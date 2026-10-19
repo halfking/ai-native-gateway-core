@@ -11,6 +11,13 @@ var nextSedScript = regexp.MustCompile(`^[ \t]+-e[ \t]*(?:'([^']*)'|"((?:\\.|[^"
 var wildcardAssignment = regexp.MustCompile(`(?i)^\^?(?:\\\()?["']?[a-z0-9_]*(?:password|passwd|pwd|secret|token|api_?key|access_key|authorization|密码|口令)["']?[ \t]*[:=：][ \t]*(?:\\\))?(?:\.\*|\.\+|\[\^(?: |;|,|\\s)\][*+])\$?$`)
 var maskedReplacement = regexp.MustCompile(`(?i)^(?:(?:[a-z0-9_]*(?:password|passwd|pwd|secret|token|api_?key|access_key|authorization|密码|口令)[ \t]*[:=：][ \t]*)|\\[0-9])?(?:\[REDACTED(?::[a-z_]+)?\]|\[MASKED\]|<REDACTED>|\*{3,})$`)
 
+// isPlaceholderSecretValue requires a complete masking replacement. It is only
+// consulted after the sed parser proves a credential wildcard and complete
+// substitution; a marker prefix alone never exempts a credential assignment.
+func isPlaceholderSecretValue(value string) bool {
+	return maskedReplacement.MatchString(value)
+}
+
 // DetectionText removes only known redaction syntax from credential detection.
 // Byte offsets remain unchanged. Only a complete substitution with both a
 // credential wildcard and a known masking replacement qualifies. Otherwise
@@ -82,7 +89,7 @@ func maskScript(view []byte, text string, match []int, spans *[][2]int) {
 			flagsEnd++
 		}
 		replacement := script[replacementStart:replacementEnd]
-		if wildcardAssignment.MatchString(script[patternStart:patternEnd]) && (replacement == "" || maskedReplacement.MatchString(replacement)) {
+		if wildcardAssignment.MatchString(script[patternStart:patternEnd]) && (replacement == "" || isPlaceholderSecretValue(replacement)) {
 			blank(view, start+patternStart, start+patternEnd)
 			blank(view, start+replacementStart, start+replacementEnd)
 			*spans = append(*spans, [2]int{start + patternStart, start + patternEnd}, [2]int{start + replacementStart, start + replacementEnd})
