@@ -52,7 +52,37 @@ func monitorPath(name string) string {
 // TestMonitorScriptsParse runs `bash -n` on every script the cron file schedules.
 // bash -n is the cheapest check that catches the majority of self-inflicted
 // breakage (unterminated quotes, bad heredocs) without executing anything.
+//
+// ★★ 2026-10-19（§143.13）：范围从「cron 调度的那些」扩到「**目录下全部** .sh」。
+//
+//	理由：按需工具（如 index-reader-census.sh）**按目录约定不进 cron**
+//	（名字不占 `pg17-*` 前缀 ⇒ cron 登记门不要求它登记），
+//	⇒ 它们**不在**本门原覆盖范围里 ⇒ **一个语法坏掉的按需工具没人拦**。
+//	而 §143.13 正好撞上这一类：仓里的普查器**从来没跑起来过**
+//	（`${SQL/__IDX__/'$IDX'}` 的单引号让 shell 不展开 ⇒ 真库语法错）。
+//	⚠ 但要说清：`bash -n` **抓不到**那个 bug（它语法是对的，坏的是**展开**）。
+//	⇒ 本条是**补充**，不是替代；真正抓到它的是 §143.13 新增的「真库执行」门。
 func TestMonitorScriptsParse(t *testing.T) {
+	dir := filepath.Join("..", "252-monitor")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("读 %s: %v", dir, err)
+	}
+	checked := 0
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() || !strings.HasSuffix(name, ".sh") {
+			continue
+		}
+		checked++
+		out, err := exec.Command("bash", "-n", filepath.Join(dir, name)).CombinedOutput()
+		if err != nil {
+			t.Errorf("bash -n 失败（%s）:\n%s", name, out)
+		}
+	}
+	if checked < 8 {
+		t.Fatalf("只检查到 %d 个脚本 ⇒ 目录扫描本身坏了，这道门正在空转", checked)
+	}
 	for _, name := range mustNotCrash {
 		name := name
 		t.Run(name, func(t *testing.T) {

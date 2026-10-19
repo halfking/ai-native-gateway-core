@@ -110,7 +110,7 @@ HTTP/SSE → middleware chain → protocol/IR normalization → session assignme
 | `bg/` | عمال الخلفية — السبر، تنظيف دورة الحياة، تجميع الإحصاءات، صيانة الأقسام |
 | `storage/` | مصنع تخزين ثنائي الوضع (`full`: PG+Redis / `lite`: SQLite+ملفات+KV داخلي) |
 | `internal/` | بنية تحتية عرضية — IR، إزالة حقول المزوّدين، مرآة الجلسات، outbox، القياس عن بعد… |
-| `sql/migrations/` + `db/migrations/` | ترحيلات idempotent (سلسلة بدء التشغيل حاليًا عند 870) |
+| `sql/migrations/` + `db/migrations/` | ترحيلات idempotent (سلسلة بدء التشغيل حاليًا عند 878) |
 | `installer/` | وحدة تثبيت/ترقية مستقلة متعددة المنصات |
 | `scripts/`، `deploy/` | أدوات البناء والنشر والمرايا والتحقق |
 
