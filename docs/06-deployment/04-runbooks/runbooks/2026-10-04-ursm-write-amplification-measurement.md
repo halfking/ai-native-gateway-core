@@ -29205,7 +29205,19 @@ deploy/sql/docs/features/ 现存文件       = 11 个，日期 2026-06-14 ~ 2026
 |---|---|
 | ① **审计查不到** | 它不在迁移历史里 ⇒ 任何「这个对象是谁建的/何时建的」都查不出来 |
 | ② **重建回不来** | 不在基线里 ⇒ CI 测试库、新环境初始化、灾备恢复**都不会有它** ⇒ `api_key_model_cost` 在那些环境里**从一开始就是空的** |
-| ③ **窗口已消失** | 根 `docs/` 现在 0 个 `.sql` ⇒ 无法回答「**历史上还有哪些对象是靠这个窗口建的**」 |
+| ③ **窗口已关闭** | 根 `docs/` 现在 0 个 `.sql` |
+
+> 🚨 **[2026-10-19 §128 就地订正] 上表第 ③ 行「窗口已消失 / 无法回答」是错的 ——
+> 文件没有消失，是被 `55a6e6c05` 纯重命名进了 `docs/archive/process/schema-history/`。**
+> ⇒ ⇒ 全部 **10 个文件都是 rename（相似度 100%、内容零变化）**，逐一可查：
+> `git ls-tree 55a6e6c05^ docs/` 确认它们改名前全在 `docs/` 根目录。
+> ⇒ ⇒ ★★★ 所以**盲区是「不可执行」，不是「不可知」**：文件在、内容在、git 历史完整可恢复，
+> **要查「这个对象是谁建的/怎么建的」随时查得到**。
+> ⇒ ⇒ 真正剩下的只有 §127 量出的那一半：**那 3 个对象虽然脚本可查，却不在任何可自动重建的体系里**
+> ⇒ CI/新环境/灾备**仍然不会有它们**（第 ② 行成立）。
+> ⇒ ★★★ 订正措辞：**「一次性 SQL 域」的正确说法是「不可重建的脚本域」，不是「不可审计的脚本域」。**
+> 把它当「信息已丢失」会导致放弃盘点，而盘点（§127）恰恰给出了可执行的补迁移清单。
+> 详见 **§128**。
 
 ⇒ ⇒ ★★★ ⇒ **`docs/` 根目录的一次性 SQL 域是一个结构性盲区**：
 它生产过生产对象，却从未被纳入任何可审计、可重建的体系。
@@ -29518,3 +29530,176 @@ ON CONFLICT (bucket, api_key_id, raw_model) DO UPDATE SET ...
    `could not identify an ordering operator for type xid` ⇒ 必须 `age(xmin)::bigint` 后再排。
    ★ 同族：**PG 的 `age()` 是唯一的「对象年龄」量具**，凡是问「谁先建谁后建」都该用它，
    而不是靠 commit 日期猜（本例 commit 日期与对象年龄给出的是两个不同粒度的答案）。
+
+---
+
+## §128 订正 §126 的「不可审计」定性 + 补测 §123 剩余三视图，挖出一条 P0 级性能缺陷（2026-10-19）
+
+本节清掉 §126/§127 留下的三个**纯只读**待办（git 生命周期、两个孤儿索引、三视图），
+其中一个产出了需要属主决策的新发现。
+
+### 一、🚨 订正 §126：「一次性 SQL 域」是**不可重建**，不是**不可审计**
+
+§126 的后果表第 ③ 行写的是「**窗口已消失** ⇒ 无法回答『历史上还有哪些对象是靠这个窗口建的』」，
+这个定性**是错的**。实测：
+
+```
+$ git log --all --oneline --diff-filter=D --name-only -- 'docs/2026-06-1*.sql' ...
+55a6e6c05  chore(docs): complete docs topic regroup + retire root deploy scripts (rule 36)
+```
+
+⇒ ⇒ ★★★ **`--diff-filter=D` 会把这批文件报成「删除」，但 `git show --stat -M 55a6e6c05` 显示它们全是 rename、
+相似度 100%、内容零变化**（`.../schema-history}/2026-06-14-peak-stats.sql | 0`）。
+⇒ ⇒ 且 `git ls-tree --name-only 55a6e6c05^ docs/ | grep '\.sql$'` **逐一确认**：
+改名前 10 个文件全在 `docs/` 根目录（含 `2026-06-15-auto-route-mode-realtime-trigger-fix.sql`，
+它没出现在 rename 列表里是因为它本来就在同一目录、未被改动）。
+
+⇒ ⇒ 🚨 **所以文件没有消失、内容完整、git 历史可逐字节恢复。**
+**盲区是「不可执行/不可自动重建」，不是「不可知/信息已丢失」。**
+
+⇒ ⇒ ★★★ 真正的风险范围只有 §127 量出的那三个对象，且第 ② 行（CI/新环境/灾备不会有它们）**依然成立**。
+⇒ ★★★ 订正措辞：**「一次性 SQL 域」的正确说法是「不可重建的脚本域」。**
+把它当「信息已丢失」会误导人放弃盘点 —— 而 §127 的盘点恰恰给出了可执行的补迁移清单。
+（已在 §126 的后果表下方加**就地订正横幅**，原文保留。）
+
+★ 附带教训：`--diff-filter=D` 只看「路径消失」不看「内容去哪」，
+**重命名提交会被误报成删除** ⇒ 判断「文件是否还在」不能只看 filter，
+要把 `-M`（rename 检测）和 `ls-tree <rev>^` 一起用。
+
+### 二、✅ §127 的 P0-e 已关闭：那两个孤儿索引在生产**不存在，且无实际影响**
+
+```
+### 7. idx_request_logs_auto / idx_request_logs_explicit_model
+（0 行 —— 两个索引在全库都不存在）
+
+### 7c. 本该服务它们的查询形态是否已被覆盖
+ _request_logs | idx_request_logs_client_model            (client_model)
+ _request_logs | idx_request_logs_client_model_hash       (hash (client_model))
+ _request_logs | idx_request_logs_client_model_lower      (lower(client_model))
+ _request_logs | idx_request_logs_client_model_prefix     (client_model text_pattern_ops)
+ _request_logs | idx_request_logs_credential_model_ts     (credential_id, lower(COALESCE(outbound_model, client_model)), ts DESC)
+（另有 2026_10 分区上的 5 个等价索引）
+```
+
+⇒ ⇒ ★★★ **两个索引确实不在体系内（§127 结论成立），但 `client_model` 这个查询面已被 5+ 个索引覆盖**
+⇒ 补它们**没有性能收益**，只是补齐 schema 完整性。
+⇒ ★ 所以 §127 的 P0-e 从「待清理的孤儿」降级为「**不必做**」。
+⇒ ★★★ 再次印证 [[阴性结论要当缺陷一样复核]] 的另一面：
+**「对象缺失」不等于「要补」** —— 补之前要问「它服务的东西是不是已经有人服务了」。
+
+### 三、🚨 §123 剩余三视图：依赖图 + 挖出一条 P0 级性能缺陷
+
+#### 3.1 依赖图（用 `regexp_matches` 提 FROM/JOIN，⚠ 它是集合返回函数、需 `[2]` 取第二捕获组）
+
+| 视图 | 读取的上游 |
+|---|---|
+| `request_logs_with_current_month` | `request_logs_with_current_month_without_request_class_due_at` + **LATERAL**(`_request_logs_hot` ∪ `_request_logs`) + `session_turn_details(_hot)` + `session_turns(_hot)` |
+| `routing_analytics_source` | `request_logs_with_current_month` |
+| `v_model_health_dashboard` | `v_node_probe_state_compat` + `credentials` + `providers` + **LATERAL**(`request_logs_with_current_month`) + `real24` |
+
+⇒ ⇒ 🚨 **`v_model_health_dashboard` 与 `routing_analytics_source` 都以 `request_logs_with_current_month` 为下游**
+⇒ 下面这条性能缺陷的爆炸半径**不止一个视图**。
+
+#### 3.2 🚨 新发现 P0：`request_logs_with_current_month` 单次 `count(*)` **超过 180 秒仍未完成**
+
+```
+### 3a. request_logs_with_current_month 行数
+ERROR:  canceling statement due to statement timeout
+时间：180015.038 ms (03:00.015)     ← 3 分钟超时都没跑完
+
+### C. 但 LIMIT 1 秒回
+ count
+-------
+     1
+（1 行记录）
+```
+
+⇒ ⇒ ★★★ **同一张视图，`LIMIT 1` 秒回、`count(*)` 180s 超时** ⇒ 这是**全量展开成本**问题，不是「表坏/锁死」。
+⇒ ⇒ 🚨 而 §125 已实测 `/api/admin/auto-route/*` 在 154 上**确有调用** ⇒ 这是一条**正在被真实流量触发**的慢查询。
+
+#### 3.3 根因：不是缺索引，是 `LEFT JOIN LATERAL` 的嵌套循环
+
+先否掉最容易被猜的成因（§「0 命中的第一嫌疑是量具坏」/ 阴性结论复核）：
+
+```
+### E. session_turns 族上的 request_id 索引
+ session_turns        | idx_session_turns_request                        (request_id)
+ session_turns        | session_turns_tenant_request_partition_key       UNIQUE (tenant_id, request_id, partition_date)
+ session_turns_hot    | idx_session_turns_hot_request                   (request_id)
+ session_turns_hot    | session_turns_hot_tenant_request_key             UNIQUE (tenant_id, request_id, partition_date)
+ （2026_10 / default 分区上同样齐全）
+```
+
+⇒ ⇒ ✅ **索引齐全 ⇒ 视图尾部那两个 `NOT EXISTS(... request_id = ...)` 不是元凶。**
+⇒ ⇒ ★ **真正的成本在骨架里的这一段**（`pg_get_viewdef` 实测）：
+
+```sql
+ FROM request_logs_with_current_month_without_request_class_due_at v
+   LEFT JOIN LATERAL (
+       SELECT h.request_class, h.due_at, ... FROM _request_logs_hot h
+        WHERE h.request_id = v.request_id AND h.ts = v.ts
+       UNION ALL
+       SELECT p.request_class, p.due_at, ... FROM _request_logs p
+        WHERE p.request_id = v.request_id AND p.ts = v.ts
+   ) source ON true
+ WHERE NOT (EXISTS (SELECT 1 FROM session_turns_hot th WHERE th.request_id = rl.request_id))
+   AND NOT (EXISTS (SELECT 1 FROM session_turns tp WHERE tp.request_id = rl.request_id))
+```
+
+上游规模（实测，`\timing on`）：
+
+| 上游 | `count(*)` | 耗时 |
+|---|---|---|
+| `session_turns_hot` | 10,033 | 16.4 ms |
+| `_request_logs_hot` | **0** | 5.5 ms |
+| `_request_logs` | 338,976 | 192.5 ms |
+
+⇒ ⇒ ★★★ **视图要对 338,976 行逐行做一次 LATERAL 查找**
+（`_request_logs_hot` 为 0 行 ⇒ **第一分支恒空，纯浪费**；第二分支对 338,976 行父表按 `request_id + ts` 查）
+⇒ ⇒ 🚨 而视图还有 **60+ 个输出列**（含 `request_preview` / `response_preview` / `transform_summary` 等大文本列）
+⇒ ⇒ ★★★ 这就是 `count(*)` 跑不完的成因：**338,976 行 × LATERAL 查找 × 60 列宽行**。
+⇒ ★ 顺带暴露两个独立缺陷（**本节未验证，登记待查**）：
+**① `_request_logs_hot` 为 0 行**（门控停写的下游后果之一？）；
+**② LATERAL 的 UNION ALL 第一个分支恒空**（`_request_logs_hot` 无数据时纯属白跑，可条件跳过）。
+
+#### 3.4 诚实边界
+
+⚠ **本节没有跑 `EXPLAIN (ANALYZE)`** —— 那需要执行整个计划，对 338,976 行的宽视图本身就是一次重负载，
+在无授权的生产环境上跑 `EXPLAIN ANALYZE` 等于**真的执行一遍**。
+上面的根因是**从视图定义 + 上游行数推断**，不是执行计划实测。
+⇒ ★★ **要坐实必须做**：`EXPLAIN (ANALYZE, BUFFERS)` 或先在只读副本上跑
+（授权项见 §六 P0-f）。**本节的成本数字（180s 超时）是实测，根因归因是推断。**
+
+### 四、动作边界
+
+本节全部为只读查询 + git 只读命令。**未执行任何生产写**。
+
+### 五、本节的两条可复用教训
+
+1. ★★★ **「不可重建」与「不可审计」是两个维度，混淆会让人放弃本可完成的盘点。**
+   本节实测：那批 `.sql` 全是 `git mv` 的纯重命名、内容零变化、逐个可恢复 ⇒
+   **信息一直都在**。把「根 `docs/` 下 0 个 `.sql`」读成「脚本域已消失、无法回答历史」，
+   会直接导向「这批对象查不清了、放弃」的错误结论。
+   ⇒ ★ 判别动作：判「某文件是否还在」**不能只看 `--diff-filter=D`**，
+   要配 `git show -M`（rename 检测）+ `git ls-tree <rev>^`（改名前路径）。
+2. ★★★ **「对象缺失」不等于「要补」** —— 补之前先问「它服务的东西是否已有人服务」。
+   本节实测两个孤儿索引确实不存在，但 `client_model` 查询面已被 5+ 个等价索引覆盖
+   ⇒ 补它们只有 schema 完整性收益、**零性能收益** ⇒ 从待办降级为「不必做」。
+   ⇒ ★ 同族：**为了「体系完整」而补的对象，要单独记一笔它的收益是什么**，
+   否则待办清单会攒下一堆「补了也没用」的项。
+3. ★★★ **`\b` 之外的第二个 PGRE 陷阱：`regexp_matches` 是集合返回函数。**
+   `regexp_replace(m.raw, ...)` 直接报 `function regexp_replace(text[], unknown, unknown) does not exist`
+   ⇒ 必须 `(regexp_matches(...))[2]` 取第 N 个捕获组。
+   ⇒ ★ 「长定义刷屏」的正解是**先提取成一张小表再打印**，而不是把全文 `SELECT` 出来
+   （本节先被刷屏两次才改对）。
+
+### 六、动作清单（待授权）
+
+| # | 动作 | 前置 | 风险 |
+|---|---|---|---|
+| 🚨 **P0-f** | **坐实 §3.3 的根因**：`EXPLAIN (ANALYZE, BUFFERS)` 或在只读副本上跑一次 | 需属主授权在生产跑 ANALYZE，或提供只读副本 | 高（在生产跑 ANALYZE = 真的执行一遍 180s+ 的重查询） |
+| 🚨 **P0-g** | 修 `request_logs_with_current_month` 的 LATERAL：第一分支 `_request_logs_hot` 为 0 时跳过；`UNION ALL` 第二分支改按 `request_id` 走索引并去掉 `ts` 等值条件 | 需先 P0-f 坐实；改视图 = 生产写 | 高（视图是 `/api/admin/auto-route/*` 的数据源，改错会影响接口） |
+| 🚨 **P0-h** | 查 `_request_logs_hot` 为 0 的成因（门控停写的下游？分区未挂？） | 只读可查 | 低 |
+| ★ | 给这类宽视图加**巡检项**：`LIMIT 1` 与 `count(*)` 的耗时比（秒回 vs 跑不完 = 全量展开失控） | 需先 P0-f 定阈值 | 低 |
+| ✅ | ~~§127 P0-e：清理两个孤儿索引~~ —— **已关闭**，生产不存在且查询面已被覆盖，**不必做** | — | — |
+| ✅ | ~~§126：查 `docs/` 那批文件的生命周期~~ —— **已完成**，见 §一 | — | — |
