@@ -136,6 +136,16 @@ MIN_INDEX_MB=${MIN_INDEX_MB:-16}          # 低于此尺寸不测：量它比回
 MIN_DEAD_PAGES=${MIN_DEAD_PAGES:-2000}     # 批量删除型：死页下限（2000 页 ≈ 16MB）
 MIN_LEAF_DENSITY=${MIN_LEAF_DENSITY:-60}   # 零散 churn 型：叶页密度下限（%）
 MIN_RECLAIM_MB=${MIN_RECLAIM_MB:-32}       # 重建后至少能回收这么多才值得动手
+# 重建目标密度 = btree 的 fillfactor 默认值（90）。★ 这不是猜的：
+#   REINDEX / CREATE INDEX 走**排序建**，实测可达密度三处互证 ——
+#     90.20%（2026-10-03 生产真值，见 $STATE 基线文件）
+#     89.82% / 89.88%（2026-10-19 两个沙箱对照实验，见 §143.11）
+#   旧公式按「填到 100%」算 ⇒ **越接近 90% 越发狂**：
+#   密度 90.07% 的 route_incident_events_pkey 旧口径报「可回收 3MB」，
+#   而排序建到 90% 只差 0.07% ⇒ 真值 ≈ 0；密度 89.14% 的 1987 万行索引
+#   旧口径报 115MB、实测只收回 46MB（2026-10-03 生产）。
+#   ⇒ 收益必须按「重建到 90%」算，否则 --fix 会反复挑中重建不动的索引。
+FILLFACTOR=${FILLFACTOR:-90}
 MAX_FIX_PER_RUN=${MAX_FIX_PER_RUN:-10}     # 单次运行最多重建几个，避免 cron 跑成长任务
 DENSITY_TOLERANCE=${DENSITY_TOLERANCE:-2}  # 当前密度高于「上次重建后密度」这么多点以内，视为已在自然填充率
 STATE=${STATE:-/var/lib/pg17-index-bloat/seen-density.tsv}  # index<TAB>重建后密度，自校准基线
@@ -205,7 +215,26 @@ log "control probe OK: $control_idx ${control_val}"
 # ⚠ 判据仍是 pgstatindex 的**双信号**（deleted_pages OR avg_leaf_density），
 #   **不**因为放宽覆盖面就改成按尺寸一刀切 —— pg_toast 里 3 条 ≥16MB 的
 #   只有 1 条真膨胀，另两条叶页密度 89.88% / 90.18%，一刀切会纯浪费。
-candidates=$(de "SELECT c.oid::regclass::text
+# ★ 候选集同时返回「族键」（family key），用来对齐自校准基线（见下方 baseline 段）：
+#   叶分区索引的名字与**父表**索引的名字不同（`ursm_node_snapshot_min_20261019_pkey`
+#   vs `ursm_node_snapshot_min_pkey`），而 $STATE 记的是重建时**实际动过的那个索引**。
+#   2026-10-19 实测：基线文件里唯一的真实数据点 `ursm_node_snapshot_min_pkey 90.20`
+#   （分区父表上的索引，relkind='I'）**永远匹配不到任何被测的叶分区索引**
+#   ⇒ 自校准在生产上是死的 ⇒ 每次都按「未达自然填充率」重新挑中同一族索引。
+#   族键取「同一父表上、索引形状（USING 之后的定义本体）完全相同」的那个父表索引名；
+#   非分区表没有父表，族键就是它自己 ⇒ 旧格式基线条目继续可用。
+candidates=$(de "SELECT c.oid::regclass::text || '|' ||
+                   COALESCE(
+                     (SELECT pi_idx.relname
+                        FROM pg_inherits inh
+                        JOIN pg_index  pi     ON pi.indrelid = inh.inhparent
+                        JOIN pg_class pi_idx ON pi_idx.oid = pi.indexrelid
+                       WHERE inh.inhrelid = i.indrelid
+                         AND regexp_replace(pg_get_indexdef(pi.indexrelid), '^.*?USING ', 'USING ')
+                           = regexp_replace(pg_get_indexdef(c.oid),          '^.*?USING ', 'USING ')
+                       ORDER BY pi_idx.relname
+                       LIMIT 1),
+                     c.relname)
                    FROM pg_index i
                    JOIN pg_class c  ON c.oid = i.indexrelid
                    JOIN pg_am am    ON am.oid = c.relam AND am.amname = 'btree'
@@ -262,8 +291,9 @@ fi
 measured=0; unmeasured=0; flagged=0; cand_mb=0
 flag_list=""
 
-while IFS= read -r idx; do
+while IFS='|' read -r idx fam_key; do
   [ -z "$idx" ] && continue
+  [ -z "$fam_key" ] && fam_key="$idx"
   row=$(podman exec -e PGOPTIONS="-c statement_timeout=${PROBE_TIMEOUT}s" \
           "$CONTAINER" psql -U "$PG_USER" -d "$PG_DB" -tAX -c \
           "SELECT pg_relation_size('$idx'), s.deleted_pages, s.leaf_pages, s.avg_leaf_density
@@ -304,8 +334,36 @@ while IFS= read -r idx; do
   #   实收 46MB；重建后密度 90.20%、仍估 115MB —— 它会持续被选中、每次只回收一点。
   #   曾为此加「密度>=88 视为已达上限」的豁免分支，因 avg_leaf_density 语义被误读
   #   （见文件头）而撤除。此处仅记录该行为已知，不再据此下结论。
-  headroom_mb=$(awk -v d="$dead_pages" -v l="$leaf_pages" -v y="$density" \
-    'BEGIN{printf "%d", (d + l*(1-y/100))*8192/1048576}')
+  #
+  # ★★ 2026-10-19（§143.12）再修正：**重建目标不是 100%，是 fillfactor 90%**。
+  #   REINDEX 走**排序建**（按键序重排条目后重建 btree），不是「合并相邻页」——
+  #   上面那段「不能重排行序」的说法是**错的**，且与同一文件 2026-10-03 记下的
+  #   「重建后密度 90.20%」直接矛盾：若不重排，1987 万行的索引不可能从 89.14%
+  #   变成 90.20%。就地订正。
+  #   ⇒ 重建后的可达密度 = btree fillfactor 默认值 90%，与表的行序无关。
+  #   旧公式 (1−y/100) 的后果：密度越接近 90%，高估越离谱 ——
+  #     密度 90.07%（route_incident_events_pkey）旧口径「可回收 3.8MB」，
+  #     真值 ≈ 0（排序建只能到 90%）；密度 89.14% 的 1987 万行索引旧口径 115MB。
+  #   新公式按「重建到 FILLFACTOR(=90)」算：reclaim = dead + leaf×(1 − min(y,90)/90)。
+  #   ★ 校准依据是**受控实验**，不是生产数字：
+  #     2026-10-19 两个沙箱对照（同数据、只改插入顺序）——
+  #       随机插 68.13% → 排序建 89.88%，实测体积少 24.22%；公式给 24.3%；
+  #       批内同首列 70.20% → 排序建 89.82%，实测少 21.98%；公式给 22.0%。
+  #     ⇒ 公式与受控实测吻合到 0.1 个百分点。
+  #   ⚠ 2026-10-03 生产那次（重建前 89.14%、重建后 90.20%、估 132MB 实收 46MB）
+  #     **不能当校准点**：6.5 小时里该表在持续写入 + TTL 删除，
+  #     重建前后的活元组字节数本身变了（按密度反推，活字节从 1,138MB 降到 1,120MB）
+  #     ⇒ 「实收 46MB」里混着数据变化，不是干净的重建收益。此处只留作背景。
+  #   ★ 语义提醒：dead_pages 与 leaf_pages 是**互斥**的两批页，不重复计数 ——
+  #     2026-10-19 实测 pgstatindex 全字段逐页对得上：
+  #     pg_toast_81522141_index 的 leaf=1 + deleted=29299 + internal=2 + root=1
+  #     = rel_pages=29303；三个正常索引（stats_event_dedup_pkey 等）同样对得上。
+  #   ★ 口径性质：新公式给的是**下界**（保证能收回的那部分）。
+  #     排序建会顺带丢掉**活页里残留的死元组字节**，而工具只测「死页」不测「死字节」
+  #     ⇒ churn 型的真实收益高于此数；工具没有便宜的办法测死字节（pgstattuple 要全扫）。
+  #   ★ empty_pages 实测恒为 0（>20MB 的 btree 索引无一例外，2026-10-19）⇒ 不进公式。
+  headroom_mb=$(awk -v d="$dead_pages" -v l="$leaf_pages" -v y="$density" -v f="$FILLFACTOR" \
+    'BEGIN{ y=(y>f?f:y); printf "%d", (d + l*(1-y/f))*8192/1048576}')
   reason=""
   [ "$dead_pages" -ge "$MIN_DEAD_PAGES" ] && reason="dead_pages=$dead_pages($(( dead_pages * 8192 / 1024 / 1024 ))MB)"
   if awk -v y="$density" -v t="$MIN_LEAF_DENSITY" 'BEGIN{exit !(y<t)}'; then
@@ -314,7 +372,10 @@ while IFS= read -r idx; do
   # 累计 headroom 也能单独越过门槛（页数极多、每页都只空一点点：两个单信号都没破线，
   # 汇总起来却超过 MIN_RECLAIM_MB）。此时 reason 会是空串，日志会打出 "reason="
   # 这种读不出所以然的行，--fix 的日志同样带不出来。补一个兜底说明。
-  [ -z "$reason" ] && reason="aggregate(leaf_pages=${leaf_pages}×${density}%空隙)"
+  # ⚠ 旧串写的是「×${density}%空隙」，但 density 是**已用**占比（avg_leaf_density），
+  #   空隙是 100−density ⇒ 旧串把「已用 89.14%」标成「空隙 89.14%」，
+  #   照字面读会把回收量算反一个量级（2026-10-19 发现，就地订正）。
+  [ -z "$reason" ] && reason="aggregate(leaf_pages=${leaf_pages}×已用${density}%,重建可达${FILLFACTOR}%)"
 
   # === 自校准：已达自然填充率的索引不再重复重建 =====================
   # 问题（2026-10-03 生产实测）：ursm_node_snapshot_min_pkey 重建后密度 90.20%，
@@ -328,17 +389,24 @@ while IFS= read -r idx; do
   # avg_leaf_density 语义误读之上，已撤除（见文件头）。绝对阈值要靠猜。
   # 这里改成**相对判据**：拿该索引自己上一次重建后的密度当基线。
   # 基线是实测出来的，不是猜的；且随该索引自身的数据分布自动校准。
-  baseline=$(awk -F'\t' -v k="$idx" '$1==k{print $2; exit}' "$STATE" 2>/dev/null || true)
+  # 基线先按**族键**找（叶分区索引继承父表索引的自然填充率），
+  # 再退回按索引名找（非分区表的族键就是它自己 ⇒ 等价于旧行为，旧文件继续可用）。
+  baseline=$(awk -F'\t' -v k="$fam_key" '$1==k{print $2; exit}' "$STATE" 2>/dev/null || true)
+  baseline_src="$fam_key"
+  if [ -z "$baseline" ]; then
+    baseline=$(awk -F'\t' -v k="$idx" '$1==k{print $2; exit}' "$STATE" 2>/dev/null || true)
+    baseline_src="$idx"
+  fi
   if [ -n "$baseline" ] && awk -v y="$density" -v b="$baseline" -v t="$DENSITY_TOLERANCE" \
        'BEGIN{exit !(y >= b - t)}'; then
-    log "ok        $idx size=${size_mb}MB density=${density}% >= 自身重建后基线 ${baseline}% -${DENSITY_TOLERANCE}（已达自然填充率，再重建无收益）"
+    log "ok        $idx size=${size_mb}MB density=${density}% >= 族基线 ${baseline}% (${baseline_src}) -${DENSITY_TOLERANCE}（已达自然填充率，再重建无收益）"
     continue
   fi
 
   if [ "$headroom_mb" -ge "$MIN_RECLAIM_MB" ]; then
     flagged=$((flagged + 1))
     cand_mb=$((cand_mb + headroom_mb))
-    flag_list="${flag_list}${idx}|${headroom_mb}|${reason}"$'\n'
+    flag_list="${flag_list}${idx}|${fam_key}|${headroom_mb}|${reason}"$'\n'
     log "CANDIDATE $idx size=${size_mb}MB headroom≈${headroom_mb}MB reason=${reason}"
   else
     log "ok        $idx size=${size_mb}MB dead_pages=$dead_pages density=${density}% headroom≈${headroom_mb}MB"
@@ -371,9 +439,10 @@ if [ "$MODE" = "fix" ] && [ "$flagged" -gt 0 ]; then
   # 二者会选出不同的前 N：体积第 4 大的候选是 idx_route_incident_events_type_created
   # (111MB/54MB)，而 headroom 第 4 大是 idx_state_transitions_created (93MB/75MB)。
   # MAX_FIX_PER_RUN 的意义是「先做最值钱的几个」，所以必须按 headroom 排。
-  flag_list=$(printf '%s' "$flag_list" | grep . | sort -t'|' -k2,2nr)
-  while IFS='|' read -r idx headroom_mb reason; do
+  flag_list=$(printf '%s' "$flag_list" | grep . | sort -t'|' -k3,3nr)
+  while IFS='|' read -r idx fam_key headroom_mb reason; do
     [ -z "$idx" ] && continue
+    [ -z "$fam_key" ] && fam_key="$idx"
     if [ "$done_count" -ge "$MAX_FIX_PER_RUN" ]; then
       log "SKIP $idx : reached MAX_FIX_PER_RUN=$MAX_FIX_PER_RUN, 留待下次"
       continue
@@ -398,10 +467,13 @@ if [ "$MODE" = "fix" ] && [ "$flagged" -gt 0 ]; then
         if [[ "$post_d" =~ ^(NaN|[0-9.]+)$ ]]; then
           mkdir -p "$(dirname "$STATE")"
           tmp_state="${STATE}.tmp.$$"
-          { [ -f "$STATE" ] && grep -v "^${idx}[[:space:]]" "$STATE" || true; \
-            printf '%s\t%s\n' "$idx" "$post_d"; } > "$tmp_state"
+          # 基线记在**族键**下：同一父表索引的各个叶分区共享一个自然填充率
+          # （它们是同一份定义、同一批数据，只是分区不同）⇒ 记族键才能让
+          # 「这一族已经重建到位」这件事在下一个分区上被认出来。
+          { [ -f "$STATE" ] && awk -F'\t' -v k="$fam_key" '$1!=k' "$STATE" || true; \
+            printf '%s\t%s\n' "$fam_key" "$post_d"; } > "$tmp_state"
           mv "$tmp_state" "$STATE"
-          log "baseline  $idx : post-reindex density=${post_d}% 记入 $STATE"
+          log "baseline  $idx : post-reindex density=${post_d}% 记入 $STATE（族键 ${fam_key}）"
         else
           log "baseline  $idx : 重建后密度读取失败（${post_d}），基线未更新"
         fi

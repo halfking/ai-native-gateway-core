@@ -78,7 +78,12 @@ case "$sql" in
     ;;
   *"ORDER BY pg_relation_size(c.oid) DESC"*)
     # 候选集：一条叶分区索引 + 一条 TOAST 索引
-    printf '%s\n' "public.leaf_part_idx" "pg_toast.pg_toast_99999999_index"
+    # FAKE_CANDIDATES 存在时整段覆盖（§143.12：用来造「族键」形态的候选集）
+    if [ -n "$FAKE_CANDIDATES" ]; then
+      printf '%s\n' "$FAKE_CANDIDATES"
+    else
+      printf '%s\n' "public.leaf_part_idx" "pg_toast.pg_toast_99999999_index"
+    fi
     ;;
   *"pg_relation_size"*)
     echo "${FAKE_SIZE_BYTES}"
@@ -96,6 +101,8 @@ type bloatEnv struct {
 	log    string
 	state  string
 	notify string
+	// candidates 覆盖候选集查询的返回（§143.12：族键形态）。空 = 用假命令的默认两条。
+	candidates string
 }
 
 func newBloatEnv(t *testing.T) *bloatEnv {
@@ -150,6 +157,7 @@ func (e *bloatEnv) runRow(t *testing.T, dead, leaf int, density, row string) (st
 		"FAKE_LEAF_PAGES="+strconv.Itoa(leaf),
 		"FAKE_DENSITY="+density,
 		"FAKE_ROW="+row,
+		"FAKE_CANDIDATES="+e.candidates,
 	)
 	out, err := cmd.CombinedOutput()
 	rc := 0
