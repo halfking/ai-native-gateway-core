@@ -28937,6 +28937,27 @@ SELECT c.relname, c.relkind, (SELECT count(*) FROM pg_trigger WHERE tgrelid=c.oi
 ⇒ ⇒ 🚨🚨 **完整因果链**：
 
 ```
+> 🚨 **[2026-10-19 §126 就地订正] 下面因果链的「第 2、3 步」是错的 —— 触发器不是「随老表消失」，它**从来就不在迁移体系里**。**
+>
+> ① **860 只做 RENAME，不含任何 `DROP TRIGGER`**（209 行里只有 5 条
+>    `ALTER TABLE … RENAME TO`，而 RENAME **保留**触发器）。
+> ② **时间对不上**：860 执行于 **2026-10-14**，而 `api_key_model_cost` 停更于
+>    **2026-06-19** —— 860 晚 **4 个月**，不可能是原因。
+> ③ **真实真相**：`trg_update_api_key_model_cost` 在**基线 schema（0 行）、
+>    561 个 startup 迁移（0 行）、应用代码 db/admin/bg/internal/cmd（0 行）**
+>    里**全都不存在**。建它的 SQL 只存在于
+>    `deploy/sql/docs/features/` 与 `docs/archive/process/schema-history/` ——
+>    而 `deploy/sql/migrate-sql-files.sh:52-54` 证明 `docs/features/` 只是
+>    **从仓库根 `docs/` 复制过去供打包**的位置，**不是执行渠道**
+>    （`verify-migration.sh:102` 只查「≥10 个文件」的数量）。
+> ④ ⇒ 那是**一次性手工执行域**（11 个文件、日期 2026-06-14 ~ 07-25），
+>    **现已归档、根 `docs/` 下 0 个 `.sql`** ⇒ 既查不到、也重建不回。
+> ⑤ ⚠ **触发器在 6-19 之后为何消失仍未确定**（分区化改造 / 手工 DROP / 回滚脚本，候选均未验证）。
+>
+> ⚠ **修法巧合相同（都指向「在 `_request_logs` 上重建」），但依据完全不同** ——
+> 若沿用本节原文，会误以为「触发器是被 860 弄丢的」或「改名会丢触发器」。
+> 正确处置见 **§126**。
+
 2026-06-15  迁移在 request_logs 上建 trg_update_api_key_model_cost
 2026-06-19 03:30   api_key_model_cost 最后一批数据
    ↓  request_logs 老表被退役/改名（§116 的 S4 退役轮）
@@ -29092,3 +29113,142 @@ SELECT c.relname, c.relkind, (SELECT count(*) FROM pg_trigger WHERE tgrelid=c.oi
 | ★ | 对候选逐个查数据源是否停更（那才是「僵尸端点」的另一半） |
 | ★ | 若要长期做这件事，应做成**巡检项**而不是一次性分析：「端点零调用 ∧ 其数据源已停更」应自动报警 |
 | ★ | 「多实例分散流量 ⇒ 单实例统计会漏」这条应进巡检方法纪律 |
+
+---
+
+## §126 🚨 **订正 §124**：触发器不是「随老表消失」—— 它**从来就不在迁移体系里**（2026-10-19）
+
+§124 写：
+
+> `request_logs` 老表被退役/改名 ⇒ 触发器随表一起消失，函数仍在。
+
+⇒ ⇒ 🚨 **这条机制描述是错的。** 追下去发现的事实更糟，而且**完全不同**。
+
+### 一、先否掉 §124 的机制：860 只做 RENAME，且**日期对不上**
+
+`sql/migrations/startup/860_rename_request_logs_family_pending_delete.sql`（209 行）：
+
+```
+:102   EXECUTE 'ALTER TABLE public.request_logs RENAME TO _request_logs';
+```
+
+⚠ ⚠ 全文 **grep 不到任何 `DROP TRIGGER`**（`:57/:72/:87/:102/:117` 只有 5 条 RENAME）。
+⚠ 且 `ALTER TABLE … RENAME TO` **保留触发器** —— 改名不会带走它。
+
+⚠⚠⚠ 更硬的反证：**时间根本对不上。**
+
+| 事件 | 时间 |
+|---|---|
+| `api_key_model_cost` 最后一批数据 | **2026-06-19 03:30** |
+| 迁移 860 执行改名 | **2026-10-14** |
+
+⇒ 860 比停更**晚 4 个月** ⇒ **860 不可能是原因。**
+⇒ ⇒ ⇒ §124 的「随老表消失」必须撤回。
+
+### 二、★ 真正的真相：这个触发器**从未进入 schema 基线**
+
+三处交叉验证，**全部为空**：
+
+```sql
+-- ① 基线 schema：只有函数，没有 CREATE TRIGGER
+grep 'trg_update_api_key_model_cost' sql/schema/01-schema.sql          → 0 行
+grep 'trg_update_api_key_model_cost' deploy/sql/schemas/baseline/…    → 0 行
+
+-- ② startup 迁移（561 个）里从未出现
+grep -r 'trg_update_api_key_model_cost' sql/migrations/startup/        → 0 行
+
+-- ③ 应用代码从不建立它
+grep -r 'update_api_key_model_cost' db/ admin/ bg/ internal/ cmd/     → 0 行（非测试）
+```
+
+⇒ ⇒ ★★★ 而建它的 SQL **确实存在**，在：
+
+| 路径 | 性质 |
+|---|---|
+| `deploy/sql/docs/features/2026-06-15-auto-route-mode-cost-table.sql` | **打包副本** |
+| `docs/archive/process/schema-history/2026-06-15-…sql` | **归档** |
+
+⇒ 其来源由 `deploy/sql/migrate-sql-files.sh:52-54` 给出：
+
+```bash
+# 迁移 docs/*.sql 到 docs/features/
+find "$PROJECT_ROOT/docs" -maxdepth 1 -name "*.sql" -exec cp -v {} "$DEPLOY_SQL_DIR/docs/features/" \;
+```
+
+⇒ ⇒ ★★★ **`docs/features/` 只是把仓库根 `docs/*.sql` 复制过去供打包的位置，不是执行渠道**；
+`verify-migration.sh:102` 对它的检查也只是「至少 10 个文件」的**存在性/数量**检查，不执行。
+⇒ ⇒ 那些文件原本住在**仓库根 `docs/`** —— 那是一次性手工执行域。
+
+### 三、🚨 那个执行域**现在已经空了**，且规模只有约 6 周
+
+```
+docs/ 下现存的 *.sql                     = 0 个
+sql/migrations/startup/*.sql（非 down）  = 561 个
+deploy/sql/docs/features/ 现存文件       = 11 个，日期 2026-06-14 ~ 2026-07-25
+```
+
+⇒ ⇒ ★★★ 完整链条：
+
+```
+2026-06-14 ~ 07-25   一个约 6 周的「docs/ 根目录一次性脚本」窗口（11 个文件）
+   ↓  有人在生产手工执行了 auto-route-mode-cost-table.sql
+   ↓  ⇒ 触发器 trg_update_api_key_model_cost 建立在当时的 request_logs 上
+   ↓  ⇒ api_key_model_cost 写入 352 行（2026-06-14 ~ 06-19）
+   ↓  之后 触发器消失（原因未定，见第五节）
+后来    文件被移出 docs/ 根目录，归档进 docs/archive/process/schema-history/
+现在    docs/ 根目录 0 个 .sql ⇒ 连「这个窗口存在过」的清单都没有了
+```
+
+⇒ ⇒ 🚨🚨 **三个后果，缺一不可**：
+
+| 后果 | 说明 |
+|---|---|
+| ① **审计查不到** | 它不在迁移历史里 ⇒ 任何「这个对象是谁建的/何时建的」都查不出来 |
+| ② **重建回不来** | 不在基线里 ⇒ CI 测试库、新环境初始化、灾备恢复**都不会有它** ⇒ `api_key_model_cost` 在那些环境里**从一开始就是空的** |
+| ③ **窗口已消失** | 根 `docs/` 现在 0 个 `.sql` ⇒ 无法回答「**历史上还有哪些对象是靠这个窗口建的**」 |
+
+⇒ ⇒ ★★★ ⇒ **`docs/` 根目录的一次性 SQL 域是一个结构性盲区**：
+它生产过生产对象，却从未被纳入任何可审计、可重建的体系。
+
+### 四、⚠ 与 §124 的对比：同一现象，两种归因，一条正确
+
+| | §124 的说法 | 本节的事实 |
+|---|---|---|
+| 触发器为什么不在 | 随老表退役消失 | **从未在迁移体系里存在过** |
+| 依据 | 表被改名，触发器随表消失 | 基线 0、startup 迁移 0、应用代码 0 |
+| 时间 | 未核对（以为与退役同时） | **860 晚 4 个月**，时间上不可能 |
+| 修法方向 | 在 `_request_logs` 上重建触发器 | ⚠ **方向相同，但依据完全不同** —— 且重建前必须先确认「这个链路还要不要」 |
+
+⇒ ⇒ ★★★ **修法巧合地相同，理由却完全不同。**
+如果只记住 §124 的版本，下一个人会以为「触发器是被 860 弄丢的」，
+从而在 860 上花时间、或者误以为「改名会丢触发器」而给所有改名加警告。
+
+### 五、诚实边界
+
+| | |
+|---|---|
+| ❌ | **触发器在 2026-06-19 之后为何消失，仍未确定** —— 候选：① `request_logs` 分区化改造（ATTACH PARTITION 与触发器克隆的交互）；② 手工 `DROP TRIGGER`；③ 回滚脚本被跑过。**均未验证** |
+| ❌ | 未量化「那个 6 周窗口还建过哪些其他 DB 对象」⇒ **盲区的实际大小未知**（`docs/archive/process/schema-history/` 下有多少 `.sql` 未统计） |
+| ❌ | 未验证生产环境当初**是否真的手工执行过**那个文件（表里有数据是强证据，但不是「执行过这个文件」的直接证据） |
+| ❌ | 未查 git 历史确认 `docs/2026-06-15-…sql` 是何时被移走的、移到哪 |
+| ⚠ | 「新建环境不会有该触发器」是基于「不在基线与迁移里」的推断，**未在真实的新环境上验证过** |
+| ✅ | 已证：860 无 DROP TRIGGER 且日期晚 4 个月；基线/startup 迁移/应用代码三处均无该触发器；`docs/features/` 是复制产物不是执行渠道；`verify-migration.sh` 只查数量；`docs/` 根目录现 0 个 `.sql`；startup 迁移 561 个；features 目录 11 个、日期 6-14~7-25 |
+
+### 六、动作边界
+
+⚠ 本节全程**只读**：仓库内 `grep` / `ls` / `find`（读代码与文档）。
+**未连生产、未执行任何 SQL、未做任何生产写。**
+⚠ 本节对 §124 的订正是**基于仓库证据 + §124 已实测的生产读数**
+（`_request_logs` 的 `n_triggers=0`、`api_key_model_cost` 停更于 6-19），
+没有新增生产查询。
+
+### 七、由此产生的待办
+
+| 优先级 | 动作 |
+|---|---|
+| 🚨 | **量化盲区大小**：统计 `docs/archive/process/schema-history/` 下的 `.sql`，逐个核对它们建立的 DB 对象是否进了基线 ⇒ 这是**一次性盘点**，一次性做完 |
+| 🚨 | 确认 `trg_update_api_key_model_cost` 消失的确切原因（分区化改造 vs 手工 DROP） |
+| 🚨 | 决策 `api_key_model_cost` 链路：要么按 §124 的方向重建（但在 `_request_logs` 上，且**必须作为 startup 迁移**，不能重演一次性脚本），要么下线视图+API |
+| ★ | **给「一次性 SQL 域」定规则**：凡在生产执行的 DDL/DML 必须补一个 startup 迁移，否则新环境缺失 |
+| ★ | 查 git 历史确认 `docs/` 下那批文件的生命周期 |
+| ★ | §124 的就地订正横幅已加（本节即为订正文，§124 原文保留） |
