@@ -26521,3 +26521,130 @@ usage_facts_20261004   4 条  2.3 MB     …（10 个空分区，各 1~2.5 MB）
 ⚠ 已知未做：C 档其余约 1,194 MB 未逐条查消费者；`idx_scan` 不覆盖
 规划器路径（如唯一性检查）、也不覆盖极低频的手工运维查询——**周级或月级操作与"没用过"无法区分**。
 
+---
+
+## §108 发现一条从未挖过的效率税：**104 GB 临时文件**，物化视图刷新占 57%（2026-10-19）
+
+§97~§107 都在扫**空间**。本节扫**效率**：`pg_stat_database.temp_bytes`。
+这个读数从 10-05 就在眼前（每次查数据库概况都会看到），**十几天没人碰过**。
+
+### 一、先对账：两把尺子不在同一个时间窗
+
+| 尺子 | 窗口 | temp 字节 |
+|---|---|---|
+| `pg_stat_database.temp_bytes` | ≥ **13.8 天**（postmaster 启动至今） | **104 GB** |
+| `pg_stat_statements`（10-18 **22:03:37** 被重置） | **11.6 小时** | **8,149 MB** |
+
+⇒ 折算成速率：**近期 703 MB/h ≈ 16.9 GB/天**，长期平均 **7.5 GB/天**
+⇒ ⇒ ★ **近期临时文件溢出速率是长期平均的 2.25 倍。**
+
+⚠ 这正是 §107 用过的同一件事：**不与权威来源对账就会得出错的比例**。
+本节若直接用 `pg_stat_statements` 的 8,149 MB 去比 104 GB，会得到「覆盖率 7.7%」
+并误以为「pgss 只解释了一小部分，其余无从查证」——真相是**pgss 只覆盖了 3.5% 的时间**。
+
+⇒ TOP-15 合计 ≈ 7,540 MB = pgss 窗口总量的 **93%** ⇒ **清单对该窗口有代表性**。
+
+### 二、谁在写临时文件
+
+| 语句 | 次数 | 平均耗时 | temp 写入 | 每次 |
+|---|---|---|---|---|
+| `REFRESH MV CONCURRENTLY session_task_stats` | 20 | 10.8s | **2,717 MB** | **136 MB** |
+| `REFRESH MV CONCURRENTLY session_client_stats` | 20 | **31.5s** | 801 MB | 40 MB |
+| `REFRESH MV CONCURRENTLY session_client_task_matrix` | 20 | 2.4s | 570 MB | 28.5 MB |
+| `REFRESH MV CONCURRENTLY routing_analytics_7d` | 35 | **81.5s** | 317 MB | 9 MB |
+| 巡检主判据（§105/§106 那条） | 6 | **122s** | 391 MB | 65 MB |
+
+⇒ ⇒ **物化视图 REFRESH CONCURRENTLY 合计 ≈ 4,405 MB = pgss 窗口的 54%**（另有一条
+`WITH merged AS MATERIALIZED (…session_turns_hot UNION ALL…)` 852 MB 非 MV）。
+⇒ 第五行是 §106 那条巡检：**122 秒里大量时间在写临时文件**，与「扫不完」的表象一致。
+
+### 三、代码调用点核实（`pg_stat_statements` 只是候选）
+
+| 语句 | 仓内调用点 |
+|---|---|
+| `REFRESH … CONCURRENTLY <view>` | `bg/materialized_view_refresher.go:785`（`execRefresh`） |
+| `REFRESH … tuning_signals_5m` / `_daily` | `bg/tuning_view_refresher.go:92,96` |
+
+⇒ 都是**生产排程**，不是手工诊断脚本（区别于 §12 推翻的 `pgstattuple_approx`）。
+
+### 四、根因是算术，不是异常
+
+```
+PG 侧 work_mem = 8192 kB = 8 MB   （来源：configuration file）
+shared_buffers = 3.5 GB
+temp_file_limit = -1（无上限）
+```
+
+**单次刷新要排的数据量 9–136 MB，而 work_mem 只有 8 MB** ⇒ 必然切成十几个
+8 MB 的临时文件。**这不是"某次查询跑飞了"，是 work_mem 的算术后果。**
+
+⇒ ⇒ ★ 通用式：⭐⭐⭐⭐ **看到 temp 写入异常时，先算「被排的数据量 ÷ work_mem」**。
+比值远大于 1 时，问题不在查询计划，在**内存预算**——改索引或改视图定义都是白费力气。
+
+### 五、本节做的改动（**仓库内，未部署**）
+
+沿用本文件**已有**的模式（`mvRefreshStatementTimeout` 抬 30s→180s 时就是这么做的）：
+会话级抬高 + 归还前 `RESET`，不污染连接池。
+
+```go
+if _, err := conn.Exec(ctx, "SET work_mem = '"+mvRefreshWorkMem+"'"); err != nil {
+    return mvRefreshed, err
+}
+defer func() {
+    _, _ = conn.Exec(context.WithoutCancel(ctx), "RESET work_mem")
+}()
+```
+
+`mvRefreshWorkMem = "256MB"`。
+
+**为什么 256MB 是上界而非叠加**：每轮**全网只有一个实例真正执行刷新**
+（Redis 令牌桶 + advisory lock 兜底，见文件头），所以这是**单会话上界**，不 ×实例数。
+
+⚠ **诚实边界**：PG 宿主（172.16.2.210）的内存余量本轮**没有核到**（只读通道拿不到）。
+故取保守值而不是「实测够用的最大值」，并在常量注释里写明「调更大前先确认宿主内存」。
+
+### 六、⚠ 判据被自己的变异验证打回两次（第三版才对）
+
+`TestRefreshView_WorkMemResetIsDeferred` 断言「`RESET work_mem` 必须在 defer 里」：
+
+| 版本 | 写法 | 变异结果 |
+|---|---|---|
+| 第一版 | `LastIndex("defer func()") < Index("RESET work_mem")` | **假绿**：把 RESET 改成裸调用照样通过 |
+| 第二版 | 加边界推算 + `Index("}()")` 找闭合 | **仍假绿**：`closeAt` 在整个函数体剩余部分搜 `}()`，后面任意 defer 都满足；且 `body[d:resetAt]` 把 d 处那个 `defer func() {` 自己也包进去，**恒真** |
+| 第三版 | **钉精确形态**：`Contains(body, "defer func() {\n\t\t…RESET work_mem…\n\t}()")` + `Count("RESET work_mem") == 1` | ✅ |
+
+⇒ ⇒ ★ **共同根因：用字符串位置去推断代码结构。** 两个版本的判据都"看起来在测结构"，
+实际测的是文本顺序。**能钉精确形态时就不要推断结构。**
+
+最终变异验证（`bg/materialized_view_refresher_workmem_test.go`，4 测试）：
+
+| 变异 | 期望 | 结果 |
+|---|---|---|
+| 删掉 `SET work_mem` | 红 | ✅ 红 |
+| 删掉 `RESET work_mem` | 红 | ✅ 红 |
+| RESET 改成裸调用 | 红 | ✅ 红 |
+| defer 里复位错对象 + 裸调用 | 红 | ✅ 红 |
+| 常数降到 64MB（< 实测 136MB） | 红 | ✅ 红 |
+| **注释里放诱饵字符串 + 删真实 SET** | 红 | ✅ 红 |
+
+⇒ 最后一条专门验「剥整行注释」是否承重：不剥就会被注释里的诱饵喂绿。
+`/opt/homebrew/bin/go vet ./bg/` 干净；`go test ./bg/ -count=1` 全绿（27.9s）。
+
+### 七、两个干净的阴性结论
+
+| | |
+|---|---|
+| ✅ | `pg_stat_statements` 里的 `CREATE INDEX tmp_sd_cov` / `tmp_ss_fr_cov`（84 MB + 62 MB 临时文件）**已不在库中** ⇒ 先前的覆盖索引实验**没有留下残留** |
+| ✅ | §107 的「idx_scan 统计窗口 ≥13.8 天」被**独立复核通过**：`ursm_node_snapshot_min_20261017` 的 `n_tup_ins = 5,155,321`，与 §68 实测的 3,590 行/分钟 ≈ 5.17M 行/天**恰好吻合**。若是 11.6 小时窗口（约 2.5M）或只有 6 天，`20261013/14/15/16/17` 这些完整日分区应是 0 |
+| ⚠ | 仍有 4 条 `idx_tmp_*` 残留（`tenant_model_policies` 系，各 16 kB，合计 64 kB）—— 体积可忽略，仅作卫生登记 |
+
+### 八、本节动作边界
+
+⚠ 改动**只在仓库内**，**未部署、未改 252、未改任何生产配置**。
+`work_mem` 是**会话级** GUC，只影响刷新器自己那条连接，**不需要改 PG 配置文件**——
+所以部署风险面很小，但**仍需你授权后才会部署**。
+⚠ 预期收益（把溢写消掉）是**推理**：`work_mem 8MB → 256MB` 应当让 136MB 的排序留在内存里，
+**本节没有实测验证过**（验证需要部署后观察 `temp_bytes` 变化）。
+★ 同族：[[§101 的教训：换一条判据比跑勤原判据更能发现问题]] ·
+[[§90 的教训：治理清单要按宿主寿命切分]]。
+

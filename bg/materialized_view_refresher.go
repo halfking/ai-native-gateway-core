@@ -105,6 +105,29 @@ const (
 	// 用后立刻 RESET，不污染连接池归还后的其他语句。
 	mvRefreshStatementTimeout = "180s"
 
+	// mvRefreshWorkMem lifts work_mem for the REFRESH statement only.
+	//
+	// Why (2026-10-19, 252 PG temp-file 审计轮，生产只读实测):
+	//   pg_stat_database.temp_files = 14,458 / temp_bytes = 104 GB。
+	//   pg_stat_statements（10-18 22:03 重置后的 11.6h 窗口）里
+	//   TOP15 占全窗口 93%，其中物化视图 REFRESH CONCURRENTLY 约占 57%：
+	//     session_task_stats          2,717 MB / 20 次 = 136 MB 每次，均值 10.8s
+	//     session_client_stats          801 MB / 20 次 =  40 MB 每次，均值 31.5s
+	//     session_client_task_matrix    570 MB / 20 次 = 28.5 MB 每次，均值 2.4s
+	//     routing_analytics_7d          317 MB / 35 次 =   9 MB 每次，均值 81.5s
+	//   而 PG 侧 work_mem = 8MB（配置文件）⇒ 单次刷新要溢写 136MB 时，
+	//   必然落盘十几个 8MB 临时文件。**这不是异常，是 work_mem 的算术后果。**
+	//
+	// 与上面 statement_timeout 同一条处置路径：会话级抬高 + 用后 RESET，
+	// 不污染归还连接池后的其他语句。REFRESH 是普通查询计划（不是维护命令），
+	// 其排序/哈希节点吃的是 work_mem 而不是 maintenance_work_mem。
+	//
+	// ⚠ 256MB 的依据与它的上界：每轮全网只有一个实例真正执行刷新
+	//（Redis 令牌桶 + advisory lock 兜底，见文件头），所以这是**单会话上界**，
+	// 不是 ×实例数。调更大之前请先确认 PG 宿主（172.16.2.210）的内存余量 ——
+	// 本轮**没有**核到该宿主内存（只读通道拿不到），故这里取保守值而不取"实测够用"。
+	mvRefreshWorkMem = "256MB"
+
 	// ── 357 会话分析物化视图族（2026-10-07）─────────────────────────────
 	// 迁移 357 建了 session_client_stats / session_task_stats /
 	// session_client_task_matrix 三个物化视图，admin session-analytics 端点
@@ -668,6 +691,17 @@ func (r *MaterializedViewRefresher) refreshView(ctx context.Context, viewName st
 	}
 	defer func() {
 		_, _ = conn.Exec(context.WithoutCancel(ctx), "RESET statement_timeout")
+	}()
+
+	// Same shape, different axis: the REFRESH rewrite spills to temp files
+	// because work_mem (8MB on 252) is two orders of magnitude below the
+	// largest measured sort. See mvRefreshWorkMem for the full measurement.
+	// RESET keeps the pool clean for whatever statement runs next.
+	if _, err := conn.Exec(ctx, "SET work_mem = '"+mvRefreshWorkMem+"'"); err != nil {
+		return mvRefreshed, err
+	}
+	defer func() {
+		_, _ = conn.Exec(context.WithoutCancel(ctx), "RESET work_mem")
 	}()
 
 	if !useAdvisoryLock {
