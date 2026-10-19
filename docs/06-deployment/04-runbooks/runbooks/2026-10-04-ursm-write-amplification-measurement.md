@@ -29246,9 +29246,275 @@ deploy/sql/docs/features/ 现存文件       = 11 个，日期 2026-06-14 ~ 2026
 
 | 优先级 | 动作 |
 |---|---|
-| 🚨 | **量化盲区大小**：统计 `docs/archive/process/schema-history/` 下的 `.sql`，逐个核对它们建立的 DB 对象是否进了基线 ⇒ 这是**一次性盘点**，一次性做完 |
-| 🚨 | 确认 `trg_update_api_key_model_cost` 消失的确切原因（分区化改造 vs 手工 DROP） |
-| 🚨 | 决策 `api_key_model_cost` 链路：要么按 §124 的方向重建（但在 `_request_logs` 上，且**必须作为 startup 迁移**，不能重演一次性脚本），要么下线视图+API |
+| ✅ | ~~**量化盲区大小**~~ —— **§127 已完成**：实测盲区 = **3 个对象**（1 触发器 + 2 索引），其余 14 个都在体系内 |
+| 🚨 | ~~确认 `trg_update_api_key_model_cost` 消失的确切原因~~ —— **§127 已部分收敛**：**不是**分区化改造、**不是** 860 的 RENAME。触发器**确实建过并写了 5 天**（`min_bucket` 与改它的 commit 同一分钟）。**真正的机制是它的 `ON CONFLICT` 目标索引消失了**，且**「重建触发器」单独执行会打断生产写入（42P10 实测）** ⇒ 见 **§127 §三**，机制归属（down 脚本中断 vs 手工重建）仍未判定 |
+| 🚨 | 决策 `api_key_model_cost` 链路 ⚠ **§127 已修正本行的顺序约束**：不是「重建触发器」，而是**三步不可换序** —— ① 聚合去重 352→88 行 ② 补唯一索引 ③ 再重建触发器（且必须作为 startup 迁移、挂在 `_request_logs` 上）。或直接下线视图+API（则三步全免） |
 | ★ | **给「一次性 SQL 域」定规则**：凡在生产执行的 DDL/DML 必须补一个 startup 迁移，否则新环境缺失 |
 | ★ | 查 git 历史确认 `docs/` 下那批文件的生命周期 |
 | ★ | §124 的就地订正横幅已加（本节即为订正文，§124 原文保留） |
+
+---
+
+## §127 一次性 SQL 域盲区的**实际大小**已量出：`api_key_model_cost` 停更的真实机制 + 一个会打断写入的修复陷阱（2026-10-19）
+
+§126 立了一个待办：「盘点 `docs/archive/process/schema-history/` 下的 `.sql`，核对建立的 DB 对象是否进基线」。
+本节把它做完，**并顺带推翻了 §124/§126 的一个隐含前提**：那批触发器**曾经存在过、且真的在写数据**——
+§124 的 `max(bucket)=2026-06-19` 与 §126 的「不在迁移体系里」两件事都对，但它们之间的因果被漏掉了。
+
+### 一、盘点结果：10 个 `.sql`，17 个 DB 对象，逐个对账
+
+`docs/archive/process/schema-history/` 实有 **10 个 `.sql`**（6-14 ~ 6-22，约一周半，比 §126 估的「6 周」小得多）：
+
+| 文件 | 行数 | 建立的 DB 对象 |
+|---|---|---|
+| `2026-06-14-peak-stats.sql` | 88 | 表 `credential_model_peak_1m` / `credential_model_weekly_peak` / `auto_tune_audit` + 4 索引 |
+| `2026-06-15-auto-route-mode.sql` | 100 | 表 `model_task_index` / `credential_model_index` / `api_key_auto_profile` + 5 列 + `idx_request_logs_auto` |
+| `2026-06-15-auto-route-mode.down.sql` | 36 | （回滚） |
+| `2026-06-15-auto-route-mode-cost-table.sql` | 217 | 表 `api_key_model_cost` + **PK + 3 索引** + 函数 `update_api_key_model_cost()` + 触发器 `trg_update_api_key_model_cost` + 视图 `customer_cost_view` / `model_cost_per_task_view` |
+| `2026-06-15-auto-route-mode-cost-table.down.sql` | 12 | （回滚：DROP VIEW ×2 → TRIGGER → FUNCTION → TABLE） |
+| `2026-06-15-auto-route-mode-realtime-trigger.sql` | 77 | 函数 `notify_auto_route_refresh()` + 触发器 ×3 |
+| `2026-06-15-auto-route-mode-realtime-trigger-fix.sql` | 29 | 同名函数修正版 |
+| `2026-06-15-auto-route-mode-realtime-trigger.down.sql` | 10 | （回滚） |
+| `2026-06-22-explicit-model-stats.sql` | 31 | 索引 `idx_request_logs_explicit_model` |
+| `2026-06-22-explicit-model-stats.down.sql` | 4 | （回滚） |
+
+对账口径 = **基线 `sql/schema/01-schema.sql` / 561 个 startup 迁移 / 应用 Go 代码**三处（沿用 §126 的三处口径）：
+
+| 对象 | 基线 | startup 迁移 | Go 代码 | 判定 |
+|---|---|---|---|---|
+| `credential_model_peak_1m` | ✅ | `397` | ✅ | 在体系内 |
+| `credential_model_weekly_peak` | ✅ | `660`（补唯一索引） | ✅ | 在体系内 |
+| `auto_tune_audit` | ✅ | — | ✅ | 在体系内 |
+| `model_task_index` | ✅ | `726` | ✅ | 在体系内 |
+| `credential_model_index` | ✅ | 44 个 | ✅ | 在体系内（分区化改造最活跃的族） |
+| `api_key_auto_profile` | ✅ | — | ✅ | 在体系内 |
+| `api_key_model_cost` | ⚠ **表在、PK 与 FK 不在** | — | — | 🚨 见 §三 |
+| `update_api_key_model_cost()` | ✅ | — | — | ⚠ 函数在，**触发器不在** |
+| `update_api_key_model_cost_stmt()` | ✅ | — | — | 🚨 见 §二 |
+| `customer_cost_view` / `model_cost_per_task_view` | ✅ | — | ✅ | 在体系内 |
+| `notify_auto_route_refresh()` | ✅ | `307/367/524/566/568` | ✅ | 在体系内（**唯一被迁移反复修订的族**） |
+| `trg_notify_auto_route_{cmb,creds,apikeys}` | ✅ | `307/367/524/566/568` | 部分 | 在体系内 |
+| `trg_update_api_key_model_cost` | ❌ | ❌ | ❌ | **不在体系内**（§126 结论） |
+| `idx_request_logs_auto` | ❌ | ❌ | ❌ | **不在体系内**（新发现） |
+| `idx_request_logs_explicit_model` | ❌ | ❌ | ❌ | **不在体系内**（新发现） |
+
+⇒ ⇒ ★★★ **盲区实际大小 = 3 个对象**（1 触发器 + 2 索引），不是「整个 auto-route 成本域」。
+其余 14 个对象都在体系内，且 `notify_auto_route_refresh` 一族**被 5 个 startup 迁移反复修订**——
+说明「一次性脚本域」这个标签会误导：同一个功能域里，**大多数对象后来被迁移体系收编了，只有少数漏网**。
+⇒ ★ 判别动作：**「某个文件在一次性域里」不能推出「它建的对象都不在体系内」**，
+必须逐对象对账（本节就是 §126 那条待办要做的事）。
+
+### 二、🚨 §124/§126 的隐含前提错了：触发器**曾经存在且真的在写数据**
+
+§126 写「该触发器**从来就不在**迁移体系里」，读者容易顺推出「它可能从没真正生效过」。
+生产实测否掉这个读法：
+
+```
+### B. 是否有任何触发器挂在这两个函数上（全库，不限表）
+ tgname | table_name | func | tgenabled
+--------+------------+------+-----------
+(0 行记录)
+```
+
+**零个触发器**，但同一次查询 A 显示**两个函数都在**（`provolatile=v`，`body_md5` 各一），
+且表 `api_key_model_cost` 有 **352 行真实数据**（`min_bucket=2026-06-14 23:40` ~ `max_bucket=2026-06-19 03:30`）。
+
+⇒ ⇒ ★★★ `min_bucket = 2026-06-14 23:40:00+08`，而 `git show 3cf9e6bbe`（`fix(v2.0.2): audit-driven corrections`）
+的提交时间是 **2026-06-14 23:41:25 +0800** —— **同一分钟**。
+⇒ ★★★ 那次提交正是改这个触发器函数的一次审计修复（fix #3「active_concurrent 累加不回落」），
+**它同时是本仓唯一一次 `git log -S` 能追到的 `DROP TRIGGER IF EXISTS trg_update_api_key_model_cost`**。
+⇒ ⇒ 🚨 **触发器确实建过、确实按预期写了 5 天数据，然后消失了。**
+「不在迁移体系里」与「曾经工作过」**两句话都成立**，只是 §126 没把后半句写出来。
+
+★ 附带：该提交把 plpgsql 的 `$$` 写成了 `$`（`RETURNS TRIGGER AS $ ... $ LANGUAGE plpgsql`），
+单行 `$` 不是合法的 dollar-quote 定界符 ⇒ **那版脚本原样执行必然语法失败**。
+生产上生效的是修正后的版本。这解释了为什么「按 git 里的文件重建」这条路会踩坑（见 §四）。
+
+### 三、★★ 停更的真实机制：`ON CONFLICT` 的唯一索引没了，而重建触发器会打断日志写入
+
+生产实测：
+
+```
+### Q. api_key_model_cost 的约束（ON CONFLICT 目标是否存在）
+ conname | contype | pg_get_constraintdef
+---------+---------+----------------------
+(0 行记录)
+
+### R. api_key_model_cost 的索引
+ indexname | indexdef
+-----------+------------
+(0 行记录)
+```
+
+**零约束、零索引。** 而建表原脚本（`:52`）写的是：
+
+```sql
+    last_decision_at    TIMESTAMPTZ,               -- auto-route 决策时间
+    updated_at          TIMESTAMPTZ DEFAULT NOW(),
+    PRIMARY KEY (bucket, api_key_id, raw_model)    -- ← 建表时就有
+);
+CREATE INDEX IF NOT EXISTS idx_akmc_api_key_bucket ...
+CREATE INDEX IF NOT EXISTS idx_akmc_canonical ...
+CREATE INDEX IF NOT EXISTS idx_akmc_pressure ...
+```
+
+⇒ ⇒ 🚨 **PK 和 3 个索引在建表时都在，现在全没了；而表和 352 行数据还在。**
+`down` 脚本的执行顺序恰好能解释这个组合 —— 它是
+`DROP VIEW ×2 → DROP TRIGGER → DROP FUNCTION → DROP TABLE`（`cost-table.down.sql:5-11`）：
+若**只执行到第 8 行（`DROP TRIGGER`）就中断**，则「触发器没了、表和数据还在」完全吻合；
+若再往下走到 `DROP TABLE`，表也没了。实测表在 ⇒ **执行停在了 TRIGGER 与 TABLE 之间**，
+而 PK/索引是随 `DROP TABLE` 一起没的 ⇒ **表是被重建的**（表在、数据在、约束不在 = 新表被灌回旧数据）。
+
+⇒ ⇒ ★★★ 与 down 脚本并存的另一个更简解释（**未排除**）：有人手工
+`DROP TABLE` 后按「表结构」重建了表并灌回 352 行，但**只抄了列定义、没抄 PK 与索引**。
+两种解释都指向同一个可执行结论（补 PK），**机制归属本节不判**。
+
+⇒ ⇒ 🚨🚨 **这里有一个会打断生产的陷阱。** 函数体里有：
+
+```sql
+ON CONFLICT (bucket, api_key_id, raw_model) DO UPDATE SET ...
+```
+
+`ON CONFLICT (cols)` **要求存在匹配的唯一索引/约束**，否则报 **SQLSTATE 42P10**
+`there is no unique or exclusion constraint matching the ON CONFLICT specification`。
+
+本地沙箱（PG 17.10，`llm-gateway-pg`）按生产形态复现 + 变异验证：
+
+| 步骤 | 动作 | 结果 |
+|---|---|---|
+| 1 | 建**无 PK 无索引**的表 + 挂同构触发器，插一条 auto 请求 | ❌ **报错 42P10**，且 `sim_request_logs` 计数 **= 0** |
+| 3 | 反查计数确认 | 请求日志那条**被连带回滚**（AFTER 触发器异常 ⇒ 外层 INSERT 整体失败） |
+| 4 | 补 `CREATE UNIQUE INDEX` 后重插 | ✅ 成功，`sim_akmc` 352 → **353** |
+| 5 | 同 bucket 再插一条 | ✅ 走 `DO UPDATE` 累加，`requests_total` 1 → **2**（不再新增行） |
+
+⇒ ⇒ ★★★ **触发器是 `AFTER INSERT ... FOR EACH ROW` ⇒ 它抛错会让 `request_logs` 的插入一起回滚。**
+所以「直接重建触发器」在没有 PK 的现状下**会把 auto 请求的日志写入打断**——
+而 §125 已实测这两个端点在 154/245 两台上**零调用**，正好解释了为什么它坏了一百多天**没人发现**：
+**零流量掩盖了一个会打断写入的缺陷**（§「无人使用是缺陷长期存活的最佳掩护」的第三例）。
+
+⇒ ⇒ 🚨 **P0 处置顺序被这条实测推翻了**：原计划（§124/§126）是「重建触发器」。
+正确顺序必须是 **先补唯一索引 → 再重建触发器**，且补索引前要先处理重复数据（见下）。
+
+### 四、🚨 补唯一索引也会直接失败：352 行**全部**是重复的
+
+```
+### AA. 生产 352 行是否有重复的 (bucket, api_key_id, raw_model)
+ dup_groups | dup_rows
+------------+----------
+         88 |      352        ← 352 行全部落在重复组里，无一例外
+
+### AG. 重复组的大小分布
+ n_rows_per_group | groups | rows
+------------------+--------+------
+                4 |     88 |    352   ← 88 组，每组恰好 4 行
+
+### AH. 一个重复组内 4 行逐字段对比（抽样）
+ bucket                | key | raw_model        | req_total | last_request_at              | updated_at
+ 2026-06-14 23:40:00+08 |   1 | claude-sonnet-4.5|         1 | 2026-06-14 23:44:43.174993  | ...43.174993
+ （×4 行，requests_total / tokens / cost / active_concurrent / pressure_ratio 全同，updated_at 到微秒相同）
+
+### AI. groups_with_identical_updated_at = 88   ← 88 组全部 updated_at 完全相同
+
+### AJ. count(DISTINCT bucket, api_key_id, raw_model) = 88   ← 去重后应剩 88 行
+
+### AC. orphan_key_rows = 0     ### AD. NULL raw_model / bucket / api_key_id 全为 0
+```
+
+⇒ ⇒ ★★★ **352 = 88 × 4，去重后只剩 88 行。** 因为 88 个三元组全部重复，
+`CREATE UNIQUE INDEX (bucket, api_key_id, raw_model)` 会**直接失败**（唯一约束冲突）。
+⇒ ⇒ 🚨 **所以 §四 的「先补唯一索引」也不是一步到位**：必须先 `DELETE`/`聚合`掉重复，
+再补索引，最后才挂触发器。**三步，一步都不能省，也不能换序。**
+
+⇒ ⇒ ★ **这 4 倍重复是什么**：`updated_at` 到**微秒**都相同 ⇒ 4 行是**同一事务、同一 `NOW()`** 写入的
+⇒ 形态是**一次批量重放 4 次**，不是「4 个并存触发器」（并存触发器各自提交，时间戳会散开，
+且 §126 已证明该触发器在 git 历史里只被 `CREATE` 过一次）。**具体重放来源未验证**，
+但它已经足以支撑「先聚合去重」这个动作。
+
+### 五、✅ 顺手定性了两个悬置问题
+
+**§124 待定性「`customer_cost_view` 只有 5 行」——已答：是「只有 5 个 key 有数据」，不是视图失效。**
+
+```
+### O. customer_cost_view 的 5 行
+ api_key_id | key_alias    | tenant_id | total_auto_requests | last_request_at
+          1 | (空)         | default   |                  488 | 2026-06-19 02:45:58
+         10 | huangxt-ide  | default   |                 1040 | 2026-06-16 00:43:16
+         11 | (空)         | default   |                  104 | 2026-06-16 16:11:33
+         17 | kevin-key    | kevin     |                   28 | 2026-06-16 16:02:06
+         29 | test         | acme      |                    4 | 2026-06-19 03:33:10
+
+### P. api_key_model_cost 的 distinct key = 5     ← 与 O 逐个对上
+### S. 这 5 个 key 仍在 api_keys（enabled：1=f，其余 4 个 t）
+```
+
+⇒ ⇒ ★★★ 5 行 = 表里 `distinct api_key_id` **恰好也是 5**，两边一一对应 ⇒ 视图**没有丢行也没有多行**。
+`cost_usd_7d` 全 0 是因为所有 `bucket` 都早于 7 天窗口（陈旧，不是空表）。
+⇒ ★ 所以「5 行」是**上游只有 5 个 key 曾产生 auto 流量**的如实反映，视图侧无缺陷。
+（对照 §五 的 `AF`：同期 `_request_logs` 有 **198,370** 条 `is_auto_request=TRUE` 的行
+—— 说明 6 月那个窗口里 auto 请求的比例远高于这 5 个 key，
+**若链路健康，本表应远不止 5 个 key**。这也从数据侧再次坐实停更。）
+
+**§123 待补的 `request_logs_with_current_month` 等 3 个视图 —— 本轮顺带确认了它们的真实数据面。**
+`_request_logs`（v2 父表）实测 `min_ts=2026-09-30 18:54` ~ `max_ts=2026-10-13 20:18`，
+`count(*)=338,976`，**2026-07-01 之前 0 行**；`request_logs_2026_06` 已不存在（分区已 DROP）。
+⇒ ★ 这解释了 §126「日期对不上」的一个细节：老分区是**随时间被回收的**，
+所以「触发器挂在老表上、随老表消失」这个直觉**在直觉层面是合理的**，只是**具体机制不是 RENAME**（860 保留触发器）
+也不是 §124 说的「老表被改名」，而是**分区被 DROP 后，挂在父表上的触发器随 DROP 一起没了**。
+⇒ ⚠ 但注意：这**不能**用来解释 6-19 的停更 —— June 分区现在确实没了，可它**在 6-19 当天还在**（表里 6-19 03:33 还有写入）。
+**⇒ 停更时刻早于分区回收，两者不是同一件事。**
+
+### 六、🚨 时间线（事务年龄实测，非推演）
+
+`pg_class.xmin` 的事务年龄（`age()` 转 bigint 可比较，**直接 `ORDER BY xmin` 会报
+`could not identify an ordering operator for type xid`** —— xid 没有默认排序算子）：
+
+| 对象 | age（越大越老） |
+|---|---|
+| `update_api_key_model_cost_stmt()` | 460,046,848 |
+| `customer_cost_view` | 460,046,685 |
+| `model_cost_per_task_view` | 460,046,658 |
+| `api_key_model_cost`（表） | 460,046,175 |
+| `update_api_key_model_cost()` | **15,864,599**（≈ 1/29，独立得多） |
+
+⇒ ⇒ ★★★ 表、两个视图、`_stmt` 函数是**同一批事务**建的（age 互相差 < 700），
+**行级 `update_api_key_model_cost()` 明显年轻一代** ⇒ 它是后来被 `CREATE OR REPLACE` 重写过的
+（与 `3cf9e6bbe` 那次 `$$`→`$` 的改写吻合）。
+⇒ ★ `_stmt` 函数**从未被任何触发器引用**（`B` 查询零行），它只在 2026-08-04
+`f1c5fdfe6 生成所有的数据库脚本` 这次**从生产 dump 里被捞进仓**——
+`git log -S` 全历史的首次出现就在那一次 ⇒ **它是手工建在生产、从未进过任何迁移或源码的孤儿函数**。
+（与 §126 的 `trg_update_api_key_model_cost` 同病：**产物在库里，来路不在仓**。）
+
+### 七、动作边界（本节仍为**零生产写**）
+
+本节全部为只读查询 + 本地沙箱复现。**未执行任何生产写**：未 `DROP`、未 `CREATE INDEX`、
+未 `DELETE` 去重、未重建触发器、未改任何生产对象。
+
+### 八、动作清单（全部待授权）
+
+| # | 动作 | 前置 | 风险 |
+|---|---|---|---|
+| 🚨 P0-a | **先聚合去重** 352 → 88 行（`GROUP BY bucket, api_key_id, raw_model` 取 `max()`/`sum()` 合并） | 需属主确认合并口径（计数类求和 vs 取最大） | 写 `api_key_model_cost`，352 行小表 |
+| 🚨 P0-b | **补唯一索引** `CREATE UNIQUE INDEX CONCURRENTLY uq_akmc ON api_key_model_cost (bucket, api_key_id, raw_model)` | 必须在 P0-a 之后，否则失败 | 无 P0-a 就会失败；CONCURRENTLY 不锁表 |
+| 🚨 P0-c | **再重建触发器**（作为 startup 迁移，`ON _request_logs`，`WHEN (NEW.is_auto_request = TRUE)`） | 必须在 P0-b 之后 | 🚨 **顺序错误 = 打断 auto 请求的日志写入**（42P10 实测） |
+| 🚨 P0-d | 下线或修 `cost/model` + `cost/customer`（§125 两台零调用） | 与 P0-a~c 二选一 | 若走「下线」，则 P0-a~c 全免 |
+| 🚨 P0-e | 清理 2 个孤儿索引对象（`idx_request_logs_auto` / `idx_request_logs_explicit_model` 在生产是否存在**未验证**） | 先只读确认存在性 | 低 |
+| ★ | 给 2 个孤儿函数（`update_api_key_model_cost_stmt` 等）定性：留还是随表一起下线 | 依赖 P0-d | 低 |
+| ★ | **给「一次性 SQL 域」立规**：凡在生产执行的 DDL/DML 必须补 startup 迁移（本节已把盘点做完，可直接立规） | — | — |
+
+⚠ **P0-c 的顺序是本节最贵的一条**：「重建触发器」是 §124/§126 一直建议的动作，
+**实测证明它单独执行会打断生产写入**。若下一个人照 §124 的描述直接重建，会造成一次真实事故。
+
+### 九、本节的三条可复用教训
+
+1. ★★★ **「不在迁移体系里」与「曾经工作过」是两句话，必须分别取证。**
+   §126 只证了前半句（基线/迁移/代码三处皆无），读者很容易顺推出「可能从没生效过」，
+   于是跳过了「它到底跑了多久、写了多少数据」——而后者才是定位停更时刻的唯一凭据。
+   **本例 `min_bucket` 与那个改它的 commit 是同一分钟**，这是能把机制钉死的证据。
+2. ★★★ **修复动作的顺序本身就是要交付物，且顺序错会从「修 bug」变成「制造事故」。**
+   `ON CONFLICT` 需要唯一索引 ⇒ 无索引时重建 `AFTER` 触发器会抛 42P10 并**连带回滚外层 INSERT**
+   ⇒ 「重建触发器」这一个动作，拆开是三步且不可换序。
+   **验一个修复动作是否安全，要问「它在当前 DB 状态下执行会怎样」，而不是「它的语义对不对」。**
+3. ★★★ **`xid` 没有默认排序算子**：`ORDER BY xmin` 直接报
+   `could not identify an ordering operator for type xid` ⇒ 必须 `age(xmin)::bigint` 后再排。
+   ★ 同族：**PG 的 `age()` 是唯一的「对象年龄」量具**，凡是问「谁先建谁后建」都该用它，
+   而不是靠 commit 日期猜（本例 commit 日期与对象年龄给出的是两个不同粒度的答案）。
