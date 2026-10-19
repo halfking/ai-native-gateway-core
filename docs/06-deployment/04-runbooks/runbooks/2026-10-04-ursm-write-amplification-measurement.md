@@ -30464,3 +30464,145 @@ if !entry.SessionV2WriteRequired && !shadowWriteEnabled() { return } // :123-125
    ⇒ **「那天覆盖率低」与「那天系统坏」是两件事**。
    ⇒ ★★ 通用式：**成簇 ⇒ 缩小时间窗，不是给出机制**；
    机制仍需另找证据（本节留 P0-k 去查部署历史）。
+
+---
+
+## §135 252 现状复核：线上脚本仍是**未修版本**，且 `L1 DROP` 已真实执行过 176 次（2026-10-19）
+
+本节复核挂置多轮的 252 运维 P0。**全部为只读**（SSH 只读命令 + 日志读取）。
+
+### 一、现状快照
+
+```
+磁盘：/dev/vda3  197G  已用 134~135G  可用 55G  72%（较此前记录的 71% 略升）
+
+/etc/cron.d/：
+  pg17                       9,746 B   10-06 15:53   ← 主文件，8 条作业
+  pg17.bak.20261003-162457     863 B    3 条
+  pg17.bak.20261004-011152   1,222 B    4 条
+  pg17.bak.20261004-234856   1,855 B    5 条
+  pg17.bak.20261006-155307   8,123 B    7 条
+  pg17-ctrlog-snapshot        426 B
+```
+
+⇒ ⇒ **§116/§117 的「4 个 bak 仍在 cron.d」未变** ⇒ 作业数 = 8 + 19 = **27 条**（应为 8 条）。
+
+### 二、🚨 线上脚本确认仍是**未修版本** —— 这两个 P0 至今未部署
+
+```
+/opt/scripts/pg17-emergency-cleanup.sh：grep "MIN_RECLAIM_MB|dry.run|pgstattuple" → 0 命中
+/opt/scripts/pg17-vacuum-bloat.sh：    grep "pgstattuple_approx|amname"        → 0 命中
+```
+
+⇒ ⇒ ✅ **§116 的 L1 三道闸与 §117 的确认闸，线上一个都没有。**
+
+### 三、🚨🚨 `L1 DROP` 历史上已真实执行 **176 次**（不是「潜在风险」）
+
+```
+grep -c "L1 DROP" /var/log/pg17-emergency-cleanup.log   → 176
+
+按对象去重：
+  126  public.candidate_failure_logs_columnar_old   ← ★ 单个对象被 DROP 126 次
+   30  default                                          ← 默认分区
+    2  public.routing_decision_log_2026_08
+    2  public.request_wal_2026_08
+    2  public.request_logs_bodies_2026_09
+    2  public.request_logs_bodies_2026_08
+    1  usage_facts_default / ursm_node_snapshot_min / stats_event_inbox_default
+    1  session_turns_2026_08 / session_titles / sessions_2026_08
+    1  session_bodies_2026_08 / session_analysis_metadata / request_logs_2026_08
+    1  bak_20260920_ursm_node_snapshot_min / armor_judgments / analysis_events
+```
+
+⇒ ⇒ ★★★ **`candidate_failure_logs_columnar_old` 被连续 DROP 126 次、每 15 分钟一次**
+⇒ ⇒ ★ 触发频率实测：日志共 11,971 次 `invoked AUTO`，首条 `2026-07-15`，
+末条 `2026-10-19 15:45` ⇒ **每 15 分钟一次，跨 3 个月，日志已 2.2 MB**。
+⇒ ⇒ ★ 当前状态：`disk 72% < 90%` ⇒ 每 15 分钟写 2 行「skip」日志
+⇒ **无界增长的日志本身就是一个待清理项**（2.2 MB 且每 15 分钟 +2 行）。
+
+### 四、🚨 L1 判据当前会选中的**真实目标集**（252 实例）
+
+```sql
+WHERE n_live_tup = 0 AND pg_total_relation_size(relid) >= 100MB
+  AND schemaname NOT IN ('columnar_internal')
+```
+
+实测：
+
+| 表 | `n_live_tup` | 大小 |
+|---|---|---|
+| `ursm_node_snapshot_min_legacy` | 0 | **852 MB** |
+| `usage_ledger_2026_09` | 0 | 742 MB |
+| `session_turn_details_2026_09` | 0 | 603 MB |
+| `_request_logs_bodies_hot` | 0 | 291 MB |
+| `request_wal_2026_09` | 0 | 193 MB |
+| `routing_decision_log_2026_09` | 0 | 137 MB |
+| **合计** | | **≈ 2,817 MB** |
+
+⇒ ⇒ 🚨🚨 **一旦磁盘过 90%，这 6 张表会被一次性 DROP（合计约 2.8 GB）。**
+⇒ ⇒ ★★ 其中 **`ursm_node_snapshot_min_legacy`（852 MB）实测极其健康**
+（2,836,620 行，正是 §104 待拍板项）⇒ **它会是第一个被误杀的**。
+⇒ ⇒ 🚨 而三张 `*_2026_09` 分区**确实是有数据的分区**，只是 `n_live_tup=0`
+（§118 已证：`n_live_tup` 在 PG 重启后清零 ⇒ 估计值不可信）⇒ **纯误伤**。
+
+⇒ ⇒ ★★★ **这就把 §116/§117/§118/§104 四节的结论在 252 上合流了**：
+`n_live_tup = 0` 是估计量，而 `L1 DROP` 是不可逆动作
+⇒ **正是「凡接不可逆动作的判据必须用权威量复核，估计量只能筛可疑项」那条纪律的实例。**
+
+### 五、⚠⚠ 一条必须纠正的口径：252 与生产 PG 是**两个不同实例**
+
+本节初稿曾写「该表仍在生产、4,319 行，所以 DROP 全失败了」——
+**这是错的**：4,319 行来自 **生产 PG `172.16.2.210`**（`candidate_failure_logs_hot`），
+而 `candidate_failure_logs_columnar_old` 在 **252** 上实测 **不存在**。
+
+⇒ ⇒ ★★★ **⇒ 「某表在某实例存在」不能跨实例推断。**
+本会话此前的多轮生产查询打的是 172.16.2.210，而 252 有自己的一套同名表
+⇒ **这是 [[阴性结论要当缺陷一样复核]] 的多副本变体**：
+阴性结论的可信度上限 = **观察实例的数量**。
+⇒ ★ 落到行动上：**§116/§117 的脚本修复必须在 252 上单独验证**，
+不能用 172.16.2.210 的数据代替。
+
+### 六、诚实边界
+
+⚠ 本节**没有**在 252 上验证「若真执行 DROP 会发生什么」——那需要一次真实演练，
+属生产写，未做。
+⚠ 126 次 DROP 的**具体对象已被删除**（不是失败重试）：日志显示
+`candidate_failure_logs_columnar_old` 至今不存在 ⇒ **它是真的被 DROP 掉了**，
+只因 `DROP TABLE IF EXISTS` 之后不再命中而「静默成功」。
+⇒ ★★ 也就是说：**这张 8 月的老表已经在 9-06 被脚本删掉了，且无人察觉。**
+
+### 七、动作边界
+
+本节全部为只读（SSH 只读命令、日志读取、`docker exec ... SELECT`）。
+**未执行任何生产写**：未 DROP、未部署脚本、未改 cron。
+
+### 八、动作清单（优先级已按本节证据重排）
+
+| # | 动作 | 优先级 | 本节新增的证据 |
+|---|---|---|---|
+| 🚨 **P0-0（新·最高）** | **部署 §116 三道闸到 `/opt/scripts/pg17-emergency-cleanup.sh`** | **高于此前的 P0** | L1 已执行 176 次、当前目标集 6 表 2.8 GB、`ursm_node_snapshot_min_legacy` 会第一个被误杀 |
+| 🚨 P0-1 | 把 4 个 `pg17.bak.*` 移出 `/etc/cron.d/`（27 条 → 8 条） | 高 | 复核确认仍在；19 条重复作业 |
+| 🚨 P0-2 | 部署 §117/§118 的 `pg17-vacuum-bloat.sh`（确认闸 + 列存排除） | 高 | 线上确认无 `pgstattuple_approx`/`amname` |
+| ★ | 给 emergency-cleanup 日志加轮转（已 2.2 MB，每 15 分钟 +2 行） | 中 | 本节新增 |
+| ★ | 复核 `ursm_node_snapshot_min_legacy` 的处置（§104）——**现在它同时是 L1 的第一个目标** | 中 | 本节新增 |
+| ⚠ | **所有 252 侧结论不得用 172.16.2.210 的数据代替**，需在 252 上单独验证 | 方法论 | §五 |
+
+### 九、本节的可复用教训
+
+1. ★★★★★ **「某对象存在」不能跨实例推断 —— 阴性结论的可信度上限 = 观察实例数。**
+   本节初稿据生产 PG 的 `candidate_failure_logs_hot`（4,319 行）推断
+   252 上的 `candidate_failure_logs_columnar_old` 「还在、所以 DROP 失败了」，
+   实测该表在 252 上**根本不存在**（是真的被删了）。
+   ⇒ ⇒ ★★★ **⇒ 「两处同名/相似对象」是跨实例误推断的头号来源。**
+   ★ 同族：[[阴性结论要当缺陷一样复核]] —— 那里说单实例统计会漏，这里是多副本陷阱。
+   ★ **落到行动**：脚本修复**必须在目标机器上验证**，不能用另一套环境的数据代替。
+2. ★★★★ **「潜在风险」与「已发生」要分开记账，而日志会把两者混在一起。**
+   `L1 DROP` 176 次里，126 次打在同一张早已不存在的表上 ⇒ 每次都「成功」，
+   **因为脚本用 `DROP TABLE IF EXISTS` + `|| true` 吞掉了所有错误**。
+   ⇒ ⇒ ★★★ **⇒ 一个会报错的脚本，恰恰是最危险的那种：它失败时不留痕。**
+   ★ 判别动作：**评估自动化脚本时，先看它失败时会不会说话**。
+3. ★★★ **不可逆动作的判据用估计量，代价会在触发那天集中兑现。**
+   `n_live_tup = 0`（估计量，PG 重启后清零）驱动 `DROP TABLE`（不可逆）
+   ⇒ 当前目标集 6 表 / 2.8 GB，含一张**实测健康**的 852 MB 表。
+   ⇒ ★★ 这是 [[凡接不可逆动作的判据必须用权威量复核]] 的教科书实例：
+   **估计量只能筛可疑项，不能直接驱动 DROP。**
