@@ -58,6 +58,27 @@
 #   pgstatindex 逐页读，>1GB 索引实测 >90s。故先按 MIN_INDEX_MB 圈定，
 #   每个索引单独加 statement_timeout，超时记 unmeasured。
 #
+#   2026-10-19 生产只读实测探测速率（§115，pgstatindex 单条耗时）：
+#     383.8MB → 6,529ms   349.3MB → 5,284ms   305.6MB → 3,011ms
+#     240.0MB → 2,073ms   224.0MB → 3,835ms   398.4MB → 16,172ms（冷缓存首条）
+#   ⇒ 热态速率约 60~115 MB/s。放开 relispartition 后新增 72 条 / 4,455MB，
+#     预计**新增探测耗时约 60~120 秒**（含每条一次 podman exec 的进程开销），
+#     不是担心的「10 分钟」—— §104 留下的「必须先确认运行时间」前置条件已满足。
+#
+# === 覆盖面：候选集必须看得见两类索引（2026-10-19 两次独立发现）===
+#   ① 叶分区上的索引：分区父表的索引是 relkind='I'（无物理存储），
+#      本来就被 relkind='i' 排除；而**叶分区**的索引 relkind 与普通表一样是 'i'，
+#      早先那个 `AND NOT c.relispartition` 把它们**全挡在外面**（§104：72 条 / 4,455MB），
+#      却什么也没挡住 ⇒ 已删除。
+#   ② TOAST 表的唯一索引：pg_toast 命名空间早先被 nspname='public' 整体排除，
+#      其中 `pg_toast_81522141_index` 是 **229MB、29,299 个死页、密度 0.54%**
+#      的纯垃圾（§114）⇒ 命名空间已放宽到 public + pg_toast。
+#   ⚠ 放宽命名空间**不等于**按尺寸一刀切 REINDEX：pg_toast 里 3 条 ≥16MB 的索引
+#     只有 1 条真膨胀（另两条叶页密度 89.88% / 90.18%），
+#     所以判据仍是 pgstatindex 的**双信号**（deleted_pages OR avg_leaf_density）。
+#   ✅ PG 17.10 实测：`REINDEX INDEX CONCURRENTLY` 作用在 TOAST 索引上**允许且有效**
+#     （本地同镜像 kx-citus-pg17 沙箱：1,800kB → 8,192 bytes；活行在表时也允许）。
+#
 # === REINDEX CONCURRENTLY ===
 #   必须单语句下发。与 SET 放同一个 -c 会被 psql 包进隐式事务块，
 #   报 "cannot run inside a transaction block"（pg17-vacuum-bloat.sh 踩过，
@@ -175,13 +196,21 @@ fi
 log "control probe OK: $control_idx ${control_val}"
 
 # === 圈定候选（只取尺寸达标的 btree 索引）===========================
+# ★ 覆盖面两次修正（2026-10-19，§104 / §115），两处都是**结构性盲区**：
+#   ① `AND NOT c.relispartition` 已删除：它挡的是「分区父表上无物理存储的索引」，
+#      而那些是 relkind='I'、压根不在 relkind='i' 的候选集里 ⇒ 这一条什么都没挡，
+#      却把**叶分区**上的 72 条 / 4,455MB 索引全部挡在外面（机制「压根没量」）。
+#   ② 命名空间从 `= 'public'` 放宽为 `IN ('public','pg_toast')`：
+#      TOAST 表的唯一索引早先整体不可见，其中一条是 229MB 的纯死索引（§114）。
+# ⚠ 判据仍是 pgstatindex 的**双信号**（deleted_pages OR avg_leaf_density），
+#   **不**因为放宽覆盖面就改成按尺寸一刀切 —— pg_toast 里 3 条 ≥16MB 的
+#   只有 1 条真膨胀，另两条叶页密度 89.88% / 90.18%，一刀切会纯浪费。
 candidates=$(de "SELECT c.oid::regclass::text
                    FROM pg_index i
                    JOIN pg_class c  ON c.oid = i.indexrelid
                    JOIN pg_am am    ON am.oid = c.relam AND am.amname = 'btree'
-                   JOIN pg_namespace n ON n.oid = c.relnamespace AND n.nspname = 'public'
+                   JOIN pg_namespace n ON n.oid = c.relnamespace AND n.nspname IN ('public','pg_toast')
                   WHERE c.relkind = 'i'
-                    AND NOT c.relispartition
                     AND i.indisvalid
                     AND pg_relation_size(c.oid) >= ${MIN_INDEX_MB} * 1024 * 1024
                   ORDER BY pg_relation_size(c.oid) DESC;")
@@ -204,13 +233,15 @@ log "candidates(>=${MIN_INDEX_MB}MB btree, valid, public): $cand_count"
 # 为什么要单独报而不是顺手放进候选：INVALID 索引是**正确性**问题而非空间问题。
 # PostgreSQL 会跳过它做查询规划，REINDEX CONCURRENTLY 之外还需确认业务查询
 # 是否正依赖它（若是，索引失效期间等价于该查询全表扫）。处置路径不同。
+# ★ 覆盖面与候选集保持一致（2026-10-19 §104/§115）：同样放宽命名空间到
+#   public + pg_toast，同样不排除叶分区索引 —— 否则「INVALID 索引」这条
+#   独立告警线（indisvalid=false，需 REINDEX/VALIDATE）会漏掉同一批对象。
 invalid_idx=$(de "SELECT c.oid::regclass::text
                   FROM pg_index i
                   JOIN pg_class c  ON c.oid = i.indexrelid
                   JOIN pg_am am    ON am.oid = c.relam AND am.amname = 'btree'
-                  JOIN pg_namespace n ON n.oid = c.relnamespace AND n.nspname = 'public'
+                  JOIN pg_namespace n ON n.oid = c.relnamespace AND n.nspname IN ('public','pg_toast')
                  WHERE c.relkind = 'i'
-                   AND NOT c.relispartition
                    AND NOT i.indisvalid
                  ORDER BY pg_relation_size(c.oid) DESC;")
 if [ "${invalid_idx:0:5}" = "ERROR" ]; then
