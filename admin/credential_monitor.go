@@ -1872,6 +1872,19 @@ func (m *CredentialMonitorHandlers) handleCredentialDecisions(w http.ResponseWri
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
+
+	// 12h-audit 20261020: role gate（与 handleMonitorSummary / handleModelHistory 同口径）。
+	// 本路由注册在 AdminMiddleware 之下（只认证、不检 role），而
+	// runCredentialDecisions 只在 IsTenantAdmin 时才追加
+	// `AND rdl.tenant_id = $N` ⇒ role=user 的调用方 tenant_id 为空
+	// ⇒ 读到**全租户**的路由决策日志（request_id / model / outbound_model /
+	// error_class / chosen_provider_id），且 routing_decision_log 没有 RLS 兜底。
+	// ⇒ 与审计 #154 在 model-history 上关掉的洞是同一个。
+	// 位置放在 nil-db 门**之前**：未授权者拿 403，不泄露 DB 是否配置。
+	if !IsTenantAdmin(r) && !IsSuperAdminOrLegacy(r) {
+		writeError(w, http.StatusForbidden, "administrator role required")
+		return
+	}
 	if m.h == nil || m.h.db == nil {
 		writeError(w, http.StatusServiceUnavailable, "database not configured")
 		return

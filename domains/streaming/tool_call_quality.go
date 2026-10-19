@@ -148,8 +148,19 @@ func ProcessStreamLine(line string, mode string, accFlags []string, seenIDs map[
 			id, _ := tc["id"].(string)
 			if name != "" {
 				seenIDs["named:"+slot] = 1
-			} else if hasName && seenIDs["named:"+slot] == 0 {
+			} else if seenIDs["named:"+slot] == 0 && seenIDs["empty:"+slot] == 0 &&
+				(hasName || id != "") {
+				// ★ 2026-10-20 12h 审计轮修正：**缺 name 键**与**显式空串**
+				// 同性质，都是「空名」——原实现只认显式空串（hasName），
+				// 于是「有 id 但没有 name 键」的 tool_call（正是本特性要抓的
+				// 缺陷）在流式路径下**不再被标记**，而**非流式**路径
+				// （结构体字段零值 == ""）仍然标记 ⇒ 同一上游缺陷的判定结果
+				// 取决于走没走 SSE。
+				// 判别依据：tool_call 的**首帧**带 id，续帧不带 id
+				// ⇒ 「无 name 键 + 有 id」= 首帧就缺 name ⇒ 缺陷。
+				// 「empty:slot」保证同一槽位只计一次（续帧不重复计）。
 				emptyCount++
+				seenIDs["empty:"+slot] = 1
 			}
 			if id != "" {
 				callKey := "call:" + slot + ":" + id
