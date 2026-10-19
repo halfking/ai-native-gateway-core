@@ -53,7 +53,7 @@
 ## 2026-10-17 — 211 部署基础镜像必须钉 registry-211，readyz 无 mode 字段（Seen: 1/3）
 - 任务 / 缺陷：优化 deploy-211 走 registry-211.itestu.cn 基础镜像并部署验证。
 - 根因：引擎默认曾回落 `golang:1.27.1-alpine`/`docker.io`；211 直连 docker.io 不通。runtime `alpine:3.22` 原先只在 `/opt/kaixuan/base-images` 离线包，registry 仅有 `lang-base/alpine:3.18-i386`。readyz 实为 `status+database.connected+redis.connected`，没有 `mode` 字段——按 mode=full/lite 断言会得到 unknown 假象。
-- 防复发检查：`deploy-211.sh` export + 引擎默认钉 `lang-base/kx-base-golang:1.27-alpine-amd64` 与 `lang-base/alpine:3.22-amd64`；构建前 `d211_ensure_base_images`（pull→离线 retag）；契约门钉默认字符串与 ensure；就绪验 DB/Redis connected 并拒绝 mode=lite 字面。
+- 防复发检查：`deploy-211.sh` export + 引擎默认钉 `lang-base/kx-base-golang:1.27-alpine-amd64` 与 `lang-base/alpine:3.22-amd64`；构建前 `dd_ensure_base_images`（pull→离线 retag，2026-10-20 引擎泛化后由 `d211_` 前缀改为 `dd_`）；契约门钉默认字符串与 ensure；就绪验 DB/Redis connected 并拒绝 mode=lite 字面。
 - 证据：契约门 83/0；实部署 build FROM registry-211 两基础镜像；应用镜像推送 `app-images/llm-gateway-go:211-17f66c69-dirty`；readyz DB/Redis connected、healthz ready、SPA text/html。数据面静态/admin key 仍 401（库血统 SECRET 对齐属既有项，非本轮镜像路径回归）。
 - 状态：镜像路径已验证；鉴权对齐待观察
 
@@ -2796,3 +2796,30 @@ L1 判对 2 次、判错 5 次 ⇒ **准确率 1/6**。
 - 实际证据/溯源：`db/session_summaries_arbiter_test.go` 与
   `scripts/ursmcheck/migration_879_redundant_uidx_drop_test.go` 各改一处断言
   （字面串 → 正则），改完对**最终版门**重跑变异 M1~M5 / M1~M4 全红、还原 md5 逐字一致。
+## 2026-10-20 — 「先改配置再校验配置」失败时必须还原文件：否则留下潜伏半切换态（Seen: 1/3）
+- 场景：211 蓝绿切流（改 nginx upstream 主 server 行 → `nginx -t` → reload）。判据门场景⑤抓到：`nginx -t` 失败时**磁盘配置已被改写**（已指向候选端口 8782），而 nginx 跑的仍是旧配置（8781）。
+- 根因：实现是「改文件 → `nginx -t` → 失败就只 warn 不 reload」。失败瞬间**流量没变**（暂不致命），但磁盘与运行态已分叉 ⇒ 此后**任何一次** nginx reload（人工的、systemd 的、crontab 的）都会把这份**未经验证**的配置加载进去 ⇒ 半切换态是**潜伏**的，不是当场可见的。
+- 防复发检查：① 任何「先写配置、再校验配置」的动作，校验失败时必须把文件**还原**（本轮改成「先备份改前内容 → 改文件 → `nginx -t` → 失败则 `cp` 还原」）；② 备份必须**每次**都写「改前内容」——旧实现是「只在备份不存在时写」⇒ 还原会拿到**更早的版本**（另一层潜伏缺陷）；③ 判据要有行为层：真 nginx conf + 替身 nginx，让 `-t` 失败并断言「upstream 未被改」+「没有 reload」。
+- 证据：`tests/deploy_211_teardown_order_test.sh` 场景⑤（真 conf 文件 + `nginx` 替身，替身复刻「`-t` 失败就不许 reload」的语义）；变异「nginx -t 失败不还原配置」2 条断言红、「切流跳过 nginx -t」4 条断言红。
+- 溯源：本轮 211 蓝绿改造；[复盘](docs/audit/2026-10-20-211-bluegreen-docker-engine.md)。
+
+## 2026-10-20 — 泛化重构后旧判据变红：先分「判据过时」与「真缺陷」，再动手（Seen: 1/3）
+- 场景：把 `deploy-211-docker.sh` 泛化成主机无关的 `deploy-seamless-docker.sh`（`D211_`→`DD_`，主机名进薄外壳）后，契约门 4 条红。
+- 真因分类（**这才是关键**）：① 「`--via` 转发 `DD_GO_BASE_IMAGE`」红——旧判据 grep **字面量** `DD_GO_BASE_IMAGE='`，泛化后转发改成「显式清单 + 通用展开」⇒ 字面量消失但**转发没坏** ⇒ 改判据；② 「引擎默认基础镜像仓钉 registry-211」红——泛化后引擎**本就不该**钉主机名 ⇒ 改判据成「引擎按 target 拼」+「引擎不含写死主机名」+「薄外壳钉 211 的」；③ 「version.json 改写」红——**这条是真缺陷**：槽位隔离后改写仍指向**未被挂载**的平铺路径，且 python 只传 2 个参数却读 `sys.argv[3]` ⇒ IndexError 被 `|| warn` 吞掉 ⇒ 失败形态是「**静默不改写**」，线上 `/version` 继续显示别人的版本戳。
+- 防复发检查：① 泛化重构后逐条判据红时，先问「这条判据钉的是**契约**还是**实现形态**」——钉契约而实现形态已变 ⇒ 改判据并**同时**守住契约的新形态（例：「转发清单里有该变量」+「通用展开那行在」两件事都要判，只判一件会漏「清单里有但没展开」/「清单里没有」）；② 判据红**不总是**判据的错：先查「新形态下这个契约还成立吗」——不成立就是真缺陷。
+- 证据：契约门 118/0（含新增「引擎不含写死主机名」「改写目标是本槽副本」等反向断言）；顺序门 48/0。
+- 溯源：本轮 211 蓝绿改造；[复盘](docs/audit/2026-10-20-211-bluegreen-docker-engine.md)。
+
+## 2026-10-20 — 变异 harness 自身的两种「假通过」：变换没执行、类型用错（Seen: 1/3）
+- 现象一：10 条变异**全部**报「没打中（副本与原件逐字节相同）」。真因：harness 把 transform 当**普通参数**传进 `python3 -`（`sys.argv` 里躺着代码但**没人 exec 它**）⇒ 副本压根没变。
+- 现象二：改成 `python3 -c` 后仍有 3 条 `anchor-miss`。真因：transform 里用 `.read()` 拿到的是**字符串**，而代码按**行列表**用（`enumerate(str)` 迭代出来的是**字符**，永远匹配不上多字符锚点）。
+- 防复发检查：① 变异 harness 必须有「**变异确实生效**」的自证（`cmp` 副本 vs 原件必须不等；不等才允许继续）；② harness 自身报错（anchor-miss / 语法错 / 退出码非零）必须与「被测代码有问题」**分开归类**——这正是「0 命中的第一嫌疑是量具坏了」在写 harness 阶段的形态，不是事后才该想起；③ 判据读数只认「真断言红」（输出里有断言行），脚本提前退出不算「被抓住」。
+- 证据：本轮 harness 两版：首版 0/10 命中、第二版 6/10（4 条 harness 自身故障）、第三版 10/10 命中；harness 与变异规格在 `/tmp/mut_verify_211_bluegreen.sh` + `/tmp/mut_specs_211.json`。
+- 溯源：本轮 211 蓝绿判据门。
+
+## 2026-10-20 — 「通用引擎 + 薄外壳」泛化：主机名一个字都不能留在引擎里（Seen: 1/3）
+- 场景：把 211 专属的 Docker 部署脚本改造成可复用于多台 Docker 主机的通用引擎（`deploy-seamless-docker.sh`），主机信息全部由薄外壳（`deploy-211.sh`）用环境变量注入。
+- 根因/教训：泛化不是「把主机名换成变量」就完了——**默认值、备份文件名、注释里的主机名**都会在下一台主机上变成错的：① 引擎默认 `DD_BASE_REGISTRY=registry-211.itestu.cn` ⇒ 新主机会去拉 211 的仓（已改 `registry-${DD_TARGET}.itestu.cn`）；② 备份文件后缀 `.bak-d211-realip`（已改 `.bak-dd-realip`）；③ 引擎里的 `gw211_` 静态 key 前缀必须按 target 拼（否则新主机的 key 与 211 同前缀）。
+- 防复发检查：① 泛化后 `grep -n "<主机名>" 引擎` 只允许剩**历史说明性注释**，任何会影响行为的字面量都要清；② 判据加**反向断言**：「引擎不含写死的主机名」（`registry-211` 这类字面量不得出现）+「引擎默认按 target 拼」；③ 复制引擎 = 两份语义各自演化必然漂 ⇒ 新增主机只允许新增**薄外壳**；④ 薄外壳里 `DD_STATE_DIR` 这类**存密钥/状态**的路径不可改（换路径 = 换 SECRET_KEY = 库内 key 全失效）。
+- 证据：契约门新增「引擎默认基础镜像仓按 target 拼」「引擎不含写死的主机专属仓名」两条；211 薄外壳 `scripts/deploy-211.sh` 只含主机信息 + 家族骨架。
+- 溯源：本轮 211 蓝绿改造；[复盘](docs/audit/2026-10-20-211-bluegreen-docker-engine.md)。

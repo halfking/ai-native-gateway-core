@@ -15,6 +15,13 @@
 > handoff 见 `docs/96小时内修订审计-20261007-1350.md` §八。
 > **2026-10-19 24h 审计轮**（本会话）：5 个本地未推送 dup 提交合并、bg/ 两族
 > 假阳性 ERROR 收口（推送 `151a0ba13`），见下方「2026-10-19 24h 审计轮」节。
+> **2026-10-20 211 蓝绿轮**（本会话）：Docker 部署引擎
+> `scripts/deploy-211-docker.sh` → **`scripts/deploy-seamless-docker.sh`**
+> （主机无关，薄外壳 `scripts/deploy-211.sh` 注入主机信息），并把 211 从
+> 单容器形态改成**蓝绿切换**（与 245/252 同款：候选槽 → 验收 → 切 nginx
+> upstream → 停旧槽；失败 abort）。**旧文件名已不存在**，本文件下方历史段落里
+> 的 `deploy-211-docker.sh` 是历史叙述，不是现行入口。
+> 复盘见 `docs/audit/2026-10-20-211-bluegreen-docker-engine.md`。
 
 ## 经验反馈闭环（vibe-coding Rule 66）
 
