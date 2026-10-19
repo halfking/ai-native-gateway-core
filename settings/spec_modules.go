@@ -10,6 +10,12 @@ const CategoryModules Category = "modules"
 // integrations (Feishu bot, webhook, etc.) are defined here as well.
 func ModuleSpecs() []*Spec {
 	return []*Spec{
+		{
+			Key: "sanitize.output_check_enabled", Type: TypeBool, Scope: ScopePlatform,
+			Category: CategoryModules, Default: true, HotReload: true, DangerLevel: Warning,
+			Description:     "输出敏感检查总开关",
+			DescriptionLong: "默认开启。关闭后跳过输出敏感守卫（含工具参数外传检查）、可选输出合规和写出前脱敏；输入脱敏与占位符还原继续执行。保存后各网关后续请求自动读取新值；流式守卫在首帧固定检查状态。可通过参数历史回滚恢复。",
+		},
 		// ── Audit logging ─────────────────────────────────────────────
 		{
 			Key:             "audit.enabled",

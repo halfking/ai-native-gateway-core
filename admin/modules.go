@@ -212,7 +212,7 @@ func allModuleDefinitions() []ModuleDefinition {
 				Icon:        "🔒",
 				Category:    "security",
 				SettingKey:  "output_compliance.enabled",
-				ConfigKeys:  []string{settings.KeySanitizeRulesRefreshIntervalSeconds, settings.KeySanitizeRulesAuditEnabled, settings.KeySanitizeRulesEventLimit},
+				ConfigKeys:  []string{"sanitize.output_check_enabled", settings.KeySanitizeRulesRefreshIntervalSeconds, settings.KeySanitizeRulesAuditEnabled, settings.KeySanitizeRulesEventLimit},
 				DocsURL:     "/admin/sanitize-rules",
 				DangerLevel: settings.Warning,
 			},

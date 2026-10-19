@@ -206,7 +206,7 @@ func rewriteAssistantContentInJSON(body []byte, redactedContent string) ([]byte,
 // 默认 false：与 ModuleSpecs / optional interceptor 一致；显式 true 才启用
 // write-time 脱敏。强制外传守卫不走本开关。
 func outputComplianceEnabled() bool {
-	return settings.GetPlatformBool("output_compliance.enabled", false)
+	return settings.GetPlatformBool("sanitize.output_check_enabled", true) && settings.GetPlatformBool("output_compliance.enabled", false)
 }
 
 // getRedactionMode 读取 output_compliance.redaction_mode。SC-2：此前硬

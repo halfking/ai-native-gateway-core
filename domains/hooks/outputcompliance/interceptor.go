@@ -93,7 +93,9 @@ func NewMandatoryOutputComplianceInterceptor(checker interface {
 	return &OutputComplianceInterceptor{checker: checker, mandatory: true, stateKey: stateKey}
 }
 
-func (it *OutputComplianceInterceptor) isEnabled() bool { return it.mandatory || enabled() }
+func (it *OutputComplianceInterceptor) isEnabled() bool {
+	return settings.GetPlatformBool("sanitize.output_check_enabled", true) && (it.mandatory || enabled())
+}
 
 func (it *OutputComplianceInterceptor) FailClosed() bool { return true }
 
