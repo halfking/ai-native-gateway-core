@@ -3140,3 +3140,17 @@ PostgreSQL 解析调用时，**带默认值的那个也能接 3 参调用**，
 - 防复发检查：① 拦截路径上**规则名必须一路透传到客户端**：检查器产出 `ComplianceIssue.RuleID` → 错误类型带 `RuleID` → 拦截结果带 `Metadata` → 写者渲染终帧时带 `"rule"` 字段；② 同族分支的日志字段要**逐条对齐**（一条有 reason_codes，另一条也必须有）——加字段时按「分支」而不是按「函数」盘点；③ 协议终帧要**能被客户端解析器吃下**：openai-responses 形状的 `response` 对象缺 `id`/`object`/`status` 时整帧会被丢掉，表现与「空响应」一模一样。
 - 证据：`errorsx/policy_block.go`、`ComplianceIssue.RuleID`、`ChunkResult.Metadata`、三种协议形状的终帧都带 `"rule"`；判据 `TestR1037PolicyFailureFrameCarriesRule` / `TestR1037ResponsesFailureFrameCarriesResponseIdentity` / `TestR1037BlockedTerminalCarriesRuleName`（端到端跑生产链，断言终帧含规则名）；变异 M4/M5 转红。
 - 溯源：211 空响应事故 r1037；[复盘](docs/audit/2026-10-20-r1037-211-空响应与硬阻断清单.md)。
+
+## 2026-10-20 — 「配置项替换默认值」会静默关掉已有的收紧；配置类开关应当**累加**（Seen: 1/3）
+- 场景：给防外传守卫加硬阻断清单（出厂默认 = 只有 input 允许硬阻断），运维用环境变量配一条 egress 规则。
+- 真因（**生产部署实测才发现**）：首版语义是「环境变量有值 ⇒ **替换**出厂默认」。211 实测设 `egress:builtin.egress_sink` 后，启动日志 `allows=[egress:builtin.egress_sink]` —— **input 没了** ⇒ 只想定一条 egress 规则的运维，顺手把请求侧的明文凭据 fail-closed 也关了。失败形态是**静默放宽已有收紧**，日志里还看不出异常（它照常打印了一行 loaded）。
+- 防复发检查：① 任何「默认值 + 配置项」型开关，**默认项必须是不可被配置项顶掉的那一层**——配置项只能**加**规则；要关默认项必须另给一个**显式**写法（本轮用 `-`）；② 启动日志要把**合并后的完整清单**打出来（不是只打配置项），并在判据里钉住「配置 egress 规则后 input 仍然在」；③ 单测要覆盖「默认值 + 配置项」的**合并结果**，不是只覆盖「配置项生效」。
+- 证据：`domains/sanitizerules/hardblock.go`（`LoadHardBlockAllowsFromEnv` 累加 + 去重）、判据 `TestR1037LoadFromEnvIsAdditive`；211 五轮部署的启动日志读数。
+- 溯源：211 空响应事故 r1037 的部署验证段；[复盘](docs/audit/2026-10-20-r1037-211-空响应与硬阻断清单.md) §7.3。
+
+## 2026-10-20 — 部署机的环境变量到不了远端执行的引擎：「export 了再部署」可能是空操作（Seen: 1/3）
+- 场景：给容器注入一个运维可配的环境变量（`LLM_GATEWAY_HARD_BLOCK_RULES`）。部署机 `export` 后跑部署脚本，**容器里压根没有这个变量**，行为仍是默认值。
+- 真因：`--via` 形态的部署引擎是在**目标机**上执行的（`ssh "$VIA" "cd … && bash scripts/deploy-seamless-docker.sh …"`）。部署机的环境变量只活在本机进程，**不会**跟着 ssh 命令走——除非显式转发。引擎里已有的转发清单（`_dd_fwd`）没列这个变量。
+- 防复发检查：① 凡是「部署机可配 ⇒ 要进容器」的变量，都必须进引擎的**远端转发清单**，并加一条**契约门**断言「该变量出现在转发清单里」（只看引擎读没读它不够）；② 文档里给出的运维路径要与实际一致：**改远端 env 文件**（引擎跨部署保留）与**部署机 export**（需转发）要分别写清哪条生效；③ 部署后**核验容器里那个变量本身**（`docker exec … printenv`），别只看启动日志。
+- 证据：`scripts/deploy-seamless-docker.sh` 的 `_dd_fwd` 清单 + `tests/deploy_211_contract_test.sh` 新增断言（124 通过 0 失败）；211 实测「export 后容器 env 仍无该变量」⇒ 补转发 ⇒ 实测容器 env 出现该值。
+- 溯源：211 空响应事故 r1037 的部署验证段；[复盘](docs/audit/2026-10-20-r1037-211-空响应与硬阻断清单.md) §7.3。
