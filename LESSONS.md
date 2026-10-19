@@ -4,6 +4,139 @@
 
 ## 待观察经验
 
+### 2026-10-19 — 迁移文件头关于"生产列形态"的事实前提必须当场量（Seen: 1/3）
+- 任务 / 缺陷：迁移 877 上线前的写放大定量决策（`docs/audit/2026-10-19-877-写放大定量决策.md`）。
+- 根因：877 的 `.sql` 文件头与 `docs/db-changelog.md` 都断言「search_text 是 **TOAST 宽列**」，
+  并据此推断 trigram 抽取成本"实际很可能显著更高"。生产只读实测**推翻了这条前提**：
+  `session_turns_hot` 6,624 行 / `session_turns_2026_10` 227,088 行的 `length()` 是
+  p50=81 / p90=117 / p99=145 / **max=148**，`pg_column_size` avg=93 —— 远低于 TOAST 阈值，
+  该值**永远内联在 heap**。此前的 455 字符夹具因此**高估约 5.3 倍**。
+  另一条被推翻的隐含前提：`show_trgm()` 返回的是 **distinct** 的 trigram，不是全部 3-gram
+  （生产 avg=**84.59**/行，distinct 与 all 相等）。
+- 防复发检查：任何以"生产某列是宽列/大值"为前提的**写放大、容量、构建时长**论证，
+  必须先跑 `length()` / `pg_column_size()` 的分位数 + `show_trgm()` 计数，并把结果
+  做成**夹具自检**（本轮实现：合成夹具的 distinct trigram 必须与生产实测在 ±12% 内，
+  超差即报错而不是调断言）。超过 ±12% 时修夹具形状，不修判据。
+- 证据：`sql/migrations/startup/migration_877_write_amplification_test.go`
+  （夹具保真度自检，实测 85.10 vs 生产 84.59，偏差 +0.6%）；
+  生产 PG 17.10 只读采样（2026-10-19）。
+- 状态：待观察
+
+### 2026-10-19 — WAL 是集群级计数器；GIN 的 WAL/行随测量窗口长度漂移（Seen: 1/3）
+- 任务 / 缺陷：877 写放大的 WAL 口径。
+- 根因：① `pg_stat_wal` 只有**集群级**口径，生产 PG 上 91 秒测到 +12.6 MB WAL，
+  但那整个平台（crm-go / casdoor / kxmemory…）都在写，**无法归因到 `session_turns`**；
+  ② GIN 索引页被持续改写 ⇒ 每次检查点后每个被改页要写一次 8KB **全页镜像（FPI）**，
+  FPI 是"每页每检查点"的一次性成本，摊到多少行上取决于**测量窗口长度**。
+  实测同一张表同一批数据：共享库交错测 14,844 B/行、顺序独占测（窗口前强制 CHECKPOINT）
+  45,832 B/行、独立静库测 3,727 B/行 —— 差 12 倍。
+- 防复发检查：WAL/行只能从**一次性库**测；生产侧归因用 `pg_relation_size` 的增量
+  （可归因到单个索引）；报告 WAL 成本给**区间**并写明检查点节奏，
+  绝不用单点值做容量决策。
+- 证据：`sql/audit/2026-10-19-877-write-amplification-cross-check.sql`（独立静库交叉校验）
+  与 `-factors.sql`（因子分解）；生产 `session_turns_2026_10_search_text_idx` 75MB /
+  227,088 行 = **346 B/行**，与基准预测的 318~365 B/行一致。
+- 状态：待观察
+
+### 2026-10-19 — 一列只写不读同样是缺陷；消费方判据要覆盖四件（Seen: 1/3）
+- 任务 / 缺陷：`sessions.duration_ms`（877 修好了写入侧）**零读侧**。
+- 根因：写入侧门（`domains/session/v2/session_duration_ms_realdb_test.go`）只证明"值写对了"，
+  没有任何门证明"有人读它"。只写不读的列没有对外契约，审计只能记成
+  「诚实，但没有用户可见收益」。
+- 防复发检查：新增/修复一个列时，**同一轮**必须接上读侧并让判据覆盖四件事：
+  ① 结构体有该字段；② **json tag 正确**（tag 错 = 字段在 Go 侧存在、在 HTTP 侧不存在，
+  前端读不到）；③ SELECT 真的选了那一列；④ Scan 真的扫进了那个字段
+  （只声明字段不选列 ⇒ 恒零值；列选了不扫 ⇒ 值读不出来）。
+  判据用 **go/ast** 而非文本扫描（注释进不来，本仓吃过"按裸子串切文件被自己注释绊倒"的亏）。
+- 证据：`admin/session_duration_ms_consumer_test.go`；三条变异各自变红
+  （去掉 SELECT 列 / 改错 json tag / 去掉 Scan 目标），复原后转绿。
+- 状态：已修待观察
+
+### 2026-10-19 — `sql/migrations/startup/` 下的非迁移 SQL 会被当成迁移部署（Seen: 1/3）
+- 任务 / 缺陷：把 877 的基准脚本（交叉校验 / 因子分解）放进 `sql/migrations/startup/`。
+- 根因：该目录是**启动迁移目录**，文件名以数字开头即被当成一个迁移号。
+  `TestMigrationRegistryStaysContinuous` 当场报红：「877_write_amplification_cross_check.sql
+  （编号 877，在近邻窗口 [859, 878] 内）未登记进 `docs/db-changelog.md` ……
+  后果：该迁移会被**静默部署**（脚本 warn-only + 部署侧只查文件存在）」。
+- 防复发检查：基准/审计/诊断 SQL 一律放 `sql/audit/`（已有 2026-10-02 的 db-audit 系列），
+  不放 `sql/migrations/startup/`；`sql/README.md` 的目录说明要同步。
+- 证据：迁移目录连续性门实测报红；改放 `sql/audit/2026-10-19-877-write-amplification-*.sql` 后转绿。
+- 状态：已修待观察
+
+### 2026-10-19 — 判据会把错误行为钉死：13 条既有断言在守"谎"（Seen: 1/3）
+- 任务 / 缺陷：memora `internal/p3` 的 stub 处理器（另一仓，本轮同形处置）。
+- 根因：p3 的 28 处 `TODO(batch-9+)` 长期返回 200 + **编造的成功形状**
+  （`{"id":"stub","status":"created"}` / `{"count":0}` / `{"status":"accepted"}` /
+  `{"deleted":true}`）。更隐蔽的是**已有判据在守它**：`batch9_test.go` 里 13 条断言
+  要求这些路由返回 200 + 假成功 —— 判据把"什么都没发生"钉成了"已发生"，
+  注释读起来很有理，但它在守的正是那个谎。
+- 防复发检查：改一个路由的行为前，先 grep 该仓**既有判据**里对该行为的断言，
+  连同注释里**论证结论的句子**一起改；新增"未实现"路由时同时登记到
+  `p3StubRoutes`（运行时逐条打）与源码 AST 守卫（防漏登）两条；
+  改完做变异验证（把 stub 改回 200 + 假成功 ⇒ 两道门都要红）。
+- 证据：memora `internal/p3/stub_honesty_test.go`；变异实测两段各自报红
+  （运行时门红在状态码，AST 门红在 `fabricated id "stub"` 与 `fabricated success status "created"`）。
+- 状态：已修待观察
+
+### 2026-10-19 — LLM 调用参数没对真实网关标定过：默认值在"抽取"这类批任务上两个都不够（Seen: 1/3）
+- 任务 / 缺陷：memora dream cycle 首跑（接真实网关 `https://llm.kxpms.cn`，非 llm-mock）。
+- 根因：抽取调用的两个参数都是**照抄通用默认值**，从未对抽取任务标定过：
+  ① 超时用 `llm.Client` 的默认 **20s**（问答用的短请求预算）；
+  ② `max_tokens=2000`（同样照抄通用默认）。
+  实测 12 条 observation 拼成的抽取 prompt：**26.2s / 26.9s** ⇒ 被客户端掐断，
+  错误是 `context deadline exceeded`；把 max_tokens 提到 8000 后
+  `completion_tokens=2982` ⇒ 2000 这个上限**从一开始就不可能够**，
+  输出被截断在 JSON 中间 ⇒ `malformed JSON`。
+  ⇒ **两个坑的表象都是"抽取失败"，根因完全不同**（超时 vs 输出截断），
+  只看"抽取失败"会以为是同一个问题。
+- 防复发检查：任何**批处理型 LLM 调用**必须显式给 `Timeout` 与 `MaxTokens`，
+  数值来自**对真实端点的实测**（含 `usage.completion_tokens`），不是默认值；
+  判据要钉住**调用时真正传出去的 opts**（与被测对象同层），
+  而不是"源码里有没有这个常量"——常量在不在都可能与实际行为脱节。
+  ★ 实测值随批量线性涨（抽取输出随 observation 条数增长，而 observation 上限是 500），
+  所以标定要按**最大批量**留余量，不能按"这次刚好够"。
+- 证据：memora `internal/dream/extraction_params_test.go`
+  （同层判据：断言 `opts.Timeout >= 60s` 与 `opts.MaxTokens >= 4000`；
+  变异验证：删掉 `Timeout` 字段 → 门红 `timeout = 0s`；
+  `MaxTokens` 回落到 2000 → 门红 `max_tokens = 2000`）；
+  真实网关实测记录见 memora `internal/dream/engine.go` 的常量注释。
+- 状态：已修待观察
+
+### 2026-10-19 — 真实环境的模型名会漂移：可选项必须"当场拉清单 + 当场实测"（Seen: 1/3）
+- 任务 / 缺陷：同上首跑的模型选型。
+- 根因：本轮开工时 `abab6.5s-chat` / `abab5.5-chat` 实测可用；几小时后再测变成
+  `No available provider for model 'abab6.5s-chat'. All 6 candidates failed.`。
+  而 `GET /v1/models` 当时列出 **27** 个模型，其中**多数调用即 503**
+  （glm-5.3 / glm-5-turbo / glm-4.7 / nemotron-3-super / nemotron-3-ultra 均实测 503）。
+  ⇒ **"模型在清单里" ≠ "模型可用"**，也 ≠ **"模型遵守你要的输出 schema"**。
+- 防复发检查：选模型必须三步实测——① 拉 `/v1/models` 清单；② 对候选逐个发**真实形状**
+  的请求；③ 按**消费方的解析语义**评判返回（不是"是不是 JSON"）。
+  ★ 尤其要区分"JSON 合法"与"**键名与消费方期望的一致**"：
+  本轮实测 `deepseek-v4-flash` 返回 `{"nodes","edges"}`、`glm-4-flash` 返回
+  `{"knowledge_graph"}`/`{"events"}` —— 都是**合法 JSON**，但消费方一个都取不到。
+  ⇒ 判别动作：**用消费方的解析器判返回，不要用"能不能 parse"判。**
+- 证据：memora `internal/dream/extract.go` 的 `ParseExtraction` 键名口径
+  （`entities`/`facts`/`relationships` + 别名）；本轮 20 个模型的逐个实测记录。
+- 状态：待观察
+
+### 2026-10-19 — mock 夹具的列数是写死的 ⇒ "SELECT 掉列"这类缺陷它测不出来（Seen: 1/3）
+- 任务 / 缺陷：接上 `sessions.duration_ms` 消费方时给 `admin/session_detail_v2_test.go` 补夹具。
+- 根因：pgxmock 的返回列由**夹具写死**。生产代码把 `s.duration_ms` 加进 SELECT（27→28 列）
+  而夹具仍造 27 列 ⇒ pgx 报 `incorrect argument number 28 for columns 27`，
+  4 条既有测试变红（这是**夹具**该跟，不是生产代码错）。
+  ★ 但反过来更值得记：**把 SELECT 里的列删掉，这条夹具仍然全绿**
+  —— 夹具照旧返回 28 列，Scan 照旧拿 28 个目标，位置对得上 ⇒ 测试察觉不到。
+  ⇒ 于是"值断言"与"AST 门"**各管一半，缺一不可**：
+  值断言管"Scan 目标与列的对应关系正确"（抓错位），
+  AST 门管"SELECT 里确实有这一列"（抓掉列）—— 任何一边单独存在都是半盲的。
+- 防复发检查：给 mock 补列时，同时确认**两道门各覆盖一个方向**；
+  写完判据要问一句"**这条判据在哪种真实缺陷下仍会全绿**"，并把答案写进注释
+  （本轮把"本门抓不到 SELECT 掉列"直接写进了新判据的注释）。
+- 证据：`admin/session_detail_v2_test.go`（`TestQuerySession_ReadsDurationMs` +
+  夹具补 `duration_ms` 列）与 `admin/session_duration_ms_consumer_test.go`（AST 门）。
+- 状态：已修待观察
+
+
 ### 2026-10-17 — 顶栏 X 不关 AppSheet / Focus；/me 先开后跳会被导航清掉
 - 根因：`HyperApp.overlayActive` 只认 drawer/account，忽略 `Hyper.topOverlay`；`closeActiveOverlay` 未走 `dismissOverlay`。`/me` 若先开 Sheet 再 `replace('/')`，runtime 导航 silent-close 全 overlay。
 - 防复发：overlay 顶栏 X 必须绑定 `Hyper.topOverlay` + `dismissOverlay`；账户兼容路由先 replace 再派发 `llmgw:open-account`。判据 `HyperApp.overlayClose.spec.ts`。
