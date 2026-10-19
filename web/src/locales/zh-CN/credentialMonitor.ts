@@ -240,5 +240,7 @@ export default {
     concurrencyFailed: '设置失败: ',
     offlineFailed: '下线失败: ',
     onlineFailed: '上线失败: ',
+    superAdminOnlyHint: '仅超级管理员可执行状态修正；当前为只读。',
+    superAdminOnlyError: '仅超级管理员可执行状态修正操作。',
   },
 }

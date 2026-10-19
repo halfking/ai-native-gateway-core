@@ -441,6 +441,7 @@ export default {
     nodeDetailTitle: '节点详情',
 
     nodeDetailLoadFailed: '加载节点详情失败',
+    nodeDetailSuperAdminOnlyHint: '僅超級管理員可以維護節點；目前以唯讀方式展示。',
 
     perfPressure: '性能压力',
 

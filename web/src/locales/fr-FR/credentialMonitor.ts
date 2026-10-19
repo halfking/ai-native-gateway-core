@@ -229,5 +229,7 @@ export default {
     concurrencyFailed: 'Échec du réglage : ',
     offlineFailed: 'Échec de la mise hors ligne : ',
     onlineFailed: 'Échec de la mise en ligne : ',
+    superAdminOnlyHint: 'Seuls les super administrateurs peuvent effectuer les corrections d\'état ; actuellement en lecture seule.',
+    superAdminOnlyError: 'Seuls les super administrateurs peuvent effectuer les corrections d\'état.',
   },
 }

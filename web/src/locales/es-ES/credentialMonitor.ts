@@ -226,5 +226,7 @@ export default {
     concurrencyFailed: 'Configuración fallida: ',
     offlineFailed: 'Paso a offline fallido: ',
     onlineFailed: 'Paso a online fallido: ',
+    superAdminOnlyHint: 'Solo los superadministradores pueden aplicar correcciones de estado; actualmente en modo de solo lectura.',
+    superAdminOnlyError: 'Solo los superadministradores pueden aplicar correcciones de estado.',
   },
 }

@@ -105,12 +105,12 @@ function mountDrawer(model?: string) {
         NodeDetailConcurrencyPanel: {
           name: 'NodeDetailConcurrencyPanel',
           props: ['credentialId', 'providerId', 'monitor', 'monitorLoading', 'canEdit'],
-          template: '<div class="stub-concurrency">并发与指纹槽位</div>',
+          template: '<div class="stub-concurrency" :data-can-edit="String(canEdit)">并发与指纹槽位</div>',
         },
         NodeDetailOtherModelsPanel: {
           name: 'NodeDetailOtherModelsPanel',
           props: ['credentialId', 'currentModel', 'models', 'canEdit', 'needsRefresh'],
-          template: '<div class="stub-other-models">其它模型面板</div>',
+          template: '<div class="stub-other-models" :data-can-edit="String(canEdit)">其它模型面板</div>',
         },
         NodeDetailAccessErrorsPanel: false,
         NodeDetailAvailabilityPanel: {
@@ -121,7 +121,7 @@ function mountDrawer(model?: string) {
         NodeDetailEmergencyPanel: {
           name: 'NodeDetailEmergencyPanel',
           props: ['candidate', 'rawModel', 'canEdit'],
-          template: '<div class="stub-emergency">紧急维护面板</div>',
+          template: '<div class="stub-emergency" :data-can-edit="String(canEdit)">紧急维护面板</div>',
         },
         FpSlotVisualizer: true,
       },
@@ -440,5 +440,62 @@ describe('NodeDetailDrawer model×node scope', () => {
     expect(resolve).toHaveBeenCalledWith('m-2', undefined, false, expect.objectContaining({ signal: expect.any(AbortSignal) }))
     expect(wrapper.text()).not.toContain('加载明细数据')
     expect(wrapper.get('h2').text()).toBe('m-2')
+  })
+})
+
+/**
+ * ★ 写侧角色门（2026-10-20）
+ *
+ * 节点详情抽屉里的**每一个**写操作，后端都要求 super_admin：
+ *   · session-ping / models-test / emergency-repair / candidate-binding → h.superAdmin
+ *   · set-concurrency-auto / model-toggle / set|clear-manual-disabled → RequireSuperAdminForWrite
+ *   · PATCH /api/providers/{id}/credentials/{id}（手动并发 / 指纹槽位 / 生命周期）
+ *     → providerConsole 对 tenant_admin 只读（admin/provider_access.go:67-74）
+ *
+ * 而抽屉的这层门原先只判「是否 default 租户」：default 租户的 tenant_admin
+ * canEdit=true ⇒ 能点到写按钮，点下去只拿到 403。
+ *
+ * 判据纪律（AGENTS.md）：
+ *   ① 断言落在**组件真正收到的那层**（面板拿到的 canEdit），不是源码文本；
+ *   ② **允许侧也要有正向断言**（super_admin 确实拿到 true），否则
+ *      「因为压根没渲染」也能让阻断侧全绿 ⇒ 假绿。
+ */
+describe('★ 写侧角色门 —— 节点详情抽屉的写操作一律要求 super_admin', () => {
+  it('default 租户的 tenant_admin ⇒ 三个写面板拿到的 canEdit 都是 false', async () => {
+    superAdmin.mockReturnValue(false)
+    defaultTenant.mockReturnValue(true)
+    const wrapper = mountDrawer('m-1')
+    await flushPromises()
+
+    await clickMainTab(wrapper, '其它模型')
+    expect(wrapper.find('.stub-other-models').attributes('data-can-edit')).toBe('false')
+
+    await clickMainTab(wrapper, '设置与维护')
+    expect(wrapper.find('.stub-concurrency').attributes('data-can-edit')).toBe('false')
+    expect(wrapper.find('.stub-emergency').attributes('data-can-edit')).toBe('false')
+  })
+
+  it('★ 允许侧正向断言：super_admin 拿到的 canEdit 是 true（防假绿）', async () => {
+    superAdmin.mockReturnValue(true)
+    defaultTenant.mockReturnValue(true)
+    const wrapper = mountDrawer('m-1')
+    await flushPromises()
+
+    await clickMainTab(wrapper, '其它模型')
+    expect(wrapper.find('.stub-other-models').attributes('data-can-edit')).toBe('true')
+
+    await clickMainTab(wrapper, '设置与维护')
+    expect(wrapper.find('.stub-concurrency').attributes('data-can-edit')).toBe('true')
+    expect(wrapper.find('.stub-emergency').attributes('data-can-edit')).toBe('true')
+  })
+
+  it('非 default 租户 ⇒ 仍是 false（原有的租户门不被放宽）', async () => {
+    superAdmin.mockReturnValue(true)
+    defaultTenant.mockReturnValue(false)
+    const wrapper = mountDrawer('m-1')
+    await flushPromises()
+
+    await clickMainTab(wrapper, '其它模型')
+    expect(wrapper.find('.stub-other-models').attributes('data-can-edit')).toBe('false')
   })
 })

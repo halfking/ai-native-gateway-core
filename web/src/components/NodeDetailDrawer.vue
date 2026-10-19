@@ -20,7 +20,6 @@ const props = defineProps<{
   model?: string
   initialTab?: NodeDetailTab
   seedCandidate?: RoutingCandidate | null
-  requireSuperAdminEdit?: boolean
 }>()
 
 const emit = defineEmits<{
