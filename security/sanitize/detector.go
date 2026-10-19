@@ -285,10 +285,76 @@ func (d *PatternDetector) DetectScope(ctx context.Context, text string, scope De
 	if blocked != "" {
 		return nil, ruleBlockError(blocked)
 	}
+	// 只在**脱敏面**做类型裁决。ScopeEgress 是 tool 参数外传守卫的判定面，
+	// 那里 custom(address) 片段参与拦截决策（r1035 的 inert_tool 豁免按
+	// 「custom 且非 network_destination」放行），改它等于改守卫语义。
+	if scope != ScopeEgress {
+		fragments = dropLabelWrappedAddressFragments(fragments)
+	}
 	sort.SliceStable(fragments, func(i, j int) bool {
 		return fragments[i].Start < fragments[j].Start
 	})
 	return fragments, nil
+}
+
+// dropLabelWrappedAddressFragments 剔除「标签 + 精确值」形态里那层包裹性的
+// 地址片段，让精确类型（phone / email / …）的片段胜出。
+//
+// r1036（2026-10-20，154 生产取证）：`configs/sensitive_patterns.yaml` 的
+// address 规则
+//
+//	[^\s]{2,}[省市区县镇乡村路街道巷弄号栋单元室]\s*[\d\-号栋单元室]+
+//
+// 字符类里的「号」既表示门牌号，也命中「手机号 / 房间号 / 工单号」这类
+// **标签词的尾字**。于是「手机号 13800138001」被 address 规则整段吞掉
+// （0:21），而同一次检测里 phone 规则命中的「13800138001」（10:21）被它
+// **包裹**。mergeFragmentSpans 按起点排序、起点相同时取跨度更大者，于是外层
+// 赢，整句塌成一个 `{SENSITIVE:custom:1}`。
+//
+// 危害是**类型退化**而不是泄漏：值照样被遮住，但占位符类型从 phone 退成
+// custom，映射值从「一个号码」变成「标签+号码整句」——下游按类型分流的地方
+// 拿不到类型信息，调用方拿到的映射也不再是「一个手机号」。
+//
+// 判据（不看具体标签词，只看结构）：一个 custom 片段**完全包住**另一个
+// 更精确类型的片段 ⇒ 它不是地址，而是「标签 + 精确值」⇒ 精确类型胜出。
+//
+//   - 「手机号 13800138001」：custom(0:21) ⊃ phone(10:21) ⇒ 丢弃 custom
+//   - 「北京市朝阳区建国路88号」：只有 custom，无精确子片段 ⇒ 保持原样
+//
+// 为什么不在正则里删掉「号」：真实地址大量以「号」结尾（「建国路88号」、
+// 「文三路100号」），删掉会让地址规则整体失效——那是倒退不是修复。
+func dropLabelWrappedAddressFragments(fragments []SensitiveFragment) []SensitiveFragment {
+	if len(fragments) < 2 {
+		return fragments
+	}
+	// 收集更精确类型的片段（custom 之外的都是「更精确」）。
+	precise := make([]SensitiveFragment, 0, len(fragments))
+	for _, f := range fragments {
+		if f.Type != TypeCustom {
+			precise = append(precise, f)
+		}
+	}
+	if len(precise) == 0 {
+		return fragments
+	}
+	kept := make([]SensitiveFragment, 0, len(fragments))
+	for _, f := range fragments {
+		if f.Type == TypeCustom {
+			wrapped := false
+			for _, p := range precise {
+				// 完全包住：custom 覆盖了精确片段，且不是同一段。
+				if f.Start <= p.Start && f.End >= p.End && (f.Start < p.Start || f.End > p.End) {
+					wrapped = true
+					break
+				}
+			}
+			if wrapped {
+				continue
+			}
+		}
+		kept = append(kept, f)
+	}
+	return kept
 }
 
 // vendorKeyShapeSource is the shape the built-in rule and the shipped

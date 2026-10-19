@@ -32442,6 +32442,24 @@ last_line=$(grep -F "${fingerprint}" "$cooldown_file" | head -1)   # 按**当前
 ★ 注意最后一行：`session_dim` 的表有 **5292 万次**索引扫描，而这一条是 0 ——
 ⇒ 「表热」与「这条索引热」是两件事，**不能用表的热度替索引背书**。
 
+> ⚠⚠ **2026-10-21 订正（§143.16 实测）——上表的「表的索引扫描数」列是**错的量具**，原文保留。**
+> ① **那一列是表级计数**（`pg_stat_all_tables.idx_scan` = 该表**所有**索引扫描数之和），
+>    **分辨不出「哪条索引热」**；而本表 18 条的备注恰恰是按这一列下的。
+> ② 改用**每索引**计数（`pg_stat_all_indexes.idx_scan`）重测后，18 条里**至少 6 条**的每索引计数是 **0**：
+>    `idx_node_probe_runs_api_model`、`idx_analysis_events_session`、`idx_ih_instance`、
+>    `idx_session_summaries_archival`、`idx_session_summaries_search`、`idx_session_dim_client`
+>    ⇒ 它们的「表很热」**不构成「这条索引有人在用」的证据**。
+> ③ `idx_pmm_provider_bucket` 的「1,840,609」是表级；它自己全生命周期只扫 **1** 次（§143.15 已订正同一条）。
+> ④ ★ **但结论方向没变**：这些索引的每索引计数确实为 0 ⇒「没人选」成立；
+>    变的是**证据形式**——上表最后一行那句「不能用表的热度替索引背书」**仍然成立，且本节把它推广到了全表**。
+> ⑤ ★★ **但本表仍不是处置清单**：18 条里多数**有读方**（§143.16.4 的 14 条生产 EXPLAIN），
+>    其中 `idx_route_incident_events_created_at` 的 0 扫描是「**留存 worker 默认不启用**」造成的
+>    （`domains/routeincident/retention.go:3` + `:186` 启动时探索引、缺了就跳过）
+>    ⇒ **删了等于永久关掉留存**；真正可 DROP 的只有 **4 条 / 201.4 MiB**（§143.16.3 的 T3）。
+> ⑥ ★★ **本表整体漏掉了一个最大的量**：**死页**（`pgstatindex` 的 `deleted_pages`）
+>    ——`request_stats_error_drill_minute_pkey` 有 7413 块（占 94.6%）是死页，
+>    **按体积排序的框架结构性地看不见它**（详见 §143.16.1）。
+
 ### 143.9.7 工具与判据
 
 新增 `scripts/252-monitor/unused-index-report.sh`（**按需诊断**，不占 `pg17-`/`ursm-` 前缀 ⇒
@@ -33223,6 +33241,28 @@ md5 与仓内**逐字一致**、台账记 `in-sync`、仓内正典 cron 副本�
 ⇒ ⚠ ★★ **但它不是「删掉没人用的那个」那种简单结论**：扫描计数显示
 **两个都在被用**（uidx 357 万次 vs pkey 17 万次）⇒ 处置需要**读方证据**
 （`index-reader-census.sh`），且 pkey 是**约束**（删它要先改约束）⇒ 属主拍板项。
+
+> ⚠⚠ **2026-10-21 订正（§143.16 实测）——本节的三处读数与一处推论要修订，原文保留。**
+> ① **体积口径**：`session_summaries_pkey` 实测 **67.8 MiB**、`session_summaries_session_key_uidx` **67.2 MiB**
+>    （上面的 71.1MB 是 MB/MiB 与时点差异）⇒ **一对共 135 MiB**。
+> ② ★★★ **真正的冗余不止这一对**：同表还有第三条
+>    `session_summaries_session_key_per_tenant` = `UNIQUE (tenant_id, session_key)`、**77.6 MiB**，
+>    **逻辑上被主键完全蕴含**（主键保证 `session_key` 唯一 ⇒ 二元组必然唯一）⇒
+>    **三条合计 145 MiB 逻辑冗余**，不是 71MB。
+> ③ ★ **「pkey 是约束（删它要先改约束）」这半句弄反了**：
+>    `session_summaries_session_key_uidx` 是**独立 `CREATE UNIQUE INDEX`**
+>    （**不在** `pg_constraint` 里，**也不在** `sql/objects/` 正典目录里 ⇒ 是**运行时 bootstrap 产物**）
+>    ⇒ 删它**只需 `DROP INDEX`**；真正要改**约束**口径的是
+>    `session_summaries_session_key_per_tenant`（在 `sql/objects/constraints/` 正典里）。
+> ④ ★★ **迁移 560 的理由已失效**：它的理由是「跨租户共用 session_key 会互相覆盖」，
+>    但当前 schema 的主键**就是 `session_key` 本身** ⇒ 那种碰撞在主键下**不可能发生**
+>    ⇒ 该约束防的是**已被主键防住**的东西（属主是否改约束口径见 §143.16.3 的 T2）。
+> ⑤ ★★ **删除的顺序铁律**：bootstrap（`db/session_summaries_schema.go`）**每次启动都会确保该索引存在**
+>    ⇒ **先发「不再创建」的代码，再在生产 DROP**；否则每次启动被建回来（§143.16.7 的 P1）。
+> ⑥ ★ **读方证据已补齐**（§143.16.4）：`ON CONFLICT (session_key)` 的仲裁索引**删掉裸 uidx 后由主键接管**，
+>    本地 PG 17.11 实测 `Conflict Arbiter Indexes: arb_t_pkey, arb_t_uidx` → 只剩 PK 时 `arb_t_pkey`
+>    ⇒ **冲突语义不变**；生产 EXPLAIN 显示点查现在走 `Index Only Scan using session_summaries_session_key_uidx`
+>    ⇒ 删后由**同键的主键**接管同样的 Index Only Scan（不是 Seq Scan）。
 ⇒ 其余零星：`session_aggregate_outbox` 12MB、`session_bodies_hot` 6.3MB、
 `usage_ledger_hot` 2.9MB、`runtime_metrics` 两条、`credential_model_index_hot` 0.3MB …
 
@@ -34047,3 +34087,379 @@ stderr 恢复后，`ursm-snapshot-health` 的失败原因第一次**可读**：
 [[对照组不是同一条件下造的]] · [[算术上的巧合会伪装成因果]] ·
 [[证伪要用能区分假设的实验]] · [[负面对照也能证明收益为零]] ·
 [[生产上的自然对照往往有混淆]] · [[不可比的两个东西放在一起比大小]]。
+
+---
+
+## §143.16 索引处置清单：从「按大小排 DROP」升级为「逐条实测读数 + 读方证据 + 分档」（2026-10-21）
+
+### §143.16.0 结论先行
+
+⇒ ⇒ ★★★ **本节推翻的是「E 类 = 按大小排 DROP 候选」这个框架本身。**
+
+§143.9.6 给了 18 条 / 387MB 的 E 类清单，§143.12.6 给了「71MB 逐字重复对」，
+两者都是**按体积排序**的候选表。本节做了三件上一轮没做的事：
+
+1. **把「表的索引扫描数」换成「每索引扫描数」** ⇒ 发现 E 类清单的证据形式是错的量具
+   （表热 ≠ 这条索引热；§143.15 已对 `idx_pmm_provider_bucket` 记过一次同样的订正，
+   本节把它**推广到整张 E 类表**）。
+2. **把 `pgstatindex` 的 `deleted_pages` 口径量清** ⇒ 发现**死页是最大的单项收益**，
+   而它在 §143.9~§143.15 一路都没被量过 ⇒ §143.12 的 E 类框架**结构性地看不见它**。
+3. **给每个候选配读方证据**（仓库 grep + 生产 `EXPLAIN`）⇒ 发现「0 扫描」有**四种成因**，
+   其中三种**不能**当 DROP 依据。
+
+⇒ ⇒ ★★ **本节的处置建议分四档**（详见 §143.16.3）：
+
+| 档 | 动作 | 语义风险 | 本节给出的量 |
+|---|---|---|---|
+| **T0** | `REINDEX`（不改索引定义、不改读写路径） | **无** | 7 条 ≈ **305 MiB**（推算下界）+ pmm 5 条 55~62MB（§143.15） |
+| **T1** | `DROP INDEX` **独立**唯一索引（与主键键集逐字重复） | **无**（主键接管仲裁，已实测） | `session_summaries_session_key_uidx` **67.2 MiB** |
+| **T2** | `DROP` **约束**（逻辑被主键蕴含） | 需属主拍板**约束口径** | `session_summaries_session_key_per_tenant` **77.6 MiB** |
+| **T3** | `DROP` **无读方**索引（逐条给读方证据） | 需逐条确认 | 4 条 ≈ **201.4 MiB** |
+
+⇒ ⇒ ★ **合计上界 ≈ 651 MiB**（全是**推算**，不是实测；口径与外推边界见 §143.16.6）。
+⚠ **本节对生产的写入仍然是 0** —— 全部是只读查询 + 本地沙箱受控实验。
+
+### §143.16.1 ★★ 量具订正：`deleted_pages` 到底是什么（这一节是本节全部结论的地基）
+
+#### §143.16.1.1 先把 `pgstatindex` 的真实签名打出来
+
+PG 17.10（生产，Debian）实测 `pg_proc.proargnames`：
+
+```
+{relname, version, tree_level, index_size, root_block_no, internal_pages,
+ leaf_pages, empty_pages, deleted_pages, avg_leaf_density, leaf_fragmentation}
+```
+
+⚠ **`tree_height` 不存在**（真实名是 `tree_level`）—— 本节第一次按 `tree_height` 查时
+直接 `ERROR: column s.tree_height does not exist` ⇒ **量具的列名也得先查，不能照抄记忆**。
+
+#### §143.16.1.2 恒等式：`deleted_pages` **物理仍在索引里**
+
+对 10 条大索引取全字段后，`blocks` 与各分项的关系**逐条精确成立**：
+
+```
+blocks = 1(meta) + internal_pages + leaf_pages + empty_pages + deleted_pages
+```
+
+| 索引 | blocks | internal | leaf | empty | **deleted** | 1+i+l+e+d |
+|---|---|---|---|---|---|---|
+| `uq_route_incident_events_idem` | 29360 | 462 | 28897 | 0 | 0 | 29360 ✓ |
+| `idx_stats_event_dedup_event_id_occurred_at` | 19319 | 232 | 19086 | 0 | 0 | 19319 ✓ |
+| `uq_state_transitions_tenant_request_seq` | 15683 | 189 | 15388 | 0 | 105 | 15683 ✓ |
+| `stats_event_dedup_pkey` | 13917 | 182 | 13734 | 0 | 0 | 13917 ✓ |
+| `idx_route_incident_events_type_created` | 12871 | 113 | 12757 | 0 | 0 | 12871 ✓ |
+| `request_stats_dim_minute_pkey` | 8921 | 27 | 4055 | 0 | **4838** | 8921 ✓ |
+| `session_summaries_pkey` | 8681 | 81 | 8599 | 0 | 0 | 8681 ✓ |
+| `session_summaries_session_key_uidx` | 8601 | 81 | 8519 | 0 | 0 | 8601 ✓ |
+| `request_stats_error_drill_minute_pkey` | 7831 | 5 | **412** | 0 | **7413** | 7831 ✓ |
+| `idx_session_dim_tenant` | 7113 | 49 | 7063 | 0 | 0 | 7113 ✓ |
+
+⇒ ⇒ ★★ **`deleted_pages` 不是「已经从索引里删掉了」的会计数，而是「仍占着物理块、但已脱离 btree 的死页」。**
+⇒ ⇒ ★ **推论（对公式至关重要）**：`deleted` 与 `leaf` **不相交** ⇒
+`reclaim = dead + leaf×(1−min(density,90)/90)` **没有重复计数** ⇒ §143.15 的标定结论（比值 ≈0.96）**依然成立**。
+
+⇒ ⇒ ★★★ **本节最大的发现就在这张表里**：
+
+> `request_stats_error_drill_minute_pkey`：**7831 块里 7413 块（94.6%）是死页**，
+> 活的部分只有 412 个叶页 + 5 个内页 + 1 个元页 ≈ **3.2 MiB**，
+> 而整条索引占 **61.2 MiB**。
+> ⇒ **REINDEX 一次就能把 61.2 MiB 压到 ≈3.4 MiB**，而这**不改任何语义**。
+
+#### §143.16.1.3 本地受控实验：死页为什么留得住（PG 17.11 沙箱，7 阶段）
+
+沙箱：`postgresql@17` 17.11，数据目录 `/private/tmp/pmm_exp/pg17`，库 `pmm_sbx`。
+脚本：`/private/tmp/pmm_exp/semantics.sql`（可原样重跑）。
+
+| 阶段 | 动作 | leaf | empty | **deleted** | density | index_size |
+|---|---|---|---|---|---|---|
+| A | 建索引后基线（20 万行） | 767 | 0 | 0 | 89.96 | 6,332,416 |
+| B | 删一半（`a % 2 = 0`），**未 VACUUM** | 767 | 0 | 0 | **89.96** | 6,332,416 |
+| C | `VACUUM` | 767 | 0 | 0 | **45.17** | 6,332,416 |
+| D | `REINDEX` | **384** | 0 | 0 | 89.84 | **3,178,496** |
+| E | 删连续段 + `VACUUM` | 232 | 0 | **152** | 89.22 | 3,178,496 |
+| F | **再 `VACUUM` 一次** | 232 | 0 | **152** | 89.22 | **3,178,496** |
+| G | `REINDEX` | 230 | 0 | **0** | 89.99 | **1,916,928** |
+
+⇒ ⇒ ★★★ **三条结论**（每条都有阶段对照，不是推的）：
+
+1. **B→C：密度是 `VACUUM` 之后的口径。**
+   删一半但还没 VACUUM 时密度仍是 89.96（死元组**仍占着页内空间**），
+   VACUUM 把死元组从页里摘掉后密度掉到 45.17（真实存活占用）。
+   ⇒ **生产读数的密度项是「下界」**：表在上次 autovacuum 之后又攒的死元组会让密度**偏高**。
+   ⇒ 量化：`request_state_transitions` 自上次 autovacuum（2026-10-19 11:50）后攒了
+   **49,634** 个死元组、分布在 15,388 个叶页上 ⇒ 密度虚高约 **1.6%**；
+   `request_stats_dim_minute` 13,060 个死元组 ⇒ 约 **1.6%**；
+   `request_stats_error_drill_minute` 只有 166 个 ⇒ 约 **0.02%**（几乎无偏）。
+2. **E→F：`VACUUM` 回收不了死页。** 连续两次 `VACUUM` 后 `deleted_pages` 仍是 152、
+   `index_size` 一字节没变 ⇒ **只有 `REINDEX` 能把它变成 0（G 阶段：3,178,496 → 1,916,928）**。
+3. **D 阶段：空洞（density 缺口）也只有 `REINDEX` 能收。**
+   VACUUM 之后 767 个叶页里活数据只占 45.17% ⇒ 页还是 767 个；
+   REINDEX 后变成 384 个 ⇒ **重排**才回收空洞。
+
+⇒ ⇒ ★ **机制一句话**（PG 17 bottom-up deletion）：
+> 删除让整页被摘空 ⇒ 页面**脱离 btree** 但**仍占物理块** ⇒ 表级 `VACUUM` 不清它 ⇒
+> **只有 `REINDEX`（重写整棵索引）能把它变成 0**。
+
+⇒ ⇒ ★★ **生产侧互证**（不靠沙箱外推）：
+`request_stats_error_drill_minute` 这张表**已 autovacuum 17 次**（最近 2026-10-19 22:35），
+7413 个死页**至今仍在** ⇒ 「VACUUM 回收不了死页」在生产的 **PG 17.10** 上同样成立。
+
+### §143.16.2 ★★ 逐条收益表（15 条候选，测得值 + 公式推算 + 判词）
+
+⚠ **口径声明（先读）**：
+- `mib` / `leaf` / `dead` / `density` / `idx_scan` 是**生产实测**（154 跳板，PG 17.10，2026-10-21）。
+- `reclaim_mib` 是**公式推算**，**不是实测**：公式 = `(dead + leaf×(1−min(density,90)/90)) × 8KB`，
+  来自 `scripts/252-monitor/pg17-index-bloat.sh`，其标定见 §143.15（预测/实测 ≈ **0.96**，n=**2** 且同表）。
+  ⇒ **本表给的是下界**，且**跨表属外推**（边界见 §143.16.6）。
+- `idx_scan` 是**每索引**计数（`pg_stat_all_indexes.idx_scan`），**全生命周期**口径
+  （`pg_stat_database.stats_reset` = NULL）⇒ 与 `pg_stat_statements` 的 27 小时窗口**不可混比**。
+
+| # | 索引 | 表 | mib | leaf | **dead** | density | **每索引 idx_scan** | reclaim（推算） | 判词 |
+|---|---|---|---|---|---|---|---|---|---|
+| 1 | `uq_route_incident_events_idem` | route_incident_events | 229.3 | 28897 | 0 | 74.98 | 310,494 | 37.7 | **T0** REINDEX（有读方、极热） |
+| 2 | `idx_stats_event_dedup_event_id_occurred_at` | stats_event_dedup | 150.9 | 19086 | 0 | 56.62 | 1,481,120 | 55.3 | **T0** |
+| 3 | `uq_state_transitions_tenant_request_seq` | request_state_transitions | 122.5 | 15388 | 105 | 50.04 | 1,192,638 | 54.2 | **T0** |
+| 4 | `stats_event_dedup_pkey` | stats_event_dedup | 108.7 | 13734 | 0 | 70.08 | 198,163 | 23.7 | **T0** |
+| 5 | `idx_route_incident_events_type_created` | route_incident_events | 100.5 | 12757 | 0 | 75.18 | **1** | 16.4 | **T3 可 DROP**（无读方） |
+| 6 | `idx_route_incident_events_incident_created` | route_incident_events | 86.6 | 11016 | 0 | 72.08 | 20 | 17.1 | **保留**（E1 选中） |
+| 7 | `session_summaries_session_key_per_tenant` | session_summaries | 77.6 | 9827 | 0 | 68.6 | 5 | 18.3 | **T2**（逻辑蕴含，约束口径） |
+| 8 | `request_stats_dim_minute_pkey` | request_stats_dim_minute | 69.7 | 4055 | **4838** | 41.48 | 428,446 | **54.9** | **T0（死页 39.6 MiB）** |
+| 9 | `session_summaries_pkey` | session_summaries | 67.8 | 8599 | 0 | 68.17 | 179,005 | 16.3 | **保留**（仲裁索引） |
+| 10 | `session_summaries_session_key_uidx` | session_summaries | 67.2 | 8519 | 0 | 68.78 | **3,644,644** | 15.7 | **T1**（与 PK 逐字重复） |
+| 11 | `session_dim_pkey` | session_dim | 64.2 | 8135 | 0 | 69.58 | **56,052,477** | 14.4 | **保留**（极热） |
+| 12 | `request_stats_error_drill_minute_pkey` | request_stats_error_drill_minute | 61.2 | **412** | **7413** | 55.78 | 69,167 | **59.1** | **T0（94.6% 是死页）** |
+| 13 | `idx_session_summaries_last_request_recent` | session_summaries | 59.7 | 7610 | 0 | 85.75 | 69 | 2.8 | 保留（密度已 85.75，收益仅 2.8） |
+| 14 | `uq_session_project_attribution` | session_project_attribution | 59.6 | 7538 | 0 | 59.4 | 59,442 | 20.0 | **T0** |
+| 15 | `idx_session_dim_tenant` | session_dim | 55.6 | 7063 | 0 | 43.16 | 20 | 28.7 | **保留**（E4 选中） |
+
+⇒ ⇒ ★ **T0（REINDEX）合计 ≈ 304.9 MiB**（1+2+3+4+8+12+14）；
+另加 §143.15 的 pmm 5 条 55~62 MB ⇒ **REINDEX 一轮 ≈ 360~367 MiB（推算下界）**。
+
+⇒ ⇒ ★★★ **本表最重要的读法**：
+**「体积大」和「可回收多」是两件事，而「可回收多」的第一位不是密度，是死页。**
+- 第 12 行：61.2 MiB 里 **57.9 MiB 是死页**（密度项只占 1.2 MiB）
+- 第 8 行：69.7 MiB 里 **37.8 MiB 是死页**、17.1 MiB 是空洞
+- 第 5 行：100.5 MiB **全是活数据**（dead=0、密度 75.18）⇒ **REINDEX 只能拿 16.4 MiB**，
+  真要拿回 100.5 MiB 只能 **DROP**（T3）⇒ **两档的适用对象由 dead/density 结构决定，不由体积决定**。
+
+### §143.16.3 ★★ 分档处置建议
+
+#### T0 —— `REINDEX`（**不改语义**，收益最大）
+
+| 索引 | 推算回收 | 备注 |
+|---|---|---|
+| `request_stats_error_drill_minute_pkey` | **57.9 MiB**（死页） | 单项最大 |
+| `uq_state_transitions_tenant_request_seq` | **54.2 MiB**（空洞） | 1,192,638 次扫描，热 |
+| `request_stats_dim_minute_pkey` | **54.9 MiB**（死页 37.8 + 空洞 17.1） | |
+| `idx_stats_event_dedup_event_id_occurred_at` | **55.3 MiB**（空洞） | 1,481,120 次扫描，热 |
+| `uq_route_incident_events_idem` | 37.7 MiB | 310,494 次扫描 |
+| `stats_event_dedup_pkey` | 23.7 MiB | |
+| `uq_session_project_attribution` | 20.0 MiB | |
+| **pmm 5 条**（§143.15） | 55~62 MB | |
+
+⚠ **执行方式的三个前提**（属主拍板时一并定）：
+① **`REINDEX CONCURRENTLY`**（不锁表，但需两遍扫描 + 等旧快照回收）还是普通 `REINDEX`（ACCESS EXCLUSIVE）？
+② 窗口：这些表都在写（`request_state_transitions` 858,597 活行、`stats_event_dedup` 1,481,120 次索引扫描）⇒ 建议低峰。
+③ **一次性 REINDEX 只是止血**：§143.15 已证「增量增长的 btree」机制没变 ⇒ 会再退化 ⇒ **是否定期化**需要调度位。
+
+#### T1 —— `DROP INDEX` 独立唯一索引（**零语义风险**，但**必须先发代码**）
+
+**`session_summaries_session_key_uidx`（67.2 MiB）**
+
+- **它是逐字重复**：主键 `session_summaries_pkey` = `PRIMARY KEY (session_key)`，
+  它 = `CREATE UNIQUE INDEX … (session_key)` ⇒ `pg_index.indkey` **两者都是 `1`**，键集逐字相同。
+- **它是独立索引，不是约束** ⇒ 只需要 `DROP INDEX`，**不需要改约束**。
+  ⇒ ★ 这里要**订正 §143.12.6 的半句**：原文说「pkey 是约束（删它要先改约束）」——
+  **弄反了**：要改约束的是 `session_summaries_session_key_per_tenant`（见 T2），
+  `session_summaries_session_key_uidx` **不在 `pg_constraint` 里**。
+- **仲裁不会因此失效**（本地 PG 17.11 实测）：
+  ```
+  两份都在时：Conflict Arbiter Indexes: arb_t_pkey, arb_t_uidx
+  只剩 PK 时：Conflict Arbiter Indexes: arb_t_pkey
+  ```
+  ⇒ 删掉裸 uidx 后 **`ON CONFLICT (session_key)` 仍由主键仲裁，冲突语义不变**。
+- **计划不会退化**（生产 E13 实测）：`SELECT session_key FROM session_summaries WHERE session_key = 'x'`
+  现在是 `Index Only Scan using session_summaries_session_key_uidx`
+  ⇒ 键集相同 ⇒ 删后由**主键接管同样的 Index Only Scan**（不是 Seq Scan）。
+- ⚠ **执行顺序铁律**：`db/session_summaries_schema.go` 的 bootstrap **每次启动都会确保它存在**
+  ⇒ **必须先发「不再创建」的代码，再在生产 DROP**；否则每次启动被建回来（§143.16.7 的 P1）。
+- ★ **本轮的落地形态（三段式，缺一不可）**：
+  ① 迁移 **655**（`applied+verified`，SHA 已登记 ⇒ **不能改**）仍会建这条索引
+  ⇒ 全新安装路径上它必然存在；
+  ② 迁移 **879**（`879_drop_session_summaries_redundant_session_key_uidx.sql`，
+  **pending deploy**）把它删掉，**守卫**＝「存在**别的**可仲裁唯一索引时才删」
+  ⇒ 表没有主键（memora 最小 shape）时它**不动手**（那时它是唯一的仲裁器）；
+  ③ runtime bootstrap（`db/session_summaries_schema.go`）的创建守卫已改成
+  「`session_key` 上没有别的可仲裁唯一索引时才建」
+  ⇒ **不再重建**（判据抽成常量 `sessionSummariesSessionKeyArbiterSQL`，
+  bootstrap 与 canonical 短路**两处共用**）。
+  ⇒ 净效果：这条索引**不再存在**，且**不会被建回来**。
+
+#### T2 —— `DROP` 逻辑蕴含的**约束**（需属主拍板**约束口径**）
+
+**`session_summaries_session_key_per_tenant`（77.6 MiB）= `UNIQUE (tenant_id, session_key)`**
+
+- **逻辑蕴含**：主键已保证 `session_key` 全表唯一 ⇒ `(tenant_id, session_key)` 必然唯一 ⇒ 该约束**永不触发**。
+- **它当初的理由已失效**：迁移 `560_session_summaries_tenant_uniqueness.sql` 的理由是
+  「跨租户共用 session_key 会互相覆盖」⇒ 但**当前 schema 的主键就是 `session_key` 本身**
+  ⇒ 跨租户共用 session_key **在主键下就不可能存在** ⇒ 该约束防的是**已经被主键防住**的东西。
+- **读方证据**：生产 E14（`WHERE tenant_id = $1 AND session_key = $2`）**没有选它**
+  （计划器选了 `idx_session_summaries_cost`），每索引 `idx_scan` 只有 **5** 次。
+- ⚠ **它是「改约束口径」而不是「删冗余索引」** ⇒ 属主拍板；且原迁移 560 **保留原文**（不删不改），
+  只在 §143.16 与新迁移里记录「该约束已被主键蕴含、2026-10-21 起不再作为语义依赖」。
+
+#### T3 —— `DROP` **无读方**索引（读方证据逐条给全）
+
+| 索引 | 体积 | 仓库读方 | 生产 EXPLAIN | 判词 |
+|---|---|---|---|---|
+| `idx_route_incident_events_type_created` | 100.5 MiB | **无**：仓内 `route_incident_events` 的 WHERE 只有 `incident_id` / `created_at`；`event_type` 只出现在 SELECT 投影 | E3 选 `idx_route_incident_events_created_at` + `Filter: event_type` | **可 DROP** |
+| `idx_node_probe_runs_api_model` | 38.6 MiB | **无**：`api_model` 在仓内只出现在 INSERT 列（`bg/node_probe.go:2196`、`:2718`） | E10 可作 Index Cond，但**没有仓库读方** | **可 DROP** |
+| `idx_analysis_events_session` | 35.3 MiB | **无**：仓内 `analysis_events` 的读方只有 `processed_at`（`domains/analysis/bus/pg_poll.go:46`）与 `started_at`（`bg/partition_manager.go:2441`） | E12 可作 Index Cond，但**没有仓库读方** | **可 DROP** |
+| `idx_node_probe_runs_provider` | 27.0 MiB | `admin/probe_dashboard.go:1236-1250` 有查询，但 E8 **未选中**它（选了 `idx_node_probe_runs_started`） | E8：Index Scan using `idx_node_probe_runs_started` + Filter | **可 DROP**（删后计划不变） |
+
+⇒ ⇒ ★ **T3 合计 ≈ 201.4 MiB**。
+
+### §143.16.4 ★★★ 读方证据：仓库 grep + 生产 `EXPLAIN`（14 条计划，2026-10-21）
+
+| 候选 | 仓库读方（文件:行） | 生产 EXPLAIN | 每索引 idx_scan | 判词 |
+|---|---|---|---|---|
+| `idx_route_incident_events_incident_created` | `admin/route_incidents.go:778`、`domains/routeincident/store.go:648` | E1：`Index Scan using idx_route_incident_events_incident_created` | 20 | **保留** |
+| `idx_route_incident_events_created_at` | `domains/routeincident/retention.go:186`（**启动时探索引**）、`:293-297` | E2b：`Index Scan using idx_route_incident_events_created_at` | 0 | **保留**（见下方成因 ②） |
+| `idx_session_dim_tenant` | `admin/session_health_api.go:545` | E4：`Index Scan using idx_session_dim_tenant` | 20 | **保留** |
+| `idx_session_dim_owner_user` | `admin/session_analytics_timeseries.go:42-44` | E5：`Index Scan using idx_session_dim_owner_user`，`Index Cond: owner_user = …` | 0 | **保留**（**不是**缺失索引，见下） |
+| `idx_ih_instance` | `center/store_pgx.go:167-198` | E6：`Index Only Scan using idx_ih_instance` | 0 | **同 PK 同键但被计划器选中** ⇒ 见 §143.16.4.2 |
+| `idx_ih_timestamp` | `center/store_pgx.go:198` | E7：`Index Only Scan using idx_ih_timestamp` | 18 | **保留** |
+| `instance_heartbeats_pkey` | — | 未被任何计划选中 | 0 | 保留（PK，18 次扫描） |
+| `idx_node_probe_runs_cred_model` | `bg/probe_necessity.go:449`、`bg/probe_policy.go:126` | E9：`Index Scan using idx_node_probe_runs_cred_model` | 116,963 | **保留** |
+| `idx_node_probe_runs_started` | `db/probe_views_unified.go:362`、`bg/partition_manager.go:1155` | E8：选中 | 331 | **保留** |
+| `idx_analysis_events_unprocessed` | `domains/analysis/bus/pg_poll.go:46` | E11：选中 | 339,213 | **保留** |
+| `session_summaries_session_key_uidx` | `internal/summarystore/store.go:188`、`internal/sessionv2mirror/session_summary_dim.go:92`、`domains/sessionforensics/export.go:536`（`ON CONFLICT (session_key)`） | E13：`Index Only Scan using session_summaries_session_key_uidx` | 3,644,644 | **T1** |
+| `session_summaries_session_key_per_tenant` | 无 `ON CONFLICT (tenant_id, session_key)` | E14：**未选中** | 5 | **T2** |
+
+#### §143.16.4.1 ★★ 「0 扫描」的**四种成因**（只有第 4 种能当 DROP 依据）
+
+| # | 成因 | 本轮样本 | 能不能 DROP |
+|---|---|---|---|
+| ① | **表是只写表**，写入路径根本不走这个索引 | `instance_heartbeats`（整表几乎只被写，§143.9.6 D 类） | ❌ 删了要重写写入路径 |
+| ② | **功能默认关闭**，一旦打开就是它的路径 | `idx_route_incident_events_created_at` —— 留存 worker「**默认不启用**」（`retention.go:3`），但它**启动时探索引**、缺了就**跳过**（`retention.go:186`、测试 `TestEventRetentionSkipsWithoutTimeIndex`） | ❌ **删了 = 永久关掉留存** |
+| ③ | **被别的索引遮住**（查询存在，但计划器选了另一条） | `idx_node_probe_runs_provider`（E8 选了 `idx_node_probe_runs_started`） | ⚠ 可删，但**要确认删后计划不变**（E8 已证） |
+| ④ | **真没人用**（仓库无读方 + 生产计划不选） | `idx_route_incident_events_type_created`、`idx_node_probe_runs_api_model`、`idx_analysis_events_session` | ✅ **可 DROP** |
+
+⇒ ⇒ ★★ **本轮自己也踩了一次成因 ② 的探针陷阱**：
+第一次量 `idx_route_incident_events_created_at` 时，我用 `WHERE created_at < now()` 探 ⇒
+**Seq Scan** ⇒ 差点把它判成「没人用、可 DROP」。
+改用**留存 worker 的真实形态**（`created_at < now() - interval '30 days'`）⇒
+**Index Scan using idx_route_incident_events_created_at** ⇒ 判词反转。
+⇒ ★ **「对照组不是同一条件下造的」这条纪律，在索引这一侧同样成立** ——
+**探针的选择性必须和真实查询一致**。
+
+#### §143.16.4.2 ★ 两处「反常但已证实」的计划行为
+
+1. **`idx_session_dim_owner_user` 是 `(tenant_id, owner_user)`，首列未被约束，计划器却把 `owner_user` 当 Index Cond。**
+   - 本地 PG 17.11 **同形复现**：`(tenant_id, owner_user) WHERE owner_user IS NOT NULL` +
+     `WHERE owner_user = 'x'` ⇒ `Bitmap Index Scan … Index Cond: (owner_user = 'x')`。
+   - ⇒ **不是**生产特例，**不是**「缺一个 owner_user 单列索引」⇒ **不需要补索引**（§143.12.5 那条
+     「`idx_session_dim_tenant` 43.11%」的密度故事与这条无关）。
+2. **`idx_ih_instance` 与主键 `instance_heartbeats_pkey` 键集完全相同**（`indkey` 都是 `1 2`），
+   但 E6 的计划**选中了 `idx_ih_instance` 而不是主键**（`(instance_id, timestamp DESC)` vs 主键全 ASC）。
+   ⇒ ⇒ ★ **它不属于「纯冗余」**：删掉会让这个查询的计划从 `Index Only Scan using idx_ih_instance`
+   变成走主键的反向扫描 ⇒ **语义相同、计划不同** ⇒ 归入「需判断」档（32.4 MiB），不并入 T3。
+   ⚠ 反过来：主键 `instance_heartbeats_pkey`（25.6 MiB，0 扫描）**也没被任何计划选中** ——
+   但它是**约束**，且 §143.9.6 D 类已指出「真正的结论可能是这张表该不该存在/该不该留索引」⇒ 仍属属主项。
+
+### §143.16.5 ★★ 对 §143.9.6 / §143.12.6 的就地订正（原文保留）
+
+#### §143.16.5.1 §143.9.6 E 类表：「表的索引扫描数」是**错的量具**
+
+> ⚠⚠ **2026-10-21 订正（§143.16 实测）——本表的「表的索引扫描数」列是表级计数，**
+> **它分辨不出「哪条索引热」，而本表 18 条的备注恰恰是按这条列下的结论。**
+> ① **本列不是每索引的扫描数**：`pg_stat_all_tables.idx_scan` 是**该表所有索引的扫描数之和**。
+> ② 用**每索引**计数（`pg_stat_all_indexes.idx_scan`）重测后，18 条里**至少 6 条**的每索引计数是 **0**：
+> `idx_node_probe_runs_api_model`、`idx_analysis_events_session`、`idx_ih_instance`、
+> `idx_session_summaries_archival`、`idx_session_summaries_search`、`idx_session_dim_client`
+> ⇒ 它们的「表很热」备注**不构成「这条索引有人在用」的证据**。
+> ③ `idx_pmm_provider_bucket` 的「1,840,609」是**表级**；它自己全生命周期只扫 **1** 次（§143.15 已订正）。
+> ④ **但结论方向没变**：这些索引的每索引计数确实是 0 ⇒ 「没人选」成立；
+> 变的是**证据形式**——**不能用表的热度替索引背书**（本表最后一行原话仍然成立）。
+> ⑤ **本表仍不是处置清单**：18 条里多数**有读方**（§143.16.4），
+> 真正可 DROP 的只有 **4 条 / 201.4 MiB**（§143.16.3 的 T3）。
+
+#### §143.16.5.2 §143.12.6 的「71MB 逐字重复对」：是**一对**，但真实冗余是**三条 145 MiB**
+
+> ⚠⚠ **2026-10-21 订正（§143.16 实测）——本节的三处读数与一处推论需要修订，原文保留。**
+> ① **体积口径**：`session_summaries_pkey` 实测 **67.8 MiB**、`session_summaries_session_key_uidx` **67.2 MiB**
+> （本节写的 71.1MB 是 MB/MiB 与时点差异）⇒ **一对共 135 MiB**。
+> ② ★★★ **真正的冗余不止这一对**：`session_summaries` 上还有第三条
+> `session_summaries_session_key_per_tenant` = `UNIQUE (tenant_id, session_key)`，**77.6 MiB**，
+> **逻辑上被主键完全蕴含**（主键保证 session_key 唯一 ⇒ 二元组必然唯一）⇒
+> **三条合计 145 MiB 逻辑冗余**，不是 71MB。
+> ③ ★ **「pkey 是约束（删它要先改约束）」这半句弄反了**：
+> `session_summaries_session_key_uidx` 是**独立 `CREATE UNIQUE INDEX`**
+> （不在 `pg_constraint` 里，也不在 `sql/objects/` 正典目录里 ⇒ 是**运行时 bootstrap 产物**）
+> ⇒ 删它**只需 `DROP INDEX`**；真正要改**约束**口径的是
+> `session_summaries_session_key_per_tenant`（`UNIQUE (tenant_id, session_key)`，在 `sql/objects/constraints/` 正典里）。
+> ④ **迁移 560 的理由已失效**：它的理由是「跨租户共用 session_key 会互相覆盖」，
+> 但当前 schema 的主键**就是 `session_key` 本身** ⇒ 那种碰撞在主键下**不可能发生**
+> ⇒ 该约束防的是**已被主键防住**的东西（属主是否要改约束口径见 §143.16.3 的 T2）。
+> ⑤ **删除的顺序铁律**：bootstrap（`db/session_summaries_schema.go`）每次启动都会确保该索引存在
+> ⇒ **先发「不再创建」的代码，再 DROP**（§143.16.7 的 P1）。
+
+### §143.16.6 ★★ 外推边界（本节结论**不能**被读成比它更宽的东西）
+
+- ⚠ **「≈651 MiB」是推算，不是实测。** 公式来自 `pg17-index-bloat.sh`，
+  其**标定样本 n=2 且同表**（普通索引 23.1/24.18 MB；去重压缩索引 4.17/4.36 MB，比值 ≈0.96）
+  ⇒ **跨表属外推**。真实回收量**必须**在执行后按 §143.16.8 复核。
+- ⚠ **密度项是下界**（B→C 实测：VACUUM 前的密度虚高）⇒ 真实可回收**可能更大**；
+  但**死页项是硬下界**（死页物理占块，REINDEX 必回收）⇒ 第 12/8 行的收益**接近确定**。
+- ⚠ **版本**：本地沙箱 **PG 17.11**（Homebrew）/ 生产 **PG 17.10**（Debian）⇒ 机制一致（bottom-up deletion 自 PG 17 起），
+  幅度以生产实测为准。
+- ⚠ **REINDEX 后仍会退化**（§143.15 的机制没变）⇒ 一次性 REINDEX 是止血；**定期化**要调度位。
+- ⚠ **本节的 15 条全是普通表上的索引**；`session_turns` / `session_bodies` / `usage_ledger` /
+  `request_wal` / `session_turn_details` 的 **34 条叶分区索引 1.2GB** 属**父表声明**问题
+  （C 类），**本节的方法不适用**（改父表声明会同时改所有分区），**仍是单独一轮**。
+- ⚠ **本节没有覆盖**：`credential_model_call_history`、`armor_judgments`、
+  `session_title_states`（表 0 行）、`request_context_attrs`、`route_incidents`、
+  `session_aggregate_outbox`、`stats_reconciliation_diffs`、`session_project_attribution` 的其余索引
+  ⇒ §143.9.6 的 E 类表**没有**被本节整体复核，只复核了「最大 + 有读方争议」的这批。
+- ⚠ **`idx_scan` 是全生命周期**，`pg_stat_statements` 是 27 小时窗口 ⇒ 两个口径**不可混比**。
+- ⚠ **本节对生产的写入 = 0**：只有只读查询（`pgstatindex` / `pg_stat_*` / `EXPLAIN` / `pg_index` / `pg_proc`）
+  与**本地沙箱**的受控实验。**没有** REINDEX、**没有** DROP、**没有**改任何生产 SQL。
+
+### §143.16.7 ★★ 待属主拍板清单（按「收益 ÷ 风险」排序）
+
+| 优先级 | 动作 | 收益（推算） | 语义风险 | 决策要点 |
+|---|---|---|---|---|
+| **P0** | `REINDEX` 12 条（7 条本节 + 5 条 pmm） | **≈360~367 MiB** | **无** | 普通 `REINDEX`（锁表）还是 `CONCURRENTLY`？窗口？**是否定期化**（一次性会再退化） |
+| **P1** | `DROP INDEX session_summaries_session_key_uidx` | **67.2 MiB** | **无**（主键接管仲裁，已实测） | ★ **机制已就位**：迁移 **879**（pending deploy，守卫＝「存在别的可仲裁唯一索引时才删」）＋ bootstrap 创建守卫已条件化 ⇒ 随本轮代码与迁移一起上线即可；⚠ **生产 DROP 需属主显式授权**（迁移是 pending deploy 状态） |
+| **P2** | `DROP INDEX idx_route_incident_events_type_created` / `idx_node_probe_runs_api_model` / `idx_analysis_events_session` / `idx_node_probe_runs_provider` | **≈201.4 MiB** | 低（4 条读方证据已给全） | 走 **startup 迁移**（§126 立的规），**不裸 DROP**；每条各有独立的「删了会怎样」复核 |
+| **P3** | `ALTER TABLE session_summaries DROP CONSTRAINT session_summaries_session_key_per_tenant` | **77.6 MiB** | 中（**改约束口径**） | 属主是否认定「主键已蕴含、该约束不再作为语义依赖」；迁移 560 原文保留 |
+| **P4** | `idx_ih_instance`（32.4 MiB）处置 | 32.4 MiB | 中（**计划会变**） | 与主键同键但被计划器选中；`instance_heartbeats` 是否该整表留索引（§143.9.6 D 类） |
+| **P5** | `cron` 切 `--fix`（§143.12 的 1,485MB 下界） | 待本节清单校准 | — | ★ **本节的逐条清单已把「按体积排 DROP」纠正为「按 dead/density 结构分档」⇒ 1,485MB 这个下界需要重算** |
+
+⇒ ⇒ ★★ **一句话总结给属主**：
+> **这轮最值钱的一步不是删索引，是「先量出死页」** ——
+> `request_stats_error_drill_minute_pkey` 一条索引里 94.6% 是**已经从树上摘掉、但还占着磁盘**的死页，
+> **VACUUM 清不掉，只有 REINDEX 能清**；
+> 而 §143.9.6 的 E 类框架（按体积排 DROP）**结构性地看不见这个量**。
+
+### §143.16.8 复核方法（可原样重跑）
+
+```bash
+# 1) 逐条读数（生产，只读；输出重定向到本地文件）
+bash ~/.mavis-tools/lgwp-prod.sh /private/tmp/pmm_reclaim.sql 300 > /private/tmp/pmm_reclaim.out 2>&1
+bash ~/.mavis-tools/lgwp-prod.sh /private/tmp/pmm_full.sql     300 > /private/tmp/pmm_full.out     2>&1
+# 2) 读方证据（生产，只读）
+bash ~/.mavis-tools/lgwp-prod.sh /private/tmp/pmm_explain2.sql 180 > /private/tmp/pmm_explain2.out 2>&1
+# 3) 死页机制的本地受控实验（沙箱 PG 17.11）
+/opt/homebrew/opt/postgresql@17/bin/pg_ctl -D /private/tmp/pmm_exp/pg17 \
+  -l /private/tmp/pmm_exp/pg17.log -o "-p 54399 -k /private/tmp/pmm_exp -c listen_addresses=''" start
+/opt/homebrew/opt/postgresql@17/bin/psql -h /private/tmp/pmm_exp -p 54399 -U xutaohuang -d pmm_sbx \
+  -f /private/tmp/pmm_exp/semantics.sql
+# 4) ON CONFLICT 仲裁选择的本地实测
+/opt/homebrew/opt/postgresql@17/bin/psql -h /private/tmp/pmm_exp -p 54399 -U xutaohuang -d pmm_sbx \
+  -f /private/tmp/pmm_exp/skip.sql
+```
+
+★ 同族：[[先读量具再读产物]] · [[对照组不是同一条件下造的]] ·
+[[阴性结论要当缺陷一样复核]] · [[自己上一节的结论也要复核]] ·
+[[不可比的两个东西放在一起比大小]] · [[0 命中的第一嫌疑是量具坏了]]。

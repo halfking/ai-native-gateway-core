@@ -15,6 +15,13 @@
 > handoff 见 `docs/96小时内修订审计-20261007-1350.md` §八。
 > **2026-10-19 24h 审计轮**（本会话）：5 个本地未推送 dup 提交合并、bg/ 两族
 > 假阳性 ERROR 收口（推送 `151a0ba13`），见下方「2026-10-19 24h 审计轮」节。
+> **2026-10-20 211 蓝绿轮**（本会话）：Docker 部署引擎
+> `scripts/deploy-211-docker.sh` → **`scripts/deploy-seamless-docker.sh`**
+> （主机无关，薄外壳 `scripts/deploy-211.sh` 注入主机信息），并把 211 从
+> 单容器形态改成**蓝绿切换**（与 245/252 同款：候选槽 → 验收 → 切 nginx
+> upstream → 停旧槽；失败 abort）。**旧文件名已不存在**，本文件下方历史段落里
+> 的 `deploy-211-docker.sh` 是历史叙述，不是现行入口。
+> 复盘见 `docs/audit/2026-10-20-211-bluegreen-docker-engine.md`。
 
 ## 经验反馈闭环（vibe-coding Rule 66）
 
@@ -3061,3 +3068,13 @@ To codeup.aliyun.com:kaixuan/official-deploy/llm-gateway-go.git
 - **量具订正**：`pgstatindex` 的 `avg_leaf_density`＝叶页**字节填充率**、`leaf_fragmentation`＝叶页**物理乱序度**（≈分裂痕迹），**不是**空洞率 ⇒ 此前「93~99% ⇒ 98% 的页是空的」是误读。生产无 `pageinspect` ⇒ 去重因子（9.9 / 2.51）只能在沙箱直接数。
 - **读方证据**：`idx_pmm_model_bucket` 是**胖模型 scorer 的活读路径**（EXPLAIN 实测）⇒ **不可 DROP**；本仓**无任何读方**需要 `_minute` 的 `bucket DESC` 顺序（`scorer_performance.go` 那句读的是 `provider_metrics_hour`）；`idx_pmm_provider_bucket` **全生命周期只被扫 1 次** ⇒ DROP 候选（**订正**：上一轮「184 万扫描」是**表的**扫描总数，不是这条索引的）。
 - **产出**：runbook `2026-10-04-ursm-write-amplification-measurement.md` §143.15（+ §143.12 四处就地订正横幅）；门 `internal/quality/minute_aggregator_index_order_test.go` 3 条（禁顶层 ORDER BY／钉住「一次跑只处理 1 个分钟桶」／钉住订正横幅），变异 M1~M3 全红、还原 md5 逐字一致。提交 `3a41dedcc`。**生产零写入**（只读查询 + 一份数据导出）。待属主拍板：REINDEX 5 条索引 / DROP `idx_pmm_provider_bucket` / 是否定期化。
+
+## 2026-10-21 §143.16 索引处置清单：分档 T0~T3 + 死页机制 + `session_summaries` 冗余索引修正
+
+- **结论**：§143.9.6 的「E 类 = 按体积排 DROP 候选」这个**框架本身**被升级为「逐条实测读数 + 读方证据 + 分档」：**T0** `REINDEX`（无语义变更，7 条 ≈ **305 MiB** 推算下界，另加 pmm 5 条 55~62MB）／**T1** `DROP` 独立唯一索引（`session_summaries_session_key_uidx` **67.2 MiB**，主键接管仲裁、语义不变）／**T2** `DROP` 逻辑蕴含的约束（`UNIQUE (tenant_id, session_key)` **77.6 MiB**，需属主改口径）／**T3** `DROP` 无读方索引（4 条 ≈ **201.4 MiB**）。⚠ 全部是**推算**，实测须执行后复核。
+- **★ 最大的量是「死页」，而它在前几轮一直没被量过**：`pgstatindex` 的 `deleted_pages` **物理仍在索引里**（恒等式 `blocks = 1 + internal + leaf + empty + deleted` 在 10 条读数上**逐条成立** ⇒ 与 `leaf` **不相交** ⇒ 公式无重复计数）。最刺眼的一条：`request_stats_error_drill_minute_pkey` **61.2 MiB 里 7413/7831 块（94.6%）是死页**，活的部分只有 ≈3.2 MiB。机制＝PG 17 bottom-up deletion ⇒ **VACUUM 回收不了**（本地 PG 17.11 七阶段对照：连续两次 VACUUM 后 `deleted_pages` 与 `index_size` 一字未变；生产侧该表已 autovacuum **17 次**、死页至今仍在）⇒ **只有 REINDEX 能清**。
+- **量具订正**：① `pgstatindex` 的真实列名是 `tree_level`（**没有** `tree_height`）；② **密度是 `VACUUM` 之后的口径**（删一半未 VACUUM 时密度仍 89.96，VACUUM 后掉到 45.17）⇒ 生产密度项是**下界**（`request_state_transitions` 上次 autovacuum 后又攒 49,634 个死元组 ⇒ 约 1.6% 虚高）；③ 「表级索引扫描数」**分辨不出哪条索引热** ⇒ §143.9.6 那列是**错的量具**（已加就地订正横幅，原文保留）。
+- **读方证据（14 条生产 EXPLAIN + 仓库 grep）**：「0 扫描」有**四种**成因——表只写 / **功能默认关闭**（留存 worker「默认不启用」但启动时探索引、缺了就跳过 ⇒ **删了＝永久关掉留存**）/ 被别的索引遮住 / 真没人用 ⇒ **只有第四种可 DROP**。★ 本轮自己也踩了探针选择性坑：用 `created_at < now()` 探留存索引得 Seq Scan，换成真实 cutoff（30 天前）才见 Index Scan ⇒ 判词反转。
+- **代码侧修正（生产零写入）**：`session_summaries` 的裸 `UNIQUE (session_key)` 与主键**键集逐字重复**（`indkey` 都是 1）⇒ 每次写多维护一份 ~67MiB 的 B-tree。修法**不是**无条件删（memora 最小 shape 下表无主键时它就是**唯一**的 `ON CONFLICT (session_key)` 仲裁索引）⇒ 改成**条件性**：判据「`session_key` 上是否已有可仲裁的非部分唯一索引」抽成**一个常量、两处共用**（bootstrap 的 CREATE 守卫 + canonical 短路的缺失判定）。真库六形态实测（主键/裸 uidx/部分/两列/无/两者并存）全部符合预期；本地 PG 17.11 实测 `Conflict Arbiter Indexes: arb_t_pkey, arb_t_uidx` → 只剩 PK 时 `arb_t_pkey` ⇒ **删裸的那条，冲突语义不变**。
+- **产出**：runbook `…2026-10-04-ursm-write-amplification-measurement.md` **§143.16**（9 小节）+ §143.9.6 / §143.12.6 **两处就地订正横幅**（后者订正「纯重复 71MB」实为**三条 145 MiB**，且原文「pkey 是约束、删它要先改约束」**弄反了**——uidx 是独立唯一索引，要改约束的是 `UNIQUE (tenant_id, session_key)`）；门 `scripts/ursmcheck/index_dead_page_reclaim_test.go` 3 条 + `db/session_summaries_arbiter_test.go` 4 条，变异 **M1~M5（代码）/ M1~M4（文档）全红**、还原后 md5 逐字一致；LESSONS.md 3 条。
+- **待属主拍板**：P0 `REINDEX` 12 条（≈360~367 MiB，普通还是 `CONCURRENTLY`？窗口？**是否定期化**）／P1 `DROP` 裸 uidx（**必须先发「bootstrap 不再创建」的代码**，否则启动即建回）／P2 `DROP` 4 条无读方索引（201.4 MiB，走 startup 迁移不裸 DROP）／P3 `DROP` per_tenant 约束（77.6 MiB，改口径）／P4 `idx_ih_instance`（32.4 MiB，与主键同键但**被计划器选中** ⇒ 删了会改计划）／P5 cron 切 `--fix` 的 1,485MB 下界需按本节清单**重算**。

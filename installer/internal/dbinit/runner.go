@@ -1122,6 +1122,13 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			// 形状照抄 hot 侧那 5 条已验证索引；建在父表上让未来月分区自动继承
 			// （ensure_supplier_errors_partition 用 CREATE TABLE … PARTITION OF）。
 			"878_supplier_errors_partition_indexes.sql",
+			// 879（2026-10-21）：删掉 session_summaries 上与**主键键集逐字重复**的
+			// 裸唯一索引 session_summaries_session_key_uidx(UNIQUE(session_key))。
+			// 生产两份各 ~67MiB，而该表持续写入 ⇒ 每次写多维护一份 B-tree；
+			// 且点查计划器**优先选裸的那条**（它不是没人用的那一份）。
+			// 守卫：只有当**还存在别的**可仲裁唯一索引时才删 —— 表没有主键时
+			// 裸 uidx 是 ON CONFLICT (session_key) 唯一的仲裁器，删了写入直接失败。
+			"879_drop_session_summaries_redundant_session_key_uidx.sql",
 			// 881（2026-10-20）：删掉 injection_attack_vectors 上那条**只写不读**的
 			// ivfflat 索引 —— 全仓 `<=>` 的唯一读方打的是 task_type_centroids
 			// （另一张表，索引是活的），这张表只有 INSERT 与一个不碰 embedding

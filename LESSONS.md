@@ -224,6 +224,13 @@
   （原文曾把"走 json_schema"写成"真正的解法"，已按实测订正）。
 - 状态：已修待观察
 
+### 2026-10-20 — 客户端看到明文 ≠ 泄漏：脱敏验收必须看「上游实收」（Seen: 1/3）
+- 任务 / 缺陷：154（`llm.kxpms.cn`）脱敏与恢复多轮验收；同轮查实并修掉 r1036（地址规则把「标签+号+数字」整段吞成单个 `custom` 占位符，类型从 phone 退成 custom）。
+- 根因（验收方法）：只看**客户端响应**会得出完全相反的结论——模型回复里出现明文手机号，看起来像泄漏。真实链路是「输入替换占位符 → 上游收到占位符 → 上游回占位符 → 网关还原 → 客户端拿原文」，客户端看到明文**正是还原链在工作**的证据。判据必须落在上游侧：raw 落盘的 `direction=upstream_request`（上游实收）+ Redis 脱敏映射表 `session:<tenantHash>:<sid>:sanitize`（占位符确实产生）。这是 r1014「允许侧假绿」的镜像形态。
+- 防复发检查：脱敏验收三路证据缺一不可（上游实收 / 上游实回 / 客户端可见）；`input_sensitive` 字段是 MiniMax 上游自带的，**与网关脱敏无关**，拿它当判据会误判「没脱敏」；地址类判据必须用 `NewPatternDetectorFromFile(configs/sensitive_patterns.yaml)`——内置 fallback 无地址规则，用它写判据恒绿（r1010 教训，本轮再次命中）。
+- 证据：`docs/audit/2026-10-20-154-sanitize-restore-multi-round-acceptance.md`；判据 `security/sanitize/r1036_label_suffix_address_test.go`；修复 `security/sanitize/detector.go` 的 `dropLabelWrappedAddressFragments`。
+- 顺带查实（非本轮缺陷，别当脱敏问题查）：gpt-6-luna 在 154 无候选 = 凭据 3 `quota_state=permanently_exhausted` → `v_routable_credential_models.is_routable=false` → 候选 SQL 硬排除 `AND v.is_routable = TRUE`；内网 IP 明文 = `server_ip` 已于 `ce5e35ab3` 移出 `ScopeRedact` 的既定设计；`_request_logs_hot` 0 行 = `storage.request_logs_write_enabled=false` 的 S4 停写门控。
+- 状态：修复已落地本地，**未部署 154**。
 
 ### 2026-10-17 — 顶栏 X 不关 AppSheet / Focus；/me 先开后跳会被导航清掉
 - 根因：`HyperApp.overlayActive` 只认 drawer/account，忽略 `Hyper.topOverlay`；`closeActiveOverlay` 未走 `dismissOverlay`。`/me` 若先开 Sheet 再 `replace('/')`，runtime 导航 silent-close 全 overlay。
@@ -266,7 +273,7 @@
 ## 2026-10-17 — 211 部署基础镜像必须钉 registry-211，readyz 无 mode 字段（Seen: 1/3）
 - 任务 / 缺陷：优化 deploy-211 走 registry-211.itestu.cn 基础镜像并部署验证。
 - 根因：引擎默认曾回落 `golang:1.27.1-alpine`/`docker.io`；211 直连 docker.io 不通。runtime `alpine:3.22` 原先只在 `/opt/kaixuan/base-images` 离线包，registry 仅有 `lang-base/alpine:3.18-i386`。readyz 实为 `status+database.connected+redis.connected`，没有 `mode` 字段——按 mode=full/lite 断言会得到 unknown 假象。
-- 防复发检查：`deploy-211.sh` export + 引擎默认钉 `lang-base/kx-base-golang:1.27-alpine-amd64` 与 `lang-base/alpine:3.22-amd64`；构建前 `d211_ensure_base_images`（pull→离线 retag）；契约门钉默认字符串与 ensure；就绪验 DB/Redis connected 并拒绝 mode=lite 字面。
+- 防复发检查：`deploy-211.sh` export + 引擎默认钉 `lang-base/kx-base-golang:1.27-alpine-amd64` 与 `lang-base/alpine:3.22-amd64`；构建前 `dd_ensure_base_images`（pull→离线 retag，2026-10-20 引擎泛化后由 `d211_` 前缀改为 `dd_`）；契约门钉默认字符串与 ensure；就绪验 DB/Redis connected 并拒绝 mode=lite 字面。
 - 证据：契约门 83/0；实部署 build FROM registry-211 两基础镜像；应用镜像推送 `app-images/llm-gateway-go:211-17f66c69-dirty`；readyz DB/Redis connected、healthz ready、SPA text/html。数据面静态/admin key 仍 401（库血统 SECRET 对齐属既有项，非本轮镜像路径回归）。
 - 状态：镜像路径已验证；鉴权对齐待观察
 
@@ -3044,3 +3051,63 @@ PostgreSQL 解析调用时，**带默认值的那个也能接 3 参调用**，
 - 真因：`"$out）"` 里 `$out` 紧跟中文全角括号，**bash 3.2 会把多字节首字节并进变量名** ⇒ 变量名变成 `out<0xEF...>` ⇒ unbound variable。本仓已有同类门（`deploy_211_contract_test.sh` 扫 `$var` 紧跟非 ASCII），但那次只覆盖被测脚本，没覆盖**判据脚本自己**。
 - 防复发检查：① 变异验证的读数必须**区分「真实断言红」与「量具自己炸」**——先看输出里有没有断言行、有没有 `行 N:` 这类 shell 报错；只有前者才算「被抓住」；② 判据脚本自身也要过 `$var 紧跟非 ASCII` 扫描；③ 顺带得到一条通用式：**「红」的读数与「不红」的读数一样需要先验量具**——这是「0 命中的第一嫌疑是量具坏了」的镜像形态。
 - 证据：M5/M6 首次判红时输出为 `行 170: out?: 未绑定的变量` / `行 256: anchor?: 未绑定的变量`，修正判据脚本（`${out}` / `${anchor}`）后复跑，两条变异均转为**真实断言红**（M5 三条、M6 一条）。
+
+## 2026-10-21 — 「0 扫描」的四种成因，只有一种能当删索引的依据（Seen: 1/3 个不同工作日）
+- 根因：把「这条索引 0 次扫描」直接读成「没人用 ⇒ 可 DROP」。实测同一张库里 0 扫描有**四种**成因：① **表是只写表**（写入路径根本不走它）；② **功能默认关闭**（`route_incident_events` 的留存 worker「默认不启用」，但它**启动时探索引**、缺了就跳过 ⇒ 删了 = 永久关掉留存）；③ **被别的索引遮住**（查询存在但计划器选了另一条）；④ **真没人用**（仓库无读方 + 生产计划不选）。只有第 ④ 种能进 DROP 候选。
+- 防复发检查：① 判「可删」前先给每条候选补**仓库读方 grep + 生产 EXPLAIN** 两份证据，并明确写出它属于哪一类成因；② **feature-gated 的路径要单独标出**（grep 该功能的默认开关与「缺索引就跳过」的分支）；③ ★ **探针的选择性必须与真实查询一致** —— 本轮自己用 `WHERE created_at < now()` 探留存索引，**无选择性 ⇒ Seq Scan** ⇒ 差点判成「没人用、可 DROP」；换成真实 cutoff（`now() - interval '30 days'`）⇒ 计划走该索引 ⇒ 判词反转。⇒ 「对照组不是同一条件下造的」这条纪律在索引侧同样成立。
+- 实际证据/溯源：runbook §143.16.4（14 条生产 EXPLAIN + 仓库读方定位）；§143.9.6 E 类表的就地订正横幅（那一列是**表级**计数，18 条里至少 6 条的每索引计数其实是 0）。
+
+## 2026-10-21 — 量具的「分项和」能证明它没把同一块算两遍（Seen: 1/3 个不同工作日）
+- 根因：回收量公式 `dead + leaf×(1−min(density,90)/90)` 里，「死页」与「密度缺口」若指向同一批页，公式就**重复计数**、把收益报大一倍 —— 而这在文本上完全看不出来。破局点是**把量具的分项和与总量对齐**：`blocks = 1(meta) + internal_pages + leaf_pages + empty_pages + deleted_pages` 在 10 条读数上**逐条精确成立** ⇒ 死页与叶页**不相交** ⇒ 公式结构上无重复计数。同一条恒等式还顺带钉死了 `deleted_pages` 的语义：**它物理仍在索引里**（不是「已从索引删除」的会计数）⇒ 才是可回收项。
+- 防复发检查：① 用任何**多项相加**的估算公式前，先找一把能给出**分项和 = 总量**恒等式的量具，并对多条读数逐条验证；② 恒等式不成立时，**先怀疑公式重复计数**，再去调参数；③ ★ 配套结论：**`VACUUM` 回收不了 btree 死页**（本地 PG 17.11 七阶段对照：连续两次 VACUUM 后 `deleted_pages` 与 `index_size` 一字未变；生产侧该表已 autovacuum 17 次、死页至今仍在）⇒ 只有 **REINDEX** 能清 ⇒ 「跑个 VACUUM 就行」是错的处置方向。
+- 实际证据/溯源：runbook §143.16.1（恒等式表 + A~G 七阶段受控实验 + 生产 autovacuum 互证）；最刺眼的一条：`request_stats_error_drill_minute_pkey` 61.2MiB 里 **7413/7831 块（94.6%）是死页**，活的部分只有 ≈3.2MiB。
+
+## 2026-10-21 — 删「重复的唯一索引」前，先问「它是不是唯一的仲裁索引」（Seen: 1/3 个不同工作日）
+- 根因：`ON CONFLICT (col)` 的仲裁索引必须是**非部分唯一索引**（主键本身也算）。当主键 `PRIMARY KEY (col)` 与一条裸 `UNIQUE (col)` 并存时，两者的 `pg_index.indkey` 相同 ⇒ **键集逐字重复** ⇒ 裸的那条是纯冗余（生产实测两份各 ~67MiB，且热表每次写都多维护一份 B-tree）；但若**表没有主键**（本仓的 memora 最小 shape 场景），那条裸索引就是**唯一**的仲裁索引 ⇒ 无条件删会让 `ON CONFLICT` 直接失败。⇒ 「冗余」不是静态属性，**取决于同一张表上还有没有别的仲裁索引**。
+- 防复发检查：① 判一条唯一索引「可删」前，先查 `pg_index` 里**同一列上还有没有别的非部分唯一索引**（`indisunique AND indpred IS NULL AND indnkeyatts=1`）；② 判据**抽成一个常量、两处共用**（bootstrap 的创建守卫 + canonical 短路的缺失判定）⇒ 结构上杜绝漂移；③ 仲裁语义用**真库实测**背书：本地 PG 17.11 `Conflict Arbiter Indexes: arb_t_pkey, arb_t_uidx` → 只剩 PK 时 `arb_t_pkey` ⇒ 删裸的那条，冲突语义不变。
+- 实际证据/溯源：runbook §143.16.3（T1/T2 分档）与 §143.16.5.2（对「71MB 逐字重复对」的订正：真实冗余是**三条 145MiB**，且原文「pkey 是约束、删它要先改约束」**弄反了**——uidx 是独立唯一索引，要改约束的是 `UNIQUE (tenant_id, session_key)`）；真库判据探针六形态（主键/裸 uidx/部分/两列/无/两者并存）全部符合预期；门 `db/session_summaries_arbiter_test.go` 4 条，变异 M1~M5 全红。
+
+## 2026-10-21 — 门钉源码**字面形态**，跑一次 gofmt 就假红（Seen: 1/3 个不同工作日）
+- 场景：给 `session_summaries` 的条件化索引写判据，门断言「bootstrap 里的引用形态是
+  ``IF NOT EXISTS (` + 常量 + `) THEN``」。全绿、变异 M1~M5 全红、还原 md5 一致 —— 一切正常。
+  随后例行跑 `gofmt -w`：**两条门当场变红**，而代码语义一点没变。
+- 真因：gofmt 会把 ` + 常量 + ` 压成 `+常量+`（它是更大表达式的一部分）⇒
+  门钉的是**排版**不是**语义** ⇒ 任何一次格式化都会把门变成假红。
+  ⇒ 这与「旧判据钉死缺陷」同族但方向相反：那次是**门钉住了错的**，
+  这次是**门钉住了会变的** —— 两者都让门测不到东西。
+- 防复发检查：① 断言**源码形态**的门，一律用**正则**（允许空白/引号形态变化）而不是字面串；
+  ② 判据里出现 Go 标识符的**引用**时，用「标识符 + 上下文形状」而不是「整串文本」；
+  ③ ★ **变异脚本的锚点必须与门同款**（同一次改动里一起改）——
+  门改成对空白不敏感而变异脚本还用字面锚点 ⇒ python assert 炸掉，
+  更糟的是「静默什么都没改」被误读成「门抓不住这个缺陷」；
+  ④ 提交前把 `gofmt -w` 纳入流程（在变异验证**之后**），并把门**再跑一遍**。
+- 实际证据/溯源：`db/session_summaries_arbiter_test.go` 与
+  `scripts/ursmcheck/migration_879_redundant_uidx_drop_test.go` 各改一处断言
+  （字面串 → 正则），改完对**最终版门**重跑变异 M1~M5 / M1~M4 全红、还原 md5 逐字一致。
+## 2026-10-20 — 「先改配置再校验配置」失败时必须还原文件：否则留下潜伏半切换态（Seen: 1/3）
+- 场景：211 蓝绿切流（改 nginx upstream 主 server 行 → `nginx -t` → reload）。判据门场景⑤抓到：`nginx -t` 失败时**磁盘配置已被改写**（已指向候选端口 8782），而 nginx 跑的仍是旧配置（8781）。
+- 根因：实现是「改文件 → `nginx -t` → 失败就只 warn 不 reload」。失败瞬间**流量没变**（暂不致命），但磁盘与运行态已分叉 ⇒ 此后**任何一次** nginx reload（人工的、systemd 的、crontab 的）都会把这份**未经验证**的配置加载进去 ⇒ 半切换态是**潜伏**的，不是当场可见的。
+- 防复发检查：① 任何「先写配置、再校验配置」的动作，校验失败时必须把文件**还原**（本轮改成「先备份改前内容 → 改文件 → `nginx -t` → 失败则 `cp` 还原」）；② 备份必须**每次**都写「改前内容」——旧实现是「只在备份不存在时写」⇒ 还原会拿到**更早的版本**（另一层潜伏缺陷）；③ 判据要有行为层：真 nginx conf + 替身 nginx，让 `-t` 失败并断言「upstream 未被改」+「没有 reload」。
+- 证据：`tests/deploy_211_teardown_order_test.sh` 场景⑤（真 conf 文件 + `nginx` 替身，替身复刻「`-t` 失败就不许 reload」的语义）；变异「nginx -t 失败不还原配置」2 条断言红、「切流跳过 nginx -t」4 条断言红。
+- 溯源：本轮 211 蓝绿改造；[复盘](docs/audit/2026-10-20-211-bluegreen-docker-engine.md)。
+
+## 2026-10-20 — 泛化重构后旧判据变红：先分「判据过时」与「真缺陷」，再动手（Seen: 1/3）
+- 场景：把 `deploy-211-docker.sh` 泛化成主机无关的 `deploy-seamless-docker.sh`（`D211_`→`DD_`，主机名进薄外壳）后，契约门 4 条红。
+- 真因分类（**这才是关键**）：① 「`--via` 转发 `DD_GO_BASE_IMAGE`」红——旧判据 grep **字面量** `DD_GO_BASE_IMAGE='`，泛化后转发改成「显式清单 + 通用展开」⇒ 字面量消失但**转发没坏** ⇒ 改判据；② 「引擎默认基础镜像仓钉 registry-211」红——泛化后引擎**本就不该**钉主机名 ⇒ 改判据成「引擎按 target 拼」+「引擎不含写死主机名」+「薄外壳钉 211 的」；③ 「version.json 改写」红——**这条是真缺陷**：槽位隔离后改写仍指向**未被挂载**的平铺路径，且 python 只传 2 个参数却读 `sys.argv[3]` ⇒ IndexError 被 `|| warn` 吞掉 ⇒ 失败形态是「**静默不改写**」，线上 `/version` 继续显示别人的版本戳。
+- 防复发检查：① 泛化重构后逐条判据红时，先问「这条判据钉的是**契约**还是**实现形态**」——钉契约而实现形态已变 ⇒ 改判据并**同时**守住契约的新形态（例：「转发清单里有该变量」+「通用展开那行在」两件事都要判，只判一件会漏「清单里有但没展开」/「清单里没有」）；② 判据红**不总是**判据的错：先查「新形态下这个契约还成立吗」——不成立就是真缺陷。
+- 证据：契约门 118/0（含新增「引擎不含写死主机名」「改写目标是本槽副本」等反向断言）；顺序门 48/0。
+- 溯源：本轮 211 蓝绿改造；[复盘](docs/audit/2026-10-20-211-bluegreen-docker-engine.md)。
+
+## 2026-10-20 — 变异 harness 自身的两种「假通过」：变换没执行、类型用错（Seen: 1/3）
+- 现象一：10 条变异**全部**报「没打中（副本与原件逐字节相同）」。真因：harness 把 transform 当**普通参数**传进 `python3 -`（`sys.argv` 里躺着代码但**没人 exec 它**）⇒ 副本压根没变。
+- 现象二：改成 `python3 -c` 后仍有 3 条 `anchor-miss`。真因：transform 里用 `.read()` 拿到的是**字符串**，而代码按**行列表**用（`enumerate(str)` 迭代出来的是**字符**，永远匹配不上多字符锚点）。
+- 防复发检查：① 变异 harness 必须有「**变异确实生效**」的自证（`cmp` 副本 vs 原件必须不等；不等才允许继续）；② harness 自身报错（anchor-miss / 语法错 / 退出码非零）必须与「被测代码有问题」**分开归类**——这正是「0 命中的第一嫌疑是量具坏了」在写 harness 阶段的形态，不是事后才该想起；③ 判据读数只认「真断言红」（输出里有断言行），脚本提前退出不算「被抓住」。
+- 证据：本轮 harness 两版：首版 0/10 命中、第二版 6/10（4 条 harness 自身故障）、第三版 10/10 命中；harness 与变异规格在 `/tmp/mut_verify_211_bluegreen.sh` + `/tmp/mut_specs_211.json`。
+- 溯源：本轮 211 蓝绿判据门。
+
+## 2026-10-20 — 「通用引擎 + 薄外壳」泛化：主机名一个字都不能留在引擎里（Seen: 1/3）
+- 场景：把 211 专属的 Docker 部署脚本改造成可复用于多台 Docker 主机的通用引擎（`deploy-seamless-docker.sh`），主机信息全部由薄外壳（`deploy-211.sh`）用环境变量注入。
+- 根因/教训：泛化不是「把主机名换成变量」就完了——**默认值、备份文件名、注释里的主机名**都会在下一台主机上变成错的：① 引擎默认 `DD_BASE_REGISTRY=registry-211.itestu.cn` ⇒ 新主机会去拉 211 的仓（已改 `registry-${DD_TARGET}.itestu.cn`）；② 备份文件后缀 `.bak-d211-realip`（已改 `.bak-dd-realip`）；③ 引擎里的 `gw211_` 静态 key 前缀必须按 target 拼（否则新主机的 key 与 211 同前缀）。
+- 防复发检查：① 泛化后 `grep -n "<主机名>" 引擎` 只允许剩**历史说明性注释**，任何会影响行为的字面量都要清；② 判据加**反向断言**：「引擎不含写死的主机名」（`registry-211` 这类字面量不得出现）+「引擎默认按 target 拼」；③ 复制引擎 = 两份语义各自演化必然漂 ⇒ 新增主机只允许新增**薄外壳**；④ 薄外壳里 `DD_STATE_DIR` 这类**存密钥/状态**的路径不可改（换路径 = 换 SECRET_KEY = 库内 key 全失效）。
+- 证据：契约门新增「引擎默认基础镜像仓按 target 拼」「引擎不含写死的主机专属仓名」两条；211 薄外壳 `scripts/deploy-211.sh` 只含主机信息 + 家族骨架。
+- 溯源：本轮 211 蓝绿改造；[复盘](docs/audit/2026-10-20-211-bluegreen-docker-engine.md)。
