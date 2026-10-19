@@ -278,3 +278,28 @@ F-7（Prometheus 打点 + 1min 进程内缓存 + singleflight）被 main 的 slo
   - `src/i18n/hardcoded_cjk.baseline.test.ts`：HEAD **5757** > baseline **5529**
     （本轮 5755 ⇒ 本轮反而降了 2；红门是 2026-10-05 之后别的会话累积的）
   - `src/config/navCoverage.test.ts`：6 条孤儿路由，本轮**未改** `web/src/router.ts`
+
+## 十、⑦ 9 条陈旧分支已删（留档 SHA 补登）
+
+删前逐条核实了条件（上一轮留的三个前提都已满足）：
+
+- **无 worktree 占用**：`git worktree list` 显示只有 `main` 与
+  `codex/sse-traffic-audit-20261019` 被 worktree 持有；
+- **别的会话不在本 clone**：`mavis session list` 里在跑的
+  `syncfield/llm-gateway-go-2` / `-4` 等是**独立 checkout**
+  （`git worktree list` 里不出现 ⇒ 不是本仓的 worktree），
+  删本 clone 的分支不影响它们；
+- **内容已在 main**（上一轮逐文件裁决结论，见 2026-10-19 文档 §〇）。
+
+⚠ **上一轮的留档 SHA 表漏了两条**（`fix/w5-ml-ci-runbook` 与
+`fix/w6-monitor-docs` 没登记）⇒ 补登在这里，否则删分支就等于丢工作：
+
+| 分支 | 留档 SHA |
+|---|---|
+| `fix/w5-ml-ci-runbook` | `3147f5ef4f12827227ee8c9924b0c4e94aee59c8` |
+| `fix/w6-monitor-docs` | `601bd36d1ecc66b6b1b3c8883ec8eb91cd57a7d9` |
+| `feat/app-icon-standard-recovered`（本轮工作分支，已全量并入 main） | `5eb2427507` |
+
+（其余 7 条的留档 SHA 已在 `2026-10-19-24h-audit-branch-adjudication.md` §八。）
+
+删后按 SHA 逐条 `git cat-file -e` 复核可取回。
