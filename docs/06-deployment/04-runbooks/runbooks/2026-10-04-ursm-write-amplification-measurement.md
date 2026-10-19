@@ -26944,3 +26944,103 @@ COALESCE(provider_id, (SELECT cr.provider_id FROM credentials cr
 ⚠ 全程**只读**：两条聚合查询（`GROUP BY` / 过滤计数，7 天窗口，`SET statement_timeout='300s'`）
 + 仓内 `grep`。**未改代码、未改视图、未部署、未做任何生产写。**
 
+---
+
+## §112 回答 §111 的判别动作：**不是转换处丢的，是源头就是 nil**（2026-10-19）
+
+§111 留下一个二选一的判别动作：
+「找到业务失败分支的落库语句，确认是**根本没传** `credential_id`，
+还是**传了但在转换处丢了**。」本节回答它。
+
+### 一、落库语句直接绑定该字段，中间没有转换层
+
+`domains/hooks/observability/telemetry/client.go` 的 INSERT 参数序列里：
+
+```go
+entry.RequestID,
+entry.IdempotencyKey,
+nonEmpty(entry.TenantID, "default"),
+entry.APIKeyID,
+entry.Model,
+...
+entry.CredentialID,     // ← 直接绑定，没有中间转换
+entry.ProviderID,
+```
+
+⇒ **`RequestLogEntry.CredentialID` 是 `*int`，`nil` 会原样落成 SQL NULL**，
+不存在"类型转换把它弄丢了"的环节。
+
+### 二、而且这条路径**本来就有门禁在钉**
+
+`insert_placeholder_alignment_test.go` 逐列核对「`_request_logs` 列 ↔ 绑定的 Go 标识符」：
+
+```go
+"request_id": "RequestID", "tenant_id": "TenantID", ...
+"credential_id": "CredentialID", "provider_id": "ProviderID", ...
+```
+
+⇒ ⇒ **列与参数的对应关系是被判据钉着的**，
+所以"参数错位导致 `credential_id` 写成了别人的值"这一类形态**已被排除**。
+
+### 三、⇒ 结构上的成因：`nil` 是一个**合法可表达状态**
+
+```go
+CredentialID *int `json:"credential_id,omitempty"`
+```
+
+⇒ **没有任何不变量要求它非空**：没有 `NOT NULL`、没有构造函数保证、
+没有 `buildEntry` 层面的必填校验（§111 找过，`buildEntry` 在本仓并不存在，
+注释提到的那个名字已随重构消失）。
+
+⇒ ⇒ ★ 通用式：⭐⭐⭐⭐ **"某字段大面积为空"的成因往往是「它在类型上允许为空、
+且没有任何东西保证它非空」**。这类缺陷不会报错、不会告警、
+测试也不会失败——因为**测试里构造的 entry 每一条都填了**。
+⇒ ⇒ 判别动作：先问「这个字段有没有非空不变量」，再问「谁没赋值」；
+**前者缺失本身就是缺陷**，后者只是症状。
+
+### 四、诚实的边界
+
+| | |
+|---|---|
+| ❌ | **没找到构造生产 `RequestLogEntry` 的那处赋值**。仓库里 `&RequestLogEntry{` 的命中几乎全在测试夹具 |
+| ❌ | **没能确定「是哪个写入路径在失败时留 nil」** |
+| ⚠ | 一个**未验证的线索**：`cmd/gateway/lite_telemetry_sink.go:113` 是「lite」落库路径，
+其测试明确写着「`in_progress` 占位（无 body、非终态）→ 只写 `_request_logs` 行」。
+**若存在"先写占位行、后写终态行"两段式，占位行天然还没有凭据。**
+这条与 §111 观察到的 `request_status='completed'` 且 `origin_stage` 为空的 2,182 行方向一致，
+**但本轮没有验证两段式是否真的发生**（需要看同一 `request_id` 是否有占位/终态两行）。 |
+
+⇒ 判别动作（下轮可做，**只读**）：
+```sql
+SELECT request_id, count(*) AS n,
+       count(DISTINCT request_status) AS statuses
+FROM request_logs_2026_10
+WHERE ts >= now() - interval '7 days'
+  AND credential_id IS NULL
+GROUP BY 1 HAVING count(*) > 1 LIMIT 20;
+```
+⇒ 若存在同一 `request_id` 多行且状态不同 ⇒ **两段式写入成立**，
+占位行是根因；若不存在 ⇒ 是单次写入时就没填。
+
+### 五、本节的净进展（把 §111 的二选一收掉一个）
+
+```
+§111 的问题：根本没传  vs  传了但转换处丢了
+                     ↓
+§112 的答案：转换处没丢（有门禁钉着列↔参数对齐），DB 里的 NULL
+            就是 entry 里那个 nil
+            ⇒ 归属落在「构造 entry 时没赋值」
+            ⇒ 而 nil 之所以合法，是因为类型允许 + 无非空不变量
+```
+
+⇒ ⇒ ★ **"二选一"式的判别动作，本质是在找「丢失发生在哪一层」。
+本节用一道已有的门禁（列↔参数对齐测试）就砍掉了一半可能性** ——
+⇒ 判别动作：**先看现有判据已经排除了什么**，再决定要不要自己写探针。
+★ 同族：[[0 命中的第一嫌疑永远是量具坏了]] 的镜像用法 ——
+**这里反过来：已有判据是免费的排除器**。
+
+### 六、动作边界
+
+⚠ 全程**只读**：仓内 `grep` 与源码阅读。**未改任何代码、未改视图、
+未部署、未做任何生产写。**
+
