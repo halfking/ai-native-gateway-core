@@ -66,14 +66,30 @@
 
 #### 2.2.1 数据来源
 1. **真实使用记录**（默认显示）
-   - 来源：`request_logs` 表，`is_self_test = false`
+   - 来源：视图 `request_logs_with_current_month`（**不是**物理表 `request_logs`），
+     按后端共用的探针排除谓词过滤（见 2.2.2）
    - 含义：真实用户请求的路由结果和错误
    - 按 `(credential_id, raw_model_name, time_bucket)` 聚合
 
 2. **自检测试记录**（可选显示）
-   - 来源：`model_probe_runs` 表或 `request_logs` 中 `is_self_test = true`
+   - 来源：`model_probe_runs` 表；或 `request_logs` 系视图里
+     `task_type='probe_triggered'` / `quality_flags` 含 `probe` /
+     `origin_actor` 属于探针 worker 的那些行
    - 含义：系统自动探测的健康检查结果
    - 独立维度展示，避免与真实流量混淆
+
+> ⚠ **落地订正（2026-10-20）**：`request_logs` **没有 `is_self_test` 列** ——
+> 那是早期设计稿的说法。真实判据是三臂谓词，且**三个臂都要带 COALESCE**
+> （`bg.ProbeTrafficExclusionPredicateView`，`bg/probe_policy.go:188`）：
+> ```sql
+> NOT COALESCE('probe' = ANY(quality_flags), FALSE)
+> AND COALESCE(task_type, '') <> 'probe_triggered'
+> AND COALESCE(origin_actor, '') NOT IN (
+>       'node-probe-worker', 'active-probe-worker',
+>       'probe-service', 'credential-selfcheck-worker')
+> ```
+> 缺 COALESCE 时 `'probe' = ANY(NULL)` 为 NULL、`NOT NULL` 不为 TRUE ⇒
+> 那批行被**静默丢弃**（2026-10-02 实测：7d 内会话族 40,275 行里吞了 40,225 行）。
 
 #### 2.2.2 时间粒度
 支持动态调整，根据时间范围自动推荐，也可手动选择：
@@ -83,21 +99,32 @@
 - **1 小时**：适合"最近 7 天"
 - **1 天**：适合"本月"、"自定义长周期"
 
+自动推荐的实际阈值（`web/src/views/CredentialHeatmapView.vue` 的
+`suggestedGranularity`）：≤1h→`1m`、≤6h→`5m`、≤24h→`15m`、≤168h→`1h`、否则 `1d`。
+
 粒度计算逻辑：
 ```sql
 -- PostgreSQL 时间桶示例（1 分钟粒度）
-SELECT 
+-- ★ 分桶用 epoch 对齐而不是 date_trunc：date_trunc 只接受固定字段名
+--   （'minute'/'hour'/'day'），不接受 '5 minutes' 这类参数化步长。
+--   后端实际拼写见 admin/credential_monitor_heatmap.go。
+SELECT
   credential_id,
   raw_model_name,
-  date_trunc('minute', created_at) AS time_bucket,
+  to_timestamp(floor(EXTRACT(EPOCH FROM ts) / 60) * 60) AS time_bucket,
   COUNT(*) AS total_requests,
   SUM(CASE WHEN success THEN 1 ELSE 0 END) AS success_count,
   AVG(latency_ms) AS avg_latency,
   ARRAY_AGG(DISTINCT error_class) FILTER (WHERE error_class IS NOT NULL) AS error_types
-FROM request_logs
-WHERE 
-  created_at >= $1 AND created_at < $2
-  AND is_self_test = false  -- 排除自检
+FROM request_logs_with_current_month
+WHERE
+  ts >= $1 AND ts < $2
+  -- 排除自检/探针（三臂，全部带 COALESCE）
+  AND NOT COALESCE('probe' = ANY(quality_flags), FALSE)
+  AND COALESCE(task_type, '') <> 'probe_triggered'
+  AND COALESCE(origin_actor, '') NOT IN (
+        'node-probe-worker', 'active-probe-worker',
+        'probe-service', 'credential-selfcheck-worker')
 GROUP BY credential_id, raw_model_name, time_bucket
 ORDER BY time_bucket ASC
 ```
@@ -195,7 +222,8 @@ model_overload       1 次
 #### 2.4.3 模型展开/收起
 - 点击凭据行右侧的 `[▼ 展开模型]` / `[▶ 收起]` 按钮
 - 展开后显示该凭据下所有模型的独立热力图行
-- 状态持久化到 `localStorage`（key: `credential_heatmap_expanded_{credentialId}`）
+- 状态持久化到 `localStorage`（**单一** key: `credential_heatmap_expanded`，
+  值为展开的凭据 ID 数组 JSON —— 不是「每凭据一个 key」）
 
 #### 2.4.4 时间范围选择
 支持以下预设和自定义：
@@ -256,6 +284,30 @@ model_overload       1 次
 ### 3.1 前端架构
 
 #### 3.1.1 组件拆分
+
+> **落地现状（2026-10-20 订正）**：下面是**设计稿**的组件树，实际落地时
+> 子组件没有按此拆分。仓库里的真实结构是：
+> ```
+> CredentialMonitorWithTabs.vue (页面宿主，Tab 切换)
+> ├── CredentialMonitorView.vue (列表视图 Tab)
+> ├── CredentialHeatmapView.vue (热力图 Tab，单文件 1371 行)
+> ├── RoutingLogView.vue (路由记录 Tab)
+> ├── ErrorTrendView.vue (错误趋势 Tab)
+> └── ProbeHealthPanel.vue (探测健康 Tab，仅 super_admin 可见)
+> ```
+> `HeatmapToolbar/HeatmapGrid/HeatmapRow/HeatmapCell/HeatmapTimeline/
+> HeatmapDetailPopover` **均未拆分落地** —— 筛选栏、表格网格、时间座标、
+> 详情抽屉全在 `CredentialHeatmapView.vue` 内部；仓库不存在
+> `web/src/components/heatmap/` 目录。
+> 热力图只依赖两个外部组件：`ActiveFilterChips.vue` 与 `ui/KxDateRangePicker.vue`。
+>
+> Tab 数量也变了：实际是**五个**（设计稿是三个）——
+> `列表视图` / `热力图` / `路由记录` / `错误趋势` / `探测健康`，
+> 其中 `探测健康` **仅 super_admin 可见**（`CredentialMonitorWithTabs.vue` 的
+> `tabs` 数组在 `isSuperAdmin()` 为真时才追加），
+> `错误趋势` 对 tenant_admin 开放（`/api/errors/trend` 服务端按租户收口）。
+
+设计稿的组件树（保留供追溯）：
 ```
 CredentialMonitorView.vue (主页面)
 ├── CredentialListView.vue (现有列表视图)
@@ -328,12 +380,16 @@ func handleCredentialHeatmap(w http.ResponseWriter, r *http.Request) {
     excludeSelfTest := r.URL.Query().Get("exclude_self_test") == "true"
     
     // 查询数据库
-    // SELECT credential_id, raw_model_name, 
-    //        date_trunc(granularity, created_at) AS time_bucket,
+    // SELECT credential_id, raw_model_name,
+    //        to_timestamp(floor(EXTRACT(EPOCH FROM ts) / <步长秒>) * <步长秒>) AS time_bucket,
     //        COUNT(*) AS total, SUM(success::int) AS success, ...
-    // FROM request_logs
-    // WHERE created_at >= $1 AND created_at < $2
-    //   AND (exclude_self_test = false OR is_self_test = false)
+    // FROM request_logs_with_current_month      -- 视图，不是物理表
+    // WHERE ts >= $1 AND ts < $2
+    //   AND NOT COALESCE('probe' = ANY(quality_flags), FALSE)
+    //   AND COALESCE(task_type, '') <> 'probe_triggered'
+    //   AND COALESCE(origin_actor, '') NOT IN (
+    //         'node-probe-worker', 'active-probe-worker',
+    //         'probe-service', 'credential-selfcheck-worker')
     // GROUP BY credential_id, raw_model_name, time_bucket
     
     // 状态推断逻辑
@@ -349,7 +405,11 @@ func handleCredentialHeatmap(w http.ResponseWriter, r *http.Request) {
 #### 3.2.2 查询优化
 1. **索引**
    ```sql
-   CREATE INDEX CONCURRENTLY idx_request_logs_heatmap 
+   -- ⚠ 落地订正（2026-10-20）：`request_logs` 没有 `is_self_test` 列，
+   -- 且时间列是 `ts` 不是 `created_at`。下面是**设计稿**的索引形状，
+   -- 实际线上索引见迁移 035_add_heatmap_indexes.sql 与
+   -- docs/db-changelog.md 的已应用条目。
+   CREATE INDEX CONCURRENTLY idx_request_logs_heatmap
    ON request_logs (credential_id, raw_model_name, created_at, success, is_self_test)
    WHERE created_at >= NOW() - INTERVAL '30 days';
    ```
@@ -417,7 +477,7 @@ heatmapData.credentials.forEach(cred => {
 
 ### 4.1 单元测试
 - 状态映射逻辑（success_rate → status）
-- 时间桶聚合（不同粒度下的 date_trunc 结果）
+- 时间桶聚合（不同粒度下的 epoch 对齐分桶结果）
 - 色块点击事件处理
 - 模型展开/收起状态持久化
 
@@ -476,8 +536,14 @@ heatmapData.credentials.forEach(cred => {
 | 数据库查询慢（大时间范围）| 高     | 添加索引 + 分页加载 + Redis 缓存            |
 | 前端渲染卡顿（大量色块）  | 中     | 虚拟滚动 + Canvas 渲染 + Web Worker         |
 | 状态映射逻辑不准确        | 高     | 与现有 `credentialDisplayState` 对齐 + 测试 |
-| 自检数据污染真实流量      | 中     | 默认排除 `is_self_test = true` + 独立展示   |
+| 自检数据污染真实流量      | 中     | 默认排除探针/自检（三臂 COALESCE 谓词）+ 独立展示 |
 | 时间粒度选择困难          | 低     | 根据时间范围自动推荐粒度 + 提示文案          |
+
+> ⚠ **落地订正（2026-10-20）**：上表「Redis 缓存」是设计稿的缓解设想 ——
+> 实际落地**没有缓存层**，`meta.cache_hit` 恒为 `false`（实时查询），
+> 见 `admin/credential_monitor_heatmap.go` 的
+> 「cache_hit 现由缓存层控制；无缓存层时恒为 false」。
+> 另：「虚拟滚动 + Canvas 渲染」也未落地，现状是**表格形式**的色块网格。
 
 ---
 
