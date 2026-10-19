@@ -136,6 +136,66 @@
   夹具补 `duration_ms` 列）与 `admin/session_duration_ms_consumer_test.go`（AST 门）。
 - 状态：已修待观察
 
+### 2026-10-20 — 「换个模型才显形」的缺陷：验收要覆盖模型谱系，不是一个能用的模型（Seen: 1/3）
+- 任务 / 缺陷：memora dream cycle 真实网关首跑的续轮。
+- 根因：首轮用的 `sensenova-6.8-flash-lite` **恰好**同时满足"守 schema + 慢"，
+  于是另外三类问题全都藏在它后面。换网关在架的旗舰模型 `minimax-m3` 才暴露：
+  ① 它在 `response_format=json_object` 下仍先输出 `<think>…</think>` ⇒ 解析直接失败；
+  ② 它用 `type` 而不是 `entity_type` ⇒ 实体类型全塌成 other；
+  ③ 它更慢（82.9s）⇒ 撞上服务端 `WriteTimeout: 60s`。
+  ⇒ ★ **"这个模型能跑通"不等于"这条链路健壮"** —— 第一个试通的模型会把
+  后面所有问题都藏起来。
+- 防复发检查：给 LLM 链路做验收时，**至少覆盖两类形态**：
+  ① 守 schema 的（键名与 prompt 一致）；② 不守的（别名键名 / 带推理前缀 / 输出更长）。
+  判别动作：**先拉网关在架模型清单，再对每类形态各挑一个实测**，
+  而不是"找一个能用的就用"。
+  ★ 反面教训同源：`<think>` 前缀这类问题**只在换模型时**显形，
+  所以"当前默认模型能用"是一条会过期的证据。
+- 证据：memora `internal/llm/think_prefix_test.go`（用逐字取自实测的 think 前缀
+  响应走真 HTTP 往返）、`internal/dream/entity_type_alias_test.go`、
+  `internal/dream/write_deadline_test.go`；真实网关复验：
+  修复前 `http_code=000` + 全 other，修复后 `http_code=200` + 正常分布。
+- 状态：已修待观察
+
+### 2026-10-20 — HTTP 写超时会把「成功」变成「失败」：报错不等于没做完（Seen: 1/3）
+- 任务 / 缺陷：同上续轮。
+- 根因：抽取实测 26.2s ~ 82.9s，而网关 `http.Server` 写着
+  `WriteTimeout: 60 * time.Second` ⇒ 超过 60s 的请求**响应写不出去**：
+  客户端拿到 `http_code=000`（Go 客户端收到 `EOF`），**而 cycle 跑完了、
+  数据也全部落库了**。现场表现是「成功长得和失败一模一样」：
+  调用方看到报错，合理地重试，于是每重试一次多出一个 episode
+  （每次 run 生成新的 uuid）。
+- 防复发检查：凡是把一个**长耗时操作**挂在同步 HTTP 上，必须同时核对三处超时：
+  ① 服务端 `WriteTimeout`；② 前置代理的 `proxy_read_timeout`（nginx 默认也是 60s）；
+  ③ 客户端自己的超时。★ 修法优先**按路由延长**（Go 1.20+
+  `http.NewResponseController`），不要抬全局 `WriteTimeout` ——
+  全局抬高会让所有慢请求都失去上限。
+  ★ 判别动作：**看到"请求失败"时，先确认服务端是不是没做完**
+  （查日志里的完成记录 + 查数据是否已落库），再判定失败 ——
+  否则会把"其实成功了"误判成"没跑成"，进而做出重试/回滚的错误动作。
+- 证据：memora `internal/dream/write_deadline_test.go`（真路由 + 慢假 LLM +
+  短 `WriteTimeout` 的测试服务器；变异"摘掉注册行"报出**与生产一致的 EOF**）。
+- 状态：已修待观察
+
+### 2026-10-20 — 「看起来有答案、实际是空集」：解析层丢字段，先问它有没有读方（Seen: 1/3）
+- 任务 / 缺陷：同上续轮（`entity_type` 别名）。
+- 根因：模型返回 `{"name":"alice","type":"person"}`，解析只认 `entity_type`
+  ⇒ 类型全塌成 `"other"`。抽取报 `completed`、图也写了、**没有任何错误**。
+  但 `entity_type` 是**有真读方**的过滤键（`pgstore/read_queries.go` 的
+  `n.entity_type = $5`，并由 `/api/graph/entities?entity_type=…` 暴露）
+  ⇒ 按类型查询**静默返回 0 行**：看起来像"没有这类实体"，
+  实际是"类型信息在解析阶段就丢了"。
+- 防复发检查：★ 判别动作：**解析层丢掉一个字段时，先问"这个字段有没有读方"**：
+  有读方 ⇒ 是缺陷（**静默错误**，比报错更难查）；没有读方 ⇒ 才只是观感问题。
+  ⇒ 对 LLM 返回做键名兼容时，别只盯着"能不能 parse"，
+  还要盯**消费方实际按哪些键取值**。
+  ★ 判据要**按消费方的过滤语义**写（"别让类型全塌成 other"），
+  而不是只断言"解析没报错"。
+- 证据：memora `internal/dream/entity_type_alias_test.go`
+  （用实测原样 payload；变异"去掉 type 别名"报红
+  `EntityType = "other", want "person"`）。
+- 状态：已修待观察
+
 
 ### 2026-10-17 — 顶栏 X 不关 AppSheet / Focus；/me 先开后跳会被导航清掉
 - 根因：`HyperApp.overlayActive` 只认 drawer/account，忽略 `Hyper.topOverlay`；`closeActiveOverlay` 未走 `dismissOverlay`。`/me` 若先开 Sheet 再 `replace('/')`，runtime 导航 silent-close 全 overlay。

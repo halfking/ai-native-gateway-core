@@ -6,7 +6,9 @@
 
 ## 结论
 
-**首跑成功**，且首跑本身暴露了**三个真缺陷**（不是环境噪声，都是代码与真实环境不匹配）：
+**首跑成功**，且首跑本身暴露了**七个真缺陷**（不是环境噪声，都是代码与真实环境不匹配）。
+
+首轮四个（用 `sensenova-6.8-flash-lite` 跑出来的）：
 
 | # | 现象 | 真因 | 修法 |
 |---|---|---|---|
@@ -15,7 +17,15 @@
 | 3 | `graph_episodes.updated_at does not exist` (42703) | 000024 只给 `graph_entities` 声明了 `updated_at`，另两张表没有；而 pgstore 三处 `ON CONFLICT DO UPDATE SET updated_at = NOW()` | 新增迁移 **000060** 补两列 |
 | 4 | 实体写入 25P02、但事实写进去了 | pgstore 用 `CopyFrom` 走快路径，而 **PG 不支持在启用 RLS 的表上 COPY FROM**；回退又跑在**已被中止的事务**里 ⇒ 真实根因被掩盖 | 去掉 CopyFrom，直接走 `INSERT … ON CONFLICT` |
 
-最终首跑（真实网关 `https://llm.kxpms.cn`，模型 `sensenova-6.8-flash-lite`）：
+续轮三个（**换成旗舰模型 `minimax-m3` 才显形**的，详见下文"续轮"节）：
+
+| # | 现象 | 真因 | 修法 |
+|---|---|---|---|
+| 5 | 同一模型下 `malformed JSON`（连解析都过不去） | 推理模型在 `response_format=json_object` 下仍先输出 `<think>…</think>`，而解析只剥 ```json 围栏 | `stripThinkBlocks`，只认成对的块 |
+| 6 | 抽取全成功，但 `entity_type` 全是 `other` | 模型用 `type` 而不是 `entity_type`；而 `entity_type` 是**有真读方**的过滤键 ⇒ 按类型查询**静默返 0 行** | `entityTypeOf` 别名取值 |
+| 7 | 耗时超 60s 时**响应写不出去**（`http_code=000`） | 网关 `http.Server` 写着 `WriteTimeout: 60s`，而抽取实测要 26.2s ~ **82.9s** ⇒ 客户端收到连接错误，**但 cycle 跑完了、数据也落库了** | 按路由延长写超时（`http.ResponseController`），不抬全局值 |
+
+首轮结果（真实网关 `https://llm.kxpms.cn`，模型 `sensenova-6.8-flash-lite`）：
 
 ```json
 {"status":"completed","observations":12,
@@ -25,6 +35,10 @@
 
 PG 侧真值（`acc-pg17` / 库 `memora`）：**1 episode + 22 entities + 17 facts**，内容语义正确
 （`GIN trigram 索引` / `ScopeRedact` / `ScopeEgress` / `planner` / `duration_ms` / `search_text` …）。
+
+续轮结果（模型 `minimax-m3`，修复前**完全跑不起来**）：
+`http_code=200`、37.0s、`status=completed`、**1 episode + 18 entities + 14 facts**，
+`entity_type` 分布 `concept 7 / tool 5 / person 2 / service 2 / other 2`。
 
 ## 环境与拓扑
 
@@ -145,6 +159,12 @@ COPY FROM**（`graph_entities` 由 000027 装 `tenant_isolation` 策略且 FORCE
 | `internal/dream/extraction_params_test.go` | **新门**：断言**调用时真正传出去的** `opts.Timeout ≥ 60s`、`opts.MaxTokens ≥ 4000` |
 | `internal/graph/pgstore/write_columns_contract_test.go` | **新门**：代码写路径引用的每一列，迁移都必须建出来（代码↔迁移契约） |
 | `internal/graph/pgstore/write_entities_rls_test.go` | **新门（真库，`-tags=integration`）**：entity 写入在**带 RLS**的真库上可用且真的落库；重复写不翻倍 |
+| `internal/llm/chat.go`（续轮） | 新增 `stripThinkBlocks`：`ChatJSON` 的 JSON 路径上先剥成对思考块再剥围栏 |
+| `internal/dream/extract.go`（续轮） | 新增 `entityTypeOf`：`entity_type` → `type` → `entityType` 别名取值 |
+| `internal/dream/handler.go`（续轮） | dream 路由组挂 `extendWriteDeadline(150s)`，按请求延长写超时 |
+| `internal/llm/think_prefix_test.go`（续轮） | **新门**：think 前缀能被解析 + 未闭合标签不剥 + 截断 JSON 仍被拒 |
+| `internal/dream/entity_type_alias_test.go`（续轮） | **新门**：实体类型别名（用实测原样 payload） |
+| `internal/dream/write_deadline_test.go`（续轮） | **新门**：真路由 + 慢假 LLM + 短 `WriteTimeout` ⇒ 响应写得出去 |
 
 ### 判据的变异验证（各自变红）
 
@@ -185,6 +205,124 @@ COPY FROM**（`graph_entities` 由 000027 装 `tenant_isolation` 策略且 FORCE
    ⚠ 计数**必须**带两个 GUC —— 否则 FORCE RLS 会把它们全滤成 0（我第一次就踩了这个坑：
    "落库 0 行"其实是"看不见"）。
 
+## 续轮：换模型才暴露的另外三处（2026-10-20 凌晨）
+
+首跑用的 `sensenova-6.8-flash-lite` 恰好是"守 schema + 慢"的那一类。
+把它换成网关在架的旗舰模型 **`minimax-m3`** 后，又暴露三处**只在换模型时
+才会显形**的问题 —— 它们都藏在"模型恰好听话"的后面。
+
+### 续 1：推理前缀让整类模型完全不可用
+
+`minimax-m3` 在 `response_format=json_object` 下仍会**先输出一段推理**：
+
+```
+<think>The user wants me to extract a knowledge graph from the project event records
+...
+</think>
+
+{"entities":[{"name":"alice","type":"person"}],"facts":[...]}
+```
+
+而 `internal/llm/chat.go` 的 `stripCodeFences` 只剥 ```json 围栏
+⇒ `json.Unmarshal` 直接报 `Expecting value: line 1 column 1 (char 0)`
+⇒ `ChatJSON` 恒返回 `LLM gateway returned malformed JSON`。
+
+★ 这意味着**换一个会思考的模型，dream cycle 立刻全线失效**，
+而错误信息指向"网关返回了坏 JSON"这个与根因无关的方向。
+（`glm-z1-flash` 实测同样是这个形态。）
+
+**修法**：`internal/llm/chat.go` 增加 `stripThinkBlocks`，在 `ChatJSON` 的
+JSON 路径上先剥成对的 `<think>…</think>` / `<thinking>…</thinking>` /
+`<reasoning>…</reasoning>`，再剥围栏。**只认成对的块** —— 推理被截断时
+留下的是残缺标签，那种内容本来就不是合法 JSON，不该在这里被"猜"出来。
+`ChatText` 故意不剥：它的调用方（rerank 等）要的是模型原文。
+
+⚠ Go 的 regexp 是 RE2，**不支持反向引用**，所以三种标签各写一条分支，
+不能用 `\1` 配对。
+
+### 续 2：`entity_type` 的别名让"按类型查询"静默返空集
+
+`minimax-m3` 的实体用 **`type`** 而不是 prompt 要求的 `entity_type`：
+
+```json
+{"name":"alice","type":"person","summary":"…"}
+```
+
+⇒ `entity_type` 取不到值 ⇒ 全部落成 `"other"`。
+
+★ **这不是观感问题**：`entity_type` 是**有真读方**的过滤键 ——
+`internal/graph/pgstore/read_queries.go` 的 `n.entity_type = $5`，
+并由 `/api/graph/entities?entity_type=…` 暴露。
+类型在解析阶段全丢成 `other` 之后，按类型查询**静默返回 0 行** ——
+看起来像"没有这类实体"，实际是"类型信息压根没进来"。
+
+**修法**：`internal/dream/extract.go` 增加 `entityTypeOf`，
+按 `entity_type` → `type` → `entityType` 取值。与 `parseFacts` 里
+`relationships` 别名同一条理由：不同模型对同一 schema 的键名选择不稳定，
+接受别名比静默丢掉整类信息更稳妥。
+
+复验（同一批 observations、同一模型，修复前后）：
+
+| | entity_type 分布 |
+|---|---|
+| 修复前 | 全部 `other` |
+| 修复后 | `concept 7 / tool 5 / person 2 / service 2 / other 2` |
+
+### 续 3：耗时超 60s 时，**响应写不出去**（"成功长得和失败一模一样"）
+
+抽取耗时实测 26.2s ~ **82.9s**（minimax-m3 在 8000 max_tokens 下更慢），
+而网关的 `http.Server` 写着
+
+```go
+WriteTimeout: 60 * time.Second      // internal/server/server.go
+```
+
+⇒ 超过 60s 的 cycle，**响应根本写不出去**：客户端收到连接错误
+（`curl: http_code=000` + 响应体为空；Go 客户端收到 `EOF`），
+**而 cycle 其实跑完了、数据也全部落库了**。
+
+★ 现场表现是"成功长得和失败一模一样"：调用方看到报错，合理地重试，
+于是每重试一次就多出一个 episode（每次 run 生成新的 uuid）。
+
+**修法**：`internal/dream/handler.go` 给 dream 路由组挂
+`extendWriteDeadline(150s)`，用 `http.NewResponseController`（Go 1.20+）
+**按请求**延长写超时（gin v1.10 的 `ResponseWriter` 实现了 `Unwrap()`）。
+**不抬全局 `WriteTimeout`** —— 全局抬高会让所有慢请求都失去上限；
+而 dream run 的耗时上界是已知的（由 LLM 侧预算 `extractionTimeout=120s` 决定）。
+
+⚠ 服务端延长**不等于**这条 HTTP 入口适合长任务：nginx 的
+`proxy_read_timeout` 默认也是 60s，前置代理仍会掐断。
+代码里本就写明「生产路径应走 asynq 任务（worker.TypeDreamCycle），
+这里的同步入口保留给手动触发与调试」（该任务类型与 handler **已存在**），
+本修复只是让**手动触发**这条路真能拿到结果。
+
+### 续轮的三道新门（各自做过变异验证）
+
+| 门 | 位置 | 变异 | 结果 |
+|---|---|---|---|
+| think 前缀能被解析 | `internal/llm/think_prefix_test.go`（httptest 走真 HTTP 往返，返回**逐字取自实测**的 think 前缀响应） | ChatJSON 不再调用 `stripThinkBlocks` | 红：`LLM gateway returned malformed JSON` |
+| 未闭合标签不被猜 | 同上 | 放宽到连未闭合标签也剥 | 红：`unclosed_tag_is_kept` |
+| 截断 JSON 仍然被拒 | 同上 | —— | 绿（确认"剥思考块"没有把 JSON 合法性门开得过大） |
+| entity_type 别名 | `internal/dream/entity_type_alias_test.go`（用**实测到的原样 payload**） | 去掉 `type` 别名 | 红：`EntityType = "other", want "person"` |
+| 响应真的写得出去 | `internal/dream/write_deadline_test.go`（真路由 + 慢假 LLM + 短 `WriteTimeout` 的测试服务器） | 摘掉路由上的注册行 | 红：`EOF`（**与生产症状一致**） |
+
+★ 最后一道门的构造值得记：它跑的是
+`RegisterRoutes → Handler.Run → Service.Run → Engine.RunCycle` 的**完整链路**，
+只把 LLM 换成慢假货，并把服务器的 `WriteTimeout` 设成比 handler 耗时短。
+少了"注册"这一步，中间件写对了但没挂上路由，门照样会绿。
+
+### 续轮端到端复验（minimax-m3，真实网关）
+
+```
+http_code=200  time=37.0s
+status=completed  observations=12
+episodes=1  entities=18  facts=14
+entity_type 分布：concept 7 / tool 5 / person 2 / service 2 / other 2
+```
+
+对照：修复前同一个模型是 `http_code=000`（响应写不出去）+ 全 `other` + 完全解析不了。
+
+
 ## 遗留与边界
 
 - **旁挂容器未纳入 compose**：`memora-dream` 目前是 211 上的独立容器
@@ -195,9 +333,21 @@ COPY FROM**（`graph_entities` 由 000027 装 `tenant_isolation` 策略且 FORCE
   但实测其可用性随网关侧 provider 状态漂移；`glm-4` / `glm-4-air` / `glm-4-flash`
   是本轮唯一三个"schema 合规且在 2000 tokens 内"的备选。
   建议给 dream 的抽取任务固定一个**经过 schema 验证**的模型，而不是跟随默认模型。
-- **`minimax-m3` 的 `<think>` 前缀**：`internal/llm/chat.go` 的 `stripCodeFences` 只剥
-  ```json 围栏，不处理 `<think>…</think>` ⇒ 该模型在本仓的所有 `ChatJSON` 调用上都会
-  解析失败。本轮未改（属另一条独立改动），但它会让"换个模型就好"的直觉失效。
+  ★ 续轮已把"模型不听话"这一类整体降级了：think 前缀、entity_type 别名、
+  超时与输出上限都已修，`minimax-m3` 这类旗舰模型现在也能跑通。
+  但**"模型守 schema"这件事本身仍靠运气** —— 键名别名是按需补的，
+  不是有 schema 约束的保证。真正的解法是走网关的
+  `response_format.json_schema`（`adapter/unified/interface.go` 的
+  `JSONSchema` 类型已支持，但 memora 的 llm 客户端还没发）。
+- ~~**`minimax-m3` 的 `<think>` 前缀**~~ —— **续轮已修**（见上文"续 1"）：
+  `internal/llm/chat.go` 新增 `stripThinkBlocks`，并在 `internal/llm/think_prefix_test.go`
+  钉住（含"未闭合标签不剥""截断 JSON 仍被拒"两条反向断言）。
+- **实体名的表层变体会分裂成多个节点**：`minimax-m3` 抽出 `211 机器` 与 `211机器`、
+  `GIN trigram 索引` 与 `GIN索引` 两组，MERGE 键是 `(name, user_id, project_id)`
+  精确匹配 ⇒ 变成两个节点。这是 `parseEntities` 里**刻意**的选择
+  （代码注释写明"去重用精确 name，因为 WriteEntities 的 MERGE key 是精确匹配"），
+  本轮**未改**：改它要动 MERGE 键语义（= 图的节点身份），属产品决策。
+  ⇒ 但它意味着"图里的实体数"会随模型/措辞波动，做指标时要按 name 归一再看。
 - **读路径的列契约未覆盖**：见上文"门的边界"。
 - **acc 库**：`memora` 库的迁移被本轮从 56 推到 60，`graph_*` 三表各多了 `updated_at` 列
   （仅 `graph_entities` 原本就有）；种子数据（project + 12 observations）留在库里未清理，
