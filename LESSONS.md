@@ -196,6 +196,34 @@
   `EntityType = "other", want "person"`）。
 - 状态：已修待观察
 
+### 2026-10-20 — 「接口支持 X」≠「X 会生效」：透传型支持必须用端到端证据验（Seen: 1/3）
+- 任务 / 缺陷：memora dream cycle 的 schema 约束路线评估（真实网关）。
+- 根因：网关的 `adapter/unified/interface.go` 定义了 `JSONSchema` 类型，
+  `convertResponseFormat` 会把它**原样透传**给上游 —— 于是很容易得出
+  "网关支持 json_schema ⇒ 可以用它把模型输出约束住"的结论。
+  ★ 实测**不成立**：对真实网关发
+  `response_format={type:"json_schema", json_schema:{…,"strict":true}}`
+  （schema 带 required + `additionalProperties:false` + enum），
+  网关**照收不误**，但模型**完全无视**：
+  minimax-m3 返回的仍以 `<think>…</think>` 开头
+  （completion_tokens=2337 / reasoning_tokens=381）；
+  另一次 glm-4 的 json_schema 返回**不是对象**（completion_tokens=292），
+  随后 4 次重试全 503。
+  ⇒ 这里的 `JSONSchema` 只保证**能传过去**，不保证**对端会执行**。
+- 防复发检查：★ 判别动作：凡是要靠"某层支持某能力"来简化上层逻辑，
+  必须有一条**端到端证据**（真发一次、真看对端行为），
+  不能只看**类型定义/字段存在**就说"有这能力"。
+  ★ 尤其要区分**语法透传**（字段被原样转发）与**语义执行**（对端真的按它约束）。
+  ⇒ 写进文档的"解法"如果建立在未经验证的能力上，它会变成**反向的误导**：
+  让人以为可以放松下游的兜底逻辑。⇒ 下结论前先问：
+  "这条能力我**实测过**吗？还是我只是**看到它有定义**？"
+- 证据：真实网关实测（2026-10-20，211 发起）——
+  minimax-m3 + `json_schema` + `strict:true` 仍返回 think 前缀；
+  glm-4 + `json_schema` 返回非对象且随后连续 503。
+  结论已写回 `docs/audit/2026-10-19-dream-cycle-首跑.md` 的遗留项
+  （原文曾把"走 json_schema"写成"真正的解法"，已按实测订正）。
+- 状态：已修待观察
+
 
 ### 2026-10-17 — 顶栏 X 不关 AppSheet / Focus；/me 先开后跳会被导航清掉
 - 根因：`HyperApp.overlayActive` 只认 drawer/account，忽略 `Hyper.topOverlay`；`closeActiveOverlay` 未走 `dismissOverlay`。`/me` 若先开 Sheet 再 `replace('/')`，runtime 导航 silent-close 全 overlay。

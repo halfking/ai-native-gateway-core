@@ -322,6 +322,25 @@ entity_type 分布：concept 7 / tool 5 / person 2 / service 2 / other 2
 
 对照：修复前同一个模型是 `http_code=000`（响应写不出去）+ 全 `other` + 完全解析不了。
 
+## 推送就绪度（干跑，未改动共享 checkout）
+
+两仓的 `origin/main` 都被其他会话推进了（llm-gateway-go 落后 **56** 条、memora 落后 **1** 条）。
+用**临时 worktree** 做 cherry-pick 干跑（不碰共享 checkout 的 `main`）：
+
+| 仓 | cherry-pick 到最新 origin/main | 冲突 | rebase 后跑门 |
+|---|---|---|---|
+| llm-gateway-go | 4 个提交 | **0** | `go test ./admin/` **exit=0**（那 7 条既有失败已被上游那 56 条修掉）、`sql/migrations/startup` ok、`domains/session/v2` ok |
+| memora | 3 个提交 | **0** | `go test ./...` **exit=0**、`-tags=integration ./internal/graph/pgstore/` ok |
+
+`LESSONS.md` 与 `docs/db-changelog.md` 两处有上游追加，**自动合并成功**。
+逐文件比对确认：我改过的 17 个文件在两棵树里**逐字节一致**（只有
+`docs/db-changelog.md` 因上游追加而不同）⇒ 前端 `SessionSummaryBar` 的 **8/8**
+结果可直接继承，无需在 rebase 树里重装 node_modules。
+
+⇒ **结论：rebase 后可直接推送，且门全绿。** 但 rebase 会改动共享 checkout 的
+`main` 基线（其他会话也从这个 checkout 出发），所以**没有自动执行** ——
+留给仓库属主决定。
+
 
 ## 遗留与边界
 
@@ -335,10 +354,17 @@ entity_type 分布：concept 7 / tool 5 / person 2 / service 2 / other 2
   建议给 dream 的抽取任务固定一个**经过 schema 验证**的模型，而不是跟随默认模型。
   ★ 续轮已把"模型不听话"这一类整体降级了：think 前缀、entity_type 别名、
   超时与输出上限都已修，`minimax-m3` 这类旗舰模型现在也能跑通。
-  但**"模型守 schema"这件事本身仍靠运气** —— 键名别名是按需补的，
-  不是有 schema 约束的保证。真正的解法是走网关的
-  `response_format.json_schema`（`adapter/unified/interface.go` 的
-  `JSONSchema` 类型已支持，但 memora 的 llm 客户端还没发）。
+  ★ 但**"模型守 schema"这件事本身仍靠运气** —— 键名别名是按需补的，
+  不是有 schema 约束的保证。
+  ⚠️ **不要指望网关的 `json_schema` 能兜底**：实测它是**语法透传、不是语义执行**。
+  2026-10-20 续测（真实网关，minimax-m3，`strict:true` + 完整 schema +
+  `additionalProperties:false`）：网关**照收不误**，但模型**完全无视** ——
+  返回内容依然以 `<think>…</think>` 开头（`completion_tokens=2337`，
+  `reasoning_tokens=381`）。另有一次 `glm-4` 的 json_schema 返回**不是对象**
+  （`completion_tokens=292`），而 `glm-4` 随后 4 次重试全 503。
+  ⇒ `adapter/unified/interface.go` 的 `JSONSchema` 类型只保证**能传过去**，
+  不保证**对端会执行**。⇒ 结论：**解析层的别名兜底是当前唯一有效手段**，
+  别把它换成"我们有 schema 支持所以可以放松解析"。
 - ~~**`minimax-m3` 的 `<think>` 前缀**~~ —— **续轮已修**（见上文"续 1"）：
   `internal/llm/chat.go` 新增 `stripThinkBlocks`，并在 `internal/llm/think_prefix_test.go`
   钉住（含"未闭合标签不剥""截断 JSON 仍被拒"两条反向断言）。
