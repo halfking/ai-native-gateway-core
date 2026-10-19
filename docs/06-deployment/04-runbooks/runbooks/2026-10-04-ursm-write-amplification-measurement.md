@@ -33506,3 +33506,302 @@ SQL=${SQL/__IDX__/'$IDX'}      # ← 替换值写在**单引号**里
 ★ 同族：[[0 命中的第一嫌疑是量具坏了]] · [[替身要复刻关键性质，否则读数是假的]] ·
 [[先读量具再读产物]] · [[阴性结论要当缺陷一样复核]] · [[判据红了先怀疑自己的前提]] ·
 [[假绿也要当缺陷一样复核]] · [[同一个结论不要在多处复述]]。
+
+## §143.14 「巡检日志 9 天不增长 ⇒ 巡检已死」：**两个互相独立的机制**被同一个现象掩盖（2026-10-19~20）
+
+### §143.14.0 结论先行
+
+这一轮原本是去查一个**现象**：「252 的巡检日志 9 天不增长 ⇒ 巡检是不是已经死了」。
+
+查完的结论是：**现象是真的，但「巡检死了」这个推断是错的**，而且**不是一个原因，是两个**：
+
+| # | 机制 | 覆盖对象 | 观测形态 | 本轮处置 |
+|---|---|---|---|---|
+| ① | **crond 内存里的 job list 与磁盘文件不一致** ⇒ 同一脚本被**重复登记** ⇒ 每分钟起两个实例，一个真跑、一个被单实例闸门挡掉 | 全部 12 个 cron 登记的巡检（availability 每分钟最明显） | `skip` 日志 13,043 条；crond 日志里**每分钟 2 条**逐字相同的 CMD | 把误放在 `/etc/cron.d/` 里的**备份副本**移走 ⇒ crond 自动重载 ⇒ **每分钟 1 条 CMD** |
+| ② | 单实例闸门写成 `exec 9>lockfile 2>/dev/null` ⇒ **`exec` 不带命令时重定向作用于当前 shell** ⇒ 脚本此后**所有 stderr 永久消失** | 全部 12 个巡检脚本 | 出事时**收得到推送**（notify 在脚本内主动调用），但**事后查不到任何证据** | 12 个脚本统一改成 `{ exec 9>lockfile; } 2>/dev/null`（组的重定向只作用于组本身，fd 9 语义不变） |
+
+★ **判别这两个机制的关键量具不是脚本日志，而是 crond 自己的日志**（`/var/log/cron` + 轮转 `.gz`）：
+数它**每分钟派发了几条 CMD** ⇒ 机制①立刻显形；而「日志不增长」对两个机制都成立（脚本健康时本来就不输出）。
+
+★ 而且 **② 的修复立刻挖出了两个此前完全不可见的真缺陷**（§143.14.4 / §143.14.5）：
+反引号把 SQL 注释当命令执行（潜伏 16 天）、快照健康巡检卡在 180s 超时边缘（自 10-10 起大面积出不了结论）。
+⇒ **「把证据管道修好」本身就是一次缺陷挖掘**：管道堵着的时候，里面的问题一个都看不见。
+
+### §143.14.1 现场取证：**第一步就推翻了前提**
+
+- 「巡检日志 9 天不增长 ⇒ 巡检死了」——**这个推断一开始就站不住**：
+  这些脚本的契约是**「健康时不输出」**（文件头写明「常态健康时脚本刻意不输出，所以这份 log 只在真事件时增长」），
+  ⇒ **「日志陈旧」与「一切正常」同形**，问「巡检还在跑吗」要问**心跳文件的 mtime**，不是问日志。
+- 实测：`/var/lib/pg17-check/pg-availability.lastrun` **每分钟都被重写**（state 与 lastrun 相差 14ms）⇒ **PG 每分钟真被采样**。
+- 另一个卡了半天的谜题：`llmgw-source` **不是用户**，是 `/usr/local/bin/llmgw-source` wrapper
+  （`source /etc/llmgw/notify.conf` 后 `exec "$@"`）⇒ 「用户不存在」之谜解开。
+- ⇒ ★ **教训**：「现象 ⇒ 原因」之间隔着一个**契约**。本例的契约是「健康时不输出」，
+  不读契约就下结论，会把「正常」读成「死亡」，然后花几小时去追一个不存在的问题。
+
+### §143.14.2 机制①：发布漂移的**第四种形态** —— 守护进程内存 ≠ 磁盘文件
+
+**现象**：`/var/log/llmgw-single-instance-skip.log` 里 `availability` 的 skip 累计 **13,043 条**（1.018 条/分钟）。
+
+**假设一（先验最可能）**：上一轮真的还在跑 ⇒ 去查有没有挂死实例。
+
+- 实测 `/proc/locks`：availability 与 onconflict 两个锁文件的 inode **都不在**；
+- `fuser` 对两个锁文件**都查不到持有者**；
+- ⇒ **没有任何东西挂死**。「上一轮仍在运行」这句话是**错的措辞**，而它把所有人引向「找挂死进程」这个错误方向。
+
+**假设二（真正的成因）**：**同一分钟被起了两个实例**。
+
+- crond 自己的日志（`/var/log/cron` + 轮转 `.gz`）里，每分钟**两条逐字相同**的 availability CMD：
+  ```
+  Oct 19 23:29:01 ... CROND[2360879]: (root) CMD (llmgw-source /opt/scripts/pg17-pg-availability-check.sh 2>&1 | tee -a …)
+  Oct 19 23:29:01 ... CROND[2360880]: (root) CMD (llmgw-source /opt/scripts/pg17-pg-availability-check.sh 2>&1 | tee -a …)
+  ```
+  两个不同 PID、同一秒 ⇒ **crond 的内存 job list 里有两条**。
+- 10-18 时 `disk-watch` / `emergency-cleanup` 是 **×4 条**（它们不是分钟级，所以 ×2 的 job ⇒ ×4 的 CMD）。
+- crond 的 RELOAD 记录全集（`/var/log/cron` 全量）：
+  `Sep 28 16:49` / `Oct 4 22:49` / `Oct 5 10:53` / `Oct 6 23:55` / `Oct 7 03:57` / `Oct 11 02:17` / `Oct 11 02:20`（均为 `/var/spool/cron/root`）
+  ＋ `Oct 3 16:25` / `Oct 4 01:12` / `Oct 4 23:50` / `Oct 6 00:34` / `Oct 6 01:14` / `Oct 6 15:54` / `Oct 19 22:53`（均为 `/etc/cron.d/pg17`）。
+  ⇒ ★ **`Oct 6 15:54` → `Oct 19 22:53` 之间零次 cron.d RELOAD**（13 天）。
+
+**根因（两条合起来才成立）**：
+
+1. crond **只在文件 mtime 变化时**重载 job list。`/etc/cron.d/pg17` 在 10-06 15:54 之后**没被改过** ⇒ 没 RELOAD。
+2. 在 10-06 15:54 那一刻，`/etc/cron.d/` 下**同时存在两份登记了同一批脚本的文件** ⇒ crond 载入后每个脚本有**两条**条目。
+   ⇒ **文件早就修好了，内存里跑的仍是旧的**。
+
+⇒ ⇒ ★★ **这是发布漂移的第四种形态**（前三种见 §143.10/§143.12）：
+**守护进程内存里的 job list 与磁盘文件不一致**。
+它比前三形态更阴险，因为「磁盘上是对的」这个**最容易被当成证据的检查会给出假绿**。
+
+⇒ ⇒ ★★ **铁律**：**`/etc/cron.d/` 下每个文件都是一张调度表** ⇒
+**备份副本绝对不能留在那个目录** ⇒ 统一放 `/opt/backups/pg17/cron.d/`。
+（§143.12 我自己把备份放在 `/etc/cron.d/pg17.bak.20261019-225204` ⇒ **亲手制造了第三套调度** ——
+这正是「自己的缺陷要用自己的判据钉住」的由来。）
+
+**本轮生产修正（已执行）**：
+
+```bash
+ssh 252 'mkdir -p /opt/backups/pg17/cron.d && mv /etc/cron.d/pg17.bak.20261019-225204 /opt/backups/pg17/cron.d/'
+```
+
+- crond 会**自动感知目录变更并 RELOAD**（实测 `Oct 19 22:53:01 (*system*) RELOAD (/etc/cron.d/pg17)`）；
+- ⇒ **availability 每分钟 CMD 从 2 条降为 1 条**（23:55 起）；
+- ⇒ **skip 日志停止增长**（最后一条 `23:54:01`）；
+- ⇒ 心跳与 state **仍每分钟更新**（巡检没有被误伤）。
+
+### §143.14.3 机制②：`exec 9>file 2>/dev/null` 把脚本 stderr **永久吞掉**
+
+- 写法（12 个巡检脚本的单实例闸门，原文）：
+  ```bash
+  && exec 9>"$_llmgw_lock_file" 2>/dev/null; then
+  ```
+- ★ **机制**：`exec` **不带命令**时，重定向施加到**当前 shell** ⇒
+  `2>/dev/null` 让 **fd 2 从此永久指向 /dev/null** ⇒ 脚本此后所有 stderr 输出**全部消失**。
+  而这些脚本的 `log()`、`ABORT:`、`WARN:` 诊断**全在 stderr**。
+- 修法（**只改重定向的作用域，fd 9 语义不变**）：
+  ```bash
+  && { exec 9>"$_llmgw_lock_file"; } 2>/dev/null; then
+  ```
+  组的重定向只作用于组本身，组结束即恢复。
+- 实测（最小实验，本地 macOS bash）：`exec 9>file 2>/dev/null` 会吞掉后续 stderr；
+  `{ exec 9>file; } 2>/dev/null` 保住 stderr 且 fd 9 语义不变。
+
+**影响面（必须分清，否则会误判严重性）**：
+
+- 5 个脚本靠 `2>&1 | tee -a` 落盘（availability / onconflict / pg-table-bloat-check / ursm-snapshot-health / ursm-snapshot-payload-bloat）
+  ⇒ 它们的 **stderr 段**（失败诊断、ABORT 说明）自 **2026-10-10**（闸门引入日）起**全部静默**。
+  ⇒ ★ 精确表述是「**失败诊断静默**」，不是「日志不增长」——
+  这几个脚本的**正常输出走 stdout**，日志**仍在长**（实测 snapshot-health 的日志 10-04 至今每小时都有 `start` 行，共 616 条）。
+  ⇒ 真正的危害是：**出事时收得到推送（notify 在脚本内主动调用），但事后查不到证据**，
+  而且**失败的一轮在日志里表现为「截断」，看起来像正常结束**。
+- 3 个脚本（drop-old-columnar / proactive-empty-table-cleanup / vacuum-bloat）的 cron 行是 `>/dev/null 2>&1`
+  ⇒ 本来就不靠 stderr ⇒ **不受此缺陷影响**（本轮仍统一了形态，但它们**未部署**，见 §143.14.7）。
+
+★ **判据必须只看 `{ }` 组内部**：写成「脚本里不得出现 `2>/dev/null`」会误伤（`command -v` 那行就有）。
+
+### §143.14.4 附带发现①：双引号里的**反引号**把 SQL 注释当命令执行（潜伏 16 天）
+
+stderr 恢复后的**第一轮**运行（`ursm-snapshot-health` @ `00:17`）立刻暴露两行假错：
+
+```
+/opt/scripts/ursm-snapshot-health.sh: line 478: base_buckets: command not found
+/opt/scripts/ursm-snapshot-health.sh: line 479: --: command not found
+```
+
+**机制**：`ursm-snapshot-health.sh` 的主判据 SQL 放在**双引号字符串**里，而其中一段 SQL 注释用了**反引号**：
+
+```sql
+-- 两段聚合各自独立算完再 1:1 连接。写成 `base_buckets b LEFT JOIN base_active a
+-- ON a.slot=b.slot GROUP BY b.slot` 会产生 7×3 的笛卡尔积……
+```
+
+⇒ bash 在**双引号里也会做命令替换** ⇒ 反引号内容被**当 shell 命令执行**。
+反引号内容**含换行** ⇒ 被拆成**两条命令**（第一条以 `base_buckets` 开头、第二条以 `--` 开头）⇒ **正好对上那两行报错**。
+
+- **溯源**：`git log -S` ⇒ 引入于 **`8a94c0ce1`（2026-10-04 02:01）**，
+  ⇒ 潜伏 **16 天**；**不是本轮部署带进去的**（部署前的线上备份里也有 —— 逐字对照确认）。
+- **为什么之前没人看见**：这俩假错在 **stderr** 上 ⇒ 被机制②吞掉整整 16 天。
+  ⇒ ★ **机制②的修复把它挖出来了** —— 这就是「证据管道堵着 ⇒ 里面的问题一个都看不见」的直接演示。
+- **危害三层**：① 假错淹没真错；② 「读日志有没有错」的人会把真错当噪声；
+  ③ 反引号是**命令替换**，内容一旦像命令就会真的被执行（这次是良性的「找不到命令」）。
+- **修法**：注释里的反引号换成「」（本仓既有风格）。
+- **族门**：`scripts/ursmcheck/monitor_shell_quoting_test.go`
+  - `TestNoBacktickInsideDoubleQuotedStrings`：**引号感知**扫描（跳过 `#` 注释行 / 单引号区 / heredoc 正文），
+    报「双引号内的反引号」与「引号外的反引号」；
+  - `TestSnapshotHealthHasNoCommandSubstitutionInSQL`：定点版（只看本脚本的 `--` SQL 注释行）；
+  - `TestBacktickScannerDetectsInjectedBacktick`：**量具自证** —— 故意造违规文本断言扫描器能报出来。
+- ★ **判据为什么不能用简单 grep**：这些脚本的**注释里大量用反引号做行内代码标注**
+  （实测 **148 处**）⇒ 简单 grep 会恒红 ⇒ 门被稀释 ⇒ 没人看 ⇒ 必须引号感知。
+- ★★ **这道门当场抓到了我自己**：我写的订正注释里带了 `` `…` `` ⇒ 门立刻红 ⇒ 改掉。
+  ⇒ **新门第一次上线就抓到作者本人**，这是「门有牙」的最强证据。
+
+### §143.14.5 附带发现②：快照健康巡检**卡在 180s 超时边缘**，自 10-10 起大面积出不了结论
+
+stderr 恢复后，`ursm-snapshot-health` 的失败原因第一次**可读**：
+
+```
+[2026-10-20 00:20:25] ABORT: main query failed: ERROR:  canceling statement due to statement timeout
+```
+
+**量化（252，`/var/log/ursm-snapshot-health.log` 逐日统计，`OK:` vs `ABORT:`）**：
+
+| 日期 | OK | ABORT | | 日期 | OK | ABORT |
+|---|---|---|---|---|---|---|
+| 10-04 | 23 | 0 | | 10-15 | 15 | 9 |
+| 10-05 | 40 | 0 | | 10-16 | 18 | 6 |
+| 10-06 | 21 | 4 | | 10-17 | 19 | 5 |
+| 10-07 | 60 | 0 | | 10-18 | 9 | 15 |
+| 10-08 | 72 | 0 | | 10-19 | 10 | 14 |
+| 10-09 | 66 | 6 | | 10-10 | **0** | **53** |
+| 10-11 | 20 | 1 | | 10-12 | 2 | 22 |
+| 10-13 | 0 | 11 | | 10-14 | 11 | 10 |
+
+⇒ ★ **从 2026-10-10 起，这道巡检有相当一部分小时数是「量具不可用、本次不出结论」（exit 3）**。
+⇒ ⇒ ★★ **代价不是「多报一次错」，而是「§5.6『落库次数塌陷』指纹的探测通道在那些小时里是**瞎**的」** ——
+这正是这条巡检存在的理由（2026-10-05 容器被误删、4 分钟无人告警）。
+
+- **成因**：表长大了（脚本头写「23.7M 行」），7 天基线 + 2 天 DISTINCT 活跃度的聚合成本跟着涨，
+  而超时上限还停在 **180s**。
+- **实测（252，2026-10-20 00:24，空闲时段，`STMT_TIMEOUT=600s`）**：整轮 **105s**，exit 0，
+  判据「OK: 无真空洞，无降级」；**stderr 同时复现了那两行反引号假错**（中文 locale：
+  `行478: base_buckets: 未找到命令` / `行479: --: 未找到命令`）⇒ 机制确认。
+- **修法**：`STMT_TIMEOUT` 默认值 **180s → 600s**（对 105s 的实测成本有 **5.7 倍**余量；
+  按有负载时 180s+ 的观测也有 3 倍以上余量）。
+- **门**：`TestSnapshotHealthStatementTimeoutHasHeadroom` 钉住**下限**（≥600s）
+  **且两处默认值必须一致**（`:="${STMT_TIMEOUT:=XXXs}"` 与 `de()` 里的 `:-` 兜底；
+  后者是**死代码**，正因是死代码才容易「改了一处以为生效了」）。
+- ⚠ **诚实的代价**：这条查询每小时要扫 **7 天 ~2,370 万行**（列存表），**成本是真的**。
+  把它降下来需要「**每日基线物化表**」这类**结构改动**（新增对象 ⇒ 需属主拍板），**不在本轮范围内**。
+  ⇒ 本轮只把「量具超时」换成「出结论」，**不假装成本不存在**。
+
+### §143.14.6 仓内门（§143.14 新增，全部带变异验证）
+
+| 门 | 钉住什么 | 变异（期望红） |
+|---|---|---|
+| `TestSingleInstanceGateMustNotSwallowStderr` | 12 个脚本的闸门不得含 `exec 9>… 2>/dev/null` 形态（只看 `{ }` 组内部） | 把组内的 `2>` 去掉 ⇒ 红 |
+| `TestAvailabilitySkipDoesNotRefreshHeartbeat` | 被锁挡掉的那一轮**不得**刷新 `pg-availability.lastrun` | 把 trap 移回闸门前 ⇒ 红 |
+| `TestOnconflictSkipDoesNotRefreshHeartbeat` | 同上（onconflict） | 同上 ⇒ 红 |
+| `TestOnconflictQueryTimeoutAbortsInsteadOfHanging` | 查询必须有上限 | 去掉 `timeout` 包裹 ⇒ 红 |
+| `TestOnconflictRefusesUnboundedQueryWhenTimeoutMissing` | 缺 `timeout(1)` ⇒ **fail-closed exit 3**，不做无上限查询 | 去掉 fail-closed 分支 ⇒ 红 |
+| `TestCanonicalCronSchedulesEachScriptExactlyOnce` | 正典 `/etc/cron.d/pg17` 里每个 `/opt/scripts/*.sh` **只允许一条**调度行 | 复制一行调度 ⇒ 红 |
+| `TestNoBacktickInsideDoubleQuotedStrings` | 双引号内不得有反引号（引号感知扫描） | 把反引号放回 SQL 注释 ⇒ 红（实测 2 处） |
+| `TestSnapshotHealthHasNoCommandSubstitutionInSQL` | 定点：SQL 注释行不得有反引号 | 同上 ⇒ 红 |
+| `TestSnapshotHealthStatementTimeoutHasHeadroom` | 超时下限 ≥600s 且两处一致 | 改回 180s ⇒ 红（实测 2 处） |
+| `TestBacktickScannerDetectsInjectedBacktick` | **量具自证**：扫描器必须能报出违规 | —— |
+| `TestSingleInstanceGateScanIgnoresQuotedAndCommentedText` | fd9 门只扫**代码位**（引号/注释里的同名字样不得误报） | 把注释里的模式写进引号外 ⇒ 红 |
+
+★★ **本轮最值钱的一条方法论收获**：
+「补齐量具」比「新写门」更能挖出真缺陷 ——
+**macOS 没有 `flock(1)`** ⇒ 既有夹具里**闸门分支从未被执行过** ⇒ 6 条既有门**全部空转**；
+**补上假 flock 后，既有门当场变红**，一次就抓出潜伏 9 天的缺陷。
+⇒ ⇒ ★ **「门是绿的」不等于「门在测东西」**；先问「**这个门在测我修的那条路径吗？**」。
+
+### §143.14.6.1 收尾时撞见的两个「**判据自身**」的问题（同轮修掉）
+
+本轮的门自己红过两次，两次都指向**判据**而不是被测代码 —— 这是同一类错误的两个形态。
+
+#### ① fd9 族门在**原始文本**里搜模式 ⇒ 把「注释里引用了该模式」也算成违规
+
+- 现象：`TestSingleInstanceGateMustNotSwallowStderr` 报
+  `ursm-snapshot-health.sh:424 单实例闸门把 stderr 一起重定向掉了`，
+  而 424 行是**我自己写的 SQL 注释**（里面写了「exec 9>file 2>/dev/null」这句说明文字）。
+- 真相：那段文字位于**双引号字符串**内部 ⇒ 在 shell 语义里是**惰性文本**（**不会被执行**），
+  但「原始文本 grep」的门照样报红 ⇒ **判据自身的假阳性**。
+- ⇒ ⇒ ★★ **正确口径**：**只有引号外的文本才可能被 shell 执行**
+  ⇒ 「fd9 闸门吞 stderr」这条判据必须只扫**代码位**。
+  ★ 而「双引号内的反引号」那条判据恰好**相反** —— 它要报的正是**引号内**的反引号
+  （因为双引号里也会做命令替换），但仍要排除**注释**。
+  ⇒ 一次引号感知扫描同时给出这两个视图，避免两套解析器给出互相矛盾的结论。
+- 修法：扫描器改为同时产出**代码位**（引号外、注释外）；
+  新增 `TestSingleInstanceGateScanIgnoresQuotedAndCommentedText`（4 条子用例 + 2 条真缺陷仍被抓的自证）。
+- ★ **变异复核**：把某个**真闸门**退回旧形态 ⇒ 门仍红 ⇒ 新口径没有把门削弱成恒绿。
+
+#### ② 既有门 `TestAvailabilityDoesNotClaimOutageLengthItNeverObserved` **间歇失败**（与本轮无关，但已定位并修好）
+
+- 现象：`-count=1/2` 绿、`-count=3` 红；全量套件里偶发红。
+- ★ **归属判定**（用强证据，不用「弱证据」推断）：
+  在 **pristine HEAD 的 worktree**（`git worktree add /private/tmp/p14314-pristine HEAD`）上
+  用**同样的 `-count=6`** 复跑 ⇒ **同样红 1 次** ⇒ **既有 flaky，不是本轮引入**。
+  ⇒ 这条纪律又一次生效：**不查就会写成「既有失败与我无关」或「我引入的」**，
+  而两者都需要证据。
+- 根因（真在**夹具**里，不在被测脚本）：
+  夹具的**假 timeout** 泄漏后台 watcher ——
+  `kill "$watcher"` 只杀了 subshell 本身，**没杀它的 `sleep` 子进程**；
+  而 bash 的语义是「**等待前台子命令时收到信号，要推迟到该命令结束才处理**」
+  ⇒ 信号被推迟 ⇒ `sleep` 结束后 subshell **仍然执行** `kill -TERM -"$pid"`
+  ⇒ 那个 pid 早已被系统**回收复用** ⇒ **误杀后续运行里的无关进程**
+  ⇒ 症状表现为「间歇性少一条告警」，与判据毫无关系。
+- 修法（两条同时上）：① watcher 里 `trap 'exit 0' TERM` ⇒ 收到信号立刻退出，绝不执行那行 kill；
+  ② 先杀**整个进程组**（`kill -TERM -"$watcher"`，`set -m` 下 watcher 自成一组），
+  杀不掉再退回杀子 shell。
+- 验收：修后 `-count=8` **8/8 全绿**（修前第 3 次起就红）。
+- ⇒ ★ **教训**：「间歇性少一条断言」这种症状，**第一嫌疑是量具**（夹具/替身/桩），
+  而不是「判据太严」；而**替身必须自己收干净自己起的后台进程**。
+
+### §143.14.7 生产部署与验收（252）
+
+- **部署范围**：台账里 **9 个 in-sync** 的只读巡检脚本（`pg-table-bloat-check` / `pg17-disk-watch` /
+  `pg17-duplicate-index-check` / `pg17-emergency-cleanup` / `pg17-index-bloat` /
+  `pg17-onconflict-constraint-check` / `pg17-pg-availability-check` / `ursm-snapshot-health` /
+  `ursm-snapshot-payload-bloat`）。
+  旧版逐个备份到 `/opt/backups/pg17/<name>.bak.<TS>`。
+- **3 个 drift 脚本未部署**（`pg17-drop-old-columnar-partitions` / `pg17-proactive-empty-table-cleanup` /
+  `pg17-vacuum-bloat`）：它们的新版含**破坏性动作**（VACUUM FULL / 新启用 DROP），属主拍板项。
+  ⇒ 但**仓内已统一了闸门形态** ⇒ 台账里「仓内 md5」照改、「线上 md5」不动、状态保持 `drift` 并写清原因。
+- **部署后校验**：9/9 **线上 md5 == 仓内 md5**；线上 `bash -n` 全过。
+
+**验收证据（决定性）**：
+
+1. **重复调度已消**：availability 每分钟 CMD `2 → 1`（23:55 起）；skip 日志最后一条 `23:54:01`，此后不增长。
+2. **stderr 已出声（10 天零增长后首次）**：
+   ```
+   2026-10-20T00:29:03+0800 OK: 索引 ursm_node_snapshot_min_pkey 的列集合恰好覆盖 ON CONFLICT 推断列（credential_id,raw_model_name,snapshot_ts,tenant_id）。
+   2026-10-20T00:29:03+0800 该表共有 1 个唯一索引/约束。
+   ```
+   （此前该日志停在 `2026-10-10 16:14:45`；crond 于 `00:29:01` 只派发**一条**。）
+3. **心跳语义修正生效**：新文件 `/var/lib/pg17-check/pg-onconflict.lastrun` = `2026-10-20T00:29:03+0800`（由脚本自己写，trap 在闸门**之后**）。
+4. **availability 心跳仍每分钟更新**（`00:16:02` 实测），且 skip 不再刷新它。
+5. **反引号假错消失**：`ursm-snapshot-health` 部署后线上文件已无反引号形态（`grep` 复核）。
+6. **超时修复**：实测 `STMT_TIMEOUT=600s` 整轮 **105s**、exit 0、判据 OK。
+
+### §143.14.8 诚实边界与本轮**没做**的事
+
+- ⚠ **本轮对生产的写入只有三类**：
+  ① **移走我自己放错的 cron 备份副本**（`/etc/cron.d/pg17.bak.*` → `/opt/backups/pg17/cron.d/`）；
+  ② **部署 9 个只读巡检脚本**（旧版逐个备份）；③ 手工跑一次只读巡检做测量。
+  ⇒ **没有**改任何 cron 调度行、**没有**动任何表/索引、**没有**跑 `--fix` 类的破坏性动作。
+- ⚠ **`STMT_TIMEOUT` 600s 只解决了「出不了结论」**，**没有解决成本**：
+  每小时扫 7 天 ~2,370 万行是真的；降本要「每日基线物化表」⇒ **结构改动 ⇒ 待属主拍板**。
+- ⚠ **3 个 drift 脚本仍未部署**（破坏性动作待拍板），它们**本就不靠 stderr** ⇒ 机制②对它们无实害。
+- ⚠ **没有新增「巡检自身死亡」的看门狗作业**：
+  本轮只把**心跳语义修对**（心跳 = 真采样过），**刻意不引入新的调度面**（新增 cron = 新增漂移面）。
+  ⇒ 「心跳陈旧即告警」这件事**仍没有人做**（待属主决定要不要加）。
+- ⚠ **212/211 侧本轮未动**（本节的现场证据全部来自 252）。
+- ⚠ **本轮的门全部是仓内门**：「线上跑的是哪一版」由 `deployed-252.tsv` 记录，
+  由 `deployed_script_drift_test.go` 保证「改了脚本必须更新台账」；
+  但**「台账记录的线上 md5 是否属实」仍然无法在 CI 里自动核对**（需要那台机器的凭据）——
+  这与 §143.13 的普查器盲区同族，**仍未闭环**。
+
+★ 同族：[[日志不增长不是死亡证据]] · [[守护进程内存与磁盘不一致]] ·
+[[备份副本不得留在调度目录]] · [[exec 不带命令时重定向作用于当前 shell]] ·
+[[补齐量具比新写门更能挖出缺陷]] · [[注释里不能插在反斜杠续行中间]] ·
+[[判据红了先怀疑自己的前提]] · [[门是绿的不等于门在测东西]]。

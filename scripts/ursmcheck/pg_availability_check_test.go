@@ -78,9 +78,22 @@ d=$1; shift
 #   而症状（超时没生效）会直接指向被测脚本，而真因在夹具。
 # ★ { } 2>/dev/null 压掉 shell 回收时的 "Terminated: 15" ——
 #   真 timeout 不打这行，被测脚本 log 里凭空多一行会让人以为出了别的问题。
-( sleep "$d"; kill -TERM -"$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null ) >/dev/null 2>&1 & watcher=$!
+# ★★ 2026-10-20 订正（§143.14）：watcher 必须在被杀时**立刻退出**，
+#   绝不能「等 sleep 结束才执行那行 kill」。
+#   旧写法的坑是 bash 的信号语义：**shell 等待前台子命令时收到信号，
+#   会推迟到该子命令结束才处理** ⇒
+#     「kill "$watcher"」 只杀了 subshell 本身，**没杀它的 sleep 子进程**；
+#     而 subshell 正在等 sleep ⇒ 信号被推迟 ⇒ sleep 结束后 subshell
+#     **仍然执行** 「kill -TERM -"$pid"」 ⇒ 那个 pid 早已被系统回收复用
+#     ⇒ **误杀后续运行里的无关进程**。
+#   症状完全不像「夹具坏了」：表现为「间歇性少一条告警」这种与判据无关的现象
+#   （2026-10-20 实测：-count=1/2 绿、-count=3 红；pristine HEAD 同样 -count=6 里红 1 次）。
+#   ⇒ 修法两条同时上：① 「trap 'exit 0' TERM」 让 watcher 收到信号就退出，
+#     绝不执行那行 kill；② 先杀**整个进程组**（set -m 下 watcher 自成一组，
+#     连它的 sleep 一起收），杀不掉再退回杀子 shell。
+( trap 'exit 0' TERM; sleep "$d"; kill -TERM -"$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null ) >/dev/null 2>&1 & watcher=$!
 { wait "$pid"; rc=$?; } 2>/dev/null
-kill "$watcher" 2>/dev/null
+kill -TERM -"$watcher" 2>/dev/null || kill -TERM "$watcher" 2>/dev/null
 [ "$rc" -ge 128 ] && exit 124
 exit "$rc"
 `
@@ -101,10 +114,37 @@ printf '\n' >> "$FAKE_NOTIFY_LOG"
 exit 0
 `
 
+// 假 flock（2026-10-19 新增，§143.14）。
+//
+// ★ 为什么需要它：被测脚本的「单实例闸门」用 `flock -n 9` 判断
+//
+//	「锁是不是被占着」，而 **macOS 没有 flock(1)**（util-linux 的东西），
+//	⇒ 开发机上 `command -v flock` 失败 ⇒ 整道闸门被跳过（fail-open）
+//	⇒ **闸门那条分支在开发机上从来没被执行过**，于是
+//	「被锁挡掉的那一轮到底做了什么」无人验证。
+//	§143.14 的教训正是：没被走过的分支里藏着真缺陷 ——
+//	skip 路径当时会刷新心跳文件（心跳在说谎）。
+//
+// 语义：只实现「拿不到锁 ⇒ 退出非 0」这一件事。
+//
+//	FAKE_FLOCK_RC=1 ⇒ 模拟「锁被别的实例占着」。
+//
+// ★ 被测脚本调的是 "flock -n 9"（fd 形式），真 flock 会去锁那个 fd；
+//
+//	这里不碰 fd —— 本门要验的是**闸门分支的行为**，不是 flock 的实现。
+const fakeFlockBody = `#!/bin/sh
+# 假 flock：不实现真锁，只按 FAKE_FLOCK_RC 决定「拿到 / 拿不到」。
+# ★ 被测脚本调的是 "flock -n 9"（fd 形式），真 flock 会去锁那个 fd；
+#   这里不碰 fd —— 本门要验的是**闸门分支的行为**，不是 flock 的实现。
+exit "${FAKE_FLOCK_RC:-0}"
+`
+
 type availEnv struct {
 	bin       string
 	state     string
 	notifyLog string
+	lockDir   string
+	skipLog   string
 }
 
 type availRun struct {
@@ -113,8 +153,8 @@ type availRun struct {
 	notify []string
 }
 
-// newAvailEnv 造一套夹具。必须带三个假命令：podman、docker（脚本挑运行时用）、
-// timeout（开发机可能没有）。
+// newAvailEnv 造一套夹具。必须带四个假命令：podman、docker（脚本挑运行时用）、
+// timeout（开发机可能没有）、flock（开发机没有 ⇒ 闸门整条被跳过）。
 func newAvailEnv(t *testing.T) *availEnv {
 	t.Helper()
 	dir := t.TempDir()
@@ -122,6 +162,8 @@ func newAvailEnv(t *testing.T) *availEnv {
 		bin:       filepath.Join(dir, "bin"),
 		state:     filepath.Join(dir, "state"),
 		notifyLog: filepath.Join(dir, "notify.log"),
+		lockDir:   filepath.Join(dir, "lock"),
+		skipLog:   filepath.Join(dir, "skip.log"),
 	}
 	if err := os.MkdirAll(e.bin, 0o755); err != nil {
 		t.Fatal(err)
@@ -130,6 +172,7 @@ func newAvailEnv(t *testing.T) *availEnv {
 		"podman":  fakeRuntimeBody,
 		"docker":  fakeRuntimeBody,
 		"timeout": fakeTimeoutBody,
+		"flock":   fakeFlockBody,
 	} {
 		if err := os.WriteFile(filepath.Join(e.bin, name), []byte(body), 0o755); err != nil {
 			t.Fatal(err)
@@ -153,6 +196,12 @@ func (e *availEnv) run(t *testing.T, extra ...string) availRun {
 		"PG17_STATE_DIR="+e.state,
 		"PG17_NOTIFY="+filepath.Join(e.bin, "notify"),
 		"FAKE_NOTIFY_LOG="+e.notifyLog,
+		// ★ 单实例闸门必须被**真正执行**（否则 macOS 上没有 flock ⇒ 闸门整条
+		//   被 fail-open 跳过 ⇒ 闸门分支永远没被验证过）。
+		//   锁目录与 skip 日志都指到临时目录：默认值在开发机上不可写，
+		//   mkdir 失败同样会让闸门被跳过。
+		"LLMGW_LOCK_DIR="+e.lockDir,
+		"LLMGW_LOCK_SKIP_LOG="+e.skipLog,
 	)
 	cmd.Env = append(cmd.Env, extra...)
 	out, err := cmd.CombinedOutput()
