@@ -465,6 +465,13 @@ var projectionExprsV2 = []string{
 	"NULL::jsonb",
 	"NULL::numeric(3,2)",
 	"t.upstream_finish_reason",
+	// ⚠ tools 尚无写入路径，本列恒为空数组 —— 读它得不到信息。
+	// 事实校准（2026-10-19 复核）：列由 456 建为
+	// `tools JSONB NOT NULL DEFAULT '[]'::jsonb`，所以它在库里是 **'[]' 而非
+	// NULL**；本投影把它原样透出，形状正确、值为空。
+	// 缺的是写入方：turn_writer.go 的 INSERT 列清单里没有 tools，
+	// 全仓也无人写它（同 attempt_no，见 admin/turns_sessions.go 的注）。
+	// ⇒ 别写「投影了 tools 就等于有工具调用数据」的判据（恒真）。
 	"t.tools",
 	"t.client_endpoint",
 	"t.client_timeout",

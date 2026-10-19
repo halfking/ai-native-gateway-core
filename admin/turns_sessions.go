@@ -566,6 +566,15 @@ func (h *Handler) loadTurnsForSessions(ctx context.Context, sessions []*TurnsSes
 
 	turnWhere := strings.Join(turnClauses, " AND ")
 
+	// ⚠ 下面 SELECT 里的 `attempt_no` **尚无写入路径，恒为 0** —— 读它得不到
+	// 信息，别据此写「本轮是第 N 次尝试」的判据（那类判据恒真）。
+	// 事实校准（2026-10-19 复核）：该列由 456 建为
+	// `attempt_no INT NOT NULL DEFAULT 0`，所以它在库里是 **0 而非 NULL**；
+	// 投影里的 COALESCE 是冗余的，不是「把 NULL 兜成 0」。
+	// 缺的是写入方：turn_writer.go 的 INSERT 列清单里没有 attempt_no，
+	// 全仓也无人写它（promote 函数只搬运既有值，同样不产生新值）。
+	// 可用真源在 requestjourney 侧（AttemptNo，见
+	// domains/requestjourney/attempt_facts.go），尚未接到本写入点。
 	query := fmt.Sprintf(`
 		SELECT t.session_id, t.turn_no, t.ts,
 			COALESCE(t.request_id, '') AS request_id,

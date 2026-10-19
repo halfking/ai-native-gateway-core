@@ -1108,6 +1108,13 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			// 的实例，下个月建分区时原样长回来（实测每月约 243 MiB ≈ 2.9 GB/年）。
 			// 守卫在迁移文件里**现算覆盖关系**，证不出来就整条回滚。
 			"876_drop_prefix_covered_parent_indexes.sql",
+			// 877（2026-10-19）：session_turns search_text GIN trigram 索引 ——
+			// S4 停写后 admin/logs.go:540 的 `search_text ILIKE '%…%'` 前导
+			// 通配符谓词在 session 家族上没有任何可用索引，对每个 6.4GB 级月分区
+			// 顺序扫描。补齐 v1 族既有（ensure_request_logs_partition）的 trigram
+			// 能力到 session 族。判据是 planner 层（EXPLAIN 出 Bitmap Index
+			// Scan），不是「索引存在」——后者在空表上恒真。
+			"877_session_turns_search_text_trgm.sql",
 		},
 	}
 }

@@ -1691,6 +1691,17 @@ files=(
   # 守卫在迁移文件内现算覆盖关系，证不出来整条回滚、不删任何索引。
   "$ROOT_DIR/sql/migrations/startup/876_drop_prefix_covered_parent_indexes.sql"
 
+  # ── 877（2026-10-19）：session_turns search_text GIN trigram 索引 ─────────
+  # S4 停写后新请求只落 session 家族，而 request_logs_with_current_month
+  # 的前两条 UNION ALL 臂就是 session_turns(_hot)。admin/logs.go:540 的搜索
+  # 过滤是 `search_text ILIKE '%'||$n||'%'`——**前导通配符**，btree 无法服务；
+  # session 族又没有任何 search_text 索引（v1 族有：ensure_request_logs_
+  # partition 每个分区建 gin_trgm_ops，本次只是补齐到 session 族）。
+  # ⇒ 该谓词退化为对每个 6.4GB 级月分区顺序扫描。
+  # 上线代价见迁移文件头（父表上不支持 CREATE INDEX CONCURRENTLY；
+  # GIN trigram 构建分钟级，故 statement_timeout 放宽到 10min）。
+  "$ROOT_DIR/sql/migrations/startup/877_session_turns_search_text_trgm.sql"
+
   # ── 2026-10-16 孤儿迁移 044 补登（health_source 白名单缺 probe_now）──────
   #
   # 044_health_source_probe_now.sql 早就写在 sql/migrations/startup/ 里，注释把
