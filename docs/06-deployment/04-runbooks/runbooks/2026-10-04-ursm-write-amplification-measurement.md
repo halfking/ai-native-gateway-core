@@ -27365,6 +27365,25 @@ WHERE c.relkind = 'i' AND NOT c.relispartition AND i.indisvalid
 | 55 MB 空 TOAST heap + 6 MB 索引 | `REINDEX`（管不到） | `TRUNCATE` 或 `VACUUM FULL` | 索引回收不到 TOAST 堆 |
 | `_request_logs_hot` 40 MB 自有索引 | — | `TRUNCATE`（整表 59 MB） | 索引只随表重建才回收 |
 
+
+> 🚨 **[2026-10-19 §122 就地订正] 下面这段的两处结论被实测推翻 —— 方向对、载体错，且「静默零」不在 SQL 层。**
+>
+> ① **「`recent_success_rate()` 直读恒空的 `_request_logs_hot` ⇒ 静默返回零」是错的。**
+>    该函数是 `UNION ALL` **两个**源：`_request_logs_hot`（门控后为空）
+>    ∪ `session_turns_hot`（**仍在正常写入**）⇒ 兜底生效。
+>    生产实测：`recent_success_rate(21,'minimax-m3',50,3)` 返回 `rate=1, samples=50`（52.6 ms）。
+>
+> ② 真正静默的是 **`system_health_status`**（单源，无兜底），且**「零」不在 SQL 层**：
+>    SQL 在 0 行时返回 `success_rate = NULL`（**诚实**），
+>    是 Go 侧 `bg/system_health.go:130-133` 的 `sr := 0.0; if != nil {…}` **零值兜底**把它变成 `0`。
+>    实测生产 API：`/api/health/system` → `{"status":"suspect","success_rate":0,…}`，
+>    而同一服务的 `/readyz` 是 **200** ⇒ 一个说「可疑 + 0%」，一个说「正常」。
+>
+> ③ **「7 个函数」不准** —— 实测引用 v1 家族的是 **26 个函数 + 12 个视图**。
+>
+> ⚠ §122 只验了 2 个函数，**12 个视图一个都没验** ⇒ 「读端只有一处」尚未成立。
+> 详见 **§122**。
+
 ⇒ ⇒ ★ **"回收空间"和"修行为"是两件事**：
 TRUNCATE / REINDEX 解决**空间**；
 而 §74 记的 `recent_success_rate()` 直读恒空的 `_request_logs_hot`（3 小时窗口）
@@ -28523,3 +28542,167 @@ It mirrors the decision v1 already made"）在数据上的体现。
 | ★ | 找 §111 的**原始 SQL 与测量时间戳**重放，定位 12.36% 的出处 |
 | ★ | 查其余网关实例（本地 host-first / 245）的 journal，补全「多实例是否一致」 |
 | ★ | 若决定保留标记：给「成功路径不打日志」这件事补一个可观测计数（现在只有 prometheus，且进程内存、重启归零） |
+
+---
+
+## §122 普查「**读端**」—— 找到 §114 那句「静默零」的**确切位置**，且它不在 SQL 层（2026-10-19）
+
+§117 普查的是**写端**（cron 作业）。§114 留了一条行为项：
+
+> 门控停写期间 `recent_success_rate()` 等 7 函数读恒空表 ⇒ **静默零**；
+> TRUNCATE 修不了，需产品/代码决策。
+
+本节去验它。结论：**方向对了，但位置错了，而且措辞也不对。**
+
+### 一、口径：先列全读端对象，并**按副作用把函数分类**
+
+| | 数量 | 说明 |
+|---|---|---|
+| 引用 v1 家族的**视图** | **12** | `pg_depend` 可列全（视图有规范化 rewrite 依赖） |
+| 引用 v1 家族的**函数** | **26** | 见下方两个坑 |
+
+⚠ 第一个坑：**`pg_depend` 里查函数引用会返回 0 行**，而实际有 26 个 ——
+因为它们都是 `LANGUAGE sql` 的**字符串体**（`AS $function$ ... $function$`），
+**函数体内的表引用不产生依赖记录**（只有 PG 14+ 的 `BEGIN ATOMIC` 标准体语法才记）。
+⇒ 改用 `pg_get_functiondef(oid) LIKE '%request_logs%'` 才列全。
+
+⚠ 第二个坑：我用「函数体是否含 `insert|update|delete|...`」分类读写，
+结果 **26/26 全部命中**，连 595 字节的 `credential_most_used_model` 也中 ——
+**过度匹配了注释里的词**。
+⇒ ★★ 但这个方向是**保守安全**的（把纯读误判成有写，就不去调它），
+   所以保留为**筛选器**，判定靠读定义。
+
+⚠ ⇒ ★★★ **最要紧的一条：26 个函数全部 `provolatile = 'v'`（VOLATILE）或 `'s'`（STABLE），
+而 `cleanup_stale_in_progress_requests`、`promote_*`、`archive_*` 从名字看就会写库。
+⇒ 本节一条都没盲调，只调用了「STABLE + 定义确认纯 SELECT」的两个。**
+
+### 二、★ 同族两个读端函数，**抗门控能力完全不同**
+
+#### `recent_success_rate(bigint,text,int,int)` —— `LANGUAGE sql` + **STABLE**
+
+```sql
+WITH recent AS (
+    SELECT success, ts FROM _request_logs_hot WHERE …      ← 门控关闭后为空
+    UNION ALL
+    SELECT success, ts FROM public.session_turns_hot WHERE … ← 仍在正常写入
+)
+SELECT AVG(CASE WHEN success THEN 1.0 ELSE 0.0 END), COUNT(*)::int
+  FROM (SELECT success FROM recent ORDER BY ts DESC LIMIT p_sample_n) newest_samples;
+```
+
+**生产实测**（先在 `session_turns_hot` 找一个真实的 `(credential_id, model)` 组合）：
+
+```
+session_turns_hot 最近 3h：credential_id=21 / model=minimax-m3 → 420 行、419 成功
+
+SELECT * FROM recent_success_rate(21, 'minimax-m3', 50, 3);
+  rate | samples
+------++--------
+    1 |      50          ← 52.6 ms
+```
+
+⇒ ⇒ ★★★ **它工作正常。**`UNION ALL` 的第二源 `session_turns_hot` 仍在写，兜底生效。
+⇒ ⇒ ⇒ **§114 说的「`recent_success_rate()` 静默零」是错的。**
+
+#### `system_health_status(int)` —— `LANGUAGE sql` + **STABLE**
+
+```sql
+WITH win AS (
+    SELECT COUNT(*) AS n, COUNT(*) FILTER (WHERE success) AS ok,
+           COUNT(*) FILTER (WHERE NOT success) AS fail
+      FROM _request_logs_hot                                   ← ★ 单源，没有任何兜底
+     WHERE ts >= now() - make_interval(secs => p_window_seconds)
+)
+SELECT CASE WHEN n = 0 THEN 'suspect'                          ← 0 行 ⇒ suspect
+            WHEN ok/n >= 0.80 THEN 'ok' ELSE 'degraded' END, …
+```
+
+**生产实测**：
+
+```
+SELECT * FROM system_health_status(3600);
+  status  | success_rate | sample_count | failure_count | last_check_at
+---------+--------------+--------------+---------------+-------------------
+ suspect |           NULL|            0 |             0 | 2026-10-19 11:13:20
+```
+
+⇒ ⇒ ★★★ **同族两个函数，一个有兜底源、一个没有。**
+⇒ ⇒ ★★ 「门控停写导致监控失效」**不是全有全无，而是分对象的** ——
+这正是 §117 那条「必须把普查做完才能说一族里只有几处」的价值。
+
+### 三、🚨 但真正的「静默零」不在 SQL 层，在 **Go 的零值兜底**
+
+SQL 层是**诚实**的：`n = 0` 时 `success_rate` 返回 **NULL**（不是 0）。
+把 NULL 变成 `0` 的是 `bg/system_health.go:130-133`：
+
+```go
+sr := 0.0
+if successRate != nil {
+        sr = *successRate
+}
+w.lastStatus.Store(SystemHealthStatus{ Status: status, SuccessRate: sr, … })
+```
+
+⇒ ⇒ 🚨 **Go 的零值兜底把「没有数据」改写成了「成功率 0%」。**
+⇒ ⇒ ★★★ 这才是 §114 那句「静默零」的**确切位置** —— 我 §114 把它归到了 SQL 函数上，
+**位置错了**（结论方向对，载体错）。
+
+**用户可见性坐实**（154 canary，只读 GET）：
+
+```
+GET /api/health/system  →  HTTP 200
+{"status":"suspect","success_rate":0,"sample_count":0,"failure_count":0,
+ "last_check_at":"2026-10-19T11:14:16.865983+08:00"}
+
+GET /readyz            →  HTTP 200          ← 服务其实健康
+```
+
+⇒ ⇒ 🚨🚨 **生产 API 当前正在对外报「可疑 + 成功率 0%」，而 `/readyz` 是 200。**
+⇒ ⇒ ★★★ 且它**每 30 秒刷新一次并经 SSE 推给浏览器** ——
+`bg/system_health.go:22-25`：「the LiveStreamSSEHub re-broadcasts the new status to any
+browser connected to `/api/health/system/stream`（the GDRT H badge on the homepage
+listens on this stream）」。
+⇒ ⇒ ⇒ **从 2026-10-14 起，主页 H 徽章已持续 6 天显示「可疑 + 0%」，而真相是门控有意停写。**
+
+### 四、缺陷是两个叠加，各修各的
+
+| 层 | 现状 | 问题 | 方向 |
+|---|---|---|---|
+| **SQL** `system_health_status` | 单源 `_request_logs_hot` | 门控关闭时无数据源 ⇒ 恒 `suspect` | ① 对齐 `recent_success_rate` 加 `session_turns_hot` 兜底；② 或新增一档「数据源停用」区分于「可疑」 |
+| **Go** `bg/system_health.go:130-133` | `nil ⇒ 0.0` | **把「未知」谎报成「0% 成功率」** | 保留「未知」语义（独立标志位或哨兵值），让前端能区分「没数据」与「全失败」 |
+
+⇒ ⇒ ★★★ **即使把 SQL 的兜底源补上，Go 这三行仍应改** ——
+它对**任何**「SQL 返回 NULL」的场合都会说谎，不止门控这一种成因。
+⇒ ⚠ 三条修法**都是设计变更**（涉及 SQL 对象 + API 契约 + 前端展示），
+**本节不改**，登记为待拍板。
+
+### 五、诚实边界
+
+| | |
+|---|---|
+| ❌ | **12 个视图一个都没验**（`customer_cost_view`、`v_model_health_dashboard`、`routing_analytics_source` 等是否也在门控后返回 0 或空，**未查**）⇒ 本节的「读端普查」**不完整**，不能说「只有一处」 |
+| ❌ | 只在 **154 canary** 上验了 API。其它实例（本地 host-first、245 等）未验 |
+| ❌ | 未确认 `/api/health/system` 是否**对外公网暴露**（若暴露则影响面更大）—— 未查 |
+| ❌ | `recent_success_rate` 只测了**一个** `(credential_id, model)` 组合；不能据此说它对所有凭据都工作（例如只在 `session_turns_hot` 有数据的那些） |
+| ❌ | 「门控关闭」与「suspect」的因果链本节**未做受控验证**（同 §120：开门控看是否恢复 = 生产写） |
+| ⚠ | 「26 个函数全部可能写」是**保守判断**，未逐个读定义确认；我只读了两个 |
+| ✅ | 已证：26 函数/12 视图清单；`pg_depend` 对字符串体失效；两个 STABLE 函数实测输出；`system_health_status` 单源无兜底；Go 零值兜底的三行代码；API 实测 `suspect`+`success_rate:0` 与 `/readyz` 200 并存 |
+
+### 六、动作边界
+
+⚠ 本节全程**只读**：生产 `pg_proc`/`pg_get_functiondef` 元数据查询 + 两个 **STABLE 纯 SELECT** 函数的调用
++ 154 上两次 **HTTP GET**（`/api/health/system`、`/readyz`）+ 读仓库代码。
+**未改任何 SQL 对象、未改任何 Go 代码、未部署、未做任何生产写。**
+⇒ ⚠ 特别声明：**26 个函数里没有一个被盲调**，只调用了「STABLE + 定义确认纯 SELECT」的两个；
+VOLATILE 的 `cleanup_stale_in_progress_requests`、`promote_*` 等**全程未调用**。
+
+### 七、由此产生的待办
+
+| 优先级 | 动作 |
+|---|---|
+| 🚨 **P0（属主）** | 改 `bg/system_health.go:130-133` 的零值兜底 —— 它对**任何** NULL 都谎报 0%，不限于门控 |
+| 🚨 **P0（属主）** | 给 `system_health_status` 加 `session_turns_hot` 兜底，或新增「数据源停用」状态档 |
+| ★ | **把 12 个视图逐个验完**（本节没做）⇒ 才能说「读端只有一处」 |
+| ★ | 确认 `/api/health/system` 的暴露面（是否公网） |
+| ★ | 若门控继续停写：让 worker 在门控关闭时**保持上一次状态**而不是持续报 suspect |
+| ★ | 其余网关实例（本地 host-first / 245）的同类验证 |
