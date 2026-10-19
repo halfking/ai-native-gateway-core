@@ -51,6 +51,7 @@ func TestHandleClearManualDisabled(t *testing.T) {
 		m := &CredentialMonitorHandlers{h: h}
 
 		req := httptest.NewRequest(http.MethodPost, "/api/credentials/clear-manual-disabled", bytes.NewBufferString("invalid"))
+		req = SetAuthContext(req, &AuthContext{Role: "super_admin", IsJWT: true})
 		w := httptest.NewRecorder()
 
 		m.handleClearManualDisabled(w, req)
@@ -67,6 +68,7 @@ func TestHandleClearManualDisabled(t *testing.T) {
 		body := map[string]any{"reason": "test"}
 		bodyBytes, _ := json.Marshal(body)
 		req := httptest.NewRequest(http.MethodPost, "/api/credentials/clear-manual-disabled", bytes.NewBuffer(bodyBytes))
+		req = SetAuthContext(req, &AuthContext{Role: "super_admin", IsJWT: true})
 		w := httptest.NewRecorder()
 
 		m.handleClearManualDisabled(w, req)
@@ -83,6 +85,7 @@ func TestHandleClearManualDisabled(t *testing.T) {
 		body := map[string]any{"credential_id": 123}
 		bodyBytes, _ := json.Marshal(body)
 		req := httptest.NewRequest(http.MethodPost, "/api/credentials/clear-manual-disabled", bytes.NewBuffer(bodyBytes))
+		req = SetAuthContext(req, &AuthContext{Role: "super_admin", IsJWT: true})
 		w := httptest.NewRecorder()
 
 		m.handleClearManualDisabled(w, req)
