@@ -790,6 +790,13 @@ if grep -qE 'ENV_FILE.*LLM_GATEWAY_HARD_BLOCK_RULES|LLM_GATEWAY_HARD_BLOCK_RULES
 else
   bad "引擎不复用 env 文件里的硬阻断清单：运维手工改的值下次部署即丢"
 fi
+# 部署机 → 远端引擎的转发：--via 形态的引擎在**目标机**上跑，部署机的环境
+# 变量到不了那儿 ⇒ 清单必须显式转发，否则「export 了再部署」是空操作。
+if grep -qE 'DD_SKIP_LOGIN_SMOKE LLM_GATEWAY_HARD_BLOCK_RULES' "$SCRIPT"; then
+  ok "引擎把 LLM_GATEWAY_HARD_BLOCK_RULES 转发到远端（部署机 export 有效）"
+else
+  bad "引擎不转发 LLM_GATEWAY_HARD_BLOCK_RULES：部署机 export 的清单到不了远端"
+fi
 
 echo
 printf '结果: %d 通过, %d 失败\n' "$pass" "$fail"

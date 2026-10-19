@@ -35,6 +35,12 @@ package sanitizerules
 //	前缀.*   同前缀的一族规则（如 secret.*）
 //
 // 未在清单里的规则**不允许**硬阻断；被允许的规则保持它原有的 action。
+//
+// ## 环境变量的三条语义
+//
+//	未设置 → 出厂默认（只有 input 允许硬阻断）
+//	有值   → **出厂默认 + 配置项**（累加，见 LoadHardBlockAllowsFromEnv）
+//	"-"    → 显式清空（唯一能关掉请求侧底线的写法）
 
 import (
 	"fmt"
@@ -144,8 +150,18 @@ func ParseHardBlockAllows(raw string) ([]HardBlockAllow, error) {
 
 // LoadHardBlockAllowsFromEnv 从环境变量装载清单。
 //
-// 未设置环境变量时**保持默认清单**（不是清空）——运维没配 ≠ 运维要全放开。
-// 显式设成空串则视为「清空清单」，用 "-" 前缀表达（避免与「未设置」混淆）。
+// 语义（三条，别搞混）：
+//
+//	未设置  → **保持出厂默认**（只有 input 允许硬阻断）。
+//	          「忘了配」≠「配成全放开」，也不≠「配成全关」。
+//	有值    → **出厂默认 + 配置项**（**累加**，不是替换）。
+//	          理由：出厂默认里的 `input:*` 是请求侧 fail-closed 的底线；
+//	          若配置项替换掉它，运维只想开一条 egress 规则就会**静默**把
+//	          请求侧的明文凭据放行（211 首轮部署实测踩到：设
+//	          `egress:builtin.egress_sink` 后启动日志的 allows 里
+//	          input 消失 ⇒ 请求侧不再 fail-closed）。
+//	"-"     → 显式清空（任何 scope 都不允许硬阻断）。这是唯一能关掉请求侧
+//	          底线的写法，必须显式。
 func LoadHardBlockAllowsFromEnv() ([]HardBlockAllow, error) {
 	raw, ok := os.LookupEnv(HardBlockAllowEnv)
 	if !ok {
@@ -156,10 +172,24 @@ func LoadHardBlockAllowsFromEnv() ([]HardBlockAllow, error) {
 		SetHardBlockAllows(nil)
 		return nil, nil
 	}
-	allows, err := ParseHardBlockAllows(raw)
+	adds, err := ParseHardBlockAllows(raw)
 	if err != nil {
 		return nil, err
 	}
-	SetHardBlockAllows(allows)
-	return allows, nil
+	// 累加：出厂默认（input:*）+ 配置项。重复项去重（配置项里显式写了
+	// input:* 也只留一条，避免启动日志里出现两条一样的）。
+	merged := DefaultHardBlockAllows()
+	seen := make(map[HardBlockAllow]bool, len(merged)+len(adds))
+	for _, a := range merged {
+		seen[a] = true
+	}
+	for _, a := range adds {
+		if seen[a] {
+			continue
+		}
+		seen[a] = true
+		merged = append(merged, a)
+	}
+	SetHardBlockAllows(merged)
+	return merged, nil
 }

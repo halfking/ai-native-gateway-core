@@ -145,6 +145,46 @@ func TestR1037LoadFromEnvAppliesConfiguredList(t *testing.T) {
 	}
 }
 
+// TestR1037LoadFromEnvIsAdditive 钉住清单的**累加**语义。
+//
+// 211 首轮部署实测踩到的坑：把 `egress:builtin.egress_sink` 配上去后，
+// 启动日志的 allows 里 **input 没了** ⇒ 只想定一条 egress 规则的运维，
+// 顺手把请求侧的明文凭据 fail-closed 也关了 —— 那是**静默放宽已有收紧**。
+//
+// ⇒ 配置项只能**加**规则，不能顶掉出厂默认；关请求侧底线必须显式写 "-"。
+func TestR1037LoadFromEnvIsAdditive(t *testing.T) {
+	prev := HardBlockAllows()
+	t.Cleanup(func() { SetHardBlockAllows(prev) })
+	SetHardBlockAllows([]HardBlockAllow{{Scope: "input", Rule: "*"}})
+	t.Setenv(HardBlockAllowEnv, "egress:builtin.egress_sink")
+
+	allows, err := LoadHardBlockAllowsFromEnv()
+	if err != nil {
+		t.Fatalf("LoadHardBlockAllowsFromEnv: %v", err)
+	}
+	if !HardBlockAllowed("input", "pii.server_ip") {
+		t.Error("配置 egress 规则后，请求侧的 fail-closed 底线被顶掉了（清单语义应是累加）")
+	}
+	if !HardBlockAllowed("egress", "builtin.egress_sink") {
+		t.Error("配置的 egress 规则未生效")
+	}
+	// 重复项去重：配置里显式再写一遍 input:*，启动日志里也不该出现两条。
+	t.Setenv(HardBlockAllowEnv, "egress:builtin.egress_sink,input:*")
+	allows, err = LoadHardBlockAllowsFromEnv()
+	if err != nil {
+		t.Fatalf("LoadHardBlockAllowsFromEnv: %v", err)
+	}
+	seen := map[HardBlockAllow]int{}
+	for _, a := range allows {
+		seen[a]++
+	}
+	for a, n := range seen {
+		if n > 1 {
+			t.Errorf("清单出现重复项 %+v（%d 次）", a, n)
+		}
+	}
+}
+
 // TestR1037LoadFromEnvInvalidKeepsPrevious 固化「配错不静默生效」：
 // 解析失败时**保持原清单**并报错——不能因为一个错别字就悄悄把守门全撤了。
 //

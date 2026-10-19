@@ -273,7 +273,7 @@ if [[ -n "$VIA" ]]; then
             DD_REDIS_CONTAINER DD_REDIS_IMAGE DD_REDIS_DB_START DD_REDIS_DB_END \
             DD_BASE_REGISTRY DD_GO_BASE_IMAGE DD_RUNTIME_BASE_IMAGE \
             DD_ALLOW_STALE_WEB DD_PUBLIC_PROBE_IP DD_ADMIN_USER DD_ADMIN_PASSWORD \
-            DD_SKIP_LOGIN_SMOKE; do
+            DD_SKIP_LOGIN_SMOKE LLM_GATEWAY_HARD_BLOCK_RULES; do
     if [[ -n "${!_v+x}" ]]; then _dd_fwd+=" ${_v}='${!_v}'"; fi
   done
   _dd_args="${DD_ARGS[@]+"${DD_ARGS[@]}"}"
