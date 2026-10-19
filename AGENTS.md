@@ -2936,3 +2936,11 @@ To codeup.aliyun.com:kaixuan/official-deploy/llm-gateway-go.git
    （4300ec39b）是 §113 教训/§114 runbook；上一轮 24h 审计登记的
    `navCoverage` / `hardcoded_cjk` 棘轮 / `i18n/parity` 三条
    仍是 owner 决策项，**未代做**。
+
+
+## 2026-10-19 SSE流量审计续轮
+
+- source78b32c7d6修复每连接queue/node周期重复发送；digest忽略外层时间戳与每次采样递增的SourceVersion，wire真实版本保留。普通成功写失效cache以纠正晚initial_data，keepalive不失效；每类最多补一帧。
+- core117行回归、失败重试/500节点字节夹具、broad live-stream、race两轮及build/vet通过；两个审查P2均有RED→GREEN，真实browser-use/原GoHub7协议断言通过并清理。夹具99%不是生产节省。
+- 源码及已推送merge 36d32f52f按精确SHA完成Go/generic审查；并行主干变更保留，未改原共享checkout。公网只读采样401，未绕鉴权；未部署生产或修改DB/前端。
+- 详细证据、风险、回滚与下一轮提示词见[本轮SSE审计](docs/audit/2026-10-19-sse-traffic-audit.md)。下一步审查隐藏页连接生命周期，并补真实upstream/在用版本/只读管理身份的生产采样与发布验证。
