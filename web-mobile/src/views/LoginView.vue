@@ -26,7 +26,10 @@ const auth = useAuthStore()
 
 const username = ref('')
 const password = ref('')
-const rememberMe = ref(false)
+// 移动端默认勾选「保持登录」：不勾时 token 进 sessionStorage / 会话 cookie，
+// Android stopApp/冷启会丢会话（2026-10-18 Maestro 01-shell-after-relaunch 红）。
+// 桌面同仓 LoginView 若分叉，保持各自默认；此处验收契约是 7 天保持。
+const rememberMe = ref(true)
 const captchaCode = ref('')
 const captchaId = ref('')
 const captchaImage = ref('')
