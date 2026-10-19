@@ -30922,3 +30922,305 @@ git worktree add /tmp/ursm_pristine HEAD
    而非「某个确定缺陷」。
    ⇒ ★★★ **⇒ 偶发 FAIL 不能放过，但也不能默认是自己引入的** ——
    先取证归属，再决定是修还是登记。
+
+## §139 **在 252 上落地修正**：P0-0 / P0-1 / P0-2 + 日志轮转，四项全部实测验证（2026-10-19）
+
+属主授权「完成 211 与 252 上的修正与优化」后执行。本节只记**做了什么、凭什么说做完**；
+凡未做的（disk-watch 告警族、§104/§120 拍板）一律列在末尾「本节未做」。
+
+### §139.1 P0-0：`pg17-emergency-cleanup.sh` 上线前，先发现「父表名写错」并补上**第四道闸**
+
+部署前的例行 diff（线上 vs 仓库）暴露两件事，第二件比预期严重：
+
+1. 仓库版把 `_default` 分区的父表名单从 `request_logs` 改成 **`_request_logs`**。
+   252 实测：`request_logs_default <- _request_logs`（父表确实带下划线）
+   ⇒ **线上那个名单从来没匹配上过**，这条分支是死的（另一族静默失效）。
+
+2. ★★ 但**这个修复本身是个陷阱**。把父表名改对，等于**唤醒一条沉睡的 DROP 分支**，
+   而它的目标 `request_logs_default` 虽然实测 0 行 / 0 MB / relpages=0，
+   却被 **4 个函数的函数体按名字引用**（252 实测）：
+
+   ```
+   archive_request_logs_default()        ensure_request_logs_partition()
+   promote_request_logs_default_batch()  repair_request_logs_detached_partitions()
+   ```
+
+   `promote_request_logs_default_batch` 正是 v1 日志门控
+   （`storage.request_logs_write_enabled=false`）**可逆性所依赖的一环**（§131）。
+   ⇒ 「看起来是空的」与「可以删」之间隔着 promote/归档链路。
+   ⇒ 处置：**给该分支补第四道闸**（函数体引用检查，命中即 SKIP 并留痕），
+   而不是回退父表名（那等于把一个已证实的 bug 永久留着）。
+
+⚠ 这层依赖 **`pg_depend` 查不到**：`LANGUAGE sql` 的函数体是字符串常量，表名不在依赖图里
+（§127 同族坑）。只能用 `strpos(p.prosrc, '<child>')` 显式查。
+⚠ 用 `strpos` 而不是 `LIKE`：表名里全是 `_`，在 `LIKE` 里是**单字符通配符**。
+
+#### 第四道闸的第一版判据是**假绿**——变异验证当场抓到的
+
+给新门写完行为门（注入假 `docker`）后跑变异验证，**第一轮没红**：
+
+```
+变异：把 strpos 谓词改成 false（第四道闸彻底失效）
+结果：ok —— 全绿
+```
+
+根因：假 `docker` 只按子串 `pg_proc` 应答，**完全不看谓词** ⇒
+「有依赖」是无条件给的 ⇒ 改坏谓词它照旧让脚本走 SKIP 分支 ⇒ 用例必然绿。
+⇒ 与 §117「注释里出现同样的字面量会让假 docker 认错分支」是**同一条纪律的另一面**：
+**判据被「怎么问」是行为的一部分，问法变了答案就该变。**
+⇒ 修法：假 docker 的 case 模式从 `*pg_proc*` 收紧为 `*pg_proc*strpos*`。
+
+两轮变异验证（各自命中对应的门）：
+
+| 变异 | 变红的门 |
+|---|---|
+| `strpos(...) > 0` → `false` | `TestEmergencyDefaultPartitionRefusesToDropWhenFunctionBodyReferencesIt` |
+| `if [ -n "$dependents" ]` → `$dependentsX`（恒跳过） | 上一条 **+** `TestEmergencyDefaultPartitionDropsWhenUnreferenced` |
+
+★ 第二条是**正向下限**：线上唯一的候选（`request_logs_default`）**永远**会被第四道闸挡住，
+若没有这条「无引用时仍会删」的用例，这道门测的就是一个生产上永不发生的分支。
+
+### §139.2 部署与只读验证
+
+```
+备份  /opt/scripts/.bak/pg17-emergency-cleanup.sh.20261019-163623（+ vacuum-bloat 同款）
+安装  install -m 755；md5 双向核对一致；bash -n 通过
+自检  /opt/scripts/pg17-emergency-cleanup.sh --auto → disk 72% < 90% 早退，日志正常
+```
+
+**不真的跑 L1**（会 DROP），改用只读探针把三道闸逐条模拟一遍：
+
+| 判据 | 252 实测（只读） |
+|---|---|
+| ① 候选层 `NOT c.relispartition` | 只剩 2 张普通表：`_legacy`(852MB) / `_request_logs_bodies_hot`(290MB) |
+| ② `COUNT(*)` 复核 | `_legacy`=**2,836,620**、`usage_ledger_2026_09`=**1,416,772**、`session_turn_details_2026_09`=**786,036**、`request_wal_2026_09`=**446,777**、`routing_decision_log_2026_09`=**440,138**、唯一真空 `_request_logs_bodies_hot`=0 |
+| ③ `is_part` 行为层 SKIP | 上列 4 张 `ispartition=1`，全部在行为层被 SKIP |
+| ④ 函数体引用 | `request_logs_default` COUNT(*)=0，引用函数=**4 个** ⇒ SKIP |
+
+⇒ **旧版在磁盘过 90% 时会 DROP 掉 5,926,343 行 / 约 2GB（其中 4 张是分区，会打断写路径）；
+新版逐条 SKIP。** §137 的数字在生产侧逐字复现。
+
+### §139.3 P0-2：`pg17-vacuum-bloat.sh` 上线（确认闸 + 列存排除）
+
+252 实测：
+
+- 新候选集（`amname='heap'` ∧ 估算 dead_pct≥30 ∧ >256MB）= **空** ⇒ 周日 03:15 什么都不会做。
+  这是 §118 校准的直接后果（估算在本库**高估约 21 倍**：7.29% vs 实测 0.346%）。
+- 确认闸对列存表**必然失败**，实测报错原文：`ERROR: only heap AM is supported`
+  ⇒ 把列存表排除在候选层是必需项，不是洁癖。
+- ⚠ 新发现：**252 的 `statement_timeout` 默认 30s**，而 866MB 的 `session_summaries`
+  上 `pgstattuple_approx` 实测要 **15s**（`dead_tuple_percent=0.41`）。
+  确认闸不显式设超时 ⇒ 直接继承 30s ⇒ 大表上会超时失败 ⇒ 走 SKIP（fail-safe，方向正确，
+  但**是静默的永久失效**，且日志会误写成「扩展缺失或读失败」）。
+  ⇒ 已登记为待办，**本轮未改**（改它要先定超时值并重测，不是顺手能动的）。
+
+### §139.4 P0-1：`/etc/cron.d/pg17.bak.*` —— 先证「它们真的在跑」，再动
+
+原计划直接移走。执行前先查一个前提：这 4 个文件名**带 `.`**，
+若 cron 实现忽略带点文件名，那「重复作业」就是虚惊，P0-1 根本不成立。
+
+252 是 **Alibaba Cloud Linux 3 + cronie 1.5.2**（`/usr/sbin/crond`），文档不可靠 ⇒ **在机器上做 A/B 判定实验**：
+
+```
+无点对照 /etc/cron.d/zzzctrlprobe   * * * * * root /bin/date -Iseconds >> ctrl.log
+带点实验 /etc/cron.d/zzz.dotprobe   * * * * * root /bin/date -Iseconds >> dot.log
+```
+
+结果：**两侧输出完全一致**（各 2 行，时间戳相同）⇒ **cronie 照样读带点文件名** ⇒ 重复是真的。
+
+第二组实验（删文件后要不要重启 cron）：放一个每分钟的探针，确认它在跑 → 移走 → 再等 70 秒：
+
+```
+放置期间 1 行；移走后累计仍是 1 行  ⇒ crond 删文件即生效，无需重启
+```
+
+独立复核（不靠实验，直接读日志）：`/var/log/llmgw-single-instance-skip.log` **今天**的记录——
+
+```
+1007 skip: pg17-pg-availability-check.sh
+ 270 skip: pg17-emergency-cleanup.sh
+  34 skip: ursm-snapshot-health.sh
+```
+
+⇒ 重复条目**确实在执行**，只是被单实例锁挡在「记 invoked」之前。
+这也解释了为什么 `pg17-emergency-cleanup.log` 里 invoked 仍只有 **4 次/小时**（不是 20）：
+**loser 在记日志之前就退出了**。⇒ ★ 「静态条数」与「实际执行次数」是两个量，
+前者（本节前几轮写的「27 条作业」）会让人误判严重性，后者才决定代价。
+
+处置（零风险，只动 `/etc/cron.d`，不碰 `/opt/scripts/.bak/` 与 `/opt/scripts/backups/`）：
+
+```
+mkdir -p /etc/cron.d.bak
+mv /etc/cron.d/pg17.bak.* /etc/cron.d.bak/
+/etc/cron.d 作业行数：47 → 19
+```
+
+⚠ 附带量化：`pg17-pg-availability-check.sh` 是 `* * * * *`，但今天有 **1,007 次**被锁挡下
+⇒ 它的单轮耗时经常超过 1 分钟，**实际采样率约 30%，不是「每分钟心跳」**。
+这与 §「巡检还在跑吗问 lastrun 的 mtime」是一致的——文件在更新，但频率与设计不符。
+
+### §139.5 日志轮转
+
+`/etc/logrotate.d/pg17-llmgw`：12 个巡检日志，`daily / rotate 14 / maxsize 20M /
+compress / delaycompress / copytruncate`，`logrotate -d` 校验 12 个模式全部识别、零错误。
+
+实测体量与增速（先量再定，别凭印象）：
+
+| 日志 | 体量 | 起始 | 增速 |
+|---|---|---|---|
+| `pg17-disk-watch.log` | 9.2 MB / 58,604 行 | 07-14 | ≈96 KB/天 |
+| `pg17-disk-watch.alert.log` | 6.8 MB / 133,426 行 | 07-15 | ≈71 KB/天 |
+| `llmgw-single-instance-skip.log` | 2.8 MB / 17,157 行 | 10-10（九天） | ≈311 KB/天（P0-1 后应大幅下降） |
+| `pg17-emergency-cleanup.log` | 2.2 MB / 36,799 行 | 07-15 | ≈23 KB/天 |
+
+合计 ≈500 KB/天、15 MB/月 ⇒ **磁盘上无关紧要，但它们是「事发后唯一的证据」**，
+被自己的噪声淹没比占磁盘更糟（§8「资源风险 vs 信号风险」）。
+`copytruncate` 而非 `create`：写入方全是 cron 起的短生命周期进程，收不到 SIGHUP。
+
+★ **没有强制轮转**：现网日志还没写进 runbook，强制轮转会毁掉证据。
+下一次 logrotate 日常运行自然生效。
+
+### §139.6 本节未做（明确留给属主 / 待排期）
+
+- **`pg17-disk-watch` 的永久 warning**（本轮新发现，未改）：
+  磁盘 **72%** 稳定（avail 54.1GB，波动 0.1GB）≥ 阈值 **60%** ⇒ 永不恢复的 warning。
+  `grep -c "🟡" pg17-disk-watch.alert.log` = **9,772 条**。
+  IM 推送有 60 分钟冷却（`PG17_CRIT_COOLDOWN_MIN`），所以不是通知风暴，
+  但仍是**每天约 24 条内容完全相同的 IM**——真事件会被淹没。
+  ⚠ **不该动的**是阈值（脚本注释写明「70% 触发后没人看，warning 才定 60%」），
+  该动的是**电平判定 → 状态跳变判定**（§17 的原话：先分清噪声与检出）。
+- vacuum-bloat 确认闸的显式超时（§139.3）。
+- §104 / §120 两项拍板、§134 P0-k、§127 P0-a/b/c 等既有待办，本轮未动。
+
+---
+
+## §140 **211 侧**：它是一套**完全独立的实例**，§105–§138 的结论一条都不能直接搬（2026-10-19）
+
+### §140.1 先划边界：211 与 252 不是同一套东西
+
+| | 252 | 211 |
+|---|---|---|
+| 角色 | PG 运维机（`/opt/scripts` + `/etc/cron.d/pg17`） | 容器宿主机（hostname=`docker`，Proxmox 内网） |
+| PG | `pg-252-pg17` 容器 | **`acc-pg17` 容器**（`llm-gateway-211` 的 `LLM_GATEWAY_DATABASE_URL=postgres://…@acc-pg17:5432/llm_gateway`） |
+| 与生产 `172.16.2.210` 的关系 | 独立实例 | **独立实例** |
+| `/opt/scripts` | 有 | **无** |
+| `pg17` cron | 8 条作业 | **无**（`/etc/cron.d` 只有 e2scrub_all / vzdump / zfsutils-linux） |
+
+⇒ 两条直接推论：
+
+1. **§135–§138 的 252 修正完全不适用于 211**——那里没有 emergency-cleanup、没有
+   `L1 DROP` 判据、没有 pg17 cron 族。211 的 5.9M 行误伤风险**不存在**
+   （211 实测 `n_live_tup=0 AND size>=100MB` 的表 = **0 张**）。
+2. **§135「多副本纪律」在这里得到第二次兑现**：`supplier_errors_2026_09`
+   在 211 是 **heap**，而生产 172.16.2.210 上它是**列存分区**
+   （`admin/columnar_surface_servible_realdb_test.go:35` 的报错引用）。
+   ⇒ 连「同一张表是不是列存」这种基础属性都不能跨实例推断。
+
+211 的 `llm_gateway` 库 **5,568 MB**（252 与生产都是它的数倍）。
+
+### §140.2 普查结果：四个目标，量级与成因各不相同
+
+| 对象 | 体量 | 结论 |
+|---|---|---|
+| `ursm_node_snapshot_min` | **2,176 MB**（堆 1,601 + 索引 575，TOAST 仅 480 kB） | 8 天 5,973,976 行；键基数只有 **1,282** 个 `(provider,credential,model)`；PK 520 MB 但 `idx_scan=5,626,636`（真在用）。日行数在 33,088~1,156,556 之间剧烈摆动（10-14 只有 33,088 行，8 MB）。⇒ 存储是**时间序列**成本，杠杆在保留期，不在索引。 |
+| `session_bodies_2026_10` | 1,115 MB（**堆仅 21 MB**，TOAST **1,057 MB**） | 65,671 行，每行 `request_delta` + `outbound_body` + `response_delta` 全非空。★ 我一度怀疑「jsonb 没压缩」，**被数据否掉**：最大样本 raw 3,672,042 B → stored 1,341,060 B，**压缩比 0.365（2.7×）**，`attstorage='x'`（EXTENDED）本就是默认。⇒ 这 1 GB 是**真实 payload**，不是配置缺陷。 |
+| `supplier_errors_2026_10` | 54 MB / 75,329 行 | **零索引**（详见 §140.3） |
+| `stats_event_inbox_default` | 71 MB / 75,866 行，dead 13.1% | inbox 未见消费证据，本轮未定性 |
+
+### §140.3 唯一当场修掉的一个：`supplier_errors` 历史侧零索引（迁移 878）
+
+**缺陷本体**：`supplier_errors_unified` = `supplier_errors_hot UNION ALL supplier_errors`，
+是 admin 侧错误分析的唯一读入口，而它两臂的索引配置**完全不对称**：
+
+```
+supplier_errors_hot      5 条 btree（+pkey）
+supplier_errors_2026_09  0 条
+supplier_errors_2026_10  0 条   ← 54 MB / 75,329 行
+supplier_errors_2026_11  0 条   （未来月分区，已预建）
+```
+
+★ 结构性成因：`supplier_errors_hot` **不是分区**（`relispartition=f`），
+所以父表上没有任何索引声明会克隆给月分区。
+
+实测代价（`EXPLAIN ANALYZE`，非估算）：
+
+| 查询（真实调用点） | 修复前 | 修复后 |
+|---|---|---|
+| `admin/vendor_credential_error_handlers.go:337`<br>`credential_id` 等值 + 30 天窗 + `ORDER BY occurred_at DESC LIMIT 200` | `Seq Scan on supplier_errors_2026_10`<br>`actual rows=21,639 / Rows Removed by Filter: 53,690`<br>`Buffers: read=6,876 / **60.213 ms** | `Index Scan using supplier_errors_2026_10_occurred_at_idx`<br>`Rows Removed by Filter: 11`<br>`Buffers: read=297 / **4.746 ms（−92%）** |
+| `admin/errors_trend.go:266`<br>1 小时窗 `GROUP BY supplier` | `Seq Scan`<br>`actual rows=0 / Rows Removed by Filter: 75,329`<br>`read=6,842 / **13.113 ms** | `Index Scan using supplier_errors_2026_10_occurred_at_idx`<br>`read=2` / **0.416 ms（−97%）** |
+
+累计口径：`seq_scan=1,615 / seq_tup_read=**69,873,160** / idx_scan=（空）/
+n_tup_ins=75,329 / n_tup_upd=0 / n_tup_del=0` ⇒ **读:写 ≈ 927:1，而读侧一条索引都没有**。
+
+**设计取舍（写清楚，别让下一个人重新推一遍）**：
+
+- 5 条索引形状**照抄 hot 侧同名索引**，不重新设计——那 5 条服务的就是同一批查询的另一半臂，
+  且是 `EXPLAIN` 实测出来的，不是推测。
+- `idx_supplier_errors_part_credential_occurred` **刻意不含 `tenant_id`**：
+  调用点写成 `($2 = '' OR tenant_id = $2)`，**OR 形态**参数化谓词不能当索引键，
+  放进去只是白付写成本。
+- 建在**父表**上（876 同款教训）：`ensure_supplier_errors_partition` 用
+  `CREATE TABLE … PARTITION OF`，只处理分区实例的话下个月会长不回来。
+  实测确认：三个分区（含空的 `2026_11`）各自拿到 5 条索引，父表 `pg_get_indexdef`
+  照旧渲染 `ON ONLY`——**验收按分区级 `pg_index`，不按父表文字、也不按索引名**（877 已定口径）。
+- 写侧成本诚实口径：本表月增约 7.5 万行（2.5k/天），5 条 btree 实测只在有数据的那个分区
+  占 **12 MB**（54 MB 表）⇒ 属索引的收益区间。
+  ⚠ **不可据此推广**到 `usage_ledger` / `session_turns` 等热写表，读写比完全不同。
+
+**接线（§126 立规：生产执行过的 DDL 必须补 startup 迁移，不留一次性 SQL）**：
+`878_supplier_errors_partition_indexes.sql` + `.down.sql`；canonical/embeddata 两副本 SHA 一致
+（`42ddc0c9…`）；installer `go:embed` + map、`runner.go StartupFiles`、
+`installed_startup_migrations.tsv` 第 273 位、`apply-db-revision-sequence.sh` 的 `files=()`、
+`docs/db-changelog.md` 登记 —— 六处全部就位后，才在 211 上执行
+（SHA 逐字节核对、`to_regclass` 确认 absent、`psql_rc=0`）。
+
+### §140.4 「两张失败日志表 100% 重叠」——**报了但没定性**，因为还差一步
+
+实测：`supplier_errors` 75,329 行 / **18,970** 个 distinct request_id；
+`candidate_failure_logs` 75,330 行 / **18,970** 个 distinct request_id；
+两表 distinct request_id 的 `INTERSECT` = **18,970**（双方全集）。
+
+行数几乎相等、去重口径完全相同 ⇒ **极可能是同一批失败的双写**（合计 115 MB），
+但两表列不同（`candidate_failure_logs` 独有 `upstream_response_body`、
+`context`、`aggregation_id`；`supplier_errors` 独有 `stage`、`latency_ms`、`affected_users`），
+**语义是否可互替需要属主判**。⇒ 本轮**只登记不下结论**，也不动数据。
+⚠ 提醒：这是 §130 那条纪律的同族——「看起来重复」和「可以合并」之间还差一步独立证据。
+
+### §140.5 211 侧未做
+
+- `ursm_node_snapshot_min` 保留期（2.1 GB / 8 天，键基数 1,282）——需先查清消费方
+  读多远的历史才能定，属**属主决策**，本轮不动。
+- `stats_event_inbox_default` 71 MB 未定性（是否已停止消费）。
+- `supplier_errors` × `candidate_failure_logs` 的合并/下线（§140.4，待属主判语义）。
+
+---
+
+### 本轮新增的可复用教训
+
+28. **修好一个 typo 会唤醒一条沉睡的破坏性分支**——「让代码开始工作」和「让它按你预期工作」
+   是两件事。本轮把 `_default` 分区的父表名改对（对），唤醒的却是一条会打断 promote 链路的
+   DROP 分支（错）。⇒ 上线任何「此前从未生效」的分支前，先问它**一旦生效会碰到什么**，
+   并把它的判据补到与相邻分支同等强度（本轮是补第四道闸：函数体引用）。
+
+29. **假运行时的应答粒度决定了门能不能测到东西**。假 `docker` 只按 `pg_proc` 匹配 SQL 时，
+   「有依赖」是无条件给的 ⇒ 改坏谓词也照样绿。⇒ 假运行时的 case 模式要匹配到**判据本身**
+   （`pg_proc*strpos*`），而不只是匹配到「哪个表」。与 §117 注释字面量那条同源：
+   **判据被怎么问，是行为的一部分。**
+
+30. **静态条数 ≠ 实际执行次数**。4 个 `pg17.bak.*` 里共 19 条作业确实在跑，
+   但 `invoked` 日志仍只有 4 次/小时——**loser 在记日志之前就被单实例锁挡掉了**。
+   ⇒ 报告「N 条重复作业」之前，先找**直接证据**（这里是 `llmgw-single-instance-skip.log`
+   里当天的 270 / 1,007 次 skip），否则会把严重性说过头。
+
+31. **cron 实现不能靠文档，也不能靠文件名猜**。252 是 cronie（不是 Debian cron），
+   读**带点**的 `/etc/cron.d` 文件——用一条每分钟的 A/B 探针在机器上判定，60 秒出结论。
+   顺带用第二个探针证明「删文件即生效，无需重启」。
+
+32. **压缩怀疑要先量压缩比再下结论**。我看着 1,057 MB TOAST / 65,671 行（16 KB/行）认定
+   「jsonb 没压」，量了最大样本才发现 3.67 MB → 1.34 MB（2.7×），`attstorage` 本来就是
+   EXTENDED。⇒ 「看起来没压」要先用**同一个值的两态**（存储态 vs 解压态）量一次。
+
+33. **`relkind` 过滤会造出「零索引」的假结论**。我先用 `relkind IN ('r','p')` 查索引归属，
+   得出「分区一个索引都没有 / hot 也没有」的错说法；实际 hot 有 5 条 btree
+   （`relkind='i'` 被我滤掉了）。⇒ 查「某对象上有没有索引」不要靠对象表过滤，
+   要直接查 `pg_index` 或 `pg_indexes`。

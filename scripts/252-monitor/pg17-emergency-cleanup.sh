@@ -173,15 +173,40 @@ if [ "$LEVEL" = "L1" ] || [ "$LEVEL" = "L2" ] || [ "$LEVEL" = "L3" ]; then
     [ -z "$child" ] && continue
     # 验证是否真的为 0 行（防止意外删除有数据的默认分区）
     row_count=$(docker_exec psql -U "$PG_USER" -d "$PG_DB" -tAc "SELECT COUNT(*) FROM $child" 2>/dev/null || echo "-1")
-    if [ "$row_count" = "0" ]; then
-      echo "[$(date -Iseconds)] L1 DROP default partition $child (verified 0 rows)" >> "$LOG"
-      docker_exec psql -U "$PG_USER" -d "$PG_DB" -tAc "
-        ALTER TABLE ${parent} DETACH PARTITION $child;
-        DROP TABLE IF EXISTS $child;
-      " >> "$LOG" 2>&1 || true
-    else
-      echo "[$(date -Iseconds)] L1 SKIP default partition $child: has $row_count rows (NOT EMPTY!)" >> "$LOG"
+    if [ "$row_count" != "0" ]; then
+      echo "[$(date -Iseconds)] L1 SKIP default partition ${child}: has ${row_count} rows (NOT EMPTY!)" >> "$LOG"
+      continue
     fi
+    # ★★ 第四道闸（2026-10-19 实测后补）：0 行**不足以**判定可以摘默认分区。
+    #   默认分区在本仓是**承重对象**，不是残留物。252 实测：
+    #     public.request_logs_default  0 行 / 0 MB / relpages=0
+    #     但 public schema 下有 4 个函数的**函数体按名字引用它**：
+    #       archive_request_logs_default()        ensure_request_logs_partition()
+    #       promote_request_logs_default_batch()  repair_request_logs_detached_partitions()
+    #   ⇒ 「看起来是空的」与「可以删」之间隔着 promote/归档链路；
+    #     其中 promote_request_logs_default_batch 正是 v1 日志门控
+    #     （storage.request_logs_write_enabled）的可逆性所依赖的一环。
+    #   ⚠ 这层依赖 **pg_depend 查不到**：`LANGUAGE sql` 的函数体是字符串常量，
+    #     表名不在依赖图里（§127 同族坑）。所以只能显式用函数体文本查。
+    #   ⇒ 命中即 SKIP 并留痕：宁可留一个 0 行空壳。
+    #   ⚠ 用 strpos 而不是 LIKE：表名里全是 `_`，在 LIKE 里是**单字符通配符**，
+    #     会把 `request_logs_2026_10_default` 之类一并算成依赖（方向是保守，
+    #     但会让日志里的原因不可信）。strpos 是精确子串。
+    dependents=$(docker_exec psql -U "$PG_USER" -d "$PG_DB" -tAc "
+      SELECT string_agg(p.proname || '()', ',')
+      FROM pg_proc p
+      JOIN pg_namespace n ON n.oid = p.pronamespace
+      WHERE n.nspname = 'public' AND strpos(p.prosrc, '${child}') > 0;
+    " 2>/dev/null || echo "")
+    if [ -n "$dependents" ]; then
+      echo "[$(date -Iseconds)] L1 SKIP default partition ${child}: 0 行但被函数体引用（${dependents}），摘掉会打断该链路" >> "$LOG"
+      continue
+    fi
+    echo "[$(date -Iseconds)] L1 DROP default partition $child (verified 0 rows, no function body references it)" >> "$LOG"
+    docker_exec psql -U "$PG_USER" -d "$PG_DB" -tAc "
+      ALTER TABLE ${parent} DETACH PARTITION $child;
+      DROP TABLE IF EXISTS $child;
+    " >> "$LOG" 2>&1 || true
   done <<< "$DEFAULT_PARTS"
 fi
 

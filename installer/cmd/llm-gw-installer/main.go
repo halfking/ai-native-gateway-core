@@ -897,6 +897,9 @@ var dropPrefixCoveredParentIndexes876 []byte
 //go:embed embeddata/startup/877_session_turns_search_text_trgm.sql
 var sessionTurnsSearchTextTrgm877 []byte
 
+//go:embed embeddata/startup/878_supplier_errors_partition_indexes.sql
+var supplierErrorsPartitionIndexes878 []byte
+
 //go:embed embeddata/startup/859_tighten_pii_phone_intl_regex.sql
 var tightenPiiPhoneIntlRegex859 []byte
 
@@ -1200,6 +1203,7 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/875_ursm_snapshot_empty_response_rate_5m.sql":              ursmSnapshotEmptyResponseRate5m875,
 	"startup/876_drop_prefix_covered_parent_indexes.sql":                dropPrefixCoveredParentIndexes876,
 	"startup/877_session_turns_search_text_trgm.sql":                     sessionTurnsSearchTextTrgm877,
+	"startup/878_supplier_errors_partition_indexes.sql":                  supplierErrorsPartitionIndexes878,
 	"startup/859_tighten_pii_phone_intl_regex.sql":                                   tightenPiiPhoneIntlRegex859,
 	"startup/852_models_canonical_column_set_reconcile.sql":                          modelsCanonicalColumnSetReconcile852,
 	"startup/853_credential_probe_queue_automatic.sql":                               credentialProbeQueueAutomatic853,

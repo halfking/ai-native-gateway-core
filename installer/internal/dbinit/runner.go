@@ -1115,6 +1115,13 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			// 能力到 session 族。判据是 planner 层（EXPLAIN 出 Bitmap Index
 			// Scan），不是「索引存在」——后者在空表上恒真。
 			"877_session_turns_search_text_trgm.sql",
+			// 878（2026-10-19）：supplier_errors 分区父表 5 条 btree 索引 ——
+			// supplier_errors_unified = hot UNION ALL 历史，历史侧是**零索引**的
+			// 54MB 月分区，而同一批查询在 hot 侧走 btree（211 acc-pg17 实测：
+			// seq_tup_read=69,873,160 / idx_scan 为空，读:写 ≈ 927:1）。
+			// 形状照抄 hot 侧那 5 条已验证索引；建在父表上让未来月分区自动继承
+			// （ensure_supplier_errors_partition 用 CREATE TABLE … PARTITION OF）。
+			"878_supplier_errors_partition_indexes.sql",
 		},
 	}
 }

@@ -69,7 +69,20 @@ case "$all" in
       printf '%s' "$CANDIDATES"
       ;;
   *pg_inherits*)
-      : ;;   # _default 分区���支（本门不关心）
+      # _default 分区候选（child|parent）。默认空 ⇒ 只关心死表分支的用例不受影响。
+      printf '%s' "$DEFAULT_PARTS"
+      ;;
+  *pg_proc*strpos*)
+      # 第四道闸：函数体是否按名字引用该分区（strpos 实测，不是 pg_depend）。
+      #
+      # ★ 这里必须同时匹配 **pg_proc 与 strpos** 两个词，不能只匹配 pg_proc：
+      #   只按表名/模式名应答时，「有依赖」是假 docker **无条件**给的 ——
+      #   于是把脚本里的 strpos 判据改坏（例如换成字面量 false），它照样返回
+      #   「有依赖」⇒ SKIP 分支仍然走到 ⇒ 用例全绿。
+      #   2026-10-19 实测过这个假绿：变异验证第一轮就是绿的。
+      #   ⇒ 判据被**怎么问**是行为的一部分，问法变了答案就该变。
+      printf '%s' "$DEPENDENTS"
+      ;;
   *DROP*)
       : ;;
   *)
@@ -110,6 +123,81 @@ func runEmergency(t *testing.T, candidates, fakeCount string) (string, string) {
 	}
 	logBody, _ := os.ReadFile(logPath)
 	return string(traceBody), string(logBody)
+}
+
+// runEmergencyDefaultParts 跑一轮 L1，喂 `_default` 分区候选与第四道闸的应答。
+// 与 runEmergency 分开是因为它要多带两个环境变量，而 runEmergency 的签名
+// 已被四条既有用例固定住（改签名会让人以为这几条也变了）。
+func runEmergencyDefaultParts(t *testing.T, parts, fakeCount, dependents string) (string, string) {
+	t.Helper()
+	dir := t.TempDir()
+	fake := fakeEmergencyDocker(t, dir)
+	trace := filepath.Join(dir, "trace.txt")
+	logPath := filepath.Join(dir, "emergency.log")
+
+	cmd := exec.Command(bashForScriptFor(t, emergencyScript), emergencyScript, "--level", "L1")
+	cmd.Env = append(os.Environ(),
+		"DOCKER_BIN="+fake,
+		"TRACE_FILE="+trace,
+		"CANDIDATES=",
+		"DEFAULT_PARTS="+parts,
+		"DEPENDENTS="+dependents,
+		"FAKE_COUNT="+fakeCount,
+		"LOG="+logPath,
+		"LLMGW_NO_SINGLE_INSTANCE_LOCK=1",
+		"LLMGW_LOCK_DIR="+dir,
+	)
+	_, _ = cmd.CombinedOutput()
+
+	traceBody, err := os.ReadFile(trace)
+	if err != nil {
+		t.Fatalf("读调用轨迹失败（脚本可能没跑到 _default 分支查询）: %v", err)
+	}
+	logBody, _ := os.ReadFile(logPath)
+	return string(traceBody), string(logBody)
+}
+
+// TestEmergencyDefaultPartitionRefusesToDropWhenFunctionBodyReferencesIt 钉住第四道闸。
+//
+// 252 实测形态：public.request_logs_default 0 行 / 0 MB / relpages=0，
+// 但有 4 个函数的**函数体**按名字引用它（archive_/promote_/ensure_/repair_），
+// 且这层依赖 pg_depend 查不到（LANGUAGE sql 的函数体是字符串）。
+// 「看起来是空的」与「可以删」之间隔着 promote 归档链路 —— 本门判的是后者不成立。
+func TestEmergencyDefaultPartitionRefusesToDropWhenFunctionBodyReferencesIt(t *testing.T) {
+	skipWindows(t)
+
+	trace, logBody := runEmergencyDefaultParts(t,
+		"request_logs_default|_request_logs",
+		"0",
+		"archive_request_logs_default(),promote_request_logs_default_batch()")
+
+	requireCalls(t, trace)
+	if strings.Contains(trace, "DROP TABLE IF EXISTS request_logs_default") {
+		t.Fatalf("★ 0 行但被函数体引用的默认分区仍被摘掉 —— 会打断 promote/归档链路\ntrace:\n%s\nlog:\n%s", trace, logBody)
+	}
+	if strings.Contains(trace, "DETACH PARTITION request_logs_default") {
+		t.Fatalf("★ 在 DROP 之前就 DETACH 了 —— 分区先被摘下来，后续 INSERT 直接报 no partition of relation found\ntrace:\n%s", trace)
+	}
+	if !strings.Contains(logBody, "SKIP") || !strings.Contains(logBody, "promote_request_logs_default_batch") {
+		t.Fatalf("必须在日志里留下 SKIP 与具体函数名，否则事后无法反查为什么没删\nlog:\n%s", logBody)
+	}
+}
+
+// TestEmergencyDefaultPartitionDropsWhenUnreferenced 是**正向下限**：
+// 没有任何函数体引用时，0 行的默认分区仍然必须被摘掉。
+// 没有这条，上面那道门可以靠「一律 SKIP」变绿，而线上唯一的候选
+// （request_logs_default）恰好**永远**会被第四道闸挡住 —— 那这道门
+// 测的就是一个生产上永不发生的分支。
+func TestEmergencyDefaultPartitionDropsWhenUnreferenced(t *testing.T) {
+	skipWindows(t)
+
+	trace, _ := runEmergencyDefaultParts(t, "some_free_default|some_parent", "0", "")
+
+	requireCalls(t, trace)
+	if !strings.Contains(trace, "DETACH PARTITION some_free_default") ||
+		!strings.Contains(trace, "DROP TABLE IF EXISTS some_free_default") {
+		t.Fatalf("无函数引用且 0 行的默认分区应当被 DETACH+DROP —— 脚本可能被改瘫，本门失去意义\ntrace:\n%s", trace)
+	}
 }
 
 // bashForScript 找一个能跑这些守卫脚本的 bash，**优先** >= 4。

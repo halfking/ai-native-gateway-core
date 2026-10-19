@@ -1702,6 +1702,16 @@ files=(
   # GIN trigram 构建分钟级，故 statement_timeout 放宽到 10min）。
   "$ROOT_DIR/sql/migrations/startup/877_session_turns_search_text_trgm.sql"
 
+  # ── 878（2026-10-19）：supplier_errors 分区父表 5 条 btree 索引 ─────────
+  # supplier_errors_unified 是 admin 错误分析的唯一读入口（hot UNION ALL 历史）。
+  # 两臂索引配置完全不对称：hot 有 5 条 btree，月分区一条都没有
+  # ⇒ 同一批查询热侧走索引、历史侧对 54MB 分区顺序扫描
+  # （211 acc-pg17 实测：1 小时窗查询读满 75,329 行、13.1ms；
+  #   凭据列表查询读满 75,329 行出 200 行、60.2ms；
+  #   累计 seq_tup_read=69,873,160 而 idx_scan 为空）。
+  # 形状照抄 hot 侧同名索引，不重新设计；建在父表上，未来月分区自动继承。
+  "$ROOT_DIR/sql/migrations/startup/878_supplier_errors_partition_indexes.sql"
+
   # ── 2026-10-16 孤儿迁移 044 补登（health_source 白名单缺 probe_now）──────
   #
   # 044_health_source_probe_now.sql 早就写在 sql/migrations/startup/ 里，注释把
