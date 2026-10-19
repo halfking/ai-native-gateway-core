@@ -185,26 +185,42 @@ func (m *CandidateFailureMonitor) tick(ctx context.Context) {
 	}
 }
 
+// checkStalenessSQL: 见 checkStaleness 内的两条子查询的形态约束。
+//
+// 2026-10-18 (24h 审计轮：S4 停写 + 假阳性 ERROR)：
+// 原实现读 `request_logs_with_current_month` 当 "最近请求活动" 信号，
+// 但该视图 UNION 了 `session_turns_hot + session_turns + request_logs 派生`
+// 三腿 —— S4 停写时 `_request_logs_hot` 冻结，但 session_log 臂照写
+// ⇒ lastRequest 恒有值（最近 session turn 行）⇒ staleness 永远"有最近活动"。
+// 本机实测：S4 停写后 candidate_failure_logs_hot 0 行（无真实上游调用），
+// `request_logs_with_current_month` 仍 838 行（来自 session_turns），
+// staleness 22h+ 假阳性。
+// 修：lastRequest 改读 `request_logs_with_current_month_without_request_class_due_at`，
+// 该视图仅含 request_logs 腿（不含 session_turns），与 failure writer 写
+// 入口同源；S4 停写后该视图也 0 行 ⇒ lastRequest=nil ⇒ 不告警。
+// 写门禁（TestStalenessSQLDoesNotUseSessionTurns）锁定表名序列，
+// 防止后人把视图改回 session_turns 混合形态。
+const checkStalenessLastRequestSurface = "request_logs_with_current_month_without_request_class_due_at"
+
 // checkStaleness detects a dead or unwired failure-log pipeline when the
 // gateway has recent request activity. A quiet gateway must not alert merely
 // because no candidate failure has ever been recorded.
 func (m *CandidateFailureMonitor) checkStaleness(ctx context.Context) error {
 	var lastFailure, lastRequest *time.Time
-	if err := m.db.QueryRow(ctx, `
+	// 2026-09-12: candidate_failure_logs 视图必需 — bare 父表只 hold cold
+	// rows，partition promote 失败时（09-10 P5 duplicate key）父表 max(ts)
+	// 会 8h+ stale 而 hot 表每分钟在写，旧 surface 报警假阴性。
+	// 2026-10-18: lastRequest 改读 `request_logs_with_current_month_
+	// without_request_class_due_at`，剔除 session_turns UNION。旧 surface
+	// 在 S4 停写 + 仅 session 写时假阳性（lastRequest 来自 session_turns，
+	// 与 failure writer 入口不同源）。S4 停写时本视图也 0 行 ⇒ lastRequest
+	// =nil ⇒ 不告警（与「网关真在跑、就是没有上游调用」语义对齐）。
+	checkStalenessSQL := `
 		SELECT
-			-- 2026-09-12: both surfaces must read the current-month view —
-			-- the writer inserts into candidate_failure_logs_hot, so the bare
-			-- parent only holds promoted (cold) rows; with the partition
-			-- promote failing (P5 duplicate key, since 09-10) its max(ts) ran
-			-- 8h+ stale and the staleness alert fired while the hot table was
-			-- being written minutes earlier.
 			(SELECT max(ts) FROM candidate_failure_logs_with_current_month),
-			-- 2026-09-11: recent-window reads must use the current-month
-			-- surface — the bare _request_logs parent only holds cold rows
-			-- (max(ts) a day+ stale on 154), so "gateway has recent activity"
-			-- evaluated false and staleness alerts never fired.
-			(SELECT max(ts) FROM request_logs_with_current_month WHERE ts >= now() - interval '5 minutes')
-	`).Scan(&lastFailure, &lastRequest); err != nil {
+			(SELECT max(ts) FROM ` + checkStalenessLastRequestSurface + ` WHERE ts >= now() - interval '5 minutes')
+	`
+	if err := m.db.QueryRow(ctx, checkStalenessSQL).Scan(&lastFailure, &lastRequest); err != nil {
 		return err
 	}
 	if !failureLogIsStale(lastFailure, lastRequest, time.Now(), m.stalenessThreshold) {
