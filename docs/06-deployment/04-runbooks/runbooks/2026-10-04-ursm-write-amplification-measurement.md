@@ -28706,3 +28706,144 @@ VOLATILE 的 `cleanup_stale_in_progress_requests`、`promote_*` 等**全程未�
 | ★ | 确认 `/api/health/system` 的暴露面（是否公网） |
 | ★ | 若门控继续停写：让 worker 在门控关闭时**保持上一次状态**而不是持续报 suspect |
 | ★ | 其余网关实例（本地 host-first / 245）的同类验证 |
+
+---
+
+## §123 把 §122 留下的 12 个视图验完 —— 挖出**第四种静默形态**，并拿到**秒级铁证**（2026-10-19）
+
+§122 明确写了「12 个视图一个都没验 ⇒ 『读端只有一处』尚未成立」。本节去验。
+
+### 一、★★ 秒级铁证：数据流在门控设置前 **16 秒** 停止
+
+§120 用小时级吻合支撑因果链（门控 `updated_at` = 10-13 20:18:27，标记率断在当天）。
+本节拿到**精确到秒**的读数：
+
+```sql
+SELECT ts FROM _request_logs ORDER BY ts DESC LIMIT 1;
+  ts
+  2026-10-13 20:18:11.634426+08
+```
+
+```
+门控 settings_kv.updated_at  = 2026-10-13 20:18:27.656301+08
+v1 数据最后一笔            = 2026-10-13 20:18:11.634426+08
+                                    ↑ 相差 16 秒
+```
+
+⇒ ⇒ ★★★ 门控关闭**立即生效**：无缓存延迟、无渐进停写、无「最后一个 in-flight 请求」。
+⇒ ⇒ ★★★ 这把 §120 的「小时级吻合」升级为**秒级吻合**，
+与 §120 的「9 月 v2 为 0」对照一起，构成门控停写因果链的完整证据。
+
+**两张 hot 表同时确认已停**：
+
+| 表 | count(*) | max(ts) |
+|---|---|---|
+| `_request_logs_hot` | **0** | NULL |
+| `_request_logs_bodies_hot` | **0** | NULL |
+
+### 二、⚠ 量具坑：`\b` 在 PostgreSQL 正则里是**退格符**，不是词边界
+
+第一版用 `pg_get_viewdef(...) ~ '_request_logs\b'` 判「是否引用 v1 家族」，得到 **12 个全 `f`**。
+而 §122 的 `pg_depend` 查询已经证明它们**全都引用** v1 家族。
+
+⇒ ⇒ 🚨 PGRE 的词边界是 **`\y`**（以及 `\m` 词首 / `\M` 词尾）；
+**`\b` 是反斜杠 + 字母 b，不是 `\b`（退格符，ASCII 32）**。
+⇒ ⇒ ★★★ ⇒ 「12 个全 `f`」是**纯假阴性**，且它长得和真结论一模一样。
+⇒ ⇒ ★★ 判别动作：**写完正则先自测一个已知为真的样本**，确认它能命中，再信它的 `f`。
+★ 这与「0 命中的第一嫌疑是量具坏了」同族 —— 但更狠：
+那次是数量异常，这次是**分类全错而输出完全正常**。
+
+### 三、12 个视图的真实数据源（`regexp_matches` 提 FROM/JOIN）
+
+| 视图 | 引用 | 门控后行数 | 形态 |
+|---|---|---|---|
+| `v_continuation_effectiveness` | `_request_logs` | **0** | 🚨 **归零** |
+| `v_node_switch_analysis` | `_request_logs` | **0** | 🚨 **归零** |
+| `v_timeout_effectiveness` | `_request_logs` | **0** | 🚨 **归零** |
+| `model_cost_per_task_view` | `_request_logs`, `api_key_model_cost` | **0** | 🚨 **归零**（基线未取，见边界） |
+| `customer_cost_view` | `_request_logs`, `api_key_model_cost`, `api_keys` | **5** | ⚠ 可疑（未取基线） |
+| `v_probe_system_health` | `request_logs_with_current_month`, `v_node_probe_state_compat` | **1** | ⚠ 少量 |
+| `request_logs_bodies_with_current_month` | `_request_logs_bodies(_hot)` | **330,463** | ⚠ **陈旧**（停在 10-13） |
+| `request_logs_with_current_month_without_customer_id` | `_request_logs(_hot)` | **338,976** | ⚠ **陈旧** |
+| `request_logs_with_current_month_without_request_class_due_at` | 同上（上游） | **338,976** | ⚠ **陈旧** |
+| `request_logs_with_current_month` | `_request_logs(_hot)` ∪ `session_turns(_hot)` ∪ `session_turn_details(_hot)` | 未测 | ✅ 有 session 兜底 |
+| `routing_analytics_source` | `request_logs_with_current_month` | 未测 | 继承 |
+| `v_model_health_dashboard` | credentials/model_stats/providers + `request_logs_with_current_month` | 未测 | 继承 |
+
+⚠ **7 个已验**（前 7 行中除 `request_logs_with_current_month` 外），
+**3 个未测**。**不能说「读端只有一处」。**
+
+### 四、🚨 归零的**机制**是「24 小时滚动窗口」，不是「表空」
+
+`v_timeout_effectiveness` 的定义（生产只读）：
+
+```sql
+FROM _request_logs
+WHERE ts > (now() - '24:00:00'::interval)      -- ★ 24 小时滑动窗口
+  AND effective_timeout_seconds IS NOT NULL
+GROUP BY date_trunc('hour', ts), timeout_mode
+```
+
+⇒ ⇒ ★★★ **滚动窗口是静默失效的放大器。**
+数据源停写后，它**不会立刻归零**，而是在「窗口长度」之后归零 ——
+⇒ **归零时刻 = 停写时刻 + 窗口长度**，而不是停写时刻。
+⇒ ⇒ ★★★ 而归零之后，**最危险的解读随之出现**：
+
+| 视图列 | 归零后读者会读成 | 真相 |
+|---|---|---|
+| `v_timeout_effectiveness.timeout_rate` | 「最近没有超时，一切正常」 | **不知道** |
+| `v_node_switch_analysis.switches` | 「没有节点切换」 | **不知道** |
+| `v_continuation_effectiveness.cache_hit_rate` | 「没有续接请求」 | **不知道** |
+
+⇒ ⇒ ⇒ **一个「健康类指标」的空结果，会被读成「指标良好」而不是「指标失明」。**
+这是本节找到的**第四种静默形态**，也是**最危险的一种**：
+
+| 形态 | 表现 | 危险度 |
+|---|---|---|
+| ① 假零 | 返回 `0` | 中（`/readyz` 会打架） |
+| ② 假疑 | 返回 `suspect` | 中（同上） |
+| ③ **假新鲜** | 返回 330,463 行**停写前**的旧数据，名字却叫 `with_current_month` | **高**（无任何异常信号） |
+| ④ **假良好** | 滚动窗口归零，被读成「指标良好」 | **最高** |
+
+⇒ ⇒ ★★ 形态 ③ 的具体证据：`request_logs_bodies_with_current_month` 返回 **330,463** 行 ——
+与 §116 订正后的 bodies 真实行数**完全一致**，即它返回的是 **10-13 之前的历史**，
+而视图名里的 "with_current_month" 暗示「当月至今」，实际只到当月第 13 天。
+
+### 五、⚠ 一个未解释的差值（如实登记，不编解释）
+
+`_request_logs` 侧视图给 **338,976** 行，`_request_logs_bodies` 侧视图给 **330,463** 行，
+相差 **8,513**。
+
+⇒ §116 曾实测 bodies 与 logs「逐日行数几乎完全一致、孤儿行 0」。
+⇒ ⇒ ⚠ 两个口径**不一致**，可能的原因（**均未验证**）：
+视图的时间窗口不同 / bodies 侧有额外过滤（如只保留有正文的行）/ 两者分组维度不同。
+⇒ ⇒ ★★★ **不为它编解释**，只登记「读数出处未定」，与 §120/§121 的 12.36% 同类。
+
+### 六、诚实边界
+
+| | |
+|---|---|
+| ❌ | **3 个视图未测**：`request_logs_with_current_month`、`routing_analytics_source`、`v_model_health_dashboard`（后者已知 81.5s 的同类查询，见 §110） |
+| ❌ | **4 个归零视图缺「停写前基线」** ⇒ 无法区分「被门控归零」与「本来就是 0」。特别是 `model_cost_per_task_view`（0）与 `customer_cost_view`（5） |
+| ❌ | 未测这些视图的**实际消费方**（哪些 API / 报告 / 巡检在读）⇒ 「空结果会被读成指标良好」是**推理**，未找到具体读者坐实 |
+| ❌ | 未确认这些视图是否**对外暴露** |
+| ❌ | `customer_cost_view = 5` 行是否正常未知（它按 `api_keys` 分组，若真只有 5 个 key 则正常） |
+| ✅ | 已证：v1 父表数据上界与门控相差 **16 秒**；两张 hot 表 0 行/NULL；7 个视图的实测行数；12 个视图的数据源清单；`v_timeout_effectiveness` 的 24 小时窗口；`\b` 在 PGRE 里是退格符导致的假阴性 |
+
+### 七、动作边界
+
+⚠ 本节全程**只读生产**：元数据查询（`pg_get_viewdef` / `regexp_matches` / `information_schema`）
++ 两张 hot 表的 `count`/`max` + v1 父表的 `ORDER BY ts DESC LIMIT 1` + **7 个视图的 `count(*)`**
+（最慢一批 30.58 s）。全部共享锁，**未写入任何对象**。
+⚠ 本节**未调用任何视图以外的函数**，也**未调用任何被视图间接触发的写函数**。
+
+### 八、由此产生的待办
+
+| 优先级 | 动作 |
+|---|---|
+| 🚨 | **给 4 个归零视图加「数据源已停用」判别**（例如窗口内无数据且底层 `max(ts)` 落后 ⇒ 显式标注，而不是返回空） |
+| 🚨 | `request_logs_bodies_with_current_month` 等「陈旧型」视图应暴露自己的**数据上界**，让读者能发现已停更 |
+| ★ | 补 3 个未测视图；给 4 个归零视图取**停写前基线**，才能定性 |
+| ★ | 找出这些视图的**实际消费方**，坐实「空结果被读成指标良好」 |
+| ★ | §122 的两条 P0（Go 零值兜底、`system_health_status` 兜底源）仍在 |
+| ★ | §120 的属主决策仍在 |
