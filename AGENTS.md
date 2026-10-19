@@ -378,7 +378,15 @@ cd web && GATEWAY_API_TARGET=http://127.0.0.1:5198 \
       ⇒ 一度误判 `ui-audit.mjs --strict` 失败（pristine 树上实测 **exit 0**）
       ⇒ 用 `PIPESTATUS` 或不接管道；
     - `git worktree add` + `checkout` 22,170 个文件会把 `git status` 打成进度刷屏
-      ⇒ 加 `--porcelain` 或静默。
+      ⇒ 加 `--porcelain` 或静默；
+    - **给长命令加的 `timeout` 本身就是量具**：`pnpm build` 被 `timeout 420` 杀掉时，
+      pnpm 报的也是 `ELIFECYCLE Command failed`（与真失败同形）⇒ 我一度把它记成
+      「web 构建在 pristine 上也失败」；复跑（`timeout 500`）**exit 0**、
+      pristine 树也 **exit 0** ⇒ **根本没有构建回归**。
+      ⇒ 判别动作：构建类失败**先去掉 timeout 复跑**，再谈「是否既有」。
+      ⇒ 补充：前一轮我还用 `cmd | tail; echo $?` 取过退出码（取到的是 `tail` 的），
+      两处叠加才把一个「我的量具坏了」写成了「仓库有缺陷」——
+      **判据的探针出错，结论会连带错两次**。
 
 ## 剩余任务
 
