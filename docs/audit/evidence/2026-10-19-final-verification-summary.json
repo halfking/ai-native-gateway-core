@@ -7,7 +7,8 @@
   "independent_review": {
     "status": "approved_no_remaining_P0_P1",
     "binding": "uncommitted file bytes; not commit-SHA approval",
-    "reviewer": "final_go_review"
+    "reviewer": "final_go_review",
+    "historical": true
   },
   "final_commands": [
     {
@@ -232,7 +233,7 @@
     }
   ],
   "continuation": {
-    "updated_at": "2026-10-19T11:41:43.105089+00:00",
+    "updated_at": "2026-10-19T12:50:01.537270+00:00",
     "new_gate_evidence_manifest": "2026-10-19-gate-evidence-code-manifest.json",
     "new_gate_evidence_files": 10,
     "new_gate_combined_sha256": "b315f2cbddf7a188fae51361beb806c223a950d74dc5bcba71e99772dc464353",
@@ -319,11 +320,13 @@
         "admin": 138.982,
         "bg": 34.801,
         "domains/nodestatecache": 1.129,
-        "domains/streaming": 1.347,
+        "domains/streaming": 150.572,
         "domains/streaming/executors": 49.557
-      }
+      },
+      "tested_package_count": 330,
+      "timing_count_scope": "main full-Go-test phase only; subsequent storage/privacy repeats excluded"
     },
-    "count_note": "Initial failures are historical evidence. CGO and registry gaps resolved; complete frozen-tree verify passed. Main integration must be verified separately.",
+    "count_note": "Initial failures are historical. The feature tree and the integrated main tree both passed complete root verification. Main Go phase has 330 tested packages; subsequent repeated packages are counted separately.",
     "post_go_required_gates": {
       "exit_code": 0,
       "log": "final-post-go-gates.log",
@@ -388,8 +391,50 @@
       ],
       "resolution": "preserve all main content and append the exact task additions",
       "all40_reviewed_go_files_unchanged": true,
-      "status": "merge resolution verified; final merged verification pending",
-      "production_deployed": false
+      "status": "merged, independently reviewed, fully verified and pushed to origin/main",
+      "production_deployed": false,
+      "tested_main_sha": "c04c0b7606d860137f9a72a35bd1ac3f99510e85",
+      "pushed_code_sha": "c04c0b7606d860137f9a72a35bd1ac3f99510e85",
+      "push_confirmed": true,
+      "final_metadata_scope": "audit report and verification JSON only; executable/test/config sources unchanged",
+      "merged_full_gate": {
+        "tested_sha": "c04c0b7606d860137f9a72a35bd1ac3f99510e85",
+        "exit_code": 0,
+        "log_sha256": "f00923cdf6d12c9107ad8115deadd9e03ef94f9a2c030a8b09f616395682270e",
+        "log_bytes": 57730,
+        "tested_package_count": 330,
+        "completed_recorded_at": "2026-10-19T12:48:17.312252+00:00",
+        "status": "passed",
+        "log": "final-merged-verify.log",
+        "command": "SDKROOT=<Xcode26.2 SDK> VERIFY_CGO_ENABLED=1 GOMAXPROCS=4 GOFLAGS=-p=1 GOCACHE=<task-private-cache> bash verify.sh",
+        "package_set": "./...",
+        "excluded_packages": [],
+        "root_script_pass_marker": true,
+        "all_go_test_packages_passed": true,
+        "package_seconds": {
+          "admin": 130.242,
+          "bg": 35.006,
+          "domains/nodestatecache": 0.892,
+          "domains/streaming": 150.647,
+          "domains/streaming/executors": 44.487
+        },
+        "privacy": "passed",
+        "whole_repo_vet": "passed",
+        "session_storage_audit": "passed",
+        "build_tag_matrix": "2 modules x 15 configs passed",
+        "gateway_build": "passed",
+        "govulncheck": {
+          "reachable_vulnerabilities": 0,
+          "imported_package_vulnerabilities": 0,
+          "required_module_vulnerabilities_not_reachable": 1
+        }
+      },
+      "independent_review": {
+        "reviewer": "final_go_review",
+        "reviewed_sha": "c04c0b7606d860137f9a72a35bd1ac3f99510e85",
+        "status": "approved_no_remaining_P0_P1",
+        "all40_reviewed_go_files_unchanged": true
+      }
     }
   },
   "total_reviewed_go_files": 40,
