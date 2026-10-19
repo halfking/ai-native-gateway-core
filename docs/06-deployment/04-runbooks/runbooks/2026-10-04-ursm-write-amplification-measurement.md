@@ -32298,3 +32298,163 @@ last_line=$(grep -F "${fingerprint}" "$cooldown_file" | head -1)   # 按**当前
 
 ★ 同族：[[恒真门]] · [[变异没红的第一嫌疑是变异自己]] · [[先读量具再读产物]] ·
 [[量具出错的代价在接进不可逆动作的那一刻]] · [[假绿也要当缺陷一样复核]]。
+
+---
+
+## §143.9 存储普查的**第四条轴**：「未被使用的索引」—— 1.65GB，减去会复发的那部分只剩 387MB（2026-10-19）
+
+§115 留的待办是「index-bloat 先 `--report`」。本节先补齐 §143 缺的那一半
+（头部大表的四叉拆解），再把「未被使用」这条轴单独量出来。
+
+### 143.9.1 头部大表的四叉拆解：堆/索引/TOAST/TOAST 索引（252 实测，只读）
+
+| 表 | heap | indexes | toast | toast_index | total | toast% | idx% |
+|---|---|---|---|---|---|---|---|
+| session_bodies_2026_10 | 90 MB | 114 MB | **3864 MB** | 43 MB | 4068 MB | **95.0** | 2.8 |
+| session_turns_2026_09 | 1109 MB | 907 MB | 718 MB | 10 MB | 2734 MB | 26.3 | 33.2 |
+| ursm_node_snapshot_min_20261017 | 1155 MB | 398 MB | 8 kB | 8 kB | 1554 MB | 0.0 | 25.6 |
+| session_turns_2026_10 | 338 MB | 310 MB | 642 MB | 9 MB | 1290 MB | 49.8 | 24.0 |
+| ursm 族（7 张合计） | — | — | — | — | **8288 MB** | 0.0 | 25~30 |
+| route_incident_events | 615 MB | 489 MB | 8 kB | 8 kB | 1104 MB | 0.0 | **44.3** |
+| request_logs_2026_10 | 372 MB | 266 MB | 376 MB | 6 MB | 1015 MB | 37.0 | 26.3 |
+| session_summaries | 366 MB | 498 MB | 6 kB | 0.2 MB | 870 MB | 0.7 | **57.2** |
+| usage_ledger_2026_09 | 261 MB | 481 MB | 8 kB | 8 kB | 742 MB | 0.0 | **64.8** |
+| stats_event_dedup | 128 MB | 259 MB | 8 kB | 8 kB | 387 MB | 0.0 | **66.8** |
+| request_logs_bodies_2026_10 | **579 MB** | **0** | — | — | 579 MB | — | 0.0 |
+
+⇒ 三簇形态：
+- **TOAST 主导**（`session_bodies_2026_10`）：3.9GB 是**真实内容**，
+  且它的 toast_index 只有 43MB（正常）—— 与 §143.4 的 `_request_logs_bodies_hot`
+  （toast index 是数据的 4.1 倍）**形态相反**，不是索引病。
+- **索引主导**（`usage_ledger_2026_09` 64.8%、`stats_event_dedup` 66.8%、
+  `session_summaries` 57.2%）：索引比堆还大 ⇒ 要问「这些索引有人用吗」。
+- **⚠ 零索引的 579MB 纯堆**（`request_logs_bodies_2026_10`）：
+  它是 `_request_logs_bodies` 的分区，列是 `request_id` / `ts` / 三个 jsonb body，
+  而**整族没有任何约束、没有任何索引**（对照：`session_bodies` 每个分区都有
+  PK + 2 个 UNIQUE）。⇒ ① `request_id` **不唯一**（无约束保证）；
+  ② 任何按 `request_id` 查这 579MB 都是**全表扫**。
+
+### 143.9.2 ★ 仓里已有三条相邻的轴，**没有一条覆盖「未被使用」**
+
+| 工具 | 轴 |
+|---|---|
+| `pg17-index-bloat.sh` | 索引**膨胀**（页密度） |
+| `pg17-duplicate-index-check.sh` | **重复**与前缀覆盖（§78/§79/§80） |
+| `index-reader-census.sh` | 「这张表有谁在读」（语句形态取证，**按需诊断**） |
+| **（本节新增）`unused-index-report.sh`** | **这条索引有没有人用** |
+
+⇒ §115 的「先 `--report`」因此落成一件**新工具**，而不是重复既有能力。
+⇒ 新工具**不替代** `index-reader-census.sh`：它回答「索引没人用过」，
+普查工具回答「表有谁在读、读了哪些列」——**删索引前的读方证据必须由普查工具取**。
+
+### 143.9.3 实测：57 个索引 14 天零扫描，合计 1,653MB
+
+| 量 | 读数 |
+|---|---|
+| **统计窗口** | `postmaster_start` = **2026-10-05 15:49** ⇒ 窗口 **14 天 5 小时** |
+| 全库 `idx_scan` 总量 | **6,714,774,197**（67 亿次） |
+| 索引总数 / 被用过 | 2376 / **615** |
+| ≥10MB 且 `idx_scan=0` | **57 个 / 1,653MB**（其中 ≥50MB 的 699MB） |
+
+⚠⚠ **窗口只有 14 天**（PG 重启清零 `idx_scan`），**不是** 3 个月；
+且 `pg_stat_statements` 的窗口**更短**（252 上 2026-10-18 22:03 重置 ⇒ 23 小时）。
+⇒ 「14 天没人用过」**不能**推出「永远没人用」（月度报表、人工排查、灾备恢复都可能在窗口外）。
+
+### 143.9.4 ★ 分类：把 1.65GB 拆成三种**处置方式完全不同**的部分
+
+| 类 | 含义 | 数量 | 字节 | 能不能动 |
+|---|---|---|---|---|
+| **C** | **叶分区索引**（宿主是分区） | 34 | **1,233,600,512** | ❌ **删了会长回来** —— `CREATE TABLE … PARTITION OF` 会克隆父表声明的每个索引（§79）⇒ 要动**父表声明**，那是 schema 变更、需 migration、影响所有分区 |
+| **D** | 非分区表的**约束附带**索引（PK/UNIQUE） | 5 | 93,937,664 | ⚠ **删索引 = 删约束** ⇒ 还要看这个约束是不是 `ON CONFLICT` 目标 |
+| **E** | 非分区表的**独立索引** | 18 | **405,692,416** | ✅ 真正「删了就没了」的 |
+
+⇒ ⇒ ★★★ **不分类就会得出一个漂亮但错的数字**：
+「可以回收 1.65GB」是假的 —— **真能回收的只有 387MB**，
+另外 1.2GB 删了会随下个分区长回来（§79 的实测：只删分区实例是无效的，
+真实代价从一次性 345MiB 变成每月 ≈243MiB ≈ **2.9 GB/年**）。
+
+### 143.9.5 ★ 一个必须先证伪的假阳性：`ON CONFLICT` 目标索引
+
+判据「`idx_scan=0` ⇒ 未使用」有个明显的反例候选：UNIQUE 索引若是
+`ON CONFLICT` 的目标，可能只被写路径使用而从不被读 ⇒ 显示为 0。
+**本地沙箱判定实验（PG 17.10，20 万行表 + `pg_stat_force_next_flush()`）**：
+
+| 操作 | `idx_scan` 增量 |
+|---|---|
+| `INSERT … ON CONFLICT DO NOTHING`（冲突 + 不冲突各一次） | **+2** |
+| `INSERT … ON CONFLICT DO UPDATE` | **+1** |
+| 显式 `SELECT … WHERE k=…`（Index Only Scan） | **+1** |
+| 纯 `INSERT`（不冲突） | **+0** |
+
+⇒ ⇒ ★★★ **`ON CONFLICT` 计入 `idx_scan`** ⇒
+「零扫描的 UNIQUE/PK」**不是** ON CONFLICT 造成的假阳性 ——
+那些索引连冲突检测都没被触发过。
+⇒ ★ 反过来这条更重要：**纯 INSERT 不计入** ⇒ **只写不读的索引必然显示 0**，
+而它每次写都在付维护成本 ⇒ 这是**存储 + 写放大**双输，不是零成本。
+⇒ ⚠ 实验自身也踩了两个坑（已记）：① 小表上规划器全走 seq scan ⇒ 必须让表够大；
+② `pg_stat_*` 视图有收集器延迟 ⇒ 必须 `pg_stat_force_next_flush()`，否则读到的是旧值。
+
+### 143.9.6 E 类 387MB 的明细（可动的部分，18 条）
+
+| 表 | 索引 | 大小 | 表的索引扫描数 | 备注 |
+|---|---|---|---|---|
+| node_probe_runs | idx_node_probe_runs_api_model | 39 MB | 114,056 | 表很热，只是这条没人选 |
+| route_incident_events | idx_route_incident_events_created_at | 38 MB | 299,548 | 1.77M 行 |
+| analysis_events | idx_analysis_events_session | 35 MB | 1,125,981 | |
+| instance_heartbeats | idx_ih_instance | 32 MB | **18** | ⚠ 整张表几乎只被写（277K 行）⇒ 不是「索引多余」是「表是只写表」 |
+| session_summaries | idx_session_summaries_archival | 32 MB | 3,779,603 | |
+| node_probe_runs | idx_node_probe_runs_provider | 27 MB | 114,056 | |
+| provider_metrics_minute | idx_pmm_provider_bucket | 23 MB | 1,840,609 | |
+| request_stats_error_drill_minute | idx_rsedm_error_bucket | 23 MB | 67,592 | |
+| credential_model_call_history | idx_call_history_model_time | 19 MB | 32,271 | |
+| armor_judgments | idx_armor_judgments_request | 19 MB | **82** | |
+| session_summaries | idx_session_summaries_search | 17 MB | 3,779,603 | GIN(search_vector) ⇒ 全文检索没人用 |
+| session_title_states | idx_session_title_states_active | 15 MB | 13,417 | 表 **0 行** |
+| request_context_attrs | idx_rca_session_turn | 12 MB | 363,210 | |
+| route_incidents | idx_route_incidents_tenant_state | 12 MB | 599,297 | |
+| session_aggregate_outbox | idx_session_aggregate_outbox_session | 11 MB | 989,274 | |
+| stats_reconciliation_diffs | idx_stats_reconciliation_diffs_tenant | 10 MB | 20,603 | |
+| session_project_attribution | idx_spa_tenant_status | 10 MB | 55,873 | |
+| session_dim | idx_session_dim_client | 10 MB | **52,925,090** | 表极热（5292 万次），这条就是没人选 |
+
+★ 注意最后一行：`session_dim` 的表有 **5292 万次**索引扫描，而这一条是 0 ——
+⇒ 「表热」与「这条索引热」是两件事，**不能用表的热度替索引背书**。
+
+### 143.9.7 工具与判据
+
+新增 `scripts/252-monitor/unused-index-report.sh`（**按需诊断**，不占 `pg17-`/`ursm-` 前缀 ⇒
+不进 cron 登记门；与 `index-reader-census.sh` 同款，用时 scp 到机器上跑）。
+它**无条件打印统计窗口**，并按 C/D/E 分类输出。
+
+判据：`scripts/ursmcheck/unused_index_report_test.go`，4 条门
+（只读 / 必报窗口 / 必分类 / 必指向读方普查），4 组变异全部转红：
+
+| 变异 | 结果 |
+|---|---|
+| M1 工具里混入 `REINDEX` | ✅ 红（只读门） |
+| M2 拆掉窗口查询 | ✅ 红（**第一版没红**：函数名在 SQL 里出现两次，只改一处；两处都拆才红） |
+| M3 分类里删掉 C 类分支 | ✅ 红 |
+| M4 输出不再指向读方普查工具 | ✅ 红 |
+
+★ 门用**假 psql**（注入 `PSQL_CMD`），断言**脚本实际下发的 SQL**：
+「把判定词写进注释」骗不过它。
+★ 分类是在 **SQL 的 CASE** 里算的 ⇒ 桩不执行 SQL ⇒ 门必须两头都钉：
+输出层（桩按分类查询返回 canned 三行，验「脚本确实把分类打印出来」）+
+SQL 层（验「分类确实是在查询里算的、且判定依据 relispartition/pg_inherits/conindid 都在」）。
+
+### 143.9.8 动作边界与待办
+
+⚠ 本节**全程只读**：只跑了 `pg_stat_*` / `pg_class` / `pg_index` 目录查询，
+外加本地沙箱（`llm-gateway-pg`）的一次判定实验（建/删了一张临时表）。
+**未在 252 上执行任何写操作，未 DROP 任何索引。**
+
+| 优先级 | 动作 |
+|---|---|
+| 🚨 **需属主授权** | **E 类 18 条 / 387MB** 的处置决策。删前必须：① 跑 `index-reader-census.sh` 取读方证据；② 确认该索引不是 `ON CONFLICT` 目标（§143.9.5 已证 ON CONFLICT 会计入，但**新写的**代码路径要复核）；③ 走 **startup 迁移**（§126 立的规），不裸 DROP。 |
+| 🚨 | **C 类 34 条 / 1.2GB** —— 只能在**父表**上做（改索引声明），影响所有分区 ⇒ 单独一轮，且要算清「删掉会省多少写放大」与「新分区会少什么查询能力」。**不是本轮能顺手做的。** |
+| ⚠ | **D 类 5 条 / 90MB**（PK）—— `instance_heartbeats_pkey` 26MB 那张表**几乎只被写**（277K 行、18 次扫描）⇒ 真正的结论可能是「这张表该不该存在/该不该留索引」，不是「删索引」。 |
+| ★ | `request_logs_bodies_2026_10` 579MB **零索引零约束**（§143.9.1）：要不要给 `_request_logs_bodies` 族补 `request_id` 索引？⇒ 这要结合「按 request_id 查 body」的实际查询形态决定。 |
+| ★ | 把 `unused-index-report.sh` 接进 §115 的 `--report` 流程，与 `pg17-index-bloat.sh`（膨胀）、`pg17-duplicate-index-check.sh`（重复）并列成三条轴。 |
+
+★ 同族：[[先读量具再读产物]] · [[阴性结论要当缺陷一样复核]] · [[替身要复刻关键性质，否则读数是假的]] ·
+[[先数消费者再写缺陷]] · [[量具出错的代价在接进不可逆动作的那一刻]]。
