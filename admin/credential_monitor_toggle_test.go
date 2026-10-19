@@ -153,10 +153,15 @@ func TestHandleModelToggle_MethodNotAllowed(t *testing.T) {
 }
 
 // TestHandleModelToggle_NilDB returns 503 before any validation runs.
+//
+// 2026-10-19: model-toggle 现在有写侧角色门（superadmin 才可写，
+// 见 credential_monitor.go 的写侧角色门注释），未授权者会先得 403。
+// 本用例要验的是**过了角色门之后**的 nil-db 分支，故用 super_admin 身份。
 func TestHandleModelToggle_NilDB(t *testing.T) {
 	m := &CredentialMonitorHandlers{h: &Handler{}}
 	req := newReq(http.MethodPost, "/api/credentials/model-toggle",
 		strReader(`{"credential_id":1,"raw_model_name":"m","action":"offline","reason":"r"}`))
+	req = SetAuthContext(req, &AuthContext{Role: "super_admin", IsJWT: true})
 	rr := rec()
 	m.handleModelToggle(rr, req)
 	if rr.Code != http.StatusServiceUnavailable {
