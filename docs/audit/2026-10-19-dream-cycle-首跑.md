@@ -290,8 +290,30 @@ WriteTimeout: 60 * time.Second      // internal/server/server.go
 **不抬全局 `WriteTimeout`** —— 全局抬高会让所有慢请求都失去上限；
 而 dream run 的耗时上界是已知的（由 LLM 侧预算 `extractionTimeout=120s` 决定）。
 
-⚠ 服务端延长**不等于**这条 HTTP 入口适合长任务：nginx 的
-`proxy_read_timeout` 默认也是 60s，前置代理仍会掐断。
+⚠ 服务端延长**不等于**这条 HTTP 入口适合长任务：前置代理的读超时也会掐断。
+**已把整条入口链实测一遍**（2026-10-20）：
+
+```
+252 nginx  memora-api.itestu.cn / memora.itestu.cn
+              proxy_read_timeout 300s
+              └─ proxy_pass 100.106.67.198:8000
+211 nginx  ns-gateway-211.conf  (listen 100.106.67.198:8000)
+              proxy_read_timeout 300s
+              └─ upstream ns_memora_api_upstream → 127.0.0.1:8091
+211 docker  memora-server (acc) :8091
+              └─ Go http.Server WriteTimeout 60s  ← 真正的瓶颈
+```
+
+⇒ **每一层能读到的 nginx 都是 300s**，远高于 dream 的 150s
+⇒ **瓶颈只有 Go 服务那 60s**（已按路由提到 150s），nginx 不是问题。
+⚠ 但"nginx 默认 60s"这条**一般性提醒仍然成立**：本链之所以是 300s，
+是因为这些 vhost 显式写了 `proxy_read_timeout 300s`；**新加的 vhost 不会自动继承**。
+⇒ 若将来把 dream 暴露到**别的**入口，必须逐层确认读超时 > 150s。
+⇒ 一层**没读到**的：252 的 `memora.kxpms.cn` → `127.0.0.1:18082` →
+`kxmemory-go-prod`（podman，host 网络）。那个 `gateway` 二进制**不是 nginx**，
+没有可读的超时配置；而且它连的是 `llm_gateway` 库、**不带任何 `FEATURE_*` 开关**
+⇒ 与 dream cycle 无关（它是网关产品面，不是 memora 面）。
+
 代码里本就写明「生产路径应走 asynq 任务（worker.TypeDreamCycle），
 这里的同步入口保留给手动触发与调试」（该任务类型与 handler **已存在**），
 本修复只是让**手动触发**这条路真能拿到结果。
