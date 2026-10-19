@@ -245,10 +245,11 @@ func TestNonStreamReSpelledForgedMarkerStillMasks(t *testing.T) {
 		} `json:"choices"`
 	}
 	require.NoError(t, json.Unmarshal(result.ModifiedBody, &got))
-	// The tolerant stage masks a re-spelled marker through the loose path,
-	// which normalizes the span but has no exact-type parse to name — so this
-	// one keeps the bare marker. The exact stage is what carries the type.
-	require.Equal(t, "a p@ss w0rd b "+redactedMarker, got.Choices[0].Message.Content)
+	// The tolerant stage masks a re-spelled marker through the loose path.
+	// r1038（2026-10-20）：标记一律带类型——这条路径**能**读出类型
+	// （"secret"，来自被改写的拼写），所以遮蔽物是 "[REDACTED:secret]"，
+	// 而不是丢掉类型的裸形态。
+	require.Equal(t, "a p@ss w0rd b "+RedactionMarker(TypeSecret), got.Choices[0].Message.Content)
 	assert.NotContains(t, string(result.ModifiedBody), "SENSITIVE")
 }
 

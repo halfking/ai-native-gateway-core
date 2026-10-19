@@ -156,7 +156,30 @@ const (
 	looseMaskUnknown
 )
 
+// redactedMarker 是遮蔽标记的**形状基座**（不带类型）。带类型的形态一律由
+// RedactionMarker 生成——不要把它直接写进客户端可见文本。
 const redactedMarker = "[REDACTED]"
+
+// redactedMarkerPrefix 是判定「文本里有没有遮蔽标记」用的前缀。
+//
+// r1038（2026-10-20）：标记一律带类型之后，判定不能再拿整串 "[REDACTED]" 去
+// Contains——带类型的形态（"[REDACTED:phone]"）并不包含它，那样的判定会
+// 把「真的发生了遮蔽」误判成「没发生」。
+const redactedMarkerPrefix = "[REDACTED"
+
+// unknownRedactionType 是「类型不可知」时的类型名。
+//
+// 用户口径（2026-10-20）：「原则上每个占位符都有特殊的标记」——客户端看到的
+// 遮蔽物必须**自证遮掉了哪一类**。类型确实不可知时（退化跨段、超长尾段、
+// 整字段遮蔽），说「unknown」比说「不知道」更可用：它至少告诉客户端
+// 「这里有一处被网关遮掉了，而网关没解析出类型」，而不是一个无从追问的裸标记。
+//
+// 这不是给类型编名字：unknown 是一句关于**这次遮蔽**的实话（类型未知），
+// 不是关于被遮内容的猜测。类型名来自规则名，本就不构成泄漏。
+const unknownRedactionType SensitiveType = "unknown"
+
+// unknownRedactedMarker 是类型不可知时的遮蔽标记。
+const unknownRedactedMarker = "[REDACTED:unknown]"
 
 // RedactionMarker returns the client-visible mask for a known sensitive type:
 // "[REDACTED:phone]", "[REDACTED:secret]", and so on.
@@ -167,13 +190,12 @@ const redactedMarker = "[REDACTED]"
 // The type is not sensitive — it is the name of a rule, not the value it
 // matched — and naming it makes the loss self-describing.
 //
-// A marker whose type is unknown or empty falls back to the bare form. That
-// case is real, not hypothetical: maskDegenerateMarkerSpans and the
-// over-length placeholder tail mask bytes before any type has been parsed, and
-// inventing a type there would be a guess about bytes nobody resolved.
+// r1038（2026-10-20）：类型不可知时**不再退回裸标记**，而是退到
+// "[REDACTED:unknown]"。裸标记让客户端无法区分「遮了一处」与「网关出了
+// 故障」，也让「每个占位符都有特殊标记」这条口径在最常见的降级路径上失效。
 func RedactionMarker(typ SensitiveType) string {
 	if typ == "" {
-		return redactedMarker
+		return unknownRedactedMarker
 	}
 	return redactedMarker[:len(redactedMarker)-1] + ":" + string(typ) + "]"
 }
@@ -429,7 +451,10 @@ func rewriteLooseSpans(ctx context.Context, text string, resolve placeholderReso
 			changed = true
 		case policy == looseMaskUnknown:
 			stats.unresolved++
-			replacement, changed = redactedMarker, true
+			// 类型是**已知的**（typ 来自 parseLoosePlaceholder）：退化成一个裸
+			// 标记会把唯一还能告诉客户端「遮的是哪一类」的信息丢掉。r1038 起
+			// 连「类型不可知」也写成 "[REDACTED:unknown]"，此处更没有理由退回裸形态。
+			replacement, changed = RedactionMarker(typ), true
 		default:
 			stats.unresolved++
 			continue

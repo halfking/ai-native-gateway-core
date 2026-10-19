@@ -185,6 +185,11 @@ func TestSanitizeRoundTripForgedMarkerIsStillMasked(t *testing.T) {
 		} `json:"choices"`
 	}
 	require.NoError(t, json.Unmarshal(result.ModifiedBody, &got))
-	require.Equal(t, "real Sup3rS3cret! forged [REDACTED]", got.Choices[0].Message.Content)
+	// r1038（2026-10-20）：遮蔽物一律带类型。被改写过的拼写
+	// （{SENSITIVE: secret : 9}）里的类型是**读得出来的**（secret），
+	// 所以遮蔽物是 "[REDACTED:secret]"——不是把类型丢掉的裸形态。
+	require.Equal(t, "real Sup3rS3cret! forged [REDACTED:secret]", got.Choices[0].Message.Content)
 	require.NotContains(t, string(result.ModifiedBody), "SENSITIVE")
+	require.NotContains(t, string(result.ModifiedBody), "[REDACTED]",
+		"客户端可见文本里不应再有裸形态的遮蔽标记")
 }

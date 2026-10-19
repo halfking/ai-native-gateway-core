@@ -226,6 +226,11 @@ func main() {
 	// repeated calls (e.g. main reload) are safe.
 	metrics.SetGlobal(metrics.NewPrometheusRecorder())
 
+	// r1037（2026-10-20，211）：装载「硬阻断清单」。默认清单里 egress/output 一律
+	// 不终止回合（形状匹配只记录/遮蔽），要拦的规则由环境变量显式开。
+	// 必须在任何请求进来之前装载，否则前几秒的请求会走默认值。
+	loadHardBlockPolicy()
+
 	// 2026-08-18 fix: explicitly register credential reveal-failure metric.
 	// The provider package's init() already calls this, but main()-time
 	// invocation is auditable in source and removes the "metric visible

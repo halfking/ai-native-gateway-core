@@ -1721,6 +1721,26 @@ files=(
   # 裸 uidx 是 ON CONFLICT (session_key) 唯一的仲裁器，删了写入直接失败。
   "$ROOT_DIR/sql/migrations/startup/879_drop_session_summaries_redundant_session_key_uidx.sql"
 
+  # ── 881（2026-10-20，§144 审计轮补登）：删掉 injection_attack_vectors 上
+  # 只写不读的 ivfflat 索引 ──────────────────────────────────────────────
+  # 本迁移 2026-10-20 落地时只做了 installer 五点同步、漏了本通道腿
+  # （apply-db-revision-sequence_test 对账门实测红：
+  #   "startup migration 881 exists but is missing from the channel files=(...) array"）。
+  # 生产 schema_migrations 已有 881（部署链 runner 应用），本条目补齐的是
+  # 升级通道形态本身，让全新环境与已应用环境的投递路径一致。
+  "$ROOT_DIR/sql/migrations/startup/881_drop_attack_vectors_embedding_index.sql"
+
+  # ── 882（2026-10-20，§144 审计轮）：`_request_logs` 负成本部分索引 ──────
+  # 根修 bg/routing_health_checks.go recorded_cost_is_negative 的重扫浪费
+  # （R51 §3.5 登记的方案 (a)）。252 生产 24h 日志窗实测：该检查每 ~8-9 分钟
+  # 顺序扫一遍 43 万行、158 次慢查 / 2,010s（较 R51 轮再 +31%，连续第二轮
+  # 抬头）+ 34 次/天被 statement_timeout 击杀；而源已停写（10-13 起）、
+  # 全表负成本行 = 0（2026-10-20 实测，10-06 时代的 1,628 条已随退役分区
+  # 消失）。部分索引 0 条目、构建秒级；检查变索引探针，canary 语义保留。
+  # 建在父表上让未来月分区自动继承（877 台账口径）；fresh-install 月分区
+  # 全 heap（01-schema ensure 不带 USING columnar），无列存拒绝面。
+  "$ROOT_DIR/sql/migrations/startup/882_request_logs_cost_negative_partial_idx.sql"
+
   # ── 2026-10-16 孤儿迁移 044 补登（health_source 白名单缺 probe_now）──────
   #
   # 044_health_source_probe_now.sql 早就写在 sql/migrations/startup/ 里，注释把

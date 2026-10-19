@@ -203,9 +203,10 @@ func TestRedactionMarkerNamesTheType(t *testing.T) {
 	if got := RedactionMarker(TypeSecret); got != "[REDACTED:secret]" {
 		t.Errorf("RedactionMarker(TypeSecret) = %q", got)
 	}
-	// An unknown type must fall back rather than invent one.
-	if got := RedactionMarker(""); got != redactedMarker {
-		t.Errorf("RedactionMarker(\"\") = %q, want the bare marker", got)
+	// r1038（2026-10-20）：类型不可知时退到 "[REDACTED:unknown]"（带类型的
+	// 标记），不再是无从追问的裸形态。
+	if got := RedactionMarker(""); got != unknownRedactedMarker {
+		t.Errorf("RedactionMarker(\"\") = %q, want %q", got, unknownRedactedMarker)
 	}
 
 	// The reported symptom, end to end: the proxy command comes back intact

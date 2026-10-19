@@ -265,7 +265,7 @@ export default {
       failed: '{op} 失败：{msg}',
     },
     rowResult: {
-      running: '执行中…',
+      running: '{op} 执行中…',
       success: '{op}: 释放 {size} ({pct}%, {ms}ms)',
       failed: '{op} 失败：{msg}',
     },

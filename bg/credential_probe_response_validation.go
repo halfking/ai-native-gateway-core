@@ -14,6 +14,19 @@ import (
 
 const credentialProbeBodyLimit = 64 << 10
 
+// credentialProbeModelsBodyLimit 是 /v1/models 目录专用的读上限。
+//
+// 2026-10-20 12h 审计轮修复：单次完成/单条消息的响应体天然很小，64KiB 够用；
+// 但 /v1/models 返回的是**整个模型目录**，条目形如
+// {"id":"...","object":"model","owned_by":"..."} ≈ 50 字节 ⇒ 64KiB 只装得下
+// 约 1.3k 个模型，聚合型供应商很容易越线。
+// 越线的后果不是「截断后继续判健康」，而是 readCredentialProbeBody 直接返回
+// 错误 → classifyProbeHTTPResponse 把 2xx 判成 probe_response_inconclusive
+// → 该模型**永远到不了 healthy_confirmed**，且每轮周期都被重新选中
+// （旧写法是截断后按 2xx 判 ok，所以这是一处**行为回退**）。
+// ⇒ 这里给目录型端点单独放宽到 1MiB（约 2 万个模型，仍是有界读）。
+const credentialProbeModelsBodyLimit = 1 << 20
+
 // Retain bounded classification evidence before shortening operator previews.
 // Quota codes can follow long vendor metadata, beyond the old 1KiB read cap.
 func credentialProbeHTTPFailure(protocol string, status int, body []byte) string {
@@ -58,12 +71,23 @@ func credentialProbeInvalidResponse(message string) bool {
 // Read the complete bounded response: a truncated JSON prefix cannot prove
 // health, and a body read error must not turn a received 200 into success.
 func readCredentialProbeBody(r io.Reader) ([]byte, error) {
-	body, err := io.ReadAll(io.LimitReader(r, credentialProbeBodyLimit+1))
+	return readCredentialProbeBodyLimit(r, credentialProbeBodyLimit)
+}
+
+// readCredentialProbeBodyLimit 是带显式上限的读；上限必须由调用方按
+// **响应体形态**选择：单次生成用默认 64KiB，模型目录用
+// credentialProbeModelsBodyLimit（见该常量处的说明）。
+// 超过上限一律返回错误而不是截断 —— 截断出来的 JSON 前缀不是证据。
+func readCredentialProbeBodyLimit(r io.Reader, limit int) ([]byte, error) {
+	if limit <= 0 {
+		limit = credentialProbeBodyLimit
+	}
+	body, err := io.ReadAll(io.LimitReader(r, int64(limit)+1))
 	if err != nil {
 		return nil, fmt.Errorf("read response: %w", err)
 	}
-	if len(body) > credentialProbeBodyLimit {
-		return nil, fmt.Errorf("response exceeds %d bytes", credentialProbeBodyLimit)
+	if len(body) > limit {
+		return nil, fmt.Errorf("response exceeds %d bytes", limit)
 	}
 	return body, nil
 }
