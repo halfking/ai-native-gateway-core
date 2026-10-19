@@ -474,6 +474,7 @@ export default {
 
     nodeDetailLoadFailed: 'Failed to load node detail',
     nodeDetailSuperAdminOnlyHint: 'Nur Super-Administratoren können Knoten pflegen; derzeit wird nur lesend angezeigt.',
+    nodeDetailDefaultTenantOnlyHint: 'Nur der default-Tenant kann Knoten pflegen; derzeit wird nur lesend angezeigt.',
 
     perfPressure: 'Performance Pressure',
 

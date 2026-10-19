@@ -51,17 +51,19 @@ clear-manual-disabled。口径是两条（`admin/context.go:79`）：
 `SignToken(42, "default", …, "tenant_admin", …)` ⇒ **default 租户的 tenant_admin 是真实存在的角色**，
 不是理论形态。
 
-### 1.2 前端漏了 5 个面（不是 3 个）
+### 1.2 前端缺门的是 3 个面（不是上一轮点名的 3 个组件）
 
-上一轮点名 3 个组件，但逐文件扫描「调用 super_admin 门后端写 API 的全部前端位置」
-后发现真正缺门的是 **5 个**：
+上一轮点名 3 个组件；逐文件扫描「调用 super_admin 门后端写 API 的全部前端位置」
+→ 覆盖 **5 个面**，其中**缺门的是 3 个**（⚠ 2026-10-21 订正：原文此处写
+「发现真正缺门的是 **5 个**」，与紧随其后的表格**自相矛盾**——表里 5 行只有 3 行标 ❌）。
+数目巧合（3 = 3）容易让下一个人以为「点名的 3 个 = 缺门的 3 个」，**集合并不相同**：
 
 | 面 | 调用的写 API | 上一轮时的门 |
 |---|---|---|
 | `web/src/views/CredentialMonitorView.vue` | promote / demote | ✅ 已有 `isSuperAdmin()`（禁用+守卫） |
 | `web/src/components/credential-monitor/CredentialDetailDrawer.vue` | promote / demote / setConcurrencyAuto / toggleModelAvailability / clear+setManualDisabled | ✅ 已有（禁用+守卫） |
 | **`web/src/views/CredentialHeatmapView.vue`** | toggleModelAvailability / promote / demote / setManualDisabled | ❌ **零门** |
-| **`web/src/composables/useNodeDetailDrawerLoad.ts` + 2 个面板** | setManualDisabled / toggleModelAvailability / setConcurrencyAuto | ❌ 门只判「是否 default 租户」 |
+| **`web/src/composables/useNodeDetailDrawerLoad.ts` + 4 个面板**（⚠ 2026-10-21 订正：原文写「2 个面板」，实际消费 `canEdit` 的是 `NodeDetailOtherModelsPanel` / `NodeDetailMaintainPanel` / `NodeDetailEmergencyPanel` / `NodeDetailConcurrencyPanel` **4 个**） | setManualDisabled / toggleModelAvailability / setConcurrencyAuto | ❌ 门只判「是否 default 租户」 |
 | **`web-mobile/src/components/credential/CredentialOpsSheet.vue` + 热力图入口** | promote / demote / setConcurrencyAuto / toggleCredentialModel | ❌ **零门** |
 
 节点详情抽屉那三处最隐蔽：`canEdit` 的定义是
@@ -268,6 +270,10 @@ F-7（Prometheus 打点 + 1min 进程内缓存 + singleflight）被 main 的 slo
   src/components/NodeDetailDrawer.test.ts` = 20 passed
 - web-mobile：`pnpm vitest run src/components/credential/CredentialOpsSheet.spec.ts` = 10 passed
 - web i18n：`src/i18n/keys_referenced` + `src/i18n/parity` = 全绿（3 个新键 × 8 语种）
+  ⚠ **2026-10-21 订正**：这三条门**只比键集合 / 键是否存在，不比键值** ⇒
+  `ar-SA` 的 `ops.overview.nodeDetailSuperAdminOnlyHint` 被填成**英文原文**仍然全绿
+  （同一提交里另外两个 ar-SA 键是真阿拉伯语 ⇒ 是**漏**，不是该 locale 的整体状态）。
+  本轮已修，并补 `src/i18n/localizedKeys.test.ts`（登记册门）钉住这一类。
 - 硬编码中文棘轮：本轮净 **-2**（5757 → 5755，见下）
 - 变异验证（全部按预期变红）：
   - 热力图：删函数守卫 → 「端点没被调用」红；删按钮 disabled → 「按钮全禁用」红

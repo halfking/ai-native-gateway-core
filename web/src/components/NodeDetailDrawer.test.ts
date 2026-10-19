@@ -4,6 +4,9 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import NodeDetailDrawer from './NodeDetailDrawer.vue'
 import type { RoutingCandidate } from '../api/routing'
 import { liveStreamState } from '../composables/liveStreamStore'
+// 全局 i18n 实例（`useNodeDetailDrawerLoad` 用的就是它，不是下面那个
+// 组件内自建的 `i18n`）——只读提示的文案由它解析，切语言要切它。
+import { i18n as appI18n } from '../i18n'
 
 const openRequestDetailPageMock = vi.hoisted(() => vi.fn())
 
@@ -350,7 +353,13 @@ describe('NodeDetailDrawer model×node scope', () => {
     const wrapper = mountDrawer('m-1')
     await flushPromises()
     await clickMainTab(wrapper, '设置与维护')
-    expect(wrapper.text()).toContain('仅 default 租户可以维护节点')
+    // ★ 2026-10-21：原文断言的是**硬编码中文字面量**「仅 default 租户可以维护节点」。
+    //   那条断言**只因缺陷而绿**——提示语当时是源码里的字面量，与界面语言无关。
+    //   提示改成 i18n 键后，本用例在 jsdom（navigator.language=en-US ⇒ locale 'en'）
+    //   立刻变红 ⇒ 反过来证明「非 default 租户的用户在非中文界面下看到的是中文」
+    //   是个真实缺陷（`defaultLocale()` 按 navigator.language 选语种）。
+    //   现在断言「提示 = i18n 解析结果」，不钉字面量、随界面语言走。
+    expect(wrapper.text()).toContain(appI18n.global.t('ops.overview.nodeDetailDefaultTenantOnlyHint'))
     const ping = wrapper.findAll('button').find(b => b.text().includes('会话 Ping'))
     expect(ping?.attributes('disabled')).toBeDefined()
   })
@@ -497,5 +506,134 @@ describe('★ 写侧角色门 —— 节点详情抽屉的写操作一律要求 
 
     await clickMainTab(wrapper, '其它模型')
     expect(wrapper.find('.stub-other-models').attributes('data-can-edit')).toBe('false')
+  })
+})
+
+/**
+ * ★ 只读提示的本地化（2026-10-21 批判式审计的订正）
+ *
+ * `editGateHint` 有**两个**阻塞分支，各给一句提示：
+ *   · 非 default 租户       → 「仅 default 租户可以维护节点…」
+ *   · default 但非 super_admin → 「仅超级管理员可以维护节点…」
+ * 上一轮只把**第二支**接上了 i18n 键，第一支仍是**硬编码中文字面量**
+ * ⇒ 非 default 租户的用户无论界面语言是什么，都只看到中文。
+ *
+ * 判据纪律（AGENTS.md）：
+ *   ① **断言必须落在「界面语言变了、提示也跟着变」这个用户可见效果上。**
+ *      只断言「提示等于 zh-CN 文案」是**假绿**——zh-CN 文案与被替换掉的
+ *      硬编码字面量**逐字相同**，改回硬编码照样全绿。
+ *      ⇒ 本块把 i18n 实例切到 'en' 再断言英文文案 + **零中文字符**。
+ *   ② 抽屉组件用的是**组件内自建的** i18n 实例（`createI18n`），
+ *      而 `useNodeDetailDrawerLoad` 用的是**全局** `../i18n` 实例
+ *      ⇒ 提示文案走全局实例，必须改全局实例的 locale 才切得动。
+ *   ③ 本 describe 自带 beforeEach（不依赖前一个 describe 留下的
+ *      `liveStreamState.nodes`，避免顺序依赖的隐性前提）。
+ */
+describe('★ 只读提示的本地化 —— 两个阻塞分支都必须走 i18n', () => {
+  beforeEach(() => {
+    liveStreamState.nodes = [{
+      credential_id: 5,
+      provider_id: 1,
+      provider_code: 'p',
+      manual_disabled: false,
+      circuit_state: 'closed',
+      raw_models: ['m-1', 'm-2'],
+    }]
+    monitorSummary.mockReset().mockResolvedValue({
+      credentials: [{
+        id: 5, provider_id: 1, concurrency_limit: null, concurrency_limit_auto: 4,
+        effective_concurrency: 4, models: [modelStatus('m-1')],
+      }],
+    })
+    decisions.mockReset().mockResolvedValue({ decisions: [] })
+    slidingWindow.mockReset().mockResolvedValue({
+      entries: [], stats: { total: 0, success: 0, failed: 0, failure_rate: 0, error_kinds: {} },
+      source: 'redis',
+    })
+    modelHistory.mockReset().mockResolvedValue({ events: [] })
+    resolve.mockReset().mockResolvedValue({ candidates: [] })
+  })
+
+  it('★ 非 default 租户：英文界面下提示是英文（防「改回硬编码中文」假绿）', async () => {
+    defaultTenant.mockReturnValue(false)
+    superAdmin.mockReturnValue(true)
+    const prev = appI18n.global.locale.value
+    appI18n.global.locale.value = 'en'
+    try {
+      const wrapper = mountDrawer('m-1')
+      await flushPromises()
+      await clickMainTab(wrapper, '其它模型')
+
+      const hint = wrapper.find('.nd-notice--warn')
+      expect(hint.exists()).toBe(true)
+      expect(hint.text()).toBe('Only the default tenant can maintain nodes; showing read-only.')
+      expect(hint.text()).not.toMatch(/[一-鿿]/)
+    } finally {
+      appI18n.global.locale.value = prev
+    }
+  })
+
+  it('非 default 租户：zh-CN 界面下解析成本地化文案（不是原始 key 路径）', async () => {
+    defaultTenant.mockReturnValue(false)
+    superAdmin.mockReturnValue(true)
+    const prev = appI18n.global.locale.value
+    appI18n.global.locale.value = 'zh-CN'
+    try {
+      const wrapper = mountDrawer('m-1')
+      await flushPromises()
+      await clickMainTab(wrapper, '其它模型')
+
+      const hint = wrapper.find('.nd-notice--warn')
+      expect(hint.exists()).toBe(true)
+      // v735 式事故的护栏：vue-i18n 解析不到时会**原样渲染 key 路径**。
+      expect(hint.text()).not.toBe('ops.overview.nodeDetailDefaultTenantOnlyHint')
+      expect(hint.text()).toBe(appI18n.global.t('ops.overview.nodeDetailDefaultTenantOnlyHint'))
+    } finally {
+      appI18n.global.locale.value = prev
+    }
+  })
+
+  it('default 租户但非 super_admin：英文界面下提示也是英文（同一族两支口径一致）', async () => {
+    defaultTenant.mockReturnValue(true)
+    superAdmin.mockReturnValue(false)
+    const prev = appI18n.global.locale.value
+    appI18n.global.locale.value = 'en'
+    try {
+      const wrapper = mountDrawer('m-1')
+      await flushPromises()
+      await clickMainTab(wrapper, '其它模型')
+
+      const hint = wrapper.find('.nd-notice--warn')
+      expect(hint.exists()).toBe(true)
+      expect(hint.text()).toBe('Only super admins can maintain nodes; showing read-only.')
+      expect(hint.text()).not.toMatch(/[一-鿿]/)
+    } finally {
+      appI18n.global.locale.value = prev
+    }
+  })
+
+  it('★ 运行时切换界面语言 ⇒ 提示跟着变（不是只在挂载时取一次）', async () => {
+    // `editGateHint` 是 computed，里面调 `i18n.global.t(...)`。
+    // 若 t() 没有把 locale 记成依赖，computed 会**缓存旧语种**的文案 ⇒
+    // 用户在界面上切语言后，这句提示还停在上一种语言。
+    // ⇒ 本条断言「切换发生在挂载**之后**」时提示也会更新。
+    defaultTenant.mockReturnValue(false)
+    superAdmin.mockReturnValue(true)
+    const prev = appI18n.global.locale.value
+    appI18n.global.locale.value = 'zh-CN'
+    try {
+      const wrapper = mountDrawer('m-1')
+      await flushPromises()
+      await clickMainTab(wrapper, '其它模型')
+      expect(wrapper.find('.nd-notice--warn').text()).toMatch(/[一-鿿]/)
+
+      appI18n.global.locale.value = 'en'
+      await flushPromises()
+
+      expect(wrapper.find('.nd-notice--warn').text())
+        .toBe('Only the default tenant can maintain nodes; showing read-only.')
+    } finally {
+      appI18n.global.locale.value = prev
+    }
   })
 })

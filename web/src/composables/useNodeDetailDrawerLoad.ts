@@ -86,7 +86,11 @@ export function useNodeDetailDrawerLoad(
     // 顺序：先报更靠前的那个阻塞条件。
     // 非 default 租户 ⇒ 租户门先挡（提示租户）；default 租户但不是 super_admin
     // ⇒ 角色门挡（提示角色）。两者同时不满足时提示租户门，因为它更早生效。
-    if (!isDefaultTenant()) return '仅 default 租户可以维护节点；当前以只读方式展示。'
+    //
+    // ★ 2026-10-21 订正：「非 default 租户」这支原先是**硬编码中文**字面量，
+    //   与「非 super_admin」那支（上一轮已 i18n 化）不对称 ⇒ 非 default 租户
+    //   的用户无论界面语言是什么，都只会看到中文提示。两个分支现在都走 i18n 键。
+    if (!isDefaultTenant()) return i18n.global.t('ops.overview.nodeDetailDefaultTenantOnlyHint')
     if (!isSuperAdmin()) return i18n.global.t('ops.overview.nodeDetailSuperAdminOnlyHint')
     return ''
   })

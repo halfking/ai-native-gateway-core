@@ -74,6 +74,7 @@ export default {
     nodeDetailTitle: '节点详情',
     nodeDetailLoadFailed: '加载节点详情失败',
     nodeDetailSuperAdminOnlyHint: '仅超级管理员可以维护节点；当前以只读方式展示。',
+    nodeDetailDefaultTenantOnlyHint: '仅 default 租户可以维护节点；当前以只读方式展示。',
     perfPressure: '性能压力',
     memory: '内存',
     concurrency: '并发',

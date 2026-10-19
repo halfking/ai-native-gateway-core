@@ -474,6 +474,7 @@ export default {
 
     nodeDetailLoadFailed: 'Failed to load node detail',
     nodeDetailSuperAdminOnlyHint: 'Solo los superadministradores pueden mantener los nodos; se muestra en modo de solo lectura.',
+    nodeDetailDefaultTenantOnlyHint: 'Solo el tenant default puede mantener los nodos; se muestra en modo de solo lectura.',
 
     perfPressure: 'Performance Pressure',
 
