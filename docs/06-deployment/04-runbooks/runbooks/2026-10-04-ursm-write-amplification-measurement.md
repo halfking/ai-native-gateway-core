@@ -27158,3 +27158,247 @@ affinity_hit = COALESCE(EXCLUDED.affinity_hit, _request_logs_hot.affinity_hit),
 未部署、未做任何生产写。**
 ★ 本节**没有**对 `_request_logs_hot` 执行任何写操作或 TRUNCATE。
 
+
+---
+
+## §114 复核 §113 敲响的那声警：两张 `_hot` 表的 TRUNCATE 判据 —— **门控真值** + 一个 **229 MB 的死 TOAST 索引** + 脚本的**第二个盲区**（2026-10-19）
+
+§113 第六节留了一个待复核：
+
+> ⚠ **复核** | §97/§104 把 `_request_logs_hot` / `_request_logs_bodies_hot` 当「退役 v1 表、
+> count(*)=0、可 TRUNCATE」——**热表空是因为 promote 已搬走，不是因为退役**。
+> 若按原判据 TRUNCATE，**会打断正在使用的热表**。
+
+本节给出答案。**§113 的主要推理被自己的证据推翻了一半（"promote 搬空"不成立），
+但 TRUNCATE 判据最终成立**——只是成立的理由、工具和优先级都变了。
+顺带挖出一件**从未进过任何清单**的 229 MB。
+
+### 一、决定性的一步：读门控的**真值**，不是读它的默认值
+
+`storage.request_logs_write_enabled` 在 `settings/spec_storage.go:118-124` 里
+`Default: true` / `ScopePlatform` / `HotReload`。
+**默认值是 `true`，所以「查不到这个键」和「这个键是 false」是两件事**——
+必须去 `settings_kv` 里查实际值。
+
+```sql
+SELECT key, value, value_type, scope, category, updated_at, updated_by, prev_value, prev_updated_at
+FROM settings_kv WHERE key = 'storage.request_logs_write_enabled';
+```
+
+实测（生产只读，2026-10-19）：
+
+| 字段 | 值 |
+|---|---|
+| `value` | **`false`** |
+| `value_type` / `scope` / `category` | `bool` / `platform` / `storage` |
+| `updated_at` | **2026-10-13 20:18:27.656301+08** |
+| `updated_by` | **空**（无操作者署名） |
+| `prev_value` / `prev_updated_at` | **NULL / NULL**（首次写入，不是从 true 改过来的） |
+
+⇒ ⇒ ★ **门是 10-13 20:18 被人关掉的**，
+且**这个时间点与 `request_logs_2026_10` 冻结在 20:18:11 完全吻合**（§74 实测），
+⇒ **「月分区不更新」和「门被关」是同一个事件的两面**，不是两件事。
+⇒ `prev_value` 为 NULL + `updated_by` 为空 ⇒ **这条没有留下"谁关的"**，
+登记为**可追溯性缺口**（不是缺陷，但下次出同样的事会同样查不到人）。
+
+### 二、§113 的"promote 搬空"假说：**被自己的证据推翻**
+
+§113 说「热表空 = promote 已把它们搬走」。**读调用方直接否掉**：
+
+`bg/partition_manager.go:1534-1548` `filterRetiredV1Lifecycle`：
+
+```go
+// 停写后 v1 族生命周期作业的退役行为（迁移 860 轮）：停写 = ensure/promote
+// 不再维护一个已冻结、已改名为 `_request_logs*` 的族（预建未来分区 /
+// 排空恒空的 hot 表都是纯浪费，且归档会往待删族里写新行）。
+// 重新开启写路径时门自动恢复（热加载设置）。
+case "ensure_request_logs_partition", "ensure_request_logs_bodies_partition",
+     "promote_request_logs_hot_to_partition", "promote_request_logs_bodies_hot_to_partition":
+    continue
+```
+
+⇒ ⇒ ★ **门一关，这四个 v1 生命周期作业就被整体摘掉** ——
+**promote 根本不会跑** ⇒ **热表空不可能是"promote 搬走的"**。
+⇒ 与 `client.go:1414-1418` 的 `logsWrite` 分支合起来看：
+门关 ⇒ **主行 UPSERT / protocol-fingerprint 增补 / 正文写入全部跳过** ⇒
+**`request_logs` 全族一个字都不再落库**。
+
+仓内 `bg/partition_manager_v1_retirement_test.go:44-49` 把它钉成了门禁
+（停写时四条必须在场/必须不在场的双向断言）。
+
+⇒ ⇒ ★★ **所以 §113 的主要推理是错的**：
+热表空 = **运行时门控停写**（10-13 20:18 起），
+**不是** "promote 把它搬走了"。
+⇒ 但**结论方向没变**：这族确实是**待删族**——
+迁移 `860_rename_request_logs_family_pending_delete.sql` 正文写着
+「这是 **S4 retirement 的 pending-delete 标记**」、
+「**Writes are already gated off (`storage.request_logs_write_enabled=false`)**」。
+
+### 三、350 MB 的**准确构成**：不是"两张空表各占 59/291 MB"
+
+§97/§104 只记了"表总大小"。实测拆到 fork 级（`pg_class.reltoastrelid` + `pg_index`）：
+
+| 表 | heap | TOAST heap | **TOAST 索引** | 自有索引 | 合计 |
+|---|---|---|---|---|---|
+| `_request_logs_hot` | 12 MB | 3,920 kB | 1,992 kB | **40 MB** | 59 MB |
+| `_request_logs_bodies_hot` | **0 bytes** | 55 MB | **229 MB** | 6,384 kB | **291 MB** |
+
+⇒ ⇒ ★★ **`_request_logs_bodies_hot` 的 291 MB 里，229 MB 是 TOAST 表的**唯一索引**——
+**而那张 TOAST 表有 0 行**。
+
+`pgstattuple` 直读（TOAST 表本体）：
+
+| 指标 | 值 |
+|---|---|
+| `table_len` | 57,958,400 |
+| `tuple_count`（活行） | **0** |
+| `dead_tuple_count` | **0** |
+| `free_space` | 57,731,984（**99.61%**） |
+
+`pgstatindex`（索引本体）：
+
+| 指标 | 值 |
+|---|---|
+| `index_size` | 240,050,176（229 MB） |
+| `leaf_pages` | **1** |
+| `internal_pages` | 2 |
+| **`deleted_pages`** | **29,299** |
+| **`avg_leaf_density`** | **0.54%** |
+
+⇒ ⇒ ★★ **29,299 个死页 / 总共 29,302 页 ⇒ 这个索引 99.99% 是垃圾**。
+这是本轮发现的**全库最大单块可回收项**（229 MB），
+而它**不在 §97/§104/§107 的任何一张清单上**。
+
+### 四、机制复现：**本地 PG 17.10 沙箱**（与生产同镜像 `kx-citus-pg17`）
+
+⚠ 全程在**本机容器 `llm-gateway-pg`**（`kx-citus-pg17:offline-arm64`，PG **17.10**）里做，
+**未碰生产**。用一次性 schema `toast_probe`，用完即弃。
+
+**第一次夹具无效，被自己的读数当场抓出来**：
+`repeat('x', 100000)` 这种**高度可压缩**的载荷被 PG 压回行内（<2KB），
+**压根没进 TOAST**（TOAST 索引恒为 8,192 bytes）⇒ 换成**不可压缩**的随机 hex
+（`string_agg(md5(random()::text),'')` × 2500 ≈ 80KB/行）。
+
+复现结果：
+
+| 步骤 | 读数 |
+|---|---|
+| 插入 2,000 行 × 80KB 随机 hex | 表 **159 MB**，TOAST 索引 **1,800 kB** |
+| `DELETE` 全部 + `VACUUM` | TOAST 索引 **仍 1,800 kB**；表 1,832 kB |
+| `pgstatindex` | `deleted_pages=222`、`leaf_pages=1`、**`avg_leaf_density=0.05`** |
+| `REINDEX INDEX CONCURRENTLY <toast idx>` | 索引 **1,800 kB → 8,192 bytes**；表 1,832 kB → **40 kB** |
+
+⇒ ⇒ ★★★ **生产签名与本地复现逐条吻合**
+（`leaf_pages=1` / `avg_leaf_density` 0.05% vs 0.54% / `deleted_pages` 222 vs 29,299）。
+
+⇒ ⇒ ★★ **机制坐实**：
+**DELETE 密集的负载在"大 TOAST 载荷"表上，会把 TOAST 的唯一索引撑成死页堆**；
+**VACUUM 收不了索引的空间**（VACUUM 只管堆表，索引只有 REINDEX 能重建），
+所以**空表也可以背着几百 MB 的死索引**。
+
+⇒ ⇒ ★★ **同时回答了一个悬着的操作问题**（PG 17.10 实测三条都成功）：
+`REINDEX INDEX CONCURRENTLY <toast idx>` / `REINDEX INDEX <toast idx>` / `REINDEX TABLE <用户表>` **全部允许**。
+⇒ **229 MB 可以在线、不加锁、不改结构地收回来**，
+比 `TRUNCATE`（要 ACCESS EXCLUSIVE 独占锁）**严格更优**。
+
+### 五、脚本的**第二个结构性盲区**：`pg_toast` 命名空间（300 MB 不可见）
+
+`scripts/252-monitor/pg17-index-bloat.sh:178-187` 的候选集：
+
+```sql
+FROM pg_index i
+JOIN pg_class c  ON c.oid = i.indexrelid
+JOIN pg_am am    ON am.oid = c.relam AND am.amname = 'btree'
+JOIN pg_namespace n ON n.oid = c.relnamespace AND n.nspname = 'public'   -- ★ 盲区
+WHERE c.relkind = 'i' AND NOT c.relispartition AND i.indisvalid
+  AND pg_relation_size(c.oid) >= ${MIN_INDEX_MB} * 1024 * 1024
+```
+
+⇒ **`n.nspname = 'public'` 把 `pg_toast` 命名空间整体挡在外面。**
+实测全库 `pg_toast` 里 ≥16MB 的索引：
+
+| 索引 | 大小 | 归属表 | 归属表活行 | `deleted_pages` | `avg_leaf_density` | 判定 |
+|---|---|---|---|---|---|---|
+| `pg_toast_81522141_index` | **229 MB** | `_request_logs_bodies_hot` | **0** | **29,299** | **0.54%** | ★ **全膨胀** |
+| `pg_toast_96868624_index` | 42 MB | `session_bodies_2026_10` | 226,595 | 75 | **89.88%** | 健康 |
+| `pg_toast_86116938_index` | 30 MB | `session_bodies_hot` | 10,517 | 3,698 | 90.18% | 死页多、叶页密 |
+
+⇒ 脚本候选 **50 个**，`pg_toast` **3 个 / 300 MB** 一个都看不见。
+
+⇒ ⇒ ★★★ **所以修法不能用"把 pg_toast 整个纳进来 + 按尺寸 REINDEX"**：
+上表 **3 个里只有 1 个真膨胀**，另外 2 个（42 MB + 30 MB）叶页密度 89.88% / 90.18%，
+**REINDEX 纯浪费**。
+⇒ ⇒ **必须沿用脚本已有的双信号判据**（`deleted_pages` **OR** `avg_leaf_density`，
+§104 已自测过单信号盲区），**只把命名空间条件放宽**，
+让 `pg_toast` 里的索引**进入同一套双信号判据**。
+⇒ ⚠ 这一条**与 §104 的 `AND NOT c.relispartition`（4,797 MB 盲区）是两个独立盲区**，
+**两条都要修**，修一条不会覆盖另一条。
+
+### 六、TRUNCATE 判据的最终裁决：**成立，但工具与优先级都变了**
+
+| 问题 | 结论 | 依据 |
+|---|---|---|
+| 两张表是不是"在用架构"？ | **代码路径仍在树里**（`client.go:1419-1423`），但**运行时被门控停写**，且仓内自己标为**待删族**（迁移 860） | §二 |
+| 空的原因是「promote 搬走」？ | ❌ **错**。门一关，promote 作业被**整体摘掉**，不可能搬 | §二 |
+| 空的原因是「门控停写」？ | ✅ **对**。门 `false`，`updated_at=2026-10-13 20:18:27` | §一 |
+| TRUNCATE 会不会"打断正在使用的热表"？ | ❌ **不会**。TRUNCATE **保留表结构、索引、触发器**（实测：`_request_logs_hot` 上有 2 个 AFTER INSERT 触发器 `trg_sync_session_task_id` / `trg_update_session_summary`，TRUNCATE 不触发也不删除它们）；回切门后写入照旧 | `pg_trigger` 实测 |
+| 会不会丢数据？ | ❌ **不会**。两张表**活行均为 0** | `pg_stat_user_tables` |
+| 结论 | ✅ **§97/§104 的 TRUNCATE 判据成立**，但**理由要改成"运行时门控停写 + 迁移 860 待删标记 + promote 作业被退役过滤"** | |
+
+⇒ ⇒ ★★ **但 §113 的告警不是白敲的**——它把「空表有两种相反含义」这条纪律又用上了：
+本轮是**「被门控停写」**，上一轮（§74）是**「被 promote 搬走」**。
+⇒ ⇒ **两种都必须先确认表还是不是写入路径的一部分，才谈处置。**
+
+⇒ ⇒ ★★★ **回收空间的工具要分层**（本节新结论）：
+
+| 目标 | ❌ 不该用 | ✅ 该用 | 理由 |
+|---|---|---|---|
+| 229 MB 死 TOAST 索引 | `TRUNCATE`（要独占锁） | **`REINDEX INDEX CONCURRENTLY`** | 在线、不锁、不改结构（本地 PG 17.10 实测） |
+| 55 MB 空 TOAST heap + 6 MB 索引 | `REINDEX`（管不到） | `TRUNCATE` 或 `VACUUM FULL` | 索引回收不到 TOAST 堆 |
+| `_request_logs_hot` 40 MB 自有索引 | — | `TRUNCATE`（整表 59 MB） | 索引只随表重建才回收 |
+
+⇒ ⇒ ★ **"回收空间"和"修行为"是两件事**：
+TRUNCATE / REINDEX 解决**空间**；
+而 §74 记的 `recent_success_rate()` 直读恒空的 `_request_logs_hot`（3 小时窗口）
+⇒ **静默返回零**、被消费方读成「正常」，
+**这是门控停写的后果，TRUNCATE 一点也修不了它**。
+⇒ 读端消费者实测：**12 个视图** + **7 个函数**
+（`recent_success_rate` / `system_health_status` / `cleanup_stale_in_progress_requests` /
+`credential_most_used_model` ×2 / 两个 `promote_*`）。
+
+### 七、顺带订正两个待授权项的**数字**（原数字已过期）
+
+| 项 | 旧记录 | 实测（2026-10-19） |
+|---|---|---|
+| `TRUNCATE usage_facts_default` | 「堆 80 MB + 索引 43 MB」 | **堆 0 bytes、活行 0、total 80 MB —— 全部在 7 条索引上**（23 + 18 + 8,488×3 + 8,472 + 6,048 kB）。⇒ 回收额仍是 80 MB，但**理由与手段要改成"索引全空"** |
+| `DROP public.ursm_node_snapshot_min_legacy` | 「852 MB，待 DROP」 | heap **592 MB** / total **852 MB** / **活行 2,836,620** ⇒ ⚠ **这是删 284 万行历史快照数据，不是清空间**，属**属主拍板**范畴而非纯空间优化 |
+
+### 八、诚实的边界
+
+| | |
+|---|---|
+| ❌ | **没解释 `request_logs_bodies_2026_10` 为何 `n_tup_ins=0` 却有 816,144 行**（统计重置自 PG 启动 2026-10-05 15:49:43 起）。同期 `_request_logs_bodies_hot` 是 ins 109,447 / del 125,346 ⇒ **删掉的比写入的多**。函数 `promote_request_logs_bodies_hot_to_partition` 的 **Phase 1 是"超 TTL 直接丢弃"**（`ts < now()-ttl_days` 且 `ts < now()-p_retention` ⇒ 直接 `DELETE` 后 `RETURN`，**不归档**），Phase 2 才是搬进月分区 ⇒ 两者差额可能就落在这里。**但 PG 日志已不可用（§109），机制未坐实**，登记为**待实证**，**不下结论** |
+| ❌ | **没有验证生产的 154/245 上跑 `REINDEX INDEX CONCURRENTLY` 的实际行为**（本地同版本同镜像已验证语义，生产负载/参数未验证） |
+| ❌ | **没有确认 `pg_toast` 命名空间里是否还有 <16MB 但高死页的 TOAST 索引**（脚本的 16MB 门槛会跳过它们）—— 普查只覆盖 ≥16MB |
+| ⚠ | `updated_by` 为空 ⇒ 门是**谁**关的不可追溯 |
+| ⚠ | 12 视图 + 7 函数仍读这一族；TRUNCATE 期间的 ACCESS EXCLUSIVE 会**短暂阻塞**它们 |
+| ✅ | 已证：门控真值与生效时刻；退役过滤的代码位置与门禁位置；350 MB 的 fork 级构成；229 MB 死 TOAST 索引（本地同版本复现 + 生产 `pgstatindex` 双证）；`REINDEX` 对 TOAST 索引的许可与效果；脚本第二个盲区；两个待授权项的数字订正 |
+
+### 九、动作边界
+
+⚠ 全程**只读**（生产）+ **本地容器沙箱实验**（`llm-gateway-pg`，一次性 schema）。
+**未对生产做任何写**：未 TRUNCATE、未 REINDEX、未 DROP、未改设置、
+未改脚本、未部署、未跑 `--fix`。
+★ 本节**没有**执行 §97/§104/§107 任何一项待授权动作。
+
+### 十、由此产生的待办（**全部需授权**）
+
+| 优先级 | 动作 | 收益 | 性质 |
+|---|---|---|---|
+| ★★★ | **`REINDEX INDEX CONCURRENTLY pg_toast.pg_toast_81522141_index`** | **229 MB** | **在线、不加锁、不改结构、活行 0**（比 TRUNCATE 严格更优） |
+| ★★★ | **修 `pg17-index-bloat.sh`：候选集放宽到 `pg_toast` 命名空间**（用现有双信号判据，**勿**按尺寸一刀切） | 防止再漏 300 MB 级 TOAST 索引 | 仓内改动 + 部署 |
+| ★★ | `TRUNCATE` 两张 `_hot` 表 | 约 121 MB（229 MB 已被 REINDEX 拿走） | 需窗口（12 视图在读） |
+| ★★ | `TRUNCATE usage_facts_default` | 80 MB（全在索引） | 活行 0 |
+| ★★ | 修 `pg17-index-bloat.sh` 的 `AND NOT c.relispartition` | 4,797 MB | §104 既有待办，**与本条独立** |
+| ⚠ | `ursm_node_snapshot_min_legacy` 的 DROP | 852 MB | ⚠ **含 284 万行活数据**，属主拍板 |
+| ⚠ | 行为项：门控停写期间 `recent_success_rate()` 等读恒空表 ⇒ 静默零 | 行为正确性 | **TRUNCATE 修不了**，需产品/代码决策 |
