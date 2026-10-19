@@ -27,11 +27,13 @@
 //	go test -tags=integration ./sql/migrations/startup/ -run TestMigration877 -v -count=1
 //
 // ⚠ TEST_PG_URL 必须指向可丢弃的一次性库：夹具用 public 下的真名
-//   （session_turns / session_turns_hot），与生产同名才能验证级联的真实路径；
-//   结束时逐对象 DROP IF EXISTS 清理。
+//
+//	（session_turns / session_turns_hot），与生产同名才能验证级联的真实路径；
+//	结束时逐对象 DROP IF EXISTS 清理。
 package startup
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os"
@@ -47,12 +49,13 @@ import (
 // 在 CI 上跑成分钟级。命中率由 fixtureNeedleEvery 控制，必须让 needle
 // **有选择性**（见文件末「夹具纪律」）。
 const (
-	fixtureRows         = 120000
-	fixtureNeedleEvery  = 500 // → 命中率 ~0.2%
-	fixtureSearchNeedle = "needle"
-	fixtureTenant       = "tenant_3"
-	fixtureParent       = "session_turns"
-	fixtureHot          = "session_turns_hot"
+	fixtureRows          = 120000
+	fixtureNeedleEvery   = 500 // → 命中率 ~0.2%
+	fixtureSearchNeedle  = "needle"
+	fixtureTenant        = "tenant_3"
+	fixtureParent        = "session_turns"
+	fixtureHot           = "session_turns_hot"
+	generatorMarker      = "SELECT format(\n  'CREATE INDEX CONCURRENTLY"
 	fixtureCleanupSQL877 = `
 DROP VIEW IF EXISTS session_turns_with_current_month;
 DROP TABLE IF EXISTS session_turns_2026_10;
@@ -152,6 +155,77 @@ func TestMigration877SearchTextTrgm(t *testing.T) {
 		}
 	}
 
+	// applyMigration877 应用**真实文件** 877，处理 \gexec。
+	//
+	// \gexec 是 psql 元命令，不是 SQL；pgx 会把它当 SQL 发给 PG 然后语法错。
+	// 走真 psql 也不可行：部署机上 psql 在 PG 容器里（installer 用的是
+	// `docker exec <container> psql`），宿主 PATH 上并没有；本机的
+	// ~/kaixuan/pg18/bin/psql 是**转发到线上 llm-gateway-pg 容器的 shim**，
+	// 拿它跑这道门等于打生产。所以这里自己实现 \gexec 的语义：
+	//   1) \gexec 之前的最后一条语句是 SELECT format(...)，跑它、取回生成的 DDL；
+	//   2) 逐条执行那些 DDL；
+	//   3) 执行 \gexec 之后的剩余部分。
+	// 这样测的仍然是**真实文件的真实 DDL**，且不依赖宿主 psql。
+	// 耦合点只有一个：生成器 SELECT 必须是 \gexec 前最后一条语句。上面那道
+	// generatorMarker 门在它不再成立时立刻红，而不是静默测了个空。
+	applyMigration877 := func(script []byte, what string) {
+		t.Helper()
+		// 按**整行**切，不用裸子串：877 的文件头注释里就出现了 \gexec 这个词
+		// （描述三段式），裸切会把注释从中间劈开。整行形式只匹配真正的元命令。
+		const gexecLine = "\n\\gexec\n"
+		segments := bytes.Split(script, []byte(gexecLine))
+		if len(segments) < 2 {
+			t.Fatalf("%s: 877 应当至少有一个独占一行的 \\gexec 元命令", what)
+		}
+		for i, seg := range segments {
+			gen := bytes.LastIndex(seg, []byte(generatorMarker))
+			if gen < 0 {
+				// 普通段：整段自动提交执行。
+				//
+				// 这里**刻意不做**文本扫描去禁止 "CREATE INDEX CONCURRENTLY"
+				// 出现在普通段：877 的注释与 RAISE 文案里多处出现该词句，
+				// 任何子串判定都会被自己的说明文字绊倒（本轮已因此误报两次）。
+				// 而且不需要它——若某段真的混入了 CONCURRENTLY，PG 会直接回
+				// SQLSTATE 25001，错误信息（"CREATE INDEX CONCURRENTLY cannot
+				// run inside a transaction block"）比任何文本守卫都准。
+				// 首次改机制时正是靠这条真实错误发现问题的。
+				if _, err := scriptConn.Exec(ctx, string(seg)); err != nil {
+					t.Fatalf("%s: 第 %d 段执行失败: %v", what, i, err)
+				}
+				continue
+			}
+			prefix, generator := seg[:gen], strings.TrimSpace(strings.TrimSuffix(
+				strings.TrimSpace(string(seg[gen:])), ";"))
+			if _, err := scriptConn.Exec(ctx, string(prefix)); err != nil {
+				t.Fatalf("%s: 第 %d 段前置语句失败: %v", what, i, err)
+			}
+			rows, err := scriptConn.Query(ctx, generator)
+			if err != nil {
+				t.Fatalf("%s: 第 %d 段生成器 SELECT 失败: %v", what, i, err)
+			}
+			var generated []string
+			for rows.Next() {
+				var stmt string
+				if err := rows.Scan(&stmt); err != nil {
+					rows.Close()
+					t.Fatalf("%s: 第 %d 段扫生成语句失败: %v", what, i, err)
+				}
+				generated = append(generated, stmt)
+			}
+			rows.Close()
+			if err := rows.Err(); err != nil {
+				t.Fatalf("%s: 第 %d 段生成器迭代失败: %v", what, i, err)
+			}
+			for _, stmt := range generated {
+				// 每条都是 CREATE INDEX CONCURRENTLY —— 必须**各自**自动提交。
+				// 这里逐条 Exec，形态与生产（\\gexec 逐条发）一致。
+				if _, err := scriptConn.Exec(ctx, stmt); err != nil {
+					t.Fatalf("%s: 第 %d 段执行 %q 失败: %v", what, i, stmt, err)
+				}
+			}
+		}
+	}
+
 	execScript(fixtureCleanupSQL877)
 	// 独立连接做清理（migration_532 的 R42 教训：t.Cleanup 晚于 defer 关连接，
 	// 写在已关连接上会静默漏夹具）。
@@ -175,10 +249,22 @@ func TestMigration877SearchTextTrgm(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	execScript(string(migration))
+
+	// ★ 通道门：877 必须携带 dbinit:no-transaction 标记。
+	//   applySQL 在没有该标记时会给整个文件加 --single-transaction，而
+	//   CREATE INDEX CONCURRENTLY 在事务块内是非法的（718 文件头记的就是
+	//   这个失败面："无该标记时全新安装会失败于 CREATE INDEX CONCURRENTLY
+	//   cannot run inside a transaction block"）。这条判据守的是**部署通道**
+	//   而不是索引行为——今天为绿，丢掉标记即红。
+	if !bytes.Contains(migration, []byte("dbinit:no-transaction")) {
+		t.Errorf("877 含 CREATE INDEX CONCURRENTLY，必须携带 dbinit:no-transaction 标记；" +
+			"否则 installer applySQL 的 --single-transaction 会让它在全新安装上失败")
+	}
+
+	applyMigration877(migration, "apply 877")
 
 	// P4 幂等。
-	execScript(string(migration))
+	applyMigration877(migration, "re-apply 877 (idempotence)")
 
 	// ── P5 附带删掉的死索引（Task 4）：upstream_protocol 那条必须不在了。
 	//
@@ -192,7 +278,7 @@ func TestMigration877SearchTextTrgm(t *testing.T) {
 		t.Fatalf("P5 upstream index check: %v", err)
 	}
 	if upstreamIdx != 0 {
-		t.Errorf("P5: idx_session_turns_hot_upstream_protocol still exists; migration 877 "+
+		t.Errorf("P5: idx_session_turns_hot_upstream_protocol still exists; migration 877 " +
 			"drops it because the column is permanently NULL (no writer) and has no reader")
 	}
 
@@ -237,6 +323,42 @@ func TestMigration877SearchTextTrgm(t *testing.T) {
 			"seq-scans every month partition.", plan)
 	}
 
+	// ── P6 自愈：模拟 applySQL 的 5 分钟 ctx 掐断 CONCURRENTLY 的残留
+	// （indisvalid=false 的半成品索引），复跑 877 必须把它 DROP 并重建为 valid。
+	//
+	// 为什么这条重要：IF NOT EXISTS 只判存在性，对 invalid 对象**不生效**。
+	// 所以「重跑一次」在有残留时会看起来跑了、实际什么都没修——索引在、
+	// 名字对、indisvalid=false，而 planner 不用它。那正是「索引明明在，
+	// EXPLAIN 却还在 Seq Scan」最难查的一种形态。877 的第 0 段就是为它写的。
+	//
+	// 需要改 pg_catalog（非超级用户会失败），失败则跳过本条而不是判红：
+	// 这道门本来就跑在可丢弃的一次性库上，跳过不影响其他判据的有效性。
+	if _, err := pool.Exec(ctx, `UPDATE pg_index SET indisvalid = false, indisready = false
+		WHERE indexrelid = to_regclass('public.idx_session_turns_hot_search_trgm')`); err != nil {
+		t.Logf("P6 skipped: cannot write pg_catalog (%v); needs a superuser test DB", err)
+	} else {
+		var invalid int
+		if err := pool.QueryRow(ctx, `SELECT count(*) FROM pg_index
+			WHERE indexrelid = to_regclass('public.idx_session_turns_hot_search_trgm')
+			  AND NOT indisvalid`).Scan(&invalid); err != nil {
+			t.Fatalf("P6 seed check: %v", err)
+		}
+		if invalid != 1 {
+			t.Fatalf("P6 setup: expected to mark the hot index invalid, still %d invalid", invalid)
+		}
+		applyMigration877(migration, "re-apply 877 after simulated ctx kill")
+		var stillInvalid int
+		if err := pool.QueryRow(ctx, `SELECT count(*) FROM pg_index
+			WHERE indexrelid = to_regclass('public.idx_session_turns_hot_search_trgm')
+			  AND NOT indisvalid`).Scan(&stillInvalid); err != nil {
+			t.Fatalf("P6 post check: %v", err)
+		}
+		if stillInvalid != 0 {
+			t.Errorf("P6: 877 的第 0 段没有清掉 indisvalid=false 的残留；"+
+				"IF NOT EXISTS 对 invalid 对象不生效，重跑会假装修好了（stillInvalid=%d）", stillInvalid)
+		}
+	}
+
 	// ── P3 变异自证：把索引摘掉，planner 必须不再用它。
 	// 没有这一步，P2 可能恒真（例如谓词退化、夹具空、planner 版本差异）。
 	// 这段是**门内自带的反证**，不是靠人手点掉索引再看。
@@ -250,7 +372,7 @@ func TestMigration877SearchTextTrgm(t *testing.T) {
 			"the fixture is not measuring what it claims to.\nplan:\n%s", planNoIdx)
 	}
 	// 复原，让 P4 之后的状态与迁移产物一致（不影响判定，纯粹为可读性）。
-	execScript(string(migration))
+	applyMigration877(migration, "restore 877 after P3")
 }
 
 // explainText 跑 EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) 并取回文本。
@@ -288,7 +410,7 @@ func planUsesTrgmIndex(plan string) bool {
 		indexCond    bool
 	)
 	for _, line := range strings.Split(plan, "\n") {
-		if strings.Contains(line, "Bitmap Index Scan") && strings.Contains(line, "search_text_idx") {
+		if strings.Contains(line, "Bitmap Index Scan") && strings.Contains(line, "search_trgm") {
 			bitmapOnTrgm = true
 		}
 		if bitmapOnTrgm && strings.Contains(line, "Index Cond:") && strings.Contains(line, "search_text") {

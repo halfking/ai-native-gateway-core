@@ -101,6 +101,23 @@ var knownStartupChainConcurrencyViolations = map[string]int{
 	// ⇒ 871 的 DO 块会对 indisvalid=false 明确报错，**下一次启动迁移**
 	// 才会发现，届时需先 DROP INDEX CONCURRENTLY 重建。
 	"871_route_incident_events_created_at_idx.sql": 4,
+	// 877（2026-10-19 会话族审计轮）与 871 同类：携带 dbinit:no-transaction
+	// 标记 ⇒ applySQL 不加 --single-transaction ⇒ 走非事务通道，能正常应用。
+	//
+	// 它之所以用三段式 CONCURRENTLY（727/729 同款）而不是父表普通 CREATE INDEX，
+	// 正是因为 session_turns 是**活写**分区父表：普通级联会在整个构建期持
+	// ShareLock 阻断写入，而 GIN trigram 覆盖 100% 行且 search_text 是 TOAST
+	// 宽列，6.4GB 分区属分钟级构建。
+	//
+	// ⚠️ 5 分钟 applySQL ctx 这条风险对 877 **比对 871 现实得多**：871 的索引是
+	// 4 条窄索引，877 是覆盖全部行的 trigram 索引。被 ctx 掐断会留下
+	// **invalid 索引**（CONCURRENTLY 的两阶段扫描未完成）。因此 877 自带
+	// ① 建之前 DROP 掉同名 invalid 索引、② 建之后校验 indisvalid 并显式报错，
+	// 让「上次被掐断」变成可自愈 + 可诊断，而不是一个静默的半成品索引。
+	//
+	// 计数 5：两条生成器里的字符串字面量 + 校验块 RAISE 文案里的一处提及
+	// （countConcurrently 按剥注释后的正文做子串统计，字符串字面量算正文）。
+	"877_session_turns_search_text_trgm.sql": 5,
 }
 
 func countConcurrently(t *testing.T, path string) int {
