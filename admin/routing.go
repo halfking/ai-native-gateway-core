@@ -5824,25 +5824,10 @@ func (h *Handler) applyForceEnable(ctx context.Context, credentialID int, rawMod
 		return fmt.Errorf("force_enable: update credentials failed: %w", err)
 	}
 
-	var cmbRows int64
-	if rawModel != "" {
-		tag, err := tx.Exec(ctx, `
-			UPDATE credential_model_bindings cmb
-			SET available = TRUE,
-				unavailable_reason = NULL,
-				unavailable_at = NULL,
-				unavailable_recover_at = NULL,
-				updated_at = NOW()
-			FROM provider_models pm
-			WHERE cmb.credential_id = $1
-			  AND pm.id = cmb.provider_model_id
-			  AND pm.raw_model_name = $2
-		`, credentialID, rawModel)
-		if err != nil {
-			met.RoutingCredentialResetTotal.WithLabelValues("db", "error").Inc()
-			return fmt.Errorf("force_enable: update cmb failed: %w", err)
-		}
-		cmbRows = tag.RowsAffected()
+	cmbRows, err := forceEnableBindings(ctx, tx, credentialID, rawModel)
+	if err != nil {
+		met.RoutingCredentialResetTotal.WithLabelValues("db", "error").Inc()
+		return fmt.Errorf("force_enable: update cmb failed: %w", err)
 	}
 
 	// Clear NodeProbeWorker backoff so v_routable_credential_models drops
@@ -5949,7 +5934,7 @@ func (h *Handler) applyForceEnable(ctx context.Context, credentialID int, rawMod
 	beforeAfter["previous_availability_state"] = availState
 	beforeAfter["new_manual_disabled"] = false
 	beforeAfter["new_availability_state"] = "ready"
-	beforeAfter["cmb_available"] = cmbRows > 0 || rawModel == ""
+	beforeAfter["cmb_available"] = cmbRows > 0
 	beforeAfter["cmb_rows_updated"] = cmbRows
 	beforeAfter["node_probe_rows_updated"] = probeRows
 	beforeAfter["model_probe_rows_updated"] = modelProbeRows
