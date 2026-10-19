@@ -48,11 +48,16 @@ if [ -z "${LLMGW_NO_SINGLE_INSTANCE_LOCK:-}" ] \
   _llmgw_single_instance_guarded=true
 fi
 
-CONTAINER=pg-252-pg17
-PG_USER=llm_gateway
-PG_DB=llm_gateway
-LOG=/var/log/pg17-vacuum-bloat.log
+CONTAINER=${CONTAINER:-pg-252-pg17}
+PG_USER=${PG_USER:-llm_gateway}
+PG_DB=${PG_DB:-llm_gateway}
+LOG=${LOG:-/var/log/pg17-vacuum-bloat.log}
 TABLE_TIMEOUT_MIN=30   # 单表 VACUUM FULL 上限（分钟）
+# 真实死元组比例门槛：pgstattuple 实测低于此值一律 SKIP（§117 确认闸）。
+# 取 30 与 BLOAT_SQL 的估算门槛同值 ⇒ 估算只负责「筛出来」，实测负责「做不做」。
+MIN_DEAD_PCT=${MIN_DEAD_PCT:-30}
+# 可注入：让行为门能用假 docker 驱动真实判定分支（同 emergency-cleanup / proactive）。
+DOCKER_BIN=${DOCKER_BIN:-docker}
 
 mkdir -p "$(dirname "$LOG")" 2>/dev/null || true
 echo "[$(date -Iseconds)] start vacuum-bloat weekly cleanup" >> "$LOG"
@@ -60,7 +65,7 @@ echo "[$(date -Iseconds)] start vacuum-bloat weekly cleanup" >> "$LOG"
 # === 列存元数据表（最需要 VACUUM FULL，DROP 列存表后必有大量 dead tuple）===
 META_TABLES=("chunk" "stripe" "chunk_group")
 for meta in "${META_TABLES[@]}"; do
-  size=$(docker exec "$CONTAINER" psql -U "$PG_USER" -d "$PG_DB" -tAc \
+  size=$("$DOCKER_BIN" exec "$CONTAINER" psql -U "$PG_USER" -d "$PG_DB" -tAc \
     "SELECT pg_total_relation_size('columnar_internal.${meta}')/1024/1024" 2>/dev/null || echo "0")
   echo "[$(date -Iseconds)]   columnar_internal.${meta} size=${size}MB - start VACUUM FULL" >> "$LOG"
   # 2026-10-03 修复：原写法把 SET 与 VACUUM FULL 放在同一个 -c 里，psql 会把它们
@@ -68,11 +73,11 @@ for meta in "${META_TABLES[@]}"; do
   # 自 2026-07-15 上线起每一个周日 100% 失败（已核对 /var/log/pg17-vacuum-bloat.log）。
   # 退出码还被 `|| echo FAILED` 吞掉，结尾照打 done，所以长期无人察觉。
   # 正确写法：超时参数走 PGOPTIONS，VACUUM FULL 单独一条语句下发。
-  docker exec -e PGOPTIONS="-c statement_timeout=${TABLE_TIMEOUT_MIN}min -c lock_timeout=5min" \
+  "$DOCKER_BIN" exec -e PGOPTIONS="-c statement_timeout=${TABLE_TIMEOUT_MIN}min -c lock_timeout=5min" \
     "$CONTAINER" psql -U "$PG_USER" -d "$PG_DB" -tAX \
     -c "VACUUM FULL columnar_internal.${meta}" >> "$LOG" 2>&1 \
     || echo "[$(date -Iseconds)]   VACUUM FULL columnar_internal.${meta} FAILED" >> "$LOG"
-  new_size=$(docker exec "$CONTAINER" psql -U "$PG_USER" -d "$PG_DB" -tAc \
+  new_size=$("$DOCKER_BIN" exec "$CONTAINER" psql -U "$PG_USER" -d "$PG_DB" -tAc \
     "SELECT pg_total_relation_size('columnar_internal.${meta}')/1024/1024" 2>/dev/null || echo "0")
   echo "[$(date -Iseconds)]   columnar_internal.${meta} size=${size}MB -> ${new_size}MB" >> "$LOG"
 done
@@ -98,7 +103,7 @@ ORDER BY dead_pct DESC, size DESC
 LIMIT 20;
 "
 
-TARGETS=$(docker exec "$CONTAINER" psql -U "$PG_USER" -d "$PG_DB" -tAc "$BLOAT_SQL" 2>/dev/null || echo "")
+TARGETS=$("$DOCKER_BIN" exec "$CONTAINER" psql -U "$PG_USER" -d "$PG_DB" -tAc "$BLOAT_SQL" 2>/dev/null || echo "")
 if [ -z "$TARGETS" ]; then
   echo "[$(date -Iseconds)] no business tables need VACUUM FULL (no bloat > 30% with size >= 256MB)" >> "$LOG"
 else
@@ -106,9 +111,29 @@ else
   echo "$TARGETS" >> "$LOG"
   while IFS='|' read -r tname size dead_pct; do
     [ -z "$tname" ] && continue
-    echo "[$(date -Iseconds)]   VACUUM FULL ${tname} (size=${size} bytes, dead_pct=${dead_pct}%)" >> "$LOG"
+    # ★ 2026-10-19（§117）：BLOAT_SQL 的 dead_pct 是**从 pg_stat 的估计值算的**
+    #   （100*n_dead_tup/(n_live_tup+n_dead_tup)），而 pg_stat 会被 PG 重启清零、
+    #   只在 ANALYZE/VACUUM 之后才回来。本文件头部本来就写着「用 pgstattuple 扩展
+    #   （如果没有就用 dead_tup_pct 估算）」，但**估算那条路径是唯一的实现**。
+    # ⇒ 与 §116 同族的处置：**估计量只能筛可疑项，不能驱动不可逆动作**。
+    #   VACUUM FULL 会拿 ACCESS EXCLUSIVE 锁住整表（TABLE_TIMEOUT_MIN=30），
+    #   对着一张其实很健康的表锁 30 分钟，代价落在 252 上所有在线业务。
+    # ⇒ 确认闸：真去读表（pgstattuple_approx 真读页），<阈值一律 SKIP；
+    #   量不出来（扩展缺失 / 读失败）也 SKIP 并显式留痕 —— 宁可不做，不可错做。
+    real_dead_pct=$("$DOCKER_BIN" exec "$CONTAINER" psql -U "$PG_USER" -d "$PG_DB" -tAX \
+      -c "SELECT round(dead_tuple_percent::numeric,1) FROM pgstattuple_approx('$tname');" 2>/dev/null \
+      | tr -d '[:space:]')
+    if ! [[ "$real_dead_pct" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
+      echo "[$(date -Iseconds)]   SKIP ${tname}: 估算 dead_pct=${dead_pct}% 但 pgstattuple_approx 量不出来（扩展缺失或读失败），不做不可逆动作" >> "$LOG"
+      continue
+    fi
+    if awk -v r="$real_dead_pct" -v t="$MIN_DEAD_PCT" 'BEGIN{exit !(r<t)}'; then
+      echo "[$(date -Iseconds)]   SKIP ${tname}: 估算 dead_pct=${dead_pct}% 但实测仅 ${real_dead_pct}%（<${MIN_DEAD_PCT}%），统计估计不可信" >> "$LOG"
+      continue
+    fi
+    echo "[$(date -Iseconds)]   VACUUM FULL ${tname} (size=${size} bytes, 估算 dead_pct=${dead_pct}%, 实测=${real_dead_pct}%)" >> "$LOG"
     # 2026-10-03 同上修复（事务块问题）
-    docker exec -e PGOPTIONS="-c statement_timeout=${TABLE_TIMEOUT_MIN}min -c lock_timeout=5min" \
+    "$DOCKER_BIN" exec -e PGOPTIONS="-c statement_timeout=${TABLE_TIMEOUT_MIN}min -c lock_timeout=5min" \
       "$CONTAINER" psql -U "$PG_USER" -d "$PG_DB" -tAX \
       -c "VACUUM FULL ${tname}" >> "$LOG" 2>&1 \
       || echo "[$(date -Iseconds)]   VACUUM FULL ${tname} FAILED" >> "$LOG"

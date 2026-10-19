@@ -27789,3 +27789,130 @@ mv /etc/cron.d/pg17.bak.* /etc/cron.d.bak/
 ★ 同族：`[[grep 命中字段名后必须确认它属于哪个 struct 和哪张表]]`
 —— 本次同一个小时内，我在**同一个字段名**（`llmgw-source`）上连错两次：
 先当用户、再当证据。
+
+---
+
+## §117 把 §116 的纪律做完：**同族普查** —— 5 个会写库的巡检作业逐个验完，带雷的只有 1 个（2026-10-19）
+
+§116 的 LESSONS 里写了一条：
+
+> **发现缺陷时，先在同一文件/同一族里列全所有同类分支，逐条问「这里抄了吗」——
+> 列全之前不要开始改第一个。**
+
+§116 修的是 `emergency-cleanup` 的 L1。本节把那一条**做到底**：
+把 cron 里**所有会写库的巡检作业**逐个验一遍，给出「还有没有第二颗雷」的确定答案。
+
+### 一、普查口径：以 `/etc/cron.d/pg17` 的**实际作业清单**为准，不是全仓脚本
+
+`/etc/cron.d/pg17` 里注册 11 个作业。其中会**对数据库做不可逆/重操作**的有 5 个：
+
+| 脚本 | 频率 | 不可逆动作 |
+|---|---|---|
+| `pg17-emergency-cleanup.sh` | 每 15 分钟（磁盘 ≥90% 触发） | **DROP TABLE**（L1）/ VACUUM FULL（L2） |
+| `pg17-vacuum-bloat.sh` | 周日 03:15 | **VACUUM FULL**（ACCESS EXCLUSIVE ≤30 min） |
+| `pg17-drop-old-columnar-partitions.sh` | 每月 1 号 02:30 | **DROP 分区** |
+| `pg17-proactive-empty-table-cleanup.sh` | 每日 02:00 | **DROP 空表** |
+| `pg17-index-bloat.sh` | 周日 04:40（`--report`） | REINDEX（仅 `--fix` 时） |
+
+⚠ **普查基线取自 cron.d 而不是 `ls scripts/`** ——
+仓内 `scripts/` 下有 22 个文件提到 `n_live_tup`/`reltuples`，
+但绝大多数是 `deprecated/`、测试脚本、容量基线查询，**根本不在生产 cron 上**。
+⇒ **「文件里出现了这个量具」≠「它驱动着生产动作」**——这一条必须先分清，否则会把力气花在错的地方。
+
+### 二、逐个验完（读的是**实际判据**，不是 grep 命中）
+
+| 脚本 | 判据用什么量 | 误差方向 | 有无确认闸 | 结论 |
+|---|---|---|---|---|
+| `pg17-emergency-cleanup.sh` L1 | `n_live_tup = 0` | **危险**（删活数据） | ❌ 无 | 🚨 **§116 的雷，已修** |
+| `pg17-vacuum-bloat.sh` | `100*n_dead_tup/(n_live_tup+n_dead_tup)` | 浪费（白占独占锁） | ❌ 无 | ⚠ **本节新发现，已修** |
+| `pg17-drop-old-columnar-partitions.sh` | `pg_inherits` + 月份字符串 cutoff | **不含量具** | — | ✅ **先 DETACH 再 DROP**，失败显式记录 |
+| `pg17-proactive-empty-table-cleanup.sh` | `n_live_tup=0` 筛选 | 危险方向已被挡 | ✅ `COUNT(*)` + `relispartition` 双闸 | ✅ 干净 |
+| `pg17-index-bloat.sh` | `pgstatindex` **真读页** | 不含量具 | — | ✅ 干净 |
+
+⇒ ⇒ ★★★ **确定答案：生产 cron 上只有 `emergency-cleanup` L1 一颗雷。**
+§116 那条修复**不是「修了一处」，是「一族里唯一的那一处」**——这一点在修完时还不能说，
+**必须把普查做完才能说**。
+
+### 三、`pg17-vacuum-bloat.sh`：同族第 4 个命中，而且**承诺没兑现**
+
+它的头部注释白纸黑字写着：
+
+```sh
+# 用 pgstattuple 扩展（如果没有就用 dead_tup_pct 估算）
+```
+
+⇒ ★ **但代码里只有估算那一条路径**——注释承诺的「真读表」从来没实现过。
+⇒ ⇒ 与 §116 同源的病根：`pg_stat` 的估计值被直接接到了**不可逆动作**上。
+⇒ 差别只在**代价形态**：
+`VACUUM FULL` 不删数据，但它**整表 ACCESS EXCLUSIVE**（本脚本上限 30 分钟），
+**代价落在 252 上所有在线业务**（154 网关经它出网）。
+
+⇒ **当前是否上膛：否**。逐字复现它的 `BLOAT_SQL`（生产只读）：
+
+```sql
+WITH ranked AS (SELECT …, CASE WHEN n_live_tup + n_dead_tup > 0
+        THEN 100.0 * n_dead_tup / (n_live_tup + n_dead_tup) ELSE 0 END AS dead_pct
+  FROM pg_stat_user_tables WHERE schemaname NOT IN ('columnar_internal'))
+SELECT … WHERE dead_pct >= 30 AND size > 256*1024*1024;
+```
+⇒ **命中 0 行**。
+⇒ 为什么 §116 那批 `n_live_tup=0` 的表没被选中：它们的 `n_dead_tup` 也是 0 ⇒ `dead_pct=0` ⇒ 被跳过。
+⇒ ★ **这是「坏量具」恰好落在**安全方向**（跳过）**，不是「量具没问题」。
+⇒ 252 日志实跑记录也对得上：
+`2026-10-18 03:19:37 no business tables need VACUUM FULL`；
+上一次（10-11）确有目标：`session_summaries 993MB dead_pct=52.3%`，耗时约 1 分钟。
+
+⇒ ⇒ ★★ **但危险方向同样存在**：一张 `n_dead_tup` 虚高、`n_live_tup` 虚低的表
+⇒ `dead_pct` 虚高 ⇒ **对着健康表锁 30 分钟**。§116 已证明本库 `pg_stat` 的两个方向都会偏
+（`request_logs_bodies_2026_10` 高估 2.5×、`provider_events` 低估 2.9×）⇒ **不是理论风险**。
+
+### 四、修法：**确认闸，fail-safe 方向**
+
+在 `VACUUM FULL` 之前用 `pgstattuple_approx`（**真读页**）复核：
+
+1. 实测 < `MIN_DEAD_PCT`（默认 30，与原估算门槛同值）⇒ **SKIP**，日志写明估算值与实测值
+2. 实测**量不出来**（扩展缺失 / 读失败）⇒ **SKIP** 并显式留痕
+   ⇒ ★ **宁可不做，不可错做**：「量不了」绝不能被当成「达标」
+3. 实测达标 ⇒ 才执行 `VACUUM FULL`，日志同时记估算值与实测值
+
+顺带把该脚本做成**可注入**（`DOCKER_BIN` / `CONTAINER` / `LOG` / `MIN_DEAD_PCT`），
+否则只能做子串断言，量的是「写过这句话」不是「行为变了」。
+
+新增门禁 `scripts/ursmcheck/vacuum_bloat_confirm_gate_test.go`（假 docker 驱动真实分支）：
+
+| 用例 | 断言 |
+|---|---|
+| `TestVacuumBloatSkipsWhenEstimateLies` | 估算 52.3% / **实测 3.1%** ⇒ 必须 SKIP |
+| `TestVacuumBloatSkipsWhenUnmeasurable` | 实测**量不出来** ⇒ 必须 SKIP（fail-safe） |
+| `TestVacuumBloatStillRunsWhenConfirmed` | 实测 55% 达标 ⇒ **必须**执行（防把脚本改瘫骗过门） |
+| `TestVacuumBloatUsesConfirmGate` | 闸的三个组成部分都在 |
+
+**变异验证 2/2 全红**（拆确认闸 / 拆 fail-safe 分支），md5 校验复原（`6252e8aec6b4beba419cc2eccceea756`）。
+
+### 五、诚实边界
+
+| | |
+|---|---|
+| ❌ | **没有在生产上跑过修改后的脚本**（部署需授权）。门禁用假 docker 验行为 |
+| ❌ | **没有量过 `pgstattuple_approx` 在 256MB+ 表上的耗时**。它在周日 03:15 对每个候选跑一次，
+若候选多且表大，这一趟本身要花时间（当前候选 0 ⇒ 代价为零，但改天不一定） |
+| ❌ | `MIN_DEAD_PCT` 取 30（与原估算门槛同值）是一个**判断**，不是实测；改小会更激进、改大更保守 |
+| ⚠ | 普查只覆盖 **cron.d 上注册**的作业；仓内 `scripts/` 下另有 22 个文件提到该量具，
+但不在生产 cron 上（本节已按纪律区分，未逐一审计） |
+| ✅ | 已证：cron 实际作业清单；5 个会写库作业的判据与确认闸；vacuum-bloat 当前 0 目标；
+252 日志两次实跑记录；`dead_pct` 与 §116 那批表的交互；2/2 变异全红 |
+
+### 六、动作边界
+
+⚠ 全程**只读**（生产 + 252）+ 本地沙箱。**未部署、未触发任何 DROP / VACUUM FULL、
+未对生产做任何写。**
+
+### 七、由此产生的待办
+
+| 优先级 | 动作 |
+|---|---|
+| 🚨 **P0** | 部署 `pg17-emergency-cleanup.sh`（§116 修复）到 252 |
+| 🚨 **P0** | 把 4 个 `/etc/cron.d/pg17.bak.*` 移出 cron.d（§116 六之二） |
+| ★★ P1 | 部署 `pg17-vacuum-bloat.sh`（本节修复）到 252 |
+| ★★ P1 | 给 §116 那 5 张命中表补 `ANALYZE` |
+| ★ | 量 `pgstattuple_approx` 在大表上的耗时，据此决定 `MIN_DEAD_PCT` 与是否需要更粗的预筛 |
