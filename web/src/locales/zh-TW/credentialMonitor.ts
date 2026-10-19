@@ -229,5 +229,7 @@ export default {
     concurrencyFailed: '設定失敗: ',
     offlineFailed: '下線失敗: ',
     onlineFailed: '上線失敗: ',
+    superAdminOnlyHint: '僅超級管理員可執行狀態修正；目前為唯讀。',
+    superAdminOnlyError: '僅超級管理員可執行狀態修正操作。',
   },
 }

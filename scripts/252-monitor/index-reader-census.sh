@@ -69,6 +69,20 @@ case "$IDX" in
   *[!A-Za-z0-9_.$]*) log "ABORT: 索引名只允许标识符字符（字母数字 _ . $），实得 '$IDX'"; exit 2 ;;
 esac
 
+# ★ 2026-10-19 修正（§143.13）：索引名**必须用双引号**展开进 SQL。
+#   原写法 `SQL=${SQL/__IDX__/'$IDX'}` 把替换值写在**单引号**里
+#   ⇒ shell 不展开 $IDX ⇒ SQL 里留下字面量 `$IDX`
+#   ⇒ 真库直接报 `syntax error at or near "$"` ⇒ 工具**从来没跑起来过**
+#     （exit 3「量具不可用」，不是「索引不存在」的结论）。
+#   ⇒ 修法：`"'$IDX'"`（双引号里放单引号）⇒ 展开成 SQL 字符串字面量 'session_turns'。
+#   ⇒ 安全性：上面的字符类守卫已把 $IDX 限死在 [A-Za-z0-9_.$] ⇒ 展开不可能破字面量。
+#   ⚠ **踩过的坑（别再试）**：psql 的变量插值（`:'var'`）**只在 stdin 路径生效**，
+#     `-c "select :'v'"` **不插值**（2026-10-19 本地 PG 17.10 实测：
+#     `-c` 报 `syntax error at or near ":"`，同一语句走 stdin 则正确返回 hello）。
+#     ⇒ 想用 psql 变量就必须把 SQL 走 stdin，而本脚本的 PSQL_CMD 契约是 `-c`。
+#   ⚠ 这类 bug 在假 psql 桩下**永远不会暴露**（桩照单全收）——
+#     脚本里已有同款注释（关于 `c.relkind::text`），这是同仓**第三次**同族事故。
+#     ⇒ 已补一道**真库**门（把实际下发的 SQL 打到真 PG 上跑，见 ursmcheck）。
 SQL=$(cat <<'SQL'
 -- ★ `c.relkind` 必须 ::text —— 它的类型是 "char"，
 --   `"char" || unknown` 算子不唯一，真库直接报
@@ -101,7 +115,8 @@ SELECT coalesce((
   WHERE ic.relname = __IDX__), '');
 SQL
 )
-SQL=${SQL/__IDX__/'$IDX'}
+# ⚠ 替换值必须用**双引号**包住：单引号会让 shell 不展开 $IDX（详见上方注释）。
+SQL=${SQL/__IDX__/"'$IDX'"}
 
 psql_17() {
   # shellcheck disable=SC2086 # PSQL_CMD 是刻意按多词命令传入的
@@ -122,6 +137,16 @@ if [ -z "$meta" ]; then
 fi
 
 IFS='|' read -r RELKIND TBL BYTES SCANS NCONSTRAINED NKEYS KEYCOLS <<< "$meta"
+
+# 表名要进**正则字面量**，所以只能出现标识符字符。
+# 表名来自 pg_class（不是用户输入），但仍然必须挡住引号/反斜杠 ——
+# 否则一条带引号的表名会把正则字面量劈开 ⇒ SQL 语法错 ⇒ exit 3。
+case "$TBL" in
+  *[!A-Za-z0-9_$]*|"")
+    log "ABORT: 表名 '$TBL' 含非常规字符，无法安全内联进正则字面量 —— 本次不出结论。"
+    exit 3
+    ;;
+esac
 
 echo "索引        : $IDX"
 echo "表          : $TBL   （relkind=${RELKIND}，键列 ${NKEYS} 个：${KEYCOLS}）"

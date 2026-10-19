@@ -229,5 +229,7 @@ export default {
     concurrencyFailed: 'Einstellung fehlgeschlagen: ',
     offlineFailed: 'Offline-Schaltung fehlgeschlagen: ',
     onlineFailed: 'Online-Schaltung fehlgeschlagen: ',
+    superAdminOnlyHint: 'Nur Super-Administratoren können Statuskorrekturen ausführen; derzeit nur lesend.',
+    superAdminOnlyError: 'Nur Super-Administratoren können Statuskorrekturen ausführen.',
   },
 }

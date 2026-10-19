@@ -104,7 +104,11 @@ func (c *summaryCache) invalidateCredential(credentialID int) {
 		return
 	}
 	for key := range c.entries {
-		if strings.Contains(key, fmt.Sprintf(":c%d:", credentialID)) {
+		// `:c0:` 是**该 provider 的全量**摘要（key 由 monitorSummaryCacheKey
+		// 拼成 p<provider>:c<credential>:…，credential 缺省为 0）。单个凭据状态
+		// 变了之后，这个聚合条目同样过期 —— 只删 `:c<id>:` 会让它继续被命中，
+		// 最多 TTL(30s) 内对外给出旧值。
+		if strings.Contains(key, fmt.Sprintf(":c%d:", credentialID)) || strings.Contains(key, ":c0:") {
 			delete(c.entries, key)
 		}
 	}
@@ -534,7 +538,7 @@ func runMonitorSummary(ctx context.Context, db pgxQueryer, p monitorSummarySQLPa
 		); scanErr != nil {
 			scanFailures++
 			slog.Warn("monitor summary scan failed",
-				"credential_id", p.ProviderID, "error", scanErr.Error())
+				"credential_id", p.CredentialID, "provider_id", p.ProviderID, "error", scanErr.Error())
 			continue
 		}
 
@@ -583,12 +587,12 @@ func runMonitorSummary(ctx context.Context, db pgxQueryer, p monitorSummarySQLPa
 	}
 	if rows.Err() != nil {
 		slog.Error("monitor summary rows iteration failed",
-			"credential_id", p.ProviderID, "scan_failures", scanFailures, "error", rows.Err().Error())
+			"credential_id", p.CredentialID, "provider_id", p.ProviderID, "scan_failures", scanFailures, "error", rows.Err().Error())
 		return startedAt, summaries, fmt.Errorf("rows iteration failed: %w", rows.Err())
 	}
 	if scanFailures > 0 {
 		slog.Warn("monitor summary scan failures observed",
-			"credential_id", p.ProviderID, "scan_failures", scanFailures)
+			"credential_id", p.CredentialID, "provider_id", p.ProviderID, "scan_failures", scanFailures)
 	}
 	return startedAt, summaries, nil
 }
@@ -679,6 +683,27 @@ func (m *CredentialMonitorHandlers) handleMonitorSummary(w http.ResponseWriter, 
 			writeError(w, http.StatusGatewayTimeout, "monitor summary timed out waiting for refresh")
 			return
 		}
+	}
+
+	// ⚠️ 2026-10-20：补 nil-db 判空。本 handler 原先是本组**唯一**没有这道门的
+	// （promote/demote/set-concurrency/model-toggle/decisions/manual-disabled/
+	//  sliding-window 等 9 个兄弟 handler 都有）—— m.h.db 为 nil 时
+	// runMonitorSummary 会拿 nil querier 去 Query，直接 nil pointer panic。
+	// 生产上 h.db 恒接线，所以这不是线上事故，是**一致性缺口**：
+	// 同一个 handler 家族对「DB 没接」给出 9 种 503 + 1 种 panic。
+	//
+	// ⚠ 判的是**实际 querier**（summaryQuerier），不是 m.h.db：
+	//   summaryDB 是测试注入点（见 credential_monitor_server_duration_test.go），
+	//   只看 m.h.db 会把「注入了 mock db」的测试误判成「没接 DB」。
+	//
+	// 位置遵循本组既定口径（2026-10-19 写侧角色门轮）：
+	//   ① 在**角色门之后** ⇒ 未授权者得 403 而不是 503
+	//      （503 会泄露「DB 是否已配置」）；
+	//   ② 在**首次真正访问 db 之前**、且在缓存命中之后
+	//      ⇒ 缓存命中时不需要 DB，不该被 nil-db 拦下。
+	if m == nil || m.h == nil || (m.summaryDB == nil && m.h.db == nil) {
+		writeError(w, http.StatusServiceUnavailable, "database not configured")
+		return
 	}
 
 	// ⚠️ 2026-10-05 修正：原来写的是 `queryStart.Sub(startedAt)` —— 那是
@@ -991,6 +1016,23 @@ func (m *CredentialMonitorHandlers) handlePromote(w http.ResponseWriter, r *http
 		return
 	}
 
+	// 2026-10-19 写侧角色门（补 audit #153/#154 读侧同族的**写侧**缺口）：
+	// 本组路由注册在 AdminMiddleware 之下（admin/auth.go:86），该中间件
+	// **只认证不检 role**；而 promote/demote/set-concurrency/model-toggle 的
+	// UPDATE 不带租户过滤 ⇒ 任意已认证用户可跨租户改写凭据状态。
+	// 按两条收口，与读侧（admin/credential_monitor.go:634 等）同标准：
+	//   ① 管理员下限：super_admin / admin_key / tenant_admin，挡 role=user；
+	//   ② 写操作需 super_admin（admin/context.go:79 的既定约定：tenant_admin 只读）。
+	// 顺序：**角色门在 nil-db 检查之前** —— 未授权者应得 403 而不是 503
+	// （503 会泄露「DB 是否已配置」，与读侧 role gate 判据同一条口径）。
+	if !IsTenantAdmin(r) && !IsSuperAdminOrLegacy(r) {
+		writeError(w, http.StatusForbidden, "administrator role required")
+		return
+	}
+	if RequireSuperAdminForWrite(w, r) {
+		return
+	}
+
 	var req struct {
 		CredentialID int    `json:"credential_id"`
 		Reason       string `json:"reason"`
@@ -1009,6 +1051,11 @@ func (m *CredentialMonitorHandlers) handlePromote(w http.ResponseWriter, r *http
 	defer cancel()
 
 	// Force recover: set availability_state = 'ready', clear recover_at
+	if m == nil || m.h == nil || m.h.db == nil {
+		writeError(w, http.StatusServiceUnavailable, "database not configured")
+		return
+	}
+
 	_, err := m.h.db.Exec(ctx, `
 		UPDATE credentials
 		SET availability_state = 'ready',
@@ -1044,6 +1091,23 @@ func (m *CredentialMonitorHandlers) handleDemote(w http.ResponseWriter, r *http.
 		return
 	}
 
+	// 2026-10-19 写侧角色门（补 audit #153/#154 读侧同族的**写侧**缺口）：
+	// 本组路由注册在 AdminMiddleware 之下（admin/auth.go:86），该中间件
+	// **只认证不检 role**；而 promote/demote/set-concurrency/model-toggle 的
+	// UPDATE 不带租户过滤 ⇒ 任意已认证用户可跨租户改写凭据状态。
+	// 按两条收口，与读侧（admin/credential_monitor.go:634 等）同标准：
+	//   ① 管理员下限：super_admin / admin_key / tenant_admin，挡 role=user；
+	//   ② 写操作需 super_admin（admin/context.go:79 的既定约定：tenant_admin 只读）。
+	// 顺序：**角色门在 nil-db 检查之前** —— 未授权者应得 403 而不是 503
+	// （503 会泄露「DB 是否已配置」，与读侧 role gate 判据同一条口径）。
+	if !IsTenantAdmin(r) && !IsSuperAdminOrLegacy(r) {
+		writeError(w, http.StatusForbidden, "administrator role required")
+		return
+	}
+	if RequireSuperAdminForWrite(w, r) {
+		return
+	}
+
 	var req struct {
 		CredentialID      int     `json:"credential_id"`
 		Reason            string  `json:"reason"`
@@ -1066,6 +1130,11 @@ func (m *CredentialMonitorHandlers) handleDemote(w http.ResponseWriter, r *http.
 	defer cancel()
 
 	recoverAt := time.Now().Add(time.Duration(req.RecoverAfterHours * float64(time.Hour)))
+
+	if m == nil || m.h == nil || m.h.db == nil {
+		writeError(w, http.StatusServiceUnavailable, "database not configured")
+		return
+	}
 
 	_, err := m.h.db.Exec(ctx, `
 		UPDATE credentials
@@ -1105,6 +1174,23 @@ func (m *CredentialMonitorHandlers) handleSetConcurrencyAuto(w http.ResponseWrit
 		return
 	}
 
+	// 2026-10-19 写侧角色门（补 audit #153/#154 读侧同族的**写侧**缺口）：
+	// 本组路由注册在 AdminMiddleware 之下（admin/auth.go:86），该中间件
+	// **只认证不检 role**；而 promote/demote/set-concurrency/model-toggle 的
+	// UPDATE 不带租户过滤 ⇒ 任意已认证用户可跨租户改写凭据状态。
+	// 按两条收口，与读侧（admin/credential_monitor.go:634 等）同标准：
+	//   ① 管理员下限：super_admin / admin_key / tenant_admin，挡 role=user；
+	//   ② 写操作需 super_admin（admin/context.go:79 的既定约定：tenant_admin 只读）。
+	// 顺序：**角色门在 nil-db 检查之前** —— 未授权者应得 403 而不是 503
+	// （503 会泄露「DB 是否已配置」，与读侧 role gate 判据同一条口径）。
+	if !IsTenantAdmin(r) && !IsSuperAdminOrLegacy(r) {
+		writeError(w, http.StatusForbidden, "administrator role required")
+		return
+	}
+	if RequireSuperAdminForWrite(w, r) {
+		return
+	}
+
 	var req struct {
 		CredentialID         int    `json:"credential_id"`
 		ConcurrencyLimitAuto int    `json:"concurrency_limit_auto"`
@@ -1126,6 +1212,11 @@ func (m *CredentialMonitorHandlers) handleSetConcurrencyAuto(w http.ResponseWrit
 
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
+
+	if m == nil || m.h == nil || m.h.db == nil {
+		writeError(w, http.StatusServiceUnavailable, "database not configured")
+		return
+	}
 
 	_, err := m.h.db.Exec(ctx, `
 		UPDATE credentials
@@ -1225,7 +1316,24 @@ func (m *CredentialMonitorHandlers) handleModelToggle(w http.ResponseWriter, r *
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	if m.h.db == nil {
+
+	// 2026-10-19 写侧角色门（补 audit #153/#154 读侧同族的**写侧**缺口）：
+	// 本组路由注册在 AdminMiddleware 之下（admin/auth.go:86），该中间件
+	// **只认证不检 role**；而 promote/demote/set-concurrency/model-toggle 的
+	// UPDATE 不带租户过滤 ⇒ 任意已认证用户可跨租户改写凭据状态。
+	// 按两条收口，与读侧（admin/credential_monitor.go:634 等）同标准：
+	//   ① 管理员下限：super_admin / admin_key / tenant_admin，挡 role=user；
+	//   ② 写操作需 super_admin（admin/context.go:79 的既定约定：tenant_admin 只读）。
+	// 顺序：**角色门在 nil-db 检查之前** —— 未授权者应得 403 而不是 503
+	// （503 会泄露「DB 是否已配置」，与读侧 role gate 判据同一条口径）。
+	if !IsTenantAdmin(r) && !IsSuperAdminOrLegacy(r) {
+		writeError(w, http.StatusForbidden, "administrator role required")
+		return
+	}
+	if RequireSuperAdminForWrite(w, r) {
+		return
+	}
+	if m == nil || m.h == nil || m.h.db == nil {
 		writeError(w, http.StatusServiceUnavailable, "database not configured")
 		return
 	}
@@ -1819,6 +1927,23 @@ func (m *CredentialMonitorHandlers) handleClearManualDisabled(w http.ResponseWri
 		return
 	}
 
+	// 2026-10-19 写侧角色门（补 audit #153/#154 读侧同族的**写侧**缺口）：
+	// 本组路由注册在 AdminMiddleware 之下（admin/auth.go:86），该中间件
+	// **只认证不检 role**；而 promote/demote/set-concurrency/model-toggle 的
+	// UPDATE 不带租户过滤 ⇒ 任意已认证用户可跨租户改写凭据状态。
+	// 按两条收口，与读侧（admin/credential_monitor.go:634 等）同标准：
+	//   ① 管理员下限：super_admin / admin_key / tenant_admin，挡 role=user；
+	//   ② 写操作需 super_admin（admin/context.go:79 的既定约定：tenant_admin 只读）。
+	// 顺序：**角色门在 nil-db 检查之前** —— 未授权者应得 403 而不是 503
+	// （503 会泄露「DB 是否已配置」，与读侧 role gate 判据同一条口径）。
+	if !IsTenantAdmin(r) && !IsSuperAdminOrLegacy(r) {
+		writeError(w, http.StatusForbidden, "administrator role required")
+		return
+	}
+	if RequireSuperAdminForWrite(w, r) {
+		return
+	}
+
 	var req struct {
 		CredentialID int    `json:"credential_id"`
 		Reason       string `json:"reason"`
@@ -1853,6 +1978,11 @@ func (m *CredentialMonitorHandlers) handleClearManualDisabled(w http.ResponseWri
 	var exists bool
 	var currentDisabled bool
 	checkQ := fmt.Sprintf("SELECT true, COALESCE(manual_disabled, false) FROM credentials WHERE id = $1 %s", tenantCheck)
+	if m == nil || m.h == nil || m.h.db == nil {
+		writeError(w, http.StatusServiceUnavailable, "database not configured")
+		return
+	}
+
 	if err := m.h.db.QueryRow(ctx, checkQ, checkArgs...).Scan(&exists, &currentDisabled); err != nil {
 		if err == pgx.ErrNoRows {
 			writeError(w, http.StatusNotFound, "credential not found")
@@ -1918,6 +2048,23 @@ func (m *CredentialMonitorHandlers) handleSetManualDisabled(w http.ResponseWrite
 		return
 	}
 
+	// 2026-10-19 写侧角色门（补 audit #153/#154 读侧同族的**写侧**缺口）：
+	// 本组路由注册在 AdminMiddleware 之下（admin/auth.go:86），该中间件
+	// **只认证不检 role**；而 promote/demote/set-concurrency/model-toggle 的
+	// UPDATE 不带租户过滤 ⇒ 任意已认证用户可跨租户改写凭据状态。
+	// 按两条收口，与读侧（admin/credential_monitor.go:634 等）同标准：
+	//   ① 管理员下限：super_admin / admin_key / tenant_admin，挡 role=user；
+	//   ② 写操作需 super_admin（admin/context.go:79 的既定约定：tenant_admin 只读）。
+	// 顺序：**角色门在 nil-db 检查之前** —— 未授权者应得 403 而不是 503
+	// （503 会泄露「DB 是否已配置」，与读侧 role gate 判据同一条口径）。
+	if !IsTenantAdmin(r) && !IsSuperAdminOrLegacy(r) {
+		writeError(w, http.StatusForbidden, "administrator role required")
+		return
+	}
+	if RequireSuperAdminForWrite(w, r) {
+		return
+	}
+
 	var req struct {
 		CredentialID   int    `json:"credential_id"`
 		ManualDisabled bool   `json:"manual_disabled"`
@@ -1953,6 +2100,11 @@ func (m *CredentialMonitorHandlers) handleSetManualDisabled(w http.ResponseWrite
 	var exists bool
 	var currentDisabled bool
 	checkQ := fmt.Sprintf("SELECT true, COALESCE(manual_disabled, false) FROM credentials WHERE id = $1 %s", tenantCheck)
+	if m == nil || m.h == nil || m.h.db == nil {
+		writeError(w, http.StatusServiceUnavailable, "database not configured")
+		return
+	}
+
 	if err := m.h.db.QueryRow(ctx, checkQ, checkArgs...).Scan(&exists, &currentDisabled); err != nil {
 		if err == pgx.ErrNoRows {
 			writeError(w, http.StatusNotFound, "credential not found")

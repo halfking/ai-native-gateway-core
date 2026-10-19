@@ -1104,8 +1104,42 @@ build_backend() {
   printf '%s\n' "$out"
 }
 
+# check_web_dist_freshness <dist 目录> <源码目录> <标签>
+# 产物比源码旧 ⇒ 拒绝部署（无声前端回滚：线上跑旧 SPA，部署显示成功）。
+# 「产物缺失」不在这里管（缺不缺由各分支自己判：要么纯 API 形态、要么硬失败）。
+# 逃生舱：DL_ALLOW_STALE_WEB=1（与 211 的 D211_ALLOW_STALE_WEB 同一语义）。
+# 口径与 211 的 d211_check_web_dist 一致：只看会进 bundle 的源码
+# （*.test.ts / *.spec.ts 不进产物，mtime 漂移不该拦部署）。
+check_web_dist_freshness() {
+  local _dist="$1" _src="$2" _label="$3" _newer
+  [[ -f "$_dist/index.html" ]] || return 0
+  [[ -d "$_src" ]] || return 0
+  if [[ "${DL_ALLOW_STALE_WEB:-0}" == "1" ]]; then
+    warn "$_dist 存在但未通过新鲜度校验（DL_ALLOW_STALE_WEB=1）"
+    return 0
+  fi
+  _newer="$(find "$_src" -type f \
+    ! -name '*.test.ts' ! -name '*.test.tsx' ! -name '*.test.js' ! -name '*.test.jsx' \
+    ! -name '*.spec.ts' ! -name '*.spec.tsx' ! -name '*.spec.js' ! -name '*.spec.jsx' \
+    -newer "$_dist/index.html" -print -quit 2>/dev/null || true)"
+  if [[ -n "$_newer" ]]; then
+    die "$_dist 陈旧：$_newer 晚于 $_dist/index.html，拒绝部署陈旧前端（否则线上是旧 SPA 而部署显示成功）。重新构建前端，或显式 DL_ALLOW_STALE_WEB=1 放行"
+  fi
+  return 0
+}
+
 build_frontend() {
-  (( SKIP_FRONTEND )) && return 0
+  # ★ 前端产物新鲜度门（2026-10-20，211 同类缺陷收口到本机链路）
+  # --no-frontend 与「node_modules 缺失 → 沿用既有 dist」两条路径都会
+  # **沿用检出的 web/dist**，而检出的 dist 可能比 src 旧 ⇒ 上线一个旧 SPA，
+  # 部署却显示成功（无声前端回滚）。211 侧 2026-10-15 已按 P1 收口，本机
+  # 链路此前没有这道门。
+  # 逃生舱：DL_ALLOW_STALE_WEB=1（与 211 的 D211_ALLOW_STALE_WEB 同一语义）。
+  if (( SKIP_FRONTEND )); then
+    check_web_dist_freshness "$PROJECT_ROOT/web/dist" "$PROJECT_ROOT/web/src" web
+    check_web_dist_freshness "$PROJECT_ROOT/web-mobile/dist" "$PROJECT_ROOT/web-mobile/src" web-mobile
+    return 0
+  fi
   need_cmd node
   # 2026-10-05（UI规范 18 §10.3 步骤 1）：把 bump-version 烧出的 build_seq
   # 透传给两个前端构建，落进各自 index.html 的 deploy-seq meta——取值接既有
@@ -1140,6 +1174,7 @@ build_frontend() {
       # ——浏览器白页。「保留既有 dist」只在 dist 真的存在时可接受。
       die "web/node_modules missing AND web/dist/index.html absent — refusing to stage an empty web/ (2026-10-11 2538 white-page incident); install frontend deps first (corepack pnpm install --frozen-lockfile in web/)"
     else warn 'web/node_modules is missing; retaining existing web/dist'; fi
+    check_web_dist_freshness "$PROJECT_ROOT/web/dist" "$PROJECT_ROOT/web/src" web
   fi
   # 2026-10-04 统一入口轮：web-mobile（Hyper 移动前端）与 web 同链路构建。
   # 同样的「响亮失败」契约——移动端构建挂了绝不能静默部署出没有 /m 的版本
@@ -1155,6 +1190,7 @@ build_frontend() {
     elif [[ ! -f "$PROJECT_ROOT/web-mobile/dist/index.html" ]]; then
       die "web-mobile/node_modules missing AND web-mobile/dist/index.html absent — refusing to stage an empty web-mobile; install frontend deps first (corepack pnpm install --frozen-lockfile in web-mobile/)"
     else warn 'web-mobile/node_modules is missing; retaining existing web-mobile/dist'; fi
+    check_web_dist_freshness "$PROJECT_ROOT/web-mobile/dist" "$PROJECT_ROOT/web-mobile/src" web-mobile
   fi
 }
 

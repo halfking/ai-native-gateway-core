@@ -473,6 +473,8 @@ export default {
     nodeDetailTitle: 'Node Detail',
 
     nodeDetailLoadFailed: 'Failed to load node detail',
+    nodeDetailSuperAdminOnlyHint: 'Seuls les super administrateurs peuvent maintenir les nœuds ; affichage en lecture seule.',
+    nodeDetailDefaultTenantOnlyHint: 'Seul le tenant default peut maintenir les nœuds ; affichage en lecture seule.',
 
     perfPressure: 'Performance Pressure',
 

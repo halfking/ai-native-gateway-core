@@ -74,6 +74,8 @@ export default {
     viewNode: 'Details',
     nodeDetailTitle: 'Node Detail',
     nodeDetailLoadFailed: 'Failed to load node detail',
+    nodeDetailSuperAdminOnlyHint: 'Only super admins can maintain nodes; showing read-only.',
+    nodeDetailDefaultTenantOnlyHint: 'Only the default tenant can maintain nodes; showing read-only.',
     perfPressure: 'Performance Pressure',
     memory: 'Memory',
     concurrency: 'Concurrency',

@@ -1677,7 +1677,6 @@ onUnmounted(() => stopPoll())
       :model="nodeDrawerModel"
       :initial-tab="nodeDrawerTab"
       :seed-candidate="nodeDrawerSeed"
-      :require-super-admin-edit="true"
       @applied="onCandidateSettingsApplied"
     />
   </div>

@@ -228,5 +228,7 @@ export default {
     concurrencyFailed: 'Set failed: ',
     offlineFailed: 'Offline failed: ',
     onlineFailed: 'Online failed: ',
+    superAdminOnlyHint: 'Only super admins can perform status corrections; currently read-only.',
+    superAdminOnlyError: 'Only super admins can perform status corrections.',
   },
 }

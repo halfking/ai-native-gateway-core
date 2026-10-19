@@ -31,6 +31,7 @@ package admin
 import (
 	"context"
 	cryptoRand "crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -466,6 +467,9 @@ type liveStreamClient struct {
 	isSuper  bool
 	writeMu  sync.Mutex
 	closed   bool
+	// Only queue_snapshot/node_update use this bounded, per-connection cache.
+	// Protected by writeMu; a new connection always receives its first state.
+	periodicState map[string][sha256.Size]byte
 }
 
 // LiveStreamSSEHub is the singleton fan-out point. Create one at
@@ -1874,6 +1878,26 @@ func (h *LiveStreamSSEHub) fanOut(env LiveStreamEnvelope) {
 		}
 	}
 
+	var stateDigest [sha256.Size]byte
+	periodic := env.Type == "queue_snapshot" || env.Type == "node_update"
+	if periodic {
+		state := env
+		state.Timestamp = time.Time{} // delivery time is not a state change
+		if state.Queue != nil {
+			queue := *state.Queue
+			// QueueProjection increments this counter on every read, even idle.
+			// Ignore it for equality only; preserve the real version on the wire.
+			queue.SourceVersion = 0
+			state.Queue = &queue
+		}
+		data, err := json.Marshal(state)
+		if err != nil {
+			slog.Warn("live stream state marshal failed", "err", err.Error())
+			return
+		}
+		stateDigest = sha256.Sum256(data)
+	}
+
 	for _, c := range clients {
 		if !h.shouldDeliver(c, env) {
 			continue
@@ -1883,7 +1907,13 @@ func (h *LiveStreamSSEHub) fanOut(env LiveStreamEnvelope) {
 		if c.isSuper && superData != nil {
 			payload = superData
 		}
-		if !h.writeEvent(c, payload) {
+		var written bool
+		if periodic {
+			written = h.writeEventState(c, payload, env.Type, stateDigest)
+		} else {
+			written = h.writeEvent(c, payload)
+		}
+		if !written {
 			h.evict(c)
 		}
 	}
@@ -2041,10 +2071,24 @@ func lastN(items []string, n int) string {
 //	data: <json>\n
 //	\n
 func (h *LiveStreamSSEHub) writeEvent(c *liveStreamClient, data []byte) bool {
+	return h.writeEventState(c, data, "", [sha256.Size]byte{})
+}
+
+// writeEventState suppresses only identical periodic state for this client.
+// Comparing and remembering under the write lock prevents concurrent duplicate
+// sends; failed writes never advance the remembered state. Other event types
+// bypass and invalidate the cache: an initial replay can finish after a newer
+// periodic write, so the next tick must repair its potentially older state.
+func (h *LiveStreamSSEHub) writeEventState(c *liveStreamClient, data []byte, kind string, digest [sha256.Size]byte) bool {
 	c.writeMu.Lock()
 	defer c.writeMu.Unlock()
 	if c.closed {
 		return false
+	}
+	if kind != "" {
+		if previous, ok := c.periodicState[kind]; ok && previous == digest {
+			return true
+		}
 	}
 	defer func() {
 		if r := recover(); r != nil {
@@ -2066,6 +2110,14 @@ func (h *LiveStreamSSEHub) writeEvent(c *liveStreamClient, data []byte) bool {
 	}
 	if c.fl != nil {
 		c.fl.Flush()
+	}
+	if kind == "" {
+		c.periodicState = nil
+	} else {
+		if c.periodicState == nil {
+			c.periodicState = make(map[string][sha256.Size]byte, 2)
+		}
+		c.periodicState[kind] = digest
 	}
 	return true
 }

@@ -123,4 +123,5 @@ require 'rollback starts the derived rollback_service' "systemctl start '\\\$rol
 require 'rollback records rollback_service in run/active-service' "printf '%s.n. '\\\$rollback_service' > '\\\$REMOTE_ROOT/run/active-service'" "$ROOT/scripts/deploy-seamless.sh"
 require 'rollback stops prior unit only when it differs from rollback_service' '\[ -n .\$current_active_service. -a .\$current_active_service. != .\$rollback_service. \]' "$ROOT/scripts/deploy-seamless.sh"
 require 'rollback removes prior slot only when port differs from canonical' '\[ .\$current_active_port. != .\$canonical_port. \]' "$ROOT/scripts/deploy-seamless.sh"
+bash "$ROOT/tests/deploy_web_surface_test.sh" || fail 'release web permissions and public entry runtime gate'
 (( fail == 0 ))

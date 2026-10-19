@@ -8,7 +8,21 @@
       content="width=device-width, initial-scale=1.0, viewport-fit=cover"
     />
     <meta name="theme-color" content="#f4f6f9" />
-    <link rel="icon" type="image/png" href="favicon.png" />
+    <!--
+      2026-10-19：应用图标标准（开轩 icon）。**路径必须相对**（不带前导 /），
+      理由与下面 entry-switch.js 的注释同一条：生产下 index.html 由 /m/ 提供，
+      相对引用解析为 /m/favicon.svg（mobile_static.go 的 ServeSPA 从
+      web-mobile/dist 根取文件）；dev serve 下应用在根路径，解析为
+      /favicon.svg（vite public 目录）。写成根绝对路径 /favicon.svg 则两侧
+      必有一侧错——生产下会去桌面 web 根取图，移动端自己的 public 资产永远
+      不会被请求，两侧图标一旦分叉，移动端会静默显示桌面图标。
+      门：middleware/mobile_index_asset_path_test.go。
+    -->
+    <link rel="icon" href="favicon.svg" type="image/svg+xml" />
+    <link rel="icon" href="favicon-32.png" sizes="32x32" type="image/png" />
+    <link rel="icon" href="favicon-32-dark.png" sizes="32x32" type="image/png" media="(prefers-color-scheme: dark)" />
+    <link rel="apple-touch-icon" href="apple-touch-icon-180.png" />
+    <link rel="apple-touch-icon" href="favicon-180-dark.png" media="(prefers-color-scheme: dark)" />
     <!--
       部署序号（UI规范 18 §3）：构建期由 vite.config.ts 的 llmgwDeploySeq 插件
       替换占位符。取值优先 LLMGW_DEPLOY_SEQ / BUILD_SEQ（bump-version 管线

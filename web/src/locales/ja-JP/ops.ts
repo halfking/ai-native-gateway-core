@@ -473,6 +473,8 @@ export default {
     nodeDetailTitle: '节点详情',
 
     nodeDetailLoadFailed: '加载节点详情失败',
+    nodeDetailSuperAdminOnlyHint: 'ノードの保守操作はスーパー管理者のみ可能です。読み取り専用で表示しています。',
+    nodeDetailDefaultTenantOnlyHint: 'default テナントのみノードの保守操作が可能です。読み取り専用で表示しています。',
 
     perfPressure: '性能压力',
 

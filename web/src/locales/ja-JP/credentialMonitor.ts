@@ -229,5 +229,7 @@ export default {
     concurrencyFailed: '設定失敗: ',
     offlineFailed: 'オフライン失敗: ',
     onlineFailed: 'オンライン失敗: ',
+    superAdminOnlyHint: 'ステータス修正はスーパー管理者のみ実行できます。現在は読み取り専用です。',
+    superAdminOnlyError: 'ステータス修正はスーパー管理者のみ実行できます。',
   },
 }

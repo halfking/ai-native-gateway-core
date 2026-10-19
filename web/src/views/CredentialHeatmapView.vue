@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
 import {
   getCredentialHeatmap,
   toggleModelAvailability,
@@ -14,6 +15,7 @@ import {
 import { useCredentialLabels } from '../composables/useCredentialLabels'
 import { useFilterChips, type FilterChip } from '../composables/useFilterChips'
 import { formatDateTimeIso, parseLocalMinute } from '../utils/datetime'
+import { isSuperAdmin } from '../store'
 import ActiveFilterChips from '../components/ActiveFilterChips.vue'
 import KxDateRangePicker from '../components/ui/KxDateRangePicker.vue'
 import type { KxDateRange } from '../components/ui/kx-date-types'
@@ -28,7 +30,22 @@ import type { KxDateRange } from '../components/ui/kx-date-types'
 //   - 筛选条件默认折叠,折叠头外部仅以 chips 展示已选条件
 //   - 热力图为表格形式:横向时间座标列,所有行的色块按列对齐
 
+const { t } = useI18n()
 const { credentialDisplayName, loadCredentialLabels } = useCredentialLabels()
+
+// 2026-10-20 写侧角色门（与后端 admin/credential_monitor.go 的
+// RequireSuperAdminForWrite 对齐）：本视图「状态修正」的 6 个动作
+// （模型上下线 / 凭据恢复 / 凭据降级 / 凭据启用 / 凭据停用）打到的后端端点
+// 全部要求 super_admin —— tenant_admin 是**只读**档（admin/handler.go:942
+// 「default 租户 tenant_admin 获得只读 + 凭据 API Key 轮换」）。
+// 后端那道门是 2026-10-19 才补上的，前端没同步 ⇒ tenant_admin 会看到
+// 完全可点的写按钮，点下去只拿到 403。
+//
+// 口径说明：这里用**禁用 + 守卫**（而不是 v-if 隐藏），与同属「凭据监控」
+// 席的 CredentialMonitorView / CredentialDetailDrawer 保持一致 ——
+// 「凭据监控」列表页与本页（探测健康 tab）是同一个页面的两个 tab，
+// 两处口径不同正是 UI规范 登记过的那类「三处口径互不相同」。
+const canManageMonitor = computed(() => isSuperAdmin())
 
 // Time range presets
 type TimeRangePreset = 'today' | '1h' | '6h' | '24h' | 'yesterday' | '7d' | 'month' | 'custom'
@@ -511,6 +528,12 @@ const actionBusy = ref(false)
 const actionMessage = ref<string | null>(null)
 
 async function runAction(kind: 'model-online' | 'model-offline' | 'promote' | 'demote' | 'enable' | 'disable') {
+  // 写侧角色门：与后端 RequireSuperAdminForWrite 同一口径。
+  // 按钮已禁用，这里是第二道（防程序化调用 / 防按钮态被绕过）。
+  if (!canManageMonitor.value) {
+    actionMessage.value = t('credentialMonitor.error.superAdminOnlyError')
+    return
+  }
   if (!selectedBucket.value || actionBusy.value) return
   actionBusy.value = true
   actionMessage.value = null
@@ -840,20 +863,24 @@ onUnmounted(() => {
 
           <div class="detail-section correction-section">
             <h4>状态修正</h4>
+            <p v-if="!canManageMonitor" class="action-message">
+              {{ t('credentialMonitor.error.superAdminOnlyHint') }}
+            </p>
             <input
               v-model="actionReason"
               class="field-input reason-input"
               placeholder="操作原因 (可选)"
+              :disabled="!canManageMonitor"
             />
             <div class="action-btns">
-              <button class="btn btn-sm" :disabled="actionBusy" @click="runAction('model-online')">模型上线</button>
-              <button class="btn btn-sm" :disabled="actionBusy" @click="runAction('model-offline')">模型下线</button>
-              <button class="btn btn-sm" :disabled="actionBusy" @click="runAction('promote')">恢复凭据</button>
-              <button class="btn btn-sm" :disabled="actionBusy" @click="runAction('demote')">降级凭据</button>
+              <button class="btn btn-sm" :disabled="!canManageMonitor || actionBusy" @click="runAction('model-online')">模型上线</button>
+              <button class="btn btn-sm" :disabled="!canManageMonitor || actionBusy" @click="runAction('model-offline')">模型下线</button>
+              <button class="btn btn-sm" :disabled="!canManageMonitor || actionBusy" @click="runAction('promote')">恢复凭据</button>
+              <button class="btn btn-sm" :disabled="!canManageMonitor || actionBusy" @click="runAction('demote')">降级凭据</button>
             </div>
             <div class="action-btns" style="margin-top: 8px;">
-              <button class="btn btn-sm btn-success" :disabled="actionBusy" @click="runAction('enable')">启用凭据</button>
-              <button class="btn btn-sm btn-danger" :disabled="actionBusy" @click="runAction('disable')">停用凭据</button>
+              <button class="btn btn-sm btn-success" :disabled="!canManageMonitor || actionBusy" @click="runAction('enable')">启用凭据</button>
+              <button class="btn btn-sm btn-danger" :disabled="!canManageMonitor || actionBusy" @click="runAction('disable')">停用凭据</button>
             </div>
             <p v-if="actionMessage" class="action-message" :class="{ fail: actionMessage.startsWith('操作失败') }">
               {{ actionMessage }}

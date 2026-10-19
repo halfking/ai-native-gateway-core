@@ -103,8 +103,9 @@ func ChatChunkHasOutput(payload string) bool {
 
 // ChatSemanticDelta reports whether payload is a valid OpenAI delta frame
 // with at least one choice but no semantic output. It deliberately excludes
-// usage, keepalive, malformed payloads, and empty/missing choices so those
-// protocol-control frames cannot trigger early-empty failover.
+// usage, keepalive, malformed payloads, empty/missing choices, and active
+// reasoning. Reasoning is progress while generating, even though reasoning
+// alone is not a completed assistant answer (ChatChunkHasOutput).
 func ChatSemanticDelta(payload string) bool {
 	if payload == "" || payload == "[DONE]" {
 		return false
@@ -120,7 +121,8 @@ func ChatSemanticDelta(payload string) bool {
 		return false
 	}
 	chunk, err := ir.ParseOpenAIStreamChunk("data: " + payload + "\n\n")
-	return err == nil && chunk != nil && chunk.Type == ir.ChunkTypeDelta && chunk.Delta != nil && !ChatChunkHasOutput(payload)
+	return err == nil && chunk != nil && chunk.Type == ir.ChunkTypeDelta && chunk.Delta != nil &&
+		chunk.Delta.ReasoningContent == "" && !ChatChunkHasOutput(payload)
 }
 
 // Format classifies a non-stream upstream body by wire protocol.

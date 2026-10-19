@@ -42,7 +42,7 @@ func TestVacuumBloatExecutesQuotedIdentifier(t *testing.T) {
 
 	// tname 是给人看的裸名，qname 是 format('%I.%I') 的产物。
 	targets := `weird name|993697792|52.3|"public"."weird name"`
-	trace, logBody := runVacuumBloat(t, targets, "55.0")
+	trace, logBody := runVacuumBloat(t, targets, "55.0", "300000000")
 
 	requireVacuumCalls(t, trace)
 	if !strings.Contains(trace, `VACUUM FULL "public"."weird name"`) {
@@ -60,7 +60,7 @@ func TestVacuumBloatMeasuresQuotedIdentifier(t *testing.T) {
 	skipVacuumWindows(t)
 
 	targets := `weird name|993697792|52.3|"public"."weird name"`
-	trace, _ := runVacuumBloat(t, targets, "55.0")
+	trace, _ := runVacuumBloat(t, targets, "55.0", "300000000")
 
 	requireVacuumCalls(t, trace)
 	if !strings.Contains(trace, `pgstattuple_approx('"public"."weird name"')`) {
@@ -74,7 +74,7 @@ func TestVacuumBloatMeasuresQuotedIdentifier(t *testing.T) {
 func TestVacuumBloatFallsBackWhenQnameAbsent(t *testing.T) {
 	skipVacuumWindows(t)
 
-	trace, _ := runVacuumBloat(t, "public.session_summaries|993697792|52.3", "55.0")
+	trace, _ := runVacuumBloat(t, "public.session_summaries|993697792|52.3", "55.0", "300000000")
 
 	requireVacuumCalls(t, trace)
 	if !strings.Contains(trace, "VACUUM FULL public.session_summaries") {

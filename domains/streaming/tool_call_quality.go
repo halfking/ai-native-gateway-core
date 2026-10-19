@@ -89,14 +89,14 @@ func ProcessNonStreamBody(body []byte, mode string) ([]byte, QualityFixResult) {
 
 // ProcessStreamLine is the streaming equivalent of ProcessNonStreamBody.
 // `line` is one full "data: {...}\n" SSE chunk. When the line carries a
-// `delta.tool_calls` array with empty names, we either tag (detect_only)
-// or rewrite (fix) the line. The returned flags accumulate across the
+// `delta.tool_calls` array with explicit empty names, we tag the line without
+// inventing an executable name. The returned flags accumulate across the
 // entire stream — caller passes the accumulator back in on every line.
 //
-// Streaming detection is intentionally narrower than non-stream: we only
-// look at the per-chunk `delta.tool_calls[].function.name` and dedup
-// `delta.tool_calls[].id` within the chunk. Empty `content` fields are
-// left alone — that's the stream-level renderer's job, not ours.
+// Tool identity is (choice index, tool index), so a repeated id on an argument
+// continuation is preserved. Different tools sharing an id are tagged and, in
+// fix mode, receive stable suffixes. seenIDs carries this request-local state;
+// its keys are opaque. Empty content is left to the stream-level renderer.
 func ProcessStreamLine(line string, mode string, accFlags []string, seenIDs map[string]int) (string, []string, map[string]int) {
 	if mode == "" || mode == QualityModeOff {
 		return line, accFlags, seenIDs
@@ -120,8 +120,7 @@ func ProcessStreamLine(line string, mode string, accFlags []string, seenIDs map[
 	changed := false
 	emptyCount := 0
 	dupCount := 0
-	toolIndex := 0
-	for _, rawChoice := range choices {
+	for choicePosition, rawChoice := range choices {
 		choice, ok := rawChoice.(map[string]any)
 		if !ok {
 			continue
@@ -134,45 +133,39 @@ func ProcessStreamLine(line string, mode string, accFlags []string, seenIDs map[
 		if !ok {
 			continue
 		}
-		for _, rawTC := range rawTCs {
+		choiceIndex := streamQualityIndex(choice["index"], choicePosition)
+		for toolPosition, rawTC := range rawTCs {
 			tc, ok := rawTC.(map[string]any)
 			if !ok {
 				continue
 			}
+			if seenIDs == nil {
+				seenIDs = map[string]int{}
+			}
+			slot := fmt.Sprintf("%d/%d", choiceIndex, streamQualityIndex(tc["index"], toolPosition))
 			fn, _ := tc["function"].(map[string]any)
-			if fn == nil {
-				continue
-			}
-			name, _ := fn["name"].(string)
+			name, hasName := fn["name"].(string)
 			id, _ := tc["id"].(string)
-			if name == "" {
+			if name != "" {
+				seenIDs["named:"+slot] = 1
+			} else if hasName && seenIDs["named:"+slot] == 0 {
 				emptyCount++
-				if mode == QualityModeFix {
-					// Use the ordinal of tool_calls seen in this line, not
-					// len(accFlags). accFlags is a set-like deduped slice,
-					// so using it would give the same name to every empty
-					// tool_call in one chunk after the first flag is added.
-					fn["name"] = fmt.Sprintf("__unknown_tool_stream_%d__", toolIndex)
-					changed = true
-				}
 			}
-			toolIndex++
 			if id != "" {
-				// First-line callers (and a few tests) pass a nil map;
-				// lazy-init here so the dedup path is allocation-free
-				// when no tool_call ids repeat within the stream.
-				if seenIDs == nil {
-					seenIDs = map[string]int{}
+				callKey := "call:" + slot + ":" + id
+				ordinal := seenIDs[callKey]
+				if ordinal == 0 {
+					idKey := "id:" + id
+					ordinal = seenIDs[idKey] + 1
+					seenIDs[idKey] = ordinal
+					seenIDs[callKey] = ordinal
 				}
-				if seen, ok := seenIDs[id]; ok {
+				if ordinal > 1 {
 					dupCount++
 					if mode == QualityModeFix {
-						tc["id"] = fmt.Sprintf("%s__dup%d", id, seen+1)
+						tc["id"] = fmt.Sprintf("%s__dup%d", id, ordinal)
 						changed = true
 					}
-					seenIDs[id] = seen + 1
-				} else {
-					seenIDs[id] = 1
 				}
 			}
 		}
@@ -193,6 +186,13 @@ func ProcessStreamLine(line string, mode string, accFlags []string, seenIDs map[
 		return line, accFlags, seenIDs
 	}
 	return "data: " + string(out) + "\n", accFlags, seenIDs
+}
+
+func streamQualityIndex(value any, fallback int) int {
+	if index, ok := value.(float64); ok && index >= 0 && index < 1<<31 && index == float64(int(index)) {
+		return int(index)
+	}
+	return fallback
 }
 
 // chatQualityReport is the internal scan result for a non-stream body.

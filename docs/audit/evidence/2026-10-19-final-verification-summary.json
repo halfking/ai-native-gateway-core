@@ -1,0 +1,451 @@
+{
+  "recorded_at": "2026-10-19T11:06:30.929517+00:00",
+  "baseline": "aa888f9b80ad08490df8d3f8a5508bf52f6152f0",
+  "code_manifest": "2026-10-19-reviewed-code-manifest.json",
+  "combined_code_sha256": "3315252023c859386878cbb53167c1cac7fb411a3991431d51983aac1053103c",
+  "code_files": 30,
+  "independent_review": {
+    "status": "approved_no_remaining_P0_P1",
+    "binding": "uncommitted file bytes; not commit-SHA approval",
+    "reviewer": "final_go_review",
+    "historical": true
+  },
+  "final_commands": [
+    {
+      "command": "GOCACHE=<task-private-cache> CGO_ENABLED=0 go test ./bg ./internal/healthstateguard -count=1 -timeout=180s",
+      "exit_code": 0,
+      "package_seconds": {
+        "bg": 37.022,
+        "internal/healthstateguard": 1.163
+      }
+    },
+    {
+      "command": "GOCACHE=<task-private-cache> CGO_ENABLED=0 go build ./...",
+      "exit_code": 0
+    },
+    {
+      "command": "GOCACHE=<task-private-cache> CGO_ENABLED=0 go vet ./...",
+      "exit_code": 0
+    },
+    {
+      "command": "GOCACHE=<task-private-cache> CGO_ENABLED=0 go test ./tests/integration ./tests/48h-audit/D01-ir-lifecycle/stress -run <exact-two-timing-tests> -count=1",
+      "exit_code": 0,
+      "package_seconds": {
+        "tests/integration": 1.594,
+        "tests/48h-audit/D01-ir-lifecycle/stress": 0.925
+      }
+    }
+  ],
+  "other_passes": {
+    "streaming_full_package_seconds": 152.039,
+    "executors_full_package_seconds": 46.439,
+    "related_packages": 13,
+    "node_focused_race_seconds": 1.89,
+    "independent_vet_exit_code": 0,
+    "independent_healthstateguard_seconds": 0.377,
+    "independent_long_prefix_http_replay_seconds": 0.723
+  },
+  "behavioral_mutations": {
+    "reasoning_terminal": {
+      "killed": 6,
+      "attempted": 6
+    },
+    "tool_quality": {
+      "killed": 5,
+      "attempted": 5
+    },
+    "credential_initial": {
+      "killed": 9,
+      "attempted": 9
+    },
+    "node_probe": {
+      "killed": 14,
+      "attempted": 14
+    },
+    "root_entry_paths": [
+      {
+        "name": "accept-invalid",
+        "rc": 1,
+        "behavioral_failure": true
+      },
+      {
+        "name": "ignore-read-failure",
+        "rc": 1,
+        "behavioral_failure": true
+      },
+      {
+        "name": "observe-writes-state",
+        "rc": 1,
+        "behavioral_failure": true
+      },
+      {
+        "name": "forget-fallback-observation",
+        "rc": 1,
+        "behavioral_failure": true
+      },
+      {
+        "name": "learn-capability-from-any-200",
+        "rc": 1,
+        "behavioral_failure": true
+      },
+      {
+        "name": "models-html-is-health",
+        "rc": 1,
+        "behavioral_failure": true
+      },
+      {
+        "name": "reject-real-output",
+        "rc": 1,
+        "behavioral_failure": true
+      },
+      {
+        "name": "apply-ignored-consensus",
+        "rc": 1,
+        "behavioral_failure": true
+      },
+      {
+        "name": "transient-writes-authority",
+        "rc": 1,
+        "behavioral_failure": true
+      },
+      {
+        "name": "raw-diagnostic-preview",
+        "rc": 1,
+        "behavioral_failure": true
+      },
+      {
+        "name": "wrong-observation-kind",
+        "rc": 1,
+        "behavioral_failure": true
+      },
+      {
+        "name": "provider-error-recovers-model",
+        "rc": 1,
+        "behavioral_failure": true
+      },
+      {
+        "name": "gateway-build-writes-hold",
+        "rc": 1,
+        "behavioral_failure": true
+      },
+      {
+        "name": "capability-is-health",
+        "rc": 1,
+        "behavioral_failure": true
+      },
+      {
+        "name": "active-fallback-native-scope",
+        "rc": 1,
+        "behavioral_failure": true
+      },
+      {
+        "name": "model-fallback-native-scope",
+        "rc": 1,
+        "behavioral_failure": true
+      },
+      {
+        "name": "cancel-forgets-protocol-evidence",
+        "rc": 1,
+        "behavioral_failure": true
+      }
+    ],
+    "root_long_evidence": [
+      {
+        "name": "active-preview-only",
+        "rc": 1,
+        "behavioral_failure": true
+      },
+      {
+        "name": "model-preview-only",
+        "rc": 1,
+        "behavioral_failure": true
+      },
+      {
+        "name": "inherited-is-new-rejection",
+        "rc": 1,
+        "behavioral_failure": true
+      }
+    ],
+    "credential_long_evidence": {
+      "killed": 2,
+      "attempted": 2
+    },
+    "note": "Only runs ending in behavioral assertion failures count; compilation/cache failures excluded. Reasoning progress and force-enable red/green/overlay tests are documented separately in the audit report."
+  },
+  "production": {
+    "deployed_by_this_task": false,
+    "last_observed_release": "2741-250ea7f8",
+    "observed_at_cst": "2026-10-19T18:48:09+08:00",
+    "raw_user_uuid_matches": 0,
+    "user_instruction": "log first; fix supported findings; code-check and skip uncorrelated/ambiguous samples"
+  },
+  "database_validation": {
+    "read_only_snapshot": true,
+    "node_observation_replay": "PostgreSQL TEMP tables in BEGIN/ROLLBACK; no public state modifications"
+  },
+  "unverified_or_skipped": [
+    "staticcheck not installed",
+    "Memora session append/pin/archive interface unavailable",
+    "user 13 ambiguous tool-name reconstruction",
+    "user 18 raw-wire causal attribution",
+    "production rollout"
+  ],
+  "local_log_integrity": [
+    {
+      "name": "frozen-final-packages.log",
+      "sha256": "5f6140c49b1553562127bc5d4b97190ca3ebc000daf636a29a9c384644f38c65",
+      "bytes": 122
+    },
+    {
+      "name": "frozen-final-build.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    {
+      "name": "frozen-final-vet.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    {
+      "name": "final-timing-gates-rerun.log",
+      "sha256": "1d54506f39d459dac6983e4c1bcb8aa927ae1f92dae7f8d02971ce0d80c0099a",
+      "bytes": 150
+    },
+    {
+      "name": "final-verify-isolated.log",
+      "sha256": "6ae2790307eaaf6ca7633b04157aabe839499796d72155c9e64da5945642e75a",
+      "bytes": 114387
+    },
+    {
+      "name": "pristine-gate-failures.log",
+      "sha256": "f6d9d8c288c8f0322a9d8d6c647d86edf69815b56c0715037fc5a4acfb4df5b4",
+      "bytes": 10346
+    },
+    {
+      "name": "node-race-final.log",
+      "sha256": "899ed60cb669fc9890ed270f6293a975123fa279b46abf0dd0af1d4811130a07",
+      "bytes": 49
+    },
+    {
+      "name": "independent-fallback-long-error-review-green.log",
+      "sha256": "55dd5595c6b0f5a45311322aa98a1cf3a3dd8d17c8278a32c554de23f6242d2f",
+      "bytes": 654
+    }
+  ],
+  "continuation": {
+    "updated_at": "2026-10-19T12:50:01.537270+00:00",
+    "new_gate_evidence_manifest": "2026-10-19-gate-evidence-code-manifest.json",
+    "new_gate_evidence_files": 10,
+    "new_gate_combined_sha256": "b315f2cbddf7a188fae51361beb806c223a950d74dc5bcba71e99772dc464353",
+    "independent_review": "approved, no remaining P0/P1; original30 unchanged",
+    "environment_revalidation": "Xcode26.2 CGO1 SQLite smoke passed; Docker29.8 and audit images present; Bash5.3.9",
+    "cgo_full_run_prior_to_gate_repair": "all storage/cmd/gateway/bg/streaming passed; 10 precise registry gates failed",
+    "gate_proof_mutations": [
+      {
+        "name": "reject-visible-local",
+        "exit_code": 1,
+        "behavioral_failure": true
+      },
+      {
+        "name": "allow-unknown-dynamic",
+        "exit_code": 1,
+        "behavioral_failure": true
+      },
+      {
+        "name": "ignore-call-binding",
+        "exit_code": 1,
+        "behavioral_failure": true
+      },
+      {
+        "name": "ignore-selector",
+        "exit_code": 1,
+        "behavioral_failure": true
+      },
+      {
+        "name": "ignore-parenthesized-calls",
+        "exit_code": 1,
+        "behavioral_failure": true
+      },
+      {
+        "name": "reject-local-mixed-union",
+        "exit_code": 1,
+        "behavioral_failure": true
+      },
+      {
+        "name": "erase-unknown-fragments",
+        "exit_code": 1,
+        "behavioral_failure": true
+      },
+      {
+        "name": "ignore-file-proof-scope",
+        "exit_code": 1,
+        "behavioral_failure": true
+      },
+      {
+        "name": "trust-any-signature",
+        "exit_code": 1,
+        "behavioral_failure": true
+      },
+      {
+        "name": "trust-all-v1-as-mixed",
+        "exit_code": 1,
+        "behavioral_failure": true
+      }
+    ],
+    "gate_proof_tests": {
+      "complete_related_admin_gates_seconds": 30.884,
+      "proof_final_seconds": 4.71,
+      "independent_related_admin_seconds": 32.801
+    },
+    "integration_vet_exit_code": 0,
+    "disposable_storage_audit_exit_code": 0,
+    "closing_full_gate": {
+      "status": "passed",
+      "exit_code": 0,
+      "command": "SDKROOT=<Xcode26.2 SDK> VERIFY_CGO_ENABLED=1 GOMAXPROCS=4 GOFLAGS=-p=1 GOCACHE=<task-private-cache> bash verify.sh",
+      "log": "final-serial-verify.log",
+      "log_sha256": "010a123b3959c823fc828529b233b39ab0c31bee26aeddc2d77f289a23f5262e",
+      "completed_at": "2026-10-19T12:09:34.906662+00:00",
+      "package_set": "./...",
+      "excluded_packages": [],
+      "root_script_pass_marker": true,
+      "all_go_test_packages_passed": true,
+      "privacy": "passed",
+      "whole_repo_vet": "passed",
+      "session_storage_audit": "passed",
+      "build_tag_matrix": "2 modules x 15 configs passed",
+      "gateway_build": "passed",
+      "reachable_vulnerabilities": 0,
+      "package_seconds": {
+        "admin": 138.982,
+        "bg": 34.801,
+        "domains/nodestatecache": 1.129,
+        "domains/streaming": 150.572,
+        "domains/streaming/executors": 49.557
+      },
+      "tested_package_count": 330,
+      "timing_count_scope": "main full-Go-test phase only; subsequent storage/privacy repeats excluded"
+    },
+    "count_note": "Initial failures are historical. The feature tree and the integrated main tree both passed complete root verification. Main Go phase has 330 tested packages; subsequent repeated packages are counted separately.",
+    "post_go_required_gates": {
+      "exit_code": 0,
+      "log": "final-post-go-gates.log",
+      "privacy": "passed",
+      "session_storage_audit": "passed",
+      "whole_repo_vet": "passed",
+      "build_tag_matrix": "2 modules x 15 configurations passed",
+      "gateway_build": "passed",
+      "govulncheck": {
+        "reachable_vulnerabilities": 0,
+        "imported_package_vulnerabilities": 0,
+        "required_module_vulnerabilities_not_reachable": 1
+      }
+    },
+    "nodestatecache_isolated_control": {
+      "exit_code": 0,
+      "p50_us": 65.542,
+      "p99_us": 210.958,
+      "max_us": 395.709,
+      "threshold_us": 1000,
+      "threshold_unchanged": true,
+      "log": "nodestatecache-isolated-control.log"
+    },
+    "code_commit_tip": "ad2bf3fd91f916cdef37e51059bbda55b9ea7fec",
+    "local_code_commits": [
+      {
+        "index": 1,
+        "sha": "f13c2289d3aa3bf8101228b540fcc22c9af38865",
+        "message": "test(audit): reconcile reader inventories and SQL source proof gates",
+        "files": 11
+      },
+      {
+        "index": 2,
+        "sha": "c6ed58412f51729ad35ab6be2abf86c090e97c0a",
+        "message": "fix(streaming): separate reasoning progress from terminal answer validation",
+        "files": 4
+      },
+      {
+        "index": 3,
+        "sha": "dad204a55fd45544516ef8b3b30e4ad956031b97",
+        "message": "fix(streaming): keep tool call identity stable across continuation frames",
+        "files": 2
+      },
+      {
+        "index": 4,
+        "sha": "72e7a5d450dc36e3884da24e27bac6c1ca251d62",
+        "message": "fix(admin): restore bindings when force enabling an entire credential",
+        "files": 4
+      },
+      {
+        "index": 5,
+        "sha": "ad2bf3fd91f916cdef37e51059bbda55b9ea7fec",
+        "message": "fix(bg): require semantic probe evidence before changing node health",
+        "files": 20
+      }
+    ],
+    "integration": {
+      "main_base": "39ff587b2ef141c96b8c608be4b932752f123e9b",
+      "reviewed_branch_tip": "a040e2e469f7349b415f111ec1a5ede9a9be6e07",
+      "conflicts": [
+        "LESSONS.md"
+      ],
+      "resolution": "preserve all main content and append the exact task additions",
+      "all40_reviewed_go_files_unchanged": true,
+      "status": "merged, independently reviewed, fully verified and pushed to origin/main",
+      "production_deployed": false,
+      "tested_main_sha": "c04c0b7606d860137f9a72a35bd1ac3f99510e85",
+      "pushed_code_sha": "c04c0b7606d860137f9a72a35bd1ac3f99510e85",
+      "push_confirmed": true,
+      "final_metadata_scope": "audit report and verification JSON only; executable/test/config sources unchanged",
+      "merged_full_gate": {
+        "tested_sha": "c04c0b7606d860137f9a72a35bd1ac3f99510e85",
+        "exit_code": 0,
+        "log_sha256": "f00923cdf6d12c9107ad8115deadd9e03ef94f9a2c030a8b09f616395682270e",
+        "log_bytes": 57730,
+        "tested_package_count": 330,
+        "completed_recorded_at": "2026-10-19T12:48:17.312252+00:00",
+        "status": "passed",
+        "log": "final-merged-verify.log",
+        "command": "SDKROOT=<Xcode26.2 SDK> VERIFY_CGO_ENABLED=1 GOMAXPROCS=4 GOFLAGS=-p=1 GOCACHE=<task-private-cache> bash verify.sh",
+        "package_set": "./...",
+        "excluded_packages": [],
+        "root_script_pass_marker": true,
+        "all_go_test_packages_passed": true,
+        "package_seconds": {
+          "admin": 130.242,
+          "bg": 35.006,
+          "domains/nodestatecache": 0.892,
+          "domains/streaming": 150.647,
+          "domains/streaming/executors": 44.487
+        },
+        "privacy": "passed",
+        "whole_repo_vet": "passed",
+        "session_storage_audit": "passed",
+        "build_tag_matrix": "2 modules x 15 configs passed",
+        "gateway_build": "passed",
+        "govulncheck": {
+          "reachable_vulnerabilities": 0,
+          "imported_package_vulnerabilities": 0,
+          "required_module_vulnerabilities_not_reachable": 1
+        }
+      },
+      "independent_review": {
+        "reviewer": "final_go_review",
+        "reviewed_sha": "c04c0b7606d860137f9a72a35bd1ac3f99510e85",
+        "status": "approved_no_remaining_P0_P1",
+        "all40_reviewed_go_files_unchanged": true
+      }
+    }
+  },
+  "total_reviewed_go_files": 40,
+  "initial_full_verify": {
+    "status": "failed",
+    "final_log": "final-verify-isolated.log",
+    "pristine_exact_baseline_reproduced": "admin seven gates, errdiscard one gate, sql_source_indirection two gates",
+    "environment_failures": "CGO_ENABLED=0 SQLite unavailable",
+    "timing_failures": "IR serialize P99 17.075ms >10ms, cancellation ticker did not fire; exact tests passed isolated rerun, not pristine proof",
+    "our_registration_failures": "two healthstateguard registry failures fixed; final full package passed",
+    "merge_push_deploy_allowed": false,
+    "historical": true
+  }
+}

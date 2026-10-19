@@ -77,6 +77,14 @@ func NewAuthMiddleware(apiKey string) *AuthMiddleware {
 				"/healthz", "/healthz/full", "/readyz", "/version", "/metrics",
 				"/", "/index.html", "/m", "/maintain",
 				"/logo-icon.png", "/logo-icon-dark.png", "/favicon.png",
+				// 2026-10-19：应用图标标准（开轩 icon）落地——favicon.svg +
+				// 32/180 两档 PNG + apple-touch-icon 全部在 public 根，浏览器
+				// 运行期匿名请求。漏登记 ⇒ 全局 API-key 门 401 ⇒ 图标破图。
+				// 两侧都有门盯着：web_public_bypass_contract_test.go 的正向腿
+				// （被 index.html 引用却 401）与反向腿（public 根文件未表态）
+				// 都会当场变红。
+				"/favicon.svg", "/favicon-32.png", "/favicon-32-dark.png",
+				"/favicon-180-dark.png", "/apple-touch-icon-180.png",
 				"/theme-init.js", "/entry-switch.js", "/donation-qr.png",
 				"/user-agreement.html",
 			},

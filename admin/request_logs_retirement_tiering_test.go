@@ -43,6 +43,7 @@ type retirementTieringEntry struct {
 }
 
 var v1ReaderRetirementTiering = map[string]retirementTieringEntry{
+	"admin/tenant_stats_logs_table.go":      {Tier: "②", Reason: "租户统计四臂源从tenants.go抽出；仍须在退役前移除v1热/父表腿"},
 	"admin/analytics.go":                    {Tier: "②", Reason: "对外 API：session-analytics 端点，响应直接含 v1 统计"},
 	"admin/attachments_routes.go":           {Tier: "②", Reason: "对外 API：附件归属校验，退役后仍要判归属"},
 	"admin/attempt_quality_api.go":          {Tier: "②", Reason: "对外 API：尝试质量指标（读 v1 臂视图，§9.260 补进来的）"},
@@ -72,21 +73,20 @@ var v1ReaderRetirementTiering = map[string]retirementTieringEntry{
 	"admin/probe_history.go":            {Tier: "③", Reason: "probe-run 历史端点：这个读的**目的**就是看 v1 探针跑过什么"},
 	"admin/provider_diagnose.go":        {Tier: "③", Reason: "provider 诊断（从 provider_probe.go 拆出）：诊断面"},
 	"admin/provider_models.go":          {Tier: "②", Reason: "对外 API：provider 下的模型与用量（§9.49 动态列盲区形态）"},
-	"admin/providers.go":                {Tier: "②", Reason: "对外 API：provider 列表"},
 	"admin/quality_correlations.go":     {Tier: "③", Reason: "请求级质量关联分析：观测面（2026-10-13 S4 波 4 起经 canonical+切换层读，v1 臂）"},
 	"admin/request_trace.go":            {Tier: "②", Reason: "对外 API：请求链路"},
 	"admin/route_incidents.go":          {Tier: "③", Reason: "路由事故（route_incidents）：观测面"},
 	// admin/routing.go 于 2026-10-13（S3 波 3 停写切换）除名：唯一的 v1 读点
 	// popularModelsHotSQL 改读会话族原生源（SessionFamilyTurnsSourceSQL），
 	// 文件已无任何 v1 读点证据（字面量 106→105，分档域 114→113）。
-	"admin/session_analytics_breakdown.go":     {Tier: "②", Reason: "对外 API：会话分析分组"},
-	"admin/session_analytics_timeseries.go":    {Tier: "②", Reason: "对外 API：会话分析时序"},
-	"admin/session_bodies_batch.go":            {Tier: "②", Reason: "对外功能：bodies 批量读（经切换层 SessionBodiesSourceSQL）"},
-	"admin/session_compare.go":                 {Tier: "②", Reason: "对外 API：会话对比（间接读方，§9.259 点名的 7 个之一）"},
-	"admin/session_detail_v2.go":               {Tier: "②", Reason: "对外 API：会话详情 v2"},
-	"admin/session_export.go":                  {Tier: "②", Reason: "对外 API：会话导出（★ FROM 读会话族 LEFT JOIN bodies，退役总体是 session_turns 不是 v1）"},
-	"admin/session_extract.go":                 {Tier: "②", Reason: "对外 API：会话抽取"},
-	"admin/session_management_api.go":          {Tier: "②", Reason: "对外 API：会话管理"},
+	"admin/session_analytics_breakdown.go":  {Tier: "②", Reason: "对外 API：会话分析分组"},
+	"admin/session_analytics_timeseries.go": {Tier: "②", Reason: "对外 API：会话分析时序"},
+	"admin/session_bodies_batch.go":         {Tier: "②", Reason: "对外功能：bodies 批量读（经切换层 SessionBodiesSourceSQL）"},
+	"admin/session_compare.go":              {Tier: "②", Reason: "对外 API：会话对比（间接读方，§9.259 点名的 7 个之一）"},
+	"admin/session_detail_v2.go":            {Tier: "②", Reason: "对外 API：会话详情 v2"},
+	"admin/session_export.go":               {Tier: "②", Reason: "对外 API：会话导出（★ FROM 读会话族 LEFT JOIN bodies，退役总体是 session_turns 不是 v1）"},
+	"admin/session_extract.go":              {Tier: "②", Reason: "对外 API：会话抽取"},
+	"admin/session_management_api.go":       {Tier: "②", Reason: "对外 API：会话管理"},
 	// 2026-10-15 审计：admin/session_online.go 已自 v1 族**整体**退出——
 	// online 列表改读 session_summaries（24h 审计，旧链 S4 停写后生产 52s/0 行），
 	// timeline 走会话族原生源（SessionFamilyTurnsForSessionSQL）。两条腿都不碰
@@ -224,7 +224,7 @@ var v1ArmLiteralBlindSpot = []string{
 	// 以下 9 个于 2026-10-13（S3 波 2 停写切换）迁入：原直读 v1 基表，
 	// 本轮统一改读 canonical 视图（读 v1 臂 + 无拼接 FROM ⇒ 满足盲区定义）。
 	"admin/diagnostics_credential.go",
-	"admin/providers.go",
+	// providers.go no longer has a request-log read.
 	"admin/request_trace.go",
 	"admin/swim_lane_init.go",
 	"admin/work_types.go",
@@ -258,7 +258,7 @@ var v1ArmLiteralBlindSpot = []string{
 	// 读加了 session 兜底拼接点，工具可见（迁入 v1ReaderIndirectPopulation）。
 	"admin/usage.go",
 	"admin/usage_trend_series.go",
-	"bg/candidate_failure_monitor.go",
+	// candidate_failure_monitor now concatenates an explicit v1-only view constant.
 	"bg/daily_probe_audit.go",
 	"bg/integrity_fingerprint_drift.go",
 	"bg/shared_pick.go",
@@ -283,6 +283,7 @@ var v1ArmLiteralBlindSpot = []string{
 //
 // 实测：字面量 107 ∩ 间接 22 = 14，并集 = **115**。
 var v1ReaderIndirectPopulation = []string{
+	"bg/candidate_failure_monitor.go",
 	// 2026-10-16（v1 退役轮）：outcome-freshness 探针的 `SELECT MAX(ts) FROM `
 	// 改拼 bg.ActiveSettleTurnsTable()（跟 settle worker 同一个写门），源码里不再有
 	// v1 关系名字面量 ⇒ 拼接点工具看得见它、自字面量总体出列。与
@@ -427,8 +428,9 @@ func TestV1ReaderTieringDomainIsBothPopulations(t *testing.T) {
 		// 2026-10-16（v1 退役轮）：outcome_freshness 拼接化后同款迁入
 		//（间接 26→27）。交集仍为 17：它是从字面量总体**移出**再进本总体，
 		//	入表前不在交集里、入表后仍不在交集里（两处总体互换了同一个成员）。
-		{"间接总体", len(indirect), 27},
-		{"交集", inter, 17},
+		// candidate monitor moved its staleness view name into a constant: +1 indirect and intersection.
+		{"间接总体", len(indirect), 28},
+		{"交集", inter, 18},
 		{"并集（域）", union, 109},
 	} {
 		if c.got != c.exp {

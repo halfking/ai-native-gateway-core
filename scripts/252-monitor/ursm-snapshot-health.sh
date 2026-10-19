@@ -126,10 +126,15 @@ LLMGW_LOCK_DIR=${LLMGW_LOCK_DIR:-/var/run/lock}
 _llmgw_lock_file="$LLMGW_LOCK_DIR/llmgw-$(basename "$0" .sh).lock"
 
 _llmgw_single_instance_guarded=false
+# ★ 打开锁文件的那一行**不得**把 stderr 一起重定向（§143.14）：
+#   exec 不带命令时，重定向施加到**当前 shell** ⇒ "exec 9>file 2>/dev/null"
+#   会让本脚本此后所有 stderr 输出永久消失 ⇒ log()（写 stderr）全部失声。
+#   ⇒ 用 { exec 9>file; } 2>/dev/null：组的重定向只作用于组本身，组结束即恢复；
+#     fd 9 的语义不变（exec 的重定向仍然持久）。
 if [ -z "${LLMGW_NO_SINGLE_INSTANCE_LOCK:-}" ] \
    && command -v flock >/dev/null 2>&1 \
    && mkdir -p "$LLMGW_LOCK_DIR" 2>/dev/null \
-   && exec 9>"$_llmgw_lock_file" 2>/dev/null; then
+   && { exec 9>"$_llmgw_lock_file"; } 2>/dev/null; then
   if ! flock -n 9; then
     echo "[$(date +%Y-%m-%dT%H:%M:%S%z)] skip: $(basename "$0") 上一轮仍在运行（lock=${_llmgw_lock_file}），本轮不重复执行" \
       >> "${LLMGW_LOCK_SKIP_LOG:-/var/log/llmgw-single-instance-skip.log}" 2>/dev/null || true
@@ -179,7 +184,30 @@ CONF=${LLMGW_PG17_CONF:-/etc/llmgw/pg17.conf}
 : "${SPARSE_KEEP_RATIO:=0.5}"
 
 # 本脚本只读会话的 statement_timeout（应用角色的 30s 不够用，见 de() 注释）
-: "${STMT_TIMEOUT:=180s}"
+#
+# ★★ 2026-10-20 订正（§143.14）：180s → 600s。
+#   起因是**量具超时导致巡检大面积出不了结论**，而且这件事**一直没人看见**：
+#   252 上这道巡检的日志（/var/log/ursm-snapshot-health.log）里
+#   「ABORT: main query failed: ERROR: canceling statement due to statement timeout」
+#   的每日条数 vs 「OK:」的每日条数（2026-10-20 实测）：
+#       10-04~10-08  OK 216 / ABORT 4      ← 几乎全绿
+#       10-10        OK   0 / ABORT 53     ← 全灭
+#       10-12~10-13  OK   2 / ABORT 33
+#       10-18~10-19  OK  19 / ABORT 29
+#   ⇒ 也就是说：**从 2026-10-10 起，这道巡检有相当一部分小时数是「量具不可用、
+#     本次不出结论」**（exit 3），而 §5.6「落库次数塌陷」指纹的探测通道
+#     恰恰在那些小时里是**瞎的**。
+#   成因：表长大了（本文件头写「23.7M 行」），7 天基线 + 2 天 DISTINCT 活跃度的
+#   聚合成本跟着涨，而超时上限还停在 180s。
+#   实测（252，2026-10-20 00:24，空闲时段，STMT_TIMEOUT=600s）：
+#       整轮 105s（其中主判据那一段 ~104s），exit 0，判据「OK: 无真空洞，无降级」。
+#   ⇒ 600s 对 105s 的实测成本有 **5.7 倍**余量；按有负载时 180s+ 的观测，
+#     也有 3 倍以上余量。
+#   ⇒ **代价要说清**：这条查询每小时要扫 7 天 ~2,370 万行（列存表），
+#     成本是真的；把它降下来需要「每日基线物化表」这类**结构改动**（新增对象 ⇒
+#     需属主拍板），不在本轮范围内。⇒ 这里只把「量具超时」换成「出结论」，
+#     不假装成本不存在。
+: "${STMT_TIMEOUT:=600s}"
 
 # 统计粒度。默认 hour，理由见文件头「为什么按小时而不是按分钟」。
 : "${GRANULARITY:=hour}"
@@ -239,7 +267,7 @@ de() {
   # _test.go 只钉住「它被注册了」，不钉它跑出什么 —— 而「量具跑不通却报绿」
   # 正是这道脚本最贵的失效形态。形态照抄 payload-bloat 脚本的同名注入点。
   # shellcheck disable=SC2086 # PSQL_CMD 刻意按多词命令传入
-  ${PSQL_CMD:-podman exec -e "PGOPTIONS=-c statement_timeout=${STMT_TIMEOUT:-180s}" \
+  ${PSQL_CMD:-podman exec -e "PGOPTIONS=-c statement_timeout=${STMT_TIMEOUT:-600s}" \
     "$CONTAINER" psql -U "$PG_USER" -d "$PG_DB" -tAX -c} "$1" 2>&1 || true
 }
 
@@ -382,9 +410,21 @@ ref_act AS (
            FILTER (WHERE a > 0) AS rate
   FROM base_active GROUP BY 1
 ),
--- 两段聚合各自独立算完再 1:1 连接。写成 `base_buckets b LEFT JOIN base_active a
--- ON a.slot=b.slot GROUP BY b.slot` 会产生 7×3 的笛卡尔积（虽然中位数碰巧不变，
+-- 两段聚合各自独立算完再 1:1 连接。写成「base_buckets b LEFT JOIN base_active a
+-- ON a.slot=b.slot GROUP BY b.slot」会产生 7×3 的笛卡尔积（虽然中位数碰巧不变，
 -- 但那是「碰巧对」，不是「对」）。
+-- ★★ 2026-10-20 订正（§143.14）：这里原来用的是**反引号**，
+--   而本段 SQL 在**双引号字符串**里 ⇒ bash 把反引号内容当**命令替换**执行了 ⇒
+--   每小时都往 stderr 打两行假错：
+--     line 478: base_buckets: command not found
+--     line 479: --: command not found
+--   （反引号内容含换行 ⇒ 被拆成两条命令：第一条以 base_buckets 开头、第二条以 -- 开头。）
+--   ⇒ 危害有三层：① 假错淹没真错（stderr 是排查的唯一线索）；
+--     ② 这些假错**只在 stderr 恢复后才看得见**——此前被单实例闸门的
+--     「exec 9>file 2>/dev/null」吞掉整整 16 天（2026-10-04 引入反引号）；
+--     ③ 靠"读日志有没有错"判断巡检健康的人，会把真错当噪声。
+--   ⇒ 改用「」后本段再无反引号。族门：scripts/ursmcheck/monitor_shell_quoting_test.go
+--     的 TestNoBacktickInsideDoubleQuotedStrings（钉住**双引号里不得有反引号**这一类）。
 slot_ref AS (
   SELECT r.slot, r.p50, t.a50, t.rate
   FROM ref_rows r LEFT JOIN ref_act t ON t.slot = r.slot
@@ -471,16 +511,31 @@ if [ "$G_UNIT" = "hour" ]; then
   printf '  活跃分钟占比   : %s%%   (常态 100%%；塌到个位数即 §5.6 的指纹)\n' "$active_pct"
 fi
 echo
+# ★★ 2026-10-19 订正：这一段原来是**写死 252 拓扑**的绝对阈值
+#   （peak>90000 ⇒ 双写 / >45000 ⇒ 单写 / 否则「显著低于常态」）。
+#   把它带到 211（acc-pg17）装机后实测：单写、峰值 35,708 行/桶，
+#   **每一次都落到 else 分支**打印「显著低于常态」——
+#   而同一份输出里正写着「正常 3/3」「OK: 无真空洞，无降级」。
+#   ⇒ 一行自称「推断」的话，在任何常态量级不等于 252 双写量级的实例上都是恒假，
+#      而且它恒假的方向恰好是**报忧**——训练读者忽略工具的最后一行。
+#   ⇒ 改成与**同时段基线**比：脚本手里已有 p50(本窗, $7) 与 ref_p50(基线, $8)，
+#      比值与「这台机器有几台在写」无关，跨实例、跨双写/单写都成立。
+#   ⚠ 阈值沿用 DEGRADED_RATIO 的同一套语义，不另起口径：
+#      ≥0.8 接近常态；[0.5,0.8) 低于常态（双写掉一台正落此带）；<0.5 显著低于。
 case "$G_UNIT" in
   hour)
-    if [ "$peak" -gt 90000 ] 2>/dev/null; then
-      echo "  当前基线推断   : 双写（154 authoritative + 245 shadow）"
-    elif [ "$peak" -gt 45000 ] 2>/dev/null; then
-      echo "  当前基线推断   : 单写（245 可能已退出 shadow）"
+    ratio=$(awk -v a="$p50" -v b="$ref_p50" 'BEGIN{ if (b>0) printf "%.2f", a/b; else print "NA" }')
+    if awk -v r="$ratio" 'BEGIN{exit !(r=="NA")}' 2>/dev/null; then
+      echo "  当前量级对比   : 基线为空，无参照系（见上方 ABORT 说明）"
+    elif awk -v r="$ratio" 'BEGIN{exit !(r+0>=0.8)}'; then
+      echo "  当前量级对比   : 接近同时段常态（本窗 p50 / 基线 = ${ratio}）"
+    elif awk -v r="$ratio" 'BEGIN{exit !(r+0>=0.5)}'; then
+      echo "  当前量级对比   : 低于常态（${ratio}）—— 双写掉一台正落此带，请查是否只剩单写"
     else
-      echo "  当前基线推断   : 显著低于常态，请结合上面逐桶判定看"
-    fi ;;
-  minute) echo "  当前基线推断   : 见 peak（分钟粒度，跨小时比较意义有限）" ;;
+      echo "  当前量级对比   : 显著低于常态（${ratio}）"
+    fi
+    echo "  本窗峰值       : ${peak} 行/桶（绝对值随实例而异，只作记录，不参与判定）" ;;
+  minute) echo "  当前量级对比   : 见 peak（分钟粒度，跨小时比较意义有限）" ;;
 esac
 
 # === 异常桶明细（最多 20 条）===

@@ -4719,7 +4719,9 @@ live 分支只写了 `Reason` 忘了把 `Stale` 设回 `false` ⇒ 该字段**�
 | `errors_out` | 3 | 响亮失败，灰度立刻可见（**可接受**） |
 | `validator_dual_read` | 1 | §9.35 的新鲜度探针 |
 
-**⇒ 灰度前必须处理的静默档：**57** 条**（`silently_empty` + `silently_degraded_content` + `silently_frozen`；计数口径 = countSilentStopWriteEffects 的三档 switch，见下方 2026-10-13 订正）
+**⇒ 灰度前必须处理的静默档：**56** 条**（`silently_empty` + `silently_degraded_content` + `silently_frozen`；计数口径 = countSilentStopWriteEffects 的三档 switch，见下方 2026-10-13 订正）
+
+2026-10-19 来源登记核对：providers.go 已移除 request-log 读点，原 error-rate 静默空档出列，57→56；租户四臂源抽出另登记为聚合退化，仍不纳入这三个静默档的计数。
 
 > ⚠ **S4 波 4 补记（2026-10-13，blob 会话臂 + quality 会话族重写轮）：58 → 57。**
 > −1：admin/quality_correlations.go 除名——五个分桶整体会话族化

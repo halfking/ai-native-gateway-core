@@ -40,10 +40,15 @@ LLMGW_LOCK_DIR=${LLMGW_LOCK_DIR:-/var/run/lock}
 _llmgw_lock_file="$LLMGW_LOCK_DIR/llmgw-$(basename "$0" .sh).lock"
 
 _llmgw_single_instance_guarded=false
+# ★ 打开锁文件的那一行**不得**把 stderr 一起重定向（§143.14）：
+#   exec 不带命令时，重定向施加到**当前 shell** ⇒ "exec 9>file 2>/dev/null"
+#   会让本脚本此后所有 stderr 输出永久消失 ⇒ log()（写 stderr）全部失声。
+#   ⇒ 用 { exec 9>file; } 2>/dev/null：组的重定向只作用于组本身，组结束即恢复；
+#     fd 9 的语义不变（exec 的重定向仍然持久）。
 if [ -z "${LLMGW_NO_SINGLE_INSTANCE_LOCK:-}" ] \
    && command -v flock >/dev/null 2>&1 \
    && mkdir -p "$LLMGW_LOCK_DIR" 2>/dev/null \
-   && exec 9>"$_llmgw_lock_file" 2>/dev/null; then
+   && { exec 9>"$_llmgw_lock_file"; } 2>/dev/null; then
   if ! flock -n 9; then
     echo "[$(date +%Y-%m-%dT%H:%M:%S%z)] skip: $(basename "$0") 上一轮仍在运行（lock=${_llmgw_lock_file}），本轮不重复执行" \
       >> "${LLMGW_LOCK_SKIP_LOG:-/var/log/llmgw-single-instance-skip.log}" 2>/dev/null || true
@@ -133,8 +138,31 @@ if [ "$LEVEL" = "L1" ] || [ "$LEVEL" = "L2" ] || [ "$LEVEL" = "L3" ]; then
   #   ⇒ 三道闸与同族脚本（pg17-proactive-empty-table-cleanup.sh）以及
   #      **本文件自己的 _default 分支**（第 132 行起，早就写了「验证是否真的为 0 行」）
   #      完全对齐 —— 正确写法就在隔壁，此前只是没抄过来。
+  #
+  # ★ ④ 第四道闸（2026-10-19 §143.6 补，本分支此前**完全没有**）：
+  #   「0 行」只回答「里面没有数据」，不回答「没人再用它」。而 `_default` 分支
+  #   早就因为这个教训加过第四道闸（下面那段），**死表分支却一直漏着** ——
+  #   同一个错误只修了一半，剩下的一半恰好是能 DROP 整张表的那一半。
+  #   252 实测（§143.6，闸补之前）：
+  #     死表候选恰好 2 张：ursm_node_snapshot_min_legacy 852MB（COUNT(*)=2,836,620
+  #     ⇒ 被第三道闸挡住）、**public._request_logs_bodies_hot 291MB / COUNT(*)=0
+  #     ⇒ 三道闸全过**，下一次磁盘过 90% 时它会被真的 DROP。
+  #   而它被 **7 个 public 函数体按名字引用**：
+  #     cleanup_stale_in_progress_requests / credential_most_used_model（两个重载）
+  #     promote_request_logs_bodies_hot_to_partition / promote_request_logs_hot_to_partition
+  #     recent_success_rate / system_health_status
+  #   ⇒ DROP 掉它不是「删个残留」，是打断 promote 链路 + 两个健康/统计读路径。
+  #   ⚠ 这层依赖 **pg_depend 查不到**（实测 0 行）：`LANGUAGE sql` 的函数体是字符串
+  #     常量，表名不在依赖图里（§127 同族坑）。只能显式用函数体文本查。
+  #   ⚠ 用 strpos 而不是 LIKE：表名里全是 `_`，在 LIKE 里是**单字符通配符**，
+  #     会把 `request_logs_2026_10_default` 之类一并算成依赖（方向保守，
+  #     但日志里的原因会不可信）。strpos 是精确子串。
+  #
+  #   搜索范围取「所有非系统 schema」而非只有 public：本分支 DROP 的是**表**，
+  #   任何 schema 里的函数体引用它都算依赖；而 7 条实测都在 public，
+  #   放宽不改变当前判定结果，只让未来非 public 的引用也被挡住。
   DEAD_TABLES=$(docker_exec psql -U "$PG_USER" -d "$PG_DB" -tA -F'|' -c "
-    SELECT format('%I.%I', s.schemaname, s.relname), c.relispartition::int
+    SELECT format('%I.%I', s.schemaname, s.relname), c.relispartition::int, s.relname
     FROM pg_stat_user_tables s
     JOIN pg_class c ON c.oid = s.relid
     WHERE s.n_live_tup = 0 AND pg_total_relation_size(s.relid) >= 100*1024*1024
@@ -142,7 +170,7 @@ if [ "$LEVEL" = "L1" ] || [ "$LEVEL" = "L2" ] || [ "$LEVEL" = "L3" ]; then
       AND NOT c.relispartition
     ORDER BY pg_total_relation_size(s.relid) DESC;
   ")
-  while IFS='|' read -r tname is_part; do
+  while IFS='|' read -r tname is_part bare_name; do
     [ -z "$tname" ] && continue
     # 行为层的第二道闸：候选行带出的结构标记也要看。
     # 只做 SQL 过滤的话，将来有人改了上面那条 WHERE，本脚本就会重新开始裸 DROP 分区。
@@ -156,7 +184,34 @@ if [ "$LEVEL" = "L1" ] || [ "$LEVEL" = "L2" ] || [ "$LEVEL" = "L3" ]; then
       echo "[$(date -Iseconds)] L1 SKIP ${tname}: n_live_tup=0 但 COUNT(*)=${actual_count}（统计不可信，拒绝 DROP）" >> "$LOG"
       continue
     fi
-    echo "[$(date -Iseconds)] L1 DROP ${tname} (verified 0 rows)" >> "$LOG"
+    # 第四道闸：0 行**不足以**判定可以摘表，还要看有没有函数体按名字引用它。
+    # ⚠ 归一化表名：候选第一列是 format('%I') 的**加引号**形式
+    #   （public."_request_logs_bodies_hot"），而函数体里写的是**裸名**。
+    #   直接拿第一列去 strpos 会永远匹配不上 ⇒ 闸恒「无依赖」⇒ 恒放行。
+    #   第三列是新加的裸 relname；第二列缺失时从第一列尾部兜底并剥引号。
+    search_name=${bare_name:-${tname##*.}}
+    search_name=${search_name//\"/}
+    search_name=${search_name//\'/}
+    # ⚠ 空模式是**最危险的形态**：PG 里 strpos(x, '') = 1（永远命中），
+    #   与 strpos(x, NULL) = NULL（永不命中）方向相反。所以宁可跳过这张表，
+    #   也不能拿空串去问 —— 那会把「什么都查不到」变成「什么都算有依赖」以外的第三种：
+    #   查错对象。留痕以便反查。
+    if [ -z "$search_name" ]; then
+      echo "[$(date -Iseconds)] L1 SKIP ${tname}: 解析不出裸表名，拒绝用空模式做依赖查询" >> "$LOG"
+      continue
+    fi
+    dependents=$(docker_exec psql -U "$PG_USER" -d "$PG_DB" -tAc "
+      SELECT string_agg(p.proname || '()', ',')
+      FROM pg_proc p
+      JOIN pg_namespace n ON n.oid = p.pronamespace
+      WHERE n.nspname NOT IN ('pg_catalog','information_schema')
+        AND strpos(p.prosrc, '${search_name}') > 0;
+    " 2>/dev/null || echo "")
+    if [ -n "$dependents" ]; then
+      echo "[$(date -Iseconds)] L1 SKIP ${tname}: 0 行但被函数体引用（${dependents}），摘掉会打断该链路" >> "$LOG"
+      continue
+    fi
+    echo "[$(date -Iseconds)] L1 DROP ${tname} (verified 0 rows, no function body references it)" >> "$LOG"
     docker_exec psql -U "$PG_USER" -d "$PG_DB" -tAc "DROP TABLE IF EXISTS $tname" >> "$LOG" 2>&1 || true
   done <<< "$DEAD_TABLES"
 

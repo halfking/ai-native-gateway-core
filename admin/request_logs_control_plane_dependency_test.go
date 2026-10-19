@@ -44,7 +44,7 @@ type controlPlaneVerdict struct {
 	// Gated：该消费方是否被 S4 写门覆盖。false = 门管不到它。
 	Gated bool
 
-	// Evidence：必须在该文件里逐字存在的片段。
+	// Evidence：必须在该文件的非 Go 注释代码中逐字存在的片段。
 	Evidence string
 
 	// EvidenceIn：Evidence 实际所在文件，默认为登记键本身。
@@ -164,14 +164,12 @@ var requestLogsControlPlaneReaders = map[string]controlPlaneVerdict{
 	//   · 退回保守（model_probe：热度没了 → next_retry_at 不再推后 → 探针变频繁）
 	//   · 静默失效（today_success_probe：候选集空 → 不再提交探测 → 只能等自身恢复）
 	"bg/candidate_failure_monitor.go": {
-		Feeds:    "5 分钟失败信号 → UPDATE credentials（凭据状态写入）",
-		Live:     true,
-		Gated:    false,
-		Evidence: "FROM request_logs_with_current_month",
-		BlastRadius: "bg/candidate_failure_monitor.go:391 `UPDATE credentials` —— 凭据级状态写入，" +
-			"由 :206/:333 两处 710 视图读点（5 分钟窗口）驱动。",
-		Note: "读 710 视图（有 session 臂）⇒ 停写后业务流量仍供数，**不会查空**。" +
-			"但探针流量消失会改变 5 分钟窗口的构成，失败信号口径随之变化。",
+		Feeds: "5-minute real request failure ratio -> credential cooling",
+		Live:  true, Gated: false,
+		Evidence:    "FROM _request_logs_hot r",
+		BlastRadius: "checkAutoCool joins session_turns_hot with deduplicated _request_logs_hot, then updates credentials.",
+		Note: "The session hot arm continues after S4 stop-write; probe_direct failures are excluded. " +
+			"checkStaleness separately reads a v1-only view constant to observe the failure-log writer; it does not authorize cooling.",
 	},
 	"bg/credential_selfcheck.go": {
 		Feeds:    "_request_logs_hot 近期表现 → 自检任务提交（self_check_runs / system_probe_runs / probe sink）",
@@ -523,9 +521,9 @@ var requestLogsControlPlaneReaders = map[string]controlPlaneVerdict{
 		Feeds:       "request_id → waterfall 响应（查不到即 404）",
 		Live:        false,
 		Gated:       false,
-		Evidence:    "FROM _request_logs_hot",
-		BlastRadius: "（dormant：无写入）",
-		Note:        "失败模式是 errors_out（404），属可接受：灰度立刻暴露。",
+		Evidence:    "FROM request_logs_with_current_month",
+		BlastRadius: "（展示面：无控制面状态写入）",
+		Note:        "S3 波 2 已改读 canonical 视图，会话臂供新请求、v1 臂供历史。旧热表名只在迁移说明注释中，不是读点证据。",
 	},
 	"cmd/compression-bench/main.go": {
 		Feeds:       "历史行 → 离线压缩基准样本",
@@ -716,8 +714,8 @@ func TestRequestLogsControlPlaneKnownEntriesAreReal(t *testing.T) {
 			t.Errorf("%s: 读取失败 %v", file, err)
 			continue
 		}
-		if !strings.Contains(string(raw), v.Evidence) {
-			t.Errorf("%s: Evidence 在 %s 中不存在：\n  %q", file, evFile, v.Evidence)
+		if !inventoryEvidenceInCode(string(raw), v.Evidence) {
+			t.Errorf("%s: Evidence 未出现在 %s 的有效非注释 Go 代码中：\n  %q", file, evFile, v.Evidence)
 		}
 		// 关键约束：活的且门控外的读点，必须点名它授权/改变的写入。
 		// 少了这一条，「活」就只是一个形容词。

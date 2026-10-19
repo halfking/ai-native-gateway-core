@@ -183,6 +183,11 @@ var bodiesUnaffectedJustification = map[string]string{
 // 键必须与 requestLogsReadInventory 完全一致（由门双向核）。
 // 值在完成逐点评估前大量为 unclassified——**这是当前真实状态，不是占位符**。
 var requestLogsStopWriteClassification = map[string]stopWriteClassification{
+	"admin/tenant_stats_logs_table.go": {
+		Effect:   effectSilentlyDegradedAggregate,
+		Evidence: "FROM session_turns_hot t",
+		Note:     "Four-arm tenant source extracted from tenants.go: session hot/parent above V1FreezeCutoffSQL plus v1 hot/parent. Stop-write removes only v1 anti-joins; new session traffic remains, while non-session/probe traffic has no new v1 mirror. DROP still requires removing both v1 arms.",
+	},
 	// ── 本轮亲自打开确认的（证据为文件中逐字存在的片段）──────────────────
 	// ── batch1：2026-10-02 逐点评估（29 条）────────────────────────────────
 	//
@@ -492,7 +497,7 @@ var requestLogsStopWriteClassification = map[string]stopWriteClassification{
 	},
 	// ── batch7：2026-10-02 §9.36 续 batch6（11 条）──────────────────────────
 	//
-	// 本批的族全部是 reads_view_with_null_padded_predicate / reads_view_and_base，
+	// 本批的族全部是 reads_view_with_null_padded_predicate / reads_session_and_base，
 	// 所以**判 unaffected 的三条都必须进 nullPaddedUnaffectedJustification**。
 	// 判据要点见 batch6 段头：判「视图读点是否还供数」必须量**近期**填充率。
 	"admin/auto_title_generator.go": {
@@ -517,8 +522,12 @@ var requestLogsStopWriteClassification = map[string]stopWriteClassification{
 	},
 	"bg/candidate_failure_monitor.go": {
 		Effect:   effectUnaffected,
-		Evidence: "FROM request_logs_with_current_month",
-		Note:     "两个 _request_logs 读点：:206 staleness 判据的 lastRequest（`SELECT max(ts) FROM request_logs_with_current_month WHERE ts >= now() - interval '5 minutes'`）、:333 auto-cool 的 win CTE（`WHERE ts >= now() - interval '5 minutes' AND credential_id IS NOT NULL GROUP BY credential_id`）。**判 unaffected 的理由是「流量由未挂 S4 写门的 session 臂持续供给 + 谓词不依赖补位列」**，见 nullPaddedUnaffectedJustification 的具名论证。5 分钟窗口本应倾向 empty，但**empty 的前提（没有新行）不成立**——session 臂照写 ⇒ 窗口内恒有新行，这正是这两个读点的用途。补位列核查：_request_logs 读点的行级谓词只有 `ts` 与 `credential_id`（直映非补位）；族标记命中的 provider_id(:256/:267) **全部落在 candidate_failure_logs_with_current_month 腿**（不是 _request_logs 族）且只在投影与 GROUP BY。⚠ 同 live_stream_sse：族把本文件分到 null_padded 是因为 `id`（:397 `WHERE id = $2`），那不是 710 视图的列 ⇒ **族误触发**。错误通道两处都是 `if err != nil { return err }`（:207/:353）上抛，不存在吞错转静默。下游表现：failureLogIsStale(:241-243) 在 lastRequest==nil 时 return false 不告警，但 lastRequest 不会为 nil；auto-cool 继续按真实失败率翻 cooling。",
+		Evidence: "FROM _request_logs_hot r",
+		Note: "checkAutoCool consumes session_turns_hot plus a deduplicated v1 hot arm; " +
+			"real session traffic continues after stop-write and probe_direct failures do not cool credentials. " +
+			"The independent staleness read uses checkStalenessLastRequestSurface (v1-only). " +
+			"A quiet v1 writer gives lastRequest=nil and intentionally produces no stale-pipeline alert; " +
+			"it is not evidence of health or permission to restore a credential. Query errors propagate to tick warnings.",
 	},
 	"bg/shared_pick.go": {
 		Effect:   effectSilentlyEmpty,
@@ -544,7 +553,7 @@ var requestLogsStopWriteClassification = map[string]stopWriteClassification{
 		// byModel/byApp/daily 四组统计停写后由会话腿继续供数，不再 7 天归零。
 		// 钉桩 admin/s3_wave3_read_sources_test.go。
 		Effect:   effectSilentlyDegradedAggregate,
-		Evidence: "FROM session_turns_hot t",
+		Evidence: "tenantStatsLogsTableSQL(settings.RequestLogsWriteEnabled())",
 		Note:     "两类读点并存。视图腿（attachTenantUsage7d / getTenant 单租户）本就有 session 臂，持续供数。基表腿 logsTable 2026-10-13 S3 波 3 起四臂化：两条会话腿（冻结点 db.V1FreezeCutoffSQL 以上的行 + NOT EXISTS v1 双子排除，防双写期与翻转边界双计）+ 两条 R36-A1 原样 v1 腿（hot∪母表，零反连接——252-dev 30s 超时裁决保持）⇒ credits/byModel/byApp/daily 对新流量继续反映真实值。残余降级（登记，非回归）：① byModel 次选臂 client_model 在会话腿投影 NULL（734 特征层，首选用直映 t.model）⇒ 缺 details 行的轮按 outbound 名分桶；② 音频计量行（work_type='audio_transcription'）2026-10-13 起随 S4 门丢弃、无会话族落点 ⇒ 音频秒数不再入租户统计；③ 会话族口径不含探针/内部回环（R36 旧口径全量含）⇒ 含探针租户总数略降、更干净。静默通道不变：attachTenantUsage7d 与 getTenant 的吞错仍把查询失败显示为 0 用量（200）；四组统计错误显式上抛（writeTenantStatsError）。",
 	},
 	"admin/usage_trend_series.go": {
@@ -594,8 +603,8 @@ var requestLogsStopWriteClassification = map[string]stopWriteClassification{
 	},
 	"cmd/gateway/waterfall_by_request.go": {
 		Effect:   effectErrorsOut,
-		Evidence: "FROM _request_logs_hot",
-		Note:     "单请求 waterfall 落库回查按 request_id = $1 命中 _request_logs_hot，pgx.ErrNoRows 被翻译成 (_, false, nil)，调用方 handleDispatchWaterfallByRequest 直接 http.Error(404, ...) ⇒ 内存环之外的请求立刻 404，灰度即可见（可接受失败模式）。",
+		Evidence: "FROM request_logs_with_current_month",
+		Note:     "S3 波 2 已改为 canonical 点查，镜像覆盖的业务请求由会话臂供给；三个筛选字段均为直映。但 sessionv2mirror 排除无会话探针和已有会话的 IsInternalAutoEntry，这些仅有 v1 的请求在 S4 后、内存环外仍可 404，故保留 errors_out 风险档。不能把列直映当成所有请求都有会话行。缺失 request_id 或无 t0 也可 404，与停写因果不同。",
 	},
 	"domains/analysis/optimizer.go": {
 		Effect:   effectSilentlyEmpty,
@@ -735,11 +744,7 @@ var requestLogsStopWriteClassification = map[string]stopWriteClassification{
 		Evidence: "pg_total_relation_size('_request_logs') AS total_size",
 		Note:     "唯一读点是 pg_total_relation_size + COUNT 分龄（7/30/90 天桶），读的是表体量与生命周期分布而非流量；停写后存量仍在、行数只因保留期清理下降，不产生查空或报错。已核实无流量类读点混入。",
 	},
-	"admin/providers.go": {
-		Effect:   effectSilentlyEmpty,
-		Evidence: "COALESCE(SUM(CASE WHEN lower(COALESCE(request_status, '')) IN ('failure', '') AND NOT success THEN 1 ELSE 0 END)::float8",
-		Note:     "供应商详情页 error_rate_24h 走 LEFT JOIN (... FROM _request_logs_hot WHERE ts >= now() - interval '24 hours' ...)，停写 24h 后该子查询恒零行 ⇒ LEFT JOIN 补 NULL ⇒ COALESCE(er.rate, 0) 把 error_rate_24h **静默改成 0**，接口仍 200、凭据数与健康数全部照常，运营会读成「该供应商零故障」。本次最隐蔽的一处。",
-	},
+	// providers.go has no remaining request-log read.
 	"admin/session_tenant.go": {
 		Effect:   effectUnaffected,
 		Evidence: "SELECT 1 FROM _request_logs_hot",
@@ -1109,6 +1114,13 @@ gw_task_id 过滤的三处误判成会话内读，差了两档。`
 //
 // 这是整个登记的承重点：没有它，104 条登记可以在一个下午凭印象写完，而门全绿。
 // 变异验证：把任一 Evidence 改成文件里没有的片段即红。
+func TestWaterfallStopWriteAssessmentUsesCanonicalSource(t *testing.T) {
+	entry := requestLogsStopWriteClassification["cmd/gateway/waterfall_by_request.go"]
+	if entry.Effect != effectErrorsOut || entry.Evidence != "FROM request_logs_with_current_month" {
+		t.Fatalf("waterfall canonical source must retain the S4 v1-only 404 risk: %+v", entry)
+	}
+}
+
 func TestRequestLogsStopWriteClassificationEvidenceIsReal(t *testing.T) {
 	root := repoRootFromCaller(t)
 	for file, c := range requestLogsStopWriteClassification {
@@ -1128,8 +1140,8 @@ func TestRequestLogsStopWriteClassificationEvidenceIsReal(t *testing.T) {
 			t.Errorf("%s: 读取失败 %v（登记里的文件必须存在）", file, err)
 			continue
 		}
-		if !strings.Contains(string(raw), c.Evidence) {
-			t.Errorf("%s: Evidence 在该文件中不存在：\n  %q\n"+
+		if !inventoryEvidenceInCode(string(raw), c.Evidence) {
+			t.Errorf("%s: Evidence 未出现在该文件的有效非注释 Go 代码中：\n  %q\n"+
 				"分级必须锚在真实存在的代码上，否则「已评估」无法与「凭印象」区分",
 				file, c.Evidence)
 			continue
@@ -1163,7 +1175,7 @@ func TestRequestLogsStopWriteClassificationEvidenceIsReal(t *testing.T) {
 		// 不需要任何手维护名单，因而不会漂移。
 		for _, fn := range danglingSourceSQLCalls(t, string(raw)) {
 			t.Errorf("%s: 调用了 %q，但它既**不在 db 包里定义**"+
-				"（那是会话族 raw helper 的位置），也**不在 indirectRequestLogsReaders 里登记**"+
+				"（那是会话族 raw helper 的位置），也不是可核的本地固定SQL或**已登记的间接读源**"+
 				"（那是切换层的位置）。\n"+
 				"  ⇒ 本文件的停写分级（%s）缺一个可核的来源：v1 关系名在哪、"+
 				"默认臂读什么，都无从核对。\n"+
@@ -1195,12 +1207,62 @@ func danglingSourceSQLCalls(t *testing.T, src string) []string {
 			continue
 		}
 		seen[fn] = true
-		if !definedInDBPackage(t, fn) {
+		if !definedInDBPackage(t, fn) && !localLiteralRequestLogSource(src, fn) {
 			out = append(out, fn)
 		}
 	}
 	sort.Strings(out)
 	return out
+}
+
+// A local, argument-free function returning one immutable SQL literal exposes
+// its real relations in this same file. Dynamic builders still need registration.
+func localLiteralRequestLogSource(src, name string) bool {
+	f, err := parser.ParseFile(token.NewFileSet(), "local.go", src, 0)
+	if err != nil {
+		return false
+	}
+	for _, decl := range f.Decls {
+		fn, ok := decl.(*ast.FuncDecl)
+		if !ok || fn.Name.Name != name || fn.Recv != nil || fn.Type.Params.NumFields() != 0 || fn.Body == nil || len(fn.Body.List) != 1 {
+			continue
+		}
+		ret, ok := fn.Body.List[0].(*ast.ReturnStmt)
+		if !ok || len(ret.Results) != 1 {
+			return false
+		}
+		lit, ok := ret.Results[0].(*ast.BasicLit)
+		if !ok || lit.Kind != token.STRING {
+			return false
+		}
+		sql, err := strconv.Unquote(lit.Value)
+		if err != nil || !requestLogsReadPattern.MatchString(stripSQLComments(sql)) {
+			return false
+		}
+		// A same-named declaration cannot prove a selector or shadowed closure.
+		// Parse with object resolution and require every call to bind this declaration.
+		calls, bound := 0, true
+		ast.Inspect(f, func(n ast.Node) bool {
+			call, ok := n.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			switch callee := ast.Unparen(call.Fun).(type) {
+			case *ast.Ident:
+				if callee.Name == name {
+					calls++
+					bound = bound && callee.Obj != nil && callee.Obj.Decl == fn
+				}
+			case *ast.SelectorExpr:
+				if callee.Sel.Name == name {
+					bound = false
+				}
+			}
+			return true
+		})
+		return calls > 0 && bound
+	}
+	return false
 }
 
 // dbDefinedFuncs 是 db 包里定义的全部函数名，**每个测试进程只算一次**。
@@ -1278,13 +1340,13 @@ func isRegisteredSwitchFunc(fn string) bool {
 //	familyBodiesMixed —— 一并读，但**其中 bodies 腿没有任何 session 兜底**。
 //	               「一并读」不等于「部分退化」：主轮次腿可能照常工作，
 //	               而正文腿彻底失效，表现为「拿得到轮次、拿不到正文」。
-//	familyViewBase —— 视图腿（session 臂仍供数）+ 基表腿（停写即冻结）⇒ 部分退化。
+//	familySessionBase —— session 供给（710视图或本地UNION）+ 基表腿（停写即冻结）⇒ 部分退化。
 const (
 	familyBodies      = "reads_bodies_family"
 	familyView        = "reads_710_view_only"
 	familyBase        = "reads_base_tables_only"
 	familyBodiesMixed = "reads_bodies_plus_other"
-	familyViewBase    = "reads_view_and_base"
+	familySessionBase = "reads_session_and_base"
 	// familyViewNullPadded：读 710 视图（行级有 session 臂），但**谓词/分组/连接**
 	// 用到了 session 臂恒 NULL 的 30 列之一 ⇒ 行级有、谓词级空。
 	familyViewNullPadded = "reads_view_with_null_padded_predicate"
@@ -1698,6 +1760,100 @@ func nullPaddedPredicateHit(raw string) (hit bool, via string) {
 	return false, ""
 }
 
+// Only a return expression with UNION output arms can prove a local session
+// fallback. An anti-join, SQL comment or scalar subquery is not such an arm.
+func localSessionBaseUnion(code string) bool {
+	f, err := parser.ParseFile(token.NewFileSet(), "source.go", code, 0)
+	if err != nil {
+		return false
+	}
+	var literalSQL func(ast.Expr) (string, bool)
+	literalSQL = func(e ast.Expr) (string, bool) {
+		switch x := ast.Unparen(e).(type) {
+		case *ast.BasicLit:
+			if x.Kind == token.STRING {
+				value, err := strconv.Unquote(x.Value)
+				return value, err == nil
+			}
+		case *ast.BinaryExpr:
+			if x.Op == token.ADD {
+				left, lok := literalSQL(x.X)
+				right, rok := literalSQL(x.Y)
+				return left + right, lok && rok
+			}
+		}
+		return "", false
+	}
+	union := regexp.MustCompile(`(?i)\bUNION\s+ALL\b`)
+	quoted := regexp.MustCompile(`'(?:''|[^'])*'`)
+	from := regexp.MustCompile(`(?i)\bFROM\s+(?:public\.)?(session_turns_hot|session_turns|_request_logs_hot|_request_logs)\b`)
+	found := false
+	ast.Inspect(f, func(n ast.Node) bool {
+		ret, ok := n.(*ast.ReturnStmt)
+		if !ok || len(ret.Results) != 1 {
+			return true
+		}
+		literal, complete := literalSQL(ret.Results[0])
+		if !complete {
+			return true
+		}
+		sql := quoted.ReplaceAllString(stripSQLComments(literal), " ")
+		sql = strings.TrimSpace(sql)
+		// Strip only parentheses enclosing the entire query, then split UNIONs
+		// at depth zero. A UNION inside EXISTS or a scalar cannot supply rows.
+		for strings.HasPrefix(sql, "(") {
+			depth, closeAt := 0, -1
+			for i, r := range sql {
+				if r == '(' {
+					depth++
+				}
+				if r == ')' {
+					depth--
+					if depth == 0 {
+						closeAt = i
+						break
+					}
+				}
+			}
+			if closeAt != len(sql)-1 {
+				break
+			}
+			sql = strings.TrimSpace(sql[1 : len(sql)-1])
+		}
+		var arms []string
+		start := 0
+		for _, loc := range union.FindAllStringIndex(sql, -1) {
+			prefix := sql[:loc[0]]
+			if strings.Count(prefix, "(") != strings.Count(prefix, ")") {
+				continue
+			}
+			arms = append(arms, sql[start:loc[0]])
+			start = loc[1]
+		}
+		if len(arms) == 0 {
+			return true
+		}
+		arms = append(arms, sql[start:])
+		session, base := false, false
+		for _, arm := range arms {
+			loc := from.FindStringSubmatchIndex(arm)
+			if loc == nil {
+				continue
+			}
+			prefix := arm[:loc[0]]
+			if strings.Count(prefix, "(") != strings.Count(prefix, ")") {
+				continue
+			}
+			table := strings.ToLower(arm[loc[2]:loc[3]])
+			session = session || table == "session_turns_hot" || table == "session_turns"
+			base = base || table == "_request_logs_hot" || table == "_request_logs"
+		}
+		found = found || session && base
+		return true
+	})
+	return found
+}
+
 // sourceFamilyOf 从文件源码机械判定它读哪一族。
 // sourceFamilyOf 按源码文本判定 v1 读法族。
 //
@@ -1751,8 +1907,8 @@ func sourceFamilyOf(code string, readsVBodies bool) string {
 		return familyBodiesMixed
 	case bo:
 		return familyBodies
-	case vi && ba:
-		return familyViewBase
+	case ba && (vi || localSessionBaseUnion(raw)):
+		return familySessionBase
 	case vi:
 		return familyView
 	case ba:
@@ -1760,6 +1916,37 @@ func sourceFamilyOf(code string, readsVBodies bool) string {
 	default:
 		return "undetermined"
 	}
+}
+
+// The tenant helper has exactly two input states. Its compiled SQL in both
+// states must prove mixed output; no unknown fragments are inferred from AST.
+func sourceFamilyForFile(code, file string, readsVBodies bool) string {
+	family := sourceFamilyOf(code, readsVBodies)
+	if family != familyBase || file != "admin/tenant_stats_logs_table.go" {
+		return family
+	}
+	f, err := parser.ParseFile(token.NewFileSet(), file, code, 0)
+	if err != nil {
+		return family
+	}
+	defined := false
+	for _, decl := range f.Decls {
+		if fn, ok := decl.(*ast.FuncDecl); ok && fn.Recv == nil && fn.Name.Name == "tenantStatsLogsTableSQL" && len(fn.Type.Params.List) == 1 && fn.Type.Params.NumFields() == 1 {
+			kind, isIdent := fn.Type.Params.List[0].Type.(*ast.Ident)
+			defined = isIdent && kind.Name == "bool"
+		}
+	}
+	if !defined {
+		return family
+	}
+	for _, enabled := range []bool{false, true} {
+		query := tenantStatsLogsTableSQL(enabled)
+		literal := "package admin; func source() string { return " + strconv.Quote(query) + " }"
+		if !localSessionBaseUnion(literal) {
+			return family
+		}
+	}
+	return familySessionBase
 }
 
 // TestRequestLogsStopWriteSourceFamilyCoversInventory 产出并钉住那张四分表。
@@ -1779,7 +1966,7 @@ func TestRequestLogsStopWriteSourceFamilyCoversInventory(t *testing.T) {
 		if err != nil {
 			t.Fatalf("read %s: %v", file, err)
 		}
-		fam := sourceFamilyOf(string(raw), isSwitchConsumerFile(t, root, file))
+		fam := sourceFamilyForFile(string(raw), file, isSwitchConsumerFile(t, root, file))
 		if ind, isIndirect := indirectRequestLogsReaders[file]; isIndirect {
 			// 器眼看不见它，族由登记给定；登记里没有合法族时才算 undetermined。
 			if ind.Family == "" {
@@ -1801,7 +1988,7 @@ func TestRequestLogsStopWriteSourceFamilyCoversInventory(t *testing.T) {
 	}
 	total := 0
 	for _, k := range []string{familyBodies, familyBodiesMixed, familyView, familyBase,
-		familyViewBase, familyViewNullPadded} {
+		familySessionBase, familyViewNullPadded} {
 		total += counts[k]
 	}
 	// §9.49：分母用「直接表 ∪ 间接表」。用 len(requestLogsReadInventory) 会让
@@ -1817,9 +2004,9 @@ func TestRequestLogsStopWriteSourceFamilyCoversInventory(t *testing.T) {
 		"  view_only=%d                  session 臂仍供数 ⇒ 静默少计\n"+
 		"  view_with_null_padded=%d      **行级有、谓词级空**（migration 710 补位 30 列）\n"+
 		"  base_only=%d                  完全停止增长\n"+
-		"  view_and_base=%d              部分退化",
+		"  session_and_base=%d              部分退化",
 		counts[familyBodies], counts[familyBodiesMixed], counts[familyView],
-		counts[familyViewNullPadded], counts[familyBase], counts[familyViewBase])
+		counts[familyViewNullPadded], counts[familyBase], counts[familySessionBase])
 }
 
 // TestStopWriteEffectAgreesWithSourceFamily 拦住本项目已经犯过一次的错：
@@ -1859,7 +2046,7 @@ func TestStopWriteEffectAgreesWithSourceFamily(t *testing.T) {
 			t.Errorf("%s: 读取失败 %v", file, err)
 			continue
 		}
-		fam := sourceFamilyOf(string(raw), isSwitchConsumerFile(t, root, file))
+		fam := sourceFamilyForFile(string(raw), file, isSwitchConsumerFile(t, root, file))
 		if fam == familyViewNullPadded && c.Effect == effectUnaffected {
 			if reason, ok := nullPaddedUnaffectedJustification[file]; !ok || strings.TrimSpace(reason) == "" {
 				t.Errorf("%s（族=%s）判为「停写不受影响」，但它在 session 臂 NULL 补位的列上出现。\n"+

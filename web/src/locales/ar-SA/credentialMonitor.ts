@@ -241,5 +241,7 @@ export default {
     concurrencyFailed: 'فشل الإعداد: ',
     offlineFailed: 'فشل عدم الاتصال: ',
     onlineFailed: 'فشل الاتصال: ',
+    superAdminOnlyHint: 'يمكن للمشرفين الكبار فقط إجراء تصحيحات الحالة؛ حاليًا للقراءة فقط.',
+    superAdminOnlyError: 'يمكن للمشرفين الكبار فقط إجراء تصحيحات الحالة.',
   },
 }

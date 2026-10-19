@@ -28,6 +28,7 @@
 import { computed, ref, watch } from 'vue'
 import AppSheet from '@/components/common/AppSheet.vue'
 import AppConfirm from '@/components/common/AppConfirm.vue'
+import { useAuthStore } from '@/stores/auth'
 import { t } from '@/i18n'
 import {
   promoteCredential,
@@ -63,6 +64,14 @@ const openProxy = computed({
   get: () => props.open,
   set: (v: boolean) => emit('update:open', v),
 })
+
+// 2026-10-20 写侧角色门：本面板的四个写操作
+// （模型上下线 / 凭据恢复 / 凭据降级 / 自动并发）后端全部要求 super_admin ——
+// promote/demote/set-concurrency-auto 走 RequireSuperAdminForWrite，
+// model-toggle 走 h.superAdmin。
+// 入口（热力图卡上的「凭据调参」链接）已按 v-if 隐藏，这里是第二道守卫。
+const auth = useAuthStore()
+const isSuperAdmin = computed(() => auth.role === 'super_admin')
 
 type OpKind = 'toggle-offline' | 'toggle-online' | 'promote' | 'demote' | 'concurrency'
 
@@ -161,6 +170,13 @@ function what(op: OpKind): string {
 async function runOp(): Promise<void> {
   const op = pending.value
   if (op === null) return
+  // 写侧角色门：与后端 RequireSuperAdminForWrite / h.superAdmin 同一口径。
+  if (!isSuperAdmin.value) {
+    opError.value = t('credOps.errForbidden')
+    pending.value = null
+    pendingModel.value = null
+    return
+  }
   // ★ reason 必填：后端有三个端点不校验，但空 reason 会毁掉审计日志
   const rerr = validateReason(reasonText.value)
   if (rerr !== null) {

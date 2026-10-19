@@ -59,6 +59,27 @@ func censusSource(t *testing.T) string {
 	return string(b)
 }
 
+// censusExecutableSource 读脚本原文，但把**整行注释**换成空行（行号保持不变）。
+//
+// ★★ 为什么必须剥注释（2026-10-19，§143.13 实测）：
+//   下面那道「裸 $VAR 紧跟全角字符」的门是**源码文本**判据。
+//   而「源码文本断言先剥注释」是本仓的老教训（§917 同款：JSDoc 里的示例代码
+//   把登记表变成空气门）——
+//   本轮给普查器补了一段解释**单引号展开 bug**的注释，
+//   注释里写了 `$IDX` 后面紧跟中文 ⇒ 那道门立刻红了。
+//   ⇒ 红的是**注释**，不是代码 ⇒ 判据必须只管**可执行部分**。
+//   ⇒ 保留行号（注释行替换成空行）⇒ 报错仍指向原来的行。
+func censusExecutableSource(t *testing.T) string {
+	t.Helper()
+	lines := strings.Split(censusSource(t), "\n")
+	for i, ln := range lines {
+		if strings.HasPrefix(strings.TrimSpace(ln), "#") {
+			lines[i] = ""
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
 // TestCensusMustNotFilterByColumnName —— 普查**不允许**按列名筛选语句。
 //
 // 这条钉的是 §81 的死因：筛选条件 `AND query ~* 'request_id'` 与被删索引的
@@ -247,7 +268,10 @@ func TestCensusSQLIsRealNotJustStubs(t *testing.T) {
 // `RELKIND?: 未绑定的变量` —— 多字节的 `）` 被并进了变量名。
 // 本脚本的输出全是中文，必须一律写成 ${VAR}。
 func TestCensusBraceQuotesVarsBeforeCJK(t *testing.T) {
-	for i, ln := range strings.Split(censusSource(t), "\n") {
+	// ★ 只扫**可执行部分**（整行注释已剥）：注释里写 `$IDX` 后面跟中文
+	//   是文档，不是 bash 语法（§143.13 实测：补了一段解释展开 bug 的注释
+	//   就把这道门打红了 ⇒ 红的是注释，不是代码）。
+	for i, ln := range strings.Split(censusExecutableSource(t), "\n") {
 		for j := 0; j+1 < len(ln); j++ {
 			if ln[j] != '$' || !isIdentStart(ln[j+1]) {
 				continue

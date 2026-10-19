@@ -473,6 +473,8 @@ export default {
     nodeDetailTitle: 'Node Detail',
 
     nodeDetailLoadFailed: 'Failed to load node detail',
+    nodeDetailSuperAdminOnlyHint: 'يمكن للمشرفين الكبار فقط صيانة العُقد؛ العرض حاليًا للقراءة فقط.',
+    nodeDetailDefaultTenantOnlyHint: 'لا يمكن صيانة العُقد إلا في المستأجر الافتراضي؛ العرض حاليًا للقراءة فقط.',
 
     perfPressure: 'Performance Pressure',
 
