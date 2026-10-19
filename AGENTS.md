@@ -3054,3 +3054,10 @@ To codeup.aliyun.com:kaixuan/official-deploy/llm-gateway-go.git
 - source fe482b5e7经main cb4c07f95已推送；consumer ref管理visibility listener，hidden主动close并隔代，visible新建权威重放；first hidden/manual/identity/fatal/多consumer正确守卫。三代码文件189总变动行，generic/TypeScript精确SHA审查通过。
 - 5旧实现RED→7文件111GREEN、独立typecheck/71tests、完整pnpm build及native browser-use9断言通过；后台6.502s frames243→243，opened3/closed3/active0，owned资源已清理。生产未部署，AdminMiddleware需用户JWT，ops key401不证明服务故障。
 - efan六机同源/周归因待补，详见[隐藏页审计与下轮提示词](docs/audit/2026-10-19-sse-hidden-page.md)及network-switch主handoff。
+
+## 2026-10-20 §143.15 `provider_metrics_minute` 索引膨胀（写侧 ORDER BY 评估）
+
+- **结论**：§143.12「加 `ORDER BY` 即可让 `idx_pmm_model_bucket` 变密」**被证伪**（沙箱实测：分钟内按键序插入 ⇒ 三条关键索引**逐字节相同** ⇒ 收益 0）。真正机制＝**增量增长的 btree 留下冻结的半满页**（599 个 provider×model 组随时间反复分裂）⇒ **与索引方向无关**（REINDEX 后 DESC 也到 90.17%；同样增量长出来的 ASC 只有 52.00%）⇒ 真正的解法是 **REINDEX**（生产口径 **≈55~62MB**）。**不改 `minute_aggregator.go`。**
+- **量具订正**：`pgstatindex` 的 `avg_leaf_density`＝叶页**字节填充率**、`leaf_fragmentation`＝叶页**物理乱序度**（≈分裂痕迹），**不是**空洞率 ⇒ 此前「93~99% ⇒ 98% 的页是空的」是误读。生产无 `pageinspect` ⇒ 去重因子（9.9 / 2.51）只能在沙箱直接数。
+- **读方证据**：`idx_pmm_model_bucket` 是**胖模型 scorer 的活读路径**（EXPLAIN 实测）⇒ **不可 DROP**；本仓**无任何读方**需要 `_minute` 的 `bucket DESC` 顺序（`scorer_performance.go` 那句读的是 `provider_metrics_hour`）；`idx_pmm_provider_bucket` **全生命周期只被扫 1 次** ⇒ DROP 候选（**订正**：上一轮「184 万扫描」是**表的**扫描总数，不是这条索引的）。
+- **产出**：runbook `2026-10-04-ursm-write-amplification-measurement.md` §143.15（+ §143.12 四处就地订正横幅）；门 `internal/quality/minute_aggregator_index_order_test.go` 3 条（禁顶层 ORDER BY／钉住「一次跑只处理 1 个分钟桶」／钉住订正横幅），变异 M1~M3 全红、还原 md5 逐字一致。提交 `3a41dedcc`。**生产零写入**（只读查询 + 一份数据导出）。待属主拍板：REINDEX 5 条索引 / DROP `idx_pmm_provider_bucket` / 是否定期化。
