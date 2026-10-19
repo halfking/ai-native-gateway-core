@@ -83,18 +83,37 @@ for meta in "${META_TABLES[@]}"; do
 done
 
 # === 业务表 bloat 检测 ===
-# 用 pgstattuple 扩展（如果没有就用 dead_tup_pct 估算）
+# 2026-10-19（§118）就地订正上面那句旧注释「用 pgstattuple 扩展（如果没有就用 dead_tup_pct 估算）」：
+#   那句描述的两条路径里，**只有估算那条存在**，pgstattuple 从未被调用过。
+#   现已改为：pg_stat 估算只负责「筛出可疑项」，真动手前用 pgstattuple_approx 真读页复核。
+#   生产实测校准（2026-10-19，session_summaries 857MB）：
+#     估算 dead_pct = 62,877/(800,561+62,877) = 7.29%
+#     实测 pgstattuple_approx dead_tuple_percent = 0.346%
+#     ⇒ n_dead_tup 在本库**高估约 21 倍**。估算不是「不够准」，是量纲级别不准。
+#   复核耗时实测：852MB 表 5.95s、857MB 表 8.12s ⇒ 约 100~130 MB/s（与 pgstatindex 热态同量级）。
+#   ⇒ 确认闸代价 = 候选数 × 单表耗时；LIMIT 20 且门槛 256MB，最坏约 2~3 分钟（周日 03:15，可接受）。
+#
+# ★ 列存表（amname='columnar'）**不在本脚本范围**：pgstattuple_approx 对非堆表直接报
+#   `ERROR: only heap AM is supported`（2026-10-19 实测 routing_decision_log_2026_09）。
+#   旧 WHERE 只排除了 columnar_internal 这个 schema，**没排除 public 下的列存表**
+#   （routing_decision_log_2026_09、provider_events 都是 public.columnar），
+#   它们会进候选 → 确认闸必然失败 → 被 fail-safe 跳过 ⇒ 静默的永久失效。
+#   ⇒ 现在在候选层显式排除，让「不在范围内」成为**看得见的口径**，而不是靠运行时失败。
+#   VACUUM FULL 是堆表维护操作；列存的回收/合并走 pgcolumnar 自己的路径，属另一件事。
 BLOAT_SQL="
 WITH ranked AS (
   SELECT
-    schemaname||'.'||relname AS tname,
-    pg_total_relation_size(relid)::bigint AS size,
-    n_live_tup, n_dead_tup,
-    CASE WHEN n_live_tup + n_dead_tup > 0
-         THEN 100.0 * n_dead_tup / (n_live_tup + n_dead_tup)
+    s.schemaname||'.'||s.relname AS tname,
+    pg_total_relation_size(s.relid)::bigint AS size,
+    s.n_live_tup, s.n_dead_tup,
+    CASE WHEN s.n_live_tup + s.n_dead_tup > 0
+         THEN 100.0 * s.n_dead_tup / (s.n_live_tup + s.n_dead_tup)
          ELSE 0 END AS dead_pct
-  FROM pg_stat_user_tables
-  WHERE schemaname NOT IN ('columnar_internal')
+  FROM pg_stat_user_tables s
+  JOIN pg_class c ON c.oid = s.relid
+  JOIN pg_am am ON am.oid = c.relam
+  WHERE s.schemaname NOT IN ('columnar_internal')
+    AND am.amname = 'heap'
 )
 SELECT tname, size, round(dead_pct::numeric, 1)
 FROM ranked
@@ -120,11 +139,12 @@ else
     #   对着一张其实很健康的表锁 30 分钟，代价落在 252 上所有在线业务。
     # ⇒ 确认闸：真去读表（pgstattuple_approx 真读页），<阈值一律 SKIP；
     #   量不出来（扩展缺失 / 读失败）也 SKIP 并显式留痕 —— 宁可不做，不可错做。
+    #   ※ 候选层已排除非堆表，所以走到这里的失败只剩「扩展缺失 / 读失败」两种。
     real_dead_pct=$("$DOCKER_BIN" exec "$CONTAINER" psql -U "$PG_USER" -d "$PG_DB" -tAX \
       -c "SELECT round(dead_tuple_percent::numeric,1) FROM pgstattuple_approx('$tname');" 2>/dev/null \
       | tr -d '[:space:]')
     if ! [[ "$real_dead_pct" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
-      echo "[$(date -Iseconds)]   SKIP ${tname}: 估算 dead_pct=${dead_pct}% 但 pgstattuple_approx 量不出来（扩展缺失或读失败），不做不可逆动作" >> "$LOG"
+      echo "[$(date -Iseconds)]   SKIP ${tname}: 估算 dead_pct=${dead_pct}% 但 pgstattuple_approx 量不出来（扩展缺失或读失败；候选已限堆表），不做不可逆动作" >> "$LOG"
       continue
     fi
     if awk -v r="$real_dead_pct" -v t="$MIN_DEAD_PCT" 'BEGIN{exit !(r<t)}'; then

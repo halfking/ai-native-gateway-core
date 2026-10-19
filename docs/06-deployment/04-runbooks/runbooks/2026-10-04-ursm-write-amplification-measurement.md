@@ -27916,3 +27916,163 @@ SELECT … WHERE dead_pct >= 30 AND size > 256*1024*1024;
 | ★★ P1 | 部署 `pg17-vacuum-bloat.sh`（本节修复）到 252 |
 | ★★ P1 | 给 §116 那 5 张命中表补 `ANALYZE` |
 | ★ | 量 `pgstattuple_approx` 在大表上的耗时，据此决定 `MIN_DEAD_PCT` 与是否需要更粗的预筛 |
+
+---
+
+## §118 给 §117 的确认闸做**生产校准** —— 挖出「量具高估 21 倍」与「列存表永久失效」两个新事实（2026-10-19）
+
+§117 给 `pg17-vacuum-bloat.sh` 加了确认闸，判据用假 docker 验过、变异全红。但诚实边界里留了两条：
+
+> ❌ **没有量过 `pgstattuple_approx` 在 256MB+ 表上的耗时**
+> ❌ 普查只覆盖 cron.d 上注册的作业
+
+本节把这两条补上 —— 顺带把 §116 那 4 张分区表的精确 `count(*)` 也结清（三项全是**纯只读**测量）。
+
+### 一、§116 的 4 张分区表：精确 `count(*)`（承重数字结清）
+
+§116/§117 里这 4 张表一直只标了 `reltuples` 量级。按纪律补权威量：
+
+| 表 | **真实 `count(*)`** | `reltuples` | 误差 | 总量 | `count(*)` 耗时 |
+|---|---|---|---|---|---|
+| `usage_ledger_2026_09` | **1,416,772** | 1,416,772 | 100.0% | 742 MB | 16.77 s |
+| `session_turn_details_2026_09` | **786,036** | 781,611 | 99.4% | 603 MB | 16.22 s |
+| `request_wal_2026_09` | **446,777** | 446,777 | 100.0% | 193 MB | 0.82 s |
+| `routing_decision_log_2026_09` | **440,138** | 440,138 | 100.0% | 137 MB | 0.45 s |
+
+（`ursm_node_snapshot_min_legacy` = **2,836,620** 行 / 852 MB，§116 已实测）
+
+⇒ **4 张全部非空**，§116「L1 命中 5 张表、其中 4 张被裸 DROP」的结论再次坐实。
+⇒ 顺带一个成本读数：`count(*)` 在 742 MB 表上要 **16.8 秒** —— 这是 §105
+「巡检主判据成本优化」那件待拍的实测输入（用权威量复核本来就不是廉价操作）。
+
+### 二、★ 同一张 `pg_class` 行里有两个统计量，**一个准、一个废**
+
+把上面 4 张连同 `ursm_node_snapshot_min_legacy` 与权威量并排看：
+
+| 表 | 真实行数 | `reltuples` | `n_live_tup` |
+|---|---|---|---|
+| `ursm_node_snapshot_min_legacy` | 2,836,620 | 2,614,886（误差 7.8%） | **0** |
+| `usage_ledger_2026_09` | 1,416,772 | 1,416,772（误差 0.0%） | **0** |
+| `session_turn_details_2026_09` | 786,036 | 781,611（误差 0.6%） | **0** |
+| `request_wal_2026_09` | 446,777 | 446,777（误差 0.0%） | **0** |
+| `routing_decision_log_2026_09` | 440,138 | 440,138（误差 0.0%） | **0** |
+
+⇒ ⇒ ★★★ **`reltuples` 误差 0.0%~7.8%，`n_live_tup` 误差 100%（全 0）。**
+而 `emergency-cleanup` L1 用的是 **`n_live_tup`** ⇒ 这就是它一次点中 5 张表的**直接机制**。
+⇒ ⇒ ★★ 这两条口径**差别只在 PG 重启后**：`pg_stat` 被清零，`pg_class.reltuples` 跨重启保留。
+⇒ ⇒ ★ 顺带记一条**当时没走的更便宜的路**：把判据换成 `reltuples = 0` 也能拦住这 5 张
+（没有一张 reltuples 是 0）。**但没有换** —— `reltuples` 对「从未被 ANALYZE 过的新建表」同样为 0，
+那种情况**确实**是空表可安全 DROP，语义上成立；可它仍然是**估计量**，
+而承重数字必须是 `count(*)`。⇒ §116 落地的 `COUNT(*)` 三道闸才是正解。
+
+### 三、确认闸的校准：★ **估算高估约 21 倍**（生产真值，不是合成夹具）
+
+`session_summaries`（857 MB）是全库唯一 `n_live_tup` 归位的表（PG 重启后被 VACUUM/ANALYZE 带回），
+正好用来做第一次生产校准：
+
+```
+估算 dead_pct = 100 * n_dead_tup / (n_live_tup + n_dead_tup)
+              = 62,877 / (800,561 + 62,877) = 7.29%
+实测 pgstattuple_approx(dead_tuple_percent) = 0.346%
+⇒ n_dead_tup 在本库高估约 21 倍
+```
+
+⇒ ⇒ ★★★ **这不是「不够准」，是量纲级别不准。**
+§117 当时只能说「§116 已证 pg_stat 两个方向都会偏，所以不是理论风险」——
+本节给出了**数量级**。
+⇒ ⇒ ★★ 而两者都低于 30% 门槛、**本次结果一致**；正因如此才要说清楚：
+**这一次的「闸没起作用」不能证明闸没用**，它只是恰好与估算落在同一侧。
+真正的判据是**方向与量级真实存在** ⇒ 换一张更大的表或更低的门槛，估算就会把健康表推进 `VACUUM FULL`。
+⇒ ★ 这条已写成第 6 条门禁（`TestVacuumBloatSkipsAtProductionCalibration`）。
+
+### 四、确认闸的耗时实测（结清 §117 的第一条诚实边界）
+
+| 表 | 大小 | `pgstattuple_approx` 耗时 | 结果 |
+|---|---|---|---|
+| `ursm_node_snapshot_min_legacy` | 852 MB | **5.95 s** | dead_tuple_percent = 0.103% |
+| `session_summaries` | 857 MB | **8.12 s** | dead_tuple_percent = 0.346% |
+| `routing_decision_log_2026_09` | 137 MB | 0.009 s | 🚨 **ERROR: only heap AM is supported** |
+
+⇒ ⇒ ★★★ **约 100~130 MB/s**，与 §115 实测 `pgstatindex` 热态 60~115 MB/s **同量级**
+（两者都是「真读页」，这个一致性反过来交叉验证了两边读数）。
+⇒ ⇒ ★★ **确认闸代价可算**：候选数 × 单表耗时。`LIMIT 20` + 256MB 门槛 ⇒
+最坏约 **2~3 分钟**（周日 03:15，业务低峰）。**不需要更粗的预筛**，成本已在可接受区间。
+⇒ ⇒ ⇒ `MIN_DEAD_PCT` 取 30 的判断**现在有了成本侧依据**：确认闸本身
+便宜到不值得为省它而放宽判据。⚠ 但「30」这个阈值本身**仍未实测校准**（见下）。
+
+### 五、🚨 新发现：确认闸对**列存表**是**永久失效**
+
+```
+SELECT dead_tuple_percent FROM pgstattuple_approx('routing_decision_log_2026_09');
+ERROR:  only heap AM is supported
+```
+
+查 `pg_am` 后坐实：`routing_decision_log_2026_09` 与 `provider_events` 的
+`access_method = columnar`，而**其余 5 张大表都是 heap**。
+
+⇒ ⇒ 🚨 **旧候选 SQL 排除不掉它们**：`WHERE schemaname NOT IN ('columnar_internal')`
+只排除了列存的**元数据 schema**，而这两张是 **`public` schema 下的列存表**。
+⇒ ⇒ ★★★ 后果链：列存表进候选 ⇒ 确认闸**必然**失败 ⇒ 被 fail-safe 跳过。
+**行为上是安全的**，但那是**静默的永久失效** ——
+日志只会写「pgstattuple_approx 量不出来」，读起来与「扩展没装」**一模一样**。
+⇒ ⇒ ★★ 这正是 §117 写的 fail-safe 纪律的代价：
+fail-safe 让**错做**不可能，但**也让「做不了」变得看不出来**。
+
+**修法：在候选层显式排除，不靠运行时失败。**
+
+```sql
+FROM pg_stat_user_tables s
+JOIN pg_class c ON c.oid = s.relid
+JOIN pg_am   am ON am.oid = c.relam
+WHERE s.schemaname NOT IN ('columnar_internal')
+  AND am.amname = 'heap'
+```
+
+⇒ 让「列存不在本脚本范围内」成为**看得见的口径**。
+⇒ 依据：`VACUUM FULL` 是**堆表**维护操作；列存的回收/合并走 pgcolumnar 自己的路径，
+属另一件事（**未验，属另一轮**）。
+⇒ ⚠ 顺带订正脚本头部那句旧注释「用 pgstattuple 扩展（如果没有就用 dead_tup_pct 估算）」——
+那句话描述的两条路径里**只有估算那条存在**，现就地加订正说明。
+
+### 六、门禁：新增 2 条（共 6 条），**变异 2/2 全红**
+
+| 用例 | 断言 |
+|---|---|
+| `TestVacuumBloatCandidateExcludesColumnarTables` | 下发的候选 SQL 必须含 `pg_am` + `amname = 'heap'` |
+| `TestVacuumBloatSkipsAtProductionCalibration` | 估算 30.0% / **实测 0.3%**（生产实测 21 倍偏差形态）⇒ 必须 SKIP |
+
+变异：
+
+| 变异 | 结果 |
+|---|---|
+| 拆掉候选层的 `AND am.amname = 'heap'` | **只有**新增那条红（精准，非一拆全红） |
+| 把确认闸的比较改成 `if false`（**合法变异**，`bash -n` 仍过） | 两条 SKIP 门红（含生产校准那条） |
+
+md5 复原 `0886ecbf70de2c6fb0504a25d78f857c`；全包回归 42.9s 通过，`go vet` 干净，`bash -n` 通过。
+
+### 七、诚实边界
+
+| | |
+|---|---|
+| ❌ | **`MIN_DEAD_PCT = 30` 本身仍未实测校准** —— 本节只测了**确认闸的成本**（够便宜）与**估算的误差量级**（21 倍）。阈值该定多少是另一个问题 |
+| ❌ | **列存表的膨胀维护完全没被覆盖** —— 本节只是把「不在范围内」写明，列存膨胀怎么处置属另一轮 |
+| ❌ | 没在生产跑过修改后的脚本（部署需授权）；未部署、未触发任何 `VACUUM FULL`/`DROP`、未对生产做任何写 |
+| ⚠ | `count(*)` 的耗时读数只有 4 个样本，且列存与堆混在一起（`routing_decision_log` 0.45s 是列存），不能直接外推成「代价 ∝ 体积」 |
+| ✅ | 已证：4 张分区表精确行数；`reltuples` vs `n_live_tup` 的量级差；确认闸生产校准（21 倍）；`pgstattuple_approx` 耗时 ~100~130 MB/s；列存 `only heap AM is supported`；2/2 变异全红 |
+
+### 八、动作边界
+
+⚠ 本节**全程只读生产**（`count(*)` / `pg_stat` / `pg_am` / `pgstattuple_approx` 四类查询，
+最后一项虽读全页但**只取共享锁、不写任何东西**）+ 仓内改脚本与门禁。
+**未部署、未改 cron、未对生产做任何写。**
+
+### 九、由此产生的待办
+
+| 优先级 | 动作 |
+|---|---|
+| 🚨 **P0** | 部署 `pg17-emergency-cleanup.sh`（§116）到 252 |
+| 🚨 **P0** | 移出 4 个 `/etc/cron.d/pg17.bak.*`（§116 六之二） |
+| 🚨 **P0** | 部署 `pg17-vacuum-bloat.sh`（§117 + 本节列存排除）到 252 —— **本节改动尚未部署** |
+| ★★ P1 | 给 §116 那 5 张表补 `ANALYZE`（让 `n_live_tup` 归位） |
+| ★ | 定 `MIN_DEAD_PCT`：需要一份「已知脏度」的表清单做校准，不能只靠阈值直觉 |
+| ★ | 列存表膨胀处置（另一轮）：列存该用什么量具、走什么回收路径 |

@@ -180,3 +180,64 @@ func TestVacuumBloatUsesConfirmGate(t *testing.T) {
 		}
 	}
 }
+
+// ---------------------------------------------------------------------------
+// §118（2026-10-19）：把生产实测的校准数据与「列存表」盲区钉成判据
+// ---------------------------------------------------------------------------
+
+// TestVacuumBloatCandidateExcludesColumnarTables 钉住 §118 的实测盲区：
+//
+//	SELECT ... FROM pgstattuple_approx('routing_decision_log_2026_09');
+//	ERROR:  only heap AM is supported
+//
+// 该表的 amname 是 `columnar`（不是 columnar_internal 里的元数据表，
+// 而是 **public schema 下的列存表**）⇒ 旧 WHERE 只排 `schemaname NOT IN
+// ('columnar_internal')`，**排除不掉它** ⇒ 它会进候选 ⇒ 确认闸必然失败
+// ⇒ 被 fail-safe 跳过。行为上安全，但那是**静默的永久失效**：
+// 日志只会写「量不出来」，读起来与「扩展没装」一模一样。
+//
+// ⇒ 现在在候选层用 `pg_am` JOIN + `amname='heap'` 显式排除，
+// 让「列存不在本脚本范围内」成为看得见的口径，而不是靠运行时失败。
+func TestVacuumBloatCandidateExcludesColumnarTables(t *testing.T) {
+	skipVacuumWindows(t)
+
+	trace, _ := runVacuumBloat(t, "", "")
+
+	requireVacuumCalls(t, trace)
+	for _, needle := range []string{"pg_am", "amname = 'heap'"} {
+		if !strings.Contains(trace, needle) {
+			t.Fatalf("候选 SQL 缺少 %q —— 列存表（amname='columnar'）会进候选，"+
+				"而 pgstattuple_approx 对非堆表必然报 `only heap AM is supported`，"+
+				"于是列存表被静默地永久跳过（fail-safe 但看不出原因）\ntrace:\n%s", needle, trace)
+		}
+	}
+}
+
+// TestVacuumBloatSkipsAtProductionCalibration 用**生产真值**驱动闸：
+// session_summaries（857MB）实测
+//
+//	估算 dead_pct = 62,877/(800,561+62,877) = 7.29%
+//	实测 pgstattuple_approx dead_tuple_percent = 0.346%
+//	⇒ n_dead_tup 在本库高估约 21 倍
+//
+// 换句话说：估算说「脏了」，真读页说「几乎不脏」。
+// 本例两者都低于 30% 门槛、结果一致，但**方向与量级都是真的** ——
+// 换一张更大的表或更低的门槛，估算就会把健康表推进 VACUUM FULL。
+//
+// ⇒ 因此钉住这个量级本身：估算远超阈值而实测极低时，必须 SKIP。
+func TestVacuumBloatSkipsAtProductionCalibration(t *testing.T) {
+	skipVacuumWindows(t)
+
+	// 估算用一个远超门槛的值（真实估算是 7.29%，这里取 30.0 恰好压线之上，
+	// 目的是让「估算达标、实测极低」这个组合成为**唯一**的触发条件）
+	trace, logBody := runVacuumBloat(t, "public.session_summaries|898584576|30.0", "0.3")
+
+	requireVacuumCalls(t, trace)
+	if strings.Contains(trace, "VACUUM FULL public.session_summaries") {
+		t.Fatalf("★ 估算过线（30.0%%）但实测仅 0.3%%（生产实测高估约 21 倍）仍执行了 VACUUM FULL —— "+
+			"确认闸失效，白拿 30 分钟 ACCESS EXCLUSIVE\ntrace:\n%s\nlog:\n%s", trace, logBody)
+	}
+	if !strings.Contains(logBody, "0.3") {
+		t.Fatalf("SKIP 时必须留下实测值，否则事后无法区分「闸起作用」与「作业没跑」\nlog:\n%s", logBody)
+	}
+}
