@@ -87,7 +87,7 @@ func runVacuumBloat(t *testing.T, targets, realPct string) (string, string) {
 	trace := filepath.Join(dir, "trace.txt")
 	logPath := filepath.Join(dir, "vacuum.log")
 
-	cmd := exec.Command(bashForScript(t), vacuumBloatScript)
+	cmd := exec.Command(bashForScriptFor(t, vacuumBloatScript), vacuumBloatScript)
 	cmd.Env = append(os.Environ(),
 		"DOCKER_BIN="+fake,
 		"TRACE_FILE="+trace,

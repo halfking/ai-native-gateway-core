@@ -198,8 +198,16 @@ func (m *CandidateFailureMonitor) tick(ctx context.Context) {
 // 修：lastRequest 改读 `request_logs_with_current_month_without_request_class_due_at`，
 // 该视图仅含 request_logs 腿（不含 session_turns），与 failure writer 写
 // 入口同源；S4 停写后该视图也 0 行 ⇒ lastRequest=nil ⇒ 不告警。
-// 写门禁（TestStalenessSQLDoesNotUseSessionTurns）锁定表名序列，
+// 写门禁（TestStalenessLastRequestSurfaceExcludesSessionTurns）锁定表名序列，
 // 防止后人把视图改回 session_turns 混合形态。
+//
+// ⚠ 依赖登记（2026-10-19 审计补）：该视图是 577/734 为规避投影缺失而**故意**
+// 建成的 v1-only 中间层，不是承重对象，随时可能被清理迁移删掉。它在
+// cmd/gateway/request_logs_view_session_arm_pin_test.go 的 v1OnlyRequestLogsViews
+// 里登记（那是该事实的唯一真相来源，由真库 pg_get_viewdef 重算核对）。
+// ⇒ 若哪天该视图被删，本检查会**每 tick 报错**（而不是静默漏告警），
+//
+//	处置顺序是：先改这条常量，再同步那份登记表，两处一起改才算闭环。
 const checkStalenessLastRequestSurface = "request_logs_with_current_month_without_request_class_due_at"
 
 // checkStaleness detects a dead or unwired failure-log pipeline when the

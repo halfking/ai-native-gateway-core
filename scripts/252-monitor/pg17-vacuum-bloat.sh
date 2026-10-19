@@ -104,6 +104,22 @@ BLOAT_SQL="
 WITH ranked AS (
   SELECT
     s.schemaname||'.'||s.relname AS tname,
+    -- 2026-10-19 审计修正：执行用名必须是**标识符引用过的** form。
+    --   tname 是 schemaname||'.'||relname 的裸拼，PG 只在名字需要时才加引号；
+    --   而本脚本把它直接插进两条要发给 PG 执行的语句（确认闸的实测调用，
+    --   以及最终那条重建表空间的调用）。
+    --   朴素名（含引号/大小写/空格的表名或 schema 名）会拼出坏 SQL。
+    --   后果方向是 fail-safe（psql 报错 => 量不出来 => SKIP），不是错做；
+    --   但同族 emergency-cleanup 的 DROP 路径早已用 format 带引号形态，
+    --   两边形态不一致本身就是下一个读者的坑 => 这里对齐。
+    --   format 带引号形态对朴素标识符**不加**引号，日志与既有行为完全不变。
+    --   ⚠ 纪律一：本注在 BLOAT_SQL 的双引号串里，不可出现反引号、美元-花括号
+    --     或双引号，否则 bash 在赋值时做命令替换/参数展开（3.2 下未定义变量
+    --     还会被 set -u 直接打死）。本轮踩过一次。
+    --   ⚠ 纪律二：也**不要**在本串里写出下方那两条语句的函数名/关键字全文 ——
+    --     行为门注入的假 docker 是按子串匹配 SQL 来应答的，注释里出现同样的
+    --     字面量会让假 docker 认错分支。本轮同样踩过一次。
+    format('%I.%I', s.schemaname, s.relname) AS qname,
     pg_total_relation_size(s.relid)::bigint AS size,
     s.n_live_tup, s.n_dead_tup,
     CASE WHEN s.n_live_tup + s.n_dead_tup > 0
@@ -115,7 +131,7 @@ WITH ranked AS (
   WHERE s.schemaname NOT IN ('columnar_internal')
     AND am.amname = 'heap'
 )
-SELECT tname, size, round(dead_pct::numeric, 1)
+SELECT tname, size, round(dead_pct::numeric, 1), qname
 FROM ranked
 WHERE dead_pct >= 30 AND size > 256*1024*1024
 ORDER BY dead_pct DESC, size DESC
@@ -128,8 +144,12 @@ if [ -z "$TARGETS" ]; then
 else
   echo "[$(date -Iseconds)] bloat targets:" >> "$LOG"
   echo "$TARGETS" >> "$LOG"
-  while IFS='|' read -r tname size dead_pct; do
+  while IFS='|' read -r tname size dead_pct qname; do
     [ -z "$tname" ] && continue
+    # 执行一律用 qname（format('%I.%I')，见 BLOAT_SQL 里的修正注）。
+    # tname 只用于日志/报错——日志要的是人能读的裸名，不是引号形态。
+    # 缺第 4 列时（旧的候选集形态）回退到 tname，保持向后兼容。
+    if [ -z "${qname:-}" ]; then qname="$tname"; fi
     # ★ 2026-10-19（§117）：BLOAT_SQL 的 dead_pct 是**从 pg_stat 的估计值算的**
     #   （100*n_dead_tup/(n_live_tup+n_dead_tup)），而 pg_stat 会被 PG 重启清零、
     #   只在 ANALYZE/VACUUM 之后才回来。本文件头部本来就写着「用 pgstattuple 扩展
@@ -141,7 +161,7 @@ else
     #   量不出来（扩展缺失 / 读失败）也 SKIP 并显式留痕 —— 宁可不做，不可错做。
     #   ※ 候选层已排除非堆表，所以走到这里的失败只剩「扩展缺失 / 读失败」两种。
     real_dead_pct=$("$DOCKER_BIN" exec "$CONTAINER" psql -U "$PG_USER" -d "$PG_DB" -tAX \
-      -c "SELECT round(dead_tuple_percent::numeric,1) FROM pgstattuple_approx('$tname');" 2>/dev/null \
+      -c "SELECT round(dead_tuple_percent::numeric,1) FROM pgstattuple_approx('$qname');" 2>/dev/null \
       | tr -d '[:space:]')
     if ! [[ "$real_dead_pct" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
       echo "[$(date -Iseconds)]   SKIP ${tname}: 估算 dead_pct=${dead_pct}% 但 pgstattuple_approx 量不出来（扩展缺失或读失败；候选已限堆表），不做不可逆动作" >> "$LOG"
@@ -155,7 +175,7 @@ else
     # 2026-10-03 同上修复（事务块问题）
     "$DOCKER_BIN" exec -e PGOPTIONS="-c statement_timeout=${TABLE_TIMEOUT_MIN}min -c lock_timeout=5min" \
       "$CONTAINER" psql -U "$PG_USER" -d "$PG_DB" -tAX \
-      -c "VACUUM FULL ${tname}" >> "$LOG" 2>&1 \
+      -c "VACUUM FULL ${qname}" >> "$LOG" 2>&1 \
       || echo "[$(date -Iseconds)]   VACUUM FULL ${tname} FAILED" >> "$LOG"
   done <<< "$TARGETS"
 fi

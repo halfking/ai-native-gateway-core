@@ -35,6 +35,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"testing"
@@ -91,7 +92,7 @@ func runEmergency(t *testing.T, candidates, fakeCount string) (string, string) {
 	trace := filepath.Join(dir, "trace.txt")
 	logPath := filepath.Join(dir, "emergency.log")
 
-	cmd := exec.Command(bashForScript(t), emergencyScript, "--level", "L1")
+	cmd := exec.Command(bashForScriptFor(t, emergencyScript), emergencyScript, "--level", "L1")
 	cmd.Env = append(os.Environ(),
 		"DOCKER_BIN="+fake,
 		"TRACE_FILE="+trace,
@@ -111,10 +112,36 @@ func runEmergency(t *testing.T, candidates, fakeCount string) (string, string) {
 	return string(traceBody), string(logBody)
 }
 
-// bashForScript 找一个 bash >= 4（脚本用了 ${2^^}）。
+// bashForScript 找一个能跑这些守卫脚本的 bash，**优先** >= 4。
+//
+// 2026-10-19 审计修正（12h 修订审计轮 §3）：本helper 此前只接受 bash >= 4，
+// 找不到就 `t.Skip`。而 macOS 自带的 /bin/bash 是 **3.2**，且默认没装
+// homebrew bash ⇒ **本包所有行为门在维护者自己的机器上全部 SKIP**，
+// 跑出来是绿的（PASS/ok），实际上一条判定分支都没走到 ——
+// 正是本仓 LESSONS 反复登记的「假绿」。
+//
+// 但**不能**无脑退回 bash 3：本 helper 覆盖的脚本里，
+// pg17-emergency-cleanup.sh:72 用了 `${2^^}`，bash 3.2 直接 `bad substitution`
+// 把脚本打死（2026-10-19 实测）。所以正确的口径是**按被测脚本判**：
+// 目标脚本不含 bash-4 专有语法 ⇒ 用 bash 3 也能跑，门就不该跳过；
+// 含 ⇒ 老老实实 Skip 并说清原因，而不是让整包假绿。
+//
+// ⚠ 判「是否 bash4 专有」时注意 `${2^^}`：变量名以**数字**开头，
+//
+//	按 `${[A-Za-z_]…}` 写正则会漏掉它（本轮第一次就漏了，
+//	差点把一个真需要 bash4 的脚本判成 bash3 兼容）。
 func bashForScript(t *testing.T) string {
 	t.Helper()
-	for _, c := range []string{"/opt/homebrew/bin/bash", "/usr/local/bin/bash", "/bin/bash"} {
+	return bashForScriptFor(t, "")
+}
+
+// bashForScriptFor 同上，但可传入被测脚本路径做逐脚本判定。
+// 传空串时退化为「只用 bash >= 4，找不到就 Skip」。
+func bashForScriptFor(t *testing.T, script string) string {
+	t.Helper()
+	candidates := []string{"/opt/homebrew/bin/bash", "/usr/local/bin/bash", "/opt/local/bin/bash", "/bin/bash"}
+	var fallback []string
+	for _, c := range candidates {
 		out, err := exec.Command(c, "-c", "echo ${BASH_VERSINFO[0]}").Output()
 		if err != nil {
 			continue
@@ -122,9 +149,46 @@ func bashForScript(t *testing.T) string {
 		if strings.TrimSpace(string(out)) >= "4" {
 			return c
 		}
+		fallback = append(fallback, c)
 	}
-	t.Skip("找不到 bash >= 4（脚本用了 ${2^^}），本门在当前环境跑不起来")
-	return ""
+	if len(fallback) == 0 {
+		t.Skip("找不到任何可用的 bash —— 这是环境问题，不是被测行为")
+		return ""
+	}
+	if script == "" {
+		t.Skipf("找不到 bash >= 4，且未指定被测脚本可做兼容性判定（bash3: %s）", fallback[0])
+		return ""
+	}
+	if scriptUsesBash4Only(script) {
+		t.Skipf("%s 用到 bash4 专有语法（如大写展开），bash 3.2 跑不了；装 bash>=4 后再跑本门", script)
+		return ""
+	}
+	return fallback[0]
+}
+
+// scriptUsesBash4Only 判断脚本是否用了 bash 4 才有的语法。
+// 逐脚本判定，而不是一刀切 —— 一刀切会让**所有**行为门在 macOS 上静默跳过。
+var bash4OnlyPatterns = []*regexp.Regexp{
+	regexp.MustCompile(`\$\{[0-9A-Za-z_][^}]*\^\^`), // ${x^^} / ${2^^}：变量名可能是纯数字
+	regexp.MustCompile(`\$\{[0-9A-Za-z_][^}]*,,\}`), // ${x,,}
+	regexp.MustCompile(`declare\s+-A`),                // 关联数组
+	regexp.MustCompile(`\bmapfile\b`),
+	regexp.MustCompile(`\breadarray\b`),
+	regexp.MustCompile(`\bcoproc\b`),
+}
+
+func scriptUsesBash4Only(script string) bool {
+	b, err := os.ReadFile(script)
+	if err != nil {
+		return true // 读不了就按「要 bash4」处理，宁可 Skip 也不给错误结论
+	}
+	s := string(b)
+	for _, re := range bash4OnlyPatterns {
+		if re.MatchString(s) {
+			return true
+		}
+	}
+	return false
 }
 
 // requireCalls 断言脚本**确实**调过假 docker。
