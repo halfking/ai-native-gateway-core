@@ -603,8 +603,8 @@ var requestLogsStopWriteClassification = map[string]stopWriteClassification{
 	},
 	"cmd/gateway/waterfall_by_request.go": {
 		Effect:   effectErrorsOut,
-		Evidence: "FROM _request_logs_hot",
-		Note:     "单请求 waterfall 落库回查按 request_id = $1 命中 _request_logs_hot，pgx.ErrNoRows 被翻译成 (_, false, nil)，调用方 handleDispatchWaterfallByRequest 直接 http.Error(404, ...) ⇒ 内存环之外的请求立刻 404，灰度即可见（可接受失败模式）。",
+		Evidence: "FROM request_logs_with_current_month",
+		Note:     "S3 波 2 已改为 canonical 点查，镜像覆盖的业务请求由会话臂供给；三个筛选字段均为直映。但 sessionv2mirror 排除无会话探针和已有会话的 IsInternalAutoEntry，这些仅有 v1 的请求在 S4 后、内存环外仍可 404，故保留 errors_out 风险档。不能把列直映当成所有请求都有会话行。缺失 request_id 或无 t0 也可 404，与停写因果不同。",
 	},
 	"domains/analysis/optimizer.go": {
 		Effect:   effectSilentlyEmpty,
@@ -1114,6 +1114,13 @@ gw_task_id 过滤的三处误判成会话内读，差了两档。`
 //
 // 这是整个登记的承重点：没有它，104 条登记可以在一个下午凭印象写完，而门全绿。
 // 变异验证：把任一 Evidence 改成文件里没有的片段即红。
+func TestWaterfallStopWriteAssessmentUsesCanonicalSource(t *testing.T) {
+	entry := requestLogsStopWriteClassification["cmd/gateway/waterfall_by_request.go"]
+	if entry.Effect != effectErrorsOut || entry.Evidence != "FROM request_logs_with_current_month" {
+		t.Fatalf("waterfall canonical source must retain the S4 v1-only 404 risk: %+v", entry)
+	}
+}
+
 func TestRequestLogsStopWriteClassificationEvidenceIsReal(t *testing.T) {
 	root := repoRootFromCaller(t)
 	for file, c := range requestLogsStopWriteClassification {
@@ -1133,8 +1140,8 @@ func TestRequestLogsStopWriteClassificationEvidenceIsReal(t *testing.T) {
 			t.Errorf("%s: 读取失败 %v（登记里的文件必须存在）", file, err)
 			continue
 		}
-		if !strings.Contains(string(raw), c.Evidence) {
-			t.Errorf("%s: Evidence 在该文件中不存在：\n  %q\n"+
+		if !inventoryEvidenceInCode(string(raw), c.Evidence) {
+			t.Errorf("%s: Evidence 未出现在该文件的有效非注释 Go 代码中：\n  %q\n"+
 				"分级必须锚在真实存在的代码上，否则「已评估」无法与「凭印象」区分",
 				file, c.Evidence)
 			continue
