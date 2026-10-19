@@ -200,6 +200,133 @@ func TestEmergencyDefaultPartitionDropsWhenUnreferenced(t *testing.T) {
 	}
 }
 
+// runEmergencyDeadTables 跑一轮 L1 的**死表分支**，并能喂第四道闸的应答。
+//
+// 与 runEmergencyDefaultParts 的区别：后者喂 `_default` 分区候选（键 CANDIDATES 留空），
+// 前者喂 DEAD_TABLES 候选。两者都要带 DEPENDENTS，否则第四道闸拿不到应答 ——
+// 而假 docker 在 `*pg_proc*strpos*` 分支里 `printf '%s' "$DEPENDENTS"`，
+// 环境变量不存在时它就是**空串**，闸会「查不到任何依赖」⇒ 恒放行 ⇒ 用例假绿。
+func runEmergencyDeadTables(t *testing.T, candidates, fakeCount, dependents string) (string, string) {
+	t.Helper()
+	dir := t.TempDir()
+	fake := fakeEmergencyDocker(t, dir)
+	trace := filepath.Join(dir, "trace.txt")
+	logPath := filepath.Join(dir, "emergency.log")
+
+	cmd := exec.Command(bashForScriptFor(t, emergencyScript), emergencyScript, "--level", "L1")
+	cmd.Env = append(os.Environ(),
+		"DOCKER_BIN="+fake,
+		"TRACE_FILE="+trace,
+		"CANDIDATES="+candidates,
+		"DEFAULT_PARTS=",
+		"DEPENDENTS="+dependents,
+		"FAKE_COUNT="+fakeCount,
+		"LOG="+logPath,
+		"LLMGW_NO_SINGLE_INSTANCE_LOCK=1",
+		"LLMGW_LOCK_DIR="+dir,
+	)
+	_, _ = cmd.CombinedOutput()
+
+	traceBody, err := os.ReadFile(trace)
+	if err != nil {
+		t.Fatalf("读调用轨迹失败（脚本可能没跑到死表分支查询）: %v", err)
+	}
+	logBody, _ := os.ReadFile(logPath)
+	return string(traceBody), string(logBody)
+}
+
+// TestEmergencyL1RefusesToDropEmptyTableReferencedByFunctionBody 钉住死表分支的
+// **第四道闸**（§143.6 补，此前本分支完全没有这道闸）。
+//
+// 252 实测形态：public._request_logs_bodies_hot 0 行 / 291MB ⇒ 前三道闸全过，
+// 但它被 7 个 public 函数体按名字引用（含 promote_request_logs_bodies_hot_to_partition、
+// recent_success_rate、system_health_status）⇒ 磁盘过 90% 时 DROP 它 = 打断 promote 链路。
+// 同一张表的兄弟形态 public._request_logs_hot（0 行 / 61MB）同理。
+func TestEmergencyL1RefusesToDropEmptyTableReferencedByFunctionBody(t *testing.T) {
+	skipWindows(t)
+
+	trace, logBody := runEmergencyDeadTables(t,
+		"public._request_logs_bodies_hot|0|_request_logs_bodies_hot",
+		"0",
+		"promote_request_logs_bodies_hot_to_partition(),system_health_status()")
+
+	requireCalls(t, trace)
+	if strings.Contains(trace, "DROP TABLE IF EXISTS public._request_logs_bodies_hot") {
+		t.Fatalf("★ 0 行但被函数体引用的死表仍被 DROP —— 会打断 promote 链路与健康读路径\ntrace:\n%s\nlog:\n%s", trace, logBody)
+	}
+	if !strings.Contains(logBody, "SKIP") || !strings.Contains(logBody, "promote_request_logs_bodies_hot_to_partition") {
+		t.Fatalf("必须在日志里留下 SKIP 与具体函数名，否则事后无法反查为什么没删\nlog:\n%s", logBody)
+	}
+}
+
+// TestEmergencyL1DependencyLookupUsesBareTableName 钉住**归一化**这一步。
+//
+// ⚠ 这条是本组门里最容易被忽略、后果最重的一条：
+//   候选第一列是 `format('%I)'` 的**加引号**形式（public."_request_logs_bodies_hot"），
+//   而函数体里写的是**裸名**。若直接拿第一列去 strpos，就**永远匹配不上**
+//   ⇒ 闸恒「无依赖」⇒ 恒放行，而上面那条阻断侧用例**照样全绿**
+//   （假 docker 不看表名，只看 SQL 里有没有 pg_proc+strpos 两个词）。
+//   ⇒ 换句话说：上面那道门测的是「有应答时会不会 SKIP」，
+//     这道门测的才是「问的对象对不对」。
+func TestEmergencyL1DependencyLookupUsesBareTableName(t *testing.T) {
+	skipWindows(t)
+
+	trace, _ := runEmergencyDeadTables(t,
+		`public."_request_logs_bodies_hot"|0`,
+		"0",
+		"") // 无依赖 ⇒ 会 DROP；本门只看**问的表名**，不看结果
+
+	requireCalls(t, trace)
+	if !strings.Contains(trace, "strpos(p.prosrc, '_request_logs_bodies_hot')") {
+		t.Fatalf("★ 依赖查询用的不是裸表名 —— 加引号形式永远匹配不到函数体，第四道闸会恒放行\ntrace:\n%s", trace)
+	}
+	if strings.Contains(trace, `strpos(p.prosrc, 'public.`) {
+		t.Fatalf("★ 依赖查询把 schema 限定名当成了表名 —— 同样永远匹配不到\ntrace:\n%s", trace)
+	}
+	// 第三列缺失时必须从第一列兜底并剥引号（老形态候选不能因此绕过闸）。
+	if !strings.Contains(trace, "DROP TABLE IF EXISTS public.\"_request_logs_bodies_hot\"") {
+		t.Fatalf("两列形态的候选应当仍然走完 DROP 路径（本门只验归一化，别把脚本改瘫）\ntrace:\n%s", trace)
+	}
+}
+
+// TestEmergencyL1SkipsWhenBareNameCannotBeResolved 钉住空模式防护。
+//
+// PG 里 `strpos(x,'')` 返回 **1**（永远命中），而 `strpos(x,NULL)` 返回 NULL
+//（永不命中）—— 空模式的语义与「查不到」**完全相反**，是能静默改判的方向。
+// 解析不出裸表名时必须 SKIP，且**不能**发出那次依赖查询。
+func TestEmergencyL1SkipsWhenBareNameCannotBeResolved(t *testing.T) {
+	skipWindows(t)
+
+	trace, logBody := runEmergencyDeadTables(t, "public.|0|", "0", "")
+
+	requireCalls(t, trace)
+	if strings.Contains(trace, "DROP TABLE IF EXISTS public.") {
+		t.Fatalf("★ 解析不出裸表名时不得 DROP\ntrace:\n%s", trace)
+	}
+	if strings.Contains(trace, "strpos(p.prosrc, '')") {
+		t.Fatalf("★ 不得用空模式查依赖（PG 里 strpos(x,'')=1，语义与直觉相反）\ntrace:\n%s", trace)
+	}
+	if !strings.Contains(logBody, "SKIP") {
+		t.Fatalf("解析不出表名时必须留 SKIP 记录\nlog:\n%s", logBody)
+	}
+}
+
+// TestEmergencyL1StillDropsUnreferencedEmptyTableInDeadTableBranch 是**正向下限**。
+// 没有函数体引用时，0 行的死表仍然必须被 DROP ——
+// 否则上面几道门可以靠「一律 SKIP」变绿，而线上唯一真会落盘的候选
+// （_request_logs_bodies_hot）恰好**永远**会被第四道闸挡住 ⇒ 那道门测的是一个
+// 生产上永不发生的分支。这条保证闸是**判别式**的，不是一律拒绝。
+func TestEmergencyL1StillDropsUnreferencedEmptyTableInDeadTableBranch(t *testing.T) {
+	skipWindows(t)
+
+	trace, logBody := runEmergencyDeadTables(t, "public.some_genuinely_empty_dead_table|0|some_genuinely_empty_dead_table", "0", "")
+
+	requireCalls(t, trace)
+	if !strings.Contains(trace, "DROP TABLE IF EXISTS public.some_genuinely_empty_dead_table") {
+		t.Fatalf("无函数引用且 0 行的死表应当被 DROP —— 脚本可能被改瘫，本门失去意义\ntrace:\n%s\nlog:\n%s", trace, logBody)
+	}
+}
+
 // bashForScript 找一个能跑这些守卫脚本的 bash，**优先** >= 4。
 //
 // 2026-10-19 审计修正（12h 修订审计轮 §3）：本helper 此前只接受 bash >= 4，

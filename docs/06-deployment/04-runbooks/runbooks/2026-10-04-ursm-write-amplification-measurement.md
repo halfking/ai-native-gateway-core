@@ -31635,3 +31635,311 @@ fi
 
 ★ 同族：[[§896 的教训：测试桩失明]] · [[恒真门]] · [[§901 的教训：判据红的第一件事是不动被测代码]] ·
 [[多副本纪律]]。
+
+---
+
+## §143 252 全库普查（按**可回收字节**排序）+ 一个 229MB 的**隐形占用**（2026-10-19）
+
+本轮把 §119 那条「判据是否该从死元组比例改成可回收字节数」放到生产上跑一遍，
+既当验证也当普查。**结论：大表一个都不值得动；但查出一张空表占着 290MB。**
+
+### §143.1 普查结果：29 GB 的库，可回收约 555 MB（1.9%）
+
+逐张 `pgstattuple_approx` 真读页（44 张 >100MB 的堆表）。头部：
+
+| 表 | total | heap | idx | dead% | **free%** | 可回收 | 耗时 | pg_stat 估 dead% |
+|---|---|---|---|---|---|---|---|---|
+| `session_bodies_2026_10` | 4,028MB | **89MB** | 112MB | 2.38 | 2.30 | **4MB** | 1s | 4.0 |
+| `session_turns_2026_09` | 2,733MB | 1,108MB | 907MB | 0.03 | 5.41 | 60MB | 26s | 0.5 |
+| `ursm_node_snapshot_min_20261017` | 1,553MB | 1,155MB | 398MB | 0.00 | 1.23 | 14MB | 2s | 0.5 |
+| `session_turns_2026_10` | 1,271MB | 333MB | 303MB | 2.27 | 6.30 | 28MB | 9s | 3.4 |
+| `route_incident_events` | 1,100MB | 613MB | 486MB | 0.00 | 4.21 | 25MB | 4s | 0.0 |
+| `session_summaries` | 868MB | 365MB | 496MB | 0.43 | 4.24 | 17MB | 20s | **7.7** |
+| `ursm_node_snapshot_min_legacy` | 852MB | 592MB | 260MB | 0.10 | 1.03 | 6MB | 2s | — |
+| `request_state_transitions` | 403MB | 238MB | 164MB | 0.16 | **12.52** | 30MB | 8s | 3.7 |
+| `stats_event_dedup` | 386MB | 127MB | 258MB | 0.77 | **15.24** | 20MB | 13s | 1.0 |
+
+**全部 44 张 >100MB 表的可回收合计 ≈ 555 MB / 29 GB ≈ 1.9%。**
+⇒ ★ **252 上没有值得动的大表**。§115/§118/§129 那些针对大表的动作，在本库已无收益。
+另：列存侧 14 张共 799MB（`request_logs_bodies_2026_10` 579MB + `routing_decision_log_2026_09` 137MB 为前二），
+它们的回收走 pgcolumnar 自己的路径，不在本脚本口径内（§118）。
+
+### §143.2 pg_stat 的高估：**第三张独立表**复现
+
+| 表 | pg_stat 估 dead% | `pgstattuple_approx` 实测 | 倍差 |
+|---|---|---|---|
+| `session_summaries` | 7.7 | **0.43** | **18×** |
+| `session_summaries`（§118，2026-10-19 早） | 7.29 | 0.346 | 21× |
+| `ursm_node_snapshot_min`（§141，211） | 13.48 | 0.24 | 44× |
+
+⇒ 三张不同的表、三次独立测量，同一方向、同一量级。
+**pg_stat 的 `n_dead_tup` 在本仓不能用来筛「该不该 VACUUM FULL」**——
+它只能提示「值得看一眼」。
+
+### §143.3 关键形态：**「空闲」远大于「死元组」** —— 这正是 §119 判据要改的理由
+
+普查里出现了一族表：**空闲率很高、死元组几乎为 0**：
+
+| 表 | free% | dead% | 可回收 | 读法 |
+|---|---|---|---|---|
+| `candidate_failure_logs_2026_09` | **65.26** | **0.00** | 67MB | 9 月分区，被 retention 删过 54,179 行，行已被 vacuum 走 |
+| `request_stage_events` | **55.43** | 0.71 | 71MB | 被删 537,419 行（`n_tup_del`），行已 vacuum 走 |
+| `armor_judgments` | **42.90** | 0.00 | 33MB | 同样的形态 |
+| `request_state_transitions` | 12.52 | 0.16 | 30MB | |
+| `assets` | **98.8** | 0.1 | 66MB | 见 §143.5 |
+
+⇒ 死元组比例这一维在这些表上**恒为 0**，而它们恰恰是可回收空间的主要来源。
+**VACUUM FULL 能回收的是字节（空闲空间 + 死元组），不是比例。**
+⇒ §119 的建议成立：判据应当以「可回收字节数」为主排序键，
+比例只作为「这张表值不值得看一眼」的门槛。现有
+`pg-table-bloat-check.sh` 已经带了 `MIN_FREE_MB=2` 的字节下限（方向对），
+但**排序仍按空闲率**，可以再收一档。
+
+### §143.4 ★ 真发现：一张**空表**占着 290 MB，其中 **229 MB 是 TOAST 索引**
+
+普查读到 `_request_logs_bodies_hot`：`total=290MB / heap=0MB / idx=6MB / dead=0.00 / free=0.00`。
+**空表怎么会有 290MB？** 逐 fork 对账：
+
+```
+pg_relation_size(表)          =           0      （堆真的是 0 字节）
+pg_indexes_size(表)           =     6,586,368   （2 个索引）
+pg_relation_size(toast)       =    57,958,400   （TOAST 数据 55.3 MiB）
+pg_indexes_size(toast)        =   240,132,096   ★★ TOAST 自己的索引 229 MiB
+pg_total_relation_size(表)    =   304,734,208   （290.6 MiB）
+文件系统 stat 对账（81522141* + 81522144*）= 58,015,744 字节（与上面逐项吻合）
+行数                             =           0
+```
+
+⇒ **TOAST 索引 229 MiB 是它所索引的 TOAST 数据（55.3 MiB）的 4.1 倍。**
+家族扫描（堆 < 64KB 而 total > 20MB 的全库表）确认**这是单例**：
+
+| 表 | heap | idx | hidden | toast | toast 索引 |
+|---|---|---|---|---|---|
+| `_request_logs_bodies_hot` | 0 | 6.3MB | **284MB** | 55.3MB | **229MB** |
+| `usage_facts_default` | 0 | 79.6MB | 16KB | 0 | 0 |
+
+⚠ **为什么现有巡检全都看不见它**（这是它能活到现在的原因）：
+① `pg-table-bloat-check.sh` 的口径是 `pgstattuple_approx` 打在**堆**上 ⇒ 堆 0 字节 ⇒ 报 0；
+② `pg17-vacuum-bloat.sh` 的候选层先按 `n_dead_tup/(live+dead) >= 30%` 筛 ⇒ dead 0.1% ⇒ 不进候选；
+③ `pg17-proactive-empty-table-cleanup.sh` 按 `pg_relation_size` 判空 ⇒ 堆 0 字节确实算空，
+   但它回收的是「空表」，而这张表 `pg_total_relation_size` 有 290MB ⇒ **该删的正是它**；
+④ `pg17-emergency-cleanup.sh` 的 L1 判据 `n_live_tup=0 AND size>=100MB` ⇒ **它是唯一命中的那张**
+   （§137 早已把它列为「唯一真空」，当时只知道它真空、**没量过它为什么还占 290MB**）。
+
+⇒ 处置：**`DROP TABLE public._request_logs_bodies_hot` 可回收 290MB，且不丢任何数据（0 行）**。
+⚠ 这是 DROP，按既定口径需属主显式授权；本轮**只取证、未执行**。
+   同族的 `_request_logs_hot`（0 行、61MB、其中索引 40MB）同理，但小于 100MB 门槛，
+   L1 判据够不到它 —— 若一并处理，两张合计约 **351MB**。
+
+### §143.5 `assets` 的 98.8% 空闲：是**历史残留**，不是现在的速率
+
+该表 3,964 行存活却累计 **3,806,896 次 UPDATE**。直觉是「现在还在疯狂重写」。
+但那是自统计起算的**历史总量**。量速率（间隔 180 秒两次读数）：
+
+| 表 | 180 秒 Δins / Δupd / Δdel | 折算每天 upd |
+|---|---|---|
+| `assets` | 0 / **840** / 0 | **≈ 403,200** |
+| `session_turns_hot` | 4 / 8 / 0 | ≈ 3,840 |
+| `_request_logs_hot` | 0 / 0 / 0 | 0 |
+| `sanitize_rule_events` | 0 / 0 / 0 | 0 |
+| `stats_usage_daily` | 0 / 0 / 0 | 0 |
+| `stats_usage_monthly` | 0 / 0 / 0 | 0 |
+| `session_mirror_outbox` | 0 / 0 / 0 | 0 |
+| `request_stats_minute` | 0 / 0 / 0 | 0 |
+
+⇒ `assets` 现在的速率是 **403,200 次/天**，而 `apihub/pg_store.go:73-89` 记录的
+2026-10-04 修复前口径是 **924.9 万次/天**（3 实例 × 60 秒 × 2,141 行），
+即 `assetHeartbeatRefreshInterval = 5 * time.Minute` 那个修复
+**已生效且超出它自述的 12 倍**（实测 ≈ 23 倍）。⇒ **不是新缺陷。**
+3,964 行 × 102 次/天全表重写仍偏多，但那是修复设计内的水位。
+
+⇒ ★ 所以 `assets` 那 66MB 空闲空间**是一次性的历史残留**，跑一次 VACUUM FULL 就能收回；
+   而它 98.8% 的空闲率天天进普查报表，**报告的是过去、不是现在**。
+
+⚠ 诚实口径：180 秒窗口对 `stats_usage_*` **不足以判死**——
+它们的 `last_vacuum` 落在 00:44~00:51（明显是日批节奏），3 分钟窗口完全可能落在两批之间。
+上表里那些「0」只能读作「这 3 分钟内没写」，**不能**读作「静态表」。
+
+### 本轮新增的可复用教训
+
+43. **累计计数不能当现状，速率要单独量**。`assets` 的 3,806,896 次 UPDATE
+    读起来像「还在疯狂重写」，实测量化后发现速率只有 403,200/天，
+    而那个数**恰恰证明修复已经生效**（对照修复前的 9,249,000/天）。
+    ⇒ 判别动作：凡是要说「某表现在如何」，先取两次读数算增量；
+      **累计值只用来回答「历史上发生过什么」**。
+
+44. **「空闲」与「死元组」是两个量，回收的是前者**。`candidate_failure_logs_2026_09`
+    free 65.26% 而 dead 0.00%、`request_stage_events` free 55.43% 而 dead 0.71%
+    —— 行早已被 vacuum 走，留下的是**再也不会还给 OS 的空闲页**。
+    ⇒ 只按 dead 比例排序/判据，会把这一族表整体漏掉；
+      判据必须落在**字节**上（`free + dead`），比例只当门槛。
+
+45. **「所有巡检都看不见」本身就是一条线索**。一张占 290MB 的空表能活这么久，
+    是因为四道巡检**各自只量一个维度**：堆的大小、堆的空闲率、索引的死元组、
+    live_tup 与总大小——**没有一道量「toast 与它的索引」**。
+    ⇒ 排查「某个空间是不是白占」时，把 `pg_total_relation_size`
+      拆成 `heap + indexes + toast + toast_index` 四项对账，
+      差值本身就是答案（本次 229MB）。
+
+★ 同族：[[先读量具再读产物]] · [[阴性结论要当缺陷一样复核]] · [[§118 的教训：合成/估计数据不配当判据]] ·
+[[多副本纪律]]。
+
+---
+
+## §143.6 §143 的普查顺带暴露的**上膛**风险：L1 死表分支缺第四道闸（2026-10-19）
+
+### 143.6.1 怎么发现的：普查答案自己指出来的
+
+§143 查到 `public._request_logs_bodies_hot` 是 0 行、却占 291MB（§143.4）。
+按既定口径，这属于「属主未授权的 DROP」，先记下不动手。但**记下来之前**必须问一个问题：
+
+> 这张表现在被哪些东西用着？
+
+```sql
+-- 252 实测：7 个函数体按名字引用两张 _hot 表
+SELECT p.proname, n.nspname FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
+WHERE strpos(p.prosrc,'_request_logs_bodies_hot')>0 OR strpos(p.prosrc,'_request_logs_hot')>0;
+```
+
+| proname | schema |
+|---|---|
+| `cleanup_stale_in_progress_requests` | public |
+| `credential_most_used_model`（两个重载） | public |
+| `promote_request_logs_bodies_hot_to_partition` | public |
+| `promote_request_logs_hot_to_partition` | public |
+| `recent_success_rate` | public |
+| `system_health_status` | public |
+
+**全部 7 个都在 `public`**，而 `pg_depend` 对这两张表返回 **0 行** ——
+与 §127 同族：`LANGUAGE sql` 的函数体是字符串常量，表名不在依赖图里，
+**只能显式用函数体文本查**。
+
+### 143.6.2 真问题不是「这张表能不能删」，是「谁会替我删」
+
+候选层扫描到**两处**会 DROP 空表的地方：
+
+| 脚本 | 分支 | 结构防护 |
+|---|---|---|
+| `pg17-proactive-empty-table-cleanup.sh` | 候选 SQL | ✅ `AND s.relname NOT LIKE '%_hot'` —— **结构性排除**这两张表 |
+| `pg17-emergency-cleanup.sh` | `_default` 分支 | ✅ §139.3 补的第四道闸（`strpos(p.prosrc,…)`） |
+| **`pg17-emergency-cleanup.sh`** | **死表分支（`DEAD_TABLES`）** | ❌ **三道闸齐全，第四道闸完全没有** |
+
+死表分支的判据是 `n_live_tup=0 AND pg_total_relation_size >= 100MB AND NOT relispartition`。
+把 §143.4 的读数代进去：
+
+```
+死表候选恰好 2 张：
+  ursm_node_snapshot_min_legacy   852MB  COUNT(*)=2,836,620  ⇒ 被第三道闸（COUNT(*)）挡住
+  _request_logs_bodies_hot        291MB  COUNT(*)=        0  ⇒ ★ 三道闸全过
+```
+
+⇒ **磁盘一旦过 90%（当前 72%，还剩 18 个点），cron 每 15 分钟调一次的
+`--auto` 会在下一次触发里真的 `DROP TABLE public._request_logs_bodies_hot`**，
+打断 `promote_request_logs_bodies_hot_to_partition` 链路，
+以及 `recent_success_rate` / `system_health_status` 两个读路径。
+
+★ 这不是假想分支：**`--auto` 是 cron 里的活作业**，日志每 15 分钟一行
+`auto + disk < 90%, skip` 就是引信读数。
+
+### 143.6.3 为什么这个洞偏偏漏了：同一个错误只修了一半
+
+§139.3 给 `_default` 分支补第四道闸时，结论写的是
+「0 行**不足以**判定可以摘默认分区」。**同一条结论对死表分支同样成立**，
+因为死表分支比默认分区更危险 —— 默认分区摘掉还要先 `DETACH`，
+而死表分支是**直接 `DROP TABLE`**。
+
+⇒ 教训（可复用）：**给任何 DROP 路径加闸时，要按「分支」而不是按「缺陷」枚举。**
+当时修的是「发现的那一处」，没有把**同一形态**在相邻分支里再查一遍 ——
+而相邻分支里恰好有正确写法（`_default` 分支就在同一个文件下方 50 行）。
+
+### 143.6.4 修法：把 `_default` 分支的第四道闸抄到死表分支（外加两处实测必要的加固）
+
+改动（`scripts/252-monitor/pg17-emergency-cleanup.sh`）：
+
+1. 候选 SQL 多带一列**裸 `relname`**。
+2. DROP 前查 `strpos(p.prosrc, '${search_name}') > 0`，命中即 SKIP 并留函数名。
+   搜索范围取**所有非系统 schema**（而非只有 `public`）：本分支 DROP 的是**表**，
+   任何 schema 的函数体引用它都算依赖。实测 7 条都在 `public`，
+   放宽**不改变当前判定结果**，只让未来的非 public 引用也被挡住。
+3. ⚠ **两处实测必要的加固**（都是「照抄」会带进来的坑）：
+
+   **① 表名归一化 —— 不做这道，闸会恒放行。**
+   候选第一列是 `format('%I)'` 的**加引号**形式
+   （`public."_request_logs_bodies_hot"`），函数体里写的是**裸名**。
+   直接拿第一列去 `strpos` ⇒ **永远匹配不上** ⇒ 闸恒「无依赖」⇒ 恒放行，
+   而**阻断侧的测试照样全绿**（假 docker 只看 SQL 里有没有 `pg_proc`+`strpos` 两个词，
+   不看问的是谁）。故必须从裸名列取值，并在两列形态时从第一列尾部兜底 + 剥引号。
+
+   **② 空模式防护 —— PG 的语义与直觉相反。**
+   `strpos(x, '')` 返回 **1**（永远命中），而 `strpos(x, NULL)` 返回 `NULL`（永不命中）。
+   空串不是「查不到」，是「全算有依赖」。解析不出裸表名时**必须 SKIP 且不发出那次查询**，
+   否则会把「问错对象」伪装成一次正常判定。
+
+### 143.6.5 判据（4 条新门，全部走假 docker 行为门）
+
+| 门 | 断言的性质 | 去掉它会怎样 |
+|---|---|---|
+| `TestEmergencyL1RefusesToDropEmptyTableReferencedByFunctionBody` | 有依赖 ⇒ 不 DROP + 日志留函数名 | **事故本身** |
+| `TestEmergencyL1DependencyLookupUsesBareTableName` | 问的是**裸表名** | 闸恒放行，而上面那条**照样绿** |
+| `TestEmergencyL1SkipsWhenBareNameCannotBeResolved` | 空名 ⇒ SKIP 且**不发查询** | 拿空串当模式，语义反了 |
+| `TestEmergencyL1StillDropsUnreferencedEmptyTableInDeadTableBranch` | 无依赖 ⇒ **仍要 DROP**（正向下限） | 闸退化成「一律拒绝」 |
+
+★ 第二条是这组门里最容易被跳过、后果最重的一条：
+上面第一条测的是「**有应答时会不会 SKIP**」，第二条测的才是「**问的对象对不对**」。
+只写前者，闸可以是恒真的而测试全绿。
+
+### 143.6.6 变异验证（3 处，每处都有机械落盘检查）
+
+备份取在**变异之前**（`cp` 写在修完之后 ⇒ 所谓还原拷回同一份，这是本会话已登记的坑），
+替换用 `assert old in s`（`str.replace` 不匹配时**静默通过**），还原后 `diff` 必须为空：
+
+| 变异 | 期望 | 结果 |
+|---|---|---|
+| M1 `[ -n "$dependents" ]` → `[ -z … ]` | 阻断侧转红 | ✅ 红（日志里出现 `L1 DROP public._request_logs_bodies_hot`） |
+| M2 删掉剥引号两行 | 归一化门转红 | ✅ 红 |
+| M3 删掉空名防护 | 空名门转红 | ✅ 红 |
+
+三次还原后 `diff /tmp/emergency.sh.pristine <file>` 均为空、`md5` 均回到
+`b14923566bcdaf6e440066a7ec89a5f4`。全包 `go test ./... -count=1` 56s 绿，`go vet` 干净。
+
+### 143.6.7 上线验证：用**拦截器**跑真实脚本，而不是再对源码做一次断言
+
+只读模拟的做法：把 `DOCKER_BIN` 指向一个拦截器，它把含
+`DROP` / `DETACH` / `TRUNCATE` 的调用替换成回显，其余原样转发真 `docker`。
+
+**拦截器必须自证，否则「没 DROP」不构成证据**（量具纪律）。两条自证：
+
+1. 用脚本真实的参数形态
+   `exec pg-252-pg17 psql … -tAc "DROP TABLE IF EXISTS public._request_logs_bodies_hot"`
+   调它 ⇒ 输出 `[SIMULATED-NOOP-WOULD-HAVE-RUN]` 且回显了完整 SQL（证明匹配的是真参数）。
+2. 非 DROP 调用（`SELECT`）原样转发，返回真实结果。
+
+252 实测（真实数据、真实脚本、只读）：
+
+```
+current disk used=72%
+L1 SKIP public.ursm_node_snapshot_min_legacy: n_live_tup=0 但 COUNT(*)=2836620（统计不可信，拒绝 DROP）
+L1 SKIP public._request_logs_bodies_hot: 0 行但被函数体引用（promote_request_logs_bodies_hot_to_partition()），摘掉会打断该链路
+L1 SKIP default partition request_logs_default: 0 行但被函数体引用（archive_request_logs_default(),promote_request_logs_default_batch(),ensure_request_logs_partition(),repair_request_logs_detached_partitions()），摘掉会打断该链路
+done. disk: 72% -> 72%
+```
+
+⇒ **三张候选表全部 SKIP，零 DROP 命令发出**。第二行就是修好的那一处 ——
+在补丁之前，这一行会是 `L1 DROP public._request_logs_bodies_hot (verified 0 rows)`。
+
+部署：`/opt/scripts/pg17-emergency-cleanup.sh` md5 `b1492356…`
+（旧版备份 `/opt/scripts/pg17-emergency-cleanup.sh.bak.20261019-181750`，旧 md5 `aa6f3c79…`）。
+稳态复核：`/etc/cron.d/pg17` 作业 **8** 条，18:15:02 自动触发仍正常 `auto + disk < 90%, skip`，
+日志 ERROR 计数 **0**。模拟产物（拦截器已 `chmod -x`）归档在 `/tmp/p143-sim-archive/`。
+
+### 143.6.8 这次不 DROP，但「能不能删」仍然要属主拍板
+
+修闸解决的是「**不该有的自动 DROP**」。那张表 291MB（其中 229MB 是 TOAST 索引、
+是它自身数据的 4.1 倍）**仍然是白占的空间**。§143.4 已记为待授权项，
+本节不重复裁决 —— 只是现在多了一条信息：**它被 7 个函数体引用**，
+所以「直接 DROP」与「先摘掉函数体引用再 DROP」是两个不同动作，
+后者需要逐个判断那 7 处引用的意图（尤其是两条 `promote_*_hot_to_partition`
+本身是否还需要保留 —— 它们与 §120/§141.6 的 v1 停写拍板是同一件事）。
+
+★ 同族：[[恒真门]] · [[先读量具再读产物]] · [[照抄约定前问输入形状一样吗]] ·
+[[阴性结论要当缺陷一样复核]] · [[变异没施加 ≠ 判据无敏感性]]。
