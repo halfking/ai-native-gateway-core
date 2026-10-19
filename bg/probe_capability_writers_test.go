@@ -19,7 +19,7 @@ func TestNodeProbeDirectPersistsNativeResponsesVerdict(t *testing.T) {
 		{
 			name:          "native success",
 			responsesCode: http.StatusOK,
-			responsesBody: `{"id":"resp_1","object":"response","status":"completed","output":[]}`,
+			responsesBody: `{"id":"resp_1","object":"response","status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"pong"}]}]}`,
 			wantSupported: true,
 		},
 		{

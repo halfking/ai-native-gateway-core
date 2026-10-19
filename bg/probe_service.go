@@ -394,6 +394,21 @@ func (s *ProbeService) Run(ctx context.Context, task ProbeQueueTask) (ProbeQueue
 		}
 		return ProbeQueueResult{}, err
 	}
+	if direct.observationOnly {
+		// Settle the task without a health verdict. Only the observation clock
+		// changes; routing/backoff state and any legacy picker lease survive.
+		if err := s.worker.recordProbeObservation(hbCtx, credID, model, false); err != nil {
+			return ProbeQueueResult{}, err
+		}
+		s.worker.emitProbe(hbCtx, credID, direct.providerID, model, direct.outboundModel, "direct", attempt, trigger, direct)
+		now := time.Now()
+		result := ProbeQueueResult{Status: ProbeQueueSuccess, ReasonCode: direct.errCode, ReasonDetail: direct.errDetail}
+		if err := s.insertAuditRowWithLeaseCheck(ctx, hbCtx, task, credID, model, triggerKind, attempt, 0, direct, nodeProbeRoundResult{}, false, startedAt, now, int(now.Sub(startedAt).Milliseconds())); err != nil {
+			auditPersistFailedTotal.WithLabelValues(task.Source).Inc()
+			return result, fmt.Errorf("%w: %v", ErrProbeAuditPersistFailed, err)
+		}
+		return result, nil
+	}
 
 	// Missing-binding short-circuit: a (cred, model) with no binding row is a
 	// config problem, not a health problem. Emit one audit row, drop the state,
@@ -773,6 +788,9 @@ func (s *ProbeService) gatewayRound(ctx context.Context, credID int, model strin
 }
 
 func (s *ProbeService) applyOutcome(ctx context.Context, outcome probeOutcome) {
+	if outcome.direct.observationOnly {
+		return
+	}
 	if s.applyOutcomeFn != nil {
 		s.applyOutcomeFn(ctx, outcome)
 		return
@@ -837,6 +855,7 @@ func probeResultToRound(model string, pr *ProbeResult) nodeProbeRoundResult {
 		return r
 	}
 	r.httpStatus = pr.HTTPStatus
+	r.observationOnly = pr.ObservationOnly
 	r.latencyMs = pr.LatencyMs
 	r.requestURL = pr.RequestURL
 	r.requestBody = pr.RequestBody
@@ -855,7 +874,7 @@ func probeResultToRound(model string, pr *ProbeResult) nodeProbeRoundResult {
 		// specific classifier — loopback transport failures are this
 		// instance's fault (see classifyGatewayRoundRootCause).
 		r.rootCause = ProbeRootCause(pr.RootCause)
-		if r.rootCause == "" {
+		if r.rootCause == "" && !r.observationOnly {
 			r.rootCause = classifyGatewayRoundRootCause(r.errCode, r.httpStatus, r.responseBody)
 		}
 	}
@@ -907,6 +926,9 @@ func (w *NodeProbeWorker) notifyAutoRouteRefresh(ctx context.Context, credID int
 // during the transition (queue row remains the primary state).
 func (w *NodeProbeWorker) mirrorNodeProbeState(ctx context.Context, credID int, model string, attempt int, success bool,
 	direct, gw nodeProbeRoundResult, now time.Time, backoff time.Duration) {
+	if direct.observationOnly {
+		return
+	}
 	if w.db == nil {
 		return
 	}

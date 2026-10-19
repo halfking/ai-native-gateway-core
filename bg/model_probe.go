@@ -992,8 +992,9 @@ func (r *ModelProbeRunner) featuredCycle(ctx context.Context) {
 //   - model_unavailable: fail++; succ = 0
 //     if fail >= 3 → newState = 'broken_confirmed',  state_change = 'broke'
 //     else          newState = 'recovering',        state_change = 'unchanged'
-//   - provider_error (auth/network/5xx/rate_limit): succ = 0, fail unchanged
-//     so provider issues never cause a model to be marked broken_confirmed.
+//   - provider_error (auth/network/5xx/rate_limit): retain model authority;
+//     the error belongs to the provider path and proves neither recovery nor
+//     a model-specific failure.
 //   - skipped: no state change, but endpoint_id_required resets counters.
 func (r *ModelProbeRunner) computeConsensus(
 	status string, category probeCategory, prevState, errCode string, prevSucc, prevFail int,
@@ -1044,11 +1045,10 @@ func (r *ModelProbeRunner) computeConsensus(
 			stateChange = "unchanged"
 		}
 	default:
-		// probeCategoryProviderError: do NOT advance fail counter. Provider-side
-		// issues (auth, network, http_5xx, rate_limit) do not prove the model
-		// is unavailable.
-		newSucc = 0
-		newState = "recovering"
+		// Provider-side errors prove neither model failure nor recovery. In
+		// particular, changing broken_confirmed to recovering would make
+		// applyResult restore its availability cache without a successful ping.
+		applied = false
 	}
 	return
 }
@@ -1161,6 +1161,9 @@ func (r *ModelProbeRunner) applyResult(
 	stateChange string, applied bool, triggeredBy string,
 	newSucc, newFail int, newState string,
 ) {
+	if !applied {
+		return
+	}
 
 	cfg := LoadProbeBackoffConfig()
 	var nextRetryInterval time.Duration

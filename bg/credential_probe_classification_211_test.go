@@ -30,8 +30,8 @@ func TestCredentialProbe211Classification(t *testing.T) {
 		reason  string
 		binding bool
 	}{
-		{"user quota creds67-70", 403, `{"error":{"code":"insufficient_user_quota","message":"用户额度不足，余额0"}}`, "ready", "periodic_exhausted", "balance_low", false},
-		{"account balance cred72", 403, `{"error":{"code":"INSUFFICIENT_BALANCE","message":"Insufficient account balance"}}`, "ready", "periodic_exhausted", "balance_low", false},
+		{"user quota creds67-70", 403, `{"error":{"code":"insufficient_user_quota","message":"用户额度不足，余额0"}}`, "suspended", "permanently_exhausted", "quota_permanent", false},
+		{"account balance cred72", 403, `{"error":{"code":"INSUFFICIENT_BALANCE","message":"Insufficient account balance"}}`, "suspended", "permanently_exhausted", "quota_permanent", false},
 		{"model region cred44", 403, `{"error":{"message":"This model is not available in your region"}}`, "ready", "", "model_binding_error", true},
 		{"named model cred61", 404, `{"error":{"message":"Model 'claude-sonnet-5' not found"}}`, "ready", "", "model_binding_error", true},
 		{"model permission", 403, `{"error":{"message":"You do not have access to model 'claude-sonnet-5'"}}`, "ready", "", "model_binding_error", true},
@@ -41,7 +41,7 @@ func TestCredentialProbe211Classification(t *testing.T) {
 		{"invalid key", 403, `{"error":{"code":"invalid_api_key","message":"Invalid API key"}}`, "auth_failed", "", "auth_error", false},
 		{"revoked key with region", 403, `{"error":{"message":"API key revoked. This model is not available in your region"}}`, "auth_failed", "", "auth_error", false},
 		{"invalid key with quota", 403, `{"error":{"code":"invalid_api_key","message":"Insufficient account balance"}}`, "auth_failed", "", "auth_error", false},
-		{"quota request id429", 403, `{"request_id":"req429001","error":{"code":"insufficient_user_quota","message":"用户额度不足，余额0"}}`, "ready", "periodic_exhausted", "balance_low", false},
+		{"quota request id429", 403, `{"request_id":"req429001","error":{"code":"insufficient_user_quota","message":"用户额度不足，余额0"}}`, "suspended", "permanently_exhausted", "quota_permanent", false},
 		{"401 body numbers", 401, `{"request_id":"req403429402","error":{"message":"Insufficient account balance; chat status 403: model not found"}}`, "auth_failed", "", "auth_error", false},
 		{"model body numbers", 403, `{"request_id":"req401429402","error":{"message":"This model is not available in your region"}}`, "ready", "", "model_binding_error", true},
 		{"disabled key quota", 403, `{"error":{"code":"api_key_disabled","message":"Insufficient account balance"}}`, "auth_failed", "", "auth_error", false},
@@ -90,7 +90,7 @@ func TestCredentialProbe211Classification(t *testing.T) {
 					t.Fatalf("classification=%+v, want state=%s quota=%s reason=%s binding=%v", pr, tc.state, tc.quota, tc.reason, tc.binding)
 				}
 				wantHealth := "warning"
-				if tc.state != "ready" {
+				if tc.state != "ready" && tc.quota == "" {
 					wantHealth = "unreachable"
 				}
 				if pr.HealthStatus != wantHealth || pr.HealthError == "" || pr.HealthSource != "probe" {
@@ -206,7 +206,7 @@ func TestCredentialProbe211FallbackFailureAndCapability(t *testing.T) {
 		binding             bool
 	}{
 		{"auth", 400, 401, `{"error":{"message":"Invalid API key"}}`, "auth_failed", "auth_error", false},
-		{"quota", 400, 403, `{"error":{"message":"Insufficient account balance"}}`, "ready", "balance_low", false},
+		{"quota", 400, 403, `{"error":{"message":"Insufficient account balance"}}`, "suspended", "quota_permanent", false},
 		{"region", 400, 403, `{"error":{"message":"This model is not available in your region"}}`, "ready", "model_binding_error", true},
 		{"missing model", 404, 404, `{"error":{"message":"Model 'claude-sonnet-5' not found"}}`, "ready", "model_binding_error", true},
 	} {
@@ -289,7 +289,7 @@ func TestCredentialProbe211FallbackLegIsolation(t *testing.T) {
 			binding             bool
 		}{
 			{`{"error":{"message":"Forbidden"}}`, "auth_failed", "auth_error", false},
-			{`{"error":{"message":"Insufficient account balance"}}`, "ready", "balance_low", false},
+			{`{"error":{"message":"Insufficient account balance"}}`, "suspended", "quota_permanent", false},
 			{`{"error":{"message":"This model is not available in your region"}}`, "ready", "model_binding_error", true},
 		} {
 			t.Run(nativeBody+"/"+final.reason, func(t *testing.T) {
