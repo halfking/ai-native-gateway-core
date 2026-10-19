@@ -2772,3 +2772,26 @@ L1 判对 2 次、判错 5 次 ⇒ **准确率 1/6**。
 - 表现极具误导性：**看起来像「门有假阳性」，实际门是对的**（手动在干净树上复跑 C0 全绿）⇒ 若照着错误信号去改门，就是改错方向。
 - 防复发：① 每条变异前把**所有**涉及文件还原回原始态（不是还原本条改的那个）；② 变异脚本必须**打印失败腿名字**，并对**对照变异自动重跑一次** —— 失败腿的名字是区分「门有假阳性」与「树被污染 / 这一轮跑飘了」的第一手证据；③ 还原后做逐字/md5 校验，确认无残留 diff。
 - 证据/溯源：`scripts/mutate-s4-recorded-cost-skip-gate.py` 等三份脚本统一改造；同族见 2026-10-20「判据与变异脚本自身的三种假信号」第 ③ 条（那一条是「没校验还原」，本条是「还原得不够全」）。
+
+## 2026-10-20 — 变异脚本的「红」要分清是**断言红**还是**编译红**：编译红只证明代码被改了，不证明目标腿会触发（Seen: 1/3 个不同工作日）
+- 场景：tuning 协调门的 10 条变异在**提交后的树**上复跑时，M8（删掉 follower 跳过时的指标记录）与 M9（删掉白名单校验整块）两条都报了「判据变红」——但失败行是 **`FAIL github.com/kaixuan/llm-gateway-go/bg [build failed]`**，**不是**具名断言红。
+- 根因：这两条变异**整行/整块删除**代码 ⇒ 顺手让被删语句引用的局部变量或 import 变成「未使用」：
+  M8 删掉 `for _, v := range TuningViews` 循环体里**唯一**用到 `v` 的语句 ⇒ `v declared and not used`；
+  M9 删掉白名单块 ⇒ 该块是文件里**唯一**的 `fmt.` 用法 ⇒ `fmt imported and not used`。
+  ⇒ 门确实「变红了」，但红在**编译**上，**目标断言一次都没跑**。
+- 为什么危险：脚本原先把 `build failed` 与 `--- FAIL` **同列为「红」** ⇒ 脚本**绿**只证明
+  「我改的代码让包编译不过」，**不证明**那条腿真的有判别力。⇒ 一条**不外科**的变异可以
+  永远「通过」，而真正的腿是否触发**无人验证**。这与「断言要匹配机制」同族，但方向相反：
+  这里是**变异**太钝，把门糊过去了。
+- 防复发：① 变异脚本必须**分判两类红**——`assertion_fails`（`--- FAIL` / `FAIL\t`）
+  与 `compile_fails`（`build failed` / `cannot use` / `undefined:` / `declared and not used` /
+  `imported and not used`）；**只有编译红 ⇒ 判该变异不合格**（脚本退出码非 0），
+  不许当作「这条腿能红」。② 变异要**外科式**：改**判定条件/取值**而不是删整行
+  （本轮修法：M8 把 outcome 标签 `skipped_follower` 改成 `skipped_other`；
+  M9 把 `if !isTuningView(view)` 改成 `if false && !isTuningView(view)`）
+  ⇒ 包仍能编译，**具名断言**才会红。
+- 证据/溯源：`scripts/mutate-tuning-view-coordination-gate.py`（改 M8/M9 + 加两类红的分判），
+  `scripts/mutate-autoroute-index-sql-gate.py` 与 `scripts/mutate-s4-recorded-cost-skip-gate.py`
+  同步加同一分判。⚠ 同族见 2026-10-20「判据与变异脚本自身的三种假信号」
+  （那三条是「替换串自己命中判据」「SIGPIPE 把转红判成没转红」「没校验还原」；
+  本条是**第四种**：编译红冒充断言红）。

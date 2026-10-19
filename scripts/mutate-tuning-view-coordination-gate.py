@@ -54,16 +54,12 @@ MUTATIONS = [
      "",
      "red"),
     ("M8-follower 跳过不记指标(尺子腿)",
-     "				recordMVRefreshSkipped(v, \"skipped_follower\")\n",
-     "",
+     'recordMVRefreshSkipped(v, "skipped_follower")',
+     'recordMVRefreshSkipped(v, "skipped_other")',
      "red"),
     ("M9-去掉白名单校验(白名单腿)",
-     """	if !isTuningView(view) {
-		return tuningSkippedMissingView, 0,
-			fmt.Errorf("refusing to refresh non-whitelisted materialized view %q", view)
-	}
-""",
-     "",
+     "if !isTuningView(view) {",
+     "if false && !isTuningView(view) {",
      "red"),
     ("M10-周期层不释放令牌(释放腿)",
      "		defer handle.Release(context.WithoutCancel(ctx))\n",
@@ -84,11 +80,29 @@ def run_gate():
     return r.returncode == 0, r.stdout + r.stderr
 
 
+def assertion_fails(out):
+    """**具名断言红** —— 真正触发了目标腿。"""
+    return [l.strip() for l in out.splitlines()
+            if l.strip().startswith("--- FAIL") or l.strip().startswith("FAIL\t")]
+
+
+def compile_fails(out):
+    """**编译级失败** —— 包根本编译不过。
+
+    ⚠ 它只证明「代码被改了」，**不证明目标腿会触发**：
+    整行删除一个语句，常常顺手让它引用的局部变量/import 变成「未使用」
+    ⇒ 编译失败 ⇒ 门变红，但红在**编译**而不是**断言**上。
+    ⇒ 这类变异不合格（2026-10-20 实测：M8 删掉循环里唯一用到 v 的语句、
+      M9 删掉白名单块让 fmt 成为未使用 import ⇒ 两条都只拿到 build failed）。
+    """
+    return [l.strip() for l in out.splitlines()
+            if "build failed" in l or "cannot use" in l or "undefined:" in l
+            or "declared and not used" in l or "imported and not used" in l]
+
+
 def failing_lines(out):
     """把失败的那几条腿点名 —— 没有它，一次「对照变异变红」只能靠猜。"""
-    return [l.strip() for l in out.splitlines()
-            if l.strip().startswith("--- FAIL") or l.strip().startswith("FAIL\t")
-            or "build failed" in l or "cannot use" in l]
+    return assertion_fails(out) or compile_fails(out)
 
 
 def main():
@@ -109,15 +123,36 @@ def main():
                 if green:
                     print(f"FAIL {name}: 变异后判据仍然全绿 ⇒ 这条腿抓不住该缺陷")
                     failures.append(name)
+                    continue
+                a = assertion_fails(out)
+                c = compile_fails(out)
+                if a:
+                    print(f"OK   {name}: 判据变红（**断言红**）: {'; '.join(a)}")
+                elif c:
+                    # ⚠ 只有编译级失败：变异让包编译不过 ⇒ 门「抓到了改动」，
+                    # 但**没有证明目标腿会触发** ⇒ 这条变异不合格 ⇒ 判失败。
+                    print(f"!!   {name}: 只有**编译级失败**（{'; '.join(c)}）"
+                          f" ⇒ 门抓到了改动，但**没证明目标腿会触发** ⇒ 变异不够外科")
+                    failures.append(name)
                 else:
-                    fails = failing_lines(out)
-                    print(f"OK   {name}: 判据变红 ({'; '.join(fails) if fails else 'FAIL'})")
+                    print(f"??   {name}: 变红但未解析出失败腿；重跑一次判定")
+                    green2, out2 = run_gate()
+                    if green2:
+                        print(f"OK   {name}: 重跑后全绿 ⇒ 上一轮是**不稳定**（不是门的假阳性）")
+                    else:
+                        print(f"FAIL {name}: 重跑仍然变红 ⇒ 门有假阳性，"
+                              f"失败腿 = {failing_lines(out2)}")
+                        failures.append(name)
             else:
                 if green:
                     print(f"OK   {name}: 判据仍然全绿（无假阳性）")
                 else:
-                    fails = failing_lines(out)
-                    print(f"??  {name}: 第一轮变红，失败腿 = {fails or '(未解析出腿名)'}；重跑一次判定是真假阳性还是不稳定")
+                    a = assertion_fails(out)
+                    c = compile_fails(out)
+                    kind = "断言红" if a else ("编译级失败" if c else "未解析")
+                    print(f"??  {name}: 第一轮变红（{kind}），失败腿 = "
+                          f"{failing_lines(out) or '(未解析出腿名)'}；"
+                          f"重跑一次判定是真假阳性还是不稳定")
                     green2, out2 = run_gate()
                     if green2:
                         print(f"OK   {name}: 重跑后全绿 ⇒ 上一轮是**不稳定**（不是门的假阳性）")

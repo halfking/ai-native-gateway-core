@@ -77,6 +77,24 @@ def failing_lines(out):
             or "build failed" in l or "cannot use" in l]
 
 
+def assertion_fails(out):
+    """**具名断言红** —— 真正触发了目标腿。"""
+    return [l.strip() for l in out.splitlines()
+            if l.strip().startswith("--- FAIL") or l.strip().startswith("FAIL\t")]
+
+
+def compile_fails(out):
+    """**编译级失败** —— 包根本编译不过。
+
+    ⚠ 它只证明「代码被改了」，**不证明目标腿会触发**
+    ⇒ 这类变异不合格（详见 scripts/mutate-tuning-view-coordination-gate.py 同名函数的注释：
+    2026-10-20 实测 M8/M9 整行删除 ⇒ 局部变量/import 变未使用 ⇒ 只拿到 build failed）。
+    """
+    return [l.strip() for l in out.splitlines()
+            if "build failed" in l or "cannot use" in l or "undefined:" in l
+            or "declared and not used" in l or "imported and not used" in l]
+
+
 def main():
     tmp = pathlib.Path(tempfile.mkdtemp())
     originals = {}
@@ -108,15 +126,27 @@ def main():
                     print(f"FAIL {name}: 变异后判据仍然全绿 ⇒ 这条腿抓不住该缺陷")
                     failures.append(name)
                 else:
-                    fails = failing_lines(out)
-                    print(f"OK   {name}: 判据变红 ({'; '.join(fails) if fails else 'FAIL'})")
+                    a = assertion_fails(out)
+                    c = compile_fails(out)
+                    if a:
+                        print(f"OK   {name}: 判据变红（**断言红**）: {'; '.join(a)}")
+                    elif c:
+                        # ⚠ 只有编译级失败 ⇒ 门抓到了改动，但**没证明目标腿会触发**。
+                        print(f"!!   {name}: 只有**编译级失败**（{'; '.join(c)}）"
+                              f" ⇒ 没证明目标腿会触发 ⇒ 变异不够外科")
+                        failures.append(name)
+                    else:
+                        print(f"OK   {name}: 判据变红（未解析出腿名）")
             else:
                 # 对照变异变红有两种可能：门有假阳性，或这一轮跑出了**不稳定**。
                 # 二者的处理完全不同（前者要改门，后者要改判据的量具），
                 # 而「是哪条腿红的」是区分它们的第一手证据。
                 # ⇒ 失败时重跑一次并把失败腿打出来；重跑还红 ⇒ 门有假阳性。
                 fails = failing_lines(out)
-                print(f"??  {name}: 第一轮变红，失败腿 = {fails or '(未解析出腿名)'}；重跑一次判定是真假阳性还是不稳定")
+                a = assertion_fails(out)
+                c = compile_fails(out)
+                kind = "断言红" if a else ("编译级失败" if c else "未解析")
+                print(f"??  {name}: 第一轮变红（{kind}），失败腿 = {fails or '(未解析出腿名)'}；重跑一次判定是真假阳性还是不稳定")
                 green2, out2 = run_gate()
                 if green2:
                     print(f"OK   {name}: 重跑后全绿 ⇒ 上一轮是**不稳定**（不是门的假阳性）")
