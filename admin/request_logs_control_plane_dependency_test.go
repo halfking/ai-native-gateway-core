@@ -44,7 +44,7 @@ type controlPlaneVerdict struct {
 	// Gated：该消费方是否被 S4 写门覆盖。false = 门管不到它。
 	Gated bool
 
-	// Evidence：必须在该文件里逐字存在的片段。
+	// Evidence：必须在该文件的非 Go 注释代码中逐字存在的片段。
 	Evidence string
 
 	// EvidenceIn：Evidence 实际所在文件，默认为登记键本身。
@@ -521,9 +521,9 @@ var requestLogsControlPlaneReaders = map[string]controlPlaneVerdict{
 		Feeds:       "request_id → waterfall 响应（查不到即 404）",
 		Live:        false,
 		Gated:       false,
-		Evidence:    "FROM _request_logs_hot",
-		BlastRadius: "（dormant：无写入）",
-		Note:        "失败模式是 errors_out（404），属可接受：灰度立刻暴露。",
+		Evidence:    "FROM request_logs_with_current_month",
+		BlastRadius: "（展示面：无控制面状态写入）",
+		Note:        "S3 波 2 已改读 canonical 视图，会话臂供新请求、v1 臂供历史。旧热表名只在迁移说明注释中，不是读点证据。",
 	},
 	"cmd/compression-bench/main.go": {
 		Feeds:       "历史行 → 离线压缩基准样本",
@@ -714,8 +714,8 @@ func TestRequestLogsControlPlaneKnownEntriesAreReal(t *testing.T) {
 			t.Errorf("%s: 读取失败 %v", file, err)
 			continue
 		}
-		if !strings.Contains(string(raw), v.Evidence) {
-			t.Errorf("%s: Evidence 在 %s 中不存在：\n  %q", file, evFile, v.Evidence)
+		if !inventoryEvidenceInCode(string(raw), v.Evidence) {
+			t.Errorf("%s: Evidence 未出现在 %s 的有效非注释 Go 代码中：\n  %q", file, evFile, v.Evidence)
 		}
 		// 关键约束：活的且门控外的读点，必须点名它授权/改变的写入。
 		// 少了这一条，「活」就只是一个形容词。
