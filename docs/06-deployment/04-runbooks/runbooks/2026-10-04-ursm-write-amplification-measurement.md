@@ -26752,3 +26752,115 @@ routing_audit_summary_7d：  HashAggregate → Gather → Nested Loop Anti/Left 
 **Go 行为零变化**，全包测试通过（28.1s）。
 **未部署、未改 PG 配置、未改 252、未做任何生产写。**
 
+---
+
+## §110 追 `routing_analytics_7d` 的 81.5 秒：**不是排序慢，是 34% 的请求根本没有凭据**（2026-10-19）
+
+§108 盯临时文件时留下一条刺眼的读数：`REFRESH routing_analytics_7d`
+**产出 5,004 行、均值 81.5 秒**。本节顺着它往下挖，**两次差点归因错**，都记在这里。
+
+### 一、§109 的 EXPLAIN 露出一个不该出现的形状
+
+`routing_audit_summary_7d`（同源）的计划里出现了
+`request_logs_2026_08` / `request_logs_2026_09` 的 `Index Scan`——
+而查询条件是 **`ts >= now() - 7 days`**（今天 10-19 ⇒ 窗口从 10-12 起）。
+**8 月、9 月的分区在窗口外，不该被扫。**
+
+### 二、顺着定义往下剥（三层）
+
+```
+routing_analytics_7d        聚合 + 3 个 percentile_cont
+  └─ routing_analytics_source    SELECT 16 列，无过滤
+       └─ request_logs_with_current_month
+            SELECT … CASE WHEN t.credential_id ~ '^[0-9]+$' … ,
+                   d.provider_id, d.client_model, d.client_profile
+            ← 带 JOIN，provider_id 来自 d（日志表本身没有这一列）
+```
+
+⇒ 关键结构：**`provider_id` 不是日志表自带的列，是 JOIN 出来的。**
+
+### 三、⚠ 我第一次归因错了：相关子查询**不是**瓶颈
+
+视图里有：
+
+```sql
+COALESCE(provider_id, (SELECT cr.provider_id FROM credentials cr
+                       WHERE cr.id = routing_analytics_source.credential_id LIMIT 1))
+```
+
+我第一反应：「这是聚合查询输出列表里的相关子查询，每行执行一次 ⇒ 罪魁祸首」。
+
+⇒ **先量规模再下结论**：`routing_analytics_source` 7 天窗口只有 **154,320 行**。
+**15.4 万次主键查不可能花 81 秒。**
+⇒ ⇒ ★ **归因前先问「这个嫌疑能解释得了观测到的量级吗」。** 量级对不上就不是它。
+
+### 四、⚠ 我第二次归因错了：它也不是可以随手删的死代码
+
+于是去看它到底会不会触发（`COALESCE` 未必短路）：
+
+| `credential_id` | `provider_id` | 行数 |
+|---|---|---|
+| 非空 | 非空 | 64,730 |
+| **非空** | **空** | **0** |
+| 空 | 非空 | 0 |
+| 空 | 空 | 89,534 |
+
+⇒ **`credential_id IS NULL` ⟺ `provider_id IS NULL`，完全等价（0 例外）。**
+⇒ 子查询的 `cr.id = NULL` 永不匹配 ⇒ 恒返回 NULL
+⇒ **该 COALESCE 改不了任何一个值**，是"当前状态下"的可证明空操作。
+
+**但我不能建议删它**，因为回仓查消费者后发现它是**显式契约**：
+
+| 位置 | 内容 |
+|---|---|
+| `admin/analytics_materialized.go:188-191` | 「migration 632 bakes the same fallback into the view's `effective_provider_id` column **so both paths agree** on how much traffic lands in the 'unknown' provider bucket」 |
+| `sql/migrations/startup/migration_632_test.go:155` | **门禁**断言 SQL 含 `FROM credentials cr WHERE cr.id = credential_id` |
+
+⇒ 它保证 **MV 路径与 base 路径（`buildFlowL23Query`）口径一致**。
+⇒ ⇒ ★ **"当前是空操作"和"可以删除"是两件事**：
+前者是数据事实，后者要考虑**未来数据形态**与**已固化的门禁**。
+凭前者建议删后者，就会把一条口径契约换成一次数据形态赌注。
+
+### 五、★ 真正的根因在**写入侧**
+
+源头表实测（7 天窗口）：
+
+| 表 | 行数 | `credential_id` 缺失率 |
+|---|---|---|
+| `_request_logs_hot` | **0** | — （与 §97「退役 v1 hot 表 count(*)=0」一致） |
+| `request_logs_2026_10` | 48,173 | **33.81%** |
+
+⇒ **三分之一的请求日志没有 `credential_id` ⇒ JOIN 不上 ⇒ 没有 `provider_id`
+⇒ 分析面板里那 58% 的 `'unknown'` provider 桶不是视图的缺陷，是数据本身的缺失。**
+
+⇒ ⇒ ★ **视图层的兜底修不了它**：`provider_id` 缺失时 `credential_id` 同样缺失，
+**根本没有凭据可查**。这条兜底在当前数据形态下**结构性地永远打不中**。
+⇒ ⇒ 修法只能在**写入路径**（谁没写 `credential_id`）或**模型**（把 provider 直接落库）。
+⚠ **具体是哪一个写入者漏写，本轮未查明**——生产写入不在这轮检索到的
+`INSERT INTO _request_logs` 里（全在测试与 `storage/sqlite`），
+真实写入走的是另一条路径，**如实登记为未坐实**。
+
+### 六、诚实边界（本节明确没做到的）
+
+| | |
+|---|---|
+| ❌ | **没证明 81.5 秒是这三条里的哪一条造成的。** 本节证明了「子查询不是瓶颈」「COALESCE 不改值」，**没证明**剩下的是什么 |
+| ❌ | 没查明分区裁剪是否真的失效——EXPLAIN 里旧分区确实出现，但带 `Index Cond: (ts = …)`，**可能被运行时裁剪剪掉了**，只是静态 EXPLAIN 显示 Append 分支 |
+| ❌ | 没找到生产写入路径，**没查清谁漏写 `credential_id`** |
+| ✅ | 已证明：COALESCE 当前不改值；缺失率 34%；`_request_logs_hot` 为空 |
+
+### 七、⇒ 一条方法论
+
+⇒ ⇒ ★ 本节连续两次归因错误，**两次都是同一个动作**：
+**看到一个"显然该慢"的写法，就直接认定它是瓶颈。**
+⇒ 正确的顺序是：**先量规模 → 算量级能不能解释观测 → 再看消费者与契约 → 最后才谈改法。**
+⇒ 第一次我连量级都没算（15.4 万行 vs 81 秒）；
+第二次我算到了"不改值"，却差点跳过"这是不是被门禁固化的口径契约"。
+★ 同族：[[阴性结论要当缺陷一样复核]] · [[先数消费者再写缺陷]] ·
+[[§102 的教训：承重断言查不到权威来源时让建议不依赖它]]。
+
+### 八、动作边界
+
+⚠ 全程**只读**：`pg_get_viewdef` × 3、`count(*)` 与分组统计、两条 `EXPLAIN (COSTS OFF)`（未执行）、
+仓内 `grep`。**未改任何视图定义、未改写入路径、未改仓库代码、未部署、未做任何生产写。**
+
