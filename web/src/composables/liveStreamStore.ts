@@ -328,6 +328,7 @@ let visibilityChangeHandler: (() => void) | null = null
 // Track page visibility changes
 function installVisibilityListener() {
   if (typeof document === 'undefined' || visibilityChangeHandler) return
+  visibilityState.isVisible = !document.hidden
   
   visibilityChangeHandler = () => {
     const wasHidden = !visibilityState.isVisible
@@ -338,21 +339,14 @@ function installVisibilityListener() {
       const hiddenDuration = Date.now() - visibilityState.lastVisibleAt
       console.log(`[LiveStream] Page visible after ${Math.round(hiddenDuration / 1000)}s`)
       
-      if (visibilityState.missedWhileHidden) {
-        console.log('[LiveStream] Missed updates while hidden, reconnecting for authoritative replay')
-        // A snapshot_refresh only repairs request tiles. Reconnect so the
-        // server also replays request_lifecycle and child_request frames.
-        // The existing connection is intentionally closed first; openConnection
-        // will perform the normal initial_data + lifecycle replay handshake.
-        if (refCount > 0) {
-          closeConnection()
-          openConnection()
-        }
-        visibilityState.missedWhileHidden = false
-      }
+      // Suspending transport creates a replay gap even if no frame arrived.
+      // A fresh connection restores requests, lifecycle actions and children.
+      if (refCount > 0) openConnection()
+      visibilityState.missedWhileHidden = false
     } else if (document.hidden) {
       visibilityState.lastVisibleAt = Date.now()
-      console.log('[LiveStream] Page hidden, marking updates as missed')
+      visibilityState.missedWhileHidden = true
+      closeConnection()
     }
   }
   
@@ -1332,7 +1326,7 @@ function mergeLegendsByKey(existing: LiveStreamLegendItem[], incoming: LiveStrea
 
 function openConnection() {
   openConnectionTotal++
-  if (es || refCount <= 0) return
+  if (es || refCount <= 0 || !visibilityState.isVisible) return
   if (typeof EventSource === 'undefined') {
     liveStreamState.connection = 'unsupported'
     return
@@ -1347,8 +1341,6 @@ function openConnection() {
   recomputeMaxVisible()
   resizeHandler = () => recomputeMaxVisible()
   window.addEventListener('resize', resizeHandler)
-  // Install visibility listener when opening connection
-  installVisibilityListener()
   // Browser EventSource cannot set Authorization headers, and the
   // project uses HttpOnly cookies that some reverse-proxy / dev
   // setups do not propagate to the EventSource request (e.g. a
@@ -1382,7 +1374,7 @@ function openConnection() {
     try {
       const env = JSON.parse(ev.data) as LiveStreamEnvelope
       
-      // Skip updates when page is hidden (keep connection alive, don't write state)
+      // Defend against a message queued before the visibility event closes us.
       if (!visibilityState.isVisible) {
         console.debug('[LiveStream] Message received but page hidden, marking as missed')
         visibilityState.missedWhileHidden = true
@@ -1464,15 +1456,17 @@ function closeConnection() {
     window.removeEventListener('resize', resizeHandler)
     resizeHandler = null
   }
-  // Remove visibility listener when closing connection
-  removeVisibilityListener()
+  // Visibility follows consumer refs, including while transport is suspended.
   clearFatalReconnect()
   liveStreamState.connection = 'closed'
 }
 
 export function acquireLiveStream(): () => void {
   refCount += 1
-  if (refCount === 1) openConnection()
+  if (refCount === 1) {
+    installVisibilityListener()
+    openConnection()
+  }
   // Idempotent release: a double cleanup must not close the singleton out
   // from under a second live consumer.
   let released = false
@@ -1483,6 +1477,7 @@ export function acquireLiveStream(): () => void {
     if (refCount <= 0) {
       refCount = 0
       closeConnection()
+      removeVisibilityListener()
     }
   }
 }
@@ -1518,8 +1513,8 @@ export function requestSnapshotRefresh() {
 
 // 2026-09-01 (P2 cleanup): removed _requestSnapshotRefresh forward declaration.
 // The visibility handler used to call this back-reference before the function
-// was defined below; the current implementation inlines closeConnection() +
-// openConnection() directly, so the indirection is dead code.
+// was defined below; visibility now suspends and reopens transport directly,
+// so the indirection is dead code.
 
 export function pauseStream() {
   liveStreamState.paused = true
@@ -1637,6 +1632,7 @@ export const __testing = {
   // make every later assertion meaningless — a cascade that hides the real
   // failure behind a pile of confusing ones.
   resetForTest: () => {
+    closeConnection()
     removeVisibilityListener()
     clearFatalReconnect()
     fatalReconnectAttempt = 0
@@ -1654,7 +1650,7 @@ export const __testing = {
   // ---------------------------------------------------------------------------
 
   // Lets a test assert on the *decision* the visibility handler makes. The
-  // recovery branch calls closeConnection()/openConnection(), which are inert
+  // recovery branch calls openConnection(), which is inert
   // without an EventSource, so without this a test could not tell "recovered"
   // from "declined to recover" — the exact ambiguity that hid the
   // missedWhileHidden bug for as long as it existed.
@@ -1712,16 +1708,20 @@ export const __testing = {
       // refCount-relative bookkeeping independent of the network state,
       // which is exactly the property we want to assert here.
       liveStreamState.connection = 'closed'
-      // The visibility listener is installed by openConnection() in
-      // production. Without it here, the handler is never attached and any
+      // Like production, attach on the first consumer even without transport.
+      // Without it here, the handler is never attached and any
       // assertion about its recovery decision would pass for every
       // implementation — including the broken one — because nothing would run.
       installVisibilityListener()
     }
+    let released = false
     return () => {
+      if (released) return
+      released = true
       refCount -= 1
       if (refCount <= 0) {
         refCount = 0
+        closeConnection()
         removeVisibilityListener()
       }
     }
