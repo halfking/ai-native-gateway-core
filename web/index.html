@@ -15,7 +15,19 @@
     <meta name="llmgw:deploy-seq" content="__LLMGW_DEPLOY_SEQ__" />
     <meta name="llmgw:deploy-seq-src" content="__LLMGW_DEPLOY_SEQ_SRC__" />
     <title>AI Native 组织核心网关</title>
-    <link rel="icon" type="image/png" href="/favicon.png" />
+    <!--
+      2026-10-19：应用图标标准（开轩 icon）。SVG 优先（其内部带
+      prefers-color-scheme 暗色变体），PNG 两档兜底给不支持 SVG 的浏览器；
+      暗色 PNG 用 media 门控，只在暗色偏好时生效，浅色下不重复下载。
+      全部是 web/public 根级资产 —— 匿名可达由 middleware/auth_mw.go 的
+      ExactPaths 保证（漏登记 ⇒ 全局 API-key 门 401 ⇒ 图标破图），
+      web_public_bypass_contract_test.go 的正/反两腿盯着这件事。
+    -->
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="icon" href="/favicon-32.png" sizes="32x32" type="image/png" />
+    <link rel="icon" href="/favicon-32-dark.png" sizes="32x32" type="image/png" media="(prefers-color-scheme: dark)" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon-180.png" />
+    <link rel="apple-touch-icon" href="/favicon-180-dark.png" media="(prefers-color-scheme: dark)" />
     <!-- 2026-08-25: 拆出 inline script，避免被 CSP script-src 'self' 'unsafe-eval' 拦截 -->
     <script src="/theme-init.js"></script>
     <!-- 2026-10-04: 统一入口客户端腿 —— iPadOS 桌面级 UA 场景下按触屏+小屏切到 /m/。
