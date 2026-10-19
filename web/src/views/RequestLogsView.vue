@@ -1478,8 +1478,8 @@ onMounted(async () => {
             type="text"
             class="filter-input"
             style="width:220px"
-            placeholder="搜索请求消息内容…"
-            title="消息片段"
+            placeholder="搜索模型/会话ID/密钥前缀…"
+            title="按请求元数据匹配：客户端/出站模型、客户端配置、请求模式、会话/任务 ID、密钥前缀、密钥属主、应用编码。★ 不检索请求/响应正文 —— 后端 ?q= 走的是 search_text，而 search_text 只由这些元数据拼成（见 domains/hooks/observability/telemetry/client.go 的 searchText）"
             @keyup.enter="resetPageAndLoad"
           />
           <input
