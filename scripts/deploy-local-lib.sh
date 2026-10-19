@@ -1185,12 +1185,14 @@ dl_wait_pg_isready() {
         psql -X -v ON_ERROR_STOP=1 -Atqc 'SELECT 1' \
         -h 127.0.0.1 -p 5432 -U "$user" -d "$db" >/dev/null 2>&1 && {
         log "PG pre-flight: ready after $attempt probe(s) via docker exec"
+        dl_pg_check_memory "$user" "$pass" "$host" "$port" "$db" || true
         return 0
       }
     elif _dl_have psql; then
       PGPASSWORD="$pass" psql -X -v ON_ERROR_STOP=1 -Atqc 'SELECT 1' \
         -h "$host" -p "$port" -U "$user" -d "$db" >/dev/null 2>&1 && {
         log "PG pre-flight: ready after $attempt probe(s) via psql"
+        dl_pg_check_memory "$user" "$pass" "$host" "$port" "$db" || true
         return 0
       }
     else
@@ -1206,6 +1208,70 @@ dl_wait_pg_isready() {
     die "PG pre-flight timed out after 90s ($host:$port, db=$db) — fail-closed (DL_PG_PREFLIGHT_REQUIRED=1); gateway would have hit database:null in 20s; refusing to start the container"
   fi
   warn "PG pre-flight timed out after 90s ($host:$port, db=$db); gateway boot retry will have to absorb the remaining warmup"
+  return 1
+}
+# dl_pg_check_memory — shared_buffers 下限体检（2026-10-20）。
+#
+# 为什么需要这道门：shared_buffers 被调小到几百 kB 时，PG **能正常应答**、
+# 探活全绿、部署也报 VERIFY_PASS=1，但每条语句的**规划**要 ~1s
+# （catalog 页根本进不了共享缓冲 ⇒ 规划期反复走系统调用）。
+# 后果不是「慢」而是**静默丢数据**：session 族的写路径在 1~2s 的 context
+# deadline 内超时 ⇒ 网关返回 200，但 session_turns / session_bodies /
+# trace_events **一行都没落库**。
+#
+# 实测（2026-10-20，本机 llm-gateway-pg）：
+#   shared_buffers=400kB  ⇒ session_turns_hot 规划 1195ms / 执行 0.03ms
+#   shared_buffers=2GB    ⇒ session_turns_hot 规划   50ms / 执行 0.03ms
+# 差的不是执行，是**规划**——而规划时间直接决定写路径能否在 deadline 内完成。
+#
+# 阈值：PG 自己的默认是 128MB（16384×8kB）。低于它 ⇒ 报 warn；
+# DL_PG_MIN_SHARED_BUFFERS_REQUIRED=1 ⇒ die（fail-closed）。
+# 只查 shared_buffers，不查 work_mem 等：后者只影响单条大查询，不影响落库。
+dl_pg_check_memory() {
+  local user="$1" pass="$2" host="$3" port="$4" db="$5"
+  local min_kb="${DL_PG_MIN_SHARED_BUFFERS_KB:-131072}"
+  local required="${DL_PG_MIN_SHARED_BUFFERS_REQUIRED:-0}"
+  local raw='' kb=''
+  raw=$(_dl_pg_scalar "SHOW shared_buffers" "$user" "$pass" "$host" "$port" "$db") || return 0
+  [[ -z "$raw" ]] && return 0
+  # SHOW shared_buffers 返回 '400kB' / '2GB' / '16384' (8kB blocks)
+  kb=$(printf '%s' "$raw" | tr 'A-Z' 'a-z' | awk '
+    {
+      v=$1
+      if (v ~ /mb$/)      { printf "%d", v*1024; next }
+      if (v ~ /gb$/)      { printf "%d", v*1024*1024; next }
+      if (v ~ /kb$/)      { printf "%d", v; next }
+      if (v ~ /^[0-9]+$/) { printf "%d", v*8; next }
+      print ""
+    }')
+  [[ -z "$kb" ]] && return 0
+  if (( kb < min_kb )); then
+    local msg="PG shared_buffers=${raw} (≈${kb}kB) < ${min_kb}kB — 每条语句的规划会退化到 ~1s，写路径会在 context deadline 内超时 ⇒ 请求返回 200 但 session 族一行都不落库。修：ALTER SYSTEM SET shared_buffers='2GB'; 然后重启 PG（容器：docker exec <pg> psql -c \"ALTER SYSTEM ...\" && docker restart <pg>）"
+    if [[ "$required" == "1" ]]; then
+      die "$msg — fail-closed (DL_PG_MIN_SHARED_BUFFERS_REQUIRED=1)"
+    fi
+    warn "$msg"
+  else
+    log "PG pre-flight: shared_buffers=${raw} (≈${kb}kB) ≥ ${min_kb}kB — ok"
+  fi
+  return 0
+}
+# _dl_pg_scalar — 在已探测通过的 PG 上取一个标量；拿不到就返回非 0（调用方跳过）。
+_dl_pg_scalar() {
+  local q="$1" user="$2" pass="$3" host="$4" port="$5" db="$6"
+  local pg_container
+  pg_container=$(dl_pg_container_name)
+  if (( DL_DOCKER )) && [[ -n "$pg_container" ]]; then
+    docker exec -i -e PGPASSWORD="$pass" "$pg_container" \
+      psql -X -v ON_ERROR_STOP=1 -Atqc "$q" \
+      -h 127.0.0.1 -p 5432 -U "$user" -d "$db" 2>/dev/null && return 0
+    return 1
+  fi
+  if _dl_have psql; then
+    PGPASSWORD="$pass" psql -X -v ON_ERROR_STOP=1 -Atqc "$q" \
+      -h "$host" -p "$port" -U "$user" -d "$db" 2>/dev/null && return 0
+    return 1
+  fi
   return 1
 }
 dl_pg_container_name() {

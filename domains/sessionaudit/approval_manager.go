@@ -25,6 +25,25 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
+// isMalformedUUIDInputError 判定一个 DB 错误是不是「把非法 uuid 文本喂给了
+// uuid 列」造成的 22P02（invalid input syntax for type uuid）。
+//
+// 2026-10-20 复核轮：approval_queue.id 是 uuid 列，路由里的 {request_id} 是
+// 自由文本 ⇒ 格式非法的 id 让 PG 在比较时抛 22P02 ⇒ 端点 500。
+// 语义上它等于「查无此行」⇒ 归一为 ErrNotFound。
+//
+// 判在**错误分类**层（而不是入参校验）：域层不该知道「id 是 uuid」这种存储
+// 细节 —— 也正因如此，既有单测用非 uuid 的假 id 是合法的，不该被门禁打断。
+//
+// 提为纯函数是为了让判据能**同层**直接驱动它（无需真库）。
+func isMalformedUUIDInputError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "22P02"
+}
+
 // ErrTenantMismatch 跨租户访问被拒绝。
 var ErrTenantMismatch = errors.New("sessionaudit: tenant mismatch")
 
@@ -180,6 +199,18 @@ func (m *ApprovalManager) getWithTx(ctx context.Context, approvalID, expectedTen
 		return nil, ErrNotFound
 	}
 	if err != nil {
+		// 2026-10-20 复核轮：approval_queue.id 是 **uuid** 列，而本函数收到的是
+		// 路由里的 {request_id}（自由文本）。格式非法的 id 会让 PG 在**比较**时
+		// 抛 22P02（invalid input syntax for type uuid: "1"）⇒ handler 收到通用
+		// 错误 ⇒ 端点 500（实测 GET /api/v1/approvals/1 → 500）。
+		// 语义上「格式非法的 id」=「不存在这条审批」⇒ 归一为 ErrNotFound（404），
+		// 不让输入格式问题伪装成服务端故障。
+		//
+		// 判在**错误分类**而不是入参校验上：域层不该知道「id 是 uuid」这种
+		// 存储细节（也正因如此，既有单测用非 uuid 的假 id 是合法的）。
+		if isMalformedUUIDInputError(err) {
+			return nil, ErrNotFound
+		}
 		return nil, fmt.Errorf("query approval: %w", err)
 	}
 

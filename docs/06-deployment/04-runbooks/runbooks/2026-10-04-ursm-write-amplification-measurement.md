@@ -34546,6 +34546,20 @@ SELECT inhparent AS parent_idx, inhrelid AS child_idx
 | **`idx_session_turns_attachment_count_gw`** | (attachment_count) WHERE attachment_count > 0 | **128 kB** | **0** | ★ 能力取舍 |
 | `idx_session_turns_digest_null` | (ts, id) WHERE digest IS NULL | 48 kB | 4,837 | 保留 |
 
+> ⚠⚠ **订正横幅（2026-10-20，§143.18.2.3 就地订正；上表原文保留）**
+>
+> 上表里 `uq_session_turns_final_success` 那一条的**判词**（「★ 唯一索引 ⇒ T2 口径」）
+> **所依赖的前提已被 §143.18.2 证伪**：**唯一索引的「全族 0 扫描」不是「没人用」的证据** ——
+> 纯插入触发的**唯一性检查走插入路径、不经 `index_beginscan`** ⇒ `idx_scan` 恒为 0；
+> 只有 `ON CONFLICT` 仲裁那种用法才看得见。
+> （沙箱前后差分：`UNIQUE` + 200 次重复键被拒 ⇒ **Δidx_scan = 0**，与「完全没人用」的普通索引
+> **读数完全一样**；生产两证：`usage_ledger` 276,116 次写入 vs UNIQUE 0 扫描；
+> `session_memora` **同表同批行**的两条唯一索引 —— 仲裁键 pkey 149,964 次扫描、兄弟 UNIQUE 0 次。）
+>
+> ⇒ ★ **结论方向未变**（它仍该走 T2），但**理由必须换成**「`is_final_success` 每会话至多一条是
+> **业务不变量**，要动它得先确认写入侧是否依赖该约束」——
+> ⇒ **不得**再引用「0 扫描」作为理由。详见 **§143.18.2**。
+
 ⇒ ⇒ ★ **8 条全族 0 扫描，合计 ≈322 MB**（每条 6 个分区实例各一份）。
 
 ⇒ ⇒ ★★ **其中一条是纯冗余，不需要任何能力取舍**：
@@ -34829,3 +34843,558 @@ GOCACHE=/tmp/gocache-p1437 go test ./scripts/ursmcheck/ -run 'TestRunbook14317' 
 ★ 同族：[[先读量具再读产物]] · [[阴性结论要当缺陷一样复核]] ·
 [[对照组不是同一条件下造的]] · [[自己上一节的结论也要复核]] ·
 [[假绿也要当缺陷一样复核]] · [[0 命中的第一嫌疑是量具坏了]]。
+
+## §143.18 全库分区索引「全族全图」与「全族 0 扫描」的三种成因（2026-10-20）
+
+### §143.18.0 结论先行
+
+§143.17 把「分区族全族读数」这套量具做到了 `session_turns` 一族（8 条声明）。
+本节把它推广到**全库 32 个分区父表 / 170 条索引声明 / 5671 MB 叶分区索引**，
+并得到 **5 条新证据 + 1 条判词修正**。本节对生产**零写入**（全部只读）。
+
+| # | 结论 | 体量 | 强度 |
+|---|---|---|---|
+| 1 | **全库 96 条声明「全族 0 扫描」＝ 1135 MB（占全库索引 20.0%）** | 1135 MB | ★★ |
+| 2 | ★★★ **其中 292 MB（13 条）是「唯一性检查不可见」的读数假象 ⇒ 不得进 T3/T4** | 292 MB | ★★★★★ |
+| 3 | ★★★ **最大的杠杆不是索引，是保留期**：`ursm_node_snapshot_min` 族 8.4 GB / 7 天 / 日增 1.2~1.5 GB | 8.4 GB | ★★★★ |
+| 4 | ★★ **「构造性死」**：索引列恒 NULL / 恒单值 / 部分索引恒空 ⇒ 任何查询都用不上 | 26 MB + 若干 0 MB | ★★★ |
+| 5 | ★★ **新档位 T5「读方存在但规划器不认」**：有仓内读方提到该列，但谓词形态不可 sargable 或选择性过低 ⇒ 实测规划器**不选** | 110 MB | ★★ |
+
+★ **本节修正了 §143.17 的一条判词**（详见 §143.18.2）：
+**「全族 0 扫描」对唯一索引而言不是使用证据** ⇒ §143.17 把
+`uq_session_turns_final_success` 归入「T2 口径」时，**那条推理链的前提已被本节证伪**
+（结论方向未变 —— 它确实该走 T2 —— 但**理由必须换掉**）。
+
+★ **本节的分类总表见 §143.18.9**；**待属主拍板清单见 §143.18.9.2**；
+**本节没做的事见 §143.18.9.3**（诚实边界）。
+
+### §143.18.1 量具：全族全图是怎么读出来的（含两个会把结论读反的陷阱）
+
+**母查询**（生产只读，154 跳板 → `llm_gateway`）：
+
+```sql
+-- 父声明 → 叶实例的权威映射（★ 索引级 pg_inherits）
+WITH fam AS (
+  SELECT c.oid AS poid, c.relname AS parent
+  FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
+  WHERE n.nspname='public' AND c.relkind='p'
+),
+leaf_decl AS (
+  SELECT f.parent, pd.relname AS decl, l.relname AS leaf,
+         li.oid AS idx_oid, pg_relation_size(li.oid) AS bytes
+  FROM fam f
+  JOIN pg_index pi ON pi.indrelid = f.poid
+  JOIN pg_class pd ON pd.oid = pi.indexrelid
+  JOIN pg_inherits li ON li.inhparent = pi.indexrelid        -- ★ 索引级
+  JOIN pg_class l  ON l.oid = li.inhrelid
+)
+SELECT parent, decl, count(*) AS n_leaves, sum(bytes) AS bytes, sum(s.idx_scan) AS scan
+FROM leaf_decl JOIN pg_stat_user_indexes s ON s.indexrelid = leaf_decl.idx_oid
+GROUP BY 1,2;
+```
+
+**读数**（2026-10-20 生产）：
+
+- 分区父表 **32** 个；父表声明 **170** 条；叶分区索引合计 **5671 MB**；
+- 「全族 0 扫描」声明 **96** 条 / **1135 MB** ＝ 全库索引的 **20.0%**；
+- 其中 **13 条 / 292 MB 是 UNIQUE**（§143.18.2 处理），
+  **7 条 / 320 MB 属 `session_turns`**（§143.17 已处置），
+  **本轮新处置 76 条 / 523 MB**（§143.18.5~§143.18.6）。
+
+#### ⚠ 陷阱一：`pg_inherits` 的表级与索引级**用反会全读成 0**
+
+`pg_inherits` 有**两套**父子语义，列名都是 `inhparent`：
+
+| 用法 | `inhparent` 指 | 用来找什么 |
+|---|---|---|
+| 表级 | **父表** oid | 父表 → 叶分区 |
+| 索引级 | **父索引** oid | 父声明 → 叶索引实例 |
+
+本轮第一次跑母查询时**把两者用反了** ⇒ 32 个族全部读成「0 条声明 / 0 字节」。
+⇒ **判别动作**：`pg_inherits` 里**先看 `inhrelid` 的 relkind** ——
+若 `inhrelid` 是索引（`pg_class.relkind='i'`）⇒ 这是索引级行。
+
+#### ⚠ 陷阱二：父表自身 `pg_total_relation_size` = 0，父表索引壳 = 0 字节
+
+分区父表**不存数据**，存储全在叶分区实例里 ⇒
+`pg_total_relation_size('public.routing_decision_log')` = **0 bytes**，
+父表上那个索引壳（`ON ONLY`）也是 **0 字节**。
+⇒ 任何「按父表算体量」的口径都会读成 0；**必须按叶实例求和**。
+
+### §143.18.2 ★★★ 核心：唯一索引的「全族 0 扫描」是**结构性读数假象**
+
+#### §143.18.2.1 沙箱前后差分（PG 17.11，决定性）
+
+沙箱夹具（`/private/tmp/pmm_exp/pg17`，端口 54399，库 `pmm_sbx`）四张表，
+用 `pg_stat_force_next_flush()` 在**同一条连接**上取前后快照算差分：
+
+| 夹具 | 键 | 行为 | **Δidx_scan** | 行数后果 |
+|---|---|---|---|---|
+| `t_uniq_key` | UNIQUE | 逐行插入，**200 次重复键被拒**（NOTICE 确认「约束检查实际触发并拒绝次数 = 200」） | **0** | 200 行（重复被挡住） |
+| `t_plain_key` | 无唯一 | 逐行插入，**完全没人用** | **0** | 400 行 |
+| `t_oc_update_pkey` | UNIQUE | 200 次 `ON CONFLICT` 仲裁 | **200** | — |
+| `t_oc_nothing_pkey` | UNIQUE | 200 次 `ON CONFLICT DO NOTHING` | **200** | — |
+
+★ **两条腿给出同一个读数（0），行为却完全相反**：
+`t_uniq_key` 拦下了 200 次重复写入（**完整性在起作用**），
+`t_plain_key` 什么都没拦（**完整性形同虚设**）。
+
+⇒ ⇒ **精确规则**：
+> **唯一索引的「使用」有两种形态，`idx_scan` 只看得见 `ON CONFLICT` 仲裁那一种。**
+> **纯插入触发的唯一性检查走插入路径，不经 `index_beginscan` ⇒ 完全不可见。**
+
+⇒ ⇒ **推论**：
+> **唯一索引的「全族 0 扫描」既不能进 T3（无读方可删），也不能进 T4（能力取舍）。**
+> **必须改判「写入路径是否依赖这条唯一性」。**
+
+#### §143.18.2.2 生产交叉证据（三条，互相独立）
+
+**证据 A —— `usage_ledger`（276,116 次写入 vs 0 扫描）**
+
+| 声明 | 全族 idx_scan | 叶实例体量 |
+|---|---|---|
+| `usage_ledger_partitioned_request_id_ts_key`（UNIQUE） | **0** | 249 MB（其中 `usage_ledger_2026_09_request_id_ts_key` 187 MB） |
+| `idx_usage_ledger_part_tenant` | 166 | 74 MB |
+| `usage_ledger_ts_tenant_cache_agg_idx` | 132 | 110 MB |
+| `idx_usage_ledger_recon_cover` | 6 | 223 MB |
+
+该族全生命周期 **276,116 次插入**，而那条 **UNIQUE** 的四个叶实例 `idx_scan` **全为 0**
+（逐叶核对：2026_08 = 8192 B / 0、2026_09 = 187 MB / 0、2026_10 = 62 MB / 0、2026_11 = 8192 B / 0）。
+⇒ 写入侧确实在用这条唯一性（`admin/telemetry.go:424` 与
+`domains/hooks/observability/telemetry/client.go:1375` 的 `INSERT INTO usage_ledger_hot`
+**不带 `ON CONFLICT`** ⇒ 唯一性是**唯一**的去重机制），
+⇒ **它的 0 扫描是假象，不是「没人用」。**
+
+**证据 B —— ★ `session_memora` 同表同数据双唯一索引判别（最干净的一条）**
+
+`session_memora` 族 3 条声明：
+
+| 声明 | 键 | idx_scan | 解释 |
+|---|---|---|---|
+| `session_memora_pkey` | UNIQUE (id, partition_date) | **149,964** | ★ **是 promote 函数的 `ON CONFLICT` 仲裁键** |
+| `session_memora_tenant_id_session_id_partition_date_key` | UNIQUE (tenant_id, session_id, partition_date) | **0** | 仅作唯一性**检查**（无仲裁） |
+| `idx_session_memora_session` | btree (session_id, partition_date DESC) | 0 | 无读方（见 §143.18.5） |
+
+`sql/migrations/startup/706_session_family_s1a.sql:316-322` 的 promote 函数：
+
+```sql
+INSERT INTO public.session_memora
+    (id, session_id, tenant_id, client_env, initial_context, created_at, partition_date)
+SELECT id, session_id, tenant_id, client_env, initial_context, created_at, partition_date
+FROM to_move
+ON CONFLICT (id, partition_date) DO NOTHING     -- ★ 仲裁键 = pkey，不是那条 (tenant_id,session_id,partition_date)
+```
+
+⇒ **同一条 INSERT、同一批 149,964 行、同一个表上的两条唯一索引**：
+- 被 `ON CONFLICT` 点名的 pkey ⇒ **149,964 次扫描**（＝ 插入次数，1:1）
+- 没被点名的兄弟 UNIQUE ⇒ **0 次扫描**
+
+⇒ 这是「唯一索引的 0 扫描是假象」在**生产**上最干净的判别：
+**同一张表、同一批行、两个唯一索引，差别只在「是不是仲裁键」。**
+
+**证据 C —— 写入侧 SQL 自证**：`domains/session/v2/family_writers.go:120-126`
+写 hot 表用 `ON CONFLICT (tenant_id, session_id, partition_date) DO NOTHING`
+（那是 hot 表自己的索引）⇒ 与证据 B 完全自洽。
+
+#### §143.18.2.3 ⇒ 修正 §143.17 的一条判词（**原文保留 + 就地订正**）
+
+§143.17 §143.17.2 的表里有：
+
+> **`uq_session_turns_final_success`** | UNIQUE (tenant_id, session_id, partition_date) WHERE is_final_success | 2064 kB | 0 | ★ 唯一索引 ⇒ T2 口径
+
+★ **订正（2026-10-20，本节）**：
+**「唯一索引 ⇒ T2 口径」这个推理链的前提**（「0 扫描 ⇒ 没人用 ⇒ 可按约束口径处理」）
+**已被本节证伪**：唯一索引的 0 扫描**不足以**支持任何处置结论。
+⇒ **结论方向未变**（它仍该走 T2 —— 但**理由必须换成**「
+  `is_final_success` 每会话至多一条是**业务不变量**，要动它得先确认
+  写入侧是否依赖该约束」），**不能**再引用「0 扫描」作为理由。
+
+### §143.18.3 ★★ 表级读数补齐：零扫描 ≠ 表没被读
+
+**这是量具上的一处盲区**：§143.16/§143.17 的量具全部建在**声明级 `idx_scan`** 上，
+但一个表可能被**顺序扫描**读（`seq_scan`），而**不碰任何一条索引**。
+⇒ **声明级 0 扫描 + 表级大 `seq_scan` ＝ 一条「只在 EXPLAIN 层面成立」的处置理由**。
+
+族级读数（生产，叶分区聚合，2026-10-20）：
+
+| 族 | 叶 seq_scan | 叶 idx_scan | 插入 | 更新 | 删除 | 精确行数 |
+|---|---|---|---|---|---|---|
+| `session_turns` | 64,079,495 | 187,725,616 | 175,898 | 0 | 0 | 1,047,944 |
+| `session_bodies` | 347,888 | 3,944,334 | 175,683 | 0 | 0 | 247,460 |
+| `auto_route_selections` | 29,826 | 295,762 | 798 | 0 | 0 | 1,562 |
+| `candidate_failure_logs` | 28,719 | 173,920 | 101,026 | 0 | 57,078 | 180,727 |
+| `_request_logs` | 14,584 | **4,693,395,370** | 147,591 | 0 | 0 | 334,902 |
+| `supplier_errors` | 5,567 | 924 | 101,406 | 0 | 0 | 266,080 |
+| `credential_model_index` | 4,899 | 552,829 | 431,424 | 0 | 0 | 431,424 |
+| `usage_facts` | 2,390 | 252,691 | 200,868 | 0 | 0 | 265,494 |
+| `session_turn_details` | 424 | **282,136,469** | 165,910 | 0 | 0 | 1,035,114 |
+| `ursm_node_snapshot_min` | 297 | 27,616,792 | 27,604,504 | 0 | 0 | 25,267,908 |
+| `usage_ledger` | 238 | 304 | **276,116** | 0 | 0 | 483,201 |
+| `sessions` | 210 | 1,438,183 | 153,686 | 16,394 | 0 | 398,414 |
+| `stats_event_inbox` | 1 | 402,222 | 201,102 | 200,831 | 139,163 | 147,825 |
+| `request_wal` | **5** | **7** | 191,734 | 0 | 0 | 298,956 |
+| `session_memora` | 3 | 149,964 | 149,964 | 0 | 0 | 323,895 |
+| `system_probe_runs` | 2 | **0** | 25,984 | 0 | 0 | 36,878 |
+| `routing_decision_log` | **0** | 113 | **0** | 0 | 0 | 582,444 |
+
+★ **三条本轮新读数**：
+
+1. ★★ **`request_wal` 族：191,734 次写入，全族只有 12 次读**（5 seq + 7 idx）
+   ⇒ 这不是「某条索引没用」，是**整张表在生产里几乎只写不读** ⇒
+   `idx_wal_session`（69 MB，全库最大的非唯一零扫描声明）落在**写独占**的表上。
+2. ★★ **`routing_decision_log` 族：582,444 行，但 `n_tup_ins = 0`**
+   ⇒ 写入走的不是普通 heap 插入路径 ⇒ 实测确认 **3/3 叶分区都是 `columnar` AM**
+   （Citus columnar 13.3-1）⇒ **`n_tup_ins` 对 columnar 表不适用**。
+   ⚠ 且 columnar **会**用普通 btree：该族 `ts` 索引与 `chosen_credential_id` 索引
+   实测有 28 / 16 / 9 / 60 次扫描 ⇒ **不能**用「columnar ⇒ 索引无用」这条捷径。
+3. ★ **`n_live_tup` 是估算，不能当真值**：`routing_decision_log` 的 `n_live_tup` = 141,520，
+   而 `count(*)` = **582,444**（差 4.1×）。本节表里的「精确行数」列一律用 `count(*)`。
+
+### §143.18.4 ★★★ 「构造性死」：列恒 NULL / 恒单值 / 部分索引恒空
+
+**这一档比「0 扫描」强得多**：它证明索引**在任何查询形态下都不可能有用**，
+不需要「有没有读方」这个前提。
+
+**直证方法**（生产，**全量计数，不是抽样**）：
+
+```sql
+SELECT 'usage_facts' AS tbl, 'canonical_id' AS col,
+       count(*) AS n_rows, count(canonical_id) AS n_nonnull,
+       count(*) FILTER (WHERE canonical_id IS NULL) AS n_null,
+       count(DISTINCT canonical_id) AS n_distinct
+FROM usage_facts
+UNION ALL ... ;
+```
+
+读数（15 个关键列，2026-10-20 生产全量）：
+
+| 表 | 列 | 行数 | 非空 | 空 | 非空取值数 | ⇒ 判词 |
+|---|---|---|---|---|---|---|
+| `usage_facts` | `canonical_id` | 265,494 | **0** | **265,494** | **0** | ★ **恒 NULL** ⇒ `idx_usage_facts_model_time`（26 MB）**任何等值谓词都命中 0 行** |
+| `system_probe_runs` | `provider_id` | 36,878 | **0** | **36,878** | **0** | ★ **恒 NULL** ⇒ `idx_system_probe_runs_provider`（2 MB）同 |
+| `sessions` | `parent_session_id` | 398,414 | **0** | **398,414** | **0** | ★ **恒 NULL** ⇒ 部分索引 `WHERE parent_session_id IS NOT NULL` **恒空** |
+| `sessions` | `status` | 398,414 | 398,414 | 0 | **1** | ★ 恒单值 `'active'` ⇒ 等值谓词选中 **100%** 行 ⇒ **不能用于过滤**（⚠ 但**能**用于 `updated_at` 排序 ⇒ 见 §143.18.5.3） |
+| `sessions` | `agent_role` | 398,414 | 398,414 | 0 | **1** | ★ 恒 `'main'` ⇒ 部分索引 `WHERE agent_role <> 'main'` **恒空** |
+| `system_probe_runs` | `skip_reason` | 36,878 | 118 | 36,760 | 1 | ★ 99.68% NULL ⇒ 部分索引只含 118 行 |
+| `session_turn_details` | `gw_task_id` | 1,035,114 | 315,705 | 719,409 | 13,246 | 正常（有选择性） |
+| `routing_decision_log` | `tenant_id` | 582,444 | 572,611 | 9,833 | **3** | 选择性差（≈1/3） |
+| `routing_decision_log` | `success` | 582,444 | 582,444 | 0 | **2** | 选择性差（50%） |
+| `routing_decision_log` | `model` | 582,444 | 582,444 | 0 | 884 | 选择性 **0.11%**（够用） |
+| `candidate_failure_logs` | `aggregation_id` | 180,727 | 180,727 | 0 | **180,727（全唯一）** | 索引有意义，但 0 扫描 ⇒ 无读方 |
+| `candidate_failure_logs` | `provider_id` | 180,727 | 180,727 | 0 | 16 | 选择性 6.25% |
+| `supplier_errors` | `supplier` | 266,080 | 266,080 | 0 | 6 | 选择性 16.7% |
+| `usage_facts` | `request_id` | 265,494 | 265,494 | 0 | 265,494（全唯一） | 索引有意义，但 0 扫描 ⇒ 无读方 |
+| `session_memora` | `session_id` | 323,895 | 323,895 | 0 | 323,895（全唯一） | 同 |
+
+★ **本节最重要的一条**：
+`usage_facts.canonical_id` **265,494 行全部为 NULL** ⇒
+`idx_usage_facts_model_time`（26 MB）**索引了一个永远取不到值的列**。
+
+⚠ **但这一档的判词必须区分两种「死」**：
+
+| 形态 | 例子 | 能否说「不可用」 |
+|---|---|---|
+| **列恒 NULL** | `canonical_id` / `provider_id` / `parent_session_id` | ✅ **能** —— 任何等值谓词恒命中 0 行；部分索引恒空 |
+| **列恒单值** | `status` / `agent_role` | ⚠ **不能一刀切** —— `status='active'` 选中 100% 行（**过滤**无用），但索引 (status, updated_at DESC) **仍能服务 `ORDER BY updated_at DESC`** ⇒ §143.18.5.3 实测 `idx_sessions_status` **确实被规划器选中** ⇒ 它是 **T4，不是死索引** |
+
+⇒ ⇒ ★ **通用式**：
+> **「列没有选择性」≠「索引没有用」。**
+> **恒 NULL ⇒ 死；恒单值 ⇒ 只能失去「过滤」能力，若索引第二列能服务排序则仍有价值。**
+> **判别动作：问「这条索引除首列外还能服务什么」，再问「规划器实际选不选」。**
+
+### §143.18.5 ★★ EXPLAIN 三态细分 + 真实查询形态复核
+
+#### §143.18.5.1 三态探针（为什么一态不够）
+
+同一个逻辑谓词，**三种形态下规划器的选择不同**：
+
+| 形态 | 例子 | 规划器 | 结论 |
+|---|---|---|---|
+| **① 理想谓词**（纯等值，比真实查询更有利） | `WHERE session_id = 'gw_…'` | 选索引 | 「索引**能**被选中」 |
+| **② 真实形态的 OR 形（字面量）** | `WHERE ('gw_…' = '' OR session_id = 'gw_…')` | **也选索引** | ★ PG 在 **custom plan** 下把常量折叠掉 ⇒ OR 形式被化简 ⇒ 可 sargable |
+| **③ 强制 generic plan**（参数未知） | `PREPARE` + `set_config('plan_cache_mode','force_generic_plan',false)` | **不选索引** | ★ 参数未知 ⇒ 无法折叠 ⇒ OR 形态真的挡住索引 |
+
+实测（`candidate_failure_logs` 的 `/api/candidate-failures?session=` 形态）：
+
+```
+① 纯等值            → Index Scan using candidate_failure_logs_2026_10_session_id_ts_idx1
+② 字面量 OR（custom）→ Index Scan using candidate_failure_logs_2026_10_session_id_ts_idx1   ★ 折叠成功
+③ 强制 generic plan  → Index Scan using candidate_failure_logs_2026_10_ts_idx                ★ 退回 ts 索引
+```
+
+⇒ ★ **「OR 形 ⇒ 索引用不上」不是无条件成立**：
+**custom plan 下可折叠 ⇒ 索引可用；generic plan 下不可用。**
+⇒ **归类时按「custom plan 可用」记 T4，但必须把「计划模式敏感」写进备注**。
+
+#### §143.18.5.2 ★ 仓内读方 × EXPLAIN 交叉（判定规则）
+
+★ **本节确立的判定规则（与 §143.16/§143.17 的 T3/T4 门槛一致）**：
+
+> **T3「无读方可删」** ＝ 仓内**无**真实读方能约束该索引首列 **且** 生产 EXPLAIN **不选**它
+> **T4「能力取舍」** ＝ 仓内**有**真实读方 **且** 其谓词 **sargable** **且** EXPLAIN **会选**它
+> **★ T5（新增，见 §143.18.6）** ＝ 仓内**有**真实读方提到该列，但**谓词形态不可 sargable**
+>   **或**该列选择性过低 ⇒ 实测 EXPLAIN **不选**它
+
+★ **两条腿缺一不可**：只查仓内会误判（「没人提这列」≠「没人能提这列」）；
+只查 EXPLAIN 也会误判（「规划器会选」≠「有查询用它」⇒ 那只是 T4 的可能性，不是证据）。
+
+#### §143.18.5.3 ★★ 真实查询形态复核 —— **两处修正了本轮自己的初判**
+
+★ **本轮我自己的初判被真实形态推翻两次**（保留过程，因为这是本节最贵的教训）：
+
+| 索引 | 我的初判 | 真实形态复核 | 修正后 |
+|---|---|---|---|
+| `idx_sessions_status`（19 MB） | 构造性死（`status` 恒 `'active'`） | `admin/turns_sessions.go:408/413/419/488` 真实形态（`tenant_id` + `status` + `updated_at` 范围 + `ORDER BY updated_at DESC`）⇒ **Index Scan using `sessions_*_status_updated_at_idx`** | **T4**（我错：恒单值只废掉「过滤」，没废掉「排序」） |
+| `idx_sessions_primary_request`（18 MB） | 无读方 | `admin/session_detail_v2.go:561` `s.primary_request_id IN (子查询)` ⇒ **Index Scan using `sessions_*_primary_request_id_idx`** | **T4**（我错：只查了 `=` 形式，漏了 `IN`） |
+
+★ **第三条**（初判正确，但**依据**要换）：`idx_routing_decision_log_part_model`（39 MB）——
+`admin/analytics.go:1041` 的真实形态是**四路 OR**：
+
+```sql
+outbound_model = ANY($2) OR canonical_model = ANY($2)
+OR client_model = ANY($2) OR model = ANY($2)
+```
+
+⇒ **PostgreSQL 的 BitmapOr 要求每一路都能产出位图路径**；另外三列都没有索引
+⇒ **整条 OR 无法用位图** ⇒ **没有任何查询能用上 `idx_..._part_model`**。
+⇒ 实测 R3：真实形态 ⇒ **ColumnarScan**，索引一次都没被选。
+⇒ 且 `model` 一列**确实**有等值读方（`admin/analytics.go:1041` 的第 4 路）⇒
+**它属于 §143.18.6 的 T5，不是「无读方」**。
+
+### §143.18.6 ★★ 新档位 T5「读方存在但规划器不认」
+
+**这是 §143.16/§143.17 都没覆盖的第三种形态**：
+
+| 档位 | 仓内读方 | EXPLAIN 选不选 | 处置语义 |
+|---|---|---|---|
+| T3 | **无** | 不选 | 回收无用空间 |
+| T4 | **有**，sargable | **选** | 放弃一项查询能力 |
+| **★ T5（新增）** | **有**，但形态用不上 / 选择性过低 | **不选** | **读方存在却用不上 ⇒ 删不删都是「读方还在」** |
+
+★ **T5 的 5 条 / 110 MB**：
+
+| 声明 | MB | 读方在哪 | 为什么用不上 |
+|---|---|---|---|
+| `idx_routing_decision_log_part_model` | 39 | `admin/analytics.go:1041`（四路 OR 的第 4 路） | ★ BitmapOr 要求每路都有位图路径 ⇒ **没有任何查询能用它** |
+| `idx_routing_decision_log_part_success` | 26 | `admin/routing.go:3313` `rdl.success = $N` + `ts` 范围 | 实测 R1 真实形态 ⇒ **ColumnarScan**；且 `success` 只有 **2** 个取值（50% 选择性）⇒ 过滤能力本就无用 |
+| `idx_routing_decision_log_part_tenant_ts` | 26 | `admin/routing.go:3299` / `admin/session_tenant.go:24` / `admin/credential_monitor.go:1790` `rdl.tenant_id = $N` | 实测 R2 真实形态 ⇒ **ColumnarScan**；`tenant_id` 只有 **3** 个取值（≈1/3）⇒ 同上 |
+| `idx_supplier_errors_part_supplier_credential` | 11 | `admin/errors_trend.go:265-275` `($3 = '' OR ... OR supplier = $3)` | ★ OR 形 ⇒ **不可 sargable**；且 `supplier` 只有 **6** 个取值；实测 P15 纯等值下规划器也**不选**它（改选 `ts` 索引） |
+| `idx_supplier_errors_part_tenant` | 8 | 同上（`tenant_id` 那一路） | OR 形 + `tenant_id` 只有 **1** 个取值（`'default'`）⇒ 实测 P18 / Q1b / Q2b 规划器**一律不选**它 |
+
+★ **对 878 迁移的一处订正（不是推翻结论，是收窄论据）**：
+`sql/migrations/startup/878_supplier_errors_partition_indexes.sql` 的文件头写
+「形状照抄 `supplier_errors_hot` 上**已被同一批查询实测用上**的那 5 条」，
+并把 `idx_supplier_errors_part_supplier_credential` 记作「serves errors_trend.go」。
+⇒ **在生产实例上实测**（2026-10-20）：
+`errors_trend` 的真实形态对 `supplier` 是 **OR 形** ⇒ **父表那条 supplier 索引用不上**；
+真正被选中的是 `idx_supplier_errors_part_credential_occurred`（`credential_id` 纯等值）
+与 `idx_supplier_errors_part_error_type`（因 `GROUP BY error_type` 而被选为 Index Only Scan）。
+⇒ ★ **878 补的 5 条父表索引里，本轮实测「被规划器选中」的只有 2 条**
+（credential / error_type），另加 1 条 `occurred_at` 本来就在用 ⇒
+**supplier / tenant 两条（19 MB）在现行查询形态下用不上。**
+
+### §143.18.7 ★ 边界：孤儿叶索引，与「父声明是 SSOT」的反向缺口
+
+§143.16/§143.17 的动作单元规则是「**父表声明是 SSOT**」
+（876 迁移的注释独立佐证：「`CREATE TABLE … PARTITION OF` 会克隆父表上声明的每一个索引」）。
+本轮实测发现**反向缺口**：**有些索引只存在于叶分区上，父表没有对应声明**。
+
+**孤儿叶索引清点**（生产，index 级 `pg_inherits` 缺行）：**26 条**，合计 **≈ 0.2 MB**
+（全部 8192~16384 字节、几乎全 0 扫描）：
+
+| 族 | 孤儿条数 | 形态 |
+|---|---|---|
+| `handoff_logs` | **9** | ★ 父表 `parent_idx_count = 0`（**父表一条声明都没有**），9 个叶各带 3 条手写索引（`session_id` / `tenant_id` / `trigger_reason`），且**两套命名法**（`handoff_logs_2026_11_session_idx` vs `idx_handoff_logs_2026_09_session`） |
+| `session_module_executions` | 8 | 父表只有 pkey；6 个叶各带 2 条手写索引 |
+| `dashboard_access_events` | 4 | 同上；且**只覆盖 6 个叶中的 4 个**（2026_10 与 default 缺） |
+| `session_turns` | 3 | `*_digest_null_idx`（`WHERE digest IS NULL`）—— ★ **这三个有真实扫描**（1850 / 1501 / 1502） |
+| `_request_logs` | 2 | `idx_request_logs_2026_11_client_model_trgm` / `_search_trgm`（GIN，2026_11 空分区，0 扫描） |
+
+⚠ **两个后果（都比「多几条小索引」重要）**：
+
+1. ⇒ **新分区不会继承这些索引**：`handoff_logs` 父表零声明 ⇒
+   **下一个新建的 `handoff_logs` 分区将一条索引都没有** ⇒ 那些按 `session_id` /
+   `tenant_id` / `trigger_reason` 的读路径会退化成顺序扫描。
+   ⇒ **修法不是「在叶上补」，而是「把声明提到父表」**（父表声明 ⇒ 新分区自动派生）。
+2. ⇒ **本轮的全族全图天然看不见它们**：§143.18.1 的母查询是
+   「父声明 → 叶实例」，**方向单一** ⇒ 孤儿叶索引**不在 170 条声明里**。
+   ⇒ ⇒ ★ **诚实边界**：本节的「全族全图」覆盖的是**父声明派生**的那 170 条；
+   **26 条孤儿叶索引在图之外**（体量可忽略，但**结构缺口真实存在**）。
+
+### §143.18.8 ★★★ 最大的杠杆不是索引，是保留期
+
+#### §143.18.8.1 体量与速率
+
+| 项 | 读数 |
+|---|---|
+| 族总体量（含索引） | **8,395,956,224 B ＝ 8.4 GB**（`pg_total_relation_size` 父表 = 0，须按叶求和） |
+| 行数 | 25,267,908（9 个日分区，20261013~20261021） |
+| 实际保留跨度 | **7 天**（`min_ts` = 2026-10-13 00:01:06、`max_ts` = 2026-10-20 05:52:03） |
+| 日分区体量 | 280 → 716 → 1280 → 1443 → 1554 → 1186 → 1373 MB（20261020 当日仅 175 MB，20261021 空） |
+| **日增速率** | **≈ 1.2 ~ 1.5 GB/天** |
+| **折 30 天** | **≈ 36 GB** |
+| 设计文档估计 | `retention.go:40` 注明「分区 8→31、4~7 GB→13~19 GB」⇒ **本轮独立推导 ~17 GB** ⇒ **估算低约 2 倍** |
+
+★ **该族的主索引不可删**：`ursm_node_snapshot_min_pkey` 单条 **2114 MB**，
+但**扫描 27,585,296 次** ⇒ 是留存 worker 的访问路径
+（`domains/ursm/v2/persist/retention.go:303` 明写「`snapshot_ts` 是首列，每批从最老死条目起步」）
+⇒ **它是承重的**；且其死页率仅 **0.13%**（359 页 / 267,896 叶页）⇒ **没有 REINDEX 空间**。
+
+⇒ ⇒ ★ **结论：这一族的杠杆是保留期（分区数 / 天数），不是索引。**
+
+#### §143.18.8.2 ★ 7 天是**设计值**，不是回落、不是提前删除
+
+`domains/ursm/v2/persist/retention.go:40-48`：
+
+> ★ 默认值由 30 天改为 **7 天**（2026-10-14）。理由不是「7 天更省」，而是
+> **默认值必须等于生产实际生效的值**，否则默认值就成了一个静默的定时炸弹。
+
+**两台实例的生效窗口实测**（`cmd/gateway/main.go:194-202` 的 `retentionSource()` 就是为分辨
+「配置来的 vs 兜底来的」而留的那行日志；`main.go:1456` 的启动日志带 `retention`/`source`）：
+
+| 主机 | 生效窗口 | source | 判读 |
+|---|---|---|---|
+| 245 | `168h0m0s` | `env` | **显式配置** |
+| 154 | `168h0m0s` | `env` | **显式配置** |
+
+⇒ **两台都是 7 天、都是显式配置 ⇒ 无档位漂移 ⇒ 7 天是设计值。**
+
+**10 天日志**（`journalctl -u llmgo-245-canary@8781.service` / `llm-gateway-go-canary@8782.service`）：
+
+| 主机 | 「nothing reclaimed」 | 「worker starting」 | 实际动作 |
+|---|---|---|---|
+| 245 | 98 | 22 | 0 次 drop；**1 次** `cleanup failed(non-fatal) error=closed pool mode=row-delete` |
+| 154 | 81 | 30 | **1 次** `dropped expired partitions partitions_dropped=1 bytes_reclaimed=161,226,752`；**1 次** `removed expired snapshots deleted=2681` |
+
+⇒ ⇒ ★ **245 的 98 轮「nothing reclaimed」是正常的**：154 已经把同库同目标 drop 完，
+另一台无事可做 ⇒ **不是「245 没在清理」**。
+
+#### §143.18.8.3 ★★ 新登记的待查项（本轮不深挖）：245 的连接池反复降级
+
+245 侧 10 天内 **690 次「pool marked degraded」+ 332 次「pool marked draining」+ 38 次进程启动**
+⇒ 留存清理那 1 次 `closed pool` 是它的**下游症状**，**根因不在留存代码**。
+⇒ **登记为独立待查项**（§143.18.9.2 的 H 项）。
+
+### §143.18.9 分类总表 / 待拍板 / 诚实边界 / 复核方法
+
+#### §143.18.9.1 分类总表（96 条零扫描声明 / 1135 MB）
+
+| 档 | 条数 | 体量 | 判据 | 动作 |
+|---|---|---|---|---|
+| **假象桶**（不进任何档） | 13 | **292 MB** | 唯一索引的**唯一性检查**不走 `index_beginscan` ⇒ 0 扫描不是使用证据（§143.18.2） | **改判「写入路径是否依赖这条唯一性」**；**不得**按 T3/T4 处理 |
+| └ 其中 `usage_ledger` UNIQUE | 1 | 249 MB | 276,116 次写入、唯一性是**唯一**去重机制（无 `ON CONFLICT`） | 保留（依赖它） |
+| └ 其中 `session_memora` UNIQUE | 1 | 28 MB | 同表兄弟 pkey 是仲裁键、它是检查键 | 保留（完整性约束） |
+| └ 其余 11 条 | 11 | 12 MB | `sessions_pkey` / `uq_session_turns_final_success` / `system_probe_runs_pkey` + 8 条 0 MB | 保留（§143.17 B2 口径修正） |
+| **T3 无读方可删** | 20 | **207 MB** | 仓内无读方 **且** EXPLAIN 不选 | ★ 需属主授权 DROP |
+| **T4 能力取舍** | 10 | **135 MB** | 有读方 **且** sargable **且** EXPLAIN 会选 | 保留 |
+| **★ T5 读方存在但规划器不认** | 5 | **110 MB** | 有读方但形态用不上 / 选择性过低 ⇒ 实测不选 | ★ **需属主拍板**（新档） |
+| **退役族（`_request_logs`）** | 23 | **71 MB** | v1 退役族；本轮**未逐列闭环**（★ 见下方「并行会话交叉」注） | 沿用待拍板 F 项 |
+| **零写入/空族声明** | 18 | **0 MB** | `session_tools` / `tool_usage_stats` / `credential_model_index_archive` 写入量 = 0；`cache_metrics` / `credit_ledger` / `mock_probe_history` / `session_censors` 空族 | 不处置（收益为 0） |
+| **§143.17 已处置** | 7 | 320 MB | `session_turns` 族非唯一零扫描 | 见 §143.17 |
+| **合计** | **96** | **1135 MB** | | |
+
+★ **T3 的 20 条 / 207 MB 明细**（按体量）：
+
+| MB | 声明 | 判据 |
+|---|---|---|
+| 69 | `request_wal.idx_wal_session` | 仓内无任何读方（`request_wal` 整表生产里几乎只写不读：191,734 写 / 12 读） |
+| 47 | `usage_facts.idx_usage_facts_request` | 20 条生产读方**全部**只滤 `occurred_at`；`request_id` 仅出现在 INSERT 列表与一处投影 |
+| 26 | `usage_facts.idx_usage_facts_model_time` | ★ **构造性死**：`canonical_id` 265,494/265,494 **恒 NULL** |
+| 25 | `session_memora.idx_session_memora_session` | `public.session_memora` 在仓内 **INSERT-only**（唯一 SQL 是 706 的 promote） |
+| 14 | `candidate_failure_logs.idx_cfl_provider_ts` | `provider_id` 从不进 WHERE（只进 SELECT / GROUP BY / 与临时表的 join 键） |
+| 12 | `stats_event_inbox.idx_stats_event_inbox_request` | `request_id` 只在 `RETURNING` 里被投影 |
+| 1 | `stats_event_inbox.idx_stats_event_inbox_claimable` | ★ **生产实证**：`LLM_GATEWAY_STATS_INBOX_CONSUMER` **未设置** ⇒ 消费器从不运行（见下） |
+| 1 | `stats_event_inbox.idx_stats_event_inbox_pending` | 同上 |
+| 3+2+2+2+2+0+0 | `system_probe_runs` 的 7 条 | 3 个真实读方**全部**只按 `started_at` / `created_at` 范围查 ⇒ 7 条索引的首列（`raw_model`/`automaticity`/`status`/`provider_id`/`credential_id`/`task_id`/`skip_reason`）**没有一条被约束**；其中 `provider_id` 恒 NULL、`skip_reason` 99.68% NULL |
+| 1+0 | `auto_route_selections.idx_ars_task_profile_ts` / `idx_ars_unsettled` | 无读方（`settled_at IS NULL` 的读法只打在 hot 表上） |
+| 0+0 | `sessions.idx_sessions_parent_session` / `idx_sessions_agent_role` | 写独占 + **构造性死**（`parent_session_id` 恒 NULL；`agent_role` 恒 `'main'` ⇒ 部分索引恒空） |
+| 0 | `stats_event_inbox.idx_stats_event_inbox_dead_letter` | `ReplayDLQ` **无生产调用方** |
+
+★ **「消费器未启用」是本轮唯一一条**用**生产进程环境**直接判定的项**（不是推断）**：
+
+```bash
+# 154（pid 25747）/ 245（pid 3144547）两个在跑的网关进程
+tr '\0' '\n' < /proc/<pid>/environ | grep -E '^LLM_GATEWAY_STATS_INBOX_CONSUMER='
+# ⇒ 两台均**无此变量**（而两台各有 53 / 60 个其它 LLM_GATEWAY_* 变量）
+```
+
+⇒ `domains/stats/inbox_consumer.go:402-435` 的 claim 路径在生产**从不执行**
+⇒ `idx_stats_event_inbox_claimable` / `_pending` 两条**同时**满足：
+**0 扫描 + 无生产调用方 + 死页率 88.60% / 88.76%**（`idx_stats_event_inbox_scope` 死页率仅 8.47%）
+⇒ ⇒ **REINDEX 是浪费，应直接 DROP**（若属主确认消费器将来也不会启用）。
+
+#### §143.18.9.2 待属主拍板清单（本节新增；**对生产零写入**）
+
+| # | 事项 | 体量 / 收益 | 依据 | 风险 |
+|---|---|---|---|---|
+| **A** | ★★★ **唯一索引的判词修正**：292 MB 从 T3/T4 里**移出**，改判「写入路径是否依赖唯一性」 | 292 MB 不再误判为可删 | §143.18.2（沙箱三腿 + 生产两证） | 低（只改判词，不动生产） |
+| **B** | ★★★★ **`ursm_node_snapshot_min` 保留期**：7 天（实测速率折 30 天 ≈ **36 GB**）vs 设计估计 17 GB（**低约 2 倍**） | 30 天档 ≈ 36 GB；每多留 1 天 ≈ 1.2~1.5 GB | §143.18.8 | **中**：改 `URSM_SNAPSHOT_RETENTION_DAYS` 会改两台生效窗口 ⇒ 需显式授权 + 两台同步 |
+| **C** | ★★★ **T3 清单 20 条 / 207 MB** 的 DROP 授权 | 207 MB | §143.18.9.1 | **中**：DROP 父声明会级联全部分区且未来不再派生；须先发代码（§143.16 T1 口径） |
+| **D** | ★★ **★ T5 新档 5 条 / 110 MB**：读方存在但规划器不认 —— 删还是不删？ | 110 MB | §143.18.6 | **中**：读方确实存在（不是「没人用」）⇒ 删掉不改变现行计划，但会让将来改写查询时少一条备选 |
+| **E** | ★★ **`usage_facts` 族死页 14,236 页 ≈ 111 MiB**（7 条声明，死页率 44~56%）⇒ T0 REINDEX 候选 | ≈ 111 MiB 可回收 | `pfam_dead.out`（`pgstatindex`） | 低（不改语义） |
+| **F** | ★★ **`_request_logs` 退役族 23 条 / 71 MB**：本轮**未逐列闭环** ⇒ 是否单独开一轮（★ **与并行会话的 `cost_usd < 0` 部分索引那条线互补、不重复**，见 §143.18.9.3） | 71 MB | §143.18.9.1 | 低 |
+| **G** | ★★ **`handoff_logs` 父表零声明**（9 个叶各带 3 条手写索引）⇒ 新分区将无索引 ⇒ 是否把声明提到父表 | 结构正确性（非体量） | §143.18.7 | **中**：改父表 DDL ⇒ 需迁移 + 授权 |
+| **H** | ★★ **245 连接池 690 次 degraded / 332 次 draining / 38 次进程启动** ⇒ 留存 `closed pool` 的根因 | 可观测性 / 稳定性 | §143.18.8.3 | **中**：本轮**不深挖** |
+| **I** | ★ **878 补的 5 条父表索引实测只有 2 条被选中**（supplier / tenant 两条 19 MB 用不上）⇒ 是否订正 878 文件头的论据 | 19 MB | §143.18.6 | 低（只订正论据，不动 DDL） |
+
+#### §143.18.9.3 诚实边界：本节**没做**的事
+
+- ⚠ **对生产写入为 0**：无 DROP / REINDEX / VACUUM / ANALYZE / 建索引 / 应用迁移 / 改脚本 / 改 cron。
+- ⚠ **全族全图只覆盖「父声明派生」的 170 条**；**26 条孤儿叶索引在图外**（§143.18.7）。
+- ⚠ **`_request_logs` 退役族 23 条 / 71 MB 未逐列闭环**（F 项）。
+  ★ **并行会话交叉（2026-10-20 观测，该迁移随后已入 `origin/main`）**：
+  另一会话给 `_request_logs` 建了 `WHERE cost_usd < 0` 的部分索引
+  （`sql/migrations/startup/882_request_logs_cost_negative_partial_idx.sql`，
+  修 `bg/routing_health_checks.go` 的 `recorded_cost_is_negative`：
+  每 ~8~9 分钟扫 ~43 万行；252 生产 24h 窗实测 ≥1s 慢查 158 次 / 2,010s，
+  另有 34 次/天被 `statement_timeout` 击杀）。
+  ⇒ ⇒ **本节的 F 项不要与那条线重复做**：那条线处理的是**该族唯一还在跑的读方**；
+  **本节的 23 条零扫描声明是**另外 23 条**（读方在别处或已停写）⇒ **两者互补，不冲突**。
+  ⇒ ⚠ **迁移编号可能变**（本仓已有 879 → 881 的先例）⇒ 以**文件内容**为准，别只认编号。
+- ⚠ **EXPLAIN 只证明「计划会选」，不证明「曾经被用过」**；本节所有 EXPLAIN
+  仅用于区分「索引没用」与「查询没来」，**不用于**证明「索引在用」。
+- ⚠ **OR 形态的可用性依赖计划模式**（custom / generic）⇒ §143.18.5.1 的 T4 判定带此前提。
+- ⚠ **零扫描 = 全生命周期计数**（`pg_stat_database.stats_reset` 为 NULL）⇒ 跨表可比；
+  **不可**与 `pg_stat_statements` 的 27 小时窗口混比。
+- ⚠ **本轮没有逐条复核 §143.16 的 T0~T3 清单**（P0~P5 / C 类 1.2 GB 仍未处置）。
+- ⚠ **`session_turns` 族沿用 §143.17 的结论**，本轮只补了 `uq_session_turns_final_success` 的理由订正。
+- ⚠ **本节未评估「删掉 T3 后写放大会降多少」** —— 那是 §143.16 的收益公式口径，本节只给读数与档位。
+- ⚠ **发现 `sessions.status` 恒 `'active'` 之后，未去查是否有别的表也在写这个列**（本轮只统计了 `sessions` 族）。
+
+#### §143.18.9.4 复核方法（可原样重跑）
+
+```bash
+# 1) 全族全图（父声明 → 叶实例；★ 索引级 pg_inherits）
+bash ~/.mavis-tools/lgwp-prod.sh /private/tmp/pfam_decl.sql 300 > /private/tmp/pfam_decl.out 2>&1
+# 2) 唯一索引叶实例逐条扫描数（证据 A）
+bash ~/.mavis-tools/lgwp-prod.sh /private/tmp/pfam_uniq.sql 300 > /private/tmp/pfam_uniq.out 2>&1
+# 3) 族级表活动（seq/idx/写入量）
+bash ~/.mavis-tools/lgwp-prod.sh /private/tmp/pfam_14318.sql 300 > /private/tmp/pfam_14318.out 2>&1
+# 4) 构造性死直证（15 列全量计数，不是抽样）
+bash ~/.mavis-tools/lgwp-prod.sh /private/tmp/pfam_degen.sql 300 > /private/tmp/pfam_degen.out 2>&1
+# 5) 孤儿叶索引 + columnar AM 盘点
+bash ~/.mavis-tools/lgwp-prod.sh /private/tmp/pfam_orphan.sql 300 > /private/tmp/pfam_orphan.out 2>&1
+bash ~/.mavis-tools/lgwp-prod.sh /private/tmp/pfam_colr3.sql 300 > /private/tmp/pfam_colr3.out 2>&1
+# 6) EXPLAIN 三态（理想谓词 / 字面量 OR / 真实形态 / 强制 generic plan）
+bash ~/.mavis-tools/lgwp-prod.sh /private/tmp/pfam_explain.sql  300 > /private/tmp/pfam_explain.out  2>&1
+bash ~/.mavis-tools/lgwp-prod.sh /private/tmp/pfam_explain2.sql 300 > /private/tmp/pfam_explain2.out 2>&1
+bash ~/.mavis-tools/lgwp-prod.sh /private/tmp/pfam_explain3.sql 300 > /private/tmp/pfam_explain3.out 2>&1
+# 7) 消费器是否在生产启用（决定 inbox 两条的档位）
+for hp in 154:25747 245:3144547; do h=${hp%%:*}; p=${hp##*:}; \
+  ssh -o ConnectTimeout=15 $h "tr '\0' '\n' < /proc/$p/environ | grep -E '^LLM_GATEWAY_STATS_INBOX_CONSUMER=' || echo '$h: 未设置'"; done
+# 8) 沙箱前后差分（唯一索引假象；★ 须逐行插入，多行 INSERT 遇重复键会整条回滚）
+/opt/homebrew/opt/postgresql@17/bin/psql -h /private/tmp/pmm_exp -p 54399 -U xutaohuang -d pmm_sbx \
+  -f /private/tmp/pmm_exp/unq_idxscan_probe_v3.sql
+```
+
+⇒ ⇒ ★ **本节落地的门**（不连库，可原样重跑）：
+
+```bash
+# §143.18 文档门：假象桶 / 构造性死 / T5 新档 / 保留期杠杆 / 诚实边界
+GOCACHE=/tmp/gocache-p1437 go test ./scripts/ursmcheck/ -run 'TestRunbook14318' -count=1 -v
+```
+
+★ 同族：[[先读量具再读产物]] · [[0 命中的第一嫌疑是量具坏了]] ·
+[[阴性结论要当缺陷一样复核]] · [[自己上一节的结论也要复核]] ·
+[[对照组不是同一条件下造的]] · [[判据红了先怀疑自己的前提]] ·
+[[进临界区的新探测先量挂钟成本]]。

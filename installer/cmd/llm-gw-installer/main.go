@@ -906,6 +906,12 @@ var dropSessionSummariesRedundantSessionKeyUidx879 []byte
 //go:embed embeddata/startup/881_drop_attack_vectors_embedding_index.sql
 var dropAttackVectorsEmbeddingIndex881 []byte
 
+//go:embed embeddata/startup/880_session_write_timeout_budget.sql
+var sessionWriteTimeoutBudget880 []byte
+
+//go:embed embeddata/startup/882_request_logs_cost_negative_partial_idx.sql
+var requestLogsCostNegativePartialIdx882 []byte
+
 //go:embed embeddata/startup/859_tighten_pii_phone_intl_regex.sql
 var tightenPiiPhoneIntlRegex859 []byte
 
@@ -1204,14 +1210,16 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/870_usage_ledger_recon_cover_idx.sql":                                   usageLedgerReconCover870,
 	"startup/871_route_incident_events_created_at_idx.sql":                           routeIncidentEventsCreatedAtIdx871,
 	"startup/872_credential_model_index_partitions_heap.sql":                         cmiPartitionsHeap872,
-	"startup/873_usage_ledger_ts_cover_cache_agg_idx.sql":                     usageLedgerCoverCacheAgg873,
-	"startup/874_session_turns_client_request_id_idx.sql":                     sessionTurnsClientRequestIdIdx874,
-	"startup/875_ursm_snapshot_empty_response_rate_5m.sql":              ursmSnapshotEmptyResponseRate5m875,
-	"startup/876_drop_prefix_covered_parent_indexes.sql":                dropPrefixCoveredParentIndexes876,
-	"startup/877_session_turns_search_text_trgm.sql":                     sessionTurnsSearchTextTrgm877,
-	"startup/878_supplier_errors_partition_indexes.sql":                  supplierErrorsPartitionIndexes878,
-	"startup/879_drop_session_summaries_redundant_session_key_uidx.sql": dropSessionSummariesRedundantSessionKeyUidx879,
-	"startup/881_drop_attack_vectors_embedding_index.sql":                 dropAttackVectorsEmbeddingIndex881,
+	"startup/873_usage_ledger_ts_cover_cache_agg_idx.sql":                            usageLedgerCoverCacheAgg873,
+	"startup/874_session_turns_client_request_id_idx.sql":                            sessionTurnsClientRequestIdIdx874,
+	"startup/875_ursm_snapshot_empty_response_rate_5m.sql":                           ursmSnapshotEmptyResponseRate5m875,
+	"startup/876_drop_prefix_covered_parent_indexes.sql":                             dropPrefixCoveredParentIndexes876,
+	"startup/877_session_turns_search_text_trgm.sql":                                 sessionTurnsSearchTextTrgm877,
+	"startup/878_supplier_errors_partition_indexes.sql":                              supplierErrorsPartitionIndexes878,
+	"startup/879_drop_session_summaries_redundant_session_key_uidx.sql":              dropSessionSummariesRedundantSessionKeyUidx879,
+	"startup/880_session_write_timeout_budget.sql":                                   sessionWriteTimeoutBudget880,
+	"startup/881_drop_attack_vectors_embedding_index.sql":                            dropAttackVectorsEmbeddingIndex881,
+	"startup/882_request_logs_cost_negative_partial_idx.sql":                         requestLogsCostNegativePartialIdx882,
 	"startup/859_tighten_pii_phone_intl_regex.sql":                                   tightenPiiPhoneIntlRegex859,
 	"startup/852_models_canonical_column_set_reconcile.sql":                          modelsCanonicalColumnSetReconcile852,
 	"startup/853_credential_probe_queue_automatic.sql":                               credentialProbeQueueAutomatic853,

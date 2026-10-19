@@ -159,7 +159,7 @@ func (h *Handler) handleDataLifecycleStorage(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), storageRequestTimeout)
 	defer cancel()
 
 	writeJSON(w, http.StatusOK, h.storageOverviewSnapshot(ctx))
@@ -178,8 +178,33 @@ func (h *Handler) handleDataLifecycleStorage(w http.ResponseWriter, r *http.Requ
 // 会让数据永久陈旧 —— 那是本判据专门要拦的退化。
 var storageOverviewTTL = 30 * time.Second
 
-// storageCollectTimeout 单次聚合的独立上限，与 handler 的 15s 对齐。
-const storageCollectTimeout = 15 * time.Second
+// storageRequestTimeout 单个存储端点的**请求侧**预算。
+//
+// 与 storageCollectTimeout（采集侧预算）是两件事：请求预算管"用户等多久"，
+// 采集预算管"采集能跑多久"。两者的关系必须是 采集 > 请求，否则采集会在
+// 跑完之前被掐掉，快照永远建不出来（判据见 TestStorageCollectBudgetOutlivesRequestBudget）。
+const storageRequestTimeout = 15 * time.Second
+
+// storageCollectTimeout 单次聚合的独立上限。
+//
+// 2026-10-20：从 15s 抬到 60s。
+//
+// 抬的理由不是"让慢查询多跑一会儿"，而是**聚合必须有跑完的机会**：
+// 聚合的 ctx 是从 context.WithoutCancel 派生的（采集不挂在请求 ctx 上，
+// 发起者随时可能断开），所以**请求 ctx 到期并不会掐死采集**——只有
+// storageCollectTimeout 会。原先两者都是 15s，于是：冷页缓存下一次采集要
+// 11–17s ⇒ 采集在 15s 被自己掐掉 ⇒ 快照**永远建不出来** ⇒
+// /storage/tables 稳定 500（"context deadline exceeded"，duration_ms=15006），
+// 而且**每次请求都重试一次、再掐死一次**，没有任何自愈路径。
+//
+// 抬到 60s 后：采集能跑完 ⇒ 快照建得出来 ⇒ 启动预热（main.go 调
+// PrewarmStorageSnapshots）就能成功 ⇒ 请求路径直接命中快照，返回毫秒级。
+// 请求自己的 15s 预算不变（用户侧不等待超过 15s），采集超了也只是
+// 这次请求先超时返回，下次请求命中已建好的快照。
+//
+// 采集本身是纯读（pg_class / pg_stat_user_tables + stat 文件），
+// 跑 60s 不会积压资源：单飞键保证同一时刻只有一次采集在飞。
+const storageCollectTimeout = 60 * time.Second
 
 type storageOverviewSnapshot struct {
 	overview  storageOverview
@@ -715,7 +740,7 @@ func (h *Handler) handleDataLifecycleTableSizes(w http.ResponseWriter, r *http.R
 		}
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), storageRequestTimeout)
 	defer cancel()
 
 	resp, err := h.tableSizesSnapshot(ctx, limit)
@@ -939,26 +964,71 @@ func queryDirectory(path string) directoryInfo {
 //	没有 tie-break 就只能算"大概率成立"，不能算严格成立。补 relname 作
 //	次键后前缀性质精确，且并列时选谁从此固定（优化前是任意的）。
 //	对耗时无影响（Top-N 的主项仍是 pg_total_relation_size）。
+//
+// 2026-10-20 第四次：TOAST 列的相关子查询是**纯浪费**，且取的是错值。
+//
+//	原表达式：
+//	  COALESCE(pg_total_relation_size((
+//	    SELECT t.oid FROM pg_class t WHERE t.reltoastrelid = c.oid)), 0)
+//
+//	两个独立的问题：
+//
+//	(1) 值恒为 0。子查询找的是「toast 表的宿主表」：t.reltoastrelid = c.oid
+//	    意味着 c 自己是某张表的 TOAST 表。而本查询的 WHERE 限定
+//	    c.relkind IN ('r','p')，TOAST 表的 relkind 是 't'，**永远匹配不上**。
+//	    实测：536 张 r/p 表中可命中 0 张；而其中 435 张**确实有** TOAST 表。
+//	    ⇒ toast_bytes 这个字段一直是 0，而 StorageOverview.vue:186 照着渲染它。
+//
+//	(2) 代价极高。相关子查询被 planner 展开成 SubPlan → Seq Scan on pg_class，
+//	    对 LIMIT 下的每一行都重扫一遍全表（≈4000 行）。Top-200 就是
+//	    200 × 4000 ≈ **80 万行重复扫描**，且每次还要过一遍
+//	    relation_is_a_known_shard() 函数调用。全花在算一个恒为 NULL 的值上。
+//
+//	改法：直接用 c.reltoastrelid 这一列——它就是 c 自己的 TOAST 表 oid
+//	（无 TOAST 时为 0，而 pg_total_relation_size(0) 返回 NULL，被 COALESCE
+//	兜成 0）。零 join、零子扫描，且取到的是真值。
+//
+//	为什么上一轮（2026-10-16）记的是「LEFT JOIN 改写实测没有收益」：
+//	那次的对照数字（1170/1197/3463ms vs 1696/1254/1455ms）是在
+//	shared_buffers=400kB 的病态配置下测的，**规划**就要 ~1.2s，
+//	规划耗时把子查询的差异整个盖住了 —— 结论方向对（当时没找到更优写法），
+//	但「没有收益」这个判断本身不成立。直接用列比 LEFT JOIN 还更省：
+//	后者仍要 join 一遍 pg_class。
+//
+//	另注：本查询剩余的耗时主体是 pg_total_relation_size 本身 —— 它要对每张表
+//	真的去 stat 主 fork / fsm / vm / toast / 每个索引，共约 6000 次 stat。
+//	本机 PG 数据目录挂在 Docker Desktop 的 **virtiofs** 上
+//	（docker inspect: bind /Users/niuer/kaixuan/postgres-citus → /var/lib/postgresql/data），
+//	每次 stat 是一次到宿主机的 RPC，实测 0.2–1.2ms/次 ⇒ 光 stat 就要 4.2s。
+//	生产（Linux 原生文件系统）没有这层开销，该开销不成立。
+//	本轮实测：改掉子查询后，采集从「>15s 打满超时」降到 4–6s，
+//	落进 15s 预算内 ⇒ 启动预热成功 ⇒ 端点稳定 200。
+// tableSizesSQL Top-N 大表查询的 SQL 正文。
+//
+// 抽成包级常量（而不是留在函数体里）：判据需要用**同一条**语句跑
+// EXPLAIN 来证明「计划里没有 SubPlan」（那 80 万行重复全扫的形状），
+// 复制一份 SQL 到测试里会让这道门在 SQL 漂移时静默失守 ——
+// 门还在，验的却不是线上跑的那句。
+const tableSizesSQL = `
+	SELECT
+		c.relname,
+		n.nspname,
+		COALESCE(s.n_live_tup, 0),
+		pg_total_relation_size(c.oid),
+		pg_indexes_size(c.oid),
+		COALESCE(pg_total_relation_size(c.reltoastrelid), 0),
+		(c.relkind = 'p')
+	FROM pg_class c
+	JOIN pg_namespace n ON n.oid = c.relnamespace
+	LEFT JOIN pg_stat_user_tables s ON s.relid = c.oid
+	WHERE n.nspname NOT IN ('pg_catalog','information_schema')
+	  AND c.relkind IN ('r','p')
+	ORDER BY 4 DESC, 1
+	LIMIT $1
+`
+
 func queryTableSizes(ctx context.Context, h *Handler, limit int) ([]tableSizeInfo, int64, string, error) {
-	rows, err := h.db.Query(ctx, `
-		SELECT
-			c.relname,
-			n.nspname,
-			COALESCE(s.n_live_tup, 0),
-			pg_total_relation_size(c.oid),
-			pg_indexes_size(c.oid),
-			COALESCE(pg_total_relation_size((
-				SELECT t.oid FROM pg_class t WHERE t.reltoastrelid = c.oid
-			)), 0),
-			(c.relkind = 'p')
-		FROM pg_class c
-		JOIN pg_namespace n ON n.oid = c.relnamespace
-		LEFT JOIN pg_stat_user_tables s ON s.relid = c.oid
-		WHERE n.nspname NOT IN ('pg_catalog','information_schema')
-		  AND c.relkind IN ('r','p')
-		ORDER BY 4 DESC, 1
-		LIMIT $1
-	`, limit)
+	rows, err := h.db.Query(ctx, tableSizesSQL, limit)
 	if err != nil {
 		return nil, 0, "", err
 	}

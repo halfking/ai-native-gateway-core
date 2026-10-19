@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -1476,11 +1477,49 @@ func (c *CredentialProbeV2) writeBindingProbeEvidence(ctx context.Context, db bi
 	return result, err
 }
 
+// probePersistenceBudgetTimeout is the independent time budget for probe
+// persistence (health writes and probe audits).
+//
+// A probe that exhausted its own deadline used to hand that expired context
+// straight to the writer, so the health record it had just produced was
+// dropped without a trace: the write failed with "context deadline exceeded"
+// and only a warning was logged. Persistence therefore runs on its own
+// budget. Only an explicit cancellation — the caller withdrawing the result
+// it handed over — stops the write; a deadline that expires mid-write must
+// not silently truncate the record.
+const probePersistenceBudgetTimeout = 5 * time.Second
+
+// probePersistenceBudget derives the independent persistence budget from ctx.
+// The caller's deadline is dropped (it may already be exhausted), but the
+// caller's cancellation is still honoured: a cancelled caller no longer owns
+// the result, so it must not be written.
+func probePersistenceBudget(ctx context.Context) (context.Context, context.CancelFunc) {
+	budget, cancel := context.WithTimeout(context.WithoutCancel(ctx), probePersistenceBudgetTimeout)
+	stop := context.AfterFunc(ctx, func() {
+		// Deadline exhaustion is not a withdrawal — the record still matters.
+		// Any other cause (explicit cancel, custom cancel cause) is.
+		if !errors.Is(context.Cause(ctx), context.DeadlineExceeded) {
+			cancel()
+		}
+	})
+	return budget, func() {
+		stop()
+		cancel()
+	}
+}
+
 // writeHealth persists probe results with manual-disable guard.
 // Even if the caller somehow passes a manual_disabled credential, the
 // WHERE clause refuses to write.
 func (c *CredentialProbeV2) writeHealth(ctx context.Context, credID int, pr probeResult) {
-	execCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	// An explicit cancellation means the caller withdrew this result: do not
+	// write state the caller no longer owns.
+	if errors.Is(ctx.Err(), context.Canceled) {
+		return
+	}
+	// The probe's own deadline may already be exhausted, but the health record
+	// it just produced must still land: persistence runs on its own budget.
+	execCtx, cancel := probePersistenceBudget(ctx)
 	defer cancel()
 	if pr.ObservationOnly {
 		slog.Info("credential probe v2: inconclusive probe; preserving authoritative state",

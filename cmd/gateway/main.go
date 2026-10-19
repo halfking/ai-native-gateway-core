@@ -3957,7 +3957,8 @@ func main() {
 	// credentialstate 提交回调消费），保留；suspiciousProbe 从未被构造（NewSuspiciousProbeRunner
 	// 零调用方），已于 2026-09-04 随死代码清理第二批删除。
 	var modelProbe *bg.ModelProbeRunner
-	var modelAvailabilityCache *bg.ModelAvailabilityCache
+	// Construct before starting any probe workers that receive this pointer.
+	modelAvailabilityCache := bg.NewModelAvailabilityCache(fpSlotRedis, 4*time.Hour)
 	var modelAvailabilityReader *bg.ModelAvailabilityReader
 	var modelAvailabilityBackfill *bg.AvailabilityCacheBackfill
 	var modelAvailabilityKeyCounter *bg.AvailabilityKeyCounter
@@ -5406,7 +5407,6 @@ func main() {
 		// Health tracking workers (2026-06-22): sliding window aggregation,
 		// auto-scaleup, and auto-recovery. Run in both modes.
 		if fpSlotRedis != nil {
-			modelAvailabilityCache = bg.NewModelAvailabilityCache(fpSlotRedis, 4*time.Hour)
 			callHistoryAggregator = bg.NewCallHistoryAggregator(fpSlotRedis, dbConn.Pool(), 1*time.Minute)
 			// R36 (2026-09-17 audit, R34 遗留#4): single-writer election —
 			// instance-local watermarks + replace ON CONFLICT make dual

@@ -342,10 +342,20 @@ func (c *outputSensitiveChecker) unsafeToolValueDetail(ctx context.Context, valu
 		// 只对**本地执行类工具**生效（Bash/shell/exec…）：只有那里的参数才是
 		// 「一条会被执行的命令」。惰性内容工具（Write/Edit）的内容是被写下去
 		// 的数据，里面出现 URL 是文档，不是命令 —— r1035 已有同款分流。
-		if isLocalExecTool(toolName) && hasPublicHostSink(value) &&
-			sanitizerules.HardBlockAllowed("egress", egressSinkRuleID) {
-			setToolIssueRule(issue, "egress_destination", path, egressSinkRuleID)
-			return true, nil
+		//
+		// 命中**一律进台账**（sanitize_rule_events）：不在清单里记 log、
+		// 在清单里记 block —— 与形状规则同一口径，运维据此判断「该不该把
+		// 这条规则加进清单」。（方向规则是代码级判定、没有快照规则可 observe，
+		// 早期版本只落在容器日志里，台账是空的 ⇒ 观测缺口。）
+		if isLocalExecTool(toolName) && hasPublicHostSink(value) {
+			sink := SensitiveFragment{Type: TypeCustom, Kind: "egress_sink", RuleID: egressSinkRuleID}
+			if !sanitizerules.HardBlockAllowed("egress", egressSinkRuleID) {
+				c.observe(ctx, sink, "log")
+			} else {
+				c.observe(ctx, sink, "block")
+				setToolIssueRule(issue, "egress_destination", path, egressSinkRuleID)
+				return true, nil
+			}
 		}
 		return false, nil
 	case map[string]any:

@@ -1129,6 +1129,13 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			// 守卫：只有当**还存在别的**可仲裁唯一索引时才删 —— 表没有主键时
 			// 裸 uidx 是 ON CONFLICT (session_key) 唯一的仲裁器，删了写入直接失败。
 			"879_drop_session_summaries_redundant_session_key_uidx.sql",
+			// 880（2026-10-20）：把 session 写路径的**超时预算**在所有环境上对齐到 2000ms。
+			// 缺陷：`settings.GetPlatformInt` 的解析顺序是 DB → env → spec.Default →
+			// 代码 fallback，`spec.Default`（一直是 500）命中时代码里那个 2000 走不到
+			// ⇒ 实际预算 500ms，撑不住一次 shadow write 的串行步骤 ⇒ 正文不落、
+			// turn_no 错位、trace 丢失（全是静默失效）。本迁移只抬「已持久化过且
+			// 偏小」的值，不覆盖偏大的运维调优值。
+			"880_session_write_timeout_budget.sql",
 			// 881（2026-10-20）：删掉 injection_attack_vectors 上那条**只写不读**的
 			// ivfflat 索引 —— 全仓 `<=>` 的唯一读方打的是 task_type_centroids
 			// （另一张表，索引是活的），这张表只有 INSERT 与一个不碰 embedding
@@ -1139,6 +1146,14 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			// 守卫在迁移文件里**现算**：embedding 列有非 NULL 值就拒绝删
 			// （= 将来真有向量检索了，逼人重新评估）。
 			"881_drop_attack_vectors_embedding_index.sql",
+			// 882（2026-10-20）：给 `_request_logs`（860 改名的 request_logs 分区
+			// 父表）建 WHERE cost_usd < 0 的部分索引，根修
+			// bg/routing_health_checks.go recorded_cost_is_negative 的重扫浪费
+			// （R51 §3.5 方案 (a)。252 生产 24h 实测：158 次慢查 / 2,010s +
+			// 34 次/天被 statement_timeout 击杀；而源已停写、全表负成本行 = 0）。
+			// 建在父表上让未来月分区自动继承；fresh-install 的月分区
+			// （01-schema ensure）不带 USING columnar，全 heap，无 AM 拒绝面。
+			"882_request_logs_cost_negative_partial_idx.sql",
 		},
 	}
 }

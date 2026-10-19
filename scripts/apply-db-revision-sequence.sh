@@ -1721,6 +1721,26 @@ files=(
   # 裸 uidx 是 ON CONFLICT (session_key) 唯一的仲裁器，删了写入直接失败。
   "$ROOT_DIR/sql/migrations/startup/879_drop_session_summaries_redundant_session_key_uidx.sql"
 
+  # ── 881（2026-10-20，§144 审计轮补登）：删掉 injection_attack_vectors 上
+  # 只写不读的 ivfflat 索引 ──────────────────────────────────────────────
+  # 本迁移 2026-10-20 落地时只做了 installer 五点同步、漏了本通道腿
+  # （apply-db-revision-sequence_test 对账门实测红：
+  #   "startup migration 881 exists but is missing from the channel files=(...) array"）。
+  # 生产 schema_migrations 已有 881（部署链 runner 应用），本条目补齐的是
+  # 升级通道形态本身，让全新环境与已应用环境的投递路径一致。
+  "$ROOT_DIR/sql/migrations/startup/881_drop_attack_vectors_embedding_index.sql"
+
+  # ── 882（2026-10-20，§144 审计轮）：`_request_logs` 负成本部分索引 ──────
+  # 根修 bg/routing_health_checks.go recorded_cost_is_negative 的重扫浪费
+  # （R51 §3.5 登记的方案 (a)）。252 生产 24h 日志窗实测：该检查每 ~8-9 分钟
+  # 顺序扫一遍 43 万行、158 次慢查 / 2,010s（较 R51 轮再 +31%，连续第二轮
+  # 抬头）+ 34 次/天被 statement_timeout 击杀；而源已停写（10-13 起）、
+  # 全表负成本行 = 0（2026-10-20 实测，10-06 时代的 1,628 条已随退役分区
+  # 消失）。部分索引 0 条目、构建秒级；检查变索引探针，canary 语义保留。
+  # 建在父表上让未来月分区自动继承（877 台账口径）；fresh-install 月分区
+  # 全 heap（01-schema ensure 不带 USING columnar），无列存拒绝面。
+  "$ROOT_DIR/sql/migrations/startup/882_request_logs_cost_negative_partial_idx.sql"
+
   # ── 2026-10-16 孤儿迁移 044 补登（health_source 白名单缺 probe_now）──────
   #
   # 044_health_source_probe_now.sql 早就写在 sql/migrations/startup/ 里，注释把
@@ -1744,7 +1764,29 @@ files=(
   # 幂等、不带函数体、不依赖任何前序迁移的派生结果，位置无关；放末尾可确保
   # 它看到的是前序全部重放完的最终表形态。
   "$ROOT_DIR/sql/migrations/startup/044_health_source_probe_now.sql"
+
+  # ── 880（2026-10-20）：session 写路径的超时预算对齐到 2000ms ─────────
+  #
+  # 缺陷本体（实测，非推断）：
+  #   · internal/sessionv2mirror/hook.go 的注释写着「raise the default budget to
+  #     2000ms」，常量也确实提到了 2000 —— **但那次修复从未生效**。
+  #   · settings.GetPlatformInt 的解析顺序是 DB → env → spec.Default → 代码
+  #     fallback；spec.Default 命中时代码里的常量走不到，而这条的 spec.Default
+  #     一直是 500 ⇒ 实际预算一直是 500ms。
+  #   · 500ms 撑不住一次 shadow write 的串行步骤（维度写→turn→details→bodies→
+  #     summaries）⇒ 细节层写超时 ⇒ **正文一行不落**、整笔写走 outbox 异步
+  #     重放 ⇒ turn_no 与请求顺序错位、trace 丢失。**全是静默失效。**
+  #
+  # 这条迁移把「已持久化过且偏小」的预算抬到 2000（偏大的值保留，不覆盖运维
+  # 的手工调优）；spec.Default 的同步改动见 settings/spec_sessions_v2.go，
+  # 两处的一致性由 settings/session_write_timeout_default_test.go 钉住。
+  #
+  # ⚠ 本迁移**只管预算**。同一轮查出的另一个叠加根因（本机 PG 的
+  # shared_buffers=400kB ⇒ 每条语句规划 ~1s）属环境，不在迁移范围内 ——
+  # 不改它，症状依旧。详见 docs/audit/2026-10-20-request-logs-session-turns-复核轮.md。
+  "$ROOT_DIR/sql/migrations/startup/880_session_write_timeout_budget.sql"
 )
+
 
 
 # 2026-09-21 内容指纹重放通道（纪律⑨，F4 机制债收口）：当某个"已应用"的

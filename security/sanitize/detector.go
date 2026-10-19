@@ -336,12 +336,36 @@ func (d *PatternDetector) DetectScope(ctx context.Context, text string, scope De
 	// 那里 custom(address) 片段参与拦截决策（r1035 的 inert_tool 豁免按
 	// 「custom 且非 network_destination」放行），改它等于改守卫语义。
 	if scope != ScopeEgress {
-		fragments = dropLabelWrappedAddressFragments(fragments)
+		fragments = dropLabelWrappedAddressFragments(fragments, text)
 	}
 	sort.SliceStable(fragments, func(i, j int) bool {
 		return fragments[i].Start < fragments[j].Start
 	})
 	return fragments, nil
+}
+
+// addressSpecificChars 是 address 规则字符类里**只属于地址**的那部分。
+//
+// address 规则的字符类是：
+//
+//	省市区县镇乡村路街道巷弄  +  号栋单元室
+//
+// 前一组（省市区县镇乡村路街道巷弄）只出现在**地名/路名**里；
+// 后一组（号栋单元室）是**通用尾字**，同时也出现在「手机号 / 房间号 /
+// 工单号 / 订单号」这类**标签词**的尾字上。
+//
+// ⇒ 判别「被包住的那段残余是标签还是真地址」就靠这一组：
+// 残余里出现其中任一字 ⇒ 它是地址（必须继续脱敏）；
+// 没有 ⇒ 它只是标签（可以让位给精确类型）。
+//
+// 门（security/sanitize/r1036_label_suffix_address_test.go）断言本组每一字
+// 都仍在 yaml 的 address 正则字符类里 —— yaml 改了地址规则而本常量没跟着改时，
+// 门会红，不会静默失配。
+const addressSpecificChars = "省市区县镇乡村路街道巷弄"
+
+// hasAddressSpecificChar 报告残余里是否出现地址专有字。
+func hasAddressSpecificChar(s string) bool {
+	return strings.ContainsAny(s, addressSpecificChars)
 }
 
 // dropLabelWrappedAddressFragments 剔除「标签 + 精确值」形态里那层包裹性的
@@ -358,6 +382,20 @@ func (d *PatternDetector) DetectScope(ctx context.Context, text string, scope De
 // **包裹**。mergeFragmentSpans 按起点排序、起点相同时取跨度更大者，于是外层
 // 赢，整句塌成一个 `{SENSITIVE:custom:1}`。
 //
+// ★ 2026-10-20 12h 审计轮修正（**原实现有泄漏**）：
+// 原实现把被包住的 custom 片段**整段丢弃**。但「包住」只说明 custom 的跨度
+// 更大，**不说明它多出来的那部分只是标签**：
+//
+//	「手机号 13800138001」        custom 残余 =「手机号        」⇒ 标签
+//	「北京市朝阳区建国路88号 13800138001」
+//	                              custom 残余 =「北京市朝阳区建国路88号」⇒ **真地址**
+//
+// 两者在结构上**完全同形**（都是「前缀 + 空格 + 精确值」），原实现无法区分
+// ⇒ 真地址那一例被**整段丢弃**，地址明文留在脱敏结果里（实测泄漏）。
+//
+// ⇒ 修正：把 custom **裁成残余**，而不是丢弃它；残余里若出现地址专有字
+// （见 addressSpecificChars）就**继续按 custom 脱敏**，否则才让位给精确类型。
+//
 // 危害是**类型退化**而不是泄漏：值照样被遮住，但占位符类型从 phone 退成
 // custom，映射值从「一个号码」变成「标签+号码整句」——下游按类型分流的地方
 // 拿不到类型信息，调用方拿到的映射也不再是「一个手机号」。
@@ -370,7 +408,7 @@ func (d *PatternDetector) DetectScope(ctx context.Context, text string, scope De
 //
 // 为什么不在正则里删掉「号」：真实地址大量以「号」结尾（「建国路88号」、
 // 「文三路100号」），删掉会让地址规则整体失效——那是倒退不是修复。
-func dropLabelWrappedAddressFragments(fragments []SensitiveFragment) []SensitiveFragment {
+func dropLabelWrappedAddressFragments(fragments []SensitiveFragment, text string) []SensitiveFragment {
 	if len(fragments) < 2 {
 		return fragments
 	}
@@ -386,22 +424,91 @@ func dropLabelWrappedAddressFragments(fragments []SensitiveFragment) []Sensitive
 	}
 	kept := make([]SensitiveFragment, 0, len(fragments))
 	for _, f := range fragments {
-		if f.Type == TypeCustom {
-			wrapped := false
-			for _, p := range precise {
-				// 完全包住：custom 覆盖了精确片段，且不是同一段。
-				if f.Start <= p.Start && f.End >= p.End && (f.Start < p.Start || f.End > p.End) {
-					wrapped = true
-					break
-				}
-			}
-			if wrapped {
-				continue
+		if f.Type != TypeCustom {
+			kept = append(kept, f)
+			continue
+		}
+		// 找出被本 custom 完全包住的精确片段。
+		var inner []SensitiveFragment
+		for _, p := range precise {
+			// 完全包住：custom 覆盖了精确片段，且不是同一段。
+			if f.Start <= p.Start && f.End >= p.End && (f.Start < p.Start || f.End > p.End) {
+				inner = append(inner, p)
 			}
 		}
-		kept = append(kept, f)
+		if len(inner) == 0 {
+			kept = append(kept, f)
+			continue
+		}
+		// ★ 不整段丢弃：把 custom **裁成残余**（减去被包住的精确片段）。
+		// 残余为空 ⇒ 它确实只是「标签 + 精确值」的外壳 ⇒ 丢弃；
+		// 残余非空 ⇒ 看它是不是**真地址**：
+		//   · 含地址专有字（addressSpecificChars）⇒ 是地址 ⇒ **继续按 custom 脱敏**
+		//     （否则地址明文外泄，2026-10-20 12h 审计轮修正）；
+		//   · 不含 ⇒ 只是标签 ⇒ 让位给精确类型（r1036 的原意）。
+		for _, gap := range subtractSpans(f.Start, f.End, inner) {
+			value := ""
+			if gap[0] >= 0 && gap[1] <= len(text) && gap[0] < gap[1] {
+				value = text[gap[0]:gap[1]]
+			}
+			if !hasAddressSpecificChar(value) {
+				continue
+			}
+			trimmed := f
+			trimmed.Start = gap[0]
+			trimmed.End = gap[1]
+			trimmed.Value = value
+			kept = append(kept, trimmed)
+		}
 	}
 	return kept
+}
+
+// subtractSpans 返回 [start,end) 减去若干内部片段之后剩下的区间（按序）。
+//
+// ⚠ 不要把它"简化"成复用同文件里的 outsideReservedSpans —— 两者**前提不同**：
+//
+//	outsideReservedSpans(start, end, reserved) 假定 reserved **已按位置升序**
+//	（遇到 marker[0] >= end 就 break，直接假定后面没有更靠前的片段）；
+//	它的调用点在检测主循环里，reserved 天然是升序。
+//
+//	subtractSpans 的输入 inner 来自 dropLabelWrappedAddressFragments 里的
+//	precise 列表，而 precise 是**按规则迭代顺序**收集的（片段按规则 append，
+//	位置排序发生在本函数返回**之后**的 sort.SliceStable）⇒ **不保证升序**。
+//
+//	⇒ 若直接复用 outsideReservedSpans，未排序的 inner 会被它提前 break 截断，
+//	导致「残余」被算错 ⇒ 裁出来的残余既可能是错的区间、也可能漏掉真地址。
+//	⇒ 这里必须自己排序（下面的 sort.SliceStable）才成立。
+func subtractSpans(start, end int, inner []SensitiveFragment) [][2]int {
+	type span struct{ s, e int }
+	spans := make([]span, 0, len(inner))
+	for _, p := range inner {
+		s, e := p.Start, p.End
+		if s < start {
+			s = start
+		}
+		if e > end {
+			e = end
+		}
+		if s < e {
+			spans = append(spans, span{s, e})
+		}
+	}
+	sort.SliceStable(spans, func(i, j int) bool { return spans[i].s < spans[j].s })
+	var gaps [][2]int
+	cursor := start
+	for _, sp := range spans {
+		if sp.s > cursor {
+			gaps = append(gaps, [2]int{cursor, sp.s})
+		}
+		if sp.e > cursor {
+			cursor = sp.e
+		}
+	}
+	if cursor < end {
+		gaps = append(gaps, [2]int{cursor, end})
+	}
+	return gaps
 }
 
 // vendorKeyShapeSource is the shape the built-in rule and the shipped

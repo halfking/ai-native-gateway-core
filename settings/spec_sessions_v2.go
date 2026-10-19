@@ -93,9 +93,34 @@ func SessionsV2Specs() []*Spec {
 			Type:            TypeInt,
 			Scope:           ScopePlatform,
 			Category:        CategorySession,
-			Default:         500,
+			// ★ 2026-10-20：500 → 2000。**这不是调参偏好，是修一个被静默撤销的修复。**
+			//
+			// internal/sessionv2mirror/hook.go 的注释写着「raise the default budget
+			// to 2000ms」——它把常量 defaultShadowWriteTimeoutMs 提到了 2000。
+			// 但 `settings.GetPlatformInt(key, fallback)` 的解析顺序是
+			// **DB → env → spec.Default → 代码里的 fallback**：
+			// spec.Default 命中时，代码里那个 2000 永远用不上。
+			// 而本条的 spec.Default 一直是 500 ⇒ **那次「提到 2000」的修复
+			// 从来没有生效过**，实际预算一直是 500ms。
+			//
+			// 代价（本地实测，PG 修好 shared_buffers 之后仍然复现）：
+			// 一次 shadow write 要串行做 session_dim 维度写 + session_turns
+			// + session_turn_details + session_bodies + session_summaries，
+			// 500ms 撑不住 ⇒ 细节层写超时 ⇒
+			//   ① 正文（session_bodies）**一行都不落**（jsonb_typeof 读数是 null）；
+			//   ② 整笔写失败 ⇒ 走 outbox 异步重放 ⇒ **重放顺序 ≠ 请求顺序**
+			//      ⇒ turn_no 与时间序错位（实测：第 1 轮拿到 turn_no=3）；
+			//   ③ trace 找不到父行 ⇒ trace_events 丢失。
+			// ⇒ 「请求返回 200 但数据不完整」这一类**静默**失效，源头就在这个 500。
+			//
+			// 判据：settings/session_write_timeout_default_test.go 钉住
+			// 「spec.Default == internal/sessionv2mirror 的常量」，两边不许再各写各的。
+			Default:         2000,
 			Description:     "V2写入超时时间",
-			DescriptionLong: "写入V2表的超时时间(毫秒)。超时后不阻塞主流程，异步重试。",
+			DescriptionLong: "写入V2表的超时时间(毫秒)。超时后不阻塞主流程，异步重试。" +
+				"⚠️ 该默认值必须与 internal/sessionv2mirror 的 defaultShadowWriteTimeoutMs 一致：" +
+				"settings 的解析顺序是 DB → env → spec.Default → 代码 fallback，" +
+				"spec.Default 命中时代码里的常量不生效，两边不一致就等于悄悄改预算。",
 			Unit:            "毫秒",
 			DangerLevel:     Safe,
 			HotReload:       true,

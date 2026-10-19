@@ -3144,6 +3144,34 @@ PostgreSQL 解析调用时，**带默认值的那个也能接 3 参调用**，
 - 证据：契约门新增「引擎默认基础镜像仓按 target 拼」「引擎不含写死的主机专属仓名」两条；211 薄外壳 `scripts/deploy-211.sh` 只含主机信息 + 家族骨架。
 - 溯源：本轮 211 蓝绿改造；[复盘](docs/audit/2026-10-20-211-bluegreen-docker-engine.md)。
 
+
+## 2026-10-20 — 「执行快」不等于「语句快」：慢 SQL 必须把 Planning Time 与 Execution Time 一起读（Seen: 1/3）
+- 场景：request_logs→session_turns 退役复核轮，真实请求全部 200，但 session 族几乎不落库（正文 JSON null、trace 丢、turn_no 与时间序错位）。查遍锁等待（`pg_blocking_pids` 空）、查遍连接数（12/200、9 idle），都不是。
+- 真因：连 `SELECT count(*) FROM session_turns_hot WHERE 1=0` 这种**空查询**，`EXPLAIN ANALYZE` 报 `Execution Time: 0.03ms` 而 `Planning Time: 1195ms`。根因是本机 PG 的 `shared_buffers` 被**手改**成 400kB（PG 默认 128MB）⇒ 规划期要读的 catalog 页根本进不了共享缓冲。改成 2GB 后：规划 1195ms → **50ms**（24×），执行时间**一点没变**。
+- 防复发检查：① 看慢 SQL 时 `Planning Time` 与 `Execution Time` **必须一起读**——只看执行时间会把「慢」整个漏掉；② `EXPLAIN` 之外，还要量**空查询**的规划耗时（它把「与数据量无关的那部分成本」单独暴露出来）；③ 部署/验收前先量一次 `SHOW shared_buffers`，低于 128MB 一律先修再谈性能。
+- 通用式：**慢 SQL 有两个时间维度，"执行计划快"不等于"语句快"**；而规划期的开销几乎全部来自**catalog 访问**⇒ 共享缓冲不足时，SQL 写得再漂亮也没用。
+- 证据/溯源：`docs/audit/2026-10-20-request-logs-session-turns-复核轮.md` §2.3；`scripts/deploy-local-lib.sh` 新增 `dl_pg_check_memory` + `scripts/deploy-local-lib-pgmemory_test.sh`（4 条变异全红）。
+
+## 2026-10-20 — 「注释说改好了」不等于「改生效了」：改某个值的来源前，先把它的解析顺序列出来（Seen: 1/3）
+- 场景：`internal/sessionv2mirror/hook.go` 的注释写着「raise the default budget to 2000ms」，代码里 `defaultShadowWriteTimeoutMs` 也真的从 500 提到了 2000。**但那次修复从未生效。**
+- 真因：`settings.GetPlatformInt(key, fallback)` 的解析顺序是 **DB → env → `spec.Default` → 代码里的 fallback**。`settings/spec_sessions_v2.go` 里这条的 `Default: 500` 一直没改 ⇒ **spec.Default 先命中**，代码里那个 2000 永远走不到。实际预算一直是 500ms，而 500ms 撑不住一次 shadow write 的串行步骤 ⇒ 正文整段不落、整笔写走 outbox 异步重放 ⇒ **turn_no 与请求顺序错位**、trace 丢失。
+- 防复发检查：① 改「某个值的来源」时，**先列出它的解析链**，确认自己改的那一层**真的在链上**；② 同一语义的值只允许**一处**有字面量（判据从**源码**取字面量，不是复制品）；③ 判据要同时钉「一致性」与「方向性」：一致但都偏小，同样是缺陷。
+- 通用式：**生效的是「链上第一个命中的那一层」**，不是「你改的那一层」；注释与代码一致 ≠ 生效。
+- 证据/溯源：同上文档 §2.4；`settings/session_write_timeout_default_test.go`（2 条变异全红：spec 回 500 / 常量改 1500）。
+
+## 2026-10-20 — 「给旁路单独开一个 ctx」不等于「预算分开了」：预算分离 = 计时起点分离（Seen: 1/3）
+- 场景：维度写（`session_dim` upsert，其触发器还要 UPDATE `session_summaries`）与轮次写共用一个 ctx ⇒ 维度写慢就把**主体**的 deadline 吃光 ⇒ 主体写失败、旁路却「成功」了。
+- 真因（第一版修法被自己的判据当场抓住）：光「再开一个 `WithTimeout(bg, timeout)`」**没用**——两个 ctx 的 deadline 是**同一个绝对时刻**（t0+timeout），维度写照样耗光主体的预算。实测轮次写拿到的剩余预算是 **−0.8ms**。⇒ 轮次写的 ctx 必须在维度写**之后**才建，预算才真的从「轮次写开始」起算。
+- 防复发检查：① 「给两段各用各的预算」判据要**行为**化：让前一段把预算烧光，后一段拿到的剩余必须仍接近满额；② 改完之后必须报出**总墙钟上限**的变化（本例 timeout → ≤2×timeout），别让「总时间变长」变成隐式代价。
+- 通用式：**预算分离 = 计时起点分离**，不只是「换个 ctx 对象」。与 LESSONS「同一次判定里的不同判据可以有不同的时间语义」是同一条：**旁路不许吃主体的预算**。
+- 证据/溯源：同上文档 §2.5；`internal/sessionv2mirror/shadow_write_budget_test.go`（变异 M1 改回共用 ctx → 红）。
+
+## 2026-10-20 — 部署验证通过 ≠ 数据可用：任何「落库了」的结论都要有一份**读回**证据（Seen: 1/3）
+- 场景：迁移 RC0、部署 `VERIFY_PASS=1`、探活 200、接口 200、后台零 ERROR——但 session 族**一行都没落库**。`VERIFY_PASS` 探的是进程/端口/版本，**从不探「写进去没有」**。
+- 真因：两个叠加的根因（`shared_buffers=400kB` + spec 默认 500ms 静默撤销修复），两者都让写路径在毫秒级 deadline 内超时，而失败是**静默**的：接口 200、日志只有 WARN。
+- 防复发检查：① 「数据可用」的结论必须由**读回**支撑：正文用 `jsonb_typeof(col)='array'`（**不是** `IS NOT NULL`——JSON null 也满足）、`turn_no` 连续性、`trace_events` 非空；② 「接口 200」**不是**落库证据；③ 部署链上加**环境前置门**（本例：shared_buffers 下限），让「部署成功但数据不可用」这种组合在部署阶段就报出来。
+- 通用式：**验收口径必须覆盖「产出」而不是只覆盖「过程」**；一个只探过程的门，会在最需要它的时候全绿。
+- 证据/溯源：同上文档 §2.1–§2.6。
 ## 2026-10-21 — 「0 扫描」的四种成因，只有一种能当删索引的依据（Seen: 1/3 个不同工作日）
 - 根因：把「这条索引 0 次扫描」直接读成「没人用 ⇒ 可 DROP」。实测同一张库里 0 扫描有**四种**成因：① **表是只写表**（写入路径根本不走它）；② **功能默认关闭**（`route_incident_events` 的留存 worker「默认不启用」，但它**启动时探索引**、缺了就跳过 ⇒ 删了 = 永久关掉留存）；③ **被别的索引遮住**（查询存在但计划器选了另一条）；④ **真没人用**（仓库无读方 + 生产计划不选）。只有第 ④ 种能进 DROP 候选。
 - 防复发检查：① 判「可删」前先给每条候选补**仓库读方 grep + 生产 EXPLAIN** 两份证据，并明确写出它属于哪一类成因；② **feature-gated 的路径要单独标出**（grep 该功能的默认开关与「缺索引就跳过」的分支）；③ ★ **探针的选择性必须与真实查询一致** —— 本轮自己用 `WHERE created_at < now()` 探留存索引，**无选择性 ⇒ Seq Scan** ⇒ 差点判成「没人用、可 DROP」；换成真实 cutoff（`now() - interval '30 days'`）⇒ 计划走该索引 ⇒ 判词反转。⇒ 「对照组不是同一条件下造的」这条纪律在索引侧同样成立。
@@ -3222,13 +3250,40 @@ PostgreSQL 解析调用时，**带默认值的那个也能接 3 参调用**，
   本条补的是「**未推送提交会把两点 diff 的主语换掉**」；
   ★ [[共享仓库多会话：验证 run 会被别人的 push 取消]] · [[先读量具再读产物]] · [[0 命中的第一嫌疑是量具坏了]]。
 
-## 2026-10-20 — 「通用引擎 + 薄外壳」泛化：主机名一个字都不能留在引擎里（Seen: 1/3）
-- 场景：把 211 专属的 Docker 部署脚本改造成可复用于多台 Docker 主机的通用引擎（`deploy-seamless-docker.sh`），主机信息全部由薄外壳（`deploy-211.sh`）用环境变量注入。
-- 根因/教训：泛化不是「把主机名换成变量」就完了——**默认值、备份文件名、注释里的主机名**都会在下一台主机上变成错的：① 引擎默认 `DD_BASE_REGISTRY=registry-211.itestu.cn` ⇒ 新主机会去拉 211 的仓（已改 `registry-${DD_TARGET}.itestu.cn`）；② 备份文件后缀 `.bak-d211-realip`（已改 `.bak-dd-realip`）；③ 引擎里的 `gw211_` 静态 key 前缀必须按 target 拼（否则新主机的 key 与 211 同前缀）。
-- 防复发检查：① 泛化后 `grep -n "<主机名>" 引擎` 只允许剩**历史说明性注释**，任何会影响行为的字面量都要清；② 判据加**反向断言**：「引擎不含写死的主机名」（`registry-211` 这类字面量不得出现）+「引擎默认按 target 拼」；③ 复制引擎 = 两份语义各自演化必然漂 ⇒ 新增主机只允许新增**薄外壳**；④ 薄外壳里 `DD_STATE_DIR` 这类**存密钥/状态**的路径不可改（换路径 = 换 SECRET_KEY = 库内 key 全失效）。
-- 证据：契约门新增「引擎默认基础镜像仓按 target 拼」「引擎不含写死的主机专属仓名」两条；211 薄外壳 `scripts/deploy-211.sh` 只含主机信息 + 家族骨架。
-- 溯源：本轮 211 蓝绿改造；[复盘](docs/audit/2026-10-20-211-bluegreen-docker-engine.md)。
+## 2026-10-20 — 同一张表有两套形状时，先问「哪一份是正典」：迁移文件里的 `IF NOT EXISTS` 会把列声明变成空操作（Seen: 1/3）
+- 场景：逐页浏览器扫描（104 页）时抓到 `/api/admin/prompt-injection/detections` 恒 500，服务端报 `42703 column "detection_score" does not exist`。这一列在 `sql/migrations/startup/315_prompt_injection_detection.sql` 里明明写着。
+- 根因：**正典形状**（`sql/schema/01-schema.sql` + `sql/objects/tables/prompt_injection_detections.sql`）的 `risk_level` 是 **integer 分数（1..10，带 CHECK）**，且**没有** `detection_score`/`matched_rules`/`matched_rules_count` 三列；而 315 声明的是另一套形状。315 的建表语句是 `CREATE TABLE IF NOT EXISTS` ⇒ **在已有正典表的库上是空操作** ⇒ 315 声明的列**从未被创建** ⇒ 查它们的代码恒 42703。⇒ 迁移文件是「声明」，`sql/schema/`+`sql/objects/` 才是「正典」；**声明可能从未生效**。
+- 防复发检查：① 看到 `42P01/42703` 时，先去**正典**里核这一列/视图在不在，再去核「是哪条迁移声明的」——后者很可能就是没生效的那条；② `CREATE TABLE IF NOT EXISTS` 只在「表不存在时」才是建表，在已有表的库上它**静默什么都不做**——凡是用它声明**列**的迁移，都必须先核正典形状；③ 判据要钉**正典形状**（逐字跑生产 SQL 让 PG 自己解析），不能钉「迁移文件里写了什么」。
+- 证据：`admin/prompt_injection_canonical_shape_test.go`（真库逐字跑生产投影与统计 SQL）；`domains/promptinjection/detector_canonical_shape_test.go`（真库写侧 + 旧形状变异见证）；变异 6/6 全被抓住。
+- 溯源：本轮 request_logs→session_turns 复核轮；[审计](docs/audit/2026-10-20-request-logs-session-turns-复核轮.md §5.6.1)。
 
+## 2026-10-20 — 形状错配同时毒化读侧与**写侧**，而写侧常被降级成 WARN ⇒ 审计记录静默丢失（Seen: 1/3）
+- 场景：同一张 `prompt_injection_detections` 表的形状错配，让读侧 500（可见），也让**写侧**每次 INSERT 都失败 —— 而失败只落一行 `slog.Warn("prompt_injection: failed to log detection")`。
+- 根因：**注入检测照常生效/拦截，只是审计记录一条不留** ⇒ 页面/报表上「这批请求没有注入命中」成了**假结论**。同族先例：攻击向量库写侧（a56338ee2，`learnAttackPattern` 恒失败、表恒 0 行）。
+- 防复发检查：① 凡「写不进去只记 WARN」的写点，优先怀疑「列/类型对不上」，而不是「偶发失败」；② 这类 WARN 升级为 **Error**（审计链断掉是安全事件，不是噪声）；③ 写侧要有**真库落库判据**（事务 + 回滚 + 读回），mock 门只认「有一条 INSERT 发生过」⇒ 对参数类型不敏感，**旧 bug 在 mock 下照样全绿**。
+- 证据：本轮把写侧失败从 `slog.Warn` 升为 `slog.Error` 并带 tenant/request/score；真库门 `TestInsertDetectionSQL_LandsInCanonicalShape` 读回 risk_level/rule_name/category/categories。
+- 溯源：同上 §5.6.1。
+
+## 2026-10-20 — 真库门能抓到 mock 抓不到的东西：把生产 SQL 提成包级常量，让判据**逐字**跑它（Seen: 1/3）
+- 场景：本轮新写的 6 道真库门，在**写的过程中**当场抓到我自己的 4 个错误：`AS c` 把列别名写成了表别名（应为 `AS t(c)`）；`FROM` 跑到了子查询**外面**；`categories` 绑了 JSON 字节（PG 数组字面量 22P02）；判据自己把数组扫进 `*string`。
+- 根因：这 4 条**在 mock 下全绿** —— pgxmock 对参数类型不敏感，只认「有过一次调用」。⇒ 判据抄一份 SQL 会与生产**漂移**，且漂移了没人知道；判据自己绑错类型则把自己的错当生产的错。
+- 防复发检查：① 生产用的 SQL 提成**包级常量**（`insertDetectionSQL` / `promptInjectionDetectionsSelectCols` / `promptInjectionStatsSQL` / `userProfileBaseStatsSQL`），判据**逐字**跑它，不许抄；② 判据的绑定参数必须与生产**同形**（`pq.Array` vs JSON 字节）；③ 判据自己的扫描目标类型要和列类型对得上（数组扫进 `[]string`、timestamptz 扫进 `*time.Time`）——判据红时先分「生产错」还是「判据错」。
+- 证据：4 个错误分别由真库门报 `42601` / `22P02` / `cannot scan _text into *string` 抓出；6 道判据的变异 6/6 全红。
+- 溯源：同上 §5.6.4。
+
+## 2026-10-20 — 「端点坏」与「端点被取消」必须用两条证据分开（Seen: 1/3）
+- 场景：浏览器里 `/request-logs` 恒「共 0 条 / 加载中…」、`/api/admin/turns/sessions` 报 500。一度按「端点有缺陷」查了很久。
+- 根因：服务端 `context canceled` ⇒ Go 的 `http.Server` 在**客户端断开**时取消 request ctx。浏览器同源 HTTP/1.1 只有 **6 条**连接且**整个浏览器共享**；内嵌 Browser 每个标签页常驻一条 SSE ⇒ 标签页一多，新请求被**客户端放弃** ⇒ 服务端记 500。真缺陷是**稳定**的，争抢是**时好时坏**的（实测同一端点同标签页 500/200/500）。
+- 防复发检查：① 判定「服务端有缺陷」要**两条证据一起看**：「同一请求逐字 curl 重放」⇒ 200 ⇒ 服务端没问题；服务端日志 `context canceled` ⇒ 客户端取消的佐证；② **同端点时好时坏**本身就是争抢的指纹；③ 客户端取消在服务端被记成 `500/server_error`（`middleware/logging_mw.go` 只看状态码）⇒ 监控里「客户端跑了」与「服务端坏了」长得一样（**遗留 L7**）。
+- 证据：curl 逐字重放 `GET /api/logs` 恒 200/151–156 条；浏览器 06:26:34 500 / 06:26:36 200 / 06:26:40 500。
+- 溯源：同上 §5.5.2。
+
+## 2026-10-20 — 工具的连接池上限会伪造出「数据恒为空」：页面级验收前先问「这个工具每标签页占几条连接」（Seen: 1/3）
+- 场景：内嵌 Browser 逐页验收时，页面「完整、无报错、但数据恒空」，一度被当成应用缺陷。
+- 根因：内嵌 Browser **每标签页常驻一条 SSE**（`/api/admin/live-stream`），而 Chromium 对同源 HTTP/1.1 只有 **6 条**连接且整个浏览器共享 ⇒ 多标签页时新请求排队/被放弃。这是**工具/环境约束**，不是应用缺陷。
+- 防复发检查：① 页面级验收前先问「这个工具每标签页占几条连接」；不满足时改用**单页顺序访问**的无头脚本（本轮：playwright-core + 本机缓存的 Chrome for Testing 1223，104 页顺序扫，全程最多 1 条 SSE）；② 无头脚本顺带给出**每 API 的状态与耗时**，比 DOM 断言更适合做「>2s 定位」；③ 判据材料留档：`/tmp/llmgw-retire-20261020/pw/sweep.mjs` + `sweep.tsv`（104 行，逐页一行）。
+- 证据：104 页扫描结果：文档级 103/104 可达（唯一例外 `/maintain` 503 = 本机未部署该服务）、**0 个 API ≥2000ms**、**0 个 JS 运行时异常**、5xx API 9 处（全部 curl 可复现）。
+- 溯源：同上 §5.5。
 ## 2026-10-20 — 门禁钉在哪个相位，决定它能不能失败（Seen: 1/3）
 - 场景：修「已发布规则里的地址族规则在输出面遮蔽 IP」（用户报告
   `export https_proxy=http://[REDACTED]:7890`）。第一版门禁写在**输入面**
@@ -3327,3 +3382,17 @@ PostgreSQL 解析调用时，**带默认值的那个也能接 3 参调用**，
 - 防复发检查：① 凡是「部署机可配 ⇒ 要进容器」的变量，都必须进引擎的**远端转发清单**，并加一条**契约门**断言「该变量出现在转发清单里」（只看引擎读没读它不够）；② 文档里给出的运维路径要与实际一致：**改远端 env 文件**（引擎跨部署保留）与**部署机 export**（需转发）要分别写清哪条生效；③ 部署后**核验容器里那个变量本身**（`docker exec … printenv`），别只看启动日志。
 - 证据：`scripts/deploy-seamless-docker.sh` 的 `_dd_fwd` 清单 + `tests/deploy_211_contract_test.sh` 新增断言（124 通过 0 失败）；211 实测「export 后容器 env 仍无该变量」⇒ 补转发 ⇒ 实测容器 env 出现该值。
 - 溯源：211 空响应事故 r1037 的部署验证段；[复盘](docs/audit/2026-10-20-r1037-211-空响应与硬阻断清单.md) §7.3。
+
+## 2026-10-20 — 代码级判定（不在规则快照里）的命中，台账是空的：承诺与实现要对齐（Seen: 1/3）
+- 场景：给防外传守卫加的**方向档**（`builtin.egress_sink`）是代码级判定——它不在规则快照里，因此没有「片段」可 observe ⇒ 命中只落在容器日志（`rule_id=builtin.egress_sink`），`sanitize_rule_events` 台账里一条都没有。
+- 真因：台账写入走的是「片段 observe」这条路；代码级判定没有片段 ⇒ 走不进台账。而运维文档承诺的是「命中只记台账」——**承诺与实现不符**，且这一档恰恰是本轮新增的**推荐加固档**，运维最需要用它判断「该不该继续开着」。
+- 防复发检查：① 任何**新增的判定路径**都要问「它命中了进不进台账」——不在规则快照里的判定要**自己合成片段**再 observe（只带 RuleID/Type/Kind，**不带值**：observe 路径不读 Value，无泄漏面）；② 文档里写「命中记台账」这类承诺时，逐条对到**每条**判定路径，而不是对到「有快照规则的那些」；③ 判据要覆盖**两种动作**（清单外记 log / 清单内记 block），只测一种会漏掉「该记的时候没记」。
+- 证据：`security/sanitize/output_sensitive.go`（方向判定命中一律 observe）；判据 `TestR1037SinkRuleHitIsRecordedInLedger`（两个子用例），变异 M11（摘掉 observe）两个子用例都转红；211 生产台账读数：默认档 `builtin.egress_sink|egress|log`、方向档 `builtin.egress_sink|egress|block`。
+- 溯源：r1037 在 211 补到含 r1038 的 main 后的生产复验；[复盘](docs/audit/2026-10-20-r1037-211-空响应与硬阻断清单.md) §7.6。
+
+## 2026-10-20 — 「请求里有这条命令」≠「模型发出了这条命令」：验收要读**实际产出的**内容（Seen: 1/3）
+- 场景：生产复验「某个 Bash 命令在方向档下是否被拦」。初版脚本用「响应里有没有 `function_call`」判断模型是否发出了工具调用，一轮读到「未被拦」，差点当成「方向档漏拦」。
+- 真因：那一轮模型**没照发那条命令**（minimax-m3 对某些命令会自己改写或拒答）⇒ 「有 function_call」是假阳性；而「被拦」的表现恰恰是**工具调用参数不上线**，两个信号混在一起 ⇒ 读数互相污染。
+- 防复发检查：① 判「模型是否发出了 X」要读**实际产出的字段**（Responses 协议读 `response.function_call_arguments.delta` 的内容；Chat 协议读 `delta.tool_calls[].function.arguments`），不要用「有没有某个事件类型」代替——事件类型只说明「有工具调用」，不说明「调用的是哪条命令」；② 「被拦」的表现与「模型没发」在客户端侧**长得一样**（都没有工具调用参数）⇒ 判定必须把两者分开：读实际内容 + 看网关侧日志的 `rule_id`；③ 一次读数异常先怀疑**夹具/读法**，别急着改被测行为（本轮重跑同一命令即被拦，读法是错的）。
+- 证据：复验脚本从「找 `function_call` 字符串」改成「拼 `response.function_call_arguments.delta`」后读数稳定；网关侧日志 `output_compliance: blocked stream event ... reason_codes=[egress_destination] rule_id=builtin.egress_sink` 作权威旁证。
+- 溯源：r1037 补到含 r1038 的 main 后的生产复验；[复盘](docs/audit/2026-10-20-r1037-211-空响应与硬阻断清单.md) §7.6。
