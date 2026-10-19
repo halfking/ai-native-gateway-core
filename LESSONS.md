@@ -3112,6 +3112,62 @@ PostgreSQL 解析调用时，**带默认值的那个也能接 3 参调用**，
 - 证据：契约门新增「引擎默认基础镜像仓按 target 拼」「引擎不含写死的主机专属仓名」两条；211 薄外壳 `scripts/deploy-211.sh` 只含主机信息 + 家族骨架。
 - 溯源：本轮 211 蓝绿改造；[复盘](docs/audit/2026-10-20-211-bluegreen-docker-engine.md)。
 
+## 2026-10-20 — 门禁钉在哪个相位，决定它能不能失败（Seen: 1/3）
+- 场景：修「已发布规则里的地址族规则在输出面遮蔽 IP」（用户报告
+  `export https_proxy=http://[REDACTED]:7890`）。第一版门禁写在**输入面**
+  （`SanitizeInput`），自认为覆盖了缺陷。
+- 真因：`DetectScope` 的作用域是**相位**级的，而输入与输出走**不同相位**：
+  输入侧 `SanitizeInput` → `ScopeInputDeclarations` ⇒ 相位 `"input"`；
+  输出侧 `outputSensitiveChecker.Check` → `detector.Detect`（= `ScopeRedact`）
+  ⇒ 相位 `"output"`。legacy 地址规则挂的是 `scopes=[output]` ⇒ 它在**输入面
+  压根不适用** ⇒ 门禁**恒绿**（假绿）：修复前修复后都绿，钉不住任何东西。
+  靠**变异验证**才发现（改坏实现后主门禁纹丝不动，只有边界那条转红）。
+- 防复发检查：① 写门禁前先确认「被测代码走哪个相位」，用**同一个相位**驱动它
+  （本轮为此把输出侧单独设门，并把输入面的门改用**同时挂 input 相位**的规则形态）；
+  ② 「没被遮蔽」类断言的前提要用**结构性**断言（规则在快照里 / 作用域含该相位 /
+  enabled / 正则确实匹配这段文本），**不要**用「另一个面看得见」——相位不同，
+  另一个面看不见是**规则形状**决定的，不是检测器坏了；
+  ③ 门禁写完**必须**做变异验证，且以「**主门禁**转红」为通过标准，边界门转红不算。
+- 证据：`security/sanitize/r1038_redaction_scope_marker_test.go`（13 条），
+  变异「地址族排除失效」→ 6 条转红；第一版（只测输入面）变异下 0 条转红。
+- 溯源：本轮 r1038；[复盘](docs/audit/2026-10-20-r1038-脱敏范围与遮蔽标记.md)。
+
+## 2026-10-20 — 数据修复不是代码保证：停用 DB 行 ≠ 行为消失（Seen: 1/3）
+- 场景：851 迁移把 `pii_patterns.ip_address` 那行 `enabled=false`，用户以为
+  「IP 不会被遮了」就完事了。但 legacy 导入把**同一行**造成
+  `type=server_ip / scopes=[output] / action=mask` 的**托管规则**，
+  而**基线快照不可变** ⇒ 851 之前发布过基线的部署拿到的快照里那行仍然是 enabled
+  ⇒ 遮蔽会一直存在，直到有人手工重发一版规则。
+- 真因：停用 DB 行只影响**下一次**基线发布；已发布快照是**历史**。
+  而「这条规则被启用时会发生什么」是**代码**的问题，不该由数据承担。
+- 防复发检查：① 凡是「某类数据被停用/收紧」当作安全修复的，必须同时有**代码级
+  兜底**（本轮：`DetectScope` 的地址族排除改为**全路径**生效，fallback 与托管规则
+  同口径）；② 基线/快照的**形状**要有门禁钉住（本轮抽出 `legacyPIIRule` 并加
+  `TestR1038LegacyPIIRuleMarksAddressFamilyAsLog`：地址族行的 action 必须是 `log`），
+  否则形状被改回 mask 时没有任何判据会报警（已发布快照是运行期数据，测试看不见）；
+  ③ 「只撤遮蔽、不撤检出」要成组实现：地址族在脱敏面放行，但命中**照记**进台账。
+- 证据：`cmd/gateway/r1038_legacy_pii_shape_test.go`、
+  `security/sanitize/r1038_redaction_scope_marker_test.go`；245 上已发布快照
+  v13（2026-10-19）实测 `compliance.pii.11 enabled=false`，本机基线 v1
+  （2026-10-16）实测无 `compliance.pii.*`。
+- 溯源：本轮 r1038。
+
+## 2026-10-20 — 别把输出字段当输入用：那是契约变更（Seen: 1/3）
+- 场景：要让「地址族 PII 命中只检出、不遮蔽」，第一版把 `ComplianceIssue.Redacted`
+  当成 `redactOutput` 的**输入**（`policy.AutoRedact && issue.Redacted`）。
+- 真因：`Redacted` 是**输出**（这条命中有没有被遮蔽），给管理台看的。拿它当输入
+  ⇒ 任何**手工构造 issue** 的调用方（不填这个字段）会突然失去遮蔽能力 ——
+  `domains/outputcompliance/owner_test.go` 的 `TestRedactOutput_MultipleIssuesDescendingOrder`
+  立刻变红（它构造的 issue 不带 `Redacted`）。
+- 防复发检查：① 要给某类 issue 加「不改写正文」的语义，用**独立字段**
+  （本轮新增 `DetectOnly`），不要复用已有字段——已有字段的语义属于它的读者；
+  ② 改 `redactOutput` 的判定条件前，先问「这个字段的**既有读者**是谁」：
+  结构体上的布尔字段通常同时被 UI / 存储 / 测试读；③ 契约测试变红时先分
+  「判据过时」与「真缺陷」：本轮那条红是**真缺陷**（契约被我改了），
+  改法是加字段而不是改判据。
+- 证据：`domains/outputcompliance/checker.go`（新增 `DetectOnly`）、
+  `domains/outputcompliance/owner_test.go:138`（未改判据即绿）。
+- 溯源：本轮 r1038。
 ## 2026-10-20 — 改「默认值」会让既有判据**同时从两端假绿**：闸门判据要落在默认不放开的那一档（Seen: 1/3）
 - 场景：给防外传守卫引入「硬阻断清单」，出厂默认只保留请求侧（input）允许硬阻断，egress/output 一律不终止回合。
 - 根因：既有判据写的是「**这条守卫开着的时候**它拦得住 X」。默认值一改，它们从「测拦截能力」退化成「测默认不拦」——**阻断侧与允许侧都会假绿**（判据纪律第 3 条：放行有两种成因，(b) 压根没触发也是放行）。本轮 28 条既有判据差点集体失去意义。

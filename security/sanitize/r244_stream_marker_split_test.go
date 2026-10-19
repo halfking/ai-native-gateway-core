@@ -124,7 +124,7 @@ func TestStreamRedactsGarbageContinuationAfterReservedMarker(t *testing.T) {
 	if strings.Contains(out, "{SENSITIVE:") {
 		t.Errorf("reserved marker prefix leaked: %s", out)
 	}
-	if !strings.Contains(out, "[REDACTED]") {
+	if !strings.Contains(out, unknownRedactedMarker) {
 		t.Errorf("expected a redaction, got: %s", out)
 	}
 	if result.ShouldBlock {

@@ -1193,7 +1193,11 @@ func TestSanitizeRestoreInterceptor_MasksInvalidPlaceholderContinuationAndKeepsS
 	require.NoError(t, err)
 	require.NotNil(t, result)
 	assert.False(t, result.ShouldBlock, "a malformed placeholder must not terminate the client stream")
-	assert.Contains(t, string(result.ModifiedChunk), "[REDACTED]")
+	// r1038：遮蔽物一律带类型。此处标记前缀被垃圾文本补全，类型从未被解析出
+	// 来 ⇒ 标记是 "[REDACTED:unknown]"（一句关于**这次遮蔽**的实话），
+	// 而不是无从追问的裸形态。
+	assert.Contains(t, string(result.ModifiedChunk), unknownRedactedMarker)
+	assert.NotContains(t, string(result.ModifiedChunk), "[REDACTED]")
 	assert.NotContains(t, string(result.ModifiedChunk), "{SENSITIVE:")
 	assert.NotContains(t, string(result.ModifiedChunk), "13800138000")
 	continued, err := it.InterceptStreamChunk(context.Background(), contentFrame("following"), meta)
