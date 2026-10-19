@@ -29,4 +29,7 @@
 - [x] Use isolated Go overlays to corrupt evidence, call-site counts, reader membership, unassessed membership, tier evidence and blind-spot membership individually. Require the designated test and intended assertion to fail; compiler errors do not count.
 - [x] Mutate the evidence predicate and its caller independently; confirm unit fixtures and the real gate catch both.
 - [x] Run complete admin tests, related SQL indirection tests, `go build ./...` and `go vet ./admin`.
-- [ ] Review exact commit SHA on both axes, save Task Stop Summary, merge without squashing concurrent changes, push main, and remove this worktree.
+- [x] Review exact commit SHA on both axes, save Task Stop Summary, merge without squashing concurrent changes, and push main (0ebe9bf8e → ff7b8e382).
+- [x] Confirm the merged main passes the complete admin package, build and vet.
+
+Final cleanup follows the audit report/lessons documentation checkpoint: push that checkpoint, then remove only this task's worktree and branch.
