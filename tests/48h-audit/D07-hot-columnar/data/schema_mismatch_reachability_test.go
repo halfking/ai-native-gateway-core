@@ -189,6 +189,20 @@ func countProductionCallSites(t *testing.T, needles map[string]string) map[strin
 			switch d.Name() {
 			case "vendor", "node_modules", ".git", "web", "installer", "docs", "sql", "deploy", "scripts", "skills":
 				return filepath.SkipDir
+			case ".audit-validation":
+				// ★ 2026-10-20 审计加的排除项，理由与上面一串**同类**：
+				//   它是 .gitignore 里的**审计 scratch 目录**（/.audit-validation/），
+				//   里面可能存着仓库源码的**快照副本**（上一轮 trace-retirement 实验留的
+				//   source/ 目录）。本门数的是"生产调用点"，而 gitignore 掉的目录
+				//   **永远不可能是已提交的生产源码** ⇒ 把它算进来只会数重。
+				//   实测症状：登记「期望 1 处调用」的两条被数成 2 处
+				//   （.audit-validation/.../cmd/gateway/main.go 与 cmd/gateway/main.go），
+				//   门因此变红 —— 红因是"仓内留了源码副本"，不是仓库缺陷。
+				//
+				//   ★ 这不是"放宽断言"：本门断言的是**生产调用点**的条数，
+				//     被排除的目录按定义不在生产集合内。变异实测见文件末：
+				//     在**真实**源码目录（cmd/）下造一个重复调用点，门照样变红。
+				return filepath.SkipDir
 			}
 			return nil
 		}
