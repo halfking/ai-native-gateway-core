@@ -3210,3 +3210,17 @@ PostgreSQL 解析调用时，**带默认值的那个也能接 3 参调用**，
 - 防复发检查：① 凡是「部署机可配 ⇒ 要进容器」的变量，都必须进引擎的**远端转发清单**，并加一条**契约门**断言「该变量出现在转发清单里」（只看引擎读没读它不够）；② 文档里给出的运维路径要与实际一致：**改远端 env 文件**（引擎跨部署保留）与**部署机 export**（需转发）要分别写清哪条生效；③ 部署后**核验容器里那个变量本身**（`docker exec … printenv`），别只看启动日志。
 - 证据：`scripts/deploy-seamless-docker.sh` 的 `_dd_fwd` 清单 + `tests/deploy_211_contract_test.sh` 新增断言（124 通过 0 失败）；211 实测「export 后容器 env 仍无该变量」⇒ 补转发 ⇒ 实测容器 env 出现该值。
 - 溯源：211 空响应事故 r1037 的部署验证段；[复盘](docs/audit/2026-10-20-r1037-211-空响应与硬阻断清单.md) §7.3。
+
+## 2026-10-20 — 代码级判定（不在规则快照里）的命中，台账是空的：承诺与实现要对齐（Seen: 1/3）
+- 场景：给防外传守卫加的**方向档**（`builtin.egress_sink`）是代码级判定——它不在规则快照里，因此没有「片段」可 observe ⇒ 命中只落在容器日志（`rule_id=builtin.egress_sink`），`sanitize_rule_events` 台账里一条都没有。
+- 真因：台账写入走的是「片段 observe」这条路；代码级判定没有片段 ⇒ 走不进台账。而运维文档承诺的是「命中只记台账」——**承诺与实现不符**，且这一档恰恰是本轮新增的**推荐加固档**，运维最需要用它判断「该不该继续开着」。
+- 防复发检查：① 任何**新增的判定路径**都要问「它命中了进不进台账」——不在规则快照里的判定要**自己合成片段**再 observe（只带 RuleID/Type/Kind，**不带值**：observe 路径不读 Value，无泄漏面）；② 文档里写「命中记台账」这类承诺时，逐条对到**每条**判定路径，而不是对到「有快照规则的那些」；③ 判据要覆盖**两种动作**（清单外记 log / 清单内记 block），只测一种会漏掉「该记的时候没记」。
+- 证据：`security/sanitize/output_sensitive.go`（方向判定命中一律 observe）；判据 `TestR1037SinkRuleHitIsRecordedInLedger`（两个子用例），变异 M11（摘掉 observe）两个子用例都转红；211 生产台账读数：默认档 `builtin.egress_sink|egress|log`、方向档 `builtin.egress_sink|egress|block`。
+- 溯源：r1037 在 211 补到含 r1038 的 main 后的生产复验；[复盘](docs/audit/2026-10-20-r1037-211-空响应与硬阻断清单.md) §7.6。
+
+## 2026-10-20 — 「请求里有这条命令」≠「模型发出了这条命令」：验收要读**实际产出的**内容（Seen: 1/3）
+- 场景：生产复验「某个 Bash 命令在方向档下是否被拦」。初版脚本用「响应里有没有 `function_call`」判断模型是否发出了工具调用，一轮读到「未被拦」，差点当成「方向档漏拦」。
+- 真因：那一轮模型**没照发那条命令**（minimax-m3 对某些命令会自己改写或拒答）⇒ 「有 function_call」是假阳性；而「被拦」的表现恰恰是**工具调用参数不上线**，两个信号混在一起 ⇒ 读数互相污染。
+- 防复发检查：① 判「模型是否发出了 X」要读**实际产出的字段**（Responses 协议读 `response.function_call_arguments.delta` 的内容；Chat 协议读 `delta.tool_calls[].function.arguments`），不要用「有没有某个事件类型」代替——事件类型只说明「有工具调用」，不说明「调用的是哪条命令」；② 「被拦」的表现与「模型没发」在客户端侧**长得一样**（都没有工具调用参数）⇒ 判定必须把两者分开：读实际内容 + 看网关侧日志的 `rule_id`；③ 一次读数异常先怀疑**夹具/读法**，别急着改被测行为（本轮重跑同一命令即被拦，读法是错的）。
+- 证据：复验脚本从「找 `function_call` 字符串」改成「拼 `response.function_call_arguments.delta`」后读数稳定；网关侧日志 `output_compliance: blocked stream event ... reason_codes=[egress_destination] rule_id=builtin.egress_sink` 作权威旁证。
+- 溯源：r1037 补到含 r1038 的 main 后的生产复验；[复盘](docs/audit/2026-10-20-r1037-211-空响应与硬阻断清单.md) §7.6。
