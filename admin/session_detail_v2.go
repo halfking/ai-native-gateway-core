@@ -99,6 +99,10 @@ type SessionV2 struct {
 	Intent              *string    `json:"intent,omitempty"`
 	PrimaryRequestID    *string    `json:"primary_request_id,omitempty"`
 	TurnLogsSummary     any        `json:"turn_logs_summary,omitempty"`
+	// DurationMs 是 sessions.duration_ms —— 877 起由**每轮刷新**写入的
+	// 已流逝时长（updated_at - created_at）。见 session_turns_v2.go 的
+	// sessionSnapshotV2.DurationMs 注释（同一口径、同一消费方）。
+	DurationMs *int64 `json:"duration_ms,omitempty"`
 
 	// SessionAnalysis 是 migration 567 的 session_analysis_metadata 读侧投影
 	// （LEFT JOIN LATERAL 命中时非空）。见 session_meta_view.go 的字段定义与
@@ -348,6 +352,7 @@ func (api *SessionDetailV2API) querySession(
 				s.last_model, s.last_provider,
 				s.task_type, s.client_type, s.topic, s.intent,
 				s.primary_request_id, s.turn_logs_summary,
+				s.duration_ms,
 				sam.status, sam.schema_version, sam.input_hash,
 				sam.source_task_id, sam.updated_at, sam.payload
 			FROM public.sessions s
@@ -374,6 +379,7 @@ func (api *SessionDetailV2API) querySession(
 		&s.LastModel, &s.LastProvider,
 		&s.TaskType, &s.ClientType, &s.Topic, &s.Intent,
 		&s.PrimaryRequestID, &turnLogsSummaryRaw,
+		&s.DurationMs,
 		&saStatus, &saSchemaVersion, &saInputHash, &saSourceTaskID, &saUpdatedAt, &saPayloadRaw,
 	)
 	if err != nil {

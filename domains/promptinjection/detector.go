@@ -795,6 +795,47 @@ func (d *Detector) createApprovalRequest(ctx context.Context, tenantID, requestI
 	}
 }
 
+// insertAttackVectorSQL 是「自动学习攻击模式」的写入语句。
+//
+// ★ 为什么 categories 不能直接绑 JSON 字节（2026-10-20 审计修，见
+//   docs/audit/2026-10-20-prompt-injection-attack-vector-write.md）：
+//   列类型是**枚举数组** injection_category[]，而旧写法把 json.Marshal 的
+//   []byte 直接塞进 $4 ⇒ lib/pq 按文本发送 ⇒ PG 报
+//       ERROR: malformed array literal: "["prompt_injection",...]"
+//   ⇒ **每一次 learnAttackPattern 必然失败**，表恒为空（本地实测 0 行），
+//   而失败被 slog.Warn 吞掉 ⇒ 静默失效（写侧从不落库，读侧永远空集）。
+//
+// 现在 $4 传的是 text[]（pq.Array），由 SQL 侧把**合法**的枚举标签转成
+// injection_category[]。不在枚举里的标签（DB 动态规则可以带自定义类别）
+// 被**丢弃**而不是让整条 INSERT 失败 —— 一个不认识的类别不该让整条学习写不进去。
+const insertAttackVectorSQL = `INSERT INTO injection_attack_vectors (
+	tenant_id, attack_text, attack_hash, categories, severity, source, detected_at
+)
+SELECT $1, $2, $3,
+       ARRAY(SELECT c::injection_category
+             FROM unnest($4::text[]) AS c
+             WHERE c = ANY (enum_range(NULL::injection_category)::text[])),
+       $5, 'detection', NOW()
+ON CONFLICT (tenant_id, attack_hash) DO NOTHING`
+
+// attackVectorSeverity 把检测分映射成落库用的 severity。
+//
+// 列上的 CHECK 是 severity >= 1 AND severity <= 10（迁移 364）。
+// result.Score 取的是命中规则的**最大 severity**（规则取值域 3..10），
+// 所以正常路径必然落在区间内；但 CHECK 违反会让整条 INSERT 失败、
+// 而失败只留一行 Warn ⇒ 又一次静默失效。这里显式夹取，
+// 让"分数越界"降级成"存一个边界值"而不是"整条写不进去"。
+func attackVectorSeverity(score int) int {
+	switch {
+	case score < 1:
+		return 1
+	case score > 10:
+		return 10
+	default:
+		return score
+	}
+}
+
 // learnAttackPattern 自动学习攻击模式
 func (d *Detector) learnAttackPattern(ctx context.Context, tenantID, input string, result *DetectionResult) {
 	if len(input) < 10 || len(input) > 10000 {
@@ -802,14 +843,9 @@ func (d *Detector) learnAttackPattern(ctx context.Context, tenantID, input strin
 	}
 
 	hash := fmt.Sprintf("%x", []byte(input))
-	categoriesJSON, _ := json.Marshal(result.Categories)
 
-	query := `INSERT INTO injection_attack_vectors (
-		tenant_id, attack_text, attack_hash, categories, severity, source, detected_at
-	) VALUES ($1, $2, $3, $4, $5, 'detection', NOW())
-	ON CONFLICT (tenant_id, attack_hash) DO NOTHING`
-
-	_, err := d.db.ExecContext(ctx, query, tenantID, input, hash, categoriesJSON, result.Score)
+	_, err := d.db.ExecContext(ctx, insertAttackVectorSQL,
+		tenantID, input, hash, pq.Array(result.Categories), attackVectorSeverity(result.Score))
 	if err != nil {
 		slog.Warn("prompt_injection: failed to learn attack pattern", "error", err)
 	}
