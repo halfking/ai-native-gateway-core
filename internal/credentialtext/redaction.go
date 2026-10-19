@@ -30,6 +30,11 @@ func DetectionText(text string) string {
 // DetectionView also returns byte ranges recognized as masking syntax. Callers
 // can audit exemptions without retaining the script or any credential values.
 func DetectionView(text string) (string, [][2]int) {
+	view, spans := detectionView(text)
+	return maskJSONRedaction(text, view, spans)
+}
+
+func detectionView(text string) (string, [][2]int) {
 	if !strings.Contains(text, "sed") {
 		return text, nil
 	}
