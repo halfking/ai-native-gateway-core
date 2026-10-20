@@ -1773,15 +1773,19 @@ files=(
   # UNION ALL 视图族三重互斥 ⇒ 列存不可行；829 记录了列存方案被整体回滚）。
   # 只改 pg_description 一行 ⇒ 零锁零 IO；不改 430 本体（已 applied + 已记账）。
   "$ROOT_DIR/sql/migrations/startup/886_session_bodies_storage_comment.sql"
+  # 887：给会话族的 search_text 建**全文检索**腿 —— 表达式 GIN 索引
   # `USING gin (to_tsvector('simple', search_text))`。
   # ★ **不得改用生成列**：promote_session_turns_hot_to_partition 会报
   #   "cannot insert into a generated column" ⇒ 热表永远排不进月分区。
   # ★ 走三段式 CONCURRENTLY（逐分区建 → 建父壳 → ATTACH），与 877 同款。
   # ★ 只给会话族建，不给 v1 族建（v1 族 _request_logs 2026-10-20 实测 0 行
   #   ⇒ 代价为零；且顶层 OR 要求每条参与扫描的关系两条腿都有索引）。
+  "$ROOT_DIR/sql/migrations/startup/887_session_turns_search_text_fts.sql"
+  # 888：补会话族的 join 索引缺口 —— session_bodies 父表与 hot 表各补一条
   # (tenant_id, session_id, turn_no DESC, request_id)，sessions 补一条
   # (tenant_id, session_id, partition_date DESC)。
   # ★ PG 不支持 ALTER INDEX … ADD COLUMN ⇒ 只能「建新 + 删旧」（先建后删）。
+  "$ROOT_DIR/sql/migrations/startup/888_session_family_join_index_gaps.sql"
   # 视图投影与 db/request_logs_view_schema.go 的 sessionFamilyProjection 都
   # 引用它）。本迁移只订正 4 条列注释；填充由写路径承担
   # （domains/session/v2/turn_writer.go 的 turnToolsJSONBExpr）。

@@ -299,3 +299,5 @@
 281	884_session_family_v_analytics_views.sql
 282	885_session_turns_host_tags.sql
 283	886_session_bodies_storage_comment.sql
+284	887_session_turns_search_text_fts.sql
+285	888_session_family_join_index_gaps.sql

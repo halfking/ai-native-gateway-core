@@ -924,6 +924,12 @@ var sessionTurnsHostTags885 []byte
 //go:embed embeddata/startup/886_session_bodies_storage_comment.sql
 var sessionBodiesStorageComment886 []byte
 
+//go:embed embeddata/startup/887_session_turns_search_text_fts.sql
+var sessionTurnsSearchTextFTS887 []byte
+
+//go:embed embeddata/startup/888_session_family_join_index_gaps.sql
+var sessionFamilyJoinIndexGaps888 []byte
+
 //go:embed embeddata/startup/859_tighten_pii_phone_intl_regex.sql
 var tightenPiiPhoneIntlRegex859 []byte
 
@@ -1253,6 +1259,8 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/884_session_family_v_analytics_views.sql":                               sessionFamilyVAnalyticsViews884,
 	"startup/885_session_turns_host_tags.sql":                                        sessionTurnsHostTags885,
 	"startup/886_session_bodies_storage_comment.sql":                                 sessionBodiesStorageComment886,
+	"startup/887_session_turns_search_text_fts.sql":                                  sessionTurnsSearchTextFTS887,
+	"startup/888_session_family_join_index_gaps.sql":                                 sessionFamilyJoinIndexGaps888,
 	"startup/859_tighten_pii_phone_intl_regex.sql":                                   tightenPiiPhoneIntlRegex859,
 	"startup/852_models_canonical_column_set_reconcile.sql":                          modelsCanonicalColumnSetReconcile852,
 	"startup/489_credential_probe_queue_startup_backfill.sql":                        credentialProbeQueueStartupBackfill489,

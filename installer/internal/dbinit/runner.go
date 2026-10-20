@@ -1208,6 +1208,24 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			// 是列存；论证见 765:13-21 与 829）。只改 pg_description，
 			// 零锁零 IO；**不改 430 本体**（已 applied + 已记账 + 校验和已登记）。
 			"886_session_bodies_storage_comment.sql",
+			// 887：给会话族的 search_text 建**全文检索**腿 —— 表达式 GIN 索引
+			// `USING gin (to_tsvector('simple', search_text))`。
+			// ★ **不得改用生成列**：promote_session_turns_hot_to_partition 会
+			//   因为 "cannot insert into a generated column" 报错 ⇒ 热表永远
+			//   排不进月分区（887 头部有完整论证）。
+			// ★ 含 CREATE INDEX CONCURRENTLY ⇒ 本文件带 dbinit:no-transaction
+			//   标记（首行），applySQL 据此不加 --single-transaction。
+			// ★ 只给**会话族**建，不给 v1 族（_request_logs）建：顶层 OR 要求
+			//   每条参与扫描的关系两条腿都有索引，而 v1 族 2026-10-20 实测 0 行
+			//   ⇒ 代价为零（前提与复核条件写在 887 头部）。
+			"887_session_turns_search_text_fts.sql",
+			// 888：补会话族的 join 索引缺口 —— session_bodies 父表与 hot 表各
+			// 补一条 (tenant_id, session_id, turn_no DESC, request_id)，
+			// sessions 补一条 (tenant_id, session_id, partition_date DESC)。
+			// ★ PG **不支持** ALTER INDEX … ADD COLUMN ⇒ 只能「建新 + 删旧」
+			//   （先建后删，无空窗）。
+			// ★ 含 CREATE/DROP INDEX CONCURRENTLY ⇒ 带 dbinit:no-transaction。
+			"888_session_family_join_index_gaps.sql",
 		},
 	}
 }
