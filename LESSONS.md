@@ -4019,3 +4019,131 @@ PostgreSQL 解析调用时，**带默认值的那个也能接 3 参调用**，
      是**两种不同的问题**（后者多数是 `bak_20260920_*` 人工备份表）⇒ 混在一起会淹掉重点。
 - 证据：`docs/audit/2026-10-21-R60-新装缺列族.md` §2。
 - 溯源：R60 轮（2026-10-21）。
+
+## 2026-10-20 — 判「某表有没有数据」前，先排除三种「0 行」成因（Seen: 2/3）
+- 场景：memora 的 `memory` 表，同一轮里两次读数分别是 **0 行**与 **19 行**。差异不在数据，在**读法**。
+- 根因与通式：`memora` 的表开 `FORCE ROW LEVEL SECURITY` ⇒ **不钉租户 GUC 的 `count(*)` 恒返 0**；
+  正确读法是 `SET app.tenant_id=…; SET app.current_tenant=…; SET app.project_id=…` 之后**带谓词**再数。
+  同源第二条：`pg_stat_user_tables.n_live_tup` 对同一张表给出 **876**（陈旧估计），真实是 **0**。
+  ⇒ **`count(*)` 返回 0 有三种成因（真空 / RLS 过滤 / 统计陈旧），必须三者排除后才能下结论。**
+- 防复发检查：① 判「表为空」前先确认读法能穿过该表的隔离策略（RLS / 分区 / 视图安全栏）；
+  ② 优先用**精确** `count(*)`（带谓词）而不是 `pg_stat` 估计；③ 同一张表**用两种读法各数一遍**，不一致时先怀疑量具；
+  ④ 审计报告里凡是「某表 0 行 ⇒ 某能力是空的」这类推论，必须在报告里写明**读法**。
+- 证据：本轮审计员按无 GUC 读法报「live `memory` = 0 行 ⇒ 记忆落库是空的」；按 GUC 读法实测 **19 行**
+  （`memory-bank` 19 个条目 + `memory_ingest_receipts` 19 行，outcome 全 `accepted`）⇒ 该结论被订正。
+  `pg_stat_user_tables` 同表 `n_live_tup=876` 而真实 0。
+- 溯源：三项目会话治理轮 §5.4。
+
+## 2026-10-20 — 「幂等」类断言必须落在**可观测的最终状态**上，不能落在「调用了几次」上（Seen: 1/3）
+- 场景：asr 的 A-4 头条主张「重复分析**不**产生重复关联」，判据 `TestInferIsIdempotentOnReanalysis` 全绿。
+- 根因：判据断言的是**对 `fakeLinker` 发起了两次写**（`internal/projectinfer/producer_test.go:269`）⇒ 证明的是**写次数**，不是**行数**；
+  真正的「不产生重复行」只存在于注释里（`producer_test.go:266-268`）。把 `internal/taskdomain/repository.go:680`
+  的 `ON CONFLICT` **整个删掉**（重分析会真的写出第二行 `task_sessions`）⇒ `projectinfer`/`taskdomain`/`taskapi`
+  **三个包全绿** ⇒ 该主张**无守卫**。
+- 防复发检查：① 「幂等 / 不重复 / 不产生重复行」类主张，判据必须断言**行数**或**唯一 id**，
+  且该断言必须能在**真库**上跑（假实现只能测到「调用了几次」）；
+  ② 判据用 fake 时，先问「这个 fake 能不能表达『重复写入后的状态』」——不能就是空壳；
+  ③ 断言 `len(fake.calls) == 2` 与断言 `len(fake.rows) == 1` 是**两件事**，后者才是不重复。
+- 证据：二轮审计变异 A4（`DO UPDATE`→`DO NOTHING`）与 **A5（删掉整个 `ON CONFLICT`）**：`ok internal/projectinfer 3.017s`
+  / `ok internal/taskdomain 29.872s` / `ok internal/taskapi 14.909s` ⇒ **全绿**；修法是加真库回读
+  `SELECT count(*) FROM task_sessions WHERE session_id=$1 == 1`。
+- 溯源：三项目会话治理轮 §5.2（A4/A5 行）、§5.3（A-F1）。
+
+## 2026-10-20 — CI 不跑的文件里的判据 = **没有判据**（Seen: 1/3）
+- 场景：memora M-1 的验收标准是「重放 ⇒ 409 且**不产生新行**」——这是整轮 P0 最关键的保证（它让摄取可重试）。
+- 根因：守卫它的 `internal/sessionanalysis/store_integration_test.go:1` 是 `//go:build integration` 且需
+  `KX_INTEGRATION_PG=1`；而 `.gitlab-ci.yml:190-193` 的 `rls-isolation-tests` 作业**只跑** `./internal/kbmigrations/...`
+  与 `./internal/p3/...`，`.github/workflows/ci.yml:20-21` 的 `go test -race ./...` **不带 tag** ⇒ **该文件被跳过**。
+  ⇒ 这条保证**在 CI 上从未被机器检查过**。另有一个更隐蔽的变体：`internal/v2` 的单元判据用**自己就返回该错误**的
+  假后端（`internal/v2/session_analysis_test.go:177`）⇒ 只测到「错误→409」的映射，**测不到真回执检查**（变异 M5c 全绿）。
+- 防复发检查：① 新增判据后**立刻查它是否在某个 CI 作业的运行列表里**；`//go:build` 标签 ⇒ 逐个 CI 配置确认；
+  ② 关键保证要有**一条不需要外部依赖（DB/Redis/Docker）就能跑**的单元级守卫；
+  ③ 单元级守卫不许用「自己返回期望错误」的假后端 —— 那测的是映射不是逻辑。
+- 证据：二轮审计 M5c 变异（破坏回执检查）⇒ `ok internal/v2 0.702s` **全绿**；
+  `.gitlab-ci.yml:190-193` / `.github/workflows/ci.yml:20-21` 两处配置实读。
+- 溯源：三项目会话治理轮 §5.2（M5c 行）、§5.3（M-F1、M-F3）。
+
+## 2026-10-20 — 跨仓契约**只有消费方** = 契约未闭合（Seen: 1/3）
+- 场景：memora 建好了 `POST /api/v2/session-analysis`（契约、幂等键、落域、中间件齐备），asr 与网关都「看起来接上了」。
+- 根因：memora 自己在 `internal/sessionanalysis/payload.go:40-45` 写明「网关目前**没有**任何代码调用 memora 的 v2 面……
+  因此本包是**契约就位**」；二轮审计 grep 证实 asr 与网关里**都没有生产者**。
+  连带查出形状级不匹配：网关 `WorkTypes []Classification{Value,Source,Confidence}` vs memora `[]string` ⇒ **整个载荷 422**；
+  网关的 `Features` 与 memora 的 `Tags` **结构完全同形** ⇒ 会**静默贴错标签**；memora 必填 `dispatch_id` 而生产方没有该字段。
+- 防复发检查：① 跨仓契约落地时，**先落消费方不等于契约完成** —— 必须同时落**生产方**或明确写下「本仓只做消费方」；
+  ② 契约形状以**生产方的权威结构**为准（本轮是网关 `domains/analysis/sessionmeta/extractor.go:53` 的 `Result`），
+  消费方**照抄生产方的形状**，不要自己另发明一套；
+  ③ 字段名相同 ≠ 语义相同：`tags` 与 `features` 结构同形但含义不同 ⇒ **静默贴错标签**比报错更坏；
+  ④ 生产方没有的必填字段，要么改成可推导，要么从入参拿。
+- 证据：`memora/internal/sessionanalysis/payload.go:40-45,148,152,214` vs 网关 `domains/analysis/sessionmeta/extractor.go:53,69,104-109`。
+- 溯源：三项目会话治理轮 §5.3（C-F1、C-F2）。
+
+## 2026-10-20 — 「停写门」的**代码默认值**与**部署配置事实**是两回事（Seen: 1/3）
+- 场景：上一轮结论写「`request_log` 双写**已下线**」；本轮对照代码发现**代码默认仍开着**。
+- 根因：`settings/spec_storage.go:118-125` 声明 `storage.request_logs_write_enabled` 的 `Default: true`，
+  访问器 `settings/key_request_logs_write_enabled.go:34` 在 store 未初始化时**也回退 `true`**
+  ⇒ 任何**未显式配置**该键的环境（新装 / 克隆 / 灾备）**继续双写**。
+  上一轮的真库「0 行」是**某台机器的 settings_kv 配置事实**，不是代码事实。
+- 防复发检查：① 「已下线 / 已开启 / 已切换」这类**状态主张**必须分三层写清：
+  **代码默认值** / **部署配置** / **真库实测**，三者任一不同 ⇒ 主张不成立；
+  ② 判「某开关在某环境生效」时，**先看代码默认**，再看部署配置；只看部署配置会把「单机事实」当「代码事实」；
+  ③ 改这类默认值前先查**启动期校验**：默认改了可能让**未配置的环境拒绝启动**
+  （本轮：`ValidateSessionWriteState` ⇒ `ErrNoRequestWriteSource`）—— 这是**响亮失败**，但必须把「可接受配置」写对。
+- 证据：`settings/spec_storage.go:118-125`、`settings/key_request_logs_write_enabled.go:34`；
+  顺带修掉启动期错误消息里**点名了不存在的环境变量**、且宣传的「V2-only」配置**会被自己的校验拒绝**这两处真缺陷
+  （`cmd/gateway/session_write_safety.go`）。
+- 溯源：三项目会话治理轮 §2 D0。
+
+## 2026-10-20 — **自造量具也要自检**：解析类脚本最容易在引号/续行上悄悄失效（Seen: 1/3）
+- 场景：自写跨仓路由核对脚本，判定「memora 47 个 gin 路由组 / 430 个叶子路由」；第一次跑却只解析出 **1 个组**。
+- 根因：bash 里 `$(...)` 赋值 + `sed` 的引号/续行在 macOS **bash 3.2** 下把提取结果打成了空/单行；
+  脚本当时**没有自检**，差点把「量具坏了」当成「代码坏了」。
+- 防复发检查：① 任何**解析类**量具（grep/sed/awk/正则提取）必须带**自检段**：
+  对**已知必然存在**的若干对象断言能解析出来，自检不过 ⇒ 先信量具坏；
+  ② 「解析结果为空」与「目标不存在」必须可区分 —— 前者先查量具；
+  ③ 复杂字符串处理优先换语言（python3）而不是在 bash 里跟引号较劲。
+- 证据：改写后自检段 4 条已知路由全部解析成功，基线正确报出 `/product/add`、`/product/search` 两条**memora 并不存在**的路径
+  （= 本轮 D1 的直接证据）；修复后同一脚本判 `RESULT: PASS`。
+  ⚠️ 另一处同源教训：**实现方自己写的核对脚本不能给自己打分** —— 审计方另写一份**逻辑不同**的脚本（独立提取 + 独立判据）复核。
+- 溯源：三项目会话治理轮 §5.4 前后。
+
+## 2026-10-20 — 量具报 FAIL 时先证明**量具没坏**：锚点错位会批量造假 FAIL（Seen: 1/3）
+- 场景：为 G-2（网关 → memora 会话分析投递）另写跨仓契约核对脚本，首跑报 **28 条 FAIL**，
+  读起来像「网关载荷字段全都不被 memora 认」。
+- 根因（两处都是量具侧，代码没问题）：
+  ① **锚点错位**：脚本用「文件里出现 `project_id`」来找 memora 的请求体结构 ⇒ 命中的是
+  `internal/sessionanalysis/gateway_payload_test.go`（测试夹具）与 `internal/worker/tasks.go` 的
+  `DreamCyclePayload`（`project_id`/`user_id`/`force`）⇒ 拿一个**不相干**的字段集当契约基准，
+  于是网关的 26 个字段全部「多发」。
+  ② **正则方向错**：`payload.Features = append(...)` 的**源**（`range result.Features`）在 append **之前**，
+  而脚本按「append 之后」找 ⇒ 报「网关没把 Features 映射到 payload.Features」；
+  同一段还把 `[^)]*` 用来跨 `append(...)`，结果被 `strings.TrimSpace(f.Key)` 的 `)` 提前截断。
+  第三处：`DeriveDispatchID` 定义在 `internal/sessionanalysis/payload.go:358`，脚本只读了 `parse.go`。
+- 防复发检查：
+  ① 契约/结构类量具的**锚点必须写死到「文件 + 类型名」**，不要用「字段名出现即命中」这种模糊匹配；
+  ② 量具的**失败输出必须能区分「量具坏了」与「代码坏了」** —— 解析到的结构名、字段集要**打印出来**供人眼核对；
+  ③ 量具要**参数化输入根目录**（本轮 `GW_ROOT` / `ME_ROOT`）⇒ 可以在**副本**上施加变异来证明它不是恒绿，
+     而不必污染真实工作树；
+  ④ 「量具报 N 条 FAIL」时，**先看 N 是不是大得离谱**（28 条「全字段多发」是典型的锚点错位信号）⇒ 先查量具再改代码。
+- 证据：修正锚点与窗口后基线 `RESULT: PASS`（顶层字段集合两端**完全一致**、10 组嵌套结构字段**零差异**）；
+  随后在副本上施加两个变异：MUT-1「features 静默落进 tags」⇒ 量具红 2 条
+  （`网关未把 Result.Features 映射到 payload.Features` / `网关把 features 静默贴进 tags`），
+  MUT-2「网关多发 `bogus_field`」⇒ 量具红 `网关多发顶层字段 bogus_field` ⇒ **量具可被证伪**。
+- 溯源：三项目会话治理轮 §6（G-2 独立复验）。
+
+## 2026-10-20 — 多仓并发时 `origin/main` 会**持续前移** ⇒ 合并基线必须每次重取（Seen: 1/3）
+- 场景：三仓同机各有并发会话在推 `main`。本轮网关的 `origin/main` 在**同一轮内前移了 3 次**，
+  第一次合并的基线 `10bde2b6d` 在准备推送时已变成 `a6cec1f0e`；memora 前移 8 个提交、asr 多次前移。
+- 根因：并发会话各自把 `main` 直推远端 ⇒ 本地 `main`/`origin/main` **随时**在动。
+  若按「上次 fetch 时的基线」建 integration 分支再推，就会**覆盖掉别人的提交**，
+  或推上去时才发现基线已过期 ⇒ 合并要重做、验证要重跑。
+- 防复发检查：
+  ① **每次合并/推送前**都 `git fetch origin` 并读 `git rev-list --left-right --count origin/main...HEAD`，
+     确认「远端没有前移到我之上」；
+  ② integration 分支**永远从最新 `origin/main` 重建**（`git checkout -B integrate/<name> origin/main`）
+     再 `git merge --no-ff <feature>`，不要在旧基线上继续叠；
+  ③ 合并后**必须重跑** `go build ./...` 与相关包测试 —— 基线变了，之前的绿**不再作数**；
+  ④ 推送用 `git push origin <integration>:main`（不要 `git checkout main`）——
+     `main` 常被别的 worktree 占用（本轮 memora 的 `main` 被 `memora-a7-wt` 占用）。
+- 证据：本轮网关合并 G-2 时的实测：`git rev-list --left-right --count origin/main...HEAD` 先是 `3 1`
+  （落后 3 / 领先 1）⇒ 重新 `checkout -B` 到 `a6cec1f0e` 后无冲突合并，build RC0、包测试全绿。
+- 溯源：三项目会话治理轮 §6（推送收尾）。

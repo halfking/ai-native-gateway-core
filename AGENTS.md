@@ -158,6 +158,48 @@
 > 门 `scripts/ursmcheck/section_14324_window_correction_test.go`（新，6 条）、
 > 变异 M1~M5 全红并全部还原（md5 逐字校验）。
 > 完整记录见 runbook `§143.24`。
+> **2026-10-20 §143.25 轮（本会话）**：**把「11-03 的超时风险」量化掉**
+> ⇒ **301,255 行搬进 columnar 实测中位 3,410 ms**（10 分钟预算的 0.6%，**裕量 176×**）
+> ⇒ **超时风险从「未量化、可能很高」降级为「量级上极不可能触发」**。
+> **对生产的写入 = 0**（生产侧全只读 + 本地一次性库 `itgate_14325`，退出即 DROP）。
+> ★★★★★ **实测方式**：本地真库、**654 函数体逐字不改**（`USING columnar` 保留）、
+> 生产同构 schema（17 列 + archive 父表 3 个 `ON ONLY` 索引 + 源分区 2 个索引）、
+> 行数与生产一致、**数据取值域取自生产**（43 凭据 / 12 个真实模型名 / 4 种 billing_mode）；
+> **源体积 86 MB vs 生产 84 MB**（同形成立）。
+> ★★★★ **「columnar 批量写更慢」的直觉被推翻**：heap 对照臂（只换 AM）中位 **4,213 ms**
+> ⇒ **columnar 反而更快（0.81×）**；拆解 insert 2,780–3,716 ms、CHECKPOINT 另 346 ms；
+> 缩放近似线性、边际 ≈11.4 µs/行（30k→317 / 100k→857 / 301,255→3,410 ms）。
+> ★★★★ **失败模式重新定级（方向与 §143.22/§143.24 相反）**：风险从「超时」移到
+> **「静默且不可恢复」** —— archive 调度门是 `now.Day() <= 3` 且 `s.day == today`
+> （`bg/partition_manager.go:602-610`，24h ticker + 启动时也跑）⇒ **11-03 当天是 09 月
+> 分区唯一窗口**（11-04 起门关闭；12-03 的目标已是 10 月 ⇒ 09 月再无归档机会）；
+> 失败**只有 slog.Error**（无指标无告警）；**人工补跑没有产品入口**；
+> 841 的 `llm_gateway_partition_retention` **生产实测 0 行** ⇒ **不丢数据但不自愈**。
+> ⇒ 观测口径新增**失败判定**（dst 不存在 + 源还在 = 失败并回滚）与人工补跑形态
+> （`SELECT * FROM public.archive_credential_model_index(date '2026-09-03');`，幂等可重复，
+> 但属生产写需授权）⇒ 建议排序 **R1** 只读观测(0) → **R2** 加指标/告警(小，最高性价比)
+> → **R3** 放宽窗口/每日重试(根治) → **R4** 孤儿表防御修复(不急) → **R5** 生产预飞(**不再必要**)；
+> ⇒ ★★ **明确不推荐**为「防超时」去改 `runArchive` 的 10 分钟超时。
+> ★★★ **订正横幅六（就地订正 §143.23.5，原文保留）**：「本地 citus 不含 columnar ⇒
+> 只能测 heap」**不成立** —— 镜像**带** columnar 扩展（**扩展名是 `citus_columnar`，不是
+> `columnar`**），只是**没装**；`CREATE EXTENSION citus_columnar` 后 `pg_am` 就有 columnar
+> ⇒ §143.23 只测 heap 是**主动选择「只换一个变量」**，不是能力所限
+> ⇒ **「生产 columnar 路径的耗时未量化」这条缺口已闭合**；顺带首次在**真 columnar** 上
+> 跑通 654（success/301,255/t），并实测确认 `EXCEPT ALL` 幂等保护会拒绝「dst 已存在且内容不符」。
+> ★★★ **本轮自身的口径纠错（自我打脸）**：`pg_stat_statements.rows` 是**总行数**不是
+> 「每次均值」（15 分钟内 15,188→15,268 而 calls 只 +4）⇒ 此前口径作废；
+> `track=top` ⇒ 内层语句无独立读数；`stats_reset=2026-10-18 22:03` ⇒ 窗口只有 ~41 小时
+> ⇒ **分区行数与 promote 调用数不可相除**；PG 日志 `log_min_duration_statement=1000`
+> ⇒ `duration:` 是**尾部样本**；**columnar 表 `n_tup_ins` 恒 0** ⇒ columnar 没有行数仪。
+> ★★ **并发漂移（实测）**：并行会话已占用 **885**（`885_session_turns_host_tags`，
+> 注册齐全）⇒ **CMI 归档孤儿表修复不能用 885 ⇒ 下一个空号是 890**；
+> ⇒ **纪律：动迁移号之前必须现场取号**（`ls sql/migrations/startup/*.sql | grep -v down |
+> cut -d_ -f1 | sort -n | tail -1`），且**只加源文件 = 迁移不会生效**（5 处注册点 + 2 处台账）。
+> 门 `scripts/ursmcheck/section_14325_columnar_cost_test.go`（新，**11 条**，含
+> 「脚本必须保留 columnar 臂」的守卫）、变异 **M1~M16 全红**并全部还原（md5 逐字校验）；
+> 可重跑脚本入仓 `scripts/audit/verify_columnar_bulk_write_local.py`
+> （函数体由脚本从仓内 654 迁移提取，不手抄）。
+> 完整记录见 runbook `§143.25`。
 
 ## 经验反馈闭环（vibe-coding Rule 66）
 
