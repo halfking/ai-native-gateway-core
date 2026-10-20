@@ -102,6 +102,14 @@ for obj_type in tables views functions sequences triggers indexes constraints po
         continue
     fi
 
+    # ★ bash 3.2 兼容（2026-10-21 修正）：`${obj_type^}` 是 **bash 4.0+** 的
+    #   「首字母大写展开」，macOS 自带的是 bash 3.2 ⇒ 不支持 ⇒ 脚本在
+    #   macOS 上以 `bad substitution` 直接退出（实测复现）。
+    #   ★ 危害形态值得记：Linux（bash 5）上**完全正常** ⇒ CI 若跑在 Linux 上
+    #   这条路径**恒绿**，缺陷只在 macOS 上现形 ⇒ 典型的「平台依赖的假绿」。
+    #   ⇒ 这里用 POSIX 工具链拼首字母大写，所有 bash 版本都能跑。
+    obj_title="$(printf '%s' "$obj_type" | cut -c1 | tr '[:lower:]' '[:upper:]')${obj_type:1}"
+
     # ★ 基线形态 fallback 体清单（带 dbinit:baseline-v1-fallback 标记的对象）。
     #
     # 这些对象是**基线时点**的形态（v1 fallback 体）：部署形态由启动序列里的
@@ -121,7 +129,7 @@ for obj_type in tables views functions sequences triggers indexes constraints po
     done < <(grep -lE '^[[:space:]]*--[[:space:]]*dbinit:baseline-v1-fallback([[:space:]]|$)' "$target_path"/*.sql 2>/dev/null || true)
 
     cat > "$target_path/README.md" <<EOF
-# ${obj_type^}
+# ${obj_title}
 
 > 本目录包含 ${obj_type} 对象的 DDL 定义，从 \`sql/objects/${obj_type}/\` 同步。
 

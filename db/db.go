@@ -184,10 +184,22 @@ func (db *DB) ApplyMigrations(ctx context.Context) error {
 // 流下锁等待超过角色级 statement_timeout=30s 即被 57014 击杀，boot 重试撞
 // 同一堵墙（烧点不可推进）直至 retry_budget 烧穿 → postgres disabled →
 // 部署安全网回滚（245 07:23/07:26/07:35 三连败实证，PG 日志逐字归因）。
-// 守卫语义：全部列在位 → true（调用方跳过 DDL，幂等 stamp 类语句照常执行）；
-// 表不存在 / 任一列缺失 / 探测出错 → false（走原 ensure 路径，自含幂等）。
 //
-// tableExists 报告某个关系在 public schema 里在不在。
+// ★ 守卫语义（**以实现为准**；本段注释 2026-10-20 订正过，原注释与实现相反）：
+//   - 表存在且全部列在位 → true（调用方跳过 DDL，幂等 stamp 类语句照常执行）
+//   - 表**不存在** → **也返回 true**（missing=0）：SQL 里 to_regclass 的判据
+//     写在 WHERE 里，表不存在 ⇒ 该列无行 ⇒ 计 0 ⇒ 读作「没有缺列」。
+//   - 任一列缺失 / 探测出错 → false（走原 ensure 路径，自含幂等）。
+//
+// ⚠⚠「表不存在 ⇒ true」曾经是 **848 那条 v1 DDL 的承重语义**：890 之后 v1 族
+// 被 DROP ⇒ _request_logs_hot.audio_seconds 永远不可能在位 ⇒ 若按「表不存在
+// ⇒ false」实现，848 每次 boot 都会去 ALTER 一张不存在的表 ⇒ 42P01。
+// ⇒ 848 已改为**显式存在性闸**（见 ensureBillingUnitAndAudioSeconds），
+//   本函数这条语义**不再**是任何调用方的承重前提 ⇒ 未来若要把它改成
+//   「表不存在 ⇒ false」，只需重跑 848 的显式闸（那才是真正的契约所在）。
+//
+// ── tableExists（r1039 续轮新增，2026-10-21）─────────────────────
+// 报告某个关系在 public schema 里在不在。
 //
 // 2026-10-21（r1039 续轮）：request_logs 族退役（860 改名 → 890 删除）之后，
 // 「这张表**在不在**」是**部署形态**的问题，不是「列缺不缺」的问题。
@@ -210,7 +222,6 @@ func (d *DB) tableExists(ctx context.Context, name string) bool {
 	}
 	return exists
 }
-
 func (db *DB) columnsAllPresent(ctx context.Context, table string, cols []string) bool {
 	if db == nil || db.pool == nil || len(cols) == 0 {
 		return false
@@ -3160,7 +3171,26 @@ func (d *DB) ensureBillingUnitAndAudioSeconds(ctx context.Context) error {
 		return nil
 	}
 	cmbOK := d.columnsAllPresent(ctx, "credential_model_bindings", []string{"billing_unit"})
-	hotOK := d.columnsAllPresent(ctx, "_request_logs_hot", []string{"audio_seconds"})
+	// ★ 890（v1 族退役）：族不存在 ⇒ 这两条 v1 DDL 不是「no-op」而是 **42P01**
+	// （ALTER 一张不存在的表）。
+	//
+	// ⚠ 为什么不能只靠 columnsAllPresent 的短路：它的真实语义是「表不存在 ⇒
+	// true」（见其注释：to_regclass 判据写在 WHERE 里，表不存在 ⇒ missing=0
+	// ⇒ 读作「没有缺列」）⇒ 退役后 hotOK 恒 true ⇒ 短路恒触发 ⇒ **恰好**不炸。
+	// 但那是**巧合式安全**：一旦有人把 columnsAllPresent 改成它注释里原来
+	// 写的「表不存在 ⇒ false」，本函数就会每次 boot 去 ALTER 已 DROP 的族 ⇒
+	// boot 失败（42P01）⇒ 网关起不来。
+	// ⇒ 这里补一道**显式存在性闸**（与 ensureRequestLogSchema / maas /
+	// work_type 三处同一条纪律），把承重语义从「helper 的空真」挪到
+	// 「本函数自己判断族在不在」。
+	var v1FamilyPresent bool
+	if err := d.pool.QueryRow(ctx, `
+		SELECT to_regclass('public._request_logs') IS NOT NULL
+		   OR to_regclass('public._request_logs_hot') IS NOT NULL
+	`).Scan(&v1FamilyPresent); err != nil {
+		return fmt.Errorf("probe v1 request_logs presence for 848 DDL: %w", err)
+	}
+	hotOK := !v1FamilyPresent || d.columnsAllPresent(ctx, "_request_logs_hot", []string{"audio_seconds"})
 	if cmbOK && hotOK {
 		if _, err := d.pool.Exec(ctx, `
 			INSERT INTO public.schema_migrations (version, description)
@@ -3171,6 +3201,19 @@ func (d *DB) ensureBillingUnitAndAudioSeconds(ctx context.Context) error {
 		}
 		slog.Info("billing_unit + audio_seconds schema ensured (migration 848, catalog short-circuit)")
 		return nil
+	}
+	// v1 腿的 DDL 只在族真的在位时才拼进去（族不在 ⇒ 拼进去就是 42P01）。
+	v1DDL := ""
+	if v1FamilyPresent {
+		v1DDL = `
+		ALTER TABLE _request_logs_hot
+		    ADD COLUMN IF NOT EXISTS audio_seconds double precision;
+
+		ALTER TABLE _request_logs
+		    ADD COLUMN IF NOT EXISTS audio_seconds double precision;
+`
+	} else {
+		slog.Info("v1 request_logs family is retired (890) — 848 audio_seconds DDL skipped")
 	}
 	_, err := d.pool.Exec(ctx, `
 		ALTER TABLE credential_model_bindings
@@ -3191,28 +3234,7 @@ func (d *DB) ensureBillingUnitAndAudioSeconds(ctx context.Context) error {
 		    END IF;
 		END
 		$do$;
-
-		-- 2026-10-21（r1039 续轮）：族侧 DDL **按表存在性条件化**。
-		-- request_logs 族退役后（860 改名 → 890 删除）_request_logs /
-		-- _request_logs_hot 不在库里 ⇒ 上面的 ALTER 必然 42P01 ⇒
-		-- 整条 boot 迁移中止。
-		-- ⚠ 这不是假想：短路条件是 cmbOK && hotOK，而 hotOK 里的
-		--   columnsAllPresent 在**表不在**时返回 true（missing=0 ⇒ 没缺列）
-		--   ⇒ 只要 cmb.billing_unit 缺（正是这段 DDL 要修的东西）就会落进
-		--   本分支 ⇒ 42P01。
-		-- 用 to_regclass 守卫 + EXECUTE：表在时行为与原来逐字一致，
-		-- 表不在时该族侧列无处可加（本来也没有族表）⇒ 跳过。
-		DO $do$
-		BEGIN
-		    IF to_regclass('public._request_logs_hot') IS NOT NULL THEN
-		        EXECUTE 'ALTER TABLE public._request_logs_hot ADD COLUMN IF NOT EXISTS audio_seconds double precision';
-		    END IF;
-		    IF to_regclass('public._request_logs') IS NOT NULL THEN
-		        EXECUTE 'ALTER TABLE public._request_logs ADD COLUMN IF NOT EXISTS audio_seconds double precision';
-		    END IF;
-		END
-		$do$;
-
+` + v1DDL + `
 		INSERT INTO public.schema_migrations (version, description)
 		VALUES ('848', 'cmb.billing_unit + _request_logs.audio_seconds for media duration billing')
 		ON CONFLICT (version) DO UPDATE SET description = EXCLUDED.description;

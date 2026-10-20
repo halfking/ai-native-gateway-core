@@ -568,8 +568,9 @@ var indirectSiteAssessments = map[string]siteAssessment{
 			"★ 2026-10-20（890）该函数**恒返回会话族**（TurnsTable = \"session_turns_hot\"、" +
 			"SessionKeyCol = \"session_id\"、Family = settleFamilySession），**v1 臂整条删除**——" +
 			"理由记在文件头：v1 族没了以后「写门开着 ⇒ 读 v1」这条分支**永远走不到**，" +
-			"而 `settings.RequestLogsWriteEnabled()` 在 settings 存储未初始化时回落**默认 true**" +
-			"⇒ 留着它就是新装/早启进程直接 42P01。",
+			"而 `settings.RequestLogsWriteEnabled()` 在 settings 存储未初始化时回落**代码默认**" +
+			"（★ 2026-10-20 订正：G-0 已把代码默认翻成 `false`，这条理由已从「当前风险」" +
+			"降级为「历史动机」；v1 臂删除仍是对的，它是纵深防御）⇒ 留着它就是新装/早启进程直接 42P01。",
 		Consequence: "与 v1 无关（结算三条腿同源同表，都读会话族热表）。" +
 			"⚠ 与本条目退役前那版（「条件性：S4 关上写门后自动切到会话族；切换那一刻之前仍读 v1 底表」）" +
 			"**形态不同**：现在是**恒**会话族，没有「切换那一刻」。",
@@ -742,7 +743,10 @@ var indirectSiteAssessments = map[string]siteAssessment{
 	},
 	"bg/candidate_failure_monitor.go": {
 		Verdict: verdictNonV1ByInspection,
-		Via: "1 处（288）`(SELECT max(ts) FROM ` + checkStalenessLastRequestSurface + ` rl`，" +
+		Via: "2 处（290、295）：① `(SELECT max(ts) FROM ` + checkStalenessLastRequestSurface + ` rl`，" +
+			"② `(SELECT max(id) FROM ` + checkStalenessLastRequestSurface + ` rl`" +
+			"（aee31a117 的 S4 停写假阳性二分类给 staleness 查询加的第二个子查询，" +
+			"读的是**同一张**会话族热腿）；" +
 			"而 `var checkStalenessLastRequestSurface = db.SessionFamilyTurnsHotSourceSQL()`" +
 			"（candidate_failure_monitor.go:267）。" +
 			"★ 2026-10-20（890）它**从 v1-only 视图**（`request_logs_with_current_month_without_request_class_due_at`，" +
@@ -1359,7 +1363,7 @@ type bucketSnapshot struct {
 // （上一版是「多出 1」：bg/routing_health_checks.go 同时落在 canonical 与
 // unresolved 两桶 —— 2026-10-21 那次改写把它的 canonical 拼接点变成了纯字面量，
 // 于是它只剩 unresolved 一处 ⇒ 差集归零）。
-// 处数自检：0 + 0 + 122 + 19 = 141 = 总数 ✔
+// 处数自检：0 + 0 + 122 + 20 = 142 = 总数 ✔
 var documentedSnapshot = bucketSnapshot{
 	// 同日晚间二次：compression_sessions 的 LATERAL 性能修复消除 2 处拼接
 	//（LATERAL 体重跑 canonical 全源改单趟 CTE，e01ffed39）→ 94→92、
@@ -1391,7 +1395,14 @@ var documentedSnapshot = bucketSnapshot{
 	//   成因逐站点核过（见上面第 ⑤ 条）：+7 处来自三个新增的会话族读方文件，
 	//   −1 处是一个拼接点被改写成纯字面量（离开了本工具的口径，目标仍是会话族）。
 	//   ⇒ 方向=变大=「把看不见变成看得见」+ 一处「读法变了」；无桶变小 ⇒ 改数字即可。
-	TotalSites: 141,
+	// ★ 2026-10-21（B4 轮）：141 → 142，unresolved 19 → 20 处。
+	//   成因：`bg/candidate_failure_monitor.go` 的 aee31a117（S4 停写假阳性
+	//   二分类）给 staleness 查询**加了第二个** `max(id)` 子查询，
+	//   它与既有的 `max(ts)` 子查询读**同一张**会话族热腿
+	//   （`checkStalenessLastRequestSurface`）⇒ 新增 1 处拼接点。
+	//   ⇒ 方向 = **变大**（同一操作数、同一张表、同一个文件）
+	//   ⇒ 不是「新增读方」，也不是「扫描范围变了」⇒ 改数字即可（无桶变小）。
+	TotalSites: 142,
 	V1Files:    0,
 	V1Sites:    0,
 	// ★ v1 臂桶**归零**：不是「推导器坏了」，是**没有任何视图还有 v1 臂**。
@@ -1412,7 +1423,7 @@ var documentedSnapshot = bucketSnapshot{
 	CanonFiles: 59,
 	CanonSites: 122,
 	UnresFiles: 12,
-	UnresSites: 19,
+	UnresSites: 20,
 }
 
 func TestDocumentedSnapshotMatchesMeasurement(t *testing.T) {

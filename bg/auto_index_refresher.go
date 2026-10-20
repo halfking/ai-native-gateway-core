@@ -642,13 +642,22 @@ SELECT
 -- '-infinity'（见 db/v1_freeze_cutoff.go），条件恒真、零成本，但它把
 -- 「本查询与 admin 侧同款分界」这件事保持在同一形状上。
 FROM (
-    SELECT (CASE WHEN t.credential_id ~ '^[0-9]+$' THEN t.credential_id::bigint END),
-           COALESCE(mo.raw_model_name, mo.outbound_model_name, t.model),
-           mo.canonical_id,
-           mo.billing_mode,
-           mo.unit_price_in_per_1m,
-           mo.unit_price_out_per_1m,
-           t.success, t.latency_ms
+    -- ⚠⚠ 这 8 个投影**必须带别名**：外层（rl.*）按 v1 腿的列名引用它们
+    -- （credential_id / model_key / mo_canonical_id / mo_billing_mode /
+    --   mo_price_in / mo_price_out / success / latency_ms）。
+    -- 890 之前这条子查询的列名来自 v1 族的真实列；删掉 v1 腿、换成会话腿
+    -- 之后，若不补别名，PG 会把无别名表达式列命名为 "?column?" ⇒ 外层
+    -- rl.credential_id 直接 42703（column rl.credential_id does not exist）
+    -- ⇒ 整条 rollup 失败 ⇒ autoroute 每 5s 刷新报错、凭据健康/压力指标停更。
+    -- （2026-10-20 实测：活库日志每 5s 一条 42703。）
+    SELECT (CASE WHEN t.credential_id ~ '^[0-9]+$' THEN t.credential_id::bigint END) AS credential_id,
+           COALESCE(mo.raw_model_name, mo.outbound_model_name, t.model)      AS model_key,
+           mo.canonical_id                                                   AS mo_canonical_id,
+           mo.billing_mode                                                   AS mo_billing_mode,
+           mo.unit_price_in_per_1m                                           AS mo_price_in,
+           mo.unit_price_out_per_1m                                          AS mo_price_out,
+           t.success                                                         AS success,
+           t.latency_ms                                                      AS latency_ms
     FROM session_turns_hot t
     LEFT JOIN model_offers mo
       ON mo.credential_id = (CASE WHEN t.credential_id ~ '^[0-9]+$' THEN t.credential_id::bigint END)
