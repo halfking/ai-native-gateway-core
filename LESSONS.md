@@ -5715,3 +5715,80 @@ PostgreSQL 解析调用时，**带默认值的那个也能接 3 参调用**，
   `bg/candidate_failure_monitor_s4_stop_test.go` 的 M5 变异
   （**第一版 build failed ⇒ 变异不合格；第二版绿 ⇒ 门无牙 ⇒ 修门后红**）。
 - 溯源：R51 续轮（2026-10-21）。
+
+## 2026-10-21 — ★★★★★ **DROP 类改动的验收面必须覆盖「运行时所有引用被删关系的路径」**：表名扫描抓不到「字符串常量里的 SQL」（llm-gateway-go R68）
+
+- 场景：迁移 890 把 v1 族（表 + 分区 + 索引 + promote 函数）整体 DROP。**数据面**（读源）已全部切到会话族，
+  但**运行时路径**里仍有三处引用被 DROP 的关系，分布在**三个不同的包**：
+  ① `bg` 的 `rollupCredentialModelIndexSQL`（会话腿投影无别名 ⇒ 外层 `rl.credential_id` **42703** ⇒ autoroute 指标每 5s 停更）；
+  ② `db` 的 848 ensure（`ALTER TABLE _request_logs`）；
+  ③ `admin` 的 `hotPromoteTableMap`（自动 hot cron 每轮 **42883**）。
+- ⇒ ⇒ ★ **通用式**：
+  1. ⭐⭐⭐⭐⭐ **「表名扫描」只覆盖 SQL 文件与视图体**；Go 里的 **SQL 字符串常量**（`const xxxSQL = `…`）、
+     **map 值**（`hotPromoteTableMap`）、**模板拼接**（`fmt.Sprintf("SELECT %s(...)", fnName)`）都是**盲区**。
+     ⇒ 退役/DROP 类的验收清单必须显式列出这三类载体。
+  2. ⭐⭐⭐⭐ **"退役"要按"被删对象"逐个追**：890 不只删了**表**，还删了**函数**（promote_*）⇒ 凡是**按函数名调用**
+     的代码（动态 SQL）也要一起追；本轮 ③ 就是"表没了、函数也没了、调用还在"。
+  3. ⭐⭐⭐⭐ **注释会撒谎**：`promoteHotRetiredReason` 的注释写着「the automatic lifecycle job is gated the same way」，
+     **其实没有**（手动路径查了、cron 路径没查）⇒ 注释不是证据，**代码路径才是**。
+  4. ⭐⭐⭐⭐⭐ **纯文本形状门抓不到列解析错误**：`bg` 的既有门只数 `FROM session_turns_hot t` 出现次数、查
+     `FROM _request_logs_hot` 是否消失 ⇒ 少一个别名照样绿 ⇒ **凡是"引用了别名列名"的 SQL 改写，必须配一道
+     「真库执行门」**（显式事务 + ROLLBACK，零足迹）——形状门只能守形状，守不住语义。
+- 证据：`bg/auto_index_refresher_rollup_realdb_test.go`（新，真库执行）、`bg/auto_index_refresher_rollup_alias_gate_test.go`（新，别名闭包）、
+  `db/db_848_v1_family_guard_test.go`（新）、`admin/data_lifecycle_v1_retirement_test.go`（新）；
+  变异 M1（去一个别名）⇒ 两道门同时红（静态门说"投影项没有别名"、真库门说 42703）⇒ sha256 还原。
+- 溯源：R68 轮（2026-10-21）。
+
+## 2026-10-21 — ★★★★★ **「注释与实现相反」的 helper 语义，会把「安全」变成巧合**（llm-gateway-go R68）
+
+- 场景：`db.columnsAllPresent` 的注释写「表不存在 / 列缺失 / 探测出错 → **false**（走原 ensure 路径）」；
+  **实现**把 `to_regclass(...) IS NOT NULL` 写在 `WHERE` 里 ⇒ 表不存在时 `missing=0` ⇒ 返回 **true**。
+  ⇒ 而迁移 848 的 v1 DDL 安全（不 ALTER 已 DROP 的族）**恰恰靠这个"空真"** ⇒ 一旦有人按注释把它改成 false，
+  **每次 boot 都 42P01、网关起不来**。
+- ⇒ ⇒ ★ **通用式**：
+  1. ⭐⭐⭐⭐⭐ **"安全"若压在一条"注释与实现相反"的语义上，它就是巧合而不是设计** ⇒ 修法不是"改注释"，
+     而是**把承重语义搬到显式的地方**（848 自己探族在不在），**然后**再把注释订正成实现事实。
+  2. ⭐⭐⭐⭐ **"表不存在 ⇒ true/valse"这类 helper 语义必须逐调用点枚举**：本轮 16 个调用点里，
+     只有 848 依赖"空真"，其余目标表都在基线里存在 ⇒ 语义可改但要**先**把唯一的承重点拆掉。
+  3. ⭐⭐⭐ **判据纪律**：helper 语义改动 ⇒ 先 grep 出全部调用点并分类，再改。
+- 证据：`db/db.go`（注释订正 + 848 显式闸）、`db/db_848_v1_family_guard_test.go`（新）。
+- 溯源：R68 轮（2026-10-21）。
+
+## 2026-10-21 — ★★★★★ **共享本地环境的活库会被并行会话的一次性 ad-hoc 命令销毁；真库克隆脚本就是备份**（llm-gateway-go R68）
+
+- 场景：21:57 另一并行会话执行 `DROP DATABASE IF EXISTS llm_gateway; CREATE DATABASE llm_gateway OWNER llm_gateway;`
+  （3 次失败后强杀连接成功）⇒ 本地数据全丢（用户的网关 key、3 个上游凭据、provider_models 249、session_turns 1524）。
+  **无 dump、无备份**。唯一救命稻草：一个真库回归脚本早前 `CREATE DATABASE ... TEMPLATE` 克隆出来的
+  `itgate_sessfam_94339`（327 MB，131 张非空表）——**它就是旧环境的完整快照**。
+- ⇒ ⇒ ★ **通用式**：
+  1. ⭐⭐⭐⭐⭐ **真库回归脚本克隆源库时，源库即备份** ⇒ 克隆物**不要随手删**（脚本命名里的 `itgate_*` 与
+     "用完即删"的直觉相冲突时，以"可恢复性"优先）。
+  2. ⭐⭐⭐⭐⭐ **共享工作区 + 共享本地环境 ⇒ 活库随时可能被别的会话清空** ⇒ 动手改活库数据前，
+     先确认**还有别的库能恢复它**；没有就先把源库克隆一份。
+  3. ⭐⭐⭐⭐ **恢复手法（同实例）**：`postgres_fdw` 跨库搬运（`IMPORT FOREIGN SCHEMA … LIMIT TO`）⇒
+     **服务器端 INSERT，无 COPY 转义问题、无 236MB 中转文件**；四件必做：
+     **列交集（排除 `attgenerated`/identity）**、**`TRUNCATE … CASCADE` 后再搬**、
+     **`SET session_replication_role = replica`（关触发器/外键/RLS）**、**排除两本台账**（`gateway_db_revision_sequences` / `schema_migrations`）。
+  4. ⭐⭐⭐⭐ **量具坑三条**：① `psql` 的 `\restrict` 安全模式 —— PG 17 的明文 dump 首行带 token，
+     **在 dump 前插任何 SQL** ⇒ token 失配 ⇒ psql 进受限模式 ⇒ **COPY 数据行被当命令**；② `2>/dev/null` 吞掉
+     psql 错误 ⇒ "0 个关系"的**假读数**；③ 生成列不能显式插入。
+  5. ⭐⭐⭐ **"删同 hash 行再插入"会打断 id 语义**：key 的 `id` 被运行实例的 keystore 快照引用 ⇒
+     改 id ⇒ 预算检查按旧 id 查活表无行 ⇒ **fail-closed 503**；⇒ **复原数据要回到原 id**。
+- 证据：`docs/audit/2026-10-20-R68-890后三处运行时残留与本地库灾后恢复.md` §1；读数：120/120 表逐表一致、1,008,708 行。
+- 溯源：R68 轮（2026-10-21）。
+
+## 2026-10-21 — ★★★★ **「上游返回空」先查上游，别先怀疑自己的改动**（llm-gateway-go R68）
+
+- 场景：恢复后模型请求全部失败（`empty_response` / `no_candidate`）。逐层取证后，**根因全在上游**：
+  sensenova **429**（tpm/rpm 限流）/ **403**（套餐不含该模型）/ **404**（模型不存在）、
+  nvidia **410**（模型 2026-08-07 下线）/ vapeur **429**（组织余额不足）。
+  而网关把「整段完成都进 `reasoning_content`、`content` 从未出现」判成空响应，是 **r1029 的既定裁决**（154 生产实证），
+  不是缺陷 —— 把 `max_tokens` 从 16 放大到 600 后同一模型正常返回。
+- ⇒ ⇒ ★ **通用式**：
+  1. ⭐⭐⭐⭐⭐ **恢复类事故里，「模型不通」几乎总是上游/凭据侧的事** ⇒ 用**直连上游**的工具（解密后自己发一次请求，
+     只打印状态与响应体）把上游与网关两侧**切开**，再谈是不是自己的锅。
+  2. ⭐⭐⭐⭐ **"空响应"要分三种**：① 上游真没内容；② 上游把内容放在 `reasoning_content`（预算被推理吃光 ⇒
+     调大 `max_tokens` 即可）；③ 网关的分类规则（查 `internal/emptyoutcome` 的**裁决记录**，别凭直觉改）。
+  3. ⭐⭐⭐ **别用"上游挂了"解释自己的失败**：每条失败都要有**状态码 + 响应体**的直连证据。
+- 证据：R68 轮直连取证表（`docs/audit/2026-10-20-R68-890后三处运行时残留与本地库灾后恢复.md` §3.1）。
+- 溯源：R68 轮（2026-10-21）。

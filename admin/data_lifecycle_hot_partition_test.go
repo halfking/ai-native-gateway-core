@@ -180,6 +180,13 @@ func TestHotPromoteTableMap(t *testing.T) {
 	// 定义），此前手动 promote 无法触达该表。
 	// 2026-09-05: 补上 supplier_errors_hot（promote 函数由迁移 V371 定义，
 	// 供应商错误唯一事实源的 8h 保留/批量迁移入口，审计闭环1/5）。
+	//
+	// ★ 2026-10-20（迁移 890，v1 族真删）：两条 v1 族**仍在**清单里 ——
+	// 不是为了还能 promote（表与函数都被 DROP，早就不行了），而是为了保住
+	// **手动 promote 端点的退役语义**（对退役族回 409 + 退役理由，而不是
+	// 笼统的"不支持该表"）。自动 cron 侧由**能力探针**兜住（函数不存在 ⇒
+	// INFO 的 SKIP，不刷 42883 噪声）。把条目摘掉会改掉手动端点的拒绝形状
+	// ⇒ 既有退役契约测试直接变红（实测）。
 	expected := []string{
 		"_request_logs_hot",
 		"usage_ledger_hot",
