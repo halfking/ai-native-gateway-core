@@ -134,6 +134,35 @@ done
 echo "-- ⑤ 今天与当月"
 psql_ -c "SELECT 'today='||to_char(now(),'YYYY-MM-DD')||' month='||to_char(now(),'YYYY_MM')"
 
+# ── ⑥ ensure 链（= 产品启动一次）────────────────────────────────────────────
+#
+# ★ 为什么这一步是**必须的**（2026-10-21 R61 轮实测）：
+#   「装完」与「装完能用」不是一回事 —— 产品启动时的 ensure 链
+#   （db.Open）会自己 ADD COLUMN 补掉一批列（models_canonical.standard_iq* /
+#   credentials 三列 / provider_catalog 三列 / _request_logs.outbound_body /
+#   session_turns.host,tags）。
+#   ⇒ 只量「装完」会把这 20 列算成缺口（R60 轮的「23 列缺族」就是这么来的），
+#     而量「装完 + 启动过」才是产品真实形态 ⇒ 差集只剩 26 个**遗留列**。
+#
+#   跑法：走一次 db.Open（真·启动一次），顺带把
+#   db/db_fresh_install_runtime_shape_test.go 的「ensure 自愈清单」也钉一遍。
+echo
+echo "== ⑥ ensure 链（= 产品启动一次）=="
+_pg_pw="$(docker exec "$PG_CONTAINER" printenv POSTGRES_PASSWORD 2>/dev/null | head -1)"
+_pg_port="$(docker port "$PG_CONTAINER" 5432/tcp 2>/dev/null | head -1 | sed 's/.*://')"
+if [[ -z "$_pg_pw" || -z "$_pg_port" ]]; then
+  echo "  ⚠ 取不到容器口令/端口（POSTGRES_PASSWORD / docker port）⇒ 跳过 ensure 链。"
+  echo "    ⇒ 后果：库停留在「装完但没启动」形态 ⇒ 拿它量列差集会得到**失真**读数。"
+else
+  export TEST_DATABASE_URL="postgres://${PG_USER}:${_pg_pw}@127.0.0.1:${_pg_port}/${DB}?sslmode=disable"
+  if go test ./db/ -run TestFreshInstallRuntimeShape_EnsureChain -count=1 -v 2>&1 | tail -12; then
+    echo "  ✓ ensure 链已跑（库现在 = 产品真实形态）"
+  else
+    echo "  ✗ ensure 链未通过 ⇒ 库形态不可信（见上面输出）"
+  fi
+  unset TEST_DATABASE_URL
+fi
+
 if [[ "$KEEP_DB" != "1" ]]; then
   docker exec -i "$PG_CONTAINER" psql -U "$PG_USER" -d postgres -q -c "DROP DATABASE IF EXISTS $DB" >/dev/null 2>&1
   echo
