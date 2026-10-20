@@ -3467,3 +3467,45 @@ PostgreSQL 解析调用时，**带默认值的那个也能接 3 参调用**，
 - 防复发检查：① 判「某改动已生效」先问**它跑在哪**：仓库级运维脚本 ⇒ 看**生产机上的副本内容**（`grep -c` 关键标记），不要看 git log；② 判「排程在跑它吗」要把**排程源列全**：用户 crontab + root crontab + `/etc/cron*` + systemd unit/timer + **其它所有用户的 crontab**（`for u in $(cut -d: -f1 /etc/passwd); do crontab -u $u -l; done`）——只查 `crontab -l` 会漏掉**别的用户**的排程；③ 副本拷贝件与发布链是**两条链**，修复要么进发布链，要么明确写「运维从 checkout 执行」；④ 本仓先例：`internal/billguard` 等旁挂单元同属这一类。
 - 证据：§5.9.3.1（部署目录清单 + 154 两份副本的 `pg_inherits=0` + 三台机 × 5 类排程源零命中的实测输出与复核命令）。
 - 溯源：request_logs→session_turns 复核轮 §5.9.3.1。
+
+## 2026-10-20 — 「量不出来」是对**量法**的判断，不是对**事实**的判断（Seen: 1/3）
+- 场景：上一轮把「列表端点对同一行集扫两遍」记成遗留，理由是「在本地小数据集上无法证明收益」。本轮改量法后，事实直接出来了。
+- 根因：原量法选的是**连续量**（`EXPLAIN (ANALYZE, BUFFERS)` 的 buffers / 墙钟），而本机只有 ~1.2k 行 ⇒ 第二趟**全命中缓存** ⇒ 三种写法实测**完全相同**（都是 137 hit / 0.30ms）⇒ 这个量具在原理上就**分辨不出**这件事。改量**执行次数**（结构性、与数据量无关）⇒ 2→1 直接可见。
+- 防复发检查：① 说「量不出」之前先问「**我选的量具有没有分辨这件事的能力**」——分辨率不足 ≠ 事实不存在；② 优先找**结构性**的量（执行次数、扫描的行集条数、依赖图形状、依赖的表名），而不是**连续**的量（耗时、buffers、CPU）；③ 量不出来时**不要**把它写成结论的一部分（「无法证明收益」会被下一轮当成「没有收益」），要写成「用这个量法量不出，换什么量法能证」。
+- 证据：`admin/logs.go` 的 `listLogs` 合并聚合前后对照；`admin/logs_single_scan_test.go` 用 pgx `QueryTracer` 数「读日志源 + 带聚合 + 无 GROUP BY」的查询数（必须 = 1），并与旧两扫口径逐值对账；变异（把 COUNT 拆回独立查询）⇒ 门转红并打印录到的 SQL。
+- 溯源：request_logs→session_turns 复核轮 §5.12.4 / §10.1；[复盘](docs/audit/2026-10-20-request-logs-session-turns-复核轮.md) §5.12.4 / §10.1。
+
+## 2026-10-20 — 夹具里被比较的两个键必须**故意不同**，否则门分不出键漂移（Seen: 1/3）
+- 场景：第一版真库门把会话行的 `model`（客户端模型）与 `raw_model_name`（上游原始模型）设成**同一个值**。变异「把匹配键从 `raw_model_name` 换成 `model`」**没让门变红** ⇒ 门看着在测、其实测不出来。
+- 根因：门断言的是「指标取到了夹具的值」，而**两个键同值** ⇒ 「取对了」与「取错了」**产生同一个读数** ⇒ 门分辨不出。这与「允许侧判据要配前提断言」同族：门必须能分辨「对的」与「错的」，而不只是「有值」与「没值」。
+- 防复发检查：① 写夹具时问一句「**我要防的那个漂移，会让这两个值不同吗**」；若不会，夹具就钉不住它；② 夹具里凡是**成对出现的语义相近字段**（上游原始模型 vs 客户端模型、请求体 vs 落库体、原始 id vs 归一化 id），默认给**不同**的哨兵值；③ 变异验证要**逐个**针对「换键/换列名」这类改法跑，而不是只跑一个「把逻辑改坏」的变异。
+- 证据：`admin/auto_route_cost_views_session_source_test.go`（`rawModel = "gate-upstream-raw-model"` vs `clientModel = "gate-client-model-DIFFERENT"`）；变异 M2（匹配键换成 `model`）在两值同值时**全绿**、改成不同值后**立刻转红**（`avg_latency_ms` 变 NULL）。
+- 溯源：request_logs→session_turns 复核轮 §5.12.2 / §5.12.5 / §10.2；[复盘](docs/audit/2026-10-20-request-logs-session-turns-复核轮.md) §5.12.5 / §10.2。
+
+## 2026-10-20 — 「端点空」与「读源错」是**两件独立的事**（Seen: 1/3）
+- 场景：`/api/admin/auto-route/cost/customer` 返回 `[]`。本轮修了读源（迁移 883 把两个活指标从冻结的 `_request_logs` 切到会话族），**端点仍然 `[]`** ⇒ 差点把「修好了但没生效」写进结论。
+- 根因：视图的子查询是**相关子查询**，外层聚合表 `api_key_model_cost` 零行时**压根不执行** ⇒ 读源对不对都不影响结果。真正的原因是另一条独立的链：`api_key_model_cost` 的 trigger（`trg_update_api_key_model_cost`）在正典与全部 startup 迁移里**都不存在**，真库全触发器清点也确认它**没挂在任何表上**（函数 `update_api_key_model_cost()` 存在但无调用方）⇒ 该表从未被生产流量写过 ⇒ 端点从功能设计出来那天起就一直是 `[]`。
+- 防复发检查：① 看到空结果按**三步**查：外层聚合表**有没有数据**（用 `count(*)` + `max(bucket)`，见下一条）→ 读源对不对 → 相关子查询在空表上不执行；② 要证明**读源**对，必须**造外层行**的夹具，不能靠「视图建出来了」或「端点不报错」；③ 结论里把「**读源已修**」与「**端点有数**」**分开写**，别让读者以为一个蕴含另一个；④ 若是**新功能缺口**（聚合链从未接线）而不是退役残留，就**登记为遗留并写清复活的前置顺序**，不要在「退役」这条线上顺手扩范围。
+- 证据：迁移 883 的注释与 `sql/objects/views/*.sql`；真库 `pg_trigger` 全量清点（无 `trg_update_api_key_model_cost`）；`api_key_model_cost` 0 行、0 索引（⇒ 原函数 `ON CONFLICT` 会报 42P10）；真库门 `admin/auto_route_cost_views_session_source_test.go` 造外层行后两个指标都取到值。
+- 溯源：request_logs→session_turns 复核轮 §5.12.2 / §5.12.3 / §10.3；[复盘](docs/audit/2026-10-20-request-logs-session-turns-复核轮.md) §5.12.3 / §10.3（L11）。
+
+## 2026-10-20 — 跨族映射列时逐列查 `information_schema`，不要靠记忆（Seen: 1/3）
+- 场景：把 `outbound_model` 映射到会话族的 `raw_model_name` 时，顺手把 `api_key_id` 直接对上 ⇒ 建视图直接报 `operator does not exist: text = integer`。
+- 根因：同一个概念在三个族里是**三种类型**——会话族 `api_key_id` 是 **text**（写侧 `APIKeyID string`，落库是十进制文本）、v1 是 **bigint**、聚合表是 **integer**。凭印象写比较 ⇒ 隐式转换在两侧都不成立。
+- 防复发检查：① 跨族映射列时**逐列查类型**（一张 `information_schema` 查询就够），并把**类型差异写进迁移注释**（它是下一个人的坑）；② 映射表里**显式标注类型**，不只标列名——「同名列」不等于「同类型列」；③ 写视图/SQL 之前先在真库跑一遍**会失败的比较**（`SELECT '2'::text = 2::integer`）比读代码快。
+- 证据：迁移 883 注释（`::text` 的由来）；真库建视图时报 `operator does not exist: text = integer`（本轮真实踩到）；契约门 `migration_883_session_family_cost_view_metrics_test.go` 钉住 `::text` 不得被去掉（变异 M4 ⇒ 转红）。
+- 溯源：request_logs→session_turns 复核轮 §5.12.2 / §10.4；[复盘](docs/audit/2026-10-20-request-logs-session-turns-复核轮.md) §5.12.2 / §10.4。
+
+## 2026-10-20 — 判据会**污染它自己要用的度量**：先问「这个量会不会被我自己写高」（Seen: 1/3）
+- 场景：证明「`api_key_model_cost` 从未被生产流量写过」的证据是 `pg_stat_user_tables.n_tup_ins = 0`。加完真库门后，同一个读数变成 **13**，而表里**0 行**、`n_tup_del=0` ⇒ 字面读数是「写进 13 行又删干净了」⇒ 差点把 L11 这条正确结论**整个推翻**。
+- 根因（受控实验实测，不是猜的）：**PG 的 `n_tup_ins` 计入回滚事务里的插入**——`BEGIN; INSERT; ROLLBACK;` 之后计数确实 +1（而 `COMMIT` 后 +1、`DELETE` 后 `n_tup_del` +1，均已逐项对照）。本轮的真库门正是 `defer tx.Rollback()` 的**夹具插入** ⇒ **门把自己的度量写高了**。
+- 防复发检查：① 用一个量下结论前，先问「**这个量会不会被我自己（的测试/任务）写高**」；② **可复现的判据**是「跑 N 次 ⇒ 计数恰好 +N、行数不变」——本轮连跑 3 次门，计数 13→16（**恰好 +3**）、行数恒 0 ⇒ 那 13 次全是门自己的夹具；③ 判「某表有没有被写过」优先用**结构事实**（触发器在不在、现在几行、`max(bucket)`、网关日志里有没有它的痕迹），**计数器**会被任何跑过夹具的测试抬高；④ 统计读数有**刷新延迟**（PG 收集器不是即时的）⇒ 同一会话里连读两次会拿到不同值，受控实验要先 `pg_sleep` 再读，否则会读到「全是 0」的假象。
+- 证据：受控实验（`_stat_probe_t` 探针表：rollback +1 / commit +1 / delete `n_tup_del` +1）；真库门 `admin/auto_route_cost_views_session_source_test.go:88` 的 `defer tx.Rollback()`；13→16 的连跑复现；`pg_trigger` 全量清点 + `api_key_model_cost` 0 行。
+- 溯源：request_logs→session_turns 复核轮 §5.12.2 订正框 / §5.12.3 / §10.5；[复盘](docs/audit/2026-10-20-request-logs-session-turns-复核轮.md) §5.12.2 / §5.12.3 / §10.5。
+
+## 2026-10-20 — 读数「0」有两种成因：**取错了** 与 **本来就没有这种流量**（Seen: 1/3）
+- 场景：`active_concurrent` 修完读源后，活体读数**仍然是 0** ⇒ 差点再写一次「修了但没生效」。
+- 根因：第二种成因——会话族里 `is_auto_request` **全是 false**（hot 310 行 / parent 877 行，auto 行数 0 / 0）⇒ 本机这轮测试走的是**指定模型直连**，**压根没有 auto 路由流量**（`is_auto_request` 来自 **`X-Gw-Is-Auto` 头或 `model="auto"`**，`domains/streaming/handler.go:7006`）⇒ 5 分钟窗里没有可计数的行，**0 是正确的**。
+- 防复发检查：① 看到 0 先分它是「取错了」还是「没有可取的」——查**上游集合的大小**（`count(*) FILTER (WHERE is_auto_request)`、`count(*) FILTER (WHERE success)`），而不是反复重跑同一个查询；② 利用**同一个视图里两个指标的不对称**做旁证：本例 7 天窗那个指标**同一时刻**取到了真实值（4046.1ms / 6395.8ms）⇒ 读源是通的、只是这条腿上没流量；③ 这与「端点空 ≠ 读源错」是同一族但**方向相反** ⇒ 合起来一条：**任何单个读数都不能同时定两件事**，一条读数只能定一件事。
+- 证据：真库 `count(*) FILTER (WHERE is_auto_request)` = 0（hot 310 / parent 877）；`active_concurrent` 的 5 分钟窗读数 0；同期 `avg_latency_ms` 取到 4046.1 / 6395.8；真库门用夹具证明该腿**接线正确**（`active_concurrent == 1`）。
+- 溯源：request_logs→session_turns 复核轮 §5.12.6 / §10.6；[复盘](docs/audit/2026-10-20-request-logs-session-turns-复核轮.md) §5.12.6 / §10.6。

@@ -32,7 +32,11 @@
 --
 -- 三个判别读数（真库，见 §5.12 取数命令）：
 --   · `public._request_logs` count(*) = 0、`_request_logs_hot` count(*) = 0
---   · `pg_stat_user_tables` 里 `_request_logs` n_tup_ins = 0
+--   · `pg_trigger` 全量清点：**没有任何**触发器往 `_request_logs` 写，
+--     ⇒ 那族**冻结**、不再有任何新行
+--     （⚠ 不要用 `pg_stat_user_tables.n_tup_ins` 当「有没有被写过」的证据：
+--      PG **计入回滚事务里的插入**，任何跑过 `defer tx.Rollback()` 夹具的
+--      测试都会把它写高 ⇒ 本轮实测同一张表「计数 13 / 行数 0」）
 --   · 两个 admin 端点 `/api/admin/auto-route/cost/customer` 与
 --     `/api/admin/auto-route/cost/model` 均返回 `[]`
 --
@@ -81,10 +85,13 @@
 --         （实测 information_schema），而本子查询需要 `raw_model_name`。
 --
 -- **刻意不做**：不复活 `api_key_model_cost` 的聚合链（trigger + 唯一索引）。
--- 那条链**从未接线**（正典与全部 startup 迁移里都没有 trigger；该表
--- `pg_stat_user_tables.n_tup_ins = 0` ⇒ 一行都没被写过）⇒ 两个端点
--- 本来就返回 `[]`，与本迁移无关。复活它是**新功能**（还要写侧补
--- `canonical_id`，实测会话族该列 0/NULL），已登记为遗留 L11 单独排期。
+-- 那条链**从未接线**：正典与全部 startup 迁移里都没有 trigger，**真库全触发器
+-- 清点也确认 `trg_update_api_key_model_cost` 没挂在任何表上**（函数
+-- `update_api_key_model_cost()` 存在但无调用方），该表**0 行**、**0 索引**
+-- ⇒ 两个端点本来就返回 `[]`，与本迁移无关。
+-- （⚠ 同样不要用 `n_tup_ins` 当证据——见文件头注释里那条订正。）
+-- 复活它是**新功能**（还要写侧补 `canonical_id`，实测会话族该列 0/NULL），
+-- 已登记为遗留 L11 单独排期。
 -- ⇒ **本迁移的可见效果是「读源正确」，不是「端点有数」**；两者不要混。
 --
 -- 锁与时长：`CREATE OR REPLACE VIEW` 只取 ACCESS EXCLUSIVE 于视图本身
