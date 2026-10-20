@@ -95,7 +95,14 @@ func liteTerminalEntry(requestID, sessionID string) *telemetry.RequestLogEntry {
 // TestLiteRequestLogSink_PersistsFullJournal 验证终态条目落盘全链路：
 // _request_logs 行、sessions 行、session_turns 元数据与 FileBodies 原文
 // 文件均可读回。
+//
+// 前提显式化（2026-10-20 审计 D0 收口）：本用例测的是 **v1 写路径**
+// （断言 _request_logs 行能读回），此前隐式依赖「未配置 ⇒ 继续双写」。
+// D0 把 storage.request_logs_write_enabled 的**代码默认**改成 false 之后，
+// 该隐式前提消失 ⇒ 必须显式声明「v1 写门 = 开」。
+// 断言本身未改、未跳过、未降级。
 func TestLiteRequestLogSink_PersistsFullJournal(t *testing.T) {
+	withV1WriteEnabled(t, "true")
 	rt, sink := newLiteSinkForTest(t)
 	defer rt.Shutdown()
 	ctx := context.Background()
@@ -388,6 +395,10 @@ func TestLiteRequestLogSink_TurnNoContinuesAcrossRestart(t *testing.T) {
 // TestLiteRequestLogSink_DataSurvivesShutdown Shutdown 排空后数据仍在
 // （FileBodies 异步写队列被 Close 排空，落盘完整）。
 func TestLiteRequestLogSink_DataSurvivesShutdown(t *testing.T) {
+	// 前提显式化（2026-10-20 审计 D0 收口）：本用例断言 _request_logs 行在
+	// Shutdown 之后仍能读回 ⇒ 测的是 **v1 写路径**，必须显式声明
+	// 「v1 写门 = 开」。D0 把代码默认改成 false 之后，隐式前提不再成立。
+	withV1WriteEnabled(t, "true")
 	cfg := liteStorageConfigForTest(t)
 	rt, err := initStorageMode(nil, cfg)
 	if err != nil {
