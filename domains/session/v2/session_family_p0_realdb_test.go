@@ -235,7 +235,7 @@ func TestTurnWriterHostTagsRealDB(t *testing.T) {
 			"「哪台机器写的这轮」又无处可查了", fbHost)
 	}
 	if len(fbTags) == 0 {
-		t.Fatalf("未显式给 tags 时落库为空数组 —— 「没有标签」与「标签没写」"+
+		t.Fatalf("未显式给 tags 时落库为空数组 —— 「没有标签」与「标签没写」" +
 			"必须长得不一样")
 	}
 	if fbTags[0] != TurnTagNamespace {
@@ -302,7 +302,7 @@ func TestPromoteColumnContractRealDB(t *testing.T) {
 		t.Fatalf("read hot shape: %v", err)
 	}
 	if parentShape != hotShape {
-		t.Fatalf("父表与 hot 的列形状不同 ⇒ promote 会当场报错（column contract has drifted），" +
+		t.Fatalf("父表与 hot 的列形状不同 ⇒ promote 会当场报错（column contract has drifted），"+
 			"热表永远排不进月分区。\n--- parent ---\n%s\n--- hot ---\n%s", parentShape, hotShape)
 	}
 
@@ -386,7 +386,7 @@ func TestSessionTurnsFTSIndexUsableRealDB(t *testing.T) {
 			"**不要**把恒绿当通过。")
 	}
 	if len(trgmIndexes) == 0 {
-		t.Fatalf("库里没有任何 gin_trgm_ops 索引 —— 子串回退腿缺失，"+
+		t.Fatalf("库里没有任何 gin_trgm_ops 索引 —— 子串回退腿缺失，" +
 			"「破坏子串检索」的风险成立")
 	}
 	t.Logf("FTS 索引 %d 个、trigram 索引 %d 个", len(ftsIndexes), len(trgmIndexes))
@@ -509,11 +509,11 @@ func TestSessionBodiesRequestIDJoinIndexRealDB(t *testing.T) {
 		t.Fatalf("iterate pg_indexes: %v", err)
 	}
 	if len(covering["session_bodies"]) == 0 {
-		t.Fatalf("session_bodies 上没有覆盖 join 谓词四列 (tenant_id, session_id, turn_no, request_id) "+
+		t.Fatalf("session_bodies 上没有覆盖 join 谓词四列 (tenant_id, session_id, turn_no, request_id) " +
 			"的 btree 索引 —— 迁移 888 未入库，或列序不对。**不要**把恒绿当通过。")
 	}
 	if len(covering["session_bodies_hot"]) == 0 {
-		t.Fatalf("session_bodies_hot 上没有覆盖 join 谓词四列的 btree 索引 —— "+
+		t.Fatalf("session_bodies_hot 上没有覆盖 join 谓词四列的 btree 索引 —— " +
 			"迁移 888 的 hot 臂未入库。")
 	}
 	t.Logf("bodies 连接索引：parent=%v hot=%v", covering["session_bodies"], covering["session_bodies_hot"])
@@ -619,4 +619,130 @@ func explainPlan(t *testing.T, pool *pgxpool.Pool, stmt string, args ...any) str
 		t.Fatalf("EXPLAIN 返回空计划 —— 判据前提有疑问")
 	}
 	return strings.Join(lines, "\n")
+}
+
+// ---------------------------------------------------------------------------
+// G-7② —— 迁移 888 的 sessions 索引：抗连接的**计划级**判据
+// ---------------------------------------------------------------------------
+
+// TestSessionsPartitionDateAntiJoinUsesIndexRealDB proves the **second** 888
+// index — idx_sessions_tenant_session_partition_date — actually carries the
+// "latest partition row" anti-join.
+//
+// 2026-10-21（判据自审轮）：G-7 的验收判据原文是「**每条**新索引都有**对应查询**的
+// 判据（EXPLAIN 不再 Seq Scan / 不再扫全部分区）」—— 这是个**全称量词**。
+// bodies 臂有计划级真库腿（TestSessionBodiesRequestIDJoinIndexRealDB），
+// ★ 而 sessions 臂**只有**静态门（索引列序 + 四个读方存在）
+// （sql/migrations/startup/session_family_join_index_gaps_test.go:214）
+// ⇒ **全称量词没被证明** ⇒ 该行当时不能叫「已闭合」。
+// ⇒ 本门补上计划级的那一半。
+//
+// 生产实际用的谓词（internal/titlestore/store.go:271 /
+// admin/turns_sessions.go:190 的 turnsSessionsLatestPartitionSQL）：
+//
+//	partition_date = (SELECT MAX(x.partition_date) FROM public.sessions x
+//	                  WHERE x.tenant_id = s.tenant_id AND x.session_id = s.session_id)
+//
+// 本门证明三件事：
+//  1. 索引在 catalog 里，且列序 = (tenant_id, session_id, partition_date DESC)；
+//  2. 它是**分区索引**（建在 ONLY 父表上）⇒ **至少有一个分区子索引** ——
+//     没有子索引的话父级索引在计划里根本不出现，这是「catalog 查得到、EXPLAIN
+//     看不到」的最隐蔽一种；
+//  3. 抗连接子查询在 enable_seqscan=off 下**能**走该索引，且**不**顺序扫 sessions。
+//
+// 诚实边界（同本文件其它计划门）：enable_seqscan=off 只证明「**能**用上该索引」，
+// **不**证明生产数据量下 planner **会**选它。
+func TestSessionsPartitionDateAntiJoinUsesIndexRealDB(t *testing.T) {
+	pool := realDBPool(t)
+	ctx := context.Background()
+
+	// ── 前提自证 ①：索引在 catalog 里，且列序覆盖三列 ──────────────────────
+	rows, err := pool.Query(ctx, `
+		SELECT indexdef FROM pg_indexes
+		 WHERE schemaname='public' AND tablename='sessions'
+		   AND indexname='idx_sessions_tenant_session_partition_date'`)
+	if err != nil {
+		t.Fatalf("read pg_indexes: %v", err)
+	}
+	var def string
+	found := false
+	for rows.Next() {
+		if err := rows.Scan(&def); err != nil {
+			rows.Close()
+			t.Fatalf("scan indexdef: %v", err)
+		}
+		found = true
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate pg_indexes: %v", err)
+	}
+	if !found {
+		t.Fatalf("public.sessions 上没有 idx_sessions_tenant_session_partition_date —— " +
+			"迁移 888 的 sessions 臂未入库。**不要**把恒绿当通过。")
+	}
+	if !sessionsIndexCoversLatestPartition(def) {
+		t.Fatalf("idx_sessions_tenant_session_partition_date 的列序不对"+
+			"（判据要求 tenant_id, session_id, partition_date DESC）：\n%s", def)
+	}
+
+	// ── 前提自证 ②：分区索引必须有子索引 ──────────────────────────────────
+	// 它建在 ONLY 父表上 ⇒ 那是 partitioned index，真正承重的是各分区上的子索引。
+	// 只查父表的 pg_indexes 会造出「索引存在」的假象 ⇒ 必须查子索引。
+	var childCount int
+	if err := pool.QueryRow(ctx, `
+		SELECT count(*) FROM pg_indexes
+		 WHERE schemaname='public'
+		   AND tablename LIKE 'sessions\_%'
+		   AND indexname LIKE '%tenant_session_partition_date%'`).Scan(&childCount); err != nil {
+		t.Fatalf("count partition child indexes: %v", err)
+	}
+	if childCount == 0 {
+		t.Fatalf("idx_sessions_tenant_session_partition_date 在任何分区上都没有子索引 —— " +
+			"父级索引是 partitioned index，没有子索引它在计划里根本不出现。")
+	}
+	t.Logf("sessions 抗连接索引：父级=%s 子索引数=%d", def, childCount)
+
+	// ── 计划断言 ─────────────────────────────────────────────────────────
+	// 探针用不存在的 session_id：**不需要**真有行 —— EXPLAIN（不带 ANALYZE）
+	// 只出计划形状，不执行 ⇒ 计划里该不该用索引，与有没有行无关。
+	plan := explainPlan(t, pool, `
+		SELECT s.session_id
+		  FROM public.sessions s
+		 WHERE s.tenant_id=$1 AND s.session_id=$2
+		   AND s.partition_date = (SELECT MAX(x.partition_date) FROM public.sessions x
+		                            WHERE x.tenant_id = s.tenant_id AND x.session_id = s.session_id)`,
+		"default", "gw_probe_sessions_anti_join")
+	if strings.Contains(plan, "Seq Scan on sessions") {
+		t.Fatalf("sessions 抗连接在 enable_seqscan=off 下仍然顺序扫描 sessions —— "+
+			"idx_sessions_tenant_session_partition_date 对这条谓词不可用。\n%s", plan)
+	}
+	if !strings.Contains(plan, "tenant_session_partition_date") {
+		t.Fatalf("sessions 抗连接的计划里没有 idx_sessions_tenant_session_partition_date —— "+
+			"这条读路径仍然不承重（判据要求的「不再扫全部分区」没有兑现）。\n%s", plan)
+	}
+	t.Logf("sessions 抗连接计划（enable_seqscan=off）：\n%s", plan)
+}
+
+// sessionsIndexCoversLatestPartition reports whether the sessions index
+// definition carries exactly (tenant_id, session_id, partition_date DESC).
+//
+// The DESC on the third column is not decoration: the production predicate is
+// "partition_date = (SELECT MAX(partition_date) ...)", so the index has to
+// serve a **descending** max lookup. An ascending
+// (tenant_id, session_id, partition_date) index answers the same equality but
+// does not match the ORDER BY DESC that max() wants.
+func sessionsIndexCoversLatestPartition(indexDef string) bool {
+	openIdx := strings.Index(indexDef, "(")
+	closeIdx := strings.LastIndex(indexDef, ")")
+	if openIdx < 0 || closeIdx <= openIdx {
+		return false
+	}
+	parts := strings.Split(indexDef[openIdx+1:closeIdx], ",")
+	got := make([]string, 0, len(parts))
+	for _, p := range parts {
+		got = append(got, strings.ToLower(strings.TrimSpace(p)))
+	}
+	want := []string{"tenant_id", "session_id", "partition_date desc"}
+	return strings.Join(got, ",") == strings.Join(want, ",")
 }
