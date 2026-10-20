@@ -87,21 +87,35 @@ func TestCostViewMetrics_ReadSessionFamilyNotFrozenV1(t *testing.T) {
 	}
 	defer func() { _ = tx.Rollback(ctx) }() // 夹具不留在库里
 
-	// ── 前提断言 1：v1 冻结族当前确实是空的 ─────────────────────────────
+	// ── 前提断言 1：v1 族**不存在**（不是「空」）─────────────────────────
 	// ⇒ 「指标非零」这件事只可能由会话族贡献。
-	var v1Rows int
-	if err := tx.QueryRow(ctx, `SELECT count(*) FROM public._request_logs`).Scan(&v1Rows); err != nil {
+	// ★ R68 改瞄：v1 族已随迁移 890 真删 ⇒ 原来的
+	//   `SELECT count(*) FROM public._request_logs` 必然 42P01
+	//   ⇒ 前提升级成「关系**不存在**」—— 更强，且归因前提不变。
+	var v1Present bool
+	if err := tx.QueryRow(ctx, `SELECT to_regclass('public._request_logs') IS NOT NULL`).Scan(&v1Present); err != nil {
 		t.Fatalf("probe _request_logs: %v", err)
 	}
-	if v1Rows != 0 {
-		t.Fatalf("premise broken: public._request_logs has %d rows (expected 0 — the v1 family is retired/frozen); "+
-			"this gate's conclusion would no longer be attributable to the session family", v1Rows)
+	if v1Present {
+		t.Fatalf("premise broken: public._request_logs 又存在了 —— " +
+			"「指标非零」这件事不再能归因给会话族（v1 族可能重新长出行）")
 	}
 
-	// ── 找一个真实 api_key（视图要 JOIN api_keys）──────────────────────
+	// ── 夹具 0：一个**真实存在**的 api_key（视图 JOIN api_keys）──────────
+	// ★ R68 改瞄：原来写的是「从库里挑一个」（`SELECT id FROM api_keys LIMIT 1`）。
+	//   在**全新安装**的库里 api_keys 本来就可以是空的 ⇒ 那是**环境状态**，
+	//   不是被测行为 ⇒ 门会随机红（实测：一次性库 0 行 ⇒
+	//   "pick api_key: no rows in result set"）。
+	//   ⇒ 改为**在事务内种一个**（随 ROLLBACK 消失，不留痕）。
+	//   必需列：application_id / tenant_id / key_hash / key_prefix；
+	//   key_hash 上有唯一索引 ⇒ 用带门标识的值避免撞已有行。
 	var apiKeyID int
-	if err := tx.QueryRow(ctx, `SELECT id FROM public.api_keys ORDER BY id LIMIT 1`).Scan(&apiKeyID); err != nil {
-		t.Fatalf("pick api_key: %v", err)
+	if err := tx.QueryRow(ctx, `
+		INSERT INTO public.api_keys
+			(application_id, tenant_id, key_hash, key_prefix, key_alias, enabled, status)
+		VALUES (1, 'default', 'gw_cost_view_gate_key_hash', 'gw_cost_v', 'gw-cost-view-gate', true, 'active')
+		RETURNING id`).Scan(&apiKeyID); err != nil {
+		t.Fatalf("seed api_key fixture: %v", err)
 	}
 
 	const rawModel = "gate-upstream-raw-model"

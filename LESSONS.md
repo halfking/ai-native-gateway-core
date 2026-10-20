@@ -5409,3 +5409,124 @@ PostgreSQL 解析调用时，**带默认值的那个也能接 3 参调用**，
 - 证据：本次 rebase（`git rebase origin/main` 冲突于 `LESSONS.md`）；
   修复用 `git show 6b7402054:LESSONS.md` ＋ `git show 86eb96318:LESSONS.md` 两侧重建。
 - 溯源：三项目会话治理续做轮（2026-10-20）。
+
+## 2026-10-21 — ★★★★★ **「门绿」之前先问「它到底跑没跑」**：环境变量名不一致 / build tag ⇒ 那条断言从未执行（llm-gateway-go R68 · D3）
+- 场景：v1 族退役后逐条改瞄 30 条 42P01 恒红门，改完跑「同一个包」以为都绿了。
+- 实测翻车（两处，症状完全一样——**一条红的门消失了**）：
+  ① `TestBudgetCheck_NonMissingRelationErrorKeeps500` 用 `reorderTestPool(t)`，
+     它读的是 **`LLM_GATEWAY_PG_URL`**，而本仓所有真库腿都读 `TEST_DATABASE_URL`
+     ⇒ 只设后者时它**永远 SKIP** ⇒ 「绿」是**空过**（两个变量都设才真跑 ⇒ PASS）；
+  ② `TestSessionSummaryV2FallbackMatchesLegacyQueryOnRealRows` 带
+     `//go:build integration` ⇒ 用 `-run` 过滤跑默认 tag 时它**根本没进读数**
+     ⇒ 我一度以为「这条门不存在」。
+- ⇒ ⇒ ★ **通用式**：
+  1. ⭐⭐⭐⭐⭐ **「红→绿」的第一嫌疑不是「修好了」，而是「没跑了」** ——
+     ⇒ 每次都核：**这条测试名真的出现在 `-v` 输出里吗？**
+  2. ⭐⭐⭐⭐ **同一仓里不同门可能用不同环境变量** ⇒ 跑真库腿要**把本仓用到的
+     变量全列出来**（`rg 'os.Getenv\(".*(PG|DATABASE)' --glob '*_test.go'`），
+     不是只设自己记得的那个；
+  3. ⭐⭐⭐⭐ **带 build tag 的门要单独带 tag 跑一遍** ⇒ 否则它在默认跑法里
+     **结构性不可见**（R57 已在另一处踩过同款：`TestStatsRebuildSQLParses`）；
+  4. ⭐⭐⭐⭐ **「no tests to run」必须判作废，不能读成 PASS**（变异 harness 同款纪律）。
+- 证据：`admin/keys_budget_test.go`（`reorderTestPool`）、
+  `admin/routing_candidate_binding_test.go:298`（`LLM_GATEWAY_PG_URL`）、
+  `admin/session_summary_v2_fallback_integration_test.go`（build tag）。
+- 溯源：llm-gateway-go R68 轮（D3 侧），§19.18。
+
+## 2026-10-21 — ★★★★ **族退役后的夹具不是「机械换表名」**：四个维度逐一对齐，否则门会变成恒绿（llm-gateway-go R68 · D3）
+- 场景：v1 族（迁移 890）整体 DROP 后，30 条真库门全灭在 42P01 ⇒ 逐条改瞄会话族。
+- 实测翻车（连着四次）：① 正文列名不是 `request_body`/`response_body` 而是
+  **`request_delta`/`response_delta`**（照抄旧列名 ⇒ 42703）；
+  ② `total_tokens` 在会话族是**派生**的（`NULLIF(prompt+completion,0)`），
+  照抄旧种子的物理列值 ⇒ 读出来恒 0；
+  ③ 唯一键从 `request_id` 变成 **`(tenant_id, session_id, turn_no)`**
+  ⇒ 同 session 多行必须给不同 turn_no（固定 1 ⇒ 23505）；
+  ④ 正文源的配对键从 `(request_id, ts)` 变成 **`request_id` 单键**且**源里没有 ts**
+  ⇒ 旧形态不是「读不到」而是**解析期就不存在**（42703）。
+- ⇒ ⇒ ★ **通用式**：
+  1. ⭐⭐⭐⭐⭐ **换族要核四个维度**：**列名 / 派生列 / 唯一键 / 配对键** ——
+     少核一个就会出现「改了表名还是红」，而症状看起来像「夹具坏了」；
+  2. ⭐⭐⭐⭐ **派生列的旧值不可照抄**（v1 的 `total_tokens` 是物理列，
+     会话族是表达式）⇒ 种子要改成写**源列**，让读源自己算；
+  3. ⭐⭐⭐⭐ **唯一键变了 ⇒ 夹具的「多行」构造法也要变**（v1 靠 request_id 区分，
+     会话族靠 turn_no 区分）；
+  4. ⭐⭐⭐⭐ **旧形态若已「结构上不可能」，就不是「读不到」而是「解析期报错」** ——
+     ⇒ 这反而是好消息：失败方式从**静默**变成**响亮**。
+- 证据：`docs/audit/2026-10-21-R68-D3-v1族退役后门改瞄.md` §3。
+- 溯源：llm-gateway-go R68 轮（D3 侧），§19.18。
+
+## 2026-10-21 — ★★★★ **契约变了，「只增不减」这类方向性不变式会从「保守」变成「有害」**（llm-gateway-go R68 · D3）
+- 场景：`TestSessionSummaryV2FallbackMatchesLegacyQueryOnRealRows` 断言
+  「legacy（元组键）配上的轮次 split（单键）必须配上同一份；legacy 没配上的轮次，
+  split **可以**有正文」—— 这是**方向性**不变式，它成立的前提是
+  **两条路径的配对键不同**。
+- 实测翻车：族退役后两条路径用**同一个 request_id 单键 + 同一个源**
+  ⇒ 「多取」不再是收益而是**串位**（把别的轮次的正文带进来）
+  ⇒ 留着方向性断言 = **把 bug 钉成优点**。
+- ⇒ ⇒ ★ **通用式**：
+  1. ⭐⭐⭐⭐⭐ **方向性不变式（「只增不减」「至少有一边」）必须随契约一起复核** ——
+     它的成立前提是「两条路径的机制不同」；机制一合，它就变成「多取即对」；
+  2. ⭐⭐⭐⭐ 机制合流后的正确期望通常是**相等** ⇒ 改成相等性断言
+     （轮次集合 / 编号 / 内容三条全在），不是**删掉**断言；
+  3. ⭐⭐⭐⭐ **「多取」与「取错」在读数上都是「比期望多」** ⇒ 只有逐轮**内容相等**
+     才区分得开（突变验证里「按下一轮取正文」正是这样被抓住的）。
+- 证据：`admin/session_summary_v2_fallback_integration_test.go`（R68 改瞄）
+  + 变异 M4（`mergeFallbackTurns` 串位 ⇒ 门红）。
+- 溯源：llm-gateway-go R68 轮（D3 侧），§19.18。
+
+## 2026-10-21 — ★★★ **幂等契约的「载体」可能随一次迁移一起消失**：断言「恰好 1 行」与「恰好 2 行」都会把错钉成对（llm-gateway-go R68 · D3）
+- 场景：telemetry 的 `persistRequestLog` 原来同时写 v1 表（迁移 455 给了
+  `UNIQUE(request_id)` + `ON CONFLICT` ⇒ 重投=刷新）与 `usage_ledger_hot`（纯 INSERT）。
+  v1 族退役后**只剩后者**，而它的唯一键是 **`(request_id, ts)`**（迁移 344）、
+  写入**不带 ON CONFLICT** ⇒ **实测重投 ⇒ 2 行**。
+- 实测翻车：文档化的契约（「遥测 at-least-once ⇒ 同 request_id 重投=刷新而非重复行」，
+  产品注释至今还写着）**当前无处兑现** ⇒ 而门只有两个选项，两个都错：
+  断言「恰好 1 行」= 断言一条**当前不成立**的契约（恒红）；
+  断言「恰好 2 行」= 把**重复计费**钉成契约（更糟：它会掩盖这个缺口）。
+- ⇒ ⇒ ★ **通用式**：
+  1. ⭐⭐⭐⭐⭐ **门只能断言「当前为真且可观测」的东西** ⇒ 对未兑现的契约，
+     正确做法是「断言可观测的那部分 + 把缺口登记给属主」，**不是**二选一硬断言；
+  2. ⭐⭐⭐⭐ **区分「缺口是新引入的」与「缺口是老账」** ——
+     本例 ledger 重复**不是** 890 引入的（890 之前也重复），
+     变的是「**幂等语义载体**没了」⇒ 措辞不能写成「回归」；
+  3. ⭐⭐⭐⭐ **修法若要动迁移 + 热写路径 ⇒ 属主拍板**，本轮只实测 + 留证 + 登记。
+- 证据：`docs/audit/2026-10-21-R68-D3-v1族退役后门改瞄.md` §4.1
+  （唯一键实测：`pg_indexes` 上 `usage_ledger_hot_request_id_ts_key`；
+  行数实测：门内 `t.Logf("re-ingest 行数现状 = 2")`）。
+- 溯源：llm-gateway-go R68 轮（D3 侧），§19.18。
+
+## 2026-10-21 — ★★★ **默认值翻转会换掉「活路径」**：夹具种错表 ⇒ 读数全零 ⇒ 看起来像「夹具坏了」（llm-gateway-go R68 · D3）
+- 场景：tenant stats 端点有两条读路径（raw union / daily rollup），
+  由 `settings.RequestLogsWriteEnabled()` 选；该键默认在 890 之后被翻成 **false**
+  ⇒ **活路径是 rollup**（`stats_usage_daily`），raw union 只在写门显式打开时可达。
+- 实测翻车：按 raw union 的读源把种子种进 `session_turns_hot` ⇒
+  端点返回的 daily 桶**全为 0**（`Requests:0 Success:0 Errors:0 Tokens:0 Credits:0 Cost:0`）
+  ⇒ 第一反应是「夹具错了」；真相是**活路径换了**（rollup 表里没有这批数据）。
+- ⇒ ⇒ ★ **通用式**：
+  1. ⭐⭐⭐⭐⭐ **「读数全零」的第一嫌疑是「读的不是那张表」**，不是「数据没种进去」
+     ⇒ 先查**端点当前走哪条腿**（读产品源码里的分支条件 + 那个条件的**默认值**）；
+  2. ⭐⭐⭐⭐ **默认值是被迁移悄悄改掉的**（一个 setting 的默认翻转 ⇒ 一整族读点换源）
+     ⇒ 改瞄夹具前必须核「分支条件的当前默认值」，不能沿用旧轮的印象；
+  3. ⭐⭐⭐⭐ ★ **顺带发现**：换路径后 raw union 那条腿**默认无人覆盖**
+     ⇒ 「会话族两臂 union」的正确性在默认跑法下**没有门** ⇒ 登记为遗留。
+- 证据：`admin/tenant_stats_rollup.go`（`tryTenantStatsFromDailyRollup`）、
+  `settings/key_request_logs_write_enabled.go:44`（默认 false）、
+  `admin/tenant_stats_daily_live_test.go`（R68 改瞄 + 变异 M5 验证有牙）。
+- 溯源：llm-gateway-go R68 轮（D3 侧），§19.18。
+
+## 2026-10-21 — ★★ **变异锚点必须核「恰好 1 次」**：源串出现两次时，锚点会「恰好匹配 2 处」⇒ 变异作废（llm-gateway-go R68 · D3）
+- 场景：变异 harness 用「把源串替换成别的」制造语义变异，脚本里写
+  `assert s.count(old)==1`。
+- 实测翻车：会话族正文源串在 `admin/logs.go` 里**出现 2 次**
+  （`fetchSessionOutboundBody` 与 `fetchRequestBodies` 都用它）
+  ⇒ assert 失败 ⇒ 变异作废（**脚本没有乱改**，这点是对的）
+  ⇒ 改成「取**第 2 次**出现」才做出语义正确的变异（只改 `fetchRequestBodies` 那处）。
+- ⇒ ⇒ ★ **通用式**：
+  1. ⭐⭐⭐⭐ **锚点「恰好一次」是纪律，但「出现两次」是常态** ——
+     ⇒ 变异脚本应支持「取第 N 次」/「取最后一次」，而不是只支持「唯一」；
+  2. ⭐⭐⭐⭐ ★ **「锚点匹配数不是 1」= 变异作废，不是「变异无效」**
+     ⇒ 读数要判**作废**并重做（别把它读成「门没牙」）；
+  3. ⭐⭐⭐⭐ 语义变异必须**只改目标函数**：同文件里同源的另一个调用点不能被连带改到
+     （否则红灯可能来自别处 ⇒ 门有牙的结论不可信）。
+- 证据：R68 变异 harness `/tmp/r68/mutate_r68.sh`（M1 第一版作废 → 改锚后变红）。
+- 溯源：llm-gateway-go R68 轮（D3 侧），§19.18。

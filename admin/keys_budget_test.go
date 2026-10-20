@@ -309,8 +309,13 @@ func TestBudgetCheck_NonMissingRelationErrorKeeps500(t *testing.T) {
 		`ALTER VIEW usage_ledger_with_current_month RENAME TO usage_ledger_with_current_month_bak`); err != nil {
 		t.Fatalf("rename view: %v", err)
 	}
+	// ★ R68：原写法是 `SELECT no_such_column_zz FROM usage_ledger_hot` ——
+	//   PG 在 **CREATE VIEW 时就校验列引用** ⇒ 直接 42703 ⇒ 夹具自己就建不出来
+	//   （这道门一直在红，且**与 v1 族无关**）。
+	//   ⇒ 正确形态：建一个**存在但缺列**的视图（少投影 handler 会读的那一列
+	//     `cost_usd`）⇒ 查它时才是**运行期** 42703 —— 这才是本门要区分的形态。
 	if _, err := pool.Exec(ctx,
-		`CREATE VIEW usage_ledger_with_current_month AS SELECT no_such_column_zz FROM usage_ledger_hot`); err != nil {
+		`CREATE VIEW usage_ledger_with_current_month AS SELECT request_id, api_key_id, ts FROM usage_ledger_hot`); err != nil {
 		t.Fatalf("create broken view: %v", err)
 	}
 	t.Cleanup(func() {

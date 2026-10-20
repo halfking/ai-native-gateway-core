@@ -507,6 +507,19 @@ func TestMergeLongTail(t *testing.T) {
 //   - session_summaries.duration_seconds 是 GENERATED ALWAYS 列（修前
 //     显式插入 428C9），时长经 last_request_at = first + N 秒表达；
 //   - _request_logs.provider_id 是 bigint（修前夹具塞 'openai' 字符串 22P02）；
+// R68 夹具改瞄（v1 族随迁移 890 真删 ⇒ `_request_logs` 已不存在）：
+//   - 夹具从 `_request_logs` 换成**会话族两腿**（session_turns_hot +
+//     session_turn_details_hot）；
+//   - canonical 视图 = session_turns_hot LEFT JOIN session_turn_details_hot
+//     UNION ALL session_turns LEFT JOIN session_turn_details
+//     ⇒ `outbound_model` ← **t.model**（不是 outbound_model 列）、
+//       `provider_id` ← **d.provider_id**（**details 层**）、
+//       `request_status` ← **派生列**（由 t.success / t.error_kind 算出）、
+//       `gw_session_id` ← t.session_id（'sys:%' 会被置 NULL）；
+//   - 两表 join 键 = tenant_id + request_id + partition_date
+//     （request_id 显式同值；partition_date 两表默认都是 CURRENT_DATE）；
+//   - ⚠ 只插 turn 行会让 provider 维度全塌成 'unknown'
+//     ⇒ 长尾语义（9010/9020/9090 三个 provider）就没了 ⇒ 必须**两张表都插**。
 //   - 上下文改 tenant_admin（super_admin 无租户过滤，会在共享真库上聚合
 //     全量真实行，断言既不确定也踩真实数据形状）；
 //   - 日期窗口动态覆盖 now()（修前固定 2026-07 窗口，夹具行落在 now()
@@ -534,20 +547,69 @@ func seedBreakdownTenant(t *testing.T, db *pgxpool.Pool) {
 	}
 }
 
-// cleanupBreakdownFixtures 按外键逆序清扫夹具行（_request_logs →
+// cleanupBreakdownFixtures 按外键逆序清扫夹具行（会话族两腿 →
 // session_summaries → tenants）。必须在 defer db.Close() 之后注册
 // （LIFO 先清理后关池）。
+//
+// ★ R68：原来这里删的是 `_request_logs` ⇒ v1 族退役后它**必然 42P01**
+// ⇒ **每一个**用本清理函数的用例都被它拖红（连只插 session_summaries 的
+// 形态端点用例也一样红）⇒ 改瞄会话族两腿。
 func cleanupBreakdownFixtures(t *testing.T, db *pgxpool.Pool) {
 	t.Helper()
 	ctx := context.Background()
-	if _, err := db.Exec(ctx, `DELETE FROM _request_logs WHERE tenant_id = $1 AND gw_session_id LIKE 'gw\_%'`, breakdownTenant); err != nil {
-		t.Errorf("cleanup _request_logs: %v", err)
+	if _, err := db.Exec(ctx, `DELETE FROM session_turn_details_hot WHERE tenant_id = $1 AND session_id LIKE 'gw\_%'`, breakdownTenant); err != nil {
+		t.Errorf("cleanup session_turn_details_hot: %v", err)
+	}
+	if _, err := db.Exec(ctx, `DELETE FROM session_turns_hot WHERE tenant_id = $1 AND session_id LIKE 'gw\_%'`, breakdownTenant); err != nil {
+		t.Errorf("cleanup session_turns_hot: %v", err)
 	}
 	if _, err := db.Exec(ctx, `DELETE FROM session_summaries WHERE tenant_id = $1 AND session_key LIKE 'gw\_%'`, breakdownTenant); err != nil {
 		t.Errorf("cleanup session_summaries: %v", err)
 	}
 	if _, err := db.Exec(ctx, `DELETE FROM tenants WHERE code = $1`, breakdownTenant); err != nil {
 		t.Errorf("cleanup tenants: %v", err)
+	}
+}
+
+// insertSessionTurnPair 往会话族两腿插一对行（turn + details）。
+//
+// ★ R68 改瞄的事实依据（真库实测，canonical 视图定义原文）：
+//
+//	session_turns_hot t LEFT JOIN session_turn_details_hot d
+//	  ON d.tenant_id = t.tenant_id AND d.request_id = t.request_id
+//	 AND d.partition_date = t.partition_date
+//	UNION ALL
+//	session_turns t LEFT JOIN session_turn_details d ON ...
+//
+//	· `outbound_model` ← **t.model**（会话族没有 outbound_model 列）
+//	· `provider_id`    ← **d.provider_id**（**details 层**）
+//	· `request_status` ← **派生列**（t.success / t.error_kind 算出来）
+//	· `gw_session_id`  ← t.session_id（'sys:%' 会被置 NULL）
+//
+// ⇒ 夹具**两张表都要插**：只插 turn 行 ⇒ provider 维度全塌成 'unknown'
+// ⇒ 长尾（9010 / 9020 / 9090 三个 provider）语义就没了。
+// ⚠ `turn_no` 参与会话族的唯一键（tenant_id, session_id, turn_no）
+//
+//	⇒ **同一 session 里的多行必须是不同 turn**（v1 的「一个 session 若干行」
+//	在会话族里 = turn 1..N）⇒ 固定写 1 会撞 23505。
+func insertSessionTurnPair(t *testing.T, db *pgxpool.Pool, sessionID, requestID string,
+	turnNo int, ts time.Time, model string, providerID int64) {
+	t.Helper()
+	ctx := context.Background()
+	if _, err := db.Exec(ctx, `
+		INSERT INTO session_turns_hot
+			(session_id, turn_no, tenant_id, request_id, ts, model,
+			 cost_usd, prompt_tokens, completion_tokens, latency_ms, success)
+		VALUES ($1, $2, $3, $4, $5, $6, 0.5, 100, 200, 1000, true)
+	`, sessionID, turnNo, breakdownTenant, requestID, ts, model); err != nil {
+		t.Fatalf("failed to insert session_turns_hot: %v", err)
+	}
+	if _, err := db.Exec(ctx, `
+		INSERT INTO session_turn_details_hot
+			(session_id, turn_no, tenant_id, request_id, ts, provider_id)
+		VALUES ($1, $2, $3, $4, $5, $6)
+	`, sessionID, turnNo, breakdownTenant, requestID, ts, providerID); err != nil {
+		t.Fatalf("failed to insert session_turn_details_hot: %v", err)
 	}
 }
 
@@ -565,7 +627,7 @@ func setupModelBreakdownTestData(t *testing.T, db *pgxpool.Pool) {
 		t.Fatalf("failed to insert session_summaries: %v", err)
 	}
 
-	// 插入 _request_logs（provider_id 为 bigint：9010/9020 夹具值）
+	// 插入会话族两腿（★ R68 改瞄：v1 族已退役；provider_id 走 details 层）
 	for i := 0; i < 10; i++ {
 		model := "gpt-4o"
 		provider := int64(9010)
@@ -573,45 +635,28 @@ func setupModelBreakdownTestData(t *testing.T, db *pgxpool.Pool) {
 			model = "claude-3-5-sonnet"
 			provider = int64(9020)
 		}
-
-		_, err := db.Exec(ctx, `
-			INSERT INTO _request_logs (request_id, gw_session_id, tenant_id, ts, outbound_model, provider_id, cost_usd, prompt_tokens, completion_tokens, latency_ms, request_status, success)
-			VALUES ($5, 'gw_test_1', $1, $2, $3, $4, 0.5, 100, 200, 1000, 'success', true)
-		`, breakdownTenant, now.Add(time.Duration(i)*time.Minute), model, provider,
-			fmt.Sprintf("test-mbd-1-%d-%d", i, now.UnixNano()))
-		if err != nil {
-			t.Fatalf("failed to insert _request_logs: %v", err)
-		}
+		insertSessionTurnPair(t, db, "gw_test_1",
+			fmt.Sprintf("test-mbd-1-%d-%d", i, now.UnixNano()),
+			i+1, now.Add(time.Duration(i)*time.Minute), model, provider)
 	}
 }
 
 func setupLongTailTestData(t *testing.T, db *pgxpool.Pool) {
 	seedBreakdownTenant(t, db)
-	ctx := context.Background()
 	now := time.Now()
 
-	// 插入主要模型（高占比）
+	// 插入主要模型（高占比）—— ★ R68 改瞄：会话族两腿
 	for i := 0; i < 100; i++ {
-		_, err := db.Exec(ctx, `
-			INSERT INTO _request_logs (request_id, gw_session_id, tenant_id, ts, outbound_model, provider_id, cost_usd, prompt_tokens, completion_tokens, latency_ms, request_status, success)
-			VALUES ($4, $1, $2, $3, 'gpt-4o', 9010, 0.5, 100, 200, 1000, 'success', true)
-		`, fmt.Sprintf("gw_test_%d", i), breakdownTenant, now.Add(time.Duration(i)*time.Minute),
-			fmt.Sprintf("test-ltl-m-%d-%d", i, now.UnixNano()))
-		if err != nil {
-			t.Fatalf("failed to insert _request_logs: %v", err)
-		}
+		insertSessionTurnPair(t, db, fmt.Sprintf("gw_test_%d", i),
+			fmt.Sprintf("test-ltl-m-%d-%d", i, now.UnixNano()),
+			1, now.Add(time.Duration(i)*time.Minute), "gpt-4o", 9010)
 	}
 
 	// 插入长尾模型（低占比 <2%）
 	for i := 0; i < 3; i++ {
-		_, err := db.Exec(ctx, `
-			INSERT INTO _request_logs (request_id, gw_session_id, tenant_id, ts, outbound_model, provider_id, cost_usd, prompt_tokens, completion_tokens, latency_ms, request_status, success)
-			VALUES ($5, $1, $2, $3, $4, 9090, 0.1, 10, 20, 500, 'success', true)
-		`, fmt.Sprintf("gw_tiny_%d", i), breakdownTenant, now.Add(time.Duration(i)*time.Minute),
-			fmt.Sprintf("tiny-model-%d", i), fmt.Sprintf("test-ltl-t-%d-%d", i, now.UnixNano()))
-		if err != nil {
-			t.Fatalf("failed to insert _request_logs: %v", err)
-		}
+		insertSessionTurnPair(t, db, fmt.Sprintf("gw_tiny_%d", i),
+			fmt.Sprintf("test-ltl-t-%d-%d", i, now.UnixNano()),
+			1, now.Add(time.Duration(i)*time.Minute), fmt.Sprintf("tiny-model-%d", i), 9090)
 	}
 }
 
