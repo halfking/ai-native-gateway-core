@@ -36,6 +36,7 @@ import (
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/kaixuan/llm-gateway-go/internal/testguard"
 )
 
 const auditDBEnv = "TEST_AUDIT_ISOLATED_DB_URL"
@@ -46,6 +47,19 @@ func openPool(t *testing.T) *pgxpool.Pool {
 	if dsn == "" {
 		t.Skipf("%s not set; skipping integration test", auditDBEnv)
 	}
+	// ★★★ R87 轮：**目标库守卫**，必须在建池之前、也就是在任何破坏性 SQL 之前。
+	//
+	//   这条腿会 TRUNCATE public.session_bodies_hot / public.session_bodies /
+	//   public.session_turns_hot / public.session_turns —— 全是**产品表**。
+	//   而它读的名字叫 TEST_AUDIT_ISOLATED_DB_URL（含义是「隔离审计库」，
+	//   `scripts/audit/verify-outbox-reaper.sh` 给的是隔离容器 127.0.0.1:15433），
+	//   事实源却把它指向**产品库** ⇒⇒ 名字与值互相矛盾 ⇒ 破坏性 SQL 落在产品库上。
+	//
+	//   ⇒ 守卫的放行条件：库名是一次性库（scratch/e2e/tmp/bench/itgate/_it），
+	//   **或**目标是本仓的本地审计容器（回环 + 15433/55432）。
+	//   ⇒ 不满足 ⇒ **跳过**（不是失败）：这是环境不满足，不是代码缺陷；
+	//     跳过不构成证据，但至少不会清空产品库。
+	target := testguard.RequireIsolatedTarget(t, dsn)
 	cfg, err := pgxpool.ParseConfig(dsn)
 	if err != nil {
 		t.Fatalf("parse dsn: %v", err)
@@ -59,6 +73,8 @@ func openPool(t *testing.T) *pgxpool.Pool {
 	if err := pool.Ping(context.Background()); err != nil {
 		t.Fatalf("ping: %v", err)
 	}
+	// 守卫的第二层：连接落到的库必须就是 DSN 指名的那个（DSN 撒谎 ⇒ 失败）。
+	testguard.RequireDatabaseMatchesDSN(t, pool, target)
 	return pool
 }
 
