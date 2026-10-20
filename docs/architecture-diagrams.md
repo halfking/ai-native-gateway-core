@@ -195,7 +195,7 @@ graph TB
 ```mermaid
 graph TB
     subgraph entry["入口 / 组装层"]
-        MAIN["cmd/gateway/main.go<br/>composition root (~8402 行)<br/>+ 32 个 main_* 接线文件"]
+        MAIN["cmd/gateway/main.go<br/>composition root (~8,416 行)<br/>+ 32 个 main_* 接线文件"]
     end
 
     subgraph dp["数据面领域 (domains/)"]
