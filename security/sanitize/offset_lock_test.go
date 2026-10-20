@@ -263,3 +263,101 @@ func TestSanitizeOffsetsNoRedisKeepsRequestLocalMapping(t *testing.T) {
 	require.Contains(t, forwarded, "{SENSITIVE:phone:1}")
 	require.NotContains(t, forwarded, "13800138000")
 }
+
+// blockingHolderDetector blocks inside Detect until it is released, so the
+// caller owns the per-session offset lock for as long as the test wants.
+// The once guard keeps it safe if Detect is ever called more than once.
+type blockingHolderDetector struct {
+	entered chan<- struct{}
+	resume  <-chan struct{}
+	once    sync.Once
+}
+
+func (d *blockingHolderDetector) Name() string { return "blocking-holder" }
+
+func (d *blockingHolderDetector) Detect(ctx context.Context, text string) ([]SensitiveFragment, error) {
+	d.once.Do(func() {
+		if d.entered != nil {
+			close(d.entered)
+		}
+	})
+	select {
+	case <-d.resume:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	return NewPatternDetector().Detect(ctx, text)
+}
+
+// TestSanitizeOffsetsSlowHolderDoesNotFailWaiter pins the contract that a
+// holder which is merely slow must not be mistaken for a stuck lock.
+//
+// Why this gate exists (2026-10-20, audit): the waiter used to give up after
+// 3 attempts × 50 ms ≈ 100 ms while the lease was 15 s. The holder's critical
+// section (load offsets → detect → allocate → commit) routinely exceeds
+// 100 ms on a loaded host, so the waiter failed closed with 503 on a healthy
+// system. That is the flake behind TestSanitizeOffsetsAcrossMiddlewareInstances.
+//
+// The gate is deliberately **deterministic**: it makes the holder slow *by
+// construction* (300 ms, three times the old wait window) instead of relying
+// on a load-dependent flake that reproduces roughly once every 12
+// whole-package runs. A gate that only reds under load cannot be used to
+// validate a fix.
+//
+// The complementary contract — a lock that is genuinely held by someone else
+// still fails closed — stays pinned by
+// TestSanitizeOffsetsBusyOrRedisFaultStopsDispatch.
+func TestSanitizeOffsetsSlowHolderDoesNotFailWaiter(t *testing.T) {
+	mini, err := miniredis.Run()
+	require.NoError(t, err)
+	defer mini.Close()
+	rdb := redis.NewClient(&redis.Options{Addr: mini.Addr()})
+	defer rdb.Close()
+
+	entered := make(chan struct{})
+	resume := make(chan struct{})
+	holder := newOffsetTestMiddleware(t, rdb, &blockingHolderDetector{entered: entered, resume: resume})
+	waiter := newOffsetTestMiddleware(t, rdb, NewPatternDetector())
+
+	const tenant, session = "tenant-slow-holder", "session-slow-holder"
+	holderDone := make(chan int, 1)
+	go func() {
+		status, _, called := callOffsetTestMiddleware(holder, tenant, session, "13800138000")
+		if !called {
+			holderDone <- -status
+			return
+		}
+		holderDone <- status
+	}()
+
+	// Wait until the holder is inside Detect: at that point it owns the
+	// per-session offset lock, so the waiter below really contends.
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("holder did not enter the detector")
+	}
+
+	waiterDone := make(chan int, 1)
+	go func() {
+		status, _, called := callOffsetTestMiddleware(waiter, tenant, session, "13912345678")
+		if !called {
+			waiterDone <- -status
+			return
+		}
+		waiterDone <- status
+	}()
+
+	// Hold the lock for three times the old wait window.
+	time.Sleep(300 * time.Millisecond)
+	close(resume)
+
+	require.Equal(t, http.StatusOK, <-holderDone)
+	select {
+	case status := <-waiterDone:
+		require.Equal(t, http.StatusOK, status,
+			"a live holder that is merely slow must not make the waiter fail closed")
+	case <-time.After(10 * time.Second):
+		t.Fatal("waiter did not finish")
+	}
+}
