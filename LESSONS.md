@@ -8618,8 +8618,10 @@ asr A-6「可续跑」在 §11.4 写着「❌ **仍未做**」，理由是「`re
     而 `shared_blks_hit = 115,424,288`（每次约 129,255）⇒ ⇒ ★★ **⇒ 「内存命中为主、物理读是尖刺」**；
     `temp_blks_read/written = 0` ⇒ ⇒ ★★ **⇒ 没有排序/哈希溢出 ⇒ 排除「临时文件」这条线。**
   ⇒ ⇒ ★★★ **⇒ 表级落地：★ 用 `pg_statio_user_tables.heap_blks_read + idx_blks_read` 做 3 秒一档的快照差分，并同步标注被测语句是否可见**
-    ⇒ ★★ **⇒ 实测单次运行（07:42:05 → 07:42:29）的增量**：
-    **`session_dim` +6,323** / `session_summaries` +2,280 / `session_project_attribution` +132 / `project_dim` +4
+    ⇒ ★★ **⇒ 实测两次运行（慢/快各一）的对照**：
+    **慢**（19,960 ms）⇒ 物理读 **+8,745**，其中 **`session_dim` +6,323** / `session_summaries` +2,280 / `session_project_attribution` +132 / `project_dim` +4；
+    **快**（3,996 ms）⇒ 物理读 **+102**，其中 **`session_dim` +0**
+    ⇒ ⇒ ★★★ **⇒ 两次运行 SQL 完全一样，耗时差 5 倍、物理读差 80 倍 ⇒ ⇒ ★★ **⇒ 变量部分是「缓存命中率」，不是「代码退化」****
     ⇒ ⇒ ★★★ **⇒ 热点是 `session_dim` 的 pkey 探测（14,081 次 × 4 buffers/次）—— 而 §1.1 已证明这 14,081 次里有 99.87% 结构上永远解析不出来。**
   ⇒ ⇒ ★★ **⇒ 量具坑：★ `pg_statio_user_tables.idx_blks_read` 对「无索引的表」是 NULL** ⇒ ★★ **⇒ `ORDER BY heap+idx DESC` 在 PG 里会把 NULL 排到最前**
     ⇒ ⇒ ★★★ **⇒ 必须 `COALESCE(idx_blks_read, 0)` + `NULLS LAST`，否则「top-N 物理读表」会全是 NULL 行。**

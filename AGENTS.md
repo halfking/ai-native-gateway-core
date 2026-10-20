@@ -5976,8 +5976,9 @@ index b953a6f03..555ef83c4 100644
 >   ⇒ ★★★ **量具侧证**：`pg_stat_statements` 每次调用 `shared_blks_read ≈ 285`（≈2.2 MB 物理读）、`shared_blks_hit ≈ 129,255`、`temp_blks_read = 0`
 >   ⇒ ⇒ ★★★ **⇒ §2 的「`project_dim` 热行 upsert 等锁」假设被打掉 ⇒ 它的两条候选修法收益估算都建立在错误前提上**（审计档 §4.1 已订正）
 > ⇒ ★★★★★ **⑭ 归因终于落到表：`session_dim` 的 pkey 探测是物理读热点**
->   ⇒ ★★★ **用 `pg_statio_user_tables` 做 3 秒一档快照差分**（并同步标注 worker 是否可见）⇒ **单次运行（07:42:05 → 07:42:29）增量**：
->     **`session_dim` +6,323** / `session_summaries` +2,280 / `session_project_attribution` +132 / `project_dim` +4
+>   ⇒ ★★★ **用 `pg_statio_user_tables` 做 3 秒一档快照差分**（并同步标注 worker 是否可见）⇒ **慢/快两次运行对照**：
+>     **慢**（19,960 ms）⇒ 物理读 **+8,745**（**`session_dim` +6,323** / `session_summaries` +2,280 / `session_project_attribution` +132 / `project_dim` +4）；
+>     **快**（3,996 ms）⇒ 物理读 **+102**（**`session_dim` +0**）⇒ ⇒ ★★ **两次 SQL 完全一样、耗时差 5 倍、物理读差 80 倍 ⇒ 变量部分是「缓存命中率」，不是「代码退化」**
 >   ⇒ ★★★ **⇒ 机制**：CTE 对 `session_dim` 做 **14,081 次 pkey 探测 × 4 buffers/次**（索引 + heap），
 >     而 `session_dim` 总共 374 MB（堆 203 MB + pkey 索引 65 MB）、`shared_buffers` 只有 3584 MB 且是共享库 ⇒ **部分页被逐出 ⇒ 每次运行重新读盘**
 >   ⇒ ⇒ ★★★ **⇒ 而 §1.1 已证明这 14,081 次里有 99.87% 结构上永远解析不出来（`application_code` 空 ⇒ `gw_resolve_project_ref` 恒 NULL）⇒ ⇒ ⇒ 这 6,323 次物理读大半是白读的。**
