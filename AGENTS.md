@@ -5097,3 +5097,46 @@ To codeup.aliyun.com:kaixuan/official-deploy/llm-gateway-go.git
 > + `scripts/mutate-14342-reclaim-gate.py`（变异，隔离副本）。
 > ⇒ ★ **本地真库实测（一次性库 `itgate_14342`）**：复刻「0 行 + TOAST 膨胀」形态 ⇒
 > `TRUNCATE` 与 `VACUUM FULL` 都把 1.35 MB 收到 16 KB ⇒ ⇒ **生产配方取 `VACUUM FULL`**。
+
+> **2026-10-21 R79 轮（本会话）**：**并行会话通报的「一道永远 SKIP 的门」⇒ 实测是一族 9 个**
+> ⇒ ⇒ ★★★ **两类门要分开处置，而「表不存在」这个借口必须用实验证伪**。
+> ⇒ 通报的那条：`cmd/gateway/dual_read_gate_pg_test.go:39`
+> `TestS4GateStopsClaimingReadyAfterStopWrite` —— 在任何当前形态库上**永远 SKIP ⇒ 永远绿**
+> （`go test` 把 SKIP 记成 PASS）。
+> ⇒ ★★★★ **★ 决定性实验（比通报更重的一层）**：建一次性库把 4 张表**补齐并塞 100 行 v1 数据**
+> ⇒ 它照样**红**：`v1 覆盖率从未被测量（V1CoveragePP=-1）` ⇒ 且日志显示
+> **有 100 行 v1 也报 `v1=0 / reason="v1_family_retired"`**
+> ⇒ ⇒ ★★★ **⇒ 它在 legacy 形态上是假红，在当前形态上是永远 SKIP ⇒ 在任何环境下都给不出正确信号。**
+> ⇒ ★★ **根因（产品侧证据）**：`cmd/gateway/dual_read_gate.go:9-18` 自写
+> **「this rule set has no production call site any more」**；
+> `cmd/gateway/dual_read_validator.go:390-424` 的 `SummarizeFrom` 在退役态**一条查询都不发**，
+> 返回**硬编码常量**（`V1Retired=true` / `V1CoveragePP=-1` / `S4Ready=false` /
+> `S4GateVoid=true` / `reason=v1_family_retired`）
+> ⇒ ⇒ ★★ **⇒ 退役态是「常量」不是「库相关的事实」⇒ 真库层对它没有任何可测增量
+> ⇒ ⇒ ★★ **⇒ 处置是「退役」不是「改瞄」（改瞄成真库门 = 给常量套真库外套）。**
+> ⇒ ★★★ **族谱（9 个 dual-read 真库门）**：**6 个真读 v1 族 SQL**（契约已随 890 退役）
+> + **3 个根本不读业务表**（被共用入口 `openDualReadGate` 连坐成永远 SKIP）。
+> ⇒ ★★ **本轮只落地了零风险那一半（零覆盖删除、零产品改动）**：
+> ① 新增 `openDualReadConnection`（**只验连通性**，不开表探针）；
+> ② **救活 2 个门**（`TestDualReadValidator_Summarize_RealDB` · `TestDriftClassExpression_RealDB`）
+> ⇒ ★★ **#7 现在是「退役态契约的真库门」**：真库上证明「Summarize 不 42P01 且如实报
+> `v1_family_retired`」⇒ **任何把 v1 族写回活路径的改动都会在这里暴露（42P01）**
+> ⇒ ★ **这正是 R78 轮那类缺陷（v1 族复活）的活体守卫**；
+> ③ 新门 `cmd/gateway/dual_read_v1_probe_guard_test.go`：**走 `openDualReadGate` 的门必须真的读 v1 族**
+> （沿门内调用图闭包判定，★ **闭包刻意不穿过基础设施函数** ——
+> 「不许靠 `probeDualReadTables` 自己那句 `_request_logs` 蒙混过关」，否则判据恒绿）
+> ⇒ **变异 M1 成立**（改回 `openDualReadGate` ⇒ 门红并点名；还原 md5 逐字一致）。
+> ⇒ ★★ **行为读数**（当前形态库）：**8 SKIP / 1 活 ⇒ 3 活 / 6 SKIP** ⇒ **新增 2 个活门、零新增红**；
+> 整包两种模式（无 DSN / 有 DSN）**全 ok**。
+> ⇒ ★★ **属主裁决项（本轮未拍板）**：余下 **6 个 v1-SQL 门**怎么处置
+> ⇒ **建议 R79-A（退役 6 个 + 清理 v1-only 辅助函数）**
+> ⇒ ★ **R79-B（改写成退役态断言）会与 #7 重复；R79-C（原样保留）不可接受** ——
+> 仓里已有明文立场（`cmd/tools/validate_sessions_v2/loader.go`）：
+> 「留着一条只为了还能列出点东西而存在的查询，是给运维制造『工具还在正常跑』的错觉
+> —— **比没有门更糟，因为它看起来在防着什么**」。
+> ⇒ ★★ **★ 为什么不能只「把 SKIP 去掉」**：去掉探针后它们在 legacy 库上会**跑起来并失败**
+> ⇒ ⇒ **假红比永远绿更容易误导人** ⇒ ⇒ **探针与退役必须一起做**。
+> ⇒ ★★ **替代覆盖已存在**（退役态契约在 mock/单元层已守）：
+> `s4_gate_coverage_faces_test.go::TestS4CoverageIsNotMeasuredAfterV1Retirement` +
+> `dual_read_validator_test.go`（pgxmock：**断言一条查询都不发**）⇒ ⇒ **退役不丢覆盖率**。
+> ⇒ 完整记录见 handoff `§19.20.19`。
