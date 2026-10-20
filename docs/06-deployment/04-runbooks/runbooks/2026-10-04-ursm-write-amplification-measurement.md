@@ -38778,3 +38778,187 @@ GOCACHE=/tmp/gocache-p1437 go test ./scripts/ursmcheck/ -run 'TestRunbook14330' 
 [[量具之间矛盾时先怀疑量具]] · [[阴性结论要当缺陷一样复核]] ·
 [[自己上一节的结论也要复核]] · [[跨节订正前先自问「我要订正的这条真的错了吗」]] ·
 [[PG 日志说超时 ≠ 被角色级超时杀了]] · [[要测冷态每一臂都要有自己的冷窗口]]。
+
+## §143.31 **P9 闭环**：rollup 在生产上**等的是 I/O**；⇒ **P11 有了明确落点，且是零语义风险**（2026-10-20）
+
+### §143.31.0 结论先行
+
+1. ★★★★★ **P9 闭合（§143.28.5 的判别表落地）** ——
+   在生产上以 **2 s 采样 `pg_stat_activity`** 抓到了 rollup 的运行现场：
+
+   | 时刻 | 语句 | state | wait_event_type | wait_event | age |
+   |---|---|---|---|---|---:|
+   | 17:50:36.038 | `DELETE FROM stats_usage_daily WHERE day_utc >= (…)` | active | **IO** | **DataFileRead** | 0.11 s |
+   | 17:50:38.046 | 同上 | active | **IO** | **DataFileRead** | 2.12 s |
+   | 17:50:40.055 | 同上 | active | **IO** | **DataFileRead** | 4.12 s |
+   | 17:50:42.076 | `WITH latest AS (SELECT f.* FROM usage_facts f JOIN stats_event_dedup …)`（= `dailyInsertSQL`，`domains/stats/daily_monthly_rollup.go:195`） | active | **IO** | **DataFileRead** | 0.91 s |
+
+   ⇒ ⇒ ★★★★★ **⇒ 两条语句【全部】在等物理 I/O**（`DataFileRead`）
+   ⇒ ⇒ ★★★★ **⇒ 没有一条是 `Lock`（撞车）、没有一条是 `Client`（客户端先放弃）**
+   ⇒ ⇒ ★★★★★ **⇒ §143.28 的「争用」判断成立**：**rollup 不是在算，是在等磁盘**
+   ⇒ ⇒ ★★★★ **⇒ §143.29 的因果链里最关键的那一环，从「推断」变成了「实测」**
+   （★ 完整的因果闭环仍需 P11 的授权验证，但「rollup 在等 I/O」这一环已是现场读数。）
+
+2. ★★★★ **⇒ 两条读数互相印证（第三把尺子对上）**：
+   ★ **DELETE 的 age 0.11 → 2.12 → 4.12 s**，紧接着聚合语句在 **17:50:42** 启动（age 0.91 s）
+   ⇒ ⇒ **DELETE 实测 ≥ 4.12 s** ⇒ 与 §143.27 的 **`DELETE` = 4,818 ms**（生产 110 次真实调用）**吻合**
+   ⇒ ⇒ **⇒ 三把尺子（脚本侧计时 / pgss / 现场 pg_stat_activity）第一次三方对上。**
+
+3. ★★★★★ **★ 由此得到一个更硬的结论**：★ **聚合语句一启动就 `IO|DataFileRead`**
+   ⇒ ⇒ **它不是「先算一段、再等 I/O」，而是【一上来就在等磁盘】**
+   ⇒ ⇒ ★★★ **⇒ 「换 JOIN 形态（LATERAL / 半连接）」确实救不了它** ——
+   ⇒ ⇒ **§143.28 的方向性结论（「优化单条 join」不是正确方向）现在有了生产现场的直接支持。**
+
+4. ★★★★★ **P11 有了明确落点，而且【是零语义风险的】**（详见 §143.31.2）：
+   巡检的三个 CTE 里，**`base_buckets` 是唯一贵的那条**：
+   **每小时把 7 天（≈ 2,600 万行）全扫一遍 + `GROUP BY (slot, date_trunc)`**
+   ⇒ ⇒ ★★★ **⇒ 它的产出只依赖「(天, 小时位, 桶) 的行数」，这个量【每天只变一次】**
+   ⇒ ⇒ **⇒ 物化成一张每日汇总表即可 ⇒ 每小时只查几百行 ⇒ 扫描量 −96%，判定输入逐字不变**
+   ⇒ ⇒ **⇒ 它【不是】「缩短 7 天窗」（那是属主的语义决策），而是【换个地方算】（零语义风险）**
+   ⇒ ⇒ ★★★ **⇒ 与 §143.27 的 151 MB 索引改造同属「零语义风险」那一类
+   ⇒ ⇒ ⇒ 只需要属主授权「写迁移 + 改脚本」，不需要语义拍板。**
+
+⚠ **本节对生产的写入 = 0**：全部只读
+（`pg_stat_activity` 轮询采样 + 巡检脚本源码阅读 + 仓库源码阅读）。**没有**改脚本 / 改 cron /
+改超时 / 建表 / 建索引 / 跑迁移 / 改任何配置。
+
+### §143.31.1 P9 的取证细节（可原样重跑）
+
+**采样器**（只读，2 s 一次，命中即打印）：
+```sql
+SELECT to_char(clock_timestamp(),'HH24:MI:SS.MS') AS t, pid, state,
+       coalesce(wait_event_type,'-') AS wt, coalesce(wait_event,'-') AS we,
+       round(extract(epoch from (clock_timestamp()-query_start))::numeric,2) AS age_s,
+       left(regexp_replace(query,'\s+',' ','g'),70) AS q
+FROM pg_stat_activity
+WHERE datname = current_database() AND state <> 'idle'
+AND (query ILIKE '%stats_usage_daily%' OR query ILIKE '%stats_event_dedup%')
+```
+
+★ **为什么这样选**：
+- ★ **`state <> 'idle'`** ⇒ 只要连接在跑就算数（idle in transaction 也会暴露）；
+- ★ **`wait_event_type` / `wait_event`** ⇒ PG 17 的**等待事件分类**（`IO` / `Lock` / `Client` / 空）；
+  ★ **空 + `state='active'` ⇒ 它在【算】**（这是 §143.28.5 判别表的第三档）；
+- ★ **`age_s` 用 `query_start` 算** ⇒ 拿到的是**这条语句已经跑了多久**，而不是事务年龄。
+
+★ **同批采样里的其它读数**（同样有诊断价值）：
+| 观察到的语句 | wait_event_type | wait_event | 判读 |
+|---|---|---|---|
+| `INSERT INTO stats_event_dedup (…)`（`domains/stats/event_writer.go:176` 的写手） | **IO** | **DataFileRead** | ★ **stats 写手也在等物理 I/O** ⇒ ★ **它与 rollup 抢的是同一块盘** |
+| `WITH facts AS (SELECT min(occurred_at)::date AS oldest FROM public.usage_facts …)` | （空） | （空） | ★ **在算**，而且**同一条带 3 个并行 worker**（3 个 pid 的 age 相同）⇒ ★ **它开并行抢 CPU** |
+| `WITH facts AS …` 的来源 | — | — | ★ **`bg/routing_health_checks.go:947` 的 `stats_ground_truth_gap` 检查** |
+
+⇒ ⇒ ★★★ **⇒ 顺带发现：CPU 侧也有竞争者** ——
+`stats_ground_truth_gap` 是**路由健康检查**，它在 4 核机上开**并行 worker** 扫
+`usage_facts` + `stats_usage_daily` ⇒ ⇒ **它与 rollup 抢 CPU，而 rollup 与巡检抢 I/O**
+⇒ ⇒ **⇒ 252 的 load 14/4 核 是【多个作业】共同造成的，不是单点**（与 §143.28 的「墙钟不可信」一致）。
+
+### §143.31.2 P11 的具体落点：**把 `base_buckets` 从「每小时全扫 7 天」换成「每天一次物化」**
+
+#### §143.31.2.1 现状（脚本源码逐字，`scripts/252-monitor/ursm-snapshot-health.sh`）
+
+```sql
+base_buckets AS (
+  SELECT $G_SLOT_TS AS slot, count(*) AS c
+  FROM ursm_node_snapshot_min
+  WHERE snapshot_ts >= $NOW_EXPR - make_interval(days => $BASELINE_DAYS)  -- 7 天
+    AND snapshot_ts < (SELECT lo FROM win)
+  GROUP BY 1, $G_TRUNC snapshot_ts)),
+```
+⇒ ⇒ ★★★ **这是唯一贵的那条**：★ **7 天 × ≈375 万行/天 ≈ 2,600 万行，每小时全扫一遍**
+⇒ ⇒ **§85 的成本分解**：`base_buckets` **61%** + `base_active` 35% + `cur` 4%
+⇒ ⇒ **⇒ 物化 `base_buckets` ⇒ 直接砍掉巡检 61% 的成本**
+
+#### §143.31.2.2 ★ 为什么这是**零语义风险**的（关键论证）
+
+★ **`base_buckets` 的产出只有两个用途**：
+① 按小时位 `slot` 分组，每组取**中位数**（与同时段基线比大小）；
+② 输出 `c`（行数基线）。
+
+★ **这两个用途都只依赖「每个 (天, 小时位, 桶) 的行数」这一个量** ——
+★ **而这个量在一天之内是不变的**（只在跨天时新增一批）
+⇒ ⇒ ★★★★★ **⇒ 把「(天, slot, 桶) → 行数」每天算一次存起来，
+   巡检时用最近 7 天的这张表算中位数 ⇒ 【判定输入逐字相同】**
+⇒ ⇒ ★★★ **⇒ 与「缩短 7 天窗」完全不同**：
+- 「缩短窗口」= **改判据的语义** ⇒ **属主的决策**（§143.21/§143.22 那一族的「保留期」语义）；
+- ★ **「换个地方算」= 改实现，不改判定** ⇒ **零语义风险** ⇒ **可仓内直接落地**（仍需写生产迁移的授权）。
+
+#### §143.31.2.3 落地形态（草案，未实施）
+
+| 项 | 内容 |
+|---|---|
+| 新表 | `ursm_snapshot_slot_daily(day date, slot int, bucket_ts timestamptz, rows bigint)`，主键 `(day, slot, bucket_ts)` |
+| 体积 | 小时粒度：24 slot × 24 桶 = **576 行/天**；分钟粒度：34,560 行/天 ⇒ ★ **7 天窗口只需几千行** |
+| 填充 | 每天一次（或每小时滚动补「昨天」）算「前一天的每个 (slot, 桶) 的行数」⇒ **3.75M 行/天扫一次**，而不是 26M 行 × 24 次 |
+| 巡检侧 | `base_buckets` 改为读这张表 ⇒ **每小时从 2,600 万行全扫降到几千行** |
+| 语义 | ★ **判定输入不变** ⇒ ★ **零语义风险** |
+| 扫描量 | **26M 行/小时 → 3.75M 行/天 ⇒ −96%**（★ **估算，未实测**） |
+| 物理读 | ★ **巡检每次 2.9 GB ⇒ 估 0.2~0.4 GB（估，未实测）** ⇒ ★ **−85% 上下（估）** |
+| 次级杠杆 | `base_active`（2 天 + `count(DISTINCT date_trunc('minute', ts))`，35%）⇒ 可同样按「(天, slot) 的活跃分钟数」物化 |
+
+⚠ **上表的收益数字是估算，不是实测** —— ★ **本节没有跑过一次物化后的查询**（那是生产写，需授权）。
+
+### §143.31.3 对既有结论的增量
+
+| 条目 | 变化 |
+|---|---|
+| **P9** | ★★★★★ **关闭** —— 现场读数已拿到：`IO|DataFileRead`（两条语句都是），**无 `Lock`、无 `Client`** |
+| **P11** | ★★★★★ **仍是全局第一**，★ **但从「方向」变成「有落点」**：★ **落点 = `base_buckets` 每日物化**，★ **且是零语义风险**（§143.31.2） |
+| **P16（新增）** | **CPU 侧也要看**：`stats_ground_truth_gap`（`bg/routing_health_checks.go:947`）在 4 核机上开**并行 worker** 扫 `usage_facts`+`stats_usage_daily` ⇒ ★ **它与 rollup 抢 CPU** ⇒ ★ **是否该限制它的并行度/频率，值得单查**（★★ **本节未查 ⇒ 诚实边界**） |
+| §143.29 的排名 / §143.30 的机制 | ★ 不变（本节只补现场证据，不改排名） |
+
+### §143.31.4 诚实边界与本节**没做**的事
+
+- ⚠ **本节对生产的写入 = 0**；**未写迁移、未改脚本、未改 cron、未改超时** ⇒ **生产行为未变**。
+- ★★ **P11 的收益（−96% 扫描量 / −85% 物理读）是估算，未实测** ——
+  ★ 要实测需要「建表 + 写迁移 + 改脚本 + 部署」⇒ **需属主授权**。
+- ★★ **没有抓到 rollup 那一轮是否最终被 30 s 杀掉** ——
+  ★ 抓到的只是它的**两条语句的等待事件**；
+  ★ 252 的 PG 容器日志路径在采样后发生了变化（容器被重建），154 上网关服务名下的日志没取到
+  ⇒ ⇒ **诚实边界：本节只回答了「它在等什么」，没回答「它最后成没成功」。**
+- ★★ **`stats_ground_truth_gap` 只被识别出来，**没有被量化**（不知道它每次跑多久、多占多少 CPU）。
+- ★★ **采样只覆盖了 1 次 rollup 运行**（17:50 那一轮）⇒ ★ **不能据此说「每一次都是 IO 阻塞」**
+  ⇒ ★ **「这一轮在等 I/O」是实测；「每轮都在等 I/O」是外推。**
+- ★★★ **采样器本身有盲区**：★ 它按 `query ILIKE` 匹配 ⇒ ★ **一条语句若不含
+  `stats_usage_daily` / `stats_event_dedup` 字样就抓不到** ⇒ ★ **例如聚合语句是因为含
+  `stats_event_dedup` 才被匹配到的** ⇒ ★ **漏抓是可能的**（★ 这也是「阴性结论要当缺陷一样复核」的同族）。
+
+### §143.31.5 待拍板（本节新增 / 变更）
+
+| 编号 | 事项 | 变化 |
+|---|---|---|
+| **P9** | 抓作业运行时的 `pg_stat_activity` | ★★★★★ **关闭**（`IO|DataFileRead`；无 Lock、无 Client） |
+| **P11** | 缩短/改写巡检 | ★★★★★ **仍是全局第一**；★★ **落点 = `base_buckets` 每日物化（零语义风险）**；★★ **与 §143.14 的「每日基线物化表」同一件事** |
+| **P16（新增）** | **CPU 侧竞争者**：`stats_ground_truth_gap` 的并行度/频率 | ★★★ 新增 —— 本节只识别，未量化 |
+| **P14 / P15** | 超时策略 / 巡检成功率可观测 | ★ 不变（§143.30） |
+
+⚠ **P11/P16 是「改生产行为」⇒ 需属主显式授权**；**本节对生产的写入仍为 0**。
+
+### §143.31.6 复核方法（可原样重跑）
+
+```bash
+# ── 1) ★ 生产只读：抓 rollup 运行时的等待事件（2 s 采样）
+#    采样 SQL 见 §143.31.1（只读 SELECT）
+
+# ── 2) ★ 巡检脚本的三条 CTE 与成本归属（仓库侧，不连库）
+grep -n "base_buckets\|base_active\|G_ACTIVE\|BASELINE_DAYS" scripts/252-monitor/ursm-snapshot-health.sh
+
+# ── 3) ★ rollup 的两条语句与调度
+grep -n "DELETE FROM stats_usage_daily\|WITH latest AS\|defaultRollupInterval" \
+     domains/stats/daily_monthly_rollup.go
+
+# ── 4) ★ CPU 侧竞争者的来源
+sed -n '940,960p' bg/routing_health_checks.go
+```
+
+⇒ ⇒ ★ **本节落地的门**（不连库，可原样重跑）：
+
+```bash
+# §143.31 文档门：P9 现场读数 / P11 的落点与零语义论证 / CPU 侧竞争者 / 诚实边界
+GOCACHE=/tmp/gocache-p1437 go test ./scripts/ursmcheck/ -run 'TestRunbook14331' -count=1 -v
+```
+
+★ 同族：[[先读量具再读产物]] · [[量具之间矛盾时先怀疑量具]] ·
+[[EXPLAIN 只证明「计划会选」]] · [[阴性结论要当缺陷一样复核]] ·
+[[自己上一节的结论也要复核]] · [[PG 日志说超时 ≠ 被角色级超时杀了]] ·
+[[阈值型判据先量噪声底]]。
