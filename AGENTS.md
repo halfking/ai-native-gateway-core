@@ -5742,8 +5742,18 @@ To codeup.aliyun.com:kaixuan/official-deploy/llm-gateway-go.git
 > `git diff --cached | shasum -a 256`（**索引内容的指纹**；★ 只记 `git diff` 看不出问题，它恒为空）
 > ⇒ ⇒ **复原**：`git diff --name-only > f` ⇒ `git add --pathspec-from-file=f` ⇒ 再比指纹
 > ⇒ ⇒ ★★ **更稳的形态：能隔离就别在共享树里 rebase** —— 本轮第二次 rebase 改在隔离 worktree 做
-> ⇒ ⇒ ⚠ **后果（不隐瞒）**：共享工作树的 `main` 停在 rebase 前 ⇒ 与 origin/main **分叉**
-> ⇒ ⇒ 下一会话 `fetch && rebase` 时会因 **patch-id 相同**被自动跳过 ⇒ 收敛，不产生重复历史。
+> ⇒ ⇒ ⚠ **后果（不隐瞒）**：共享工作树的 `main` 停在 rebase 前 ⇒ 与 origin/main **分叉**。
+> ⇒ ⇒ ⚠⚠ **订正（原判词「下一会话 fetch && rebase 时会因 patch-id 相同被自动跳过 ⇒ 收敛」已被实测推翻）**：
+> **只对第二个提交成立**，第一个**不等** ⇒ 实测 `git show 1e80c3620 | git patch-id --stable`
+> ≠ `git show 31ed01e09 | git patch-id --stable` ⇒ **根因：那个提交含【经冲突解决的文件】**
+> （`LESSONS.md`/`AGENTS.md`）⇒ 冲突解决**改变了提交内容** ⇒ patch-id 随之改变
+> ⇒ ⇒ ★★ **「patch-id 相同 ⇒ 自动跳过」的前提是「提交内容逐字未变」**
+> ⇒ ⇒ ★★★★ **通用式：凡依赖这个兜底假设，都要先真的量一次 patch-id**
+> ⇒ ⇒ **危害**：git 会把它**重放一遍** ⇒ 改的正是已被改过的 LESSONS/AGENTS ⇒ 必然冲突
+> ⇒ ⇒ **若按「两侧全保留」解 ⇒ 已在上游的内容会被写第二遍**
+> ⇒ ⇒ ★ **正确处置是 `git rebase --skip`**（内容已在上游的 rebase 形态里）⇒ 共享 `main` 收口为
+> origin/main + 并行会话那一条（patch-id 未变 ⇒ 零丢失；LESSONS 里 §143.46 块**仍只有 1 份**）
+> ⇒ ⇒ 完整记录见 runbook `§143.46.12`（含**订正横幅二十四**）。
 > ⇒ 完整记录见 runbook `§143.46`（.0~.11）。
 
 > **2026-10-21 R82 轮（本会话）**：★★★★ **登记册里「9 条本轮未复现」不是被修好了** —— 被两个**互斥**机制抵消 ＋ 查出两条新机制 ＋ **给属主决策 E3 装了一颗硬约束**
