@@ -4873,6 +4873,34 @@ To codeup.aliyun.com:kaixuan/official-deploy/llm-gateway-go.git
 > P1 回收 9 月空分区 ≈2,133 MB（需逐个确认）/ **P2 快照族建模（最大杠杆）**/
 > P3 `session_bodies` 16 KB/行 TOAST 形态 / **P4 = v1 族退役（原主线，现降级）**。
 > ⇒ 完整记录见 runbook `§143.40`。
+>
+> 🚨🚨🚨 **订正横幅二十（§143.42-B · 2026-10-21）—— 本块上方「P0 回收 1,293 MB」与
+> 「9 月空分区 ≈2,133 MB」两份清单是**假读数，已撤回** ⇒ ★★ **照原文执行将跨 17 张表
+> 不可逆销毁 300 万+ 行** ⇒ ★ **请勿执行其中的 `TRUNCATE` / `DROP`**
+>
+> - **根因**：本块用 `pg_stat_user_tables.n_live_tup` 判「零行」。
+>   ⇒ ★★★ 该字段对「**长期无写入 + 从未 analyze**」的表**恒为 0**（陈旧估算）⇒ **系统性假空**。
+> - **复算（252 生产，只读）**：改用 `EXISTS(SELECT 1 … LIMIT 1)` 精确判空，
+>   20 个「零行对象」里 **17 个实际有行**：
+>   `ursm_node_snapshot_min_legacy` 852 MB → **2,836,620 行**／
+>   `session_title_states` 91 MB → **175,975 行**／
+>   9 月「空分区包」11 个 → **11/11 全部非空**（`usage_ledger_2026_09` 1,416,772／
+>   `session_turn_details_2026_09` 786,036／`request_wal_2026_09` 446,777／
+>   `routing_decision_log_2026_09` 440,138／`sessions_2026_09` 163,682）。
+> - **真正真空只有 3 个**：`_request_logs_bodies_hot` 291 MB（orphan）/
+>   `_request_logs_hot` 59 MB（orphan）/ `usage_facts_default` 80 MB（attached）
+>   ⇒ ⇒ **零行 orphan 回收 = 350 MB（不是 1,293 MB）**；**9 月空分区包整包撤回**。
+> - **顺带解掉一个待定性项**：本块「9 月 `session_turns` 799,243 行 而
+>   `session_turn_details_2026_09` 0 行 ⇒ details 没接线」—— **错**：
+>   details 实有 **786,036 行**（≈98.3%）⇒ **写入正常，无需定性**。
+> - ★★ **通用式（凡「空表 ⇒ 可回收」的判据，一律照此）**：
+>   **判空必须用 `EXISTS(SELECT 1 … LIMIT 1)` 或精确 `count(*)`，不得用 `n_live_tup`** ——
+>   后者是**估算**，且在「无写入 + 未 analyze」时**恒 0** ⇒ ⇒ **它系统性地把「有数据」读成「空」**
+>   ⇒ ⇒ ★ **假空的方向永远是「让人以为可以删」⇒ 杀伤力最大**。
+> - ★ **本轮独立复核（R76 轮会话，生产只读）**：对订正列的 10 个对象逐个跑 `EXISTS` 复判
+>   ⇒ **7 个判非空、3 个判真空**，与订正口径**逐条一致** ⇒ 订正成立。
+>   现场证据：`n_live_tup=0` 而 `n_tup_ins=109,447`（`_request_logs_bodies_hot`）、
+>   多个对象 `last_analyze` 为空 ⇒ 估算从未更新。
 
 > **2026-10-21 R77 轮（db 包形态线 · 本会话）**：接并行会话通报的**两条 db 包 v1 时代夹具**
 > ⇒ ★★ **复现逐字属实**，但 **★ 订正通报对 (B) 的定性**（说「断言全是会话族形态」**不准确**）：
