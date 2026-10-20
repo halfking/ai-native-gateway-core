@@ -9123,3 +9123,13 @@ installer `//go:embed` 指令 + files 映射 → `dbinit` 的 `StartupFiles` →
 ③ 生产应用日（2026-08-16）的文件字节里**没有**建 FK 的 DO 块。
 ★ 顺带记：**本条此前在台账里完全没有登记行**（生产已应用、仓内有文件、但 `docs/db-changelog.md` 无行）
 ⇒ ⇒ 「台账漏登记」与「台账记了旧字节」是**两种**漂移，本轮两种都遇到了。
+## 2026-10-20T08:49:38Z — deploy 245 build_seq 2765 (3badf239)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 885 | `885_session_turns_host_tags.sql` | `e3189e0f2cc5ad6753298f033d9b9c8d912d71d49138720a9940e13ec66734c3` | applied+verified |
+| 886 | `886_session_bodies_storage_comment.sql` | `3e16ea7e5839ab9cd016dd3c8a86c754388f46b673bd0693f70193c791297915` | applied+verified |
+| 887 | `887_session_turns_search_text_fts.sql` | `a09595450929a696c301d51a53f2cbc38ecf0214f189f8333700f23baae5a710` | applied+verified |
+| 888 | `888_session_family_join_index_gaps.sql` | `c86d47f2d6e20e04bad07c3d3e41e4dc100cf33d48e90b07ec31ac5b0f7cfdd8` | applied+verified |
+| 889 | `889_session_turns_tools_population.sql` | `88750aace44f88445174aa6e56c40d7f0dcbec3ee669453e23961cabe0a06b4b` | applied+verified |
+
