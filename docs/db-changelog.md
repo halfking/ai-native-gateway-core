@@ -9177,3 +9177,26 @@ installer `//go:embed` 指令 + files 映射 → `dbinit` 的 `StartupFiles` →
   ③ ★ **迁移号被挤掉并改号**：原拟 890 ⇒ 890 被并行会话占用 ⇒ 892 在台账里也被占
      ⇒ 最终定 **893** ⇒ ★ 「下一个空号」是会漂移的活事实，取号要**当场**取、**取完即用**，且**还要看台账**。
 ★ 留证：handoff `docs/96小时内修订审计-20261007-1350.md` §19.8。
+
+## 2026-10-21 — R67 轮：**data-lifecycle 分段端点的空表 500**（纯 Go，无迁移；**生产可复现**）
+
+| 项 | 内容 |
+|---|---|
+| 位置 | `admin/data_lifecycle.go`（`dataLifecycleCanonicalSegmentsSQL`）—— **纯 SQL 字符串**，无迁移、无 schema 变更 |
+| 缺陷 | 分段 SQL 用 `(sz.total_size * a.total / NULLIF(g.rows_all, 0))::bigint` 产出 `size_bytes` / `size_human`；**会话族两腿都空时 `rows_all = 0` ⇒ 除以 NULL ⇒ 两列都是 NULL**；而 handler 把它们扫进**非指针** `int64` / `string` ⇒ pgx scan 报错 ⇒ 该行被跳过 ⇒ **`__ALL__` 行缺失** ⇒ 走 `!gotAll` 分支 ⇒ **`/api/admin/data-lifecycle/stats` 返 500** |
+| 实测复现 | 生产 SQL 原文 + 事务内删空 + ROLLBACK ⇒ `__ALL__\|0\|0\|0\|0\|0\|<NULL>\|<NULL>\|0` |
+| 可达态 | **新装库 / 日志 TTL 清空后 / 日志族整体退役后**（不是理论态） |
+| 修法 | **SQL 侧** `COALESCE(..., 0)`：0 行 ⇒ 摊派结果本就该是 0 字节 ⇒ 把「无行」翻译成 0，而不是让 NULL 穿透到 scan 变成 500。**不**改成可空扫描（保持「响亮失败」，靠门挡回归） |
+| 门 | `admin/data_lifecycle_canonical_segments_test.go` 的 `TestDataLifecycleCanonicalSegmentsSurvivesEmptyFamily`（新）：**判据与被测对象同层**（跑生产那条 SQL、扫生产那个**非指针** scan 形状）；删空写在**会 ROLLBACK 的事务**里 ⇒ 门无副作用、可指向任何库 |
+| 变异 | M1（去掉 SQL 侧 COALESCE）⇒ **红**；M2（门不删空 ⇒ 前提不在场）⇒ **红**（预置一行使前提确定化）⇒ 8/8 变异全红、还原 md5 逐字一致 ✅ |
+| 部署影响 | **无 schema 变更** ⇒ 部署顺序不变（先上新二进制再落 schema，本轮**无 schema 可落**）⇒ ★ **纯 Go 修复，随二进制生效** |
+
+★ 顺带订正（同一文件）：`databaseStorageInfo.TotalBytes` 的**三处错误注释** ——
+原文声称「含 WAL」（**不成立**：`pg_total_relation_size` 不含 WAL）、「pg_database_size 只算 heap+index」
+（**不成立**：它是**整库**含 pg_catalog）、「通常 DatabaseBytes ≤ TotalBytes」（**不保证**：
+两者口径不同 ⇒ 在「系统目录占比大」的库上后者**必然更小**）。
+⇒ 实测（一次性库）：整库 44,996,275 / 用户 schema 42,360,832 / pg_catalog 单独 43,950,080。
+⇒ ★ **前端 `StorageOverview.vue` 的 `columnarPctOfDB` 用 `total_bytes` 作分母** ⇒
+这个「用户对象总量」口径是**自洽**的 ⇒ **别改成整库**。
+★ 留证：handoff `docs/96小时内修订审计-20261007-1350.md` §19.13.4；
+审计文档 `docs/audit/2026-10-21-R67-C类逐条定性.md` §3。

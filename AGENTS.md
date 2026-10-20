@@ -4143,3 +4143,49 @@ To codeup.aliyun.com:kaixuan/official-deploy/llm-gateway-go.git
   ② `domains-hooks-handoff` 的 23503：FK 目标表是**动态**的（`handoff_logs_hot` 存在就指它），
      而**产品**写的正是 hot 表并取它的 id ⇒ ⇒ **是测试插错了父表**。
   ⇒ ⇒ **「红在哪」不等于「谁错了」**：都要回到「产品/被测对象的契约原文」去找依据。
+
+### 2026-10-21 R67 轮：**C2~C15 逐条定性**（§17.7-2 关闭）⇒ 真缺陷只有 **1** 条，但挖出「**注册启动链不可重跑**（第二遍 52 条失败）」
+
+> 完整记录：`docs/96小时内修订审计-20261007-1350.md` §19.13；
+> 逐条证据：`docs/audit/2026-10-21-R67-C类逐条定性.md`。
+
+- ★★★ **C 类 15 条里只有 1 条是真缺陷（C9）** ⇒ ★ **R59 的 C 类清单整体偏重**（真缺陷密度 1/15）。
+  - ★★ **C9（生产可复现）**：`admin/data_lifecycle.go` 的分段 SQL 用
+    `(sz.total_size * a.total / NULLIF(g.rows_all, 0))::bigint` 产出 `size_bytes`/`size_human`；
+    会话族两腿都空时 `rows_all=0` ⇒ 除以 NULL ⇒ 两列 **NULL**；
+    handler 把它们扫进**非指针** `int64`/`string` ⇒ pgx scan 报错 ⇒ 该行被跳过
+    ⇒ **`__ALL__` 行缺失** ⇒ 端点 **500**。
+    ⇒ 可达态：**新装库 / 日志 TTL 清空后 / 日志族整体退役后**（实测复现 `__ALL__|0|0|0|0|0|<NULL>|<NULL>|0`）。
+    ⇒ **修法**：**SQL 侧** `COALESCE(...,0)`（0 行 ⇒ 摊派本就该是 0 字节）；**不**改成可空扫描。
+    ⇒ **新门** `TestDataLifecycleCanonicalSegmentsSurvivesEmptyFamily`：跑生产那条 SQL、扫生产那个
+      **非指针** scan 形状；删空写在**会 ROLLBACK 的事务**里 ⇒ 门无副作用、可指向任何库。
+- ★★ **D2（新）：注册启动链不可重跑** —— installer 的 `InitSchema`
+  （`installer/internal/dbinit/runner.go:1340`）**无条件**应用每一条 startup 迁移、
+  **没有「已应用」台账** ⇒ **链必须可重跑**；而**第二遍 52 条失败**
+  （**37 条**是 v1 族退役 890 造成的 42P01；2 条是 C13 的真身
+  —— 三个**后建**视图 `routing_analytics_source` / `v_model_health_dashboard` /
+  `v_probe_system_health` 依赖 `request_logs_with_current_month` ⇒ 532 的 `DROP VIEW` 必撞 2BP01）。
+  ⇒ ★ **不是理论风险**：§143.22 记的 680 号 2026-10 事故与 R59 的 D 类**同型** ⇒ 重跑路径在生产里被走过。
+  ⇒ 修法两路（A 守卫/台账、B 显式拒绝重跑）**都改可部署链 ⇒ 属主拍板** ⇒ 本轮只实测 + 留证。
+  ⇒ ★ 新量具：`scripts/audit/replay-startup-chain.sh`（可重跑）。
+- ★★ **8 条判据的「前提」随 v1 族退役同时失效**（C3/C5/C7/C8/C10 + C2 + C6）⇒ 本轮逐条改瞄：
+  C3 换成**结构性**阳性对照（凡有列存分区的母表都必须在全集里）；
+  C5 换成**抽取器自检**（合成正例必须被认出 ⇒ 0 候选从此可信）；
+  C7 换成**当前事实源**（canonical 视图列集 + 会话族物理独有列）★ 顺带发现**真缺口**：
+  清单 40 个 v1 列名里 **38 个在库里一个都不存在**，会话族 **31 个物理独有列**清单只覆盖 2 个
+  ⇒ 清单按当前族重算（40 → **68** 列），静态禁令爆炸半径实测 **0**；
+  C8 换成**生产 FROM + 生产谓词**同层判据（★ 注意 `quality_flags` **不在** `session_turns` 物理列上
+  —— 由会话分臂投影补 NULL ⇒ 去查物理列会**误判缺列**）；
+  C10 换成**会话族 RLS**（含 WITH CHECK ⇒ 读与写都覆盖，**比只管 AFTER INSERT 的触发器更强**）；
+  C2 补第三个实参（`dim_type`）；C6 换成**同口径**判据 + 与 PG 实时求和对账
+  （★ R59 的「漏了 TOAST」**被证伪**：`pg_total_relation_size` 本就含 TOAST；真因=**口径错配**）。
+- ★ **本轮自身的三次量具故障**（都作废重做）：
+  ① ★★ **在 Citus 上不能用 `CREATE DATABASE … TEMPLATE` 克隆库** ⇒ 克隆库根本没建成
+  ⇒ 「第二遍 295 条全红」**全是连接失败** ⇒ 改为在一次性库本体上重放 ⇒ 真读数 243/52；
+  ② `pg_depend` 查依赖者时 UNION 两侧列数/类型不齐（自造）；
+  ③ ★ **自己写的门用 `string_agg`** ⇒ 0 行时返 **NULL**（不是空串）⇒ **这正是 C7 旧门的死法**。
+- ★ **变异验证的 harness 也有三个缺陷**（第一版读数全部作废重做）：
+  ① **没加 build tag** ⇒ 带 `//go:build integration` 的测试**根本没跑**（「no tests to run」被当成了 PASS）；
+  ② **没有「测试没跑 ⇒ 作废」检测**；
+  ③ **变异设计错误**（把一条**本来就成立**的断言去掉 ⇒ 绿是**正确**结果，不能当「门没牙」）。
+  ⇒ ⇒ ★ **「绿」与「红」都不是结论** —— 先确认「量具（测试）真的跑了」与「变异真改语义」。

@@ -145,8 +145,18 @@ func dataLifecycleCanonicalSegmentsSQL(tenantFilter string) string {
 		SELECT CASE WHEN a.is_total = 1 THEN '__ALL__'
 		            ELSE COALESCE(a.tenant_id, 'default') END AS scope,
 		       a.total, a.hot, a.warm, a.cold, a.expired,
-		       (sz.total_size * a.total / NULLIF(g.rows_all, 0))::bigint AS size_bytes,
-		       pg_size_pretty((sz.total_size * a.total / NULLIF(g.rows_all, 0))::bigint) AS size_human,
+		       -- ★ 2026-10-21（R67 / C9）：这两列**曾经**会产出 NULL。
+		       --   rows_all = 0（会话族两腿都空）⇒ NULLIF(g.rows_all, 0) = NULL
+		       --   ⇒ 除以 NULL ⇒ size_bytes = NULL、size_human = NULL。
+		       --   而 handler 把它们扫进**非指针** int64 / string
+		       --   （data_lifecycle.go 的 dedupRow）⇒ pgx scan 报错 ⇒ 该行被跳过
+		       --   ⇒ __ALL__ 行缺失 ⇒ 端点 500。
+		       --   实测可达态：新装库、TTL 清空后、日志族整体退役后。
+		       --   修法是**在 SQL 侧**收口（不改成可空扫描）：
+		       --   0 行 ⇒ 摊派结果本就该是 0 字节，COALESCE 把「无行」翻译成 0，
+		       --   而不是让 NULL 穿透到 scan 变成 500。
+		       COALESCE((sz.total_size * a.total / NULLIF(g.rows_all, 0))::bigint, 0) AS size_bytes,
+		       pg_size_pretty(COALESCE((sz.total_size * a.total / NULLIF(g.rows_all, 0))::bigint, 0)) AS size_human,
 		       sz.total_size AS table_size
 		  FROM agg a
 		  CROSS JOIN grand g

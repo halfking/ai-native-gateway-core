@@ -133,7 +133,8 @@ func sanitizeSchemaToken(name string) string {
 // 除了解码后的具体值，还逐个核对 raw JSON 的键名 —— 前端
 // StorageOverview.vue / tuning.ts 的 TS 类型依赖这些键，缺一个就是契约破坏。
 func TestDataLifecycleStorageOverviewFieldsAreComplete(t *testing.T) {
-	h, _, _ := newStoragePerfHandler(t)
+	h, pool, _ := newStoragePerfHandler(t)
+	ctx := context.Background()
 
 	req := httptest.NewRequest(http.MethodGet, "/api/admin/data-lifecycle/storage", nil)
 	rec := httptest.NewRecorder()
@@ -170,9 +171,41 @@ func TestDataLifecycleStorageOverviewFieldsAreComplete(t *testing.T) {
 	if ov.Database.TotalBytes <= 0 {
 		t.Errorf("TotalBytes = %d, want > 0", ov.Database.TotalBytes)
 	}
-	if ov.Database.TotalBytes < ov.Database.DatabaseBytes {
-		t.Errorf("TotalBytes(%d) < DatabaseBytes(%d)：含 TOAST 的近似总量不该小于库本体",
-			ov.Database.TotalBytes, ov.Database.DatabaseBytes)
+	// ★ 2026-10-21（R67 / C6 改判）：**跨口径**的不变式是错的，撤掉。
+	//
+	//   TotalBytes   = 用户 schema 的 SUM(pg_total_relation_size)（**含** TOAST）
+	//   DatabaseBytes = pg_database_size()（**整库**，含 pg_catalog / information_schema）
+	//   ⇒ 两者根本不是同一个口径，「TotalBytes ≥ DatabaseBytes」在
+	//     「系统目录占比大」的库上**必然不成立**（新装库/空库正是这种）。
+	//   实测（一次性库 itgate_r59_shape）：
+	//     pg_database_size = 44,996,275 / 用户 schema 合计 = 42,360,832
+	//     pg_catalog 单独 = 43,950,080 ⇒ 差值就是系统目录。
+	//   ⇒ R59 记的「总量漏了 TOAST」被**证伪**：pg_total_relation_size 本就含 TOAST。
+	//   ⇒ 换成两条**同口径**判据：
+	//   ① 总量 ≥ 它自己的三段拆分之和（环境无关）；
+	//   ② 总量与 PG **实时同口径**求和一致（±1%）—— 这才是「总量没漏」的真判据。
+	if split := ov.Database.TablesBytes + ov.Database.IndexesBytes + ov.Database.ToastBytes; ov.Database.TotalBytes < split {
+		t.Errorf("TotalBytes(%d) < 表+索引+TOAST(%d)：同口径下总量不该小于它的拆分之和",
+			ov.Database.TotalBytes, split)
+	}
+	var liveTotal int64
+	if err := pool.QueryRow(ctx, `
+		SELECT COALESCE(SUM(pg_total_relation_size(c.oid)), 0)::bigint
+		FROM pg_class c
+		JOIN pg_namespace n ON n.oid = c.relnamespace
+		WHERE n.nspname NOT IN ('pg_catalog','information_schema')
+	`).Scan(&liveTotal); err != nil {
+		t.Fatalf("读 PG 实时同口径总量失败：%v", err)
+	}
+	if liveTotal > 0 {
+		diff := ov.Database.TotalBytes - liveTotal
+		if diff < 0 {
+			diff = -diff
+		}
+		if allowed := liveTotal / 100; diff > allowed {
+			t.Errorf("TotalBytes(%d) 与 PG 实时同口径求和(%d) 差 %d 字节 > 容差 %d —— 总量口径漏了东西",
+				ov.Database.TotalBytes, liveTotal, diff, allowed)
+		}
 	}
 	if ov.Database.TablesBytes <= 0 {
 		t.Errorf("TablesBytes = %d, want > 0", ov.Database.TablesBytes)

@@ -100,35 +100,22 @@ func TestDataLifecycleCanonicalSegmentsMatchViewSemantics(t *testing.T) {
 	}
 	hotBefore, sessParBefore := countLegs()
 
-	var sessHot, sessPar, v1Par, v1Dup int64
-	if err := pool.QueryRow(ctx,
-		`SELECT (SELECT count(*) FROM _request_logs WHERE ts > $1::timestamptz - INTERVAL '90 days')`,
-		time.Now()).Scan(&v1Par); err != nil {
-		t.Fatalf("重算 v1 行数失败：%v", err)
-	}
-	sessHot, sessPar = hotBefore, sessParBefore
-	if err := pool.QueryRow(ctx, `
-		SELECT count(*) FROM _request_logs p
-		 WHERE p.ts > $1::timestamptz - INTERVAL '90 days'
-		   AND (EXISTS (SELECT 1 FROM session_turns_hot th WHERE th.request_id = p.request_id)
-		     OR EXISTS (SELECT 1 FROM session_turns t  WHERE t.request_id = p.request_id))
-	`, time.Now()).Scan(&v1Dup); err != nil {
-		t.Fatalf("重算 v1 重复行失败：%v", err)
-	}
-	// 90 天内 expired 段必然为 0，所以这里的下界就是「90 天内的全部行」。
+	// ★ 2026-10-21（R67 / C9）：v1 族已随迁移 885/890 真删 ⇒
+	//   ① 下面这两条重算 v1 臂的查询会直接 42P01（关系不存在）⇒ 删掉；
+	//   ② 生产 SQL 的源只剩会话族两腿（见
+	//      TestDataLifecycleCanonicalSQLDropsOnlyTheColumnBloat：
+	//      v1 族关系名不得在场、NOT EXISTS 反连接数必须是 0）
+	//   ⇒ 重算也只剩会话族：总量 ≈ hot + 母表（90 天内）。
+	sessHot, sessPar := hotBefore, sessParBefore
 	hotAfter, sessParAfter := countLegs()
 	// ⚠ 必须**先求和再取包络**。promote 是 hot 减、父表增的同步变化，
 	//   把两个独立的 min 相加会得到一个**任何真实瞬间都不存在**的更小值
 	//   （实测因此差 1~2 行，判据时红时绿）。会话族总数在 promote 前后守恒，
 	//   所以先各自求和，min/max 才是真正的上下包络。
 	sessBefore, sessAfter := hotBefore+sessParBefore, hotAfter+sessParAfter
-	lo, hi := v1Par-v1Dup, v1Par
-	if sessBefore < sessAfter {
-		lo += sessBefore
-		hi += sessAfter
-	} else {
-		lo += sessAfter
-		hi += sessBefore
+	lo, hi := sessBefore, sessAfter
+	if lo > hi {
+		lo, hi = hi, lo
 	}
 	// 两端都留 ±2% 余量：这是生产活库，测量期间既有 promote（守恒）
 	// 也有新请求写入（单调增），还会因为 90 天窗口滑动而掉行。
@@ -139,22 +126,113 @@ func TestDataLifecycleCanonicalSegmentsMatchViewSemantics(t *testing.T) {
 	// 2%~5% 对应本端点守护的失败模式（少一条腿 = 少 4 倍）来说绰绰有余，
 	// 既不会放过真缺陷，也不会被正常写入量触发。
 	hi += hi / 20
-	wantMin := lo
 	if total < lo || total > hi {
-		t.Errorf("总量 %d 小于视图等价源在 90 天内的行数下界 %d"+
-			"（会话 hot=%d + 父=%d + v1 未重复=%d）：某条腿被漏掉了。"+
-			"★ 第一版就是在这里出的错——当时只算了 v1 未重复那一条腿，"+
-			"少了近 4 倍，而独立重算和它自洽、判据全绿",
-			total, wantMin, sessHot, sessPar, v1Par-v1Dup)
+		t.Errorf("总量 %d 不在会话族（hot + 母表）90 天内行数的包络 [%d, %d] 内"+
+			"（hot=%d 母表=%d）：某条腿被漏掉了。"+
+			"★ v1 族已退役 ⇒ 这里只剩会话族两腿，漏一条就是少一半",
+			total, lo, hi, sessHot, sessPar)
 	}
-	if total > sessHot+sessPar+v1Par {
-		t.Errorf("总量 %d 超过各族行数之和 %d：不可能，说明有重复计数",
-			total, sessHot+sessPar+v1Par)
+	if total > sessHot+sessPar {
+		t.Errorf("总量 %d 超过会话族两腿行数之和 %d：不可能，说明有重复计数",
+			total, sessHot+sessPar)
 	}
 
-	t.Logf("规范源查询 %v；总量=%d（会话 hot=%d 父=%d，v1 未重复=%d）；hot=%d warm=%d cold=%d expired=%d，%d 个租户",
-		time.Since(start).Round(time.Millisecond), total, sessHot, sessPar, v1Par-v1Dup,
+	t.Logf("规范源查询 %v；总量=%d（会话 hot=%d 母表=%d）；hot=%d warm=%d cold=%d expired=%d，%d 个租户",
+		time.Since(start).Round(time.Millisecond), total, sessHot, sessPar,
 		hot, warm, cold, expired, tenants)
+}
+
+// TestDataLifecycleCanonicalSegmentsSurvivesEmptyFamily —— **空表形态**下的同款扫描。
+//
+// ★ 为什么必须单独钉空表（R67 / C9 坐实）：
+//
+//	分段 SQL 的 size_bytes / size_human 曾经是
+//	(sz.total_size * a.total / NULLIF(g.rows_all, 0))::bigint
+//	⇒ 会话族两腿都空时 rows_all = 0 ⇒ 除以 NULL ⇒ 两列产出 **NULL**。
+//	而 handler 把它们扫进**非指针** int64 / string（dedupRow）⇒ pgx scan 报错
+//	⇒ 该行被跳过 ⇒ __ALL__ 行缺失 ⇒ 端点走 !gotAll 分支 ⇒ **500**。
+//	实测可达态不是理论上的：新装库、日志 TTL 清空后、日志族整体退役后。
+//
+// ★ 判据与被测对象**同层**：跑的是生产那条 SQL（dataLifecycleCanonicalSegmentsSQL），
+//
+//	扫的是生产那条 scan 形状（**非指针** int64 / string）。
+//	⇒ 有人把 COALESCE 去掉，这里会直接 scan 报错 —— 这就是门有牙的证据。
+//
+// ★ 无副作用：删空写在**会 ROLLBACK 的事务**里 ⇒ 对被指向的库零写入。
+func TestDataLifecycleCanonicalSegmentsSurvivesEmptyFamily(t *testing.T) {
+	dsn := os.Getenv("TEST_DATABASE_URL")
+	if dsn == "" {
+		t.Skip("TEST_DATABASE_URL not set")
+	}
+	pool, err := pgxpool.New(context.Background(), dsn)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer pool.Close()
+	ctx := context.Background()
+
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	defer tx.Rollback(ctx)
+	// 删空要花的时间与表大小成正比 ⇒ 给出上界，避免在活库上把门挂死。
+	if _, err := tx.Exec(ctx, `SET LOCAL statement_timeout = '120s'`); err != nil {
+		t.Fatalf("set statement_timeout: %v", err)
+	}
+	for _, rel := range []string{"session_turns_hot", "session_turns"} {
+		if _, err := tx.Exec(ctx, `DELETE FROM `+rel); err != nil {
+			t.Fatalf("清空 %s 失败：%v", rel, err)
+		}
+	}
+	// ★ 前提必须真的在场：表没空 ⇒ 本门在测的是「非空形态」⇒ 恒绿。
+	var hotLeft, parLeft int64
+	if err := tx.QueryRow(ctx,
+		`SELECT (SELECT count(*) FROM session_turns_hot), (SELECT count(*) FROM session_turns)`,
+	).Scan(&hotLeft, &parLeft); err != nil {
+		t.Fatalf("读删空结果失败：%v", err)
+	}
+	if hotLeft != 0 || parLeft != 0 {
+		t.Fatalf("前提不在场：删空后 hot=%d 母表=%d 仍非 0 ⇒ 本门没在测空表形态", hotLeft, parLeft)
+	}
+
+	rows, err := tx.Query(ctx, dataLifecycleCanonicalSegmentsSQL(""))
+	if err != nil {
+		t.Fatalf("查询失败：%v", err)
+	}
+	defer rows.Close()
+	gotAll := false
+	for rows.Next() {
+		var scope string
+		var tot, h, w, c, e int64
+		// ★ 非指针：与 handler 的 dedupRow 同形状（这是缺陷的实际触发点）。
+		var sizeBytes int64
+		var sizeHuman string
+		var tableSize int64
+		if err := rows.Scan(&scope, &tot, &h, &w, &c, &e,
+			&sizeBytes, &sizeHuman, &tableSize); err != nil {
+			t.Fatalf("★ 生产同款 scan 失败（size_bytes / size_human 为 NULL 时就是这样）：%v", err)
+		}
+		if scope != "__ALL__" {
+			continue
+		}
+		gotAll = true
+		if tot != 0 {
+			t.Errorf("空族下 __ALL__ 总量 = %d，应为 0", tot)
+		}
+		if sum := h + w + c + e; sum != tot {
+			t.Errorf("空族下四段之和 %d ≠ 总量 %d", sum, tot)
+		}
+		if sizeBytes != 0 {
+			t.Errorf("空族下 size_bytes = %d，应为 0（无行 ⇒ 摊派 0 字节）", sizeBytes)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("rows: %v", err)
+	}
+	if !gotAll {
+		t.Fatal("空族下没有 __ALL__ 行 —— handler 会因缺该行走进 500 分支")
+	}
 }
 
 // TestDataLifecycleDedupSQLHasNoCanonicalView —— 源码层：折叠后的那条查询
