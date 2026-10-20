@@ -167,27 +167,40 @@ native reader 源）⇒ ⇒ ★★ **「canonical DDL 那一处」现在被门�
 
 ## 7. 边界与未闭合
 
-- ⚠ **诚实边界 ①（包级数字：两次读数都不可引用，诚实数字是 6）**：
-  ★ 我对 `db` 包连测三遍，**三个数**：第一遍「2 FAIL」（**摘要管道吃的** —— 我用了
-  `head -5` + 计数当「全量清单」⇒ 信息被吃掉）｜第二遍「10 FAIL」（**库已被污染**）｜
-  第三遍**干净库 + 全量 DSN 集** ⇒ **6 FAIL**（诚实数字）。
+- ⚠ **诚实边界 ①（包级数字：诚实数字是「隔离口径 4 条真红」）**：
+  ★ 我对 `db` 包连测多遍，**数字各不相同**（每一次都带坐标）：
 
-  | # | 红 | 性质（实测） | v1 时代？ |
-  |---|---|---|---|
-  | 1 | `TestRequestLogsCurrentMonthViewEnsureRoundTrip`（(A)） | 夹具 v1 形态 ⇒ ensure 装不上 | ✔ **是** |
-  | 2 | `TestRequestLogsViewV2EnsureMatchesMigration`（(B)） | 夹具克隆 v1 表 + 已退役 wrapper 链 | ✔ **是** |
-  | 3 | `TestEnsureAsrCatalogSeed_RealDB` | `provider_models row missing for zhipu/glm-asr` ⇒ **seed 缺** | ✘ 否 |
-  | 4 | `TestDDLSkipGuardsAgainstRealPostgres` | `cleanup: drop scratch db …: timeout` ⇒ **清理超时**（不是断言红）★ **它就是掏空形态库的元凶**（在共享库上建 scratch + 做 DDL） | ✘ 否 |
-  | 5 | `TestRoutingAnalyticsSourceGates_RealDB` | `routing fixture names already exist; supply an empty scratch database` ⇒ **测试自己要求空库** | ✘ 否 |
-  | 6 | `TestSessionDimCoverageIsAUserSessionMetric` | `relation "public.session_turns_hot" does not exist` ⇒ **库已被前面的测试毁掉** | ✘ 否 |
+  | 口径 | 红数 | 说明 |
+  |---|---|---|
+  | ① 摘要管道（`head -5` + 计数） | 「2」 | ★ **摘要吃了信息** ⇒ 不可引用 |
+  | ② 整包跑（库已被前一轮污染） | 10 / 11 | ★ **污染产物** ⇒ 不可引用 |
+  | ③ 整包跑（**干净库** + 全量 DSN 集） | **6** | 其中 **2 条是同包内污染造成的假红** |
+  | ④ ★ **逐条隔离**（干净库 + 全量 DSN 集） | ★ **4 条真红** | **诚实数字** |
 
-  ⇒ ⇒ ★★★ **⇒ 通报「db 包里还有两条 v1 时代的夹具」这个**定性**是准确的**（只有 1、2 两条是 v1 时代）
-  ⇒ ⇒ ★★ **⇒ 但「db 包整体红只有这 2 条」这个**包级数字**在别处不成立**（我的坐标上是 6）
-  ⇒ ⇒ ★★★ **⇒ 而那 4 条的成因没有一个是产品缺陷**（seed 缺 / 清理超时 / **靶子库要求空库** /
-  **库被污染**）⇒ ⇒ ★★ **⇒ 归因顺序：先排除「库被污染」与「靶子库要求空库」，再谈产品缺陷**
-  ⇒ ⇒ ★★★ **⇒ 它们的真正价值是证明了「形态测量」与「包级测试」必须分库**：
-  ★ 同库时，**先跑的测试会毁掉形态**（`schema_migrations` / canonical 视图 / `session_turns_hot` 全没了），
-  ★ 而**后跑的测试会因为形态没了而假红** ⇒ ⇒ **⇒ 一次包级跑批之后，那个库就不再是形态库了**。
+  ★ ⇒ **④ 的 4 条真红**：
+
+  | 红 | 隔离下的性质 | v1 时代？ |
+  |---|---|---|
+  | `TestRequestLogsCurrentMonthViewEnsureRoundTrip`（(A)） | 夹具 v1 形态 ⇒ ensure 装不上 | ✔ **是** |
+  | `TestRequestLogsViewV2EnsureMatchesMigration`（(B)） | 夹具克隆 v1 表 + 已退役 wrapper 链 | ✔ **是** |
+  | `TestEnsureAsrCatalogSeed_RealDB` | `provider_models row missing for zhipu/glm-asr` ⇒ **seed 缺** | ✘ 否 |
+  | `TestRoutingAnalyticsSourceGates_RealDB` | `routing fixture names already exist; supply an empty scratch database` ⇒ **靶子库要求空库** | ✘ 否 |
+
+  ⇒ ⇒ ★★★ **⇒ 通报「db 包里还有两条 v1 时代的夹具」这个**定性**是准确的** ✓（只有 1、2 两条是 v1 时代）
+  ⇒ ⇒ ★★ **⇒ 「db 包整体红只有 2 条」要加口径**：严格说是「**只有 2 条是 v1 时代的**」；
+  ★ **包级真红是 4 条**（另 2 条是 **seed 缺** 与 **靶子库要求空库** ⇒ **都不是产品缺陷**）⇒ ⇒ **结论一致**。
+
+  ★ ⇒ ★★★ **⇒ 「同包内污染」是真实存在的**：★ `TestSessionDimCoverageIsAUserSessionMetric`
+  在**整包跑**里报 `relation "public.session_turns_hot" does not exist`（42P01），
+  ★ **逐条隔离跑则绿** ⇒ ⇒ **它是被同包前面的测试毁掉形态后的假红**。
+  ★ ⇒ ★★ **⇒ 决定性证据**：跑完 db 包后，**形态库被掏空** ——
+  `schema_migrations` / canonical 视图 / `session_turns_hot` **全都不存在**（关系数 2338 → 2281）；
+  ★ 而**逐条隔离跑完，形态库仍完整**（三者都在）⇒ ⇒ ⇒ **⇒ 污染源在包内某条测试**
+  （★ `TestDDLSkipGuardsAgainstRealPostgres` 嫌疑最大：它在共享库上建 scratch + 做 DDL，
+  且它自己的红是**清理超时**而不是断言红）
+  ⇒ ⇒ ⇒ ★★★ **⇒ 「形态测量」与「包级测试」必须分库**：同库时**先跑的测试会毁掉形态**，
+  而**后跑的测试会因为形态没了而假红** ⇒ ⇒ **⇒ 形态测量要在跑包级测试之前做，或在另一个库上做**
+  ⇒ ⇒ ⇒ ★ **⇒ 归因顺序：先排除「库被污染」与「靶子库要求空库」，再谈产品缺陷**。
 - ⚠ **诚实边界 ②**：「新装形态」= **本机容器 + 本机 PG 镜像 + 最新树** ⇒ 生产 252 未复核。
 - ⚠ **未闭合**：(A)/(B) 的处置 = 属主决策项（本轮只做证据与代价表，**未动那两道门**）。
 - ⚠ **未闭合**：§5.4 的 613/628 两处 native reader 源未纳入门。
