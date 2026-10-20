@@ -407,7 +407,7 @@ var supersededLedgerOnly = map[string]string{
 // `scripts/apply-db-revision-sequence_test.sh` 的 `channel_gap_allowlist` 是通道侧
 // 的登记判据，改一处必须同步另一处——单边绿不算绿。
 var manualByDesign = map[string]string{
-	"830_ursm_node_snapshot_min_partitioned.sql": "manual by design: the RENAME + CREATE PARENT TABLE half cannot run unattended (it renames a live 10GB+ table instead of copying rows), so registering it in StartupFiles would RENAME a live table during an unattended upgrade; db.ensureURSMNodeSnapshotMinDailyPartition mirrors only the post-migration half and *probes* (to_regprocedure) instead of erroring so the two steps stay order-independent — bg/partition_825_contract_test.go Test830IsDeliberatelyNotInTheAutoStartupSequence pins the no-registration decision; the same decision is registered in scripts/apply-db-revision-sequence_test.sh channel_gap_allowlist — both sides must list it",
+	"830_ursm_node_snapshot_min_partitioned.sql": "manual by design: the RENAME + CREATE PARENT TABLE half cannot run unattended (it renames a live 10GB+ table instead of copying rows), so registering it in StartupFiles would RENAME a live table during an unattended upgrade; db.ensureURSMNodeSnapshotMinDailyPartition mirrors only the post-migration half and *probes* (to_regprocedure) instead of erroring so the two steps stay order-independent — bg/partition_830_contract_test.go Test830IsDeliberatelyNotInTheAutoStartupSequence pins the no-registration decision; the same decision is registered in scripts/apply-db-revision-sequence_test.sh channel_gap_allowlist — both sides must list it",
 }
 
 // TestCanonicalStartupMigrationsAtOrAbove704AreRegistered (R34, 2026-09-17

@@ -9251,3 +9251,37 @@ canonical 与 embeddata 两副本**已逐字同步**（`cmp` 校验），安装�
 这个「用户对象总量」口径是**自洽**的 ⇒ **别改成整库**。
 ★ 留证：handoff `docs/96小时内修订审计-20261007-1350.md` §19.13.4；
 审计文档 `docs/audit/2026-10-21-R67-C类逐条定性.md` §3。
+
+## 2026-10-21 — R72 轮：**视图按 OID 绑定 ⇒ 392 改名后诊断视图脱靶**（894；已登记进生产升级序列）
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 894 | `894_rebind_candidate_failure_logs_diagnosis_view.sql` | `efa17d89a5302ea5b3bff51cbe33eda7c41046592ba265839202a80eaa4ac4b8` | **registered in installer StartupFiles（链尾）+ 生产升级序列 `scripts/apply-db-revision-sequence.sh`** —— 只做 `CREATE OR REPLACE VIEW`，**不改表、不动数据、不删 archive 表** ⇒ 幂等、零破坏性。down：`894_rebind_candidate_failure_logs_diagnosis_view.down.sql`（sha256 `87d47c64989fcd1d9bfde24942d8e260bebd11c351f3bb1c5b0f1203d74b6714`） |
+
+★ **缺陷机制（一句话）**：**视图绑定的是关系 OID，不是名字。**
+迁移 392 把老堆表 `candidate_failure_logs` **改名**成
+`candidate_failure_logs_columnar_archive`（保留旧数据）并**新建**同名空分区表时，
+**既有视图不会跟着换表** ⇒ 它仍绑在老表 OID 上，而 `pg_get_viewdef` 打印的是那个 OID 的
+**当前名字** ⇒ 视图的 FROM 变成 archive 表 ⇒ **新形态的数据对它不可见**。
+
+★ **实测读数**（2026-10-21，只读）：
+| 环境 | 视图绑定 | 视图行数 | 活表行数 |
+|---|---|---|---|
+| 生产 211 | **ARCHIVE（脱靶）** | **0** | **91,935**（2026-10-12~10-20） |
+| 生产 252 | LIVE | 187,907 | 187,907（392 走「已分区则跳过」分支 ⇒ 从未改名） |
+| 本地（新装链） | **ARCHIVE（脱靶）** | 0 | 198 |
+| 一次性库（基线 + 仅 392） | 基线后 LIVE ⇒ 392 后 **自动变 ARCHIVE** | 0 | — |
+
+⇒ **同一个视图在两个生产实例返回完全不同的数据集** ⇒ 违反「多个环境同样标准」。
+★ **仓内两处真相源（基线 `sql/schema/01-schema.sql` 与对象源文件
+`sql/objects/views/v_candidate_failure_logs_diagnosis.sql`）都写 `FROM public.candidate_failure_logs`**
+⇒ 即 **链终态 ≠ 真相源**；894 的视图体与那两份**归一化后逐字同形**（门 `Test894ViewBodyIsIdenticalToBothInRepoSources` 三方比对）。
+
+★ **为什么重绑到「活表」而不是「archive ∪ 活表」**：真相源写的就是活表；
+且**实测三处 archive 表都是 0 行**（本地 0 / 211 0）⇒ 重绑**不丢任何历史**；
+archive 表本身**一行不删**（保留是 392 的显式设计）。
+★ **影响面**：全仓**无任何生产代码读这个视图**（`grep -rn` 只命中 4 份定义副本本身）
+⇒ 这是**诊断视图**的跨环境口径修复，**不影响任何端点响应**。
+★ 门：`sql/migrations/startup/migration_894_view_rebind_test.go`（三方同源 + 绑活表 + 6 点登记 +
+embeddata 逐字 + down 可逆 + **真库腿纯只读**）。
+★ 留证：审计档 `docs/audit/2026-10-21-R72b-视图脱靶族与冻结行集扫描.md`。

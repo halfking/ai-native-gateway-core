@@ -67,7 +67,15 @@ export D07_S01_PG_URL="$__datasource_dsn"
 export DATABASE_URL="$__datasource_dsn"
 export DB_TEST_URL="$__datasource_dsn"
 export DECISION_RETIREMENT_TEST_DATABASE_URL="$__datasource_dsn"
-export GATEWAY_CANONICAL_TEST_DSN="$__datasource_dsn"
+# ⚠ GATEWAY_CANONICAL_TEST_DSN **不在事实源里**（R85 轮）：
+#   它是 dsn_exclusive（专用值）—— canonical fixture 除主库外**还要连第二个库**
+#   `identity_shadow`（admin/shared_principal_realdb_test.go:113 改库名）
+#   ⇒ ⇒ 它本来就只能指向「本地联调专用库」。
+#   ⇒ 与通用 DSN 同值 = 把「连本地库」的前提给了一个通用库。
+#   ⇒ 产品侧自己的守卫会正确地拒绝这种 DSN（授权开关未开 ⇒ t.Fatal）
+#     ⇒ 事实源默认注入它，只会把「靶子不对」显示成红。
+#   ★ 授权开关本身（GATEWAY_CANONICAL_TEST_LOCAL_ONLY，dangerous 类）**绝不由事实源
+#     打开** ⇒ 门禁不能替人授予「连本地库」的权限。
 export GUARD_IT_DSN="$__datasource_dsn"
 export IDENTITY_SHADOW_DSN="$__datasource_dsn"
 export LICENSE_AUTHORITY_DATABASE_URL="$__datasource_dsn"
@@ -98,6 +106,11 @@ export TEST_RESOLVE_INVARIANT_DB_URL="$__datasource_dsn"
 export TEST_RETIREMENT_HTTP_DSN="$__datasource_dsn"
 export TEST_SESSION_INGEST_DATABASE_URL="$__datasource_dsn"
 export TEST_SESSION_SETTINGS_DATABASE_URL="$__datasource_dsn"
-export TRACE_RETIREMENT_TEST_DSN="$__datasource_dsn"
+# ⚠ TRACE_RETIREMENT_TEST_DSN **不在事实源里**（R81 轮）：
+#   它是 dsn_exclusive（专用值）—— 必须指向名为 trace_retirement* 的隔离库
+#   （或显式授权的本地 54318 schema）。
+#   ⇒ 与通用 DSN 同值 = 让破坏性的 trace-retirement 清理打到共享库上。
+#   ⇒ 产品侧自己的守卫（trace_retirement_test.go 等四处）会拒绝这种 DSN
+#   ⇒ 事实源默认注入它，只会把「真库腿跑不起来」变成「门禁红」。
 
 unset __datasource_dsn

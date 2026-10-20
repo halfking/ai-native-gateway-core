@@ -156,18 +156,68 @@ psql_ -c "SELECT 'today='||to_char(now(),'YYYY-MM-DD')||' month='||to_char(now()
 #   db/db_fresh_install_runtime_shape_test.go 的「ensure 自愈清单」也钉一遍。
 echo
 echo "== ⑥ ensure 链（= 产品启动一次）=="
+#
+# ★★★ 2026-10-21 R85 轮修：这一段的「形态可信」判据此前是**假绿**（四个变体）。
+#
+#   旧写法：`if go test … | tail -12; then echo "  ✓ ensure 链已跑（库现在 = 产品真实形态）"`
+#
+#   ⇒ ★★ 四个变体都会打印出那句「✓ 库现在 = 产品真实形态」：
+#     (V0) 上面的「取不到容器口令/端口 ⇒ 跳过 ensure 链」分支 —— 库停在「装完但没启动」，
+#          脚本却继续跑完并以 0 退出（**读数失真却没有任何人知道**）；
+#     (V1) `go test` 对 **SKIP** 返回 0 ⇒ 跳过也被当成「跑过了」
+#          （★ 本仓 §19.20.28 给那道门加了**诚实的 SKIP 分支** ⇒ 这条路径**更近了**）；
+#     (V2) `-run` 的名字没匹配到任何测试 ⇒ go test 打印 "no tests to run" 且退出 0；
+#     (V3) 第 ④ 步的 startup 链 failed/missing ⇒ 库压根不是产品形态
+#          （第 ④ 步**容忍**链失败并继续往下跑）。
+#
+#   ⇒ ★★★ 最坏的形态：**量具只在「已经坏掉」的时候才说谎** ⇒ 平时看着绿，
+#          一旦链出问题（正是你最需要它的时候）它反而报「形态可信」。
+#   ⇒ 修法：**只有「目标测试真的 PASS 且 startup 链干净」才认形态可信**；
+#     其余一律显式说清「不可信」，并让脚本以 **3** 退出（3 = 量具坏了，
+#     与 db-package-isolation-check.sh 的退出码契约一致）。
+_shape_trusted=0
 _pg_pw="$(docker exec "$PG_CONTAINER" printenv POSTGRES_PASSWORD 2>/dev/null | head -1)"
 _pg_port="$(docker port "$PG_CONTAINER" 5432/tcp 2>/dev/null | head -1 | sed 's/.*://')"
 if [[ -z "$_pg_pw" || -z "$_pg_port" ]]; then
   echo "  ⚠ 取不到容器口令/端口（POSTGRES_PASSWORD / docker port）⇒ 跳过 ensure 链。"
   echo "    ⇒ 后果：库停留在「装完但没启动」形态 ⇒ 拿它量列差集会得到**失真**读数。"
+  echo "    ⇒ ★ 本次读数**不可信**（脚本将以 3 退出）。"
 else
   export TEST_DATABASE_URL="postgres://${PG_USER}:${_pg_pw}@127.0.0.1:${_pg_port}/${DB}?sslmode=disable"
-  if go test ./db/ -run TestFreshInstallRuntimeShape_EnsureChain -count=1 -v 2>&1 | tail -12; then
-    echo "  ✓ ensure 链已跑（库现在 = 产品真实形态）"
-  else
-    echo "  ✗ ensure 链未通过 ⇒ 库形态不可信（见上面输出）"
+  # ★ 捕获**真实**结果：退出码 + 「目标测试到底跑了没有 / 是不是 SKIP」。
+  #   ⚠ 不能只看退出码：go test 对 SKIP 返回 0；名字没匹配上任何测试也返回 0。
+  _out="$(go test ./db/ -run TestFreshInstallRuntimeShape_EnsureChain -count=1 -v 2>&1)"
+  _rc=$?
+  printf '%s\n' "$_out" | tail -12
+  _verdict="none"
+  if grep -q -- '--- PASS: TestFreshInstallRuntimeShape_EnsureChain' <<<"$_out"; then
+    _verdict="pass"
+  elif grep -q -- '--- SKIP: TestFreshInstallRuntimeShape_EnsureChain' <<<"$_out"; then
+    _verdict="skip"
+  elif grep -q -- '--- FAIL: TestFreshInstallRuntimeShape_EnsureChain' <<<"$_out"; then
+    _verdict="fail"
+  elif grep -q -- 'no tests to run' <<<"$_out"; then
+    _verdict="nomatch"
   fi
+  case "$_verdict" in
+    pass)
+      if [[ "$fail" -gt 0 || "$missing" -gt 0 ]]; then
+        echo "  ⚠ ensure 链 PASS，但第 ④ 步的 startup 链有失败（failed=${fail} missing=${missing}）"
+        echo "    ⇒ 库**未必**是产品真实形态 ⇒ 本次读数**不可信**（脚本将以 3 退出）。"
+      else
+        echo "  ✓ ensure 链已跑（库现在 = 产品真实形态）"
+        _shape_trusted=1
+      fi ;;
+    skip)
+      echo "  ⚠ ensure 链**未真正执行**（SKIP）⇒ 库形态不可信（见上面输出）"
+      echo "    ⇒ ★ 常见成因：目标库不是「全新安装形态」（缺 session_turns_hot 且同源 promote 函数也不在）"
+      echo "    ⇒   或 startup 链没跑成 ⇒ **别拿这次的读数当「装完且启动过」的形态**。" ;;
+    nomatch)
+      echo "  ✗ 目标测试名没匹配到任何测试（no tests to run）⇒ 第 ⑥ 步什么都没跑 ⇒ 库形态不可信"
+      echo "    ⇒ ★ 多半是测试被改名/删除 ⇒ 查 db/db_fresh_install_runtime_shape_test.go。" ;;
+    *)
+      echo "  ✗ ensure 链未通过（rc=${_rc}）⇒ 库形态不可信（见上面输出）" ;;
+  esac
   unset TEST_DATABASE_URL
 fi
 
@@ -175,4 +225,17 @@ if [[ "$KEEP_DB" != "1" ]]; then
   docker exec -i "$PG_CONTAINER" psql -U "$PG_USER" -d postgres -q -c "DROP DATABASE IF EXISTS $DB" >/dev/null 2>&1
   echo
   echo "== 已 DROP $DB =="
+fi
+
+# ★★★ 退出码契约（R85 轮加）：
+#   0 = 形态可信（= 产品真实形态，「装完且启动过」）
+#   3 = **量具坏了**（形态不可信）⇒ 与 db-package-isolation-check.sh 的契约一致。
+#   ⚠ 这一行是 R85 轮修掉的那个假绿的**唯一对外信号**：在它之前，
+#     「链坏了 / 目标测试被 SKIP / 名字没匹配上」全部以 0 退出 ⇒ 调用方无从分辨。
+#   ⚠ 放在 DROP 之后 ⇒ 库照样回收（不改成「不可信就留库」，避免共享工作树里堆一次性库）；
+#     要留库现场看请用 KEEP_DB=1 重跑。
+if [[ "$_shape_trusted" != "1" ]]; then
+  echo
+  echo "== ★ 本次形态读数**不可信**（退出码 3 = 量具坏了）=="
+  exit 3
 fi

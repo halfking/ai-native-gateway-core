@@ -214,12 +214,20 @@ if canonicalExists && bodyIsSessionOnly && !bodyHasV1Arm {
   （`db/scratch_db_test.go` / `db/db_package_isolation_gate_test.go` 等）本轮**一个都没碰**
   ⇒ ★ 提醒：`db/db_package_isolation_gate_test.go` 当前有语法错误（`t.Helper.TODO()`）
   ⇒ **共享工作树上 `./db/` 包级 vet 会红**（不是本轮改动）。
+- ★★ **靶子自证（本条由并行会话 R78 轮通报补入）**：**跑一次 `./db/` 包会把 890 已退役的
+  v1 族 `_request_logs` 按新名复活，并 CASCADE 带走 canonical 视图**
+  ⇒ ⇒ **任何以「canonical 视图形态」为判据的读数，靶子必须自证「没被 db 包碰过」**
+  ⇒ ⇒ 本轮形态门读的是**一次性库 `itgate_r80_shape`**（本轮**没有**跑过 `./db/` 包）⇒ 靶子成立。
+  ⇒ ⇒ ⚠ **并行 R79 轮建议**把 `TestDualReadValidator_Summarize_RealDB` 纳入 v1 族判据 ——
+  该门已是「退役态契约的真库门」（真库上证明 `Summarize` 不 42P01 且如实报 `v1_family_retired`）
+  ⇒ ⇒ **与本轮判据同族**；但它落在 `cmd/gateway/dual_read_*`（**归并行会话 D3 范围**）
+  ⇒ ⇒ **本轮未改**，仅登记为「v1 族判据」的可选增强项。
 
 ---
 
 ## 7. 与规划文档的对应
 
-- 本轮对应规划文档 `docs/96小时内修订审计-20261007-1350.md` 的 **形态门线**（§19.20.17 / §19.20.18）。
+- 本轮对应规划文档 `docs/96小时内修订审计-20261007-1350.md` 的 **形态门线**（§19.20.17 / §19.20.24）。
 - ★ 本轮**没有**推进的属主决策项（仍待拍板，见 §19.20.16 末尾）：
   ① 既有库 9 个孤儿要不要清理；② `573`/`603` 两条未登记失败怎么处理；
   ③ `727/728/729/744` 是否登记进注册链；④ db/ 两条 v1 时代夹具（A′/B′/C′）；

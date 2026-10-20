@@ -338,37 +338,16 @@ func mayCarryMarker(payload []byte) bool {
 
 // mayContainMarkerText is mayCarryMarker for callers that already hold the
 // payload as a string, so the conversion happens once per probe.
+//
+// 2026-10-21（r1039 续轮第三轮）：标记词的判定从「全 ASCII 词」或「全全角词」
+// 的**析取**改成「逐字符各自决定宽度」的**合取**（containsMarkerWordAnyWidth）。
+// 混拼形态（"ＳENSITIVE：phone" / "SENSITIVＥ:phone"）在旧判据下两者皆不成立
+// ⇒ 折宽副本不构造 ⇒ 生产扫描器看不见 ⇒ 标记原样到客户端（实测 0 spans）。
 func mayContainMarkerText(text string) bool {
 	if strings.ContainsAny(text, "{｛") {
 		return true
 	}
-	if containsFoldCaseWord(text, placeholderMarkerWord) {
-		return true
-	}
-	return containsFullWidthMarkerWord(text)
-}
-
-// containsFullWidthMarkerWord reports whether text contains the full-width
-// spelling of the marker word ("ＳＥＮＳＩＴＩＶＥ" / "ｓｅｎｓｉｔｉｖｅ").
-//
-// It is allocation-free and memchr-shaped, like the ASCII word scan above: a
-// full-width form always starts with the 0xEF lead byte, so one memchr finds
-// the candidates and each candidate costs a fixed number of byte comparisons.
-// Ordinary CJK text does not use the 0xEF lead byte (its characters start at
-// 0xE4), so the scan stays quiet on it.
-func containsFullWidthMarkerWord(text string) bool {
-	for i := 0; i < len(text); {
-		j := strings.IndexByte(text[i:], fullWidthBraceLeadByte)
-		if j < 0 {
-			return false
-		}
-		i += j
-		if matchFullWidthMarkerWordAt(text, i) {
-			return true
-		}
-		i++
-	}
-	return false
+	return containsMarkerWordAnyWidth(text)
 }
 
 // asciiLower folds one ASCII byte to lower case, leaving every other byte

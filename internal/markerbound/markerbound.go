@@ -209,14 +209,28 @@ func fullWidthLetterAt[T ~string | ~[]byte](text T, i int) (byte, bool) {
 	return 0, false
 }
 
-// matchFullWidthMarkerWordAt mirrors sanitize.matchFullWidthMarkerWordAt:
-// whether the full-width spelling of the marker word starts at byte offset i.
-func matchFullWidthMarkerWordAt[T ~string | ~[]byte](text T, i int) bool {
+// matchMarkerWordAnyWidthAt mirrors sanitize.matchMarkerWordAnyWidthAt:
+// whether the marker word starts at byte offset i with **each character
+// independently** spelled in ASCII or in the full-width form.
+//
+// 2026-10-21（r1039 续轮第三轮）：混拼形态（"ＳENSITIVE：…" / "SENSITIVＥ:…"）
+// 在「全 ASCII 词」与「全全角词」两条门下**都不成立** ⇒ 这个副本与
+// sanitize 一样看不见它 ⇒ 截断切点会把混拼标记切成两半 ⇒ 半截标记随上游跑掉。
+// ⇒ 两个副本必须**同步**改，否则契约门（span 集合逐条比对）会分叉。
+func matchMarkerWordAnyWidthAt[T ~string | ~[]byte](text T, i int) bool {
 	const word = "sensitive"
-	if i < 0 || i+3*len(word) > len(text) {
-		return false
-	}
 	for k := 0; k < len(word); k++ {
+		if i >= len(text) {
+			return false
+		}
+		if text[i] < 0x80 {
+			if asciiLower(text[i]) != word[k] {
+				return false
+			}
+			i++
+			continue
+		}
+		// 非 ASCII：只接受全角**字母**（Ａ-Ｚ / ａ-ｚ）
 		letter, ok := fullWidthLetterAt(text, i)
 		if !ok || asciiLower(letter) != word[k] {
 			return false
@@ -226,21 +240,47 @@ func matchFullWidthMarkerWordAt[T ~string | ~[]byte](text T, i int) bool {
 	return true
 }
 
-// containsFullWidthMarkerWord mirrors sanitize.containsFullWidthMarkerWord:
-// whether text contains the full-width spelling of the marker word.
-func containsFullWidthMarkerWord(text string) bool {
+// containsMarkerWordAnyWidth mirrors sanitize.containsMarkerWordAnyWidth:
+// whether text contains the marker word in any mix of ASCII and full-width
+// spellings.
+func containsMarkerWordAnyWidth(text string) bool {
+	for i := 0; i < len(text); {
+		j := indexAnyByte(text[i:], 's', 'S')
+		if j < 0 {
+			break
+		}
+		i += j
+		if matchMarkerWordAnyWidthAt(text, i) {
+			return true
+		}
+		i++
+	}
 	for i := 0; i < len(text); {
 		j := strings.IndexByte(text[i:], 0xEF)
 		if j < 0 {
-			return false
+			break
 		}
 		i += j
-		if matchFullWidthMarkerWordAt(text, i) {
+		if matchMarkerWordAnyWidthAt(text, i) {
 			return true
 		}
 		i++
 	}
 	return false
+}
+
+// indexAnyByte returns the index of the first occurrence of either byte in s,
+// or -1. It is the two-byte twin of strings.IndexByte.
+func indexAnyByte(s string, a, b byte) int {
+	ia := strings.IndexByte(s, a)
+	if a == b {
+		return ia
+	}
+	ib := strings.IndexByte(s, b)
+	if ib >= 0 && (ia < 0 || ib < ia) {
+		return ib
+	}
+	return ia
 }
 
 // foldMarkerWidth mirrors sanitize.foldMarkerWidth: a copy of text in which
@@ -255,7 +295,7 @@ func containsFullWidthMarkerWord(text string) bool {
 // grammar cannot match anything else, and folding every text would put an
 // O(n) copy on the path for no possible gain.
 func foldMarkerWidth(text string) (string, bool) {
-	if !containsFoldASCII(text, markerWord) && !containsFullWidthMarkerWord(text) {
+	if !containsMarkerWordAnyWidth(text) {
 		return "", false
 	}
 	var b strings.Builder
@@ -400,10 +440,7 @@ func mayContainMarker(text string) bool {
 	if strings.ContainsAny(text, "{｛") {
 		return true
 	}
-	if containsFoldASCII(text, markerWord) {
-		return true
-	}
-	return containsFullWidthMarkerWord(text)
+	return containsMarkerWordAnyWidth(text)
 }
 
 // asciiLower folds one ASCII byte to lower case, leaving every other byte
@@ -413,27 +450,6 @@ func asciiLower(c byte) byte {
 		return c + ('a' - 'A')
 	}
 	return c
-}
-
-func containsFoldASCII(text, word string) bool {
-	n := len(word)
-	for i := 0; i+n <= len(text); i++ {
-		match := true
-		for j := 0; j < n; j++ {
-			c := text[i+j]
-			if 'A' <= c && c <= 'Z' {
-				c += 'a' - 'A'
-			}
-			if c != word[j] {
-				match = false
-				break
-			}
-		}
-		if match {
-			return true
-		}
-	}
-	return false
 }
 
 // parse mirrors sanitize.parseLoosePlaceholder: strict shape validation,

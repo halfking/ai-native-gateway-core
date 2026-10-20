@@ -327,6 +327,134 @@
 > ⇒ 本轮**只动测试面** ⇒ 对生产零影响。
 > ⇒ 完整记录见 handoff `§19.12` + `docs/audit/2026-10-21-R66-全仓时钟判据普查.md`。
 
+> **2026-10-21 R72 轮（本会话）**：**「逐页逐 API 验证」从人工点按变成可复现读数**
+> ⇒ 随即挖出**三处合并期静默丢失的路由挂载**。**对生产的写入 = 0**（252 只读核实）。
+> ⇒ ★★★★ **上游合并 37 提交**（R78–R80 三轮，快进无冲突，origin/main = `d3b57b45e`）
+>    ⇒ 门禁全绿（stopguard/db/bg/admin/startup/autoroute/stats）；**无新 SQL 迁移**
+>    ⇒ 重新部署 `VERIFY_PASS=1`（release `2.5.8.2793`，active **8782**）。
+> ⇒ ★★★★ **三个零依赖量具**（新增）：
+>    ① API 全量扫（259 端点 ×3 取 min）⇒ **`min>2000ms` 仅 3 条 SSE 常驻流**；
+>       非 SSE 最慢 `/api/admin/sessions` **299ms** ⇒ **端点粒度已无慢 SQL**。
+>    ② ★ **`scripts/audit/page-sweep-cdp.mjs`**：**零第三方依赖**的 CDP 页面巡检
+>       （Node ≥22 内置全局 `fetch`+`WebSocket` ⇒ **不需要 puppeteer/playwright**
+>       ⇒ 不触发「依赖安装属用户侧决策」）；路由清单**从仓内 router 源文件抽**；
+>       `--mobile` 同一把尺子量移动 SPA。
+>    ③ Android 模拟器（**maestro/adb/emulator/AVD `emulator-5554` 与原生应用
+>       `com.kaixuan.llmgw` 本机均已具备** ⇒ ★ **推翻上一轮「Maestro 资产不在本机」的裁决**；
+>       但 **maestro CLI 起不来（本机无任何 Java 运行时）** ⇒ 按 AGENTS.md 不越权装依赖
+>       ⇒ 改用 **adb 驱动同一台 AVD**（Maestro 底下的同一层机制））。
+> ⇒ ★★★★ **三处发现**：
+>    ① **F1（★已修）`/api/admin/model-status` 恒 404** —— 注册函数 `RegisterModelStatusRoutes`
+>       还在，**调用点被合并 `d2cbaf88b` 静默删掉**（hunk 里只有 `-` 行、没有对应新增）。
+>       修复 = 原位恢复调用 + 说明注释；重新部署后该端点 **200**（305 个模型真实载荷）。
+>    ② **F2 `/api/admin/feishubot/*` 恒 404** —— `registerFeishuRoutes` 被**build 修复**
+>       （`b6f8a69cb`，标题与飞书无关 ⇒ 顺手删）整块删掉，后续 merge 只加回函数体、**没加回调用**。
+>       ★ 承载表由 `sql/migrations/domain/220` 建，但 **domain 迁移只进新装链**
+>       （`init-local-db.sh`）**不进升级链**（`apply-db-revision-sequence.sh` 只带显式清单）
+>       ⇒ 本机无表；★ **生产 252 只读实测：无表、无函数**
+>       ⇒ ⇒ **单独恢复调用会把生产 404 变成 500** ⇒ 本轮**不擅自恢复**，
+>       改为在源码里写**显式停用标记 + 恢复配方（三件缺一不可）**，把决定变成可评审的东西。
+>    ③ **F3 `/api/admin/provider-cost-reconciliation` 404** —— **条件挂载**（对账子开关未开），
+>       与仓库既有惯例一致 ⇒ **非缺陷，不修**（别拿环境产物改产品默认值）。
+> ⇒ ★★★★ **新门 `internal/routemount`**：**任何注册 HTTP 路由的函数必须在非测试代码里有调用点**
+>    （AST 扫描；`main`/`init` 除外；**只在 `_test.go` 里被调用也算孤儿**；
+>    允许**带理由的显式停用标记**，且每次运行都打印停用清单）
+>    + 扫描器自证 5 条 + 变异 **M1/M2 全红**（M1 抽调用点 ⇒ 门点名该函数与路由；
+>    M2 抽停用标记 ⇒ 门红）。
+> ⇒ ★★★★ **页面「慢」的真相**：桌面页 **68 个 XHR / 并发峰值 7–9**（移动端仅 2–6），
+>    浏览器把 `/api/routing/resolve` 记成 **356–589ms**，而**同端点直连只要 1.2–1.9ms**
+>    ⇒ **「页面最慢的 API」≠「服务端慢查询」**（HTTP/1.1 同源并发上限 6 ⇒ 排队）；
+>    且冷首访 >2s 的 3 页（4042/2871/2584ms）**热访复测 = 802/800/848ms、800/741/802ms**
+>    ⇒ **全部 <2s ⇒ 是冷首访效应，不是稳态慢页** ⇒ **不改 SQL、不改表结构**。
+> ⇒ ★★ **本轮量具自身坏了三次**（配置态被当缺陷 / SSE 长连接永不结束 / SPA 切页 abort 被算失败）
+>    ⇒ **通用式：几乎所有页面都同样地坏 ⇒ 量具坏了，不是被测坏了**。
+> ⇒ ★ **M1 第一次还原没做到逐字一致**（把两行顺序调换 ⇒ 逻辑等价、文本不同 ⇒ sha256 对不上）
+>    ⇒ **通用式：还原校验校验的是字节，顺序变化也是改动**。
+> ⇒ 完整记录见 `docs/audit/2026-10-21-R72-全量页面端点巡检与三处静默丢失的路由挂载.md`
+>    + LESSONS `§148`/`§149`/`§150`。
+>
+> **2026-10-21 R72 续（本会话）**：**兄弟会话的「恒绿盲区」教训回流 ⇒ 我的新门也有同族盲区（已堵）**
+> ⇒ ★★ 兄弟会话（`llm-gateway-go-cursor` checkout，同一 origin）报出它们自家门的一处**恒绿盲区**：
+>    「扫仓内 .go 的 SQL 字面量」那条扫描腿只扫**单字面量** ⇒ Go 字符串拼接把一条 SQL 拆成两个字面量
+>    ⇒ **变量表名的写路径被静默丢掉** ⇒ 登记册一漏 ⇒ 差集门**假红** ⇒ 门失去牙。
+> ⇒ ★★ **同一族形状在我这道 `internal/routemount` 上实测存在** ⇒ 回头审出**两个真实盲区**：
+>    ① 只认 `HandleFunc` 的**字面量**路径 ⇒ 仓内 **4 处**变量/拼接路径
+>       （`admin/sanitize_rules_handler.go:20-21`、`admin/journal_handlers.go:34`）
+>       ⇒ 该函数**根本不进候选集** ⇒ 调用点没了门照样绿；
+>    ② 完全不认 Go 1.22 的 `mux.Handle("METHOD /path", h)` ⇒ 仓内 **11 处**生产代码。
+> ⇒ ★ **修法**：解析不出来的输入按「**未知**」记账（路由记 `<dynamic>`）而不是跳过；
+>    `Handle` 的方法前缀在归一化时剥掉 ⇒ **候选集扩大后重跑全仓：0 新孤儿、0 假阳性**。
+> ⇒ ★★ **变异 M3/M4 全红**（★ 这两条在加固前都是绿的 ⇒ 它们就是盲区的可执行证据）：
+>    M3 抽掉动态路径形态的调用点 ⇒ 门点名 `admin.registerSanitizeRuleRoutes … <dynamic>`；
+>    M4 抽掉 `Handle` 形态的调用点 ⇒ 门点名 `main.registerPluginStaticRoutes … /plugins/{pluginId}/{rest...}`；
+>    两条均 sha256 逐字还原（M3 第一次还原**位置放错** ⇒ sha256 对不上 ⇒ 改正后逐字一致）。
+> ⇒ ★★ **通用式（已入 LESSONS §151）**：**扫描腿遇到「解析不出来的输入」必须记成「未知」，
+>    不能记成「没有」** —— 否则那条目标从候选集消失 ⇒ 门对它没有牙，而门看上去是绿的。
+> ⇒ ★ **配套**：判据形态必须按「**仓库里真实存在的写法**」枚举，不是按「写门时想到的写法」枚举。
+
+> **2026-10-21 R72c 轮（本会话）**：**把「多轮模型请求 + 落库验证」这一步从「等上游 key」里解出来**
+> ⇒ ★★ **先订正口径**：目标「相关资源」给的 `baseurl=http://127.0.0.1:8782/v1` + apikey 是**本机网关**的
+>    key/地址 ⇒ **这一步的前置是网关自己的 key（本地就有）**；上游 provider key 只是加分项，**不是前置**
+>    ⇒ ⇒ 「等上游 key」这条**假阻塞**本轮解除（并已入 LESSONS §155）。
+> ⇒ ★★ **实测 48 次请求**（3 轮 × 8 模型 × 2 提示词，限速 5.5s/次 ≤ 12 RPM）：
+>    **5 个模型全 200**（`glm-5.2` 走**真实上游**，回复 "Pong! How can I help you today?" / "OK."；
+>    `claude-sonnet-5-5`/`gpt-5.6-luna`/`grok-4.6`/`mimo-v2.6-flash` 走本地 mock）= 30 次成功；
+>    3 个 503（`deepseek-v4-flash`/`glm-5.3-flash`/`minimax-m2.7`）⇒ **URSM v2 权威节点镜像覆盖**。
+> ⇒ ★★★ **落库读数（会话族）**：`session_turns_hot` 里 `glm-5.2` success=t 7 行、延迟 1671~11301ms、
+>    tokens 97/843；mock 四模型 success=t 各 6~8 行；**失败请求同样落库**（success=false）
+>    ⇒ ★ **落点是 hot 不是父表**（hot 保留 8h ⇒ 只查父表会误判「没落库」⇒ 必须查 hot ∪ parent）。
+>    ⇒ ★ **`%request_logs%` 关系数 = 0** ⇒ v1 族真删且**零写入**。
+> ⇒ ★★ **三条实测发现（本轮未改产品代码，只取证 + 定位修复点）**：
+>    ① ★ **本地 provider 的 base_url 硬编码 `127.0.0.1`**（`admin/local_provider.go:defaultLocalBaseURLForCode`）
+>       ⇒ **容器形态下指向「容器自己」** ⇒ **ollama/vllm/llamacpp/lmstudio/mlx 全部接不上**
+>       ⇒ ★ **与本仓既有约定冲突**（本仓对容器→宿主一律用 `host.docker.internal`，连本地 PG 都是这么配的）
+>       ⇒ 修复点已定位，**一刀切会打挂「同容器/同网络」场景 ⇒ 属主决策**；
+>    ② ★ 种子化的 mock provider（2433/2434）**base_url 缺 `/v1`** 且**没有任何凭据** ⇒ 探针必判 unreachable；
+>    ③ ★ **URSM v2 权威节点镜像**决定候选生死（`view_sample ... avail=false` ⇒ 候选在数据层存在却进不了候选集）。
+> ⇒ ★★ **新增零依赖测试夹具** `scripts/mocks/llm-mock-upstream/server-stdlib.py`（**只用 Python 标准库**）：
+>    补 `/v1/models`（★ 探针两步法的 Step 1）⇒ 之前仓内两个 mock 都提供不了 ⇒ **mock 在跑却收不到请求**。
+>    ⇒ **不装 aiohttp**（依赖安装属用户侧决策）⇒ 标准库实现更可复现。
+> ⇒ ★ **量具边界**：`X-Ratelimit-Limit: 12` ⇒ 首轮无节流的 14 连发把后面全打成 **429**（网关自己的每 key 限流，
+>    **不是**上游故障）⇒ 本轮改 5.5s/次 ⇒ 48 次零 429（口径已记录）。
+> ⇒ ★ **测试痕迹已清理**：凭据 10 / 8 条绑定 / provider 2433 的 8 条 provider_models 全删、base_url 复原、mock 停、端口释放。
+> ⇒ 完整记录见 `docs/audit/2026-10-21-R72c-模型请求与落库验证.md` + LESSONS `§155`/`§156`/`§157`。
+
+>
+> **2026-10-21 R72b 轮（本会话）**：**把一条样本做成通用扫描 ⇒ 挖出「视图按 OID 绑定 ⇒ 改名后视图脱靶」的真缺陷族**
+> ⇒ **对生产的写入 = 0**（211 / 252 全程只读；唯一落地 = 迁移 894 **登记进部署序列**，上生产由属主走发布通道）。
+> ⇒ ★★ **起点**：兄弟会话报出一条 P2「auto-route 成本仪表盘返回 3.5 个月前快照」
+>    （`api_key_model_cost` 352 行冻结在 2026-06-19，写方随 890 删除，两个视图顶层 FROM 仍指向它）
+>    ⇒ 本轮**独立复核**并**订正**一处：迁移 883 **两个视图都没换顶层 FROM**，且第 87–90 行**明文写着**
+>    「刻意不复活 `api_key_model_cost` 的聚合链」⇒ **不是疏漏，是显式取舍**；
+>    ⇒ ★ **我先前笔记写「本地 `model_cost_per_task_view` 已是纯会话族」⇒ 错的**（顶层 FROM 仍是该表）⇒ 已订正。
+> ⇒ ★★★ **通用扫描**：「所有视图的顶层 FROM 行集来源 × 写方活性」⇒ **同一件事翻了三次车**：
+>    ① 把 `_test.go` 的**夹具 INSERT** 当成写方；② 写目标正则**不认 schema 限定**（`public.x` 被记成表名 `public`）；
+>    ③ ★ **先把多行文本拍平再剥 `--` 注释 ⇒ 一行注释吞掉整段函数体** ⇒ 写方凭空消失
+>    ⇒ 修法 = **转义换行 → 还原 → 剥注释 → 才拍平**（或用 psql `-R` record separator 分行）。
+> ⇒ ★★★★ **真缺陷（机制 → 复现 → 三实例读数 → 修法）**：
+>    ★ **PostgreSQL 的视图绑定关系的 OID，不是名字** ⇒ 迁移 392 的「**改名保留旧表**」
+>    （`candidate_failure_logs` → `candidate_failure_logs_columnar_archive`）**不会让既有视图跟着换表**
+>    ⇒ 视图仍绑老表 OID ⇒ `pg_get_viewdef` 打印该 OID 的**当前名字** ⇒ FROM 自动变 archive
+>    ⇒ ★ **新形态的数据对它不可见**；且 392 的分支幂等（`IF NOT has_partitions`）
+>    ⇒ **同一迁移在两种前置状态下产生两种形态** ⇒ **211 脱靶（0 行，活表 91,935 行）/ 252 正常（187,907 行）**
+>    ⇒ ★★ **同一个视图在两个生产实例返回不同数据集** ⇒ 直接违反「多环境同一标准」。
+>    ⇒ **最小复现（一次性库）**：基线后读 LIVE ⇒ 仅加 392 ⇒ **自动变 ARCHIVE** ⇒ 机制坐实、非随机。
+> ⇒ ★★ **修法 = 迁移 `894_rebind_candidate_failure_logs_diagnosis_view.sql`**（+ 同名 `.down.sql`）：
+>    只做 `CREATE OR REPLACE VIEW`，视图体与仓内**两处真相源**（基线 `sql/schema/01-schema.sql`
+>    与对象源文件 `sql/objects/views/v_candidate_failure_logs_diagnosis.sql`）**归一化后逐字同形**
+>    ⇒ **不改表、不动数据、不删 archive 表** ⇒ 零语义风险（实测三处 archive 表皆 0 行 ⇒ 不丢历史）。
+>    ⇒ **登记 7 点**：正本 / embeddata 副本（逐字一致）/ installer `go:embed` + map /
+>    `runner.go` StartupFiles / `installed_startup_migrations.tsv` 镜像 / **生产升级序列** / `docs/db-changelog.md`。
+> ⇒ ★★ **门** `sql/migrations/startup/migration_894_view_rebind_test.go`：三方同源 + 绑活表（**先剥注释**）
+>    + 7 点登记 + embeddata 逐字 + down 可逆 + **真库腿纯只读** ⇒ 变异 **M1~M5 全红**、还原逐字一致。
+> ⇒ ★ **本轮自身两次量具故障**：① 门的第一版抽取器用 `" AS "` 字面量，而三份来源的 `AS` 后面**跟的是换行**
+>    ⇒ 抽出不相干片段 ⇒ **被阳性对照当场逼红**；② ★ **变异脚本用 `git checkout --` 还原 ⇒ 对 untracked 无效**
+>    ⇒ 迁移文件**留在变异态** ⇒ 已改为「备份 → 回拷 → 比 sha256」。
+> ⇒ ★★ **一条被推翻的怀疑（假阳性留证）**：`handoff_logs_with_current_month` 曾被判「脱靶到遗留表」——
+>    实际是 534 **有意**的三臂 UNION（live ∪ hot ∪ legacy）⇒ **不是缺陷** ⇒ 关闭。
+>    ⇒ ★ **通用式：「视图依赖了历史名表」≠「视图读不到活数据」**；判脱靶必须看**顶层 FROM 是不是唯一臂**。
+> ⇒ 完整记录见 `docs/audit/2026-10-21-R72b-视图脱靶族与冻结行集扫描.md` + LESSONS `§152`/`§153`/`§154`。
+
 > **2026-10-20 §143.25 轮（本会话）**：**把「11-03 的超时风险」量化掉**
 > ⇒ **301,255 行搬进 columnar 实测中位 3,410 ms**（10 分钟预算的 0.6%，**裕量 176×**）
 > ⇒ **超时风险从「未量化、可能很高」降级为「量级上极不可能触发」**。
@@ -5098,6 +5226,48 @@ To codeup.aliyun.com:kaixuan/official-deploy/llm-gateway-go.git
 > ⇒ ★ **本地真库实测（一次性库 `itgate_14342`）**：复刻「0 行 + TOAST 膨胀」形态 ⇒
 > `TRUNCATE` 与 `VACUUM FULL` 都把 1.35 MB 收到 16 KB ⇒ ⇒ **生产配方取 `VACUUM FULL`**。
 
+> **2026-10-21 R79 轮（本会话）**：**并行会话通报的「一道永远 SKIP 的门」⇒ 实测是一族 9 个**
+> ⇒ ⇒ ★★★ **两类门要分开处置，而「表不存在」这个借口必须用实验证伪**。
+> ⇒ 通报的那条：`cmd/gateway/dual_read_gate_pg_test.go:39`
+> `TestS4GateStopsClaimingReadyAfterStopWrite` —— 在任何当前形态库上**永远 SKIP ⇒ 永远绿**
+> （`go test` 把 SKIP 记成 PASS）。
+> ⇒ ★★★★ **★ 决定性实验（比通报更重的一层）**：建一次性库把 4 张表**补齐并塞 100 行 v1 数据**
+> ⇒ 它照样**红**：`v1 覆盖率从未被测量（V1CoveragePP=-1）` ⇒ 且日志显示
+> **有 100 行 v1 也报 `v1=0 / reason="v1_family_retired"`**
+> ⇒ ⇒ ★★★ **⇒ 它在 legacy 形态上是假红，在当前形态上是永远 SKIP ⇒ 在任何环境下都给不出正确信号。**
+> ⇒ ★★ **根因（产品侧证据）**：`cmd/gateway/dual_read_gate.go:9-18` 自写
+> **「this rule set has no production call site any more」**；
+> `cmd/gateway/dual_read_validator.go:390-424` 的 `SummarizeFrom` 在退役态**一条查询都不发**，
+> 返回**硬编码常量**（`V1Retired=true` / `V1CoveragePP=-1` / `S4Ready=false` /
+> `S4GateVoid=true` / `reason=v1_family_retired`）
+> ⇒ ⇒ ★★ **⇒ 退役态是「常量」不是「库相关的事实」⇒ 真库层对它没有任何可测增量
+> ⇒ ⇒ ★★ **⇒ 处置是「退役」不是「改瞄」（改瞄成真库门 = 给常量套真库外套）。**
+> ⇒ ★★★ **族谱（9 个 dual-read 真库门）**：**6 个真读 v1 族 SQL**（契约已随 890 退役）
+> + **3 个根本不读业务表**（被共用入口 `openDualReadGate` 连坐成永远 SKIP）。
+> ⇒ ★★ **本轮只落地了零风险那一半（零覆盖删除、零产品改动）**：
+> ① 新增 `openDualReadConnection`（**只验连通性**，不开表探针）；
+> ② **救活 2 个门**（`TestDualReadValidator_Summarize_RealDB` · `TestDriftClassExpression_RealDB`）
+> ⇒ ★★ **#7 现在是「退役态契约的真库门」**：真库上证明「Summarize 不 42P01 且如实报
+> `v1_family_retired`」⇒ **任何把 v1 族写回活路径的改动都会在这里暴露（42P01）**
+> ⇒ ★ **这正是 R78 轮那类缺陷（v1 族复活）的活体守卫**；
+> ③ 新门 `cmd/gateway/dual_read_v1_probe_guard_test.go`：**走 `openDualReadGate` 的门必须真的读 v1 族**
+> （沿门内调用图闭包判定，★ **闭包刻意不穿过基础设施函数** ——
+> 「不许靠 `probeDualReadTables` 自己那句 `_request_logs` 蒙混过关」，否则判据恒绿）
+> ⇒ **变异 M1 成立**（改回 `openDualReadGate` ⇒ 门红并点名；还原 md5 逐字一致）。
+> ⇒ ★★ **行为读数**（当前形态库）：**8 SKIP / 1 活 ⇒ 3 活 / 6 SKIP** ⇒ **新增 2 个活门、零新增红**；
+> 整包两种模式（无 DSN / 有 DSN）**全 ok**。
+> ⇒ ★★ **属主裁决项（本轮未拍板）**：余下 **6 个 v1-SQL 门**怎么处置
+> ⇒ **建议 R79-A（退役 6 个 + 清理 v1-only 辅助函数）**
+> ⇒ ★ **R79-B（改写成退役态断言）会与 #7 重复；R79-C（原样保留）不可接受** ——
+> 仓里已有明文立场（`cmd/tools/validate_sessions_v2/loader.go`）：
+> 「留着一条只为了还能列出点东西而存在的查询，是给运维制造『工具还在正常跑』的错觉
+> —— **比没有门更糟，因为它看起来在防着什么**」。
+> ⇒ ★★ **★ 为什么不能只「把 SKIP 去掉」**：去掉探针后它们在 legacy 库上会**跑起来并失败**
+> ⇒ ⇒ **假红比永远绿更容易误导人** ⇒ ⇒ **探针与退役必须一起做**。
+> ⇒ ★★ **替代覆盖已存在**（退役态契约在 mock/单元层已守）：
+> `s4_gate_coverage_faces_test.go::TestS4CoverageIsNotMeasuredAfterV1Retirement` +
+> `dual_read_validator_test.go`（pgxmock：**断言一条查询都不发**）⇒ ⇒ **退役不丢覆盖率**。
+> ⇒ 完整记录见 handoff `§19.20.19`。
 > **2026-10-21 R80 轮（本会话）**：★★★★ **形态门补 `customer_id` 契约（2 → 3）＋ 两条 PG 机制实测**
 > ⇒ **对生产的写入 = 0**（全程只读 + 一次性库 `itgate_r80_shape`）｜基线 `611fd46e1`：
 > ★ **需求来自并行会话 R77 轮订正**（canonical 视图 118 列、`customer_id`/`request_class`/`due_at` 3/3 在位
@@ -5134,7 +5304,7 @@ To codeup.aliyun.com:kaixuan/official-deploy/llm-gateway-go.git
 > 不证明「门能发现列被删」（后者在既有库上不可达）。
 > ⇒ ★ **并行会话在 `db/` 包的未提交文件本轮一个都没碰**；⚠ `db/db_package_isolation_gate_test.go`
 > 当前有语法错误（`t.Helper.TODO()`）⇒ **共享工作树上 `./db/` 包级 vet 会红**（不是本轮改动）。
-> ⇒ 完整记录见 handoff `§19.20.18` ＋ `docs/audit/2026-10-21-R80-形态门-customer_id契约.md`。
+> ⇒ 完整记录见 handoff `§19.20.24` ＋ `docs/audit/2026-10-21-R80-形态门-customer_id契约.md`。
 > **2026-10-21 R76 轮（本会话）—— 批判式审计轮**：**把 R51 续轮自己的结论逐条挑毛病**，
 > 而不是再加功能。⇒ ★ **本轮最大的收获是推翻了我自己的一条判词**：
 > 我据 `pg_stat_statements` 的 `mean_exec_time = 9.17 s / calls = 287` 判「生产上这条检查
@@ -5173,3 +5343,570 @@ To codeup.aliyun.com:kaixuan/official-deploy/llm-gateway-go.git
 > 要真正翻转成「假绿通过」，需要「全部变异都期望绿」或「红变异恰好红在别的腿上」的脚本
 > ⇒ **本仓逐份核过，无此类脚本** ⇒ ⇒ **危害分级必须按每份脚本单独判，且必须用实测给**。
 > ⇒ ⇒ **本轮不改上游那份脚本**（它正被上游迭代 ⇒ 并发写同一文件风险不对称）⇒ 登记为遗留。
+
+> **2026-10-21 R81 轮（本会话）**：★★★★★ **官方门禁第一次 `exit=0`** —— 573/603 定性（新机制 **[M10]**）＋ **「事实源承载 ⇒ 免于被分类」盲区**（破坏性测试被指向共享库的注入错误）
+> ⇒ ★★ **本轮把「官方跑法读数不存在」这个长期挡路项解掉了**（此前门禁 `exit=2` ⇒ 跑不完 ⇒ 任何引用官方读数的话都不成立）
+> ⇒ ★★★ **before → after（官方跑法）**：`startup rerun` **2 条未登记 ⇒ 0 条**；
+> ⇒ **门禁 `exit=2` ⇒ `exit=0`**（`PASS=181 SKIP=8 FAIL=0`）⇒ ★★ **官方门禁第一次走完全程**。
+> ⇒ ★★★★ **573/603 定性（三路取证：官方 runner / 克隆重放拿完整 DETAIL / 单条语句实测）**：
+> ⇒ **新机制 [M10] = 「第二遍把已退役的 v1 族按旧名复活 ⇒ 它的 DROP 撞上依赖方」** ——
+> ⇒ 官方重跑 = **baseline 三件套 → 链**，而 `01-schema.sql` 是**裸 pgdump 基线**
+> ⇒ ⇒ 它把 v1 族**按旧名**重新建出来（`341` 建 `request_logs_hot`、`448` 按旧名重建 v1 臂视图）
+> ⇒ ⇒ **573/603 因此「有对象可动」⇒ 但对象已被视图依赖 ⇒ DROP 被挡**
+> ⇒ ⇒ 佐证：860 改名成 `_request_logs*`、890 再删 ⇒ **第二遍对 v1 族净效果为零**（kept 库 4 个名字全无）。
+> ⇒ ★★★★ **573 与 603 报错不同但根因同**：573 = DROP **视图**被挡（`routing_analytics_source`
+> ⇒ ⇒ **再往下两个物化视图** `routing_analytics_7d` / `routing_audit_summary_7d`）；
+> ⇒ 603 = DROP **列**被挡 ⇒ ⇒ **一条机制、两个条目**。
+> ⇒ ★★ **方向对比**：**[M8] 向后级联** vs **[M10] 向前依赖**（上一遍留下的依赖方⇒挡住本遍的 DROP）
+> ⇒ ⇒ **判别动作 = 问「依赖方是本遍之前建的，还是本遍建的」**。
+> ⇒ ⚠ **不能靠 `CASCADE` 消掉 573**：会连带删掉 canonical 视图 + `routing_analytics_source` + 两个物化视图
+> ⇒ ⇒ 把「重跑失败」升级成「**静默毁掉下游对象**」。
+> ⇒ ★★ **登记原因必须引官方跑法的报错原文**（手工变体是 `relation "public.request_logs" does not exist`
+> ⇒ ⇒ 根因 = ★★ **`DROP COLUMN IF EXISTS` 的 IF EXISTS 只覆盖「列」不覆盖「表」** ⇒ 另一条机制，另标）。
+> ⇒ ★★★★★ **顺带挖出「让门禁永远红」的注入错误**：rerun 段不再 die 之后门禁**继续往下走**，真库腿报 4 条红
+> ⇒ ⇒ `requires loopback trace_retirement database or explicitly authorized local 54318 schema isolation`
+> ⇒ ⇒ ★★★★ **那 4 条红不是「`t.Fatal` 该改成 `t.Skip`」** —— 看守卫完整结构：「**没配** ⇒ 已经 `t.Skip`」，
+> ⇒ ⇒ 只有「**配了但指向不安全的地方**」才 `t.Fatal` ⇒ ⇒ **那是安全拒绝** ⇒ ⇒
+> ⇒ **红的原因是「谁喂了不该喂的 DSN」** ⇒ ⇒ **喂它的是官方 runner 自己**
+> ⇒ ⇒ `run-integration-gate.sh:850` 把 `TRACE_RETIREMENT_TEST_DSN` 绑成 `"$GATE_URL"`（门禁自己那个**共享**库）
+> ⇒ ⇒ **破坏性测试被指向共享库** ⇒ ⇒ 守卫正确拒绝 ⇒ ⇒ **门禁永远红，而红的原因不是产品缺陷**。
+> ⇒ ★★★★ **为什么能活这么久？——「豁免即盲区」**：登记册的差集完备判据是 `if 在事实源 { continue }`
+> ⇒ ⇒ **凡被事实源导出的名字，永远不会被要求分类** ⇒ ⇒ `TRACE_RETIREMENT_TEST_DSN` 本该是 `dsn_exclusive`，
+> ⇒ ⇒ 却因为**先被塞进事实源**而**从未被分类** ⇒ ⇒ ★★ **通用式：任何「豁免规则」都会变成盲区**。
+> ⇒ ★★★★ **修法（每一步都被既有门自证）**：登记 `dsn_exclusive` ⇒ **既有判据 ③ 立刻要求它出事实源**
+> ⇒ ⇒ 从 `datasource_env.sh` 删 export ＋ 从 runner 删注入 ⇒ ⇒ 测试改走它**本来就设计好的** `t.Skip` 分支；
+> ⇒ ★★ **新增判据**：`dsn_exclusive` 若出现在 runner 的 `env \` 块里，**其值不得是通用值 `$GATE_URL`**
+> ⇒ ⇒（`dsn_exclusive` 本就**允许**出现在 runner 里 —— `TEST_TENANT_DATABASE_URL` 拿 `$TENANT_DSN` 是**专用值**）
+> ⇒ ⇒ ⇒ **只看名字分不出「专用值」与「通用值」⇒ 必须看值**）＋ 值解析器 ＋ **自检 (f)**；
+> ⇒ ⇒ **变异 M1**（把注入塞回 runner）⇒ 判据**红** ⇒ **有牙**；还原按**被改路径** `shasum -a 256` 逐字一致。
+> ⇒ ★★★★ **附带修掉 `origin/main` 上既有的红**：`MEMORA_REPO_PATH` 未登记 ⇒ 登记为 `component`
+> ⇒ ⇒ `TestPGTestEnvRegistryCoversEveryGapName` 由红转绿 ⇒ ★★ 证据 = **干净树集合对照**（pristine main 上同一组红）。
+> ⇒ ★★ **零迁移改动 ⇒ 零生产 schema 变更 ⇒ 零产品行为变更**。
+> ⇒ ★★ **附带发现：登记册里 9 条已不复现**（`562/610/680/696/700/710/733/808/860`，**2/2 次独立运行都缺**）
+> ⇒ ⇒ **登记册可从 26 条缩到 17 条** ⇒ ⚠ **但删之前必须查清「为什么不再复现」**
+> ⇒ ⇒ （若是链序/状态的偶然，删了将来会变成「新增未登记」而 die）⇒ ⇒ **登记为下一轮第一件事**。
+> ⇒ ⚠ **诚实边界**：**没有**改 573/603 本身（它们仍失败，只是不再 abort ⇒ 真修 = E1/E3，**属主决策**）；
+> ⇒ 门禁跑的是 **一条腿**（`./internal/sessionv2mirror/`）⇒ 「exit=0」适用范围 = 该腿 + rerun 阶段；
+> ⇒ 那 4 条 trace-retirement 测试**在本机仍没跑过**（本轮产出是「它们不再假装红」，**不是**「它们跑过了」）。
+> ⇒ ⇒ 完整记录见 handoff `§19.20.25` ＋ `docs/audit/2026-10-21-R81-第二遍失败573-603与事实源盲区.md`。
+
+> **2026-10-21 R80 轮（本会话 · admin 用量门族）**：★★★★ **「夹具插错了表 ⇒ 9 个门全是 SKIP」**
+> ⇒ ★★★ **守卫连坐的是 2 个文件 / 11 个用例，而守卫问错了对象**
+> ⇒ ⇒ ★★★ **改瞄到 `usage_ledger` 后 9 个门从「全 SKIP」变「全真跑」，变异 M1~M3 全红**
+> ⇒ ⇒ ★★★ 完整记录见 handoff `§19.20.21`。
+> ⇒ ★★★★ **起因**：R70 轮（`1d469fb89`）在**共享 helper** `testDB()` 里加了**文件级守卫**
+> （查 `public._request_logs` 不在 ⇒ 整个文件 SKIP）
+> ⇒ ⇒ 爆炸半径实测 = **2 文件 / 11 用例**：`usage_enhanced_test.go` 9 个（其中 **4 个根本不插种子**）
+> + `usage_trend_series_test.go` 2 个（种子在 `request_stats_dim_minute`，**另一个族**）
+> ⇒ ⇒ **R79「永远 SKIP」家族第二例（共用入口连坐）**。
+> ⇒ ★★★★ **决定性事实①：取数源是 `usage_ledger`，不是会话族** ⇒ **订正 R70 轮「改瞄会话族」的表述**：
+> `planCostTrend`（`admin/usage_enhanced.go:94-129`）把维度分两侧 ——
+> **计费侧**（`model`/`provider`/`api_key`）⇒ 基表 `usage_ledger_with_current_month`；
+> **请求侧**（`work_type`/`intent`）⇒ `request_logs_with_current_month`。
+> ⇒ ★★ `usage_ledger_with_current_month` 真身 = `usage_ledger_hot UNION ALL usage_ledger`
+> ⇒ **名字有误导，但不按月过滤** ⇒ 动态周期（当月+上月）完全可用。
+> ⇒ ★★ 种子列是 `raw_model_name`；旧夹具的 **`outbound_model` 在 `usage_ledger` 不存在**。
+> ⇒ ★★★★ **决定性事实②：租户过滤靠 auth context，不靠 header** ——
+> `EffectiveTenantIDAll`（`admin/context.go:69`）读 `GetTenantID(r)`（`context.go:37`），
+> 而后者**只读 request context 里的 `AuthContext`，不读任何 header**
+> ⇒ ⇒ ★★ 旧夹具那句 `X-Tenant-ID` **从未参与过 SQL** ⇒ 统计口径一直是「所有租户」
+> ⇒ ⇒ 在共享库上 `COUNT(*)` 会把别人的行算进来 ⇒ ⇒ 修法是
+> `SetAuthContext(req, &AuthContext{Role:"tenant_admin", TenantID: tenantID})`。
+> ⇒ ★★★ **决定性事实③：`INSERT INTO tenants (id, name)` 一直 42703 且被吞** ——
+> `tenants` 主键是 **`code`**（真库 `tenants_pkey PRIMARY KEY (code)`），**没有 `id` 列**
+> ⇒ ⇒ 那条语句从未成功过；且 `usage_ledger`/`session_turns` **都没有**指向 `tenants` 的外键 ⇒ 对断言无影响。
+> ⇒ ★★★★ **落地（只改 `admin/usage_enhanced_test.go` 一个文件 ⇒ 生产零影响）**：
+> 种子改瞄 `usage_ledger` + `session_turns`（压缩计数的唯一落点）｜守卫**下沉到用例级** `requireRelations`
+> （点名缺哪个关系）｜**删掉** `isSchemaShapeMismatch` 的 SKIP 分支（插入失败现在**红**）｜
+> 3 个纯参数用例**不再被连坐**（不查库的路径 ⇒ 无 DSN 也跑）｜3 条弱断言收紧
+> （`至少一条`⇒`恰好 3 组 + gpt-4o 合计 3.50`；period-compare 的 `t.Logf`⇒`t.Errorf` + 条数 + trend + significant）｜
+> 周期改**动态**（当月+上月 ⇒ 不再是绝对月 pin，且覆盖生产命中的当月分区）｜
+> 清理改 `t.Cleanup`（旧写法在 `t.Fatalf` 之后**不执行** ⇒ 留孤儿行）｜租户 id **每次运行唯一**
+> ｜★★ **负控：邻居租户的行** ⇒ **「租户过滤真的生效」第一次有断言在守**。
+> ⇒ ★★★★ **验收**：有 DSN **9/9 PASS**（此前 9/9 SKIP）｜无 DSN **3 PASS + 6 SKIP + 零 FAIL**｜
+> 被解放的 `usage_trend_series` 2 个用例 **PASS**｜形态库跑前跑后 **rel diff 0 / col diff 0**、**零残留行**。
+> ⇒ ★★★★ **变异 M1~M3 全红且红因逐条对得上**（还原按被改路径 md5 逐字一致）：
+> M1 期望成本改错 ⇒ 红在「want 3.50」；M2 摘掉 `SetAuthContext` ⇒ 红在「got 4 个分组 / 890888 cache_read」
+> ⇒ **租户过滤有牙**；M3 种子改回 `_request_logs` ⇒ 红在 `42P01` ⇒ **插入失败不再被 SKIP 吞掉**。
+> ⇒ ★★★★ **干净树集合对照**（pristine `git archive HEAD` + 另建形态库）：
+> 只在「本轮版本」= **1 条**（在并行会话**未跟踪的新文件**里 ⇒ 不是本轮引入）／只在 pristine = **0 条**／
+> 共有 **8 条**逐条同名复现 ⇒ ⇒ **本轮零新红**；且**两个版本跑完 admin 整包，形态库损伤都是 0 行**
+> ⇒ ⇒ ★★ **admin 包的破坏性门安全闸有效**（与 db 包的 −140 关系 / −959 列形成对比）。
+> ⇒ ★★★★ **附带发现：admin 包里 3 道破坏性门**永远 SKIP**（安全闸的副作用）** ——
+> `admin/models_modality_source_realdb_test.go:68-75` 的闸是「8 张夹具表存在一张就 SKIP」
+> ⇒ **产品形态库里这 8 张表永远存在** ⇒ ⇒ **这道门从未真正跑过**
+> ⇒ ★★ **作者自己的注释就写着**「人看到的是『通过』，实际一次都没跑」—— **防住了残桩，却制造了永久 SKIP**
+> ⇒ ⇒ **R79 家族第三类**：**契约要空库，而事实源给的是产品形态库 ⇒ 门永远不跑**；
+> 修法方向（R78 的 `db/scratch_db_test.go` 已有同款机制）**本轮未实施 ⇒ 登记为 R80-A 属主项**。
+> ⇒ ★★ **R80-B 属主项**：R70 轮那套「插入失败 ⇒ SKIP」模式在仓库里**共 5 个文件**
+> （`admin`/`domains/credential`/`bg`/`bg/systemmonitor`/`internal/outbox`）⇒ 要不要全族收敛。
+> ⇒ ★★ **R70 轮报的 `bg/feature_stats_worker_test.go` 的 `TRUNCATE … CASCADE` 危害 ⇒ 本轮复核：已被代码自守**
+> （连的是**专用** `LLM_GATEWAY_FEATURE_STATS_TEST_DSN`，且有**库名守卫**
+> `current_database()` 不匹配 `itgate|scratch|test|tmp|bench|pg_` 就 SKIP ⇒ 拒绝在共享库上 TRUNCATE）
+> ⇒ ⇒ ★ **⇒ R78 静态门无需跨包推广**（admin 包实测零损伤）；真正缺的是「永远 SKIP」普查（另一件工具）。
+
+> **2026-10-21 R80 轮（本会话 · 续）**：★★★★ **「两轮对同一个开关给出相反建议」⇒ 真答案在第三处（谁喂了 DSN）**
+> ⇒ ⇒ ★★★★ 回应并行会话 R71 轮收尾通报；完整记录见 handoff `§19.20.22`。
+> ⇒ ★★★★ **① 通报「本地 main 落后 / 会 non-ff」⇒ 已解决**：实测本地 main 落后 `origin/main` **9 个提交但领先 0**
+> ⇒ ⇒ `git merge origin/main` 是**纯快进** ⇒ ⇒ 合并后本地 main = `origin/main` = `ccc3b77ee`，对拍一致 **0/0**
+> ⇒ ⇒ **non-ff 障碍已清**；且**工作树里 9 处他人未提交改动全部存活**。
+> ⇒ ⚠ ★★ **「共享工作树」的口径差异**：R71 轮说的「16 个未提交改动（含 `bg/auto_index_refresher.go`）」与
+> 本 checkout 实测的 **9 处且不含该文件** **不一致** ⇒ ⇒ **两边不在同一棵 checkout**
+> ⇒ ⇒ ★ **「共享工作树」跨 checkout 不成立 ⇒ 冲突面判断必须先确认 checkout 身份**。
+> ⇒ ★★ **② 通报「新静态门会因新 env 名而红」⇒ 已核，不受影响**：在对方工作树的**在途版本**上实测
+> `TestRealDBLegsUseDeclaredDSNEnvNames` / `TestPGTestEnvRegistryCoversEveryGapName` /
+> `TestPGTestEnvRegistryClassesMatchFactsourceAndRunner` / `TestPGTestEnvRegistryScannerSelfCheck`
+> ⇒ **4/4 PASS**（登记册 67 条、**未登记 0**、死条目 0）⇒ ★ **本轮没有新增任何 env 变量名**
+> （`admin/usage_enhanced_test.go` 只读既有的 `TEST_DATABASE_URL`）。
+> ⇒ ★★★★ **③ 通报「建议 `GATEWAY_CANONICAL_TEST_LOCAL_ONLY` 未授权 ⇒ 改 SKIP」⇒ 本轮实测：不建议执行**
+> ⇒ ⇒ ★★ R81 轮说「那几处 `t.Fatal` 是安全拒绝，不能一刀切改成 SKIP」，R71 轮说「建议改 SKIP」
+> ⇒ ⇒ ★★★★ **两边都对了一半：真答案在第三处 ——「谁喂了那个 DSN」**：
+> ① **官方门禁不 source 事实源**（`run-integration-gate.sh` 里没有 source `datasource_env.sh`）
+> ⇒ ⇒ `GATEWAY_CANONICAL_TEST_DSN` 在门禁里**未设** ⇒ ⇒ 第一道守卫（`dsn == "" ⇒ t.Skip`）就放行
+> ⇒ ⇒ **官方现状 0 FAIL**（与 R71 自己的三档读数一致）；
+> ② ⇒ ⇒ **那 1 条「缺授权」是「切事实源」才出现的**：`scripts/audit/datasource_env.sh:70`
+> 把 `GATEWAY_CANONICAL_TEST_DSN` 导出成**通用 DSN** ⇒ ⇒ fixture 拿到 DSN ⇒ 撞上授权守卫
+> ⇒ ⇒ **红的是「谁喂了不该喂的 DSN」，不是产品缺陷**；
+> ③ ⇒ ⇒ **守卫一个字都不用改**：`t.Fatal` 是**登记册自己写明的语义**
+> （R71 给该开关的分类理由原文：「**不给则 `t.Fatal` 而非 `SKIP`**」）⇒ ⇒ 改成 SKIP 会与登记册**自相矛盾**，
+> 且把「安全拒绝」降级成「静默跳过」；
+> ④ ⇒ ⇒ ★★★ **更硬的论据**：即使打开授权也不成立 —— canonical fixture 还要连**第二个库** `identity_shadow`
+> （`admin/shared_principal_realdb_test.go:113` 改库名）⇒ ⇒ 通用 DSN 指向的库**没有**那个库
+> ⇒ ⇒ ⇒ **它本来就只能指向「本地联调专用库」** ⇒ ⇒ 归 `dsn_exclusive` 是**准确分类**，不是新语义；
+> ⑤ ⇒ ⇒ ★★ 与 R71 自己的结论 2 一致（隔离开关不进 runner 的 `env \` 块）⇒ ⇒ **`dangerous` 类授权开关也不能进**
+> ⇒ ⇒ **授权只能由人在本地环境手给，不能由门禁给** ⇒ ⇒ **修法只能落在「别导出那个 DSN」**。
+> ⇒ ⇒ ★★ **修法（与 R81 轮刚做完的 `TRACE_RETIREMENT_TEST_DSN` 同款，且本例更干净：runner 的 `env \` 块本来就没有它）**：
+> ① `scripts/ursmcheck/pg_test_env_registry.tsv` 加 `GATEWAY_CANONICAL_TEST_DSN	dsn_exclusive	<理由>`；
+> ② `scripts/audit/datasource_env.sh` **删第 70 行** export（判据 ③ 会自动要求它出事实源）；
+> ③ `scripts/ursmcheck/datasource_env_test.go` 豁免表加一行（+ 理由）⇒ 删 export 后它既不在事实源也不在 runner
+> ⇒ ⇒ 效果：测试回到它**设计好的** `t.Skip` 分支 ⇒ ⇒ **「切事实源」那档的 7 条红应当少掉这条**。
+> ⇒ ⚠ **本轮未实施**：这三个文件是 R71/R81 会话**工作树里在途改**的 ⇒ **同文件两个写者纪律** ⇒ 精确修法已发持有方。
+> ⇒ ★★ **④ R71 三条技术结论对账**：结论 1（21 个 DSN 变量名已闭合）**已收到，本轮无在途活依赖它**；
+> 结论 2（隔离开关不进 runner）**采纳**并推广到 `dangerous` 类；结论 3 **部分采纳（保留 `t.Fatal`）、部分不采纳（不改 SKIP）**。
+> ⇒ ★★ **⑤ 同域实测：admin 整包对形态库零损伤**（关系 diff 0 / 列 diff 0，pristine 与本轮版本各一次）
+> ⇒ ⇒ 与 db 包的 −140 关系 / −959 列形成对比 ⇒ ⇒ **admin 包的破坏性门安全闸有效**
+> ⇒ ⇒ **「破坏性门必须自带一次性库」在 admin 包不需要推广**（代价是那 3 道门**永远 SKIP**，见 §19.20.21 ⑧）。
+
+> **2026-10-21 R80 轮（本会话 · 续二）**：★★★★ **9 道「永久 SKIP 的门」被救活** ⇒ 闸从「躲开」变成「自证隔离成立」
+> ⇒ ⇒ 完整记录见 handoff `§19.20.23`。
+> ⇒ ★★★★ **起因**：admin 包两道**破坏性真库门**（`models_modality_source_realdb_test.go` /
+> `pricing_import_realdb_test.go`）的闸是「**8 张夹具表存在一张就 SKIP**」/
+> 「`model_offers` 已存在就 SKIP」⇒ ⇒ 而**产品形态库里那些表永远存在**
+> ⇒ ⇒ **它们在任何产品形态库上永远 SKIP ⇒ 从来没真正跑过**（`go test` 把 SKIP 记成 PASS）。
+> ⇒ ⇒ ★★ 闸的**本意是对的**（两道门要 `DROP TABLE` 重建 ⇒ 不能在有这些表的库上跑）
+> ⇒ ⇒ ★★★ **但它防的是「残桩」，代价是「永久不跑」** ——
+> ★ **安全闸必须同时回答「上次跑崩留下的残桩怎么办」**和**「上次根本没跑过我看得出来吗」**。
+> ⇒ ⇒ ★★ 作者**自己已写下这个警告**（`models_modality_source_realdb_test.go:77-78`：
+> 「人看到的是『通过』，**实际一次都没跑**」）⇒ ⇒ ⇒ **缺的不是意识，是「一次性空库」这个机制**
+> ⇒ ⇒ ⇒ 而 R78 已在 `db/scratch_db_test.go` 落过该机制 ⇒ ⇒ ⇒ **本轮复制到 admin 包**。
+> ⇒ ★★★★ **落地（3 个文件，生产零影响）**：
+> ① 新增 `admin/scratch_db_test.go`（一次性**空库**分配器；三条硬约束：绝不 fallback 共享库 /
+> 空库自证 / 强制回收；+ CREATEDB 预检 ⇒ 预检不过就明说没跑而不是假红；
+> ★ **不在 `internal/testdb` 共用**：db 包那份带自己的 `scratchPolicy`，共用会牵动已验收的 7 道门
+> ⇒ ⇒ **宁可复制 60 行，也不在已验收的隔离线上做重构**）；
+> ② 两道门改接 `scratchEmptyPool(t)` ⇒ **库要假、表名要真**；
+> ③ ★★★ **闸从「躲开」变成「自证隔离成立」**：`t.Skipf("…already exist")` ⇒
+> **`t.Fatalf("…隔离破了（拿到的不是一次性空库）")`** ⇒ ⇒ 这一改**把「有人把 helper 改回连共享库」
+> 变成一道会红的门**。
+> ⇒ ★★★★ **验收**：9 个用例**从「0.00s SKIP」变真跑全绿**（`TestListModels_modalityProvenanceReachesTheList`
+> 0.00s → **28.52s**，它现在真的在验出处链路）｜基线 `PASS=9 FAIL=0`｜形态库 **2421 关系 / 9333 列逐字未变**｜
+> 一次性库**零残留**。
+> ⇒ ★★★★ **变异 M4/M5 全红且红因逐字对得上**：
+> **M4**（不建一次性库，保留 `testdb` 调用以**编译干净**）⇒ 红在
+> 「一次性库不是空的（public 下有 **446 张表**）」；**M5**（再去掉空库自证）⇒ 红在
+> 「8 张夹具表已经存在 —— 隔离破了…本门会 DROP 掉它们（含 credentials / providers），绝不能在共享库上跑」
+> ⇒ ⇒ ★★★ **两次变异跑完后形态库关系数都还是 2421** ⇒ ⇒⇒
+> **实测证明「闸在 DROP 之前命中 ⇒ 共享库一个对象都没掉」** ⇒ ★★ **安全前提不是推理，是量出来的**。
+> ⇒ ★★ **本轮自身的两处脚本缺陷（已修）**：`sed -i.bak` 在**包目录**留 `.bak`（改用 `perl -pi`）；
+> M4 让 `testdb` 变成未使用 import ⇒ **编译红** ⇒ 按纪律**作废** ⇒ ⇒ **变异必须编译干净**。
+> ⇒ ★★★ **为什么这不是替属主拍板**：两道门**自己声明了契约**「夹具对象已存在时也跳过（**它要建表**）」
+> ⇒ ⇒ **「要一个空库」是它们既有的声明**，本轮只是**把声明兑现** ⇒ ⇒ **属主语义决策被完整保留**；
+> 且实测 **9 个全绿、零新红** ⇒ ⇒ **R80-A 从「待裁决」变成「已做掉且代价为零」**。
+> ⇒ ★ **剩余同族缺口**：`admin/session_retirement_http_test.go` 要
+> `ALTER TABLE session_summaries DROP COLUMN` ⇒ 需要的是**产品形态的隔离库**（不是空库）
+> ⇒ ⇒ 它缺的是「专用的产品形态隔离 DSN」⇒ ⇒ 登记为下一项。
+> **2026-10-21 §143.43 轮（本会话）**：**推翻我上一轮自己的三处判词**（订正横幅二十二）
+> ⇒ ★★★★★ **真相：快照族的留存是【双模】的，形态由 `pg_class.relkind` 自答**
+> （`domains/ursm/v2/persist/retention_partition.go`，2026-10-04 落地）：
+> **分区父表 ⇒ 逐分区 DROP（空间真归还）** / **普通 heap ⇒ 行级 DELETE（空间不归还）**。
+> ⇒ ★★★ **生产日志闭环（决定性证据）**：
+> 154（252 侧）：`mode=partition-drop`、`retention=168h0m0s`、
+> **2026-10-21T00:01:21 `partitions_dropped=1` / `bytes_reclaimed=293322752`**（回收 280 MB）；
+> 211：`mode=row-delete`，每小时 DELETE 3.8~4.0 万行。
+> ⇒ ★★★ **两实例形态分叉（实测）**：**252 = 分区父表**（8 个日分区 20261014..20261021，
+> 族 10,033,619,520 B）⇒ 占用 **O(保留天数)**；
+> **211 = 普通表**（6,042,257 行 / 2,411,266,048 B，死元组 942,614 = 13.56%）
+> ⇒ 占用 **O(7 天高水位) + bloat**，堆内可回收 **367,839,785 B**。
+> ⇒ ★★★ **被推翻的三处判词**（原文保留在 runbook §143.43.1）：
+> ①「行级 DELETE ⇒ 分区文件永不收缩 ⇒ O(总天数)」⇒ **两实例都不成立**
+> （超期 7 天的行数两实例都是 **0** ⇒ 行数有界 ⇒ 高水位有界）；
+> ②「需要新造按日 DROP helper」⇒ **仓内早就有，且已在生产跑通**；
+> ③「`drop_old_state_partition_table` 只管月度 ⇒ 快照族掉不了分区」
+> ⇒ **两个不相干的机制被我接在了一起**（它归 `routing_decision_log` 等 7 个月度族管，
+> 快照族由 URSM 留存器独立负责）。
+> ⇒ ★★★★ **根因（方法论）**：★ **我只 grep 了 `bg/` 与 `sql/migrations/`，没 grep
+> `domains/ursm/v2/persist/` ⇒ ⇒ 「仓里没有」的结论整体作废**
+> ⇒ ⇒ **纪律：「缺失」类结论必须先列全「可能存在的位置」并逐个排除**。
+> ⇒ ★★★★ **订正后的三条真实缺口**：
+> **A** 211 快照族非分区 ⇒ 空间不归还（`VACUUM FULL` 可回收 ≈351 MiB；长期解 = 830 手工迁移）；
+> **B** **830 是 manual-by-design（`.sql.skip`，未注册进 installer/启动序列）**
+> ⇒ **新装库与 211 永远拿不到分区形态** ⇒ 每个新环境都会重现 211 的 bloat 形态（属主决策）；
+> **C** **`usage_facts` 两实例均无任何留存**（`settings_kv` 里 11 个 `lifecycle.*_ttl_days` 键
+> 两实例完全一致、**其中没有 usage_facts** ⇒ 无 TTL、无 worker、无 DROP 登记）
+> ⇒ **唯一真正的无界增长族**（252 ≈1.5 MB/天、211 ≈0.9 MB/天；**TTL 天数属计费语义 ⇒ 属主拍板**）。
+> ⇒ ★★ **C 的零语义风险即时项**：252 `usage_facts_default` **heap 0 B + index 83,476,480 B / 0 行**
+> ⇒ **纯索引膨胀 ≈80 MB**（`REINDEX` 或 `VACUUM FULL`；**不是 DELETE、不是 DROP 整表**）；
+> 252 `usage_facts_20260926..20261005` 10 个空日分区 ≈34 MiB（`DROP` 空分区）。
+> ⇒ ★ **仓内交付**：`scripts/audit/verify_snapshot_retention_shape.sql`（**只读**判定脚本，
+> 两实例实跑通过）+ `scripts/audit/retention_shape_findings.tsv`（9 行机器可读登记册）+
+> `admin/retention_shape_verdict.go`（纯决策表，**回滚锚点优先于「0 行 ⇒ 可回收」**）+
+> `admin/section_14343_retention_shape_test.go`（门：决策表 8 例自测 / 登记册逐行重算 +
+> 绝对条数与字节数钉住 / **缺口打桩用 go/ast**（不看注释）/ **证据字符串钉住** /
+> 陈旧引用） + `scripts/mutate-14343-retention-shape-gate.py`（变异，隔离副本 M1~M7）。
+> ⇒ ★ **顺带修掉两处陈旧引用**：`bg/partition_825_contract_test.go` → `bg/partition_830_contract_test.go`
+> （文件早已改名 ⇒ 注释指向不存在的文件 ⇒ 「830 不进自动序列」这条决策**看起来没有 pin**）。
+> ⇒ ⚠ **本轮对生产的写入 = 0**（两实例查询 + 两台网关日志读取，全只读）。
+> ⇒ ⚠ **观测点（样本量 = 1）**：DROP 路径只有 1 次成功样本 ⇒ 证明「可用」不证明「稳定」
+> ⇒ **明日起每天核对「252 分区数是否稳定在 8 个」**（>9 ⇒ DROP 路径没跑）。
+
+> **2026-10-21 §143.44 轮（本会话）**：**属主授权四项**（零语义风险回收包 / `usage_facts` TTL=365 /
+> 211 的 830 分区化 / 快照族 25.2% 空壳行选 A）⇒ **252 两项已执行并验证（回收 114 MiB）**，
+> **211 执行前预检抓到一个会打断写路径的缺陷并已修**。
+> ⇒ ★★★★★ **核心发现**：**211 的表有 57 列**（多 `empty_response_rate_5m`，writer 的 INSERT 确实写它）
+> 而 **830 硬编码 56 列**（252 当时的列集）⇒ ⇒ **830 原样在 211 上执行会 42703 打断写路径**
+> （且 boot 不失败、RC=0、日志无异常 ⇒ 静默 + 致命）⇒ ⇒ **「同一迁移在两个实例上是两个不同版本」**。
+> ⇒ ★★★★ **修法**：830 改为 **LIKE 列驱动** ⇒ 「新父表列集 == 旧表列集」成为**结构属性**；
+> **对 252 行为完全不变**；刻意不用 `INCLUDING INDEXES`（PK 名会撞）/ `INCLUDING CONSTRAINTS`，
+> 必须保留 `INCLUDING DEFAULTS`。
+> ⇒ ★★★★ **本地真库 A/B 验证全绿**（一次性库 `itgate_14344`，**用 211 的真实 57 列做夹具**）：
+> 新父表 57 == 旧表 57、`empty_response_rate_5m` 在位、PK 四列不变、3 个日分区边界 **+08**、
+> legacy 保留、**writer 的真实 48 列 INSERT 成功**且落点在当日分区（非 default）。
+> ⇒ ★★★★ **门**：既有真实库测试的「56 列」断言（实现细节）改为**性质断言**（逐列名对照旧表）；
+> 夹具同步改为「带齐 writer 会写的列」（实测 4 列夹具 ⇒ 42703 红）；
+> 新门 `bg/section_14344_830_column_completeness_test.go`（静态 + 真库多带一列的性质）。
+> ⚠ **本门第一版被自己的注释喂饱**（整文件 `Contains("INCLUDING INDEXES")` ⇒ 830 注释里就写着它）
+> ⇒ 改为**只对 CREATE TABLE 语句本身**断言。
+> ⇒ ★★★ **252 回收已执行并验证**：库 **33,681,446,579 → 33,561,761,459 B（−114 MiB）**；
+> `usage_facts_default` 83,492,864 → **57,344 B**（**纯索引膨胀** ⇒ 手段是 `VACUUM FULL`/`REINDEX`，
+> **不是 DELETE、不是 DROP 整表**）；分区 27 → 17；**行数 275,930 未损**、写入路径正常。
+> ⇒ ★★ **执行通道**：新增 `~/.mavis-tools/lgwp-prod-write.sh`（与只读护栏 `lgwp-prod.sh` 配套，
+> 必须显式 `LGWP_PROD_WRITE=1`，并把 SQL 全文打进 stdout 供审计）。
+> ⇒ ⚠ **211 的写入仍为 0**：830 的执行时刻待属主确认；**且摊开一个语义后果** ——
+> **830 不搬数据** ⇒ 6,042,257 行历史会移进 `ursm_node_snapshot_min_legacy`（无读路径）
+> ⇒ ⇒ **推荐形态 = 830 + 历史搬运**（逐日 ensure + `INSERT … SELECT` 回父表 ⇒ 活动表恢复 7 天历史，
+> 且历史分区会被 DROP 型留存按天自然回收 ⇒ 211 最终与 252 同款）。
+> ⇒ ⚠ **待办**：`usage_facts` TTL=365 的登记 + 按日 DROP 登记；快照族 25.2% 空壳行「选 A」
+> （persist writer 跳过空租户 node 键）的实现与部署。
+
+> **2026-10-21 §143.44 轮（本会话，续 §143.43）**：**属主授权四项已执行三项**，
+> **第四项的判据被实测推翻并订正**；**211 与 252 的修正均已落地并验证**。
+> ⇒ ★★★★★ **211 三阶段执行（已落地，零残留）**：
+> **Phase 1 `VACUUM FULL public.ursm_node_snapshot_min`** ⇒ **19.2 s**、回收 **509,108,224 B（485.4 MiB）**
+> （堆 1.76→1.46 GB、**索引 646→441 MB**、行数 6,065,287 未损）⇒ ★ **比「堆内可回收」估的 351 MiB 多 134 MiB**
+> ⇒ **因为索引也被重建收缩**；
+> **Phase 2 830（列驱动版）** ⇒ **0.455 s**；
+> **Phase 3 历史搬运** ⇒ 逐日 ensure + 逐日 `INSERT … SELECT`，**8 天 / 6,065,757 行 / 36.7 s**。
+> ⇒ ⇒ ★★★ **211 复核全绿**：父表 `relkind='p'`、**57 列 == 旧表 57 列（ordinal 零错位）**、
+> **6,066,697 行**、**10 个日分区（边界 +08）**、**写入落点全在日分区**、
+> `persist committed rows=470` **迁移后仍每 60 s 一次**、PK 4 列 + ensure 函数在位。
+> ⇒ ★★ **211 现在与 252 同款形态**（分区父表 + 按日分区 + DROP 型留存）；
+> ⚠ **`ursm_node_snapshot_min_legacy`（211，1.90 GB）按 830 步骤 3 保留**（唯一退路）
+> ⇒ **7 天后评估 DROP**（已登记待办）。
+> ⇒ ★★★★ **选项 A 的判据被实测推翻**：字面的「跳过**空租户**键」**会误伤真实观测**
+> （既有测试直接变红）⇒ 两实例实测：211 **无一行空租户行**（退化行在 `default` 下且
+> `updated_at_ms≠0` ⇒ **已被真实观测覆盖** ⇒ 有信息）；252 的空租户行 **100%** 命中
+> **`generation=1 ∧ updated_at_ms=0`（种子签名）**，而 `default` 组 `updated_at_ms=0` = **0**
+> ⇒ ⇒ **判据改为「种子签名」**（252 命中 24~25%、211 命中 0、**真实观测零误伤**）
+> ⇒ ⇒ **顺带订正 §143.42**：「25.2% 无信息行」是 **252 特有**读数，非两实例通用。
+> ⇒ ★★ **`usage_facts` 留存（TTL=365，属主定）已实现**：
+> `stateTableTTLSpecs()` 增登记（`partitionUnit="day"`）+ `settings/spec_lifecycle.go` 增键（默认 365）
+> + **新按日 DROP helper** `dropOldDailyStatePartitions`（既有 SQL helper 只认月度分区名
+> ⇒ **只加登记行等于什么都没做**）⇒ 判据：整天已过去 + 契约名 ⇒ 不碰今天/未来 ⇒ 写入永不 23514；
+> **DROP 不带 `IF EXISTS`** ⇒ 对端已删 ⇒ 42P01 ⇒ 跳过不计数。
+> ⇒ ★★ **门**：新门 3 个文件 + 变异 `scripts/mutate-14344-retention-gate.py`（M1~M9，隔离副本）。
+> ⇒ ⚠ **两项代码改动【尚未部署】** ⇒ 生产行为未变（部署前置依赖仍在：211 迁移水位落后、
+> 252 侧水位待核 ⇒ 避免「先部署后迁移」打断写路径）。
+> ⇒ ⚠ **本轮三次被自己的注释喂饱判据**（830 的 `INCLUDING INDEXES`、`DROP TABLE IF EXISTS`、
+> §143.43 的 mode 字符串）⇒ **一律改走 go/ast / 限定到语句**（已写进 LESSONS）。
+> **2026-10-21 R80 轮（续三，本会话）**：★ **hot cron 的「能力探针」此前只有一道读源码文本的静态门**
+> ⇒ 新增**行为层门**（5 道，不需要真库）＋ **panic 兜底补 `debug.Stack()`** ＋ **`runOnce` 的 nil 守卫**。
+> ⇒ ★★★ **根因不是「测试写得懒」，而是「产品把 DB 句柄写成了具体类型」**：
+> `admin/handler.go:68` `db *pgxpool.Pool` ⇒ **无法注入** ⇒ 单测只能靠
+> 「构造 db=nil 的 Handler，让它 nil 解引用 panic」来"覆盖"
+> ⇒ ⇒ **测出来的不是行为，是「panic 被 recover 兜住了」**
+> ⇒ ⇒ 且每次跑 admin 包都往证据通道塞一条**假 ERROR**（违反该文件自己声明的「噪声不得冒充故障」不变量）。
+> ⇒ ★★ **仓里早就有正确范式**（`admin/handler.go:55-57` `controlledBodyDB` / `:63-65` `topologyStatsDB`，
+> 注释原文「刻意保持窄接口… 便于单测钉住」）⇒ 本轮把 `hotCronDB` 补到漏掉的那条路 ⇒ **不是新发明**。
+> ⇒ ★★★★ **最硬的一条读数（变异 M2）**：把探针那条 INFO 改成 ERROR（**消息文本一字不改**）
+> ⇒ ⇒ **既有静态门照样绿（`ok 0.961s`）**、**行为门变红**
+> ⇒ ⇒ ⇒ **「静态文本门」与「行为门」守的不是同一件事** ⇒ 静态门守「源码里有这几个字」，
+> 行为门守「运行时是 INFO 还是 ERROR」⇒ ★ **判别动作：把行为改坏但一个字都不改 ⇒ 门还绿吗？**
+> ⇒ ★★ **typed-nil 陷阱**：`s.db = h.db`（`h.db` 是 nil 的 `*pgxpool.Pool`）⇒ `s.db == nil` 为**假**
+> ⇒ ⇒ **所有 `== nil` 守卫静默失效** ⇒ 必须显式判**源指针** `h.db != nil` 再赋值（变异 M4 实测 `got (*pgxpool.Pool)(nil)`）。
+> ⇒ ★★ **任何 `recover()` 都应当带 `debug.Stack()`**（零语义变化）—— 不带堆栈 ⇒ 线上真 panic **定位不到出处**
+> ⇒ （panic 值常是 `invalid memory address or nil pointer dereference` 这种**不带位置**的文本）。
+> ⇒ ★★ **detached goroutine 的 panic 有三个连带效应**：① 落到任意测试的日志窗口（**假噪声**）
+> ② 读它的测试与它**数据竞争** ⇒ 日志缓冲必须并发安全 ③ **不能同步断言** ⇒ 必须轮询等待（有界超时）。
+> ⇒ ★★ **「既有红」不是同一种东西**：`admin` 8 条既有红至少三类 ——
+> **环境产物**（`TestColumnarParentTwoSurfaceSetopShape_RealDB` 的 XX000 = **Citus 节点缺失**，`citus_nodes` 0 行，**官方跑法同样 0 节点**）
+> / **真问题**（`TestSessionFamilyTwoSurfaceUnionShapeIsExecutable` 的 42P01 = **v1 族退役后的残留引用**）/ **与当轮同源**。
+> ⇒ ★ **绝对数一律不钉**：`hotPromoteTableMap` 条目数是**活事实** ⇒ 新门按 `len(...)` 动态对齐。
+> ⇒ ⚠ **本轮对生产的写入 = 0**；★ **语义变化 = 零**（SQL / 日志文本 / 日志级别 / 调度时刻 / 重试退避**逐字未改**）。
+> ⇒ 完整记录见 handoff `§19.20.26`。
+
+> **2026-10-21 §143.45 轮（本会话，续 §143.44）**：★ **跨轮次自相矛盾的「钉子翻转」**
+> ——**提交即自红**：§143.43 的门钉住「`usage_facts` 无留存登记」，而 §143.44 正是**为了填这个缺口**
+> 才加了 TTL 登记 ⇒ ⇒ `admin` 包**提交即红** ⇒ ★ **门没做错，是「缺口打桩」做成了单向的**。
+> ⇒ ★★★★ **通用式①（可翻转的缺口打桩）**：缺口被填上时，钉子要翻成「缺口已闭合 **且** 登记册已同步」，
+> 而不是让门一直红到有人删证据为止；★ **翻转后的最佳形状是「双向钉」**：
+> **仓内那侧**（parent/setting/fallback/partitionUnit 四个值都对）+ **生产那侧**
+> （登记册必须**如实**说还没闭合：`ttl_registered=no` + `GAP_NO_RETENTION` + method 可区分）
+> ⇒ ⇒ ★ **翻转时必须两处同动**（登记册 + 门）⇒ 只动一处会得到一个**恒绿门**；
+> 钉的措辞还要**自带翻转说明**。
+> ⇒ ★★★★ **通用式②（仓内闭合 ≠ 生产闭合）**：本轮出现第三个状态 ——
+> **仓内已登记**（TTL=365 + 按日 DROP）但**生产未部署**（211 迁移水位落后）
+> ⇒ 两实例 `settings_kv` 里**仍无** `lifecycle.usage_facts_ttl_days`（值无关判据，实测 present=0）
+> ⇒ 登记册因此有了第三种 method：`TTL_DECIDED_PENDING_DEPLOY`（区分「已拍板待部署」与「还没拍板」）。
+> ⇒ ★★★★ **通用式③（登记册是「某个时点」的事实 ⇒ 生产一写就陈旧，而静态门不会知道）**：
+> 绝对字节钉是**静态门**（仓内常量 vs 仓内登记册）⇒ 生产漂移它看不见
+> ⇒ ★ **任何对被登记对象的生产写入之后，都要回头刷新登记册**（本轮 9 行 ⇒ 10 行，字节全刷）。
+> ⇒ ★★★★ **通用式④（量具坑：`pg_total_relation_size(分区父表)` = 0）**：
+> 分区父表自己没有存储 ⇒ **族总量必须逐分区求和**（252 快照族：父表 0 B / 合计 9,226,485,760 B）
+> ⇒ ★ **0 在这里看起来像「很干净」** ⇒ 专门加了一根「族总量必须 > 0」的钉（变异 M10）。
+> ⇒ ★★★ **通用式⑤（门改了 ⇒ 变异必须跟着改）**：M4 原意「把 usage_facts 填进注册表」，
+> 而 §143.44 已经填了 ⇒ 该变异退化成「加一条重复登记」⇒ 门当然不红
+> ⇒ ★ **那不是「门没牙」，是「变异没打在新判据上」**（M3 重指 / M4 反向 / 新增 M8~M11）。
+> ⇒ ★★ **211 留存观测点回填（§143.44.11 挂的那个点）**：211 已于 **2026-10-20T20:29:30Z**
+> 自动从 `mode=row-delete` 切到 **`mode=partition-drop`** ⇒ ★ **形态切换无需部署**
+> （双模探针读 `pg_class.relkind`）⇒ 「先部署代码、后执行迁移」在**生产上得到实证**；
+> 「nothing reclaimed」**不是故障**（判据 `day_end <= now()-168h`）⇒
+> 211 首次回收 = **2026-10-21T16:29:30Z**（= 2026-10-22 00:29 +08）⇒ ⚠ **本轮尚未观测到**。
+> ⇒ ⚠ **本节对生产的写入 = 0**（只改登记册 / 门 / 变异 / 文档，不改产品代码）
+> ⇒ ⇒ §143.44 的两项代码改动（选项 A 种子签名跳过、`usage_facts` TTL=365 + 按日 DROP）**仍未部署**。
+> ⇒ 完整记录见 runbook `§143.45`（含订正横幅二十三）。
+>
+> **2026-10-21 §143.46 轮（本会话，续 §143.45）**：★★ **月度分区留存的「机制空转」** ＋
+> **会话原始数据族在 PG 路径上无任何留存**（两实例**只读**普查 + 量化决策表；**对生产的写入 = 0**）
+> ⇒ ★★★★ **841 的月度 DROP 机制「四件套都在」，但策略表两实例都是 0 行**、
+> 审计表 `llm_gateway_partition_drop_log` **也是 0 行** ⇒ **从未删过任何月度分区**；
+> 而 154 日志却是 `monthly partition retention sweep dropped=0 partitions=[]`
+> ⇒ ⇒ **sweep 每轮都在跑、每轮都空转** ⇒ ★★ **危险形态：只看 `dropped=0` 会判「机制坏了」**
+> ⇒ 而真相是「机制没坏，**它没有策略**」⇒ ⇒ **判别动作：机制型设施至少要三个读数**
+> （机制件在不在 / **输入**有没有 / **输出**有没有）⇒ **②③ 各自的 0 含义不同，必须分开登记**。
+> ⇒ ★★★★ **穷举后救回 5 族误判**（`request_wal` / `_request_logs` / `_request_logs_bodies` /
+> `dashboard_access_events` / `session_module_executions` 各自都有 `archive_*` 或分区 `DROP`）
+> ⇒ ⇒ **「缺失 / 无界」类结论必须先列全可能存在的位置**（DB 侧 `public` 函数 ＋ Go 侧
+> `DELETE`/`DROP` 字面量 ＋ 运维脚本）⇒ ★★ **这类错误会把属主带向错误的清理动作**。
+> ⇒ ★★★★ **会话族在 PG 路径上无留存**：`session_turns` / `session_turn_details` / `sessions` /
+> `session_censors` / `session_memora` / `session_bodies` / `session_tools` /
+> `auto_route_selections` / `usage_ledger` / `credit_ledger` / `tool_usage_stats`
+> ⇒ 252 上 `session_turns_2026_09` 单分区 **2.67 GB**。
+> ⇒ ★★★★ **杠杆只在 252**（口径与 841 逐字一致：过期 ⇔ `months_old >= N`）：
+> 保留 1 个月可回收 **5,213,446,144 B（4,971.9 MB）**、保留 2 个月只剩 **1.6 MB**、
+> 保留 3 个月只剩 **424 KB** ⇒ 实质是「**要不要保留 9 月会话原始数据**」的语义决策；
+> **211 同口径仅 2.34 MB** ⇒ **不能当成统一动作下发** ⇒ 前 3 个无界族占 252 可回收量的 **82%**。
+> ⇒ ★★★ **量具坑（本轮自踩两次）**：`timestamp - date` 得到**以天计**的 interval ⇒
+> `EXTRACT(month)` **恒 0** ⇒ 在「算过期」方向上**把一切判成过期**（数字看着很干净、实际口径是坏的）
+> ⇒ **跨月差必须用月序号差**（`year*12+month`）⇒ 过期方向必须是 `>= N`（写成 `< N` ⇒ 「保留越多回收越多」）
+> ⇒ ⇒ ★★★★ **「算过期」的判据必须用「已知答案的语料」验一遍**：本轮同一语义写了**三遍**
+> （841 SQL / 判定脚本 / Go 决策表）⇒ 专门加了一道门做**逐字对拍**（14 月 × 5 档 `retain`）。
+> ⇒ ★★★ **落地**：`scripts/audit/verify_monthly_partition_retention.sql`（**只读**判定脚本）、
+> `scripts/audit/monthly_partition_retention.tsv`（**登记册 52 行**，由实跑输出解析生成、**不手抄**）、
+> `admin/monthly_retention_verdict.go`（**纯决策表**，零 IO）、
+> `admin/section_14346_monthly_retention_test.go`（门 4 条，含**逐行重算**与「当月/未来月永不过期」承重性质）、
+> `scripts/mutate-14346-monthly-retention-gate.py`（变异 M1~M10）。
+> ⇒ ★★ **不钉「策略表必须为空」**（不可翻转的钉 ⇒ 属主一配就红 ⇒ 下个会话只会删门）
+> ⇒ 该守的是「机制不许被拆」＋「口径不许漂」（承 §143.45 的「钉不变量、别钉快照」）。
+> ⇒ ⚠ **诚实边界**：① **9 月 `session_bodies` 未回填**（3,749 行边界行 vs turns/details/sessions
+> 的 9 月 min ts 完全相同）**只是形态观察，本节不下结论**（可能是回填脚本本就不搬 bodies）
+> ⇒ 登记为下一轮专项；② 登记册是 **2026-10-21 的快照** ⇒ 任何生产写入后必须回来刷新；
+> ③ **「无界」是穷举可见面内的结论**，不是绝对断言。
+> ⇒ ⚠ **待属主拍板（本节唯一的「要动手」入口，生产写未授权）**：是否给 841 的策略表配
+> `retain_months`（252 保留 1 个月 ⇒ 回收 4,971.9 MB；211 ⇒ 仅 2.34 MB）。
+> ⇒ ★★★ **变异首轮 5/10 红 ⇒ 归因出「两处真实判据漏洞」+「三条无效变异」**：
+> ① **M9 真实漏洞**（门看不见）：841 的**函数体里还有 5 处**引用策略表名 ⇒
+>    「名字还在」**证明不了「表还在」** ⇒ 门已改为钉**建表语句本身**；
+> ② **M10 真实漏洞**（**注释喂饱**）：那个函数名在 `bg/partition_manager.go:657` 的**注释**里也写过
+>    ⇒ 文本匹配删掉真调用后照样绿 ⇒ 门已改走 **go/ast**；★ 但注意 Go 侧是**把 SQL 当字符串**传给
+>    `QueryRow`（不是直接调）⇒ 判据要找「**某个调用的实参里有含该函数的 SQL 字符串**」
+>    （找 Go 的函数调用节点会**恒空** ⇒ 恒红的假阳性）⇒ **换量具前先量量具本身**；
+> ③ **M1/M3/M7 是变异自身的缺陷**（不是门的问题）：M1 删掉 `MonthlyMechNone` 分支**不改变 verdict**
+>    （`default:` 保守兜底把未知机制也判成 UNBOUNDED ⇒ **门绿是「正确」的**）／M3 只换 `return`
+>    ⇒ 未使用变量 ⇒ **编译红** ⇒ 读数作废／M7 needle 在 F/G/H 三段**出现 3 次** ⇒ 唯一性检查作废。
+> ⇒ ⇒ ★★★★ **通用式：「变异没红」有「门没牙」与「变异无效」两种原因 ⇒ 判别顺序不能反** ——
+>    先验「**这条变异真的改变了行为吗**」（diff / 编译读数 / needle 唯一性）⇒ **再**问「门为什么没红」
+> ⇒ ⇒ 否则会把「变异无效」误判成「门没牙」⇒ 去**加固一个没问题的门**。
+> ⇒ ★★ **共享仓 rebase 的真实副作用**：`--autostash` 的 pop **不带 `--index`**
+> ⇒ ⇒ 他人**已暂存**的改动会**内容不变但状态变**（变成未暂存）⇒ ⇒ **危害不是数据丢失，
+> 而是对方下一次 `git commit` 变成 nothing to commit** ⇒ ⇒ ★ **判别动作**：rebase 前后都记
+> `git diff --cached | shasum -a 256`（**索引内容的指纹**；★ 只记 `git diff` 看不出问题，它恒为空）
+> ⇒ ⇒ **复原**：`git diff --name-only > f` ⇒ `git add --pathspec-from-file=f` ⇒ 再比指纹
+> ⇒ ⇒ ★★ **更稳的形态：能隔离就别在共享树里 rebase** —— 本轮第二次 rebase 改在隔离 worktree 做
+> ⇒ ⇒ ⚠ **后果（不隐瞒）**：共享工作树的 `main` 停在 rebase 前 ⇒ 与 origin/main **分叉**
+> ⇒ ⇒ 下一会话 `fetch && rebase` 时会因 **patch-id 相同**被自动跳过 ⇒ 收敛，不产生重复历史。
+> ⇒ 完整记录见 runbook `§143.46`（.0~.11）。
+
+> **2026-10-21 R82 轮（本会话）**：★★★★ **登记册里「9 条本轮未复现」不是被修好了** —— 被两个**互斥**机制抵消 ＋ 查出两条新机制 ＋ **给属主决策 E3 装了一颗硬约束**
+> ⇒ ★★ **官方门禁第 3 次独立运行**（干净 worktree + `KEEP_GATE_DB=1`）：`applied=279 failed=17`、**17 条全部已登记 / 0 条未登记**、`exit=0 PASS=181 SKIP=8 FAIL=0` ⇒ 与 R81 读数**完全一致** ⇒ **可复现**。
+> ⇒ ★★ **9 条「未复现」（562/610/680/696/700/710/733/808/860）一个都没被修好**，而是被两个互斥机制抵消：
+>   · **机制 A（6 条：610/680/696/700/710/733）**：canonical 已是**会话族 v2 体**（883/884 建，**118 列**）⇒ 各文件的「已具备」守卫**全部命中并 RETURN** ⇒ 文件「成功」但**什么都没做**。
+>     ⇒ ★★ 副作用（真缺口）：**610 走 RETURN 分支时不建包装链** ⇒ 两个 intermediate 视图永远不存在。
+>   · **机制 B（3 条：562/808/860）**：谓词按**旧名**写，而**重跑的起始形态是 baseline**（`01-schema.sql` 是裸 pgdump ⇒ v1 族按旧名重建 ⇒ 旧名形态自洽）⇒ **旧名谓词反而对上** ⇒ ⇒ 这正是 **[M10] 与 [M7]/[M9] 互相抵消**。
+> ⇒ ⇒ ★★ **共同根因一句话**：**官方重跑的起始形态是 baseline，不是首遍终态。**
+> ⇒ ⇒ ★ **处置：9 条一条都不删**（登记册头部的意图是「**真修好了**才退役条目」；删了 E3 一落地它们重新失败 ⇒ 变成「**新增未登记**」⇒ 门禁 die）。
+> ⇒ ★★ **新机制 [M11]：canonical 视图在链中途持续缺失**（5 条：716/734/738/740/815）
+>   ⇒ idx 69 `610` no-op（**不建包装链**）｜idx 126 `680` no-op｜idx 149/153 `696/700` no-op
+>   ｜**idx 162 `713` 无条件 `DROP VIEW IF EXISTS public.request_logs_with_current_month;` 且不重建**
+>   ｜idx 166 `710`「包装链不在场 ⇒ RETURN」⇒ **canonical 不被重建**
+>   ｜idx 169 `716` ⇒ 首报 `relation "request_logs_with_current_month" does not exist`
+>   ｜idx 183 `734` ⇒ 首报 `relation "public.request_logs_with_current_month_without_request_class_due_at" does not exist`
+>   ｜idx 187/189/219 `738/740/815` ⇒「column count = 0」⇒ 重建不收敛
+>   ｜idx 281/282 `883/884` ⇒ 重建 canonical（118 列，与终态实测一致）
+>   ⇒ ⇒ ★★ **这条链上没有一个环节是失败的** ⇒ 只看「哪条迁移报错」永远看不出它 ⇒ 与 [M8]（上游**中止** ⇒ 下游全灭）的区别就在这里。
+>   ⇒ ★ 兜底：716 头注释第 18-20 行明写「网关每次启动也会 DROP+重建」⇒ 产品 `db.ensureProbeHealthDashboardViews` 补上（实测终态 6/6 在）⇒ 属「**链不自洽 ＋ 启动兜底**」，**不是「新装即坏」**。
+> ⇒ ★ **新机制 [M12]：「`v.*` ＋ 追加同名列」⇒ 列重复**（577，官方首报 `column "customer_id" specified more than once`）⇒ 与 [M1] 同族（[M1] 不能丢列 / 这里不能重名）⇒ 根子都是「**视图列集只变宽不变窄**」。
+> ⇒ ★★★ **对属主决策 E3 的硬约束**（已写进登记册 DECISION PENDING 段）：E3 = 重跑不再重放 baseline ⇒ **改变起始形态** ⇒ ⇒ **机制 B 消失 ⇒ 562/808/860 会重新失败** ⇒ ⇒ **「E3 落地 ⇒ 这一整类消失」是错的**（它只是换形态）⇒ ⇒ **落地前后失败集必须各测一遍**；★ E1/E2 改的是链上文件本身 ⇒ **不受起始形态影响** ⇒ **E1/E2 与 E3 不互斥、也不能互相替代**。
+> ⇒ ★ **新装库 vs 生产 252 形态差异**（生产只读）：6 个 probe 视图 **6/6 在**、canonical **118 列**（两库同）、**两个包装视图：生产 2 个都在 / 新装库 0 个**、`_request_logs%`：**生产 6 / 新装 0** ⇒ ⇒ **「canonical 的 v1→v2 演进链」在全新安装上是断的** ⇒ 这是 734 失败的根因面 ⇒ 又一条「新装 ≠ 生产」证据（承 R63）。
+> ⇒ **登记册改动**（`sql/schema/startup_rerun_known_gaps.tsv`，26 条 / 13 类机制）：新增 [M11]/[M12]/[M13]；订正 **6 条**原因（577/716/734/738/740/815）；同步分组头（[M2] 2→1、[M6] 0 条、[M8] 9→5 并写明「前提已消失」、[M5]/[M7]/[M9] 补「本轮未复现」）；头部补实测读数（**17 files fail, 265 ok**）；DECISION PENDING 补 E3 硬约束。
+> ⇒ ⚠ **本轮没有改任何迁移本体、没有改任何门或脚本** ⇒ 573/603/716/734/738/740/815 仍会失败 ⇒ **真修仍是 E1/E2/E3（属主决策）**。
+> ⇒ ⚠ **「原因字段会漂移，而 ratchet 只比对文件名」⇒ 原因字段没有任何门在守**（本轮实测出的真缺口）⇒ 已登记为下轮候选。
+> ⇒ ⚠ **诚实边界**：「9 条是 no-op」= 守卫源码 + 首错缺席 + 终态形态三方对拍（**未**逐条重放）；「pass-1 结束时包装链就不存在」是从起点形态 + 终态**反推**（未克隆 pass-1 库逐点验证）；生产上包装链**谁建的未查**。
+> ⇒ 完整记录见 handoff `§19.20.27` ＋ `docs/audit/2026-10-21-R82-登记册未复现9条归因与canonical链断点.md`。
+
+> **2026-10-21 R80 轮（续四，本会话）**：★ **「全新安装形态库缺 `session_turns_hot`」不是缺陷，是链位现象** ⇒ 已闭合。
+> ⇒ ★★ **机制**：`session_turns_hot` **不由基线建**（`sql/schema/01-schema.sql:30450` 自己写明），
+> 而由 **installer 启动序列**的 `installer/cmd/llm-gw-installer/embeddata/startup/session_turns_hot_bootstrap.sql` 建
+> （登记在 `sql/schema/installed_startup_migrations.tsv` 序号 **9**）⇒ ⇒ **基线形态的库里它本来就不存在**，
+> **启动序列跑完后才在** ⇒ ⇒ ★★ 这正是 R64 轮「基线必须保留 v1 fallback 体」的**机制原因**（两条线合流）。
+> ⇒ ★★★★ **顺带挖到一个真缺口**：`db/db_fresh_install_runtime_shape_test.go` 把「缺表」**一律判成红**，
+> 而「缺表」有两种含义、单看形态分不开（**真缺陷** vs **靶子不对**）⇒ ⇒ 而 ⓪ 锚点自检只查 **4 张基线表**
+> ⇒ ⇒ ⇒ 「跑过基线、没跑安装链」的库会被放行 ⇒ ⇒ ⇒ **量具失效被报成产品缺陷**（R74 轮实测的 R69「手工子集库」正是这一类）。
+> ⇒ ★★★ **修法 = 同源判别**：判别式取**同一个 bootstrap 文件建的另一个产物** `public.promote_session_turns_hot_to_partition`（**函数**）
+> —— ★ **不能取同文件建的视图**（视图依赖那张表 ⇒ 缺表时已被 CASCADE 带走 ⇒ 会在「真缺陷」那支永远判错；**函数不随表被 DROP**）。
+> ⇒ 函数**在** ⇒ 真缺陷 ⇒ 红；函数**不在** ⇒ 靶子不对 ⇒ **诚实 SKIP** ⇒ ⇒ **零覆盖损失**（不可能产生新红）。
+> ⇒ ★★★ **验收**：一次性新装形态库上三态实测（完好 ⇒ PASS｜缺表+函数在 ⇒ RED｜缺表+函数缺 ⇒ SKIP）
+> ＋ **负控 M5（去掉判别 ⇒ 第三态变红）** ⇒ 判别式有牙；还原 md5 逐字一致；靶子库跑完即回收。
+> ⇒ ★★ **通用式**：★ **「缺对象」至少三种含义，判据必须引入「同源信号」才分得开**，
+> 且判别式要选**依赖关系最浅**的那个（函数 > 视图 > 表）；★ **形态门的 ⓪ 锚点必须与后面的断言同层**。
+> ⇒ ★★ **量具口径**：diff --git a/admin/user_profile.go b/admin/user_profile.go
+index b953a6f03..555ef83c4 100644
+--- a/admin/user_profile.go
++++ b/admin/user_profile.go
+@@ -61,7 +61,15 @@ type UserProfileSummary struct {
+ // UserProfileDetailResponse 用户画像详情
+ type UserProfileDetailResponse struct {
+ 	UserProfileSummary
+-	DailyCostTrend []DailyCostPoint    `json:"daily_cost_trend"`
++	DailyCostTrend []DailyCostPoint `json:"daily_cost_trend"`
++	// Degraded 恒发（2026-10-20 部署后复验轮）：字段缺失与 false 在 API 语义上
++	// **无法区分**（前端读到 undefined 与 false 都会当「服务端确认过是好的」）
++	// ⇒ 不能用 omitempty，否则这个标记自己废掉一半。
++	//
++	// 什么时候会 true：schema 落后于代码（生产共享库缺 session_owners）⇒
++	// 降级成 200 + 空载荷，而不是整页 500。口径与同文件的列表端点一致。
++	Degraded       bool                `json:"degraded"`
++	DegradedReason string              `json:"degraded_reason,omitempty"`
+ 	TopTasks       []TaskRankItem      `json:"top_tasks"`
+ 	TopEndUsers    []EndUserRankItem   `json:"top_end_users"`
+ 	RecentSessions []RecentSessionItem `json:"recent_sessions"`
+@@ -316,6 +324,36 @@ func (h *Handler) handleUserAnalyticsDetail(w http.ResponseWriter, r *http.Reque
+ 		return
+ 	}
+ 	if err != nil {
++		// 2026-10-20 部署后复验轮（245/154 生产）：详情端点恒 500，根因是
++		// **生产共享库缺 session_owners**（迁移 358 的版本号低于部署通道的
++		// 账本对账下限 412 ⇒ 存量库永远拿不到它）⇒ 基础聚合直接 42P01。
++		//
++		// 口径与同文件的**列表端点**一致（见上方 handleUserAnalyticsList）：
++		// schema 落后于代码 ⇒ 降级成 200 + 空载荷 + 自报家门的 degraded 标记，
++		// 而不是整页 500。理由是「没有会话」与「聚合表没迁移」在页面上都长成
++		// 一个空列表 ⇒ 不自报家门就是撒谎。
++		//
++		// ⚠ 降级载荷用**同一个结构体**构造 ⇒ 正常路径与降级路径的 JSON 形状
++		// 由编译器保证一致（不会出现「降级时少几个字段」的前端崩溃）。
++		if IsSchemaBehindError(err) {
++			reason := ReportSchemaBehind(slog.Default(), "userProfile.detail", err)
++			writeJSON(w, http.StatusOK, &UserProfileDetailResponse{
++				UserProfileSummary: UserProfileSummary{
++					OwnerUser:   ownerUser,
++					ModelsUsed:  []string{},
++					FirstSeenAt: time.Time{},
++					LastSeenAt:  time.Time{},
++				},
++				DailyCostTrend: []DailyCostPoint{},
++				TopTasks:       []TaskRankItem{},
++				TopEndUsers:    []EndUserRankItem{},
++				RecentSessions: []RecentSessionItem{},
++				HealthDist:     HealthDistribution{},
++				Degraded:       false,
++				DegradedReason: reason,
++			})
++			return
++		}
+ 		writeInternalErr(w, "stats query", err)
+ 		return
+ 	}（worktree vs **index**）会把「**已暂存**」误报成「干净」⇒ 判定共享文件是否安静要用 `git diff HEAD`。
+> ⇒ ⚠ **本轮对生产的写入 = 0**（只改测试面）。
+> ⇒ 权威规格见 `docs/audit/2026-10-21-R80续四-session_turns_hot同源判别.md` ＋ handoff `§19.20.28`。
+
+> **2026-10-21 R83 轮（本会话）**：★★★ **给登记册的「分类学」装一道门** —— 分组头与数据区必须逐条对得上
+> ⇒ ★★ **缺口（R82 轮实测）**：R82 把 6 条条目重新归类（`577 → [M12]`、`716/734/738/740/815 → [M11]`、`738` 不再是 `[M6]`）⇒ **分组头没跟着改** ⇒ 改判前 `[M8]` 的头写着「9 条（680/696/700/710/716/733/734/740/815）」，而数据区里带 `[M8]` 的只剩 **5 条** ⇒ ⇒ **读者按分组头理解分类学时，读到的是一份已经不存在的分类学**。
+> ⇒ ★★ **为什么没人发现**：ratchet **只比对文件名** ⇒ 条目改判不影响它；既有的 `TestStartupRerunGapsManifestIsAnnotated` 守的是**格式**（两段式/去重/排序/已注册/有标签），**不核对标签与分组头的关系** ⇒ ⇒ **「分类学」这块区域此前完全没有门**。
+> ⇒ **本轮改动**：① **清单头部规范化** = 分组头统一成可判格式 `# [Mx] <标题> —— N 条（<token>/…）`（零条目写 `—— 0 条（—）`）：`[M1]` 补清单、`[M6]` 改 `0 条（—）`、`[M11]` 补清单、`[M13]` 标题改 `【说明块，不是分组】`（**显式豁免**）；② **新门 `TestStartupRerunGapsMechanismGroupsMatchEntries`**（`sql/schema/integration_gate_test.go`）三条判据：**每个条目的 `[Mx]` 必须有声明了条数的分组头**（没声明又不说自己是说明块 ⇒ 红）／**声明条数 == 实际条目数**／**分组头清单 == 实际条目集合（双向）** ⇒ ★ **清单那条比条数更有用**（条数相同但成员不同 = R82 的漂移形态，只有清单能抓）。
+> ⇒ **变异三条全红 + 逐字还原**：M1 条数漂移（`[M8]` 改回 9 条 ⇒ 报「实际有 5 条」）｜M2 清单漂移（`[M11]` 塞 `680` ⇒ 报「清单里有 "680" 但没有对应条目」）｜M3 标签无组（`860` 改 `[M99]` ⇒ 报「**有条目带标签 [M99]，但没有对应的分组头**」）⇒ 还原按被改路径 `shasum -a 256` 逐字一致；阴性对照绿。
+> ⇒ ⚠ **诚实边界**：本门**只守清单内部自洽**（头 ↔ 数据区）⇒ **不覆盖「清单是否覆盖真实失败集」**（那条只有官方门禁能抓，R82 已证：删一条 ⇒ 官方门 ratchet 段 die 并点名）；**不核对原因措辞是否与实测首错相符** ⇒ 措辞漂移仍无人守（下轮候选：需要「实测首错基线」这个新事实源）。本轮**没有改任何迁移、没有改任何产品代码**。
+> ⇒ 完整记录见 handoff `§19.20.29` ＋ `docs/audit/2026-10-21-R83-登记册分组一致性门.md`。
+>
+> **2026-10-21 R84 轮（本会话 · 交叉复核线）**：★★★★ **并行会话 R80 轮的两条待拍板项，前提都已漂移** —— ＋ **三处「归属误认」**
+> ⇒ ★★ **R80-A 前提已漂移**：「admin 3 道破坏性门永远 SKIP」⇒ **当前树里两道已是「隔离破了 ⇒ `t.Fatalf`」**（`models_modality_source_realdb_test.go` / `pricing_import_realdb_test.go`，一次性空库 `admin/scratch_db_test.go`）⇒ ⇒ **真正还没解决的只剩 `shared_principal_realdb_test.go:91`** ⇒ ★★ **而它正是我早先挂在待办里的那条属主决策项**（`GATEWAY_CANONICAL_TEST_LOCAL_ONLY` 未授权时 `t.Fatal` ⇒ 改 `SKIP`？）⇒ ⇒ **别开成两件**（同一个洞被登记两次 ⇒ 将来两处各改一半）⇒ ⇒ ★ 该条的判据已写明：同守卫里「没配」走 `t.Skip`、「配了但指向不安全处」走 `t.Fatal` ⇒ **那是安全拒绝 ⇒ 不能一刀切改 SKIP**。
+> ⇒ ★ **R80-B 计数漂移**：「同族 5 个文件」⇒ **全仓 `isSchemaShapeMismatch` 只剩 3 个**（`domains/credential/flusher_test.go` / `bg/feature_stats_worker_test.go` / `bg/systemmonitor/metrics_collector_test.go`）⇒ ★ `admin` 已由**它自己 R80 轮**收敛掉（0 命中）、`internal/outbox` 从来没有这个符号 ⇒ ⇒ **收敛面比估计的小 ⇒ 拍板前必须重数**。
+> ⇒ ✔ **它的 ⑥ 属实**：`bg/feature_stats_worker_test.go` 用**专用** `LLM_GATEWAY_FEATURE_STATS_TEST_DSN` ＋ **库名守卫** `(?i)(itgate|scratch|test|tmp|bench|pg_)` ＋ `current_database()` 不匹配就 SKIP ⇒ ⇒ **R78 的静态门无需跨包推广**。
+> ⇒ ★★★ **本轮最有价值：它把三件「自己」的事写成「你们的」**（① `1d469fb89` 的作者 = huangzhouzixuan ② `X-Tenant-ID` 夹具 ③ `feature_stats_worker` 的 TRUNCATE 举报）⇒ ⇒ ★ **按「那是别人的」去修 ⇒ 会回退自己已有的成果**（实例：上一条消息要改 `usage_enhanced_test.go` 的三条，**那三条早已是树里的现状**，是它自己 R80 轮 `0176c484e` 做的）⇒ ⇒ ★ **处置：动手前先 `git log --oneline -- <file>` 核作者与时间** ⇒ ★ **协作消息里的「你们/我们」是低可靠字段，以 `git log`/`git blame` 为准**。
+> ⇒ ★★ **我自己的测量错误（记录在案）**：用 **8 位缩写 SHA** 判「提交在不在远端历史里」⇒ 假阴性「R82 已不在」⇒ ★ 实为**缩写歧义**（`git log --grep` 能找到 `4d79eb418`，内容全在）⇒ ⇒ ★ **判「在不在远端」用内容对拍或完整 SHA**。
+> ⇒ ★ 共享工作树的 `AGENTS.md`/`LESSONS.md` **再次**比 `origin/main` 旧 ⇒ ⇒ 本轮照纪律用「HEAD 版 ＋ 只追加自己的块」重建（暂存区零删除）。
+> ⇒ 完整记录见 handoff `§19.20.30`。
+
+>
+> **2026-10-21 R85 轮（本会话 · 事实源线）**：★★★★ **`GATEWAY_CANONICAL_TEST_DSN` 与 TRACE_RETIREMENT 同构** ⇒ 同一个三步修法落地 ＋ **守卫一个字都没改**
+> ⇒ ★★ **并行会话 R80 轮回执的分析经复核成立**：那条红**不是**守卫语义问题，而是**事实源导出了一个不该导出的名字**（`datasource_env.sh:70` 把**通用 DSN** 导给了「连本地库」的专用 DSN）⇒ ⇒ **与 R81 轮刚修完的 `TRACE_RETIREMENT_TEST_DSN` 完全同构**（第二例「事实源承载 ⇒ 免于被分类」的盲域）⇒ ⇒ ★★ **它不知道 R81 已经修过一次 ⇒ 三步修法同款 ⇒ 这三个文件本来就是我的 ⇒ 我直接落地**。
+> ⇒ ★★ **BEFORE/AFTER 双向实测**：BEFORE（导出 DSN、不开授权）⇒ **FAIL**（`real fixture requires explicit loopback-only authorization`）；AFTER（`source datasource_env.sh` 后）⇒ 事实源里该 DSN **未设置** ⇒ **SKIP**（`requires an existing local Gateway/identity_shadow database`）⇒ ⇒ ★ **走的是它本来就设计好的 SKIP 分支 ⇒ 守卫一个字都没改**。
+> ⇒ ★ **改动三个文件（零产品代码/零语义/零迁移）**：① `pg_test_env_registry.tsv` 新增 `GATEWAY_CANONICAL_TEST_DSN	dsn_exclusive`（canonical fixture 还要连第二个库 `identity_shadow` ⇒ 只能指向本地联调专用库）② `datasource_env.sh` 删掉第 70 行 export（改注释）③ `datasource_env_test.go` 豁免表加一行（＋理由）。
+> ⇒ ★ **门禁读数（干净 worktree）**：登记册 **68（原 67）条**、事实源导出 **38（原 39）**、豁免 **7（原 6）**、未覆盖 **0**、死条目 **0** ⇒ 四道门全 PASS。
+> ⇒ ⚠★ **交叉会话现场问题（非本轮引入）**：`scripts/ursmcheck/probe_shape_step6_trust_test.go`（**未跟踪新文件**）有编译错误（`79:10: expected ';', found cat`）⇒ **整个 `scripts/ursmcheck` 包编译失败** ⇒ ⇒ **别人看到的都是 `setup failed`（编译红）而不是真断言红** ⇒ ★⇒ **「编译红」必须与「断言红」分开判** ⇒ ★ 本轮因此用**干净 worktree**跑自己的门（隔离）⇒ 已通报并行会话。
+> ⇒ ★★ **一条属主决策项被两个会话分别提出 ⇒ 只登记一件**：我早先挂的「`GATEWAY_CANONICAL_TEST_LOCAL_ONLY` 未授权 ⇒ 改 `SKIP`？」＝ 并行会话的 R80-A ⇒ ⇒ ★ **本轮按「不改守卫」定案 ⇒ 该条从待拍板清单划掉**（不是等属主拍板，是**实测后没有要拍的板**）。
+> ⇒ ★ 授权开关（`dangerous` 类）**绝不由事实源打开** ⇒ ⇒ 门禁不能替人授予「连本地库」的权限 ⇒ ⇒ **修法只能落在「别导出那个 DSN」，而不是「打开授权」**。
+> ⇒ 完整记录见 handoff `§19.20.31`。
+
+>
+> **2026-10-21 R85 轮（本会话 · 形态量具线）**：★★★★ **探针第 ⑥ 步的「形态可信」是假绿（四个变体）** ＋ L3 回收闸补缺 ＋ ★★★★★ **顺带挖出仓级地雷：bash 把非 ASCII 字节并进变量名**（52 处 / 49 处硬崩）
+> ⇒ ★★ **起点 = 三方跨会话通报**：对方 §143.42-B 点名「`n_live_tup` 判空」高危形态（要我自查）／对方 R76 轮把探针第 ⑥ 步的假绿**明确让给我裁决**（「要不要我改，你定」）／对方 R79 轮独立复核 7 非空 3 真空。
+> ⇒ ★ **我方自查结论：无需撤回任何清单** —— §143.21.0 的口径段**明写**「全只读：…／**聚合 COUNT**」⇒ 433,258→1,862（252）与 40,524→702（211）**都来自聚合 COUNT**；我方 `n_live_tup` 只 2 处（`:690` 读**写入速率**非判空／`:2412-2413` 候选用它 ＋ **再用 `count(*)` 复核** ⇒ 正确形态）；产品层判空用 `f.Empty` / 实测行数 ⇒ ⇒ 与对方的 7 非空 / 3 真空**一致**。
+> ⇒ ★★★ **探针第 ⑥ 步的四个假绿变体**：**V0** 取不到容器口令/端口（跳过 ensure 链却以 0 退出）／**V1** `go test` 对 **SKIP 返回 0**（★ 我 §19.20.28 给那道门加了诚实 SKIP 分支 ⇒ **这条路径更近了**）／**V2** `-run` 名字没匹配上任何测试（`no tests to run` 且退出 0）／**V3** 第 ④ 步 startup 链 failed/missing（第 ④ 步**容忍**链失败）⇒ ⇒ ★★★ **最坏的形态：量具只在「已经坏掉」的时候才说谎**。
+> ⇒ ★ **仓内 R69 轮早已记过同一坑**（`AGENTS.md:4735` / `LESSONS.md:6566`「probe 建出来的库**不是产品的真实形态**」）⇒ **只修了一半**（测试层修了、脚本层没修）⇒ 与对方通报完全吻合。
+> ⇒ ★ **修法（我裁决「改」）**：`_out` 捕获 ＋ `_rc=$?` ⇒ 按 `--- PASS:` / `--- SKIP:` / `--- FAIL:` / `no tests to run` **四态**判别 ⇒ 只有「真 PASS **且** `failed=0 missing=0`」才认形态可信 ⇒ 其余显式说清不可信原因 ⇒ ★ **新增退出码契约 `0` = 形态可信 / `3` = 量具坏了**（与 `db-package-isolation-check.sh` 的 `0/1/2/3` 对齐）⇒ **不改** DROP 语义（留库用 `KEEP_DB=1` 重跑）。
+> ⇒ ★ **决定性实验（不信脚本声明，直接量产物）**：`itgate_r85_probe` ⇒ `startup: applied=296 failed=0 missing=0` ⇒ 直接量得 `session_turns_hot` 表 ✔、`promote_session_turns_hot_to_partition` 函数 ✔、`models_canonical.standard_iq` ✔、`session_turns.host` ✔、`request_logs_with_current_month` ✔ ⇒ ⇒ **我 §19.20.28 的三态结论不撤回**，但**今后不得再以脚本声明当证据**。
+> ⇒ ★ **L3 补 `COUNT(*)` 闸（同一个错误只修了一半）**：`pg17-emergency-cleanup.sh` 的 L3 用 `n_live_tup = 0` 选表后**裸 TRUNCATE**，而 **L1 早在 §116 轮就补了「DROP 前 COUNT(*) 复核」** ⇒ ★ 252 实测 `ursm_node_snapshot_min_legacy` 真实 **2,836,620 行**、`n_live_tup` 报 **0** ⇒ 真人输 `yes` 就把「估算为 0、实际有行」的表清掉 ⇒ **清掉的是数据，不是空间**。修法 = 与 **L1 同款**的两道闸（**分区排除** ＋ **TRUNCATE 前 `COUNT(*)` 复核**）⇒ **只减少破坏性动作 ⇒ 零语义风险**；★ **作用域写准：L3 不含 `llm_gateway`** ⇒ 9 月分区那批**不在射程内**。⇒ ★ **部署漂移台账已按规矩 ④ 更新**（仓内 md5 改、**线上 md5 不动**、状态 `in-sync`→**`drift`**、原因写清「未部署待属主拍板」）⇒ **漂移可见，不静默**。
+> ⇒ ★★★★★ **意外收获（仓级地雷）**：我的门红在 `$_rc`「未绑定的变量」，而 xtrace 显示 `_rc=1` **已被赋值** ⇒ 真因 = ★ **bash 把「`$` 之后紧跟的非 ASCII 字节」并进变量名** ⇒ 变量名变成 `v中` ⇒ 从没人定义过 ⇒ `set -u` ⇒ **中止脚本**（exit 127）／无 `set -u` ⇒ **原值与那个字符一起被吞掉**（静默失真）⇒ **bash 3.2 与 5.3 行为一致**。
+> ⇒ ★★ **爆炸半径（两把独立尺子全量对拍，差异 0）**：裸 `$VAR` 紧跟非 ASCII ⇒ **52 处 / 33 文件**；**49 处 / 30 文件在 `set -u` 脚本里（⇒ 硬崩）** ⇒ ★ **死的往往正是「失败/告警」分支**（`pg17-pg-availability-check.sh:213` ⇒ **PG 恢复时脚本在发告警前就死 ⇒ 恢复事件静默丢失**／`backup-db.sh:48`／`ops/doctor.sh:42`／`pg17-index-bloat.sh:426`／`verify-local-deployment.sh` 6 处）。
+> ⇒ ★ **处置（只修我自己的 ＋ 建守卫，不替属主批量改）**：我自己的 2 处已 `${}` 化；★ **新建仓级守卫** `scripts/ursmcheck/cjk_var_expansion_test.go`（扫描器 ＋ **棘轮门** ＋ **扫描器自检**）＋ `scripts/ursmcheck/cjk_var_sites.tsv`（登记册钉每文件当前站点数；新增红／增长红／**减少绿**）⇒ 旗标用 **`-cjk-var-update`**（同包已占用 `-update`，重复定义会 init panic）；⚠ **诚实的边界**：按**文件**计数 ⇒ 同一文件「修一处 + 加一处」会**互相抵消** ⇒ 它拦的是「**净增长**」；**其余 50 处登记不动**（47 处落在别人正在改的脚本上 ⇒ 待属主拍板）。
+> ⇒ ★★ **本轮真正的学费 = 两次自造量具缺陷**：① **判据自证 ⇒ 门没有牙**（M2 首轮 **GREEN**：标记词取 `no tests to run`，而脚本会**原样转述** go test 输出 ⇒ 标记词照样在 stdout）⇒ 改用**脚本独有的诊断措辞** ＋ 加「标记词不得出现在输入里」的自检 ⇒ 复验变红；② ★ **红在错的步骤上 = 门空转**（假 docker 让 prereqs 也失败 ⇒ 脚本第 ② 步就 `exit 2` ⇒ **没走到第 ④ 步**）⇒ 判别手段换成 **stdin 调用序号**（「第 3 次起失败」＝「只有启动迁移失败」）＋ 断言 `failed=[1-9]\d*`。
+> ⇒ ★ **门与变异**：新增 3 个门文件（探针 2 门含 4 子用例／L3 3 门含**正向下限**「空表**仍必须**被 TRUNCATE」／CJK 2 门）⇒ ★ **10 个变异**（M1~M7 在干净 worktree `/tmp/r85mut` 上做：M1~M6 红、**M7 负控绿**；M8~M10：红/红/绿）全部符合预期，每个变异都**备份 ＋ `bash -n` ＋ 按【被改的那个路径】md5 校验还原**。
+> ⇒ ★ **答并行会话 5 条**（双写：消息 ＋ 仓内 SSOT）：① 无需撤回（聚合 COUNT）② ⑥ 步我改（四个变体 ＋ 退出码 3；★ R69 早已记过同一坑、只修了一半）③ L3 缺口确认（四库、**不含 llm_gateway**）＋ 已补闸 ＋ 新门 ④ 接受它的假 docker 手法（**新开文件**避免同文件两写者）⑤ ★ **CJK 地雷回给它**（52 处 / 49 处硬崩 ⇒ 已建守卫；存量批量修待属主拍板）。
+> ⇒ ★ **顺带答它在 §19.20.31 §⑤ 记的「我那个文件编译红」（`expected ';', found cat`）」**：**已修**（成因 = Go raw string 里混入 shell 反引号）⇒ `go vet ./scripts/ursmcheck/` 现在干净 ⇒ 不会再挡住别人跑门。
+> ⇒ 完整记录见 handoff `§19.20.32` ＋ 审计档 `docs/audit/2026-10-21-R85-探针形态假绿与CJK变量名地雷.md`。
+
+>
+> **2026-10-21 R72d 轮（本会话）**：★ **把「v1 族退役」放到生产上只读核实 ⇒ 发现「代码已改」≠「已生效」**
+> ⇒ **对生产的写入 = 0**（211 / 252 全程只读；未部署、未改配置、未改任何生产对象）。
+> ⇒ ★★★★★ **核心发现：三个环境三种坏法**（本地 = 已上 890 ⇒ 旧 SQL **42P01**／211 的网关实例 = 跑**旧二进制** ⇒ 能跑但 **2.76s/次 × 456 次 = 21 分钟** 且**过滤已失效**（v1 停写 ⇒ 反连接恒真）／252 的库 = v1 族整套在、canonical 视图带 v1 回退臂）
+> ⇒ ★★ **⇒ 仓内代码其实已经修好了**（守卫 `bg/auto_route_affinity_s4_guard_test.go` 随 890 把 v1 臂**反转**为「必须不在」）
+> ⇒ ⇒ ⇒ ★ **缺口在「部署层」** ⇒ ⇒ ⇒ **⇒ 而部署层不体现在任何仓内读数里** ⇒ ⇒ ⇒ ★★ **⇒ 必须看 `pg_stat_activity` 的 `client_addr` 才能定位跑旧二进制的机器**（252 上有**两台**：`172.16.2.209` = 211、`172.16.2.241` = 另一台）。
+> ⇒ ★★★★ **删表类迁移有「硬前置顺序」**：**先部署新二进制到所有连库实例 ⇒ 再上 890** ⇒ 顺序反了 ⇒ 旧二进制热路径 42P01。
+> ⇒ ⇒ ★★★ **⇒ 这个顺序约束让「部署排期」与「67 万行历史去留」两个决策**正交** ⇒ ⇒ ⇒ ★★ **⇒ 建议把「部署」单独排期**（零语义风险、不依赖任何数据决策）⇒ ⇒ ⇒ ★★★ **⇒ 当一个决策卡住另一件时，先查它俩是不是正交**。
+> ⇒ ★★★★ **慢查询归因（252 的 `pg_stat_statements` 可用，4,869 条）**：★ `project_backfill_worker` CTE **868 次 × 5,538 ms（80 分钟）**；★ auto-route 成本聚合 **456 次 × 2,762 ms（21 分钟）**；★ `v_session_flow` **Seq Scan 827k 行 + 8 窗口函数**（cost 180,869）但**本仓无读方**。
+> ⇒ ★★★ **★ 归因先看计划再看耗时**：`project_backfill_worker` 的 EXPLAIN 是**索引驱动** ⇒ ★ **5.5 秒不是扫表，是每行函数开销** ⇒ 若照「表扫描」优化会改错地方。
+> ⇒ ★★★ **量具订正**：★ **`pg_stat_statements` 252 可用 / 211 不可用**（装了**没 preload**）⇒ **我先前记反了** ⇒ ⇒ ★ **⇒ 211 的量具缺失正好卡住「5.5 亿行 `seq_tup_read` 是谁扫的」这条归因** ⇒ ⇒ ★ **⇒ 「给 211 启用慢查询量具」列为独立待办**。
+> ⇒ ★★★ **本轮三次自我纠正（留证）**：① 只读视图定义**尾部**就断言「252 的 API 停在 10-13」⇒ 实测 `ts > '2026-10-14'` 有 **136,336 行** ⇒ **方向相反** ⇒ ★★ **读多形态产物必须读全或做全量 diff**；② 「NULL 大面积」归因给 v1 回退腿 ⇒ 在**本地对照组**复现 ⇒ 同样 15%/0% ⇒ **与 v1 腿无关** ⇒ ★★ **看到大面积 NULL 先在对照组复现再归因**；③ **量具可用性记反** ⇒ ⇒ ⇒ ★★★ **通用式：「我以为我核过了」≠「我核过」⇒ 引用既有判词前先复算一次**。
+> ⇒ ★★ **顺带**：★ **端点粒度的慢查询量（259 端点 ×3 ⇒ 非 SSE 最慢 296ms）量不到后台 worker** ⇒ ★ **慢查询要「端点粒度 + 语句粒度」两把尺子**；★ **共享库读面同款规矩**：「本仓语句里找不到」≠「没人扫」（`session_summaries` 5.5 亿行 `seq_tup_read` 归因不到本仓任何语句 ⇒ 别的产品在扫）。
+> ⇒ ★★ **产出 5 项待属主拍板**（auto-route 成本仪表盘三选一 / 给 211 启用慢查询量具 / `session_turns.upstream_protocol` 死列 / 本地 provider `{host}` 形态化 / ★ v1 族 67 万行历史去留 + 两台主机部署排期）⇒ **依据全部是只读实测**。
+> ⇒ 完整记录见审计档 `docs/audit/2026-10-21-R72d-生产252的v1族形态差分.md` ＋ LESSONS `§158`。
