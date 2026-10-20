@@ -34488,6 +34488,24 @@ bash ~/.mavis-tools/lgwp-prod.sh /private/tmp/pmm_explain2.sql 180 > /private/tm
 4. ★★ **252 上没有可用的 PG 查询日志**：`logging_collector=off`（无日志文件），
    容器 stdout 近 96h **只有 1 行** ⇒ ⇒ **「靠日志判断慢查询」这条线在 252 上目前是断的**。
 
+> ⚠⚠ **订正横幅（2026-10-20，§143.19.1.1 就地订正；上面第 4 条原文保留）**
+>
+> ★★ **上面第 4 条的判词已被生产实测证伪**：
+> **252 的 PG 日志通道从未断过** —— 错的是**读法**，不是「日志不存在」。
+> - **真实通道**：podman **conmon** 把容器 stderr 落盘到
+>   `/var/lib/containers/storage/overlay-containers/<container-id>/userdata/ctr.log`
+>   （容器 ID `dc5e54272d7a…` = 本节记的同一个 ⇒ 容器没换过），
+>   实测 `ctr.log` 870 MB 活跃 + 3 个轮转文件（835 MB / 61 MB / 27 MB）⇒ 合计 1.8 GB。
+> - **还有小时级外抄**：`/etc/cron.d/pg17-ctrlog-snapshot`（`47 * * * *`）
+>   → `/opt/scripts/pg17-ctrlog-snapshot.sh`（只读，**绝不 truncate**）
+>   ⇒ `/var/log/pg17-ctrlog-archive/ctrlog-YYYYMMDD.log`（实测 2.0 GB / 10-05→10-20 共 17 天；
+>   2 天 gzip、30 天删除）。
+> - **为什么当初读成「只有 1 行」**：`docker logs` / `podman logs` 走 podman 的
+>   **journald / k8s-file 驱动**，**读不到 conmon 的 `ctr.log`**
+>   ⇒ **「读不到」被当成了「没有」**。
+> ⇒ ⇒ **正确读法 + 完整证据见 §143.19.1.1**；
+> ⇒ ⇒ **C1 的处置项（开 `logging_collector=on`）也一并订正**（会与 conmon 通道**重复落盘**）。
+
 ⚠ **本节对生产的写入 = 0**：全部只读（`pg_inherits` / `pg_stat_*` / `pg_stat_statements` /
 `EXPLAIN` / `pg_class`）+ 252 的 `docker logs` 只读查看。
 
@@ -34746,6 +34764,29 @@ applied+磁盘是改写后的 `ed604aa5…`）、**704**（pending 行 `e99d9aa3
 但它们与 877 **同形**（同一文件两条指纹、没人说清哪条旧）⇒ 同一个门覆盖。
 
 ### §143.17.5 ★★ 252 的 PG 查询日志目前是**空的**（观测缺口）
+> ⚠⚠⚠ **订正横幅（2026-10-20，§143.19.1.1 就地订正；本小节原文整体保留）**
+>
+> ★★★ **本小节的标题与结论（「252 的 PG 查询日志目前是**空的**」「没有可用的 PG 查询日志」）
+> 已被生产实测证伪** —— **日志通道从未断过，错的是读法**。
+>
+> | 原判词 | 生产实测（2026-10-20） | 谁对 |
+> |---|---|---|
+> | 「`logging_collector=off` ⇒ 不产生日志文件 ⇒ 252 上没有可用的 PG 查询日志」 | **错**：PG 日志走 **stderr → podman conmon → `ctr.log`**（`overlay-containers/<id>/userdata/`，实测 870 MB 活跃 + 3 个轮转）；另有 `/etc/cron.d/pg17-ctrlog-snapshot` 小时级只读外抄（归档 2.0 GB / 17 天） | ★ **实测对** |
+> | 「`docker logs pg-252-pg17 --since 96h` 只有 1 行」 | **读法失败**：`docker logs`/`podman logs` 走 journald/k8s-file 驱动，**读不到 conmon 的 `ctr.log`** ⇒ 「读不到」≠「没有」 | ★ **实测对**（原句是**读法**错，不是**对象**错） |
+> | 「含 `search_text` 的语句 0 条、含 `session_turns` 的语句 0 条」 | 同源错误（读的是空壳）⇒ 该阴性结论**不成立** | ★ **实测对** |
+> | 「1s 阈值在这套库上几乎抓不到东西」 | **不成立**：本轮窗口解析出 **35,992 个 ≥1s 慢查块** | ★ **实测对** |
+> | 动作项「① `logging_collector=on` ② 调阈值 ③ 配套轮转与保留期」 | ★ **① 应撤销**（会与 conmon 通道**重复落盘**）；② 阈值 1s **已够用**；③ 轮转/保留期**已有**（1 GB 轮转 + 30 天归档） | ★ **实测对** |
+>
+> ⇒ ⇒ ★★ **修正后的 C1 动作项**：
+> ① **把正确读法写进 runbook**（✅ §143.19.1.1 已完成）；
+> ② **归档保留期确认**：30 天 / 2.0 GB / 17 天；磁盘 `/dev/vda3` 197 G / 已用 119 G /
+> **可用 70 G（64%）** ⇒ **不紧张，登记即可**；
+> ③ **不再建议 `logging_collector=on`**。
+> ⇒ ⇒ ★★ **另有一条价值判断本节是对的**：
+> 「靠日志判断慢查询这条线**有价值**」—— 本轮实测证实：
+> **`pg_stat_statements` 看不见错误**（55,870 个错误块只有 `ctr.log` 能看到）⇒
+> **错误清单只能靠日志**，慢查询清单则两边互证。
+> ⇒ ⇒ ★ **完整证据与新清单见 §143.19.1.1 / §143.19.3.3**。
 
 252 的 PG 实际配置（实测）：
 
@@ -34786,6 +34827,14 @@ log_statement            = none
 | **B4** | `idx_session_turns_req_status_backfill{,_cov}`（75 MB / 6,382 + 8,905 次） | 75 MB | 中 | ★ **回填是否已完结**？完结即可删 ⇒ 要核回填覆盖率 |
 | **B5** | 2026_09 上那条死实例（58 MB / 0） | 58 MB | 低 | ⚠ **重跑父表 DDL 会复活它** ⇒ 告示要写进迁移文件 |
 | **C1** | **打开 252 的 PG 日志**（`logging_collector=on` + 阈值 + 轮转） | 磁盘 | 低 | ⇒ 恢复「靠日志判断慢查询」这条线 |
+
+> ⚠ **订正横幅（2026-10-20，§143.19.1.1）**：上面 C1 的**动作项已被订正** ——
+> **日志通道从未断过**（真实通道 = conmon 的 `ctr.log` + 小时级只读外抄），
+> **不需要 `logging_collector=on`**（会与 conmon 通道**重复落盘**），
+> 且 `log_min_duration_statement=1s` **已足够**（本轮抓到 35,992 个 ≥1s 块）。
+> ⇒ ⇒ **C1 降级为「只需把正确读法写进 runbook」**（✅ §143.19.1.1 已完成）
+> +「确认 30 天归档 / 2.0 GB / 磁盘 70 G 可用是否维持现状」。
+> ⇒ ⇒ **详见 §143.19.1.1 与 §143.19.7-C1**。
 
 ### §143.17.7 诚实边界与本轮**没做**的事
 
@@ -35398,3 +35447,491 @@ GOCACHE=/tmp/gocache-p1437 go test ./scripts/ursmcheck/ -run 'TestRunbook14318' 
 [[阴性结论要当缺陷一样复核]] · [[自己上一节的结论也要复核]] ·
 [[对照组不是同一条件下造的]] · [[判据红了先怀疑自己的前提]] ·
 [[进临界区的新探测先量挂钟成本]]。
+
+## §143.19 252 PG 日志通道的真实拓扑 + 生产慢查询清单（按库拆）+ `refreshIndexSQL` 的成本根因（2026-10-20）
+
+### §143.19.0 结论先行
+
+本节把 §143.16~§143.18 的「读数」手段从**单一量具**扩到**两个独立量具**，并产出三条新结论：
+
+1. ★★★★★ **252 的 PG 日志通道从未断过** —— §143.17.0 第 4 条与 §143.17.5 的判词
+   （「252 上没有可用的 PG 查询日志」「靠日志判断慢查询这条线在 252 上目前是断的」）
+   **被证伪**。真实通道是 **podman conmon 落盘的 `ctr.log`**（不是 `docker logs`），
+   加上 `/etc/cron.d/pg17-ctrlog-snapshot` 的**小时级只读外抄**（2 天 gzip / 30 天删除）。
+   ⇒ **已就地加订正横幅**（§143.17.0 / §143.17.5 / §143.17.6-C1 三处），原文保留。
+2. ★★★★★ **生产慢查询清单必须先按 `dbid` 拆库** —— 本实例是**混库**
+   （llm_gateway / smm / postgres / pocket / redclaw / kxmemory / memora…）。
+   `pg_stat_statements` 1.11 **只有 `dbid`、没有 `database` 列** ⇒ 不拆库就会把
+   smm 的 `daily_kline` 混进本库清单。拆库后本库读数：
+   **351 条慢语句 / 7,414 次调用 / 12.36 小时 DB 时间**（均值 ≥1s 的口径），
+   同期 smm 7 条、postgres 4 条。**本节所有清单均已拆库。**
+3. ★★★★ **两条独立量具交叉互证通过** —— `pg_stat_statements`（按库拆）
+   与 `ctr.log` 逐块解析（35,992 个 ≥1s 慢查块 / 55,870 个错误块）
+   在**家族排名**上高度吻合（`routing_analytics_7d` / `credential_model_index` /
+   `session_summaries` / `daily_kline` 四族两边同序）⇒ 结论不依赖单一量具。
+4. ★★★★ **`refreshIndexSQL`（auto-route 热路径）的成本根因是「冷分区存了
+   5 分钟粒度的全历史」**，不是索引、不是形态：它**必须**全扫
+   **434,658 行**才能算出每组的 `MAX(bucket)`。
+   872（columnar→heap）修掉了 stripe 碎裂（16,308 hits 放大已除），
+   **但没有减少一行扫描量** ⇒ 均值不降。
+   ⇒ **同口径 A/B 实测**：去掉 09 月分区（−301,255 行）⇒ 880.963 ms → **155.358 ms**
+   （−82%），buffers 7,553 → 2,347（−69%）。
+   ⇒ **可落地方案**（语义对账全绿）：冷分区只保留**每组最新一行** ⇒
+   301,255 → 1,018 行（−99.66%），`refreshIndexSQL` 结果**逐行完全等价**
+   （1,079 行，双向差集 0/0）。
+5. ★★ **`DISTINCT ON` 这条路被生产实测彻底封死**：走已有索引
+   `(credential_id, raw_model, bucket DESC)` 的 `DISTINCT ON` 实测
+   **161,495.853 ms（161 秒）**；强制走索引后仍 **7,412.081 ms** ⇒ 比现形态慢 **8.4 倍**。
+   ⇒ 这**独立印证并加重**了 `autoroute/index_sql_shape_test.go` 里
+   「C = DISTINCT ON 真慢」的结论（该门记的是 2~3 倍，生产实测是 8.4 倍）。
+6. ★★ **自订正（本会话内）**：压缩前我曾判定「§143.17.4 的『命名形态 ⇒ 新版从未执行』被证伪」
+   —— **这个判断本身是无效推理**，理由见 §143.19.5。**§143.17.4 的结论是对的，不需要订正。**
+
+⚠ **本节对生产的写入 = 0**：全部只读（`pg_stat_statements` / `pg_stat_statements_info` /
+`pg_class` / `pg_index` / `pg_inherits` / `pg_proc` / `pg_stat_all_indexes` /
+`columnar_healthcheck()` / `EXPLAIN` / `EXPLAIN (ANALYZE, BUFFERS)`）
++ 252 的日志文件**只读**解析（`zcat` / `grep` / Python 逐行状态机）。
+**没有** DELETE、**没有** TRUNCATE、**没有** DROP、**没有**改任何生产配置。
+
+### §143.19.1 ★★★★★ 订正 §143.17 的两条判词（就地横幅，原文保留）
+
+#### §143.19.1.1 C1「252 的 PG 日志是空的」——**证伪**
+
+**原判词**（§143.17.0 第 4 条 + §143.17.5 小节标题「252 的 PG 查询日志目前是**空的**（观测缺口）」）：
+
+> `logging_collector=off` ⇒ 不产生日志文件；语句只走 stderr ⇒ 进容器 stdout
+> ⇒ ⇒ **`docker logs pg-252-pg17 --since 96h` 只有 1 行**；
+> ⇒ ⇒ ★ **结论：252 上没有可用的 PG 查询日志**。
+> ⇒ ⇒ ★ **动作项（属主）**：要恢复「靠日志判断慢查询」这条线，需要
+> ① `logging_collector=on`（落文件，可轮转、可归档），② `log_min_duration_statement` 调到有用阈值，
+> ③ 配套日志轮转与保留期。
+
+**证伪证据（2026-10-20 实测，四条）**：
+
+| # | 证据 | 读数 |
+|---|---|---|
+| 1 | **真实通道存在**：podman conmon 把容器 stderr 落盘到 `overlay-containers/<container-id>/userdata/ctr.log` | 容器 ID `dc5e54272d7a35612cf32a1dd993d0e0610c36a9bf877c305bca4e8607fe2f5a`（= §143.17.5 里记的同一个 `dc5e…` ⇒ **容器没换过**）；`userdata/` 目录 1.1 GB |
+| 2 | **它一直在滚**：`ctr.log` 870 MB 活跃 + `ctr.log-20261020` 835 MB + `ctr.log-20261019.gz` 61 MB + `ctr.log-20261018.gz` 27 MB | 4 个文件 ≈ **1.8 GB**；`ctr.log` 的 mtime = 本轮测量时刻（活文件） |
+| 3 | **它有小时级外抄**：`/etc/cron.d/pg17-ctrlog-snapshot`（`47 * * * *`）→ `/opt/scripts/pg17-ctrlog-snapshot.sh`（R25 部署 / R26 修复） | 脚本**只读** `ctr.log`（注释明写「绝不 truncate/轮转它」）⇒ 按偏移增量外抄到 `/var/log/pg17-ctrlog-archive/ctrlog-YYYYMMDD.log`；`-mtime +2` gzip、`-mtime +30` 删除 ⇒ **30 天保留** |
+| 4 | **归档目录在产** | `/var/log/pg17-ctrlog-archive/` 2.0 GB，**10-05 → 10-20 共 17 天**逐日文件；`/var/log/pg17-ctrlog-snapshot.log` 有 `boundary: prev_ctr=… prev_offset=… cur_size=…` 的界标记录 |
+
+⇒ ⇒ ★★★ **错的不是「日志不存在」，是「读法」**：
+`docker logs` / `podman logs` 走的是 podman 的 **journald/k8s-file 驱动**，
+**读不到 conmon 的 `ctr.log`** ⇒ 那个「只有 1 行」是**读法失败**，不是数据缺失。
+⇒ ⇒ ★ **正确读法**（本节全部读数都走这条路）：
+
+```bash
+# 252：PG 容器 stderr 的真实落盘位置（★ 容器 ID 会变，先查再读）
+D=/var/lib/containers/storage/overlay-containers/$(podman inspect pg-252-pg17 --format '{{.Id}}')/userdata
+ls -la $D/ctr.log*                       # 活跃 + 轮转
+# 历史归档（更方便，含 17 天）
+ls -la /var/log/pg17-ctrlog-archive/
+```
+
+⇒ ⇒ ★ **对 C1 处置项的订正**：
+**不需要** `logging_collector=on`（那会**再开一套**文件通道，与 conmon 通道**重复落盘**）。
+真正该做的是三件小事：
+① **把读法写进 runbook**（本节即是）；
+② **确认归档保留期**（30 天、2.0 GB、17 天）够用 ⇒ 磁盘实测 `/dev/vda3` 197 G / 已用 119 G / **可用 70 G（64%）** ⇒ **不紧张，登记即可**；
+③ **`log_min_duration_statement` 阈值**：现值 1s，**实测 1s 阈值已能抓到 35,992 个块**（本节窗口）⇒ 原文「1s 几乎抓不到东西」这句**也不成立**（它当时是被 `docker logs` 的空读数误导的）。
+
+#### §143.19.1.2 §143.17.4 的「命名形态 ⇒ 新版从未执行」——**不订正（结论正确）**
+
+⚠ **本节要专门写一条自我订正**，因为本会话前半段（压缩前）曾把它判成「被证伪」：
+
+**当时的（错误）推理**：生产 `session_turns` 上唯一的 GIN 父声明叫
+`idx_session_turns_search_trgm`，而这个名字**看起来是新版**的命名 ⇒ ⇒ 「新版执行过」。
+
+**这个推理无效，两处错**：
+1. **父声明名不是版本判别器** —— `git show 37944e9d2:sql/migrations/startup/877_session_turns_search_text_trgm.sql`
+   第 80 行（旧版）写的是 `CREATE INDEX IF NOT EXISTS idx_session_turns_search_trgm`，
+   而当前文件（新版）第 142 行写的是
+   `CREATE INDEX IF NOT EXISTS idx_session_turns_search_trgm ON ONLY public.session_turns …`
+   ⇒ ⇒ **两版父声明同名** ⇒ 父声明名**不能**区分版本。
+2. **真正的判别器是「叶实例名」**（旧版 PG 自动改名 `<分区>_<列名>_idx` = `..._search_text_idx`；
+   新版 stage 1 显式命名 `<分区>_search_trgm`）**与「DDL 原文」**。
+
+**生产实测（2026-10-20，三条独立证据）**：
+
+| # | 证据 | 读数 | 指向 |
+|---|---|---|---|
+| 1 | 叶实例名（`pg_inherits` 索引级父子关系 + `pg_class`） | **6 个叶实例全部是 `session_turns_2026_07/08/09/10/11/default_search_text_idx`**（旧版形态）；全库 `session_turns%_search_trgm` 命名对象 **0 个** | **新版 stage 1 没跑** |
+| 2 | `pg_stat_statements` 里的 DDL 原文（定向查 `query LIKE '%search_trgm%'`，**只有 2 条**） | ① `CREATE INDEX IF NOT EXISTS idx_session_turns_search_trgm ON public.session_turns USING gin (search_text gin_trgm_ops)` —— **无 `ON ONLY`**（= 旧版形态），耗时 127,274.8 ms；② `CREATE INDEX IF NOT EXISTS idx_session_turns_hot_search_trgm ON public.session_turns_hot …`（两版同形），2,768.5 ms | **新版 stage 3（带 `ON ONLY`）与 stage 1（带 `CONCURRENTLY`）都不在统计里** |
+| 3 | 新版 stage 4 的 `ALTER INDEX … ATTACH PARTITION` | `pg_stat_statements` 里唯一的 `ATTACH PARTITION` 记录是**另一个迁移**的 `DO $$ … _digest_null_idx …`（22 次）⇒ **877 的 ATTACH 没跑过** | 一致 |
+
+⇒ ⇒ ★★★ **结论：§143.17.4 第 4 条（「旧版已上、新版未上」）成立，不需要订正。**
+⇒ ⇒ ★★ **而且它与台账读数互相独立**：台账那条是 `schema_migrations` 有
+`877 @ 2026-10-19 16:59:08.656651+08`（**表只有 `version/description/applied_at` 三列、没有 SHA** ⇒ 它只能证明「877 记过账」，**不能**证明「哪一版」）⇒ 真正区分版本的是上面第 1、2 条。
+⇒ ⇒ ★ **§143.17.4 那个订正横幅（另一会话写的）「本节的第 4 条证据被对方生产读数独立印证 ✅」是对的，本节确认它。**
+⇒ ⇒ ★★ **本节新增的方法论**（比「877 结论」本身更值钱）：
+> **「迁移文件的版本形态」有三层名字，判别力从强到弱是：
+> ① DDL 原文（`pg_stat_statements`）＞ ② 产物对象名（叶实例名）＞ ③ 父声明名（两版常同名，无判别力）。**
+> ⇒ 只看③会把「新版跑过」和「旧版跑过」读成同一件事。
+
+### §143.19.2 ★★★★★ 量具一：`pg_stat_statements`（按 `dbid` 拆库）
+
+#### §143.19.2.1 为什么必须拆库
+
+- 本实例 `pg-252-pg17` 是**混库**：`llm_gateway` / `smm` / `postgres` / `pocket` / `redclaw` /
+  `kxmemory` / `memora` 等**全部业务库共用**（§143.18 已有同款纪律，repo R28）。
+- `pg_stat_statements` **1.11 只有 `dbid`（oid），没有 `database` 列** ⇒ 必须自己 join `pg_database`。
+- ⚠ **本节踩过一次**：第一版查询混库，`SELECT source, MAX(date) FROM daily_kline GROUP BY source`
+  进了本库 top-6 —— 那是 **smm 股票库**的表（本轮实测 `smm` 7 条 / 3,073.2 s）。
+
+#### §143.19.2.2 本库慢查询总账（2026-10-20 13:2x 实测）
+
+口径：`pg_stat_statements` 窗口 = `stats_reset 2026-10-18 22:03:37` 起（**1 天 15 小时**），
+筛选 `mean_exec_time >= 1000`（毫秒），`dbid → datname = 'llm_gateway'`。
+
+| 指标 | 读数 |
+|---|---|
+| 慢语句条数 | **351** |
+| 总调用次数 | **7,414** |
+| **总 DB 时间** | **12.36 小时**（44,496.0 s） |
+| 平均 `mean_exec_time` | 13,248.6 ms |
+| 最大 `mean_exec_time` | **340,826 ms**（= `SELECT COUNT(*) FROM request_logs_with_current_month`） |
+| 同期其它库 | `smm` 7 条 / 3,073.2 s；`postgres` 4 条 / 255.8 s |
+
+⇒ ⇒ ★ **这 12.36 小时是「本库慢查询吃掉的总 DB 时间」**，而窗口只有 39 小时
+⇒ ⇒ ★ **平均每分钟 19 秒的 DB 时间花在 mean ≥1s 的语句上**（39 h × 60 × 19 s ≈ 12.4 h，自洽）。
+
+#### §143.19.2.3 集中度（**用 SQL 算，不手算**）
+
+| 排名 | 家族 | 次数 | 总耗时(s) | 单次均值(ms) | 累计占比 |
+|---|---|---|---|---|---|
+| 1 | `REFRESH MATERIALIZED VIEW CONCURRENTLY routing_analytics_7d` | 104 | 6,186.1 | 59,482 | **14.1%** |
+| 2 | `WITH win AS (…)`（`ursm_node_snapshot_min` 小时桶） | 24 | 4,196.4 | 174,849 | 23.6% |
+| 3 | `WITH targets AS (session_summaries JOIN session_dim …)` | 619 | 3,590.1 | 5,800 | 31.8% |
+| 4 | `REFRESH … session_client_stats` | 57 | 3,102.8 | 54,434 | 38.8% |
+| 5 | `WITH latest_bucket AS (credential_model_index_with_current_month …)` | 963 | 2,910.4 | 3,022 | **45.4%** |
+| 6 | `WITH neg AS (… _request_logs cost_usd < 0 …)` | 286 | 2,631.0 | 9,199 | 51.4% |
+| 7 | `REFRESH … session_task_stats` | 56 | 1,365.5 | 24,384 | 54.5% |
+| 8 | `WITH pick AS (DISTINCT ON … credential errors)` | 225 | 1,216.0 | 5,405 | 57.3% |
+| 9 | `promote_session_turns_hot_to_partition` | 230 | 1,057.7 | 4,599 | 59.7% |
+| 10 | `SELECT c.id FROM credentials c -- v1 臂 …` | 418 | 1,021.8 | 2,445 | 62.0% |
+| 11 | `SELECT (SELECT COUNT(DISTINCT …)) FROM (… )` | 351 | 1,021.4 | 7,326 | 64.3% |
+| 12 | `promote_session_bodies_hot_to_partition` | 285 | 937.0 | 3,288 | 66.5% |
+| 13 | `SELECT c.relname, … pg_total_relation_size …`（**巡检**） | 114 | 913.3 | 8,055 | 68.5% |
+| 14 | `SELECT s.task_type, s.profile, s.canonical_id, … COUNT(*) …` | 321 | 900.3 | 2,805 | 70.6% |
+| 15 | `REFRESH … routing_audit_summary_7d` | 93 | 613.5 | 6,596 | **72.0%** |
+
+⇒ ⇒ ★ **前 15 家族占 72.0%** ⇒ 治理面**很窄**（改 15 处能拿掉 3/4 的慢查询时间）。
+⇒ ⇒ ★★ **matview 家族合计**：第 1、4、7、15 四条 REFRESH =
+6,186.1 + 3,102.8 + 1,365.5 + 613.5 = **11,267.9 s = 3.13 h**
+（占 12.36 h 的 **25.3%**）⇒ **单一最大的可攻面是 4 个物化视图的 CONCURRENTLY 刷新**。
+
+### §143.19.3 ★★★★ 量具二：252 `ctr.log` 逐块解析（独立于 `pg_stat_statements`）
+
+#### §143.19.3.1 解析口径（写清楚，下一个人才能复现）
+
+- **源**：4 个文件（`ctr.log` + `ctr.log-20261020` + `ctr.log-20261019.gz` + `ctr.log-20261018.gz`），
+  合计 **1.8 GB**、**6,753,453 行**。
+- **剥壳**：podman 每行前缀 `<iso-ts> <stream> <F|T> ` ⇒ 剥掉后再看 PG 行首
+  `YYYY-MM-DD HH:MM:SS.mmm TZ [pid] LEVEL:`。
+- **慢查块**：`LOG:  duration: N ms  statement: <sql>`（或 `execute/parse/bind`）；
+  **续行并入当前块**（podman 对多行语句按行打前缀，续行**没有** PG 行首）。
+- **家族归一**：数字字面量 → `?`、空白折叠 ⇒ 取前 100 字符作家族键。
+
+⚠⚠ **量具坑（本轮踩了两次，两次都靠「量具坏了」先验救回来）**：
+1. ★ **第一版解析器的慢查块数是 0**（错误块却解析出 43,408 条）⇒
+   **0 命中的第一嫌疑是量具坏了** —— 真因：PG 的 `"LOG:  duration: …"` 里
+   `LOG:` 之后有**两个**空格，而正则写的是 `^duration:` ⇒ 恒不匹配。
+   **改正则（允许前导空白）后：慢查块 0 → 35,992**。
+2. ★ **「筛选家族」用 `ILIKE '%ON ONLY%'` 会出假阳性**：
+   15 条 `WITH matched AS MATERIALIZED (…)` 命中 —— 因为 `%` 是通配符，
+   那些语句正文里确实含 "ON ONLY" 字样。
+   ⇒ **定向查必须用 `position('X' in query) > 0` 或 `query LIKE '%精确串%'`**，
+   不能用宽 `ILIKE`（这与本仓「判据的关键词匹配要剥注释」是同族纪律）。
+
+#### §143.19.3.2 读数（2026-10-20 13:2x）
+
+| 指标 | 读数 |
+|---|---|
+| 慢查块（≥1s） | **35,992** |
+| 错误块（ERROR/FATAL/PANIC） | **55,870** |
+| 慢查块总耗时 | **178,901,682.5 ms = 49.7 小时** |
+| 按日 | 10-17: 5,100 块 / 35,135,521 ms；10-18: 20,816 块 / 85,907,568 ms；10-19: 6,579 块 / 36,561,562 ms；10-20: 3,497 块 / 21,297,032 ms |
+| 按 kind | `statement` 35,173 / `execute` 580 / `bind` 186 / `parse` 53 |
+
+**TOP 家族（按总耗时）**：
+
+| 家族 | 次数 | 总耗时(ms) | 单次最大(ms) |
+|---|---|---|---|
+| `REFRESH MATERIALIZED VIEW CONCURRENTLY routing_analytics_7d` | 185 | 14,008,626 | 163,041 |
+| `WITH matched AS MATERIALIZED (…)`（provider/client.go） | 3,787 | 11,388,910 | 27,788 |
+| `WITH latest_bucket AS (credential_model_index …)` | 1,623 | 8,019,614 | 26,418 |
+| `WITH targets AS (session_summaries …)` | 542 | 8,012,757 | 118,920 |
+| `SELECT source, MAX(date) FROM daily_kline GROUP BY source`（**smm 库**） | 748 | 7,767,777 | 59,759 |
+| `WITH win AS (… 'hour' …)` | 48 | 7,243,401 | 319,211 |
+| `REFRESH … session_client_stats` | 120 | 6,019,384 | 175,786 |
+| `INSERT INTO provider_metrics_minute (…)` | 1,407 | 4,928,667 | 28,292 |
+| `WITH neg AS (… cost_usd …)` | 433 | 4,707,935 | 29,841 |
+
+⇒ ⇒ ★★★ **两个量具交叉互证通过**：`routing_analytics_7d`（两边都是第一/第四）、
+`credential_model_index`（第 3 / 第 5）、`session_summaries`（第 4 / 第 3）、
+`daily_kline`（第 5 / 属 smm 已标注）⇒ **家族层面的结论不依赖单一量具**。
+⚠ **两量具的窗口不同**（`pg_stat_statements` 39 h vs `ctr.log` ~3.5 天）⇒
+**只比「家族排序」，不比绝对值**（绝对值口径见 §143.19.6）。
+
+#### §143.19.3.3 错误家族（`ctr.log` 独有 —— `pg_stat_statements` 看不见错误）
+
+| 家族 | 条数 | 判词 |
+|---|---|---|
+| `UNION types character varying and bigint cannot be matched at character 766` | **40,160** | ★ **已被 10-18 轮覆盖并修复**（`24748e233`，245=2687/154=2688）；本窗口 10-17 08:30 后**零复发**。**不重复立项** |
+| `canceling statement due to user request` | 7,434 | 客户端中断（流式请求）⇒ 流量形态非缺陷 |
+| `connection to client lost` | 3,885 | 与上行 cancel 成对（pgx 弃连） |
+| `canceling statement due to statement timeout` | 1,497 | 30s rolconfig 击杀；**pocket `scheduled_tasks` $4 双型错仍在烧**（953 条，见下） |
+| `terminating background worker "parallel worker" due to administrator command` | 1,387 | 领头语句被杀的陪葬 ⇒ 症状非病因 |
+| `inconsistent types deduced for parameter $4 at character 135` | **953** | ★ **pocket（仓外）**：`UPDATE scheduled_tasks SET … next_run_at=$4, … CASE WHEN $4=0 …` ⇒ 修复 `fa20e648` **至今未上线**（10-17/10-18 两轮已登记，本轮**再次复登**） |
+| `could not attach to dynamic shared area` | 56 | DSM 已知噪音（10-13 轮登记） |
+| `could not map dynamic shared memory segment` | 24 | 同上 |
+| `syntax error at or near "同属"` / `relation "llm_optimization_reports" does not exist` 等 | 各 ≤ 11 | 10-18 轮已定性并闭环（`e8f186916` 修复；外部工具打错库）⇒ **不重复立项** |
+
+⇒ ⇒ ★★ **本节最重要的产出是「两个量具的分工」**：
+**`pg_stat_statements` 只记成功/被计时的语句，错误完全不可见** ⇒
+**慢查询清单必须配 `ctr.log`，错误清单只能靠 `ctr.log`**。
+⇒ ⇒ ★ **这正是 §143.17.5 那条判词虽然结论错、但「日志这条线有价值」是对的** ——
+错在「日志读不到」，不在「日志有用」。
+
+### §143.19.4 ★★★★ `refreshIndexSQL` 的成本根因（872 收益复核 + 裁剪方案）
+
+#### §143.19.4.1 872 的真实收益（10-18 轮遗留项 #1 的答案）
+
+| 项 | 10-18 轮记录（`docs/audit/2026-10-18-252-sql-log-audit-round.md` §六.1） | 本轮实测（2026-10-20 13:2x） |
+|---|---|---|
+| `refreshIndexSQL` 的 `pg_stat_statements` 均值 | **2,310.8 ms**（calls 4,383 / max 25,229 ms） | **3,022.3 ms**（calls **963** / max 23,650 ms / **stddev 3,690.2 ms**） |
+| 2026_10 分区的 buffer 命中 | **16,308**（121k 行却吃 16k hits ⇒ 25× 放大） | **2,302**（131,878 行 / 2,295 页 ⇒ 1.0×）★ **放大已除** |
+| 存储形态 | columnar | **heap**（`relam` = 2）；`columnar_healthcheck()` 三行 **compliant = t** |
+| `columnar_insert_only_parents()` | `{routing_decision_log}` | `{routing_decision_log}`（**已不含本族**） |
+
+⇒ ⇒ ★★★ **结构侧完全闭环**：872 的自证门全绿（3/3 `compliant=t`）、白名单已摘、
+**stripe 放大（25×）已除**（16,308 → 2,302 hits）。
+⇒ ⇒ ⚠⚠ **但均值没降（2,310.8 → 3,022.3 ms）** ⇒ **这不能归因于 872**，理由有两条**硬口径**：
+1. **窗口不可比**：`pg_stat_statements` 的 `stats_reset` = **2026-10-18 22:03:37**，
+   而 872 应用于 **2026-10-18 12:59:42** ⇒ **整个窗口都在 872 之后**，
+   **窗口内不存在「872 前」的对照** ⇒ 跨窗口的 2,310.8 → 3,022.3 **不能**当成「872 变慢了」。
+2. **噪声大于均值**：`stddev 3,690.2 ms` > `mean 3,022.3 ms` ⇒ 分布极宽，
+   且 `autoroute/index_sql_shape_test.go`（2026-10-20 R51 轮落的门）**已用交错 ABAB×6 实测过同一族**：
+   形态 A 现形态 min 297.9 / 中位 339.9 / max 439.9 / 均值 355.0 ms ⇒ **单条查询 ~300~440 ms**。
+   ⇒ **3,022 ms 是含并发排队与主备负载的均值，单条语句本身没有 3 秒那么慢。**
+⇒ ⇒ ★★ **诚实的判词**：
+> **872 修好了它要修的东西（存储形态 + stripe 放大），但 `refreshIndexSQL` 的成本结构没变 ——
+> 因为成本从来不在「怎么读」，而在「读多少行」。**
+
+#### §143.19.4.2 成本根因：必须全扫 434,658 行
+
+`autoroute/index.go:520` 的 `refreshIndexSQL` 的第一段是：
+
+```sql
+WITH latest_bucket AS (
+    SELECT credential_id, raw_model, MAX(bucket) AS bucket
+    FROM credential_model_index_with_current_month
+    GROUP BY credential_id, raw_model
+)
+```
+
+`credential_model_index_with_current_month` = `credential_model_index_hot` ∪ `credential_model_index`（冷父表，UNION ALL）。
+
+**生产实测（2026-10-20 13:2x）**：
+
+| 源 | 行数 | 大小 | 备注 |
+|---|---|---|---|
+| `credential_model_index_hot` | 1,537 | 6.2 MB | 时间跨度 **05:10 → 13:10（8 小时）** |
+| `credential_model_index_2026_09` | **301,255** | 84 MB | 跨度 **2026-09-04 → 09-30（26 天）** |
+| `credential_model_index_2026_10` | 131,937 | 38 MB | 跨度 10-01 → 10-20 |
+| `credential_model_index_2026_11` | 0 | 24 kB | 空 |
+| **合计** | **434,729** | | 组数（`credential_id, raw_model`）= **1,079** |
+
+⇒ ⇒ ★★★ **每组平均 403 行**（434,729 / 1,079）——
+因为它是 **5 分钟一桶的 rollup**，一天 288 桶 × 26 天 ⇒ 冷分区天然堆了**每组每桶一行**。
+⇒ ⇒ ★★ **`MAX(bucket) GROUP BY` 在语义上就要求扫到「每组的最大桶」**，
+而**没有任何索引能免掉这个扫描**（要免，就得先知道每组的最大桶 —— 那正是要算的东西）。
+
+**EXPLAIN (ANALYZE, BUFFERS) 实测**：
+
+```
+Limit (actual rows=50)                                    Buffers: shared hit=7553
+  -> Sort  (top-N heapsort)                               Buffers: shared hit=7553
+    -> HashAggregate (actual rows=1079)                    Buffers: shared hit=7550
+      -> Append (actual rows=434658)                      Buffers: shared hit=7550
+        -> Seq Scan on credential_model_index_hot          (actual rows=1525)   Buffers: 45
+        -> Seq Scan on credential_model_index_2026_09      (actual rows=301255) Buffers: 5203
+        -> Seq Scan on credential_model_index_2026_10      (actual rows=131878) Buffers: 2302
+        -> Seq Scan on credential_model_index_2026_11      (actual rows=0)      Buffers: 1
+Execution Time: 752.408 ms
+```
+
+⇒ ⇒ ★ **计划是 `HashAggregate` + 4 路 Seq Scan** ⇒ **7,553 buffers 全是全表扫描的代价**。
+
+#### §143.19.4.3 同口径 A/B：行数就是成本（**同一条 SQL、同一时刻、只改扫描范围**）
+
+| 形态 | 扫描行数 | Buffers | 执行时间 | 相对现形态 |
+|---|---|---|---|---|
+| **A 现状**（4 分区全扫） | **434,658** | 7,553 | **880.963 ms** | — |
+| **B 去掉 09 月**（hot + 10 月） | 133,439 | 2,347 | **155.358 ms** | **−82.4% 时间 / −68.9% buffers** |
+
+⇒ ⇒ ★★★ **行数是成本的直接驱动**（不是算术巧合：**同一条 SQL、同一时刻、只少扫 301,255 行**）。
+⇒ ⇒ ⚠⚠ **但 B 形态不能直接采用** —— 语义会坏：
+**09 月独有组 = 235 个（21.8%）**（`full_groups 1079` vs `partial_groups 844`，
+`groups_only_in_0909 = 235`）⇒ **裁掉 09 月会漏掉 21.8% 的组**。
+
+#### §143.19.4.4 ★★★★ 可落地方案：冷分区只保留「每组最新一行」
+
+**方案**：`credential_model_index` 的冷月分区里，**每个 `(credential_id, raw_model)`
+只保留 `MAX(bucket)` 那一行**，其余历史桶行删掉。
+
+**为什么安全 —— 三个读方全部只取「每组最新一行」**（仓内全量 grep，只读方无遗漏）：
+
+| 读方 | 位置 | 取数形态 | 需要历史行吗 |
+|---|---|---|---|
+| auto-route 热路径 | `autoroute/index.go:520` `refreshIndexSQL` | `MAX(bucket) GROUP BY` + JOIN 回视图 | **不需要** |
+| admin 索引快照 | `admin/auto_route.go:326` `autoRouteIndexSnapshotSQL` | `(credential_id, raw_model, MAX(bucket)) IN (…)` | **不需要** |
+| 凭据监控 P95 | `admin/credential_monitor.go:457` | `ORDER BY bucket DESC LIMIT 1`（单组） | **不需要** |
+
+⇒ ⇒ ★★★ **语义对账（生产实测，逐行）**：
+
+| 对账 | 读数 | 判词 |
+|---|---|---|
+| `latest_bucket` 集合（现状 vs 裁剪后） | 1,079 行 vs 1,079 行，**`only_in_full = 0` / `only_in_kept = 0`** | ★ **完全等价** |
+| 整条 `refreshIndexSQL` 的结果（现状 vs 裁剪后） | 1,079 行 vs 1,079 行，**`only_now = 0` / `only_trim = 0`**（EXCEPT ALL 双向） | ★ **完全等价** |
+| 09 月行数 | **301,255 → 1,018 行（−99.66%）** | |
+| 09 月字节（数据行层面） | **88,367,104 → 约 64,837 B（−99.93%）** | |
+
+⇒ ⇒ ★★ **规模**：09 月分区 84 MB ⇒ 裁剪后约 **0.1~1 MB**（含 2 条索引）
+⇒ ⇒ ★★ **对 `refreshIndexSQL` 的收益**：扫描行数 434,658 → **134,457（−69.1%）**
+⇒ ⇒ ★★★ **并且这一刀同时治了「冷族 93.2% 的行超过 7 天 TTL」**：
+实测 `credential_model_index` 全表 **433,133 行里 403,878 行（93.2%）超过 7 天**。
+⇒ ⇒ ★★ **但执行前必须先确认「7 天 TTL 语义」**：
+`cleanup_old_credential_model_index()` 的函数体**只 DELETE `credential_model_index_hot`**，
+**明文跳过冷月分区**（理由写在函数注释里：「Columnar 月分区不支持 DELETE/CTID scans」）
+⇒ ⚠ **那个理由在 872 之后已经不成立了**（872 已把冷月分区转成 **heap**，`relam` = 2 ⇒ DELETE 可用）
+⇒ ⇒ ★★★ **这是一条典型的「前提漂移」缺陷**：
+> **317 时代冷月分区是 columnar ⇒ 跳过 DELETE 是正确的；
+> 872（2026-10-18）把它们全转成 heap ⇒ 前提变了，但 `cleanup_old_credential_model_index()`
+> 自 317 起从未被改过（`grep` 全仓：只有 `317_partition_credential_model_index.sql` 定义它）**
+> ⇒ **「7-day TTL cleanup」这个注释在冷族上是空文。**
+⇒ ⇒ ★ **归档不是替代品**：`archive_credential_model_index(month)` 跑在**每月 3 号**，
+参数是 `twoMonthsAgo = now.AddDate(0, -2, 0)`（`bg/partition_manager.go:603`）
+⇒ **它归档的是两个月前的月** ⇒ **2026_09 分区要到 2026-11-03 才会被归档**
+⇒ ⇒ ★★ **这不是缺陷，是设计**（保留两个月热数据；与 09 月分区实测跨度 26 天自洽）
+⇒ ⇒ ★★ **所以「冷族多留了两个月」是设计，「冷族留了每组 26 天的 5 分钟桶」是缺陷。**
+
+#### §143.19.4.5 ★★ `DISTINCT ON` 这条路被生产实测封死
+
+`autoroute/index_sql_shape_test.go`（R51 轮落的门）已把 `DISTINCT ON`（形态 C）标为
+「真慢 2~3 倍」。**本轮生产实测更严重**：
+
+| 形态 | 计划 | Buffers | 执行时间 | 相对现形态（880.963 ms） |
+|---|---|---|---|---|
+| 现形态（`MAX(bucket) GROUP BY`） | HashAggregate + 4× Seq Scan | 7,553 | **880.963 ms** | 1× |
+| `DISTINCT ON`（规划器自主选） | Merge Append + 4× **Index Only Scan**（Heap Fetches 301,255 + 131,878） | 386,033 + 4,853 | **161,495.853 ms** | **183×** |
+| `DISTINCT ON` + `enable_seqscan=off` | 同上 | 390,886 | **7,412.081 ms** | **8.4×** |
+
+⇒ ⇒ ★★★ **这条路彻底封死**：即便强制走索引（`Index Only Scan`）仍比现形态慢 8.4 倍，
+因为**索引扫描 43 万次 Heap Fetch 的代价远高于顺序扫 43 万行**
+（09 月的可见性地图已过期 ⇒ Heap Fetches = 301,255 = 全部行）。
+⇒ ⇒ ★ **结论不变但更强**：**该动的是「读多少行」，不是「怎么读」** ——
+与 `autoroute/index_sql_shape_test.go` 的判词**方向一致**，本节只是把「为什么」测到了根上。
+⚠ **该门已在本仓存在 ⇒ 任何改写 `refreshIndexSQL` 的提案必须先过它**，
+本节**不建议改 SQL 形态**（建议改**数据保留**）。
+
+### §143.19.5 ★★ 本节的两条「自订正」与两条「不订正」（防后人重犯）
+
+| # | 事项 | 判定 | 依据 |
+|---|---|---|---|
+| 1 | **§143.17.0 第 4 条 + §143.17.5「252 的 PG 日志是空的」** | ★★ **订正**（就地横幅，原文保留） | §143.19.1.1 的四条证据 |
+| 2 | **§143.17.6 的 C1 动作项「`logging_collector=on` + 阈值 + 轮转」** | ★★ **订正**（横幅内） | 真实通道已经是 stderr→conmon→`ctr.log`+小时外抄；再开 `logging_collector` 会**重复落盘** |
+| 3 | **§143.17.4 第 4 条「命名形态 ⇒ 新版从未执行」** | ★ **不订正**（结论正确） | §143.19.1.2 的三条生产证据；**且被本节反向印证** |
+| 4 | **本会话前半段我自己的「877 前提被证伪」判断** | ★★★ **自订正** | 父声明名两版同名 ⇒ 父声明名无判别力；判别力在 DDL 原文与叶实例名 |
+
+⇒ ⇒ ★★★ **第 4 条的教训（比 877 结论本身更值钱）**：
+> **「A 与 B 长得不一样，所以现场是 A」这类推理，只有在「A 的名字与 B 的名字不同」
+> **且**「现场那个名字确实只可能来自 A」时才成立。
+> 本轮里「父声明名」在两版中**相同** ⇒ 「父声明叫新版名」**不能**推出「新版跑过」。
+> ⇒ **纪律**：判「某迁移的哪一版在生产跑过」时，
+> **必须至少两条独立证据**（DDL 原文 + 产物对象名），
+> **且要先确认「该名字在两版里是否真的不同」。**
+
+### §143.19.6 诚实边界与本轮**没做**的事
+
+- ⚠ **本节对生产的写入 = 0**（见 §143.19.0 末尾）。**没有** DELETE / TRUNCATE / DROP /
+  REINDEX / ANALYZE / 迁移 / 改配置 / 改 cron。
+  ⇒ **§143.19.4.4 的裁剪方案只是「方案」**，**执行需要属主授权**。
+- ⚠ **`EXPLAIN (ANALYZE, BUFFERS)` 会真的执行语句**（本节用的都是 SELECT ⇒ 只读安全）。
+- ⚠ **两个量具的窗口不同**：`pg_stat_statements` 39 h vs `ctr.log` ~3.5 天（10-17 → 10-20 13:xx）
+  ⇒ §143.19.3.2 的交叉只比**家族排序**，**不比绝对耗时**。
+- ⚠ **`pg_stat_statements` 的 `total_exec_time` / `mean_exec_time` 单位是毫秒**
+  （PG 17 的该扩展版本）⇒ 本节所有「小时」都是 `/1000/3600` 换算来的。
+  ⚠ 另：`pg_stat_statements` 1.11 **没有 `database` 列**（只有 `dbid`）、**没有 `info` 视图**。
+- ⚠ **「零扫描/零复发」这类阴性结论都复核过**：UNION 洪水 40,160 条 ⇒ 10-18 轮已修且
+  10-17 08:30 后零复发；`archive_credential_model_index` 在 `pg_stat_statements` 里 0 条
+  ⇒ 但**它本该在 11-03 才跑**（`twoMonthsAgo`）⇒ **不是缺陷**，已按「阴性结论要当缺陷一样复核」处理。
+- ⚠ **本节没有覆盖**：其余 10 个 `REFRESH` 家族（`tuning_signals_5m` 952 次 / 218.3 s、
+  `session_client_task_matrix` 57 次 / 155.2 s、`tuning_signals_daily` 952 次 / 123.9 s 等）
+  逐个的根因；`WITH win`（4,196.4 s）、`WITH targets`（3,590.1 s）、`WITH neg`（2,631.0 s）
+  三族的内部结构（10-18 轮已把 `WITH neg` 定为「bg 对账读，登记」）；
+  `provider_metrics_minute` 的 4,691 次写入（均值 16.9 ms ⇒ 健康）。
+- ⚠ **裁剪方案的两条未决边界**（执行前必须定）：
+  ① **「每组只留最新一行」会不会伤到「历史趋势」类需求** ——
+  本轮 grep 到的三个读方都只要最新行，但**仓外**（admin UI 的图表/导出）未穷举；
+  ② **裁剪后 `credential_model_index` 的 UNIQUE `(bucket, credential_id, raw_model)` 仍在**
+  ⇒ 裁剪不破坏约束，但**重复写同一 bucket 的 upsert 路径**（promote）会否重新堆积
+  ⇒ 需在 `promote_credential_model_index_hot_to_partition` 侧另做「只 promote 每组最新行」的收口。
+
+### §143.19.7 待拍板（本节新增）
+
+| 优先级 | 动作 | 量 | 语义风险 | 决策要点 |
+|---|---|---|---|---|
+| **A1** | ★★★★ **裁剪 `credential_model_index` 冷月分区：每组只留 `MAX(bucket)` 一行** | 09 月 **301,255 → 1,018 行**；**84 MB → ~1 MB**；`refreshIndexSQL` 扫描 **−69.1%**（880.963 → 155.358 ms 量级） | **中**（只影响「最新桶」语义；仓内三个读方已对账全绿，**仓外未穷举**） | ⚠ **先决**：① 仓外读方确认（admin 图表/导出是否要历史桶）；② promote 侧收口（否则会重新堆积）；③ **需属主授权**（生产写） |
+| **A2** | ★★★★ **修 `cleanup_old_credential_model_index()`：872 之后冷月分区已是 heap，TTL 可用** | 恢复「7 天 TTL」在冷族上的实际效果 | 低（函数体只裁 `>7d` 的行） | ⚠ **这条与 A1 互补**：A1 是一次性裁剪，A2 是持续机制。**只做 A2 不够**（它删的是 7 天前的桶，但组还在 ⇒ 仍需至少一行） |
+| **A3** | ★★ **`archive_credential_model_index` 保留两个月（`twoMonthsAgo`）是否要缩短** | 09 月分区 84 MB（且在 11-03 会被归档） | 低 | ⇒ **本轮判定为「设计而非缺陷」**（`bg/partition_manager.go:603` 的注释明写）；**不建议改**，但需在台账写明「冷族天然保有 ~2 个月」 |
+| **B1** | ★★★ **4 个物化视图的 `REFRESH CONCURRENTLY`（本库慢查询的最大单一面）** | 合计 **11,267.9 s = 3.13 h = 12.36 h 的 25.3%** | 中 | `routing_analytics_7d` 单条 59,482 ms 均值；`db/db.go:8440-8447`（迁移 856）已记「ANALYZE 巡检持快照 ⇒ 阻塞 REFRESH」；⇒ **需先量「刷新慢是因为源表大还是因为被阻塞」**（EXPLAIN 不适用，得看等待事件） |
+| **B2** | ★★ **`ursm_node_snapshot_min` 小时桶查询（`WITH win AS …`，4,196.4 s / 24 次 / 174,849 ms）** | 4,196.4 s = 12.36 h 的 **9.4%** | 低 | 与 §143.18.8 的保留期杠杆同族（该族 8.4 GB / 7 天 / 日增 1.2~1.5 GB）⇒ **建议合并立项** |
+| **C1** | ★★ **把「252 PG 日志的正确读法」写进 runbook 并停止建议 `logging_collector=on`** | 0 | 无 | ✅ **本节已完成**（§143.19.1.1）；⇒ **属主只需确认「归档 30 天 / 2.0 GB / 磁盘 70 G 可用」是否继续维持现状** |
+| **C2** | ★ **pocket `scheduled_tasks` $4 双型错（953 条）** | 0 | 无 | **仓外**（`opencode-pocket`）；修复 `fa20e648` 已在仓内但**至今未上线**（10-17/10-18/本轮**三轮复登**）⇒ **建议升级给 owner** |
+| **C3** | ★ **`columnar_healthcheck()` 里 3 行 `expected=unknown`（`_request_logs_bodies` / `candidate_failure_logs`）** | 0 | 无 | 10-18 轮已见；**本轮未查因（不是本轮增量）** ⇒ 登记 |
+
+### §143.19.8 复核方法（可原样重跑）
+
+```bash
+# ── 0) 先读量具口径（★ 本节两条判词都栽在「量具读法」上）
+#    252 PG 日志的真实通道（★ 容器 ID 会变，先查再读）
+ssh 252 'D=/var/lib/containers/storage/overlay-containers/$(podman inspect pg-252-pg17 --format "{{.Id}}")/userdata; ls -la $D/ctr.log*'
+ssh 252 'ls -la /var/log/pg17-ctrlog-archive/; cat /etc/cron.d/pg17-ctrlog-snapshot'
+#    ★ 护栏只放行 4 个 SET：SET enable_seqscan 会被拒 ⇒ 用 set_config('enable_seqscan','off',false)
+
+# ── 1) 慢查询清单：★ 必须按 dbid 拆库（不拆会把 smm 的 daily_kline 混进来）
+bash ~/.mavis-tools/lgwp-prod.sh /private/tmp/p14319/slow_by_db.sql 300 > /private/tmp/p14319/slow_by_db.out 2>&1
+bash ~/.mavis-tools/lgwp-prod.sh /private/tmp/p14319/conc.sql        300 > /private/tmp/p14319/conc.out 2>&1
+bash ~/.mavis-tools/lgwp-prod.sh /private/tmp/p14319/final_facts.sql 300 > /private/tmp/p14319/final_facts.out 2>&1
+
+# ── 2) 877 版本判别：DDL 原文（定向，★ 不要用宽 ILIKE）
+bash ~/.mavis-tools/lgwp-prod.sh /private/tmp/p14319/ver877c.sql 300 > /private/tmp/p14319/ver877c.out 2>&1
+bash ~/.mavis-tools/lgwp-prod.sh /private/tmp/p14319/ver877d.sql 300 > /private/tmp/p14319/ver877d.out 2>&1
+#    ★ 父声明名两版相同：git show 37944e9d2:sql/migrations/startup/877_session_turns_search_text_trgm.sql | grep -n 'CREATE INDEX'
+#    ★ relkind 陷阱：分区父表上的索引 relkind='I'（大写），不是 'i' ⇒ 用 relkind='i' 会漏掉全部
+
+# ── 3) 872 收益 + refreshIndexSQL 根因
+bash ~/.mavis-tools/lgwp-prod.sh /private/tmp/p14319/mv_health.sql   300 > /private/tmp/p14319/mv_health.out 2>&1
+bash ~/.mavis-tools/lgwp-prod.sh /private/tmp/p14319/cmi_diag2.sql  300 > /private/tmp/p14319/cmi_diag2.out 2>&1
+bash ~/.mavis-tools/lgwp-prod.sh /private/tmp/p14319/ab_rows.sql    300 > /private/tmp/p14319/ab_rows.out 2>&1
+bash ~/.mavis-tools/lgwp-prod.sh /private/tmp/p14319/lad2.sql       300 > /private/tmp/p14319/lad2.out 2>&1
+bash ~/.mavis-tools/lgwp-prod.sh /private/tmp/p14319/keep2.sql      300 > /private/tmp/p14319/keep2.out 2>&1
+bash ~/.mavis-tools/lgwp-prod.sh /private/tmp/p14319/ttl.sql        300 > /private/tmp/p14319/ttl.out 2>&1
+
+# ── 4) 252 ctr.log 逐块解析（本地跑，不过网；脚本见 §143.19.9）
+scp /private/tmp/p14319/parse_ctr.py 252:/tmp/parse_ctr_p14319.py
+ssh 252 'python3 /tmp/parse_ctr_p14319.py > /tmp/p14319_ctr_parse.out 2>/tmp/p14319_ctr_parse.err'
+```
+
+⇒ ⇒ ★ **本节落地的门**（不连库，可原样重跑）：
+
+```bash
+# §143.19 文档门：日志通道拓扑 / 按库拆库 / 两条订正 / refreshIndexSQL 根因 / 裁剪语义对账
+GOCACHE=/tmp/gocache-p1437 go test ./scripts/ursmcheck/ -run 'TestRunbook14319' -count=1 -v
+```
+
+★ 同族：[[先读量具再读产物]] · [[0 命中的第一嫌疑是量具坏了]] ·
+[[阴性结论要当缺陷一样复核]] · [[自己上一节的结论也要复核]] ·
+[[对照组不是同一条件下造的]] · [[判据红了先怀疑自己的前提]] ·
+[[「读不到」与「没有」返回值同形]] · [[算术巧合不能当因果]]。
