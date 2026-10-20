@@ -2431,6 +2431,134 @@ startup chain: 1 of 284 registered migrations fail, 0 expected
 
 ---
 
+### 6.13 ★ 致命缺陷 F5：`deploy-local.sh` 的共享目录判定把**软链**误判成「未绑定」⇒ 部署整体中止
+
+**症状**：本地部署在 `migrate_existing_pg_to_shared()` 这一腿失败，
+`docker run` 报 `Bind for 127.0.0.1:5432 failed: port is already allocated`，
+脚本「已恢复原容器」后退出，**网关根本没起来**。
+
+**根因（三层）**：
+
+1. **宿主机实况**：`llm-gateway-pg` 的 bind source 是
+   `~/kaixuan/postgres-citus`（citus+pgvector 镜像 `kx-citus-pg17:13.3.0-vector-arm64`），
+   而脚本约定的共享目录是 `~/kaixuan/postgres` ⇒ **字符串不相等**。
+2. **判定缺陷**：那条腿用**字符串**（仅压缩斜杠）比较两条路径 ⇒ 判定「未绑定共享目录」
+   ⇒ 触发**几百 MB 级数据搬迁 + 容器重建**。
+3. **固定端口**：重建用的 `docker run` **硬编码** `-p 127.0.0.1:5432:5432`
+   （同仓的 compose 模板却是 `${LLM_GATEWAY_PG_PORT:-5432}`）⇒ 本机 5432 已被别的实例
+   （`acc-pg17`）占用 ⇒ **重建必失败** ⇒ 整条部署中止。
+   ⇒ 即便判定正确，这台机器上这条腿也**跑不通**。
+
+**修法（最小改动 + 可测）**：
+
+- 新增 `scripts/deploy-local-lib.sh` 的 `dl_physical_path()` / `dl_same_physical_dir()`：
+  判定改用**物理路径**（`cd … && pwd -P`）⇒ **同一份数据**就跳过搬迁；
+  目录不存在时回退到旧的斜杠归一化（不静默返回空串）。
+- `scripts/deploy-local.sh` 的那条腿改调 `dl_same_physical_dir "$DL_PG_SOURCE" "$shared"`。
+- 宿主机侧把共享目录做成软链：`~/kaixuan/postgres -> postgres-citus`
+  ⇒ 物理路径相同 ⇒ 腿直接跳过，**活数据原地不动、容器不重建、零停机**。
+- 契约门（`tests/deploy_local_contract_test.sh`）：软链与目标判为同一目录、不同目录判为不同、
+  空输入判为不同、不存在路径回退非空、且脚本**必须**走 `dl_same_physical_dir`
+  （并禁止再出现旧的字符串归一化写法）。
+- 变异验证 2 项全红：M1 把判定退回纯字符串比较 ⇒ 「must use dl_same_physical_dir」红；
+  M2 去掉 `pwd -P` ⇒ 「dl_physical_path must resolve symlinks」红。两次均按 sha256 还原。
+
+⚠ **仍然遗留（未改，诚实登记）**：重建那一步仍**硬编码 5432**。本轮之所以没踩到，
+是因为判定正确后**根本不进重建**。⇒ 一旦真有人把活数据搬到别的目录，这条腿在
+「5432 被占」的机器上仍会失败。**建议**：把重建端口也改成 `${LLM_GATEWAY_PG_PORT:-5432}`
+（与 compose 模板一致）。
+
+### 6.14 ★ 本地部署与全量验收（实测数据，2026-10-20）
+
+**部署**：release `2.5.8-8531596a-20261020-2766`（git_sha `8531596a`），
+`VERIFY_PASS=1`，端口 8782，`VERIFY_DATABASE=external`。
+顺序按 §6.10：**先停旧容器 → 落 885/886 → 上新二进制 → 起网关**。
+
+**落库事实**（真库 `llm_gateway` @ 127.0.0.1:54318）：
+
+| 项 | 结果 |
+|---|---|
+| v1 族关系数 | **0**（`_request_logs*` 全删；`recent_success_rate` / `system_health_status` 仍在——它们是**被替换**不是被删，按 §6.7 3c 有意不还原 v1 腿） |
+| 会话族 `cost_usd < 0` 部分索引 | **2** 条（父表 + hot 表，即迁移 886） |
+| 新装链 | **0 of 284 fail**（`TestStartupChainGapsMatchReviewedSet`，真库逐条跑） |
+
+**模型多轮请求**（`ping` / `say OK.`，7 个模型 × 3 轮 = 21 次）：
+
+- **只有 `deepseek-v4-flash` 本机有活凭据** ⇒ 3/3 返回 200（`pong` / `OK.` / `OK.`）；
+  其余模型 503 `no_candidate` 或 400 `invalid_model` ⇒ **环境既有状态，不是本轮回归**
+  （部署前的 `gateway-8782.log` 里已有 52 条 `no_candidate`；凭据池只有 3 条、全在 deepseek）。
+- **写链路完好**：21 次请求 → `session_turns_hot` 22 行（含 1 条后台流量），
+  状态码逐条正确（3×200 / 16×503 / 3×400），200 行的 `is_final_success=true`；
+  正文落在 `session_bodies_hot.outbound_body`，**是 JSON array**（不是 null），
+  且长度随轮次增长（37 → 119 → 200 字符）⇒ 多轮上下文确实累积。
+  ⚠ 口径澄清：`session_turns.request_delta/response_delta` 是 **null**，但**部署前的历史 200 行
+  （08:02~08:27）同样是 null** ⇒ 不是回归；本形态的正文存在 `session_bodies*` 族。
+
+**逐 API 扫描**（533 条 GET 路由，口径同 2026-10-16 验收轮）：
+
+| 状态 | 数量 | 判定 |
+|---|---|---|
+| 200 | 281 | ✅ |
+| 405 | 122 | 扫描口径（GET 打只读 POST 路由；方法前缀由 Go 1.22 ServeMux 在**进 handler 前**拦截 ⇒ 零副作用） |
+| 400 | 68 | 缺/错参数 |
+| 404 | 50 | **前缀分发器按设计要子路径**（如 `/api/admin/model-integrity` 要 `summary`/`events`/`fingerprint-drift`）+ handler 级 `not found` |
+| 503 | 7 | 子系统未启用（identity-pool / mobile-node / lite / memora）+ 运维平台未配 |
+| 401 | 5 | OpenAI 兼容腿（`/v1/models` 等）要 **API key**，本扫用的是 admin JWT |
+| **500** | **0** | ★ 上一轮验收轮的 **12 个 500 全部清零** |
+
+延迟：p50 **1.4ms** / p95 **14.4ms**。
+⚠ 扫出两条「>2s」：`/api/free-pool/stream`（89.7s）、`/api/admin/system-monitor/stream`（51.1s）。
+**它们不是慢查询**——用 `curl -w time_starttransfer` 实测 **TTFB = 1.6ms / 1.8ms**，
+量到的是 **SSE 流的持续时长**（客户端等流结束），不是响应延迟。
+⇒ 口径教训见 §12.2。
+
+**逐页浏览器验证**（headless Chromium + **真实 UI 登录** + 真实后端，105 个页面）：
+
+| 指标 | 值 |
+|---|---|
+| 页面数 | **105**（`web/src/router.ts` 的 107 条 `path:` 去掉 2 条 catch-all） |
+| 页面 HTTP 非 200 | **1**：`/maintain` = 503「运维平台不可用」（按设计，本机没配运维平台） |
+| 耗时 | p50 **928ms** / p95 **1256ms** / max **1640ms** ⇒ **无页面 >2s** |
+| 页面内业务 5xx | **0**；仅有 `/maintain-api/*`（运维平台未配）与 `/api/free-discovery/*`（子系统未启用）的 503 |
+| 页面内 4xx | 全是**扫描器用错 ID** 造成的：用真实 ID 复测即 200（`/api/keys/10` 200、`/api/admin/sessions/<真实 session_id>/turns` 200、`/api/admin/session-analytics/clients/grok-4.6` 200） |
+
+⇒ **上一轮验收文档明确留下的缺口（「每一个页面这一条尚未满足」）在本轮关闭**。
+
+⚠ **「Maestro」的口径说明**：仓库内没有 Maestro 脚手架；本轮与历史轮次用
+**headless Chromium 逐页扫 + 逐 API 扫**等价覆盖（真实浏览器 + 真实登录 + 真实后端），
+差异只在录制/断言框架，不在覆盖面。
+
+### 6.15 ★ 211/252 的执行单（SQL 变更记录 + 顺序 + 归档 + 回滚）
+
+**本轮新增的 SQL（两个文件，两套）**：
+
+| 编号 | 文件 | 作用 | 幂等/可逆 |
+|---|---|---|---|
+| 885 | `sql/migrations/startup/885_drop_request_logs_v1_family.sql` | **真删** v1 族：6 个关系 + 4 张 v1-only 视图 + 20 个函数/过程 + 2 个触发器；canonical 视图改两臂；`routing_analytics_source` 换 canonical 形态；两条 owner_filter 改读 `sessions.owner_user` | 一次性；非空闸会拒绝在有数据的库上执行；`.down.sql` 可逐字复原 20 函数 + 2 触发器 + 11 个关系（**救不回任何一行数据**） |
+| 886 | `sql/migrations/startup/886_session_turns_cost_negative_partial_idx.sql` | 会话族 `cost_usd < 0` 部分索引（父表 + hot 表），键 `(ts, credential_id, raw_model_name)` INCLUDE `(cost_usd, cache_read_tokens, prompt_tokens)` | `CREATE INDEX IF NOT EXISTS`；`.down.sql` 可删 |
+
+**登记的六处**（缺一处就装不上）：canonical `sql/migrations/startup/`、
+`installer/cmd/llm-gw-installer/embeddata/startup/` 两份副本、
+`installer/cmd/llm-gateway-go-installer/main.go`（go:embed + embeddedSQLFiles map）、
+`installer/internal/dbinit/runner.go`（StartupFiles）、
+`sql/schema/installed_startup_migrations.tsv`（用 `cd installer && go test ./internal/dbinit/ -run TestStartupManifest -update` 生成）、
+`scripts/apply-db-revision-sequence.sh` 的 `files=()`（886 排在 885 之后、序列末尾）。
+
+**执行顺序（生产，与本地相反）**：
+
+1. **先上新二进制**（含 885/886 的二进制必须先就位），
+   或安排**维护窗口**（本地是「先停旧容器」，生产是「先上新二进制」——见 §6.10）。
+2. 跑 `scripts/apply-db-revision-sequence.sh`（含 885 → 886）。
+   ⚠ 通道里 885 之前的历史文件对 v1 族做**词法改名适配**（`_request_logs`）——
+   库处于「已改名」形态时适配才生效；**混态（`ambiguous`/`mixed`）会直接报错停下**，需人工处理。
+3. 885 的**非空闸**：v1 族任一表有行 ⇒ `RAISE EXCEPTION` ⇒ **先按 §6.11 完成归档与核账**。
+
+**回滚**：`.down.sql` 逐字复原 20 函数 + 2 触发器 + 11 个 v1 关系（分区不在 down 范围）；
+但**落进会话族的数据不会回流到 v1 族** ⇒ 回滚只是「让旧二进制还能跑」，
+不是「把数据搬回去」。
+
+---
+
 
 ## 7. 本轮新增的经验
 
@@ -2982,3 +3110,90 @@ M8 是本轮最关键的一条：它证明「台账为空 + 新增即红」这�
 4. `admin/usage_trend_series.go` 的 `detail` 档读的是被 DROP 的包装视图，
    而它本来就想「带 api_key 过滤的 detail 档」⇒ 修复方向是改读 canonical 视图
    （885 之后是会话族两臂体、列名同序），不是重建包装视图。
+
+---
+
+## 12. 部署与验收轮新增的经验
+
+### 12.1 ★ 「字符串相等」≠「同一份数据」：路径判定必须按**物理路径**
+
+**现象**：`deploy-local.sh` 的「容器数据目录 == 共享目录吗」判定用字符串比，
+宿主机上共享目录是软链（`~/kaixuan/postgres -> postgres-citus`）⇒ 判成「未绑定」
+⇒ 触发几百 MB 级数据搬迁 + 容器重建 ⇒ 重建固定占 5432、该端口已被别的实例占住
+⇒ **整条部署中止**，网关根本没起来。
+
+**根因**：判定问的是「**路径写法**一样吗」，而要问的是「**是不是同一份数据**」。
+软链、绑定挂载、`/private/var` 与 `/var` 别名，都是「同物异名」。
+
+**防复发检查**：凡是「这两个路径是不是同一个东西」的判定，都用**物理路径**
+（`cd … && pwd -P`）而不是字符串；比较前先问「有没有可能是同物异名」。
+本轮已把判定抽成 `dl_same_physical_dir()`（可 source、可单测）并配契约门 + 2 项变异。
+
+**证据**：`scripts/deploy-local.sh`（判定改造）、`scripts/deploy-local-lib.sh`
+（`dl_physical_path` / `dl_same_physical_dir`）、`tests/deploy_local_contract_test.sh`
+（新门）、宿主机 `~/kaixuan/postgres -> postgres-citus`。
+**溯源**：§6.13。
+
+### 12.2 ★ 长流的「耗时」是**流时长**，不是响应延迟
+
+**现象**：逐 API 扫描报出 `/api/free-pool/stream` 89.7s、`/api/admin/system-monitor/stream` 51.1s，
+按「>2s 必须定位并优化」的规则本应去查慢 SQL——但这是**假慢**。
+
+**根因**：SSE/长轮询端点的响应**不结束**，客户端的「等待响应」时长等于**流的持续时间**；
+首字节其实 1.6ms 就到了。用 `curl -w time_starttransfer` 实测 TTFB = 1.6ms / 1.8ms。
+
+**防复发检查**：扫出「慢端点」时，先问「这个端点返回的是**一次性响应**还是**流**」；
+流式端点一律改用 **TTFB**（`time_starttransfer`）量，别用「读到 EOF」的总时长。
+⇒ 判据纪律的又一个形态：**量具的计时边界必须与被测语义对齐**。
+
+**证据**：§6.14 的 API 扫表 + `curl -w` 复测。
+**溯源**：§6.14。
+
+### 12.3 ★ 扫出 404，先怀疑**量具用错了 ID**
+
+**现象**：逐页扫里 `/api/keys/1`、`/api/admin/sessions/1/turns`、
+`/api/admin/session-analytics/clients/1` 都是 404，看着像「端点坏了」。
+
+**根因**：扫描器把路径里的 `:id` 一律替换成 `1`，而这些 ID 空间里 **1 不存在**
+（真 key id = 10、session id = `gw_…`、client id 是模型名）。
+
+**防复发检查**：动态段替换出来的 404/4xx，**必须用真实 ID 复测一次**再下结论；
+真实 ID 从库里取（最近的 `request_id` / `session_id` / 主键），
+并把「用真实 ID 复测 → 200」写进验收记录。
+⇒ 这与 §11.7「零命中要用合成样本自证」是同一族：**没命中可能是「看不见」，也可能是「本来就没有」**。
+
+**证据**：`/api/keys/10` 200、`/api/admin/sessions/gw_ca40172f…/turns` 200、
+`/api/admin/session-analytics/clients/grok-4.6` 200。
+**溯源**：§6.14。
+
+### 12.4 ★ 路由 404 有三类成因，别混成「端点不存在」
+
+**现象**：50 条 404 混着三种完全不同的东西。
+
+**根因与分类**：
+1. **Go 默认 mux 的 404**（正文 `404 page not found`）：路径没被注册；
+2. **前缀分发器的按设计 404**：`/api/admin/model-integrity` 是**前缀**，
+   要子路径（`summary` / `events` / `fingerprint-drift`），裸路径必然 404；
+3. **handler 级 not found**（JSON 正文）：路由在，但资源/子资源不存在。
+
+**防复发检查**：判「端点不存在」前，先看 **404 正文形态**（纯文本 vs JSON）
+与**路由是不是前缀**；前缀型路由要扫它的**真实子路径**才算覆盖。
+
+**证据**：`admin/handler.go:979-980`（前缀分发器）、`admin/model_integrity.go:66`
+（`http.NotFound`）。**溯源**：§6.14。
+
+### 12.5 ★ 写链路验收要看**正文类型**，不是「有没有落行」
+
+**现象**：v1 族真删后做写链路验收，第一眼看到
+`session_turns.request_delta/response_delta` 全是 JSON **null**，差点判成「正文丢了」。
+
+**根因**：本形态的正文存在 `session_bodies*` 族（`outbound_body`，JSON **array**），
+而 `session_turns` 那两列是**另一个开关控制的可选写入**（见 §11.8 第 3 条）。
+
+**防复发检查**：判「正文是否落库」必须先确认**正文的目标表**与**类型**：
+`jsonb_typeof(...)` 是 array 才算有正文；并且要拿**部署前的同形态历史行**做对照，
+否则分不清「本轮回归」与「既有形态」。
+
+**证据**：本轮 200 行的 `session_bodies_hot.outbound_body` = `array`，长度 37 → 119 → 200
+（随多轮增长）；部署前的历史 200 行 `session_turns.request_delta` 同样是 null ⇒ 非回归。
+**溯源**：§6.14。

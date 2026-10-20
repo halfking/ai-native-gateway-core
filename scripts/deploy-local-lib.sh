@@ -137,6 +137,33 @@ dl_shared_pg_dir() {
   fi
   printf '%s\n' "${v%/}/postgres"
 }
+# 物理路径（解析软链）。用于「容器数据目录 == 共享目录吗」这类判定：
+# 宿主机上容器数据目录常以软链形态挂在共享根下（例如
+# ~/kaixuan/postgres -> postgres-citus），字符串比较会把它误判成
+# 「未绑定共享目录」⇒ 触发一次几百 MB 级数据搬迁 + 容器重建；重建固定
+# 占用 5432，在该端口已被别的实例占用的机器上直接失败 ⇒ 整个部署中止。
+# 目录不存在时回退到「压缩连续斜杠 + 去尾斜杠」的旧归一化，保证调用方
+# 仍能比较字符串（不静默返回空串）。
+dl_physical_path() {
+  local p="${1:-}"
+  [[ -n "$p" ]] || return 0
+  local resolved=""
+  resolved=$(cd -- "$p" 2>/dev/null && pwd -P) || resolved=""
+  if [[ -z "$resolved" ]]; then
+    resolved=$(printf '%s' "$p" | tr -s '/' | sed 's:/*$::')
+  fi
+  printf '%s\n' "$resolved"
+}
+# 两个目录是否指向**同一份数据**（物理路径相同即同一份）。
+# 空输入一律判否：调用方据此区分「无法判定」与「确实不同」。
+dl_same_physical_dir() {
+  local a="${1:-}" b="${2:-}"
+  [[ -n "$a" && -n "$b" ]] || return 1
+  local pa pb
+  pa=$(dl_physical_path "$a")
+  pb=$(dl_physical_path "$b")
+  [[ -n "$pa" && "$pa" == "$pb" ]]
+}
 dl_shared_redis_dir() { printf '%s\n' "$(dl_shared_root)/redis"; }
 dl_pg_log_dir() { printf '%s\n' "$(dl_shared_pg_dir)/logs"; }
 dl_pg_backup_dir() { printf '%s\n' "$(dl_shared_pg_dir)/backups"; }

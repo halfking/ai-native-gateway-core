@@ -323,13 +323,16 @@ migrate_existing_pg_to_shared() {
   # 2026-09-23 修复：容错归一化路径（Docker 有时报告带尾部 / 或双斜杠的路径），
   # 否则 `DL_PG_SOURCE != shared` 误报为真、触发无用迁移并最终 docker run
   # 解析异常（"invalid mode: /var/lib/postgresql/data"）。
-  local dl_pg_source_norm shared_norm
-  dl_pg_source_norm=$(printf '%s' "$DL_PG_SOURCE" | tr -s '/' | sed 's:/*$::')
-  shared_norm=$(printf '%s' "$shared" | tr -s '/' | sed 's:/*$::')
-  [[ -n "$dl_pg_source_norm" && "$dl_pg_source_norm" != "$shared_norm" ]] || {
+  # 2026-10-20 修复：归一化必须解析**软链**（dl_same_physical_dir /
+  # dl_physical_path）。容器数据目录以软链形态挂在共享根下时（如
+  # ~/kaixuan/postgres -> postgres-citus），纯字符串比较会误判成「未绑定共享
+  # 目录」⇒ 触发几百 MB 级无用搬迁 + 容器重建；而重建固定占用 5432，该端口
+  # 已被别的实例占用的机器上会直接失败 ⇒ 整个部署中止。物理路径相同即同一份
+  # 数据，无需搬迁。判定函数放在 deploy-local-lib.sh 里，契约门可直接驱动。
+  if [[ -z "$DL_PG_SOURCE" ]] || dl_same_physical_dir "$DL_PG_SOURCE" "$shared"; then
     log "llm-gateway-pg already bound to shared $shared (no copy required; source=$DL_PG_SOURCE)"
     return 0
-  }
+  fi
   log "migrating llm-gateway-pg data to $shared (source retained at $DL_PG_SOURCE)"
   docker stop "$DL_PG_CONTAINER" >/dev/null 2>&1 || true
   mkdir -p "$SHARED_PG_BACKUP_DIR"

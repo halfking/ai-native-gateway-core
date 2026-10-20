@@ -3854,3 +3854,57 @@ PostgreSQL 解析调用时，**带默认值的那个也能接 3 参调用**，
 - 证据：三条扫描的守卫全部退役；`bg/` 全绿（34.5s）；4 道新门 + 9 项变异全部转红；
   `deploy/prometheus/rules/s4-scan-skip.yml` 的 reason 闭集同步更新为 {s4_stop_write, usage_arm_empty}。
 - 溯源：request_logs→session_turns 复核轮 §6.5；[复盘](docs/audit/2026-10-20-request-logs-session-turns-复核轮.md) §6.5。
+
+## 2026-10-20 — ★ 「字符串相等」≠「同一份数据」：路径判定必须按**物理路径**（Seen: 1/3）
+- 场景：`deploy-local.sh` 的「容器数据目录 == 共享目录吗」判定，导致本地部署整条中止
+  （`docker run` 报 `Bind for 127.0.0.1:5432 failed: port is already allocated`，网关没起来）。
+- 根因：判定用**字符串**比两条路径，而宿主机上共享目录是**软链**
+  （`~/kaixuan/postgres -> postgres-citus`）⇒ 判成「未绑定」⇒ 触发几百 MB 级数据搬迁 +
+  容器重建；而重建那一步**硬编码 5432**（同仓 compose 模板却是 `${LLM_GATEWAY_PG_PORT:-5432}`），
+  该端口已被别的实例占住 ⇒ **重建必失败 ⇒ 整条部署中止**。
+  真正要问的不是「路径写法一样吗」，而是「**是不是同一份数据**」。
+- 防复发检查：① 凡是「这两个路径是不是同一个东西」的判定，都用**物理路径**
+  （`cd … && pwd -P`）而不是字符串，并先问「有没有可能是同物异名」（软链、绑定挂载、`/private/var` 别名）；
+  ② 判定函数放进**可 source 的 lib** 并配契约门（软链==目标、不同==不同、空输入==不同、
+  不存在路径回退非空、脚本必须走该函数），本轮 2 项变异全红；
+  ③ 部署脚本里凡有「固定端口」与「模板端口」两处，视为**不一致缺陷**（本轮遗留登记，未改）。
+- 证据：`scripts/deploy-local-lib.sh`（`dl_physical_path` / `dl_same_physical_dir`）、
+  `scripts/deploy-local.sh`（判定改造）、`tests/deploy_local_contract_test.sh`（新门 + 2 项变异全红）；
+  宿主机 `~/kaixuan/postgres -> postgres-citus`；部署后 `VERIFY_PASS=1`（release 2.5.8.2766）。
+- 溯源：request_logs→session_turns 复核轮 §6.13；[复盘](docs/audit/2026-10-20-request-logs-session-turns-复核轮.md) §6.13。
+
+## 2026-10-20 — ★ 长流的「耗时」是**流时长**，不是响应延迟 ⇒ 量延迟要看 TTFB（Seen: 1/3）
+- 场景：逐 API 扫描报出 `/api/free-pool/stream` 89.7s、`/api/admin/system-monitor/stream` 51.1s，
+  按「>2s 必须定位」本应去查慢 SQL——实际是**假慢**。
+- 根因：SSE / 长轮询端点的响应**不结束**，客户端「等响应」的时长等于**流的持续时间**；
+  首字节 1.6ms 就到了。`curl -w time_starttransfer` 实测 TTFB = 1.6ms / 1.8ms。
+- 防复发检查：扫出「慢端点」先问「返回的是**一次性响应**还是**流**」；流式端点一律用 **TTFB** 量，
+  不用「读到 EOF」的总时长。⇒ 与「量具的计时边界必须与被测语义对齐」同族。
+- 证据：§6.14 的 API 扫表 + `curl -w` 复测（TTFB 1.6ms / 1.8ms）。
+- 溯源：request_logs→session_turns 复核轮 §6.14。
+
+## 2026-10-20 — ★ 扫出 404 先怀疑**量具用错了 ID**；路由 404 有三类成因（Seen: 1/3）
+- 场景：逐页扫里 `/api/keys/1`、`/api/admin/sessions/1/turns`、
+  `/api/admin/session-analytics/clients/1` 全是 404，看着像端点坏了。
+- 根因：① 扫描器把 `:id` 一律替换成 `1`，而这些 ID 空间里 **1 不存在**
+  （真 key id=10、session id=`gw_…`、client id 是模型名）⇒ 是**量具**问题不是被测问题；
+  ② 路由 404 混着三类：**Go 默认 mux 404**（未注册）、**前缀分发器按设计 404**
+  （`/api/admin/model-integrity` 要 `summary`/`events`/`fingerprint-drift`）、
+  **handler 级 not found**（JSON 正文）。
+- 防复发检查：动态段替换出来的 404/4xx **必须用真实 ID 复测一次**再下结论（真实 ID 从库里取），
+  并把「用真实 ID 复测 → 200」写进验收记录；判「端点不存在」前先看 **404 正文形态**
+  与**路由是不是前缀**（前缀型路由要扫真实子路径才算覆盖）。
+- 证据：`/api/keys/10` 200、`/api/admin/sessions/gw_ca40172f…/turns` 200、
+  `/api/admin/session-analytics/clients/grok-4.6` 200；`admin/model_integrity.go:66`。
+- 溯源：request_logs→session_turns 复核轮 §6.14。
+
+## 2026-10-20 — ★ 写链路验收要看**正文类型**与**正文的目标表**，不是「有没有落行」（Seen: 1/3）
+- 场景：v1 族真删后验收写链路，第一眼看到 `session_turns.request_delta/response_delta`
+  全是 JSON **null**，差点判成「正文丢了」。
+- 根因：本形态的正文在 `session_bodies*` 族（`outbound_body`，JSON **array**）；
+  `session_turns` 那两列是**另一个开关控制的可选写入**，本机上恒 NULL 是**既有状态**。
+- 防复发检查：判「正文是否落库」先确认**正文的目标表**与**类型**（`jsonb_typeof(...)` 是 array
+  才算有正文）；并拿**本轮改动之前**的同形态历史行做对照，否则分不清「回归」与「既有形态」。
+- 证据：本轮 200 行 `session_bodies_hot.outbound_body` = `array`，长度 37 → 119 → 200（随多轮增长）；
+  部署前的历史 200 行 `session_turns.request_delta` 同样为 null ⇒ 非回归。
+- 溯源：request_logs→session_turns 复核轮 §6.14。
