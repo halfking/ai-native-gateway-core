@@ -18,6 +18,21 @@ import (
 // telemetry.go itself and fails on any positional drift, mirroring the
 // telemetry-package guard that was installed after the 2026-08-25 client.go
 // incident.
+//
+// ★ 2026-10-20（迁移 890，v1 族退役）：被守的那条 INSERT **换了对象**。
+//
+//	原来：INSERT INTO _request_logs_hot (37 列)  —— v1 宽元数据表
+//	现在：INSERT INTO usage_ledger_hot (19 列) —— 计费行（v1 表已 DROP）
+//
+// 主体（占位符与列/参数的三方对齐）**还在**，只是落到了本路径剩下的唯一
+// 一条 INSERT 上 ⇒ 这是「主体还在、形状变了」的**反转**：判据跟着走，
+// 不是把门删掉。
+//
+// ⚠ 为什么必须跟着走（而不是删掉这条门）：v1 表被 DROP 之后，这条 INSERT
+// 是 ingest 路径上**唯一**的 PG 写入。它一旦列数与 VALUES 不齐，症状是
+// "INSERT has more target columns than expressions" ⇒ 整条 ingest 事务回滚，
+// **连同同事务已写的 usage_ledger 计费行**一起丢 ⇒ 计费数据静默丢失。
+// 门在，症状就在被拦下。
 func TestPersistRequestLogPlaceholderAlignment(t *testing.T) {
 	src, err := os.ReadFile("telemetry.go")
 	if err != nil {
@@ -33,9 +48,11 @@ func TestPersistRequestLogPlaceholderAlignment(t *testing.T) {
 		rest = rest[:j+1]
 	}
 
-	sqlStart := strings.Index(rest, "INSERT INTO _request_logs_hot (")
+	// ★ 被守的 INSERT 已从 v1 宽表换成 usage_ledger 计费行（890）。
+	sqlStart := strings.Index(rest, "INSERT INTO usage_ledger_hot (")
 	if sqlStart < 0 {
-		t.Fatalf("INSERT INTO _request_logs_hot not found")
+		t.Fatalf("INSERT INTO usage_ledger_hot not found —— " +
+			"persistRequestLog 里已无别的 INSERT；若目标又变了，先确认它仍与「列/VALUES/参数」三方对齐")
 	}
 	sqlEnd := strings.Index(rest[sqlStart:], "`") + sqlStart
 	sql := rest[sqlStart:sqlEnd]
@@ -45,7 +62,12 @@ func TestPersistRequestLogPlaceholderAlignment(t *testing.T) {
 	cols := splitTopLevel(sql[colStart:colEnd])
 
 	valStart := strings.Index(sql, ") VALUES (") + len(") VALUES (")
+	// ⚠ usage_ledger_hot 这条 INSERT **没有** ON CONFLICT 子句 ⇒ 找不到时
+	// 取到串尾，而不是 -1（-1 会让切片 panic，把「形状变了」报成「测试崩了」）。
 	valEnd := strings.Index(sql, "ON CONFLICT")
+	if valEnd < 0 {
+		valEnd = len(sql)
+	}
 	valsTxt := regexp.MustCompile(`--[^\n]*`).ReplaceAllString(sql[valStart:valEnd], "")
 	valsTxt = strings.TrimSuffix(strings.TrimRight(valsTxt, " \t\n"), ")")
 	exprs := splitTopLevel(valsTxt)

@@ -1,0 +1,133 @@
+# fresh_install_column_gaps.tsv — 全新安装缺列登记册（★ 装完 **且启动过** 之后的形态）
+#
+# WHAT THIS FILE IS
+#   一份「全新安装的库，**装完并启动一次**之后，缺哪些列」的显式登记册。每行一条：
+#
+#       <table>	<column>	<severity>	<one-line reason>
+#
+#   「全新安装」= installer 的真实路径 **+ 产品的第一次启动**：
+#       embeddata/00-prereqs → embeddata/01-schema（基线）→ embeddata/02-seed
+#       → StartupFiles 登记的 startup 迁移（登记册 = installed_startup_migrations.tsv）
+#       → **db.Open 的 ensure 链**（产品启动时必跑）
+#
+#   ★ **「装完」不等于「装完能用」**：产品启动时的 ensure 链会自己补一批列
+#     （ADD COLUMN IF NOT EXISTS），而 installer's 迁移链**不会**
+#     ⇒ 两侧必须比「装完 **且启动过**」的形态，否则会把 ensure 自愈的列算成缺口。
+#
+#   本文件是**棘轮**：sql/schema/fresh_install_column_gaps_test.go 会
+#   (a) 要求每条登记在**此刻仍然缺**（缺了才登记；已修复 ⇒ 门红 ⇒ 请删掉该行），
+#   (b) 要求「startup 通道声明过、但库里没有」的每一列都出现在本清单里
+#       （漏登 ⇒ 门红 ⇒ 新缺口当场被抓住）。
+#   ⇒ 修好一个缺口 = 删一行；新缺口冒出来 = 补一行并写清理由。
+#
+# ★★★ 口径演进（2026-10-21，R60 → R61）
+#
+#   R60 的口径是「装完、ensure 链没跑」的库 ⇒ 量到 23 条 ⇒ 结论写进 handoff §十八。
+#   R61 轮复核（自己上一节的结论也要复核）：
+#     ① 换口径（装完 + 启动一次）⇒ 那 23 条里 20 条是 **ensure 自愈**的伪缺口
+#        （outbound_body / credentials 三列 / models_canonical 三列 / provider_catalog 三列
+#         / session_turns.host,tags 及其分区副本）⇒ 真缺口只剩 D1 修掉的那条。
+#     ② 但门 A 的**解析面**当时只认「ALTER TABLE ... ADD COLUMN」
+#        ⇒ 「CREATE TABLE IF NOT EXISTS」形状（表已存在 ⇒ **整段静默空操作**）
+#           一条都看不见 ⇒ 缺口被漏掉。
+#        ⇒ R61 把 CREATE 形状也纳入声明面；★ 且解析器必须**剥掉 SQL 注释**
+#          （否则注释里的第一个词会被当成列名 ⇒ 实测多出 100+ 条幽灵列）。
+#
+#   ⇒ **本清单现在的轴** = 「startup 通道声明过、但全新安装（装完+启动后）库里没有的列」。
+#     选这条轴是因为它**本地可算**（声明面 vs 库实况）⇒ 门能真的盯住它；
+#     「生产侧」是**人工核对**（无本地 oracle）⇒ 每行的生产判定随 reason 记录在案。
+#     它**不是**「生产 vs 新装」的差集（那条差集实测 26 列，**全是生产多留的历史列**，
+#     产品读写都不依赖 ⇒ 不在本清单里，见 handoff §18.13）。
+#
+#   ⇒ ★★ **severity 的第一道闸门 = 「生产侧有没有这一列」**（R62 轮实测确立）：
+#       ★ **按名命中对『不存在的列』必然是假阳性** —— 一个列在**生产里都不存在**，
+#         产品就不可能真的依赖它 ⇒ 机械按名命中的 high/medium 一律不成立。
+#       生产也没有（死 DDL） ⇒ severity 恒为 benign，且**不得据此补 ALTER**；
+#       生产有 ⇒ 才按按名命中数定 high / medium。
+#     ⇒ 机械判定（按列名在产品代码里检索）只作**参考**：
+#       high   产品路径（非测试代码）按名引用了它 ⇒ 走那条路径会 42703
+#       medium 只在测试代码里引用，或列名太通用（命中 >20 处）⇒ 按名判定不可靠
+#       benign 全仓无按名命中 ⇒ 当前产品读写都不依赖它（遗留列）
+#     ⚠ 按名检索**不能排除** SELECT * 形态的隐式依赖 ⇒ medium/high 都要人工复核。
+#
+#   ⇒ ★ **人工覆盖**：机械判定认不出「别名/派生列」（典型：`detection_score`
+#     在产品代码里是读路径的派生别名 `risk_level AS detection_score`，不是物理列）
+#     ⇒ 人工判断写成覆盖行（**注释行**，所以数据行解析会跳过它）：
+#         # OVERRIDE <table>.<column>	<severity>	<reason>
+#     `-update` 重生成时**保留**覆盖行 ⇒ 登记册既可重算，又不丢人的判断。
+#
+# ★★★ 口径演进（2026-10-21，R62 轮）：生产侧核对 + 三类假阳性 + 真缺口集 = ∅
+#
+#   R62 轮拿**生产 252** 把本清单的 20 列逐条核对 ⇒ 结论：
+#     - **16 列生产也没有** ⇒ 「没人跑过的死 DDL」（对应迁移的 CREATE 形状在
+#       『表已存在』上整段静默空操作 ⇒ 那段 DDL 从未真正生效过）
+#       ⇒ ★ 按名命中对这 16 列**必然是假阳性** ⇒ 其中 11 行原本被判 high/medium
+#         （diagnostic_runs.audit_log_id / goal_run_actions.tenant_id /
+#          goal_run_steps.tenant_id / goal_runs.fencing_token / goal_runs.goal_run_id /
+#          request_stage_events.trace_id / usage_ledger.{cost_currency,department,
+#          employee,id,position}）⇒ **全部降级为 benign** ⇒ 「补 20 个 ALTER」会补出
+#         11 个**没人依赖、连生产都没有**的列 ⇒ **该采纳项不执行**（见 handoff §19.8）。
+#     - **4 列生产有**（prompt_injection_detections.{detection_layers,detection_score,
+#       matched_rules,matched_rules_count}）⇒ 不是死 DDL，是真实的生产/新装形态差异；
+#       但产品读写**不依赖这些物理列**（读路径是派生别名 `risk_level AS detection_score`
+#       等）⇒ 仍是 benign ⇒ **不补**。
+#     ⇒ ★★ **真缺口集 = ∅**（20 列：16 死 DDL + 4 产品不依赖 ⇒ 没有一列需要补 ALTER）。
+#
+#   ⇒ ★ 三类假阳性（每一类都是「量具口径」问题，不是产品缺陷）：
+#     ① R60：量在「装完但 ensure 链没跑」⇒ 把 20 个 **ensure 自愈**的列算成缺口；
+#     ② R62：只按「startup 声明 vs 库里实况」判 ⇒ 把**生产也没有的死 DDL**算成缺口；
+#     ③ 若只按「生产 vs 新装」判 ⇒ 把**生产多留的历史列**算成缺口。
+#     ⇒ ★ **判缺口必须三侧对照**：生产有 ∧ 新装没有 ∧ 产品依赖。
+#
+# HOW TO ADD AN ENTRY
+#   跑：go test ./sql/schema/ -run TestFreshInstallColumnGapsMatchTheInstallChain -update
+#   （它用真库读数重生成整份清单 ⇒ 登记册永远可重算，不是一份手抄件）
+#   ⚠ 该命令会**写文件** ⇒ 只在一次性库上跑。
+#
+# ⚠ 已知边界（写在前面，别让后人误读这份清单的覆盖面）：
+#   - 本清单是「startup 通道的声明 vs 全新安装的实况」的差集，
+#     **不是**「产品实际用到的列」的穷举。
+#   - domain 通道与 root 通道的文件不在 startup 目录里 ⇒ 门检不出来。
+#   - 门只认**物理表**（relkind ∈ r/p）⇒ 视图上的列不在检测范围内。
+#   - ★ 门要求 oracle 是「装完 + 启动过」的形态：库里若缺
+#     models_canonical.standard_iq（只有 ensure 链会加它）⇒ 门**跳过并给出显式理由**。
+# OVERRIDE diagnostic_runs.audit_log_id	benign	生产侧核对（252，2026-10-21）：**生产也没有这一列** ⇒ 这是『没人跑过的死 DDL』（390_routing_audit_log.sql 的 CREATE 形状在『表已存在』上整段是静默空操作 ⇒ 这段 DDL 从未真正生效过）⇒ ★ **按名命中对『不存在的列』必然是假阳性**（命中的是别名/别的表/别的 schema）⇒ 产品走不到这条路径 ⇒ **不补 ALTER**
+# OVERRIDE goal_run_actions.intent_hash	benign	生产侧核对（252，2026-10-21）：**生产也没有这一列** ⇒ 这是『没人跑过的死 DDL』（549_goal_run_ledger.sql 的 CREATE 形状在『表已存在』上整段是静默空操作 ⇒ 这段 DDL 从未真正生效过）⇒ ★ **按名命中对『不存在的列』必然是假阳性**（命中的是别名/别的表/别的 schema）⇒ 产品走不到这条路径 ⇒ **不补 ALTER**
+# OVERRIDE goal_run_actions.step_sequence	benign	生产侧核对（252，2026-10-21）：**生产也没有这一列** ⇒ 这是『没人跑过的死 DDL』（549_goal_run_ledger.sql 的 CREATE 形状在『表已存在』上整段是静默空操作 ⇒ 这段 DDL 从未真正生效过）⇒ ★ **按名命中对『不存在的列』必然是假阳性**（命中的是别名/别的表/别的 schema）⇒ 产品走不到这条路径 ⇒ **不补 ALTER**
+# OVERRIDE goal_run_actions.tenant_id	benign	生产侧核对（252，2026-10-21）：**生产也没有这一列** ⇒ 这是『没人跑过的死 DDL』（549_goal_run_ledger.sql 的 CREATE 形状在『表已存在』上整段是静默空操作 ⇒ 这段 DDL 从未真正生效过）⇒ ★ **按名命中对『不存在的列』必然是假阳性**（命中的是别名/别的表/别的 schema）⇒ 产品走不到这条路径 ⇒ **不补 ALTER**
+# OVERRIDE goal_run_steps.tenant_id	benign	生产侧核对（252，2026-10-21）：**生产也没有这一列** ⇒ 这是『没人跑过的死 DDL』（549_goal_run_ledger.sql 的 CREATE 形状在『表已存在』上整段是静默空操作 ⇒ 这段 DDL 从未真正生效过）⇒ ★ **按名命中对『不存在的列』必然是假阳性**（命中的是别名/别的表/别的 schema）⇒ 产品走不到这条路径 ⇒ **不补 ALTER**
+# OVERRIDE goal_runs.fencing_token	benign	生产侧核对（252，2026-10-21）：**生产也没有这一列** ⇒ 这是『没人跑过的死 DDL』（549_goal_run_ledger.sql 的 CREATE 形状在『表已存在』上整段是静默空操作 ⇒ 这段 DDL 从未真正生效过）⇒ ★ **按名命中对『不存在的列』必然是假阳性**（命中的是别名/别的表/别的 schema）⇒ 产品走不到这条路径 ⇒ **不补 ALTER**
+# OVERRIDE goal_runs.goal_run_id	benign	生产侧核对（252，2026-10-21）：**生产也没有这一列** ⇒ 这是『没人跑过的死 DDL』（549_goal_run_ledger.sql 的 CREATE 形状在『表已存在』上整段是静默空操作 ⇒ 这段 DDL 从未真正生效过）⇒ ★ **按名命中对『不存在的列』必然是假阳性**（命中的是别名/别的表/别的 schema）⇒ 产品走不到这条路径 ⇒ **不补 ALTER**
+# OVERRIDE goal_runs.policy_hash	benign	生产侧核对（252，2026-10-21）：**生产也没有这一列** ⇒ 这是『没人跑过的死 DDL』（549_goal_run_ledger.sql 的 CREATE 形状在『表已存在』上整段是静默空操作 ⇒ 这段 DDL 从未真正生效过）⇒ ★ **按名命中对『不存在的列』必然是假阳性**（命中的是别名/别的表/别的 schema）⇒ 产品走不到这条路径 ⇒ **不补 ALTER**
+# OVERRIDE goal_runs.root_idempotency_key	benign	生产侧核对（252，2026-10-21）：**生产也没有这一列** ⇒ 这是『没人跑过的死 DDL』（549_goal_run_ledger.sql 的 CREATE 形状在『表已存在』上整段是静默空操作 ⇒ 这段 DDL 从未真正生效过）⇒ ★ **按名命中对『不存在的列』必然是假阳性**（命中的是别名/别的表/别的 schema）⇒ 产品走不到这条路径 ⇒ **不补 ALTER**
+# OVERRIDE prompt_injection_detections.detection_layers	benign	生产侧核对（252，2026-10-21）：**生产有这一列**（⇒ 不是死 DDL，是真实的生产/新装形态差异）；但产品读写**不依赖这个物理列**：写路径是正典形状（detector.go:326 的 insertDetectionSQL 用 risk_level/rule_name/category），读路径是派生别名（admin/prompt_injection_handler.go:51-54） ⇒ **不补 ALTER**
+# OVERRIDE prompt_injection_detections.detection_score	benign	生产侧核对（252，2026-10-21）：**生产有这一列**（⇒ 不是死 DDL，是真实的生产/新装形态差异）；但产品读写**不依赖这个物理列**：写路径是正典形状（detector.go:326 的 insertDetectionSQL 用 risk_level/rule_name/category），读路径是派生别名（admin/prompt_injection_handler.go:51-54：risk_level AS detection_score） ⇒ **不补 ALTER**
+# OVERRIDE prompt_injection_detections.matched_rules	benign	生产侧核对（252，2026-10-21）：**生产有这一列**（⇒ 不是死 DDL，是真实的生产/新装形态差异）；但产品读写**不依赖这个物理列**：写路径是正典形状（detector.go:326 的 insertDetectionSQL 用 risk_level/rule_name/category），读路径是派生别名（读路径派生自 COALESCE(rule_name,)） ⇒ **不补 ALTER**
+# OVERRIDE prompt_injection_detections.matched_rules_count	benign	生产侧核对（252，2026-10-21）：**生产有这一列**（⇒ 不是死 DDL，是真实的生产/新装形态差异）；但产品读写**不依赖这个物理列**：写路径是正典形状（detector.go:326 的 insertDetectionSQL 用 risk_level/rule_name/category），读路径是派生别名（读路径派生自 array_length(categories,1)） ⇒ **不补 ALTER**
+# OVERRIDE request_stage_events.trace_id	benign	生产侧核对（252，2026-10-21）：**生产也没有这一列** ⇒ 这是『没人跑过的死 DDL』（434_request_stage_events_table.sql 的 CREATE 形状在『表已存在』上整段是静默空操作 ⇒ 这段 DDL 从未真正生效过）⇒ ★ **按名命中对『不存在的列』必然是假阳性**（命中的是别名/别的表/别的 schema）⇒ 产品走不到这条路径 ⇒ **不补 ALTER**
+# OVERRIDE usage_ledger.cost_currency	benign	生产侧核对（252，2026-10-21）：**生产也没有这一列** ⇒ 这是『没人跑过的死 DDL』（330_usage_ledger_partition.sql 的 CREATE 形状在『表已存在』上整段是静默空操作 ⇒ 这段 DDL 从未真正生效过）⇒ ★ **按名命中对『不存在的列』必然是假阳性**（命中的是别名/别的表/别的 schema）⇒ 产品走不到这条路径 ⇒ **不补 ALTER**
+# OVERRIDE usage_ledger.department	benign	生产侧核对（252，2026-10-21）：**生产也没有这一列** ⇒ 这是『没人跑过的死 DDL』（330_usage_ledger_partition.sql 的 CREATE 形状在『表已存在』上整段是静默空操作 ⇒ 这段 DDL 从未真正生效过）⇒ ★ **按名命中对『不存在的列』必然是假阳性**（命中的是别名/别的表/别的 schema）⇒ 产品走不到这条路径 ⇒ **不补 ALTER**
+# OVERRIDE usage_ledger.employee	benign	生产侧核对（252，2026-10-21）：**生产也没有这一列** ⇒ 这是『没人跑过的死 DDL』（330_usage_ledger_partition.sql 的 CREATE 形状在『表已存在』上整段是静默空操作 ⇒ 这段 DDL 从未真正生效过）⇒ ★ **按名命中对『不存在的列』必然是假阳性**（命中的是别名/别的表/别的 schema）⇒ 产品走不到这条路径 ⇒ **不补 ALTER**
+# OVERRIDE usage_ledger.id	benign	生产侧核对（252，2026-10-21）：**生产也没有这一列** ⇒ 这是『没人跑过的死 DDL』（330_usage_ledger_partition.sql 的 CREATE 形状在『表已存在』上整段是静默空操作 ⇒ 这段 DDL 从未真正生效过）⇒ ★ **按名命中对『不存在的列』必然是假阳性**（命中的是别名/别的表/别的 schema）⇒ 产品走不到这条路径 ⇒ **不补 ALTER**
+# OVERRIDE usage_ledger.position	benign	生产侧核对（252，2026-10-21）：**生产也没有这一列** ⇒ 这是『没人跑过的死 DDL』（330_usage_ledger_partition.sql 的 CREATE 形状在『表已存在』上整段是静默空操作 ⇒ 这段 DDL 从未真正生效过）⇒ ★ **按名命中对『不存在的列』必然是假阳性**（命中的是别名/别的表/别的 schema）⇒ 产品走不到这条路径 ⇒ **不补 ALTER**
+# OVERRIDE usage_ledger.route_reason	benign	生产侧核对（252，2026-10-21）：**生产也没有这一列** ⇒ 这是『没人跑过的死 DDL』（330_usage_ledger_partition.sql 的 CREATE 形状在『表已存在』上整段是静默空操作 ⇒ 这段 DDL 从未真正生效过）⇒ ★ **按名命中对『不存在的列』必然是假阳性**（命中的是别名/别的表/别的 schema）⇒ 产品走不到这条路径 ⇒ **不补 ALTER**
+diagnostic_runs	audit_log_id	benign	390_routing_audit_log.sql 以 CREATE TABLE ... (表已存在 ⇒ 整段是静默空操作) 形状声明；生产侧核对（252，2026-10-21）：**生产也没有这一列** ⇒ 这是『没人跑过的死 DDL』（390_routing_audit_log.sql 的 CREATE 形状在『表已存在』上整段是静默空操作 ⇒ 这段 DDL 从未真正生效过）⇒ ★ **按名命中对『不存在的列』必然是假阳性**（命中的是别名/别的表/别的 schema）⇒ 产品走不到这条路径 ⇒ **不补 ALTER**
+goal_run_actions	intent_hash	benign	549_goal_run_ledger.sql 以 CREATE TABLE ... (表已存在 ⇒ 整段是静默空操作) 形状声明；生产侧核对（252，2026-10-21）：**生产也没有这一列** ⇒ 这是『没人跑过的死 DDL』（549_goal_run_ledger.sql 的 CREATE 形状在『表已存在』上整段是静默空操作 ⇒ 这段 DDL 从未真正生效过）⇒ ★ **按名命中对『不存在的列』必然是假阳性**（命中的是别名/别的表/别的 schema）⇒ 产品走不到这条路径 ⇒ **不补 ALTER**
+goal_run_actions	step_sequence	benign	549_goal_run_ledger.sql 以 CREATE TABLE ... (表已存在 ⇒ 整段是静默空操作) 形状声明；生产侧核对（252，2026-10-21）：**生产也没有这一列** ⇒ 这是『没人跑过的死 DDL』（549_goal_run_ledger.sql 的 CREATE 形状在『表已存在』上整段是静默空操作 ⇒ 这段 DDL 从未真正生效过）⇒ ★ **按名命中对『不存在的列』必然是假阳性**（命中的是别名/别的表/别的 schema）⇒ 产品走不到这条路径 ⇒ **不补 ALTER**
+goal_run_actions	tenant_id	benign	549_goal_run_ledger.sql 以 CREATE TABLE ... (表已存在 ⇒ 整段是静默空操作) 形状声明；生产侧核对（252，2026-10-21）：**生产也没有这一列** ⇒ 这是『没人跑过的死 DDL』（549_goal_run_ledger.sql 的 CREATE 形状在『表已存在』上整段是静默空操作 ⇒ 这段 DDL 从未真正生效过）⇒ ★ **按名命中对『不存在的列』必然是假阳性**（命中的是别名/别的表/别的 schema）⇒ 产品走不到这条路径 ⇒ **不补 ALTER**
+goal_run_steps	tenant_id	benign	549_goal_run_ledger.sql 以 CREATE TABLE ... (表已存在 ⇒ 整段是静默空操作) 形状声明；生产侧核对（252，2026-10-21）：**生产也没有这一列** ⇒ 这是『没人跑过的死 DDL』（549_goal_run_ledger.sql 的 CREATE 形状在『表已存在』上整段是静默空操作 ⇒ 这段 DDL 从未真正生效过）⇒ ★ **按名命中对『不存在的列』必然是假阳性**（命中的是别名/别的表/别的 schema）⇒ 产品走不到这条路径 ⇒ **不补 ALTER**
+goal_runs	fencing_token	benign	549_goal_run_ledger.sql 以 CREATE TABLE ... (表已存在 ⇒ 整段是静默空操作) 形状声明；生产侧核对（252，2026-10-21）：**生产也没有这一列** ⇒ 这是『没人跑过的死 DDL』（549_goal_run_ledger.sql 的 CREATE 形状在『表已存在』上整段是静默空操作 ⇒ 这段 DDL 从未真正生效过）⇒ ★ **按名命中对『不存在的列』必然是假阳性**（命中的是别名/别的表/别的 schema）⇒ 产品走不到这条路径 ⇒ **不补 ALTER**
+goal_runs	goal_run_id	benign	549_goal_run_ledger.sql 以 CREATE TABLE ... (表已存在 ⇒ 整段是静默空操作) 形状声明；生产侧核对（252，2026-10-21）：**生产也没有这一列** ⇒ 这是『没人跑过的死 DDL』（549_goal_run_ledger.sql 的 CREATE 形状在『表已存在』上整段是静默空操作 ⇒ 这段 DDL 从未真正生效过）⇒ ★ **按名命中对『不存在的列』必然是假阳性**（命中的是别名/别的表/别的 schema）⇒ 产品走不到这条路径 ⇒ **不补 ALTER**
+goal_runs	policy_hash	benign	549_goal_run_ledger.sql 以 CREATE TABLE ... (表已存在 ⇒ 整段是静默空操作) 形状声明；生产侧核对（252，2026-10-21）：**生产也没有这一列** ⇒ 这是『没人跑过的死 DDL』（549_goal_run_ledger.sql 的 CREATE 形状在『表已存在』上整段是静默空操作 ⇒ 这段 DDL 从未真正生效过）⇒ ★ **按名命中对『不存在的列』必然是假阳性**（命中的是别名/别的表/别的 schema）⇒ 产品走不到这条路径 ⇒ **不补 ALTER**
+goal_runs	root_idempotency_key	benign	549_goal_run_ledger.sql 以 CREATE TABLE ... (表已存在 ⇒ 整段是静默空操作) 形状声明；生产侧核对（252，2026-10-21）：**生产也没有这一列** ⇒ 这是『没人跑过的死 DDL』（549_goal_run_ledger.sql 的 CREATE 形状在『表已存在』上整段是静默空操作 ⇒ 这段 DDL 从未真正生效过）⇒ ★ **按名命中对『不存在的列』必然是假阳性**（命中的是别名/别的表/别的 schema）⇒ 产品走不到这条路径 ⇒ **不补 ALTER**
+prompt_injection_detections	detection_layers	benign	315_prompt_injection_detection.sql 以 CREATE TABLE ... (表已存在 ⇒ 整段是静默空操作) 形状声明；生产侧核对（252，2026-10-21）：**生产有这一列**（⇒ 不是死 DDL，是真实的生产/新装形态差异）；但产品读写**不依赖这个物理列**：写路径是正典形状（detector.go:326 的 insertDetectionSQL 用 risk_level/rule_name/category），读路径是派生别名（admin/prompt_injection_handler.go:51-54） ⇒ **不补 ALTER**
+prompt_injection_detections	detection_score	benign	315_prompt_injection_detection.sql 以 CREATE TABLE ... (表已存在 ⇒ 整段是静默空操作) 形状声明；生产侧核对（252，2026-10-21）：**生产有这一列**（⇒ 不是死 DDL，是真实的生产/新装形态差异）；但产品读写**不依赖这个物理列**：写路径是正典形状（detector.go:326 的 insertDetectionSQL 用 risk_level/rule_name/category），读路径是派生别名（admin/prompt_injection_handler.go:51-54：risk_level AS detection_score） ⇒ **不补 ALTER**
+prompt_injection_detections	matched_rules	benign	315_prompt_injection_detection.sql 以 CREATE TABLE ... (表已存在 ⇒ 整段是静默空操作) 形状声明；生产侧核对（252，2026-10-21）：**生产有这一列**（⇒ 不是死 DDL，是真实的生产/新装形态差异）；但产品读写**不依赖这个物理列**：写路径是正典形状（detector.go:326 的 insertDetectionSQL 用 risk_level/rule_name/category），读路径是派生别名（读路径派生自 COALESCE(rule_name,)） ⇒ **不补 ALTER**
+prompt_injection_detections	matched_rules_count	benign	315_prompt_injection_detection.sql 以 CREATE TABLE ... (表已存在 ⇒ 整段是静默空操作) 形状声明；生产侧核对（252，2026-10-21）：**生产有这一列**（⇒ 不是死 DDL，是真实的生产/新装形态差异）；但产品读写**不依赖这个物理列**：写路径是正典形状（detector.go:326 的 insertDetectionSQL 用 risk_level/rule_name/category），读路径是派生别名（读路径派生自 array_length(categories,1)） ⇒ **不补 ALTER**
+request_stage_events	trace_id	benign	434_request_stage_events_table.sql 以 CREATE TABLE ... (表已存在 ⇒ 整段是静默空操作) 形状声明；生产侧核对（252，2026-10-21）：**生产也没有这一列** ⇒ 这是『没人跑过的死 DDL』（434_request_stage_events_table.sql 的 CREATE 形状在『表已存在』上整段是静默空操作 ⇒ 这段 DDL 从未真正生效过）⇒ ★ **按名命中对『不存在的列』必然是假阳性**（命中的是别名/别的表/别的 schema）⇒ 产品走不到这条路径 ⇒ **不补 ALTER**
+usage_ledger	cost_currency	benign	330_usage_ledger_partition.sql 以 CREATE TABLE ... (表已存在 ⇒ 整段是静默空操作) 形状声明；生产侧核对（252，2026-10-21）：**生产也没有这一列** ⇒ 这是『没人跑过的死 DDL』（330_usage_ledger_partition.sql 的 CREATE 形状在『表已存在』上整段是静默空操作 ⇒ 这段 DDL 从未真正生效过）⇒ ★ **按名命中对『不存在的列』必然是假阳性**（命中的是别名/别的表/别的 schema）⇒ 产品走不到这条路径 ⇒ **不补 ALTER**
+usage_ledger	department	benign	330_usage_ledger_partition.sql 以 CREATE TABLE ... (表已存在 ⇒ 整段是静默空操作) 形状声明；生产侧核对（252，2026-10-21）：**生产也没有这一列** ⇒ 这是『没人跑过的死 DDL』（330_usage_ledger_partition.sql 的 CREATE 形状在『表已存在』上整段是静默空操作 ⇒ 这段 DDL 从未真正生效过）⇒ ★ **按名命中对『不存在的列』必然是假阳性**（命中的是别名/别的表/别的 schema）⇒ 产品走不到这条路径 ⇒ **不补 ALTER**
+usage_ledger	employee	benign	330_usage_ledger_partition.sql 以 CREATE TABLE ... (表已存在 ⇒ 整段是静默空操作) 形状声明；生产侧核对（252，2026-10-21）：**生产也没有这一列** ⇒ 这是『没人跑过的死 DDL』（330_usage_ledger_partition.sql 的 CREATE 形状在『表已存在』上整段是静默空操作 ⇒ 这段 DDL 从未真正生效过）⇒ ★ **按名命中对『不存在的列』必然是假阳性**（命中的是别名/别的表/别的 schema）⇒ 产品走不到这条路径 ⇒ **不补 ALTER**
+usage_ledger	id	benign	330_usage_ledger_partition.sql 以 CREATE TABLE ... (表已存在 ⇒ 整段是静默空操作) 形状声明；生产侧核对（252，2026-10-21）：**生产也没有这一列** ⇒ 这是『没人跑过的死 DDL』（330_usage_ledger_partition.sql 的 CREATE 形状在『表已存在』上整段是静默空操作 ⇒ 这段 DDL 从未真正生效过）⇒ ★ **按名命中对『不存在的列』必然是假阳性**（命中的是别名/别的表/别的 schema）⇒ 产品走不到这条路径 ⇒ **不补 ALTER**
+usage_ledger	position	benign	330_usage_ledger_partition.sql 以 CREATE TABLE ... (表已存在 ⇒ 整段是静默空操作) 形状声明；生产侧核对（252，2026-10-21）：**生产也没有这一列** ⇒ 这是『没人跑过的死 DDL』（330_usage_ledger_partition.sql 的 CREATE 形状在『表已存在』上整段是静默空操作 ⇒ 这段 DDL 从未真正生效过）⇒ ★ **按名命中对『不存在的列』必然是假阳性**（命中的是别名/别的表/别的 schema）⇒ 产品走不到这条路径 ⇒ **不补 ALTER**
+usage_ledger	route_reason	benign	330_usage_ledger_partition.sql 以 CREATE TABLE ... (表已存在 ⇒ 整段是静默空操作) 形状声明；生产侧核对（252，2026-10-21）：**生产也没有这一列** ⇒ 这是『没人跑过的死 DDL』（330_usage_ledger_partition.sql 的 CREATE 形状在『表已存在』上整段是静默空操作 ⇒ 这段 DDL 从未真正生效过）⇒ ★ **按名命中对『不存在的列』必然是假阳性**（命中的是别名/别的表/别的 schema）⇒ 产品走不到这条路径 ⇒ **不补 ALTER**

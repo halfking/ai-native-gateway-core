@@ -779,30 +779,208 @@ func TestV1ArmViewsAreDerivedFromDDL(t *testing.T) {
 	}
 }
 
-// 门 16（§9.260）：推导器必须认得**运行时由 composer 创建、没有仓库 DDL 文件**的视图。
+// 门 17（§19.10 跨会话订正，2026-10-21）：**部署时点**不得含 v1 臂；
+// 基线形态的 v1 臂必须**声明**出来，且必须有一个**可核的切换迁移**兜底。
 //
-// 真库 `pg_class` 里有 4 个 `_request_logs*_with_current_month*` 视图，
-// 4 个**全部含 v1 臂**；而 `sql/objects/views/` 的 54 个 DDL 文件只覆盖其中 2 个。
-// 缺的两个由 composer 在运行时建（`db/request_logs_view_schema.go:128` / `:140`）。
+// （取代门 16 `TestComposerDefinesNoV1ArmView` —— 旧名保留在本段注释里，
 //
-// ⇒ 第一版只看 DDL 目录，于是读那两个视图的文件被判成 **canonical**
-// —— 方向是**「把有风险的报成安全」**，也就是本工具最坏的失效方向。
-func TestV1ArmViewsIncludeComposerDefinedOnes(t *testing.T) {
-	set := viewsWithV1Arm(repoRoot(t))
-	want := []string{
-		"request_logs_with_current_month",
-		"request_logs_with_current_month_without_customer_id",          // 无 DDL 文件
-		"request_logs_with_current_month_without_request_class_due_at", // 无 DDL 文件
-		"request_logs_bodies_with_current_month",
+//	按旧名仍能搜到本测试。门 16 **生来就红**：写它的时候那 5 个视图文件
+//	已经是 v1 fallback 体，而它断言「全仓不得有 v1 臂」。）
+//
+// # 为什么必须分「两个时点」
+//
+// 「sql/objects/views/ 里出现 v1 臂」这件事，在两个时点上的含义**相反**：
+//
+//	基线时点（sql/objects/views/ 的基线体）⇒ **允许** v1 臂
+//	    基线 schema 逐语句应用，而 CREATE VIEW 会**急切校验**它引用的关系
+//	    ⇒ 写成会话族形态会让**全新安装**在基线阶段 42P01 中止。
+//	部署时点（切换迁移的体 / 迁移后的实况）⇒ **不该有** v1 臂
+//	    部署形态由 883 / 884 换上 ⇒ 读方不该静默少行。
+//
+// ⇒ 门 16 把「基线形态」当成了「部署形态」，逼人去改那 5 个源文件 ——
+//
+//	那是**会炸新装**的方向。
+//
+// # 豁免必须**可证伪**（本门的三条新腿）
+//
+// 声明不是空白支票：每条声明必须给出切换迁移，而门会去**读那个迁移的体**：
+//
+//	C 切换迁移的体里还有 v1 臂      ⇒ 豁免无效（红）
+//	D 切换迁移不在启动链里          ⇒ 豁免无效（红）
+//	E 切换迁移排在 v1 退役之后      ⇒ 豁免无效（红）
+//
+// ⇒ 「把豁免用起来」这件事本身是有牙的：想豁免就得真的有部署形态。
+func TestDeploymentTimeHasNoV1ArmView(t *testing.T) {
+	root := repoRoot(t)
+	audit := AuditV1Arms(root)
+
+	// ① 主断言：部署时点不得有 v1 臂。
+	if len(audit.DeploymentArms) != 0 {
+		t.Errorf("★ 部署时点推出了 %d 个含 v1 臂的视图（%v）—— **不应该有**。\n"+
+			"部署时点 = 未声明为基线形态的视图 DDL + composer + 各声明的**切换迁移的体**。\n"+
+			"⚠ 若这是「基线形态 fallback 体」⇒ 补两行声明：\n"+
+			"    -- dbinit:baseline-v1-fallback\n"+
+			"    -- dbinit:baseline-v1-fallback-switch: <把它换成会话族形态的迁移>\n"+
+			"⚠ **不要**为了让它变绿去改 sql/objects/views/ 的源 DDL（那会让全新安装 42P01）。",
+			len(audit.DeploymentArms), audit.DeploymentArms)
 	}
-	for _, w := range want {
-		if !set[w] {
-			t.Errorf("视图 %q 没被推出含 v1 臂。\n"+
-				"★ 最可能的原因：它由 composer 在**运行时**创建、仓库里没有 DDL 文件 ⇒ "+
-				"推导器只读 sql/objects/views/ 就会漏。\n"+
-				"真库 pg_class 里有 4 个 _request_logs*_with_current_month* 视图，**全部含 v1 臂**；"+
-				"漏掉任何一个都会把它下面的读方判成 canonical（把有风险的报成安全）。\n"+
-				"当前推出集合：%v", w, v1ArmViewNames(set))
+
+	// ② 声明纪律：每条声明都要有可核的切换迁移兜底。
+	if len(audit.Problems) != 0 {
+		t.Errorf("★ 基线形态 fallback 体的声明有 %d 条问题：\n  - %s\n"+
+			"⇒ 豁免不成立 ⇒ 门红。修法：把切换迁移补对（存在 + 已登记 + 排在 v1 退役之前 + 体里没有 v1 臂），"+
+			"或去掉那两行声明（那样它会被当部署形态判）。",
+			len(audit.Problems), strings.Join(audit.Problems, "\n  - "))
+	}
+
+	// ③ 声明集合 == 显式登记册（双向严格相等）。
+	//
+	// ★ 为什么要有登记册：声明是从源文件里**解析**出来的 ⇒ 解析器坏了
+	//   （或标记写错）会让声明集合**静默变空** ⇒ 那样 ① 会因为「没有声明
+	//   要豁免」而把 5 个视图算成部署形态 ⇒ ① 反而会红 ⇒ 方向是安全的。
+	//   但反方向会出事：**新增**一个基线形态 fallback 体却忘了登记 ⇒
+	//   没人知道它的切换迁移是谁 ⇒ 兜底关系只存在于源文件里。
+	//   ⇒ 登记册 = 「豁免台账」，必须与实测**双向严格相等**。
+	wantBaselineFallbacks := map[string]string{
+		"customer_cost_view":           "883_session_family_cost_view_metrics.sql",
+		"model_cost_per_task_view":     "883_session_family_cost_view_metrics.sql",
+		"v_continuation_effectiveness": "884_session_family_v_analytics_views.sql",
+		"v_node_switch_analysis":       "884_session_family_v_analytics_views.sql",
+		"v_timeout_effectiveness":      "884_session_family_v_analytics_views.sql",
+	}
+	gotBaselineFallbacks := map[string]string{}
+	for _, d := range audit.BaselineFallbacks {
+		gotBaselineFallbacks[d.View] = d.Switch
+	}
+	for view, switchName := range wantBaselineFallbacks {
+		got, ok := gotBaselineFallbacks[view]
+		if !ok {
+			t.Errorf("★ 登记册里的 %s **没有**出现在实测声明集合里 ⇒ 声明被删了/被改坏了。\n"+
+				"实测声明集合=%v", view, gotBaselineFallbacks)
+			continue
+		}
+		if got != switchName {
+			t.Errorf("★ %s 的切换迁移声明变了：登记册=%s，实测=%s ⇒ 两条真相源不一致。",
+				view, switchName, got)
 		}
 	}
+	for view := range gotBaselineFallbacks {
+		if _, ok := wantBaselineFallbacks[view]; !ok {
+			t.Errorf("★ 实测多出一个基线形态 fallback 体声明：%s（切换迁移=%s）⇒ "+
+				"请在登记册里补上它的切换迁移（否则它的兜底关系只存在于源文件里）。",
+				view, gotBaselineFallbacks[view])
+		}
+	}
+	if len(wantBaselineFallbacks) == 0 {
+		t.Errorf("★ 登记册空了 ⇒ 这道门会变成「什么都没登记也是绿的」。")
+	}
+
+	// ④⑤ 正向对照 A / B：推导器仍认得出 v1 臂（在**未声明**的视图 DDL 与 composer 里）。
+	//    （这两段沿用门 16 的原逻辑：门 16 的推导器没坏，坏的只是它的**前提**。）
+	dir := t.TempDir()
+	vdir := filepath.Join(dir, "sql", "objects", "views")
+	if err := os.MkdirAll(vdir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	ddl := "CREATE VIEW public.synthetic_ddl_v1_arm AS\n" +
+		" SELECT request_id FROM public._request_logs_hot\n" +
+		"UNION ALL\n" +
+		" SELECT request_id FROM public._request_logs;\n"
+	if err := os.WriteFile(filepath.Join(vdir, "synthetic_ddl_v1_arm.sql"), []byte(ddl), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got := viewsWithV1Arm(dir)
+	if !got["synthetic_ddl_v1_arm"] {
+		t.Errorf("★ 正向对照 A 失败：合成的「含 v1 臂的 DDL 视图」没被推出（集合=%v）。\n"+
+			"⇒ **推导器坏了**（最常见：fromRelationRE 的捕获范围被改窄、不再吃 schema 限定名——\n"+
+			"§9.258 踩过一次，第四桶恒为 0）。\n"+
+			"⇒ 那么上面那句「部署时点没有 v1 臂视图」就**不可信**。", v1ArmViewNames(got))
+	}
+	if len(got) != 1 {
+		t.Errorf("合成夹具推出的集合应当**只有** synthetic_ddl_v1_arm 一个，实际=%v —— "+
+			"推导器把别的东西也算成 v1 臂视图了（假阳性方向）。", v1ArmViewNames(got))
+	}
+
+	croot := t.TempDir()
+	cdir := filepath.Join(croot, "db")
+	if err := os.MkdirAll(cdir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	composer := "package db\n\n" +
+		"// synthetic composer: a CREATE VIEW whose body reads a v1 base table.\n" +
+		"const syntheticComposerDDL = `\n" +
+		"CREATE OR REPLACE VIEW public.synthetic_composer_v1_arm AS\n" +
+		"SELECT request_id FROM public._request_logs_hot\n" +
+		"UNION ALL\n" +
+		"SELECT request_id FROM public._request_logs\n" +
+		"`\n"
+	if err := os.WriteFile(filepath.Join(cdir, "request_logs_view_schema.go"), []byte(composer), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cgot := viewsWithV1Arm(croot)
+	if !cgot["synthetic_composer_v1_arm"] {
+		t.Errorf("★ 正向对照 B 失败：合成的「含 v1 臂的 composer 视图」没被推出（集合=%v）。\n"+
+			"⇒ **composer 那条推导路径坏了**。⇒ 那么 ① 的结论就**不可信**。",
+			v1ArmViewNames(cgot))
+	}
+
+	// ⑥⑦⑧ 豁免的三条腿：合成夹具里，故障必须被**报出来**（而不是被放过）。
+	//
+	// 每一腿都用**同一个** AuditV1Arms ⇒ 证明「豁免不是空白支票」。
+	t.Run("豁免腿C_切换迁移体带v1臂", func(t *testing.T) {
+		r := newFakeRepoRoot(t)
+		r.writeView("v_baseline_fallback.sql", baselineFallbackViewDDL("v_baseline_fallback"))
+		// 切换迁移的体里**还有** v1 臂 ⇒ 部署形态是脏的。
+		r.writeMigration("900_switch.sql", "CREATE OR REPLACE VIEW public.v_baseline_fallback AS\n"+
+			" SELECT request_id FROM public._request_logs;\n")
+		r.writeChain("900_switch.sql", "901_drop_v1.sql")
+		r.writeMigration("901_drop_v1.sql", v1DropMigrationDDL())
+		a := AuditV1Arms(r.dir)
+		if !containsSubstring(a.Problems, "部署形态体里还有 v1 臂") {
+			t.Errorf("★ 豁免腿 C 失败：切换迁移的部署形态体里带 v1 臂，**没有被报出来**。\n"+
+				"问题列表=%v\n⇒ 豁免变成了空白支票 ⇒ 部署形态脏了没人知道。", a.Problems)
+		}
+	})
+
+	t.Run("豁免腿D_切换迁移不在启动链", func(t *testing.T) {
+		r := newFakeRepoRoot(t)
+		r.writeView("v_baseline_fallback.sql", baselineFallbackViewDDL("v_baseline_fallback"))
+		r.writeMigration("900_switch.sql", sessionFamilySwitchDDL("v_baseline_fallback"))
+		// 启动链里**只有**退役迁移，没有切换迁移。
+		r.writeChain("901_drop_v1.sql")
+		r.writeMigration("901_drop_v1.sql", v1DropMigrationDDL())
+		a := AuditV1Arms(r.dir)
+		if !containsSubstring(a.Problems, "不在启动链") {
+			t.Errorf("★ 豁免腿 D 失败：切换迁移不在启动链，**没有被报出来**。\n"+
+				"问题列表=%v", a.Problems)
+		}
+	})
+
+	t.Run("豁免腿E_切换迁移排在退役之后", func(t *testing.T) {
+		r := newFakeRepoRoot(t)
+		r.writeView("v_baseline_fallback.sql", baselineFallbackViewDDL("v_baseline_fallback"))
+		r.writeMigration("900_switch.sql", sessionFamilySwitchDDL("v_baseline_fallback"))
+		r.writeMigration("901_drop_v1.sql", v1DropMigrationDDL())
+		// 切换迁移**在链里**，但排在退役**之后** ⇒ 视图还没换形态，v1 就被删了。
+		r.writeChain("901_drop_v1.sql", "900_switch.sql")
+		a := AuditV1Arms(r.dir)
+		if !containsSubstring(a.Problems, "排在 v1 族退役迁移") {
+			t.Errorf("★ 豁免腿 E 失败：切换迁移排在退役之后，**没有被报出来**。\n"+
+				"问题列表=%v", a.Problems)
+		}
+	})
+
+	t.Run("反向_未声明却含v1臂必须算部署形态", func(t *testing.T) {
+		r := newFakeRepoRoot(t)
+		// 含 v1 臂、**没有**声明 ⇒ 必须被算成部署形态（主断言红）。
+		r.writeView("v_undeclared.sql",
+			"CREATE VIEW public.v_undeclared AS\n SELECT request_id FROM public._request_logs;\n")
+		r.writeChain("901_drop_v1.sql")
+		r.writeMigration("901_drop_v1.sql", v1DropMigrationDDL())
+		a := AuditV1Arms(r.dir)
+		if len(a.DeploymentArms) != 1 || a.DeploymentArms[0] != "v_undeclared" {
+			t.Errorf("★ 反向对照失败：未声明却含 v1 臂的视图**没有**被算成部署形态。\n"+
+				"实际=%v\n⇒ 主断言会漏报 ⇒ 「源里有 v1 臂」这件事没人管了。", a.DeploymentArms)
+		}
+	})
 }

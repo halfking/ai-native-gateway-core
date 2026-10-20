@@ -2,12 +2,50 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
+
+// ── 退役态的假查询器 ────────────────────────────────────────────────────
+//
+// retiredFamilyQuerier 是一个**只记账**的 dualReadQuerier：它不查库，
+// 只记下「有人试图发查询」这件事。
+//
+// 为什么需要它：v1 族退役后，正确的行为是**一条查询都不发**
+// （详见 TestDualReadValidator_RetiredFamilyIssuesNoQuery）。
+// 而「0 条」这个断言有个致命的形态问题：**判据没跑成的时候它同样绿**。
+// ⇒ 必须配一条**正控制**：同一个计数器必须看得见真发出去的查询。
+//
+// ⚠ 这个类型定义在**无 build tag** 的文件里（就是本文件），因为三道门都要用它：
+// 本文件（无 tag）、s4_gate_coverage_faces_test.go（无 tag）、
+// dual_read_both_faces_test.go（!integration）。
+// 无 tag 的定义在两个形状里都看得见；反过来（定义在带 tag 的文件里），
+// 另一个形状就会「符号不存在」——同款坑见 sql_identifier_helpers_test.go 的注记。
+type retiredFamilyQuerier struct {
+	queries []string
+}
+
+func (q *retiredFamilyQuerier) Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error) {
+	q.queries = append(q.queries, sql)
+	return nil, fmt.Errorf("retiredFamilyQuerier: 退役态下不应发查询：%s", sql)
+}
+
+func (q *retiredFamilyQuerier) QueryRow(ctx context.Context, sql string, args ...any) pgx.Row {
+	q.queries = append(q.queries, sql)
+	return retiredFamilyErrorRow{err: fmt.Errorf("retiredFamilyQuerier: 退役态下不应发查询：%s", sql)}
+}
+
+// retiredFamilyErrorRow 是一个「一 Scan 就报错」的 pgx.Row：
+// 万一哪天有人在这条路上加了查询，它会**响亮地失败**而不是静默地返回零行。
+type retiredFamilyErrorRow struct{ err error }
+
+func (r retiredFamilyErrorRow) Scan(dest ...any) error { return r.err }
 
 func TestDualReadValidator_Constructor(t *testing.T) {
 	v := NewDualReadValidator(nil) // nil pool must not panic
@@ -64,6 +102,96 @@ func TestDualReadValidator_NilPoolSummarize(t *testing.T) {
 	}
 }
 
+// TestDualReadValidator_RetiredFamilyIssuesNoQuery 钉住退役态的**行为**：
+// 对账路径一条查询都不发，且如实报「未测量」。
+//
+// # 为什么这道门存在
+//
+// 迁移 890 把 v1 族整体 DROP 之后，对账（v1 ↔ 会话族）在**语义上**就没有对象了：
+// 差集需要「另一侧」，而另一侧已经不存在。剩下的风险有两个方向：
+//
+//	(a) **还在量**：把「没量」报成「量了 0」——`zero_drift=true`、
+//	    `v1_coverage_pp=0` 读起来像「两侧一致、窗口干净」。
+//	    这正是本仓反复吃亏的「真空为绿」，只是这次发生在**退役态**。
+//	(b) **还在查**：任何提到 v1 族的语句都是 42P01（整条语句失败，不是那条腿失败）。
+//
+// ⇒ (b) 由「零查询」这条断言兜底（不发查询就不会 42P01）；
+// (a) 由下面那些字段断言兜底（必须带「未测量」的标记）。
+//
+// ★ 「0 条查询」这个断言本身有个致命形态：**判据没跑成的时候它同样绿**。
+// 末尾有一条**正控制**：同一个计数器必须看得见真发出去的查询。
+func TestDualReadValidator_RetiredFamilyIssuesNoQuery(t *testing.T) {
+	q := &retiredFamilyQuerier{}
+	v := NewDualReadValidatorOn(q)
+	ctx := context.Background()
+	now := time.Now()
+
+	sum, err := v.SummarizeFrom(ctx, "", now, 168)
+	if err != nil {
+		t.Fatalf("SummarizeFrom: %v", err)
+	}
+	if len(q.queries) != 0 {
+		t.Errorf("退役态的对账发出了 %d 条查询（%v）—— v1 族已被 DROP，任何提到它的语句都是 "+
+			"42P01；而「没有对账可做」的正确实现是**一条都不发**", len(q.queries), q.queries)
+	}
+	// 「未测量」的标记必须齐全：少一个，读者就会把 0 读成「量了 0」。
+	if !sum.V1Retired {
+		t.Error("MirrorDriftSummary.V1Retired 必须为 true —— 它是「本次运行没有做任何对账」的显式标记")
+	}
+	if sum.V1CoveragePP != -1 {
+		t.Errorf("V1CoveragePP = %v，期望 -1 —— -1 是「**未测量**」的哨兵值；"+
+			"0 会被读成「测到了 0%% 覆盖」", sum.V1CoveragePP)
+	}
+	if sum.S4Ready {
+		t.Error("S4Ready 必须为 false —— 退役态下没有第二侧可比，恒 false 的理由是「没有东西可比」")
+	}
+	if !sum.S4GateVoid {
+		t.Error("S4GateVoid 必须为 true —— 「这次没法评估漂移」与「评估了、有漂移」必须可区分")
+	}
+	if sum.S4GateVoidReason != s4GateReasonV1FamilyRetired {
+		t.Errorf("S4GateVoidReason = %q，期望 %q —— 复用前三条（证据不足）会把读者引向"+
+			"「把 v1 写打开」这个退役后有害的 remedy", sum.S4GateVoidReason, s4GateReasonV1FamilyRetired)
+	}
+
+	detail, err := v.CompareDetail(ctx, "", "sess-retired", 10)
+	if err != nil {
+		t.Fatalf("CompareDetail: %v", err)
+	}
+	if len(q.queries) != 0 {
+		t.Errorf("CompareDetail 发出了 %d 条查询（%v）—— 同样不该发", len(q.queries), q.queries)
+	}
+	if !detail.V1Retired {
+		t.Error("DualReadDetail.V1Retired 必须为 true")
+	}
+	if detail.ZeroDriftEvaluable {
+		t.Error("ZeroDriftEvaluable 必须为 false —— 含义是「本次运行没有验证任何漂移」")
+	}
+	if detail.ZeroDrift {
+		t.Error("ZeroDrift 必须为 false —— 没有证据说漂移为零；「没做对账」与「对账结果为零」必须长得不一样")
+	}
+
+	// Compare 走的是不走 HTTP 的那条路：它必须**响亮地失败**，
+	// 而不是返回一份「零差异」的 diff —— 零差异在这个语义下是**假的**。
+	diff, err := v.Compare(ctx, "", "sess-retired", 10)
+	if err == nil {
+		t.Errorf("Compare 必须返回错误，实际返回 nil（diff=%+v）—— 「零差异」会被读成"+
+			"「两侧一致」，而事实是「只有一侧，而且它没被读过」", diff)
+	}
+	if len(q.queries) != 0 {
+		t.Errorf("Compare 发出了 %d 条查询（%v）—— 退役后没有对账可做", len(q.queries), q.queries)
+	}
+
+	// ★ 正控制：计数器必须看得见查询，否则上面三条「0 条」可能只是判据没跑成。
+	before := len(q.queries)
+	if _, err := q.Query(ctx, "SELECT 1"); err == nil {
+		t.Error("正控制失效：retiredFamilyQuerier 对任何查询都应当报错")
+	}
+	if len(q.queries) != before+1 {
+		t.Errorf("正控制失效：发了一条查询后计数从 %d 变成 %d —— 「0 条」这个断言没有牙",
+			before, len(q.queries))
+	}
+}
+
 // TestMirrorDriftClassSQLCoversThreeBuckets 守住「按设计排除」与「真漏写」的区分。
 //
 // 这个区分是 S4 判据的核心：把 internal_loopback / non_terminal 也算成漏写，
@@ -97,22 +225,26 @@ func TestMirrorDriftClassSQLCoversThreeBuckets(t *testing.T) {
 	if !strings.Contains(mirrorDriftClassSQL, "COALESCE(rl.is_auto_request, false)") {
 		t.Fatal("internal_loopback arm must be gated on COALESCE(is_auto_request,false); a NULL is_auto_request is not an internal loopback")
 	}
-	// The scope must anti-join on BOTH session_turns legs; a single leg would
-	// miss rows sitting in the hot table and under-report drift.
-	for _, want := range []string{"session_turns_hot", "NOT EXISTS"} {
-		if !strings.Contains(mirrorDriftScopeSQL, want) {
-			t.Fatalf("scope SQL missing %q", want)
-		}
-	}
-	if n := strings.Count(mirrorDriftScopeSQL, "NOT EXISTS"); n != 2 {
-		t.Fatalf("scope SQL must anti-join both turns legs, found %d NOT EXISTS", n)
-	}
-	// 分类臂读到的每一列都必须在 scope 里被投影出来，否则 PG 直接 42703。
-	for _, col := range []string{"is_auto_request", "origin_actor", "request_type", "task_type", "success", "error_kind"} {
-		if !strings.Contains(mirrorDriftScopeSQL, col) {
-			t.Fatalf("scope SQL does not project %q but the class expression reads it", col)
-		}
-	}
+	// ★ 2026-10-20（迁移 890，v1 族整体退役）：本函数原先还有**三段**关于
+	// 「对账范围 SQL」（mirrorDriftScopeSQL）的断言：
+	//
+	//	- 范围必须反连接会话族的**两条腿**（NOT EXISTS × 2）；
+	//	- 范围必须投影分类表达式读到的每一列（is_auto_request / origin_actor / ...）。
+	//
+	// 它们随**被测对象**一起退役：那条 SQL 已从 dual_read_validator.go 删除
+	// （v1 族被 DROP ⇒ 任何提到它的语句 42P01），而「范围」这个集合在退役后
+	// **根本不存在**——没有第二侧就没有漂移可比。
+	//
+	// ⇒ 断言删除，理由是「被测对象没了」，不是「断言不重要了」。
+	// 删掉的风险由另外两道门接手：
+	//
+	//	- 「退役后不许再发查询、不许再报成已测量」：
+	//	  TestDualReadValidator_RetiredFamilyIssuesNoQuery（本文件）；
+	//	- 「对账这条路上不许再出现 v1 族的关系名」：
+	//	  dual_read_both_faces_test.go 的 TestDriftReconciliationMentionsNoRetiredV1Relation。
+	//
+	// 分类表达式本身**没有退役**：db.MirrorDriftClassSQL 仍在 admin 侧使用，
+	// 上面的断言继续守它。
 }
 
 // TestMirrorDriftClassSQLHandlesNullWorkType 守住一个会把「问题已修复」伪装出来的

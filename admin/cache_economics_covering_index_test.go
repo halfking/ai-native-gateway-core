@@ -112,12 +112,12 @@ func extractCacheEconomicsAggregateSQL(t *testing.T) string {
 
 // explainPlanNode 是 EXPLAIN (FORMAT JSON) 的一个节点。
 type explainPlanNode struct {
-	NodeType   string           `json:"Node Type"`
-	Relation   string           `json:"Relation Name"`
-	IndexName  string           `json:"Index Name"`
-	ActualRows int64            `json:"Actual Rows"`
-	ActualLoops int64           `json:"Actual Loops"`
-	Plans      []explainPlanNode `json:"Plans"`
+	NodeType    string            `json:"Node Type"`
+	Relation    string            `json:"Relation Name"`
+	IndexName   string            `json:"Index Name"`
+	ActualRows  int64             `json:"Actual Rows"`
+	ActualLoops int64             `json:"Actual Loops"`
+	Plans       []explainPlanNode `json:"Plans"`
 }
 
 // walkLedgerScans 收集计划里所有落在 usage_ledger* 上的扫描节点。
@@ -134,10 +134,11 @@ func walkLedgerScans(n explainPlanNode, out *[]explainPlanNode) {
 // (ts, tenant_id) 前缀、INCLUDE 携带缓存 token 列的覆盖索引。
 //
 // ★ 必须按**定义**匹配而不是按索引名匹配：分区上的索引由 PG 按列名自动
-//   改名，名字里根本不含 cache，按名字查会得出「没建」的假结论
-//   （870 实测踩过）。这条同时是上面那条判据的**前提断言** ——
-//   「索引不存在」与「索引存在但没被用上」是两种完全不同的故障，
-//   混在一起报就会把方向修反。
+//
+//	改名，名字里根本不含 cache，按名字查会得出「没建」的假结论
+//	（870 实测踩过）。这条同时是上面那条判据的**前提断言** ——
+//	「索引不存在」与「索引存在但没被用上」是两种完全不同的故障，
+//	混在一起报就会把方向修反。
 func ledgerCoverIndexHasCacheTokens(ctx context.Context, pool *pgxpool.Pool, partition string) (bool, error) {
 	var ok bool
 	err := pool.QueryRow(ctx, `
@@ -156,9 +157,12 @@ func ledgerCoverIndexHasCacheTokens(ctx context.Context, pool *pgxpool.Pool, par
 // TestCacheEconomicsAggregateIsServedWithoutHeapFetch 真库判据：
 //
 // ① 前提：每个 usage_ledger 分区上都有一条携带缓存 token 列的覆盖索引。
-//    （873 迁移之前必然红 —— 这就是它的作用）
+//
+//	（873 迁移之前必然红 —— 这就是它的作用）
+//
 // ② 结果：30 天窗口那条聚合的 EXPLAIN 里，真正吃时间的分区
-//    （9 月，1,039,470 行）必须走 **Index Only Scan**。
+//
+//	（9 月，1,039,470 行）必须走 **Index Only Scan**。
 //
 // 故意**不**断言「没有 Seq Scan」：10 月分区只有 79MB / 44 万行，
 // planner 选 Parallel Seq Scan 是完全正当的优化，用它当判据会把

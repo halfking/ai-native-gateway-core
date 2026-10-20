@@ -79,6 +79,8 @@ func r1039EnsureBody(t *testing.T) string {
 func TestR1039RequestLogsProviderIDColumnOrderInEnsureBody(t *testing.T) {
 	body := r1039EnsureBody(t)
 
+	// ⚠ needle 不带分号：那列是**多列 ALTER 的中间项**（逗号续行），写成
+	//   `... BIGINT;` 会因为分号位置不同而永远匹配不到 ⇒ 判据恒红。
 	addCol := strings.Index(body, "ADD COLUMN IF NOT EXISTS provider_id BIGINT")
 	if addCol < 0 {
 		t.Fatal("ensureRequestLogSchema 必须补 provider_id 列（它自己在下面给 _request_logs 建带 provider_id 的索引）")
@@ -319,7 +321,7 @@ func TestR1039RecentSuccessRateEnsureRealDB(t *testing.T) {
 		}
 	})
 
-	t.Run("旧族仍在_双腿必须都在", func(t *testing.T) {
+	t.Run("旧族仍在_仍只留会话腿_族已退役读面不依赖它", func(t *testing.T) {
 		// ⚠ 夹具的 credential_id 必须是 **bigint**：v1 request_logs 的真实列型
 		// （installer/.../01-schema.sql: credential_id bigint）就是 bigint；
 		// 旧腿写的是 `credential_id = p_credential_id`（p_credential_id 是 BIGINT），
@@ -334,13 +336,96 @@ func TestR1039RecentSuccessRateEnsureRealDB(t *testing.T) {
 			t.Fatalf("旧族仍在时 ensure 必须成功，got: %v", err)
 		}
 		body := functionBody()
-		for _, leg := range []string{"_request_logs_hot", "session_turns_hot"} {
-			if !strings.Contains(body, leg) {
-				t.Errorf("旧族仍在时函数体缺少 %q（回退兼容：旧库不许丢样本）", leg)
-			}
+		// 族已退役（860 改名 → 890 删除）⇒ 读面**不许**再依赖它：
+		// 体里写 _request_logs_hot 的话，在族退役库上 CREATE 时校验表引用
+		// ⇒ 42P01 ⇒ 整条 boot 迁移中止（2026-10-21 本机实测）。
+		// ⇒ 哪怕物理表还在（211/252 的遗留形态），体里也**只**许有会话腿。
+		if strings.Contains(body, "_request_logs_hot") {
+			t.Error("recent_success_rate 体里仍引用 _request_logs_hot：族已退役，读面不得依赖它（退役库上 CREATE 即 42P01）")
 		}
-		if !strings.Contains(body, "UNION ALL") {
-			t.Error("双腿必须 UNION ALL 并集取样")
+		if !strings.Contains(body, "session_turns_hot") {
+			t.Error("会话腿 session_turns_hot 必须在场（停写后新流量唯一落点）")
+		}
+		if strings.Contains(body, "UNION ALL") {
+			t.Error("只剩一条腿时 UNION ALL 会变成悬空语法错")
 		}
 	})
+}
+
+// TestR1039BillingUnitEnsureSurvivesRetiredFamily 是 **848 ensure** 的真库判据。
+//
+// ## 缺陷（结构性，不是本机环境问题）
+//
+// db.ensureBillingUnitAndAudioSeconds 的短路条件是
+// `cmbOK && hotOK`，其中 hotOK = columnsAllPresent("_request_logs_hot",
+// ["audio_seconds"])。而 columnsAllPresent 在**表不在**时返回 **true**
+// （missing=0 ⇒ 没缺列）⇒ 于是：
+//
+//   · 族在、cmb.billing_unit 缺 ⇒ 走 DDL 分支（正常补列）；
+//   · 族**不在**、cmb.billing_unit 缺 ⇒ **也**走 DDL 分支
+//     ⇒ ALTER TABLE _request_logs_hot / _request_logs
+//     ⇒ 42P01 ⇒ 整条 boot 迁移中止。
+//
+// ⚠ 在真实新装路径上，startup 迁移 848 早就把 cmb.billing_unit 补上了
+// （848 跑在族退休之前：848 < 860 < 890）⇒ 短路条件成立 ⇒ 不进 DDL 分支
+// ⇒ **新装路径不触发**。触发条件是「cmb.billing_unit 缺 + 族已退休」，例如
+// 只跑了部分 startup 迁移的库、或 v1 fallback 体灌入的基线副本。
+// ⇒ 本条是**防御性**判据：把那条 landmine 钉死，免得哪天族退休提前或 848 被
+// 跳过时又炸一次 boot。
+func TestR1039BillingUnitEnsureSurvivesRetiredFamily(t *testing.T) {
+	dsn := os.Getenv("TEST_DATABASE_URL")
+	if dsn == "" {
+		dsn = os.Getenv("TEST_DB_URL")
+	}
+	if dsn == "" {
+		t.Skip("TEST_DATABASE_URL / TEST_DB_URL 未设置 —— 本次**没有**跑真库行为验证（只跑了源码级判据）")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	t.Cleanup(cancel)
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Skipf("connect real db: %v", err)
+	}
+	t.Cleanup(pool.Close)
+	d := &DB{pool: pool}
+
+	exec := func(q string) {
+		t.Helper()
+		if _, err := pool.Exec(ctx, q); err != nil {
+			t.Fatalf("exec failed: %v\nSQL: %s", err, q)
+		}
+	}
+
+	// 夹具：族**不在** + cmb 缺 billing_unit。
+	exec(`DROP TABLE IF EXISTS public._request_logs_hot, public._request_logs CASCADE;`)
+	// 848 ensure 末尾会往 schema_migrations 记账 ⇒ 该表必须在场。
+	exec(`CREATE TABLE IF NOT EXISTS public.schema_migrations (
+		version TEXT PRIMARY KEY, description TEXT);`)
+	exec(`CREATE TABLE IF NOT EXISTS public.credential_model_bindings (
+		credential_id BIGINT, provider_model_id BIGINT, available BOOLEAN DEFAULT TRUE,
+		unavailable_reason TEXT, unavailable_at TIMESTAMPTZ, admin_protected BOOLEAN DEFAULT FALSE);`)
+	exec(`ALTER TABLE public.credential_model_bindings DROP COLUMN IF EXISTS billing_unit;`)
+	t.Cleanup(func() {
+		bg := context.Background()
+		_, _ = pool.Exec(bg, `DROP TABLE IF EXISTS public.credential_model_bindings CASCADE;`)
+	})
+
+	if err := d.ensureBillingUnitAndAudioSeconds(ctx); err != nil {
+		t.Fatalf("族已退役 + cmb 缺 billing_unit 时 ensure 必须成功（42P01 会中止整条 boot 迁移），got: %v", err)
+	}
+	// cmb 侧该补的列必须真的补上了（不许为了躲 42P01 而整段跳过）。
+	var n int
+	if err := pool.QueryRow(ctx, `
+		SELECT count(*) FROM information_schema.columns
+		WHERE table_schema='public' AND table_name='credential_model_bindings'
+		  AND column_name='billing_unit'`).Scan(&n); err != nil {
+		t.Fatalf("probe cmb.billing_unit: %v", err)
+	}
+	if n == 0 {
+		t.Error("ensure 之后仍没有 credential_model_bindings.billing_unit ⇒ cmb 侧没补上")
+	}
+	// 幂等：第二遍必须也不许报错。
+	if err := d.ensureBillingUnitAndAudioSeconds(ctx); err != nil {
+		t.Fatalf("ensure 第二遍必须幂等成功，got: %v", err)
+	}
 }

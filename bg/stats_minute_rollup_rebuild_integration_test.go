@@ -50,16 +50,24 @@ func TestStatsRebuildSQLParses(t *testing.T) {
 	cases := []struct {
 		name string
 		sql  string
+		// args：该语句**实际**需要的实参。
+		// ★ 2026-10-21（R67 / C2）：retire-dim 那一族用 $3 = dim_type
+		//   （产品侧 retireClosedDims 传 floor, until, dq.dimType），
+		//   而本门**过去只传 2 个实参** ⇒ PG 报 "mismatched param and
+		//   argument count" ⇒ 读起来像「SQL 形状错」，其实是**门少传了一个
+		//   实参**（产品侧是对的）。⇒ 这里按语句各自的占位符数给实参。
+		args []any
 	}{
-		{"rollup-main", rollupMainStatement(credits)},
-		{"retire-main", retireClosedMainMinuteSQL},
-		{"retire-dim", retireClosedDimStatement(`COALESCE(NULLIF(r.client_profile, ''), '__unknown__')`)},
-		{"retire-error-drill", retireClosedErrorDrillMinuteSQL},
+		{"rollup-main", rollupMainStatement(credits), []any{from, to}},
+		{"retire-main", retireClosedMainMinuteSQL, []any{from, to}},
+		{"retire-dim", retireClosedDimStatement(`COALESCE(NULLIF(r.client_profile, ''), '__unknown__')`),
+			[]any{from, to, "client_profile"}},
+		{"retire-error-drill", retireClosedErrorDrillMinuteSQL, []any{from, to}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			// EXPLAIN 只规划不执行：回填是重写全租户聚合的写操作。
-			if _, err := pool.Exec(ctx, "EXPLAIN "+tc.sql, from, to); err != nil {
+			if _, err := pool.Exec(ctx, "EXPLAIN "+tc.sql, tc.args...); err != nil {
 				t.Fatalf("%s failed to plan against the real schema: %v", tc.name, err)
 			}
 			if !strings.Contains(tc.sql, "node-probe-worker") {

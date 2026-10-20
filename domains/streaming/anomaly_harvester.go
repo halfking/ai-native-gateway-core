@@ -219,7 +219,13 @@ func backfillActualTokensSweep(ctx context.Context, tx pgx.Tx) error {
 		UPDATE response_format_anomalies a
 		SET actual_tokens = r.completion_tokens,
 		    usage_source  = 'llm'
-		FROM _request_logs_hot r
+		-- ★ 890（v1 族退役）：源换成会话族热表（v1 热表已 DROP）。原口径是
+		-- 「v1 热表里的行」⇒ 热表对热表，范围不变。usage_source /
+		-- completion_tokens / request_id 在会话族里同名同义。
+		-- ⚠ 口径损失（如实登记）：'corrected' 这个 usage_source 值来自
+		-- telemetry.CorrectEstimatedUsage（它改的是 v1 行）⇒ 随 v1 族退役后
+		-- 会话族里不会再出现 'corrected' ⇒ 本 sweep 只剩 'llm' 一条腿。
+		FROM public.session_turns_hot r
 		WHERE a.request_id = r.request_id
 		  AND a.actual_tokens IS NULL
 		  AND a.usage_source  = 'estimated'

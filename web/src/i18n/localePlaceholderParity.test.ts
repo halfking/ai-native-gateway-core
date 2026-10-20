@@ -49,15 +49,43 @@ describe('i18n 占位符平价（同一键、跨语种）', { timeout: 120_000 }
     expect(report.keysWithPlaceholder, '几乎没提取到占位符 ⇒ 提取器可能坏了').toBeGreaterThanOrEqual(500)
   })
 
-  it('★ 定点回归：族1 deviceLimitBody 的 8 个语种都带 {active}/{max}', () => {
+  it('★ 定点回归：同形状活键（2 个占位符 × 8 语种）', () => {
+    // ★ 2026-10-21（R57 轮）：原「族1」钉的是 `customer.wizard.messages.deviceLimitBody`，
+    //   而那个键住在**死命名空间** `customer.wizard.*` 里（三口径实测零消费者）
+    //   ⇒ 属主拍板删除该命名空间后，这个键随之消失 ⇒ 原定点回归**失去了对象**
+    //   （8 语种全空 ⇒ 门红）。
+    //   ⇒ 换成一个**同形状（2 个占位符）且真被引用**的活键，保证这个形状仍被覆盖 ——
+    //     否则「同形状的下一个键族」来了照样漏（LESSONS 2026-10-21
+    //     「补一个能覆盖旧形状的门，比给每个旧形状手写定点回归更值」）。
     const values = allLocaleValues()
-    const key = 'customer.wizard.messages.deviceLimitBody'
+    const key = 'agentRegistryView.pager.pageInfo'
     const bad: string[] = []
     for (const loc of ALL_LOCALES) {
       const got = [...placeholderSet(values.get(loc)?.[key])].sort().join(',')
-      if (got !== 'active,max') bad.push(`${loc}: 占位符=[${got}]，期望=[active,max]`)
+      if (got !== 'page,total') bad.push(`${loc}: 占位符=[${got}]，期望=[page,total]`)
     }
-    expect(bad, `族1 回归（占位符被吞）：\n${bad.join('\n')}`).toEqual([])
+    expect(bad, `同形状活键回归（占位符被吞）：\n${bad.join('\n')}`).toEqual([])
+  })
+
+  it('★ 三个死命名空间已删除（钉住这次处置，防止被加回来）', () => {
+    // 属主 2026-10-21 拍板：只删这三个点名命名空间，其余死键留给后续轮。
+    // ⇒ 这里钉住「它们不在了」：否则有人重跑
+    //   web/scripts/sync-sessions-locale-leaks.mjs 之类的脚本、或从别处拷回词条，
+    //   就会把 1112 条死翻译悄悄加回来，而没有任何门会响。
+    const values = allLocaleValues()
+    const deadPrefixes = [
+      'customer.wizard.',
+      'sessions.promptInjectionCategories.',
+      'sessions.audit.promptInjectionCategories.',
+    ]
+    const still: string[] = []
+    for (const loc of ALL_LOCALES) {
+      const v = values.get(loc) ?? {}
+      for (const k of Object.keys(v)) {
+        if (deadPrefixes.some((p) => k.startsWith(p))) still.push(`${loc}:${k}`)
+      }
+    }
+    expect(still, `死命名空间被加回来了（${still.length} 条）：\n${still.slice(0, 10).join('\n')}`).toEqual([])
   })
 
   it('★ 定点回归：族2 rowResult.running 的 8 个语种都带 {op}', () => {

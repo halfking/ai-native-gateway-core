@@ -10,6 +10,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/kaixuan/llm-gateway-go/db"
 	"github.com/kaixuan/llm-gateway-go/internal/providercap"
 	"github.com/kaixuan/llm-gateway-go/secret"
 )
@@ -144,7 +145,9 @@ func (a *GatewayRequestAnalyzer) AnalyzeRequests(ctx context.Context, credential
 			COUNT(*) FILTER (WHERE NOT success) AS error_count,
 			AVG(stream_first_chunk_ms) FILTER (WHERE stream_first_chunk_ms IS NOT NULL) AS avg_ttft_ms,
 			AVG(latency_ms) FILTER (WHERE latency_ms IS NOT NULL) AS avg_duration_ms
-		FROM _request_logs_hot
+		-- ★ 890（v1 族退役）：源换成会话族热腿（v1 热表已 DROP）。
+		-- 窗口被 clamp 到 8h（= hot 保留期）⇒ 热腿口径与 v1 侧一致。
+		FROM ` + db.SessionFamilyTurnsHotSourceSQL() + `
 		WHERE credential_id = $1
 		  AND ts >= NOW() - INTERVAL '1 hour' * $2
 	`
@@ -175,7 +178,7 @@ func (a *GatewayRequestAnalyzer) AnalyzeRequests(ctx context.Context, credential
 	// 类型字符串的首字符判断是否为 5xx，所以状态码优先。
 	errorTypeQuery := `
 		SELECT COALESCE(upstream_status_code::text, error_kind, 'unknown') AS error_type, COUNT(*)
-		FROM _request_logs_hot
+		FROM ` + db.SessionFamilyTurnsHotSourceSQL() + `
 		WHERE credential_id = $1
 		  AND ts >= NOW() - INTERVAL '1 hour' * $2
 		  AND NOT success
@@ -206,7 +209,8 @@ func (a *GatewayRequestAnalyzer) AnalyzeRequests(ctx context.Context, credential
 	rlQuery := `
 		SELECT COUNT(*) FILTER (WHERE upstream_status_code = 429) AS rl_hits,
 		       COUNT(*) AS total
-		FROM _request_logs_hot
+		-- ★ 890（v1 族退役）：源换成会话族热腿（v1 热表已 DROP）。
+		FROM ` + db.SessionFamilyTurnsHotSourceSQL() + `
 		WHERE credential_id = $1
 		  AND ts >= NOW() - INTERVAL '1 hour' * $2
 	`
@@ -257,7 +261,7 @@ func (a *GatewayRequestAnalyzer) BucketSuccessRates(
 		  FLOOR(EXTRACT(EPOCH FROM ts) / ($3 * 60)) * ($3 * 60) AS bucket_epoch,
 		  100.0 * COUNT(*) FILTER (WHERE success) / NULLIF(COUNT(*), 0) AS sr,
 		  COUNT(*) AS req
-		FROM _request_logs_hot
+		FROM ` + db.SessionFamilyTurnsHotSourceSQL() + `
 		WHERE credential_id = $1
 		  AND ts >= NOW() - INTERVAL '1 hour' * $2
 		GROUP BY 1

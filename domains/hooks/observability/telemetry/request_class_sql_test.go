@@ -1,142 +1,163 @@
 package telemetry
 
 import (
-	"os"
-	"regexp"
-	"strconv"
-	"strings"
 	"testing"
 	"time"
+
+	"github.com/pashagolub/pgxmock/v4"
+	"github.com/stretchr/testify/require"
 )
 
-// Offline contract tests for migration 610 (V6-W1.6 R8): request_class /
-// due_at must be wired through EVERY write statement of _request_logs_hot and
-// keep the column ↔ placeholder ↔ arg alignment. Reads client.go source
-// only — same offline pattern as TestRequestLogMainTableExcludesBodyColumns.
+// ★ 2026-10-20（迁移 890，v1 族退役）：本文件整体**改指**。
+//
+// 被改指的对象：「request_class / due_at 必须被 v1 宽表的每一条写语句携带」
+// 这条 **SQL 级**契约（迁移 610 / 608）。它成立的前提是 v1 宽表有这两列
+// 且写语句里有 $101/$102 与「判据用各自占位符」的 CASE 形态——v1 族随 890
+// 删除 ⇒ 断言对象已不存在。
+//
+// 改指后守的不变式（**它没有随 v1 一起退役**，因为落点换了）：
+//
+//	request_class / due_at 的**领域不变式**必须在写路径上被强制：
+//	① immediate ⇒ 没有 due_at；
+//	② scheduled ⇒ 必须有 due_at。
+//
+// 这条不变式现在由谁承载：写路径在**交给会话族镜像之前**归一化 entry
+// （normalizeRequestClassAndDueAt），而会话族镜像
+// （internal/sessionv2mirror/s1b_fields.go:66-67）把 entry.RequestClass /
+// entry.DueAt 搬进会话族的写入载荷 ⇒ 归一化若失效，库里就会出现
+// 「scheduled 但没有 due_at」的行。
+//
+// ⇒ 本文件从「读源码比对 SQL 文本」改成「**跑写路径、看 hook 拿到的 entry**」：
+// hook 拿到的 entry 正是会话族镜像会拿到的那一份（persistRequestLog 在写库
+// 成功后触发 hooks），所以断言点选在这里比选在函数内部更贴近真实消费者。
+//
+// 注：requestClassArg（把 class 收敛成 immediate/scheduled 的绑定值助手）
+// 随 v1 的 INSERT 一起失去了生产调用点——它现在只被单测覆盖。
+// 「class 归一化之后写进哪张表」已不在本包（会话族承接），详见本轮报告。
 
-func readClientSource(t *testing.T) string {
+// persistedEntryAfterWrite 跑一次写路径，返回 onPersisted hook 看到的 entry。
+//
+// op 决定走 insert 还是 update 路径；两条路径的期望语句不同（INSERT 19 参 /
+// UPDATE 5 参），但归一化的断言点相同 ⇒ 抽成一个 helper，让 insert 与 update
+// 两条用例断言**同一件事**。
+func persistedEntryAfterWrite(t *testing.T, op RequestLogOp, entry *RequestLogEntry) *RequestLogEntry {
 	t.Helper()
-	src, err := os.ReadFile("client.go")
-	if err != nil {
-		t.Fatalf("read client.go: %v", err)
+	mock, recording, _ := newRecordingDB(t)
+
+	mock.ExpectBegin()
+	if op == RequestLogInsert {
+		mock.ExpectExec(`INSERT INTO usage_ledger_hot`).
+			WithArgs(anyArgs(19)...).
+			WillReturnResult(pgxmock.NewResult("INSERT", 1))
+	} else {
+		mock.ExpectExec(`UPDATE usage_ledger_hot`).
+			WithArgs(anyArgs(5)...).
+			WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 	}
-	return string(src)
+	mock.ExpectCommit()
+
+	c := &Client{requestLogDB: recording}
+	var seen *RequestLogEntry
+	c.AddOnRequestLogPersisted(func(e *RequestLogEntry) { seen = e })
+
+	require.NoError(t, c.persistRequestLog(entry))
+	require.NoError(t, mock.ExpectationsWereMet())
+	require.NotNil(t, seen, "写库成功后 onPersisted hook 必须被触发（否则下面的断言是假绿）")
+	return seen
 }
 
-func functionBody(t *testing.T, src, signature string) string {
-	t.Helper()
-	start := strings.Index(src, signature)
-	if start < 0 {
-		t.Fatalf("signature not found: %s", signature)
-	}
-	end := strings.Index(src[start+1:], "\nfunc ")
-	if end < 0 {
-		t.Fatalf("function end not found after %s", signature)
-	}
-	return src[start : start+1+end]
-}
+// TestInsertRequestLog_NormalizesRequestClassDomainInvariant（★ 改指，原名
+// TestInsertRequestLogCarriesRequestClass）：INSERT 路径必须把 class/due_at
+// 归一到领域不变式上。
+//
+// 旧门守的是「$101/$102 必须出现在 v1 的 INSERT 里，且判据占位符与写入值
+// 占位符各自独立」——那条 SQL 随 v1 族退役。
+//
+// 改指后守的是同一件事在**新落点**上的形态：insert 路径一定要给 class
+// （缺失/非法 ⇒ immediate），scheduled 必须带 due_at。
+func TestInsertRequestLog_NormalizesRequestClassDomainInvariant(t *testing.T) {
+	due := time.Unix(1800000000, 0).UTC()
+	scheduled := "scheduled"
 
-func TestInsertRequestLogCarriesRequestClass(t *testing.T) {
-	body := functionBody(t, readClientSource(t), "func (c *Client) insertRequestLog")
-	for _, want := range []string{
-		"request_class, due_at",               // column list tail
-		"requestClassArg(entry.RequestClass)", // arg-side immediate default
-		"$102",                                // due_at placeholder
-		"entry.RequestClass",                  // $101 arg
-		"entry.DueAt",                         // $102 arg
-		"request_class        = COALESCE(EXCLUDED.request_class, _request_logs_hot.request_class)",
-		"due_at               = COALESCE(EXCLUDED.due_at, _request_logs_hot.due_at)",
-	} {
-		if !strings.Contains(body, want) {
-			t.Fatalf("insertRequestLog missing 608 contract piece %q", want)
-		}
+	cases := []struct {
+		name      string
+		class     *string
+		due       *time.Time
+		wantClass string
+		wantDue   bool
+	}{
+		{name: "missing class becomes immediate", class: nil, wantClass: "immediate"},
+		{name: "invalid class becomes immediate", class: strptr("deferred"), wantClass: "immediate"},
+		{name: "scheduled without due time becomes immediate", class: &scheduled, wantClass: "immediate"},
+		{name: "scheduled with due time is kept", class: &scheduled, due: &due, wantClass: "scheduled", wantDue: true},
 	}
-	// Arg ordering: RequestClass/DueAt must come AFTER CustomerID ($100 ↔
-	// customer_id, "the LAST column" per the 507 comment, now second-to-last).
-	cust := strings.Index(body, "entry.CustomerID,")
-	cls := strings.Index(body, "requestClassArg(entry.RequestClass),")
-	if cust < 0 || cls < 0 || cls < cust {
-		t.Fatalf("608 args must follow CustomerID: cust=%d class=%d", cust, cls)
-	}
-	// Highest placeholder must be 103 (608's $101/$102 plus Wave 3 B1's
-	// $103 credits_rate_multiplier, migration 736).
-	re := regexp.MustCompile(`\$(\d+)`)
-	max := 0
-	for _, m := range re.FindAllStringSubmatch(body, -1) {
-		n := 0
-		for _, c := range m[1] {
-			n = n*10 + int(c-'0')
-		}
-		if n > max {
-			max = n
-		}
-	}
-	if max != 103 {
-		t.Fatalf("max placeholder = %d, want 103", max)
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			seen := persistedEntryAfterWrite(t, RequestLogInsert, &RequestLogEntry{
+				Op:           RequestLogInsert,
+				RequestID:    "req-class-insert",
+				TenantID:     "tenant-1",
+				Success:      true,
+				RequestClass: tc.class,
+				DueAt:        tc.due,
+			})
+
+			require.NotNil(t, seen.RequestClass, "insert 路径必须给出一条确定的 class")
+			require.Equal(t, tc.wantClass, *seen.RequestClass)
+			require.Equal(t, tc.wantDue, seen.DueAt != nil,
+				"immediate ⇒ 没有 due_at；scheduled ⇒ 必须有 due_at（会话族镜像直接搬这两个字段）")
+		})
 	}
 }
 
-func TestUpdateRequestLogCarriesRequestClass(t *testing.T) {
-	src := readClientSource(t)
-	idx := strings.Index(src, "UPDATE _request_logs_hot\n")
-	if idx < 0 {
-		t.Fatalf("UPDATE statement not found")
-	}
-	seg := src[idx : idx+20000]
-	// 2026-10-02（§9.74.2）：$98 的判据由 `$98 IS NULL` 改为 `$98::text IS NULL`。
-	// 语义完全不变 —— 这个门断言的三件事（$98→request_class、$99→due_at、
-	// 判据为 NULL 时保留旧值）都还在。改动的原因是**类型推断**，不是语义：
-	// 裸参数出现在 CASE 的 WHEN 判据里没有类型上下文，PG 拒绝整条语句
-	// （SQLSTATE 42P08），于是这条生产写入路径上的 request_class/due_at
-	// 永远不落库。根因与最小复现见 client.go 该处注释，以及
-	// TestCaseWhenPlaceholderHasTypeContext（离线门，真库测试没 DSN 时会 skip）。
-	//
-	// 2026-10-03（§9.90.1，用户拍板解耦）：due_at 的判据由复用 $98 改为
-	// 自己的 $99。那是 608 迁移「class 与 due_at 一起下发」的历史遗留耦合，
-	// class 为 NULL 时 due_at 被连带跳过。
-	//
-	// ⚠ **只把字面量换成新的不够**——那只是让门跟着实现走，将来谁把它们
-	// 绑回去，重新钉一次字面量就又绿了。所以这里断言的是**各自判据**这个
-	// 语义：每列的 WHEN 判据必须用**它自己**的那个占位符。
-	// 判据形如 `<col> = CASE WHEN $<n>::<type> IS NULL THEN <col> ELSE $<m> END`，
-	// 这里要求 n == m（判据与写入值同参），并额外钉住 $98/$99 的归属。
-	// ⚠ RE2 **不支持反向引用**（`\1` 在 Compile 期就报 invalid escape sequence），
-	// 所以 THEN 分支也捕获一次、再在 Go 里比对列名相等，而不是写进正则。
-	assignRe := regexp.MustCompile(
-		`(?m)^\s*,\s*(request_class|due_at)\s*=\s*CASE WHEN \$(\d+)::([a-z ]+) IS NULL THEN (request_class|due_at) ELSE \$(\d+) END`)
+// TestUpdateRequestLog_PreservesRequestClassAndDueAt（★ 改指，原名
+// TestUpdateRequestLogCarriesRequestClass）：UPDATE 路径**不得**凭空造 class
+// （库里已有的值要保住），但非法组合仍然要归一。
+//
+// 旧门守的是「v1 的 UPDATE 里 request_class / due_at 各自的 CASE 判据必须用
+// 自己的占位符（§9.90.1 解耦）」——那条 SQL 随 v1 族退役。
+//
+// 改指后守的是**同一个意图**在新落点上的形态：update 只在调用方**显式**
+// 给了 class 时才动它（normalizeRequestClassAndDueAt(entry, true)）；没给就
+// 原样保留 ⇒ 终态回填不会把库里已写好的 scheduled 抹成 immediate。
+func TestUpdateRequestLog_PreservesRequestClassAndDueAt(t *testing.T) {
+	due := time.Unix(1800000000, 0).UTC()
+	scheduled := "scheduled"
 
-	got := map[string][2]int{}
-	for _, m := range assignRe.FindAllStringSubmatch(seg, -1) {
-		if m[1] != m[4] {
-			t.Fatalf("assignment 形状异常：写入 %s 却把 %s 当保留旧值的列", m[1], m[4])
-		}
-		n1, err := strconv.Atoi(m[2])
-		if err != nil {
-			t.Fatalf("%s: 判据占位符 %q 解析失败: %v", m[1], m[2], err)
-		}
-		n2, err := strconv.Atoi(m[5])
-		if err != nil {
-			t.Fatalf("%s: 写入值占位符 %q 解析失败: %v", m[1], m[5], err)
-		}
-		got[m[1]] = [2]int{n1, n2}
+	cases := []struct {
+		name      string
+		class     *string
+		due       *time.Time
+		wantClass string // "" ⇒ 期望保持 nil
+		wantDue   bool
+	}{
+		{name: "unset class stays unset", class: nil},
+		{name: "scheduled with due time is kept", class: &scheduled, due: &due, wantClass: "scheduled", wantDue: true},
+		{name: "scheduled without due time is normalized", class: &scheduled, wantClass: "immediate"},
+		{name: "invalid class is normalized", class: strptr("deferred"), wantClass: "immediate"},
 	}
-	for _, col := range []string{"request_class", "due_at"} {
-		ns, ok := got[col]
-		if !ok {
-			t.Fatalf("UPDATE missing 608 assignment for %s (pattern no longer matches; "+
-				"if the SQL shape changed on purpose, update this gate deliberately)", col)
-		}
-		if ns[0] != ns[1] {
-			t.Fatalf("%s: 判据用 $%d 而写入值用 $%d —— 两列的判据必须各自用"+
-				"自己的占位符；共用一个是 608 迁移的历史耦合，已于 §9.90.1 裁决解耦", col, ns[0], ns[1])
-		}
-	}
-	// 归属钉死：换了占位符编号而不改这里，说明有人在重排参数。
-	if got["request_class"] != [2]int{98, 98} {
-		t.Fatalf("request_class 占位符 = %v, want [98 98]", got["request_class"])
-	}
-	if got["due_at"] != [2]int{99, 99} {
-		t.Fatalf("due_at 占位符 = %v, want [99 99]", got["due_at"])
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			seen := persistedEntryAfterWrite(t, RequestLogUpdate, &RequestLogEntry{
+				Op:           RequestLogUpdate,
+				RequestID:    "req-class-update",
+				TenantID:     "tenant-1",
+				Success:      true,
+				RequestClass: tc.class,
+				DueAt:        tc.due,
+			})
+
+			if tc.wantClass == "" {
+				require.Nil(t, seen.RequestClass,
+					"update 路径不得凭空造 class（库里已有的值必须保住）")
+			} else {
+				require.NotNil(t, seen.RequestClass)
+				require.Equal(t, tc.wantClass, *seen.RequestClass)
+			}
+			require.Equal(t, tc.wantDue, seen.DueAt != nil)
+		})
 	}
 }
 

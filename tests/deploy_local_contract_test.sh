@@ -358,6 +358,49 @@ for needle in 'cleanup_legacy_downloads' 'llm-gateway-pg' 'dl_shared_pg_dir' 'CL
 done
 pass 'PostgreSQL migration uses shared service directories and --cleanup-downloads'
 
+# 「容器数据目录 == 共享目录吗」必须按**物理路径**判定。
+# 2026-10-20 实测事故：容器数据目录以软链挂在共享根下时（~/kaixuan/postgres
+# -> postgres-citus），旧的纯字符串比较判成「未绑定」⇒ 触发几百 MB 级数据搬迁
+# + 容器重建；重建固定占用 5432，而该端口已被别的实例占住 ⇒ 部署整体中止。
+# 判定函数放在 deploy-local-lib.sh 里（可 source、可单测），脚本走同一条路径。
+phys_root="$TMP/phys"
+mkdir -p "$phys_root/real"
+ln -s "$phys_root/real" "$phys_root/link"
+mkdir -p "$phys_root/other"
+
+resolved_link=$(dl_physical_path "$phys_root/link")
+resolved_real=$(dl_physical_path "$phys_root/real")
+[[ "$resolved_link" == "$resolved_real" ]] \
+  || fail "dl_physical_path must resolve symlinks (link=$resolved_link real=$resolved_real)"
+resolved_other=$(dl_physical_path "$phys_root/other")
+[[ "$resolved_other" != "$resolved_real" ]] \
+  || fail 'dl_physical_path must keep distinct directories distinct'
+missing=$(dl_physical_path "$phys_root/missing")
+[[ -n "$missing" ]] || fail 'dl_physical_path must return a non-empty fallback for a missing path'
+[[ "$missing" != *'//' && "$missing" != */ ]] \
+  || fail "dl_physical_path fallback must normalize slashes (got: $missing)"
+
+dl_same_physical_dir "$phys_root/link" "$phys_root/real" \
+  || fail 'a symlink and its target must count as the same physical directory'
+dl_same_physical_dir "$phys_root/real" "$phys_root/real" \
+  || fail 'a directory must count as the same physical directory as itself'
+if dl_same_physical_dir "$phys_root/real" "$phys_root/other"; then
+  fail 'distinct directories must not count as the same physical directory'
+fi
+if dl_same_physical_dir "" "$phys_root/real"; then
+  fail 'an empty path must not count as the same physical directory'
+fi
+if dl_same_physical_dir "$phys_root/real" ""; then
+  fail 'an empty shared path must not count as the same physical directory'
+fi
+
+grep -q 'dl_same_physical_dir "\$DL_PG_SOURCE" "\$shared"' "$ROOT/scripts/deploy-local.sh" \
+  || fail 'the PostgreSQL shared-directory decision must use dl_same_physical_dir'
+if grep -q "tr -s '/' | sed 's:/\*\$::'" "$ROOT/scripts/deploy-local.sh"; then
+  fail 'the PostgreSQL shared-directory decision must not compare raw path strings'
+fi
+pass 'shared-directory decision resolves symlinks instead of comparing raw path strings'
+
 # The old local scripts exported INSTALL_ROOT under ~/Downloads. The unified
 # entry point must ignore that legacy variable and remain idempotent for an
 # existing (including dangling) Redis symlink.

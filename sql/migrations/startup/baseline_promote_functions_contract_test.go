@@ -15,17 +15,44 @@ import (
 // supplier_errors has no objects/ canonical — its promote body lives only
 // on the V371 deploy track; migration 703 pinned it and the baselines
 // carry the 703 body, asserted by name below (F13 closure).
+//
+// ★ 2026-10-20（迁移 890 真删 v1 族）：原先本表还含 `request_logs` 与
+// `request_logs_bodies` 两条 v1 族条目。890 把 v1 族连同只服务它的分区管理
+// 函数一起 DROP ⇒ 它们的 objects/ 正典（promote_request_logs_hot_to_partition_
+// interval_integer.sql / promote_request_logs_bodies_hot_to_partition_
+// interval_integer.sql）**已随族退役**（被 5f64031cb 删除）。
+// ⇒ 这两条移到下面的 retiredV1PromoteTables，按**基线互相一致**的口径守。
 var migration698Tables = []string{
 	"candidate_failure_logs",
 	"credential_model_index",
 	"credit_ledger",
-	"request_logs_bodies",
-	"request_logs",
 	"request_wal",
 	"routing_decision_log",
 	"supplier_errors",
 	"tool_usage_stats",
 	"usage_ledger",
+}
+
+// retiredV1PromoteTables 是**已随 890 退役**的 v1 族 promote 函数。
+//
+// 退役了什么：这两个函数的 objects/ 正典（唯一「正典 vs 基线」的比对基准）。
+// 为什么退役：890 把 v1 族（表 + 分区 + 只服务它的分区管理函数）整体删除 ⇒
+// 正典留着就成了一份「指向已不存在的关系」的规格。
+//
+// ★ 幸存的不变量（比「正典逐字一致」更弱但仍有效）：
+//
+//	三份基线副本仍然带着这两个函数体，而且**互相逐字一致** —— 它们是这些
+//	函数体的**唯一现存副本**（890 的 down 只重建了 ensure/create_next_month
+//	那四个函数，没有重建 promote 两个；890 的 up 把它们 DROP 掉了）。
+//	⇒ 基线若漂移，就再也没有别的地方能拿回 698 钉过的那份体。
+//
+//	另外两条内容级不变量也继续守（它们不依赖正典）：
+//	· 698 的 Asia/Shanghai 钉子仍是 BEGIN 后的第一条语句（这正是 23514
+//	  「no partition of relation found for row」那类失败的防线）；
+//	· 695 自愈 + 3×system_fingerprint 谱系（见下方 695/697 检查）。
+var retiredV1PromoteTables = []string{
+	"request_logs",
+	"request_logs_bodies",
 }
 
 // promoteFnSigRe matches one promote hot_to_partition signature start; the
@@ -131,6 +158,10 @@ var baselinePromoteFunctionsNoObjectsFile = []string{
 // deploy/installer mirrors 697-era without the pin), and a baseline-only
 // re-import would run unpinned month routing against 694-pinned partition
 // bounds — the exact 23514 failure mode migration 698 closed.
+//
+// ★ 2026-10-20（迁移 890 真删 v1 族）：v1 族的两条 promote 函数的正典已随族
+// 退役 ⇒ 它们不再走「正典 vs 基线」这条路，改走**基线互相一致**（见
+// retiredV1PromoteTables 的注释）。其余 8 条的口径**不变**。
 func TestBaselinePromoteHotFunctionsThreeWayConsistency(t *testing.T) {
 	expected := make(map[string]string, len(migration698Tables))
 	for _, table := range migration698Tables {
@@ -199,6 +230,37 @@ func TestBaselinePromoteHotFunctionsThreeWayConsistency(t *testing.T) {
 		}
 	}
 
+	// ── 已退役的 v1 族 promote：正典没了，幸存的不变量是「三份基线互相一致」──
+	// 它们是这些函数体的唯一现存副本（890 的 down 没重建 promote 两个）。
+	// 阳性对照：基线里必须**找得到**这两个函数（找不到 ⇒ 副本已丢失，本门红）。
+	for _, table := range retiredV1PromoteTables {
+		name := "promote_" + table + "_hot_to_partition"
+		want, ok := ref[name]
+		if !ok {
+			t.Errorf("canonical baseline missing retired v1 promote function %s —— 它是 v1 族 promote 体的唯一现存副本", name)
+			continue
+		}
+		for _, label := range labels {
+			body, ok := extracted[label][name]
+			if !ok {
+				t.Errorf("%s baseline missing retired v1 promote function %s —— 正典已随 890 退役，基线副本是它唯一的存在形式", label, name)
+				continue
+			}
+			if body != want {
+				t.Errorf("%s baseline body drift for retired v1 %s (三份基线必须互相逐字一致)\n canonical: %s\n %s: %s",
+					label, name, want, label, body)
+			}
+			// 698 钉子仍然要守：它是 23514「no partition of relation found for
+			// row」那类失败的防线；若将来有人复活 v1 族的分区管理，钉子必须一起回来。
+			if !strings.Contains(body, "BEGIN SET LOCAL TIME ZONE 'Asia/Shanghai';") {
+				t.Errorf("%s baseline %s: Shanghai pin is not the first statement after BEGIN", label, name)
+			}
+			if strings.Index(body, "date_trunc(") < strings.Index(body, "SET LOCAL") {
+				t.Errorf("%s baseline %s: month grouping evaluated before the timezone pin", label, name)
+			}
+		}
+	}
+
 	// 695/697 lineage must survive inside every request_logs promote body:
 	// the self-heal demote and the three system_fingerprint column lists.
 	for _, label := range labels {
@@ -222,16 +284,36 @@ func TestBaselinePromoteHotFunctionsThreeWayConsistency(t *testing.T) {
 // un-prebuilt months fail the whole data-modifying CTE with "no partition
 // of partitioned row found", and the same oldest batch is retried every
 // scheduler tick (head-of-line blocking) until months rotate through.
+//
+// ★ 2026-10-20（迁移 890 真删 v1 族）：v1 族那两条的正典已随族退役 ⇒ 它们的
+// C-F-2 检查改用**基线副本的体**（唯一现存副本）执行，同一条规则不降级。
 func TestPromoteMonthsCTEHasDeterministicOrder(t *testing.T) {
 	monthsLimitRe := regexp.MustCompile(`(?s)LIMIT 12`)
 	orderFirstRe := regexp.MustCompile(`ORDER BY 1\s+LIMIT 12|\n(\s*)ORDER BY 1\n\s*LIMIT 12`)
-	for _, table := range migration698Tables {
-		name, body := objectsCanonicalBody(t, table)
+
+	check := func(name, body string) {
 		if !monthsLimitRe.MatchString(body) {
-			continue // function uses a different pre-ensure shape
+			return // function uses a different pre-ensure shape
 		}
 		if !orderFirstRe.MatchString(body) {
 			t.Errorf("%s: months subquery has LIMIT 12 without ORDER BY 1 — non-deterministic pre-ensure set (C-F-2)", name)
 		}
+	}
+
+	for _, table := range migration698Tables {
+		name, body := objectsCanonicalBody(t, table)
+		check(name, body)
+	}
+
+	// 已退役的 v1 族：正典没了，改查基线副本里的体（同一规则、同一强度）。
+	baselinePromote := extractPromoteHotFunctions(t, readBaseline(t, baselineEnsureSources["canonical"]), "canonical")
+	for _, table := range retiredV1PromoteTables {
+		name := "promote_" + table + "_hot_to_partition"
+		body, ok := baselinePromote[name]
+		if !ok {
+			t.Errorf("canonical baseline missing retired v1 promote function %s —— 无法对它执行 C-F-2 检查", name)
+			continue
+		}
+		check(name, body)
 	}
 }

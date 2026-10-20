@@ -23,6 +23,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/kaixuan/llm-gateway-go/db"
 	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"github.com/kaixuan/llm-gateway-go/internal/loopback"
 	"github.com/kaixuan/llm-gateway-go/ratelimit"
@@ -256,27 +257,25 @@ func (w *CredentialSelfcheckWorker) pickDueCredential(ctx context.Context) (int,
 	err := w.db.QueryRow(queryCtx, `
 		SELECT c.id
 		FROM credentials c
-		-- v1 臂改为 LEFT JOIN：原本是 INNER JOIN（e.last_error_at IS NOT NULL），
-		-- 那会让 v1 证据成为硬前置，即使补了 session 臂也永远轮不上它 ——
-		-- 即「补了臂但没接线」。改成 LEFT JOIN 后，硬前置由下面的 se 承担。
-		LEFT JOIN LATERAL (
-			SELECT MAX(rl.ts) AS last_error_at
-			FROM _request_logs_hot rl
-			WHERE rl.credential_id = c.id
-			  AND rl.ts >= now() - interval '24 hours'
-			  -- R50 note: probe rows are deliberately INCLUDED here (no
-			  -- origin_stage arm). A failed probe is genuine evidence the
-			  -- credential is unhealthy — unlike usage scans (INV-3), the
-			  -- self-reinforcing direction is damped by the
-			  -- credentialSelfcheckWindow between picks. Same trade-off as
-			  -- the deferred F18 candidate_failure_logs attribution.
-			  AND (rl.success = FALSE OR COALESCE(rl.status_code, 0) >= 400)
-		) e ON e.last_error_at IS NOT NULL
-		-- 2026-10-02 审计：第二条错误证据臂指向 session 族（SSOT，不受 S4 停写门管）。
+		-- ★ 2026-10-20（迁移 890，v1 族退役）：原先的 **v1 臂**
+		-- （LEFT JOIN LATERAL ... e，证据源是 v1 热表）整条删除。
+		-- 理由：v1 族被 DROP 后，同一条 FROM 里提到 v1 关系会让**整条
+		-- 语句** 42P01（不是「那条臂失败」）⇒ 整个 pickDueCredential 崩掉。
+		-- 而它本来就已经是「非承重臂」：下面的 se 臂（会话族）从 2026-10-02
+		-- 起就是硬前置，停写后 v1 臂恒空（证据源冻结）⇒ 两者等价。
 		--
-		-- 上面那条臂是**硬过滤**（e.last_error_at IS NOT NULL），不是排序：停写生效 24h 后
-		-- _request_logs_hot 不再产生新的失败行 ⇒ 没有任何凭据能通过 ⇒ 自检**自己静默**。
-		-- 这与 credential_recovery 的 lookbackCandidateSQL 同形（方向 ②：证据缺失）。
+		-- 丢掉的能力（如实登记，与 2026-10-02 审计同一判断）：
+		-- 「探针最近失败 ⇒ 现在去复检」这条**快捷信号**。探针流量按设计
+		-- 不走 session 写路径 ⇒ 会话族里根本没有探针行。
+		-- 但这不是能力丢失：探针系统本身（node_probe / node_probe_state）
+		-- 不受该门管，仍会直接发现不健康；selfcheck 用 v1 探针失败行只是
+		-- 取证捷径。保住的是**业务失败**的检测（停写后仍有效）。
+		-- 下面这条臂是**唯一的**错误证据臂，也是**硬过滤**
+		-- （se.last_error_at IS NOT NULL），不是排序。
+		--
+		-- 2026-10-02 审计（补臂当时）：session 族臂指向 SSOT（不受 S4 停写门管），
+		-- 补它的理由是「v1 臂停写后恒空 ⇒ 没有任何凭据能通过 ⇒ 自检**自己静默**」，
+		-- 与 credential_recovery 的 lookbackCandidateSQL 同形（方向 ②：证据缺失）。
 		--
 		-- 真库实测（2026-10-02，24h 窗口，按凭据去重）：
 		--   v1 侧有报错的凭据 41，session 侧 15，**两侧都有 15，只有 v1 有 26**。
@@ -290,12 +289,10 @@ func (w *CredentialSelfcheckWorker) pickDueCredential(ctx context.Context) (int,
 		-- 后者不是能力丢失：探针系统本身（node_probe / node_probe_state）不受该门管，
 		-- 仍会直接发现不健康。selfcheck 用 v1 探针失败行只是取证捷径。
 		-- ⇒ 因此**不门控整个自检 worker**（那会连同仍然有效的故障发现一起停掉），
-		--   改为补这条臂把「止错」的部分保住。
+		--   靠这条臂把「止错」的部分保住。
 		--
-		-- 纯增量：两条臂同时生效，命中集合是原集合的超集，不改变今天的挑选结果
-		-- （24h 内 v1 已覆盖全部业务失败——§9.28 修正：两侧都有的凭据是 **19** 个而非 15，
-		-- 原先只读父表少计了 4 个；仅 v1 有的 22 个仍全部是 node_probe）。
-		-- credential_id 类型不同（v1 是 bigint、session_turns 是 text），故显式 CAST。
+		-- ★ 890（v1 族退役）后本臂的凭据 id 用 CAST（session_turns.credential_id
+		-- 是 text，c.id 是 bigint）。
 		--
 		-- ⚠️ 必须同时读 **hot 与父表**两个面（§9.28）。会话族的写方只写
 		-- session_turns_hot，冷行由 promote_session_turns_hot_to_partition
@@ -321,7 +318,7 @@ func (w *CredentialSelfcheckWorker) pickDueCredential(ctx context.Context) (int,
 			  -- （语义不变），让 planner 把父表裁到今天/昨天两个分区。
 			  AND st.partition_date >= (now() - interval '24 hours')::date
 			  AND (st.success = FALSE OR COALESCE(st.status_code, 0) >= 400)
-		) se ON COALESCE(e.last_error_at, se.last_error_at) IS NOT NULL
+		) se ON se.last_error_at IS NOT NULL
 		LEFT JOIN LATERAL (
 			SELECT MAX(completed_at) AS last_at
 			FROM self_check_runs scr
@@ -335,11 +332,12 @@ func (w *CredentialSelfcheckWorker) pickDueCredential(ctx context.Context) (int,
 		-- pick per 5m tick, newest-error-first let 3 noisy credentials starve
 		-- everything else; rotating on l.last_at guarantees every erroring
 		-- credential gets its turn.
-		-- e.last_error_at → COALESCE(e.last_error_at, se.last_error_at)：与上面的硬前置
-		-- 同一个接线问题。停写后唯一合格的群体 v1 值为 NULL，PostgreSQL 的
-		-- DESC 默认 NULLS FIRST，会把他们全部挤到最前，丢掉「最近报错优先」的排序语义。
+		-- 排序键：COALESCE(e.last_error_at, se.last_error_at) → se.last_error_at。
+		-- 原先是 COALESCE(...) 是因为 v1 臂在停写后恒为 NULL，而 PostgreSQL 的
+		-- DESC 默认 NULLS FIRST，会把 NULL 群体全部挤到最前、丢掉「最近报错优先」
+		-- 的排序语义。v1 臂删除后只剩一个非空来源，COALESCE 随之消失。
 		ORDER BY COALESCE(l.last_at, '1970-01-01'::timestamptz) ASC,
-		         COALESCE(e.last_error_at, se.last_error_at) DESC, c.id
+		         se.last_error_at DESC, c.id
 		LIMIT 1`, fmt.Sprintf("%d seconds", int(credentialSelfcheckWindow.Seconds()))).Scan(&id)
 	if err != nil {
 		if err == pgx.ErrNoRows {
@@ -599,12 +597,16 @@ func (w *CredentialSelfcheckWorker) recentInUsageWindow(ctx context.Context, cre
 func (w *CredentialSelfcheckWorker) recentUsageModels(ctx context.Context, credentialID int, tenant string) (map[string]struct{}, error) {
 	rows, err := w.db.Query(ctx, `
 		SELECT DISTINCT rl.client_model
-		FROM _request_logs_hot rl
+		-- ★ 890（v1 族退役）：源换成会话族热腿（v1 热表已 DROP）。
+		-- 窗口 3 天 ≫ hot 保留期 8h，v1 侧本来就只看得到最近 8h ⇒ 口径不变。
+		-- rl.client_model 在会话族里同名同义（来自 session_turn_details）。
+		FROM `+db.SessionFamilyTurnsHotSourceSQL()+` rl
 		WHERE rl.credential_id = $1
 		  AND rl.tenant_id = $2
 		  AND rl.ts >= now() - `+probeUsageWindowInterval+`
 		  AND rl.success = TRUE
-		  AND `+fmt.Sprintf(probeTrafficExclusionPredicate, "rl", "rl")+`
+		  -- 会话族没有 quality_flags ⇒ 用会话族那条探针排除谓词。
+		  AND `+fmt.Sprintf(probeTrafficExclusionPredicateSession, "rl", "rl", "rl")+`
 		  AND COALESCE(rl.client_model, '') <> ''`, credentialID, tenant)
 	if err != nil {
 		return nil, err
@@ -643,7 +645,9 @@ func (w *CredentialSelfcheckWorker) selfcheckRecentFallback(ctx context.Context,
 		SELECT model, COUNT(*)::int AS count
 		FROM (
 			SELECT COALESCE(mc.canonical_name, mc2.canonical_name, rl.client_model) AS model
-			FROM _request_logs_hot rl
+			-- ★ 890（v1 族退役）：源换成会话族热腿（v1 热表已 DROP）。
+			-- 窗口 3 天 ≫ hot 保留期 8h，v1 侧本来就只看得到最近 8h ⇒ 口径不变。
+			FROM `+db.SessionFamilyTurnsHotSourceSQL()+` rl
 			LEFT JOIN models_canonical mc ON mc.id = rl.canonical_id
 			LEFT JOIN LATERAL (
 				SELECT canonical_id FROM model_aliases
@@ -655,10 +659,10 @@ func (w *CredentialSelfcheckWorker) selfcheckRecentFallback(ctx context.Context,
 			  -- 2026-09-20 probe-volume policy: 3-day usage scope (was 7 days)
 			  AND rl.ts >= now() - interval '3 days'
 			  AND rl.success = TRUE
-			  -- R50: dual-arm exclusion (quality_flags + origin_stage) — the
-			  -- probe gateway round carries no 'probe' flag, only the flag arm
-			  -- let it count as usage here (same gap R49 F4 closed elsewhere).
-			  AND `+fmt.Sprintf(probeTrafficExclusionPredicate, "rl", "rl")+`
+			  -- R50: exclusion — the probe gateway round carries no 'probe'
+			  -- flag, only the origin arm let it count as usage here.
+			  -- ★ 890：会话族没有 quality_flags ⇒ 用会话族那条探针排除谓词。
+			  AND `+fmt.Sprintf(probeTrafficExclusionPredicateSession, "rl", "rl", "rl")+`
 			  AND COALESCE(rl.client_model, '') <> ''
 		) ranked
 		GROUP BY model ORDER BY count DESC, model LIMIT 10`, credentialID, tenant)

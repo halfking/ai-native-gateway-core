@@ -43,11 +43,22 @@ type databaseStorageInfo struct {
 	// pg_database_size：当前连接的 database 自己的数据+索引
 	DatabaseBytes int64  `json:"database_bytes"`
 	DatabaseHuman string `json:"database_human"`
-	// TotalBytes：估算的"含 TOAST / WAL" 总占用。
+	// TotalBytes：**用户 schema** 的关系总占用（表 + 索引 + TOAST）。
 	// 2026-07-03: Citus 不支持 pg_total_database_size(name)，改为
 	//   SUM(pg_total_relation_size) 在所有用户 schema 上求和作为近似。
-	//   通常 DatabaseBytes ≤ TotalBytes（pg_database_size 只算 heap+index；
-	//   这里额外包含 TOAST，且仅算 user schemas，所以两值有差异是正常的）。
+	//
+	// ★ 2026-10-21（R67 / C6 订正）：原注释三处与实现不符，按事实重写 ——
+	//   ① 「含 WAL」：**不成立**。pg_total_relation_size 只量关系存储，
+	//      WAL / WAL 预留 / 统计信息都不在其中。
+	//   ② 「pg_database_size 只算 heap+index」：**不成立**。它是**整库**
+	//      占用（含 pg_catalog / information_schema / 空闲空间）。
+	//   ③ 「通常 DatabaseBytes ≤ TotalBytes」：**不保证**。两者口径不同
+	//      （整库 vs 仅用户 schema），在「系统目录占比大」的库上
+	//      （新装库、空库）TotalBytes **必然更小**。
+	//      实测（一次性库）：整库 44,996,275 / 用户 schema 42,360,832 /
+	//      pg_catalog 单独 43,950,080。
+	//   ⇒ 前端把本字段当「用户对象总量」用（StorageOverview.vue 的
+	//     columnarPctOfDB 用它作分母）⇒ 这个口径是**自洽**的，别改成整库。
 	TotalBytes int64  `json:"total_bytes"`
 	TotalHuman string `json:"total_human"`
 	// 表 / 索引 / TOAST 三段拆分（来自 pg_class 视角）
@@ -1003,6 +1014,7 @@ func queryDirectory(path string) directoryInfo {
 //	生产（Linux 原生文件系统）没有这层开销，该开销不成立。
 //	本轮实测：改掉子查询后，采集从「>15s 打满超时」降到 4–6s，
 //	落进 15s 预算内 ⇒ 启动预热成功 ⇒ 端点稳定 200。
+//
 // tableSizesSQL Top-N 大表查询的 SQL 正文。
 //
 // 抽成包级常量（而不是留在函数体里）：判据需要用**同一条**语句跑

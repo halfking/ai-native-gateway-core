@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -14,11 +15,147 @@ import (
 	"github.com/prometheus/client_golang/prometheus/testutil"
 )
 
+// statusRemainingCountTag marks a pgxmock expectation as "the remaining-rows
+// count query", so the matcher below recognises it by SHAPE instead of by
+// literal text.
+const statusRemainingCountTag = "<<remaining-count>>"
+
+// statusRemainingCountRe recognises a single-column bigint count query.
+//
+// Shape, not text — see statusBackfillQueryMatcher for why.
+var statusRemainingCountRe = regexp.MustCompile(`(?is)\bselect\s+(?:0|count\s*\([^()]*\))\s*::\s*bigint\s*$`)
+
+// statusRemainingConstantZeroRe recognises the structural zero that the
+// remaining count has become since 890 (the source family is dropped, so
+// there is nothing left that could be copied).
+var statusRemainingConstantZeroRe = regexp.MustCompile(`(?is)\bselect\s+0\s*::\s*bigint\s*$`)
+
+// statusBackfillQueryMatcher is the pool-level pgxmock matcher for this file.
+//
+// pgxmock v4 supports only a POOL-level matcher (ExpectedQuery carries no
+// QueryMatcher of its own), so a per-expectation rule has to be dispatched
+// from the expected string: expectations carrying the marker prefix are matched
+// by shape, everything else keeps the default regexp behaviour.
+//
+// ★★ 2026-10-21 (R65 round, measured): this exists because of a failure
+// mode that is much worse than a red assertion.
+//
+// A regexp expectation pins the SQL TEXT into the fixture, and pgxmock's
+// response to a text mismatch is NOT "this assertion turns red":
+//
+//	count query text changed  ⇒  the ExpectedQuery never matches
+//	⇒  it is NOT consumed  ⇒  it stays at the HEAD of the expectation queue
+//	⇒  every later call fails with "was not expected"
+//	⇒  the product's "probe failed ⇒ back off and retry" path turns that into
+//	    a loop that NEVER returns
+//	⇒  the only exit left is go test's default 600s timeout.
+//
+// Measured on 2026-10-21: the whole domains/session/v2 package took
+// 606.375s and the one test that never finished was
+// TestSessionRequestStatusBackfill_GaugeSampledBeforeFirstDrain. The fixture
+// had gone stale because migration 890 rewrote
+// sessionRequestStatusRemainingSQL from "SELECT count(*) … JOIN
+// public._request_logs" to "SELECT 0::bigint", while the fixture still
+// expected the old JOIN text.
+//
+// ⇒ LESSON: a fixture must pin BEHAVIOUR, never TEXT — and any test that can
+// loop forever must carry its own deadline (bounded ctx, see below).
+func statusBackfillQueryMatcher(expectedSQL, actualSQL string) error {
+	if strings.HasPrefix(expectedSQL, statusRemainingCountTag) {
+		return matchStatusRemainingCount(actualSQL)
+	}
+	return pgxmock.QueryMatcherRegexp.Match(expectedSQL, actualSQL)
+}
+
+// matchStatusRemainingCount accepts any single-column bigint count query.
+//
+// The value the query returns is the fixture's business, not the query's
+// literal text: the mock may report any count, and the assertions check that
+// the number reaches the gauge verbatim.
+func matchStatusRemainingCount(actualSQL string) error {
+	if !statusRemainingCountRe.MatchString(actualSQL) {
+		return fmt.Errorf("not a single-column bigint count query: %s", actualSQL)
+	}
+	return nil
+}
+
+// stripSQLComments removes SQL comments (-- line comments and /* */ blocks,
+// including nested blocks) from a statement and returns the executable text.
+//
+// ★★ 2026-10-21 (R65 round): every SQL-text assertion in this package must go
+// through it, and the reason is a measured false green.
+//
+// The constants carry long explanatory comments, and a substring assertion
+// over the RAW text can be satisfied by a word that appears only in a
+// COMMENT. Measured: the candidate query's contract test asserted
+// "AND FALSE" over the raw text; DELETING the clause left the test GREEN,
+// because the clause is also NAMED in the comment right above it.
+//
+// ⇒ A text assertion that does not strip comments is not a gate, it is a
+// coincidence detector. The mutation that proved it: M6 in the R65 mutation
+// round (removing AND FALSE) reported GREEN, and the fix (strip first) turned
+// it RED.
+func stripSQLComments(q string) string {
+	var out strings.Builder
+	out.Grow(len(q))
+	for i := 0; i < len(q); {
+		switch {
+		case q[i] == '\'':
+			// Copy a string literal verbatim, honouring the '' escape.
+			out.WriteByte(q[i])
+			i++
+			for i < len(q) {
+				out.WriteByte(q[i])
+				if q[i] != '\'' {
+					i++
+					continue
+				}
+				i++
+				if i < len(q) && q[i] == '\'' {
+					out.WriteByte(q[i])
+					i++
+					continue
+				}
+				break
+			}
+		case strings.HasPrefix(q[i:], "--"):
+			for i < len(q) && q[i] != '\n' {
+				i++
+			}
+		case strings.HasPrefix(q[i:], "/*"):
+			depth := 1
+			i += 2
+			for i < len(q) && depth > 0 {
+				switch {
+				case strings.HasPrefix(q[i:], "/*"):
+					depth++
+					i += 2
+				case strings.HasPrefix(q[i:], "*/"):
+					depth--
+					i += 2
+				default:
+					i++
+				}
+			}
+		default:
+			out.WriteByte(q[i])
+			i++
+		}
+	}
+	return out.String()
+}
+
+// executableSQL is the stripper plus a trim — what a text assertion should
+// look at.
+func executableSQL(q string) string {
+	return strings.TrimSpace(stripSQLComments(q))
+}
+
 // newStatusBackfillMock builds a pgxmock pool wired for the request_status
 // backfill seam.
 func newStatusBackfillMock(t *testing.T) pgxmock.PgxPoolIface {
 	t.Helper()
-	mock, err := pgxmock.NewPool(pgxmock.QueryMatcherOption(pgxmock.QueryMatcherRegexp))
+	mock, err := pgxmock.NewPool(pgxmock.QueryMatcherOption(pgxmock.QueryMatcherFunc(statusBackfillQueryMatcher)))
 	if err != nil {
 		t.Fatalf("pgxmock.NewPool: %v", err)
 	}
@@ -70,13 +207,19 @@ func statusCounterDelta(t *testing.T, result string, fn func()) float64 {
 }
 
 // TestSessionRequestStatusBackfill_FillsBatch pins the happy path: the batched
-// UPDATE must carry the guarded `request_status IS NULL` predicate, join
-// _request_logs on request_id ONLY, and address the row by id + partition_date
-// so the partitioned parent prunes.
+// UPDATE must carry the guarded `request_status IS NULL` predicate and address
+// the row by id + partition_date so the partitioned parent prunes.
+//
+// ★ 2026-10-21 (R65 round): the "join _request_logs on request_id ONLY" half
+// of this contract died with the v1 family. The mock's UPDATE expectation is
+// also deliberately the PREFIX "SET request_status" and not the full
+// "SET request_status = l.request_status" it used to be: pinning the whole
+// text is what turned an implementation change into a 606-second hang (see
+// statusBackfillQueryMatcher).
 func TestSessionRequestStatusBackfill_FillsBatch(t *testing.T) {
 	mock := newStatusBackfillMock(t)
 	expectStatusTxPrefix(mock, 0, 100)
-	mock.ExpectExec("UPDATE public\\.session_turns t SET request_status = l\\.request_status").
+	mock.ExpectExec("UPDATE public\\.session_turns t SET request_status").
 		WithArgs(int64(42), statusFixedDate(), "req_42").
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 	mock.ExpectCommit()
@@ -109,22 +252,34 @@ func TestSessionRequestStatusBackfill_UpdateSQLContract(t *testing.T) {
 		wantArgs int
 	}{
 		{
-			name:  "guard_and_join",
+			// ★ 2026-10-21 (R65 round): migration 890 dropped the v1 family, so
+			// the JOIN is gone and the statement degenerates to an identity
+			// assignment behind AND FALSE. The previous form kept
+			// `SET request_status = l.request_status` while removing the JOIN
+			// that defined the alias `l` ⇒ the statement could not even be
+			// parsed (42P01, measured on a real PG).
+			name:  "guard_and_no_v1_source",
 			batch: []requestStatusBackfillRow{{id: 42, partitionDate: statusFixedDate(), tenantID: "tenant_a", requestID: "req_42"}},
 			want: []string{
-				"UPDATE public.session_turns t SET request_status = l.request_status",
+				// identity assignment: shape-compatible and always legal
+				"UPDATE public.session_turns t SET request_status = t.request_status",
 				"FROM (VALUES",
 				"AS v(id, partition_date, request_id)",
-				// join must be request_id ONLY — no ts, no tenant, no created_at
-				"JOIN public._request_logs l ON l.request_id = v.request_id",
 				// idempotence guard
 				"AND t.request_status IS NULL",
 				// partition pruning via pkey (id, partition_date)
 				"WHERE t.id = v.id AND t.partition_date = v.partition_date",
-				// NULL source labels must never be written
-				"AND l.request_status IS NOT NULL",
+				// no-op gate: the candidate set is empty since 890
+				"AND FALSE",
 			},
-			notWant:  []string{"l.ts =", "l.created_at", "ON CONFLICT", "t.tenant_id"},
+			notWant: []string{
+				// ★ the v1 family is DROPPED: any reference is a 42P01 at runtime
+				"public._request_logs",
+				// ★ alias l vanished with the JOIN; naming it is a 42P01 at
+				//   PARSE time, independent of AND FALSE
+				"l.request_status",
+				"ON CONFLICT", "t.tenant_id",
+			},
 			wantArgs: 3,
 		},
 		{
@@ -140,6 +295,7 @@ func TestSessionRequestStatusBackfill_UpdateSQLContract(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			sql, args := buildRequestStatusUpdateSQL(tc.batch)
+			sql = executableSQL(sql)
 			for _, want := range tc.want {
 				if !strings.Contains(sql, want) {
 					t.Errorf("UPDATE SQL missing %q\ngot: %s", want, sql)
@@ -357,12 +513,18 @@ func TestSessionRequestStatusBackfill_SourceProbeDetectsRetirement(t *testing.T)
 // TestSessionRequestStatusBackfill_RetiredStopsWithoutErrorNoise is the core
 // retirement guarantee: once _request_logs is gone the job increments `retired`
 // exactly once and RETURNS — no drain attempt, no per-tick ERROR spam.
+//
+// ★ 2026-10-21 (R65 round): the startup count no longer FAILS in the retired
+// world — since 890 the remaining count is a constant 0 (the source is gone,
+// so there is nothing left that could be copied), so the gauge legitimately
+// reads 0. The "a failed count must read -1, never 0" contract is still
+// covered, but it belongs to the count-FAILURE path and lives in
+// TestSessionRequestStatusBackfill_RemainingGaugeFailureIsNotZero.
 func TestSessionRequestStatusBackfill_RetiredStopsWithoutErrorNoise(t *testing.T) {
 	mock := newStatusBackfillMock(t)
 	// The startup gauge sample fires BEFORE the first probe, so it sees the
-	// retired world too: its count fails (relation gone) and the gauge takes
-	// the -1 sentinel — honest "unmeasurable", never 0.
-	expectStatusRemainingErr(mock, errors.New(`relation "public._request_logs" does not exist`))
+	// retired world too: the count answers 0 (nothing left to copy).
+	expectStatusRemaining(mock, 0)
 	expectStatusProbe(mock, false, true) // retired
 	// NOTE: no batch ExpectBegin/SELECT/UPDATE programmed. pgxmock fails the
 	// test on any UNEXPECTED call, so if the job tried to drain, this goes red.
@@ -370,7 +532,11 @@ func TestSessionRequestStatusBackfill_RetiredStopsWithoutErrorNoise(t *testing.T
 	b := newSessionRequestStatusBackfillForTest(mock, 0, 100, 0)
 	delta := statusCounterDelta(t, "retired", func() {
 		done := make(chan struct{})
-		b.Start(context.Background())
+		// Bounded ctx: if the fixture ever goes stale again, the job's retry
+		// loop must die on a deadline, not on go test's 600s default.
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		b.Start(ctx)
 		go func() { b.Stop(); close(done) }()
 		select {
 		case <-done:
@@ -424,8 +590,10 @@ func TestSessionRequestStatusBackfill_SelectFailureAfterRetirementIsTerminal(t *
 // path: a nil (or typed-nil) pool must not panic, and Start/Stop stay idempotent.
 func TestSessionRequestStatusBackfill_NilPoolLifecycle(t *testing.T) {
 	b := newSessionRequestStatusBackfillForTest(nil, 0, 0, 0)
-	b.Start(context.Background())
-	b.Start(context.Background()) // second start is a no-op
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	b.Start(ctx)
+	b.Start(ctx) // second start is a no-op
 	b.Stop()
 	b.Stop() // second stop is a no-op
 }
@@ -495,24 +663,48 @@ func TestSessionRequestStatusBackfill_DefaultConstants(t *testing.T) {
 	}
 }
 
-// TestSessionRequestStatusBackfill_CandidateSQLJoinIsRequestIDOnly pins the
-// measured facts the join relies on: _request_logs.request_id is unique, so no
-// extra predicate may be added "for safety" — it would only drop matchable rows.
-func TestSessionRequestStatusBackfill_CandidateSQLJoinIsRequestIDOnly(t *testing.T) {
-	sql := sessionRequestStatusCandidateSQL
+// TestSessionRequestStatusBackfill_CandidateSQLIsEmptyAfterV1Retirement pins
+// the candidate query's post-890 shape.
+//
+// ★ 2026-10-21 (R65 round): the previous contract here ("the join must be on
+// request_id ONLY") died with the v1 family. What replaces it is a stronger
+// property: the candidate set is EMPTY (AND FALSE) and the query must not
+// name the dropped family at all — naming it is a runtime 42P01, not a subtle
+// row-set change. The keyset shape is kept so the drain machinery stays intact.
+func TestSessionRequestStatusBackfill_CandidateSQLIsEmptyAfterV1Retirement(t *testing.T) {
+	sql := executableSQL(sessionRequestStatusCandidateSQL)
 	for _, want := range []string{
-		"JOIN public._request_logs l ON l.request_id = t.request_id",
-		"t.request_status IS NULL",
-		"l.request_status IS NOT NULL",
+		// keyset shape (the machinery's contract)
+		"WHERE t.id > $1",
 		"ORDER BY t.id",
+		"LIMIT $2",
+		// the NULL-label predicate is still the only thing that could
+		// qualify a row
+		"t.request_status IS NULL",
+		// ★ the explicit "no source" gate
+		"AND FALSE",
 	} {
 		if !strings.Contains(sql, want) {
 			t.Errorf("candidate SQL missing %q", want)
 		}
 	}
-	for _, notWant := range []string{"l.ts =", "l.created_at", "l.tenant_id"} {
-		if strings.Contains(sql, notWant) {
-			t.Errorf("candidate SQL must not add join condition %q (request_id is unique)", notWant)
+	for _, notWant := range []string{
+		// ★ the v1 family is DROPPED (migration 890): naming it is a 42P01
+		"public._request_logs",
+	} {
+		if strings.Contains(strings.ToLower(sql), strings.ToLower(notWant)) {
+			t.Errorf("candidate SQL must not contain %q — the label source is retired, "+
+				"so the candidate set is empty and the query must not touch the dropped family", notWant)
+		}
+	}
+	// The projection must stay aligned with the table's real columns: a
+	// projected column that does not exist is a PARSE-time 42P01, exactly like
+	// the alias l that 890 left behind. The real-database gate in
+	// session_request_status_backfill_v1_retirement_test.go PREPAREs this
+	// statement, which is the authoritative check.
+	for _, col := range []string{"t.id", "t.partition_date", "t.tenant_id", "t.request_id"} {
+		if !strings.Contains(sql, col) {
+			t.Errorf("candidate SQL does not project %q", col)
 		}
 	}
 }
@@ -521,10 +713,10 @@ func TestSessionRequestStatusBackfill_CandidateSQLJoinIsRequestIDOnly(t *testing
 // mechanism that makes retirement observable: ::regclass would RAISE on a
 // dropped table (turning retirement into ERROR spam), to_regclass returns NULL.
 func TestSessionRequestStatusBackfill_SourceProbeSQLUsesToRegclass(t *testing.T) {
-	if strings.Contains(sessionRequestStatusSourceProbeSQL, "::regclass") {
+	if strings.Contains(executableSQL(sessionRequestStatusSourceProbeSQL), "::regclass") {
 		t.Error("probe SQL must use to_regclass (NULL on absent table), not ::regclass (raises)")
 	}
-	if !strings.Contains(sessionRequestStatusSourceProbeSQL, "to_regclass('public._request_logs')") {
+	if !strings.Contains(executableSQL(sessionRequestStatusSourceProbeSQL), "to_regclass('public._request_logs')") {
 		t.Error("probe SQL must probe _request_logs by to_regclass")
 	}
 }
@@ -570,15 +762,23 @@ func statusBackfillFixtureDB(t *testing.T, adminDSN string) (*pgxpool.Pool, stri
 	return pool, name
 }
 
-// TestSessionRequestStatusBackfill_RealDB is the real-library gate: it builds a
-// miniature _request_logs + RANGE-partitioned session_turns in a throwaway
-// database, runs the job's batches, and asserts
+// TestSessionRequestStatusBackfill_RealDB is the real-library gate.
 //
-//	(a) only joinable NULL rows were updated,
-//	(b) a row with no v1 twin stays NULL (structurally unbackfillable),
-//	(c) a row whose v1 label is NULL stays NULL,
-//	(d) an already-labelled row is untouched, and
-//	(e) a second full pass is a no-op (idempotence).
+// ★ 2026-10-21 (R65 round): the gate in this slot used to build a miniature
+// _request_logs + session_turns, run the job's batches, and assert that
+// joinable NULL rows got their labels copied from their v1 twin. That premise
+// died with migration 890 (the v1 family is DROPPED), so the gate now pins
+// the behaviour that actually ships:
+//
+//	(a) every SQL the job issues must PARSE on a real PostgreSQL — this is
+//	    where the 42P01 class of defect dies. A statement naming a relation or
+//	    an alias that does not exist is rejected at BIND time, even when it
+//	    can never match a row: 890 left `SET request_status = l.request_status`
+//	    behind after removing the JOIN that defined the alias `l`;
+//	(b) the job retires immediately and quietly when the source is gone
+//	    (no drain, no error spam, exactly one `retired`);
+//	(c) the remaining gauge reads 0 — the structural zero of a retired source;
+//	(d) not a single row is written.
 //
 // Fixture teardown is deliberately NOT in t.Cleanup. t.Cleanup callbacks run
 // AFTER deferred functions in the same test, so a cleanup that reuses a pool
@@ -633,11 +833,9 @@ func TestSessionRequestStatusBackfill_RealDB(t *testing.T) {
 	}
 	defer pool.Close() // runs BEFORE the admin-drop defer (LIFO) ⇒ pools closed first
 
+	// The fixture mirrors production AFTER 890: the session family exists, the
+	// v1 label source does NOT.
 	if _, err := pool.Exec(ctx, `
-CREATE TABLE public._request_logs (
-	request_id      TEXT PRIMARY KEY,
-	request_status  TEXT
-);
 CREATE TABLE public.session_turns (
 	id              BIGINT,
 	partition_date  DATE NOT NULL,
@@ -651,85 +849,73 @@ CREATE TABLE public.session_turns_2026_10
 	PARTITION OF public.session_turns FOR VALUES FROM ('2026-10-01') TO ('2026-11-01');
 CREATE TABLE public.session_turns_default PARTITION OF public.session_turns DEFAULT;
 CREATE UNIQUE INDEX ON public.session_turns (id, partition_date);
-INSERT INTO public._request_logs (request_id, request_status) VALUES
-	('req_1','success'), ('req_2','rate_limited'), ('req_3','failure'),
-	('req_4','in_progress'), ('req_6',NULL), ('req_8','success');
 INSERT INTO public.session_turns (id, partition_date, tenant_id, request_id, request_status) VALUES
 	(1,'2026-09-01','tenant_a','req_1',NULL),
-	(2,'2026-09-01','tenant_a','req_2',NULL),
-	(3,'2026-09-15','tenant_a','req_3',NULL),
-	(4,'2026-09-20','tenant_b','req_4',NULL),
-	(5,'2026-09-25','tenant_b','req_orphan',NULL),
-	(6,'2026-09-28','tenant_b','req_6',NULL),
-	(7,'2026-09-29','tenant_b','req_7','success'),
-	(8,'2026-10-02','tenant_a','req_8',NULL),
-	(9,'2026-11-15','tenant_c','req_9',NULL);
+	(2,'2026-10-02','tenant_b','req_2',NULL),
+	(3,'2026-10-03','tenant_c','req_3','success');
 `); err != nil {
 		t.Fatalf("create/seed fixture: %v", err)
 	}
 
+	// (a) Every statement must PARSE. PREPARE binds without executing, so this
+	// is a pure parse/bind check — it writes nothing and touches no row.
+	batchSQL, _ := buildRequestStatusUpdateSQL([]requestStatusBackfillRow{
+		{id: 42, partitionDate: statusFixedDate(), tenantID: "tenant_a", requestID: "req_42"},
+	})
+	for _, stmt := range []struct {
+		name string
+		sql  string
+	}{
+		{"rsb_candidate", sessionRequestStatusCandidateSQL},
+		{"rsb_remaining", sessionRequestStatusRemainingSQL},
+		{"rsb_probe", sessionRequestStatusSourceProbeSQL},
+		{"rsb_update", batchSQL},
+	} {
+		if _, err := pool.Exec(ctx, "PREPARE "+stmt.name+" AS "+stmt.sql); err != nil {
+			t.Errorf("PREPARE %s failed: %v\n--- statement ---\n%s", stmt.name, err, stmt.sql)
+			continue
+		}
+		if _, err := pool.Exec(ctx, "DEALLOCATE "+stmt.name); err != nil {
+			t.Fatalf("DEALLOCATE %s: %v", stmt.name, err)
+		}
+	}
+
+	// (b) The job must retire immediately and quietly: the source is gone, so
+	// the probe says so and the job returns without draining.
 	b := newSessionRequestStatusBackfillForTest(pool, 0, 100, 0)
+	runCtx, cancelRun := context.WithTimeout(ctx, 30*time.Second)
+	defer cancelRun()
+	retired := statusCounterDelta(t, "retired", func() { b.run(runCtx) })
+	if retired != 1 {
+		t.Errorf("retired delta = %v, want 1 — with the v1 family dropped the job must "+
+			"retire exactly once instead of retrying", retired)
+	}
+
+	// (c) The gauge is the structural zero of a retired source.
+	if got := testutil.ToFloat64(requestStatusBackfillRemaining); got != 0 {
+		t.Errorf("remaining gauge = %v, want 0 (the source is gone ⇒ nothing left to copy)", got)
+	}
+
+	// (d) Nothing may be written. A drain on a source-less world selects no
+	// candidates, and the NULL labels must survive untouched.
 	selected, err := b.drain(ctx)
 	if err != nil {
 		t.Fatalf("drain: %v", err)
 	}
-	if selected != 5 {
-		t.Fatalf("selected = %d, want 5 (req_6 has a NULL v1 label ⇒ not a candidate)", selected)
+	if selected != 0 {
+		t.Errorf("selected = %d, want 0 — with no label source there are no candidates", selected)
 	}
-
-	assertStatus := func(id int64, want any, why string) {
-		t.Helper()
-		var got *string
-		if err := pool.QueryRow(ctx, "SELECT request_status FROM public.session_turns WHERE id = $1", id).Scan(&got); err != nil {
-			t.Fatalf("read id=%d: %v", id, err)
-		}
-		var norm any
-		if got != nil {
-			norm = *got
-		}
-		if norm != want {
-			t.Errorf("id=%d request_status = %v, want %v (%s)", id, norm, want, why)
-		}
+	var stillNull, labelled int
+	if err := pool.QueryRow(ctx,
+		"SELECT count(*) FILTER (WHERE request_status IS NULL), "+
+			"count(*) FILTER (WHERE request_status IS NOT NULL) "+
+			"FROM public.session_turns").Scan(&stillNull, &labelled); err != nil {
+		t.Fatalf("read labels: %v", err)
 	}
-	assertStatus(1, "success", "joinable NULL row must be filled")
-	assertStatus(2, "rate_limited", "rate_limited is the label only v1 carries")
-	assertStatus(3, "failure", "row inside the same partition")
-	assertStatus(4, "in_progress", "second tenant's row must be filled")
-	assertStatus(8, "success", "second partition must be filled too")
-	assertStatus(5, nil, "no v1 twin ⇒ structurally unbackfillable, must stay NULL")
-	assertStatus(6, nil, "v1 twin label is NULL ⇒ must stay NULL")
-	assertStatus(7, "success", "already-labelled row must be untouched")
-	assertStatus(9, nil, "DEFAULT partition row with no twin ⇒ must stay NULL")
-
-	// Idempotence: a second full pass must select and update nothing.
-	selected2, err := b.drain(ctx)
-	if err != nil {
-		t.Fatalf("drain (rerun): %v", err)
+	if stillNull != 2 || labelled != 1 {
+		t.Errorf("labels after the job = %d NULL / %d non-NULL, want 2 NULL / 1 non-NULL "+
+			"(the job must not invent or clear labels)", stillNull, labelled)
 	}
-	if selected2 != 0 {
-		t.Fatalf("rerun selected = %d, want 0 (guard must exclude every filled row)", selected2)
-	}
-	assertStatus(1, "success", "rerun must not change anything")
-	assertStatus(5, nil, "rerun must not invent a label")
-	assertStatus(7, "success", "rerun must not overwrite an existing label")
-
-	// Retirement on a live database: drop _request_logs and prove the job stops
-	// quietly (retired, no error) instead of spinning on a missing relation.
-	if _, err := pool.Exec(ctx, "DROP TABLE public._request_logs"); err != nil {
-		t.Fatalf("drop fixture _request_logs: %v", err)
-	}
-	available, err := b.sourceAvailable(ctx)
-	if err != nil {
-		t.Fatalf("sourceAvailable after retirement: %v", err)
-	}
-	if available {
-		t.Error("sourceAvailable = true after _request_logs was dropped, want false")
-	}
-	retiredDelta := statusCounterDelta(t, "retired", func() {})
-	if _, err := b.drain(ctx); err != nil && err != errRequestStatusSourceRetired {
-		t.Errorf("drain after retirement: %v (want errRequestStatusSourceRetired or a clean stop)", err)
-	}
-	_ = retiredDelta
 
 	// Teardown while both pools are still open; failure is FATAL.
 	if _, err := admin.Exec(ctx, "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = $1", name); err != nil {
@@ -796,6 +982,12 @@ func remainingTimeoutArg() string {
 // count itself, ROLLBACK. Programming the Begin is itself the pin: a
 // regression to a bare pool.QueryRow would consume no Begin and fail these
 // expectations.
+//
+// n is the count the MOCK reports — a simulation, not the literal the real
+// query produces. It must be allowed to be non-zero: the real remaining count
+// has been 0 since 890, and 0 is also the Prometheus zero value, so a gauge
+// assertion on 0 cannot tell "sampled" from "never sampled" (a恒绿 assertion).
+// A non-zero sentinel is what gives the gauge assertions teeth.
 func expectStatusRemaining(mock pgxmock.PgxPoolIface, n int64) {
 	mock.ExpectBegin()
 	mock.ExpectExec("SELECT set_config\\('app.current_role', 'super_admin', true\\)").
@@ -805,12 +997,17 @@ func expectStatusRemaining(mock pgxmock.PgxPoolIface, n int64) {
 	mock.ExpectExec("SELECT set_config\\('statement_timeout', \\$1, true\\)").
 		WithArgs(remainingTimeoutArg()).
 		WillReturnResult(pgxmock.NewResult("SELECT", 1))
-	mock.ExpectQuery("JOIN public\\._request_logs l ON l\\.request_id").
+	// Matched by SHAPE, not by text — see statusBackfillQueryMatcher.
+	mock.ExpectQuery(statusRemainingCountTag).
 		WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(n))
 	mock.ExpectRollback()
 }
 
 // expectStatusRemainingErr is expectStatusRemaining with a failing count.
+//
+// The "a count failure must read as -1, never 0" contract is independent of
+// the query's shape: even though the real query has been a constant 0 since
+// 890, a failure still has to be reported honestly.
 func expectStatusRemainingErr(mock pgxmock.PgxPoolIface, err error) {
 	mock.ExpectBegin()
 	mock.ExpectExec("SELECT set_config\\('app.current_role', 'super_admin', true\\)").
@@ -820,7 +1017,7 @@ func expectStatusRemainingErr(mock pgxmock.PgxPoolIface, err error) {
 	mock.ExpectExec("SELECT set_config\\('statement_timeout', \\$1, true\\)").
 		WithArgs(remainingTimeoutArg()).
 		WillReturnResult(pgxmock.NewResult("SELECT", 1))
-	mock.ExpectQuery("JOIN public\\._request_logs l ON l\\.request_id").
+	mock.ExpectQuery(statusRemainingCountTag).
 		WillReturnError(err)
 	mock.ExpectRollback()
 }
@@ -832,18 +1029,44 @@ func expectStatusRemainingErr(mock pgxmock.PgxPoolIface, err error) {
 // 1.5M rows are still draining. Here the probe then reports the source
 // retired, so run() returns without ever draining; the gauge must still carry
 // the startup number, proving the sample fired before the first drain.
+//
+// ★ 2026-10-21 (R65 round): two things changed, and both were load-bearing.
+//
+//  1. The count is reported by the mock as a NON-ZERO SENTINEL. The real
+//     remaining count has been a constant 0 since 890, and 0 is also the
+//     Prometheus zero value — a gauge assertion on 0 cannot tell "sampled"
+//     from "never sampled", so it would be a恒绿 assertion. The sentinel
+//     restores the teeth: the gauge must show the number the count reported.
+//
+//  2. The ctx is BOUNDED. This is the test that hung for 606s: the stale
+//     fixture made the probe fail, the job's "probe failed ⇒ back off and
+//     retry" path looped forever, and the only exit was go test's default
+//     600s timeout. A one-second fixture regression must not cost the CI
+//     ten minutes; with a deadline it fails in seconds and says why.
 func TestSessionRequestStatusBackfill_GaugeSampledBeforeFirstDrain(t *testing.T) {
 	mock := newStatusBackfillMock(t)
-	const startupRemaining int64 = 1520530
+	const startupRemaining int64 = 424242 // sentinel: ≠ 0 and ≠ -1
+	// Declare the baseline: the gauge is PACKAGE-LEVEL state, so "the gauge
+	// reads 0" only means something if this test put it there. Without the
+	// reset, a value left behind by an earlier test would satisfy the
+	// assertion below even if the startup sample never fired — a false green
+	// that depends on test order.
+	requestStatusBackfillRemaining.Set(0)
 	expectStatusRemaining(mock, startupRemaining)
 	expectStatusProbe(mock, false, false)
 
 	b := newSessionRequestStatusBackfillForTest(mock, time.Millisecond, 100, 0)
-	b.run(context.Background())
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	retired := statusCounterDelta(t, "retired", func() { b.run(ctx) })
+	if retired != 1 {
+		t.Fatalf("retired delta = %v, want 1 — the probe reports the source gone, "+
+			"so run() must retire exactly once instead of retrying", retired)
+	}
 	if got := testutil.ToFloat64(requestStatusBackfillRemaining); got != float64(startupRemaining) {
 		t.Errorf("remaining gauge = %v after startup, want %d — if this reads 0 the "+
-			"pre-drain sample was dropped and the D9 release gate can false-green "+
-			"during the entire active backfill window", got, startupRemaining)
+			"pre-drain sample was dropped (or carried 0, which is indistinguishable "+
+			"from never sampled) and the D9 release gate can false-green", got, startupRemaining)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("unmet expectations: %v", err)
@@ -870,10 +1093,17 @@ func TestSessionRequestStatusBackfill_RemainingGaugeReportsIdle(t *testing.T) {
 // A non-zero count must reach the gauge verbatim — this is the number the
 // release check reads, so a scaled or clamped value would silently pass a
 // half-finished backfill.
+//
+// ★ 2026-10-21 (R65 round): the value is now a SENTINEL rather than the old
+// business number 1520530. The real remaining count has been 0 since 890, and
+// 0 is also the Prometheus zero value — an assertion on 0 cannot tell
+// "the count reported 0" from "the count never ran". A sentinel keeps the
+// property under test (the count's value reaches the gauge UNSCALED) and
+// keeps the assertion meaningful.
 func TestSessionRequestStatusBackfill_RemainingGaugeIsVerbatim(t *testing.T) {
 	mock := newStatusBackfillMock(t)
 	expectIdleBatch(mock)
-	const want int64 = 1520530
+	const want int64 = 314159 // sentinel: ≠ 0 and ≠ -1
 	expectStatusRemaining(mock, want)
 
 	b := newSessionRequestStatusBackfillForTest(mock, 0, 100, 0)
@@ -919,7 +1149,7 @@ func TestSessionRequestStatusBackfill_RemainingSampledOncePerDrain(t *testing.T)
 	mock := newStatusBackfillMock(t)
 	// Batch 1: FULL (1 == batchSize) -> loop continues.
 	expectStatusTxPrefix(mock, 0, 1)
-	mock.ExpectExec("UPDATE public\\.session_turns t SET request_status = l\\.request_status").
+	mock.ExpectExec("UPDATE public\\.session_turns t SET request_status").
 		WithArgs(int64(42), statusFixedDate(), "req_42").
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 	mock.ExpectCommit()
@@ -942,21 +1172,27 @@ func TestSessionRequestStatusBackfill_RemainingSampledOncePerDrain(t *testing.T)
 	}
 }
 
-// The executable release precondition, pinned as SQL. If someone rewrites the
-// remaining query the v1-side IS NOT NULL filter must survive: without it the
-// 46 NULL-label v1 rows keep the number permanently above zero and "done"
-// becomes unreachable.
+// TestSessionRequestStatusBackfill_RemainingSQLContract pins the remaining
+// count query's post-890 shape.
+//
+// ★ 2026-10-21 (R65 round): the previous contract here ("the v1-side IS NOT
+// NULL filter must survive") died with the v1 family — the source is DROPPED,
+// so the number of rows that could still be copied is structurally 0.
+//
+// ⚠⚠ The consequence must not be silently inherited: **a gauge that is
+// structurally 0 is a PERMANENTLY GREEN release signal.** The D9 clause-4
+// gate ("remaining == 0 ⇒ safe to retire") is therefore void, and reading
+// this gauge as a release precondition is a mistake — it now answers 0 for
+// every possible world. The constant is pinned here so that anyone changing
+// it has to confront that, rather than discovering it inside a release window.
 func TestSessionRequestStatusBackfill_RemainingSQLContract(t *testing.T) {
-	q := sessionRequestStatusRemainingSQL
-	for _, want := range []string{
-		"FROM public.session_turns t",
-		"JOIN public._request_logs l ON l.request_id = t.request_id",
-		"t.request_status IS NULL",
-		"l.request_status IS NOT NULL",
-	} {
-		if !strings.Contains(q, want) {
-			t.Errorf("remaining SQL missing %q", want)
-		}
+	q := executableSQL(sessionRequestStatusRemainingSQL)
+	if !statusRemainingConstantZeroRe.MatchString(q) {
+		t.Errorf("remaining SQL must be the structural zero (SELECT 0::bigint), got: %s", q)
+	}
+	// ★ the v1 family is DROPPED (migration 890): naming it is a 42P01
+	if strings.Contains(strings.ToLower(q), "public._request_logs") {
+		t.Errorf("remaining SQL must not reference the dropped v1 family, got: %s", q)
 	}
 	// A LIMIT would report a sample, not a total.
 	if strings.Contains(strings.ToUpper(q), "LIMIT") {
@@ -965,51 +1201,53 @@ func TestSessionRequestStatusBackfill_RemainingSQLContract(t *testing.T) {
 	}
 }
 
-// TestSessionRequestStatusBackfill_RemainingSQLCoversBothSurfaces pins the
-// gauge to BOTH storage surfaces of the session family.
+// TestSessionRequestStatusBackfill_RemainingSQLNoLongerCoversAnySurface is the
+// executable form of "the D9 release gate is void".
 //
-// Why this is a guard and not a comment: the candidate query is
-// parent-only **on purpose**, so the two SQL constants sit in the same file with
-// deliberately different scopes. That asymmetry is exactly the kind of thing a
-// later reader "helpfully" normalizes — and normalizing it in the wrong
-// direction produces a green release gate over data that would be lost at
-// retirement, which is the one thing the gauge exists to prevent (audit §9.160).
-func TestSessionRequestStatusBackfill_RemainingSQLCoversBothSurfaces(t *testing.T) {
-	q := sessionRequestStatusRemainingSQL
-	for _, surface := range []string{"public.session_turns t", "public.session_turns_hot t"} {
-		if !strings.Contains(q, surface) {
-			t.Errorf("remaining SQL does not cover %q — the gauge is the D9 clause-4 release gate, "+
-				"so it must answer for every row that will still exist after retirement, not just "+
-				"the ones promote has already rotated into the parent", surface)
+// ★ 2026-10-21 (R65 round): the test in this slot used to assert that the
+// gauge covers BOTH storage surfaces (parent + hot). That premise died with
+// the v1 family: the count is a constant 0 and mentions no table at all, so
+// it cannot be scoped to any surface. The fact is worth pinning precisely
+// because it is WHY the release gate must not be trusted any more — a gauge
+// that reads 0 for every possible world is green forever.
+func TestSessionRequestStatusBackfill_RemainingSQLNoLongerCoversAnySurface(t *testing.T) {
+	q := strings.ToLower(executableSQL(sessionRequestStatusRemainingSQL))
+	for _, surface := range []string{"public.session_turns", "public.session_turns_hot"} {
+		if strings.Contains(q, surface) {
+			t.Errorf("remaining SQL references %q — since 890 the count is the constant 0; "+
+				"if a surface comes back, the D9 release gate needs an explicit re-derivation "+
+				"(a gauge scoped to one surface reads 0 while the other still holds NULL labels)", surface)
 		}
 	}
-	// Both halves must carry the same predicate. A half that dropped the
-	// v1-side IS NOT NULL guard would count the 46 structurally unfillable
-	// rows and pin the gauge above zero forever, so the two subqueries have to
-	// be symmetric rather than merely both present.
-	if n := strings.Count(q, "t.request_status IS NULL"); n != 2 {
-		t.Errorf("remaining SQL: expected the NULL-label predicate on both surfaces, found %d", n)
-	}
-	if n := strings.Count(q, "l.request_status IS NOT NULL"); n != 2 {
-		t.Errorf("remaining SQL: expected the v1-side NOT NULL guard on both surfaces, found %d", n)
-	}
-	if n := strings.Count(q, "JOIN public._request_logs l ON l.request_id = t.request_id"); n != 2 {
-		t.Errorf("remaining SQL: expected the request_id join on both surfaces, found %d", n)
-	}
-	// The two halves are summed, not UNION-ed. A UNION ALL would emit two rows
-	// and Scan into a single int would fail at runtime.
-	if !strings.Contains(q, "+ (SELECT count(*)") {
-		t.Error("remaining SQL must SUM the two per-surface counts; UNION ALL would return two rows " +
-			"and the single-int Scan in requestStatusBackfillRemaining would error every tick")
-	}
 }
+
+// ── retired premise ─────────────────────────────────────────────────────────
+//
+// TestSessionRequestStatusBackfill_RemainingSQLCoversBothSurfaces was REMOVED
+// on 2026-10-21 (R65 round), not by accident:
+//
+//   - It asserted that the remaining-count SQL covers BOTH storage surfaces
+//     (public.session_turns + public.session_turns_hot), because the gauge was
+//     the D9 clause-4 release gate and a surface-scoped gauge would read 0
+//     while the other surface still held NULL labels.
+//   - Migration 890 dropped the v1 label source, so the count of "rows that
+//     could still be copied" became the CONSTANT 0 — it mentions no table at
+//     all and therefore cannot be scoped to any surface. The premise the test
+//     defended no longer exists; keeping the assertions would have demanded
+//     the impossible (a table-scoped count over a source that is gone).
+//   - Its replacement is TestSessionRequestStatusBackfill_RemainingSQLNoLonger
+//     CoversAnySurface, which pins the same fact executably: the query names
+//     no surface, which is exactly WHY the D9 release gate is void.
+//
+// ⚠ If a surface ever comes back (a new label source), the release gate must
+// be re-derived from scratch — do not resurrect the old assertions blindly.
 
 // TestSessionRequestStatusBackfill_SourceProbeCoversBothSurfaces: the gauge
 // selects from session_turns_hot, so a probe that only checks the parent's
 // column lets a half-applied 823 turn every gauge tick into an ERROR instead of
 // a quiet degradation.
 func TestSessionRequestStatusBackfill_SourceProbeCoversBothSurfaces(t *testing.T) {
-	p := sessionRequestStatusSourceProbeSQL
+	p := executableSQL(sessionRequestStatusSourceProbeSQL)
 	for _, rel := range []string{"to_regclass('public.session_turns')", "to_regclass('public.session_turns_hot')"} {
 		if !strings.Contains(p, rel) {
 			t.Errorf("source probe does not check request_status on %s; a half-applied 823 would "+

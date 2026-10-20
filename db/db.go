@@ -186,16 +186,19 @@ func (db *DB) ApplyMigrations(ctx context.Context) error {
 // 部署安全网回滚（245 07:23/07:26/07:35 三连败实证，PG 日志逐字归因）。
 // 守卫语义：全部列在位 → true（调用方跳过 DDL，幂等 stamp 类语句照常执行）；
 // 表不存在 / 任一列缺失 / 探测出错 → false（走原 ensure 路径，自含幂等）。
-// tableExists reports whether a relation exists in the public schema.
 //
-// 2026-10-21（r1039 续轮）：request_logs 族退役（request_logs → session_turns）后，
-// 「这张表**在不在**」是**部署形态**的问题，不是「列缺不缺」的问题。ensure 链的
-// 目录短路清单早就用 to_regclass(...) IS NOT NULL 把这些表的列算成「可选」，
-// 而 ensure 体却**无条件** ALTER 它们 ⇒ 族退役的库上 boot 迁移直接 42P01 中止
-// （2026-10-21 本机 deploy-local 实测中止）。
+// tableExists 报告某个关系在 public schema 里在不在。
 //
-// ⇒ 用**同一把尺子**（to_regclass）判断，别用 information_schema.tables
-// （视图/外表也会命中，与 ensure 体 ALTER 的对象集合不是一回事）。
+// 2026-10-21（r1039 续轮）：request_logs 族退役（860 改名 → 890 删除）之后，
+// 「这张表**在不在**」是**部署形态**的问题，不是「列缺不缺」的问题。
+// ensure 链里多处按「列缺不缺」判断是否要 ALTER，但**族退役后表本身没了**，
+// 而 `columnsAllPresent` 在**表不在**时返回 true（missing=0 ⇒ 没缺列）
+// ⇒ 于是「缺列」这条路被正确跳过，「缺表」那条路没人管 ⇒ ALTER 一张不存在
+// 的表 ⇒ 42P01 ⇒ 整条 boot 迁移中止。
+//
+// ⇒ 用 to_regclass 口径（与目录短路清单、890 的族探测**同一把尺子**）判断
+//    「在不在」。不用 information_schema.tables：视图/外表也会命中，
+//    与 ensure 体的 ALTER 对象集合不是一回事。
 func (d *DB) tableExists(ctx context.Context, name string) bool {
 	if d == nil || d.pool == nil {
 		return false
@@ -2615,10 +2618,30 @@ func (d *DB) ensureRequestLogSchema(ctx context.Context) error {
 	if d == nil || d.pool == nil {
 		return nil
 	}
-	// 2026-10-21（r1039 续轮）：与目录短路清单同口径——族表不在 ⇒ 整个 ensure
-	// 跳过（而不是 ALTER 一张不存在的表 ⇒ 42P01 ⇒ boot 中止）。
-	if !d.tableExists(ctx, "_request_logs") {
-		slog.Info("_request_logs 不存在（request_logs 族未安装或已退役）—— 跳过该族 schema 自愈")
+	// ★ 890（v1 族退役）：本函数存在的**唯一**目的是给 v1 族补列/补索引。
+	// 族被删之后它无事可做 ⇒ 显式早退。
+	//
+	// ⚠ 为什么不能只靠下面的 catalog 短路：短路算的是「**缺多少**列/索引」，
+	// 而退役后索引**跟着表一起消失** ⇒ missing = 13 ≠ 0 ⇒ 短路**不触发**
+	// ⇒ 继续跑 `ALTER TABLE _request_logs …` ⇒ 42P01 ⇒ applyMigrationsOnce
+	// 失败 ⇒ db.Open 返回 (nil, err) ⇒ 42P01 命中 IsSchemaMismatchError
+	// ⇒ 网关**快速失败但仍以「无数据库」形态起来**，而 /readyz 在
+	// SetDepsOptional(true) 下**仍返 200**（见 cmd/gateway/main.go 的
+	// readyz 分支）⇒ 部署安全网放行 ⇒ 网关「就绪但没有数据库」。
+	//
+	// ⇒ 判据必须从「缺什么」改成「**在不在**」：族不存在 ⇒ 无事可做。
+	//
+	// 探测用 to_regclass（不抛 42P01），且**两个**表都查：hot 表与母表是
+	// 独立关系，退役时各自消失；只看其中一个会漏。
+	var v1FamilyPresent bool
+	if err := d.pool.QueryRow(ctx, `
+		SELECT to_regclass('public._request_logs') IS NOT NULL
+		   OR to_regclass('public._request_logs_hot') IS NOT NULL
+	`).Scan(&v1FamilyPresent); err != nil {
+		return fmt.Errorf("probe v1 request_logs family presence: %w", err)
+	}
+	if !v1FamilyPresent {
+		slog.Info("v1 request_logs family is retired (890) — nothing to ensure; skipping the v1 schema DDL")
 		return nil
 	}
 	// 2026-09-23 252 SQL 日志审计轮（D1 残余根修，07:23/07:26 245 蓝绿两连败
@@ -2637,8 +2660,7 @@ func (d *DB) ensureRequestLogSchema(ctx context.Context) error {
 		     'compression_reason','compression_strategy','compression_meta',
 		     'outbound_body','outbound_msg_count','outbound_token_est',
 		     'outbound_msg_hashes','quality_flags','quality_fix_actions',
-		     'quality_score','client_request_id','provider_id',
-		     'upstream_finish_reason',
+		     'quality_score','client_request_id','provider_id','upstream_finish_reason',
 		     'tool_calls','t0_arrived_at','t1_total_enqueued_at',
 		     't2_total_dequeued_at','t3_model_enqueued_at','t4_model_dequeued_at',
 		     't5_cred_enqueued_at','t6_cred_dequeued_at','t7_forward_start_at',
@@ -2709,11 +2731,10 @@ func (d *DB) ensureRequestLogSchema(ctx context.Context) error {
 		    -- request_id (_request_logs.request_id) is forced server-side
 		    -- to prevent client retries from collapsing into a single
 		    -- audit row. See db/migrations/054_request_logs_client_request_id.sql.
-		    ADD COLUMN IF NOT EXISTS client_request_id TEXT,
-		    -- 2026-10-20（r1039 续轮）：provider_id —— 本 ensure 链**自己**
+		    -- 2026-10-21（r1039 续轮）：provider_id —— 本 ensure 链**自己**
 		    -- 要在下面给 _request_logs 建 (provider_id, …) 索引（2026-06-19
-		    -- 9cd51d8a7 引入，随 v2 改名 request_logs→_request_logs 一起搬过来），
-		    -- 却**从没补过这一列**。
+		    -- 9cd51d8a7「per-provider tool_call quality fix mode」引入，随 v2
+		    -- 改名 request_logs→_request_logs 一起搬过来），却**从没补过这一列**。
 		    -- ⇒ 任何 _request_logs 不带 provider_id 的库（最小/新装基线、
 		    --   由 v1 fallback 体灌入的基线副本）上，整条 boot 迁移在
 		    --   CREATE INDEX idx_request_logs_provider_quality 处报
@@ -2721,7 +2742,11 @@ func (d *DB) ensureRequestLogSchema(ctx context.Context) error {
 		    --   **网关起不来**（2026-10-21 本机 deploy-local 实测中止）。
 		    -- 已是 v1→v2 改名产物的库（211/252 等）本来就有这一列 ⇒
 		    -- ADD COLUMN IF NOT EXISTS 是 no-op ⇒ 零影响。
-		    ADD COLUMN IF NOT EXISTS provider_id BIGINT;
+		    --
+		    -- ⚠ 列序无语义要求：provider_id 插在 client_request_id 之前，
+		    --   只为把 client_request_id 的分号结尾改成逗号续行。
+		    ADD COLUMN IF NOT EXISTS provider_id BIGINT,
+		    ADD COLUMN IF NOT EXISTS client_request_id TEXT;
 		CREATE INDEX IF NOT EXISTS idx_request_logs_gw_session_ts
 		    ON _request_logs (gw_session_id, ts DESC)
 		    WHERE gw_session_id IS NOT NULL AND gw_session_id <> '';
@@ -2788,12 +2813,11 @@ func (d *DB) ensureRequestLogSchema(ctx context.Context) error {
 	// V3.1 (migration 491): 9-stage dispatch queue timestamps on hot + parent.
 	// Startup ensure so environments that have not yet run 491 still accept INSERTs.
 	//
-	// 2026-10-21（r1039 续轮）：request_logs 族已退役（request_logs → session_turns），
-	// 「这张表**在不在**」是**部署形态**的问题，不是「列缺不缺」的问题 ——
-	// 目录短路清单一直用 to_regclass(...) IS NOT NULL 把这些表的列算成「可选」，
-	// 而 ensure 体却**无条件** ALTER 它们 ⇒ 族退役后（_request_logs_hot 不存在）
-	// boot 迁移直接 42P01 中止（2026-10-21 本机 deploy-local 实测中止）。
-	// ⇒ 体与清单口径必须一致：表不在 ⇒ 这一族的 DDL 整个跳过。
+	// 2026-10-21（r1039 续轮）：hot 侧按**表在不在**条件化。
+	// 族退役（860 改名 → 890 删除）后 _request_logs_hot 与 _request_logs 是
+	// **两个独立关系**，各自消失 —— 上面的族级早退只兜住「两个都不在」，
+	// 兜不住「母表在、hot 表不在」（形态 B：860 改名跑完、890 删除前中断，
+	// 或部分退役的库）⇒ hot 侧 ALTER 仍然 42P01 ⇒ boot 中止。
 	hotTableExists := d.tableExists(ctx, "_request_logs_hot")
 	if hotTableExists {
 		_, err = d.pool.Exec(ctx, `
@@ -2836,7 +2860,8 @@ func (d *DB) ensureRequestLogSchema(ctx context.Context) error {
 	// ensure_request_logs_partition 为新分区补建（columnar AM 可能拒建唯一
 	// 索引，故此处只做 hot 侧 Go 镜像）。
 	//
-	// 2026-10-21（r1039 续轮）：hot 侧与上面同理——表不在（族退役）⇒ 跳过。
+	// 2026-10-21（r1039 续轮）：hot 侧同样按**表在不在**条件化（母表在、
+	// hot 表不在的形态 B 下，无条件 ALTER hot 表 ⇒ 42P01 ⇒ boot 中止）。
 	if hotTableExists {
 		_, err = d.pool.Exec(ctx, `
 		ALTER TABLE _request_logs_hot
@@ -3168,12 +3193,13 @@ func (d *DB) ensureBillingUnitAndAudioSeconds(ctx context.Context) error {
 		$do$;
 
 		-- 2026-10-21（r1039 续轮）：族侧 DDL **按表存在性条件化**。
-		-- request_logs 族退役后（request_logs → session_turns）_request_logs /
-		-- _request_logs_hot 不在新装库里 ⇒ 上面的 ALTER 必然 42P01 ⇒
+		-- request_logs 族退役后（860 改名 → 890 删除）_request_logs /
+		-- _request_logs_hot 不在库里 ⇒ 上面的 ALTER 必然 42P01 ⇒
 		-- 整条 boot 迁移中止。
 		-- ⚠ 这不是假想：短路条件是 cmbOK && hotOK，而 hotOK 里的
-		--   columnsAllPresent 在**表不在**时返回 true ⇒ 只要 cmb.billing_unit
-		--   缺（正是这段 DDL 要修的东西）就会落进本分支 ⇒ 42P01。
+		--   columnsAllPresent 在**表不在**时返回 true（missing=0 ⇒ 没缺列）
+		--   ⇒ 只要 cmb.billing_unit 缺（正是这段 DDL 要修的东西）就会落进
+		--   本分支 ⇒ 42P01。
 		-- 用 to_regclass 守卫 + EXECUTE：表在时行为与原来逐字一致，
 		-- 表不在时该族侧列无处可加（本来也没有族表）⇒ 跳过。
 		DO $do$
@@ -4534,20 +4560,6 @@ CREATE INDEX IF NOT EXISTS idx_request_logs_work_type
 // work_type column and its index, i.e. whether workTypeRequestLogsDDL would be
 // a pure no-op. Both are checked because the DDL is applied as one unit: the
 // index cannot be created before the column exists.
-//
-// 2026-10-21（r1039 续轮）：**索引探针必须与列探针同一把尺子**。
-// 原来列探针带 `to_regclass('public._request_logs') IS NOT NULL` 守卫、索引探针
-// 不带 ⇒ 在「族已退役」（request_logs → session_turns，族表不在）的新装库上：
-//
-//	missing = 0（列探针：表不在 ⇒ 没缺列）
-//	       + 1（索引探针：表不在 ⇒ 索引当然也不在）
-//	⇒ missing=1 ⇒ 判定「需要 DDL」⇒ 执行
-//	ALTER TABLE _request_logs ADD COLUMN IF NOT EXISTS work_type TEXT;
-//	⇒ ERROR: relation "_request_logs" does not exist (SQLSTATE 42P01)
-//	⇒ 整条 boot 迁移中止 ⇒ 网关起不来（2026-10-21 本机 deploy-local 实测中止）。
-//
-// ⇒ 索引探针同样加 `to_regclass` 守卫：表不在 ⇒ 「没缺列、没缺索引」⇒ 跳过 DDL。
-//    表在时的语义**逐字不变**（列缺 / 索引缺 → 仍然执行 DDL）。
 func (d *DB) workTypeRequestLogsCurrent(ctx context.Context) bool {
 	var missing int
 	err := d.pool.QueryRow(ctx, `
@@ -4560,8 +4572,7 @@ func (d *DB) workTypeRequestLogsCurrent(ctx context.Context) bool {
 		          AND column_name = want.name))
 		  +
 		  (SELECT count(*) FROM (VALUES ('idx_request_logs_work_type')) AS want(name)
-		   WHERE to_regclass('public._request_logs') IS NOT NULL
-		     AND NOT EXISTS (
+		   WHERE NOT EXISTS (
 		       SELECT 1 FROM pg_indexes
 		        WHERE schemaname='public' AND indexname = want.name))
 	`).Scan(&missing)
@@ -4584,6 +4595,22 @@ func (d *DB) ensureWorkTypeSchema(ctx context.Context) error {
 	// Guarded separately: this is the only statement above that takes an
 	// exclusive lock on request_logs. Everything in workTypeSchemaSQL touches
 	// small config tables and is cheap to re-check.
+	//
+	// ★ 890（v1 族退役）：族不存在 ⇒ 这条 DDL 不是「no-op」而是 **42P01**
+	// （ALTER TABLE 一个不存在的表）。workTypeRequestLogsCurrent 的短路算的是
+	// 「缺多少」：列项因 to_regclass 为 NULL 而计 0，**索引项计 1** ⇒
+	// missing ≠ 0 ⇒ 判定「不 current」⇒ 继续执行 DDL ⇒ 42P01 ⇒ boot 失败。
+	// ⇒ 这里补一道**存在性**闸：族不在 ⇒ 整段 DDL 无事可做。
+	var v1TablePresent bool
+	if err := d.pool.QueryRow(ctx, `
+		SELECT to_regclass('public._request_logs') IS NOT NULL
+	`).Scan(&v1TablePresent); err != nil {
+		return fmt.Errorf("probe v1 request_logs presence for work_type DDL: %w", err)
+	}
+	if !v1TablePresent {
+		slog.Info("v1 request_logs family is retired (890) — work_type column/index DDL skipped")
+		return nil
+	}
 	if d.workTypeRequestLogsCurrent(ctx) {
 		slog.Info("work_type_config schema ensured (22 seed rows idempotent); " +
 			"_request_logs work_type column and index already present, DDL skipped")
@@ -7067,7 +7094,7 @@ func (d *DB) ensureRoutingRecentSuccessRate(ctx context.Context) error {
 			return err
 		}
 	}
-	_, err := d.pool.Exec(ctx, recentSuccessRateEnsureSQL(d.tableExists(ctx, "_request_logs_hot")))
+	_, err := d.pool.Exec(ctx, recentSuccessRateEnsureSQL)
 	if err != nil {
 		return err
 	}
@@ -7089,48 +7116,20 @@ func (d *DB) ensureRoutingRecentSuccessRate(ctx context.Context) error {
 // 归一化，失配只损失样本量不产生错误样本）。探针排除谓词对会话腿是防御
 // 性的——探针轮次本就不镜像。
 //
-// ⚠ 注释里不许出现反引号：本段 SQL 在 Go raw string 里。
-// recentSuccessRateEnsureSQL 返回 recent_success_rate 的 CREATE OR REPLACE 文本。
+// ★ 890（v1 族退役）：v1 腿被**摘掉**，只剩会话腿。
 //
-// 2026-10-21（r1039 续轮）：函数体是 **LANGUAGE sql** ⇒ PostgreSQL 在 CREATE 时
-// 就**校验体里的表引用** ⇒ 族退役 / 新装的库（没有 _request_logs_hot）上
-// CREATE OR REPLACE 直接 42P01 ⇒ 整条 boot 迁移中止（2026-10-21 本机新装实测中止）。
+// ⚠⚠ 为什么这一刀必须在删表**之前**落：`recent_success_rate` 被
+// `provider/client.go` 的候选查询以 `CROSS JOIN LATERAL` 调用 ⇒ v1 腿
+// 42P01 ⇒ **整条候选查询失败 ⇒ 选不出任何上游凭据 ⇒ 100% 流量失败**。
+// 这不是"面板变暗"，是"网关不能转发"。而 CREATE OR REPLACE 对 plpgsql/
+// SQL 函数体**不在创建时解析** ⇒ 函数能建成功、直到第一次被调用才炸 ⇒
+// 症状与"上游全挂"同形，根因却在一次字符串手术上。
 //
-// ⇒ 旧腿（_request_logs_hot）按**表在不在**决定要不要进 UNION ALL：
-//   · 表在（旧族仍在写）⇒ 双腿，与既有语义逐字一致；
-//   · 表不在 ⇒ 只剩 session_turns_hot 一条腿 —— 那才是当前写入面
-//     （停写切换后新流量只落 session_turns(_hot)）。
-//     ⚠ 语义不丢：旧腿存在的库上双腿仍原样保留
-//     （判据见 db/db_recent_success_rate_body_test.go）。
-//
-// 2026-10-13 S3 波 2（停写切换）：双热腿取样。原体只读 _request_logs_hot；
-// S4 停写后新流量只落 session_turns_hot，3 小时窗口滑过停写时刻后 samples
-// 恒 0、rate 恒 NULL——消费方把零读成「正常」，凭据健康体系的
-// BelowThreshold 恢复机制全体失灵（request_logs_stop_write_classification_test
-// 登记的主失效源）。会话腿口径：credential_id 是 TEXT（707 S1a），数字守卫
-// CAST 后比较；模型键 model/canonical_model 回退链对应 v1 的 outbound/client
-// COALESCE（会话侧 outbound=t.model，值可能归一化，失配只损失样本量不产生
-// 错误样本）。探针排除谓词对会话腿是防御性的——探针轮次本就不镜像。
+// ⇒ 删表前先摘腿；删表后本函数只剩会话腿，语义与 S3 波 2 的"停写后会话腿
+// 独供"完全一致（v1 腿在停写后本来就恒空）。
 //
 // ⚠ 注释里不许出现反引号：本段 SQL 在 Go raw string 里。
-func recentSuccessRateEnsureSQL(legacyHotExists bool) string {
-	legacyLeg := ""
-	if legacyHotExists {
-		legacyLeg = `
-			        SELECT success, ts
-			            FROM _request_logs_hot
-			            WHERE credential_id = p_credential_id
-			              AND lower(COALESCE(outbound_model, client_model)) = lower(p_raw_model)
-			              AND ts > NOW() - (p_window_hours || ' hours')::interval
-			              -- Probe/self-check rows measure the health worker, not the
-			              -- business route. Legacy probe IDs are retained for old rows
-			              -- created before origin_stage/task_type was added.
-			              AND COALESCE(task_type, '') <> 'probe_triggered'
-			              AND COALESCE(origin_stage, '') NOT IN ('self_check', 'node_probe', 'system_health')
-			              AND request_id NOT LIKE 'probe-%'
-			    UNION ALL`
-	}
-	return `
+const recentSuccessRateEnsureSQL = `
 		CREATE OR REPLACE FUNCTION recent_success_rate(p_credential_id BIGINT,
 		                                    p_raw_model     TEXT,
 		                                    p_sample_n      INT DEFAULT 50,
@@ -7139,17 +7138,17 @@ func recentSuccessRateEnsureSQL(legacyHotExists bool) string {
 		LANGUAGE sql
 		STABLE
 		AS $$
-		    WITH recent AS (` + legacyLeg + `
+			    WITH recent AS (
 			        SELECT success, ts
-			            FROM public.session_turns_hot
-			            WHERE credential_id ~ '^[0-9]+$'
-			              AND credential_id::bigint = p_credential_id
-			              AND lower(COALESCE(model, canonical_model)) = lower(p_raw_model)
-			              AND ts > NOW() - (p_window_hours || ' hours')::interval
-			              AND COALESCE(task_type, '') <> 'probe_triggered'
-			              AND COALESCE(origin_stage, '') NOT IN ('self_check', 'node_probe', 'system_health')
-			              AND request_id NOT LIKE 'probe-%'
-		    )
+				    FROM public.session_turns_hot
+				    WHERE credential_id ~ '^[0-9]+$'
+				      AND credential_id::bigint = p_credential_id
+				      AND lower(COALESCE(model, canonical_model)) = lower(p_raw_model)
+				      AND ts > NOW() - (p_window_hours || ' hours')::interval
+				      AND COALESCE(task_type, '') <> 'probe_triggered'
+				      AND COALESCE(origin_stage, '') NOT IN ('self_check', 'node_probe', 'system_health')
+				      AND request_id NOT LIKE 'probe-%'
+			    )
 
 		    SELECT AVG(CASE WHEN success THEN 1.0 ELSE 0.0 END)::double precision,
 		           COUNT(*)::int
@@ -7158,7 +7157,6 @@ func recentSuccessRateEnsureSQL(legacyHotExists bool) string {
 		    ) newest_samples;
 		$$;
 	`
-}
 
 // ensureUnavailableRecoverAtSchema mirrors db/migrations/292_unavailable_recover_at.sql.
 func (d *DB) ensureUnavailableRecoverAtSchema(ctx context.Context) error {

@@ -46,6 +46,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/kaixuan/llm-gateway-go/db"
 	"github.com/kaixuan/llm-gateway-go/internal/dbrows"
 	"github.com/kaixuan/llm-gateway-go/internal/providercap"
 	"github.com/kaixuan/llm-gateway-go/internal/upstreamurl"
@@ -420,15 +421,25 @@ func (r *ModelProbeRunner) nonfeaturedWatchdogTick(ctx context.Context) {
 			    ))) AS model
 			), usage AS (
 			    SELECT lower(raw_model) AS raw_model FROM (
-			        SELECT COALESCE(rl.outbound_model, rl.client_model) AS raw_model,
+			        SELECT rl.raw_model_name AS raw_model,
 			               count(*) AS calls
-			        FROM _request_logs_hot rl
+			        FROM `+db.SessionFamilyTurnsHotSourceSQL()+` rl
 			        WHERE rl.success
 			          AND rl.ts > now() - make_interval(hours => $2)
 			          -- R50: dual-arm probe exclusion — watchdog backoff is a
 			          -- usage scan (INV-3); probe-only models must back off too.
-			          AND `+fmt.Sprintf(probeTrafficExclusionPredicate, "rl", "rl")+`
-			          AND COALESCE(rl.outbound_model, rl.client_model) <> ''
+			          -- ★ 890（v1 族退役）：会话族没有 quality_flags ⇒ 必须用
+			          -- 会话族那条探针排除谓词（origin_stage + task_type +
+			          -- origin_actor 三臂；物理谓词引用 quality_flags，会 42703）。
+			          AND `+fmt.Sprintf(probeTrafficExclusionPredicateSession, "rl", "rl", "rl")+`
+			          -- ★ 890：模型名口径换成 rl.raw_model_name——会话族里它就是
+			          -- COALESCE(outbound_model, client_model) 的同义列（取值口径
+			          -- 登记见 internal/sessionv2mirror/s1a_fields.go）。
+			          -- 不用投影的 outbound_model 列：那一列在会话臂上落的是
+			          -- t.model（= client_model 的同义列），拿它去比
+			          -- provider_models.raw_model_name 会在别名映射行上系统性误判。
+			          AND rl.raw_model_name IS NOT NULL
+			          AND rl.raw_model_name <> ''
 			        GROUP BY raw_model
 			    ) t
 			    ORDER BY calls DESC LIMIT $3
@@ -514,9 +525,13 @@ func (r *ModelProbeRunner) demoteAgedHealthyBindings(ctx context.Context) {
 			  AND COALESCE(cmb.unavailable_reason, '') NOT LIKE 'manual%'
 			  AND lower(mps.raw_model_name) NOT IN (SELECT model FROM static)
 			  AND NOT EXISTS (
-			      SELECT 1 FROM _request_logs_hot rl
+			      -- ★ 890（v1 族退役）：证据源换成会话族热腿（v1 热表已 DROP）。
+			      -- 模型名口径用 rl.raw_model_name（会话族里它就是
+			      -- COALESCE(outbound_model, client_model) 的同义列），
+			      -- 与上面 usage CTE 同一口径。
+			      SELECT 1 FROM `+db.SessionFamilyTurnsHotSourceSQL()+` rl
 			      WHERE rl.credential_id = mps.credential_id
-			        AND COALESCE(rl.outbound_model, rl.client_model) = mps.raw_model_name
+			        AND rl.raw_model_name = mps.raw_model_name
 			        AND rl.success
 			        AND rl.ts > now() - make_interval(hours => $2))
 			  AND NOT EXISTS (
@@ -912,13 +927,20 @@ func (r *ModelProbeRunner) featuredCycle(ctx context.Context) {
 		  -- 2026-09-20 INV-3: the model must have real (non-probe) traffic on
 		  -- THIS credential within the 3-day probe scope window.
 		  AND EXISTS (
-			SELECT 1 FROM _request_logs_hot rl
+			-- ★ 890（v1 族退役）：证据源换成会话族热腿（v1 热表已 DROP；
+			-- 窗口 3 天 ≫ hot 保留期 8h，v1 侧本来就只看得到最近 8h，
+			-- 会话族热腿的保留期同款 ⇒ 口径不变）。
+			SELECT 1 FROM `+db.SessionFamilyTurnsHotSourceSQL()+` rl
 			WHERE rl.credential_id = cmb.credential_id
 			  AND rl.ts >= now() - `+probeUsageWindowInterval+`
-			  AND `+fmt.Sprintf(probeTrafficExclusionPredicate, "rl", "rl")+`
+			  -- 会话族没有 quality_flags ⇒ 用会话族那条探针排除谓词。
+			  AND `+fmt.Sprintf(probeTrafficExclusionPredicateSession, "rl", "rl", "rl")+`
+			  -- 腿 1 用 client_model（会话族同名同义，来自 session_turn_details）；
+			  -- 腿 2/3 用 rl.raw_model_name —— 它在会话族里就是 v1
+			  -- outbound_model 的同义列（COALESCE(outbound_model, client_model)）。
 			  AND (pm.raw_model_name = rl.client_model
-			       OR pm.raw_model_name = rl.outbound_model
-			       OR pm.outbound_model_name = rl.outbound_model)
+			       OR pm.raw_model_name = rl.raw_model_name
+			       OR pm.outbound_model_name = rl.raw_model_name)
 		  )
 		LIMIT $1
 	`, MaxBatchPerCycle*4 /* bound scan; Go-side globalIsFeaturedModel further filters */)

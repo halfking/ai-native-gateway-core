@@ -1530,6 +1530,21 @@ files=(
   # 的防御性 ALTER，原通道是 init-local-db/installer，startup 通道从未投递）。
   # 缺列时 gateway 启动 ensure 链在 db open 即 42703（ensure asr catalog seed）。
   "$ROOT_DIR/sql/migrations/startup/361b_provider_models_source_prelude.sql"
+  # 2026-10-21（R60 轮，属主拍板「登记 5 个」）：同一族的另外 4 条**也从未被投递**
+  # ⇒ 全新安装的库缺 5 个列 ⇒ provider_models.source 缺了 ⇒ **db.Open 的 ensure 链
+  # 直接 42703** ⇒ 「全新安装 = 装完即炸」（已实测复现两条真库门）。
+  # 全部是 ADD COLUMN IF NOT EXISTS ⇒ 幂等；目标表都由 01-schema 基线建好
+  # （或由 351/426 建好）⇒ 放在这里即可，不依赖 374（374 同样未登记，但不需要）。
+  #   375/376  offline_activation_requests 补 status / reject_reason / activation_code
+  #            （375 自述是「修复 P0: store_pgx.go RejectOfflineRequest() 用了这两个字段，
+  #              但 374 迁移文件中漏掉了」⇒ 本条是 374 的补漏）
+  #   387     session_embeddings 补 embedding_v2
+  #   427     task_type_centroids 补 embedding_model
+  "$ROOT_DIR/sql/migrations/startup/375_offline_requests_status.sql"
+  "$ROOT_DIR/sql/migrations/startup/376_offline_activation_code.sql"
+  "$ROOT_DIR/sql/migrations/startup/387_session_analysis_inference.sql"
+  "$ROOT_DIR/sql/migrations/startup/427_task_type_centroids_model.sql"
+  "$ROOT_DIR/sql/migrations/startup/893_fresh_install_partition_prereq.sql"
 
   # 2026-10-07（844）：给 v_supplier_price_vs_baseline 补两个缓存基准价的投影。
   #
@@ -1762,6 +1777,99 @@ files=(
   # ⇒ 能改读且不丢能力；canonical 视图不投影这 6 列 ⇒ 只能用会话族直连形态。
   # 两条腿 hot ∪ parent UNION ALL（前提：hot ∩ parent 实测无重叠）。
   "$ROOT_DIR/sql/migrations/startup/884_session_family_v_analytics_views.sql"
+  # 885：session_turns 父表与 hot 表各加 host（网关实例身份）+ tags（轮次级
+  # 标签数组）两列（审计 A5 缺口：全族此前无任何主机/实例列；标签只到 session 级）。
+  # ★ 两侧必须同形：迁移 707 的 promote 契约校验比较父表与 hot 的列集合，
+  #   只加一侧会让 promote 当场报错、热表永远排不进月分区。
+  "$ROOT_DIR/sql/migrations/startup/885_session_turns_host_tags.sql"
+  # 886：订正 public.session_bodies 的表注释 —— 430 写下的「使用 columnar
+  # 存储格式，配合 zstd 压缩，可省 60-80% 磁盘」是**假注释**：该族自建表起
+  # 就是 heap + lz4 TOAST（765:13-21 记录了原因：唯一约束 + ON CONFLICT +
+  # UNION ALL 视图族三重互斥 ⇒ 列存不可行；829 记录了列存方案被整体回滚）。
+  # 只改 pg_description 一行 ⇒ 零锁零 IO；不改 430 本体（已 applied + 已记账）。
+  "$ROOT_DIR/sql/migrations/startup/886_session_bodies_storage_comment.sql"
+  # 887：给会话族的 search_text 建**全文检索**腿 —— 表达式 GIN 索引
+  # `USING gin (to_tsvector('simple', search_text))`。
+  # ★ **不得改用生成列**：promote_session_turns_hot_to_partition 会报
+  #   "cannot insert into a generated column" ⇒ 热表永远排不进月分区。
+  # ★ 走三段式 CONCURRENTLY（逐分区建 → 建父壳 → ATTACH），与 877 同款。
+  # ★ 只给会话族建，不给 v1 族建（v1 族 _request_logs 2026-10-20 实测 0 行
+  #   ⇒ 代价为零；且顶层 OR 要求每条参与扫描的关系两条腿都有索引）。
+  "$ROOT_DIR/sql/migrations/startup/887_session_turns_search_text_fts.sql"
+  # 888：补会话族的 join 索引缺口 —— session_bodies 父表与 hot 表各补一条
+  # (tenant_id, session_id, turn_no DESC, request_id)，sessions 补一条
+  # (tenant_id, session_id, partition_date DESC)。
+  # ★ PG 不支持 ALTER INDEX … ADD COLUMN ⇒ 只能「建新 + 删旧」（先建后删）。
+  "$ROOT_DIR/sql/migrations/startup/888_session_family_join_index_gaps.sql"
+  # 889：裁决 session_turns.tools 死列 —— **填充**（不删列：710/816/817/824 的
+  # 视图投影与 db/request_logs_view_schema.go 的 sessionFamilyProjection 都
+  # 引用它）。本迁移只订正 4 条列注释；填充由写路径承担
+  # （domains/session/v2/turn_writer.go 的 turnToolsJSONBExpr）。
+  "$ROOT_DIR/sql/migrations/startup/889_session_turns_tools_population.sql"
+
+  # ── 890：退役 v1 request_logs 族的**最后一步**（真删表）───────────────────
+  #
+  # ① canonical 视图 request_logs_with_current_month 去掉第三臂（冻结 v1 体 +
+  #    双反连接去重），只剩两臂 session_turns_hot ∪ session_turns；
+  # ② 删 4 张 v1-only 视图（…_without_customer_id / …_without_request_class_due_at /
+  #    request_logs_bodies_with_current_month / request_logs_bodies_progress）；
+  # ③ 删 v1 族全部表（母表带分区一起删）+ hot 表 + 序列；
+  # ④ 删只服务 v1 族的分区管理函数与两个触发器函数；
+  # ⑤ 把 recent_success_rate / system_health_status 两个**静态读 v1** 的函数
+  #    换成会话族形态（前者进的是 provider 的候选查询 ⇒ 不换就是 100% 流量失败）。
+  #
+  # ⚠ 非空闸：v1 族里有行就 RAISE EXCEPTION —— 那些行是会话族镜像建立之前的
+  #    历史，删表即删历史且不可回滚 ⇒ 把"要不要丢历史"交回人。生产（211/252）
+  #    若还有 2026-10-16 停写前的历史，本迁移会**拒绝执行**（先归档再删）。
+  #
+  # ⚠ 本文件按**两种物理名**都写（request_logs 与 _request_logs）：本通道的
+  #    runtime adapter（:38-134）会把 `request_logs` 词法改写成 `_request_logs`，
+  #    而**安装器不做这个改写**（逐字执行）⇒ 两种名字都试，三条通道都正确。
+  "$ROOT_DIR/sql/migrations/startup/890_drop_request_logs_v1_family.sql"
+
+  # ── 891（2026-10-20）：会话族负成本部分索引 ────────────────────────────────
+  #
+  # 根修 bg/routing_health_checks.go recorded_cost_is_negative 检查的**全表扫描**。
+  #
+  # ★ 起因：890 把 v1 `_request_logs` 族**真删掉** ⇒ **882 给它建的那条同款
+  #   索引随表消亡**（索引活不过它的表）；而检查的源随 890 迁到了**会话族**
+  #   ⇒ 会话族上**一条 cost_usd 索引都没有**。
+  # 实测（本地 PG17 真库）：hot 表 Seq Scan，父表每个分区一次 Seq Scan
+  #   （4 个分区），cost_usd < 0 谓词挂在 Filter 上。
+  #
+  # 形态：两条部分索引（父表 session_turns + hot 表 session_turns_hot），
+  #   键序 (ts, credential_id, raw_model_name) 服务 30 天窗范围谓词与
+  #   GROUP BY；INCLUDE (cost_usd, cache_read_tokens, prompt_tokens) 让聚合
+  #   index-only；谓词 `cost_usd < 0`；条目数 = 负成本行数（实测 0）⇒ 索引几页。
+  # 建在父表上 ⇒ 未来月分区自动继承（877 台账口径，882/874 同款）。
+  #
+  # ⚠ 本文件**不含任何 `request_logs` 词法 token** ⇒ 本通道的 runtime adapter
+  #   （:38-134，request-logs-physical-v1 世代探测）对它**零改写**
+  #   （实测该正则命中 0 次）⇒ 执行体与源逐字相同。
+  "$ROOT_DIR/sql/migrations/startup/891_session_turns_cost_negative_partial_idx.sql"
+
+  # ── 892（2026-10-20）：URSM 快照健康巡检的每日 slot 汇总表（P11，§143.35）──
+  #
+  # 根修巡检的「每小时重扫 7 天基线」（§143.29 成本 #1：每次 2.9 GB 物理读 /
+  # 190 s、26 次成功累计 74 GB）。
+  #
+  # 形态：表 public.ursm_snapshot_slot_daily
+  #   （PK (day, granularity, slot, bucket_ts)）
+  #   + 幂等填充函数 public.refresh_ursm_snapshot_slot_daily(days_back, granularity)
+  #   ★ 只保留【一个】重载 —— 两个都带默认参数时 f(1) 报 not unique。
+  # 迁移内首次回填 8 天 × 两种粒度 ⇒ 表一落地就有完整 7 天基线
+  # （否则巡检读到「没有基线」⇒ 全部桶判 NO-BASELINE ⇒ 安静地不再告警。
+  #   ★★ 那比「慢」更坏：巡检从「慢」变成「失明」，而外部完全看不出来）。
+  #
+  # ⚠ 顺序前提：源表 ursm_node_snapshot_min 由 **baseline** sql/schema/01-schema.sql 建
+  #   （★ 453_ursm_v2_node_snapshot_min.sql **未在任何通道登记** ⇒ 已被 baseline 吸收；
+  #    892 只用 baseline 的 snapshot_ts 一列 ⇒ **不依赖** 818 的 typed 列）
+  #   ⇒ baseline 先于任何迁移执行 ⇒ **无迁移间顺序依赖**。
+  # ★ 与 830（把源表分区化，`.skip` 手工执行）**无关** ⇒ 两者可独立授权。
+  #
+  # ⚠ 本文件**不含任何 `request_logs` 词法 token** ⇒ 本通道的 runtime adapter
+  #   （:38-134）对它**零改写** ⇒ 执行体与源逐字相同。
+  "$ROOT_DIR/sql/migrations/startup/892_ursm_snapshot_slot_daily.sql"
 
   # ── 2026-10-16 孤儿迁移 044 补登（health_source 白名单缺 probe_now）──────
   #

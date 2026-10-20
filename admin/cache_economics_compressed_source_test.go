@@ -6,9 +6,10 @@
 // 恒为 0 是**降级产物而不是真实值**，且每次白烧 3s。
 //
 // 实测（同一 30 天窗口）：
-//   request_logs_with_current_month   >300s（跑不完）
-//   _request_logs（母表单腿）            648 ms → 10,590 行
-//   _request_logs_hot                   3 ms  → 0 行
+//
+//	request_logs_with_current_month   >300s（跑不完）
+//	_request_logs（母表单腿）            648 ms → 10,590 行
+//	_request_logs_hot                   3 ms  → 0 行
 //
 // 本文件钉两条互相制约的源码不变量：**必须读母表**（否则跑不完），
 // 且**必须是单腿**（否则 promote 会把重复行数两次）。只钉前者会放任
@@ -28,11 +29,12 @@ import (
 // stripSQLCommentsForCompressed 去掉 `--` 行注释。
 //
 // ★ 必需：usage_enhanced.go 里那条压缩计数的注释**通篇都在讨论**
-//   request_logs_with_current_month / _request_logs_hot / promote 去重，
-//   注释里出现这些名字恰恰是在解释「为什么不再用它们」。
-//   不剥离的话，下面两条断言一律恒真——「不得出现某视图」会因为注释里
-//   提到它而误报，「必须出现某表」更会因为注释里提到而恒真。
-//   这是 AGENTS.md「别把注释当代码导致假绿」的又一次现身。
+//
+//	request_logs_with_current_month / _request_logs_hot / promote 去重，
+//	注释里出现这些名字恰恰是在解释「为什么不再用它们」。
+//	不剥离的话，下面两条断言一律恒真——「不得出现某视图」会因为注释里
+//	提到它而误报，「必须出现某表」更会因为注释里提到而恒真。
+//	这是 AGENTS.md「别把注释当代码导致假绿」的又一次现身。
 func stripSQLCommentsForCompressed(sql string) string {
 	var out []string
 	for _, line := range strings.Split(sql, "\n") {
@@ -92,8 +94,22 @@ func TestCompressedCountReadsParentNotCanonicalView(t *testing.T) {
 		t.Error("压缩计数仍在读 request_logs_with_current_month：该视图在 30 天窗口 >300s 跑不完，" +
 			"子预算必然超时，端点会报一个恒为 0 的假值")
 	}
-	if !strings.Contains(sql, "FROM _request_logs") {
-		t.Errorf("压缩计数没有读 _request_logs 母表，实际 SQL：%s", strings.TrimSpace(sql))
+	// ★ 2026-10-20（迁移 890，v1 族真删）：压缩计数的取数源从 v1 母表
+	// `_request_logs` 换成**会话族母表** `session_turns`（hot 不查 ——
+	// promote 会把 hot 搬进母表，两腿同时存在时朴素 UNION ALL 会把同一行
+	// 数两次，见 TestCompressedCountStaysSingleLeg）。
+	// ⇒ 判据从「必须读 _request_logs 母表」**反转**为「必须读会话族母表，
+	// 且不得再出现 v1 族关系名」。
+	if !strings.Contains(sql, "FROM session_turns ") {
+		t.Errorf("压缩计数没有读 session_turns 母表，实际 SQL：%s", strings.TrimSpace(sql))
+	}
+	if hits := retiredV1RelationsInSQL(sql); len(hits) > 0 {
+		t.Errorf("压缩计数仍引用已退役 v1 族关系名 %v —— v1 族已随 890 被 DROP，读它 = 42P01：%s",
+			hits, strings.TrimSpace(sql))
+	}
+	// 就地阳性对照：同一把尺子必须能认出 v1 形态（否则上面那条恒绿）。
+	if hits := retiredV1RelationsInSQL("FROM _request_logs"); len(hits) == 0 {
+		t.Error("retiredV1RelationsInSQL 认不出 v1 形态 —— 负向断言已恒绿，判据坏了")
 	}
 	// 谓词本身不能被改掉：这两条是「压缩过」的唯一定义。
 	for _, frag := range []string{

@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kaixuan/llm-gateway-go/metrics"
 )
@@ -225,7 +226,88 @@ type TurnRecord struct {
 	// writer ever populated it, so `session_turns.client_protocol` was
 	// permanently NULL. Travels with AgentName/AgentType.
 	ClientProtocol string
+	// Host is the gateway instance that wrote this turn
+	// (migration 885, audit A5 gap). Empty = resolve from the process
+	// identity (LLM_GATEWAY_INSTANCE_ID → hostname → "llm-gateway"), so
+	// the column is never written empty.
+	Host string
+	// Tags is the turn-level label array (migration 885, audit A5 gap).
+	// Empty = derive the standard labels from the turn's own classification
+	// columns (see deriveTurnTags).
+	Tags []string
 }
+
+// turnToolsJSONBExpr 是 session_turns.tools 列的取值表达式（**包级常量**）。
+//
+// # 这条表达式修的是什么（2026-10-20 会话族审计 G-6）
+//
+// `session_turns.tools`（JSONB）**从来没有被写过**：turn_writer 的 INSERT 列
+// 清单里没有它 ⇒ 每一行都停在列的默认值 `'[]'::jsonb` ⇒ 视图
+// request_logs_with_current_month 把它投影成 `tool_calls` ⇒ **管理台
+// 的「工具调用」字段恒为空数组**（不是「没有工具调用」，是「没写过」）。
+//
+// 真正的工具事实落在 session_tools（写方：domains/toolexecution/
+// postgres_store.go:61 的 Save ⇒ 落 session_tools_hot，8h 后 promote 进
+// 月分区）。它由**同步**的工具钩子写入（domains/hooks/toolexecution/
+// hook.go 的 BeforeToolCall → Tracker.RecordStart → store.Save）⇒
+// 工具行在**请求结束、写轮次行之前**就已经提交 ⇒ 轮次写入时能读到。
+//
+// # 为什么用**子查询**而不是「先查再插」
+//
+// · 原子：子查询在 INSERT 的同一条语句里求值 ⇒ 不存在「插进去之后又被
+//
+//	promote 搬走、随后的 UPDATE 打空」的竞态（session_turns_hot 会被
+//	promote_session_turns_hot_to_partition 搬到月分区）。
+//
+// · 零额外往返：不改位置参数个数（仍是 101）⇒ 不动既有判据钉住的参数表。
+// · 零额外写放大：没有第二条 UPDATE。
+//
+// # 取值形状
+//
+// 只取**摘要**字段（工具名 / 调用 id / 状态 / 耗时 / 错误类型），不取
+// arguments 与 result —— 那两份正文在 session_bodies 与 session_tools 里，
+// 复制到轮次元数据行上是**无界的重复**（一轮的工具结果可以很大）。
+//
+// # 索引承重
+//
+// 谓词是 (session_id, request_id)；session_tools_hot 上有
+// idx_session_tools_hot_session (session_id, started_at DESC)
+// ⇒ session_id 是索引前缀 ⇒ 紧索引扫描（该会话的工具行数），
+// **不需要**为它新建索引。
+//
+// # 为什么 $1/$4 带显式 ::text（§9.100 同款纪律）
+//
+// 真实列型（真库 information_schema 2026-10-20 实测）：
+//
+//	session_turns_hot.session_id / request_id  = **text**
+//	session_tools_hot.session_id / request_id  = **varchar(64)**
+//
+// 而 $1/$4 在这条 INSERT 里**各被用两次**：一次在目标列清单（按目标列
+// 定型 ⇒ text），一次在本子查询的等值谓词里。PG 对「varchar 列 = 未知
+// 类型的参数」的算子解析会**偏向 text**（text 是字符串类里的 preferred
+// type）⇒ 子查询里 $1 被定型成 text。
+//
+// 目标列与子查询定型一致时没问题；**一旦不一致就是 Parse 期直接拒绝**：
+//
+//	ERROR: inconsistent types deduced for parameter $1 (SQLSTATE 42P08)
+//
+// （真库门实测抓到：夹具把目标列写成 varchar(64) 时立刻报这条。
+//
+//	当前真库目标是 text，两边都落到 text ⇒ 不报。）
+//
+// ⇒ 这里写死 `::text`：不依赖「当前两边恰好都落到 text」这个**巧合**，
+//
+//	也不依赖算子解析偏好。pgx 不发送参数 OID，服务端推导是唯一裁判，
+//	歧义必须**在 SQL 里**消掉（turn_writer.go 对 $3 的既有处理同源）。
+const turnToolsJSONBExpr = `(SELECT COALESCE(jsonb_agg(jsonb_build_object(
+					'tool_name', t.tool_name,
+					'tool_call_id', COALESCE(t.tool_call_id, ''),
+					'status', t.status,
+					'duration_ms', t.duration_ms,
+					'error_type', COALESCE(t.error_type, '')
+				  ) ORDER BY t.started_at), '[]'::jsonb)
+			FROM public.session_tools_hot t
+			WHERE t.session_id = $1::text AND t.request_id = $4::text)`
 
 // AppendTurn appends a new turn to the session, returning the assigned turn_no
 //
@@ -476,7 +558,10 @@ func (w *TurnWriter) appendTurnInLockedTx(ctx context.Context, tx pgx.Tx, rec Tu
 				origin_stage, origin_actor, client_ip, client_forwarded_for,
 				agent_name, agent_type, virtual_client_id,
 				request_status,
-				client_protocol
+				client_protocol,
+				host,
+				tags,
+				tools
 			) SELECT
 				$1, $2, $3, $4, $5,
 				$6, $7, $8, $9,
@@ -506,7 +591,11 @@ func (w *TurnWriter) appendTurnInLockedTx(ctx context.Context, tx pgx.Tx, rec Tu
 				$95, $96, $97,
 				$98,
 				-- §9.208: client_protocol appended last so no existing $N shifts.
-				$99
+				$99,
+				-- 885：host/tags 接在其后，同样只追加不重编号。
+				$100, $101,
+				-- 889：tools 接在其后（同样只追加不重编号 ⇒ 位置参数仍是 101 个）。
+				`+turnToolsJSONBExpr+`
 			WHERE NOT EXISTS (
 				SELECT 1
 				FROM public.session_turns_with_current_month
@@ -551,6 +640,10 @@ func (w *TurnWriter) appendTurnInLockedTx(ctx context.Context, tx pgx.Tx, rec Tu
 		// exactly the "mismatched param and argument count" incident this
 		// INSERT is guarded against (TestRequestLogInsertParamCount).
 		nilIfEmpty(rec.ClientProtocol),
+		// $100 / $101 —— 885 的 host / tags。追加在末尾，理由同上（不重编号）。
+		// host 用进程身份兜底（永不空）；tags 用轮次自身分类列物化（永不空数组）。
+		resolveTurnHost(rec),
+		pgtype.FlatArray[string](resolveTurnTags(rec)),
 	)
 
 	if err != nil {

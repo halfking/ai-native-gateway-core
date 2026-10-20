@@ -27,46 +27,70 @@ import (
 	"testing"
 )
 
-// forbiddenViewReaders lists the session-domain readers that MUST keep using
-// request_logs_with_current_moth. Each entry records the file, the predicate
-// shape that makes it ineligible, and the measured cost of migrating it.
+// sessionKeyedReaders lists the session-domain readers that look rows up by
+// **request key** rather than by a session predicate
+// (request_id / client_request_id / parent_request_id).
 //
-// Keep this list tight: it is a safety rail, not a wishlist. Each line here
-// was classified by reading the actual WHERE clause AND confirmed against
-// the live database — see the audit report.
-var forbiddenViewReaders = []struct {
-	// fileWide bans the native helper anywhere in the file. Use it only when
+// # ★ 2026-10-20（迁移 890，v1 族真删）：判据从「必须留在视图上」换成
+// 「读的源必须覆盖会话族的两条腿」
+//
+// 原判据（forbiddenViewReaders）是「这些读方**必须**继续用
+// request_logs_with_current_month，不得用原生源」，理由是：
+// 「原生源会漏 27.6% 的行 —— 那些行只存在于 v1（探针/自检、无会话头流量、
+// in_progress 占位行、标题/摘要回环）」。
+//
+// 那条理由的**前提是「v1 还在」**。890 之后 canonical 视图**本身就是**
+// 会话族两臂体（hot ∪ 母表 + 734 details 层）⇒ 视图与原生源返回**同样的行**
+// ⇒ 「视图 vs 原生源」这个区分**已经没有对象**。
+//
+// ⇒ 不变式换成等价且仍成立的那一条：**读的源必须覆盖会话族的两条腿**
+// （hot ∪ 母表）。只读 hot 会静默漏掉已 promote 的行 —— 那才是真正的
+// 「漏读」形态（promote 会把 hot 搬进母表并排空 hot）。
+//
+// ⚠ 谓词形状的标记（marker）仍然要钉：那道门真正防的是「这个读方的查询
+// 形状变了」——形状变了就得重新分类，而不是让分类器跟着漂。
+type sessionKeyedReaders = []struct {
+	// fileWide bans the source check at file level. Use it only when
 	// EVERY view usage in that file is ineligible; a function-scoped check
 	// silently passes when the file has several occurrences of the marker.
-	fileWide   bool
-	file       string
-	marker     string // a distinctive string that must still be present
-	shape      string // why the native source cannot serve it
-	mustAbsent string // what a naive migration would introduce instead
-}{
+	fileWide bool
+	file     string
+	marker   string // a distinctive string that must still be present
+	shape    string // why this reader is in the class
+}
+
+// coversBothSessionLegs 报告一段源码里读的源是否覆盖会话族两条腿。
+//
+// 允许的三种形态（都是 hot ∪ 母表）：
+//   - canonical 视图 request_logs_with_current_month（890 之后 = 会话族两臂体）
+//   - db.SessionFamilyTurnsSourceSQL()（原生源，hot ∪ 母表）
+//   - db.SessionFamilyTurnsForSessionSQL()（原生源，会话谓词内推版）
+func coversBothSessionLegs(span string) bool {
+	return strings.Contains(span, "request_logs_with_current_month") ||
+		strings.Contains(span, "SessionFamilyTurnsSourceSQL") ||
+		strings.Contains(span, "SessionFamilyTurnsForSessionSQL")
+}
+
+var sessionKeyedReaderTable = sessionKeyedReaders{
 	{
-		file:       "unified_detail.go",
-		marker:     "WHERE request_id = $1",
-		shape:      "unified detail is a per-request_id lookup — no session predicate to scope on",
-		mustAbsent: "SessionFamilyTurnsSourceSQL",
+		file:   "unified_detail.go",
+		marker: "WHERE rl.request_id = $1",
+		shape:  "unified detail is a per-request_id lookup — no session predicate to scope on",
 	},
 	{
-		file:       "unified_detail.go",
-		marker:     "WHERE client_request_id = $1",
-		shape:      "client-request lookup, same hazard as request_id",
-		mustAbsent: "SessionFamilyTurnsSourceSQL",
+		file:   "unified_detail.go",
+		marker: "WHERE rl.client_request_id = $1",
+		shape:  "client-request lookup, same hazard as request_id",
 	},
 	{
-		file:       "session_turns_tree.go",
-		marker:     "WHERE parent_request_id = ANY($1)",
-		shape:      "children are fetched by parent_request_id, not by session",
-		mustAbsent: "SessionFamilyTurnsSourceSQL",
+		file:   "session_turns_tree.go",
+		marker: "WHERE parent_request_id = ANY($1)",
+		shape:  "children are fetched by parent_request_id, not by session",
 	},
 	{
-		file:       "session_turns_unified.go",
-		marker:     "parent_request_id = ANY($2)",
-		shape:      "same as session_turns_tree: request_id-keyed fan-out",
-		mustAbsent: "SessionFamilyTurnsSourceSQL",
+		file:   "session_turns_unified.go",
+		marker: "parent_request_id = ANY($2)",
+		shape:  "same as session_turns_tree: request_id-keyed fan-out",
 	},
 	{
 		// Correction to the first pass of this table (2026-09-30): these three
@@ -87,22 +111,21 @@ var forbiddenViewReaders = []struct {
 		// aliases the source (`... rl`, because it joins bodies), the
 		// eligible one does not — and the guard is function-scoped, since
 		// forbidding the whole file would be wrong.
+		//
 		// fileWide: BOTH view queries in this file are ineligible, so the ban is
 		// file-level. A function-scoped check was tried first and proved
 		// ineffective: the file contains two occurrences of the marker, so the
 		// guard inspected whichever came first and the second stayed unchecked —
 		// mutating only the second call site left the test green.
-		fileWide:   true,
-		file:       "no_topic_session.go",
-		marker:     "FROM request_logs_with_current_month rl",
-		shape:      "no-topic listing is keyed on gw_task_id IS NULL — the header-less traffic that never mirrors",
-		mustAbsent: "SessionFamilyTurnsSourceSQL",
+		fileWide: true,
+		file:     "no_topic_session.go",
+		marker:   "FROM request_logs_with_current_month rl",
+		shape:    "no-topic listing is keyed on gw_task_id IS NULL — the header-less traffic that never mirrors",
 	},
 	{
-		file:       "session_title.go",
-		marker:     "FROM request_logs_with_current_month rl",
-		shape:      "loadTaskLogsForTitle keys on sessionLogsWhere → gw_task_id = $1, not on a session predicate",
-		mustAbsent: "SessionFamilyTurns",
+		file:   "session_title.go",
+		marker: "FROM request_logs_with_current_month rl",
+		shape:  "loadTaskLogsForTitle keys on sessionLogsWhere → gw_task_id = $1, not on a session predicate",
 	},
 }
 
@@ -136,12 +159,15 @@ func funcSpan(src, marker string) (string, bool) {
 // TestSessionRequestKeyedReadersStayOnView is the executable form of the
 // §5.5.5 classification.
 //
-// Discriminating power was verified by mutation: swapping any one of these
-// readers to the native source makes this test red, because the check is on
-// the marker being absent from the native-source form and present in the
-// view form — not on a `[\s\S]*` pattern that would tolerate both.
+// ★ 2026-10-20（890）：判据从「必须在视图上、不得用原生源」换成
+// 「读的源必须覆盖会话族两条腿（hot ∪ 母表）」—— 理由见
+// sessionKeyedReaderTable 的头注（canonical 视图在 890 之后就是会话族两臂体，
+// 「视图 vs 原生源」已无对象）。
+//
+// Discriminating power was verified by mutation: pointing any one of these
+// readers at a **single-leg** source (hot only) makes this test red.
 func TestSessionRequestKeyedReadersStayOnView(t *testing.T) {
-	for _, tc := range forbiddenViewReaders {
+	for _, tc := range sessionKeyedReaderTable {
 		t.Run(tc.file+"/"+tc.marker, func(t *testing.T) {
 			raw, err := os.ReadFile(filepath.Join(".", tc.file))
 			if err != nil {
@@ -161,12 +187,48 @@ func TestSessionRequestKeyedReadersStayOnView(t *testing.T) {
 				t.Fatalf("%s no longer contains %q — the query shape changed; re-classify it against §5.5.3 before assuming the marker is still safe to guard",
 					tc.file, tc.marker)
 			}
-			if strings.Contains(span, tc.mustAbsent) {
-				t.Errorf("%s now uses %s, but this reader is %s.\n"+
-					"Native mode would silently drop the rows that only exist in v1 — probes, in_progress placeholders and title/summary loopbacks (27.6%% of the view by request_id, 27.9%% by gw_task_id). Keep it on the view until S6 is preceded by a decision on those rows.",
-					tc.file, tc.mustAbsent, tc.shape)
+			// ★ 反转后的正向判据：读的源必须覆盖会话族两条腿。
+			//
+			// ⚠ **源这一项按文件级判，不按函数级**：「这个文件读的源覆盖两条腿吗」
+			// 是文件的属性；而「这个谓词形状还在吗」才是每条查询的属性。
+			// 函数级判源会踩一个具体的坑：`funcSpan` 从 marker 往后取，
+			// 而 marker（谓词）常常就写在 FROM 源**下面一行** ⇒ 源那一行
+			// 落在 span 之外 ⇒ 判据恒红（反过来：源在 marker 之上时恒绿）。
+			// ⇒ 源判文件级，谓词判函数级。
+			if !coversBothSessionLegs(body) {
+				t.Errorf("%s 的源既不是 canonical 视图、也不是会话族原生源 —— "+
+					"它读不到会话族的一半行（promote 会把 hot 搬进母表并排空 hot ⇒ 只读 hot = 静默漏读）。\n"+
+					"该读方是 %s。", tc.file, tc.shape)
+			}
+			// ★ 反转后的负向判据：**单腿**源（hot only）不得出现。
+			if strings.Contains(body, "SessionFamilyTurnsHotSourceSQL") {
+				t.Errorf("%s 用了 SessionFamilyTurnsHotSourceSQL（只有 hot 一条腿）—— "+
+					"promote 之后 hot 被排空，读它会静默漏掉已归档的轮次。该读方是 %s。",
+					tc.file, tc.shape)
 			}
 		})
+	}
+}
+
+// TestSessionKeyedReaderSourceGuardHasTeeth 是上面那道门的**阳性对照**：
+// 同一把判据必须能抓住「只读 hot 一条腿」这个退化。
+//
+// ⚠ 没有这一条，上面那道门就只是「没坏」的同义反复 —— 而判据纪律明确
+// 指出：只断言「没坏」的判据，在「干脆没做」面前永远是绿的。
+func TestSessionKeyedReaderSourceGuardHasTeeth(t *testing.T) {
+	// ① 单腿源必须被识别为「不覆盖两条腿」。
+	if coversBothSessionLegs("FROM ` + dbpkg.SessionFamilyTurnsHotSourceSQL() + ` rl") {
+		t.Error("coversBothSessionLegs 接受了只有 hot 一条腿的源 —— 判据没有区分力")
+	}
+	// ② 两腿源（原生源 / 视图）必须被接受。
+	for _, ok := range []string{
+		"FROM ` + dbpkg.SessionFamilyTurnsSourceSQL() + ` rl",
+		"FROM ` + dbpkg.SessionFamilyTurnsForSessionSQL() + ` rl",
+		"FROM request_logs_with_current_month rl",
+	} {
+		if !coversBothSessionLegs(ok) {
+			t.Errorf("coversBothSessionLegs 拒绝了合法形态 %q —— 判据过严", ok)
+		}
 	}
 }
 
