@@ -294,31 +294,90 @@ func TestSection14343UsageFactsGapIsPinned(t *testing.T) {
 	}
 }
 
+// goConstStrings 解析 Go 文件，返回「常量名 → 字符串字面量值」。
+//
+// ★ 为什么必须用 AST 而不是 strings.Contains：
+//
+//	本轮变异 M5 证明了**文本匹配会被注释喂饱** —— 把常量值改成 "rd" 之后，
+//	文件里仍然有一处**注释**写着 "row-delete" ⇒ 文本断言照样绿
+//	⇒ ⇒ **这正是本仓 LESSONS 里「判据一旦能在注释里被满足就不是判据」那条**，
+//	而我自己写门时又犯了一次 ⇒ ⇒ **⇒ 证据类断言一律走 AST**。
+func goConstStrings(t *testing.T, path string) map[string]string {
+	t.Helper()
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, path, nil, parser.SkipObjectResolution)
+	if err != nil {
+		t.Fatalf("解析 %s：%v", path, err)
+	}
+	out := map[string]string{}
+	for _, decl := range file.Decls {
+		gd, ok := decl.(*ast.GenDecl)
+		if !ok || gd.Tok != token.CONST {
+			continue
+		}
+		for _, spec := range gd.Specs {
+			vs, ok := spec.(*ast.ValueSpec)
+			if !ok {
+				continue
+			}
+			for i, name := range vs.Names {
+				if i >= len(vs.Values) {
+					continue
+				}
+				lit, ok := vs.Values[i].(*ast.BasicLit)
+				if !ok || lit.Kind != token.STRING {
+					continue
+				}
+				if s, err := strconv.Unquote(lit.Value); err == nil {
+					out[name.Name] = s
+				}
+			}
+		}
+	}
+	return out
+}
+
 // TestSection14343EvidenceStringsArePinned 钉住本轮**全部证据字符串**。
 //
 // 本轮的每一条结论都引用了两类可复现的字符串：
 //
-//	① 生产日志里的 mode 值（partition-drop / row-delete）—— 来自实现里的常量；
+//	① 生产日志里的 mode 值（partition-drop / row-delete）与形态探针（relkind = 'p'）
+//	   —— 来自实现里的**常量**；
 //	② runbook 的横幅编号与订正正文 —— 结论的书面载体。
 //
 // 它们一旦被改写，本轮结论就**不可复现**，而读者不会察觉 ⇒ 必须钉住。
+//
+// ★ 实现侧一律走 **go/ast**（读常量值），**不走文本匹配** ——
+//
+//	变异 M5 已经实证过：文本匹配会被**注释**喂饱（把常量值改掉，断言照样绿）。
 func TestSection14343EvidenceStringsArePinned(t *testing.T) {
-	raw, err := os.ReadFile(retentionImpl14343)
-	if err != nil {
-		t.Fatalf("读取 %s：%v", retentionImpl14343, err)
-	}
-	impl := string(raw)
+	consts := goConstStrings(t, retentionImpl14343)
 
-	// 形态探测：relkind='p' 才是"走 DROP"的判据（钉住形态，不是钉住关键词）。
-	if !strings.Contains(impl, "c.relkind = 'p'") {
-		t.Errorf("%s 里不再有 `c.relkind = 'p'` 的形态探测 —— 双模留存的判据被改了，"+
+	// 形态探测的判据：relkind='p' 才是「走 DROP」的依据。
+	probe, ok := consts["snapshotPartitionProbeSQL"]
+	if !ok {
+		t.Fatalf("%s 里找不到常量 snapshotPartitionProbeSQL —— 形态探针被改名或删除，"+
 			"本轮全部结论（252=DROP / 211=DELETE）随之失效", retentionImpl14343)
 	}
+	if !strings.Contains(probe, "relkind = 'p'") {
+		t.Errorf("形态探针常量里不再有 `relkind = 'p'` —— 双模留存的判据被改了，" +
+			"本轮全部结论（252=DROP / 211=DELETE）随之失效")
+	}
+
 	// 两个 mode 常量 = 日志里的两个 mode 值。
-	for _, mode := range []string{"partition-drop", "row-delete"} {
-		if !strings.Contains(impl, mode) {
-			t.Errorf("%s 里不再有 mode 常量 %q —— 生产日志的 mode= 证据不可复现了",
-				retentionImpl14343, mode)
+	for name, want := range map[string]string{
+		"RetentionModePartitionDrop": "partition-drop",
+		"RetentionModeRowDelete":     "row-delete",
+	} {
+		got, ok := consts[name]
+		if !ok {
+			t.Errorf("%s 里找不到常量 %s —— 生产日志的 mode= 证据不可复现了",
+				retentionImpl14343, name)
+			continue
+		}
+		if got != want {
+			t.Errorf("常量 %s 的值 = %q，期望 %q —— 生产日志的 mode= 证据不可复现了",
+				name, got, want)
 		}
 	}
 

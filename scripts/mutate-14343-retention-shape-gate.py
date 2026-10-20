@@ -72,10 +72,11 @@ MUTATIONS = [
     # M4：给 stateTableTTLSpecs() 加一条 usage_facts ⇒ 缺口打桩必须红。
     #   ★ 这条变异的意义：**门红不是坏事** —— 它表示「usage_facts 的留存被填上了」，
     #     于是证据链（登记册 + runbook）必须同步更新。
-    ("M4", "usage_facts 被加进 stateTableTTLSpecs()（缺口被填上 ⇒ 门必须红，逼着同步证据链）",
+    #   ★ 替换串**不包含** needle（把 cache_metrics 那一条**换成** usage_facts，
+    #     而不是追加 —— 追加会让替换串包含 needle ⇒ 脚本按纪律作废该轮）。
+    ("M4", "usage_facts 出现在 stateTableTTLSpecs() 里（缺口被填上 ⇒ 门必须红，逼着同步证据链）",
      PARTMGR_REL,
      "\t\t{parent: \"cache_metrics\", setting: \"lifecycle.cache_metrics_ttl_days\", fallback: 90},\n",
-     "\t\t{parent: \"cache_metrics\", setting: \"lifecycle.cache_metrics_ttl_days\", fallback: 90},\n"
      "\t\t{parent: \"usage_facts\", setting: \"lifecycle.usage_facts_ttl_days\", fallback: 30},\n",
      "TestSection14343UsageFactsGapIsPinned"),
 
