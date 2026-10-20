@@ -21,6 +21,8 @@ export default {
   pattern: "RE2-Ausdruck",
   group: "Erfassungsgruppe",
   scopes: "Phasen",
+  perMode: "Nach Phase aktivieren",
+  perModeHint: "Angehakt = die Regel ist in dieser Phase aktiv; nicht angehakt = die Regel ist für diese Phase gestoppt. Die Spalte „Aktiviert“ ist der Hauptschalter.",
   action: "Aktion",
   priority: "Priorität",
   tenant: "Mandant (leer = alle)",

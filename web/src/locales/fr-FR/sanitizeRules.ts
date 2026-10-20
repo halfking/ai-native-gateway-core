@@ -21,6 +21,8 @@ export default {
   pattern: "Expression RE2",
   group: "Groupe de capture",
   scopes: "Étapes",
+  perMode: "Activer par phase",
+  perModeHint: "Coché = la règle est active dans cette phase ; décoché = la règle est arrêtée pour cette phase. La colonne « Activé » est l’interrupteur principal.",
   action: "Action",
   priority: "Priorité",
   tenant: "Locataire (vide = tous)",

@@ -360,6 +360,12 @@ migrate_existing_pg_to_shared() {
   pg_user=$(dl_container_env "$old_name" POSTGRES_USER); pg_user=${pg_user:-llm_gateway}
   pg_db=$(dl_container_env "$old_name" POSTGRES_DB); pg_db=${pg_db:-llm_gateway}
   pg_pass=$(dl_container_env "$old_name" POSTGRES_PASSWORD)
+  # 2026-10-20 修复：重建容器时**沿用原容器实际发布的宿主端口**，不再硬编码 5432。
+  # 端口与容器 env 里的 DSN 必须成对沿用，详见 dl_pg_publish_spec 的注释。
+  local pg_bind_ip pg_host_port pg_publish_spec
+  pg_bind_ip=$(docker inspect -f '{{with index .NetworkSettings.Ports "5432/tcp"}}{{with index . 0}}{{.HostIp}}{{end}}{{end}}' "$old_name" 2>/dev/null || true)
+  pg_host_port=$(docker inspect -f '{{with index .NetworkSettings.Ports "5432/tcp"}}{{with index . 0}}{{.HostPort}}{{end}}{{end}}' "$old_name" 2>/dev/null || true)
+  pg_publish_spec=$(dl_pg_publish_spec "$pg_bind_ip" "$pg_host_port")
   # 2026-09-23 修复：改用 `--mount type=bind,...` 显式语法，避免 `-v src:dst` 在路径含
   # 特定字符或 daemon 严格模式下被误解析为 mode 段（曾导致 "invalid mode"）。同时把
   # env-file 的位置单独列在 `--env-file` 之前以便排错时一眼看出是文件来源。
@@ -368,7 +374,7 @@ migrate_existing_pg_to_shared() {
     --restart unless-stopped
     --env-file "$env_file"
     --mount "type=bind,source=${shared},target=/var/lib/postgresql/data"
-    -p "127.0.0.1:5432:5432"
+    -p "$pg_publish_spec"
   )
   [[ -n "$network" ]] && run_args+=(--network "$network")
   log "creating new llm-gateway-pg with shared storage at $shared"

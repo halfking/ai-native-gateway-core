@@ -553,6 +553,17 @@ export default {
     flowApproveDesc: "Aprobar — pausar para revisión humana",
     flowBlockDesc: "Bloquear — bloquear y registrar de inmediato",
     rulesTitle: "Reglas de detección",
+
+
+
+
+
+
+
+
+
+
+
     searchPlaceholder: "Buscar nombre o descripción",
     addRule: "Añadir regla",
     addRuleTitle: "Añadir regla",
@@ -1323,6 +1334,17 @@ promptInjectionCategories: {
     flowApproveDesc: 'Approve — pause for human review',
     flowBlockDesc: 'Block — block immediately and log',
     rulesTitle: 'Detection Rules',
+    viewDetail: 'Ver detalles',
+    ruleDetailTitle: 'Detalles de la regla',
+    fieldActionOverride: 'Anulación de acción',
+    fieldTags: 'Etiquetas',
+    fieldExamples: 'Ejemplos',
+    fieldUpdatedAt: 'Actualizado el',
+    systemRuleReadOnly: 'Las reglas del sistema son de solo lectura; solo se permite activarlas o desactivarlas',
+    actionOverrideInherit: 'Heredar de la política',
+    tagsPlaceholder: 'Separados por comas',
+    examplesPlaceholder: 'Un ejemplo por línea',
+    ruleDetailNoChange: 'La regla no ha cambiado',
     searchPlaceholder: 'Search rule name or description',
     addRule: 'Add Rule',
     addRuleTitle: 'Add Detection Rule',

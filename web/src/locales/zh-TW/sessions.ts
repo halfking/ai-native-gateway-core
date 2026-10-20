@@ -554,6 +554,17 @@ export default {
     flowApproveDesc: "審批 - 暫停請求，等待人工審批",
     flowBlockDesc: "阻斷 - 直接阻斷並記錄",
     rulesTitle: "偵測規則庫",
+
+
+
+
+
+
+
+
+
+
+
     searchPlaceholder: "搜尋規則名稱或描述",
     addRule: "新增規則",
     addRuleTitle: "新增偵測規則",
@@ -1340,6 +1351,17 @@ promptInjectionCategories: {
 
     // rules
     rulesTitle: '检测规则库',
+    viewDetail: '檢視詳情',
+    ruleDetailTitle: '規則詳情',
+    fieldActionOverride: '動作覆寫',
+    fieldTags: '標籤',
+    fieldExamples: '範例',
+    fieldUpdatedAt: '更新時間',
+    systemRuleReadOnly: '系統規則為唯讀，僅可啟用或停用',
+    actionOverrideInherit: '繼承策略',
+    tagsPlaceholder: '以逗號分隔',
+    examplesPlaceholder: '每行一個範例',
+    ruleDetailNoChange: '規則沒有變更',
     searchPlaceholder: '搜索规则名称或描述',
     addRule: '添加规则',
     addRuleTitle: '添加检测规则',

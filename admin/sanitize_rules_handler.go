@@ -33,8 +33,16 @@ func (h *Handler) handleSanitizeRules(w http.ResponseWriter, r *http.Request) {
 	path := strings.TrimPrefix(r.URL.Path, sanitizeRulesPath)
 	eventRead := path == "/events"
 	eventReview := strings.HasPrefix(path, "/events/") && strings.HasSuffix(path, "/review")
-	if !super && !(auth.Role == "tenant_admin" && auth.TenantID != "" && (eventRead || eventReview)) {
+	// r1039（D4）：租户管理员要能**看**自己租户的放行情况（「为什么我被拦了」），
+	// 但**写**（授予/撤销放行）只给超管 —— 判定在 handleEgressReleases 内部。
+	egressReleaseRead := path == "/egress-releases"
+	if !super && !(auth.Role == "tenant_admin" && auth.TenantID != "" && (eventRead || eventReview || egressReleaseRead)) {
 		writeError(w, 403, "insufficient permission for rule management")
+		return
+	}
+	if path == "/egress-releases" {
+		// 放行表不依赖规则管理器 ⇒ 放在这个 503 之前。
+		h.handleEgressReleases(w, r, auth)
 		return
 	}
 	if h.sanitizeRuleManager == nil {

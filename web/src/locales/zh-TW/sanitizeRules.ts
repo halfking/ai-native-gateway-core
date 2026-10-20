@@ -21,6 +21,8 @@ export default {
   pattern: "RE2 表達式",
   group: "擷取群組",
   scopes: "適用階段",
+  perMode: "按模式啟停",
+  perModeHint: "勾上＝該模式下這條規則生效；取消＝該模式下停用。全域「啟用」開關是總閘。",
   action: "動作",
   priority: "優先順序",
   tenant: "租戶（空白表示全部）",

