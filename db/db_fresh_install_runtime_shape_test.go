@@ -82,7 +82,10 @@ func TestFreshInstallRuntimeShape_EnsureChain(t *testing.T) {
 		{"provider_catalog", "has_free_tier"},
 		{"provider_catalog", "free_tier_notes"},
 		{"provider_catalog", "official_free_docs_url"},
-		{"_request_logs", "outbound_body"},
+		// ★ `_request_logs.outbound_body` 已从本清单移除（2026-10-21 R62 轮）：
+		//   并行会话的迁移 `890_drop_request_logs_v1_family.sql` **退役了 v1
+		//   request_logs 族**（表与函数一起 DROP）⇒ 这一列**不再存在**
+		//   ⇒ 要求它「装完+启动后在位」是**要求一个已退役对象复活**。
 		{"session_turns", "host"},
 		{"session_turns", "tags"},
 	}

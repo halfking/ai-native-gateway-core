@@ -1302,7 +1302,7 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			"387_session_analysis_inference.sql",
 			// 427：task_type_centroids 补 embedding_model（任务类型质心用的模型名列）。
 			"427_task_type_centroids_model.sql",
-			"890_fresh_install_partition_prereq.sql",
+			"893_fresh_install_partition_prereq.sql",
 		},
 	}
 }

@@ -309,4 +309,4 @@
 291	376_offline_activation_code.sql
 292	387_session_analysis_inference.sql
 293	427_task_type_centroids_model.sql
-294	890_fresh_install_partition_prereq.sql
+294	893_fresh_install_partition_prereq.sql

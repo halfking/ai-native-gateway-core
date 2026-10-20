@@ -22,13 +22,13 @@ import (
 //	⇒ 核心写路径直接 23514：
 //	   ERROR: no partition of relation "session_turns" found for row
 //
-// R62 轮用迁移 `890_fresh_install_partition_prereq.sql` 修掉了它。
+// R62 轮用迁移 `893_fresh_install_partition_prereq.sql` 修掉了它。
 // 而**两道现有真库门都看不见这类缺陷**：
 //
 //   - installer 迁移链的连续性门：管的是「登记的迁移还在不在」，与分区无关；
 //   - `sql/schema/fresh_install_column_gaps.tsv` 那道门：量的是**列**的差集。
 //
-// ⇒ 而且**分区与函数也是资产**：谁把 890 从安装链里摘掉、或把某个 ensure 函数
+// ⇒ 而且**分区与函数也是资产**：谁把 893 从安装链里摘掉、或把某个 ensure 函数
 //
 //	改坏，缺口会静默回来，两道门都不会响。
 //
@@ -45,17 +45,17 @@ import (
 //
 //	一个都不许报错**，并且**真的写一行**看它落到哪个分区。
 //
-// # ★★ oracle（量具自检）为什么**不能**用「890 的产物」
+// # ★★ oracle（量具自检）为什么**不能**用「893 的产物」
 //
 // 第一版本门用「`llm_gateway_ensure_monthly_partition` 存在吗」当 oracle，
-// 不存在就 t.Skip。⇒ **实测证明这是恒绿门**：变异 M1 把 890 从安装链摘掉后，
+// 不存在就 t.Skip。⇒ **实测证明这是恒绿门**：变异 M1 把 893 从安装链摘掉后，
 // 标记函数随之消失 ⇒ oracle 判「这不是全新安装」⇒ **SKIP** ⇒ 门绿。
 // ⇒ 「用被测对象自己的产物当 oracle」会让门在被测对象坏掉时自动闭嘴。
 //
 // ⇒ 现在改成：
 //   - **oracle = 仓内约定**（TEST_DATABASE_URL / TEST_DB_URL 是否设置）——
-//     它与被测对象**无关** ⇒ 890 被摘掉时门照样跑、照样红；
-//   - 890 的产物**降级成断言**（第 ① 条）—— 摘掉 890 ⇒ 这里红。
+//     它与被测对象**无关** ⇒ 893 被摘掉时门照样跑、照样红；
+//   - 893 的产物**降级成断言**（第 ① 条）—— 摘掉 893 ⇒ 这里红。
 //
 // # ★ 本门**无副作用**（为什么敢在生产上跑）
 //
@@ -88,10 +88,10 @@ func TestFreshInstallPartitionShape(t *testing.T) {
 	}
 	defer d.Close()
 
-	// ── ① 迁移 890 的两个助手函数必须存在 ─────────────────────────────────
+	// ── ① 迁移 893 的两个助手函数必须存在 ─────────────────────────────────
 	//
-	// 它们是 890 独有的产物 ⇒ 「890 被摘掉 / 被改名」在这里直接红。
-	// ★ 这一条**必须留在门里**：否则「890 不在链上」这件事没有任何判据。
+	// 它们是 893 独有的产物 ⇒ 「893 被摘掉 / 被改名」在这里直接红。
+	// ★ 这一条**必须留在门里**：否则「893 不在链上」这件事没有任何判据。
 	for _, fn := range []string{
 		"llm_gateway_ensure_monthly_partition",
 		"llm_gateway_monthly_family_prefix",
@@ -104,9 +104,9 @@ func TestFreshInstallPartitionShape(t *testing.T) {
 			t.Fatalf("查函数 %s: %v", fn, err)
 		}
 		if n == 0 {
-			t.Errorf("★ 迁移 890 的助手函数 %s 不存在 ⇒ "+
-				"890 很可能没被登记进安装链（installer/internal/dbinit/runner.go 的 StartupFiles）"+
-				"⇒ 目标库不是「装完 890」的形态", fn)
+			t.Errorf("★ 迁移 893 的助手函数 %s 不存在 ⇒ "+
+				"893 很可能没被登记进安装链（installer/internal/dbinit/runner.go 的 StartupFiles）"+
+				"⇒ 目标库不是「装完 893」的形态", fn)
 		}
 	}
 
@@ -179,23 +179,32 @@ func TestFreshInstallPartitionShape(t *testing.T) {
 			if n == 0 {
 				t.Errorf("★ %s 族没有覆盖%s（%s）的**月分区** ⇒ 落在该月的写入会 23514"+
 					"（`no partition of relation %q found for row`）"+
-					"⇒ 新装库的核心写路径是坏的（迁移 890 被摘掉 / 被改坏？）",
+					"⇒ 新装库的核心写路径是坏的（迁移 893 被摘掉 / 被改坏？）",
 					fam, m.label, m.at.Format("2006-01-02"), fam)
 			}
 		}
 	}
 
-	// ── ③ 运行期要用的 11 个 ensure 函数必须齐备 ───────────────────────────
+	// ── ③ 运行期要用的 ensure 函数必须齐备 ───────────────────────────────
 	//
-	// 这 11 个就是 `bg/partition_manager.go` 的 ensureSpecs() 里对**月分区族**
-	// 的调用目标（8 个 timestamptz 族 + 3 个 date 族）。
+	// 这 9 个就是 `bg/partition_manager.go` 的 ensureSpecs() 里对**仍然存活的
+	// 月分区族**的调用目标（6 个 timestamptz 族 + 3 个 date 族）。
+	//
+	// ★★ **为什么是 9 个而不是 11 个**（2026-10-21 R62 轮合并后发现）：
+	//   并行会话的迁移 `890_drop_request_logs_v1_family.sql` **退役了 v1
+	//   request_logs 族** ⇒ 它把 `ensure_request_logs_partition` 与
+	//   `ensure_request_logs_bodies_partition` **一起 DROP 了**
+	//   （`DROP FUNCTION IF EXISTS public.ensure_request_logs_partition(timestamptz);`）
+	//   ⇒ ★ **这两个函数不该再存在** ⇒ 本门**不得**要求它们在
+	//   ⇒ ★★ 而迁移 893 在**链尾** ⇒ 它跑在退役迁移**之后**
+	//   ⇒ ★★★ **若 893 还建这两个函数，就会把已退役的族「复活」**
+	//     ⇒ 这就是「893 不建任何函数」这个决定在合并后**变成安全关键属性**的原因。
+	//
 	// ★ 它们**全部在 baseline `sql/schema/01-schema.sql` 里**
 	//   （R61 轮记的「来源迁移未登记 ⇒ 新装库没函数」是**错的**，R62 轮实测纠正）。
 	// ⇒ 它们的「缺」不会表现为「函数不在」，而表现为「函数在但**造错分区**」
 	//   ⇒ 见下面第 ④ 条。
 	wantFns := []string{
-		"ensure_request_logs_partition",
-		"ensure_request_logs_bodies_partition",
 		"ensure_request_wal_partition",
 		"ensure_routing_decision_log_partition",
 		"ensure_credential_model_index_partition",
@@ -220,7 +229,7 @@ func TestFreshInstallPartitionShape(t *testing.T) {
 		}
 	}
 
-	// ── ④ ★ 逐个真的调用那 11 个 ensure 函数 ⇒ **一个都不许报错** ──────────
+	// ── ④ ★ 逐个真的调用那 9 个 ensure 函数 ⇒ **一个都不许报错** ──────────
 	//
 	// ★★★ 这是本门最硬的一条断言，也是 R62 轮实际抓到缺陷的那条：
 	//

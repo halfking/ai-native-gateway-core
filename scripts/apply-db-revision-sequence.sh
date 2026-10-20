@@ -1544,7 +1544,7 @@ files=(
   "$ROOT_DIR/sql/migrations/startup/376_offline_activation_code.sql"
   "$ROOT_DIR/sql/migrations/startup/387_session_analysis_inference.sql"
   "$ROOT_DIR/sql/migrations/startup/427_task_type_centroids_model.sql"
-  "$ROOT_DIR/sql/migrations/startup/890_fresh_install_partition_prereq.sql"
+  "$ROOT_DIR/sql/migrations/startup/893_fresh_install_partition_prereq.sql"
 
   # 2026-10-07（844）：给 v_supplier_price_vs_baseline 补两个缓存基准价的投影。
   #

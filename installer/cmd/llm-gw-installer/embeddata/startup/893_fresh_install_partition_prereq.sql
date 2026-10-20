@@ -1,4 +1,4 @@
--- 890_fresh_install_partition_prereq.sql
+-- 893_fresh_install_partition_prereq.sql
 --
 -- 全新安装的「月分区」前置：让新装库在**装完那一刻**就有当月+次月分区。
 --
@@ -28,7 +28,19 @@
 -- `ensure_dashboard_events_partition` / `ensure_session_module_executions_partition` /
 -- `ensure_sessions_v2_partitions` ⇒ 11/11 命中），
 -- **函数有，缺的是「当月/次月分区」这个产物**。
--- ⇒ 所以本条**不再负责建函数**（那会与 baseline 的既有版本重名、且参数/返回类型
+--
+-- ★★ **纠正一之补（2026-10-21 R62 轮合并后发现，比上面更要紧）**：
+--   并行会话的迁移 `890_drop_request_logs_v1_family.sql` **退役了 v1 request_logs 族**
+--   ⇒ 它把 `ensure_request_logs_partition` 与 `ensure_request_logs_bodies_partition`
+--   **一起 DROP 了**：
+--       DROP FUNCTION IF EXISTS public.ensure_request_logs_partition(timestamptz);
+--       DROP FUNCTION IF EXISTS public.ensure_request_logs_bodies_partition(timestamptz);
+--   ⇒ ★★ **本迁移在安装链的链尾（索引 294）⇒ 它跑在退役迁移之后**
+--   ⇒ ⇒ ★★★ **若本条还「确保那两个函数存在」，就会把已退役的族「复活」**
+--     ⇒ ⇒ 所以「**不建任何函数**」这个决定，在合并后从「省事」升级为**安全关键属性**。
+--   ⇒ ⇒ 本条的 §② 也就**自动不含**那两个族（它们的表已被 DROP ⇒ 发现式循环看不见它们）。
+--
+-- ⇒ 所以本条**不负责建函数**（那会与 baseline 的既有版本重名、且参数/返回类型
 --   都与运行期约定不一致 ⇒ 纯风险无收益）。
 --
 -- ── 纠正二：子分区名**不能**用 `parent_YYYY_MM` 推（2026-10-21 R62 轮实测）────
