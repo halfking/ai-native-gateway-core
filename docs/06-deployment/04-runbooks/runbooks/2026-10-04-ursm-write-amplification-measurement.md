@@ -41907,3 +41907,144 @@ AND NOT EXISTS (
   ⇒ 删它就断了 830 的唯一退路 ⇒ **不可回收**（§143.42 同一结论）。
 - ⚠ **本节没有评估 §143.42 的 25.2% 空壳行治理**（那才是快照族**真正的**存储优化点）
   ⇒ ⇒ **本节是「机制复核」，不是「存储优化」**。
+
+### §143.44 ★★★★★ 830 列驱动化 —— **211 的 57 列差点让分区化直接打断写路径**（+ 252 授权回收落地）
+
+> ★★★ **本节是 §143.43 的续篇**：属主授权了四项（零语义风险回收包 / `usage_facts` TTL=365 /
+> 211 的 830 分区化 / 快照族 25.2% 空壳行选 A）。本节记录**已执行**部分与**执行前发现**的缺陷。
+>
+> ⚠ **本节对生产的写入**：252 = **114 MiB（已执行并验证）**；211 = **0（执行前发现的缺陷已修，窗口待定）**。
+
+#### §143.44.1 ★★★★★ 执行前的预检抓到：**同一迁移在两个实例上是两个不同版本**
+
+**211 预检**（`scripts/audit/verify_830_precheck_211.sql`，只读）：
+
+| 判据 | 实测 | 含义 |
+|---|---|---|
+| 830 三条前置守卫 | 全 `t` | 未执行过，可执行 |
+| 旧表形态 | `relkind='r'`、5,933,664 行、**2,411,405,312 B** | 普通表 ⇒ 走行级 DELETE |
+| **列数** | **57 列** | ★★ **830 硬编码的是 56 列**（252 当时的列集） |
+| 主键 | `(snapshot_ts, tenant_id, credential_id, raw_model_name)` ✔ | arbiter 无虞 |
+| 第 57 列 | **`empty_response_rate_5m real`** | 后续迁移补的，**writer 的 INSERT 确实写它** |
+
+⇒ ⇒ ★★★★★ **「830 原样在 211 上执行」会直接打断写路径**：
+
+```
+新父表没有 empty_response_rate_5m
+⇒ writer 的 INSERT 报 42703 column "empty_response_rate_5m" does not exist
+⇒ 而 boot 不失败、迁移 RC=0、日志无任何异常 ⇒ 静默 + 致命
+```
+
+⇒ ⇒ ★★ 这就是「**同一迁移在两个实例上是两个不同版本**」的典型形态
+（与 §143.42 的「不能直接登记旧文件」同族）⇒ ⇒ **凡是要在多实例上跑的迁移，
+它的正确性必须由「列集/形态」这类**结构属性**来保证，而不是由一份人肉维护的清单**。
+
+#### §143.44.2 ★★★★★ 修法：830 改为**列驱动**（`LIKE`），把「列集一致」变成结构属性
+
+```sql
+-- 改前：硬编码 56 列（252 当时的列集）
+CREATE TABLE public.ursm_node_snapshot_min (
+    snapshot_ts timestamp with time zone NOT NULL,
+    recovery_epoch bigint NOT NULL,
+    ... 56 列逐字列出 ...
+) PARTITION BY RANGE (snapshot_ts);
+
+-- 改后：列集跟着源表走
+CREATE TABLE public.ursm_node_snapshot_min (
+    LIKE public.ursm_node_snapshot_min_legacy
+        INCLUDING DEFAULTS INCLUDING GENERATED INCLUDING IDENTITY
+        INCLUDING STORAGE INCLUDING COMMENTS
+) PARTITION BY RANGE (snapshot_ts);
+```
+
+★ **刻意不选的选项**：`INCLUDING INDEXES`（会复制旧表 PK 索引名 ⇒ 1c 建同名 PK 撞名）、
+`INCLUDING CONSTRAINTS`（复制 CHECK；旧表实测无 CHECK）；**`INCLUDING DEFAULTS` 必须有**
+（`tenant_id DEFAULT ''` 是硬约束）；`NOT NULL` 由 `LIKE` **总是**复制。
+
+⇒ ★★ **对 252 行为完全不变**（LIKE 出来仍是那 56 列、同一顺序、同一 DEFAULT/NOT NULL）。
+
+#### §143.44.3 ★★★★★ 本地真库 A/B 验证（**用 211 的真实 57 列做夹具**）
+
+一次性库 `itgate_14344`（本地 PG 17.10），夹具 = 211 实测列集（57 列）+ writer 的真实 48 列 INSERT：
+
+| 断言 | 实测 |
+|---|---|
+| 新父表形态 | `relkind='p'` ✔ |
+| **新父表列数 == 旧表列数** | **57 == 57** ✔ |
+| `empty_response_rate_5m` 在位 | ✔ |
+| 主键 | 四列、顺序不变 ✔ |
+| 日分区 | 3 个，边界 **`+08`** ✔ |
+| legacy 保留 | ✔（1 行） |
+| **writer 的 48 列 INSERT** | **INSERT 0 1** ✔ |
+| 写入落点 | `ursm_node_snapshot_min_20261021`（**日分区，非 default**）✔ |
+
+⇒ ⇒ ★★★ **⇒ 改后的 830 在 211 的真实列形态下安全可用**（A/B 到判定层，不是推理）。
+
+#### §143.44.4 ★★ 门：既有断言「56 列」是**实现细节**，必须改成**性质**
+
+| 门 | 改动 |
+|---|---|
+| `bg/ursm_830_realdb_test.go` | 「56 列且无 ts 单列索引」⇒ **「列集与旧表一致（逐列名对照）+ 无 ts 单列索引」** |
+| 同文件的 `makePreMigrationTable` 夹具 | 原注释「列不需要与生产一致：830 不读旧表结构，只 RENAME」**在列驱动后不成立** ⇒ 夹具改为带齐 writer 会写的列（否则实测 42703 红） |
+| `bg/section_14344_830_column_completeness_test.go`（新） | ① **静态**：830 必须用 `LIKE` 建父表、不得再出现硬编码列定义、`INCLUDING INDEXES/CONSTRAINTS` 必须缺席、`INCLUDING DEFAULTS` 必须在场<br>② **真库性质**：夹具**故意多带一列** ⇒ 新父表必须**多出同一列**（只比数量不够：可能多一列少一列而总数相同） |
+
+⇒ ★★ **★ 本门第一版被自己的注释喂饱**（用 `strings.Contains(整文件, "INCLUDING INDEXES")` 判禁令，
+而 830 的注释里正写着「· 不写 INCLUDING INDEXES」）⇒ **门恒绿、毫无意义**
+⇒ ⇒ 改成**只对 CREATE TABLE 语句本身**断言（`extractCreateParentStmt`）
+⇒ ⇒ **这是本仓 LESSONS「判据一旦能在注释里被满足就不是判据」的又一次现场复现**。
+
+#### §143.44.5 ★★★ 252 授权回收：**已执行并验证**
+
+授权：属主答「三项全部授权（252 两项立即执行，211 那项先确认低峰时段）」。
+执行通道：`~/.mavis-tools/lgwp-prod-write.sh`（与只读护栏 `lgwp-prod.sh` 配套；
+**必须显式 `LGWP_PROD_WRITE=1`**，且会把 SQL 全文打进 stdout 供审计）。
+
+**执行前预检（只读）**：10 个待删日分区逐个 `EXISTS (SELECT 1 … LIMIT 1)` = **f**（真空）、
+合计 **36,249,600 B**（**纯索引**，堆 0 B）；`usage_facts` 数据最早 `2026-10-06 02:24:36` ⇒ 分区区间本就没有数据。
+
+**执行**：
+
+```sql
+VACUUM FULL public.usage_facts_default;
+DROP TABLE public.usage_facts_20260926, …, public.usage_facts_20261005;  -- 10 个空日分区
+```
+
+**执行后验证（只读）**：
+
+| 指标 | 执行前 | 执行后 | 变化 |
+|---|---|---|---|
+| `pg_database_size` | 33,681,446,579 B | **33,561,761,459 B** | **−119,685,120 B（114 MiB）** |
+| `usage_facts_default` | 83,492,864 B | **57,344 B** | −83,435,520 B（≈79.6 MiB，收到空索引最小尺寸） |
+| `usage_facts` 分区数 | 27 | **17** | −10 |
+| `usage_facts` 行数 | 275,930 | **275,930** | **未损** |
+| 最新一条事实 | — | `2026-10-21 03:43:12` | **写入路径正常** |
+
+⇒ ★★ **`usage_facts_default` 的 80 MB 不是「分区大」，是纯索引膨胀**（heap 0 B + index 83,476,480 B）
+⇒ ⇒ 与 §143.42 的 `_request_logs_bodies_hot`（229 MB 在 TOAST 索引）**同族**
+⇒ ⇒ **回收手段是 `REINDEX`/`VACUUM FULL`，不是 DELETE、更不是 DROP 整表**
+⇒ ⇒ ★★ **本地真库实测**：分区上的 `VACUUM FULL` 合法（`VACUUM` ⇒ heap 8,192→0、idx 16,384→8,192）
+⇒ ⇒ ★★ **「0 行 + 大占用」几乎总是索引膨胀** ⇒ **判空必须 `EXISTS`，判占用必须拆 heap/index**。
+
+#### §143.44.6 ⚠ 211 的执行方案（**待属主确认时刻**）与一个**必须摊开说**的语义后果
+
+★ **830 不搬数据**（只 RENAME + 建空父表）⇒ 执行后：
+
+- 6,042,257 行历史 ⇒ 全部落进 `ursm_node_snapshot_min_legacy`（**回滚锚点，无任何读路径**）；
+- 新的分区父表**从零开始** ⇒ **活动表里读不到那 7 天历史**（数据没丢，但在没人读的那张表里）。
+
+⇒ ⇒ ★★★ **⇒ 推荐的执行形态 = 830 + 历史搬运**：
+① 跑 830（列驱动版）；② 为历史区间逐日 `ensure_ursm_node_snapshot_min_daily_partition(<日>)`；
+③ `INSERT INTO ursm_node_snapshot_min SELECT * FROM ursm_node_snapshot_min_legacy`
+⇒ ⇒ **活动表恢复完整 7 天历史，且这些历史分区会被 DROP 型留存按天自然回收**
+⇒ ⇒ **211 最终与 252 同款形态**（8 个日分区、7 天窗口）。
+⇒ ⚠ 代价：一次性多写 ≈6.04M 行（≈1.4 GB 数据 + 索引 + WAL）⇒ **需先量 211 的磁盘余量**。
+⇒ ⚠ 若**不**搬：执行更快，但活动表读不到历史 ⇒ 与「尽量不破坏现有系统运行情况」相悖 ⇒ **需属主明说**。
+
+#### §143.44.7 ★★ 本节诚实边界
+
+- ⚠ **211 的写入仍是 0**（830 的执行时刻待属主确认；VACUUM FULL 的低峰窗口待定）。
+- ⚠ **830 的列驱动化只在本轮验证了「211 的 57 列」这一种形态** ⇒ **任意列集都能过**是**结构性质**
+  （`LIKE` 语义），但**新装库**（基线 32 列 + 818 的 24 列）未在本节实跑 ⇒ 已登记为待验证。
+- ⚠ **`usage_facts` 的 TTL=365 与「25.2% 空壳行选 A」两项代码改动尚未落地**（下一节）。
+- ⚠ **本节没有评估 830 在 252 上「重跑」的后果** ⇒ 830 在 252 已执行过，其前置守卫会直接 RAISE
+  （`ursm_node_snapshot_min_legacy` 已存在）⇒ **幂等重放不安全，这是设计意图**。

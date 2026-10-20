@@ -5222,7 +5222,7 @@ To codeup.aliyun.com:kaixuan/official-deploy/llm-gateway-go.git
 > 不证明「门能发现列被删」（后者在既有库上不可达）。
 > ⇒ ★ **并行会话在 `db/` 包的未提交文件本轮一个都没碰**；⚠ `db/db_package_isolation_gate_test.go`
 > 当前有语法错误（`t.Helper.TODO()`）⇒ **共享工作树上 `./db/` 包级 vet 会红**（不是本轮改动）。
-> ⇒ 完整记录见 handoff `§19.20.18` ＋ `docs/audit/2026-10-21-R80-形态门-customer_id契约.md`。
+> ⇒ 完整记录见 handoff `§19.20.24` ＋ `docs/audit/2026-10-21-R80-形态门-customer_id契约.md`。
 > **2026-10-21 R76 轮（本会话）—— 批判式审计轮**：**把 R51 续轮自己的结论逐条挑毛病**，
 > 而不是再加功能。⇒ ★ **本轮最大的收获是推翻了我自己的一条判词**：
 > 我据 `pg_stat_statements` 的 `mean_exec_time = 9.17 s / calls = 287` 判「生产上这条检查
@@ -5306,7 +5306,7 @@ To codeup.aliyun.com:kaixuan/official-deploy/llm-gateway-go.git
 > ⇒ ⚠ **诚实边界**：**没有**改 573/603 本身（它们仍失败，只是不再 abort ⇒ 真修 = E1/E3，**属主决策**）；
 > ⇒ 门禁跑的是 **一条腿**（`./internal/sessionv2mirror/`）⇒ 「exit=0」适用范围 = 该腿 + rerun 阶段；
 > ⇒ 那 4 条 trace-retirement 测试**在本机仍没跑过**（本轮产出是「它们不再假装红」，**不是**「它们跑过了」）。
-> ⇒ ⇒ 完整记录见 handoff `§19.20.20` ＋ `docs/audit/2026-10-21-R81-第二遍失败573-603与事实源盲区.md`。
+> ⇒ ⇒ 完整记录见 handoff `§19.20.25` ＋ `docs/audit/2026-10-21-R81-第二遍失败573-603与事实源盲区.md`。
 
 > **2026-10-21 R80 轮（本会话 · admin 用量门族）**：★★★★ **「夹具插错了表 ⇒ 9 个门全是 SKIP」**
 > ⇒ ★★★ **守卫连坐的是 2 个文件 / 11 个用例，而守卫问错了对象**
@@ -5486,3 +5486,58 @@ To codeup.aliyun.com:kaixuan/official-deploy/llm-gateway-go.git
 > ⇒ ⚠ **本轮对生产的写入 = 0**（两实例查询 + 两台网关日志读取，全只读）。
 > ⇒ ⚠ **观测点（样本量 = 1）**：DROP 路径只有 1 次成功样本 ⇒ 证明「可用」不证明「稳定」
 > ⇒ **明日起每天核对「252 分区数是否稳定在 8 个」**（>9 ⇒ DROP 路径没跑）。
+
+> **2026-10-21 §143.44 轮（本会话）**：**属主授权四项**（零语义风险回收包 / `usage_facts` TTL=365 /
+> 211 的 830 分区化 / 快照族 25.2% 空壳行选 A）⇒ **252 两项已执行并验证（回收 114 MiB）**，
+> **211 执行前预检抓到一个会打断写路径的缺陷并已修**。
+> ⇒ ★★★★★ **核心发现**：**211 的表有 57 列**（多 `empty_response_rate_5m`，writer 的 INSERT 确实写它）
+> 而 **830 硬编码 56 列**（252 当时的列集）⇒ ⇒ **830 原样在 211 上执行会 42703 打断写路径**
+> （且 boot 不失败、RC=0、日志无异常 ⇒ 静默 + 致命）⇒ ⇒ **「同一迁移在两个实例上是两个不同版本」**。
+> ⇒ ★★★★ **修法**：830 改为 **LIKE 列驱动** ⇒ 「新父表列集 == 旧表列集」成为**结构属性**；
+> **对 252 行为完全不变**；刻意不用 `INCLUDING INDEXES`（PK 名会撞）/ `INCLUDING CONSTRAINTS`，
+> 必须保留 `INCLUDING DEFAULTS`。
+> ⇒ ★★★★ **本地真库 A/B 验证全绿**（一次性库 `itgate_14344`，**用 211 的真实 57 列做夹具**）：
+> 新父表 57 == 旧表 57、`empty_response_rate_5m` 在位、PK 四列不变、3 个日分区边界 **+08**、
+> legacy 保留、**writer 的真实 48 列 INSERT 成功**且落点在当日分区（非 default）。
+> ⇒ ★★★★ **门**：既有真实库测试的「56 列」断言（实现细节）改为**性质断言**（逐列名对照旧表）；
+> 夹具同步改为「带齐 writer 会写的列」（实测 4 列夹具 ⇒ 42703 红）；
+> 新门 `bg/section_14344_830_column_completeness_test.go`（静态 + 真库多带一列的性质）。
+> ⚠ **本门第一版被自己的注释喂饱**（整文件 `Contains("INCLUDING INDEXES")` ⇒ 830 注释里就写着它）
+> ⇒ 改为**只对 CREATE TABLE 语句本身**断言。
+> ⇒ ★★★ **252 回收已执行并验证**：库 **33,681,446,579 → 33,561,761,459 B（−114 MiB）**；
+> `usage_facts_default` 83,492,864 → **57,344 B**（**纯索引膨胀** ⇒ 手段是 `VACUUM FULL`/`REINDEX`，
+> **不是 DELETE、不是 DROP 整表**）；分区 27 → 17；**行数 275,930 未损**、写入路径正常。
+> ⇒ ★★ **执行通道**：新增 `~/.mavis-tools/lgwp-prod-write.sh`（与只读护栏 `lgwp-prod.sh` 配套，
+> 必须显式 `LGWP_PROD_WRITE=1`，并把 SQL 全文打进 stdout 供审计）。
+> ⇒ ⚠ **211 的写入仍为 0**：830 的执行时刻待属主确认；**且摊开一个语义后果** ——
+> **830 不搬数据** ⇒ 6,042,257 行历史会移进 `ursm_node_snapshot_min_legacy`（无读路径）
+> ⇒ ⇒ **推荐形态 = 830 + 历史搬运**（逐日 ensure + `INSERT … SELECT` 回父表 ⇒ 活动表恢复 7 天历史，
+> 且历史分区会被 DROP 型留存按天自然回收 ⇒ 211 最终与 252 同款）。
+> ⇒ ⚠ **待办**：`usage_facts` TTL=365 的登记 + 按日 DROP 登记；快照族 25.2% 空壳行「选 A」
+> （persist writer 跳过空租户 node 键）的实现与部署。
+
+> **2026-10-21 R80 轮（续三，本会话）**：★ **hot cron 的「能力探针」此前只有一道读源码文本的静态门**
+> ⇒ 新增**行为层门**（5 道，不需要真库）＋ **panic 兜底补 `debug.Stack()`** ＋ **`runOnce` 的 nil 守卫**。
+> ⇒ ★★★ **根因不是「测试写得懒」，而是「产品把 DB 句柄写成了具体类型」**：
+> `admin/handler.go:68` `db *pgxpool.Pool` ⇒ **无法注入** ⇒ 单测只能靠
+> 「构造 db=nil 的 Handler，让它 nil 解引用 panic」来"覆盖"
+> ⇒ ⇒ **测出来的不是行为，是「panic 被 recover 兜住了」**
+> ⇒ ⇒ 且每次跑 admin 包都往证据通道塞一条**假 ERROR**（违反该文件自己声明的「噪声不得冒充故障」不变量）。
+> ⇒ ★★ **仓里早就有正确范式**（`admin/handler.go:55-57` `controlledBodyDB` / `:63-65` `topologyStatsDB`，
+> 注释原文「刻意保持窄接口… 便于单测钉住」）⇒ 本轮把 `hotCronDB` 补到漏掉的那条路 ⇒ **不是新发明**。
+> ⇒ ★★★★ **最硬的一条读数（变异 M2）**：把探针那条 INFO 改成 ERROR（**消息文本一字不改**）
+> ⇒ ⇒ **既有静态门照样绿（`ok 0.961s`）**、**行为门变红**
+> ⇒ ⇒ ⇒ **「静态文本门」与「行为门」守的不是同一件事** ⇒ 静态门守「源码里有这几个字」，
+> 行为门守「运行时是 INFO 还是 ERROR」⇒ ★ **判别动作：把行为改坏但一个字都不改 ⇒ 门还绿吗？**
+> ⇒ ★★ **typed-nil 陷阱**：`s.db = h.db`（`h.db` 是 nil 的 `*pgxpool.Pool`）⇒ `s.db == nil` 为**假**
+> ⇒ ⇒ **所有 `== nil` 守卫静默失效** ⇒ 必须显式判**源指针** `h.db != nil` 再赋值（变异 M4 实测 `got (*pgxpool.Pool)(nil)`）。
+> ⇒ ★★ **任何 `recover()` 都应当带 `debug.Stack()`**（零语义变化）—— 不带堆栈 ⇒ 线上真 panic **定位不到出处**
+> ⇒ （panic 值常是 `invalid memory address or nil pointer dereference` 这种**不带位置**的文本）。
+> ⇒ ★★ **detached goroutine 的 panic 有三个连带效应**：① 落到任意测试的日志窗口（**假噪声**）
+> ② 读它的测试与它**数据竞争** ⇒ 日志缓冲必须并发安全 ③ **不能同步断言** ⇒ 必须轮询等待（有界超时）。
+> ⇒ ★★ **「既有红」不是同一种东西**：`admin` 8 条既有红至少三类 ——
+> **环境产物**（`TestColumnarParentTwoSurfaceSetopShape_RealDB` 的 XX000 = **Citus 节点缺失**，`citus_nodes` 0 行，**官方跑法同样 0 节点**）
+> / **真问题**（`TestSessionFamilyTwoSurfaceUnionShapeIsExecutable` 的 42P01 = **v1 族退役后的残留引用**）/ **与当轮同源**。
+> ⇒ ★ **绝对数一律不钉**：`hotPromoteTableMap` 条目数是**活事实** ⇒ 新门按 `len(...)` 动态对齐。
+> ⇒ ⚠ **本轮对生产的写入 = 0**；★ **语义变化 = 零**（SQL / 日志文本 / 日志级别 / 调度时刻 / 重试退避**逐字未改**）。
+> ⇒ 完整记录见 handoff `§19.20.26`。

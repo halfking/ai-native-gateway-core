@@ -146,6 +146,27 @@
 #   它不是跑不过，是**故意要人来消歧**。登记它是为了让门知道这是设计的一部分，
 #   而不是把它当成回归。★ 它的改名也正是 [M7] 两条谓词过期的**成因**。
 #
+# [M10] 第二遍把 v1 族**按旧名复活** ⇒ DROP 撞上依赖方 —— 2 条（573 / 603）
+#   ★★ 这是 2026-10-21（R81 轮）实测出来的**新机制**，与 [M1]-[M9] 都不是一回事。
+#   机制（一句）：**官方重跑 = baseline 三件套 + 链**，而 **01-schema.sql 是裸
+#   pgdump 基线**（1547 条 ERROR 那个）⇒ 它把 v1 族按**旧名**重新建了出来
+#   （`request_logs` / `request_logs_hot`）⇒ ⇒ 链的前段（448/459/532…）再按旧名
+#   重建 v1 臂视图 ⇒ ⇒ **573/603 因此「有对象可动」** ⇒ 但那些对象**已被视图依赖**
+#   ⇒ ⇒ 它们的 DROP 被挡住。
+#   ⇒ ★★ **方向与 [M8] 相反**：[M8] 是「上游中止 ⇒ 下游全灭」（向后），
+#     这里是「**上一遍留下的依赖方 ⇒ 挡住本遍的 DROP**」（向前）。
+#   ⇒ ★★ 被挡对象不同但同根：573 是 DROP **视图**（canonical）被
+#     `routing_analytics_source`（再往下两个物化视图 routing_analytics_7d /
+#     routing_audit_summary_7d）挡住；603 是 DROP **列**被同遍重建的 v1 臂视图挡住。
+#   ⚠ **不能靠 CASCADE 消掉**：573 的 CASCADE 会把 canonical 视图 +
+#     routing_analytics_source + 两个物化视图**一起删掉**
+#     （把「重跑失败」升级成「静默毁掉下游对象」）。
+#   ★ 变体（**不重跑 baseline** 时）：603 的首报变成
+#     `relation "public.request_logs" does not exist` ⇒ 根因是
+#     `ALTER TABLE … DROP COLUMN IF EXISTS` 的 **IF EXISTS 只覆盖「列」不覆盖「表」**
+#     （表本身不存在时照样 42P01）⇒ ⇒ ★ **「加了 IF EXISTS 就幂等」是错的**。
+#   ⇒ 真正的修法在 E1（先枚举下游依赖）/ E3（让重放前提不成立）⇒ 均为待拍板决策。
+#
 # DECISION PENDING (§9.119.5 / §9.124.6, not applied here on purpose):
 #   E1  rewrite the view-rewriting files as DROP VIEW IF EXISTS + CREATE VIEW
 #       (needs downstream view/function dependencies enumerated first)
@@ -165,7 +186,9 @@
 520_durable_task_settlement_intents.sql	[M3] 死守卫：两条 DROP POLICY IF EXISTS 指向 durable_task_settlement_tenant_isolation / _super_admin_bypass，而全链无任何迁移创建这两个名字；真正创建的 durable_task_settlement_access 一条守卫都没有（§9.125.2 实测：1 条真实错误）
 562_fix_request_logs_bodies_partitions_heap.sql	[M7] 谓词过期（首遍改名遗留）：860 在**首遍**把带分区的父表改名为 _request_logs_bodies；R57 轮真库实测：request_logs_bodies_2026_07/08/09 三个分区的父表实测都是 _request_logs_bodies，而本文件的 VERIFY 仍按**旧名** request_logs_bodies 判「已附着」⇒ 读成「未附着」⇒ RAISE '562: VERIFY FAIL - partition not attached to request_logs_bodies'。★ 是谓词没跟首遍改名同步，不是本文件自身不可重跑
 568_credential_priority_flag.sql	[M1] CREATE OR REPLACE VIEW public.model_offers 把列 raw_model_name 改名为 canonical_raw_name；PG 不允许 CREATE OR REPLACE VIEW 改列名
+573_drop_request_logs_body_columns.sql	[M10] 第二遍把 v1 族**按旧名复活** ⇒ 本文件要 DROP 的 canonical 视图**被下游依赖挡住**：实测首报 ERROR:  cannot drop view request_logs_with_current_month because other objects depend on it / DETAIL:  view routing_analytics_source depends on view request_logs_with_current_month（**再往下还有两个物化视图**：routing_analytics_7d / routing_audit_summary_7d 挂在 routing_analytics_source 下）—— 这条依赖链是 890 把 routing_analytics_source 换成 canonical 形态之后才有的 ⇒ 573 **首遍**跑时它们还不存在 ⇒ DROP 成功；**第二遍**时已存在 ⇒ DROP 被挡 ⇒ 事务回滚 ⇒ 迁移判失败。★ ⚠ **不能靠加 CASCADE 消掉**：CASCADE 会把 canonical 视图 + routing_analytics_source + 两个物化视图**一起删掉**（把「重跑失败」升级成「静默毁掉下游对象」）；而 573 随后的 CREATE VIEW 在 v1 族退役后本来就建不出来（实测 ERROR:  relation "public.request_logs_hot" does not exist）⇒ ⇒ 本条在 890 之后**语义上已无事可做**（canonical 视图已是会话族两臂体，本就没有 body 投影）。★ 真正的修法 = E1（先枚举下游依赖）或 E3（给 InitSchema 一个「已初始化」守卫）⇒ 均为 §9.119.5 / §9.124.6 的**待拍板**决策 ⇒ 本轮只登记，不动迁移。
 577_request_logs_view_customer_id.sql	[M2] 无守卫 CREATE VIEW public.request_logs_with_current_month，重跑时关系已存在
+603_repair_request_logs_schema_consistency.sql	[M10] 与 573 **同根因**（第二遍把 v1 族按旧名复活）⇒ 本文件要 DROP 的**列**被同遍重建出来的 v1 臂视图依赖：官方跑法实测首报 ERROR:  cannot drop desired object(s) because other objects depend on them。★ 与 573 的差别只在**被挡住的对象**：573 是 DROP **视图**被依赖挡住，603 是 DROP **列**被依赖挡住 ⇒ ⇒ 同一个根因（v1 族在第二遍被复活 ⇒ 有对象可动 ⇒ 但对象已被视图依赖）。★ **为什么第二遍会有对象可动**：官方重跑顺序是 baseline 三件套 → 链，而 **01-schema.sql 是裸 pgdump 基线** ⇒ 它把 v1 族按**旧名**重新建了出来（`request_logs` / `request_logs_hot`），链的前段（448/459/532…）再按旧名重建 v1 臂视图 ⇒ ⇒ 这些视图依赖 `request_logs` 的列 ⇒ ⇒ DROP COLUMN 被挡。★ 变体（**不重跑 baseline** 时实测）：首报变成 ERROR:  relation "public.request_logs" does not exist —— 根因是 `ALTER TABLE … DROP COLUMN IF EXISTS` 的 **IF EXISTS 只覆盖「列」，不覆盖「表」**（表本身不存在时照样 42P01）；同文件的 10 条 `ADD COLUMN IF NOT EXISTS` / 3 条 UPDATE / §M 段的存在性自检**同样**会失败。⇒ 本迁移的意图（把 hot 表补齐到与 parent 一致）在族退役后**已自动满足** ⇒ 语义上应退化成 no-op；修法方向 = 加「族不存在 ⇒ 整体跳过」的守卫（按 to_regclass 判存在性，不按名字猜）⇒ 属迁移改动，本轮只登记。
 610_request_class_due_at.sql	[M5] 迁移自带的 RAISE EXCEPTION 幂等守卫在重跑时自己触发（谓词只描述当前形状、不描述是否已执行过）
 614_session_bodies_hot.sql	[M4] CREATE TABLE IF NOT EXISTS 之后紧跟的 ALTER TABLE ADD CONSTRAINT 与 CREATE INDEX 全无守卫；该文件无显式 BEGIN，所以 8 条错误全是独立的、不被级联掩盖：1 multiple primary keys + 5 relation already exists（3 约束 + 4 索引中重复者）+ 1 cannot drop columns from view（§9.125.1 实测）
 625_session_bodies_unified_explicit.sql	[M1] CREATE OR REPLACE VIEW 带显式列清单，比链上后续 637 扩宽后的列集窄；PG 禁止 CREATE OR REPLACE VIEW 丢列

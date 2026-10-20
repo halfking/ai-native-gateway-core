@@ -139,6 +139,15 @@ const (
 	r71RegistryPath      = "pg_test_env_registry.tsv"
 	r71DatasourceEnvPath = "../../scripts/audit/datasource_env.sh"
 	r71GateRunnerPath    = "../../scripts/audit/run-integration-gate.sh"
+
+	// r71GenericGateDSNValue 是官方 runner 把**所有** DSN 绑到的那个通用值
+	// （门禁自己的一次性库）。
+	//
+	// ★ 它是「dsn_exclusive 拿到了通用值」这一判据的锚：
+	//   dsn_exclusive 的定义是「整体 DSN，但**必须与通用 DSN 不同**」
+	//   ⇒ 绑到通用值 = 专用隔离被悄悄抹平。
+	// ★ 写成常量而不是散在断言里的字面量 ⇒ 判据的锚只有一处。
+	r71GenericGateDSNValue = "$GATE_URL"
 )
 
 // r71Update 重算登记册：补齐新出现的 env 名（**保留已有人工分类**）。
@@ -416,6 +425,51 @@ func r71ParseRunnerEnvBlock(t *testing.T, path string) map[string]bool {
 	return out
 }
 
+// r71ParseRunnerEnvValues 解析官方 runner 的 `env \` 块里每个变量的**值**
+// （去掉了两侧引号），返回 name → value。
+//
+// ★ 为什么需要值（不只是名字）：**`dsn_exclusive` 允许出现在官方 runner 的
+// `env \` 块里** —— 前提是它拿到的是**专用值**（实例：TEST_TENANT_DATABASE_URL
+// 拿的是 $TENANT_DSN，不是通用库）。
+// ⇒ ⇒ 只看名字分不出「专用值」与「通用值」⇒ ⇒ 必须看值。
+// ★ 判据用**值字面量**判定「通用值」：runner 把 DSN 一律绑到 "$GATE_URL"
+//   （门禁自己的那个一次性库）⇒ 那就是通用值。
+func r71ParseRunnerEnvValues(t *testing.T, path string) map[string]string {
+	t.Helper()
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	out := map[string]string{}
+	m := reR71RunnerEnvBlock.FindStringSubmatch(string(raw))
+	if len(m) < 2 {
+		t.Fatalf("%s 里没解析出 `env \\` 块 ⇒ 解析器失效（门会恒绿）", path)
+	}
+	for _, line := range strings.Split(m[1], "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		name, value := line, ""
+		if i := strings.Index(line, "="); i > 0 {
+			name, value = line[:i], line[i+1:]
+		}
+		value = strings.TrimSpace(value)
+		// ★ env 块的每一行都以 ` \` 续行 ⇒ 先去掉反斜杠，再剥引号。
+		//   顺序反了会得到 `"$GATE_URL" \` 这种剥不干净的值 ⇒ 判据永远不成立。
+		value = strings.TrimSuffix(value, `\`)
+		value = strings.TrimSpace(value)
+		value = strings.Trim(value, `"'`)
+		if reR71Export.MatchString("export " + name+"=") {
+			out[name] = value
+		}
+	}
+	if len(out) == 0 {
+		t.Fatalf("%s 里没解析出 `env \\` 块的变量 ⇒ 解析器失效（门会恒绿）", path)
+	}
+	return out
+}
+
 // ── 判据 ①：差集完备 ＋ ②：反向完备 ─────────────────────────────────────────
 
 func TestPGTestEnvRegistryCoversEveryGapName(t *testing.T) {
@@ -498,6 +552,7 @@ func TestPGTestEnvRegistryClassesMatchFactsourceAndRunner(t *testing.T) {
 	reg := r71ParseRegistry(t, r71RegistryPath)
 	ds := r71ParseDatasourceExports(t, r71DatasourceEnvPath)
 	runner := r71ParseRunnerEnvBlock(t, r71GateRunnerPath)
+	runnerVals := r71ParseRunnerEnvValues(t, r71GateRunnerPath)
 
 	for name, e := range reg {
 		switch e.class {
@@ -516,6 +571,24 @@ func TestPGTestEnvRegistryClassesMatchFactsourceAndRunner(t *testing.T) {
 			if runner[name] {
 				t.Errorf("%s 类 %q 出现在官方 runner %s 的 `env \\` 块里 ⇒ 跑真库腿时**自动打开**了一个取消保护的开关",
 					e.class, name, r71GateRunnerPath)
+			}
+		}
+		// ★★ dsn_exclusive **可以**出现在 runner 的 `env \` 块里，但**必须拿专用值**。
+		//
+		//   R81 轮实测到的真实事故：TRACE_RETIREMENT_TEST_DSN 被登记为 dsn_exclusive
+		//   （它必须指向名为 trace_retirement* 的隔离库），而 runner 却把它绑成
+		//   "$GATE_URL"（门禁自己的那个**共享**一次性库）⇒ ⇒ 产品侧自己的守卫
+		//   正确地拒绝了它（trace_retirement_test.go 等四处：
+		//   "requires loopback trace_retirement database or explicitly
+		//   authorized local 54318 schema isolation"）⇒ ⇒ 官方门禁**永远红**，
+		//   而红的原因不是产品缺陷。
+		//   ⇒ ⇒ 判据 = **看值**：专用值（$TENANT_DSN 这类）放行，
+		//   **通用值（$GATE_URL）判红**。
+		if e.class == r71ClassDSNExcl {
+			if v, ok := runnerVals[name]; ok && v == r71GenericGateDSNValue {
+				t.Errorf("dsn_exclusive 类 %q 在官方 runner %s 的 `env \\` 块里被绑成**通用值** %s ⇒ "+
+					"专用隔离被悄悄抹平（该 DSN 必须指向它自己的隔离库，不能与通用 DSN 同值）",
+					name, r71GateRunnerPath, r71GenericGateDSNValue)
 			}
 		}
 		if strings.TrimSpace(e.reason) == "" {
@@ -598,5 +671,30 @@ func f() string { return os.Getenv("TEST_DATABASE_URL") }
 `))
 	if len(known) != 1 || known[0] != "TEST_DATABASE_URL" {
 		t.Fatalf("基本用例失效：%v", known)
+	}
+
+	// (f) ★★ 值解析器自检（R81 轮新增）：`dsn_exclusive` 的判据是**看值**，
+	//   所以「值解析器能不能把值取出来」本身就是承重构件 —— 它一旦失效，
+	//   那条判据会**恒绿**（取不到值 ⇒ 永远 != $GATE_URL ⇒ 永远放行）。
+	//   ⇒ 这里钉住三件事：① 取得到值；② 引号被剥掉；③ 通用值与专用值可区分。
+	envBlock := `env \
+  TEST_TENANT_DATABASE_URL="$TENANT_DSN" \
+  TRACE_RETIREMENT_TEST_DSN="$GATE_URL" \
+  go test ./pkg
+`
+	tmp := filepath.Join(t.TempDir(), "runner.sh")
+	if err := os.WriteFile(tmp, []byte(envBlock), 0o644); err != nil {
+		t.Fatalf("写临时 runner：%v", err)
+	}
+	vals := r71ParseRunnerEnvValues(t, tmp)
+	if got := vals["TEST_TENANT_DATABASE_URL"]; got != "$TENANT_DSN" {
+		t.Errorf("专用值解析错：TEST_TENANT_DATABASE_URL = %q，期望 $TENANT_DSN", got)
+	}
+	if got := vals["TRACE_RETIREMENT_TEST_DSN"]; got != r71GenericGateDSNValue {
+		t.Errorf("通用值解析错：TRACE_RETIREMENT_TEST_DSN = %q，期望 %s", got, r71GenericGateDSNValue)
+	}
+	// ★ 判据本身的分辨力：这两个值**必须**被判成不同 ⇒ 否则那条判据没有分辨力。
+	if vals["TEST_TENANT_DATABASE_URL"] == vals["TRACE_RETIREMENT_TEST_DSN"] {
+		t.Errorf("专用值与通用值被解析成同一个 ⇒ 「dsn_exclusive 拿到了通用值」这条判据没有分辨力")
 	}
 }

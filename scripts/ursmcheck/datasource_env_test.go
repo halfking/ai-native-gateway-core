@@ -57,6 +57,17 @@ var datasourceEnvExemptions = map[string]string{
 	"XIAOMI_BASE_URL":          "HTTP base URL，不是 DSN",
 	"WA877_ALLOW_ANY_DSN":      "是「允许任意 DSN」的开关，不是 DSN 本身",
 	"TEST_TENANT_DATABASE_URL": "必须指向**独立的、不可绕过 RLS 的租户角色**（官方 runner 现场建）⇒ 不能与通用 DSN 同值",
+	// ★★ R81 轮新增：与上面 TEST_TENANT_DATABASE_URL **同族**（dsn_exclusive）。
+	//
+	// ★ 它为什么必须豁免（而不进事实源）：trace-retirement 那条腿做的是
+	//   **破坏性清理**（删表/改 schema）⇒ 它只能跑在自己的隔离库上 ——
+	//   产品侧自己的守卫要求 DSN 指向**名为 trace_retirement* 的库**
+	//   （或显式授权的本地 54318 schema）。
+	//   ⇒ 与通用 DSN 同值 = 让破坏性清理打到共享库上。
+	//   ⇒ 而事实源与官方 runner 给的**恰恰就是通用 DSN** ⇒ ⇒
+	//   产品守卫会正确地拒绝它 ⇒ ⇒ 门禁得到 4 条**假红**（红的原因不是产品缺陷）。
+	//   ⇒ 不进事实源 ⇒ 那条腿改走它本来就设计好的 t.Skip 分支。
+	"TRACE_RETIREMENT_TEST_DSN": "破坏性 trace-retirement 腿的专用 DSN：必须指向名为 trace_retirement* 的隔离库（或显式授权的本地 54318 schema）⇒ 不能与通用 DSN 同值",
 }
 
 // ── 匹配器（纯函数，可被自检直接调用）──────────────────────────────────────────

@@ -33,6 +33,7 @@ LLM_GATEWAY_REDIS_ADDR	component	Redis 地址（host:port），绝不能填 PG D
 LLM_GATEWAY_RUN_LIVE_OBSERVATION	component	允许打线上观测（布尔），与真库腿无关
 LLM_GATEWAY_SSOT_DRAFT	component	草稿文件路径（SSOT 导入用）
 LLM_GATEWAY_USE_NEW_PROBE_MODE	component	特性开关：新探针模式
+MEMORA_REPO_PATH	component	外部仓库路径（memora 记忆仓的本地 checkout 路径）；不是 DSN，是拼装型外部依赖路径
 O5_FALLBACK_FILE_EVIDENCE	component	取证文件路径（降级读文件的真实样本）
 ONNXRUNTIME_SHARED_LIBRARY_PATH	component	ONNX 动态库路径（本地库，与 PG 无关）
 PARITY_UPDATE_GOLDEN	component	更新 golden 文件的开关（布尔）
@@ -61,6 +62,7 @@ TEST_SESSION_INGEST_REVISION_SCRIPT	component	修订脚本路径（夹具覆盖�
 TEST_TENANT_DATABASE_URL	dsn_exclusive	租户隔离腿专用 DSN：必须指向不可绕过 RLS 的独立角色，不能与通用 DSN 同值
 TOOL_REGISTRY_TEST_DB	dsn_exclusive	PG DSN（带凭据），属工具注册表专用实例，不能与通用 DSN 同值
 TRACE_RETIREMENT_LOCAL_SCHEMA	dangerous	允许在本地 schema 上改结构（还限端口 54318）；打开即取消「只读」的约束
+TRACE_RETIREMENT_TEST_DSN	dsn_exclusive	trace-retirement 真库腿的专用 DSN：必须指向名为 trace_retirement* 的隔离库（或显式授权的本地 54318 schema）；与通用 DSN 同值 = 让破坏性清理打到共享库上 ⇒ 必须专用值，不能与通用 DSN 同值
 UPDATE_ANTHROPIC_STREAM_GOLDEN	component	更新 golden 文件的开关（布尔）
 UPDATE_UPSTREAM_BODIES	component	更新 golden 文件的开关（布尔）
 URSM_830_ALLOW_ANY_DB	dangerous	允许连任意库（破坏性门的守门开关）；打开即取消「只连门禁库」的约束

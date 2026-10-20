@@ -847,7 +847,6 @@ env \
   TEST_PG_URL="$GATE_URL" \
   TEST_RESOLVE_INVARIANT_DB_URL="$GATE_URL" \
   TEST_TENANT_DATABASE_URL="$TENANT_DSN" \
-  TRACE_RETIREMENT_TEST_DSN="$GATE_URL" \
   go test -tags=integration -count=1 -v -timeout 20m ${TEST_NAME:+-run "$TEST_NAME"} "$PKG" \
   > "$RUN_LOG" 2>&1
 TEST_RC=$?

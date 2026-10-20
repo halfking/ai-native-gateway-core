@@ -98,6 +98,11 @@ export TEST_RESOLVE_INVARIANT_DB_URL="$__datasource_dsn"
 export TEST_RETIREMENT_HTTP_DSN="$__datasource_dsn"
 export TEST_SESSION_INGEST_DATABASE_URL="$__datasource_dsn"
 export TEST_SESSION_SETTINGS_DATABASE_URL="$__datasource_dsn"
-export TRACE_RETIREMENT_TEST_DSN="$__datasource_dsn"
+# ⚠ TRACE_RETIREMENT_TEST_DSN **不在事实源里**（R81 轮）：
+#   它是 dsn_exclusive（专用值）—— 必须指向名为 trace_retirement* 的隔离库
+#   （或显式授权的本地 54318 schema）。
+#   ⇒ 与通用 DSN 同值 = 让破坏性的 trace-retirement 清理打到共享库上。
+#   ⇒ 产品侧自己的守卫（trace_retirement_test.go 等四处）会拒绝这种 DSN
+#   ⇒ 事实源默认注入它，只会把「真库腿跑不起来」变成「门禁红」。
 
 unset __datasource_dsn
