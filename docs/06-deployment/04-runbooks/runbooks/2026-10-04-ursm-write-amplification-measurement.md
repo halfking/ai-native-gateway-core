@@ -34504,6 +34504,21 @@ bash ~/.mavis-tools/lgwp-prod.sh /private/tmp/pmm_explain2.sql 180 > /private/tm
 >   **journald / k8s-file 驱动**，**读不到 conmon 的 `ctr.log`**
 >   ⇒ **「读不到」被当成了「没有」**。
 > ⇒ ⇒ **正确读法 + 完整证据见 §143.19.1.1**；
+
+> ⚠⚠ **订正横幅二（2026-10-20，§143.20.6 就地补订；本横幅不改上面第一条，只补「读法分叉」）**
+>
+> ★★★ **「`docker logs` 读不到」是 252（podman）独有的现象，不是通用规律** ——
+> **211 跑的是 docker 运行时 ⇒ `docker logs` 恰恰是唯一读法**。
+>
+> | 实例 | 运行时 | 日志落盘 | `docker logs` |
+> |---|---|---|---|
+> | **252** | **podman 4.9.4**（conmon） | `/var/lib/containers/storage/overlay-containers/<id>/userdata/ctr.log`（+ `ctr.log-YYYYMMDD` 轮转 + `/var/log/pg17-ctrlog-archive/` 每日归档） | ❌ **读不到**（走 journald / k8s-file 驱动）⇒ 必须直读 `ctr.log` |
+> | **211** | **docker**（json-file） | `/var/lib/docker/containers/<id>/<id>-json.log`（+ `.1` / `.2`，共 3 个） | ✅ **能读**（实测 48h 5,197 行 / 179 个 duration 块） |
+>
+> ⇒ ⇒ ★ **正确读法必须按运行时分叉**，不能把 252 的结论套到 211 上，反之亦然。
+> ⇒ ⇒ ★ **211 侧没有 `ctr.log` 归档机制** ⇒ 它的日志只留 docker 自己的轮转
+> （实测 3 个文件 / 约 250 MB）⇒ **历史窗口比 252 短**。
+> ⇒ ⇒ **完整证据见 §143.20.4.2**。
 > ⇒ ⇒ **C1 的处置项（开 `logging_collector=on`）也一并订正**（会与 conmon 通道**重复落盘**）。
 
 ⚠ **本节对生产的写入 = 0**：全部只读（`pg_inherits` / `pg_stat_*` / `pg_stat_statements` /
@@ -35935,3 +35950,399 @@ GOCACHE=/tmp/gocache-p1437 go test ./scripts/ursmcheck/ -run 'TestRunbook14319' 
 [[阴性结论要当缺陷一样复核]] · [[自己上一节的结论也要复核]] ·
 [[对照组不是同一条件下造的]] · [[判据红了先怀疑自己的前提]] ·
 [[「读不到」与「没有」返回值同形]] · [[算术巧合不能当因果]]。
+
+## §143.20 四个物化视图的刷新成本根因 + 211 侧独立实例普查（2026-10-20）
+
+### §143.20.0 结论先行
+
+本节接着 §143.19 的两条待拍板项（B1 = 4 个 matview 的 `REFRESH CONCURRENTLY`）
+往下做，并把「211 与 252」里此前**只审计过 252** 的那半边补上。产出五条：
+
+1. ★★★★ **B1 的根因不是索引、不是 JOIN 形态，是「7 天窗的全量重算」**：
+   同口径交错 A/B（预热后 3 轮）：**7 天窗 3,518~9,809 ms vs 1 天窗 442~724 ms**
+   ⇒ **慢 8.0~13.6 倍**，两组**完全不重叠** ⇒ 远超噪声带，成立。
+   源数据量对应：`session_turns` **7 天窗 130,126 行 vs 1 天窗 15,868 行（−87.8%）**。
+2. ★★★★ **「把 JOIN 换成 LATERAL」被实测证伪（阴性结论，但过程里踩了三次坑）**：
+   忠实 A/B（只改 JOIN 形态、其余逐字一致）+ **预热后交错 ABAB×4**：
+   现状中位 **99.05 ms** vs LATERAL 中位 **107.94 ms** ⇒ **LATERAL 反而慢 8.9%**，
+   两组组内极差 27.4 / 32.6 ms **完全重叠** ⇒ **落在噪声带内 ⇒ 无实质差异**。
+   ⇒ ⇒ **本节实测推翻了本会话先前自己算出的 −23.6% / −33% / −69%**（原因见 §143.20.3.4）。
+3. ★★★★ **REFRESH 的方差比均值更值得看**：`routing_analytics_7d`
+   **min 6,875 / mean 58,849 / max 121,833 / stddev 31,462 ms** ⇒ **max 是 min 的 17.7 倍**、
+   **stddev > mean/2** ⇒ 典型**负载依赖**形态。现场噪声底：252 宿主
+   **load 14.17 / 4 核**（超载 3.5 倍）⇒ 「59.5 秒」里有多少是查询本身、多少是排队，
+   **在当前负载下不可分离** ⇒ ⇒ **任何「单次读数 × 假设」的收益承诺都不可信**。
+4. ★★★ **陈旧度预算的算术仍成立（阴性结论已按纪律复核）**：
+   门 `admin/session_analytics_view_freshness_test.go` 用
+   `routingMeasuredRefreshSeconds = 30 s`（注释说「252 日志均值上沿 ~26 s」）。
+   本轮实测均值已 **58.8 s（2.26×）**、max **121.8 s**；
+   session 侧 `session_client_stats` max **175.5 s**
+   ⇒ ⇒ **算术仍成立**（最坏稳定态年龄 1,975.5 s < 预算 2,700 s）⇒ **契约未破，不改门**；
+   ⚠ **但门注释里的基准过期了 2.26 倍** ⇒ 本节把它写进 runbook（**不擅自改门的常量**）。
+5. ★★★★ **211 是一个此前未被审计的独立生产实例**（§143.19 全程只查 252）：
+   - `acc-pg17`（127.0.0.1:5432，PG **17.10**）里有自己的 `llm_gateway`（**6,018 MB**），
+     **混库**（acc / crm / goacos / kaixuan / llm_gateway / memora / pocket …）；
+   - ⚠ **`pg_stat_statements` 扩展已装（1.11）但未进 `shared_preload_libraries`**
+     （该实例只有 `citus`）⇒ **慢查询量具在 211 上完全不可用**
+     ⇒ 211 的慢查询**只剩容器日志一条线**（实测 48h 内 179 个 duration 块）；
+   - ★★ **同一迁移 877 在两实例上是两个不同版本**：211 上**新版已执行**
+     （叶实例 `session_turns_2026_10_search_trgm`，**4 个新版命名叶实例**挂在
+     `idx_session_turns_search_trgm` 父声明下），而 252 上是**旧版**
+     （叶实例 `..._search_text_idx`）⇒ ⇒ **§143.17.4 的「叶实例名判别法」在两个实例上都成立**
+     （252 判「新版没跑」、211 判「新版跑过」）⇒ **方法被跨实例验证**；
+     ⚠ **但 211 的 `schema_migrations` 只有 63 条、最大 869，877 那行没有** ⇒
+     **对象在、台账无** ⇒ 台账缺口（跨实例版）。
+   - `llm_gateway_pre_cutover_20261014`（**1,169 MB**）是 10-14 切换遗留，未清理 ⇒ 磁盘登记项；
+   - ★ 211 的**同一个** `routing_analytics_7d` 也慢：48h 内 **103 次 / 568,908.9 ms**
+     （占该实例 179 个 duration 块的 **57.5%**），单次 **6,182~6,189 ms**
+     （比 252 的 58.8 s **快 9.5 倍** ⇒ 与数据量差 3 倍一致 ⇒ **同一个设计问题，不同的数据规模**）。
+
+⚠ **本节对生产的写入 = 0**：全部只读（`pg_stat_statements` / `pg_stat_statements_info` /
+`pg_class` / `pg_index` / `pg_inherits` / `pg_settings` / `pg_stat_activity` /
+`columnar_healthcheck()` / `EXPLAIN` / `EXPLAIN (ANALYZE, BUFFERS)`）
++ 211 的容器日志**只读**解析（`docker logs`）。
+**没有** DELETE / TRUNCATE / DROP / REINDEX / ANALYZE / 迁移 / 改配置 / 改 cron。
+
+### §143.20.1 ★★★★ B1 的根因：7 天窗的全量重算
+
+#### §143.20.1.1 物化视图本身很小，慢的是它的源表
+
+| matview | 堆大小 | est_rows | 实测 mean | 实测 max | stddev | calls |
+|---|---|---|---|---|---|---|
+| `routing_analytics_7d` | **3,568 kB** | 5,073 | **58,849 ms** | 121,833 ms | 31,462 ms | 107 |
+| `session_client_stats` | 664 kB | 751 | **53,034 ms** | **175,530 ms** | 38,634 ms | 59 |
+| `session_task_stats` | 824 kB | 6 | 24,524 ms | 75,064 ms | 19,770 ms | 59 |
+| `routing_audit_summary_7d` | 64 kB | 1 | 7,021 ms | 38,292 ms | 4,198 ms | 96 |
+| `session_client_task_matrix` | 2,056 kB | 1,370 | 2,736 ms | 5,188 ms | 890 ms | 59 |
+| `tuning_signals_5m` | 168 kB | 10 | 236 ms | 5,260 ms | 348 ms | 966 |
+| `tuning_signals_daily` | 80 kB | 40 | 137 ms | 8,617 ms | 376 ms | 966 |
+
+⇒ ⇒ ★★ **物化视图只有几 MB，刷新要几十秒** ⇒ ⇒ **成本全在「重算源表」上**。
+⇒ ⇒ ★ **`routing_analytics_7d` 的定义**（生产 `pg_get_viewdef`）：
+`SELECT … FROM routing_analytics_source WHERE ts >= now() - '7 days'::interval AND <6 条过滤> GROUP BY <7 个维度>`，
+而 `routing_analytics_source` = **`request_logs_with_current_month`**（v1 拼装视图）
+⇒ ⇒ ★ **源表 5 条 UNION ALL 臂**（`session_turns_hot` / `session_turns` /
+`_request_logs_hot` / `_request_logs` + 一条派生臂）。
+
+#### §143.20.1.2 源表的时间分布（成本随「窗内行数」走）
+
+| 源 | 7 天窗 | 1 天窗 | 全表 |
+|---|---|---|---|
+| `session_turns` | **130,126** | **15,868** | 1,056,422 |
+| `session_turns_hot` | 3,862 | — | 3,861 |
+| `_request_logs` | 8,877 | — | 338,976 |
+| `_request_logs_hot` | 0 | — | 0 |
+
+⇒ ⇒ ★★ **物化视图的分组维度**：`hours=169`（7 天 × 24.2）、`models=459`、`tenants=1`
+⇒ ⇒ **5,061 行结果**（`routing_analytics_7d`）来自 **130,126 行源数据** ⇒ **放大比 1:25.7**。
+
+#### §143.20.1.3 ★★★★ 决定性 A/B：7 天窗 vs 1 天窗（预热后交错 3 轮）
+
+**同一条 SQL、同一时刻、只改 `ts >= now() - interval` 的长度**：
+
+| 轮 | 7 天窗 | 1 天窗 | 比值 |
+|---|---|---|---|
+| 1 | **3,517.948 ms** | **441.874 ms** | 8.0× |
+| 2 | **9,808.550 ms** | **723.521 ms** | 13.6× |
+| 3 | **6,848.252 ms** | **520.239 ms** | 13.2× |
+
+⇒ ⇒ ★★★ **两组完全不重叠**（7 天窗 3.5~9.8 s vs 1 天窗 0.44~0.72 s）⇒ **远超噪声带，成立**。
+⇒ ⇒ ★★ **这解释了均值为什么是 59 s**：单次 7 天窗全量重算本身就要 3.5~9.8 s，
+**`REFRESH CONCURRENTLY` 的额外机制**（建临时影子表 + 比对差异 + 两遍写）
+**再乘一个量级** ⇒ ⇒ ★ **「均值 59 s」里，「重算源表」与「CONCURRENTLY 机制」各占多少，
+本节没有分离**（`EXPLAIN` 只覆盖前者）⇒ ⇒ **诚实边界**（见 §143.20.5）。
+⇒ ⇒ ⚠⚠ **但 1 天窗不是免费的**：视图名 `routing_analytics_7d` 与读方
+（`admin/analytics_materialized.go:166/180/198` 的 7 天窗口面板、
+`metrics/routing_analytics_mv_drift.go:79` 的 drift 监控）**都把 7 天当语义契约**
+⇒ ⇒ **改窗 = 改语义 ⇒ 属主决策，不是优化**。
+
+### §143.20.2 ★★★★ 换 JOIN 形态是死路（阴性结论，且过程中踩了三次坑）
+
+#### §143.20.2.1 起点：计划里有一个很贵的 Nested Loop
+
+`routing_analytics_7d` 刷新查询的 `EXPLAIN (ANALYZE, BUFFERS)`（简化投影）：
+
+```
+GroupAggregate (actual rows=4307)                      Buffers: shared hit=583058
+  -> Sort (actual rows=115213)                         Buffers: shared hit=583049
+    -> Subquery Scan on request_logs_with_current_month (actual rows=115213)
+      -> Append (actual rows=133886)                   Buffers: shared hit=583043
+        -> Hash Left Join (session_turns_hot)           Buffers: shared hit=2836
+        -> Gather (actual rows=129743)                 Buffers: shared hit=550272
+          -> Parallel Append
+            -> Parallel Index Scan using session_turns_2026_09_ts_idx (actual rows=0)   Buffers: 4
+            -> Parallel Index Scan using session_turns_2026_10_ts_idx (actual rows=43310 loops=3)
+              -> Append (actual rows=1 loops=129930)    Buffers: shared hit=519722
+                -> Index Scan using session_turn_details_2026_10_tenant_id_request_id_partition_key
+                   (actual rows=1 loops=129930)         Buffers: shared hit=519722
+```
+
+⇒ ⇒ ★★★ **热点是 `session_turn_details_2026_10` 的 `Index Scan`：`loops=129,930`** ⇒
+**519,722 buffers = 全查询 583,058 的 89.1%** ⇒ 典型「逐行索引探测」。
+⇒ ⇒ ★ **同时注意 09 月臂**：`Parallel Index Scan using session_turns_2026_09_ts_idx`
+（**actual rows=0**）⇒ **索引是生效的**（`ts >= now()-7d` 可 sargable）⇒
+**「09 月分区 2,734 MB / 798,278 行」不是本次慢的原因**（它在窗外，索引直接剪掉）。
+⇒ ⇒ ★★ **换形态候选**：`LEFT JOIN LATERAL`（734 迁移的 session 臂现在是**普通** `LEFT JOIN`）。
+
+#### §143.20.2.2 ★ 坑一：**第一版 A/B 两侧都不是现状**
+
+第一版 A/B 写成了「普通 JOIN（**无 `::text`**）vs LATERAL（**无 `::text`**）」，
+得到 3,482.245 ms vs 1,082.137 ms（**−69%**）⇒ ★★ **这个数不能用**：
+现状视图的 JOIN 键是 **`d.tenant_id::text = t.tenant_id::text`**（生产 `pg_get_viewdef` 实测），
+而我两侧都去掉了 `::text` ⇒ **两个都不是现状** ⇒ **比较的不是「谁更好」，是「两个自定义形态谁更好」**。
+
+⇒ ⇒ ★★ **纪律**：**A/B 的两个形态必须有一个是「现状的逐字复现」**，
+否则你测的是自己的两个草稿，不是现状 vs 候选。
+
+#### §143.20.2.3 ★ 坑二：**`::text` 没有破坏索引**（我的推断错了）
+
+我曾据「JOIN 键带 `::text` ⇒ `tenant_id` 索引前缀失效」推断这是慢因 ⇒
+**实测否掉**：`d.tenant_id::text = t.tenant_id::text` 与原列比较**两者 buffers 完全相同**（30,204），
+且计划里的 `Index Cond` 照旧 ⇒ ⇒ ★ **规划器识别了 `varchar → text` 的隐式转换，索引仍然可用**。
+⇒ ⇒ ★★ **纪律**：「`::text` 一定废索引」是**常见但错误的先验**；
+「EXPLAIN 只证明『计划会选』」这条纪律在这里的反向用法同样成立 ——
+**要先量，再下结论**。
+
+#### §143.20.2.4 ★★ 坑三：单次读数与「先跑的是冷的」
+
+忠实 A/B（只改 JOIN 形态、含 `::text`、真实 30 列投影）**单次**读数：
+现状 1,669.761 ms vs LATERAL 1,276.192 ms（**−23.6%**）⇒ ★ **但这个数也不可用**：
+**预热后交错 ABAB×4** 的结果推翻了它：
+
+| 轮 | A 现状 | B LATERAL |
+|---|---|---|
+| 1 | 94.178 ms | 123.859 ms |
+| 2 | 99.051 ms | 91.270 ms |
+| 3 | 121.627 ms | 107.304 ms |
+| 4 | 95.855 ms | 108.584 ms |
+
+⇒ A 中位 **99.05**、B 中位 **107.94** ⇒ **LATERAL 慢 8.9%**；
+两组组内极差 **27.4 / 32.6 ms**（**完全重叠**）⇒ ⇒ ★★★ **落在噪声带内 ⇒ 无实质差异**。
+⇒ ⇒ ★★ **「先跑的那条是冷的」**（`autoroute/index_sql_shape_test.go` 已写明这条纪律）
+在本节再次生效：预热前 A 的首轮是 187.7 ms（冷），预热后 94~122 ms。
+⇒ ⇒ ★★★ **最终判词**：
+> **`LEFT JOIN LATERAL` 对这条热路径没有实质收益。**
+> ⇒ 成本不在「怎么 JOIN」，在「要重算 7 天的 13 万行」。
+> ⇒ ⇒ **与 §143.19 的 `DISTINCT ON` 结论同构**（都是「换形态是死路，该动的是读多少行」），
+> 但**这次是在 matview 刷新路径上**独立得到的。
+
+#### §143.20.2.5 ★★ LATERAL 的语义安全性（结论是「安全但没用」）
+
+即便收益为负，**语义等价性仍要核**（万一将来有人要用）：
+
+| 项 | 实测 |
+|---|---|
+| `session_turn_details` 是否有 UNIQUE `(tenant_id, request_id, partition_date)` | ✅ 有（`session_turn_details_request_id_key`）⇒ **LATERAL 不会行放大** |
+| 行数是否一对一 | ✅ 1,043,956 行 = 1,043,956 distinct keys |
+| 7 天窗内两形态行集 | ✅ **129,916 vs 129,916，`EXCEPT ALL` 双向差集 0/0** |
+
+⇒ ⇒ ★ **语义安全，但无收益** ⇒ ⇒ **不建议改**（改了要动 824 迁移 + 同步
+`admin/board_time_range_test.go:54` 的逐字断言）。
+
+### §143.20.3 ★★★ 刷新成本里有多少是「排队」？（诚实边界）
+
+#### §143.20.3.1 方差本身就是判据
+
+`routing_analytics_7d`：min 6,875 / mean 58,849 / max 121,833 / stddev **31,462** ms
+⇒ **max 是 min 的 17.7 倍**，**stddev > mean/2**
+⇒ ⇒ ★★★ **这是「负载依赖」的典型形态**，不是「查询本身稳定地慢」。
+`session_client_stats` 更极端：max **175,530 ms** / stddev 38,634 ms。
+
+#### §143.20.3.2 现场噪声底
+
+- 252 宿主：**load 14.17 / 17.15 / 20.22（4 核）** ⇒ **超载 3.5 倍**；
+- 采样时刻 `pg_stat_activity`：51 个 backend，**1 个 active**、**0 个 waiting**
+  ⇒ 采样点本身不拥挤 ⇒ **但采样点不等于刷新时刻的负载**（刷新是每 30 分钟一轮的尖峰）。
+
+⇒ ⇒ ★★★ **因此**：
+> **「59.5 秒」这个数不能直接当作「查询需要 59.5 秒」**。
+> 它是「3.5~9.8 s 的重算」+「CONCURRENTLY 机制」+「过载下的排队」的合成读数。
+> ⇒ ⇒ **在当前负载下，三者不可分离** ⇒ ⇒ **任何基于单次读数的收益承诺都不可信**
+> ⇒ ⇒ ★ **这也是为什么 §143.20.2.4 必须用交错重复**：不重复就分不出信号与噪声。
+
+#### §143.20.3.3 ★ 顺带发现：`db/db.go` 记的「ANALYZE 巡检持快照 ⇒ 阻塞 REFRESH」
+
+`db/db.go:8440-8447`（迁移 856，2026-10-13）已记：
+「它持有的快照会让每次 `REFRESH MATERIALIZED VIEW CONCURRENTLY` 等它」。
+⇒ ⇒ ★★ **本轮未能证实也未能否证这条**（采样点没有抓到正在跑的 REFRESH 的等待事件，
+`pg_stat_activity` 抓到的是 `LISTEN auto_route_refresh` 的 idle 连接）⇒ **登记为未闭合**。
+
+#### §143.20.3.4 ★★ 陈旧度预算的算术：**仍成立**（阴性结论已复核）
+
+门：`admin/session_analytics_view_freshness_test.go`
+- `routingMeasuredRefreshSeconds = 30 * time.Second`
+  （注释：「取 pg_stat_statements / 252 日志里 `routing_analytics_7d` CONCURRENTLY 均值上沿（~26s）」）
+- `sessionMeasuredRefreshSeconds = 64 * time.Second`
+- `RefreshInterval = 30m` / `mvFreshnessBudget = 45m` / `RefreshTimeout = 5m`
+
+**本轮实测代入**：
+
+| 视图 | 实测 mean | 实测 max | 稳定态最坏年龄（30m + 该值） | 预算 2,700 s |
+|---|---|---|---|---|
+| `routing_analytics_7d` | 58.8 s | 121.8 s | 1,858.8 s / **1,921.8 s** | ✅ 成立 |
+| `session_client_stats` | 53.0 s | **175.5 s** | 1,853.0 s / **1,975.5 s** | ✅ 成立 |
+
+⇒ ⇒ ★★★ **算术仍成立 ⇒ 契约未破 ⇒ 不改门的常量**。
+⇒ ⇒ ⚠ **但门注释里的「~26 s」已过期 2.26 倍** ⇒ ⇒ **本节把它写进 runbook**，
+**不擅自改注释/常量**（那会让「实测基准」变成又一个会漂移的硬编码 ⇒ 正确做法是**引用本节**）。
+
+### §143.20.4 ★★★★ 211 侧普查：一个此前未被审计的独立生产实例
+
+⚠ **§143.19 全程只查了 252**（因为目标库 `172.16.2.210` 在 252 上）⇒
+本节补上「211 与 252」里的另一半。
+
+#### §143.20.4.1 211 的 PG 拓扑
+
+| 容器 | 端口 | 镜像 | 库 | 备注 |
+|---|---|---|---|---|
+| `acc-pg17` | **127.0.0.1:5432** | `kx-citus-pg17:amd64` | `acc_db` / `acc_multinode` / `crm` / `goacos` / `kaixuan` / **`llm_gateway`** / `llm_gateway_pre_cutover_20261014` / `memora` / `pocket` / `pocket_test` … | ★ **混库**（10 个业务库）；PG **17.10** |
+| `wa-pg17` | 0.0.0.0:15432 | `postgres:17-alpine` | `postgres` / `wa_quiet` / `wabench` | 与本仓无关 |
+
+⇒ ⇒ ★ **211 的网关连的是 `acc-pg17` 的 `llm_gateway`**：
+`LLM_GATEWAY_DATABASE_URL=postgres://acc_super:***@acc-pg17:5432/llm_gateway?sslmode=disable`
+⇒ ⇒ ★★ **⇒ 211 与 252 是两个独立的 `llm_gateway` 库，两套数据、两套慢查询、两套迁移水位**。
+
+#### §143.20.4.2 ★★ 211 的慢查询量具**不可用**（真实观测缺口）
+
+```
+shared_preload_libraries   = citus          ← ★ 没有 pg_stat_statements
+pg_stat_statements 扩展    = 1.11（已装，但没进 preload）
+log_min_duration_statement = 500            ← 比 252 的 1s 更敏感
+logging_collector          = off
+```
+
+⇒ ⇒ ★★★ **扩展装了 ≠ 能用**：`pg_stat_statements` 必须经 `shared_preload_libraries` 预加载，
+否则视图查询直接报错（实测：`ERROR: pg_stat_statements must be loaded via "shared_preload_libraries"`）
+⇒ ⇒ ★★ **⇒ 211 侧慢查询**只剩**容器日志**一条线（48h 内 179 个 duration 块）。
+⇒ ⇒ ★★★ **⇒ 容器运行时不同 ⇒ 读法不同（这是 §143.19 的「正确读法」必须补的分叉）**：
+
+| 实例 | 运行时 | 日志落盘 | `docker logs` 能读吗 |
+|---|---|---|---|
+| **252** | **podman 4.9.4**（conmon） | `/var/lib/containers/storage/overlay-containers/<id>/userdata/ctr.log` | ❌ **读不到**（走 journald/k8s-file 驱动）⇒ 必须直读 `ctr.log` + 归档目录 |
+| **211** | **docker**（json-file） | `/var/lib/docker/containers/<id>/<id>-json.log`（+ `.1` / `.2` 轮转，共 3 个） | ✅ **能读**（实测 48h 5,197 行 / 179 个 duration 块） |
+
+⇒ ⇒ ★★ **⇒ §143.19.1.1 的「正确读法」必须补上这个分叉**：
+**「`docker logs` 读不到」是 252（podman）独有的现象，不是通用规律** ——
+在 211（docker）上 `docker logs` 恰恰是**唯一**的读法（无 `ctr.log` 归档机制）。
+⇒ ⇒ ★ **本节已在 §143.19 就地补订正横幅**（见 §143.20.6）。
+
+#### §143.20.4.3 ★★ 211 的慢查询画像：与 252 同一个病
+
+48h 内 179 个 duration 块的家族聚合（`docker logs` 只读解析）：
+
+| 次数 | 总耗时(ms) | 家族 |
+|---|---|---|
+| **103** | **568,908.9** | `REFRESH MATERIALIZED VIEW CONCURRENTLY routing_analytics_7d` |
+| 54 | 129,494.3 | （语句体为空 ⇒ 解析伪影/被取消查询） |
+| 1 | 17,605.9 | `SELECT count(*) AS rows, …` |
+| 1 | 6,271.9 | `SELECT date_trunc('day', snapshot_ts)::date AS d, …` |
+| 1 | 3,988.4 | `SELECT w.label, count(*) AS rows, pg_size_pretty(sum(pg_column_size(ursm_node_sn…` |
+| 1 | 1,008.8 | `CREATE INDEX CONCURRENTLY IF NOT EXISTS session_turns_2026_10_search_trgm ON pub…` |
+
+⇒ ⇒ ★★★ **103/179 = 57.5% 的慢查块是同一个 matview 刷新**，单次 **6,182~6,189 ms**
+⇒ ⇒ ★★ **与 252 是同一个设计问题**（7 天窗全量重算），
+但 **211 更快（6.2 s vs 58.8 s）**，与数据量差一致
+（211 `session_turns_2026_10` **345 MB / 70,290 行** vs 252 **1,417 MB / 240,614 行**，
+且 211 **没有 09 月分区**）⇒ ⇒ ★ **再次印证「成本 ∝ 窗内行数」**。
+
+#### §143.20.4.4 ★★★ 同一迁移 877 在两实例上是两个不同版本（跨实例订正）
+
+**211（`acc-pg17`）实测**：
+
+| 项 | 读数 |
+|---|---|
+| `idx_session_turns_search_trgm`（父声明） | 存在（relkind `I` = 分区索引） |
+| 它的叶实例 | **`session_turns_2026_07/08/10/11_search_trgm`**（**新版形态**）共 4 个 |
+| 父声明→叶实例的 `pg_inherits`（索引级） | ✅ 4 条全挂在新版父声明下 |
+| 全库 `session_turns%_search_trgm` 命名对象 | **4 个**（252 是 **0 个**） |
+| **对照：252 的同族叶实例** | **`session_turns_2026_10_search_text_idx`**（**旧版形态**，6 个，79.27 MB）⇒ **两实例的叶实例名形态不同** |
+| `schema_migrations` 里 877 的行 | ❌ **没有**（该表只有 **63 条**记录、最大 **869**） |
+| 211 的 `schema_migrations` 最大版本 | **869**（252 是 **882**） |
+
+⇒ ⇒ ★★★ **两条结论**：
+1. ★★ **§143.17.4 的「叶实例名判别法」被跨实例验证**：
+   252 现场是旧版形态 ⇒ 判「新版没跑」✅；211 现场是新版形态 ⇒ 判「新版跑过」✅
+   ⇒ ⇒ **方法有效**（§143.19.1.2 的「判别力排序：DDL 原文 > 产物对象名 > 父声明名」也再次成立 ——
+   两实例的**父声明名相同**，只有**叶实例名**能区分）。
+2. ⚠★ **台账缺口（跨实例版）**：211 上 **877 的对象完整存在但迁移没记账**
+   ⇒ ⇒ **「对象存在」≠「迁移已应用并记账」** ⇒ ⇒ **两实例的迁移状态必须分别核**
+   ⇒ ⇒ **本仓的 `docs/db-changelog.md` 与 `schema_migrations` 是单实例口径 ⇒ 跨实例会漏**。
+
+⇒ ⇒ ★ **附带**：211 的 `llm_gateway` **落后 13 个迁移**（869 vs 882）⇒
+且 `llm_gateway_pre_cutover_20261014`（**1,169 MB**）是 10-14 切换遗留、未清理 ⇒ **磁盘登记项**。
+
+### §143.20.5 诚实边界与本轮**没做**的事
+
+- ⚠ **本节对生产的写入 = 0**（见 §143.20.0 末尾）。**没有** DELETE / TRUNCATE / DROP /
+  REINDEX / ANALYZE / 迁移 / 改配置 / 改 cron / 改 preload。
+- ⚠ **「59.5 s」的构成未分离**：§143.20.1.3 的 A/B 只覆盖「重算源表」那部分
+  （3.5~9.8 s）；`REFRESH CONCURRENTLY` 机制（影子表 + 差异比对 + 两遍写）
+  与「过载排队」**在当前负载下不可分离** ⇒ ⇒ **本节不给「修完能省多少秒」的承诺**。
+- ⚠ **`db/db.go:8440-8447` 记的「ANALYZE 巡检持快照 ⇒ 阻塞 REFRESH」本轮未闭合**
+  （采样点没抓到正在跑的 REFRESH 的等待事件）⇒ 登记为未闭合。
+- ⚠ **1 天窗 A/B 不可直接采用**：视图名与读方都把 7 天当**语义契约** ⇒ 改窗 = 改语义。
+- ⚠ **LATERAL 的语义等价虽已核（双向差集 0/0），但**结论是**无收益** ⇒ 不建议改；
+  且真要改会撞 `admin/board_time_range_test.go:54` 的逐字断言 + 需要新迁移（824 不可改）。
+- ⚠ **211 侧只做了普查**：`pg_stat_statements` 未 preload ⇒ **211 没有任何
+  `pg_stat_statements` 读数**；本节的 211 慢查询读数**全部来自容器日志**（48h 窗口）。
+  ⇒ **211 的慢查询全貌未知**（日志只留 48h 的 179 个块）。
+- ⚠ **本节没有覆盖**：4 个 matview 的**刷新调度器**本身
+  （`bg/materialized_view_refresher.go` 的 token-bucket 协调、`bg/tuning_view_refresher.go`）的
+  正确性与重叠度；`session_client_stats` 的 max 175.5 s 是否逼近 `RefreshTimeout`（5 分钟）——
+  实测 175.5 s 只用掉 58%，但 stddev 38.6 s 意味着尾部可能更远 ⇒ **未闭合**。
+- ⚠ **宿主机负载是本轮的公共放大器**：252 load 14/4 核 ⇒ 本节所有单点读数都要按这个噪声底读。
+
+### §143.20.6 §143.19 的就地补订（读法分叉）
+
+⚠ **本节给 §143.19.1.1 补一条订正横幅**（跨实例分叉）：
+**「`docker logs` 读不到」是 252（podman）独有的现象**；
+**211 是 docker 运行时 ⇒ `docker logs` 恰恰是唯一读法**（无 `ctr.log` 归档机制）。
+⇒ ⇒ ★ **正确读法必须按运行时分叉**，不能把 252 的结论套到 211 上，反之亦然。
+
+### §143.20.7 待拍板（本节新增）
+
+| 优先级 | 动作 | 量 | 语义风险 | 决策要点 |
+|---|---|---|---|---|
+| **A1** | ★★★★ **`credential_model_index` 冷分区裁剪（每组只留 `MAX(bucket)` 一行）** | 09 月 301,255 → 1,018 行；**84 MB → ~1 MB**；`refreshIndexSQL` 扫描 **−69.1%** | 中 | ⬅️ §143.19.7-A1，本节**未推翻**；新增前置条件：**仓外读方（admin 图表/导出）确认** + **promote 侧收口**（否则会重新堆积） |
+| **A2** | ★★★★ **修 `cleanup_old_credential_model_index()`（872 后冷族已是 heap ⇒ 7 天 TTL 可用）** | 恢复冷族 TTL（现 93.2% 的行超期） | 低 | ⬅️ §143.19.7-A2；**与 A1 互补**：A1 是一次性裁剪，A2 是持续机制 |
+| **B1** | ★★★★ **matview 刷新成本** | 4 个视图合计 **3.13 h = 12.36 h 的 25.3%** | 中 | ⬅️ §143.19.7-B1，本节把根因钉到「**7 天窗全量重算**」并**证伪了「换 JOIN 形态」**；⇒ **剩下的路只有三条**：① 降窗（改语义）② 增量物化（结构性改造）③ **降主机负载**（R31/R32 已登记）；**且本节不给秒数承诺** |
+| **B1b** | ★★★ **「ANALYZE 巡检持快照 ⇒ 阻塞 REFRESH」本轮未闭合** | 未量化 | 低 | ⇒ 需在**刷新时刻**采样 `pg_stat_activity.wait_event`（本轮采样点没抓到） |
+| **C4** | ★★★★ **211 的 `pg_stat_statements` 加进 `shared_preload_libraries`** | 0 | 低（需重启实例） | ⇒ **211 侧慢查询量具从「没有」变成「有」**；⚠ 需重启 ⇒ **需属主授权**；⇒ 改完必须**回读 `pg_settings` 确认**（`shared_preload_libraries` 是 sighup/restart 级） |
+| **C5** | ★★★ **211 的迁移水位落后 13 个（869 vs 882）+ `llm_gateway_pre_cutover_20261014` 1,169 MB 未清理** | 1,169 MB | 中（迁移可能改行为） | ⇒ **迁移升级要单独评估**（211 上 877 已是新版形态 ⇒ 升级路径与 252 不同）⇒ ⇒ **建议先做 C4（量具）再评估升级** |
+| **C6** | ★★ **211 上 877「对象在、台账无」** | 0 | 低 | ⇒ 台账缺口（跨实例版）⇒ ⇒ 需要一种「按实例核迁移状态」的口径（本仓 `docs/db-changelog.md` 是单实例的） |
+| **C7** | ★★ **§143.19.1.1 的读法补订正横幅（按运行时分叉）** | 0 | 无 | ✅ **本节已完成**（§143.20.6） |
+
+### §143.20.8 复核方法（可原样重跑）
+
+```bash
+# ── 1) 4 个 matview 的实测读数（均值/max/stddev 是判据的关键，缺一不可）
+bash ~/.mavis-tools/lgwp-prod.sh /private/tmp/p14319/budget.sql 300 > /private/tmp/p14319/budget.out 2>&1
+# ── 2) 源表时间分布（7 天 vs 1 天）—— 成本 ∝ 窗内行数
+bash ~/.mavis-tools/lgwp-prod.sh /private/tmp/p14319/retention.sql 300 > /private/tmp/p14319/retention.out 2>&1
+# ── 3) ★ 决定性 A/B：7 天窗 vs 1 天窗（预热后交错 3 轮；★ 预热不可省）
+bash ~/.mavis-tools/lgwp-prod.sh /private/tmp/p14319/win_ab.sql 300 > /private/tmp/p14319/win_ab.out 2>&1
+# ── 4) ★ 证伪「换 JOIN 形态」：忠实 A/B（只改 JOIN 形态）+ 预热后交错 ABAB×4
+bash ~/.mavis-tools/lgwp-prod.sh /private/tmp/p14319/lat_faithful.sql 300 > /private/tmp/p14319/lat_faithful.out 2>&1
+bash ~/.mavis-tools/lgwp-prod.sh /private/tmp/p14319/final_ab_all.sql 300 > /private/tmp/p14319/final_ab.out 2>&1
+# ── 5) LATERAL 的语义等价（UNIQUE 键 + 行集双向差集）
+bash ~/.mavis-tools/lgwp-prod.sh /private/tmp/p14319/lat_sem.sql 300 > /private/tmp/p14319/lat_sem.out 2>&1
+# ── 6) 噪声底（宿主 load + pg_stat_activity）
+bash ~/.mavis-tools/lgwp-prod.sh /private/tmp/p14319/load.sql 300 > /private/tmp/p14319/load.out 2>&1
+ssh 252 'cat /proc/loadavg; nproc'
+# ── 7) ★ 211 侧（独立实例，运行时是 docker ⇒ docker logs 能读）
+ssh 211 'docker exec -i acc-pg17 psql -U acc_super -d llm_gateway -f - < /tmp/211_slow.sql'
+ssh 211 'docker logs acc-pg17 --since 48h 2>&1 | grep -ac "duration:"'
+ssh 211 'docker exec -i acc-pg17 psql -U acc_super -d llm_gateway -f - < /tmp/211_877b.sql'
+```
+
+⇒ ⇒ ★ **本节落地的门**（不连库，可原样重跑）：
+
+```bash
+# §143.20 文档门：7 天窗根因 / LATERAL 证伪 / 211 独立实例 / 877 跨实例版本差异 / 预算算术仍成立
+GOCACHE=/tmp/gocache-p1437 go test ./scripts/ursmcheck/ -run 'TestRunbook14320' -count=1 -v
+```
+
+★ 同族：[[先读量具再读产物]] · [[0 命中的第一嫌疑是量具坏了]] ·
+[[对照组不是同一条件下造的]] · [[阴性结论要当缺陷一样复核]] ·
+[[算术巧合不能当因果]] · [[自己上一节的结论也要复核]] ·
+[[「读不到」与「没有」返回值同形]] · [[EXPLAIN 只证明「计划会选」]]。
