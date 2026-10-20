@@ -6046,3 +6046,82 @@ PostgreSQL 解析调用时，**带默认值的那个也能接 3 参调用**，
   + 「共享工作树的已跟踪文件：未被改动 OK」；
   门 `admin/section_14336_board_single_scan_test.go`（**7 条**）。
 - 溯源：llm-gateway-go4 §143.36 轮（2026-10-21）。
+- 溯源：三项目会话治理 B4 轮（2026-10-20）。
+
+## 2026-10-21 — 门的「前提」会随被观测对象一起消失：门红 ≠ 实现坏（Seen: 1/3）
+- 任务 / 缺陷：本轮全仓 `go test ./...` 扫出 4 个**既有红门**（origin/main 上就红），
+  其中 3 条的根因不是实现坏了，而是**门在守一个已经不存在的对象**。
+- 根因：迁移 890（v1 族退役）把 v1 族整族 DROP，**并把依赖 v1 表的认领逻辑一并删除** ⇒
+  ① `internal/sessionv2mirror` 的两条门要求 `client.go` 里有 `entry.T0Missing = true`
+     （它由「查 v1 表有没有 t0 行」得出）⇒ 该设置点随 v1 退役消失 ⇒ 门恒红；
+  ② `domains/streaming` 的 audio 门要求「门开时 INSERT 照发」⇒ 那个写点已退役成
+     **有文档的 no-op** ⇒ 门恒红；而它的另一半「停写时零写入」⇒ **恒绿**（测了个寂寞）；
+  ③ `scripts/ursmcheck` 的 LESSONS 冲突标记门用**裸子串**匹配 ⇒ 把 LESSONS.md 里
+     **讲「冲突标记翻车」的那条经验正文**判成真冲突 ⇒ 门恒红 ⇒ **真冲突反而看不见**。
+- 防复发检查：任何红门先问三句 —— **① 门在守什么？② 那个被守的对象还在吗？
+  ③ 门红了是「实现变坏」还是「前提消失」？** 前提消失时的处置**不是把实现改回去
+  （那是推翻既定决策），也不是把门删了（删掉就把「复活所需的登记」一起删了），
+  而是**改成钉「退役这件事本身」**：触发源必须仍然不存在 + **必须留下显式登记**
+  （文件头写明「哪个触发源退役了 / 哪一列从此恒为 NULL / 债指向哪」）。
+  ⇒ 同时把「恒绿的那一半」也一起改掉（否则门看起来还是绿的，却什么都测不到）。
+- 证据：`internal/sessionv2mirror/abandoned_turn_gate_test.go`
+  （`TestAbandonedTurnTriggerSourceIsRetired`）、`internal/sessionv2mirror/final_success_turn_gate_test.go`
+  （`TestFinalSuccessClaimIsSetOnTheEntry`）、`domains/streaming/audio_usage_gate_test.go`
+  （3 条）、`scripts/ursmcheck/process_record_guard_test.go`（`findConflictMarkers` + 自检）；
+  变异 harness `scripts/audit/verify-v1-retirement-red-gates.sh`（M1/M4~M8）。
+- 状态：待观察
+
+## 2026-10-21 — 静态判据的扫描面要按「哪台机器会执行它」分档，否则会逼人做无意义的事（Seen: 1/3）
+- 任务 / 缺陷：为「仓内 shell 脚本不得依赖 bash 4+ 特性」写静态门时，先按「全仓 300+ 脚本」
+  扫 ⇒ 立刻命中 16 个**只在 Linux 生产主机上跑**的部署脚本 ⇒ 若按「一刀切禁止」处理，
+  就要给这 16 个脚本加毫无必要的声明或改写 ⇒ **过宽的门比没有门更坏**（它训练人绕过门）。
+- 根因：① macOS 自带 **bash 3.2**（实测 `GNU bash, version 3.2.57`），Linux 是 bash 5
+  ⇒ bash 4+ 特性在 macOS 上 `bad substitution` 直接退出、在 Linux 上完全正常
+  ⇒ **平台依赖的假绿**：CI 跑 Linux ⇒ 这条路径恒绿，缺陷只在开发者机器上现形；
+  ② 仓内**早就有**同纪律（`scripts/checks/install-entrypoints-test.sh:7` 写着
+  「install.sh 必须能被 macOS 自带的 bash 3.2 解析（不用 mapfile / ${var,,}）」），
+  但**覆盖面不全**（只查 user scripts 与 install 入口）⇒ 本轮把同一纪律扩到
+  `deploy/sql/` + `scripts/audit/` + `scripts/checks/`。
+- 防复发检查：静态判据的**扫描面必须按执行环境分档**，判据写「在哪台机器上跑」而不是
+  「在哪个目录」。⇒ 并且**清单里的每条规则必须内置一个最小样本**（清单与样本不可能分叉）；
+  ⇒ **实测**确认一条候选特性是不是真 bash 4 特性（本轮实测 `&>` / `&>>` **是 bash 3.x 就有的**
+  ⇒ 若不实测就会把 16 个脚本推进无意义的声明里）。
+- 证据：`sql/schema/shell_bash_compat_gate_test.go`（含 7 条自检）；
+  实测 macOS bash 3.2 对 `&>` 的行为（rc=0、文件写出）；生产部署脚本 16 处的清单在门文件头。
+- 状态：待观察
+
+## 2026-10-21 — 静态扫描器自己也会瞎：剥注释 / 剥字面量 / heredoc 三层各有盲区（Seen: 1/3）
+- 任务 / 缺陷：写「shell 脚本不得用 bash 4 特性」的静态门时，扫描器先后踩了 5 个盲区，
+  每一个都表现为「门绿但读数瞎了」。
+- 根因（5 个盲区，全部实测暴露）：① 注释里**引用**特性（`# 不要用 ${v^}`）被误判
+  ⇒ 要剥注释；② 单引号里的 `mapfile` 是**字面量**（真实踩坑：`checks/install-entrypoints-test.sh`
+  **自己禁止 mapfile**、自己写了 `mapfile` 作为 grep 的正则字面量）⇒ 要剔单引号；
+  ③ **未加引号的 heredoc 体会被 shell 展开** ⇒ 体里的 `# ${obj_type^}` 是**可执行面**
+  （它长得像注释但正是缺陷本体）⇒ 剥注释时**必须保留 heredoc 体**；
+  ④ **引号定界的 heredoc 体是字面量**（`<<'PYEOF'` 里是 Python 源码）⇒ 反而要整段剔除；
+  ⑤ 双引号内**只有 `${...}` / `$(...)` 是可执行面**，其余是字面量 ⇒ 要按词法处理。
+  ⇒ 另有一个**纯实现 bug**：解析 heredoc 定界符时**没把引号算进推进量** ⇒ 闭合引号被当成
+  普通单引号翻转了状态 ⇒ **后面整段解析全错**（表现为「明明在引号里，行首的 `if ...` 却整段消失」）。
+- 防复发检查：任何「扫文本找 X」的判据，都必须问一句「**我的扫描面本身对不对**」：
+  ① 每条规则**内置最小样本**并自检「抓得到自己的样本」；
+  ② 自检必须同时覆盖**过宽**方向（「bash 3.2 支持的写法不被误判」）——
+  过宽的扫描器会把正常写法全变成红；
+  ③ 变异验证要打在**扫描面失效**的那一层（本轮第一次变异打在 `${obj_type^}` 上**没变红**
+  ⇒ 才发现剥注释把 heredoc 体吃了 ⇒ **只有「删一行看门是否红」能暴露量具瞎了**）。
+- 证据：`sql/schema/shell_bash_compat_gate_test.go` 的 7 条自检
+  （每条规则抓得到自己的样本 / bash 3.2 写法不误判 / 已剔除项不误判 / 单引号字面量 /
+  双引号转义 / heredoc 体 / 注释引用）；变异 M2、M3（`scripts/audit/verify-v1-retirement-red-gates.sh`）。
+- 状态：待观察
+
+## 2026-10-21 — 变异还原必须按原路径 md5 校验；`git checkout --` 会把修复本身一起丢掉（Seen: 1/3）
+- 任务 / 缺陷：本轮做 M2 变异验证时，用 `git checkout -- <file>` 还原 ⇒ 它回到的是 **HEAD**，
+  而本轮的修复**还没提交** ⇒ **修复本身被一起丢掉**；更糟的是「还原校验」读的也是同一个错路径
+  ⇒ **报出假读数**。
+- 根因：`git checkout --` 的语义是「把工作区恢复成 HEAD」，不是「撤销我刚才的临时改动」。
+  ⇒ 在「修复未提交」的窗口里用它 = 自毁。
+- 防复发检查：变异还原一律走「**备份 → 精确还原 → 按原路径 sha256 逐字校验**」，
+  **禁止**用 `git checkout --` / `git restore`；校验必须读**被改的那个路径**，
+  而不是备份或别处。⇒ 本轮把这条纪律写进了变异 harness 的注释与实现
+  （`restore_file` 还原后立刻比对 sha256，不一致即判失败）。
+- 证据：`scripts/audit/verify-v1-retirement-red-gates.sh`（`restore_file` + 逐条「还原后必须重新全绿」）。
+- 状态：待观察

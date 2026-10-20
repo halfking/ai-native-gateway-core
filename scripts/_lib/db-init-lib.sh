@@ -1,6 +1,14 @@
 #!/usr/bin/env bash
+# requires-bash: 4
 # =============================================================================
 # db-init-lib.sh — Shared library for deploy/sql/ initialization scripts
+# =============================================================================
+# ★ requires-bash: 4 —— 本库用了 **bash 4 关联数组**（`declare -A`，
+#   见 db_init::verify 的 EXPECTED_ASSOCIATIVE 参数）。
+#   ⇒ bash 4.0+ 才有 `declare -A`；**macOS 自带 bash 3.2 不支持**
+#   ⇒ 本库只能在 **Linux 生产/运维主机**上 source，不得在 macOS 上跑。
+#   ⇒ 这个运行前提过去只存在于注释里（隐含前提），现由
+#     sql/schema/shell_bash_compat_gate_test.go 的静态判据钉住。
 # =============================================================================
 # SSOT (single source of truth) for the pattern used by every service's
 # deploy/sql/{init,verify,dump-schema,dump-seed}.sh:
