@@ -30,6 +30,12 @@
 #       ⇒ 解析器自检必须红（否则 M1–M4 都是恒绿）
 #   M6  把字符串字面量处理打坏
 #       ⇒ 解析器自检必须红
+#   M7  **被 apply 的基线**（sql/schema/01-schema.sql）里改掉顶层 FROM
+#       ⇒ 红（★ 第一版门只钉了「不被 apply」的 sql/objects/ 副本 ⇒ 这条能抓住它）
+#   M8  安装器内嵌基线（embeddata/01-schema.sql）里改掉顶层 FROM
+#       ⇒ 红（同上，第三份被 apply 的基线也在门眼里）
+#   M9  让解析器少认一个视图（提前 break）
+#       ⇒ **解析完整性自检**必须红（漏解析 ⇒ 反向检查不可信）
 #
 # ★ **本轮的门第一版就是被 M1/M2 抓住的**：它只断言「该视图在**某个**形态里
 #   读冻结表」⇒ 改掉 883 那份、基线那份还在 ⇒ **照样绿** ⇒ 门会放过形态被改。
@@ -273,6 +279,43 @@ mutate "$GATE" \
   "$(b64 "case c == '\\'':")" \
   "$(b64 "case c == '@':")"
 expect_red "M6-string-literal-handling-broken" "$PARSER"
+restore "$GATE"
+
+# ---------------------------------------------------------------------------
+# M7 — **被 apply 的基线**（sql/schema/01-schema.sql）：改掉顶层 FROM。
+#      ★ 这一条专门打第一版门的盲区：第一版只钉了 `sql/objects/views/*.sql`，
+#        而那目录**根本没有任何 apply 通道** ⇒ 改真正被应用的基线时它是绿的。
+# ---------------------------------------------------------------------------
+BASE_SCHEMA="sql/schema/01-schema.sql"
+backup "$BASE_SCHEMA"
+mutate "$BASE_SCHEMA" \
+  "$(b64 'FROM (public.api_key_model_cost akmc')" \
+  "$(b64 'FROM (public.session_turns akmc')"
+expect_red "M7-applied-baseline-schema-rowset-changed" "$ROWSET"
+restore "$BASE_SCHEMA"
+
+# ---------------------------------------------------------------------------
+# M8 — 安装器内嵌基线（embeddata/01-schema.sql）：改掉顶层 FROM。
+# ---------------------------------------------------------------------------
+BASE_EMBED="installer/cmd/llm-gw-installer/embeddata/01-schema.sql"
+backup "$BASE_EMBED"
+mutate "$BASE_EMBED" \
+  "$(b64 'FROM public.api_key_model_cost mcp')" \
+  "$(b64 'FROM public.session_turns mcp')"
+expect_red "M8-applied-baseline-embeddata-rowset-changed" "$ROWSET"
+restore "$BASE_EMBED"
+
+# ---------------------------------------------------------------------------
+# M9 — 让解析器少认一个视图（提前 break）⇒ 完整性自检必须红。
+# ---------------------------------------------------------------------------
+backup "$GATE"
+mutate "$GATE" \
+  "$(b64 '		out[name] = body[:end]')" \
+  "$(b64 '		if len(out) >= 2 {
+			break
+		}
+		out[name] = body[:end]')"
+expect_red "M9-parser-under-parses-views" "$ROWSET"
 restore "$GATE"
 
 echo
