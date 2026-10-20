@@ -5741,3 +5741,14 @@ index b953a6f03..555ef83c4 100644
 > ⇒ ★★ **我自己的测量错误（记录在案）**：用 **8 位缩写 SHA** 判「提交在不在远端历史里」⇒ 假阴性「R82 已不在」⇒ ★ 实为**缩写歧义**（`git log --grep` 能找到 `4d79eb418`，内容全在）⇒ ⇒ ★ **判「在不在远端」用内容对拍或完整 SHA**。
 > ⇒ ★ 共享工作树的 `AGENTS.md`/`LESSONS.md` **再次**比 `origin/main` 旧 ⇒ ⇒ 本轮照纪律用「HEAD 版 ＋ 只追加自己的块」重建（暂存区零删除）。
 > ⇒ 完整记录见 handoff `§19.20.30`。
+
+>
+> **2026-10-21 R85 轮（本会话 · 事实源线）**：★★★★ **`GATEWAY_CANONICAL_TEST_DSN` 与 TRACE_RETIREMENT 同构** ⇒ 同一个三步修法落地 ＋ **守卫一个字都没改**
+> ⇒ ★★ **并行会话 R80 轮回执的分析经复核成立**：那条红**不是**守卫语义问题，而是**事实源导出了一个不该导出的名字**（`datasource_env.sh:70` 把**通用 DSN** 导给了「连本地库」的专用 DSN）⇒ ⇒ **与 R81 轮刚修完的 `TRACE_RETIREMENT_TEST_DSN` 完全同构**（第二例「事实源承载 ⇒ 免于被分类」的盲域）⇒ ⇒ ★★ **它不知道 R81 已经修过一次 ⇒ 三步修法同款 ⇒ 这三个文件本来就是我的 ⇒ 我直接落地**。
+> ⇒ ★★ **BEFORE/AFTER 双向实测**：BEFORE（导出 DSN、不开授权）⇒ **FAIL**（`real fixture requires explicit loopback-only authorization`）；AFTER（`source datasource_env.sh` 后）⇒ 事实源里该 DSN **未设置** ⇒ **SKIP**（`requires an existing local Gateway/identity_shadow database`）⇒ ⇒ ★ **走的是它本来就设计好的 SKIP 分支 ⇒ 守卫一个字都没改**。
+> ⇒ ★ **改动三个文件（零产品代码/零语义/零迁移）**：① `pg_test_env_registry.tsv` 新增 `GATEWAY_CANONICAL_TEST_DSN	dsn_exclusive`（canonical fixture 还要连第二个库 `identity_shadow` ⇒ 只能指向本地联调专用库）② `datasource_env.sh` 删掉第 70 行 export（改注释）③ `datasource_env_test.go` 豁免表加一行（＋理由）。
+> ⇒ ★ **门禁读数（干净 worktree）**：登记册 **68（原 67）条**、事实源导出 **38（原 39）**、豁免 **7（原 6）**、未覆盖 **0**、死条目 **0** ⇒ 四道门全 PASS。
+> ⇒ ⚠★ **交叉会话现场问题（非本轮引入）**：`scripts/ursmcheck/probe_shape_step6_trust_test.go`（**未跟踪新文件**）有编译错误（`79:10: expected ';', found cat`）⇒ **整个 `scripts/ursmcheck` 包编译失败** ⇒ ⇒ **别人看到的都是 `setup failed`（编译红）而不是真断言红** ⇒ ★⇒ **「编译红」必须与「断言红」分开判** ⇒ ★ 本轮因此用**干净 worktree**跑自己的门（隔离）⇒ 已通报并行会话。
+> ⇒ ★★ **一条属主决策项被两个会话分别提出 ⇒ 只登记一件**：我早先挂的「`GATEWAY_CANONICAL_TEST_LOCAL_ONLY` 未授权 ⇒ 改 `SKIP`？」＝ 并行会话的 R80-A ⇒ ⇒ ★ **本轮按「不改守卫」定案 ⇒ 该条从待拍板清单划掉**（不是等属主拍板，是**实测后没有要拍的板**）。
+> ⇒ ★ 授权开关（`dangerous` 类）**绝不由事实源打开** ⇒ ⇒ 门禁不能替人授予「连本地库」的权限 ⇒ ⇒ **修法只能落在「别导出那个 DSN」，而不是「打开授权」**。
+> ⇒ 完整记录见 handoff `§19.20.31`。

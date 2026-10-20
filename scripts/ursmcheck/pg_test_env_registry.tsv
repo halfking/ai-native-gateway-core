@@ -9,6 +9,7 @@
 ABS_SESSIONS_DIR	component	会话快照目录（路径），与「连哪个库」无关
 AUTO_USE_CHANNEL_QUALITY_ROUTING	component	特性开关（布尔），不改变连库目标
 FREEDISCOVERY_DEFINITELY_UNSET_VAR_2	component	哨兵变量：用来断言某变量「确实未被设置」
+GATEWAY_CANONICAL_TEST_DSN	dsn_exclusive	canonical fixture 的专用 DSN：除主库外还必须连第二个库 `identity_shadow` ⇒ 只能指向「本地联调专用库」⇒ 不能与通用 DSN 同值（否则把「连本地库」的前提给了一个通用库 ⇒ 产品守卫正确拒绝 ⇒ 门禁得到假红）
 GATEWAY_CANONICAL_TEST_LOCAL_ONLY	dangerous	授权开关：=yes 才允许 canonical fixture 连本地库（不给则 t.Fatal 而非 SKIP）；打开即授予「连本地库」的权限
 GATEWAY_URL	component	网关 HTTP 地址（不是 DSN），真库腿打的是 API 不是库
 HOME	component	环境杂项（HOME），测试只用来拼路径
