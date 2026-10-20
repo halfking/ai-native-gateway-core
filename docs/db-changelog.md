@@ -9143,3 +9143,26 @@ installer `//go:embed` 指令 + files 映射 → `dbinit` 的 `StartupFiles` →
 本轮 154 部署**零迁移** ⇒ **生产 schema 未被本轮改动**。
 版本产物：VERSION / version.json / web/public/version.json / web/public/menu-config.json
 （menu-config 只变了构建导出的 `exported_at` 时间戳，与先例 32ec82b82 同款）。
+
+## 2026-10-21 — R62 轮：**全新安装的月分区前置**（890；**未在生产应用**，只影响新装形态）
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 890 | `890_fresh_install_partition_prereq.sql` | `eae1ba9a9dc02492fcd5897be9bb4fbaac0cc9317406938d66656ff2a51446a0` | **registered in installer StartupFiles（★ 未在生产应用）** —— 2026-10-21 起登记进 `installer/internal/dbinit/runner.go` 的 `StartupFiles`（链尾）⇒ **只影响「全新安装」的形态**：一次性库实测 **293 条 startup 链全绿（applied=293 / failed=0 / missing=0）**、当月+次月分区到位、5 个核心族真实写入全部落在 `_2026_10` 月分区（非 default）⇒ **23514 消除**。★ 已装好的库（生产 252 / 154 / 245）**不需要**跑它 ⇒ **本轮生产零变更、零重启** |
+
+★ **它做什么**：两个通用助手 + 发现式补「当月 + 次月」分区 + default 兜底。
+★ **它不做什么**（都是实测结论，不是取舍偏好）：
+① **不建任何 ensure 函数** —— 那 11 个 `ensure_*_partition()` **全部在 baseline
+`sql/schema/01-schema.sql` 里**（11/11 实测）⇒ 建了就是与 baseline 抢名字的死代码；
+② **不覆盖生产既有函数**（幂等按 `pg_class`/`pg_proc` 存在性 + **边界覆盖**判定）；
+③ **不用 `parent_YYYY_MM` 拼子分区名** —— `_request_logs` / `_request_logs_bodies` 两族的
+子分区真名是 `request_logs_YYYY_MM` / `request_logs_bodies_YYYY_MM`（**无下划线**，S4 改名后
+子分区沿用旧名；baseline 与生产 252 同约定）⇒ 前缀按**族内既有兄弟的众数**推导
+（`llm_gateway_monthly_family_prefix`）⇒ 否则 baseline 自带的 ensure 函数会报
+`partition "request_logs_2026_10" would overlap partition "_request_logs_2026_10"`（42P17）
+⇒ **该族永远无法自愈**。
+★ **副本一致性**：`installer/cmd/llm-gw-installer/embeddata/startup/890_fresh_install_partition_prereq.sql`
+与 canonical **md5 相同**（`938a9b617a166d1dcee297f372b22368`）⇒ installer 打包的与仓内的是同一份字节。
+★ 门：`db/db_fresh_install_partition_shape_test.go`（5 类断言，含「逐个调用 11 个 ensure 函数零报错」
+与「真实写入落点」）⇒ 变异 M1（摘 890）红 36 条 / M2（改命名）红 2 条且报错逐字一致。
+★ 留证：handoff `docs/96小时内修订审计-20261007-1350.md` §19.8。
