@@ -849,7 +849,7 @@ JS 堆栈是**多行**的，整表被写坏（解析出来「106 行、route 重
 | ~~**L1**~~ | ~~7 张 v1 分区表未带 `_` 待删标志 … 形状分叉~~ ⇒ **2026-10-20 复核轮内已订正，见 §5.9**：这不是缺陷，是迁移 860 的**明确设计**（待删标志在**父表**上，子表名按设计保持不变）；「新装与存量形状分叉」的前提**不成立**（正典基线 schema 造的就是无前缀分区名，862 那个 `_request_logs_2026_10` 只是**合成夹具名**）。**真正要修的是按名字枚举的口径**（已修，见 §5.9.3） | ~~真实不一致~~ → **前提有误** | 不出改名迁移（改名会与 860 的设计、基线 schema、`ensure_request_logs_partition` 的动态前缀脱节）；改为把两处按名字前缀枚举分区族的运维脚本改成**按 `pg_inherits` 走父表** |
 | ~~**L2**~~ | ~~`customer_cost_view.active_concurrent`（5 分钟窗）与 `model_cost_per_task_view.avg_latency_ms`（7 天窗）是活指标读冻结族 ⇒ 恒 0 / 恒 NULL~~ ⇒ **2026-10-20 复核轮续做已修读源**（迁移 883 → 切会话族；真库行为门 + 5 道契约门，4 处变异转红；部署 `2.5.8.2757` 后活体直查：旧读源形状全 0/NULL，新读源取到真实延迟 4046.1ms / 6395.8ms，§5.12.6）。⚠ **但端点仍返回 `[]`**：外层聚合表 `api_key_model_cost` 的 trigger **从未接线**（真库全触发器清点确认它没挂在任何表上、该表 0 行、无唯一索引）⇒ 端点空是**新功能缺口**不是退役残留 ⇒ 记为 **L11**（见 §5.12.3） | ~~恒 0 / 恒 NULL~~ → **读源已修**，端点仍空（L11） | 复活聚合链：写侧 `canonical_id` → 唯一索引 → 会话族 trigger（§5.12.3 给了顺序与理由） |
 | ~~L3~~ | ~~列表端点 COUNT / SUM / 分页三扫同一行集~~ ⇒ **2026-10-20 复核轮续做已修**：COUNT 与各 SUM 合并成**一条**聚合（同一行集的执行次数 2→1），降级语义保持；判据用 pgx QueryTracer 数查询 + 与旧两扫口径逐值对账（§5.12.4） | ~~效率~~ → **已收口** | 无 |
-| L4 | 5 张 `v_*` 视图 + `request_logs_bodies_with_current_month` 仍读 v1 裸母表（`internal/sqlreadguard` 已登记 `DEBT(R47)`） | 已知债 | 逐张判定：历史可读（保留）vs 活指标（必须迁） |
+| L4 | ~~5 张 `v_*` 视图 + `request_logs_bodies_with_current_month` 仍读 v1 裸母表~~ ⇒ **2026-10-20 订正 + 收口**：① 「5 张」是**坏仪器**量出来的（`LIKE '%_request_logs%'` 的 `_` 是单字符通配符 ⇒ 把 canonical 视图名也判成命中）⇒ 精确重判**实为 3 张**，`v_model_health_dashboard` / `v_probe_system_health` 是**假阳性**；② 那 **3 张真读 v1 的分析视图已由迁移 884 收口**（改读会话族，`v_node_switch_analysis` 0 行 → 16 行）⇒ **本轮之后全库仍读 v1 族的视图恰好 4 张**（真库精确清点，2026-10-20）：`request_logs_with_current_month`（canonical，**含臂3**）、`..._without_customer_id`、`..._without_request_class_due_at`、`request_logs_bodies_progress`（+ `request_logs_bodies_with_current_month` 读 bodies 族）⇒ 与 **L12** 的阻塞项集合一致 | ~~5 张~~ → **3 张已收口**，余 4 张见 L12 | 「历史可读（保留）vs 活指标（必须迁）」的逐张判定已在 §5.13 做掉：3 张分析视图是**活指标且无 API 消费** ⇒ 收口；余下 4 张是**有意建成的中间层** ⇒ 随 L12 一起动 |
 | L5 | `storage.admin_logs_native_turns_read` 默认关闭 ⇒ 列表页继续付 canonical 视图的 v1 臂 + 反连接成本 | 已决策 | 保持关闭（27.6% 缺口），但**成本要显式记账** |
 | L6 | 本机 PG 的 `shared_buffers` 原值 400 kB 是**手改在容器数据目录**里的，不在仓库内 | 环境 | 已在本机修好并加部署门；**任何新建的本机 PG 都要按门检查**（门只在本仓的 deploy-local 路径生效） |
 | **L7** | **客户端取消被记成 `500 / error.kind=server_error`**（`middleware/logging_mw.go` 的 `errorKind(status)` 只看状态码）⇒ 「客户端跑了」与「服务端坏了」在监控里**长得一样**；且多数 handler 的裸 `writeError(500, …)` **不留任何日志**（只有 `handleTurnsSessions` 等少数几处打了 WARN） | 观测 | 在 `emitRequestLog` 里判 `r.Context().Err() == context.Canceled` ⇒ `error.kind=client_aborted`（不改级别，避免把真 5xx 降级）；并让裸 `writeError(500,…)` 路径也留一行 WARN。**本轮未改**（共享中间件，改动面大且会动全部请求的日志形态） |
@@ -1321,7 +1321,7 @@ PSQL="$HOME/kaixuan/pg18/bin/psql"
 |---|---|---|---|
 | **L2**（两个活指标读冻结族） | ✅「API 读源转到 session 族」 | ✅（恒 0 / 恒 NULL 是错的） | **做**（§5.12.2） |
 | **L3**（列表端点同一行集扫两遍） | ✅「优化列表效率，不要表扫描」 | ✅（执行次数 2→1） | **做**（§5.12.4） |
-| L4（5 张 `v_*` 视图仍读 v1 裸母表） | ✅ 但**全是历史只读面** | ❌ 活指标不依赖它们 | 留待（L4） |
+| L4（`v_*` 视图读 v1 裸母表） | ✅ 但**全是历史只读面** | ❌ 活指标不依赖它们 | 留待（L4）⇒ ⚠️ **该行的「5 张」是坏仪器量出来的**（`_` 通配符），精确重判实为 3 张；那 3 张**已于 §5.13 由迁移 884 收口** |
 | L5（`admin_logs_native_turns_read` 默认关闭） | ⚠️ 是**开关决策**不是缺陷 | — | 留待（L5） |
 | L7 / L8 | ✅ 但改动面在共享中间件 / 需要新迁移定口径 | — | 留待 |
 
