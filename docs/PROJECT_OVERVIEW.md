@@ -1,6 +1,7 @@
 # LLM Gateway Go — 项目总览与架构设计
 
-> **版本**: v3.0（全码审计重生成）  
+> **版本**: 2.5.8-d09a18e0-20261020-2786
+  
 > **更新日期**: 2026-10-06  
 > **状态**: 生产运行中 · 本版基于全码审计刷新（四域子代理 + 主代理实证），新增/重生文档见 §8  
 
@@ -27,7 +28,7 @@ LLM Gateway Go 是一个**企业级大语言模型网关系统**，为企业提�
 |------|----------|
 | **核心语言** | Go 1.27.1 |
 | **Web框架** | Gin/Echo (数据面), Vue 3 + TypeScript (管理面板) |
-| **数据库** | PostgreSQL 15+ (RLS + 分区表 + 列存) |
+| **数据库** | PostgreSQL 14+ (RLS + 分区表 + 列存) |
 | **缓存/状态** | Redis 7+ (URSM状态、限流、会话、队列) |
 | **存储** | Aliyun OSS / AWS S3 (请求体归档) |
 | **可观测性** | OpenTelemetry + Prometheus + Grafana |
@@ -39,12 +40,12 @@ LLM Gateway Go 是一个**企业级大语言模型网关系统**，为企业提�
 
 | 指标 | 数值 | 说明 |
 |------|------|------|
-| Go源文件总数 | 5,318 个 | `find . -name "*.go" -not -path "./vendor/*" \| wc -l` |
-| Admin API文件 | 667 个 | `find ./admin -name "*.go" -type f \| wc -l` |
-| 后台Worker文件 | 403 个 | `find ./bg -name "*.go" -type f \| wc -l` |
+| Go源文件总数 | 5,704 个 | `find . -name "*.go" -not -path "./vendor/*" \| wc -l` |
+| Admin API文件 | 725 个 | `find ./admin -name "*.go" -type f \| wc -l` |
+| 后台Worker文件 | 424 个 | `find ./bg -name "*.go" -type f \| wc -l` |
 | 领域模块数量 | 68 个 | `ls ./domains/ \| wc -l` (一级目录) |
-| 数据库迁移 | 1070 个 SQL | `sql/migrations/` 全量；startup 数字序列活跃至 **869**（work_type 路由来源；7xx 段止于 765），下一枚 870 |
-| 单元测试文件 | 3,118 个 | `*_test.go`（不含 vendor/installer） |
+| 数据库迁移 | 1,117 个 SQL | `sql/migrations/` 全量；startup 数字序列活跃至 **893**（work_type 路由来源） |
+| 单元测试文件 | 3,275 个 | `*_test.go`（不含 vendor/installer） |
 | 可执行程序 | 34 个 | `ls ./cmd/ \| wc -l` |
 
 ---
@@ -70,7 +71,7 @@ LLM Gateway Go 是一个**企业级大语言模型网关系统**，为企业提�
 │                                                                   │
 │  ┌─────────────────────────────────────────────────────────┐   │
 │  │            控制面 (Control Plane)                         │   │
-│  │  Admin API (453文件) + Vue SPA + 后台Worker (217文件)    │   │
+│  │  Admin API (725文件) + Vue SPA + 后台Worker (424文件)    │   │
 │  └─────────────────────────────────────────────────────────┘   │
 │                                                                   │
 │  ┌─────────────────────────────────────────────────────────┐   │
@@ -211,7 +212,7 @@ Client Request
 - **双层状态**: 内存 + Redis 双层健康状态
 - **7类错误分级**: Auth/RateLimit/ContextLength/ServerError/Network/Timeout/Unknown
 - **主动探测**: `bg/active_probe_worker.go` 定期健康检查
-- **指纹池**: 50+ UA + 35 Accept-Language + 11 utls profile 自适应伪装
+- **指纹池**: 42 UA + 35 Accept-Language 自适应伪装（⚠ 代码里没有 utls 依赖，go.mod 中 `utls` 命中 0）
 - **并发控制**: FP槽位管理，动态并发限制
 
 **关键组件**:
@@ -266,7 +267,7 @@ Client Request
 
 ### 3.7 后台Worker系统
 
-**位置**: `bg/` (401个Go文件)
+**位置**: `bg/` (424个Go文件)
 
 核心Worker（部分列举）:
 
@@ -285,7 +286,7 @@ Client Request
 
 ### 3.8 Admin API与管理面板
 
-**位置**: `admin/` (653个Go文件), `web/` (Vue 3 + TS)
+**位置**: `admin/` (725个Go文件), `web/` (Vue 3 + TS)
 
 #### Admin API模块
 
@@ -406,12 +407,12 @@ Client Request
 ## 5. 代码统计
 
 ```
-Go源文件总数:     5,318 个 (不含 vendor/installer)
-Admin API文件:      667 个
-后台Worker文件:     403 个
+Go源文件总数:     5,704 个 (不含 vendor/installer)
+Admin API文件:      725 个
+后台Worker文件:     424 个
 领域模块:            68 个 (domains/ 一级目录)
-数据库迁移:         1070 个 SQL (sql/migrations/; startup 活跃序列最新 869, 下一枚 870)
-测试文件:         3,118 个 (*_test.go, 不含 vendor/installer)
+数据库迁移:         1,117 个 SQL (sql/migrations/; startup 活跃序列最新 893)
+测试文件:         3,275 个 (*_test.go, 不含 vendor/installer)
 可执行程序:           34 个 (cmd/)
 ```
 
