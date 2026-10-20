@@ -52,6 +52,54 @@ import (
 // ⇒ 只能指向**一次性库**（scripts/audit/probe-onetime-db-shape.sh 建的那种），
 //
 //	绝不要指向生产。
+// canonicalMustProjectColumns 是 canonical 视图**必须投影**的列集合。
+//
+// ★ 为什么是「集合」而不是「列数」：
+//   R69 轮实测过分类信息的载体契约——分类信息（request_class / due_at）的载体
+//   换到了 `session_turn_details`，但 canonical 视图这一层**仍必须投影它们**
+//   （否则读路径拿不到分类）。
+//   R77 轮实测 canonical 视图 **118 列**，且 `customer_id` / `request_class` /
+//   `due_at` **3/3 在位** ⇒ ⇒ 只差 customer_id 没被门钉住。
+//
+// ★ **刻意不钉绝对列数**（118 / 104 / 106 / 108 都钉过、都会腐烂）：
+//   R74 轮实测 `session_turns` 列数 104→106→108 三次变化 ⇒ 绝对数 pin 必然腐烂。
+//   要守的是「**这几列在不在**」，不是「一共几列」。
+//
+// ★★ 为什么还要一道静态 pin（TestCanonicalMustProjectColumnsIsPinned）：
+//   R80 轮实测到一个真实陷阱——把 customer_id 从这个集合里删掉、把阈值改回 2，
+//   **门照样绿**（它只断言「集合里的列都在」；集合自己变小，门当然满足）。
+//   ⇒ ⇒ 形态门可以被**静默削弱**而不被任何人发现。
+//   ⇒ ⇒ 所以集合的**内容**另有一道静态门钉住：删一个元素 ⇒ 静态门红
+//   ⇒ ⇒ **削弱变成响亮的失败，而不是无声的退化**。
+var canonicalMustProjectColumns = []string{
+	"request_class",
+	"due_at",
+	"customer_id",
+}
+
+// TestCanonicalMustProjectColumnsIsPinned —— 契约集合的**内容**必须钉死。
+//
+// ★ 这道门防的是「静默削弱」：形态门断言的是「集合里的列都在」⇒ 有人把某一列
+//   从集合里删掉（并把阈值改回集合大小），形态门**照样绿**。
+//   ⇒ 削弱不会自己暴露 ⇒ 必须另有一道门把集合内容本身钉住。
+//
+// ★ 这道门**不需要 DSN**（纯静态）⇒ 任何环境下都会真跑，不会被 SKIP 掉。
+func TestCanonicalMustProjectColumnsIsPinned(t *testing.T) {
+	want := []string{"request_class", "due_at", "customer_id"}
+	if len(canonicalMustProjectColumns) != len(want) {
+		t.Fatalf("canonical 必投影列集合的大小变了：现在 %d 列（%v），期望 %d 列（%v）⇒ "+
+			"若这是**有意**的契约变更，请同步改本门并在提交信息里写明理由；"+
+			"若不是，说明有人为了让形态门变绿而静默削弱了契约",
+			len(canonicalMustProjectColumns), canonicalMustProjectColumns, len(want), want)
+	}
+	for i := range want {
+		if canonicalMustProjectColumns[i] != want[i] {
+			t.Errorf("canonical 必投影列集合第 %d 项 = %q，期望 %q ⇒ 同上（静默削弱）",
+				i, canonicalMustProjectColumns[i], want[i])
+		}
+	}
+}
+
 func TestFreshInstallRuntimeShape_EnsureChain(t *testing.T) {
 	dsn := os.Getenv("TEST_DATABASE_URL")
 	if dsn == "" {
@@ -219,26 +267,28 @@ func TestFreshInstallRuntimeShape_EnsureChain(t *testing.T) {
 		}
 	}
 
-	// ④ ★ canonical 视图必须投影分类列 request_class + due_at。
+	// ④ ★ canonical 视图必须投影 canonicalMustProjectColumns 里的每一列。
 	//
 	// ★ 为什么排在 db.Open **之后**（与 ① 相反）：db.Open 会把 canonical 视图
 	//   按「会话族两面」形态**重建**（实测：ensure 链里有
 	//   `rebuild request_logs_with_current_month as session-only two-arm body`）
 	//   ⇒ 视图这一层的形态是**启动时**决定的 ⇒ 必须在启动之后量。
 	//
-	// ★ 契约来源：R69 轮实测——分类信息（request_class / due_at）的载体换到了
-	//   `session_turn_details`，但 canonical 视图这一层**仍必须投影它们**
-	//   （否则读路径拿不到分类）。
-	var classified int
+	// ★★ 集合内容见 canonicalMustProjectColumns 的注释（契约来源：R69/R77 轮实测）。
+	//   ★ 判据形态 = **集合投影**（「这几列在不在」），**不是**绝对列数 pin。
+	var projected int
 	if err := d.pool.QueryRow(ctx, `
 		SELECT count(*) FROM information_schema.columns
 		WHERE table_schema = 'public' AND table_name = 'request_logs_with_current_month'
-		  AND column_name IN ('request_class', 'due_at')`).Scan(&classified); err != nil {
-		t.Fatalf("查 canonical 视图的分类列: %v", err)
+		  AND column_name::text = ANY($1::text[])`,
+		canonicalMustProjectColumns).Scan(&projected); err != nil {
+		t.Fatalf("查 canonical 视图的必投影列: %v", err)
 	}
-	if classified != 2 {
-		t.Errorf("canonical 视图 request_logs_with_current_month 只投影了 %d/2 个分类列"+
-			"（request_class / due_at）⇒ 分类信息的读路径断了（R69 轮实测过这条载体契约）",
-			classified)
+	if projected != len(canonicalMustProjectColumns) {
+		t.Errorf("canonical 视图 request_logs_with_current_month 只投影了 %d/%d 个必投影列"+
+			"（%s）⇒ 分类信息与客户维度的读路径断了"+
+			"（R69 轮实测过前两列的载体契约；R77 轮实测三列 3/3 在位）",
+			projected, len(canonicalMustProjectColumns),
+			strings.Join(canonicalMustProjectColumns, " / "))
 	}
 }
