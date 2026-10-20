@@ -129,8 +129,8 @@ check() {  # check <label> <expected: PASS|FAIL> <output>
 
 echo
 echo "== 2/5 baseline: all legs green =="
-BASE_OUT=$(run_leg 'TestTurnWriterHostTagsRealDB|TestPromoteColumnContractRealDB|TestSessionTurnsFTSIndexUsableRealDB|TestSessionBodiesRequestIDJoinIndexRealDB|TestSessionsPartitionDateAntiJoinUsesIndexRealDB' baseline)
-check "baseline (5 legs)" PASS "$BASE_OUT"
+BASE_OUT=$(run_leg 'TestTurnWriterHostTagsRealDB|TestPromoteColumnContractRealDB|TestSessionTurnsFTSIndexUsableRealDB|TestSessionBodiesRequestIDJoinIndexRealDB|TestSessionsPartitionDateAntiJoinUsesIndexRealDB|TestSessionTurnsDeadColumnRealDB|TestSessionTurnsNoUnregisteredWritePath|TestSessionTurnsWritePathRegistryHonest' baseline)
+check "baseline (8 legs)" PASS "$BASE_OUT"
 if echo "$BASE_OUT" | grep -q "^FAIL"; then
   echo "ERROR: baseline is not green — the legs are broken, not the mutations" >&2
   echo "$BASE_OUT" | tail -40 >&2
@@ -226,9 +226,92 @@ check "M5 sessions anti-join leg -> RED" FAIL "$(run_leg 'TestSessionsPartitionD
 docker exec -i "$PG_CONTAINER" psql -U "$PG_USER" -d "$CLONE_DB" -v ON_ERROR_STOP=1 -f - \
   < sql/migrations/startup/888_session_family_join_index_gaps.sql >/dev/null
 
+# --- M6: 给两张表同时加一列（无默认值、无人写）-------------------------
+# G-6 的全集差集门声称「库面无默认 ∧ 不在任何写方集合里的列」为空。
+# 加一列（两侧同时加，保持 promote 的形状契约）⇒ 这一列既无默认值、又没人写
+# ⇒ 它就是一条**新死列** ⇒ 门必须变红。
+# 这正是这道门存在的理由：没有它，「下一列变死」不会被任何人发现。
+echo "   [M6] ALTER TABLE session_turns/session_turns_hot ADD COLUMN mut_dead_probe text"
+PSQL_CLONE -c "ALTER TABLE public.session_turns ADD COLUMN mut_dead_probe text" >/dev/null
+PSQL_CLONE -c "ALTER TABLE public.session_turns_hot ADD COLUMN mut_dead_probe text" >/dev/null
+check "M6 new dead column leg -> RED" FAIL "$(run_leg 'TestSessionTurnsDeadColumnRealDB' m6)"
+PSQL_CLONE -c "ALTER TABLE public.session_turns DROP COLUMN IF EXISTS mut_dead_probe" >/dev/null
+PSQL_CLONE -c "ALTER TABLE public.session_turns_hot DROP COLUMN IF EXISTS mut_dead_probe" >/dev/null
+
+# --- M7: 摘掉「已知死列」登记里的 upstream_protocol ---------------------
+# allowlist 是「已知且已接受」的死列清单。它的作用是让**新的**死列变红；
+# 但它自己也是可以被滥用的后门（把新死列加进去 ⇒ 门又绿）。
+# ⇒ 摘掉一条登记，门必须变红（证明它守的是「未登记的死列」）。
+GATE_FILE="domains/session/v2/session_turns_dead_column_test.go"
+GATE_BACKUP="/tmp/sessfam-dead-column-test.go.$$"
+cp "$GATE_FILE" "$GATE_BACKUP"
+GATE_BEFORE=$(shasum -a 256 "$GATE_FILE" | awk '{print $1}')
+python3 - "$GATE_FILE" <<'PY2'
+import re
+import sys
+
+p = sys.argv[1]
+s = open(p, encoding="utf-8").read()
+# 摘掉 sessionTurnsKnownDeadColumns 里的 upstream_protocol 那一条
+m = re.search(r"\t\{\n\t\tColumn: \"upstream_protocol\",.*?\n\t\},\n", s, re.S)
+if not m:
+    sys.stderr.write("mutation anchor not found\n")
+    sys.exit(3)
+open(p, "w", encoding="utf-8").write(s[:m.start()] + s[m.end():])
+PY2
+if [[ $? -ne 0 ]]; then
+  echo "   [M7] mutation could not be applied (anchor moved) — restoring and reporting UNVERIFIED"
+  cp "$GATE_BACKUP" "$GATE_FILE"
+else
+  check "M7 unregistered dead column leg -> RED" FAIL "$(run_leg 'TestSessionTurnsDeadColumnRealDB' m7)"
+  cp "$GATE_BACKUP" "$GATE_FILE"
+fi
+GATE_AFTER=$(shasum -a 256 "$GATE_FILE" | awk '{print $1}')
+if [[ "$GATE_BEFORE" != "$GATE_AFTER" ]]; then
+  echo "   [M7] gate source restored, checksum differs from the original — INVESTIGATE" >&2
+  FAIL=$((FAIL+1))
+else
+  echo "   [M7] gate source restored, checksum identical ($GATE_AFTER)"
+fi
+
+# --- M8: 摘掉「UPDATE 路径登记」里的 is_abandoned -----------------------
+# 登记册是人写的 ⇒ 人可能忘登记新写的写路径 ⇒ 那一列会被差集门**假红**
+# ⇒ 开发者随手把它塞进 allowlist ⇒ allowlist 变成「让门变绿的地方」⇒ 门失去牙。
+#
+# ⇒ 这条变异守的是「登记册不能悄悄腐坏」：摘掉一条登记，
+#    「未登记写路径扫描」腿必须变红（它能把变量表名的 UPDATE 也扫出来）。
+echo "   [M8] remove the is_abandoned UPDATE-path registration"
+cp "$GATE_FILE" "$GATE_BACKUP"
+python3 - "$GATE_FILE" <<'PY2'
+import re
+import sys
+
+p = sys.argv[1]
+s = open(p, encoding="utf-8").read()
+m = re.search(r"\t\{\n\t\tColumn: \"is_abandoned\",.*?\n\t\},\n", s, re.S)
+if not m:
+    sys.stderr.write("mutation anchor not found\n")
+    sys.exit(3)
+open(p, "w", encoding="utf-8").write(s[:m.start()] + s[m.end():])
+PY2
+if [[ $? -ne 0 ]]; then
+  echo "   [M8] mutation could not be applied (anchor moved) — restoring and reporting UNVERIFIED"
+  cp "$GATE_BACKUP" "$GATE_FILE"
+else
+  check "M8 unregistered write path leg -> RED" FAIL "$(run_leg 'TestSessionTurnsNoUnregisteredWritePath' m8)"
+  cp "$GATE_BACKUP" "$GATE_FILE"
+fi
+GATE_AFTER=$(shasum -a 256 "$GATE_FILE" | awk '{print $1}')
+if [[ "$GATE_BEFORE" != "$GATE_AFTER" ]]; then
+  echo "   [M8] gate source restored, checksum differs from the original — INVESTIGATE" >&2
+  FAIL=$((FAIL+1))
+else
+  echo "   [M8] gate source restored, checksum identical ($GATE_AFTER)"
+fi
+
 echo
 echo "== 4/5 restore check: legs green again =="
-RESTORE_OUT=$(run_leg 'TestTurnWriterHostTagsRealDB|TestPromoteColumnContractRealDB|TestSessionTurnsFTSIndexUsableRealDB|TestSessionBodiesRequestIDJoinIndexRealDB|TestSessionsPartitionDateAntiJoinUsesIndexRealDB' restore)
+RESTORE_OUT=$(run_leg 'TestTurnWriterHostTagsRealDB|TestPromoteColumnContractRealDB|TestSessionTurnsFTSIndexUsableRealDB|TestSessionBodiesRequestIDJoinIndexRealDB|TestSessionsPartitionDateAntiJoinUsesIndexRealDB|TestSessionTurnsDeadColumnRealDB|TestSessionTurnsNoUnregisteredWritePath|TestSessionTurnsWritePathRegistryHonest' restore)
 check "after restoring every mutation -> PASS" PASS "$RESTORE_OUT"
 
 echo
