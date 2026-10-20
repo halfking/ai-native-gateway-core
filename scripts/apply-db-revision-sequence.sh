@@ -1848,6 +1848,29 @@ files=(
   #   （实测该正则命中 0 次）⇒ 执行体与源逐字相同。
   "$ROOT_DIR/sql/migrations/startup/891_session_turns_cost_negative_partial_idx.sql"
 
+  # ── 892（2026-10-20）：URSM 快照健康巡检的每日 slot 汇总表（P11，§143.35）──
+  #
+  # 根修巡检的「每小时重扫 7 天基线」（§143.29 成本 #1：每次 2.9 GB 物理读 /
+  # 190 s、26 次成功累计 74 GB）。
+  #
+  # 形态：表 public.ursm_snapshot_slot_daily
+  #   （PK (day, granularity, slot, bucket_ts)）
+  #   + 幂等填充函数 public.refresh_ursm_snapshot_slot_daily(days_back, granularity)
+  #   ★ 只保留【一个】重载 —— 两个都带默认参数时 f(1) 报 not unique。
+  # 迁移内首次回填 8 天 × 两种粒度 ⇒ 表一落地就有完整 7 天基线
+  # （否则巡检读到「没有基线」⇒ 全部桶判 NO-BASELINE ⇒ 安静地不再告警。
+  #   ★★ 那比「慢」更坏：巡检从「慢」变成「失明」，而外部完全看不出来）。
+  #
+  # ⚠ 顺序前提：源表 ursm_node_snapshot_min 由 **baseline** sql/schema/01-schema.sql 建
+  #   （★ 453_ursm_v2_node_snapshot_min.sql **未在任何通道登记** ⇒ 已被 baseline 吸收；
+  #    892 只用 baseline 的 snapshot_ts 一列 ⇒ **不依赖** 818 的 typed 列）
+  #   ⇒ baseline 先于任何迁移执行 ⇒ **无迁移间顺序依赖**。
+  # ★ 与 830（把源表分区化，`.skip` 手工执行）**无关** ⇒ 两者可独立授权。
+  #
+  # ⚠ 本文件**不含任何 `request_logs` 词法 token** ⇒ 本通道的 runtime adapter
+  #   （:38-134）对它**零改写** ⇒ 执行体与源逐字相同。
+  "$ROOT_DIR/sql/migrations/startup/892_ursm_snapshot_slot_daily.sql"
+
   # ── 2026-10-16 孤儿迁移 044 补登（health_source 白名单缺 probe_now）──────
   #
   # 044_health_source_probe_now.sql 早就写在 sql/migrations/startup/ 里，注释把

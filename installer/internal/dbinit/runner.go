@@ -1219,6 +1219,18 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			// ★ 顺序前提：两表与 raw_model_name（707 补列）都由启动序列建 ⇒
 			//   891 编号在其后，天然排在它们之后。
 			"891_session_turns_cost_negative_partial_idx.sql",
+			// 892：URSM 快照健康巡检的**每日 slot 汇总表**（P11，§143.35）——
+			// 根修「巡检每小时重扫 7 天基线」的成本（§143.29 成本 #1：
+			// 每次 2.9 GB 物理读 / 190 s，累计 74 GB）。
+			// 形态：表 ursm_snapshot_slot_daily + 幂等填充函数
+			//   refresh_ursm_snapshot_slot_daily(days_back, granularity)。
+			// ★ 与 891 无关，但编号在它之后 ⇒ 天然排在它后面。
+			// ⚠ 依赖：源表 ursm_node_snapshot_min 由 **baseline** sql/schema/01-schema.sql 建
+			//   （★ 453_ursm_v2_node_snapshot_min.sql **未在任何通道登记** ⇒ 已被 baseline 吸收；
+			//    892 只用 baseline 的 snapshot_ts 一列 ⇒ **不依赖** 818 的 typed 列）
+			//   ⇒ baseline 先于任何迁移执行 ⇒ 892 天然在它之后。
+			// ★ 不依赖 830（把源表变成分区表的那个迁移）—— 两者可独立授权。
+			"892_ursm_snapshot_slot_daily.sql",
 			// 885：给 session_turns **父表与 hot 表**各加 host（网关实例
 			// 身份）+ tags（轮次级标签数组）两列（审计 A5 缺口：全族此前
 			// 无任何主机/实例列，轮次级此前无标签位）。
