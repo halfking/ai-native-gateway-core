@@ -2593,6 +2593,32 @@ func (d *DB) ensureRequestLogSchema(ctx context.Context) error {
 	if d == nil || d.pool == nil {
 		return nil
 	}
+	// ★ 890（v1 族退役）：本函数存在的**唯一**目的是给 v1 族补列/补索引。
+	// 族被删之后它无事可做 ⇒ 显式早退。
+	//
+	// ⚠ 为什么不能只靠下面的 catalog 短路：短路算的是「**缺多少**列/索引」，
+	// 而退役后索引**跟着表一起消失** ⇒ missing = 13 ≠ 0 ⇒ 短路**不触发**
+	// ⇒ 继续跑 `ALTER TABLE _request_logs …` ⇒ 42P01 ⇒ applyMigrationsOnce
+	// 失败 ⇒ db.Open 返回 (nil, err) ⇒ 42P01 命中 IsSchemaMismatchError
+	// ⇒ 网关**快速失败但仍以「无数据库」形态起来**，而 /readyz 在
+	// SetDepsOptional(true) 下**仍返 200**（见 cmd/gateway/main.go 的
+	// readyz 分支）⇒ 部署安全网放行 ⇒ 网关「就绪但没有数据库」。
+	//
+	// ⇒ 判据必须从「缺什么」改成「**在不在**」：族不存在 ⇒ 无事可做。
+	//
+	// 探测用 to_regclass（不抛 42P01），且**两个**表都查：hot 表与母表是
+	// 独立关系，退役时各自消失；只看其中一个会漏。
+	var v1FamilyPresent bool
+	if err := d.pool.QueryRow(ctx, `
+		SELECT to_regclass('public._request_logs') IS NOT NULL
+		   OR to_regclass('public._request_logs_hot') IS NOT NULL
+	`).Scan(&v1FamilyPresent); err != nil {
+		return fmt.Errorf("probe v1 request_logs family presence: %w", err)
+	}
+	if !v1FamilyPresent {
+		slog.Info("v1 request_logs family is retired (890) — nothing to ensure; skipping the v1 schema DDL")
+		return nil
+	}
 	// 2026-09-23 252 SQL 日志审计轮（D1 残余根修，07:23/07:26 245 蓝绿两连败
 	// 实证）：下方 ADD COLUMN IF NOT EXISTS 即使全部列已存在，也要对
 	// _request_logs 父表 + 全部月分区取 ACCESS EXCLUSIVE 锁才能逐列 no-op。
@@ -4490,6 +4516,22 @@ func (d *DB) ensureWorkTypeSchema(ctx context.Context) error {
 	// Guarded separately: this is the only statement above that takes an
 	// exclusive lock on request_logs. Everything in workTypeSchemaSQL touches
 	// small config tables and is cheap to re-check.
+	//
+	// ★ 890（v1 族退役）：族不存在 ⇒ 这条 DDL 不是「no-op」而是 **42P01**
+	// （ALTER TABLE 一个不存在的表）。workTypeRequestLogsCurrent 的短路算的是
+	// 「缺多少」：列项因 to_regclass 为 NULL 而计 0，**索引项计 1** ⇒
+	// missing ≠ 0 ⇒ 判定「不 current」⇒ 继续执行 DDL ⇒ 42P01 ⇒ boot 失败。
+	// ⇒ 这里补一道**存在性**闸：族不在 ⇒ 整段 DDL 无事可做。
+	var v1TablePresent bool
+	if err := d.pool.QueryRow(ctx, `
+		SELECT to_regclass('public._request_logs') IS NOT NULL
+	`).Scan(&v1TablePresent); err != nil {
+		return fmt.Errorf("probe v1 request_logs presence for work_type DDL: %w", err)
+	}
+	if !v1TablePresent {
+		slog.Info("v1 request_logs family is retired (890) — work_type column/index DDL skipped")
+		return nil
+	}
 	if d.workTypeRequestLogsCurrent(ctx) {
 		slog.Info("work_type_config schema ensured (22 seed rows idempotent); " +
 			"_request_logs work_type column and index already present, DDL skipped")
@@ -6995,6 +7037,18 @@ func (d *DB) ensureRoutingRecentSuccessRate(ctx context.Context) error {
 // 归一化，失配只损失样本量不产生错误样本）。探针排除谓词对会话腿是防御
 // 性的——探针轮次本就不镜像。
 //
+// ★ 890（v1 族退役）：v1 腿被**摘掉**，只剩会话腿。
+//
+// ⚠⚠ 为什么这一刀必须在删表**之前**落：`recent_success_rate` 被
+// `provider/client.go` 的候选查询以 `CROSS JOIN LATERAL` 调用 ⇒ v1 腿
+// 42P01 ⇒ **整条候选查询失败 ⇒ 选不出任何上游凭据 ⇒ 100% 流量失败**。
+// 这不是"面板变暗"，是"网关不能转发"。而 CREATE OR REPLACE 对 plpgsql/
+// SQL 函数体**不在创建时解析** ⇒ 函数能建成功、直到第一次被调用才炸 ⇒
+// 症状与"上游全挂"同形，根因却在一次字符串手术上。
+//
+// ⇒ 删表前先摘腿；删表后本函数只剩会话腿，语义与 S3 波 2 的"停写后会话腿
+// 独供"完全一致（v1 腿在停写后本来就恒空）。
+//
 // ⚠ 注释里不许出现反引号：本段 SQL 在 Go raw string 里。
 const recentSuccessRateEnsureSQL = `
 		CREATE OR REPLACE FUNCTION recent_success_rate(p_credential_id BIGINT,
@@ -7006,18 +7060,6 @@ const recentSuccessRateEnsureSQL = `
 		STABLE
 		AS $$
 			    WITH recent AS (
-			        SELECT success, ts
-				    FROM _request_logs_hot
-				    WHERE credential_id = p_credential_id
-				      AND lower(COALESCE(outbound_model, client_model)) = lower(p_raw_model)
-				      AND ts > NOW() - (p_window_hours || ' hours')::interval
-				      -- Probe/self-check rows measure the health worker, not the
-				      -- business route. Legacy probe IDs are retained for old rows
-				      -- created before origin_stage/task_type was added.
-				      AND COALESCE(task_type, '') <> 'probe_triggered'
-				      AND COALESCE(origin_stage, '') NOT IN ('self_check', 'node_probe', 'system_health')
-				      AND request_id NOT LIKE 'probe-%'
-				    UNION ALL
 			        SELECT success, ts
 				    FROM public.session_turns_hot
 				    WHERE credential_id ~ '^[0-9]+$'

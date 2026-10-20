@@ -38778,3 +38778,434 @@ GOCACHE=/tmp/gocache-p1437 go test ./scripts/ursmcheck/ -run 'TestRunbook14330' 
 [[量具之间矛盾时先怀疑量具]] · [[阴性结论要当缺陷一样复核]] ·
 [[自己上一节的结论也要复核]] · [[跨节订正前先自问「我要订正的这条真的错了吗」]] ·
 [[PG 日志说超时 ≠ 被角色级超时杀了]] · [[要测冷态每一臂都要有自己的冷窗口]]。
+
+## §143.31 **P9 闭环**：rollup 在生产上**等的是 I/O**；⇒ **P11 有了明确落点，且是零语义风险**（2026-10-20）
+
+### §143.31.0 结论先行
+
+1. ★★★★★ **P9 闭合（§143.28.5 的判别表落地）** ——
+   在生产上以 **2 s 采样 `pg_stat_activity`** 抓到了 rollup 的运行现场：
+
+   | 时刻 | 语句 | state | wait_event_type | wait_event | age |
+   |---|---|---|---|---|---:|
+   | 17:50:36.038 | `DELETE FROM stats_usage_daily WHERE day_utc >= (…)` | active | **IO** | **DataFileRead** | 0.11 s |
+   | 17:50:38.046 | 同上 | active | **IO** | **DataFileRead** | 2.12 s |
+   | 17:50:40.055 | 同上 | active | **IO** | **DataFileRead** | 4.12 s |
+   | 17:50:42.076 | `WITH latest AS (SELECT f.* FROM usage_facts f JOIN stats_event_dedup …)`（= `dailyInsertSQL`，`domains/stats/daily_monthly_rollup.go:195`） | active | **IO** | **DataFileRead** | 0.91 s |
+
+   ⇒ ⇒ ★★★★★ **⇒ 两条语句【全部】在等物理 I/O**（`DataFileRead`）
+   ⇒ ⇒ ★★★★ **⇒ 没有一条是 `Lock`（撞车）、没有一条是 `Client`（客户端先放弃）**
+   ⇒ ⇒ ★★★★★ **⇒ §143.28 的「争用」判断成立**：**rollup 不是在算，是在等磁盘**
+   ⇒ ⇒ ★★★★ **⇒ §143.29 的因果链里最关键的那一环，从「推断」变成了「实测」**
+   （★ 完整的因果闭环仍需 P11 的授权验证，但「rollup 在等 I/O」这一环已是现场读数。）
+
+2. ★★★★ **⇒ 两条读数互相印证（第三把尺子对上）**：
+   ★ **DELETE 的 age 0.11 → 2.12 → 4.12 s**，紧接着聚合语句在 **17:50:42** 启动（age 0.91 s）
+   ⇒ ⇒ **DELETE 实测 ≥ 4.12 s** ⇒ 与 §143.27 的 **`DELETE` = 4,818 ms**（生产 110 次真实调用）**吻合**
+   ⇒ ⇒ **⇒ 三把尺子（脚本侧计时 / pgss / 现场 pg_stat_activity）第一次三方对上。**
+
+3. ★★★★★ **★ 由此得到一个更硬的结论**：★ **聚合语句一启动就 `IO|DataFileRead`**
+   ⇒ ⇒ **它不是「先算一段、再等 I/O」，而是【一上来就在等磁盘】**
+   ⇒ ⇒ ★★★ **⇒ 「换 JOIN 形态（LATERAL / 半连接）」确实救不了它** ——
+   ⇒ ⇒ **§143.28 的方向性结论（「优化单条 join」不是正确方向）现在有了生产现场的直接支持。**
+
+4. ★★★★★ **P11 有了明确落点，而且【是零语义风险的】**（详见 §143.31.2）：
+   巡检的三个 CTE 里，**`base_buckets` 是唯一贵的那条**：
+   **每小时把 7 天（≈ 2,600 万行）全扫一遍 + `GROUP BY (slot, date_trunc)`**
+   ⇒ ⇒ ★★★ **⇒ 它的产出只依赖「(天, 小时位, 桶) 的行数」，这个量【每天只变一次】**
+   ⇒ ⇒ **⇒ 物化成一张每日汇总表即可 ⇒ 每小时只查几百行 ⇒ 扫描量 −96%，判定输入逐字不变**
+   ⇒ ⇒ **⇒ 它【不是】「缩短 7 天窗」（那是属主的语义决策），而是【换个地方算】（零语义风险）**
+   ⇒ ⇒ ★★★ **⇒ 与 §143.27 的 151 MB 索引改造同属「零语义风险」那一类
+   ⇒ ⇒ ⇒ 只需要属主授权「写迁移 + 改脚本」，不需要语义拍板。**
+
+⚠ **本节对生产的写入 = 0**：全部只读
+（`pg_stat_activity` 轮询采样 + 巡检脚本源码阅读 + 仓库源码阅读）。**没有**改脚本 / 改 cron /
+改超时 / 建表 / 建索引 / 跑迁移 / 改任何配置。
+
+### §143.31.1 P9 的取证细节（可原样重跑）
+
+**采样器**（只读，2 s 一次，命中即打印）：
+```sql
+SELECT to_char(clock_timestamp(),'HH24:MI:SS.MS') AS t, pid, state,
+       coalesce(wait_event_type,'-') AS wt, coalesce(wait_event,'-') AS we,
+       round(extract(epoch from (clock_timestamp()-query_start))::numeric,2) AS age_s,
+       left(regexp_replace(query,'\s+',' ','g'),70) AS q
+FROM pg_stat_activity
+WHERE datname = current_database() AND state <> 'idle'
+AND (query ILIKE '%stats_usage_daily%' OR query ILIKE '%stats_event_dedup%')
+```
+
+★ **为什么这样选**：
+- ★ **`state <> 'idle'`** ⇒ 只要连接在跑就算数（idle in transaction 也会暴露）；
+- ★ **`wait_event_type` / `wait_event`** ⇒ PG 17 的**等待事件分类**（`IO` / `Lock` / `Client` / 空）；
+  ★ **空 + `state='active'` ⇒ 它在【算】**（这是 §143.28.5 判别表的第三档）；
+- ★ **`age_s` 用 `query_start` 算** ⇒ 拿到的是**这条语句已经跑了多久**，而不是事务年龄。
+
+★ **同批采样里的其它读数**（同样有诊断价值）：
+| 观察到的语句 | wait_event_type | wait_event | 判读 |
+|---|---|---|---|
+| `INSERT INTO stats_event_dedup (…)`（`domains/stats/event_writer.go:176` 的写手） | **IO** | **DataFileRead** | ★ **stats 写手也在等物理 I/O** ⇒ ★ **它与 rollup 抢的是同一块盘** |
+| `WITH facts AS (SELECT min(occurred_at)::date AS oldest FROM public.usage_facts …)` | （空） | （空） | ★ **在算**，而且**同一条带 3 个并行 worker**（3 个 pid 的 age 相同）⇒ ★ **它开并行抢 CPU** |
+| `WITH facts AS …` 的来源 | — | — | ★ **`bg/routing_health_checks.go:947` 的 `stats_ground_truth_gap` 检查** |
+
+⇒ ⇒ ★★★ **⇒ 顺带发现：CPU 侧也有竞争者** ——
+`stats_ground_truth_gap` 是**路由健康检查**，它在 4 核机上开**并行 worker** 扫
+`usage_facts` + `stats_usage_daily` ⇒ ⇒ **它与 rollup 抢 CPU，而 rollup 与巡检抢 I/O**
+⇒ ⇒ **⇒ 252 的 load 14/4 核 是【多个作业】共同造成的，不是单点**（与 §143.28 的「墙钟不可信」一致）。
+
+### §143.31.2 P11 的具体落点：**把 `base_buckets` 从「每小时全扫 7 天」换成「每天一次物化」**
+
+#### §143.31.2.1 现状（脚本源码逐字，`scripts/252-monitor/ursm-snapshot-health.sh`）
+
+```sql
+base_buckets AS (
+  SELECT $G_SLOT_TS AS slot, count(*) AS c
+  FROM ursm_node_snapshot_min
+  WHERE snapshot_ts >= $NOW_EXPR - make_interval(days => $BASELINE_DAYS)  -- 7 天
+    AND snapshot_ts < (SELECT lo FROM win)
+  GROUP BY 1, $G_TRUNC snapshot_ts)),
+```
+⇒ ⇒ ★★★ **这是唯一贵的那条**：★ **7 天 × ≈375 万行/天 ≈ 2,600 万行，每小时全扫一遍**
+⇒ ⇒ **§85 的成本分解**：`base_buckets` **61%** + `base_active` 35% + `cur` 4%
+⇒ ⇒ **⇒ 物化 `base_buckets` ⇒ 直接砍掉巡检 61% 的成本**
+
+#### §143.31.2.2 ★ 为什么这是**零语义风险**的（关键论证）
+
+★ **`base_buckets` 的产出只有两个用途**：
+① 按小时位 `slot` 分组，每组取**中位数**（与同时段基线比大小）；
+② 输出 `c`（行数基线）。
+
+★ **这两个用途都只依赖「每个 (天, 小时位, 桶) 的行数」这一个量** ——
+★ **而这个量在一天之内是不变的**（只在跨天时新增一批）
+⇒ ⇒ ★★★★★ **⇒ 把「(天, slot, 桶) → 行数」每天算一次存起来，
+   巡检时用最近 7 天的这张表算中位数 ⇒ 【判定输入逐字相同】**
+⇒ ⇒ ★★★ **⇒ 与「缩短 7 天窗」完全不同**：
+- 「缩短窗口」= **改判据的语义** ⇒ **属主的决策**（§143.21/§143.22 那一族的「保留期」语义）；
+- ★ **「换个地方算」= 改实现，不改判定** ⇒ **零语义风险** ⇒ **可仓内直接落地**（仍需写生产迁移的授权）。
+
+#### §143.31.2.3 落地形态（草案，未实施）
+
+| 项 | 内容 |
+|---|---|
+| 新表 | `ursm_snapshot_slot_daily(day date, slot int, bucket_ts timestamptz, rows bigint)`，主键 `(day, slot, bucket_ts)` |
+| 体积 | 小时粒度：24 slot × 24 桶 = **576 行/天**；分钟粒度：34,560 行/天 ⇒ ★ **7 天窗口只需几千行** |
+| 填充 | 每天一次（或每小时滚动补「昨天」）算「前一天的每个 (slot, 桶) 的行数」⇒ **3.75M 行/天扫一次**，而不是 26M 行 × 24 次 |
+| 巡检侧 | `base_buckets` 改为读这张表 ⇒ **每小时从 2,600 万行全扫降到几千行** |
+| 语义 | ★ **判定输入不变** ⇒ ★ **零语义风险** |
+| 扫描量 | **26M 行/小时 → 3.75M 行/天 ⇒ −96%**（★ **估算，未实测**） |
+| 物理读 | ★ **巡检每次 2.9 GB ⇒ 估 0.2~0.4 GB（估，未实测）** ⇒ ★ **−85% 上下（估）** |
+| 次级杠杆 | `base_active`（2 天 + `count(DISTINCT date_trunc('minute', ts))`，35%）⇒ 可同样按「(天, slot) 的活跃分钟数」物化 |
+
+⚠ **上表的收益数字是估算，不是实测** —— ★ **本节没有跑过一次物化后的查询**（那是生产写，需授权）。
+
+### §143.31.3 对既有结论的增量
+
+| 条目 | 变化 |
+|---|---|
+| **P9** | ★★★★★ **关闭** —— 现场读数已拿到：`IO|DataFileRead`（两条语句都是），**无 `Lock`、无 `Client`** |
+| **P11** | ★★★★★ **仍是全局第一**，★ **但从「方向」变成「有落点」**：★ **落点 = `base_buckets` 每日物化**，★ **且是零语义风险**（§143.31.2） |
+| **P16（新增）** | **CPU 侧也要看**：`stats_ground_truth_gap`（`bg/routing_health_checks.go:947`）在 4 核机上开**并行 worker** 扫 `usage_facts`+`stats_usage_daily` ⇒ ★ **它与 rollup 抢 CPU** ⇒ ★ **是否该限制它的并行度/频率，值得单查**（★★ **本节未查 ⇒ 诚实边界**） |
+| §143.29 的排名 / §143.30 的机制 | ★ 不变（本节只补现场证据，不改排名） |
+
+### §143.31.4 诚实边界与本节**没做**的事
+
+- ⚠ **本节对生产的写入 = 0**；**未写迁移、未改脚本、未改 cron、未改超时** ⇒ **生产行为未变**。
+- ★★ **P11 的收益（−96% 扫描量 / −85% 物理读）是估算，未实测** ——
+  ★ 要实测需要「建表 + 写迁移 + 改脚本 + 部署」⇒ **需属主授权**。
+- ★★ **没有抓到 rollup 那一轮是否最终被 30 s 杀掉** ——
+  ★ 抓到的只是它的**两条语句的等待事件**；
+  ★ 252 的 PG 容器日志路径在采样后发生了变化（容器被重建），154 上网关服务名下的日志没取到
+  ⇒ ⇒ **诚实边界：本节只回答了「它在等什么」，没回答「它最后成没成功」。**
+- ★★ **`stats_ground_truth_gap` 只被识别出来，**没有被量化**（不知道它每次跑多久、多占多少 CPU）。
+- ★★ **采样只覆盖了 1 次 rollup 运行**（17:50 那一轮）⇒ ★ **不能据此说「每一次都是 IO 阻塞」**
+  ⇒ ★ **「这一轮在等 I/O」是实测；「每轮都在等 I/O」是外推。**
+- ★★★ **采样器本身有盲区**：★ 它按 `query ILIKE` 匹配 ⇒ ★ **一条语句若不含
+  `stats_usage_daily` / `stats_event_dedup` 字样就抓不到** ⇒ ★ **例如聚合语句是因为含
+  `stats_event_dedup` 才被匹配到的** ⇒ ★ **漏抓是可能的**（★ 这也是「阴性结论要当缺陷一样复核」的同族）。
+
+### §143.31.5 待拍板（本节新增 / 变更）
+
+| 编号 | 事项 | 变化 |
+|---|---|---|
+| **P9** | 抓作业运行时的 `pg_stat_activity` | ★★★★★ **关闭**（`IO|DataFileRead`；无 Lock、无 Client） |
+| **P11** | 缩短/改写巡检 | ★★★★★ **仍是全局第一**；★★ **落点 = `base_buckets` 每日物化（零语义风险）**；★★ **与 §143.14 的「每日基线物化表」同一件事** |
+| **P16（新增）** | **CPU 侧竞争者**：`stats_ground_truth_gap` 的并行度/频率 | ★★★ 新增 —— 本节只识别，未量化 |
+| **P14 / P15** | 超时策略 / 巡检成功率可观测 | ★ 不变（§143.30） |
+
+⚠ **P11/P16 是「改生产行为」⇒ 需属主显式授权**；**本节对生产的写入仍为 0**。
+
+### §143.31.6 复核方法（可原样重跑）
+
+```bash
+# ── 1) ★ 生产只读：抓 rollup 运行时的等待事件（2 s 采样）
+#    采样 SQL 见 §143.31.1（只读 SELECT）
+
+# ── 2) ★ 巡检脚本的三条 CTE 与成本归属（仓库侧，不连库）
+grep -n "base_buckets\|base_active\|G_ACTIVE\|BASELINE_DAYS" scripts/252-monitor/ursm-snapshot-health.sh
+
+# ── 3) ★ rollup 的两条语句与调度
+grep -n "DELETE FROM stats_usage_daily\|WITH latest AS\|defaultRollupInterval" \
+     domains/stats/daily_monthly_rollup.go
+
+# ── 4) ★ CPU 侧竞争者的来源
+sed -n '940,960p' bg/routing_health_checks.go
+```
+
+⇒ ⇒ ★ **本节落地的门**（不连库，可原样重跑）：
+
+```bash
+# §143.31 文档门：P9 现场读数 / P11 的落点与零语义论证 / CPU 侧竞争者 / 诚实边界
+GOCACHE=/tmp/gocache-p1437 go test ./scripts/ursmcheck/ -run 'TestRunbook14331' -count=1 -v
+```
+
+★ 同族：[[先读量具再读产物]] · [[量具之间矛盾时先怀疑量具]] ·
+[[EXPLAIN 只证明「计划会选」]] · [[阴性结论要当缺陷一样复核]] ·
+[[自己上一节的结论也要复核]] · [[PG 日志说超时 ≠ 被角色级超时杀了]] ·
+[[阈值型判据先量噪声底]]。
+
+## §143.32 补上 §143.30 的边界缺口：**211 也跑同一个巡检** —— 而 211 缺的是【分区】与【可观测性面】（2026-10-20）
+
+### §143.32.0 结论先行
+
+§143.30.8 留了一条诚实边界：「**『只有一条调用路径』这句话的范围是 252**」
+⇒ ★ **本节把 211 / 154 / 245 查了一遍**，结论如下：
+
+1. ★★★★★ **211 也跑同一个巡检**（此前**没有任何文档写过**这件事）：
+   `/etc/cron.d/llmgw-ursm-snapshot-health:21` ⇒ **同样是每小时 :17**
+   ⇒ 脚本 `/opt/llm-gateway-go-211/scripts/ursm-snapshot-health.sh`
+   ⇒ ★ **它用 211 自己的适配层**（`/etc/llmgw/pg17.conf`：`CONTAINER=acc-pg17` +
+   `PSQL_CMD=…/psql-acc-pg17.sh`）⇒ ★ **仓内脚本一个字都没改**（`LLMGW_PG17_CONF` 扩展点）。
+   ⇒ ⇒ **两台机器各跑各的 PG ⇒ 不构成竞争** ⇒ ★ **§143.30 的「只有一条调用路径」在 252 库里依然成立。**
+
+2. ★★★★ **⇒ 211 上发现一个【真缺陷】：巡检探针失准 ⇒ 假告警**
+   211 的巡检日志**每轮**都写：
+   `baseline span: 0 day(s) with data (oldest 0, newest 0)` + `baseline_thin=thin:0d/7d`
+   + 「本次 OK 判定是**偏宽松**的」
+   ⇒ ⇒ **但 211 的表里【有】7 天数据**（实测 **5,933,760 行**，min `2026-10-13 17:30`，max `2026-10-20 18:02`）
+   ⇒ ⇒ ★★★ **⇒ 根因：211 的 `ursm_node_snapshot_min` 是【普通表】（`relkind='r'`）不是分区表**
+   ⇒ ⇒ **⇒ 探针走 `pg_inherits` + 分区名正则 `_[0-9]{8}$` ⇒ 在普通表上必然返回 `0|0|0`**
+   ⇒ ⇒ ★★★ **⇒ 这是一个【假告警】：它在报一个不存在的「基线样本不足」**
+   ⇒ ⇒ ★★ **且它【不】影响判定**：主判据 `base_buckets` 走的是**数据**不是分区目录
+   ⇒ ⇒ **⇒ 211 的 `ref_p50` 实测 = 39,494（> 0）⇒ 判定是对的**
+   （★ `ref_p50` 取自 `summary` 行的第 8 个字段 —— 脚本 `ref_p50=$(… awk '{print $8+0}')`。）
+
+3. ★★★★★ **⇒⇒⇒ 211 上的三件事其实是【同一件】—— 表没分区**：
+
+   | 现象 | 机制（仓内源码/实测） | 执行 830 之后 |
+   |---|---|---|
+   | 巡检探针报「0 天数据」（**假告警**） | 表不是分区表 ⇒ `pg_inherits` 无子分区 ⇒ 探针恒返回 0 | ★ **自动恢复** —— 830 的分区名是 `ursm_node_snapshot_min_YYYYMMDD`（`830_…sql.skip:206`）⇒ **正好匹配探针的 `_[0-9]{8}$`** |
+   | 留存走 **DELETE** ⇒ 磁盘单调增长 | `domains/ursm/v2/persist/retention_partition.go:17` 每轮探测 `pg_class.relkind='p'` ⇒ 非分区表 ⇒ 走 `deleteBatch`（`retention.go:344`） | ★ **自动切路** ⇒ ★★ **零 Go 改动** |
+   | 表占库 **38.0%**（2,296 MB / 6,047 MB） | DELETE 只把行变成死元组，空页留在堆的物理头部 ⇒ VACUUM 截不掉（830 设计稿 §1.3 原文） | ★ **DROP 分区 ⇒ 整块回收** |
+
+   ⇒ ⇒ ★★★ **⇒ 211 缺的正是迁移 830（分区化），而它【是 `.skip` 的】** ——
+   ★★ **`.skip` 是设计如此**（文件头：「手工执行迁移，**不在 installer 自动启动序列里**」，
+   理由是「步骤 1 会对一张 10 GB 的活表做 RENAME」）
+   ⇒ ⇒ **⇒ 211 要修，就得在可控窗口里人工跑一次 830 ⇒ 这是属主的授权项。**
+
+4. ★★★★ **⇒ P11 的适用范围因此被收窄（重要！）**：
+   | | 252 | 211 |
+   |---|---|---|
+   | 表形态 | 分区表 | **普通表** |
+   | 7 天行数 | **27,806,075** | **5,933,760**（**1/4.7**） |
+   | 每桶行数（基线中位） | 177,910 | **39,494**（**1/4.5**） |
+   | **巡检一轮耗时** | **170 ~ 731 s**（p50 210 s） | **~4 s** |
+   ⇒ ⇒ ★★ **⇒ `base_buckets` 每日物化（P11）只对 252 有收益；211 不需要**
+   ⇒ ⇒ ★★★ **⇒ ⇒ 「把同一套改动推到两台机器」在这里是错的 ⇒ 必须按实例分别裁决**
+   ⇒ ⇒ ★★ **⇒ 顺带一个【天然对照】**：★ **同一份脚本在两台实例上的耗时差 40~180×，
+   远超行数比 4.7×** ⇒ ⇒ ⇒ **【提示】252 的额外开销来自 I/O 争用而不只是数据量**
+   ⇒ ⇒ ★ **但两台不是同一台机器 ⇒ 这只是【提示】，不是【证明】**（诚实边界）
+
+5. ★★★★ **⇒⇒⇒ 211 的【可观测性面】比 252 窄得多**（本轮实测）：
+   - ★ **211 的 `/etc/cron.d` 只登记了 1 个巡检脚本**（`llmgw-ursm-snapshot-health`）
+     ⇒ ★★ **252 登记了 12 个** ⇒ ⇒ **⇒ 211 上没有：可用性心跳、disk-watch、emergency-cleanup、
+     index-bloat、duplicate-index-check、table-bloat、onconflict-constraint-check…**
+   - ★★ **211 也没有部署台账**：仓内只有 `scripts/252-monitor/deployed-252.tsv` 与
+     `deployed-cron-252.tsv` ⇒ ⇒ **⇒ 「改了仓内脚本却没部署」在 211 上【完全无人察觉】**
+     ⇒ ★ **而 211 的巡检脚本 md5 确实与 252 的不同**（`c6d25bde…` vs `b5aaa384…`，
+     前者是 **180 s** 版、后者是 **600 s** 版 ⇒ ★ 211 的脚本比 252 的旧一代）
+   - ★★★ **⇒⇒ 由此，§143.26 的 P8（211 的 `pg_stat_statements` 进 preload）从「次要」升级为
+     「211 可观测性的前提」**：★ **慢查询量具在 211 上根本不可用**
+     ⇒ ⇒ **⇒ 没有量具 ⇒ 上面这些结论只能靠「读脚本 + 读日志 + 读目录」拿 ⇒ 这就是本节的取证方式。**
+
+⚠ **本节对生产的写入 = 0**：全部只读
+（211 的脚本 / cron / 配置 / 巡检日志、`pg_class` / `pg_inherits` / `pg_stat_user_tables` /
+`pg_settings` 的只读查询 + 仓内源码与迁移阅读）。**没有**改脚本 / 改 cron / 改配置 /
+建表 / 建索引 / 跑迁移 / 部署任何东西。
+
+### §143.32.1 211 的巡检长什么样（实测）
+
+```
+/etc/cron.d/llmgw-ursm-snapshot-health:21
+17 * * * * root LLMGW_PG17_CONF=/etc/llmgw/pg17.conf \
+     /opt/llm-gateway-go-211/scripts/ursm-snapshot-health.sh \
+     >> /opt/llm-gateway-go-211/logs/ursm-snapshot-health.log 2>&1
+```
+⇒ ★ **与 252 同一分钟（:17）**、同一份仓内脚本（`scripts/252-monitor/ursm-snapshot-health.sh`）、
+★ **同一套判据参数**（`WINDOW_HOURS=3`、`BASELINE_DAYS=7`）。
+
+★ **211 的适配层**（`/etc/llmgw/pg17.conf`，2026-10-19 建）已经把 211 的差异吸收掉了：
+```ini
+CONTAINER=acc-pg17
+PSQL_CMD=/opt/llm-gateway-go-211/scripts/psql-acc-pg17.sh
+PG_USER=llm_gateway
+PG_DB=llm_gateway
+```
+⇒ ★ **「不改仓内脚本一个字」的适配约定成立** ⇒ ★★ **⇒ 任何仓内修复（含 §143.31 的探针修法）
+都能用同一份脚本落到 211 上**（只要部署）。
+
+★ **211 的运行样本**（每轮 4 秒）：
+```
+[2026-10-20 17:17:01] start ursm-snapshot-health mode=report now=now() window=3h granularity=hour baseline=7d ratio=0.5
+[2026-10-20 17:17:01] control ok: rows_in_last_10min=9240
+[2026-10-20 17:17:01] baseline span: 0 day(s) with data (oldest 0, newest 0), BASELINE_DAYS=7
+[2026-10-20 17:17:05] summary: 3|0|0|0|0|3|37831|39494|55285|100 | baseline_thin=thin:0d/7d
+[2026-10-20 17:17:05] OK: 无真空洞，无降级
+```
+⇒ ★★★ **注意第 3 行**：`0 day(s) with data` —— **这就是假告警的现场**
+⇒ ★★ 而第 4 行的 `ref_p50` = **39,494**（> 0）⇒ ★★ **所以最后的 `OK` 是【对的】**。
+
+### §143.32.2 探针为什么在 211 上必然返回 0（源码级）
+
+探针（仓内 `scripts/252-monitor/ursm-snapshot-health.sh`，211 部署版 `:360` 附近同源）：
+```sql
+SELECT coalesce(max((regexp_match(c.relname, '_([0-9]{8})$'))[1]::date)::text, '0') || '|' ||
+       coalesce(min((regexp_match(c.relname, '_([0-9]{8})$'))[1]::date)::text, '0') || '|' ||
+       count(*) FILTER (WHERE pg_relation_size(c.oid) > 0)
+FROM pg_class c
+JOIN pg_inherits h ON h.inhrelid = c.oid
+WHERE h.inhparent = 'ursm_node_snapshot_min'::regclass
+  AND c.relname ~ '_[0-9]{8}$';
+```
+⇒ ★ **它有两重依赖**：① `pg_inherits`（分区目录）② 分区名形如 `_<8 位数字>$`
+⇒ ⇒ ★★★ **⇒ 211 的表是 `relkind='r'`（普通表）⇒ `pg_inherits` 里没有它 ⇒ 命中 0 行**
+⇒ ⇒ **⇒ 返回 `0|0|0`** ⇒ ⇒ **⇒ 于是 `span_ndays=0 < BASELINE_DAYS=7` ⇒ 报「基线样本不足」**
+⇒ ⇒ ★★ **⇒ 探针的注释其实已经写明了它为什么不能改成扫表**：
+「实测 `SELECT min(snapshot_ts) … GROUP BY tableoid` 在这张 23.7M 行表上直接打满 30s
+statement_timeout（§86 实测）」⇒ ⇒ **⇒ 在 252 上不能回退，在 211 上根本不需要回退（表小 4.7×）**
+⇒ ⇒ ★★★ **⇒ 但 211 的「0 天」是【错的】⇒ ⇒ 必须有一条对两种形态都对的读法。**
+
+★★ **⇒ 修法方向（两条，尚未实施）**：
+- **(a) ★ 探针改为「问主判据已经算出来的东西」**：
+  ★ **主判据的 `base_buckets` 本来就扫了那 7 天** ⇒ ★★ **在它旁边加一个
+  `count(DISTINCT date_trunc('day', snapshot_ts))` 就是「基线窗里有几天数据」**
+  ⇒ ⇒ ★★★ **⇒ 零额外扫描、两种表形态都对 ⇒ 这是正解。**
+- **(b) 探针改成读分区边界（`pg_get_expr(relpartbound)`）而不是分区名**：
+  ⇒ **能对付「命名不规整的分区表」，但对普通表仍然无解** ⇒ ⇒ ★ **不解决 211 的问题。**
+
+⇒ ⇒ ★★★ **⇒ 结论：(a) 才是正解；(b) 解决不了 211。**
+⇒ ⇒ ★★ **⇒ 而更根本的修法是 §143.32.0-3 的【执行 830】** ——
+★★ **执行 830 后探针自动恢复正常（分区名正好匹配），不需要改脚本。**
+⇒ ⇒ ⇒ **⇒ 两个修法【不冲突】：(a) 让探针对两种形态都成立（仓内改，不需授权），
+830 让 211 变成「本来就该有的形态」（生产操作，需授权）。**
+
+### §143.32.3 211 的量级读数（本轮实测，只读）
+
+```
+relkind  ursm_node_snapshot_min = 'r'                       ← 普通表（非分区）
+size     total 2,296 MB  =  heap 1,683 MB + pkey 549 MB + ts_idx 64 MB
+rows     5,913,625（relkind=r，reltuples 5,913,625）   span 2026-10-13 17:30 → 2026-10-20 18:02
+db       6,047 MB；该表占 38.0%；全库剩余可用空间仅 35 MB；public 下 432 个非空关系
+tabstat  n_live_tup 5,950,538  n_dead_tup 652,856（≈10.9% of live）
+         n_tup_ins 7,839,593   n_tup_del 1,903,989（= 插入量的 24.3%）
+         autovacuum_count 7    last_autovacuum 2026-10-20 00:51:40
+```
+⇒ ⇒ ★★★★ **⇒ 三个可行动的读数**：
+- ★★★ **死元组 652,856（占活行 10.9%）** ⇒ ★★ **DELETE 型留存已经在制造垃圾**
+  ⇒ ★ **而 DELETE 造出的空页 VACUUM 截不掉 ⇒ 磁盘单调增长**（830 设计稿 §1.3 原文）
+  ⇒ ⇒ **⇒ 211 的 6,047 MB 里，free 只剩 35 MB ⇒ 磁盘压力的真实来源就在这里。**
+- ★★ **全库只剩 35 MB 可用** ⇒ ★★ **211 的磁盘比 252 更紧**
+  ⇒ ⇒ ★★★ **⇒ 这把「211 执行 830」的收益从「结构性」升级为「【救急】」**
+  ⇒ ★★ **（DROP 分区能整块回收，而 DELETE 型留存只把空间变成死元组。）**
+- ★★ **`session_bodies_2026_10` 1,199 MB（19.8%）是 211 的第二大户** ⇒ ★ **下一刀该看它**（本节未查）。
+
+### §143.32.4 211 与 252 的巡检对比表（本节的核心对照）
+
+| 维度 | 252 | 211 |
+|---|---|---|
+| 巡检脚本 | `/opt/scripts/ursm-snapshot-health.sh` | `/opt/llm-gateway-go-211/scripts/ursm-snapshot-health.sh` |
+| 脚本 md5 | `b5aaa384104fb5f45478cae50cd4ef5e` | `c6d25bde6bede767b021e87629cad047` |
+| 部署时间 | 2026-10-20 00:31 | 2026-10-19 17:44 |
+| `STMT_TIMEOUT` | **600 s** | **180 s** |
+| 调度 | `/etc/cron.d/pg17:106`（:17） | `/etc/cron.d/llmgw-ursm-snapshot-health:21`（:17） |
+| 容器/连接 | podman `pg-252-pg17` | docker `acc-pg17`（`psql-acc-pg17.sh` 包装） |
+| 表形态 | 分区表 | **普通表** |
+| 7 天行数 | 27,806,075 | 5,933,760 |
+| 表占库 | 8.4 GB（族，§143.18） | 2,296 MB（**38.0%**） |
+| 探针读数 | `8 day(s) with data` ✅ | **`0 day(s) with data`** ❌ **假告警** |
+| 巡检一轮 | **170~731 s** | **~4 s** |
+| 巡检成功率 | **56%**（41h 窗口 23/41） | 本节未统计（日志仅 531 行，起于 10-19 17:46） |
+| 部署台账 | ✅ `deployed-252.tsv` + `deployed-cron-252.tsv` | ❌ **无** |
+| cron 登记的巡检脚本数 | **12** | **1** |
+
+⇒ ⇒ ★★★ **⇒ 一句话**：★ **211 跑的是【同一份判据、同一套参数】的缩小版** ——
+★★ **它的问题【不是】巡检本身，而是【表没分区】与【可观测性面窄 11 项】。**
+
+### §143.32.5 对既有结论的增量
+
+| 条目 | 变化 |
+|---|---|
+| **P11** | ★★★★ **适用范围收窄**：★ **只对 252 有收益**（211 的巡检只要 4 s）；★★ **并且它【不是】 211 的修法** —— 211 要的是 **830（分区化）** |
+| **P8**（211 的 `pg_stat_statements` 进 preload） | ★★★★ **升级**：★ **它是 211 可观测性的前提**（没有量具 ⇒ 本节的结论只能靠读脚本/日志/目录） |
+| **P17（新增）** | **211 执行迁移 830（分区化）** ⇒ ★★★ **零 Go 改动**（`retention_partition.go` 按 `relkind` 自动选路）⇒ **一次解决三件事**（假告警 / DELETE 型留存 / 38% 库占比）⇒ ⚠ **需属主授权**（它 RENAME 一张活表，`.skip` 是设计如此） |
+| **P18（新增）** | **巡检探针改为对「普通表 / 分区表」两种形态都成立**（让主判据顺带返回基线天数）⇒ ★★ **纯仓内改动，零语义风险、不需生产写** |
+| **P19（新增）** | **211 的可观测性面**：把 252 那 12 个巡检脚本按需落到 211 + **给 211 建部署台账**（否则「改了不部署」永远无人察觉） |
+| §143.30 的「只有一条调用路径」 | ★ **范围补注**：★ **成立范围是「252 的库」**；★★ **211 跑的是同一份脚本、另一套 PG ⇒ 不构成第二条路径** |
+
+### §143.32.6 诚实边界与本节**没做**的事
+
+- ⚠ **本节对生产的写入 = 0**；**未改脚本 / 未改 cron / 未改配置 / 未跑迁移 / 未部署** ⇒ **生产行为未变**。
+- ★★ **211 的巡检成功率没统计**（日志只有 531 行、起于 2026-10-19 17:46）⇒ ★ **不能与 252 的 56% 横向比较**。
+- ★★★ **「252 慢是因为争用而不只是数据量」是【提示】不是【证明】** ——
+  ★ **两台不是同一台机器**（CPU/内存/磁盘/负载都不同）⇒ ⇒ **要证成它，只能在 252 上做
+  「缩短基线 ⇒ 观察巡检耗时与 rollup 成功率」的 A/B**（= P11 的授权验证）。
+- ★★ **211 上没有 `pg_stat_statements` 的读数可用**（未进 preload，§143.20 已记）
+  ⇒ ⇒ **⇒ 本节对 211 的全部结论都来自「读脚本 + 读日志 + 读目录」** ⇒ ★ **与 252 的证据强度不同**。
+- ★★ **没有查 154 / 245 上有没有同名巡检**（本节只查了 211）⇒ ★ **边界仍未完全闭合**。
+- ★★ **`session_bodies_2026_10`（1,199 MB）只是被看见，没有被诊断**。
+- ★★ **830 的执行成本与风险本节没有评估**（设计稿 §5.2 有步骤，本节未读）⇒ ★ **P17 的授权建议需要先读那份设计稿**。
+
+### §143.32.7 待拍板（本节新增）
+
+| 编号 | 事项 | 变化 |
+|---|---|---|
+| **P11** | `base_buckets` 每日物化 | ★★★★ **范围收窄为【只对 252】**；落点不变（§143.31.2） |
+| **P17（新增）** | **211 执行迁移 830（分区化）** | ★★★★ 新增 —— **零 Go 改动**、一次解决三件事、**且 211 只剩 35 MB 可用空间 ⇒ 收益是救急级** ⇒ ⚠ **需授权**（RENAME 活表） |
+| **P18（新增）** | **巡检探针对两种表形态都成立** | ★★★ 新增 —— ★ **纯仓内改动，零语义风险，不需生产写** ⇒ 可直接落地 |
+| **P19（新增）** | **211 的可观测性面**：12 个巡检脚本按需落地 + **211 的部署台账** | ★★★ 新增 —— ★ **台账是「改了不部署」的唯一防线** |
+| **P8** | 211 的 `pg_stat_statements` 进 preload | ★★★★ **升级为「211 可观测性的前提」** |
+
+⚠ **P17/P19 是「改生产行为」⇒ 需属主显式授权**；**P18 是仓内改动 ⇒ 可直接做**；
+**本节对生产的写入仍为 0**。
+
+### §143.32.8 复核方法（可原样重跑）
+
+```bash
+# ── 1) ★ 211 的巡检存在性与调度
+ssh 211 'cat /etc/cron.d/llmgw-ursm-snapshot-health; ls -la /opt/llm-gateway-go-211/scripts/ursm-snapshot-health.sh; \
+          md5sum /opt/llm-gateway-go-211/scripts/ursm-snapshot-health.sh; \
+          grep -n "STMT_TIMEOUT:=\|CONTAINER:=\|LLMGW_PG17_CONF" /opt/llm-gateway-go-211/scripts/ursm-snapshot-health.sh'
+
+# ── 2) ★ 211 的假告警现场（探针返回 0）与表里【有】7 天数据
+ssh 211 'grep -a "baseline span" /opt/llm-gateway-go-211/logs/ursm-snapshot-health.log | tail -3'
+ssh 211 'docker exec -i acc-pg17 psql -U llm_gateway -d llm_gateway -tAX -c \
+          "SELECT min(snapshot_ts), max(snapshot_ts), count(*) FROM ursm_node_snapshot_min"'
+
+# ── 3) ★ 根因：211 的表不是分区表（探针的 pg_inherits 命中 0 行）
+ssh 211 'docker exec -i acc-pg17 psql -U llm_gateway -d llm_gateway -tAX -c \
+          "SELECT c.relname, c.relkind FROM pg_class c WHERE c.relname = '\''ursm_node_snapshot_min'\''"'
+
+# ── 4) ★ 仓内：830 的分区命名与 Go 侧的两栖选路
+grep -n "ursm_node_snapshot_min_%s" sql/migrations/startup/830_ursm_node_snapshot_min_partitioned.sql.skip
+grep -n "relkind" domains/ursm/v2/persist/retention_partition.go
+```
+
+⇒ ⇒ ★ **本节落地的门**（不连库，可原样重跑）：
+
+```bash
+# §143.32 文档门：211 的同族巡检 / 探针假告警 / 三件事同一件 / P11 范围收窄 / 可观测性缺口
+GOCACHE=/tmp/gocache-p1437 go test ./scripts/ursmcheck/ -run 'TestRunbook14332' -count=1 -v
+```
+
+★ 同族：[[先读量具再读产物]] · [[阴性结论要当缺陷一样复核]] ·
+[[自己上一节的结论也要复核]] · [[跨节订正前先自问「我要订正的这条真的错了吗」]] ·
+[[共享仓库迁移号必然漂移]] · [[PG 日志说超时 ≠ 被角色级超时杀了]]。

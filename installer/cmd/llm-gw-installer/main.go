@@ -918,6 +918,11 @@ var sessionFamilyCostViewMetrics883 []byte
 //go:embed embeddata/startup/884_session_family_v_analytics_views.sql
 var sessionFamilyVAnalyticsViews884 []byte
 
+//go:embed embeddata/startup/890_drop_request_logs_v1_family.sql
+var dropRequestLogsV1Family890 []byte
+
+//go:embed embeddata/startup/891_session_turns_cost_negative_partial_idx.sql
+var sessionTurnsCostNegativePartialIdx891 []byte
 //go:embed embeddata/startup/885_session_turns_host_tags.sql
 var sessionTurnsHostTags885 []byte
 
@@ -1285,6 +1290,8 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/882_request_logs_cost_negative_partial_idx.sql":                         requestLogsCostNegativePartialIdx882,
 	"startup/883_session_family_cost_view_metrics.sql":                               sessionFamilyCostViewMetrics883,
 	"startup/884_session_family_v_analytics_views.sql":                               sessionFamilyVAnalyticsViews884,
+	"startup/890_drop_request_logs_v1_family.sql":                                    dropRequestLogsV1Family890,
+	"startup/891_session_turns_cost_negative_partial_idx.sql":                         sessionTurnsCostNegativePartialIdx891,
 	"startup/885_session_turns_host_tags.sql":                                        sessionTurnsHostTags885,
 	"startup/886_session_bodies_storage_comment.sql":                                 sessionBodiesStorageComment886,
 	"startup/887_session_turns_search_text_fts.sql":                                  sessionTurnsSearchTextFTS887,

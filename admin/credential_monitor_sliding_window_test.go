@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"regexp"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -339,75 +340,211 @@ func TestSlidingWindowSQL_ContainsTenantFilter(t *testing.T) {
 // 两臂的不同位置 → varchar/bigint 解析期恒炸，245 上 ~12/s 报错 8 小时。
 // 能整句验证语义的真库门（TEST_DATABASE_URL）是 opt-in、可被静默跳过，
 // 这里加静态形状钉让每次 go test 都兜住。
+//
+// ★ 2026-10-20（迁移 885，v1 族真删）：hot 查询的两臂（会话臂 + v1 臂）
+// 收敛为**一条**（会话族 hot + details 特征层）。
+// ⇒ 「两臂位置一致」这个不变式**不再有对象**（一条臂没有「配对」可言），
+// 但它背后的那个事实还在：**外层 WHERE/ORDER 引用的每个列名，必须在内层
+// 投影里存在**。列名对不上 ⇒ 解析期 42703（列不存在），症状是整个端点 500。
+// ⇒ 判据换成守这条等价不变式。
 func TestSlidingWindowHotQueryArmsPositionallyAligned(t *testing.T) {
-	// SQL 注释里也出现过 "UNION ALL" 字样，只按整行匹配切臂。
+	q := slidingWindowHotQuery()
+
+	// ① 恰有**一条**臂：v1 臂已随 885 退役。多一条 UNION ALL 臂 ⇒ 它读了一个
+	//    已删除的族 ⇒ 42P01。
+	//
+	//    ⚠ 这里**不做**「有第二条臂就红」的反向断言 —— 那会把「有人把 v1
+	//    臂加回来」与「有人把会话臂拆成两条合法 UNION」混为一谈。真正的
+	//    负向判据在下面 ③（v1 族关系名不得在场）。
 	unionAllLine := regexp.MustCompile(`(?m)^\s*UNION ALL\s*$`)
-	arms := unionAllLine.Split(slidingWindowHotQuery(), -1)
-	if len(arms) != 2 {
-		t.Fatalf("hot query 应恰有两个 UNION ALL 臂，实得 %d", len(arms))
+	arms := unionAllLine.Split(q, -1)
+	if len(arms) != 1 {
+		t.Fatalf("hot query 应恰有 1 条臂（v1 臂已随 885 退役），实得 %d:\n%s", len(arms), q)
 	}
-	fromLine := regexp.MustCompile(`(?m)^\s*FROM\s`)
-	// 臂1 文本含外层查询，取最后一个行首 FROM（session 臂主 FROM）与其
-	// 之前最后一个 SELECT；臂2 取第一个（v1 臂主 FROM 在 NOT EXISTS 子
-	// 查询之前，其 SELECT 也是首个）。
-	armColumns := func(arm string, last bool) []string {
-		locs := fromLine.FindAllStringIndex(arm, -1)
-		if len(locs) == 0 {
-			t.Fatal("arm has no line-start FROM")
+
+	// ② 内层投影必须覆盖外层引用到的**每一个**列名。
+	//
+	//    「两臂位置一致」没了，但「外层 WHERE/ORDER 引用的列在内层投影里
+	//    存在」这条还在 —— 列名对不上 ⇒ 解析期 42703（列不存在）⇒ 整个端点 500。
+	inner, outer := splitInnerOuterQuery(t, q)
+	innerAliases := projectedAliases(innerSelectList(t, inner))
+	for _, ref := range outerColumnRefs(outer) {
+		if !innerAliases[ref] {
+			t.Errorf("外层引用了 %q，而内层投影里没有这一列 —— 解析期 42703（列不存在）⇒ 整个端点 500。\n"+
+				"内层投影别名: %v\n外层: %s", ref, sortedAliasKeys(innerAliases), strings.TrimSpace(outer))
 		}
-		fromPos := locs[0][0]
-		if last {
-			fromPos = locs[len(locs)-1][0]
+	}
+	// 历史错位过的两列必须**仍然**在内层投影里（#153 把 tenant_id 插进两臂的
+	// 不同位置 ⇒ varchar/bigint 解析期恒炸，245 上 ~12/s 报错 8 小时）。
+	for _, must := range []string{"tenant_id", "credential_id"} {
+		if !innerAliases[must] {
+			t.Errorf("内层投影缺少 %q（#153 的历史错位列）—— 外层 WHERE/ORDER 引用它 ⇒ 解析期报错", must)
 		}
-		list := arm[:fromPos]
-		sel := strings.Index(list, "SELECT")
-		if last {
-			sel = strings.LastIndex(list, "SELECT")
-		}
-		if sel < 0 {
-			t.Fatal("arm has no SELECT")
-		}
-		list = list[sel+len("SELECT"):]
-		var cols []string
-		var cur strings.Builder
-		depth := 0
-		for _, r := range list {
-			switch r {
-			case '(':
-				depth++
-			case ')':
-				depth--
-			case ',':
-				if depth == 0 {
-					cols = append(cols, cur.String())
-					cur.Reset()
-					continue
-				}
+	}
+
+	// ③ 负向判据：v1 族关系名不得在场（按标识符边界）。
+	if hits := retiredV1RelationsInSQL(q); len(hits) > 0 {
+		t.Errorf("hot query 仍引用已退役 v1 族关系名 %v —— v1 族已随 885 被 DROP，读它 = 42P01：\n%s", hits, q)
+	}
+	// 就地阳性对照：同一把尺子必须能认出 v1 形态（否则上面那条恒绿）。
+	if hits := retiredV1RelationsInSQL("FROM _request_logs_hot rl"); len(hits) == 0 {
+		t.Error("retiredV1RelationsInSQL 认不出 v1 形态 —— 负向断言已恒绿，判据坏了")
+	}
+}
+
+// splitInnerOuterQuery 把 `SELECT … FROM ( … ) cand <outer>` 形态的 SQL 拆成
+// 内层子查询与外层部分。
+func splitInnerOuterQuery(t *testing.T, q string) (inner, outer string) {
+	t.Helper()
+	open := strings.Index(q, "FROM (")
+	if open < 0 {
+		t.Fatalf("query has no FROM ( … ) subquery:\n%s", q)
+	}
+	depth := 0
+	closeAt := -1
+	for i := open + len("FROM (") - 1; i < len(q); i++ {
+		switch q[i] {
+		case '(':
+			depth++
+		case ')':
+			depth--
+			if depth == 0 {
+				closeAt = i
 			}
-			cur.WriteRune(r)
 		}
-		return append(cols, cur.String())
+		if closeAt >= 0 {
+			break
+		}
 	}
-	a := armColumns(arms[0], true)
-	b := armColumns(arms[1], false)
-	if len(a) != len(b) {
-		t.Fatalf("两臂列数不一致: %d vs %d\n臂1: %q\n臂2: %q", len(a), len(b), a, b)
+	if closeAt < 0 {
+		t.Fatalf("unbalanced parentheses in query:\n%s", q)
 	}
-	// tenant_id（audit #153 引入）与 credential_id 是历史上错位过的两列；
-	// 其余列位一旦换序同样会类型错位，靠真库门兜底。
-	for _, name := range []string{"tenant_id", "credential_id"} {
-		pos := func(cols []string) int {
-			for i, c := range cols {
-				if strings.Contains(c, name) {
-					return i
-				}
+	inner = q[open+len("FROM (") : closeAt]
+	outer = q[closeAt+1:]
+	return inner, outer
+}
+
+// innerSelectList 取内层子查询的 **SELECT 列表**（到行首 FROM 之前为止）。
+//
+// ⚠ 不能把整个内层子查询当列表：内层后面还跟着 FROM/JOIN/ON，
+// 而 ON 子句里的列名（d.tenant_id 之类）会被误当成投影出来的别名。
+func innerSelectList(t *testing.T, inner string) string {
+	t.Helper()
+	sel := strings.Index(inner, "SELECT")
+	if sel < 0 {
+		t.Fatalf("inner subquery has no SELECT:\n%s", inner)
+	}
+	list := inner[sel+len("SELECT"):]
+	if loc := regexp.MustCompile(`(?m)^\s*FROM\s`).FindStringIndex(list); loc != nil {
+		list = list[:loc[0]]
+	}
+	return list
+}
+
+// projectedAliases 取一段 SELECT 列表里的**列别名**集合。
+//
+// 别名取「AS 之后的标识符」或「最后一个点之后的标识符」；没有别名时取表达式
+// 本身的名字（`t.request_id` ⇒ request_id）。
+func projectedAliases(selectList string) map[string]bool {
+	out := map[string]bool{}
+	for _, item := range splitTopLevelSelect(selectList) {
+		item = strings.TrimSpace(item)
+		if item == "" {
+			continue
+		}
+		if i := strings.LastIndex(strings.ToUpper(item), " AS "); i >= 0 {
+			out[strings.TrimSpace(item[i+4:])] = true
+			continue
+		}
+		if i := strings.LastIndex(item, "."); i >= 0 {
+			out[strings.TrimSpace(item[i+1:])] = true
+			continue
+		}
+		out[item] = true
+	}
+	return out
+}
+
+// splitTopLevelSelect 按顶层逗号切分（括号内的逗号不算）。
+func splitTopLevelSelect(s string) []string {
+	var out []string
+	var cur strings.Builder
+	depth := 0
+	for _, r := range s {
+		switch r {
+		case '(':
+			depth++
+		case ')':
+			depth--
+		case ',':
+			if depth == 0 {
+				out = append(out, cur.String())
+				cur.Reset()
+				continue
 			}
-			return -1
 		}
-		if pa, pb := pos(a), pos(b); pa != pb || pa < 0 {
-			t.Fatalf("%s 两臂位置不一致或缺失: 臂1 pos=%d 臂2 pos=%d\n臂1: %q\n臂2: %q", name, pa, pb, a, b)
+		cur.WriteRune(r)
+	}
+	if cur.Len() > 0 {
+		out = append(out, cur.String())
+	}
+	return out
+}
+
+// outerColumnRefs 取外层部分里出现的**列引用**（排除 SQL 关键字、函数名、
+// 占位符与别名）。
+func outerColumnRefs(outer string) []string {
+	// ⚠ **先剥 SQL 注释与引号字面量**：外层那段里有中文注释
+	//（「…outbound_model 与 model_offers 大小写…」）和带引号的示例值
+	//（"MiniMax-M3"）⇒ 不剥就会把它们当成列引用 ⇒ 一堆假阳性。
+	outer = stripSQLComments(outer)
+	outer = regexp.MustCompile(`'(?:''|[^'])*'`).ReplaceAllString(outer, " ")
+	skip := map[string]bool{
+		"where": true, "and": true, "or": true, "not": true, "order": true, "by": true,
+		"desc": true, "asc": true, "limit": true, "offset": true, "select": true,
+		"from": true, "as": true, "on": true, "join": true, "left": true, "inner": true,
+		"outer": true, "group": true, "having": true, "null": true, "is": true,
+		"true": true, "false": true, "now": true, "interval": true, "minutes": true,
+		"lower": true, "coalesce": true, "extract": true, "epoch": true, "bigint": true,
+		"text": true, "int": true, "integer": true, "case": true, "when": true,
+		"then": true, "else": true, "end": true, "cast": true, "cand": true,
+	}
+	seen := map[string]bool{}
+	var out []string
+	for _, tok := range strings.FieldsFunc(outer, func(r rune) bool {
+		return !(r == '_' || r >= '0' && r <= '9' || r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z')
+	}) {
+		low := strings.ToLower(tok)
+		// ⚠ 纯数字是 $N 占位符的残片（"$1" 被字段切分器切成 "1"），
+		// 不是列名 ⇒ 必须排除，否则每条查询都会报一堆假阳性。
+		if low == "" || isAllDigitsToken(low) {
+			continue
+		}
+		if skip[low] || seen[low] {
+			continue
+		}
+		seen[low] = true
+		out = append(out, low)
+	}
+	return out
+}
+
+func isAllDigitsToken(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return false
 		}
 	}
+	return len(s) > 0
+}
+
+func sortedAliasKeys(m map[string]bool) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }
 
 func TestSlidingWindowBatch_TenantAdminSkipsRedis(t *testing.T) {
@@ -502,8 +639,8 @@ func TestHandleSlidingWindow_SuperAdminUsesRedis(t *testing.T) {
 		t.Fatalf("got %d want 200 body=%s", rec.Code, rec.Body.String())
 	}
 	var resp struct {
-		Source string                       `json:"source"`
-		Stats  map[string]any               `json:"stats"`
+		Source string         `json:"source"`
+		Stats  map[string]any `json:"stats"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
 		t.Fatal(err)

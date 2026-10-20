@@ -3617,6 +3617,299 @@ PostgreSQL 解析调用时，**带默认值的那个也能接 3 参调用**，
   退役族零新增（15 次请求后 4 张退役表仍全 0）。
 - 溯源：request_logs→session_turns 复核轮 §5.13.11 / §10.14；[复盘](docs/audit/2026-10-20-request-logs-session-turns-复核轮.md) §5.13.11 / §10.14。
 
+## 2026-10-20 — ★ 「缺什么」的短路判据在对象**被删之后**反而**不**短路（Seen: 1/3）
+- 场景：v1 `request_logs` 族退役（迁移 890 真删表）。删表前，一切正常；删表后，
+  网关**起不来**，而症状是「**readyz 仍返 200**、但网关没有数据库」。
+- 根因：启动路径的三个 ensure 都用同一把尺子——**catalog 短路**：
+  「期望的列与索引全部在位 ⇒ 零 DDL」。这把尺子算的是「**缺多少**」：
+  ```sql
+  (列项)   WHERE to_regclass('public._request_logs') IS NOT NULL AND NOT EXISTS(…)
+  + (索引项) WHERE NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = want.name)
+  ```
+  退役后：列项因 `to_regclass` 为 NULL 而计 **0**（"没缺列"），
+  **索引项却计 13**（索引随表一起消失 ⇒ "缺 13 个索引"）⇒ `missing = 13 ≠ 0`
+  ⇒ **短路不触发** ⇒ 继续跑 `ALTER TABLE _request_logs …` ⇒ **42P01**。
+- 放大成事故的那一步：`42P01` 命中 `db.IsSchemaMismatchError` ⇒ 启动快速失败
+  ⇒ `db.Open` 返回 `(nil, err)` ⇒ `dbConn == nil` ⇒ `SetDepsOptional(true)`
+  ⇒ **`/readyz` 返 200** ⇒ 部署安全网放行 ⇒ 网关「就绪但没有数据库」。
+  ⇒ **一个 DDL 形状问题，最终表现成"部署成功但服务是空壳"**。
+- 防复发检查：① 任何「**存在性**」当前提的 ensure，判据必须先问
+  **「对象在不在」**（`to_regclass(...) IS NOT NULL`），再问「缺什么」——
+  顺序反了就会在对象消失时短路失效；② 短路判据里只要有**「按名字数」**的项
+  （索引/触发器/约束），就必须确认这些名字**与被删对象同生共死**——
+  否则删对象会让计数失真；③ 启动路径的每个 ensure 都要有一条
+  **「族已退役 ⇒ 本函数无事可做 ⇒ 早退」**的显式分支，别指望短路兜底；
+  ④ boot 失败时 `readyz` 必须能反映"没有数据库"（否则部署安全网会放行空壳）。
+- 证据：真库 3 个 ensure（`ensureRequestLogSchema` / `ensureWorkTypeSchema` /
+  `EnsureMaasSchema`）逐一实测：退役后 `missing` 分别为 13 / 1 / 1 ⇒ 短路全部失效；
+  补上存在性早退后三者均零 DDL 通过。§5.13 复核轮 §6.2。
+- 溯源：request_logs→session_turns 复核轮 §6.2；[复盘](docs/audit/2026-10-20-request-logs-session-turns-复核轮.md) §6.2。
+
+## 2026-10-20 — ★ `CREATE OR REPLACE FUNCTION` 对 SQL 函数体**不在创建时解析**（Seen: 1/3）
+- 场景：`recent_success_rate` 被 provider 的候选查询以 `CROSS JOIN LATERAL` 调用。
+  退役 v1 时把它的 v1 腿摘掉；迁移文件与 Go 侧运行时 SSOT 各写了一份函数体。
+- 根因：`CREATE OR REPLACE FUNCTION … LANGUAGE sql` **不解析函数体** ⇒
+  函数体里引用一张**不存在的表**也**建得成功** ⇒ 直到**第一次被调用**才 42P01。
+  ⇒ 后果的爆炸半径与"漂移"的严重程度**不成比例**：
+  一份 30 行的函数体里差一个表名，症状是
+  **「选不出任何上游凭据 ⇒ 100% 流量失败」**，
+  而日志里只有一句 `relation "_request_logs_hot" does not exist`——
+  根因在一次字符串手术上，症状却像"上游全挂"。
+- 防复发检查：① 凡是**函数体**（不是视图体）跨文件存在两份 ⇒ 必须有
+  **文本等价**的门（`sql/migrations/startup/migration_890_v1_family_drop_test.go`
+  的 `TestMigration890RecentSuccessRateMatchesRuntimeSSOT`）；
+  ② 视图体同理（`TestMigration890ProjectionMatchesComposer`）——
+  视图体**会**在创建时被解析，但漂移的后果是"自愈把两臂换成三臂 ⇒ 42P01 ⇒ 面板全 500"；
+  ③ 改这类函数体时，先问「**谁在调用它、调用失败长什么样**」——
+  调用点在请求路径上还是后台任务上，决定了事故形态是"流量全断"还是"面板变暗"。
+- 证据：把迁移里的函数体改一行（`probe-%` → `probe-XX%`）⇒ 等价门红；
+  还原 ⇒ 绿。`recent_success_rate` 的调用点：`provider/client.go` 候选查询。
+- 溯源：request_logs→session_turns 复核轮 §6.3；[复盘](docs/audit/2026-10-20-request-logs-session-turns-复核轮.md) §6.3。
+
+## 2026-10-20 — ★ 「真删表」的第一顺位不是删，是**删完之后谁会 42P01**（Seen: 1/3）
+- 场景：目标要求"把 `_request` 前缀的待删表**真正删掉**"。删表本身只有 6 条
+  `DROP`；但真正的工作量在**删表之后**。
+- 根因：v1 族被 286 处 Go SQL 引用（其中 ~168 处是**基表**直读，不是走 canonical
+  视图的）⇒ 删表后**任何提到 v1 关系的语句整条 42P01**（不是"那条腿空"，
+  是**整条语句失败**）⇒ 覆盖 admin 读面、bg 后台任务、请求路径上的凭据解析。
+  ⇒ 真正的工作量是**把 168 处读面迁到会话族**，不是写 DROP。
+- 防复发检查：① 「删对象」类变更的清单必须先列**引用图**
+  （基表 / 视图 / 函数 / 触发器 / 启动路径 DDL），再动手；
+  ② **启动路径的 DDL 优先于读面**——它决定网关能不能起来；
+  ③ 读面按「**会不会让请求路径失败**」排序（凭据候选查询 > 请求体读 > 后台聚合）；
+  ④ 「整条语句失败」这条语义决定了**UNION 的一条腿**也必须删，
+  不能只把 v1 腿换成"空集"。
+- 证据：真库 `pg_depend` + 逐文件扫描得 168 处基表直读；`recent_success_rate`
+  一处就足以让 100% 流量失败；`bg/` 20 处 + `admin/` 136 处会让 30+ 个面板/探针
+  同时变暗。§6.1。
+- 溯源：request_logs→session_turns 复核轮 §6.1；[复盘](docs/audit/2026-10-20-request-logs-session-turns-复核轮.md) §6.1。
+
+## 2026-10-20 — ★ 投递通道对「改名后」的处理**不一致** ⇒ 迁移要同时写两种物理名（Seen: 1/3）
+- 场景：860 把 `request_logs` 族改名成 `_request_logs`（"待删标志"）。
+  890 要把它删掉。写下 `DROP TABLE public.request_logs` 之后发现：
+  部署通道会把它**自动改写**成 `_request_logs`，而**安装器不会**。
+- 根因：三条投递路径对"改名后"的处理**不是同一套**：
+  · 部署通道 `scripts/apply-db-revision-sequence.sh` 有 runtime adapter，
+    按真库探测代际（legacy / renamed / mixed / ambiguous）后**词法改写**
+    `request_logs` → `_request_logs`；
+  · 安装器 `installer/internal/dbinit/runner.go` **逐字执行**迁移文件；
+  · 新装路径在 860 之后族已经是 `_request_logs`。
+  ⇒ 写死任一种拼写，都会让**另一条通道**的 DROP 静默不生效
+  （`DROP TABLE IF EXISTS` 不报错 ⇒ **零信号** ⇒ 族还在那儿，
+  而所有读面已经按"族没了"改过了 ⇒ 下次启动 42P01）。
+- 防复发检查：① 任何触及**被改过名**的族的迁移，必须同时写**两种物理名**
+  （`request_logs` 与 `_request_logs`），并用「**存在才删**」的动态 SQL；
+  ② 改写正则只认**整词**（`(?<![\w$])request_logs(?:_bodies_hot|_bodies|_hot|_archive|_id_seq)?(?![\w$])`）
+  ⇒ 视图名（`request_logs_with_current_month…`）**不会**被改写
+  ⇒ 视图名写原名、表名写两种拼写，**别弄反**；
+  ③ 判"某个名字出现了没有"**绝不用 `LIKE` 配 `_`**（`_` 是单字符通配符）。
+- 证据：三条通道的差异逐条读代码确认（部署通道 adapter 的代际探测 + 安装器
+  无改写）；890 的删除步骤用「两种拼写都试 + `to_regclass` 存在才删」；
+  真库往返验证 up→down 后族与三臂视图逐字还原。§6.4。
+- 溯源：request_logs→session_turns 复核轮 §6.3；[复盘](docs/audit/2026-10-20-request-logs-session-turns-复核轮.md) §6.3。
+
+## 2026-10-20 — ★ 变异验证必须先确认「**变异真的应用了**」（Seen: 1/3）
+- 场景：给 890 的 6 道契约门做变异验证。5 处按预期变红，**1 处没红**。
+- 根因：那一处的变异是"把投影里的 `t.ts AS ts,` 改成 `t.ts + interval '0 seconds' AS ts,`"，
+  而迁移文件里那行是**制表符缩进**、我按**四个空格**写的替换串 ⇒
+  `str.replace` **没匹配上** ⇒ 文件**没变** ⇒ 门当然绿。
+  ⇒ **"门绿了"这件事，当时既可能是"门在工作"，也可能是"文件根本没被改"**——
+  两者在输出上**长得一模一样**。
+- 防复发检查：① 变异脚本**必须自证**：`assert new != old`（或打印 sha 对比），
+  没应用就**直接失败**，不许"继续跑测试看颜色"；
+  ② 变异的目标串要用**从文件里读出来的**内容（而不是手打的字面量），
+  或至少在替换后校验命中次数 == 期望次数；
+  ③ 变异验证的结论要写成「**该处变异应用后门变红**」，
+  而不是「该处门能发现这类问题」——后者在变异没应用时也是成立的。
+- 证据：改用 tab 缩进后重跑 ⇒ 该处**变红**；把 Go 侧投影也改一次 ⇒
+  **同一个门双向都红**（迁移侧漂移与代码侧漂移都能被抓）。
+- 溯源：request_logs→session_turns 复核轮 §6.9；[复盘](docs/audit/2026-10-20-request-logs-session-turns-复核轮.md) §6.9。
+
+## 2026-10-20 — ★ `sql/objects/` 是「**从不应用、但对基线承重**」的**第四份**表示（Seen: 1/3）
+- 场景：真删 v1 族时，我判定 `sql/objects/` 是「部署后形态的 SSOT」，把 5 张分析视图改成了会话族形态 ⇒ 883/884 的门红了。
+- 根因：`sql/objects/` **不是**部署形态的 SSOT。仓库自己的 `scripts/audit/baseline-reconcile.py` 明写它是
+  「**第四份表示、从不应用**（唯一引用是 `deploy/sql/sync-objects.sh` 的单向拷贝）、但**对基线承重**
+  （部分基线对象的**唯一出处**）」；`sql/schema/objects_registry_test.go` 同款结论。
+  ⇒ 改了它 ⇒ **新装路径**的基线 `CREATE VIEW` 急切校验了**尚不存在**的 `session_turns_hot`
+  （它由**启动序列**建、基线不建）⇒ 42P01 **中止整个安装**；
+  ⚠ 而**升级路径是绿的**（升级路径上启动序列先跑）⇒ 「升级绿」会骗人。
+- 防复发检查：① 动 `sql/objects/` 之前先问「**这份表示被谁消费**」——
+  审计器明说它**从不应用** ⇒ 它的价值在**基线**，不在部署形态；
+  ② 「部署形态」交给**迁移**换上（883/884 先例），`sql/objects/` 保持**基线 fallback 溯源体**；
+  ③ 这类对象要在 `internal/sqlreadguard` 里登记成 **LEGIT（基线 fallback 溯源体，非生产读面）**，
+  否则零债棘轮会逼着人去改它 ⇒ 白白破掉新装路径；
+  ④ 改完必须跑**新装链**（不是只跑升级链）。
+- 证据：真库临时库实测——新装路径报 42P01 中止，而升级路径绿；
+  回退 5 张视图到 v1 fallback 体后新装链 **0 of 282 fail**；
+  `internal/sqlreadguard` 白名单 1 → 6 条 LEGIT、`debtBaseline` 仍为空。
+- 溯源：request_logs→session_turns 复核轮 §6.8；[复盘](docs/audit/2026-10-20-request-logs-session-turns-复核轮.md) §6.8。
+
+## 2026-10-20 — ★ `pg_get_functiondef` 的输出**没有结尾分号**，而 dollar-quote 的**开引号行**与**闭合行**几乎一样（Seen: 1/3）
+- 场景：把真库的函数定义灌进 down 迁移脚本来「逐字复原被删的函数」，psql 报
+  `syntax error at or near "CREATE"`。
+- 根因（两层）：① `pg_get_functiondef` 的输出**不带结尾分号** ⇒ 直接拼进脚本时，
+  psql 会把下一个 `CREATE OR REPLACE` **并进同一条语句**；
+  ② 更阴的一层：我用「行尾是 `$function$`」来找**闭合定界符行**，
+  而**开引号行** `AS $function$` 也满足这个条件 ⇒ 分号补到了**开引号**上，
+  并且补完就 `i = j+1` **跳过了整个函数体** ⇒ 20 个函数只剩 19 个、其中一个被吞掉。
+- 防复发检查：① 往脚本里灌 DDL 时，**先确认每条语句的分号**（`pg_get_functiondef` / `pg_dump` 的输出都不带）；
+  ② 找 dollar-quote 的**闭合行**要用「**整行恰好等于** `$function$` / `$$`」，
+  **不是**「行尾包含」——`AS $function$` 与 `$function$` 只差一个前缀；
+  ③ 灌完**数语句条数**并与源对象数对账（本轮：20 个函数/过程 + 1 个重载 ⇒ 期望 20 条 CREATE，
+  实测 19 ⇒ 当场抓到）；④ 灌完**真库往返**（up → down → 比对 `pg_get_functiondef` 全等），
+  这道真库门才是最终裁判，静态数数只是它的前置。
+- 证据：补分号后重灌 → 20/20；真库往返实测 20/20 函数定义与 up 前**逐字一致**、2 个触发器复原。
+- 溯源：request_logs→session_turns 复核轮 §6.7；[复盘](docs/audit/2026-10-20-request-logs-session-turns-复核轮.md) §6.7。
+
+## 2026-10-20 — ★ down 迁移的「文件头声称」要用**集合比对**钉住，数个数挡不住「补了 4 个、漏了 4 个」（Seen: 1/3）
+- 场景：890 的 down 文件头写着「那些函数**也**被 890 删了，所以本 down 一并把它们装回去」，
+  而 890 up 删的是 **20 个**函数/过程 + 2 个触发器函数 —— down 实际只复原了 **4 个**。
+- 根因：门只检查了「down 里有这几个名字」（**存在性**），没检查「**up 删掉的都在**」（**完备性**）。
+  ⇒ 文件头与实现不符这件事，在「只查存在性」的门下**永远绿**。
+  ⚠ 更隐蔽的一层：已复原的那 4 个，函数体取自**陈旧正典** `sql/objects/functions/`，
+  与**真库部署版**逐字比对后**实质不同**（真库版多了 advisory lock 串行、默认分区约束处理、
+  legacy shell 重挂）⇒ 回滚会装回一个**更弱**的分区函数 ⇒ **存在性绿 ≠ 有用**。
+- 防复发检查：① down 类迁移的门要比**集合**（up 的 DROP 清单 ⇔ down 的 CREATE 清单），
+  不是比「有没有某个名字」；② **重载按条数比**（本轮 `credential_most_used_model` 有两个重载 ⇒
+  20 个对象只有 19 个名字，只比名字集合会漏掉「少复原一个重载」）；
+  ③ down 的函数体**优先取真库定义**（`pg_get_functiondef` / `pg_get_triggerdef` / `obj_description`），
+  正典 objects 层是**静态 SSOT**，可能比部署版旧；④ 文件头与实现不一致时，
+  优先怀疑**文件头**（它是给人读的承诺，代码才是事实）。
+- 证据：890 down 由「4 个」补到「20 个函数/过程 + 2 个触发器」；真库往返实测 20/20 逐字一致；
+  三道新门 + 3 项变异（删函数体 / 删触发器 / 改函数名）全部转红、源文件按字节还原。
+- 溯源：request_logs→session_turns 复核轮 §6.7；[复盘](docs/audit/2026-10-20-request-logs-session-turns-复核轮.md) §6.7。
+
+## 2026-10-20 — ★ 负向判定必须按**标识符边界**：canonical 视图名里就含 `request_logs`（Seen: 1/3）
+- 场景：要给「`bg/routing_health_checks.go` 不再读 v1 族」写负向断言，第一版用
+  `strings.Contains(sql, "public.request_logs")`。
+- 根因：canonical 视图叫 **`request_logs_with_current_month`**（它**活着**，只是从三臂变两臂）
+  ⇒ `Contains` 会把它判成 v1 读点 ⇒ 负向断言**假红**；
+  反过来，若把判据放宽成「只看 `request_logs` 子串」，又会把**视图名**漏掉（真阳性丢失）。
+  ⚠ 与已有的「`LIKE` 配 `_`」是同一族陷阱（`_` 是单字符通配符），但这次是**子串 vs 标识符**的版本。
+- 防复发检查：① 判「SQL 里有没有提到某个关系」要**剥掉注释与字符串字面量**后按**标识符**切分再**精确匹配**；
+  ② 每条负向断言配**阳性对照**（同一判据必须能对真读点报红）与**阴性对照**
+  （必须对那个「名字里含关键词」的合法对象**不**报红）——没有对照的负向断言恒绿；
+  ③ 阴性对照必须**非空洞**：断言那个名字里**确实含**关键词子串（否则对照证明不了任何事）。
+- 证据：判据自检门（正例 `public._request_logs` 必报、负例 `public.request_logs_with_current_month` 必不报）
+  + 3 项变异（重新引入 v1 读点 / 改掉会话族源 / 把视图名塞进 v1 清单）全部转红。
+- 溯源：request_logs→session_turns 复核轮 §6.6；[复盘](docs/audit/2026-10-20-request-logs-session-turns-复核轮.md) §6.6。
+
+## 2026-10-20 — ★ Go 侧判「SQL 里有没有提到某关系」必须走 `go/ast` 取**字符串字面量**（Seen: 1/3）
+- 场景：要给 bg 的检查侧写「不再读 v1 族」的负向断言。
+- 根因：按行剥 `//` 会把 Go 字符串字面量**截断**（字面量里可以含 `//`、`--`）；
+  而直接扫全文又会把源码里的**退役说明注释**判成读点 ⇒ 门恒绿。
+  ⚠ 本仓的 `stripSQLComments` 只剥 **SQL** 注释（`--` / `/* */`），**剥不掉 Go 注释**（`//`）
+  ⇒ 用它处理 Go 源文件是**用错了尺子**。
+- 防复发检查：① Go 侧一律用 `go/ast` 取**字符串字面量**（本仓 `goStringLiterals` 已是公共写法）；
+  ② 解析失败按 `t.Fatal` 处理 —— 宁可红在「读不到」，也不要静默放行；
+  ③ 「SQL 文本」与「Go 源码」是两种材料，**量具不能互换**。
+- 证据：F1 三道门（退役守卫的读点检测）全部用 AST 判定；把源码注释里加一句「读 `_request_logs`」后门仍绿（正确）。
+- 溯源：request_logs→session_turns 复核轮 §6.5；[复盘](docs/audit/2026-10-20-request-logs-session-turns-复核轮.md) §6.5。
+
+## 2026-10-20 — ★ text 型的 `credential_id` 用**空字符串**表示「无凭据」（不是 NULL）（Seen: 1/3）
+- 场景：把负成本导出行从 v1 族迁到会话族时，`credential_id` 的类型从 bigint 变成 **text**。
+- 根因：会话族的 `credential_id` 是 text，且「无凭据」用**空字符串**表示（真库实测 535 行里 **453 行是空串**，
+  不是 NULL）⇒ `IS NULL` 判不出来；直接 `::bigint` 转换会在空串上**报错**（22P02）。
+- 防复发检查：① 任何 text→数字的转换都要**安全转换**：
+  `CASE WHEN credential_id ~ '^[0-9]+$' THEN credential_id::bigint END`（本仓既有先例：
+  `idx_session_turns_hot_credential_ts` 用的就是同一形态）；② 「无凭据」要同时判
+  `IS NULL` **与** `= ''`；③ 导出脚本的表头/列序变了 ⇒ **对拍门**要跟着换口径（本轮
+  `TestNegativeCostExportParity` 从「已登记漂移」升级成**完整对拍**）。
+- 证据：真库端到端跑通（EXIT=0、9 个小节齐全、CSV 表头 `credential_id,raw_model_name,…`）；
+  分组列从 `outbound_model` 改为 `raw_model_name`（会话族的 `model` 列落的是 **client_model**，不是出站模型）。
+- 溯源：request_logs→session_turns 复核轮 §6.3；[复盘](docs/audit/2026-10-20-request-logs-session-turns-复核轮.md) §6.3。
+
+## 2026-10-20 — ★ 两个 `WITH` 不能串联 ⇒ 多源并集要写成**括号化子查询**（Seen: 1/3）
+- 场景：把导出脚本的 v1 源换成会话族两臂（`session_turns_hot ∪ session_turns`）并「与别的 CTE 共存」。
+- 根因：写成 `WITH a AS (...), b AS (WITH c AS (...) SELECT ...)` ⇒ PostgreSQL 报
+  `syntax error at or near "WITH"` ⇒ **嵌套 WITH 在这个位置不被接受**。
+- 防复发检查：① 多个来源要并集时，写成**括号化子查询**形态
+  `FROM ( SELECT … FROM a UNION ALL SELECT … FROM b ) r`（可以与外层 CTE 共存）；
+  ② 改完必须**真库跑一遍**（本轮是端到端跑导出脚本，EXIT=0 才算过），
+  静态看 SQL 读不出「这个位置能不能嵌 WITH」。
+- 证据：改括号化子查询后导出脚本端到端通过；真库实测 details 侧 JOIN **1:1**（535/535、1002/1002 ⇒ 不扇出）。
+- 溯源：request_logs→session_turns 复核轮 §6.3；[复盘](docs/audit/2026-10-20-request-logs-session-turns-复核轮.md) §6.3。
+
+## 2026-10-20 — ★ 「零命中」有两种成因：真干净 / 扫描器坏了 ⇒ 零债棘轮要用**合成样本**自证（Seen: 1/3）
+- 场景：把 `internal/sqlreadguard` 的 v1 读面债棘轮推到 **0**（v1 桶 0 文件 / 0 处）。
+- 根因：「0 命中」既可能是「真的没有读点」，也可能是「**扫描器没扫到**」⇒ 两者在输出上**一模一样**。
+  ⇒ 零债棘轮越严，越可能**锁死一把坏尺子**。
+- 防复发检查：① 零债棘轮必须配**合成样本**：故意放一条 v1 读点进临时目录，
+  断言扫描器**能报出来**（本轮用 LEGIT 白名单 + 判据自检两道）；
+  ② 白名单从 1 条增到 6 条时，每条都要写明**为什么它是合法豁免**（本轮 5 条是「基线 fallback 溯源体」）；
+  ③ 「债为 0」不是「没问题」——它只说明**这把尺子**此刻没报。
+- 证据：LEGIT 6 条 + `debtBaseline` 仍为空；判据自检（正例必报、负例必不报）+ 变异全部转红。
+- 溯源：request_logs→session_turns 复核轮 §6.8；[复盘](docs/audit/2026-10-20-request-logs-session-turns-复核轮.md) §6.8。
+
+## 2026-10-20 — ★ 停写键的**代码默认**被翻转 ⇒ 「门关着的理由已过期、后果却不可逆」（Seen: 1/3）
+- 场景：上游把 `storage.request_logs_write_enabled` 的**代码默认**由 true 改成 false，
+  而 bg 里三条扫描的「可比性守卫」仍读这个键。
+- 根因：守卫的**前提**（证据源不再前进 ⇒ 不可判定 ⇒ 跳过）在证据源随 890 迁到会话族之后**已过期**，
+  但守卫**还在** ⇒ 在任何**未显式配置**该键的环境（新装 / 克隆 / 灾备）上，扫描**永久停摆**，
+  且跳过被记成正常 skip ⇒ **零错误信号**。
+  ⚠ 关键在于「**默认值的翻转把「显式关闭」变成了「默认关闭」**」——出问题的不是配置，是**默认**。
+- 防复发检查：① 任何「按某个键决定跳过」的守卫，键的**默认值**翻转时必须**重新评估**该守卫的前提；
+  ② 守卫的**前提**与守卫的**输入**要分开评估：本例是「输入（读已退役的键）与前提（源不前进）双双失效」；
+  ③ 处置不是「保留旧行为」，而是**退役过期守卫 + 保留每条扫描自己的开关/判据**
+  （本轮：36h 回看有独立 interval 开关、健康检查恒执行、账务比对换成**数据驱动**判据
+  `usageCreditComparable(usageArmRows, diffRows)`）；④ 退役后的 reason 要进**闭集**并保持指标序列连续。
+- 证据：三条扫描的守卫全部退役；`bg/` 全绿（34.5s）；4 道新门 + 9 项变异全部转红；
+  `deploy/prometheus/rules/s4-scan-skip.yml` 的 reason 闭集同步更新为 {s4_stop_write, usage_arm_empty}。
+- 溯源：request_logs→session_turns 复核轮 §6.5；[复盘](docs/audit/2026-10-20-request-logs-session-turns-复核轮.md) §6.5。
+
+## 2026-10-20 — ★ 「字符串相等」≠「同一份数据」：路径判定必须按**物理路径**（Seen: 1/3）
+- 场景：`deploy-local.sh` 的「容器数据目录 == 共享目录吗」判定，导致本地部署整条中止
+  （`docker run` 报 `Bind for 127.0.0.1:5432 failed: port is already allocated`，网关没起来）。
+- 根因：判定用**字符串**比两条路径，而宿主机上共享目录是**软链**
+  （`~/kaixuan/postgres -> postgres-citus`）⇒ 判成「未绑定」⇒ 触发几百 MB 级数据搬迁 +
+  容器重建；而重建那一步**硬编码 5432**（同仓 compose 模板却是 `${LLM_GATEWAY_PG_PORT:-5432}`），
+  该端口已被别的实例占住 ⇒ **重建必失败 ⇒ 整条部署中止**。
+  真正要问的不是「路径写法一样吗」，而是「**是不是同一份数据**」。
+- 防复发检查：① 凡是「这两个路径是不是同一个东西」的判定，都用**物理路径**
+  （`cd … && pwd -P`）而不是字符串，并先问「有没有可能是同物异名」（软链、绑定挂载、`/private/var` 别名）；
+  ② 判定函数放进**可 source 的 lib** 并配契约门（软链==目标、不同==不同、空输入==不同、
+  不存在路径回退非空、脚本必须走该函数），本轮 2 项变异全红；
+  ③ 部署脚本里凡有「固定端口」与「模板端口」两处，视为**不一致缺陷**（本轮遗留登记，未改）。
+- 证据：`scripts/deploy-local-lib.sh`（`dl_physical_path` / `dl_same_physical_dir`）、
+  `scripts/deploy-local.sh`（判定改造）、`tests/deploy_local_contract_test.sh`（新门 + 2 项变异全红）；
+  宿主机 `~/kaixuan/postgres -> postgres-citus`；部署后 `VERIFY_PASS=1`（release 2.5.8.2766）。
+- 溯源：request_logs→session_turns 复核轮 §6.13；[复盘](docs/audit/2026-10-20-request-logs-session-turns-复核轮.md) §6.13。
+
+## 2026-10-20 — ★ 长流的「耗时」是**流时长**，不是响应延迟 ⇒ 量延迟要看 TTFB（Seen: 1/3）
+- 场景：逐 API 扫描报出 `/api/free-pool/stream` 89.7s、`/api/admin/system-monitor/stream` 51.1s，
+  按「>2s 必须定位」本应去查慢 SQL——实际是**假慢**。
+- 根因：SSE / 长轮询端点的响应**不结束**，客户端「等响应」的时长等于**流的持续时间**；
+  首字节 1.6ms 就到了。`curl -w time_starttransfer` 实测 TTFB = 1.6ms / 1.8ms。
+- 防复发检查：扫出「慢端点」先问「返回的是**一次性响应**还是**流**」；流式端点一律用 **TTFB** 量，
+  不用「读到 EOF」的总时长。⇒ 与「量具的计时边界必须与被测语义对齐」同族。
+- 证据：§6.14 的 API 扫表 + `curl -w` 复测（TTFB 1.6ms / 1.8ms）。
+- 溯源：request_logs→session_turns 复核轮 §6.14。
+
+## 2026-10-20 — ★ 扫出 404 先怀疑**量具用错了 ID**；路由 404 有三类成因（Seen: 1/3）
+- 场景：逐页扫里 `/api/keys/1`、`/api/admin/sessions/1/turns`、
+  `/api/admin/session-analytics/clients/1` 全是 404，看着像端点坏了。
+- 根因：① 扫描器把 `:id` 一律替换成 `1`，而这些 ID 空间里 **1 不存在**
+  （真 key id=10、session id=`gw_…`、client id 是模型名）⇒ 是**量具**问题不是被测问题；
+  ② 路由 404 混着三类：**Go 默认 mux 404**（未注册）、**前缀分发器按设计 404**
+  （`/api/admin/model-integrity` 要 `summary`/`events`/`fingerprint-drift`）、
+  **handler 级 not found**（JSON 正文）。
+- 防复发检查：动态段替换出来的 404/4xx **必须用真实 ID 复测一次**再下结论（真实 ID 从库里取），
+  并把「用真实 ID 复测 → 200」写进验收记录；判「端点不存在」前先看 **404 正文形态**
+  与**路由是不是前缀**（前缀型路由要扫真实子路径才算覆盖）。
+- 证据：`/api/keys/10` 200、`/api/admin/sessions/gw_ca40172f…/turns` 200、
+  `/api/admin/session-analytics/clients/grok-4.6` 200；`admin/model_integrity.go:66`。
+- 溯源：request_logs→session_turns 复核轮 §6.14。
+
+## 2026-10-20 — ★ 写链路验收要看**正文类型**与**正文的目标表**，不是「有没有落行」（Seen: 1/3）
+- 场景：v1 族真删后验收写链路，第一眼看到 `session_turns.request_delta/response_delta`
+  全是 JSON **null**，差点判成「正文丢了」。
+- 根因：本形态的正文在 `session_bodies*` 族（`outbound_body`，JSON **array**）；
+  `session_turns` 那两列是**另一个开关控制的可选写入**，本机上恒 NULL 是**既有状态**。
+- 防复发检查：判「正文是否落库」先确认**正文的目标表**与**类型**（`jsonb_typeof(...)` 是 array
+  才算有正文）；并拿**本轮改动之前**的同形态历史行做对照，否则分不清「回归」与「既有形态」。
+- 证据：本轮 200 行 `session_bodies_hot.outbound_body` = `array`，长度 37 → 119 → 200（随多轮增长）；
+  部署前的历史 200 行 `session_turns.request_delta` 同样为 null ⇒ 非回归。
+- 溯源：request_logs→session_turns 复核轮 §6.14。
 ## 2026-10-21 — 判据扫描器的「**枚举范围**」比它的「**判定逻辑****更隐蔽地决定覆盖面（Seen: 1/3）
 - 场景：i18n 跨语种「键存在性平价」门（R56 轮新增 `web/src/i18n/localeKeyParity.ts`）。
   R55 轮已建的 `callSiteParams.ts` 扫描器**判定逻辑是对的**，
@@ -4261,6 +4554,29 @@ PostgreSQL 解析调用时，**带默认值的那个也能接 3 参调用**，
 - 证据：§143.29 变异 M1~M28 首轮 26/28 ⇒ 修替换串后 **28/28 全红且按预期红**、runbook md5 逐字还原。
 - 溯源：llm-gateway-go4 §143.29 轮（2026-10-20）。
 
+## 2026-10-20 — ★ 自己新建的迁移编号，可能与**并进来的上游编号**撞车（Seen: 1/3）
+- 场景：本轮把「v1 族真删」编为 885、把会话族负成本索引编为 886；
+  合并 `origin/main`（59 个提交）时发现**上游已占用 885~889**
+  （`session_turns_host_tags` / `session_bodies_storage_comment` /
+  `session_turns_search_text_fts` / `session_family_join_index_gaps` /
+  `session_turns_tools_population`），且**已随 154 的 2765 部署**。
+- 根因：迁移编号是**全局唯一**的资源，而本分支的编号是基于**合并前**的 main 选的；
+  上游在并行期继续往下编号 ⇒ 两条分支的编号空间**相交**。
+  撞号的后果不是「编译失败」，而是**两个不同迁移共用一个编号** ⇒
+  台账/清单/通道数组里出现两行同号、审计文档指代错对象。
+- 防复发检查：① 任何「本轮新增编号」的决策，都要在**合并前**先看一遍远端最新编号；
+  ② 合并后第一件事是**核编号占用**（`git ls-tree origin/main sql/migrations/startup/` 排序取最大号）；
+  ③ 已部署的编号**不可改** ⇒ 只能改自己的 ⇒ 改号要连带改全套登记：
+  canonical + embeddata 两份文件、契约门文件名与测试名、installer's go:embed + map +
+  `StartupFiles` + **TSV 清单（用 `-update` 重生成，别手改）**、部署通道 `files=()`、
+  changelog 登记行（**sha 要重算**）、散文编号；
+  ④ 改号只动编号、不动内容 ⇒ 但**幂等性必须重测**：
+  本地那条部署记录用的是旧文件名 ⇒ 通道下次会**再跑一次**新编号的文件
+  ⇒ 在「旧编号已应用」的库上重跑一次，确认不报错（实测：890 在 v1 已删的库克隆上 EXIT=0）。
+- 证据：`sql/migrations/startup/890_drop_request_logs_v1_family.sql`（原 885）、
+  `891_session_turns_cost_negative_partial_idx.sql`（原 886）、TSV 重生成后 294 条、
+  新装链门 0 of 294 fail、890/891 幂等实测（克隆库重跑 EXIT=0）。
+- 溯源：request_logs→session_turns 复核轮 §6.15；[复盘](docs/audit/2026-10-20-request-logs-session-turns-复核轮.md) §6.15。
 ## 2026-10-21 — 「文件存在 ≠ 迁移会运行」不止是**列**：**分区与函数**同样是资产（2026-10-21 实测，llm-gateway-go R61 §19.7）
 - 场景：R60/R61 沿着「文件存在 ≠ 迁移会运行」这条线查列缺口 ⇒ ★ 顺藤摸瓜挖到**第三个实例**，
   而且后果最重：**新装库没有当月分区** ⇒ 核心写路径（session_turns / sessions / usage_ledger /
@@ -4352,6 +4668,43 @@ PostgreSQL 解析调用时，**带默认值的那个也能接 3 参调用**，
   门 `scripts/ursmcheck/process_record_guard_test.go`（3 条），变异 M1~M4 全红。
 - 溯源：llm-gateway-go4 §143.30 轮后续（2026-10-20）。
 
+## 2026-10-20 §143.32 轮 — 量具在「不适用的形态」上会把「**数不到**」报成「**没有**」（Seen: 1/3）
+- 场景：211 上跑着一道基线跨度探针，它数「带日期的分区」⇒ 判「表里有几天基线数据」。
+  实测 211 的 `ursm_node_snapshot_min` 是**普通表**（`relkind='r'`）⇒ 探针每轮返回 `0|0|0`
+  ⇒ 于是它每轮报「**0 day(s) with data**」+「**基线样本不足 / 本次 OK 判定是偏宽松的**」
+  ⇒ ⇒ ★★ **但 211 的表里实测有 7 天数据、5,933,760 行** ⇒ ⇒ ★★★ **那是假告警**。
+- 根因（一行）：★ **探针把「我的数法在这个形态上不适用」当成了「事实为零」** ——
+  ★ 它的两重依赖（`pg_inherits` 分区目录 + 分区名 `_[0-9]{8}$`）在普通表上**必然**命中 0 行。
+  ⇒ ⇒ ★★★ **「数不到」与「没有」是两件事，量具必须能区分它们。**
+- 防复发检查：
+  ① ⭐⭐⭐⭐⭐ **任何量具/探针都要先问：「我的读法在哪些形态上不适用？」**
+     ⇒ ⇒ **不适用时必须输出明确的「不适用」（如 `n/a`）+ 理由，而不是把它折成 0/空**
+     ⇒ ⇒ ★★ **判据要配一条「不适用形态」的用例**，不能只测「正常形态」；
+  ② ⭐⭐⭐⭐ **判据的「假告警」方向也要钉**：★ **「该报的没报」和「不该报的报了」是两种缺陷**，
+     ★ **只钉前者会漏掉后者**（本轮就是「没报」这一侧全绿，而「报了」这一侧是错的）；
+  ③ ⭐⭐⭐ **先量事实再下结论**：★ 「0 天」这个读数**必须与表的实际行数/跨度并排看**
+     ⇒ ★ **两把尺子不一致时，是尺子错了**（同族：[[量具之间矛盾时先怀疑量具]]）。
+- 证据：runbook `§143.32`；211 实测（`relkind='r'`、5,933,760 行、span 10-13→10-20）
+  vs 巡检日志每轮 `0 day(s) with data`；修法 P18（探针带 `relkind` + 分区总数，
+  不适用时输出 `baseline span: n/a`），行为门 2 条新用例 + 1 条源码断言，变异 M1~M7 全红。
+- 溯源：llm-gateway-go4 §143.32 轮（2026-10-20）。
+
+## 2026-10-20 §143.32 轮 — 改夹具/桩时**按「出现次数」改，不要按「第一次命中」改**（Seen: 1/3）
+- 场景：给探针加了 2 个输出字段 ⇒ 桩（假 psql）必须多返回 2 段。
+  我用 Python 的 `str.replace(needle, repl)` 改桩，**needle 里带了行尾注释** ⇒
+  ⇒ ★★ **只命中了两处同形桩中的一处** ⇒ 另一处仍返回 3 段
+  ⇒ ⇒ ★★ 于是脚本读到空的 `relkind` ⇒ 走进新分支 ⇒ **「基线真薄要告警」那条既有门当场变红**。
+- 根因（一行）：★ **needle 带上下文 ⇒ 它只匹配一处** ⇒ ★★ **「我改了文件 ⇒ 那文件里所有同形的地方都改了」是错的**。
+- 防复发检查：
+  ① ⭐⭐⭐⭐ **改夹具/桩/夹带文本时，先数出现次数**（`grep -c`）⇒ ★★ **要么用不带上下文的 needle 做 replace_all，
+     要么逐处改并核对计数**；
+  ② ⭐⭐⭐⭐ **改完必须跑【既有】门** —— ★ 本轮正是既有门 `TestHealthSummaryCarriesBaselineThinSuffix`
+     抓到了「只改了一半」⇒ ★★ **既有门不只防回归，也是你这次改动的对照物**；
+  ③ ⭐⭐⭐ 同族：[[Contains 型门只保护「至少有一处」]] —— ★ **「只改到一处」与「只替换到第一处」是同一个盲区**
+     ⇒ ⇒ ★ **两边都要用「出现次数」来核**。
+- 证据：§143.32 轮的实际一次红：`TestHealthSummaryCarriesBaselineThinSuffix`
+  （summary 行缺 `baseline_thin=thin:3d/7d`）⇒ 定位到第二处桩未改 ⇒ 补改后全绿。
+- 溯源：llm-gateway-go4 §143.32 轮（2026-10-20）。
 ## 2026-10-21 — ★★ **oracle 不能用「被测对象自己的产物」**：被测对象坏掉时门会自动闭嘴（Seen: 1/2）
 - 场景：给「全新安装的月分区形态」写门 `db/db_fresh_install_partition_shape_test.go`。
   第一版的量具自检是「`llm_gateway_ensure_monthly_partition`（迁移 890 独有的助手函数）在不在？」

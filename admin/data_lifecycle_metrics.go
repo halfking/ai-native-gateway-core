@@ -27,7 +27,7 @@ import (
 // Prometheus metrics for data lifecycle monitoring
 //
 // The four *DataSizeBytes fields are nullable on purpose. Each is a prorated
-// slice of pg_total_relation_size('_request_logs'):
+// slice of pg_total_relation_size('session_turns'):
 //
 //	size = total_size * (rows in bucket) / NULLIF(total_rows, 0)
 //
@@ -90,19 +90,25 @@ func (h *Handler) handleDataLifecycleMetrics(w http.ResponseWriter, r *http.Requ
 	var hotSize, warmSize, coldSize, expiredSize sql.NullInt64
 
 	// Quick aggregation query (no pg_size_pretty to save CPU)
+	//
+	// 2026-10-20（迁移 885）：v1 族整体退役 ⇒ 计数源与尺寸源都换成会话族
+	// 母表 session_turns。⚠ pg_total_relation_size 对**分区父表**返回 0（父表
+	// 自身没有存储），v1 母表当年也是分区父表、同样是 0 ⇒ 换源前后这个数字
+	// **逐字相同**。行数口径则从「v1 母表的行」变成「会话族母表的行」——
+	// 这正是端口的目的：会话族是唯一事实源。
 	err := h.db.QueryRow(ctx, `
 		SELECT
 			COUNT(*) AS total_rows,
-			pg_total_relation_size('_request_logs') AS total_size,
+			pg_total_relation_size('session_turns') AS total_size,
 			COUNT(*) FILTER (WHERE ts > NOW() - INTERVAL '7 days') AS hot_rows,
-			(pg_total_relation_size('_request_logs') * COUNT(*) FILTER (WHERE ts > NOW() - INTERVAL '7 days')::numeric / NULLIF(COUNT(*), 0))::bigint AS hot_size,
+			(pg_total_relation_size('session_turns') * COUNT(*) FILTER (WHERE ts > NOW() - INTERVAL '7 days')::numeric / NULLIF(COUNT(*), 0))::bigint AS hot_size,
 			COUNT(*) FILTER (WHERE ts BETWEEN NOW() - INTERVAL '30 days' AND NOW() - INTERVAL '7 days') AS warm_rows,
-			(pg_total_relation_size('_request_logs') * COUNT(*) FILTER (WHERE ts BETWEEN NOW() - INTERVAL '30 days' AND NOW() - INTERVAL '7 days')::numeric / NULLIF(COUNT(*), 0))::bigint AS warm_size,
+			(pg_total_relation_size('session_turns') * COUNT(*) FILTER (WHERE ts BETWEEN NOW() - INTERVAL '30 days' AND NOW() - INTERVAL '7 days')::numeric / NULLIF(COUNT(*), 0))::bigint AS warm_size,
 			COUNT(*) FILTER (WHERE ts BETWEEN NOW() - INTERVAL '90 days' AND NOW() - INTERVAL '30 days') AS cold_rows,
-			(pg_total_relation_size('_request_logs') * COUNT(*) FILTER (WHERE ts BETWEEN NOW() - INTERVAL '90 days' AND NOW() - INTERVAL '30 days')::numeric / NULLIF(COUNT(*), 0))::bigint AS cold_size,
+			(pg_total_relation_size('session_turns') * COUNT(*) FILTER (WHERE ts BETWEEN NOW() - INTERVAL '90 days' AND NOW() - INTERVAL '30 days')::numeric / NULLIF(COUNT(*), 0))::bigint AS cold_size,
 			COUNT(*) FILTER (WHERE ts < NOW() - INTERVAL '90 days') AS expired_rows,
-			(pg_total_relation_size('_request_logs') * COUNT(*) FILTER (WHERE ts < NOW() - INTERVAL '90 days')::numeric / NULLIF(COUNT(*), 0))::bigint AS expired_size
-		FROM _request_logs
+			(pg_total_relation_size('session_turns') * COUNT(*) FILTER (WHERE ts < NOW() - INTERVAL '90 days')::numeric / NULLIF(COUNT(*), 0))::bigint AS expired_size
+		FROM session_turns
 	`).Scan(
 		&metrics.TotalRows,
 		&metrics.TotalSizeBytes,

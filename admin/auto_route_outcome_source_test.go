@@ -24,7 +24,11 @@ func TestOutcomeFreshnessFollowsActiveSettleSource(t *testing.T) {
 		writeEnabled bool
 		wantSQL      string
 	}{
-		{"dual write", true, "SELECT MAX(ts) FROM _request_logs_hot"},
+		// ★ 2026-10-20（迁移 885，v1 族真删）：settle worker 恒读会话族
+		// ⇒ 探针（outcome-freshness）也恒读会话族，与写门无关。
+		// 原判据是「写门开 ⇒ 读 v1 热表」——那个默认值在 885 之后指向一张
+		// **已删除的表** ⇒ 42P01 ⇒ 探针恒报「读不到」。
+		{"dual write", true, "SELECT MAX(ts) FROM session_turns_hot"},
 		{"session only", false, "SELECT MAX(ts) FROM session_turns_hot"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

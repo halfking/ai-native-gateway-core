@@ -34,21 +34,21 @@ func TestSlidingWindowFamily_UserRoleForbidden(t *testing.T) {
 		handler func(w http.ResponseWriter, r *http.Request)
 	}{
 		{
-			name:   "monitor-summary",
-			method: http.MethodGet,
-			path:   "/api/credentials/monitor-summary",
+			name:    "monitor-summary",
+			method:  http.MethodGet,
+			path:    "/api/credentials/monitor-summary",
 			handler: (&CredentialMonitorHandlers{h: &Handler{}}).handleMonitorSummary,
 		},
 		{
-			name:   "sliding-window",
-			method: http.MethodGet,
-			path:   "/api/credentials/sliding-window?credential_id=1&model=gpt",
+			name:    "sliding-window",
+			method:  http.MethodGet,
+			path:    "/api/credentials/sliding-window?credential_id=1&model=gpt",
 			handler: (&CredentialMonitorHandlers{h: &Handler{}}).handleSlidingWindow,
 		},
 		{
-			name:   "sliding-window/batch",
-			method: http.MethodPost,
-			path:   "/api/credentials/sliding-window/batch",
+			name:    "sliding-window/batch",
+			method:  http.MethodPost,
+			path:    "/api/credentials/sliding-window/batch",
 			handler: (&CredentialMonitorHandlers{h: &Handler{}}).handleSlidingWindowBatch,
 		},
 	}

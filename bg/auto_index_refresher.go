@@ -445,16 +445,46 @@ func (r *AutoIndexRefresher) rollupCredentialModelIndex(ctx context.Context, buc
 // rollupModelTaskIndex inserts the latest per-canonical × per-task_type
 // snapshot into model_task_index.
 //
-// Source: _request_logs in the last 5 minutes, classified by task_type
-// (heuristic, persisted in _request_logs.task_type from auto requests).
-// If no auto requests yet, the table stays empty — that's fine.
+// Source: the session family (session_turns_hot), last 5 minutes, classified
+// by task_type. If no auto requests yet, the table stays empty — that's fine.
 //
-// S4 停写登记（2026-10-13 S3 波 3 实测，不迁）：auto 请求（sys:% 会话）
-// 按设计**不镜像进 session_turns 家族**——本地真库 3 天窗 v1 侧 3,420 条
-// is_auto_request 行、会话侧 0 条。此读点没有会话族数据源，与探针面族
-// 同类（audit §5「观测对象无 session 家族归宿」桶，主拍板项）。停写后
-// model_task_index 冻结在停写前状态（auto 请求本身也停了 → 无新样本，
-// 表维持既有行，非崩溃）。
+// ★ 2026-10-20（迁移 885，v1 族退役）：源从 `public._request_logs` 换成
+// **会话族**（db.SessionFamilyTurnsHotSourceSQL()）。
+//
+// # 总体（population）变了，而且变得更**对**
+//
+// 旧登记（2026-10-13 S3 波 3 实测，「不迁」）写的是：auto 请求按设计不镜像进
+// 会话族 —— 本地真库 3 天窗 v1 侧 3,420 条 is_auto_request 行、会话侧 0 条。
+//
+// 那条测量的两侧口径**不同**，这才是它看起来矛盾的原因：
+//
+//   - v1 侧那 3,420 条里含**内部** auto 流量（探针 / 内部回环）；
+//   - 会话族**按设计**把内部 auto 条目排除（internal/sessionv2mirror/hook.go 的
+//     4 臂分类：IsInternalAutoEntry 命中即 return，**不镜像进 session_turns 家族**），
+//     但**业务** auto 请求是镜像的 —— 镜像侧写 is_auto_request
+//     （internal/sessionv2mirror/s1a_fields.go:75-76）。
+//
+// ⇒ 改指之后，这个索引的总体从「v1 的全部 auto 行（含内部探针）」收窄成
+// **业务 auto 请求**——而后者正是「per model per task_type 的自动路由性能」
+// 这个索引本该统计的东西（内部探针的延迟与成功率本来就代表不了业务任务）。
+// ⇒ 「不迁」这条登记在 885 之后**已经没有对象**：v1 族不存在了，不存在
+// 「换个源继续按老口径统计」的选项。
+//
+// # 两个必须一起说清的后果
+//
+//  1. **本语句没有 DELETE**（只有 INSERT … ON CONFLICT DO UPDATE）⇒ 窗口里
+//     没有业务 auto 请求时，本轮**不写任何行**，既有行**保留**（表冻结在
+//     上一轮有样本的样子），**不是**被清空。
+//  2. 若某个环境**从未**产生过业务 auto 请求，表会一直是空的；
+//     admin 侧对此已有话术（admin/analytics.go:645：
+//     "model_task_index is empty; awaiting first bg worker refresh"）。
+//
+// ⚠ 口径前提（本轮未改，但会决定这个索引有没有内容）：
+//   业务 auto 请求必须**真的**流经网关并带上 is_auto_request —— 实测本地真库
+//   session_turns_hot 535 行里 is_auto_request 非空 0 行、origin_actor 非空
+//   0 行 ⇒ 本地环境**从未产生过业务 auto 流量**（不是映射坏了）。
+//   读这个索引之前先确认那件事，否则会把「本地没有 auto 流量」读成「自动
+//   路由坏了」。
 func (r *AutoIndexRefresher) rollupModelTaskIndex(ctx context.Context, bucket time.Time) (int, error) {
 	tag, err := r.db.Exec(ctx, rollupModelTaskIndexSQL, bucket)
 	if err != nil {
@@ -509,7 +539,7 @@ func (r *AutoIndexRefresher) rollupModelTaskIndex(ctx context.Context, bucket ti
 // signals, so the SQL scores are advisory.
 var rollupCredentialModelIndexSQL = `
 WITH fresh AS (
--- ── Half 1: traffic-derived rows (5-min window from _request_logs) ─────────
+-- ── Half 1: traffic-derived rows (5-min window from the session family) ───
 -- 2026-09-10 修复：peak 子查询改为关联内层 q 的分组列。原来子查询里引用
 -- COALESCE(rl.outbound_model, rl.client_model)，它只是 GROUP BY 表达式而非
 -- 裸列，PG 报 "subquery uses ungrouped column"。聚合下推到 q，外层再取
@@ -603,23 +633,15 @@ SELECT
 -- 输出名对齐：匹配行用 offers 自己的 raw_model_name（与 half-2 基线键、
 -- credential_model_peak_1m.raw_model 同名空间），未匹配行回落 t.model
 -- （与 v1 腿未匹配行的失序幅度同级）。
+--
+-- ★ 2026-10-20（迁移 885，v1 族退役）：**v1 腿整条删除**，只剩会话腿。
+-- 理由：v1 族被 DROP 后，同一条 FROM 里提到 v1 关系会让**整条语句** 42P01
+-- （不是「那条腿失败」）⇒ half-1 与 half-2 一起挂。删除不损失供数能力：
+-- 停写后 v1 腿本就恒空（v1 hot 排空），会话腿已经是承重腿。
+-- ⚠ 冻结点守卫（db.V1FreezeCutoffSQL）保留：885 之后它是常数
+-- '-infinity'（见 db/v1_freeze_cutoff.go），条件恒真、零成本，但它把
+-- 「本查询与 admin 侧同款分界」这件事保持在同一形状上。
 FROM (
-    SELECT rl.credential_id AS credential_id,
-           COALESCE(rl.outbound_model, rl.client_model) AS model_key,
-           mo.canonical_id AS mo_canonical_id,
-           mo.billing_mode AS mo_billing_mode,
-           mo.unit_price_in_per_1m AS mo_price_in,
-           mo.unit_price_out_per_1m AS mo_price_out,
-           rl.success, rl.latency_ms
-    FROM _request_logs_hot rl
-    LEFT JOIN model_offers mo
-      ON mo.credential_id = rl.credential_id
-     AND (mo.outbound_model_name = COALESCE(rl.outbound_model, rl.client_model)
-       OR mo.raw_model_name = COALESCE(rl.outbound_model, rl.client_model))
-    WHERE rl.ts >= NOW() - INTERVAL '5 minutes'
-      AND rl.ts < NOW()
-      AND rl.credential_id IS NOT NULL
-    UNION ALL
     SELECT (CASE WHEN t.credential_id ~ '^[0-9]+$' THEN t.credential_id::bigint END),
            COALESCE(mo.raw_model_name, mo.outbound_model_name, t.model),
            mo.canonical_id,
@@ -709,18 +731,13 @@ JOIN provider_models pm             ON pm.id = v.provider_model_id
 LEFT JOIN models_canonical mc       ON mc.id = pm.canonical_id
 WHERE v.is_routable = TRUE
   AND pm.raw_model_name IS NOT NULL
-  AND NOT EXISTS (
-      SELECT 1 FROM _request_logs_hot rl
-      WHERE rl.credential_id = v.credential_id
-        AND (rl.outbound_model = pm.raw_model_name
-          OR rl.client_model  = pm.raw_model_name)
-        AND rl.ts >= NOW() - INTERVAL '5 minutes'
-  )
   -- S3 波 3（2026-10-13）：同源会话腿抑制——停写后 v1 NOT EXISTS 恒空，
   -- 没有这条腿的话 half-2 的 cold-start 基线会每 5 分钟经 ON CONFLICT
   -- 覆盖 half-1 刚写入的真实指标（half-1/half-2 必须同迁，见文件头）。
   -- 匹配键与 half-1 会话腿同一 alias 链（canonical 粒度）；pm.canonical_id
   -- 为 NULL 时 IN 集为空 = 不抑制 = 写基线，与 v1 名失配时的行为同级。
+  -- ★ 2026-10-20（迁移 885，v1 族退役）：原先成对存在的 v1 抑制臂删除
+  -- （v1 族已 DROP，提及即 42P01 带走整条语句）；会话腿成为唯一抑制臂。
   AND NOT EXISTS (
       SELECT 1
       FROM session_turns_hot t
@@ -796,14 +813,23 @@ ON CONFLICT (bucket, credential_id, raw_model) DO UPDATE SET
     updated_at           = NOW()
 `
 
-// rollupModelTaskIndexSQL aggregates _request_logs into per-task-type
+// rollupModelTaskIndexSQL aggregates the session-turn family into per-task-type
 // performance buckets. Used by the admin auto-route dashboard
 // ("which model wins which task type?") and future analytics.
 //
 // Bucket key: (bucket, canonical_id, task_type). Filtered to auto-route
 // requests only (is_auto_request = true) so we measure actual routing
 // outcomes rather than pre-auto usage.
-const rollupModelTaskIndexSQL = `
+//
+// ★ 2026-10-20（迁移 885，v1 族退役）：源从 v1 hot 表换成**会话族原生源**
+// （db.SessionFamilyTurnsHotSourceSQL：session_turns_hot ∪ 特征层 LEFT JOIN，
+// 投影出与 v1 同名列的 118 列契约）。选 hot 腿而不是 hot ∪ parent 的理由：
+// 窗口是 5 分钟，远小于 hot 保留期（默认 8h）⇒ 窗内的行只可能落在 hot 侧
+// （与同文件 half-1 会话腿、bg/candidate_failure_monitor.go 的 auto-cool 腿
+// 同款论证）。投影带来的列名对等让下面这份 SELECT 一字未改。
+// ⚠ 它是 **var** 不是 const：投影源由 db.SessionFamilyTurnsHotSourceSQL() 生成，
+// 那不是编译期常量（const 表达式里不能调函数）。
+var rollupModelTaskIndexSQL = `
 INSERT INTO model_task_index (
     bucket, canonical_id, task_type,
     sample_count, success_rate,
@@ -823,7 +849,7 @@ SELECT
          ELSE 0
     END AS avg_cost_per_1k_usd,
     MODE() WITHIN GROUP (ORDER BY rl.credential_id) AS primary_credential_id
-FROM _request_logs_hot rl
+FROM ` + db.SessionFamilyTurnsHotSourceSQL() + ` rl
 WHERE rl.ts >= NOW() - INTERVAL '5 minutes'
   AND rl.ts < $1
   AND rl.is_auto_request = TRUE

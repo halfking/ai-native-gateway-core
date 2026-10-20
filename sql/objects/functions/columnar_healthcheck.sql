@@ -21,8 +21,8 @@ CREATE FUNCTION public.columnar_healthcheck() RETURNS TABLE(parent_name text, pa
             -- to exactly the families that recurred. The 20 names below are
             -- R17's 21-family list minus routing_decision_log (which is the
             -- canonical should_be_columnar).
-            ARRAY['request_logs','request_wal','usage_ledger',
-                  'request_logs_archive','request_wal_archive',
+            ARRAY['request_wal','usage_ledger',
+                  'request_wal_archive',
                   'usage_ledger_archive',
                   -- R17 rolled-back families (20):
                   'sessions','session_turns','session_turn_details',

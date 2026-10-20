@@ -779,30 +779,108 @@ func TestV1ArmViewsAreDerivedFromDDL(t *testing.T) {
 	}
 }
 
-// 门 16（§9.260）：推导器必须认得**运行时由 composer 创建、没有仓库 DDL 文件**的视图。
+// 门 16（§9.260，**2026-10-20 迁移 885 之后取反**）：
+// composer 定义的视图**不得**含 v1 臂。
 //
-// 真库 `pg_class` 里有 4 个 `_request_logs*_with_current_month*` 视图，
-// 4 个**全部含 v1 臂**；而 `sql/objects/views/` 的 54 个 DDL 文件只覆盖其中 2 个。
-// 缺的两个由 composer 在运行时建（`db/request_logs_view_schema.go:128` / `:140`）。
+// （原名 TestV1ArmViewsIncludeComposerDefinedOnes —— 885 之后结论从「必须含」
+// 翻成「必须不含」，名字跟着改；旧名留在这段注释里，方便按旧名搜到本测试。）
 //
-// ⇒ 第一版只看 DDL 目录，于是读那两个视图的文件被判成 **canonical**
-// —— 方向是**「把有风险的报成安全」**，也就是本工具最坏的失效方向。
-func TestV1ArmViewsIncludeComposerDefinedOnes(t *testing.T) {
+// # 为什么取反，以及取反之后怎么保住「仪器自检」
+//
+// §9.260 当初立这道门是因为：真库 `pg_class` 里有 4 个
+// `_request_logs*_with_current_month*` 视图，**全部含 v1 臂**；而
+// `sql/objects/views/` 的 DDL 文件只覆盖其中 2 个，缺的两个由 composer
+// 在**运行时**建 ⇒ 只读 DDL 目录的推导器会把读它们的读方判成 canonical，
+// 方向是**「把有风险的报成安全」**。
+//
+// ★ 2026-10-20（迁移 885）：v1 族整体退役 ⇒
+//
+//	· composer 只定义一个视图 `request_logs_with_current_month`，体是**会话两臂**
+//	  （db/request_logs_view_schema.go 的 canonicalSessionOnlyDDL）；
+//	· `…_without_customer_id` / `…_without_request_class_due_at` 两张 v1-only
+//	  包装视图**被 885 删掉**；
+//	· `request_logs_bodies_with_current_month` / `request_logs_bodies_progress`
+//	  同样被 885 删掉。
+//
+// ⇒ **全仓再没有任何视图含 v1 臂** ⇒ 这道门的前提整个翻转。
+//
+// ⚠ 但「前提翻转」本身**不能**是「把断言删掉」：第四桶恒为 0 与
+// 「推导器坏了」在输出里**长得一模一样**（§9.258 就卡在这里一轮）。
+// ⇒ 本测试改成三段：
+//
+//	① **取反的主断言**：全仓推导集合**必须为空** —— composer 一旦再长出
+//	   一条 v1 臂，这道门立刻红；
+//	② **正向对照 A**：一段**含 v1 臂**的合成 DDL 视图**必须**被推出
+//	   ⇒ 证明推导器没坏；
+//	③ **正向对照 B**：一段**含 v1 臂**的合成 composer（CREATE VIEW 字符串
+//	   住在 db/request_logs_view_schema.go 里）**必须**被推出
+//	   ⇒ 证明「composer 侧」这条推导路径也没坏，而且它正是 ① 的对手盘：
+//	   **如果** composer 真的长出一条 v1 臂，① 会红而 ③ 绿 ⇒ 红是可信的。
+//
+// ①②③ 合起来 ⇒ 「v1 臂桶为空」这件事**有证据**，不是「没人看过」。
+func TestComposerDefinesNoV1ArmView(t *testing.T) {
+	// ① 取反的主断言。
 	set := viewsWithV1Arm(repoRoot(t))
-	want := []string{
-		"request_logs_with_current_month",
-		"request_logs_with_current_month_without_customer_id",          // 无 DDL 文件
-		"request_logs_with_current_month_without_request_class_due_at", // 无 DDL 文件
-		"request_logs_bodies_with_current_month",
+	if len(set) != 0 {
+		t.Errorf("★ 全仓推出了 %d 个含 v1 臂的视图（%v）—— 885 之后**不应该有**。\n"+
+			"要么是 composer（db/request_logs_view_schema.go）又长出了一条 v1 臂，\n"+
+			"要么是 sql/objects/views/ 下的某个 DDL 又引用了 v1 基表。\n"+
+			"⚠ 后果：那些视图的读方会被判成 reads-v1-arm（行集会变小、不报错）——\n"+
+			"而 v1 族已经**被删了**，所以那个分类是**假**的。",
+			len(set), v1ArmViewNames(set))
 	}
-	for _, w := range want {
-		if !set[w] {
-			t.Errorf("视图 %q 没被推出含 v1 臂。\n"+
-				"★ 最可能的原因：它由 composer 在**运行时**创建、仓库里没有 DDL 文件 ⇒ "+
-				"推导器只读 sql/objects/views/ 就会漏。\n"+
-				"真库 pg_class 里有 4 个 _request_logs*_with_current_month* 视图，**全部含 v1 臂**；"+
-				"漏掉任何一个都会把它下面的读方判成 canonical（把有风险的报成安全）。\n"+
-				"当前推出集合：%v", w, v1ArmViewNames(set))
-		}
+
+	// ② 正向对照 A：合成 DDL 视图含 v1 臂 ⇒ 必须被推出。
+	dir := t.TempDir()
+	vdir := filepath.Join(dir, "sql", "objects", "views")
+	if err := os.MkdirAll(vdir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	ddl := "CREATE VIEW public.synthetic_ddl_v1_arm AS\n" +
+		" SELECT request_id FROM public._request_logs_hot\n" +
+		"UNION ALL\n SELECT request_id FROM public._request_logs;\n"
+	if err := os.WriteFile(filepath.Join(vdir, "synthetic_ddl_v1_arm.sql"), []byte(ddl), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got := viewsWithV1Arm(dir)
+	if !got["synthetic_ddl_v1_arm"] {
+		t.Errorf("★ 正向对照 A 失败：合成的「含 v1 臂的 DDL 视图」没被推出（集合=%v）。\n"+
+			"⇒ **推导器坏了**（最常见：fromRelationRE 的捕获范围被改窄、不再吃 schema 限定名——\n"+
+			"§9.258 踩过一次，第四桶恒为 0）。\n"+
+			"⇒ 那么上面那句「全仓没有 v1 臂视图」就**不可信**。", v1ArmViewNames(got))
+	}
+	// 夹具目录里只有那一个视图 ⇒ 推出集合**必须恰好**是它。
+	// 多出别的名字 = 推导器把不该算的东西算进来了（假阳性方向）。
+	if len(got) != 1 {
+		t.Errorf("合成夹具推出的集合应当**只有** synthetic_ddl_v1_arm 一个，实际=%v —— "+
+			"推导器把别的东西也算成 v1 臂视图了（假阳性方向）。", v1ArmViewNames(got))
+	}
+
+	// ③ 正向对照 B：合成 composer 含 v1 臂 ⇒ 必须被推出。
+	//
+	// 这一段是 ① 的**对手盘**：① 说「composer 不得有 v1 臂」，③ 说
+	//「**如果**它有了，推导器一定会发现」。没有 ③，① 就只是一句断言。
+	croot := t.TempDir()
+	cdir := filepath.Join(croot, "db")
+	if err := os.MkdirAll(cdir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	composer := "package db\n\n" +
+		"// synthetic composer: a CREATE VIEW whose body reads a v1 base table.\n" +
+		"const syntheticComposerDDL = `\n" +
+		"CREATE OR REPLACE VIEW public.synthetic_composer_v1_arm AS\n" +
+		"SELECT request_id FROM public._request_logs_hot\n" +
+		"UNION ALL\n" +
+		"SELECT request_id FROM public._request_logs\n" +
+		"`\n"
+	if err := os.WriteFile(filepath.Join(cdir, "request_logs_view_schema.go"), []byte(composer), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cgot := viewsWithV1Arm(croot)
+	if !cgot["synthetic_composer_v1_arm"] {
+		t.Errorf("★ 正向对照 B 失败：合成的「含 v1 臂的 composer 视图」没被推出（集合=%v）。\n"+
+			"⇒ **composer 那条推导路径坏了**（viewSourceFiles[1] = db/request_logs_view_schema.go\n"+
+			"这一路）。⇒ 那么 ① 的「全仓没有 v1 臂视图」就**不可信**。",
+			v1ArmViewNames(cgot))
 	}
 }

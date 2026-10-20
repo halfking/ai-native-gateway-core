@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/kaixuan/llm-gateway-go/db"
 	"github.com/kaixuan/llm-gateway-go/internal/modelresponse"
 	"github.com/kaixuan/llm-gateway-go/internal/upstreamurl"
 	"github.com/kaixuan/llm-gateway-go/modelcatalog"
@@ -1111,7 +1112,18 @@ func seedCanonicalAliases(ctx context.Context, db modelcatalog.Querier, rawName 
 //
 // 否定式比肯定式危险一个量级：肯定式在证据消失时不做动作（安全降级），
 // 否定式在证据消失时**做动作**。
-const staleExpiryBlockedS4Reason = "S4 停写中：宽限守卫依赖 _request_logs，证据源已停止写入，下架判定不成立"
+// staleExpiryBlockedS4Reason 是「不下架」的对外说明（运维读日志时看到的那句）。
+//
+// ★ 2026-10-20（迁移 885，v1 族退役）：证据源已换成会话族，**这道护栏的判据
+// 其实已经失效**——会话族一直在写、从不冻结，「证据源停止写入」这个前提不再
+// 成立 ⇒ 严格说它现在只会「永远阻断下架」。
+// 但「要不要退役这道护栏」是**产品决策**（打开它意味着生产开始真的下架
+// stale 模型），不在本轮「删表」的范围内 ⇒ 本轮只换证据源、护栏本身不动，
+// 并把「判据已失效」写进注释与交接。
+// ⇒ 消息里仍点名 _request_logs：那是这道护栏**当初依赖的证据源**（运维要查
+// 它的来历），也是本仓对「v1 裸读」检测器（internal/sqlreadguard）仅剩的
+// 那个可解释的白名单命中点。
+const staleExpiryBlockedS4Reason = "S4 停写中：宽限守卫依赖 v1 证据源（_request_logs，已随 885 退役），证据源停止写入 ⇒ 下架判定不成立；⚠ 该护栏判据现已失效（证据源已是会话族，一直在写），待父会话裁决是否退役它"
 
 // staleExpiryMayRun 判定「能否基于 v1 证据执行 stale 下架」。
 //
@@ -1131,11 +1143,20 @@ func (s *Service) expireStaleModels(ctx context.Context, seen []modelOffer) {
 
 	// S4 停写护栏：证据源停止写入时，宽限守卫失去判据，此时**不动**才是安全方向。
 	//
-	// 这里刻意**不做**「把证据换成 session 侧」的端口：session_turns 的
-	// raw_model_name 目前 0 填充（源头 RequestLogEntry 无该字段，见
-	// session_writer_v2.go 的「视图 NULL 补位」登记），而拿 session_turns.model
-	// 代替是错的——实测它等于 client_model（1138/1138），本守卫要比的却是上游名。
-	// 补齐那个字段是独立的一件事，不在这里顺手糊一个近似实现。
+	// ★ 2026-10-20（迁移 885，v1 族退役）：证据源已换成会话族，
+	// **当初不换的理由已经消失**——本注释说「session_turns 的 raw_model_name
+	// 目前 0 填充（源头 RequestLogEntry 无该字段）」，这条现在**不成立**：
+	// 会话族的 raw_model_name 已随镜像写入（s1a_fields.go §9.60.8：
+	// raw_model_name = COALESCE(outbound_model, client_model)），真库实测
+	// 近 3 天 625/627 行非空非空串，且带的是**上游名**（如
+	// "nvidia/llama-3.1-nemoguard-8b-topic-control"）⇒ 它正是 v1 侧
+	// outbound_model 的同义列（且是它的超集：多了 client_model 回落）
+	// ⇒ 守卫只会更宽松（更少误下架），方向安全。
+	// ⚠ 而「拿 session_turns.model 代替是错的」那条**仍然成立**（model 恒等于
+	// client_model，是客户端名不是上游名）⇒ 这里比的是 raw_model_name，不是 model。
+	//
+	// ⚠ 护栏本身（staleExpiryMayRun）保留不动：它的判据（证据源冻结）现已
+	// 失效，但「要不要退役它」是产品决策，见 staleExpiryBlockedS4Reason。
 	if mayExpire, blockedReason := staleExpiryMayRun(settings.RequestLogsWriteEnabled()); !mayExpire {
 		slog.Info("discovery: skip stale-model expiry",
 			"reason", blockedReason,
@@ -1185,14 +1206,19 @@ func (s *Service) expireStaleModels(ctx context.Context, seen []modelOffer) {
 			  AND raw_model_name NOT IN (%s)
 			  AND available = TRUE
 			  AND COALESCE(admin_protected, FALSE) = FALSE
+			  -- ★ 885（v1 族退役）：证据源换成**会话族原生源**（hot ∪ parent）。
+			  -- 模型名口径用 rl.raw_model_name —— 会话族里它就是 v1 outbound_model
+			  -- 的同义列（COALESCE(outbound_model, client_model)），且是 v1 侧
+			  -- outbound_model 的**超集**（多了 client_model 回落）⇒ 守卫只会更
+			  -- 宽松（更少误下架），方向安全。
 			  AND NOT EXISTS (
-			    SELECT 1 FROM _request_logs rl
+			    SELECT 1 FROM `+db.SessionFamilyTurnsSourceSQL()+` rl
 			    WHERE rl.credential_id = $1
-			      -- case-insensitive: _request_logs.outbound_model can differ in
-			      -- case from model_offers.raw_model_name (e.g. "MiniMax-M3" vs
+			      -- case-insensitive: the model name can differ in case from
+			      -- model_offers.raw_model_name (e.g. "MiniMax-M3" vs
 			      -- "minimax-m3"). A plain = would miss the rows and wrongly
 			      -- expire a model that's actively succeeding.
-			      AND lower(rl.outbound_model) = lower(model_offers.raw_model_name)
+			      AND lower(rl.raw_model_name) = lower(model_offers.raw_model_name)
 			      AND rl.success = TRUE
 			      AND rl.ts > now() - interval '%d hours'
 			  )

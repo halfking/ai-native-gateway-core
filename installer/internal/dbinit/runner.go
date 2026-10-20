@@ -1192,6 +1192,33 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			// 两条腿 hot ∪ parent UNION ALL（前提：hot ∩ parent 实测无重叠，
 			// 计数型指标不会被数两次）。
 			"884_session_family_v_analytics_views.sql",
+			// 890：退役 v1 request_logs 族的**最后一步**（真删表）。
+			// ① canonical 视图 `request_logs_with_current_month` 去掉第三臂
+			//    （冻结 v1 体 + 双反连接去重），只剩两臂 session_turns_hot ∪
+			//    session_turns；② 删 4 张 v1-only 视图；③ 删 v1 族全部表
+			//    （母表带分区）+ hot 表 + 序列；④ 删只服务 v1 族的分区管理
+			//    函数与两个触发器函数。
+			// ⚠ 本文件按**两种物理名**都写（`request_logs` 与 `_request_logs`），
+			//    因为投递通道对"改名后"的处理**不一致**：部署通道
+			//    scripts/apply-db-revision-sequence.sh 会做词法改写，
+			//    安装器**不做**（逐字执行）⇒ 两种名字都试，三条通道都正确。
+			"890_drop_request_logs_v1_family.sql",
+			// 891：给**会话族**建 `WHERE cost_usd < 0` 的部分索引 ——
+			// 根修 bg/routing_health_checks.go recorded_cost_is_negative
+			// 检查的全表扫描。
+			// ★ 起因：890 把 v1 `_request_logs` 族**真删掉** ⇒ **882 给它建
+			//   的那条同款索引随表消亡**（索引活不过它的表）；而检查的源
+			//   随 890 迁到了会话族 ⇒ 会话族上**一条 cost_usd 索引都没有**。
+			// 实测（本地 PG17 真库）：hot 表 Seq Scan，父表每个分区一次
+			//   Seq Scan（4 个分区），谓词挂在 Filter 上。
+			// 形态：两条部分索引（父表 + hot），键序 (ts, credential_id,
+			//   raw_model_name) 服务 30 天窗范围谓词与 GROUP BY，INCLUDE
+			//   (cost_usd, cache_read_tokens, prompt_tokens) 让聚合 index-only。
+			//   谓词 `cost_usd < 0`；条目数 = 负成本行数（实测 0）⇒ 索引本体几页。
+			// 建在父表上 ⇒ 未来月分区自动继承（877 台账口径，882/874 同款）。
+			// ★ 顺序前提：两表与 raw_model_name（707 补列）都由启动序列建 ⇒
+			//   891 编号在其后，天然排在它们之后。
+			"891_session_turns_cost_negative_partial_idx.sql",
 			// 885：给 session_turns **父表与 hot 表**各加 host（网关实例
 			// 身份）+ tags（轮次级标签数组）两列（审计 A5 缺口：全族此前
 			// 无任何主机/实例列，轮次级此前无标签位）。

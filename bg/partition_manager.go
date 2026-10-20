@@ -641,10 +641,24 @@ func (pm *PartitionManager) archiveOldPartitionsIfNeeded(ctx context.Context) {
 	// retention via lifecycle.credential_probe_model_log_ttl_days.
 	pm.cleanupOldCredentialProbeModelLog(ctx)
 
-	// 5. 2026-07-14: _request_logs_bodies partition cleanup (every tick).
-	// Request/response bodies are only needed for debugging; older than
-	// lifecycle.request_logs_bodies_ttl_days (default 7d) get DROP'd.
-	pm.dropOldRequestLogsBodiesPartitions(ctx)
+	// 5. 2026-07-14: _request_logs_bodies partition cleanup — **已于 2026-10-20
+	// 随迁移 885 退役**（v1 正文族已被物理删除，见下方注释块）。
+	//
+	//    退役了什么：每 tick 调用 `drop_old_request_logs_bodies_partitions($1)`
+	//    的那一步（以及它对应的 Go 函数）。该 SQL 函数被 885 一并 DROP ⇒
+	//    885 之后每次 tick 都会 42P01（未定义函数），每 tick 一条 ERROR。
+	//    为什么退役：它清理的是 v1 正文族 `_request_logs_bodies` 的月分区；
+	//    885 之后那张表连同族内其余表/分区/函数一起没了 ⇒ **没有对象可清**。
+	//    现在由什么承担：会话族正文（`session_bodies`）走另一条链：
+	//      · hot → 月分区：`promote_session_bodies_hot_to_partition`（614 建，
+	//        见 promoteSpecs；它只搬运、不删除）；
+	//      · 月分区过期 DROP：迁移 841 的**通用**月度分区保留机制
+	//        （`llm_gateway_partition_retention` 配置表 +
+	//        `llm_gateway_drop_expired_month_partitions()`，由本文件
+	//        dropExpiredMonthlyPartitions 调用）。
+	//    ⚠ 如实记录：841 的配置表**出厂为空** ⇒ 默认不删任何月分区；
+	//      仓库里也没有任何地方 INSERT 它 ⇒ v1 族那条 7 天正文 TTL
+	//      **没有等价物**，会话族月分区目前只增不减（列为遗留项）。
 
 	// 6. 2026-07-15: node_probe_runs audit-table TTL cleanup (every tick).
 	// Append-only audit table with no partition strategy; without this it
@@ -784,10 +798,22 @@ func shouldRunRequestLogsArchive(now time.Time) bool {
 // statement_timeout='30min'（与 30min Go 预算对齐）。集合返回函数是单条
 // 驱动层语句，函数内的批游标不稀释 statement_timeout；252 角色级 30s 会
 // 击杀大积压首跑并整批回滚（活锁，同 R72 F2 对 753 的诊断）。
+//
+// ── 2026-10-20（迁移 885 真删族）：本作业**已退役**，下面这段函数体不会再被执行 ──
+//
+// 退役了什么：`archive_request_logs_default($1)` 这条 v1 族归档调用。
+// 为什么退役：885 把 v1 族（表 + 视图 + 只服务它的分区管理函数）整体删除，
+// `archive_request_logs_default` 在 885 的 DROP 列表里 ⇒ 885 之后调用它必然
+// 42P01（未定义函数）。旧闸（v1LifecycleRetired = !写开关）只是**恰好**挡住了
+// 这条路（停写时为真）；但那是个**偶然**的护栏，不是设计——写开关一翻就漏。
+// ⇒ 现在由 v1LifecycleRetired **恒 true** 无条件挡住（见其注释）。
+// 函数体保留而不删，是为了留住 F-11/F-12/R73 三条审计结论所依赖的形状
+// （每日一次节奏门 + 显式事务 + 30min statement_timeout）：若将来真要复活某个
+// 归档作业，这些必须一起回来，否则会重犯「相位锁死 + 角色级 30s 击杀大积压」。
 func (pm *PartitionManager) archiveOldRequestLogs(ctx context.Context) {
 	if v1LifecycleRetired() {
-		// v1 族已停写且物理改名（迁移 860 待删除标志）：归档摘要没有任何
-		// 消费方，跑了只会往待删族里写新行。回写开启时本门自动恢复。
+		// 885 之后 v1 族已不存在 ⇒ 没有可归档的对象，也没有可调用的函数。
+		// 回写开关不再能把它打开（v1LifecycleRetired 恒 true）。
 		return
 	}
 	if pm.db == nil {
@@ -1289,37 +1315,6 @@ func (pm *PartitionManager) cleanupOldRuntimeAlertEvents(ctx context.Context) {
 	}
 }
 
-// dropOldRequestLogsBodiesPartitions drops monthly partitions of
-// _request_logs_bodies older than the configured TTL. Retention is
-// read fresh from settings.Global on every call
-// (lifecycle.request_logs_bodies_ttl_days, default 7), so changes
-// take effect on the next partition_manager tick.
-func (pm *PartitionManager) dropOldRequestLogsBodiesPartitions(ctx context.Context) {
-	retentionDays := settings.GetPlatformInt("lifecycle.request_logs_bodies_ttl_days", 7)
-	if retentionDays < 1 {
-		retentionDays = 7
-	}
-
-	timeoutCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
-	defer cancel()
-
-	var dropped int64
-	err := pm.db.QueryRow(timeoutCtx,
-		"SELECT COUNT(*) FROM drop_old_request_logs_bodies_partitions($1)",
-		retentionDays,
-	).Scan(&dropped)
-	if err != nil {
-		slog.Error("partition_manager: _request_logs_bodies cleanup failed",
-			"ttl_days", retentionDays, "error", err)
-		return
-	}
-
-	if dropped > 0 {
-		slog.Info("partition_manager: _request_logs_bodies cleanup dropped partitions",
-			"ttl_days", retentionDays, "count", dropped)
-	}
-}
-
 // cleanupOldCredentialProbeModelLog deletes rows from
 // credential_probe_model_log older than the configured TTL.
 //
@@ -1422,33 +1417,53 @@ func (pm *PartitionManager) runArchive(ctx context.Context, s archiveSpec, twoMo
 	}
 }
 
+// v1LifecycleRetired reports whether the v1 request_logs family's lifecycle
+// jobs (ensure/promote/archive) are retired.
+//
+// 2026-10-20（迁移 885 真删族）：**本函数恒为 true**。
+//
+// 旧语义（2026-10-13 起）：S4 停写把 storage.request_logs_write_enabled 翻成
+// false，迁移 860 再把族改名成 `_request_logs*` 作为「待删除标志」。旧闸的前提是
+// **「族还在，只是被冻结」** ⇒ 停写时暂停维护（预建未来分区 / 排空恒空的 hot 表
+// / 归档没人读的摘要都是纯浪费），回写开启时自动恢复维护。
+//
+// 885 之后这个前提**已不存在**：族（表 + 分区 + 序列 + 只服务它的分区管理函数）
+// 被物理删除。于是「恢复写 ⇒ 恢复维护」没有对象可维护 —— 恢复维护只会把
+// 「调用已被 DROP 的函数」重新变成每 tick 一次的 42P01。⇒ 维护侧**无条件**退役：
+// ensure/promote 的 v1 条目已从清单里移除（见 ensureSpecs / promoteSpecs 的注释），
+// archive 的调用由本函数的恒 true 挡在门外。
+//
+// ⚠ 与写开关的关系：storage.request_logs_write_enabled 现在只影响**写面**，
+// 而写面在 885 之后已无落库对象（族表没了）⇒ 「回切到 v1 写」这条路本身已由
+// 885 关闭，不是本函数关的。本函数不再读该设置，是为了让「维护侧无条件退役」
+// 这一事实**不依赖任何设置的状态**。
+func v1LifecycleRetired() bool {
+	return true
+}
+
 // ensureSpecs returns the ensure_<table>_partition() functions we
 // invoke on every tick. Add a row here when a new table is onboarded.
 //
+// 2026-10-20（迁移 885 真删族）：**v1 request_logs 族的两条 ensure 条目已从本
+// 清单移除**（`ensure_request_logs_partition` / `ensure_request_logs_bodies_partition`）。
+//
+// 退役了什么：这两条 v1 族生命周期条目（它们调用的是 885 已 DROP 的函数）。
+// 为什么退役：旧闸（filterRetiredV1Lifecycle）的前提是「族还在但冻结」——
+// 停写时维护一个冻结的族是浪费，回写时自动恢复维护。885 之后族已被物理删除，
+// 前提消失 ⇒ 「恢复维护」没有对象可维护，而继续调用必然 42P01。
+// ⇒ 条目**无条件移除**（不再随写开关出现/消失），避免「看起来还在管、其实管的是空气」。
+// 现在由什么承担：会话族的分区预建由 `ensure_sessions_v2_partitions`（430，
+// 一次覆盖 sessions / session_turns / session_bodies）与
+// `ensure_session_family_partitions`（706，覆盖 memora/censors/tools）承担，
+// 两者都在本清单里，未受本次改动影响。
+//
 // Migration 328a (2026-07-02) split the body columns out of
-// _request_logs into request_logs_bodies. The bodies partition is
+// _request_logs into request_logs_bodies. The bodies partition was
 // paired with the metadata partition by (target_ts → month), so we
-// ensure both at the same time. Without this entry, _request_logs
-// would have a partition that _request_logs_bodies lacks, and the
-// admin/body JOIN would silently return no rows for that month.
-// v1LifecycleRetired reports whether the request_logs family's lifecycle jobs
-// (ensure/promote/archive) should stand down. S4 stop-write flipped
-// storage.request_logs_write_enabled=false (2026-10-13 production, local
-// 07:01:04); migration 860 then renamed the family to `_request_logs*` as the
-// pending-delete marker. The rewritten SQL functions would keep "maintaining"
-// a frozen family (creating future partitions, promoting an always-empty hot
-// table, archiving summaries nobody reads) — wasteful and confusing. The
-// retention DELETE (drop_old_request_logs_bodies_partitions) stays ON: it is
-// the one job that actually shrinks the family ahead of the final DROP.
-// Re-enabling writes flips this back automatically (hot-reloadable setting).
-func v1LifecycleRetired() bool {
-	return !settings.RequestLogsWriteEnabled()
-}
-
+// used to ensure both at the same time. That pairing is gone with the
+// v1 family itself (885).
 func ensureSpecs() []archiveSpec {
 	specs := []archiveSpec{
-		{fnName: "ensure_request_logs_partition", label: "_request_logs"},
-		{fnName: "ensure_request_logs_bodies_partition", label: "_request_logs_bodies"},
 		{fnName: "ensure_request_wal_partition", label: "request_wal"},
 		{fnName: "ensure_routing_decision_log_partition", label: "routing_decision_log"},
 		{fnName: "ensure_credential_model_index_partition", label: "credential_model_index"},
@@ -1525,26 +1540,7 @@ func ensureSpecs() []archiveSpec {
 		// boot ensure 容忍缺失一致 ⇒ 两个步骤的先后顺序无关。
 		{fnName: "ensure_ursm_node_snapshot_min_daily_partition", label: "ursm_node_snapshot_min (daily)", argExpr: "$1::date", partitionUnit: "day", parentTable: "ursm_node_snapshot_min"}, // Migration 830
 	}
-	return filterRetiredV1Lifecycle(specs)
-}
-
-// filterRetiredV1Lifecycle drops the request_logs family's lifecycle entries
-// when the family is retired (stop-write + migration 860 rename). See
-// v1LifecycleRetired for the full rationale.
-func filterRetiredV1Lifecycle(specs []archiveSpec) []archiveSpec {
-	if !v1LifecycleRetired() {
-		return specs
-	}
-	out := make([]archiveSpec, 0, len(specs))
-	for _, s := range specs {
-		switch s.fnName {
-		case "ensure_request_logs_partition", "ensure_request_logs_bodies_partition",
-			"promote_request_logs_hot_to_partition", "promote_request_logs_bodies_hot_to_partition":
-			continue
-		}
-		out = append(out, s)
-	}
-	return out
+	return specs
 }
 
 // archiveSpecs returns the archive_<table>() functions we invoke on
@@ -1582,14 +1578,28 @@ func archiveSpecs() []archiveSpec {
 // Each function signature is promote_<table>_hot_to_partition(p_retention interval,
 // p_batch_size int) RETURNS bigint; the caller loops until the function
 // returns 0 (no more eligible cold rows for this table).
+//
+// 2026-10-20（迁移 885 真删族）：**v1 request_logs 族的两条 promote 条目已从本
+// 清单移除**（`promote_request_logs_hot_to_partition` /
+// `promote_request_logs_bodies_hot_to_partition`）。
+//
+// 退役了什么：这两条 v1 族生命周期条目（它们调用的是 885 已 DROP 的函数）。
+// 为什么退役：旧闸（filterRetiredV1Lifecycle，已随之删除）的前提是「族还在但
+// 冻结」⇒ 排空一个恒空的 hot 表是纯浪费，回写时又自动恢复维护。885 之后族已被
+// 物理删除 ⇒ 前提消失 ⇒ 条目**无条件移除**；继续调用必然 42P01。
+// 现在由什么承担：会话族的 hot 排水由 `promote_session_turns_hot_to_partition`
+// （526）、`promote_session_turn_details_hot_to_partition`（733）、
+// `promote_session_bodies_hot_to_partition`（614）承担，均在本清单内。
+//
+// ⚠ 位次变化：本清单去掉两条 v1 条目后，`promote_session_turn_details_hot_to_partition`
+// 从第 11 位前移到**第 9 位**（下文 promoteDefaultToPartitions 的 R51 批预算注释
+// 同步改了位次）。
 func promoteSpecs() []archiveSpec {
 	specs := []archiveSpec{
-		{fnName: "promote_request_logs_hot_to_partition", label: "_request_logs_hot"},
 		{fnName: "promote_usage_ledger_hot_to_partition", label: "usage_ledger_hot"},
 		{fnName: "promote_request_wal_hot_to_partition", label: "request_wal_hot"},
 		{fnName: "promote_routing_decision_log_hot_to_partition", label: "routing_decision_log_hot"},
 		{fnName: "promote_credential_model_index_hot_to_partition", label: "credential_model_index_hot"},
-		{fnName: "promote_request_logs_bodies_hot_to_partition", label: "_request_logs_bodies"},
 		{fnName: "promote_credit_ledger_hot_to_partition", label: "credit_ledger"},
 		{fnName: "promote_tool_usage_stats_hot_to_partition", label: "tool_usage_stats"},
 		// model_probe_runs_hot 已切换为纯 hot 表策略（2026-07-14），
@@ -1614,7 +1624,7 @@ func promoteSpecs() []archiveSpec {
 		{fnName: "promote_session_censors_hot_to_partition", label: "session_censors_hot"}, // Migration 706
 		{fnName: "promote_session_tools_hot_to_partition", label: "session_tools_hot"},     // Migration 706
 	}
-	return filterRetiredV1Lifecycle(specs)
+	return specs
 }
 
 // promoteDefaultToPartitions iterates promoteSpecs() and, for each,
@@ -1719,7 +1729,8 @@ func (pm *PartitionManager) promoteDefaultToPartitions(ctx context.Context) {
 	cycleCtx, cycleCancel := context.WithTimeout(ctx, promoteCycleTimeout)
 	defer cycleCancel()
 	// R51 (2026-09-21)：batches 是全周期共享预算，排位靠后的表（如
-	// session_turn_details_hot，promoteSpecs 第 11 位）在前序大表积压耗尽
+	// session_turn_details_hot，promoteSpecs 第 9 位——885 退役掉两条 v1 条目后
+	// 由第 11 位前移）在前序大表积压耗尽
 	// 预算后整个周期颗粒无收。改为每表保底至少 1 批：预算耗尽后，尚未跑过
 	// 批的表仍允许再跑一批才让位；外层循环因此遍历全部 spec，不再提前 break。
 	batches := 0

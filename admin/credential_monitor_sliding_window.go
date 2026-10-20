@@ -24,7 +24,7 @@ const (
 // 2026-10-16 audit #153: tenantID + isTenantAdmin thread the caller's tenant
 // scope down to the SQL filter. Redis entries carry no tenant tag, so for
 // tenant_admin callers we skip the Redis fast path and force the DB fallback
-// (which carries `AND ($5 = '' OR tenant_id = $5)`).
+// (which carries `AND ($5 = ” OR tenant_id = $5)`).
 func (m *CredentialMonitorHandlers) loadSlidingWindowEntries(
 	ctx context.Context,
 	credentialID int,

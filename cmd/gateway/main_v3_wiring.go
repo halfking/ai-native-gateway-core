@@ -9,8 +9,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-
 	"github.com/kaixuan/llm-gateway-go/db"
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/compression"       //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/memory"                  //nolint:depguard // historical violation, B1 routing.go CQRS will fix
@@ -112,12 +110,18 @@ var lastOutboundSessionSQL = `
 // LastOutboundForSession runs the L3 cold-start fallback query.
 //
 // 2026-10-13 S3 波 2（停写切换）：gw_session_id 是会话内谓词（A 形态）。
-// 原实现只读 _request_logs 母表（outbound 自 Phase 1 起就大多在 bodies 表，
+// 原实现只读 v1 母表（outbound 自 Phase 1 起就大多在 bodies 表，
 // 该查询本就接近恒空），S4 停写后新会话完全无行。会话族优先：turns 元数据
 // 四列（113 列契约内）经 SessionFamilyTurnsForSessionSQL 按 session 内推，
 // outbound_body 经 SessionFamilyBodiesSourceSQL 按 request_id 单键 JOIN
-// （该源不投影 ts，ts 等值 JOIN 形态禁止）。0 行回退 v1 母表原查询，
-// 服务镜像前历史会话。
+// （该源不投影 ts，ts 等值 JOIN 形态禁止）。
+//
+// ★ 2026-10-20（迁移 885，v1 族整体退役）：**v1 母表兜底腿已删除**。
+// 那条腿只在会话族查不到行时触发，而它读的关系已被 DROP ⇒ 42P01 ⇒
+// 「会话族没命中」会从「回退到 v1 取历史」变成「整条查询报错」。
+// 镜像前的历史会话在会话族里本就没有对应轮次，回退腿取到的内容
+// 属于「另一个存储面里的同一段历史」，退役后不可得 ⇒ 直接返回
+// pgx.ErrNoRows（调用方按「无 outbound」处理），不制造 42P01。
 func (a *pgBackendAdapter) LastOutboundForSession(ctx context.Context, tenantID, gwSessionID string) (*compression.LastOutboundRow, error) {
 	if a.dbConn == nil {
 		return nil, fmt.Errorf("db pool not configured")
@@ -127,22 +131,7 @@ func (a *pgBackendAdapter) LastOutboundForSession(ctx context.Context, tenantID,
 		return nil, fmt.Errorf("db pool is nil")
 	}
 	sessionRow := pool.QueryRow(ctx, lastOutboundSessionSQL, gwSessionID, tenantID)
-	row, err := scanLastOutboundRow(sessionRow)
-	if err == nil {
-		return row, nil
-	}
-	if !errors.Is(err, pgx.ErrNoRows) {
-		return nil, err
-	}
-	v1Row := pool.QueryRow(ctx, `
-		SELECT outbound_body, outbound_msg_count, outbound_token_est,
-		       outbound_msg_hashes, compression_meta
-		FROM _request_logs
-		WHERE tenant_id = $1 AND gw_session_id = $2 AND outbound_body IS NOT NULL
-		ORDER BY ts DESC
-		LIMIT 1
-	`, tenantID, gwSessionID)
-	return scanLastOutboundRow(v1Row)
+	return scanLastOutboundRow(sessionRow)
 }
 
 func scanLastOutboundRow(row interface{ Scan(dest ...any) error }) (*compression.LastOutboundRow, error) {

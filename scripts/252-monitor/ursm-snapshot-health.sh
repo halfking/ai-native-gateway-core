@@ -372,7 +372,9 @@ log "control ok: rows_in_last_10min=$control"
 #     「空占位」与「真没数据」——后者恰恰是本检查要抓的形态。
 span=$(de "SELECT coalesce(max((regexp_match(c.relname, '_([0-9]{8})\$'))[1]::date)::text, '0') || '|' ||
                  coalesce(min((regexp_match(c.relname, '_([0-9]{8})\$'))[1]::date)::text, '0') || '|' ||
-                 count(*) FILTER (WHERE pg_relation_size(c.oid) > 0)
+                 count(*) FILTER (WHERE pg_relation_size(c.oid) > 0) || '|' ||
+                 (SELECT relkind::text FROM pg_class WHERE oid = 'ursm_node_snapshot_min'::regclass) || '|' ||
+                 (SELECT count(*) FROM pg_inherits WHERE inhparent = 'ursm_node_snapshot_min'::regclass)
           FROM pg_class c
           JOIN pg_inherits h ON h.inhrelid = c.oid
           WHERE h.inhparent = 'ursm_node_snapshot_min'::regclass
@@ -381,14 +383,31 @@ if sql_failed "$span"; then
   # 体检本身失败**不阻断**：它只是告警探针，不能让它把一台健康的机器判成 exit 3。
   log "WARN: baseline-span probe failed (non-fatal): ${span//$'\n'/ }"
 else
-  IFS='|' read -r span_hi span_lo span_ndays <<<"$span"
-  log "baseline span: ${span_ndays:-?} day(s) with data (oldest $span_lo, newest $span_hi), BASELINE_DAYS=${BASELINE_DAYS}"
-  if [ "${span_ndays:-0}" -lt "${BASELINE_DAYS}" ] 2>/dev/null; then
-    # ★ 记进 summary 行，让下游能区分「7 天都健康」与「只有 3 天、判定偏松」。
-    BASELINE_THIN="thin:${span_ndays}d/${BASELINE_DAYS}d"
-    echo "WARN: 基线样本不足 —— 表里只有 ${span_ndays} 天数据，判定阈值却按 ${BASELINE_DAYS} 天标定。" >&2
-    echo "      本次 OK 判定是**偏宽松**的，不可当作「${BASELINE_DAYS} 天都健康」。" >&2
-    echo "      常见原因：URSM_SNAPSHOT_RETENTION_DAYS 被调小（当前默认 7 天）。" >&2
+  # ★★ P18（§143.32）：探针多带两个字段 —— 表的 relkind 与分区总数。
+  #    原因：这条探针**只数「带日期的分区」**，所以它对**非分区表**恒返回 0 天。
+  #    211 实测：ursm_node_snapshot_min 是普通表（relkind='r'，pg_inherits 无子分区），
+  #    探针因此每轮报「0 day(s) with data」⇒ 接着报「基线样本不足 / OK 判定偏宽松」
+  #    ⇒ ★ **那是假告警**（211 的表里实测有 7 天数据、5,933,760 行）。
+  #    ⇒ 探针对「不适用」的形态必须**明确说 n/a**，不能把「数不到」说成「没有」。
+  IFS='|' read -r span_hi span_lo span_ndays span_relkind span_nparts <<<"$span"
+  if [ "${span_relkind:-}" != "p" ]; then
+    # 该表不是分区父表 ⇒ 目录探针**不适用** ⇒ 本探针不出结论、不发告警。
+    # ★ 基线天数改由主判据的 ref_p50 判定（ref_p50<=0 的极端形态由「基线为空 ⇒ ABORT」覆盖）。
+    BASELINE_THIN=""
+    log "baseline span: n/a（本表 relkind=${span_relkind:-?}，不是分区父表 ⇒ 目录探针不适用；基线天数由主判据的 ref_p50 判定）"
+  elif [ "${span_nparts:-0}" -gt 0 ] && [ "${span_ndays:-0}" -eq 0 ]; then
+    # 是分区父表、但没有一个分区名匹配 _YYYYMMDD ⇒ 命名约定不适用 ⇒ 同样不出结论。
+    BASELINE_THIN=""
+    log "baseline span: n/a（本表是分区父表，但 ${span_nparts} 个分区里没有一个分区名匹配 _YYYYMMDD ⇒ 目录探针不适用）"
+  else
+    log "baseline span: ${span_ndays:-?} day(s) with data (oldest $span_lo, newest $span_hi), BASELINE_DAYS=${BASELINE_DAYS}"
+    if [ "${span_ndays:-0}" -lt "${BASELINE_DAYS}" ] 2>/dev/null; then
+      # ★ 记进 summary 行，让下游能区分「7 天都健康」与「只有 3 天、判定偏松」。
+      BASELINE_THIN="thin:${span_ndays}d/${BASELINE_DAYS}d"
+      echo "WARN: 基线样本不足 —— 表里只有 ${span_ndays} 天数据，判定阈值却按 ${BASELINE_DAYS} 天标定。" >&2
+      echo "      本次 OK 判定是**偏宽松**的，不可当作「${BASELINE_DAYS} 天都健康」。" >&2
+      echo "      常见原因：URSM_SNAPSHOT_RETENTION_DAYS 被调小（当前默认 7 天）。" >&2
+    fi
   fi
 fi
 

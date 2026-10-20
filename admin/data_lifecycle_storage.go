@@ -1003,6 +1003,7 @@ func queryDirectory(path string) directoryInfo {
 //	生产（Linux 原生文件系统）没有这层开销，该开销不成立。
 //	本轮实测：改掉子查询后，采集从「>15s 打满超时」降到 4–6s，
 //	落进 15s 预算内 ⇒ 启动预热成功 ⇒ 端点稳定 200。
+//
 // tableSizesSQL Top-N 大表查询的 SQL 正文。
 //
 // 抽成包级常量（而不是留在函数体里）：判据需要用**同一条**语句跑

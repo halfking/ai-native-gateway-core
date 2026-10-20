@@ -521,17 +521,18 @@ func (b *sessionRequestStatusBackfill) sampleRemaining(ctx context.Context) {
 // window-less, because "rows that would be lost at retirement" is a different
 // question from "rows this job can still fix" and _hot holds only ~6k rows.
 const sessionRequestStatusRemainingSQL = `
-	SELECT (SELECT count(*)
-	          FROM public.session_turns t
-	          JOIN public._request_logs l ON l.request_id = t.request_id
-	         WHERE t.request_status IS NULL
-	           AND l.request_status IS NOT NULL
-	           AND t.partition_date >= (now() - interval '7 days')::date)
-	     + (SELECT count(*)
-	          FROM public.session_turns_hot t
-	          JOIN public._request_logs l ON l.request_id = t.request_id
-	         WHERE t.request_status IS NULL
-	           AND l.request_status IS NOT NULL)`
+	-- ★ 2026-10-20（迁移 885，v1 族退役）：标签源（v1 族）已整体 DROP ⇒
+	-- 没有任何 turn 还有「可抄的孪生源行」⇒ **剩余量恒为 0**。
+	--
+	-- 这正是这个量表的定义（见文件头「v1-side IS NOT NULL mirrors the
+	-- candidate query」）：它数的是「**还能被抄**的行」，不是「标签为 NULL
+	-- 的行」。源没了 ⇒ 可抄的行数为 0 ⇒ 量表为 0。
+	--
+	-- ⚠ **不要把它读成「所有 NULL 标签都被补上了」**：823 之前的历史行现在
+	-- 是**结构性不可填**（标签随 v1 族一起消失），它们的 request_status 永远
+	-- 是 NULL。D9 退役门（用这个量表当放行信号）随 v1 族退役**不再有意义**——
+	-- 退役的放行条件是「剩余量归零」，而剩余量现在**结构上**就是 0。
+	SELECT 0::bigint`
 
 // sessionRequestStatusSourceProbeSQL checks both ends of the copy. to_regclass
 // yields NULL for an absent relation instead of raising, which is what turns
@@ -593,13 +594,19 @@ const sessionRequestStatusSourceProbeSQL = `
 // window-less gauge keeps reporting the backlog and the release gate stays
 // honest. See the file header for the full argument.
 const sessionRequestStatusCandidateSQL = `
+	-- ★ 2026-10-20（迁移 885，v1 族退役）：标签源已整体 DROP ⇒ 候选集**恒为空**。
+	--
+	-- 保留这条语句的形状（键集分页 + LIMIT + 同样的投影列）是为了让 drain 的
+	-- 「没有候选」路径仍然是一次**廉价查询**（而不是「没有查询」），也让
+	-- processBatch 的批次 machinery 一行未动。AND FALSE 是显式的「无源」
+	-- 表达：planner 把它折叠成一个空 Result，不会去扫 session_turns 再逐行
+	-- 探测一个已不存在的源。
 	SELECT t.id, t.partition_date, t.tenant_id, t.request_id
 	FROM public.session_turns t
-	JOIN public._request_logs l ON l.request_id = t.request_id
 	WHERE t.id > $1
 	  AND t.partition_date >= (now() - interval '7 days')::date
 	  AND t.request_status IS NULL
-	  AND l.request_status IS NOT NULL
+	  AND FALSE
 	ORDER BY t.id
 	LIMIT $2`
 
@@ -752,9 +759,13 @@ func buildRequestStatusUpdateSQL(batch []requestStatusBackfillRow) (string, []an
 		args = append(args, r.id, r.partitionDate, r.requestID)
 	}
 	sb.WriteString(") AS v(id, partition_date, request_id) ")
-	sb.WriteString("JOIN public._request_logs l ON l.request_id = v.request_id ")
+	// ★ 2026-10-20（迁移 885，v1 族退役）：标签源（v1 族）已整体 DROP ⇒
+	// 本语句**永远匹配不到任何行**（候选集恒为空，见
+	// sessionRequestStatusCandidateSQL）。保留 FROM-VALUES + 同样的 $N 占位
+	// 是为了让参数个数与形状不变（pgx 会拒绝「语句没引用却传了参数」）。
+	// `AND FALSE` 让它成为一次真正的 no-op，而不是「把标签写成它自己」。
 	sb.WriteString("WHERE t.id = v.id AND t.partition_date = v.partition_date ")
-	sb.WriteString("AND t.request_status IS NULL AND l.request_status IS NOT NULL")
+	sb.WriteString("AND t.request_status IS NULL AND FALSE")
 	return sb.String(), args
 }
 

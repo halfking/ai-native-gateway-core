@@ -63,8 +63,32 @@ func TestSourceFamilyLocalUnionProof(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := sourceFamilyForFile(string(raw), "admin/tenant_stats_logs_table.go", false); got != familySessionBase {
-		t.Fatalf("real tenant source family=%s, want mixed source", got)
+	// ★ 2026-10-20（迁移 885，v1 族真删）：tenant stats 的四臂收敛成两臂
+	// （会话 hot ∪ 母表）⇒ 它的族从「混合（会话 + 基表）」变成
+	// **「只读会话族」**（familySessionOnly）。
+	//
+	// ⇒ 判据从「必须是 mixed」**反转**为「必须是 session-only」。
+	if got := sourceFamilyForFile(string(raw), "admin/tenant_stats_logs_table.go", false); got != familySessionOnly {
+		t.Fatalf("real tenant source family=%s, want session-family-only", got)
+	}
+	// ★ 分类器只读文本；这里再补一条**编译产物级**的证明：两个输入态
+	// （writeEnabled 真/假）都必须编译出「会话族两腿、无任何 v1 腿」的
+	// UNION —— 这才是「它真的只读会话族」的硬证据，而不是「文本里出现过
+	// session_turns」。
+	for _, enabled := range []bool{false, true} {
+		query := tenantStatsLogsTableSQL(enabled)
+		literal := "package admin; func source() string { return " + strconv.Quote(query) + " }"
+		if !localSessionOnlyUnion(literal) {
+			t.Errorf("tenant stats SQL（writeEnabled=%v）不是「只有会话族两腿」的 UNION：\n%s", enabled, query)
+		}
+		if hits := retiredV1RelationsInSQL(query); len(hits) > 0 {
+			t.Errorf("tenant stats SQL（writeEnabled=%v）仍引用已退役 v1 族关系名 %v —— v1 族已随 885 被 DROP：\n%s",
+				enabled, hits, query)
+		}
+	}
+	// 就地阳性对照：同一把尺子必须能认出 v1 形态（否则上面那条恒绿）。
+	if hits := retiredV1RelationsInSQL("FROM _request_logs p"); len(hits) == 0 {
+		t.Error("retiredV1RelationsInSQL 认不出 v1 形态 —— 负向断言已恒绿，判据坏了")
 	}
 }
 
@@ -73,20 +97,36 @@ func TestSourceFamilyProofIsFileScoped(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := sourceFamilyForFile(string(raw), "admin/other.go", false); got != familyBase {
-		t.Fatalf("file proof leaked: %s", got)
+	// ★ 2026-10-20（迁移 885）：**按路径的证明已退役**（见
+	// sourceFamilyForFile 的头注）⇒ 这道门的形态从「路径相关的证明不许
+	// 泄漏」换成「**分类不得依赖路径**」。
+	//
+	// 原来守的是：tenant stats 的「混合」证明只对这个文件生效，同样内容
+	// 放到别的路径下不得拿到那一档。现在没有按路径的证明了 ⇒ 等价且仍
+	// 成立的不变式是：**同一段源码在不同路径下必须得到同一个族**。
+	//
+	// ⚠ 这条断言只有在「存在路径相关的暗箱」时才会红 ⇒ 必须配阳性对照
+	// （下面的 v1 形态片段：它在**任何**路径下都必须被判成基表族）。
+	base := sourceFamilyOf(string(raw), false)
+	for _, path := range []string{"admin/other.go", "admin/tenant_stats_logs_table.go", "bg/x.go"} {
+		if got := sourceFamilyForFile(string(raw), path, false); got != base {
+			t.Fatalf("分类依赖路径：%s 得到 %s，纯文本分类是 %s —— 分类器必须与路径无关", path, got, base)
+		}
 	}
+	// 阳性对照：v1 形态的片段在任何路径下都必须被判成基表族
+	//（⇒ 上面那条断言不是恒绿：分类器确实会区分）。
 	for _, code := range []string{
 		"package admin; func other() string { return `SELECT ts FROM _request_logs` }",
 		"package admin; // func tenantStatsLogsTableSQL(bool) string {}\nvar q = `SELECT ts FROM _request_logs`",
 		"package admin; func (*Handler) tenantStatsLogsTableSQL(bool) string { return `SELECT ts FROM _request_logs` }",
 		"package admin; func tenantStatsLogsTableSQL(any) string { return `SELECT ts FROM _request_logs` }",
 	} {
-		if got := sourceFamilyForFile(code, "admin/tenant_stats_logs_table.go", false); got != familyBase {
-			t.Fatalf("proof accepted different source declaration: %s", got)
+		for _, path := range []string{"admin/tenant_stats_logs_table.go", "admin/other.go"} {
+			if got := sourceFamilyForFile(code, path, false); got != familyBase {
+				t.Fatalf("v1 形态片段在 %s 下被判成 %s，期望基表族", path, got)
+			}
 		}
 	}
-
 }
 
 // stripSQLComments removes `-- ...` to end of line and `/* ... */` from a SQL
