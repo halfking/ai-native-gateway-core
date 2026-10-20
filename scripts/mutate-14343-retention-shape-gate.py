@@ -18,6 +18,12 @@
   ② 登记册（数据侧）→ M3
   ③ 缺口打桩的**被钉住对象**（机制侧）→ M4
   ④ 证据字符串（实现 + 文档侧）→ M5 / M6 / M7
+  ⑤ §143.45 的双向钉与新口径 → M8 / M9 / M10 / M11
+
+★★ §143.45 更新（M3 重指 / M4 反向 / 新增 M8~M11）：
+   ★ **门改了 ⇒ 变异必须跟着改**；否则「变异全绿」只是**变异没打在新判据上**
+     —— 例如 M4 原意是「把 usage_facts 填进注册表」，而 §143.44 已经填了 ⇒
+     该变异退化成「加一条重复登记」⇒ 门当然不红 ⇒ 那不是门没牙，是变异失效。
 
 用法：
     python3 scripts/mutate-14343-retention-shape-gate.py [REPO_ROOT]
@@ -62,23 +68,27 @@ MUTATIONS = [
     # M3：把 211 快照族的关键字节数 +1 ⇒ 绝对字节钉住必须红。
     #   ★ 刻意改 verdict **不**能红的那一位：判定结果不变，只有「钉住的绝对读数」能发现它
     #     ⇒ 这正是「绝对读数钉住」存在的理由。
+    #   ★ §143.45：needle 已重指到 post-§143.44 的读数（原值 6042257/2411266048
+    #     已被本轮生产写入改变 ⇒ 那条 needle 在刷新后的登记册里**不存在**
+    #     ⇒ 脚本会按纪律「SKIP-needle-count」作废该轮 ⇒ 变异统计失真）。
     ("M3", "登记册的关键字节数被改动（verdict 仍自洽 ⇒ 只能靠绝对读数钉住发现）",
      TSV_REL,
-     "6042257\t2411266048\t367839785",
-     "6042257\t2411266049\t367839785",
+     "6083147\t2029412736\t0",
+     "6083147\t2029412737\t0",
      "TestSection14343RegistryIsRecomputable"),
 
     # ── ③ 缺口打桩的**被钉住对象**（机制侧）────────────────────────────
-    # M4：给 stateTableTTLSpecs() 加一条 usage_facts ⇒ 缺口打桩必须红。
-    #   ★ 这条变异的意义：**门红不是坏事** —— 它表示「usage_facts 的留存被填上了」，
-    #     于是证据链（登记册 + runbook）必须同步更新。
-    #   ★ 替换串**不包含** needle（把 cache_metrics 那一条**换成** usage_facts，
-    #     而不是追加 —— 追加会让替换串包含 needle ⇒ 脚本按纪律作废该轮）。
-    ("M4", "usage_facts 出现在 stateTableTTLSpecs() 里（缺口被填上 ⇒ 门必须红，逼着同步证据链）",
+    # M4：★ §143.45 **反向**：把 stateTableTTLSpecs() 里的 usage_facts 登记**改名**。
+    #   ★ 为什么要反向：§143.44 已经把 usage_facts 登记进去了 ⇒ 原变异
+    #     （「加一条 usage_facts」）现在只是「加一条重复登记」⇒ 门不会红
+    #     ⇒ 那不叫「门没牙」，那叫**变异没打在新判据上**。
+    #   ★ 改名成 usage_facts_x 而不是删行：改名是**纯语义**变化
+    #     （父表名不再精确等于 usage_facts ⇒ 该族回到无留存）⇒ 仓内那根钉必须红。
+    ("M4", "usage_facts 的仓内登记被改名（仓内那侧闭合被破坏 ⇒ 门必须红）",
      PARTMGR_REL,
-     "\t\t{parent: \"cache_metrics\", setting: \"lifecycle.cache_metrics_ttl_days\", fallback: 90},\n",
-     "\t\t{parent: \"usage_facts\", setting: \"lifecycle.usage_facts_ttl_days\", fallback: 30},\n",
-     "TestSection14343UsageFactsGapIsPinned"),
+     "\t\t{parent: \"usage_facts\", setting: \"lifecycle.usage_facts_ttl_days\", fallback: 365, partitionUnit: \"day\"},\n",
+     "\t\t{parent: \"usage_facts_x\", setting: \"lifecycle.usage_facts_x_ttl_days\", fallback: 365, partitionUnit: \"day\"},\n",
+     "TestSection14343UsageFactsGapIsOpenInProductionAndClosedInRepo"),
 
     # ── ④ 证据字符串（实现 + 文档侧）────────────────────────────────────
     # M5：实现里的 row-delete 常量被改名 ⇒ 「211 走 row-delete」这条证据不可复现。
@@ -100,6 +110,39 @@ MUTATIONS = [
      RUNBOOK_REL,
      "#### §143.43.1 上一轮的三处判词（**逐字保留**，供对照）",
      "#### §143.43.1 （原文保留块已被删除）",
+     "TestSection14343EvidenceStringsArePinned"),
+    # ── ⑤ §143.45 新增：双向钉的另外几根 + 新口径 ─────────────────────────
+    # M8：把登记册里 252 usage_facts 族的 ttl_registered 改成 yes（并把 verdict
+    #   同步改成 PARTITION_DROP_ACTIVE，使**决策表重算仍然自洽**）
+    #   ⇒ 只能靠「生产侧那根钉」发现 ⇒ 证明它不是恒绿门。
+    ("M8", "登记册谎报生产已闭合（ttl_registered=yes 且 verdict 自洽 ⇒ 靠生产侧钉发现）",
+     TSV_REL,
+     "276190\t254402560\t0\tno\tGAP_NO_RETENTION\tTTL_DECIDED_PENDING_DEPLOY",
+     "276190\t254402560\t0\tyes\tPARTITION_DROP_ACTIVE\tTTL_DECIDED_PENDING_DEPLOY",
+     "TestSection14343UsageFactsGapIsOpenInProductionAndClosedInRepo"),
+
+    # M9：把 method 漂回「还没拍板」（TTL_DECIDED_PENDING_DEPLOY → TTL_DECISION_NEEDED）
+    #   ★ 只动 211 那一行（needle 唯一）：两行都写同一个值 ⇒ needle 不唯一会被作废。
+    ("M9", "登记册的 method 漂回「还没拍板」（已拍板待部署 vs 还没拍板 必须可区分）",
+     TSV_REL,
+     "88883\t80232448\t0\tno\tGAP_NO_RETENTION\tTTL_DECIDED_PENDING_DEPLOY",
+     "88883\t80232448\t0\tno\tGAP_NO_RETENTION\tTTL_DECISION_NEEDED",
+     "TestSection14343UsageFactsGapIsOpenInProductionAndClosedInRepo"),
+
+    # M10：把分区父表族的族总量写成 0 —— 正是 `pg_total_relation_size(父表)=0`
+    #   那个量具坑的形状 ⇒ 「族总量必须 > 0」这根钉必须红。
+    #   ⚠ 它也会触发绝对字节钉（同一行）⇒ 双红属正常，脚本只看"是否红"。
+    ("M10", "分区父表族的族总量被写成 0（抄了父表函数的返回值 ⇒ 量具坑复发）",
+     TSV_REL,
+     "29262511\t9226485760\t0",
+     "29262511\t0\t0",
+     "TestSection14343RegistryIsRecomputable"),
+
+    # M11：把 §143.45 的订正横幅二十三删掉 ⇒ 结论的书面载体消失。
+    ("M11", "runbook 的订正横幅二十三被删（§143.45 的书面载体消失）",
+     RUNBOOK_REL,
+     "> 🚨🚨🚨 **订正横幅二十三（§143.45 追加 · 订正 §143.43 的三处「现状」）**",
+     "> 🚨🚨🚨 **（横幅已被删除）**",
      "TestSection14343EvidenceStringsArePinned"),
 ]
 
@@ -175,7 +218,9 @@ def main():
             shutil.copy2(backup, target)
 
             open(target, "wb").write(orig.replace(nb, repl.encode()))
-            cp = run_go(tree, ["go", "vet", "./admin/"])
+            # ★ vet 覆盖被变异文件所在包：admin/（门与决策表）与 bg/（M4 改的注册表）
+            #   —— 只 vet ./admin/ 时，M4 那条变异根本不会被编译检查到。
+            cp = run_go(tree, ["go", "vet", "./admin/", "./bg/"])
             if cp.returncode != 0:
                 print(f"❌ {mid}: 变异后编译/vet 失败 ⇒ 读数作废（编译红 ≠ 断言红）")
                 print((cp.stdout + cp.stderr)[-1200:])

@@ -1,34 +1,53 @@
 # retention_shape_findings.tsv —— 快照族 / usage_facts 族 留存形态与可回收空间 登记册
 #
-# 产出轮次：§143.43（2026-10-21）。全部读数来自生产**只读**查询，
-#   复现命令：bash ~/.mavis-tools/lgwp-prod.sh scripts/audit/verify_snapshot_retention_shape.sql 200   （252）
-#             ssh 211 'docker exec -i acc-pg17 psql -U acc_super -d llm_gateway -f -' < scripts/audit/verify_snapshot_retention_shape.sql
+# 产出轮次：§143.45（2026-10-21）刷新。**首次产出：§143.43（2026-10-21）**。
+#   ★ 本表是**某个时点的生产快照**，不是活数据：§143.44 在两实例上做了真实写入
+#     （211 分区化 + VACUUM FULL；252 VACUUM FULL + DROP 10 个空日分区）
+#     ⇒ 绝对字节数 / relkind / 行数全部变化 ⇒ §143.43 的读数已整体失效。
+#     ⇒ **每次对这两个族做生产写入，都必须回来刷新本表**（否则门钉住的是一个
+#       已经不存在的世界，而门自己不会知道）。
+#   复现命令：bash ~/.mavis-tools/lgwp-prod.sh scripts/audit/refresh_retention_registry.sql 300   （252）
+#             ssh 211 'docker exec -i acc-pg17 psql -U acc_super -d llm_gateway -f -' < scripts/audit/refresh_retention_registry.sql
 #
 # ★ 本表是**事实层**，不是结论层：verdict 列必须能被
 #   admin/retention_shape_verdict.go 的 ClassifyRetentionShape() **重算出来**
 #   （admin/section_14343_retention_shape_test.go 逐行重算 + 钉住绝对字节数）。
 #   登记册不可能自说自话。
 #
+# ★ **量具口径（§143.45 实测踩到的坑）**：
+#   `pg_total_relation_size(parent)` 对**分区父表返回 0**（父表自己没有存储）
+#   ⇒ **族总量必须逐分区求和**。两实例实测均如此：
+#     252 快照族父表 0 B / 子分区合计 9,226,485,760 B；
+#     211 快照族父表 0 B / 子分区合计 2,029,412,736 B。
+#   ⇒ 表里分区父表行的 total_bytes 一律是**子分区求和**的结果，不是父表函数的返回值。
+#
+# ★ `ttl_registered` 的口径 = **生产**事实（settings_kv 里有没有那个键，值无关）。
+#   §143.44 已在**仓内**登记 usage_facts（TTL=365 + 按日 DROP），但**尚未部署**
+#   ⇒ 两实例的 settings_kv 里仍无 `lifecycle.usage_facts_ttl_days`
+#   ⇒ 本列仍是 no（生产缺口**未闭合**）⇒ verdict 仍是 GAP_NO_RETENTION。
+#   ⇒ ★ 仓内闭合 ≠ 生产闭合：这两件事必须分开记账，混在一起就会谎报生产状态。
+#
 # 列：
 #   instance        211 / 252 / both
 #   scope           SNAPSHOT_FAMILY | SNAPSHOT_OBJECT | USAGE_FACTS_FAMILY | USAGE_FACTS_OBJECT | STRUCTURAL_GAP
 #   object          对象名（USAGE_FACTS_OBJECT 的多分区行用区间表示）
-#   relkind         p=分区父表 r=普通表 -=不适用
+#   relkind         p=分区父表 r=普通表 -=不适用（对象已不存在 / 机制缺口）
 #   rows            实测行数（EXISTS/count(*) 口径，不是 n_live_tup 估算）
-#   total_bytes     pg_total_relation_size
+#   total_bytes     pg_total_relation_size（分区父表行 = 子分区求和，见上方口径）
 #   reclaimable_bytes  可回收字节（口径见 evidence）
-#   ttl_registered  yes/no —— 该族是否有留存登记（值无关判据：settings_kv 里有没有那个键）
+#   ttl_registered  yes/no —— 该族在**生产**是否有留存登记（值无关判据：settings_kv 里有没有那个键）
 #   verdict         必须等于 ClassifyRetentionShape 的输出
-#   method          回收手段（NONE 表示不回收）
+#   method          回收手段（NONE 表示不回收；ALREADY_RECLAIMED 表示本轮已回收）
 #   evidence        读数来源与关键中间量
 #
 instance	scope	object	relkind	rows	total_bytes	reclaimable_bytes	ttl_registered	verdict	method	evidence
-252	SNAPSHOT_FAMILY	public.ursm_node_snapshot_min	p	28969382	10033619520	0	yes	PARTITION_DROP_ACTIVE	NONE	生产日志 mode=partition-drop retention=168h0m0s；2026-10-21T00:01:21 dropped=1 bytes_reclaimed=293322752；8 个日分区 20261014..20261021
-252	SNAPSHOT_OBJECT	public.ursm_node_snapshot_min_legacy	r	2614886	893845504	0	yes	NOT_RECLAIMABLE	NONE	迁移 830 的回滚锚点：830 down 以 RENAME 把它换回原名，删它就断了唯一退路
-211	SNAPSHOT_FAMILY	public.ursm_node_snapshot_min	r	6042257	2411266048	367839785	yes	ROW_DELETE_BLOAT	VACUUM_FULL	生产日志 mode=row-delete（每小时 DELETE 约 38k 行）；堆可回收 = 堆 1764524032 − 活元组 1396684247；死元组 942614（13.56%）
-252	USAGE_FACTS_FAMILY	public.usage_facts	p	275828	373678080	0	no	GAP_NO_RETENTION	TTL_DECISION_NEEDED	settings_kv 无 lifecycle.usage_facts_ttl_days（值无关判据）；15 天累计 275828 行 ⇒ 约 1.5 MB/天，且无任何 worker/DROP 登记
-252	USAGE_FACTS_OBJECT	public.usage_facts_default	r	0	83492864	83476480	yes	RECLAIMABLE_NOW	REINDEX_OR_VACUUM_FULL	heap 0 B + index 83476480 B，0 行 ⇒ 纯索引膨胀（默认分区曾收过行，索引页不回收）
-252	USAGE_FACTS_OBJECT	public.usage_facts_20260926..20261005	r	0	36249600	36249600	yes	RECLAIMABLE_NOW	DROP_EMPTY_DAY_PARTITION	10 个空日分区（数据自 10-06 起才有）；合计仅索引 36052992 B
-211	USAGE_FACTS_FAMILY	public.usage_facts	p	88689	79904768	0	no	GAP_NO_RETENTION	TTL_DECISION_NEEDED	settings_kv 无 lifecycle.usage_facts_ttl_days（值无关判据）；日均约 0.9 MB
-211	USAGE_FACTS_OBJECT	public.usage_facts_20261011	r	0	65536	65536	yes	RECLAIMABLE_NOW	DROP_EMPTY_DAY_PARTITION	空日分区（仅索引 57344 B）
-both	STRUCTURAL_GAP	public.ursm_node_snapshot_min（新装库形态）	-	0	0	0	no	STRUCTURAL_GAP_NO_AUTO_PATH	MANUAL_830_MIGRATION	830 是 manual-by-design（.sql.skip，既未注册进 installer 也未进启动序列）⇒ 新装库永远是非分区形态 ⇒ 每个新环境都会重现 211 的 bloat 形态
+252	SNAPSHOT_FAMILY	public.ursm_node_snapshot_min	p	29262511	9226485760	0	yes	PARTITION_DROP_ACTIVE	NONE	8 个日分区 20261014..20261021（族总量 = 逐分区求和，父表 pg_total_relation_size = 0）；生产日志 mode=partition-drop，2026-10-21T00:01:21 dropped=1 bytes_reclaimed=293322752；§143.43 的 10,033,619,520 B 已被 20261013 分区的 DROP 改变（−807,133,760 B 净差）
+252	SNAPSHOT_OBJECT	public.ursm_node_snapshot_min_legacy	r	2836620	893845504	0	yes	NOT_RECLAIMABLE	NONE	迁移 830 的回滚锚点：830 down 以 RENAME 把它换回原名，删它就断了唯一退路；heap 620,847,104 B + index 272,801,792 B
+211	SNAPSHOT_FAMILY	public.ursm_node_snapshot_min	p	6083147	2029412736	0	yes	PARTITION_DROP_ACTIVE	NONE	§143.44 已分区化（830 列驱动 + 历史搬运 6,065,757 行）；10 个日分区 20261014..20261023（族总量 = 逐分区求和）；生产日志 mode=partition-drop（2026-10-20T20:29:30Z 起；此前为 row-delete，每小时 DELETE 约 38k 行）⇒ ★ 本行取代 §143.43 的普通表读数（relkind r / 2,411,266,048 B / 死元组 13.56%），两实例的形态分叉到此闭合
+211	SNAPSHOT_OBJECT	public.ursm_node_snapshot_min_legacy	r	6065757	1902911488	0	yes	NOT_RECLAIMABLE	NONE	830 步骤 3 保留的回滚锚点（观察 ≥7 天后人工 DROP）；heap 1,461,084,160 B + index 441,442,304 B；n_dead_tup 942,614
+252	USAGE_FACTS_FAMILY	public.usage_facts	p	276190	254402560	0	no	GAP_NO_RETENTION	TTL_DECIDED_PENDING_DEPLOY	生产 settings_kv 仍无 lifecycle.usage_facts_ttl_days（值无关判据）⇒ **生产缺口未闭合**；但**仓内已登记**（§143.44：lifecycle.usage_facts_ttl_days 默认 365 + 按日 DROP helper）⇒ 属主已拍板 365，待部署
+211	USAGE_FACTS_FAMILY	public.usage_facts	p	88883	80232448	0	no	GAP_NO_RETENTION	TTL_DECIDED_PENDING_DEPLOY	同 252：生产 settings_kv 无该键 ⇒ 生产缺口未闭合；仓内已登记（§143.44，TTL=365）
+252	USAGE_FACTS_OBJECT	public.usage_facts_default	r	0	57344	57344	yes	RECLAIMABLE_NOW	VACUUM_FULL	§143.44 已 VACUUM FULL：83,492,864 → 57,344 B（heap 0 B + index 57,344 B 的最小尺寸）⇒ 纯索引膨胀已回收；剩余 57,344 B 是索引空页的最小尺寸
+252	USAGE_FACTS_OBJECT	public.usage_facts_20260926..20261005	-	0	0	0	yes	NOT_RECLAIMABLE	ALREADY_RECLAIMED	§143.44 已 DROP 这 10 个空日分区（属主授权；库 −119,685,120 B）⇒ 对象已不存在 ⇒ 0 行 0 字节 ⇒ 无事可做
+211	USAGE_FACTS_OBJECT	public.usage_facts_20261011	r	0	65536	65536	yes	RECLAIMABLE_NOW	DROP_EMPTY_DAY_PARTITION	空日分区（仅索引 57,344 B）
+both	STRUCTURAL_GAP	public.ursm_node_snapshot_min（新装库形态）	-	0	0	0	no	STRUCTURAL_GAP_NO_AUTO_PATH	MANUAL_830_MIGRATION	830 是 manual-by-design（.sql.skip，既未注册进 installer 也未进启动序列）⇒ 新装库永远是非分区形态 ⇒ 每个新环境都会重现 211 的 bloat 形态（属主未拍板）
