@@ -30,6 +30,14 @@
 #   PG_CONTAINER  container (default: llm-gateway-pg)
 #   PG_USER       database user (default: llm_gateway)
 #   KEEP_DB       1 = do not drop the database at the end
+#   DB_NAME       override the database name (default itgate_r59_shape)
+#
+# ★ 2026-10-21（R68 轮）：加 DB_NAME 覆盖的原因 ——
+#   库名 `itgate_r59_shape` 是**跨会话共享**的：脚本开头就
+#   `DROP DATABASE IF EXISTS $DB` ⇒ **两个会话同时跑就会互删**。
+#   （本轮实测：并行会话跑了一次 probe ⇒ 我的一次性库被整个 DROP，
+#     后续读数全部变成 "database does not exist" ⇒ 读数无意义。）
+#   ⇒ 并行工作请用**自己的库名**（DB_NAME=itgate_r68_xxx）。
 # -----------------------------------------------------------------------------
 set -uo pipefail
 
@@ -38,7 +46,7 @@ cd "$REPO_ROOT"
 
 PG_CONTAINER="${PG_CONTAINER:-llm-gateway-pg}"
 PG_USER="${PG_USER:-llm_gateway}"
-DB="itgate_r59_shape"
+DB="${DB_NAME:-itgate_r59_shape}"
 KEEP_DB="${KEEP_DB:-0}"
 SF_DIR="$REPO_ROOT/installer/cmd/llm-gw-installer/embeddata/startup"
 

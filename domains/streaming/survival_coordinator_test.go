@@ -336,6 +336,12 @@ func TestSurvivalCoordinatorDeadlineCancelsBlockingAttemptAtWallClockBudget(t *t
 	if res.Decision.Reason != "deadline_exceeded" {
 		t.Fatalf("decision = %+v, want survival deadline_exceeded", res.Decision)
 	}
+	// ★ R68 轮实测（探针复制本等待序列，25 次，宿主 16 核超载 3.5×）：
+	//   自然值 ∈ [40.06ms, 43.56ms]，均值 40.82ms
+	//   ⇒ 下界 20ms 的**实测余量 ≥ 20.06ms**（余量/阈值 = 100.3%）
+	//   ⇒ 上界 500ms 的余量 ≥ 456.4ms ⇒ 双边都宽裕。
+	//   ⇒ 自然值由**生存预算 40ms 的定时器**决定（只晚不早 ⇒ 下界恒成立）。
+	//   台账：internal/clockguard/measured_margins.tsv
 	if elapsed < 20*time.Millisecond || elapsed > 500*time.Millisecond {
 		t.Fatalf("blocking attempt returned after %v, want near the 40ms wall-clock budget", elapsed)
 	}

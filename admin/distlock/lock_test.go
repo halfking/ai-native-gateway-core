@@ -162,6 +162,13 @@ func TestRedisManager_FollowerTTLExpired(t *testing.T) {
 	//   · 「它没有瞬间放弃」用 50ms 表达即可：自然值 ≈200ms ⇒ **4× 余量**，
 	//     亚毫秒抖动打不到它。
 	// ⇒ 判别职责归行为断言，时钟只做「粗判 + 宽松兜底」。
+	//
+	// ★ R68 轮复测（12 次，宿主 16 核超载 3.5×）：自然值 ∈ [200.38ms, 228.23ms]
+	//   ⇒ 当前 50ms 下界的**实测余量 ≥ 150.38ms**（余量/阈值 = 300.8%）
+	//   ⇒ 确认 R66 轮的修法有效，且**这仍是全仓 8 处判别型下界里唯一一处
+	//     自然值来自「毫秒分辨率读数」（PTTL）而非定时器**的地方。
+	//   台账：internal/clockguard/measured_margins.tsv
+	//   ⇒ 门（internal/clockguard）在有人把下界改大到贴近自然值时会变红。
 	if elapsed < 50*time.Millisecond || elapsed > 1500*time.Millisecond {
 		t.Fatalf("Wait elapsed %v; want ~TTL (200ms), but not instantly", elapsed)
 	}

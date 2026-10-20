@@ -536,6 +536,12 @@ func TestRPMGovernorPaces(t *testing.T) {
 		t.Fatalf("paced acquire: %v", err)
 	}
 	elapsed := time.Since(start)
+	// ★ R68 轮实测（探针复制本等待序列，25 次，宿主 16 核超载 3.5×）：
+	//   自然值 ∈ [299.97ms, 302.19ms]，均值 300.81ms
+	//   ⇒ 下界 150ms 的**实测余量 ≥ 149.97ms**（余量/阈值 = 100%）
+	//   ⇒ 自然值由**令牌桶的补充定时器**决定（定时器只晚不早 ⇒ 下界恒成立）。
+	//   台账：internal/clockguard/measured_margins.tsv
+	//   ⇒ 门（internal/clockguard）在有人把下界改大到贴近自然值时会变红。
 	if elapsed < 150*time.Millisecond {
 		t.Fatalf("rpm governor did not pace: elapsed=%v (expected >=~300ms)", elapsed)
 	}

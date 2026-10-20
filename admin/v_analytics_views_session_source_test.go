@@ -123,14 +123,19 @@ func TestVAnalyticsViews_ReadSessionFamilyNotFrozenV1(t *testing.T) {
 	}
 	defer func() { _ = tx.Rollback(ctx) }() // 夹具不留在库里
 
-	// ── 前提断言 1：v1 冻结族当前确实是空的 ─────────────────────────────
-	var v1Rows int
-	if err := tx.QueryRow(ctx, `SELECT count(*) FROM public._request_logs`).Scan(&v1Rows); err != nil {
+	// ── 前提断言 1：v1 族**不存在**（不是「空」）─────────────────────────
+	// ★ R68 改瞄：v1 族已随迁移 890 真删 ⇒ 原来的
+	//   `SELECT count(*) FROM public._request_logs` 必然 42P01。
+	//   ⇒ 前提从「**空的**」升级成「**不存在的**」—— 更强，而且
+	//     「视图取到的数据只可能来自会话族」这个**归因前提**依然成立
+	//     （v1 族一旦复活，这道门会立刻红，而不是默默读到一个空集）。
+	var v1Present bool
+	if err := tx.QueryRow(ctx, `SELECT to_regclass('public._request_logs') IS NOT NULL`).Scan(&v1Present); err != nil {
 		t.Fatalf("probe _request_logs: %v", err)
 	}
-	if v1Rows != 0 {
-		t.Fatalf("premise broken: public._request_logs has %d rows (expected 0 — the v1 family is retired/frozen); "+
-			"this gate's conclusion would no longer be attributable to the session family", v1Rows)
+	if v1Present {
+		t.Fatalf("premise broken: public._request_logs 又存在了 —— " +
+			"「视图取到会话族数据」这件事不再能归因给会话族（v1 族可能重新长出行）")
 	}
 
 	// ── 前提断言 2：真库定义体里**没有** request_logs 族引用（精确仪器）──

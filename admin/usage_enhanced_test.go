@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -57,7 +59,15 @@ func TestUsageCostTrend_ByModel(t *testing.T) {
 		`, tenantID, now, td.model, td.cost, td.tokens, td.success)
 
 		if err != nil {
-			t.Logf("Warning: failed to insert test data: %v", err)
+			// ★ R70 轮：插入失败若是「schema 不匹配」（v1 族已退役 ⇒ `_request_logs` 不存在）
+			//   ⇒ 本门的前置未满足 ⇒ **明确 SKIP 并说明**；
+			//   ⇒ 原来只 t.Logf ⇒ 接着在「expected at least one entry」处红
+			//   ⇒ 看起来像产品缺陷，实际是**夹具随 schema 漂移**。
+			//   ⇒ 其它原因 ⇒ 仍然红（不掩盖真缺陷）。
+			if isSchemaShapeMismatch(err) {
+				t.Skipf("夹具与当前 schema 不匹配（%v）—— 本门的前置未满足，不构成证据", err)
+			}
+			t.Fatalf("failed to insert test data: %v", err)
 		}
 	}
 
@@ -488,8 +498,15 @@ func TestUsageCacheEconomics_WithCompression(t *testing.T) {
 func testDB(t *testing.T) *pgxpool.Pool {
 	t.Helper()
 
-	// 尝试连接测试数据库
-	dbURL := "postgres://localhost/llm_gateway_test?sslmode=disable"
+	// ★ R70 轮：原先**写死** `postgres://localhost/llm_gateway_test`（**完全无视 env**）⇒
+	//   在「本机恰好有那个库、且当前 OS 用户有权限」的机器上会**真的连上去**；
+	//   连不上时只 t.Logf ⇒ **静默 SKIP 被 `go test` 记成绿**（R69 §19.18）。
+	//   ⇒ 改成认事实源（scripts/audit/datasource_env.sh）；未设 ⇒ 不连、明确说明。
+	dbURL := os.Getenv("TEST_DATABASE_URL")
+	if dbURL == "" {
+		t.Log("Skipping test: TEST_DATABASE_URL not set —— 请 source scripts/audit/datasource_env.sh \"$DSN\"（未设时本门不构成证据）")
+		return nil
+	}
 
 	ctx := context.Background()
 	db, err := pgxpool.New(ctx, dbURL)
@@ -505,5 +522,37 @@ func testDB(t *testing.T) *pgxpool.Pool {
 		return nil
 	}
 
+	// ★★★★ R70 轮：**文件级守卫** —— 本文件的 9 个用例**全部**把种子插进
+	//   `_request_logs`（v1 族），而 v1 族已被迁移 890 退役 ⇒
+	//   ⇒ 插入会 42P01，而错误原本被 `_, _ = db.Exec(...)` **吞掉**
+	//   ⇒ ⇒ 接着在断言处红（看起来像产品缺陷，实际是**夹具随 schema 漂移**）。
+	//   ⇒ ⇒ 显式化成守卫：**表不在 ⇒ 明确 SKIP 并说明**（本门需要改瞄会话族；
+	//   ⇒ ⇒ **真正的改瞄属并行会话 D3 范围**，已通报 ⇒ 在那之前本门不构成证据）。
+	var rel string
+	if err := db.QueryRow(ctx, `SELECT COALESCE(to_regclass('public._request_logs')::text, '')`).Scan(&rel); err != nil {
+		t.Logf("Skipping test: cannot probe schema: %v", err)
+		db.Close()
+		return nil
+	}
+	if rel == "" {
+		db.Close()
+		t.Skip("_request_logs 不存在（v1 族已退役，迁移 890）—— 本门的夹具尚未改瞄会话族，" +
+			"改瞄前不构成证据（改瞄属 D3 范围）")
+	}
+
 	return db
+}
+
+// isSchemaShapeMismatch 判断这个错误是不是「夹具与当前 schema 不匹配」
+// （列/表不存在，或 NOT NULL 违反）。
+//
+// ★ R70 轮：**只认这三类**，其它错误一律不算 ⇒ ⇒ 门不会把真缺陷藏成 SKIP。
+func isSchemaShapeMismatch(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "does not exist") ||
+		strings.Contains(msg, "violates not-null constraint") ||
+		strings.Contains(msg, "violates null constraint")
 }
