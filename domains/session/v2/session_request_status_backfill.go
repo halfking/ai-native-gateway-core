@@ -744,12 +744,14 @@ func execRequestStatusUpdate(ctx context.Context, tx pgx.Tx, batch []requestStat
 // The FROM-VALUES list carries each row's (id, partition_date) so the
 // partitioned parent prunes to the owning partition's pkey
 // (session_turns_pkey = (id, partition_date)) instead of touching all six.
-// The label itself comes from _request_logs (l.request_status), never from the
-// VALUES tuple, so the copy has exactly one source of truth.
+// The label column is never written from the VALUES tuple: since 885 the v1
+// source is gone, so the statement degenerates to an identity assignment
+// (t.request_status = t.request_status) guarded by AND FALSE — see the
+// in-body note for the 42P01 that the previous l.request_status form caused.
 func buildRequestStatusUpdateSQL(batch []requestStatusBackfillRow) (string, []any) {
 	var sb strings.Builder
 	args := make([]any, 0, len(batch)*3)
-	sb.WriteString("UPDATE public.session_turns t SET request_status = l.request_status FROM (VALUES ")
+	sb.WriteString("UPDATE public.session_turns t SET request_status = t.request_status FROM (VALUES ")
 	for i, r := range batch {
 		if i > 0 {
 			sb.WriteString(", ")
@@ -764,6 +766,29 @@ func buildRequestStatusUpdateSQL(batch []requestStatusBackfillRow) (string, []an
 	// sessionRequestStatusCandidateSQL）。保留 FROM-VALUES + 同样的 $N 占位
 	// 是为了让参数个数与形状不变（pgx 会拒绝「语句没引用却传了参数」）。
 	// `AND FALSE` 让它成为一次真正的 no-op，而不是「把标签写成它自己」。
+	//
+	// ★★ 2026-10-21（R65 轮实测修正）：885 那一版把 FROM 里的
+	// `JOIN public._request_logs l` 删掉了，**却没改 SET 子句**——
+	// SET 仍在写 `l.request_status`，而别名 `l` 已随 v1 族一起消失。
+	// ⇒ 这条语句**根本无法被解析**：
+	//
+	//	ERROR:  missing FROM-clause entry for table "l"   (42P01)
+	//
+	// 注意这是**解析期**错误，不是执行期：PG 在 bind 阶段就拒绝它，
+	// 与 `AND FALSE` 会不会命中任何行**无关**。也就是说，只要有人
+	// 把这条语句送给 PG（哪怕它恒匹配 0 行），整条语句就炸。
+	// 当时代价是「候选集恒空 ⇒ UPDATE 永不可达」把它藏住了 ——
+	// 一颗定时炸弹：任何人去掉 `AND FALSE`，或把语句挪到别的路径上，
+	// 就会立刻 42P01。
+	//
+	// ⇒ 修法：`SET request_status = t.request_status`（**自赋值**）。
+	// 自赋值是**恒等**的（写回自己原来的值），所以：
+	//   · 参数个数与形状不变（仍是每行 3 个占位）⇒ 夹具与实参不用动；
+	//   · 即使 `AND FALSE` 被误删，这条语句也**不会改坏任何标签**；
+	//   · 语句在真库上可解析（PREPARE 通过 ⇒ 42P01 这一类彻底消失）。
+	// 「把标签写成它自己」在这里指的是「用 VALUES 里的值写回去」——
+	// VALUES 只有 (id, partition_date, request_id)，没有标签列，
+	// 所以 t.request_status（表自己的列）才是唯一形状兼容的合法来源。
 	sb.WriteString("WHERE t.id = v.id AND t.partition_date = v.partition_date ")
 	sb.WriteString("AND t.request_status IS NULL AND FALSE")
 	return sb.String(), args
