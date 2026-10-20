@@ -47,7 +47,8 @@ import (
 // 这道门是**有副作用的**：它在 TEST_DATABASE_URL 指向的库上跑 db.Open，
 // 也就是**真的启动一次产品**（ensure 链 + 迁移守卫）。
 // ⇒ 只能指向**一次性库**（scripts/audit/probe-onetime-db-shape.sh 建的那种），
-//   绝不要指向生产。
+//
+//	绝不要指向生产。
 func TestFreshInstallRuntimeShape_EnsureChain(t *testing.T) {
 	dsn := os.Getenv("TEST_DATABASE_URL")
 	if dsn == "" {

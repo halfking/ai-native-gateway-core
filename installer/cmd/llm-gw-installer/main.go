@@ -955,6 +955,9 @@ var sessionAnalysisInference387 []byte
 //go:embed embeddata/startup/427_task_type_centroids_model.sql
 var taskTypeCentroidsModel427 []byte
 
+//go:embed embeddata/startup/890_fresh_install_partition_prereq.sql
+var freshInstallPartitionPrereq890 []byte
+
 //go:embed embeddata/startup/859_tighten_pii_phone_intl_regex.sql
 var tightenPiiPhoneIntlRegex859 []byte
 
@@ -1292,6 +1295,7 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/376_offline_activation_code.sql":                                        offlineActivationCode376,
 	"startup/387_session_analysis_inference.sql":                                     sessionAnalysisInference387,
 	"startup/427_task_type_centroids_model.sql":                                      taskTypeCentroidsModel427,
+	"startup/890_fresh_install_partition_prereq.sql":                                 freshInstallPartitionPrereq890,
 	"startup/859_tighten_pii_phone_intl_regex.sql":                                   tightenPiiPhoneIntlRegex859,
 	"startup/852_models_canonical_column_set_reconcile.sql":                          modelsCanonicalColumnSetReconcile852,
 	"startup/489_credential_probe_queue_startup_backfill.sql":                        credentialProbeQueueStartupBackfill489,
