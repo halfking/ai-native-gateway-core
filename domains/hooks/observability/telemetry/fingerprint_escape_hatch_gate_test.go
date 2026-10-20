@@ -253,7 +253,7 @@ func TestFingerprintArmIsNotGatedByStopWrite(t *testing.T) {
 //
 //	logsWrite := requestLogsWriteEnabled()                  （client.go，两处）
 //	  └─ requestLogsWriteEnabled() { return settings.RequestLogsWriteEnabled() }
-//	       └─ settings.RequestLogsWriteEnabled() { return GetPlatformBool(KeyRequestLogsWriteEnabled, true) }
+//	       └─ settings.RequestLogsWriteEnabled() { return GetPlatformBool(KeyRequestLogsWriteEnabled, false) }
 //	            └─ KeyRequestLogsWriteEnabled = "storage.request_logs_write_enabled"
 func TestLogsWriteSnapshotReadsTheStopWriteKey(t *testing.T) {
 	fset := token.NewFileSet()
