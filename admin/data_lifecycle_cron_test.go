@@ -2,6 +2,7 @@ package admin
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 )
@@ -163,24 +164,36 @@ func TestMaybeRunAt(t *testing.T) {
 }
 
 func TestMaybeRunAt_MatchTime(t *testing.T) {
-	// 用 mock handler 让 runOnce 不会因为 db=nil 而 panic
+	// ★ 本用例在 2026-10-21（§19.20.24）重写过，原因三条：
+	// ① 旧版的注释前提是**假的**（写着「用 mock handler 让 runOnce 不会因为
+	//    db=nil 而 panic」，而下一行注释又承认「runOnce 内部会 panic」）⇒
+	//    它其实**靠 panic 在跑**；
+	// ② 旧版调的是 maybeRun，而用例名叫 TestMaybeRunAt_MatchTime ⇒
+	//    「命中时间 ⇒ maybeRunAt 会触发」这条**根本没被测**；
+	// ③ 靠 panic 在跑 ⇒ 每跑一次 admin 包就往证据通道里塞一条
+	//    ERROR data-lifecycle: hot cron panic（假故障噪声）。
+	//
+	// ⇒ 现在注入假 DB（窄接口 hotCronDB）⇒ 全程无 panic、无真库、无噪声。
+	logs := captureHotCronLogs(t)
+	db := &fakeHotCronDB{probePresent: false}
 	s := &HotCronScheduler{
 		h:   &Handler{hotJobMgr: newHotJobManager()},
+		db:  db,
 		cfg: HotCronConfig{RunAtHour: 2, RunAtMinute: 0, RetentionHours: 24, BatchSize: 100},
 	}
-	// runOnce 会访问 db（nil），所以不能用正常路径；只验证 runCount 是否增加
-	// 用 goroutine 包装并捕获 panic
-	done := make(chan struct{})
-	go func() {
-		defer func() {
-			_ = recover()
-			close(done)
-		}()
-		s.maybeRun(context.Background())
-	}()
-	<-done
-	// 由于 db=nil，runOnce 内部会 panic 但被 recover 兜住，runCount 应增加
+
+	// ★ 真正走 maybeRunAt 且命中时间（2026-07-13 02:00 UTC）。
+	s.maybeRunAt(context.Background(), time.Date(2026, 7, 13, 2, 0, 0, 0, time.UTC))
+
 	if s.runCount != 1 {
 		t.Errorf("expected runCount=1, got %d", s.runCount)
+	}
+	// maybeRun 是**异步**的（detached goroutine）⇒ 等 runOnce 跑完再读日志。
+	hotCronWaitFor(t, "hot cron run 结束", func() bool {
+		return s.Stats().LastRunAt != nil
+	})
+	// ★ 关键不变量：命中时间这条路径**一条 ERROR 都不该有**。
+	if strings.Contains(logs.String(), "level=ERROR") {
+		t.Fatalf("hot cron 正常路径不该产生 ERROR；日志：\n%s", logs.String())
 	}
 }

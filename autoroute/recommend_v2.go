@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/kaixuan/llm-gateway-go/db"
 	"github.com/kaixuan/llm-gateway-go/internal/dbrows"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
@@ -392,14 +393,16 @@ func loadCorrectionScores(ctx context.Context, pool *pgxpool.Pool, sessionID str
 	var lastLatencyMs int
 	err := pool.QueryRow(ctx, `
 		SELECT
-			COALESCE(NULLIF(task_type, ''), NULLIF(task_type_chosen, ''), 'chat') AS last_task,
-			COALESCE(NULLIF(model_chosen, ''), NULLIF(client_model, ''), '') AS last_model,
-			success,
-			COALESCE(latency_ms, 0) AS last_latency_ms
-		FROM _request_logs
-		WHERE gw_session_id = $1
-		  AND is_auto_request = TRUE
-		ORDER BY ts DESC
+			COALESCE(NULLIF(rl.task_type, ''), NULLIF(rl.task_type_chosen, ''), 'chat') AS last_task,
+			COALESCE(NULLIF(rl.model_chosen, ''), NULLIF(rl.client_model, ''), '') AS last_model,
+			rl.success,
+			COALESCE(rl.latency_ms, 0) AS last_latency_ms
+		-- ★ 890（v1 族退役）：源换成**会话族原生源**
+		-- （db.SessionFamilyTurnsForSessionSQL：会话谓词内推到 t.session_id = $1，
+		-- idx_session_turns_session 可用）。$1 仍是会话 id，占位符不变。
+		FROM `+db.SessionFamilyTurnsForSessionSQL()+` rl
+		WHERE rl.is_auto_request = TRUE
+		ORDER BY rl.ts DESC
 		LIMIT 1
 	`, sessionID).Scan(&lastTask, &lastModel, &lastSuccess, &lastLatencyMs)
 	if err != nil {
@@ -519,7 +522,7 @@ func availabilityKey(credentialID int64, canonicalName string) string {
 }
 
 // getHotTop3Canonicals queries the top 3 canonical models by successful
-// 48-hour request volume. Uses a 2-minute TTL cache to reduce _request_logs scans.
+// 48-hour request volume. Uses a 2-minute TTL cache to reduce session-family scans.
 func (idx *Index) getHotTop3Canonicals(ctx context.Context) []int {
 	// Check cache first
 	idx.hotCanonicalMu.RLock()
@@ -542,12 +545,14 @@ func (idx *Index) getHotTop3Canonicals(ctx context.Context) []int {
 	}
 
 	rows, err := pool.Query(ctx, `
-		SELECT canonical_id, count(*) as usage_count
-		FROM _request_logs
-		WHERE ts > NOW() - INTERVAL '48 hours'
-		  AND success = TRUE
-		  AND canonical_id IS NOT NULL
-		GROUP BY canonical_id
+		SELECT rl.canonical_id, count(*) as usage_count
+		-- ★ 890（v1 族退役）：源换成**会话族原生源**（hot ∪ parent）。
+		-- 原口径是 v1 母表（48h 窗跨过 hot 保留期）⇒ 会话族同款两个存储面。
+		FROM `+db.SessionFamilyTurnsSourceSQL()+` rl
+		WHERE rl.ts > NOW() - INTERVAL '48 hours'
+		  AND rl.success = TRUE
+		  AND rl.canonical_id IS NOT NULL
+		GROUP BY rl.canonical_id
 		ORDER BY usage_count DESC
 		LIMIT 3
 	`)

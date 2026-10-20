@@ -111,6 +111,11 @@ func TestSleepWithCtx_Completes(t *testing.T) {
 	if !ok {
 		t.Error("background ctx: SleepWithCtx should return true on normal completion")
 	}
+	// ★ R68 轮实测（探针复制本等待序列，30 次，宿主 16 核超载 3.5×）：
+	//   自然值 ∈ [10.05ms, 12.22ms]，均值 10.97ms
+	//   ⇒ 下界 5ms 的**实测余量 ≥ 5.05ms**（余量/阈值 = 101%）
+	//   ⇒ 自然值由 **10ms 睡眠定时器**决定（只晚不早 ⇒ 下界恒成立）。
+	//   台账：internal/clockguard/measured_margins.tsv
 	if elapsed < 5*time.Millisecond {
 		t.Errorf("expected ~10ms sleep, got %v", elapsed)
 	}

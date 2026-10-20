@@ -358,6 +358,46 @@ export default {
     storageConfig: 'Configuración de almacenamiento',
     logManagement: 'Gestión de registros',
     usageCost: 'Coste de uso',
+    usageEnhanced: 'Análisis avanzado de uso',
+  },
+
+  usageEnhanced: {
+    refresh: 'Actualizar',
+    loading: 'Cargando…',
+    empty: 'Sin datos',
+    cards: {
+      totalCost: 'Coste total',
+      totalRequests: 'Solicitudes totales',
+      periodDelta: 'Δ de coste entre periodos',
+      cacheHitRate: 'Tasa de acierto de caché',
+    },
+    trend: {
+      title: 'Tendencia de coste (últimos {days} días)',
+    },
+    hotKeys: {
+      title: 'Claves API principales (por consumo de tokens)',
+      colId: 'ID de clave API',
+      colPrefix: 'Prefijo de clave',
+      colApplication: 'Aplicación',
+      colRequests: 'Solicitudes',
+      colTokens: 'N.º de tokens',
+      colCost: 'Coste total',
+    },
+    degraded: {
+      title: 'Algunas métricas no están disponibles: ',
+      hint: 'El esquema de la base de datos está por detrás de esta versión; las cifras son marcadores de «no se puede calcular», no mediciones reales.',
+    },
+    errors: {
+      load: 'No se pudieron cargar los datos de uso avanzados',
+    },
+    sources: {
+      summary: 'Resumen de uso',
+      costTrend: 'Tendencia de coste',
+      periodCompare: 'Comparación de periodos',
+      cacheEconomics: 'Economía de caché',
+      hotKeys: 'Claves API activas',
+    },
+    footer: 'Última actualización: {time}',
   },
 
   usageCost: {

@@ -56,8 +56,8 @@ func (w *ApprovalTimeoutWorker) Start(ctx context.Context) {
 func (w *ApprovalTimeoutWorker) Stop() {
 	if w.cancel != nil {
 		w.cancel()
+		<-w.done
 	}
-	<-w.done
 }
 
 func (w *ApprovalTimeoutWorker) run(ctx context.Context) {

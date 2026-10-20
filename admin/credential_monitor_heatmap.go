@@ -86,6 +86,7 @@ type HeatmapResponse struct {
 //   - credential_ids: comma-separated list of credential IDs (optional)
 //   - models: comma-separated list of model names (optional, case-insensitive)
 //   - exclude_self_test: exclude self-test requests (default: true)
+//
 // parseExcludeSelfTest 解析 exclude_self_test 查询参数。
 //
 // 缺省 true（与本文件上方文档及 FEATURE-REQ §4.2 一致）：此前直接用

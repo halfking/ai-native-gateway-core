@@ -46,10 +46,20 @@ var exemptions = map[string]string{
 	"cmd/sessionmeta-bench/sampler.go:192":                            "benchmark main package, out of R66 scope",
 	"cmd/tuning-backtest/main.go:205":                                 "one-shot/main package, out of R66 scope",
 	"cmd/tuning-backtest/main.go:289":                                 "one-shot/main package, out of R66 scope",
-	"tests/session_audit/cmd/audit-test/main.go:210":                  "test harness main package, out of R66 scope",
-	"tests/test_popularity_tracker.go:121":                            "test helper (non _test.go), out of R66 scope",
+	"tests/session_audit/cmd/audit-test/main.go:240":                  "test harness main package, out of R66 scope。R53（2026-10-20 v1 族退役轮）改键 210→240：按本文件纪律先回原提交再改键——① `git show HEAD:tests/session_audit/cmd/audit-test/main.go` 第 210 行当时**正是** `for rows.Next() {`，其上 209 是 `processCount := 0`、其下是 `var row RequestLogRow` 的 Scan 块，与今天 240 起的循环**逐字相同**；② 本轮 diff（`git diff -- tests/session_audit/cmd/audit-test/main.go`）里**没有任何** `for rows.Next()` / `rows.Err()` 行被增删，只有 `@@ -175,25 +175,55 @@` 一处纯**新增** hunk ⇒ 是**同一处漂移**，不是「另找一处顶上」；③ 该循环仍**没有**终检（这正是本条豁免存在的理由），守卫在键修正后重新把它认作已登记的例外",
+	"tests/test_popularity_tracker.go:150":                            "test helper (non _test.go), out of R66 scope。R53（2026-10-20 v1 族退役轮）改键 121→150：按本文件纪律先回原提交再改键——① `git show HEAD:tests/test_popularity_tracker.go` 第 121 行当时**正是** `for rows.Next() {`，其上 120 是 `var stats []modelStat`、其下是 `var ms modelStat` + `rows.Scan(&ms.model, &ms.count)` 的 Scan 块，与今天 150 起的循环**逐字相同**；② 本轮 diff 里**没有任何** `for rows.Next()` / `rows.Err()` 行被增删，只有若干纯新增 hunk ⇒ **同一处漂移**；③ 该循环仍无终检，本条豁免继续成立",
 	"scripts/injection-test/test-prompt-injection-detection.go:393":   "scripts/ manual injection probe, out of R66 scope",
-	"cmd/tools/validate_sessions_v2/loader.go:205":                    "one-shot validator main package, out of R66 scope。R44 改键 167→205：按本文件自己的程序查过——豁免登记时（8a6142263）loader.go:167 逐字是 `var turns []V1Turn` + `for rows.Next() {`（LoadV1Turns 的 v1 turn 迭代），今天的 204-205 与之**逐字相同**，所以是「同一处漂移」而不是「另找一处顶上」；漂移由 e6193ea92 / fe5003034 两笔窗口内提交造成",
+	// ★ R53（2026-10-20 v1 族退役轮）：**删除** `cmd/tools/validate_sessions_v2/loader.go:205`
+	// 这条豁免 —— 删它不是「让守卫变绿」的放松，而是它**已经失效**：
+	// ① 豁免登记时（8a6142263）loader.go:167 逐字是 `var turns []V1Turn` + `for rows.Next() {`
+	//    （LoadV1Turns 的 v1 turn 迭代），R44 已改键 167→205 并确认是「同一处漂移」；
+	// ② 本轮 v1 族退役把 **LoadV1Turns 整段删除**（loader.go 本轮净删 330 行）⇒
+	//    键指向的 205 行**已不是** rows 循环；
+	// ③ 剩下的两处循环（217、317）**各自都有终检**（rows.Err() 在 249、337）
+	//    ⇒ 守卫对它们本来就会判绿，本条豁免**不再豁免任何东西**。
+	// ⇒ 按本文件自己的规则（「该行已没有 for X.Next() 循环……应删除该条目」）删除，
+	//    而不是把键改到 217/317 —— 改过去会给两个**已被守住**的循环套上
+	//    「不受 R66 约束」的口子。
 }
 
 // TestEveryRowsLoopIsGuarded 是 R66 的站位级主门。

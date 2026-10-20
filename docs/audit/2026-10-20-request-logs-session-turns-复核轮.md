@@ -2107,6 +2107,484 @@ git worktree add /tmp/lgw-pristine-20261020 HEAD        # = 7c8aad856
 
 ---
 
+## 6. ★ 真删轮：迁移 890（v1 族**最终删除**）+ **四个**致命缺陷的根修 + 退役前必须做的三件事
+
+> 本节是本轮（2026-10-20 复核轮续做）的收口章节。前 5 节讲的是「**怎么把写入和读面切到会话族**」；
+> 本节讲的是「**把切完的 v1 族真删掉**」，以及在删之前/删之后**实测抓到的四个致命缺陷**。
+> 四者都不是推理出来的，是在本机真库上**复现出来的**（其中 F4 是**新装链实测**逼出来的）。
+
+### 6.0 结论先行
+
+| # | 结论 | 证据位置 |
+|---|---|---|
+| 1 | v1 族**真删**由迁移 890 一次做掉：6 个关系、4 张 v1-only 视图、canonical 视图的第三臂、**20 个函数/过程 + 2 个触发器** | §6.1、§6.3 |
+| 2 | ★ **致命缺陷 F1**：上游把停写键的**代码默认**翻成 false ⇒ 三条 bg 扫描的「可比性前提」永久失效 ⇒ 在任何**未显式配置该键**的环境上**永久停摆**（门关着的理由已过期、后果却不可逆） | §6.5 |
+| 3 | ★ **致命缺陷 F2**：882 的负成本索引建在**会被 890 删掉的表**上 ⇒ 索引随表消亡 ⇒ 会话族**无任何 `cost_usd` 索引** ⇒ 检查退回**全分区 Seq Scan** | §6.6 |
+| 4 | ★★ **致命缺陷 F4**：890 一度**破掉新装路径** —— 两条**只在升级路径上看不见**的 v1 依赖边（`routing_analytics_source` 视图 + 两条 RESTRICTIVE `*_owner_filter` 策略）⇒ PostgreSQL 直接拒绝 `DROP TABLE` ⇒ **新装被 890 中止**；按仓库既有决策 D9（先改写策略、再删表）修好后，新装链 **0 of 284 fail** | §6.4 |
+| 5 | ★ **致命缺陷 F3**：890 的 down **只复原 4/20 个函数**，且那 4 个的函数体取自**陈旧正典** ⇒ 回滚得到「表回来了、promote/TTL 函数没回来」的**半活**族 | §6.7 |
+| 6 | 我自己的一条裁决被推翻：`sql/objects/` **不是**「部署后形态的 SSOT」，它是「**从不应用、但对基线承重**」的第四份表示 ⇒ 改了它会**破掉新装路径** | §6.8 |
+| 7 | **部署顺序**是硬要求：本地已按「**先停旧容器、再落 schema**」执行；生产（211/252）必须「**先上新二进制（890 延后）再落 schema**」或安排维护窗口 | §6.10 |
+| 8 | **211/252 若还有停写前的历史，890 会拒绝执行**（非空闸）⇒ 必须先归档/核账，否则删表即删历史（down 只能重建骨架） | §6.11 |
+
+### 6.1 爆炸半径：890 到底删掉了什么
+
+**删掉的对象**（全部来自 `sql/migrations/startup/890_drop_request_logs_v1_family.sql`）：
+
+| 类别 | 数量 | 明细 |
+|---|---|---|
+| 关系 | 6 | `_request_logs`（分区母表）/ `_request_logs_hot` / `_request_logs_bodies` / `_request_logs_bodies_hot` / `_request_logs_archive` / `_request_logs_id_seq` |
+| v1-only 视图 | 4 | `request_logs_with_current_month_without_customer_id` / `request_logs_with_current_month_without_request_class_due_at` / `request_logs_bodies_with_current_month` / `request_logs_bodies_progress` |
+| canonical 视图的臂 | 1 | `request_logs_with_current_month` 的**第三臂**（v1 冻结体）——视图本身**活着**，只是从三臂变两臂 |
+| 函数/过程 | 18 | 分区管理（`ensure_*` / `promote_*` / `create_next_month_partitions` / `ensure_next_month_archive_partition` / `repair_request_logs_detached_partitions`）、归档（`archive_request_logs` / `archive_request_logs_default`）、回填与清理（`backfill_request_logs_bodies` / `cleanup_stale_in_progress_requests` / `drop_old_request_logs_bodies_partitions`）、读面（`credential_most_used_model` ×2 / `get_last_successful_request` / `update_api_key_model_cost`） |
+| 触发器函数 | 2 | `update_session_tenant_binding` / `update_session_summary`（实测这两个触发器**只**挂在 v1 表上；它们写的 `session_tenant_binding` / `session_summaries` 反而是**会话族**的表 ⇒ v1 停写后它们早已无输入） |
+| 触发器 | 2 | `trg_session_tenant_binding`（挂 `_request_logs`）/ `trg_update_session_summary`（挂 `_request_logs_hot`）——**随表消失** |
+
+**替换（不是删除）的两个函数**：`recent_success_rate`、`system_health_status` —— 它们的函数体从「静态读 v1」换成会话族形态（理由见 §6.3）。
+
+**读侧**：全仓 v1 读面归零，由仓库自带的审计器证明（`internal/sqlreadguard`：v1 桶 **0 文件 / 0 处**）。
+**写侧**：v1 的三个流量写点全部挂停写门（§3.1），本地 v1 族 6 个关系**实测全 0 行**。
+
+### 6.2 ★ boot 路径的「存在性闸」：删表之后**必须**先问「对象在不在」
+
+这一节承接上一轮（§5.13 之后）的实测，是**真删表**的第一块多米诺：
+它不发生在迁移里，而发生在**网关启动**时。
+
+**缺陷本体（真库实测，非推理）**：启动路径上三个 ensure 都用同一把尺子——**catalog 短路**，
+算的是「**缺多少**」：
+
+```sql
+-- 列项：表在且列不在 ⇒ 计 1
+WHERE to_regclass('public._request_logs') IS NOT NULL AND NOT EXISTS (...)
+-- 索引项：按名字数
++ WHERE NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = want.name)
+```
+
+退役后：列项因 `to_regclass` 为 NULL 而计 **0**（"没缺列"），**索引项却计 13**
+（索引随表一起消失 ⇒ "缺 13 个索引"）⇒ `missing = 13 ≠ 0` ⇒ **短路不触发**
+⇒ 继续跑 `ALTER TABLE _request_logs …` ⇒ **42P01**。
+
+**放大成事故的那一步**：`42P01` 命中 `db.IsSchemaMismatchError` ⇒ 启动快速失败
+⇒ `db.Open` 返回 `(nil, err)` ⇒ `dbConn == nil` ⇒ `SetDepsOptional(true)`
+⇒ **`/readyz` 仍返 200** ⇒ 部署安全网放行 ⇒ 网关「**就绪但没有数据库**」。
+⇒ 一个 DDL 形状问题，最终表现成「部署成功但服务是空壳」。
+
+**修法（三处，早退优先于短路）**：
+
+| 位置 | 早退条件 | 落地形态 |
+|---|---|---|
+| `db/db.go:2613` | `_request_logs` / `_request_logs_hot` 都不在 | `slog.Info("v1 request_logs family is retired (890) — nothing to ensure; skipping the v1 schema DDL")` |
+| `db/db.go:4527` | `_request_logs` 不在 | work_type 列/索引 DDL 跳过 |
+| `db/maas_schema.go:75` | `_request_logs` 不在 | maas `credits_charged` DDL 跳过 |
+
+⚠ 两条纪律：**① 「存在性」当前提的 ensure，判据必须先问「对象在不在」，再问「缺什么」**
+（顺序反了就会在对象消失时短路失效）；**② 任何「按名字数」的项（索引/触发器/约束），
+必须确认这些名字与被删对象同生共死**——否则删对象会让计数失真（此处：13）。
+
+### 6.3 迁移 890（up）：三条设计决定
+
+1. **非空闸**：v1 族任一表有行 ⇒ `RAISE EXCEPTION`。理由：v1 的行是会话族镜像建立**之前**的历史，删表即删历史，而 down **只能重建骨架**（救不回任何一行）⇒ 把「要不要丢历史」变成必须显式回答的问题，而不是迁移的副作用。
+   实现上用**动态 SQL**（`FOREACH` + `to_regclass`）而不是写死表名 —— 写死表名会被投递通道的词法改写改掉，而「两种名字都试」在动态 SQL 里天然成立。
+2. **命名代际：两种物理名都写**。投递通道对「改名后」的处理**不一致** —— 部署通道 `scripts/apply-db-revision-sequence.sh` 做词法改写（`request_logs` → `_request_logs`，正则 `(?<![\w$])…(?![\w$])` 防双前缀），而**安装器** `installer/internal/dbinit/runner.go` **逐字执行、不改写** ⇒ 890 把两种名字都写进删表清单 ⇒ 三条通道都正确。
+3. **canonical 视图改两臂**（`session_turns_hot ∪ session_turns` + details 特征层 LEFT JOIN），投影与 710/734/813/815/816/817/824 装出来的**逐字相同** ⇒ **118 列同名同序** ⇒ 约 40 个读方**零改动**（真库实测：改前改后行数 1267 一致）。
+   ⚠ **顺序硬约束**：必须**先**换 canonical 视图、**后**删两张中层包装视图（旧 canonical 的第三臂依赖它们 ⇒ 顺序反了会被依赖挡住）。
+
+两个「静态读 v1」的函数必须换，原因不是洁癖：
+
+- `recent_success_rate` 进的是 provider 候选查询的 `CROSS JOIN LATERAL` ⇒ **带 v1 腿就是 100% 流量失败**；而 `CREATE OR REPLACE FUNCTION` 对 SQL 函数体**不在创建时解析** ⇒ 建得成功、**首次调用才炸** ⇒ 症状与「上游全挂」同形。
+- `system_health_status` 是 30s 窗口读 `_request_logs_hot` ⇒ 42P01 ⇒ 健康徽章永久 suspect + 每 30s 一条 WARN。
+
+### 6.4 ★★ 致命缺陷 F4：890 一度**破掉新装路径** —— 两条只在升级路径上看不见的 v1 依赖边
+
+这是本轮**最重**的一条：它不是「某个功能坏了」，而是「**新装直接装不上**」，
+而且在**升级路径上完全看不出来**（升级路径是绿的）。
+
+**发现方式**：跑仓库自带的**新装链门**（`installer/cmd/llm-gw-installer/startup_chain_gate_test.go`
+的 `TestStartupChainGapsMatchReviewedSet`，逐条把整条 fresh-install 链应用到**一次性库**上）。
+它报：
+
+```
+ERROR:  cannot drop table _request_logs_hot because other objects depend on it
+DETAIL: policy session_turns_owner_filter on table session_turns depends on table _request_logs_hot
+startup chain: 1 of 284 registered migrations fail, 0 expected
+```
+
+**根因**：两条**指向 v1 族**的依赖边，而它们**只在升级路径上不可见**：
+
+| # | 依赖边 | 为什么升级路径看不到 | 新装路径的形态 |
+|---|---|---|---|
+| ① | `routing_analytics_source` 视图 | 它由**迁移 649** 建（body 直读 `_request_logs_hot`），但生产上 2026-10-13（S3 波 2 停写切换）被**应用启动期**的 `CREATE OR REPLACE VIEW` 换成了 canonical 形态（`db/db.go` 的 `routingAnalyticsMVSQL`）⇒ **生产早已不依赖 v1** | 安装器**只跑迁移、从不启动应用** ⇒ 应用的那次自愈**永远不会发生** ⇒ 它仍是 649 的 v1 直读形态 |
+| ② | `session_turns_owner_filter` / `session_turns_hot_owner_filter`（**RESTRICTIVE**） | 策略表达式**内部** UNION ALL 读 `_request_logs_hot` ∪ `_request_logs` 取最早那行的 `owner_user`；**生产**上这两条策略**已经不在**（实测本地真库 0 条 `owner_filter` 策略）⇒ 生产无依赖 | 457/526 建的策略**仍在** ⇒ 依赖边仍在 |
+
+⇒ 这两条边都由**历史迁移**建立，而历史迁移的字节**不可变**（sha 台账 + 「历史 SQL 字节不可变」）
+⇒ **只能由退役迁移自己切断**。
+
+**修法（按仓库已有的权威决策，不是临时发明）**：`docs/audit/2026-10-04-session-migration-decision-sheet.md`
+的 **D9**（援引审计 §9.137 / §9.139 的真库实测）早已写明整改路径**三步、顺序不能换**：
+
+> ① `sessions.owner_user` 已存在（§9.141.1）⇒ 不需要新增字段；
+> ② **把 `*_owner_filter` 策略改写成读 `sessions.owner_user`，不再引用 `request_logs`**；
+> ③ **最后才 `DROP TABLE request_logs`**。
+> ⚠ 「只做 2+3 步会把 owner 过滤**直接删掉**（不是迁移，是丢失）」。
+
+⇒ 890 补两步：
+
+- **2b 步**：把 `routing_analytics_source` 换成**与生产逐字相同**的 canonical 形态
+  （15 列、列名/类型/次序与旧体逐位一致 ⇒ `CREATE OR REPLACE` 的列契约成立）。
+  生产上这一步是幂等 no-op（body 已相同）。
+- **2c 步**：把两条 `*_owner_filter` 策略改写成读 `public.sessions.owner_user`
+  （`sessions.session_id` 与 `session_turns.session_id` **同型 text** ⇒ 可直接等值连接）。
+  **只在策略存在时改写** ⇒ 生产形态（本来就没有）是 no-op ⇒ **不凭空造出**生产从来没有的策略。
+
+⚠ **安全语义没有被悄悄改变**（逐条核对）：改写**前** owner 来自**恒空**的 v1 族 ⇒ `EXISTS` 恒假 ⇒
+**对非超管一律不可见**（fail-closed）；改写**后** `app.current_user` 在**生产里零设置点**
+（审计 R38 `agent-guc-surface.md` 实测：仅测试 `set_config`）⇒ `current_setting('app.current_user', true)` 为 NULL ⇒
+比较结果 NULL ⇒ `EXISTS` 仍恒假 ⇒ **仍然 fail-closed**。⇒ **今天的可见性完全不变**，
+本步只把 owner 的来源从一张**即将被删的表**换成会话族自己。超管旁路原样保留。
+
+**down 侧的对称复原**：回滚时把两条策略**还原成 v1 形态**（逐字取自真库定义），
+且**只在「策略存在且其表达式不再引用 v1」时**才还原 ⇒ 生产形态仍是 no-op ⇒
+既不让回滚后的库与回滚前不等价，也不凭空造策略。
+
+**复验（全部实测）**：
+
+| 验证 | 结果 |
+|---|---|
+| 新装链门（284 条逐条跑真库） | **0 of 284 fail**（修前：1 of 284 fail，890 中止整条链） |
+| 真库往返：up 后 | v1 函数 0 / v1 表 0 / **仍依赖 v1 的视图 0** / **仍依赖 v1 的策略 0** |
+| 真库往返：down 后 | **20/20** 函数逐字一致、2 个触发器复原、11 个 v1 关系回来 |
+| 真库往返：策略复原（在新装形态的库上） | 两条策略**与 890 之前逐字一致** |
+| 门 + 变异 | 新立 2 道门；9 项变异全部转红、源文件按字节还原 |
+
+⇒ **教训的形状**：「升级路径绿」≠「新装路径绿」这一条，本轮**第三次**兑现
+（前两次：5 张分析视图、2 张中层包装视图）。但这次的形态**更隐蔽**：
+前两次是**基线里的视图定义**与生产不一致，而这次是**「生产靠应用自愈修好了、新装没人自愈」**
+⇒ ⇒ **凡是靠应用启动期自愈维持的形态，新装路径上都不存在** ⇒
+**退役类迁移必须假设「新装形态 = 历史迁移原样」**，而不是「= 生产当前形态」。
+
+### 6.5 ★ 致命缺陷 F1：停写键的**代码默认**被翻转 ⇒ 三条扫描永久停摆
+
+**触发源**：上游提交 `c2fae70ea`（审计 D0）把 `storage.request_logs_write_enabled` 的**代码默认**由 `true` 改成 `false`
+（`settings/key_request_logs_write_enabled.go:44` = `GetPlatformBool(KeyRequestLogsWriteEnabled, false)`）。
+
+**为什么这是致命缺陷而不是「改了默认值」**：890 之后，bg 里三条扫描的**证据源**都已随 v1 族迁到会话族（⇒ 源在**无条件前进**），但它们的**前提守卫**仍读那个停写键 —— 「证据源不再前进 ⇒ 不可判定 ⇒ 跳过」。于是：
+
+- 在**显式**配置了 `storage.request_logs_write_enabled=false` 的环境（本地、生产）⇒ 跳过是**对的**（源确实冻结了）；
+- 在**没有显式配置**该键的环境（**新装 / 克隆 / 灾备**）⇒ 代码默认 false ⇒ **永久跳过** ⇒
+  「**门关着的理由已过期、后果却不可逆**」：源明明在前进，扫描却永远不跑，且**没有任何错误信号**（跳过被 `s4ScanSkipMetrics` 记成正常的 skip）。
+
+三条被波及的扫描与本轮的处置：
+
+| 扫描 | 原前提守卫 | 处置 | 为什么这样处置是安全的 |
+|---|---|---|---|
+| credential recovery 的 36h 回看 | `lookbackComparability`（读停写键） | **退役该守卫**，36h 回看**恒执行** | 该扫描有**自己独立**的启用开关 `lookbackScanIntervalLocked()`（interval=0 是禁用哨兵）⇒ 退役守卫**不会**自己产生探测流量 |
+| routing health 的 `recorded_cost_is_negative` | `recordedCostComparability`（读停写键） | **退役该守卫**，检查**恒执行** | `SkipWhen` 的**机制**保留（将来某条检查的源又不再前进时仍可用）；闭集 reason 里 `s4_stop_write` 也保留（指标序列连续性，gauge 恒 0） |
+| ledger reconciliation 的 `usage_credit` 比对 | `usageCreditComparability`（开关式） | 换成**数据驱动**判据 | 新增纯函数 `usageCreditComparable(usageArmRows, diffRows)`：diffRows=0 ⇒ 可判定；**usage 臂为 0 且有差异行** ⇒ 不可判定 ⇒ `markSkipped("usage_arm_empty")` 且**不产生 finding**（SQL 增列 `(SELECT count(*)::int FROM usage) AS usage_arm_rows`） |
+
+⇒ 处置原则：**不是「保留旧行为」，而是「把每条扫描自己的开关/判据留下，把已经过期的全局前提退役」**。
+
+**判据**：三道新门（`TestLookbackScanIsNotGatedByRetiredV1Key` / `TestUsageCreditComparabilityIsDataDriven` /
+`TestUsageCreditCheckIsNotGatedByRetiredV1Key` / `TestRecordedCostCheckCarriesNoS4Guard`），
+其中「Go 侧有没有读那个键」用 **`go/ast` 取字符串字面量**判定（不用正则扫全文：注释会把「退役说明」顶成读点），
+并配**阳性对照**（合成检查覆盖 `SkipWhen` 机制的两条腿）。
+
+### 6.6 ★ 致命缺陷 F2：882 的索引随表消亡 ⇒ 慢 SQL 回归
+
+**缺陷本体**（实测，非推理）：
+
+- 882 建的 `idx_request_logs_cost_negative` 挂在 **`public._request_logs`** 上 ⇒ 890 的 `DROP TABLE` **级联删索引** ⇒
+  会话族**没有任何 `cost_usd` 索引**。
+- 实测 `EXPLAIN (ANALYZE, BUFFERS)`：负成本检查对 `session_turns_2026_07/08/10/11` **各一次 Seq Scan**（本地 1ms；生产是真表 ⇒ 全表扫描）。
+- **第二个成因**（容易被漏掉）：检查用的是**宽源** `db.SessionFamilyTurnsSourceSQL()` —— 那是给「日志列表」型读方准备的
+  **118 列投影 + 与 `session_turn_details*` 的 LEFT JOIN**。对本检查（一个 6 列、按 2 列分组的窄聚合）它是纯浪费：
+  ① 宽投影把行宽推到 ~677 字节；② **details 的 LEFT JOIN 更贵** —— 即使 turns 侧被过滤到 0 行，哈希连接仍要**扫完整个 details 面**建哈希表
+  ⇒ **慢查的真正来源不是 turns 表，而是 details 表**。
+
+**根修（两件，缺一不可）**：
+
+1. 检查改用**窄源**：直接 `session_turns_hot ∪ session_turns`，只取本检查真正用到的 **6 列**，去掉 118 列投影与 details JOIN
+   （同款窄读的先例：`domains/streaming/anomaly_harvester.go:228`）。
+2. 会话族自己的 **`cost_usd < 0` 部分索引**（迁移 891）：父表级 + hot 表，键 `(ts, credential_id, raw_model_name)`、
+   `INCLUDE (cost_usd, cache_read_tokens, prompt_tokens)`、`WHERE cost_usd < 0` ⇒ 从 Seq Scan 变 Index Only Scan。
+
+**判据**：882 的门从 4 道改成 **7 道** —— 形态门/down 门保留（迁移文件自身没被改坏），cross-pin 门**反转**
+（原门钉「检查侧读 `public._request_logs r`」，现在检查侧已迁会话族 ⇒ 改为**负向**断言「不再读 v1 族」+ **正向**断言「读会话族窄源、谓词仍是 `cost_usd < 0` / 30 天」），
+另加两道新门：「v1 族真删 ⇒ 882 的索引**必然**随表消亡」「会话族**必须**有自己的 `cost_usd < 0` 部分索引」。
+⚠ 负向断言配了**阳性对照**（判据自检：同一判据必须能对真 v1 读点报红）与**阴性对照**
+（必须对 canonical 视图名 `request_logs_with_current_month` **不**报红 —— 用 `strings.Contains` 会假红）。
+3 项变异（重新引入 v1 读点 / 改掉会话族源 / 把视图名塞进 v1 清单）**全部转红**，源文件按字节还原。
+
+### 6.7 ★ 致命缺陷 F3：890 的 down 只复原 4/20 个函数 ⇒ 半活族
+
+**这一条是在「退役前自查」里抓到的，机制上比 F1/F2 更隐蔽**：它不影响前向，只影响**回滚**。
+
+**事实一（文件头与实际不符）**：890 的 down 文件头写着「那些函数**也**被 890 删了，所以本 down 一并把它们装回去」，
+而 890 up 删的是 **20 个**函数/过程 + 2 个触发器函数，down 实际只复原了 **4 个**
+（`ensure_request_logs_partition` / `ensure_request_logs_bodies_partition` / `create_next_month_partitions` / `ensure_next_month_archive_partition`）。
+⇒ 回滚后 v1 族「**表回来了、promote / TTL / 归档函数没回来**」= **半活**：表在、分区不产、正文不清理。
+
+**事实二（更严重：已复原的那 4 个函数体也是陈旧的）**：它们取自正典 `sql/objects/functions/`，
+与**真库部署版**逐字比对后**实质不同** —— 真库版多了 advisory lock 串行、默认分区约束处理、legacy shell 重挂等分支
+⇒ 回滚会装回一个**更弱**的分区函数。
+
+**事实三（回滚通常是「代码也一起回滚」）**：旧版 `bg/partition_manager.go` 会调用 promote / archive / TTL 这些函数 ⇒
+只恢复表不恢复函数 ⇒ 旧代码**每 tick 42P01**。
+
+**修法**：按 **890 执行前的真库定义**逐字复原 —— 来源 `pg_get_functiondef` / `pg_get_triggerdef` / `obj_description`，
+2026-10-20 于本地真库采样 ⇒ **20 个函数/过程 + 2 个触发器全部装回**，顺序与 up 的 DROP 顺序一致。
+⚠ 已核对：本节所有函数体内**不含裸 `request_logs` 标识符**（只有 `_request_logs*`）⇒ 两条投递通道（runtime 词法改写 / installer 原样）装出来的库完全一致。
+
+**真库往返实测**（临时库 = 本地库的 schema-only 克隆）：
+
+| 阶段 | 实测 |
+|---|---|
+| up 前 | 快照 20 个函数定义 |
+| up 后 | v1 族函数 **0** 个、v1 族表 **0** 张 |
+| down 后 | **20/20 函数定义与 up 前逐字一致**（`pg_get_functiondef` 全等比较）、**2 个触发器**复原、11 个 v1 关系回来（**分区不在 down 范围**，文件头已声明） |
+
+**判据**：三道新门 —— `TestMigration890DownRestoresEveryDroppedFunction`（up 的 DROP **集合** ⇔ down 的 CREATE 集合；
+**重载按条数比**（`credential_most_used_model` 有两个重载 ⇒ 20 个对象只有 19 个名字，只比名字集合会漏掉「少复原一个重载」））、
+`TestMigration890DownRestoresTheTwoTriggers`、`TestMigration890DownEmbeddataCopyIsByteIdentical`。
+3 项变异（删一个函数体 / 删一个触发器 / 改一个函数名）**全部转红**，源文件按字节还原。
+
+**有意不还原的一处**：`recent_success_rate` / `system_health_status` 是 890「**替换函数体**」而非「删除对象」，
+本 down **保留会话族形态**（会话族形态不引用 v1 表 ⇒ 回滚后不 42P01；v1 空表时 v1 腿口径与三臂 canonical 视图不自洽）——
+理由写在 down 文件头的 3c 条，避免下一个人把它当成漏项去「修」。
+
+### 6.8 ★ 一条被我自己推翻的裁决：`sql/objects/` 是「第四份表示」
+
+**我一度把 `sql/objects/` 当成「部署后形态的 SSOT」**，把 5 张分析视图改成了会话族形态
+（`customer_cost_view` / `model_cost_per_task_view` / `v_continuation_effectiveness` / `v_node_switch_analysis` / `v_timeout_effectiveness`）。
+
+**结果**：883/884 的门红了 —— 因为**新装基线**（4 份副本）引用了这 5 张视图，而新装路径上 `session_turns_hot`
+由**启动序列**建、**基线不建** ⇒ 基线里的 `CREATE VIEW` 急切校验它引用的关系 ⇒ 新装报 **42P01 中止整个安装**
+（2026-10-20 真库临时库实测）—— ⚠ 而**升级路径是绿的**（升级路径上启动序列先跑）。
+
+**裁决依据**（仓库自己写的）：`scripts/audit/baseline-reconcile.py` 明写 `sql/objects/` 是
+「**第四份表示、从不应用**（唯一引用是 `deploy/sql/sync-objects.sh` 的单向拷贝）、但**对基线承重**（部分基线对象的唯一出处）」；
+`sql/schema/objects_registry_test.go` 同款结论。
+
+⇒ **回退**这 5 张视图到 v1 fallback 体（4 份基线副本全回 v1 体），**部署形态交给迁移 883/884 换上**
+（两条路径跑完启动序列后形态一致），并立**基线自洽门**（`sql/schema/baseline_view_refs_test.go`：「升级路径绿」≠「新装路径绿」）。
+⇒ **保留** `sql/objects/views/request_logs_with_current_month.sql` 的会话两臂体
+（`db/request_logs_view_dump_generation_test.go` 要求它与 Go composer 同代，且与 883/884 的 5 张**不重叠**；3 份基线副本保持 v1 体，890 在两条路径上换上）。
+⇒ `internal/sqlreadguard` 白名单从 1 条增到 **6 条 LEGIT**（5 条「基线 fallback 溯源体」+ 1 条散文误报），
+并改写了那段**已经写错的**注释（原文说「5 张分析视图已改会话族」）⇒ `debtBaseline` 仍为空（零债棘轮保持）。
+
+### 6.9 本轮的门禁与变异验证清单
+
+| 门 | 守什么 | 变异验证 |
+|---|---|---|
+| `TestMigration882_IndexShapeIsStable` | 882 迁移文件自身没被改坏（索引虽已消亡，文件仍会跑） | — |
+| `TestMigration882_DownDropsSameIndex` | down 删同名索引 | — |
+| `TestMigration882_IndexDiesWithTheV1Family` | 890 真的删了 882 索引挂着的那张表 | — |
+| `TestMigration882_CheckSideMovedToSessionFamily` | 检查侧**不再读 v1 族**（负向）+ 读会话族窄源与原谓词（正向） | ✅ 3 项全红 |
+| `TestMigration882_DetectorSelfCheck` | **判据自身**：必须能对真 v1 读点报红、且对 canonical 视图名不报红 | ✅ |
+| `TestMigration882_NegativeCostIndexNowOnSessionFamily` | 会话族**必须**有自己的 `cost_usd < 0` 部分索引（按内容发现，不写死文件名） | ⏳ 待 891 落地后补 |
+| `TestMigration890DownRestoresEveryDroppedFunction` | up 的 DROP 集合 ⇔ down 的 CREATE 集合（条数 + 名字集合） | ✅ 3 项全红 |
+| `TestMigration890DownRestoresTheTwoTriggers` | 两个 v1 触发器复原 | ✅ |
+| `TestMigration890DownEmbeddataCopyIsByteIdentical` | down 的两份副本逐字节相同 | ✅ |
+| bg 的 4 道 F1 门 | 三条扫描不再被退役键门控；`usage_credit` 判据数据驱动 | ✅（worker 报告 9 项变异全红） |
+| `internal/sqlreadguard` | v1 读面归零 + 6 条 LEGIT 溯源体 | ✅ |
+| `internal/rowsguard` | 3 条豁免键改键（同一循环体漂移）+ 1 条删除（循环已退役） | ✅ |
+
+### 6.10 ★ 部署顺序：先上新二进制，还是先落 schema？
+
+**窗口风险**：旧二进制跑在新 schema 上。
+
+- 缓解一半：890 把 `recent_success_rate` / `system_health_status` 的**函数体**换掉了 ⇒ 旧二进制调这两个**函数**拿到的是新体（不 42P01）。
+- 但**直接读 v1 关系**的路径会 42P01。**实测证据**：当前本地在跑的容器 `llm-gateway-local-8782`
+  （`2.5.8-70a30467-20261020-2764`，git_sha `70a30467`，**来自另一份 checkout `llm-gateway-go-3`**）的源码里
+  `admin/analytics.go:821 FROM _request_logs_hot`、`admin/analytics.go:827 FROM _request_logs`、
+  `admin/auto_route_outcome_freshness.go` 等**生产文件**直接读 v1 关系 ⇒ 890 之后这些端点会 42P01。
+
+⇒ **本地**：**先停旧容器，再落 schema**（本轮已按此执行；停服窗口 = 停机 + 部署时长）。
+⇒ **生产（211/252）**：**先上新二进制（890 延后），再落 schema**；若要一次做完，安排维护窗口。
+   ⚠ `deploy-local.sh` 的默认顺序是「**先迁移后上新二进制**」⇒ 直接跑会在迁移窗口里让旧容器带着 v1 腿撞新 schema。
+⚠ 另一条协调事实：本地部署根 `~/kaixuan/llm-gateway-go-v2` 是**多会话共享**的，而当前在跑的容器来自**另一份 checkout**
+⇒ 本地部署前要确认没有别的会话正在部署（否则会互抢部署根与端口）。
+
+### 6.11 ★ 211/252 的归档与核账要求（非空闸会拒绝执行）
+
+890 的非空闸在 v1 族任一表有行时 `RAISE EXCEPTION` ⇒ **211/252 若还有 2026-10-16 停写前的历史，890 会拒绝执行**。
+这不是保护伞式的「拦一下」，而是**必须显式回答「这些历史要不要丢」**：
+
+1. **逐表计数**（6 个关系，含两种物理名）：
+   `SELECT 'public.'||relname, n_live_tup FROM pg_stat_user_tables WHERE relname LIKE '%request_logs%'`
+   ⇒ 再用 `count(*)` 复核（`n_live_tup` 是估计值）。
+2. **最后写入时间**：确认 v1 族的最后写入时间 **早于** 会话族镜像建立的起点 ⇒ 镜像链之前的行就是「历史」。
+3. **归档**（若确认要留）：`pg_dump --data-only --table='public._request_logs*'`，**落盘后再跑 890**；
+   ⚠ down 只能重建**骨架**，救不回任何一行 ⇒ 归档是唯一的救法。
+4. **核账**：把 v1 族的行数/金额与会话族对应区间对齐（口径差异要写进 211/252 的核账记录，不要静默丢弃）。
+
+### 6.12 遗留与风险登记（本轮**没有**解决的，诚实列出）
+
+| # | 遗留 | 证据 | 归属 |
+|---|---|---|---|
+| 1 | **质量标记真实丢失**：`session_turn_details` 有 `quality_flags` / `quality_fix_actions` / `quality_score` 列，镜像代码也映射了，但真库 **904 行全部 NULL** ⇒ 上游算出的质量标记**目前没落库**（lite/SQLite sink 仍落） | 真库实测 | 需决定：接线落库，或**明确登记为口径损失** |
+| 2 | **v1 的 7 天正文 TTL 没有等价物**：841 的 `llm_gateway_partition_retention` 出厂为空且全仓无 INSERT ⇒ 会话族月分区**只增不减** | 全仓检索 | 待办（与本轮退役无直接因果） |
+| 3 | 两个 settings 键已成**死键**：`lifecycle.request_logs_ttl_days` / `lifecycle.request_logs_bodies_ttl_days` | 检索 | 清理或登记 |
+| 4 | `resolvePromoteConfig` 的 `case "_request_logs_bodies":` 与 `bg/metrics.go` 的 `hotTableTSColumn` 里 `_request_logs*` label 现在**不可达**（刻意保留） | 代码审读 | 低危 |
+| 5 | `updateRequestLog` **丢弃 `CommandTag`** ⇒ 0 行 UPDATE 是**静默 no-op**（无错、无日志、无指标） | 代码审读 | 与本轮无直接因果 |
+| 6 | `quality_flags` 无 PG 写目标 + `requestClassArg`（`client.go:2749`）无生产调用方 | 代码审读 | 同上 |
+| 7 | canonical 视图**第三臂消失** ⇒ **镜像链建立之前的历史**不再由该视图提供（v1 族已删，视图无从引用） | 设计必然 | 已被非空闸的前置归档要求覆盖 |
+| 8 | `admin/` 包的「v1 bodies 读方为 0 ⇒ 量具坏了」类门：主体退役后这类判据需要换题（正在处理） | 本轮实测 | 处理中 |
+
+---
+
+### 6.13 ★ 致命缺陷 F5：`deploy-local.sh` 的共享目录判定把**软链**误判成「未绑定」⇒ 部署整体中止
+
+**症状**：本地部署在 `migrate_existing_pg_to_shared()` 这一腿失败，
+`docker run` 报 `Bind for 127.0.0.1:5432 failed: port is already allocated`，
+脚本「已恢复原容器」后退出，**网关根本没起来**。
+
+**根因（三层）**：
+
+1. **宿主机实况**：`llm-gateway-pg` 的 bind source 是
+   `~/kaixuan/postgres-citus`（citus+pgvector 镜像 `kx-citus-pg17:13.3.0-vector-arm64`），
+   而脚本约定的共享目录是 `~/kaixuan/postgres` ⇒ **字符串不相等**。
+2. **判定缺陷**：那条腿用**字符串**（仅压缩斜杠）比较两条路径 ⇒ 判定「未绑定共享目录」
+   ⇒ 触发**几百 MB 级数据搬迁 + 容器重建**。
+3. **固定端口**（**本轮改动前的代码**）：重建用的 `docker run` **硬编码** `-p 127.0.0.1:5432:5432`
+   （同仓的 compose 模板却是 `${LLM_GATEWAY_PG_PORT:-5432}`）⇒ 本机 5432 已被别的实例
+   （`acc-pg17`）占用 ⇒ **重建必失败** ⇒ 整条部署中止。
+   ⇒ 即便判定正确，这台机器上这条腿也**跑不通**。
+
+**修法（最小改动 + 可测）**：
+
+- 新增 `scripts/deploy-local-lib.sh` 的 `dl_physical_path()` / `dl_same_physical_dir()`：
+  判定改用**物理路径**（`cd … && pwd -P`）⇒ **同一份数据**就跳过搬迁；
+  目录不存在时回退到旧的斜杠归一化（不静默返回空串）。
+- `scripts/deploy-local.sh` 的那条腿改调 `dl_same_physical_dir "$DL_PG_SOURCE" "$shared"`。
+- 宿主机侧把共享目录做成软链：`~/kaixuan/postgres -> postgres-citus`
+  ⇒ 物理路径相同 ⇒ 腿直接跳过，**活数据原地不动、容器不重建、零停机**。
+- 契约门（`tests/deploy_local_contract_test.sh`）：软链与目标判为同一目录、不同目录判为不同、
+  空输入判为不同、不存在路径回退非空、且脚本**必须**走 `dl_same_physical_dir`
+  （并禁止再出现旧的字符串归一化写法）。
+- 变异验证 2 项全红：M1 把判定退回纯字符串比较 ⇒ 「must use dl_same_physical_dir」红；
+  M2 去掉 `pwd -P` ⇒ 「dl_physical_path must resolve symlinks」红。两次均按 sha256 还原。
+
+★ **订正（合并上游后）**：上面第 3 层「重建**固定占用 5432**」描述的是**本轮改动前**
+的代码（`-p "127.0.0.1:5432:5432"` 硬编码）。合并进来的上游提交**已经把它改掉了**：
+重建现在用 `dl_pg_publish_spec "$pg_bind_ip" "$pg_host_port"` ⇒ **沿用旧容器已发布的
+host 端口**（本机即 54318），并支持 `LLM_GATEWAY_PG_PORT_BIND` 覆盖
+（`scripts/deploy-local-lib.sh:208-217`）⇒ **「端口被占 ⇒ 重建必失败」这一层在合并后
+已不存在**。本轮那次失败发生在**合并前**的代码上；两条修法（物理路径判定 + 沿用端口）
+合起来才是完整解。
+
+### 6.14 ★ 本地部署与全量验收（实测数据，2026-10-20）
+
+**部署**：**两次**，两次均 `VERIFY_PASS=1`、端口 8782、`VERIFY_DATABASE=external`：
+
+| # | release | git_sha | 触发原因 |
+|---|---|---|---|
+| ① | `2.5.8-8531596a-20261020-2766` | `8531596a` | 本轮改动 + 当时尚未提交的部署脚本修复（§6.13） |
+| ② | **`2.5.8-20c814d7-20261020-2768`** | `20c814d7` | **合并上游并改号后重部署**（`20c814d7` = 已推送的合并提交） |
+
+⇒ **§6.14 以下的全部验收数字都是第二次部署（合并后）实测的**，
+且与合并前**逐项一致**：写链路（3/21 成功、正文 JSON array）、
+533 端点扫（**500 = 0**，p50 1.3ms / p95 17.9ms）、105 页扫（**无 >2s**，max 1519ms）。
+顺序按 §6.10：**先停旧容器 → 落 890/891 → 上新二进制 → 起网关**。
+
+**落库事实**（真库 `llm_gateway` @ 127.0.0.1:54318）：
+
+| 项 | 结果 |
+|---|---|
+| v1 族关系数 | **0**（`_request_logs*` 全删；`recent_success_rate` / `system_health_status` 仍在——它们是**被替换**不是被删，按 §6.7 3c 有意不还原 v1 腿） |
+| 会话族 `cost_usd < 0` 部分索引 | **2** 条（父表 + hot 表，即迁移 891） |
+| 新装链 | **0 of 284 fail**（`TestStartupChainGapsMatchReviewedSet`，真库逐条跑） |
+
+**模型多轮请求**（`ping` / `say OK.`，7 个模型 × 3 轮 = 21 次）：
+
+- **只有 `deepseek-v4-flash` 本机有活凭据** ⇒ 3/3 返回 200（`pong` / `OK.` / `OK.`）；
+  其余模型 503 `no_candidate` 或 400 `invalid_model` ⇒ **环境既有状态，不是本轮回归**
+  （部署前的 `gateway-8782.log` 里已有 52 条 `no_candidate`；凭据池只有 3 条、全在 deepseek）。
+- **写链路完好**：21 次请求 → `session_turns_hot` 22 行（含 1 条后台流量），
+  状态码逐条正确（3×200 / 16×503 / 3×400），200 行的 `is_final_success=true`；
+  正文落在 `session_bodies_hot.outbound_body`，**是 JSON array**（不是 null），
+  且长度随轮次增长（37 → 119 → 200 字符）⇒ 多轮上下文确实累积。
+  ⚠ 口径澄清：`session_turns.request_delta/response_delta` 是 **null**，但**部署前的历史 200 行
+  （08:02~08:27）同样是 null** ⇒ 不是回归；本形态的正文存在 `session_bodies*` 族。
+
+**逐 API 扫描**（533 条 GET 路由，口径同 2026-10-16 验收轮）：
+
+| 状态 | 数量 | 判定 |
+|---|---|---|
+| 200 | 281 | ✅ |
+| 405 | 122 | 扫描口径（GET 打只读 POST 路由；方法前缀由 Go 1.22 ServeMux 在**进 handler 前**拦截 ⇒ 零副作用） |
+| 400 | 68 | 缺/错参数 |
+| 404 | 50 | **前缀分发器按设计要子路径**（如 `/api/admin/model-integrity` 要 `summary`/`events`/`fingerprint-drift`）+ handler 级 `not found` |
+| 503 | 7 | 子系统未启用（identity-pool / mobile-node / lite / memora）+ 运维平台未配 |
+| 401 | 5 | OpenAI 兼容腿（`/v1/models` 等）要 **API key**，本扫用的是 admin JWT |
+| **500** | **0** | ★ 上一轮验收轮的 **12 个 500 全部清零** |
+
+延迟：p50 **1.4ms** / p95 **14.4ms**。
+⚠ 扫出两条「>2s」：`/api/free-pool/stream`（89.7s）、`/api/admin/system-monitor/stream`（51.1s）。
+**它们不是慢查询**——用 `curl -w time_starttransfer` 实测 **TTFB = 1.6ms / 1.8ms**，
+量到的是 **SSE 流的持续时长**（客户端等流结束），不是响应延迟。
+⇒ 口径教训见 §12.2。
+
+**逐页浏览器验证**（headless Chromium + **真实 UI 登录** + 真实后端，105 个页面）：
+
+| 指标 | 值 |
+|---|---|
+| 页面数 | **105**（`web/src/router.ts` 的 107 条 `path:` 去掉 2 条 catch-all） |
+| 页面 HTTP 非 200 | **1**：`/maintain` = 503「运维平台不可用」（按设计，本机没配运维平台） |
+| 耗时 | p50 **928ms** / p95 **1256ms** / max **1640ms** ⇒ **无页面 >2s** |
+| 页面内业务 5xx | **0**；仅有 `/maintain-api/*`（运维平台未配）与 `/api/free-discovery/*`（子系统未启用）的 503 |
+| 页面内 4xx | 全是**扫描器用错 ID** 造成的：用真实 ID 复测即 200（`/api/keys/10` 200、`/api/admin/sessions/<真实 session_id>/turns` 200、`/api/admin/session-analytics/clients/grok-4.6` 200） |
+
+⇒ **上一轮验收文档明确留下的缺口（「每一个页面这一条尚未满足」）在本轮关闭**。
+
+⚠ **「Maestro」的口径说明**：仓库内没有 Maestro 脚手架；本轮与历史轮次用
+**headless Chromium 逐页扫 + 逐 API 扫**等价覆盖（真实浏览器 + 真实登录 + 真实后端），
+差异只在录制/断言框架，不在覆盖面。
+
+### 6.15 ★ 211/252 的执行单（SQL 变更记录 + 顺序 + 归档 + 回滚）
+
+**本轮新增的 SQL（两个文件，两套）**：
+
+| 编号 | 文件 | 作用 | 幂等/可逆 |
+|---|---|---|---|
+| 890 | `sql/migrations/startup/890_drop_request_logs_v1_family.sql` | **真删** v1 族：6 个关系 + 4 张 v1-only 视图 + 20 个函数/过程 + 2 个触发器；canonical 视图改两臂；`routing_analytics_source` 换 canonical 形态；两条 owner_filter 改读 `sessions.owner_user` | 一次性；非空闸会拒绝在有数据的库上执行；`.down.sql` 可逐字复原 20 函数 + 2 触发器 + 11 个关系（**救不回任何一行数据**） |
+| 891 | `sql/migrations/startup/891_session_turns_cost_negative_partial_idx.sql` | 会话族 `cost_usd < 0` 部分索引（父表 + hot 表），键 `(ts, credential_id, raw_model_name)` INCLUDE `(cost_usd, cache_read_tokens, prompt_tokens)` | `CREATE INDEX IF NOT EXISTS`；`.down.sql` 可删 |
+
+★ **编号更正（合并上游时改号）**：这两条迁移最初编为 **885 / 886**；
+合并 `origin/main`（59 个提交）时发现**上游已占用 885~889**
+（`885_session_turns_host_tags` / `886_session_bodies_storage_comment` /
+`887_session_turns_search_text_fts` / `888_session_family_join_index_gaps` /
+`889_session_turns_tools_population`），且**已随 154 的 2765 部署**
+⇒ 上游的编号**不可改** ⇒ 本分支的这两条**改号为 890 / 891**。
+改动面：canonical + embeddata 四个文件、两个契约门、installer's go:embed + map +
+`StartupFiles` + TSV 清单、部署通道 `files=()`、changelog 登记行（含 sha 重算）、
+本文与 LESSONS 的散文编号。**内容只改了编号**（文件头/注释里的编号与错误信息文案）。
+⚠ 本地那条部署记录里的「885/886」是**改号前**的文件名（内容相同）；本地库上
+「v1 族已删」这个**事实**不受改号影响。
+⚠ 改号后的**幂等性已实测（两条路径）**：① 在「v1 族已删」的库克隆上重跑 890 → EXIT=0；② **第二次本地部署时，通道在活库上真的重跑了 890 与 891**（`run/db-revision-sequence.log`：`applying …/890_drop_request_logs_v1_family.sql`、`applying …/891_…sql` ⇒ 随后 `database revision sequence completed successfully`）⇒ 改号**没有**在真实投递路径上炸掉。
+（非空闸用 `to_regclass` 判存在 ⇒ 缺表即跳过；canonical/函数/policy 全部
+`CREATE OR REPLACE` 或「仅在存在时改写」）；891 连跑两次 → 两条索引仍在、EXIT=0。
+
+**登记的六处**（缺一处就装不上）：canonical `sql/migrations/startup/`、
+`installer/cmd/llm-gw-installer/embeddata/startup/` 两份副本、
+`installer/cmd/llm-gateway-go-installer/main.go`（go:embed + embeddedSQLFiles map）、`installer/internal/dbinit/runner.go`（StartupFiles）、
+`sql/schema/installed_startup_migrations.tsv`（用 `cd installer && go test ./internal/dbinit/ -run TestStartupManifest -update` 生成）、
+`scripts/apply-db-revision-sequence.sh` 的 `files=()`（891 排在 890 之后、序列末尾）。
+
+**执行顺序（生产，与本地相反）**：
+
+1. **先上新二进制**（含 890/891 的二进制必须先就位），
+   或安排**维护窗口**（本地是「先停旧容器」，生产是「先上新二进制」——见 §6.10）。
+2. 跑 `scripts/apply-db-revision-sequence.sh`（含 890 → 891）。
+   ⚠ 通道里 890 之前的历史文件对 v1 族做**词法改名适配**（`_request_logs`）——
+   库处于「已改名」形态时适配才生效；**混态（`ambiguous`/`mixed`）会直接报错停下**，需人工处理。
+3. 890 的**非空闸**：v1 族任一表有行 ⇒ `RAISE EXCEPTION` ⇒ **先按 §6.11 完成归档与核账**。
+
+**回滚**：`.down.sql` 逐字复原 20 函数 + 2 触发器 + 11 个 v1 关系（分区不在 down 范围）；
+但**落进会话族的数据不会回流到 v1 族** ⇒ 回滚只是「让旧二进制还能跑」，
+不是「把数据搬回去」。
+
+---
+
+
 ## 7. 本轮新增的经验
 
 ### 7.1 「执行快」不等于「语句快」：EXPLAIN 的 Execution Time 会骗人
@@ -2526,3 +3004,241 @@ chat 腿不接受」——这类**协议腿之间的规则不对称**，靠读�
   正文三列全 `array`）、两个 deepseek 5/5=503（`success=f` 落库、B 按前提 SKIP、
   C 按前提 SKIP）、退役族零新增。
 - 溯源：request_logs→session_turns 复核轮 §5.13.11 / §10.14；[复盘](docs/audit/2026-10-20-request-logs-session-turns-复核轮.md) §5.13.11 / §10.14。
+
+---
+
+## 11. `admin/` 包收口轮：v1 退役后「台账型门」全部翻转（2026-10-20）
+
+> 范围：**只改 `admin/` 包**（生产代码零改动）。`bg/`、`db/`、`sql/`、`internal/sqlreadguard/`
+> 由本轮之外的上游收口；本节只报告它们的状态。
+
+### 11.1 为什么台账型门会集体变红
+
+迁移 890 把 v1 族**物理删除**之后，`admin/` 里那批「台账型」门的前提整体失效：
+
+| 台账 | 原来守什么 | 890 之后的事实 |
+|---|---|---|
+| `requestLogsReadInventory` | 读 `_request_logs*` 的生产文件清单（57 文件 / 109 调用点） | **0**（canonical 视图不是 v1；SQLite 存储面是同名不同物） |
+| `indirectRequestLogsReaders` | 间接读 v1 的文件（3 条） | **0**（两个切换层都恒为会话族） |
+| `requestLogsStopWriteClassification` | 停写分级（63 条） | **0** |
+| `v1BodiesReaders` / `v1BodiesReaderShapes` / `v1BodiesReadPaths` | bodies 读方登记（24 / 24 / 3 路径） | **0** |
+| `retirementBreakers` / `retirementReattributed` | 删 v1 会坏掉的文件 | **0** |
+| `viewArmCutoverReaders` | 「切换那一刻会静默降级」的清单 | **0**（canonical 视图没有 v1 臂了） |
+| `requestLogsControlPlaneReaders` | 控制面依赖 | **0** |
+| `v1ReaderRetirementTiering` / `v1ArmViewNamesRuntimeChecked` / `v1ArmLiteralBlindSpot` / `v1ReaderIndirectPopulation` | 分档域 / v1 臂视图 / 工具盲区 / 第二总体 | **0** |
+
+⇒ **处置不是删门**：这些门守的是「不许出现新的 v1 读方」这条不变式，
+删掉就没人守了。⇒ 统一翻成 **「清单必须为空 + 实测必须为空 + 新增即红」**，
+并给每条负向断言配**阳性对照**（合成条目 / 合成源码），
+避免「表空了 ⇒ 循环不执行 ⇒ 恒绿」。
+
+### 11.2 「canonical 视图不是 v1」是这一轮的口径分水岭
+
+890 之后 `request_logs_with_current_month` **仍然存在**（内容换成会话族两臂体，118 列同名同序）。
+
+⇒ 一切「v1 读方」口径必须排除它，否则 55 个视图读方会被误算成 v1 读方。
+本轮把它收窄成**已退役关系的闭合集**（`retiredV1RelationNames`：
+5 张底表 × 两种拼写 + 4 张 v1-only 视图），并在
+`admin/session_family_sql_shape_test.go` 里用**标识符边界**判定
+（`public.request_logs` 是 `public.request_logs_with_current_month` 的前缀 ⇒
+朴素 `Contains` 会把「必须在场的 canonical 视图」判成「必须不在场的 v1 族」）。
+
+### 11.3 已知的生产缺陷：**4 个 admin 生产文件仍读 890 已 DROP 的视图**
+
+`890_drop_request_logs_v1_family.sql` DROP 了
+`request_logs_with_current_month_without_customer_id` 与
+`request_logs_with_current_month_without_request_class_due_at`，
+而下列文件仍读它们 ⇒ **运行时 42P01**：
+
+| 文件 | 行 | 读的关系 |
+|---|---|---|
+| `admin/usage_trend_series.go` | 407 / 588 | `…_without_customer_id` |
+| `admin/auto_route.go` | 158 | `…_without_customer_id` |
+| `admin/attempt_quality_api.go` | 139 | `…_without_request_class_due_at` |
+| `admin/auto_route_correlations.go` | 129 / 150 / 171 / 193 / 246 | `…_without_request_class_due_at` |
+
+⇒ 本轮**只报告不改**（生产文件由上游收口）；但它们被**逐个具名**登记在
+`admin/session_family_sql_shape_test.go` 的 `retiredV1ReferenceExceptions` 里，
+并由 `TestRetiredV1ReferencesAreAllAccountedFor` 守着
+（**新面孔即红** + 例外只许缩小 + 每项必须有非空理由）。
+⇒ 「v1 读方总体为空」这句话因此**是逐个核对过的**，不是「扫不到所以为空」。
+
+### 11.4 同名不同物：`storage/sqlite/request_log_store.go`
+
+该文件里的 `request_logs` 是它**自己的 SQLite 表**（列是 request_id / tenant_id /
+session_id / ts / method / path / status_code / duration_ms / has_body，占位符 `?`），
+与 PG 的 v1 族无关。⇒ 扫描器按**路径**排除 `storage/sqlite/`（不是按「有没有 `?`」
+那种启发式 —— 后者一个 PG SQL 里出现 `?` 也可能是 JSON 操作符）。
+
+### 11.5 处置三分法（本轮 22 道红用例）
+
+- **(a) 反转断言**（主体还在、形状变了 ⇒ 「必须读 v1」改成「必须读会话族」+
+  负向断言「不得再出现 v1 族关系名」）：tenant stats / data lifecycle /
+  cross-table request_id / bodies 批量取数 / outcome 新鲜度 / 压缩计数 /
+  telemetry 占位符与停写门 / PGBodyReader 七件套 等。
+- **(b) 删测试留注释**：**本轮没有用到**。原先预留这一类是因为「主体真退役且无等价物」，
+  实际每道红用例都找到了等价不变量（要么是「会话族两腿在场」，要么是
+  「只许缩小 / 只许新增」这类**形状不变量**）⇒ 全部走 (a) 或 (c)。
+- **(c) 换成守新不变量的门**：
+  `TestBodiesSwitchLayerIsAlwaysSessionFamily`（切换层恒等于会话族）、
+  `TestTenantStatsLogsTable_ProjectionAndSourceUntouched`、
+  `TestTenantStatsLogsTable_BothBranchesAreIdentical`、
+  `TestResetCredentialSuccessRateRowsIsANoOpAfterV1Retirement`、
+  `TestResetCredentialSuccessRateRowsNeverTouchesTheSessionFamily`、
+  `TestSessionKeyedReaderSourceGuardHasTeeth`、`TestSessionLegOnlyGuardHasTeeth`、
+  `TestTelemetryIngestHasNoV1Writes`，
+  以及本轮 22 道台账门全部翻成的「清单为空 + 实测为空 + 新增即红」。
+
+**门名改动 5 处**（语义已变、名字会误导；均在 `auditGateDocs` 映射之外 ⇒ 门总数仍 17）：
+
+| 旧名 | 新名 |
+|---|---|
+| `TestBodiesSwitchDefaultsToV1` | `TestBodiesSwitchLayerIsAlwaysSessionFamily` |
+| `TestResetCredentialSuccessRateRowsRunsInsideSuperAdminGUCTx` | `TestResetCredentialSuccessRateRowsIsANoOpAfterV1Retirement` |
+| `TestResetCredentialSuccessRateRowsKeepsGUCGuardPredicate` | `TestResetCredentialSuccessRateRowsNeverTouchesTheSessionFamily` |
+| `TestTenantStatsLogsTable_V1LegsUntouched` | `TestTenantStatsLogsTable_ProjectionAndSourceUntouched` |
+| `TestTenantStatsLogsTable_StopWriteDropsTwinAntiJoin` | `TestTenantStatsLogsTable_BothBranchesAreIdentical` |
+
+### 11.6 同步更新的文档
+
+- `docs/audit/2026-09-30-session-request-data-re-audit.md`：
+  「灰度前必须处理的静默档：**56** 条」→ **0** 条，并追加 2026-10-20 订正
+  （v1 族真删 ⇒ 停写分级表清空 ⇒ 三个静默档条数归零；**口径未变**，
+  数字仍由 `countSilentStopWriteEffects` 从登记表实时计算）。
+
+### 11.7 变异验证（8 条，全部「变红 → 按字节还原 → sha256 一致」）
+
+| # | 变异 | 变红的门 | 还原 |
+|---|---|---|---|
+| M1 | `db.SessionBodiesSourceSQL()` 退回 v1 臂 | `TestIndirectRequestLogsReadersAreStillIndirect` / `TestBodiesSwitchPairIsPinnedAndPaired` | sha256 一致 ✓ |
+| M2 | `bg.settleSourceFor` 的 `TurnsTable` 退回 `_request_logs_hot` | `TestIndirectRequestLogsReadersAreStillIndirect` | sha256 一致 ✓ |
+| M3 | `db.SessionFamilyTurnsSourceSQL()` 少一条腿（hot ∪ hot） | `TestSessionFamilySourceShapeMatchersHaveTeeth` | sha256 一致 ✓ |
+| M4 | `admin/tenant_stats_logs_table.go` 源退回 `_request_logs_hot` | `TestRequestLogsReadInventoryIsComplete` / `TestRetiredV1ReferencesAreAllAccountedFor` | sha256 一致 ✓ |
+| M5 | `admin/telemetry.go` 写回 `_request_logs_hot` | `TestTelemetryIngestHasNoV1Writes` | sha256 一致 ✓ |
+| M6 | `admin/usage_enhanced.go` 压缩计数源退回 `_request_logs` | `TestCompressedCountReadsParentNotCanonicalView` | sha256 一致 ✓ |
+| M7 | 去掉 SQLite 存储面排除（同名假阳性未被识别） | `TestRequestLogsReadInventoryIsComplete` / `TestRetiredV1ReferencesAreAllAccountedFor` | sha256 一致 ✓ |
+| M8 | 新增一个**未具名**的 v1 读方 | `TestRetiredV1ReferencesAreAllAccountedFor` / `TestRequestLogsReadInventoryIsComplete` | sha256 一致 ✓ |
+
+M8 是本轮最关键的一条：它证明「台账为空 + 新增即红」这条不变式**真的在跑**，
+而不是「扫描器坏了所以看起来空」。
+
+### 11.8 本轮发现、**没有改**的问题
+
+1. **4 个 admin 生产文件仍读 890 已 DROP 的视图** ⇒ 运行时 42P01（§11.3）。
+2. **`storage.session_bodies_native_read` 是僵尸配置项**：读端开关已无读者
+   （`db.SessionBodiesSourceSQL()` 恒等于会话族），但键仍登记在
+   `settings/spec_storage.go` 的 settings spec 里 ⇒ 运维改它不会有任何效果。
+3. **写端 `storage.session_turns_bodies_enabled` 仍在**（控制 `session_turns` 的
+   `request_delta` / `response_delta` 两列是否写入）。**会话族的 `session_bodies`
+   正文是无条件写的**（`bodiesRec`），所以正文读链没问题；但
+   `session_turns` 宽表那两列在生产上恒 NULL —— 与 v1 退役无关，是既有状态。
+4. `admin/usage_trend_series.go` 的 `detail` 档读的是被 DROP 的包装视图，
+   而它本来就想「带 api_key 过滤的 detail 档」⇒ 修复方向是改读 canonical 视图
+   （890 之后是会话族两臂体、列名同序），不是重建包装视图。
+
+---
+
+## 12. 部署与验收轮新增的经验
+
+### 12.1 ★ 「字符串相等」≠「同一份数据」：路径判定必须按**物理路径**
+
+**现象**：`deploy-local.sh` 的「容器数据目录 == 共享目录吗」判定用字符串比，
+宿主机上共享目录是软链（`~/kaixuan/postgres -> postgres-citus`）⇒ 判成「未绑定」
+⇒ 触发几百 MB 级数据搬迁 + 容器重建 ⇒（**本轮改动前的**）重建固定占 5432、
+该端口已被别的实例占住 ⇒ **整条部署中止**，网关根本没起来。
+（端口那一层在**合并上游后已修**——重建改为沿用旧容器已发布的 host 端口；见 §6.13 订正段。）
+
+**根因**：判定问的是「**路径写法**一样吗」，而要问的是「**是不是同一份数据**」。
+软链、绑定挂载、`/private/var` 与 `/var` 别名，都是「同物异名」。
+
+**防复发检查**：凡是「这两个路径是不是同一个东西」的判定，都用**物理路径**
+（`cd … && pwd -P`）而不是字符串；比较前先问「有没有可能是同物异名」。
+本轮已把判定抽成 `dl_same_physical_dir()`（可 source、可单测）并配契约门 + 2 项变异。
+
+**证据**：`scripts/deploy-local.sh`（判定改造）、`scripts/deploy-local-lib.sh`
+（`dl_physical_path` / `dl_same_physical_dir`）、`tests/deploy_local_contract_test.sh`
+（新门）、宿主机 `~/kaixuan/postgres -> postgres-citus`。
+**溯源**：§6.13。
+
+### 12.2 ★ 长流的「耗时」是**流时长**，不是响应延迟
+
+**现象**：逐 API 扫描报出 `/api/free-pool/stream` 89.7s、`/api/admin/system-monitor/stream` 51.1s，
+按「>2s 必须定位并优化」的规则本应去查慢 SQL——但这是**假慢**。
+
+**根因**：SSE/长轮询端点的响应**不结束**，客户端的「等待响应」时长等于**流的持续时间**；
+首字节其实 1.6ms 就到了。用 `curl -w time_starttransfer` 实测 TTFB = 1.6ms / 1.8ms。
+
+**防复发检查**：扫出「慢端点」时，先问「这个端点返回的是**一次性响应**还是**流**」；
+流式端点一律改用 **TTFB**（`time_starttransfer`）量，别用「读到 EOF」的总时长。
+⇒ 判据纪律的又一个形态：**量具的计时边界必须与被测语义对齐**。
+
+**证据**：§6.14 的 API 扫表 + `curl -w` 复测。
+**溯源**：§6.14。
+
+### 12.3 ★ 扫出 404，先怀疑**量具用错了 ID**
+
+**现象**：逐页扫里 `/api/keys/1`、`/api/admin/sessions/1/turns`、
+`/api/admin/session-analytics/clients/1` 都是 404，看着像「端点坏了」。
+
+**根因**：扫描器把路径里的 `:id` 一律替换成 `1`，而这些 ID 空间里 **1 不存在**
+（真 key id = 10、session id = `gw_…`、client id 是模型名）。
+
+**防复发检查**：动态段替换出来的 404/4xx，**必须用真实 ID 复测一次**再下结论；
+真实 ID 从库里取（最近的 `request_id` / `session_id` / 主键），
+并把「用真实 ID 复测 → 200」写进验收记录。
+⇒ 这与 §11.7「零命中要用合成样本自证」是同一族：**没命中可能是「看不见」，也可能是「本来就没有」**。
+
+**证据**：`/api/keys/10` 200、`/api/admin/sessions/gw_ca40172f…/turns` 200、
+`/api/admin/session-analytics/clients/grok-4.6` 200。
+**溯源**：§6.14。
+
+### 12.4 ★ 路由 404 有三类成因，别混成「端点不存在」
+
+**现象**：50 条 404 混着三种完全不同的东西。
+
+**根因与分类**：
+1. **Go 默认 mux 的 404**（正文 `404 page not found`）：路径没被注册；
+2. **前缀分发器的按设计 404**：`/api/admin/model-integrity` 是**前缀**，
+   要子路径（`summary` / `events` / `fingerprint-drift`），裸路径必然 404；
+3. **handler 级 not found**（JSON 正文）：路由在，但资源/子资源不存在。
+
+**防复发检查**：判「端点不存在」前，先看 **404 正文形态**（纯文本 vs JSON）
+与**路由是不是前缀**；前缀型路由要扫它的**真实子路径**才算覆盖。
+
+**证据**：`admin/handler.go:979-980`（前缀分发器）、`admin/model_integrity.go:66`
+（`http.NotFound`）。**溯源**：§6.14。
+
+### 12.5 ★ 写链路验收要看**正文类型**，不是「有没有落行」
+
+**现象**：v1 族真删后做写链路验收，第一眼看到
+`session_turns.request_delta/response_delta` 全是 JSON **null**，差点判成「正文丢了」。
+
+**根因**：本形态的正文存在 `session_bodies*` 族（`outbound_body`，JSON **array**），
+而 `session_turns` 那两列是**另一个开关控制的可选写入**（见 §11.8 第 3 条）。
+
+**防复发检查**：判「正文是否落库」必须先确认**正文的目标表**与**类型**：
+`jsonb_typeof(...)` 是 array 才算有正文；并且要拿**部署前的同形态历史行**做对照，
+否则分不清「本轮回归」与「既有形态」。
+
+**证据**：本轮 200 行的 `session_bodies_hot.outbound_body` = `array`，长度 37 → 119 → 200
+（随多轮增长）；部署前的历史 200 行 `session_turns.request_delta` 同样是 null ⇒ 非回归。
+**溯源**：§6.14。
+
+### 12.6 ★ 自己新建的迁移编号，可能与**并进来的上游编号**撞车
+
+**现象**：本轮的「v1 族真删」编为 885、「会话族负成本索引」编为 886；
+合并 `origin/main`（59 个提交）时发现上游已占用 **885~889** 且**已部署到 154**。
+
+**根因**：迁移编号是**全局唯一**资源，而本分支的编号基于**合并前**的 main 选；
+上游并行期继续往下编号 ⇒ 两条分支的编号空间相交。撞号的后果不是编译失败，
+而是**两个不同迁移共用一个编号** ⇒ 台账/清单/通道数组出现两行同号、文档指代错对象。
+
+**防复发检查**：① 选编号前先看远端最新号；合并后第一件事是**核编号占用**；
+② 已部署的编号不可改 ⇒ 只能改自己的，且改号要连带改**全套登记**
+（canonical + embeddata、契约门、go:embed + map、`StartupFiles`、**TSV 用 `-update` 重生成**、
+通道 `files=()`、changelog 行**重算 sha**、散文编号）；
+③ 改号只动编号 ⇒ 但**幂等性必须重测**（本地那条部署记录用的是旧文件名 ⇒ 通道下次会再跑一次新编号的文件）。
+
+**证据**：890/891（原 885/886）；TSV 重生成后 294 条；新装链 0 of 294 fail；
+890 在「v1 已删」的库克隆上重跑 EXIT=0、891 连跑两次 EXIT=0 且两条索引仍在。
+**溯源**：§6.15。

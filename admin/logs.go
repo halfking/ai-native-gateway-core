@@ -537,7 +537,20 @@ func (h *Handler) listLogs(w http.ResponseWriter, r *http.Request) {
 		addFilter("rl.identity_hash = $%d", v)
 	}
 	if v := strings.TrimSpace(queryString(r, "q")); v != "" {
-		addFilter("rl.search_text ILIKE $%d", "%"+v+"%")
+		// G-5（2026-10-20 会话族审计）：词形搜索词**并联**一条全文检索腿，
+		// 与迁移 887 的索引表达式 to_tsvector('simple', search_text) **逐字同形**
+		// —— 不同形时 planner 静默不用那条索引（不报错，只是顺序扫描）。
+		//
+		// ★ 子串腿**永远保留**（OR 而不是 AND）：FTS 词元严格窄于子串
+		//   （"eepseek" 是 "deepseekchat" 的子串但不是它的词元）⇒ 用 AND
+		//   会砍掉子串召回，那是「破坏子串检索」。
+		// ★ 不用 addFilter：全文形态要绑**两个**参数（ILIKE 侧绑 '%词%'，
+		//   FTS 侧绑原词 —— plainto_tsquery 自己会切分与加引号），
+		//   而 addFilter 只推进一个 argIdx。
+		clause, qArgs := buildSessionSearchPredicate(v, argIdx)
+		clauses = append(clauses, clause)
+		args = append(args, qArgs...)
+		argIdx += len(qArgs)
 	}
 	if v := strings.TrimSpace(queryString(r, "error_kind")); v != "" {
 		addFilter("rl.error_kind = $%d", v)
@@ -1100,71 +1113,43 @@ func normalizeJSONForAPI(raw json.RawMessage) json.RawMessage {
 	return raw
 }
 
-// fetchRequestBodies 2026-08-17 BUGFIX 二阶段 body 读取：从 _request_logs_bodies
-// 中拉取单条请求的 request_body/response_body。
+// fetchRequestBodies 2026-08-17 BUGFIX 二阶段 body 读取：拉取单条请求的
+// request_body/response_body。
 //
 //   - 阶段 0：内存 LRU+TTL 缓存（rule 36 §1 持久化语义）。
 //     dashboard 用户经常"开 → 关 → 再开"同一个 request_id 来回比对；
-//     重复点击走 cache < 1ms 而非 5s columnar 扫描。命中条件：5min 内同 ID。
-//   - 阶段 1：查 _request_logs_bodies_hot (heap, 单条索引 <1ms)，
-//     覆盖 dashboard "实时请求流 → 点击请求" 高频路径（24h 内请求都还在 hot）。
-//   - 阶段 2：hot 找不到时回退到 _request_logs_bodies 视图（含 columnar 月分区，
-//     单 ID 扫描可能 30s+），走独立的 20s ctx。cold ctx 直接派生自 r.Context()
-//     而非 metadata 用的 30s ctx——确保冷路径有完整 20s 余量，metadata
-//     慢也不会拖累 body 读取（rule 11 §14 持续验证）。
+//     重复点击走 cache < 1ms。命中条件：5min 内同 ID。
+//   - 阶段 1：会话族正文源（session_bodies hot ∪ 父表，request_id 单键索引
+//     命中，ms 级）。
 //
-// 之所以拆出来（而不是 LEFT JOIN 进主查询），是因为 UNION ALL 视图
-// request_logs_bodies_with_current_month 会强制 planner 扫 columnar 分区；
-// 在 hot-first 分支里提前 LIMIT 1 短路后，columnar 分区永远不会被触达。
+// 2026-10-20（迁移 890）：v1 族整体退役 ⇒ 原来的三条腿（v1 hot 正文表 /
+// 会话族 / v1 columnar 冷扫）收敛成一条会话族腿。冷扫那条本来就是**证明
+// 缺席**（columnar 分区无 btree，154 实测单 id miss 59s > 20s ctx），
+// 超时又挂在 ErrNoRows 分支下够不着 ⇒ unified 全量 500。v1 退役后这个
+// 超时面直接消失。
 //
-// 返回值约定：cache hit → (body, body, nil)；hot 命中 → (body, body, nil)；
-// cold 命中 → (body, body, nil)；两边都没行 → (nil, nil, sql.ErrNoRows)；
+// 之所以拆出来（而不是 LEFT JOIN 进主查询），是因为正文源要按 request_id
+// 单键短路，避免把整族正文拖进主查询的扫描面。
+//
+// 返回值约定：cache hit → (body, body, nil)；会话族命中 → (body, body, nil)；
+// 两边都没行 → (nil, nil, sql.ErrNoRows)；
 // transport 错误 → (nil, nil, err)。caller 把 body 置 nil 但 metadata 仍 200。
 func (h *Handler) fetchRequestOutboundBody(ctx context.Context, requestID string) (json.RawMessage, error) {
-	var raw []byte
-	hotCtx, hotCancel := context.WithTimeout(ctx, 3*time.Second)
-	defer hotCancel()
-	err := h.db.QueryRow(hotCtx, `
-		SELECT outbound_body::text
-		  FROM _request_logs_bodies_hot
-		 WHERE request_id = $1
-		 LIMIT 1
-	`, requestID).Scan(&raw)
+	// 2026-10-20（迁移 890）：v1 族整体退役 ⇒ 出站正文只剩一条腿：会话族
+	// （session_bodies hot ∪ 父表，fetchSessionOutboundBody）。
+	//
+	// 被删掉的两条腿是「v1 hot 正文表」与「v1 bodies 视图冷扫」。冷扫那条
+	// 本来就只是**证明缺席**——columnar 分区无 btree，154 实测单 id miss 59s
+	//（2026_10 分区），20s ctx 必超时，而超时不是 ErrNoRows，挂在 ErrNoRows
+	// 分支下的兜底永远够不着 ⇒ unified 全量 500、getLog 正文吞掉后 20s 白等。
+	// v1 表退役后这个超时面直接消失：正文只可能来自会话族。
+	raw, err := fetchSessionOutboundBody(ctx, h.db, requestID)
 	if err == nil {
-		return json.RawMessage(raw), nil
-	}
-	if !errors.Is(err, sql.ErrNoRows) {
-		slog.WarnContext(ctx, "admin fetchRequestOutboundBody hot scan failed",
-			"request_id", requestID, "error", err.Error())
-	}
-
-	// 阶段 2（2026-10-18 顺序重排）：session 家族腿提前到 columnar 冷扫**之前**。
-	// 原「hot → 冷扫 → session 兜底」的顺序在 S4 停写后有一个结构性死角：
-	// 停写后新请求的正文只落 session_bodies，v1 冷扫对它们是**证明缺席**——
-	// columnar 分区无 btree，154 实测单 id miss 59s（2026_10 分区），20s ctx
-	// 必超时，而超时不是 ErrNoRows，原兜底挂在 ErrNoRows 分支下永远够不着
-	// ⇒ unified 全量 500、getLog 正文吞掉后 20s 白等。
-	// 提前后三类行各有归宿：停写后行只在 session（ms 级索引命中）；镜像期行
-	// （2026-09-20~停写）v1 与 session 双副本，session 侧即正典读源
-	//（storage.session_bodies_native_read=true，dual-read-drift 7 天零漂移后
-	// S4 拍板）；镜像前行 session 快速 miss（request_id 索引，ms 级）后仍走
-	// 冷扫，行为不变。
-	if raw, err := fetchSessionOutboundBody(ctx, h.db, requestID); err == nil {
 		return raw, nil
 	}
-
-	coldCtx, coldCancel := context.WithTimeout(ctx, 20*time.Second)
-	defer coldCancel()
-	err = h.db.QueryRow(coldCtx, `
-		SELECT outbound_body::text
-		  FROM request_logs_bodies_with_current_month
-		 WHERE request_id = $1
-		 LIMIT 1
-	`, requestID).Scan(&raw)
-	if err == nil {
-		return json.RawMessage(raw), nil
-	}
 	if !errors.Is(err, sql.ErrNoRows) {
+		slog.WarnContext(ctx, "admin fetchRequestOutboundBody session scan failed",
+			"request_id", requestID, "error", err.Error())
 		return nil, err
 	}
 	return nil, sql.ErrNoRows
@@ -1211,43 +1196,15 @@ func (h *Handler) fetchRequestBodies(ctx context.Context, requestID string) (req
 		return entry.body, entry.resp, nil
 	}
 
-	// 阶段 1: hot (heap, 索引秒级) — 派生自 metadata ctx（30s），
-	// 单查询预算 3s；如果 metadata 自己卡到 30s 边界，hot 会跟着取消 — 这是
-	// 期望行为（同一接口整体超时）。
-	hotCtx, hotCancel := context.WithTimeout(ctx, 3*time.Second)
-	defer hotCancel()
-	var rb, ob []byte
-	row := h.db.QueryRow(hotCtx, `
-		SELECT request_body::text, response_body::text
-		  FROM _request_logs_bodies_hot
-		 WHERE request_id = $1
-		 LIMIT 1
-	`, requestID)
-	if scanErr := row.Scan(&rb, &ob); scanErr == nil {
-		if err := validatePersistedBodySize(rb, ob); err != nil {
-			return nil, nil, err
-		}
-		body, resp := decodeStoredBodyForAdmin(rb), decodeStoredBodyForAdmin(ob)
-		h.bodyFetchCache.Put(requestID, body, resp)
-		elapsed := time.Since(start)
-		if elapsed > 1*time.Second {
-			slog.InfoContext(ctx, "admin fetchRequestBodies hot path slow",
-				"request_id", requestID, "elapsed_ms", elapsed.Milliseconds())
-		}
-		return body, resp, nil
-	} else if !errors.Is(scanErr, sql.ErrNoRows) {
-		// 真正的查询错误（非 not found）— 仍尝试阶段 2
-		slog.WarnContext(ctx, "admin fetchRequestBodies hot scan failed",
-			"request_id", requestID, "error", scanErr.Error())
-	}
-
-	// 阶段 2（2026-10-18 顺序重排）：session 家族腿提前到 columnar 冷扫**之前**，
-	// 理由与 fetchRequestOutboundBody 同一处：停写后新请求正文只落 session_bodies，
-	// v1 冷扫对它们是证明缺席（154 实测单 id miss 59s > 20s ctx），原顺序下
-	// 超时错误让挂在 ErrNoRows 分支的 session 兜底永远够不着。提前后：
-	// 停写后行 ms 级命中；镜像期行 session 即正典读源；镜像前行 session 索引
-	// miss（ms 级）后照走冷扫，行为不变。request_id 单键、不涉 ts 等值
-	//（SessionFamilyBodiesSourceSQL 的列合同无 ts，见 db/request_logs_view_schema.go）。
+	// 阶段 1（2026-10-20 迁移 890）：会话族正文源（session_bodies hot ∪ 父表）。
+	//
+	// 原来的三条腿是「v1 hot 正文表 → 会话族 → v1 columnar 冷扫」；v1 族整体
+	// 退役后只剩中间这条。冷扫那条本来就是**证明缺席**（columnar 分区无 btree，
+	// 154 实测单 id miss 59s > 20s ctx），超时又挂在 ErrNoRows 分支下够不着
+	// ⇒ unified 全量 500 —— 那个超时面随 v1 表一起消失。
+	//
+	// request_id 单键、不涉 ts 等值（SessionFamilyBodiesSourceSQL 的列合同无 ts，
+	// 见 db/request_logs_view_schema.go）。
 	sessCtx, sessCancel := context.WithTimeout(ctx, 5*time.Second)
 	defer sessCancel()
 	var srb, sob []byte
@@ -1262,47 +1219,25 @@ func (h *Handler) fetchRequestBodies(ctx context.Context, requestID string) (req
 		}
 		body, resp := decodeStoredBodyForAdmin(srb), decodeStoredBodyForAdmin(sob)
 		h.bodyFetchCache.Put(requestID, body, resp)
-		return body, resp, nil
-	}
-
-	// 阶段 3: columnar 月分区（可能慢，给 20s ctx）——镜像前（2026-09-20 之前）
-	// 的历史请求正文只在 v1 家族，本腿是它们唯一读路径。
-	// 直接派生自请求 ctx（不是 metadata ctx），确保 metadata 卡顿不会拖累 body。
-	// http.Request.Context() 通常由 nginx proxy_read_timeout（默认 1200s）兜底。
-	coldCtx, coldCancel := context.WithTimeout(ctx, 20*time.Second)
-	defer coldCancel()
-	row = h.db.QueryRow(coldCtx, `
-		SELECT request_body::text, response_body::text
-		  FROM request_logs_bodies_with_current_month
-		 WHERE request_id = $1
-		 LIMIT 1
-	`, requestID)
-	if scanErr := row.Scan(&rb, &ob); scanErr != nil {
 		elapsed := time.Since(start)
-		if errors.Is(scanErr, sql.ErrNoRows) {
-			// 两端都没找到 → 缓存 sql.ErrNoRows sentinel（5min 内重复查询直接命中）
-			h.bodyFetchCache.Put(requestID, nil, nil)
-			slog.InfoContext(ctx, "admin fetchRequestBodies no body anywhere",
-				"request_id", requestID, "elapsed_ms", elapsed.Milliseconds())
-			return nil, nil, sql.ErrNoRows
-		}
-		if errors.Is(scanErr, context.DeadlineExceeded) {
-			slog.WarnContext(ctx, "admin fetchRequestBodies cold path timeout",
+		if elapsed > 1*time.Second {
+			slog.InfoContext(ctx, "admin fetchRequestBodies session path slow",
 				"request_id", requestID, "elapsed_ms", elapsed.Milliseconds())
 		}
+		return body, resp, nil
+	} else if !errors.Is(sessErr, sql.ErrNoRows) {
 		// transport-class error（ctx cancel, conn refused, ...）不缓存 — 让
 		// 下一次请求能 retry（rule 22 §4 错误缓存防抖）。
-		return nil, nil, scanErr
+		slog.WarnContext(ctx, "admin fetchRequestBodies session scan failed",
+			"request_id", requestID, "error", sessErr.Error())
+		return nil, nil, sessErr
 	}
-	if err := validatePersistedBodySize(rb, ob); err != nil {
-		return nil, nil, err
-	}
-	body, resp := decodeStoredBodyForAdmin(rb), decodeStoredBodyForAdmin(ob)
-	h.bodyFetchCache.Put(requestID, body, resp)
-	elapsed := time.Since(start)
-	slog.InfoContext(ctx, "admin fetchRequestBodies cold path hit",
-		"request_id", requestID, "elapsed_ms", elapsed.Milliseconds())
-	return body, resp, nil
+
+	// 两端都没找到 → 缓存 sql.ErrNoRows sentinel（5min 内重复查询直接命中）
+	h.bodyFetchCache.Put(requestID, nil, nil)
+	slog.InfoContext(ctx, "admin fetchRequestBodies no body anywhere",
+		"request_id", requestID, "elapsed_ms", time.Since(start).Milliseconds())
+	return nil, nil, sql.ErrNoRows
 }
 
 func (h *Handler) listTopModels(w http.ResponseWriter, r *http.Request) {

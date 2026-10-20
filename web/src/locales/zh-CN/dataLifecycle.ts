@@ -124,6 +124,46 @@ export default {
     storageConfig: '存储配置',
     logManagement: '日志管理',
     usageCost: '用量成本',
+    usageEnhanced: '用量增强分析',
+  },
+
+  usageEnhanced: {
+    refresh: '刷新',
+    loading: '加载中…',
+    empty: '无数据',
+    cards: {
+      totalCost: '总成本',
+      totalRequests: '总请求数',
+      periodDelta: '同期对比 Δ 成本',
+      cacheHitRate: '缓存命中率',
+    },
+    trend: {
+      title: '成本趋势（最近 {days} 天）',
+    },
+    hotKeys: {
+      title: 'Top API keys（按 token 消耗排序）',
+      colId: 'API 密钥 ID',
+      colPrefix: 'Key 前缀',
+      colApplication: '应用',
+      colRequests: '请求数',
+      colTokens: 'Token 数',
+      colCost: '总成本',
+    },
+    degraded: {
+      title: '部分指标不可用：',
+      hint: '数据库结构落后于当前版本，以下数字是「无法计算」的占位，不是真实测量值。',
+    },
+    errors: {
+      load: '加载用量增强数据失败',
+    },
+    sources: {
+      summary: '用量总览',
+      costTrend: '成本趋势',
+      periodCompare: '周期对比',
+      cacheEconomics: '缓存经济学',
+      hotKeys: '热门 API Key',
+    },
+    footer: '最近刷新：{time}',
   },
 
   usageCost: {

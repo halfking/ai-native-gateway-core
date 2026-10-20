@@ -122,12 +122,27 @@ func TestSessionBodiesBatchSQLIsNotALefiJoin(t *testing.T) {
 	if got := strings.Count(sessionBodiesByRequestIDSQL, "session_bodies"); got != 2 {
 		t.Errorf("byRequestID SQL must read BOTH session family legs (hot ∪ parent), got %d:\n%s", got, sessionBodiesByRequestIDSQL)
 	}
-	// v1 变体与元组变体钉住 v1 视图（随 v1 DROP 退役，届时本判据连同删除）。
-	if !strings.Contains(v1BodiesByRequestIDSQL, "request_logs_bodies_with_current_month") {
-		t.Errorf("v1ByID SQL must read the v1 bodies view, got:\n%s", v1BodiesByRequestIDSQL)
+	// ★ 2026-10-20（迁移 890，v1 族真删）：这两个变体原来钉住 v1 视图，
+	// 随 v1 DROP 一并退役 ⇒ 它们的取数源换成**会话族正文源**。
+	// ⇒ 判据从「必须读 v1 视图」**反转**为「必须读会话族两腿，且不得再
+	// 出现 v1 族关系名」。
+	//
+	// ⚠ 变量名 `v1BodiesByRequestIDSQL` 是**历史名**（记录「这条腿曾经服务
+	// v1 回退路径」这个事实），不再表示它读 v1。
+	for name, sql := range map[string]string{
+		"v1ByID":    v1BodiesByRequestIDSQL,
+		"byIDAndTS": sessionBodiesByRequestIDAndTSSQL,
+	} {
+		if got := strings.Count(sql, "session_bodies"); got != 2 {
+			t.Errorf("%s SQL must read BOTH session family legs (hot ∪ parent), got %d:\n%s", name, got, sql)
+		}
+		if hits := retiredV1RelationsInSQL(sql); len(hits) > 0 {
+			t.Errorf("%s SQL must not reference the retired v1 family %v —— v1 族已随 890 被 DROP，读它 = 42P01:\n%s", name, hits, sql)
+		}
 	}
-	if !strings.Contains(sessionBodiesByRequestIDAndTSSQL, "request_logs_bodies_with_current_month") {
-		t.Errorf("byIDAndTS SQL must read the v1 bodies view, got:\n%s", sessionBodiesByRequestIDAndTSSQL)
+	// 就地阳性对照：同一把尺子必须能认出 v1 形态（否则上面那条恒绿）。
+	if hits := retiredV1RelationsInSQL("FROM request_logs_bodies_with_current_month rb"); len(hits) == 0 {
+		t.Error("retiredV1RelationsInSQL 认不出 v1 正文视图 —— 负向断言已恒绿，判据坏了")
 	}
 	// Two array/batch parameters maximum — an unbounded turn count must not be
 	// able to blow the 65535 parameter ceiling.

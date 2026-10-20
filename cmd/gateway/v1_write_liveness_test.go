@@ -8,21 +8,58 @@ import (
 
 // ── 门 ────────────────────────────────────────────────────────────────
 
-// TestV1WriteLivenessSQLReadsBothFaces 把「两面都要读」钉住。
+// TestV1WriteLivenessSQLReadsBothFaces 把「读哪两个面」钉住。
+//
+// ★ 2026-10-20（迁移 890，v1 族整体退役）：这道门**反转**了。
+//
+// 原门要求读数必须读 **v1 族的两个面**（`_request_logs_hot` ∪ `_request_logs`），
+// 理由是本地真库父表落后 hot 约 491 分钟，只读一个面会把健康的写腿报成 dead。
+//
+// 现在那一族被整体 DROP ⇒ 任何提到它的语句都是 **42P01**（整条语句失败，
+// 不是那条腿失败）⇒ 读数已改读**会话族的两个面**
+// （`session_turns_hot` ∪ `session_turns`，见 v1_write_liveness.go）。
+// ⇒ 门从「必须读到 v1 两面」反转成「**不许再提 v1**；会话族两面都要读」。
+//
+// 为什么「会话族两面都要读」这条不能丢：会话族的 hot 与 parent 同样是两个
+// **不同的关系**，只读 parent 依然会把「最近 N 分钟没有流量」误报成 dead
+// （父面晋级延迟 ⇒ parent 落后 hot）。v1 族退役换掉了被读的那一族，
+// 没有换掉「两个面」这件事本身。
 func TestV1WriteLivenessSQLReadsBothFaces(t *testing.T) {
+	// 阳性：会话族的两个面都要读（只读父面会把健康的写腿报成 dead）。
 	for _, face := range []string{
-		"_request_logs_hot", "_request_logs",
 		"session_turns_hot", "session_turns",
 	} {
-		if !containsSub(v1WriteLivenessSQL, face) {
-			t.Errorf("存活读数没有读 %s —— 本地真库父表落后 hot 约 491 分钟，"+
-				"只读一个面会把健康的写腿报成 dead", face)
+		if !containsIdentifier(v1WriteLivenessSQL, face) {
+			t.Errorf("存活读数没有读 %s —— 只读一个面会把「最近 N 分钟没有流量」"+
+				"误报成死亡信号（本地真库父面落后 hot 约 491 分钟那个实测）", face)
 		}
 	}
-	// 阴性对照：判据必须能分辨单面与双面，否则上面四条会恒绿。
-	one := "SELECT 1 FROM _request_logs WHERE 1=1"
-	if containsAllSub(one, []string{"_request_logs_hot", "_request_logs"}) {
-		t.Error("判据分不清单面与双面：一个只读 _request_logs 的片段被判成双面")
+	// 阴性（退役）：不许再提 v1 族。
+	//
+	// 为什么是**族**语义（前缀命中即算命中）而不是标识符边界匹配：
+	// containsIdentifier 要求 needle 后面不是标识符字节，而 '_' **就是**
+	// 标识符字节 ⇒ containsIdentifier(sql, "_request_logs") 对
+	// "_request_logs_hot" 返回 **false**，整族都漏掉。这里要的就是族语义。
+	//
+	// 反过来，族名前缀带下划线 ⇒ 规范视图 public.request_logs（**另一个**关系）
+	// 不会被误伤（下面的负控制钉住这一点）。
+	if containsSub(v1WriteLivenessSQL, "_request_logs") {
+		t.Errorf("存活读数仍然提到 v1 族（_request_logs*）—— 那一族已被迁移 890 整体 DROP，" +
+			"任何提到它的语句都是 42P01（整条语句失败，不是那条腿失败）")
+	}
+
+	// ★ 正控制：判据必须看得见 v1 族，否则上面那条否定断言恒绿。
+	if !containsSub("SELECT count(*) FROM _request_logs_hot", "_request_logs") {
+		t.Error("判据没有牙：一个确实提到 _request_logs_hot 的片段被判成「没提到」")
+	}
+	// 负控制：不能误伤会话族与规范视图。
+	for _, other := range []string{
+		"SELECT count(*) FROM session_turns_hot",
+		"SELECT count(*) FROM public.request_logs",
+	} {
+		if containsSub(other, "_request_logs") {
+			t.Errorf("判据误伤：%q 不含 v1 族，却被判成提到了", other)
+		}
 	}
 }
 

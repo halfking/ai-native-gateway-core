@@ -151,7 +151,14 @@ declare -a failed_list=()
 # required an underscore right after the numeric prefix, which silently
 # excluded date-prefixed migrations such as
 # 2026-07-13-multimodal-token-fields-hot.sql — 464 of 777 files matched.
-mapfile -t mig_files < <(ls sql/migrations/startup/ 2>/dev/null \
+# ★ bash 3.2 兼容（2026-10-21）：原写法是 `mapfile -t`（bash 4.0+），
+#   而 macOS 自带 bash 3.2 不支持 ⇒ 本脚本在 macOS 上**语法错误直接退出**
+#   ⇒ 等于「本地审计在开发者机器上根本没跑过」。改用 read 循环。
+mig_files=()
+while IFS= read -r _mig_line; do
+  [ -n "$_mig_line" ] || continue
+  mig_files+=("$_mig_line")
+done < <(ls sql/migrations/startup/ 2>/dev/null \
     | grep -E '^[0-9].*\.sql$' \
     | grep -v '\.down\.sql$' \
     | sort)

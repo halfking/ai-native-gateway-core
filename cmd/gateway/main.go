@@ -2246,6 +2246,13 @@ func main() {
 		} else {
 			slog.Info("memora context-compression oracle disabled (set LLM_GATEWAY_MEMORA_BASE_URL to enable)")
 		}
+		// G-2（审计）：结构化会话分析产出 → memora 的 v2 落地域
+		// （POST /api/v2/session-analysis，契约 v1.1）。**独立于**上面那个
+		// 「上下文压缩 oracle」开关：那条链用的是 memora 的 v1 通用记忆入口，
+		// 而这条链用的是 v2 的会话分析契约面（端点、鉴权、幂等键都不同）。
+		// ⇒ 装在 if/else **之外**，这样「配了 memora 但没开分析推送」
+		//   与「完全没配 memora」两种情形都得到明确的禁用态（而不是漏装）。
+		installSessionAnalysisPusher(os.Getenv("LLM_GATEWAY_MEMORA_BASE_URL"))
 		if dbConn != nil && dbConn.Enabled() {
 			routingExec.State = credential.NewWriter(dbConn.Pool())
 			routingExec.DB = dbConn
@@ -7575,6 +7582,20 @@ func main() {
 		// Phase 3.8 (2026-06-28): Probe Health Dashboard API
 		adminHandler.RegisterProbeDashboardRoutes(mux, wrapAdmin)
 		slog.Info("Phase 3.8 probe health dashboard API enabled (/api/admin/probe/*)")
+
+		// Model status page — 24h traffic availability (Statuspage-style).
+		//
+		// ★ 2026-10-21（R72 轮）：本调用点曾被**合并静默冲掉**——
+		//   引入提交 0174ec0aa 把它放在 RegisterProbeDashboardRoutes 旁边，
+		//   而合并提交 d2cbaf88b 的 main.go 改动里只有一行
+		//   `- adminHandler.RegisterModelStatusRoutes(mux, wrapAdmin)`，
+		//   **没有对应的新增** ⇒ handler 与注册函数都还在，路由却没了。
+		//   后果：/api/admin/model-status 恒 404（实测于本机 8782）。
+		//   该缺陷不会让任何现有测试变红（没有测试断言「端点存在」），
+		//   所以只能靠「注册函数有调用点」这条静态门兜住（见
+		//   admin/admin_route_mount_test.go）。
+		adminHandler.RegisterModelStatusRoutes(mux, wrapAdmin)
+		slog.Info("model status API enabled (/api/admin/model-status)")
 
 		// Phase 3.9 (2026-07-02, Task D2): Approval Request Query API
 		// Provides REST API for querying, approving, and rejecting approval requests

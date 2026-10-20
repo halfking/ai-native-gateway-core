@@ -553,6 +553,17 @@ export default {
     flowApproveDesc: "Genehmigen — pausieren für menschliche Prüfung",
     flowBlockDesc: "Blockieren — sofort blocken",
     rulesTitle: "Erkennungsregeln",
+
+
+
+
+
+
+
+
+
+
+
     searchPlaceholder: "Regelname oder Beschreibung suchen",
     addRule: "Regel hinzufügen",
     addRuleTitle: "Erkennungsregel hinzufügen",
@@ -634,24 +645,6 @@ export default {
     cancel: "Abbrechen",
     confirmTitle: "Bestätigen",
     confirmDelete: "Diesen Eintrag löschen?",
-  },
-promptInjectionCategories: {
-    promptInjectionCategoryInstructionOverride: 'Instruction override',
-    promptInjectionCategoryInstructionLeak: 'Instruction leak',
-    promptInjectionCategoryJailbreak: 'Jailbreak',
-    promptInjectionCategoryEncodingBypass: 'Encoding bypass',
-    promptInjectionCategoryInjectionMarker: 'Injection marker',
-    promptInjectionCategoryMultiTurnAttack: 'Multi-turn attack',
-    promptInjectionCategoryResourceExhaustion: 'Resource exhaustion',
-    promptInjectionCategoryDataExfiltration: 'Data exfiltration',
-    promptInjectionCategorySocialEngineering: 'Social engineering',
-    promptInjectionCategoryPromptLeaking: 'Prompt leaking',
-    promptInjectionCategoryPayloadSmuggling: 'Payload smuggling',
-    promptInjectionCategoryUnicodeObfuscation: 'Unicode obfuscation',
-    promptInjectionCategoryContextManipulation: 'Context manipulation',
-    promptInjectionCategoryToolAbuse: 'Tool abuse',
-    promptInjectionCategoryLegacy: 'Legacy',
-    promptInjectionCategoryUnknown: 'Other',
   },
   management: {
       loading: "Laden…",
@@ -1323,6 +1316,17 @@ promptInjectionCategories: {
     flowApproveDesc: 'Approve — pause for human review',
     flowBlockDesc: 'Block — block immediately and log',
     rulesTitle: 'Detection Rules',
+    viewDetail: 'Details anzeigen',
+    ruleDetailTitle: 'Regeldetails',
+    fieldActionOverride: 'Aktion überschreiben',
+    fieldTags: 'Schlagwörter',
+    fieldExamples: 'Beispiele',
+    fieldUpdatedAt: 'Aktualisiert am',
+    systemRuleReadOnly: 'Systemregeln sind schreibgeschützt; erlaubt sind nur Aktivieren und Deaktivieren',
+    actionOverrideInherit: 'Von der Richtlinie übernehmen',
+    tagsPlaceholder: 'Durch Kommas getrennt',
+    examplesPlaceholder: 'Ein Beispiel pro Zeile',
+    ruleDetailNoChange: 'Die Regel wurde nicht geändert',
     searchPlaceholder: 'Search rule name or description',
     addRule: 'Add Rule',
     addRuleTitle: 'Add Detection Rule',
@@ -1406,23 +1410,5 @@ promptInjectionCategories: {
     confirmDelete: 'Delete this item?',
   },
 
-  promptInjectionCategories: {
-    promptInjectionCategoryInstructionOverride: 'Instruction override',
-    promptInjectionCategoryInstructionLeak: 'Instruction leak',
-    promptInjectionCategoryJailbreak: 'Jailbreak',
-    promptInjectionCategoryEncodingBypass: 'Encoding bypass',
-    promptInjectionCategoryInjectionMarker: 'Injection marker',
-    promptInjectionCategoryMultiTurnAttack: 'Multi-turn attack',
-    promptInjectionCategoryResourceExhaustion: 'Resource exhaustion',
-    promptInjectionCategoryDataExfiltration: 'Data exfiltration',
-    promptInjectionCategorySocialEngineering: 'Social engineering',
-    promptInjectionCategoryPromptLeaking: 'Prompt leaking',
-    promptInjectionCategoryPayloadSmuggling: 'Payload smuggling',
-    promptInjectionCategoryUnicodeObfuscation: 'Unicode obfuscation',
-    promptInjectionCategoryContextManipulation: 'Context manipulation',
-    promptInjectionCategoryToolAbuse: 'Tool abuse',
-    promptInjectionCategoryLegacy: 'Legacy',
-    promptInjectionCategoryUnknown: 'Other',
-  },
   metaTitleClearConfirm: 'Den Titel dieser Sitzung leeren?',
 }

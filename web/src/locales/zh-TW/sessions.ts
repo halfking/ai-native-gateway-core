@@ -554,6 +554,17 @@ export default {
     flowApproveDesc: "審批 - 暫停請求，等待人工審批",
     flowBlockDesc: "阻斷 - 直接阻斷並記錄",
     rulesTitle: "偵測規則庫",
+
+
+
+
+
+
+
+
+
+
+
     searchPlaceholder: "搜尋規則名稱或描述",
     addRule: "新增規則",
     addRuleTitle: "新增偵測規則",
@@ -635,24 +646,6 @@ export default {
     cancel: "取消",
     confirmTitle: "確認",
     confirmDelete: "確定刪除此項目?",
-  },
-promptInjectionCategories: {
-    promptInjectionCategoryInstructionOverride: 'Instruction override',
-    promptInjectionCategoryInstructionLeak: 'Instruction leak',
-    promptInjectionCategoryJailbreak: 'Jailbreak',
-    promptInjectionCategoryEncodingBypass: 'Encoding bypass',
-    promptInjectionCategoryInjectionMarker: 'Injection marker',
-    promptInjectionCategoryMultiTurnAttack: 'Multi-turn attack',
-    promptInjectionCategoryResourceExhaustion: 'Resource exhaustion',
-    promptInjectionCategoryDataExfiltration: 'Data exfiltration',
-    promptInjectionCategorySocialEngineering: 'Social engineering',
-    promptInjectionCategoryPromptLeaking: 'Prompt leaking',
-    promptInjectionCategoryPayloadSmuggling: 'Payload smuggling',
-    promptInjectionCategoryUnicodeObfuscation: 'Unicode obfuscation',
-    promptInjectionCategoryContextManipulation: 'Context manipulation',
-    promptInjectionCategoryToolAbuse: 'Tool abuse',
-    promptInjectionCategoryLegacy: 'Legacy',
-    promptInjectionCategoryUnknown: 'Other',
   },
   management: {
       title: "Session Management",
@@ -1340,6 +1333,17 @@ promptInjectionCategories: {
 
     // rules
     rulesTitle: '检测规则库',
+    viewDetail: '檢視詳情',
+    ruleDetailTitle: '規則詳情',
+    fieldActionOverride: '動作覆寫',
+    fieldTags: '標籤',
+    fieldExamples: '範例',
+    fieldUpdatedAt: '更新時間',
+    systemRuleReadOnly: '系統規則為唯讀，僅可啟用或停用',
+    actionOverrideInherit: '繼承策略',
+    tagsPlaceholder: '以逗號分隔',
+    examplesPlaceholder: '每行一個範例',
+    ruleDetailNoChange: '規則沒有變更',
     searchPlaceholder: '搜索规则名称或描述',
     addRule: '添加规则',
     addRuleTitle: '添加检测规则',
@@ -1435,23 +1439,5 @@ promptInjectionCategories: {
     confirmDelete: '确定删除此项?',
   },
 
-  promptInjectionCategories: {
-    promptInjectionCategoryInstructionOverride: '指令覆盖',
-    promptInjectionCategoryInstructionLeak: '指令泄漏',
-    promptInjectionCategoryJailbreak: '越狱攻击',
-    promptInjectionCategoryEncodingBypass: '编码绕过',
-    promptInjectionCategoryInjectionMarker: '注入标记',
-    promptInjectionCategoryMultiTurnAttack: '多轮攻击',
-    promptInjectionCategoryResourceExhaustion: '资源耗尽',
-    promptInjectionCategoryDataExfiltration: '数据窃取',
-    promptInjectionCategorySocialEngineering: '社会工程',
-    promptInjectionCategoryPromptLeaking: '提示词泄漏',
-    promptInjectionCategoryPayloadSmuggling: 'Payload 走私',
-    promptInjectionCategoryUnicodeObfuscation: 'Unicode 混淆',
-    promptInjectionCategoryContextManipulation: '上下文操纵',
-    promptInjectionCategoryToolAbuse: '工具滥用',
-    promptInjectionCategoryLegacy: '兼容旧分类',
-    promptInjectionCategoryUnknown: '其他',
-  },
   metaTitleClearConfirm: '確認清空此會話的標題？',
 }

@@ -4,92 +4,71 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
-	"strings"
 	"testing"
 )
 
-// S4 停写门控范围（2026-10-02 审计，第三处跨门边界的检查）。
+// ★ 2026-10-20（迁移 890 + 并行审计轮 D0）：本文件的门控类判据**退役换题**。
 //
-// lookbackCandidateSQL 拿「36h 窗口内是否有成功」当候选资格判据，证据源是
-// _request_logs_hot ∪ _request_logs —— **整体在 S4 门内**。停写生效后证据源冻结，
-// EXISTS(...) 恒空，于是**没有任何绑定再进 lookback 候选集**，降级/离线绑定
-// 在这条路径上永久失去恢复机会，而扫描照常返回空、无任何痕迹。
+// # 退役了什么
 //
-// 方向与 ledger_reconciliation 的 usage_credit_mismatch 相反：那边跨门产生
-// **假报机**（无上界的假差异），这边跨门产生**静默洞**（无痕的漏恢复）。
-// 同一个结构缺陷的两个方向，所以判据与修法也同形。
+// 原先本文件守的是「36h lookback 扫描的**可比性门**」：
 //
-// 逐项核实过同文件另外两条恢复路径**不需要**门控（不是「同一个文件就一起挡」）：
-//   - expiredCmbRecoverySQL（:1132 的 NOT EXISTS）读 node_probe_state；
-//   - recoverFreshDegradedSQL（:1261 的 NOT EXISTS）同样读 node_probe_state。
-// 两者都不碰 _request_logs、不受该门影响，停写后仍完全可判定。
-// 真正被这条扫描漏掉的，正是 unavailable_reason **不**属于
-// continuous_failure / probe!_% / auto!_% 的那批绑定——因为那正是另外两条
-// 路径接不住的部分。
+//   - 常量 `lookbackSkipS4StopWrite`（"s4_stop_write"）与纯函数
+//     `lookbackComparability(logsWriteEnabled)`；
+//   - 三道门：
+//     ① `TestLookbackComparability`（判定函数的正反两腿）；
+//     ② `TestLookbackSkipIsNotSeparableFromNoCandidates`（跳过 ≠ 没有候选）；
+//     ③ `TestLookbackScanIsGatedBeforeQuerying`（结构钉子：门在查询之前、
+//        门分支有 return、门结果经 markSkipped 记录、reset 在门之前）。
+//
+// # 为什么退役（两个前提同时消失，而门仍然闭合）
+//
+// ① **证据源换了**：890 把 v1 族整体 DROP，36h 回看的证据源随之迁到
+//    **会话族**（hot ∪ parent，写入路径**无条件**、不读任何停写键）⇒
+//    「证据源会因某个开关被关掉而冻结 ⇒ 问题不可判定」这个前提**不再成立**。
+// ② **门的输入恒为假**：`lookbackComparability` 读的是
+//    `settings.RequestLogsWriteEnabled()`，而该键的**代码默认**已被并行审计轮
+//    改成 false（origin/main 的 D0）⇒ 在任何**未显式配置**该键的环境
+//    （新装 / 克隆 / 灾备）上，这条扫描**永久停摆** ⇒
+//    「不再具备判定能力」被读成「没有需要恢复的绑定」（静默洞）。
+//
+// ⇒ 门关着的理由已过期、后果却不可逆 ⇒ 门必须退役，而不是留着当摆设。
+//
+// # 现在由什么承担
+//
+// 新门 `TestLookbackScanIsNotGatedByRetiredV1Key` 守的是**退役后的不变式**：
+// 这条扫描**不得**再被那个已退役的键门控 ⇒ 有人把门加回来时立刻变红。
+//
+// ⚠ 退役**不等于**「这条扫描现在开始跑」：本扫描有**自己独立**的启用开关
+//   （`lookbackScanIntervalLocked()`，hotconfig / env；interval=0 是禁用哨兵）
+//   ⇒ 是否真的扫描仍由那个开关决定 ⇒ 退役**不会**自行产生探测流量。
+//
+// # 「跳过 ≠ 没有候选」这条不变式去哪了
+//
+// 它没有消失，只是**搬走了**：跳过机制（`markSkipped` / `resetSkipped` /
+// `SkippedChecks`）仍在使用，只是**使用者换成了**账务对账那条扫描
+// （reason = `usage_arm_empty`）。那边的等价判据见
+// `bg/ledger_reconciliation_s4_gate_test.go`。
+//
+// # 为什么保留 AST 辅助函数
+//
+// 下面的 findIfCallingCred / findCallCred / findCallCredExpr /
+// callsWithinCred / hasReturnCred 是本文件自己的 AST 辅助（未导出、包内专用）。
+// 新门仍然要用它们（判据要打在**去掉注释后**的源码上，而不是在源码里搜字符串），
+// 所以它们随新门一起留在这里。
 
-func TestLookbackComparability(t *testing.T) {
-	cases := []struct {
-		name       string
-		logsWrite  bool
-		wantOK     bool
-		wantReason string
-	}{
-		{"gate open — the 36h question is answerable", true, true, ""},
-		{"gate closed — the question stops being answerable", false, false, lookbackSkipS4StopWrite},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			ok, reason := lookbackComparability(tc.logsWrite)
-			if ok != tc.wantOK {
-				t.Fatalf("comparable = %v, want %v", ok, tc.wantOK)
-			}
-			if reason != tc.wantReason {
-				t.Fatalf("reason = %q, want %q", reason, tc.wantReason)
-			}
-			// A refusal must carry a machine-readable reason, otherwise "skipped"
-			// degrades silently into "no candidates" — which for this scan reads
-			// as "nothing to recover" and is the exact failure we're preventing.
-			if !ok && strings.TrimSpace(reason) == "" {
-				t.Error("refused to scan but gave no machine-readable reason")
-			}
-			if ok && reason != "" {
-				t.Errorf("scanned fine but still reported reason %q", reason)
-			}
-		})
-	}
-}
-
-// TestLookbackSkipIsNotSeparableFromNoCandidates pins the channel that keeps
-// "we stopped being able to tell" apart from "there is nothing to tell".
-func TestLookbackSkipIsNotSeparableFromNoCandidates(t *testing.T) {
-	r := &CredentialRecovery{}
-	if got := r.SkippedChecks(); len(got) != 0 {
-		t.Fatalf("fresh recovery already reports skips: %v", got)
-	}
-	r.markSkipped(lookbackSkipS4StopWrite)
-	if got := r.SkippedChecks(); len(got) != 1 || got[0] != lookbackSkipS4StopWrite {
-		t.Fatalf("skip not recorded: %v", got)
-	}
-	r.resetSkipped()
-	if got := r.SkippedChecks(); len(got) != 0 {
-		t.Fatalf("resetSkipped did not clear the list: %v", got)
-	}
-	var nilRec *CredentialRecovery
-	if got := nilRec.SkippedChecks(); got != nil {
-		t.Fatalf("nil recovery returned %v", got)
-	}
-}
-
-// TestLookbackScanIsGatedBeforeQuerying is the structural pin. Three separate
-// things must hold, and each has a way to silently break:
+// TestLookbackScanIsNotGatedByRetiredV1Key（★ 退役换题后的新门）：
+// 36h 回看扫描**不得**再被已退役的 v1 停写键门控。
 //
-//  1. the scan consults the predicate at all (drop it → cross-boundary again);
-//  2. the gate precedes the query (move it after → rows already in hand);
-//  3. the gate's branch terminates (drop the return → it queries anyway).
+// 守的不变量：scanLookbackRecoveries 的函数体里**不得**出现
+//   - `settings.RequestLogsWriteEnabled` 的调用（那个键的 subject 已被 890
+//     删除，且代码默认已被翻成 false），也**不得**出现
+//   - `lookbackComparability`（已随门退役删除；若有人把它加回来，这条同时红）。
 //
-// A weaker version of (3) searched the function body for the first `return` and
-// matched an unrelated one — the same bug shape fixed in ledger_reconciliation.go.
-func TestLookbackScanIsGatedBeforeQuerying(t *testing.T) {
+// ⚠ 判据必须**有牙**：检查器若根本认不出「读了这个键」，上面那条断言就是恒绿。
+//
+//	⇒ 正向对照：一个确实读了该键的合成片段必须被判成「读到了」。
+func TestLookbackScanIsNotGatedByRetiredV1Key(t *testing.T) {
 	fset := token.NewFileSet()
 	file, err := parser.ParseFile(fset, "credential_recovery.go", nil, 0)
 	if err != nil {
@@ -106,67 +85,81 @@ func TestLookbackScanIsGatedBeforeQuerying(t *testing.T) {
 		t.Fatal("scanLookbackRecoveries not found")
 	}
 
-	gate := findIfCallingCred(t, scan, "lookbackComparability")
-	if gate == nil {
-		t.Fatal("scanLookbackRecoveries no longer consults lookbackComparability — the 36h " +
-			"evidence source (_request_logs_hot/request_logs) is inside the S4 blast radius, " +
-			"and after stop-write the scan would report 'no candidates' forever")
+	// ★ 正向对照：检查器必须看得见「读了这个键」，否则下面的否定断言恒绿。
+	if !mentionsRequestLogsWriteEnabledInSource(t, "package p\nfunc f() { if settings.RequestLogsWriteEnabled() { return } }") {
+		t.Fatal("判据没有牙：一个确实读了 settings.RequestLogsWriteEnabled 的片段被判成「没读」")
 	}
-	if !hasReturnCred(gate.Body.List) {
-		t.Error("the gate's skip branch has no return — the scan would go on to query rows " +
-			"after deciding the question is unanswerable")
+	if mentionsRequestLogsWriteEnabledInSource(t, "package p\nfunc f() { if false { return } }") {
+		t.Fatal("判据误伤：一个没读该键的片段被判成「读了」")
 	}
-	if !callsWithinCred(gate.Body.List, "markSkipped") {
-		t.Error("the gate result is not recorded via markSkipped — a skip is then " +
-			"indistinguishable from a scan that legitimately found no candidates")
-	}
-	// The reset must run BEFORE the gate, as a sibling — not inside the skip
-	// branch. Inside would mean only skipped runs ever clear the list, so a run
-	// that really executed and really found nothing would keep inheriting the
-	// previous run's "skipped" verdict. (The guard's first version looked for
-	// it inside gate.Body and correctly failed on this file — the placement was
-	// right and the assertion was wrong.)
-	reset := findCallCred(t, scan, "resetSkipped")
-	if reset == nil {
-		t.Error("the scan never calls resetSkipped — SkippedChecks would keep reporting the " +
-			"previous run's skips, so a run that really executed and really found nothing " +
-			"would still read as 'skipped'")
-	} else {
-		if reset.Pos() > gate.Pos() {
-			t.Error("resetSkipped() is called AFTER the gate — a run that skipped would keep " +
-				"the previous run's verdict, and a run that executed would clear it late")
-		}
-		if callsWithinCred(gate.Body.List, "resetSkipped") {
-			t.Error("resetSkipped() sits inside the skip branch — only skipped runs would clear " +
-				"the list, so an executed run that found nothing inherits the old verdict")
-		}
-	}
-	q := findCallCred(t, scan, "Query")
-	if q == nil {
-		t.Fatal("scan no longer issues a query — this test needs updating")
-	}
-	if gate.Pos() > q.Pos() {
-		t.Error("the gate is consulted AFTER the query is issued; it must short-circuit first")
+	// ★ 第二条正对照：**注释里**提到这个键不算读点（退役记录就写在注释里）。
+	if mentionsRequestLogsWriteEnabledInSource(t, "package p\n// 旧门读 settings.RequestLogsWriteEnabled()\nfunc f() {}") {
+		t.Fatal("判据误伤：注释里提到该键被判成「读了」——判据必须打在去掉注释后的源码上")
 	}
 
-	// The two ungated sibling scans must stay ungated: they read
-	// node_probe_state, not _request_logs, so they remain fully decidable under
-	// stop-write. Gating them would trade a silent hole for a different one.
-	for _, d := range file.Decls {
-		fd, ok := d.(*ast.FuncDecl)
-		if !ok {
-			continue
-		}
-		switch fd.Name.Name {
-		case "recoverExpiredBindings", "recoverFreshDegradedBindings":
-			if findIfCallingCred(t, fd, "lookbackComparability") != nil {
-				t.Errorf("%s is gated by the lookback predicate, but it keys off "+
-					"credential_model_bindings / node_probe_state, which the S4 gate does not "+
-					"touch — it stays decidable, and gating it would silently disable recovery "+
-					"on the two paths that ARE still valid", fd.Name.Name)
-			}
-		}
+	if mentionsRequestLogsWriteEnabledExpr(scan) {
+		t.Error("scanLookbackRecoveries 又读起了 settings.RequestLogsWriteEnabled —— " +
+			"那道门的前两个前提都已消失（证据源随 890 迁到会话族、该键的代码默认被翻成 false），" +
+			"门若还挂着，这条扫描会在任何未显式配置该键的环境上永久停摆，" +
+			"把「不再具备判定能力」读成「没有需要恢复的绑定」")
 	}
+	if findIfCallingCred(t, scan, "lookbackComparability") != nil {
+		t.Error("scanLookbackRecoveries 又调用了 lookbackComparability —— " +
+			"那道门已随 890 + D0 退役（连同它的常量与纯函数一并删除）")
+	}
+
+	// 扫描**必须**仍然发查询 —— 否则「不门控」就变成了「不扫描」，
+	// 而那比门控更糟（静默洞，且连 skip 痕迹都没有）。
+	if findCallCred(t, scan, "Query") == nil {
+		t.Error("scanLookbackRecoveries 不发查询了 —— 「退役这道门」不等于「不扫描」；" +
+			"不发查询的扫描既没有候选，也没有 skip 痕迹 ⇒ 与「没有需要恢复的绑定」不可区分")
+	}
+}
+
+// mentionsRequestLogsWriteEnabledInSource 报「这段 Go **源码**里读没读
+// settings.RequestLogsWriteEnabled」（注释不算）。
+//
+// 解析成 AST 再判，而不是 strings.Contains：退役记录就写在注释里，
+// 用文本匹配会把注释判成读点 ⇒ 恒红。
+func mentionsRequestLogsWriteEnabledInSource(t *testing.T, src string) bool {
+	t.Helper()
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "snippet.go", src, 0)
+	if err != nil {
+		t.Fatalf("parse snippet: %v", err)
+	}
+	return mentionsRequestLogsWriteEnabledExpr(file)
+}
+
+// mentionsRequestLogsWriteEnabledExpr 报「这段 Go 代码里读没读
+// settings.RequestLogsWriteEnabled」。
+func mentionsRequestLogsWriteEnabledExpr(node ast.Node) bool {
+	if node == nil {
+		return false
+	}
+	found := false
+	ast.Inspect(node, func(n ast.Node) bool {
+		if found {
+			return false
+		}
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		sel, ok := call.Fun.(*ast.SelectorExpr)
+		if !ok {
+			return true
+		}
+		if sel.Sel.Name != "RequestLogsWriteEnabled" {
+			return true
+		}
+		// 形如 settings.RequestLogsWriteEnabled()：包名必须是 settings。
+		if pkg, ok := sel.X.(*ast.Ident); ok && pkg.Name == "settings" {
+			found = true
+		}
+		return !found
+	})
+	return found
 }
 
 func findIfCallingCred(t *testing.T, fn *ast.FuncDecl, name string) *ast.IfStmt {

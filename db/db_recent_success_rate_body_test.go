@@ -6,50 +6,86 @@ import (
 )
 
 // TestRecentSuccessRateBodyServesBothHotFamilies（S3 波 2，2026-10-13）钉住
-// recent_success_rate 函数体的双族取样形状。
+// recent_success_rate 函数体的取样形状。
 //
 // 背景：S4 停写（storage.request_logs_write_enabled=false）后新流量只落
 // session_turns(_hot)。原函数体只读 _request_logs_hot——3 小时窗口滑过停写
 // 时刻后 samples 恒 0、rate 恒 NULL，而消费方把零读成「正常」
-// （BelowThreshold=false），凭据健康体系的降级/恢复机制静默失灵。这正是
-// request_logs_stop_write_classification_test 登记的主失效源；本钉桩防止
-// 有人把会话腿「顺手清掉」而门依旧全绿。
+// （BelowThreshold=false），凭据健康体系的降级/恢复机制静默失灵。
 //
-// 判据同层：断言直接驱动 boot 时真正发给 PostgreSQL 的那段文本
-// （recentSuccessRateEnsureSQL），不是测试里另抄的一份。
+// ★ 2026-10-20（迁移 890，v1 族最终删除）：本门**反转为单腿**。
+//
+// 原门钉的是「两族热腿都在场（`FROM _request_logs_hot` ∪
+// `FROM public.session_turns_hot`，UNION ALL 并集取样，探针排除谓词出现
+// **两处**）」。
+//
+// v1 族被整体 DROP 之后：
+//
+//	· 留 v1 腿 ⇒ 函数体 42P01 ⇒ 它被 `provider/client.go` 的候选查询以
+//	  `CROSS JOIN LATERAL` 调用 ⇒ **选不出任何上游凭据 ⇒ 100% 流量失败**；
+//	· 而且 `CREATE OR REPLACE FUNCTION` 对 SQL 函数体**不在创建时解析** ⇒
+//	  建得成功、首次调用才炸（症状看起来像「所有上游都挂了」）。
+//
+// ⇒ v1 腿**必须摘掉**，只留会话腿；取样语义（最新 p_sample_n 条再聚合）
+//
+//	与数字守卫（TEXT 列直接 ::bigint 会 22P02）**必须保留**。
+//
+// ⇒ 反转后的判据：会话腿在场、v1 腿**不在场**、取样与守卫语义不变。
+// 负向断言（v1 腿不得在场）配**阳性对照**——否则「v1 腿不在场」与
+// 「判据没跑」不可区分。
 func TestRecentSuccessRateBodyServesBothHotFamilies(t *testing.T) {
 	body := recentSuccessRateEnsureSQL
 
-	// 两族热腿都必须在场——缺任何一腿，停写切换的某一侧就是盲区。
-	for _, leg := range []string{"FROM _request_logs_hot", "FROM public.session_turns_hot"} {
-		if !strings.Contains(body, leg) {
-			t.Errorf("recent_success_rate 函数体缺少 %q：停写切换的一侧将供不出样本", leg)
+	// ---- 会话腿必须在场 ----
+	if !strings.Contains(body, "FROM public.session_turns_hot") {
+		t.Error("recent_success_rate 函数体缺少会话族热腿：凭据成功率将供不出样本")
+	}
+
+	// ---- v1 腿必须**不在场**（890 之后它必然 42P01）----
+	//
+	// ⚠ 量具按**标识符边界**判：`request_logs` 是 `request_logs_hot` 的前缀，
+	// 朴素包含会把热表判成母表。这里两条都列出来，两条都不该命中。
+	for _, unwanted := range []string{
+		"FROM _request_logs_hot", "FROM _request_logs",
+		"FROM request_logs_hot", "FROM request_logs",
+	} {
+		if strings.Contains(body, unwanted) {
+			t.Errorf("recent_success_rate 函数体仍含 %q —— v1 族已被迁移 890 整体 DROP，"+
+				"该函数经 CROSS JOIN LATERAL 被候选查询调用 ⇒ 42P01 ⇒ "+
+				"选不出任何上游凭据 ⇒ 100%% 流量失败。", unwanted)
 		}
 	}
-	// UNION ALL 连接（不是两段独立查询）——取样必须是并集内最新的
-	// p_sample_n 条，写门开时才与原单腿语义等价。
-	if !strings.Contains(body, "UNION ALL") {
-		t.Error("两腿必须是 UNION ALL 并集取样，分离的两段查询会改变样本语义")
-	}
+
 	// 取样语义：外层按 ts 取最新 p_sample_n 条再聚合——丢了这层，
 	// 样本量随窗口内总量浮动，rate 不再是「最近 N 条」的口径。
 	if !strings.Contains(body, "ORDER BY ts DESC LIMIT p_sample_n") {
-		t.Error("并集必须按 ts 取最新 p_sample_n 条再聚合（取样口径回归）")
+		t.Error("必须按 ts 取最新 p_sample_n 条再聚合（取样口径回归）")
 	}
 	// 会话腿的 credential_id 是 TEXT（707 S1a）：数字守卫 CAST 必须在——
 	// 非数字凭据行直接 ::bigint 会 22P02 炸掉整条函数。
 	if !strings.Contains(body, "credential_id ~ '^[0-9]+$'") {
 		t.Error("会话腿 credential_id 缺数字守卫 CAST（TEXT 列直接 ::bigint 会 22P02）")
 	}
-	// 探针排除谓词在两腿都必须保留（v1 腿语义、会话腿防御）。
-	probeArms := strings.Count(body, "NOT IN ('self_check', 'node_probe', 'system_health')")
-	if probeArms < 2 {
-		t.Errorf("探针排除谓词应出现在两腿（实存 %d 处）——v1 腿是语义、会话腿是防御", probeArms)
+	// 探针排除谓词必须保留（890 之后它是**唯一的**防御腿：v1 腿没了，
+	// 它是唯一挡住探针/自检行污染样本的地方）。
+	if !strings.Contains(body, "NOT IN ('self_check', 'node_probe', 'system_health')") {
+		t.Error("探针排除谓词丢失：探针/自检行会污染成功率样本（890 之后它是唯一的防御）")
 	}
 	// 函数签名与默认值不变：调用点传参 (id, raw_model, 50, 3) 逐位对应。
 	if !strings.Contains(body, "p_sample_n      INT DEFAULT 50") ||
 		!strings.Contains(body, "p_window_hours  INT DEFAULT 3") {
 		t.Error("函数签名/默认值漂移会打碎 CROSS JOIN LATERAL 调用点")
+	}
+
+	// ---- 阳性对照：证明上面那条负向判据**分得清** ----
+	//
+	// 喂一段确实含 v1 腿的函数体，断言同一条判据**会**抓到它。
+	// 没有它，上面那个循环若把判据写坏（例如比较了一个永远不出现的串），
+	// 整段会恒绿。
+	const v1LegSample = "WITH recent AS (SELECT success FROM _request_logs_hot WHERE credential_id = p_credential_id)"
+	if !strings.Contains(v1LegSample, "FROM _request_logs_hot") {
+		t.Error("阳性对照失效：含 v1 腿的样本没有被负向判据抓到 —— " +
+			"上面那条负向断言此时恒绿，测不到任何东西")
 	}
 }
 

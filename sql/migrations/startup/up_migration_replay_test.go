@@ -81,15 +81,16 @@ func TestUpMigrationsDoNotRecreateTheBrokenShape(t *testing.T) {
 		if !strings.Contains(body, snapshotTable) {
 			continue
 		}
-		checked++
-		// 建表内联写法（`  PRIMARY KEY (…)`，前面没有 ADD）与 ALTER 写法
-		// （`ADD [CONSTRAINT x] PRIMARY KEY (…)`）都要覆盖 ——
-		// 「只认 ALTER 那种」会直接漏掉本次事故的元凶 453.sql。
-		m := reAnyPrimaryKey.FindStringSubmatch(body)
-		if m == nil {
+		// ★★ 范围收窄（2026-10-20，§143.35 收尾轮）：
+		//   本文件只是【提到】这张表（读它 / 引用它）⇒ 它的主键不是这张表的
+		//   ⇒ 不在本题范围内。
+		//   ★ 原先的取法是「文件里第一个 PRIMARY KEY」⇒ 建了【另一张】带主键的表
+		//   又提到这张表的迁移（例：892 建 ursm_snapshot_slot_daily）会被误判。
+		got, declared, hasPK := declaredPrimaryKeyCols(body)
+		if !declared || !hasPK {
 			continue
 		}
-		got := joinCols(m[1])
+		checked++
 		if got == want {
 			continue
 		}
@@ -104,7 +105,7 @@ func TestUpMigrationsDoNotRecreateTheBrokenShape(t *testing.T) {
 	}
 
 	if checked < 2 {
-		t.Fatalf("只检查了 %d 个涉及 %s 的正向迁移 —— 预期至少 2 个（453 与 830）。"+
+		t.Fatalf("只检查了 %d 个【声明】%s 的正向迁移 —— 预期至少 2 个（453 与 830）。"+
 			"★ 没有覆盖就等于没有判据。", checked, snapshotTable)
 	}
 	if len(offenders) > 0 {
@@ -120,6 +121,80 @@ func TestUpMigrationsDoNotRecreateTheBrokenShape(t *testing.T) {
 // 上游的 reAddPrimaryKey 刻意要求 `ADD` 前缀（那是 down 门需要的精确性），
 // 在这里复用会漏掉 453 的内联建表写法。
 var reAnyPrimaryKey = regexp.MustCompile(`(?is)PRIMARY\s+KEY\s*\(([^)]*)\)`)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ★★ 范围收窄（2026-10-20，§143.35 收尾轮）
+//
+// ★★★ 本门原先的取法是「文件正文里【提到】ursm_node_snapshot_min」⇒
+//   「文件里的【第一个】PRIMARY KEY (…)」⇒ 与 writer 的 ON CONFLICT 比。
+// ⇒ ⇒ **范围过宽**：任何「建了【另一张】带主键的表、同时又提到这张表」的迁移
+//   都会被误判成 offender。
+// ⇒ ⇒ **实测踩到**：迁移 892（URSM 巡检的每日 slot 汇总表）建的是
+//   `ursm_snapshot_slot_daily`（PK = day, granularity, slot, bucket_ts），
+//   它只是**读** `ursm_node_snapshot_min` ⇒ **重放它不会碰这张表的主键**
+//   ⇒ ⇒ **不是 landmine**，却把本门判红了。
+// ⇒ ⇒ ★ 修法：把主键提取**限定到该表自身的声明语句**：
+//   ① ALTER 形态（`ALTER TABLE [ONLY] [public.]<表> … ADD [CONSTRAINT x] PRIMARY KEY (…)`）
+//      —— 它是后发生的，对**最终形态**权威 ⇒ **优先**；
+//   ② 内联形态（`CREATE TABLE [IF NOT EXISTS] [public.]<表> ( … PRIMARY KEY (…) )`）
+//      —— 只看**建表语句自己的括号块**里的主键（PG 的列类型里也可能有括号，
+//         所以必须做括号配对，不能用正则一路扫）。
+// ⇒ ⇒ ★★ 收窄后【守卫力未被削弱】，实测逐条复核：
+//   453（内联 3 列 PK）⇒ 仍然 OFFENDER ✔；
+//   463（ALTER 4 列）⇒ OK ✔；830（ALTER 4 列）⇒ OK ✔；
+//   818 / 875（只提到、不声明）⇒ 跳过 ✔；892（建的是另一张表）⇒ 跳过 ✔。
+// ─────────────────────────────────────────────────────────────────────────────
+
+// reSnapshotCreateTable 匹配「声明该表」的建表写法（内联主键形态）。
+var reSnapshotCreateTable = regexp.MustCompile(
+	`(?is)CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(?:public\.)?` + snapshotTable + `\s*\(`)
+
+// reSnapshotAddPrimaryKey 匹配「给该表加主键」的 ALTER 写法。
+//
+// ★ `[^;]*?` 不跨语句边界 ⇒ 不会把「ALTER 别的表」误当成「ALTER 这张表」。
+var reSnapshotAddPrimaryKey = regexp.MustCompile(
+	`(?is)ALTER\s+TABLE\s+(?:ONLY\s+)?(?:public\.)?` + snapshotTable +
+		`\b[^;]*?ADD\s+(?:CONSTRAINT\s+\S+\s+)?PRIMARY\s+KEY\s*\(([^)]*)\)`)
+
+// parenBlockContent 返回「以左括号开头的那一段」里、最外层括号内的内容。
+//
+// ★ 必须做括号配对：PG 的列类型自带括号（numeric(10,2)），
+//   默认值也可能是表达式（DEFAULT (now())）⇒ 一路正则扫会取错位置。
+func parenBlockContent(s string) string {
+	depth := 1
+	for i := 0; i < len(s); i++ {
+		switch s[i] {
+		case '(':
+			depth++
+		case ')':
+			depth--
+			if depth == 0 {
+				return s[:i]
+			}
+		}
+	}
+	return s
+}
+
+// declaredPrimaryKeyCols 返回「本文件为 ursm_node_snapshot_min 声明的主键列集合」。
+//
+//	declared —— 本文件是否【声明】了这张表（只提到不算）
+//	ok      —— 是否成功取到主键列
+func declaredPrimaryKeyCols(body string) (cols string, declared bool, ok bool) {
+	// ① ALTER 形态优先（最终形态权威）。
+	if m := reSnapshotAddPrimaryKey.FindStringSubmatch(body); m != nil {
+		return joinCols(m[1]), true, true
+	}
+	// ② 内联 CREATE TABLE 形态：只看建表语句自己的括号块。
+	mi := reSnapshotCreateTable.FindStringIndex(body)
+	if mi == nil {
+		return "", false, false
+	}
+	if m := reAnyPrimaryKey.FindStringSubmatch(parenBlockContent(body[mi[1]:])); m != nil {
+		return joinCols(m[1]), true, true
+	}
+	return "", true, false
+}
 
 // TestUpLandmineRegistryHasNoStaleEntries —— 登记表的防腐，两个方向都要。
 func TestUpLandmineRegistryHasNoStaleEntries(t *testing.T) {

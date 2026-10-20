@@ -256,7 +256,7 @@ done
 # db.ensureURSMNodeSnapshotMinDailyPartition mirrors only the post-migration
 # half and probes (to_regprocedure) rather than erroring, keeping the two steps
 # order-independent. The no-registration decision is pinned by
-# bg/partition_825_contract_test.go Test830IsDeliberatelyNotInTheAutoStartupSequence.
+# bg/partition_830_contract_test.go Test830IsDeliberatelyNotInTheAutoStartupSequence.
 # ⚠ This is the **channel-side copy** of the same decision; the Go-side copy is
 #   manualByDesign in installer/cmd/llm-gw-installer/stats_migrations_test.go.
 #   Editing one without the other leaves the other gate red — "已豁免" must hold

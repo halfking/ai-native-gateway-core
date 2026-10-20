@@ -90,181 +90,16 @@ type bodyReaderShape struct {
 }
 
 var v1BodiesReaderShapes = map[string]bodyReaderShape{
-
-	"admin/session_export.go": {
-		Shape:  shapeAlreadySwitched,
-		Reason: "§9.230 已迁。bodies 腿经 `db.SessionBodiesSourceSQL()`，默认臂 = v1 ⇒ 停写/退役后果不变。",
-	},
-	"admin/session_compare.go": {
-		Shape:  shapeAlreadySwitched,
-		Reason: "§9.230 已迁。同上。",
-	},
-	"admin/compression_stats.go": {
-		Shape:  shapeAlreadySwitched,
-		Reason: "§9.232 已迁（3 处）。⚠ 其中 `compressionStatsEstimatedOrigSQL` 由 **const 改成 var** —— 函数调用不能出现在 const 声明里。值未变（默认臂逐字相同），但不再是编译期常量。",
-	},
-	"admin/logs_summary.go": {
-		Shape:  shapeAlreadySwitched,
-		Reason: "§9.232 已迁（2 处）。",
-	},
-	"admin/quality_correlations.go": {
-		Shape: shapeAlreadySwitched,
-		Reason: "2026-10-13 S4 波 4 已迁（1 处）：turns=canonical、bodies=切换层读 " +
-			"outbound_body（非 request_body——会话臂那是增量数组、无 tools/messages 键，" +
-			"读它会静默塌桶）。原「口径变更」警告已显式拍板：探针流量出围" +
-			"（R51 不进会话族），业务 auto 流量为新分子；探针维度归 node_probe_runs（主拍板）。",
-	},
-	"admin/memora_handlers.go": {
-		Shape:  shapeAlreadySwitched,
-		Reason: "§9.232 已迁（1 处）。停写分级仍是 degraded_content，理由见该条 Note。",
-	},
-	"admin/no_topic_session.go": {
-		Shape:  shapeAlreadySwitched,
-		Reason: "§9.232 已迁（2 处）。降级的是正文两列、不是行数（分级 Note 未变）。",
-	},
-	"admin/session_sanitize_matches.go": {
-		Shape:  shapeAlreadySwitched,
-		Reason: "§9.232 已迁（1 处）。",
-	},
-	"admin/session_title.go": {
-		Shape:  shapeAlreadySwitched,
-		Reason: "§9.232 已迁（1 处）。语料降级为 preview 兜底那一档未变。",
-	},
-	"admin/auto_title_generator.go": {
-		Shape:  shapeAlreadySwitched,
-		Reason: "§9.232 已迁（1 处）。",
-	},
-
-	"db/request_logs_view_schema.go": {
-		Shape: shapeAlreadySwitched,
-		Reason: "★ bodies 读端灰度切换层的**唯一**所在地（§9.233）。" +
-			"`SessionBodiesSourceSQL()` 默认返回 `request_logs_bodies_with_current_month`（v1），" +
-			"开关打开才返回 `SessionFamilyBodiesSourceSQL()`。⇒ **默认支是 v1**。" +
-			"⚠ 它在 §9.230→§9.233 之间搬过两次家，每次都是同一个原因：" +
-			"切换层住错包，前一批消费点能迁、后一批迁不了。" +
-			"消费点 13 个（admin 9 + domains/sessionforensics 1 + domains/sessionsummary 2 + bg 1），" +
-			"由 indirectSourceConsumers 机器识别。",
-	},
-	"domains/sessionforensics/export.go": {
-		Shape: shapeAlreadySwitched,
-		Reason: "§9.233 已迁（2 处）→ dbpkg.SessionBodiesSourceSQL()。 ⚠ 它在 domains/ 与 bg/ 包 —— **这正是 §9.232 迁不了的那 4 个**：" +
-			"admin 包的薄包装函数它们看不见，而「谁调用了切换层」的识别当时也只在包内解析。",
-	},
-	"domains/sessionsummary/summarizer.go": {
-		Shape: shapeAlreadySwitched,
-		Reason: "§9.233 已迁（2 处）→ dbpkg.SessionBodiesSourceSQL()。 ⚠ 它在 domains/ 与 bg/ 包 —— **这正是 §9.232 迁不了的那 4 个**：" +
-			"admin 包的薄包装函数它们看不见，而「谁调用了切换层」的识别当时也只在包内解析。",
-	},
-	"domains/sessionsummary/system_prompt_prefix.go": {
-		Shape: shapeAlreadySwitched,
-		Reason: "§9.233 已迁（1 处，INNER JOIN）→ dbpkg.SessionBodiesSourceSQL()。 ⚠ 它在 domains/ 与 bg/ 包 —— **这正是 §9.232 迁不了的那 4 个**：" +
-			"admin 包的薄包装函数它们看不见，而「谁调用了切换层」的识别当时也只在包内解析。",
-	},
-	"bg/passive_probe_listener.go": {
-		Shape: shapeAlreadySwitched,
-		Reason: "§9.233 已迁（1 处）→ dbpkg.SessionBodiesSourceSQL()。 ⚠ 它在 domains/ 与 bg/ 包 —— **这正是 §9.232 迁不了的那 4 个**：" +
-			"admin 包的薄包装函数它们看不见，而「谁调用了切换层」的识别当时也只在包内解析。",
-	},
-
-	// ── B 类：ts 等值，换不了 ────────────────────────────────────────────
-	"admin/body_resolver.go": {
-		Shape: shapeJoinsOnTs,
-		Reason: "`ON rb.request_id = rl.request_id AND rb.ts = rl.ts`（:214/:233）。" +
-			"helper 不投影 ts ⇒ 换过去解析期 42703（响亮，但换不了）。" +
-			"⚠ 更深一层：这个 ts 等值条件**实测几乎恒假**" +
-			"（admin/session_bodies_batch.go 文件头记着 99.85% 的 bodies 行 ts 不等），" +
-			"所以这条腿今天大概率本来就取不到值。改它属于**修正匹配语义**，" +
-			"要先定「到底按 request_id 匹配还是按 (request_id, ts) 匹配」，" +
-			"不是 repoint。",
-	},
-	// 2026-10-13 S4 波 4 出列：admin/compression_sessions.go 整只端点已
-	// 会话族化（canonical turns 源 + SessionFamilyBodiesSourceSQL，LATERAL
-	// 改 request_delta 数组长度、ts 等值配对删除——见 v1_bodies_reader_shapes
-	// 原条目自身的「换源前先定口径」警告，本轮已按 §5.9 拍板口径落地）。
-	"cmd/compression-bench/main.go": {
-		Shape: shapeJoinsOnTs,
-		Reason: ":237 `JOIN _request_logs_bodies b ON b.request_id = rl.request_id AND b.ts = rl.ts`，" +
-			"且读的是**基表** `_request_logs_bodies`（不经 view）。压测工具，" +
-			"量的是 v1 自身的压缩行为；换源后它量的就不再是「v1 的压缩率」。" +
-			"⇒ 它是**基准工具**，retire v1 时应随 v1 一起退役或显式改口径。",
-	},
-
-	// ── C 类：两次顺序查询，不该换 ───────────────────────────────────────
-	"admin/logs.go": {
-		Shape: shapeTwoStepHotThenView,
-		Reason: "`fetchRequestOutboundBody` / `fetchRequestBodies` 各自是**两次顺序查询**：" +
-			"先 `FROM _request_logs_bodies_hot`（3s 超时，命中即返回），" +
-			"未命中再 `FROM request_logs_bodies_with_current_month`（20s）。" +
-			"文件注释明写这个分层是刻意的（“stage 2: columnar 月分区（可能慢，给 20s ctx）”）。" +
-			"⇒ 换成 helper 的 UNION 子查询会让**每条**请求都去扫分区父表，" +
-			"把「近期走热表」变成「近期也扫月分区」。这是性能设计的改动，" +
-			"必须自带前后延迟读数，不能混在 repoint 里做。",
-	},
-	"admin/unified_detail.go": {
-		Shape: shapeTwoStepHotThenView,
-		Reason: "`pgBodyReader.loadOutboundBody`（:265-300）同样是 hot → view 两次顺序查询，" +
-			"注释写着 “Try hot table first, then fall back to partitioned bodies table”。" +
-			"⚠ 它的错误语义与 admin/logs.go **相反**：`pgx.ErrNoRows` 会被" +
-			"翻成 `requestdetail.ErrNotFound` 并上抛 404。" +
-			"⇒ 换源后若 session_bodies 覆盖不到，这个 404 是**响亮**的（好），" +
-			"但仍会改变「详情页能否打开」——属于可见行为变更，不能当机械替换。",
-	},
-
-	// ── D 类：只读体量 ───────────────────────────────────────────────────
-	"admin/data_lifecycle.go": {
-		Shape: shapeSizeNotContent,
-		Reason: ":237 `COUNT(DISTINCT request_id)` 7 天增长趋势 + :255 的 bodies 腿。" +
-			"它不读正文，量的是「v1 存了多少、压了多少」。" +
-			"⇒ 退役 v1 后这条趋势应当**改指会话族**（否则 requests 线继续涨、compressed 线冻结，" +
-			"两条线分叉且无错误信号），但它换的是**统计对象**不是 JOIN，" +
-			"和内容读方不是同一件事。",
-	},
-	// admin/data_lifecycle_blobs.go 于 2026-10-13（S4 波 4）出列：会话臂治理
-	// （治理对象 session_bodies 族，execute 目标 session_bodies_hot）。
-	// 2026-10-13 S4 波 4 出列：cmd/scenario_driver/main.go 的落库断言已改数
-	// session_bodies_hot / session_turns_hot（原条目自身预告的终态——「数 v1
-	// 恒 0」在停写当天就成了活缺陷：s22-3/s23-3 永久 FAIL）。
-
-	// ── 工具：读 v1 就是它的工作本身 ─────────────────────────────────────
-	"cmd/tools/backfill_session_bodies/main.go": {
-		Shape: shapeMustStayOnV1,
-		Reason: "★ 它就是**从 v1 读、往 session_bodies 填**的那个工具。" +
-			"把它的 bodies 源换成 session_bodies 等于让它读自己写的表 → 自毁。" +
-			"⇒ 退役顺序上它必须排在**回填跑完之后**，且 retire v1 时要一并退役" +
-			"（回填完成 = 它的使命完成），不是迁往会话族。",
-	},
-	"cmd/tools/validate_sessions_v2/loader.go": {
-		Shape: shapeMustStayOnV1,
-		Reason: "★ 它的职责就是 **v1 ↔ session 对拍判镜像漂移**（`LoadV1Turns` 两步查 v1 母表 + bodies）。" +
-			"它读 v1 **不是遗漏，是被测对象**。" +
-			"⇒ retire v1 之后它要么退役、要么改成「对拍更老的一代」，" +
-			"**不存在「迁到会话族」这个选项**——那会让它对着自己校验自己。" +
-			"这是 §9.231 最要紧的一条结论：两个工具在 v1 退役后**无处可去**。",
-	},
-
-	// ── A 类：单键 JOIN + 列全在合同内 ────────────────────────────────────
-	"admin/session_bodies_batch.go": {
-		Shape: shapeJoinsOnTs,
-		Reason: "★ **本轮被自己的门改判的一条。** 起初我按文件名把它归为可迁移 —— " +
-			"「纯点查助手、`FROM … rb`、`WHERE rb.request_id IN (unnest($1))`」，" +
-			"看起来是全表最 trivial 的一个。`TestV1BodiesReaderShapeDecisionsAreSupported` " +
-			"报它**用到了 `rb.ts`**：`sessionBodiesByRequestIDAndTSSQL`（:82-92）投影了 " +
-			"`rb.ts` 并用 `WHERE (rb.request_id, rb.ts) IN (SELECT * FROM unnest($1,$2) …)` 配对。" +
-			"⇒ helper 不投影 ts ⇒ **整个文件不能换**（不是「一半能换」，因为换源要改函数体）。\n" +
-			"⚠ 另注：那个元组变体实测几乎恒空（文件头：同一批键里 99.85% 的 ts 不相等）。" +
-			"**若确认它已经无产出，直接退役它比迁移它更省事** —— 这条要先问清楚。\n" +
-			"⚠ 影响面比文件本身大：`sessionBodiesByRequestIDSQL` 的消费点有 " +
-			"admin/session_summary_v2.go 与 admin/session_compare.go，改它要连消费点一起数。",
-	},
-	// 2026-10-13 S4 波 4：admin/quality_correlations.go 改判 already-switched——
-	// turns 腿 canonical、bodies 腿经切换层读 outbound_body（原条目警告的
-	// 「口径变更」（探针流量→业务 auto 流量）已显式拍板执行并登记在
-	// 退役门：探针维度归 node_probe_runs，主拍板项）。
-
-	"domains/hooks/goal/history_store.go": {
-		Shape:  shapeHelperCompatible,
-		Reason: "`:85` `LEFT JOIN _request_logs_bodies rb`（基表），无 ts。",
-	},
+	// ★ 2026-10-20（迁移 890，v1 族真删）：本表**已清空**。
+	//
+	// 24 条登记判定的都是「bodies 读方该怎么换成会话族」——而 890 之后
+	// **没有任何生产文件再读 v1 bodies 腿**（bodies 读端恒为会话族）
+	// ⇒ 「这个读法能不能换 helper」已经没有对象。
+	//
+	// ⇒ 本表保留（不删）：它守的是「**不许出现新的 v1 bodies 读方**」。
+	//
+	// ⚠ 不要在这里手填「已知的例外」—— 已退役关系的残留引用登记在
+	// retiredV1ReferenceExceptions（生产缺陷台账）。
 }
 
 // bodiesAliasRE 从 `JOIN _request_logs_bodies… <别名> ON` 里**解析出别名**。
@@ -415,9 +250,23 @@ func TestV1BodiesReaderShapesAreClassified(t *testing.T) {
 	sort.Strings(stale)
 	t.Logf("v1 bodies 读方：实测 %d 文件 / 判定 %d 文件", len(measured), len(v1BodiesReaderShapes))
 
+	// ★ 890 之后（2026-10-20）：**实测为 0 是正确状态**，不是「量具坏了」。
+	//
+	// 原来这里是一条地板（实测为 0 ⇒ Fatal），因为那时总体为空只可能意味着
+	// 「SSOT 推导或路径过滤出了问题」。890 之后 v1 族被物理删除 ⇒ 总体真的归零。
+	//
+	// ⇒ 地板翻成：**总量为空必须是因为扫描器扫过而没命中**。
+	// 判据：扫描器的模式必须仍能认出 v1 bodies 形态（阳性对照）。
 	if len(measured) == 0 {
-		t.Fatal("v1 bodies 读方实测为 0 —— 这是量具坏了，不是「bodies 腿没人读了」。" +
-			"在此状态下下面那道门会全绿，而一个依赖都没被判定。")
+		pat := v1BodiesReadPattern(t)
+		if !pat.MatchString("FROM _request_logs_bodies_hot rb") {
+			t.Fatal("v1 bodies 读方实测为 0，**且**扫描模式认不出 v1 bodies 形态 —— " +
+				"这不是「bodies 腿已经没人读了」，是量具坏了。")
+		}
+	}
+	if len(v1BodiesReaderShapes) > 0 {
+		t.Errorf("形状判定表仍有 %d 条 —— 890 之后没有 v1 bodies 读方可判定。",
+			len(v1BodiesReaderShapes))
 	}
 	if len(unregistered) > 0 {
 		t.Errorf("这些 bodies 读方还没有形状判定：%v\n"+
@@ -447,22 +296,41 @@ func TestV1BodiesReaderShapesAreDeclaredWell(t *testing.T) {
 		shapeMustStayOnV1: true, shapeAlreadySwitched: true,
 	}
 	for file, d := range v1BodiesReaderShapes {
-		if !valid[d.Shape] {
-			t.Errorf("%s：Shape = %q，不是已声明的档位。可选：%s\n"+
-				"  ⚠ 新增档位必须同时在下面两处登记，否则「不可换」会被默认分支吞掉：\n"+
-				"    ① 本函数的 valid 集合 ② TestV1BodiesReaderShapeDecisionsAreSupported 的日志列表",
-				file, d.Shape, strings.Join(sortedKeys(valid), " / "))
-		}
-		if strings.TrimSpace(d.Reason) == "" {
-			t.Errorf("%s：Reason 为空——空理由的登记等于没有登记。\n"+
-				"  这一项要回答「退役后由什么替代、为什么那个替代够用」"+
-				"（或「为什么这个读方本来就该读 v1」）。", file)
+		for _, p := range bodiesShapeProblems(file, d, valid) {
+			t.Errorf("%s：%s", file, p)
 		}
 	}
-	if len(v1BodiesReaderShapes) == 0 {
-		t.Fatal("判定表为空 —— 上面两道门会因「实测为 0」而 Fatal 或全绿，" +
-			"而一个读方都没被判定。")
+
+	// ★ 890 之后（2026-10-20）：表为空 ⇒ 逐条校验不执行 ⇒ 判据必须有牙。
+	//
+	// ⇒ 用**合成条目**证明自检逻辑有效：Shape 不在已声明档位 / Reason 为空
+	// —— 两种都必须被判出问题；一条各项都合规的必须不被判出问题。
+	bad := map[string]bodyReaderShape{
+		"Shape 未声明": {Shape: "shape-not-declared", Reason: "合成条目"},
+		"Reason 为空": {Shape: shapeHelperCompatible},
 	}
+	for name, d := range bad {
+		if len(bodiesShapeProblems(name, d, valid)) == 0 {
+			t.Errorf("合成条目「%s」没有被自检逻辑判出问题 —— 自检逻辑没有牙"+
+				"（表空着的时候，这是唯一还能证明它有效的手段）", name)
+		}
+	}
+	ok := bodyReaderShape{Shape: shapeAlreadySwitched, Reason: "合成条目：各项合规"}
+	if problems := bodiesShapeProblems("synthetic/ok.go", ok, valid); len(problems) != 0 {
+		t.Errorf("一个各项都合规的合成条目被判出问题 %v —— 自检逻辑本身坏了", problems)
+	}
+}
+
+// bodiesShapeProblems 是一条形状判定的**自检**（返回问题列表，空 = 合格）。
+func bodiesShapeProblems(file string, d bodyReaderShape, valid map[string]bool) []string {
+	var problems []string
+	if !valid[d.Shape] {
+		problems = append(problems, "Shape = "+d.Shape+"，不是已声明的档位")
+	}
+	if strings.TrimSpace(d.Reason) == "" {
+		problems = append(problems, "Reason 为空——空理由的登记等于没有登记")
+	}
+	return problems
 }
 
 // TestV1BodiesReaderShapeDecisionsAreSupported 交叉核对「人写的判定」与「机器读到的形状」。
@@ -564,11 +432,19 @@ func TestV1BodiesScanIncludesSwitchConsumers(t *testing.T) {
 	measured := scanV1BodiesReaders(t, root)
 	consumers := indirectSourceConsumers(t, root)
 
+	// ★ 890 之后（2026-10-20）：**没有消费点是正确状态**。
+	//
+	// 原来这里是一条地板（consumers 为空 ⇒ Fatal），因为那时切换层
+	// （`db.SessionBodiesSourceSQL()`）**默认臂是 v1** ⇒ 它的消费点全是 v1 读方。
+	// 890 之后 bodies 读端恒为会话族、切换层退化为 no-op ⇒
+	// 「经切换层读 v1 bodies」这件事不再存在 ⇒ 消费点为空是正确值。
+	//
+	// ⇒ 地板翻成：**消费点为空必须是因为切换层不再是 v1 臂**。
 	if len(consumers) == 0 {
-		t.Fatal("切换层没有任何消费点 —— " +
-			"要么 admin/session_bodies_source.go 的 SwitchFunc 字段被删了，" +
-			"要么消费点检测（`fn(` 文本匹配）失效。" +
-			"两种情况下 bodies 总体都会静悄悄少掉全部消费点，而本门**仍绿**。")
+		if dbpkg.SessionBodiesSourceSQL() != dbpkg.SessionFamilyBodiesSourceSQL() {
+			t.Fatal("切换层没有消费点，**且** db.SessionBodiesSourceSQL() ≠ " +
+				"db.SessionFamilyBodiesSourceSQL() —— 切换层还在选源，消费点理应存在。")
+		}
 	}
 	var missing []string
 	for c := range consumers {
@@ -585,10 +461,7 @@ func TestV1BodiesScanIncludesSwitchConsumers(t *testing.T) {
 	t.Logf("切换层消费点 %d 个：%v", len(got), got)
 	if len(missing) > 0 {
 		t.Errorf("这些消费点不在 v1 bodies 实测总体里：%v\n"+
-			"⇒ 它们的 bodies 腿已改走切换层（默认臂=v1），却从退役证据里消失了。\n"+
-			"  scanV1BodiesReaders 末尾的「消费点并入总体」被删掉或失效了。\n"+
-			"  ⚠ 本门**本来故意红**，所以少 2 个还是少 15 个都不改退出码 —— "+
-			"这正是这道门存在的理由。", missing)
+			"⇒ 它们的 bodies 腿已改走切换层，却从退役证据里消失了。", missing)
 	}
 }
 

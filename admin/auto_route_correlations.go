@@ -37,6 +37,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	dbpkg "github.com/kaixuan/llm-gateway-go/db"
 )
 
 // AutoRouteCorrelationsResponse is the JSON wire format returned by
@@ -115,10 +117,18 @@ func (h *AutoRouteHandlers) handleAutoRouteCorrelations(w http.ResponseWriter, r
 	}
 
 	// ── By model ─────────────────────────────────────────────
-	// R46 F3: 读面 request_logs_with_current_month_without_request_class_due_at
-	// （_request_logs 侧 hot∪母表）。裸母表对最近 8h 仍在 hot 侧的 auto 流量
-	// 全盲；不能换 turns 优先的 request_logs_with_current_month——turns 段把
-	// model_chosen/strategy_used 投影为 NULL，本文件全部查询依赖这些列。
+	// ★ 2026-10-20（890 真删轮）：读面从 `request_logs_with_current_month_without_request_class_due_at`
+	// 换成**会话族原生源** db.SessionFamilyTurnsSourceSQL()（hot ∪ parent + details 特征层）。
+	//
+	// 为什么必须换：那两张包装视图**直读 v1 族**（真库实测：定义体第一行就是
+	// `FROM _request_logs_hot`），而 v1 族自 2026-10-13 停写后**恒 0 行**
+	// ⇒ 本端点此前**恒返回空**（不报错）；890 删掉 v1 族后它们会变成 **42P01**。
+	//
+	// 为什么换过去不会丢列（旧注释担心的「turns 段把 model_chosen/strategy_used
+	// 投影为 NULL」）：会话族原生源**自带 details 特征层的 LEFT JOIN**
+	// ⇒ `model_chosen` / `strategy_used` 来自 `session_turn_details*`、
+	// `task_type_chosen` 来自 `session_turns*` ⇒ 本文件依赖的列**都有值**
+	// （无 details 行的轮次这三列为 NULL，而查询本来就用 `IS NOT NULL` 过滤）。
 	byModelQuery := `
 		SELECT
 		    model_chosen,
@@ -126,7 +136,7 @@ func (h *AutoRouteHandlers) handleAutoRouteCorrelations(w http.ResponseWriter, r
 		    AVG(CASE WHEN success THEN 1.0 ELSE 0.0 END) AS success,
 		    COALESCE(AVG(latency_ms), 0)::int AS avg_latency,
 		    COALESCE(AVG(cost_usd), 0) AS avg_cost
-		FROM request_logs_with_current_month_without_request_class_due_at
+		FROM ` + dbpkg.SessionFamilyTurnsSourceSQL() + ` rl
 		WHERE is_auto_request = TRUE
 		  AND model_chosen IS NOT NULL
 		  AND ts >= NOW() - INTERVAL '1 day' * $1
@@ -147,7 +157,7 @@ func (h *AutoRouteHandlers) handleAutoRouteCorrelations(w http.ResponseWriter, r
 		    AVG(CASE WHEN success THEN 1.0 ELSE 0.0 END) AS success,
 		    COALESCE(AVG(latency_ms), 0)::int AS avg_latency,
 		    COALESCE(AVG(cost_usd), 0) AS avg_cost
-		FROM request_logs_with_current_month_without_request_class_due_at
+		FROM ` + dbpkg.SessionFamilyTurnsSourceSQL() + ` rl
 		WHERE is_auto_request = TRUE
 		  AND strategy_used IS NOT NULL
 		  AND ts >= NOW() - INTERVAL '1 day' * $1
@@ -168,7 +178,7 @@ func (h *AutoRouteHandlers) handleAutoRouteCorrelations(w http.ResponseWriter, r
 		    AVG(CASE WHEN success THEN 1.0 ELSE 0.0 END) AS success,
 		    COALESCE(AVG(latency_ms), 0)::int AS avg_latency,
 		    COALESCE(AVG(cost_usd), 0) AS avg_cost
-		FROM request_logs_with_current_month_without_request_class_due_at
+		FROM ` + dbpkg.SessionFamilyTurnsSourceSQL() + ` rl
 		WHERE is_auto_request = TRUE
 		  AND task_type_chosen IS NOT NULL
 		  AND ts >= NOW() - INTERVAL '1 day' * $1
@@ -190,7 +200,7 @@ func (h *AutoRouteHandlers) handleAutoRouteCorrelations(w http.ResponseWriter, r
 		    AVG(CASE WHEN success THEN 1.0 ELSE 0.0 END) AS success,
 		    COALESCE(AVG(latency_ms), 0)::int AS avg_latency,
 		    COALESCE(AVG(cost_usd), 0) AS avg_cost
-		FROM request_logs_with_current_month_without_request_class_due_at
+		FROM ` + dbpkg.SessionFamilyTurnsSourceSQL() + ` rl
 		WHERE is_auto_request = TRUE
 		  AND model_chosen IS NOT NULL
 		  AND task_type_chosen IS NOT NULL
@@ -243,7 +253,7 @@ func (h *AutoRouteHandlers) handleAutoRouteCorrelations(w http.ResponseWriter, r
 			        PARTITION BY task_type_chosen
 			        ORDER BY AVG(CASE WHEN success THEN 1.0 ELSE 0.0 END) DESC, AVG(latency_ms) ASC
 			    ) AS rn
-			FROM request_logs_with_current_month_without_request_class_due_at
+			FROM ` + dbpkg.SessionFamilyTurnsSourceSQL() + ` rl
 			WHERE is_auto_request = TRUE
 			  AND task_type_chosen IS NOT NULL
 			  AND model_chosen IS NOT NULL

@@ -8,11 +8,11 @@
 // live-stream fan-out made the signal even more cluster-wide.
 //
 // The corrected contract is identity-based, not timestamp-based:
-//   1. each gateway records one LOCAL, mirror-eligible terminal request_id per
-//      minute from its telemetry persisted hook;
-//   2. the horizon endpoint checks whether mature canaries exist in
-//      session_turns_hot UNION session_turns;
-//   3. another gateway's row can never satisfy this instance's request_id.
+//  1. each gateway records one LOCAL, mirror-eligible terminal request_id per
+//     minute from its telemetry persisted hook;
+//  2. the horizon endpoint checks whether mature canaries exist in
+//     session_turns_hot UNION session_turns;
+//  3. another gateway's row can never satisfy this instance's request_id.
 //
 // A bounded ten-minute ring plus a five-minute maturity delay detects a
 // continuous mirror outage without retaining per-request state or flagging the

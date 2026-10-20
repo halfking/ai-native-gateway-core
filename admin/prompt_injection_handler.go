@@ -3,6 +3,7 @@ package admin
 import (
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -333,6 +334,59 @@ type PromptInjectionRule struct {
 	UpdatedAt      string   `json:"updated_at"`
 }
 
+// PromptInjectionRulePatch 是 PUT /rules/{id} 的**部分更新**载荷。
+//
+// ★ 2026-10-20 修复：updateRule 过去把 body 解码成 PromptInjectionRule（全是值
+// 类型字段）后**无条件 SET 8 列** ⇒ 任何**部分**载荷都会把未传的字段清零。
+// 现存爆炸点不是理论上的：web/src/components/PromptInjectionConfigPanel.vue 的
+// 严重度滑杆调 updateRule(id, { severity })，对自定义规则会把 pattern/description
+// 清空、enabled 置 false、tags/examples 变空数组；对系统规则则整条 404。
+//
+// 改成指针字段后「未传（nil）」与「传零值（&false / &0 / &[]string{}）」可以区分，
+// 语义即 PATCH —— 正好也是 web/src/api/promptInjection.ts 里 UpdateRulePatch
+// 一直宣称的语义（此前只是后端没兑现）。
+type PromptInjectionRulePatch struct {
+	Pattern        *string   `json:"pattern"`
+	Description    *string   `json:"description"`
+	Severity       *int      `json:"severity"`
+	Enabled        *bool     `json:"enabled"`
+	CaseSensitive  *bool     `json:"case_sensitive"`
+	ActionOverride *string   `json:"action_override"`
+	Tags           *[]string `json:"tags"`
+	Examples       *[]string `json:"examples"`
+}
+
+// promptInjectionRuleSelectCols 是规则列表与单条读取共用的投影。
+// 抽成常量是为了让「详情」端点与「列表」端点返回**同一形状**——
+// 否则前端详情页会拿到比列表少的字段（例如 false_positive_rate 在 DB 里存在，
+// 但两个端点都没投影它；这是有意的：不在结构体里的列不进 API 契约）。
+const promptInjectionRuleSelectCols = `id, rule_name, rule_type, category, COALESCE(category_new::text, ''),
+	pattern, description, severity, enabled, case_sensitive,
+	COALESCE(is_system, true), COALESCE(action_override::text, ''),
+	COALESCE(tags, '{}'), COALESCE(examples, '{}'),
+	created_at, updated_at`
+
+// enumNullIfEmpty 把枚举列上的空串换成 NULL。
+//
+// ★ 2026-10-20 浏览器验收时实测到的真缺陷：
+// prompt_injection_rules.category_new 是 injection_category 枚举、
+// action_override 是 injection_action 枚举，**两列都允许 NULL**。
+// 但前端表单在「没选」时给的是**空串**而不是 null（新建规则的表单默认值就是
+// ""）⇒ 直接把空串塞进 SQL 会得到
+//
+//	ERROR: invalid input value for enum injection_action: "" (SQLSTATE 22P02)
+//
+// 表现是 500，而且**从 UI 新建自定义规则必失败**（每次都带上 action_override:""）。
+// 同样的坑在 updateRule 上：把动作覆盖清空再保存，同样 500。
+//
+// ⇒ 空串的语义是「不覆盖 / 没有覆盖动作」，落库必须是 NULL。
+func enumNullIfEmpty(s string) interface{} {
+	if s == "" {
+		return nil
+	}
+	return s
+}
+
 func (h *PromptInjectionHandler) handleRules(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
@@ -360,6 +414,8 @@ func (h *PromptInjectionHandler) handleRuleSubrouter(w http.ResponseWriter, r *h
 	}
 
 	switch r.Method {
+	case http.MethodGet:
+		h.getRule(w, r, parts[0])
 	case http.MethodPut:
 		h.updateRule(w, r, parts[0])
 	case http.MethodDelete:
@@ -369,6 +425,32 @@ func (h *PromptInjectionHandler) handleRuleSubrouter(w http.ResponseWriter, r *h
 	}
 }
 
+// getRule 返回单条规则的完整详情。
+//
+// 2026-10-20 新增：「点开看规则详情」需要一个**有独立 404 语义**的单条读取端点
+// —— 列表端点已经返回全部可展示字段（复用同一份投影），但「按 id 取一条」在
+// 详情弹窗场景下才是正确的契约：id 不存在时必须能区分「没有这条规则」与
+// 「规则被删了/列表缓存过期」。
+func (h *PromptInjectionHandler) getRule(w http.ResponseWriter, r *http.Request, ruleID string) {
+	row := h.pool.QueryRow(r.Context(),
+		`SELECT `+promptInjectionRuleSelectCols+` FROM prompt_injection_rules WHERE id=$1`, ruleID)
+
+	rule := PromptInjectionRule{}
+	if err := row.Scan(&rule.ID, &rule.RuleName, &rule.RuleType, &rule.Category, &rule.CategoryNew,
+		&rule.Pattern, &rule.Description, &rule.Severity, &rule.Enabled, &rule.CaseSensitive,
+		&rule.IsSystem, &rule.ActionOverride, &rule.Tags, &rule.Examples,
+		&rule.CreatedAt, &rule.UpdatedAt); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "Rule not found"})
+			return
+		}
+		writeInternalErrStr(w, "Failed to get rule", err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, rule)
+}
+
 func (h *PromptInjectionHandler) listRules(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	ruleType := q.Get("type")
@@ -376,11 +458,7 @@ func (h *PromptInjectionHandler) listRules(w http.ResponseWriter, r *http.Reques
 	enabled := q.Get("enabled")
 	search := q.Get("search")
 
-	query := `SELECT id, rule_name, rule_type, category, COALESCE(category_new::text, ''),
-		pattern, description, severity, enabled, case_sensitive,
-		COALESCE(is_system, true), COALESCE(action_override::text, ''),
-		COALESCE(tags, '{}'), COALESCE(examples, '{}'),
-		created_at, updated_at
+	query := `SELECT ` + promptInjectionRuleSelectCols + `
 		FROM prompt_injection_rules WHERE 1=1`
 	args := []interface{}{}
 	argCount := 1
@@ -455,8 +533,8 @@ func (h *PromptInjectionHandler) createRule(w http.ResponseWriter, r *http.Reque
 
 	var ruleID int
 	err := h.pool.QueryRow(r.Context(), query,
-		req.RuleName, req.RuleType, req.Category, req.CategoryNew, req.Pattern, req.Description,
-		req.Severity, req.Enabled, req.CaseSensitive, req.ActionOverride,
+		req.RuleName, req.RuleType, req.Category, enumNullIfEmpty(req.CategoryNew), req.Pattern, req.Description,
+		req.Severity, req.Enabled, req.CaseSensitive, enumNullIfEmpty(req.ActionOverride),
 		pq.Array(req.Tags), pq.Array(req.Examples),
 	).Scan(&ruleID)
 
@@ -469,22 +547,59 @@ func (h *PromptInjectionHandler) createRule(w http.ResponseWriter, r *http.Reque
 }
 
 func (h *PromptInjectionHandler) updateRule(w http.ResponseWriter, r *http.Request, ruleID string) {
-	var req PromptInjectionRule
-	if err := readJSONRequired(r, &req); err != nil {
+	// 2026-10-20：改成 PATCH 语义（指针字段 + 动态 SET）。
+	// 旧实现无条件 SET 8 列，任何部分载荷都会把未传字段清零（详见
+	// PromptInjectionRulePatch 的注释）。全量载荷仍然照旧生效。
+	var patch PromptInjectionRulePatch
+	if err := readJSONRequired(r, &patch); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Invalid request: " + err.Error()})
 		return
 	}
 
-	query := `UPDATE prompt_injection_rules SET
-		pattern=$1, description=$2, severity=$3, enabled=$4, case_sensitive=$5,
-		action_override=$6, tags=$7, examples=$8, updated_at=NOW()
-		WHERE id=$9 AND COALESCE(is_system, true) = false`
+	sets := make([]string, 0, 8)
+	args := make([]interface{}, 0, 9)
+	add := func(col string, val interface{}) {
+		args = append(args, val)
+		sets = append(sets, col+"=$"+strconv.Itoa(len(args)))
+	}
+	if patch.Pattern != nil {
+		add("pattern", *patch.Pattern)
+	}
+	if patch.Description != nil {
+		add("description", *patch.Description)
+	}
+	if patch.Severity != nil {
+		add("severity", *patch.Severity)
+	}
+	if patch.Enabled != nil {
+		add("enabled", *patch.Enabled)
+	}
+	if patch.CaseSensitive != nil {
+		add("case_sensitive", *patch.CaseSensitive)
+	}
+	if patch.ActionOverride != nil {
+		add("action_override", enumNullIfEmpty(*patch.ActionOverride))
+	}
+	if patch.Tags != nil {
+		add("tags", pq.Array(*patch.Tags))
+	}
+	if patch.Examples != nil {
+		add("examples", pq.Array(*patch.Examples))
+	}
+	if len(sets) == 0 {
+		// 空补丁：旧实现会把整行清零（pattern=''、enabled=false…）。现在明确拒绝。
+		writeJSON(w, http.StatusBadRequest, map[string]string{
+			"error": "no updatable fields supplied (expected at least one of: pattern, description, severity, enabled, case_sensitive, action_override, tags, examples)",
+		})
+		return
+	}
 
-	result, err := h.pool.Exec(r.Context(), query,
-		req.Pattern, req.Description, req.Severity, req.Enabled, req.CaseSensitive,
-		req.ActionOverride, pq.Array(req.Tags), pq.Array(req.Examples), ruleID,
-	)
+	args = append(args, ruleID)
+	query := `UPDATE prompt_injection_rules SET ` + strings.Join(sets, ", ") +
+		`, updated_at=NOW() WHERE id=$` + strconv.Itoa(len(args)) +
+		` AND COALESCE(is_system, true) = false`
 
+	result, err := h.pool.Exec(r.Context(), query, args...)
 	if err != nil {
 		writeInternalErrStr(w, "Failed to update rule", err)
 		return

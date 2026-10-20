@@ -182,7 +182,11 @@ func (h *RequestTraceHandler) loadTrace(ctx context.Context, requestID string) (
 func (h *RequestTraceHandler) requestTraceState(ctx context.Context, requestID string) (traceLoadState, error) {
 	var status string
 	var traceEvents []byte
-	// 与 LoadFromPG 一致：session 父行（即使无事件）优先，legacy 仅服务历史。
+	// 与 LoadFromPG 一致：session 父行（即使无事件）优先。
+	//
+	// 2026-10-20（迁移 890）：v1 族整体退役 ⇒ 原来的 legacy 兜底腿
+	// （v1 hot ∪ v1 母表）删除。会话族是唯一事实源，legacy 轮次随 v1 表
+	// 一起消失，找不到就是找不到（traceStateMissing），不再去别处找。
 	err := h.db.QueryRow(ctx, `
 		SELECT COALESCE(request_status, ''), trace_events FROM (
 			SELECT request_status, trace_events, ts, 0 AS priority FROM session_turns_hot WHERE request_id = $1
@@ -190,15 +194,6 @@ func (h *RequestTraceHandler) requestTraceState(ctx context.Context, requestID s
 			SELECT request_status, trace_events, ts, 1 AS priority FROM session_turns WHERE request_id = $1
 		) t ORDER BY priority, ts DESC NULLS LAST LIMIT 1
 	`, requestID).Scan(&status, &traceEvents)
-	if errors.Is(err, pgx.ErrNoRows) {
-		err = h.db.QueryRow(ctx, `
-			SELECT COALESCE(request_status, ''), trace_events FROM (
-				SELECT request_status, trace_events, ts FROM _request_logs_hot WHERE request_id = $1
-				UNION ALL
-				SELECT request_status, trace_events, ts FROM _request_logs WHERE request_id = $1
-			) t ORDER BY ts DESC NULLS LAST LIMIT 1
-		`, requestID).Scan(&status, &traceEvents)
-	}
 	if errors.Is(err, pgx.ErrNoRows) {
 		return traceStateMissing, nil
 	}

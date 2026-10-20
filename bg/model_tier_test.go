@@ -141,22 +141,39 @@ func TestModelTier_LoopRefreshUsesParentContext(t *testing.T) {
 // names. It does not execute the query (that would need a DB) but it asserts
 // the literal strings so a regression like "model" (a nonexistent column) is
 // caught at unit-test time instead of at the 10min refresh.
+//
+// ★ 2026-10-20（迁移 890，v1 族退役）：读源从 v1 热表换成**会话族热腿**
+// （v1 族已 DROP，提及即整条语句 42P01）；模型名口径从
+// COALESCE(outbound_model, client_model) 换成会话族的 raw_model_name —— 它
+// 就是那个 COALESCE 的同义列（取值口径登记见 internal/sessionv2mirror/
+// s1a_fields.go）。
 func TestModelTier_SQLReferencesActualColumns(t *testing.T) {
 	// We can't import the function body directly; instead we assert the source
 	// text via string-grep on the SQL fragments we know are inside refresh().
 	// The test fails if the developer accidentally references a missing column.
 	mustContain := []string{
-		"COALESCE(rl.outbound_model, rl.client_model)", // real model-name column
-		"FROM _request_logs_hot rl",                    // table exists
-		"WHERE rl.success",                             // column exists
-		"WHERE tenant_id = $1",                         // tenant scope (audit #3)
-		"GROUP BY raw_model",                           // dedup (audit #11)
+		"rl.raw_model_name", // real model-name column (session family)
+		"WHERE rl.success",  // column exists
+		"WHERE tenant_id = $1",
+		"GROUP BY rl.raw_model_name", // dedup (audit #11)
 	}
 	src := sourceFromFile(t, "model_tier.go")
 	for _, fragment := range mustContain {
 		assert.True(t, strings.Contains(src, fragment),
 			"model_tier.go must contain %q (audit guard)", fragment)
 	}
+	// 源必须是会话族热腿。
+	// ⚠ 用正则而不是子串：`+` 两侧的空格是排版细节（`FROM `+db.X()+` rl` 与
+	// `FROM ` + db.X() + ` rl` 都合法），子串匹配会随排版变化假红。
+	sessionSourceRE := regexp.MustCompile("FROM\\s+`\\s*\\+\\s*db\\.SessionFamilyTurnsHotSourceSQL\\(\\)\\s*\\+\\s*`\\s+rl")
+	assert.True(t, sessionSourceRE.MatchString(src),
+		"model_tier.go must read the session-family hot leg (audit guard)")
+	// 负向断言：不得再引用退役的 v1 族（迁移 890 已 DROP ⇒ 整条语句 42P01）。
+	// ⚠ 正向对照：上面那条会话族源断言 —— 只删 v1 不加会话族会被抓住。
+	// ⚠ 边界：文件里的历史注释提到过 "_request_logs_hot"（无 FROM），
+	// 所以 needle 必须带 "FROM " 才不会踩到注释。
+	assert.False(t, strings.Contains(src, "FROM _request_logs_hot"),
+		"model_tier.go must not read the retired v1 family (migration 890 dropped it)")
 	// Guard: must NOT reference the bare `model` column from request_logs_hot.
 	// Use a tight pattern: a SELECT/GROUP BY/ORDER BY column reference, not just
 	// any substring (avoid false-positive matches like `raw_model`, `client_model`,
@@ -164,7 +181,7 @@ func TestModelTier_SQLReferencesActualColumns(t *testing.T) {
 	// it's not preceded by `raw_` or any column prefix.
 	notAllowed := regexp.MustCompile(`(?im)(?:select|where|group\s+by|order\s+by)\s+(?:\w+\.)?model\b`)
 	assert.False(t, notAllowed.MatchString(src),
-		"_request_logs_hot has no `model` column; use COALESCE(outbound_model,client_model)")
+		"the session family has no bare `model` column; use rl.raw_model_name")
 
 	// Tier-aware priority must return the featured default when the global
 	// tier recognises the model. We restore the previous global state on exit.
