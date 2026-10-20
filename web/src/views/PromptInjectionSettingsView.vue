@@ -307,8 +307,11 @@
                 <el-switch v-model="row.enabled" @change="toggleRule(row)" />
               </template>
             </el-table-column>
-            <el-table-column :label="t('sessions.promptInjectionFull.colActions')" width="120" fixed="right">
+            <el-table-column :label="t('sessions.promptInjectionFull.colActions')" width="200" fixed="right">
               <template #default="{ row }">
+                <el-button size="small" type="primary" link @click="openRuleDetail(row)">
+                  {{ t('sessions.promptInjectionFull.viewDetail') }}
+                </el-button>
                 <el-button v-if="!row.is_system" size="small" type="danger" @click="deleteRule(row)">{{ t('sessions.promptInjectionFull.delete') }}</el-button>
                 <span v-else class="meta">{{ t('sessions.promptInjectionFull.lockedHint') }}</span>
               </template>
@@ -666,6 +669,90 @@
       </template>
     </AppModal>
 
+    <AppModal v-model="showRuleDetail" :title="t('sessions.promptInjectionFull.ruleDetailTitle')" size="md">
+      <div v-if="ruleDetailLoading" class="state">{{ t('sessions.promptInjectionFull.loading') }}</div>
+      <el-form v-else-if="ruleDetail" :model="ruleDetailForm" label-width="140px">
+        <!-- Read-only identity block: the backend treats these as immutable
+             (rule_name / rule_type / category are not in the PUT SET list, and
+             is_system is server-managed), so the detail view shows them
+             instead of offering an input that would silently do nothing. -->
+        <el-form-item :label="t('sessions.promptInjectionFull.colRuleName')">
+          <span>{{ ruleDetail.rule_name }}</span>
+        </el-form-item>
+        <el-form-item :label="t('sessions.promptInjectionFull.colType')">
+          <span>{{ ruleDetail.rule_type }}</span>
+        </el-form-item>
+        <el-form-item :label="t('sessions.promptInjectionFull.colCategory')">
+          <span>{{ getCategoryLabel(ruleDetail.category_new || ruleDetail.category) }}</span>
+        </el-form-item>
+        <el-form-item :label="t('sessions.promptInjectionFull.colTime')">
+          <span>{{ ruleDetail.created_at }}</span>
+        </el-form-item>
+        <el-form-item :label="t('sessions.promptInjectionFull.fieldUpdatedAt')">
+          <span>{{ ruleDetail.updated_at }}</span>
+        </el-form-item>
+        <el-form-item v-if="ruleDetail.is_system" :label="t('sessions.promptInjectionFull.colType')">
+          <span class="meta">{{ t('sessions.promptInjectionFull.systemRuleReadOnly') }}</span>
+        </el-form-item>
+
+        <el-form-item :label="t('sessions.promptInjectionFull.colPattern')">
+          <el-input
+            v-model="ruleDetailForm.pattern"
+            type="textarea"
+            :rows="4"
+            :disabled="ruleDetail.is_system"
+            :placeholder="t('sessions.promptInjectionFull.patternPlaceholder')"
+          />
+        </el-form-item>
+        <el-form-item :label="t('sessions.promptInjectionFull.colDescription')">
+          <el-input
+            v-model="ruleDetailForm.description"
+            :disabled="ruleDetail.is_system"
+            :placeholder="t('sessions.promptInjectionFull.ruleDescPlaceholder')"
+          />
+        </el-form-item>
+        <el-form-item :label="t('sessions.promptInjectionFull.colSeverity')">
+          <el-slider v-model="ruleDetailForm.severity" :min="1" :max="10" show-stops :disabled="ruleDetail.is_system" />
+        </el-form-item>
+        <el-form-item :label="t('sessions.promptInjectionFull.colCaseSensitive')">
+          <el-switch v-model="ruleDetailForm.case_sensitive" :disabled="ruleDetail.is_system" />
+        </el-form-item>
+        <el-form-item :label="t('sessions.promptInjectionFull.fieldActionOverride')">
+          <el-select v-model="ruleDetailForm.action_override" :disabled="ruleDetail.is_system">
+            <el-option :label="t('sessions.promptInjectionFull.actionOverrideInherit')" value="" />
+            <el-option v-for="(label, value) in ACTION_LABELS" :key="value" :label="label" :value="value" />
+          </el-select>
+        </el-form-item>
+        <el-form-item :label="t('sessions.promptInjectionFull.fieldTags')">
+          <el-input
+            v-model="ruleDetailForm.tags_text"
+            :disabled="ruleDetail.is_system"
+            :placeholder="t('sessions.promptInjectionFull.tagsPlaceholder')"
+          />
+        </el-form-item>
+        <el-form-item :label="t('sessions.promptInjectionFull.fieldExamples')">
+          <el-input
+            v-model="ruleDetailForm.examples_text"
+            type="textarea"
+            :rows="3"
+            :disabled="ruleDetail.is_system"
+            :placeholder="t('sessions.promptInjectionFull.examplesPlaceholder')"
+          />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="showRuleDetail = false">{{ t('sessions.promptInjectionFull.cancel') }}</el-button>
+        <el-button
+          v-if="ruleDetail && !ruleDetail.is_system"
+          type="primary"
+          :disabled="ruleDetailSaving"
+          @click="saveRuleDetail"
+        >
+          {{ t('sessions.promptInjectionFull.save') }}
+        </el-button>
+      </template>
+    </AppModal>
+
     <AppModal v-model="showAddCanary" :title="t('sessions.promptInjectionFull.createTokenTitle')" size="sm">
       <el-form :model="newCanary" label-width="140px">
         <el-form-item :label="t('sessions.promptInjectionFull.colName')">
@@ -718,12 +805,15 @@ import {
 import {
   CATEGORIES, getCategoryMeta, getSeverityTagType,
   getPolicy, listRules, toggleRule as apiToggleRule, updatePolicy, updateRule,
+  getRule as apiGetRule, createRule as apiCreateRule, deleteRule as apiDeleteRule,
   listEngines, getEngine, createEngine as apiCreateEngine, updateEngine as apiUpdateEngine,
   removeEngine, listCanaryTokens, createCanaryToken as apiCreateCanaryToken,
   updateCanaryToken as apiUpdateCanaryToken, removeCanaryToken,
   getSeverityMatrix, updateSeverityMatrix,
   listStats, listDetections,
+  ACTION_LABELS,
   type PromptInjectionRule,
+  type UpdateRulePatch,
 } from '../api/promptInjection'
 import PromptInjectionConfigPanel from '../components/PromptInjectionConfigPanel.vue'
 
@@ -855,7 +945,6 @@ const loadAvailableModels = async () => {
     }))
   } catch { availableModels.value = [] }
 }
-import { req } from '../api/_core'
 import { listModels } from '../api/models'
 import EmptyState from '../components/EmptyState.vue'
 
@@ -977,7 +1066,7 @@ const toggleRule = async (rule: any) => {
 }
 const createRule = async () => {
   try {
-    await req('POST', '/api/admin/prompt-injection/rules', newRule as any)
+    await apiCreateRule(newRule as any)
     ElMessage.success(t('sessions.promptInjectionFull.ruleCreated'))
     showAddRule.value = false
     Object.assign(newRule, { rule_name: '', rule_type: 'basic', category_new: '', pattern: '', description: '', severity: 5, case_sensitive: false, enabled: true })
@@ -989,11 +1078,108 @@ const createRule = async () => {
 const deleteRule = async (rule: any) => {
   if (!(await confirmDialog(t('sessions.promptInjectionFull.confirmDelete'), { title: t('sessions.promptInjectionFull.confirmTitle') }))) return
   try {
-    await req('DELETE', `/api/admin/prompt-injection/rules/${rule.id}`)
+    await apiDeleteRule(rule.id)
     ElMessage.success(t('sessions.promptInjectionFull.ruleDeleted'))
     loadRules()
   } catch (e: any) {
     ElMessage.error(t('sessions.promptInjectionFull.deleteFailed', { msg: e?.message || '' }))
+  }
+}
+
+// ───── Rule detail: view / edit / save ─────
+//
+// 2026-10-20: the rules tab had no detail affordance at all — the only
+// in-row write was the enabled switch, and the only other action was delete.
+// The owner asked for「点击检查规则详情并修改保存」, so the detail view is the
+// place where a rule's pattern, severity, action override, tags and examples
+// can be inspected and edited.
+//
+// Two backend facts drive the shape of this code:
+//   1. GET /rules/{id} now exists (it used to answer 405) so the detail view
+//      can re-read by id and get a real 404 instead of rendering a stale row.
+//   2. PUT /rules/{id} is now a genuine PATCH (pointer fields, dynamic SET),
+//      so sending only the changed fields is correct AND safe — before the
+//      fix, a partial body silently blanked the other seven columns.
+const showRuleDetail = ref(false)
+const ruleDetailLoading = ref(false)
+const ruleDetailSaving = ref(false)
+const ruleDetail = ref<PromptInjectionRule | null>(null)
+const ruleDetailForm = reactive({
+  pattern: '',
+  description: '',
+  severity: 5,
+  case_sensitive: false,
+  action_override: '',
+  tags_text: '',
+  examples_text: '',
+})
+
+// splitList turns the free-text form fields back into the array shape the API
+// expects. Blank lines are dropped so an empty textarea means "no entries"
+// rather than one empty string.
+function splitList(text: string): string[] {
+  return (text || '')
+    .split(/[\n,]/)
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0)
+}
+
+// 行类型与 el-table 的槽签名一致（element-plus 的 DefaultRow =
+// Record<PropertyKey, any>）；写窄类型会与 el-table-column 作用域槽的
+// row 类型对不上（vue-tsc 报 DefaultRow 不能赋给 {id: number|string}）。
+const openRuleDetail = async (rule: Record<PropertyKey, any>) => {
+  showRuleDetail.value = true
+  ruleDetailLoading.value = true
+  try {
+    const fresh = await apiGetRule(rule.id)
+    ruleDetail.value = fresh
+    Object.assign(ruleDetailForm, {
+      pattern: fresh.pattern || '',
+      description: fresh.description || '',
+      severity: fresh.severity || 5,
+      case_sensitive: !!fresh.case_sensitive,
+      action_override: fresh.action_override || '',
+      tags_text: (fresh.tags || []).join(', '),
+      examples_text: (fresh.examples || []).join('\n'),
+    })
+  } catch (e: any) {
+    ElMessage.error(t('sessions.promptInjectionFull.loadRulesFailed', { msg: e?.message || '' }))
+    showRuleDetail.value = false
+    ruleDetail.value = null
+  } finally {
+    ruleDetailLoading.value = false
+  }
+}
+
+const saveRuleDetail = async () => {
+  const current = ruleDetail.value
+  if (!current) return
+  const patch: UpdateRulePatch = {}
+  if (ruleDetailForm.pattern !== (current.pattern || '')) patch.pattern = ruleDetailForm.pattern
+  if (ruleDetailForm.description !== (current.description || '')) patch.description = ruleDetailForm.description
+  if (ruleDetailForm.severity !== (current.severity || 5)) patch.severity = ruleDetailForm.severity
+  if (ruleDetailForm.case_sensitive !== !!current.case_sensitive) patch.case_sensitive = ruleDetailForm.case_sensitive
+  if (ruleDetailForm.action_override !== (current.action_override || '')) patch.action_override = ruleDetailForm.action_override
+  const nextTags = splitList(ruleDetailForm.tags_text)
+  if (nextTags.join(' ') !== (current.tags || []).join(' ')) patch.tags = nextTags
+  const nextExamples = splitList(ruleDetailForm.examples_text)
+  if (nextExamples.join(' ') !== (current.examples || []).join(' ')) patch.examples = nextExamples
+
+  if (Object.keys(patch).length === 0) {
+    ElMessage.info(t('sessions.promptInjectionFull.ruleDetailNoChange'))
+    return
+  }
+
+  ruleDetailSaving.value = true
+  try {
+    await updateRule(current.id, patch)
+    ElMessage.success(t('sessions.promptInjectionFull.ruleUpdated'))
+    showRuleDetail.value = false
+    loadRules()
+  } catch (e: any) {
+    ElMessage.error(t('sessions.promptInjectionFull.saveFailed', { msg: e?.message || '' }))
+  } finally {
+    ruleDetailSaving.value = false
   }
 }
 

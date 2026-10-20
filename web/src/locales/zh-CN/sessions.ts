@@ -777,6 +777,17 @@ export default {
 
     // rules
     rulesTitle: '检测规则库',
+    viewDetail: '查看详情',
+    ruleDetailTitle: '规则详情',
+    fieldActionOverride: '动作覆盖',
+    fieldTags: '标签',
+    fieldExamples: '示例',
+    fieldUpdatedAt: '更新时间',
+    systemRuleReadOnly: '系统规则为只读，仅可启用或停用',
+    actionOverrideInherit: '继承策略',
+    tagsPlaceholder: '用逗号分隔',
+    examplesPlaceholder: '每行一个示例',
+    ruleDetailNoChange: '规则没有改动',
     searchPlaceholder: '搜索规则名称或描述',
     addRule: '添加规则',
     addRuleTitle: '添加检测规则',

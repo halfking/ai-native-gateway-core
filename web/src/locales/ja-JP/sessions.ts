@@ -553,6 +553,17 @@ export default {
     flowApproveDesc: "承認 — 一時停止して人間レビュー",
     flowBlockDesc: "ブロック — 即時ブロック",
     rulesTitle: "検出ルール",
+
+
+
+
+
+
+
+
+
+
+
     searchPlaceholder: "ルール名または説明を検索",
     addRule: "ルール追加",
     addRuleTitle: "検出ルールを追加",
@@ -1321,6 +1332,17 @@ export default {
 
     // rules
     rulesTitle: '检测规则库',
+    viewDetail: '詳細を表示',
+    ruleDetailTitle: 'ルール詳細',
+    fieldActionOverride: 'アクション上書き',
+    fieldTags: 'タグ',
+    fieldExamples: '例',
+    fieldUpdatedAt: '更新日時',
+    systemRuleReadOnly: 'システムルールは読み取り専用です。有効化と無効化のみ可能です',
+    actionOverrideInherit: 'ポリシーから継承',
+    tagsPlaceholder: 'カンマ区切り',
+    examplesPlaceholder: '1 行に 1 つの例',
+    ruleDetailNoChange: 'ルールに変更はありません',
     searchPlaceholder: '搜索规则名称或描述',
     addRule: '添加规则',
     addRuleTitle: '添加检测规则',

@@ -36,6 +36,30 @@ package sanitizerules
 //
 // 未在清单里的规则**不允许**硬阻断；被允许的规则保持它原有的 action。
 //
+// ## egress scope 的额外限制（r1039，2026-10-20）
+//
+// egress scope **只接受逐条的内建规则 ID**（`builtin.` 前缀）：
+//
+//	egress:*                  → 拒绝
+//	egress:secret.*           → 拒绝（不接受前缀族）
+//	egress:pii.email.egress   → 拒绝（PII/secret 分类器不是外传判定）
+//	egress:builtin.egress_sink → 接受
+//
+// 成因（实测）：`egress:*` 会把 PII/secret 分类器的 .egress 副本一并变成
+// 阻断规则，而那些规则的语义是**分类与遮蔽**、不是「外传判定」。于是
+//
+//	ssh deploy@prod.example.com 'kubectl get pods'   → 拦
+//	scp file.txt backup@files.example.com:/tmp/x     → 拦
+//	echo contact ops@example.com                     → 拦
+//	一个手机号 / 一个身份证 / `发货地址 建国路88号`     → 拦
+//
+// 全部是**正常操作**被拦——正是 owner 说的「不要放大范围，导致正常的工具
+// 执行或脚本执行失败」。⇒ egress 只能逐条点名内建规则。
+//
+// 限制的**执行点是解析层**（ParseHardBlockAllows / LoadHardBlockAllowsFromEnv），
+// 也就是运维唯一能碰的那张表；程序内调用 SetHardBlockAllows 不受此限
+// （测试基线要能表达「全部可阻断」）。
+//
 // ## 环境变量的三条语义
 //
 //	未设置 → 出厂默认（只有 input 允许硬阻断）
@@ -121,6 +145,33 @@ func HardBlockAllowed(scope, id string) bool {
 	return false
 }
 
+// EgressScopeRulePrefix 是 egress scope 允许的规则 ID 前缀。
+//
+// 只有内建规则（builtin.*）能被选成 egress 的硬阻断规则：它们是
+// 「外传目的地 / 凭据字段 / 方向判定」这一族；PII 与 secret 分类器的
+// .egress 副本（pii.email.egress / secret.password.egress …）语义是
+// **分类与遮蔽**，把它们当成外传判定会把正常工具调用整条掐断。
+const EgressScopeRulePrefix = "builtin."
+
+// ValidateHardBlockAllow 报告一条清单项是否合规。
+//
+// egress scope 的限制在这里（r1039）：只接受逐条的内建规则 ID。
+// 解析层与将来的管理面都走这一个入口，避免两处口径漂移。
+func ValidateHardBlockAllow(scope, rule string) error {
+	if scope != "egress" {
+		return nil
+	}
+	switch {
+	case rule == "*":
+		return fmt.Errorf("egress scope 不接受通配 %q：会把 PII/secret 分类器变成阻断规则", rule)
+	case strings.HasSuffix(rule, ".*"):
+		return fmt.Errorf("egress scope 只接受逐条规则 ID，不接受前缀族 %q", rule)
+	case !strings.HasPrefix(rule, EgressScopeRulePrefix):
+		return fmt.Errorf("egress scope 只接受 %s 前缀的内建规则，%q 是分类器规则", EgressScopeRulePrefix, rule)
+	}
+	return nil
+}
+
 // ParseHardBlockAllows 解析 `scope:rule` 列表。
 func ParseHardBlockAllows(raw string) ([]HardBlockAllow, error) {
 	var out []HardBlockAllow
@@ -142,6 +193,9 @@ func ParseHardBlockAllows(raw string) ([]HardBlockAllow, error) {
 		}
 		if rule == "" {
 			return nil, fmt.Errorf("hard block allow %q: empty rule", item)
+		}
+		if err := ValidateHardBlockAllow(scope, rule); err != nil {
+			return nil, fmt.Errorf("hard block allow %q: %w", item, err)
 		}
 		out = append(out, HardBlockAllow{Scope: scope, Rule: rule})
 	}

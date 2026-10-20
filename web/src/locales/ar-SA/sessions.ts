@@ -553,6 +553,17 @@ export default {
     flowApproveDesc: "موافقة — إيقاف للمراجعة",
     flowBlockDesc: "حظر — حظر فوري",
     rulesTitle: "قواعد الكشف",
+
+
+
+
+
+
+
+
+
+
+
     searchPlaceholder: "ابحث في القواعد",
     addRule: "إضافة قاعدة",
     addRuleTitle: "إضافة قاعدة",
@@ -1305,6 +1316,17 @@ export default {
     flowApproveDesc: 'Approve — pause for human review',
     flowBlockDesc: 'Block — block immediately and log',
     rulesTitle: 'Detection Rules',
+    viewDetail: 'عرض التفاصيل',
+    ruleDetailTitle: 'تفاصيل القاعدة',
+    fieldActionOverride: 'تجاوز الإجراء',
+    fieldTags: 'الوسوم',
+    fieldExamples: 'الأمثلة',
+    fieldUpdatedAt: 'وقت التحديث',
+    systemRuleReadOnly: 'قواعد النظام للقراءة فقط؛ يُسمح فقط بتفعيلها أو تعطيلها',
+    actionOverrideInherit: 'الوراثة من السياسة',
+    tagsPlaceholder: 'مفصولة بفواصل',
+    examplesPlaceholder: 'مثال واحد في كل سطر',
+    ruleDetailNoChange: 'لم تتغير القاعدة',
     searchPlaceholder: 'Search rule name or description',
     addRule: 'Add Rule',
     addRuleTitle: 'Add Detection Rule',

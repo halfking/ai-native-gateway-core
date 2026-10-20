@@ -553,6 +553,17 @@ export default {
     flowApproveDesc: "Genehmigen — pausieren für menschliche Prüfung",
     flowBlockDesc: "Blockieren — sofort blocken",
     rulesTitle: "Erkennungsregeln",
+
+
+
+
+
+
+
+
+
+
+
     searchPlaceholder: "Regelname oder Beschreibung suchen",
     addRule: "Regel hinzufügen",
     addRuleTitle: "Erkennungsregel hinzufügen",
@@ -1305,6 +1316,17 @@ export default {
     flowApproveDesc: 'Approve — pause for human review',
     flowBlockDesc: 'Block — block immediately and log',
     rulesTitle: 'Detection Rules',
+    viewDetail: 'Details anzeigen',
+    ruleDetailTitle: 'Regeldetails',
+    fieldActionOverride: 'Aktion überschreiben',
+    fieldTags: 'Schlagwörter',
+    fieldExamples: 'Beispiele',
+    fieldUpdatedAt: 'Aktualisiert am',
+    systemRuleReadOnly: 'Systemregeln sind schreibgeschützt; erlaubt sind nur Aktivieren und Deaktivieren',
+    actionOverrideInherit: 'Von der Richtlinie übernehmen',
+    tagsPlaceholder: 'Durch Kommas getrennt',
+    examplesPlaceholder: 'Ein Beispiel pro Zeile',
+    ruleDetailNoChange: 'Die Regel wurde nicht geändert',
     searchPlaceholder: 'Search rule name or description',
     addRule: 'Add Rule',
     addRuleTitle: 'Add Detection Rule',

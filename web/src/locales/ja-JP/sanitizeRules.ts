@@ -21,6 +21,8 @@ export default {
   pattern: "RE2 式",
   group: "キャプチャグループ",
   scopes: "適用段階",
+  perMode: "フェーズ別の有効化",
+  perModeHint: "チェック＝そのフェーズでルールが有効、未チェック＝そのフェーズで停止します。「有効」列はマスタースイッチです。",
   action: "動作",
   priority: "優先度",
   tenant: "テナント（空欄はすべて）",

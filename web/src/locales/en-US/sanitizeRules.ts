@@ -21,6 +21,8 @@ export default {
   pattern: "RE2 expression",
   group: "Capture group",
   scopes: "Stages",
+  perMode: "Enable per phase",
+  perModeHint: "Checked = the rule is active in that phase; cleared = the rule is stopped for that phase. The \"Enabled\" column is the master switch.",
   action: "Action",
   priority: "Priority",
   tenant: "Tenant (empty = all)",
