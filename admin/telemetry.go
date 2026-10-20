@@ -351,9 +351,9 @@ func (t *telemetryIngester) persistDecisionLog(ctx context.Context, e *decisionL
 
 // requestLogsWriteEnabled 报告 _request_logs 宽表家族（_request_logs_hot 主行 +
 // _request_logs_bodies_hot 正文）当前是否允许写入 —— S4 停写 gate，键
-// storage.request_logs_write_enabled（默认 true = 维持现状双写，HotReload
-// 即时生效）。与 telemetry 包的 requestLogsWriteEnabled()、Lite sink 同一键、
-// 同一默认。
+// storage.request_logs_write_enabled（★ **代码默认 = false** ⇒ 未显式配置
+// 即**不双写**；HotReload 即时生效）。与 telemetry 包的 requestLogsWriteEnabled()、
+// Lite sink 同一键、同一默认。
 //
 // 2026-10-01 审计修正：F5 接线时把 S4 门内联成 settings.GetPlatformBool 的
 // 一处字面量，镜像门又需要判同一个键。抽成本 helper 是为了**两处判定与键名
