@@ -37530,6 +37530,32 @@ PG 日志口径 **11,042.1 s / 2 天 = 5,521 s/day ≈ 1.53 h/day**（只含 >1s
 
 #### §143.26.3.1 被 `statement timeout` 杀的语句（2 天 349 次，top 指纹）
 
+> **订正横幅十七（2026-10-21，§143.36 就地订正 §143.26.3 / §143.26.8 / §143.29 里的
+> 「外传守卫（请求热路径）」判词）**
+>
+> ★★★★★ **本节上面的「外传守卫（**请求热路径**）」这个判词已被生产只读归因【证伪】。**
+> - ⇒ ⇒ ★★★★ **归属**：该语句 = 仓内 `admin/dashboard_board_fallback.go` 的
+>   `fillOverviewCountsFromLogs`（**看板降级读面**：活跃模型数 / 活跃供应商数），
+>   **逐字同构**（骨架序列 21,135 字符逐字相等 + 结构计数全等）⇒ **不在请求热路径上**。
+> - ⇒ ⇒ ★★★ **它也不是「守卫」**：那个名字来自语句里
+>   `COUNT(DISTINCT client_model/outbound_model)` 的字面（哪些模型被外发），
+>   但它**没有任何拦截/守卫语义**，只是一张看板上的计数。
+> - ⇒ ⇒ ★★★★ **根因（实测）**：**不是「投影太宽」，而是「同一个派生表被独立扫描了两遍」**
+>   （顶层 2 个标量子查询 ⇒ 一次调用 4 次会话族扫描）
+>   ⇒ ★★ **把 118 列裁成 9 列零收益**（100.0% / 100.9%，planner 已裁列）⇒ **那条路已排除**。
+> - ⇒ ⇒ ★★★★ **修法 = 改单遍**（零语义风险：`COUNT(DISTINCT)` 忽略 NULL ⇒
+>   尾臂 `IS NOT NULL` 是 no-op ⇒ **逐值**相等；生产实测 30 天窗
+>   **2,827,731 块 / 37,328 ms → 1,426,254 块 / 4,587 ms** ⇒ buffers **50.4%**、
+>   exec **−87.7%**）⇒ **已仓内落地**（`admin/dashboard_board_fallback.go` + 6 道新门），
+>   **对生产写入 = 0、未部署**。
+> - ⇒ ⇒ ★★★ **「2 天 69 次被 `statement timeout` 杀」的物理原因已找到**：
+>   30 天窗上它**实测 37.3 s** ⇒ **它本来就跑不完 30 s**（不是「请求热路径敏感」）。
+> - ⇒ ⇒ ★★ **对优先级的影响**：「因为在请求热路径上所以更敏感」这条理由**不成立**；
+>   但 ★ **P12 仍值得做**（它仍是 §143.26.3 的第 2 名超时被杀者，且改法已就绪）。
+> - ⇒ ⇒ ★★ **完整记录见 §143.36**（含 A/B 纪律遵守情况与门的判据口径）。
+>
+> —— **原文保留在上方，不删改。**
+
 | # | 指纹（截断） | 次数 | 归属（仓内） |
 |---:|---|---:|---|
 | 1 | `WITH latest AS ( SELECT f.* FROM usage_facts f JOIN stats_event_dedup d …` → `INSERT INTO stats_usage_daily` | **90** | `domains/stats/daily_monthly_rollup.go:198`（`dailyInsertSQL`） |
@@ -39916,3 +39942,238 @@ GOCACHE=/tmp/gocache-p1437 go test ./scripts/ursmcheck/ -run 'TestSection14335' 
   ⇒ postflight：门绿 + LESSONS.md **逐字还原**（md5 校验）。
   ⇒ ★ P2 是**阳性对照**（若 P2 变红 ⇒ 说明口径没改对）；P1 是**守卫力对照**
   （若 P1 变绿 ⇒ 说明门被改成了恒绿门）。
+
+---
+
+## §143.36 ★★★★★ P12「外传守卫」的生产只读归因 ⇒ **归属订正** + **根因实测** + **仓内修法**
+
+> **本节对生产的写入 = 0**（全部只读：pg_stat_statements / pg_class / pg_index /
+> pg_stat_statements_info / EXPLAIN（不带 ANALYZE）与 EXPLAIN (ANALYZE)（只对 SELECT，
+> 护栏放行且 SELECT 不写库））。
+> **本节未改任何生产对象、未改生产脚本、未改生产配置。**
+
+### §143.36.0 本节一句话
+
+★★ **「外传守卫（请求热路径）」这个既有判词被证伪** ⇒ 它其实是
+**看板降级读面** `admin/dashboard_board_fallback.go` 的 `fillOverviewCountsFromLogs`；
+★★★ **根因不是「投影太宽」，而是「同一个派生表被独立扫描了两遍」** ⇒
+**修法 = 改成单遍**（零语义风险、逐值等价、生产实测 buffers **恰好减半**）⇒ **已仓内落地**。
+
+### §143.36.1 起点：既有判词与它要修的东西
+
+§143.26.3（第 2 名）与 §143.26.8（P6）、§143.29（P12）都把这条语句记作
+**「外传守卫（请求热路径）」**，并据此把它排到结构性成本的**第 2 位**。
+§143.29.3 的读数是：
+
+| 指标 | 读数 |
+|---|---|
+| calls | 332（§143.29 口径）/ **342 + 68**（本节实测，见 §143.36.2） |
+| 累计物理读 | **18,876.9 MB**（巡检之后第 2 名） |
+| 每次物理读 | 56.8 MB（7,065 块/次） |
+| 均时 / max | 1,862 ms / **29,524 ms**（撞 30 s `statement_timeout`） |
+| 被杀 | §143.26.3 记「2 天 69 次」 |
+
+### §143.36.2 ★★ 先证「前提漂移」不成立（这是本轮的第一道门）
+
+§143.35 的通用式：★ **当「读数变慢」时，先查它是不是「前提漂移」** ——
+本条的待验前提是「迁移 890 退役了 v1 `request_logs` 族 ⇒ 若该守卫读 v1 族，
+它现在应当**报错**而不是变慢」。
+
+**实测（生产只读）**：
+
+| queryid | calls | mean | max | 物理读 | 形态 |
+|---|---|---|---|---|---|
+| `8961579589194073112` | **342** | 1,818.2 ms | 29,524.4 ms | 18,876.9 MB / **7,065 块/次** | 顶层 2 个标量子查询；**有** `tenant_id` 过滤 |
+| `395297407534424939` | **68** | 6,996.8 ms | 29,577.5 ms | 3,492.6 MB / 6,574 块/次 | 顶层 2 个标量子查询；**无** `tenant_id` 过滤 |
+
+⇒ ⇒ ★★★ **前提漂移不成立**：该语句**活着**（342 + 68 = 410 次 / 2 天），
+且**读的不是 v1 族** —— 它的 FROM 是 `public.session_turns` ∪ `public.session_turns_hot`
+（**v2 会话族**）+ `session_turn_details` LEFT JOIN。
+
+⇒ ⇒ ★ **统计窗口**：`pg_stat_statements_info.stats_reset = 2026-10-18 22:03:37+08`
+⇒ 本节所有读数覆盖 **2 天 00:29:31**。
+
+### §143.36.3 ★★★★ 归属锁定：**逐字同构**，不是「上下文命中」
+
+§143.26.0 第 1 条已记教训：★ **「上下文命中」不是归属判定**。
+本节因此取**生产语句的逐字原文**（`pg_stat_statements.query` 全量取回，单条取、不分段）
+再与仓内源码生成物做**同构判定**。
+
+**判据（三条同时过）**：
+
+| 判据 | 生产原文 | 仓内生成物 | 结果 |
+|---|---|---|---|
+| ① **骨架序列**（抹掉全部常量/占位符后的字符序列） | 21,135 字符 | 21,135 字符 | ★ **逐字相等** |
+| ② 结构计数 | 顶层子查询 2 / `UNION ALL` 2 / turns 腿 2 / hot 腿 2 / details JOIN 4 / 投影项 474 | 同 | ★ **全等** |
+| ③ token 多重集合 | 4,222 | 4,342 | **必然不等**（见下） |
+
+⇒ ⇒ ★★★ **判据③ 的「不等」是表征差异、不是结构差异**：
+`pg_stat_statements` 存的是**常量归一化**后的形态（字面量被写成 `$N`），
+仓内生成物是字面量形态 ⇒ **常量 token 数必然不同** ⇒ ③ 不是同构判据，①② 才是。
+（★ 这是本轮第二个量具坑：先写了「token 集合必须相等」，那是**恒假**判据。）
+
+⇒ ⇒ ★★ **仓内归属**：`admin/dashboard_board_fallback.go:38`
+`func (h *Handler) fillOverviewCountsFromLogs(...)` —— 调用链
+`queryOverviewCounts` → `fillOverviewCountsFromLogs`（看板「活跃模型数 / 活跃供应商数」）。
+
+⇒ ⇒ ★★★ **★ 既有判词「外传守卫（请求热路径）」被证伪**：
+- 它**不是**「外传守卫」—— 那个名字来自语句里 `COUNT(DISTINCT client_model/outbound_model)`
+  的**字面**（哪些模型被外发），但**它没有任何拦截/守卫语义**，只是一张看板上的计数；
+- 它**不在请求热路径上** —— 它是 **admin 看板的降级读面**
+  （`fallbackBoardSummary` → `queryOverviewCounts` → `fillOverviewCountsFromLogs`），
+  **只在分钟统计缺覆盖时触发**；
+- ⇒ ⇒ ★★★ **这个订正改变了 P12 的性质**：
+  「因为在请求热路径上所以比后台作业更敏感」这个**优先级理由不成立**；
+  但 ★ **P12 仍是值得做的** —— 因为它是 §143.26.3 记录的**「2 天 69 次被
+  `statement timeout` 杀」的第 2 名**，而 30 天窗上它**实测 37.3 s**（正撞 30 s 上限）。
+
+### §143.36.4 ★★★★ 根因实测：**扫两遍**，不是「列太宽」
+
+**形态解剖**（生产原文逐字）：
+
+```
+SELECT
+  (SELECT COUNT(DISTINCT COALESCE(NULLIF(r.client_model,…),NULLIF(r.outbound_model,…)))
+     FROM ( <118 列投影> FROM public.session_turns_hot t LEFT JOIN public.session_turn_details_hot d …
+            UNION ALL
+            <118 列投影> FROM public.session_turns t LEFT JOIN public.session_turn_details d … ) AS r
+    WHERE r.ts >= … AND r.ts < … AND r.tenant_id = … AND <探针排除谓词>
+      AND r.request_status IN ('success','failure','rate_limited')
+      AND COALESCE(NULLIF(r.client_model,…),NULLIF(r.outbound_model,…)) IS NOT NULL),
+  (SELECT COUNT(DISTINCT r.provider_id) FROM ( <同一份派生表> ) AS r
+    WHERE <同一组谓词> AND r.provider_id IS NOT NULL)
+```
+
+⇒ ★★★ **顶层 2 个标量子查询 ⇒ 同一份派生表被独立扫描 2 遍**
+（每遍 = hot 腿 + parent 腿 UNION ALL + 118 列投影 + details LEFT JOIN）
+⇒ 一次调用 = **4 次会话族扫描**。
+
+**决定性 A/B（生产只读，EXPLAIN (ANALYZE, BUFFERS)）**：
+
+| 形态 | 7 天窗·default | 30 天窗·无租户 | 结果值 |
+|---|---|---|---|
+| **改前**（宽投影 × 2 子查询） | 937,846 块 / 3,246 ms | **2,827,731 块 / 37,328 ms**（+ 26,331 物理读） | 731 / 15 |
+| **窄投影**（9 列 × 2 子查询） | 937,815 块（**100.0%**） | 2,852,990 块（**100.9%**） | — |
+| **改后**（9 列 × **单遍**） | **468,863 块（50.0%）/ 2,443 ms** | **1,426,254 块（50.4%）/ 4,587 ms** | **731 / 15** |
+
+⇒ ⇒ ★★★★★ **三个结论，每一个都推翻了既有假设**：
+
+1. ★★★ **根因是「扫两遍」，不是「列太宽」** ——
+   ★ **把 118 列投影裁成 9 列【零收益】**（100.0% / 100.9%）
+   ⇒ 因为 **PostgreSQL 的 planner 已经把未引用的投影列裁掉了**
+   （EXPLAIN 里 `width` 从 700 降到 40）⇒ **裁剪投影这条路已由实测排除，不要再走**。
+2. ★★★ **单遍 = 恰好减半**（50.0% / 50.4%）⇒ 这是「2 次独立扫描 → 1 次」的线性预期，
+   ★★ **实测与模型完全吻合** ⇒ 归因闭环。
+3. ★★★★ **30 天窗上改前实测 37,328 ms** ⇒ **正撞 30 s `statement_timeout`**
+   ⇒ ★★ **这才是 §143.26.3「2 天 69 次被杀」的物理原因**（不是「请求热路径敏感」，
+   而是**它本来就跑不完**）。
+
+⇒ ⇒ ★★ **语义「逐值」不变**（不是「大概等价」）：
+★ `COUNT(DISTINCT x)` **按定义忽略 NULL**（SQL 标准：COUNT 只计非 NULL）
+⇒ 改前那两条 `… AND <expr> IS NOT NULL` 尾臂都是 **no-op**
+（它们只是把本来就不会被计入的行提前滤掉，不改变去重集合）
+⇒ **改后与改前逐值相等** ⇒ ★ 实测印证：30 天窗 (731, 15) == (731, 15)；
+1 天窗 (60, 6) == (60, 6)。
+
+⇒ ⇒ ★ **A/B 纪律遵守情况**：
+① **现状逐字复现** —— §143.36.3 的骨架序列 21,135 字符逐字相等；
+② **预热** —— 每个形态先跑一次不计；
+③ **交错 ABAB×4** —— 12 轮交错（不是 AAAA 再 BBBB）；
+④ **报中位与组内极差** —— Exec 中位：current 129.8 ms（极差 175.3）、
+narrow 127.9 ms（极差 79.1）、single 65.0 ms（极差 192.6）
+⇒ ★★ **组内极差 > 组间差** ⇒ **时间不可作主判据**（宿主负载噪声 > 效应）
+⇒ ★★ **主判据取 buffers**（确定性量，不受负载影响）⇒ 50.0% / 50.4% / 100.0%。
+
+### §143.36.5 ★★ 仓内修法（已落地，**对生产写入 = 0**）
+
+**改一个函数**：`admin/dashboard_board_fallback.go` 的 `fillOverviewCountsFromLogs`：
+
+```go
+// 改前（两个标量子查询 ⇒ 派生表被独立扫描两遍）
+SELECT
+  (SELECT COUNT(DISTINCT %s) FROM %s WHERE %s AND %s IS NOT NULL),
+  (SELECT COUNT(DISTINCT %s.provider_id) FROM %s WHERE %s AND %s.provider_id IS NOT NULL)
+
+// 改后（单遍 ⇒ 一次扫描同时算两个聚合）
+SELECT COUNT(DISTINCT %s), COUNT(DISTINCT %s.provider_id)
+FROM %s
+WHERE %s
+```
+
+⇒ ★★★ **零语义风险**（`COUNT(DISTINCT)` 忽略 NULL ⇒ 尾臂是 no-op ⇒ 逐值相等）
+⇒ ★★★ **零形状风险**（返回仍是 1 行 2 列，`.Scan(&logModels, &logProviders)` 不变）
+⇒ ★★ **零 SQL 契约风险**（不碰 `boardLogsWhere`、不碰探针排除谓词、不碰投影 helper）
+⇒ ★ **只动这一处**：全 admin 包扫描确认「同一 SQL 模板里 ≥ 2 个 `FROM %s`
+且含 `(SELECT COUNT(DISTINCT`」的形态**仅此一处**（其余 3 个看板读面
+`fallbackBoardSummary` / `fallbackBoardTrends` / `fallbackDimPie` 都是**单次 FROM 扫描**）。
+
+⚠ **免检许可的边界（写进代码注释了）**：★ 「可以省掉 `IS NOT NULL` 臂」这条许可
+**只对 `COUNT(DISTINCT)` 成立** ⇒ 若将来把聚合换成 `SUM`/`AVG`/`COUNT(*)`
+（它们对 NULL 敏感），**必须把 `IS NOT NULL` 臂加回去**。
+
+### §143.36.6 ★★★ 三道新门 + 变异（`admin/section_14336_board_single_scan_test.go`）
+
+| # | 门 | 守什么 |
+|---|---|---|
+| 1 | `TestSection14336OverviewCountsIsSingleScan` | ★ **派生表占位符在同一个 SQL 模板里被引用恰好 1 次**（退化回双子查询 ⇒ 红） |
+| 2 | `TestSection14336NoScalarSubqueryInOverviewCounts` | 顶层无 `(SELECT` 标量子查询；`COUNT(DISTINCT` 恰好 2 处 |
+| 3 | `TestSection14336DistinctAggregatesIgnoreNulls` | ★ 聚合保持 `COUNT(DISTINCT)` 形态（禁 `SUM`/`AVG`/`COUNT(*)`）—— **免检许可的边界** |
+| 4 | `TestSection14336NarrowProjectionIsNotTheFix` | ★ 登记阴性结论：继续用完整投影 helper（裁剪投影收益实测为 0） |
+| 5 | `TestSection14336OnlyOneDoubleScanSiteInAdmin` | 全 admin 包扫「双扫形态」—— 防止又埋一处 |
+| 6 | `TestSection14336RunbookHasSection` | 本节在场（关键读数在册） |
+
+⇒ ★★★ **★ 门的判据口径（★ 三处量具坑都在本轮踩到并修掉了）**：
+- **(a)** 用 `strings.Index(body, "fmt.Sprintf(`")` 找 SQL 模板会**先命中 `modelExpr`**
+  （它在函数体前面）⇒ 必须**遍历所有反引号模板**并挑出含 `SELECT` 的那个
+  ⇒ 第一版门在这里读到 `modelExpr` ⇒ **门红而产品是对的**（量具 bug，不是产品 bug）。
+- **(b)** 「数 `FROM %s`」必须**限定在同一个 SQL 模板内** ⇒ 按**文件**计数会把同文件的
+  另外两个正常单扫读面也算进来 ⇒ **恒红**。
+- **(c)** 门自己所在的 `.go` 文件含这些字面量 ⇒ 扫描时必须**排除自己**。
+- **(d)** ★ **判据不能数「FROM」「SELECT」这类关键词**（改前改后数字巧合接近）⇒
+  唯一稳的口径是「**派生表占位符在同一个模板里被引用了几次**」。
+
+### §143.36.7 ★★ 本节对既有结论的影响
+
+| 既有条目 | 原判词 | 本节订正后 |
+|---|---|---|
+| §143.26.3 第 2 名 | 「外传守卫（**请求热路径**）」 | ★ **归属 = 看板降级读面** `fillOverviewCountsFromLogs`；**不在请求热路径上** |
+| §143.26.8 **P6**（给外传守卫定超时/改形态） | 「在请求热路径上，比后台作业更敏感」 | ★★ **优先级理由不成立**（不是请求热路径）；但 ★ **「改形态」这半条已被本节的单遍改法覆盖**（30 天窗 37.3 s → 4.6 s ⇒ 不再撞超时） |
+| §143.29 **P12**（降它的物理读） | 「新增，★★★★」 | ★★ **已归因 + 已给修法 + 已仓内落地**；**收益已实测**（buffers 50.4%、exec −87.7%）⇒ **待部署** |
+| §143.29.3 的排序（「巡检 > 外传守卫 > matview > rollup」） | 按结构性成本排 | ★ **排序不变**（物理读总量未变，**变的是每次的量**）⇒ 但 ★ **「它是请求热路径」这条理由被撤** |
+| §143.26.3「2 天 69 次被杀」 | 归因到外传守卫 | ★★ **物理原因已找到**：30 天窗实测 37.3 s ⇒ **它本来就跑不完 30 s** ⇒ **单遍改法直接消除** |
+
+⇒ ⇒ ★★★ **一句话**：★ **P12 从「一个待定超时的请求热路径守卫」变成
+「一个已归因、已实测、已修好、待部署的看板降级读面」**。
+
+### §143.36.8 ★ 本节遗留与待拍板
+
+- ★★ **部署需授权**（改 Go 代码 ⇒ 改生产行为）⇒ **本节对生产写入 = 0、未部署**。
+- ★★ **P12 的「为什么它跑 410 次」尚未归因** ——
+  看板 fallback 只在**分钟统计缺覆盖**时触发 ⇒ ★ **这指向 §143.28 P15
+  （巡检/rollup 覆盖率 ⇒ 看板降级频次）**，是**下一轮**的线索。
+  ⇒ ★ **本节只解决「每次有多贵」，没解决「它为什么被触发这么多次」**。
+- ★★ **同类双扫形态是否存在于其他包**：`admin` 包已全扫（仅此一处），
+  ★ **其他包（`maas` / `bg` / `domains`）本轮未扫** ⇒ 登记为待办。
+
+### §143.36.9 ★ 本节的可重跑脚本（收益数字不是口头断言）
+
+★ `scripts/audit/verify_14336_board_ab.py` —— 生成「语义对照 + 预热 + **交错 ABAB×4**」
+的 SQL（782 行 / 62,606 B），**只读**（全部 SELECT / EXPLAIN ANALYZE 对 SELECT）：
+
+```bash
+# 生产（走既有只读护栏）
+bash ~/.mavis-tools/lgwp-prod.sh scripts/audit/verify_14336_board_ab.sql 600
+
+# 本地真库
+docker exec -i llm-gateway-pg psql -U llm_gateway -d llm_gateway \
+  -f scripts/audit/verify_14336_board_ab.sql
+```
+
+⇒ ★★ **它把「逐值等价」与「buffers 减半」两件事都变成可复现的读数**，
+而不是「本轮实测过一次」的口头结论。
+⇒ ⚠ **脚本里的宽投影列表达式是【快照】**（与仓内 `db.SessionFamilyTurnsSourceSQL()`
+  逐字一致，由 §143.36.3 的骨架序列判定保证）⇒ ★ **改仓内投影时必须同步这个脚本**，
+  否则 A/B 测的不是现网形态。
+⇒ ★ 窗口/租户在脚本顶部两个变量里（默认 30 天窗 + 平台口径 = **最重的那个变体**）。
+
+
