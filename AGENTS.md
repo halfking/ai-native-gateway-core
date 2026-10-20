@@ -4594,3 +4594,36 @@ To codeup.aliyun.com:kaixuan/official-deploy/llm-gateway-go.git
 > ⇒ 根因 = 分钟统计保留期 `lifecycle.request_stats_minute_ttl_days` **默认 14 天**（Max 90）
 > ⇒ ★★ **必须在 P20 部署前拍板**（若决定 30 天 tab 走明细口径，该窗口就不能被门控跳过）。
 > ⇒ 完整记录见 runbook `§143.37`。
+
+> **2026-10-21 R71 轮（本会话）**：**「真库腿的环境前置」此前不存在清单** ⇒ 落成登记册 + 完备性门
+> ⇒ ★★★★ **头条**：官方 runner 的名单推导门（`sql/schema/integration_gate_test.go::TestGateInjectsEveryDBCredentialName`）
+>   **只按「DB URL 形状」扫描** ⇒ 实测推导 **21 个**；而 AST 实测「全仓测试文件读到的 env 名」
+>   = **98 个** ⇒ ⇒ **77 个落在它的视野外**，而这 77 个里**恰好包含全部 8 个隔离/危险开关**
+>   （`TEST_SESSION_INGEST_ISOLATED`、`TEST_PG_CONTRACTS_ISOLATED`、`REPORT_E2E_ALLOW_DESTRUCTIVE`、
+>   `URSM_830_ALLOW_ANY_DB`、`WA877_ALLOW_ANY_DSN`、`TRACE_RETIREMENT_LOCAL_SCHEMA`、
+>   `GATEWAY_CANONICAL_TEST_LOCAL_ONLY`、`USAGE_OBSERVATION_LOCAL_PG`）
+>   ⇒ ⇒ ★★ **R69 轮的「官方 runner 漏 21 个 DSN 变量名」已被后续提交修复（实测绿）⇒ DSN 侧已闭合；
+>   缺口在「开关/前置侧」** —— 那 8 条红不是产品缺陷，而是**一份不存在的清单在报错**。
+> ⇒ ★★★★ **三档实测（同库同基线，一次性库 `itgate_r71_test` 合规名）**：
+>   官方现状 **26 PASS / 18 SKIP / 0 FAIL**；切事实源 **36 / 4 / 7**；切事实源 + 隔离开关 **36 / 4 / 7**
+>   ⇒ **收益 = 16 条腿从静默 SKIP 变真跑**（18 条 SKIP 逐条指名缺哪个变量，16/18 就在事实源里）
+>   ⇒ **代价 = 7 红 / 0 产品缺陷**（5 条 Citus 元数据缓存错误 + 1 条缺表 + 1 条缺授权）。
+> ⇒ ★★★★ **订正上轮读数（量具口径被库名污染）**：上轮那「7 条隔离守卫红」是**库名不带 `_test` 后缀**
+>   时守卫按设计拦人的产物，**不是切事实源的代价** ⇒ ⇒ 由此得机制性结论：官方 runner 的库名
+>   `itgate_${$}_${RANDOM}` **天然不合规** ⇒ 隔离开关守卫**天然成立** ⇒ **官方跑法不需要、也不该**
+>   注入隔离开关（注入 ⇒ 一次性门禁库变「可破坏」）⇒ ⇒ 这就是门判据③ 的**机制性理由**。
+> ⇒ ★★ **交付**：`scripts/ursmcheck/pg_test_env_registry.tsv`（**65 条**登记册 + **五类分类学**
+>   `dsn`/`dsn_exclusive`/`isolation`/`dangerous`/`component`，逐条有理由）
+>   ＋ `scripts/ursmcheck/pg_test_env_registry_test.go`（**5 判据** + AST 扫描器 + 自检）
+>   ⇒ 变异 **M1~M6 全红（6/6）**，还原按**被改的那个路径** `shasum -a 256` 逐字校验。
+> ⇒ ★★★ **本轮三条量具层自我订正**：① 分类轴第一版「文件内出现 `pgxpool.New`」⇒ **漏 17 个名字**
+>   （含最关键的 `TEST_SESSION_INGEST_ISOLATED`）⇒ 改为「读了环境变量」；
+>   ② runner env 块解析第一版 `(?ms)`+`.*\n` ⇒ `.*` 贪婪跨行 ⇒ **28 个假名** ⇒ 改 `[^\n]*`；
+>   ③ 变异脚本的还原校验用 `md5 -q`（本机不可用）⇒ before/now 皆空 ⇒ **「还原 OK」是假读数**
+>   ⇒ 换 `shasum` 重跑才是真读数 ⇒ ★ **「还原校验」本身也是量具**。
+> ⇒ ★★ **最强的一条旁证**：SKIP 消息里**测试代码自己写着**「请 source scripts/audit/datasource_env.sh」
+>   ⇒ ⇒ **仓库的测试代码已经在要求「用事实源」** ⇒ 官方 runner 不切 = **这条指引根本执行不了**。
+> ⇒ ⚠ **属主决策项仍未拍板**：`run-integration-gate.sh` 是否切事实源（证据与改法已就绪）、
+>   隔离/授权开关的授权模型（`GATEWAY_CANONICAL_TEST_LOCAL_ONLY` 现为 `t.Fatal`，建议改 SKIP）、
+>   Citus 一次性库形态的 `pg_dist_local_group` 错误、A 类 6 条、db/ 两条 v1 夹具、**D2**、**C1**。
+> ⇒ 完整记录见 `docs/audit/2026-10-21-R71-测试env事实源边界与五类分类学.md` 与本文件 `§19.20`。
