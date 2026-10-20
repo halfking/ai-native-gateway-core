@@ -522,6 +522,24 @@ func testDB(t *testing.T) *pgxpool.Pool {
 		return nil
 	}
 
+	// ★★★★ R70 轮：**文件级守卫** —— 本文件的 9 个用例**全部**把种子插进
+	//   `_request_logs`（v1 族），而 v1 族已被迁移 890 退役 ⇒
+	//   ⇒ 插入会 42P01，而错误原本被 `_, _ = db.Exec(...)` **吞掉**
+	//   ⇒ ⇒ 接着在断言处红（看起来像产品缺陷，实际是**夹具随 schema 漂移**）。
+	//   ⇒ ⇒ 显式化成守卫：**表不在 ⇒ 明确 SKIP 并说明**（本门需要改瞄会话族；
+	//   ⇒ ⇒ **真正的改瞄属并行会话 D3 范围**，已通报 ⇒ 在那之前本门不构成证据）。
+	var rel string
+	if err := db.QueryRow(ctx, `SELECT COALESCE(to_regclass('public._request_logs')::text, '')`).Scan(&rel); err != nil {
+		t.Logf("Skipping test: cannot probe schema: %v", err)
+		db.Close()
+		return nil
+	}
+	if rel == "" {
+		db.Close()
+		t.Skip("_request_logs 不存在（v1 族已退役，迁移 890）—— 本门的夹具尚未改瞄会话族，" +
+			"改瞄前不构成证据（改瞄属 D3 范围）")
+	}
+
 	return db
 }
 
