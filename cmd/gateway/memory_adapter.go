@@ -29,6 +29,17 @@ func newLegacyMemoryServicesFromEnv(baseURL string) *legacyMemoryServices {
 		APIKey:             os.Getenv("LLM_GATEWAY_MEMORA_API_KEY"),
 		SmartSearchBaseURL: os.Getenv("LLM_GATEWAY_MEMORA_SMART_SEARCH_BASE_URL"),
 		SmartSearchAPIKey:  os.Getenv("LLM_GATEWAY_MEMORA_SMART_SEARCH_API_KEY"),
+		// Route overrides (2026-10-20, audit D1). Empty = memora's real
+		// routes (/api/memory/add, /api/search); the MemOS-era /product/*
+		// routes are reachable only through the explicit opt-in
+		// LLM_GATEWAY_MEMORA_LEGACY_MEMOS_PATHS=1 (read inside the client).
+		AddPath:    os.Getenv("LLM_GATEWAY_MEMORA_ADD_PATH"),
+		SearchPath: os.Getenv("LLM_GATEWAY_MEMORA_SEARCH_PATH"),
+		// memora's project scope is fail-closed: without X-Project-ID the
+		// add/search endpoints answer 400 "project_id is required".
+		// Per-call project ids (the manual extraction path puts one in
+		// info["project_id"]) still win over this default.
+		ProjectID: os.Getenv("LLM_GATEWAY_MEMORA_PROJECT_ID"),
 	})
 	sink := memclient.NewSink(client, 2, 2048)
 	return newLegacyMemoryServices(client, sink)
