@@ -6332,3 +6332,28 @@ PostgreSQL 解析调用时，**带默认值的那个也能接 3 参调用**，
   而写方 `domains/toolexecution/postgres_store.go:61` 与接线
   `cmd/gateway/tool_execution_integration.go` 都是**活的** ⇒ 收窄到「上游零流量」。
 - 状态：待观察
+
+## 2026-10-21 — ★★★★★ **「跑过了」≠「形态对了」：量具必须断言形态，而且漏检的门比红门更危险**（llm-gateway-go R69 · D3 批次二 收尾）
+- 场景：合并 35 个提交后，在**全新 probe 库**上复验，本轮改好的两条门**变红**
+  （`relation "session_turns_hot" does not exist` / `canonical 视图只投影 0/2 列`）。
+- 实测翻车：★ **代码是对的** —— 在一个**有 `session_turns_hot`** 的库上两条门**全绿**。
+  ⇒ ⇒ **红来自环境形态，不来自代码** ⇒ 若照着「红」去改代码，就会**改坏本来正确的门**。
+- 根因：★ `scripts/audit/probe-onetime-db-shape.sh` 建出来的库**缺 `session_turns_hot`**
+  （母表在、hot 表不在、details 在），而脚本跑完 ensure 链打印的是
+  **「✓ ensure 链已跑（库现在 = 产品真实形态）」** ⇒ ⇒ **这句话是错的**；
+  ⇒ ★★ 且 ensure 链自己的门 `TestFreshInstallRuntimeShape_EnsureChain` 在这个状态下 **PASS**
+  ⇒ ⇒ **它没检 hot 表** ⇒ ⇒ **一道漏检门**。
+- ⇒ ⇒ ★ **通用式**：
+  1. ⭐⭐⭐⭐⭐ **量具要断言「形态」，不能只断言「跑过了」** ——
+     「ensure 链跑过了」≠「库 = 产品形态」⇒ **守卫必须点名校验关键关系在不在**；
+  2. ⭐⭐⭐⭐⭐ **一条门在自己缺关键对象时仍然绿 ⇒ 它是漏检门** ——
+     ⇒ 判据里必须包含「**那个对象在不在**」这一条；
+  3. ⭐⭐⭐⭐ **自己新写的门变红 ⇒ 先确认「是不是环境变了」** ——
+     本轮的红来自 **incoming 提交 + probe 库形态** ⇒ **不是我的代码坏了**；
+  4. ⭐⭐⭐⭐ **脚本里的成功文案（「库现在 = 产品真实形态」）不算证据** ⇒ 必须是可证伪的断言；
+  5. ⭐⭐⭐ **追一条红门时，判它「是缺陷还是形态」之前，先把被测形态量出来**
+     （★ 本轮若不查，多条「v1 族退役缺陷」会被定性错）。
+- 证据：`itgate_r69_final`（probe 库）缺 `session_turns_hot`；
+  `itgate_r69_d3b`（有该表）上 `TestV1WriteLiveness_RealDB` 与
+  `TestRequestClassCarriedBySessionDetails` **全绿**。
+- 溯源：llm-gateway-go R69 轮（D3 侧·批次二），§19.19.7 + 审计文档 §9。

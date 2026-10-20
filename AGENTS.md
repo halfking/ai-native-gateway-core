@@ -4667,3 +4667,14 @@ To codeup.aliyun.com:kaixuan/official-deploy/llm-gateway-go.git
 >   隔离/授权开关的授权模型（`GATEWAY_CANONICAL_TEST_LOCAL_ONLY` 现为 `t.Fatal`，建议改 SKIP）、
 >   Citus 一次性库形态的 `pg_dist_local_group` 错误、A 类 6 条、db/ 两条 v1 夹具、**D2**、**C1**。
 > ⇒ 完整记录见 `docs/audit/2026-10-21-R71-测试env事实源边界与五类分类学.md` 与本文件 `§19.20`。
+- ★★★★★ **收尾复验的决定性发现：probe 建出来的库**不是产品的真实形态** ——
+  `scripts/audit/probe-onetime-db-shape.sh` 建出来的库**缺 `session_turns_hot`**
+  （母表 `session_turns` 在、hot 表不在、details 在），
+  而脚本跑完 ensure 链打印的是「✓ ensure 链已跑（**库现在 = 产品真实形态**）」⇒ **这句话是错的**；
+  ⇒ ★★ 且 ensure 链自己的门 `db::TestFreshInstallRuntimeShape_EnsureChain` 在这个状态下**PASS**
+  ⇒ ⇒ **它没检 hot 表** ⇒ **一道漏检门**。
+  ⇒ ⇒ ★★ 本轮追的「v1 族退役后的红门」里**相当一部分是在这个不完整形态上测出来的**
+  ⇒ ⇒ **「canonical 视图 0 列」「`_request_logs` 父表在、hot 表不在」「会话族两腿不同形」都要重新定性**。
+  ⇒ ⇒ ★ **通用式**：★ **量具要断言「形态」，不能只断言「跑过了」**；
+  ★ **一条门在自己缺关键对象时仍然绿 ⇒ 它是漏检门** ⇒ 判据里必须有「那个对象在不在」；
+  ★ **自己新写的门变红 ⇒ 先确认是不是环境变了**（本轮的红来自 incoming 提交 + probe 库形态，**不是代码坏了**）。
