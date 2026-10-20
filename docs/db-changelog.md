@@ -9133,3 +9133,13 @@ installer `//go:embed` 指令 + files 映射 → `dbinit` 的 `StartupFiles` →
 | 888 | `888_session_family_join_index_gaps.sql` | `c86d47f2d6e20e04bad07c3d3e41e4dc100cf33d48e90b07ec31ac5b0f7cfdd8` | applied+verified |
 | 889 | `889_session_turns_tools_population.sql` | `88750aace44f88445174aa6e56c40d7f0dcbec3ee669453e23961cabe0a06b4b` | applied+verified |
 
+## 2026-10-20T09:05:00Z — deploy 154 build_seq 2767 (8a826814)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| — | （无新迁移） | — | `无 pending startup 迁移；checksum ledger 校验通过` |
+
+★ 154 与 245 连的是**同一张库**（252 的 `llm_gateway`）⇒ 885–889 已由 245 的 2765 应用，
+本轮 154 部署**零迁移** ⇒ **生产 schema 未被本轮改动**。
+版本产物：VERSION / version.json / web/public/version.json / web/public/menu-config.json
+（menu-config 只变了构建导出的 `exported_at` 时间戳，与先例 32ec82b82 同款）。
