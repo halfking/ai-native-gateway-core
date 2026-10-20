@@ -113,15 +113,29 @@ func StorageSpecs() []*Spec {
 		},
 		{
 			// 存储优化方案 v2 S2（migration 710 轮）：_request_logs 停写 gate。
-			// S2 仅登记（默认 true = 继续双写）；S4 落 telemetry client 分支化
-			// 后由本开关一键停写/回切（plan §4 S2/S4 行、§7）。
+			//
+			// 2026-10-20（D0）：Default 由 true 改为 false。理由是审计记录的
+			// 事实：「上一轮真库 0 行」只是**生产配置事实**（某台机器在
+			// settings_kv 里显式写了 false），**不是代码事实**——本行的
+			// Default: true 与访问器的 GetPlatformBool(..., true) 回退
+			// 意味着任何**未显式配置**的环境（新装、克隆、灾备、lite 形态）
+			// 仍然继续双写 _request_logs 宽族。
+			//
+			// 改成 false 之后，「未显式配置 ⇒ 不双写」成为**代码事实**。
+			// 代价（必须写在这里，不能只写进 commit message）：
+			//  · 关闭侧（v1=false）要求 session 六表族是唯一事实源，因此
+			//    启动期安全检查（cmd/gateway/session_write_safety.go）要求
+			//    「sessions_v2.enabled && sessions_v2.shadow_write」或
+			//    「本键显式为 true」二者之一，否则以 ErrNoRequestWriteSource
+			//    **拒绝启动**（这是有意的 fail-loud，不是静默丢数据）。
+			//  · 重新打开（回切）方式见 DescriptionLong。
 			Key:             "storage.request_logs_write_enabled",
 			Type:            TypeBool,
 			Scope:           ScopePlatform,
 			Category:        CategoryStorage,
-			Default:         true,
+			Default:         false,
 			Description:     "_request_logs 主账本写入（S4 停写 gate）",
-			DescriptionLong: "存储优化方案 v2：开启时 telemetry/admin ingest 维持 _request_logs(_hot) 与 bodies 双写（现状）；S4 落地写分支后关闭即停写，session 六表族成为唯一事实源。关闭前提：dual_read_validator 对账 7 天零漂移（plan §4 S2 退出条件）。回切即重新开启，热表结构不动、无数据丢失窗口。",
+			DescriptionLong: "存储优化方案 v2：开启时 telemetry/admin ingest 维持 _request_logs(_hot) 与 bodies 双写（退役中的宽族）；关闭即停写，session 六表族（sessions/session_turns/session_bodies/…）成为唯一事实源。**代码默认自 2026-10-20 起为 false**——未显式配置的环境不再双写（此前「已下线」只是生产配置事实，不是代码事实）。关闭侧前提：PG 可用且 sessions_v2.enabled + sessions_v2.shadow_write 打开，否则启动期安全检查会以 ErrNoRequestWriteSource 拒绝启动（fail-loud）。**重新打开（回切）方式**：环境变量 LLM_GATEWAY_STORAGE_REQUEST_LOGS_WRITE_ENABLED=true，或在 settings_kv 写 storage.request_logs_write_enabled=true（admin 设置页同键）；热表结构不动、无数据丢失窗口。",
 			DangerLevel:     Dangerous,
 			HotReload:       true,
 		},

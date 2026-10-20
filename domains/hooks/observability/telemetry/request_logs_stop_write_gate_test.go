@@ -31,21 +31,28 @@ func withStopWriteGateSettings(t *testing.T, writeEnabled bool) {
 	settings.Global = registry
 }
 
-// TestRequestLogsWriteEnabled_DefaultsTrue：settings.Global 为 nil（单测未
-// 初始化 settings）时门控必须回退为 true（继续双写），与 Lite sink 同语义。
-func TestRequestLogsWriteEnabled_DefaultsTrue(t *testing.T) {
+// TestRequestLogsWriteEnabled_DefaultsFalse：settings.Global 为 nil（单测未
+// 初始化 settings）时门控必须回退为 false（不双写），与 Lite sink 同语义。
+//
+// 2026-10-20（审计 D0）：本断言的**期望值**由 true 改为 false —— 这是契约变更，
+// 不是断言变弱。理由：代码默认必须是「不双写」，否则未显式配置的环境
+// （新装/克隆/灾备）会继续写已退役的宽族，使「双写已下线」只是某台机器的
+// 配置事实而不是代码事实。旧值 true 曾经承担的那层担心（false 会被 dual-read
+// 门读成「v1 已冻结」而作废 S4 判据）没有消失：cmd/gateway 的 S4 门仍然以
+// v1_writes_disabled 给出 void 理由，只是现在那是**有意为之**的状态。
+func TestRequestLogsWriteEnabled_DefaultsFalse(t *testing.T) {
 	prevGlobal := settings.Global
 	t.Cleanup(func() { settings.Global = prevGlobal })
 
 	settings.Global = nil
-	require.True(t, requestLogsWriteEnabled())
+	require.False(t, requestLogsWriteEnabled())
 
 	registry := settings.NewRegistry()
 	for _, spec := range settings.StorageSpecs() {
 		registry.MustRegisterSpec(spec)
 	}
-	settings.Global = registry // 已注册 spec 但无后端值 → default true
-	require.True(t, requestLogsWriteEnabled())
+	settings.Global = registry // 已注册 spec 但无后端值 → 落到声明默认
+	require.False(t, requestLogsWriteEnabled())
 }
 
 // TestInsertRequestLogStopWriteGate：Full 链路 INSERT 路径的 S4 停写门控。
