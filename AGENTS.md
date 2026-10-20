@@ -22,6 +22,13 @@
 > upstream → 停旧槽；失败 abort）。**旧文件名已不存在**，本文件下方历史段落里
 > 的 `deploy-211-docker.sh` 是历史叙述，不是现行入口。
 > 复盘见 `docs/audit/2026-10-20-211-bluegreen-docker-engine.md`。
+> **2026-10-20 request_logs→session_turns 退役复核轮（续做）**：3 张 v1 裸母表分析视图
+> 改读会话族（**迁移 884**，`v_node_switch_analysis` 0 行 → 16 行）；★ **884 一度破新装**
+> （基线引用了启动序列才建的 `session_turns_hot` ⇒ 新装 42P01 中止，而**升级路径是绿的**）
+> ⇒ 4 份基线副本全回 **v1 fallback 体**、部署形态交给迁移换上，并立**基线自洽门**；
+> 另修**既有**新装断链（853 缺 489/490）⇒ fresh-install 链 **0 of 282 fail**。
+> 新装路径的硬约束见下方「★ 基线自洽」一节。
+> 复盘见 `docs/audit/2026-10-20-request-logs-session-turns-复核轮.md` §5.13。
 
 ## 经验反馈闭环（vibe-coding Rule 66）
 
@@ -1040,6 +1047,53 @@ bash tests/deploy_local_contract_test.sh           # 仅在 SSOT 在场时跑（
 bash scripts/apply-db-revision-sequence_test.sh   # 通道腿 + installer 腿对账，rc=0
 cd installer && go test ./...                     # 五点同步对账 + 重新生成 TSV 用 -run TestStartupManifest -update
 ```
+
+## ★ 基线自洽：新装路径的硬约束（2026-10-20 补记，884 一度破新装）
+
+**基线 schema（`01-schema.sql` 的 3 份副本）里只许引用「基线自己创建的关系」。**
+
+- 基线是**逐语句**应用的，而 `CREATE VIEW` 会**急切校验**它引用的关系
+  ⇒ 基线里只要写了 `FROM public.session_turns_hot`（这个关系由**启动序列**的
+  `session_turns_hot_bootstrap.sql` 与迁移 733/734 建、**基线时点还不存在**），
+  **新装**就报 42P01 并**中止整个安装**；而**升级路径是绿的**（那些表早就存在）
+  ⇒ **「升级路径绿」≠「新装路径绿」**（2026-10-20 真库临时库实测）。
+- ⇒ 改视图时：**部署形态交给迁移换上，基线保留 v1 fallback 体**
+  （基线自建 `public.request_logs` / `request_logs_hot` ⇒ fallback 体在基线时点有效）
+  ⇒ 两条路径跑完启动序列后**形态一致**。
+- 守门：`sql/schema/baseline_view_refs_test.go`（基线自洽门，静态常驻）+ 
+  `internal/sqlreadguard`（读 v1 族的登记，DEBT/LEGIT 分账）。
+- ⚠ **基线的 3 份副本**：canonical `sql/schema/01-schema.sql`、
+  `deploy/sql/schemas/baseline/01-schema.sql`、
+  `installer/cmd/llm-gw-installer/embeddata/01-schema.sql`（**新装实际用的是它**）。
+  前两份必须**逐字节相同**（`deploy/sql/verify-migration.sh` 会 diff）；
+  第三份是独立快照（本轮实测也已与前两份逐字节一致）。
+- 复现命令（临时库跑基线即可，不需跑启动序列）：
+  ```bash
+  SCRATCH=$(echo "$DATABASE_URL" | sed 's#/[^/]*$#/scratch_x#')
+  psql "$DATABASE_URL" -c "CREATE DATABASE scratch_x;"
+  psql "$SCRATCH" -v ON_ERROR_STOP=1 -q -f installer/cmd/llm-gw-installer/embeddata/01-schema.sql
+  ```
+- 整条 fresh-install 链的门（需 `TEST_INSTALLER_FRESH_DB_URL` 指向**空库**）：
+  `cd installer && go test -tags integration ./cmd/llm-gw-installer/ -run 'TestStartupChainGaps|TestFreshInstaller' -v`
+  ⇒ 2026-10-20 实测 **0 of 282 fail**（此前断在 853，见下方 §853 断链）。
+
+### ★ 断链时先看被断那条迁移**自己声明的依赖**（853 断链的教训）
+
+853 自己在文件头声明依赖「489/490_credential_probe_queue_*（队列表本体）」，而那两条
+**从未登记**进 `StartupFiles` ⇒ 新装在 853 处 42P01 并中止整个安装
+（853 的 runner 注释却写着「once 489/490 create the queue」——事实是它们没被登记）。
+本轮已补登 489/490（幂等、自包含，排在 853 之前）。
+⇒ **登记一条启动迁移时，把它的声明依赖一起核对是否在链里**；
+断链常常是**整族没登记**，不是单条漏登记。
+
+### ★ 门自己的量具会比被测对象更严 ⇒ 造假阳性
+
+`installer/cmd/llm-gw-installer/startup_chain_gate_test.go` 的 `runInstallerPSQL` 曾
+无条件加 `--single-transaction`，**不尊重** `dbinit:no-transaction` 标记
+⇒ 7 条含 `DROP/CREATE INDEX CONCURRENTLY` 的迁移在**门里**被误报成「链上新破坏」
+⇒ 门长期红着 ⇒ 真缺陷被淹没、门退化成摆设。
+本轮已修（与真实安装器 `dbinit.Runner.applySQL` 同一套分流），并把已审阅失败集合清空。
+⇒ **量具的执行通道必须与被测系统的执行通道逐字一致**；门红了先问「是我的尺子坏了吗」。
 
 ## 已落地的回归门
 
