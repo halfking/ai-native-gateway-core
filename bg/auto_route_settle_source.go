@@ -62,6 +62,20 @@ const (
 // 判定刻意做成**默认 v1**：只有明确读到写门关闭才切到会话族。反过来默认会话族
 // 会在 settings 存储未初始化时（GetPlatformBool 默认 true，见
 // settings/key_request_logs_write_enabled.go）意外改源。
+//
+// ★★ 订正（2026-10-21，R59 轮）：**上面那段前提已不成立**。
+//
+//	`GetPlatformBool` 的缺省值在 2026-10-20（audit D0）被从 true 改成 **false**
+//	（settings/key_request_logs_write_enabled.go 的注释：It used to be true, and that fallback
+//	was the load-bearing half of the defect）⇒ **缺省时族 = session，不是 v1**。
+//	⇒ 「默认 v1」这个意图（以及当时为它写下的这句注释）随之失效：
+//	  凡是**没有显式配置** `storage.request_logs_write_enabled` 的部署，
+//	  结算基线会读 `session_turns_hot` 而不是 `_request_logs_hot`。
+//	⇒ ⚠ 这是**语义决策项**（属主待定），本文件只陈述事实、不替属主选边：
+//	  要么把「缺省 ⇒ v1」恢复成一个独立于写门缺省值的判据，
+//	  要么正式接受「缺省 ⇒ session」并同步改掉下面这句注释与所有按 v1 写的结算腿。
+//	⇒ 期间的稳妥做法：结算腿**显式钉住族**（bg/auto_route_settle_worker_integration_test.go
+//	  的 withSettleSourceV1），门 `TestSettleLegsPinTheirFamily` 钉住这个动作有效。
 func settleSourceFor(logsWriteEnabled bool) settleSourceSpec {
 	if !logsWriteEnabled {
 		return settleSourceSpec{
