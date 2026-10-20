@@ -49,6 +49,10 @@
 | **★ D1 的另一半：成本端点仍 `[]`** | **不是**本轮没修好，而是**聚合链从未接线**：`api_key_model_cost` 的 trigger（`trg_update_api_key_model_cost`）在正典与全部 startup 迁移里**都不存在**，**真库全触发器清点也确认它没挂在任何表上**（函数 `update_api_key_model_cost()` 存在但**无调用方**），该表**0 行**、**无唯一索引** ⇒ 原函数的 `ON CONFLICT` 会报 42P10。⇒ 这两个端点**从功能设计出来那天起**就一直是 `[]`，与退役无关。复活需按序补：写侧 `canonical_id`（现 0/NULL）→ 唯一索引 → 会话族 trigger ⇒ 登记为 **L11**（§5.12.3） |
 | **★ D3：列表端点对同一行集扫两遍 → 一遍** | 上一轮记 L3 时说「本地小数据集量不出收益」——**量法选错了**：buffers 确实量不出（三种写法都是 137 hit，第二趟全命中缓存），但**执行次数**是结构性的。已把 COUNT 与各 SUM 合并成**一条**聚合（执行次数 2→1），并保持「聚合失败 ⇒ 退回单独 COUNT、聚合字段回零、页照常出；COUNT 也失败才 500」的旧降级语义。判据用 **pgx QueryTracer 数查询**（必须恰好 1 条非分组聚合扫描）+ 与旧两扫口径**逐值对账**，变异（拆回两查）转红（§5.12.4）。**部署 `2.5.8.2757` 后读回**：200/82ms，`count=324`、`total_requests=324`、`prompt_tokens=13109`、`completion_tokens=11875`、`by_model` 20 项 ⇒ **口径与部署前逐值一致**（§5.12.6） |
 | **★ 一条「判据污染度量」的实测发现** | 用来证明「`api_key_model_cost` 从未被写」的证据 `pg_stat_user_tables.n_tup_ins` 被**门自己**污染了：真库门用 `defer tx.Rollback()` 造夹具，而 **PG 计入回滚事务的插入**（本轮受控实验实测：`BEGIN; INSERT; ROLLBACK;` 后计数 +1）⇒ 读数从 0 变成 13，看起来像「表被写过后又删了」。**连跑该门 3 次 ⇒ 计数 13→16（恰好 +3）、行数恒 0** ⇒ 那 13 次插入全是门自己的回滚夹具，该表从未被生产流量写过。⇒ 证据已换成**「触发器在不在 + 现在几行」**（§5.12.2 订正框、§5.12.3 证据链） |
+| **★ 一把坏尺子：`LIKE '%_request_logs%'` 里的 `_` 是**单字符通配符** | 上一轮「5 张 `v_*` 视图读 v1 裸母表」是**坏仪器量出来的**：SQL 的 `LIKE` 里 `_` 匹配**任意单字符** ⇒ 这条判据把 canonical 视图名 `request_logs_with_current_month` 也判成命中 ⇒ **精确重判后实为 3 张**，`v_model_health_dashboard` / `v_probe_system_health` 是**假阳性**。⇒ 本轮自己写的 883 POST_CONDITION 也是这条坏判据，已一并订正为 `strpos`（内容指纹变化 ⇒ 通道按契约**自动重放**，幂等，视图体不变）。⇒ 本仓自己的门 `internal/sqlreadguard` 用的是**正则 + 词边界**，那个门是对的 ⇒ 坏的只有我们临时写的 ad-hoc 读数与文档里的命令。⇒ **判别动作：判「某个名字出现了没有」别用 `LIKE` 配 `_`**（§5.13.1） |
+| **★ 3 张 v1 裸母表分析视图已改读会话族（迁移 884）** | `v_continuation_effectiveness` / `v_node_switch_analysis` / `v_timeout_effectiveness` 原读 `_request_logs`（v1 停写并清空 ⇒ **恒 0 行、无错误信号**），且是「后期删除 `_request_logs`」的**依赖阻塞项**（`pg_depend` 清点：v1 族被 **7 个视图**依赖，**无任何表/MV/函数**依赖）⇒ 这 3 张又是**唯一没有任何 API/Go 代码消费**的 v1 读面 ⇒ 零 API 影响地收口。会话族 `session_turn_details` 上 6 个细节语义列**类型逐列一致**（真库 `information_schema` 核过）⇒ 能改读且**不丢能力**。结果：`v_node_switch_analysis` **0 行 → 16 行真实数据**；另两张仍空但**成因可证明**（底层 `is_continuation` / `effective_timeout_seconds` 确实 0 行）⇒ 空从「不知道为什么」变成「知道为什么」（§5.13） |
+| **★★ 884 一度**破掉新装路径**（本轮自己引入、自己抓住）** | 884 顺手改了**安装器实际使用的那份基线**，而基线里的 `CREATE VIEW` **急切校验**它引用的关系、且 `session_turns_hot` / `session_turn_details*` **由启动序列建、基线不建** ⇒ 新装报 42P01 并**中止整个安装**；而**升级路径是绿的** ⇒ **「升级路径绿」≠「新装路径绿」**。已把 5 张视图的 4 份副本全回 **v1 fallback 体**（基线自建 `request_logs` ⇒ 基线时点有效），**部署形态交给迁移换上** ⇒ 两条路径跑完启动序列后**逐字同形**（实测 `sess=t, lit_v1=f`），并立了**基线自洽门**（静态常驻，变异验证转红）（§5.13.7） |
+| **★★ 新装链本身断在 853（既有缺陷，与本轮无关）** | 853 在新装链报「`credential_probe_queue` 不存在」⇒ **整个新装中止**。根因：853 **自己声明**依赖 489/490（队列表本体），而那两条**从未登记**进链（853 的 runner 注释却写着「once 489/490 create the queue」）。**既有性证明**：pristine HEAD 工作树复跑**同样失败**。已补登 489/490（幂等自包含）⇒ 整链 **0 of 282 fail**；顺带修了**链门自己的量具**（它无条件 `--single-transaction`，不尊重 `dbinit:no-transaction` ⇒ 7 条假破坏）⇒ 已审阅失败集合清空、门从红转绿；顺带修了 2 条被 853 掩盖的**过期 pin**（hot 表 104→**106** 列；`request_logs`→`_request_logs`，因 860 改名）。`TestFreshInstallerSessionTurnsHotBootstrap` 从「在 853 中止」**转 PASS**（§5.13.8） |
 | **★ 部署后复验（API 全量 + 104 页逐页）** | API 全量 **511 条路由、0 个 >2s、0 个 5xx**；逐页 **101×200 + 1×503**（`/maintain` 本机未部署）、**0 个 JS 运行时异常**、**0 个慢 API**、**≥2000ms 的页面 0 个**（最慢 `/dashboard` 1965ms）。与 2756 基线逐条 join：路由集合**完全相同**、状态变化 **4 处全是 `500→200`**、页面标记集合**完全一致** ⇒ **0 处回退**。`/api/logs` 稳态 **26–48ms**。⚠ 复验中抓到一次**量具污染**：API 全量扫与逐页扫**并发**跑 ⇒ `/dashboard` 读数虚高到 2920ms，**独占重跑 = 1965ms**（比基线还快）⇒ 教训见 §10.7（§5.12.7） |
 
 ---
@@ -299,7 +303,7 @@ session_bodies_hot       有行    session_turns / session_bodies  有行
 | `customer_cost_view` | 主表 `api_key_model_cost` + **v1 子查询** `active_concurrent`（5 分钟窗） |
 | `model_cost_per_task_view` | 主表 `api_key_model_cost` + **v1 子查询** `avg_latency_ms`（7 天窗） |
 | `routing_analytics_source` | 读 canonical 视图 ⇒ 实际已切 |
-| `v_continuation_effectiveness` / `v_model_health_dashboard` / `v_node_switch_analysis` / `v_probe_system_health` / `v_timeout_effectiveness` | 仍读 v1 裸母表（`internal/sqlreadguard` 门里登记为 `DEBT(R47)`） |
+| `v_continuation_effectiveness` / `v_node_switch_analysis` / `v_timeout_effectiveness` | ⚠ **本行已订正（2026-10-20 §5.13.1）**：上一轮写「5 张 `v_*` 视图仍读 v1 裸母表」**是坏尺子量出来的**（`LIKE '%_request_logs%'` 里的 `_` 是单字符通配符 ⇒ 把 canonical 视图名 `request_logs_with_current_month` 也判成命中）。**精确重判后是 3 张**（上列前三个），另两个（`v_model_health_dashboard` / `v_probe_system_health`）是**假阳性**。这 3 张已于**迁移 884** 改读会话族（`v_node_switch_analysis` 从 0 行变成 16 行真实数据）⇒ 登记为 `DEBT(R47)` 的 3 条也已由自清洁门移除（§5.13） |
 
 前 3 张 v1-only 视图是**有意建成**的：`cmd/gateway/request_logs_view_session_arm_pin_test.go`
 把它们登记在 `v1OnlyRequestLogsViews`，注释写明「577/734 迁移为规避投影缺失而故意
@@ -853,6 +857,7 @@ JS 堆栈是**多行**的，整表被写坏（解析出来「106 行、route 重
 | **L9** | **一个模型的 429 会冷却整个凭据**：`nodehealth` 熔断（付费档连续 3 次）⇒ `EffectSetCredentialUnavailable` ⇒ `credentials.availability_state='cooling'` + **该凭据名下全部绑定 `available=FALSE`** ⇒ 兄弟模型（哪怕刚 200 过）一起 `no_candidate` 3 分钟。写侧的 `writeModelLevelFailureOnly` 本来是对的（只冷自己），是**熔断路径**把范围放大 | 设计代价 | 本轮**不改**：改成模型级会重新打到同一个已超配额的端点上，更糟。若要改，需先答「凭据级限流 vs 模型级限流怎么区分」——上游 TPM/RPM 限流是**账号级**的，凭据级冷却在这类场景是对的；真正要收窄的是**被误判为模型故障的凭据级限流** |
 | **L10** | **探针 chat 腿没有 Responses 腿那个「预算耗尽也算证据」的豁免**：reasoning 模型在探针预算（`ProbePingMaxTokens=32`）内把预算全花在 `reasoning_content` 上、`content:null` ⇒ chat 腿判 `probe_response_inconclusive` ⇒ 永远到不了 `healthy_confirmed` ⇒ 模型不可路由。实测命中 `z-ai/glm-5.3-flash`（凭据 2） | 规则不对称 | 本轮**不改**：「2xx 不等于健康、必须有正向证据」是本仓 2026-10-20 12h 审计轮**刻意**立的规矩（`bg/probe_observation_beat_gate_20261020_test.go` 整篇在钉）。要改必须单独一轮，并同时回答「reasoning 模型的探针预算该给多少」（32 ⇒ 多少）和「`finish_reason=length` + `content:null` 算不算协议可达证据」 |
 | **L11** | **auto-route 成本聚合链从未接线**：`api_key_model_cost` 的填充 trigger `trg_update_api_key_model_cost` 在正典与**全部** startup 迁移里都不存在（只在归档 feature doc 里建过，且建在 v1 表上）；**真库全触发器清点确认它没挂在任何表上**（函数 `update_api_key_model_cost()` 存在但**无调用方**）⇒ 该表**0 行**、**无任何索引** ⇒ 原函数里的 `ON CONFLICT (bucket, api_key_id, raw_model)` 会报 42P10。⇒ `/api/admin/auto-route/cost/customer` 与 `/api/admin/auto-route/cost/model` **从功能设计出来那天起就一直返回 `[]`**，与 request_logs 退役**无关**。⚠ **证据口径订正**：本条原先用 `pg_stat_user_tables.n_tup_ins = 0` 当「一行都没写过」的证据，**该读数已被本轮的真库门污染**（PG 计入回滚事务的插入，门用 `defer tx.Rollback()` 造夹具 ⇒ 连跑 3 次门计数 13→16、行数恒 0）⇒ 证据已换成**「触发器在不在 + 现在几行」**（§5.12.2 订正框 / §5.12.3） | 新功能缺口（非退役残留） | 按依赖序复活：① 写侧补 `canonical_id`（会话族现 0/NULL）与 `cost_usd` 的计价来源 → ② `api_key_model_cost (bucket, api_key_id, raw_model)` UNIQUE 索引 → ③ 在 `session_turns_hot` 上挂会话族版聚合 trigger（v1 版的 `outbound_model`/`client_model` 列在会话族不存在，**不能直接复用原函数体**）。**读源切换已完成**（迁移 883）。本轮**不做**（属新功能 + 要动写热路径） |
+| **L12** | **「删除 `_request_logs`」这一步的真正阻塞项是 canonical 视图的 v1 臂（臂3）**：`pg_depend` 真库清点 ⇒ `_request_logs` 被 **7 个视图**依赖，其中 3 张分析视图已于迁移 884 收口 ⇒ 还剩 **4 个**：`request_logs_with_current_month`（**臂3**：`..._without_request_class_due_at` LEFT JOIN LATERAL（`_request_logs_hot ∪ _request_logs`）带双反连接去重）、`..._without_customer_id`、`..._without_request_class_due_at`、`request_logs_bodies_progress`。后 3 张是**有意建成**的 v1-only 中间层（`cmd/gateway/request_logs_view_session_arm_pin_test.go` 双向钉住形状与代码清单）⇒ **不能单独删**；臂3 现在**恒空**（v1 已清空）⇒ 删掉它不改变读数，但**会改变 canonical 视图的形状** ⇒ 撞上多道形状门 | 最终删除步骤（与 canonical 臂3 绑定） | ① 先让 canonical 视图在**不依赖 v1** 的前提下重建（臂3 恒空 ⇒ 语义上可去，但要同步改 shape 门与 `db/request_logs_view_schema.go` 的 composer、`db/request_logs_view_dump_generation_test.go` 的世代钉）；② 再把 3 张 v1-only 中间层与它们在 `v1OnlyRequestLogsViews` 的登记一并去掉；③ 最后 `DROP TABLE _request_logs*`（注意 860 的设计：待删标志在**父表**，月分区名**不带**前缀 ⇒ 一起删）。**本轮不做**（属最终删除步骤，牵动 canonical 形状） |
 
 ### 6.1 既有失败的归因（**不是**本轮引入）
 
@@ -1637,6 +1642,299 @@ model_cost_per_task_view 含 FROM session_turns st_par? → true
 （13 → 连跑 3 次门 → 16），根因是 PG 计入回滚事务的插入。
 ⇒ 这条已写进 §5.12.2 的订正框与 §5.12.3 的证据链，**证据已换成「触发器 + 行数」**。
 
+## 5.13 ★ 续做收口：3 张 v1 裸母表分析视图改读会话族（迁移 884）+ 一次**量具订正**
+
+### 5.13.1 ★ 先说本轮最大的发现：**上一轮（和我自己）用了一把坏尺子**
+
+上一轮 §4.2 的结论是「**5 张** `v_*` 视图仍读 v1 裸母表」，判定写法是：
+
+```sql
+pg_get_viewdef(v) LIKE '%_request_logs%'
+```
+
+⇒ **SQL 的 `LIKE` 里 `_` 是「单字符通配符」**（不是字面下划线）⇒ 这条判据会把
+**canonical 视图名 `request_logs_with_current_month`** 也判成命中
+（`%` + `_` 匹配掉 `request_logs` 前面那个空格）⇒ **假阳性**。
+
+用**精确仪器**（`strpos` 精确子串 / 正则 + 词边界）重判全部 13 张触及
+`request_logs` 族的视图，真库读数：
+
+| 视图 | 精确：含 `_request_logs` 字面量 | 精确：含 `session_turns` | 旧 LIKE 判据 | 结论 |
+|---|---|---|---|---|
+| `request_logs_with_current_month` | **t** | t | t | 真读 v1（**canonical，本就该有 v1 臂**） |
+| `request_logs_with_current_month_without_customer_id` | **t** | f | t | 真读 v1（**有意建成**的 v1-only 中间层） |
+| `request_logs_with_current_month_without_request_class_due_at` | **t** | f | t | 同上 |
+| `request_logs_bodies_with_current_month` | **t** | f | t | 同上 |
+| `request_logs_bodies_progress` | **t** | f | t | 同上（v1 正文回填进度，冻结族上**恒 0 是正确读数**） |
+| **`v_continuation_effectiveness`** | **t** | f | t | **真读 v1 裸母表** |
+| **`v_node_switch_analysis`** | **t** | f | t | **真读 v1 裸母表** |
+| **`v_timeout_effectiveness`** | **t** | f | t | **真读 v1 裸母表** |
+| `routing_analytics_source` | f | f | t | 读 canonical ⇒ **已切**（假阳性） |
+| `v_model_health_dashboard` | f | f | **t** | **假阳性**（只提到 canonical 名） |
+| `v_probe_system_health` | f | f | **t** | **假阳性**（同上） |
+| `customer_cost_view` / `model_cost_per_task_view` | f | t | f | 本轮 883 已切 |
+
+⇒ **订正**：上一轮说「5 张」，**实为 3 张**；`v_model_health_dashboard` 与
+`v_probe_system_health` 是**假阳性**（它们只提到 canonical 视图名）。
+⇒ 而上一轮**自己写的 883 POST_CONDITION 用的就是这条坏判据**
+⇒ 本轮一并订正（迁移 883 的内容指纹因此变化，通道按契约**自动重放**：
+`content replay (ledger c005c02cb438 -> file cb0da6adfb7c)`，幂等、视图体不变）。
+⇒ **本仓自己的门 `internal/sqlreadguard` 用的是正则 + 词边界
+（`(?i)\b(FROM|JOIN)\s+(public\.)?_?request_logs\b`）⇒ 那个门是对的**，
+坏的只有我们临时写的 ad-hoc 读数与文档里的命令。
+⇒ **判别动作：判「某个名字出现了没有」时，别用 `LIKE` 配 `_`**——
+`_` 是通配符；要精确就用 `strpos` / `position` / 正则 + 词边界。
+
+### 5.13.2 这 3 张视图为什么值得收口（缺陷本体）
+
+| # | 视图 | 原读源 | 后果 |
+|---|---|---|---|
+| 1 | `v_continuation_effectiveness` | `FROM _request_logs`（24h 窗） | **恒 0 行**、无错误信号 |
+| 2 | `v_node_switch_analysis` | `FROM _request_logs`（24h 窗） | **恒 0 行**、无错误信号 |
+| 3 | `v_timeout_effectiveness` | `FROM _request_logs`（24h 窗） | **恒 0 行**、无错误信号 |
+
+真库读数（改读源前）：`_request_logs` **0 行**；三张视图 **0 / 0 / 0 行**。
+
+**两条额外的理由**（都不在「读源」这一层，但正是它们让这批优先）：
+
+1. **它们是「后期删除 `_request_logs`」的依赖阻塞项。**
+   `pg_depend` 真库清点（2026-10-20）：
+
+   | v1 表 | 被哪些对象依赖 |
+   |---|---|
+   | `_request_logs` | **7 个视图**：`request_logs_with_current_month`（canonical）、`..._without_customer_id`、`..._without_request_class_due_at`、`request_logs_bodies_progress`、**`v_continuation_effectiveness`**、**`v_node_switch_analysis`**、**`v_timeout_effectiveness`** |
+   | `_request_logs_hot` | canonical + 2 个 `without_*` 视图 |
+   | `_request_logs_bodies` | `request_logs_bodies_progress`、`request_logs_bodies_with_current_month` |
+   | `_request_logs_bodies_hot` | `request_logs_bodies_with_current_month` |
+
+   ⇒ **没有任何表 / 物化视图 / 函数**依赖 v1 族 ⇒ 阻塞项**全是视图**。
+2. **这 3 张是唯一「没有任何 API/Go 代码消费」的 v1 读面**
+   （全仓 grep 只命中 `internal/sqlreadguard` 的 DEBT 登记与文档）
+   ⇒ 收口它们**零 API 影响**。
+
+⇒ 而剩下 4 个阻塞项（canonical 与 3 张 v1-only 中间层）是**有意建成**的
+（`cmd/gateway/request_logs_view_session_arm_pin_test.go` 把它们登记在
+`v1OnlyRequestLogsViews`，并有双向门钉住形状）⇒ 真正的最后一步是
+**canonical 的 v1 臂（臂3）**，那是另一件事、且必须与那 4 张一起动
+⇒ 本轮**不碰**，登记为后续（§5.13.6）。
+
+### 5.13.3 能改读**且不丢能力**（逐列查类型，不是靠记忆）
+
+会话族的 6 个「细节语义列」在 **`session_turn_details` / `_hot`** 上**都有**
+（真库 `information_schema` 逐列核过），且与 v1 **类型完全一致**
+⇒ `CREATE OR REPLACE VIEW` 可直接替换（列名/列序/类型都不变）：
+
+| 语义列 | v1 `_request_logs` | 会话族 details | 一致 |
+|---|---|---|---|
+| `is_continuation` | boolean | boolean | ✓ |
+| `cached_response_id` | bigint | bigint | ✓ |
+| `context_size_tokens` | integer | integer | ✓ |
+| `node_switch_count` | integer | integer | ✓ |
+| `timeout_mode` | character varying | character varying | ✓ |
+| `effective_timeout_seconds` | integer | integer | ✓ |
+| `error_kind` / `latency_ms` / `success` / `ts` | text / integer / boolean / timestamptz | 同（**turns 侧**） | ✓ |
+
+⚠ **canonical 视图不能复用**：`request_logs_with_current_month` 的 118 列里
+**不投影**这 6 列（实测）⇒ 只能用会话族**直连**形态
+（`session_turns*` LEFT JOIN `session_turn_details*`）。
+⇒ details 覆盖率真库实测 **100%**（877/877 parent、312/312 hot，无一行缺 details）。
+
+**两条腿的选择**：`hot ∪ parent UNION ALL`，join 键与 canonical 视图的会话臂
+**逐字相同**（`d.tenant_id::text = t.tenant_id::text AND d.request_id = t.request_id
+AND d.partition_date = t.partition_date`）。
+⇒ 前提（真库实测，也是门里的前提断言）：**hot ∩ parent 无重叠**（turns 0 行、
+details 0 行）⇒ 这 3 张都是**计数型**指标，UNION ALL **不会**把同一行数两次
+（这与 5 分钟窗那种指标只取 hot 单腿是同一个理由）。
+
+### 5.13.4 改完之后：一张**活了**，两张仍空但**成因可证明**
+
+| 视图 | 改前 | 改后 | 成因 |
+|---|---|---|---|
+| `v_node_switch_analysis` | **0 行** | **16 行**（16 个小时桶、314 个请求、成功率与延迟齐全） | ✅ **读源通了** |
+| `v_continuation_effectiveness` | 0 行 | 0 行 | 底层 `session_turn_details` 里 `is_continuation` **0 行** ⇒ **本来就没有这种流量**（不是读源错） |
+| `v_timeout_effectiveness` | 0 行 | 0 行 | 底层 `effective_timeout_seconds` 非 NULL **0 行** ⇒ **本来就没有这种流量** |
+
+⇒ 这是 §10.6「0 的两种成因」的**第三个实例**：
+**「空」从「读源错」变成了「没有这种流量」，而且这次后者是**可证明**的**
+（底层列的计数直接给出了证据）⇒ 改读源把「不知道为什么空」变成了「知道为什么空」。
+
+### 5.13.5 判据（2 道）+ 4 处变异全部转红
+
+| 门 | 钉什么 | 变异 → 转红 |
+|---|---|---|
+| `admin/v_analytics_views_session_source_test.go`（**真库 + 造夹具**） | 三张视图真的取到会话族的值；5 条前提断言（v1 族为空、定义体无 v1 引用、夹具不在 parent 腿、夹具每行都有 details、两个桶里除夹具外无别的行）；**阴性侧**：窗口外（>24h）的行不得被计入 | **M1** 改回读 v1 ⇒ 前提断言红；**M2** 删掉 24h 窗口 ⇒ 阴性侧红；**M3** 断 details join ⇒ 红；**M4** 只留 hot 腿 ⇒ 红（**parent 腿夹具缺失**） |
+| `sql/migrations/startup/migration_884_..._test.go`（契约门 6 道） | 迁移体读会话族 + 两条腿 + join 键 + 每张视图自己那几列（**并集**覆盖 6 列）+ 24h 窗口；down 用 **860 之后的物理名** `_request_logs`；**4 份文件正文逐字相同**；embeddata 一致；**三处登记**；**★ 第 0 条：判据的判据** | 把 883 的好写法改回坏 `LIKE` ⇒ 红；去掉任一登记 ⇒ 红 |
+
+**★ 夹具的三个坑（本门实测踩出来的，写在这里给下一个人）**：
+
+1. **桶会被真实流量污染** ⇒ 断言只能写成「≥」⇒ 那是弱判据。
+   ⇒ 解法：夹具放到**未来**的整点（视图窗口 `ts > now()-24h` **没有上界**
+   ⇒ 未来行在窗内，而真实流量不可能有未来时间戳）⇒ 该桶**独占** ⇒ 断言可精确。
+2. **窗口外的桶不能写死**（本门第一版写死「now-30h」）⇒ 那个桶里**恰好有 1 行
+   真实数据** ⇒「该桶为空」的前提不成立 ⇒ 阴性侧断言分不清是「窗口条件被删坏」
+   还是「那个桶本来就有数据」。
+   ⇒ 解法：**动态找**一个「证明为空」的窗口外小时桶（从 now-28h 往后逐小时试，
+   找第一个两条腿都没行的）。
+3. **只往 hot 腿插夹具 ⇒ 「漏掉 parent 腿」的变异抓不到**（夹具在 hot，
+   hot 单腿照样能取到它）⇒ 必须再插一条**只在 parent 腿**的夹具
+   （本门用 `switches=994` 做哨兵）。
+
+**M4 变异为什么值得单独做**：它是三条断言里唯一能证明「两条腿都在」的；
+没有它，视图被改成 hot 单腿（父表 877 行全丢）这门**照样绿**。
+
+### 5.13.6 遗留：真正的「最后一步」是 canonical 的 v1 臂（臂3）
+
+收口这 3 张之后，`_request_logs` 还被 **4 个视图**依赖：
+`request_logs_with_current_month`（canonical 的**臂3**）、
+`..._without_customer_id`、`..._without_request_class_due_at`、
+`request_logs_bodies_progress`。
+⇒ 那 3 张 v1-only 中间层是**有意建成**的（`request_logs_view_session_arm_pin_test.go`
+双向钉住形状与代码清单）⇒ **不能单独删**。
+⇒ 真正要删 v1 表时，**臂3 必须与它们一起走**（臂3 现在恒空 ⇒ 删掉它不改变读数，
+但会改变 canonical 视图的形状 ⇒ 撞上好几道形状门）。
+⇒ 登记为后续项（**L12**），本轮**不做**（属最终删除步骤，牵动 canonical 视图形状）。
+
+### 5.13.7 ★ 我自己引入的一个**新装路径**缺陷，以及为此立的**基线自洽门**
+
+**缺陷本体**：884 把 3 张视图的读源换成会话族（`session_turns_hot` / `session_turn_details*`），
+而我在**同一轮**顺手把**安装器实际使用的那份基线**
+（`installer/cmd/llm-gw-installer/embeddata/01-schema.sql`）**也**改了
+⇒ 884 的视图体里出现了 `FROM public.session_turns_hot` / `FROM public.session_turn_details_hot`。
+
+而这些关系**基线并不创建**：
+
+| 关系 | 谁建 | 基线里有吗 |
+|---|---|---|
+| `public.session_turns`（parent） | **基线自建** | ✅ 有 |
+| `public.session_turns_hot` | 启动序列 `session_turns_hot_bootstrap.sql`（TSV index 9） | ❌ **没有** |
+| `public.session_turn_details` / `_hot` | 迁移 733 / 802（启动序列） | ❌ **没有** |
+
+基线是**逐语句**应用的，而 `CREATE VIEW` **急切校验**它引用的关系 ⇒ 新装在基线里报：
+
+```
+ERROR:  relation "public.session_turns_hot" does not exist
+LINE 24:            FROM public.session_turns_hot st
+```
+
+并**中止整个安装**（真库临时库实测，2026-10-20）。
+而**升级路径是绿的**（那些表早就存在）⇒ **「升级路径绿」≠「新装路径绿」**。
+
+> 取数命令（复现口径）：
+> ```bash
+> SCRATCH=$(echo "$DATABASE_URL" | sed 's#/[^/]*$#/scratch_fresh3#')
+> psql "$DATABASE_URL" -c "CREATE DATABASE scratch_fresh3;"
+> psql "$SCRATCH" -v ON_ERROR_STOP=1 -q -f installer/cmd/llm-gw-installer/embeddata/01-schema.sql
+> ```
+> 覆盖范围：本机 PG 18.10（127.0.0.1:54318）；**只跑基线**（不跑启动序列），
+> 因为缺陷就发生在基线时点。启动序列里 `session_turns_hot` 由
+> `session_turns_hot_bootstrap.sql`（TSV index 9）建 ⇒ 基线时点还不存在。
+
+**纠正**：5 张视图（2 成本 + 3 分析）的 **4 份副本**（canonical `sql/schema/01-schema.sql`、
+`deploy/sql/schemas/baseline/01-schema.sql`、installer `embeddata/01-schema.sql`、
+以及 `sql/objects/views/*.sql` 的说明头）全部回到 **v1 fallback 体**：
+基线自建 `public.request_logs` / `public.request_logs_hot` ⇒ 该体在基线时点**有效**；
+**部署形态由迁移 883 / 884 换上** ⇒ 两条路径跑完启动序列后**形态一致**。
+
+> 实测（2026-10-20，新装链跑完 vs 存量升级后的真库，逐字同形）：
+> ```
+> SELECT v.relname, strpos(pg_get_viewdef(v.oid,true),'session_turns')>0 AS sess,
+>        strpos(pg_get_viewdef(v.oid,true),'_request_logs')>0 AS lit_v1
+> FROM pg_class v JOIN pg_namespace n ON n.oid=v.relnamespace
+> WHERE v.relkind='v' AND n.nspname='public' AND v.relname IN
+>  ('customer_cost_view','model_cost_per_task_view','v_continuation_effectiveness',
+>   'v_node_switch_analysis','v_timeout_effectiveness') ORDER BY v.relname;
+> ```
+> 两条路径 5 张视图全部 `sess=t, lit_v1=f` ⇒ 同形。
+
+> 顺带查明：883 只改了 canonical + deploy-baseline 两份（**没改**安装器那份）
+> ⇒ 883 留下 3 份副本分叉，但**没有破新装**（883 的读源 `session_turns` 是基线自建的）。
+
+**判据**：`sql/schema/baseline_view_refs_test.go` —— **基线自洽门**（静态，常驻）：
+
+1. 采集基线**创建**的对象（TABLE / VIEW / MATERIALIZED VIEW / SEQUENCE / TYPE /
+   FUNCTION / PROCEDURE / DOMAIN / EXTENSION / FOREIGN TABLE）；
+2. 逐个 `CREATE VIEW` 的定义体，抓 `FROM` / `JOIN` 后面的关系名；
+3. 排除 **CTE**（`WITH x AS (…)` / `, x AS (…)`）—— CTE 不是关系；
+4. 每个被引用的关系**必须**在 ① 里 ⇒ 否则报出来。
+
+| 变异 | 结果 |
+|---|---|
+| 把基线里 `public.request_logs rl` 改成 `public.session_turns_hot rl` | **红**，并点名 `public.customer_cost_view → session_turns_hot` |
+| 恢复 | 绿 |
+
+⚠ **这道门自己踩的量具坑（必须写下来）**：Go 的 `regexp` 里第一版漏了 `m` 标志
+⇒ `^` 只匹配**整串开头** ⇒ **扫到 0 个视图** ⇒ 门会「安静通过」
+（0 个视图自然没有违规，**空集合同样满足「没有违规」**）
+⇒ 门自带两条 Fatal：「采集到 0 个已创建对象」/「扫到 0 个视图」
+⇒ 这是判据纪律第 3 条（「没被阻断」有两种成因，必须把「看不见」单独判掉）的又一形态，
+**在门自己身上**发生了一次。
+
+### 5.13.8 ★ 新装链本身断在 853（**既有缺陷**，与本轮无关，但挡住了「新装可跑通」这个交付物）
+
+**现象**：把链容错跑完（每条迁移独立事务、失败不遮后面）后，新装链在
+`853_credential_probe_queue_automatic.sql` 报：
+
+```
+ERROR:  relation "public.credential_probe_queue" does not exist
+```
+
+⇒ 安装器 `InitSchema` 遇错即返回 ⇒ **整个新装中止**。
+
+**根因**：853 的**文件头自己声明**依赖「489/490_credential_probe_queue_*（队列表本体）」，
+而**那两条从未登记进 `StartupFiles`** ⇒ 队列表在新装环境里根本不存在。
+853 的 runner 注释本来就写着「Fresh installs hit 42703 … **once 489/490 create the queue**」
+——**事实是它们没被登记**。
+
+**既有性证明**（pristine HEAD 工作树，AGENTS.md 纪律：证「既有失败与我无关」用强证据）：
+
+```bash
+git worktree add /tmp/lgw-pristine-20261020 HEAD        # = 7c8aad856
+# 用同一套集成测试、同样的临时库跑 pristine
+```
+
+⇒ pristine **同样在 853 失败** ⇒ **既有缺陷，与本轮无关**。
+
+**修法**（3 处登记 + 1 处生成，489/490 都幂等且自包含：不引用其它关系）：
+
+| 点位 | 动作 |
+|---|---|
+| `installer/cmd/llm-gw-installer/embeddata/startup/489_*.sql`、`490_*.sql` | 从 canonical **逐字节**复制（`cmp` 验过） |
+| `installer/cmd/llm-gw-installer/main.go` | `go:embed` ×2 + embed map ×2 |
+| `installer/internal/dbinit/runner.go` | `StartupFiles` ×2 —— 必须排在 853 **之前**（853 是 `ALTER TABLE` 那张表） |
+| `sql/schema/installed_startup_migrations.tsv` | **用生成器**产出（`cd installer/internal/dbinit && go test -run TestStartupManifest -update`），序号不写死 |
+
+**顺带修了链门自己的量具**（`startup_chain_gate_test.go`）：它的 `runInstallerPSQL`
+无条件加 `--single-transaction`，而真实安装器（`dbinit.Runner.applySQL`）会把带
+`dbinit:no-transaction` 标记的文件送到**非事务通道**
+⇒ 718/719/807/822/845/871/877 这 7 条含 `DROP/CREATE INDEX CONCURRENTLY` 的迁移
+在**这个门里**被误报成「链上新破坏」
+⇒ **量具比被测对象更严 ⇒ 造假阳性**（§10.9）。
+修正后这 7 条全绿 ⇒ 原 18 条「已审阅失败项」里有 **10 条早已不再失败**（只是没人跑这个门）
+⇒ 按该表自带的收缩规则逐条删除 ⇒ **本表清空**
+⇒ 门的含义变成最锐的一条：**「整条 fresh-install 链必须一条不落地应用成功」**。
+
+**顺带修了 2 条过期 pin**（都是被 853 中止掩盖、853 一通就露出来的）：
+
+| 断言 | 旧值 | 新值 | 依据（实测） |
+|---|---|---|---|
+| `session_turns_hot` 列数 | 104（2026-10-01 的 pin） | **106** | 821 加 `is_abandoned`、823 加 `request_status`；**新装链临时库 106**、**生产真库 106**（两者一致 ⇒ 钉的是「新装与生产同形」） |
+| 「734 视图链可查」查的表 | `public.request_logs` | `public._request_logs` | 迁移 **860**（`860_rename_request_logs_family_pending_delete`，链内 index 257）把族整体改名成 `_` 待删标志形态；**部署通道也跑 860** ⇒ 生产真库同样是 renamed 代（实测 `_request_logs` 在、`request_logs` 不在） |
+
+**结果**（真库 PG 18.x 临时库，**真实 `psql` 逐条跑**，不是静态分析）：
+
+| 门 | 修前 | 修后 |
+|---|---|---|
+| `TestStartupChainGapsMatchReviewedSet` | 8/280 失败 + 18 条过期项 ⇒ **红**（且真缺陷与 7 条假破坏混在一起） | **0 of 282 fail，0 expected ⇒ 绿** |
+| `TestFreshInstallerSessionTurnsHotBootstrap` | **在 853 中止**（新装根本不成立） | **PASS**（42.6s，整链跑完 + 形状断言全过） |
+| 新装后 5 张视图读源 | — | 与存量真库**逐字同形**（`sess=t, lit_v1=f`） |
+
+**未做（并说明为什么）**：489/490 **不**进部署通道
+（`scripts/apply-db-revision-sequence.sh` 的 `files=()`）
+——生产真库已有该表（33 列 + `automatic` 列、173 行，2026-10-20 实测）⇒ 对存量库是 no-op；
+进通道只会在生产上新建一个用不到的对象。
+
+---
+
 ## 7. 本轮新增的经验
 
 ### 7.1 「执行快」不等于「语句快」：EXPLAIN 的 Execution Time 会骗人
@@ -1912,3 +2210,88 @@ chat 腿不接受」——这类**协议腿之间的规则不对称**，靠读�
   （**没有任何单个 API ≥2000ms**），其自身端点最大 221ms
   （`admin/dashboard/swim-lane-init`）⇒ 页面耗时是 87 个并行请求的聚合 + SPA 渲染。
 - 溯源：request_logs→session_turns 复核轮 §5.12.7；[复盘](docs/audit/2026-10-20-request-logs-session-turns-复核轮.md) §5.12.7。
+
+### 10.8 ★ 判「某个名字出现了没有」时，别用 `LIKE` 配 `_`：`_` 是**单字符通配符**
+
+- 场景：上一轮判定「哪些视图还读 v1 裸母表」用的写法是
+  `pg_get_viewdef(v) LIKE '%_request_logs%'` ⇒ 结论是「**5 张** `v_*` 视图读 v1」。
+  本轮用精确仪器重判 ⇒ **实为 3 张**，另两张（`v_model_health_dashboard` /
+  `v_probe_system_health`）是**假阳性**。
+- 根因：SQL 的 `LIKE` 里 **`_` 匹配任意单字符**（不是字面下划线）⇒
+  `'%_request_logs%'` 会把 `request_logs_with_current_month`（**canonical 视图名**）
+  也判成命中（`%` + `_` 吃掉了 `request_logs` 前面那个空格）⇒
+  **「v1 族」与「canonical」被混为一谈**。
+  ⇒ 而本轮**我自己新写的 883 POST_CONDITION 用的也是这条坏判据** ⇒
+  同一把尺子在一轮内坑了两次（上一轮的结论 + 本轮的迁移自检）。
+- 防复发检查：① 判「某个标识符出现了没有」**不用 `LIKE` 配 `_`**：用
+  `strpos(x, '_request_logs') > 0`（精确子串）、`position(...)`、
+  或**正则 + 词边界**（`\b` 尾巴是关键：`request_logs_with_current_month`
+  里的 `_` 是词字符 ⇒ `\b` 不成立 ⇒ 不会误判）；
+  ② **先确认判据能分辨「要判的那个」与「最像它的那个」**——本例最像的是
+  canonical 视图名；③ 判据自己错了时，它钉的一切都是假的 ⇒
+  **给判据配一条「判据的判据」**（本轮 `TestMigration884_JudgmentInstrumentDistinguishesV1FromCanonical`
+  就是这条：断言精确仪器命中 v1 字面量、**不**命中 canonical 名，并核对仓库自己的门里
+  仍然是那条正则）；④ 上一轮写下的**数量型结论**（「5 张」）在下一轮要**重算**，
+  不要直接引用——本轮就是靠重算才发现上一轮多算了 2 张。
+- 证据：真库 `pg_get_viewdef` 精确重判 13 张视图（§5.13.1 的表）：3 张真读 v1、
+  2 张假阳性；`internal/sqlreadguard` 的正则 `(?i)\b(FROM|JOIN)\s+(public\.)?_?request_logs\b`
+  对两者的判定分别是「命中 / 不命中」⇒ 仓库的门是对的。
+- 溯源：request_logs→session_turns 复核轮 §5.13.1 / §10.8；[复盘](docs/audit/2026-10-20-request-logs-session-turns-复核轮.md) §5.13.1。
+
+### 10.9 ★ **量具比被测对象更严 ⇒ 造假阳性**：修尺子要先于下结论
+
+- 场景：仓库自带的 fresh-install 链门 `TestStartupChainGapsMatchReviewedSet`
+  报告「8 条新破坏」，其中 7 条的错误都是
+  `DROP/CREATE INDEX CONCURRENTLY cannot run inside a transaction block`。
+- 根因：**门自己的执行通道**（`runInstallerPSQL`）无条件加 `--single-transaction`，
+  而**真实安装器**（`dbinit.Runner.applySQL` 与同包的 `applyInstallerSQL`）
+  会把带 `dbinit:no-transaction` 标记的文件送到**非事务通道**
+  ⇒ 这 7 条在**门里**必然失败，在**真安装器里**其实成功
+  ⇒ **量具比被测对象更严 ⇒ 量具造的假阳性**。
+- 危害比「假绿」更隐蔽：门的失败集合里**混着真缺陷**（853 的队列表缺失）
+  与**假破坏**（7 条事务包裹）⇒ **信号被淹没**，真缺陷没人看得见；
+  而且门长期红着 ⇒ 没人相信它 ⇒ 它彻底退化成摆设。
+- 防复发检查：① **量具的执行通道必须与被测系统的执行通道逐字一致**
+  （同一套标记分流、同一套事务语义）；② 门的失败集合要**分类**看：
+  「真破坏」与「量具造成的破坏」必须分开记账，不能混进同一张 allowlist；
+  ③ 门红了先问「**是我的尺子坏了吗**」，再问「被测对象坏了吗」；
+  ④ 修完尺子要**重跑**并把 allowlist 按该门自带的收缩规则清理干净
+  （本轮清空 18 条 ⇒ 门从「8 坏 / 18 期望」变成「0 坏 / 0 期望」）。
+- 证据：本机 PG 18.10 临时库逐条实跑 —— 修前 `8 of 280 fail`，
+  修后 `0 of 282 fail, 0 expected`（§5.13.8 的结果表）。
+- 溯源：request_logs→session_turns 复核轮 §5.13.8 / §10.9。
+
+### 10.10 ★ **「升级路径绿」≠「新装路径绿」**：基线必须自洽
+
+- 场景：迁移 884 改读会话族后，**升级路径**（真库）一路绿、部署后读数也对；
+  而**新装路径**在基线第 18647 行就报 42P01 并**中止整个安装**。
+- 根因：基线（`01-schema.sql`）是**逐语句**应用的，而 `CREATE VIEW` 会
+  **急切校验**它引用的关系 ⇒ 只要基线里写了
+  `FROM public.session_turns_hot`（这个关系由**启动序列**建、基线不建），
+  新装就必然在这里死。**升级路径看不出这个问题**（那些表早就存在）。
+- 防复发检查：① 改视图/改表时，**先问「这个关系在基线时点存在吗」**
+  ——基线自建的是「基线自己 CREATE 出来的」，启动序列建的是「基线时点还没有」；
+  ② 视图的**部署形态**交给**迁移**换上，**基线保留 fallback 体**
+  （基线自建 `request_logs` ⇒ fallback 体在基线时点有效）⇒ 两条路径最终同形；
+  ③ 立一道**基线自洽门**（静态、��驻）把「基线引用了基线不创建的关系」这条
+  变成**常驻**约束，而不是靠某次新装撞出来；
+  ④ 门自己也要防「扫到 0 个对象就安静通过」（§5.13.7 的量具坑）。
+- 证据：新装临时库实跑（基线 exit=0 修复后）；新装链 282 条全绿；新装后 5 张视图
+  与存量真库**逐字同形**（§5.13.7 / §5.13.8）。
+- 溯源：request_logs→session_turns 复核轮 §5.13.7 / §10.10。
+
+### 10.11 ★ 判「这条迁移会不会在链上跑」时，看**它自己声明的依赖**是否在链里
+
+- 场景：853 在新装链上报「队列表不存在」。读 853 的 runner 注释，
+  它明明白白写着「once **489/490** create the queue」
+  ⇒ **作者以为 489/490 在链里**，实际那两条**从未登记**。
+- 通式：一条迁移**自己文件头里声明的依赖**，就是它最可信的依赖清单
+  ⇒ 链上断链时，**先拿被断的那条的声明去查链**，比翻全链快得多。
+  顺带：对同一个对象的「创建者」往往有好几条（这里 489 建表、490 补列、
+  853 加 `automatic` 列）⇒ 断链常常是**整族没登记**，不是单条漏登记。
+- 防复发检查：① 登记一条启动迁移时，把它的**声明依赖**一起核对是否在 `StartupFiles` 里；
+  ② 链上顺序要**按依赖排**（489/490 必须在 853 之前）；
+  ③ 登记后**重跑整链**并对比失败集合（`knownStartupChainGaps` 这类 allowlist
+  能给出「改前 vs 改后」的精确差集）。
+- 证据：853 文件头 + runner 注释 + pristine 工作树复现（既有性）+ 补登后 0/282 失败（§5.13.8）。
+- 溯源：request_logs→session_turns 复核轮 §5.13.8 / §10.11。
