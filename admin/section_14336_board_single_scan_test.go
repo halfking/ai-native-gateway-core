@@ -46,6 +46,29 @@ import (
 
 const fallbackSrc14336 = "dashboard_board_fallback.go"
 
+// ★★★★ 剥注释层（2026-10-21 补）—— **本门的第一版踩了仓内第 5 处同款坑**。
+//
+// 仓内既有纪律（见 cmd/gateway/dual_read_gate_test.go 的 stripGoComments、
+// internal/sessionv2mirror/abandoned_turn_gate_test.go 等 10+ 处实现）：
+// ★ **「判据一旦能在注释里被满足，就不是判据」**。
+//
+// ★★ **本轮实测抓到自己的两个 needle 可被注释满足**（剥注释后消失）：
+//   - `(SELECT`   —— 改前形态的「顶层标量子查询」标记；
+//   - `AVG(`      —— 「聚合必须保持 DISTINCT 形态」这条禁项。
+//   ⇒ **改前形态恰好写在【注释】里**（本函数上方的长注释描述了旧形态）
+//   ⇒ ⇒ **不改剥注释层 ⇒ 改前的双扫形态会被判绿** ⇒ 门没有牙。
+//
+// ⇒ ★★ **纪律要靠「检索既有实现」来继承，不能靠记忆**（远端 LESSONS 2026-10-21 第一条）。
+//
+// ★★ **剥注释器必须是【状态机】而不是正则** —— 本轮第一版用了正则
+//   （`(?m)//[^\n]*` / `(?s)/\*.*?\*/`）⇒ **自证门当场抓到它把字符串字面量里的
+//   `//` 与 `/* */` 也吃掉了**（仓内 `admin/request_logs_retirement_tiering_test.go`
+//   的 `stripGoCommentsKeepingStrings` 就是状态机实现 ⇒ **同包直接复用**）。
+//   ⇒ 正则实现会在遇到 URL 字面量（"http://…"）时把后面整行吃掉。
+func stripGoComments14336(src string) string {
+	return stripGoCommentsKeepingStrings(src)
+}
+
 // sqlTemplates14336 返回一个 .go 文件里所有反引号 SQL 模板（fmt.Sprintf 的实参）。
 func sqlTemplates14336(src string) []string {
 	var out []string
@@ -72,7 +95,9 @@ func boardFallbackBody14336(t *testing.T) string {
 	if err != nil {
 		t.Fatalf("read %s: %v", fallbackSrc14336, err)
 	}
-	body := goFuncBodyStrict(string(src), "func (h *Handler) fillOverviewCountsFromLogs(")
+	// ★★ 剥注释后再取函数体（判据不得被注释满足）
+	body := goFuncBodyStrict(stripGoComments14336(string(src)),
+		"func (h *Handler) fillOverviewCountsFromLogs(")
 	if body == "" {
 		t.Fatalf("fillOverviewCountsFromLogs not found in %s", fallbackSrc14336)
 	}
@@ -89,7 +114,8 @@ func boardFallbackSQL14336(t *testing.T) string {
 	if err != nil {
 		t.Fatalf("read %s: %v", fallbackSrc14336, err)
 	}
-	body := goFuncBodyStrict(string(src), "func (h *Handler) fillOverviewCountsFromLogs(")
+	body := goFuncBodyStrict(stripGoComments14336(string(src)),
+		"func (h *Handler) fillOverviewCountsFromLogs(")
 	if body == "" {
 		t.Fatalf("fillOverviewCountsFromLogs not found in %s", fallbackSrc14336)
 	}
@@ -177,7 +203,7 @@ func TestSection14336NarrowProjectionIsNotTheFix(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read board_time_range.go: %v", err)
 	}
-	fb := goFuncBodyStrict(string(src), "func boardRequestLogsFromClause(")
+	fb := goFuncBodyStrict(stripGoComments14336(string(src)), "func boardRequestLogsFromClause(")
 	if fb == "" {
 		t.Fatalf("boardRequestLogsFromClause not found")
 	}
@@ -208,13 +234,52 @@ func TestSection14336OnlyOneDoubleScanSiteInAdmin(t *testing.T) {
 		if err != nil {
 			continue
 		}
-		for _, tmpl := range sqlTemplates14336(string(b)) {
+		for _, tmpl := range sqlTemplates14336(stripGoComments14336(string(b))) {
 			if strings.Count(tmpl, "FROM %s") >= 2 &&
 				strings.Contains(tmpl, "(SELECT COUNT(DISTINCT") {
 				t.Errorf("admin/%s 的某个 SQL 模板里出现 %d 个 FROM %%s + (SELECT COUNT(DISTINCT ⇒ 疑似双扫读面\n  模板: %q",
 					e.Name(), strings.Count(tmpl, "FROM %s"), tmpl)
 			}
 		}
+	}
+}
+
+// TestSection14336StripCommentsHasTeeth 是【剥注释器自身】的两腿自证：
+//   腿① 该剥的剥掉了：注释里的 SQL 片段不能被源码判据命中；
+//   腿② 不该剥的没剥：字符串字面量里的 "//" 与 "/* */" 不能被吃掉
+//        （否则会把真实 SQL 判成「不存在」）。
+//
+// ★ 这条门存在的理由：本门的第一版有两个 needle 可被注释满足
+//   （`(SELECT` / `AVG(`）⇒ **改前形态恰好写在注释里** ⇒ 门会判绿。
+func TestSection14336StripCommentsHasTeeth(t *testing.T) {
+	// 腿①：该剥的剥掉了
+	withComment := "x := 1 // (SELECT COUNT(DISTINCT y)\n" +
+		"/* AVG( */\n" +
+		"z := 2\n"
+	stripped := stripGoComments14336(withComment)
+	if strings.Contains(stripped, "(SELECT") {
+		t.Errorf("行注释里的 (SELECT 未被剥掉 ⇒ 源码判据可被注释满足")
+	}
+	if strings.Contains(stripped, "AVG(") {
+		t.Errorf("块注释里的 AVG( 未被剥掉 ⇒ 源码判据可被注释满足")
+	}
+	if !strings.Contains(stripped, "z := 2") {
+		t.Errorf("剥注释把真实代码也吃掉了")
+	}
+
+	// 腿②：不该剥的没剥
+	withLiterals := "u := " + "`http://example.com/a`" + "\n" +
+		"v := " + "`/* not a comment */`" + "\n" +
+		"w := 3\n"
+	stripped2 := stripGoComments14336(withLiterals)
+	if !strings.Contains(stripped2, "http://example.com/a") {
+		t.Errorf("字符串字面量里的 // 被误剥 ⇒ 会把真实 SQL 判成不存在")
+	}
+	if !strings.Contains(stripped2, "/* not a comment */") {
+		t.Errorf("字符串字面量里的 /* */ 被误剥")
+	}
+	if !strings.Contains(stripped2, "w := 3") {
+		t.Errorf("剥注释把真实代码也吃掉了")
 	}
 }
 
