@@ -5541,3 +5541,107 @@ To codeup.aliyun.com:kaixuan/official-deploy/llm-gateway-go.git
 > ⇒ ★ **绝对数一律不钉**：`hotPromoteTableMap` 条目数是**活事实** ⇒ 新门按 `len(...)` 动态对齐。
 > ⇒ ⚠ **本轮对生产的写入 = 0**；★ **语义变化 = 零**（SQL / 日志文本 / 日志级别 / 调度时刻 / 重试退避**逐字未改**）。
 > ⇒ 完整记录见 handoff `§19.20.26`。
+
+>
+> **2026-10-21 R82 轮（本会话）**：★★★★ **登记册里「9 条本轮未复现」不是被修好了** —— 被两个**互斥**机制抵消 ＋ 查出两条新机制 ＋ **给属主决策 E3 装了一颗硬约束**
+> ⇒ ★★ **官方门禁第 3 次独立运行**（干净 worktree + `KEEP_GATE_DB=1`）：`applied=279 failed=17`、**17 条全部已登记 / 0 条未登记**、`exit=0 PASS=181 SKIP=8 FAIL=0` ⇒ 与 R81 读数**完全一致** ⇒ **可复现**。
+> ⇒ ★★ **9 条「未复现」（562/610/680/696/700/710/733/808/860）一个都没被修好**，而是被两个互斥机制抵消：
+>   · **机制 A（6 条：610/680/696/700/710/733）**：canonical 已是**会话族 v2 体**（883/884 建，**118 列**）⇒ 各文件的「已具备」守卫**全部命中并 RETURN** ⇒ 文件「成功」但**什么都没做**。
+>     ⇒ ★★ 副作用（真缺口）：**610 走 RETURN 分支时不建包装链** ⇒ 两个 intermediate 视图永远不存在。
+>   · **机制 B（3 条：562/808/860）**：谓词按**旧名**写，而**重跑的起始形态是 baseline**（`01-schema.sql` 是裸 pgdump ⇒ v1 族按旧名重建 ⇒ 旧名形态自洽）⇒ **旧名谓词反而对上** ⇒ ⇒ 这正是 **[M10] 与 [M7]/[M9] 互相抵消**。
+> ⇒ ⇒ ★★ **共同根因一句话**：**官方重跑的起始形态是 baseline，不是首遍终态。**
+> ⇒ ⇒ ★ **处置：9 条一条都不删**（登记册头部的意图是「**真修好了**才退役条目」；删了 E3 一落地它们重新失败 ⇒ 变成「**新增未登记**」⇒ 门禁 die）。
+> ⇒ ★★ **新机制 [M11]：canonical 视图在链中途持续缺失**（5 条：716/734/738/740/815）
+>   ⇒ idx 69 `610` no-op（**不建包装链**）｜idx 126 `680` no-op｜idx 149/153 `696/700` no-op
+>   ｜**idx 162 `713` 无条件 `DROP VIEW IF EXISTS public.request_logs_with_current_month;` 且不重建**
+>   ｜idx 166 `710`「包装链不在场 ⇒ RETURN」⇒ **canonical 不被重建**
+>   ｜idx 169 `716` ⇒ 首报 `relation "request_logs_with_current_month" does not exist`
+>   ｜idx 183 `734` ⇒ 首报 `relation "public.request_logs_with_current_month_without_request_class_due_at" does not exist`
+>   ｜idx 187/189/219 `738/740/815` ⇒「column count = 0」⇒ 重建不收敛
+>   ｜idx 281/282 `883/884` ⇒ 重建 canonical（118 列，与终态实测一致）
+>   ⇒ ⇒ ★★ **这条链上没有一个环节是失败的** ⇒ 只看「哪条迁移报错」永远看不出它 ⇒ 与 [M8]（上游**中止** ⇒ 下游全灭）的区别就在这里。
+>   ⇒ ★ 兜底：716 头注释第 18-20 行明写「网关每次启动也会 DROP+重建」⇒ 产品 `db.ensureProbeHealthDashboardViews` 补上（实测终态 6/6 在）⇒ 属「**链不自洽 ＋ 启动兜底**」，**不是「新装即坏」**。
+> ⇒ ★ **新机制 [M12]：「`v.*` ＋ 追加同名列」⇒ 列重复**（577，官方首报 `column "customer_id" specified more than once`）⇒ 与 [M1] 同族（[M1] 不能丢列 / 这里不能重名）⇒ 根子都是「**视图列集只变宽不变窄**」。
+> ⇒ ★★★ **对属主决策 E3 的硬约束**（已写进登记册 DECISION PENDING 段）：E3 = 重跑不再重放 baseline ⇒ **改变起始形态** ⇒ ⇒ **机制 B 消失 ⇒ 562/808/860 会重新失败** ⇒ ⇒ **「E3 落地 ⇒ 这一整类消失」是错的**（它只是换形态）⇒ ⇒ **落地前后失败集必须各测一遍**；★ E1/E2 改的是链上文件本身 ⇒ **不受起始形态影响** ⇒ **E1/E2 与 E3 不互斥、也不能互相替代**。
+> ⇒ ★ **新装库 vs 生产 252 形态差异**（生产只读）：6 个 probe 视图 **6/6 在**、canonical **118 列**（两库同）、**两个包装视图：生产 2 个都在 / 新装库 0 个**、`_request_logs%`：**生产 6 / 新装 0** ⇒ ⇒ **「canonical 的 v1→v2 演进链」在全新安装上是断的** ⇒ 这是 734 失败的根因面 ⇒ 又一条「新装 ≠ 生产」证据（承 R63）。
+> ⇒ **登记册改动**（`sql/schema/startup_rerun_known_gaps.tsv`，26 条 / 13 类机制）：新增 [M11]/[M12]/[M13]；订正 **6 条**原因（577/716/734/738/740/815）；同步分组头（[M2] 2→1、[M6] 0 条、[M8] 9→5 并写明「前提已消失」、[M5]/[M7]/[M9] 补「本轮未复现」）；头部补实测读数（**17 files fail, 265 ok**）；DECISION PENDING 补 E3 硬约束。
+> ⇒ ⚠ **本轮没有改任何迁移本体、没有改任何门或脚本** ⇒ 573/603/716/734/738/740/815 仍会失败 ⇒ **真修仍是 E1/E2/E3（属主决策）**。
+> ⇒ ⚠ **「原因字段会漂移，而 ratchet 只比对文件名」⇒ 原因字段没有任何门在守**（本轮实测出的真缺口）⇒ 已登记为下轮候选。
+> ⇒ ⚠ **诚实边界**：「9 条是 no-op」= 守卫源码 + 首错缺席 + 终态形态三方对拍（**未**逐条重放）；「pass-1 结束时包装链就不存在」是从起点形态 + 终态**反推**（未克隆 pass-1 库逐点验证）；生产上包装链**谁建的未查**。
+> ⇒ 完整记录见 handoff `§19.20.27` ＋ `docs/audit/2026-10-21-R82-登记册未复现9条归因与canonical链断点.md`。
+
+> **2026-10-21 R80 轮（续四，本会话）**：★ **「全新安装形态库缺 `session_turns_hot`」不是缺陷，是链位现象** ⇒ 已闭合。
+> ⇒ ★★ **机制**：`session_turns_hot` **不由基线建**（`sql/schema/01-schema.sql:30450` 自己写明），
+> 而由 **installer 启动序列**的 `installer/cmd/llm-gw-installer/embeddata/startup/session_turns_hot_bootstrap.sql` 建
+> （登记在 `sql/schema/installed_startup_migrations.tsv` 序号 **9**）⇒ ⇒ **基线形态的库里它本来就不存在**，
+> **启动序列跑完后才在** ⇒ ⇒ ★★ 这正是 R64 轮「基线必须保留 v1 fallback 体」的**机制原因**（两条线合流）。
+> ⇒ ★★★★ **顺带挖到一个真缺口**：`db/db_fresh_install_runtime_shape_test.go` 把「缺表」**一律判成红**，
+> 而「缺表」有两种含义、单看形态分不开（**真缺陷** vs **靶子不对**）⇒ ⇒ 而 ⓪ 锚点自检只查 **4 张基线表**
+> ⇒ ⇒ ⇒ 「跑过基线、没跑安装链」的库会被放行 ⇒ ⇒ ⇒ **量具失效被报成产品缺陷**（R74 轮实测的 R69「手工子集库」正是这一类）。
+> ⇒ ★★★ **修法 = 同源判别**：判别式取**同一个 bootstrap 文件建的另一个产物** `public.promote_session_turns_hot_to_partition`（**函数**）
+> —— ★ **不能取同文件建的视图**（视图依赖那张表 ⇒ 缺表时已被 CASCADE 带走 ⇒ 会在「真缺陷」那支永远判错；**函数不随表被 DROP**）。
+> ⇒ 函数**在** ⇒ 真缺陷 ⇒ 红；函数**不在** ⇒ 靶子不对 ⇒ **诚实 SKIP** ⇒ ⇒ **零覆盖损失**（不可能产生新红）。
+> ⇒ ★★★ **验收**：一次性新装形态库上三态实测（完好 ⇒ PASS｜缺表+函数在 ⇒ RED｜缺表+函数缺 ⇒ SKIP）
+> ＋ **负控 M5（去掉判别 ⇒ 第三态变红）** ⇒ 判别式有牙；还原 md5 逐字一致；靶子库跑完即回收。
+> ⇒ ★★ **通用式**：★ **「缺对象」至少三种含义，判据必须引入「同源信号」才分得开**，
+> 且判别式要选**依赖关系最浅**的那个（函数 > 视图 > 表）；★ **形态门的 ⓪ 锚点必须与后面的断言同层**。
+> ⇒ ★★ **量具口径**：diff --git a/admin/user_profile.go b/admin/user_profile.go
+index b953a6f03..555ef83c4 100644
+--- a/admin/user_profile.go
++++ b/admin/user_profile.go
+@@ -61,7 +61,15 @@ type UserProfileSummary struct {
+ // UserProfileDetailResponse 用户画像详情
+ type UserProfileDetailResponse struct {
+ 	UserProfileSummary
+-	DailyCostTrend []DailyCostPoint    `json:"daily_cost_trend"`
++	DailyCostTrend []DailyCostPoint `json:"daily_cost_trend"`
++	// Degraded 恒发（2026-10-20 部署后复验轮）：字段缺失与 false 在 API 语义上
++	// **无法区分**（前端读到 undefined 与 false 都会当「服务端确认过是好的」）
++	// ⇒ 不能用 omitempty，否则这个标记自己废掉一半。
++	//
++	// 什么时候会 true：schema 落后于代码（生产共享库缺 session_owners）⇒
++	// 降级成 200 + 空载荷，而不是整页 500。口径与同文件的列表端点一致。
++	Degraded       bool                `json:"degraded"`
++	DegradedReason string              `json:"degraded_reason,omitempty"`
+ 	TopTasks       []TaskRankItem      `json:"top_tasks"`
+ 	TopEndUsers    []EndUserRankItem   `json:"top_end_users"`
+ 	RecentSessions []RecentSessionItem `json:"recent_sessions"`
+@@ -316,6 +324,36 @@ func (h *Handler) handleUserAnalyticsDetail(w http.ResponseWriter, r *http.Reque
+ 		return
+ 	}
+ 	if err != nil {
++		// 2026-10-20 部署后复验轮（245/154 生产）：详情端点恒 500，根因是
++		// **生产共享库缺 session_owners**（迁移 358 的版本号低于部署通道的
++		// 账本对账下限 412 ⇒ 存量库永远拿不到它）⇒ 基础聚合直接 42P01。
++		//
++		// 口径与同文件的**列表端点**一致（见上方 handleUserAnalyticsList）：
++		// schema 落后于代码 ⇒ 降级成 200 + 空载荷 + 自报家门的 degraded 标记，
++		// 而不是整页 500。理由是「没有会话」与「聚合表没迁移」在页面上都长成
++		// 一个空列表 ⇒ 不自报家门就是撒谎。
++		//
++		// ⚠ 降级载荷用**同一个结构体**构造 ⇒ 正常路径与降级路径的 JSON 形状
++		// 由编译器保证一致（不会出现「降级时少几个字段」的前端崩溃）。
++		if IsSchemaBehindError(err) {
++			reason := ReportSchemaBehind(slog.Default(), "userProfile.detail", err)
++			writeJSON(w, http.StatusOK, &UserProfileDetailResponse{
++				UserProfileSummary: UserProfileSummary{
++					OwnerUser:   ownerUser,
++					ModelsUsed:  []string{},
++					FirstSeenAt: time.Time{},
++					LastSeenAt:  time.Time{},
++				},
++				DailyCostTrend: []DailyCostPoint{},
++				TopTasks:       []TaskRankItem{},
++				TopEndUsers:    []EndUserRankItem{},
++				RecentSessions: []RecentSessionItem{},
++				HealthDist:     HealthDistribution{},
++				Degraded:       false,
++				DegradedReason: reason,
++			})
++			return
++		}
+ 		writeInternalErr(w, "stats query", err)
+ 		return
+ 	}（worktree vs **index**）会把「**已暂存**」误报成「干净」⇒ 判定共享文件是否安静要用 `git diff HEAD`。
+> ⇒ ⚠ **本轮对生产的写入 = 0**（只改测试面）。
+> ⇒ 权威规格见 `docs/audit/2026-10-21-R80续四-session_turns_hot同源判别.md` ＋ handoff `§19.20.28`。
