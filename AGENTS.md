@@ -4714,10 +4714,13 @@ To codeup.aliyun.com:kaixuan/official-deploy/llm-gateway-go.git
 > 停写已确认（`_request_logs_hot` = 0 行、`max_ts` 7 天前）⇒ 亲和度表 **22 秒前**还在更新。
 > ⇒ ★★★ **⇒ 已落一条可执行的只读前置核验** `scripts/audit/verify_890_cutover_precheck.sql`
 > **（生产实测 verdict = BLOCKED：禁止执行 890，先部署新二进制）**。
-> ⇒ ★★ **仓内复核结论：两处「残留」都不是故障**（`partitionedTables` 与 `partguard` 名单
-> ⇒ 逐条读过错误路径 ⇒ 优雅降级 / 无害）⇒ **但退役链在 Go 侧是隐式的**
-> ⇒ 已把 `partitionedTableConfig` 新增**纯元数据**字段 `RetiredByMigration`（**运行期不读**
-> ⇒ 零行为影响）+ 6 条门（解析器自证 / 清单一致性 / 全仓 Go SQL 字面量 / **判据语义自测** /
-> 核验脚本 / runbook 在场）。
+> ⇒ ★★★ **仓内复核（★ 本轮自订正）**：`partitionedTables` 那条**是缺陷**
+> （**每次**调用刷一条 42P01 WARN + 该表状态永远拿不到 ⇒ 「静默降级」）⇒ ★ **已被并行会话
+> `14b64ddf4` 修掉**（`to_regclass` 探表 + `retired` 字段 + 端到端门）⇒ ⇒ **本轮据此撤回了
+> 自己的两件未发布产物**（`RetiredByMigration` 元数据字段 + 与之重复的门）
+> ⇒ ⇒ ★★ **⇒ 「优雅降级」≠「不是缺陷」**：判缺陷要问「会不会每次都产生错误」
+> +「用户能不能分辨『本来没数据』与『坏了』」。
+> ⇒ ⇒ 本门只保留并行会话没覆盖的那块：**全仓 Go 的类 SQL 字符串字面量不得含 890 的 DROP 表**
+> + 解析器自证 + **判据语义自测** + 核验脚本 + runbook 在场（**5 条**）。
 > ⇒ 🚨 **新增待拍板：890 的执行顺序 + v1 族 ≈1.9 GB 的回收路径**（本节未改迁移 890 的文件）。
 > ⇒ 完整记录见 runbook `§143.38`。

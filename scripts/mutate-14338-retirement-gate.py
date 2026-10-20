@@ -26,26 +26,27 @@ import tempfile
 
 REPO = os.path.abspath(sys.argv[1] if len(sys.argv) > 1 else ".")
 
-LIFECYCLE_REL = "admin/data_lifecycle_partition.go"
+GATE_REL = "admin/section_14338_retirement_consistency_test.go"
 QUERIES_REL = "admin/dashboard_board_queries.go"
 PRECHECK_REL = "scripts/audit/verify_890_cutover_precheck.sql"
 RUNBOOK_REL = "docs/06-deployment/04-runbooks/runbooks/2026-10-04-ursm-write-amplification-measurement.md"
 
 MUTATIONS = [
-    ("M1", "抹掉 _request_logs 的【退役登记】（退役链在 Go 侧变成隐式）",
-     LIFECYCLE_REL,
-     '\t\tHasArchiveFunc:   false,\n'
-     '\t\t// ★ v1 族在迁移 890 被 DROP（§143.38）⇒ 登记退役归属，\n'
-     '\t\t//   让门能断言「本清单与 890 的 DROP 清单一致」。\n'
-     '\t\tRetiredByMigration: "890",\n',
-     '\t\tHasArchiveFunc:   false,\n',
-     "TestSection14338ManagedTableListMatchesDropList"),
+    # ★★ M1/M2 换了目标：原版打的是 `admin/data_lifecycle_partition.go` 的
+    #   `RetiredByMigration` 元数据字段 —— ★★ 那条**已撤回**
+    #   （并行会话 `14b64ddf4` 的行为化修法 `to_regclass` 探表 + `retired` 字段
+    #   + 端到端门更强 ⇒ 元数据登记是多余的）⇒ 原 M1/M2 已随字段一起删除。
+    ("M1", "核验脚本的判词反了（把「禁止执行 890」改成「可以执行 890」）",
+     PRECHECK_REL,
+     "禁止执行 890",
+     "可以执行 890",
+     "TestSection14338CutoverPrecheckScriptExists"),
 
-    ("M2", "把退役登记写成别的迁移号",
-     LIFECYCLE_REL,
-     '\t\tRetiredByMigration: "890",\n',
-     '\t\tRetiredByMigration: "891",\n',
-     "TestSection14338ManagedTableListMatchesDropList"),
+    ("M2", "DROP 清单解析器漏掉 archive 族（量具自己瞎了）",
+     GATE_REL,
+     'if strings.HasSuffix(name, "_id_seq") {',
+     'if strings.HasSuffix(name, "_id_seq") || strings.HasSuffix(name, "_archive") {',
+     "TestSection14338DropListParserSeesTheRealTables"),
 
     # ★ 第一版 M3 作废（替换串包含 needle 作为子串 ⇒ 纪律拦下）：
     #   往文件里「插入」一行新代码 ⇒ 替换串必然带着 needle 本身。

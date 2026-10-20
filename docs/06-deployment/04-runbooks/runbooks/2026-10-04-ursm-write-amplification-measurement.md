@@ -40696,20 +40696,50 @@ SELECT s.task_type, s.profile, s.canonical_id, s.chosen_model, COALESCE(s.tenant
 ⇒ ⚠ **这条断链在 `pg_stat_statements` 里【不可见】**（只记成功执行的语句）
 ⇒ ⇒ ★★ **所以必须有「执行前核验」，而且核验必须看「生产上正在跑的那条语句」**。
 
-### §143.38.6 ★★ 仓内复核：两处残留**不是**故障（阴性结论，但逐条验过）
+### §143.38.6 ★★★ 仓内复核：★ **「优雅降级」不等于「不是缺陷」**（本节自订正）
 
 ★ 既然 890 会 DROP v1 族 ⇒ 仓内还有谁引用它们？逐条查：
 
 | 位置 | 形态 | 结论 |
 |---|---|---|
-| `admin/data_lifecycle_partition.go` 的 `partitionedTables` | 表名写在 Go 结构体里 ⇒ **审计工具看不见** | ★ **不是故障**：错误被调用方 `slog.Warn` + `continue` 吞掉 ⇒ 890 之后该表从列表里消失（一条 WARN），其余表照常 200 ⇒ **优雅降级，不是崩溃** |
-| `internal/partguard/parents.go` 的父表名单 | 同上 | ★ **不是故障**：它守的是「别往这些父表**写**」⇒ 890 之后不写就无害 |
+| `admin/data_lifecycle_partition.go` 的 `partitionedTables` | 表名写在 Go 结构体里 ⇒ **审计工具看不见** | ★★★ **是缺陷**（见下面的自订正）⇒ ★ **已被并行会话修掉** |
+| `internal/partguard/parents.go` 的父表名单 | 同上 | ★ **无害**：它守的是「别往这些分区父表**写**」⇒ 890 之后不写就无害 |
 | `cmd/tools/sql_source_indirection_audit` 的 `v1Tables` | 覆盖 8 个名字（两代命名 + bodies 族） | ★ **覆盖住了**：门 `go test ./cmd/tools/sql_source_indirection_audit/` 全绿 |
 
-⇒ ★★★ **⇒ 仓内没有会造成故障的活引用**（这三条都逐条读过错误路径）。
-⇒ ★★ **⇒ 但「退役链」在 Go 侧是【隐式】的** ⇒ 本节把它**显式登记**：
-`partitionedTableConfig` 新增 `RetiredByMigration`（**运行期不读**），
-`_request_logs` 条目标 `"890"` ⇒ 门据此断言「890 的 DROP 清单」与「仓内受管表清单」**永远一致**。
+> **★ 本小节自订正（2026-10-21，本节发布前的同一轮内）**
+>
+> ★★ **本节第一版把 `partitionedTables` 那条判成「不是故障」** —— 理由是
+> 「错误被调用方 `slog.Warn` + `continue` 吞掉 ⇒ 优雅降级 ⇒ 不是崩溃」。
+> ⇒ ★★★ **这个判词太宽松了** —— **并行会话 `14b64ddf4`（2026-10-21 00:14）
+> 把同一条定性为缺陷并已修掉**，它的说法更准：
+>
+> - 现象：**每次** `/api/admin/data-lifecycle/partitions` 调用都刷一条
+>   `data_lifecycle_partitions: failed to get status … 42P01` 的 WARN，
+>   **且该表的状态永远拿不到** ⇒ 页面上「看不出报错」，但那块信息**恒空**；
+> - 修法：`getPartitionTableStatus` 先用 `to_regclass` 探表在不在；
+>   不在 ⇒ 返回「已退役」状态（新增 `retired` 字段，JSON 加法式变更）⇒ **不再查它**；
+>   清单条目**保留**（既有端点契约：UI 仍列出该表名）；
+> - 门：`admin/session_family_runtime_sql_test.go`（**5 条**，含
+>   `TestRetiredPartitionTableStatusIsNotAnError` 与
+>   `TestPartitionStatusProbesTableExistence`）。
+>
+> ⇒ ⇒ ★★★★ **⇒ 本轮据此撤回了自己的两件产物**（都**未发布**）：
+> ① `partitionedTableConfig.RetiredByMigration` 元数据字段
+>    —— ★ **行为化修法（探表 + 端到端门）比元数据登记更强**，
+>    而且元数据登记**运行期不读** ⇒ 只能被门看见，挡不住任何运行期行为；
+> ② 与它配套的「受管表清单 ⇄ DROP 清单一致性」那道门（⇒ **重复的门只会变成噪声**）。
+> ⇒ ⇒ ★★ **⇒ 本门只保留并行会话没有覆盖的那一块**：
+> **仓内任何 Go 的「类 SQL 字符串字面量」都不得含 890 要 DROP 的表名**（T3）
+> —— 这正是 `sql_source_indirection_audit` 的视野之外（它扫的是 SQL 的 FROM/JOIN 片段）。
+>
+> ⇒ ⇒ ★★★★★ **⇒ 通用式（本轮最值钱的一条元教训）**：
+> ★★ **「优雅降级」≠「不是缺陷」** ——
+> ★ **降级可以接受，但「每次调用都刷一条错误」+「那块信息恒空」就是缺陷类**
+> （并行会话的原话：**「降级可接受，降级原因必须留痕」**）
+> ⇒ ⇒ ★★ **⇒ 判「是不是缺陷」时，要问的不是「会不会崩」，而是
+> 「① 会不会每次都产生错误 ② 用户能不能分辨『本来没数据』与『坏了』」**
+> ⇒ ⇒ ★★ **⇒ 只读错误路径不足以定性**：读到「错误被吞掉」就该停吗？**不该** ——
+> ★ **还要看「吞掉之后，用户看到的是什么」**。
 
 ### §143.38.7 ★★★ 可执行的生产前置核验（已落仓 + **生产实测**）
 

@@ -22,15 +22,13 @@ package admin
 // 本仓已有两道相关的东西，但它们**各管一头**，中间的空档正是本轮要堵的：
 //
 // ① `cmd/tools/sql_source_indirection_audit`（v1 读点审计，**独立 main module**）
-//    ⇒ 它扫的是「SQL 的 FROM/JOIN 片���」⇒ ★ **表名写在 Go 结构体里它看不见**
+//    ⇒ 它扫的是「SQL 的 FROM/JOIN 片段」⇒ ★ **表名写在 Go 结构体里它看不见**
 //    （本轮实测：`admin/data_lifecycle_partition.go` 的 `partitionedTables`
 //    与 `internal/partguard/parents.go` 的父表名单，都不在它的视野里）。
 // ② `internal/partguard` 的父表名单（守卫**写入**）
 //    ⇒ 它守的是「别往这些分区父表写」⇒ 890 之后名单会陈旧，但**不写就无害**。
 //
 // ⇒ ⇒ 本门把「**890 要删什么**」与「**仓里还有什么在引用它**」绑在一起：
-//   · T2：仓内**受管表名清单**（`partitionedTables`）与 890 的 DROP 清单必须一致
-//     （被 DROP 的表必须登记 `RetiredByMigration`）。
 //   · T3：仓内任何 Go 的**类 SQL 字符串字面量**都不得含 890 要 DROP 的表名。
 //
 // ★ 与既有纪律同源：**退役链的完整性必须被门钉住**，否则「迁移文件多加一个
@@ -162,39 +160,6 @@ func keys14338(m map[string]bool) []string {
 // ─────────────────────────────────────────────────────────────────────────
 // T2：仓内受管表名清单 ⇄ 890 的 DROP 清单 必须一致
 // ─────────────────────────────────────────────────────────────────────────
-
-// TestSection14338ManagedTableListMatchesDropList 钉住
-// `admin/data_lifecycle_partition.go` 的 `partitionedTables`。
-//
-// ★ 背景：本清单里的 `_request_logs` 在 890 之后不存在 ⇒ 该项会**优雅降级**
-//
-//	（列表接口对该表记 WARN 并跳过，其余表照常 200 —— 实测错误路径，
-//	**不是崩溃**）⇒ 所以这不是「崩溃级缺陷」，而是「**退役链没被登记**」。
-//
-// ⇒ ⇒ 门要求：清单里凡是被 890 DROP 的表，必须**显式登记**退役归属；
-//
-//	反过来，登记了退役的表必须真的在 890 的 DROP 清单里（防「登记了个寂寞」）。
-func TestSection14338ManagedTableListMatchesDropList(t *testing.T) {
-	dropped := drop890Tables14338(t)
-
-	for _, cfg := range partitionedTables {
-		isDropped := dropped[cfg.TableName]
-		switch {
-		case isDropped && cfg.RetiredByMigration == "":
-			t.Errorf("admin/data_lifecycle_partition.go 的 partitionedTables 里 %q 会被迁移 890 DROP，"+
-				"但没有登记 RetiredByMigration ⇒ 退役链与仓内清单不一致\n"+
-				"  ⇒ 修法：给该条目加 RetiredByMigration: \"890\"（运行期不读这个字段 ⇒ 零行为影响）",
-				cfg.TableName)
-		case !isDropped && cfg.RetiredByMigration != "":
-			t.Errorf("partitionedTables 里 %q 登记了 RetiredByMigration=%q，但它【不在】890 的 DROP 清单里\n"+
-				"  ⇒ 要么迁移改了，要么登记写错了 ⇒ 两边必须对齐。",
-				cfg.TableName, cfg.RetiredByMigration)
-		case cfg.RetiredByMigration != "" && cfg.RetiredByMigration != "890":
-			t.Errorf("partitionedTables 里 %q 的 RetiredByMigration=%q；本仓已知的退役迁移只有 \"890\" ⇒ "+
-				"新增退役迁移时要同步更新这条门。", cfg.TableName, cfg.RetiredByMigration)
-		}
-	}
-}
 
 // ─────────────────────────────────────────────────────────────────────────
 // T3：仓内 Go 的「类 SQL 字符串字面量」不得含 890 要 DROP 的表名

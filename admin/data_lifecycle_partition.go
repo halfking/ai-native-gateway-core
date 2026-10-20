@@ -16,21 +16,6 @@ type partitionedTableConfig struct {
 	PartitionColumn  string // e.g., "ts", "created_at"
 	Description      string // Human-readable description
 	HasArchiveFunc   bool   // Whether archive_<table>() function exists
-	// ★ RetiredByMigration 标记这张表**会被哪个迁移删掉**（空 = 不会）。
-	//
-	// 2026-10-21（§143.38）：迁移 890 会 DROP 整个 v1 `request_logs` 族
-	// （母表 / hot / bodies / archive / 4 个 v1-only 视图 / 序列 / 13 个函数）。
-	// ⇒ 本清单里的 `_request_logs` 在 890 之后**就不存在了**。
-	// ⇒ ⇒ 890 之后本清单项会「优雅降级」：列表接口对该表记一条 WARN 并跳过，
-	//   其它表照常返回 200（实测错误路径：getPartitionTableStatus 返回 err，
-	//   调用方 slog.Warn + continue）⇒ **不是崩溃**，但清单项已经陈旧。
-	// ⇒ ⇒ 用这个字段把「退役链」在 Go 侧**显式登记**出来，
-	//   门（scripts/ursmcheck/migration_890_retirement_consistency_test.go
-	//   + admin/section_14338_retirement_consistency_test.go）据此断言
-	//   「890 的 DROP 清单」与「仓内受管表清单」**永远一致**。
-	//
-	// ★ 运行期**不读**这个字段 ⇒ 本次改动对运行时行为**零影响**。
-	RetiredByMigration string
 }
 
 // Supported partitioned tables for columnar archive management
@@ -46,9 +31,6 @@ var partitionedTables = []partitionedTableConfig{
 		PartitionColumn:  "ts",
 		Description:      "请求日志表",
 		HasArchiveFunc:   false,
-		// ★ v1 族在迁移 890 被 DROP（§143.38）⇒ 登记退役归属，
-		//   让门能断言「本清单与 890 的 DROP 清单一致」。
-		RetiredByMigration: "890",
 	},
 	{
 		TableName:        "usage_ledger",
