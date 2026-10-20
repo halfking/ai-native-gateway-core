@@ -32,6 +32,9 @@ package admin
 //   （机制不许被拆）+ 第 4 条（口径不许漂）。
 
 import (
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
 	"strconv"
 	"strings"
@@ -345,15 +348,84 @@ func TestSection14346MechanismIsInPlace(t *testing.T) {
 		}
 	}
 
-	// Go 侧必须真的在调用 DROP 那个函数（否则机制建好了也没人跑）。
+	// ★★ **建表头必须逐字在**：上面的名字判据**证明不了「表还在」** ——
+	// 841 的函数体里就有 5 处引用这个表名 ⇒ 把 CREATE TABLE 整段删掉，
+	// 「名字还在」照样成立 ⇒ 门会绿 ⇒ **机制已被拆而门看不见**。
+	// ⇒ 承 §143.45 的纪律「判据一旦能在别处被满足就不是判据」：
+	//   这里必须钉**建表语句本身**。
+	if !strings.Contains(body, "CREATE TABLE IF NOT EXISTS public.llm_gateway_partition_retention (") {
+		t.Errorf("%s 里（剥注释后）没有 `CREATE TABLE IF NOT EXISTS public."+
+			"llm_gateway_partition_retention (` —— 策略表的**建表语句**不在了 ⇒ "+
+			"路径 B 的输入载体被拆（名字可能在函数体里还留着，但表没了）", migration841)
+	}
+
+	// Go 侧必须**真的在调用** DROP 那个函数（否则机制建好了也没人跑）。
+	//
+	// ★★ 这里**必须走 go/ast**，不能用文本匹配：函数名在 bg/partition_manager.go
+	// 的**注释**里也出现过（`// `llm_gateway_drop_expired_month_partitions()`，由本文件…`）
+	// ⇒ 只删掉真正的调用语句，文本匹配**照样绿** ⇒ 门会被注释喂饱。
+	// ⇒ 判据要问的是「**有没有一个真的调用点**」，而 AST 才能回答这件事。
 	pm, err := os.ReadFile(partitionMgr14346)
 	if err != nil {
 		t.Fatalf("读取 %s：%v", partitionMgr14346, err)
 	}
-	if !strings.Contains(string(pm), "llm_gateway_drop_expired_month_partitions") {
-		t.Errorf("%s 里没有调用 llm_gateway_drop_expired_month_partitions —— "+
+	_ = pm // ★ 文本读一遍只为给出更好的报错；判据在 AST 上
+	calls := monthlyDropCallSitesByAST(t, partitionMgr14346)
+	if len(calls) == 0 {
+		t.Errorf("%s 里没有**真正的调用点**（AST 上找不到对 "+
+			"llm_gateway_drop_expired_month_partitions 的调用）—— "+
 			"路径 B 不会被执行（机制建好但没人调用）", partitionMgr14346)
 	}
+}
+
+// monthlyDropCallSitesByAST 用 go/ast 找出「**有人真的把调用 DROP 函数的 SQL 传下去**」的所在函数。
+//
+// ★ 为什么必须走 AST（而不是 strings.Contains）：
+//
+//	① 该函数名在 bg/partition_manager.go 的**注释**里也出现 ⇒ 文本匹配会被注释喂饱；
+//	② AST 只会给出**代码里的字符串字面量**，注释永远进不来 ⇒ 判据与意图一致。
+//
+// ★★ 注意实现形态：Go 侧**不是**直接调那个 SQL 函数，而是把 SQL 当**字符串**传给
+//
+//	pm.db.QueryRow(ctx, "SELECT llm_gateway_drop_expired_month_partitions()")
+//
+// ⇒ 所以判据必须找「**某个调用的实参里有含该函数的 SQL 字符串**」，
+// 而不是找 Go 的函数调用节点（那会恒空 ⇒ 变成恒红的假阳性）。
+func monthlyDropCallSitesByAST(t *testing.T, path string) []string {
+	t.Helper()
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, path, nil, parser.SkipObjectResolution)
+	if err != nil {
+		t.Fatalf("解析 %s：%v", path, err)
+	}
+	var sites []string
+	for _, decl := range file.Decls {
+		fn, ok := decl.(*ast.FuncDecl)
+		if !ok || fn.Body == nil {
+			continue
+		}
+		ast.Inspect(fn.Body, func(n ast.Node) bool {
+			call, ok := n.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			for _, arg := range call.Args {
+				lit, ok := arg.(*ast.BasicLit)
+				if !ok || lit.Kind != token.STRING {
+					continue
+				}
+				s, err := strconv.Unquote(lit.Value)
+				if err != nil {
+					continue
+				}
+				if strings.Contains(s, "llm_gateway_drop_expired_month_partitions(") {
+					sites = append(sites, fn.Name.Name)
+				}
+			}
+			return true
+		})
+	}
+	return sites
 }
 
 // TestSection14346ExpirySemanticsAlignAcrossThreePlaces 是本轮**最承重**的一道门。

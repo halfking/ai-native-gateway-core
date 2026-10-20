@@ -19,6 +19,25 @@
   ③ 登记册（事实层）→ M8
   ④ 机制不许被拆（841 迁移 / Go 调用）→ M9 / M10
 
+★ **首轮实测：5/10 红** ⇒ 逐条归因（**不是**「门没牙」的单一结论）：
+  ① **M9 / M10 = 真实判据漏洞**（门真的看不见，已修门）：
+     · M9：841 的**函数体里还有 5 处**引用策略表名 ⇒ 「名字还在」**证明不了「表还在」**
+       ⇒ 门改成钉**建表语句本身**（`CREATE TABLE IF NOT EXISTS public.<名> (`）；
+     · M10：该函数名在 bg/partition_manager.go 的**注释**里也出现 ⇒ 文本匹配被注释喂饱
+       ⇒ 门改成走 **go/ast**（找「某个调用的**实参**里有含该函数的 SQL 字符串」
+       —— Go 侧不是直接调它，而是把 SQL 当**字符串**传给 QueryRow）。
+  ② **M1 / M3 / M7 = 变异自身的缺陷**（不是门的问题，已修变异）：
+     · M1：删掉 `MonthlyMechNone` 分支**不改变 verdict**（`default:` 把未知机制也判成
+       UNBOUNDED）⇒ **变异无效** ⇒ 改成直接把它判成 COVERED；
+     · M3：只换 `return` ⇒ py/pm 变成未使用变量 ⇒ **编译红** ⇒ 读数作废
+       ⇒ 改成连声明一起换、并用 `_ =` 保持编译干净；
+     · M7：needle 在文件里出现 **3 次**（F/G/H 三段各有一次）⇒ 触发唯一性检查作废
+       ⇒ 改成**只打 F 段**（F 段缩进与 G/H 不同 ⇒ 逐字唯一）。
+  ⇒ ⇒ ★★★ **通用式：「变异没红」有两种完全不同的原因** ——「**门没牙**」与「**变异无效**」。
+  ⇒ ★ **判别动作**：先问「**这条变异真的改变了行为吗**」（看它的 diff、看编译读数），
+  ⇒ **再**问「门为什么没红」⇒ 顺序反了会把「变异无效」误判成「门没牙」，
+  ⇒ 进而去「加固一个没问题的门」。
+
 用法：
     python3 scripts/mutate-14346-monthly-retention-gate.py [REPO_ROOT]
 """
@@ -39,11 +58,15 @@ PM_REL = "bg/partition_manager.go"
 
 MUTATIONS = [
     # ── ① 决策表 ────────────────────────────────────────────────────────
-    # M1：把「无机制 ⇒ 无界」判反 ⇒ 覆盖判定失守。
+    # M1：把「无机制 ⇒ 无界」判成「无机制 ⇒ 已覆盖」⇒ 无界族被放过。
+    # ★ 第一版把 `if in.Mechanism == MonthlyMechNone {` 改成 `if false {` ⇒ 门**照样绿**：
+    #   因为 switch 下面有 `default:` 分支把**未知机制**也判成 UNBOUNDED（保守）
+    #   ⇒ NONE 掉进 default ⇒ verdict 不变 ⇒ **这条变异根本没打在新判据上**。
+    #   ⇒ 教训：**变异必须真的改变行为**，否则「变异没红」不是「门没牙」，是「变异无效」。
     ("M1", "决策表把「无任何机制」判成已覆盖（无界族被放过）",
      VERDICT_REL,
-     "\tif in.Mechanism == MonthlyMechNone {\n",
-     "\tif false {\n",
+     "\tif in.Mechanism == MonthlyMechNone {\n\t\treturn MonthlyVerdictUnbounded,\n",
+     "\tif in.Mechanism == MonthlyMechNone {\n\t\treturn MonthlyVerdictCovered,\n",
      "TestSection14346DecisionTableSelfTest"),
 
     # M2：★ 承重 —— 把过期方向写反 ⇒ 当月/未来月会被判为过期。
@@ -54,9 +77,17 @@ MUTATIONS = [
      "TestSection14346DecisionTableSelfTest"),
 
     # M3：跨月差退化成「恒 0」⇒ 正是本轮在 SQL 侧踩过的那个坑。
+    # ★ 第一版只把 `return (cy*12+cm)-(py*12+pm)` 换成 `return 0` ⇒ **py/pm 变成未使用变量**
+    #   ⇒ 编译红 ⇒ 读数作废（编译红 ≠ 断言红）⇒ 必须连声明一起换掉，且用 `_ =` 保持编译干净。
     ("M3", "跨月差退化成恒 0（timestamp-date 那类 interval 的 EXTRACT(month) 恒 0）",
      VERDICT_REL,
+     "\tpy, pm := partMonth.Year(), int(partMonth.Month())\n"
+     "\tcy, cm := currentMonth.Year(), int(currentMonth.Month())\n"
      "\treturn (cy*12 + cm) - (py*12 + pm)\n",
+     "\tpy, pm := partMonth.Year(), int(partMonth.Month())\n"
+     "\tcy, cm := currentMonth.Year(), int(currentMonth.Month())\n"
+     "\t_, _ = py, pm\n"
+     "\t_, _ = cy, cm\n"
      "\treturn 0\n",
      "TestSection14346DecisionTableSelfTest"),
 
@@ -83,10 +114,20 @@ MUTATIONS = [
      "TestSection14346ExpirySemanticsAlignAcrossThreePlaces"),
 
     # M7：★ 判定脚本恢复 timestamp-date 那类写法 ⇒ 跨月差恒 0。
+    # ★ 第一版 needle 只取「EXTRACT(year FROM date_trunc(...))」那一段 ⇒ 在本文件里**出现 3 次**
+    #   （F/G/H 三段各一次）⇒ 触发脚本的「needle 必须唯一」检查 ⇒ 该条作废（SKIP）。
+    #   ⇒ 改成**只打 F 段**（F 段的缩进与 G/H 不同 ⇒ 逐字唯一），
+    #   并把整个 months_old 表达式换成「EXTRACT(month FROM (date - date))」那种恒 0 形态。
     ("M7", "判定脚本用 EXTRACT(month FROM (timestamp - date)) 算跨月差（恒 0）",
      SQL_REL,
-     "((EXTRACT(year FROM date_trunc('month', now()))::int * 12 + EXTRACT(month FROM date_trunc('month', now()))::int)",
-     "((EXTRACT(year FROM (date_trunc('month', now()) - to_date('2026-01-01','YYYY-MM-DD'))) * 12 + EXTRACT(month FROM (date_trunc('month', now()) - to_date('2026-01-01','YYYY-MM-DD'))))",
+     (r"       ((EXTRACT(year FROM date_trunc('month', now()))::int * 12 + EXTRACT(month FROM date_trunc('month', now()))::int)"
+      "\n"
+      r"         - (EXTRACT(year FROM to_date(substring(c.relname FROM '_([0-9]{4}_\d{2})$'), 'YYYY_MM'))::int * 12"
+      "\n"
+      r"            + EXTRACT(month FROM to_date(substring(c.relname FROM '_([0-9]{4}_\d{2})$'), 'YYYY_MM'))::int)) AS months_old"
+      "\n"),
+     (r"       EXTRACT(month FROM (date_trunc('month', now())::date - to_date(substring(c.relname FROM '_([0-9]{4}_\d{2})$'), 'YYYY_MM')))::int AS months_old"
+      "\n"),
      "TestSection14346ExpirySemanticsAlignAcrossThreePlaces"),
 
     # ── ③ 登记册 ───────────────────────────────────────────────────────
@@ -98,11 +139,16 @@ MUTATIONS = [
      "TestSection14346RegistryIsRecomputable"),
 
     # ── ④ 机制不许被拆 ─────────────────────────────────────────────────
-    # M9：841 的配置表定义被删 ⇒ 路径 B 不存在了。
-    ("M9", "841 的配置表定义被删（路径 B 机制被拆）",
+    # M9：841 的配置表**被改名** ⇒ 路径 B 的输入载体不存在了。
+    # ★ 第一版改名成 `..._retention_disabled` ⇒ **原名仍是新名的子串**
+    #   ⇒ 「名字还在」的判据照样成立 ⇒ 门绿 ⇒ **这暴露了门的一个真实漏洞**：
+    #   名字判据**证明不了「表还在」**（841 的函数体里还有 5 处引用这个表名）
+    #   ⇒ 已把门改成钉**建表语句本身**（`CREATE TABLE IF NOT EXISTS public.<名> (`）。
+    # ★ 这里再把改名目标换成**不含原名**的名字 ⇒ 连宽松判据也过不去 ⇒ 变异更彻底。
+    ("M9", "841 的配置表被改名（路径 B 的输入载体不存在了）",
      MIG_REL,
      "CREATE TABLE IF NOT EXISTS public.llm_gateway_partition_retention (",
-     "CREATE TABLE IF NOT EXISTS public.llm_gateway_partition_retention_disabled (",
+     "CREATE TABLE IF NOT EXISTS public.llm_gateway_retention_cfg (",
      "TestSection14346MechanismIsInPlace"),
 
     # M10：Go 侧不再调用 DROP 函数 ⇒ 机制建好了也没人跑。
