@@ -36950,6 +36950,26 @@ EXECUTE format('DROP TABLE %I', src_part);
 
 ### §143.23.5 诚实边界
 
+> ⚠⚠⚠ **订正横幅六（2026-10-20，§143.25.4 就地订正；下面 §143.23.5 第 2 条与 §143.23.1 的「本地为什么能测」原文保留）**
+>
+> §143.23 写「**本地 citus 13.3-1 不含 `columnar` access method ⇒ 只能测 heap 路径
+> ⇒ 生产 columnar 路径的耗时仍未量化**」⇒ ⇒ **这条的前提是错的**，应当订正：
+>
+> 1. ★★★★ **本地镜像带 columnar 扩展，只是没装**
+>    - 实测：`pg_available_extensions` 里是 **`citus_columnar 13.3-1`**（**扩展名不是 `columnar`**），
+>      `/usr/share/postgresql/17/extension/citus_columnar.control` 与 `$libdir/citus_columnar` 都在；
+>    - ⇒ `CREATE EXTENSION citus_columnar;` 之后 **`pg_am` 里出现 `columnar`**，
+>      **能建 columnar 表、能插数据**（实测 `CREATE TABLE … USING columnar` + INSERT 1,000 行成功）。
+> 2. ★★★★ **⇒ §143.23 的「诚实边界」应改为**：本地**能**测 columnar 路径；
+>    §143.23 之所以只测 heap，是**当时主动选择「只替换 `USING columnar`→`USING heap`」这一个变量**，
+>    **不是被本地能力所限**（该选择的纪律价值仍然成立，保留）。
+> 3. ★★★★ **⇒ 「生产 columnar 路径的耗时仍未量化」这条缺口已在 §143.25 闭合**：
+>    **654 函数体逐字（`USING columnar` 不改）在本地真库跑通**，
+>    **301,255 行搬进全新 columnar 分区 = 中位 3,410 ms**（10 分钟预算的 0.6%，裕量 176×）
+>    ⇒ ⇒ **11-03 的超时风险从「未量化」降级为「量级上极不可能触发」。**
+>
+> ⇒ 详见 runbook `§143.25`。
+
 - ⚠ **本节对生产的写入 = 0**（一次性本地库 `itgate_14323`，已 DROP）。
 - ⚠ **本地只测了 heap 路径**（无 columnar AM）⇒ **生产 columnar 路径的耗时仍未量化**
   ⇒ ⇒ **11-03 的超时风险没有被本节消除**（§143.22 结论 4 仍然成立）。
@@ -37089,3 +37109,236 @@ GOCACHE=/tmp/gocache-p1437 go test ./scripts/ursmcheck/ -run 'TestRunbook14324' 
 ★ 同族：[[自己上一节的结论也要复核]] · [[阴性结论要当缺陷一样复核]] ·
 [[跨节订正前先自问「我要订正的这条真的错了吗」]] · [[0 命中的第一嫌疑是量具坏了]] ·
 [[「0 调用」有三种成因]] · [[先读量具再读产物]]。
+
+## §143.25 ★★★ 11-03 的超时风险**量化**：本地真库实测 3.4 秒（预算 600 秒，裕量 176×）—— 并订正 §143.23 的「本地无 columnar」（2026-10-20）
+
+### §143.25.0 结论先行
+
+§143.22 结论 4 / §143.23.5 / §143.24.3 一致留下同一个未闭合的口子：
+「**301,255 行单事务搬进 columnar**」vs `runArchive` 的 **10 分钟** timeout，**耗时始终未被量化**。
+本节把它**实测掉**（生产只读 + 本地一次性真库，**对生产写入 = 0**）。五条：
+
+1. ★★★★★ **超时风险从「未量化、可能很高」降级为「量级上极不可能触发」**
+   - 本地真库、**654 函数体逐字不改**（`USING columnar` 保留）、**生产同构 schema**（17 列 + 3 个 `ON ONLY` 索引 + 源分区 2 个索引）、
+     **行数与生产一致（301,255）**、**数据取值域取自生产**（43 个 credential_id / 12 个真实模型名 / 4 种 billing_mode）：
+   - 实测 **中位 3,410 ms**（3 轮交错，组内极差 3,099–9,073 ms）；独立复跑 **3,488 ms**；
+   - ⇒ ⇒ **10 分钟预算（600,000 ms）的 0.6%，裕量 176×**；
+   - ⇒ ⇒ 退一步按「252 宿主 load 14.17/4 核（超载 3.5 倍）再劣化 10 倍」估，也只剩 **34 秒**（裕量仍 17×）。
+2. ★★★★ **「columnar 批量写更慢」这个直觉假设被实测推翻**
+   - heap 对照臂（只把 `USING columnar` 换成 `USING heap`，其余逐字相同）：**中位 4,213 ms**；
+   - ⇒ ⇒ **columnar 臂比 heap 臂还快**（0.81×；复跑 0.77×）；
+   - ⇒ ⇒ 对这类**窄表**（17 列、数值 + 短文本），列式批量写入**不吃亏**，而 heap 臂还要额外写数据页 + 维护 3 个 btree；
+   - ⇒ ⇒ ★ **这条对本项目后续「往 columnar 搬数据」的决策有直接参考价值**（别再默认 columnar 慢）。
+3. ★★★★ **失败模式要重新定级——但方向变了：风险从「超时」移到「静默且不可恢复」**
+   - archive 调度门 = **`now.Day() <= 3` 且 `s.day == today`**（`bg/partition_manager.go:602-610`），
+     节拍是 **24h ticker + 进程启动时也跑一次** ⇒ ⇒ **11-03 当天是 09 月分区的唯一归档窗口**；
+   - 11-04 起门关闭；12-03 的 `twoMonthsAgo` 已是 `2026-10-03` ⇒ ⇒ **09 月分区再无归档机会**；
+   - archive 失败**只有一行 `slog.Error`**（全仓 grep：archive 路径**没有任何 metric / counter / gauge**）⇒ **无指标、无告警**；
+   - **人工补跑没有产品入口**（`admin/data_lifecycle_hot_partition.go` 的手动 promote 是 hot→月分区，**不是**月→archive）；
+   - 841 的月分区 DROP 清扫配置表 `public.llm_gateway_partition_retention` **生产实测 0 行**
+     ⇒ ⇒ **失败不会丢数据**（源分区完好），**但也不会自愈** ⇒ 09 月的 84 MB 会一直堆着。
+4. ★★★ **对属主决策的影响：11-03 既不需要赶上线，也不需要为「防超时」改代码**
+   - 与 §143.24 的「无 14 天压力」**互相独立地印证**（一条是「不触发缺陷②」，一条是「跑得完」）；
+   - ⇒ ⇒ **真正该补的是「让失败可见 + 给一次补跑窗口」**，而不是「防超时」（见 §143.25.6 的 R1/R2/R3）。
+5. ★★★ **订正 §143.23 的诚实边界（横幅六）**：「本地 citus 不含 `columnar` ⇒ 只能测 heap」**不成立**——
+   - 镜像**带** columnar 扩展（**扩展名是 `citus_columnar`，不是 `columnar`**），只是**没装**；
+     `CREATE EXTENSION citus_columnar;` 之后 `pg_am` 里就有 `columnar`，能建表能插数；
+   - ⇒ ⇒ §143.23 当时只测 heap 是**主动选择「只换一个变量」**，**不是被本地能力所限**；
+   - ⇒ ⇒ **「生产 columnar 路径的耗时仍未量化」这条缺口，本节已闭合。**
+
+⚠ **本节对生产的写入 = 0**：生产侧全只读（`pg_stat_statements` / `pg_stat_user_tables` /
+`pg_class` / `pg_am` / `pg_inherits` / `pg_settings` / 聚合 COUNT / 网关 journal 只读）；
+本地侧是**一次性库 `itgate_14325`**（退出即 DROP，不硬编码密码，走容器内本地认证）。
+**没有** DELETE / TRUNCATE / DROP / REINDEX / VACUUM / ANALYZE / 迁移 / 改配置 / 改 cron。
+
+### §143.25.1 ★★ 先钉死四把尺子的口径（否则读数会被误读）
+
+本轮一开始就踩了两个口径坑，**先登记、后读数**：
+
+| 量具 | 本轮实测口径 | 对结论的影响 |
+|---|---|---|
+| `pg_stat_statements` | **`track = top`** ⇒ **函数内层语句没有独立读数** | promote 的内层 INSERT 耗时**看不到** ⇒ 只能看外层整句 |
+| 同上 | **`pg_stat_statements_info.stats_reset = 2026-10-18 22:03:37`** ⇒ 统计窗口**只有 ~41 小时** | ⇒ **分区行数与 promote 调用数不可相除**（窗口 ≠ 分区生命周期） |
+| 同上 | ⚠ **本会话此前把 `rows` 读成「每次均值」，实为「总行数」**（判据：`credential_model_index_hot` 的 `rows` 在 15 分钟内从 15,188 涨到 15,268，而 calls 只 +4 ⇒ 是累计量在涨） | ⇒ §143.21 之前引用过的「每次均值」口径**作废**，本节全部重算 |
+| 252 的 PG 日志 | **`log_min_duration_statement = 1000`** ⇒ `duration:` 行是**尾部样本**（10-20 只记到 39 条 promote，而同窗口实际执行 ~2,000 条） | ⇒ **不能用日志的 duration 均值当总体** |
+| `pg_stat_user_tables` | **columnar 表 `n_tup_ins` 恒 0**（`routing_decision_log_2026_09/10` 实测 0）⇒ **columnar 没有行数仪** | ⇒ columnar 侧的「搬了多少行」**只能靠函数返回值 / 日志** |
+| 同上 | heap 侧可用（`credential_model_index_2026_09.n_tup_ins = 301,255`） | ⇒ 源分区的 301,255 行有**独立第二把尺子**佐证 |
+| `pg_stat_database.stats_reset` | `llm_gateway` 为 **NULL** ⇒ 累计计数**从未被重置** | ⇒ 累计计数覆盖分区整个生命周期 |
+| 网关 journal（154） | `partition_manager: promote batch` 带 **`label` + `rows=N`**（`bg/partition_manager.go:1841-1843`） | ⇒ **唯一能拿到「每批搬了多少行」的尺子** |
+
+⇒ ⇒ ★ **纪律落点**：**四把尺子各有一处口径洞，全部先钉死再读数**；
+本节所有数字都标了出处，**没有任何一个数字来自「看起来像」的读法**。
+
+### §143.25.2 ★★★ 为什么「历史读数」量不出这次的成本（决定性阴性结论）
+
+先说**为什么不能用生产历史外推**（这是本节真正的难点，不是回避实测）：
+
+- **库内不存在「一次批量写 columnar」的生产先例**：
+  - 41 小时窗口内，**唯一**直接写 columnar 的语句是 `INSERT INTO provider_events`：
+    **720 次 / 720 行 / 每次 1 行 / 7.48 ms**（`rows_per_call = 1.0`）⇒ **全是单行插**；
+  - 其余 columnar 写入全部藏在 promote 函数内层（`track=top` ⇒ 无独立读数）。
+- **promote 的批次太小 ⇒ 固定开销主导 ⇒ 不可外推**：
+  - 154 journal（48h）：`routing_decision_log_hot` **26 批 / 3,059 行 / 均 117.7 行 / 最大 638 行**；
+    `session_censors_hot` 最大 5,000 行（= `promoteBatchSize` 上限）；
+  - ⇒ ⇒ 每次调用的耗时（`promote_routing_decision_log_hot_to_partition` 均 512 ms）
+    **主要不是每行成本** ⇒ ⇒ **拿它除以 301,255 是错的**。
+- ⇒ ⇒ ★★ **结论：11-03 的成本「不可从历史推断」⇒ 只能实测**（下一节）。
+  ⇒ ★ 这本身就是可交付的结论：它把「未知」变成「**已知不可知 + 可测量**」。
+
+### §143.25.3 ★★★ 本地真库实测（654 逐字，**真 columnar 路径**）
+
+脚本（**可原样重跑**，一次性库、不硬编码密码）：
+`scripts/audit/verify_columnar_bulk_write_local.py`
+
+★ **证据力设计**：
+- **被测函数体由脚本从仓内 `sql/migrations/startup/654_archive_credential_model_index_detach_drop.sql` 提取**（不是手抄）
+  ⇒ 杜绝「抄错版本」；**columnar 臂逐字不改**（含 `USING columnar`），**heap 对照臂只替换这一处** ⇒ 单一变量；
+- **schema 与生产同构**：17 列（列名/类型/顺序逐字对齐）+ archive 父表 **3 个 `ON ONLY` btree 索引**（逐字）
+  + 源分区 **2 个索引**（1 UNIQUE + 1 btree，逐字）；
+- **数据同形**：取值域取自生产只读读数（`credential_model_index_2026_09`）
+  ⇒ 43 个 credential_id（2–73）/ 12 个**真实模型名** / 4 种 billing_mode（`per_token` 79% + `token_plan` 10.5% + `free` 9.4% + NULL 0.7%）
+  / canonical_id 418 个取值；
+  ⇒ ★ **体积对照：本地源 86 MB vs 生产源 84 MB** ⇒ **同形成立**；dst（columnar）42 MB。
+
+**A/B 交错结果（3 轮，columnar / heap 交替执行，报中位与组内极差）**：
+
+| 臂 | n | 中位 | 极差 | 相对 heap |
+|---|---|---|---|---|
+| **columnar（生产同款路径）** | 3 | **3,410 ms** | [3,099, 9,073] ms | **0.81×** |
+| heap（对照，仅换 AM） | 3 | 4,213 ms | [3,611, 5,217] ms | 1.00× |
+| columnar（独立复跑） | 1 | 3,488 ms | — | 0.77× |
+| heap（独立复跑） | 1 | 4,508 ms | — | 1.00× |
+
+**逐步拆解（654 的等价动作，columnar）**：
+
+| 步骤 | 耗时 |
+|---|---|
+| `CREATE TABLE ... PARTITION OF ... USING columnar`（含 3 个索引） | **9 ms** |
+| `INSERT INTO dst (17 列) SELECT ... FROM src`（301,255 行） | **2,780 / 3,716 ms**（两轮） |
+| `ALTER TABLE ... DETACH PARTITION` | 3 ms |
+| `DROP TABLE src` | 2 ms |
+| `COMMIT` | 1–8 ms |
+| **合计（函数调用整体）** | **3,410 / 3,488 ms** |
+| 其后的 `CHECKPOINT`（columnar 刷盘/压缩的**延迟**成本，**不在 10 分钟预算内**） | **346 ms** |
+
+**缩放曲线（columnar 臂）**：30,000 → 中位 **317 ms**；100,000 → 中位 **857 ms**；301,255 → 中位 **3,410 ms**
+⇒ ⇒ **近似线性、固定开销≈0**，边际约 **11.4 µs/行（≈ 87,700 行/秒）**
+⇒ ⇒ ★ **301,255 行是直接实测，不是外推**。
+
+⇒ ⇒ ★★★ **与 10 分钟预算（`runArchive` 的 `context.WithTimeout(ctx, 10*time.Minute)`，
+`bg/partition_manager.go:1360`）对比**：**3,410 / 600,000 = 0.6%** ⇒ **裕量 176×**。
+
+★ **本轮顺带闭合的两件事**：
+- ✅ **654 的 DDL 在真 columnar 上跑通**（此前只验过 heap 路径）：`status=success / rows_migrated=301255 / partition_dropped=t`
+  ⇒ ⇒ §143.22「技术可行性」的**推演**现在有了**本地实证**支撑；
+- ✅ **654 的幂等保护有效**：实测第二臂命中 `EXCEPT ALL` 分支时**正确报错**
+  「archive target … contains partial or mismatched rows (source 3000, target 3000)」⇒
+  ⇒ **「dst 已存在且内容不符 ⇒ 拒绝，而不是静默覆盖」这条行为被实测确认**。
+
+### §143.25.4 ★★ 订正横幅六（就地订正 §143.23 的诚实边界）
+
+> ⚠⚠⚠ **订正横幅六（2026-10-20，§143.25.4 就地订正；下面 §143.23.5 第 2 条与 §143.23.1 的「本地为什么能测」原文保留）**
+>
+> §143.23 写「**本地 citus 13.3-1 不含 `columnar` access method ⇒ 只能测 heap 路径
+> ⇒ 生产 columnar 路径的耗时仍未量化**」⇒ ⇒ **这条的前提是错的**，应当订正：
+>
+> 1. ★★★★ **本地镜像带 columnar 扩展，只是没装**
+>    - 实测：`pg_available_extensions` 里是 **`citus_columnar 13.3-1`**（**扩展名不是 `columnar`**），
+>      `/usr/share/postgresql/17/extension/citus_columnar.control` 与 `$libdir/citus_columnar` 都在；
+>    - ⇒ `CREATE EXTENSION citus_columnar;` 之后 **`pg_am` 里出现 `columnar`**，
+>      **能建 columnar 表、能插数据**（实测 `CREATE TABLE … USING columnar` + INSERT 1,000 行成功）。
+> 2. ★★★★ **⇒ §143.23 的「诚实边界」应改为**：本地**能**测 columnar 路径；
+>    §143.23 之所以只测 heap，是**当时主动选择「只替换 `USING columnar`→`USING heap`」这一个变量**，
+>    **不是被本地能力所限**（该选择的纪律价值仍然成立，保留）。
+> 3. ★★★★ **⇒ 「生产 columnar 路径的耗时仍未量化」这条缺口已在 §143.25 闭合**：
+>    **654 函数体逐字（`USING columnar` 不改）在本地真库跑通**，
+>    **301,255 行搬进全新 columnar 分区 = 中位 3,410 ms**（10 分钟预算的 0.6%，裕量 176×）
+>    ⇒ ⇒ **11-03 的超时风险从「未量化」降级为「量级上极不可能触发」。**
+>
+> ⇒ 详见 runbook `§143.25`。
+
+### §143.25.5 ★★ 失败模式与观测口径（**新增「失败判定」**）
+
+既然「超时」基本不成立，风险就落在**失败之后没人知道**上。实测的调度事实：
+
+- **唯一窗口**：`now.Day() <= 3` 且 `s.day == today`（`credential_model_index` 的 spec 是 **day=3**）
+  ⇒ **11-03 00:00 ~ 23:59**（期间任何一次进程启动/重启都会再触发一次）；
+  ⇒ **11-04 起门关闭**；12-03 的目标已是 `2026_10` ⇒ ⇒ **09 月分区再无自动归档机会**。
+- **失败不留痕**：archive 失败只有 `slog.Error("partition_manager: archive failed", …)`
+  ⇒ **无指标、无告警**（全仓 grep：archive 路径没有任何 metric/counter/gauge 注册）。
+- **失败不丢数据、也不自愈**：源分区在事务回滚后完好；841 的 DROP 清扫配置表生产实测 **0 行**
+  ⇒ **不会有人来删它** ⇒ 09 月的 84 MB 会一直留在 `credential_model_index` 下。
+
+⇒ ⇒ ★ **观测口径（在 §143.24.3 三条之外补一条「失败判定」）**：
+
+| 查法 | 读数 | 判定 |
+|---|---|---|
+| ① `pg_class` 里 `credential_model_index_archive_2026_09` | **存在** | 成功（建了 dst） |
+| ② `credential_model_index_2026_09` 是否还在父表下 | **不在** | 成功（已 DETACH+DROP） |
+| ③ `credential_model_index_archive` 总行数 | **≈ 301,255** | 成功（守恒） |
+| ④ **①不存在 且 ②还在** | — | ★ **失败并回滚**（超时的特征形态） |
+| ⑤ ④成立时的后续动作 | — | ★ **09 月永久不归档**（12-03 的目标已是 10 月）⇒ **必须人工补跑** |
+
+⇒ ⇒ ★ **人工补跑的形态**（不是产品入口，是运维动作）：
+`SELECT * FROM public.archive_credential_model_index(date '2026-09-03');`
+⇒ ★ **它是幂等的**（dst 不存在 ⇒ 走 INSERT 分支；dst 存在且内容一致 ⇒ 走 `EXCEPT ALL` 比对分支返回 `success/0/f`）
+⇒ ⇒ **补跑是安全的、可重复的**（但**属生产写，需属主授权**）。
+
+### §143.25.6 ★★ 建议（**待属主拍板**，按成本从低到高）
+
+| 编号 | 动作 | 成本 | 解决什么 |
+|---|---|---|---|
+| **R1** | 11-03 当天按 §143.25.5 的 5 条查法观测一次（含新增的失败判定 ④） | **0**（只读） | 知道这次到底成没成 |
+| **R2** | 给 archive 失败加**一个指标 / 告警**（现在只有 slog.Error） | 小（Go 改动 + 部署） | ★ **消除「静默」**（本节认为这是最高性价比的一条） |
+| **R3** | 把归档窗口从「每月 3 号一天」放宽（如 `now.Day() <= 5`），或改成「**目标月尚未归档则每天重试**」 | 小（Go 改动 + 部署） | ★ **让失败可自愈**（根治「一次失败 = 永久不归档」） |
+| **R4** | 迁移 885（孤儿表防御性修复） | §143.23.4 的 7 处注册点 | §143.24 已裁决「不急」；**本轮进一步确认不急**（11-03 的目标 attached=1，不触发缺陷②） |
+| **R5** | 在生产上做一次**回滚式预飞**（`BEGIN; CREATE dst…; INSERT…; ROLLBACK;`）以取得**生产宿主**的每行成本 | 需**生产写授权** | ★ **不再必要**：裕量 176×，按 10 倍劣化估仍剩 17× ⇒ **建议不做**（除非要消除最后一点不确定性） |
+
+⇒ ⇒ ★ **明确不推荐**：**不要**为了「防超时」去改 `runArchive` 的 10 分钟超时
+⇒ **实测已经把超时从风险清单里划掉**，改它属于为不存在的问题付代价。
+
+### §143.25.7 诚实边界
+
+- ⚠ **本节对生产的写入 = 0**（见 §143.25.0 末尾）。
+- ⚠ **本地实测 ≠ 生产实测**，差在：① 机器（本地 macOS vs 252 宿主 4 核、load 14.17 超载 3.5 倍）；
+  ② 数据是**同形合成**（取值域/基数/体积贴近生产，但熵与真实数据不完全相同 ⇒ 压缩率可能不同）；
+  ③ 本地**无并发负载**（生产归档时刻可能有其它负载）。
+  ⇒ ⇒ **本节给的是「裕量 176×」这个量级判断，不是「生产上一定是 3.4 秒」**。
+  ⇒ ⇒ ★ **即使按 10 倍劣化估（34 s），仍然远低于 600 s** ⇒ ⇒ **结论方向不因这三条边界翻转**。
+- ⚠ **只测了 09 月这一种规模**（301,255 行 / 17 列 / 窄表）；
+  ⇒ **不要**把「87,700 行/秒」外推到宽表或含 TOAST 大列的族（如 `request_logs_bodies`，行宽 ~350 KB）。
+- ⚠ **COLUMNAR 的压缩成本部分落在 `CHECKPOINT`**（实测 346 ms）⇒ **不在 10 分钟预算内，但会产生后续 I/O**。
+- ⚠ **本节没有写迁移、没有改注册点、没有改 Go 代码** ⇒ **生产行为未变**（生产仍跑 654，仍是 10 分钟超时，仍无告警）。
+- ⚠ **未覆盖**：archive 表**自身**的月分区保留期（archive 表只增不减，§143.24.4 已登记）；
+  211 侧同族的归档行为（211 的 CMI 冷族形态不同，本节未测）。
+- ⚠ **未改 §143.21/§143.22 的语义裁决**（A1′/A2′/A3′/A4 等仍待属主拍板）；
+  本节只把「11-03 的超时」这一条从待办里**划掉**。
+
+### §143.25.8 复核方法（可原样重跑）
+
+```bash
+# ── 1) ★ 本地真库实测（654 逐字，真 columnar 路径；一次性库，退出即 DROP）
+python3 scripts/audit/verify_columnar_bulk_write_local.py --rows 301255 --reps 3 --scale
+
+# ── 2) 生产只读：量具口径自检（track / stats_reset / log_min_duration_statement）
+bash ~/.mavis-tools/lgwp-prod.sh /private/tmp/p14321/columnar_cost_probe.sql  300
+bash ~/.mavis-tools/lgwp-prod.sh /private/tmp/p14321/columnar_cost_probe2.sql 300
+bash ~/.mavis-tools/lgwp-prod.sh /private/tmp/p14321/columnar_cost_probe3.sql 300
+
+# ── 3) 网关 journal 的 promote 行数（唯一能拿到「每批搬了多少行」的尺子）
+ssh 154 'journalctl -u "llm-gateway-go-canary@8781.service" --since "48 hours ago" --no-pager \
+  | grep -o "promote batch\",\"label\":\"[a-z_]*\",\"rows\":[0-9]*"'
+```
+
+⇒ ⇒ ★ **本节落地的门**（不连库，可原样重跑）：
+
+```bash
+# §143.25 文档门：实测读数 / 失败模式重定级 / 订正横幅六 / 建议清单
+GOCACHE=/tmp/gocache-p1437 go test ./scripts/ursmcheck/ -run 'TestRunbook14325' -count=1 -v
+```
+
+★ 同族：[[先读量具再读产物]] · [[0 命中的第一嫌疑是量具坏了]] ·
+[[阴性结论要当缺陷一样复核]] · [[自己上一节的结论也要复核]] ·
+[[跨节订正前先自问「我要订正的这条真的错了吗」]] · [[「0 调用」有三种成因]] ·
+[[本地真库是一次性库不是共享库]] · [[「我没跑成」和「我跑过」必须长得不一样]] ·
+[[变异后门仍绿=没有守卫力]]。
