@@ -27,18 +27,18 @@ func TestTodaySuccessProbeCadenceIsBounded(t *testing.T) {
 // currently judged unhealthy are submitted; the healthy-hourly re-probe arm
 // must stay gone.
 //
-// ★ 2026-10-20（迁移 885，v1 族退役）：读源从 v1 热表换成**会话族热腿**
+// ★ 2026-10-20（迁移 890，v1 族退役）：读源从 v1 热表换成**会话族热腿**
 // （v1 族已 DROP，提及即整条语句 42P01）；探针排除谓词随之从 v1 那条
 // （引用 quality_flags）换成**会话族**那条（origin_stage + task_type +
 // origin_actor）——会话族没有 quality_flags 列，用旧谓词会 42703。
 func TestTodaySuccessProbeSQLRecoveryOnly(t *testing.T) {
 	sql := todaySuccessProbeSQL()
 	for _, marker := range []string{
-		// ★ 885：证据源是会话族热腿（渲染后的 SQL 里是真实关系名）。
+		// ★ 890：证据源是会话族热腿（渲染后的 SQL 里是真实关系名）。
 		"public.session_turns_hot",
 		"now() - interval '24 hours'",
 		"rl.success = TRUE",
-		// ★ 885：会话族探针排除谓词（三臂）——原判据里的
+		// ★ 890：会话族探针排除谓词（三臂）——原判据里的
 		// "NOT COALESCE('probe' = ANY(rl.quality_flags), FALSE)" 引用了会话族
 		// **不存在**的列，必须换成会话族那条。
 		"rl.origin_stage",
@@ -72,7 +72,7 @@ func TestTodaySuccessProbeSQLRecoveryOnly(t *testing.T) {
 		"interval '60 minutes'",
 		"nps.last_attempt_at IS NULL",
 		"nps.credential_id IS NULL",
-		// the retired v1 family (migration 885 dropped it)
+		// the retired v1 family (migration 890 dropped it)
 		"_request_logs",
 	} {
 		if strings.Contains(sql, banned) {

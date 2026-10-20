@@ -11,7 +11,7 @@
 // 成功 0 次。
 //
 // ★ 2026-10-21（R65 轮）：本文件的守卫**改瞄**了。
-// 原来它守的是 remaining gauge 的两条臂（父表臂加窗 / _hot 臂不加窗）。迁移 885
+// 原来它守的是 remaining gauge 的两条臂（父表臂加窗 / _hot 臂不加窗）。迁移 890
 // 把 remaining 查询变成常量 `SELECT 0::bigint` ⇒ 两条臂都不存在了 ⇒ 那三条
 // 判据的**前提**消失（不是它们错了，是被守的对象没了）。
 //
@@ -88,7 +88,7 @@ func TestSessionRequestStatusCandidate_KeepsNullLabelPredicate(t *testing.T) {
 // TestSessionRequestStatusRemaining_NeedsNoWindowBecauseItScansNothing 钉住
 // 「remaining 查询现在不扫表」。
 //
-// 迁移 885 之后它是常量 0：一个表都不碰 ⇒ 既不需要 7 天下界，也不可能再烧掉
+// 迁移 890 之后它是常量 0：一个表都不碰 ⇒ 既不需要 7 天下界，也不可能再烧掉
 // R31 那份预算。这条判据的价值在于**双向**：如果哪天有人给它加回一个表扫描，
 // 却没有同时把 7 天下界加回去，这条会红（而光靠「窗还在」的判据不会发现）。
 func TestSessionRequestStatusRemaining_NeedsNoWindowBecauseItScansNothing(t *testing.T) {
@@ -112,7 +112,7 @@ func TestSessionRequestStatusRemaining_NeedsNoWindowBecauseItScansNothing(t *tes
 // 2026-10-21（R65 轮）**移除**，不是被遗忘：
 //
 //   - 它们守的是 remaining gauge 的两条臂（父表臂 / _hot 臂）的谓词与窗。
-//   - 迁移 885 把 remaining 查询变成常量 0 ⇒ **两条臂都不存在了** ⇒ 被守的对象
+//   - 迁移 890 把 remaining 查询变成常量 0 ⇒ **两条臂都不存在了** ⇒ 被守的对象
 //     没了，「窗只作用于父表臂」「两臂谓词对称」这两条命题都不再有意义。
 //   - 它们的**实质**没有丢：R31 测出来的「有窗才跑得完」这件事，改由本文件
 //     的 TestSessionRequestStatusCandidate_KeepsSevenDayFloor 钉在**候选查询**

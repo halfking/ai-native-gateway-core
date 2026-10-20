@@ -41,9 +41,9 @@ func (m stringPointerMatcher) Match(value interface{}) bool {
 
 // requestLogUpdateArgs 构造「请求日志更新」语句的绑定参数。
 //
-// ★ 2026-10-20（迁移 885，v1 族退役）：本 helper 原先构造 v1 宽表
+// ★ 2026-10-20（迁移 890，v1 族退役）：本 helper 原先构造 v1 宽表
 // `_request_logs_hot` 的 UPDATE 绑定参数（100 个占位符，覆盖 quality_* /
-// client-perception / t0..t9 / canonical 等 v1-only 列）。v1 族随 885 落库后
+// client-perception / t0..t9 / canonical 等 v1-only 列）。v1 族随 890 落库后
 // 那条语句**不再存在** ⇒ 现在构造**新写入路径**（usage_ledger_hot）的绑定参数：
 //
 //   - entry 带真实 token（PromptTokens / CompletionTokens 任一非 nil）⇒ 10 个参数：
@@ -58,7 +58,7 @@ func (m stringPointerMatcher) Match(value interface{}) bool {
 // ⚠ 本轮只改 client_test.go / final_success_claim_test.go；本 helper 的**其它**
 // 调用方（body_summary_test.go / body_summary_default_test.go /
 // usage_correction_test.go）仍在期望 v1 语句（`UPDATE _request_logs_hot`），
-// 需随迁移 885 一并改造——它们不在本轮范围内，此处只保证编译面不破。
+// 需随迁移 890 一并改造——它们不在本轮范围内，此处只保证编译面不破。
 func requestLogUpdateArgs(entry RequestLogEntry) []interface{} {
 	if entry.PromptTokens != nil || entry.CompletionTokens != nil {
 		// 10 参变体：$1 request_id … $9 success, $10 error_kind。
@@ -74,7 +74,7 @@ func requestLogUpdateArgs(entry RequestLogEntry) []interface{} {
 	return args
 }
 
-// ── 2026-10-20（迁移 885，v1 族退役）：SQL 录制器 ──────────────────────────
+// ── 2026-10-20（迁移 890，v1 族退役）：SQL 录制器 ──────────────────────────
 //
 // 用途：把「生产代码实际发出的 SQL 文本」抓下来，让判据直接对着**真实语句**
 // 下结论，而不是对着测试文件里自己抄的一份字面量。
@@ -164,11 +164,11 @@ func newRecordingDB(t *testing.T) (pgxmock.PgxPoolIface, requestLogDB, *sqlRecor
 	return mockDB, &recordingDB{inner: mockDB, recorder: recorder}, recorder
 }
 
-// ★ 2026-10-20（迁移 885，v1 族退役）：TestUpsertRequestLogBodies_UsesBodyOnlyColumns
+// ★ 2026-10-20（迁移 890，v1 族退役）：TestUpsertRequestLogBodies_UsesBodyOnlyColumns
 // **已退役**（本函数整条删除）。
 //
 // 退役对象：upsertRequestLogBodies —— v1 正文族（_request_logs_bodies_hot /
-// _request_logs_bodies / _request_logs_bodies_archive）的写入函数，随 885
+// _request_logs_bodies / _request_logs_bodies_archive）的写入函数，随 890
 // 连同 v1 正文族一起删除。v1 族落库后再写它必然 42P01。
 //
 // 为什么退役而不是改指：它守的不变式是「正文只写正文列（request_body /
@@ -185,7 +185,7 @@ func newRecordingDB(t *testing.T) (pgxmock.PgxPoolIface, requestLogDB, *sqlRecor
 func TestUpsertRequestLogBodies_RetiredWithV1BodyFamily(t *testing.T) {
 	// 占位断言：保留一个「退役登记」用例，使退役这件事在测试清单里可见，
 	// 而不是变成一段无人引用的注释。
-	t.Log("upsertRequestLogBodies 随迁移 885（v1 正文族退役）整条删除；" +
+	t.Log("upsertRequestLogBodies 随迁移 890（v1 正文族退役）整条删除；" +
 		"正文落点迁到会话族 session_bodies / session_bodies_hot，" +
 		"由 internal/sessionv2mirror 与 domains/session/v2 承接。")
 }
@@ -213,9 +213,9 @@ func TestInsertSessionOpenedEvent_IsIdempotent(t *testing.T) {
 	require.NoError(t, mockDB.ExpectationsWereMet())
 }
 
-// ★ 2026-10-20（迁移 885，v1 族退役）：本用例原先期望 v1 宽表的两条语句
+// ★ 2026-10-20（迁移 890，v1 族退役）：本用例原先期望 v1 宽表的两条语句
 // （`UPDATE _request_logs_hot` 100 参 + `INSERT INTO _request_logs_bodies_hot`），
-// 那两条随 885 整段退役 ⇒ 改为期望**新写入路径**（usage_ledger_hot 的 UPDATE），
+// 那两条随 890 整段退役 ⇒ 改为期望**新写入路径**（usage_ledger_hot 的 UPDATE），
 // 并直接检查**生产代码实际发出的** SQL 文本。
 //
 // 不变式（仍然成立，仍由本用例守着）：终态成功可以覆盖此前的中间失败——
@@ -276,7 +276,7 @@ func TestMergeRequestLogEntry_PreservesProtocolMetadata(t *testing.T) {
 	}
 }
 
-// ★ 2026-10-20（迁移 885，v1 族退役）：TestUpdateRequestLog_TerminalGuardDistinguishesNoOpFromMissing
+// ★ 2026-10-20（迁移 890，v1 族退役）：TestUpdateRequestLog_TerminalGuardDistinguishesNoOpFromMissing
 // **已退役**（表驱动用例整条删除）。
 //
 // 退役对象：「终态守卫把『无操作』与『行缺失』区分开」这个判别。它的唯一
@@ -299,7 +299,7 @@ func TestUpdateRequestLog_TerminalGuardRetiredWithV1InsertFallback(t *testing.T)
 		"新写入路径的 UPDATE 永远只改已有行，语句集合由 token 是否存在决定。")
 }
 
-// ★ 2026-10-20（迁移 885，v1 族退役）：新写入路径有**两个** UPDATE 变体——
+// ★ 2026-10-20（迁移 890，v1 族退役）：新写入路径有**两个** UPDATE 变体——
 // 带真实 token 时走 10 参（含 token / 缓存 token / cost / latency / success /
 // error_kind），不带 token 时走 5 参（latency / success / error_kind / cost）。
 // 变体选择只看「entry 是否带真实 token」，与是否终态无关。
@@ -354,7 +354,7 @@ func TestUpdateRequestLog_UsesTokenEnrichmentVariantOnlyWhenTokensPresent(t *tes
 	}
 }
 
-// ★ 2026-10-20（迁移 885，v1 族退役）：本用例**方向反转**。
+// ★ 2026-10-20（迁移 890，v1 族退役）：本用例**方向反转**。
 //
 // 原用例（TestUpdateRequestLog_MissingRequestFallsBackToInsert）断言的是
 // 「UPDATE 命中 0 行 ⇒ `SELECT EXISTS` 查不到 ⇒ 回落到 INSERT」。该回落分支
@@ -512,14 +512,14 @@ func TestResolveRequestStatus(t *testing.T) {
 	}
 }
 
-// ★ 2026-10-20（迁移 885，v1 族退役）：TestRequestLogsUpdateSQL_SetClauseDoesNotReferenceTargetAlias
+// ★ 2026-10-20（迁移 890，v1 族退役）：TestRequestLogsUpdateSQL_SetClauseDoesNotReferenceTargetAlias
 // **已退役**（原用例整条删除），并由下面的
 // TestUpdateRequestLog_ProductionSQLTargetsUsageLedgerHotWithoutAlias 接手。
 //
 // 退役对象：一份**写在测试文件内部**的 SQL 字面量
 // （`UPDATE _request_logs_hot ... FROM latest ...`）。两个问题：
 //
-//	① 它描述的表已随 885 删除，字面量从此指向一个不存在的东西；
+//	① 它描述的表已随 890 删除，字面量从此指向一个不存在的东西；
 //	② 它与生产代码**没有任何耦合**——字面量写错、表被删、生产语句改了，
 //	   它都照样绿。这是「判据钉死了一个不存在的东西」的典型形态
 //	   （LESSONS.md 教训 17：判据会把错误行为钉死，还带着注释显得很有理）。
@@ -533,10 +533,10 @@ func TestRequestLogsUpdateSQL_SetClauseDoesNotReferenceTargetAlias_Retired(t *te
 	// 占位断言：保留一个「退役登记」用例，使退役这件事在测试清单里可见，
 	// 而不是变成一段无人引用的注释。
 	t.Log("断言对象从『测试文件内的 SQL 字面量』换成『生产代码实际发出的 SQL』；" +
-		"原字面量描述的是随 885 删除的 _request_logs_hot。")
+		"原字面量描述的是随 890 删除的 _request_logs_hot。")
 }
 
-// ★ 2026-10-20（迁移 885，v1 族退役）：UPDATE 语句的**真实**形状判据。
+// ★ 2026-10-20（迁移 890，v1 族退役）：UPDATE 语句的**真实**形状判据。
 //
 // 断言对象是生产代码实际发出的 SQL（录制器抓到的原文），不是测试文件里的
 // 抄写。两条不变式：
@@ -574,10 +574,10 @@ func TestUpdateRequestLog_ProductionSQLTargetsUsageLedgerHotWithoutAlias(t *test
 	require.NotContains(t, setClause, "rl.",
 		"SET 子句不得引用目标别名（UPDATE 无 FROM 臂，带别名会报 invalid reference to FROM-clause entry）")
 	require.NotContains(t, updateSQL, "_request_logs",
-		"写入路径不得再引用随 885 退役的 v1 族")
+		"写入路径不得再引用随 890 退役的 v1 族")
 }
 
-// ★ 2026-10-20（迁移 885，v1 族退役）：TestRequestLogsHotTarget_QualityColumnsUseHotTable
+// ★ 2026-10-20（迁移 890，v1 族退役）：TestRequestLogsHotTarget_QualityColumnsUseHotTable
 // **已退役**（原用例整条删除）。
 //
 // 退役对象：一份**写在测试文件内部**的 SQL 字面量，断言「quality_flags /
@@ -586,7 +586,7 @@ func TestUpdateRequestLog_ProductionSQLTargetsUsageLedgerHotWithoutAlias(t *test
 // 为什么退役而不是改指：
 //
 //	① 断言对象是测试文件里的抄写，与生产代码没有耦合（字面量与生产语句各说各话）；
-//	② quality_flags / quality_fix_actions 是 **v1-only 列**——v1 族随 885 删除后，
+//	② quality_flags / quality_fix_actions 是 **v1-only 列**——v1 族随 890 删除后，
 //	   新 canonical 目标 usage_ledger_hot **没有这两列**（见
 //	   sql/objects/tables/usage_ledger_hot.sql），所以「迁到新表」这个不变式
 //	   本身已不存在。
@@ -600,13 +600,13 @@ func TestUpdateRequestLog_ProductionSQLTargetsUsageLedgerHotWithoutAlias(t *test
 func TestRequestLogsHotTarget_QualityColumnsUseHotTable_Retired(t *testing.T) {
 	// 占位断言：保留一个「退役登记」用例，使退役这件事在测试清单里可见，
 	// 而不是变成一段无人引用的注释。
-	t.Log("quality_flags / quality_fix_actions 是 v1-only 列，随 885 退役；" +
+	t.Log("quality_flags / quality_fix_actions 是 v1-only 列，随 890 退役；" +
 		"usage_ledger_hot 无对应列，本包不再有落点可指。")
 }
 
-// ★ 2026-10-20（迁移 885，v1 族退役）：telemetry 的 PG 写入路径**不得**再碰
+// ★ 2026-10-20（迁移 890，v1 族退役）：telemetry 的 PG 写入路径**不得**再碰
 // v1 族（_request_logs / _request_logs_hot / _request_logs_bodies* /
-// request_logs*）——885 落库后写/读它们必然 42P01。
+// request_logs*）——890 落库后写/读它们必然 42P01。
 //
 // 这是「否定判据」，因此**必须带正向对照**（方法纪律第 2 条）：
 //   - 否定面：录制到的全部 SQL 里不得出现任何 v1 表名；
@@ -639,9 +639,9 @@ func TestTelemetryWritePath_IssuesNoV1FamilySQL(t *testing.T) {
 		sawCanonicalTarget := false
 		for _, statement := range statements {
 			require.NotContains(t, statement, "_request_logs",
-				"telemetry 写入路径不得再引用随 885 退役的 v1 族")
+				"telemetry 写入路径不得再引用随 890 退役的 v1 族")
 			require.NotContains(t, statement, "request_logs_bodies",
-				"telemetry 写入路径不得再引用随 885 退役的 v1 正文族")
+				"telemetry 写入路径不得再引用随 890 退役的 v1 正文族")
 			if strings.Contains(statement, "usage_ledger_hot") {
 				sawCanonicalTarget = true
 			}
@@ -673,9 +673,9 @@ func TestTelemetryWritePath_IssuesNoV1FamilySQL(t *testing.T) {
 		sawCanonicalTarget := false
 		for _, statement := range statements {
 			require.NotContains(t, statement, "_request_logs",
-				"telemetry 写入路径不得再引用随 885 退役的 v1 族")
+				"telemetry 写入路径不得再引用随 890 退役的 v1 族")
 			require.NotContains(t, statement, "request_logs_bodies",
-				"telemetry 写入路径不得再引用随 885 退役的 v1 正文族")
+				"telemetry 写入路径不得再引用随 890 退役的 v1 正文族")
 			if strings.Contains(statement, "usage_ledger_hot") {
 				sawCanonicalTarget = true
 			}
@@ -718,9 +718,9 @@ func TestMergeRequestLogEntry_PreservesBodiesOnEmptyUpdate(t *testing.T) {
 	}
 }
 
-// ★ 2026-10-20（迁移 885，v1 族退役）：语句集合改为新写入路径——
+// ★ 2026-10-20（迁移 890，v1 族退役）：语句集合改为新写入路径——
 // 事务里现在只有一条 `UPDATE usage_ledger_hot`（v1 宽表 UPDATE 与 v1 正文族
-// INSERT 随 885 整段退役）。本用例守的不变式（正文在事务提交后才释放、
+// INSERT 随 890 整段退役）。本用例守的不变式（正文在事务提交后才释放、
 // persisted hook 能读到完整正文）与 v1 无关，保留。
 func TestPersistRequestLog_ReleasesBodiesAfterPersistedHooks(t *testing.T) {
 	requestBody := `{"messages":[{"role":"user","content":"hello"}]}`
@@ -1096,7 +1096,7 @@ func TestLookupProviderName(t *testing.T) {
 // 2026-10-13 S3 波 2（停写切换）：权威读改为会话族 MAX(turn_no)（两腿），
 // 0 时回退 v1 母表 30d 计数（镜像前历史会话）。
 //
-// ★ 2026-10-20（迁移 885，v1 族退役）：v1 回退腿整段删除——v1 族随 885 落库后
+// ★ 2026-10-20（迁移 890，v1 族退役）：v1 回退腿整段删除——v1 族随 890 落库后
 // 再读它必然 42P01 ⇒ 会话族两腿恒 0 时 turn_no 取 1（会话首轮）。
 // 「回退腿不得复活」由录制器守着：若 v1 回退查询被加回来，录制到的语句会变成
 // 2 条 ⇒ 用例变红。（注意：lookupTurnNumber 读失败时**吞掉错误**返回 1，
@@ -1141,10 +1141,10 @@ func TestLookupTurnNumber(t *testing.T) {
 		require.Equal(t, 1, result)
 		require.NoError(t, mockDB.ExpectationsWereMet())
 
-		// 只有一条查询：v1 回退腿随 885 整段删除，不得复活。
+		// 只有一条查询：v1 回退腿随 890 整段删除，不得复活。
 		statements := recorder.recorded()
 		require.Len(t, statements, 1,
-			"lookupTurnNumber 只能查会话族一条（v1 回退腿随 885 退役）")
+			"lookupTurnNumber 只能查会话族一条（v1 回退腿随 890 退役）")
 		require.Contains(t, statements[0], "session_turns_hot",
 			"正向对照：抓到的应是会话族查询")
 	})
@@ -1199,7 +1199,7 @@ func TestLookupTurnNumber(t *testing.T) {
 
 		statements := recorder.recorded()
 		require.Len(t, statements, 1,
-			"lookupTurnNumber 只能查会话族一条（v1 回退腿随 885 退役）")
+			"lookupTurnNumber 只能查会话族一条（v1 回退腿随 890 退役）")
 	})
 
 	t.Run("handles multi-turn conversation", func(t *testing.T) {
@@ -1322,9 +1322,9 @@ func TestRequestLogEmittedBeforePersisted(t *testing.T) {
 	c, mockDB := newEmittedHookClient(t, 1)
 
 	// Insert-path mock sequence (mirrors TestUpdateRequestLog_MissingRowDoesNotFallBackToInsert).
-	// ★ 2026-10-20（迁移 885，v1 族退役）：插入路径现在**只有**一条
+	// ★ 2026-10-20（迁移 890，v1 族退役）：插入路径现在**只有**一条
 	// `INSERT INTO usage_ledger_hot`（19 个绑定参数）——v1 宽表 INSERT 与
-	// v1 正文族 INSERT 随 885 整段退役。
+	// v1 正文族 INSERT 随 890 整段退役。
 	mockDB.ExpectBegin()
 	usageInsertArgs := make([]interface{}, 19)
 	for index := range usageInsertArgs {

@@ -100,7 +100,7 @@ func TestDataLifecycleCanonicalSegmentsMatchViewSemantics(t *testing.T) {
 	}
 	hotBefore, sessParBefore := countLegs()
 
-	// ★ 2026-10-21（R67 / C9）：v1 族已随迁移 885/890 真删 ⇒
+	// ★ 2026-10-21（R67 / C9）：v1 族已随迁移 890 真删 ⇒
 	//   ① 下面这两条重算 v1 臂的查询会直接 42P01（关系不存在）⇒ 删掉；
 	//   ② 生产 SQL 的源只剩会话族两腿（见
 	//      TestDataLifecycleCanonicalSQLDropsOnlyTheColumnBloat：
@@ -243,7 +243,7 @@ func TestDataLifecycleCanonicalSQLDropsOnlyTheColumnBloat(t *testing.T) {
 		t.Error("折叠后的查询里仍有 request_logs_with_current_month：" +
 			"该视图真库 >60s 跑不完（母表单腿 280ms），端点会重新变回 500@30s")
 	}
-	// ★ 2026-10-20（迁移 885，v1 族真删）：这条查询的 v1 臂（`_request_logs p`
+	// ★ 2026-10-20（迁移 890，v1 族真删）：这条查询的 v1 臂（`_request_logs p`
 	// 母表）随之退役 ⇒ 它必须**不在场**（读了就是 42P01）。
 	//
 	// 反连接也是同一件事的另一半：原来那两条 NOT EXISTS 是「会话腿不重复
@@ -251,7 +251,7 @@ func TestDataLifecycleCanonicalSQLDropsOnlyTheColumnBloat(t *testing.T) {
 	// ⇒ 本门从「必须读 v1 母表 + 两条反连接」**反转**为「v1 族关系名不得
 	// 在场，且反连接数必须是 0」。
 	if hits := retiredV1RelationsInSQL(sql); len(hits) > 0 {
-		t.Errorf("折叠后的查询里仍出现已退役 v1 族关系名 %v —— v1 族已随 885 被 DROP，读它 = 42P01", hits)
+		t.Errorf("折叠后的查询里仍出现已退役 v1 族关系名 %v —— v1 族已随 890 被 DROP，读它 = 42P01", hits)
 	}
 	if n := strings.Count(sql, "NOT EXISTS"); n != 0 {
 		t.Errorf("反连接有 %d 条，应为 0 条（v1 臂退役后反连接的对象已不存在，留着 = 42P01）", n)

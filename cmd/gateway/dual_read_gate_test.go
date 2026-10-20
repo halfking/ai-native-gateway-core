@@ -187,7 +187,7 @@ func TestS4Gate_VoidIsNeverReady(t *testing.T) {
 
 // TestSummarizeNoLongerAssignsS4ReadyDirectly 是这道修复的**回归门**。
 //
-// # ★ 2026-10-20（迁移 885，v1 族整体退役）：这道门**反转**了
+// # ★ 2026-10-20（迁移 890，v1 族整体退役）：这道门**反转**了
 //
 // 原门断言：Summarize 里对 S4Ready 的赋值**有且仅有一处**，且那一处来自
 // verdict（`sum.S4Ready = verdict.Ready`）。
@@ -262,7 +262,7 @@ func s4GateArgRE(structField, summaryField string) *regexp.Regexp {
 
 var s4ReadyAssignRE = regexp.MustCompile(`sum\.S4Ready\s*=\s*([^\n]+)`)
 
-// ── 退役态的两个「恒 false」判据（2026-10-20，迁移 885）──────────────────
+// ── 退役态的两个「恒 false」判据（2026-10-20，迁移 890）──────────────────
 //
 // ⚠ 这三个正则锚在**标识符 token** 上，且对 gofmt 会改写的排版免疫
 // （`\s*` 而不是硬编码空格）。这不是洁癖：本文件历史上就踩过一次同族的错
@@ -289,7 +289,7 @@ var (
 // with the clock. A permanently-false gate is as useless as a permanently-true
 // one, and it would make the spec's "7 天零漂移" exit condition unsatisfiable.
 //
-// # ★ 2026-10-20（迁移 885，v1 族整体退役）：这道门**反转**了
+// # ★ 2026-10-20（迁移 890，v1 族整体退役）：这道门**反转**了
 //
 // 原门断言源码里有 `d.ZeroDriftEvaluable = d.V1WritesEnabled`（可评估性跟着
 // 写入开关走），且它必须排在 `d.ZeroDrift = d.OnlyInV1Count == 0` 之前
@@ -471,7 +471,7 @@ func TestS4Gate_CoverageRule(t *testing.T) {
 // attached. A void reason that does not say how much was actually compared
 // leaves the operator to guess, and the guess they will make is the old one.
 //
-// ★ 2026-10-20（迁移 885）：这道门**没有**反转——它守的量（覆盖率必须以 -1
+// ★ 2026-10-20（迁移 890）：这道门**没有**反转——它守的量（覆盖率必须以 -1
 // 起步，0 与「从未测量」必须可区分）在退役态下**依然成立**（`V1CoveragePP`
 // 恒为 -1）。变红的原因不是行为变了，是**判据的锚点太脆**：
 // 原写法 `strings.Contains(src, "V1CoveragePP: -1,")` 硬编码了一个空格，

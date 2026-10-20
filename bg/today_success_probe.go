@@ -145,7 +145,7 @@ func todaySuccessProbeSQL() string {
 	return `
 		WITH used AS (
 			SELECT rl.credential_id AS id, pm.raw_model_name, MAX(rl.ts) AS last_used_at
-			-- ★ 885（v1 族退役）：源换成会话族热腿（v1 热表已 DROP）。
+			-- ★ 890（v1 族退役）：源换成会话族热腿（v1 热表已 DROP）。
 			-- 窗口 24h ≫ hot 保留期 8h，v1 侧本来就只看得到最近 8h，
 			-- 会话族热腿保留期同款 ⇒ 口径不变。
 			FROM ` + db.SessionFamilyTurnsHotSourceSQL() + ` rl

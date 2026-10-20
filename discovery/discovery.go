@@ -1114,7 +1114,7 @@ func seedCanonicalAliases(ctx context.Context, db modelcatalog.Querier, rawName 
 // 否定式在证据消失时**做动作**。
 // staleExpiryBlockedS4Reason 是「不下架」的对外说明（运维读日志时看到的那句）。
 //
-// ★ 2026-10-20（迁移 885，v1 族退役）：证据源已换成会话族，**这道护栏的判据
+// ★ 2026-10-20（迁移 890，v1 族退役）：证据源已换成会话族，**这道护栏的判据
 // 其实已经失效**——会话族一直在写、从不冻结，「证据源停止写入」这个前提不再
 // 成立 ⇒ 严格说它现在只会「永远阻断下架」。
 // 但「要不要退役这道护栏」是**产品决策**（打开它意味着生产开始真的下架
@@ -1123,7 +1123,7 @@ func seedCanonicalAliases(ctx context.Context, db modelcatalog.Querier, rawName 
 // ⇒ 消息里仍点名 _request_logs：那是这道护栏**当初依赖的证据源**（运维要查
 // 它的来历），也是本仓对「v1 裸读」检测器（internal/sqlreadguard）仅剩的
 // 那个可解释的白名单命中点。
-const staleExpiryBlockedS4Reason = "S4 停写中：宽限守卫依赖 v1 证据源（_request_logs，已随 885 退役），证据源停止写入 ⇒ 下架判定不成立；⚠ 该护栏判据现已失效（证据源已是会话族，一直在写），待父会话裁决是否退役它"
+const staleExpiryBlockedS4Reason = "S4 停写中：宽限守卫依赖 v1 证据源（_request_logs，已随 890 退役），证据源停止写入 ⇒ 下架判定不成立；⚠ 该护栏判据现已失效（证据源已是会话族，一直在写），待父会话裁决是否退役它"
 
 // staleExpiryMayRun 判定「能否基于 v1 证据执行 stale 下架」。
 //
@@ -1143,7 +1143,7 @@ func (s *Service) expireStaleModels(ctx context.Context, seen []modelOffer) {
 
 	// S4 停写护栏：证据源停止写入时，宽限守卫失去判据，此时**不动**才是安全方向。
 	//
-	// ★ 2026-10-20（迁移 885，v1 族退役）：证据源已换成会话族，
+	// ★ 2026-10-20（迁移 890，v1 族退役）：证据源已换成会话族，
 	// **当初不换的理由已经消失**——本注释说「session_turns 的 raw_model_name
 	// 目前 0 填充（源头 RequestLogEntry 无该字段）」，这条现在**不成立**：
 	// 会话族的 raw_model_name 已随镜像写入（s1a_fields.go §9.60.8：
@@ -1206,7 +1206,7 @@ func (s *Service) expireStaleModels(ctx context.Context, seen []modelOffer) {
 			  AND raw_model_name NOT IN (%s)
 			  AND available = TRUE
 			  AND COALESCE(admin_protected, FALSE) = FALSE
-			  -- ★ 885（v1 族退役）：证据源换成**会话族原生源**（hot ∪ parent）。
+			  -- ★ 890（v1 族退役）：证据源换成**会话族原生源**（hot ∪ parent）。
 			  -- 模型名口径用 rl.raw_model_name —— 会话族里它就是 v1 outbound_model
 			  -- 的同义列（COALESCE(outbound_model, client_model)），且是 v1 侧
 			  -- outbound_model 的**超集**（多了 client_model 回落）⇒ 守卫只会更

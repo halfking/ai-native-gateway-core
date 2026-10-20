@@ -18,7 +18,7 @@
 //     canonical_id）JOIN provider_models 取展示名。不扫明细日志。
 //   - detail 档（带 api_key 过滤）：**会话族原生源** db.SessionFamilyTurnsSourceSQL()
 //     （★ 2026-10-20：原读面 request_logs_with_current_month_without_customer_id
-//     直读 v1 族、v1 停写后恒 0 行 ⇒ 本档此前恒空；885 删族后会变 42P01 ⇒ 改指会话族）
+//     直读 v1 族、v1 停写后恒 0 行 ⇒ 本档此前恒空；890 删族后会变 42P01 ⇒ 改指会话族）
 //
 // 唯一含 api_key_id 的读面；无 api_key 索引的旧分区上长窗会慢，前端对超时
 //

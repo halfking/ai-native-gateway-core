@@ -685,7 +685,7 @@ func TestProductionGoSQLOverColumnarCandidatesAreVerified_RealDB(t *testing.T) {
 	// ★ 候选数下界的**替代**：量具自检（R67 / C5 改判）。
 	//
 	// 过去这里断言「至少有一条候选被真库裁决」⇒ 0 候选就红。
-	// 但 0 候选在当前树上是**事实正确**的：v1 族退役（890）+ 会话族换源（884/885）
+	// 但 0 候选在当前树上是**事实正确**的：v1 族退役（890）+ 会话族换源（884/890）
 	// 之后，生产不再在 **Go SQL 字符串**里内联「列存关系 + 子查询内集合算子」
 	// 这个形状 —— 那个 UNION ALL 搬进了**视图定义**里，生产读的是视图
 	// （实测：handoff_logs_with_current_month = 顶层 UNION ALL ⇒ 计划成功）。

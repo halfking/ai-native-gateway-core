@@ -90,9 +90,9 @@ type bodyReaderShape struct {
 }
 
 var v1BodiesReaderShapes = map[string]bodyReaderShape{
-	// ★ 2026-10-20（迁移 885，v1 族真删）：本表**已清空**。
+	// ★ 2026-10-20（迁移 890，v1 族真删）：本表**已清空**。
 	//
-	// 24 条登记判定的都是「bodies 读方该怎么换成会话族」——而 885 之后
+	// 24 条登记判定的都是「bodies 读方该怎么换成会话族」——而 890 之后
 	// **没有任何生产文件再读 v1 bodies 腿**（bodies 读端恒为会话族）
 	// ⇒ 「这个读法能不能换 helper」已经没有对象。
 	//
@@ -250,10 +250,10 @@ func TestV1BodiesReaderShapesAreClassified(t *testing.T) {
 	sort.Strings(stale)
 	t.Logf("v1 bodies 读方：实测 %d 文件 / 判定 %d 文件", len(measured), len(v1BodiesReaderShapes))
 
-	// ★ 885 之后（2026-10-20）：**实测为 0 是正确状态**，不是「量具坏了」。
+	// ★ 890 之后（2026-10-20）：**实测为 0 是正确状态**，不是「量具坏了」。
 	//
 	// 原来这里是一条地板（实测为 0 ⇒ Fatal），因为那时总体为空只可能意味着
-	// 「SSOT 推导或路径过滤出了问题」。885 之后 v1 族被物理删除 ⇒ 总体真的归零。
+	// 「SSOT 推导或路径过滤出了问题」。890 之后 v1 族被物理删除 ⇒ 总体真的归零。
 	//
 	// ⇒ 地板翻成：**总量为空必须是因为扫描器扫过而没命中**。
 	// 判据：扫描器的模式必须仍能认出 v1 bodies 形态（阳性对照）。
@@ -265,7 +265,7 @@ func TestV1BodiesReaderShapesAreClassified(t *testing.T) {
 		}
 	}
 	if len(v1BodiesReaderShapes) > 0 {
-		t.Errorf("形状判定表仍有 %d 条 —— 885 之后没有 v1 bodies 读方可判定。",
+		t.Errorf("形状判定表仍有 %d 条 —— 890 之后没有 v1 bodies 读方可判定。",
 			len(v1BodiesReaderShapes))
 	}
 	if len(unregistered) > 0 {
@@ -301,7 +301,7 @@ func TestV1BodiesReaderShapesAreDeclaredWell(t *testing.T) {
 		}
 	}
 
-	// ★ 885 之后（2026-10-20）：表为空 ⇒ 逐条校验不执行 ⇒ 判据必须有牙。
+	// ★ 890 之后（2026-10-20）：表为空 ⇒ 逐条校验不执行 ⇒ 判据必须有牙。
 	//
 	// ⇒ 用**合成条目**证明自检逻辑有效：Shape 不在已声明档位 / Reason 为空
 	// —— 两种都必须被判出问题；一条各项都合规的必须不被判出问题。
@@ -432,11 +432,11 @@ func TestV1BodiesScanIncludesSwitchConsumers(t *testing.T) {
 	measured := scanV1BodiesReaders(t, root)
 	consumers := indirectSourceConsumers(t, root)
 
-	// ★ 885 之后（2026-10-20）：**没有消费点是正确状态**。
+	// ★ 890 之后（2026-10-20）：**没有消费点是正确状态**。
 	//
 	// 原来这里是一条地板（consumers 为空 ⇒ Fatal），因为那时切换层
 	// （`db.SessionBodiesSourceSQL()`）**默认臂是 v1** ⇒ 它的消费点全是 v1 读方。
-	// 885 之后 bodies 读端恒为会话族、切换层退化为 no-op ⇒
+	// 890 之后 bodies 读端恒为会话族、切换层退化为 no-op ⇒
 	// 「经切换层读 v1 bodies」这件事不再存在 ⇒ 消费点为空是正确值。
 	//
 	// ⇒ 地板翻成：**消费点为空必须是因为切换层不再是 v1 臂**。

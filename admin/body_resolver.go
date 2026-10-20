@@ -204,7 +204,7 @@ func (h *Handler) lookupControlledBody(ctx context.Context, requestID, tenantID 
 	var occurredAt time.Time
 	var requestBody, responseBody *string
 
-	// 2026-10-20（迁移 885）：v1 族整体退役 ⇒ 原来的两条 v1 腿（v1 hot 主行
+	// 2026-10-20（迁移 890）：v1 族整体退役 ⇒ 原来的两条 v1 腿（v1 hot 主行
 	// JOIN v1 hot 正文表；canonical 视图 JOIN v1 bodies 视图）一起删掉，
 	// 轮次与正文都只来自会话族。
 	//
@@ -257,7 +257,7 @@ func normalizeControlledPrompt(raw *string) (string, bool) {
 	if raw == nil || strings.TrimSpace(*raw) == "" {
 		return "", false
 	}
-	// 2026-10-20（迁移 885）：正文只有会话族一份，而会话族的 request_delta
+	// 2026-10-20（迁移 890）：正文只有会话族一份，而会话族的 request_delta
 	// 是**消息数组** `[{"role":"user","content":"…"}]`，不是 v1 家族的
 	// 「带 messages 键的完整对象」。数组臂先试：JSON 数组解进切片成功即判定
 	// 是数组形状（解进对象会报错 ⇒ 落到下面的对象臂）。
@@ -305,7 +305,7 @@ func normalizeControlledResponse(raw *string) (string, bool) {
 	if raw == nil || strings.TrimSpace(*raw) == "" {
 		return "", false
 	}
-	// 2026-10-20（迁移 885）：会话族的 response_delta 是**消息数组**
+	// 2026-10-20（迁移 890）：会话族的 response_delta 是**消息数组**
 	// `[{"role":"assistant","content":"…"}]`（理由同 normalizeControlledPrompt）。
 	var array []struct {
 		Role    string          `json:"role"`

@@ -1,7 +1,7 @@
 // Command compression-bench benchmarks the v3 SessionCompressor on
 // historical request rows from a live database.
 //
-// ★ 2026-10-20（迁移 885，v1 族整体退役）：历史样本改取**会话族**
+// ★ 2026-10-20（迁移 890，v1 族整体退役）：历史样本改取**会话族**
 // （db.SessionFamilyTurnsSourceSQL / db.SessionFamilyBodiesSourceSQL）。
 // 详见 loadRequestLogs 里的说明。
 package main
@@ -215,7 +215,7 @@ func loadRequestLogs(ctx context.Context, pool *pgxpool.Pool, days, maxSamples i
 		limitClause = fmt.Sprintf("LIMIT %d", maxSamples)
 	}
 
-	// ★ 2026-10-20（迁移 885，v1 族整体退役）：数据源改指**会话族**。
+	// ★ 2026-10-20（迁移 890，v1 族整体退役）：数据源改指**会话族**。
 	//
 	// 原来这一段读 v1 宽族（turns 腿 + bodies 腿，ts 等值 JOIN）。那一族被
 	// DROP 之后，任何提到它的语句都会 42P01 ⇒ 工具直接跑不起来。

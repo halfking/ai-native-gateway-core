@@ -32,7 +32,7 @@ var v1SortKeyRE = regexp.MustCompile(`(^|[^A-Za-z0-9_.])e\.last_error_at`)
 // ⇒ 因此**不门控整个自检 worker**（那会连同仍然有效的故障发现一起停掉），
 //    改为补 session 族臂把「止错」的部分保住。
 //
-// ★ 2026-10-20（迁移 885，v1 族退役）：v1 族连表带分区一起被 DROP ⇒ 那条 v1
+// ★ 2026-10-20（迁移 890，v1 族退役）：v1 族连表带分区一起被 DROP ⇒ 那条 v1
 // 臂**必须删除**（提到已 DROP 的关系会让整条 pickDueCredential 语句 42P01）。
 // ⇒ se 臂成为**唯一**的错误证据臂、也是**唯一**的硬前置；本文件下方的门
 // 相应反转：v1 臂从「必须在、且必须 LEFT JOIN」变成「必须不在」。
@@ -53,7 +53,7 @@ var v1SortKeyRE = regexp.MustCompile(`(^|[^A-Za-z0-9_.])e\.last_error_at`)
 //     本身含 `COALESCE(e.last_error_at, se.last_error_at)`；不剥注释的话，删掉真实
 //     的 ORDER BY 接线也能被注释满足。这与 admin 的逐字面量门是同一条教训
 //     （门被自己的注释弄红/喂饱）。
-//  4. **（885 轮新增）负向断言必须按标识符边界匹配**。`se.last_error_at` 里含
+//  4. **（890 轮新增）负向断言必须按标识符边界匹配**。`se.last_error_at` 里含
 //     "e.last_error_at" 子串 ⇒ 子串匹配恒真。见 v1SortKeyRE。
 //
 // 门的边界（它看不到什么）：它是**源码**门，只能证明这条 SQL 的形状没被改回退化
@@ -63,11 +63,11 @@ var v1SortKeyRE = regexp.MustCompile(`(^|[^A-Za-z0-9_.])e\.last_error_at`)
 func TestSelfcheckErrorArmCoversSessionFamily(t *testing.T) {
 	sql := selfcheckPickSQL(t)
 
-	// ---- 臂 e（v1）：★ 885 之后已退役 ----
+	// ---- 臂 e（v1）：★ 890 之后已退役 ----
 	// 原门要求「v1 臂必须仍在，且必须是 LEFT JOIN」——那是补 session 臂时防
 	// 的「补了臂但没接线」（session 臂永远轮不上它）。
 	//
-	// ★ 2026-10-20（迁移 885，v1 族退役）：v1 族连表带分区一起被 DROP ⇒
+	// ★ 2026-10-20（迁移 890，v1 族退役）：v1 族连表带分区一起被 DROP ⇒
 	// 同一条 FROM 里提到 v1 关系会让**整条 pickDueCredential 语句** 42P01
 	// （不是「那条臂失败」）⇒ 这条臂必须**删除**。
 	// ⇒ 本门从「v1 臂必须在」**反转**为「v1 臂必须不在」。
@@ -75,7 +75,7 @@ func TestSelfcheckErrorArmCoversSessionFamily(t *testing.T) {
 	// ⚠ 负向断言的正向对照：下面 se 臂那一整组断言（两存储面 + CAST +
 	// 硬前置）就是对照项 —— 删掉 se 臂本门红，删掉 v1 臂本门绿。
 	if eArm, ok := lateralArmSrc(sql, "e"); ok {
-		t.Errorf("pickDueCredential 里不该再有 v1 错误证据臂（迁移 885 已 DROP，提及即整条语句 42P01）：\n"+
+		t.Errorf("pickDueCredential 里不该再有 v1 错误证据臂（迁移 890 已 DROP，提及即整条语句 42P01）：\n"+
 			"当前 join 关键字：%s\n%s", armJoinKeyword(eArm), eArm)
 	}
 
@@ -83,7 +83,7 @@ func TestSelfcheckErrorArmCoversSessionFamily(t *testing.T) {
 	seArm, ok := lateralArmSrc(sql, "se")
 	if !ok {
 		t.Fatal("自检的错误证据臂不再覆盖 session 族。\n" +
-			"v1 那一臂已随 885 退役，se 臂现在是**唯一**的错误证据臂，也是**硬过滤**\n" +
+			"v1 那一臂已随 890 退役，se 臂现在是**唯一**的错误证据臂，也是**硬过滤**\n" +
 			"（se.last_error_at IS NOT NULL）—— 它没了，自检就会自己静默：\n" +
 			"没有任何凭据能通过硬前置 ⇒ 一次都不跑。\n" +
 			"真库实测：24h 内 v1 有报错的凭据 41、session 侧 15、只有 v1 有的 26 条全是\n" +

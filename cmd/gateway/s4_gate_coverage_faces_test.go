@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-// ── 退役记录（2026-10-20，迁移 885：v1 request_logs 族整体退役）─────────────
+// ── 退役记录（2026-10-20，迁移 890：v1 request_logs 族整体退役）─────────────
 //
 // 本文件原先只有一道门：`TestS4GateCoverageSQLReadsBothFaces`，钉的是
 // **一条 SQL 常量的形状**——按小时量 v1 覆盖率的 SQL（`v1CoverageHoursSQL`）

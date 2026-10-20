@@ -90,10 +90,10 @@ var controlPlaneVerdicts = map[string]struct{ note string }{
 //
 // 键必须与 requestLogsReadInventory 的非 admin 子集完全一致（由门双向核）。
 var requestLogsControlPlaneReaders = map[string]controlPlaneVerdict{
-	// ★ 2026-10-20（迁移 885，v1 族真删）：本表**已清空**。
+	// ★ 2026-10-20（迁移 890，v1 族真删）：本表**已清空**。
 	//
 	// 这张表登记的是「读 v1 的读点，其输出决定了哪个写入或哪个身份」——
-	// 即**控制面依赖**。而 885 之后 v1 族被物理删除 ⇒
+	// 即**控制面依赖**。而 890 之后 v1 族被物理删除 ⇒
 	// **没有任何读点读 v1** ⇒ 不存在「依赖 v1 的控制面」。
 	//
 	// ⇒ 本表保留（不删）：它守的是「**不许出现新的 v1 控制面依赖**」。
@@ -130,7 +130,7 @@ func controlPlaneUnreviewed() []string {
 func TestRequestLogsControlPlaneKnownEntriesAreReal(t *testing.T) {
 	root := repoRootFromCaller(t)
 
-	// ★ 885 之后（2026-10-20）：控制面表必须为空。
+	// ★ 890 之后（2026-10-20）：控制面表必须为空。
 	//
 	// v1 族被物理删除 ⇒ 没有读点读 v1 ⇒ 不存在「依赖 v1 的控制面」。
 	// ⇒ 本门从「已登记的每一条都必须锚在真实代码上」翻成
@@ -141,7 +141,7 @@ func TestRequestLogsControlPlaneKnownEntriesAreReal(t *testing.T) {
 			files = append(files, f)
 		}
 		sort.Strings(files)
-		t.Errorf("控制面表仍有 %d 条登记 —— 885 之后 v1 族已物理删除，不存在依赖 v1 的控制面：\n  %s",
+		t.Errorf("控制面表仍有 %d 条登记 —— 890 之后 v1 族已物理删除，不存在依赖 v1 的控制面：\n  %s",
 			len(files), strings.Join(files, "\n  "))
 	}
 
@@ -219,7 +219,7 @@ func TestRequestLogsControlPlaneKnownEntriesAreReal(t *testing.T) {
 
 // controlPlaneEntryProblems 是一条控制面登记的**自检**（返回问题列表，空 = 合格）。
 //
-// 为什么抽成函数：885 之后控制面表清空 ⇒ 逐条校验不再执行 ⇒
+// 为什么抽成函数：890 之后控制面表清空 ⇒ 逐条校验不再执行 ⇒
 // 「自检逻辑有没有牙」就没人证明了。抽出来才能在合成登记上直接驱动它。
 func controlPlaneEntryProblems(t *testing.T, root, file string, v controlPlaneVerdict) []string {
 	t.Helper()

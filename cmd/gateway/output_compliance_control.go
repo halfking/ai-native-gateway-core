@@ -18,7 +18,7 @@ package main
 // (callerOwner rides on InterceptRequest.CallerOwner); the write-time
 // redact-body path still consumes the (callerOwner, dataOwner) pair.
 //
-// ★ 2026-10-20（v1 族退役，迁移 885）：callerOwner 的**来源换了**。
+// ★ 2026-10-20（v1 族退役，迁移 890）：callerOwner 的**来源换了**。
 // 旧实现用 LATERAL 去 v1 宽族取「该会话最近一条请求行」的 api_key_owner_user；
 // 那一族已整体退役 ⇒ 该腿 42P01 ⇒ 整条查询失败 ⇒ dataOwner 也会一起丢成空
 // （空 ⇒ 保守脱敏，方向是安全的，但 owner 规则从此只剩「一律脱敏」一种结局）。
@@ -138,7 +138,7 @@ func buildRedactBodyWithContextFn(db *sql.DB) func(context.Context, []byte, stri
 //   - dataOwner   = session_dim.owner_user（会话主属主 = 首个请求的 owner）
 //   - callerOwner = **该会话最近一轮**的 api_key_owner_user（会话族 details 族）
 //
-// ★ 2026-10-20（迁移 885，v1 族退役）：callerOwner 的来源从
+// ★ 2026-10-20（迁移 890，v1 族退役）：callerOwner 的来源从
 //   「`_request_logs` 里最近一条请求行的 api_key_owner_user」换成
 //   「会话族 details 族里最近一轮的 api_key_owner_user」。
 //

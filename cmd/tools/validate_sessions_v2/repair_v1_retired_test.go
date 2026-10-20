@@ -1,6 +1,6 @@
 package main
 
-// ★ 2026-10-20（迁移 885，v1 族整体退役）：本文件**取代**了原
+// ★ 2026-10-20（迁移 890，v1 族整体退役）：本文件**取代**了原
 // `repair_e2e_realdb_test.go`。
 //
 // 原门（§9.186）是一道真库端到端门：它往 `_request_logs` 播种两行、
@@ -43,8 +43,8 @@ import (
 // 这不是环境问题（是设计上的退役），以及去哪查。
 func TestRetiredFamilyErrorNamesTheMigration(t *testing.T) {
 	msg := errV1FamilyRetired.Error()
-	if !strings.Contains(msg, "885") {
-		t.Errorf("错误文案没有点名迁移号 885：%q —— 运维需要知道这是设计上的退役，而不是环境坏了", msg)
+	if !strings.Contains(msg, "890") {
+		t.Errorf("错误文案没有点名迁移号 890：%q —— 运维需要知道这是设计上的退役，而不是环境坏了", msg)
 	}
 	if !strings.Contains(msg, "v1") {
 		t.Errorf("错误文案没有点名是哪一族退役：%q", msg)

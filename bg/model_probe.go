@@ -428,11 +428,11 @@ func (r *ModelProbeRunner) nonfeaturedWatchdogTick(ctx context.Context) {
 			          AND rl.ts > now() - make_interval(hours => $2)
 			          -- R50: dual-arm probe exclusion — watchdog backoff is a
 			          -- usage scan (INV-3); probe-only models must back off too.
-			          -- ★ 885（v1 族退役）：会话族没有 quality_flags ⇒ 必须用
+			          -- ★ 890（v1 族退役）：会话族没有 quality_flags ⇒ 必须用
 			          -- 会话族那条探针排除谓词（origin_stage + task_type +
 			          -- origin_actor 三臂；物理谓词引用 quality_flags，会 42703）。
 			          AND `+fmt.Sprintf(probeTrafficExclusionPredicateSession, "rl", "rl", "rl")+`
-			          -- ★ 885：模型名口径换成 rl.raw_model_name——会话族里它就是
+			          -- ★ 890：模型名口径换成 rl.raw_model_name——会话族里它就是
 			          -- COALESCE(outbound_model, client_model) 的同义列（取值口径
 			          -- 登记见 internal/sessionv2mirror/s1a_fields.go）。
 			          -- 不用投影的 outbound_model 列：那一列在会话臂上落的是
@@ -525,7 +525,7 @@ func (r *ModelProbeRunner) demoteAgedHealthyBindings(ctx context.Context) {
 			  AND COALESCE(cmb.unavailable_reason, '') NOT LIKE 'manual%'
 			  AND lower(mps.raw_model_name) NOT IN (SELECT model FROM static)
 			  AND NOT EXISTS (
-			      -- ★ 885（v1 族退役）：证据源换成会话族热腿（v1 热表已 DROP）。
+			      -- ★ 890（v1 族退役）：证据源换成会话族热腿（v1 热表已 DROP）。
 			      -- 模型名口径用 rl.raw_model_name（会话族里它就是
 			      -- COALESCE(outbound_model, client_model) 的同义列），
 			      -- 与上面 usage CTE 同一口径。
@@ -927,7 +927,7 @@ func (r *ModelProbeRunner) featuredCycle(ctx context.Context) {
 		  -- 2026-09-20 INV-3: the model must have real (non-probe) traffic on
 		  -- THIS credential within the 3-day probe scope window.
 		  AND EXISTS (
-			-- ★ 885（v1 族退役）：证据源换成会话族热腿（v1 热表已 DROP；
+			-- ★ 890（v1 族退役）：证据源换成会话族热腿（v1 热表已 DROP；
 			-- 窗口 3 天 ≫ hot 保留期 8h，v1 侧本来就只看得到最近 8h，
 			-- 会话族热腿的保留期同款 ⇒ 口径不变）。
 			SELECT 1 FROM `+db.SessionFamilyTurnsHotSourceSQL()+` rl

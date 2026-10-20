@@ -38,13 +38,13 @@ import (
 
 // TestBodiesSwitchLayerIsAlwaysSessionFamily 钉住「bodies 切换层恒返回会话族」。
 //
-// ★ 2026-10-20（迁移 885，v1 族真删）：本门**改名**（原
+// ★ 2026-10-20（迁移 890，v1 族真删）：本门**改名**（原
 // `TestBodiesSwitchDefaultsToV1`）—— 被守的东西已经不存在了。
 //
 //	原来：灰度开关 `storage.session_bodies_native_read` 关（默认）时返回
 //	      v1 正文族视图 `request_logs_bodies_with_current_month`，开时返回
 //	      会话族源；判据钉「默认必须是 v1 那一臂」。
-//	现在：885 删掉了 v1 正文族**连同那张视图** ⇒ 默认臂指向一个**不存在的
+//	现在：890 删掉了 v1 正文族**连同那张视图** ⇒ 默认臂指向一个**不存在的
 //	      关系** ⇒ 走默认臂的读方整条语句 42P01（不是那条腿失败，也不是
 //	      静默空集）。⇒ 灰度期结束，`db.SessionBodiesSourceSQL()` **恒**
 //	      返回会话族源，开关不再参与选源。
@@ -60,7 +60,7 @@ func TestBodiesSwitchLayerIsAlwaysSessionFamily(t *testing.T) {
 	// ① db 侧不再读那个开关（切换层已退化为 no-op）。
 	src := stripGoComments(readRepoFile(t, "db", "request_logs_view_schema.go"))
 	if strings.Contains(src, "GetPlatformBool(SessionBodiesNativeReadSetting") {
-		t.Errorf("db/request_logs_view_schema.go 里仍在读 %q —— 885 之后 v1 臂已不存在，"+
+		t.Errorf("db/request_logs_view_schema.go 里仍在读 %q —— 890 之后 v1 臂已不存在，"+
 			"「关」这个选项没有意义；开关若被拨到任何取值都必须仍然返回会话族源。",
 			dbpkg.SessionBodiesNativeReadSetting)
 	}
@@ -69,7 +69,7 @@ func TestBodiesSwitchLayerIsAlwaysSessionFamily(t *testing.T) {
 	got := dbpkg.SessionBodiesSourceSQL()
 	if want := dbpkg.SessionFamilyBodiesSourceSQL(); got != want {
 		t.Errorf("db.SessionBodiesSourceSQL() = %q，期望 %q（恒返回会话族源）\n"+
-			"⚠ v1 正文族已随 885 被 DROP，指回它 = 12 个消费点整条语句 42P01。", got, want)
+			"⚠ v1 正文族已随 890 被 DROP，指回它 = 12 个消费点整条语句 42P01。", got, want)
 	}
 	// 负向判据：不得再出现 v1 正文族关系名（按标识符边界）。
 	if hits := retiredV1RelationsInSQL(got); len(hits) > 0 {

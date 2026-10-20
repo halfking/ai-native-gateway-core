@@ -184,7 +184,7 @@ func (h *RequestTraceHandler) requestTraceState(ctx context.Context, requestID s
 	var traceEvents []byte
 	// 与 LoadFromPG 一致：session 父行（即使无事件）优先。
 	//
-	// 2026-10-20（迁移 885）：v1 族整体退役 ⇒ 原来的 legacy 兜底腿
+	// 2026-10-20（迁移 890）：v1 族整体退役 ⇒ 原来的 legacy 兜底腿
 	// （v1 hot ∪ v1 母表）删除。会话族是唯一事实源，legacy 轮次随 v1 表
 	// 一起消失，找不到就是找不到（traceStateMissing），不再去别处找。
 	err := h.db.QueryRow(ctx, `

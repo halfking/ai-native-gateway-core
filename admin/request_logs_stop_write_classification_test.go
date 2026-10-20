@@ -124,10 +124,10 @@ const (
 // 必须同时（a）把它加进 countSilentStopWriteEffects 的 switch，
 // （b）从本表删除，（c）改文档里那一句——三处缺一都会让门红。
 //
-// ★ 2026-10-20（迁移 885，v1 族真删）：本表**已清空** —— 停写分级表随之清空，
+// ★ 2026-10-20（迁移 890，v1 族真删）：本表**已清空** —— 停写分级表随之清空，
 // 没有任何档位被使用 ⇒ 排除登记全部过期（门会要求删除）。
 var silentFormsOutsideGreyList = map[string]string{
-	// 885 之后：停写分级表为空 ⇒ 没有任何档位在使用 ⇒ 无排除登记。
+	// 890 之后：停写分级表为空 ⇒ 没有任何档位在使用 ⇒ 无排除登记。
 }
 
 // 合法分级集合。新增档位必须同时更新本集合与本文件顶部的说明。
@@ -161,15 +161,15 @@ var stopWriteEffects = map[string]string{
 //
 // 每条豁免都必须回答同一个问题：**停写之后，这个读点返回的东西会变吗？**
 //
-// ★ 2026-10-20（迁移 885，v1 族真删）：本表**已清空**。
-// 四条豁免的对象都是「读 v1 bodies 腿」的文件，而 885 之后
+// ★ 2026-10-20（迁移 890，v1 族真删）：本表**已清空**。
+// 四条豁免的对象都是「读 v1 bodies 腿」的文件，而 890 之后
 // **没有任何生产文件再读 v1 bodies 腿**（bodies 读端只剩会话族）⇒
 // 这条豁免的前提（bodies 腿硬失败）不再发生。
 //
 // ⚠ 本表**保留**（不删）：它守的是「默认拒绝 + 具名放行」这条规矩本身 ——
 // 将来若有人重新引入一条 bodies 腿读点，必须在这里具名论证。
 var bodiesUnaffectedJustification = map[string]string{
-	// 885 之后：读 v1 bodies 腿的文件为零 ⇒ 无豁免条目。
+	// 890 之后：读 v1 bodies 腿的文件为零 ⇒ 无豁免条目。
 	//
 	// ⚠ 不要在这里手填「已知的例外」：已退役关系的残留引用登记在
 	// retiredV1ReferenceExceptions（那是生产缺陷台账）。
@@ -177,9 +177,9 @@ var bodiesUnaffectedJustification = map[string]string{
 
 // requestLogsStopWriteClassification 是「停写 v1 之后每个读点会怎样」的逐文件登记。
 //
-// # 885 之后（2026-10-20）：本表**已清空**
+// # 890 之后（2026-10-20）：本表**已清空**
 //
-// 迁移 885 把 v1 族**物理删除**了 ⇒ 「停写 v1 之后会发生什么」这个问题
+// 迁移 890 把 v1 族**物理删除**了 ⇒ 「停写 v1 之后会发生什么」这个问题
 // **不再有对象**：没有文件读 v1，也就没有读点会在 v1 停写后退化。
 //
 // ⇒ 表随之清空。但**表保留、门保留** —— 它守的不变式从
@@ -208,7 +208,7 @@ type stopWriteClassification struct {
 const effectUnclassified = "unclassified"
 
 var requestLogsStopWriteClassification = map[string]stopWriteClassification{
-	// 885 之后：v1 读方总体为零 ⇒ 停写分级表为空。
+	// 890 之后：v1 读方总体为零 ⇒ 停写分级表为空。
 	//
 	// ⚠ **不要在这里手填「已知的例外」** —— 已退役关系的残留引用登记在
 	// retiredV1ReferenceExceptions（那是生产缺陷台账，不是读点分级）。
@@ -229,14 +229,14 @@ var requestLogsStopWriteClassification = map[string]stopWriteClassification{
 // 看不见没登记**。凡是「未完成项」类判据，分母必须取自**应当被完成的那份清单**。
 // TestRequestLogsStopWriteClassificationProgress 守「停写分级表与读点总体一致」。
 //
-// # 885 之后（2026-10-20）：分母归零 ⇒ 本门的新不变式是「两者都必须为空」
+// # 890 之后（2026-10-20）：分母归零 ⇒ 本门的新不变式是「两者都必须为空」
 //
 // 原来这道门是**进度条**（它**不**在未评估时失败；硬条件在 build tag `s4audit` 下）。
-// 885 之后 v1 读点总体为零 ⇒ 进度条的分母也是零 ⇒ 进度条本身没有信息量了。
+// 890 之后 v1 读点总体为零 ⇒ 进度条的分母也是零 ⇒ 进度条本身没有信息量了。
 // ⇒ 本门翻成：
 //
 //	① 分级表里的文件必须在已知读点全集里（反向：陈旧登记）——原语义保留；
-//	② 已知读点全集必须为空（885 之后没有 v1 读方）；
+//	② 已知读点全集必须为空（890 之后没有 v1 读方）；
 //	③ 分级表必须为空；
 //	④ **阳性对照**：进度计算本身必须有效 —— 用合成条目证明
 //	   「未评估清单」这条判据会响（否则总体为空时它是恒真空）。
@@ -262,15 +262,15 @@ func TestRequestLogsStopWriteClassificationProgress(t *testing.T) {
 		t.Logf("未评估清单：\n  %s", strings.Join(todo, "\n  "))
 	}
 
-	// ② + ③ 885 之后：读点总体与分级表都必须为空。
+	// ② + ③ 890 之后：读点总体与分级表都必须为空。
 	if total != 0 {
-		t.Errorf("已知读点全集仍有 %d 个文件 —— 885 之后 v1 族已物理删除，不该再有读点。\n"+
+		t.Errorf("已知读点全集仍有 %d 个文件 —— 890 之后 v1 族已物理删除，不该再有读点。\n"+
 			"新出现的读点要么是生产侧漏改（登记进 retiredV1ReferenceExceptions），"+
 			"要么是本门把「读 canonical 视图」误算成读 v1 —— 后者必须修扫描口径，不得改本门。",
 			total)
 	}
 	if len(requestLogsStopWriteClassification) > 0 {
-		t.Errorf("停写分级表仍有 %d 条登记 —— 885 之后没有 v1 读点，也就没有需要分级的对象。",
+		t.Errorf("停写分级表仍有 %d 条登记 —— 890 之后没有 v1 读点，也就没有需要分级的对象。",
 			len(requestLogsStopWriteClassification))
 	}
 
@@ -345,12 +345,12 @@ gw_task_id 过滤的三处误判成会话内读，差了两档。`
 // 变异验证：把任一 Evidence 改成文件里没有的片段即红。
 // TestWaterfallStopWriteAssessmentUsesCanonicalSource 守 waterfall API 的取源。
 //
-// # 885 之后（2026-10-20）：「v1-only 404 风险」已不存在，但「仍读 canonical 视图」仍在
+// # 890 之后（2026-10-20）：「v1-only 404 风险」已不存在，但「仍读 canonical 视图」仍在
 //
 // 原来这道门断言 waterfall 的分级是 errors_out、证据是 `FROM request_logs_with_current_month`，
 // 理由是「canonical 视图当时**含 v1 臂** ⇒ 只有 v1 有的行查不到 ⇒ 404」。
 //
-// 885 之后 canonical 视图 = **会话族两臂体**（118 列同名同序）⇒ 它仍然返回行，
+// 890 之后 canonical 视图 = **会话族两臂体**（118 列同名同序）⇒ 它仍然返回行，
 // 「v1-only 404」这个风险**不存在了** ⇒ waterfall 也不再是 v1 读方
 // （它不在停写分级表里，也不在读点清单里）。
 //
@@ -370,11 +370,11 @@ func TestWaterfallStopWriteAssessmentUsesCanonicalSource(t *testing.T) {
 	}
 	if hits := retiredV1RelationsInSQL(string(raw)); len(hits) > 0 {
 		t.Errorf("cmd/gateway/waterfall_by_request.go 读到了已退役的 v1 族关系 %v —— "+
-			"885 之后这些关系已被物理删除，运行时会 42P01。", hits)
+			"890 之后这些关系已被物理删除，运行时会 42P01。", hits)
 	}
 	if c, ok := requestLogsStopWriteClassification["cmd/gateway/waterfall_by_request.go"]; ok {
 		t.Errorf("cmd/gateway/waterfall_by_request.go 仍登记在停写分级表里（%+v）—— "+
-			"885 之后它不再读 v1，不该有停写分级。", c)
+			"890 之后它不再读 v1，不该有停写分级。", c)
 	}
 }
 
@@ -383,7 +383,7 @@ func TestWaterfallStopWriteAssessmentUsesCanonicalSource(t *testing.T) {
 // 这是整个登记的承重点：没有它，分级登记可以在一个下午凭印象写完，而门全绿。
 // 变异验证：把任一 Evidence 改成文件里没有的片段即红。
 //
-// # 885 之后（2026-10-20）：表清空 ⇒ 逐条校验变成空转 ⇒ 判据必须有牙
+// # 890 之后（2026-10-20）：表清空 ⇒ 逐条校验变成空转 ⇒ 判据必须有牙
 //
 // ⇒ ① 分级表必须为空；② **阳性对照**：用一条**合成分级**（Evidence 指向
 // 真实存在但内容对不上的片段）驱动同一个校验函数，它**必须**被判出问题；
@@ -392,7 +392,7 @@ func TestRequestLogsStopWriteClassificationEvidenceIsReal(t *testing.T) {
 	root := repoRootFromCaller(t)
 
 	if len(requestLogsStopWriteClassification) > 0 {
-		t.Errorf("停写分级表仍有 %d 条登记 —— 885 之后没有 v1 读点，不该有分级登记。",
+		t.Errorf("停写分级表仍有 %d 条登记 —— 890 之后没有 v1 读点，不该有分级登记。",
 			len(requestLogsStopWriteClassification))
 	}
 
@@ -417,7 +417,7 @@ func TestRequestLogsStopWriteClassificationEvidenceIsReal(t *testing.T) {
 
 // stopWriteEvidenceProblems 校验一条停写分级登记（返回问题列表，空 = 合格）。
 //
-// 为什么抽成函数：分级表在 885 之后清空 ⇒ 「逐条校验」这段循环不再执行 ⇒
+// 为什么抽成函数：分级表在 890 之后清空 ⇒ 「逐条校验」这段循环不再执行 ⇒
 // 「校验逻辑有没有牙」就没人证明了。抽出来才能在**合成登记**上直接驱动它。
 func stopWriteEvidenceProblems(t *testing.T, root, file string, c stopWriteClassification) []string {
 	t.Helper()
@@ -610,14 +610,14 @@ const (
 	// familySessionOnly：**只**读会话族（既不读 v1、也不读 canonical 视图、
 	// 也不带 bodies 腿）。
 	//
-	// ★ 2026-10-20（迁移 885，v1 族真删）：这是本轮新增的一族。
+	// ★ 2026-10-20（迁移 890，v1 族真删）：这是本轮新增的一族。
 	//
 	// 原来没有这一族，是因为「不读 v1 也不读视图」的文件会被判成
-	// **undetermined**（六族都不沾）——而在 885 之前那确实是个病态：
+	// **undetermined**（六族都不沾）——而在 890 之前那确实是个病态：
 	// 读面要么读 v1、要么读视图、要么读会话族原生源，后者被算成
 	// 「只读会话族」而**当时没有这一档**。
 	//
-	// 885 之后 v1 族整体退役 ⇒ 「只读会话族」成了**唯一正常**的形态
+	// 890 之后 v1 族整体退役 ⇒ 「只读会话族」成了**唯一正常**的形态
 	// （实测：domains/providerprofile/adapters.go、bg/auto_index_refresher.go
 	// 都落进这一族）。⇒ 不新增这一族，它们就会被报成「未归入任何一族」，
 	// 而那道门会让人以为「有个文件读法不明，需要人看一眼」——
@@ -1069,7 +1069,7 @@ func localSessionBaseUnion(code string) bool {
 
 // localSessionOnlyUnion 证明「本地产物**只有**会话族两条腿、没有任何基表腿」。
 //
-// ★ 2026-10-20（迁移 885）：v1 族退役后，tenant stats 的四臂收敛成两臂
+// ★ 2026-10-20（迁移 890）：v1 族退役后，tenant stats 的四臂收敛成两臂
 // （会话 hot ∪ 母表）⇒ 「混合」证明（session && base）恒为假 ⇒
 // 需要一条「只有会话腿」的证明来钉住它。
 //
@@ -1242,7 +1242,7 @@ func sourceFamilyOf(code string, readsVBodies bool) string {
 	case ba:
 		return familyBase
 	case readsSessionFamily(code):
-		// ★ 2026-10-20（885）：v1 族退役后，「只读会话族」是正常形态，
+		// ★ 2026-10-20（890）：v1 族退役后，「只读会话族」是正常形态，
 		// 不是「读法不明」。见 familySessionOnly 的头注。
 		return familySessionOnly
 	default:
@@ -1252,13 +1252,13 @@ func sourceFamilyOf(code string, readsVBodies bool) string {
 
 // sourceFamilyForFile 判定一个文件读哪一族。
 //
-// ★ 2026-10-20（迁移 885）：**路径相关的特殊证明已退役**。
+// ★ 2026-10-20（迁移 890）：**路径相关的特殊证明已退役**。
 //
 // 原来这个函数对 `admin/tenant_stats_logs_table.go` 有一条**按路径**的特例：
 // 它的 SQL 由 `tenantStatsLogsTableSQL(bool)` 拼出来 ⇒ 纯文本分类器看不见
 // 那几条臂 ⇒ 特例去**编译产物**里证明「两态都是混合输出」。
 //
-// 885 之后那件事不再成立：四臂（四条会话/v1 腿 + 双子反连接）收敛成两臂
+// 890 之后那件事不再成立：四臂（四条会话/v1 腿 + 双子反连接）收敛成两臂
 // （会话 hot ∪ 母表），而**纯文本分类器已经能认出它**（文件里字面写着
 // `FROM session_turns_hot t` / `FROM session_turns t`）⇒ 特例是多余的。
 //
@@ -1283,12 +1283,12 @@ func sourceFamilyForFile(code, file string, readsVBodies bool) string {
 // 「按代码测出的族」与「按代码测出的族」相等，没有解释空间，所以不会恒绿
 // （除非分类逻辑本身坏了）。价值在于把「104 个文件」变成 4 个可行动的队列。
 //
-// # 885 之后（2026-10-20）：总体归零 ⇒ 分类器的有效性改由**合成样本**证明
+// # 890 之后（2026-10-20）：总体归零 ⇒ 分类器的有效性改由**合成样本**证明
 //
 // 读点总体为空 ⇒ 「每个读点都要归入一族」这条判据变成空转。
 // ⇒ 本门改成两件事：
 //
-//	① 读点总体必须为空（885 之后没有 v1 读方）；
+//	① 读点总体必须为空（890 之后没有 v1 读方）；
 //	② **阳性对照**：族分类器仍然有效 —— 四段合成源码必须分别归入
 //	   familyBase / familySessionOnly / familyView / familyBodies。
 //	   （分类器本身还活着：source_sql_local_literal_test.go 仍在用它。）
@@ -1337,9 +1337,9 @@ func TestRequestLogsStopWriteSourceFamilyCoversInventory(t *testing.T) {
 			total, known,
 			len(requestLogsReadInventory), len(indirectRequestLogsReaders))
 	}
-	// ① 885 之后：读点总体必须为空。
+	// ① 890 之后：读点总体必须为空。
 	if known != 0 {
-		t.Errorf("读点总体仍有 %d 个文件 —— 885 之后 v1 族已物理删除。", known)
+		t.Errorf("读点总体仍有 %d 个文件 —— 890 之后 v1 族已物理删除。", known)
 	}
 	t.Logf("S4 停写影响面（按读表族，机械判定）：\n"+
 		"  bodies_only=%d                正文无兜底 ⇒ 硬失败\n"+
@@ -1374,13 +1374,13 @@ func TestRequestLogsStopWriteSourceFamilyCoversInventory(t *testing.T) {
 // 判据打成关系（族 × 档位的合法组合）而不是硬编码清单：新增档位时必须同时
 // 说明它与四族的关系，规则跟着走；否则新档位会默认放行所有组合。
 //
-// # 885 之后（2026-10-20）：表清空 ⇒ 逐条校验变成空转 ⇒ 判据必须有牙
+// # 890 之后（2026-10-20）：表清空 ⇒ 逐条校验变成空转 ⇒ 判据必须有牙
 //
 // ⇒ ① 分级表必须为空；② **阳性对照**：用**合成分级**驱动同一个校验函数，
 // 它必须拦住「族与档位不合法」的组合、放行合法组合。
 func TestStopWriteEffectAgreesWithSourceFamily(t *testing.T) {
 	if len(requestLogsStopWriteClassification) > 0 {
-		t.Errorf("停写分级表仍有 %d 条登记 —— 885 之后没有 v1 读点，不该有停写分级。",
+		t.Errorf("停写分级表仍有 %d 条登记 —— 890 之后没有 v1 读点，不该有停写分级。",
 			len(requestLogsStopWriteClassification))
 	}
 
@@ -1415,7 +1415,7 @@ func TestStopWriteEffectAgreesWithSourceFamily(t *testing.T) {
 
 // stopWriteEffectProblems 校验「族 × 档位」的合法组合（返回问题列表，空 = 合格）。
 //
-// 为什么抽成函数：分级表在 885 之后清空 ⇒ 逐条校验不再执行 ⇒
+// 为什么抽成函数：分级表在 890 之后清空 ⇒ 逐条校验不再执行 ⇒
 // 「规则有没有牙」就没人证明了。抽出来才能在合成分级上直接驱动它。
 func stopWriteEffectProblems(fam string, c stopWriteClassification) []string {
 	var problems []string

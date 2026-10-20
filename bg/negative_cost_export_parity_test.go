@@ -20,7 +20,7 @@ import (
 // tokens instead of grepping for something generic like "cost_usd", because a
 // generic match passes under every mutation that matters.
 //
-// ★ 2026-10-20（迁移 885，v1 族退役）：健康检查的读源已从 `public._request_logs`
+// ★ 2026-10-20（迁移 890，v1 族退役）：健康检查的读源已从 `public._request_logs`
 // 换成**会话族**（`db.SessionFamilyTurnsSourceSQL()`），模型名分组列从
 // `outbound_model` 换成会话族的 `raw_model_name`（它就是
 // COALESCE(outbound_model, client_model) 的同义列；会话族投影里的
@@ -49,7 +49,7 @@ const (
 
 // requestRowFamilyOf 判定一段 SQL 读的是哪一族。
 //
-// ⚠ 边界：`request_logs_with_current_month`（canonical 视图，885 之后是会话
+// ⚠ 边界：`request_logs_with_current_month`（canonical 视图，890 之后是会话
 // 两臂体）与退役的 v1 族名字前缀相同 ⇒ 这里按 `public._request_logs`（带下划
 // 线、且带 public. 限定）来认 v1 族，不靠裸前缀匹配。
 func requestRowFamilyOf(sql string) requestRowFamily {
@@ -154,13 +154,13 @@ func readExportScript(t *testing.T) string {
 // exportScriptDriftRegistered 是「导出脚本仍读退役的 v1 族」这一漂移的登记。
 //
 // ⚠ **这不是「检查通过」，是「已登记的未修缺陷」**：
-// 迁移 885 把 v1 族整族 DROP ⇒ 脚本里的 `public._request_logs` 指向一张不存在
+// 迁移 890 把 v1 族整族 DROP ⇒ 脚本里的 `public._request_logs` 指向一张不存在
 // 的表 ⇒ 脚本每次执行都在第一条查询上 42P01（psql ON_ERROR_STOP=1 ⇒ 退出码
 // 非零、导出产物为空）⇒ 运维会把「导出没有负成本行」误读成「没有负成本」。
 //
 // ⇒ 登记的处置：把脚本迁到会话族（源）+ 按会话族的 raw_model_name 分组。
 // 脚本迁完之后，本门**自动**切回完整对拍（见 TestNegativeCostExportParity）。
-const exportScriptDriftRegistered = "导出脚本仍读迁移 885 已 DROP 的 v1 族（public._request_logs）"
+const exportScriptDriftRegistered = "导出脚本仍读迁移 890 已 DROP 的 v1 族（public._request_logs）"
 
 func TestNegativeCostExportParity(t *testing.T) {
 	checkSQL := readRecordedCostCheckSQL(t)
@@ -172,7 +172,7 @@ func TestNegativeCostExportParity(t *testing.T) {
 	// ---- 1. 健康检查侧：必须已经迁到会话族，并按该族「被填好的出站模型列」分组 ----
 	// （v1 族退役后，读 v1 族 = 提及已 DROP 的关系 = 整条语句 42P01。）
 	if checkFamily != familySession {
-		t.Errorf("健康检查必须读会话族（迁移 885 后 v1 族已退役），实际读 %q 族", checkFamily)
+		t.Errorf("健康检查必须读会话族（迁移 890 后 v1 族已退役），实际读 %q 族", checkFamily)
 	}
 	checkGrouped := groupedModelColumns(checkSQL)
 	if want := populatedModelColumn(familySession); want != "" && !checkGrouped[want] {

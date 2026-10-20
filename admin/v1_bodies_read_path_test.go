@@ -160,10 +160,10 @@ func TestV1BodiesReadPathsArePinned(t *testing.T) {
 	root := repoRootFromCaller(t)
 	measured := scanV1BodiesReaders(t, root)
 
-	// ★ 885 之后（2026-10-20）：**总体为 0 是正确状态**，不是「扫描器坏了」。
+	// ★ 890 之后（2026-10-20）：**总体为 0 是正确状态**，不是「扫描器坏了」。
 	//
 	// 原来这里是一条地板（总体为 0 ⇒ Fatal），因为那时 bodies 读方总体
-	// 至少有 13 个。885 之后 v1 族被物理删除 ⇒ 没有任何文件再读 v1 bodies
+	// 至少有 13 个。890 之后 v1 族被物理删除 ⇒ 没有任何文件再读 v1 bodies
 	// ⇒ 总体真的归零。
 	//
 	// ⇒ 地板翻成：**总量为空必须是因为扫描器扫过而没命中**。
@@ -240,17 +240,17 @@ func TestBodiesReadPathAgreesWithTheShapeRegistry(t *testing.T) {
 		}
 	}
 
-	// ★ 885 之后（2026-10-20）：形状登记表已清空 ⇒ 「already-switched」这一档
+	// ★ 890 之后（2026-10-20）：形状登记表已清空 ⇒ 「already-switched」这一档
 	// **一个成员都没有** —— 于是这道交叉核对的两边都为空。
 	//
 	// 原来这里是一条地板（registered 为空 ⇒ Fatal），因为那时它只可能意味着
-	// 「分类常量或登记表变了」。885 之后 bodies 读方总体归零，登记表随之清空
+	// 「分类常量或登记表变了」。890 之后 bodies 读方总体归零，登记表随之清空
 	// ⇒ 空是正确值。
 	//
 	// ⇒ 地板翻成：**两边必须同时为空** —— 一边空、另一边非空，
 	// 说明两张表**不同源**（那正是这道门要盯的缝）。
 	if len(registered) > 0 {
-		t.Errorf("形状登记表里仍有 %d 条 already-switched —— 885 之后没有 v1 bodies 读方可判定。",
+		t.Errorf("形状登记表里仍有 %d 条 already-switched —— 890 之后没有 v1 bodies 读方可判定。",
 			len(registered))
 	}
 
@@ -300,7 +300,7 @@ func TestBodiesReadPathAgreesWithTheShapeRegistry(t *testing.T) {
 			"实际 %v", wantMixedInRegistry, onlyMixedInRegistry)
 	}
 	t.Logf("交叉核对：机械算出「只经切换层」%d 个；登记表 already-switched %d 个；"+
-		"两边同为空（885 之后没有 v1 bodies 读方）。",
+		"两边同为空（890 之后没有 v1 bodies 读方）。",
 		len(mechanical), len(registered))
 }
 
@@ -402,10 +402,10 @@ func TestBodiesSwitchPairIsPinnedAndPaired(t *testing.T) {
 		}
 	}
 
-	// ── 读端：885 之后**没有开关可翻了** ────────────────────────────────
+	// ── 读端：890 之后**没有开关可翻了** ────────────────────────────────
 	//
 	// 原来这道门要求读端「键必须以字面量或常量名出现」+「兜底必须是 false」。
-	// 885 之后 `db.SessionBodiesSourceSQL()` 的 v1 臂被删掉，函数体恒等于
+	// 890 之后 `db.SessionBodiesSourceSQL()` 的 v1 臂被删掉，函数体恒等于
 	// `SessionFamilyBodiesSourceSQL()` ⇒ **读端不再读这个键**。
 	//
 	// ⇒ 读端那条判据翻成它的**等价新不变量**：
@@ -425,7 +425,7 @@ func TestBodiesSwitchPairIsPinnedAndPaired(t *testing.T) {
 	if readSwitch.MatchString(string(dbSrc)) {
 		t.Errorf("db/request_logs_view_schema.go 又开始读 bodies 灰度开关 " +
 			"（GetPlatformBool(…, SessionBodiesNativeReadSetting)）—— " +
-			"读端必须恒为会话族：这个开关的 v1 臂已经被 885 删掉，重新接回去只会" +
+			"读端必须恒为会话族：这个开关的 v1 臂已经被 890 删掉，重新接回去只会" +
 			"让人以为「翻开关就能改源」。")
 	}
 	// 就地阳性对照：同一把尺子必须能认出「读端接了开关」这个形态。
@@ -436,7 +436,7 @@ func TestBodiesSwitchPairIsPinnedAndPaired(t *testing.T) {
 	// ── 写端：开关仍在，兜底必须仍是 false ──────────────────────────────
 	//
 	// 写端 `storage.session_turns_bodies_enabled` 控制 session_turns 的
-	// request_delta / response_delta 两列是否写入；它与 885 无关，**仍然在**。
+	// request_delta / response_delta 两列是否写入；它与 890 无关，**仍然在**。
 	// ⇒ 这条判据原样保留（键必须以字面量出现 + 兜底必须是 false）。
 	//
 	// ⚠ 兜底从 false 改成 true 是危险方向：会让「键不存在⇒取 false」这条前提失效。

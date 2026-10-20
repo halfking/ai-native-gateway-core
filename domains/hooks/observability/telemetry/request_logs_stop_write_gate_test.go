@@ -54,13 +54,13 @@ func TestRequestLogsWriteEnabled_DefaultsFalse(t *testing.T) {
 	require.False(t, requestLogsWriteEnabled())
 }
 
-// ★ 2026-10-20（迁移 885，v1 族退役）：本文件的两条门控用例**方向反转**。
+// ★ 2026-10-20（迁移 890，v1 族退役）：本文件的两条门控用例**方向反转**。
 //
 // 旧门（TestInsertRequestLogStopWriteGate / TestUpdateRequestLogStopWriteGate）
 // 守的是：「S4 停写键关掉后，_request_logs_hot 主行与 _request_logs_bodies_hot
 // 正文写入被整体跳过，usage_ledger 计费行照常提交」。
 //
-// 反转的原因：v1 宽表与正文族随 885 整族删除 ⇒ 停写键在本包里**不再门控任何
+// 反转的原因：v1 宽表与正文族随 890 整族删除 ⇒ 停写键在本包里**不再门控任何
 // PG 写入**。现在键只门控**文件系统正文镜像**（persistRequestLog 里的
 // mirrorRequestBodies，见 TestPersistRequestLogMirrorFollowsStopWriteGate）。
 //
@@ -246,6 +246,6 @@ func TestReviewV2LatchSurvivesUpdatePath(t *testing.T) {
 	require.Contains(t, statements[0], "UPDATE usage_ledger_hot")
 	for _, statement := range statements {
 		require.NotContains(t, statement, "INSERT INTO usage_ledger_hot",
-			"命中 0 行不得回落 INSERT（回落分支随迁移 885 退役）")
+			"命中 0 行不得回落 INSERT（回落分支随迁移 890 退役）")
 	}
 }

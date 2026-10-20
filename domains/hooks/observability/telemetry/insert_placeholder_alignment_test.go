@@ -19,7 +19,7 @@ import (
 // This test parses client.go itself and fails on any positional or semantic
 // drift, so renumbering mistakes surface in CI instead of in production.
 //
-// ★ 2026-10-20（迁移 885，v1 族退役）：本门**改指**到新写入路径
+// ★ 2026-10-20（迁移 890，v1 族退役）：本门**改指**到新写入路径
 // （INSERT INTO usage_ledger_hot）。
 //
 // 旧门锚在 "INSERT INTO _request_logs_hot (" / "ON CONFLICT" 两处字面量上，
@@ -137,7 +137,7 @@ func TestInsertRequestLogPlaceholderAlignment(t *testing.T) {
 // so the check is purely semantic: the Go arg bound to $N must match the
 // column that references $N.
 //
-// ★ 2026-10-20（迁移 885，v1 族退役）：本门**改指**到新写入路径，且从「只看
+// ★ 2026-10-20（迁移 890，v1 族退役）：本门**改指**到新写入路径，且从「只看
 // 第一条 UPDATE」升级为「**逐个变体**都查」——新写入路径有两条 UPDATE 变体
 // （带真实 token 的 10 参版 / 不带的 5 参版），只查第一条会让第二条无人看管。
 func TestUpdateRequestLogPlaceholderAlignment(t *testing.T) {
@@ -357,7 +357,7 @@ func extractCallArgs(s string) []string {
 // expectedArgIdent maps a write-target column to the Go identifier fragment
 // that must appear in the arg bound to it. Empty means "skip semantic check".
 //
-// ★ 2026-10-20（迁移 885，v1 族退役）：新写入路径的列清单（usage_ledger_hot）
+// ★ 2026-10-20（迁移 890，v1 族退役）：新写入路径的列清单（usage_ledger_hot）
 // 补进 raw_model_name / rate_multiplier 两条；v1 族的列名保留在表里，是因为
 // 读侧（会话族镜像、admin 视图）仍按那些名字讨论同一批语义。
 func expectedArgIdent(col string) string {

@@ -242,7 +242,7 @@ func (h *Handler) diagnoseProvider(w http.ResponseWriter, r *http.Request, provi
 	var ec errorClassification
 	// 24 小时窗口查询走会话族原生源（hot ∪ 父表两腿 + 734 details 层）。
 	//
-	// 2026-10-20（迁移 885）：v1 族整体退役 ⇒ 原来的 _request_logs_hot 腿
+	// 2026-10-20（迁移 890）：v1 族整体退役 ⇒ 原来的 _request_logs_hot 腿
 	// 删除。provider_id 在会话族里只存在于 details 层（session_turns 没有
 	// 这一列），所以必须走带 details LEFT JOIN 的族源；
 	// db.SessionFamilyTurnsSourceSQL() 正好投影 provider_id 与 error_kind。
@@ -528,7 +528,7 @@ func (h *Handler) doDiagnose(ctx context.Context, providerID int) map[string]any
 	}
 	var ec errorClassification
 	// 与上面 diagnoseProvider 的 24 小时错误分类**同源**（会话族原生源，
-	// 见该处注释）：2026-10-20 迁移 885 之后 v1 族整体退役，原来的
+	// 见该处注释）：2026-10-20 迁移 890 之后 v1 族整体退役，原来的
 	// _request_logs_hot 腿不存在了。两处聚合必须继续读同一张表，否则
 	// 同一次诊断里两个面板的数字会分叉。
 	ecRows, _ := h.db.Query(ctx, `SELECT COALESCE(error_kind,'other'), COUNT(*) FROM `+dbpkg.SessionFamilyTurnsSourceSQL()+` rl WHERE rl.provider_id = $1 AND rl.ts >= now() - interval '24 hours' GROUP BY rl.error_kind`, providerID)

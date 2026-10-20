@@ -6,7 +6,7 @@
 // 单项查看能力。附件实体文件存储在文件系统（LLM_GATEWAY_ATTACHMENT_DIR），
 // 此处只管理数据库中的元数据引用。
 //
-// 2026-10-20（迁移 885，v1 族整体退役）：附件元数据列的落点从 v1 宽表的
+// 2026-10-20（迁移 890，v1 族整体退役）：附件元数据列的落点从 v1 宽表的
 // attachments 列换成会话族特征层的 `session_turn_details.attachments`
 // （734 特征层，镜像桥从 telemetry 入口补采，仍在写）。
 // 读端一律走会话族原生源 db.SessionFamilyTurnsSourceSQL()（它把
@@ -528,7 +528,7 @@ func (h *Handler) handleDataLifecycleAttachmentCleanupExecute(w http.ResponseWri
 		// args slice is `[olderThanDays, tenant_id?]` so the make_interval
 		// parameter (daysIdx) is $1 when no tenant is in scope and $2 when
 		// tenant_id pre-occupies $1.
-		// 2026-10-20（迁移 885）：清理目标从 v1 hot 宽表换成会话族特征层的
+		// 2026-10-20（迁移 890）：清理目标从 v1 hot 宽表换成会话族特征层的
 		// hot 表。范围与 v1 时代**一一对应**（只清 hot 腿、不动月分区）。
 		updateSQL := fmt.Sprintf(`
 			UPDATE session_turn_details_hot

@@ -31,7 +31,7 @@ var errNoTelemetryDB = errors.New("telemetry database not configured")
 // 方案 v2，settings 键 storage.request_logs_write_enabled，默认 true = 维持
 // 现状双写；HotReload 即时生效）。
 //
-// ★ 2026-10-20（迁移 885，v1 族退役）：v1 宽表的 PG 写入分支已整段删除，本包
+// ★ 2026-10-20（迁移 890，v1 族退役）：v1 宽表的 PG 写入分支已整段删除，本包
 // 剩下的唯一消费点是**文件系统**正文镜像（persistRequestLog →
 // mirrorRequestBodies）——它不碰 PG。usage_ledger 计费、api_keys 计数、
 // outbox 会话事件照常；session 六表族（sessionv2mirror）是唯一事实源。
@@ -69,7 +69,7 @@ func pgErrorDiagnostics(err error) string {
 	return strings.Join(fields, "; ")
 }
 
-// ★ 2026-10-20（迁移 885，v1 族退役）：heapPartitionNameRE（宽表月度分区名
+// ★ 2026-10-20（迁移 890，v1 族退役）：heapPartitionNameRE（宽表月度分区名
 // 白名单）随 claimSessionFinalSuccessExec 整条删除——它只用于拼 v1 分区名。
 
 // quoteIdent 是 pgx.Identifier 等价的轻量版, 用于动态拼分区名 (避免注入).
@@ -187,7 +187,7 @@ type Client struct {
 	failRetried   uint64
 	failFallback  uint64
 
-	// ★ 2026-10-20（迁移 885，v1 族退役）：原 v1 月度分区名缓存
+	// ★ 2026-10-20（迁移 890，v1 族退役）：原 v1 月度分区名缓存
 	// （heapPartitionsMu / heapPartitions / heapPartitionsCachedAt）随
 	// claimSessionFinalSuccess 整条删除——它只服务于 v1 的认领半连接。
 }
@@ -265,7 +265,7 @@ type RequestLogEntry struct {
 	// SystemFingerprint 是上游 X-System-Fingerprint 响应头（2026-09-12 挂账
 	// 闭环）：此前仅被 integrity detector 写入 context JSONB，603 建的专用列
 	// 全表零行、7 天漂移检测器空转。现由 handler emitTelemetry 盖章。
-	// ★ 2026-10-20（迁移 885，v1 族退役）：v1 宽表的专用列写入点已删除，值由
+	// ★ 2026-10-20（迁移 890，v1 族退役）：v1 宽表的专用列写入点已删除，值由
 	// 会话族的镜像写入路径承接（s1a_fields.go）。
 	// nil = 上游未返回该头。
 	SystemFingerprint *string `json:"system_fingerprint,omitempty"`
@@ -532,7 +532,7 @@ type RequestLogEntry struct {
 	// session's single final success, so the session family can carry the same
 	// mark (audit §9.203).
 	//
-	// ★ 2026-10-20（迁移 885，v1 族退役）：它不再由 v1 认领（事务内的 UPDATE
+	// ★ 2026-10-20（迁移 890，v1 族退役）：它不再由 v1 认领（事务内的 UPDATE
 	// ... SET is_final_success=TRUE）授予——那条路径随 v1 族一起落库。现在由
 	// 本包的资格判定（shouldClaimFinalSuccess）直接置位，真正的**仲裁**交给
 	// 会话族：session_turns 的 partial 唯一索引
@@ -576,7 +576,7 @@ type RequestLogEntry struct {
 	// (request_log_pipeline.go) copies it onto this field. The current
 	// upsert SQL does not yet include the column — operators read the
 	// The streaming survival/recovery path appends structured discard events.
-	// ★ 2026-10-20（迁移 885，v1 族退役）：discard_events 列只存在于 v1 族，
+	// ★ 2026-10-20（迁移 890，v1 族退役）：discard_events 列只存在于 v1 族，
 	// 会话族没有对应列 ⇒ 这批事件在本包**不再落库**（字段与 JSON 形状保留）。
 	DiscardEvents json.RawMessage `json:"discard_events,omitempty"`
 }
@@ -651,7 +651,7 @@ func (c *Client) pgEnabled() bool {
 // S3 波 2（停写切换）：v1 宽表已停写，新流量的 gw_session_id 只落
 // session_turns_hot（api_key_id/identity_hash 由 707 S1a 加列，
 // idx_session_turns_hot_ts 供窗口过滤）。
-// ★ 2026-10-20（迁移 885，v1 族退役）：v1 那条 UNION 腿整段删除——v1 族随 885
+// ★ 2026-10-20（迁移 890，v1 族退役）：v1 那条 UNION 腿整段删除——v1 族随 890
 // 落库后读它必然 42P01。窗口 ≤ 热表保留期，不需要 parent 腿。
 // 提升为包级变量是给形状钉桩用的。
 var findRecentGatewaySessionSQL = `
@@ -1346,7 +1346,7 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 	//nolint:errcheck // deferred rollback, best-effort
 	defer tx.Rollback(ctx)
 
-	// ★ 2026-10-20（迁移 885，v1 族退役）：v1 宽表写入分支整段删除 ⇒ 停写键
+	// ★ 2026-10-20（迁移 890，v1 族退役）：v1 宽表写入分支整段删除 ⇒ 停写键
 	// （storage.request_logs_write_enabled）在本函数**不再门控任何 PG 写入**；
 	// 会话族（sessionv2mirror）成为唯一 SSOT ⇒ 会话写入**恒为必需**。
 	entry.SessionV2WriteRequired = true
@@ -1354,7 +1354,7 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 	// §9.51：进程内指纹 arm 必须与持久化写入解耦——它记录的是「本实例见过带
 	// 指纹的请求」，不是「值落进了哪张表」。此前 arm 落在 v1 的落列函数里，
 	// 会被停写门一起关掉（详见 observeSystemFingerprint）。
-	// ★ 2026-10-20（迁移 885，v1 族退役）：v1 写入分支整段删除后，这里已无门控。
+	// ★ 2026-10-20（迁移 890，v1 族退役）：v1 写入分支整段删除后，这里已无门控。
 	observeSystemFingerprint(entry)
 
 	// INSERT directly targets usage_ledger_hot (the canonical write
@@ -1403,8 +1403,8 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 	if err != nil {
 		return err
 	}
-	// ★ 2026-10-20（迁移 885，v1 族退役）：本段 v1 宽表写入分支（主行 UPSERT
-	// + protocol/fingerprint 增补 + v1 正文族）整段删除——v1 族随 885 落库后写
+	// ★ 2026-10-20（迁移 890，v1 族退役）：本段 v1 宽表写入分支（主行 UPSERT
+	// + protocol/fingerprint 增补 + v1 正文族）整段删除——v1 族随 890 落库后写
 	// 它必然 42P01。usage_ledger 计费、api_keys 计数与 outbox 会话开启事件照常
 	// 提交；会话族镜像承接本请求的事实落点。
 
@@ -1434,7 +1434,7 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 		}
 	}
 
-	// ★ 2026-10-20（迁移 885，v1 族退役）：v1 的终态成功认领整段删除（见
+	// ★ 2026-10-20（迁移 890，v1 族退役）：v1 的终态成功认领整段删除（见
 	// updateRequestLog 同处说明）⇒ 认领资格直接挂到 entry 上，由会话族自己
 	// 仲裁（session_turns 的 partial 唯一索引 + markTurnFinalSuccess）。
 	if shouldClaimFinalSuccess(entry) {
@@ -1560,8 +1560,8 @@ func buildRequestCompletedEvent(ctx context.Context, tx pgx.Tx, entry *RequestLo
 
 // CorrectEstimatedUsage 把 entry 里的真实用量校正到「估算值」上。
 //
-// ★ 2026-10-20（迁移 885，v1 族退役）：本函数**不再改写任何行**——它校正的是
-// v1 宽表的 usage_source 列，v1 族随 885 落库后写它必然 42P01。签名与返回值
+// ★ 2026-10-20（迁移 890，v1 族退役）：本函数**不再改写任何行**——它校正的是
+// v1 宽表的 usage_source 列，v1 族随 890 落库后写它必然 42P01。签名与返回值
 // 保持不变（调用方 domains/streaming/usage_backfill.go 用返回的修正行数门控
 // 后续动作），恒返回 (0, nil) = 「本次没有发生校正」。
 //
@@ -1597,7 +1597,7 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 	//nolint:errcheck // deferred rollback, best-effort
 	defer tx.Rollback(ctx)
 
-	// ★ 2026-10-20（迁移 885，v1 族退役）：v1 宽表写入分支整段删除 ⇒ 停写键
+	// ★ 2026-10-20（迁移 890，v1 族退役）：v1 宽表写入分支整段删除 ⇒ 停写键
 	// （storage.request_logs_write_enabled）在本函数**不再门控任何 PG 写入**；
 	// 会话族（sessionv2mirror）成为唯一 SSOT ⇒ 会话写入**恒为必需**。
 	entry.SessionV2WriteRequired = true
@@ -1605,7 +1605,7 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 	// §9.51：进程内指纹 arm 必须与持久化写入解耦——它记录的是「本实例见过带
 	// 指纹的请求」，不是「值落进了哪张表」。此前 arm 落在 v1 的落列函数里，
 	// 会被停写门一起关掉（详见 observeSystemFingerprint）。
-	// ★ 2026-10-20（迁移 885，v1 族退役）：v1 写入分支整段删除后，这里已无门控。
+	// ★ 2026-10-20（迁移 890，v1 族退役）：v1 写入分支整段删除后，这里已无门控。
 	observeSystemFingerprint(entry)
 
 	// 审计 §9.93：此处原有的 `if requestLogEntryTerminal(entry) { settleAbandonedTurn(...) }`
@@ -1669,9 +1669,9 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 		}
 	}
 
-	// ★ 2026-10-20（迁移 885，v1 族退役）：本段 v1 宽表写入分支（主行 UPDATE
+	// ★ 2026-10-20（迁移 890，v1 族退役）：本段 v1 宽表写入分支（主行 UPDATE
 	// 与回落 INSERT + v1 正文族 + protocol/fingerprint 增补）整段删除——v1 族随
-	// 885 落库后写它必然 42P01。usage_ledger 刷新、api_keys 计数与 outbox
+	// 890 落库后写它必然 42P01。usage_ledger 刷新、api_keys 计数与 outbox
 	// request-completed 会话事件在门控外照常提交；会话族镜像承接本请求的
 	// 事实落点。
 
@@ -1701,7 +1701,7 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 		}
 	}
 
-	// ★ 2026-10-20（迁移 885，v1 族退役）：v1 的终态成功认领整段删除（见
+	// ★ 2026-10-20（迁移 890，v1 族退役）：v1 的终态成功认领整段删除（见
 	// insertRequestLog 同处说明）⇒ 认领资格直接挂到 entry 上，由会话族自己
 	// 仲裁（session_turns 的 partial 唯一索引 + markTurnFinalSuccess）。
 	if shouldClaimFinalSuccess(entry) {
@@ -1720,13 +1720,13 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 	return tx.Commit(ctx)
 }
 
-// ★ 2026-10-20（迁移 885，v1 族退役）：upsertProtocolMetadata 整条删除——
+// ★ 2026-10-20（迁移 890，v1 族退役）：upsertProtocolMetadata 整条删除——
 // 它补写的是 v1 宽表的 client_protocol / upstream_protocol /
-// protocol_conversion 三列，v1 族随 885 落库后写它必然 42P01。
+// protocol_conversion 三列，v1 族随 890 落库后写它必然 42P01。
 // ⇒ 协议三元组由会话族的镜像写入路径承接。
 
-// ★ 2026-10-20（迁移 885，v1 族退役）：persistSystemFingerprint 整条删除——
-// 它把 entry.SystemFingerprint 落到 v1 宽表的专用列，v1 族随 885 落库后写它
+// ★ 2026-10-20（迁移 890，v1 族退役）：persistSystemFingerprint 整条删除——
+// 它把 entry.SystemFingerprint 落到 v1 宽表的专用列，v1 族随 890 落库后写它
 // 必然 42P01。指纹值由会话族承接（internal/sessionv2mirror/s1a_fields.go
 // 把 entry.SystemFingerprint 搬进会话族的写入载荷）。
 //
@@ -1744,7 +1744,7 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 // arm 记录的是**观测**（本进程处理过一个带指纹的请求），与该请求是否落库
 // 无关。
 //
-// ★ 2026-10-20（迁移 885，v1 族退役）：v1 宽表写入分支整段删除后，本函数的
+// ★ 2026-10-20（迁移 890，v1 族退役）：v1 宽表写入分支整段删除后，本函数的
 // 调用点（insertRequestLog / updateRequestLog）已**无门控**——arm 永远生效，
 // 这正是 §9.51 想要的形态。
 func observeSystemFingerprint(entry *RequestLogEntry) {
@@ -1802,27 +1802,27 @@ func shouldClaimFinalSuccess(entry *RequestLogEntry) bool {
 		!IsInternalAutoEntry(entry)
 }
 
-// ★ 2026-10-20（迁移 885，v1 族退役）：claimSessionFinalSuccess 与
+// ★ 2026-10-20（迁移 890，v1 族退役）：claimSessionFinalSuccess 与
 // heapRequestLogsPartitions 整条删除——前者是 v1 终态成功认领的入口，后者是
 // 它依赖的 v1 月度分区名缓存（pg_class.relam='h' 的宽表月度分区）。
 // ⇒ 会话族的终态成功打标见 internal/sessionv2mirror/final_success_turn.go。
 
-// ★ 2026-10-20（迁移 885，v1 族退役）：claimSessionFinalSuccessExec 整条
+// ★ 2026-10-20（迁移 890，v1 族退役）：claimSessionFinalSuccessExec 整条
 // 删除——它是 v1 族的终态成功认领（事务内的 UPDATE ... SET is_final_success=TRUE
-// + NOT EXISTS 半连接），v1 族随 885 落库后必然 42P01。
+// + NOT EXISTS 半连接），v1 族随 890 落库后必然 42P01。
 //
 // ⇒ 认领的**仲裁**改由会话族自己做：session_turns 的 partial 唯一索引
 // （uq_session_turns_hot_final_success）在会话族内部保证「一个会话一个最终
 // 成功」；internal/sessionv2mirror 的 markTurnFinalSuccess 在 w.Write 返回
 // 之后给那一行打标（23505 = 本会话别的轮次已认领 ⇒ 第一个认领者站住）。
 
-// ★ 2026-10-20（迁移 885，v1 族退役）：registerFinalSuccessClaimOutbox 整条
+// ★ 2026-10-20（迁移 890，v1 族退役）：registerFinalSuccessClaimOutbox 整条
 // 删除——它是 v1 终态成功认领的**补偿**登记（往 session_mirror_outbox 写一行
 // source='claim'），v1 认领没了，补偿也就没有对象。
 // ⇒ 会话族的终态成功打标见 internal/sessionv2mirror/final_success_turn.go。
 
-// ★ 2026-10-20（迁移 885，v1 族退役）：upsertRequestLogBodies 整条删除——
-// 它是 v1 正文族（宽表正文侧表）的**唯一**写入点，v1 族随 885 落库后写它必然
+// ★ 2026-10-20（迁移 890，v1 族退役）：upsertRequestLogBodies 整条删除——
+// 它是 v1 正文族（宽表正文侧表）的**唯一**写入点，v1 族随 890 落库后写它必然
 // 42P01。PG 侧正文改由会话族的正文镜像承担（internal/sessionv2mirror 写
 // session_turn_bodies）。
 //
@@ -2708,17 +2708,17 @@ func lookupTurnNumber(ctx context.Context, tx pgx.Tx, sessionID string) int {
 	// Since we're in the middle of the INSERT transaction, we need to count INCLUDING
 	// the row we just inserted. The turn_no should be: COUNT(*) for this session.
 	//
-	// 2026-10-20（迁移 885，v1 族退役）：原实现先读会话族两腿 MAX(turn_no)
+	// 2026-10-20（迁移 890，v1 族退役）：原实现先读会话族两腿 MAX(turn_no)
 	// （session_id 等值，idx_session_turns_session），0 时回退 v1 母表计数
-	// （镜像前历史会话）——该回退腿随 885 落库后必然 42P01，已整段删除。
+	// （镜像前历史会话）——该回退腿随 890 落库后必然 42P01，已整段删除。
 	// ⇒ 现在两腿恒 0 时 turn_no 取 1（会话首轮）。
 	// 会话轮写与 outbox 发射并发时本读可能少计在途一轮——该值本就是提示性载荷，
 	// 权威 turn_no 归 session/v2 aggregator（见上）。
 	var count int
 	err := tx.QueryRow(ctx, lookupTurnNoSessionSQL, sessionID).Scan(&count)
 
-	// ★ 2026-10-20（迁移 885，v1 族退役）：v1 回退腿整段删除——v1 族随
-	// 885 落库后再读它必然 42P01。两腿 MAX(turn_no) 恒 0 时 turn_no 取 1（首轮）。
+	// ★ 2026-10-20（迁移 890，v1 族退役）：v1 回退腿整段删除——v1 族随
+	// 890 落库后再读它必然 42P01。两腿 MAX(turn_no) 恒 0 时 turn_no 取 1（首轮）。
 
 	if err != nil {
 		// Non-fatal: log and fallback to 1

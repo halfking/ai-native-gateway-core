@@ -1710,7 +1710,7 @@ func (r *CredentialRecovery) runLookbackScan(ctx context.Context) {
 // 30s tick's business, not this scan's).
 //
 // The 36h-success predicate reads the **session-turn family** (hot ∪ parent;
-// the two storage faces, per §9.28) — since migration 885 the v1 family no
+// the two storage faces, per §9.28) — since migration 890 the v1 family no
 // longer exists. The success-model join keeps the same comparison口径 as
 // passive_probe_listener.go: the session family's raw_model_name column IS
 // COALESCE(outbound_model, client_model) (see internal/sessionv2mirror/
@@ -1743,7 +1743,7 @@ func lookbackCandidateSQL() string {
 		  -- the direction is self-limiting (probe success restores
 		  -- availability and exits the recovery candidate set), unlike the
 		  -- usage scans where R49 F4/R50 closed the loop.
-		-- ★ 885（v1 族退役）：证据源从 v1 hot ∪ v1 母表换成**会话族**
+		-- ★ 890（v1 族退役）：证据源从 v1 hot ∪ v1 母表换成**会话族**
 		-- （hot ∪ parent，同款两个存储面惯例，§9.28）。原两臂合并成一条
 		-- EXISTS：会话族原生源本身就是 hot ∪ parent 的并集，语义逐字相同。
 		--
@@ -1763,14 +1763,14 @@ func lookbackCandidateSQL() string {
 	`
 }
 
-// ★ 2026-10-20（迁移 885，v1 族退役）：**36h 回看扫描的「可比性门」退役**。
+// ★ 2026-10-20（迁移 890，v1 族退役）：**36h 回看扫描的「可比性门」退役**。
 //
 // 旧门（`lookbackComparability` + `lookbackSkipS4StopWrite`）守的是：
 // 「证据源在 S4 停写门内 ⇒ 门一关，证据源冻结 ⇒ 『窗口内是否有成功』这个问题
 // 从可判定变成不可判定 ⇒ 跳过并说明，而不是把『不可判定』读成『没有需要
 // 恢复的绑定』」。
 //
-// 885 把 v1 族整体 DROP，证据源随之迁到**会话族**（hot ∪ parent，写入路径
+// 890 把 v1 族整体 DROP，证据源随之迁到**会话族**（hot ∪ parent，写入路径
 // **无条件**、不读任何停写键）⇒
 //
 //	① 「证据源会因某个开关被关掉而冻结」这个前提**不再成立**；
@@ -1915,11 +1915,11 @@ func (r *CredentialRecovery) scanLookbackRecoveries(ctx context.Context) {
 	scanCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
 	defer cancel()
 
-	// ★ 2026-10-20（迁移 885 + 并行审计轮 D0）：**这道 S4 停写门控已退役**。
+	// ★ 2026-10-20（迁移 890 + 并行审计轮 D0）：**这道 S4 停写门控已退役**。
 	//
 	// 旧行为：门读 `settings.RequestLogsWriteEnabled()`，关 ⇒ 跳过本扫描并说明。
 	// 退役理由（两个前提同时消失，而门仍然闭合）：
-	//   ① 证据源已随 885 迁到**会话族**（hot ∪ parent，写入路径无条件、
+	//   ① 证据源已随 890 迁到**会话族**（hot ∪ parent，写入路径无条件、
 	//      不读任何停写键）⇒ 「证据源会因开关被关掉而冻结」不再成立；
 	//   ② 该键的**代码默认**已被改成 false（origin/main 的 D0）⇒ 在任何未
 	//      显式配置它的环境上，这条扫描会**永久停摆** ⇒ 一个理由已过期、

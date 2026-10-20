@@ -159,7 +159,7 @@ func (h *Handler) resolveSessionTenant(ctx context.Context, r *http.Request, ses
 	// callerTenant —— 下面的跨租户拒绝分支永不触发，租户 A 就能按 A 的口径
 	// 去脱敏/读取属于 B 的会话。先查 session 族让 S4 之后判定照常生效。
 	//
-	// 2026-10-20（迁移 885）：v1 族整体退役 ⇒ 原来那条 v1 回落腿删除。
+	// 2026-10-20（迁移 890）：v1 族整体退役 ⇒ 原来那条 v1 回落腿删除。
 	// 镜像链启用之前的历史窗口随 v1 表一起消失，那批会话在会话族里本来就
 	// 查不到行（与其它读端一致），只能落到下面的 callerTenant 兜底。
 	if h.db != nil {
@@ -205,7 +205,7 @@ func (h *Handler) lookupSessionTenant(ctx context.Context, sessionID string) str
 	if err == nil && tenant != "" {
 		return tenant
 	}
-	// 2026-10-20（迁移 885）：v1 族整体退役 ⇒ 原来的镜像链启用之前的
+	// 2026-10-20（迁移 890）：v1 族整体退役 ⇒ 原来的镜像链启用之前的
 	// v1 兜底腿删除。那段历史窗口的会话随 v1 表一起消失，在会话族里
 	// 本来就查不到行（上面那条 UNION ALL 已经是唯一事实源），因此这里
 	// 返回空租户而不是去别处找一个已经不存在的关系。
@@ -220,7 +220,7 @@ func (h *Handler) loadOutboundBodySnippet(ctx context.Context, requestID string)
 	_ = h.db.QueryRow(ctx, `
 		SELECT COALESCE(rb.outbound_body, rb.request_body)
 		  FROM request_logs_with_current_month rl
-		  -- 2026-10-20（迁移 885）：bodies 腿改成固定的会话族源。canonical 视图
+		  -- 2026-10-20（迁移 890）：bodies 腿改成固定的会话族源。canonical 视图
 		  -- 已是 session-only 的两臂体，bodies 腿必须同源；开关里的 v1 臂对
 		  -- 会话族 turns 是错的源（且 v1 表已退役，那条臂会 42P01）。
 		  LEFT JOIN `+dbpkg.SessionFamilyBodiesSourceSQL()+` rb ON rb.request_id = rl.request_id

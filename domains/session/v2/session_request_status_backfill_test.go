@@ -26,7 +26,7 @@ const statusRemainingCountTag = "<<remaining-count>>"
 var statusRemainingCountRe = regexp.MustCompile(`(?is)\bselect\s+(?:0|count\s*\([^()]*\))\s*::\s*bigint\s*$`)
 
 // statusRemainingConstantZeroRe recognises the structural zero that the
-// remaining count has become since 885 (the source family is dropped, so
+// remaining count has become since 890 (the source family is dropped, so
 // there is nothing left that could be copied).
 var statusRemainingConstantZeroRe = regexp.MustCompile(`(?is)\bselect\s+0\s*::\s*bigint\s*$`)
 
@@ -53,7 +53,7 @@ var statusRemainingConstantZeroRe = regexp.MustCompile(`(?is)\bselect\s+0\s*::\s
 // Measured on 2026-10-21: the whole domains/session/v2 package took
 // 606.375s and the one test that never finished was
 // TestSessionRequestStatusBackfill_GaugeSampledBeforeFirstDrain. The fixture
-// had gone stale because migration 885 rewrote
+// had gone stale because migration 890 rewrote
 // sessionRequestStatusRemainingSQL from "SELECT count(*) … JOIN
 // public._request_logs" to "SELECT 0::bigint", while the fixture still
 // expected the old JOIN text.
@@ -252,7 +252,7 @@ func TestSessionRequestStatusBackfill_UpdateSQLContract(t *testing.T) {
 		wantArgs int
 	}{
 		{
-			// ★ 2026-10-21 (R65 round): migration 885 dropped the v1 family, so
+			// ★ 2026-10-21 (R65 round): migration 890 dropped the v1 family, so
 			// the JOIN is gone and the statement degenerates to an identity
 			// assignment behind AND FALSE. The previous form kept
 			// `SET request_status = l.request_status` while removing the JOIN
@@ -269,7 +269,7 @@ func TestSessionRequestStatusBackfill_UpdateSQLContract(t *testing.T) {
 				"AND t.request_status IS NULL",
 				// partition pruning via pkey (id, partition_date)
 				"WHERE t.id = v.id AND t.partition_date = v.partition_date",
-				// no-op gate: the candidate set is empty since 885
+				// no-op gate: the candidate set is empty since 890
 				"AND FALSE",
 			},
 			notWant: []string{
@@ -515,7 +515,7 @@ func TestSessionRequestStatusBackfill_SourceProbeDetectsRetirement(t *testing.T)
 // exactly once and RETURNS — no drain attempt, no per-tick ERROR spam.
 //
 // ★ 2026-10-21 (R65 round): the startup count no longer FAILS in the retired
-// world — since 885 the remaining count is a constant 0 (the source is gone,
+// world — since 890 the remaining count is a constant 0 (the source is gone,
 // so there is nothing left that could be copied), so the gauge legitimately
 // reads 0. The "a failed count must read -1, never 0" contract is still
 // covered, but it belongs to the count-FAILURE path and lives in
@@ -664,7 +664,7 @@ func TestSessionRequestStatusBackfill_DefaultConstants(t *testing.T) {
 }
 
 // TestSessionRequestStatusBackfill_CandidateSQLIsEmptyAfterV1Retirement pins
-// the candidate query's post-885 shape.
+// the candidate query's post-890 shape.
 //
 // ★ 2026-10-21 (R65 round): the previous contract here ("the join must be on
 // request_id ONLY") died with the v1 family. What replaces it is a stronger
@@ -689,7 +689,7 @@ func TestSessionRequestStatusBackfill_CandidateSQLIsEmptyAfterV1Retirement(t *te
 		}
 	}
 	for _, notWant := range []string{
-		// ★ the v1 family is DROPPED (migration 885): naming it is a 42P01
+		// ★ the v1 family is DROPPED (migration 890): naming it is a 42P01
 		"public._request_logs",
 	} {
 		if strings.Contains(strings.ToLower(sql), strings.ToLower(notWant)) {
@@ -699,7 +699,7 @@ func TestSessionRequestStatusBackfill_CandidateSQLIsEmptyAfterV1Retirement(t *te
 	}
 	// The projection must stay aligned with the table's real columns: a
 	// projected column that does not exist is a PARSE-time 42P01, exactly like
-	// the alias l that 885 left behind. The real-database gate in
+	// the alias l that 890 left behind. The real-database gate in
 	// session_request_status_backfill_v1_retirement_test.go PREPAREs this
 	// statement, which is the authoritative check.
 	for _, col := range []string{"t.id", "t.partition_date", "t.tenant_id", "t.request_id"} {
@@ -767,13 +767,13 @@ func statusBackfillFixtureDB(t *testing.T, adminDSN string) (*pgxpool.Pool, stri
 // ★ 2026-10-21 (R65 round): the gate in this slot used to build a miniature
 // _request_logs + session_turns, run the job's batches, and assert that
 // joinable NULL rows got their labels copied from their v1 twin. That premise
-// died with migration 885 (the v1 family is DROPPED), so the gate now pins
+// died with migration 890 (the v1 family is DROPPED), so the gate now pins
 // the behaviour that actually ships:
 //
 //	(a) every SQL the job issues must PARSE on a real PostgreSQL — this is
 //	    where the 42P01 class of defect dies. A statement naming a relation or
 //	    an alias that does not exist is rejected at BIND time, even when it
-//	    can never match a row: 885 left `SET request_status = l.request_status`
+//	    can never match a row: 890 left `SET request_status = l.request_status`
 //	    behind after removing the JOIN that defined the alias `l`;
 //	(b) the job retires immediately and quietly when the source is gone
 //	    (no drain, no error spam, exactly one `retired`);
@@ -833,7 +833,7 @@ func TestSessionRequestStatusBackfill_RealDB(t *testing.T) {
 	}
 	defer pool.Close() // runs BEFORE the admin-drop defer (LIFO) ⇒ pools closed first
 
-	// The fixture mirrors production AFTER 885: the session family exists, the
+	// The fixture mirrors production AFTER 890: the session family exists, the
 	// v1 label source does NOT.
 	if _, err := pool.Exec(ctx, `
 CREATE TABLE public.session_turns (
@@ -985,7 +985,7 @@ func remainingTimeoutArg() string {
 //
 // n is the count the MOCK reports — a simulation, not the literal the real
 // query produces. It must be allowed to be non-zero: the real remaining count
-// has been 0 since 885, and 0 is also the Prometheus zero value, so a gauge
+// has been 0 since 890, and 0 is also the Prometheus zero value, so a gauge
 // assertion on 0 cannot tell "sampled" from "never sampled" (a恒绿 assertion).
 // A non-zero sentinel is what gives the gauge assertions teeth.
 func expectStatusRemaining(mock pgxmock.PgxPoolIface, n int64) {
@@ -1007,7 +1007,7 @@ func expectStatusRemaining(mock pgxmock.PgxPoolIface, n int64) {
 //
 // The "a count failure must read as -1, never 0" contract is independent of
 // the query's shape: even though the real query has been a constant 0 since
-// 885, a failure still has to be reported honestly.
+// 890, a failure still has to be reported honestly.
 func expectStatusRemainingErr(mock pgxmock.PgxPoolIface, err error) {
 	mock.ExpectBegin()
 	mock.ExpectExec("SELECT set_config\\('app.current_role', 'super_admin', true\\)").
@@ -1033,7 +1033,7 @@ func expectStatusRemainingErr(mock pgxmock.PgxPoolIface, err error) {
 // ★ 2026-10-21 (R65 round): two things changed, and both were load-bearing.
 //
 //  1. The count is reported by the mock as a NON-ZERO SENTINEL. The real
-//     remaining count has been a constant 0 since 885, and 0 is also the
+//     remaining count has been a constant 0 since 890, and 0 is also the
 //     Prometheus zero value — a gauge assertion on 0 cannot tell "sampled"
 //     from "never sampled", so it would be a恒绿 assertion. The sentinel
 //     restores the teeth: the gauge must show the number the count reported.
@@ -1095,7 +1095,7 @@ func TestSessionRequestStatusBackfill_RemainingGaugeReportsIdle(t *testing.T) {
 // half-finished backfill.
 //
 // ★ 2026-10-21 (R65 round): the value is now a SENTINEL rather than the old
-// business number 1520530. The real remaining count has been 0 since 885, and
+// business number 1520530. The real remaining count has been 0 since 890, and
 // 0 is also the Prometheus zero value — an assertion on 0 cannot tell
 // "the count reported 0" from "the count never ran". A sentinel keeps the
 // property under test (the count's value reaches the gauge UNSCALED) and
@@ -1173,7 +1173,7 @@ func TestSessionRequestStatusBackfill_RemainingSampledOncePerDrain(t *testing.T)
 }
 
 // TestSessionRequestStatusBackfill_RemainingSQLContract pins the remaining
-// count query's post-885 shape.
+// count query's post-890 shape.
 //
 // ★ 2026-10-21 (R65 round): the previous contract here ("the v1-side IS NOT
 // NULL filter must survive") died with the v1 family — the source is DROPPED,
@@ -1190,7 +1190,7 @@ func TestSessionRequestStatusBackfill_RemainingSQLContract(t *testing.T) {
 	if !statusRemainingConstantZeroRe.MatchString(q) {
 		t.Errorf("remaining SQL must be the structural zero (SELECT 0::bigint), got: %s", q)
 	}
-	// ★ the v1 family is DROPPED (migration 885): naming it is a 42P01
+	// ★ the v1 family is DROPPED (migration 890): naming it is a 42P01
 	if strings.Contains(strings.ToLower(q), "public._request_logs") {
 		t.Errorf("remaining SQL must not reference the dropped v1 family, got: %s", q)
 	}
@@ -1214,7 +1214,7 @@ func TestSessionRequestStatusBackfill_RemainingSQLNoLongerCoversAnySurface(t *te
 	q := strings.ToLower(executableSQL(sessionRequestStatusRemainingSQL))
 	for _, surface := range []string{"public.session_turns", "public.session_turns_hot"} {
 		if strings.Contains(q, surface) {
-			t.Errorf("remaining SQL references %q — since 885 the count is the constant 0; "+
+			t.Errorf("remaining SQL references %q — since 890 the count is the constant 0; "+
 				"if a surface comes back, the D9 release gate needs an explicit re-derivation "+
 				"(a gauge scoped to one surface reads 0 while the other still holds NULL labels)", surface)
 		}
@@ -1230,7 +1230,7 @@ func TestSessionRequestStatusBackfill_RemainingSQLNoLongerCoversAnySurface(t *te
 //     (public.session_turns + public.session_turns_hot), because the gauge was
 //     the D9 clause-4 release gate and a surface-scoped gauge would read 0
 //     while the other surface still held NULL labels.
-//   - Migration 885 dropped the v1 label source, so the count of "rows that
+//   - Migration 890 dropped the v1 label source, so the count of "rows that
 //     could still be copied" became the CONSTANT 0 — it mentions no table at
 //     all and therefore cannot be scoped to any surface. The premise the test
 //     defended no longer exists; keeping the assertions would have demanded

@@ -5,12 +5,12 @@
 // have no session_bodies, so this tool backfills them so V2 can serve the detail
 // page.
 //
-// ★ 2026-10-20（迁移 885，v1 族整体退役）：**本工具退役**。
+// ★ 2026-10-20（迁移 890，v1 族整体退役）：**本工具退役**。
 //
 // # 为什么不能改指会话族（这是本文件唯一需要说明的事）
 //
 // 这个工具的输入是**每轮的累积正文**，输出是**每轮的增量**（matryoshka 拆解）。
-// 而 v1 累积正文那一族（v1 bodies 表）已随迁移 885 一起被 DROP ⇒ 输入没了。
+// 而 v1 累积正文那一族（v1 bodies 表）已随迁移 890 一起被 DROP ⇒ 输入没了。
 //
 // 会话族里剩下的两个东西**都不能**当输入：
 //
@@ -66,6 +66,6 @@ func main() {
 	_ = useHot
 
 	log.Fatalf("backfill_session_bodies: v1 family retired — the accumulated request-log bodies "+
-		"were dropped (migration 885), and the session family already stores per-turn deltas, "+
+		"were dropped (migration 890), and the session family already stores per-turn deltas, "+
 		"so there is nothing left to derive from (session=%s)", *session)
 }

@@ -219,7 +219,7 @@ func backfillActualTokensSweep(ctx context.Context, tx pgx.Tx) error {
 		UPDATE response_format_anomalies a
 		SET actual_tokens = r.completion_tokens,
 		    usage_source  = 'llm'
-		-- ★ 885（v1 族退役）：源换成会话族热表（v1 热表已 DROP）。原口径是
+		-- ★ 890（v1 族退役）：源换成会话族热表（v1 热表已 DROP）。原口径是
 		-- 「v1 热表里的行」⇒ 热表对热表，范围不变。usage_source /
 		-- completion_tokens / request_id 在会话族里同名同义。
 		-- ⚠ 口径损失（如实登记）：'corrected' 这个 usage_source 值来自

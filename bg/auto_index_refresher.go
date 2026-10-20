@@ -448,7 +448,7 @@ func (r *AutoIndexRefresher) rollupCredentialModelIndex(ctx context.Context, buc
 // Source: the session family (session_turns_hot), last 5 minutes, classified
 // by task_type. If no auto requests yet, the table stays empty — that's fine.
 //
-// ★ 2026-10-20（迁移 885，v1 族退役）：源从 `public._request_logs` 换成
+// ★ 2026-10-20（迁移 890，v1 族退役）：源从 `public._request_logs` 换成
 // **会话族**（db.SessionFamilyTurnsHotSourceSQL()）。
 //
 // # 总体（population）变了，而且变得更**对**
@@ -467,7 +467,7 @@ func (r *AutoIndexRefresher) rollupCredentialModelIndex(ctx context.Context, buc
 // ⇒ 改指之后，这个索引的总体从「v1 的全部 auto 行（含内部探针）」收窄成
 // **业务 auto 请求**——而后者正是「per model per task_type 的自动路由性能」
 // 这个索引本该统计的东西（内部探针的延迟与成功率本来就代表不了业务任务）。
-// ⇒ 「不迁」这条登记在 885 之后**已经没有对象**：v1 族不存在了，不存在
+// ⇒ 「不迁」这条登记在 890 之后**已经没有对象**：v1 族不存在了，不存在
 // 「换个源继续按老口径统计」的选项。
 //
 // # 两个必须一起说清的后果
@@ -634,11 +634,11 @@ SELECT
 -- credential_model_peak_1m.raw_model 同名空间），未匹配行回落 t.model
 -- （与 v1 腿未匹配行的失序幅度同级）。
 --
--- ★ 2026-10-20（迁移 885，v1 族退役）：**v1 腿整条删除**，只剩会话腿。
+-- ★ 2026-10-20（迁移 890，v1 族退役）：**v1 腿整条删除**，只剩会话腿。
 -- 理由：v1 族被 DROP 后，同一条 FROM 里提到 v1 关系会让**整条语句** 42P01
 -- （不是「那条腿失败」）⇒ half-1 与 half-2 一起挂。删除不损失供数能力：
 -- 停写后 v1 腿本就恒空（v1 hot 排空），会话腿已经是承重腿。
--- ⚠ 冻结点守卫（db.V1FreezeCutoffSQL）保留：885 之后它是常数
+-- ⚠ 冻结点守卫（db.V1FreezeCutoffSQL）保留：890 之后它是常数
 -- '-infinity'（见 db/v1_freeze_cutoff.go），条件恒真、零成本，但它把
 -- 「本查询与 admin 侧同款分界」这件事保持在同一形状上。
 FROM (
@@ -736,7 +736,7 @@ WHERE v.is_routable = TRUE
   -- 覆盖 half-1 刚写入的真实指标（half-1/half-2 必须同迁，见文件头）。
   -- 匹配键与 half-1 会话腿同一 alias 链（canonical 粒度）；pm.canonical_id
   -- 为 NULL 时 IN 集为空 = 不抑制 = 写基线，与 v1 名失配时的行为同级。
-  -- ★ 2026-10-20（迁移 885，v1 族退役）：原先成对存在的 v1 抑制臂删除
+  -- ★ 2026-10-20（迁移 890，v1 族退役）：原先成对存在的 v1 抑制臂删除
   -- （v1 族已 DROP，提及即 42P01 带走整条语句）；会话腿成为唯一抑制臂。
   AND NOT EXISTS (
       SELECT 1
@@ -821,7 +821,7 @@ ON CONFLICT (bucket, credential_id, raw_model) DO UPDATE SET
 // requests only (is_auto_request = true) so we measure actual routing
 // outcomes rather than pre-auto usage.
 //
-// ★ 2026-10-20（迁移 885，v1 族退役）：源从 v1 hot 表换成**会话族原生源**
+// ★ 2026-10-20（迁移 890，v1 族退役）：源从 v1 hot 表换成**会话族原生源**
 // （db.SessionFamilyTurnsHotSourceSQL：session_turns_hot ∪ 特征层 LEFT JOIN，
 // 投影出与 v1 同名列的 118 列契约）。选 hot 腿而不是 hot ∪ parent 的理由：
 // 窗口是 5 分钟，远小于 hot 保留期（默认 8h）⇒ 窗内的行只可能落在 hot 侧

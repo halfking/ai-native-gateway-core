@@ -11,7 +11,7 @@
 // DB mock 用 pgxmock（现有 telemetry 测试基建，见 final_success_claim_test.go /
 // body_summary_test.go 的同构期望链）。
 //
-// ★ 2026-10-20（迁移 885，v1 族退役）：本文件**只改期望链**，判据本身不变。
+// ★ 2026-10-20（迁移 890，v1 族退役）：本文件**只改期望链**，判据本身不变。
 //
 // 旧期望链（v1 族的语句集合）：
 //
@@ -20,7 +20,7 @@
 //	UPDATE: usage_ledger_hot(5) + _request_logs_hot(100) + _request_logs_bodies_hot(4)
 //	        + SAVEPOINT + claim UPDATE + RELEASE
 //
-// 新期望链（迁移 885 后的语句集合）：只剩 usage_ledger_hot 的一条语句 +
+// 新期望链（迁移 890 后的语句集合）：只剩 usage_ledger_hot 的一条语句 +
 // commit（v1 宽表/正文族写入与终态成功认领整段退役；终态成功的仲裁迁到
 // internal/sessionv2mirror 的 markTurnFinalSuccess）。
 //
@@ -56,7 +56,7 @@ func TestReplayFallbackFiresOnPersistedHooks(t *testing.T) {
 	payload, err := json.Marshal(entry)
 	require.NoError(t, err)
 
-	// insertRequestLog 事务链（迁移 885 后只剩一条 INSERT：APIKeyID nil
+	// insertRequestLog 事务链（迁移 890 后只剩一条 INSERT：APIKeyID nil
 	// → 无 api_keys UPDATE；outboxWriter nil → 无 session opener；
 	// v1 宽表 / 正文族写入与终态成功认领整段退役）。
 	mockDB.ExpectBegin()
@@ -116,7 +116,7 @@ func TestReplayFallbackFiresOnPersistedHooks_UpdateOp(t *testing.T) {
 
 		// updateRequestLog 事务链：usage_ledger（无 token 走 5 参分支）→ commit。
 		// v1 宽表 UPDATE / 正文族 upsert / 终态成功认领（SAVEPOINT+claim）
-		// 随 885 整段退役。
+		// 随 890 整段退役。
 		mockDB.ExpectBegin()
 		mockDB.ExpectExec(`UPDATE usage_ledger_hot`).
 			WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).

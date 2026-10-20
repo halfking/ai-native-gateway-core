@@ -274,10 +274,10 @@ func (w *AutoRouteAffinityWorker) sweep(ctx context.Context) {
 // pkey(request_id) / the partitioned request_id index (718 dropped the
 // redundant hot-side index; the pkey covers it).
 //
-// ★ 2026-10-20（迁移 885，v1 族退役）：前两条 v1 臂（v1 hot ∪ v1 母表）整体
+// ★ 2026-10-20（迁移 890，v1 族退役）：前两条 v1 臂（v1 hot ∪ v1 母表）整体
 // 删除，只留会话族那一条。理由与它们当初被加进来时写的**同一条**：那两条臂
 // 在「过滤臂在门内、驱动表在门外」的形态下会**恒真** ⇒ 合成流量不再被排除。
-// 885 之后它们不是「恒真」而是「**42P01**」——整条聚合查询会失败（不是那条臂
+// 890 之后它们不是「恒真」而是「**42P01**」——整条聚合查询会失败（不是那条臂
 // 失败，是**整条语句**失败：同一条 FROM 里的任何 v1 关系被提及都会带走整句）。
 // ⇒ 删掉它们不损失任何过滤能力：会话族臂（第三条）在停写后**就是**承重臂，
 // 而 v1 臂在双写期是 no-op（同一 request_id 必然同时命中 v1 臂）。
@@ -315,7 +315,7 @@ func (w *AutoRouteAffinityWorker) aggregate(ctx context.Context) ([]affinityAggr
 		  -- 「证据缺失」（静默洞），这个是「**过滤臂在门内、驱动表在门外**」
 		  -- ⇒ 过滤静默失效、方向为过度纳入。
 		  --
-		  -- ★ 885（v1 族退役）：两条 v1 臂删除（见上），会话族臂成为唯一承重臂。
+		  -- ★ 890（v1 族退役）：两条 v1 臂删除（见上），会话族臂成为唯一承重臂。
 		  AND NOT EXISTS (
 		      -- ⚠️ 同 §9.28：会话族是**两个存储面**，写方只写 session_turns_hot，
 		      -- 冷行由 promote 搬到分区父表，边界随 promote 节奏移动。只读父表 ⇒

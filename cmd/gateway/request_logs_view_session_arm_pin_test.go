@@ -48,7 +48,7 @@ var requestLogsViewsWithSessionArm = map[string]struct{}{
 
 // v1OnlyRequestLogsViews 是**曾经**为纯 v1 的视图。
 //
-// ★ 885（v1 族退役）：这 3 张视图已随 v1 族**一起被删掉**（迁移 885 的步骤 4）
+// ★ 890（v1 族退役）：这 3 张视图已随 v1 族**一起被删掉**（迁移 890 的步骤 4）
 // ⇒ 登记表随之清空。
 //
 // ⇒ 本表从"v1-only 视图的名单"变成了"**曾经**是 v1-only、现在应当已被删掉"的
@@ -60,7 +60,7 @@ var requestLogsViewsWithSessionArm = map[string]struct{}{
 // 出现在真库上（要么真不存在，要么已被改造成含 session 臂）。
 var v1OnlyRequestLogsViews = map[string]struct{}{}
 
-// retiredV1OnlyRequestLogsViews 是 885 之后**被删掉**的纯 v1 视图名单。
+// retiredV1OnlyRequestLogsViews 是 890 之后**被删掉**的纯 v1 视图名单。
 //
 // 它的作用是**负向**的：这三张名字在真库上**不允许**再以"纯 v1"形态出现。
 //   · 重新出现（纯 v1）⇒ 有人在重建它们 ⇒ 违反"v1 族已退役"的决定；
@@ -139,7 +139,7 @@ func TestRequestLogsViewSessionArmPinIsCurrent(t *testing.T) {
 				"（不影响本门判定，登记只是为了让「已确认」与「忘了看」可区分）", name)
 		}
 	}
-	// ★ 885：退役名单的**负向**断言。
+	// ★ 890：退役名单的**负向**断言。
 	//
 	// ⚠ 这里必须用 `strpos` 类的**精确**判定，而不是 `LIKE` 配 `_`：
 	// SQL 的 LIKE 里 `_` 是**单字符通配符**（审计 §10.8 的坏尺子），
@@ -149,15 +149,15 @@ func TestRequestLogsViewSessionArmPinIsCurrent(t *testing.T) {
 	// "纯 v1"形态存在（要么不存在，要么已被改造成含 session 臂）。
 	for name := range retiredV1OnlyRequestLogsViews {
 		if _, stillV1 := gotOnly[name]; stillV1 {
-			t.Errorf("视图 %s 已在 885 随 v1 族一并退役，却仍以**纯 v1**形态存在 —— "+
+			t.Errorf("视图 %s 已在 890 随 v1 族一并退役，却仍以**纯 v1**形态存在 —— "+
 				"v1 族退役是终态；要么它不存在，要么它已被改造成含 session 臂", name)
 		}
 	}
 	// 反向：v1OnlyRequestLogsViews 登记的名字必须**真的不存在**（登记的是
-	//"现在存在的纯 v1 视图"，而 885 之后这张表应当是空的）。
+	//"现在存在的纯 v1 视图"，而 890 之后这张表应当是空的）。
 	for name := range v1OnlyRequestLogsViews {
 		if _, exists := gotOnly[name]; !exists {
-			t.Errorf("v1OnlyRequestLogsViews 里的 %s 在真库上已不存在（885 已删）—— "+
+			t.Errorf("v1OnlyRequestLogsViews 里的 %s 在真库上已不存在（890 已删）—— "+
 				"登记表陈旧：它是「现在存在的纯 v1 视图」名单", name)
 		}
 	}

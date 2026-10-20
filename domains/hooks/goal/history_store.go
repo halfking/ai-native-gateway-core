@@ -72,7 +72,7 @@ const maxHistoryMessageChars = 12000
 // request_body/response_body (moved to a separate table in #10); COALESCE
 // keeps backwards compatibility during migration.
 //
-// ★ 2026-10-20（迁移 885，v1 族退役）：原先成对存在的 v1 回退查询
+// ★ 2026-10-20（迁移 890，v1 族退役）：原先成对存在的 v1 回退查询
 // （historyV1SQL）**整条删除**——v1 族被 DROP 后，同一条 FROM 里提到 v1
 // 关系会让**整条语句** 42P01。回退腿当初服务的是「镜像链启用前的历史
 // 会话」（正文只在 v1 正文族）；那些会话的正文随 v1 族一起消失 ⇒ 回退腿
@@ -116,7 +116,7 @@ func (s *PGHistoryStore) FetchBySession(ctx context.Context, sessionID, tenantID
 	if err != nil {
 		return nil, err
 	}
-	// ★ 885（v1 族退役）：原先这里有一段「会话族 0 行 ⇒ 回退 v1 查询」的
+	// ★ 890（v1 族退役）：原先这里有一段「会话族 0 行 ⇒ 回退 v1 查询」的
 	// 分支。v1 族被 DROP 后那条回退腿**必然 42P01**（同一条 FROM 里提到
 	// v1 关系 ⇒ 整条语句失败），而且它服务的对象（镜像链启用前的历史
 	// 会话正文）已经随 v1 族一起消失 ⇒ 回退腿现在没有任何可回退的对象。

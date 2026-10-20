@@ -169,7 +169,7 @@ func (m *ModelTier) refresh(ctx context.Context) {
 		}
 		if rows, err := m.db.Query(ctx, `
 			SELECT raw_model FROM (
-				-- ★ 885（v1 族退役）：源换成会话族热腿（v1 热表已 DROP）。
+				-- ★ 890（v1 族退役）：源换成会话族热腿（v1 热表已 DROP）。
 				-- 窗口 72h ≫ hot 保留期 8h，v1 侧本来就只看得到最近 8h，
 				-- 会话族热腿保留期同款 ⇒ 口径不变。
 				SELECT rl.raw_model_name AS raw_model,

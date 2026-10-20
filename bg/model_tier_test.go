@@ -142,7 +142,7 @@ func TestModelTier_LoopRefreshUsesParentContext(t *testing.T) {
 // the literal strings so a regression like "model" (a nonexistent column) is
 // caught at unit-test time instead of at the 10min refresh.
 //
-// ★ 2026-10-20（迁移 885，v1 族退役）：读源从 v1 热表换成**会话族热腿**
+// ★ 2026-10-20（迁移 890，v1 族退役）：读源从 v1 热表换成**会话族热腿**
 // （v1 族已 DROP，提及即整条语句 42P01）；模型名口径从
 // COALESCE(outbound_model, client_model) 换成会话族的 raw_model_name —— 它
 // 就是那个 COALESCE 的同义列（取值口径登记见 internal/sessionv2mirror/
@@ -168,12 +168,12 @@ func TestModelTier_SQLReferencesActualColumns(t *testing.T) {
 	sessionSourceRE := regexp.MustCompile("FROM\\s+`\\s*\\+\\s*db\\.SessionFamilyTurnsHotSourceSQL\\(\\)\\s*\\+\\s*`\\s+rl")
 	assert.True(t, sessionSourceRE.MatchString(src),
 		"model_tier.go must read the session-family hot leg (audit guard)")
-	// 负向断言：不得再引用退役的 v1 族（迁移 885 已 DROP ⇒ 整条语句 42P01）。
+	// 负向断言：不得再引用退役的 v1 族（迁移 890 已 DROP ⇒ 整条语句 42P01）。
 	// ⚠ 正向对照：上面那条会话族源断言 —— 只删 v1 不加会话族会被抓住。
 	// ⚠ 边界：文件里的历史注释提到过 "_request_logs_hot"（无 FROM），
 	// 所以 needle 必须带 "FROM " 才不会踩到注释。
 	assert.False(t, strings.Contains(src, "FROM _request_logs_hot"),
-		"model_tier.go must not read the retired v1 family (migration 885 dropped it)")
+		"model_tier.go must not read the retired v1 family (migration 890 dropped it)")
 	// Guard: must NOT reference the bare `model` column from request_logs_hot.
 	// Use a tight pattern: a SELECT/GROUP BY/ORDER BY column reference, not just
 	// any substring (avoid false-positive matches like `raw_model`, `client_model`,

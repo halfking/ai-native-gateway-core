@@ -341,7 +341,7 @@ func TestSlidingWindowSQL_ContainsTenantFilter(t *testing.T) {
 // 能整句验证语义的真库门（TEST_DATABASE_URL）是 opt-in、可被静默跳过，
 // 这里加静态形状钉让每次 go test 都兜住。
 //
-// ★ 2026-10-20（迁移 885，v1 族真删）：hot 查询的两臂（会话臂 + v1 臂）
+// ★ 2026-10-20（迁移 890，v1 族真删）：hot 查询的两臂（会话臂 + v1 臂）
 // 收敛为**一条**（会话族 hot + details 特征层）。
 // ⇒ 「两臂位置一致」这个不变式**不再有对象**（一条臂没有「配对」可言），
 // 但它背后的那个事实还在：**外层 WHERE/ORDER 引用的每个列名，必须在内层
@@ -350,7 +350,7 @@ func TestSlidingWindowSQL_ContainsTenantFilter(t *testing.T) {
 func TestSlidingWindowHotQueryArmsPositionallyAligned(t *testing.T) {
 	q := slidingWindowHotQuery()
 
-	// ① 恰有**一条**臂：v1 臂已随 885 退役。多一条 UNION ALL 臂 ⇒ 它读了一个
+	// ① 恰有**一条**臂：v1 臂已随 890 退役。多一条 UNION ALL 臂 ⇒ 它读了一个
 	//    已删除的族 ⇒ 42P01。
 	//
 	//    ⚠ 这里**不做**「有第二条臂就红」的反向断言 —— 那会把「有人把 v1
@@ -359,7 +359,7 @@ func TestSlidingWindowHotQueryArmsPositionallyAligned(t *testing.T) {
 	unionAllLine := regexp.MustCompile(`(?m)^\s*UNION ALL\s*$`)
 	arms := unionAllLine.Split(q, -1)
 	if len(arms) != 1 {
-		t.Fatalf("hot query 应恰有 1 条臂（v1 臂已随 885 退役），实得 %d:\n%s", len(arms), q)
+		t.Fatalf("hot query 应恰有 1 条臂（v1 臂已随 890 退役），实得 %d:\n%s", len(arms), q)
 	}
 
 	// ② 内层投影必须覆盖外层引用到的**每一个**列名。
@@ -384,7 +384,7 @@ func TestSlidingWindowHotQueryArmsPositionallyAligned(t *testing.T) {
 
 	// ③ 负向判据：v1 族关系名不得在场（按标识符边界）。
 	if hits := retiredV1RelationsInSQL(q); len(hits) > 0 {
-		t.Errorf("hot query 仍引用已退役 v1 族关系名 %v —— v1 族已随 885 被 DROP，读它 = 42P01：\n%s", hits, q)
+		t.Errorf("hot query 仍引用已退役 v1 族关系名 %v —— v1 族已随 890 被 DROP，读它 = 42P01：\n%s", hits, q)
 	}
 	// 就地阳性对照：同一把尺子必须能认出 v1 形态（否则上面那条恒绿）。
 	if hits := retiredV1RelationsInSQL("FROM _request_logs_hot rl"); len(hits) == 0 {

@@ -11,9 +11,9 @@ import (
 )
 
 func TestEnsureSpecsCoversAllPartitionedTables(t *testing.T) {
-	// 2026-10-20（迁移 885 真删族）：v1 族的两条 ensure 条目已**无条件**从
+	// 2026-10-20（迁移 890 真删族）：v1 族的两条 ensure 条目已**无条件**从
 	// ensureSpecs() 移除（旧行为是「停写时滤掉、回写时又出现」，前提是族还在
-	// 只是冻结；885 之后族已被物理删除 ⇒ 前提消失）。因此本清单**不再依赖**
+	// 只是冻结；890 之后族已被物理删除 ⇒ 前提消失）。因此本清单**不再依赖**
 	// 写开关，无需钉住前提。
 	specs := ensureSpecs()
 
@@ -77,7 +77,7 @@ func TestEnsureSpecsCoversAllPartitionedTables(t *testing.T) {
 }
 
 func TestPromoteSpecsCoversAllDefaultPartitions(t *testing.T) {
-	// 同上（2026-10-20 / 885）：v1 族的两条 promote 条目已无条件移除，
+	// 同上（2026-10-20 / 890）：v1 族的两条 promote 条目已无条件移除，
 	// 本清单不再依赖写开关。
 	specs := promoteSpecs()
 
@@ -253,7 +253,7 @@ func TestResolvePromoteConfigHandoffRetention(t *testing.T) {
 // tool_usage_stats[_hot]). The fnName is what selects the SQL function,
 // so set equality on fnNames is the invariant that matters.
 //
-// 2026-10-20（迁移 885 真删族）：两侧清单**不再完全相等** —— admin 侧仍登记着
+// 2026-10-20（迁移 890 真删族）：两侧清单**不再完全相等** —— admin 侧仍登记着
 // v1 族的两条（它要靠这张表回答「这个表已退役」的 409，而不是「未知表」），而
 // bg 侧已无条件移除（族被物理删除，继续调用必然 42P01）。⇒ 下面把这两条钉成
 // **唯一且显式**的例外：多一条/少一条都会红，避免例外本身悄悄变宽。
@@ -286,7 +286,7 @@ func TestPromoteSpecsCoverAdminHotPromoteTableMap(t *testing.T) {
 	}
 
 	// 已退役的 v1 族 promote 函数：admin 侧保留登记（用于回 409 退役说明），
-	// bg 侧无条件移除（885 删了族与函数）。
+	// bg 侧无条件移除（890 删了族与函数）。
 	retiredV1PromoteFns := map[string]bool{
 		"promote_request_logs_hot_to_partition":        true,
 		"promote_request_logs_bodies_hot_to_partition": true,
@@ -296,7 +296,7 @@ func TestPromoteSpecsCoverAdminHotPromoteTableMap(t *testing.T) {
 			t.Errorf("admin hotPromoteTableMap 少了已退役的 %q —— admin 侧靠它回 409 退役说明，删了就变成『未知表』", fn)
 		}
 		if _, ok := promoteByFn[fn]; ok {
-			t.Errorf("promoteSpecs() 仍调度已退役的 %q —— 885 之后调用它必然 42P01", fn)
+			t.Errorf("promoteSpecs() 仍调度已退役的 %q —— 890 之后调用它必然 42P01", fn)
 		}
 	}
 

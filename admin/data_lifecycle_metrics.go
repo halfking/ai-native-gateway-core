@@ -91,7 +91,7 @@ func (h *Handler) handleDataLifecycleMetrics(w http.ResponseWriter, r *http.Requ
 
 	// Quick aggregation query (no pg_size_pretty to save CPU)
 	//
-	// 2026-10-20（迁移 885）：v1 族整体退役 ⇒ 计数源与尺寸源都换成会话族
+	// 2026-10-20（迁移 890）：v1 族整体退役 ⇒ 计数源与尺寸源都换成会话族
 	// 母表 session_turns。⚠ pg_total_relation_size 对**分区父表**返回 0（父表
 	// 自身没有存储），v1 母表当年也是分区父表、同样是 0 ⇒ 换源前后这个数字
 	// **逐字相同**。行数口径则从「v1 母表的行」变成「会话族母表的行」——

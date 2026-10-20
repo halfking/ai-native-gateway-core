@@ -20,7 +20,7 @@ import (
 //
 // 修复形态：session 腿提前到冷扫/视图之前（hot 之后）。
 //
-// ★ 2026-10-20（迁移 885，v1 族真删）：v1 族整体退役 ⇒ **冷扫那条腿本身
+// ★ 2026-10-20（迁移 890，v1 族真删）：v1 族整体退役 ⇒ **冷扫那条腿本身
 // 不存在了** ⇒ 「session 腿必须在冷扫腿之前」这个不变式**没有对象了**
 //（只剩一条腿，谈不上先后）。
 //
@@ -91,7 +91,7 @@ func requireSessionLegOnly(t *testing.T, body, funcName string) {
 	t.Helper()
 	if problems := sessionLegViolations(body); len(problems) > 0 {
 		t.Errorf("%s 的正文读路径形状不对：%s\n"+
-			"★ 2026-10-20（885）：v1 族被 DROP ⇒ 冷扫腿必须消失（读它 = 42P01；"+
+			"★ 2026-10-20（890）：v1 族被 DROP ⇒ 冷扫腿必须消失（读它 = 42P01；"+
 			"而冷扫那条本来就是「证明缺席」——columnar 分区无 btree，154 实测单 id "+
 			"miss 59s > 20s ctx，超时不是 ErrNoRows ⇒ 挂在 ErrNoRows 分支下的兜底永远够不着）；"+
 			"正文只可能来自会话族。",

@@ -8,14 +8,14 @@ import (
 )
 
 // TestStalenessLastRequestSurfaceIsSessionFamilyWithProbeExclusion 是
-// 2026-10-18 24h 审计轮那道门的 **885 后继**。
+// 2026-10-18 24h 审计轮那道门的 **890 后继**。
 //
 // 原门钉的是「staleness 的 lastRequest 源不得含 session_turns」——前提是
 // **存在一条非 session 的请求面**（v1-only 视图
 // request_logs_with_current_month_without_request_class_due_at），靠它把
 // 停写期探针写的那批行挡在外面（实测假阳性 22h+）。
 //
-// ★ 2026-10-20（迁移 885，v1 族退役）：那个 v1-only 视图随 885 一起被 DROP
+// ★ 2026-10-20（迁移 890，v1 族退役）：那个 v1-only 视图随 890 一起被 DROP
 // ⇒ **只剩一个请求面** ⇒ 「换一个族」这条路不存在了 ⇒ 挡探针必须**显式**做。
 // ⇒ 本门改成钉那条**等价纪律的新形态**：源是会话族热腿，**且** 查询带会话族
 // 探针排除谓词（origin_stage / task_type / origin_actor 三臂）。
@@ -33,13 +33,13 @@ func TestStalenessLastRequestSurfaceIsSessionFamilyWithProbeExclusion(t *testing
 	if strings.Contains(src, "public.session_turns t") {
 		t.Fatalf("checkStalenessLastRequestSurface 只读会话族冷父表会漏掉最新 5 分钟的活动；got:\n%s", src)
 	}
-	// 不得引用已退役的 v1 族（885 已 DROP ⇒ 整条语句 42P01）。
+	// 不得引用已退役的 v1 族（890 已 DROP ⇒ 整条语句 42P01）。
 	if strings.Contains(src, "_request_logs") {
 		t.Fatalf("checkStalenessLastRequestSurface 不得引用退役的 v1 族；got:\n%s", src)
 	}
 
 	// 探针排除谓词是**必需**的，不是锦上添花：v1-only 腿原来顺带把探针流量
-	// 挡在了外面（停写期会话族照写的那批行是探针写的 ⇒ 假阳性），885 之后
+	// 挡在了外面（停写期会话族照写的那批行是探针写的 ⇒ 假阳性），890 之后
 	// 只有一个请求面，必须显式排探针才能保住同一条纪律。
 	monSrc := mustReadSourceBg(t, "candidate_failure_monitor.go")
 	const anchor = "func (m *CandidateFailureMonitor) checkStaleness("

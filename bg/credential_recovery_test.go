@@ -772,7 +772,7 @@ func TestHealthAutoRecoverSetTickIntervalDisabled(t *testing.T) {
 // only degraded/offline bindings with a SUCCESS inside the lookback window
 // are candidates; the SELECT never mutates cmb.available.
 //
-// ★ 2026-10-20（迁移 885，v1 族退役）：证据源从「v1 hot ∪ v1 母表」换成
+// ★ 2026-10-20（迁移 890，v1 族退役）：证据源从「v1 hot ∪ v1 母表」换成
 // **会话族 hot ∪ 父表**（§9.28 的两个存储面惯例）——原来的两条 EXISTS 臂
 // 合并成一条，因为会话族原生源本身就是 hot ∪ parent 的并集，语义逐字相同。
 // 模型名口径也从 COALESCE(outbound_model, client_model) 换成会话族的
@@ -806,7 +806,7 @@ func TestLookbackCandidateSQLGuards(t *testing.T) {
 			t.Fatalf("lookbackCandidateSQL missing %q in:\n%s", want, sql)
 		}
 	}
-	// 负向断言：不得再引用退役的 v1 族（迁移 885 已 DROP ⇒ 提及即整条语句
+	// 负向断言：不得再引用退役的 v1 族（迁移 890 已 DROP ⇒ 提及即整条语句
 	// 42P01 ⇒ 这条扫描会整体挂掉）。
 	// ⚠ 正向对照：上面那两条会话族存储面断言 —— 只删 v1 不加会话族会被抓住。
 	if strings.Contains(sql, "_request_logs") {

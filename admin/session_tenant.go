@@ -59,7 +59,7 @@ func requireSessionTaskAccess(w http.ResponseWriter, r *http.Request, ctx contex
 //     (tenant_id, gw_task_id) 部分索引并级联到全部分区，真库 EXPLAIN 实测走
 //     Index Only Scan（Buffers: shared hit=4）；无索引时这是 167 万行顺序扫描。
 //
-// 2026-10-20（迁移 885）：v1 族整体退役 ⇒ 原来的第四条腿
+// 2026-10-20（迁移 890）：v1 族整体退役 ⇒ 原来的第四条腿
 // （v1 hot ∪ v1 母表）删除。镜像链启用之前的历史窗口随 v1 表一起消失，
 // 这部分会话在本门下一律查不到行（与它们在其它读端同样查不到一致）。
 //

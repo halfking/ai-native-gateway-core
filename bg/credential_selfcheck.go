@@ -257,7 +257,7 @@ func (w *CredentialSelfcheckWorker) pickDueCredential(ctx context.Context) (int,
 	err := w.db.QueryRow(queryCtx, `
 		SELECT c.id
 		FROM credentials c
-		-- ★ 2026-10-20（迁移 885，v1 族退役）：原先的 **v1 臂**
+		-- ★ 2026-10-20（迁移 890，v1 族退役）：原先的 **v1 臂**
 		-- （LEFT JOIN LATERAL ... e，证据源是 v1 热表）整条删除。
 		-- 理由：v1 族被 DROP 后，同一条 FROM 里提到 v1 关系会让**整条
 		-- 语句** 42P01（不是「那条臂失败」）⇒ 整个 pickDueCredential 崩掉。
@@ -291,7 +291,7 @@ func (w *CredentialSelfcheckWorker) pickDueCredential(ctx context.Context) (int,
 		-- ⇒ 因此**不门控整个自检 worker**（那会连同仍然有效的故障发现一起停掉），
 		--   靠这条臂把「止错」的部分保住。
 		--
-		-- ★ 885（v1 族退役）后本臂的凭据 id 用 CAST（session_turns.credential_id
+		-- ★ 890（v1 族退役）后本臂的凭据 id 用 CAST（session_turns.credential_id
 		-- 是 text，c.id 是 bigint）。
 		--
 		-- ⚠️ 必须同时读 **hot 与父表**两个面（§9.28）。会话族的写方只写
@@ -597,7 +597,7 @@ func (w *CredentialSelfcheckWorker) recentInUsageWindow(ctx context.Context, cre
 func (w *CredentialSelfcheckWorker) recentUsageModels(ctx context.Context, credentialID int, tenant string) (map[string]struct{}, error) {
 	rows, err := w.db.Query(ctx, `
 		SELECT DISTINCT rl.client_model
-		-- ★ 885（v1 族退役）：源换成会话族热腿（v1 热表已 DROP）。
+		-- ★ 890（v1 族退役）：源换成会话族热腿（v1 热表已 DROP）。
 		-- 窗口 3 天 ≫ hot 保留期 8h，v1 侧本来就只看得到最近 8h ⇒ 口径不变。
 		-- rl.client_model 在会话族里同名同义（来自 session_turn_details）。
 		FROM `+db.SessionFamilyTurnsHotSourceSQL()+` rl
@@ -645,7 +645,7 @@ func (w *CredentialSelfcheckWorker) selfcheckRecentFallback(ctx context.Context,
 		SELECT model, COUNT(*)::int AS count
 		FROM (
 			SELECT COALESCE(mc.canonical_name, mc2.canonical_name, rl.client_model) AS model
-			-- ★ 885（v1 族退役）：源换成会话族热腿（v1 热表已 DROP）。
+			-- ★ 890（v1 族退役）：源换成会话族热腿（v1 热表已 DROP）。
 			-- 窗口 3 天 ≫ hot 保留期 8h，v1 侧本来就只看得到最近 8h ⇒ 口径不变。
 			FROM `+db.SessionFamilyTurnsHotSourceSQL()+` rl
 			LEFT JOIN models_canonical mc ON mc.id = rl.canonical_id
@@ -661,7 +661,7 @@ func (w *CredentialSelfcheckWorker) selfcheckRecentFallback(ctx context.Context,
 			  AND rl.success = TRUE
 			  -- R50: exclusion — the probe gateway round carries no 'probe'
 			  -- flag, only the origin arm let it count as usage here.
-			  -- ★ 885：会话族没有 quality_flags ⇒ 用会话族那条探针排除谓词。
+			  -- ★ 890：会话族没有 quality_flags ⇒ 用会话族那条探针排除谓词。
 			  AND `+fmt.Sprintf(probeTrafficExclusionPredicateSession, "rl", "rl", "rl")+`
 			  AND COALESCE(rl.client_model, '') <> ''
 		) ranked

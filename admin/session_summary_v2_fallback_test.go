@@ -129,7 +129,7 @@ func TestSessionSummaryV2FallbackPhase1CarriesNoBodyColumns(t *testing.T) {
 // LEFT JOIN 贴着函数扫描时规划器没法重排，判定全表列存扫描最便宜。半连接把
 // 20 行的哈希交给它，它就会走主键探针。
 func TestSessionSummaryV2FallbackBodiesSQLUsesIndexedSemiJoin(t *testing.T) {
-	// ★ 2026-10-20（迁移 885，v1 族真删）：phase 2 的正文源从 v1 视图
+	// ★ 2026-10-20（迁移 890，v1 族真删）：phase 2 的正文源从 v1 视图
 	// （`request_logs_bodies_with_current_month rb`）换成**会话族正文源**
 	// （hot ∪ 母表两腿，内联写两腿是因为这条要投影 ts）。
 	// ⇒ 判据从「必须读 v1 视图」**反转**为「必须读会话族两腿，且不得再
@@ -146,7 +146,7 @@ func TestSessionSummaryV2FallbackBodiesSQLUsesIndexedSemiJoin(t *testing.T) {
 	}
 	// 负向判据：v1 族关系名不得在场（按标识符边界）。
 	if hits := retiredV1RelationsInSQL(sessionBodiesByRequestIDAndTSSQL); len(hits) > 0 {
-		t.Fatalf("phase 2 SQL must not reference the retired v1 family %v —— v1 族已随 885 被 DROP，读它 = 42P01:\n%s",
+		t.Fatalf("phase 2 SQL must not reference the retired v1 family %v —— v1 族已随 890 被 DROP，读它 = 42P01:\n%s",
 			hits, sessionBodiesByRequestIDAndTSSQL)
 	}
 	// 就地阳性对照：同一把尺子必须能认出 v1 形态（否则上面那条恒绿）。

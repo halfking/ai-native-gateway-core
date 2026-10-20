@@ -45,17 +45,17 @@ var sqlReadGuardAllowFiles = map[string]string{
 }
 
 var sqlReadGuardAllowSQLFiles = map[string]string{
-	// ── 2026-10-20（迁移 885，v1 族最终删除）：本表原先有 11 条 LEGIT/DEBT
-	// 条目，全部指向「v1 fallback 体」或「v1 族函数体」。885 之后它们**逐条
+	// ── 2026-10-20（迁移 890，v1 族最终删除）：本表原先有 11 条 LEGIT/DEBT
+	// 条目，全部指向「v1 fallback 体」或「v1 族函数体」。890 之后它们**逐条
 	// 消失**，原因是**各自不同的**，必须分开记，否则下一个人会把它们看成
 	// 「一次批量删除」而漏掉其中某一类的处置：
 	//
 	//   ① 视图定义体（6 条：canonical + bodies_progress + 5 张分析视图）
 	//      —— 逐条分开说：
 	//        · canonical（`sql/objects/views/request_logs_with_current_month.sql`）
-	//          已按 885 收口成**会话族两臂体**（与 Go composer 逐字同源，
+	//          已按 890 收口成**会话族两臂体**（与 Go composer 逐字同源，
 	//          见 db/request_logs_view_dump_generation_test.go）⇒ 无裸母表读。
-	//        · bodies_progress 整个文件删除（885 删掉这张视图）⇒ 无裸读。
+	//        · bodies_progress 整个文件删除（890 删掉这张视图）⇒ 无裸读。
 	//        · **5 张分析视图**（customer_cost_view / model_cost_per_task_view /
 	//          v_continuation_effectiveness / v_node_switch_analysis /
 	//          v_timeout_effectiveness）**必须回到 v1 fallback 体** ⇒ 仍有裸读，
@@ -63,18 +63,18 @@ var sqlReadGuardAllowSQLFiles = map[string]string{
 	//      ⇒ 3 条消失、5 条保留。
 	//
 	//   ② v1 族函数体（2 条 DEBT：credential_most_used_model /
-	//      get_last_successful_request）—— 这两个函数**在 885 里被 DROP**
+	//      get_last_successful_request）—— 这两个函数**在 890 里被 DROP**
 	//      （它们只服务 v1 族）⇒ 正典文件删除 ⇒ 条目必须删。
 	//
-	//   ③ v1 正文回填 PROCEEDURE（1 条 LEGIT）—— 885 同样 DROP ⇒ 文件删除。
+	//   ③ v1 正文回填 PROCEEDURE（1 条 LEGIT）—— 890 同样 DROP ⇒ 文件删除。
 	//
-	// ⇒ 885 之后本表剩 **6 条**：5 条「基线 fallback 溯源体」+ 1 条散文误报。
+	// ⇒ 890 之后本表剩 **6 条**：5 条「基线 fallback 溯源体」+ 1 条散文误报。
 	// 这不是「把门放松」：白名单条目只豁免**命中**，真正的门是「命中数必须
 	// 为 0」——**生产读面**任何一处裸母表读都会 42P01，所以「零命中」是
 	// 必须达到的状态；白名单是「允许例外」的手段，而每条例外都必须写清
 	// 它**为什么不是生产读面**。
 	//
-	// ── 为什么 5 张分析视图可以保留裸读（而不是跟着 885 改成会话族）──────
+	// ── 为什么 5 张分析视图可以保留裸读（而不是跟着 890 改成会话族）──────
 	//
 	//   `sql/objects/` 对**部署是惰性的**（sql/schema/objects_registry_test.go：
 	//   全仓唯一引用是 deploy/sql/sync-objects.sh，它只做单向文件拷贝，
@@ -96,7 +96,7 @@ var sqlReadGuardAllowSQLFiles = map[string]string{
 	"sql/objects/views/v_continuation_effectiveness.sql": "LEGIT: **基线 fallback 溯源体**——部署形态由迁移 884 换上；本文件不被 apply，裸读 `public.request_logs` 只在基线时点成立 ⇒ 不是生产读面。迁移 884 的门要求本文件与基线三份副本**逐字相同**。",
 	"sql/objects/views/v_node_switch_analysis.sql":       "LEGIT: **基线 fallback 溯源体**——部署形态由迁移 884 换上；本文件不被 apply，裸读 `public.request_logs` 只在基线时点成立 ⇒ 不是生产读面。理由同 v_continuation_effectiveness。",
 	"sql/objects/views/v_timeout_effectiveness.sql":      "LEGIT: **基线 fallback 溯源体**——部署形态由迁移 884 换上；本文件不被 apply，裸读 `public.request_logs` 只在基线时点成立 ⇒ 不是生产读面。理由同 v_continuation_effectiveness。",
-	"sql/objects/tables/passive_probe_state.sql":         "LEGIT: **散文误报**——本文件唯一的 \"request_logs\" 出现在 `COMMENT ON TABLE … IS '…'` 的**说明文字**里（这张表由 bg/passive_probe_listener.go 写入，与 v1 族无关）。⚠ 守卫的正则只认 `FROM|JOIN` 前缀，而说明文字里恰好有 \"from request_logs\" ⇒ 命中。之所以不删条目而是改文字：这张表的**用途描述**（被动观察累计连续错误）在 885 之后仍然成立，只是它不再从 v1 族取数。",
+	"sql/objects/tables/passive_probe_state.sql":         "LEGIT: **散文误报**——本文件唯一的 \"request_logs\" 出现在 `COMMENT ON TABLE … IS '…'` 的**说明文字**里（这张表由 bg/passive_probe_listener.go 写入，与 v1 族无关）。⚠ 守卫的正则只认 `FROM|JOIN` 前缀，而说明文字里恰好有 \"from request_logs\" ⇒ 命中。之所以不删条目而是改文字：这张表的**用途描述**（被动观察累计连续错误）在 890 之后仍然成立，只是它不再从 v1 族取数。",
 }
 
 const sqlReadGuardInlineMarker = "sqlreadguard:allow"
@@ -213,14 +213,14 @@ func TestNoBareRequestLogsMotherReads(t *testing.T) {
 //
 // ⇒ 「删一条加一条」也堵得住：那是新增，会红。
 //
-// ★ 2026-10-20（迁移 885，v1 族最终删除）：本基线**清空**。
+// ★ 2026-10-20（迁移 890，v1 族最终删除）：本基线**清空**。
 //
 // 原基线 22 条（Go 15 + SQL 7）逐条被偿还，来源各不相同，必须分开记：
 //
 //	· Go 侧 15 条：v1 读面被迁到会话族（worker 清扫轮），条目由
 //	  TestSQLReadGuardWhitelistCurrent 的自清洁门报出后逐条删除；
 //	· SQL 侧 7 条：5 张 v1 fallback 分析视图 + 2 个 v1 族函数体，
-//	  正典按 885 收口后同样无裸母表读 ⇒ 条目删除、文件删除。
+//	  正典按 890 收口后同样无裸母表读 ⇒ 条目删除、文件删除。
 //
 // ⇒ 清空之后，本门从「相对基线不得新增」变成「**一条 DEBT 都不许有**」，
 //
@@ -260,7 +260,7 @@ func debtEntries() map[string]bool {
 
 // TestDebtExtractorStillFindsSyntheticDebt 是「零债时量具仍然有效」的证明。
 //
-// 背景：885 之后 v1 族被整体 DROP ⇒ 真实 DEBT 条数降到 **0**。
+// 背景：890 之后 v1 族被整体 DROP ⇒ 真实 DEBT 条数降到 **0**。
 // 而 DEBT 棘轮门原本靠「抽出条数 ≥ 下限」来证明**抽取逻辑没坏**
 // （抽取坏掉时，「没有新增」会与「一条都没抽到」同步为真 ⇒ 门安静通过）。
 // 真实债为 0 时这个兜底**失效**：0 ≥ 0 恒真。
@@ -323,7 +323,7 @@ func TestDebtRatchetDoesNotGrow(t *testing.T) {
 	// v_timeout_effectiveness / v_continuation_effectiveness 三张 **v1 裸母表**
 	// 分析视图改读会话族（这 3 张是**唯一没有任何 API/Go 代码消费**的 v1 读面，
 	// 同时是「后期删除 _request_logs」的依赖阻塞项）⇒ 同样由自清洁门报出
-	// ⇒ DEBT 由 12 降为 4（885 轮：v1 族退役，裸母表读面被彻底收口）。
+	// ⇒ DEBT 由 12 降为 4（890 轮：v1 族退役，裸母表读面被彻底收口）。
 	// 下调理由与历次下调同源：**下限必须 ≤ 真实债条数**，否则债务被真实偿还后
 	// 这道门永远转绿不了（自清洁守卫要求删条目，删条目又把计数压到下限以下
 	// ⇒ 两道门互相锁死）。
@@ -332,10 +332,10 @@ func TestDebtRatchetDoesNotGrow(t *testing.T) {
 	//
 	// ⚠ 剩下的 4 条是**真债**，不是漏网：2 条 Go（discovery 的下架宽限守卫、
 	// telemetry 的写侧腿）与 2 条 SQL（正典函数体）。它们的"债"性质是
-	// 「读的是已冻结的 v1 ⇒ 恒空」，885 之后这些对象**已被删** ⇒ 这几条
+	// 「读的是已冻结的 v1 ⇒ 恒空」，890 之后这些对象**已被删** ⇒ 这几条
 	// 将在正典层收口时一并出列。
 	//
-	// ⚠ 2026-10-20 下限 4 → **0**（885 轮收口）：上面那 4 条**逐条被偿还**
+	// ⚠ 2026-10-20 下限 4 → **0**（890 轮收口）：上面那 4 条**逐条被偿还**
 	// （2 条 Go 随读面迁移出列，2 条 SQL 随正典函数体删除出列）⇒ 真实 DEBT
 	// 条数降到 **0**。下限必须 ≤ 真实债条数 ⇒ 0 是唯一能让这道门转绿的值
 	// （同历次下调同源：否则自清洁门要求删条目、删条目又把计数压到下限以下
@@ -352,7 +352,7 @@ func TestDebtRatchetDoesNotGrow(t *testing.T) {
 	// 任何一条 DEBT 条目都是「新增」⇒ 必红。v1 族被 DROP 之后，
 	// DEBT 这个档位已经没有存在的对象了。
 	if len(debt) > 0 {
-		t.Fatalf("DEBT 条目仍有 %d 条（期望 0）：%v —— v1 族已被迁移 885 整体 DROP，"+
+		t.Fatalf("DEBT 条目仍有 %d 条（期望 0）：%v —— v1 族已被迁移 890 整体 DROP，"+
 			"任何裸母表读都会 42P01，DEBT 档位已无存在的对象。"+
 			"若确有一条真实债，请先修代码再登记（优先把理由从 DEBT(R47) 改成 LEGIT 并给出依据）。",
 			len(debt), keysSorted(debt))

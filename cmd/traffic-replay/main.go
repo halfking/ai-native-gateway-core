@@ -1,7 +1,7 @@
 // Command traffic-replay replays historical request rows through
 // the REAL auto-route pipeline (HeuristicClassifier + Score + Decider),
 //
-// ★ 2026-10-20（迁移 885，v1 族整体退役）：历史样本改取**会话族**
+// ★ 2026-10-20（迁移 890，v1 族整体退役）：历史样本改取**会话族**
 // （见 loadHistoricalRows 的说明）。
 // surfacing "what would have happened" if the new pattern /
 // weight / override were live during the historical window.
@@ -122,7 +122,7 @@ func main() {
 
 // loadHistoricalRows fetches the replay set from the request store.
 //
-// ★ 2026-10-20（迁移 885，v1 族整体退役）：数据源改指**会话族**。
+// ★ 2026-10-20（迁移 890，v1 族整体退役）：数据源改指**会话族**。
 //
 // 原来这一段读 v1 宽族。那一族被 DROP 之后，任何提到它的语句都会 42P01
 // ⇒ 工具直接跑不起来。⇒ 改用 db.SessionFamilyTurnsSourceSQL()（turns 腿，

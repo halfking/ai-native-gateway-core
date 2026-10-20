@@ -247,12 +247,12 @@ func (s *PGStore) LoadSignals(ctx context.Context, tenantID, gwSessionID string)
 	if s == nil || s.q == nil {
 		return Signals{}, ErrNoStore
 	}
-	// ★ 885：投影源由 db.SessionFamilyTurnsForSessionSQL() 生成 ⇒ 它是 var 不是
+	// ★ 890：投影源由 db.SessionFamilyTurnsForSessionSQL() 生成 ⇒ 它是 var 不是
 	// const（const 表达式里不能调函数）。
 	var q = `
 		SELECT COALESCE(rl.work_type, ''), COALESCE(rl.request_preview, ''),
 		       COALESCE(rl.identity_hash, ''), COALESCE(rl.api_key_id, 0)
-		-- ★ 885（v1 族退役）：源换成**会话族原生源**
+		-- ★ 890（v1 族退役）：源换成**会话族原生源**
 		-- （db.SessionFamilyTurnsForSessionSQL：会话谓词内推到 t.session_id = $1，
 		-- idx_session_turns_session 可用）。
 		-- ⚠ 占位符顺序因此调整：$1 = 会话 id（内推），$2 = 租户，$3 = 回溯天数。
@@ -262,7 +262,7 @@ func (s *PGStore) LoadSignals(ctx context.Context, tenantID, gwSessionID string)
 		ORDER BY rl.ts ASC
 		LIMIT 1`
 	sig := Signals{GwSessionID: gwSessionID, TenantID: tenantID}
-	// ★ 885：占位符顺序 = (会话 id, 租户, 回溯天数)，见上面 SQL 的注释。
+	// ★ 890：占位符顺序 = (会话 id, 租户, 回溯天数)，见上面 SQL 的注释。
 	err := s.q.QueryRow(ctx, q, gwSessionID, tenantID, signalLookbackDays).
 		Scan(&sig.WorkType, &sig.UserText, &sig.IdentityHash, &sig.APIKeyID)
 	if err != nil {
@@ -291,7 +291,7 @@ func InheritFromHistory(q Querier, window time.Duration) InheritLookup {
 		if q == nil || s.IdentityHash == "" {
 			return "", nil
 		}
-		// ★ 885：同上，投影源是函数调用 ⇒ var 不是 const。
+		// ★ 890：同上，投影源是函数调用 ⇒ var 不是 const。
 		var sql = `
 			SELECT spa.project_ref
 			FROM public.session_project_attribution spa
@@ -299,7 +299,7 @@ func InheritFromHistory(q Querier, window time.Duration) InheritLookup {
 			  AND spa.status = 'confirmed'
 			  AND spa.project_ref IS NOT NULL
 			  AND spa.updated_at > NOW() - ($3 || ' seconds')::interval
-			  -- ★ 885（v1 族退役）：源换成**会话族原生源**（hot ∪ parent）。
+			  -- ★ 890（v1 族退役）：源换成**会话族原生源**（hot ∪ parent）。
 			  -- 会话 id 在这里是**变量**（spa.gw_session_id）而不是绑定参数，
 			  -- 所以用 ForSession 那条（它把会话谓词钉成 $1）不合适 ⇒ 用全族源。
 			  -- 投影里的 gw_session_id 与 idx_session_turns_effective_session 的

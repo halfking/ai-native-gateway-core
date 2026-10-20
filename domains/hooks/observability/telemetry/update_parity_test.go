@@ -16,7 +16,7 @@ import (
 //
 // 旧门（routing_attempts / routing_summary / attachments / canonical_model /
 // t0_arrived_at）守的是「v1 宽表的 UPDATE 必须赋值 INSERT 也赋的那些列」。
-// v1 族随 885 整族删除 ⇒ 那批列不存在了 ⇒ 断言对象已不存在。
+// v1 族随 890 整族删除 ⇒ 那批列不存在了 ⇒ 断言对象已不存在。
 //
 // 改指后守的是**同一件事在新写入路径上的形态**（usage_ledger_hot）：
 //

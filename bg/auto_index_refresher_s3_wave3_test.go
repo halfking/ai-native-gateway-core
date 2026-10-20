@@ -9,10 +9,10 @@ package bg
 //  1. half-1 带会话腿（session_turns_hot + 冻结点守卫 + alias 链 offers 匹配）；
 //  2. half-2 的反连接带同源会话抑制腿——half-1/half-2 必须同迁，否则基线
 //     经 ON CONFLICT 每 5 分钟覆盖真实指标；
-//  3. ★ 2026-10-20（迁移 885，v1 族退役）：**v1 腿必须不在**——885 把 v1 族
+//  3. ★ 2026-10-20（迁移 890，v1 族退役）：**v1 腿必须不在**——890 把 v1 族
 //     连表带分区一起 DROP，同一条 FROM 里提到 v1 关系会让整条语句 42P01。
 //     本条第 3 点原先是「v1 腿必须保留」（写门开 = 生产/回滚期它是唯一流量源），
-//     885 之后该前提作废，方向随之反转。
+//     890 之后该前提作废，方向随之反转。
 //
 // 判据纪律：断言驱动包级变量文本（它就是发给 PostgreSQL 的语句本体）。
 // 真库语义验证（alias 链匹配率 96.5% vs v1 96.7%、整句 INSERT 可执行、
@@ -44,10 +44,10 @@ func TestRollupCredentialModelIndex_ServesSessionFamily(t *testing.T) {
 	if !strings.Contains(sql, "mo.canonical_id IN (SELECT ma.canonical_id FROM model_aliases ma") {
 		t.Fatalf("session leg must match offers through the alias chain (canonical granularity); got:\n%s", sql)
 	}
-	// ★ 2026-10-20（迁移 885，v1 族退役）：**v1 腿整条删除**，本门从
+	// ★ 2026-10-20（迁移 890，v1 族退役）：**v1 腿整条删除**，本门从
 	// 「v1 腿必须在」**反转**为「v1 腿必须不在」。
 	//
-	// 理由：885 把 v1 族（_request_logs*）连表带分区一起 DROP ⇒ 同一条 FROM
+	// 理由：890 把 v1 族（_request_logs*）连表带分区一起 DROP ⇒ 同一条 FROM
 	// 里提到 v1 关系会让**整条语句** 42P01（不是「那条腿失败」）⇒ half-1 与
 	// half-2 一起挂。停写后 v1 腿本就恒空（v1 hot 排空），删掉不损失供数。
 	//
@@ -55,7 +55,7 @@ func TestRollupCredentialModelIndex_ServesSessionFamily(t *testing.T) {
 	// 「删 half-2 腿留 half-1 腿」那种变异仍会被上面两条抓住（计数会变成 1），
 	// 而「把 v1 腿塞回来」被本条抓住 —— 两个方向都有门。
 	if strings.Contains(sql, "FROM _request_logs_hot") {
-		t.Fatalf("half-1/half-2 不得再引用退役的 v1 族（迁移 885 已 DROP，提及即整条语句 42P01）；got:\n%s", sql)
+		t.Fatalf("half-1/half-2 不得再引用退役的 v1 族（迁移 890 已 DROP，提及即整条语句 42P01）；got:\n%s", sql)
 	}
 	// half-2 抑制腿：同 alias 链反向（canonical → aliases → lower(t.model)）。
 	if !strings.Contains(sql, "lower(t.model) IN (SELECT ma.raw_name FROM model_aliases ma") {
@@ -63,10 +63,10 @@ func TestRollupCredentialModelIndex_ServesSessionFamily(t *testing.T) {
 	}
 }
 
-// TestRollupModelTaskIndex_SourceIsSessionFamily pins the **885 之后**的
+// TestRollupModelTaskIndex_SourceIsSessionFamily pins the **890 之后**的
 // model_task rollup 读源契约。
 //
-// ★ 2026-10-20（迁移 885，v1 族退役）：原先的登记是「**不迁**」——auto 请求
+// ★ 2026-10-20（迁移 890，v1 族退役）：原先的登记是「**不迁**」——auto 请求
 // （sys:% 会话）按设计不镜像进 session_turns 家族（2026-10-13 实测：3 天窗
 // v1 侧 3,420 条 is_auto_request 行、会话侧 **0** 条），所以这个读点没有会话族
 // 数据源、留在 _request_logs_hot 上，并由注释登记下来，免得有人「把它迁完」
@@ -88,7 +88,7 @@ func TestRollupModelTaskIndex_SourceIsSessionFamily(t *testing.T) {
 	// 负向：不得再引用退役的 v1 族（提及即整条语句 42P01）。
 	// 正向对照：下面那条会话族源断言。
 	if strings.Contains(rollupModelTaskIndexSQL, "FROM _request_logs") {
-		t.Fatalf("model_task rollup 不得再引用退役的 v1 族（迁移 885 已 DROP）；got:\n%s", rollupModelTaskIndexSQL)
+		t.Fatalf("model_task rollup 不得再引用退役的 v1 族（迁移 890 已 DROP）；got:\n%s", rollupModelTaskIndexSQL)
 	}
 	// 正向：源必须是会话族热腿（窗口 5 分钟 ≪ hot 保留期 ⇒ 窗内的行必在热侧）。
 	// ⚠ 这里断言的是**渲染后**的 SQL（rollupModelTaskIndexSQL 是 var，不是 const）
@@ -106,7 +106,7 @@ func TestRollupModelTaskIndex_SourceIsSessionFamily(t *testing.T) {
 		t.Fatalf("read auto_index_refresher.go: %v", err)
 	}
 	// 「auto 请求不镜像进 session_turns 家族」这条**事实**必须继续留在文件里。
-	// ⚠ 与它同段的「不迁」**决定**已随 885 作废（源已经迁了）——本门只钉事实，
+	// ⚠ 与它同段的「不迁」**决定**已随 890 作废（源已经迁了）——本门只钉事实，
 	// 不钉那个已作废的决定。
 	if !strings.Contains(string(src), "不镜像进 session_turns 家族") {
 		t.Fatal("auto 请求不镜像进 session_turns 家族这条事实必须继续登记在 auto_index_refresher.go 上 —— " +

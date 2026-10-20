@@ -388,7 +388,7 @@ func (t *telemetryIngester) persistRequestLog(ctx context.Context, e *requestLog
 	// 与 PG 侧同一批正文，运维关停该键的目的是止血磁盘，若镜像绕过该门就是
 	// 「停写却仍落盘」，且镜像与 PG 两侧行为分裂。
 	//
-	// 2026-10-20（迁移 885）：v1 族退役后，PG 侧已不再落 v1 正文，镜像这道
+	// 2026-10-20（迁移 890）：v1 族退役后，PG 侧已不再落 v1 正文，镜像这道
 	// 灾备副本是本批正文的**唯一**副本 ⇒ 这道门更不能被绕过。
 	if requestLogsWriteEnabled() {
 		t.mirrorRequestBodies(e)
@@ -409,7 +409,7 @@ func (t *telemetryIngester) persistRequestLog(ctx context.Context, e *requestLog
 	// resolve context-loss issue. This implementation completes the proper
 	// architectural solution referenced in that commit's TODO comment.
 	//
-	// ★ 2026-10-20（迁移 885）：这两张 v1 表已随 v1 族整体退役，本路径的
+	// ★ 2026-10-20（迁移 890）：这两张 v1 表已随 v1 族整体退役，本路径的
 	// v1 写入删除（见下方 usage_ledger 之后的说明）。本段保留为历史背景。
 
 	tx, err := t.db.Begin(ctx)
@@ -452,7 +452,7 @@ func (t *telemetryIngester) persistRequestLog(ctx context.Context, e *requestLog
 		return
 	}
 
-	// 2026-10-20（迁移 885）：v1 族整体退役 ⇒ 本路径的 v1 写入（主行
+	// 2026-10-20（迁移 890）：v1 族整体退役 ⇒ 本路径的 v1 写入（主行
 	// `_request_logs_hot` + 正文 `_request_logs_bodies_hot`）整体删除。
 	//
 	// 剩下的写入只有上方那条 usage_ledger 计费行（会话族由镜像桥写，

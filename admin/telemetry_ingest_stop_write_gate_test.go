@@ -56,7 +56,7 @@ func withRequestLogsWriteSetting(t *testing.T, writeEnabled bool) {
 // TestTelemetryIngestRequestLogStopWriteGate：admin ingest（POST
 // /api/telemetry/request-log 消费端）的 S4 停写门控。
 //
-// ★ 2026-10-20（迁移 885，v1 族真删）：这道门的主体**变了**，但门留下。
+// ★ 2026-10-20（迁移 890，v1 族真删）：这道门的主体**变了**，但门留下。
 //
 //	原来：停写门关 ⇒ 只保留 usage_ledger 计费行；门开 ⇒ 额外写
 //	      `_request_logs_hot` 主行 + `_request_logs_bodies_hot` 正文
@@ -69,7 +69,7 @@ func withRequestLogsWriteSetting(t *testing.T, writeEnabled bool) {
 // 而门仍然决定**镜像**（文件灾备副本）是否投递」。
 //
 // 为什么门不能跟着删：S4 停写门（storage.request_logs_write_enabled）是运维
-// 的止血开关。它在 885 之后**仍然**有实际作用（镜像投递），而且**必须**继续
+// 的止血开关。它在 890 之后**仍然**有实际作用（镜像投递），而且**必须**继续
 // 有效——v1 表退役后，镜像这道灾备副本是本批正文的**唯一**副本。
 // ⇒ 删门 = 把「镜像不再受止血开关控制」这件事放过去。
 func TestTelemetryIngestRequestLogStopWriteGate(t *testing.T) {
@@ -172,14 +172,14 @@ func TestTelemetryIngestHasNoV1Writes(t *testing.T) {
 	rest = stripGoComments(rest)
 	if hits := retiredV1RelationsInSQL(rest); len(hits) > 0 {
 		t.Errorf("admin/telemetry.go 的 persistRequestLog 里仍出现已退役 v1 族关系名 %v —— "+
-			"v1 族已随 885 被 DROP，写它 = 42P01 = 整条 ingest 事务回滚（连同同事务的计费行）",
+			"v1 族已随 890 被 DROP，写它 = 42P01 = 整条 ingest 事务回滚（连同同事务的计费行）",
 			hits)
 	}
 	// 就地阳性对照：同一把尺子必须能认出 v1 形态。
 	if hits := retiredV1RelationsInSQL("INSERT INTO _request_logs_hot (request_id, ts)"); len(hits) == 0 {
 		t.Error("retiredV1RelationsInSQL 认不出 v1 形态 —— 这条负向断言已恒绿，判据坏了")
 	}
-	// 反向对照：canonical 视图不是 v1 族（885 之后它仍存在，只是内容换成会话族）。
+	// 反向对照：canonical 视图不是 v1 族（890 之后它仍存在，只是内容换成会话族）。
 	if hits := retiredV1RelationsInSQL("FROM request_logs_with_current_month rl"); len(hits) != 0 {
 		t.Errorf("retiredV1RelationsInSQL 把 canonical 视图判成了 v1 族：%v", hits)
 	}

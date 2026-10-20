@@ -19,7 +19,7 @@ import (
 // observation window. Non-zero TokenDiff / CostDiff means V1 and V2
 // disagree, which must be reconciled before flipping the primary read.
 //
-// ★ 2026-10-20（迁移 885，v1 族整体退役）：这个类型描述的比较**已不存在**。
+// ★ 2026-10-20（迁移 890，v1 族整体退役）：这个类型描述的比较**已不存在**。
 // Compare 现在返回错误（而不是零差异的 diff）——见该方法的注释。
 type DualReadDiff struct {
 	SessionID string
@@ -40,7 +40,7 @@ type DualReadDiff struct {
 //   - drifted matched rows per field (tokens / cost / success /
 //     credits_charged), each with up to SampleLimit request_ids.
 //
-// ★ 2026-10-20（迁移 885，v1 族整体退役）：这个对账**退役**。
+// ★ 2026-10-20（迁移 890，v1 族整体退役）：这个对账**退役**。
 // 上面三类差集都需要「另一侧」；v1 族被 DROP 之后没有另一侧。
 // ⇒ CompareDetail 现在**不做任何比较**，如实报告 V1Retired=true，
 // 且 ZeroDriftEvaluable=false（= 本次运行没有验证任何漂移）。
@@ -84,7 +84,7 @@ type DualReadDetail struct {
 	ZeroDriftEvaluable bool `json:"zero_drift_evaluable"`
 	V1WritesEnabled    bool `json:"v1_writes_enabled"`
 
-	// V1Retired 为真 = v1 族已整体退役（迁移 885），**本次运行没有做任何对账**。
+	// V1Retired 为真 = v1 族已整体退役（迁移 890），**本次运行没有做任何对账**。
 	//
 	// 它与「对账结果是零差异」必须可区分：退役态下 v1_rows / v2_rows /
 	// 各个差集与漂移计数都是**未测量**，不是「测到了 0」。
@@ -250,7 +250,7 @@ type MirrorDriftSummary struct {
 	// 窗口内 V1 行恒为 0，于是无行可缺、GenuineLoss 恒 0、Ready 恒 true，
 	// 且响应 JSON 与健康态逐字节相同。判定规则见 dual_read_gate.go。
 	//
-	// ★ 2026-10-20（迁移 885，v1 族整体退役）：对账退役 ⇒ S4Ready **恒为
+	// ★ 2026-10-20（迁移 890，v1 族整体退役）：对账退役 ⇒ S4Ready **恒为
 	// false**，且它恒为 false 的理由是「没有第二侧可比」，不是「测到了漂移」。
 	S4Ready bool `json:"s4_ready"`
 
@@ -276,7 +276,7 @@ type MirrorDriftSummary struct {
 	// 第二侧不存在，连「窗口里有没有 v1 流量」这个问题都不存在了。
 	V1CoveragePP float64 `json:"v1_coverage_pp"`
 
-	// V1Retired 为真 = v1 族已整体退役（迁移 885），**本次运行没有做任何对账**。
+	// V1Retired 为真 = v1 族已整体退役（迁移 890），**本次运行没有做任何对账**。
 	//
 	// ★ 它与「对账结果是零漂移」必须可区分：本结构里所有与 v1 有关的数字
 	// 在退役态下都是**未测量**（0 / -1），不是「测到了 0」。
@@ -288,14 +288,14 @@ type MirrorDriftSummary struct {
 // mirrorDriftClassSQL classifies a drifting V1 row into the three buckets.
 // Kept as one expression so the aggregate and the breakdown cannot disagree.
 //
-// ★ 2026-10-20（迁移 885，v1 族整体退役）：本文件**不再使用**它——
+// ★ 2026-10-20（迁移 890，v1 族整体退役）：本文件**不再使用**它——
 // 对账退役后没有「漂移的 v1 行」这个集合。保留这条转发是为了让既有门
 // （cmd/gateway/dual_read_class_parity_test.go 等按这个名字引用它）继续
 // 编译并**自行变红**，而不是让整个 cmd/gateway 的测试包编译失败。
 // SSOT 仍在 db.MirrorDriftClassSQL（admin 侧在用）。
 const mirrorDriftClassSQL = db.MirrorDriftClassSQL
 
-// s4GateReasonV1FamilyRetired 是退役态的 void 原因（2026-10-20，迁移 885）。
+// s4GateReasonV1FamilyRetired 是退役态的 void 原因（2026-10-20，迁移 890）。
 //
 // 它与 dual_read_gate.go 里那三条**不是同一类**：
 //
@@ -311,7 +311,7 @@ const mirrorDriftClassSQL = db.MirrorDriftClassSQL
 // 而那个 remedy 在退役之后**有害**（v1 族已 DROP）。
 const s4GateReasonV1FamilyRetired = "v1_family_retired"
 
-// ★ 2026-10-20（迁移 885，v1 族整体退役）：「漂移的 v1 行」这个集合
+// ★ 2026-10-20（迁移 890，v1 族整体退役）：「漂移的 v1 行」这个集合
 // **不再存在**，所以本文件原先那条对账范围 SQL（读 v1 族两个面、
 // 配两个 NOT EXISTS 反连接）已删除。
 //
@@ -323,7 +323,7 @@ const s4GateReasonV1FamilyRetired = "v1_family_retired"
 // Summarize computes the population-level drift summary over the last
 // windowHours (1..720, default 168 = 7 days). tenant "" = all tenants.
 //
-// ★ 2026-10-20（迁移 885，v1 族整体退役）：对账退役 ⇒ 这个端点**不再测量**，
+// ★ 2026-10-20（迁移 890，v1 族整体退役）：对账退役 ⇒ 这个端点**不再测量**，
 // 如实报告「没有对账可做」。原先的成本注记（每行 v1 两个 NOT EXISTS 索引
 // 探针）随之作废：现在**一条查询都不发**。
 func (v *DualReadValidator) Summarize(ctx context.Context, tenant string, windowHours int) (*MirrorDriftSummary, error) {
@@ -366,7 +366,7 @@ func clampWindowHours(h int) int {
 	return h
 }
 
-// ★ 2026-10-20（迁移 885，v1 族整体退役）：原先那条「按小时量 v1 覆盖率」的
+// ★ 2026-10-20（迁移 890，v1 族整体退役）：原先那条「按小时量 v1 覆盖率」的
 // SQL 已删除——它读 v1 族的两个面，那一族被 DROP 之后整条语句 42P01。
 // 而覆盖率这个量本身也失去了对象：没有第二侧，「窗口里 v1 覆盖了多少小时」
 // 这个问题不存在了（V1CoveragePP 恒为 -1 = 未测量）。
@@ -381,7 +381,7 @@ func clampWindowHours(h int) int {
 // same thing and compare them — see the note on dualReadQuerier and
 // TestS4GateStopsClaimingReadyAfterStopWrite.
 //
-// ★ 2026-10-20（迁移 885，v1 族整体退役）：**对账退役**，本函数**不发任何查询**。
+// ★ 2026-10-20（迁移 890，v1 族整体退役）：**对账退役**，本函数**不发任何查询**。
 //
 // 为什么不是「把 v1 侧换成会话侧、继续比」：那会比的是**同一族的两张表**
 // （session_turns_hot vs session_turns），它的差集是**晋级延迟**，不是镜像漂移——
@@ -484,7 +484,7 @@ func (v *DualReadValidator) handleDualRead(w http.ResponseWriter, r *http.Reques
 
 // Compare runs the V1 vs V2 diff for (tenant, session).
 //
-// ★ 2026-10-20（迁移 885，v1 族整体退役）：**这个比较退役**，本方法返回错误。
+// ★ 2026-10-20（迁移 890，v1 族整体退役）：**这个比较退役**，本方法返回错误。
 //
 // 为什么是错误而不是「零差异的 diff」：零差异在这个语义下是**假的**——
 // 它会被读成「两侧一致」，而事实是「只有一侧，而且它没被读过」。
@@ -519,7 +519,7 @@ func (v *DualReadValidator) CompareDetail(ctx context.Context, tenant, session s
 		sampleLimit = 50
 	}
 
-	// ★ 2026-10-20（迁移 885，v1 族整体退役）：**对账退役**，下面那段
+	// ★ 2026-10-20（迁移 890，v1 族整体退役）：**对账退役**，下面那段
 	// 「两侧 CTE + 三个查询」的比较**整体删除**，本方法**不发任何查询**。
 	//
 	// 删掉的理由（不是「v1 表空了」）：
@@ -540,7 +540,7 @@ func (v *DualReadValidator) CompareDetail(ctx context.Context, tenant, session s
 	return d, nil
 }
 
-// ★ 2026-10-20（迁移 885）：原先那三个 NULL↔0 / NULL↔false 归一化助手
+// ★ 2026-10-20（迁移 890）：原先那三个 NULL↔0 / NULL↔false 归一化助手
 // （normI / normF / normB）随漂移计数一起删除——它们唯一的用途是把
 // 「两侧字段是否相等」判出来，而那个判断已经不存在了。
 // 留着它们会让下一个读代码的人以为对账还在跑。

@@ -43,7 +43,7 @@ const (
 //	TEST_DATABASE_URL='postgres://llm_gateway:…@127.0.0.1:5432/llm_gateway?sslmode=disable' \
 //	  go test ./cmd/gateway/ -run TestS4GateMeasurement -count=1 -v
 //
-// ★ 2026-10-20（迁移 885，v1 族整体退役）：v1 族被整体 DROP 之后，**这道测量
+// ★ 2026-10-20（迁移 890，v1 族整体退役）：v1 族被整体 DROP 之后，**这道测量
 // 门要测的「第二侧」已经不存在**（对账退役，见 dual_read_validator.go）。
 // ⇒ 迁移后的库会**跳过**整道测量（探测在函数开头），迁移前的库照常跑。
 // 「退役后不许再假装测过」这个不变量由 dual_read_validator_test.go 与
@@ -82,7 +82,7 @@ func TestS4GateMeasurement(t *testing.T) {
 	}
 	defer conn.Close(ctx)
 
-	// ★ 2026-10-20（迁移 885，v1 族整体退役）：这道测量门测的是
+	// ★ 2026-10-20（迁移 890，v1 族整体退役）：这道测量门测的是
 	// **v1 ↔ 会话族的漂移**，而 v1 族已被整体 DROP ⇒ 这道门要测的
 	// 「第二侧」已经不存在。下面那些查询（`s4ScopeBody` 读
 	// `_request_logs_hot` ∪ `_request_logs`）在退役库上会 **42P01**，
@@ -97,7 +97,7 @@ func TestS4GateMeasurement(t *testing.T) {
 		t.Fatalf("probe v1 family: %v", err)
 	}
 	if !v1FamilyPresent {
-		t.Skip("v1 族已被迁移 885 整体 DROP —— 这道门测的是 v1↔会话族的漂移，第二侧已不存在" +
+		t.Skip("v1 族已被迁移 890 整体 DROP —— 这道门测的是 v1↔会话族的漂移，第二侧已不存在" +
 			"（对账已退役，见 dual_read_validator.go）。「对账退役」这个不变量由 " +
 			"cmd/gateway/dual_read_validator_test.go（零查询 + 未测量标记）与 " +
 			"dual_read_both_faces_test.go（生产源码里不再出现 v1 族关系名）承担。")
@@ -885,8 +885,8 @@ func TestBlockerSkippedByFirstGate_PositiveAndNegative(t *testing.T) {
 // a warning rather than abstracted away. mirrorDriftClassSQL (the classification)
 // is referenced from production, not copied.
 //
-// ★ 2026-10-20（迁移 885，v1 族整体退役）：它抄的那份生产 SQL（mirrorDriftScopeSQL）
-// 已经不存在了，本拷贝因此**只剩一份历史记录**——它只在 885 之前的库上还有意义
+// ★ 2026-10-20（迁移 890，v1 族整体退役）：它抄的那份生产 SQL（mirrorDriftScopeSQL）
+// 已经不存在了，本拷贝因此**只剩一份历史记录**——它只在 890 之前的库上还有意义
 // （TestS4GateMeasurement 里的退役探测会让迁移后的库跳过整道测量）。
 // 保留它而不是删掉：它是那段实测记录的可执行副本，删了这段历史就只剩注释。
 const s4ScopeBody = `
@@ -908,7 +908,7 @@ const s4ScopeBody = `
 // harmless and a renaming is fatal. A whole-text equality check would fail on a
 // harmless whitespace change and train people to ignore this test.
 //
-// ★ 2026-10-20（迁移 885，v1 族整体退役）：这道门原来有**两半**：
+// ★ 2026-10-20（迁移 890，v1 族整体退役）：这道门原来有**两半**：
 //
 //	(a) 拷贝（本文件的 s4ScopeBody）与**生产常量** mirrorDriftScopeSQL 对齐；
 //	(b) 拷贝的列清单与 db.MirrorDriftClassSQL 引用的 rl.<col> 对齐。
@@ -923,9 +923,9 @@ const s4ScopeBody = `
 //   - 对账这条路上不再出现 v1 族的关系名
 //     （dual_read_both_faces_test.go 的 TestDriftReconciliationMentionsNoRetiredV1Relation）。
 //
-// (b) 那一半**仍然有效**：拷贝还在（885 之前的库上这道测量仍可跑，
+// (b) 那一半**仍然有效**：拷贝还在（890 之前的库上这道测量仍可跑，
 // 见 TestS4GateMeasurement 里的退役探测），而它读出的列必须仍与分类表达式
-// 引用的列一致——否则即便在 885 之前的库上，拷贝与分类也会各走各的。
+// 引用的列一致——否则即便在 890 之前的库上，拷贝与分类也会各走各的。
 // 所以它保留。
 func TestS4GateSourceMatchesValidator(t *testing.T) {
 	for _, col := range []string{

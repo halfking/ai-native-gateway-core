@@ -1122,7 +1122,7 @@ func normalizeJSONForAPI(raw json.RawMessage) json.RawMessage {
 //   - 阶段 1：会话族正文源（session_bodies hot ∪ 父表，request_id 单键索引
 //     命中，ms 级）。
 //
-// 2026-10-20（迁移 885）：v1 族整体退役 ⇒ 原来的三条腿（v1 hot 正文表 /
+// 2026-10-20（迁移 890）：v1 族整体退役 ⇒ 原来的三条腿（v1 hot 正文表 /
 // 会话族 / v1 columnar 冷扫）收敛成一条会话族腿。冷扫那条本来就是**证明
 // 缺席**（columnar 分区无 btree，154 实测单 id miss 59s > 20s ctx），
 // 超时又挂在 ErrNoRows 分支下够不着 ⇒ unified 全量 500。v1 退役后这个
@@ -1135,7 +1135,7 @@ func normalizeJSONForAPI(raw json.RawMessage) json.RawMessage {
 // 两边都没行 → (nil, nil, sql.ErrNoRows)；
 // transport 错误 → (nil, nil, err)。caller 把 body 置 nil 但 metadata 仍 200。
 func (h *Handler) fetchRequestOutboundBody(ctx context.Context, requestID string) (json.RawMessage, error) {
-	// 2026-10-20（迁移 885）：v1 族整体退役 ⇒ 出站正文只剩一条腿：会话族
+	// 2026-10-20（迁移 890）：v1 族整体退役 ⇒ 出站正文只剩一条腿：会话族
 	// （session_bodies hot ∪ 父表，fetchSessionOutboundBody）。
 	//
 	// 被删掉的两条腿是「v1 hot 正文表」与「v1 bodies 视图冷扫」。冷扫那条
@@ -1196,7 +1196,7 @@ func (h *Handler) fetchRequestBodies(ctx context.Context, requestID string) (req
 		return entry.body, entry.resp, nil
 	}
 
-	// 阶段 1（2026-10-20 迁移 885）：会话族正文源（session_bodies hot ∪ 父表）。
+	// 阶段 1（2026-10-20 迁移 890）：会话族正文源（session_bodies hot ∪ 父表）。
 	//
 	// 原来的三条腿是「v1 hot 正文表 → 会话族 → v1 columnar 冷扫」；v1 族整体
 	// 退役后只剩中间这条。冷扫那条本来就是**证明缺席**（columnar 分区无 btree，

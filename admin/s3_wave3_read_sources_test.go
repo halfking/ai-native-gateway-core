@@ -14,10 +14,10 @@ import (
 	"github.com/kaixuan/llm-gateway-go/db"
 )
 
-// TestTenantStatsLogsTable_ServesSessionFamily pins the post-885 shape:
+// TestTenantStatsLogsTable_ServesSessionFamily pins the post-890 shape:
 // session-only two-arm union, freeze-guarded on both legs, and **no v1 arm**.
 //
-// ★ 2026-10-20（迁移 885，v1 族真删）：原来的四臂（会话 hot/父表 + v1
+// ★ 2026-10-20（迁移 890，v1 族真删）：原来的四臂（会话 hot/父表 + v1
 // hot/父表）与**双子反连接**（`NOT EXISTS (SELECT 1 FROM _request_logs_hot h
 // …)` / `… _request_logs p …`，各出现在两条会话腿上）一起消失 ——
 // 反连接的对象已随 v1 族退役 ⇒ 留着就是 42P01。
@@ -36,9 +36,9 @@ func TestTenantStatsLogsTable_ServesSessionFamily(t *testing.T) {
 	}
 	// ★ 反转后的负向判据：v1 族关系名必须**不在场**（按标识符边界判定 ——
 	// `request_logs_with_current_month` 是 canonical 视图，**不是** v1 族，
-	// 它在 885 之后仍然存在，只是内容换成会话族两臂体）。
+	// 它在 890 之后仍然存在，只是内容换成会话族两臂体）。
 	if hits := retiredV1RelationsInSQL(sql); len(hits) > 0 {
-		t.Fatalf("logsTable 不得再出现已退役 v1 族关系名 %v —— v1 族已随 885 被 DROP，读它 = 42P01；\n%s", hits, sql)
+		t.Fatalf("logsTable 不得再出现已退役 v1 族关系名 %v —— v1 族已随 890 被 DROP，读它 = 42P01；\n%s", hits, sql)
 	}
 	// 就地阳性对照：同一把尺子必须能认出 v1 形态，否则上面那条负向断言恒绿。
 	if hits := retiredV1RelationsInSQL("NOT EXISTS (SELECT 1 FROM _request_logs_hot h WHERE h.request_id = t.request_id)"); len(hits) == 0 {
@@ -49,7 +49,7 @@ func TestTenantStatsLogsTable_ServesSessionFamily(t *testing.T) {
 // TestTenantStatsLogsTable_ProjectionAndSourceUntouched pins the source
 // family and the projection of the logsTable on both branches.
 //
-// ★ 2026-10-20（迁移 885）：本门**改名**（原 `…_V1LegsUntouched`）——
+// ★ 2026-10-20（迁移 890）：本门**改名**（原 `…_V1LegsUntouched`）——
 // 被守的「v1 腿」已经不存在了，留一个叫「V1LegsUntouched」的门会让人
 // 以为还在守什么。改名后的不变式是同一条意思的延续：
 //
@@ -67,7 +67,7 @@ func TestTenantStatsLogsTable_ProjectionAndSourceUntouched(t *testing.T) {
 		}
 		// ★ 反转：v1 族关系名必须不在场（按标识符边界）。
 		if hits := retiredV1RelationsInSQL(sql); len(hits) > 0 {
-			t.Fatalf("logsTable 不得再出现已退役 v1 族关系名 %v（writeEnabled=%v）—— v1 族已随 885 被 DROP：\n%s",
+			t.Fatalf("logsTable 不得再出现已退役 v1 族关系名 %v（writeEnabled=%v）—— v1 族已随 890 被 DROP：\n%s",
 				hits, writeEnabled, sql)
 		}
 		// 会话族两腿必须在场（删一条腿 = 漏读一侧表 = 静默少算）。
@@ -86,13 +86,13 @@ func TestTenantStatsLogsTable_ProjectionAndSourceUntouched(t *testing.T) {
 	}
 }
 
-// TestTenantStatsLogsTable_BothBranchesAreIdentical pins the post-885
+// TestTenantStatsLogsTable_BothBranchesAreIdentical pins the post-890
 // operating point: the two branches of the logsTable builder are **the same
 // statement**.
 //
-// ★ 2026-10-20（迁移 885）：本门**改名**（原
+// ★ 2026-10-20（迁移 890）：本门**改名**（原
 // `…_StopWriteDropsTwinAntiJoin`）。原判据是「停写支必须去掉双子反连接、
-// 而双写支必须保留」—— 反连接的对象（v1 族）已随 885 退役 ⇒ 两支都
+// 而双写支必须保留」—— 反连接的对象（v1 族）已随 890 退役 ⇒ 两支都
 // 不再带反连接 ⇒ 那条判据的两半（保留 / 去掉）同时失效。
 //
 // ⇒ 换成等价且更强的不变式：**`writeEnabled` 不再是语义参数**。
@@ -107,12 +107,12 @@ func TestTenantStatsLogsTable_BothBranchesAreIdentical(t *testing.T) {
 	// ★ 反转后的核心判据：两支必须逐字相同。
 	dual := tenantStatsLogsTableSQL(true)
 	if dual != sql {
-		t.Fatalf("writeEnabled 已是历史参数（v1 反连接对象随 885 退役）⇒ 两支必须产出同一条语句；\n"+
+		t.Fatalf("writeEnabled 已是历史参数（v1 反连接对象随 890 退役）⇒ 两支必须产出同一条语句；\n"+
 			"writeEnabled=true:\n%s\nwriteEnabled=false:\n%s", dual, sql)
 	}
 	// 两支都不得再指向 v1 族。
 	if hits := retiredV1RelationsInSQL(sql); len(hits) > 0 {
-		t.Fatalf("logsTable 不得再出现已退役 v1 族关系名 %v —— v1 族已随 885 被 DROP，读它 = 42P01：\n%s", hits, sql)
+		t.Fatalf("logsTable 不得再出现已退役 v1 族关系名 %v —— v1 族已随 890 被 DROP，读它 = 42P01：\n%s", hits, sql)
 	}
 	// 就地阳性对照：同一把尺子必须能认出 v1 形态。
 	if hits := retiredV1RelationsInSQL("NOT EXISTS (SELECT 1 FROM _request_logs p WHERE p.request_id = t.request_id)"); len(hits) == 0 {

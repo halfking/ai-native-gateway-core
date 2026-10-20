@@ -29,7 +29,7 @@
 // 缺列（假红），而更糟的是：若有人为了「让门变绿」而把谓词改窄，门就再也拦不住
 // 真正的 42703 了。⇒ 会话族取**迁移**（526 建表 + 707 加列），不取 objects 文件。
 //
-// ★ 2026-10-20（迁移 885，v1 族退役）：**v1 族整族被 DROP** ⇒
+// ★ 2026-10-20（迁移 890，v1 族退役）：**v1 族整族被 DROP** ⇒
 // `sql/objects/tables/request_logs_hot.sql` 随 canonical 对象库一起被删除。
 // ⇒ 本门对 v1 族的那一半**重铸**（见下方「退役族的闭包门」）：
 // 「v1 谓词的列在 v1 表上」这条断言已经**无对象可查**（那张表不存在了），
@@ -143,7 +143,7 @@ func sessionFamilyColumns(t *testing.T) map[string]bool {
 	return cols
 }
 
-// v1FamilyColumns（解析 v1 族 hot 表列集合）已随迁移 885 **退役**：
+// v1FamilyColumns（解析 v1 族 hot 表列集合）已随迁移 890 **退役**：
 // v1 族连表带分区一起被 DROP，canonical 对象库里的
 // `sql/objects/tables/request_logs_hot.sql` 也随之被删除 ⇒ 「v1 谓词引用的列
 // 是否都在 v1 表上」已经没有可查的对象（那张表不会再被查询）。
@@ -169,11 +169,11 @@ func TestRetiredV1FamilyIsUnreachable(t *testing.T) {
 	for _, logsWriteEnabled := range []bool{true, false} {
 		src := settleSourceFor(logsWriteEnabled)
 		if src.Family == settleFamilyV1 {
-			t.Errorf("写门=%v 时读源族仍是 %q：v1 族已随迁移 885 被 DROP，"+
+			t.Errorf("写门=%v 时读源族仍是 %q：v1 族已随迁移 890 被 DROP，"+
 				"选中它 ⇒ 整条结算 SQL 42P01。规格：%+v", logsWriteEnabled, src.Family, src)
 		}
 		if src.TurnsTable == "_request_logs_hot" {
-			t.Errorf("写门=%v 时读源表仍是 %q（已随迁移 885 被 DROP）", logsWriteEnabled, src.TurnsTable)
+			t.Errorf("写门=%v 时读源表仍是 %q（已随迁移 890 被 DROP）", logsWriteEnabled, src.TurnsTable)
 		}
 	}
 	// 正向对照：活路径确实落在会话族上（否则上面两条可能只是「都没选」）。
@@ -212,7 +212,7 @@ func TestProbeTrafficExclusionPredicateColumnsExistOnTheirFamily(t *testing.T) {
 
 	sessionCols := sessionFamilyColumns(t)
 
-	// ★ 2026-10-20（迁移 885，v1 族退役）：**v1 那一格被移除**。
+	// ★ 2026-10-20（迁移 890，v1 族退役）：**v1 那一格被移除**。
 	// v1 族连表带分区一起被 DROP ⇒ 「v1 谓词引用的列是否都在 v1 表上」已经
 	// 没有可查的对象（那张表不会再被查询，canonical 对象库里的
 	// request_logs_hot.sql 也随之删除）。

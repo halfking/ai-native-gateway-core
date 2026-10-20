@@ -117,12 +117,12 @@ func (h *AutoRouteHandlers) handleAutoRouteCorrelations(w http.ResponseWriter, r
 	}
 
 	// ── By model ─────────────────────────────────────────────
-	// ★ 2026-10-20（885 真删轮）：读面从 `request_logs_with_current_month_without_request_class_due_at`
+	// ★ 2026-10-20（890 真删轮）：读面从 `request_logs_with_current_month_without_request_class_due_at`
 	// 换成**会话族原生源** db.SessionFamilyTurnsSourceSQL()（hot ∪ parent + details 特征层）。
 	//
 	// 为什么必须换：那两张包装视图**直读 v1 族**（真库实测：定义体第一行就是
 	// `FROM _request_logs_hot`），而 v1 族自 2026-10-13 停写后**恒 0 行**
-	// ⇒ 本端点此前**恒返回空**（不报错）；885 删掉 v1 族后它们会变成 **42P01**。
+	// ⇒ 本端点此前**恒返回空**（不报错）；890 删掉 v1 族后它们会变成 **42P01**。
 	//
 	// 为什么换过去不会丢列（旧注释担心的「turns 段把 model_chosen/strategy_used
 	// 投影为 NULL」）：会话族原生源**自带 details 特征层的 LEFT JOIN**

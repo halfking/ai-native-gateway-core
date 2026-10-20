@@ -658,16 +658,16 @@ func TestRequestLogsRetirementExposure(t *testing.T) {
 // per-file column lists in TestRequestLogsRetirementExposure's report *do* show
 // the difference — read the report, not just the gate verdict.
 var retirementBreakers = map[string]string{
-	// ★ 2026-10-20（迁移 885，v1 族真删）：本表**已清空**。
+	// ★ 2026-10-20（迁移 890，v1 族真删）：本表**已清空**。
 	//
 	// 原先这里登记「直读 v1 底表、且读了会话族供不上的列」的读方 ——
-	// 而 885 之后 **v1 族已被物理删除**，于是：
+	// 而 890 之后 **v1 族已被物理删除**，于是：
 	//
 	//	· 读 v1 底表的代码运行时会 42P01（关系不存在），
 	//	  它们不再是「退役清单上的迁移项」，而是**生产缺陷**（登记在
 	//	  retiredV1ReferenceExceptions）；
 	//	· 「会话族供不上的列」这个判据也随之失效 ——
-	//	  canonical 视图 885 之后本身就是会话族两臂体。
+	//	  canonical 视图 890 之后本身就是会话族两臂体。
 	//
 	// ⇒ 「哪些文件会因删 v1 而坏掉」这个问题已经没有对象。
 	// ⇒ 本表保留（不删）：它守的是「**不许出现新的直读 v1 底表的读方**」。
@@ -678,12 +678,12 @@ var retirementBreakers = map[string]string{
 
 // retirementReattributed 记录「被重新归因、判定为可接受」的读方。
 //
-// ★ 2026-10-20（迁移 885，v1 族真删）：本表**已清空** —— 与 retirementBreakers
+// ★ 2026-10-20（迁移 890，v1 族真删）：本表**已清空** —— 与 retirementBreakers
 // 同理：v1 族被物理删除之后，「读方会怎样」这个问题没有对象了。
 //
 // 保留它的理由同上：它守的是「不许出现新的直读 v1 底表的读方」。
 var retirementReattributed = map[string]string{
-	// 885 之后：v1 读方总体为零 ⇒ 无归因登记。
+	// 890 之后：v1 读方总体为零 ⇒ 无归因登记。
 }
 
 // TestRequestLogsRetirementBreakersRegistryIsConsistent gates the registry in
@@ -748,16 +748,16 @@ func TestRetirementExposurePopulationIsEveryKnownReader(t *testing.T) {
 	if len(extra) > 0 {
 		t.Errorf("exposure 总体里有字面量表之外的文件：%v", extra)
 	}
-	// ★ 885 之后（2026-10-20）：**总体为空是正确状态**，不是「量具坏了」。
+	// ★ 890 之后（2026-10-20）：**总体为空是正确状态**，不是「量具坏了」。
 	//
 	// 原来这里是一条地板（总体为 0 ⇒ Fatal），因为那时总体为空只可能意味着
-	// 「扫描器坏了」。885 之后 v1 族被物理删除 ⇒ 读方总体真的归零。
+	// 「扫描器坏了」。890 之后 v1 族被物理删除 ⇒ 读方总体真的归零。
 	//
 	// ⇒ 地板翻成：**总体为空必须是因为扫描器扫过而没命中**，不是**扫描器没跑**。
 	//
 	// ⚠⚠ 2026-10-20 二次订正：**证据源换了**。
 	// 第一版的「扫描器活着」证据是「那 4 处已具名的残留引用」（admin 生产代码里
-	// 读 885 已 DROP 的两张包装视图）—— 它们随后**被修掉了**（改指会话族原生源
+	// 读 890 已 DROP 的两张包装视图）—— 它们随后**被修掉了**（改指会话族原生源
 	// db.SessionFamilyTurnsSourceSQL()，顺带把 4 个恒空端点救回有数据）。
 	// ⇒ 真命中归零 ⇒ 若还拿「必须有真命中」当地板，就等于**逼着生产代码保留缺陷**
 	// 才能让门绿 ⇒ 那是把判据绑在缺陷上。
@@ -894,17 +894,17 @@ func TestRequestLogsRetirementBreakersRegistryIsConsistent(t *testing.T) {
 	root := repoRootFromCaller(t)
 	measured, viewArm := measureV1ReadingExposure(t, root)
 
-	// ★ 885 之后（2026-10-20）：两张登记表都必须为空。
+	// ★ 890 之后（2026-10-20）：两张登记表都必须为空。
 	//
 	// v1 族被物理删除 ⇒ 没有任何读方会因为「删掉 v1」而坏掉。
 	// ⇒ 本门从「登记表必须覆盖全部 breaking 读方」翻成
 	//「**登记表必须为空，且实测 breaking 读方必须为空**」。
 	if len(retirementBreakers) > 0 {
-		t.Errorf("retirementBreakers 仍有 %d 条登记 —— 885 之后 v1 族已被物理删除，"+
+		t.Errorf("retirementBreakers 仍有 %d 条登记 —— 890 之后 v1 族已被物理删除，"+
 			"「删 v1 会坏掉哪些文件」这个问题没有对象了。", len(retirementBreakers))
 	}
 	if len(retirementReattributed) > 0 {
-		t.Errorf("retirementReattributed 仍有 %d 条登记 —— 885 之后没有 v1 读方可归因。",
+		t.Errorf("retirementReattributed 仍有 %d 条登记 —— 890 之后没有 v1 读方可归因。",
 			len(retirementReattributed))
 	}
 	if len(measured) > 0 {
@@ -980,12 +980,12 @@ func TestRequestLogsRetirementBreakersRegistryIsConsistent(t *testing.T) {
 // failure mode than a missing table, which at least announces itself.
 func TestRequestLogsRetirementRepointVerdict(t *testing.T) {
 	root := repoRootFromCaller(t)
-	// ★ 885 之后（2026-10-20）：两张登记表为空 ⇒ 「repoint 会怎样」没有对象。
+	// ★ 890 之后（2026-10-20）：两张登记表为空 ⇒ 「repoint 会怎样」没有对象。
 	// 本门剩下的判据（verdict 函数自身的 7 条用例、matcher 覆盖面）仍然有效 ——
 	// 它们是**函数级**判据，与登记表是否为空无关。
 	if len(retirementBreakers) > 0 || len(retirementReattributed) > 0 {
 		t.Errorf("repoint verdict 的评估集非空（breakers=%d reattributed=%d）—— "+
-			"885 之后没有 v1 读方，这两张表必须为空。",
+			"890 之后没有 v1 读方，这两张表必须为空。",
 			len(retirementBreakers), len(retirementReattributed))
 	}
 	// Both registries, not just the blockers: the point of this report is the

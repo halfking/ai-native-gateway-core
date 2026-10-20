@@ -303,7 +303,7 @@ func (r *LedgerReconciler) checkBalanceChain(ctx context.Context, window time.Du
 	return count
 }
 
-// ★ 2026-10-20（迁移 885 + 并行审计轮 D0）：旧的「可比性门」已退役。
+// ★ 2026-10-20（迁移 890 + 并行审计轮 D0）：旧的「可比性门」已退役。
 //
 // 退役的是：常量 `usageCreditSkipS4StopWrite`（"s4_stop_write"）与纯函数
 // `usageCreditComparability(logsWriteEnabled)`。
@@ -314,7 +314,7 @@ func (r *LedgerReconciler) checkBalanceChain(ctx context.Context, window time.Du
 // ⇒ 旧门在停写时跳过本比对，形状是对的。
 //
 // 退役理由（两个前提同时消失，而门仍然闭合）：
-//   ① 885 把 v1 族整体 DROP、usage 侧随之迁到**会话族**（写入路径无条件）
+//   ① 890 把 v1 族整体 DROP、usage 侧随之迁到**会话族**（写入路径无条件）
 //      ⇒ 「门一关两侧就不同期」不再成立；
 //   ② 该键的**代码默认**被并行审计轮改成 false ⇒ 这条**财务**比对在任何
 //      未显式配置它的环境上**永久停摆**（findings 计数恒 0 ⇒ 运维会读到
@@ -340,7 +340,7 @@ func usageCreditSQL() string {
 	return `
 		WITH usage AS (
 		    SELECT tenant_id, request_id, SUM(credits_charged) AS charged
-		    -- ★ 885（v1 族退役）：源换成会话族热腿（v1 热表已 DROP）。
+		    -- ★ 890（v1 族退役）：源换成会话族热腿（v1 热表已 DROP）。
 		    -- credits_charged / tenant_id / request_id / ts 在会话族投影里同名同义。
 		    FROM ` + db.SessionFamilyTurnsHotSourceSQL() + `
 		    WHERE ts > now() - $1::interval
@@ -359,13 +359,13 @@ func usageCreditSQL() string {
 		SELECT COALESCE(u.tenant_id, c.tenant_id),
 		       COALESCE(u.request_id, c.ref_id),
 		       COALESCE(u.charged, 0), COALESCE(c.debited, 0),
-		       -- ★ 885 + D0：usage 臂的**总体规模**。
+		       -- ★ 890 + D0：usage 臂的**总体规模**。
 		       --   它回答的是「这次比对有没有可比性」：usage 臂为 0 行而
 		       --   credit 臂有行 ⇒ 两侧不同期（源要么没写、要么没带
 		       --   credits_charged、要么镜像滞后）⇒ 比对结果会把
 		       --   credit 侧每一行都记成「计了费但没有用量」——**假发现**。
 		       --   旧实现用「S4 停写键」当这个开关（证据源在门内 ⇒ 门一关
-		       --   就冻结），885 之后证据源迁到会话族、且该键的代码默认被
+		       --   就冻结），890 之后证据源迁到会话族、且该键的代码默认被
 		       --   并行审计轮改成 false ⇒ 那个开关既过时又恒闭 ⇒ 这条
 		       --   **财务**比对在任何未显式配置它的环境上永久停摆。
 		       --   ⇒ 改用**数据驱动**的可判定性：臂空 ⇒ 不可判定 ⇒ 跳过
@@ -391,11 +391,11 @@ func usageCreditSQL() string {
 // usageArmEmptySkipReason 是 machine-readable 原因键：当 usage 臂在窗口内
 // **一行都没有**、而 credit 臂有行时，本次比对**不可判定**。
 //
-// ★ 2026-10-20（迁移 885 + 并行审计轮 D0）：它取代了旧的
+// ★ 2026-10-20（迁移 890 + 并行审计轮 D0）：它取代了旧的
 // `usageCreditSkipS4StopWrite`（"s4_stop_write"）。
 //
 // 旧键的前提是「usage 侧（v1 族）在 S4 停写门内 ⇒ 门一关，两侧不再同期」。
-// 885 把 v1 族整体 DROP、usage 侧随之迁到**会话族**（写入路径无条件）⇒
+// 890 把 v1 族整体 DROP、usage 侧随之迁到**会话族**（写入路径无条件）⇒
 // ① 「门一关就不同期」不再成立；② 而该键的**代码默认**被改成 false
 // ⇒ 这条**财务**比对在任何未显式配置它的环境上**永久停摆**
 // （停摆期间 findings 计数为 0，运维会读到「账务无差异」）。
@@ -421,7 +421,7 @@ const usageArmEmptySkipReason = "usage_arm_empty"
 //	  都记成「计了费但没有用量」的**假发现**，且数量无上界。
 //	③ 其余 ⇒ 可判定。
 //
-// ★ 2026-10-20（885 + D0）：本函数取代旧的
+// ★ 2026-10-20（890 + D0）：本函数取代旧的
 // `usageCreditComparability(logsWriteEnabled)`——旧版的输入是一个**开关**，
 // 而开关只能回答「源是否被关掉」；本版回答的是「**这一次**的两侧是否同期」，
 // 后者才是这个问题真正要问的。旧的开关式判据会让这条财务比对在未显式
@@ -440,7 +440,7 @@ func usageCreditComparable(usageArmRows, diffRows int) (comparable bool, reason 
 // checkUsageCredit compares per-request credit charges (session family)
 // against ledger consume deductions (credit_ledger_hot).
 //
-// ★ 2026-10-20（885 + D0）：本函数原先的**前提闸**（读 S4 停写键）已退役，
+// ★ 2026-10-20（890 + D0）：本函数原先的**前提闸**（读 S4 停写键）已退役，
 // 换成**数据驱动**的可判定性检查：
 //
 //	usage 臂（会话族带 credits_charged 的请求）为空，而 credit 臂有行

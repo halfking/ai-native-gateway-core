@@ -16,7 +16,7 @@ import (
 // the main write target must never reference the three body columns
 // (request_body / response_body / outbound_body) in its INSERT or UPDATE
 // statements. Bodies live exclusively in the side table (formerly
-// _request_logs_bodies_hot via upsertRequestLogBodies; since migration 885 the
+// _request_logs_bodies_hot via upsertRequestLogBodies; since migration 890 the
 // session family session_bodies / session_bodies_hot).
 //
 // 2026-08-26 incident (SQLSTATE 42703, 154/245): a client.go build lagged
@@ -28,8 +28,8 @@ import (
 // SQL, whether by code regression or by a migration that re-adds the columns
 // and tempts a future "quick fix".
 //
-// ★ 2026-10-20（迁移 885，v1 族退役）：本门**改指**到新写入目标
-// （usage_ledger_hot）——v1 宽表随 885 删除，旧锚点已不存在。
+// ★ 2026-10-20（迁移 890，v1 族退役）：本门**改指**到新写入目标
+// （usage_ledger_hot）——v1 宽表随 890 删除，旧锚点已不存在。
 // 契约本身不变：主表不碰正文列。
 //
 // It reads client.go source only — no network, no database.
@@ -105,7 +105,7 @@ func TestRequestLogMainTableExcludesBodyColumns(t *testing.T) {
 // 字符 ⇒ `\b` 会让前缀匹配失效（实测：\b 版本抓不到 "UPDATE _request_logs_hot"）。
 var v1FamilyWritePattern = regexp.MustCompile(`(?i)\b(?:INTO|FROM|UPDATE|TABLE|JOIN)\s+_request_logs`)
 
-// TestNoV1RequestLogFamilyWriteRemains —— 迁移 885 落库后的**源码级**退役门：
+// TestNoV1RequestLogFamilyWriteRemains —— 迁移 890 落库后的**源码级**退役门：
 // 本包**任何**生产源文件都不得再有指向 v1 族表（_request_logs /
 // _request_logs_hot / _request_logs_bodies* / _request_logs_archive）的
 // SQL 语句。
@@ -147,7 +147,7 @@ func TestNoV1RequestLogFamilyWriteRemains(t *testing.T) {
 				return true
 			}
 			if v1FamilyWritePattern.MatchString(lit.Value) {
-				t.Errorf("%s:%d: 生产代码里仍有指向 v1 族表的 SQL 语句 —— v1 族随迁移 885 删除，"+
+				t.Errorf("%s:%d: 生产代码里仍有指向 v1 族表的 SQL 语句 —— v1 族随迁移 890 删除，"+
 					"写它必然 42P01（正文与宽表落点已迁到会话族 / usage_ledger_hot）",
 					name, fset.Position(lit.Pos()).Line)
 			}

@@ -19,7 +19,7 @@ import (
 // contract — the shape whose loss broke every /api/logs request in the
 // 2026-09-07 42P01 incident.
 //
-// ★ 2026-10-20（迁移 885，v1 族最终删除）：本门的契约表**整体反转**。
+// ★ 2026-10-20（迁移 890，v1 族最终删除）：本门的契约表**整体反转**。
 //
 // 原契约表钉的是 v1 时代的形状：v1 宽表的两条包装链
 // （`…_without_customer_id` / `…_without_request_class_due_at`）、
@@ -29,7 +29,7 @@ import (
 //
 // v1 族被 DROP 之后，那些形状**一个字都不该再出现**：canonical 视图只剩
 // 两臂（`session_turns_hot ∪ session_turns` + 734 details LEFT JOIN），
-// 包装链没有对象（那两张视图被 885 一起删了），条件 lateral 也没有对象
+// 包装链没有对象（那两张视图被 890 一起删了），条件 lateral 也没有对象
 // （它们是为「基线链是冻结的」这件事准备的）。
 //
 // ⇒ 反转后的契约表有两类条目，缺一不可：
@@ -58,7 +58,7 @@ func TestApplyMigrationsIncludesRequestLogsViewEnsure(t *testing.T) {
 	for _, want := range []string{
 		// The three probe quantities the idempotent fast path is built on.
 		// bodyHasV1Arm is the **negative** one: it is what lets the composer
-		// notice that a pre-885 view (with a v1 arm) is still installed and
+		// notice that a pre-890 view (with a v1 arm) is still installed and
 		// replace it. Without it, a v1-arm view would survive the boot and
 		// every read of it would 42P01 on the dropped family.
 		"canonicalExists",
@@ -126,7 +126,7 @@ func TestApplyMigrationsIncludesRequestLogsViewEnsure(t *testing.T) {
 		"_request_logs_hot",
 		"request_logs_hot",
 		"_request_logs_bodies",
-		// 885 一起删掉的那两张包装链视图：composer 不该再重建它们。
+		// 890 一起删掉的那两张包装链视图：composer 不该再重建它们。
 		"request_logs_with_current_month_without_customer_id",
 		"request_logs_with_current_month_without_request_class_due_at",
 		// 为冻结链准备的 696/700 条件 lateral（其对象已不存在）。
@@ -139,7 +139,7 @@ func TestApplyMigrationsIncludesRequestLogsViewEnsure(t *testing.T) {
 		"LEFT JOIN LATERAL",
 	} {
 		if containsIdentifierIn(lits, unwanted) {
-			t.Errorf("request_logs_view_schema.go 的 SQL 字面量里仍出现 %q —— v1 族已被迁移 885 整体 DROP，"+
+			t.Errorf("request_logs_view_schema.go 的 SQL 字面量里仍出现 %q —— v1 族已被迁移 890 整体 DROP，"+
 				"composer 里任何提到它（或为冻结链准备的包装/条件 lateral）的语句都会 42P01，"+
 				"而 CREATE OR REPLACE VIEW 是**即时**校验的 ⇒ 整个 boot 失败。",
 				unwanted)

@@ -94,7 +94,7 @@ func TestCompressedCountReadsParentNotCanonicalView(t *testing.T) {
 		t.Error("压缩计数仍在读 request_logs_with_current_month：该视图在 30 天窗口 >300s 跑不完，" +
 			"子预算必然超时，端点会报一个恒为 0 的假值")
 	}
-	// ★ 2026-10-20（迁移 885，v1 族真删）：压缩计数的取数源从 v1 母表
+	// ★ 2026-10-20（迁移 890，v1 族真删）：压缩计数的取数源从 v1 母表
 	// `_request_logs` 换成**会话族母表** `session_turns`（hot 不查 ——
 	// promote 会把 hot 搬进母表，两腿同时存在时朴素 UNION ALL 会把同一行
 	// 数两次，见 TestCompressedCountStaysSingleLeg）。
@@ -104,7 +104,7 @@ func TestCompressedCountReadsParentNotCanonicalView(t *testing.T) {
 		t.Errorf("压缩计数没有读 session_turns 母表，实际 SQL：%s", strings.TrimSpace(sql))
 	}
 	if hits := retiredV1RelationsInSQL(sql); len(hits) > 0 {
-		t.Errorf("压缩计数仍引用已退役 v1 族关系名 %v —— v1 族已随 885 被 DROP，读它 = 42P01：%s",
+		t.Errorf("压缩计数仍引用已退役 v1 族关系名 %v —— v1 族已随 890 被 DROP，读它 = 42P01：%s",
 			hits, strings.TrimSpace(sql))
 	}
 	// 就地阳性对照：同一把尺子必须能认出 v1 形态（否则上面那条恒绿）。

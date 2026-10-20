@@ -48,14 +48,14 @@ import (
 // 运行期由同一个变量控制，所以两者合起来构成完整论证。无法证明的（探针的运行期
 // 取值）由 bg 侧的告警覆盖，不在这里假装。
 //
-// ★ 2026-10-20（迁移 885，v1 族退役）：本门**改指**。
+// ★ 2026-10-20（迁移 890，v1 族退役）：本门**改指**。
 //
 // 退役/改指的对象：
 //
 //	① `logsWrite := requestLogsWriteEnabled()` 这条快照（跳 1）——v1 宽表的
 //	   写入分支整段删除后，写路径里**不再有**这个快照 ⇒ 「arm 不在 logsWrite
 //	   门内」这条断言会**恒真**（假绿：门没了，被测的门也不测了）。
-//	② `persistSystemFingerprint`（环 3）——v1 落列函数随 885 整条删除。
+//	② `persistSystemFingerprint`（环 3）——v1 落列函数随 890 整条删除。
 //
 // 改指后的不变式（仍成立、仍有牙）：
 //
@@ -63,7 +63,7 @@ import (
 //	  判据从「不在 `if logsWrite {}` 内」升级为「不在**任何**提到停写键的
 //	  if 条件内」（logsWrite 这个变量名已经不存在，只认它会恒真）。
 //	★ `persistSystemFingerprint` 不得复活（它就是 §9.51 拆掉的那个耦合点：
-//	  它只可能在 v1 落列路径里被调用，而那条路径已随 885 退役）。
+//	  它只可能在 v1 落列路径里被调用，而那条路径已随 890 退役）。
 
 const fingerprintObservedMarker = "markSystemFingerprintObserved"
 const fingerprintPersistMarker = "persistSystemFingerprint"
@@ -77,7 +77,7 @@ type fingerprintCallSite struct {
 
 // stopWriteIdentifiers 是 S4 停写键在本包里的全部可能的读法。
 //
-// ⚠ 刻意**不**只认 "logsWrite" 一个名字：迁移 885 之后那个变量已经不存在了，
+// ⚠ 刻意**不**只认 "logsWrite" 一个名字：迁移 890 之后那个变量已经不存在了，
 // 只认它 ⇒ 「不在门内」这条断言恒真（假绿）。这里认的是**语义**：凡是提到
 // 停写键的条件表达式，都算「门」。
 var stopWriteIdentifiers = map[string]bool{
@@ -236,7 +236,7 @@ func isCallTo(stmt ast.Stmt, target string) bool {
 
 // TestStopWriteGateDetectorRecognizesGatedCalls 是**门检测器自身的正向对照**。
 //
-// 上一版这道门判的是「arm 不在 `if logsWrite {}` 内」。迁移 885 之后
+// 上一版这道门判的是「arm 不在 `if logsWrite {}` 内」。迁移 890 之后
 // `logsWrite` 这个变量在本包**已经不存在** ⇒ 那条判定会**恒真**（永远绿、
 // 什么也没测）。本用例把检测器喂一段合成源码，证明它**确实**能分辨
 // 「门内 / 门外」——检测器失灵时这里先红，而不是让上面那道门一直假绿。
@@ -304,7 +304,7 @@ func TestFingerprintArmIsNotGatedByStopWrite(t *testing.T) {
 		src, err := os.ReadFile(name)
 		require.NoError(t, err)
 		require.NotContains(t, string(src), "func (c *Client) "+fingerprintPersistMarker,
-			"%s 又定义了 %s() —— v1 落列函数随迁移 885 退役；它只可能在 v1 写入"+
+			"%s 又定义了 %s() —— v1 落列函数随迁移 890 退役；它只可能在 v1 写入"+
 				"路径里被调用，而那条路径已经没有了", name, fingerprintPersistMarker)
 	}
 
@@ -371,13 +371,13 @@ func TestFingerprintArmIsNotGatedByStopWrite(t *testing.T) {
 //	③ settings.RequestLogsWriteEnabled() { return GetPlatformBool(KeyRequestLogsWriteEnabled, false) }
 //	     └─ KeyRequestLogsWriteEnabled = "storage.request_logs_write_enabled"
 //
-// ★ 2026-10-20（迁移 885）：原来的跳 1 是「两个写路径各取一次
+// ★ 2026-10-20（迁移 890）：原来的跳 1 是「两个写路径各取一次
 // `logsWrite := requestLogsWriteEnabled()` 快照」——那个快照随 v1 写入分支
 // 整段删除 ⇒ 改指为「两个写路径**一次都不得**读这个键；唯一读点是镜像」。
 //
 // ★ 2026-10-20（并行审计轮 D0，origin/main）：跳 3 的**默认值**由 true 改成
 // false —— 合并后本门必须与之一致（否则注释与代码分叉，下一个人会照着注释
-// 以为「默认双写」）。语义上这仍然是自洽的：v1 族已被 885 整体 DROP，
+// 以为「默认双写」）。语义上这仍然是自洽的：v1 族已被 890 整体 DROP，
 // 「是否允许写 v1」这个问题的答案恒为「否」⇒ 默认 false 与事实一致，
 // 且未显式配置的环境（新装 / 克隆 / 灾备）不会再以为自己在双写。
 func TestStopWriteKeyGatesOnlyTheBodyMirror(t *testing.T) {
