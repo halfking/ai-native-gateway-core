@@ -358,6 +358,46 @@ export default {
     storageConfig: 'Configuration du stockage',
     logManagement: 'Gestion des journaux',
     usageCost: 'Coût d’utilisation',
+    usageEnhanced: 'Analyse avancée de l’utilisation',
+  },
+
+  usageEnhanced: {
+    refresh: 'Actualiser',
+    loading: 'Chargement…',
+    empty: 'Aucune donnée',
+    cards: {
+      totalCost: 'Coût total',
+      totalRequests: 'Requêtes totales',
+      periodDelta: 'Δ de coût entre périodes',
+      cacheHitRate: 'Taux de succès du cache',
+    },
+    trend: {
+      title: 'Tendance des coûts ({days} derniers jours)',
+    },
+    hotKeys: {
+      title: 'Principales clés API (par consommation de tokens)',
+      colId: 'ID de clé API',
+      colPrefix: 'Préfixe de clé',
+      colApplication: 'Application utilisée',
+      colRequests: 'Requêtes',
+      colTokens: 'Nombre de tokens',
+      colCost: 'Coût total',
+    },
+    degraded: {
+      title: 'Certaines métriques sont indisponibles : ',
+      hint: 'Le schéma de la base de données est en retard sur cette version ; les chiffres sont des substituts « non calculables », pas des mesures réelles.',
+    },
+    errors: {
+      load: 'Échec du chargement des données d’utilisation avancées',
+    },
+    sources: {
+      summary: 'Résumé d’utilisation',
+      costTrend: 'Tendance des coûts',
+      periodCompare: 'Comparaison de périodes',
+      cacheEconomics: 'Économie du cache',
+      hotKeys: 'Clés API actives',
+    },
+    footer: 'Dernière actualisation : {time}',
   },
 
   usageCost: {

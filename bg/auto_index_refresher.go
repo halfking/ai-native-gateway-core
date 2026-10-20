@@ -423,21 +423,89 @@ func credentialModelIndexRollupSQLs() (deleteSQL, insertSQL string) {
 	return deleteSQL, insertSQL
 }
 
+// credentialModelIndexRollupLockKey 是本 rollup 的**跨进程**互斥键。
+//
+// ★ 2026-10-20（退役轮 R69）：进程内互斥（tryBeginRefresh / singleflight）
+// 只覆盖**本进程**的触发源（5 分钟 ticker / LISTEN 监听 / admin 手动接口）。
+// 2026-10-20 本机实测暴露出进程间同库并存时的数据损坏：
+//
+//	8781（新构建，rollup 正确）  INSERT 75 行（bucket=B）
+//	8782（旧构建，rollup 42703）  DELETE bucket=B 成功 → INSERT 42703 失败
+//	⇒ hot 表被「删掉且没补回」⇒ credential_model_index_hot 恒空
+//
+// 后果不是「指标陈旧」而是**功能缺失**：autoroute 候选池读的是视图
+// credential_model_index_with_current_month（hot ∪ 月分区），新出现的
+// (credential, raw_model) 组合在月分区里要等 8h 排水窗口才可见 ⇒ 在此
+// 之前该凭据/模型对候选池**根本不存在** ⇒ 路由层 model_not_found /
+// no_candidate ⇒ 100% 流量失败。
+//
+// 为什么用 advisory lock（而不是只把两条语句放进一个事务）：
+//   - 单事务只保证**本进程**这一对语句不撕裂；另一个实例的 DELETE 仍然
+//     会把本进程刚提交的行删掉（对方不需要知道我们的锁）。
+//   - advisory lock 让**同库的所有实例**在同一把锁上排队 ⇒ 蓝绿部署
+//     窗口（候选槽 + 旧槽同时对着同一个 PG，见
+//     scripts/deploy-seamless-docker.sh）也不会互删。
+//
+// ⚠ 边界（如实记录）：advisory lock 只对**同样会取锁的构建**有效。
+// 旧构建（未修 rollup 42703 的那个）不会取锁，它照样能把我们的行删掉
+// —— 那种情况只能靠把对方升级到含修复的构建来消除（实测：旧构建的
+// DELETE 每 5s 执行一次，hot 表 n_tup_ins=1036 / n_tup_del=968 /
+// n_live_tup=0，n_live_tup=0 就是「写进去又被删掉」的直接证据）。
+//
+// 键的取法沿用仓内既有约定 settings/session_write_safety.go：
+// hashtextextended('<literal>', 0) —— 同一 PG 上所有实例算出同一个值，
+// 不依赖进程内状态，也不需要新增迁移。
+const credentialModelIndexRollupLockKey = "llmgw:credential-model-index-rollup"
+
+// rollupCredentialModelIndex 把当前 bucket 的快照写进 credential_model_index_hot。
+//
+// ★ 2026-10-20（R69）：DELETE 与 INSERT 现在在**同一个事务**里跑，且事务
+// 先取跨进程 advisory lock（credentialModelIndexRollupLockKey）。
+//
+// 改之前：两条语句各走一次 r.db.Exec（= 两个隐式事务）⇒
+//   1. 中间态对读者可见（读者能在 DELETE 与 INSERT 之间看到 hot 表空）；
+//   2. 另一个实例可以在两条语句之间插进来，把我们写的行删掉（见
+//      credentialModelIndexRollupLockKey 的注释里的本机实测）。
+// 改之后：两条语句同事务提交 ⇒ 读者只看到「旧态」或「新态」；且同库实例
+// 之间用 advisory lock 串行 ⇒ 不再互删。
+//
+// 2026-07-20 P2-#6: split into DELETE + INSERT to avoid
+// "ON CONFLICT DO UPDATE command cannot affect row a second time"
+// (SQLSTATE 21000) when half-1 (traffic) and half-2 (cold-start) of
+// the UNION ALL produce the same (bucket, credential_id, raw_model)
+// triple. Two-statement version preserves the original semantics
+// (live metrics overwrite baseline) but does it via DELETE-then-INSERT
+// instead of ON CONFLICT.
+//
+// ⚠ 事务边界带来的一个正向副作用：INSERT 失败（例如旧构建的 42703）时，
+// DELETE 会随事务一起回滚 ⇒ **失败不再留下「删掉了却没补回」的坑**。
 func (r *AutoIndexRefresher) rollupCredentialModelIndex(ctx context.Context, bucket time.Time) (int, error) {
-	// 2026-07-20 P2-#6: split into DELETE + INSERT to avoid
-	// "ON CONFLICT DO UPDATE command cannot affect row a second time"
-	// (SQLSTATE 21000) when half-1 (traffic) and half-2 (cold-start) of
-	// the UNION ALL produce the same (bucket, credential_id, raw_model)
-	// triple. Two-statement version preserves the original semantics
-	// (live metrics overwrite baseline) but does it via DELETE-then-INSERT
-	// instead of ON CONFLICT.
 	deleteSQL, insertSQL := credentialModelIndexRollupSQLs()
-	if _, err := r.db.Exec(ctx, deleteSQL, bucket); err != nil {
+
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("begin: %w", err)
+	}
+	// 回滚是幂等的：commit 之后调用它返回 ErrTxClosed，忽略即可。
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	// 锁必须**先于** DELETE 取：否则两个实例仍可能同时删同一 bucket。
+	if _, err := tx.Exec(ctx,
+		`SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`,
+		credentialModelIndexRollupLockKey,
+	); err != nil {
+		return 0, fmt.Errorf("advisory lock: %w", err)
+	}
+
+	if _, err := tx.Exec(ctx, deleteSQL, bucket); err != nil {
 		return 0, fmt.Errorf("delete: %w", err)
 	}
-	tag, err := r.db.Exec(ctx, insertSQL, bucket)
+	tag, err := tx.Exec(ctx, insertSQL, bucket)
 	if err != nil {
 		return 0, fmt.Errorf("insert: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return 0, fmt.Errorf("commit: %w", err)
 	}
 	return int(tag.RowsAffected()), nil
 }
@@ -642,13 +710,22 @@ SELECT
 -- '-infinity'（见 db/v1_freeze_cutoff.go），条件恒真、零成本，但它把
 -- 「本查询与 admin 侧同款分界」这件事保持在同一形状上。
 FROM (
-    SELECT (CASE WHEN t.credential_id ~ '^[0-9]+$' THEN t.credential_id::bigint END),
-           COALESCE(mo.raw_model_name, mo.outbound_model_name, t.model),
-           mo.canonical_id,
-           mo.billing_mode,
-           mo.unit_price_in_per_1m,
-           mo.unit_price_out_per_1m,
-           t.success, t.latency_ms
+    -- ⚠⚠ 这 8 个投影**必须带别名**：外层（rl.*）按 v1 腿的列名引用它们
+    -- （credential_id / model_key / mo_canonical_id / mo_billing_mode /
+    --   mo_price_in / mo_price_out / success / latency_ms）。
+    -- 890 之前这条子查询的列名来自 v1 族的真实列；删掉 v1 腿、换成会话腿
+    -- 之后，若不补别名，PG 会把无别名表达式列命名为 "?column?" ⇒ 外层
+    -- rl.credential_id 直接 42703（column rl.credential_id does not exist）
+    -- ⇒ 整条 rollup 失败 ⇒ autoroute 每 5s 刷新报错、凭据健康/压力指标停更。
+    -- （2026-10-20 实测：活库日志每 5s 一条 42703。）
+    SELECT (CASE WHEN t.credential_id ~ '^[0-9]+$' THEN t.credential_id::bigint END) AS credential_id,
+           COALESCE(mo.raw_model_name, mo.outbound_model_name, t.model)      AS model_key,
+           mo.canonical_id                                                   AS mo_canonical_id,
+           mo.billing_mode                                                   AS mo_billing_mode,
+           mo.unit_price_in_per_1m                                           AS mo_price_in,
+           mo.unit_price_out_per_1m                                          AS mo_price_out,
+           t.success                                                         AS success,
+           t.latency_ms                                                      AS latency_ms
     FROM session_turns_hot t
     LEFT JOIN model_offers mo
       ON mo.credential_id = (CASE WHEN t.credential_id ~ '^[0-9]+$' THEN t.credential_id::bigint END)

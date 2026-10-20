@@ -24,14 +24,15 @@ package ursm_test
 // 字节数抓「文件被换成一份更短但条目数相近的版本」—— 两个尺子指向不同的失效形态。
 
 import (
+	"fmt"
 	"os"
 	"strings"
 	"testing"
 )
 
 const (
-	lessonsFile  = "../../LESSONS.md"
-	runbookFile  = "../../docs/06-deployment/04-runbooks/runbooks/2026-10-04-ursm-write-amplification-measurement.md"
+	lessonsFile = "../../LESSONS.md"
+	runbookFile = "../../docs/06-deployment/04-runbooks/runbooks/2026-10-04-ursm-write-amplification-measurement.md"
 
 	// 地板取自「事故前」的规模，并留出余量。
 	//   LESSONS.md：事故前 198 条 / 429,302 bytes；恢复后 202 条 / 436,947 bytes
@@ -75,27 +76,91 @@ func TestLessonsFileHasNotBeenClobbered(t *testing.T) {
 //
 // ⚠⚠ 2026-10-21 §143.35 收尾轮：**检测口径从【子串】改成【行首锚定】**。
 // ★★ 原口径 `strings.Contains(text, "<<<<<<< ")` 会把**正文里引用这些标记的散文**
-//   也判成冲突 —— 实测踩到：上游自己在 LESSONS 里记「为了两侧都保留，写了个脚本
-//   按 `<<<<<<< HEAD` / `=======` / `>>>>>>> <sha>` 三个标记切片拼接」，
-//   那段散文里的标记写在【反引号里、行中】⇒ 被子串检查误判
-//   ⇒ ⇒ **origin/main 因此判红**（已在干净副本上复核）。
+//
+//	也判成冲突 —— 实测踩到：上游自己在 LESSONS 里记「为了两侧都保留，写了个脚本
+//	按 `<<<<<<< HEAD` / `=======` / `>>>>>>> <sha>` 三个标记切片拼接」，
+//	那段散文里的标记写在【反引号里、行中】⇒ 被子串检查误判
+//	⇒ ⇒ **origin/main 因此判红**（已在干净副本上复核）。
+//
 // ⇒ ⇒ 而 git 写出的真冲突标记**必在第 0 列**（opener/closer 行首、separator 独占一行）
 // ⇒ ⇒ **行首锚定既不漏真冲突、又不再误伤散文**。
 // ⇒ ★ 改口径后必须双向验：行首的真标记仍判红（阳性对照），行中的散文引用仍判绿。
+// findConflictMarkers 返回 text 里**真正的**未解决合并冲突标记。
+//
+// ★★ 口径（2026-10-21 §143.35 与本轮两次独立修复共同定稿）：
+//
+//	git 写出的真冲突标记**必在第 0 列**：opener（`<<<<<<< HEAD`）与
+//	closer（`>>>>>>> <sha>`）行首，separator（`=======`）独占一行。
+//	⇒ 只锚定 **opener / closer 的行首**。
+//
+//	★ 刻意【不】单查「独占一行的七等号」：
+//	  git 的冲突区**必然同时**有 opener 与 closer ⇒ 只看 opener/closer 就够；
+//	  而「一行正好是 7 个等号」与 markdown 的 **setext 标题下划线不可区分**
+//	  ⇒ 过程文档里引用/展示这个形态是合法的（runbook 就在解释它）
+//	  ⇒ 单查它会把**文档在讲这件事**判成冲突（实测踩到）。
+//
+// ★ 为什么抽成共享 helper：这道判断原本在两个门里各写一遍内联逻辑
+//
+//	⇒ 改口径要改两处、漏一处就出现「两个门口径不一致」。
+//	⇒ 抽出来之后，口径只有**一处**，且可被自检钉住。
+func findConflictMarkers(text string) []string {
+	var hits []string
+	for i, line := range strings.Split(text, "\n") {
+		for _, marker := range []string{"<<<<<<< ", ">>>>>>> "} {
+			if strings.HasPrefix(line, marker) {
+				hits = append(hits, fmt.Sprintf("第 %d 行：%s", i+1, line))
+				break
+			}
+		}
+	}
+	return hits
+}
+
+// TestFindConflictMarkersSelfCheck 是判据自身的自证（这道门必须**有牙**）。
+//
+// ★ 为什么要有自检：判据写成「行首锚定」之后，最大的风险是
+//
+//	① **过度收紧** ⇒ 变成「扫了个寂寞」（什么冲突都抓不到）⇒ 门恒绿；
+//	② **过度放宽** ⇒ 又把散文里的引用判成冲突（= 回到本轮修掉的那个假红）。
+//	⇒ 自检用**构造样本**双向证明：行首的真标记被抓到；
+//	  散文里的引用、独占一行的七等号**不**被抓。
+func TestFindConflictMarkersSelfCheck(t *testing.T) {
+	t.Run("行首的真冲突被抓到", func(t *testing.T) {
+		samples := []string{
+			"<<<<<<< HEAD\n正文\n=======\n对方\n>>>>>>> abc1234 (commit msg)\n",
+			"<<<<<<< feature/x\n",
+			">>>>>>> 42\n",
+		}
+		for _, s := range samples {
+			if len(findConflictMarkers(s)) == 0 {
+				t.Fatalf("样本 %q 里的真冲突没被抓到 —— 判据被收得过紧了", s)
+			}
+		}
+	})
+	t.Run("散文引用与七等号独占行不被误判", func(t *testing.T) {
+		samples := []string{
+			"- 按 `<<<<<<< HEAD` / `=======` / `>>>>>>> <sha>` 三个标记切片拼接\n",
+			"冲突标记是 <<<<<<< HEAD 这种形态\n",
+			// ★ 独占一行的七等号与 markdown setext 下划线**不可区分** ⇒ 刻意不判红。
+			"=======\n",
+		}
+		for _, s := range samples {
+			if hits := findConflictMarkers(s); len(hits) != 0 {
+				t.Fatalf("样本 %q 被误判成冲突：%v", s, hits)
+			}
+		}
+	})
+}
+
 func TestLessonsFileHasNoConflictMarkers(t *testing.T) {
 	raw, err := os.ReadFile(lessonsFile)
 	if err != nil {
 		t.Fatalf("读 %s 失败：%v", lessonsFile, err)
 	}
-	text := string(raw)
 	// ★ 阳性对照：行首锚定的真冲突标记必须被抓到（否则这条门会变成恒绿门）。
-	for _, marker := range []string{"<<<<<<< ", ">>>>>>> "} {
-		for i, ln := range strings.Split(text, "\n") {
-			if strings.HasPrefix(ln, marker) {
-				t.Fatalf("LESSONS.md 第 %d 行还有合并冲突标记 %q —— 冲突没有被真正解决",
-					i+1, marker)
-			}
-		}
+	if hits := findConflictMarkers(string(raw)); len(hits) > 0 {
+		t.Fatalf("LESSONS.md 里还有未解决的合并冲突标记（%d 处）—— 冲突没有被真正解决：\n%s",
+			len(hits), strings.Join(hits, "\n"))
 	}
 	// ★ 刻意【不】单查「独占一行的分隔标记」：
 	//   git 的冲突区**必然同时**有 opener 与 closer ⇒ 只看 opener/closer 就够；
@@ -107,14 +172,18 @@ func TestLessonsFileHasNoConflictMarkers(t *testing.T) {
 // TestRunbookHasNotBeenClobbered 钉住主 runbook 的体量地板。
 //
 // ★ 同一类风险：runbook 是本仓的过程记录主体（§143.x 全在里面），
-//   它一旦被整份覆盖，历史读数与订正横幅会一起消失。
+//
+//	它一旦被整份覆盖，历史读数与订正横幅会一起消失。
 //
 // ⚠⚠ 2026-10-21 §143.35 收尾轮：**冲突标记检测同样改成【行首锚定】**。
 // ★★ 实测踩到：runbook 是**过程日志**，它**本来就会记录冲突标记长什么样**
-//   （本轮 §143.35.9 就在解释「子串口径为什么误伤」）⇒
-//   ⇒ 子串检查会把**它自己写的说明**判成冲突 ⇒ 门把自己写红了。
+//
+//	（本轮 §143.35.9 就在解释「子串口径为什么误伤」）⇒
+//	⇒ 子串检查会把**它自己写的说明**判成冲突 ⇒ 门把自己写红了。
+//
 // ⇒ ⇒ 而 git 写出的真冲突标记**必在第 0 列** ⇒ 行首锚定既不漏真冲突、
-//   又允许正文正常引用这些标记。
+//
+//	又允许正文正常引用这些标记。
 func TestRunbookHasNotBeenClobbered(t *testing.T) {
 	raw, err := os.ReadFile(runbookFile)
 	if err != nil {
@@ -126,12 +195,9 @@ func TestRunbookHasNotBeenClobbered(t *testing.T) {
 	}
 	text := string(raw)
 	// ★ 行首锚定：git 的冲突 opener/closer 必在第 0 列。
-	for _, marker := range []string{"<<<<<<< ", ">>>>>>> "} {
-		for i, ln := range strings.Split(text, "\n") {
-			if strings.HasPrefix(ln, marker) {
-				t.Fatalf("主 runbook 第 %d 行还有合并冲突标记 %q", i+1, marker)
-			}
-		}
+	if hits := findConflictMarkers(text); len(hits) > 0 {
+		t.Fatalf("主 runbook 里还有未解决的合并冲突标记（%d 处）：\n%s",
+			len(hits), strings.Join(hits, "\n"))
 	}
 	// ★ 同样刻意【不】单查「独占一行的分隔标记」—— 理由见上面那道门：
 	//   七等号独占一行与 markdown setext 下划线不可区分，而 runbook 作为过程日志

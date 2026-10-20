@@ -358,6 +358,46 @@ promoteAll: "alles",
     storageConfig: 'Speicherkonfiguration',
     logManagement: 'Protokollverwaltung',
     usageCost: 'Nutzungskosten',
+    usageEnhanced: 'Erweiterte Nutzungsanalyse',
+  },
+
+  usageEnhanced: {
+    refresh: 'Aktualisieren',
+    loading: 'Wird geladen…',
+    empty: 'Keine Daten',
+    cards: {
+      totalCost: 'Gesamtkosten',
+      totalRequests: 'Gesamtzahl der Anfragen',
+      periodDelta: 'Periodenvergleich Δ Kosten',
+      cacheHitRate: 'Cache-Trefferquote',
+    },
+    trend: {
+      title: 'Kostentrend (letzte {days} Tage)',
+    },
+    hotKeys: {
+      title: 'Top-API-Schlüssel (nach Token-Verbrauch)',
+      colId: 'API-Key-ID',
+      colPrefix: 'Key-Präfix',
+      colApplication: 'Anwendung',
+      colRequests: 'Anfragen',
+      colTokens: 'Token-Anzahl',
+      colCost: 'Gesamtkosten',
+    },
+    degraded: {
+      title: 'Einige Kennzahlen sind nicht verfügbar: ',
+      hint: 'Das Datenbankschema ist älter als diese Version; die Werte sind Platzhalter für „nicht berechenbar“, keine echten Messwerte.',
+    },
+    errors: {
+      load: 'Erweiterte Nutzungsdaten konnten nicht geladen werden',
+    },
+    sources: {
+      summary: 'Nutzungsübersicht',
+      costTrend: 'Kostentrend',
+      periodCompare: 'Periodenvergleich',
+      cacheEconomics: 'Cache-Ökonomie',
+      hotKeys: 'Hot-API-Schlüssel',
+    },
+    footer: 'Zuletzt aktualisiert: {time}',
   },
 
   usageCost: {

@@ -193,6 +193,34 @@ func (s *HotCronScheduler) runOnce(ctx context.Context) {
 			continue
 		}
 
+		// ★ 890（v1 族真删）后的**能力探针**：promote 函数不存在 ⇒ 该表/该族
+		// 已经不存在（表与函数被一起 DROP）⇒ **SKIP**，不是 ERROR。
+		//
+		// ⚠ 为什么需要它（缺陷本体）：自动 hot cron 原本直接调 promote 函数，
+		// 而 890 把 v1 族与它的 promote 函数一起 DROP ⇒ 每轮 cron 都得到
+		// 42883（function promote_request_logs_hot_to_partition does not
+		// exist）⇒ 每轮 2 条 WARN + 1 条 ERROR 的噪声，而被调用的表**根本
+		// 不存在**、没有任何东西可搬 ⇒ 纯噪声 + 掩盖真实故障。
+		//
+		// ⇒ 探针让「函数没了」变成一条 INFO 的 SKIP，同时保留真正执行失败
+		// 时的 ERROR 语义（这是本门要守的不变量：噪声不得冒充故障）。
+		fnName := hotPromoteTableMap[table]
+		var fnPresent bool
+		if err := s.h.db.QueryRow(ctx, `
+			SELECT EXISTS (
+				SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+				WHERE n.nspname = 'public' AND p.proname = $1)
+		`, fnName).Scan(&fnPresent); err != nil {
+			slog.Warn("data-lifecycle: hot cron skip table (promote function probe failed)",
+				"table", table, "function", fnName, "error", err)
+			continue
+		}
+		if !fnPresent {
+			slog.Info("data-lifecycle: hot cron skip table (promote function absent — table/family retired)",
+				"table", table, "function", fnName)
+			continue
+		}
+
 		migrated, err := s.runOneTableWithRetry(ctx, table)
 		if err != nil {
 			failures[table] = err.Error()

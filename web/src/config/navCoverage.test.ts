@@ -71,6 +71,7 @@ const KNOWN_ORPHANS: Record<string, string> = {
   '/quality-correlations': 'R85 判 P3：质量关联页可交付未挂菜单，待产品确认归属后挂载',
   '/admin/output-compliance': 'R85 判 P3：输出合规页可交付未挂菜单，待产品确认归属后挂载',
   '/admin/usage': 'R85 判 P3：用量成本页可交付未挂菜单，R84 已证与 report-rollup 数字不同源',
+  '/admin/usage-enhanced': '2026-10-21 审计轮按同族先例登记：用量增强分析页与 /admin/usage 同属 super_admin 档、同源 5 个 usage 端点，菜单归属与 /admin/usage 一并待产品确认后挂载；本轮只修契约不擅自改菜单',
 }
 
 /** 扫描器不得腐化：路由数掉到这个量级说明解析正则坏了（沿用 metricguard「声明数<100 即红」）。 */
