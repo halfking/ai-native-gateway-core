@@ -44,7 +44,7 @@
 | **★ 累积式多轮（补做）** | 改用**累积对话**（每轮带全部历史）重做：`prompt_tokens` **84 → 92 → 107 → 386 → 1255 严格单调递增**（这才是「多轮」的可验证形态；每轮只发一条消息时它只反映本轮提示词长度）⇒ 5/5 = 200、`turn_no` 1..5 连续、正文三列 `jsonb_typeof` **全是 `array`**、退役族 `_request_logs*` **0 行** ⇒ **4 条判据全 PASS**。过程中抓到**两条量具坑**（BSD sed 不剥 `\n` 标记 ⇒ 请求体被清空；探活一次碰多模型 ⇒ 一个模型的 429 冷却整个凭据）（§5.11） |
 | **★ 新发现一：凭据级熔断会连坐兄弟模型** | 一个模型的 429（`EndpointTPMExceeded`）经 goal-retry 连打 3 次 ⇒ `nodehealth` 熔断阈值（付费档 3）⇒ `EffectSetCredentialUnavailable` ⇒ **该凭据名下 10 个绑定全部 `available=FALSE`** + `credentials.availability_state='cooling'` ⇒ 刚 200 过的兄弟模型立刻 `no_candidate`（3 分钟）。是 `reducer.go:434` 的**明确设计**，但代价要记账（L9） |
 | **★ 新发现二：探针 chat 腿缺「预算耗尽」豁免** | Responses 腿接受 `status=incomplete` + `max_output_tokens` 作正向证据，**chat 腿没有** ⇒ reasoning 模型（探针预算只有 32 token）在 `content:null` 时被判 `probe_response_inconclusive` ⇒ 永远到不了 `healthy_confirmed`。与「2xx 不等于健康」是刻意规矩冲突，本轮**不改**（L10） |
-| **★ L1 订正（上一轮自己的结论前提有误）** | 「7 张分区不带 `_` 前缀 ⇒ 新装/存量形状分叉」**不成立**：那是迁移 860 的**明确设计**（待删标志在父表上），正典基线 schema 造的就是无前缀分区名，862 那个 `_request_logs_2026_10` 只是**合成夹具名** ⇒ 两边形状相同。真正要修的是**按名字枚举分区族的口径**（两处运维脚本 ⇒ 已改成按 `pg_inherits` 走父表，真库差集证明**零回退、只补漏**）（§5.9） |
+| **★ L1 订正（上一轮自己的结论前提有误）** | 「7 张分区不带 `_` 前缀 ⇒ 新装/存量形状分叉」**不成立**：那是迁移 860 的**明确设计**（待删标志在父表上），正典基线 schema 造的就是无前缀分区名，862 那个 `_request_logs_2026_10` 只是**合成夹具名** ⇒ 两边形状相同。真正要修的是**按名字枚举分区族的口径**（两处运维脚本 ⇒ 已改成按 `pg_inherits` 走父表，真库差集证明**零回退、只补漏**）。⚠️ 这两个脚本是**仓库级运维资产、不在发布链上** ⇒ 已提交≠已生效，生产机上的拷贝件仍是旧口径（当前**无排程在跑**，详见 §5.9.3.1） |
 
 ---
 
@@ -929,6 +929,40 @@ PSQL="$HOME/kaixuan/pg18/bin/psql"
 **覆盖范围**：`public` schema，`_request_logs` / `_request_logs_bodies` /
 `credential_model_index` / `model_probe_runs` / `usage_ledger` / `request_wal`
 六个家族的分区子表 + 各自的 `_hot` 表。
+
+### 5.9.3.1 ★ 这条修复的**生效范围**（别把「已提交」当「已生效」）
+
+两个脚本是**仓库级运维资产**，**不在部署物里**：本机部署目录
+`~/kaixuan/llm-gateway-go-v2/` 只有 `bin/ logs/ run/ raw-logs/ attachments/ backups/`，
+**没有 `scripts/`** ⇒ 改脚本**不需要重新部署网关**（网关二进制里没有它们）。
+
+但**生产机上的脚本副本是旧的**（实测 154）：
+
+```
+/opt/llm-gateway-go/build-2515/scripts/ops/analyze-partition-stats.sh   pg_inherits=0   （10-08）
+/opt/llm-gateway-go/build-src/scripts/ops/analyze-partition-stats.sh    pg_inherits=0   （08-25）
+```
+
+⇒ 若运维**从那两份副本**直接执行，跑的仍是**旧口径**（会漏 ANALYZE / 列存轮转那 4~5 张）。
+⇒ **好消息是当前没有排程影响**：245 / 154 / 252 三台机 × 5 类排程源
+（用户 crontab、root crontab、`/etc/cron*`、systemd unit/timer、**其它所有用户的
+crontab**）**全部零命中**这两个脚本 ⇒ 没有任何定时任务在跑它们。
+⇒ **处置建议**：运维改从**仓库 checkout** 执行这两个脚本（或把 154 上那两份副本刷新到
+当前 `origin/main`）。**本轮未刷新那两份副本**（它们不在发布链上，属另一会话/运维的资产，
+且当前无排程消费者）。
+
+```bash
+# 核对「哪台机上有旧副本、有没有排程在跑」
+for h in 245 154 252; do
+  ssh "$h" 'for u in $(cut -d: -f1 /etc/passwd); do
+      crontab -u $u -l 2>/dev/null | grep -q "analyze-partition-stats\|pg-columnar-rotate" && echo "$u"
+    done
+    grep -rli "analyze-partition-stats\|pg-columnar-rotate" /etc/cron* /etc/systemd/system 2>/dev/null
+    for f in $(ls -d /opt/llm-gateway-go/*/scripts/ops/analyze-partition-stats.sh 2>/dev/null); do
+      printf "%s pg_inherits=" "$f"; grep -c pg_inherits "$f"
+    done'
+done
+```
 
 ### 5.9.4 顺带订正一条**基线 schema 不该动**的判断
 

@@ -3460,3 +3460,10 @@ PostgreSQL 解析调用时，**带默认值的那个也能接 3 参调用**，
 - 防复发检查：① 凡是「按证据强弱定生死」的规则，列出它覆盖的**全部**腿，逐腿对照「同一现象在这条腿上判什么」；② 判据文件分散在不同文件时，靠 grep 单个文件发现不了不对称——要按**规则**而不是按**文件**盘点；③ 不要为了让某条腿通过就改判据：本仓「2xx 不等于健康、必须有正向证据」是 2026-10-20 12h 审计轮**刻意**立的规矩（`bg/probe_observation_beat_gate_20261020_test.go` 整篇在钉），改动要单独一轮、且必须同时回答「reasoning 模型的探针预算该给多少」；④ **不在别人的任务里顺手改掉别人刻意立的规矩**——正确处置是**记为遗留 + 写清改它要回答什么问题**（本轮记为 L10）。
 - 证据：`bg/probe_http_validation.go` 的 `responsesProbeProtocolEvidence` vs `bg/credential_probe_response_validation.go:147-152`；实测 `node_probe_runs` 里 `z-ai/glm-5.3-flash` 连续 200 + `probe_response_inconclusive` + attempt 递增。
 - 溯源：request_logs→session_turns 复核轮 §5.11.5；[复盘](docs/audit/2026-10-20-request-logs-session-turns-复核轮.md) §5.11.5 / §9.5（L10）。
+
+## 2026-10-20 — 「已提交」≠「已生效」的第二类实例：**仓库级运维脚本不在发布链上**（Seen: 1/3）
+- 场景：L1 的口径修复（两处运维脚本从「按名字前缀枚举分区族」改成「按 `pg_inherits` 走父表」）已提交并推上 `origin/main`，但**生产机上跑的仍是旧版脚本**。
+- 根因：这两类脚本**不在部署物里**——本机部署目录只有 `bin/ logs/ run/ raw-logs/ attachments/ backups/`，**没有 `scripts/`** ⇒ 改脚本**不需要重新部署**，但也**不会因为部署而生效**；生产机（154）上的副本是**拷贝件**（`/opt/llm-gateway-go/build-2515/…` 10-08、`build-src/…` 08-25），`pg_inherits=0` ⇒ 旧口径。
+- 防复发检查：① 判「某改动已生效」先问**它跑在哪**：仓库级运维脚本 ⇒ 看**生产机上的副本内容**（`grep -c` 关键标记），不要看 git log；② 判「排程在跑它吗」要把**排程源列全**：用户 crontab + root crontab + `/etc/cron*` + systemd unit/timer + **其它所有用户的 crontab**（`for u in $(cut -d: -f1 /etc/passwd); do crontab -u $u -l; done`）——只查 `crontab -l` 会漏掉**别的用户**的排程；③ 副本拷贝件与发布链是**两条链**，修复要么进发布链，要么明确写「运维从 checkout 执行」；④ 本仓先例：`internal/billguard` 等旁挂单元同属这一类。
+- 证据：§5.9.3.1（部署目录清单 + 154 两份副本的 `pg_inherits=0` + 三台机 × 5 类排程源零命中的实测输出与复核命令）。
+- 溯源：request_logs→session_turns 复核轮 §5.9.3.1。
