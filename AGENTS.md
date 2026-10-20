@@ -4627,3 +4627,26 @@ To codeup.aliyun.com:kaixuan/official-deploy/llm-gateway-go.git
 >   隔离/授权开关的授权模型（`GATEWAY_CANONICAL_TEST_LOCAL_ONLY` 现为 `t.Fatal`，建议改 SKIP）、
 >   Citus 一次性库形态的 `pg_dist_local_group` 错误、A 类 6 条、db/ 两条 v1 夹具、**D2**、**C1**。
 > ⇒ 完整记录见 `docs/audit/2026-10-21-R71-测试env事实源边界与五类分类学.md` 与本文件 `§19.20`。
+
+> **2026-10-21 R72 轮订正（本会话）**：**把 R71 轮的一处推理链整个推翻** —— 守卫语义被我读反了
+> ⇒ ⇒ ★★★ **根因**：守卫条件 `!strings.HasSuffix(db,"_test") || os.Getenv("TEST_SESSION_INGEST_ISOLATED")!="1"`
+>   ⇒ 「拦人」= 库名不合规 **OR** 开关≠1 ⇒ 「放行」= **库名合规 AND 开关=1**
+>   ⇒ ⇒ ★★ **合规库名本身不够**，隔离开关也必须显式 `=1`
+>   ⇒ ⇒ R71 轮的「库名那半边已经满足 ⇒ 缺的是开关」**把 AND 读成 OR ⇒ 整条推理链反向**
+>   ⇒ ⇒ ★ **教训：谓词含 `||` 时，放行条件是它的否定 ⇒ 必须先写成「放行 = A AND B」再动手**。
+> ⇒ ★★ **可信三档（R72 实测，合规库名 `itgate_r72_test`，同库同基线，显式 `env -u`，同 5 条隔离型腿）**：
+>   官方现状（20 名）**0 PASS / 5 SKIP / 0 FAIL**（静默 SKIP）；切事实源（40 名）**不开开关 = 5 条守卫红**；
+>   **开开关 = 5 条环境红** ⇒ ⇒ ★★ **切事实源 ⇒ 这 5 条腿由「静默 SKIP」变「红」**，且红的性质取决于是否配开关
+>   ⇒ ⇒ **属主决策①的真实代价 = 5 条腿由绿变红 + 2 组前置**（① 库名合规∧开关=1 ② Citus 节点注册）。
+> ⇒ ★★★ **Citus 节点缺失（新查清，属「基础设施级前置」）**：容器 `citus_nodes` = **0 行**
+>   ⇒ 分布组元数据缓存拿不到 ⇒ `pg_dist_local_group` XX000 / `could not open relation with OID` XX000 /
+>   `deadlock detected` 40P01 ⇒ ★ **官方 runner 建库只做 `CREATE EXTENSION citus`、无节点注册 ⇒ 官方跑法同样会撞**
+>   ⇒ ★ 本容器**无法无侵入注册节点**（`citus_add_node` 第三参是 worker group id 不是密码；
+>   `citus_set_node_role()` 不存在；`citus.node_conninfo` 是 postmaster 级 ⇒ 需重启共享容器 ⇒ **不做**）
+>   ⇒ ⇒ ★★ **它装不进 env 名维度**（它根本没有 env 名）⇒ ⇒ **天然落在登记册之外**
+>   ⇒ ⇒ ★ 需另一份「容器/基础设施级前置」清单 ⇒ **本轮只登记为待办**。
+> ⇒ ★ 顺带查清 `GATEWAY_CANONICAL_TEST_LOCAL_ONLY` = **授权开关**（必须 `=yes`，
+>   **不给就 `t.Fatal` 连 SKIP 都不是**）⇒ 建议改成「未授权 ⇒ SKIP」，否则「缺授权」被读成「产品红」。
+> ⇒ ⚠ **对 R71 轮门判据③ 的理由已就地改写**（判据不变）：理由是「官方库名不合规 + 注入隔离开关 = **解除守卫**
+>   ⇒ 一次性门禁库变可破坏」，**不是**「合规库名下开关多余」。
+> ⇒ 完整记录见 `docs/audit/2026-10-21-R71-测试env事实源边界与五类分类学.md` 文首「R72 轮订正横幅」与本文件 `§19.20.11`。
