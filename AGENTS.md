@@ -4701,3 +4701,26 @@ To codeup.aliyun.com:kaixuan/official-deploy/llm-gateway-go.git
 > ⇒ ⚠ **对 R71 轮门判据③ 的理由已就地改写**（判据不变）：理由是「官方库名不合规 + 注入隔离开关 = **解除守卫**
 >   ⇒ 一次性门禁库变可破坏」，**不是**「合规库名下开关多余」。
 > ⇒ 完整记录见 `docs/audit/2026-10-21-R71-测试env事实源边界与五类分类学.md` 文首「R72 轮订正横幅」与本文件 `§19.20.11`。
+
+> **2026-10-21 R73 轮（本会话）**：**官方 runner 真跑** ⇒ ★★★★ **门禁今天在 startup 重跑阶段就 abort ⇒ 连测试都没跑到**
+> ⇒ ⇒ ★★★ **R71/R72 轮的「官方现状」数字是用 env 集手工注入的【模拟读数】，不是 runner 实跑** ⇒ 已在审计文档加来源标注。
+> ⇒ ★★★ **官方 runner 真跑**（`scripts/audit/run-integration-gate.sh`，origin/main@76564629a）= **`exit=2`**：
+>   startup 第二遍 `applied=276 failed=20` ⇒ 15 条已知缺口 + **5 条未登记** ⇒ **abort 在跑测试之前**
+>   ⇒ ⇒ **官方门禁今天的真实状态 = 「不可用」**（不是绿、也不是红）⇒ **不是没人跑，是跑不通**。
+> ⇒ ★★ **D2 清单（此前只是属主决策项，现在逐条指名）**：`573`/`603`（v1 族视图
+>   `request_logs_with_current_month` 的依赖冲突）+ `877`/`887`/`888`（`cannot attach index …`）。
+> ⇒ ★★★★ **根因定性（★ 我第一眼判断错了，读 DETAIL 后推翻）**：
+>   `DETAIL: Another index is already attached for partition "session_turns_2026_10"`
+>   ⇒ **PG 硬约束：一个分区表在同一个父索引下只能有一个成员索引**
+>   ⇒ ⇒ **不是幂等性缺陷，而是迁移链内部抢同一个挂载槽位**
+>   ⇒ ⇒ 实测：父索引 `idx_session_turns_search_trgm` 的 2026_10 成员是
+>   **`session_turns_2026_10_search_text_idx`**（不是 `_search_trgm`）
+>   ⇒ ⇒ ★★★ **⇒ 首次安装时同样冲突 ⇒ 新装库很可能是「子索引存在、没挂到父索引」**
+>   ⇒ ⇒ ★ **⚠ 下一轮待查：生产 252 是否同形态**（若是 ⇒ 产品级缺陷：planner 用不上这些父索引）。
+> ⇒ ★★ **官方库实测（证实 R72 的推断）**：runner 真建的 `itgate_54451_10493`
+>   ⇒ `citus_nodes` = **0**、`pg_dist_local_group` = 20、库名**不合规**
+>   ⇒ ⇒ **官方跑法与隔离型腿天然互斥**。
+> ⇒ ★★ **交付**：`scripts/audit/check-gate-preconditions.sh` —— **只读**体检脚本
+>   （① Citus 节点 ② 隔离放行条件 ③ runner(20) vs 事实源(40) 的 DSN 覆盖面）
+>   ⇒ 属主切事实源前一条命令看清还差哪些前置（实测报「4 项未齐备」）。
+> ⇒ 完整记录见 `docs/audit/2026-10-21-R71-测试env事实源边界与五类分类学.md` §9 与本文件 `§19.20.12`。
