@@ -21,6 +21,8 @@ export default {
   pattern: "RE2 表达式",
   group: "捕获组",
   scopes: "适用阶段",
+  perMode: "按模式启停",
+  perModeHint: "勾上＝该模式下这条规则生效；取消＝该模式下停用。全局「启用」开关是总闸。",
   action: "动作",
   priority: "优先级",
   tenant: "租户（空表示全部）",

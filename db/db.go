@@ -184,8 +184,44 @@ func (db *DB) ApplyMigrations(ctx context.Context) error {
 // 流下锁等待超过角色级 statement_timeout=30s 即被 57014 击杀，boot 重试撞
 // 同一堵墙（烧点不可推进）直至 retry_budget 烧穿 → postgres disabled →
 // 部署安全网回滚（245 07:23/07:26/07:35 三连败实证，PG 日志逐字归因）。
-// 守卫语义：全部列在位 → true（调用方跳过 DDL，幂等 stamp 类语句照常执行）；
-// 表不存在 / 任一列缺失 / 探测出错 → false（走原 ensure 路径，自含幂等）。
+//
+// ★ 守卫语义（**以实现为准**；本段注释 2026-10-20 订正过，原注释与实现相反）：
+//   - 表存在且全部列在位 → true（调用方跳过 DDL，幂等 stamp 类语句照常执行）
+//   - 表**不存在** → **也返回 true**（missing=0）：SQL 里 to_regclass 的判据
+//     写在 WHERE 里，表不存在 ⇒ 该列无行 ⇒ 计 0 ⇒ 读作「没有缺列」。
+//   - 任一列缺失 / 探测出错 → false（走原 ensure 路径，自含幂等）。
+//
+// ⚠⚠「表不存在 ⇒ true」曾经是 **848 那条 v1 DDL 的承重语义**：890 之后 v1 族
+// 被 DROP ⇒ _request_logs_hot.audio_seconds 永远不可能在位 ⇒ 若按「表不存在
+// ⇒ false」实现，848 每次 boot 都会去 ALTER 一张不存在的表 ⇒ 42P01。
+// ⇒ 848 已改为**显式存在性闸**（见 ensureBillingUnitAndAudioSeconds），
+//   本函数这条语义**不再**是任何调用方的承重前提 ⇒ 未来若要把它改成
+//   「表不存在 ⇒ false」，只需重跑 848 的显式闸（那才是真正的契约所在）。
+//
+// ── tableExists（r1039 续轮新增，2026-10-21）─────────────────────
+// 报告某个关系在 public schema 里在不在。
+//
+// 2026-10-21（r1039 续轮）：request_logs 族退役（860 改名 → 890 删除）之后，
+// 「这张表**在不在**」是**部署形态**的问题，不是「列缺不缺」的问题。
+// ensure 链里多处按「列缺不缺」判断是否要 ALTER，但**族退役后表本身没了**，
+// 而 `columnsAllPresent` 在**表不在**时返回 true（missing=0 ⇒ 没缺列）
+// ⇒ 于是「缺列」这条路被正确跳过，「缺表」那条路没人管 ⇒ ALTER 一张不存在
+// 的表 ⇒ 42P01 ⇒ 整条 boot 迁移中止。
+//
+// ⇒ 用 to_regclass 口径（与目录短路清单、890 的族探测**同一把尺子**）判断
+//    「在不在」。不用 information_schema.tables：视图/外表也会命中，
+//    与 ensure 体的 ALTER 对象集合不是一回事。
+func (d *DB) tableExists(ctx context.Context, name string) bool {
+	if d == nil || d.pool == nil {
+		return false
+	}
+	var exists bool
+	if err := d.pool.QueryRow(ctx, `SELECT to_regclass($1) IS NOT NULL`, "public."+name).Scan(&exists); err != nil {
+		slog.Warn("table existence probe failed", "table", name, "error", err)
+		return false
+	}
+	return exists
+}
 func (db *DB) columnsAllPresent(ctx context.Context, table string, cols []string) bool {
 	if db == nil || db.pool == nil || len(cols) == 0 {
 		return false
@@ -2593,6 +2629,32 @@ func (d *DB) ensureRequestLogSchema(ctx context.Context) error {
 	if d == nil || d.pool == nil {
 		return nil
 	}
+	// ★ 890（v1 族退役）：本函数存在的**唯一**目的是给 v1 族补列/补索引。
+	// 族被删之后它无事可做 ⇒ 显式早退。
+	//
+	// ⚠ 为什么不能只靠下面的 catalog 短路：短路算的是「**缺多少**列/索引」，
+	// 而退役后索引**跟着表一起消失** ⇒ missing = 13 ≠ 0 ⇒ 短路**不触发**
+	// ⇒ 继续跑 `ALTER TABLE _request_logs …` ⇒ 42P01 ⇒ applyMigrationsOnce
+	// 失败 ⇒ db.Open 返回 (nil, err) ⇒ 42P01 命中 IsSchemaMismatchError
+	// ⇒ 网关**快速失败但仍以「无数据库」形态起来**，而 /readyz 在
+	// SetDepsOptional(true) 下**仍返 200**（见 cmd/gateway/main.go 的
+	// readyz 分支）⇒ 部署安全网放行 ⇒ 网关「就绪但没有数据库」。
+	//
+	// ⇒ 判据必须从「缺什么」改成「**在不在**」：族不存在 ⇒ 无事可做。
+	//
+	// 探测用 to_regclass（不抛 42P01），且**两个**表都查：hot 表与母表是
+	// 独立关系，退役时各自消失；只看其中一个会漏。
+	var v1FamilyPresent bool
+	if err := d.pool.QueryRow(ctx, `
+		SELECT to_regclass('public._request_logs') IS NOT NULL
+		   OR to_regclass('public._request_logs_hot') IS NOT NULL
+	`).Scan(&v1FamilyPresent); err != nil {
+		return fmt.Errorf("probe v1 request_logs family presence: %w", err)
+	}
+	if !v1FamilyPresent {
+		slog.Info("v1 request_logs family is retired (890) — nothing to ensure; skipping the v1 schema DDL")
+		return nil
+	}
 	// 2026-09-23 252 SQL 日志审计轮（D1 残余根修，07:23/07:26 245 蓝绿两连败
 	// 实证）：下方 ADD COLUMN IF NOT EXISTS 即使全部列已存在，也要对
 	// _request_logs 父表 + 全部月分区取 ACCESS EXCLUSIVE 锁才能逐列 no-op。
@@ -2609,7 +2671,7 @@ func (d *DB) ensureRequestLogSchema(ctx context.Context) error {
 		     'compression_reason','compression_strategy','compression_meta',
 		     'outbound_body','outbound_msg_count','outbound_token_est',
 		     'outbound_msg_hashes','quality_flags','quality_fix_actions',
-		     'quality_score','client_request_id','upstream_finish_reason',
+		     'quality_score','client_request_id','provider_id','upstream_finish_reason',
 		     'tool_calls','t0_arrived_at','t1_total_enqueued_at',
 		     't2_total_dequeued_at','t3_model_enqueued_at','t4_model_dequeued_at',
 		     't5_cred_enqueued_at','t6_cred_dequeued_at','t7_forward_start_at',
@@ -2680,6 +2742,21 @@ func (d *DB) ensureRequestLogSchema(ctx context.Context) error {
 		    -- request_id (_request_logs.request_id) is forced server-side
 		    -- to prevent client retries from collapsing into a single
 		    -- audit row. See db/migrations/054_request_logs_client_request_id.sql.
+		    -- 2026-10-21（r1039 续轮）：provider_id —— 本 ensure 链**自己**
+		    -- 要在下面给 _request_logs 建 (provider_id, …) 索引（2026-06-19
+		    -- 9cd51d8a7「per-provider tool_call quality fix mode」引入，随 v2
+		    -- 改名 request_logs→_request_logs 一起搬过来），却**从没补过这一列**。
+		    -- ⇒ 任何 _request_logs 不带 provider_id 的库（最小/新装基线、
+		    --   由 v1 fallback 体灌入的基线副本）上，整条 boot 迁移在
+		    --   CREATE INDEX idx_request_logs_provider_quality 处报
+		    --   42703（column "provider_id" does not exist）⇒ 迁移中止 ⇒
+		    --   **网关起不来**（2026-10-21 本机 deploy-local 实测中止）。
+		    -- 已是 v1→v2 改名产物的库（211/252 等）本来就有这一列 ⇒
+		    -- ADD COLUMN IF NOT EXISTS 是 no-op ⇒ 零影响。
+		    --
+		    -- ⚠ 列序无语义要求：provider_id 插在 client_request_id 之前，
+		    --   只为把 client_request_id 的分号结尾改成逗号续行。
+		    ADD COLUMN IF NOT EXISTS provider_id BIGINT,
 		    ADD COLUMN IF NOT EXISTS client_request_id TEXT;
 		CREATE INDEX IF NOT EXISTS idx_request_logs_gw_session_ts
 		    ON _request_logs (gw_session_id, ts DESC)
@@ -2746,7 +2823,15 @@ func (d *DB) ensureRequestLogSchema(ctx context.Context) error {
 
 	// V3.1 (migration 491): 9-stage dispatch queue timestamps on hot + parent.
 	// Startup ensure so environments that have not yet run 491 still accept INSERTs.
-	_, err = d.pool.Exec(ctx, `
+	//
+	// 2026-10-21（r1039 续轮）：hot 侧按**表在不在**条件化。
+	// 族退役（860 改名 → 890 删除）后 _request_logs_hot 与 _request_logs 是
+	// **两个独立关系**，各自消失 —— 上面的族级早退只兜住「两个都不在」，
+	// 兜不住「母表在、hot 表不在」（形态 B：860 改名跑完、890 删除前中断，
+	// 或部分退役的库）⇒ hot 侧 ALTER 仍然 42P01 ⇒ boot 中止。
+	hotTableExists := d.tableExists(ctx, "_request_logs_hot")
+	if hotTableExists {
+		_, err = d.pool.Exec(ctx, `
 		ALTER TABLE _request_logs_hot
 		    ADD COLUMN IF NOT EXISTS t0_arrived_at TIMESTAMPTZ,
 		    ADD COLUMN IF NOT EXISTS t1_total_enqueued_at TIMESTAMPTZ,
@@ -2758,6 +2843,12 @@ func (d *DB) ensureRequestLogSchema(ctx context.Context) error {
 		    ADD COLUMN IF NOT EXISTS t7_forward_start_at TIMESTAMPTZ,
 		    ADD COLUMN IF NOT EXISTS t8_response_start_at TIMESTAMPTZ,
 		    ADD COLUMN IF NOT EXISTS t9_response_end_at TIMESTAMPTZ;
+	`)
+		if err != nil {
+			return err
+		}
+	}
+	_, err = d.pool.Exec(ctx, `
 		ALTER TABLE _request_logs
 		    ADD COLUMN IF NOT EXISTS t0_arrived_at TIMESTAMPTZ,
 		    ADD COLUMN IF NOT EXISTS t1_total_enqueued_at TIMESTAMPTZ,
@@ -2779,14 +2870,24 @@ func (d *DB) ensureRequestLogSchema(ctx context.Context) error {
 	// 空集，054 时代重复数据不会阻塞索引构建）；分区侧由 SQL migration 的
 	// ensure_request_logs_partition 为新分区补建（columnar AM 可能拒建唯一
 	// 索引，故此处只做 hot 侧 Go 镜像）。
-	_, err = d.pool.Exec(ctx, `
+	//
+	// 2026-10-21（r1039 续轮）：hot 侧同样按**表在不在**条件化（母表在、
+	// hot 表不在的形态 B 下，无条件 ALTER hot 表 ⇒ 42P01 ⇒ boot 中止）。
+	if hotTableExists {
+		_, err = d.pool.Exec(ctx, `
 		ALTER TABLE _request_logs_hot
-		    ADD COLUMN IF NOT EXISTS is_final_success BOOLEAN NOT NULL DEFAULT FALSE;
-		ALTER TABLE _request_logs
 		    ADD COLUMN IF NOT EXISTS is_final_success BOOLEAN NOT NULL DEFAULT FALSE;
 		CREATE UNIQUE INDEX IF NOT EXISTS uq_request_logs_hot_final_success_session
 		    ON _request_logs_hot (gw_session_id)
 		    WHERE is_final_success AND gw_session_id IS NOT NULL AND gw_session_id <> '';
+	`)
+		if err != nil {
+			return err
+		}
+	}
+	_, err = d.pool.Exec(ctx, `
+		ALTER TABLE _request_logs
+		    ADD COLUMN IF NOT EXISTS is_final_success BOOLEAN NOT NULL DEFAULT FALSE;
 	`)
 	if err != nil {
 		return err
@@ -3070,7 +3171,26 @@ func (d *DB) ensureBillingUnitAndAudioSeconds(ctx context.Context) error {
 		return nil
 	}
 	cmbOK := d.columnsAllPresent(ctx, "credential_model_bindings", []string{"billing_unit"})
-	hotOK := d.columnsAllPresent(ctx, "_request_logs_hot", []string{"audio_seconds"})
+	// ★ 890（v1 族退役）：族不存在 ⇒ 这两条 v1 DDL 不是「no-op」而是 **42P01**
+	// （ALTER 一张不存在的表）。
+	//
+	// ⚠ 为什么不能只靠 columnsAllPresent 的短路：它的真实语义是「表不存在 ⇒
+	// true」（见其注释：to_regclass 判据写在 WHERE 里，表不存在 ⇒ missing=0
+	// ⇒ 读作「没有缺列」）⇒ 退役后 hotOK 恒 true ⇒ 短路恒触发 ⇒ **恰好**不炸。
+	// 但那是**巧合式安全**：一旦有人把 columnsAllPresent 改成它注释里原来
+	// 写的「表不存在 ⇒ false」，本函数就会每次 boot 去 ALTER 已 DROP 的族 ⇒
+	// boot 失败（42P01）⇒ 网关起不来。
+	// ⇒ 这里补一道**显式存在性闸**（与 ensureRequestLogSchema / maas /
+	// work_type 三处同一条纪律），把承重语义从「helper 的空真」挪到
+	// 「本函数自己判断族在不在」。
+	var v1FamilyPresent bool
+	if err := d.pool.QueryRow(ctx, `
+		SELECT to_regclass('public._request_logs') IS NOT NULL
+		   OR to_regclass('public._request_logs_hot') IS NOT NULL
+	`).Scan(&v1FamilyPresent); err != nil {
+		return fmt.Errorf("probe v1 request_logs presence for 848 DDL: %w", err)
+	}
+	hotOK := !v1FamilyPresent || d.columnsAllPresent(ctx, "_request_logs_hot", []string{"audio_seconds"})
 	if cmbOK && hotOK {
 		if _, err := d.pool.Exec(ctx, `
 			INSERT INTO public.schema_migrations (version, description)
@@ -3081,6 +3201,19 @@ func (d *DB) ensureBillingUnitAndAudioSeconds(ctx context.Context) error {
 		}
 		slog.Info("billing_unit + audio_seconds schema ensured (migration 848, catalog short-circuit)")
 		return nil
+	}
+	// v1 腿的 DDL 只在族真的在位时才拼进去（族不在 ⇒ 拼进去就是 42P01）。
+	v1DDL := ""
+	if v1FamilyPresent {
+		v1DDL = `
+		ALTER TABLE _request_logs_hot
+		    ADD COLUMN IF NOT EXISTS audio_seconds double precision;
+
+		ALTER TABLE _request_logs
+		    ADD COLUMN IF NOT EXISTS audio_seconds double precision;
+`
+	} else {
+		slog.Info("v1 request_logs family is retired (890) — 848 audio_seconds DDL skipped")
 	}
 	_, err := d.pool.Exec(ctx, `
 		ALTER TABLE credential_model_bindings
@@ -3101,13 +3234,7 @@ func (d *DB) ensureBillingUnitAndAudioSeconds(ctx context.Context) error {
 		    END IF;
 		END
 		$do$;
-
-		ALTER TABLE _request_logs_hot
-		    ADD COLUMN IF NOT EXISTS audio_seconds double precision;
-
-		ALTER TABLE _request_logs
-		    ADD COLUMN IF NOT EXISTS audio_seconds double precision;
-
+` + v1DDL + `
 		INSERT INTO public.schema_migrations (version, description)
 		VALUES ('848', 'cmb.billing_unit + _request_logs.audio_seconds for media duration billing')
 		ON CONFLICT (version) DO UPDATE SET description = EXCLUDED.description;
@@ -4490,6 +4617,22 @@ func (d *DB) ensureWorkTypeSchema(ctx context.Context) error {
 	// Guarded separately: this is the only statement above that takes an
 	// exclusive lock on request_logs. Everything in workTypeSchemaSQL touches
 	// small config tables and is cheap to re-check.
+	//
+	// ★ 890（v1 族退役）：族不存在 ⇒ 这条 DDL 不是「no-op」而是 **42P01**
+	// （ALTER TABLE 一个不存在的表）。workTypeRequestLogsCurrent 的短路算的是
+	// 「缺多少」：列项因 to_regclass 为 NULL 而计 0，**索引项计 1** ⇒
+	// missing ≠ 0 ⇒ 判定「不 current」⇒ 继续执行 DDL ⇒ 42P01 ⇒ boot 失败。
+	// ⇒ 这里补一道**存在性**闸：族不在 ⇒ 整段 DDL 无事可做。
+	var v1TablePresent bool
+	if err := d.pool.QueryRow(ctx, `
+		SELECT to_regclass('public._request_logs') IS NOT NULL
+	`).Scan(&v1TablePresent); err != nil {
+		return fmt.Errorf("probe v1 request_logs presence for work_type DDL: %w", err)
+	}
+	if !v1TablePresent {
+		slog.Info("v1 request_logs family is retired (890) — work_type column/index DDL skipped")
+		return nil
+	}
 	if d.workTypeRequestLogsCurrent(ctx) {
 		slog.Info("work_type_config schema ensured (22 seed rows idempotent); " +
 			"_request_logs work_type column and index already present, DDL skipped")
@@ -4914,7 +5057,56 @@ func (d *DB) Close() {
 		_ = stdlibDB.Close()
 	}
 	if pool != nil {
+		closePoolWithTimeout(pool, poolCloseTimeout)
+	}
+}
+
+// poolCloseTimeout bounds how long Close() waits for the pool to release
+// its resources.
+//
+// 2026-10-21 (R71), measured on llm-gateway-go: pgxpool.Close() waits for
+// every acquired connection to be returned. A connection held by a worker
+// that never stopped — e.g. the long-lived LISTEN connection owned by
+// AutoRouteRealtimeListener, whose Stop() was skipped because an earlier
+// Stop() in the same shutdown goroutine was still blocking — therefore
+// blocks Close() forever. In the gateway this Close() runs from a defer in
+// main(), so main never returned: the process lingered as a zombie holding
+// every Redis connection it had opened, and its background goroutines kept
+// failing against the closed pool.
+//
+// The bound keeps the failure local. pgxpool.Close() closes its own
+// close-channel before waiting, so the pool is already refusing new work
+// when the wait is abandoned; only the "wait for outstanding resources"
+// part is given up on. The abandoned goroutine finishes on its own and
+// releases the connections.
+const poolCloseTimeout = 15 * time.Second
+
+// closePoolWithTimeout closes the pool and waits at most timeout for it to
+// release its resources. It reports whether the pool finished closing
+// within the bound.
+//
+// The close itself runs on its own goroutine so that a leaked connection
+// cannot pin the caller forever.
+func closePoolWithTimeout(pool *pgxpool.Pool, timeout time.Duration) bool {
+	if pool == nil {
+		return true
+	}
+	closed := make(chan struct{})
+	go func() {
+		defer close(closed)
 		pool.Close()
+	}()
+	if timeout <= 0 {
+		<-closed
+		return true
+	}
+	select {
+	case <-closed:
+		return true
+	case <-time.After(timeout):
+		slog.Warn("db: pool close timed out; abandoning the wait for outstanding connections",
+			"timeout", timeout.String())
+		return false
 	}
 }
 
@@ -6995,6 +7187,18 @@ func (d *DB) ensureRoutingRecentSuccessRate(ctx context.Context) error {
 // 归一化，失配只损失样本量不产生错误样本）。探针排除谓词对会话腿是防御
 // 性的——探针轮次本就不镜像。
 //
+// ★ 890（v1 族退役）：v1 腿被**摘掉**，只剩会话腿。
+//
+// ⚠⚠ 为什么这一刀必须在删表**之前**落：`recent_success_rate` 被
+// `provider/client.go` 的候选查询以 `CROSS JOIN LATERAL` 调用 ⇒ v1 腿
+// 42P01 ⇒ **整条候选查询失败 ⇒ 选不出任何上游凭据 ⇒ 100% 流量失败**。
+// 这不是"面板变暗"，是"网关不能转发"。而 CREATE OR REPLACE 对 plpgsql/
+// SQL 函数体**不在创建时解析** ⇒ 函数能建成功、直到第一次被调用才炸 ⇒
+// 症状与"上游全挂"同形，根因却在一次字符串手术上。
+//
+// ⇒ 删表前先摘腿；删表后本函数只剩会话腿，语义与 S3 波 2 的"停写后会话腿
+// 独供"完全一致（v1 腿在停写后本来就恒空）。
+//
 // ⚠ 注释里不许出现反引号：本段 SQL 在 Go raw string 里。
 const recentSuccessRateEnsureSQL = `
 		CREATE OR REPLACE FUNCTION recent_success_rate(p_credential_id BIGINT,
@@ -7006,18 +7210,6 @@ const recentSuccessRateEnsureSQL = `
 		STABLE
 		AS $$
 			    WITH recent AS (
-			        SELECT success, ts
-				    FROM _request_logs_hot
-				    WHERE credential_id = p_credential_id
-				      AND lower(COALESCE(outbound_model, client_model)) = lower(p_raw_model)
-				      AND ts > NOW() - (p_window_hours || ' hours')::interval
-				      -- Probe/self-check rows measure the health worker, not the
-				      -- business route. Legacy probe IDs are retained for old rows
-				      -- created before origin_stage/task_type was added.
-				      AND COALESCE(task_type, '') <> 'probe_triggered'
-				      AND COALESCE(origin_stage, '') NOT IN ('self_check', 'node_probe', 'system_health')
-				      AND request_id NOT LIKE 'probe-%'
-				    UNION ALL
 			        SELECT success, ts
 				    FROM public.session_turns_hot
 				    WHERE credential_id ~ '^[0-9]+$'

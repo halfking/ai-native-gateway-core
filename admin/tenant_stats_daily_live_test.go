@@ -22,6 +22,29 @@ import (
 // 前天故意留空验证零填充），调用真实 handler，校验序列长度/分桶/求和，
 // 结束后清理种子（零残留）。
 //
+// ★ R68 改瞄（2026-10-21，v1 族退役）：**换的是「活路径」，不是表名**。
+//
+// ① 种子原来落在 v1 的 `_request_logs_hot` ⇒ 890 之后必然 42P01。
+// ② 更要紧的是：**890 之后 getTenantStats 的活路径已经不是 raw union**。
+//
+//	`settings.RequestLogsWriteEnabled()` 的默认值已被翻成 **false**
+//	（那个键的 subject 随 890 一起没了）⇒
+//	`tryTenantStatsFromDailyRollup` 不再早退 ⇒ 端点走的是
+//	**daily rollup 路径**（`stats_usage_daily`），raw union
+//	（tenantStatsLogsTableSQL 的会话族两臂）只在**写门被显式打开**时才可达。
+//	⇒ 把种子种进 `session_turns_hot` 会得到「全零的 daily」（实测：桶全 0）。
+//
+// ⇒ 本门改种 `stats_usage_daily`（活路径的真源）。
+// ⚠ **换表名不等于换夹具**：rollup 是**预聚合**表 ⇒ 一行代表「一天一个维度」的
+//
+//	汇总（request_count/success_count/failure_count/total_tokens/…），
+//	不是「一天一行请求」。今日 2 请求（1 成 1 败）= **一行**聚合，不是两行。
+//
+// ⚠ day_utc 是 **Asia/Shanghai** 日历日（读源用 `timezone('Asia/Shanghai', now())::date`）。
+// ⚠ 唯一键含 dimension_type/dimension_key/traffic_class/provider_id/…
+//
+//	⇒ 夹具必须写全这些维度列，否则与已有行撞键。
+//
 // Run with:
 //
 //	TEST_DATABASE_URL=postgres://... go test -count=1 -run TestTenantStatsDaily_Live ./admin
@@ -45,7 +68,7 @@ func TestTenantStatsDaily_Live(t *testing.T) {
 	// ── 清场 + 种子 ──────────────────────────────────────
 	cleanup := func() {
 		//nolint:errcheck // 清场 best-effort
-		pool.Exec(ctx, `DELETE FROM _request_logs_hot WHERE tenant_id = $1`, code)
+		pool.Exec(ctx, `DELETE FROM stats_usage_daily WHERE tenant_id = $1`, code)
 		//nolint:errcheck // 清场 best-effort
 		pool.Exec(ctx, `DELETE FROM tenants WHERE code = $1`, code)
 	}
@@ -59,13 +82,25 @@ func TestTenantStatsDaily_Live(t *testing.T) {
 	}
 	// 今日 2 行（1 成功 1 失败）、昨日 1 行；前日留空验证零填充。
 	seed := `
-		INSERT INTO _request_logs_hot (request_id, ts, tenant_id, success, total_tokens, credits_charged, cost_usd)
+		INSERT INTO stats_usage_daily
+			(day_utc, tenant_id, provider_id, credential_id, canonical_id,
+			 raw_model_name, dimension_type, dimension_key, traffic_class,
+			 request_count, success_count, failure_count,
+			 prompt_tokens, completion_tokens, total_tokens,
+			 credits_charged, cost_usd)
 		VALUES
-		 ('zz-stats-daily-r1', now(),                        $1, true,  100, 10, 0.5),
-		 ('zz-stats-daily-r2', now(),                        $1, false,  50,  0, 0.0),
-		 ('zz-stats-daily-r3', now() - INTERVAL '1 day',     $1, true,   70,  7, 0.3)`
+			((timezone('Asia/Shanghai', now()))::date, $1, 0, 0, 0,
+			 'zz-model', 'provider_model', 'zz-model', 'business',
+			 2, 1, 1,
+			 100, 50, 150,
+			 10, 0.5),
+			((timezone('Asia/Shanghai', now()))::date - 1, $1, 0, 0, 0,
+			 'zz-model', 'provider_model', 'zz-model', 'business',
+			 1, 1, 0,
+			 70, 0, 70,
+			 7, 0.3)`
 	if _, err := pool.Exec(ctx, seed, code); err != nil {
-		t.Fatalf("seed _request_logs_hot: %v", err)
+		t.Fatalf("seed stats_usage_daily: %v", err)
 	}
 
 	// ── 调用真实 handler ────────────────────────────────
@@ -125,10 +160,11 @@ func TestTenantStatsDaily_Live(t *testing.T) {
 		}
 	}
 
-	// ── days=30：R36-A1 回归（days>7 必须走并集视图，热尾不得为零）──
-	// 种子只落 _request_logs_hot；修复前 days>7 读父表 _request_logs，
-	// 尚未晋升的热尾整段为零且与同响应 byModel/byApp 矛盾——本断言即
-	// 红/绿分界（2026-09-30 三十六轮补真库实证）。
+	// ── days=30：R36-A1 回归（长窗不得丢热尾）──
+	// 原始回归点是「days>7 读父表而非并集视图 ⇒ 热尾整段为零且与同响应
+	// byModel/byApp 矛盾」。890 之后活路径换成 rollup，窗口谓词是
+	// `day_utc >= today-(days-1)` ⇒ 长窗同样必须覆盖今日/昨日两桶。
+	// ⇒ 本断言即红/绿分界（2026-09-30 三十六轮补真库实证）。
 	rec30 := httptest.NewRecorder()
 	req30 := httptest.NewRequest(http.MethodGet, "/api/admin/tenants/"+code+"/stats?days=30", nil)
 	h.getTenantStats(rec30, req30, code)

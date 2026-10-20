@@ -412,8 +412,15 @@ if [[ "$GATE_APPLY_STARTUP" == "1" && "$GATE_DB_SHAPE" == "installer" ]]; then
       die "有 ${sf_fail} 条启动迁移未应用，但找不到已知缺口清单 ${GAP_MANIFEST}。" \
 "清单缺失时无法区分「已知缺口」与「新回归」，而放行等于把新回归当已知缺口吞掉。"
     fi
-    mapfile -t gap_known < <(sed -e 's/#.*$//' -e '/^[[:space:]]*$/d' \
-                              -e 's/[[:space:]].*$//' "$GAP_MANIFEST" | sort -u)
+    # ★ bash 3.2 兼容（2026-10-21）：原写法是 `mapfile -t`（bash 4.0+），
+    #   而 macOS 自带 bash 3.2 不支持 ⇒ 本脚本在 macOS 上**语法错误直接退出**
+    #   ⇒ 等于「本地审计在开发者机器上根本没跑过」。改用 read 循环。
+    gap_known=()
+    while IFS= read -r _gap_line; do
+      [ -n "$_gap_line" ] || continue
+      gap_known+=("$_gap_line")
+    done < <(sed -e 's/#.*$//' -e '/^[[:space:]]*$/d' \
+                    -e 's/[[:space:]].*$//' "$GAP_MANIFEST" | sort -u)
     declare -a gap_unlisted=()
     declare -a gap_hit=()
     for entry in "${sf_failed[@]}"; do
@@ -451,7 +458,11 @@ if [[ "$GATE_APPLY_STARTUP" == "1" && "$GATE_DB_SHAPE" == "installer" ]]; then
     # Stale entries: a listed migration that applied fine this run. Surfaced, not
     # fatal, so a real fix is not blocked — but it must not be forgotten either.
     declare -a gap_stale=()
-    mapfile -t gap_actual < <(for e in "${sf_failed[@]}"; do echo "${e%% :: *}"; done | sort -u)
+    gap_actual=()
+    while IFS= read -r _gap_line; do
+      [ -n "$_gap_line" ] || continue
+      gap_actual+=("$_gap_line")
+    done < <(for e in "${sf_failed[@]}"; do echo "${e%% :: *}"; done | sort -u)
     for known in "${gap_known[@]}"; do
       printf '%s\n' "${gap_actual[@]}" | grep -qxF "$known" || gap_stale+=("$known")
     done
@@ -536,8 +547,12 @@ if [[ "$GATE_APPLY_STARTUP" == "1" && "$GATE_DB_SHAPE" == "installer" ]]; then
       declare -a br_unlisted=() br_over=() br_under=() br_absent=()
       # Names the budget actually exempts, read once so the "failed but not
       # listed" check below does not re-parse the file per failure.
-      mapfile -t br_listed < <(sed -e 's/#.*$//' -e '/^[[:space:]]*$/d' \
-                                 -e 's/[[:space:]].*$//' "$BR_BUDGET")
+      br_listed=()
+      while IFS= read -r _br_line; do
+        [ -n "$_br_line" ] || continue
+        br_listed+=("$_br_line")
+      done < <(sed -e 's/#.*$//' -e '/^[[:space:]]*$/d' \
+                      -e 's/[[:space:]].*$//' "$BR_BUDGET")
       while IFS=$'\t' read -r bf budget _; do
         [[ -z "$bf" || "$bf" == \#* ]] && continue
         actual=0
@@ -610,8 +625,12 @@ if [[ "$GATE_APPLY_STARTUP" == "1" && "$GATE_DB_SHAPE" == "installer" ]]; then
 "但找不到已知缺口清单 ${RR_MANIFEST}。缺清单时无法区分「已知不可重跑」与「新回归」，" \
 "而放行等于把新回归当已知缺口吞掉。"
       fi
-      mapfile -t rr_known < <(sed -e 's/#.*$//' -e '/^[[:space:]]*$/d' \
-                               -e 's/[[:space:]].*$//' "$RR_MANIFEST" | sort -u)
+      rr_known=()
+      while IFS= read -r _rr_line; do
+        [ -n "$_rr_line" ] || continue
+        rr_known+=("$_rr_line")
+      done < <(sed -e 's/#.*$//' -e '/^[[:space:]]*$/d' \
+                      -e 's/[[:space:]].*$//' "$RR_MANIFEST" | sort -u)
       declare -a rr_unlisted=() rr_hit=()
       for entry in "${rr_failed[@]}"; do
         f="${entry#rerun:}"; f="${f%% :: *}"
@@ -631,7 +650,11 @@ if [[ "$GATE_APPLY_STARTUP" == "1" && "$GATE_DB_SHAPE" == "installer" ]]; then
 "sql/schema/startup_rerun_known_gaps.tsv 再重跑；不要为了让门禁变绿而放宽这里的判据。"
       fi
       declare -a rr_stale=()
-      mapfile -t rr_actual < <(for e in "${rr_failed[@]}"; do echo "${e#rerun:}" | cut -d' ' -f1; done | sort -u)
+      rr_actual=()
+      while IFS= read -r _rr_line; do
+        [ -n "$_rr_line" ] || continue
+        rr_actual+=("$_rr_line")
+      done < <(for e in "${rr_failed[@]}"; do echo "${e#rerun:}" | cut -d' ' -f1; done | sort -u)
       for known in "${rr_known[@]}"; do
         printf '%s\n' "${rr_actual[@]}" | grep -qxF "$known" || rr_stale+=("$known")
       done
@@ -824,7 +847,6 @@ env \
   TEST_PG_URL="$GATE_URL" \
   TEST_RESOLVE_INVARIANT_DB_URL="$GATE_URL" \
   TEST_TENANT_DATABASE_URL="$TENANT_DSN" \
-  TRACE_RETIREMENT_TEST_DSN="$GATE_URL" \
   go test -tags=integration -count=1 -v -timeout 20m ${TEST_NAME:+-run "$TEST_NAME"} "$PKG" \
   > "$RUN_LOG" 2>&1
 TEST_RC=$?

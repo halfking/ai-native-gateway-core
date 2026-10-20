@@ -47,6 +47,23 @@ import (
 // 判据只断言**能被证明的那一侧**：AST 层面的词法包含关系 + `logsWrite` 的来源。
 // 运行期由同一个变量控制，所以两者合起来构成完整论证。无法证明的（探针的运行期
 // 取值）由 bg 侧的告警覆盖，不在这里假装。
+//
+// ★ 2026-10-20（迁移 890，v1 族退役）：本门**改指**。
+//
+// 退役/改指的对象：
+//
+//	① `logsWrite := requestLogsWriteEnabled()` 这条快照（跳 1）——v1 宽表的
+//	   写入分支整段删除后，写路径里**不再有**这个快照 ⇒ 「arm 不在 logsWrite
+//	   门内」这条断言会**恒真**（假绿：门没了，被测的门也不测了）。
+//	② `persistSystemFingerprint`（环 3）——v1 落列函数随 890 整条删除。
+//
+// 改指后的不变式（仍成立、仍有牙）：
+//
+//	★ 进程内 arm 的调用链上**没有任何一环**被 S4 停写键门控——
+//	  判据从「不在 `if logsWrite {}` 内」升级为「不在**任何**提到停写键的
+//	  if 条件内」（logsWrite 这个变量名已经不存在，只认它会恒真）。
+//	★ `persistSystemFingerprint` 不得复活（它就是 §9.51 拆掉的那个耦合点：
+//	  它只可能在 v1 落列路径里被调用，而那条路径已随 890 退役）。
 
 const fingerprintObservedMarker = "markSystemFingerprintObserved"
 const fingerprintPersistMarker = "persistSystemFingerprint"
@@ -56,6 +73,18 @@ type fingerprintCallSite struct {
 	line   int
 	fn     string
 	inGate bool
+}
+
+// stopWriteIdentifiers 是 S4 停写键在本包里的全部可能的读法。
+//
+// ⚠ 刻意**不**只认 "logsWrite" 一个名字：迁移 890 之后那个变量已经不存在了，
+// 只认它 ⇒ 「不在门内」这条断言恒真（假绿）。这里认的是**语义**：凡是提到
+// 停写键的条件表达式，都算「门」。
+var stopWriteIdentifiers = map[string]bool{
+	"logsWrite":                  true,
+	"requestLogsWriteEnabled":    true,
+	"RequestLogsWriteEnabled":    true,
+	"KeyRequestLogsWriteEnabled": true,
 }
 
 // telemetrySourceFiles 列出本包**所有**非测试源文件。
@@ -78,8 +107,27 @@ func telemetrySourceFiles(t *testing.T) []string {
 	return out
 }
 
+// condReferencesStopWrite 报告该 if 条件里是否提到 S4 停写键。
+func condReferencesStopWrite(cond ast.Expr) bool {
+	found := false
+	ast.Inspect(cond, func(n ast.Node) bool {
+		switch v := n.(type) {
+		case *ast.Ident:
+			if stopWriteIdentifiers[v.Name] {
+				found = true
+			}
+		case *ast.SelectorExpr:
+			if stopWriteIdentifiers[v.Sel.Name] {
+				found = true
+			}
+		}
+		return true
+	})
+	return found
+}
+
 // findFingerprintCalls 收集本包里对 target 的所有调用点，并记录每处是否
-// 词法上位于 `if logsWrite { … }` 体内。
+// 词法上位于「提到 S4 停写键的 if 条件」体内。
 func findFingerprintCalls(t *testing.T, target string) []fingerprintCallSite {
 	t.Helper()
 	var sites []fingerprintCallSite
@@ -88,29 +136,42 @@ func findFingerprintCalls(t *testing.T, target string) []fingerprintCallSite {
 		fset := token.NewFileSet()
 		file, err := parser.ParseFile(fset, name, nil, 0)
 		require.NoError(t, err, "parse %s", name)
+		sites = append(sites, fingerprintCallsInFile(t, name, fset, file, target)...)
+	}
+	return sites
+}
 
-		var walkFunc func(fn *ast.FuncDecl)
-		walkFunc = func(fn *ast.FuncDecl) {
-			var walkStmts func(stmts []ast.Stmt, inGate bool)
-			walkStmts = func(stmts []ast.Stmt, inGate bool) {
-				for _, stmt := range stmts {
-					if isCallTo(stmt, target) {
-						sites = append(sites, fingerprintCallSite{
-							file:   name,
-							line:   fset.Position(stmt.Pos()).Line,
-							fn:     fn.Name.Name,
-							inGate: inGate,
-						})
-					}
-					walkStatement(stmt, inGate, walkStmts)
+// fingerprintCallsInFile 在单个已解析文件里找 target 的调用点。
+//
+// 抽出来是为了让**门检测器本身**可以被正向对照验证（见
+// TestStopWriteGateDetectorRecognizesGatedCalls）：合成一段「有门 / 无门」的
+// 源码喂进来，必须分别报出 inGate=true / false——否则「本包没有一处在门内」
+// 这条否定断言就永远为真、永远绿。
+func fingerprintCallsInFile(t *testing.T, name string, fset *token.FileSet, file *ast.File, target string) []fingerprintCallSite {
+	t.Helper()
+	var sites []fingerprintCallSite
+
+	var walkFunc func(fn *ast.FuncDecl)
+	walkFunc = func(fn *ast.FuncDecl) {
+		var walkStmts func(stmts []ast.Stmt, inGate bool)
+		walkStmts = func(stmts []ast.Stmt, inGate bool) {
+			for _, stmt := range stmts {
+				if isCallTo(stmt, target) {
+					sites = append(sites, fingerprintCallSite{
+						file:   name,
+						line:   fset.Position(stmt.Pos()).Line,
+						fn:     fn.Name.Name,
+						inGate: inGate,
+					})
 				}
+				walkStatement(stmt, inGate, walkStmts)
 			}
-			walkStmts(fn.Body.List, false)
 		}
-		for _, decl := range file.Decls {
-			if fn, ok := decl.(*ast.FuncDecl); ok && fn.Body != nil {
-				walkFunc(fn)
-			}
+		walkStmts(fn.Body.List, false)
+	}
+	for _, decl := range file.Decls {
+		if fn, ok := decl.(*ast.FuncDecl); ok && fn.Body != nil {
+			walkFunc(fn)
 		}
 	}
 	return sites
@@ -118,8 +179,7 @@ func findFingerprintCalls(t *testing.T, target string) []fingerprintCallSite {
 
 func walkStatement(stmt ast.Stmt, inGate bool, walkStmts func([]ast.Stmt, bool)) {
 	isGate := func(cond ast.Expr) bool {
-		id, ok := cond.(*ast.Ident)
-		return ok && id.Name == "logsWrite"
+		return condReferencesStopWrite(cond)
 	}
 	switch s := stmt.(type) {
 	case *ast.BlockStmt:
@@ -174,43 +234,78 @@ func isCallTo(stmt ast.Stmt, target string) bool {
 	return found
 }
 
-func TestFingerprintArmIsNotGatedByStopWrite(t *testing.T) {
-	// §9.51 这道门被**反转过一次**。第一版断言的是「arm 在 `if logsWrite`
-	// 内」——那正是缺陷本身。修好之后同一段判据会红，于是必须把它换成
-	// **可持久的不变式**：
-	//
-	//	进程内指纹 arm 的整条调用链上，**没有任何一环**在 `if logsWrite {}` 体内。
-	//
-	// 这才是「修好了」的定义。钉死具体行号或具体函数名会在下一次重构时变成噪音，
-	// 而这条不变式在重构后依然可判定。
-	//
-	// 断言顺序**不是随意的**：环 3 排在最前，因为它是「别把修复撤销掉」的守卫。
-	// 撤销修复会同时触发环 1/环 2，若它们在前，环 3 就永远轮不到——而一条
-	// 排在更严格断言之后、自己不可达的断言就是装饰（本门第一版正是如此）。
+// TestStopWriteGateDetectorRecognizesGatedCalls 是**门检测器自身的正向对照**。
+//
+// 上一版这道门判的是「arm 不在 `if logsWrite {}` 内」。迁移 890 之后
+// `logsWrite` 这个变量在本包**已经不存在** ⇒ 那条判定会**恒真**（永远绿、
+// 什么也没测）。本用例把检测器喂一段合成源码，证明它**确实**能分辨
+// 「门内 / 门外」——检测器失灵时这里先红，而不是让上面那道门一直假绿。
+func TestStopWriteGateDetectorRecognizesGatedCalls(t *testing.T) {
+	const synthetic = `package p
 
-	// ── 环 3：落列那个函数的函数体里不得再 arm ──────────────────────────────
+func gated() {
+	if requestLogsWriteEnabled() {
+		markSystemFingerprintObserved()
+	}
+}
+
+func alsoGated() {
+	if logsWrite {
+		markSystemFingerprintObserved()
+	}
+}
+
+func ungated() {
+	markSystemFingerprintObserved()
+}
+`
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "synthetic.go", synthetic, 0)
+	require.NoError(t, err)
+
+	sites := fingerprintCallsInFile(t, "synthetic.go", fset, file, fingerprintObservedMarker)
+	require.Len(t, sites, 3, "合成源码里应当有 3 处调用点")
+
+	gatedCount := 0
+	for _, site := range sites {
+		if site.inGate {
+			gatedCount++
+		}
+	}
+	require.Equal(t, 2, gatedCount,
+		"门检测器失灵：合成源码里两处调用点在停写门内、一处在门外")
+	require.False(t, sites[2].inGate, "无门的那处必须报 inGate=false")
+}
+
+// TestFingerprintArmIsNotGatedByStopWrite（★ 改指）：进程内指纹 arm 的整条
+// 调用链上，**没有任何一环**被 S4 停写键门控。
+//
+// §9.51 这道门被**反转过一次**。第一版断言的是「arm 在 `if logsWrite`
+// 内」——那正是缺陷本身。修好之后同一段判据会红，于是必须把它换成
+// **可持久的不变式**：
+//
+//	进程内指纹 arm 的整条调用链上，**没有任何一环**在 S4 停写门的体内。
+//
+// 这才是「修好了」的定义。钉死具体行号或具体函数名会在下一次重构时变成噪音，
+// 而这条不变式在重构后依然可判定。
+//
+// 断言顺序**不是随意的**：环 3 排在最前，因为它是「别把修复撤销掉」的守卫。
+// 撤销修复会同时触发环 1/环 2，若它们在前，环 3 就永远轮不到——而一条
+// 排在更严格断言之后、自己不可达的断言就是装饰（本门第一版正是如此）。
+func TestFingerprintArmIsNotGatedByStopWrite(t *testing.T) {
+	// ── 环 3：v1 落列函数不得复活（它就是 §9.51 拆掉的那个耦合点）─────────
 	//
 	// 第一版这里写的是「persistSystemFingerprint 的调用点不能自我递归」。
 	// 它读起来像是这条，但它量的是完全不同的东西，而且几乎恒真。已订正。
-	fset := token.NewFileSet()
-	file, err := parser.ParseFile(fset, "client.go", nil, 0)
-	require.NoError(t, err)
-	var persist *ast.FuncDecl
-	for _, decl := range file.Decls {
-		if fn, ok := decl.(*ast.FuncDecl); ok && fn.Name.Name == fingerprintPersistMarker {
-			persist = fn
-		}
-	}
-	require.NotNil(t, persist, "client.go no longer defines %s()", fingerprintPersistMarker)
-
-	// 用深匹配而不是 isCallTo：后者为「调用归属哪个基本块」设计，是浅匹配，
-	// 用在这里会恒假（详见 blockCallsDeep 的注释）。
-	for _, arm := range []string{"observeSystemFingerprint", fingerprintObservedMarker} {
-		require.False(t, blockCallsDeep(persist.Body, arm),
-			"%s() calls %s() again — that is exactly the coupling audit §9.51 removed. "+
-				"%s is only ever called from `if logsWrite {}`, so arming there makes the "+
-				"in-process re-arm die at S4 stop-write again.",
-			fingerprintPersistMarker, arm, fingerprintPersistMarker)
+	// ★ 2026-10-20：persistSystemFingerprint 随 v1 族整条删除 ⇒ 本环改为
+	// 断言它**仍然不存在**（它只可能在 v1 落列路径里被调用，而那条路径已退役；
+	// 它若回来，arm 与写门的耦合就会回来）。
+	for _, name := range telemetrySourceFiles(t) {
+		src, err := os.ReadFile(name)
+		require.NoError(t, err)
+		require.NotContains(t, string(src), "func (c *Client) "+fingerprintPersistMarker,
+			"%s 又定义了 %s() —— v1 落列函数随迁移 890 退役；它只可能在 v1 写入"+
+				"路径里被调用，而那条路径已经没有了", name, fingerprintPersistMarker)
 	}
 
 	// ── 环 1：arm 的唯一底层写入方，且它自己不在门内 ─────────────────────────
@@ -220,7 +315,7 @@ func TestFingerprintArmIsNotGatedByStopWrite(t *testing.T) {
 		fingerprintObservedMarker)
 	for _, o := range observed {
 		require.False(t, o.inGate,
-			"%s() at %s:%d is inside `if logsWrite {}`. The in-process re-arm records that "+
+			"%s() at %s:%d is inside a stop-write gate. The in-process re-arm records that "+
 				"THIS PROCESS saw fingerprint traffic; it has nothing to do with whether that "+
 				"traffic was written to the wide table. §9.51 moved it out for exactly this reason.",
 			fingerprintObservedMarker, o.file, o.line)
@@ -230,6 +325,23 @@ func TestFingerprintArmIsNotGatedByStopWrite(t *testing.T) {
 			fingerprintObservedMarker)
 	}
 
+	// 环 1 补强：arm 的包装函数**整个函数体**都不得读停写键。
+	// 块级判定（inGate）只看「调用点所在的 if 条件」；这一条更狠——包装函数里
+	// 任何位置读了这个键都不行（§9.51 的耦合就是这么长回去的）。
+	clientFset := token.NewFileSet()
+	clientFile, err := parser.ParseFile(clientFset, "client.go", nil, 0)
+	require.NoError(t, err)
+	var armWrapper *ast.FuncDecl
+	for _, decl := range clientFile.Decls {
+		if fn, ok := decl.(*ast.FuncDecl); ok && fn.Name.Name == "observeSystemFingerprint" {
+			armWrapper = fn
+		}
+	}
+	require.NotNil(t, armWrapper, "client.go no longer defines observeSystemFingerprint()")
+	require.False(t, blockCallsDeep(armWrapper.Body, "requestLogsWriteEnabled"),
+		"observeSystemFingerprint() 不得读 S4 停写键 —— arm 记录的是「本进程见过带指纹的"+
+			"请求」，与写不写库无关；把它挂到停写键上就是 §9.51 那个缺陷的复刻")
+
 	// ── 环 2：arm 的入口必须在两个写路径里，且都在门控之外 ───────────────────
 	arms := findFingerprintCalls(t, "observeSystemFingerprint")
 	require.Len(t, arms, 2,
@@ -238,7 +350,7 @@ func TestFingerprintArmIsNotGatedByStopWrite(t *testing.T) {
 			"the detector on that path", len(arms))
 	for _, a := range arms {
 		require.False(t, a.inGate,
-			"observeSystemFingerprint() at %s:%d is inside `if logsWrite {}` — that is the "+
+			"observeSystemFingerprint() at %s:%d is inside a stop-write gate — that is the "+
 				"exact defect audit §9.51 fixed; do not move it back", a.file, a.line)
 		require.Contains(t, []string{"insertRequestLog", "updateRequestLog"}, a.fn,
 			"observeSystemFingerprint() at %s:%d is called from %s; re-derive the stop-write "+
@@ -246,16 +358,29 @@ func TestFingerprintArmIsNotGatedByStopWrite(t *testing.T) {
 	}
 }
 
-// TestLogsWriteSnapshotReadsTheStopWriteKey 让上一道门的论证闭合。
+// TestStopWriteKeyGatesOnlyTheBodyMirror（★ 改指，原名
+// TestLogsWriteSnapshotReadsTheStopWriteKey）让上一道门的论证闭合。
 //
-// `inGate` 只有在 `logsWrite` 确实**就是 S4 停写键**时才有意义。这条链有三跳，
+// `inGate` 只有在「S4 停写键」确实还在门控某个读点时才有意义。这条链有三跳，
 // 每一跳都要钉住，否则中间任一环被换掉、而门仍然绿：
 //
-//	logsWrite := requestLogsWriteEnabled()                  （client.go，两处）
-//	  └─ requestLogsWriteEnabled() { return settings.RequestLogsWriteEnabled() }
-//	       └─ settings.RequestLogsWriteEnabled() { return GetPlatformBool(KeyRequestLogsWriteEnabled, true) }
-//	            └─ KeyRequestLogsWriteEnabled = "storage.request_logs_write_enabled"
-func TestLogsWriteSnapshotReadsTheStopWriteKey(t *testing.T) {
+//	① 本包里，S4 停写键的**唯一**读点是 persistRequestLog 里的**文件系统正文
+//	   镜像**；两个 PG 写路径（insertRequestLog / updateRequestLog）**不得**
+//	   再读它——v1 宽表写入已退役，计费写入（usage_ledger）必须恒写。
+//	② requestLogsWriteEnabled() { return settings.RequestLogsWriteEnabled() }
+//	③ settings.RequestLogsWriteEnabled() { return GetPlatformBool(KeyRequestLogsWriteEnabled, false) }
+//	     └─ KeyRequestLogsWriteEnabled = "storage.request_logs_write_enabled"
+//
+// ★ 2026-10-20（迁移 890）：原来的跳 1 是「两个写路径各取一次
+// `logsWrite := requestLogsWriteEnabled()` 快照」——那个快照随 v1 写入分支
+// 整段删除 ⇒ 改指为「两个写路径**一次都不得**读这个键；唯一读点是镜像」。
+//
+// ★ 2026-10-20（并行审计轮 D0，origin/main）：跳 3 的**默认值**由 true 改成
+// false —— 合并后本门必须与之一致（否则注释与代码分叉，下一个人会照着注释
+// 以为「默认双写」）。语义上这仍然是自洽的：v1 族已被 890 整体 DROP，
+// 「是否允许写 v1」这个问题的答案恒为「否」⇒ 默认 false 与事实一致，
+// 且未显式配置的环境（新装 / 克隆 / 灾备）不会再以为自己在双写。
+func TestStopWriteKeyGatesOnlyTheBodyMirror(t *testing.T) {
 	fset := token.NewFileSet()
 	file, err := parser.ParseFile(fset, "client.go", nil, 0)
 	require.NoError(t, err)
@@ -267,40 +392,36 @@ func TestLogsWriteSnapshotReadsTheStopWriteKey(t *testing.T) {
 		}
 	}
 
-	// 跳 1：两个写路径各取一次快照。
-	assignedIn := map[string]int{}
+	// ── 跳 1（改指）：停写键在本包里的读点分布 ──────────────────────────────
+	readsIn := map[string]int{}
 	for _, decl := range file.Decls {
 		fn, ok := decl.(*ast.FuncDecl)
 		if !ok || fn.Body == nil {
 			continue
 		}
 		ast.Inspect(fn.Body, func(n ast.Node) bool {
-			assign, ok := n.(*ast.AssignStmt)
+			call, ok := n.(*ast.CallExpr)
 			if !ok {
 				return true
 			}
-			for i, lhs := range assign.Lhs {
-				id, ok := lhs.(*ast.Ident)
-				if !ok || id.Name != "logsWrite" || i >= len(assign.Rhs) {
-					continue
-				}
-				if call, ok := assign.Rhs[i].(*ast.CallExpr); ok {
-					if rid, ok := call.Fun.(*ast.Ident); ok && rid.Name == "requestLogsWriteEnabled" {
-						assignedIn[fn.Name.Name]++
-					}
-				}
+			id, ok := call.Fun.(*ast.Ident)
+			if !ok || id.Name != "requestLogsWriteEnabled" {
+				return true
 			}
+			readsIn[fn.Name.Name]++
 			return true
 		})
 	}
+	require.Equal(t, 1, readsIn["persistRequestLog"],
+		"persistRequestLog 必须恰好读一次停写键（它门的是文件系统正文镜像）")
 	for _, fn := range []string{"insertRequestLog", "updateRequestLog"} {
-		require.Equal(t, 1, assignedIn[fn],
-			"%s must take exactly one `logsWrite := requestLogsWriteEnabled()` snapshot", fn)
+		require.Zero(t, readsIn[fn],
+			"%s 不得再读 S4 停写键 —— v1 宽表写入已退役，计费写入（usage_ledger）"+
+				"必须恒写；把这个键挂回写路径等于让停写把计费也停掉", fn)
 	}
-	require.Len(t, assignedIn, 2,
-		"only insertRequestLog and updateRequestLog may snapshot logsWrite; got %d snapshots "+
-			"in %v — a third gate site is a place this argument has not been checked",
-		len(assignedIn), assignedIn)
+	require.Len(t, readsIn, 1,
+		"停写键在本包只应剩一个读点（persistRequestLog 的正文镜像）；got %d in %v —— "+
+			"多出来的读点都要重新推导一次门控语义", len(readsIn), readsIn)
 
 	// 跳 2：本地 wrapper 必须**原样**转发到 settings 包。
 	//
@@ -313,7 +434,7 @@ func TestLogsWriteSnapshotReadsTheStopWriteKey(t *testing.T) {
 	require.Len(t, wrapper.Body.List, 1,
 		"requestLogsWriteEnabled() must be a pure pass-through: exactly one statement. "+
 			"Any extra statement can change its value while still referencing the S4 key once, "+
-			"which would silently invalidate every `if logsWrite {}` gate in this package "+
+			"which would silently invalidate every stop-write gate in this package "+
 			"(mutation M5 in audit §9.50.5 slipped through the earlier reference-count check)")
 
 	ret, ok := wrapper.Body.List[0].(*ast.ReturnStmt)

@@ -323,13 +323,16 @@ migrate_existing_pg_to_shared() {
   # 2026-09-23 修复：容错归一化路径（Docker 有时报告带尾部 / 或双斜杠的路径），
   # 否则 `DL_PG_SOURCE != shared` 误报为真、触发无用迁移并最终 docker run
   # 解析异常（"invalid mode: /var/lib/postgresql/data"）。
-  local dl_pg_source_norm shared_norm
-  dl_pg_source_norm=$(printf '%s' "$DL_PG_SOURCE" | tr -s '/' | sed 's:/*$::')
-  shared_norm=$(printf '%s' "$shared" | tr -s '/' | sed 's:/*$::')
-  [[ -n "$dl_pg_source_norm" && "$dl_pg_source_norm" != "$shared_norm" ]] || {
+  # 2026-10-20 修复：归一化必须解析**软链**（dl_same_physical_dir /
+  # dl_physical_path）。容器数据目录以软链形态挂在共享根下时（如
+  # ~/kaixuan/postgres -> postgres-citus），纯字符串比较会误判成「未绑定共享
+  # 目录」⇒ 触发几百 MB 级无用搬迁 + 容器重建；而重建固定占用 5432，该端口
+  # 已被别的实例占用的机器上会直接失败 ⇒ 整个部署中止。物理路径相同即同一份
+  # 数据，无需搬迁。判定函数放在 deploy-local-lib.sh 里，契约门可直接驱动。
+  if [[ -z "$DL_PG_SOURCE" ]] || dl_same_physical_dir "$DL_PG_SOURCE" "$shared"; then
     log "llm-gateway-pg already bound to shared $shared (no copy required; source=$DL_PG_SOURCE)"
     return 0
-  }
+  fi
   log "migrating llm-gateway-pg data to $shared (source retained at $DL_PG_SOURCE)"
   docker stop "$DL_PG_CONTAINER" >/dev/null 2>&1 || true
   mkdir -p "$SHARED_PG_BACKUP_DIR"
@@ -360,6 +363,12 @@ migrate_existing_pg_to_shared() {
   pg_user=$(dl_container_env "$old_name" POSTGRES_USER); pg_user=${pg_user:-llm_gateway}
   pg_db=$(dl_container_env "$old_name" POSTGRES_DB); pg_db=${pg_db:-llm_gateway}
   pg_pass=$(dl_container_env "$old_name" POSTGRES_PASSWORD)
+  # 2026-10-20 修复：重建容器时**沿用原容器实际发布的宿主端口**，不再硬编码 5432。
+  # 端口与容器 env 里的 DSN 必须成对沿用，详见 dl_pg_publish_spec 的注释。
+  local pg_bind_ip pg_host_port pg_publish_spec
+  pg_bind_ip=$(docker inspect -f '{{with index .NetworkSettings.Ports "5432/tcp"}}{{with index . 0}}{{.HostIp}}{{end}}{{end}}' "$old_name" 2>/dev/null || true)
+  pg_host_port=$(docker inspect -f '{{with index .NetworkSettings.Ports "5432/tcp"}}{{with index . 0}}{{.HostPort}}{{end}}{{end}}' "$old_name" 2>/dev/null || true)
+  pg_publish_spec=$(dl_pg_publish_spec "$pg_bind_ip" "$pg_host_port")
   # 2026-09-23 修复：改用 `--mount type=bind,...` 显式语法，避免 `-v src:dst` 在路径含
   # 特定字符或 daemon 严格模式下被误解析为 mode 段（曾导致 "invalid mode"）。同时把
   # env-file 的位置单独列在 `--env-file` 之前以便排错时一眼看出是文件来源。
@@ -368,7 +377,7 @@ migrate_existing_pg_to_shared() {
     --restart unless-stopped
     --env-file "$env_file"
     --mount "type=bind,source=${shared},target=/var/lib/postgresql/data"
-    -p "127.0.0.1:5432:5432"
+    -p "$pg_publish_spec"
   )
   [[ -n "$network" ]] && run_args+=(--network "$network")
   log "creating new llm-gateway-pg with shared storage at $shared"

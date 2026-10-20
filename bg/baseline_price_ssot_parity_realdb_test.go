@@ -160,11 +160,11 @@ func queryBaselineRows(ctx context.Context, t *testing.T, pool *pgxpool.Pool) ma
 	out := map[string]dbBaselineRow{}
 	for rs.Next() {
 		var (
-			name                     string
-			r                        dbBaselineRow
-			in, out_, cr, cw         *float64
-			cur, ven, url            *string
-			ts                       *time.Time
+			name             string
+			r                dbBaselineRow
+			in, out_, cr, cw *float64
+			cur, ven, url    *string
+			ts               *time.Time
 		)
 		if err := rs.Scan(&name, &cur, &in, &out_, &cr, &cw, &ven, &url, &ts); err != nil {
 			t.Fatalf("scan baseline row: %v", err)

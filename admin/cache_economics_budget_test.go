@@ -10,10 +10,12 @@
 //	compressedQuery request_logs_with_current_month  35344 ms
 //
 // 推翻它的理由（审计 §13.1）：
-//   ① 窗口错了——端点走 resolveUsageTimeRange(r, 30)，默认是**最近 30 天**，
-//      那次计时取自「今天」与「本月」两个窗口；
-//   ② 计时边界错了——同一次 EXPLAIN 在当天窗口下 Execution Time 只有 61.367ms，
-//      8.3s 来自包着 podman exec 的 wall clock。
+//
+//	① 窗口错了——端点走 resolveUsageTimeRange(r, 30)，默认是**最近 30 天**，
+//	   那次计时取自「今天」与「本月」两个窗口；
+//	② 计时边界错了——同一次 EXPLAIN 在当天窗口下 Execution Time 只有 61.367ms，
+//	   8.3s 来自包着 podman exec 的 wall clock。
+//
 // 真实 30 天窗口下：主聚合 12,667ms（已被迁移 873 修到 487ms），
 // 而压缩计数读 canonical 视图是 **>300s 跑不完**（不是 35s）。
 //

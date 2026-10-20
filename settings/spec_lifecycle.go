@@ -83,5 +83,18 @@ func LifecycleSpecs() []*Spec {
 		{Key: "lifecycle.request_wal_ttl_days", Type: TypeInt, Scope: ScopePlatform, Category: CategoryLifecycle, Min: floatPtr(1), Max: floatPtr(30), Default: 1, DangerLevel: Warning, HotReload: true, Description: "request_wal 保留天数", DescriptionLong: "request_wal 月度分区保留天数。默认 1 天。", Unit: "天"},
 		{Key: "lifecycle.credit_ledger_ttl_days", Type: TypeInt, Scope: ScopePlatform, Category: CategoryLifecycle, Min: floatPtr(1), Max: floatPtr(30), Default: 1, DangerLevel: Warning, HotReload: true, Description: "credit_ledger 保留天数", DescriptionLong: "credit_ledger 月度分区保留天数。默认 1 天。", Unit: "天"},
 		{Key: "lifecycle.tool_usage_stats_ttl_days", Type: TypeInt, Scope: ScopePlatform, Category: CategoryLifecycle, Min: floatPtr(1), Max: floatPtr(30), Default: 1, DangerLevel: Warning, HotReload: true, Description: "tool_usage_stats 保留天数", DescriptionLong: "tool_usage_stats 月度分区保留天数。默认 1 天。", Unit: "天"},
+
+		// 2026-10-21（§143.44）：usage_facts —— **两实例上唯一没有任何留存的族**。
+		//
+		// 证据（值无关判据）：211 与 252 的 settings_kv 里 11 个
+		// `lifecycle.*_ttl_days` 键**完全一致**，其中**没有** usage_facts
+		// ⇒ 该族逐日分区 + DEFAULT 分区**无界增长**（252 ≈1.5 MB/天）。
+		//
+		// ★ 保留期 = **365 天**（属主 2026-10-21 定）：它是**计费事实**族，
+		//   保留期属于账期/审计语义（年审窗口），不是技术参数。
+		//   回收方式 = 按日分区 DROP（bg/partition_manager.go 的
+		//   dropOldDailyStatePartitions；既有月度 SQL helper 只认
+		//   ^<parent>_\d{4}_\d{2}$，对日分区名一个都不匹配）。
+		{Key: "lifecycle.usage_facts_ttl_days", Type: TypeInt, Scope: ScopePlatform, Category: CategoryLifecycle, Min: floatPtr(1), Max: floatPtr(3650), Default: 365, DangerLevel: Warning, HotReload: true, Description: "usage_facts 保留天数", DescriptionLong: "usage_facts 按日分区（usage_facts_YYYYMMDD）的保留天数。默认 365 天（计费事实族，对齐年度审计/账期窗口）。超过保留期的**整个日分区**被 DROP 回收空间（不是逐行 DELETE）。", Unit: "天"},
 	}
 }

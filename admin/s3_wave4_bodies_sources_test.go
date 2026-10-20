@@ -30,18 +30,33 @@ func s3Wave4ReadFile(t *testing.T, rel string) string {
 	return readRepoFile(t, parts...)
 }
 
-// TestS3Wave4BatchFetcherFamilySplit 钉住「主取数器=会话族、summary 回退=v1、
-// 元组变体=v1」的三分格局。会话族双腿用 count==2（判据纪律 #7：删一条腿
-// 的静默回退必须红）。
+// TestS3Wave4BatchFetcherFamilySplit 钉住「两个取数器都读会话族 hot∪父表两腿」。
+//
+// ★ 2026-10-20（迁移 890，v1 族真删）：原来是**三分格局**——
+// 主取数器=会话族、summary 回退变体=**v1 视图**、元组变体=**v1 视图**。
+// v1 族被 DROP ⇒ 后两个的 v1 臂必须消失（读了就是 42P01）。
+//
+// ⇒ 本门从「三分格局」**反转**为「两个都读会话族」。会话族双腿用
+// count==2（判据纪律 #7：删一条腿的静默回退必须红）。
+//
+// ⚠ 标识符「v1BodiesByRequestIDSQL」是**历史名**：它记录的是「这条腿曾经
+// 服务 v1 回退路径」这个事实，不再表示它读 v1。
 func TestS3Wave4BatchFetcherFamilySplit(t *testing.T) {
-	if got := strings.Count(sessionBodiesByRequestIDSQL, "session_bodies"); got != 2 {
-		t.Errorf("主批量取数器必须读会话族 hot∪父表两腿（count==2），实测 %d：\n%s", got, sessionBodiesByRequestIDSQL)
-	}
-	if strings.Contains(sessionBodiesByRequestIDSQL, "_request_logs_bodies") {
-		t.Errorf("主批量取数器不得再引用 v1 bodies（回退 v1 = 停写后新会话正文静默为空）：\n%s", sessionBodiesByRequestIDSQL)
-	}
-	if !strings.Contains(v1BodiesByRequestIDSQL, "request_logs_bodies_with_current_month") {
-		t.Errorf("summary 回退专用的 v1 变体必须留在 v1 视图（与它的 v1 turns 腿同源）：\n%s", v1BodiesByRequestIDSQL)
+	for name, sql := range map[string]string{
+		"主批量取数器":       sessionBodiesByRequestIDSQL,
+		"summary 回退变体": v1BodiesByRequestIDSQL,
+	} {
+		if got := strings.Count(sql, "session_bodies"); got != 2 {
+			t.Errorf("%s 必须读会话族 hot∪父表两腿（count==2），实测 %d：\n%s", name, got, sql)
+		}
+		// ★ 反转后的负向判据：v1 族关系名必须不在场（按标识符边界）。
+		if hits := retiredV1RelationsInSQL(sql); len(hits) > 0 {
+			t.Errorf("%s 仍出现已退役 v1 族关系名 %v —— v1 族已随 890 被 DROP，读它 = 42P01：\n%s", name, hits, sql)
+		}
+		// 就地阳性对照：同一把尺子必须能认出 v1 形态（否则上面那条恒绿）。
+		if hits := retiredV1RelationsInSQL("FROM request_logs_bodies_with_current_month rb"); len(hits) == 0 {
+			t.Error("retiredV1RelationsInSQL 认不出 v1 正文视图 —— 负向断言已恒绿，判据坏了")
+		}
 	}
 }
 

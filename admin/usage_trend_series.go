@@ -16,7 +16,9 @@
 //     dim_type='model'，单表索引扫描（今天窗 22ms / 7d 1.2s 实测）。
 //   - provider 档（仅 provider 过滤）：request_stats_minute（自带 provider_id ×
 //     canonical_id）JOIN provider_models 取展示名。不扫明细日志。
-//   - detail 档（带 api_key 过滤）：request_logs_with_current_month_without_customer_id
+//   - detail 档（带 api_key 过滤）：**会话族原生源** db.SessionFamilyTurnsSourceSQL()
+//     （★ 2026-10-20：原读面 request_logs_with_current_month_without_customer_id
+//     直读 v1 族、v1 停写后恒 0 行 ⇒ 本档此前恒空；890 删族后会变 42P01 ⇒ 改指会话族）
 //
 // 唯一含 api_key_id 的读面；无 api_key 索引的旧分区上长窗会慢，前端对超时
 //
@@ -36,6 +38,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	dbpkg "github.com/kaixuan/llm-gateway-go/db"
 	"github.com/kaixuan/llm-gateway-go/maas"
 )
 
@@ -404,11 +407,11 @@ func (h *Handler) queryUsageTrendDetail(ctx context.Context, tr boardTimeRange, 
 			COALESCE(SUM(COALESCE(r.total_tokens, 0)), 0),
 			COALESCE(SUM(%s), 0),
 			COALESCE(SUM(COALESCE(r.cost_usd, 0)), 0)
-		FROM request_logs_with_current_month_without_customer_id r
+		FROM %s r
 		WHERE %s
 		GROUP BY 1, 2
 		ORDER BY 2, 1
-	`, usageTrendModelExpr, sqlTrendBucket("r.ts", tr.trendBucketMinutes()), creditsExpr, where)
+	`, dbpkg.SessionFamilyTurnsSourceSQL(), usageTrendModelExpr, sqlTrendBucket("r.ts", tr.trendBucketMinutes()), creditsExpr, where)
 	return h.scanUsageTrendRows(ctx, query, args)
 }
 
@@ -585,12 +588,12 @@ func (h *Handler) queryUsageTrendModelsDetail(ctx context.Context, tr boardTimeR
 			COALESCE(SUM(COALESCE(r.total_tokens, 0)), 0),
 			COALESCE(SUM(%s), 0),
 			COALESCE(SUM(COALESCE(r.cost_usd, 0)), 0)
-		FROM request_logs_with_current_month_without_customer_id r
+		FROM %s r
 		WHERE %s
 		GROUP BY 1
 		ORDER BY 2 DESC
 		LIMIT 100
-	`, usageTrendModelExpr, creditsExpr, where), args...)
+	`, dbpkg.SessionFamilyTurnsSourceSQL(), usageTrendModelExpr, creditsExpr, where), args...)
 	if err != nil {
 		return nil, err
 	}

@@ -199,7 +199,11 @@ func (api *SessionExportAPI) handleExport(w http.ResponseWriter, r *http.Request
 	writeExportJSON(w, http.StatusOK, pack)
 }
 
-// buildExport JOIN _request_logs + bodies + summaries + attachments，组装迁移包。
+// buildExport JOIN 会话族 turns（SessionFamilyTurnsForSessionSQL）+ bodies
+// + summaries + attachments，组装迁移包。
+//
+// 2026-10-20（迁移 890）：v1 族整体退役，本段注释里的 `_request_logs` 读法
+// 已不存在；实际 SQL 早已迁到会话族原生源（见下方函数体）。
 //
 // sessionExportMessagesSQL is factored out so the integration gate can execute
 // this exact text against a real database. Two fatal defects lived in this
@@ -224,7 +228,11 @@ func sessionExportMessagesSQL() string {
 			COALESCE(rb.request_body, '{}'::jsonb) AS request_body,
 			COALESCE(rb.response_body, '{}'::jsonb) AS response_body
 		FROM ` + dbpkg.SessionFamilyTurnsForSessionSQL() + ` rl
-		LEFT JOIN ` + dbpkg.SessionBodiesSourceSQL() + ` rb ON rb.request_id = rl.request_id
+		-- 2026-10-20（迁移 890）：bodies 腿从 db.SessionBodiesSourceSQL()（带 v1 臂的
+		-- 运行时开关）改成**固定的会话族源**。理由与 admin/session_bodies_batch.go
+		-- 同款：turns 腿是会话族，bodies 腿就必须同源——开关的 v1 臂对会话族
+		-- turns 是错的源（而且 v1 表已随 890 退役，那条臂会 42P01）。
+		LEFT JOIN ` + dbpkg.SessionFamilyBodiesSourceSQL() + ` rb ON rb.request_id = rl.request_id
 		WHERE 1 = 1
 		ORDER BY rl.ts ASC
 	`

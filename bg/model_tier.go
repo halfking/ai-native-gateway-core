@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/kaixuan/llm-gateway-go/db"
 	"github.com/kaixuan/llm-gateway-go/internal/dbrows"
 	"github.com/kaixuan/llm-gateway-go/settings"
 )
@@ -168,15 +169,22 @@ func (m *ModelTier) refresh(ctx context.Context) {
 		}
 		if rows, err := m.db.Query(ctx, `
 			SELECT raw_model FROM (
-				SELECT COALESCE(rl.outbound_model, rl.client_model) AS raw_model,
+				-- ★ 890（v1 族退役）：源换成会话族热腿（v1 热表已 DROP）。
+				-- 窗口 72h ≫ hot 保留期 8h，v1 侧本来就只看得到最近 8h，
+				-- 会话族热腿保留期同款 ⇒ 口径不变。
+				SELECT rl.raw_model_name AS raw_model,
 				       count(*) AS calls
-				FROM _request_logs_hot rl
+				FROM `+db.SessionFamilyTurnsHotSourceSQL()+` rl
 				WHERE rl.success
 				  AND rl.ts > now() - make_interval(hours => $1)
-				  AND `+fmt.Sprintf(probeTrafficExclusionPredicate, "rl", "rl")+`
-				  AND COALESCE(rl.outbound_model, rl.client_model) IS NOT NULL
-				  AND COALESCE(rl.outbound_model, rl.client_model) <> ''
-				GROUP BY COALESCE(rl.outbound_model, rl.client_model)
+				  -- 会话族没有 quality_flags ⇒ 用会话族那条探针排除谓词。
+				  AND `+fmt.Sprintf(probeTrafficExclusionPredicateSession, "rl", "rl", "rl")+`
+				  -- 模型名口径用 rl.raw_model_name（会话族里它就是
+				  -- COALESCE(outbound_model, client_model) 的同义列，见
+				  -- internal/sessionv2mirror/s1a_fields.go 的取值口径登记）。
+				  AND rl.raw_model_name IS NOT NULL
+				  AND rl.raw_model_name <> ''
+				GROUP BY rl.raw_model_name
 			) t
 			ORDER BY calls DESC
 			LIMIT $2`, windowHours, topN); err == nil {

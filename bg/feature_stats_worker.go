@@ -62,8 +62,8 @@ func (w *FeatureStatsWorker) Start(ctx context.Context) {
 func (w *FeatureStatsWorker) Stop() {
 	if w.cancel != nil {
 		w.cancel()
+		<-w.done
 	}
-	<-w.done
 }
 
 func (w *FeatureStatsWorker) run(ctx context.Context) {

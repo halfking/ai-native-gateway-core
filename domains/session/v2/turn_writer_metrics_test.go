@@ -118,7 +118,7 @@ func TestTurnWriter_WritesSessionsV2Metrics(t *testing.T) {
 			WithArgs(rec.TenantID, rec.SessionID).
 			WillReturnRows(pgxmock.NewRows([]string{"next"}).AddRow(1))
 		mock.ExpectExec("INSERT INTO public\\.session_turns_hot").
-			WithArgs(anyN(99)...). // $1..$99（$99 = §9.208 追加的 client_protocol，刻意排在末尾以免重排既有编号）
+			WithArgs(anyN(101)...). // $1..$101（$99 = §9.208 追加的 client_protocol，$100/$101 = 885 追加的 host/tags；三者都刻意排在末尾以免重排既有编号）
 			WillReturnResult(pgconn.NewCommandTag("INSERT 0 1"))
 		mock.ExpectExec("t0_arrived_at").
 			WithArgs(anyN(26)...). // 成功后的 enrich UPDATE

@@ -1,0 +1,36 @@
+# measured_margins.tsv —— 全仓「判别型下界」的自然值实测台账（R68 轮）
+#
+# 每一行 = 一处「判别型下界」判据（断言 `elapsed < <阈值>`，即判「不能太快」）
+#   及其在**当前树**上实测到的自然值（该判据实际等到的时长）。
+#
+# 为什么要这张表：R66 轮把全仓 53 处时钟判据按「判别职责」分型后，把判别型下界里
+#   除 distlock 外的 10 处登记为「已分析、未实测」—— 依据是**读实现推导**
+#   （定时器只晚不早 ⇒ 下界恒成立），不是实测。
+#   而 distlock 那处的教训恰恰是：**余量按构造接近零时，跑够多次也不会红**
+#   ⇒ 「包级全绿」证明不了余量 ⇒ 必须逐处量自然值。
+#
+# 实测方法（R68 轮，2026-10-21）：
+#   · 探针**复制**原测试的等待序列，只把下界断言换成日志（不判下界）⇒ 测的是同一个量；
+#   · 探针是**临时文件**，测完即删 ⇒ 原测试文件一字未动；
+#   · 宿主 16 核、测量时 load 56.4 ⇒ **超载 3.5×**（R66 轮为 4.25×）；
+#   · 每站点 10~30 次连跑，取 min/max/mean。
+#
+# 门（internal/clockguard/margin_gate_test.go）用它做两件事：
+#   ① **登记册严格相等**：扫描出的判别型下界集合必须与本表逐条相等（双向）
+#      ⇒ 新增判别型下界而未实测登记 ⇒ 红；表里有而代码里没了 ⇒ 红。
+#   ② **棘轮**：每处的当前阈值必须 ≤ 实测自然值最小值的 90%
+#      ⇒ 有人把下界改大到贴近自然值（distlock 同型病根）⇒ 红。
+#
+# ⚠ 诚实边界：自然值会随实现变化漂移，本表是**某一时点**的快照 ⇒
+#   门抓得到「下界被改大」，抓不到「自然值被改小」⇒ 后者需要重新实测。
+#
+# 列：file <TAB> func <TAB> measured_min_ns <TAB> measured_max_ns <TAB> samples <TAB> safety_source
+#
+admin/distlock/lock_test.go	TestRedisManager_FollowerTTLExpired	200377083	228228625	12	PTTL读数（毫秒分辨率）⇒ 唯一不安全类；R66 已把下界 200ms⇒50ms
+domains/dispatch/dispatch_test.go	TestRPMGovernorPaces	299967459	302192667	25	令牌桶补充定时器 ⇒ 只晚不早
+domains/dispatch/governor_extra_call_test.go	TestRPMGovernorRecordExtraCallChargesBucket	30030917	32011250	30	giveUp 30ms 截止定时器 ⇒ 只晚不早
+domains/streaming/survival_coordinator_test.go	TestSurvivalCoordinatorDeadlineCancelsBlockingAttemptAtWallClockBudget	40063208	43562000	25	生存预算 40ms 定时器 ⇒ 只晚不早
+domains/ursm/v2/migration/cleanup_test.go	TestCleanupRateLimited	1506640458	1539386042	10	限速器节流定时器 ⇒ 只晚不早
+internal/dbx/vacuum_mutex_test.go	TestVacuumFullMutexStatementTimeoutInsideTxn	1012452000	1055934709	10	PG 侧 SET LOCAL statement_timeout（服务器端计时器）
+internal/probeutil/retry_test.go	TestSleepWithCtx_Completes	10048125	12224042	30	10ms 睡眠定时器 ⇒ 只晚不早
+internal/streamretry/retry_test.go	TestRetryContext_Sleep	9073083	11991917	30	10ms 基准 ±20% 抖动 ⇒ 实现推导下限 8ms

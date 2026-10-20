@@ -4,9 +4,7 @@ package db
 
 import (
 	"context"
-	"fmt"
 	"os"
-	"strings"
 	"testing"
 	"time"
 
@@ -133,6 +131,12 @@ func BodiesBlocksCutover(g bodiesGap) (blocked bool, why string) {
 
 // measureBodiesGapSQL 是上面那个测量的 SQL。
 //
+// ⚠⚠⚠ **R69 轮：这条 SQL 已退役，且它引用的 v1 族关系已不存在** ——
+// `_request_logs_bodies` 随迁移 885（真删表）+ 890（退族）被删除
+// ⇒ **现在跑它必然 42P01** ⇒ 它**不能再被用来量任何东西**。
+// 保留它只作**历史测量记录**（§9.228/§9.229 的口径与撤回过程）。
+// ⇒ 若将来要重新量「会话 bodies 覆盖度」，**必须重写口径**，不能复用这条。
+//
 // ⚠ **口径钉死在这里，不要在调用点改写**：
 //   - 总体 = `_request_logs` 里 `request_id IS NOT NULL` 且有会话头的 turn。
 //     这与 bodies 的实际用法一致：export/compare/summarizer 都是在
@@ -218,90 +222,86 @@ FROM (
 ) t
 `
 
-// TestBodiesCutoverGapBlocksCutover 是数据门（**故意红**，真库）。
+// TestBodiesCutoverV1ArmStaysRetired 是 bodies 切换的**现行**守卫。
 //
-// 与 admin 侧那道 bodies 门同一个 package 家族但**不同问题**：
-// 那道问「谁读过、评估过没有」，这道问「切了会不会丢正文」。
-func TestBodiesCutoverGapBlocksCutover(t *testing.T) {
+// # R69 轮改瞄（2026-10-21）：这道门换过一次题目
+//
+// 原门 `TestBodiesCutoverGapBlocksCutover` 量的是
+// 「**session_bodies 能不能替代 `_request_logs_bodies`**」——
+// 即切换前先看数据缺口（`would_be_lost` 必须为 0）。
+//
+// ★ **那个题目已经不存在了**：v1 族随迁移 885（真删表）+ 890（退族）被退役，
+// `_request_logs_bodies` **这个关系在真库里已经不存在** ⇒
+// 原门的三个测量 SQL（`measureBodiesGapSQL` / `lossByDaySQL` /
+// `measureBodiesSessionTailSQL`）与 `v1OnlyTurnsSQL` **全部 42P01**
+// ⇒ ⇒ 这道门**恒红**，而那个红**与产品无关**：它守的那个东西已经被删了。
+//
+// ⇒ **同一族的问题在退役后换了形态**：
+//
+//	切换前：会不会丢正文？        ⇒ 量 `would_be_lost`
+//	切换后：会不会**又切回去**？  ⇒ 断言 **v1 关系不存在**
+//
+// ⇒ 后者才是今天**唯一**还有意义的不变量：
+// 一旦有人把 `_request_logs_bodies` / `request_logs_bodies_with_current_month`
+// 重新建起来（某个迁移回滚、或带外 DDL），读面就会**重新分裂成两族**，
+// 而 `admin/request_logs_bodies_retirement_gate_test.go`（流程门）
+// 只问「谁读过、评估过没有」，**不问它还在不在**。
+//
+// ⇒ 所以本门现在钉两件事：
+//
+//	① v1 bodies 的两个关系名**必须都不存在**（退役完成）；
+//	② 会话 bodies 源**必须可执行**（真跑一次 JOIN）⇒ 切过去取得到正文。
+//
+// ⚠ **② 允许 0 行**：空库上 0 行是**正常**的（不是「量具坏了」）——
+// 本门量的是「源可不可执行」，不是「有没有数据」。
+// （★ 这与 `db/session_bodies_source_test.go` 那道门分工不同：
+// 那道门量**列名与类型**，本门量**关系退役状态与源可达性**。）
+//
+// # 判据量（切换前那道门的历史读数，仅作背景，不是判据）
+//
+// 实测（本地库，2026-10-05，808,556 个带会话头的 v1 turn）：
+//
+//	in session_bodies            770,209  (95.26%)
+//	in _request_logs_bodies       742,472  (91.81%)
+//	v1 有、session 没有（会丢）    29,691
+//	两边都没有                    8,656
+func TestBodiesCutoverV1ArmStaysRetired(t *testing.T) {
 	pool := newBodiesCutoverPool(t)
 	ctx := context.Background()
 
-	// 判据量：总体 = session_turns。
-	var g bodiesGap
-	if err := pool.QueryRow(ctx, measureBodiesGapSQL).Scan(
-		&g.SessionTurns, &g.HasV1Body, &g.HasSessionBody, &g.WouldBeLost, &g.WouldGain,
-	); err != nil {
-		t.Fatalf("measure bodies gap: %v", err)
-	}
-	t.Logf("★ 判据量（总体=session_turns，%d 行）：有 v1 正文 %d（%.2f%%）、"+
-		"有 session_bodies %d（%.2f%%）⇒ **切换会丢 %d 条**（%.4f%%）",
-		g.SessionTurns, g.HasV1Body, bodiesPct(g.HasV1Body, g.SessionTurns),
-		g.HasSessionBody, bodiesPct(g.HasSessionBody, g.SessionTurns),
-		g.WouldBeLost, bodiesPct(g.WouldBeLost, g.SessionTurns))
-
-	// 损失按天摊开：区分「系统性缺口」与「一个回填边界日」。
-	rows, err := pool.Query(ctx, lossByDaySQL)
-	if err != nil {
-		t.Fatalf("loss by day: %v", err)
-	}
-	defer rows.Close()
-	var days []string
-	for rows.Next() {
-		var d string
-		var n int64
-		if err := rows.Scan(&d, &n); err != nil {
-			t.Fatalf("scan loss by day: %v", err)
+	// ① v1 bodies 的关系必须不存在（退役完成 ⇒ 缺口结构上不可能存在）。
+	for _, rel := range []string{
+		"_request_logs_bodies",
+		"request_logs_bodies_with_current_month",
+	} {
+		var exists bool
+		if err := pool.QueryRow(ctx,
+			`SELECT to_regclass('public.`+rel+`') IS NOT NULL`).Scan(&exists); err != nil {
+			t.Errorf("探测 v1 bodies 关系 %q 是否存在：%v", rel, err)
+			continue
 		}
-		days = append(days, fmt.Sprintf("%s=%d", d, n))
+		if exists {
+			t.Errorf("★ v1 bodies 关系 public.%s **又存在了** —— "+
+				"v1 族已随迁移 885/890 退役（真删表）；它若被重新建起，"+
+				"读面会重新分裂成两族（v1 / 会话），而这条正是那个切换的守卫。", rel)
+		}
 	}
-	t.Logf("损失按天：%s", strings.Join(days, " "))
 
-	// 会话级尾部。
-	var sessions, sessionsThatLose, worstLose int64
-	if err := pool.QueryRow(ctx, measureBodiesSessionTailSQL).Scan(
-		&sessions, &sessionsThatLose, &worstLose,
-	); err != nil {
-		t.Fatalf("measure bodies session tail: %v", err)
+	// ② 会话 bodies 源必须**可执行**（真跑一次 JOIN）。
+	// ⚠ 0 行是允许的：这里量的是「源可达」，不是「有没有数据」。
+	var legs, bodies int64
+	if err := pool.QueryRow(ctx, `
+		SELECT count(*)::bigint,
+		       count(rb.request_id)::bigint
+		FROM public.session_turns st
+		LEFT JOIN `+SessionFamilyBodiesSourceSQL()+` rb ON rb.request_id = st.request_id
+	`).Scan(&legs, &bodies); err != nil {
+		t.Fatalf("★ 会话 bodies 源**跑不起来**（%v）—— "+
+			"它是导出/对比 API 的正文来源；源不可执行 ⇒ 那些 API 的正文全是空的。", err)
 	}
-	t.Logf("会话级：%d 个会话中 %d 个（%.2f%%）会丢至少一条正文；单会话最多丢 %d",
-		sessions, sessionsThatLose, bodiesPct(sessionsThatLose, sessions), worstLose)
-
-	// ⚠ **另一个量，且不是损失**：v1 有会话头但没有 session_turns 行的 turn。
-	// 它们**早已不在**导出/对比 API 的结果集里（那两个 API 的 FROM 是会话族），
-	// 所以切不切 bodies 都看不见。把它算进损失是 §9.228 的口径错误（§9.229 撤回）。
-	var v1Turns, v1Only, v1OnlyAuto int64
-	if err := pool.QueryRow(ctx, v1OnlyTurnsSQL).Scan(&v1Turns, &v1Only, &v1OnlyAuto); err != nil {
-		t.Fatalf("measure v1-only turns: %v", err)
-	}
-	t.Logf("（**不是切换损失**）v1 带会话头 %d 条，其中 %d 条没有 session_turns 行；"+
-		"其中 %d 条是 is_auto_request=t（%.1f%%）—— 这些按设计不进会话族（§9.215）。"+
-		"它们的去向是「退役 v1 后失去探针/自动流量的可审计性」，那是**另一个属主决定**。",
-		v1Turns, v1Only, v1OnlyAuto, bodiesPct(v1OnlyAuto, maxInt64(v1Only, 1)))
-
-	blocked, why := BodiesBlocksCutover(g)
-	if blocked {
-		t.Errorf("bodies 切换被数据缺口阻塞：%s\n\n"+
-			"判据量：session_turns %d 条里有 %d 条「有 v1 正文、但没有 session_bodies 行」"+
-			"（%.4f%%）。切换后这些 turn **仍在**导出/对比 API 的结果里，正文变成 `{}`，"+
-			"而 API 不报错。\n"+
-			"按天看：%s\n"+
-			"（全部落在同一天 ⇒ 是**回填边界**而不是写入路径缺陷；跨多天 ⇒ 要查写入路径。）\n"+
-			"会话级：%d/%d 个会话（%.2f%%）会至少丢一条，单会话最多丢 %d。\n\n"+
-			"处置顺序（**不要先改读方**）：\n"+
-			"  1. 先补齐缺口：go run ./cmd/tools/backfill_session_bodies"+
-			"（--use-hot 可先跑热分区；逐天跑可只补边界那一天）\n"+
-			"  2. 本门转绿（would_be_lost = 0）后再谈改 bodies 腿\n"+
-			"  3. 列名不同：v1 是 request_body/response_body，会话侧是\n"+
-			"     request_delta/response_delta ⇒ 需要显式列映射；"+
-			"db 包的 bodies 源 SQL helper 已存在（SessionBodiesSourceSQL，e974a0d79；"+
-			"消费点必须自带 rb 别名，见 db/session_bodies_source_alias_gate_test.go）\n"+
-			"  4. 全程需灰度开关：失效形态是 COALESCE(…,'{}') ⇒ 导出照常成功、正文为空",
-			why, g.SessionTurns, g.WouldBeLost, bodiesPct(g.WouldBeLost, g.SessionTurns),
-			strings.Join(days, " "),
-			sessionsThatLose, sessions, bodiesPct(sessionsThatLose, sessions), worstLose)
-		return
-	}
-	t.Logf("【预期红已解除】would_be_lost = 0，bodies 切换在数据层面可以开始评估。")
+	t.Logf("会话 bodies 源可执行：session_turns %d 行 ⇒ 正文命中 %d 行（0 行合法：空库）", legs, bodies)
+	t.Logf("【结论】bodies 切换已完成且**不可静默回退**：v1 bodies 关系不存在，" +
+		"会话 bodies 源可达 ⇒ 「切换会不会丢正文」在今天**结构上**恒为「不会」。")
 }
 
 func maxInt64(a, b int64) int64 {
@@ -321,6 +321,12 @@ func bodiesPct(a, b int64) float64 {
 // TestBodiesBlocksCutover_PureFunction 是纯函数的双向对照。
 //
 // ⚠ 没有对照组的话，一个恒返回 false 的 BodiesBlocksCutover 也能让上面那道门变绿。
+//
+// ★ **R69 轮说明**：上面那道门已经换成「v1 臂是否退役」的守卫
+// （`TestBodiesCutoverV1ArmStaysRetired`），**不再**调用这个纯函数。
+// ⇒ 本门保留的价值变成：**把这个判定逻辑（量到 0 条 = 阻塞，而不是「无缺口」）**
+// 钉成一个**可离线回归**的契约 —— 那个坑（把「没量到」读成「没问题」）
+// 与 v1 族无关，是**口径**上的坑，未来任何新的缺口测量都会再遇到。
 func TestBodiesBlocksCutover_PureFunction(t *testing.T) {
 	for _, tc := range []struct {
 		name      string

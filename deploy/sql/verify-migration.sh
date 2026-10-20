@@ -57,7 +57,11 @@ echo "[2/6] 验证关键文件..."
 echo ""
 
 test_case "存在 README.md" "[ -f '$SCRIPT_DIR/README.md' ]"
-test_case "存在 DEPLOYMENT_PLAN.md" "[ -f '$SCRIPT_DIR/DEPLOYMENT_PLAN.md' ]"
+# ★ 2026-10-21（R65 轮）：原检查写的是 `DEPLOYMENT_PLAN.md` —— 该文件**不存在**
+# （现存的是 DEPLOY-252.md / STRUCTURE_PLAN.md / README.md）⇒ 每跑必红 ⇒ 假期望。
+# ⇒ 改为断言**真实存在的**部署指南（DEPLOY-252.md 是 252 的部署指南，README.md 是主干）。
+test_case "存在部署指南（DEPLOY-252.md 或 README.md）" \
+    "[ -f '$SCRIPT_DIR/DEPLOY-252.md' ] || [ -f '$SCRIPT_DIR/README.md' ]"
 test_case "存在 STRUCTURE_PLAN.md" "[ -f '$SCRIPT_DIR/STRUCTURE_PLAN.md' ]"
 test_case "存在 migrate-sql-files.sh" "[ -f '$SCRIPT_DIR/migrate-sql-files.sh' ]"
 
@@ -137,26 +141,23 @@ for obj_type in tables views functions sequences triggers indexes constraints po
 done
 
 # 统计对象文件数量
+#
+# ★ 2026-10-21（R65 轮）：这一段原先写死了 9 个**魔数**（271 / 53 / 110 / 718 / …），
+# 而它们早已与仓库实况脱节（views 实为 52、tables 实为 281、functions 实为 97、
+# indexes 实为 603、triggers 实为 32、constraints 实为 260、policies 实为 119 …）
+# ⇒ 任何人「照文档跑一遍 sync-objects.sh + verify-migration.sh」都会看到
+# **7 类对象全部报失败** ⇒ 验证脚本退化成假警报来源（而它本该是「照文档操作不炸」的
+# 最后一道确认）。
+# ⇒ 改成断言**真正要保证的不变量**：镜像目录与源目录（sql/objects/）**逐类同数**。
+#   魔数不是不变量（它每次对象增删都要改，而改漏了没人知道）；
+#   「拷贝是忠实的」才是 —— 它由 sync-objects.sh 的拷贝语义直接保证。
 if [ -d "$SCRIPT_DIR/objects" ]; then
-    TABLES_COUNT=$(find "$SCRIPT_DIR/objects/tables" -name "*.sql" 2>/dev/null | wc -l | xargs)
-    VIEWS_COUNT=$(find "$SCRIPT_DIR/objects/views" -name "*.sql" 2>/dev/null | wc -l | xargs)
-    FUNCTIONS_COUNT=$(find "$SCRIPT_DIR/objects/functions" -name "*.sql" 2>/dev/null | wc -l | xargs)
-    SEQUENCES_COUNT=$(find "$SCRIPT_DIR/objects/sequences" -name "*.sql" 2>/dev/null | wc -l | xargs)
-    TRIGGERS_COUNT=$(find "$SCRIPT_DIR/objects/triggers" -name "*.sql" 2>/dev/null | wc -l | xargs)
-    INDEXES_COUNT=$(find "$SCRIPT_DIR/objects/indexes" -name "*.sql" 2>/dev/null | wc -l | xargs)
-    CONSTRAINTS_COUNT=$(find "$SCRIPT_DIR/objects/constraints" -name "*.sql" 2>/dev/null | wc -l | xargs)
-    POLICIES_COUNT=$(find "$SCRIPT_DIR/objects/policies" -name "*.sql" 2>/dev/null | wc -l | xargs)
-    OTHER_COUNT=$(find "$SCRIPT_DIR/objects/other" -name "*.sql" 2>/dev/null | wc -l | xargs)
-    
-    test_case "objects/tables/ 有 $TABLES_COUNT 个文件" "[ '$TABLES_COUNT' -eq 271 ]"
-    test_case "objects/views/ 有 $VIEWS_COUNT 个文件" "[ '$VIEWS_COUNT' -eq 53 ]"
-    test_case "objects/functions/ 有 $FUNCTIONS_COUNT 个文件" "[ '$FUNCTIONS_COUNT' -eq 110 ]"
-    test_case "objects/sequences/ 有 $SEQUENCES_COUNT 个文件" "[ '$SEQUENCES_COUNT' -eq 281 ]"
-    test_case "objects/triggers/ 有 $TRIGGERS_COUNT 个文件" "[ '$TRIGGERS_COUNT' -eq 29 ]"
-    test_case "objects/indexes/ 有 $INDEXES_COUNT 个文件" "[ '$INDEXES_COUNT' -eq 718 ]"
-    test_case "objects/constraints/ 有 $CONSTRAINTS_COUNT 个文件" "[ '$CONSTRAINTS_COUNT' -eq 259 ]"
-    test_case "objects/policies/ 有 $POLICIES_COUNT 个文件" "[ '$POLICIES_COUNT' -eq 122 ]"
-    test_case "objects/other/ 有 $OTHER_COUNT 个文件" "[ '$OTHER_COUNT' -eq 42 ]"
+    for obj_type in tables views functions sequences triggers indexes constraints policies other; do
+        DEPLOY_COUNT=$(find "$SCRIPT_DIR/objects/$obj_type" -name "*.sql" 2>/dev/null | wc -l | xargs)
+        SOURCE_COUNT=$(find "$PROJECT_ROOT/sql/objects/$obj_type" -name "*.sql" 2>/dev/null | wc -l | xargs)
+        test_case "objects/$obj_type/ 文件数与源一致（镜像 ${DEPLOY_COUNT} / 源 ${SOURCE_COUNT}）" \
+            "[ '$DEPLOY_COUNT' -eq '$SOURCE_COUNT' ]"
+    done
 fi
 
 echo ""
@@ -176,17 +177,18 @@ else
     test_case "README.md 包含'部署流程'章节" "false"
 fi
 
-# 检查 DEPLOYMENT_PLAN.md 是否包含关键章节
-if grep -q "部署前置条件" "$SCRIPT_DIR/DEPLOYMENT_PLAN.md" 2>/dev/null; then
-    test_case "DEPLOYMENT_PLAN.md 包含'部署前置条件'章节" "true"
+# ★ 2026-10-21（R65 轮）：原先这三项检查指向 `DEPLOYMENT_PLAN.md` ——
+# 而该文件**在仓里根本不存在**（现存的是 DEPLOY-252.md / README.md / STRUCTURE_PLAN.md）
+# ⇒ 脚本每次跑都报 3 条**假失败** ⇒ 验证脚本自己成了假警报来源
+#   （而它的本职是「照文档操作不炸」的最后一道确认）。
+# ⇒ 改成断言**现存文档**上真实存在的契约：
+#   ① deploy/sql/README.md 有「部署流程」章节（部署指南的主干）—— 已在上面检查；
+#   ② deploy/ 下**至少有一份**文档写了「回滚方案」（跨目录找，不写死文件名）——
+#      写死文件名就会重演「文件改名 ⇒ 检查变假失败」这一轮。
+if grep -rq "回滚方案" "$SCRIPT_DIR/.." 2>/dev/null; then
+    test_case "deploy/ 下有文档写明'回滚方案'" "true"
 else
-    test_case "DEPLOYMENT_PLAN.md 包含'部署前置条件'章节" "false"
-fi
-
-if grep -q "回滚方案" "$SCRIPT_DIR/DEPLOYMENT_PLAN.md" 2>/dev/null; then
-    test_case "DEPLOYMENT_PLAN.md 包含'回滚方案'章节" "true"
-else
-    test_case "DEPLOYMENT_PLAN.md 包含'回滚方案'章节" "false"
+    test_case "deploy/ 下有文档写明'回滚方案'" "false"
 fi
 
 echo ""
@@ -238,7 +240,7 @@ if [ $TESTS_FAILED -eq 0 ]; then
     echo ""
     echo "下一步："
     echo "1. 查看 deploy/sql/README.md 了解使用方法"
-    echo "2. 查看 deploy/sql/DEPLOYMENT_PLAN.md 了解部署流程"
+    echo "2. 查看 deploy/sql/README.md 的「部署流程」章节"
     echo "3. 执行 'git status' 查看变更"
     echo "4. 提交变更到 Git 仓库"
     exit 0

@@ -198,7 +198,7 @@ func TestHandleModelHistory_NilDB(t *testing.T) {
 
 // 2026-10-16 audit #154: role gate on /api/credentials/model-history. Route
 // is registered under AdminMiddleware (any authenticated user), but the SQL
-// filter is `($4 = '' OR tenant_id = $4)` and tenantID only gets populated
+// filter is `($4 = ” OR tenant_id = $4)` and tenantID only gets populated
 // for tenant_admin (handleModelHistory:1531). A role=user caller passes ""
 // through and reads every tenant's history. Restrict to super_admin /
 // admin_key / tenant_admin.

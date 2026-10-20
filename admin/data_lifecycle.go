@@ -11,13 +11,13 @@ import (
 	dbpkg "github.com/kaixuan/llm-gateway-go/db"
 )
 
-// dataLifecycleCompressedExists 是「这一轮带出站正文」的跨族判据，供带租户
+// dataLifecycleCompressedExists 是「这一轮带出站正文」的判据，供带租户
 // 过滤的存储增长趋势用（S4 停写轮新增）。
 //
 // # 为什么这里是 EXISTS 而不是 JOIN
 //
-// 原形态是 `LEFT JOIN request_logs_bodies_with_current_month rb` +
-// `COUNT(DISTINCT rb.request_id) FILTER (WHERE rb.outbound_body IS NOT NULL)`。
+// 原形态是把 v1 正文视图（request_logs_bodies_with_current_month）
+// LEFT JOIN 进来 + `COUNT(DISTINCT rb.request_id) FILTER (WHERE rb.outbound_body IS NOT NULL)`。
 // 它统计的是「有多少轮带出站正文」——一个**存在性**问题，所以 EXISTS 就够，
 // 而且不受镜像双生影响（本地实测 11,711 个 request_id 同时存在于两个家族：
 // JOIN 形态必须额外去重，EXISTS 天然免疫）。
@@ -25,9 +25,12 @@ import (
 // ⚠ 与 `dataLifecycleBodiesBytesSource`（blobs 那侧）**不能互换**：那边要
 // `pg_column_size` 的列值，只能 JOIN + `DISTINCT ON`；这边只要「有没有」。
 // 两处形态不同不是不一致，是各自的最省形态。
-var dataLifecycleCompressedExists = `(EXISTS (SELECT 1 FROM request_logs_bodies_with_current_month v
-		      WHERE v.request_id = rl.request_id AND v.outbound_body IS NOT NULL)
-		 OR EXISTS (SELECT 1 FROM ` + dbpkg.SessionFamilyBodiesSourceSQL() + ` sb
+//
+// 2026-10-20（迁移 890）：v1 族整体退役 ⇒ 跨族的 v1 腿删除，只剩会话族
+// 一条腿。会话族的「无正文」是 jsonb null 而不是 SQL NULL，所以判据用
+// db.SessionBodiesHasOutboundPredicate（IS NOT NULL **且** <> 'null'::jsonb），
+// 裸 IS NOT NULL 在会话族上是恒真（会把当天每一个 turn 都算成压缩过）。
+var dataLifecycleCompressedExists = `(EXISTS (SELECT 1 FROM ` + dbpkg.SessionFamilyBodiesSourceSQL() + ` sb
 		      WHERE sb.request_id = rl.request_id AND ` + dbpkg.SessionBodiesHasOutboundPredicate("sb") + `))`
 
 // Data lifecycle stats for UI display
@@ -69,25 +72,31 @@ type dailyGrowth struct {
 // 去掉列膨胀之后的等价源。⚠ 这不是「换个便宜表」，是**逐条核对过视图语义**的结果，
 // 第一版我按「视图 = v1 减去与 session_turns 重复的部分」去写，数字错了近 4 倍。
 //
-// 视图的真实构成（pg_get_viewdef 实读，560 行）:
+// 视图在 890 之前的真实构成（pg_get_viewdef 实读，560 行）:
 //
 //	leg 1  FROM session_turns_hot  t LEFT JOIN session_turn_details_hot d
 //	leg 2  FROM session_turns      t LEFT JOIN session_turn_details     d
-//	leg 3  FROM request_logs_..._without_request_class_due_at v
-//	         LEFT JOIN LATERAL (_request_logs_hot ∪ _request_logs 取 7 个附加列) source
+//	leg 3  FROM v1 包装视图（…_without_request_class_due_at）
+//	         LEFT JOIN LATERAL (v1 hot ∪ v1 母表，取 7 个附加列) source
 //	WHERE NOT EXISTS(session_turns_hot) AND NOT EXISTS(session_turns)   ← 只滤 leg 3
 //
 // ⇒ 末尾那两条 NOT EXISTS 只对 leg 3 生效（leg 1/2 的行按定义就存在于
-//   session_turns，若真被滤掉整个视图会是空的），于是视图的净内容是：
 //
-//	会话族（hot ∪ 父表分区）∪（v1 里没被会话族覆盖的那些行）
+//	  session_turns，若真被滤掉整个视图会是空的），于是视图的净内容是：
+//
+//		会话族（hot ∪ 父表分区）∪（v1 里没被会话族覆盖的那些行）
+//
+// 2026-10-20（迁移 890）：v1 族整体退役 ⇒ leg 3 随之消失，canonical 视图
+// 变成 session-only 的两臂体（leg 1/2），本函数去掉自己的 v1 臂之后与
+// 视图**逐条等价**（两臂的投影文本与 710/734/815/816/817/824 装出来的
+// 逐字相同，118 列同名同序）。
 //
 // 验证（逐日对比视图，真库 7 天窗）：
 //
-//	  视图     37270 28298 13044 19495 18194 18917 23516     32
-//	  本源     37210 28298 13044 19495 18194 18917 23516     68
-//	  └─ 6 天逐条相等；两端日的差来自 session_turns_hot promote 的移动边界，
-//	     两次查询不是同一时刻拍的。
+//	视图     37270 28298 13044 19495 18194 18917 23516     32
+//	本源     37210 28298 13044 19495 18194 18917 23516     68
+//	└─ 6 天逐条相等；两端日的差来自 session_turns_hot promote 的移动边界，
+//	   两次查询不是同一时刻拍的。
 //
 // 为什么仍然值得换源：视图贵在**它定义的东西**——每行补 canonical 列、
 // 反连 session_dim、给 7 个本端点根本不用的列做逐行 LATERAL 查。
@@ -100,10 +109,6 @@ func dataLifecycleCanonicalSourceSQL() string {
 			UNION ALL
 			SELECT tenant_id::text, ts, request_id FROM session_turns
 		) s
-		UNION ALL
-		SELECT p.tenant_id::text, p.ts FROM _request_logs p
-		 WHERE NOT EXISTS (SELECT 1 FROM session_turns_hot th WHERE th.request_id = p.request_id)
-		   AND NOT EXISTS (SELECT 1 FROM session_turns t  WHERE t.request_id = p.request_id)
 	`
 }
 
@@ -140,12 +145,27 @@ func dataLifecycleCanonicalSegmentsSQL(tenantFilter string) string {
 		SELECT CASE WHEN a.is_total = 1 THEN '__ALL__'
 		            ELSE COALESCE(a.tenant_id, 'default') END AS scope,
 		       a.total, a.hot, a.warm, a.cold, a.expired,
-		       (sz.total_size * a.total / NULLIF(g.rows_all, 0))::bigint AS size_bytes,
-		       pg_size_pretty((sz.total_size * a.total / NULLIF(g.rows_all, 0))::bigint) AS size_human,
+		       -- ★ 2026-10-21（R67 / C9）：这两列**曾经**会产出 NULL。
+		       --   rows_all = 0（会话族两腿都空）⇒ NULLIF(g.rows_all, 0) = NULL
+		       --   ⇒ 除以 NULL ⇒ size_bytes = NULL、size_human = NULL。
+		       --   而 handler 把它们扫进**非指针** int64 / string
+		       --   （data_lifecycle.go 的 dedupRow）⇒ pgx scan 报错 ⇒ 该行被跳过
+		       --   ⇒ __ALL__ 行缺失 ⇒ 端点 500。
+		       --   实测可达态：新装库、TTL 清空后、日志族整体退役后。
+		       --   修法是**在 SQL 侧**收口（不改成可空扫描）：
+		       --   0 行 ⇒ 摊派结果本就该是 0 字节，COALESCE 把「无行」翻译成 0，
+		       --   而不是让 NULL 穿透到 scan 变成 500。
+		       COALESCE((sz.total_size * a.total / NULLIF(g.rows_all, 0))::bigint, 0) AS size_bytes,
+		       pg_size_pretty(COALESCE((sz.total_size * a.total / NULLIF(g.rows_all, 0))::bigint, 0)) AS size_human,
 		       sz.total_size AS table_size
 		  FROM agg a
 		  CROSS JOIN grand g
-		  CROSS JOIN LATERAL (SELECT pg_total_relation_size('_request_logs') AS total_size) sz
+		  -- 2026-10-20（迁移 890）：v1 族退役 ⇒ 尺寸源换成会话族母表。
+		  -- ⚠ pg_total_relation_size 对**分区父表**返回 0（父表自身没有存储），
+		  --   v1 母表当年也是分区父表、同样是 0 ⇒ 这个数字换源前后**逐字相同**，
+		  --   没有引入新的口径。若要报真实占用得改成按 pg_partition_tree 求和，
+		  --   那是一个会改变可观测数字的独立决定，不夹带在这次退役里。
+		  CROSS JOIN LATERAL (SELECT pg_total_relation_size('session_turns') AS total_size) sz
 		 ORDER BY (a.total) DESC
 	`
 }
@@ -188,18 +208,17 @@ func dataLifecycleTrendSQL(tenantFilter string) string {
 		bodies AS (
 			SELECT DATE(ts) AS day, COUNT(DISTINCT request_id) AS compressed
 			FROM (
-				-- v1 腿：冻结点及之前（停写前的历史）。v1 用 SQL NULL 表示
-				-- 「没有出站正文」（实测 jsonb-null 0 行），故裸 IS NOT NULL 即可。
-				SELECT request_id, ts, (outbound_body IS NOT NULL) AS has_outbound
-				  FROM request_logs_bodies_with_current_month
-				 WHERE ts <= ` + dbpkg.V1FreezeCutoffSQL + `
-				UNION ALL
-				-- 会话腿：冻结点之后（停写后的新流量），走 session_bodies_unified
-				-- 合并视图（hot ∪ 月度分区父表，迁移 625；promote 排空 hot ⇒
-				-- 两侧 request_id 交集 0，UNION ALL 不重复）。★ 这里**必须**走
+				-- 会话腿：走 session_bodies_unified 合并视图（hot ∪ 月度分区父表，
+				-- 迁移 625；promote 排空 hot ⇒ 两侧 request_id 交集 0，UNION ALL
+				-- 不重复）。★ 这里**必须**走
 				-- SessionBodiesHasOutboundPredicate：会话族用 jsonb null 表示
 				-- 「没有正文」（实测 11,420 行），裸 IS NOT NULL 恒真 ⇒ 会把
 				-- 当天**每一个** turn 都算成压缩过（实测 993 vs 真实 250）。
+				--
+				-- 2026-10-20（迁移 890）：v1 腿（冻结点及之前的停写前历史）随 v1
+				-- 族退役而删除。冻结点本身已是常数 '-infinity'（db/v1_freeze_cutoff.go
+				-- 的 890 注释），所以剩下的会话腿覆盖全部时间，与删掉 v1 腿之前的
+				-- 实际取值**逐字相同**（v1 腿在冻结点之下恒空）。
 				SELECT request_id, ts, (` + dbpkg.SessionBodiesHasOutboundPredicate("s") + `) AS has_outbound
 				  FROM public.session_bodies_unified s
 				 WHERE s.ts > ` + dbpkg.V1FreezeCutoffSQL + `
@@ -250,7 +269,6 @@ func (h *Handler) handleDataLifecycleStats(w http.ResponseWriter, r *http.Reques
 		GrowthTrend: make([]dailyGrowth, 0),
 	}
 
-
 	// ★ 2026-10-19：原来的 1)~3)（总量 / 四段分段 / 按租户）三条查询，
 	//   合计约 9 次 request_logs_with_current_month 视图全扫，真库每次 >60s，
 	//   端点因此稳定 500@30s（29 次部署里的既定故障）。
@@ -262,15 +280,15 @@ func (h *Handler) handleDataLifecycleStats(w http.ResponseWriter, r *http.Reques
 	//     scope='__ALL__'  → 总量 + hot/warm/cold/expired 四段
 	//     scope=租户名     → 按租户行数（供 ByTenant，top 10）
 	type dedupRow struct {
-		Scope      string
-		Total      int64
-		Hot        int64
-		Warm       int64
-		Cold       int64
-		Expired    int64
-		SizeBytes  int64
-		SizeHuman  string
-		TableSize  int64
+		Scope     string
+		Total     int64
+		Hot       int64
+		Warm      int64
+		Cold      int64
+		Expired   int64
+		SizeBytes int64
+		SizeHuman string
+		TableSize int64
 	}
 	dedupRows, err := h.db.Query(ctx, dataLifecycleCanonicalSegmentsSQL(tenantFilter))
 	if err != nil {
@@ -346,11 +364,11 @@ func (h *Handler) handleDataLifecycleStats(w http.ResponseWriter, r *http.Reques
 
 	// 4. Growth trend (last 7 days)
 	// 2026-09-14: outbound_body left the main table/view in the Phase-1
-	// body-storage split (it lives in request_logs_bodies_* now). The
+	// body-storage split (it lives in the bodies family now). The
 	// bodies view has no tenant_id, so: tenant-scoped callers take the
 	// row-by-row LEFT JOIN (correct but heavy, guarded by the request
 	// timeout); the unscoped path pre-aggregates both sides by day first —
-	// a per-row join over a week of _request_logs × bodies blows the admin
+	// a per-row join over a week of request rows × bodies blows the admin
 	// time budget (measured 30s timeout on the local 100k-row dataset).
 	// ★ 2026-10-19：趋势腿自带子预算。
 	//   分段那条（单次规范源扫描）实测 12.8s，趋势那条在同一 30s 总预算里
@@ -457,10 +475,13 @@ func (h *Handler) handleDataLifecycleCleanupPreview(w http.ResponseWriter, r *ht
 
 	var resp cleanupPreviewResponse
 	err := h.db.QueryRow(ctx, `
+		-- 2026-10-20（迁移 890）：v1 族退役 ⇒ 尺寸源与分母都换成会话族母表。
+		-- pg_total_relation_size 对分区父表返回 0（父表自身无存储），v1 母表
+		-- 当年同理 ⇒ 换源前后这个估算值**逐字相同**。
 		SELECT 
 			COUNT(*) AS affected_rows,
-			(pg_total_relation_size('_request_logs') * COUNT(*)::numeric / NULLIF((SELECT COUNT(*) FROM _request_logs), 0))::bigint AS freed_bytes,
-			pg_size_pretty((pg_total_relation_size('_request_logs') * COUNT(*)::numeric / NULLIF((SELECT COUNT(*) FROM _request_logs), 0))::bigint) AS freed_human
+			(pg_total_relation_size('session_turns') * COUNT(*)::numeric / NULLIF((SELECT COUNT(*) FROM session_turns), 0))::bigint AS freed_bytes,
+			pg_size_pretty((pg_total_relation_size('session_turns') * COUNT(*)::numeric / NULLIF((SELECT COUNT(*) FROM session_turns), 0))::bigint) AS freed_human
 		FROM request_logs_with_current_month
 		`+whereClause, args...).Scan(&resp.AffectedRows, &resp.EstimatedFreedBytes, &resp.EstimatedFreedHuman)
 

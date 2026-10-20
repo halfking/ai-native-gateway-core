@@ -28,30 +28,54 @@ func repoFile(t *testing.T, rel string) string {
 	return string(b)
 }
 
-// TestFinalSuccessFlagIsSetOnTheCallersEntry pins the exact bug class that
-// T0Missing already fell into once: setting the flag on a copy.
+// TestFinalSuccessClaimIsSetOnTheEntry replaces the former
+// TestFinalSuccessFlagIsSetOnTheCallersEntry — **2026-10-21**.
 //
-// claimSessionFinalSuccessExec receives whatever pointer the current
-// persistence function holds. On the normal paths that IS the caller's entry
-// (and therefore the one firePersistedHooks hands to the mirror). But
-// updateRequestLog's upsert-race branch does `fallback := *entry` and re-enters
-// insertRequestLog(&fallback) — there the claim records on the copy while the
-// hook still reads the original. A mark set only inside the claim therefore
-// silently disappears for every request that took the fallback branch.
-func TestFinalSuccessFlagIsSetOnTheCallersEntry(t *testing.T) {
-	code := repoFile(t, "domains/hooks/observability/telemetry/client.go")
+// # 为什么旧门退役了（而不是「实现坏了」）
+//
+// 旧门钉的是 v1 终态成功认领的**旧形态**：认领发生在
+// `updateRequestLog` 的 upsert-race 分支里，该分支会
+// `fallback := *entry` 再 `insertRequestLog(&fallback)` ⇒
+// 认领记在 **copy** 上 ⇒ 必须把 flag 从 copy **拷回** caller's entry
+// （`entry.FinalSuccessClaimed = fallback.FinalSuccessClaimed`）。
+//
+// ★ 迁移 890（v1 族退役）把 v1 的终态成功认领**整段删除**，改成：
+//
+//	if shouldClaimFinalSuccess(entry) {
+//	    entry.FinalSuccessClaimed = true
+//	}
+//
+// ⇒ **不再有 copy，也不再需要拷回**；会话族自己仲裁
+//
+//	（session_turns 的 partial 唯一索引 + markTurnFinalSuccess）。
+//
+// ⇒ 旧门的断言对象（旧形态）**已不存在**，它的红是「门在守一个已经不存在的形态」。
+//
+//	★ 注意区分：这条门退役**不代表** `is_final_success` 坏了 ——
+//	  新形态把它**设在 caller's entry 上**，反而比「拷回」更不容易丢。
+//
+// ⇒ 新门钉**新形态**，且仍然**有牙**：把设置点挪回 copy 形态就会红。
+func TestFinalSuccessClaimIsSetOnTheEntry(t *testing.T) {
+	code := stripGoComments(repoFile(t, "domains/hooks/observability/telemetry/client.go"))
 
 	if !strings.Contains(code, "entry.FinalSuccessClaimed = true") {
-		t.Fatalf("client.go never sets entry.FinalSuccessClaimed = true — the v1 " +
-			"claim grants the mark but nothing tells the session family about it, " +
-			"so session_turns.is_final_success stays permanently NULL")
+		t.Fatalf("client.go 里没有 `entry.FinalSuccessClaimed = true` —— 终态成功认领必须" +
+			"落在 caller's entry 上（消费方 firePersistedHooks(entry) 读的是 caller 的指针），" +
+			"否则会话族的 is_final_success 永远不会被置位")
 	}
-	if !strings.Contains(code, "entry.FinalSuccessClaimed = fallback.FinalSuccessClaimed") {
-		t.Fatalf("the updateRequestLog upsert-race branch no longer copies the flag " +
-			"back from `fallback`. On that branch insertRequestLog receives " +
-			"&fallback, so the claim records on the copy while firePersistedHooks " +
-			"reads the caller's entry — the mark would be lost for every request " +
-			"that took it")
+
+	// ★ copy 形态已随 v1 认领整段删除而退役：若它回来了，说明认领又绕回了
+	//   `fallback := *entry` 那条路 ⇒ 必须拷回，否则该分支上的认领会丢。
+	if strings.Contains(code, "fallback.FinalSuccessClaimed") {
+		t.Fatalf("client.go 里又出现了 `fallback.FinalSuccessClaimed` —— copy 形态已随迁移 890 " +
+			"（v1 族退役）删除：认领现在直接在 entry 上设置。若你重新引入了 copy 形态，" +
+			"就必须把 flag 拷回 caller 的 entry，否则走该分支的请求会丢掉认领")
+	}
+
+	// 设置点必须**由认领判定驱动**，不是无条件置位。
+	if !strings.Contains(code, "shouldClaimFinalSuccess(entry)") {
+		t.Fatalf("client.go 里没有 `shouldClaimFinalSuccess(entry)` —— 认领的判定入口不见了，" +
+			"请先读懂现状再改：这条门现在钉的是「认领资格由 shouldClaimFinalSuccess 决定」")
 	}
 }
 

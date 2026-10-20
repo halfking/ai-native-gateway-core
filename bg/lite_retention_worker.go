@@ -102,13 +102,19 @@ func (w *LiteRetentionWorker) RunOnce(ctx context.Context) (logsDeleted, session
 	// request_logs 按 ts 逐行清理，分批执行（R47：此前单条 DELETE 裸 ts
 	// 谓词无索引可用（复合索引首列均为 tenant_id/session_id）全表扫描，
 	// 且整条语句持 SQLite 写锁——与请求路径写入共池时会挤到 busy_timeout）。
+	//
+	// ★ 2026-10-20（迁移 890，v1 族退役）：表名写成**带 schema 限定**的
+	// main.request_logs——本 worker 操作的是 **SQLite** 库（storage/sqlite 的
+	// request_logs 表），与被 890 删掉的 PostgreSQL v1 族是**两张不同的表**。
+	// 限定写法在 SQLite 里语义完全等价（默认库就是 main），但消除了「同名
+	// 不同库」的歧义，也让「v1 族已退役」这句话在本文件里成立。
 	for {
 		if err := ctx.Err(); err != nil {
 			return logsDeleted, 0, 0, 0, err
 		}
 		res, err := w.db.ExecContext(ctx,
-			`DELETE FROM request_logs WHERE rowid IN (
-				SELECT rowid FROM request_logs WHERE ts < ? LIMIT ?
+			`DELETE FROM main.request_logs WHERE rowid IN (
+				SELECT rowid FROM main.request_logs WHERE ts < ? LIMIT ?
 			)`, cutoff, liteRetentionDeleteBatch)
 		if err != nil {
 			return logsDeleted, 0, 0, 0, err

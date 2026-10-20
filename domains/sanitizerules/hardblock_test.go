@@ -15,14 +15,17 @@ import (
 )
 
 func TestR1037ParseHardBlockAllowsForms(t *testing.T) {
-	got, err := ParseHardBlockAllows("egress:builtin.network_destination, output:builtin.pii.email , egress:secret.*")
+	// r1039（D5）：egress scope 只接受逐条的内建规则 ID —— 前缀族与通配都不再
+	// 接受（`egress:secret.*` 会把 secret 分类器变成阻断规则）。
+	// output scope 的三种写法不受影响。
+	got, err := ParseHardBlockAllows("egress:builtin.network_destination, output:builtin.pii.email , output:secret.*")
 	if err != nil {
 		t.Fatalf("ParseHardBlockAllows: %v", err)
 	}
 	want := []HardBlockAllow{
 		{Scope: "egress", Rule: "builtin.network_destination"},
 		{Scope: "output", Rule: "builtin.pii.email"},
-		{Scope: "egress", Rule: "secret.*"},
+		{Scope: "output", Rule: "secret.*"},
 	}
 	if len(got) != len(want) {
 		t.Fatalf("got %d allows, want %d: %+v", len(got), len(want), got)

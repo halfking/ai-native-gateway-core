@@ -29,8 +29,6 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
-
-	"github.com/kaixuan/llm-gateway-go/settings"
 )
 
 // ─── 领域模型 ─────────────────────────────────────────────────────────────────
@@ -482,12 +480,19 @@ func (r *RedisRecorder) FlushToPG(ctx context.Context, db *pgxpool.Pool, request
 		return err
 	}
 
+	// ★ 2026-10-20（迁移 890，v1 族退役）：原先在写门开着时还会追加一条
+	// 「回退 legacy 热表」的 UPDATE。v1 族被整体 DROP 后那条语句必然 42P01
+	// ⇒ 删除。写门在本函数里**不再**决定写哪一族：trace_events 的唯一归宿
+	// 是会话族（session_turns_hot / session_turns 两面都试）。
+	//
+	// ⚠ 口径损失（如实登记）：v1 侧曾有 691,883 行带真实 trace_events，而
+	// 镜像**从不**写会话族的 trace_events 列 ⇒ 历史请求的 trace 在 PG 侧
+	// 查不到（Redis 侧那份在 flush 成功后即被删除）。这是「v1 侧有真实值、
+	// 会话侧恒 NULL」那个已登记事实（db/request_logs_view_padded_columns.go
+	// 的 rejectedProjections「trace_events」条目）的直接后果。
 	updates := []string{
 		`UPDATE session_turns_hot SET trace_events = $1::jsonb WHERE request_id = $2`,
 		`UPDATE session_turns SET trace_events = $1::jsonb WHERE request_id = $2`,
-	}
-	if settings.RequestLogsWriteEnabled() {
-		updates = append(updates, `UPDATE _request_logs_hot SET trace_events = $1::jsonb WHERE request_id = $2`)
 	}
 	var rowsAffected int64
 	for _, query := range updates {
@@ -602,17 +607,15 @@ func LoadFromPG(ctx context.Context, db *pgxpool.Pool, requestID string) (*Reque
 	if db == nil {
 		return nil, nil
 	}
+	// ★ 2026-10-20（迁移 890，v1 族退役）：原先的第二条查询（v1 热表 ∪ v1 母表）
+	// **整条删除**——v1 族被整体 DROP 后它必然 42P01，而同一条语句里的
+	// 会话族腿已经覆盖了两个存储面（hot ∪ 父表）。
 	queries := []string{
 		`SELECT trace_events FROM (
 			SELECT trace_events, ts, 0 AS priority FROM session_turns_hot WHERE request_id = $1
 			UNION ALL
 			SELECT trace_events, ts, 1 AS priority FROM session_turns WHERE request_id = $1
 		) t ORDER BY priority, ts DESC NULLS LAST LIMIT 1`,
-		`SELECT trace_events FROM (
-			SELECT trace_events, ts FROM _request_logs_hot WHERE request_id = $1
-			UNION ALL
-			SELECT trace_events, ts FROM _request_logs WHERE request_id = $1
-		) t WHERE trace_events IS NOT NULL ORDER BY ts DESC NULLS LAST LIMIT 1`,
 	}
 	for _, query := range queries {
 		var raw []byte

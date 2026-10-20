@@ -145,6 +145,33 @@ type Config struct {
 	// ResolvePersistEnabled 对非 shadow 模式恒为 true（authoritative 分支
 	// 不受此开关控制），单侧关闭只从 2 份降到 1 份。根修见 §10.63 起。
 	//
+	// ★★ 2026-10-21 订正（§143.41，252 生产只读实测；**上一段的「100% 双份落库」
+	// 不是恒定事实，而是取决于「当时有几台在写」**）：
+	//   实测 dup_by_minute（同一 10 分钟窗口，按
+	//   (tenant_id, credential_id, raw_model_name, date_trunc('minute',snapshot_ts)) 去重）：
+	//     20261014 = 2.000 │ 20261015 = 2.000 │ 20261016 = 2.000 │ 20261017 = 2.000
+	//     20261018 = 1.909 │ 20261019 = 2.000 │ **20261020 = 1.000** │ **20261021 = 1.910**
+	//   ⇒ ⇒ **写者数=1 时是 1.000（无浪费），写者数=2 时是 2.000**
+	//   ⇒ ⇒ ★★ **所以「浪费 2 倍」是【条件命题】，不是恒定结论**
+	//   ⇒ ⇒ ★★ **该现象的开关是「有几台在写」，而 §61 的跨实例写入者守卫
+	//   （commit 438a24653，2026-10-18）正是为此而做 —— 它的提交信息明说「本节未部署」**
+	//   ⇒ ⇒ ⇒ ★ **⇒ 停掉陈旧槽位 + 部署 §61 守卫 = 这一项的零迁移修法**。
+	//   另：上面那句「That table is 10 GB, 45% of the database」也已过期 ——
+	//   2026-10-21 实测该族 **12 GB / 整库 31 GB 的 37.4%**。
+	//
+	// ⚠ **另一条被本轮证伪的「看似零风险」优化（留档，别再提）**：
+	//   实测同一 (snapshot_ts, credential_id, raw_model_name) 下有 **3,739 对**行同时带
+	//   `tenant_id=''` 与 `tenant_id='default'`（占窗口内 22.2% 的行），
+	//   看上去「把 tenant 归一化 ⇒ 两行变同一 PK ⇒ ON CONFLICT 去重 ⇒ 白捡 22%」。
+	//   ⇒ ★★★ **但载荷比对证明两行【不是同一份采样的两份拷贝】**：
+	//   `available` 差 45.6%、`health_status` 差 33.5%、`generation` 差 88.3%、
+	//   `updated_at_ms` 差 **100%**、`last_probe_at_ms` 差 88.5%；
+	//   而 `lat_p50_ms` / `score` / `provider_id` / `recovery_epoch` 差 0。
+	//   ⇒ ⇒ **⇒ 归一化会让 ON CONFLICT 丢掉一份【不同的】观测 ⇒ 不是零语义损失 ⇒ 不可做**
+	//   ⇒ ⇒ ★ **真实成因是「Redis 侧有【两个 key 集合】指向同一凭据、其中一个代次陈旧」**，
+	//   不是「tenant 标签写错了」⇒ ★★ **⇒ 归一化方向也定错了**（`'default'` 才是全库惯例：
+	//   `session_turns_hot` / `credentials` / `api_keys` 里空串 0 条）。
+	//
 	// Turning ShadowDoubleWrite off to stop the waste would also destroy the
 	// drift evidence, so the two cannot be governed by one switch. This knob
 	// separates them: leave the sidecar recording (evidence preserved) and

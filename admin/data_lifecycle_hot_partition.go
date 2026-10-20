@@ -100,6 +100,15 @@ func quoteIdentifier(name string) string {
 // 2026-07-14: model_probe_runs_hot 切换为纯 hot 表策略，
 // 移除了 model_probe_runs_hot 项（不再 promote）。
 var hotPromoteTableMap = map[string]string{
+	// ⚠ 890（v1 族真删）之后，这两项的**表与 promote 函数都被 DROP**。
+	// 本表**保留**它们不是为了还能 promote（早就不行了），而是为了保住**手动
+	// promote 端点的退役语义**：对退役族必须回 409 + "retired request_logs
+	// family" 理由，而不是笼统的"不支持该表"（既有契约，见
+	// admin/data_lifecycle_hot_partition_retirement_test.go）。
+	//
+	// ⇒ 自动 hot cron **不再**盲调它们：cron 侧有**能力探针**（promote 函数
+	// 不存在 ⇒ 记一条 INFO 的 SKIP，不报错）—— 这才是止血的刀；把条目从本表
+	// 摘掉会改掉手动端点的拒绝形状（实测：既有退役契约测试直接变红）。
 	"_request_logs_hot":             "promote_request_logs_hot_to_partition",
 	"usage_ledger_hot":              "promote_usage_ledger_hot_to_partition",
 	"request_wal_hot":               "promote_request_wal_hot_to_partition",

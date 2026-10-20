@@ -66,7 +66,14 @@ func TestR1024IdentityVersusSecretFieldMatrix(t *testing.T) {
 		{"username_cn", `{"用户名":"deploy"}`, false},
 		{"username_marker_echo", `{"username":"{SENSITIVE:account:0}"}`, false},
 		{"password_plain", `{"password":"Xk9#mZ2pQ8"}`, true},
-		{"token_plain", `{"token":"abc123"}`, true},
+		// r1039（D7，2026-10-20）：这条用例的**取值**换了，**判定**没换。
+		//
+		// 原取值 "abc123" 被 r1039 归入「一眼假的示例值」族（与 xxx / changeme
+		// 同族）⇒ 凭据字段规则不再拦它（owner 口径：别把占位值当泄漏掐断
+		// 正常工具调用）。本用例要钉的是**族分流**（身份族放行 / 密码族照拦），
+		// 不是某一个具体字符串 ⇒ 取值换成真密钥形状，判定原样保留。
+		// 示例值族的边界由 security/sanitize/r1039_dummy_credential_test.go 钉。
+		{"token_plain", `{"token":"mZ3pR8!kQ92"}`, true},
 		{"api_key_plain", `{"api_key":"sk-x"}`, true},
 		{"password_cn_plain", `{"密码":"123456"}`, true},
 		{"password_number", `{"password":123456}`, true},

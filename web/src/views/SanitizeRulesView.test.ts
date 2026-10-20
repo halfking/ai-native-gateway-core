@@ -474,3 +474,107 @@ describe("editor and polling boundaries", () => {
     expect(w.text()).not.toContain(messages.valid);
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────
+// ★ 按模式启停矩阵（2026-10-20 审计轮补齐）
+//
+// 需求原话：「脱敏需要有个设置界面，可以根据模式来设置匹配规则，启用或停止相关的规则。」
+//
+// 运行期的判定在 domains/sanitizerules/model.go 的 Applies(phase, tenant, tool, field)：
+//
+//     r.Enabled && scope 命中 && tenant 命中
+//
+// ⇒ 「这条规则在某个模式上是否生效」= **全局开关 ∧ scopes 含该模式**。
+// 本组判据钉的就是这个语义：矩阵的勾选状态必须与运行期判定**同源**，
+// 而不是「scopes 里有没有这个 phase」这种看似等价、实则差一个 Enabled 的近似。
+// ─────────────────────────────────────────────────────────────────────────
+describe("按模式启停矩阵（与运行期 Applies() 同源）", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.super.mockReturnValue(true);
+    mocks.tenant.mockReturnValue(false);
+    mocks.current.mockResolvedValue(structuredClone(head));
+    mocks.events.mockResolvedValue({ events: [] });
+    mocks.versions.mockResolvedValue({ versions: [] });
+    mocks.instances.mockResolvedValue({ target_version: 1, instances: [] });
+    mocks.getSetting.mockResolvedValue({ value: 5 });
+    mocks.updateSetting.mockResolvedValue({});
+    mocks.validate.mockResolvedValue({ valid: true, config_digest: "validated" });
+    mocks.publish.mockResolvedValue({ id: 2, config: head.config });
+    mocks.review.mockResolvedValue({});
+  });
+  afterEach(() => {
+    wrapper?.unmount();
+    wrapper = undefined;
+  });
+
+  it("每条规则给出 input/output/egress 三个模式开关", async () => {
+    const w = open();
+    await flushPromises();
+    // find() 才有 exists()；get() 找不到会直接抛（那本身就是正向断言）。
+    const matrix = w.find('[data-test="rule-mode-matrix"]');
+    expect(matrix.exists()).toBe(true);
+    for (const phase of ["input", "output", "egress"]) {
+      const box = w.get(`[data-test="rule-mode-${phase}"]`);
+      expect((box.element as HTMLInputElement).type).toBe("checkbox");
+    }
+  });
+
+  it("勾选状态 = 全局启用 ∧ scopes 含该模式（不是只看 scopes）", async () => {
+    // 规则：enabled=true, scopes=["input"] ⇒ 只有 input 亮。
+    const w = open();
+    await flushPromises();
+    const input = w.get('[data-test="rule-mode-input"]');
+    const output = w.get('[data-test="rule-mode-output"]');
+    const egress = w.get('[data-test="rule-mode-egress"]');
+    expect((input.element as HTMLInputElement).checked).toBe(true);
+    expect((output.element as HTMLInputElement).checked).toBe(false);
+    expect((egress.element as HTMLInputElement).checked).toBe(false);
+  });
+
+  it("全局停用时，三个模式开关全部显示为停用（口径与运行期一致）", async () => {
+    const off = structuredClone(head);
+    off.config.rules[0].enabled = false;
+    off.config.rules[0].scopes = ["input", "output"];
+    mocks.current.mockResolvedValue(off);
+    const w = open();
+    await flushPromises();
+    expect((w.get('[data-test="rule-mode-input"]').element as HTMLInputElement).checked).toBe(false);
+    expect((w.get('[data-test="rule-mode-output"]').element as HTMLInputElement).checked).toBe(false);
+  });
+
+  it("取消某个模式 ⇒ 该模式从 scopes 里摘掉（判据看**发出去的草稿**，不看组件内部）", async () => {
+    // ⚠ 判据纪律：<script setup> 的内部变量不挂在 vm 上，写 `w.vm.draft` 只会拿到
+    //   undefined，再套个 `if (draftScopes)` 就成了**恒不执行**的假绿。
+    //   可观测的契约是「validate 发出去的草稿」——那里带的就是整份草稿。
+    const w = open();
+    await flushPromises();
+    const input = w.get('[data-test="rule-mode-input"]');
+    await input.setValue(false);
+    await flushPromises();
+    await w.get('[data-test="validate"]').trigger("click");
+    await flushPromises();
+    expect(mocks.validate).toHaveBeenCalledTimes(1);
+    const payload = mocks.validate.mock.calls[0][0] as any;
+    expect(payload.rules[0].scopes).toEqual([]);
+    // 矩阵的勾选状态也跟着变（这是「所见即所存」的一半）
+    expect((w.get('[data-test="rule-mode-input"]').element as HTMLInputElement).checked).toBe(false);
+  });
+
+  it("勾上某个模式 ⇒ scopes 加上该模式，并把全局开关带上（否则运行期仍然不生效）", async () => {
+    const off = structuredClone(head);
+    off.config.rules[0].enabled = false;
+    mocks.current.mockResolvedValue(off);
+    const w = open();
+    await flushPromises();
+    const output = w.get('[data-test="rule-mode-output"]');
+    expect((output.element as HTMLInputElement).checked).toBe(false);
+    await output.setValue(true);
+    await flushPromises();
+    await w.get('[data-test="validate"]').trigger("click");
+    await flushPromises();
+    const payload = mocks.validate.mock.calls[0][0] as any;
+    expect(payload.rules[0].enabled).toBe(true);
+    expect(payload.rules[0].scopes).toContain("output");
+  });
+});
