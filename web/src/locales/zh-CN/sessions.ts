@@ -627,6 +627,28 @@ export default {
     promptInjectionLinkStats: '检测统计',
     promptInjectionLinkStatsHint: '查看检测日志、统计与攻击向量',
     promptInjectionCategoryRoleHijack: '角色劫持',
+    // ↓ 与其余 7 个语种同构：这些键必须挂在 `sessions.config.*` 平铺路径上。
+    //   依据：src/api/promptInjection.ts 的约定「Translation key in sessions.config
+    //   namespace」+ 调用点 PromptInjectionConfigPanel.vue 的 `sessions.config.${i18nKey}`。
+    //   2026-10-21 审计轮实测：本语种原先只有 RoleHijack 在这条路径上，其余 16 个
+    //   被放在 `sessions.promptInjectionCategories.*`（全仓零消费者的死命名空间）
+    //   ⇒ 中文用户在页面上看到的是原始点号键路径。
+    promptInjectionCategoryContextManipulation: '上下文操纵',
+    promptInjectionCategoryDataExfiltration: '数据窃取',
+    promptInjectionCategoryEncodingBypass: '编码绕过',
+    promptInjectionCategoryInjectionMarker: '注入标记',
+    promptInjectionCategoryInstructionLeak: '指令泄漏',
+    promptInjectionCategoryInstructionOverride: '指令覆盖',
+    promptInjectionCategoryJailbreak: '越狱攻击',
+    promptInjectionCategoryLegacy: '兼容旧分类',
+    promptInjectionCategoryMultiTurnAttack: '多轮攻击',
+    promptInjectionCategoryPayloadSmuggling: 'Payload 走私',
+    promptInjectionCategoryPromptLeaking: '提示词泄漏',
+    promptInjectionCategoryResourceExhaustion: '资源耗尽',
+    promptInjectionCategorySocialEngineering: '社会工程',
+    promptInjectionCategoryToolAbuse: '工具滥用',
+    promptInjectionCategoryUnicodeObfuscation: 'Unicode 混淆',
+    promptInjectionCategoryUnknown: '其他',
 
   // PromptInjectionSettingsView (full admin page) 命名空间
   },

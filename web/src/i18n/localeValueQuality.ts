@@ -43,6 +43,7 @@ import { loadLocale, scanAll } from './scanner.ts'
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = dirname(__filename)
 const WEB_ROOT = join(__dirname, '..', '..')
+export { WEB_ROOT }
 export const SRC_DIR = join(WEB_ROOT, 'src')
 export const LOCALES_DIR = join(SRC_DIR, 'locales')
 export const BASELINE_FILE = join(WEB_ROOT, 'src', 'i18n', 'localeValueBaseline.json')

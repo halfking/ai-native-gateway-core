@@ -13,7 +13,7 @@
     "ui:check:strict": "node scripts/ui-audit.mjs --strict",
     "ui:selftest": "node scripts/ui-audit.mjs --selftest",
     "i18n:check": "node scripts/i18n-audit.mjs && node scripts/i18n-cjk-count.mjs",
-    "i18n:check:strict": "I18N_STRICT=1 vitest run src/i18n/keys_referenced.test.ts && vitest run src/i18n/hardcoded_cjk.baseline.test.ts && vitest run src/i18n/localeValueQuality.test.ts && vitest run src/i18n/localePlaceholderParity.test.ts",
+    "i18n:check:strict": "I18N_STRICT=1 vitest run src/i18n/keys_referenced.test.ts && vitest run src/i18n/hardcoded_cjk.baseline.test.ts && vitest run src/i18n/localeValueQuality.test.ts && vitest run src/i18n/localePlaceholderParity.test.ts && vitest run src/i18n/callSitePlaceholderCoverage.test.ts",
     "i18n:cjk:check": "node scripts/i18n-cjk-count.mjs",
     "i18n:cjk:update-baseline": "node scripts/i18n-cjk-count.mjs --update-baseline",
     "i18n:locale-value:check": "node scripts/i18n-locale-value-count.mjs",

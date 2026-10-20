@@ -250,11 +250,12 @@ function toggleExpanded(id: number) {
 function categoryDisplay(raw: string) {
   const safeRaw = raw || 'unknown'
   const meta = getCategoryMeta(safeRaw)
-  // vue-i18n v9: pass the fallback via the `default` option so missing keys
-  // (or missing translations) render a sensible Chinese label instead of the
-  // raw dotted key path.
+  // vue-i18n v9 的回退必须走**字符串第二参**（parseTranslateArgs: isString(arg2)
+  // ⇒ options.default）。传对象 `{ default: … }` 在 v9 里整个对象会变成
+  // `options.named`（具名插值表）⇒ `default` 只是个插值名，**不产生回退**，
+  // 键缺失时仍然渲染出原始点号键路径。（原注释写的是 v9 行为，与实际不符。）
   return {
-    label: t(`sessions.config.${meta.i18nKey}`, { default: meta.zhFallback || safeRaw }),
+    label: t(`sessions.config.${meta.i18nKey}`, meta.zhFallback || safeRaw),
     tagType: meta.tagType,
   }
 }
