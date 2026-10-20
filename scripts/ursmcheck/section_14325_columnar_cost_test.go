@@ -248,10 +248,25 @@ func TestRunbook14325SectionHeadingsPresent(t *testing.T) {
 		"### §143.25.5 ",
 		"### §143.25.6 ",
 		"### §143.25.7 诚实边界",
-		"### §143.25.8 复核方法（可原样重跑）",
+		"### §143.25.9 复核方法（可原样重跑）",
 	} {
 		if !strings.Contains(s, h) {
 			t.Fatalf("§143.25 缺少子节 %q —— 整节骨架不全", h)
 		}
 	}
+}
+
+// TestRunbook14325MigrationNumberDrift 钉住「迁移号 885 已被并行会话占用 ⇒ 下一个空号 890」。
+//
+// ★ 这是共享仓库的硬约束：任何「预留某个迁移号」的结论**都会漂移**
+//   ⇒ 必须钉住「先现场取号」这条纪律，否则后人会照着旧号写迁移、撞上别人的号。
+func TestRunbook14325MigrationNumberDrift(t *testing.T) {
+	s := section14325(t)
+
+	mustContain14325(t, s,
+		"885 已被并行会话占用",
+		"890",
+		"下一个空号",
+		"动迁移号之前必须现场取号",
+	)
 }
