@@ -25,6 +25,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"regexp"
 	"runtime"
 	"strings"
 	"sync"
@@ -50,10 +51,41 @@ func itPool(t *testing.T) *pgxpool.Pool {
 		t.Fatalf("connect scratch db: %v", err)
 	}
 	t.Cleanup(pool.Close)
+	// ★★★ R86 轮：**库名守卫**（本文件头写着「本测试绝不写线上 llm_gateway 库」，
+	//   但在此之前**代码里没有任何东西拦着** ⇒ 只要 GUARD_IT_DSN 指向产品库，
+	//   下面那句 `TRUNCATE credentials, providers CASCADE` 就把产品库的
+	//   **凭据表与供应商表**清空。
+	//   ⇒ GUARD_IT_DSN 曾被事实源导出（= 通用 DSN = 产品库）⇒ 这不是假想风险。
+	//   ⇒ 守卫必须在 TRUNCATE **之前** ⇒ 且必须是 Fatal（DSN 是显式给的 ⇒ 配错要响亮）。
+	guardScratchDBName(t, pool)
 	if _, err := pool.Exec(context.Background(), `TRUNCATE credentials, providers CASCADE`); err != nil {
 		t.Fatalf("truncate scratch tables: %v", err)
 	}
 	return pool
+}
+
+// reScratchDBName 认「一次性库」的命名（R86 轮）。
+//
+// ★ 口径与 domains/reportrollup 的 isScratchDB **同族但更宽**：
+//   · 独立词 token ∈ {scratch, e2e, tmp, bench, itgate} ⇒ 放行；
+//   · 或库名含 `_it`（仓内既有的一次性集成库：llm_guard_it / llm_routeincident_it）⇒ 放行。
+// ★ **不放行** `llm_gateway`（产品库），也**不放行** `llm_gateway_test`
+//   （那是**长期**库，不是一次性库 —— 同包 realdb_e2e_test.go 的注释里记过这个坑）。
+var reScratchDBName = regexp.MustCompile(`(?i)(^|_)(scratch|e2e|tmp|bench|itgate)(_|$)|_it(_|$)`)
+
+// guardScratchDBName 拒绝把「产品形态库」当一次性库用（R86 轮）。
+func guardScratchDBName(t *testing.T, pool *pgxpool.Pool) {
+	t.Helper()
+	var name string
+	if err := pool.QueryRow(context.Background(), `SELECT current_database()`).Scan(&name); err != nil {
+		t.Fatalf("read current_database(): %v", err)
+	}
+	if !reScratchDBName.MatchString(name) {
+		t.Fatalf("拒绝在库 %q 上跑本集成腿：它会 TRUNCATE credentials, providers CASCADE —— "+
+			"目标必须是一次性库（库名含独立词 scratch/e2e/tmp/bench/itgate，或含 _it，例如 llm_guard_it）；"+
+			"本文件头已写明「本测试绝不写线上 llm_gateway 库」，此前这句契约只写在注释里、代码里没有拦",
+			name)
+	}
 }
 
 // itMockZhipu simulates the zhipu plan-quota control plane with configurable

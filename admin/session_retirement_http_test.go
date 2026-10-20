@@ -75,7 +75,18 @@ func TestSessionRetirementHTTPRealDB(t *testing.T) {
 	if err != nil {
 		t.Fatal("invalid test DSN")
 	}
-	cfg.ConnConfig.RuntimeParams["search_path"] = schema
+	// ★★ search_path 必须**追加** public（不能只留隔离 schema）。
+	//
+	//   本库装了 citus_columnar，库级 EVENT TRIGGER `enforce_columnar_trigger`
+	//   → `public.fn_enforce_columnar_event_trigger()` 的函数体里是**不加限定名**地
+	//   调用 `columnar_insert_only_parents()`（它自己就在 public）
+	//   ⇒ 而 event trigger 的函数体按**会话当时的 search_path** 解析名字
+	//   ⇒ ⇒ search_path 里没有 public ⇒ **每一次 CREATE TABLE 都 42883**。
+	//
+	//   ★ 同款坑仓内已有两处明确记录（`domains/reportrollup/grainreport_e2e_test.go`、
+	//   `tools/benchreport/main.go`）；公共样板见 `internal/testschema/testschema.go`。
+	//   ★ 隔离性不受影响：public 排在隔离 schema **之后** ⇒ 裸名仍优先命中隔离 schema。
+	cfg.ConnConfig.RuntimeParams["search_path"] = schema + ",public,pg_catalog"
 	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
 		t.Fatal(err)
