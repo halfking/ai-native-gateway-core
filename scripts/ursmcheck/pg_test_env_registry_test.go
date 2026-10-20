@@ -84,6 +84,29 @@ import (
 //	DSN would be worse than leaving it unset.」
 //	⇒ 本门把这条原则**机械化**：Redis 类一律 `component`、一律不得进事实源。
 //
+// ★★ **为什么 `isolation` 连官方 runner 的 `env \` 块都不能进**
+//	（**机制性理由**，不只是「看着危险」）：
+//	官方 runner 的门禁库名是 `itgate_${$}_${RANDOM}` ⇒ **不带 `_test` 后缀**
+//	⇒ 隔离开关的守卫条件
+//	（`!strings.HasSuffix(db, "_test") || os.Getenv("TEST_SESSION_INGEST_ISOLATED") != "1"`）
+//	  **天然成立** ⇒ 官方跑法下破坏性夹具**被自动拦住**
+//	⇒ ★ **官方跑法因此不需要、也不该**再注入隔离开关；
+//	⇒ 反过来，若在官方 runner 里注入它 ⇒ 那一次性门禁库变成「可破坏」
+//	⇒ ⇒ ★ **判据③ 是这条逻辑的机械化**。
+//
+// ★★ **实测（合规库名 `itgate_r71_test`，同基线三档对照）**：
+//
+//	┌ 档                                  │ PASS │ SKIP │ FAIL │
+//	├ 官方 runner 的 20 个 env 名         │  26  │  18  │   0  │
+//	├ 完整事实源 40 个                    │  36  │   4  │   7  │
+//	└ 完整事实源 40 个 + 两个隔离开关      │  36  │   4  │   7  │
+//
+//	⇒ ★★ **档 2 = 档 3** ⇒ 隔离开关**只在库名不合规时才起作用**
+//	⇒ ⇒ 而 7 条红里**没有一条产品缺陷**：5 条 Citus 元数据缓存错误
+//	（`cache lookup failed for pg_dist_local_group` XX000）、1 条缺表
+//	（`relation "shadow_user_providers" does not exist`）、1 条**缺授权**
+//	（`real fixture requires explicit loopback-only authorization`）。
+//
 // # 判据（五条）
 //
 //	① **差集完备**：被测试读到、且**不在事实源**的每个名字都必须登记。
