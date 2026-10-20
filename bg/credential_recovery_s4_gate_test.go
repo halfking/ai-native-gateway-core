@@ -66,7 +66,8 @@ import (
 //   - `lookbackComparability`（已随门退役删除；若有人把它加回来，这条同时红）。
 //
 // ⚠ 判据必须**有牙**：检查器若根本认不出「读了这个键」，上面那条断言就是恒绿。
-//   ⇒ 正向对照：一个确实读了该键的合成片段必须被判成「读到了」。
+//
+//	⇒ 正向对照：一个确实读了该键的合成片段必须被判成「读到了」。
 func TestLookbackScanIsNotGatedByRetiredV1Key(t *testing.T) {
 	fset := token.NewFileSet()
 	file, err := parser.ParseFile(fset, "credential_recovery.go", nil, 0)
@@ -99,7 +100,7 @@ func TestLookbackScanIsNotGatedByRetiredV1Key(t *testing.T) {
 	if mentionsRequestLogsWriteEnabledExpr(scan) {
 		t.Error("scanLookbackRecoveries 又读起了 settings.RequestLogsWriteEnabled —— " +
 			"那道门的前两个前提都已消失（证据源随 890 迁到会话族、该键的代码默认被翻成 false），" +
-			"门若还挂着，这条扫描会在任何未显式配置该键的环境上永久停摆，"+
+			"门若还挂着，这条扫描会在任何未显式配置该键的环境上永久停摆，" +
 			"把「不再具备判定能力」读成「没有需要恢复的绑定」")
 	}
 	if findIfCallingCred(t, scan, "lookbackComparability") != nil {
