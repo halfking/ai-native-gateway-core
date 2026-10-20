@@ -149,7 +149,7 @@ def main():
                 results.append((mid, "SKIP-substr", False))
                 continue
 
-            open(path, "wb").write(orig.replace(nb, repl.encode(), 1)))
+            open(path, "wb").write(orig.replace(nb, repl.encode(), 1))
 
             # ★ 编译必须干净（编译红 ≠ 断言红）
             cp = run_go(tree, ["go", "vet", "./security/sanitize/", "./internal/markerbound/"])
