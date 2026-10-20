@@ -136,8 +136,18 @@ func TestAbandonedTurnTriggerSourceIsRetired(t *testing.T) {
 			"请同步检查：① 落地垫是否随之复活 ② 本文件的退役登记是否要撤掉")
 	}
 
-	// 退役必须**留痕**：没有登记的退役 = 静默的能力消失。
+	// ★ 退役必须**机器可读地**留痕：只查注释里的关键词不够 ——
+	//   实测：把登记段首句整句抹掉，只查「退役」二字的门**仍然绿**
+	//   （因为文件别处也有这两个字）⇒ 门恒绿 = 没有牙。
+	//   ⇒ 这里钉一枚**常量**的值。
 	pad := padGo(t)
+	if !strings.Contains(pad, `abandonedTurnTriggerRetired = "v1-family-retired@2026-10-20"`) {
+		t.Fatalf("internal/sessionv2mirror/abandoned_turn.go 里的机器可读退役标记缺失或被改写 —— " +
+			"「触发源已退役」这件事必须**机器可读**（常量 abandonedTurnTriggerRetired）," +
+			"否则登记只能靠注释里的关键词⇒ 门会恒绿、变成没有牙的门")
+	}
+
+	// 退役必须**留痕**（给人读的那一份）：没有登记的退役 = 静默的能力消失。
 	if !strings.Contains(pad, "退役") {
 		t.Fatalf("internal/sessionv2mirror/abandoned_turn.go 里没有「退役」登记 —— " +
 			"触发源消失这件事没有被记录 ⇒ 后来的人只会看到「is_abandoned 永远是 NULL」，" +

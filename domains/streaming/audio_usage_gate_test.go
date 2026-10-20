@@ -108,9 +108,21 @@ func TestLogAudioUsageIsDocumentedNoOp(t *testing.T) {
 //	⇒ 这里要求实现里必须有日志调用。
 func TestLogAudioUsageNoOpLeavesATrace(t *testing.T) {
 	code := readAudioUsageSource(t)
-	if !strings.Contains(code, "slog.") {
-		t.Fatalf("audio_usage_log.go 里没有任何 slog 调用 —— no-op 把「音频秒数观测被丢弃」" +
-			"这件事**静默**掉了 ⇒ 无痕的丢弃比有痕的丢弃更坏。" +
+	// ★ 判据必须钉**调用形态**，不能只钉「文件里出现过 slog.」。
+	//   实测踩坑：只查 `slog.` 时，变异写成 `_ = slog.Default` 就能骗过它
+	//   （那是**取值**不是**调用**）⇒ 门恒绿、等于没有门。
+	//   ⇒ 这里要求出现**真正的日志调用**（`slog.X(`）。
+	calls := []string{"slog.Debug(", "slog.Warn(", "slog.Info(", "slog.Error(", "slog.Log("}
+	found := ""
+	for _, c := range calls {
+		if strings.Contains(code, c) {
+			found = c
+			break
+		}
+	}
+	if found == "" {
+		t.Fatalf("audio_usage_log.go 里没有任何**日志调用**（slog.Debug/Warn/Info/Error）—— " +
+			"no-op 把「音频秒数观测被丢弃」这件事**静默**掉了 ⇒ 无痕的丢弃比有痕的丢弃更坏。" +
 			"★ 退役后写点确实没了，但「它没了」必须留在日志里")
 	}
 }

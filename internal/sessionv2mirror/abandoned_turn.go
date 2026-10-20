@@ -2,6 +2,7 @@ package sessionv2mirror
 
 // abandoned_turn.go — the "started but never reached a terminal record" landing
 // pad, applied to session_turns.is_abandoned (migration 821, audit §9.92/§9.93).
+
 //
 // # ★★ 登记债：触发源随 v1 族退役而消失（2026-10-21 记录）
 //
@@ -116,6 +117,19 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 )
+
+// # ★ 机器可读的退役标记（2026-10-21）
+//
+// 下面的退役登记是**给人读的**注释；这一枚常量是**给机器钉的**。
+//
+// ★ 为什么两者都要：登记若只写在注释里，门只能查「某个关键词在不在」
+//
+//	—— 而**全文别处也会出现同一个词** ⇒ 门会恒绿、变成没有牙的门。
+//	实测：把登记段首句整句抹掉，门**仍然绿**（因为别处还有「退役」二字）。
+//	⇒ 登记必须**同时**落成一枚常量：门钉它的**值**，抹掉/改写它就红。
+//
+// ★ 它是**包级常量**（不是局部变量）⇒ 即便当前无人引用，Go 也不会报未使用。
+const abandonedTurnTriggerRetired = "v1-family-retired@2026-10-20"
 
 // abandonedTurnOps counts outcomes of the landing pad.
 //
