@@ -41,8 +41,8 @@ var bareRequestLogsRe = regexp.MustCompile(`(?i)\b(FROM|JOIN)\s+(public\.)?_?req
 
 var sqlReadGuardAllowFiles = map[string]string{
 	// ---- LEGIT：双腿之母表腿（有意读） ----
-	"admin/analytics.go":               "LEGIT: 决策回放双腿之母表腿（R46 F9，hot 腿同查询内联）",
-	"admin/request_trace.go":           "LEGIT: hot∪母表双腿 UNION ALL（既定正面模板）",
+	"admin/analytics.go":     "LEGIT: 决策回放双腿之母表腿（R46 F9，hot 腿同查询内联）",
+	"admin/request_trace.go": "LEGIT: hot∪母表双腿 UNION ALL（既定正面模板）",
 	"admin/usage_enhanced.go": "LEGIT: cache-economics 的压缩请求计数走**母表单腿**（2026-10-18）。" +
 		"①为何单腿而不是双腿 UNION：promote 会把旧行从 _request_logs_hot 搬到母表，" +
 		"两腿同时存在时朴素 UNION ALL 会把同一行数两次——对**计数**指标那是系统性虚高；" +
@@ -124,11 +124,12 @@ var sqlReadGuardAllowFiles = map[string]string{
 }
 
 var sqlReadGuardAllowSQLFiles = map[string]string{
-	"sql/objects/views/request_logs_with_current_month.sql":                           "LEGIT: v1 回退体（两条臂）视图定义体。⚠️ 它**不是**部署形态——部署形态是 db/request_logs_view_schema.go 的三臂会话体（session_turns_hot ∪ session_turns ∪ v1 臂 + 双反连接去重）。别把本文件当该视图的定义引用（203/204 号都栽在这里，205 号更正）；世代由 db/request_logs_view_dump_generation_test.go 钉住",
-	"sql/objects/views/request_logs_bodies_progress.sql":                              "LEGIT: 视图定义体",
-	"sql/objects/views/v_node_switch_analysis.sql":                                    "DEBT(R47): 视图定义裸母表",
-	"sql/objects/views/customer_cost_view.sql":                                        "DEBT(R47): 视图定义裸母表",
-	"sql/objects/views/model_cost_per_task_view.sql":                                  "DEBT(R47): 视图定义裸母表",
+	"sql/objects/views/request_logs_with_current_month.sql": "LEGIT: v1 回退体（两条臂）视图定义体。⚠️ 它**不是**部署形态——部署形态是 db/request_logs_view_schema.go 的三臂会话体（session_turns_hot ∪ session_turns ∪ v1 臂 + 双反连接去重）。别把本文件当该视图的定义引用（203/204 号都栽在这里，205 号更正）；世代由 db/request_logs_view_dump_generation_test.go 钉住",
+	"sql/objects/views/request_logs_bodies_progress.sql":    "LEGIT: 视图定义体",
+	"sql/objects/views/v_node_switch_analysis.sql":          "DEBT(R47): 视图定义裸母表",
+	// customer_cost_view / model_cost_per_task_view 两条已于 2026-10-20 复核轮
+	// 移除（迁移 883 把两个**活指标**子查询从 v1 冻结族切到会话族后，
+	// 这两个定义体已无裸母表读；由 TestSQLReadGuardWhitelistCurrent 自清洁报出）。
 	"sql/objects/views/v_timeout_effectiveness.sql":                                   "DEBT(R47): 视图定义裸母表",
 	"sql/objects/views/v_continuation_effectiveness.sql":                              "DEBT(R47): 视图定义裸母表",
 	"sql/objects/functions/credential_most_used_model_integer_integer.sql":            "DEBT(R47): 函数体裸母表",
@@ -309,8 +310,17 @@ func TestDebtRatchetDoesNotGrow(t *testing.T) {
 	// 报出后按其要求删除 ⇒ DEBT 由 21 降为 18。
 	// 这不是「把门放松」：该门的判据是**相对 debtBaseline 不得新增**，
 	// 下限只是抽取有效性的兜底；18 条仍远高于空集，抽取坏掉仍会红。
-	if len(debt) < 17 {
-		t.Fatalf("只从白名单里抽出 %d 条 DEBT 条目（下限 17）：DEBT 识别很可能已失效，"+
+	// ⚠️ 2026-10-20 下限 17 → 15：迁移 883 把 customer_cost_view /
+	// model_cost_per_task_view 两个**活指标**子查询从 v1 冻结族切到会话族，
+	// 这两个定义体已无裸母表读 ⇒ TestSQLReadGuardWhitelistCurrent 报出
+	// （自清洁门要求删条目）⇒ DEBT 由 17 降为 15。
+	// 下调理由与 2026-10-14 那次（18→17）同源：**下限必须 ≤ 真实债条数**，
+	// 否则债务被真实偿还后这道门永远转绿不了（自清洁守卫要求删条目，
+	// 删条目又把计数压到下限以下 ⇒ 两道门互相锁死）。
+	// 这不是「把门放松」：该门的判据是**相对 debtBaseline 不得新增**，
+	// 下限只是抽取有效性的兜底；15 条仍远高于空集，抽取坏掉仍会红。
+	if len(debt) < 15 {
+		t.Fatalf("只从白名单里抽出 %d 条 DEBT 条目（下限 15）：DEBT 识别很可能已失效，"+
 			"此时「没有新增」会与「一条都没抽到」同步为真。抽到的：%v", len(debt), keysSorted(debt))
 	}
 

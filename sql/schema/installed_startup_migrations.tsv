@@ -293,3 +293,4 @@
 275	880_session_write_timeout_budget.sql
 276	881_drop_attack_vectors_embedding_index.sql
 277	882_request_logs_cost_negative_partial_idx.sql
+278	883_session_family_cost_view_metrics.sql

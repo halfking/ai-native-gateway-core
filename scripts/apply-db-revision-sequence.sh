@@ -1741,6 +1741,20 @@ files=(
   # 全 heap（01-schema ensure 不带 USING columnar），无列存拒绝面。
   "$ROOT_DIR/sql/migrations/startup/882_request_logs_cost_negative_partial_idx.sql"
 
+  # ── 2026-10-20 auto-route 成本仪表盘的两个活指标切到会话族 ──────────────
+  #
+  # customer_cost_view.active_concurrent（5 分钟窗）与
+  # model_cost_per_task_view.avg_latency_ms（7 天窗）原先读 v1 母表；
+  # 860 改名后是 `_request_logs`，而 v1 自 S4 起停写 ⇒ 该族冻结 ⇒
+  #   · active_concurrent 是 5 分钟窗 ⇒ 冻结族里没有「最近 5 分钟」的行
+  #     ⇒ 任何环境都**恒 0**（活指标恒 0，且无任何错误信号）；
+  #   · avg_latency_ms 的 7 天窗只能读到停写那一刻的快照值。
+  # 两张视图都只由 baseline 建（startup 迁移里没有），所以存量环境必须靠
+  # 这条迁移换定义体；列名/列序/列类型不变 ⇒ CREATE OR REPLACE 可用。
+  # ⚠ 会话族 api_key_id 是 text、api_key_model_cost.api_key_id 是 integer
+  #   ⇒ 比较必须显式 ::text（否则建视图时报 text = integer）。
+  "$ROOT_DIR/sql/migrations/startup/883_session_family_cost_view_metrics.sql"
+
   # ── 2026-10-16 孤儿迁移 044 补登（health_source 白名单缺 probe_now）──────
   #
   # 044_health_source_probe_now.sql 早就写在 sql/migrations/startup/ 里，注释把

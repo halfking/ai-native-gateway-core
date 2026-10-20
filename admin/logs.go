@@ -616,44 +616,34 @@ func (h *Handler) listLogs(w http.ResponseWriter, r *http.Request) {
 
 	where := strings.Join(clauses, " AND ")
 
-	// For COUNT, we need the same JOINs to filter by ak.tenant_id for tenant_admin
-	// 2026-07-06: 使用视图查询，避免遗漏 hot 表数据（migration 341）
-	var count int
-	var agg requestLogAggregate
+	// S3 波1（plan §4-S3）：FROM 源可在视图与 session_turns 原生投影间切换
+	//（storage.admin_logs_native_turns_read，默认视图）。两种形态在 rl 别名下
+	// 逐列同形，WHERE/JOIN/扫描零改动。全查询共用一次取值，保证 COUNT/聚合/
+	// 分页列表读到同一行集。
 	// Super-admin path keeps the original narrow shape (no api_keys join —
 	// api_keys is not needed for the row count or for the SUM aggregate and
 	// adding it would inflate the query plan on the busiest list endpoint).
 	// Tenant-admin path retains the LEFT JOIN against api_keys so the WHERE
 	// clause on rl.tenant_id is matched by the same row set used for COUNT
 	// and the SUM aggregate below.
-	// S3 波1（plan §4-S3）：FROM 源可在视图与 session_turns 原生投影间切换
-	//（storage.admin_logs_native_turns_read，默认视图）。两种形态在 rl 别名下
-	// 逐列同形，WHERE/JOIN/扫描零改动。全查询共用一次取值，保证 COUNT/聚合/
-	// 分页列表读到同一行集。
 	logsFrom := logsSourceFromSQL()
 
-	superCountSQL := "SELECT COUNT(*) FROM " + logsFrom + " WHERE " + where
-	tenantCountSQL := "SELECT COUNT(*) FROM " + logsFrom + " LEFT JOIN api_keys ak ON ak.id = rl.api_key_id WHERE " + where
-	if IsTenantAdmin(r) {
-		if err := h.db.QueryRow(ctx, tenantCountSQL, args...).Scan(&count); err != nil {
-			slog.Error("admin listLogs count query failed", "scope", "tenant", "error", err)
-			writeInternalErr(w, "query failed", err)
-			return
-		}
-	} else {
-		if err := h.db.QueryRow(ctx, superCountSQL, args...).Scan(&count); err != nil {
-			slog.Error("admin listLogs count query failed", "scope", "super_admin", "error", err)
-			writeInternalErr(w, "query failed", err)
-			return
-		}
-	}
-
-	// Aggregate totals over the same filter set (independent of pagination).
-	// Failure here MUST NOT take down the page; the list endpoint still has
-	// valid items / count, so we log and ship zero-valued aggregate fields.
-	// The SUM query reuses the same row-shape as the matching COUNT above
-	// (super-admin vs tenant-admin) to guarantee the totals describe the
-	// same row set the user is paginating over.
+	// 2026-10-20（复核轮 §5.12）：COUNT 与 SUM 合并为**一次**聚合。
+	//
+	// 此前对**同一行集**做了两次独立扫描（一条 COUNT、一条 SUM），而
+	// canonical 视图的扫描代价与窗口内行集大小成正比 ⇒ 每读一次列表页，
+	// 窗口内的行集就被过**两遍**。合并后一条聚合同时给出 count 与各 SUM
+	// ⇒ 只过一遍（执行次数 2 → 1）。
+	//
+	// ⚠ **失败语义必须保持**：旧行为是「SUM 失败 ⇒ 聚合字段回零、页照常出」
+	//   （COUNT 失败才 500）。所以聚合失败时退回**单独**的 COUNT 查询，
+	//   聚合字段仍然保持零值；COUNT 也失败才是 500。
+	//
+	// ⚠ **口径不变**：COUNT 与 SUM 用的是同一 FROM/WHERE 与同一组参数
+	//   （tenant_admin 路径两者都带 api_keys 的 LEFT JOIN；super_admin 路径
+	//   两者都不带）⇒ 合并查询里的 COUNT(*) 与旧 COUNT 查询**逐字等价**。
+	var count int
+	var agg requestLogAggregate
 	var (
 		promptSum     int64
 		completionSum int64
@@ -665,6 +655,7 @@ func (h *Handler) listLogs(w http.ResponseWriter, r *http.Request) {
 	)
 	aggSelect := `
 		SELECT
+			COUNT(*),
 			COALESCE(SUM(rl.prompt_tokens), 0)::bigint,
 			COALESCE(SUM(rl.completion_tokens), 0)::bigint,
 			COALESCE(SUM(rl.cache_read_tokens), 0)::bigint,
@@ -680,13 +671,25 @@ func (h *Handler) listLogs(w http.ResponseWriter, r *http.Request) {
 		aggFromSQL = " FROM " + logsFrom + " WHERE " + where
 	}
 	if err := h.db.QueryRow(ctx, aggSelect+aggFromSQL, args...).Scan(
-		&promptSum, &completionSum, &cacheReadSum, &cacheWriteSum,
+		&count, &promptSum, &completionSum, &cacheReadSum, &cacheWriteSum,
 		&totalTokens, &costSum, &creditsSum,
 	); err != nil {
 		slog.Warn("admin listLogs aggregate scan failed",
 			"err", err.Error(),
-			"count", count,
 		)
+		// 聚合失败：退回单独的 COUNT（页面的 count 与列表仍然可用，
+		// 聚合字段保持零值）—— 与旧行为一致（旧：COUNT 失败即 500）。
+		countSQL := "SELECT COUNT(*) FROM " + logsFrom + " WHERE " + where
+		scope := "super_admin"
+		if IsTenantAdmin(r) {
+			countSQL = "SELECT COUNT(*) FROM " + logsFrom + " LEFT JOIN api_keys ak ON ak.id = rl.api_key_id WHERE " + where
+			scope = "tenant"
+		}
+		if err := h.db.QueryRow(ctx, countSQL, args...).Scan(&count); err != nil {
+			slog.Error("admin listLogs count query failed", "scope", scope, "error", err)
+			writeInternalErr(w, "query failed", err)
+			return
+		}
 		// Keep aggregate zero-valued; the page still renders list + count.
 	} else {
 		agg = requestLogAggregate{

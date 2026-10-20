@@ -45,6 +45,9 @@
 | **★ 新发现一：凭据级熔断会连坐兄弟模型** | 一个模型的 429（`EndpointTPMExceeded`）经 goal-retry 连打 3 次 ⇒ `nodehealth` 熔断阈值（付费档 3）⇒ `EffectSetCredentialUnavailable` ⇒ **该凭据名下 10 个绑定全部 `available=FALSE`** + `credentials.availability_state='cooling'` ⇒ 刚 200 过的兄弟模型立刻 `no_candidate`（3 分钟）。是 `reducer.go:434` 的**明确设计**，但代价要记账（L9） |
 | **★ 新发现二：探针 chat 腿缺「预算耗尽」豁免** | Responses 腿接受 `status=incomplete` + `max_output_tokens` 作正向证据，**chat 腿没有** ⇒ reasoning 模型（探针预算只有 32 token）在 `content:null` 时被判 `probe_response_inconclusive` ⇒ 永远到不了 `healthy_confirmed`。与「2xx 不等于健康」是刻意规矩冲突，本轮**不改**（L10） |
 | **★ L1 订正（上一轮自己的结论前提有误）** | 「7 张分区不带 `_` 前缀 ⇒ 新装/存量形状分叉」**不成立**：那是迁移 860 的**明确设计**（待删标志在父表上），正典基线 schema 造的就是无前缀分区名，862 那个 `_request_logs_2026_10` 只是**合成夹具名** ⇒ 两边形状相同。真正要修的是**按名字枚举分区族的口径**（两处运维脚本 ⇒ 已改成按 `pg_inherits` 走父表，真库差集证明**零回退、只补漏**）。⚠️ 这两个脚本是**仓库级运维资产、不在发布链上** ⇒ 已提交≠已生效，生产机上的拷贝件仍是旧口径（当前**无排程在跑**，详见 §5.9.3.1） |
+| **★ D1：两个活指标读冻结族** | `customer_cost_view.active_concurrent`（**5 分钟**窗）与 `model_cost_per_task_view.avg_latency_ms`（7 天窗）读的是**已冻结**的 `_request_logs` ⇒ 前者在**任何环境都恒 0**（冻结族里永远没有「最近 5 分钟」的行）、后者只读到停写那一刻的快照，**且两者都不报任何错**。已用**迁移 883** 切到会话族（5 分钟窗=hot 单腿、7 天窗=hot∪parent；会话族 `api_key_id` 是 text ⇒ 必须 `::text`），canonical/正典/baseline/installer/runner/部署通道/TSV **七处登记齐全**，2 道门（真库行为门 + 5 道契约门）**4 处变异全部转红**（§5.12.2） |
+| **★ D1 的另一半：成本端点仍 `[]`** | **不是**本轮没修好，而是**聚合链从未接线**：`api_key_model_cost` 的 trigger 在正典与全部 startup 迁移里**都不存在**，该表 `n_tup_ins=0`（一行都没写过），且**无唯一索引** ⇒ 原函数的 `ON CONFLICT` 会报 42P10。⇒ 这两个端点**从功能设计出来那天起**就一直是 `[]`，与退役无关。复活需按序补：写侧 `canonical_id`（现 0/NULL）→ 唯一索引 → 会话族 trigger ⇒ 登记为 **L11**（§5.12.3） |
+| **★ D3：列表端点对同一行集扫两遍 → 一遍** | 上一轮记 L3 时说「本地小数据集量不出收益」——**量法选错了**：buffers 确实量不出（三种写法都是 137 hit，第二趟全命中缓存），但**执行次数**是结构性的。已把 COUNT 与各 SUM 合并成**一条**聚合（执行次数 2→1），并保持「聚合失败 ⇒ 退回单独 COUNT、聚合字段回零、页照常出；COUNT 也失败才 500」的旧降级语义。判据用 **pgx QueryTracer 数查询**（必须恰好 1 条非分组聚合扫描）+ 与旧两扫口径**逐值对账**，变异（拆回两查）转红（§5.12.4） |
 
 ---
 
@@ -828,8 +831,8 @@ JS 堆栈是**多行**的，整表被写坏（解析出来「106 行、route 重
 | # | 项 | 性质 | 建议 |
 |---|---|---|---|
 | ~~**L1**~~ | ~~7 张 v1 分区表未带 `_` 待删标志 … 形状分叉~~ ⇒ **2026-10-20 复核轮内已订正，见 §5.9**：这不是缺陷，是迁移 860 的**明确设计**（待删标志在**父表**上，子表名按设计保持不变）；「新装与存量形状分叉」的前提**不成立**（正典基线 schema 造的就是无前缀分区名，862 那个 `_request_logs_2026_10` 只是**合成夹具名**）。**真正要修的是按名字枚举的口径**（已修，见 §5.9.3） | ~~真实不一致~~ → **前提有误** | 不出改名迁移（改名会与 860 的设计、基线 schema、`ensure_request_logs_partition` 的动态前缀脱节）；改为把两处按名字前缀枚举分区族的运维脚本改成**按 `pg_inherits` 走父表** |
-| **L2** | `customer_cost_view.active_concurrent`（5 分钟窗）与 `model_cost_per_task_view.avg_latency_ms`（7 天窗）是**活指标**读冻结族 ⇒ 恒 0 / 恒 NULL，**无任何错误信号** | 静默失效 | 迁到 session 族等价源，或显式标注「v1 冻结后不可用」 |
-| L3 | 列表端点 COUNT / SUM / 分页**三扫同一行集** | 效率 | 合并为一次聚合 |
+| ~~**L2**~~ | ~~`customer_cost_view.active_concurrent`（5 分钟窗）与 `model_cost_per_task_view.avg_latency_ms`（7 天窗）是活指标读冻结族 ⇒ 恒 0 / 恒 NULL~~ ⇒ **2026-10-20 复核轮续做已修读源**（迁移 883 → 切会话族；真库行为门 + 5 道契约门，4 处变异转红）。⚠ **但端点仍返回 `[]`**：外层聚合表 `api_key_model_cost` 的 trigger **从未接线**（`n_tup_ins=0`、无唯一索引）⇒ 端点空是**新功能缺口**不是退役残留 ⇒ 记为 **L11**（见 §5.12.3） | ~~恒 0 / 恒 NULL~~ → **读源已修**，端点仍空（L11） | 复活聚合链：写侧 `canonical_id` → 唯一索引 → 会话族 trigger（§5.12.3 给了顺序与理由） |
+| ~~L3~~ | ~~列表端点 COUNT / SUM / 分页三扫同一行集~~ ⇒ **2026-10-20 复核轮续做已修**：COUNT 与各 SUM 合并成**一条**聚合（同一行集的执行次数 2→1），降级语义保持；判据用 pgx QueryTracer 数查询 + 与旧两扫口径逐值对账（§5.12.4） | ~~效率~~ → **已收口** | 无 |
 | L4 | 5 张 `v_*` 视图 + `request_logs_bodies_with_current_month` 仍读 v1 裸母表（`internal/sqlreadguard` 已登记 `DEBT(R47)`） | 已知债 | 逐张判定：历史可读（保留）vs 活指标（必须迁） |
 | L5 | `storage.admin_logs_native_turns_read` 默认关闭 ⇒ 列表页继续付 canonical 视图的 v1 臂 + 反连接成本 | 已决策 | 保持关闭（27.6% 缺口），但**成本要显式记账** |
 | L6 | 本机 PG 的 `shared_buffers` 原值 400 kB 是**手改在容器数据目录**里的，不在仓库内 | 环境 | 已在本机修好并加部署门；**任何新建的本机 PG 都要按门检查**（门只在本仓的 deploy-local 路径生效） |
@@ -837,6 +840,7 @@ JS 堆栈是**多行**的，整表被写坏（解析出来「106 行、route 重
 | **L8** | `prompt_injection_stats_enhanced`（迁移 364）**在正典库上建不出来**（引用不存在的 `detection_score`）；本轮已让统计端点**不再依赖**它，但**视图本身仍在** ⇒ 任何直接查它的外部消费者（`web-mobile/src/api/promptInjection.ts` 的注释仍这么写）继续 42P01 | 债 | 出一条新迁移用**正典形状**重建该视图（历史迁移字节不可改）；本轮未做（见 §5.6.1 的口径冲突：视图的等级分桶与正典整数 `risk_level` 不兼容，必须同时定口径） |
 | **L9** | **一个模型的 429 会冷却整个凭据**：`nodehealth` 熔断（付费档连续 3 次）⇒ `EffectSetCredentialUnavailable` ⇒ `credentials.availability_state='cooling'` + **该凭据名下全部绑定 `available=FALSE`** ⇒ 兄弟模型（哪怕刚 200 过）一起 `no_candidate` 3 分钟。写侧的 `writeModelLevelFailureOnly` 本来是对的（只冷自己），是**熔断路径**把范围放大 | 设计代价 | 本轮**不改**：改成模型级会重新打到同一个已超配额的端点上，更糟。若要改，需先答「凭据级限流 vs 模型级限流怎么区分」——上游 TPM/RPM 限流是**账号级**的，凭据级冷却在这类场景是对的；真正要收窄的是**被误判为模型故障的凭据级限流** |
 | **L10** | **探针 chat 腿没有 Responses 腿那个「预算耗尽也算证据」的豁免**：reasoning 模型在探针预算（`ProbePingMaxTokens=32`）内把预算全花在 `reasoning_content` 上、`content:null` ⇒ chat 腿判 `probe_response_inconclusive` ⇒ 永远到不了 `healthy_confirmed` ⇒ 模型不可路由。实测命中 `z-ai/glm-5.3-flash`（凭据 2） | 规则不对称 | 本轮**不改**：「2xx 不等于健康、必须有正向证据」是本仓 2026-10-20 12h 审计轮**刻意**立的规矩（`bg/probe_observation_beat_gate_20261020_test.go` 整篇在钉）。要改必须单独一轮，并同时回答「reasoning 模型的探针预算该给多少」（32 ⇒ 多少）和「`finish_reason=length` + `content:null` 算不算协议可达证据」 |
+| **L11** | **auto-route 成本聚合链从未接线**：`api_key_model_cost` 的填充 trigger `trg_update_api_key_model_cost` 在正典与**全部** startup 迁移里都不存在（只在归档 feature doc 里建过，且建在 v1 表上）⇒ 该表 `pg_stat_user_tables.n_tup_ins = 0`（一行都没写过）、**无任何索引** ⇒ 原函数里的 `ON CONFLICT (bucket, api_key_id, raw_model)` 会报 42P10。⇒ `/api/admin/auto-route/cost/customer` 与 `/api/admin/auto-route/cost/model` **从功能设计出来那天起就一直返回 `[]`**，与 request_logs 退役**无关** | 新功能缺口（非退役残留） | 按依赖序复活：① 写侧补 `canonical_id`（会话族现 0/NULL）与 `cost_usd` 的计价来源 → ② `api_key_model_cost (bucket, api_key_id, raw_model)` UNIQUE 索引 → ③ 在 `session_turns_hot` 上挂会话族版聚合 trigger（v1 版的 `outbound_model`/`client_model` 列在会话族不存在，**不能直接复用原函数体**）。**读源切换已完成**（迁移 883）。本轮**不做**（属新功能 + 要动写热路径） |
 
 ### 6.1 既有失败的归因（**不是**本轮引入）
 
@@ -1290,6 +1294,190 @@ PSQL="$HOME/kaixuan/pg18/bin/psql"
 
 ---
 
+## 5.12 ★ 续做：从遗留表里挑出「本轮真能收口」的两项（读源 D1 / 扫描次数 D3）
+
+### 5.12.1 怎么挑的：只动**有可观测效果**且**在目标内**的两项
+
+上一轮遗留表里有 6 项（L1/L2/L3/L4/L5/L6/L7/L8）。本轮按三条标准筛：
+
+| 候选 | 在目标内？ | 有可观测效果？ | 本轮处置 |
+|---|---|---|---|
+| **L2**（两个活指标读冻结族） | ✅「API 读源转到 session 族」 | ✅（恒 0 / 恒 NULL 是错的） | **做**（§5.12.2） |
+| **L3**（列表端点同一行集扫两遍） | ✅「优化列表效率，不要表扫描」 | ✅（执行次数 2→1） | **做**（§5.12.4） |
+| L4（5 张 `v_*` 视图仍读 v1 裸母表） | ✅ 但**全是历史只读面** | ❌ 活指标不依赖它们 | 留待（L4） |
+| L5（`admin_logs_native_turns_read` 默认关闭） | ⚠️ 是**开关决策**不是缺陷 | — | 留待（L5） |
+| L7 / L8 | ✅ 但改动面在共享中间件 / 需要新迁移定口径 | — | 留待 |
+
+### 5.12.2 D1：两个**活指标**读的是**冻结族** ⇒ 一个恒 0、一个恒 NULL（且无任何错误信号）
+
+**缺陷本体**（真库读数，非推理）：
+
+| # | 指标 | 窗口 | 原读源 | 后果 |
+|---|---|---|---|---|
+| 1 | `customer_cost_view.active_concurrent` | **5 分钟** | `_request_logs` | **恒 0**（任何环境都恒 0，见下） |
+| 2 | `model_cost_per_task_view.avg_latency_ms` | **7 天** | `_request_logs` | 只能读到**停写那一刻**的快照值（7 天后为 NULL） |
+
+三个决定性读数：
+
+```bash
+source /tmp/lgw-env.sh
+PSQL="$HOME/kaixuan/pg18/bin/psql"
+# ① v1 族在退役后是空的（本地）
+"$PSQL" "$DATABASE_URL" -tAc "SELECT count(*) FROM public._request_logs;"        # 0
+"$PSQL" "$DATABASE_URL" -tAc "SELECT count(*) FROM public._request_logs_hot;"    # 0
+# ② 它**从未**被写入过（统计自 PG 启动未重置）
+"$PSQL" "$DATABASE_URL" -tAc "SELECT n_tup_ins FROM pg_stat_user_tables
+  WHERE relname IN ('_request_logs','api_key_model_cost');"                      # 0 / 0
+# ③ 端点现状
+curl -s -H "Authorization: Bearer $ADMIN_TOKEN" \
+  http://127.0.0.1:8782/api/admin/auto-route/cost/customer                      # []
+```
+
+**为什么「恒 0」是普遍结论而不是「本机没数据」**：`active_concurrent` 的窗口是
+**5 分钟**，而 v1 族自 2026-10-13 停写 ⇒ **冻结族里永远没有「最近 5 分钟」的行**
+⇒ 这个计数在**任何环境**都恒 0（哪怕那台环境有三年历史数据）。它衡量的是
+「此刻有多少个 auto 请求在跑」，恒 0 ⇒ 并发压力看板与由它派生的
+`pressure_ratio` / `avg_pressure_1h` 全部失去意义，**且不报任何错**。
+
+**语义映射**（逐列核对，不是机械替换）：
+
+| v1 列 | 会话族对应列 | 依据 |
+|---|---|---|
+| `outbound_model` | **`raw_model_name`** | `domains/streaming/executors/executor.go` 的 `candidateRawModel(c)` ⇒ 候选的**上游原始模型**；`session_turns.model` 是**客户端**模型，语义不同 |
+| `api_key_id` | `api_key_id` | ⚠ **类型不同**：会话族是 **text**（写侧 `APIKeyID string`，落库是十进制文本 `'2'`），`api_key_model_cost.api_key_id` 是 **integer** ⇒ 必须显式 `::text`，否则建视图时报 `operator does not exist: text = integer`（本轮真实踩到） |
+| `is_auto_request` / `success` / `ts` / `latency_ms` | 同名列 | 语义一致 |
+
+**两条腿的选型**（各有依据，不是随手挑）：
+
+- `active_concurrent`（5 分钟）= **hot 单腿** `session_turns_hot`
+  · **完整**：在线写路径只写 hot（`domains/session/v2/turn_writer.go`），
+    晋级延迟远大于 5 分钟 ⇒ 窗口内的行必然在 hot；
+  · **无重复**：计数指标不能被数两次（下面 ② 的 UNION ALL 才有那个问题）；
+  · **便宜**：本仓先例 —— `db/request_logs_view_schema.go` 的
+    `SessionFamilyTurnsHotSourceSQL` 明写「短窗仪表盘用 hot-only，免得父表
+    分区扫描与并发 MV REFRESH 把 `/api/logs/top-models` 顶爆 10s 预算
+    （2026-10-15 生产 500 实证）」。
+- `avg_latency_ms`（7 天）= **hot ∪ parent 两条腿 UNION ALL**
+  · 7 天窗跨过 hot 保留期（名义 8h）⇒ 只带 hot 会**整段丢失** 7 天前到 8 小时前；
+  · 形态与 `SessionFamilyTurnsSourceSQL` 同款；promote 会排空 hot ⇒ 不会重复；
+  · 且它是**均值**，对偶发重复不敏感（计数指标对重复敏感，所以那条债是另一回事）。
+  · **不能**复用现成的 `session_turns_with_current_month`：它不投影
+    `raw_model_name`（实测 information_schema），而本子查询需要它。
+
+**改法与登记**（迁移 883）：
+
+| 落点 | 内容 |
+|---|---|
+| `sql/migrations/startup/883_session_family_cost_view_metrics.sql` (+`.down.sql`) | 两条 `CREATE OR REPLACE VIEW`（列名/列序/列类型不变 ⇒ 可直接替换）+ `lock_timeout=60s` + `statement_timeout=5min` + `POST_CONDITION` |
+| `sql/objects/views/{customer_cost_view,model_cost_per_task_view}.sql` | 正典定义体同步 |
+| `sql/schema/01-schema.sql` **与** `deploy/sql/schemas/baseline/01-schema.sql` | 两份**逐字节相同**（`deploy/sql/verify-migration.sh` 会 diff 它们）⇒ 新装环境与存量环境形状一致 |
+| `installer/cmd/llm-gw-installer/main.go` | `go:embed` + startup map 条目 |
+| `installer/cmd/llm-gw-installer/embeddata/startup/883_*.sql` | embeddata 副本（与 canonical **SHA 现场一致**：`84a614746d06…`） |
+| `installer/internal/dbinit/runner.go` | `StartupFiles` 条目 |
+| `scripts/apply-db-revision-sequence.sh` | 部署通道 `files=()` 条目 |
+| `sql/schema/installed_startup_migrations.tsv` | **用生成器重建**（`go test -run TestStartupManifest -update`）⇒ 883 @ 位置 278（序号不写死） |
+
+**判据（2 道，都做过变异验证）**：
+
+| 门 | 钉什么 | 变异 → 转红 |
+|---|---|---|
+| `admin/auto_route_cost_views_session_source_test.go`（**真库 + 造夹具**） | 两个指标真的取到**会话族**的值：造 `api_key_model_cost` 行 + 3 条会话行，断言 `active_concurrent == 1`、`avg_latency_ms == 夹具延迟` | **M1** 改回读 v1 ⇒ `active_concurrent` 变 0；**M2** 把匹配键换成 `model` ⇒ `avg_latency_ms` 变 NULL |
+| `sql/migrations/startup/migration_883_..._test.go`（契约门，5 道） | 迁移体不读 v1 + 两条腿的选型 + `::text` + down 可回滚 + canonical/baseline 同步 + embeddata 一致 + **三处登记都在** | **M3** 把 883 从部署通道摘掉 ⇒ 登记门红；**M4** 去掉 `::text` ⇒ 形态门红 |
+
+⇒ 门里还配了**前提断言**（`public._request_logs` 当前确实是空的 ⇒「指标非零」
+只可能由会话族贡献）与**阴性侧断言**（非 auto 行、`success IS NULL` 行都**不得**
+被计入 ⇒ 防止「为了让门过，把谓词删掉」）。
+
+**⚠ 端点仍然返回 `[]` —— 这不是本轮没修好，是另一件事**（见 §5.12.3）。
+
+### 5.12.3 D2（新遗留 **L11**）：成本聚合链**从未接线**（不是退役造成的）
+
+`api_key_model_cost` 是两张视图的**外层**聚合表。它的填充依赖 trigger
+`trg_update_api_key_model_cost`，而：
+
+- 全仓搜 `CREATE TRIGGER ... api_key_model_cost` ⇒ **只在一份归档 feature doc
+  里**（`deploy/sql/docs/features/2026-06-15-auto-route-mode-cost-table.sql`，
+  建在 `request_logs` 上）⇒ **正典与全部 startup 迁移里都没有它**；
+- `pg_stat_user_tables.n_tup_ins` = **0** ⇒ 这张表**一行都没被写过**；
+- `api_key_model_cost` **一个索引都没有** ⇒ 原函数里的
+  `ON CONFLICT (bucket, api_key_id, raw_model)` 会直接报
+  `42P10: there is no unique or exclusion constraint matching the ON CONFLICT specification`
+  ⇒ 就算把 trigger 挂回去，**第一行就会失败**。
+
+⇒ **结论：这两个成本端点从功能设计出来那天起就一直是 `[]`**，与 request_logs
+退役**无关**（不是退役造成的回归）。「端点空」和「读源错」是**两件事**：
+本轮修的是后者（读源），前者是**新功能缺口**。
+
+**复活它的前置顺序**（缺一不可，按依赖排）：
+
+1. **写侧**：会话族的 `canonical_id` 实测 **0/NULL**（`session_turns` 与
+   `_hot` 都是）⇒ `model_cost_per_task_view` 的分组键会一直是 NULL；
+   `cost_usd` 虽有值但本机全为 0（本地凭据无计价）⇒ 成本列要真实，得先确认
+   写侧在有计价的环境里会落非零值。
+2. **唯一索引**：`api_key_model_cost (bucket, api_key_id, raw_model)` UNIQUE
+   （否则 `ON CONFLICT` 无法工作）。
+3. **会话族 trigger**：在 `session_turns_hot` 上挂会话族版聚合函数
+   （会话族的列名是 `model`/`raw_model_name`，v1 版的 `outbound_model`/
+   `client_model` 不存在 ⇒ 不能直接复用原函数体）。
+4. **读源切换**：**本轮已完成**（迁移 883）。
+
+⇒ 本轮**不做** 1–3：那是**新功能**（要动写侧 + 新增唯一索引 + 挂在写热路径上的
+trigger），不在「退役双写」的目标范围内，且会显著放大本轮的风险面。
+⇒ **判别动作**：看到「某个端点返回空」时，**先问「它外层的聚合表有没有在增长」**
+（`pg_stat_user_tables.n_tup_ins`），再问「读源对不对」——两者独立，混在一起
+就会把「新功能缺口」误当成「退役残留」。
+
+### 5.12.4 D3：列表端点对同一行集扫**两遍** → 扫一遍
+
+上一轮把「列表端点三扫」记成 L3，理由是「**在本地小数据集上无法证明收益**」。
+本轮换了量法：**量执行次数，不量墙钟/buffers**。
+
+**为什么旧量法量不出来**（真库 EXPLAIN ANALYZE, BUFFERS，24h 窗，三种写法）：
+
+| 写法 | Buffers | Execution |
+|---|---|---|
+| A：旧 COUNT | shared hit=137 | 0.30ms |
+| B：旧 SUM | shared hit=137 | 0.30ms |
+| C：合并后 | shared hit=137 | 0.30ms |
+
+⇒ 本地只有 ~1.2k 行，**第二趟全命中缓存** ⇒ buffers 完全相同、**量不出差别**。
+⇒ 但**执行次数**是**结构性**、与数据量无关的事实：同一行集被独立扫了两次。
+
+**改法**（`admin/logs.go` 的 `listLogs`）：COUNT 与各 SUM 合并成**一条**聚合
+（`SELECT COUNT(*), COALESCE(SUM(...)), ... FROM <同一 FROM/WHERE>`），
+执行次数 2 → 1。
+
+**失败语义必须保持**（旧行为是「SUM 失败 ⇒ 聚合字段回零、页照常出；
+COUNT 失败才 500」）：
+
+- 合并查询失败 ⇒ 退回**单独**的 COUNT 查询（count 与列表仍然可用，聚合字段保持零值）；
+- COUNT 也失败 ⇒ 500（与旧行为一致）。
+
+**口径不变**：COUNT 与 SUM 用的是同一 FROM/WHERE 与同一组参数
+（tenant_admin 路径两者都带 `api_keys` 的 LEFT JOIN；super_admin 路径两者都不带）
+⇒ 合并查询里的 `COUNT(*)` 与旧 COUNT 查询**逐字等价**。
+
+**判据**（`admin/logs_single_scan_test.go`，真库 + **pgx QueryTracer** 数查询）：
+
+- 判据 ①：统计「读日志源 + 带聚合 + **无 GROUP BY**」的查询条数 ⇒ 必须 **1**
+  （旧写法是 2；`by_model` 的 GROUP BY 不计入）；
+- 判据 ②：响应的 `count` 与各 SUM 与**旧两次扫描的参考口径**（测试自己用同一源、
+  同一对 from/to 重算）**逐值相等**。
+- 变异验证：把 COUNT 拆回独立查询 ⇒ 判据 ① 转红（报 2 次扫描并打印录到的 SQL）；
+  恢复后转绿。
+
+**活体读回**（部署后）：`/api/logs?page=1&page_size=3` ⇒ 200，
+`count=324`、`aggregate.total_requests=324`、`prompt_tokens=13109`、`by_model` 20 项。
+
+### 5.12.5 本轮新增的一条判据纪律
+
+**夹具里被比较的两个键必须「故意不同」，否则门分不出键漂移。**
+第一版真库门把会话行的 `model` 与 `raw_model_name` 设成同一个值 ⇒ 变异 M2
+（把匹配键从 `raw_model_name` 换成 `model`）**没让门变红** ⇒ 门是「看着在测、
+其实测不出来」的那种。改成两个不同的字符串后，同一个变异立刻转红。
+⇒ **判别动作：写夹具时问一句「我要防的那个漂移，会让这两个值不同吗」**；
+若不会，夹具就钉不住它。
+
 ## 7. 本轮新增的经验
 
 ### 7.1 「执行快」不等于「语句快」：EXPLAIN 的 Execution Time 会骗人
@@ -1458,3 +1646,49 @@ chat 腿不接受」——这类**协议腿之间的规则不对称**，靠读�
 ⇒ 也提醒：**不要为了让某条腿通过就改判据**——本仓的
 「2xx 不等于健康、必须有正向证据」是刻意立的规矩（见 L10 的处理方式：
 **记为遗留、单独一轮再议**，不在别人的任务里顺手改掉）。
+
+---
+
+## 10. §5.12 之后新增的经验（本轮续做）
+
+### 10.1 ★ 「量不出来」是对**量法**的判断，不是对**事实**的判断
+
+上一轮把 L3 记成「在本地小数据集上无法证明收益」。这句话本身没错，但它
+**掩盖了一个可证的事实**：同一行集被独立扫了两次。
+本轮换了量法就出来了 —— **执行次数**是结构性的、与数据量无关；
+而 buffers / 墙钟在小数据集上**原理上就分辨不出**（第二趟全命中缓存，
+实测三种写法都是 137 hit）。
+⇒ **判别动作：说「量不出」之前，先问「我选的量具有没有分辨这件事的能力」**。
+量具分辨不出的量（分辨率不足）≠ 事实不存在。
+⇒ 推论：找**结构性**的量（执行次数、扫描的行集条数、依赖图形状），
+而不是**连续**的量（耗时、buffers、CPU）—— 前者在小环境也能证伪。
+
+### 10.2 ★ 夹具里被比较的两个键必须「故意不同」，否则门分不出键漂移
+
+第一版真库门把会话行的 `model` 与 `raw_model_name` 设成**同一个值** ⇒
+变异「把匹配键从 `raw_model_name` 换成 `model`」**没让门变红** ⇒
+门「看着在测、其实测不出来」。
+改成两个不同的字符串后，同一个变异立刻转红。
+⇒ **判别动作：写夹具时问「我要防的那个漂移，会让这两个值不同吗」**；
+若不会，夹具就钉不住它。
+⇒ 这与「允许侧判据要配前提断言」是同一族：**门必须能分辨「对的」与「错的」**，
+而不只是「有值」与「没值」。
+
+### 10.3 ★ 「端点空」与「读源错」是**两件独立的事**
+
+`/api/admin/auto-route/cost/customer` 返回 `[]`，原因有**两层**：
+读源错（活指标读冻结族）+ 聚合链从未接线（`n_tup_ins=0`）。
+只修读源 ⇒ 端点**仍然** `[]`（因为相关子查询在外层表零行时压根不执行）。
+⇒ **判别动作：看到空结果，按这个顺序查**：
+① 外层聚合表**有没有在增长**（`pg_stat_user_tables.n_tup_ins`）→ 决定「有没有数据」
+② 读源对不对（视图/查询的源表）→ 决定「数据取对了吗」
+③ 相关子查询在空表上**不执行** ⇒ 要证明读源，必须**造外层行**（夹具），
+不能靠「视图建出来了」或「端点不报错」。
+
+### 10.4 ★ 类型要查 `information_schema`，不要靠记忆
+
+会话族 `api_key_id` 是 **text**、v1 是 **bigint**、聚合表是 **integer**
+—— 三个值三种类型。凭印象写比较 ⇒ 建视图直接报
+`operator does not exist: text = integer`。
+⇒ **判别动作：跨族映射列时，逐列查类型**（一张 `information_schema` 查询就够），
+并把这个差异**写进迁移注释**（它是下一个人的坑）。

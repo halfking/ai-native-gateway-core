@@ -1154,6 +1154,16 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			// 建在父表上让未来月分区自动继承；fresh-install 的月分区
 			// （01-schema ensure）不带 USING columnar，全 heap，无 AM 拒绝面。
 			"882_request_logs_cost_negative_partial_idx.sql",
+			// 883：把 auto-route 成本仪表盘的两个**活指标**子查询从 v1 冻结族
+			// 切到会话族 —— customer_cost_view.active_concurrent（5 分钟窗，
+			// 读冻结族 ⇒ 任何环境都恒 0）与 model_cost_per_task_view.avg_latency_ms
+			// （7 天窗 ⇒ 读的是停写那一刻的快照）。两条腿的选型：5 分钟窗用
+			// hot 单腿（在线写路径只写 hot，晋级延迟远大于 5 分钟 ⇒ 完整且
+			// 无重复；本仓既有先例 SessionFamilyTurnsHotSourceSQL）；7 天窗用
+			// hot ∪ parent UNION ALL（跨过 hot 保留期，形态同
+			// SessionFamilyTurnsSourceSQL）。⚠ 会话族 api_key_id 是 text 而
+			// api_key_model_cost.api_key_id 是 integer ⇒ 必须显式 ::text。
+			"883_session_family_cost_view_metrics.sql",
 		},
 	}
 }
