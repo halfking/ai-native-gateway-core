@@ -171,6 +171,28 @@ FROM pg_class c
 WHERE c.oid IN (
   SELECT inhrelid FROM pg_inherits WHERE inhparent = 'public.session_bodies'::regclass
 )
+
+-- ★ R76 订正：分区在父索引下**已有成员**时，本段跳过该分区。
+--   PG 的硬约束（一次性 PG 17 实测）：一个分区在**同一个父索引**下只能有
+--   一个成员索引，且**与成员定义是否同义无关** —— 同义成员也报
+--   "Another index is already attached for partition"。
+--   而 PG 在分区加入父表、或父分区索引存在后再建分区时，会**自动**给分区
+--   建一个匹配索引并自动命名（形如 <partition>_<column>_idx，如
+--   session_turns_2026_10_search_text_idx）—— 那才是**生产上的真实形态**
+--   （252 实测：父索引 idx_session_turns_search_trgm 的 6 个成员全是自动名，
+--   一个 _search_trgm 都没有）。
+--   本迁移按固定后缀建的名字与它**同义但不同名**：在已有成员的情况下再建
+--   ⇒ 立刻变成「重复索引 + 永远挂不上去的孤儿」，并让下一段的 ATTACH 撞槽位
+--   ⇒ 迁移失败 ⇒ 官方门禁 abort（R73 实测 exit=2，5 条未登记失败里 3 条是它）。
+--   ⇒ 这里按「分区级 + 是否已挂父成员」判定，而不是按索引名
+--     （877 头部 :72-73 自己写的就是这条验收要求：不能按索引名 grep）。
+AND NOT EXISTS (
+  SELECT 1
+  FROM pg_inherits ci
+  JOIN pg_index mi ON mi.indexrelid = ci.inhrelid
+  WHERE ci.inhparent = to_regclass('public.idx_session_bodies_tenant_session_turn_request')
+    AND mi.indrelid = c.oid
+)
 ORDER BY c.relname
 \gexec
 
@@ -190,10 +212,12 @@ BEGIN
     WHERE i.inhparent = 'public.session_bodies'::regclass
   LOOP
     IF to_regclass(format('public.%I', part || '_tenant_session_turn_request_idx')) IS NOT NULL
+       -- ★ R76 订正：同 877 —— 判据改成「该分区在父索引下有没有成员（名字不限）」。
        AND NOT EXISTS (
          SELECT 1 FROM pg_inherits ci
-         WHERE ci.inhparent = 'public.idx_session_bodies_tenant_session_turn_request'::regclass
-           AND ci.inhrelid = to_regclass(format('public.%I', part || '_tenant_session_turn_request_idx'))
+         JOIN pg_index mi ON mi.indexrelid = ci.inhrelid
+         WHERE ci.inhparent = to_regclass('public.idx_session_bodies_tenant_session_turn_request')
+           AND mi.indrelid = to_regclass(format('public.%I', part))
        ) THEN
       EXECUTE format('ALTER INDEX public.idx_session_bodies_tenant_session_turn_request ATTACH PARTITION public.%I',
                      part || '_tenant_session_turn_request_idx');
@@ -218,6 +242,28 @@ FROM pg_class c
 WHERE c.oid IN (
   SELECT inhrelid FROM pg_inherits WHERE inhparent = 'public.sessions'::regclass
 )
+
+-- ★ R76 订正：分区在父索引下**已有成员**时，本段跳过该分区。
+--   PG 的硬约束（一次性 PG 17 实测）：一个分区在**同一个父索引**下只能有
+--   一个成员索引，且**与成员定义是否同义无关** —— 同义成员也报
+--   "Another index is already attached for partition"。
+--   而 PG 在分区加入父表、或父分区索引存在后再建分区时，会**自动**给分区
+--   建一个匹配索引并自动命名（形如 <partition>_<column>_idx，如
+--   session_turns_2026_10_search_text_idx）—— 那才是**生产上的真实形态**
+--   （252 实测：父索引 idx_session_turns_search_trgm 的 6 个成员全是自动名，
+--   一个 _search_trgm 都没有）。
+--   本迁移按固定后缀建的名字与它**同义但不同名**：在已有成员的情况下再建
+--   ⇒ 立刻变成「重复索引 + 永远挂不上去的孤儿」，并让下一段的 ATTACH 撞槽位
+--   ⇒ 迁移失败 ⇒ 官方门禁 abort（R73 实测 exit=2，5 条未登记失败里 3 条是它）。
+--   ⇒ 这里按「分区级 + 是否已挂父成员」判定，而不是按索引名
+--     （877 头部 :72-73 自己写的就是这条验收要求：不能按索引名 grep）。
+AND NOT EXISTS (
+  SELECT 1
+  FROM pg_inherits ci
+  JOIN pg_index mi ON mi.indexrelid = ci.inhrelid
+  WHERE ci.inhparent = to_regclass('public.idx_sessions_tenant_session_partition_date')
+    AND mi.indrelid = c.oid
+)
 ORDER BY c.relname
 \gexec
 
@@ -237,10 +283,12 @@ BEGIN
     WHERE i.inhparent = 'public.sessions'::regclass
   LOOP
     IF to_regclass(format('public.%I', part || '_tenant_session_partition_date_idx')) IS NOT NULL
+       -- ★ R76 订正：同 877 —— 判据改成「该分区在父索引下有没有成员（名字不限）」。
        AND NOT EXISTS (
          SELECT 1 FROM pg_inherits ci
-         WHERE ci.inhparent = 'public.idx_sessions_tenant_session_partition_date'::regclass
-           AND ci.inhrelid = to_regclass(format('public.%I', part || '_tenant_session_partition_date_idx'))
+         JOIN pg_index mi ON mi.indexrelid = ci.inhrelid
+         WHERE ci.inhparent = to_regclass('public.idx_sessions_tenant_session_partition_date')
+           AND mi.indrelid = to_regclass(format('public.%I', part))
        ) THEN
       EXECUTE format('ALTER INDEX public.idx_sessions_tenant_session_partition_date ATTACH PARTITION public.%I',
                      part || '_tenant_session_partition_date_idx');
@@ -282,10 +330,12 @@ BEGIN
     SELECT inhrelid FROM pg_inherits WHERE inhparent = 'public.session_bodies'::regclass
   )
     AND to_regclass(format('public.%I', c.relname || '_tenant_session_turn_request_idx')) IS NOT NULL
+    -- ★ R76 订正：与 ATTACH 段同一个判据（该分区在父索引下有无成员，名字不限）。
     AND NOT EXISTS (
       SELECT 1 FROM pg_inherits ci
-      WHERE ci.inhparent = 'public.idx_session_bodies_tenant_session_turn_request'::regclass
-        AND ci.inhrelid = to_regclass(format('public.%I', c.relname || '_tenant_session_turn_request_idx'))
+      JOIN pg_index mi ON mi.indexrelid = ci.inhrelid
+      WHERE ci.inhparent = to_regclass('public.idx_session_bodies_tenant_session_turn_request')
+        AND mi.indrelid = c.oid
     );
   IF unattached IS NOT NULL THEN
     RAISE EXCEPTION '888: session_bodies 的分区子索引已建但未挂到父索引下: % 。ATTACH 段没跑成；请重跑本迁移。', unattached;
@@ -297,10 +347,12 @@ BEGIN
     SELECT inhrelid FROM pg_inherits WHERE inhparent = 'public.sessions'::regclass
   )
     AND to_regclass(format('public.%I', c.relname || '_tenant_session_partition_date_idx')) IS NOT NULL
+    -- ★ R76 订正：与 ATTACH 段同一个判据（该分区在父索引下有无成员，名字不限）。
     AND NOT EXISTS (
       SELECT 1 FROM pg_inherits ci
-      WHERE ci.inhparent = 'public.idx_sessions_tenant_session_partition_date'::regclass
-        AND ci.inhrelid = to_regclass(format('public.%I', c.relname || '_tenant_session_partition_date_idx'))
+      JOIN pg_index mi ON mi.indexrelid = ci.inhrelid
+      WHERE ci.inhparent = to_regclass('public.idx_sessions_tenant_session_partition_date')
+        AND mi.indrelid = c.oid
     );
   IF unattached IS NOT NULL THEN
     RAISE EXCEPTION '888: sessions 的分区子索引已建但未挂到父索引下: % 。ATTACH 段没跑成；请重跑本迁移。', unattached;
