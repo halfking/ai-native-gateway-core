@@ -5057,7 +5057,56 @@ func (d *DB) Close() {
 		_ = stdlibDB.Close()
 	}
 	if pool != nil {
+		closePoolWithTimeout(pool, poolCloseTimeout)
+	}
+}
+
+// poolCloseTimeout bounds how long Close() waits for the pool to release
+// its resources.
+//
+// 2026-10-21 (R71), measured on llm-gateway-go: pgxpool.Close() waits for
+// every acquired connection to be returned. A connection held by a worker
+// that never stopped — e.g. the long-lived LISTEN connection owned by
+// AutoRouteRealtimeListener, whose Stop() was skipped because an earlier
+// Stop() in the same shutdown goroutine was still blocking — therefore
+// blocks Close() forever. In the gateway this Close() runs from a defer in
+// main(), so main never returned: the process lingered as a zombie holding
+// every Redis connection it had opened, and its background goroutines kept
+// failing against the closed pool.
+//
+// The bound keeps the failure local. pgxpool.Close() closes its own
+// close-channel before waiting, so the pool is already refusing new work
+// when the wait is abandoned; only the "wait for outstanding resources"
+// part is given up on. The abandoned goroutine finishes on its own and
+// releases the connections.
+const poolCloseTimeout = 15 * time.Second
+
+// closePoolWithTimeout closes the pool and waits at most timeout for it to
+// release its resources. It reports whether the pool finished closing
+// within the bound.
+//
+// The close itself runs on its own goroutine so that a leaked connection
+// cannot pin the caller forever.
+func closePoolWithTimeout(pool *pgxpool.Pool, timeout time.Duration) bool {
+	if pool == nil {
+		return true
+	}
+	closed := make(chan struct{})
+	go func() {
+		defer close(closed)
 		pool.Close()
+	}()
+	if timeout <= 0 {
+		<-closed
+		return true
+	}
+	select {
+	case <-closed:
+		return true
+	case <-time.After(timeout):
+		slog.Warn("db: pool close timed out; abandoning the wait for outstanding connections",
+			"timeout", timeout.String())
+		return false
 	}
 }
 

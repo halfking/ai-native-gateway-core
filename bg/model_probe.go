@@ -600,13 +600,29 @@ func (r *ModelProbeRunner) manualProbeWorker(ctx context.Context) {
 }
 
 func (r *ModelProbeRunner) Stop() {
+	// 2026-10-21 (R71): the wait on r.done must be reachable ONLY when a
+	// loop is actually running. r.done is closed by the goroutine that
+	// Start()/StartFeaturedOnly() launched, so a runner that was only
+	// constructed (never started) would block here forever — and because
+	// the gateway's shutdown sequence is one goroutine, that single block
+	// also prevents every later Stop() from running.
+	//
+	// Two independent entry points exist, and each owns a different cancel
+	// handle: Start() sets r.cancel, StartFeaturedOnly() stores
+	// r.featuredCancel. Both launch a goroutine that closes r.done, so
+	// "started" means "either handle is set".
+	started := false
 	if r.cancel != nil {
 		r.cancel()
+		started = true
 	}
 	if fc := r.featuredCancel.Load(); fc != nil && *fc != nil {
 		(*fc)()
+		started = true
 	}
-	<-r.done
+	if started {
+		<-r.done
+	}
 }
 
 func (r *ModelProbeRunner) run(ctx context.Context) {

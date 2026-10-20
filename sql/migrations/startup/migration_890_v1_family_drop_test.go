@@ -153,6 +153,92 @@ func TestMigration890ProjectionMatchesComposer(t *testing.T) {
 	}
 }
 
+// TestMigration890ViewBodyMatchesComposer —— ★ 迁移装出的**整段视图体** ⇔ Go 自愈体。
+//
+// # 为什么这道门必需（R76 轮实测，2026-10-21）
+//
+// 这道门是**上一道门的补缺**，不是重复：
+//
+//   - 上一道门（TestMigration890ProjectionMatchesComposer）**只比 projection**
+//     （迁移的 $proj$ 块 vs Go 的投影常量）⇒ ⇒ **FROM/JOIN 结构没人守**；
+//   - `db.CanonicalSessionOnlyDDLForTest()`（**整段 DDL** 的导出入口）**没有任何门在用**
+//     —— 它的文档注释写着「契约门比 $proj$」，可导出摆在那里没人调。
+//
+// ⇒ ⇒ **结构漂移会静悄悄通过静态层**，而它的后果恰恰是本文件头写的那一类：
+// Go 侧若把 `session_turn_details_hot` 写成 `session_turn_details`（hot 臂 join 到
+// parent 特征层）、或漏掉一条 details 腿、或把两臂顺序颠倒 ⇒ 迁移装上去的视图与
+// 网关启动时自愈重建的视图**不是同一个** ⇒ ⇒ 启动自愈会把视图换歪 ⇒
+// 而「两臂同名同序 118 列」的读方零改动承诺当场破掉。
+//
+// ★ 为什么是「整段组装后比」而不是「逐条 grep 关键字」：
+//
+//	逐条 grep（找 FROM / LEFT JOIN / ON 的字样）只能证明**出现过**，
+//	证不了**结构相同**（顺序、别名、腿的配对都测不到）⇒ 而且 grep 会被注释里的
+//	示例骗过 ⇒ ★ 本门把迁移里的 **$ddl$ 模板 + $proj$ 投影组装成迁移实际装出的
+//	整段语句**，与 Go 的整段 DDL **归一化后逐字比** ⇒ ⇒ projection 与结构**一起**被守住。
+//
+// ★ 阳性对照：组装结果必须**非空**且**含两臂与两条 details 腿**，
+//
+//	否则一个「抽不出来就返回空」的检测器也能让本门全绿。
+func TestMigration890ViewBodyMatchesComposer(t *testing.T) {
+	src := readMig885(t)
+
+	// ── 取 $proj$ 块（与上一道门同款取法）──
+	projStart := strings.Index(src, "proj := $proj$")
+	projEnd := strings.Index(src, "$proj$;")
+	if projStart < 0 || projEnd < 0 || projEnd <= projStart {
+		t.Fatal("890 no longer carries the $proj$ block; update this contract test")
+	}
+	proj := src[projStart+len("proj := $proj$") : projEnd]
+
+	// ── 取装视图的 $ddl$ 模板（整段 CREATE OR REPLACE VIEW …）──
+	ddlStart := strings.Index(src, "CREATE OR REPLACE VIEW public.request_logs_with_current_month AS")
+	if ddlStart < 0 {
+		t.Fatal("890 no longer carries the canonical view DDL template; update this contract test")
+	}
+	ddlEnd := strings.Index(src[ddlStart:], "$ddl$")
+	if ddlEnd < 0 {
+		t.Fatal("890's canonical view DDL template is no longer terminated by $ddl$; update this contract test")
+	}
+	template := src[ddlStart : ddlStart+ddlEnd]
+
+	// ── 组装：把投影填进模板（与迁移运行时同一动作）──
+	assembled := strings.ReplaceAll(template, "%s", proj)
+	if strings.TrimSpace(assembled) == "" {
+		t.Fatal("assembled 890 view body is empty — the detector would be vacuously green")
+	}
+
+	// ── 阳性对照：两臂 + 两条 details 腿必须在（否则「抽错了范围」会伪装成「一致」）──
+	for _, needle := range []string{
+		"FROM public.session_turns_hot t",
+		"FROM public.session_turns t",
+		"LEFT JOIN public.session_turn_details_hot d",
+		"LEFT JOIN public.session_turn_details d",
+		"UNION ALL",
+	} {
+		if !strings.Contains(assembled, needle) {
+			t.Fatalf("assembled 890 view body lacks %q — the extraction range is wrong "+
+				"(a wrong range reads like 'the two agree')", needle)
+		}
+	}
+
+	goBody := db.CanonicalSessionOnlyDDLForTest()
+	if strings.TrimSpace(goBody) == "" {
+		t.Fatal("db.CanonicalSessionOnlyDDLForTest returned an empty body — detector is broken")
+	}
+
+	if normalizeSQL885(assembled) != normalizeSQL885(goBody) {
+		t.Fatalf("890's installed view body and db.canonicalSessionOnlyDDL have drifted.\n"+
+			"Consequence: the view the migration installs and the view the gateway "+
+			"self-heals on boot are NOT the same body — a boot-time self-heal would "+
+			"rebuild the canonical view with a different arm/join structure "+
+			"(e.g. the hot arm joined to the parent details layer, or a missing leg), "+
+			"which breaks the 'two arms, same names, same order' promise every reader "+
+			"relies on.\n"+
+			"--- migration (assembled) ---\n%s\n--- go ---\n%s", assembled, goBody)
+	}
+}
+
 // TestMigration890RecentSuccessRateMatchesRuntimeSSOT —— ★ 迁移的函数体 ⇔
 // 运行时 SSOT。
 //
