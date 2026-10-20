@@ -4397,3 +4397,65 @@ To codeup.aliyun.com:kaixuan/official-deploy/llm-gateway-go.git
   夹具把 NULL 扫进非指针。
 - ⚠ **遗留**：R59 遗留里**另外 32 条** v1 族 42P01（12 个文件）尚未逐文件改瞄；
   `usage_ledger` 幂等（属主决策）；`TestStopWriteInterlock_...`（R57 的 C 类候选，症状逐字未变）。
+
+### 2026-10-21 R69 轮（**第四块**）：**真库腿的 DSN 口径** ⇒ 「gate 跑出来是绿的」里混着「一测未测」
+
+> 明细：`docs/audit/2026-10-21-R69-真库腿DSN口径与静默SKIP.md`；handoff `§19.18`。
+> ★ 本块**未改任何产品代码或测试断言**（只有新增：事实源脚本 + 一道静态门）⇒ **对生产零影响**。
+
+- ★★★★★ **官方 gate runner 自己漏掉 21 个 DSN 变量名 ⇒ ≥24 条真库腿在官方跑法下拿不到 DSN
+  ⇒ ⇒⇒ 「静默 SKIP」被 `go test` 记成绿 ⇒ 官方 gate 的「绿」里混着「一测未测」。**
+  ⇒ ★★★ **而这是结构性的**：漏名 ⇒ 那条腿**自己 fallback 到一个写死的默认库** ⇒ 连不上 ⇒ **仍然 SKIP** ⇒ 仍是绿
+  ⇒ ⇒ ⇒ ★★ **事后补导出是补不上的**（漏名这件事从头到尾**没有任何报错**）。
+  ⇒ ⇒ ★★★ **三条独立证据**：① 官方 runner 的 env 块 = **20** 个名字，而真库腿认 **42** 个 ⇒ **漏 21**
+  （受影响测试函数 **24** 个）；② 实测：官方 env 集下 `TestFeatureStatsWorkerDedupRate`、
+  `TestSessionRetirementHTTPRealDB` **静默 SKIP**；③ ★★ **连我自己写的「事实源」第一版都漏了**
+  ⇒ ⇒ ⇒ **「人写的清单必然漏」⇒ 必须有门自动对账**。
+- ★★★ **「静默 SKIP」有两种形态，`go test` 都记成绿**：
+  (a)「变量没设 ⇒ `t.Skip`」（★ 本仓的 SKIP 消息**本身是诚实**的：
+  「A skip is NOT evidence: the invariant stays unproven …」）；
+  (b) ★★★「变量没设 ⇒ 去连一个**写死的默认库** ⇒ 连不上 ⇒ 仍然 Skip」
+  （实例 `bg/feature_stats_worker_test.go:341`：`dsn = "postgres://localhost/llm_gateway_test?sslmode=disable"`）
+  ⇒ ⇒ ★★ **问题不在 SKIP 消息，在「变量集从哪来」。**
+- ★★★ **交付**：
+  - `scripts/audit/datasource_env.sh`（新）= 真库腿 DSN 变量的**单一事实源**：
+    导出 **40** 个名字 + **显式豁免 5** 个（每个带理由）⇒ 用法 `source scripts/audit/datasource_env.sh "$DSN"`；
+  - `scripts/ursmcheck/datasource_env_test.go`（新）= 静态门：4 判据（覆盖 / 权威清单不回退 /
+    无死条目 / 豁免表纪律）+ **匹配器自检** + **变异 M1~M3 全红**（M1 删名⇒红 · M2 新名⇒红 · M3 注释⇒绿）。
+  ⇒ ★★ **匹配器的三个坑**（都踩过）：★ **(a) 剥注释 ≠ 剥字面量** ⇒ 本门**第一版是假绿的**
+  （把自己夹具里的名字当真名字）⇒ 改用**词法器**（一个 DSN 名 =「一个字符串字面量，且**整个值**就是它」）；
+  ★ **(b) 名字不一定在调用点**（`admin/routing_resolve_invariant_test.go` 用 **const** 读它）
+  ⇒ **只扫 `os.Getenv("X")` 的门是恒绿门**（R65 同族坑）；★ **(c)「哪些名字算 DSN」不能按名字形状猜**
+  ⇒ **分类轴是「这个文件是否打开 PG 连接」**（279 个文件）。
+- ★★★ **顺带对账：C 类 16 条（R67 已定性）+ A 类 14 条（R59 登记，9 轮没人处置）**：
+  - ★★ **C 类**：**13 条已闭合**，3 条仍红且**红的原因都变了**：
+    **C4** 归 D30-a（**补齐失败原文**：Citus `columnar` 在**未命名子查询**里参与 `UNION ALL` ⇒
+    `invalid perminfoindex`）；★ **C9 订正 R67** —— R67 记「已闭合」，实测**原测试仍红**，
+    但**红在门自己的正向下限**（`total <= 0`）⇒ **产品侧已闭合**（`admin/data_lifecycle.go:158-159`
+    有 `COALESCE`、新门在位）⇒ **门侧那一半（A 类）仍开着**；**C13** 归 D2（**补齐依赖方 = 3 个视图**：
+    `routing_analytics_source` / `v_model_health_dashboard` / `v_probe_system_health`）；
+  - ★★★ **A 类**：**6 条已闭合、6 条是真·空证据、1 条是 v1 孤儿门、1 条（A7）文件在并行会话手里**。
+    ★★★ **A12 = `cmd/gateway::TestS4GateStopsClaimingReadyAfterStopWrite`** ⇒ SKIP 原因原文
+    「`public._request_logs` missing」⇒ 实测 v1 四表命中 **0** ⇒ ⇒ **它是 v1 族退役后的孤儿门**
+    ⇒ ⇒ **它现在永远 SKIP ⇒ 永远绿 ⇒ 没人看见它已经不测任何东西** ⇒ ⇒ **已通报并行会话**
+    （在 `cmd/gateway`，不在其 13 文件清单里）。
+    ⇒ ⇒ ★★ **真正的 A 类只剩 6 条** ⇒ 其正解（**灌最小种子数据** / **空库降级 SKIP**）**至今没人拍板**
+    ⇒ ⇒ **改判据语义 ⇒ 属主决策**。
+- ★★★★ **两个「量具错」的自我订正（都是我的错，不是仓库缺陷）**：
+  ★ **(a) C11 的 SKIP**：我只导出 `TEST_DATABASE_URL`，它要 `LLM_GATEWAY_PG_URL`
+  ⇒ ⇒ **仓库事实源是「一整套变量名」，不是「一个变量名」**；
+  ★★★★ **(b)「跨测试污染」的结论被复现性检验推翻**：我一度测到 `TestTenantStatsDaily_Live`
+  **整包红、单跑绿**，并给出「同包内其他测试污染了全局 `settings`」的结论
+  ⇒ ★★★ **同一批命令第二次跑它变绿了** ⇒ ⇒ ⇒ **那不是污染，是「并行会话正在改这个文件 ⇒ 我第一次读到的是半成品」**
+  ⇒ ⇒ ⇒ ★★ 我用探针证明**产品是对的**（同样的种子 + 同样的 handler ⇒ `daily[6] req=2 ok=1 err=1` 完全正确）
+  ⇒ ⇒ ⇒ ★★★★★ **通用式（必须记住）**：
+
+> ★★★★★ **在共享工作区里，读一个「正在被别人改」的文件得到的读数，只对该文件的 md5 有效。**
+> ⇒ ⇒ **同一命令连跑两次读数不同 ⇒ 第一嫌疑是「文件在两次之间变了」，不是「被测对象有不确定性」。**
+> ⇒ ⇒ **⇒ 纪律：每次测量前记录参与文件的 md5；两轮读数不一致时，先比 md5，再谈现象。**
+
+- ⚠ **属主决策项**（本轮**没有**替属主拍板）：
+  ① ★★★ **把 `run-integration-gate.sh` 切到 `source datasource_env.sh`** ⇒ **≥24 条腿会从 SKIP 变成真跑**
+  ⇒ ★★ **它们可能翻红** ⇒ **爆炸半径需拍板**；
+  ② ★★ **写死默认库**（`bg/feature_stats_worker_test.go:341`）⇒ 「连不上 ⇒ SKIP」的形态**尚未普查**；
+  ③ ★★ **A 类剩下 6 条**（灌种子 / 降级 SKIP）。
