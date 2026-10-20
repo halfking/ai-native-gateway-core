@@ -3372,6 +3372,45 @@ To codeup.aliyun.com:kaixuan/official-deploy/llm-gateway-go.git
   `TestDataLifecycle*` 两条；`sql/migrations/domain/032` 通道漏文件）、
   一次性库缺当月分区、`.github/workflows/` 对本仓（codeup 远端）不生效。
 
+## 2026-10-21 R58 轮：并行轮合并 + 一道被宿主负载打红的门（§十六）
+
+> 完整记录见 `docs/96小时内修订审计-20261007-1350.md` §十六；
+> 两条新经验见 `LESSONS.md`（2026-10-21 末两条）。
+
+- **本轮结论（一句）**：**没有新的产品缺陷；有一道被宿主负载打红的门，真因在夹具。**
+  合并并行轮两批提交（`448dc888f` §143.22 + `70a30467d`/`32ec82b82`/`86dc5e9a6`/`275821554` r1039+§143.23/24）后
+  复跑 `go test ./scripts/ursmcheck/ -count=1` ⇒ `FAIL 77.2s` / verbose `FAIL 160.4s`。
+- ★ **归属判定用三条独立证据闭合**（这三条缺一不可）：
+  ① **因果排除**：被审脚本与夹具的最后一次改动都是 `71c5bc1de`（§143.14）⇒ 合并与 R56/R57 零因果；
+  ② **独立副本对照**：`git archive f115f342a`（**合并前**）在**同一时刻同一负载**下**也红**，
+     但红在**另一个**测试、消息里带 `child setpgid ...: Operation not permitted`；同轮合并树 ⇒ 绿；
+  ③ **噪声底实测**：该测试隔离连跑 3 次 = 1.50/2.45/1.86s，阈值 4s ⇒ **余量仅 1.6~2.6 倍**。
+  ⇒ 宿主实测 `uptime` load average **31~39 / 16 核**（同时有别的项目在跑 `go test` 与 `docker build`）。
+- ★★ **两个形态，同一个夹具（`fakeTimeoutBody`）**：
+  ① **时钟越线**：判据是 `elapsed > 4s ⇒ 红`，噪声底离阈值太近 ⇒ 夹具的击杀延迟（watcher 的 `sleep 1`
+     被调度拖延）就足以越线 ⇒ **症状像「被测脚本没设查询上限」**；
+  ② **噪声污染**：bash job control 的 `setpgid` 在极端负载下失败，bash 把失败写成一行打到**它自己的 stderr**，
+     而被审脚本用 `timeout ... 2>&1` 捕获这一路 ⇒ **夹具的噪声混进「psql 的输出」** ⇒ 字段数 4 → 1
+     ⇒ 判据报「期望 4 个字段」—— **看起来像被测脚本的字段契约坏了**。
+- **修法（全在测试侧，对生产写入 = 0）**：
+  ① `fakeTimeoutBody`：**父进程 stderr 与子进程分开**（`exec 9>&2` → `exec 2>/dev/null` →
+     子进程 exec 前 `exec 2>&9`）⇒ bash 的抱怨进 /dev/null，被调用方的 stderr 一行不少地回到捕获面；
+  ② `TestOnconflictQueryTimeoutAbortsInsteadOfHanging`：**判别职责从时钟交给标记**（同族 availability 门
+     `FAKE_PSQL_COMPLETED` 同款）—— 替身跑 60s 且跑完写标记，判「标记不存在」= 查询确实被截断；
+     时钟只留 120s 的「没挂死」兜底；
+  ③ `TestAvailabilitySeparatesTimeoutFromRefusal`：替身 5s → 60s（替身太短会把「杀晚了」误读成「没截断」）。
+- **变异验证**：M1 摘掉 onconflict 脚本的 `timeout` 包裹 ⇒ **红**且消息精确
+  （「psql 替身**跑完了**（完成标记已生成，脚本耗时 1m0.3s）—— 查询**没有被截断**」）；
+  M2 摘掉 availability 脚本的 `timeout` 包裹 ⇒ **红**；两条均**备份副本 + md5 逐字还原**（未用 `git checkout`）。
+  修后整包 **ok 72.858s**。
+- ★ **合并并行轮时必查项**：并行轮这轮也动了 `web/src/locales/*/sessions.ts`，
+  而我们删过三个死命名空间 ⇒ 自动合并成功**不等于**删除范围没被加回
+  ⇒ 本轮按键路径正则精确判（`promptInjectionCategories` / `wizard` 键行 **0 命中**）✔。
+- **合并后门读数**：`sql/schema` ok、`internal/sqlguard` ok、i18n parity PASS（union 10036、硬闸 0、
+  指标恰好贴基线）、i18n 套件 10 passed + 既有红 `hardcoded_cjk` **5772>5529**（与合并前逐字相同）。
+- **遗留**：夹具的击杀延迟理论上无上界（极端超载时）⇒ 门仍可能红，但那时是**真话**；
+  假 `timeout` 仍是纯 shell 实现（依赖 `set -m`），换 `perl`/`python` 内核定时器更稳但引入新依赖 ⇒ 本轮不做。
+
 
 ## 2026-10-19 SSE流量审计续轮
 
