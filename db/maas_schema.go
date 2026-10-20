@@ -60,7 +60,7 @@ func (d *DB) EnsureMaasSchema(ctx context.Context) error {
 	if d == nil || d.pool == nil {
 		return nil
 	}
-	// ★ 885（v1 族退役）：族不存在 ⇒ 这段 DDL 不是「no-op」而是 **42P01**
+	// ★ 890（v1 族退役）：族不存在 ⇒ 这段 DDL 不是「no-op」而是 **42P01**
 	// （ALTER TABLE 一个不存在的表）。
 	//
 	// ⚠ 为什么 catalog 短路救不了：短路算的是「**缺多少**」——列项因
@@ -77,7 +77,7 @@ func (d *DB) EnsureMaasSchema(ctx context.Context) error {
 		return fmt.Errorf("probe v1 request_logs presence for maas DDL: %w", err)
 	}
 	if !v1TablePresent {
-		slog.Info("v1 request_logs family is retired (885) — maas credits_charged DDL skipped")
+		slog.Info("v1 request_logs family is retired (890) — maas credits_charged DDL skipped")
 	} else if d.maasRequestLogsCurrent(ctx) {
 		slog.Info("maas schema ensured (pricing v2 columns); _request_logs credits_charged " +
 			"column and index already present, DDL skipped")

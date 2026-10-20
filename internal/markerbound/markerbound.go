@@ -22,6 +22,7 @@ package markerbound
 
 import (
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"unicode"
@@ -42,6 +43,20 @@ var spanPattern = regexp.MustCompile(
 	`[\{｛][^{}｛｝]{0,` + strconv.Itoa(maxSpanBytes) + `}[\}｝]` +
 		`|` + `\b(?i:sensitive):+[a-z_][a-z0-9_-]{0,31}:*[0-9]{0,9}\b`)
 
+// bareSpanPattern mirrors sanitize.looseBareMarkerSpanPattern: the brace-less
+// alternative on its own. The re-scan inside a brace-delimited span needs it
+// separately.
+var bareSpanPattern = regexp.MustCompile(`\b(?i:sensitive):+[a-z_][a-z0-9_-]{0,31}:*[0-9]{0,9}\b`)
+
+// foldedBareSpanPattern mirrors sanitize.looseFoldedBareMarkerSpanPattern: the
+// bare form as the width-folded copy spells it, without the leading "\b".
+//
+// The boundary is judged on the ORIGINAL text instead (see
+// bareSpanBoundaryOK): a full-width letter is not an ASCII word character, so
+// the ASCII spelling glued to one has always been recognized, and the
+// full-width spelling must not be treated more strictly than that.
+var foldedBareSpanPattern = regexp.MustCompile(`(?i:sensitive):+[a-z_][a-z0-9_-]{0,31}:*[0-9]{0,9}\b`)
+
 // unterminatedSpanPattern mirrors sanitize.unterminatedPlaceholderSpanPattern:
 // a marker whose closing brace never arrived, anchored at the text end.
 var unterminatedSpanPattern = regexp.MustCompile(
@@ -60,18 +75,18 @@ func Spans(text string) [][2]int {
 		return nil
 	}
 	var spans [][2]int
-	for _, match := range spanPattern.FindAllStringIndex(text, -1) {
-		span := [2]int{match[0], match[1]}
-		candidate := text[span[0]:span[1]]
-		if exactPattern.MatchString(candidate) {
+	for _, candidate := range spanCandidates(text) {
+		span := [2]int{candidate[0], candidate[1]}
+		text := text[span[0]:span[1]]
+		if exactPattern.MatchString(text) {
 			spans = append(spans, span)
 			continue
 		}
-		if _, _, ok := parse(candidate); ok {
+		if _, _, ok := parse(text); ok {
 			spans = append(spans, span)
 			continue
 		}
-		if looksLikeMarker(candidate) {
+		if looksLikeMarker(text) {
 			spans = append(spans, span)
 		}
 	}
@@ -79,6 +94,254 @@ func Spans(text string) [][2]int {
 		spans = append(spans, [2]int{len(text) - len(tail), len(text)})
 	}
 	return spans
+}
+
+// spanCandidates returns the candidate spans of text: what the span pattern
+// matches, plus what the bare form matches in its full-width spelling.
+//
+// r1039 (2026-10-20): the bare form is also matched in its full-width
+// spelling — a CJK input method writes "ＳＥＮＳＩＴＩＶＥ：ｓｅｃｒｅｔ：１" —
+// and the span pattern only knows ASCII. The bare form is therefore scanned a
+// second time on a width-folded copy of the text, and the offsets are mapped
+// back onto the original.
+//
+// This mirrors security/sanitize's looseMarkerSpans; the two must stay
+// identical or a truncation boundary can split a spelling this package
+// recognizes but the other one does not (see the contract test in
+// security/sanitize).
+func spanCandidates(text string) [][2]int {
+	spans := spanPattern.FindAllStringIndex(text, -1)
+	out := make([][2]int, 0, len(spans))
+	for _, s := range spans {
+		out = append(out, [2]int{s[0], s[1]})
+	}
+	folded, ok := foldMarkerWidth(text)
+	if !ok {
+		return out
+	}
+	foldedSpans := foldedBareSpanPattern.FindAllStringIndex(folded, -1)
+	if len(foldedSpans) == 0 {
+		return out
+	}
+	mapped := mapFoldedSpans(text, foldedSpans)
+	mapped = keepBareSpanBoundaries(text, mapped)
+	all := make([][2]int, 0, len(out)+len(mapped))
+	all = append(all, out...)
+	all = append(all, mapped...)
+	return mergeSpans(all)
+}
+
+// keepBareSpanBoundaries mirrors sanitize.keepBareSpanBoundaries: drop the
+// spans whose start is preceded by an ASCII word character.
+func keepBareSpanBoundaries(text string, spans [][2]int) [][2]int {
+	if len(spans) == 0 {
+		return spans
+	}
+	out := spans[:0]
+	for _, sp := range spans {
+		if bareSpanBoundaryOK(text, sp[0]) {
+			out = append(out, sp)
+		}
+	}
+	return out
+}
+
+// bareSpanBoundaryOK mirrors sanitize.bareSpanBoundaryOK: the preceding
+// character must not be an ASCII word character.
+func bareSpanBoundaryOK(text string, off int) bool {
+	if off <= 0 || off > len(text) {
+		return true
+	}
+	r, _ := utf8.DecodeLastRuneInString(text[:off])
+	switch {
+	case r == '_':
+		return false
+	case r >= '0' && r <= '9':
+		return false
+	case r >= 'A' && r <= 'Z':
+		return false
+	case r >= 'a' && r <= 'z':
+		return false
+	}
+	return true
+}
+
+// fullWidthMarkerASCII mirrors sanitize.fullWidthMarkerASCII: the ASCII byte
+// the width fold maps r to, and whether r is a full-width form the marker
+// grammar can match at all.
+func fullWidthMarkerASCII(r rune) (byte, bool) {
+	switch {
+	case r == 0xFF0D: // －
+		return '-', true
+	case r >= 0xFF10 && r <= 0xFF19: // ０-９
+		return byte(r - 0xFEE0), true
+	case r == 0xFF1A: // ：
+		return ':', true
+	case r >= 0xFF21 && r <= 0xFF3A: // Ａ-Ｚ
+		return byte(r - 0xFEE0), true
+	case r == 0xFF3F: // ＿
+		return '_', true
+	case r >= 0xFF41 && r <= 0xFF5A: // ａ-ｚ
+		return byte(r - 0xFEE0), true
+	}
+	return 0, false
+}
+
+// fullWidthLetterAt mirrors sanitize.fullWidthLetterAt: the ASCII letter a
+// full-width form spells, read off the three bytes without decoding.
+//
+//	ＥＦ ＢＣ xx (xx = A1..BA) → Ａ-Ｚ → xx-0x60
+//	ＥＦ ＢＤ xx (xx = 81..9A) → ａ-ｚ → xx-0x20
+func fullWidthLetterAt[T ~string | ~[]byte](text T, i int) (byte, bool) {
+	if i < 0 || i+3 > len(text) || text[i] != 0xEF {
+		return 0, false
+	}
+	switch text[i+1] {
+	case 0xBC: // Ａ-Ｚ
+		if c := text[i+2]; c >= 0xA1 && c <= 0xBA {
+			return c - 0x60, true
+		}
+	case 0xBD: // ａ-ｚ
+		if c := text[i+2]; c >= 0x81 && c <= 0x9A {
+			return c - 0x20, true
+		}
+	}
+	return 0, false
+}
+
+// matchFullWidthMarkerWordAt mirrors sanitize.matchFullWidthMarkerWordAt:
+// whether the full-width spelling of the marker word starts at byte offset i.
+func matchFullWidthMarkerWordAt[T ~string | ~[]byte](text T, i int) bool {
+	const word = "sensitive"
+	if i < 0 || i+3*len(word) > len(text) {
+		return false
+	}
+	for k := 0; k < len(word); k++ {
+		letter, ok := fullWidthLetterAt(text, i)
+		if !ok || asciiLower(letter) != word[k] {
+			return false
+		}
+		i += 3
+	}
+	return true
+}
+
+// containsFullWidthMarkerWord mirrors sanitize.containsFullWidthMarkerWord:
+// whether text contains the full-width spelling of the marker word.
+func containsFullWidthMarkerWord(text string) bool {
+	for i := 0; i < len(text); {
+		j := strings.IndexByte(text[i:], 0xEF)
+		if j < 0 {
+			return false
+		}
+		i += j
+		if matchFullWidthMarkerWordAt(text, i) {
+			return true
+		}
+		i++
+	}
+	return false
+}
+
+// foldMarkerWidth mirrors sanitize.foldMarkerWidth: a copy of text in which
+// every full-width form the marker grammar can match is rewritten to its ASCII
+// spelling.
+//
+// The rewrite is one rune in, one rune out, so the folded copy has the same
+// rune count as the original — but not the same byte count, so byte offsets
+// found on the folded copy must be mapped back (see mapFoldedSpans).
+//
+// Nothing is rewritten unless the text actually mentions the marker word: the
+// grammar cannot match anything else, and folding every text would put an
+// O(n) copy on the path for no possible gain.
+func foldMarkerWidth(text string) (string, bool) {
+	if !containsFoldASCII(text, markerWord) && !containsFullWidthMarkerWord(text) {
+		return "", false
+	}
+	var b strings.Builder
+	b.Grow(len(text))
+	changed := false
+	for off := 0; off < len(text); {
+		r, size := utf8.DecodeRuneInString(text[off:])
+		if ascii, ok := fullWidthMarkerASCII(r); ok {
+			b.WriteByte(ascii)
+			changed = true
+			off += size
+			continue
+		}
+		if r == utf8.RuneError && size == 1 {
+			b.WriteByte(text[off])
+			off += size
+			continue
+		}
+		b.WriteString(text[off : off+size])
+		off += size
+	}
+	if !changed {
+		return "", false
+	}
+	return b.String(), true
+}
+
+// mapFoldedSpans mirrors sanitize.mapFoldedSpans: translate byte spans found
+// in a width-folded copy of text back onto text's own byte offsets.
+func mapFoldedSpans(text string, foldedSpans [][]int) [][2]int {
+	if len(foldedSpans) == 0 {
+		return nil
+	}
+	need := make([]int, 0, 2*len(foldedSpans))
+	for _, sp := range foldedSpans {
+		need = append(need, sp[0], sp[1])
+	}
+	mapped := make([]int, len(need))
+	ti := 0
+	origOff, foldOff := 0, 0
+	for origOff < len(text) && ti < len(need) {
+		r, size := utf8.DecodeRuneInString(text[origOff:])
+		foldedSize := size
+		if _, ok := fullWidthMarkerASCII(r); ok {
+			foldedSize = 1
+		}
+		for ti < len(need) && need[ti] == foldOff {
+			mapped[ti] = origOff
+			ti++
+		}
+		origOff += size
+		foldOff += foldedSize
+	}
+	for ; ti < len(need); ti++ {
+		mapped[ti] = origOff
+	}
+	out := make([][2]int, 0, len(foldedSpans))
+	for i := range foldedSpans {
+		out = append(out, [2]int{mapped[2*i], mapped[2*i+1]})
+	}
+	return out
+}
+
+// mergeSpans mirrors sanitize.mergeMarkerSpans: merge candidate spans into one
+// ascending, non-overlapping list. When two candidates overlap the wider one
+// wins, so a full-width match is not cut short by the narrower ASCII one.
+func mergeSpans(candidates [][2]int) [][2]int {
+	if len(candidates) < 2 {
+		return candidates
+	}
+	sort.Slice(candidates, func(i, j int) bool {
+		if candidates[i][0] != candidates[j][0] {
+			return candidates[i][0] < candidates[j][0]
+		}
+		return candidates[i][1] > candidates[j][1]
+	})
+	out := candidates[:0]
+	lastEnd := -1
+	for _, sp := range candidates {
+		if sp[0] < lastEnd {
+			continue
+		}
+		out = append(out, sp)
+		lastEnd = sp[1]
+	}
+	return out
 }
 
 // SafeCutKeepHead guards a truncation that keeps text[:cut]. If cut lands
@@ -129,11 +392,27 @@ func adjustCut(text string, cut, keep int) int {
 // no opening brace and no case-folded "sensitive" run cannot carry a marker
 // in any spelling the span grammar recognizes (the brace-less bare form
 // entered the grammar 2026-10-10 and must pass this filter too).
+//
+// r1039: the full-width spelling of the marker word counts too — a CJK
+// keyboard writes "ＳＥＮＳＩＴＩＶＥ：…" and the bare form of it must not
+// slip past this filter.
 func mayContainMarker(text string) bool {
 	if strings.ContainsAny(text, "{｛") {
 		return true
 	}
-	return containsFoldASCII(text, markerWord)
+	if containsFoldASCII(text, markerWord) {
+		return true
+	}
+	return containsFullWidthMarkerWord(text)
+}
+
+// asciiLower folds one ASCII byte to lower case, leaving every other byte
+// alone.
+func asciiLower(c byte) byte {
+	if 'A' <= c && c <= 'Z' {
+		return c + ('a' - 'A')
+	}
+	return c
 }
 
 func containsFoldASCII(text, word string) bool {

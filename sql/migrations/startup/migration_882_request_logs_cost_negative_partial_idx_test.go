@@ -2,13 +2,13 @@ package startup
 
 // migration_882_request_logs_cost_negative_partial_idx_test.go —— 迁移 882 的契约门。
 //
-// # ★ 2026-10-20（885 真删 v1 族）：这道门改了题
+// # ★ 2026-10-20（890 真删 v1 族）：这道门改了题
 //
 // 882 给 `_request_logs`（860 改名的 request_logs 分区父表）建
 // `WHERE cost_usd < 0` 的部分索引，让 bg/routing_health_checks.go 的
 // `recorded_cost_is_negative` 检查从顺序扫全表变成索引探针。
 //
-// **885 把整个 v1 族删了**（`DROP TABLE public._request_logs`）⇒
+// **890 把整个 v1 族删了**（`DROP TABLE public._request_logs`）⇒
 // 882 的索引**级联随之消亡** ⇒ 「882 索引 ↔ 检查谓词」这条不变量的
 // **主体已退役**。
 //
@@ -19,10 +19,10 @@ package startup
 //	(c) 主体退役但有等价不变量 ⇒ **换成守新不变量的门**。
 //
 // 这里走 (c)：等价不变量是「负成本检查的谓词有一个能服务它的部分索引」，
-// 它在**会话族**（迁移 886）身上继续活着 ⇒
+// 它在**会话族**（迁移 891）身上继续活着 ⇒
 //
 //	· ① 形态门（**保留**）：882 的迁移文件自身没被改坏。它仍会跑——
-//	  新装路径：基线建出 v1 族 → 882 建索引 → 885 删表删索引。
+//	  新装路径：基线建出 v1 族 → 882 建索引 → 890 删表删索引。
 //	· ② down 门（**保留**）：down 删同名索引。
 //	· ③ cross-pin 门（**反转**）：原门钉「检查侧读 `public._request_logs r`」，
 //	  现在检查侧已迁会话族 ⇒ 改为**负向**断言「不再读 v1 族」+ **正向**
@@ -79,7 +79,7 @@ func mig882Read(t *testing.T, root, rel string) string {
 
 // ── 判据工具 ────────────────────────────────────────────────────────────
 
-// mig882V1Relations 是 v1 族的关系名清单（885 之后全部不存在）。
+// mig882V1Relations 是 v1 族的关系名清单（890 之后全部不存在）。
 var mig882V1Relations = map[string]bool{
 	"request_logs":             true,
 	"_request_logs":            true,
@@ -94,7 +94,7 @@ var mig882V1Relations = map[string]bool{
 	"request_logs_id_seq":      true,
 	"_request_logs_id_seq":     true,
 	// ⚠ `request_logs_with_current_month` **不在**这张表里：它是**活着的**
-	// canonical 视图（885 之后是会话族两臂体），不是 v1 裸表。
+	// canonical 视图（890 之后是会话族两臂体），不是 v1 裸表。
 	// 把视图名塞进「v1 关系」清单，正是本文件阴性对照要防的那类假阳性。
 }
 
@@ -158,7 +158,7 @@ func TestMigration882_DetectorSelfCheck(t *testing.T) {
 //
 // ★ 注意：这条门**不再**守「索引服务检查」这件事（索引已随 v1 族消亡），
 // 只守「迁移文件与它的 down/两份副本没被人改坏」——迁移链里它仍会跑，
-// 跑出来的索引随即被 885 删掉。
+// 跑出来的索引随即被 890 删掉。
 func TestMigration882_IndexShapeIsStable(t *testing.T) {
 	up := mig882Read(t, mig882Tree(t), filepath.Join("sql", "migrations", "startup", mig882Name))
 
@@ -191,17 +191,17 @@ func TestMigration882_DownDropsSameIndex(t *testing.T) {
 // TestMigration882_IndexDiesWithTheV1Family 钉 ④：v1 族真删 ⇒ 索引必然消亡。
 //
 // 这条门钉住的是一个**事实**，防止以后出现「索引还在、表没了」的错觉：
-// 885 的 DROP TABLE 是级联的，挂在 `_request_logs` 上的索引随之消失。
+// 890 的 DROP TABLE 是级联的，挂在 `_request_logs` 上的索引随之消失。
 func TestMigration882_IndexDiesWithTheV1Family(t *testing.T) {
 	root := mig882Tree(t)
-	up885 := mig882Read(t, root, filepath.Join("sql", "migrations", "startup", "885_drop_request_logs_v1_family.sql"))
+	up885 := mig882Read(t, root, filepath.Join("sql", "migrations", "startup", "890_drop_request_logs_v1_family.sql"))
 
-	// 885 的删表清单里必须含 `_request_logs`（动态 SQL 的名字数组）。
+	// 890 的删表清单里必须含 `_request_logs`（动态 SQL 的名字数组）。
 	if !strings.Contains(up885, "'_request_logs'") {
-		t.Errorf("885 的删表清单里没有 '_request_logs' —— v1 族真删的前提不成立，882 索引的「随表消亡」结论失效")
+		t.Errorf("890 的删表清单里没有 '_request_logs' —— v1 族真删的前提不成立，882 索引的「随表消亡」结论失效")
 	}
 	if !strings.Contains(up885, "DROP TABLE IF EXISTS public.%I") {
-		t.Errorf("885 没有用 DROP TABLE 删除 v1 族 —— 索引不会随表级联消亡")
+		t.Errorf("890 没有用 DROP TABLE 删除 v1 族 —— 索引不会随表级联消亡")
 	}
 	// 反向确认：882 的索引确实挂在被删的那张表上（两条拼在一起才成结论）。
 	up882 := mig882Read(t, root, filepath.Join("sql", "migrations", "startup", mig882Name))
@@ -213,7 +213,7 @@ func TestMigration882_IndexDiesWithTheV1Family(t *testing.T) {
 // TestMigration882_CheckSideMovedToSessionFamily 钉 ③（反转）：检查侧已迁会话族。
 //
 // 原门钉的是「检查必须读 `public._request_logs r`」——那是 882 索引的
-// 对面。885 之后那半边没了 ⇒ 断言必须**反转**：
+// 对面。890 之后那半边没了 ⇒ 断言必须**反转**：
 //
 //	· 负向：检查侧**不再**读 v1 族（配判据自检作为阳性对照）；
 //	· 正向：检查侧读会话族窄源（hot ∪ parent）、谓词仍是
@@ -228,7 +228,7 @@ func TestMigration882_CheckSideMovedToSessionFamily(t *testing.T) {
 		hits = append(hits, mig882MentionedRelations(lit)...)
 	}
 	if len(hits) > 0 {
-		t.Errorf("bg/routing_health_checks.go 仍在读 v1 族关系 %v —— 885 之后这些关系已不存在 ⇒ 必然 42P01", hits)
+		t.Errorf("bg/routing_health_checks.go 仍在读 v1 族关系 %v —— 890 之后这些关系已不存在 ⇒ 必然 42P01", hits)
 	}
 
 	// 正向：会话族窄源 + 原谓词。

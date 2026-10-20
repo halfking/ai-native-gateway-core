@@ -4,7 +4,7 @@ package db
 //
 // # 为什么需要这一层
 //
-// 885（v1 request_logs 族最终删除）动了三样必须**彼此等价**的东西：
+// 890（v1 request_logs 族最终删除）动了三样必须**彼此等价**的东西：
 // 迁移文件里的视图体、迁移文件里的 recent_success_rate 函数体、以及本包里的
 // 运行时 SSOT（canonicalSessionOnlyDDL / recentSuccessRateEnsureSQL）。
 //
@@ -28,8 +28,8 @@ package db
 // self-heal installs for the canonical request-logs view: the session-only
 // two-arm body (session_turns_hot ∪ session_turns, 734 details LEFT JOIN).
 //
-// The v1 third arm is retired together with the v1 family (migration 885).
-// Contract gate: sql/migrations/startup/migration_885_v1_family_drop_test.go
+// The v1 third arm is retired together with the v1 family (migration 890).
+// Contract gate: sql/migrations/startup/migration_890_v1_family_drop_test.go
 // compares the migration's $proj$ block against
 // CanonicalSessionOnlyProjectionForTest — the two must be the same text, or a
 // boot-time self-heal would swap one body for the other.
@@ -47,7 +47,7 @@ func CanonicalSessionOnlyDDLForTest() string {
 // "the projections drifted". Exposing the projection directly removes the
 // parsing step from the gate entirely.
 //
-// Contract gate: sql/migrations/startup/migration_885_v1_family_drop_test.go.
+// Contract gate: sql/migrations/startup/migration_890_v1_family_drop_test.go.
 func CanonicalSessionOnlyProjectionForTest() string {
 	return sessionFamilyProjectionFor(canonicalColumnOrderV2, true)
 }
@@ -61,7 +61,7 @@ func CanonicalSessionOnlyProjectionForTest() string {
 // body at creation time, a drift would only surface on the first call (the
 // symptom then looks like "all upstreams down", not like a migration
 // mismatch). Contract gate:
-// sql/migrations/startup/migration_885_v1_family_drop_test.go.
+// sql/migrations/startup/migration_890_v1_family_drop_test.go.
 func RecentSuccessRateEnsureSQLForTest() string {
 	return recentSuccessRateEnsureSQL
 }

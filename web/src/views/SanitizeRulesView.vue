@@ -18,6 +18,7 @@ import {
   isRuleConfig,
   type RuleConfig,
   type SensitiveRule,
+  type RulePhase,
   type RuleCurrent,
   type RuleEvent,
   type RuleVersion,
@@ -273,6 +274,37 @@ function setList(key: "tools" | "fields", event: Event) {
       .split(",")
       .map((x) => x.trim())
       .filter(Boolean);
+}
+
+// ── 按模式启停（2026-10-20）────────────────────────────────────────────────
+// 运行期判定见 domains/sanitizerules/model.go 的 Applies()：
+//     r.Enabled && 命中 scope && 命中 tenant
+// 所以「某规则在某模式上是否生效」= 全局开关 ∧ scopes 含该模式。
+// 这里的开关直接改这两个字段，**不改数据模型**（不需要迁移），
+// 保存路径与既有的 validate → publish 完全一致。
+const RULE_PHASES = ["input", "output", "egress"] as const satisfies readonly RulePhase[];
+
+function phaseActive(rule: SensitiveRule, phase: RulePhase): boolean {
+  return !!rule.enabled && (rule.scopes || []).includes(phase);
+}
+
+function onPhaseToggle(rule: SensitiveRule, phase: RulePhase, event: Event) {
+  const on = (event.target as HTMLInputElement).checked;
+  const scopes = new Set(rule.scopes || []);
+  if (on) {
+    scopes.add(phase);
+    // 勾上某模式 ⇒ 这条规则在该模式上要真的开着，所以把全局开关也带上。
+    rule.enabled = true;
+  } else {
+    scopes.delete(phase);
+  }
+  // ⚠ 保留原有顺序：comparableRule() 用 JSON.stringify 比 scopes，
+  //   顺序一改就会让「版本差异」把纯顺序变化报成一条 changed。
+  const ordered = (rule.scopes || []).filter((p) => scopes.has(p));
+  for (const p of RULE_PHASES) {
+    if (scopes.has(p) && !ordered.includes(p)) ordered.push(p);
+  }
+  rule.scopes = ordered;
 }
 function openAdvanced() {
   if (!advancedDirty.value)
@@ -584,7 +616,9 @@ onBeforeUnmount(() => {
                 <thead>
                   <tr>
                     <th>{{ t("sanitizeRules.rule") }}</th>
-                    <th>{{ t("sanitizeRules.scopes") }}</th>
+                    <th :title="t('sanitizeRules.perModeHint')">
+                      {{ t("sanitizeRules.perMode") }}
+                    </th>
                     <th>{{ t("sanitizeRules.action") }}</th>
                     <th>{{ t("sanitizeRules.enabled") }}</th>
                     <th>{{ t("sanitizeRules.edit") }}</th>
@@ -605,7 +639,42 @@ onBeforeUnmount(() => {
                         rule.tenant_id || t("sanitizeRules.all")
                       }}</small>
                     </td>
-                    <td>{{ rule.scopes.join(", ") }}</td>
+                    <td>
+                      <!--
+                        ★ 按模式启停（2026-10-20 审计轮补齐）。
+                        运行期的判定是 domains/sanitizerules/model.go 的
+                        Applies(phase, tenant, tool, field)：
+                            r.Enabled && scope 命中 && tenant 命中
+                        也就是说「这条规则在某个模式上是否生效」= **全局开关 ∧ 该模式在 scopes 里**。
+                        此前 UI 只有一列 scopes 文本（只读）与一个全局 enabled 开关，
+                        「按模式停用某条规则」只能去编辑器里手工摘 scope —— 表达力有，
+                        但看不出来「现在这条规则在哪些模式上是真的开着的」。
+                        这里把两个维度合成一排可点的开关：勾上 = 该模式生效。
+                      -->
+                      <fieldset
+                        class="mode-matrix"
+                        data-test="rule-mode-matrix"
+                        :aria-label="
+                          t('sanitizeRules.perMode') + ' ' + rule.name
+                        "
+                      >
+                        <label
+                          v-for="phase in RULE_PHASES"
+                          :key="phase"
+                          class="check"
+                        ><input
+                          type="checkbox"
+                          :checked="phaseActive(rule, phase)"
+                          :disabled="busy"
+                          :data-test="'rule-mode-' + phase"
+                          :aria-label="
+                            phase + ' ' + t('sanitizeRules.perMode') + ' ' + rule.name
+                          "
+                          @change="onPhaseToggle(rule, phase, $event)"
+                        />{{ phase }}</label
+                        >
+                      </fieldset>
+                    </td>
                     <td>
                       <code>{{ rule.action }}</code>
                     </td>

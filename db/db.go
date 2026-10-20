@@ -2593,7 +2593,7 @@ func (d *DB) ensureRequestLogSchema(ctx context.Context) error {
 	if d == nil || d.pool == nil {
 		return nil
 	}
-	// ★ 885（v1 族退役）：本函数存在的**唯一**目的是给 v1 族补列/补索引。
+	// ★ 890（v1 族退役）：本函数存在的**唯一**目的是给 v1 族补列/补索引。
 	// 族被删之后它无事可做 ⇒ 显式早退。
 	//
 	// ⚠ 为什么不能只靠下面的 catalog 短路：短路算的是「**缺多少**列/索引」，
@@ -2616,7 +2616,7 @@ func (d *DB) ensureRequestLogSchema(ctx context.Context) error {
 		return fmt.Errorf("probe v1 request_logs family presence: %w", err)
 	}
 	if !v1FamilyPresent {
-		slog.Info("v1 request_logs family is retired (885) — nothing to ensure; skipping the v1 schema DDL")
+		slog.Info("v1 request_logs family is retired (890) — nothing to ensure; skipping the v1 schema DDL")
 		return nil
 	}
 	// 2026-09-23 252 SQL 日志审计轮（D1 残余根修，07:23/07:26 245 蓝绿两连败
@@ -4517,7 +4517,7 @@ func (d *DB) ensureWorkTypeSchema(ctx context.Context) error {
 	// exclusive lock on request_logs. Everything in workTypeSchemaSQL touches
 	// small config tables and is cheap to re-check.
 	//
-	// ★ 885（v1 族退役）：族不存在 ⇒ 这条 DDL 不是「no-op」而是 **42P01**
+	// ★ 890（v1 族退役）：族不存在 ⇒ 这条 DDL 不是「no-op」而是 **42P01**
 	// （ALTER TABLE 一个不存在的表）。workTypeRequestLogsCurrent 的短路算的是
 	// 「缺多少」：列项因 to_regclass 为 NULL 而计 0，**索引项计 1** ⇒
 	// missing ≠ 0 ⇒ 判定「不 current」⇒ 继续执行 DDL ⇒ 42P01 ⇒ boot 失败。
@@ -4529,7 +4529,7 @@ func (d *DB) ensureWorkTypeSchema(ctx context.Context) error {
 		return fmt.Errorf("probe v1 request_logs presence for work_type DDL: %w", err)
 	}
 	if !v1TablePresent {
-		slog.Info("v1 request_logs family is retired (885) — work_type column/index DDL skipped")
+		slog.Info("v1 request_logs family is retired (890) — work_type column/index DDL skipped")
 		return nil
 	}
 	if d.workTypeRequestLogsCurrent(ctx) {
@@ -7037,7 +7037,7 @@ func (d *DB) ensureRoutingRecentSuccessRate(ctx context.Context) error {
 // 归一化，失配只损失样本量不产生错误样本）。探针排除谓词对会话腿是防御
 // 性的——探针轮次本就不镜像。
 //
-// ★ 885（v1 族退役）：v1 腿被**摘掉**，只剩会话腿。
+// ★ 890（v1 族退役）：v1 腿被**摘掉**，只剩会话腿。
 //
 // ⚠⚠ 为什么这一刀必须在删表**之前**落：`recent_success_rate` 被
 // `provider/client.go` 的候选查询以 `CROSS JOIN LATERAL` 调用 ⇒ v1 腿

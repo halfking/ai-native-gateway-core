@@ -130,6 +130,28 @@ dl_shared_root() {
   printf '%s\n' "$v"
 }
 dl_shared_pg_dir() {
+  # 2026-10-20：LLM_GATEWAY_PG_DATA_DIR 覆盖。
+  #
+  # 本仓 local-dev 脚本（scripts/local-dev/recreate-llm-gateway-pg.sh:51、
+  # scripts/local-dev/recover-pg-citus-image.sh:81）早就把 LLM_GATEWAY_PG_DATA_DIR
+  # 当作「PG 数据目录在哪」的既有契约，但 deploy-local 的 shared 目录推导只看
+  # KAIXUAN_ROOT ⇒ 一个**故意**指向别处的集群（本机是 ~/kaixuan/postgres-citus，
+  # 承载 citus 13.3 + citus_columnar + vector，见 admin/data_lifecycle_storage.go:1001
+  # 与 docs/audit/2026-10-20-request-logs-session-turns-复核轮.md:440）会被
+  # migrate_existing_pg_to_shared 判成「不在 shared 位置」⇒ 触发搬迁回
+  # $KAIXUAN_ROOT/postgres，**把运维刻意选定的目录换掉**（并且那一跳本身还带着
+  # 硬编码宿主端口的缺陷，见 deploy-local.sh 的 migrate_existing_pg_to_shared）。
+  #
+  # 覆盖优先级：LLM_GATEWAY_PG_DATA_DIR（绝对路径）> $KAIXUAN_ROOT/postgres。
+  # 非绝对路径的覆盖值一律忽略并告警——docker --mount 的 source 必须是绝对路径。
+  local override="${LLM_GATEWAY_PG_DATA_DIR:-}"
+  if [[ -n "$override" ]]; then
+    if [[ "$override" == /* ]]; then
+      printf '%s\n' "${override%/}"
+      return 0
+    fi
+    printf '[deploy-local] warning: LLM_GATEWAY_PG_DATA_DIR=%s is not absolute; ignoring the override\n' "$override" >&2
+  fi
   local v; v=$(dl_shared_root)
   if [[ "$v" != /* ]]; then
     printf '[deploy-local] warning: shared_root=%s is non-absolute; falling back to %s/postgres\n' "$v" "$(dl_default_shared_root)" >&2
@@ -165,6 +187,34 @@ dl_same_physical_dir() {
   [[ -n "$pa" && "$pa" == "$pb" ]]
 }
 dl_shared_redis_dir() { printf '%s\n' "$(dl_shared_root)/redis"; }
+
+# 2026-10-20：重建 PG 容器时**沿用原容器实际发布的宿主端口**。
+#
+# deploy-local.sh 的 migrate_existing_pg_to_shared 过去硬编码
+# `-p 127.0.0.1:5432:5432`，有两个各自会炸的后果：
+#  (1) 宿主 5432 已被别的容器占用时 docker run 直接失败。本机实测 5432 被
+#      acc-pg17 占着，而 llm-gateway-pg 发布在 127.0.0.1:54318 ⇒ 搬迁必炸。
+#  (2) 即使 5432 恰好空闲，重建后的容器监听 5432，容器 env 里的 DSN 却仍写
+#      @127.0.0.1:54318 ⇒ 网关去连一个没人监听的端口。
+# 端口与 DSN 必须成对沿用，所以从原容器的 Ports 里读回 (HostIp, HostPort)。
+#
+# 抽成独立函数是为了让契约测试**不依赖 docker** 就能驱动这段推导
+# （见 tests/deploy_local_contract_test.sh）。
+#
+# 参数：$1=宿主 IP（可空）、$2=宿主端口（可空）。
+# 覆盖：LLM_GATEWAY_PG_PORT_BIND（ip:port:port，与
+#       scripts/local-dev/recreate-llm-gateway-pg.sh:52 同一契约）优先级最高。
+# 输出："ip:hostport:5432"。
+dl_pg_publish_spec() {
+  local host_ip="${1:-}" host_port="${2:-}" override="${LLM_GATEWAY_PG_PORT_BIND:-}"
+  if [[ -n "$override" && "$override" =~ ^[0-9.]+:[0-9]+:[0-9]+$ ]]; then
+    printf '%s\n' "$override"
+    return 0
+  fi
+  [[ "$host_ip" =~ ^[0-9.]+$ ]] || host_ip=127.0.0.1
+  [[ "$host_port" =~ ^[0-9]+$ ]] || host_port=5432
+  printf '%s:%s:5432\n' "$host_ip" "$host_port"
+}
 dl_pg_log_dir() { printf '%s\n' "$(dl_shared_pg_dir)/logs"; }
 dl_pg_backup_dir() { printf '%s\n' "$(dl_shared_pg_dir)/backups"; }
 dl_pg_run_dir() { printf '%s\n' "$(dl_shared_pg_dir)/run"; }

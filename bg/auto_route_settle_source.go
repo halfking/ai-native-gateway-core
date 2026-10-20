@@ -29,9 +29,9 @@ import (
 // （门控只会让数字不再变化，而正确修法是改读会话族）；这里门控的是**读哪个族**，
 // 目的是在切换发生前保持行为不变。
 //
-// # ★ 885（v1 族退役）：v1 臂整条删除，本函数恒返回会话族
+// # ★ 890（v1 族退役）：v1 臂整条删除，本函数恒返回会话族
 //
-// 迁移 885 把 v1 族（`_request_logs*` 及其分区）整体删掉 ⇒ **v1 臂不再是
+// 迁移 890 把 v1 族（`_request_logs*` 及其分区）整体删掉 ⇒ **v1 臂不再是
 // 「写门开着时才走的分支」，而是「永远走不到的分支」**。留着它有两重害处：
 //
 //  1. `settings.RequestLogsWriteEnabled()` 在 **settings 存储未初始化**时回落
@@ -74,11 +74,19 @@ const (
 // 抽成纯函数（不碰 DB、不读全局设置）是为了能单测：这一层如果只能靠集成测试
 // 验证，本地库的 selection 表是空的，永远证明不了任何事（§9.34）。
 //
-// ★ 885（v1 族退役）：**恒返回会话族**。v1 族已删，写门再翻回 true 也读不到
+// ★ 890（v1 族退役）：**恒返回会话族**。v1 族已删，写门再翻回 true 也读不到
 // 任何 v1 行（42P01），所以「按门切换」这件事本身已经不存在了。参数
-// logsWriteEnabled 保留只为不波及其它写者的调用点（见文件头「885」一节）。
+// logsWriteEnabled 保留只为不波及其它写者的调用点（见文件头「890」一节）。
+//
+// ⚠ 合并订正（2026-10-20，与上游 R59 轮的「默认 v1 ⇒ 缺省 session」订正并存）：
+// 上游曾把本判定写成「默认 v1、只有明确读到写门关闭才切会话族」，并在
+// 2026-10-21 订正为「缺省 ⇒ session」（依据：`GetPlatformBool` 的缺省值被上游
+// 从 true 改成 false，见 settings/key_request_logs_write_enabled.go）。
+// **本分支不再需要这场选择**：v1 族已被迁移 890 物理删除 ⇒ 两种缺省都会指向
+// 一张不存在的表 ⇒ 恒返回会话族是唯一安全解。上游那段注释里仍然有效的只有
+// 「D0 把缺省翻成 false」这一事实，其余「按门切族」的语义随 v1 族一并退役。
 func settleSourceFor(logsWriteEnabled bool) settleSourceSpec {
-	_ = logsWriteEnabled // v1 族已随 885 退役；写门不再决定读哪一族。
+	_ = logsWriteEnabled // v1 族已随 890 退役；写门不再决定读哪一族。
 	return settleSourceSpec{
 		TurnsTable:    "session_turns_hot",
 		SessionKeyCol: "session_id",
@@ -97,7 +105,7 @@ func settleSourceFor(logsWriteEnabled bool) settleSourceSpec {
 // 复用 settleSourceFor 而不是各写一份判定：这个文件开头「三条腿必须同源」说的
 // 就是这类分叉。
 //
-// ★ 885：v1 族退役后本函数恒返回会话族热表名，写门不再影响读源。
+// ★ 890：v1 族退役后本函数恒返回会话族热表名，写门不再影响读源。
 func ActiveSettleTurnsTable() string {
 	return settleSourceFor(settings.RequestLogsWriteEnabled()).TurnsTable
 }
@@ -112,13 +120,13 @@ var (
 	// 同时它让「源已切换但三条腿没同步切换」这类半吊子状态暴露成一条
 	// 只有两个取值的曲线，而不是一堆诡异的 reward。
 	//
-	// ★ 885：v1 族退役后只有 session 一族会被计数；v1 标签值仍在（预置序列
+	// ★ 890：v1 族退役后只有 session 一族会被计数；v1 标签值仍在（预置序列
 	// + 标签基数闭集），但恒为 0 —— 保留它是为了不改变标签基数（告警表达式
 	// 与基数纪律都按闭集写）。
 	autoRouteSettleSource = promauto.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "llmgw_autoroute_settle_source_total",
-			Help: "Settled selections by the request-row family the outcome/baseline/LATERAL legs read (session = session_turns_hot; the v1 family was retired with migration 885, so the v1 label is always 0).",
+			Help: "Settled selections by the request-row family the outcome/baseline/LATERAL legs read (session = session_turns_hot; the v1 family was retired with migration 890, so the v1 label is always 0).",
 		},
 		[]string{"family"},
 	)

@@ -553,6 +553,17 @@ export default {
     flowApproveDesc: "承認 — 一時停止して人間レビュー",
     flowBlockDesc: "ブロック — 即時ブロック",
     rulesTitle: "検出ルール",
+
+
+
+
+
+
+
+
+
+
+
     searchPlaceholder: "ルール名または説明を検索",
     addRule: "ルール追加",
     addRuleTitle: "検出ルールを追加",
@@ -634,24 +645,6 @@ export default {
     cancel: "キャンセル",
     confirmTitle: "確認",
     confirmDelete: "この項目を削除しますか?",
-  },
-promptInjectionCategories: {
-    promptInjectionCategoryInstructionOverride: 'Instruction override',
-    promptInjectionCategoryInstructionLeak: 'Instruction leak',
-    promptInjectionCategoryJailbreak: 'Jailbreak',
-    promptInjectionCategoryEncodingBypass: 'Encoding bypass',
-    promptInjectionCategoryInjectionMarker: 'Injection marker',
-    promptInjectionCategoryMultiTurnAttack: 'Multi-turn attack',
-    promptInjectionCategoryResourceExhaustion: 'Resource exhaustion',
-    promptInjectionCategoryDataExfiltration: 'Data exfiltration',
-    promptInjectionCategorySocialEngineering: 'Social engineering',
-    promptInjectionCategoryPromptLeaking: 'Prompt leaking',
-    promptInjectionCategoryPayloadSmuggling: 'Payload smuggling',
-    promptInjectionCategoryUnicodeObfuscation: 'Unicode obfuscation',
-    promptInjectionCategoryContextManipulation: 'Context manipulation',
-    promptInjectionCategoryToolAbuse: 'Tool abuse',
-    promptInjectionCategoryLegacy: 'Legacy',
-    promptInjectionCategoryUnknown: 'Other',
   },
   management: {
       loading: "読み込み中…",
@@ -1339,6 +1332,17 @@ promptInjectionCategories: {
 
     // rules
     rulesTitle: '检测规则库',
+    viewDetail: '詳細を表示',
+    ruleDetailTitle: 'ルール詳細',
+    fieldActionOverride: 'アクション上書き',
+    fieldTags: 'タグ',
+    fieldExamples: '例',
+    fieldUpdatedAt: '更新日時',
+    systemRuleReadOnly: 'システムルールは読み取り専用です。有効化と無効化のみ可能です',
+    actionOverrideInherit: 'ポリシーから継承',
+    tagsPlaceholder: 'カンマ区切り',
+    examplesPlaceholder: '1 行に 1 つの例',
+    ruleDetailNoChange: 'ルールに変更はありません',
     searchPlaceholder: '搜索规则名称或描述',
     addRule: '添加规则',
     addRuleTitle: '添加检测规则',
@@ -1434,23 +1438,5 @@ promptInjectionCategories: {
     confirmDelete: '确定删除此项?',
   },
 
-  promptInjectionCategories: {
-    promptInjectionCategoryInstructionOverride: '指令覆盖',
-    promptInjectionCategoryInstructionLeak: '指令泄漏',
-    promptInjectionCategoryJailbreak: '越狱攻击',
-    promptInjectionCategoryEncodingBypass: '编码绕过',
-    promptInjectionCategoryInjectionMarker: '注入标记',
-    promptInjectionCategoryMultiTurnAttack: '多轮攻击',
-    promptInjectionCategoryResourceExhaustion: '资源耗尽',
-    promptInjectionCategoryDataExfiltration: '数据窃取',
-    promptInjectionCategorySocialEngineering: '社会工程',
-    promptInjectionCategoryPromptLeaking: '提示词泄漏',
-    promptInjectionCategoryPayloadSmuggling: 'Payload 走私',
-    promptInjectionCategoryUnicodeObfuscation: 'Unicode 混淆',
-    promptInjectionCategoryContextManipulation: '上下文操纵',
-    promptInjectionCategoryToolAbuse: '工具滥用',
-    promptInjectionCategoryLegacy: '兼容旧分类',
-    promptInjectionCategoryUnknown: '其他',
-  },
   metaTitleClearConfirm: 'このセッションのタイトルをクリアしますか？',
 }

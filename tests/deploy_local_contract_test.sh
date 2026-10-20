@@ -663,3 +663,53 @@ out=$(KAIXUAN_ROOT=/opt/foo dl_shared_pg_dir 2>/dev/null)
 grep -Fq 'looks recursive or non-absolute' "$ROOT/scripts/deploy-local-lib.sh" \
   || fail 'dl_shared_root guard implementation missing from deploy-local-lib.sh (S8-F1 rollback watch)'
 pass 'dl_shared_root recursive/non-absolute guard contract locked (S8-F1)'
+
+# ---------------------------------------------------------------------------
+# 2026-10-20 回归：PG 宿主端口必须**沿用原容器**，不得硬编码 5432。
+#
+# 现场故障：deploy-local 搬迁 PG 数据目录时用 `-p 127.0.0.1:5432:5432`
+# 重建容器，而本机 5432 已被 acc-pg17 占着 ⇒ docker run 直接失败，部署中止。
+# 即便 5432 空闲也仍是错的：容器 env 里的 DSN 写的是 @127.0.0.1:54318，
+# 重建后容器却监听 5432 ⇒ 网关连一个没人监听的端口。
+# 端口与 DSN 必须成对沿用，所以这里钉死「从原容器读回 (HostIp,HostPort)」。
+# ---------------------------------------------------------------------------
+[[ "$(dl_pg_publish_spec '127.0.0.1' '54318')" == '127.0.0.1:54318:5432' ]] \
+  || fail 'dl_pg_publish_spec must preserve the original container host port (54318)'
+[[ "$(dl_pg_publish_spec '' '')" == '127.0.0.1:5432:5432' ]] \
+  || fail 'dl_pg_publish_spec must fall back to 127.0.0.1:5432 when the port is unknown'
+[[ "$(dl_pg_publish_spec '127.0.0.1' 'not-a-port')" == '127.0.0.1:5432:5432' ]] \
+  || fail 'dl_pg_publish_spec must reject a non-numeric host port instead of passing it through'
+[[ "$(LLM_GATEWAY_PG_PORT_BIND='0.0.0.0:15432:5432' dl_pg_publish_spec '127.0.0.1' '54318')" == '0.0.0.0:15432:5432' ]] \
+  || fail 'LLM_GATEWAY_PG_PORT_BIND must win over the observed container port'
+# 变体方向（允许的输入不得被误拒）：显式给 5432 也必须原样保留。
+[[ "$(dl_pg_publish_spec '127.0.0.1' '5432')" == '127.0.0.1:5432:5432' ]] \
+  || fail 'dl_pg_publish_spec must keep an explicit 5432 publish spec'
+# 源级锁：硬编码的 5432 绑定不得再出现在迁移路径里。
+if grep -Fq -- '-p "127.0.0.1:5432:5432"' "$ROOT/scripts/deploy-local.sh"; then
+  fail 'deploy-local.sh must not hardcode the PG publish spec to 127.0.0.1:5432'
+fi
+grep -Fq 'dl_pg_publish_spec' "$ROOT/scripts/deploy-local.sh" \
+  || fail 'deploy-local.sh must derive the PG publish spec via dl_pg_publish_spec'
+pass 'PG publish spec preserves the original container host port (no hardcoded 5432)'
+
+# ---------------------------------------------------------------------------
+# 2026-10-20 回归：LLM_GATEWAY_PG_DATA_DIR 覆盖必须被 dl_shared_pg_dir 尊重。
+#
+# 本仓 local-dev 脚本（recreate-llm-gateway-pg.sh:51 / recover-pg-citus-image.sh:81）
+# 早已把 LLM_GATEWAY_PG_DATA_DIR 当作既有契约，但 deploy-local 只看 KAIXUAN_ROOT
+# ⇒ 一个**故意**指向别处的集群（本机 ~/kaixuan/postgres-citus，承载 citus 13.3 +
+# citus_columnar + vector）会被判成「不在 shared 位置」并被搬回
+# $KAIXUAN_ROOT/postgres —— 把运维刻意选定的目录换掉。
+# ---------------------------------------------------------------------------
+out=$(LLM_GATEWAY_PG_DATA_DIR='/Users/x/kaixuan/postgres-citus' KAIXUAN_ROOT='/opt/foo' dl_shared_pg_dir 2>/dev/null)
+[[ "$out" == '/Users/x/kaixuan/postgres-citus' ]] \
+  || fail "LLM_GATEWAY_PG_DATA_DIR must win over KAIXUAN_ROOT; got: $out"
+out=$(LLM_GATEWAY_PG_DATA_DIR='/Users/x/kaixuan/postgres-citus/' KAIXUAN_ROOT='/opt/foo' dl_shared_pg_dir 2>/dev/null)
+[[ "$out" == '/Users/x/kaixuan/postgres-citus' ]] \
+  || fail "LLM_GATEWAY_PG_DATA_DIR must be normalized without a trailing slash; got: $out"
+out=$(LLM_GATEWAY_PG_DATA_DIR='relative/path' KAIXUAN_ROOT='/opt/foo' dl_shared_pg_dir 2>&1)
+[[ "$out" == *'is not absolute'* ]] \
+  || fail "a non-absolute LLM_GATEWAY_PG_DATA_DIR must warn; got: $out"
+[[ "$out" == *'/opt/foo/postgres'* ]] \
+  || fail "a non-absolute LLM_GATEWAY_PG_DATA_DIR must fall back to KAIXUAN_ROOT/postgres; got: $out"
+pass 'LLM_GATEWAY_PG_DATA_DIR override is honored by dl_shared_pg_dir'

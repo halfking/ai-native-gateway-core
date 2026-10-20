@@ -152,11 +152,41 @@ func TestOnconflictSkipDoesNotRefreshHeartbeat(t *testing.T) {
 //	⇒ 判据必须钉「它会自己退出」，而不是「它会给出结论」——
 //	  后者需要一个能挂死的 psql 替身，那正是量具的活儿。
 func TestOnconflictQueryTimeoutAbortsInsteadOfHanging(t *testing.T) {
+	// ★★ 2026-10-21 改判据形态：从「**时钟**」改成「**标记**」。
+	//
+	//   旧判据是 `elapsed > 4s ⇒ 红`。而它自己的**噪声底**是 1.5~2.45s
+	//   （宿主 load 39 时连跑 3 次：1.50 / 2.45 / 1.86s）⇒ 阈值与噪声底只差
+	//   **1.6~2.6 倍** ⇒ 负载一高就假红（2026-10-21 当天命中两次：
+	//   一次 elapsed=15.48s，症状像「被测脚本没设超时」；真因是夹具的击杀延迟）。
+	//   ⇒ 按「阈值型判据先量噪声底」纪律：**判别职责改交给标记**。
+	//     替身在「真的跑完了」时写一个标记文件 ⇒ 判据要求「标记不存在」
+	//     = 查询**确实被截断了**（与时钟无关）。
+	//     这与同族 availability 门（`FAKE_PSQL_COMPLETED` 标记）同款。
+	//   ⇒ 时钟只保留一条**宽松的兜底**（「没挂死」），不再承担判别职责。
+	//
+	//   替身跑 60s（不是 5s）：负载极高时夹具的击杀可能晚到十几秒，
+	//   替身太短会把「杀晚了」误判成「没截断」。60s 给足余量；
+	//   代价只落在**变异验证**那几轮（没有超时包裹 ⇒ 替身跑满 60s ⇒ 门红）。
+	dir := t.TempDir()
+	completed := filepath.Join(dir, "psql-completed")
 	start := time.Now()
-	rc, out, _ := runOnconflictEnv(t, 0, "sleep 5", "ONCONFLICT_QUERY_TIMEOUT=1")
+	rc, out, _ := runOnconflictEnv(t, 0,
+		"sleep 60\n: > \"$ONCONFLICT_PSQL_COMPLETED\"",
+		"ONCONFLICT_QUERY_TIMEOUT=1",
+		"ONCONFLICT_PSQL_COMPLETED="+completed)
 	elapsed := time.Since(start)
 
-	if elapsed > 4*time.Second {
+	if _, err := os.Stat(completed); err == nil {
+		t.Errorf("psql 替身**跑完了**（完成标记已生成，脚本耗时 %s）—— 查询**没有被截断**。\n"+
+			"★ 这正是 §143.14 的死因形态：查询没有上限 ⇒ 一直等一个永远不回来的答案\n"+
+			"  ⇒ 脚本持锁不放 ⇒ 之后每一轮都被闸门挡掉 ⇒ 巡检实质死亡，而日志只是「陈旧」。\n"+
+			"  期望：到 ONCONFLICT_QUERY_TIMEOUT 就退出（exit 3，本次不出结论）。\n"+
+			"  ★ 若宿主负载极高，也可能是**夹具的击杀晚于 60s** —— 那是量具的问题，\n"+
+			"    但两种情况都必须红（不能拿「负载高」当理由放过）。", elapsed)
+	} else if !os.IsNotExist(err) {
+		t.Fatalf("完成标记读不到：%v", err)
+	}
+	if elapsed > 120*time.Second {
 		t.Errorf("psql 挂死时脚本耗时 %s —— 它在**等一个永远不回来的答案**。\n"+
 			"★ 这正是 §143.14 的死因形态：无上限的查询 ⇒ 永久占锁 ⇒ 巡检实质死亡。\n"+
 			"  期望：到 ONCONFLICT_QUERY_TIMEOUT 就退出（exit 3，本次不出结论）。", elapsed)

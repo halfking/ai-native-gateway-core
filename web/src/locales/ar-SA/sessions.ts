@@ -553,6 +553,17 @@ export default {
     flowApproveDesc: "موافقة — إيقاف للمراجعة",
     flowBlockDesc: "حظر — حظر فوري",
     rulesTitle: "قواعد الكشف",
+
+
+
+
+
+
+
+
+
+
+
     searchPlaceholder: "ابحث في القواعد",
     addRule: "إضافة قاعدة",
     addRuleTitle: "إضافة قاعدة",
@@ -634,24 +645,6 @@ export default {
     cancel: "إلغاء",
     confirmTitle: "تأكيد",
     confirmDelete: "حذف هذا العنصر؟",
-  },
-promptInjectionCategories: {
-    promptInjectionCategoryInstructionOverride: 'Instruction override',
-    promptInjectionCategoryInstructionLeak: 'Instruction leak',
-    promptInjectionCategoryJailbreak: 'Jailbreak',
-    promptInjectionCategoryEncodingBypass: 'Encoding bypass',
-    promptInjectionCategoryInjectionMarker: 'Injection marker',
-    promptInjectionCategoryMultiTurnAttack: 'Multi-turn attack',
-    promptInjectionCategoryResourceExhaustion: 'Resource exhaustion',
-    promptInjectionCategoryDataExfiltration: 'Data exfiltration',
-    promptInjectionCategorySocialEngineering: 'Social engineering',
-    promptInjectionCategoryPromptLeaking: 'Prompt leaking',
-    promptInjectionCategoryPayloadSmuggling: 'Payload smuggling',
-    promptInjectionCategoryUnicodeObfuscation: 'Unicode obfuscation',
-    promptInjectionCategoryContextManipulation: 'Context manipulation',
-    promptInjectionCategoryToolAbuse: 'Tool abuse',
-    promptInjectionCategoryLegacy: 'Legacy',
-    promptInjectionCategoryUnknown: 'Other',
   },
   management: {
       loading: "جاري التحميل…",
@@ -1323,6 +1316,17 @@ promptInjectionCategories: {
     flowApproveDesc: 'Approve — pause for human review',
     flowBlockDesc: 'Block — block immediately and log',
     rulesTitle: 'Detection Rules',
+    viewDetail: 'عرض التفاصيل',
+    ruleDetailTitle: 'تفاصيل القاعدة',
+    fieldActionOverride: 'تجاوز الإجراء',
+    fieldTags: 'الوسوم',
+    fieldExamples: 'الأمثلة',
+    fieldUpdatedAt: 'وقت التحديث',
+    systemRuleReadOnly: 'قواعد النظام للقراءة فقط؛ يُسمح فقط بتفعيلها أو تعطيلها',
+    actionOverrideInherit: 'الوراثة من السياسة',
+    tagsPlaceholder: 'مفصولة بفواصل',
+    examplesPlaceholder: 'مثال واحد في كل سطر',
+    ruleDetailNoChange: 'لم تتغير القاعدة',
     searchPlaceholder: 'Search rule name or description',
     addRule: 'Add Rule',
     addRuleTitle: 'Add Detection Rule',
@@ -1406,23 +1410,5 @@ promptInjectionCategories: {
     confirmDelete: 'Delete this item?',
   },
 
-  promptInjectionCategories: {
-    promptInjectionCategoryInstructionOverride: 'Instruction override',
-    promptInjectionCategoryInstructionLeak: 'Instruction leak',
-    promptInjectionCategoryJailbreak: 'Jailbreak',
-    promptInjectionCategoryEncodingBypass: 'Encoding bypass',
-    promptInjectionCategoryInjectionMarker: 'Injection marker',
-    promptInjectionCategoryMultiTurnAttack: 'Multi-turn attack',
-    promptInjectionCategoryResourceExhaustion: 'Resource exhaustion',
-    promptInjectionCategoryDataExfiltration: 'Data exfiltration',
-    promptInjectionCategorySocialEngineering: 'Social engineering',
-    promptInjectionCategoryPromptLeaking: 'Prompt leaking',
-    promptInjectionCategoryPayloadSmuggling: 'Payload smuggling',
-    promptInjectionCategoryUnicodeObfuscation: 'Unicode obfuscation',
-    promptInjectionCategoryContextManipulation: 'Context manipulation',
-    promptInjectionCategoryToolAbuse: 'Tool abuse',
-    promptInjectionCategoryLegacy: 'Legacy',
-    promptInjectionCategoryUnknown: 'Other',
-  },
   metaTitleClearConfirm: 'مسح عنوان هذه الجلسة؟',
 }

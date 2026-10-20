@@ -918,11 +918,47 @@ var sessionFamilyCostViewMetrics883 []byte
 //go:embed embeddata/startup/884_session_family_v_analytics_views.sql
 var sessionFamilyVAnalyticsViews884 []byte
 
-//go:embed embeddata/startup/885_drop_request_logs_v1_family.sql
-var dropRequestLogsV1Family885 []byte
+//go:embed embeddata/startup/890_drop_request_logs_v1_family.sql
+var dropRequestLogsV1Family890 []byte
 
-//go:embed embeddata/startup/886_session_turns_cost_negative_partial_idx.sql
-var sessionTurnsCostNegativePartialIdx886 []byte
+//go:embed embeddata/startup/891_session_turns_cost_negative_partial_idx.sql
+var sessionTurnsCostNegativePartialIdx891 []byte
+//go:embed embeddata/startup/885_session_turns_host_tags.sql
+var sessionTurnsHostTags885 []byte
+
+//go:embed embeddata/startup/886_session_bodies_storage_comment.sql
+var sessionBodiesStorageComment886 []byte
+
+//go:embed embeddata/startup/887_session_turns_search_text_fts.sql
+var sessionTurnsSearchTextFTS887 []byte
+
+//go:embed embeddata/startup/888_session_family_join_index_gaps.sql
+var sessionFamilyJoinIndexGaps888 []byte
+
+//go:embed embeddata/startup/889_session_turns_tools_population.sql
+var sessionTurnsToolsPopulation889 []byte
+
+// ★ 2026-10-21（R60 轮）：以下 5 条**此前从未被登记** ⇒ 全新安装的库缺
+// provider_models.source 等 5 个列 ⇒ db.Open 的 ensure 链直接 42703
+// ⇒ 「全新安装 = 装完即炸」（已实测复现 db::TestEnsureAsrCatalogSeed_RealDB
+// 与 sql-migrations-startup::TestMigration715FreshChainApplyMigrations 两条真库门）。
+// 全部是 ADD COLUMN / CREATE TABLE IF NOT EXISTS ⇒ 幂等。
+// 逐条理由与依赖顺序见 installer/internal/dbinit/runner.go 的 StartupFiles 注释。
+//
+//go:embed embeddata/startup/361b_provider_models_source_prelude.sql
+var providerModelsSourcePrelude361b []byte
+
+//go:embed embeddata/startup/375_offline_requests_status.sql
+var offlineRequestsStatus375 []byte
+
+//go:embed embeddata/startup/376_offline_activation_code.sql
+var offlineActivationCode376 []byte
+
+//go:embed embeddata/startup/387_session_analysis_inference.sql
+var sessionAnalysisInference387 []byte
+
+//go:embed embeddata/startup/427_task_type_centroids_model.sql
+var taskTypeCentroidsModel427 []byte
 
 //go:embed embeddata/startup/859_tighten_pii_phone_intl_regex.sql
 var tightenPiiPhoneIntlRegex859 []byte
@@ -1251,8 +1287,18 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/882_request_logs_cost_negative_partial_idx.sql":                         requestLogsCostNegativePartialIdx882,
 	"startup/883_session_family_cost_view_metrics.sql":                               sessionFamilyCostViewMetrics883,
 	"startup/884_session_family_v_analytics_views.sql":                               sessionFamilyVAnalyticsViews884,
-	"startup/885_drop_request_logs_v1_family.sql":                                    dropRequestLogsV1Family885,
-	"startup/886_session_turns_cost_negative_partial_idx.sql":                         sessionTurnsCostNegativePartialIdx886,
+	"startup/890_drop_request_logs_v1_family.sql":                                    dropRequestLogsV1Family890,
+	"startup/891_session_turns_cost_negative_partial_idx.sql":                         sessionTurnsCostNegativePartialIdx891,
+	"startup/885_session_turns_host_tags.sql":                                        sessionTurnsHostTags885,
+	"startup/886_session_bodies_storage_comment.sql":                                 sessionBodiesStorageComment886,
+	"startup/887_session_turns_search_text_fts.sql":                                  sessionTurnsSearchTextFTS887,
+	"startup/888_session_family_join_index_gaps.sql":                                 sessionFamilyJoinIndexGaps888,
+	"startup/889_session_turns_tools_population.sql":                                 sessionTurnsToolsPopulation889,
+	"startup/361b_provider_models_source_prelude.sql":                                providerModelsSourcePrelude361b,
+	"startup/375_offline_requests_status.sql":                                        offlineRequestsStatus375,
+	"startup/376_offline_activation_code.sql":                                        offlineActivationCode376,
+	"startup/387_session_analysis_inference.sql":                                     sessionAnalysisInference387,
+	"startup/427_task_type_centroids_model.sql":                                      taskTypeCentroidsModel427,
 	"startup/859_tighten_pii_phone_intl_regex.sql":                                   tightenPiiPhoneIntlRegex859,
 	"startup/852_models_canonical_column_set_reconcile.sql":                          modelsCanonicalColumnSetReconcile852,
 	"startup/489_credential_probe_queue_startup_backfill.sql":                        credentialProbeQueueStartupBackfill489,

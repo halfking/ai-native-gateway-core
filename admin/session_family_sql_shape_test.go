@@ -6,7 +6,7 @@ package admin
 // 直接编译失败（实测：`undefined: retiredV1ReadPattern`）。
 // ⇒ **共享判据文件必须与它的消费方同标签**（此处＝都不带标签）。
 
-// 会话族读面 SQL 形状的**共享判据**（迁移 885，v1 族真删之后）。
+// 会话族读面 SQL 形状的**共享判据**（迁移 890，v1 族真删之后）。
 //
 // # 为什么共享
 //
@@ -26,7 +26,7 @@ package admin
 // # 负向判据必须按标识符边界
 //
 // `public.request_logs` 是 `public.request_logs_with_current_month` 的**前缀**，
-// 而后者是 canonical 视图（885 之后仍然存在，只是内容换成会话族两臂）。
+// 而后者是 canonical 视图（890 之后仍然存在，只是内容换成会话族两臂）。
 // ⇒ 朴素包含会把「必须在场的 canonical 视图」判成「必须不在场的 v1 族」。
 // 本文件的 `sqlMentionsRelation` 用**标识符边界**判定：命中位置的前后字符
 // 都不能是 [A-Za-z0-9_]。
@@ -43,15 +43,15 @@ import (
 	dbpkg "github.com/kaixuan/llm-gateway-go/db"
 )
 
-// retiredV1RelationNames 是迁移 885 之后**不再存在**的 v1 族关系名（闭合集合，
+// retiredV1RelationNames 是迁移 890 之后**不再存在**的 v1 族关系名（闭合集合，
 // 不是通配）。
 //
-// 来源：sql/migrations/startup/885_drop_request_logs_v1_family.sql
+// 来源：sql/migrations/startup/890_drop_request_logs_v1_family.sql
 //   - 5 张底表 × 两种拼写（`request_logs` / `_request_logs`，迁移 860 加的
 //     `_` 前缀形态一并列出）
 //   - 4 张 v1-only 视图
 //
-// ⚠ **canonical 视图 `request_logs_with_current_month` 不在此列**：885 之后它
+// ⚠ **canonical 视图 `request_logs_with_current_month` 不在此列**：890 之后它
 // 仍然存在（内容换成会话族两臂体），把它列为「不得出现」会把一条活的读面
 // 判成死代码。
 var retiredV1RelationNames = []string{
@@ -329,10 +329,10 @@ var retiredV1ReadPattern = regexp.MustCompile(
 //
 // # 为什么需要这张表
 //
-// 迁移 885 把 v1 族**物理删除**了（10 张底表 + 4 张 v1-only 视图 + 序列/索引/RLS）。
+// 迁移 890 把 v1 族**物理删除**了（10 张底表 + 4 张 v1-only 视图 + 序列/索引/RLS）。
 // ⇒ 任何仍引用它的生产代码在运行时会 **42P01**（relation does not exist）。
 //
-// 2026-10-20 实测（`admin/` 收口轮）：**4 个 admin 生产文件**仍在读 885 已 DROP
+// 2026-10-20 实测（`admin/` 收口轮）：**4 个 admin 生产文件**仍在读 890 已 DROP
 // 的两张包装视图：
 //
 //	admin/usage_trend_series.go     :407 / :588  FROM …_without_customer_id r
@@ -356,7 +356,7 @@ var retiredV1ReadPattern = regexp.MustCompile(
 var retiredV1ReferenceExceptions = map[string]string{
 	// ★ 2026-10-20：**已清空**（基线 4 → 0）。
 	//
-	// 上一轮（admin 收口轮）登记的 4 条例外——它们读的是 885 已 DROP 的两张包装视图
+	// 上一轮（admin 收口轮）登记的 4 条例外——它们读的是 890 已 DROP 的两张包装视图
 	// `request_logs_with_current_month_without_customer_id` /
 	// `request_logs_with_current_month_without_request_class_due_at`：
 	//
@@ -372,8 +372,8 @@ var retiredV1ReferenceExceptions = map[string]string{
 	// ⚠ 顺带一条**能力恢复**的事实（不是「修崩溃」那么简单）：那两张包装视图
 	// **直读 v1 族**（实测真库：`request_logs_with_current_month_without_customer_id`
 	// 的定义体第一行就是 `FROM _request_logs_hot`），而 v1 族自 2026-10-13 停写后
-	// **恒 0 行** ⇒ 这 4 个端点在 885 之前**就已经是空的**（返回 0 行/空结果，
-	// 不报错）；885 之后它们会从「空」变成 **42P01** ⇒ 改指会话族既是**止崩**，
+	// **恒 0 行** ⇒ 这 4 个端点在 890 之前**就已经是空的**（返回 0 行/空结果，
+	// 不报错）；890 之后它们会从「空」变成 **42P01** ⇒ 改指会话族既是**止崩**，
 	// 也是**把它们从「恒空」救回「有数据」**。
 	//
 	// ⇒ 例外表清空 ⇒ 本门变成**最锐**的那条：「admin 生产代码里**一个** v1 引用都不许有」。
@@ -414,7 +414,7 @@ func TestRetiredV1ReferencesAreAllAccountedFor(t *testing.T) {
 	sort.Strings(unknown)
 	if len(unknown) > 0 {
 		t.Errorf("%d 个生产文件读已退役的 v1 族关系，但**不在** retiredV1ReferenceExceptions 里 —— "+
-			"885 已经把它们从库里删了，这些代码运行时会 42P01：\n  %s\n"+
+			"890 已经把它们从库里删了，这些代码运行时会 42P01：\n  %s\n"+
 			"要么生产侧改指（会话族 / canonical 视图），要么把它具名登记进例外台账并写清理由。",
 			len(unknown), strings.Join(unknown, "\n  "))
 	}
@@ -441,7 +441,7 @@ func TestRetiredV1ReferencesAreAllAccountedFor(t *testing.T) {
 		t.Error("retiredV1ReadPattern 匹配不上 v1 正文视图 —— 扫描器没有区分力，本门是恒真空")
 	}
 	if retiredV1ReadPattern.MatchString("FROM public.request_logs_with_current_month rl") {
-		t.Error("retiredV1ReadPattern 命中了 canonical 视图 —— 885 之后它仍然存在（会话族两臂体），" +
+		t.Error("retiredV1ReadPattern 命中了 canonical 视图 —— 890 之后它仍然存在（会话族两臂体），" +
 			"把它算成 v1 引用会让本门恒红")
 	}
 }

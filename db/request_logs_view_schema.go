@@ -21,14 +21,14 @@ import (
 // （session_turns(_hot) 投影 UNION ALL 冻结 v1 体 × 反连接）。约 40 个读方
 // 同名同列契约零改动切换。
 //
-// ★ 2026-10-20（迁移 885）：v1 族（`_request_logs*`）整体退役 ⇒ 第三臂
+// ★ 2026-10-20（迁移 890）：v1 族（`_request_logs*`）整体退役 ⇒ 第三臂
 // （冻结 v1 体 + 两条反连接去重腿）与它依赖的两张中间层包装视图
 // （…_without_customer_id / …_without_request_class_due_at）**一并消失**。
 // 剩下的两臂（session_turns_hot ∪ session_turns，734 details 特征层
 // LEFT JOIN）的投影文本与 710/815/816/817/824 装出来的逐字相同 ⇒ 118 列同名
 // 同序 ⇒ 读方零改动。
 //
-// ⚠ 自愈**不得再触碰 v1 族**：那些表已被 885 删除，包装视图也没了 ⇒ 任何
+// ⚠ 自愈**不得再触碰 v1 族**：那些表已被 890 删除，包装视图也没了 ⇒ 任何
 // 重建 v1 链的分支都会 42P01，而且失败点正是"刚删掉的表"，排查成本极高。
 // ⇒ 下面**没有**任何 `_request_logs` 字面量；会话族缺席时**不做 DDL**。
 //
@@ -85,7 +85,7 @@ func (d *DB) ensureRequestLogsCurrentMonthView(ctx context.Context) error {
 	}
 
 	// 会话族在场（430+526+707）→ 装两臂体。缺会话族时**没有可退的形态**：
-	// v1 族已随 885 退役 ⇒ 此时不做任何 DDL，把问题留给启动序列报错，
+	// v1 族已随 890 退役 ⇒ 此时不做任何 DDL，把问题留给启动序列报错，
 	// 而不是让自愈在一个已经退役的族上失败。
 	var sessionTurnsExist bool
 	if err := d.pool.QueryRow(ctx, `
@@ -98,7 +98,7 @@ func (d *DB) ensureRequestLogsCurrentMonthView(ctx context.Context) error {
 	}
 	if !sessionTurnsExist {
 		slog.Warn("request_logs_with_current_month: session_turns absent and the v1 family is retired " +
-			"(885) — no fallback body to install; leaving the view as-is")
+			"(890) — no fallback body to install; leaving the view as-is")
 		return nil
 	}
 	if _, err := d.pool.Exec(ctx, canonicalSessionOnlyDDL(detailsFamilyExists)); err != nil {
@@ -227,13 +227,19 @@ var projectionExprsV2 = []string{
 	"NULL::jsonb",
 	"NULL::numeric(3,2)",
 	"t.upstream_finish_reason",
-	// ⚠ tools 尚无写入路径，本列恒为空数组 —— 读它得不到信息。
-	// 事实校准（2026-10-19 复核）：列由 456 建为
-	// `tools JSONB NOT NULL DEFAULT '[]'::jsonb`，所以它在库里是 **'[]' 而非
-	// NULL**；本投影把它原样透出，形状正确、值为空。
-	// 缺的是写入方：turn_writer.go 的 INSERT 列清单里没有 tools，
-	// 全仓也无人写它（同 attempt_no，见 admin/turns_sessions.go 的注）。
-	// ⇒ 别写「投影了 tools 就等于有工具调用数据」的判据（恒真）。
+	// tools —— 2026-10-20 起**有值了**（审计 G-6，迁移 889）。
+	//
+	// 事实校准：这一列此前**从未被写过**（456 建列，列默认值 '[]'::jsonb），
+	// turn_writer 的 INSERT 列清单里没有它 ⇒ 每行都停在 '[]' ⇒ 本投影透出
+	// 的 tool_calls 恒为空数组（不是「该请求没有工具调用」，是「没人写过」）。
+	// 现由 domains/session/v2/turn_writer.go 的 turnToolsJSONBExpr 在
+	// INSERT 的同一条语句里用子查询从 public.session_tools_hot 聚合
+	//（按 session_id + request_id），元素是
+	// {tool_name, tool_call_id, status, duration_ms, error_type} 的摘要。
+	//
+	// ⚠ **历史行仍是 '[]'**：889 不回填（工具行可能已被 promote 搬走）。
+	// ⇒ 读这一列时不能假设「老行也是空数组」——新行有值、老行没有；
+	//   也不能假设「有值就是完整工具记录」——那是摘要，不是正文。
 	"t.tools",
 	"t.client_endpoint",
 	"t.client_timeout",
@@ -471,11 +477,11 @@ func sessionFamilyProjection(withDetails bool) string {
 	return sessionFamilyProjectionFor(canonicalColumnOrderV2, withDetails)
 }
 
-// canonicalSessionOnlyComment 与迁移 885 的 COMMENT ON VIEW 同文（COMMENT 的
+// canonicalSessionOnlyComment 与迁移 890 的 COMMENT ON VIEW 同文（COMMENT 的
 // IS 只收单个字面量，不能像 SQL 赋值那样 || 拼接）。824 起补记 request_status
 // 的分类口径（816/817 的两次 client_ip 改写当时未同步本常量，视图注释一度落后
-// 两代；这里补的是最新状态，不是逐版流水）。885 起本常量描述**两臂**形态。
-const canonicalSessionOnlyComment = `'会话存储解耦 v4（885）: v1 族（_request_logs*）整体退役 ⇒ canonical 视图去掉第三臂（冻结 v1 体 + 双反连接去重），只剩两臂 session_turns_hot ∪ session_turns。两臂投影与 710/734/813/815/816/817/824 装出来的逐字相同 ⇒ 118 列同名同序 ⇒ 读方零改动。仍 NULL：id（v1 请求行 id ≠ session turn id）/test_col/test_tab_indent/provider_model/credits_rate_multiplier，以及 client_ip 本身（字面量非法时落 NULL，不抛错）。trace_events 刻意未投影（镜像从不写，近窗非空率 0，投影即净数据损失）。'`
+// 两代；这里补的是最新状态，不是逐版流水）。890 起本常量描述**两臂**形态。
+const canonicalSessionOnlyComment = `'会话存储解耦 v4（890）: v1 族（_request_logs*）整体退役 ⇒ canonical 视图去掉第三臂（冻结 v1 体 + 双反连接去重），只剩两臂 session_turns_hot ∪ session_turns。两臂投影与 710/734/813/815/816/817/824 装出来的逐字相同 ⇒ 118 列同名同序 ⇒ 读方零改动。仍 NULL：id（v1 请求行 id ≠ session turn id）/test_col/test_tab_indent/provider_model/credits_rate_multiplier，以及 client_ip 本身（字面量非法时落 NULL，不抛错）。trace_events 刻意未投影（镜像从不写，近窗非空率 0，投影即净数据损失）。'`
 
 // canonicalColumnOrderV2 是 115 列的契约顺序（= 现网 canonical 视图列序：
 // 710 冻结 113 列 + 738 credits_rate_multiplier + 740 client_ip）。
@@ -536,7 +542,7 @@ var canonicalColumnOrderV2 = []string{
 
 // canonicalSessionOnlyDDL renders the **session-only (two-arm)** canonical view.
 //
-// 2026-10-20（迁移 885）：v1 族（`_request_logs*`）整体退役 ⇒ canonical 视图的
+// 2026-10-20（迁移 890）：v1 族（`_request_logs*`）整体退役 ⇒ canonical 视图的
 // **第三臂**（冻结 v1 体 + 两条反连接去重腿）随之退役。留下的两臂是
 //
 //	session_turns_hot t LEFT JOIN session_turn_details_hot d
@@ -783,13 +789,13 @@ func SessionBodiesHasOutboundPredicate(alias string) string {
 // **9 个 admin 消费点在一次全仓解析里全部消失**（实测 5 个 vs 应有的 14 个）。
 // ⇒ 删除包装，全部调用点直接调 `dbpkg.SessionBodiesSourceSQL()`。
 // 代价是 5 个文件要新增 db import，收益是**单一切换层、单一探测路径**。
-// # ★ 2026-10-20（迁移 885，v1 族最终删除）：本切换层**退化为 no-op**。
+// # ★ 2026-10-20（迁移 890，v1 族最终删除）：本切换层**退化为 no-op**。
 //
 // 原实现：开关 `storage.session_bodies_native_read` 关（默认）时返回
 // `request_logs_bodies_with_current_month`（**v1 正文族的视图**），开时返回
 // 会话族源。那是灰度期的回滚设计：开关关 = 读 v1，开 = 读会话族。
 //
-// 885 删掉了 v1 族，**连同那张视图** ⇒ 默认臂指向一个**已不存在的关系**
+// 890 删掉了 v1 族，**连同那张视图** ⇒ 默认臂指向一个**已不存在的关系**
 // ⇒ 任何走默认臂的读方都是**整条语句 42P01**（不是那条腿失败，也不是静默空集）。
 // 实测受影响的消费点有 12 个（admin 的 6 个文件 + bg 1 + domains 3 …）。
 //

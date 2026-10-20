@@ -19,7 +19,7 @@ import (
 // 起因：203 号与 204 号都把这个文件当「该视图的定义」引用，204 号甚至从它
 // 逐列核对了 6 个列号；而它描述的结构在**有 session_turns 的库里根本不存在**。
 //
-// 885（2026-10-20，v1 族最终删除）：第三臂（v1 臂）连同它的双反连接去重
+// 890（2026-10-20，v1 族最终删除）：第三臂（v1 臂）连同它的双反连接去重
 // 一起失去对象 ⇒ 部署形态收敛为**两条会话臂**
 // （`session_turns_hot ∪ session_turns` + 734 details LEFT JOIN）。
 // ⇒ 「本文件 ≠ 部署形态」这个前提**不再成立**：本文件**就是**部署形态。
@@ -37,7 +37,7 @@ import (
 // # 权威来源（不在本文件）
 //
 //   - db/request_logs_view_schema.go            —— 二进制启动时保证 view 存在的 composer
-//   - sql/migrations/startup/885_drop_request_logs_v1_family.sql
+//   - sql/migrations/startup/890_drop_request_logs_v1_family.sql
 //   - db/request_logs_view_schema_test.go        —— 校验 composer 的契约
 //
 // # 与基线副本的**有意**不一致
@@ -103,7 +103,7 @@ func viewDumpVerdict(src string) (string, []string) {
 	case sessionArms > 0:
 		return verdictSessionFam, arms
 	// v1 两臂：两代物理名都算（迁移 860 把 dump 之外的运行库改名 `_` 前缀；
-	// 迁移 885 又把 v1 族整体删掉了 —— 这个分支现在只在**负控**里出现，
+	// 迁移 890 又把 v1 族整体删掉了 —— 这个分支现在只在**负控**里出现，
 	// 它的存在是让「两代仍可分辨」这件事可被验证）。
 	case (seen["request_logs"] || seen["_request_logs"]) &&
 		(seen["request_logs_hot"] || seen["_request_logs_hot"]):
@@ -127,9 +127,9 @@ func readRepoFile(t *testing.T, parts ...string) string {
 // `sql/objects/views/` dump carries, and proves the Go composer carries the
 // **same** generation.
 //
-// ★ 2026-10-20（885）：判据反转为「dump 与 composer **都**是会话族两臂体，
+// ★ 2026-10-20（890）：判据反转为「dump 与 composer **都**是会话族两臂体，
 // 且**都**不含 v1 族」。此前它断言的是「dump 是 v1 回退体 + composer 有
-// v1 臂 + 双反连接」——那正是 885 要拆掉的东西。
+// v1 臂 + 双反连接」——那正是 890 要拆掉的东西。
 //
 // 拆分两半的理由（两半单独看都不够）：
 //
@@ -148,10 +148,10 @@ func TestRequestLogsViewDumpGeneration(t *testing.T) {
 	}
 	if verdict != verdictSessionFam {
 		t.Fatalf("%s 的世代判定 = %q（源表 %v），期望 %q。\n"+
-			"  885 之后 canonical 视图只有两条会话臂（session_turns_hot ∪ session_turns\n"+
+			"  890 之后 canonical 视图只有两条会话臂（session_turns_hot ∪ session_turns\n"+
 			"  + 734 details LEFT JOIN），v1 第三臂已随 v1 族一起退役。\n"+
 			"  权威定义是 db/request_logs_view_schema.go（composer）+ \n"+
-			"  sql/migrations/startup/885_drop_request_logs_v1_family.sql。\n"+
+			"  sql/migrations/startup/890_drop_request_logs_v1_family.sql。\n"+
 			"  若本文件被换回 v1 体，它就会变成**谁也产不出的死件**——"+
 			"读它的人会照抄一个库里根本不存在的结构（203/204/205 号都栽在这里）。",
 			dumpPath, verdict, arms, verdictSessionFam)
@@ -168,7 +168,7 @@ func TestRequestLogsViewDumpGeneration(t *testing.T) {
 		"_request_logs_bodies", "request_logs_bodies",
 	} {
 		if containsIdentifierIn([]string{stripSQLComments(raw)}, unwanted) {
-			t.Errorf("%s 仍引用 v1 族 %q —— v1 族已被迁移 885 整体 DROP，"+
+			t.Errorf("%s 仍引用 v1 族 %q —— v1 族已被迁移 890 整体 DROP，"+
 				"任何提到它的语句整条 42P01（不是那条腿失败）。", dumpPath, unwanted)
 		}
 	}
@@ -209,7 +209,7 @@ func TestRequestLogsViewDumpGeneration(t *testing.T) {
 		}
 	}
 
-	// composer 侧同样**不得**有 v1 族与它的包装链：那些形状的对象已随 885
+	// composer 侧同样**不得**有 v1 族与它的包装链：那些形状的对象已随 890
 	// 一起消失，而 `CREATE OR REPLACE VIEW` 是**即时**校验的 ⇒ composer
 	// 里留着它们会让整个 boot 失败（42P01）。
 	//
@@ -230,7 +230,7 @@ func TestRequestLogsViewDumpGeneration(t *testing.T) {
 		"request_logs_with_current_month_without_request_class_due_at",
 	} {
 		if containsIdentifierIn(composerLits, unwanted) {
-			t.Errorf("db/request_logs_view_schema.go 的 SQL 字面量里仍出现 %q —— v1 族与它的包装链已随 885 退役。",
+			t.Errorf("db/request_logs_view_schema.go 的 SQL 字面量里仍出现 %q —— v1 族与它的包装链已随 890 退役。",
 				unwanted)
 		}
 	}

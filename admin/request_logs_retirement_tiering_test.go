@@ -43,9 +43,9 @@ type retirementTieringEntry struct {
 }
 
 var v1ReaderRetirementTiering = map[string]retirementTieringEntry{
-	// ★ 2026-10-20（迁移 885，v1 族真删）：本表**已清空**。
+	// ★ 2026-10-20（迁移 890，v1 族真删）：本表**已清空**。
 	//
-	// 这张表是「读 v1 的文件按消费面分档」——而 885 之后 **没有任何文件再读 v1**
+	// 这张表是「读 v1 的文件按消费面分档」——而 890 之后 **没有任何文件再读 v1**
 	// ⇒ 「这个读方退役后怎么办」这个问题**没有对象**了。
 	//
 	// ⇒ 本表保留（不删）：它守的是「**不许出现新的 v1 读方**」
@@ -62,14 +62,14 @@ var v1ReaderRetirementTiering = map[string]retirementTieringEntry{
 //
 // ⚠ 本集合**只答「有没有 v1 臂」，不答「v1 臂占多大比例」**。
 var v1ArmViewNamesRuntimeChecked = []string{
-	// ★ 2026-10-20（迁移 885，v1 族真删）：本集合**已清空** ——
+	// ★ 2026-10-20（迁移 890，v1 族真删）：本集合**已清空** ——
 	// **没有任何视图带 v1 臂**了：
 	//
-	//	· request_logs_with_current_month —— 885 之后是会话族两臂体（无 v1 臂）；
+	//	· request_logs_with_current_month —— 890 之后是会话族两臂体（无 v1 臂）；
 	//	· request_logs_with_current_month_without_customer_id
 	//	· request_logs_with_current_month_without_request_class_due_at
 	//	· request_logs_bodies_with_current_month
-	//	  —— 三张都被 885 直接 DROP（sql/migrations/startup/885_drop_request_logs_v1_family.sql）。
+	//	  —— 三张都被 890 直接 DROP（sql/migrations/startup/890_drop_request_logs_v1_family.sql）。
 	//
 	// ⇒ 「v1 臂视图」这个概念本身退役了。
 }
@@ -87,7 +87,7 @@ var v1ArmViewNamesRuntimeChecked = []string{
 // ⇒ 这 39 个由本门覆盖，而不是没人管：下面的
 // TestV1ArmLiteralBlindSpotIsPinnedAndTiered 逐个点名。
 var v1ArmLiteralBlindSpot = []string{
-	// ★ 2026-10-20（迁移 885，v1 族真删）：本集合**已清空** ——
+	// ★ 2026-10-20（迁移 890，v1 族真删）：本集合**已清空** ——
 	// 没有 v1 臂视图 ⇒ 没有「读 v1 臂视图且工具看不见」的文件。
 	//
 	// ⚠ 本集合保留（不删）：它守的是「**不许出现新的工具盲区**」
@@ -107,7 +107,7 @@ var v1ArmLiteralBlindSpot = []string{
 //
 // 实测：字面量 107 ∩ 间接 22 = 14，并集 = **115**。
 var v1ReaderIndirectPopulation = []string{
-	// ★ 2026-10-20（迁移 885，v1 族真删）：本总体**已清空** ——
+	// ★ 2026-10-20（迁移 890，v1 族真删）：本总体**已清空** ——
 	// 没有「读 v1 但关系名不是 FROM 字面量」的文件。
 	//
 	// ⚠ 本总体保留（不删）：它与「字面量总体」成对，构成
@@ -141,12 +141,12 @@ func TestV1ReaderTieringDomainIsBothPopulations(t *testing.T) {
 		domain[f] = true
 	}
 
-	// ★ 885 之后（2026-10-20）：两个总体都必须为空。
+	// ★ 890 之后（2026-10-20）：两个总体都必须为空。
 	//
 	// 原来这两条「双向比较」在总体非空时才是主判据；总体归零之后它变成
 	// 「∅ == ∅ ⇒ 恒绿」⇒ 必须把「总体为空」本身写成断言。
 	if len(literal) > 0 || len(indirect) > 0 {
-		t.Errorf("两个总体非空（字面量 %d + 间接 %d）—— 885 之后 v1 族已物理删除，"+
+		t.Errorf("两个总体非空（字面量 %d + 间接 %d）—— 890 之后 v1 族已物理删除，"+
 			"不该再有读 v1 的文件。", len(literal), len(indirect))
 	}
 
@@ -219,7 +219,7 @@ func TestV1ReaderTieringDomainIsBothPopulations(t *testing.T) {
 		//		改成拼接 bg.ActiveSettleTurnsTable()，自字面量总体移入间接总体
 		//		（字面量 100→99、间接 26→27）。**交集 17 与并集 109 都不变**——
 		//		它换的是总体归属，不是读方数量。
-		// ★ 2026-10-20（迁移 885，v1 族真删）：四个数全部归零。
+		// ★ 2026-10-20（迁移 890，v1 族真删）：四个数全部归零。
 		// v1 族被物理删除 ⇒ 字面量总体为空、间接总体为空、交集为空、
 		// 并集（域）为空。这四个数从此刻起是**棘轮**：任何一个新的 v1 读方
 		// 出现都会让其中至少一个不再等于 0 ⇒ 门红。
@@ -278,12 +278,12 @@ func TestV1ReaderTieringEveryFileProvenToReadV1(t *testing.T) {
 		t.Errorf("阴性对照失败：注释里的 FROM _request_logs 被判成 %d 个读点，期望 0 —— "+
 			"剥注释没生效，这道门会恒绿", l)
 	}
-	// ★ 885 之后（2026-10-20）：阳性对照改用**真 v1 底表**。
+	// ★ 890 之后（2026-10-20）：阳性对照改用**真 v1 底表**。
 	//
 	// 原来的对照是 `FROM request_logs_with_current_month` ⇒ 它依赖
 	// `isV1Relation` 认得 canonical 视图 —— 而那份认知来自
 	// `v1ArmViewNamesRuntimeChecked`（canonical 视图当时**带 v1 臂**）。
-	// 885 之后 canonical 视图是会话族两臂体、**不再是 v1** ⇒ 它从 v1 关系集里
+	// 890 之后 canonical 视图是会话族两臂体、**不再是 v1** ⇒ 它从 v1 关系集里
 	// 退出 ⇒ 原对照失效。⇒ 对照改用 `FROM _request_logs_hot`（真 v1 底表）。
 	if l, sp := v1ReadEvidence("SELECT 1 FROM _request_logs_hot"); l == 0 || sp != 0 {
 		t.Errorf("阳性对照失败：字面量 FROM _request_logs_hot → literal=%d spliced=%d，"+
@@ -291,7 +291,7 @@ func TestV1ReaderTieringEveryFileProvenToReadV1(t *testing.T) {
 	}
 	// 顺带钉住一件新事实：canonical 视图**不再**被算成 v1 读点。
 	if l, _ := v1ReadEvidence("SELECT 1 FROM request_logs_with_current_month"); l != 0 {
-		t.Errorf("canonical 视图被算成 %d 个 v1 读点，期望 0 —— 885 之后它是会话族两臂体，"+
+		t.Errorf("canonical 视图被算成 %d 个 v1 读点，期望 0 —— 890 之后它是会话族两臂体，"+
 			"不是 v1；把它算成 v1 会让「v1 读方总体为零」这句话不成立", l)
 	}
 	if l, sp := v1ReadEvidence("SELECT 1 FROM ` + logsTable + ` WHERE 1=1"); sp == 0 || l != 0 {
@@ -314,12 +314,12 @@ func TestV1ReaderTieringEveryFileProvenToReadV1(t *testing.T) {
 		indirect[f] = true
 	}
 
-	// ★ 885 之后（2026-10-20）：分档表必须为空 —— 没有读 v1 的文件 ⇒ 没有可分档的。
+	// ★ 890 之后（2026-10-20）：分档表必须为空 —— 没有读 v1 的文件 ⇒ 没有可分档的。
 	//
 	// ⚠ 下面那段逐文件取证在表为空时是**空转**，所以「表为空」这条必须显式断言；
 	// 而「取证器还有效」由本函数开头的阴性/阳性/拼接三组对照保证。
 	if len(v1ReaderRetirementTiering) > 0 {
-		t.Errorf("分档表仍有 %d 条 —— 885 之后 v1 族已物理删除，没有读 v1 的文件可分档。",
+		t.Errorf("分档表仍有 %d 条 —— 890 之后 v1 族已物理删除，没有读 v1 的文件可分档。",
 			len(v1ReaderRetirementTiering))
 	}
 
@@ -372,9 +372,9 @@ func TestV1ReaderTiersAssertMembers(t *testing.T) {
 	for k := range byTier {
 		sort.Strings(byTier[k])
 	}
-	// ★ 885 之后（2026-10-20）：分档表必须为空。
+	// ★ 890 之后（2026-10-20）：分档表必须为空。
 	if len(v1ReaderRetirementTiering) > 0 {
-		t.Errorf("消费面分档表仍有 %d 条 —— 885 之后 v1 族已物理删除，没有读 v1 的文件可分档。",
+		t.Errorf("消费面分档表仍有 %d 条 —— 890 之后 v1 族已物理删除，没有读 v1 的文件可分档。",
 			len(v1ReaderRetirementTiering))
 	}
 	t.Logf("消费面分档（域 %d 个文件）：①随v1退役 %d · ②必须迁 %d · ③按设计继续读v1 %d · ④待拍板 %d",
@@ -383,7 +383,7 @@ func TestV1ReaderTiersAssertMembers(t *testing.T) {
 
 	// ① 逐个点名。这 4 个是「读 v1 的理由就是 v1 自己」，少一个就有一个 DDL/一次性工具
 	// 在退役后还留在排期里。
-	// ★ 885 之后（2026-10-20）：四档全部为空 —— 没有读 v1 的文件可分档。
+	// ★ 890 之后（2026-10-20）：四档全部为空 —— 没有读 v1 的文件可分档。
 	wantRetireWithV1 := []string{}
 	assertTierMembers(t, byTier, "①", wantRetireWithV1)
 
@@ -471,18 +471,18 @@ func assertTierMembers(t *testing.T, byTier map[string][]string, tier string, wa
 // 这不是抄一份名单：门要回答的是「这个集合会不会悄悄少一个」。
 // §9.260 的实测就是少两个 —— 少的方向是把有风险的报成安全。
 func TestV1ArmViewSetMatchesRuntimeTruth(t *testing.T) {
-	// ★ 885 之后（2026-10-20）：**没有任何视图带 v1 臂**了。
+	// ★ 890 之后（2026-10-20）：**没有任何视图带 v1 臂**了。
 	//
-	//	· request_logs_with_current_month —— 885 之后是会话族两臂体（无 v1 臂）；
+	//	· request_logs_with_current_month —— 890 之后是会话族两臂体（无 v1 臂）；
 	//	· request_logs_with_current_month_without_customer_id
 	//	· request_logs_with_current_month_without_request_class_due_at
 	//	· request_logs_bodies_with_current_month
-	//	  —— 三张都被 885 直接 DROP。
+	//	  —— 三张都被 890 直接 DROP。
 	//
 	// ⇒ 本门从「集合必须与运行时真库对账」翻成
 	//「**集合必须为空，且 composer 不得再重建那三张被 DROP 的视图**」。
 	if len(v1ArmViewNamesRuntimeChecked) > 0 {
-		t.Errorf("v1 臂视图集合仍有 %d 个 —— 885 之后没有任何视图带 v1 臂：%s",
+		t.Errorf("v1 臂视图集合仍有 %d 个 —— 890 之后没有任何视图带 v1 臂：%s",
 			len(v1ArmViewNamesRuntimeChecked), strings.Join(v1ArmViewNamesRuntimeChecked, " "))
 	}
 
@@ -497,14 +497,14 @@ func TestV1ArmViewSetMatchesRuntimeTruth(t *testing.T) {
 	} {
 		if strings.Contains(b, "CREATE VIEW public."+name) ||
 			strings.Contains(b, "CREATE OR REPLACE VIEW public."+name) {
-			t.Errorf("composer 里又出现 CREATE VIEW public.%s —— 885 已经把它 DROP，"+
+			t.Errorf("composer 里又出现 CREATE VIEW public.%s —— 890 已经把它 DROP，"+
 				"重建它会让「v1 臂视图集合为空」这句话不成立", name)
 		}
 	}
 	// 阳性对照：canonical 视图必须**仍然**被 composer 建出来（它是活的读面）。
 	if !strings.Contains(b, "request_logs_with_current_month") {
 		t.Error("composer 里找不到 canonical 视图 request_logs_with_current_month —— " +
-			"它是 885 之后唯一还活着的读面，丢了它整条读链就没源了")
+			"它是 890 之后唯一还活着的读面，丢了它整条读链就没源了")
 	}
 	t.Logf("v1 臂视图（与真库 pg_class 对账）%d 个：%s",
 		len(v1ArmViewNamesRuntimeChecked), strings.Join(v1ArmViewNamesRuntimeChecked, " "))

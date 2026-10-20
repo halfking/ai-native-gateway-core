@@ -133,10 +133,10 @@ func TestViewV2ProjectionContractSync(t *testing.T) {
 		t.Error("legacy (710-fallback) projection must not reference the details alias")
 	}
 
-	// ── 两臂形态契约（885 起）──────────────────────────────────────────────
+	// ── 两臂形态契约（890 起）──────────────────────────────────────────────
 	//
 	// 旧契约（710~824）钉的是「v1 分支的 lateral 条件化」：冻结链横向追加
-	// fp/raw、动态链自带、815 三列恒走 lateral。885 把 v1 分支**整条摘掉**了
+	// fp/raw、动态链自带、815 三列恒走 lateral。890 把 v1 分支**整条摘掉**了
 	// ⇒ 那套条件化**整体失效**：形状参数（baseHasFP/…）不再是 DDL 的输入。
 	//
 	// ⇒ 契约换成三件**更强**的事：
@@ -149,8 +149,8 @@ func TestViewV2ProjectionContractSync(t *testing.T) {
 	//      编译错或 DDL 错，而是那一列恒 NULL，而 UNION ALL 只按位置匹型、
 	//      列数不变 ⇒ 门只能在这里拦）。
 	//
-	// ⚠ 这条契约必须**与 885 迁移文件里的视图体**逐字同源（迁移产物与自愈
-	// 重建体必须等价）。见 TestSessionOnlyCanonicalDDLMatchesMigration885。
+	// ⚠ 这条契约必须**与 890 迁移文件里的视图体**逐字同源（迁移产物与自愈
+	// 重建体必须等价）。见 TestSessionOnlyCanonicalDDLMatchesMigration890。
 	ddl := canonicalSessionOnlyDDL(true)
 	if n := strings.Count(ddl, "UNION ALL"); n != 1 {
 		t.Errorf("session-only canonical DDL must have exactly 2 arms (1 UNION ALL), got %d", n)
@@ -159,7 +159,7 @@ func TestViewV2ProjectionContractSync(t *testing.T) {
 		!strings.Contains(ddl, "FROM public.session_turns t") {
 		t.Error("session-only canonical DDL must read session_turns_hot and session_turns")
 	}
-	// v1 族零引用：这是 885 的**核心不变量**。v1 族一旦被删，任何还提到它的
+	// v1 族零引用：这是 890 的**核心不变量**。v1 族一旦被删，任何还提到它的
 	// DDL 都会 42P01 —— 而 42P01 出现在「视图重建」里时，症状是"整个日志
 	// 面板 500"，根因却是一次字符串拼写事故。
 	for _, marker := range []string{
@@ -168,7 +168,7 @@ func TestViewV2ProjectionContractSync(t *testing.T) {
 		"source.", "v.credits_rate_multiplier", "v.client_ip",
 	} {
 		if strings.Contains(ddl, marker) {
-			t.Errorf("session-only canonical DDL must not reference %q — the v1 family is retired (885)", marker)
+			t.Errorf("session-only canonical DDL must not reference %q — the v1 family is retired (890)", marker)
 		}
 	}
 	// 815 三列在会话臂里是直映。

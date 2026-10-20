@@ -1,4 +1,4 @@
--- ★ 2026-10-20（迁移 885，v1 族最终删除）：本文件**不再是** v1 回退体，
+-- ★ 2026-10-20（迁移 890，v1 族最终删除）：本文件**不再是** v1 回退体，
 -- 它现在是**会话族两臂体**（session_turns_hot ∪ session_turns + 734 details
 -- LEFT JOIN），与 composer 装到库里的形态**逐字相同**。
 --
@@ -6,19 +6,19 @@
 --   · R89-DP（205 号）把这个文件登记为「v1 回退体（两条臂）」，并明说它
 --     **不是**部署形态——当时的部署形态是三臂（会话两臂 ∪ v1 臂）。
 --     203/204 号都栽在「照抄一个库里根本不存在的结构去论证安全性」。
---   · 885 删掉了 v1 族 ⇒ 第三臂（v1 臂）连同它的双反连接去重一起失去对象
+--   · 890 删掉了 v1 族 ⇒ 第三臂（v1 臂）连同它的双反连接去重一起失去对象
 --     ⇒ 部署形态收敛为**两条会话臂**，v1 臂不可能再存在。
 --   · ⇒ 此刻起「本文件 ≠ 部署形态」这个前提**不再成立**：本文件就是部署形态。
 --
 -- 权威来源（正文逐字取自它，不是手抄）：
 --   · db/request_logs_view_schema.go（composer 的 canonicalSessionOnlyDDL）
---   · sql/migrations/startup/885_drop_request_logs_v1_family.sql（同一段 $proj$）
+--   · sql/migrations/startup/890_drop_request_logs_v1_family.sql（同一段 $proj$）
 --   · 二者的等价性由 db/view_schema_v2_contract_test.go 与
---     sql/migrations/startup/migration_885_v1_family_drop_test.go 守着。
+--     sql/migrations/startup/migration_890_v1_family_drop_test.go 守着。
 --
 -- ⚠ 读面语义变化（写在这里，免得下一个人以为是纯重构）：
 --   canonical 视图的第三臂消失 ⇒ **镜像链建立之前的历史行不再由本视图提供**
---   （那批行只存在于 v1 族，已随 885 删除）。依赖本视图的历史区间统计会
+--   （那批行只存在于 v1 族，已随 890 删除）。依赖本视图的历史区间统计会
 --   看到「更少的行」——那不是 bug，是「那段历史已经不在库里了」。
 --
 -- Name: request_logs_with_current_month; Type: VIEW; Schema: public; Owner: -
@@ -277,4 +277,4 @@
 -- Name: VIEW request_logs_with_current_month; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON VIEW public.request_logs_with_current_month IS 'Session-family two-arm body (session_turns_hot UNION ALL session_turns) with 734 details LEFT JOIN. The former v1 third arm was removed by migration 885 together with the v1 request-log family.';
+COMMENT ON VIEW public.request_logs_with_current_month IS 'Session-family two-arm body (session_turns_hot UNION ALL session_turns) with 734 details LEFT JOIN. The former v1 third arm was removed by migration 890 together with the v1 request-log family.';

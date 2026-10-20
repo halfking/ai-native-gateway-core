@@ -45,7 +45,22 @@
 // 消费方：
 //   - src/i18n/callSitePlaceholderCoverage.ts（判定层）
 //   - src/i18n/callSitePlaceholderCoverage.test.ts（门）
+//   - src/i18n/localeKeyParity.ts（键存在性判定层，2026-10-21 R56 轮新增）
 //   - scanner.ts 再导出本模块（=「接进 scanner」的落点）
+//
+// ⚠️ **本模块同时是 i18n 调用点的词法层（2026-10-21 R56 轮扩展）**：
+//   `scanCallSiteParamsInSource` 只产出「**第二参数是对象字面量**」的调用点
+//   （它是为「调用点传了哪些具名参数」服务的 ⇒ 第二参不是对象字面量时
+//   **没有具名参数可解析** ⇒ 直接跳过）。
+//   ⇒ ★ **但「这个键存不存在」与第二参形态无关** ⇒ R56 轮新增
+//   `scanCallSiteKeysInSource`：**枚举全部调用点的键**（不限第二参形态），
+//     供「跨语种键存在性平价」判定层使用。
+//   ⇒ 动机（R56 实测）：R55 的缺陷键族 `sessions.config.promptInjectionCategory*`
+//     来自 `t(\`sessions.config.${meta.i18nKey}\`, meta.zhFallback || safeRaw)`
+//     —— 第二参**不是**对象字面量 ⇒ **R55 的扫描器压根扫不到这个调用点**
+//     ⇒ R55 只能用「手写定点回归」兜住那一族，而**机制本身是瞎的**。
+//   ⇒ 两个扫描器**共用同一套掩码**（`maskSource`）⇒ 不引入第二套词法层
+//     （两套量具互相抵消比一个明显错的量具更危险）。
 
 import { readFileSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
@@ -502,6 +517,132 @@ function propNameOf(prop: string): string | null {
 }
 
 // ─────────────────────────── 对外 API ───────────────────────────
+
+/**
+ * 枚举一份源码里**全部** i18n 调用点的**键**（不限第二参数形态）。
+ *
+ * ⚠️ **为什么需要它**（2026-10-21 R56 轮实测）：
+ *   `scanCallSiteParamsInSource` 只产出「第二参是对象字面量」的调用点 ⇒
+ *   **模板键 + 非对象第二参**的调用点（61 处，实测）它一个都扫不到 ——
+ *   包括 R55 缺陷自己的 `t(\`sessions.config.${meta.i18nKey}\`, meta.zhFallback || safeRaw)`。
+ *   ⇒ 「这个键在各语种存不存在」这个问题**与第二参形态无关** ⇒ 必须有独立的键枚举。
+ *
+ * 与 `scanCallSiteParamsInSource` 的关系：**共用同一套掩码与调用点定位**
+ * （`maskSource` + `CALL_RE` + `readQuotedValue` + `skipTemplate`）⇒
+ * 两者的「代码区判定」必然一致 ⇒ 不会一个说「在代码区」另一个说「在字符串里」。
+ */
+export interface CallSiteKeyRef {
+  /** 源文件绝对路径 */
+  file: string
+  /** 1-based 行号 */
+  line: number
+  /** 1-based 列号 */
+  column: number
+  /** 键：literal=字面量内容；template=模板原文；dynamic=变量名片段 */
+  key: string
+  keyKind: CallSiteKeyKind
+  /** 模板键的静态前缀（如 `sessions.config.`）；literal/dynamic 为 '' */
+  keyPrefix: string
+  /** 模板键的静态后缀（如 `.tokenFormat`）；literal/dynamic 为 '' */
+  keySuffix: string
+  /** 第二参数形态（用于诊断「为何某个键族没被参数扫描器看到」） */
+  secondArgKind: 'none' | 'object-literal' | 'string' | 'other'
+  /** 完整调用片段 */
+  snippet: string
+}
+
+/** 判定第二参数的形态（只用于诊断，不做参数解析）。 */
+function classifySecondArg(src: string, mask: Uint8Array, i: number): {
+  kind: CallSiteKeyRef['secondArgKind']
+  next: number
+} {
+  if (i >= src.length) return { kind: 'none', next: i }
+  if (src[i] === ',') {
+    const j = skipTrivia(src, mask, i + 1)
+    if (j >= src.length) return { kind: 'none', next: j }
+    if (src[j] === '{') {
+      const bal = readBalancedObject(src, mask, j)
+      return { kind: 'object-literal', next: bal ? bal.end : j + 1 }
+    }
+    if (src[j] === "'" || src[j] === '"') {
+      return { kind: 'string', next: skipQuoted(src, j) }
+    }
+    return { kind: 'other', next: j }
+  }
+  return { kind: 'none', next: i }
+}
+
+/** 扫描一份源码里**所有** i18n 调用点的键（不限第二参数形态）。 */
+export function scanCallSiteKeysInSource(src: string, file: string): CallSiteKeyRef[] {
+  const mask = maskSource(src, file.endsWith('.vue'))
+  const out: CallSiteKeyRef[] = []
+  CALL_RE.lastIndex = 0
+  let m: RegExpExecArray | null
+  while ((m = CALL_RE.exec(src)) !== null) {
+    if (mask[m.index] !== CODE) continue
+    const openParen = m.index + m[0].length - 1
+    let i = skipTrivia(src, mask, openParen + 1)
+    if (i >= src.length) continue
+
+    let key = ''
+    let keyKind: CallSiteKeyKind = 'dynamic'
+    let keyPrefix = ''
+    let keySuffix = ''
+    if (src[i] === "'" || src[i] === '"') {
+      const r = readQuotedValue(src, i)
+      key = r.value
+      keyKind = 'literal'
+      i = r.end
+    } else if (src[i] === '`') {
+      const { end } = skipTemplate(src, i)
+      const raw = src.slice(i + 1, end - 1)
+      key = raw
+      keyKind = 'template'
+      const parts = templateStaticParts(raw)
+      keyPrefix = parts.prefix
+      keySuffix = parts.suffix
+      i = end
+    } else {
+      const vm2 = src.slice(i).match(/^[A-Za-z_$][\w$.]*/)
+      key = vm2 ? vm2[0] : ''
+      keyKind = 'dynamic'
+      i += vm2 ? vm2[0].length : 0
+    }
+
+    const second = classifySecondArg(src, mask, i)
+    const { line, column } = offsetToLineCol(src, m.index)
+    out.push({
+      file,
+      line,
+      column,
+      key,
+      keyKind,
+      keyPrefix,
+      keySuffix,
+      secondArgKind: second.kind,
+      snippet: src.slice(m.index, Math.min(second.next, src.length)).slice(0, 200),
+    })
+    // 推进到本次调用的第二参数末尾 ⇒ 避免把参数内部的 t(...) 当成新的调用点
+    CALL_RE.lastIndex = Math.max(second.next, openParen + 1)
+  }
+  return out
+}
+
+/** 扫描单个文件的全部调用点键 */
+export function scanCallSiteKeys(absFile: string): CallSiteKeyRef[] {
+  return scanCallSiteKeysInSource(readFileSync(absFile, 'utf8'), absFile)
+}
+
+/** 扫描整个源码树的全部调用点键（与 `scanAllCallSiteParams` 同口径的文件枚举） */
+export function scanAllCallSiteKeys(srcDir: string): {
+  callSites: CallSiteKeyRef[]
+  filesScanned: number
+} {
+  const files = listSourceFiles(srcDir)
+  const callSites: CallSiteKeyRef[] = []
+  for (const f of files) callSites.push(...scanCallSiteKeys(f))
+  return { callSites, filesScanned: files.length }
+}
 
 /** 扫描一份源码里所有「第二个参数是对象字面量」的 t() 调用点 */
 export function scanCallSiteParamsInSource(src: string, file: string): CallSiteParamRef[] {

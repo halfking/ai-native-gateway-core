@@ -81,13 +81,13 @@ func goStringLiterals(t *testing.T, path string) []string {
 // v1 正文族（`_request_logs_bodies`）的「7 天 TTL 清理」契约：
 //
 //	① 正典本体 `sql/objects/functions/drop_old_request_logs_bodies_partitions_integer.sql`
-//	   （随族一起被 885 删除）；
+//	   （随族一起被 890 删除）；
 //	② `bg/partition_manager.go` 里每 tick 调它的那个 Go 函数与调用点
-//	   （旧实现里它**没有**退役闸 ⇒ 是 885 之后唯一一条裸奔的 v1 调用点：
+//	   （旧实现里它**没有**退役闸 ⇒ 是 890 之后唯一一条裸奔的 v1 调用点：
 //	   每 tick 一次 42P01）。
 //
 // ── 为什么退役 ────────────────────────────────────────────────────────────
-// 迁移 885 把 v1 族（表 + 分区 + 序列 + 只服务它的分区管理函数）整体 DROP ⇒
+// 迁移 890 把 v1 族（表 + 分区 + 序列 + 只服务它的分区管理函数）整体 DROP ⇒
 // 那个 SQL 函数已不存在，继续调用必然 42P01；而族没了，**也没有对象可清**。
 //
 // ── 现在由什么承担 ────────────────────────────────────────────────────────
@@ -104,15 +104,15 @@ func goStringLiterals(t *testing.T, path string) []string {
 //
 // ── 判据（每条负向断言配阳性对照）────────────────────────────────────────
 //
-//	· 正典文件必须**已不存在**（否则说明 885 没删干净）；
+//	· 正典文件必须**已不存在**（否则说明 890 没删干净）；
 //	· partition_manager.go 的**字符串字面量**里不得再出现该函数名/该设置键
 //	  （SQL 只可能经字面量下发；注释不在字面量里 ⇒ 退役说明不会把门顶成永绿）；
-//	· 迁移 885 的 up 必须真的 DROP 它 —— 阳性对照：退役由**迁移**承载，
+//	· 迁移 890 的 up 必须真的 DROP 它 —— 阳性对照：退役由**迁移**承载，
 //	  而不是只在 Go 侧悄悄不调（少一半的退役是半个退役）。
 func TestV1BodyTTLContractIsRetiredWithTheFamily(t *testing.T) {
 	const canonicalPath = "../../../sql/objects/functions/drop_old_request_logs_bodies_partitions_integer.sql"
 	if _, err := os.Stat(canonicalPath); err == nil {
-		t.Errorf("正典 %s 仍存在 —— v1 正文族的 TTL 清理函数应随族一起退役（885 已 DROP 它）", canonicalPath)
+		t.Errorf("正典 %s 仍存在 —— v1 正文族的 TTL 清理函数应随族一起退役（890 已 DROP 它）", canonicalPath)
 	} else if !os.IsNotExist(err) {
 		t.Fatalf("stat %s: %v", canonicalPath, err)
 	}
@@ -120,10 +120,10 @@ func TestV1BodyTTLContractIsRetiredWithTheFamily(t *testing.T) {
 	literals := goStringLiterals(t, "../../../bg/partition_manager.go")
 	for _, lit := range literals {
 		if strings.Contains(lit, "drop_old_request_logs_bodies_partitions") {
-			t.Errorf("partition_manager.go 的字符串字面量里仍在下发 drop_old_request_logs_bodies_partitions —— 885 已 DROP 该函数，885 之后每 tick 必然 42P01")
+			t.Errorf("partition_manager.go 的字符串字面量里仍在下发 drop_old_request_logs_bodies_partitions —— 890 已 DROP 该函数，890 之后每 tick 必然 42P01")
 		}
 		if strings.Contains(lit, "lifecycle.request_logs_bodies_ttl_days") {
-			t.Errorf("partition_manager.go 的字符串字面量里仍在读 lifecycle.request_logs_bodies_ttl_days —— 该键服务的对象（v1 正文族）已被 885 删除")
+			t.Errorf("partition_manager.go 的字符串字面量里仍在读 lifecycle.request_logs_bodies_ttl_days —— 该键服务的对象（v1 正文族）已被 890 删除")
 		}
 	}
 	// 阳性对照：字面量扫描必须看得见活着的会话族正文排水函数 ⇒ 扫描器没坏、
@@ -139,10 +139,10 @@ func TestV1BodyTTLContractIsRetiredWithTheFamily(t *testing.T) {
 		t.Error("阳性对照失败：字面量扫描找不到 promote_session_bodies_hot_to_partition —— 判据本身失效（负向断言会假绿）")
 	}
 
-	// 阳性对照之二：退役由**迁移 885** 承载（不是只在 Go 侧悄悄不调）。
-	up, err := os.ReadFile("885_drop_request_logs_v1_family.sql")
+	// 阳性对照之二：退役由**迁移 890** 承载（不是只在 Go 侧悄悄不调）。
+	up, err := os.ReadFile("890_drop_request_logs_v1_family.sql")
 	if err != nil {
-		t.Fatalf("read migration 885: %v", err)
+		t.Fatalf("read migration 890: %v", err)
 	}
 	upSQL := string(up)
 	for _, required := range []string{
@@ -150,7 +150,7 @@ func TestV1BodyTTLContractIsRetiredWithTheFamily(t *testing.T) {
 		"DROP TABLE IF EXISTS public.%I", // v1 族表（含 _request_logs_bodies）被删
 	} {
 		if !strings.Contains(upSQL, required) {
-			t.Errorf("迁移 885 缺少 %q —— v1 族的退役必须由迁移承载，否则升级路径与新装路径的库形态会分叉", required)
+			t.Errorf("迁移 890 缺少 %q —— v1 族的退役必须由迁移承载，否则升级路径与新装路径的库形态会分叉", required)
 		}
 	}
 
