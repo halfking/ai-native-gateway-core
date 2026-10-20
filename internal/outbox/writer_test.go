@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -22,7 +23,15 @@ func TestWriter_Write(t *testing.T) {
 		t.Skip("skipping integration test in short mode")
 	}
 
-	db, err := sql.Open("postgres", "postgres://localhost/llm_gateway_test?sslmode=disable")
+	// ★ R70 轮：原先写死 `postgres://localhost/llm_gateway_test`（**无视 env**）⇒
+	//   连不上 ⇒ 静默 SKIP 被记成绿；连得上 ⇒ 往一个「不知道是谁的库」里写 outbox 事件
+	//   （好在包在 tx 里且 `defer tx.Rollback()` ⇒ 不留残留）。
+	//   ⇒ 改成认事实源；未设 ⇒ 明确 SKIP 并说明。
+	dsn := os.Getenv("TEST_DATABASE_URL")
+	if dsn == "" {
+		t.Skip("TEST_DATABASE_URL not set —— 请 source scripts/audit/datasource_env.sh \"$DSN\"（未设时本门不构成证据）")
+	}
+	db, err := sql.Open("postgres", dsn)
 	if err != nil {
 		t.Skipf("test database not available: %v", err)
 	}
@@ -32,6 +41,19 @@ func TestWriter_Write(t *testing.T) {
 	if err := db.PingContext(ctx); err != nil {
 		t.Skipf("test database not available: %v", err)
 	}
+	// ★ R70 轮：本门自己的文档自述前置是「应用 outbox_events 表迁移（V357）」。
+	//   ★ 在此之前，这个前置不满足时会**红**（relation does not exist）⇒
+	//   ⇒ 把它变成**明确的 SKIP + 说明前置**，而不是一条看不出所以然的红。
+	//   ⇒ 纪律：**把「静默绿」改成「真跑」之后，必须同时给出「依赖不满足时怎么办」的正解**，
+	//   ⇒ 否则只是把假绿换成了假红。
+	var rel string
+	if err := db.QueryRowContext(ctx, `SELECT COALESCE(to_regclass('public.outbox_events')::text, '')`).Scan(&rel); err != nil {
+		t.Skipf("test database not available: %v", err)
+	}
+	if rel == "" {
+		t.Skip("outbox_events 表不存在（未应用迁移 357）—— 本门的前置未满足，不构成证据")
+	}
+
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		t.Skipf("test database not available: %v", err)

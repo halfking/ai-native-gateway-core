@@ -68,6 +68,11 @@ var (
 
 // stripGoComments 剥掉 Go 注释，但**必须字符串字面量感知**：
 // `"postgres://host/db"` 里的 `//` 不是注释。
+//
+// ★★ **且必须「保留行数」**（R70 轮自曝）：注释内容用**空格**替换而不是删除，
+//
+//	否则被剥掉的多行注释会让后面的**行号全部前移**
+//	⇒ 凡是「按行号报位置」的判据（写死 DSN 登记册）都会指错地方。
 func stripGoComments(src string) string {
 	var b strings.Builder
 	b.Grow(len(src))
@@ -75,11 +80,17 @@ func stripGoComments(src string) string {
 		switch {
 		case src[i] == '/' && i+1 < len(src) && src[i+1] == '/':
 			for i < len(src) && src[i] != '\n' {
+				b.WriteByte(' ')
 				i++
 			}
 		case src[i] == '/' && i+1 < len(src) && src[i+1] == '*':
 			i += 2
 			for i+1 < len(src) && !(src[i] == '*' && src[i+1] == '/') {
+				if src[i] == '\n' {
+					b.WriteByte('\n')
+				} else {
+					b.WriteByte(' ')
+				}
 				i++
 			}
 			i += 2
