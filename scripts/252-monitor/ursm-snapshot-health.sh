@@ -289,7 +289,7 @@ sql_failed() { printf '%s\n' "$1" | grep -qE '^\s*(ERROR|FATAL)'; }
 #        （本次实测：10-03 23:00 明明有 122,735 行，被算成 0 行 VOID；
 #          同一时刻 24h 窗口的旧查询给出的是 122,735 —— 两个数对不上才暴露出来。）
 #   正解：统一用右开区间，序列取到 hi_excl 往前一个 step。
-BUCKETS_SQL="
+BUCKETS_SQL_SOURCE="
 WITH win AS (
   SELECT $G_TRUNC $NOW_EXPR - make_interval(hours => $WINDOW_HOURS)) AS lo,
          $G_TRUNC $NOW_EXPR)                                          AS hi_excl
@@ -314,7 +314,11 @@ joined AS (
 base_buckets AS (
   SELECT $G_SLOT_TS AS slot, count(*) AS c
   FROM ursm_node_snapshot_min
-  WHERE snapshot_ts >= $NOW_EXPR - make_interval(days => $BASELINE_DAYS)
+  -- ★★ 窗口下界【桶对齐】（P11 / §143.35）：原来是行时间下界
+  --   （$NOW_EXPR - N days）⇒ 边界桶只算半截 ⇒ 与汇总表路不一致
+  --   ⇒ ⇒ 两路必须用同一个【桶对齐】下界 ⇒ 边界桶才逐字相同。
+  --   ⇒⇒ ★★ 【这是判定输入的一处真实改动】⇒ 必须由属主知情并拍板。
+  WHERE snapshot_ts >= date_trunc('$G_UNIT', $NOW_EXPR - make_interval(days => $BASELINE_DAYS))
     AND snapshot_ts < (SELECT lo FROM win)
   GROUP BY 1, $G_TRUNC snapshot_ts)),
 -- 活跃子单位的基线**单独用短窗口**算。
@@ -336,6 +340,125 @@ base_active AS (
     AND $G_SLOT_TS IN (SELECT slot FROM joined)
   GROUP BY 1, $G_TRUNC snapshot_ts))
 "
+BUCKETS_SQL_DAILY="
+WITH win AS (
+  SELECT $G_TRUNC $NOW_EXPR - make_interval(hours => $WINDOW_HOURS)) AS lo,
+         $G_TRUNC $NOW_EXPR)                                          AS hi_excl
+),
+series AS (SELECT generate_series(lo, hi_excl - $G_IV, '$G_STEP') AS m FROM win),
+cur AS (
+  SELECT $G_TRUNC snapshot_ts) AS m, count(*) AS c, $G_ACTIVE AS a
+  FROM ursm_node_snapshot_min, win
+  WHERE snapshot_ts >= win.lo AND snapshot_ts < win.hi_excl
+  GROUP BY 1
+),
+joined AS (
+  SELECT s.m, coalesce(c.c, 0) AS c, coalesce(c.a, 0) AS a, $G_SLOT_M AS slot
+  FROM series s LEFT JOIN cur c ON c.m = s.m
+),
+-- 基线：同一批小时位在更早的 N 天里的**每个桶**各自计数，
+-- 然后对每个小时位取中位数。
+-- ★ 这里必须先按 (日期, 桶) 分组再取分位数。踩过的坑：
+--   漏掉日期维度、直接对原始行 GROUP BY 小时位，得到的是
+--   「该小时位 7 天的总行数」（~700,000），比真实单桶高 5 倍，
+--   于是 10-01/10-02 这些正常日会被整片判成 DEGRADED（实测 25/25 全红）。
+-- ★★ 基线走【每日 slot 汇总表】（P11，迁移 892）：过去的完整天读汇总表，
+--   今天仍实时读源表（今天的数据还在写，汇总表按设计不含今天）。
+--   ★ 为什么今天必须走源表（★ 本地真库 A/B 实测逼出来的，不是设计时就想到的）：
+--     汇总表的填充范围是 [today - N, today)，【不含今天】
+--     ⇒ 若新路覆盖整个窗口，今天上午到 win.lo 的那些桶会【整个消失】
+--     ⇒ ⇒ 实测：16 行 OLD_ONLY（全是今天的桶）⇒ 判定输入变了。
+--   ★ 汇总表每行 = (天, 粒度, 小时位, 桶起点) → 行数
+--     ⇒ 与源表路的「按 (天, 桶) 分组 count(*)」是【同一个量】⇒ 逐字相同。
+--   ⚠ 窗口：两路都用【桶对齐】的下界（date_trunc）⇒ 窗内的桶在两边都完整。
+--     ⇒⇒ ★★ 【这是判定输入的一处真实改动】⇒ 必须由属主知情并拍板。
+base_buckets AS (
+  SELECT d.slot AS slot, d.rows AS c
+    FROM public.ursm_snapshot_slot_daily d
+   WHERE d.granularity = '$G_UNIT'
+     AND d.bucket_ts >= date_trunc('$G_UNIT', $NOW_EXPR - make_interval(days => $BASELINE_DAYS))
+     AND d.bucket_ts <  (SELECT lo FROM win)
+     AND d.day <  (now() AT TIME ZONE current_setting('TimeZone'))::date
+  UNION ALL
+  -- 今天：实时读源表
+  SELECT $G_SLOT_TS AS slot, count(*) AS c
+    FROM ursm_node_snapshot_min
+   WHERE snapshot_ts >= date_trunc('$G_UNIT', $NOW_EXPR - make_interval(days => $BASELINE_DAYS))
+     AND snapshot_ts <  (SELECT lo FROM win)
+     AND $G_TRUNC snapshot_ts) >= (now() AT TIME ZONE current_setting('TimeZone'))::date::timestamptz
+   GROUP BY 1, $G_TRUNC snapshot_ts)),
+-- 活跃子单位的基线**单独用短窗口**算。
+-- ★ 性能实测（252，7 天 ≈ 600 万行）：
+--     count(DISTINCT date_trunc('minute', ts))  7 天 = 44.5s   ← 不可接受
+--                                        2 天 =  9.7s
+--                                        1 天 =  3.6s
+--   而同一批数据只做 count(*) 是 7.2s ⇒ **DISTINCT 是全部增量**。
+--   行数基线要 7 天（量纲敏感），但「这个小时位正常时该有多少分钟有数据」
+--   是一个**比行数稳定得多**的量（干净日实测 53~60/60），短窗口足够。
+base_active AS (
+  SELECT $G_SLOT_TS AS slot, count(*) AS c, $G_ACTIVE AS a
+  FROM ursm_node_snapshot_min
+  WHERE snapshot_ts >= $NOW_EXPR - make_interval(days => $ACTIVE_DAYS)
+    AND snapshot_ts < (SELECT lo FROM win)
+    -- ★ 只算窗口里**真的用到**的小时位（3h 窗 ⇒ 3~4 个 slot，不是 24 个）。
+    --   DISTINCT 的排序/哈希成本正比于分组数，砍掉 6~8 倍。
+    --   不加这个过滤时主判据 32.9s，加上后实测见提交信息。
+    AND $G_SLOT_TS IN (SELECT slot FROM joined)
+  GROUP BY 1, $G_TRUNC snapshot_ts))
+"
+# === 基线来源选择（P11，迁移 892 / §143.35）================================
+#
+# ★ 为什么要两条路：
+#   源表路 = 每小时扫 7 天源表（实测每次 2.9 GB / 190 s，累计 74 GB）
+#   汇总表路 = 读【每日 slot 汇总表】ursm_snapshot_slot_daily ⇒ 只读几千行
+#
+# ★★★ 为什么必须是【两段独立的 SQL】，而不是在同一段里用 CASE 选：
+#   ★ PG 在【规划期】就解析表名 ⇒ 只要 SQL 文本里出现了那个【不存在的表】，
+#     整条语句就报 relation ... does not exist ⇒ ⇒ ★★ 【把两路写进同一段 SQL
+#     是行不通的】（本地真库端到端实测：旧路也被拖崩 ⇒ 回退机制是假的）。
+#   ⇒ ⇒ 正确形态：两段各自完整的 SQL，在 shell 里按探测结果二选一。
+#
+# ★★★ 【回退是必须的，不是可选的】：
+#   若汇总表不存在（迁移未部署）/ 为空（回填没跑）/ 粒度不匹配
+#   ⇒ 必须【自动回退到源表路】，否则巡检读到「没有基线」
+#   ⇒ ⇒ 所有桶判成 NO-BASELINE ⇒ **巡检会安静地失明**
+#   ⇒ ⇒ ★★ 那比「慢」更坏（脚本照样成功退出，外部看不出来）。
+#   ⇒ ⇒ ★ 所以探测失败 ⇒ 一律走源表路 ⇒ **慢，但不失明**。
+#
+# ★ 探测三条（一次极轻量的查询）：
+#   ① 表存在吗（to_regclass）
+#   ② 有当前粒度的行吗（granularity = 当前粒度）
+#   ③ 覆盖了基线窗吗（最早一天不晚于「今天 - 基线天数」）
+#   ★ 三条都满足才走汇总表路。
+BASE_SRC="source"
+base_probe=$(de "SELECT coalesce(to_regclass('public.ursm_snapshot_slot_daily')::text, '')
+                         || '|' || coalesce((SELECT count(*)::text FROM public.ursm_snapshot_slot_daily
+                                              WHERE granularity = '$G_UNIT'), '0')
+                         || '|' || coalesce((SELECT min(day)::text FROM public.ursm_snapshot_slot_daily
+                                              WHERE granularity = '$G_UNIT'), '')")
+if ! sql_failed "$base_probe"; then
+  base_tbl=$(printf '%s' "$base_probe" | cut -d'|' -f1)
+  base_cnt=$(printf '%s' "$base_probe" | cut -d'|' -f2)
+  base_min=$(printf '%s' "$base_probe" | cut -d'|' -f3)
+  need_min=$(de "SELECT ((now() AT TIME ZONE current_setting('TimeZone'))::date - make_interval(days => $BASELINE_DAYS))::date")
+  if [ "$base_tbl" = "ursm_snapshot_slot_daily" ] \
+     && [ -n "$base_cnt" ] && [ "$base_cnt" -gt 0 ] 2>/dev/null \
+     && ! sql_failed "$need_min" && [ -n "$need_min" ] && [ -n "$base_min" ]; then
+    # ★ 日期比较用【字典序】：两个都是 YYYY-MM-DD（同一 ISO 格式）⇒ 字典序 == 日期序。
+    #   ⚠ bash 的 [ a <= b ] 会把 <= 当成两个参数（实测报「需要二元运算符」），
+    #   即使写成转义的也仍会被解析成两段 ⇒ ⇒ 这里只用 < 与 = 两个可用的比较。
+    if [ "$base_min" \< "$need_min" ] || [ "$base_min" = "$need_min" ]; then
+      BASE_SRC="daily"
+    fi
+  fi
+fi
+log "base_source=${BASE_SRC} granularity=${G_UNIT} baseline_days=${BASELINE_DAYS}"
+if [ "$BASE_SRC" = "daily" ]; then
+  BUCKETS_SQL="$BUCKETS_SQL_DAILY"
+else
+  BUCKETS_SQL="$BUCKETS_SQL_SOURCE"
+fi
+
 log "start ursm-snapshot-health mode=report now=${NOW_EXPR} window=${WINDOW_HOURS}h granularity=${G_UNIT} baseline=${BASELINE_DAYS}d ratio=${DEGRADED_RATIO}"
 
 # === 量具自检 =========================================================
