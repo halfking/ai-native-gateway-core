@@ -6046,6 +6046,66 @@ PostgreSQL 解析调用时，**带默认值的那个也能接 3 参调用**，
   + 「共享工作树的已跟踪文件：未被改动 OK」；
   门 `admin/section_14336_board_single_scan_test.go`（**7 条**）。
 - 溯源：llm-gateway-go4 §143.36 轮（2026-10-21）。
+
+## 2026-10-21 — ★★★★★ **「全仓 `go test ./...`」在共享真库上不是有效读数；同一个库上跑第二遍数字就不可比**（llm-gateway-go R69 · D3 批次二）
+- 场景：要给「v1 族退役后的红门」做全仓盘点 ⇒ 先跑 `go test ./... -count=1` 拿清单。
+- 实测翻车（两条独立的坑）：
+  1. ★★★ **包是并行跑的** ⇒ 多个包同时写同一个库 ⇒ **互相污染**。
+     铁证：`admin/v_analytics_views_session_source_test.go` 在**全仓跑法**下红
+     （`premise broken: public._request_logs 又存在了`），而**逐包跑是绿的**
+     ⇒ ⇒ 那条红是**别的包建了 v1 表**造成的污染产物。
+  2. ★★★ **同一个包、同一份代码，在「全新库」与「用过的库」上失败数不同**：
+     实测 `db/` 包 = **4**（全新库）vs **11**（用过的库）⇒ 差出来的 7 条全是
+     「库被前面的测试改过」造成的。
+- ⇒ ⇒ ★ **通用式**：
+  1. ⭐⭐⭐⭐⭐ **共享真库上的读数，只有「逐包 + 每次全新库」这一种口径可信**；
+     ⇒ 「全仓跑一遍」拿到的清单**必须**再逐包复核，否则会把污染当缺陷、把缺陷当污染；
+  2. ⭐⭐⭐⭐⭐ **同一个库上跑第二遍 ⇒ 数字不可比** ⇒ 复测必须**重建库**
+     （`DB_NAME=itgate_<本轮专用> KEEP_DB=1 bash scripts/audit/probe-onetime-db-shape.sh`），
+     ⇒ 且**库名要带本轮标识**（共享库名会被并行会话互删，R68 已踩过）；
+  3. ⭐⭐⭐⭐ **「红」的成因排序：先查环境（库状态 / 包间污染 / 探针口径），再查被测对象**；
+  4. ⭐⭐⭐⭐ **挂账里的历史数字（R59 的 75 条 / R67 的 57 条）是在污染口径下测的** ⇒ 引用它们时必须打折。
+- 证据：`/tmp/r69/full_repo.log`（全仓，22 个失败包 / 102 条）vs
+  `/tmp/r69/pkgs{,_2}/summary.txt`（逐包隔离）vs
+  `/tmp/r69/db_fresh_fails.txt`（db/ 全新库 = 4）。
+- 溯源：llm-gateway-go R69 轮（D3 侧·批次二），§19.19.1/§19.19.2。
+
+## 2026-10-21 — ★★★★★ **共享 helper 的定义文件不能带 build tag**（llm-gateway-go R69 · D3 批次二）
+- 场景：origin/main 的提交 `2c628fd7b` 让 `admin/section_14336_board_single_scan_test.go`
+  复用了 `stripGoCommentsKeepingStrings`（它住在 `admin/request_logs_retirement_tiering_test.go`）。
+- 实测翻车：★ 那个文件带 `//go:build !integration` ⇒ **在 `-tags=integration` 的树里 helper 不存在** ⇒
+  `vet: admin/section_14336_board_single_scan_test.go:69:9: undefined: stripGoCommentsKeepingStrings`
+  ⇒ ⇒ **整棵 integration 树编译不过** ⇒ ⇒ 连带拉红 `sql/schema::TestIntegrationTaggedTreeCompiles`
+  （★ **那道门本来就是为抓这种问题而存在的**）⇒ ⇒ 并且**挡住所有 `-tags=integration` 的跑法**。
+- ⇒ ⇒ ★ **通用式**：
+  1. ⭐⭐⭐⭐⭐ **共享 helper 的定义文件不能带任何 build tag** ——
+     只要**任何一个**使用方在另一种 build 里，它就必须两边都在；
+     ⇒ 判别方法：`grep -rn "func <helper>" --include='*.go' .` 看**定义文件**头两行有没有 `//go:build`；
+  2. ⭐⭐⭐⭐ **反过来也成立**：只被一种 build 用的 helper **不该**放在这个文件里
+     （它在另一种 build 里会变成死代码）；
+  3. ⭐⭐⭐⭐ **「整棵 integration 树编译不过」是最高优先级的缺陷** ——
+     它比任何单条门红都更贵（**所有** integration 腿都跑不了）；
+  4. ⭐⭐⭐⭐ **修法要避开别人的文件**：把 helper 移到**新文件**（不带 tag），
+     原文件留一行说明 ⇒ **同文件单写者纪律**不冲突。
+- 证据：`admin/go_comment_strip_test.go`（新）＋ `admin/request_logs_retirement_tiering_test.go`（移出 helper）；
+  `go vet -tags=integration ./...` 干净；`sql/schema::TestIntegrationTaggedTreeCompiles` 转绿。
+- 溯源：llm-gateway-go R69 轮（D3 侧·批次二），§19.19.1。
+
+## 2026-10-21 — ★★★★ **守卫要问「测量要用的全部关系」，而不是其中一个**（llm-gateway-go R69 · D3 批次二）
+- 场景：一道真库门先探测「被测对象还在吗」，不在就 skip；探测通过后才跑测量 SQL。
+- 实测翻车：★ 守卫查的是 **`_request_logs`（母表）**，而测量 SQL（`s4ScopeBody`）读的是
+  **`_request_logs_hot` ∪ `_request_logs`** ⇒ ⇒ **母表在、hot 表不在**时守卫**假阳性**
+  ⇒ ⇒ 门继续往下跑 ⇒ 在 hot 表上 42P01 ⇒ ⇒ **报出来像「代码坏了」，其实是「守卫问错了问题」**。
+- ⇒ ⇒ ★ **通用式**：
+  1. ⭐⭐⭐⭐⭐ **守卫的谓词必须与测量 SQL 的依赖集合**逐字对齐** ——
+     ⇒ 最稳的写法是**直接探测测量要用的那几个关系**（本轮改成两个都查）；
+  2. ⭐⭐⭐⭐ **「被测对象还在吗」与「被测对象**完整**吗」是两件事** ——
+     ⇒ 退役常常是**半退役**（父表在、hot 表不在）⇒ 守卫必须按「**缺一个就不可测**」写；
+  3. ⭐⭐⭐⭐ **skip 的措辞要写清「缺哪一个」** ⇒ 否则「半退役」会被读成「全退役」；
+  4. ⭐⭐⭐ **门红了先读门在守什么** ⇒ 这次正是「门守的东西少了一半，而门只问了一半」。
+- 证据：`cmd/gateway/s4_gate_measurement_test.go`（守卫改成探测两个关系 ⇒ 由红转诚实 skip）；
+  变异 M5（守卫退回只查母表）⇒ **红** ⇒ 证明这条守卫是承重的。
+- 溯源：llm-gateway-go R69 轮（D3 侧·批次二），§19.19.2。
 - 溯源：三项目会话治理 B4 轮（2026-10-20）。
 
 ## 2026-10-21 — 门的「前提」会随被观测对象一起消失：门红 ≠ 实现坏（Seen: 1/3）
