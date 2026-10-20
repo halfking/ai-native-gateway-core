@@ -76,12 +76,26 @@ export DECISION_RETIREMENT_TEST_DATABASE_URL="$__datasource_dsn"
 #     ⇒ 事实源默认注入它，只会把「靶子不对」显示成红。
 #   ★ 授权开关本身（GATEWAY_CANONICAL_TEST_LOCAL_ONLY，dangerous 类）**绝不由事实源
 #     打开** ⇒ 门禁不能替人授予「连本地库」的权限。
-export GUARD_IT_DSN="$__datasource_dsn"
+# ⚠ GUARD_IT_DSN **不在事实源里**（R86 轮）：
+#   它是 dsn_exclusive（专用值）—— bg/balance_floor_guard_integration_test.go:53
+#   在建好池子后**裸 TRUNCATE credentials, providers CASCADE**
+#   ⇒ 而该文件头自己写明「本测试绝不写线上 llm_gateway 库」。
+#   ⇒ 与通用 DSN 同值 = 把「清空凭据表」这件事对准产品库。
+#   ⇒ R86 轮同时给那条腿补了库名守卫（缺口：契约只写在注释里，代码里没有）。
 export IDENTITY_SHADOW_DSN="$__datasource_dsn"
 export LICENSE_AUTHORITY_DATABASE_URL="$__datasource_dsn"
 export LLM_GATEWAY_DATABASE_URL="$__datasource_dsn"
 export LLM_GATEWAY_DUALREAD_PG_DSN="$__datasource_dsn"
-export LLM_GATEWAY_FEATURE_STATS_TEST_DSN="$__datasource_dsn"
+# ⚠ LLM_GATEWAY_FEATURE_STATS_TEST_DSN **不在事实源里**（R86 轮）：
+#   它是 dsn_exclusive（专用值）—— bg/feature_stats_worker_test.go 的
+#   setupTestDB 会 `TRUNCATE feature_distribution_stats, dedup_stats,
+#   auto_route_selections CASCADE`，且库名守卫只放行
+#   itgate|scratch|test|tmp|bench|pg_ ⇒ **通用 DSN（库名 llm_gateway）必被拒绝**。
+#   ⇒ ⇒ 事实源注入它 = 注入一个**这条腿一定会拒绝**的值：
+#      事实源档下它是**死腿**（SKIP），官方 runner 档下它**根本不设**（同样 SKIP）。
+#   ⇒ ⇒ 两条通道都是死的 ⇒ 移出事实源**零覆盖损失**（移出前那条腿在两个通道里
+#      都没跑过；移出后只是把「给了一个用不了的值」改成「明说没给」）。
+#   ⇒ 真要跑它 ⇒ 显式 export 一个指向一次性库的 DSN。
 export LLM_GATEWAY_PG_TEST_URL="$__datasource_dsn"
 export LLM_GATEWAY_PG_URL="$__datasource_dsn"
 export LLM_GATEWAY_ROLLUP_TEST_DSN="$__datasource_dsn"
@@ -90,7 +104,12 @@ export LLM_GATEWAY_SUPPLIER_PG_DSN="$__datasource_dsn"
 export LLM_GATEWAY_TEST_PG_DSN="$__datasource_dsn"
 export OMNIFREE_TEST_DB_ADMIN_URL="$__datasource_dsn"
 export OMNIFREE_TEST_DB_URL="$__datasource_dsn"
-export ROUTEINCIDENT_IT_DSN="$__datasource_dsn"
+# ⚠ ROUTEINCIDENT_IT_DSN **不在事实源里**（R86 轮）：
+#   它是 dsn_exclusive（专用值）—— domains/routeincident/store_pending_lifecycle_integration_test.go
+#   会在目标库里 `CREATE TABLE IF NOT EXISTS route_incidents`（715 表形）
+#   ⇒ 该文件头写明「Cleanup: DROP DATABASE llm_routeincident_it」⇒ 设计目标是一次性库。
+#   ⇒ 与通用 DSN 同值 = 往产品库里塞一张集成测试专用表（污染 + 迁移 715 会撞它）。
+#   ⇒ R86 轮同时给那条腿补了库名守卫。
 export ROUTING_ANALYTICS_GATE_TEST_DATABASE_URL="$__datasource_dsn"
 export SANITIZE_RULES_BROWSER_DSN="$__datasource_dsn"
 export TEST_ADMIN_500_DSN="$__datasource_dsn"
@@ -104,8 +123,21 @@ export TEST_PG_DSN="$__datasource_dsn"
 export TEST_PG_URL="$__datasource_dsn"
 export TEST_RESOLVE_INVARIANT_DB_URL="$__datasource_dsn"
 export TEST_RETIREMENT_HTTP_DSN="$__datasource_dsn"
-export TEST_SESSION_INGEST_DATABASE_URL="$__datasource_dsn"
-export TEST_SESSION_SETTINGS_DATABASE_URL="$__datasource_dsn"
+# ⚠ TEST_SESSION_INGEST_DATABASE_URL **不在事实源里**（R86 轮）：
+#   它是 dsn_exclusive（专用值）—— internal/sessionv2mirror/ingest_schema_realdb_test.go:40
+#   的守卫要求「库名以 _test 结尾」**且** `TEST_SESSION_INGEST_ISOLATED=1`，
+#   随后 :49 跑 `DROP SCHEMA public CASCADE` ⇒ **它会清空整个 public schema**。
+#   ⇒ 通用 DSN（库名 llm_gateway）不满足后缀 ⇒ 守卫 t.Fatal（响亮假红，不是数据事故）。
+#   ⇒ 移出事实源 ⇒ 那条腿改走它本来就设计好的 t.Skip 分支（"set … to a throwaway *_test database"）。
+#   ⇒ ★ 隔离开关 `TEST_SESSION_INGEST_ISOLATED` 属 isolation 类 ⇒ **绝不由事实源打开**。
+# ⚠ TEST_SESSION_SETTINGS_DATABASE_URL **不在事实源里**（R86 轮）：
+#   它是 dsn_exclusive（专用值）—— settings/session_write_safety_realdb_test.go:24
+#   要求「库名以 _test 结尾」**且** `TEST_SESSION_INGEST_ISOLATED=1`（隔离开关），
+#   随后 :31 跑 `DROP SCHEMA public CASCADE`。
+#   ⇒ 通用 DSN（llm_gateway）两个条件都不满足 ⇒ 守卫 t.Fatal（响亮假红）。
+#   ⇒ 移出事实源 ⇒ 那条腿改走它本来就设计好的 t.Skip 分支
+#     （"set TEST_SESSION_SETTINGS_DATABASE_URL to isolated *_test database"）。
+#   ⇒ ★ 隔离开关仍**绝不由事实源打开**（它是 isolation 类，见登记册）。
 # ⚠ TRACE_RETIREMENT_TEST_DSN **不在事实源里**（R81 轮）：
 #   它是 dsn_exclusive（专用值）—— 必须指向名为 trace_retirement* 的隔离库
 #   （或显式授权的本地 54318 schema）。

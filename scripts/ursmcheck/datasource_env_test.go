@@ -83,6 +83,42 @@ var datasourceEnvExemptions = map[string]string{
 	// ★ 授权开关本身（GATEWAY_CANONICAL_TEST_LOCAL_ONLY，dangerous 类）**绝不由事实源打开**
 	//   ⇒ 门禁不能替人授予「连本地库」的权限。
 	"GATEWAY_CANONICAL_TEST_DSN": "canonical fixture 的专用 DSN：还要连第二个库 `identity_shadow` ⇒ 只能指向「本地联调专用库」⇒ 不能与通用 DSN 同值",
+	// ★★ R86 轮新增：四个新实例（③④⑤⑥）—— **「事实源给了通用 DSN，但这条腿一定拒绝它」**。
+	//
+	// ★ 这一族的判别形态与上面两条**不同**：
+	//   TRACE_RETIREMENT_TEST_DSN / GATEWAY_CANONICAL_TEST_DSN 是「**腿自己会拒绝**」
+	//   （守卫要求特定库名/额外授权）⇒ 事实源注入它只会得到假红或死腿。
+	//   R86 轮把这条判据**做成了机器可判的门**（(事实源导出名 × 消费腿) 靶子错配探测器），
+	//   豁免表就是那张门的台账入口。
+	//
+	// ★ LLM_GATEWAY_FEATURE_STATS_TEST_DSN（死腿）：
+	//   setupTestDB 会 TRUNCATE 三张表，库名守卫只放行 itgate|scratch|test|tmp|bench|pg_
+	//   ⇒ 通用 DSN（llm_gateway）必被拒绝 ⇒ 事实源档下这条腿**从来没跑过**。
+	//   ⇒ 移出事实源零覆盖损失（移出前死、移出后也死；差别只是不再给一个用不了的值）。
+	"LLM_GATEWAY_FEATURE_STATS_TEST_DSN": "feature-stats 破坏性腿的专用 DSN：TRUNCATE 三张表 + 库名守卫只放行一次性库 ⇒ 通用 DSN 必被拒绝 ⇒ 事实源注入它只会造出一条死腿",
+	// ★ TEST_SESSION_INGEST_DATABASE_URL（假红）：
+	//   守卫要求库名以 _test 结尾且 TEST_SESSION_INGEST_ISOLATED=1，随后 DROP SCHEMA public CASCADE
+	//   ⇒ 通用 DSN 不满足 ⇒ t.Fatal（响亮假红）⇒ 移出后改走它设计好的 t.Skip 分支。
+	"TEST_SESSION_INGEST_DATABASE_URL": "session-ingest 夹具的专用 DSN：必须指向 *_test 一次性库且配 TEST_SESSION_INGEST_ISOLATED=1，否则守卫 t.Fatal ⇒ 通用 DSN 必被拒绝 ⇒ 事实源注入它只会造出假红",
+	// ★ GUARD_IT_DSN（数据事故级）：
+	//   bg/balance_floor_guard_integration_test.go 在建池后裸 TRUNCATE credentials, providers CASCADE
+	//   ⇒ 文件头明写「本测试绝不写线上 llm_gateway 库」⇒ 契约此前**只写在注释里，代码里没有**
+	//   ⇒ R86 轮补了库名守卫，并把本名字移出事实源。
+	"GUARD_IT_DSN": "balance-floor 集成腿的专用 DSN：TRUNCATE credentials, providers CASCADE ⇒ 必须指向一次性 scratch 库（文件头已写明）⇒ 不能与通用 DSN 同值",
+	// ★ ROUTEINCIDENT_IT_DSN（污染级）：
+	//   会 CREATE TABLE route_incidents（715 表形）在目标库 ⇒ 文件头写明 Cleanup: DROP DATABASE llm_routeincident_it
+	//   ⇒ 同族：必须指向一次性库 ⇒ 不能与通用 DSN 同值。
+	"ROUTEINCIDENT_IT_DSN": "routeincident 集成腿的专用 DSN：会在目标库建 route_incidents 表（715 表形）⇒ 必须指向一次性库 ⇒ 不能与通用 DSN 同值",
+	// ★ REPORT_E2E_TEST_DATABASE_URL（R86 轮**新建**的名字）：
+	//   原本这条腿读的是**共享名** TEST_DATABASE_URL / TEST_DB_URL
+	//   ⇒ 而事实源把这两个名字都指向产品库 ⇒ 该腿在事实源档下必然 t.Fatal（假红）。
+	//   ⇒ R86 轮给它换成**专用名**（共享名无法只服务这一条破坏性腿）
+	//   ⇒ 守卫语义**一字未改**（非 scratch 库仍然 t.Fatal）。
+	"REPORT_E2E_TEST_DATABASE_URL": "reportrollup 破坏性 E2E 的专用 DSN：会 DELETE report_snapshots / usage_facts ⇒ 必须指向一次性 scratch 库 ⇒ 不能与通用 DSN 同值（R86 轮把共享名 TEST_DATABASE_URL/TEST_DB_URL 拆成专用名）",
+	// ★ TEST_SESSION_SETTINGS_DATABASE_URL（R86 轮**第七例**，由「读形态守卫」判据挖出）：
+	//   守卫要求库名以 _test 结尾**且** TEST_SESSION_INGEST_ISOLATED=1（隔离开关），
+	//   随后 DROP SCHEMA public CASCADE ⇒ 通用 DSN 两个条件都不满足 ⇒ t.Fatal（假红）。
+	"TEST_SESSION_SETTINGS_DATABASE_URL": "session-settings 夹具的专用 DSN：守卫要求 *_test 库 + 隔离开关，随后 DROP SCHEMA public CASCADE ⇒ 通用 DSN 必被拒绝 ⇒ 事实源注入它只会造出假红",
 }
 
 // ── 匹配器（纯函数，可被自检直接调用）──────────────────────────────────────────
