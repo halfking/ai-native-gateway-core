@@ -169,8 +169,10 @@ def main():
         if not os.path.exists(t):
             print(f"REFUSED: 副本里没有 {rel}")
             return 2
-        targets[rel] = (t, open(t, "rb").read(), md5(t),
-                        os.path.join(work, os.path.basename(rel) + ".bak"))
+        backup = os.path.join(work, os.path.basename(rel) + ".bak")
+        # ★ 备份必须【真的落盘】（第一版只记了路径没复制 ⇒ 还原步骤 FileNotFoundError）
+        shutil.copy2(t, backup)
+        targets[rel] = (t, open(t, "rb").read(), md5(t), backup)
 
     results = []
     try:
