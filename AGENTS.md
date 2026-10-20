@@ -5672,3 +5672,12 @@ index b953a6f03..555ef83c4 100644
 > ⇒ **变异三条全红 + 逐字还原**：M1 条数漂移（`[M8]` 改回 9 条 ⇒ 报「实际有 5 条」）｜M2 清单漂移（`[M11]` 塞 `680` ⇒ 报「清单里有 "680" 但没有对应条目」）｜M3 标签无组（`860` 改 `[M99]` ⇒ 报「**有条目带标签 [M99]，但没有对应的分组头**」）⇒ 还原按被改路径 `shasum -a 256` 逐字一致；阴性对照绿。
 > ⇒ ⚠ **诚实边界**：本门**只守清单内部自洽**（头 ↔ 数据区）⇒ **不覆盖「清单是否覆盖真实失败集」**（那条只有官方门禁能抓，R82 已证：删一条 ⇒ 官方门 ratchet 段 die 并点名）；**不核对原因措辞是否与实测首错相符** ⇒ 措辞漂移仍无人守（下轮候选：需要「实测首错基线」这个新事实源）。本轮**没有改任何迁移、没有改任何产品代码**。
 > ⇒ 完整记录见 handoff `§19.20.29` ＋ `docs/audit/2026-10-21-R83-登记册分组一致性门.md`。
+>
+> **2026-10-21 R84 轮（本会话 · 交叉复核线）**：★★★★ **并行会话 R80 轮的两条待拍板项，前提都已漂移** —— ＋ **三处「归属误认」**
+> ⇒ ★★ **R80-A 前提已漂移**：「admin 3 道破坏性门永远 SKIP」⇒ **当前树里两道已是「隔离破了 ⇒ `t.Fatalf`」**（`models_modality_source_realdb_test.go` / `pricing_import_realdb_test.go`，一次性空库 `admin/scratch_db_test.go`）⇒ ⇒ **真正还没解决的只剩 `shared_principal_realdb_test.go:91`** ⇒ ★★ **而它正是我早先挂在待办里的那条属主决策项**（`GATEWAY_CANONICAL_TEST_LOCAL_ONLY` 未授权时 `t.Fatal` ⇒ 改 `SKIP`？）⇒ ⇒ **别开成两件**（同一个洞被登记两次 ⇒ 将来两处各改一半）⇒ ⇒ ★ 该条的判据已写明：同守卫里「没配」走 `t.Skip`、「配了但指向不安全处」走 `t.Fatal` ⇒ **那是安全拒绝 ⇒ 不能一刀切改 SKIP**。
+> ⇒ ★ **R80-B 计数漂移**：「同族 5 个文件」⇒ **全仓 `isSchemaShapeMismatch` 只剩 3 个**（`domains/credential/flusher_test.go` / `bg/feature_stats_worker_test.go` / `bg/systemmonitor/metrics_collector_test.go`）⇒ ★ `admin` 已由**它自己 R80 轮**收敛掉（0 命中）、`internal/outbox` 从来没有这个符号 ⇒ ⇒ **收敛面比估计的小 ⇒ 拍板前必须重数**。
+> ⇒ ✔ **它的 ⑥ 属实**：`bg/feature_stats_worker_test.go` 用**专用** `LLM_GATEWAY_FEATURE_STATS_TEST_DSN` ＋ **库名守卫** `(?i)(itgate|scratch|test|tmp|bench|pg_)` ＋ `current_database()` 不匹配就 SKIP ⇒ ⇒ **R78 的静态门无需跨包推广**。
+> ⇒ ★★★ **本轮最有价值：它把三件「自己」的事写成「你们的」**（① `1d469fb89` 的作者 = huangzhouzixuan ② `X-Tenant-ID` 夹具 ③ `feature_stats_worker` 的 TRUNCATE 举报）⇒ ⇒ ★ **按「那是别人的」去修 ⇒ 会回退自己已有的成果**（实例：上一条消息要改 `usage_enhanced_test.go` 的三条，**那三条早已是树里的现状**，是它自己 R80 轮 `0176c484e` 做的）⇒ ⇒ ★ **处置：动手前先 `git log --oneline -- <file>` 核作者与时间** ⇒ ★ **协作消息里的「你们/我们」是低可靠字段，以 `git log`/`git blame` 为准**。
+> ⇒ ★★ **我自己的测量错误（记录在案）**：用 **8 位缩写 SHA** 判「提交在不在远端历史里」⇒ 假阴性「R82 已不在」⇒ ★ 实为**缩写歧义**（`git log --grep` 能找到 `4d79eb418`，内容全在）⇒ ⇒ ★ **判「在不在远端」用内容对拍或完整 SHA**。
+> ⇒ ★ 共享工作树的 `AGENTS.md`/`LESSONS.md` **再次**比 `origin/main` 旧 ⇒ ⇒ 本轮照纪律用「HEAD 版 ＋ 只追加自己的块」重建（暂存区零删除）。
+> ⇒ 完整记录见 handoff `§19.20.30`。
