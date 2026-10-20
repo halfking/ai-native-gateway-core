@@ -2470,8 +2470,16 @@ startup chain: 1 of 284 registered migrations fail, 0 expected
 
 ### 6.14 ★ 本地部署与全量验收（实测数据，2026-10-20）
 
-**部署**：release `2.5.8-8531596a-20261020-2766`（git_sha `8531596a`），
-`VERIFY_PASS=1`，端口 8782，`VERIFY_DATABASE=external`。
+**部署**：**两次**，两次均 `VERIFY_PASS=1`、端口 8782、`VERIFY_DATABASE=external`：
+
+| # | release | git_sha | 触发原因 |
+|---|---|---|---|
+| ① | `2.5.8-8531596a-20261020-2766` | `8531596a` | 本轮改动 + 当时尚未提交的部署脚本修复（§6.13） |
+| ② | **`2.5.8-20c814d7-20261020-2768`** | `20c814d7` | **合并上游并改号后重部署**（`20c814d7` = 已推送的合并提交） |
+
+⇒ **§6.14 以下的全部验收数字都是第二次部署（合并后）实测的**，
+且与合并前**逐项一致**：写链路（3/21 成功、正文 JSON array）、
+533 端点扫（**500 = 0**，p50 1.3ms / p95 17.9ms）、105 页扫（**无 >2s**，max 1519ms）。
 顺序按 §6.10：**先停旧容器 → 落 890/891 → 上新二进制 → 起网关**。
 
 **落库事实**（真库 `llm_gateway` @ 127.0.0.1:54318）：
@@ -2548,7 +2556,7 @@ startup chain: 1 of 284 registered migrations fail, 0 expected
 本文与 LESSONS 的散文编号。**内容只改了编号**（文件头/注释里的编号与错误信息文案）。
 ⚠ 本地那条部署记录里的「885/886」是**改号前**的文件名（内容相同）；本地库上
 「v1 族已删」这个**事实**不受改号影响。
-⚠ 改号后的**幂等性已实测**：在「v1 族已删」的库克隆上重跑 890 → EXIT=0
+⚠ 改号后的**幂等性已实测（两条路径）**：① 在「v1 族已删」的库克隆上重跑 890 → EXIT=0；② **第二次本地部署时，通道在活库上真的重跑了 890 与 891**（`run/db-revision-sequence.log`：`applying …/890_drop_request_logs_v1_family.sql`、`applying …/891_…sql` ⇒ 随后 `database revision sequence completed successfully`）⇒ 改号**没有**在真实投递路径上炸掉。
 （非空闸用 `to_regclass` 判存在 ⇒ 缺表即跳过；canonical/函数/policy 全部
 `CREATE OR REPLACE` 或「仅在存在时改写」）；891 连跑两次 → 两条索引仍在、EXIT=0。
 
