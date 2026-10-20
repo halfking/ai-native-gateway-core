@@ -36,8 +36,8 @@ func (s *SlotSuggester) Start(ctx context.Context) {
 func (s *SlotSuggester) Stop() {
 	if s.cancel != nil {
 		s.cancel()
+		<-s.done
 	}
-	<-s.done
 }
 
 func (s *SlotSuggester) run(ctx context.Context) {
