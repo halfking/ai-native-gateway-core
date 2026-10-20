@@ -2,12 +2,9 @@ package db
 
 import (
 	"context"
-	"os"
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // TestEnsureReportSnapshots_RealDB — migration 745 ensure 的真库回归
@@ -23,24 +20,26 @@ import (
 //     boot 常态路径），不重复执行任何 DDL。
 //
 // 无 TEST_DATABASE_URL / TEST_DB_URL 时跳过（与 744 真库回归同门控）。
-// 纪律：修复子代理禁连库——本测试只随协调者的 scratch 容器单点执行
-// （db/db_744_ensure_realdb_test.go 同款结构，只写不跑）。
+// 纪律（R78 轮改造）：本门自带**一次性空库**（db/scratch_db_test.go）。
+// 改造前它直连 DSN 指向的库并 `DROP TABLE IF EXISTS public.report_snapshots`
+// 再用旧形状重建 ⇒ 跑一次就把形态库的 report_snapshots 换成旧形状
+// （实测：其索引 idx_report_snapshots_scope_date 一并消失）。
+// 现在破坏只发生在一次性库上。
 func TestEnsureReportSnapshots_RealDB(t *testing.T) {
-	dsn := os.Getenv("TEST_DATABASE_URL")
-	if dsn == "" {
-		dsn = os.Getenv("TEST_DB_URL")
-	}
-	if dsn == "" {
-		t.Skip("TEST_DATABASE_URL / TEST_DB_URL 未设置，跳过真库回归")
-	}
+	pool := scratchPool(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
-	pool, err := pgxpool.New(ctx, dsn)
-	if err != nil {
-		t.Skipf("connect real db: %v", err)
-	}
-	defer pool.Close()
 	d := &DB{pool: pool}
+
+	// 夹具：ensure 末尾要往 schema_migrations 记账（745/746/759 三条），
+	// 台账表必须在场，否则报的是「缺台账表」而不是被测的形状。
+	// ⚠ 这正是「空 scratch 库」与「直连共享库」的差别：共享库里台账表本来就在，
+	// 夹具不必自建；进了空库就必须自己给最小台账（与 r1039 那道门同款）。
+	if _, err := pool.Exec(ctx, `
+		CREATE TABLE IF NOT EXISTS public.schema_migrations (
+			version TEXT PRIMARY KEY, description TEXT);`); err != nil {
+		t.Fatalf("建夹具台账表失败: %v", err)
+	}
 
 	if _, err := pool.Exec(ctx, "DROP TABLE IF EXISTS public.report_snapshots"); err != nil {
 		t.Fatalf("drop report_snapshots: %v", err)
@@ -106,21 +105,17 @@ func TestEnsureReportSnapshots_RealDB(t *testing.T) {
 // 门控与 TestEnsureReportSnapshots_RealDB 相同（TEST_DATABASE_URL /
 // TEST_DB_URL，scratch 库单点执行）。
 func TestEnsureReportSnapshots746Upgrade_RealDB(t *testing.T) {
-	dsn := os.Getenv("TEST_DATABASE_URL")
-	if dsn == "" {
-		dsn = os.Getenv("TEST_DB_URL")
-	}
-	if dsn == "" {
-		t.Skip("TEST_DATABASE_URL / TEST_DB_URL 未设置，跳过真库回归")
-	}
+	pool := scratchPool(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
-	pool, err := pgxpool.New(ctx, dsn)
-	if err != nil {
-		t.Skipf("connect real db: %v", err)
-	}
-	defer pool.Close()
 	d := &DB{pool: pool}
+
+	// 夹具：ensure 末尾要往 schema_migrations 记账 ⇒ 台账表必须在场（同上门）。
+	if _, err := pool.Exec(ctx, `
+		CREATE TABLE IF NOT EXISTS public.schema_migrations (
+			version TEXT PRIMARY KEY, description TEXT);`); err != nil {
+		t.Fatalf("建夹具台账表失败: %v", err)
+	}
 
 	// 重建 745 旧形状：bigint tenant_id、无 746 三列。
 	if _, err := pool.Exec(ctx, `

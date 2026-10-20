@@ -1,0 +1,106 @@
+{
+  "schema": 1,
+  "source": "internal/memory/handler.go:RegisterRoutes",
+  "routes": [
+    {
+      "method": "POST",
+      "path": "/api/add"
+    },
+    {
+      "method": "GET",
+      "path": "/api/daily-changes"
+    },
+    {
+      "method": "GET",
+      "path": "/api/health"
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/memories"
+    },
+    {
+      "method": "GET",
+      "path": "/api/memories"
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/memories/:id"
+    },
+    {
+      "method": "GET",
+      "path": "/api/memories/:id"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/memories/:id"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/memories/:id/tags"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/memories/tags"
+    },
+    {
+      "method": "POST",
+      "path": "/api/memory/add"
+    },
+    {
+      "method": "GET",
+      "path": "/api/memory/daily-changes"
+    },
+    {
+      "method": "GET",
+      "path": "/api/memory/health"
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/memory/memories"
+    },
+    {
+      "method": "GET",
+      "path": "/api/memory/memories"
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/memory/memories/:id"
+    },
+    {
+      "method": "GET",
+      "path": "/api/memory/memories/:id"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/memory/memories/:id"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/memory/memories/:id/tags"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/memory/memories/tags"
+    },
+    {
+      "method": "POST",
+      "path": "/api/memory/search"
+    },
+    {
+      "method": "GET",
+      "path": "/api/memory/stats"
+    },
+    {
+      "method": "POST",
+      "path": "/api/search"
+    },
+    {
+      "method": "POST",
+      "path": "/api/search/hybrid"
+    },
+    {
+      "method": "GET",
+      "path": "/api/stats"
+    }
+  ]
+}
