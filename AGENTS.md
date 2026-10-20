@@ -5469,3 +5469,29 @@ To codeup.aliyun.com:kaixuan/official-deploy/llm-gateway-go.git
 > 且历史分区会被 DROP 型留存按天自然回收 ⇒ 211 最终与 252 同款）。
 > ⇒ ⚠ **待办**：`usage_facts` TTL=365 的登记 + 按日 DROP 登记；快照族 25.2% 空壳行「选 A」
 > （persist writer 跳过空租户 node 键）的实现与部署。
+
+> **2026-10-21 R80 轮（续三，本会话）**：★ **hot cron 的「能力探针」此前只有一道读源码文本的静态门**
+> ⇒ 新增**行为层门**（5 道，不需要真库）＋ **panic 兜底补 `debug.Stack()`** ＋ **`runOnce` 的 nil 守卫**。
+> ⇒ ★★★ **根因不是「测试写得懒」，而是「产品把 DB 句柄写成了具体类型」**：
+> `admin/handler.go:68` `db *pgxpool.Pool` ⇒ **无法注入** ⇒ 单测只能靠
+> 「构造 db=nil 的 Handler，让它 nil 解引用 panic」来"覆盖"
+> ⇒ ⇒ **测出来的不是行为，是「panic 被 recover 兜住了」**
+> ⇒ ⇒ 且每次跑 admin 包都往证据通道塞一条**假 ERROR**（违反该文件自己声明的「噪声不得冒充故障」不变量）。
+> ⇒ ★★ **仓里早就有正确范式**（`admin/handler.go:55-57` `controlledBodyDB` / `:63-65` `topologyStatsDB`，
+> 注释原文「刻意保持窄接口… 便于单测钉住」）⇒ 本轮把 `hotCronDB` 补到漏掉的那条路 ⇒ **不是新发明**。
+> ⇒ ★★★★ **最硬的一条读数（变异 M2）**：把探针那条 INFO 改成 ERROR（**消息文本一字不改**）
+> ⇒ ⇒ **既有静态门照样绿（`ok 0.961s`）**、**行为门变红**
+> ⇒ ⇒ ⇒ **「静态文本门」与「行为门」守的不是同一件事** ⇒ 静态门守「源码里有这几个字」，
+> 行为门守「运行时是 INFO 还是 ERROR」⇒ ★ **判别动作：把行为改坏但一个字都不改 ⇒ 门还绿吗？**
+> ⇒ ★★ **typed-nil 陷阱**：`s.db = h.db`（`h.db` 是 nil 的 `*pgxpool.Pool`）⇒ `s.db == nil` 为**假**
+> ⇒ ⇒ **所有 `== nil` 守卫静默失效** ⇒ 必须显式判**源指针** `h.db != nil` 再赋值（变异 M4 实测 `got (*pgxpool.Pool)(nil)`）。
+> ⇒ ★★ **任何 `recover()` 都应当带 `debug.Stack()`**（零语义变化）—— 不带堆栈 ⇒ 线上真 panic **定位不到出处**
+> ⇒ （panic 值常是 `invalid memory address or nil pointer dereference` 这种**不带位置**的文本）。
+> ⇒ ★★ **detached goroutine 的 panic 有三个连带效应**：① 落到任意测试的日志窗口（**假噪声**）
+> ② 读它的测试与它**数据竞争** ⇒ 日志缓冲必须并发安全 ③ **不能同步断言** ⇒ 必须轮询等待（有界超时）。
+> ⇒ ★★ **「既有红」不是同一种东西**：`admin` 8 条既有红至少三类 ——
+> **环境产物**（`TestColumnarParentTwoSurfaceSetopShape_RealDB` 的 XX000 = **Citus 节点缺失**，`citus_nodes` 0 行，**官方跑法同样 0 节点**）
+> / **真问题**（`TestSessionFamilyTwoSurfaceUnionShapeIsExecutable` 的 42P01 = **v1 族退役后的残留引用**）/ **与当轮同源**。
+> ⇒ ★ **绝对数一律不钉**：`hotPromoteTableMap` 条目数是**活事实** ⇒ 新门按 `len(...)` 动态对齐。
+> ⇒ ⚠ **本轮对生产的写入 = 0**；★ **语义变化 = 零**（SQL / 日志文本 / 日志级别 / 调度时刻 / 重试退避**逐字未改**）。
+> ⇒ 完整记录见 handoff `§19.20.26`。
