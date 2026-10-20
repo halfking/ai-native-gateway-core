@@ -28,9 +28,9 @@ import (
 //
 // ⚠ **这三行是 §9.226.3 的快照，已过期**。当前实测见
 // `documentedSnapshot`（由 `TestDocumentedSnapshotMatchesMeasurement` 钉住，
-// 2026-10-20 / 迁移 885（v1 族整体退役）后更新）：
+// 2026-10-21 / R65 轮更新）：
 //
-//	全仓拼接点 135 处（v1 3 文件/6 处、canonical 54/110、unresolved 12/19、v1arm 0/0）
+//	全仓拼接点 141 处（v1 0 文件/0 处、canonical 59/122、unresolved 12/19、v1arm 0/0）
 //
 //	（2026-10-20 迁移 885 收口轮：v1 桶 -2 文件/-5 处、v1 臂桶 -16 文件/-27 处、
 //	canonical 桶 +29 文件/+72 处、unresolved 一栏未动（12 文件/19 处）。
@@ -40,11 +40,35 @@ import (
 //	    + cmd/tools/backfill_session_bodies/main.go（工具退役，1 处）——
 //	    两处都**逐行读过源码**，不是扫描盲区；
 //	  · v1 臂 -16 文件/-27 处 = 推导集合本身空了（composer 不再定义任何含 v1 臂
-//	    的视图，sql/objects/views/ 里的 canonical 视图已是会话两臂体，4 张 v1-only
-//	    视图随 885 删除）⇒ 那 16 个文件整体落进 canonical，不是「看不见了」；
+//	    的视图，4 张 v1-only 视图随 885 删除）⇒ 那 16 个文件整体落进 canonical，
+//	    不是「看不见了」。
+//	    ⚠★ **2026-10-21 订正（§19.10 跨会话订正）**：原文在这里写的是
+//	    「sql/objects/views/ 里的 canonical 视图已是会话两臂体」——
+//	    **这句在 10-20 09:58（e9a96c26c）之后就不成立了**：
+//	    那 5 张分析视图**必须回到 v1 fallback 体**（基线是**逐语句**应用的，
+//	    而 CREATE VIEW 会**急切校验**它引用的关系 ⇒ 写成会话族形态会让
+//	    **全新安装**在基线阶段就报 42P01 并中止），
+//	    部署形态由迁移 883/884 换上（两条路径跑完启动序列后形态一致）。
+//	    ⇒ ★★ **「源里出现过某个形态」≠「源错了」**：源可能是**某个时点的快照**；
+//	    判源之前先问「这个源是哪个时点的形态、被用在哪一步」；
+//	    ★ **判据的「不该有」必须带时点限定**，否则它会要求一个**打挂另一条路径**
+//	      的改动（那道旧门 `TestComposerDefinesNoV1ArmView` 就是这么生的：写它的时候
+//	      前提就已经是假的 ⇒ 它**生来就红**）。
 //	  · canonical +29 文件/+72 处 = 885 把一批读面从 v1 **字面量**改写成会话族
 //	    **拼接调用** ⇒ 方向=变大=「把看不见变成看得见」，按门规改数字即可。
 //	    这批新文件（17 个）逐个读过源码确认读的是会话族。）
+//
+//	（2026-10-21 R65 轮：canonical +2 文件/+6 处、总处数 +6 ⇒ 135→141。
+//	★ 逐条核过（逐站点 diff，见下面的 `documentedSnapshot` 说明段）：
+//	  · **+7 处** = 三个**新增文件**：admin/attempt_quality_api.go（1 处）、
+//	    admin/auto_route.go（1 处）、admin/auto_route_correlations.go（5 处）——
+//	    三处都读 `dbpkg.SessionFamilyTurnsSourceSQL()` ⇒ 会话族 ⇒ canonical；
+//	  · **−1 处** = bg/routing_health_checks.go 那个拼接点被 8531596a6 改写成
+//	    **纯字面量**（`public.session_turns_hot` UNION ALL `public.session_turns`）——
+//	    本工具量的是「**关系名不是字面量**的拼接点」（resolve.go:Site 定义），
+//	    所以它**离开了本工具的口径**；而它的目标是**会话族**不是 v1
+//	    ⇒ ⇒ **不是「又看不见了」**，只是读法从「间接（拼接调用）」变成「直接（字面量）」。
+//	    ⇒ 这一条**特意单独核过**：桶变小必须先排除「解析失败被吞」。)
 //
 // ★ **§9.257 的实测结论，是本工具最要紧的一条**：
 // 修完跨包解析后，unresolved 从 53 处降到 14 处（**多解析出 39 处**），
@@ -571,6 +595,39 @@ var indirectSiteAssessments = map[string]siteAssessment{
 		Consequence: "与 v1 无关（探针与结算腿同源同门，都读会话族热表）。" +
 			"⚠ 与本条目退役前那版（「条件性：写门开着 ⇒ 读 v1 底表 ⇒ 退役顺序上必须排在 S4 之后」）" +
 			"**形态不同**：现在没有 v1 那一支。",
+	},
+	// ★ 2026-10-21（R65 轮，跨会话订正 §19.10 的连带补登）：这 3 个文件是
+	// 885 真删轮把读面换成**会话族原生源**时改的，但 885 轮的清单登记**漏了它们**
+	// （那一轮自己登了 17 个新进桶文件，漏了这 3 个 ⇒ 清单门与快照门一直红）。
+	// 三个文件的拼接点都指向 db.SessionFamilyTurnsSourceSQL()（会话族原生源：
+	// hot ∪ parent + details 特征层 LEFT JOIN）⇒ 与 v1 退役**无关**。
+	"admin/attempt_quality_api.go": {
+		Verdict: verdictCanonicalOnly,
+		Via: "146 行 `FROM ` + dbpkg.SessionFamilyTurnsSourceSQL() + ` rl`。" +
+			"★ 885 真删轮从 `request_logs_with_current_month_without_request_class_due_at`" +
+			"（那张包装视图**直读 v1 族**，真库实测其定义体第一行就是 `FROM _request_logs_hot`）" +
+			"换成会话族原生源 ⇒ 旧读面在 v1 停写后恒 0 行、删族后会变 42P01。",
+		Consequence: "质量指标端点（请求量 / 成功率 / token 汇总）现在读会话族全量 ⇒ " +
+			"与 v1 退役**无关**。★ 口径提示：provider_id 来自 details 特征层，" +
+			"**没有 details 行的轮次 provider_id 为 NULL** ⇒ 按 provider 过滤时" +
+			"那部分行本来就不该计入（会话族既定口径，见 db/retirement_column_exposure.go）。",
+	},
+	"admin/auto_route.go": {
+		Verdict: verdictCanonicalOnly,
+		Via:     "156 行 `FROM ` + dbpkg.SessionFamilyTurnsSourceSQL() + ` r`（同源同上）。",
+		Consequence: "自动路由任务列表（ts / request_id / task_type / auto_* / 凭据 / 裁决 / 延迟）" +
+			"⇒ 读会话族 ⇒ 与 v1 退役**无关**。",
+	},
+	"admin/auto_route_correlations.go": {
+		Verdict: verdictCanonicalOnly,
+		Via: "5 处拼接点（132 / 153 / 174 / 195 / 239 行）全是 `FROM ` + " +
+			"dbpkg.SessionFamilyTurnsSourceSQL() + ` …`（按模型 / 按策略 / 按任务类型 / " +
+			"模型×任务类型 / top-3 裁决五段查询）。★ 885 真删轮从那两张**直读 v1 族**的" +
+			"包装视图换过来 ⇒ 旧读面恒返回空（不报错）、删族后会 42P01。",
+		Consequence: "自动路由相关性分析端点 ⇒ 读会话族 ⇒ 与 v1 退役**无关**。" +
+			"★ 这 5 段依赖的 model_chosen / strategy_used / task_type_chosen 三列" +
+			"来自会话族原生源自带的 details 特征层 LEFT JOIN ⇒ 无 details 行的轮次这三列为 NULL，" +
+			"而查询本来就用 IS NOT NULL 过滤。",
 	},
 	"credentialhealth/checker.go": {
 		Verdict:     verdictNonV1ByInspection,
@@ -1230,10 +1287,10 @@ type bucketSnapshot struct {
 // ★★ 2026-10-20（迁移 885，v1 族整体退役）更新 —— **这一版是「退役之后」的形状**，
 // 三个桶的**语义**都变了，所以这一版的注释不是在上一版上打补丁，而是重写：
 //
-//	总数 95 → 135 处（68 文件）
+//	总数 95 → **141 处（71 文件）**
 //	v1      5/11 → **0/0**    （文件 / 处数）★ 全仓 v1 基表读面归零
 //	v1 臂  16/27 → 0/0
-//	canonical 25/38 → 57/116
+//	canonical 25/38 → **59/122**
 //	unresolved 12/19 → 12/19（**未变**）
 //
 // # 逐项判方向（门规：桶变小 ⇒ 先怀疑扫描范围被改小 / 解析失败被吞）
@@ -1257,24 +1314,52 @@ type bucketSnapshot struct {
 //	   · composer（db/request_logs_view_schema.go）现在只定义一个视图
 //	     `request_logs_with_current_month`，而它的体是**会话两臂**
 //	     （canonicalSessionOnlyDDL，:561-587）⇒ 没有任何 v1 臂；
-//	   · sql/objects/views/ 里的同名 DDL 已重新采集为会话两臂体；
 //	   · 4 张 v1-only 视图（…_without_customer_id / …_without_request_class_due_at /
 //	     request_logs_bodies_with_current_month / request_logs_bodies_progress）
 //	     随 885 删除 ⇒ 它们的 DDL 文件也不在对象库里了。
 //	   ⇒ 那 16 个文件整体落进 canonical 桶（**没有**一个变成「看不见」）。
+//	   ⚠★ **2026-10-21 订正**：本段原先还有一句「sql/objects/views/ 里的同名 DDL
+//	   已重新采集为会话两臂体」——**它在 10-20 09:58（e9a96c26c）之后就不成立**：
+//	   那 5 张分析视图（customer_cost_view / model_cost_per_task_view /
+//	   v_continuation_effectiveness / v_node_switch_analysis / v_timeout_effectiveness）
+//	   **必须回到 v1 fallback 体** —— 基线是**逐语句**应用的，而 CREATE VIEW 会
+//	   **急切校验**它引用的关系 ⇒ 若写成会话族形态（session_turns_hot /
+//	   session_turn_details*），**全新安装**会在基线阶段就报 42P01 并中止
+//	   （实测见 §19.10 跨会话订正）⇒ 部署形态改由**迁移 883 / 884** 换上。
+//	   ⇒ 源文件是「**基线时点**的形态」，不是「部署形态」；
+//	   ⇒ 判据因此必须**分两个时点**（见 resolve_test.go 的
+//	   TestDeploymentTimeHasNoV1ArmView 门 17 + v1arm_deployment.go）。
 //	③ **canonical +32 文件 / +78 处**（变大）—— 方向=变大=「把看不见变成看得见」：
 //	   885 把一批读面从 v1 族**字面量**（`FROM _request_logs_hot`）改写成会话族
 //	   **拼接调用**（`+ db.SessionFamilyTurns*SQL() +`）⇒ 它们第一次进本工具。
 //	   新进桶的 17 个文件逐个读过源码确认读的是会话族（见清单里那 17 条）；
 //	   再加 maas 那 3 个文件（v1 → canonical 的重分类）。
 //	④ **unresolved 12 文件 / 19 处**（**未变**）—— 一个数都没动。
+//	⑤ **2026-10-21（R65 轮）canonical +2 文件 / +6 处（总处数 135 → 141）** ——
+//	   ★ 这一条是**逐站点 diff** 出来的（不是「总数对不上，猜一猜」）：
+//	   在 `5f64031cb`（写下 135/57/116 的那次提交）跑一次本工具、存下报告，
+//	   与当前 HEAD 的报告**逐行 diff** ⇒ 精确得到：
+//	  · **+7 处 / +3 文件** = 三个新增文件：
+//	    admin/attempt_quality_api.go:146、admin/auto_route.go:156、
+//	    admin/auto_route_correlations.go:132/153/174/195/239
+//	    ⇒ 三处都读 `dbpkg.SessionFamilyTurnsSourceSQL()`（**逐行读过源码**）
+//	    ⇒ 会话族 ⇒ canonical ⇒ 方向=变大=「把看不见变成看得见」；
+//	  · **−1 处 / −1 文件** = bg/routing_health_checks.go 的拼接点被 8531596a6
+//	    改写成**纯字面量**（`public.session_turns_hot` UNION ALL
+//	    `public.session_turns`）⇒ 本工具的 Site 定义是「**关系名不是字面量**的
+//	    拼接点」（resolve.go）⇒ 它**离开了本工具的口径**。
+//	    ⚠ 桶变小必须先排除「解析失败被吞」—— 这次排除的依据是**读法**：
+//	    目标表是**会话族**（不是 v1）⇒ 没有 v1 读点被藏起来；
+//	    且同一文件在 unresolved 桶里仍有一处（行号平移）⇒ 该文件没被跳过。
+//	  ⇒ 净 +6 处 / +2 文件；unresolved 12/19 **未变**（逐行 diff 确认只是行号平移）。
 //
-// # 一致性自检（0 + 0 + 57 + 12 = 69 ≠ 68 是**正常的**）
+// # 一致性自检（0 + 0 + 59 + 12 = 71 = 总文件数 ✔）
 //
-// 实测 68 个文件 = v1 0 + canonical 57 + unresolved 12 = 69，**多出 1**：
-// bg/routing_health_checks.go 同时落在 canonical 与 unresolved 两桶
-// （893 行是会话族拼接点、481 行是跨包常量）⇒ 一个文件可以同时有两桶的点位。
-// 处数自检：0 + 0 + 116 + 19 = 135 = 总数 ✔
+// 实测 71 个文件 = v1 0 + canonical 59 + unresolved 12 = 71，**不多不少**
+// （上一版是「多出 1」：bg/routing_health_checks.go 同时落在 canonical 与
+// unresolved 两桶 —— 2026-10-21 那次改写把它的 canonical 拼接点变成了纯字面量，
+// 于是它只剩 unresolved 一处 ⇒ 差集归零）。
+// 处数自检：0 + 0 + 122 + 19 = 141 = 总数 ✔
 var documentedSnapshot = bucketSnapshot{
 	// 同日晚间二次：compression_sessions 的 LATERAL 性能修复消除 2 处拼接
 	//（LATERAL 体重跑 canonical 全源改单趟 CTE，e01ffed39）→ 94→92、
@@ -1301,7 +1386,12 @@ var documentedSnapshot = bucketSnapshot{
 	// One additional unresolved site, not a newly introduced reader.
 	//
 	// ★ 2026-10-20（迁移 885）：上面对「逐项判方向」的整段说明就是本版的依据。
-	TotalSites: 135,
+	//
+	// ★ 2026-10-21（R65 轮）：135 → 141（canonical 57 → 59 文件 / 116 → 122 处）。
+	//   成因逐站点核过（见上面第 ⑤ 条）：+7 处来自三个新增的会话族读方文件，
+	//   −1 处是一个拼接点被改写成纯字面量（离开了本工具的口径，目标仍是会话族）。
+	//   ⇒ 方向=变大=「把看不见变成看得见」+ 一处「读法变了」；无桶变小 ⇒ 改数字即可。
+	TotalSites: 141,
 	V1Files:    0,
 	V1Sites:    0,
 	// ★ v1 臂桶**归零**：不是「推导器坏了」，是**没有任何视图还有 v1 臂**。
@@ -1309,10 +1399,18 @@ var documentedSnapshot = bucketSnapshot{
 	// 由 resolve_test.go 的 TestV1ArmViewsIncludeComposerDefinedOnes 承担
 	// 「取反 + 正向对照」：那个测试现在断言 composer **不得**定义任何 v1 臂视图，
 	// 并用两段合成夹具证明推导器**仍能**认出来（见该测试的注释）。
+	//
+	// ⚠★ 2026-10-21 订正：上面那句「composer 不得定义任何 v1 臂视图」的**范围**
+	// 原来被写成了「全仓」⇒ 它要求 `sql/objects/views/` 的 5 个基线形态视图
+	// 也不能有 v1 臂 ⇒ 而那 5 个视图**必须**有 v1 臂（基线逐语句应用 ⇒ 新装 42P01）
+	// ⇒ 那道门**生来就红**，且按它去改源会**打挂全新安装路径**。
+	// ⇒ 现在判据**分两个时点**：部署时点不得有 v1 臂（门 17），
+	// 基线时点允许（那 5 个视图以 `dbinit:baseline-v1-fallback` 声明豁免，
+	// 且豁免要过三道可证伪的腿：切换迁移存在 / 在启动链里 / 排在 v1 退役之前）。
 	V1ArmFiles: 0,
 	V1ArmSites: 0,
-	CanonFiles: 57,
-	CanonSites: 116,
+	CanonFiles: 59,
+	CanonSites: 122,
 	UnresFiles: 12,
 	UnresSites: 19,
 }
@@ -1360,7 +1458,7 @@ func TestDocumentedSnapshotMatchesMeasurement(t *testing.T) {
 
 // resolvedSitesFloor 是「可静态解析的站点数」的下限（ratchet）。
 //
-// 取 50 的理由：当前实测 116 处（v1 6 + v1 臂 0 + canonical 110），
+// 取 50 的理由：当前实测 122 处（v1 0 + v1 臂 0 + canonical 122），
 // 门槛取**不到一半**，这样日常增删读方不会误报；但「解析器整体坏掉
 // ⇒ 全部落进 unresolved（19 处）」这个形态一定会撞到它。
 const resolvedSitesFloor = 50

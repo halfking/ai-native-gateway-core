@@ -368,7 +368,14 @@ func AuditRepo(root string) ([]Site, error) {
 	// §9.258：把「含 v1 臂的视图」集合挂到每个点位上。
 	// 放在最后统一挂，而不是让 auditPackage 一路透传 —— 集合是**全仓**推导的
 	// （读 sql/objects/views/），与被扫的包无关。
-	arms := viewsWithV1Arm(root)
+	//
+	// ★ §19.10 跨会话订正：这里必须用**部署时点**的集合，不是「源文件里有 v1 臂」。
+	//   `sql/objects/views/` 里有 5 个文件是**基线形态**的 v1 fallback 体
+	//   （基线逐语句应用 + CREATE VIEW 急切校验 ⇒ 写成会话族形态会让全新安装
+	//   42P01 中止），它们的**部署形态**由 883 / 884 换上（会话族，无 v1 臂）。
+	//   ⇒ 读这些视图的读方在运行期读的是会话族 ⇒ 判成 reads-v1-arm 是**假**的
+	//   （分类语义 =「行集会变小、不报错」⇒ 假阳性方向）。
+	arms := AuditV1Arms(root).DeploymentArmSet()
 	final := dedupeSites(out)
 	for i := range final {
 		final[i].v1ArmViews = arms
