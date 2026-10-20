@@ -47,12 +47,20 @@ MUTATIONS = [
      '\t\tRetiredByMigration: "891",\n',
      "TestSection14338ManagedTableListMatchesDropList"),
 
-    ("M3", "在仓内加一处【真读点】：一条引用 v1 表的 SQL 字面量",
+    # ★ 第一版 M3 作废（替换串包含 needle 作为子串 ⇒ 纪律拦下）：
+    #   往文件里「插入」一行新代码 ⇒ 替换串必然带着 needle 本身。
+    # ⇒ 改成**更真实的回归形态**：把一个现存读面的【源表】换成 v1 表
+    #   （这正是「有人顺手改错了 FROM」的那类改动）⇒ needle 只出现在被替换处。
+    ("M3", "把一个现存读面的源表换成 v1 表（顺手改错 FROM 的那类回归）",
      QUERIES_REL,
-     "func (h *Handler) queryOverviewCountsMinute(ctx context.Context, tenantID string, tr boardTimeRange, keys, models, providers *int) error {\n",
-     "var mut14338V1ReadPoint = \"SELECT 1 FROM _request_logs_archive\"\n"
-     "\n"
-     "func (h *Handler) queryOverviewCountsMinute(ctx context.Context, tenantID string, tr boardTimeRange, keys, models, providers *int) error {\n",
+     "\t\tFROM request_stats_dim_minute\n"
+     "\t\tWHERE `+where+`\n"
+     "\t\tGROUP BY dim_key\n"
+     "\t\tORDER BY SUM(requests) DESC\n",
+     "\t\tFROM _request_logs_archive\n"
+     "\t\tWHERE `+where+`\n"
+     "\t\tGROUP BY dim_key\n"
+     "\t\tORDER BY SUM(requests) DESC\n",
      "TestSection14338NoGoSQLLiteralReadsADroppedV1Table"),
 
     ("M4", "核验脚本删掉判据本身（still_references_v1 ⇒ 换个说法）",
@@ -61,10 +69,11 @@ MUTATIONS = [
      "still_touches_v1",
      "TestSection14338CutoverPrecheckScriptExists"),
 
+    # ★ 第一版 M5 作废（替换串包含 needle 作为子串）⇒ 改成「把那一行**换掉**」。
     ("M5", "核验脚本里混进真 DDL（⇒ 它不再是只读，生产护栏会拒）",
      PRECHECK_REL,
      "SET statement_timeout = '60s';",
-     "SET statement_timeout = '60s';\nDROP TABLE IF EXISTS public._request_logs;",
+     "DROP TABLE IF EXISTS public._request_logs;",
      "TestSection14338CutoverPrecheckScriptExists"),
 
     ("M6", "抹掉 runbook 里的关键提交号（本节在案证据被改掉）",
