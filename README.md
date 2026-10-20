@@ -110,7 +110,7 @@ HTTP/SSE → middleware chain → protocol/IR normalization → session assignme
 | `bg/` | Background workers — probing, lifecycle cleanup, stats aggregation, partition maintenance |
 | `storage/` | Dual-mode storage factory (`full`: PG+Redis / `lite`: SQLite+files+in-proc KV) |
 | `internal/` | Cross-cutting infra — IR, vendor strip, session mirror, outbox, telemetry… |
-| `sql/migrations/` + `db/migrations/` | Idempotent migrations (startup series currently at 878) |
+| `sql/migrations/` + `db/migrations/` | Idempotent migrations (startup series currently at 884) |
 | `installer/` | Standalone cross-platform installer / upgrader module |
 | `scripts/`, `deploy/` | Build, deploy, mirror, and verification tooling |
 
@@ -132,7 +132,7 @@ Most gateways treat every request as an isolated event. AI Native Gateway treats
 - **Sticky Session Binding**: sessions are pinned to credentials so conversation context survives model and failover switches — no silent context loss mid-task
 - **Session-Level Audit & Replay**: full system prompts and responses are retained and replayable per session (13,000+ sessions live in production), covering task type, client model, outbound model, provider, tokens, latency, and end reason — slice by key / tenant / time range for troubleshooting and compliance
 - **Automatic Prompt Compression**: when a request approaches the provider's real context window (~80% trigger), message-level compression runs before dispatch — long agent sessions fit smaller windows instead of failing. Every compression event (strategy, threshold, before/after sizes) is recorded on the request
-- **Session Metadata Intelligence**: automatic work-type tagging (10 work types), project attribution, and title extraction turn raw traffic into searchable knowledge
+- **Session Metadata Intelligence**: automatic work-type tagging (27 work types), project attribution, and title extraction turn raw traffic into searchable knowledge
 - **Identity Tunneling**: agent traffic is attributed via virtual IP/MAC/ClientID so multi-tenant isolation holds even when many agents share one egress
 - **4-Tier Data Lifecycle**: hot (0–7 d) / warm (7–30 d) / cold (30–90 d) / expired (>90 d) with archive preview — "here is exactly what will move" before you execute
 
@@ -172,7 +172,7 @@ All modules below are shipped and running in the k3s production deployment. Scre
 ### Work-Type Configuration — Task Auto-Classification
 
 ![Work Types](docs/assets/screenshots/work-types.png)
-*Task auto-classification (10 work types) with 24h distribution, top models, and routing decision stats — configurable per work type in the admin UI*
+*Task auto-classification (27 work types) with 24h distribution, top models, and routing decision stats — configurable per work type in the admin UI*
 
 ### Free Resource Pool
 
@@ -521,7 +521,7 @@ See [ROADMAP.md](ROADMAP.md) for full details.
 | Architecture (overview) | [docs/architecture.md](docs/architecture.md) — system design and components |
 | Requirements | [docs/01-requirements/SYSTEM_REQUIREMENTS.md](docs/01-requirements/SYSTEM_REQUIREMENTS.md) — FR×19 domains / NFR×13 |
 | Feature catalog | [docs/01-requirements/functional/FEATURES_CATALOG.md](docs/01-requirements/functional/FEATURES_CATALOG.md) — feature → code → API → admin-page map |
-| API | [docs/03-design/01-architecture/architecture/API.md](docs/03-design/01-architecture/architecture/API.md) — data plane and admin API specs |
+| API | [docs/03-design/01-architecture/architecture/API.md](docs/03-design/01-architecture/architecture/API.md) — main-control-plane endpoints (`llm.kxpms.cn:8443`, 8 endpoints) |
 | Environment | [docs/environment.md](docs/environment.md) — deployment environments and variables |
 | Quick reference | [docs/QUICK_REFERENCE.md](docs/QUICK_REFERENCE.md) — common commands and troubleshooting |
 | Comparison | [docs/comparison.md](docs/comparison.md) — vs LiteLLM, OmniRoute, Portkey, Kong |
