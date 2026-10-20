@@ -54,7 +54,7 @@
 | 工具 | 状态 | 说明 |
 |---|---|---|
 | `go` | Homebrew `/opt/homebrew/bin/go` **1.27.2**（2026-10-16 `brew upgrade go`） | 在 PATH 上；`~/sdk/go` 已不存在。须 ≥ `go.mod` 的版本，否则 deploy-seamless（`GOTOOLCHAIN=local`）回退 amd64 容器构建。`/usr/local/go` 1.24.5（root）排在其后不生效 |
-| `bash` ≥4 | `~/sdk/bash5/bin/bash` 5.2.0 | 系统只有 3.2，deploy-lib 用到 `${var^^}`（bash 4+）必须用这个。**2026-10-11 下午曾被整目录清掉**（`~/sdk/` 只剩 go/caddy/缓存），已按下方重编法重建回原路径——`~/sdk/` 下的工具可能被清理，用前先 `ls` 确认 |
+| `bash` ≥4 | `~/sdk/bash5/bin/bash` 5.2.0 | 系统只有 3.2，deploy-lib 用到 `${var^^}`（bash 4+）必须用这个。**2026-10-11 下午曾被整目录清掉**（`~/sdk/` 只剩 go/caddy/缓存），已按下方重编法重建回原路径——`~/sdk/` 下的工具可能被清理，用前先 `ls` 确认。⚠ **2026-10-20 新增**：**任何**用 `mapfile` / 关联数组的**验证脚本**也必须用这个解释器——用系统 bash 3.2 跑会 `mapfile: command not found` **静默失败**并**照样打印 PASS**（实测：写回验证脚本四段检查一段没跑，末尾却打「结果：PASS」）⇒ **「检查没跑成」与「检查通过」必须长得不一样** |
 | `pnpm` | `corepack prepare pnpm@10.29.2` | 仓库 `packageManager` 锁 10.29.2 |
 | `node` | nvm 24.21.0 | 在 PATH 上（22.23.3 已被升级替代） |
 | `brew` / `docker` | **确实缺失** | 真库回归（full 模式）仍做不了；host-first 本地部署不依赖它们 |

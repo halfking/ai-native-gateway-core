@@ -3552,3 +3552,42 @@ PostgreSQL 解析调用时，**带默认值的那个也能接 3 参调用**，
 - 防复发检查：① 登记一条启动迁移时，把它的**声明依赖**一起核对是否在 `StartupFiles` 里；② 链上顺序**按依赖排**（489/490 必须在 853 之前）；③ 登记后**重跑整链**并对比失败集合（allowlist 能给出「改前 vs 改后」的精确差集）；④ 证「既有缺陷与本轮无关」要用**pristine HEAD 工作树**复跑（本轮 853 在 pristine 上同样失败）。
 - 证据：853 文件头「Dependencies: 489/490_credential_probe_queue_*」+ runner 注释「once 489/490 create the queue」；`git worktree add` 到 `7c8aad856` 复跑同样在 853 失败；补登 489/490 后整链 0/282 失败、`TestFreshInstallerSessionTurnsHotBootstrap` 从「在 853 中止」转 PASS。
 - 溯源：request_logs→session_turns 复核轮 §5.13.8 / §10.11；[复盘](docs/audit/2026-10-20-request-logs-session-turns-复核轮.md) §5.13.8 / §10.11。
+
+## 2026-10-20 — 用**裸数字**做文本启发式 ⇒ 必配词边界 + 小数/单位排除（Seen: 2/3）
+- 场景：逐页扫描的 `NOT_FOUND` 标记比上一轮多 1 页（`/admin/data-lifecycle`），
+  差点被当成「本轮改动把该页搞坏了」。
+- 根因：标记正则 `/404|页面不存在|Not Found/i` 命中的是页面正文里的
+  「PostgreSQL 数据库 v17.10 **404.2 MB** 总占用」—— **库大小**恰为 404.2 MB。
+  同类还有 UUID 里的 `…**8404**…`（**子串**命中），
+  以及「标记测 `text.slice(0,200)`、落盘只存 `slice(0,160)`」⇒ 命中可能落在
+  **没落盘**的区间里 ⇒ **事后无法复现**「为什么这一页被判成 NOT_FOUND」。
+- 防复发检查：① **裸数字**（404/500/403）做匹配时必须同时有
+  `\b` 词边界（排除 `8404` 子串）+ `(?![\.\d])`（排除 `404.2`）+
+  `(?!\s*(?:MB|GB|KB|bytes|ms|行|条|个))`（排除 `404 MB`）；
+  ② 更稳的是**只匹配明确措辞**（`页面不存在` / `Not Found` / `HTTP 404`），
+  数字状态码交给**结构化字段**（`docStatus`）判，不受正文影响；
+  ③ **标记的判定窗口必须与落盘窗口一致** ⇒ 判据与证据同源、可离线重算；
+  ④ 判「标记集合变没变」前，**先把新出现的标记逐个证伪**
+  （本轮：`docStatus=200` + 无真 5xx + 无 JS 异常 ⇒ 假阳性）。
+- 证据：2758 页扫带标记页 19 → 修完 **10**；残留 7 个 `NOT_FOUND` 逐个核实为**真态**
+  （`key/client/task/journey/approval/order not found`——路由表用合成 id，空态正确）；
+  另 3 个 `ZERO_ROWS` 是数据态。⇒ 2758 的标记集合是 2757 的**子集** ⇒ 0 处回退。
+- 溯源：request_logs→session_turns 复核轮 §5.13.10 / §10.12；[复盘](docs/audit/2026-10-20-request-logs-session-turns-复核轮.md) §5.13.10 / §10.12。
+
+## 2026-10-20 — 「检查没跑成」与「检查通过」必须长得不一样（Seen: 1/3）
+- 场景：写回验证脚本 `verify-model-writeback.sh` 打印了「=== 结果：PASS ===」，
+  但**四段检查其实一段都没跑**。
+- 根因：脚本用了 `mapfile`（bash **4+**），macOS **系统 bash 是 3.2**
+  ⇒ 段落函数因 `mapfile: command not found` + `set -u` 的 `unbound variable` **静默失败**；
+  而脚本没有 `set -e`、失败位只由 `bad()` 设置 ⇒ 段落整体挂掉时
+  **既不置失败位也不非零退出** ⇒ 末尾照常打印 PASS。
+- 防复发检查：① 依赖 bash 4+ 特性（`mapfile` / 关联数组 / `${var^^}`）的脚本
+  **必须用 `~/sdk/bash5/bin/bash`**（本仓已有），脚本头注明所需 bash 版本；
+  ② 判据脚本**每段**执行完要留下痕迹（段标题 + 计数），缺哪段一眼可见；
+  ③ 「结论行」只能在**所有段都跑过**之后打印，任一段异常 ⇒ 非零退出；
+  ④ 复跑前先 `bash --version` 确认解释器（macOS 自带 3.2，5.x 在 `~/sdk/bash5/bin`）。
+- 证据：系统 bash 跑 ⇒ 3 处 `mapfile: command not found` + `unbound variable`，末尾仍「PASS」；
+  `~/sdk/bash5/bin/bash` 跑 ⇒ A/B/C/D 四段全执行、**全项 PASS**
+  （turn_no 1..5 连续、prompt_tokens 13→32→46→314→1066 单调、
+  正文三列 `jsonb_typeof` 全 `array`、退役族零新增）。
+- 溯源：request_logs→session_turns 复核轮 §5.13.10 / §10.13；[复盘](docs/audit/2026-10-20-request-logs-session-turns-复核轮.md) §5.13.10 / §10.13。
