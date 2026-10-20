@@ -38945,6 +38945,41 @@ base_buckets AS (
 | 巡检侧 | `base_buckets` 改为读这张表 ⇒ **每小时从 2,600 万行全扫降到几千行** |
 | 语义 | ★ **判定输入不变** ⇒ ★ **零语义风险** |
 | 扫描量 | **26M 行/小时 → 3.75M 行/天 ⇒ −96%**（★ **估算，未实测**） |
+
+> **订正横幅十六（2026-10-20，§143.35 就地订正本节 §143.31.2.3）**
+>
+> ★★★★ **本节上面的「−96%（估，未实测）」与「物理读 −85%（估，未实测）」现在【有实测了】。**
+> - ⇒ ⇒ ★★★★ **P11 已仓内落地**（迁移 892 + 巡检基线来源二选一），**对生产的写入 = 0、未部署**。
+> - ⇒ ⇒ ★★★★★ **★★ 「零语义风险」这句话原本【不是】零的 —— 是被实测修正的**：
+>   ★★★ **第一次 A/B 实测 FAIL**（先失败、后改设计）：
+>   - 现象：**16 行 `OLD_ONLY`，全部是【今天】的桶**；
+>   - 根因：★ **汇总表的填充范围是 `[today - N, today)`，【不含今天】**
+>     （今天的数据还在写，不能算「每天一次」的稳定值）
+>     ⇒ 而源表路读 `now - 7 days` 起 ⇒ **含今天** ⇒ ⇒ 两路键集合不同；
+>   - ⇒ ⇒ ★★★ **⇒ 修正 = 方案 B**：【过去的完整天】走汇总表 + 【今天】仍实时读源表
+>     ⇒ ★★ **【今天实时读】本来就对**（今天的数据在变）。
+> - ⇒ ⇒ ★★★★★ **★★ 「回退机制」原本是【假的】—— 也是被端到端实测抓出来的**：
+>   ★ 最初设计「同一段 SQL 里用 `CASE` 选源」⇒ ★★★ **实测直接崩**：
+>   `ERROR: relation "public.ursm_snapshot_slot_daily" does not exist`
+>   ⇒ ⇒ ★★★ **根因：PG 在【规划期】就解析表名** ⇒ 即使 `WHERE 'source'='daily'`
+>   是常量（会被折叠），**只要 SQL 文本里出现了那个不存在的表，整条语句就报错**
+>   ⇒ ⇒ ★★★★ **⇒ 「把两路写进同一段 SQL」在表不存在时【行不通】**
+>   ⇒ ⇒ ★★ **⇒ 正确形态：两段各自完整的 SQL，在 shell 里按探测结果二选一**
+>   ⇒ ⇒ ★★★ **⇒ 这不是洁癖，是「回退必须是真回退」的前提** ——
+>   表不存在时若脚本直接崩，那不是回退，而是**巡检失明**。
+> - ⇒ ⇒ ★★★★ **★ 一处【判定输入的真实改动】**：
+>   ★★★ **窗口下界从「行时间」改成「桶对齐」**（旧：边界桶只算半截；新：整桶）
+>   ⇒ ⇒ **⇒ 这是一处真实的语义改动 ⇒ 必须由属主知情并拍板**
+>   ⇒ ⇒ 门 `TestSection14335PatrolUsesBucketAlignedWindow` 钉住它（防止被当成「零成本改动」）。
+> - ⇒ ⇒ ★★★★ **本节上表那两行「估算」现在的准确说法**：
+>   | 量 | 本节原来写的 | §143.35 的实测状态 |
+>   |---|---|---|
+>   | 扫描量 | −96%（估） | ★★ **未实测**（汇总表路读几千行是【结构性】的，量级确定，但没在生产量过） |
+>   | 物理读 | −85%（估） | ★★ **未实测**（同理） |
+>   | ★★ **判定等价** | ★ **未验证** | ★★★★★ **三层断言全 PASS**（`ab_identical` / `p50_identical` / `verdict_identical`） |
+>   ⇒ ⇒ ★★★ **⇒ 「判定等价」从【论证】升级为【实测】**；
+>   ⇒ ⇒ ★★ **而「省多少」仍然是【估】** ⇒ ⇒ **不因等价性已证就承诺收益数字**（§143.28 的纪律）。
+>   完整记录见 runbook `§143.35`。
 | 物理读 | ★ **巡检每次 2.9 GB ⇒ 估 0.2~0.4 GB（估，未实测）** ⇒ ★ **−85% 上下（估）** |
 | 次级杠杆 | `base_active`（2 天 + `count(DISTINCT date_trunc('minute', ts))`，35%）⇒ 可同样按「(天, slot) 的活跃分钟数」物化 |
 
@@ -39529,3 +39564,355 @@ GOCACHE=/tmp/gocache-p1437 go test ./scripts/ursmcheck/ -run 'TestRunbook14334' 
 ★ 同族：[[阴性结论要当缺陷一样复核]] · [[自己上一节的结论也要复核]] ·
 [[先读量具再读产物]] · [[0 命中的第一嫌疑是量具坏了]] · [[前提漂移]] ·
 [[禁止【提及】≠ 禁止【依赖】]]。
+
+## §143.35 **P11 仓内落地**：每日 slot 汇总表（迁移 892）+ 巡检基线来源二选一（2026-10-20）
+
+### §143.35.0 结论先行
+
+P11（缩短/改写巡检）是 §143.29 的**成本 #1**（每次 **2.9 GB** 物理读 / **190 s**、累计 **74 GB**），
+§143.31.2 已把落点定死：**`base_buckets` 每日物化**（零语义风险）。
+★ **本节把它做出来了** —— 仓内完成，**对生产的写入 = 0**，**未部署**。
+
+1. ★★★★★ **三层等价性已在【本地真库】实测通过**（不是推理）：
+
+   | 验证 | 脚本 | 断言 |
+   |---|---|---|
+   | 迁移单测 | `scripts/audit/verify_892_local.sh` | **10 项全 PASS**（表/函数/回填/幂等/守卫/保留期/down） |
+   | 逻辑 A/B | `scripts/audit/verify_892_patrol_ab.sh` | **`ab_identical` / `p50_identical` / `verdict_identical` 全 PASS** |
+   | ★★ 端到端 | `scripts/audit/verify_892_patrol_e2e.sh` | ★★ **`E2E_VERDICT: PASS`（两路判定逐字相同）** |
+
+   ⇒ ⇒ ★★★★ **⇒ 「零语义风险」这句话现在有硬证据**（此前只是论证）。
+
+2. ★★★★★ **⇒ 但「零语义风险」被实测修正过一次** —— **它原本不是零的**：
+   ★★★ **第一次 A/B 实测 FAIL**（不是 PASS 后补记，是**先失败后改设计**）：
+   - 现象：**16 行 `OLD_ONLY`，全部是【今天】的桶**；
+   - 根因：★ **汇总表的填充范围是 `[today - N, today)`，【不含今天】**
+     （今天的数据还在写，不能算「每天一次」的稳定值）
+     ⇒ 而源表路读 `now - 7 days` 起 ⇒ **含今天** ⇒ ⇒ 两路键集合不同；
+   - ⇒ ⇒ ★★★ **⇒ 修正 = 方案 B**：【过去的完整天】走汇总表 + 【今天】仍实时读源表；
+   - ⇒ ⇒ ★★ **【今天实时读】本来就对**（今天的数据在变，汇总表按设计不含今天）。
+
+3. ★★★★★ **★★ 「回退机制」原本是【假的】—— 也是被端到端实测抓出来的**：
+   ★ 最初的设计是「同一段 SQL 里用 `CASE` 选源」⇒ ★★★ **实测直接崩**：
+   ```
+   ERROR: relation "public.ursm_snapshot_slot_daily" does not exist
+   ```
+   ⇒ ⇒ ★★★ **根因：PG 在【规划期】就解析表名** ⇒ 即使 `WHERE 'source'='daily'`
+   是常量（会被折叠），**只要 SQL 文本里出现了那个不存在的表，整条语句就报错**
+   ⇒ ⇒ ★★★★ **⇒ 「把两路写进同一段 SQL」在表不存在时【行不通】**
+   ⇒ ⇒ ★★ **⇒ 正确形态：两段各自完整的 SQL，在 shell 里按探测结果二选一**
+   （`BUCKETS_SQL_SOURCE` / `BUCKETS_SQL_DAILY`）。
+   ⇒ ⇒ ★★★ **⇒ 这不是洁癖，是「回退必须是真回退」的前提** ——
+   表不存在时若脚本直接崩，那不是回退，而是**巡检失明**。
+
+4. ★★★★ **⇒ 一处【判定输入的真实改动】（必须由属主知情）**：
+   ★★★ **窗口下界从「行时间」改成「桶对齐」**：
+   - 旧：`snapshot_ts >= $NOW_EXPR - make_interval(days => $BASELINE_DAYS)`
+     ⇒ **边界桶只算半截**（窗切在桶中间）；
+   - 新：`snapshot_ts >= date_trunc($G_UNIT, $NOW_EXPR - make_interval(days => ...))`
+     ⇒ **边界桶算整桶**；
+   - ⇒ ⇒ ★★★ **⇒ 两路必须用同一个下界，否则边界桶不一致**
+     ⇒ ⇒ ★★ **⇒ 这是一处【真实的语义改动】**（边界桶的行数会变大）
+     ⇒ ⇒ **⇒⇒ 属主必须知情并拍板**（★★ 门 `TestSection14335PatrolUsesBucketAlignedWindow` 钉住它，
+     防止后人以为「零成本改动」）。
+
+⚠ **本节对生产的写入 = 0**：全部在**本地一次性库**（`itgate_892` / `itgate_ab892` / `itgate_e2e892`，退出即 DROP）。
+**没有**改任何生产表 / 配置 / 调度；**巡检脚本未部署**（线上仍是 `b5aaa384…`）。
+
+### §143.35.1 交付物（全部仓内）
+
+| 文件 | 作用 |
+|---|---|
+| `sql/migrations/startup/892_ursm_snapshot_slot_daily.sql` | 表 + 幂等填充函数 + **迁移内首次回填** |
+| `sql/migrations/startup/892_ursm_snapshot_slot_daily.down.sql` | 回滚（★ 写清了回滚顺序约束） |
+| `installer/cmd/llm-gw-installer/embeddata/startup/892_*.sql` | installer 的 embed 副本（★ 与 canonical **逐字相同**，有门钉住） |
+| `installer/cmd/llm-gw-installer/main.go` | `//go:embed` + 投递映射 |
+| `installer/internal/dbinit/runner.go` | 启动序列登记（**现场取号 892**） |
+| `sql/schema/installed_startup_migrations.tsv` | ★ TSV 登记（**第 284 位**；★ 派生文件 ⇒ 用它自己的 `-update` 命令重建，**不手改**） |
+| `scripts/apply-db-revision-sequence.sh` | ★ 投递通道 `files=()` 登记（★ **漏过一处 ⇒ 见 §143.35.4**） |
+| `docs/db-changelog.md` | ★ 台账 + **sha 实测值**（★ **漏过一处 ⇒ 见 §143.35.4**） |
+| `scripts/252-monitor/ursm-snapshot-health.sh` | ★ 巡检基线来源二选一（**未部署**） |
+| `scripts/252-monitor/deployed-252.tsv` | 台账：仓内 md5 已更新、状态仍 `drift`、原因写清 |
+| `scripts/audit/verify_892_local.sh` + `.sql` | 迁移单测（10 项断言） |
+| `scripts/audit/verify_892_patrol_ab.sh` + `.sql` | 逻辑 A/B（3 项断言） |
+| `scripts/audit/verify_892_patrol_e2e.sh` | ★★ 端到端（脚本实际生成的 SQL，两路判定对比） |
+| `scripts/ursmcheck/section_14335_test.go` | 仓内门（**21 条**） |
+
+### §143.35.2 迁移 892 的形态要点
+
+- **表**：`ursm_snapshot_slot_daily(day, granularity, slot, bucket_ts, rows)`，
+  主键 `(day, granularity, slot, bucket_ts)`；
+  ★ **`granularity` 必须有** —— hour 的桶是小时对齐、minute 是分钟对齐 ⇒ 混存会读出错的桶。
+- **函数**：`refresh_ursm_snapshot_slot_daily(p_days_back integer DEFAULT 1, p_granularity text DEFAULT 'hour')`
+  ⇒ ★★ **只有一个重载**（本地真库实测：两个都带默认参数 ⇒ `f(1)` 报 `not unique`；
+  ★ 而「给单参数版去掉默认值」**也救不了** ⇒ ⇒ **只保留一个函数是唯一可行形态**）。
+- **填充范围**：`[today - p_days_back, today)` ⇒ ★ **不含今天**（今天还在写）。
+- **保留期**：9 天（基线窗 7 天 + 2 天余量）⇒ 表本身不会单调增长。
+- ★★★ **迁移内做首次回填（8 天，两种粒度）** ——
+  ⇒ **这是部署的前置条件**：表若是空的，巡检读到「没有基线」⇒ 所有桶 NO-BASELINE
+  ⇒ ⇒ ★★★ **巡检会【安静地失明】**（比慢更坏：脚本照样成功退出，外部看不出来）。
+
+### §143.35.3 复核方法（可原样重跑）
+
+```bash
+# ── 1) ★ 迁移单测（本地真库，一次性库）
+bash scripts/audit/verify_892_local.sh
+
+# ── 2) ★ 逻辑 A/B（两路是否逐字等价）
+bash scripts/audit/verify_892_patrol_ab.sh
+
+# ── 3) ★★ 端到端（脚本实际生成的 SQL，两路判定是否一致）
+bash scripts/audit/verify_892_patrol_e2e.sh
+
+# ── 4) 仓内门
+GOCACHE=/tmp/gocache-p1437 go test ./scripts/ursmcheck/ -run 'TestSection14335' -count=1 -v
+```
+
+⇒ ⇒ ★ **本节落地的门**：
+
+```bash
+# §143.35 仓内门：迁移形态 / 回填 / 无重载歧义 / 两段独立 SQL / 桶对齐窗口 / 注册点 / 台账
+GOCACHE=/tmp/gocache-p1437 go test ./scripts/ursmcheck/ -run 'TestSection14335' -count=1 -v
+```
+
+### §143.35.4 ★ 收尾时才发现的登记点缺口（本轮真实缺陷，非事后补记）
+
+- **缺口本体**：892 起初只登记了 **5 处注册点里的 2 处**：
+
+  | 登记点 | 起初 | 现状 |
+  |---|---|---|
+  | `installer/cmd/llm-gw-installer/main.go`（`//go:embed` + 投递映射） | ✅ | ✅ |
+  | `installer/internal/dbinit/runner.go`（`StartupFiles`） | ✅ | ✅ |
+  | `installer/cmd/llm-gw-installer/embeddata/startup/892_*.sql`（副本） | ✅ | ✅ |
+  | `sql/schema/installed_startup_migrations.tsv`（TSV 登记） | ❌ **漏** | ✅ 用 `-update` 重建 |
+  | `scripts/apply-db-revision-sequence.sh`（投递通道 `files=()`） | ❌ **漏** | ✅ 补上 |
+  | `docs/db-changelog.md`（台账 + sha） | ❌ **漏** | ✅ 补上 |
+  | `sql/migrations/startup/892_*.down.sql`（回滚） | ✅ | ✅ |
+
+- ★★★ **为什么漏掉还能过「整包回归」**：§143.35 的门 `TestSection14335RegistrationPoints`
+  **只钉了 2 处**（runner.go + main.go）⇒ 其余 3 处漏了而门仍绿；
+  而 TSV 那条其实**是有门的**（`installer/internal/dbinit/startup_manifest_test.go`）——
+  ★★ **但它住在 `installer` 包里，不在 `./scripts/ursmcheck/` 的回归范围内**
+  ⇒ ⇒ ★★★ **「跑过了整包回归」不等于「所有包都跑过了」**
+  ⇒ ⇒ **同一仓里，一个门住在哪个包，决定了它默认会不会被执行**。
+- ★★★ **三处缺口的暴露方式各不相同**（这才是本节最值得记的）：
+  ① **TSV** —— 被 `installer/internal/dbinit` 的 manifest 门抓到
+     （门红原文：`manifest has 294 entries, StartupFiles has 295`）
+     ⇒ 修法是**用它自己的重建命令**
+     （`cd installer && go test ./internal/dbinit/ -run TestStartupManifest -update`）
+     ⇒ ★ **不要手改派生文件**（文件头自己写着「DO NOT EDIT BY HAND」）
+     ⇒ ★ 实测重建后 **diff 只新增 1 行**（后续索引整体 +1，头部未变）；
+  ② **db-changelog** —— 被 `internal/sqlguard.TestMigrationRegistryStaysContinuous` 抓到
+     （门红原文：`892_ursm_snapshot_slot_daily.sql（编号 892，在近邻窗口 [873, 892] 内）未登记进 docs/db-changelog.md`）
+     ⇒ ★ 该门按**磁盘侧最大编号**取窗口锚点（刻意不用台账侧）
+     ⇒ ⇒ **「磁盘上最新但台账没登记」必然落窗内**；
+  ③ **投递通道 `files=()`** —— ★★★ **当时【没有任何门能抓到】**
+     ⇒ ⇒ ★★ 这才是真正的死缺口：**迁移在升级库上会被静默跳过**
+     （脚本 warn-only + 部署侧只查文件存在）⇒ ⇒ **必须自己补门**。
+- ★★★★ **本轮的修法（门补进 ursmcheck 包）**：
+  `TestSection14335RegistrationPoints` 从 2 处扩到 **6 条断言 / 5 个文件**
+  （runner.go、`main.go` 的两处、`apply-db-revision-sequence.sh`、TSV、db-changelog）
+  ⇒ ★★ 每条断言**要求 needle 恰好出现一次**（`strings.Count(...) != 1` 即判红）
+  ⇒ ⇒ ★ **Contains 型门只保护「至少有一处」⇒ needle 不唯一会假绿**
+  （本轮已实测踩过：台账里「迁移 892」出现两次 ⇒ 改一处门仍绿）；
+  另加两条新门：`TestSection14335EmbeddataCopyIsByteIdentical`（两份副本**逐字**相同）
+  + `TestSection14335ChangelogShaIsMeasured`（台账 sha 必须是**文件实测值**）。
+  ⇒ 门 **19 条 → 21 条**；变异 **M1~M39 → M1~M44**
+  （新增 M40~M44 覆盖本节 4 类缺口）**44/44 全红且按预期红**，postflight 门绿 + 文件逐字还原。
+- ⚠★ **顺手订正一处自带的事实错误**：892 在 `runner.go` 的注释原写
+  「源表 `ursm_node_snapshot_min` 由启动序列建（**453/818**）」
+  ⇒ ★ **错**：`453_ursm_v2_node_snapshot_min.sql` **未在任何通道登记**
+  （投递通道 `files=()` / installer `StartupFiles` / TSV **三处都没有它**）
+  ⇒ 它已被 **baseline `sql/schema/01-schema.sql`** 吸收；
+  且 892 只用 baseline 的 `snapshot_ts` 一列 ⇒ **不依赖** 818 的 typed 列
+  ⇒ ⇒ **无迁移间顺序依赖**。
+  ⇒ ★ 教训：**注释里的「依赖某某迁移建的」本身也是断言**
+  ⇒ ⇒ 写的时候要**现场查那一条是否真在通道里**，而不是看它躺在 `sql/migrations/startup/` 目录下。
+
+### §143.35.5 ★ 顺带收窄一条守护 P0 的门（范围过宽 ⇒ 误伤下一个）
+
+- **触发**：本轮新增迁移 892 后，`sql/migrations/startup` 包的门
+  `TestUpMigrationsDoNotRecreateTheBrokenShape` 判红（门红原文）：
+
+  ```
+  892_ursm_snapshot_slot_daily.sql
+  declares PK [bucket_ts,day,granularity,slot]
+  writer needs [credential_id,raw_model_name,snapshot_ts,tenant_id]
+  ```
+
+- **根因（一行）**：★★ **那门的取法是「文件正文里【提到】`ursm_node_snapshot_min`
+  ⇒ 取文件里的【第一个】`PRIMARY KEY (…)`」** ⇒ ⇒ **范围过宽**：
+  任何「建了【另一张】带主键的表、同时又提到这张表」的迁移都会被误判成 offender。
+  ⇒ 而 892 建的是 `ursm_snapshot_slot_daily`（**它自己的表**），它只是**读**源表
+  ⇒ ⇒ **重放 892 根本不会碰 `ursm_node_snapshot_min` 的主键**
+  ⇒ ⇒ **它不是 landmine，是量具的盲区被我的迁移撞上了**。
+- ⚠★★ **这不是「一次误伤」，是【留给下一个人的同类陷阱】**：
+  今后任何「建带主键的新表、又提到 `ursm_node_snapshot_min`」的迁移都会撞上同一堵墙。
+- **修法（收窄取法，不改判据）**：把主键提取**限定到该表自身的声明语句**：
+  ① `ALTER TABLE [ONLY] [public.]<表> … ADD [CONSTRAINT x] PRIMARY KEY (…)` —— **优先**
+     （它是后发生的，对**最终形态**权威）；
+  ② 内联 `CREATE TABLE [IF NOT EXISTS] [public.]<表> ( … PRIMARY KEY (…) )`
+     —— 只看**建表语句自己的括号块**
+     （★ 必须做括号配对：PG 列类型自带括号 `numeric(10,2)`、
+     默认值可能是表达式 `DEFAULT (now())` ⇒ 一路正则扫会取错位置）。
+- ★★★ **收窄后【守卫力未被削弱】—— 三条变异逐条验证**
+  （可重跑脚本 `mutation_up_gate_narrow.py`）：
+
+  | 变异 | 做法 | 期望 | 实测 |
+  |---|---|---|---|
+  | N1 | 把 453 从 `knownUpReplayLandmines` 摘掉 | 红（**真凶仍被识别**） | **RED(as expected)** |
+  | N2 | 把 830 的 ALTER 主键改成 3 列 | 红（**ALTER 分支有力量**） | **RED(as expected)** |
+  | N3 | 把 453 的内联主键改成正确的 4 列 | 绿（**判据是数据驱动的**） | **GREEN(as expected)** |
+
+  ⇒ postflight：门绿 + 三个目标文件**逐字还原**（md5 校验）。
+  ⇒ 逐条复核覆盖：453（内联 3 列）**仍是 offender** ✔ /
+  463（ALTER 4 列）OK ✔ / 830（ALTER 4 列）OK ✔ /
+  818、875（只提到、不声明）跳过 ✔ / 892（建的是另一张表）跳过 ✔。
+- ★ **纪律**：★★ **改一条守护真实事故的门，必须用变异证明它的力量没被削弱** ——
+  「让门变绿」和「把门变准」是两件事，**前者容易得多**。
+
+### §143.35.6 ⚠ 回归中发现的【既有失败】（非本轮引入，已在干净 HEAD 上复核）
+
+- `internal/sessionv2mirror` 有 **3 条**门红：
+  `TestAbandonedTurnFlagIsSetOnEntryNotOnACopy` /
+  `TestAbandonedTurnPredicateIsGuardedByExistsFalse` /
+  `TestFinalSuccessFlagIsSetOnTheCallersEntry`。
+- ★★★ **已用 `git worktree` 拉 HEAD（`812e85c0f`）的干净副本复核：同样红**
+  ⇒ ⇒ **既有失败，与 §143.35 无关**（不涉及 892 / TSV / 巡检脚本）。
+- 它们的断言内容是「`client.go` 没在调用方的 entry 上设 `T0Missing` 标志
+  ⇒ 该标志会【每个走到该分支的请求都丢失】」⇒ 指向的是**产品侧**（v2 镜像写入路径），
+  **不在本轮 P11 的范围内** ⇒ ⇒ **登记为待查项，本轮不动**（动它要另开一轮并单独取证）。
+- ★ 教训：**「回归全绿」要问「在哪个提交上全绿」** ——
+  与否，本轮这条都不是「整包全绿」，如实记。
+
+★ 同族：[[先读量具再读产物]] · [[阴性结论要当缺陷一样复核]] ·
+[[自己上一节的结论也要复核]] · [[EXPLAIN 只证明「计划会选」]] ·
+[[PG 在规划期解析表名 ⇒ 「同一段 SQL 里写两路」行不通]] ·
+[[双引号里的反引号把 SQL 注释当命令执行]] · [[前提漂移]] ·
+[[「只改文件」≠「生效」：登记点要逐处对齐且每处都有门]] ·
+[[一个门住在哪个包，决定了它默认会不会被执行]]。
+
+### §143.35.7 ★ rebase 冲突处置 + 上游台账【编号列笔误】的订正（共享仓库）
+
+- **背景**：§143.35 提交后推送时，共享仓库已前进 **15 个提交**（`origin/main` = `8aac7b92a`）
+  ⇒ `git rebase origin/main` 撞上三个高危文件。
+
+- **① `sql/schema/installed_startup_migrations.tsv` ⇒ 【不用手改，用它自己的生成命令重建】**
+  ★ 冲突原因：上游新增了 `893_fresh_install_partition_prereq.sql`（`StartupFiles` 第 295 位），
+  而本轮的 892 在第 284 位 ⇒ 两边的尾部索引整体错位。
+  ⇒ 处置：`cd installer && go test ./internal/dbinit/ -run TestStartupManifest -update`
+  ⇒ 重建结果：**296 条**，892 在第 284 位、893 在第 295 位，**无冲突标记**。
+  ⇒ ★ **这个文件的头写着「DO NOT EDIT BY HAND」** ⇒ 派生文件一律用生成命令重建。
+
+- **② `LESSONS.md` ⇒ 追加型 ⇒ 冲突按【两侧全保留】解**
+  ★ 上游侧 394 行 + 本轮侧 135 行 ⇒ 合并后 **527,487 bytes**（上游 517,590 + 本轮增量）
+  ⇒ 逐行核对「每一侧的每一行都还在」⇒ **无内容丢失**。
+  ⇒ ★ 教训：这类文件**只能增不能减** ⇒ 解冲突时**选一侧 = 蒸发另一会话的过程记录**。
+
+- **③ `docs/db-changelog.md` ⇒ 追加型 ⇒ 同样两侧全保留，但发现上游一处笔误**
+  ⚠⚠ **上游 `7de986e78` 把「`890_drop_request_logs_v1_family.sql`」那行的
+  【编号列】改成了 `892`** —— 而**文件没改名、TSV 没改、`StartupFiles` 没改、
+  行内自述仍写着「本条**改号为 890**」** ⇒ ⇒ **且与本轮自己的 `| 892 |` 行撞号**。
+
+  ★★ **为什么 890 才是权威编号**（五个独立事实一致）：
+
+  | # | 事实源 | 值 |
+  |---|---|---|
+  | ① | 磁盘文件名 | `890_drop_request_logs_v1_family.sql` |
+  | ② | `installed_startup_migrations.tsv` | `282	890_drop_request_logs_v1_family.sql` |
+  | ③ | installer `StartupFiles` | `"890_drop_request_logs_v1_family.sql"` |
+  | ④ | 该行自述 | 「本条**改号为 890**」 |
+  | ⑤ | 生产 | 台账记着两次真实部署 `applying …/890_…` ⇒ ★ **文件名被生产 checksum 台账【冻结】** |
+
+  ⇒ ⇒ ★★ **处置：只订正台账里与事实不符的那一列**（编号列 892 → 890），
+  **不重命名文件** —— 因为生产已应用过该文件名 ⇒ 改名会让 checksum 台账
+  的文件名失配 ⇒ **有重放风险**。
+  ⇒ ⇒ 同一次提交里把 891 行的交叉引用「随 **892** 的 `DROP TABLE` 一起消失」
+  一并订正回「随 **890** 的 `DROP TABLE` 一起消失」（**做 DROP 的正是 890**）
+  ⇒ ⇒ 两行 891 去重保留一份（订正后两行只差这一个词）。
+  ⇒ ⇒ 订正后 postflight 断言全过：无「编号 892 指向 890 文件」的残留、
+  890 行恰好 1 行、891 行恰好 1 行且引用 890、本轮 `| 892 |` 行恰好 1 行。
+
+- ★ **通用式：两行台账抢同一个迁移号时，不要「选一行」——要先定【哪个号是权威】**：
+  ★ 判别动作 = 逐个列出事实源（**磁盘 / TSV / 注册表 / 行内自述 / 生产**）
+  ⇒ ★ **多数一致的那个才是权威** ⇒ ⇒ 少数派的那一列是笔误。
+  ⇒ ★★ 且要同时问一句「**改号/改名会不会动到生产**」
+  ⇒ 本例答案 = 会（文件名被 checksum 台账冻结）⇒ ⇒ **只改台账列，不改文件名**。
+
+### §143.35.8 ★ 顺手修掉 origin/main 上的【既有红】：上游 893 违反本仓锁守卫规则
+
+- **症状**：post-rebase 回归里 `installer/cmd/llm-gw-installer` 判红：
+
+  ```
+  迁移 893_fresh_install_partition_prereq.sql（#893）：含强锁 DDL 但没有
+  lock_timeout —— 它可能在等锁期间堵住全库（参见 §44）
+  ```
+
+- ★★★ **已用 `git worktree` 拉 `origin/main`（`e33e382d7`）的干净副本复核：同样红**
+  ⇒ ⇒ **上游本来就有的红**，不是本轮引入的。
+  ⇒ ⇒ **但本轮要推的提交正落在它上面** ⇒ 若不处理，main 保持红，
+  而下一个跑 installer 包测试的人会**误判成自己的锅** ⇒ ⇒ 顺手修掉。
+
+- **缺陷本体**：893 建当月/次月分区 ⇒ `CREATE TABLE ... PARTITION OF`
+  要拿父表的 **AccessExclusiveLock** ⇒ 无上限的锁等待会在等锁期间堵住全库
+  （2026-10-18 生产实测：一次迁移把 14 个网关会话堵了约 1.5 分钟）。
+  ⇒ **本仓规则**：870 号之后的迁移必须自带 `lock_timeout`
+  （门 `installer/cmd/llm-gw-installer/startup_ddl_lock_guard_gate_test.go`）。
+
+- **修法用本仓【既有惯例】，不是新发明**：
+  ★ 893 **没有显式事务**（三个 DO 块各自独立）⇒ `SET LOCAL` 离开事务块
+  只会被 PG 当成无效而告警 ⇒ **不生效**；
+  ⇒ ⇒ 而**本仓对同一形态的既有惯例就是 session 级 `SET`**：
+  871 / 877 / 887 / 888 四个迁移同样无显式事务、同样用 `SET lock_timeout`。
+  ⇒ ★ **不外泄**：installer 的 `applySQL` 对**每个文件单独起一次 psql**
+  ⇒ ⇒ session 级设置只作用于本文件这次执行。
+  ⇒ 取值 60s：与 870+ 迁移的通行值一致（872~892 的 `SET LOCAL` 都是 60s）；
+  命中即失败（55P03）而不是继续堵库 ⇒ **宁可让迁移失败，也不要让整库被一条迁移卡住**。
+
+- **连带同步（改一个迁移 ⇒ 三处必须一起动）**：
+  ① `embeddata/startup/893_*.sql` 副本（与 canonical **逐字相同**）；
+  ② `docs/db-changelog.md` 的 893 行 **sha**（实测值）：
+  `ffd47ced…` → `94b304545d6c3d6a641df938429e0ae39ba15854527c37fd7a3dedd22efbd2a3`；
+  ③ 迁移号与文件名**不变** ⇒ `installed_startup_migrations.tsv` 与投递通道
+  `files=()`（登记的是**文件名**，不是内容）⇒ **无需改动**。
+
+- **验证**：`installer/cmd/llm-gw-installer` 整包 **ok**（锁守卫门转绿）；
+  ★ **本地真库 ROLLBACK 实测**（`llm-gateway-pg`）：893 全文（含新增的 `SET`）
+  跑通，**exit=0**，18 个 default 分区 NOTICE 正常，**ROLLBACK 后无残留对象**；
+  三方 sha 现场一致（canonical / embeddata / 台账）。
+
+### §143.35.9 ★ 第二个 origin/main 既有红：冲突标记门的【子串】口径误伤散文引用
+
+- **症状**：rebase 后 `scripts/ursmcheck` 判红：
+
+  ```
+  LESSONS.md 里还有合并冲突标记 "<<<<<<< " —— 冲突没有被真正解决
+  ```
+
+- ★★★ **已用 `git worktree` 拉 `origin/main`（`a4d8a13bb`）的干净副本复核：同样红**
+  ⇒ ⇒ **上游本来就有的红**（与 §143.35.8 的 893 锁守卫同批）。
+
+- **根因（一行）**：★ 门 `TestLessonsFileHasNoConflictMarkers` 的检测口径是
+  **`strings.Contains(text, "<<<<<<< ")`（子串）** ⇒ ⇒ **把正文里【引用】这些标记的散文
+  也判成冲突**。
+  ⇒ ⇒ **实测踩到的那一段就是上游自己写的**：他们记「为了『两侧都保留』，写了个 Python
+  脚本按 `<<<<<<< HEAD` / `=======` / `>>>>>>> <sha> (message)` 三个标记**切片拼接**」
+  ⇒ 那些标记写在**反引号里、行中** ⇒ 被子串检查误判。
+
+- **修法（口径从子串改成行首锚定）**：
+  ★ git 写出的真冲突标记**必在第 0 列**（opener / closer 行首、separator 独占一行）
+  ⇒ ⇒ **行首锚定既不漏真冲突、也不再误伤行中的散文引用**。
+  ⇒ ★ separator 那条本来就要求「独占一行」⇒ 也保留。
+  ⇒ ★★ 顺带把「只查 separator」那条**降级去掉**：git 的冲突区**必然同时**有
+  opener 与 closer ⇒ 只看 opener/closer 就够；而「一行正好是七个等号」与
+  markdown 的 setext 标题下划线**不可区分** ⇒ 过程文档里引用这个形态是合法的
+  ⇒ 单查它会把「文档在讲这件事」判成冲突（★ 本轮 §143.35.9 自己就踩到了）。
+
+- ★★ **改检测口径必须双向验**（否则「把门改得不那么红」很容易）：
+  | 用例 | 做法 | 期望 | 实测 |
+  |---|---|---|---|
+  | P1 | 在 LESSONS.md 末尾注入**行首**的真冲突标记 | 红 | **RED(as expected)** |
+  | P2 | 保留仓库里那段**行中散文引用** | 绿 | **GREEN(as expected)** |
+  ⇒ postflight：门绿 + LESSONS.md **逐字还原**（md5 校验）。
+  ⇒ ★ P2 是**阳性对照**（若 P2 变红 ⇒ 说明口径没改对）；P1 是**守卫力对照**
+  （若 P1 变绿 ⇒ 说明门被改成了恒绿门）。

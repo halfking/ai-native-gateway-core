@@ -1,6 +1,7 @@
 package bg
 
 import (
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -63,10 +64,10 @@ func TestCandidateFailureMonitorClassifyStale(t *testing.T) {
 //
 // 2026-10-19/20 生产上观察到的形态（failures 完全冻结、requests 仍有）：
 //
-//   last_insert_at:   2026-10-17 02:48 (failure writer 已 72h+ 没写)
-//   last_request_at:  2026-10-19 10:05 (request 端 5 分钟内仍有行)
-//   source_max_failure_id: 40 (failure writer 曾写入 ⇒ 视作 S4 退役)
-//   source_max_request_id: 任意正值
+//	last_insert_at:   2026-10-17 02:48 (failure writer 已 72h+ 没写)
+//	last_request_at:  2026-10-19 10:05 (request 端 5 分钟内仍有行)
+//	source_max_failure_id: 40 (failure writer 曾写入 ⇒ 视作 S4 退役)
+//	source_max_request_id: 任意正值
 //
 // 期望：slog.Warn（不是 slog.Error），并把 source_max_failure_id /
 // source_max_request_id 两个字段都透传出来。
@@ -82,23 +83,33 @@ func TestCheckStalenessLogsWarnOnS4StopScenario(t *testing.T) {
 	if j := strings.Index(body, "\nfunc "); j >= 0 {
 		body = body[:j]
 	}
-
-	// 1. 字段透传：source_max_failure_id 必须写在日志里（与 source_max_aggregation_id
-	//    同形态），没有它就没法诊断「S4 停写 vs writer 真坏」。
-	if !strings.Contains(body, "source_max_failure_id") {
-		t.Fatalf("checkStaleness 必须透传 source_max_failure_id 字段；got:\n%s", body)
+	// ★★ 必须先**剥注释**再断言（2026-10-21 实测出的判据缺陷）：
+	//   checkStaleness 的**注释里**就写着「source_max_failure_id / source_max_request_id
+	//   两个诊断字段透传」⇒ 原来那两条 `strings.Contains(body, ...)` 断言
+	//   **可以被注释满足** ⇒ 把日志里的字段真删掉，这道门**仍然全绿**
+	//   （实测证据：scripts/mutate-candidate-failure-monitor-classify-gate.py 的
+	//   M5 变异「把两个诊断字段换成不含目标词的形状」⇒ 变异后判据全绿）。
+	//   ⇒ 「判据一旦能在注释里被满足，就不是判据」。
+	clean := stripGoSourceComments(body)
+	// ⚠ 第二重陷阱：被提取的函数体里**还包含** `const sourceMaxRequestIDKey =
+	//   "source_max_request_id"` 这一行（它在 checkStaleness 之后、下一个 `func `
+	//   之前）⇒ 光靠「这个字面量出现过」仍然会被**常量声明**满足 ⇒
+	//   下面两条断言钉的是**键值对形状**（key + value 变量），那个形状只出现在
+	//   日志调用里。
+	if !cfmFailureIDFieldRE.MatchString(clean) {
+		t.Fatalf("checkStaleness 必须透传 source_max_failure_id 字段（键值对形状）；got:\n%s", clean)
 	}
-	if !strings.Contains(body, sourceMaxRequestIDKey) {
-		t.Fatalf("checkStaleness 必须透传 %s 字段；got:\n%s", sourceMaxRequestIDKey, body)
+	if !cfmRequestIDFieldRE.MatchString(clean) {
+		t.Fatalf("checkStaleness 必须透传 %s 字段（键值对形状）；got:\n%s", sourceMaxRequestIDKey, clean)
 	}
 
 	// 2. SQL 必须同时读 max(aggregation_id)（failure 侧）与 max(id)（request 侧）。
 	//    只有 max(ts) 不能区分 S4 退役与 writer 真坏。
-	if !strings.Contains(body, "max(aggregation_id) FROM candidate_failure_logs_with_current_month") {
-		t.Fatalf("checkStaleness 必须读 max(aggregation_id) FROM candidate_failure_logs_with_current_month；got:\n%s", body)
+	if !strings.Contains(clean, "max(aggregation_id) FROM candidate_failure_logs_with_current_month") {
+		t.Fatalf("checkStaleness 必须读 max(aggregation_id) FROM candidate_failure_logs_with_current_month；got:\n%s", clean)
 	}
-	if !strings.Contains(body, "max(id) FROM") {
-		t.Fatalf("checkStaleness 必须读 request 侧的 max(id) 用于 source_max_request_id；got:\n%s", body)
+	if !strings.Contains(clean, "max(id) FROM") {
+		t.Fatalf("checkStaleness 必须读 request 侧的 max(id) 用于 source_max_request_id；got:\n%s", clean)
 	}
 
 	// 3. S4 停写形态走 WARN，不是 ERROR：函数体里必须出现 slog.Warn，且
@@ -106,20 +117,20 @@ func TestCheckStalenessLogsWarnOnS4StopScenario(t *testing.T) {
 	//    active; likely intentional stop-write」——这是判定方向的钉子。
 	//    ⚠ 防回归：若有人改回 slog.Error 而不删 slog.Warn，这一条会把 warning
 	//    判定为「存在但 msg 文案变了」⇒ 不会误放过去。
-	if !strings.Contains(body, `slog.Warn("candidate_failure_monitor: failure log is stale (failure writer previously active; likely intentional stop-write)"`) {
-		t.Fatalf("checkStaleness 的 S4 停写分支必须 slog.Warn(msg with 'failure writer previously active; likely intentional stop-write')；got:\n%s", body)
+	if !strings.Contains(clean, `slog.Warn("candidate_failure_monitor: failure log is stale (failure writer previously active; likely intentional stop-write)"`) {
+		t.Fatalf("checkStaleness 的 S4 停写分支必须 slog.Warn(msg with 'failure writer previously active; likely intentional stop-write')；got:\n%s", clean)
 	}
 
 	// 4. writer 真坏走 ERROR：必须保留一条 slog.Error 路径（msg 文案以
 	//    「failure writer never wrote any rows」为特征）。这一条是 negative
 	//    space：删了它就会让 S4 停写和 writer 真坏共用同一形态，告警面再次混淆。
-	if !strings.Contains(body, `slog.Error("candidate_failure_monitor: failure log is stale (failure writer never wrote any rows)"`) {
-		t.Fatalf("checkStaleness 的 writer 真坏分支必须 slog.Error(msg with 'failure writer never wrote any rows')；got:\n%s", body)
+	if !strings.Contains(clean, `slog.Error("candidate_failure_monitor: failure log is stale (failure writer never wrote any rows)"`) {
+		t.Fatalf("checkStaleness 的 writer 真坏分支必须 slog.Error(msg with 'failure writer never wrote any rows')；got:\n%s", clean)
 	}
 
 	// 5. 分类器必须被调用（不直接写 if-else，必须走纯函数，否则单测覆盖不到）：
-	if !strings.Contains(body, "candidateFailureMonitorClassifyStale(fid)") {
-		t.Fatalf("checkStaleness 必须调用 candidateFailureMonitorClassifyStale(fid)；got:\n%s", body)
+	if !strings.Contains(clean, "candidateFailureMonitorClassifyStale(fid)") {
+		t.Fatalf("checkStaleness 必须调用 candidateFailureMonitorClassifyStale(fid)；got:\n%s", clean)
 	}
 
 	// 6. S4 停写判定方向正确：分类器把 fid>0 映射为 stalenessLikelyStopWrite，
@@ -132,15 +143,15 @@ func TestCheckStalenessLogsWarnOnS4StopScenario(t *testing.T) {
 	// ⚠ 不再用「slog.Warn 与 slog.Error 之间的子串」那种位置断言：switch 的写法
 	// 可以把 case 标签放在 slog.Warn 之前也可以放在之后，单测不该把实现绑死到
 	// 某一种排版。改为「switch 块内文本满足三个不变式」即可。
-	switchStart := strings.Index(body, "switch candidateFailureMonitorClassifyStale(fid)")
+	switchStart := strings.Index(clean, "switch candidateFailureMonitorClassifyStale(fid)")
 	if switchStart < 0 {
-		t.Fatalf("checkStaleness 必须用 switch candidateFailureMonitorClassifyStale(fid)；got:\n%s", body)
+		t.Fatalf("checkStaleness 必须用 switch candidateFailureMonitorClassifyStale(fid)；got:\n%s", clean)
 	}
-	switchEnd := strings.Index(body[switchStart:], "\n\t}")
+	switchEnd := strings.Index(clean[switchStart:], "\n\t}")
 	if switchEnd < 0 {
-		t.Fatalf("switch 块找不到收尾 \\n\\t}；got:\n%s", body[switchStart:])
+		t.Fatalf("switch 块找不到收尾 \\n\\t}；got:\n%s", clean[switchStart:])
 	}
-	switchBody := body[switchStart : switchStart+switchEnd]
+	switchBody := clean[switchStart : switchStart+switchEnd]
 
 	// slog.Warn / slog.Error 都是多行调用，msg 在单独一行 ⇒ 只断言开括号
 	// 一行（含 msg 字面量），别断言收 `)` —— 收括号在另一行，含进去会把
@@ -188,3 +199,147 @@ func TestFailureLogIsStaleKeepsQuietGatewayBaseline(t *testing.T) {
 
 // mustReadSourceBg 在 pkg 内 bg/credential_selfcheck_pick_test.go:128 已
 // 定义（§9.26 提取助手），本文件直接复用，避免双份提取逻辑漂移。
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 2026-10-21：判据自身的修复（实测发现的**判据缺陷**，不是产品缺陷）
+//
+// 现象：把 checkStaleness 日志里的两个诊断字段换成不含目标词的形状
+//   （`"src_max_failure_id"` / `"src_max_request_id"`）⇒ 这道门**仍然全绿**。
+//
+// 根因（两重）：
+//   ① checkStaleness 的**注释**里就写着「source_max_failure_id / source_max_request_id
+//      两个诊断字段透传」⇒ 任何对**原始文本**做的 `strings.Contains` 断言
+//      **可以被注释满足** ⇒ 「判据一旦能在注释里被满足，就不是判据」。
+//   ② 被提取的函数体里**还包含** `const sourceMaxRequestIDKey = "source_max_request_id"`
+//      这一行（它在 checkStaleness 之后、下一个 `func ` 之前）
+//      ⇒ 光靠「这个字面量出现过」连**常量声明**都能满足 ⇒ 必须钉「键值对形状」。
+//
+// 修法：① 先剥注释（下面的 stripGoSourceComments）；② needle 改成 key+value 的
+//   **键值对形状**（只可能出现在日志调用里）。两处都改完，M5 变异转红。
+// ─────────────────────────────────────────────────────────────────────────────
+
+// cfmFailureIDFieldRE / cfmRequestIDFieldRE 钉「诊断字段以**键值对**形式出现在日志里」。
+//
+// ⚠ 为什么不用裸字面量：裸字面量会被**注释**（根因①）与**常量声明**（根因②）满足；
+//
+//	而键值对形状（key 紧跟 value 变量）只出现在 slog 调用里 ⇒ 删掉字段必红。
+var (
+	cfmFailureIDFieldRE = regexp.MustCompile(`"source_max_failure_id"\s*,\s*fid`)
+	cfmRequestIDFieldRE = regexp.MustCompile(`sourceMaxRequestIDKey\s*,\s*rid`)
+)
+
+// stripGoSourceComments 去掉 Go 源码里的行注释与块注释，**保留字符串字面量**。
+//
+// ★ 为什么必须有它：源码断言一旦能在注释里被满足，就不是判据。
+//
+//	（仓内同款纪律见 cmd/gateway/dual_read_gate_test.go 的 stripGoComments、
+//	  cmd/tools/validate_sessions_v2/loader_test.go、autoupdate/testschema_guard_test.go。）
+//
+// ⚠ 与仓内另几处实现的差别：那几个用正则（**不解析字面量**）⇒ 字符串里的 `//`
+//
+//	会被吃掉。本实现是**状态机**（认得解释字符串 / 原始字符串 / rune 字面量）
+//	⇒ 不会剥过头（见 TestStripGoSourceCommentsKeepsCodeAndLiterals 的第二腿）。
+func stripGoSourceComments(src string) string {
+	var b strings.Builder
+	b.Grow(len(src))
+	const (
+		stCode = iota
+		stLineComment
+		stBlockComment
+		stInterpretedString
+		stRawString
+		stRune
+	)
+	state := stCode
+	for i := 0; i < len(src); i++ {
+		c := src[i]
+		switch state {
+		case stCode:
+			switch {
+			case c == '/' && i+1 < len(src) && src[i+1] == '/':
+				state = stLineComment
+				i++
+			case c == '/' && i+1 < len(src) && src[i+1] == '*':
+				state = stBlockComment
+				i++
+			case c == '"':
+				state = stInterpretedString
+				b.WriteByte(c)
+			case c == '`':
+				state = stRawString
+				b.WriteByte(c)
+			case c == '\'':
+				state = stRune
+				b.WriteByte(c)
+			default:
+				b.WriteByte(c)
+			}
+		case stLineComment:
+			// 行注释的内容整体丢弃，但**保留换行** ⇒ 行结构不变（后续按行/缩进定位仍成立）
+			if c == '\n' {
+				state = stCode
+				b.WriteByte(c)
+			}
+		case stBlockComment:
+			if c == '*' && i+1 < len(src) && src[i+1] == '/' {
+				state = stCode
+				i++
+			}
+		case stInterpretedString:
+			b.WriteByte(c)
+			if c == '\\' && i+1 < len(src) {
+				i++
+				b.WriteByte(src[i])
+			} else if c == '"' {
+				state = stCode
+			}
+		case stRawString:
+			b.WriteByte(c)
+			if c == '`' {
+				state = stCode
+			}
+		case stRune:
+			b.WriteByte(c)
+			if c == '\\' && i+1 < len(src) {
+				i++
+				b.WriteByte(src[i])
+			} else if c == '\'' {
+				state = stCode
+			}
+		}
+	}
+	return b.String()
+}
+
+// TestStripGoSourceCommentsKeepsCodeAndLiterals 是剥注释器自己的**两腿自证**：
+//
+//	① **该剥的剥掉了**（行注释 / 块注释里的字样不再出现，代码本身还在）；
+//	② **不该剥的没剥**（字符串字面量里的 `//`、原始字符串里的 `/* */`、rune `'/'`）。
+//
+// ⚠ 只有第一腿 ⇒ 剥过头（把字面量吃掉）这类缺陷会隐形；只有第二腿 ⇒
+//
+//	「剥不掉」这类缺陷会隐形。两腿都在，剥注释器自己才是被量的。
+func TestStripGoSourceCommentsKeepsCodeAndLiterals(t *testing.T) {
+	// ① 该剥的剥掉了
+	in := "codeA\n// source_max_failure_id only in a comment\ncodeB\n/* source_max_request_id */\ncodeC\n"
+	out := stripGoSourceComments(in)
+	if strings.Contains(out, "source_max_failure_id") {
+		t.Fatalf("行注释没被剥掉 ⇒ 源码断言可被注释满足；got:\n%s", out)
+	}
+	if strings.Contains(out, "source_max_request_id") {
+		t.Fatalf("块注释没被剥掉 ⇒ 源码断言可被注释满足；got:\n%s", out)
+	}
+	for _, keep := range []string{"codeA", "codeB", "codeC"} {
+		if !strings.Contains(out, keep) {
+			t.Fatalf("剥注释把代码 %q 也吃掉了；got:\n%s", keep, out)
+		}
+	}
+	// ② 不剥过头：字面量里的斜杠必须留着
+	in2 := "url := \"http://x/y\"\nraw := `/* not a comment */`\nr := '/'\n"
+	out2 := stripGoSourceComments(in2)
+	for _, keep := range []string{"http://x/y", "/* not a comment */", "'/'"} {
+		if !strings.Contains(out2, keep) {
+			t.Fatalf("剥过头了：字面量 %q 被吃掉；got:\n%s", keep, out2)
+		}
+	}
+}
