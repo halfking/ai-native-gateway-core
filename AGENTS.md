@@ -117,6 +117,27 @@
 > 变异 M1~M6 全红并全部还原（md5 逐字校验）——
 > ⚠ **M2 首轮 GREEN 暴露门有漏洞**（没钉住「孤儿表」这个核心概念）⇒ 补 needle 后复验变红。
 > 完整记录见 runbook `§143.22`。
+> **2026-10-20 §143.23 轮（本会话）**：把 §143.22 的「推演，不是实测」缺口用
+> **本地真库**闭合（**对生产写入 = 0**，一次性库 `itgate_14323`，退出即 DROP）：
+> ★★★★★ **缺陷②已实测复现**并拿到**报错原文**（不是 DDL 推理）：
+> `ERROR: relation "credential_model_index_2026_09" is not a partition of relation
+> "credential_model_index"` ⇒ 事务回滚可验证（dst 0 个 / 源 **345,600 行**仍在）
+> ⇒ **「静默失败」得到实测确认**；
+> ★★★★★ **修法 A+C 实测有效**（同一孤儿表）：`success / 345,600 / t`，
+> archive 拿到全部行、源表消失、WARNING 正确发出；
+> ★★★★ **回归 + 幂等同时通过**：对**仍在父表下**的 10 月分区 ⇒ `success / 14,400 / t`
+> （原 DETACH+DROP 路径未破坏）；再跑 ⇒ `skipped / 0 / f`；
+> ⇒ ⇒ **修法 A/C 是零语义风险的缺陷修复**，且**函数签名与返回形状逐字不变**
+> ⇒ ⇒ **Go 侧 `runArchive` 零改动**；且 `CREATE OR REPLACE` 在形状不变时是**替换**
+> ⇒ **无需 DROP 旧函数**（无重载残留、无调用窗口）。
+> ⚠ **诚实边界**：本地镜像 citus 13.3-1 **不含 `columnar` AM** ⇒ **只测了 heap 路径**
+> ⇒ **生产 30 万行搬 columnar 的耗时仍未量化** ⇒ **11-03 的超时风险未被消除**。
+> ⚠ **本节未写迁移、未改注册点 ⇒ 生产行为未变**（落地还差 7 处，见 runbook §143.23.4）。
+> 门 `scripts/ursmcheck/section_14323_local_verification_test.go`（新，4 条）、
+> 变异 M1~M4 全红并全部还原（md5 逐字校验）；
+> ★ 可重跑实测脚本入仓：`scripts/audit/verify_archive_orphan_local.py`
+> （**函数体由脚本从仓内 654 迁移提取**，只替换 `USING columnar`→`USING heap` 一处）。
+> 完整记录见 runbook `§143.23`。
 
 ## 经验反馈闭环（vibe-coding Rule 66）
 

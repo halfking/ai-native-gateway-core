@@ -36818,3 +36818,138 @@ GOCACHE=/tmp/gocache-p1437 go test ./scripts/ursmcheck/ -run 'TestRunbook14322' 
 [[阴性结论要当缺陷一样复核]] · [[自己上一节的结论也要复核]] ·
 [[跨节订正前先自问「我要订正的这条真的错了吗」]] · [[保留期是最大杠杆]] ·
 [[「读不到」与「没有」返回值同形]]。
+
+## §143.23 本地真库实测：缺陷②复现 + 修法 A/C 验证（2026-10-20）
+
+### §143.23.0 结论先行
+
+§143.22 留下一个明确的缺口：**「11-03 会成功」是推演，不是实测**（第 5 步耗时未量化）。
+本节用**本地真库**把这个缺口从「推演」变成「实测」——**对生产的写入 = 0**
+（一次性库 `itgate_14323`，退出即 DROP）。产出三条：
+
+1. ★★★★★ **缺陷 ② 已实测复现**，并拿到**报错原文**（不是 DDL 推理）：
+   ```
+   ERROR:  relation "credential_model_index_2026_09" is not a partition of relation "credential_model_index"
+   CONTEXT:  SQL statement "ALTER TABLE credential_model_index DETACH PARTITION credential_model_index_2026_09"
+   PL/pgSQL function archive_credential_model_index(date) line 82 at EXECUTE
+   ```
+   ⇒ 事务回滚可验证：**dst 分区 0 个**、**源孤儿表 345,600 行仍在** ⇒
+   ⇒ **「静默失败」得到实测确认**（失败语句在 `pg_stat_statements` 里完全不可见）。
+2. ★★★★★ **修法 A + C 实测有效**（同一孤儿表场景）：
+   `status='success' / rows_migrated=345,600 / partition_dropped=t`，
+   **archive 拿到全部 345,600 行**、**源表消失**、**WARNING 正确发出**
+   （`target ... is detached from credential_model_index (orphan table); archiving via direct copy + DROP`）。
+3. ★★★★ **回归与幂等同时通过**：修法版对**仍在父表下**的 10 月分区
+   ⇒ `success / 14,400 / t` ⇒ **原 DETACH+DROP 路径未被破坏**；
+   再跑一次 ⇒ `skipped / 0 / f` ⇒ **幂等成立**。
+   ⇒ ⇒ **修法 A/C 是零语义风险的缺陷修复**，且**函数签名与返回形状逐字不变**
+   ⇒ ⇒ **Go 侧 `runArchive` 零改动**。
+
+⚠ **诚实边界（关键）**：本地镜像 `llm-gateway-pg` 的 citus 13.3-1 **不含 `columnar` access method**
+（实测 `access method "columnar" does not exist`）⇒ **本地只测了 heap 路径**。
+⇒ ⚠★ **生产 11-03 的「30 万行搬进 columnar」的耗时**仍然**未量化**
+（本地是 heap + 本地盘，量级不可搬用）⇒ ⇒ **11-03 的超时风险仍在**（见 §143.22 结论 4）。
+
+### §143.23.1 ★ 本地为什么能测、怎么保证测的是「同一份逻辑」
+
+| 约束 | 处理 |
+|---|---|
+| 本地无 `columnar` AM | 被测函数体里的 **`USING columnar` → `USING heap`（唯一一处替换）** |
+| 其余逻辑 | ★ **逐字不变**：DETACH 收尾、`col_list` 构造、`EXCEPT ALL` 幂等比对、`skipped` 分支、advisory lock |
+| 「抄错版本」风险 | ★ **函数体由脚本从仓内 `sql/migrations/startup/654_archive_credential_model_index_detach_drop.sql` 提取**（正则取 `CREATE OR REPLACE FUNCTION … $$;` 段）⇒ 不手抄 |
+| 场景同构 | 父表 RANGE 分区 + 月分区 + archive 父表 + **3 个 `ON ONLY` 索引**（与生产同形态） |
+| 数据量 | 09 月分区 **345,600 行**（5 分钟粒度 × 40 组 × 26 天）、10 月分区 **14,400 行** ⇒ 与生产的 301,255 行**同量级** |
+
+⇒ ⇒ ★★ **可重跑脚本（入仓）**：`scripts/audit/verify_archive_orphan_local.py`
+⇒ ★ **它不硬编码任何密码**（`docker exec` 走容器内本地认证）⇒ 可安全入仓。
+
+### §143.23.2 ★ 五个场景的实测读数
+
+| 场景 | 前置 | 期望 | 实测 |
+|---|---|---|---|
+| **S1** | 目标分区**在父表下** | 654 走原路径 | ✔ 成功（见 S4 回归） |
+| **S2** | 09 月分区被 `ALTER TABLE … DETACH PARTITION`（**复现迁移 337 的形态**） | **654 报错 + 事务回滚** | ✔ **ERROR**：`relation "credential_model_index_2026_09" is not a partition of relation "credential_model_index"`；`dst_2026_09_exists=0`；`src_orphan_rows=345,600`（**回滚确认**） |
+| **S3** | 同一孤儿表 | **885 修法版 success** | ✔ `success / 345,600 / t`；`archived_rows=345,600`；`src_still_exists=0`；WARNING 正确发出 |
+| **S4** | 10 月分区**仍在父表下** | **回归：仍走 DETACH+DROP** | ✔ `success / 14,400 / t`；`src_2026_10_exists=0`；`parent_visible_rows=0`；`archived_2026_10=14,400` |
+| **S5** | 再跑一次（源已不存在） | **skipped** | ✔ `skipped / 0 / f` |
+
+⇒ ⇒ ★★ **「孤儿表对读方不可见」也被实测**：S2 前置读数
+`orphan_readable=345,600`（直读孤儿表可读）而 `visible_via_parent=0`（父表查不到）
+⇒ ⇒ 与 §143.22.4 的推论一致 ⇒ **这是「数据还在但读方看不见」的机制**（不是丢失）。
+
+### §143.23.3 ★ 修法 A/C 的已验证实现（**函数签名与返回形状逐字不变 ⇒ Go 侧零改动**）
+
+```sql
+-- ① 判定源表是否仍在父表下（孤儿表 ⇒ src_attached = false）
+SELECT EXISTS (
+    SELECT 1 FROM pg_inherits i
+    JOIN pg_class p ON p.oid = i.inhparent
+    WHERE i.inhrelid = to_regclass(src_part)
+      AND p.relname = 'credential_model_index'
+) INTO src_attached;
+
+-- ② 修法 C：不是父表分区 ⇒ 告警（把「静默失败」变成可观测）
+IF NOT src_attached THEN
+    RAISE WARNING 'archive_credential_model_index: target % is detached from credential_model_index (orphan table); archiving via direct copy + DROP', src_part;
+END IF;
+
+-- ③ 修法 A：仍在父表下 ⇒ DETACH + DROP；是孤儿表 ⇒ 只 DROP
+--   （对孤儿表执行 DETACH PARTITION 必然报错 —— 654 的收尾动作，已实测复现）
+IF src_attached THEN
+    EXECUTE format('ALTER TABLE credential_model_index DETACH PARTITION %I', src_part);
+END IF;
+EXECUTE format('DROP TABLE %I', src_part);
+```
+
+⇒ ⇒ ★ **为什么不需要 DROP 旧函数**：`CREATE OR REPLACE FUNCTION` 在**签名与返回形状不变**时
+是**替换**而非**新增重载** ⇒ ⇒ 无重载残留、无「无参调用静默走旧函数」的坑（§143.21.4 记的陷阱），
+且 ⇒ **没有 DROP 造成的调用窗口**。
+
+### §143.23.4 ★ 落地还差什么（**待办，不是已完成**）
+
+⚠⚠⚠ **本节没有写迁移文件，也没有改任何注册点** ⇒ **生产上跑的还是 654**（缺陷仍在）。
+落地需要（**每一步都容易漏，漏了就是「改了等于没改」**）：
+
+| # | 位置 | 动作 |
+|---|---|---|
+| 1 | `sql/migrations/startup/885_archive_credential_model_index_orphan.sql` | 新建（§143.23.3 的实现，`CREATE OR REPLACE`，**不 DROP**） |
+| 2 | `sql/migrations/startup/885_….down.sql` | 回滚体（恢复 654 的函数体） |
+| 3 | `installer/cmd/llm-gw-installer/embeddata/startup/885_….sql` + `.down.sql` | installer 实际执行的副本 |
+| 4 | `installer/cmd/llm-gw-installer/main.go` | `//go:embed` + map 条目 |
+| 5 | `installer/internal/dbinit/runner.go` | 迁移顺序列表 |
+| 6 | `scripts/apply-db-revision-sequence.sh` + `sql/schema/installed_startup_migrations.tsv` + `docs/db-changelog.md` | 台账三处 |
+| 7 | `sql/objects/functions/`（若该族有对象源） | 对象源同步 |
+
+⇒ ⇒ ★ **本节不代做这一步的原因**：它属于**生产写**（部署后改变行为）⇒ 需属主授权；
+⇒ 且 §143.22 已判定它「不撞语义决策」⇒ **可以随时落地，不需要重新论证**。
+
+### §143.23.5 诚实边界
+
+- ⚠ **本节对生产的写入 = 0**（一次性本地库 `itgate_14323`，已 DROP）。
+- ⚠ **本地只测了 heap 路径**（无 columnar AM）⇒ **生产 columnar 路径的耗时仍未量化**
+  ⇒ ⇒ **11-03 的超时风险没有被本节消除**（§143.22 结论 4 仍然成立）。
+- ⚠ **本节未写迁移、未改注册点** ⇒ **生产行为未变**（见 §143.23.4）。
+- ⚠ **本地测的是「函数行为」，不是「整条调度链」**：
+  调度（`now.Day() <= 3` + `twoMonthsAgo`）与 tick 时机的风险（跨午夜导致 day-3 错过）
+  **仍未闭合**（§143.22 已登记）。
+- ⚠ **「行数守恒」在本地成立**（345,600 = 345,600）⇒ 但生产 301,255 行的 columnar 写入
+  是否同样守恒，**属推演**（生产侧唯一的 columnar 先例是 `routing_decision_log` 族）。
+
+### §143.23.6 复核方法（可原样重跑）
+
+```bash
+# ★ 本地真库实测（一次性库，退出即 DROP；不硬编码密码）
+python3 scripts/audit/verify_archive_orphan_local.py
+```
+
+⇒ ⇒ ★ **本节落地的门**（不连库，可原样重跑）：
+
+```bash
+# §143.23 文档门：实测读数 / 修法实现 / 落地待办 / 诚实边界
+GOCACHE=/tmp/gocache-p1437 go test ./scripts/ursmcheck/ -run 'TestRunbook14323' -count=1 -v
+```
+
+★ 同族：[[先读量具再读产物]] · [[0 命中的第一嫌疑是量具坏了]] ·
+[[阴性结论要当缺陷一样复核]] · [[自己上一节的结论也要复核]] ·
+[[形变类缺陷可从 DDL 直接推出]] · [[「0 调用」有三种成因]] ·
+[[本地真库是一次性库不是共享库]]。
