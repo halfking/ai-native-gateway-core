@@ -36299,6 +36299,27 @@ logging_collector          = off
 ⇒ ⇒ ★ **附带**：211 的 `llm_gateway` **落后 13 个迁移**（869 vs 882）⇒
 且 `llm_gateway_pre_cutover_20261014`（**1,169 MB**）是 10-14 切换遗留、未清理 ⇒ **磁盘登记项**。
 
+> **订正横幅十九（2026-10-21，§143.39 就地订正本节 §143.20.4 的「附带」与 C5 行）**
+>
+> ★★★★ **原文保留**：
+> > 「⇒ ⇒ ★ **附带**：211 的 `llm_gateway` **落后 13 个迁移**（869 vs 882）⇒
+> > 且 `llm_gateway_pre_cutover_20261014`（**1,169 MB**）是 10-14 切换遗留、未清理 ⇒ **磁盘登记项**。」
+> > （C5 行同义：「★★★ **211 迁移落后 13 个（869 vs 882）+ `llm_gateway_pre_cutover_20261014` 1,169 MB 未清理**」）
+>
+> ⇒ ★★★ **「落后 13 个迁移」这个表述是错的** —— 它是**台账口径**（`schema_migrations` 最大 869），
+>   不是**形态口径**。
+> ⇒ ★ **实测反证**：211 上 870~889 里**绝大多数对象都已存在**（870/871/873/874/877/878/882
+>   的索引、883/884 的视图全在）⇒ **台账稀疏 ≠ 形态落后**。
+> ⇒ ⇒ ★★ **211 与 252 的真实形态差集 = 5 个对象**（`host`/`tags` 两列 × 两侧 +
+>   `idx_session_turns_search_fts` + 888 的两个 join 索引），另有 2 个 888 要删的索引还在。
+> ⇒ ⇒ ★★★ **而那 2 个列缺口带来一条**与 §143.38 方向相反**的顺序约束**：
+>   **211 必须「先应用迁移 885 → 再部署新二进制」**，否则写路径 42703（且 boot 不会失败）。
+> ⇒ ⇒ ★★ **方法论**：**「迁移水位」是台账口径，「形态」是对象存在性口径**；
+>   ★ **量具背离一旦被观察到一次，就必须推广到全量** —— 本节 §143.20 当时只对 877 一条
+>   观察到，却把结论留在了「附带」的位置，还用了一个会被误读成「形态差」的措辞。
+>
+> ⇒ ★ **完整订正与证据见 §143.39**（含逐对象的 211/252 对照表与预检脚本）。
+
 ### §143.20.5 诚实边界与本轮**没做**的事
 
 - ⚠ **本节对生产的写入 = 0**（见 §143.20.0 末尾）。**没有** DELETE / TRUNCATE / DROP /
@@ -40577,3 +40598,555 @@ python3 scripts/audit/scan_14337_heavy_source.py .
 **数值**只依赖 `client_model` / `outbound_model` / `provider_id` / `ts` / `tenant_id`
 ⇒ **语义对照不受投影宽度影响**。
 
+
+## §143.38 ★★★★ 「v1 族退役（迁移 890）」的**执行顺序**：生产二进制仍是**三臂** ⇒ **必须先部署、后执行迁移**
+
+> **本节对生产的写入 = 0**（全部只读：`pg_stat_statements` / `pg_class` /
+> `schema_migrations` / v1 族表的 SELECT / EXPLAIN）。
+> **本节未改任何生产对象、未改生产脚本、未改生产配置。**
+>
+> ⚠ **本节改了 1 处仓内 Go 代码**：`admin/data_lifecycle_partition.go` 新增一个
+> **纯元数据**字段 `RetiredByMigration`（**运行期不读** ⇒ 零行为影响），
+> 用来把「退役链」在 Go 侧显式登记出来（否则仓内受管表清单与 890 的 DROP 清单会漂）。
+
+### §143.38.0 本节一句话
+
+★★ **生产上正在跑的 auto-route 亲和度聚合仍是【三条 v1 臂】（引用 `_request_logs_hot` /
+`_request_logs`），而仓内 HEAD 早已切成【一条臂】** ⇒
+**若先执行迁移 890 再部署新二进制 ⇒ 那条聚合会【整句 42P01】**
+（同一条 FROM 里任何被提及的关系不存在 ⇒ 整句失败，不是那条臂失败）
+⇒ ⇒ **亲和度学习链断裂，而且【静默】**（stale-while-error ⇒ 仍服务旧快照，无告警）。
+⇒ ⇒ ★★ **890 的执行前置条件 = 生产二进制必须已部署** ⇒ 本节把它落成**一条可执行的只读核验**
+（`scripts/audit/verify_890_cutover_precheck.sql`），**已在生产上实测跑出 BLOCKED 判词**。
+
+### §143.38.1 起点：§143.37 自己登记的下一轮线索
+
+§143.37.8 写着：「★ **本节未查的相邻读面**：`shouldUseBoardLogsFallback` 的调用方
+（`resolveBoardPies` / `resolveBoardTrends`）本轮**只确认了它们的门控是对的**，
+**没有**测它们的触发频次与成本 ⇒ 登记为下一轮线索。」
+
+⇒ 本节从这条线索出发。
+
+### §143.38.2 ★ 相邻读面复核（**阴性结论**，但按缺陷一样复核过）
+
+| 读面 | 门控形态 | 结论 |
+|---|---|---|
+| `resolveBoardPies` | `if piesEmpty(pies) && h.shouldUseBoardLogsFallback(...)` | ★ **形态正确**（两条件都成立才回退） |
+| `resolveBoardTrends` | `if len(points) > 0 { return points }` ⇒ 只有**一个点都没有**才回退 | ★ **形态正确** |
+
+⇒ ★ **⇒ 这两条链上没有 §143.37 那种「无条件 fall-through」。**
+⇒ ★ 但**阴性结论不能只靠读代码** ⇒ 本节继续用生产量具查「会话族来源被哪些语句引用」。
+
+### §143.38.3 ★★★★ 新的重读面：auto-route 亲和度聚合
+
+生产只读普查（`pg_stat_statements`，`dbid=16384`，按 `total_exec_time` 排序）
+里，引用会话族 / `request_logs_with_current_month` 的语句中，排第二的重读面是：
+
+| 指标 | 读数 |
+|---|---|
+| queryid | `-7870179464850598482` |
+| calls | **408**（2 天） |
+| 累计库时间 | **1,209.0 s** |
+| 均时 / max | **2,972.5 ms** / **28,931.3 ms**（★ 撞 30 s `statement_timeout`） |
+| 累计物理读 | **1,407.8 MB** |
+| 每次块数 | 444 |
+
+★ **归属锁定（逐字取回原文，不是「上下文命中」）**：这条语句是
+
+```sql
+SELECT s.task_type, s.profile, s.canonical_id, s.chosen_model, COALESCE(s.tenant_id, $1),
+       COUNT(*)::int, COUNT(*) FILTER (WHERE s.success)::int,
+       COALESCE(AVG(s.latency_ms), $2)::int, COALESCE(AVG(s.cost_usd), $3),
+       COALESCE(AVG(ss.health_score), $4), AVG(s.reward)
+  FROM auto_route_selections_all s
+  LEFT JOIN session_summaries ss ON ss.session_key = s.session_id
+ WHERE s.reward IS NOT NULL AND s.canonical_id IS NOT NULL
+   AND s.settled_at >= NOW() - $5::interval
+   AND NOT EXISTS (SELECT 1 FROM _request_logs_hot rl WHERE ...)   ← 臂①
+   AND NOT EXISTS (SELECT 1 FROM _request_logs     rl WHERE ...)   ← 臂②
+   AND NOT EXISTS (SELECT 1 FROM (SELECT request_id, origin_actor FROM session_turns
+                                   UNION ALL
+                                   SELECT request_id, origin_actor FROM session_turns_hot) st
+                    WHERE ...)                                        ← 臂③（会话族）
+ GROUP BY s.task_type, s.profile, s.canonical_id, s.chosen_model, COALESCE(s.tenant_id, '')
+```
+
+⇒ 仓内对应代码：`bg/auto_route_affinity_worker.go` 的 `AutoRouteAffinityWorker.aggregate()`。
+
+### §143.38.4 ★★★★ 生产实测：部署漂移被【逐字】证实
+
+★ **同一个函数，仓内 HEAD 是【一条臂】**（`5f64031cb feat(db): 退役 request_logs v1 族
+（迁移 885 真删表）+ 全仓读面切会话族` 已删掉臂①②，文件里的注释写明
+「890 之后它们不是『恒真』而是『**42P01**』——整条聚合查询会失败」）
+⇒ ★★ **生产上跑的仍是三臂 ⇒ 部署漂移成立（不是推测，是逐字比出来的）**。
+
+★ **其它读数（全部只读）**：
+
+| 项 | 读数 |
+|---|---|
+| 生产迁移水位 | **889**（`889 session_turns_tools_population`，2026-10-20 16:49:37）⇒ **890 未执行** |
+| v1 族是否还在 | 在：`_request_logs`（relkind=p）、`_request_logs_hot`（59 MB）、`_request_logs_bodies_hot`（291 MB） |
+| `request_logs_2026_10` | **334,669 行 / 1,015 MB** |
+| `request_logs_bodies_2026_10` | 816,144 行 / 579 MB |
+| `request_logs_2026_09` | 4,307 行 / 14 MB |
+| **停写是否真的停了** | ✔ **停了**：`_request_logs_hot` = **0 行**；`request_logs_2026_10` 的 `max_ts` = **2026-10-13 20:18:11**（7 天前）；每日行数 10-10: 282 / 10-11: 35,090 / 10-12: 37,586 / 10-13: 27,172 / **10-14 起 0** |
+| 亲和度表是否还在更新 | ✔ **在更新**：`task_model_affinity` 132 行，`max(updated_at)` = **22 秒前** ⇒ worker 活着 |
+
+⇒ ★★★ **⇒ 当前【没有】实时故障**（v1 表还在 ⇒ 三臂查询能跑；闸与顺序都还没被触发）。
+⇒ ★★ **⇒ 但闸会挡住**：迁移 890 带**非空闸**（族里有行就 `RAISE EXCEPTION`）
+⇒ **它今天执行会拒绝**（334,669 行 + 816,144 行 bodies）
+⇒ ⇒ ★ **这既是保护，也是把退役堵住了**（v1 族仍占 **≈1.9 GB** 不回收）。
+
+### §143.38.5 ★★★ 顺序约束：为什么「先执行 890」会**整句** 42P01
+
+★ **机制**：PostgreSQL 的解析期语义 —— 同一条语句的 FROM 里**任何**被提及的关系不存在
+⇒ **整条语句** 失败（不是「那条臂失败、其余照跑」）。
+
+⇒ ★★ **⇒ 执行 890 之前必须先部署新二进制**，否则：
+
+```
+生产旧二进制（三臂） + 890 已执行（v1 表已 DROP）
+  ⇒ 亲和度聚合语句引用 `_request_logs_hot` / `_request_logs`
+  ⇒ 整句 42P01
+  ⇒ aggregate() 返回 error ⇒ worker 记一条 Warn
+  ⇒ task_model_affinity 不再被刷新
+  ⇒ AffinityStore 继续服务**旧快照**（stale-while-error）
+  ⇒ ★★ 无告警、载荷不变、看板/路由一切正常 —— **只有亲和度学习悄悄停了**
+```
+
+⇒ ⚠ **这条断链在 `pg_stat_statements` 里【不可见】**（只记成功执行的语句）
+⇒ ⇒ ★★ **所以必须有「执行前核验」，而且核验必须看「生产上正在跑的那条语句」**。
+
+### §143.38.6 ★★★ 仓内复核：★ **「优雅降级」不等于「不是缺陷」**（本节自订正）
+
+★ 既然 890 会 DROP v1 族 ⇒ 仓内还有谁引用它们？逐条查：
+
+| 位置 | 形态 | 结论 |
+|---|---|---|
+| `admin/data_lifecycle_partition.go` 的 `partitionedTables` | 表名写在 Go 结构体里 ⇒ **审计工具看不见** | ★★★ **是缺陷**（见下面的自订正）⇒ ★ **已被并行会话修掉** |
+| `internal/partguard/parents.go` 的父表名单 | 同上 | ★ **无害**：它守的是「别往这些分区父表**写**」⇒ 890 之后不写就无害 |
+| `cmd/tools/sql_source_indirection_audit` 的 `v1Tables` | 覆盖 8 个名字（两代命名 + bodies 族） | ★ **覆盖住了**：门 `go test ./cmd/tools/sql_source_indirection_audit/` 全绿 |
+
+> **★ 本小节自订正（2026-10-21，本节发布前的同一轮内）**
+>
+> ★★ **本节第一版把 `partitionedTables` 那条判成「不是故障」** —— 理由是
+> 「错误被调用方 `slog.Warn` + `continue` 吞掉 ⇒ 优雅降级 ⇒ 不是崩溃」。
+> ⇒ ★★★ **这个判词太宽松了** —— **并行会话 `14b64ddf4`（2026-10-21 00:14）
+> 把同一条定性为缺陷并已修掉**，它的说法更准：
+>
+> - 现象：**每次** `/api/admin/data-lifecycle/partitions` 调用都刷一条
+>   `data_lifecycle_partitions: failed to get status … 42P01` 的 WARN，
+>   **且该表的状态永远拿不到** ⇒ 页面上「看不出报错」，但那块信息**恒空**；
+> - 修法：`getPartitionTableStatus` 先用 `to_regclass` 探表在不在；
+>   不在 ⇒ 返回「已退役」状态（新增 `retired` 字段，JSON 加法式变更）⇒ **不再查它**；
+>   清单条目**保留**（既有端点契约：UI 仍列出该表名）；
+> - 门：`admin/session_family_runtime_sql_test.go`（**5 条**，含
+>   `TestRetiredPartitionTableStatusIsNotAnError` 与
+>   `TestPartitionStatusProbesTableExistence`）。
+>
+> ⇒ ⇒ ★★★★ **⇒ 本轮据此撤回了自己的两件产物**（都**未发布**）：
+> ① `partitionedTableConfig.RetiredByMigration` 元数据字段
+>    —— ★ **行为化修法（探表 + 端到端门）比元数据登记更强**，
+>    而且元数据登记**运行期不读** ⇒ 只能被门看见，挡不住任何运行期行为；
+> ② 与它配套的「受管表清单 ⇄ DROP 清单一致性」那道门（⇒ **重复的门只会变成噪声**）。
+> ⇒ ⇒ ★★ **⇒ 本门只保留并行会话没有覆盖的那一块**：
+> **仓内任何 Go 的「类 SQL 字符串字面量」都不得含 890 要 DROP 的表名**（T3）
+> —— 这正是 `sql_source_indirection_audit` 的视野之外（它扫的是 SQL 的 FROM/JOIN 片段）。
+>
+> ⇒ ⇒ ★★★★★ **⇒ 通用式（本轮最值钱的一条元教训）**：
+> ★★ **「优雅降级」≠「不是缺陷」** ——
+> ★ **降级可以接受，但「每次调用都刷一条错误」+「那块信息恒空」就是缺陷类**
+> （并行会话的原话：**「降级可接受，降级原因必须留痕」**）
+> ⇒ ⇒ ★★ **⇒ 判「是不是缺陷」时，要问的不是「会不会崩」，而是
+> 「① 会不会每次都产生错误 ② 用户能不能分辨『本来没数据』与『坏了』」**
+> ⇒ ⇒ ★★ **⇒ 只读错误路径不足以定性**：读到「错误被吞掉」就该停吗？**不该** ——
+> ★ **还要看「吞掉之后，用户看到的是什么」**。
+
+### §143.38.7 ★★★ 可执行的生产前置核验（已落仓 + **生产实测**）
+
+★ `scripts/audit/verify_890_cutover_precheck.sql`（**只读**，无 DDL/写语句）
+
+```bash
+python3 - <<'EOF' >/dev/null   # 占位：脚本已在仓内
+EOF
+bash ~/.mavis-tools/lgwp-prod.sh scripts/audit/verify_890_cutover_precheck.sql 120
+```
+
+★ **判据 = 直接看生产上活跃的那条语句本身**：
+
+```sql
+SELECT count(*) FILTER (WHERE s.query LIKE '%_request_logs%') AS v1_referencing_statements,
+       CASE WHEN count(*) FILTER (WHERE s.query LIKE '%_request_logs%') = 0
+            THEN 'OK: 生产已切会话族 ⇒ 可以执行 890'
+            ELSE 'BLOCKED: 仍有活跃语句引用 v1 族 ⇒ 【禁止执行 890】，先部署新二进制'
+       END AS verdict
+  FROM pg_stat_statements s
+ WHERE s.dbid = (SELECT oid FROM pg_database WHERE datname = current_database())
+   AND s.query LIKE '%auto_route_selections_all%';
+```
+
+★★ **生产实测（2026-10-21）**：
+
+| 项 | 读数 |
+|---|---|
+| 本库里 `auto_route_selections_all` 相关语句 | 8 条 |
+| 其中**仍引用 v1 族**的（脚本第 ① 段的 `still_references_v1 = t`） | **1 条**（queryid `-7870179464850598482`，408 次） |
+| **verdict** | **`BLOCKED: 仍有活跃语句引用 v1 族 ⇒ 【禁止执行 890】，先部署新二进制`** |
+
+⇒ ★★ **⇒ 这条核验在生产上给出了明确的「现在不能执行 890」**，
+而且它**测的是真正在跑的东西**（不依赖版本号、部署记录或二进制反编译）。
+
+⚠ **诚实边界**：`pg_stat_statements` 只记**成功**执行过的语句 ⇒ 若聚合查询**已经**因 42P01
+失败，它在统计表里**不可见** ⇒ 本核验会误报「已切换」。
+⇒ ⇒ 脚本的第 ③ 段给了旁证（检查 v1 族是否还在 + 会话族 hot 行数）；
+★ **真正的兜底是「部署后再跑一次本核验」**，且 890 本身带非空闸 ⇒ 双重保险。
+
+### §143.38.8 ★★★ 六道新门 + 六个变异
+
+门文件：`admin/section_14338_retirement_consistency_test.go`（**6 条**）
+
+| # | 门 | 挡什么 |
+|---|---|---|
+| 1 | `TestSection14338DropListParserSeesTheRealTables` | ★ **解析器自证**（量具必须先证明自己看得见目标） |
+| 2 | `TestSection14338ManagedTableListMatchesDropList` | ★ 受管表清单与 890 的 DROP 清单**不一致**（漏登记 / 登记了空 / 迁移号写错） |
+| 3 | `TestSection14338NoGoSQLLiteralReadsADroppedV1Table` | ★ 全仓 Go 的**类 SQL 字符串字面量**引用了 890 要 DROP 的表 |
+| 4 | `TestSection14338RelationMatcherSemantics` | ★ **判据语义自测**（8 个用例：注释/散文/canonical 视图/词边界/schema 限定） |
+| 5 | `TestSection14338CutoverPrecheckScriptExists` | 前置核验脚本缺失 / 被改成非只读 |
+| 6 | `TestSection14338RunbookHasSection` | 本节在 runbook 里 |
+
+★ **门 3 的口径是被自己的门 4 逼出来的**（★ 这是本轮最值钱的一处量具纪律）：
+
+- 第一版口径 = 「像 SQL 的字符串字面量 + 子串包含表名」⇒ **442 处假阳性**
+  （测试夹具 + 中文散文 + canonical 视图前缀）;
+- 收窄后仍差两处：① **SQLite** 存储（`storage/sqlite/request_log_store.go`、
+  `bg/lite_retention_worker.go` —— `?` 占位符 / `rowid` / `main.`）⇒ 与 PostgreSQL 的 890 无关;
+- ⇒ 最终口径 = **两个条件同时成立**：
+  ① 字面量含**语句**关键字（SELECT / INSERT INTO / UPDATE / DELETE FROM / WITH）
+  —— ★ **不能**把裸 `from`/`join` 当信号（中文散文里到处是「读 FROM public.request_logs rl」）；
+  ② 关系名在 **FROM/JOIN 位置**（可选 schema 限定）+ **词边界**成立
+  ⇒ ⇒ ★★ **「位置」与「像不像 SQL」是两个独立条件，缺一个就是噪声源。**
+
+★ **变异脚本**：`scripts/mutate-14338-retirement-gate.py`（**隔离副本模式**，M1~M6）。
+
+### §143.38.9 ★ 本节遗留与待拍板
+
+- 🚨 **★ 新增待拍板：迁移 890 的执行顺序** ——
+  **必须「先部署新二进制（切会话族）→ 再执行 890」**，否则亲和度学习链静默断裂。
+  ⇒ ★ **本节只提供核验手段，未改任何生产状态，也未改迁移 890 的文件**
+  （改它会动 checksum 与 2 处台账 ⇒ 留给属主决定）。
+- ★★ **v1 族的 ≈1.9 GB 现在回收不了**：890 的非空闸会拒（334,669 行 + 816,144 行 bodies）
+  ⇒ ⇒ **要么归档/核账后清空再执行，要么先做一次「只删 bodies / 只删旧月」的窄口径回收**
+  ⇒ ★ **本节未评估任何回收方案**（属 §143.27 P5 的同族问题，需单独取号与拍板）。
+- ★ **本节未查**：211 实例的迁移水位与 v1 族现状（211 没有 `pg_stat_statements` ⇒
+  **无法用同一条核验** ⇒ 需按 §143.20 的办法走「读脚本 + 读日志 + 读目录」）。
+- ⚠ **本节没有碰 §143.37 的 P20 门控**，也没有碰 P11/P12 —— 那些待拍板项状态不变。
+
+## §143.39 211 独立生产实例的同族取证 —— 台账口径的伪影 + **方向相反**的顺序约束
+
+> **本节对生产的写入 = 0**。全部只读：211 的 `docker ps` / `docker exec`（读 `version.json`、
+> `strings` 抽二进制里的 SQL 文本）、`acc-pg17` 里的 SELECT（`pg_class` / `pg_index` /
+> `pg_inherits` / `information_schema` / `settings_kv` / `schema_migrations` / 视图定义），
+> 以及 211 部署树与容器的目录读取。
+> **没有** DELETE / TRUNCATE / DROP / ALTER / CREATE / REINDEX / VACUUM / ANALYZE /
+> 迁移 / 改配置 / 改 cron / 改 preload / 部署。
+
+### §143.39.0 为什么 211 需要**另一把**尺（§143.38 的脚本在 211 上是瞎的）
+
+§143.38 交付的核验脚本 `scripts/audit/verify_890_cutover_precheck.sql`，判据是
+**`pg_stat_statements` 里「生产上正在跑的那条语句」还有没有引用 v1 族**
+⇒ 它是 §143.38 选它当判据的唯一理由（因为 `pg_stat_statements` **只记成功语句**，
+断裂后那条语句会从统计里消失 ⇒ 核验必须跑在断裂**之前**）。
+
+⇒ ★★★★ **但 211 上这条路根本走不通**：
+
+| 项 | 211 | 252 |
+|---|---|---|
+| `pg_stat_statements` 扩展 | **已装**（1.11） | 已装 |
+| `shared_preload_libraries` | **只有 `citus`** ⇒ **扩展没进 preload** | 含 `pg_stat_statements` |
+| 「活跃语句」判据 | **不可用**（量具不存在） | 可用 |
+
+⇒ ⇒ ★★ **「在断裂之前跑」这个时点约束，在 211 上根本无法满足**
+⇒ ⇒ ★★★ **本节因此交付**另一把**不依赖任何数据库量具**的尺：
+**读产物**（已部署二进制里的 SQL 文本）+ **读目录**（对象存在性）
+⇒ ⇒ ★ **两把尺看的是同一份东西的两个来源**（DB 侧统计 vs 产物侧文本）⇒ **互为交叉验证，不是替代**。
+
+### §143.39.1 211 的实况（逐条实测）
+
+**实例形态**
+
+| 项 | 实测值 |
+|---|---|
+| 主机 | `192.168.31.211`（ssh 别名 `211`，LAN 直连），docker 形态 |
+| PG | 容器 `acc-pg17`（`kx-citus-pg17:amd64`），**PG 17.10**，**127.0.0.1:5432** |
+| 网关连接串 | `postgres://acc_super:***@acc-pg17:5432/llm_gateway?sslmode=disable` |
+| 活跃槽 | 容器 `llm-gateway-211-b`（`0.0.0.0:8782`，healthy），**启动于 2026-10-20 05:29Z** |
+| 已部署二进制 | `version.json` = `2.5.8-7a60b1b1-dirty-20261020-211`，`git_sha=7a60b1b1-dirty`，`build_seq=2760` |
+| 部署树 | `/root/llm-gateway-go-211`（**无 git**），`sql/migrations/startup/` **1093** 个文件，**最大编号 884** |
+| 库 | `llm_gateway` **6,168 MB**；另有 `llm_gateway_pre_cutover_20261014` **1,169 MB**（**未清理**） |
+
+**★ 二进制形态（`strings` 抽出的**逐字** SQL，不是推断）**
+
+从 `/app/llm-gateway` 里以 `FROM auto_route_selections_all s` 为锚点抽出那 120 行，
+实测三条臂**逐字在位**：
+
+```
+AND NOT EXISTS (
+    SELECT 1 FROM _request_logs_hot rl
+    WHERE rl.request_id = s.request_id
+      AND (COALESCE(rl.origin_actor, '') LIKE 'goal-%' ...))
+AND NOT EXISTS (
+    SELECT 1 FROM _request_logs rl
+    WHERE rl.request_id = s.request_id
+      AND (COALESCE(rl.origin_actor, '') LIKE 'goal-%' ...))
+AND NOT EXISTS (
+    SELECT 1 FROM (
+        SELECT request_id, origin_actor FROM session_turns
+        UNION ALL
+        SELECT request_id, origin_actor FROM session_turns_hot
+    ) st ...)
+```
+
+⇒ ⇒ ★★★ **211 的部署形态与 252 完全同构**：**旧二进制 + 两条 v1 臂**
+⇒ ⇒ **§143.38 的机制在 211 上原样成立**（890 执行 ⇒ 整句 42P01 ⇒ 亲和度学习静默断裂）。
+
+**★ 库内实况**
+
+| 项 | 实测值 |
+|---|---|
+| 停写门 `storage.request_logs_write_enabled` | **`false`**，更新于 **2026-10-13 07:01:08** |
+| `sessions_v2.enabled` / `sessions_v2.shadow_write` | `true` / `true`（2026-07-21） |
+| v1 父表 `request_logs_2026_10` | **35,506 行**，ts 跨度 **2026-10-12 01:46:31 → 2026-10-13 07:01:04** |
+| v1 bodies `request_logs_bodies_2026_10` | **35,506 行**（与父分区 1:1） |
+| v1 hot `_request_logs_hot` | **0 行** |
+| 其余 v1 月分区（07/08/11/default） | **0 行** |
+| v1 族合计 | **≈107 MB**（83 MB + 24 MB）⇒ **对比 252 的 ≈1.9 GB，差 18×** |
+| 会话族 hot `session_turns_hot` | **2,993 行 / 34 MB**，max ts **2026-10-21 00:33:25**（实时） |
+| 会话族父表 `session_turns` | **0 行 / 0 bytes** ⇒ ★ **211 的 promote 从没搬过行** |
+| `session_bodies_2026_10` | **1,214 MB**（211 上的存储大头） |
+| `session_bodies_hot` | **111 MB** |
+| 驱动表 `auto_route_selections` | **3 行**，max settled **2026-10-15 20:17** ⇒ ★ **6 天无新行** |
+| 亲和度表 `task_model_affinity` | 132 行，max `updated_at` **2026-10-21 00:29:30** ⇒ worker **活着** |
+| canonical 视图 `request_logs_with_current_month` | **与 252 逐字同形**（会话族两臂 + LATERAL 里带 v1 臂）⇒ 883/884 的**对象已生效** |
+| 台账 `schema_migrations` | **63 行**，最大版本 **869** |
+
+★ **v1 族的静止时刻与停写门逐字吻合**（数据末端 `07:01:04` vs 门写入 `07:01:08`）
+⇒ ★ **211 的 v1 族是「停写后立即冻结」的纯历史**。
+
+### §143.39.2 ★★★★ 台账口径被证伪：「211 落后 13 个迁移」是**伪影**
+
+> **订正横幅十九（2026-10-21，§143.39 就地订正 §143.20 的 C5 结论）**
+>
+> ★★★★ **原文保留**（§143.20.4 结尾 / §143.20 的 C5 行）：
+> > 「⇒ ⇒ ★ **附带**：211 的 `llm_gateway` **落后 13 个迁移**（869 vs 882）⇒
+> > 且 `llm_gateway_pre_cutover_20261014`（**1,169 MB**）是 10-14 切换遗留、未清理 ⇒ **磁盘登记项**。」
+> > C5 行：「★★★ **211 迁移落后 13 个（869 vs 882）+ `llm_gateway_pre_cutover_20261014` 1,169 MB 未清理**」
+>
+> ⇒ ★★★ **「落后 13 个迁移」这个表述是错的** —— 它是**台账口径**，不是**形态口径**。
+> ⇒ ★ **实测反证**：211 的台账虽然只到 **869**，但 870~889 里**绝大多数对象都已经存在**：
+>
+> | 迁移 | 对象 | 211 上 |
+> |---|---|---|
+> | 870 | `idx_usage_ledger_recon_cover` | ✅ 在 |
+> | 871 | `idx_route_incident_events_created_at` | ✅ 在（**台账无行**） |
+> | 873 | `usage_ledger{,_hot}_ts_tenant_cache_agg_idx` | ✅ 在 |
+> | 874 | `idx_session_turns_client_request_id` | ✅ 在 |
+> | 877 | `idx_session_turns_search_trgm` | ✅ 在（**台账无行**） |
+> | 878 | `idx_supplier_errors_part_*`（5 个） | ✅ 全在 |
+> | 882 | `idx_request_logs_cost_negative` | ✅ 在（**台账无行**） |
+> | 883 | `customer_cost_view` / `model_cost_per_task_view` | ✅ 在 |
+> | 884 | `v_continuation_effectiveness` / `v_node_switch_analysis` / `v_timeout_effectiveness` | ✅ 在 |
+>
+> ⇒ ⇒ ★★★ **211 与 252 的**真实**形态差集 = 5 个对象**（不是 13~20 个迁移）：
+>
+> | 缺口对象 | 来自 | 影响 |
+> |---|---|---|
+> | `session_turns.host` | 885 | ★ **写路径 42703**（见 §143.39.3） |
+> | `session_turns_hot.host` | 885 | ★ 同上 |
+> | `session_turns.tags` | 885 | ★ 同上（`tags` 同样缺） |
+> | `session_turns_hot.tags` | 885 | ★ 同上 |
+> | `idx_session_turns_search_fts` | 887 | 词形词搜索退化为**顺序扫描**（见下） |
+> | `idx_session_bodies_tenant_session_turn_request` | 888 | join 覆盖缺口 |
+> | `idx_sessions_tenant_session_partition_date` | 888 | join 覆盖缺口 |
+>
+> ⇒ ★ 另有 **2 个 888 要删的索引还在 211 上**（`idx_session_bodies_hot_lookup`、
+>   `idx_session_bodies_tenant_session_turn`）⇒ **既占空间又缺覆盖**。
+>
+> ⇒ ⇒ ★★ **方法论结论（比结论本身更值钱）**：
+> ★★ **「迁移水位」是**台账**口径；「形态」是**对象存在性**口径。
+> ⇒ ★★ **两者在稀疏台账的实例上会**大幅背离** ⇒ ★ **判断一个实例的形态，
+> 必须逐个对象核存在性，不能看台账最大版本。**
+> ⇒ ★ ★ **§143.20 当时其实已经摸到边了**（它写了「对象在、台账无」）
+> —— ★ **但只对 877 这一条成立**，没有推广到全部迁移 ⇒ ⇒ **结论被留在了
+> 「附带」的位置，还用了一个会被误读成「形态差」的措辞。**
+> ⇒ ★ **教训：量具背离一旦被观察到一次，就必须推广到全量，否则下一个会话会拿它当定论。**
+
+### §143.39.3 ★★★★ 新发现：升级链的列前提 ⇒ **先迁移 885，后部署新二进制**（与 §143.38 方向相反）
+
+§143.38 的顺序约束是**退役链**的方向：890 **删**对象 ⇒ 旧二进制会 42P01 ⇒
+**必须先部署新二进制**。
+
+⇒ ★★★★ **本节发现的是**升级链**的方向，与之**相反**：**
+
+- 迁移 **885** 给 `session_turns` / `session_turns_hot` 各加 **`host` TEXT** 与
+  **`tags TEXT[]`**（两侧**必须同形** —— 迁移 707 的 promote 列集合契约）；
+- 仓内 HEAD 的写路径（`domains/session/v2/turn_host_tags.go` + `TurnRecord`）
+  **显式列** `host` / `tags` 写进 `session_turns_hot`；
+- ⇒ ★★ **211 上这两列都不存在** ⇒ ⇒ **先部署新二进制 ⇒ 写路径 42703**。
+
+⇒ ★★★ **为什么这个陷阱特别危险（三重放大）**：
+
+1. ★ **boot 不会失败** —— `db.Open` 的 ensure 链**只补它自己知道的那几十列**
+   （`ensureRequestLogSchema` / `ensureRequestLogsCurrentMonthView` / …），
+   **不含** `host` / `tags` ⇒ ⇒ **迁移链不报错、容器正常起来、健康检查全绿**；
+2. ★ **验收不覆盖写路径** —— 蓝绿引擎的候选验收是
+   `readyz`(DB+Redis) / `version` / 网页面(HTML + 入口 JS MIME) / 公网入口
+   ⇒ ⇒ **没有任何一条会写一条 session turn** ⇒ ⇒ **42703 不会被切流验收拦住**；
+3. ★ **错误被吞** —— 会话写失败走的是「记 WARN + 跳过」的路
+   ⇒ ⇒ **页面上看不出报错，流量在静默地丢**。
+
+⇒ ⇒ ★★★ **与 890 的顺序约束叠在一起 ⇒ 顺序被完全钉死**：
+
+```
+211：  ① 应用迁移 885（补 host/tags）  →  ② 部署新二进制  →  ③ 执行 890（退役 v1 族）
+252：  （885/887/888 已在位）      →  ② 部署新二进制  →  ③ 执行 890
+```
+
+⇒ ★ **两个方向相反的约束不能同时满足** ⇒ ⇒ **必须**有一个「混合窗口」：
+在 ① 与 ② 之间，旧二进制对着**多了两列**的库跑 ⇒ **安全**
+（`INSERT` 显式列清单 ⇒ 多出的可空列取 NULL；且 885 两侧同形 ⇒ promote 列集合契约不破）。
+
+### §143.39.4 ★★ 211 上的 42P01 影响面很小（但机制面成立）—— 必须把两件事分开说
+
+| 维度 | 252 | 211 |
+|---|---|---|
+| **机制面**（会不会 42P01） | 会 | **会**（同一条语句形态） |
+| **影响面**（断了会丢什么） | 驱动表有量 ⇒ 聚合整句失败 ⇒ 亲和度学习断 | ★ **驱动表 `auto_route_selections` 只有 3 行、6 天无新行** ⇒ 聚合本就近乎空转 |
+
+⇒ ⇒ ★★ **211 上「先部署后退役」的风险是「几乎零」** ⇒ ⇒ **但这不构成「可以先执行 890」的理由**：
+⇒ ★★ **理由是「没必要在 211 上急着退役」**（v1 族只有 **107 MB**，对比 252 的 1.9 GB）
+⇒ ⇒ ★ **211 的 890 非空闸同样会拒**（35,506 行 + 35,506 行 bodies 在库里）
+⇒ ⇒ ★ **回收代价低 18 倍** ⇒ **211 是更适合先做「归档核账 + 清空 + 退役」的那台**。
+
+★ 另两条 211 独有的观察：
+
+- ★★ **211 的 promote 从没搬过行**（`session_turns` 父表 **0 行 / 0 bytes**，
+  而 hot 侧有 2,993 行）⇒ ⇒ ★ **§9.28 的「会话族是两个存储面」在 211 上只成立一半**
+  ⇒ ⇒ **好消息**：合成流量排除臂只查 hot ⇒ **反而更实时**（不会漏最新那批）；
+  ⇒ ⇒ **坏消息**：211 的月分区机制**从未被真实流量走过** ⇒
+  **211 上 promote 的正确性只有「0 行」这一个观测点** ⇒ ⚠ **不能拿 211 的 promote 表现
+  来给 252 的 promote 背书**。
+- ★★ **211 缺 `idx_session_turns_search_fts`（迁移 887）** ⇒
+  `admin/logs_search_predicate.go` 的 FTS 臂
+  （`to_tsvector('simple', rl.search_text) @@ plainto_tsquery('simple', $N+1)`）
+  在 211 上**没有索引可用** ⇒ ⇒ **词形词查询退化为顺序扫描**
+  ⇒ ★ 当前 session 族只有 34 MB，代价还小 ⇒ **但它是随流量增长的**。
+
+### §143.39.5 交付物：211 侧只读预检脚本 + 仓内门
+
+**★ `scripts/audit/verify_890_cutover_precheck_211.sh`**（新）
+—— 不依赖 `pg_stat_statements` 的 890 前置核验；**211 上实跑通过**：
+
+| 检查 | 手段 | 判据 |
+|---|---|---|
+| ① 已部署二进制形态 | `docker exec <容器> strings /app/llm-gateway` | v1 臂计数 ≥1 ⇒ **BLOCKER-1** |
+| ② 停写门 | `settings_kv` | `storage.request_logs_write_enabled` |
+| ③ v1 族现状 | `pg_class` + 分区行数 | 非 0 ⇒ **INFO-1**（非空闸会拒） |
+| ④ **升级链列前提** | `information_schema.columns` | `host`/`tags` 缺一 ⇒ **BLOCKER-2** |
+| ⑤ canonical 视图来源段 | `pg_get_viewdef` | 890 会 `CREATE OR REPLACE` 它 ⇒ 非阻塞 |
+| ⑥ 台账 | `schema_migrations` | ⚠ **仅供参考，不能当形态口径** |
+
+⇒ **211 实跑判词**：`VERDICT: BLOCKED —— 2 项阻塞`
+（BLOCKER-1 旧二进制仍含 v1 臂；BLOCKER-2 缺 host/tags 列）
+⇒ ★ 与 252 侧 §143.38 的 `verdict=BLOCKED` **同构** ⇒ ⇒ **两台机器的同一个门，
+判词一致**。
+
+**★ 仓内门** `admin/section_14339_retirement_precheck_test.go`（新，5 条）：
+
+| 门 | 挡什么 |
+|---|---|
+| `TestSection14339Precheck211ScriptExists` | 脚本缺失 / 判据 needle 缺失 / **只读性**（here-doc SQL 尺 + shell 代码尺，两把尺） |
+| `TestSection14339Precheck211DoesNotDependOnPgStatStatements` | 脚本又依赖上了 211 上不可用的量具 |
+| `TestSection14339V1ArmMatcherSemantics` | **判据语义自测**（7 个用例：旧二进制 2 臂 / 单臂 / 新二进制 0 臂 / canonical 视图 0 / bodies 0 / 注释 0 / schema 限定 1） |
+| `TestSection14339ShellPatternMatchesGoMatcher` | **两把尺对拍**（脚本里的 shell `grep` pattern 与 Go 判据逐夹具比） |
+| `TestSection14339GapListMatchesMigrationFiles` | **缺口清单防漂移**（从 885/887/888 解析出新对象，与清单对拍；并断言 885 父表与 hot 表**列集合同形**） |
+| `TestSection14339RunbookHasSection` | 本节 + 订正横幅十九在位 |
+
+★ **变异脚本**：`scripts/mutate-14339-retirement-gate.py`（**隔离副本模式**，`git archive HEAD`），
+**M1~M8 全红 8/8**（2026-10-21），收尾核「共享工作树的已跟踪文件**未被改动**」+ 4 个目标文件
+**md5 逐字还原**。
+
+★★ **M1 是本轮最有价值的一条**（它证明「两把尺对拍」那一条门真的有牙）：
+
+| 变异 | 改了什么 | 谁抓到了 |
+|---|---|---|
+| M1 | 预检脚本的 v1 臂 pattern **收窄**成只认 hot 表 ⇒ 母表那条臂数不到 ⇒ 臂数 2→1 ⇒ **判词被悄悄降级** | ★ **只有「shell 尺 vs Go 尺」对拍能抓**（语义自测会绿，因为 Go 判据没动） |
+| M2 | `BLOCKER-2` 判词被改成「建议」 | 脚本 needle 尺 |
+| M3 | 脚本的 here-doc SQL 里混进真 DDL | 只读性尺（here-doc 主体） |
+| M4 | 脚本又依赖上 `pg_stat_statements` | 依赖尺（here-doc + psql 调用行） |
+| M5 | 迁移 885 的父表/hot 表**列集合不同形** | 缺口清单门（连带守 707 的 promote 契约） |
+| M6 | runbook 里的预检脚本名被抹掉 | runbook 在场门 |
+| M7 | runbook 里的**已部署二进制版本串**被改 | runbook 在场门（★ 钉的是**唯一**的完整串，不是裸 SHA） |
+| M8 | Go 判据被**改宽**（canonical 视图也算 v1 臂） | 判据语义自测 |
+
+⚠ **M8 的第一版作废**（替换串是「在 needle 后面追加一段」⇒ **替换串包含 needle
+作为子串** ⇒ 纪律拦下）⇒ ★ **作废的轮次不算「门没牙」** ⇒ 改成「**换掉整行**」后重跑，
+**才拿到 8/8**。
+
+### §143.39.6 ★ 门把判据**自己**推翻了一次（here-doc 提取器的真 bug）
+
+⇒ ★★★ **这是本节最值钱的一条量具纪律**（与 §143.37/§143.38 同族但形态更新）：
+
+- 门的第一版「只读性」判据 = **按 SQL 剥注释 + 全文扫 DDL 关键字**
+  ⇒ **当场假红 4 条**（`CREATE ` / `DROP ` / `ALTER ` / `TRUNCATE`）；
+- ⇒ ★ **根因不是脚本有毒，是**判据不懂语言**：脚本是 **shell**，
+  而剥注释器只认 SQL 的 `--` / `/* */` ⇒ **文件头那段 shell 注释
+  （「不做 DELETE / TRUNCATE / DROP / ALTER / CREATE」）被当成真 DDL**；
+- ⇒ ★ **改法不是放宽判据，而是把判据改成语言感知的**：
+  只读性 = 「**here-doc 主体**（真正发给 psql 的那段 SQL）是只读的」
+  + 「**shell 代码**里没有 `rm -rf` / `pg_dump` / `pg_restore` / `docker rm`」；
+- ⇒ ★★ **改完仍然红** —— 而这次**红得对**：改版后的提取器**只剥了前引号、没剥尾引号**
+  ⇒ 定界符变成 `SQL'` ⇒ **永远匹配不到终止行** ⇒ 块一路吞到**文件尾**
+  ⇒ ⇒ ★★★ **判据把脚本后半段（散文 + 别的代码）也当成 SQL 查了**。
+  ⇒ ★ **这是判据自己的真 bug，被门当场抓住**（不是脚本的问题）。
+  ⇒ 修法：连尾引号一起剥 + **没找到终止行就不收这个块**（宁可「块数=0」响亮失败）。
+
+⇒ ⇒ ★★★★ **通用式（本轮新增）**：
+★ **判据出假红时，先问「判据懂不懂这门语言」** ——
+★★ **剥注释器、here-doc 提取器、模式匹配器，都是「量具」**
+⇒ ★ **量具必须先在自己的语义上被自测**（否则它会把「判错」伪装成「有毒」）。
+⇒ ★★ **而「先改判据」还是「先改产物」要分清**：
+★ **本例两者都要改**（判据的语言感知 + 产物的真实缺陷）⇒
+★ **但顺序必须是：先让判据说清自己在判什么**（否则你会去改一个没毒的东西）。
+
+### §143.39.7 诚实边界与本节**没做**的事
+
+- ⚠ **本节对生产的写入 = 0**（见 §143.39.0 开头）。**没有**改任何生产状态。
+- ⚠ **211 的 `pg_stat_statements` 仍然不可用** ⇒ ★ **211 的慢查询面依然只有
+  「容器日志」一条线** ⇒ ★ **本节没有补上这个量具**（补它要改
+  `shared_preload_libraries` ⇒ **生产写 ⇒ 需授权**，见 P8）。
+- ⚠ **本节没有评估 211 的 v1 族回收方案**（107 MB）⇒ 归档/核账是**语义决策**。
+- ⚠ **本节没有动迁移 885/887/888 的文件**（改它们会动 checksum 与 2 处台账）
+  ⇒ ⇒ **顺序约束目前只以「文档 + 预检脚本 + 门」的形式存在**，
+  **没有任何自动机制会阻止人先部署再迁移**。
+- ⚠ **本节没有改 ensure 链去自愈 `host` / `tags`** —— 那是**另一种修法**
+  （让 boot 绿 ⇒ 写路径不 42703），但它要求 ensure 链**两侧同形地**加列
+  （否则破坏 707 的 promote 列集合契约）⇒ ⇒ **风险高于「按顺序执行」** ⇒ 未做。
+- ⚠ **211 的 promote 只走过 0 行** ⇒ **211 的月分区机制缺真实流量观测点**。
+- ⚠ **本节未查 211 的 `llm_gateway_pre_cutover_20261014`（1,169 MB）的可回收性**
+  ⇒ 只登记了存在与大小。
+
+### §143.39.8 待拍板（本节新增）
+
+- 🚨 ★★★★ **211 的升级顺序**：**必须「先应用迁移 885 → 再部署新二进制」**，
+  否则**写路径 42703 且 boot 不会失败**（绿着启动、静默丢流量）。
+  ⇒ ★ **本节提供了核验手段（预检脚本 + 门），但没有强制机制**。
+  ⇒ ★ **属主可选**：① 按顺序执行（零代码改动）；② **给 ensure 链加自愈**
+  （改产品 ⇒ 需评估 707 列集合契约风险）；③ **给蓝绿验收加「写路径 schema 兼容」探针**
+  （改部署引擎 ⇒ 需评估与并行会话的冲突面）。
+- 🚨 ★★★ **跨实例的完整顺序**：`885 → 部署新二进制 → 890`（两台都要走）
+  ⇒ **任何一台跳过 ① 都是断写**。
+- 🚨 ★★ **211 是否先做「归档核账 + 清空 + 退役」**：211 的 v1 族只有 107 MB
+  ⇒ **代价是 252 的 1/18** ⇒ ⇒ **建议把 211 当作 v1 族退役的「先行验证实例」**。
+- 🚨 ★★ **211 补 887/888 的三个索引**（FTS + 2 个 join 覆盖）⇒ 纯性能，无语义风险。
+- ⚠ **本节没有改变** §143.38 遗留的任何待拍板项（890 顺序、v1 族 ≈1.9 GB 回收），
+  **也没有碰** P11 / P12 / P20 / 30 天 tab 口径语义。

@@ -129,7 +129,9 @@ func TestSupplierViewCacheRatiosGuardZeroAndCurrency(t *testing.T) {
 //
 // 依据（本轮实测）：视图定义**不能引用不存在的列**。在只缺
 // credential_model_bindings.cache_read/write_price_per_1m 的库上直接建视图 ⇒
-//   ERROR: 字段 cmb.cache_read_price_per_1m 不存在 (42703)
+//
+//	ERROR: 字段 cmb.cache_read_price_per_1m 不存在 (42703)
+//
 // 而全仓没有任何迁移建过这两个列（`ADD COLUMN ... cache_read` 只命中 826，
 // 而那是 baseline_cache_*，建在 models_canonical 上）。
 // ⇒ 844 必须自己 ADD COLUMN IF NOT EXISTS，不许依赖「反正 398 建过」。
@@ -137,8 +139,8 @@ func TestCacheBaselineMigrationSuppliesItsOwnColumns(t *testing.T) {
 	body := mustReadRepoFile(t, cacheBaselineMigrationFile)
 
 	if !strings.Contains(body, "ALTER TABLE public.credential_model_bindings") {
-		t.Fatalf("844 没有补 credential_model_bindings 的缓存价列。\n"+
-			"  实测：在缺这两列的库上，视图定义会 42703 硬失败（整条部署挂掉）。\n"+
+		t.Fatalf("844 没有补 credential_model_bindings 的缓存价列。\n" +
+			"  实测：在缺这两列的库上，视图定义会 42703 硬失败（整条部署挂掉）。\n" +
 			"  全仓没有任何迁移建过它们 —— 398 只是 SELECT 过，不建列。")
 	}
 	for _, col := range []string{
@@ -182,9 +184,10 @@ func TestCacheBaselineRollbackReallyRemovesColumns(t *testing.T) {
 
 // ★ 剥注释用的是本包已有的 stripSQLComments（bg/supplier_price_zero_wording_test.go:44，
 // 同名函数在 bg/auto_index_refresher_sql_test.go:23 还有个带字符串字面量处理的加强版）。
-//   第一版判据是自己重写了一个，结果 **redeclaration build failed** ——
-//   而一个编译不过的判据在 `go test ./bg/` 的整包输出里只表现为「整包 FAIL」，
-//   与「判据抓到了缺陷」在观测上很像。⇒ 先查已有工具，再决定要不要新写。
+//
+//	第一版判据是自己重写了一个，结果 **redeclaration build failed** ——
+//	而一个编译不过的判据在 `go test ./bg/` 的整包输出里只表现为「整包 FAIL」，
+//	与「判据抓到了缺陷」在观测上很像。⇒ 先查已有工具，再决定要不要新写。
 //
 // TestSupplierViewRowDedupGuardSurvived 把 826 记录过的真实事故钉成不可回退。
 //
@@ -196,10 +199,11 @@ func TestCacheBaselineRollbackReallyRemovesColumns(t *testing.T) {
 // ⇒ 844 与它的 down 都必须保留这个形态，否则会把那个错价放回去。
 //
 // ⚠ 断言必须打在**剥掉注释之后**的正文上。
-//   第一版直接 `strings.Contains(body, "LIMIT 1")`，而 844 的注释里就写着
-//   「ORDER BY、LIMIT 1 与 826 逐字一致」⇒ 变异「删掉真代码的 LIMIT 1」
-//   之后判据**照样 PASS**（实测 P3 变异绿）。
-//   这条判据的第一版是恒真的，第二版才是真的。
+//
+//	第一版直接 `strings.Contains(body, "LIMIT 1")`，而 844 的注释里就写着
+//	「ORDER BY、LIMIT 1 与 826 逐字一致」⇒ 变异「删掉真代码的 LIMIT 1」
+//	之后判据**照样 PASS**（实测 P3 变异绿）。
+//	这条判据的第一版是恒真的，第二版才是真的。
 func TestSupplierViewRowDedupGuardSurvived(t *testing.T) {
 	for _, rel := range []string{cacheBaselineMigrationFile,
 		"sql/migrations/startup/844_supplier_view_cache_baseline_columns.down.sql"} {
@@ -234,13 +238,13 @@ func TestSupplierViewCacheAssertionsSeeCodeNotComments(t *testing.T) {
 	// 自证 2：剥掉注释后，LIMIT 1 仍应存在**一次**（真代码里那一行）。
 	code := stripSQLComments(raw)
 	if !strings.Contains(code, "LIMIT 1") {
-		t.Fatalf("剥掉注释后正文里没有 LIMIT 1 —— 说明本迁移的 LIMIT 1 只存在于注释，\n"+
+		t.Fatalf("剥掉注释后正文里没有 LIMIT 1 —— 说明本迁移的 LIMIT 1 只存在于注释，\n" +
 			"  而那正是一个**真的缺陷**：LATERAL 没有 LIMIT 1，去重修法已经丢了。")
 	}
 	// 自证 3：构造一个「只有注释提到 LIMIT 1」的片段，剥注释后必须查不到。
 	probe := "-- 注释里提到 LIMIT 1\nSELECT 1;\n"
 	if strings.Contains(stripSQLComments(probe), "LIMIT 1") {
-		t.Errorf("stripSQLComments 没有剥掉行注释 —— 依赖它的判据会变成恒真。\n"+
+		t.Errorf("stripSQLComments 没有剥掉行注释 —— 依赖它的判据会变成恒真。\n" +
 			"  这就是 P3 变异变绿的原因。")
 	}
 }
