@@ -121,6 +121,101 @@ func FindZeroMarginLowerBounds(root string, skipDir string) ([]ZeroMarginLowerBo
 	return out, nil
 }
 
+// DiscriminativeLowerBound describes one clock assertion that judges
+// "it must NOT have been too fast" — i.e. `elapsed < <threshold>`.
+//
+// ★ 2026-10-21（R68 轮）新增：R66 轮把全仓 53 处时钟判据按「判别职责」分型后，
+// 把「判别型下界」里除 distlock 外的 10 处登记为「已分析、未实测」—— 依据是
+// **读实现推导**（定时器只晚不早 ⇒ 下界恒成立），不是**实测自然值**。
+// 而 distlock 那处的教训恰恰是：**余量按构造接近零时，跑够多次也不会红**
+// ⇒ 「包级全绿」证明不了余量 ⇒ 必须逐处量自然值。
+//
+// ⇒ 本函数提供那份「逐处清单」的**机器可读版本**：它是 ratchet 门的登记册
+// 对账基准（新增站点未登记 ⇒ 红；登记了但站点消失 ⇒ 红）。
+type DiscriminativeLowerBound struct {
+	// File is the repository-relative path of the test file.
+	File string
+	// Line is the 1-based line of the comparison.
+	Line int
+	// Func is the enclosing test function's name.
+	Func string
+	// Variable is the clock variable being compared (e.g. "elapsed").
+	Variable string
+	// Bound is the parsed lower bound.
+	Bound time.Duration
+	// BoundText is the source text of the bound (e.g. "200*time.Millisecond").
+	BoundText string
+}
+
+// FindDiscriminativeLowerBounds scans every *_test.go file under root and
+// returns every clock lower bound (the "must not be too fast" shape),
+// regardless of whether it coincides with a waited duration.
+//
+// Files under skipDir are skipped — the guard's own package necessarily
+// contains the pattern as fixtures.
+func FindDiscriminativeLowerBounds(root string, skipDir string) ([]DiscriminativeLowerBound, error) {
+	var out []DiscriminativeLowerBound
+	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		name := d.Name()
+		if d.IsDir() {
+			switch name {
+			case ".git", "vendor", "node_modules":
+				return filepath.SkipDir
+			}
+			if skipDir != "" && strings.Contains(path, skipDir) {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(name, "_test.go") {
+			return nil
+		}
+		bounds, err := scanDiscriminativeFile(root, path)
+		if err != nil {
+			return err
+		}
+		out = append(out, bounds...)
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func scanDiscriminativeFile(root, path string) ([]DiscriminativeLowerBound, error) {
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, path, nil, parser.ParseComments)
+	if err != nil {
+		return nil, fmt.Errorf("parse %s: %w", path, err)
+	}
+	rel, relErr := filepath.Rel(root, path)
+	if relErr != nil {
+		rel = path
+	}
+	var out []DiscriminativeLowerBound
+	for _, decl := range f.Decls {
+		fn, ok := decl.(*ast.FuncDecl)
+		if !ok || fn.Body == nil {
+			continue
+		}
+		for _, b := range collectLowerBounds(fn) {
+			out = append(out, DiscriminativeLowerBound{
+				File:      rel,
+				Line:      fset.Position(b.pos).Line,
+				Func:      fn.Name.Name,
+				Variable:  b.variable,
+				Bound:     b.bound,
+				BoundText: b.text,
+			})
+		}
+	}
+	return out, nil
+}
+
 func scanFile(root, path string) ([]ZeroMarginLowerBound, error) {
 	fset := token.NewFileSet()
 	f, err := parser.ParseFile(fset, path, nil, parser.ParseComments)
