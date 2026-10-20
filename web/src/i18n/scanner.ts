@@ -22,6 +22,19 @@ import { readFileSync, readdirSync, existsSync } from 'node:fs'
 import { dirname, join, relative } from 'node:path'
 import vm from 'node:vm'
 
+// 「调用点参数 → 占位符名」的静态解析（2026-10-21 审计轮新增）。
+// 在此再导出 ⇒ 调用方可以只依赖 scanner 这一入口，不必知道模块拆分。
+export {
+  scanCallSiteParams,
+  scanAllCallSiteParams,
+  scanCallSiteParamsInSource,
+  listSourceFiles,
+  maskSource,
+  splitSfcBlocks,
+  type CallSiteParamRef,
+  type CallSiteKeyKind,
+} from './callSiteParams.ts'
+
 // ---------------------------------------------------------------------------
 // 类型定义
 // ---------------------------------------------------------------------------
