@@ -36,6 +36,10 @@
 #       ⇒ 红（同上，第三份被 apply 的基线也在门眼里）
 #   M9  让解析器少认一个视图（提前 break）
 #       ⇒ **解析完整性自检**必须红（漏解析 ⇒ 反向检查不可信）
+#   M10 迁移目录里**多出一个**定义这两个视图的文件
+#       ⇒ 「部署形态源唯一性」判据必须红
+#   M11 安装器**内嵌目录**里多出一个定义体（新装通道同样是形态源）
+#       ⇒ 必须红（★ 只扫迁移目录的话这条会漏）
 #
 # ★ **本轮的门第一版就是被 M1/M2 抓住的**：它只断言「该视图在**某个**形态里
 #   读冻结表」⇒ 改掉 883 那份、基线那份还在 ⇒ **照样绿** ⇒ 门会放过形态被改。
@@ -70,6 +74,8 @@ fi
 WORK_DIR="$(mktemp -d)"
 BACKUP_DIR="$WORK_DIR/backup"
 mkdir -p "$BACKUP_DIR"
+ADDED_LIST="$WORK_DIR/added.list"
+: > "$ADDED_LIST"
 
 MUTATIONS_RUN=0
 MUTATIONS_RED=0
@@ -151,6 +157,15 @@ print("   mutation applied to %s (dropped registry entry %s)" % (path, view))
 PY
 }
 
+# add_file 造一个**新文件**（用于「多了一个定义体」这类变异），并登记到清理列表。
+add_file() {
+  local file="$1" content_b64="$2"
+  mkdir -p "$(dirname "$file")"
+  printf '%s' "$content_b64" | base64 -d > "$file"
+  echo "$file" >> "$ADDED_LIST"
+  echo "   mutation applied (new file) $file"
+}
+
 expect_red() {
   local label="$1" pattern="$2"
   MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
@@ -203,6 +218,11 @@ cleanup() {
       [ -f "$BACKUP_DIR/$key" ] && cp "$BACKUP_DIR/$key" "$file"
     done < "$BACKUP_DIR/index"
   fi
+  if [ -f "$ADDED_LIST" ]; then
+    while IFS= read -r file; do
+      [ -n "$file" ] && rm -f "$file"
+    done < "$ADDED_LIST"
+  fi
   rm -rf "$WORK_DIR"
 }
 trap cleanup EXIT
@@ -214,12 +234,13 @@ BASE_MODEL="sql/objects/views/model_cost_per_task_view.sql"
 ROWSET='TestAutoRouteCostViewsRowsetSourceIsRegistered'
 PARSER='TestCostViewRowsetParserSelfCheck'
 EVIDENCE='TestCostViewRowsetRegistryIsBackedByRepoEvidence'
+UNIQUE='TestCostViewRowsetNoOtherMigrationRedefinesTheViews'
 
 echo "=== L11-b 成本视图行集来源登记门：变异验证 ==="
 echo "repo: $REPO_ROOT"
 echo
 
-expect_green "baseline" "$ROWSET|$PARSER|$EVIDENCE"
+expect_green "baseline" "$ROWSET|$PARSER|$EVIDENCE|$UNIQUE"
 
 # ---------------------------------------------------------------------------
 # M1 — 部署形态：customer_cost_view 的顶层 FROM 换成会话族。
@@ -317,6 +338,28 @@ mutate "$GATE" \
 		out[name] = body[:end]')"
 expect_red "M9-parser-under-parses-views" "$ROWSET"
 restore "$GATE"
+
+# ---------------------------------------------------------------------------
+# M10 — 迁移目录里**多出一个**定义这两个视图的文件（部署形态源漂移）
+#       ⇒ 「形态源唯一性」判据必须红
+# ---------------------------------------------------------------------------
+add_file "sql/migrations/startup/999_mutation_other_definer.sql" \
+  "$(b64 'CREATE OR REPLACE VIEW public.customer_cost_view AS
+ SELECT 1 AS mutation_marker;
+')"
+expect_red "M10-another-migration-redefines-the-view" \
+  'TestCostViewRowsetNoOtherMigrationRedefinesTheViews'
+
+# ---------------------------------------------------------------------------
+# M11 — 安装器**内嵌目录**里多出一个定义体（新装通道 ⇒ 同样是形态源）
+#       ⇒ 必须红（★ 只扫迁移目录的话这条会漏）
+# ---------------------------------------------------------------------------
+add_file "installer/cmd/llm-gw-installer/embeddata/startup/998_mutation_other_definer.sql" \
+  "$(b64 'CREATE OR REPLACE VIEW public.model_cost_per_task_view AS
+ SELECT 1 AS mutation_marker;
+')"
+expect_red "M11-installer-embeddata-redefines-the-view" \
+  'TestCostViewRowsetNoOtherMigrationRedefinesTheViews'
 
 echo
 echo "=== summary ==="

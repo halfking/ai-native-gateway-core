@@ -105,6 +105,7 @@ var costViewRowsetRegistry = map[string]costViewRowsetEntry{
 	"customer_cost_view": {
 		shapes: map[string]string{
 			"deployed:883":              costViewFrozenRowsetTable,
+			"deployed:883-embeddata":    costViewFrozenRowsetTable,
 			"baseline:schema":           costViewFrozenRowsetTable,
 			"baseline:embeddata":        costViewFrozenRowsetTable,
 			"baseline:objects-customer": costViewFrozenRowsetTable,
@@ -117,6 +118,7 @@ var costViewRowsetRegistry = map[string]costViewRowsetEntry{
 	"model_cost_per_task_view": {
 		shapes: map[string]string{
 			"deployed:883":           costViewFrozenRowsetTable,
+			"deployed:883-embeddata": costViewFrozenRowsetTable,
 			"baseline:schema":        costViewFrozenRowsetTable,
 			"baseline:embeddata":     costViewFrozenRowsetTable,
 			"baseline:objects-model": costViewFrozenRowsetTable,
@@ -153,11 +155,39 @@ var costViewRowsetShapes = []struct {
 	rel  string
 }{
 	{"deployed:883", filepath.Join("sql", "migrations", "startup", "883_session_family_cost_view_metrics.sql")},
+	{"deployed:883-embeddata", filepath.Join("installer", "cmd", "llm-gw-installer", "embeddata", "startup", "883_session_family_cost_view_metrics.sql")},
 	{"baseline:schema", filepath.Join("sql", "schema", "01-schema.sql")},
 	{"baseline:embeddata", filepath.Join("installer", "cmd", "llm-gw-installer", "embeddata", "01-schema.sql")},
 	{"baseline:objects-customer", filepath.Join("sql", "objects", "views", "customer_cost_view.sql")},
 	{"baseline:objects-model", filepath.Join("sql", "objects", "views", "model_cost_per_task_view.sql")},
 }
+
+// costViewAllowedDefiners 是**允许**定义这两个视图的文件（相对仓根）。
+//
+// ⚠ 白名单必须覆盖**两条投递通道**：迁移目录（部署通道）与安装器内嵌目录
+// （新装通道）—— 新装时真正被执行的是 **embeddata 里那份 883**。
+var costViewAllowedDefiners = map[string]bool{
+	filepath.Join("sql", "migrations", "startup", "883_session_family_cost_view_metrics.sql"):                                      true,
+	filepath.Join("sql", "migrations", "startup", "883_session_family_cost_view_metrics.down.sql"):                                 true,
+	filepath.Join("installer", "cmd", "llm-gw-installer", "embeddata", "startup", "883_session_family_cost_view_metrics.sql"):      true,
+	filepath.Join("installer", "cmd", "llm-gw-installer", "embeddata", "startup", "883_session_family_cost_view_metrics.down.sql"): true,
+}
+
+// costViewDefinerRoots 是「谁可能定义这两个视图」的扫描根。
+//
+// ⚠ **两个都要扫**：只扫迁移目录 ⇒ 安装器内嵌目录里新加一份定义体不会被发现
+// ⇒ 而**新装时执行的是内嵌那份** ⇒ 形态源会悄悄漂移。
+var costViewDefinerRoots = []string{
+	filepath.Join("sql", "migrations"),
+	filepath.Join("installer", "cmd", "llm-gw-installer", "embeddata", "startup"),
+}
+
+// costViewCreateViewForThese 匹配「用 CREATE 定义这两个视图」的 DDL。
+//
+// ⚠ 口径必须是 **CREATE … VIEW**，不能是 "VIEW public.x" ——
+// 否则 `COMMENT ON VIEW public.customer_cost_view` 也会命中（883 的 up/down 里就有）
+// ⇒ 假红。
+var costViewCreateViewForThese = regexp.MustCompile(`(?i)CREATE\s+(OR\s+REPLACE\s+)?VIEW\s+public\.(customer_cost_view|model_cost_per_task_view)\b`)
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 工具
@@ -536,6 +566,60 @@ func TestAutoRouteCostViewsRowsetSourceIsRegistered(t *testing.T) {
 		if strings.TrimSpace(entry.note) == "" {
 			t.Errorf("登记册条目 %s 的后果说明是空的 —— 登记必须写清「不修会怎样」", view)
 		}
+	}
+}
+
+// TestCostViewRowsetNoOtherMigrationRedefinesTheViews 守住「**部署形态源唯一**」。
+//
+// ★ 为什么必须有它（2026-10-21 审计轮发现的**第三个**缺口）：
+// 本门把「迁移 883 的 up 体」当作**部署形态**的来源 —— 这个前提**没有任何门守着**：
+// 将来有人加一个迁移（或者加到安装器内嵌目录里）重新定义这两个视图 ⇒
+// **真正被执行的定义体就换了** ⇒ 但本门**照样绿**（它只读 883 那一份）
+// ⇒ ⇒ **形态源会悄悄过期** ⇒ 登记册钉的是一个**已经不生效**的形状。
+//
+// ⇒ 本判据扫**两个投递通道**的根目录（迁移目录 + 安装器内嵌目录），
+// 任何**白名单之外**的文件用 `CREATE … VIEW` 定义这两个视图 ⇒ 红。
+func TestCostViewRowsetNoOtherMigrationRedefinesTheViews(t *testing.T) {
+	root := repoRoot(t)
+	offenders := []string{}
+	for _, rootRel := range costViewDefinerRoots {
+		rootAbs := filepath.Join(root, rootRel)
+		if _, err := os.Stat(rootAbs); err != nil {
+			t.Fatalf("扫描根不存在：%s（%v）—— 判据前提失效", rootRel, err)
+		}
+		err := filepath.Walk(rootAbs, func(path string, info os.FileInfo, err error) error {
+			if err != nil {
+				return err
+			}
+			if info.IsDir() || !strings.HasSuffix(path, ".sql") {
+				return nil
+			}
+			rel, rerr := filepath.Rel(root, path)
+			if rerr != nil {
+				rel = path
+			}
+			if costViewAllowedDefiners[rel] {
+				return nil
+			}
+			content, rerr := os.ReadFile(path)
+			if rerr != nil {
+				return rerr
+			}
+			for _, m := range costViewCreateViewForThese.FindAllStringSubmatch(string(content), -1) {
+				offenders = append(offenders, rel+" → "+m[2])
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("walk %s: %v", rootRel, err)
+		}
+	}
+	if len(offenders) > 0 {
+		t.Errorf("除白名单（883 的 up/down，迁移目录 + 安装器内嵌目录各一份）之外，"+
+			"还有文件用 `CREATE … VIEW` 定义这两个视图：%v ⇒ "+
+			"**真正被执行的定义体已经换了** ⇒ 本门钉的形态源过期 ⇒ "+
+			"必须把新文件加进形态源（costViewRowsetShapes）并**重判**登记册",
+			offenders)
 	}
 }
 
