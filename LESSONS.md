@@ -8887,3 +8887,44 @@ asr A-6「可续跑」在 §11.4 写着「❌ **仍未做**」，理由是「`re
   4. ⭐⭐⭐ **写「官方口径是 X」之前必须查证** ⇒ ★ 本轮就栽在这上面（靠 `grep` 纠正）。
 - 溯源：llm-gateway-go R85 轮（2026-10-21）；handoff `§19.20.33` ⑮-⑥；审计档 §14.6。
 ★ 同族：[[「声明了什么」与「覆盖了什么」要拿两份事实源对拍]] · [[前提漂移]] · [[「0 命中的第一嫌疑是量具坏了」]]。
+
+## 2026-10-21 — ★★★★ **「切了之后才看见」≠「是切出来的」—— 代价必须两档同库同基线对拍**（llm-gateway-go R85）
+
+- 场景：handoff 里已有一张「切事实源 ⇒ 5 条腿从静默 SKIP 变成红」的代价表 ⇒ 本轮被要求「先量当前还有几条红，再决定要不要切」。
+- ⇒ ⇒ ★★ **实测（同库 `itgate_r85_p9`、同基线、89 个测试、15 个包，两档 env 对拍）**：
+  · 档 A（官方 runner 的 19 个 env）：**PASS 63 / SKIP 14 / FAIL 12**
+  · 档 B（SSOT 的 33 个 env）：修完 `admin` 后 **PASS 70 / SKIP 6 / FAIL 13**
+  ⇒ ⇒ **净收益 = 8 条腿从「静默 SKIP」变真跑（7 PASS ＋ 1 红）；净代价 = 1 条红**（**不是旧表说的 5**）。
+- ⇒ ⇒ ★★★★ **根因**：**那 12 条两档都红** ⇒ 它们**今天就已经红** ⇒ ⇒ **与切事实源无关**
+⇒ ⇒ ⇒ ★★ **旧表把「被切事实源点亮的既存红」当成了「切事实源的代价」** ⇒ ⇒ ⇒ **⇒ 代价不是 5，是 1。**
+- ⇒ ⇒ ★ **通用式**：
+  1. ⭐⭐⭐⭐⭐ **「切了之后才看见」≠「是切出来的」** ⇒ ⇒ **代价必须两档同库同基线对拍、逐条定性**，
+     否则**你会把别人的既存缺陷记在自己账上** ⇒ ⇒ ★ **⇒ 也别把既存缺陷的归因改掉**。
+  2. ⭐⭐⭐⭐ **「静默 SKIP」的腿数本身是收益** ⇒ ⇒ **切事实源让 8 条腿第一次真的跑起来** ⇒ ⇒
+     ★ **这些腿以前「通过」其实什么都没证明** ⇒ ⇒ ⇒ **「让腿真跑」的收益要在切事实源这种决策上兑现**。
+  3. ⭐⭐⭐ **同一次测量要同时给出「两档都红」与「只有一档红」两张清单** ⇒ ⇒ 前者是既存面，后者才是差价。
+
+## 2026-10-21 — ★★★★★ **库级 EVENT TRIGGER 的函数体里「不加限定名」的调用 ⇒ 窄 `search_path` 的会话做不了任何 DDL**（llm-gateway-go R85）
+
+- 症状：隔离 schema 的测试里，**每一句 `CREATE TABLE` 都报**
+  `ERROR: function columnar_insert_only_parents() does not exist (SQLSTATE 42883)`。
+- ⇒ ⇒ ★★★★ **根因（逐条实跑定位）**：`CONTEXT: PL/pgSQL function public.fn_enforce_columnar_event_trigger() line 15 at FOREACH over array`
+⇒ ⇒ 该库有**库级 EVENT TRIGGER** `enforce_columnar_trigger` → `public.fn_enforce_columnar_event_trigger()`，
+**它的函数体里是不加限定名地调用 `columnar_insert_only_parents()`**（该函数**就在 `public`**）
+⇒ ⇒ ⇒ **event trigger 的函数体按【会话当时的 `search_path`】解析名字**
+⇒ ⇒ ⇒ **凡是 `search_path` 不含 `public` 的会话 ⇒ 任何 `CREATE TABLE` 都 42883。**
+- ⇒ ⇒ ★★ **这是「已知、被局部绕过、但没根治」的缺陷**：仓内至少三处早就写过同一形态
+（`domains/reportrollup/grainreport_e2e_test.go:209`、`tools/benchreport/main.go:65`、
+公共样板 `internal/testschema/testschema.go:98` 的 `name + ",public,pg_catalog"`）⇒ ⇒
+**知道的人都在自己那一处追加 `public`，而根因在产品侧没动。**
+- ⇒ ⇒ ★★ **通用式**：
+  1. ⭐⭐⭐⭐⭐ **收窄 `search_path` 必须【追加】原值，不能覆盖** ⇒ ⇒
+     正确形态 = `schema + ",public,pg_catalog"`（**隔离 schema 在前 ⇒ 裸名仍优先命中它 ⇒ 隔离性不受影响**）。
+  2. ⭐⭐⭐⭐ **库级 EVENT TRIGGER 的函数体应当【全部 schema 限定】** ⇒ ⇒
+     ★ 否则**任何把 `search_path` 收窄的客户端 / 运维脚本 / 第三方工具都会踩到 42883**。
+  3. ⭐⭐⭐⭐ **「本地镜像缺件」与「解析上下文不对」要分开验** ⇒ ⇒
+     ★ 本轮先判「镜像没有 `columnar` AM」⇒ **实测 `pg_am` 的 `columnar` = 1、`pg_proc` 里该函数 = 1** ⇒ ⇒ **假设被否**。
+  4. ⭐⭐⭐ **定位「哪一句 SQL 挂了」要逐句实跑** ⇒ ⇒
+     ★ 整批 `Exec` 的错误只给行号不给语句 ⇒ ⇒ **拆成逐句（或在隔离 schema 里手跑）才看得到 `CONTEXT`**。
+- 溯源：llm-gateway-go R85 轮（2026-10-21）；handoff `§19.20.35` ④；审计档 §15.4。
+★ 同族：[[前提漂移]] · [[「0 命中的第一嫌疑是量具坏了」]] · [[「哑弹：守卫存在但无声」]]。
