@@ -82,7 +82,22 @@ func TestRollupCredentialModelIndex_ExecutesOnRealDB(t *testing.T) {
 	// 显式回滚：整条 rollup 是写语句（INSERT ... ON CONFLICT），必须零足迹。
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	tag, err := tx.Exec(ctx, rollupCredentialModelIndexSQL, time.Now())
+	// ⚠ 桶必须取一个**不可能被 dedup 命中**的值，否则「产出 0 行」是合法结果、
+	// 断言会假红（2026-10-20 实测踩到过）：
+	//
+	// rollup 的收尾有一层 dedup：当 (credential_id, raw_model) 在**上一个
+	// bucket** 的指标（success_rate / p95 / 三个 score）与本次完全相同时，
+	// 本次这一行被跳过（这是 2026-07-13 那次「97.1% 的插入是纯重复」的
+	// 优化）。⇒ 若上一次 bucket 就在眼前（运行中的实例每 5 分钟写一次），
+	// 且指标没变，INSERT 合法地产出 0 行。
+	//
+	// 取一年前的桶 ⇒ dedup 的比较窗口（[bucket-7d, bucket)）里没有任何行
+	// ⇒ 必然走插入路径 ⇒ 「产出 ≥ 1 行」才真正说明「指标源在供数」。
+	// 该桶不在任何真实 bucket 序列里，写进去的行随事务 ROLLBACK 消失 ⇒
+	// 零足迹；也不会被 promote 搬走（没有提交）。
+	bucket := time.Now().UTC().Add(-365 * 24 * time.Hour).Truncate(time.Minute)
+
+	tag, err := tx.Exec(ctx, rollupCredentialModelIndexSQL, bucket)
 	if err != nil {
 		t.Fatalf("rollup 语句在真库执行失败：%v\n（这一条就是退役改写引入的列解析/关系错误；"+
 			"语句本体：\n%s", err, rollupCredentialModelIndexSQL)
