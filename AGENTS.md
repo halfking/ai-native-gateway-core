@@ -3285,11 +3285,17 @@ To codeup.aliyun.com:kaixuan/official-deploy/llm-gateway-go.git
   ⇒ 订正一处：**基础表上 `request_class` 仍在** ⇒ **损坏只在视图层，数据没丢**。
 - **验证**：登记册补齐后同一命令**不再中止**（24 条全部命中、无「新增未登记」、无「请下调预算」）
   ⇒ `./internal/dbx` 真库上 **PASS=78 / SKIP=0 / FAIL=0**（对照：默认跑法下这些断言全被 skip）。
-- **分流判据（本轮最重要的一条方法）**：真库失败必须分 **A 门自己在拒绝空证据 / B 夹具形态不匹配 / C 疑似真缺陷**。
+- **分流判据（本轮最重要的一条方法）**：真库失败必须分
+  **A 门自己在拒绝空证据 / B 夹具形态不匹配 / C 疑似真缺陷 / D 重跑产物**。
   B 的两个具体判据：**23514 no partition found** ⇒ 一次性库**没有当月分区**
   （基线只建 `2026_07/2026_08`，链补到 09，而今天 2026_10）⇒ 凡是种「现在」数据的腿都死在这儿；
   **列存类断言为空/0 候选** ⇒ 一次性库全是 heap、生产才有列存分区。
-  ⇒ 把 B 当 C 去修 ⇒ 追鬼。
+  ★ **D（本轮新分出的一类）**：**42703 缺列**且**缺的列在基线里明明有** ⇒ 读到的是**空壳墓碑表**
+  —— 重跑阶段会**先重灌一遍基线**（基线是 860 之前的形状）⇒ 旧名族被重新造出来，后续 ALTER 全被
+  「already exists」挡住 ⇒ 墓碑表只有 CREATE TABLE 那一列集合。
+  ⚠ **不是生产缺陷**：实测生产形态库只有 `_request_logs`（156 列）、没有旧名；
+  settle worker 读的也是新族 `_request_logs_hot` ⇒ 这批失败**只在重跑形态下出现**。
+  ⇒ 把 B/D 当 C 去修 ⇒ 追鬼。
 - **待办（已登记，未擅自处置）**：C 类 5 条候选真缺陷（`TestStatsRebuildSQLParses/retire-dim`
   ——★ 该测试带 `//go:build integration`，**默认跑法里根本不存在**；`TestStopWriteInterlock_*` 默认语义；
   `TestDataLifecycle*` 两条；`sql/migrations/domain/032` 通道漏文件）、
