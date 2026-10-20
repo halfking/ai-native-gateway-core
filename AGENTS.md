@@ -4236,3 +4236,37 @@ To codeup.aliyun.com:kaixuan/official-deploy/llm-gateway-go.git
   ⇒ ★ **已实测证伪与本轮无关**（把本轮改动换回 HEAD 版复跑**照样红**）
   ⇒ 属 **D3 族**（v1 族退役后产品不再发那条 INSERT ⇒ pgxmock 期望永不匹配）
   ⇒ **已通报并行会话**。
+
+### 2026-10-21 R68 轮（**第二块**）：**68 列静态门复查** ＋ **「30s 耗时」归因** ⇒ 推翻了挂账里的**两处记错**
+
+> 明细：`docs/audit/2026-10-21-R68-68列静态门复查与30s耗时归因.md`；handoff `§19.16`。
+> ★ 本块**未改任何产品代码或测试断言**（只有变异，已全部还原、md5 逐字一致）⇒ **对生产零影响**。
+
+- ★★★ **68 列清单是对的，而且「扩到 68」是**承重**的**：
+  ① 当前族（`session_turns` ∪ `session_turns_hot`）**31 个物理独有列 31/31 全覆盖**；
+  ② 68 列里**无一列**在 canonical 视图契约里 ⇒ **无误报**；
+  ③ **变异 M-A**（注入**新加的**会话族列 `rl.session_id`）⇒ **门红**；
+  ★★ **变异 M-B**（**把 `session_id` 从清单里抽掉**）⇒ **门转绿**
+  ⇒ ⇒ ★ **扩列是这条门在当前族上唯一的拦截手段**。
+  ⇒ ⇒ ★ **「爆炸半径实测为 0、仍 PASS」只证明「今天没有越列」，不证明「清单在起作用」**
+  ⇒ **两者必须分开测**（R65「门绿 ≠ 量具有牙」的翻版）。
+- ★★★★ **「30s 耗时」归因完成 ⇒ 推翻挂账两处记错**：
+  ① **30.29s 的是 `TestRequestLogsCurrentMonthViewEnsureRoundTrip`（`db/request_logs_view_schema_test.go:252`）**，
+     **不是**挂账四轮写的 `TestRequestLogsViewV2EnsureMatchesMigration`（实测 **13.14s**）；
+  ② **包名也错**：两条都在 **`db/`**，`domains/session/v2` 内 **0 命中**（该包 339 个测试函数）
+  ⇒ ⇒ ★ **这条挂账连续四轮「未做」，是因为它一直指向错误的测试**。
+  ⇒ ⇒ **「30s」不是性能问题**，是**夹具 setup 的成本**（建 scratch 库 + 手工造 v1 形态）。
+- ★★★ **两条 db/ 测试**各自怎么死的（**不同的死法 ⇒ 不能同一种药治**）：
+  - **(A) `TestRequestLogsCurrentMonthViewEnsureRoundTrip`** ⇒ ★★ **断言与产品现状矛盾**：
+    ensure 的现行形态（`db/request_logs_view_schema.go:40-95`，v4/890 期）**只剩 session 两臂**，
+    会话族缺席时**不做任何 DDL**（实测日志：*「session_turns absent and the v1 family is
+    retired (890) — no fallback body to install」*）⇒ 它断言的「v1 动态重建形态」**已不存在**
+    ⇒ **改瞄夹具救不了，断言必须改**；
+  - **(B) `TestRequestLogsViewV2EnsureMatchesMigration`** ⇒ ★ **断言仍有效**（全是会话族形态：
+    734 details join / 740 client_ip / 738 credits / 816·817 守卫）⇒ **死的是「从真库克隆 v1 表」
+    这个夹具前提** ⇒ **可以改瞄**。
+- ⚠ **处置是属主决策**（改的是「这两道门还守什么」）：A 退役 (A) / B 两条都改瞄会话族（倾向 B）/
+  C 都退役换 v4 专门新门 ⇒ 已写进 handoff §19.16.3，**本轮未替属主拍板**。
+- ⚠ **本块的第一版读数是我的口径错**（DSN 指向了没有 canonical 视图的 `postgres` 库
+  ⇒ 读成「frozen base contract = 0 columns, want 108」）
+  ⇒ ⇒ ★ **「0 列」有两种几乎同形的成因** ⇒ 归因前必须先确认 DSN 指向的库**有没有那个对象**。
