@@ -7583,6 +7583,20 @@ func main() {
 		adminHandler.RegisterProbeDashboardRoutes(mux, wrapAdmin)
 		slog.Info("Phase 3.8 probe health dashboard API enabled (/api/admin/probe/*)")
 
+		// Model status page — 24h traffic availability (Statuspage-style).
+		//
+		// ★ 2026-10-21（R72 轮）：本调用点曾被**合并静默冲掉**——
+		//   引入提交 0174ec0aa 把它放在 RegisterProbeDashboardRoutes 旁边，
+		//   而合并提交 d2cbaf88b 的 main.go 改动里只有一行
+		//   `- adminHandler.RegisterModelStatusRoutes(mux, wrapAdmin)`，
+		//   **没有对应的新增** ⇒ handler 与注册函数都还在，路由却没了。
+		//   后果：/api/admin/model-status 恒 404（实测于本机 8782）。
+		//   该缺陷不会让任何现有测试变红（没有测试断言「端点存在」），
+		//   所以只能靠「注册函数有调用点」这条静态门兜住（见
+		//   admin/admin_route_mount_test.go）。
+		adminHandler.RegisterModelStatusRoutes(mux, wrapAdmin)
+		slog.Info("model status API enabled (/api/admin/model-status)")
+
 		// Phase 3.9 (2026-07-02, Task D2): Approval Request Query API
 		// Provides REST API for querying, approving, and rejecting approval requests
 		// with statistics support. Complements the existing admin approval handlers.
