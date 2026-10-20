@@ -9153,7 +9153,7 @@ installer `//go:embed` 指令 + files 映射 → `dbinit` 的 `StartupFiles` →
 
 | Migration | File | SHA-256 | Status |
 |-----------|------|---------|--------|
-| 893 | `893_fresh_install_partition_prereq.sql` | `ffd47cedca271bf93fd86b8f9e313fb1d2ff715a517d94a5c9fdb2f8b4154b1b` | **registered in installer StartupFiles（★ 未在生产应用）** —— 2026-10-21 起登记进 `installer/internal/dbinit/runner.go` 的 `StartupFiles`（链尾）⇒ **只影响「全新安装」的形态**：一次性库实测 **295 条 startup 链全绿（applied=295 / failed=0 / missing=0）**（★ 含并行会话合并进来的两条）、当月+次月分区到位、5 个核心族真实写入全部落在 `_2026_10` 月分区（非 default）⇒ **23514 消除**。★ 已装好的库（生产 252 / 154 / 245）**不需要**跑它 ⇒ **本轮生产零变更、零重启** |
+| 893 | `893_fresh_install_partition_prereq.sql` | `94b304545d6c3d6a641df938429e0ae39ba15854527c37fd7a3dedd22efbd2a3` | **registered in installer StartupFiles（★ 未在生产应用）** —— 2026-10-21 起登记进 `installer/internal/dbinit/runner.go` 的 `StartupFiles`（链尾）⇒ **只影响「全新安装」的形态**：一次性库实测 **295 条 startup 链全绿（applied=295 / failed=0 / missing=0）**（★ 含并行会话合并进来的两条）、当月+次月分区到位、5 个核心族真实写入全部落在 `_2026_10` 月分区（非 default）⇒ **23514 消除**。★ 已装好的库（生产 252 / 154 / 245）**不需要**跑它 ⇒ **本轮生产零变更、零重启** |
 
 ★ **它做什么**：两个通用助手 + 发现式补「当月 + 次月」分区 + default 兜底。
 ★ **它不做什么**（都是实测结论，不是取舍偏好）：

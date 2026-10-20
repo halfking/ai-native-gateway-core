@@ -102,6 +102,27 @@
 --
 --   众数（而不是"最新一个"）是刻意的：万一库里同时存在两种前缀，
 --   多数派才是该族真正的约定。
+
+-- ★★ 锁守卫（2026-10-21 §143.35 收尾轮补齐；本仓规则，见 §44）
+--   本文件建当月/次月分区 ⇒ `CREATE TABLE ... PARTITION OF` 要拿父表的
+--   AccessExclusiveLock ⇒ **无上限的锁等待会在等锁期间堵住全库**
+--   （2026-10-18 生产实测：一次迁移这样把 14 个网关会话堵了约 1.5 分钟）。
+--   ⇒ 本仓规则：**870 号之后的迁移必须自带 lock_timeout**
+--   （门：`installer/cmd/llm-gw-installer/startup_ddl_lock_guard_gate_test.go`）。
+--
+-- ★ 为什么用【session 级】`SET` 而不是 `SET LOCAL`：
+--   本文件**没有显式事务**（三个 DO 块各自独立）⇒ `SET LOCAL` 离开事务块
+--   只会被 PG 当成「无效」而告警 ⇒ 不生效。
+--   ⇒ ⇒ 而【本文件对同一形态的既有惯例就是 session 级 `SET`】：
+--   871 / 877 / 887 / 888 四个迁移同样没有显式事务、同样用 `SET lock_timeout`。
+--   ⇒ ★ 不外泄：installer 的 applySQL 对【每个文件单独起一次 psql】
+--   ⇒ ⇒ session 级设置只作用于本文件这次执行。
+--
+-- ★ 取值 60s：与本仓 870+ 迁移的通行值一致（872~892 的 `SET LOCAL` 都是 60s）。
+--   ⇒ 命中即失败（55P03）而不是继续堵库 —— 这是本仓的既定取舍：
+--   **宁可让迁移失败，也不要让整库被一条迁移卡住**。
+SET lock_timeout = '60s';
+
 CREATE OR REPLACE FUNCTION public.llm_gateway_monthly_family_prefix(p_parent text)
 RETURNS text
 LANGUAGE plpgsql
