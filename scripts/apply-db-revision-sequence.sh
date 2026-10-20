@@ -1762,6 +1762,11 @@ files=(
   # ⇒ 能改读且不丢能力；canonical 视图不投影这 6 列 ⇒ 只能用会话族直连形态。
   # 两条腿 hot ∪ parent UNION ALL（前提：hot ∩ parent 实测无重叠）。
   "$ROOT_DIR/sql/migrations/startup/884_session_family_v_analytics_views.sql"
+  # 885：session_turns 父表与 hot 表各加 host（网关实例身份）+ tags（轮次级
+  # 标签数组）两列（审计 A5 缺口：全族此前无任何主机/实例列；标签只到 session 级）。
+  # ★ 两侧必须同形：迁移 707 的 promote 契约校验比较父表与 hot 的列集合，
+  #   只加一侧会让 promote 当场报错、热表永远排不进月分区。
+  "$ROOT_DIR/sql/migrations/startup/885_session_turns_host_tags.sql"
 
   # ── 2026-10-16 孤儿迁移 044 补登（health_source 白名单缺 probe_now）──────
   #

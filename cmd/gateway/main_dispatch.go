@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
-	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -18,6 +17,7 @@ import (
 	streaming "github.com/kaixuan/llm-gateway-go/domains/streaming" //nolint:depguard
 	"github.com/kaixuan/llm-gateway-go/domains/streaming/executors"
 	"github.com/kaixuan/llm-gateway-go/hotconfig"
+	"github.com/kaixuan/llm-gateway-go/internal/instanceid"
 	"github.com/kaixuan/llm-gateway-go/internal/liveactions"
 )
 
@@ -43,14 +43,14 @@ var gatewayRequestJourneySink dispatch.ObservationSink
 var gatewayRequestJourneyJournalSink dispatch.JournalSink
 var gatewayMinuteStats *dispatch.MinuteStatsAggregator
 
+// stableGatewayInstanceID returns the stable identity of this gateway
+// instance (LLM_GATEWAY_INSTANCE_ID → hostname → "llm-gateway").
+//
+// 2026-10-20（迁移 885）：解析逻辑搬到 internal/instanceid，因为
+// domains/session/v2 的 turn writer 需要**同一个**身份写进
+// session_turns.host；留在 package main 里只能复制一份，两份迟早漂移。
 func stableGatewayInstanceID() string {
-	if configured := strings.TrimSpace(os.Getenv("LLM_GATEWAY_INSTANCE_ID")); configured != "" {
-		return configured
-	}
-	if hostname, err := os.Hostname(); err == nil && strings.TrimSpace(hostname) != "" {
-		return strings.TrimSpace(hostname)
-	}
-	return "llm-gateway"
+	return instanceid.Resolve()
 }
 
 // journalSnapshotReceiptOwner adds a process-local nonce to the stable gateway

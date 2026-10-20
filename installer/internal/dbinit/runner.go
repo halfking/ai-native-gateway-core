@@ -1192,6 +1192,16 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			// 两条腿 hot ∪ parent UNION ALL（前提：hot ∩ parent 实测无重叠，
 			// 计数型指标不会被数两次）。
 			"884_session_family_v_analytics_views.sql",
+			// 885：给 session_turns **父表与 hot 表**各加 host（网关实例
+			// 身份）+ tags（轮次级标签数组）两列（审计 A5 缺口：全族此前
+			// 无任何主机/实例列，轮次级此前无标签位）。
+			// ★ 两侧必须同形：迁移 707 给 promote_session_turns_hot_to_partition
+			//   加了列集合契约校验（父表与 hot 的 (列名:类型:非空) 集合必须
+			//   全等，否则 promote 当场 RAISE EXCEPTION）⇒ 只加一侧会让
+			//   热表永远排不进月分区。
+			// promote 函数本身不用改：707 的搬行体是「目录派生列清单 +
+			//   RETURNING h.*」⇒ 对称加列自动流经。
+			"885_session_turns_host_tags.sql",
 		},
 	}
 }

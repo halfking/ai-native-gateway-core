@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kaixuan/llm-gateway-go/metrics"
 )
@@ -225,6 +226,15 @@ type TurnRecord struct {
 	// writer ever populated it, so `session_turns.client_protocol` was
 	// permanently NULL. Travels with AgentName/AgentType.
 	ClientProtocol string
+	// Host is the gateway instance that wrote this turn
+	// (migration 885, audit A5 gap). Empty = resolve from the process
+	// identity (LLM_GATEWAY_INSTANCE_ID → hostname → "llm-gateway"), so
+	// the column is never written empty.
+	Host string
+	// Tags is the turn-level label array (migration 885, audit A5 gap).
+	// Empty = derive the standard labels from the turn's own classification
+	// columns (see deriveTurnTags).
+	Tags []string
 }
 
 // AppendTurn appends a new turn to the session, returning the assigned turn_no
@@ -476,7 +486,9 @@ func (w *TurnWriter) appendTurnInLockedTx(ctx context.Context, tx pgx.Tx, rec Tu
 				origin_stage, origin_actor, client_ip, client_forwarded_for,
 				agent_name, agent_type, virtual_client_id,
 				request_status,
-				client_protocol
+				client_protocol,
+				host,
+				tags
 			) SELECT
 				$1, $2, $3, $4, $5,
 				$6, $7, $8, $9,
@@ -506,7 +518,9 @@ func (w *TurnWriter) appendTurnInLockedTx(ctx context.Context, tx pgx.Tx, rec Tu
 				$95, $96, $97,
 				$98,
 				-- §9.208: client_protocol appended last so no existing $N shifts.
-				$99
+				$99,
+				-- 885：host/tags 接在其后，同样只追加不重编号。
+				$100, $101
 			WHERE NOT EXISTS (
 				SELECT 1
 				FROM public.session_turns_with_current_month
@@ -551,6 +565,10 @@ func (w *TurnWriter) appendTurnInLockedTx(ctx context.Context, tx pgx.Tx, rec Tu
 		// exactly the "mismatched param and argument count" incident this
 		// INSERT is guarded against (TestRequestLogInsertParamCount).
 		nilIfEmpty(rec.ClientProtocol),
+		// $100 / $101 —— 885 的 host / tags。追加在末尾，理由同上（不重编号）。
+		// host 用进程身份兜底（永不空）；tags 用轮次自身分类列物化（永不空数组）。
+		resolveTurnHost(rec),
+		pgtype.FlatArray[string](resolveTurnTags(rec)),
 	)
 
 	if err != nil {

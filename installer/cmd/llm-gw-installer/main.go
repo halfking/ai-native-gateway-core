@@ -918,6 +918,9 @@ var sessionFamilyCostViewMetrics883 []byte
 //go:embed embeddata/startup/884_session_family_v_analytics_views.sql
 var sessionFamilyVAnalyticsViews884 []byte
 
+//go:embed embeddata/startup/885_session_turns_host_tags.sql
+var sessionTurnsHostTags885 []byte
+
 //go:embed embeddata/startup/859_tighten_pii_phone_intl_regex.sql
 var tightenPiiPhoneIntlRegex859 []byte
 
@@ -1245,6 +1248,7 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/882_request_logs_cost_negative_partial_idx.sql":                         requestLogsCostNegativePartialIdx882,
 	"startup/883_session_family_cost_view_metrics.sql":                               sessionFamilyCostViewMetrics883,
 	"startup/884_session_family_v_analytics_views.sql":                               sessionFamilyVAnalyticsViews884,
+	"startup/885_session_turns_host_tags.sql":                                        sessionTurnsHostTags885,
 	"startup/859_tighten_pii_phone_intl_regex.sql":                                   tightenPiiPhoneIntlRegex859,
 	"startup/852_models_canonical_column_set_reconcile.sql":                          modelsCanonicalColumnSetReconcile852,
 	"startup/489_credential_probe_queue_startup_backfill.sql":                        credentialProbeQueueStartupBackfill489,
