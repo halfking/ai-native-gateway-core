@@ -392,6 +392,69 @@
 >    不能记成「没有」** —— 否则那条目标从候选集消失 ⇒ 门对它没有牙，而门看上去是绿的。
 > ⇒ ★ **配套**：判据形态必须按「**仓库里真实存在的写法**」枚举，不是按「写门时想到的写法」枚举。
 
+> **2026-10-21 R72c 轮（本会话）**：**把「多轮模型请求 + 落库验证」这一步从「等上游 key」里解出来**
+> ⇒ ★★ **先订正口径**：目标「相关资源」给的 `baseurl=http://127.0.0.1:8782/v1` + apikey 是**本机网关**的
+>    key/地址 ⇒ **这一步的前置是网关自己的 key（本地就有）**；上游 provider key 只是加分项，**不是前置**
+>    ⇒ ⇒ 「等上游 key」这条**假阻塞**本轮解除（并已入 LESSONS §155）。
+> ⇒ ★★ **实测 48 次请求**（3 轮 × 8 模型 × 2 提示词，限速 5.5s/次 ≤ 12 RPM）：
+>    **5 个模型全 200**（`glm-5.2` 走**真实上游**，回复 "Pong! How can I help you today?" / "OK."；
+>    `claude-sonnet-5-5`/`gpt-5.6-luna`/`grok-4.6`/`mimo-v2.6-flash` 走本地 mock）= 30 次成功；
+>    3 个 503（`deepseek-v4-flash`/`glm-5.3-flash`/`minimax-m2.7`）⇒ **URSM v2 权威节点镜像覆盖**。
+> ⇒ ★★★ **落库读数（会话族）**：`session_turns_hot` 里 `glm-5.2` success=t 7 行、延迟 1671~11301ms、
+>    tokens 97/843；mock 四模型 success=t 各 6~8 行；**失败请求同样落库**（success=false）
+>    ⇒ ★ **落点是 hot 不是父表**（hot 保留 8h ⇒ 只查父表会误判「没落库」⇒ 必须查 hot ∪ parent）。
+>    ⇒ ★ **`%request_logs%` 关系数 = 0** ⇒ v1 族真删且**零写入**。
+> ⇒ ★★ **三条实测发现（本轮未改产品代码，只取证 + 定位修复点）**：
+>    ① ★ **本地 provider 的 base_url 硬编码 `127.0.0.1`**（`admin/local_provider.go:defaultLocalBaseURLForCode`）
+>       ⇒ **容器形态下指向「容器自己」** ⇒ **ollama/vllm/llamacpp/lmstudio/mlx 全部接不上**
+>       ⇒ ★ **与本仓既有约定冲突**（本仓对容器→宿主一律用 `host.docker.internal`，连本地 PG 都是这么配的）
+>       ⇒ 修复点已定位，**一刀切会打挂「同容器/同网络」场景 ⇒ 属主决策**；
+>    ② ★ 种子化的 mock provider（2433/2434）**base_url 缺 `/v1`** 且**没有任何凭据** ⇒ 探针必判 unreachable；
+>    ③ ★ **URSM v2 权威节点镜像**决定候选生死（`view_sample ... avail=false` ⇒ 候选在数据层存在却进不了候选集）。
+> ⇒ ★★ **新增零依赖测试夹具** `scripts/mocks/llm-mock-upstream/server-stdlib.py`（**只用 Python 标准库**）：
+>    补 `/v1/models`（★ 探针两步法的 Step 1）⇒ 之前仓内两个 mock 都提供不了 ⇒ **mock 在跑却收不到请求**。
+>    ⇒ **不装 aiohttp**（依赖安装属用户侧决策）⇒ 标准库实现更可复现。
+> ⇒ ★ **量具边界**：`X-Ratelimit-Limit: 12` ⇒ 首轮无节流的 14 连发把后面全打成 **429**（网关自己的每 key 限流，
+>    **不是**上游故障）⇒ 本轮改 5.5s/次 ⇒ 48 次零 429（口径已记录）。
+> ⇒ ★ **测试痕迹已清理**：凭据 10 / 8 条绑定 / provider 2433 的 8 条 provider_models 全删、base_url 复原、mock 停、端口释放。
+> ⇒ 完整记录见 `docs/audit/2026-10-21-R72c-模型请求与落库验证.md` + LESSONS `§155`/`§156`/`§157`。
+
+>
+> **2026-10-21 R72b 轮（本会话）**：**把一条样本做成通用扫描 ⇒ 挖出「视图按 OID 绑定 ⇒ 改名后视图脱靶」的真缺陷族**
+> ⇒ **对生产的写入 = 0**（211 / 252 全程只读；唯一落地 = 迁移 894 **登记进部署序列**，上生产由属主走发布通道）。
+> ⇒ ★★ **起点**：兄弟会话报出一条 P2「auto-route 成本仪表盘返回 3.5 个月前快照」
+>    （`api_key_model_cost` 352 行冻结在 2026-06-19，写方随 890 删除，两个视图顶层 FROM 仍指向它）
+>    ⇒ 本轮**独立复核**并**订正**一处：迁移 883 **两个视图都没换顶层 FROM**，且第 87–90 行**明文写着**
+>    「刻意不复活 `api_key_model_cost` 的聚合链」⇒ **不是疏漏，是显式取舍**；
+>    ⇒ ★ **我先前笔记写「本地 `model_cost_per_task_view` 已是纯会话族」⇒ 错的**（顶层 FROM 仍是该表）⇒ 已订正。
+> ⇒ ★★★ **通用扫描**：「所有视图的顶层 FROM 行集来源 × 写方活性」⇒ **同一件事翻了三次车**：
+>    ① 把 `_test.go` 的**夹具 INSERT** 当成写方；② 写目标正则**不认 schema 限定**（`public.x` 被记成表名 `public`）；
+>    ③ ★ **先把多行文本拍平再剥 `--` 注释 ⇒ 一行注释吞掉整段函数体** ⇒ 写方凭空消失
+>    ⇒ 修法 = **转义换行 → 还原 → 剥注释 → 才拍平**（或用 psql `-R` record separator 分行）。
+> ⇒ ★★★★ **真缺陷（机制 → 复现 → 三实例读数 → 修法）**：
+>    ★ **PostgreSQL 的视图绑定关系的 OID，不是名字** ⇒ 迁移 392 的「**改名保留旧表**」
+>    （`candidate_failure_logs` → `candidate_failure_logs_columnar_archive`）**不会让既有视图跟着换表**
+>    ⇒ 视图仍绑老表 OID ⇒ `pg_get_viewdef` 打印该 OID 的**当前名字** ⇒ FROM 自动变 archive
+>    ⇒ ★ **新形态的数据对它不可见**；且 392 的分支幂等（`IF NOT has_partitions`）
+>    ⇒ **同一迁移在两种前置状态下产生两种形态** ⇒ **211 脱靶（0 行，活表 91,935 行）/ 252 正常（187,907 行）**
+>    ⇒ ★★ **同一个视图在两个生产实例返回不同数据集** ⇒ 直接违反「多环境同一标准」。
+>    ⇒ **最小复现（一次性库）**：基线后读 LIVE ⇒ 仅加 392 ⇒ **自动变 ARCHIVE** ⇒ 机制坐实、非随机。
+> ⇒ ★★ **修法 = 迁移 `894_rebind_candidate_failure_logs_diagnosis_view.sql`**（+ 同名 `.down.sql`）：
+>    只做 `CREATE OR REPLACE VIEW`，视图体与仓内**两处真相源**（基线 `sql/schema/01-schema.sql`
+>    与对象源文件 `sql/objects/views/v_candidate_failure_logs_diagnosis.sql`）**归一化后逐字同形**
+>    ⇒ **不改表、不动数据、不删 archive 表** ⇒ 零语义风险（实测三处 archive 表皆 0 行 ⇒ 不丢历史）。
+>    ⇒ **登记 7 点**：正本 / embeddata 副本（逐字一致）/ installer `go:embed` + map /
+>    `runner.go` StartupFiles / `installed_startup_migrations.tsv` 镜像 / **生产升级序列** / `docs/db-changelog.md`。
+> ⇒ ★★ **门** `sql/migrations/startup/migration_894_view_rebind_test.go`：三方同源 + 绑活表（**先剥注释**）
+>    + 7 点登记 + embeddata 逐字 + down 可逆 + **真库腿纯只读** ⇒ 变异 **M1~M5 全红**、还原逐字一致。
+> ⇒ ★ **本轮自身两次量具故障**：① 门的第一版抽取器用 `" AS "` 字面量，而三份来源的 `AS` 后面**跟的是换行**
+>    ⇒ 抽出不相干片段 ⇒ **被阳性对照当场逼红**；② ★ **变异脚本用 `git checkout --` 还原 ⇒ 对 untracked 无效**
+>    ⇒ 迁移文件**留在变异态** ⇒ 已改为「备份 → 回拷 → 比 sha256」。
+> ⇒ ★★ **一条被推翻的怀疑（假阳性留证）**：`handoff_logs_with_current_month` 曾被判「脱靶到遗留表」——
+>    实际是 534 **有意**的三臂 UNION（live ∪ hot ∪ legacy）⇒ **不是缺陷** ⇒ 关闭。
+>    ⇒ ★ **通用式：「视图依赖了历史名表」≠「视图读不到活数据」**；判脱靶必须看**顶层 FROM 是不是唯一臂**。
+> ⇒ 完整记录见 `docs/audit/2026-10-21-R72b-视图脱靶族与冻结行集扫描.md` + LESSONS `§152`/`§153`/`§154`。
+
 > **2026-10-20 §143.25 轮（本会话）**：**把「11-03 的超时风险」量化掉**
 > ⇒ **301,255 行搬进 columnar 实测中位 3,410 ms**（10 分钟预算的 0.6%，**裕量 176×**）
 > ⇒ **超时风险从「未量化、可能很高」降级为「量级上极不可能触发」**。

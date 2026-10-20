@@ -1545,6 +1545,25 @@ files=(
   "$ROOT_DIR/sql/migrations/startup/387_session_analysis_inference.sql"
   "$ROOT_DIR/sql/migrations/startup/427_task_type_centroids_model.sql"
   "$ROOT_DIR/sql/migrations/startup/893_fresh_install_partition_prereq.sql"
+  # 2026-10-21（R72 轮）：把 v_candidate_failure_logs_diagnosis **重新绑回活表**
+  # public.candidate_failure_logs。
+  #
+  # 机制：**视图绑的是关系 OID，不是名字** ⇒ 392 把老堆表改名成
+  # candidate_failure_logs_columnar_archive（保留旧数据）并新建同名空分区表时，
+  # **既有视图不会跟着换表** ⇒ 它仍绑在老表 OID 上，而 pg_get_viewdef 打印的是
+  # 那个 OID 的**当前名字** ⇒ 视图的 FROM 变成 archive 表 ⇒ **新形态的数据对它不可见**。
+  #
+  # 实测（2026-10-21，只读）：
+  #   · 211：视图读 archive ⇒ 0 行，而活表 91,935 行（2026-10-12~10-20）⇒ 恒空；
+  #   · 252：392 走「已分区则跳过」分支（从未改名）⇒ 视图读活表 ⇒ 187,907 行；
+  #   · 一次性库（基线 + 392）复现：392 之前读 LIVE，392 之后自动变 ARCHIVE。
+  # ⇒ **同一个视图在两个生产实例返回不同数据集**。
+  #
+  # 本条只做 CREATE OR REPLACE VIEW（视图体与仓内两处真相源逐字同形：
+  # sql/schema/01-schema.sql 与 sql/objects/views/v_candidate_failure_logs_diagnosis.sql），
+  # **不改表、不动数据、不删 archive 表**；archive 表实测三处皆 0 行 ⇒ 重绑不丢历史。
+  # 幂等：可重复应用；252 上是同体替换（no-op 语义）。
+  "$ROOT_DIR/sql/migrations/startup/894_rebind_candidate_failure_logs_diagnosis_view.sql"
 
   # 2026-10-07（844）：给 v_supplier_price_vs_baseline 补两个缓存基准价的投影。
   #
