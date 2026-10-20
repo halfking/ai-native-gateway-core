@@ -10,11 +10,11 @@
 #   This file answers a different question: "which of them fail when applied a
 #   SECOND time to an already-migrated database?"
 #
-# ⚠ 这份清单只覆盖「217 条链」，不覆盖 baseline 三件套。
+# ⚠ 这份清单只覆盖「282 条链」，不覆盖 baseline 三件套。
 #   InitSchema (installer/internal/dbinit/runner.go:716) 的真实顺序是
-#   00-prereqs -> 01-schema -> 02-seed -> 217 条链，而重跑 installer 会在
-#   **01-schema.sql** 就中止（1665 条 ERROR，见 baseline_rerun_budget.tsv），
-#   根本走不到链。所以下面 11 条是「假设 baseline 已被修好」之后的阻断点，
+#   00-prereqs -> 01-schema -> 02-seed -> 282 条链，而重跑 installer 会在
+#   **01-schema.sql** 就中止（1547 条 ERROR，见 baseline_rerun_budget.tsv），
+#   根本走不到链。所以下面 24 条是「假设 baseline 已被修好」之后的阻断点，
 #   不是重跑 installer 的第一现场。这一点在审计文档 §9.124 里被明确写出。
 #
 # WHY IT IS A SEPARATE QUESTION AND NOT A NICER ONE
@@ -48,6 +48,16 @@
 # MEASURED 2026-10-04 (§9.124), pass 2 of 217, on a database built by this very
 # script's first pass (prereqs + baseline + seed + 217). 11 files, 206 ok.
 #
+# ★ RE-MEASURED 2026-10-21 (R57 轮), pass 2 of 282: 24 files fail, 258 ok.
+#   口径不变（同一脚本的首遍建库 → 同一顺序重跑），只是链从 217 长到 282。
+#   与 2026-10-04 的 11 条相比**净增 13 条**，全部是**新增的注册迁移**造成的：
+#   老文件的老缺口不会自己变多，新增的是链尾那些从未被重跑过的文件。
+#   13 条的机理见下面 [M7]/[M8]/[M9] 三组，其中 9 条是**级联**（不是 13 个独立缺陷）。
+#   ⚠ 这份清单自 2026-10-04 起就没人更新过 —— 因为「重跑阶段」只在
+#   scripts/audit/run-integration-gate.sh 跑到那里才会发生，而该脚本
+#   需要 docker + 一次性 PG + 私有 registry 镜像 ⇒ 平时没人跑。
+#   ⇒ R57 轮补跑了这条腿（见 scripts/audit/measure-realdb-legs.sh）。
+#
 # ⚠ 上一版（本文件的第一版）登记的是 **3** 条，那是我在一个人造的
 #   startup-only 库上量的数 —— 起始库形状不同，数就不同。真实路径先跑
 #   baseline，链在 baseline 已经改变过的库上跑第二遍，失败集因此更大。
@@ -57,7 +67,7 @@
 # ⚠ 每条只报**第一个**错误（门用 --single-transaction + ON_ERROR_STOP=1），
 #   所以下面的 ratchet 以**文件**为粒度。真实缺陷数已单独量出（§9.125.1）：
 #
-#     11 个文件 / 18 条真实独立错误
+#     11 个文件 / 18 条真实独立错误（2026-10-04；2026-10-21 复测为 24 个文件）
 #     （原始 ERROR 行 40 条，其中 22 条是级联噪声 —— 568 / bootstrap / 738
 #       三个文件内有显式 BEGIN;，首错后同事务后续命令全报 25P02
 #       "current transaction is aborted"。去掉噪声后 614 一个文件占 8 条。）
@@ -68,7 +78,7 @@
 #
 # ---- 按机制分组（不是按修法相似度归堆） --------------------------------
 #
-# [M1] CREATE OR REPLACE VIEW 不能丢列 / 不能改列名 —— 5 条
+# [M1] CREATE OR REPLACE VIEW 不能丢列 / 不能改列名 —— 6 条
 #   PostgreSQL 硬规则：CREATE OR REPLACE VIEW 的新定义不能减少列集，也不能
 #   改已有列的名字。链上多条迁移反复重写同一个视图，后写的更宽，于是早写的
 #   在重跑时变窄 → 报错。
@@ -104,6 +114,38 @@
 #   column reference "credits_rate_multiplier" is ambiguous。
 #   与重跑有关但成因不同：重跑让同名列在视图链里出现两次。
 #
+# [M7] 谓词过期（首遍改名遗留）—— 2 条（562 / 808）
+#   860 在**首遍**把 request_logs 族改成 _ 前缀形态（带分区的父表、父表本身、
+#   默认分区全部改挂到新名下面）。这两个文件的谓词仍写死**旧名**：
+#     562 找 request_logs_bodies 下的分区 ⇒ 实测分区挂在 _request_logs_bodies
+#     808 按 p.relname=request_logs 找 DEFAULT 分区 ⇒ 实测 request_logs_default
+#          的父表是 _request_logs
+#   ⇒ 重跑时它们把「改名后的正确状态」读成「缺失」⇒ 抛错。
+#   ★ 与 [M1]-[M6] 都不是一回事：那六类是「迁移自身不幂等」，这两类是
+#     **迁移本身没问题，是判定谓词没跟上首遍已经发生的事实**。
+#   ⇒ 修法方向也不同：不是给迁移加守卫，而是让谓词按当前真名解析（或两套都认）。
+#
+# [M8] 级联：上游中止 ⇒ 下游全灭 —— 9 条（680/696/700/710/716/733/734/740/815）
+#   链上编号 < 610 的视图重建迁移（340/341/448/459/491/510）按**旧列集**
+#   重建 request_logs_with_current_month ⇒ 610 加的 request_class/due_at 被丢掉；
+#   610 的幂等守卫谓词只描述「当前形状」不描述「我是不是已经做过」⇒ 它抛错中止
+#   （[M5]）⇒ 扩展**永不恢复** ⇒ 下游 9 个文件必然失败。
+#   ⚠ 其中 680 是**修复腿**：它就是为了修「canonical 视图缺失」而写的，
+#     却依赖 request_class ⇒ 修复腿自己也跑不起来 ⇒ canonical 保持缺失。
+#   ★ 实测（2026-10-21）：重跑后 request_logs_with_current_month **不存在**，
+#     而 request_logs_with_current_month_without_customer_id 与
+#     _without_request_class_due_at 两个 intermediate 留存 ——
+#     这与 680 头注释记载的 2026-10 生产事故状态**完全同型**
+#     （非事务重放 ⇒ DROP 生效、CREATE 失败 ⇒ 网关无自愈 ⇒ /api/logs 持续失败）。
+#   ⇒ 登记这 9 条不是给它们「开免罪金牌」，而是把「一因多果」记成一条根因
+#     （610 的谓词 + 老迁移的旧列集），免得下一个人以为是 9 个独立缺陷。
+#   ⇒ 真正的修法在 E3：给 InitSchema 一个「已初始化」守卫，让重放前提不成立。
+#
+# [M9] 设计性不可重跑（按设计要求人工介入）—— 1 条（860）
+#   860 是**改名**迁移，守卫在「新旧命名并存」时明确 RAISE「resolve manually」。
+#   它不是跑不过，是**故意要人来消歧**。登记它是为了让门知道这是设计的一部分，
+#   而不是把它当成回归。★ 它的改名也正是 [M7] 两条谓词过期的**成因**。
+#
 # DECISION PENDING (§9.119.5 / §9.124.6, not applied here on purpose):
 #   E1  rewrite the view-rewriting files as DROP VIEW IF EXISTS + CREATE VIEW
 #       (needs downstream view/function dependencies enumerated first)
@@ -112,14 +154,16 @@
 #   E3  give InitSchema an "already initialised" guard — removes the replay
 #       premise entirely, so the whole class stops mattering
 #
-# ⚠ E3 现在比第一版评估时更值钱：重跑的第一现场是 baseline（1665 条），
+# ⚠ E3 现在比第一版评估时更值钱：重跑的第一现场是 baseline（1547 条），
 #   而不是链。E3 是唯一能同时消掉这两处的方案。
 # ⚠ 但 E3 单独也不够 —— 它不修 baseline 自身的不可重跑，只是不再重放它。
-#   真要支持重跑，01-schema.sql 那 1665 条是必须单独处理的。
+#   真要支持重跑，01-schema.sql 那 1547 条是必须单独处理的。
 #   在任何一个方案落地前，发布 runbook 必须写明：
 #   **发布流程不得包含「对已有库重跑 installer」**。
 # ---------------------------------------------------------------------------
+
 520_durable_task_settlement_intents.sql	[M3] 死守卫：两条 DROP POLICY IF EXISTS 指向 durable_task_settlement_tenant_isolation / _super_admin_bypass，而全链无任何迁移创建这两个名字；真正创建的 durable_task_settlement_access 一条守卫都没有（§9.125.2 实测：1 条真实错误）
+562_fix_request_logs_bodies_partitions_heap.sql	[M7] 谓词过期（首遍改名遗留）：860 在**首遍**把带分区的父表改名为 _request_logs_bodies；R57 轮真库实测：request_logs_bodies_2026_07/08/09 三个分区的父表实测都是 _request_logs_bodies，而本文件的 VERIFY 仍按**旧名** request_logs_bodies 判「已附着」⇒ 读成「未附着」⇒ RAISE '562: VERIFY FAIL - partition not attached to request_logs_bodies'。★ 是谓词没跟首遍改名同步，不是本文件自身不可重跑
 568_credential_priority_flag.sql	[M1] CREATE OR REPLACE VIEW public.model_offers 把列 raw_model_name 改名为 canonical_raw_name；PG 不允许 CREATE OR REPLACE VIEW 改列名
 577_request_logs_view_customer_id.sql	[M2] 无守卫 CREATE VIEW public.request_logs_with_current_month，重跑时关系已存在
 610_request_class_due_at.sql	[M5] 迁移自带的 RAISE EXCEPTION 幂等守卫在重跑时自己触发（谓词只描述当前形状、不描述是否已执行过）
@@ -128,5 +172,17 @@
 637_session_bodies_unified_today_visible.sql	[M1] 同一视图第二次重写（更宽）；重跑时报错的是 625 那次更窄的定义，本文件自身是否可重跑取决于链上顺序
 640_session_turns_protocol_fields.sql	[M1] CREATE OR REPLACE VIEW public.session_turns_with_current_month 丢列（与 625/637 同一 PG 规则）
 656_auto_route_selections_hot.sql	[M1] CREATE OR REPLACE VIEW public.auto_route_selections_all 在更宽定义已存在后无法再应用（与 625/637 同一 PG 规则）
+680_request_logs_current_month_view_bootstrap.sql	[M8] 级联·修复腿自锁：本文件就是为修「canonical 视图缺失」写的修复件（其头注释记载了 2026-10 生产事故：非事务重放旧迁移 ⇒ DROP 生效、CREATE 失败 ⇒ canonical 缺失 ⇒ 网关无自愈 ⇒ /api/logs 持续失败）；但它的 CREATE 依赖 h.request_class，而 request_class 已被更早的重建与 610 的扩展链互抹（见 610 条目）⇒ 修复腿自己也跑不起来 ⇒ canonical 保持缺失（R57 轮真库实测：重跑后 request_logs_with_current_month 不存在，而 request_logs_with_current_month_without_customer_id 与 _without_request_class_due_at 两个 intermediate 留存）
+696_request_logs_view_system_fingerprint.sql	[M8] 级联：依赖 h.request_class（实测报错 column h.request_class does not exist）；上游 610 中止后该列在 canonical 视图上不再存在 ⇒ 本文件必然失败
+700_request_logs_view_raw_model_name.sql	[M8] 级联：依赖 h.request_class（同 696）；本文件是 BEGIN/COMMIT 包裹的 CREATE OR REPLACE VIEW，失败后事务回滚 ⇒ 自身不留半成品
+710_request_logs_view_session_family_v2.sql	[M8] 级联：依赖 h.request_class（同 696）
+716_unify_probe_health_views.sql	[M8] 级联：依赖 canonical 视图 request_logs_with_current_month（实测报错 relation request_logs_with_current_month does not exist）；该视图在重跑中已缺失（见 680 条目）
+733_session_turn_details.sql	[M8] 级联：依赖 request_class 列（实测报错 column request_class does not exist）
+734_request_logs_view_details_join.sql	[M8] 级联：依赖 h.request_class（同 696）
 738_view_chain_credits_rate_multiplier.sql	[M6] 视图链重建时 column reference "credits_rate_multiplier" is ambiguous；重跑让同名列在链里出现两次
+740_view_chain_client_ip.sql	[M8] 级联：视图链重建不收敛（实测 request_logs_with_current_month column count = 0，expected 115）—— 因 canonical 视图在重跑中缺失（见 680 条目）
+808_request_logs_default_partition.sql	[M7] 谓词过期（首遍改名遗留）：808 的守卫外层 EXISTS 认 relname=request_logs（命中，R57 轮真库实测 _request_logs 与 request_logs 两套并存），内层却按 p.relname=request_logs 找 DEFAULT 分区，而实测 request_logs_default 的父表是**改名后**的 _request_logs ⇒ 内层判「无默认分区」⇒ CREATE TABLE ... PARTITION OF public.request_logs DEFAULT 撞名 ⇒ relation request_logs_default already exists
+815_request_logs_view_stage_band_cff.sql	[M8] 级联：视图重建不收敛（实测 request_logs_with_current_month column count = 0，expected 118）—— 因 canonical 视图在重跑中缺失（见 680 条目）
+826_model_baseline_price.sql	[M1] CREATE OR REPLACE VIEW 不能丢列（与 625/637/640/656 同一 PG 规则）：本文件的新定义比链上后续更宽的定义窄 ⇒ cannot drop columns from view
+860_rename_request_logs_family_pending_delete.sql	[M9] 设计性不可重跑（按设计要求人工介入）：860 是**改名**迁移；重跑时链条中另有环节按**旧名**重建了 request_logs_bodies_hot（R57 轮真库实测：重跑后 request_logs_bodies(p) 与 _request_logs_bodies(p) 两套父表并存，且 2026_07/08/09 三个分区挂在 _request_logs_bodies 下）⇒ 守卫按设计 RAISE both request_logs_bodies_hot and _request_logs_bodies_hot exist - resolve manually before replaying。★ 它不是「跑不过」，而是**明确要求人工消歧**
 session_turns_hot_bootstrap.sql	[M2] 尾部无守卫 CREATE VIEW public.session_turns_with_current_month（另有 4 条无守卫 CREATE POLICY，与 351/520 同机制，被首个错误挡住）
