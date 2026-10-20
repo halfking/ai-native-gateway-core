@@ -3432,3 +3432,31 @@ PostgreSQL 解析调用时，**带默认值的那个也能接 3 参调用**，
 - 防复发检查：① 判「模型是否发出了 X」要读**实际产出的字段**（Responses 协议读 `response.function_call_arguments.delta` 的内容；Chat 协议读 `delta.tool_calls[].function.arguments`），不要用「有没有某个事件类型」代替——事件类型只说明「有工具调用」，不说明「调用的是哪条命令」；② 「被拦」的表现与「模型没发」在客户端侧**长得一样**（都没有工具调用参数）⇒ 判定必须把两者分开：读实际内容 + 看网关侧日志的 `rule_id`；③ 一次读数异常先怀疑**夹具/读法**，别急着改被测行为（本轮重跑同一命令即被拦，读法是错的）。
 - 证据：复验脚本从「找 `function_call` 字符串」改成「拼 `response.function_call_arguments.delta`」后读数稳定；网关侧日志 `output_compliance: blocked stream event ... reason_codes=[egress_destination] rule_id=builtin.egress_sink` 作权威旁证。
 - 溯源：r1037 补到含 r1038 的 main 后的生产复验；[复盘](docs/audit/2026-10-20-r1037-211-空响应与硬阻断清单.md) §7.6。
+
+## 2026-10-20 — 量具坏掉的现象与服务端坏掉**同形**：先验量具的产出，再看服务端的报错（Seen: 1/3）
+- 场景：补做「累积式多轮」测试，第 1 轮 200，第 2 轮起全部 `400 sanitization_failed: Invalid request body`；服务端日志写的是 `sanitize_middleware: sanitize failed / invalid sanitizable request: JSON object required: unexpected end of JSON input` ⇒ 看起来 100% 像服务端 bug。
+- 根因：量具用 `sed 's/\n__HTTP__[0-9]*__T[0-9.]*$//'` 剥 `curl -w` 追加的标记，**macOS 默认的 BSD sed 不把 LHS 的 `\n` 当换行**（只有 GNU sed 才当）⇒ 标记留在 payload 里 ⇒ `json.loads` 抛 `Extra data` ⇒ **history 被悄悄置空**（`history=$(python3 …)` 失败时命令替换得到空串，脚本继续跑）⇒ 下一轮请求体变成空串 ⇒ 服务端如实地说「请求体非法」。
+- 防复发检查：① 凡是「服务端说我的请求体非法」，**先看落盘的请求/响应原件**——本例落盘文件里还带着 `__HTTP__200__T1.5` 标记，一眼可辨；② 量具里凡是「用子进程产出下一个中间变量」的地方，**失败必须显式中止**，不能让失败值（空串）流进下一轮——「静默清空」比「直接报错」贵得多；③ 跨平台脚本不要依赖 `sed` 的 GNU 扩展（`\n`/`\r` 等），剥标记改用 `python3` 按 `rfind("\n__HTTP__")` 切。
+- 证据：本地对照（同一输入）`old=[{"a":1}\n__HTTP__200__T1.5]` vs `new=[{"a":1}]`；服务端日志 `sanitize_middleware: sanitize failed`；修法见 `/tmp/llmgw-retire-20261020/real-model-multiround-accum.sh`（剥标记 + history 失败即中止）。
+- 溯源：request_logs→session_turns 复核轮 §5.11.2；[复盘](docs/audit/2026-10-20-request-logs-session-turns-复核轮.md) §5.11.2 / §9.1。
+
+## 2026-10-20 — 探活一次只碰**一个**模型：一个模型的 429 会把整个凭据冷却（Seen: 1/3）
+- 场景：一次探 3 个模型，读数是「第 1 个 200、第 2/3 个 503 no_candidate」，读起来像「这个族只有第一个能跑」；实际上第 2 个撞上上游 429（`EndpointTPMExceeded`）后，**第 1 个（刚 200 过）也开始 no_candidate**。
+- 根因：goal-retry 对同一节点连打 3 次 ⇒ `nodehealth` 的 `ConsecutiveFailures`（NodeKey=租户+provider+**凭据+模型**）达到 `circuitFailureThreshold`（付费档 3）⇒ `effectsFor` 触发 `EffectSetCredentialUnavailable` ⇒ `credential.Writer.SetCredentialUnavailable` 把 `credentials.availability_state` 置 `cooling`（3 分钟）**并把该凭据名下全部绑定置 `available=FALSE`** ⇒ 兄弟模型一起消失。写侧的 `writeModelLevelFailureOnly` 本来是对的（只冷自己），是**熔断路径**把范围放大到凭据级。
+- 防复发检查：① 探活**一次只碰一个模型**，否则会把「凭据被冷却」误读成「这个族没有可用模型」；② 看到「某模型族全部 no_candidate」，**先查凭据级状态**（`credentials.availability_state`）再查模型级绑定（`credential_model_bindings.available`），两者的原因与修法完全不同；③ 用 `unavailable_reason` 的**前缀**判断是谁写的：`auto_<kind>` = 模型级、`auto_credential_<kind>` = 凭据级——本例 10 个绑定里 9 个是 `auto_credential_rate_limit`、1 个是 `auto_rate_limit`，一眼看出放大发生在哪条路径；④ 客户端给上游传的 `max_tokens` 过小会让 reasoning 模型返回「200 但内容为空」⇒ 网关判 `empty_response` ⇒ 探针量具自己把自己打挂，**探活不要带 `max_tokens`**。
+- 证据：08:20:45–08:24:44 实测链（`node_probe_runs` + `credentials` + 10 条绑定读数）；判别依据 `domains/nodehealth/reducer.go:434` 与 `domains/credential/writer.go:518`（明写「✅ DO NOT update credentials.availability_state」）。
+- 溯源：request_logs→session_turns 复核轮 §5.11.4；[复盘](docs/audit/2026-10-20-request-logs-session-turns-复核轮.md) §5.11.4 / §9.2 / §9.4（L9）。
+
+## 2026-10-20 — 「目录」不等于「可路由清单」：写「某模型不存在」之前先确认目录是**谁**的（Seen: 1/3）
+- 场景：上一轮文档写「用户清单里其余 6 个模型在本机**目录里根本没有**」；本轮实测发现 `/v1/models` 的返回**随可用凭据变化**（89 个 → 77 个，恰好等于另一个凭据的 provider 的模型数），而那 6 个模型**其实都在 `provider_models` / `credential_model_bindings` 里**，只是不可路由。
+- 根因：把「某一时刻的目录快照」当成了「平台的模型集合」。目录是按**当前可用凭据**渲染的 ⇒ 凭据一挂，目录就少一大片 ⇒ 用目录做「存在性」判断会把「暂时不可用」说成「不存在」。
+- 防复发检查：① 判「某模型在本机存不存在」要逐层查：`provider_models` → `credentials`（凭据级状态：`availability_state` / `quota_state` / `lifecycle_status`）→ `credential_model_bindings.available` → 探针状态（`node_probe_state.last_direct_ok` / `node_probe_runs` 的失败码分布）；② 文档里写「不存在」时必须同时写**判据与取数命令**，否则下一轮的人无法复核（本轮改成逐个归属表 + 取数命令）；③ 不可路由的原因要分到**四类**再下结论：**环境/上游退役（410 EOL）/ 上游账单（429 balance）/ 仓库规则（探针判据）**——四类的修法完全不同，混在一起就会把「上游 EOL」当成「仓库没实现」。
+- 证据：§5.11.6 的逐个归属表（7 个模型 × 绑定/凭据/原因/性质）；`node_probe_runs` 的失败码分布（凭据 2：404×266 / timeout×206 / 500×138 / 410×96 / inconclusive×10）证明主因是「账号没部署这些模型」而非探针规则。
+- 溯源：request_logs→session_turns 复核轮 §5.11.6；[复盘](docs/audit/2026-10-20-request-logs-session-turns-复核轮.md) §5.11.6 / §9.3。
+
+## 2026-10-20 — 同一现象在**不同协议腿**上的规则要逐腿核对（Seen: 1/3）
+- 场景：探针把 `z-ai/glm-5.3-flash` 判成 `probe_response_inconclusive`（上游 HTTP 200、`content:null`、reasoning 吃满了 32 token 预算），该模型因此永远到不了 `healthy_confirmed`、永远不可路由。读 `bg/probe_http_validation.go` 看不出问题——因为豁免在**另一条腿**上。
+- 根因：**Responses 腿**接受「`status=incomplete` + `incomplete_details.reason=max_output_tokens` + 非空 `output`」作正向证据（注释明写「even if all of its output budget went into reasoning」），而 **chat 腿**要求 `choices[].message.content` 是非空字符串 ⇒ 同一件事，一条腿放行、一条腿定罪。
+- 防复发检查：① 凡是「按证据强弱定生死」的规则，列出它覆盖的**全部**腿，逐腿对照「同一现象在这条腿上判什么」；② 判据文件分散在不同文件时，靠 grep 单个文件发现不了不对称——要按**规则**而不是按**文件**盘点；③ 不要为了让某条腿通过就改判据：本仓「2xx 不等于健康、必须有正向证据」是 2026-10-20 12h 审计轮**刻意**立的规矩（`bg/probe_observation_beat_gate_20261020_test.go` 整篇在钉），改动要单独一轮、且必须同时回答「reasoning 模型的探针预算该给多少」；④ **不在别人的任务里顺手改掉别人刻意立的规矩**——正确处置是**记为遗留 + 写清改它要回答什么问题**（本轮记为 L10）。
+- 证据：`bg/probe_http_validation.go` 的 `responsesProbeProtocolEvidence` vs `bg/credential_probe_response_validation.go:147-152`；实测 `node_probe_runs` 里 `z-ai/glm-5.3-flash` 连续 200 + `probe_response_inconclusive` + attempt 递增。
+- 溯源：request_logs→session_turns 复核轮 §5.11.5；[复盘](docs/audit/2026-10-20-request-logs-session-turns-复核轮.md) §5.11.5 / §9.5（L10）。

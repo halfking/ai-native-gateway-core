@@ -1,9 +1,21 @@
 # request_logs → session_turns 双写退役：2026-10-20 复核轮
 
-> 基线：本地 `main` = `d9fc3b58f`（合并 `origin/main` 74 提交后的合并提交）
+> 基线（**方法 + 观测值**，不写死终态 SHA —— 上游每几十分钟就被推一次，写死必然过期）：
+>
+> ```bash
+> cd <仓库根> && git fetch origin --prune -q
+> git rev-list --left-right --count main...origin/main   # 期望 0  0
+> git branch --show-current                              # 期望 main
+> git status --porcelain                                 # 期望空
+> ```
+>
+> 本轮收尾时的观测值：本地 `main` 与 `origin/main` 一致、工作树干净。
+> **网关在跑的发布产物** = `2.5.8.2756`（`git_sha=b45b3725`）—— 这个 sha **可作证**，
+> 因为构建时**工作区干净且 HEAD==origin/main**（版本号类提交不改 Go 树）。
 > 环境：本机 PG 17.10（`llm-gateway-pg` 容器，127.0.0.1:54318）、Redis 7（6379）、
-> 入口 `http://127.0.0.1:8782/v1`、部署产物 `2.5.8.2746`
+> 入口 `http://127.0.0.1:8782/v1`
 > 口径：只写实测到的；未验证项显式标注。
+> 覆盖范围：本轮所有读数均来自**本机**（§5.11.3 末尾已单列覆盖范围）。
 
 本轮是**复核轮**，不是从零实施轮。2026-10-16/17 两轮已把退役主线落地
 （改名、停写门、读源切换、逐文件四族分类）。本轮做三件事：
@@ -29,6 +41,9 @@
 | **门禁自身的竞态（本轮新发现）** | `TestDataLifecycleTableSizesFieldsAreComplete` 偶发红：判据与端点读**同一个** `pg_total_relation_size`，却跨两次读做**精确相等**，而首行大表正被网关后台 worker 写入 ⇒ **端点是对的，判据的前提是错的**。已按该文件注释**早已声明的 ±1%** 修正并做变异验证（§5.7） |
 | **逐页扫描抓到的唯一一条 JS 异常** | `/quality-correlations` 在**无数据**时抛 `TypeError: Cannot read properties of null (reading 'reduce')`：后端 `breakdown` 是 Go **nil slice** ⇒ 序列化成 `null`，而前端 TS 类型声明成**非空数组** ⇒ 类型成了假的安全网。已改后端契约（恒返 `[]`）+ 前端**边界**归一化，3 道新判据全部做过变异验证（§5.8） |
 | **★ 模型请求与写入测试（补做步骤）** | `deepseek-v4-flash` **5/5 = 200**（用户清单里其余 6 个在本机**目录中不存在**或无健康凭据）；**读回证据**：5 轮 `turn_no` 1..5、`success=t`、`latency_ms` 1795→28756、正文三列 `jsonb_typeof` **全是 `array`** ⇒ **「数据存储可用」成立**。08:02 起全量 503 的归因是**三个环境原因**（凭据 auth_failed / 代理节点库 0 行 / 上游余额耗尽），**不是仓库缺陷**（§5.10） |
+| **★ 累积式多轮（补做）** | 改用**累积对话**（每轮带全部历史）重做：`prompt_tokens` **84 → 92 → 107 → 386 → 1255 严格单调递增**（这才是「多轮」的可验证形态；每轮只发一条消息时它只反映本轮提示词长度）⇒ 5/5 = 200、`turn_no` 1..5 连续、正文三列 `jsonb_typeof` **全是 `array`**、退役族 `_request_logs*` **0 行** ⇒ **4 条判据全 PASS**。过程中抓到**两条量具坑**（BSD sed 不剥 `\n` 标记 ⇒ 请求体被清空；探活一次碰多模型 ⇒ 一个模型的 429 冷却整个凭据）（§5.11） |
+| **★ 新发现一：凭据级熔断会连坐兄弟模型** | 一个模型的 429（`EndpointTPMExceeded`）经 goal-retry 连打 3 次 ⇒ `nodehealth` 熔断阈值（付费档 3）⇒ `EffectSetCredentialUnavailable` ⇒ **该凭据名下 10 个绑定全部 `available=FALSE`** + `credentials.availability_state='cooling'` ⇒ 刚 200 过的兄弟模型立刻 `no_candidate`（3 分钟）。是 `reducer.go:434` 的**明确设计**，但代价要记账（L9） |
+| **★ 新发现二：探针 chat 腿缺「预算耗尽」豁免** | Responses 腿接受 `status=incomplete` + `max_output_tokens` 作正向证据，**chat 腿没有** ⇒ reasoning 模型（探针预算只有 32 token）在 `content:null` 时被判 `probe_response_inconclusive` ⇒ 永远到不了 `healthy_confirmed`。与「2xx 不等于健康」是刻意规矩冲突，本轮**不改**（L10） |
 | **★ L1 订正（上一轮自己的结论前提有误）** | 「7 张分区不带 `_` 前缀 ⇒ 新装/存量形状分叉」**不成立**：那是迁移 860 的**明确设计**（待删标志在父表上），正典基线 schema 造的就是无前缀分区名，862 那个 `_request_logs_2026_10` 只是**合成夹具名** ⇒ 两边形状相同。真正要修的是**按名字枚举分区族的口径**（两处运维脚本 ⇒ 已改成按 `pg_inherits` 走父表，真库差集证明**零回退、只补漏**）（§5.9） |
 
 ---
@@ -820,6 +835,8 @@ JS 堆栈是**多行**的，整表被写坏（解析出来「106 行、route 重
 | L6 | 本机 PG 的 `shared_buffers` 原值 400 kB 是**手改在容器数据目录**里的，不在仓库内 | 环境 | 已在本机修好并加部署门；**任何新建的本机 PG 都要按门检查**（门只在本仓的 deploy-local 路径生效） |
 | **L7** | **客户端取消被记成 `500 / error.kind=server_error`**（`middleware/logging_mw.go` 的 `errorKind(status)` 只看状态码）⇒ 「客户端跑了」与「服务端坏了」在监控里**长得一样**；且多数 handler 的裸 `writeError(500, …)` **不留任何日志**（只有 `handleTurnsSessions` 等少数几处打了 WARN） | 观测 | 在 `emitRequestLog` 里判 `r.Context().Err() == context.Canceled` ⇒ `error.kind=client_aborted`（不改级别，避免把真 5xx 降级）；并让裸 `writeError(500,…)` 路径也留一行 WARN。**本轮未改**（共享中间件，改动面大且会动全部请求的日志形态） |
 | **L8** | `prompt_injection_stats_enhanced`（迁移 364）**在正典库上建不出来**（引用不存在的 `detection_score`）；本轮已让统计端点**不再依赖**它，但**视图本身仍在** ⇒ 任何直接查它的外部消费者（`web-mobile/src/api/promptInjection.ts` 的注释仍这么写）继续 42P01 | 债 | 出一条新迁移用**正典形状**重建该视图（历史迁移字节不可改）；本轮未做（见 §5.6.1 的口径冲突：视图的等级分桶与正典整数 `risk_level` 不兼容，必须同时定口径） |
+| **L9** | **一个模型的 429 会冷却整个凭据**：`nodehealth` 熔断（付费档连续 3 次）⇒ `EffectSetCredentialUnavailable` ⇒ `credentials.availability_state='cooling'` + **该凭据名下全部绑定 `available=FALSE`** ⇒ 兄弟模型（哪怕刚 200 过）一起 `no_candidate` 3 分钟。写侧的 `writeModelLevelFailureOnly` 本来是对的（只冷自己），是**熔断路径**把范围放大 | 设计代价 | 本轮**不改**：改成模型级会重新打到同一个已超配额的端点上，更糟。若要改，需先答「凭据级限流 vs 模型级限流怎么区分」——上游 TPM/RPM 限流是**账号级**的，凭据级冷却在这类场景是对的；真正要收窄的是**被误判为模型故障的凭据级限流** |
+| **L10** | **探针 chat 腿没有 Responses 腿那个「预算耗尽也算证据」的豁免**：reasoning 模型在探针预算（`ProbePingMaxTokens=32`）内把预算全花在 `reasoning_content` 上、`content:null` ⇒ chat 腿判 `probe_response_inconclusive` ⇒ 永远到不了 `healthy_confirmed` ⇒ 模型不可路由。实测命中 `z-ai/glm-5.3-flash`（凭据 2） | 规则不对称 | 本轮**不改**：「2xx 不等于健康、必须有正向证据」是本仓 2026-10-20 12h 审计轮**刻意**立的规矩（`bg/probe_observation_beat_gate_20261020_test.go` 整篇在钉）。要改必须单独一轮，并同时回答「reasoning 模型的探针预算该给多少」（32 ⇒ 多少）和「`finish_reason=length` + `content:null` 算不算协议可达证据」 |
 
 ### 6.1 既有失败的归因（**不是**本轮引入）
 
@@ -926,6 +943,12 @@ PSQL="$HOME/kaixuan/pg18/bin/psql"
 
 ### 5.10.1 可用的模型集（用户给的 7 个里只有 1 个在本机目录中）
 
+> ⚠️ **2026-10-20 补正**：本小节「本机**目录里根本没有这些族**」的说法**不准确**——
+> `/v1/models` 的目录**随可用凭据变化**（凭据 1 挂掉后 89 → 77，正好等于凭据 2 的
+> provider 2452 的模型数）；用户清单里的模型**其实都在 `provider_models` /
+> `credential_model_bindings` 里**，只是**不可路由**。
+> 逐个归属（含每个模型不可路由的**真实原因**）见 **§5.11.6**。
+
 `GET /v1/models`（本机）返回 **89** 个模型。用户清单里的族在本机的实际可用性：
 
 | 用户清单里的模型 | 本机结果 | 原因 |
@@ -1008,6 +1031,228 @@ PSQL="$HOME/kaixuan/pg18/bin/psql"
 必须查 hot 表或按时间窗查父表。本机读数：请求前 `session_turns=876` /
 `session_turns_hot=174` / `session_bodies_hot=174` / `sessions=989`；
 本轮 15 次请求后 hot 表新增 15 行（`turn_no` 1..5 × 3 会话）。
+
+---
+
+## 5.11 ★ 补做「累积式多轮」测试：`prompt_tokens` 84→1255 单调增长，退役族零新增
+
+### 5.11.1 为什么要重做：§5.10.2 那 5 轮**不是多轮**
+
+§5.10.3 已记：每轮只发**一条** user 消息 ⇒ 网关看到的是 5 个独立请求，
+`prompt_tokens` 只反映**本轮提示词长度**（读数 84/86/98/114/103，r4 > r5
+是因为 r5 的中文提示词更短，**不是**「不单调」）。
+
+本节用**累积对话**（每轮带上全部历史 user/assistant，与真实聊天客户端一致）
+重做，唯一目的是让「多轮」变成**可验证的形态**：`prompt_tokens` 必须单调不减。
+
+### 5.11.2 两条**量具**坑（现象与「产品缺陷」同形，必须先排除量具）
+
+**坑 1：BSD `sed` 不认 LHS 里的 `\n` ⇒ 标记没剥掉 ⇒ 请求体被清空。**
+
+脚本用 `sed 's/\n__HTTP__[0-9]*__T[0-9.]*$//'` 剥 `curl -w` 追加的标记。
+macOS 的 **BSD sed 不把 LHS 的 `\n` 当换行**（GNU sed 才当）⇒ 标记留在 payload 里
+⇒ `json.loads` 报 `Extra data` ⇒ **history 被悄悄置空** ⇒ 下一轮请求体变成空串
+⇒ 服务端回 `400 sanitization_failed: Invalid request body`。
+
+服务端日志（这一条是**服务端自己**说的，但**根因在量具**）：
+
+```
+sanitize_middleware: sanitize failed
+  error="invalid sanitizable request: JSON object required: unexpected end of JSON input"
+```
+
+本地对照（同一份输入，两种剥法）：
+
+```
+old=[{"a":1}
+__HTTP__200__T1.5]        ← BSD sed：标记没剥掉
+new=[{"a":1}]              ← python rfind：剥掉了
+```
+
+⇒ 修法：改用 python 按 `rfind("\n__HTTP__")` 剥；并让 **history 更新失败时显式中止**，
+不再让空 history 继续跑（空 history ⇒ 请求体退化 ⇒ 现象与服务端 bug 同形）。
+⇒ **判别动作：量具的失败可以伪装成服务端的失败。** 看到「服务端说请求体非法」，
+先回头验量具的**输出**（本例：落盘的 payload 里还带着 `__HTTP__` 标记）。
+
+**坑 2：探活一次碰多个模型 ⇒ 一个模型的 429 会把整个凭据冷却 ⇒ 后面的模型全部 `no_candidate`。**
+
+详见 §5.11.4。⇒ **判别动作：探活一次只碰一个模型**，否则会把「凭据被冷却」
+误读成「这个族没有可用模型」。
+
+### 5.11.3 累积式多轮：**4 条判据全 PASS**
+
+会话头 `X-Session-Id: gw_927eebbc5a24f59b580dd1fb0d678925`（`gw_` 前缀必需）。
+
+**客户端读数**（每轮都带全部历史）：
+
+| round | http | 耗时 | prompt_tokens | completion_tokens |
+|---|---|---|---|---|
+| 1 | 200 | 1.43s | 84 | 38 |
+| 2 | 200 | 1.65s | 92 | 41 |
+| 3 | 200 | 7.32s | 107 | 717 |
+| 4 | 200 | 16.46s | 386 | 1352 |
+| 5 | 200 | 25.13s | **1255** | 2158 |
+
+**读回判据**（独立脚本 `verify-model-writeback.sh`，只读库、不发请求，与发送侧互不污染）：
+
+| 判据 | 结果 |
+|---|---|
+| **A. 轮次连续** | `turn_no` = 1..5 连续，**5 行**，`success=t` 全绿，`latency_ms` 1247/1443/7123/16226/24951 |
+| **B. 多轮生效** | `prompt_tokens` = 84 → 92 → 107 → 386 → **1255**，**严格单调递增** ⇒ 累积对话确实生效 |
+| **C. 正文落库** | `session_bodies_hot` 5 行，`outbound_body` / `response_delta` / `request_delta` 的 `jsonb_typeof` **全是 `array`**（口径：用 `jsonb_typeof='array'` 判，**不用** `IS NOT NULL`） |
+| **D. 退役族零新增** | `_request_logs` / `_request_logs_bodies` / `_request_logs_archive` / `_request_logs_hot` / `_request_logs_bodies_hot` **全部 0 行**；同族对照 `session_turns_hot=306` / `session_bodies_hot=306` / `session_turns=876` |
+
+⇒ **A+B 证明「多轮是真的」；C 证明「正文落库」；D 证明「退役族没被复活」。**
+⇒ 与 §5.10.2 的 5 轮合起来：**非累积 5/5 + 累积 5/5，共 10 轮全 200 且完整落库。**
+
+**取数命令**（口径与覆盖范围一并落账）：
+
+```bash
+source /tmp/lgw-env.sh
+PSQL="$HOME/kaixuan/pg18/bin/psql"
+SID=gw_927eebbc5a24f59b580dd1fb0d678925
+
+# A/B：轮次连续 + prompt_tokens 单调不减（写侧落在 hot 表）
+"$PSQL" "$DATABASE_URL" -tAc "
+  SELECT turn_no, model, prompt_tokens, completion_tokens, success, latency_ms
+  FROM public.session_turns_hot WHERE session_id='$SID' ORDER BY turn_no;"
+
+# C：正文是 JSON 数组（**不用** IS NOT NULL —— JSON null 也满足）
+"$PSQL" "$DATABASE_URL" -tAc "
+  SELECT turn_no, jsonb_typeof(outbound_body), jsonb_typeof(response_delta),
+         jsonb_typeof(request_delta)
+  FROM public.session_bodies_hot WHERE session_id='$SID' ORDER BY turn_no;"
+
+# D：退役族零新增（覆盖父表 + hot + bodies + archive 四张）
+for t in _request_logs _request_logs_bodies _request_logs_archive \
+         _request_logs_hot _request_logs_bodies_hot; do
+  echo -n "$t: "; "$PSQL" "$DATABASE_URL" -tAc "SELECT count(*) FROM public.$t;"
+done
+```
+
+**覆盖范围说明**：本节只覆盖**本机**（`127.0.0.1:8782` + 本机 PG 17.10）、
+**凭据 1（provider 2453，sensenova）**、**模型 `deepseek-v4-flash`**。
+其它凭据/模型的可用性见 §5.11.6；本节**不**声称其它环境已验证。
+
+### 5.11.4 新发现一：一次 429 会把**整个凭据**冷却 3 分钟，兄弟模型一起连坐
+
+**实测链**（2026-10-20 08:20:45 → 08:24:44）：
+
+1. 08:20:45 探 `deepseek-v4-flash`（我自己的探针带了 `max_tokens:16`）
+   → 上游 `token.sensenova.cn` 返回 **200 但内容为空**（reasoning 模型被 16 token 截断）
+   → 网关判 `empty_response` ⇒ failover。**该错误不计入连续失败数**
+   （`nodehealth/reducer.go` 的 `ErrorKindEmptyResponse` 直接 `break`）。
+2. 08:20:54 / 08:20:59 / 08:21:10 探 `deepseek-flash` → 上游 **429
+   `RateLimitExceeded.EndpointTPMExceeded`**（"inference exceeds tpm/rpm limit"）
+   ⇒ goal-retry 对**同一节点**连打 3 次。
+3. 3 次后 `nodehealth` 的 `ConsecutiveFailures`（NodeKey = 租户+provider+**凭据+模型**）
+   达到 `circuitFailureThreshold(billing_mode)` = **3**（付费档；免费档 6）
+   ⇒ `effectsFor` 触发 `EffectRecordCircuitFailure` + `EffectSetBindingUnavailable`
+   + **`EffectSetCredentialUnavailable`**。
+4. `EffectSetCredentialUnavailable` → `credential.Writer.SetCredentialUnavailable`
+   ⇒ `credentials.availability_state='cooling'`（`availability_recover_at` = +3min）
+   **且把该凭据名下全部 10 个绑定置 `available=FALSE`**。
+5. ⇒ **刚刚才 200 过的 `deepseek-v4-flash` 立刻变成 `no_candidate`**，直到 08:24:44
+   恢复 ticker 把它翻回 `ready`。
+
+**读回证据**（冷却窗口内，cred1 的 10 个绑定）：
+
+```
+f|auto_credential_rate_limit|SenseChat-5
+f|auto_credential_rate_limit|SenseChat-5-Thinking
+f|auto_credential_rate_limit|SenseChat-Turbo
+f|auto_rate_limit|deepseek-flash              ← 模型级（writeModelLevelFailureOnly 做的，对）
+f|auto_credential_rate_limit|deepseek-v4-flash ← 凭据级（连坐）
+f|auto_credential_rate_limit|deepseek-v4.1-flash
+f|auto_credential_rate_limit|glm-5.2
+f|auto_credential_rate_limit|kimi-k3
+f|auto_credential_rate_limit|sensenova-6.8-flash-lite
+f|auto_credential_rate_limit|sensenova-u1.5-lite
+```
+
+⇒ 注意两条路径**同时**发生：写侧 `WriteOnError` 对 `KindConcurrent` 走
+`writeModelLevelFailureOnly`（**只**冷 `deepseek-flash` 自己的绑定，**不碰**
+`credentials.availability_state`，`writer.go:518` 明写「✅ DO NOT update
+credentials.availability_state」）；而 `nodehealth` 的熔断路径
+（`EffectSetCredentialUnavailable`）把范围**放大到整个凭据**。
+⇒ **归属**：熔断「连打 N 次 ⇒ 整个凭据不可用」是 `reducer.go:434` 的**明确设计**
+（注释：凭据级熔断 + 免费档阈值 6），不是本轮引入的回归；**代价**是
+「一个模型的限流会摘掉该凭据名下全部模型」。记为遗留 **L9**，本轮不改
+（改成模型级会重新打到同一个已超配额的端点上，反而更糟）。
+⇒ **判别动作**：看到「某个模型族全部 `no_candidate`」时，**先查凭据级状态**
+（`credentials.availability_state`），再查模型级绑定；两者原因完全不同。
+
+### 5.11.5 新发现二：探针的 chat 腿**没有** Responses 腿那个「预算耗尽也算证据」的豁免
+
+- **Responses 腿有豁免**：`bg/probe_http_validation.go` 的
+  `responsesProbeProtocolEvidence` 接受
+  `status=incomplete` + `incomplete_details.reason=max_output_tokens` + 非空 `output`
+  ⇒ 判为**有正向证据**（注释：「A complete Responses token-budget terminal proves
+  the former even if all of its output budget went into reasoning」）。
+- **chat 腿没有**：`bg/credential_probe_response_validation.go:147-152` 要求
+  `choices[].message.content` 是**非空字符串**（或含文本的 content 数组 / 带名字的 tool_calls）。
+  `content: null` + 只有 `reasoning_content` ⇒ **没有证据** ⇒ `probe_response_inconclusive`。
+- **实测**（凭据 2 / provider 2452 / NVIDIA NIM）：`z-ai/glm-5.3-flash` 探针
+  连续多轮拿到 **HTTP 200**，正文是
+  `{"message":{"content":null,"reasoning_content":"The user just said \"ping\"..."}}`、
+  `finish_reason:"length"` ⇒ 判 `probe_response_inconclusive`、attempt 递增、
+  一直退避 ⇒ 该模型**永远到不了 `healthy_confirmed`** ⇒ 不可路由。
+- **探针的 token 预算是 32**（`providercap.ProbePingMaxTokens = 32`，注释里明写
+  「a reasoning model can burn the entire budget invisibly」）⇒ 对 reasoning 模型
+  而言 32 token 常常**只够写 reasoning**。
+- ⇒ 这是**规则不对称**（同一件事，Responses 腿放行、chat 腿定罪），但
+  「2xx 不等于健康、必须有正向证据」是本仓 2026-10-20 12h 审计轮**刻意**立的规矩
+  （`bg/probe_observation_beat_gate_20261020_test.go` 整篇在钉它）⇒
+  **本轮不改**，记为遗留 **L10**（要改需要单独一轮，并且必须同时回答
+  「reasoning 模型探针该给多少预算」）。
+
+### 5.11.6 订正 §5.10.1 的说法：用户清单 7 个模型在本机的**逐个**归属
+
+§5.10.1 当时写的是「本机**目录里根本没有这些族**」。这句话**不准确**：
+`/v1/models` 的目录是**随可用凭据变化**的（凭据 1 挂掉后目录从 89 个变成
+**77 个**，正好等于凭据 2 的 provider 2452 的模型数），而**用户清单里的模型
+其实都在 `provider_models` / `credential_model_bindings` 里**——只是**不可路由**。
+逐个归属（真库读数）：
+
+| 用户清单模型 | `provider_models` | 凭据 | 绑定 | **不可路由的真实原因** | 性质 |
+|---|---|---|---|---|---|
+| `deepseek-v4-flash` | id=1（provider 2453） | 1 | available | 凭据 1 曾 `auth_failed`（08:02:36→08:17:36，08:18:05 恢复）⇒ 期间 `no_candidate` | **环境**（已恢复） |
+| `glm-5.3-flash` | id=3 `z-ai/glm-5.3-flash`（2452） | 2 | available | 探针 200 但 `content:null` ⇒ `probe_response_inconclusive` ⇒ 永远退避（§5.11.5） | **仓库规则**（L10） |
+| `minimax-m2.7` | id=2 `minimaxai/minimax-m2.7`（2452） | 2 | available | **上游 410 Gone**：`The model 'minimaxai/minimax-m2.7' has reached its end of life on 2026-07-27T00:00:00Z and is no longer available` | **上游退役**（不可修） |
+| `grok-4.6` | id=5（provider 2454） | 3 | available | 凭据 3 `quota_state='permanently_exhausted'`（429 `Organization balance insufficient`） | **上游账单**（不可修） |
+| `claude-sonnet-5-5` | id=6（2454） | 3 | available | 同上 | **上游账单**（不可修） |
+| `gpt-5.6-luna` | id=4（2454） | 3 | available | 同上 | **上游账单**（不可修） |
+| `mimo-v2.6-flash` | **无行** | — | — | 本机从未收录该模型（`provider_models` 里没有任何 `mimo` 记录） | **环境**（未配置） |
+
+补充读数：凭据 2 的探针失败分布（`node_probe_runs` 全量）——`http_404` **266** 次
+（NVIDIA 侧 `Function 'c322f327-…' Not found for account` ⇒ **该账号没部署这些模型**）、
+`timeout` 206、`http_500` 138、`http_410` 96（EOL）、`probe_response_inconclusive` **10**、
+`http_400` 17、`http_429` 6、`network_error` 3、`http_502` 2
+⇒ **凭据 2 不可用的主因是「账号没部署这些模型」，不是探针规则**；
+探针规则只影响其中 10 次。
+
+**取数命令**：
+
+```bash
+source /tmp/lgw-env.sh
+PSQL="$HOME/kaixuan/pg18/bin/psql"
+# 模型 → provider_models → 凭据 → 绑定可用性
+"$PSQL" "$DATABASE_URL" -tAc "
+  SELECT pm.id, pm.provider_id, pm.raw_model_name, pm.available, c.id
+  FROM provider_models pm JOIN credentials c ON c.provider_id=pm.provider_id
+  WHERE pm.raw_model_name ILIKE '%deepseek-v4-flash%' OR pm.raw_model_name ILIKE '%glm-5.3-flash%'
+     OR pm.raw_model_name ILIKE '%minimax%' OR pm.raw_model_name ILIKE '%grok-4.6%'
+     OR pm.raw_model_name ILIKE '%claude-sonnet-5-5%' OR pm.raw_model_name ILIKE '%gpt-5.6-luna%'
+     OR pm.raw_model_name ILIKE '%mimo%';"
+# 探针失败分布（按 err_code 计数）
+"$PSQL" "$DATABASE_URL" -tAc "
+  SELECT direct_err_code, count(*) FROM node_probe_runs WHERE credential_id=2 GROUP BY 1 ORDER BY 2 DESC;"
+# 上游 410 的原文
+"$PSQL" "$DATABASE_URL" -tAc "
+  SELECT id, raw_model_name, direct_http_status, left(direct_err_detail,160)
+  FROM node_probe_runs WHERE credential_id=2 AND raw_model_name='minimaxai/minimax-m2.7'
+  ORDER BY id DESC LIMIT 1;"
+```
 
 ---
 
@@ -1121,3 +1366,61 @@ spec.Default → 代码 fallback），再确认自己改的那一层**真的在�
    随轮次单调增长（实测 glm-5.2：13 → 15 → 19）。
 4. **「同一个数字连续报三次」时先写探针**。本轮 `turn_no` 与时间序错位，
    靠逐轮 `turn_no/prompt_tokens/ts` 三列并排才定位到是**重放顺序**而非写顺序。
+
+---
+
+## 9. §5.11 之后新增的经验（本轮最后一段）
+
+### 9.1 ★ 量具坏了的现象与服务端坏了**同形**
+
+BSD `sed` 不认 LHS 的 `\n` ⇒ 标记没剥掉 ⇒ `json.loads` 失败 ⇒ **history 被悄悄
+置空** ⇒ 下一轮请求体变成空串 ⇒ 服务端回 `400 sanitization_failed: Invalid
+request body`。服务端日志写的是「请求体非法」，**看起来 100% 像产品缺陷**，
+实际根因在量具（macOS 默认 `sed` 是 BSD 版，`\n` 只在 GNU sed 里是换行）。
+⇒ **判别动作：看到「服务端说我的请求体非法」，先看落盘的 payload 对不对**——
+本例落盘文件里还带着 `__HTTP__200__T1.5` 标记，一眼就能看出。
+⇒ 配套纪律：量具的中间变量更新失败时**必须显式中止**，
+不能让失败值（空串）继续流进下一轮 —— 「静默清空」比「直接报错」贵得多。
+
+### 9.2 ★ 探活一次只碰**一个**模型
+
+一次探 3 个模型，其中第 2 个撞上上游 429 ⇒ 凭据被冷却 3 分钟 ⇒ 第 3 个模型
+（以及第 1 个）全部变成 `no_candidate` ⇒ 读起来像「这个族一个都没了」，
+实际是**一个模型的问题被放大成了整个凭据**。
+⇒ **判别动作：探活失败时先查 `credentials.availability_state`（凭据级），
+再查 `credential_model_bindings.available`（模型级）**；两者的原因与修法完全不同
+（见 §5.11.4 与 L9）。
+
+### 9.3 ★ 「目录」不等于「可路由清单」
+
+`/v1/models` 的返回**随可用凭据变化**（本机实测 89 → 77，正好等于另一个凭据的
+provider 的模型数）。所以「模型不在目录里」这句话**既不成立也不准确**：
+它可能只是**那个凭据当时不可用**。真正的归属要去
+`provider_models` → `credentials` → `credential_model_bindings` → 探针/配额状态
+逐层查（§5.11.6 的表就是这么列出来的）。
+⇒ **推论：写「某模型不存在」之前，先确认目录是**谁**的目录。**
+
+### 9.4 ★ 熔断的连坐范围要与写侧粒度对齐着看
+
+同一个失败事件里，**两条粒度不同的路径同时在写**：
+写侧 `WriteOnError` 对 `KindConcurrent` 走 `writeModelLevelFailureOnly`
+（只冷自己那一个 (凭据, 模型) 绑定，`writer.go:518` 明写「✅ DO NOT update
+credentials.availability_state」）；
+熔断侧 `nodehealth` 的 `EffectSetCredentialUnavailable` 却把范围放大到**整个凭据**。
+⇒ **判别动作：看到「一个模型的故障连坐了兄弟模型」，不要只看写侧那一条路径**——
+`credential_model_bindings.unavailable_reason` 的**前缀**直接告诉你谁写的：
+`auto_<kind>` = 模型级，`auto_credential_<kind>` = 凭据级。
+本例 10 个绑定里 9 个是 `auto_credential_rate_limit`、1 个是 `auto_rate_limit`，
+一眼就能看出放大发生在哪条路径。
+
+### 9.5 ★ 同一件事在不同协议腿上的规则要逐腿核对
+
+「Responses 腿接受 `status=incomplete`+`max_output_tokens` 作正向证据、
+chat 腿不接受」——这类**协议腿之间的规则不对称**，靠读单个文件是发现不了的
+（两个判据分散在 `bg/probe_http_validation.go` 和
+`bg/credential_probe_response_validation.go`）。
+⇒ **判别动作：凡是「按证据强弱定生死」的规则，列出它覆盖的**全部**腿**，
+逐腿对照「同一现象在这条腿上判什么」**——本例是 Responses 放行、chat 定罪。
+⇒ 也提醒：**不要为了让某条腿通过就改判据**——本仓的
+「2xx 不等于健康、必须有正向证据」是刻意立的规矩（见 L10 的处理方式：
+**记为遗留、单独一轮再议**，不在别人的任务里顺手改掉）。
