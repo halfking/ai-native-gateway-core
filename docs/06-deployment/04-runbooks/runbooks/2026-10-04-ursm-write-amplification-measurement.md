@@ -35906,6 +35906,34 @@ Execution Time: 752.408 ms
 | **C2** | ★ **pocket `scheduled_tasks` $4 双型错（953 条）** | 0 | 无 | **仓外**（`opencode-pocket`）；修复 `fa20e648` 已在仓内但**至今未上线**（10-17/10-18/本轮**三轮复登**）⇒ **建议升级给 owner** |
 | **C3** | ★ **`columnar_healthcheck()` 里 3 行 `expected=unknown`（`_request_logs_bodies` / `candidate_failure_logs`）** | 0 | 无 | 10-18 轮已见；**本轮未查因（不是本轮增量）** ⇒ 登记 |
 
+
+> ⚠⚠⚠ **订正横幅三（2026-10-20，§143.21.2 / §143.21.3 就地订正；上表 A1 / A2 / A3 三行原文保留）**
+>
+> 本表把 **A1 标为「中」、A2 标为「低」、并称两者「互补」、把 A3 判为「设计而非缺陷」** ——
+> **§143.21 查清冷族的真实形态后，这四点都要改**：
+>
+> 1. ⬆️ **A1 的语义风险「中」→「高」**：冷族存的不是冗余桶，而是
+>    **5 分钟粒度的凭据健康度历史快照**（252 09 月 **1,018 组 × 平均 295.9 个 bucket**、
+>    单组最多 3,635；机制 = `DefaultRetentionWindow = 8 * time.Hour` 的 promote 窗口，
+>    实测 hot 跨度 8.4 h 吻合）⇒ **「每组只留 `MAX(bucket)` 一行」= 永久销毁这批历史曲线**。
+> 2. ⬆️ **A2 的语义风险「低」→「中-高」**：654 的 archive 语义是
+>    **「INSERT 进 archive 的 columnar 月分区 → DETACH → DROP 源分区」**
+>    ⇒ **archive 表是真正的历史存储** ⇒ A2 若「直接 DELETE」，
+>    **archive 就再也搬不到那些行 ⇒ 历史被静默丢弃** ⇒
+>    **A2 的正确形态是「先搬进 archive 再删」**，不是直接删。
+> 3. ⚠ **A1 与 A2 不是「互补」而是「同一决策的两个参数」**：
+>    「冷族保留期取多少天」+「超期数据是先搬进 archive 还是直接丢」
+>    ⇒ A1 做完则 A2 几乎无物可删；A2 先做则 A1 的量随之变小。
+> 4. ⚠ **A3 的「设计而非缺陷」要改写**：「冷族天然保有 ~2 个月」在机制上成立，
+>    **但事实是 archive 几乎零产出**（252 的 `credential_model_index_archive` **0 行**、
+>    `archive_credential_model_index` 在 `pg_stat_statements` 里 **0 次调用**；
+>    211 的 archive **0 行 / 0 分区**）⇒ **它靠的是「archive 没跑」这个巧合，不是设计在起作用**。
+>
+> 另：⭐ **§143.19.7-A1 的量要更新** —— 「`refreshIndexSQL` 扫描 −69.1%」只算了 09 月；
+> **两个冷月分区都裁 ⇒ 433,258 → 1,862 行（−99.57%）**（211 侧 40,524 → 702 行，−98.27%）。
+>
+> 详见 runbook `§143.21`。
+
 ### §143.19.8 复核方法（可原样重跑）
 
 ```bash
@@ -36346,3 +36374,236 @@ GOCACHE=/tmp/gocache-p1437 go test ./scripts/ursmcheck/ -run 'TestRunbook14320' 
 [[对照组不是同一条件下造的]] · [[阴性结论要当缺陷一样复核]] ·
 [[算术巧合不能当因果]] · [[自己上一节的结论也要复核]] ·
 [[「读不到」与「没有」返回值同形]] · [[EXPLAIN 只证明「计划会选」]]。
+
+## §143.21 `credential_model_index` 冷族的真实形态 + A2 重新裁决 + 211 侧同形态（2026-10-20）
+
+### §143.21.0 结论先行
+
+本节把 §143.19 的 **A1 / A2** 从「量已量、风险已标」推进到**形态已查清、风险已重定级**，
+并把 §143.20 的「211 是独立实例」从「盘点过」推进到「同族缺陷逐字同源」。
+产出五条：
+
+1. ★★★★ **冷族存的是「5 分钟粒度的凭据健康度历史快照」，不是冗余桶** ⇒
+   §143.19.7-A1 把语义风险标成「**中**」**偏低**，本节按证据**上调为「高」**：
+   - 252 冷族 09 月：**301,255 行 = 1,018 组 × 平均 295.9 个 bucket**（单组最多 **3,635**）；
+   - 211 冷族 10 月：**40,524 行 = 702 组**（平均 57.7 个 bucket）；
+   - 机制：`bg/partition_manager.go:52` 的 `DefaultRetentionWindow = 8 * time.Hour`
+     ⇒ promote 每小时把 hot 里「`updated_at < now() - 8h`」的行搬进月分区；
+     **实测 hot 跨度 05:45~14:10 = 8.4 h**，与 8 h 窗口**吻合** ✔
+     ⇒ ⇒ **每个组的健康度时间序列被逐点搬进冷族**（不是每组一行）。
+   ⇒ ⇒ 「每组只留 `MAX(bucket)` 一行」= **永久销毁这批历史曲线** ⇒ **必须仓外读方确认**，
+   不能按「仓内三个读方只用最新一行」就动手。
+2. ★★★★ **A2 的语义风险被 §143.19 标成「低」是错的** —— 它与 654 的 archive **抢同一批数据**：
+   - 654（`archive_credential_model_index`）的语义是
+     **「INSERT 进 archive 的 columnar 月分区 → DETACH → DROP 源分区」**
+     ⇒ **archive 表是真正的历史存储**（不是丢弃）；
+   - 若 A2 先把冷族 >7 天的行 DELETE 掉 ⇒ **archive 就再也搬不到它们**
+     ⇒ **历史数据被静默丢弃**（archive 表里就缺了那几个月）。
+   ⇒ ⇒ **A2 的正确形态不是「直接 DELETE」，而是「先搬到 archive 再删」**（与 archive 语义一致）。
+   ⇒ ⇒ **且 A2 与 A1 不是「互补」而是「冲突」**：A2 先做会削弱 A1 的归档完整性，
+   A1 先做会让 A2 的增量（只删 7 天前的桶）几乎无物可删。
+3. ★★★ **archive 路径几乎零产出**（252 与 211 都是）：
+   - 252：`credential_model_index_archive` **0 行**，只有 **1 个 32 kB 的空子分区**
+     （`credential_model_index_archive_2026_07`）；211：**0 行 / 0 分区**；
+   - `pg_stat_statements`（本库 dbid 16384）：`archive_credential_model_index` **0 次调用**，
+     而 `promote_credential_model_index_hot_to_partition` **193 次 / 18.2 s**、
+     `cleanup_old_credential_model_index()` **24 次 / 252.3 ms**；
+   - ⇒ ⇒ **冷族的回收完全押在 archive 上，而它基本没跑**
+     ⇒ **「冷族天然保有 ~2 个月」这个设计意图，实际靠的是「archive 没跑」这个巧合**。
+4. ★★★ **Go 侧 `lifecycle.credential_model_index_ttl_days` 是空转配置**：
+   `bg/partition_manager.go:1085-1097` 读了 `ttlDays` **只写进日志**，
+   执行的却是无参 `SELECT cleanup_old_credential_model_index()`，
+   而函数体里 `cutoff_ts` **写死 `NOW() - INTERVAL '7 days'`** ⇒
+   **运维改这个设置对生产零效果**（252 与 211 的函数定义**逐字相同**，同缺陷）。
+5. ★★★ **211 侧同形态、同缺陷，且台账缺口比 §143.20 说的更广**：
+   - 211 的 `cleanup_old_credential_model_index()` 定义与 252 **逐字相同** ⇒ 同一缺陷；
+   - 211 的冷族 `credential_model_index_2026_10` **40,524 行 / 702 组**（12 MB）⇒ **可裁剪 −98.27%**；
+   - ⚠⚠ **211 的 `schema_migrations` 里 `317 / 653 / 654 / 688 / 726 / 872` 一行都没有**
+     （而这些迁移的对象**全部存在**）⇒ §143.20 的 C6（「对象在、台账无」）
+     **不是 877 的孤例，而是整批** ⇒ 「单实例口径的台账」在 211 上**大面积失真**。
+
+⚠ **本节对生产的写入 = 0**（全只读：`pg_class` / `pg_index` / `pg_inherits` / `pg_stat_statements` /
+`pg_get_functiondef` / 聚合 COUNT）+ 211 的 `docker exec psql` 只读查询。
+**没有** DELETE / TRUNCATE / DROP / REINDEX / ANALYZE / 迁移 / 改配置 / 改 cron。
+
+### §143.21.1 冷族的真实形态：它是健康度时间序列
+
+#### §143.21.1.1 分区清单（252）
+
+| 分区 | relkind | access_method | 大小 | 实际行数 | 其中 >7 天 | distinct 组 | 组均 bucket |
+|---|---|---|---|---|---|---|---|
+| `credential_model_index_2026_09` | r | **heap** | **84 MB** | **301,255** | **301,255（100%）** | **1,018** | **295.9**（max 3,635） |
+| `credential_model_index_2026_10` | r | **heap** | 38 MB | 132,003 | 102,965（78.0%） | 844 | — |
+| `credential_model_index_2026_11` | r | heap | 24 kB | 0 | 0 | 0 | — |
+| `credential_model_index_hot` | r | heap | 6,216 kB | 1,612 | 0 | — | — |
+
+⚠★ **冷族三个分区全部是 `heap`**（872 于 2026-10-18 12:59:42 应用）⇒
+§143.19.1.3 的「冷族已是 heap ⇒ DELETE 技术可行」**成立**。
+
+#### §143.21.1.2 ★ 机制：8 小时 promote 窗口 ⇒ 冷族是逐点快照
+
+- `bg/partition_manager.go:52`：`const DefaultRetentionWindow = 8 * time.Hour`
+- promote 函数体（659 / 688）：`WHERE updated_at < now() - p_retention LIMIT p_batch_size`
+  ⇒ **搬的是「hot 里已稳定不再更新」的行**，搬完从 hot 删除；
+- **实测 hot 的 bucket 跨度 = 05:45~14:10 = 8.4 h** ⇒ 与 8 h 窗口吻合 ✔
+  ⇒ ⇒ **hot 每组只保留最近 8 小时的「最后一次更新」**，
+  **每次 promote 周期每组搬走一行**（值变化时才有新行）
+  ⇒ ⇒ **冷族每组的行数 = 该组在保留期内的更新次数**，09 月平均 **295.9 次/组** ✔；
+- ⇒ ★★ **这些行是 `success_rate` / `p95_latency_ms` / `unit_price_*` / `score_*` 的时间序列**
+  ⇒ **是真实历史，不是可以随手丢的重复桶**。
+
+#### §143.21.1.3 裁剪潜力的实测上限（不是估算）
+
+| 对象 | 现存行 | 「每组只留 MAX(bucket)」后 | 可回收 |
+|---|---|---|---|
+| 252 09 月 | 301,255 | **1,018** | **300,237（99.66%）** |
+| 252 10 月 | 132,003 | **844** | **131,159（99.36%）** |
+| **252 合计** | **433,258** | **1,862** | **431,396（99.57%）** |
+| 211 10 月 | 40,524 | **702** | **39,822（98.27%）** |
+
+⇒ ★ **比 §143.19.7-A1 估的「扫描 −69.1%」更好**：那个数字只算了 09 月；
+**两月都裁 ⇒ `refreshIndexSQL` 的源扫描 434,658 → ~2,000 行（−99.5%）**。
+⚠ **但这仍然只是「数字」，不是「授权」** —— 见 §143.21.1.1 的语义风险上调。
+
+### §143.21.2 ★★★★ A2 重新裁决：与 archive 抢数据，不是「低风险」
+
+#### §143.21.2.1 654 的 archive 语义是「搬走」，不是「丢弃」
+
+`sql/migrations/startup/654_archive_credential_model_index_detach_drop.sql` 的函数体顺序：
+
+```
+1) 若 dst 分区不存在 → CREATE TABLE ... PARTITION OF credential_model_index_archive ... USING columnar
+2) INSERT INTO dst SELECT ... FROM src        ← ★ 先搬到 archive（columnar）
+3) ALTER TABLE credential_model_index DETACH PARTITION src
+4) DROP TABLE src                              ← ★ 再删源分区
+```
+
+⇒ ⇒ ★★ **archive 表 = 真正的历史存储**（columnar），
+**冷族不是「等回收的垃圾」，而是「还没被搬进 archive 的历史」**。
+
+#### §143.21.2.2 ★★ A2 若「直接 DELETE」，archive 表会静默缺数据
+
+- A2 的字面做法 = `DELETE FROM credential_model_index_<month> WHERE bucket < cutoff`
+- 但 654 的 archive 是**整月搬**（`src_part` → `dst_part`）⇒
+  **若 A2 已经删掉其中一部分，archive 搬走的就只剩剩下的** ⇒
+  **archive 表里那几个月就是残缺的** ⇒ **历史被静默丢弃，无任何报错**。
+- ⇒ ⇒ **A2 的正确形态**：
+  **「先把要删的行搬进 archive 对应月分区（columnar，INSERT 安全），再 DELETE」**
+  ⇒ 这样：① 7 天 TTL 名副其实 ② **历史不丢** ③ archive 变成真正的历史存储
+  ④ **冷族 heap 变小 ⇒ `refreshIndexSQL` 扫描降**（存储与效率同向）。
+- ⚠ **仍需属主拍板**：这等于把冷族的**实际保留期从「~2 个月」缩短到「7 天」**
+  ⇒ **保留期是语义决策**（与 §143.18「保留期才是杠杆」同源）。
+
+#### §143.21.2.3 ★ A1 与 A2 是「冲突」而不是「互补」
+
+- §143.19.7 写的是「**A1 是一次性裁剪，A2 是持续机制**」⇒ **该表述本节订正**（见横幅三）；
+- 实际关系：
+  - A1 做完 ⇒ 冷族只剩「每组 1 行」⇒ A2 要删的「>7 天的桶」**几乎不存在** ⇒ **A2 变得无意义**；
+  - A2 先做 ⇒ 冷族历史被提前搬进 archive（若按 §143.21.2.2 的正确形态）
+    ⇒ **A1 裁剪的量随之变小**（因为超期的已被搬走），且 A1 的「归档完整性」前提被改变；
+- ⇒ ⇒ **两条应当合并成一个决策**：
+  **「冷族保留期取多少天」+「超期数据是先搬进 archive 还是直接丢」** ⇒ 两个参数一起拍。
+
+### §143.21.3 ★★★ archive 路径几乎零产出
+
+| 读数 | 252 | 211 |
+|---|---|---|
+| `credential_model_index_archive` 行数 | **0** | **0** |
+| archive 的子分区 | **1 个**（`..._2026_07`，**32 kB**，**heap**，**0 行**） | **0 个** |
+| `archive_credential_model_index` 在 `pg_stat_statements` 的调用 | **0 次** | 量具不可用（§143.20.5-C4） |
+| `promote_credential_model_index_hot_to_partition` | **193 次 / 18.2 s** | — |
+| `cleanup_old_credential_model_index()` | **24 次 / 252.3 ms** | — |
+| 653 / 654 的应用时间 | 2026-09-04 07:41:50 / 07:41:51 | **台账无** |
+
+⚠★ **`credential_model_index_archive_2026_07` 是 `heap` 而不是 `columnar`**
+⇒ 它是 **654 之前的老路径**建的 ⇒ **654 之后一次归档都没成功**（否则会有 `_2026_08` 子分区，
+且新分区会是 columnar）。
+
+⇒ ⇒ ★★ **「冷族天然保有 ~2 个月」（§143.19.7-A3 的判定）在机制上成立，
+但在事实上是「archive 没跑」的结果，不是设计在起作用** ⇒
+**A3 的判定需要改写**（见横幅三）。
+
+### §143.21.4 ★★★ Go 侧 TTL 配置空转
+
+```go
+// bg/partition_manager.go:1085-1097
+ttlDays := settings.GetPlatformInt("lifecycle.credential_model_index_ttl_days", 7)
+...
+err := pm.db.QueryRow(timeoutCtx,
+    "SELECT cleanup_old_credential_model_index()",   // ← 无参：ttlDays 没传进去
+).Scan(&deleted)
+```
+
+⇒ ★ **`ttlDays` 只进了 `slog.Info` 的字段**；SQL 侧 `cutoff_ts` 写死 `INTERVAL '7 days'`。
+⇒ ⇒ **运维改 `lifecycle.credential_model_index_ttl_days` 对生产零效果**。
+⇒ ★ 修法（**待属主授权后随迁移一起上**）：
+给函数加 `p_ttl_days int DEFAULT 7` 并 `DROP` 旧的无参重载，
+Go 侧改成 `SELECT cleanup_old_credential_model_index($1)`。
+⚠ **必须 DROP 旧重载**，否则无参调用会**静默解析到旧函数** ⇒ 改了等于没改。
+
+### §143.21.5 ★★★ 211 侧：同形态、同缺陷、台账缺口更广
+
+| 项 | 211 实测 |
+|---|---|
+| `cleanup_old_credential_model_index()` 定义 | 与 252 **逐字相同** ⇒ 同一缺陷 |
+| 冷族分区 | `2026_07`（0 行）、`2026_08`（0 行）、`2026_10`（**40,524 行 / 702 组**）、`2026_11`（0 行） |
+| 冷族大小 | 12 MB（vs 252 的 122 MB）⇒ **裁剪可回收 −98.27%** |
+| archive | 父表存在，**0 行 / 0 分区** |
+| `schema_migrations` 里的 `317/653/654/688/726/872` | **一行都没有**（而对象全部存在） |
+| 分区索引父声明 | `credential_model_index_bucket_cred_model_key` / `cred_model_bucket_idx` relkind **`'I'`** ✔（§143.19 的 relkind 陷阱在 211 同样适用） |
+
+⇒ ⇒ ★ **§143.20 的 C6 要扩写**：不是「877 一条没记账」，而是
+**「317/653/654/688/726/872 整整七条都没记账，但对象全在」**
+⇒ ⇒ **本仓 `docs/db-changelog.md` 与 `schema_migrations` 都是单实例口径，
+在 211 上大面积失真** ⇒ **跨实例审计必须按「对象 + DDL 原文」核，而不是查台账**。
+
+### §143.21.6 ★★ 阴性结论复核：「08 月数据丢失」是假命题
+
+- 本轮初查：252 上 `credential_model_index_2026_08` **不存在**，
+  archive 表里也没有 `_2026_08` ⇒ 看起来像「08 月既没归档也不在主表」＝ **数据丢失**；
+- ★ **复核（211 给出的反证）**：211 上 `credential_model_index_2026_07` 与 `_2026_08`
+  **分区存在、各 0 行、24 kB** ⇒ **这些月本来就是空分区**
+  ⇒ 252 上 06/07/08 消失属于「空分区被清掉」，**不是数据丢失**；
+- ⇒ ⇒ ★ **归档表 0 行也就不再是「归档失败」的证据**（搬的是 0 行，成功），
+  而是「**没有非空月被归档过**」的证据；
+- ⚠ 但 §143.21.3 的「654 之后一次都没成功」仍成立（依据是
+  **无 `_2026_08` 子分区 + 新分区会是 columnar 而现存那个是 heap**）。
+
+### §143.21.7 待拍板（本节重新表述）
+
+| 优先级 | 动作 | 量 | 语义风险 | 决策要点 |
+|---|---|---|---|---|
+| **A1′** | ★★★★ **裁剪冷月分区：每组只留 `MAX(bucket)` 一行**（**两个实例都做**） | 252 433,258 → 1,862 行（**−99.57%**）；211 40,524 → 702 行（**−98.27%**） | ⬆️ **高**（§143.19.7-A1 标的「中」**上调**） | ⚠ **冷族是 5 分钟粒度健康度历史**（每组 296 次快照）⇒ **必须仓外读方确认是否要历史曲线**；且需 **promote 侧收口**（否则按当前 ~7,900 行/天重新堆积） |
+| **A2′** | ★★★★ **修 `cleanup_old_credential_model_index()`：冷族「先搬进 archive 再删」** | 恢复「7 天 TTL」在冷族上的实际效果 | ⬆️ **中-高**（§143.19.7-A2 标的「低」**上调**） | ⚠ **不能直接 DELETE**（§143.21.2.2 ⇒ archive 表会静默缺数据）⇒ 必须先搬后删；⚠ 与 A1′ **不是互补而是同一决策的两个参数**（保留期天数 + 超期数据去留） |
+| **A3′** | ★★ **`archive_credential_model_index` 实际零产出** | archive 表 0 行 / 0 数据 | 低 | ⚠ 「冷族保有 ~2 个月」是「archive 没跑」的巧合而非设计 ⇒ 要么让 archive 真跑（day 3 / twoMonthsAgo），要么明确把冷族保留期交给 A2′ |
+| **A4** | ★★★ **修 Go 侧 TTL 空转**（`lifecycle.credential_model_index_ttl_days` 无效） | 0 | 低 | ⇒ 函数加 `p_ttl_days` 参数 + **DROP 旧重载**（否则静默走旧函数）+ Go 侧传参 ⇒ **需新迁移 + 部署授权** |
+| **C4** | ★★★★ **211 的 `pg_stat_statements` 加进 `shared_preload_libraries`** | 0 | 低（需重启实例） | ⇒ 211 慢查询量具从「没有」变成「有」；⚠ 需重启 ⇒ **需属主授权** |
+| **C6′** | ★★ **211 的迁移台账大面积失真**（`317/653/654/688/726/872` 全无记录） | 0 | 低 | ⇒ 需要一种「按实例核迁移状态」的口径（对象 + DDL 原文优先于台账） |
+| **C5** | ★★★ **211 迁移落后 13 个（869 vs 882）+ `llm_gateway_pre_cutover_20261014` 1,169 MB** | 1,169 MB | 中 | ⇒ 迁移升级要单独评估（211 上 877 已是新版形态 ⇒ 升级路径与 252 不同）⇒ 建议先做 C4 |
+
+⚠ **A1′ / A2′ 都需要生产写授权**（DELETE / 新迁移）⇒ **本节仍为 0 生产写**。
+
+### §143.21.8 复核方法（可原样重跑）
+
+```bash
+# ── 1) 冷族分区清单：relkind / access_method / 大小（★ relkind='i' 会漏父声明，要用 'I'）
+bash ~/.mavis-tools/lgwp-prod.sh /private/tmp/p14321/cold_family_state.sql 300 > /private/tmp/p14321/cold_family_state.out 2>&1
+# ── 2) archive 状态 + 关键迁移应用时间 + 冷族每组 bucket 数 + 可回收上限
+bash ~/.mavis-tools/lgwp-prod.sh /private/tmp/p14321/verify_cmi2.sql  300 > /private/tmp/p14321/verify_cmi2.out  2>&1
+# ── 3) archive / promote / cleanup 的调用记录（★ 本库 dbid=16384）
+bash ~/.mavis-tools/lgwp-prod.sh /private/tmp/p14321/pgss_cmi.sql      300 > /private/tmp/p14321/pgss_cmi.out      2>&1
+# ── 4) 211 侧同形态普查（★ 211 是 docker 运行时；用 heredoc 传 SQL，不要用 $$ 转义）
+scp -q /tmp/211_cmi.sql 211:/tmp/ && ssh 211 'docker exec -i acc-pg17 psql -U acc_super -d llm_gateway -f - < /tmp/211_cmi.sql'
+```
+
+⇒ ⇒ ★ **本节落地的门**（不连库，可原样重跑）：
+
+```bash
+# §143.21 文档门：冷族形态 / A2 重新裁决 / archive 零产出 / TTL 空转 / 211 同源 / 阴性结论复核
+GOCACHE=/tmp/gocache-p1437 go test ./scripts/ursmcheck/ -run 'TestRunbook14321' -count=1 -v
+```
+
+★ 同族：[[先读量具再读产物]] · [[0 命中的第一嫌疑是量具坏了]] ·
+[[阴性结论要当缺陷一样复核]] · [[跨节订正前先自问「我要订正的这条真的错了吗」]] ·
+[[保留期是最大杠杆]] · [[「迁移的哪一版在生产跑过」判别力排序]] ·
+[[跨实例审计必做]] · [[「扩展装了」≠「量具能用」]]。
