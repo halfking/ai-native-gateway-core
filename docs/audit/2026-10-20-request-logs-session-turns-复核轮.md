@@ -28,6 +28,8 @@
 | **逐页抓出的最重根因** | `prompt_injection_detections` 的**正典形状**（`sql/schema/` + `sql/objects/tables/`）与**历史迁移 315 的形状**不是一回事，而 315 的 `CREATE TABLE IF NOT EXISTS` 在正典库上是**空操作** ⇒ 315 声明的列**从未被创建** ⇒ 读侧恒 42703、**写侧恒失败（审计记录静默丢失）**、364 的视图建不出来 ⇒ **全环境**缺陷（不是本机没升级） |
 | **门禁自身的竞态（本轮新发现）** | `TestDataLifecycleTableSizesFieldsAreComplete` 偶发红：判据与端点读**同一个** `pg_total_relation_size`，却跨两次读做**精确相等**，而首行大表正被网关后台 worker 写入 ⇒ **端点是对的，判据的前提是错的**。已按该文件注释**早已声明的 ±1%** 修正并做变异验证（§5.7） |
 | **逐页扫描抓到的唯一一条 JS 异常** | `/quality-correlations` 在**无数据**时抛 `TypeError: Cannot read properties of null (reading 'reduce')`：后端 `breakdown` 是 Go **nil slice** ⇒ 序列化成 `null`，而前端 TS 类型声明成**非空数组** ⇒ 类型成了假的安全网。已改后端契约（恒返 `[]`）+ 前端**边界**归一化，3 道新判据全部做过变异验证（§5.8） |
+| **★ 模型请求与写入测试（补做步骤）** | `deepseek-v4-flash` **5/5 = 200**（用户清单里其余 6 个在本机**目录中不存在**或无健康凭据）；**读回证据**：5 轮 `turn_no` 1..5、`success=t`、`latency_ms` 1795→28756、正文三列 `jsonb_typeof` **全是 `array`** ⇒ **「数据存储可用」成立**。08:02 起全量 503 的归因是**三个环境原因**（凭据 auth_failed / 代理节点库 0 行 / 上游余额耗尽），**不是仓库缺陷**（§5.10） |
+| **★ L1 订正（上一轮自己的结论前提有误）** | 「7 张分区不带 `_` 前缀 ⇒ 新装/存量形状分叉」**不成立**：那是迁移 860 的**明确设计**（待删标志在父表上），正典基线 schema 造的就是无前缀分区名，862 那个 `_request_logs_2026_10` 只是**合成夹具名** ⇒ 两边形状相同。真正要修的是**按名字枚举分区族的口径**（两处运维脚本 ⇒ 已改成按 `pg_inherits` 走父表，真库差集证明**零回退、只补漏**）（§5.9） |
 
 ---
 
@@ -810,7 +812,7 @@ JS 堆栈是**多行**的，整表被写坏（解析出来「106 行、route 重
 
 | # | 项 | 性质 | 建议 |
 |---|---|---|---|
-| **L1** | **7 张 v1 分区表未带 `_` 待删标志**（`request_logs_2026_07/08/10/11/default`、`request_logs_bodies_2026_10/11`）。实测 `pg_inherits` 显示其父表是 `_request_logs` —— **父改名了、子没改**。而迁移 862 的集成测试期望 `public._request_logs_2026_10` ⇒ **新装与存量环境形状分叉** | 真实不一致 | 出一条迁移把存量分区改名 + 补齐 installer 通道；并把「待删对象」的查找口径从「`_` 前缀」改成「按 `pg_inherits` 递归」——前缀口径会漏掉这 7 张，而分区才是真正占空间的部分 |
+| ~~**L1**~~ | ~~7 张 v1 分区表未带 `_` 待删标志 … 形状分叉~~ ⇒ **2026-10-20 复核轮内已订正，见 §5.9**：这不是缺陷，是迁移 860 的**明确设计**（待删标志在**父表**上，子表名按设计保持不变）；「新装与存量形状分叉」的前提**不成立**（正典基线 schema 造的就是无前缀分区名，862 那个 `_request_logs_2026_10` 只是**合成夹具名**）。**真正要修的是按名字枚举的口径**（已修，见 §5.9.3） | ~~真实不一致~~ → **前提有误** | 不出改名迁移（改名会与 860 的设计、基线 schema、`ensure_request_logs_partition` 的动态前缀脱节）；改为把两处按名字前缀枚举分区族的运维脚本改成**按 `pg_inherits` 走父表** |
 | **L2** | `customer_cost_view.active_concurrent`（5 分钟窗）与 `model_cost_per_task_view.avg_latency_ms`（7 天窗）是**活指标**读冻结族 ⇒ 恒 0 / 恒 NULL，**无任何错误信号** | 静默失效 | 迁到 session 族等价源，或显式标注「v1 冻结后不可用」 |
 | L3 | 列表端点 COUNT / SUM / 分页**三扫同一行集** | 效率 | 合并为一次聚合 |
 | L4 | 5 张 `v_*` 视图 + `request_logs_bodies_with_current_month` 仍读 v1 裸母表（`internal/sqlreadguard` 已登记 `DEBT(R47)`） | 已知债 | 逐张判定：历史可读（保留）vs 活指标（必须迁） |
@@ -841,6 +843,171 @@ JS 堆栈是**多行**的，整表被写坏（解析出来「106 行、route 重
 在一次全量跑里红了、**同提交再跑就绿**、pristine worktree 也绿 ⇒ 判据自身的竞态，
 **不是**本轮引入的产品缺陷。根因与修法见 **§5.7**（判据与端点读同一个
 `pg_total_relation_size`，却跨两次读做精确相等，而首行大表正被网关后台 worker 写入）。
+
+---
+
+## 5.9 ★ L1 订正：「7 张分区不带 `_` 前缀」**不是**缺陷，是 860 的设计；真正的问题是**按名字枚举的口径**
+
+### 5.9.1 上一轮写下的结论（**前提有误**）
+
+上一轮在遗留表里记了 L1：「7 张 v1 分区表未带 `_` 待删标志（`pg_inherits` 显示父表
+是 `_request_logs`）⇒ **新装与存量环境形状分叉**」，并建议「出一条迁移把存量分区改名」。
+
+**本轮复核后：这条结论的前提不成立。** 决定性证据有三条：
+
+| 证据 | 读数 | 出处 |
+|---|---|---|
+| 860 的**明确设计** | 「monthly partitions and archive children (`request_logs_2026_10`, `request_logs_archive_2026_08`, `request_logs_default`, …) —— they **inherit the marker through their renamed parents** and are dropped together with them; their index names likewise stay」 | `sql/migrations/startup/860_rename_request_logs_family_pending_delete.sql:18-21` |
+| **正典基线 schema 造的就是无前缀分区名** | `CREATE TABLE public.request_logs_2026_07` / `request_logs_2026_08` + `ALTER TABLE ONLY public.request_logs ATTACH PARTITION public.request_logs_2026_07 …`；860 随后只改**父表** | `deploy/sql/schemas/baseline/01-schema.sql:13002/13150/19569`（`sql/schema/01-schema.sql` 同） |
+| **862 的 `_request_logs_2026_10` 只是合成夹具** | 那是 `migration_862_integration_test.go:54` 里的**夹具**建表语句；862 的**生产 SQL 本身是父表派生**的（`CREATE INDEX … ON public._request_logs (ts)`，不硬编码任何子分区名） | `sql/migrations/startup/862_partition_family_leading_ts_idx.sql:60`；全仓 `grep` 无任何生产 DDL 造 `_request_logs_YYYY_MM` |
+
+⇒ **新装环境与存量环境产出的形状完全相同**（父表 `_request_logs` + 子表
+`request_logs_2026_*`）⇒ 「形状分叉」不成立，两边**都**是这一形状。
+⇒ 而且**改名不是正确的修法**：860 的函数体改写**刻意跳过**了动态前缀
+`'request_logs_' || to_char(...)`（它的边界守卫明确写了「dynamic prefixes …
+must not be touched」），所以只改存量分区名、**不改函数体**的话，一旦重新开启
+v1 写路径，函数又会造出**无前缀**的新分区 ⇒ 分叉原地复活。
+⇒ 正确动作是**把口径从「按名字」改成「按父表」**，而不是改名字。
+
+### 5.9.2 但确实有一个**真缺陷**：按名字前缀枚举分区族的口径会漏
+
+| 脚本 | 旧口径 | 漏掉的 |
+|---|---|---|
+| `scripts/ops/analyze-partition-stats.sh` | `relname ~ '^(credential_model_index\|model_probe_runs\|_request_logs)_(202[0-9]_[0-9]{2}\|hot)$'` | **5 张**：`request_logs_2026_07/08/10/11/default` |
+| `scripts/pg-columnar-rotate.sh` | `child.relname ~ '^(_request_logs\|credential_model_index\|usage_ledger\|request_wal)_2026_(0[1-9]\|1[0-2])$'` | **4 张**：`request_logs_2026_07/08/10/11` |
+
+⇒ 这两张表的**统计信息不被刷新**（`last_analyze` 停在旧值）、**列存轮转跳过它们**。
+本机实测这 7 张分区合计 2,277,376 bytes、**0 行**（v1 族已冻结）⇒ 当前影响小，
+但**是结构性的**：族一旦解冻或迁到别的环境，缺口立刻变成真问题。
+
+### 5.9.3 修法与**差集证明**（真库实测）
+
+两处都改成**按 `pg_inherits` 走父表**（父表名单 = 家族名；月份窗口仍按**子表自己的
+后缀**判定，与旧口径等价）。仓库里已有这个写法的先例：
+`deploy/sql/schemas/baseline/01-schema.sql:1436` 的
+`c.relname ~ ('^' || parent_name || '_\d{4}_\d{2}$')`。
+
+**旧口径 vs 新口径的差集（真库，2026-10-20）**：
+
+| 脚本 | 新口径**补上** | 新口径**漏掉**（回退） |
+|---|---|---|
+| `analyze-partition-stats` | `request_logs_2026_07` / `_08` / `_10` / `_11` / `_default`（**5**） | **0**（旧口径的 8 张一张不少） |
+| `pg-columnar-rotate` | `request_logs_2026_07` / `_08` / `_10` / `_11`（**4**） | **0**（旧口径的 10 张一张不少） |
+
+**取数命令**（DSN 走 `DATABASE_URL`，不落盘）：
+
+```bash
+source /tmp/lgw-env.sh
+PSQL="$HOME/kaixuan/pg18/bin/psql"
+# 旧口径 vs 新口径的差集（两个 WITH + 双向 EXCEPT 的等价写法）
+"$PSQL" "$DATABASE_URL" -f /tmp/anacmp.sql   # analyze 口径
+"$PSQL" "$DATABASE_URL" -f /tmp/rotcmp.sql   # rotate 口径
+# 分区归属（证明父表是谁）
+"$PSQL" "$DATABASE_URL" -tAc "SELECT c.relname, p.relname FROM pg_class c
+  JOIN pg_inherits i ON i.inhrelid=c.oid JOIN pg_class p ON p.oid=i.inhparent
+  WHERE p.relname ~ '(^|_)request_logs' ORDER BY 1;"
+```
+
+**口径**：按 `pg_inherits` 的父子关系枚举分区，家族以**父表名**标识。
+**覆盖范围**：`public` schema，`_request_logs` / `_request_logs_bodies` /
+`credential_model_index` / `model_probe_runs` / `usage_ledger` / `request_wal`
+六个家族的分区子表 + 各自的 `_hot` 表。
+
+### 5.9.4 顺带订正一条**基线 schema 不该动**的判断
+
+`deploy/sql/schemas/baseline/01-schema.sql:201` 的分区名正则里用的是**无前缀**的
+`request_logs` / `request_logs_bodies` —— 看着像漏了 `_`，其实**是对的**：
+基线 schema 造出来的分区本来就叫 `request_logs_2026_07`（无前缀），
+860 是在基线**之后**才改的父表名。⇒ **不动基线 schema**（它是历史快照）。
+
+---
+
+## 5.10 ★ 补做「模型请求与写入测试」步骤：5/5 成功并完整落库 + 之后全量 503 的完整归因
+
+### 5.10.1 可用的模型集（用户给的 7 个里只有 1 个在本机目录中）
+
+`GET /v1/models`（本机）返回 **89** 个模型。用户清单里的族在本机的实际可用性：
+
+| 用户清单里的模型 | 本机结果 | 原因 |
+|---|---|---|
+| `deepseek-v4-flash` | **200** | 有健康凭据 |
+| `glm-5.3-flash` | 503 | 目录里只有 `glm-5.2` / `glm-5.3`，没有 `glm-5.3-flash` |
+| `minimax-m2.7` / `grok-4.6` / `claude-sonnet-5-5` / `gpt-5.6-luna` / `mimo-v2.6-flash` | 503 / 400 | 本机**目录里根本没有这些族**（`minimax`/`grok`/`claude`/`gpt-5`/`mimo` 命中数均为 0）；`mimo-v2.6-flash` 是 `400 invalid_model: Model 'mimo-v2.6-flash' is not supported by this gateway` |
+
+⇒ 实际可跑：`deepseek-v4-flash`、`deepseek-flash`、`glm-5.2`（探针 200/200/200，
+`glm-5.3` 与 `deepseek-v4.1-flash` 503）。
+
+### 5.10.2 成功的 5 轮与**读回证据**
+
+会话头 `X-Session-Id: gw_add2edb31d14a16e8d027a602a63dd2b`（**必须** `gw_` 前缀，
+否则被静默丢弃 ⇒ 多轮退化成 N 次单轮）。
+
+**读回（`session_turns_hot`；正文在 `session_bodies_hot`，晋级有延迟）**：
+
+| turn_no | model | prompt_tokens | completion_tokens | success | latency_ms |
+|---|---|---|---|---|---|
+| 1 | deepseek-v4-flash | 84 | 26 | t | 1795 |
+| 2 | deepseek-v4-flash | 86 | 19 | t | 1799 |
+| 3 | deepseek-v4-flash | 98 | 528 | t | 7469 |
+| 4 | deepseek-v4-flash | 114 | 1323 | t | 19964 |
+| 5 | deepseek-v4-flash | 103 | 2211 | t | 28756 |
+
+**正文是否落库**（量具纪律：用 `jsonb_typeof(col)='array'` 判，**不用** `IS NOT NULL`，
+因为 JSON `null` 也满足 `IS NOT NULL`）：
+
+| turn_no | `outbound_body` | `response_delta` | `request_delta` |
+|---|---|---|---|
+| 1–5（全部 5 行） | **array** | **array** | **array** |
+
+⇒ 5 轮全部落库、轮次序号连续、正文三列**都是数组** ⇒ **「数据存储可用」成立**。
+
+### 5.10.3 一个**量具**坑：每轮只发一条消息 ≠ 多轮
+
+首版脚本每轮只发**一条** user 消息 ⇒ 网关看到的每轮都是独立请求，
+`prompt_tokens` 只反映**本轮提示词长度**。读数 `r4=114 > r5=103` 看着像「不单调」，
+其实是因为 r5 的中文提示词比 r4 **短** —— 那是**提示词长度**，不是多轮上下文。
+⇒ 已改成**累积对话**（每轮带上全部历史 user/assistant），这才是「多轮」的可验证形态
+（`prompt_tokens` 必然单调增长）。
+
+### 5.10.4 08:02 起全量 503 的**完整归因**（三个独立环境原因，**都不是仓库缺陷**）
+
+| # | 现象 | 根因（读数） | 性质 |
+|---|---|---|---|
+| 1 | `no_candidate`（`candidates_count:0`） | 凭据 1 `availability_state='auth_failed'`（`state_updated_at=08:02:36`，`availability_recover_at=08:17:36`）⇒ 被 `autoroute/index.go` 的 `refreshIndexSQL` 里 `COALESCE(cr.availability_state,'ready')='ready'` 谓词滤掉 | **环境/上游**：凭据被判 auth 失败 |
+| 2 | `upstream_down`：`provider requires egress proxy but none is available: no available active nodes` | `proxy_nodes` **0 行**、`proxy_subscriptions` **0 行** ⇒ 网关自己的出网代理节点库是空的 | **环境**：代理节点库没配 |
+| 3 | 429 `budget_exceeded` | 凭据 3 `quota_state='permanently_exhausted'`、`health_error='responses status 429: {"error":{"message":"Organization balance insufficient","code":"budget_exceeded"}}'`、`lifecycle_status='suspended'` | **上游账单**：账户余额耗尽 |
+
+⇒ 网关的行为是**正确**的：摘除失败候选、给出明确原因（`no_candidate` /
+`upstream_down` / `429 budget_exceeded`），而不是把请求路由到已知坏的凭据。
+⇒ 判定「这不是产品缺陷」的两条独立证据：
+① 同一份二进制在 08:00:15–08:01:15 连续 5 次 200 且完整落库；
+② 刷新作业本身**健康**（`auto index refreshed` 每 5 分钟一次，最新桶
+`2026-10-20T00:05:00Z`、`credential_rows=7`），`credential_model_index_hot` 里
+`deepseek-v4-flash|1` 在位 ⇒ 计划数据在库里，缺的是**凭据与代理节点**。
+
+**取数命令**：
+
+```bash
+source /tmp/lgw-env.sh
+PSQL="$HOME/kaixuan/pg18/bin/psql"
+# 三个凭据的当前可用性
+"$PSQL" "$DATABASE_URL" -tAc "SELECT id, provider_id, availability_state, health_status,
+   quota_state, LEFT(COALESCE(health_error,''),60), availability_recover_at
+   FROM public.credentials ORDER BY id;"
+# 代理节点库
+"$PSQL" "$DATABASE_URL" -tAc "SELECT count(*) FROM public.proxy_nodes;"
+"$PSQL" "$DATABASE_URL" -tAc "SELECT count(*) FROM public.proxy_subscriptions;"
+# 候选计划（生产 SQL，逐字）
+# autoroute/index.go 的 refreshIndexSQL
+```
+
+### 5.10.5 顺带确认的一条**读侧事实**：`session_turns` 不是写入落点
+
+写侧落在 **`session_turns_hot`**（本轮 15 行新数据全在 hot 表），晋级到
+`session_turns` 有延迟 ⇒ **用 `session_turns` 直接查「刚发的请求」会查不到**，
+必须查 hot 表或按时间窗查父表。本机读数：请求前 `session_turns=876` /
+`session_turns_hot=174` / `session_bodies_hot=174` / `sessions=989`；
+本轮 15 次请求后 hot 表新增 15 行（`turn_no` 1..5 × 3 会话）。
 
 ---
 

@@ -3298,6 +3298,28 @@ PostgreSQL 解析调用时，**带默认值的那个也能接 3 参调用**，
 - 防复发检查：① 后端**任何**要返回的数组字段，出声明处就用 `[]T{}` 初始化，不要留 nil slice；同一响应里若有多个数组字段，**形态必须一致**（一个 `[]` 一个 `null` 就是 bug）；② 前端的 TS 类型若由**后端契约**推导，就得承认 wire 上可能是 `null`（单独一个 `Wire` 类型），否则类型会骗人；③ 归一化放在**边界**（写进响应式状态之前）而不是模板里 —— 防御散落在 4 个模板表达式里**就会漏掉第 5 个**，且会改掉既有跨层契约门禁钉的模板形态；④ 前端**不能依赖后端**：后端修好后前端那道门仍要有效 ⇒ 门要断言「**页面的承受力**」，不要断言「后端返 null」这个具体形态，否则后端修好门就变废门。
 - 证据：端点实返 `{"breakdown":null,"insights":[]}`（同一响应里形态不一致的直接证据）；`pg_stat_user_tables`/session_turns 读数 `is_auto_request IS TRUE` = 0 行；3 道新判据（真库+真 handler+解进 map 才看得见 `null` 与 `[]` 的区别 / 静态门钉写法 / 前端门钉承受力）全部做过变异验证，去掉归一化时前端门报的正是生产同款 `TypeError`。
 - 溯源：[复核轮](docs/audit/2026-10-20-request-logs-session-turns-复核轮.md) §5.8。
+
+## 2026-10-20 — 复核自己上一轮写下的结论：「现象看着像缺陷」≠「迁移没做到」（Seen: 1/3）
+- 场景：上一轮在遗留表里记了 L1：「7 张 v1 分区表未带 `_` 待删标志（`pg_inherits` 显示父表是 `_request_logs`）⇒ **新装与存量环境形状分叉**」，并建议「出一条迁移把存量分区改名」。本轮复核时按这个建议准备动 DDL。
+- 真因：**三条决定性证据**把前提推翻了：① 迁移 860 的头部注释**明写**「monthly partitions and archive children … they **inherit the marker through their renamed parents** and are dropped together with them; their index names likewise stay」⇒ 不带前缀是**设计**，不是漏；② 正典基线 schema 造出来的分区就叫 `request_logs_2026_07/08`（`ALTER TABLE ONLY public.request_logs ATTACH PARTITION …`），860 随后**只改父表** ⇒ **新装与存量形状完全相同**，「分叉」不成立；③ 全仓 grep 无任何**生产 DDL** 造 `_request_logs_YYYY_MM` —— 那个名字只出现在 `migration_862_integration_test.go:54` 的**合成夹具**里，而 862 的**生产 SQL 本身是父表派生**的。
+- 关键推论：**改名不仅不是正确修法，还会把分叉做活** —— 860 的函数体改写**刻意跳过**了动态前缀 `'request_logs_' || to_char(...)`（边界守卫注释写明「dynamic prefixes … must not be touched」），只改存量分区名而不改函数体，重新开写路径时函数又会造出**无前缀**分区 ⇒ 分叉原地复活。**真正该修的是「按名字枚举」这个口径**（改成按 `pg_inherits` 走父表），而不是改名字。
+- 防复发检查：① 判「某个形状是不是缺陷」时，先去读**做这件事的那条迁移的头部注释**与**正典基线 schema**（它们是书面证据），而不是从「现象」反推意图；② 看到「新装与存量分叉」这类断言，先验证**新装环境到底产出什么**（基线 schema + 迁移顺序），别拿一个**测试夹具**里的名字当契约；③ 判据/文档里引用了某个对象名时，先确认它是**生产 DDL** 产出的还是**夹具**里合成的；④ 真要改「待删标志」的物理形态，必须同时改**产生它的那段代码**（函数体的动态命名），否则分叉会复活。
+- 证据：`860_rename_request_logs_family_pending_delete.sql:18-21`；`deploy/sql/schemas/baseline/01-schema.sql:13002/13150/19569`；`862_partition_family_leading_ts_idx.sql:60`（`ON public._request_logs (ts)`，无硬编码子分区名）；`migration_862_integration_test.go:54`（夹具）；真库 `pg_inherits` 读数（7 张分区的父表是 `_request_logs` / `_request_logs_bodies`）；修后两处脚本的**旧口径 vs 新口径差集**：analyze 补 5 张 / rotate 补 4 张，**回退 0 张**。
+- 溯源：[复核轮](docs/audit/2026-10-20-request-logs-session-turns-复核轮.md) §5.9。
+
+## 2026-10-20 — 判「上游/环境坏了」还是「产品坏了」：找**独立于症状**的第二条证据（Seen: 1/3）
+- 场景：模型请求在 08:00 连续 5 次 200、08:02 起全部 503（`no_candidate` / `upstream_down`）。直觉是「刚部署完把网关弄坏了」。
+- 真因：三个**互相独立**的环境原因叠加：① 凭据 1 `availability_state='auth_failed'` ⇒ 被 `autoroute/index.go` 的 `refreshIndexSQL` 里 `COALESCE(cr.availability_state,'ready')='ready'` 滤掉 ⇒ `candidates_count:0`；② `proxy_nodes` 与 `proxy_subscriptions` **都是 0 行** ⇒ 需出网代理的 provider 必然 `upstream_down: no available active nodes`；③ 凭据 3 上游 429 `budget_exceeded`（Organization balance insufficient）⇒ `quota_state='permanently_exhausted'`。网关的行为是**正确**的（摘除失败候选并给出明确原因，而不是路由到已知坏的凭据）。
+- 防复发检查：① 判「是不是我弄坏的」要拿**独立于症状**的第二条证据：这里用的是「同一份二进制在 08:00:15–08:01:15 连续 5 次 200 且完整落库」+「刷新作业健康（每 5 分钟一次、最新桶有数据、`credential_model_index_hot` 里目标模型在位）」⇒ **数据在库里，缺的是凭据与代理节点**；② 顺着错误文案往下钻到**判定那一层**（`no_candidate` ⇒ 查 `refreshIndexSQL` 的 WHERE 谓词；`upstream_down` ⇒ 查 `proxy_nodes`），别停在错误码上；③ 「是不是我改坏的」的第一反应应当是查**上游/环境状态**（凭据可用性、代理节点库、上游余额），因为这三样每天都在变。
+- 证据：`credentials` 三行读数（`auth_failed` / `ready` / `suspended+permanently_exhausted`）；`proxy_nodes`=0、`proxy_subscriptions`=0；`node_probe_state` 退避中的 9 行；`auto index refreshed` 每 5 分钟且 `credential_rows=7`；成功批次的 5 行读回（`turn_no` 1..5、success=t、正文三列 `jsonb_typeof='array'`）。
+- 溯源：[复核轮](docs/audit/2026-10-20-request-logs-session-turns-复核轮.md) §5.10。
+
+## 2026-10-20 — 落库点不等于查询点：写侧落在 hot 表时，用父表查「刚发的请求」必然查不到（Seen: 1/3）
+- 场景：模型请求 5 次 200 之后，`SELECT … FROM session_turns WHERE session_id='<gw_…>'` **返回 0 行**，一度以为「又没落库」。
+- 真因：写侧落在 **`session_turns_hot`**（本轮 15 次请求的新数据全在 hot 表），晋级到 `session_turns` 有延迟；正文同理在 `session_bodies_hot`（独立表，**父表 `count(*)` 不含它**）。⇒ 「查父表查不到」不等于「没写」。
+- 防复发检查：① 判「数据落库了吗」要按**写侧的真实落点**查（hot 表 / 按时间窗查父表），别默认父表；② 落库验证的口径固定为 `jsonb_typeof(col)='array'`（**不用** `IS NOT NULL` —— JSON `null` 也满足 `IS NOT NULL`）；③ 读数前先记**请求前基线**（本轮：`session_turns=876` / `session_turns_hot=174` / `session_bodies_hot=174`），用**增量**说话。
+- 证据：请求后 `session_turns_hot` 新增 15 行（3 会话 × 5 轮，`turn_no` 1..5）；`session_bodies_hot` 同会话 5 行的 `outbound_body`/`response_delta`/`request_delta` 的 `jsonb_typeof` 全为 `array`。
+- 溯源：[复核轮](docs/audit/2026-10-20-request-logs-session-turns-复核轮.md) §5.10.5。
 ## 2026-10-20 — 门禁钉在哪个相位，决定它能不能失败（Seen: 1/3）
 - 场景：修「已发布规则里的地址族规则在输出面遮蔽 IP」（用户报告
   `export https_proxy=http://[REDACTED]:7890`）。第一版门禁写在**输入面**
