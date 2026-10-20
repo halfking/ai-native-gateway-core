@@ -2246,6 +2246,13 @@ func main() {
 		} else {
 			slog.Info("memora context-compression oracle disabled (set LLM_GATEWAY_MEMORA_BASE_URL to enable)")
 		}
+		// G-2（审计）：结构化会话分析产出 → memora 的 v2 落地域
+		// （POST /api/v2/session-analysis，契约 v1.1）。**独立于**上面那个
+		// 「上下文压缩 oracle」开关：那条链用的是 memora 的 v1 通用记忆入口，
+		// 而这条链用的是 v2 的会话分析契约面（端点、鉴权、幂等键都不同）。
+		// ⇒ 装在 if/else **之外**，这样「配了 memora 但没开分析推送」
+		//   与「完全没配 memora」两种情形都得到明确的禁用态（而不是漏装）。
+		installSessionAnalysisPusher(os.Getenv("LLM_GATEWAY_MEMORA_BASE_URL"))
 		if dbConn != nil && dbConn.Enabled() {
 			routingExec.State = credential.NewWriter(dbConn.Pool())
 			routingExec.DB = dbConn
