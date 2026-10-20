@@ -186,15 +186,16 @@
 > ⇒ ★ 通用式：**当「测试侧补丁」是唯一能让红变绿的路时，先问「产品侧是不是真缺东西」。**
 
 > **2026-10-21 R62 轮（本会话）**：**§19.7 的「当月分区缺失」已修完**
-> ⇒ 新建 `sql/migrations/startup/890_fresh_install_partition_prereq.sql` + 登记进
+> ⇒ 新建 `sql/migrations/startup/893_fresh_install_partition_prereq.sql` + 登记进
 > `installer/internal/dbinit/runner.go` 的 `StartupFiles`（6 点同步面）⇒
-> 一次性库 **293 条链全绿（applied=293 failed=0 missing=0）**、**当月+次月分区到位**、
+> 一次性库 **295 条链全绿（applied=295 failed=0 missing=0）**（★ 293 ⇒ 295 是合并进了
+> 并行会话的两条 startup 迁移）、**当月+次月分区到位**、
 > **5 个核心族真实写入全部落在 `_2026_10` 月分区（非 default）** ⇒ **23514 消除**。
 > ⇒ ★★ **本会话自己推翻自己三处**：
 > ① **§19.7.2 的「ensure 函数来源迁移全部未登记 ⇒ 新装库既没函数」是错的** ——
 >    实测那 **11 个函数全部在 baseline `sql/schema/01-schema.sql` 里** ⇒ 函数有，
->    缺的是「当月分区」这个**产物** ⇒ ⇒ 890 因此**不建任何函数**（建了就是与 baseline 抢名字的死代码）。
-> ② ★★ **890 第一版自己造错了分区名** —— 用 `parent_YYYY_MM` 拼子分区名 ⇒ 对
+>    缺的是「当月分区」这个**产物** ⇒ ⇒ 893 因此**不建任何函数**（建了就是与 baseline 抢名字的死代码）。
+> ② ★★ **893 第一版自己造错了分区名** —— 用 `parent_YYYY_MM` 拼子分区名 ⇒ 对
 >    `_request_logs` / `_request_logs_bodies` 两族**造错**（真约定是 `request_logs_YYYY_MM`，
 >    baseline 与**生产 252** 一致）⇒ baseline 自带的 ensure 函数每次报
 >    `partition "request_logs_2026_10" would overlap partition "_request_logs_2026_10"`（42P17）
@@ -204,12 +205,21 @@
 >    （「没人跑过的死 DDL」）+ **4 列生产有但产品读写不依赖物理列**（读路径是派生别名）
 >    ⇒ ⇒ **真缺口集 = ∅** ⇒ **「补 20 个 ALTER」不执行**；登记册 **11 行 high/medium → benign**
 >    ⇒ ★ **severity 的第一道闸门 = 生产侧有没有这一列**（按名命中对「不存在的列」必然是假阳性）。
-> ⇒ ★ **门的第一版是恒绿门**：oracle 用了 890 的产物（标记函数）⇒ 摘掉 890 ⇒ oracle 判「不是新装库」
+> ⇒ ★ **门的第一版是恒绿门**：oracle 用了 893 的产物（标记函数）⇒ 摘掉 893 ⇒ oracle 判「不是新装库」
 >    ⇒ **SKIP** ⇒ 变异 M1 暴露 ⇒ 改版：oracle = 仓内约定（`TEST_DATABASE_URL`）、
->    **890 的产物降级为断言**、写操作放进**回滚事务** ⇒ 门无副作用、可安全指向任何库。
+>    **893 的产物降级为断言**、写操作放进**回滚事务** ⇒ 门无副作用、可安全指向任何库。
 > ⇒ 门 `db/db_fresh_install_partition_shape_test.go`（新）：5 类断言（助手函数在 / 当月+次月按**边界**覆盖 /
->    11 个 ensure 函数齐备 / **逐个调用零报错** / 真实写入落点）⇒ 变异 **M1（摘 890）红 36 条**、
->    **M2（改命名）红 2 条且报错逐字一致**。
+>    **9 个** ensure 函数齐备 / **逐个调用零报错** / 真实写入落点）⇒ 变异 **M1（摘 893）红 32 条**、
+>    **M3（破坏前缀推导）红 39 条**。
+> ⇒ ★★ **合并期的跨会话交互**（origin 的 `890_drop_request_logs_v1_family.sql` **退役了 v1 request_logs 族**）：
+>    ① 那两个 ensure 函数被**一起 DROP** ⇒ 目标从 11 个改成 **9 个**（门与迁移同步改）；
+>    ② ★★★ **「893 不建任何函数」从「省事」变成安全关键属性** —— 893 在**链尾**⇒ 跑在退役之后
+>       ⇒ **若它建那两个函数就会把已退役的族复活**；
+>    ③ ★ **原变异 M2 的前提失效**（那个 bug 只影响已删的两族 ⇒ 合并后红 0 条 ⇒ 变潜伏）
+>       ⇒ 补 **M3**（破坏前缀推导）证明门**仍然有牙**（红 39 条）；
+>    ④ 顺带修掉 R61 门里 `_request_logs.outbound_body` 那条（表已退役 ⇒ 要求它在位＝要求复活）。
+> ⇒ ★ **迁移号被合并挤掉**：原拟 890 ⇒ 890 被占 ⇒ 892 被占（台账里 origin 登记成 `| 892 |` 与其文件名 890 不一致）
+>    ⇒ 最终定 **893** ⇒ ★ **「下一个空号」是会漂移的活事实**：要**当场**取、**取完即用**，且**还要看台账**。
 > ⇒ ⚠ **诚实边界**：生产 252 上 `credential_model_index` / `request_wal` / `routing_decision_log` /
 >    `usage_ledger` **没有 default 分区**（另 4 族有）⇒ 新装库与生产在这 4 族上形态不一致
 >    ⇒ 补生产那 4 个属**生产写入**，需属主另行拍板，本轮**未动**。
@@ -249,7 +259,13 @@
 > ⇒ **分区行数与 promote 调用数不可相除**；PG 日志 `log_min_duration_statement=1000`
 > ⇒ `duration:` 是**尾部样本**；**columnar 表 `n_tup_ins` 恒 0** ⇒ columnar 没有行数仪。
 > ★★ **并发漂移（实测）**：并行会话已占用 **885**（`885_session_turns_host_tags`，
-> 注册齐全）⇒ **CMI 归档孤儿表修复不能用 885 ⇒ 下一个空号是 890**；
+> 注册齐全）⇒ **CMI 归档孤儿表修复不能用 885 ⇒ 下一个空号是 890**
+> （⚠ **2026-10-21 R62 轮订正**：**890 随后被并行会话占用**
+> ——`890_drop_request_logs_v1_family.sql`；891 被 `891_session_turns_cost_negative_partial_idx.sql` 占用；
+> **892 也在台账里被占用**（origin 把 `890_drop_request_logs_v1_family.sql` 登记成了 `| 892 |`，
+>   与它的**文件名 890** 不一致 ⇒ 台账号与文件名对不上 ⇒ 该号视为已占）
+> ⇒ ★⇒ **「下一个空号」是**会漂移**的活事实 ⇒ 取号必须**当场**取、且**取完即用**
+> ⇒ R62 轮据此把自己的迁移从 890 改成了 **893**）；
 > ⇒ **纪律：动迁移号之前必须现场取号**（`ls sql/migrations/startup/*.sql | grep -v down |
 > cut -d_ -f1 | sort -n | tail -1`），且**只加源文件 = 迁移不会生效**（5 处注册点 + 2 处台账）。
 > 门 `scripts/ursmcheck/section_14325_columnar_cost_test.go`（新，**11 条**，含
@@ -660,7 +676,7 @@ cd web && GATEWAY_API_TARGET=http://127.0.0.1:5198 \
 
 ## 本轮已落地：脱敏范围事故
 
-用户报告会话里出现 `export https_proxy=http://[REDACTED]:7890`。分析发现是
+用户报告会话里出现 `export https_proxy=http://[REDACTED]:7893`。分析发现是
 **三条互相独立的遮蔽链路各自在遮地址**，只修一条不够：
 
 1. `security/sanitize` 的 `server_ip`/`internal_ip` —— 一条规则同时承担
