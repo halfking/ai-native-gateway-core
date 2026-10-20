@@ -483,22 +483,35 @@ func TestSection14342RunbookHasSection(t *testing.T) {
 	for _, needle := range []string{
 		"§143.42",
 		"订正横幅二十",
+		"订正横幅二十一",
 		"reclaim_candidates.tsv",
 	} {
 		if !strings.Contains(body, needle) {
 			t.Errorf("runbook 里找不到 %q", needle)
 		}
 	}
+	// ★★ **两个「订正横幅」都必须保留**：二十 = 并行会话 R79 轮独立复核的那一份，
+	//   二十一 = 本轮那一份 ⇒ ⇒ 两者结论一致、互为佐证
+	//   ⇒ ⇒ **删掉任何一边 = 抹掉一次独立复核的证据** ⇒ ⇒ 门盯着它们都在。
+	//   ⚠ 查「同号横幅」时**不要**用 `^> \*\*订正横幅` 这种行首正则
+	//   （R79 那条的形态是 `> 🚨🚨🚨 **订正横幅二十…` ⇒ 本轮就是这么漏掉它的）
+	//   ⇒ ⇒ **按关键词查，不按行首格式查**。
 	// ★ 订正横幅必须**就地**出现在 §143.40.3 之前（原文保留 + 横幅在前），
 	//   否则读 §143.40.3 的人会先读到那份已被撤回的清单。
-	idxBanner := strings.Index(body, "订正横幅二十")
 	idx143403 := strings.Index(body, "§143.40.3")
-	if idxBanner < 0 || idx143403 < 0 {
-		t.Fatalf("runbook 结构对不上：banner=%d §143.40.3=%d", idxBanner, idx143403)
+	if idx143403 < 0 {
+		t.Fatal("runbook 里找不到 §143.40.3")
 	}
-	if idxBanner > idx143403 {
-		t.Errorf("★ 订正横幅二十（%d）必须排在 §143.40.3（%d）之前 ⇒ "+
-			"否则读 §143.40.3 的人会先读到已被撤回的清单", idxBanner, idx143403)
+	for _, banner := range []string{"订正横幅二十", "订正横幅二十一"} {
+		idx := strings.Index(body, banner)
+		if idx < 0 {
+			t.Errorf("runbook 里找不到 %q", banner)
+			continue
+		}
+		if idx > idx143403 {
+			t.Errorf("★ %s（%d）必须排在 §143.40.3（%d）之前 ⇒ "+
+				"否则读 §143.40.3 的人会先读到已被撤回的清单", banner, idx, idx143403)
+		}
 	}
 	_ = filepath.Join
 }
