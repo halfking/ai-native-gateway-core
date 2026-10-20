@@ -55,6 +55,7 @@
 | **★★ 新装链本身断在 853（既有缺陷，与本轮无关）** | 853 在新装链报「`credential_probe_queue` 不存在」⇒ **整个新装中止**。根因：853 **自己声明**依赖 489/490（队列表本体），而那两条**从未登记**进链（853 的 runner 注释却写着「once 489/490 create the queue」）。**既有性证明**：pristine HEAD 工作树复跑**同样失败**。已补登 489/490（幂等自包含）⇒ 整链 **0 of 282 fail**；顺带修了**链门自己的量具**（它无条件 `--single-transaction`，不尊重 `dbinit:no-transaction` ⇒ 7 条假破坏）⇒ 已审阅失败集合清空、门从红转绿；顺带修了 2 条被 853 掩盖的**过期 pin**（hot 表 104→**106** 列；`request_logs`→`_request_logs`，因 860 改名）。`TestFreshInstallerSessionTurnsHotBootstrap` 从「在 853 中止」**转 PASS**（§5.13.8） |
 | **★ 部署后复验（API 全量 + 104 页逐页）** | API 全量 **511 条路由、0 个 >2s、0 个 5xx**；逐页 **101×200 + 1×503**（`/maintain` 本机未部署）、**0 个 JS 运行时异常**、**0 个慢 API**、**≥2000ms 的页面 0 个**（最慢 `/dashboard` 1965ms）。与 2756 基线逐条 join：路由集合**完全相同**、状态变化 **4 处全是 `500→200`**、页面标记集合**完全一致** ⇒ **0 处回退**。`/api/logs` 稳态 **26–48ms**。⚠ 复验中抓到一次**量具污染**：API 全量扫与逐页扫**并发**跑 ⇒ `/dashboard` 读数虚高到 2920ms，**独占重跑 = 1965ms**（比基线还快）⇒ 教训见 §10.7（§5.12.7） |
 | **★ 2758 部署后复验（API 全量 + 104 页逐页 + 累积式多轮）** | API 全量 **511 路由、0 个 >2s、0 个 5xx**，与 2757 逐条 join **状态变化 0 处**（与 2756 基线的 4 处变化仍全是 `500→200`）⇒ **0 回退**；逐页 **101×200 + 1×503**、**0 个真 JS 异常**、**0 个真 5xx**、**0 个慢 API**、**0 个慢页面**，`navMs` 中位 1122 / 最慢 1965（与 2757 独占跑**逐位相同**）；累积式多轮 **5/5 = 200**、`prompt_tokens` **13→32→46→314→1066 严格单调**，写回读回**全项 PASS**（轮次连续、正文三列 `jsonb_typeof` 全 `array`、退役族零新增）。⚠ 过程中又抓到**两把坏尺子**：页扫 `NOT_FOUND` 标记命中「**404.2 MB**」这类**数字**（假阳性，已修：词边界 + 小数/单位排除 + 判定窗口与落盘窗口统一），以及写回验证脚本在 **bash 3.2** 下「检查没跑成却打印 PASS」（已改用 `~/sdk/bash5/bin/bash`）（§5.13.10） |
+| **★ 定时补跑：三模型累积式多轮 + 凭据状态读数** | `glm-5.2` **5/5 = 200**（`prompt_tokens` **13→28→42→307→577 严格单调**、写回读回全项 PASS）；`deepseek-v4-flash` / `deepseek-flash` **5/5 = 503** —— 归因**不是**凭据冷却（凭据 1 = `ready`、恢复点已过），而是这两个模型绑定的探针状态 **`node_probe_failed`**（且 `proxy_nodes` 0 行 ⇒ 无第二候选）⇒ **环境状态，非仓库缺陷**；**失败请求同样落库**（`success=f`/`status_code=503`）⇒ 审计链完整。退役族 4 表在 15 次请求后仍**全 0**。⚠ 过程中又抓到 **4 处量具缺陷**（`$var` 紧跟全角括号 ⇒ 整段不执行；B/C 判据缺前提；C 段结论行与 FAIL 自相矛盾）⇒ 判据脚本需要「**前提 / 段级 SKIP / 段级结论**」三件套（§5.13.11、§10.14） |
 
 ---
 
@@ -2039,6 +2040,71 @@ git worktree add /tmp/lgw-pristine-20261020 HEAD        # = 7c8aad856
 ⇒ **纪律**：`set -e` 缺席时，检查失败必须**显式置失败位**并让脚本**非零退出**，
 不能让「检查没执行」与「检查通过」长得一样。
 
+### 5.13.11 ★ 定时任务补跑：三模型累积式多轮 + 凭据状态读数（+ 又抓到 4 处**量具**缺陷）
+
+> 触发：定时任务要求「凭据 1 的 `availability_recover_at` 到点后重跑累积式多轮」。
+> 取数命令（口径与覆盖范围）：
+> ```bash
+> API_KEY=… MODELS="deepseek-v4-flash,deepseek-flash,glm-5.2" ROUNDS=5 ROUND_DELAY=12 \
+>   OUT_DIR=… bash /tmp/llmgw-retire-20261020/real-model-multiround-accum.sh
+> for sid in <三个 session_id>; do
+>   ~/sdk/bash5/bin/bash /tmp/llmgw-retire-20261020/verify-model-writeback.sh "$sid" 5
+> done
+> # 凭据/绑定状态（读侧，独立于发请求的脚本）
+> psql "$DATABASE_URL" -tAF'|' -c "SELECT id, availability_state FROM credentials ORDER BY id;"
+> psql "$DATABASE_URL" -tAF'|' -c "
+> SELECT raw_model_name, credential_id, is_routable, unavailable_reason
+> FROM public.v_routable_credential_models
+> WHERE raw_model_name IN ('deepseek-v4-flash','deepseek-flash','glm-5.2') ORDER BY 1;"
+> ```
+> 覆盖范围：本机 PG 18.10 + 本机网关 8782；三个模型 × 5 轮累积式对话。
+
+**结果（15 次请求 / 3 个会话）**：
+
+| 模型 | 轮次 | `prompt_tokens` | 落库 | 写回读回 |
+|---|---|---|---|---|
+| `glm-5.2` | **5/5 = 200** | **13 → 28 → 42 → 307 → 577 严格单调** | 5 行 `success=t` | **全项 PASS**（轮次连续 1..5、正文三列全 `array`、退役族零新增） |
+| `deepseek-v4-flash` | 5/5 = **503** | 28→28→46→**71**→**56**（见下方口径） | 5 行 `success=f` | PASS（失败也落库，B 判据按前提 SKIP） |
+| `deepseek-flash` | 5/5 = **503** | 27→28→45→**70**→**55** | 5 行 `success=f` | PASS（同上） |
+
+> ⚠ **503 的轮次 `prompt_tokens` 为什么「变小」**：脚本只在 **200** 时把 assistant 回复并进
+> history ⇒ 全失败会话里 history **不推进** ⇒ 每轮请求只带**本轮**提示词
+> ⇒ `prompt_tokens` 只反映**提示词长度**（第 5 轮的中文提示词比第 4 轮短）
+> ⇒ **「变小」是预期，不是「多轮退化」**。这条判据的**前提**是「至少有成功轮次」。
+
+**凭据与绑定状态读数（2026-10-20 10:28–10:30 实测）**：
+
+| 对象 | 读数 |
+|---|---|
+| `credentials` | 1 = `ready`、2 = `ready`、3 = `suspended`（`availability_recover_at` 已为空 ⇒ 08:17 的恢复点已过） |
+| `deepseek-v4-flash`（凭据 1 / provider 2453） | `is_routable = f`，`unavailable_reason = **node_probe_failed**` |
+| `deepseek-flash`（凭据 1 / provider 2453） | `is_routable = f`，`unavailable_reason = **node_probe_failed**` |
+| `glm-5.2`（凭据 1 / provider 2453） | `is_routable = **t**` ✔ |
+| `glm-5.2`（凭据 3 / provider 2454） | `is_routable = f`，`unavailable_reason = availability_suspended` |
+| `proxy_nodes` | **0 行** ⇒ 没有第二候选 |
+
+⇒ 两个 deepseek 模型的 503 **不是**凭据冷却（凭据 1 是 `ready`），而是**这两个模型绑定的
+探针状态是 `node_probe_failed`** ⇒ 路由层直接判定「无可用候选」。
+⇒ 这是**环境状态**，不是仓库缺陷；且**失败请求同样落库**（`success=f`、`status_code=503`）
+⇒ 审计链完整。
+
+**退役与数据终态**：退役族 4 张表行数 **全 0**（15 次请求之后仍为 0）；
+会话族 `session_turns` 881 / `session_turns_hot` 344 / `session_bodies_hot` 344。
+
+#### ★ 本轮又抓到 **4 处量具缺陷**（全在写回验证脚本里，全都不是产品问题）
+
+| # | 现象 | 根因 | 修法 |
+|---|---|---|---|
+| 1 | 验证脚本在 `~/sdk/bash5/bin/bash` 下报 `p?: unbound variable` ⇒ **B 段整段不执行** | 脚本里写的是 `... -> $p（说明对话没累积）`——**变量名后紧跟全角括号**；bash 在 `set -u` 下把非 ASCII 字节并进了变量名（`p` + 0xEF…）⇒ 变量名变成 `p?` | 全文正则扫「`$var` 紧跟非 ASCII」一律改成 `${var}` |
+| 2 | B 段既打印「**不适用（SKIP）**」又报「`FAIL: prompt_tokens 变小`」 | 判据**缺前提**：全失败会话里 history 不推进 ⇒ 「变小」是预期 | B 段加前提：无成功轮次 ⇒ **整个单调性循环跳过**（不是只打印一行 SKIP） |
+| 3 | C 段对**失败轮次**报「`outbound_body` 的 jsonb_typeof='null`，不是 array」 | 判据**缺前提**：失败轮次没到上游 ⇒ 出站正文与响应增量**合法地是 null** | C 段只判**成功轮次**；失败轮次打印「不适用：没到上游，出站正文本就是 null」 |
+| 4 | C 段报了一堆 FAIL，末尾却仍打印「**C: 正文三列全部是 JSON 数组 OK**」 | **结论行无条件打印** ⇒ 结论与失败自相矛盾 | 结论行改为「按本段失败位是否增加来选文案」 |
+
+⇒ 与 §10.13 同一族，但这次更细一层：**「检查没跑成」「检查跑成但前提不成立」「检查跑成且结论为负」
+是三件不同的事**，而量具把它们都印成了相似的东西。
+⇒ **防复发检查（新增）**：判据脚本每一段都要有
+「**前提**（什么时候这条判据适用）」「**本段结论**（按本段失败位选文案）」「**段级 SKIP**（前提不成立时明说）」三样。
+
 ---
 
 ## 7. 本轮新增的经验
@@ -2439,3 +2505,24 @@ chat 腿不接受」——这类**协议腿之间的规则不对称**，靠读�
   末尾仍打印「PASS」；`~/sdk/bash5/bin/bash` 跑 → A/B/C/D 四段全部执行、**全项 PASS**
   （turn_no 1..5、prompt_tokens 13→32→46→314→1066 单调、正文三列全 `array`、退役族零新增）。
 - 溯源：request_logs→session_turns 复核轮 §5.13.10 / §10.13。
+
+### 10.14 ★ 判据的「前提 / 段级 SKIP / 段级结论」三件套（Seen: 1/3）
+
+- 场景：定时补跑三模型累积式多轮时，写回验证脚本连续暴露 4 个问题，
+  其中 3 个会让**产品结论被写错**。
+- 根因（四处各不相同，但都是「量具的缺陷」）：
+  ① 脚本里 `... -> $p（说明…）`——**变量名后紧跟全角括号**，bash 5.2 在 `set -u` 下
+  把非 ASCII 字节并进变量名 ⇒ `p?: unbound variable` ⇒ **B 段整段不执行**；
+  ② B 段判据**缺前提**（全失败会话 history 不推进 ⇒ 「token 变小」是预期），
+  且只打印 SKIP 却仍让循环体报 FAIL ⇒ 输出自相矛盾；
+  ③ C 段判据**缺前提**（失败轮次没到上游 ⇒ `outbound_body`/`response_delta` 合法地是 null）；
+  ④ C 段的**结论行无条件打印「OK」**，即使刚报了一堆 FAIL。
+- 防复发检查：① 写含中文的 bash 脚本时，**变量引用一律带花括号** `${var}`
+  （bash 会把 `$var` 后的非 ASCII 字节并进变量名）；② 每条判据都要写清**前提**
+  （什么时候适用）与**不适用时怎么办**（明说 SKIP，不要含糊放过）；
+  ③ **段级结论必须按本段失败位选文案**，不能无条件打印；
+  ④ 「检查没跑成」「前提不成立」「结论为负」三者必须在输出上**可区分**。
+- 证据：修正后三个会话全部 **PASS**：`glm-5.2` 5/5=200（token 13→28→42→307→577 单调、
+  正文三列全 `array`）、两个 deepseek 5/5=503（`success=f` 落库、B 按前提 SKIP、
+  C 按前提 SKIP）、退役族零新增。
+- 溯源：request_logs→session_turns 复核轮 §5.13.11 / §10.14；[复盘](docs/audit/2026-10-20-request-logs-session-turns-复核轮.md) §5.13.11 / §10.14。
