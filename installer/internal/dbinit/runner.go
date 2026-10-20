@@ -1232,6 +1232,49 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			// 零锁零 IO；写路径的填充在 domains/session/v2/turn_writer.go
 			// （turnToolsJSONBExpr，从 session_tools_hot 按 session_id+request_id 聚合）。
 			"889_session_turns_tools_population.sql",
+
+			// ★★ 2026-10-21（R60 轮，属主拍板「登记 5 个」）：以下 5 条**此前从未被登记**
+			// ⇒ 全新安装出来的库缺 5 个列 ⇒ 其中 provider_models.source 缺了 ⇒
+			// **db.Open 的 ensure 链直接 42703** ⇒ 「全新安装 = 装完即炸」
+			// （已实测复现 db::TestEnsureAsrCatalogSeed_RealDB 与
+			//  sql-migrations-startup::TestMigration715FreshChainApplyMigrations 两条真库门；
+			//  后者测的正是真实新装路径 —— 它的链来自 installed_startup_migrations.tsv）。
+			//
+			// 为什么既有那道空棘轮（sql/schema/startup_known_gaps.tsv，0 known gaps）
+			// 看不见这一类：**它数「已登记迁移 failed」，不数「文件从未运行 missing」**
+			// ⇒ 缺列时它照样是绿的 ⇒ 现已补
+			// sql/schema/fresh_install_column_gaps.tsv（缺列登记册）
+			// + sql/schema/fresh_install_column_gaps_test.go（真库门，检新缺口 + 查过期）。
+			//
+			// 全部是 ADD COLUMN IF NOT EXISTS ⇒ **幂等** ⇒ 与仓内 851/855/856/857
+			// 的同形态补登记一致（那四条的注释也写着「文件躺在 sql/migrations/startup/ 里，
+			// deploy 的目录扫描会捡到它，但安装器只跑 StartupFiles」）。
+			//
+			// 位置：**链尾**（不按编号插位）—— 依赖已逐条核过：
+			//   361b  目标 provider_models 由 01-schema 基线建好（基线 16 列、无 source）；
+			//         已登记链里**没有任何**迁移引用 provider_models.source ⇒ 无前向依赖。
+			//   375/376 目标 offline_activation_requests 由基线建好（9 列、无 status/
+			//         reject_reason/activation_code）；718 只是**注释**里提到该表名 ⇒ 无依赖。
+			//   387  目标 session_embeddings 由 351（链内 index 8）建好 ⇒ 排在它之后即可。
+			//   427  目标 task_type_centroids 由 426（链内 index 3）建好 ⇒ 排在它之后即可。
+			// 链尾是唯一无条件成立的位置（同 855 的处置）。
+			//
+			// 361b：provider_models.source 前置补列（NOT NULL DEFAULT 'discovery'）。
+			//   原始出处是 domain/361（domain 通道，**安装器不跑**）⇒ 361b 就是为
+			//   「只走 startup 通道的库」写的同一句防御性 ALTER（文件头原文如此）。
+			"361b_provider_models_source_prelude.sql",
+			// 375：给 offline_activation_requests 补 status + reject_reason。
+			//   文件头自述「修复 P0: store_pgx.go RejectOfflineRequest() 使用了这两个字段，
+			//   但 374 迁移文件中漏掉了」⇒ 本条是 374 的补漏（374 本身也未登记，
+			//   但目标表由基线建好 ⇒ 不需要 374 在链里）。
+			"375_offline_requests_status.sql",
+			// 376：给 offline_activation_requests 补 activation_code（离线激活码，
+			//   供客户核对/审计）。
+			"376_offline_activation_code.sql",
+			// 387：session_embeddings 补 embedding_v2（会话分析推理用的向量列）。
+			"387_session_analysis_inference.sql",
+			// 427：task_type_centroids 补 embedding_model（任务类型质心用的模型名列）。
+			"427_task_type_centroids_model.sql",
 		},
 	}
 }

@@ -25,7 +25,13 @@
 #   与生产 252（只读）逐列求差集：
 #       fresh  8965 个 (schema, table, column)
 #       prod  14106 个
-#       → 生产有、新装没有，且所在关系在两边都存在 ⇒ 23 条（即本清单）
+#       → 生产有、新装没有，且所在关系在两边都存在 ⇒ 23 条
+#   2026-10-21（R60 轮后段，属主拍板「登记 5 个」）：其中 6 条已随补登记修好
+#   （provider_models.source / offline_activation_requests.status /
+#     .reject_reason / .activation_code / session_embeddings.embedding_v2 /
+#     task_type_centroids.embedding_model）⇒ **已按棘轮方向删行** ⇒ 本清单剩 17 条。
+#   ⇒ ★ 剩余 17 条的成因是**另外两条通道**（domain / root），安装器**设计上**不跑它们
+#     ⇒ 门 A 检不出（它只扫 startup 通道）⇒ 这部分只靠本清单 + 人工复核。
 #   复算命令见 docs/audit/2026-10-21-R60-新装缺列族.md §2。
 #
 # SEVERITY
@@ -56,9 +62,6 @@ durable_llm_tasks	last_disconnect_at	benign	生产 252 保留的历史列，新�
 models_canonical	standard_iq	medium	生产 252 有；新装无 —— 由 domain 通道 sql/migrations/domain/350_model_iq.sql 提供，installer 链不跑 domain 通道
 models_canonical	standard_iq_source	medium	生产 252 有；新装无 —— 同上（domain/350_model_iq.sql）
 models_canonical	standard_iq_updated_at	medium	生产 252 有；新装无 —— 同上（domain/350_model_iq.sql）
-offline_activation_requests	activation_code	high	生产 252 的 maintain schema 有；新装的 public 表没有 —— startup/376_offline_activation_code.sql 提供，该文件从未登记
-offline_activation_requests	reject_reason	high	生产 252 的 maintain schema 有；新装的 public 表没有 —— startup/375_offline_requests_status.sql 提供，该文件从未登记
-offline_activation_requests	status	high	生产 252 的 maintain schema 有；新装的 public 表没有 —— startup/375_offline_requests_status.sql 提供，该文件从未登记（licensing 离线激活腿因此 42703）
 prompt_injection_detections	detection_layers	high	生产 252 有；新装无 —— startup/315_prompt_injection_detection.sql 提供，该文件从未登记
 prompt_injection_detections	detection_score	high	生产 252 有；新装无 —— 同上（315）
 prompt_injection_detections	matched_rules	high	生产 252 有；新装无 —— 同上（315）
@@ -66,6 +69,3 @@ prompt_injection_detections	matched_rules_count	high	生产 252 有；新装无 
 provider_catalog	free_tier_notes	medium	生产 252 有；新装无 —— 由 root 通道 sql/migrations/075-omnifree-schema.sql 提供
 provider_catalog	has_free_tier	medium	生产 252 有；新装无 —— 同上（075-omnifree-schema.sql，root 通道）
 provider_catalog	official_free_docs_url	medium	生产 252 有；新装无 —— 同上（075-omnifree-schema.sql，root 通道）
-provider_models	source	fatal	★ 新装库连库都开不了：db.Open 的 ensure asr catalog seed 直接 42703（column "source" of relation "provider_models" does not exist）—— startup/361b_provider_models_source_prelude.sql 提供，该文件从未登记（domain/361 才是原始出处，而 installer 不跑 domain 通道）
-session_embeddings	embedding_v2	medium	生产 252 有；新装无 —— startup/387_session_analysis_inference.sql 提供，该文件从未登记
-task_type_centroids	embedding_model	medium	生产 252 有；新装无 —— startup/427_task_type_centroids_model.sql 提供，该文件从未登记

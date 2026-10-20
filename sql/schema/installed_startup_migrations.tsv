@@ -302,3 +302,8 @@
 284	887_session_turns_search_text_fts.sql
 285	888_session_family_join_index_gaps.sql
 286	889_session_turns_tools_population.sql
+287	361b_provider_models_source_prelude.sql
+288	375_offline_requests_status.sql
+289	376_offline_activation_code.sql
+290	387_session_analysis_inference.sql
+291	427_task_type_centroids_model.sql

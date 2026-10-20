@@ -1530,6 +1530,20 @@ files=(
   # 的防御性 ALTER，原通道是 init-local-db/installer，startup 通道从未投递）。
   # 缺列时 gateway 启动 ensure 链在 db open 即 42703（ensure asr catalog seed）。
   "$ROOT_DIR/sql/migrations/startup/361b_provider_models_source_prelude.sql"
+  # 2026-10-21（R60 轮，属主拍板「登记 5 个」）：同一族的另外 4 条**也从未被投递**
+  # ⇒ 全新安装的库缺 5 个列 ⇒ provider_models.source 缺了 ⇒ **db.Open 的 ensure 链
+  # 直接 42703** ⇒ 「全新安装 = 装完即炸」（已实测复现两条真库门）。
+  # 全部是 ADD COLUMN IF NOT EXISTS ⇒ 幂等；目标表都由 01-schema 基线建好
+  # （或由 351/426 建好）⇒ 放在这里即可，不依赖 374（374 同样未登记，但不需要）。
+  #   375/376  offline_activation_requests 补 status / reject_reason / activation_code
+  #            （375 自述是「修复 P0: store_pgx.go RejectOfflineRequest() 用了这两个字段，
+  #              但 374 迁移文件中漏掉了」⇒ 本条是 374 的补漏）
+  #   387     session_embeddings 补 embedding_v2
+  #   427     task_type_centroids 补 embedding_model
+  "$ROOT_DIR/sql/migrations/startup/375_offline_requests_status.sql"
+  "$ROOT_DIR/sql/migrations/startup/376_offline_activation_code.sql"
+  "$ROOT_DIR/sql/migrations/startup/387_session_analysis_inference.sql"
+  "$ROOT_DIR/sql/migrations/startup/427_task_type_centroids_model.sql"
 
   # 2026-10-07（844）：给 v_supplier_price_vs_baseline 补两个缓存基准价的投影。
   #
