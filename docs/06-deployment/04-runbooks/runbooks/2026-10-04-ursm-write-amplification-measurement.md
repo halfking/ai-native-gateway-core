@@ -42277,3 +42277,174 @@ DROP TABLE public.usage_facts_20260926, …, public.usage_facts_20261005;  -- 10
 - ⚠ **首次 DROP 回收尚未观测到**：211 的首次回收时点是 2026-10-21T16:29:30Z ⇒ 本节**未**验证
   「分区被 DROP 后空间真归还」在 211 上发生过 ⇒ §143.45.4 的结论目前是**判据推导 + 252 实测**，
   211 侧仍待观测。
+
+### §143.46 ★★★★ 月度分区留存的**机制空转** ＋ 会话原始数据族在 PG 路径上**无任何留存**（两实例只读普查 + 量化决策表）
+
+#### §143.46.0 本节一句话结论
+
+- ★★★★ **月度分区 DROP 的机制早就建好了，但「建好了」不等于「在回收」**：
+  迁移 841 建的策略表 `public.llm_gateway_partition_retention` **两实例都是 0 行**，
+  审计表 `public.llm_gateway_partition_drop_log` **两实例也是 0 行** ⇒
+  ⇒ **从未删过任何一个月度分区**；154 生产日志却是
+  `partition_manager: monthly partition retention sweep dropped=0 partitions=[]`
+  ⇒ ⇒ **sweep 每轮都在跑，只是每轮都空转**。
+- ★★★★ **会话原始数据族在 PG 路径上没有任何留存**（穷举 DB 侧 `public` 函数 ＋ Go 侧
+  `DELETE`/`DROP` 后确认）：`session_turns` / `session_turn_details` / `sessions` /
+  `session_censors` / `session_memora` / `session_bodies` / `session_tools` /
+  `auto_route_selections` / `usage_ledger` / `credit_ledger` / `tool_usage_stats`
+  ⇒ 252 上 `session_turns_2026_09` 单分区 **2,867,773,440 B（2.67 GB）**。
+- ★★★★ **杠杆只在 252**：按 841 的口径（过期 ⇔ `months_old >= N`），
+  252 保留 1 个月可回收 **5,213,446,144 B（4,971.9 MB）**、保留 2 个月只剩 **1.6 MB**、
+  保留 3 个月只剩 **424 KB** ⇒ ⇒ **这是一个「要不要保留 9 月会话原始数据」的语义决策，
+  不是「清理一下垃圾」的运维动作**；211 同口径只有 **2.34 MB** ⇒ **该杠杆对 211 没有意义**。
+- ⚠ **本节对生产的写入 = 0**：只做只读普查 ＋ 仓内登记册/决策表/门/脚本/文档。
+  「给 841 的策略表配 `retain_months`」是**生产写**，**待属主拍板**（§143.46.9）。
+
+#### §143.46.1 ★★★★ 841 的月度 DROP 机制：四件套都在，策略表是空的
+
+| 机制件 | 位置 | 实测（252 / 211） |
+|---|---|---|
+| 策略表 | `public.llm_gateway_partition_retention(family PK, retain_months, enabled, note, updated_at)` | **0 行 / 0 行** |
+| 只读列举 | `public.llm_gateway_expired_month_partitions()` | 在（调用即返回 0 行） |
+| 真正 DROP | `public.llm_gateway_drop_expired_month_partitions()` | 在（每轮返回 0） |
+| 审计表 | `public.llm_gateway_partition_drop_log` | **0 行 / 0 行** |
+| Go 侧调用点 | `bg/partition_manager.go` 的 `SELECT llm_gateway_drop_expired_month_partitions()` | 在 |
+
+- ★ **两个 0 是同一件事的两面**：策略表 0 行 ⇒ 没有任何族进入判定循环 ⇒
+  审计表 0 行 ⇒ **一次都没删过**。⇒ ★★ **不能只读日志里的 `dropped=0` 就断言「机制是坏的」** ——
+  它没坏，**它没有策略**。
+- ★ 与 §143.45 的形态切换是**同一类判别**（`relkind` 自答「该不该删」）：**机制健康 ≠ 机制在工作**。
+  ⇒ 本节因此把「策略表行数」与「审计表行数」**分别**登记，而不是合并成一个结论。
+
+#### §143.46.2 ★★★★ 三类留存机制必须分开数 —— 「无界」是一个需要穷举才能下的结论
+
+| 路径 | 位置 | 口径 | 现状 |
+|---|---|---|---|
+| A（Go 侧按天 TTL） | `bg/partition_manager.go` 的 `stateTableTTLSpecs()`（8 族） | 按**天**声明，但**每月 2 号**才扫 ⇒ 实际留存 **TTL..TTL+30 天** | 覆盖 8 族 |
+| B（SQL 侧按月） | 迁移 841 的策略表 ＋ `llm_gateway_drop_expired_month_partitions()` | 按**月** | **配置为空 ⇒ 空转** |
+| C（各族专门机制） | `archive_*` / 专门的分区 `DROP` helper / 只剪 hot 表（`HOT_TRIM` ⇒ 月分区仍累积） | 按族 | 覆盖 9 族 |
+
+- ★★ **路径 A 的「TTL=7 天」会给出「比真实更干净」的错误预期** ⇒
+  它是 7..37 天（每月 2 号才扫）。这个区间已进决策表（`EffectiveRetentionDays`），
+  并被门钉住。
+- ★★ **路径 C 的 `HOT_TRIM` 是「半覆盖」**：hot 表被剪了，**月分区照样累积** ⇒
+  不能算作「有留存」。登记册里它单独成一个机制值（`HOT_TRIM`），理由里写明是半覆盖。
+- ⇒ **只有「三条路径都不覆盖」的族才是真无界** ⇒ 这就是本节穷举的全部理由。
+
+#### §143.46.3 ★★ 救回 5 族误判（「无界」结论的第一嫌疑是量具漏了）
+
+- ★ **初判把 5 个族判成无界，穷举后全部改判**：
+  `request_wal`（`archive_request_wal`）、`_request_logs`（`archive_request_logs`）、
+  `_request_logs_bodies`（`drop_old_request_logs_bodies_partitions`）、
+  `dashboard_access_events`、`session_module_executions`（各有 `archive_*`）。
+- ⇒ ⇒ ★★★★ **通用式：「缺失 / 无界」这类结论必须先列全可能存在的位置** ——
+  本节若停在「grep 不到 DELETE 就是无界」，就会把 5 个**有留存**的族写成无界，
+  而这类错误会**直接把属主带向错误的清理动作**（删掉正在被归档的数据）。
+- ⚠ **穷举的边界**：只穷举了 **DB 侧 `public` 函数** ＋ **Go 侧 `DELETE`/`DROP` 字面量**；
+  若某条留存走的是**别的名字**（比如运维脚本、外部任务、pg_cron 里的裸 SQL），
+  本节**看不见** ⇒ 登记册的 `NONE` 是「**本仓 + 本库可见面**里没有」，不是「宇宙里没有」。
+- ★ 另一个常见误判源：**lite 路径不作用于 PG** ——
+  `bg/lite_retention_worker.go` 与 `retention_session_bodies_days` 是 SQLite 侧配置，
+  **不得**据此判 PG 表的留存状态。
+
+#### §143.46.4 ★★★ 量化决策表（口径与 841 逐字一致：过期 ⇔ `months_old >= N`）
+
+- 252（库总 31 GB）：
+
+| 保留月数 | 可回收字节 | 折合 | 备注 |
+|---|---|---|---|
+| 1 个月 | **5,213,446,144** | **4,971.9 MB** | 全部来自 9 月及更早 |
+| 2 个月 | **1,630,208** | 1.6 MB | 9 月被保留 ⇒ 几乎归零 |
+| 3 个月 | **434,176** | 424 KB | 同上 |
+
+- 211：保留 1 个月仅 **2,457,600 B（2.34 MB）** ⇒ ★ **该杠杆对 211 无意义**
+  ⇒ ⇒ **同一个「配 `retain_months`」的动作，在两实例上的收益差 3 个数量级** ⇒
+  ⇒ **不能当成一个统一动作下发**。
+- 252 上按族拆（保留 1 个月口径，MB）：
+
+| 族 | 可回收 | 机制 | 结论 |
+|---|---|---|---|
+| `session_turns` | 2,735.3 | NONE | ★ 无界 |
+| `usage_ledger` | 741.6 | NONE | ★ 无界 |
+| `session_turn_details` | 603.1 | NONE | ★ 无界 |
+| `request_wal` | 192.6 | ARCHIVE | 已被归档机制覆盖 |
+| `candidate_failure_logs` | 147.7 | STATE_TABLE_TTL | 路径 A 覆盖 |
+| `routing_decision_log` | 137.1 | STATE_TABLE_TTL | 路径 A 覆盖 |
+| `supplier_errors` | 113.7 | STATE_TABLE_TTL | 路径 A 覆盖 |
+| `sessions` | 90.7 | NONE | ★ 无界 |
+| `credential_model_index` | 84.3 | STATE_TABLE_TTL | 路径 A 覆盖 |
+| `session_memora` | 52.5 | NONE | ★ 无界 |
+
+- ★★ **前 3 个无界族占 252 可回收量的 82%** ⇒ ⇒ **属主的决策实际上只需要回答一件事：
+  「9 月的会话原始数据（turns / details / usage_ledger）还要不要留」**。
+- ★★ **`session_bodies` 在 252 上 total = 4,644.8 MB 但 keep1 只有 17.6 MB** ——
+  因为它的**当月分区才是大头**（10 月仍在长）⇒ 这正是
+  §143.45 那条纪律的另一个实例：**钉「可回收量」而不是「族总量」**。
+
+#### §143.46.5 ★★★ 量具坑（本轮自己踩了两次，方向很危险）
+
+- ★★★ **坑①：`timestamp - date` 得到的是「以天计」的 interval** ⇒
+  `EXTRACT(month FROM (ts - d))` **恒为 0** ⇒ 「几个月前」全算成 0。
+  ⇒ ★★ 在「算过期」的方向上，这会把**一切**判成过期 ⇒ **数字会骗人且骗得很安全**
+  （看起来「有很多可回收」，实际口径是坏的）。
+  ⇒ 正确做法：**月序号差**（`year*12 + month` 之差）。
+  ⇒ 841 自己用的是 `date - interval 'N months'`（**对的**），只有测量脚本踩了这个坑。
+- ★★★ **坑②：过期方向** ⇒ 过期 ⇔ `months_old >= N`；写成 `< N` 会得到
+  「**保留越多回收越多**」的反向数字。
+- ⇒ ⇒ ★★★★ **通用式：「算过期」的判据必须用一组「已知答案的语料」验一遍** ——
+  同一个语义在**三个地方**各写了一遍（841 的 SQL / 判定脚本 / Go 决策表），
+  ⇒ 本节为此专门加了一道门（`TestSection14346ExpirySemanticsAlignAcrossThreePlaces`），
+  用 14 个月 × 5 档 `retain` 的笛卡尔积**逐字对拍** 841 的公式。
+- ★ **841 自己的注释里就记着同族的致命 bug**（`right(relname,6)` 会把 `2026_07` 取成 `026_07`
+  ⇒ 一切过期）⇒ ⇒ **同族缺陷在同一文件里留过疤 ⇒ 新写同族判据必须先读那段注释**。
+
+#### §143.46.6 ★★ 9 月族间不对称（**登记为待查，本节不下结论**）
+
+- 252 的 9 月分区里，`session_turns` / `session_turn_details` / `sessions` 的最小 ts
+  **完全相同**（`2026-09-06 11:03:50.985994+08`）⇒ 像是**一起被回填**的；
+  而 `session_bodies_2026_09` 只有 **3,749 行**，ts 全部落在
+  `2026-10-01 00:00~07:59` ⇒ 这是 **UTC 日切**的边界行（`partition_date` 按 UTC 日切）。
+- ⇒ 另一个锚点：v2 会话族的整体起点 = **`2026-10-01 08:00:34.096036+08`**。
+- ⇒ ⇒ ★ **本节不下结论**（「9 月 bodies 未回填」只是一个**形态观察**，可能是
+  「回填脚本本来就不搬 bodies」，也可能是「搬了但 bodies 当时还没有数据」）。
+  ⇒ 登记为**下一轮的专项排查项**（可能涉及历史数据缺失，但**证据不足**）。
+- ⚠ **不要把它当成「已确认的数据丢失」**：§143.24 已经吃过一次教训
+  （「08 月数据丢失」是假命题 —— 那些月本来就是空分区）。
+
+#### §143.46.7 ★★ 仓内落地（**全部零生产影响**）
+
+| 产物 | 作用 |
+|---|---|
+| `scripts/audit/verify_monthly_partition_retention.sql` | **只读**判定脚本（8 段：机制三件套 / 策略表 / 审计表 / 会被列为过期的分区 / 族体积 / 逐分区清单+`months_old` / 按 N 量化 / 按族量化）⇒ 两实例各跑一遍即可复现 |
+| `scripts/audit/monthly_partition_retention.tsv` | **登记册 52 行 / 13 列**（事实层）：`instance / scope / family / n_month_parts / total_bytes / reclaim_keep{1,2,3} / policy_registered / ttl_declared_days / mechanism / verdict / note` ⇒ 由脚本实跑输出解析生成，**刻意不手抄** |
+| `admin/monthly_retention_verdict.go` | **纯决策表**（零 IO）：`ClassifyMonthlyRetention` / `EffectiveRetentionDays` / `IsMonthlyPartitionExpired` / `MonthlyMonthDistance` ⇒ 「哪些族该被 DROP」不再只写在散文里 |
+| `admin/section_14346_monthly_retention_test.go` | 门 4 条：决策表自测（含「当月/未来月永不过期」这条**承重性质**）/ 登记册**逐行重算** + 可回收量钉 + 中心结论集合 / 机制不许被拆 / **三处口径对齐** |
+| `scripts/mutate-14346-monthly-retention-gate.py` | 变异 M1~M10（决策表 3 / 口径对齐 4 / 登记册 1 / 机制 2）⇒ 证明门有牙 |
+
+- ★★★ **登记册 = 事实层、决策表 = 结论层**：门**逐行重算**登记册的 `verdict`
+  ⇒ 登记册**不可能自说自话**（承 §143.43）。
+- ★★ **门不钉「策略表必须为空」** —— 那是一根**不可翻转**的钉（属主一旦配了策略就红，
+  下一个会话只会去删门）。真正该守的是「机制不许被拆」＋「口径不许漂」。
+
+#### §143.46.8 ⚠ 本节诚实边界
+
+- ⚠ **对生产的写入 = 0**：本节只做了两实例的**只读**普查；§143.44 的两项代码改动
+  （选项 A 种子签名跳过、`usage_facts` TTL=365 + 按日 DROP）**仍未部署**。
+- ⚠ **登记册是快照**：它是 **2026-10-21 05:1x +08** 的生产事实 ⇒
+  ★ 任何对月度分区的生产写入/回收之后都必须回来刷新它，否则门钉住的是一个已经不存在的世界，
+  而**门自己不会知道**（静态门的固有边界，已写进登记册表头）。
+- ⚠ **「无界」是穷举可见面内的结论**（DB 侧 `public` 函数 + Go 侧 `DELETE`/`DROP` 字面量），
+  不是绝对断言（见 §143.46.3 的边界说明）。
+- ⚠ **保留月数是属主的语义决策**（审计/账期窗口），本节**不代拍板**，只给量化表。
+- ⚠ **9 月 bodies 的不对称未定论**（§143.46.6）。
+
+#### §143.46.9 ⚠ 待属主拍板（本节唯一的「要动手」入口）
+
+- ★★★★ **是否给 841 的策略表配 `retain_months`**（**生产写**，未授权）：
+  252 保留 1 个月 ⇒ 回收 **4,971.9 MB**；保留 2 个月 ⇒ 仅 **1.6 MB**；
+  211 保留 1 个月 ⇒ 仅 **2.34 MB**。
+  ⇒ 实质是「**要不要保留 9 月的会话原始数据**」⇒ 属主决策，本节不代劳。
+  ⇒ 形态（`INSERT` 一行即可，未执行）：
+  `INSERT INTO public.llm_gateway_partition_retention(family, retain_months, enabled, note) VALUES (...)`
+  ⇒ ★ 841 的语义是「保留 N 个月（含当月）」⇒ `retain_months=1` ⇒ **只保留当月**。
+- ⚠ **不建议用本节的数字直接推「两实例统一动作」**：211 的同口径收益只有 2.34 MB。

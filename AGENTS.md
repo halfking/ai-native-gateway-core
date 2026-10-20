@@ -5685,6 +5685,46 @@ To codeup.aliyun.com:kaixuan/official-deploy/llm-gateway-go.git
 > ⇒ ⇒ §143.44 的两项代码改动（选项 A 种子签名跳过、`usage_facts` TTL=365 + 按日 DROP）**仍未部署**。
 > ⇒ 完整记录见 runbook `§143.45`（含订正横幅二十三）。
 >
+> **2026-10-21 §143.46 轮（本会话，续 §143.45）**：★★ **月度分区留存的「机制空转」** ＋
+> **会话原始数据族在 PG 路径上无任何留存**（两实例**只读**普查 + 量化决策表；**对生产的写入 = 0**）
+> ⇒ ★★★★ **841 的月度 DROP 机制「四件套都在」，但策略表两实例都是 0 行**、
+> 审计表 `llm_gateway_partition_drop_log` **也是 0 行** ⇒ **从未删过任何月度分区**；
+> 而 154 日志却是 `monthly partition retention sweep dropped=0 partitions=[]`
+> ⇒ ⇒ **sweep 每轮都在跑、每轮都空转** ⇒ ★★ **危险形态：只看 `dropped=0` 会判「机制坏了」**
+> ⇒ 而真相是「机制没坏，**它没有策略**」⇒ ⇒ **判别动作：机制型设施至少要三个读数**
+> （机制件在不在 / **输入**有没有 / **输出**有没有）⇒ **②③ 各自的 0 含义不同，必须分开登记**。
+> ⇒ ★★★★ **穷举后救回 5 族误判**（`request_wal` / `_request_logs` / `_request_logs_bodies` /
+> `dashboard_access_events` / `session_module_executions` 各自都有 `archive_*` 或分区 `DROP`）
+> ⇒ ⇒ **「缺失 / 无界」类结论必须先列全可能存在的位置**（DB 侧 `public` 函数 ＋ Go 侧
+> `DELETE`/`DROP` 字面量 ＋ 运维脚本）⇒ ★★ **这类错误会把属主带向错误的清理动作**。
+> ⇒ ★★★★ **会话族在 PG 路径上无留存**：`session_turns` / `session_turn_details` / `sessions` /
+> `session_censors` / `session_memora` / `session_bodies` / `session_tools` /
+> `auto_route_selections` / `usage_ledger` / `credit_ledger` / `tool_usage_stats`
+> ⇒ 252 上 `session_turns_2026_09` 单分区 **2.67 GB**。
+> ⇒ ★★★★ **杠杆只在 252**（口径与 841 逐字一致：过期 ⇔ `months_old >= N`）：
+> 保留 1 个月可回收 **5,213,446,144 B（4,971.9 MB）**、保留 2 个月只剩 **1.6 MB**、
+> 保留 3 个月只剩 **424 KB** ⇒ 实质是「**要不要保留 9 月会话原始数据**」的语义决策；
+> **211 同口径仅 2.34 MB** ⇒ **不能当成统一动作下发** ⇒ 前 3 个无界族占 252 可回收量的 **82%**。
+> ⇒ ★★★ **量具坑（本轮自踩两次）**：`timestamp - date` 得到**以天计**的 interval ⇒
+> `EXTRACT(month)` **恒 0** ⇒ 在「算过期」方向上**把一切判成过期**（数字看着很干净、实际口径是坏的）
+> ⇒ **跨月差必须用月序号差**（`year*12+month`）⇒ 过期方向必须是 `>= N`（写成 `< N` ⇒ 「保留越多回收越多」）
+> ⇒ ⇒ ★★★★ **「算过期」的判据必须用「已知答案的语料」验一遍**：本轮同一语义写了**三遍**
+> （841 SQL / 判定脚本 / Go 决策表）⇒ 专门加了一道门做**逐字对拍**（14 月 × 5 档 `retain`）。
+> ⇒ ★★★ **落地**：`scripts/audit/verify_monthly_partition_retention.sql`（**只读**判定脚本）、
+> `scripts/audit/monthly_partition_retention.tsv`（**登记册 52 行**，由实跑输出解析生成、**不手抄**）、
+> `admin/monthly_retention_verdict.go`（**纯决策表**，零 IO）、
+> `admin/section_14346_monthly_retention_test.go`（门 4 条，含**逐行重算**与「当月/未来月永不过期」承重性质）、
+> `scripts/mutate-14346-monthly-retention-gate.py`（变异 M1~M10）。
+> ⇒ ★★ **不钉「策略表必须为空」**（不可翻转的钉 ⇒ 属主一配就红 ⇒ 下个会话只会删门）
+> ⇒ 该守的是「机制不许被拆」＋「口径不许漂」（承 §143.45 的「钉不变量、别钉快照」）。
+> ⇒ ⚠ **诚实边界**：① **9 月 `session_bodies` 未回填**（3,749 行边界行 vs turns/details/sessions
+> 的 9 月 min ts 完全相同）**只是形态观察，本节不下结论**（可能是回填脚本本就不搬 bodies）
+> ⇒ 登记为下一轮专项；② 登记册是 **2026-10-21 的快照** ⇒ 任何生产写入后必须回来刷新；
+> ③ **「无界」是穷举可见面内的结论**，不是绝对断言。
+> ⇒ ⚠ **待属主拍板（本节唯一的「要动手」入口，生产写未授权）**：是否给 841 的策略表配
+> `retain_months`（252 保留 1 个月 ⇒ 回收 4,971.9 MB；211 ⇒ 仅 2.34 MB）。
+> ⇒ 完整记录见 runbook `§143.46`（.0~.9）。
+
 > **2026-10-21 R82 轮（本会话）**：★★★★ **登记册里「9 条本轮未复现」不是被修好了** —— 被两个**互斥**机制抵消 ＋ 查出两条新机制 ＋ **给属主决策 E3 装了一颗硬约束**
 > ⇒ ★★ **官方门禁第 3 次独立运行**（干净 worktree + `KEEP_GATE_DB=1`）：`applied=279 failed=17`、**17 条全部已登记 / 0 条未登记**、`exit=0 PASS=181 SKIP=8 FAIL=0` ⇒ 与 R81 读数**完全一致** ⇒ **可复现**。
 > ⇒ ★★ **9 条「未复现」（562/610/680/696/700/710/733/808/860）一个都没被修好**，而是被两个互斥机制抵消：
