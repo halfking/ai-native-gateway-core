@@ -178,9 +178,16 @@ func TestCompressedCountRealDBCompletesWithinSubBudget(t *testing.T) {
 	}
 
 	// 独立重算：不经 handler 的字面量，直接打物理表。
+	//
+	// ★ R68 改瞄（2026-10-21）：这里原来查 v1 母表 `_request_logs` ⇒ 890 之后
+	// 必然 42P01（relation does not exist）。而**被测 SQL 本身**在 890 那轮
+	// 已经改读会话族母表 `session_turns`（见上面 TestCompressedCountReadsParentNotCanonicalView
+	// 的判据：「必须读 session_turns 母表」）。
+	// ⇒ 独立重算必须打**同一张物理表**，否则就是「拿 v1 的数字对会话族的查询」
+	//   —— 两边口径不同源，比对本身没有意义。
 	var want int64
 	if err := pool.QueryRow(context.Background(), `
-		SELECT count(*) FROM _request_logs
+		SELECT count(*) FROM session_turns
 		 WHERE ts >= (now() - interval '30 days') AND ts < now()
 		   AND compression_strategy IS NOT NULL AND compression_strategy <> ''
 	`).Scan(&want); err != nil {

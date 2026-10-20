@@ -54,7 +54,7 @@ func TestFetchRequestBodies_HotOnly_PassesInUnderOneSecond(t *testing.T) {
 
 	ctx := context.Background()
 	requestID := "test-fetch-bodies-hot-" + time.Now().Format("20060102-150405.000000")
-	insertTestRequestLogWithBodies(t, pool, requestID)
+	insertSessionTurnWithBodies(t, pool, requestID)
 	// R65 批判复审：t.Cleanup 晚于 defer pool.Close 执行，cleanup 打在已关池上
 	// 静默漏行（每轮全量漏 7 行实锤）——defer 注册晚于 Close，LIFO 先清后关。
 	defer cleanupTestRequestLog(t, pool, requestID)
@@ -79,10 +79,14 @@ func TestFetchRequestBodies_HotOnly_PassesInUnderOneSecond(t *testing.T) {
 }
 
 // TestFetchRequestBodies_HotMiss_FallsBackToBodiesView verifies that when
-// hot has no row for a given request_id, the helper still tries the bodies
-// view. We can only assert the fallback is *invoked* (no columnar in the
-// dev DB test environment if TTL hasn't promoted anything), so we
-// simulate by inserting directly into _request_logs_bodies only.
+// the hot tier has no row for a given request_id, the helper still reaches the
+// parent tier.
+//
+// ★ R68 改瞄（2026-10-21）：旧版只能「断言第二条腿被调用过」——因为当时 v1 的
+// bodies 父表是 **columnar** 分区，dev 库里有没有被 TTL 晋升过是环境状态
+// ⇒ 断言写成「要么成功、要么 ErrNoRows」⇒ **两���都绿** ⇒ 这道门其实没牙。
+// 会话族的 bodies 父表当月分区实测是 **heap** ⇒ 父表腿**必然可达**
+// ⇒ 这里可以**确定性地**断言「父表腿的行被取到」。
 func TestFetchRequestBodies_HotMiss_FallsBackToBodiesView(t *testing.T) {
 	pool := setupTestDB(t)
 	defer pool.Close()
@@ -90,29 +94,31 @@ func TestFetchRequestBodies_HotMiss_FallsBackToBodiesView(t *testing.T) {
 	ctx := context.Background()
 	requestID := "test-fetch-bodies-cold-" + time.Now().Format("20060102-150405.000000")
 
-	// Insert metadata + body in the partitioned table only. _request_logs_hot
-	// and _request_logs_bodies_hot will not have this request_id, so the
-	// helper must fall back to the bodies view.
+	// 只插父表腿（session_bodies）；session_bodies_hot 不会有这个 request_id
+	// ⇒ 命中只可能来自父表腿。
 	require.NoError(t, insertBodyIntoPartitionedOnly(t, pool, requestID))
 	// R65 同形修正（R41 R-1 漏网处）：t.Cleanup 晚于 defer pool.Close 执行，
 	// 清理打在已关池上静默漏行——defer 注册晚于 Close，LIFO 保证先清后关。
 	defer cleanupColdBody(t, pool, requestID)
 
+	// 前提：hot 腿确实没有这一行 ⇒ 父表腿可达性没被证伪
+	var hotRows int
+	require.NoError(t, pool.QueryRow(ctx, `
+		SELECT count(*) FROM session_bodies_hot WHERE request_id = $1
+	`, requestID).Scan(&hotRows))
+	require.Equal(t, 0, hotRows, "前提破坏：hot 腿竟然有这一行 ⇒ 没证明父表腿被读到")
+
 	h := &Handler{db: pool}
 	reqBody, respBody, err := h.fetchRequestBodies(ctx, requestID)
 
-	// Depending on whether TTL has promoted this row into a columnar partition
-	// in the dev DB, the fallback can succeed or return ErrNoRows. We only
-	// require that the helper attempts the second query without panicking.
-	if err != nil {
-		assert.ErrorIs(t, err, sql.ErrNoRows,
-			"hot-miss fallback should report ErrNoRows when bodies view has no row either (got %v)", err)
-		assert.Nil(t, reqBody)
-		assert.Nil(t, respBody)
-		return
-	}
-	// If the bodies view does contain the row, verify content.
-	assert.NotNil(t, reqBody, "cold path should still surface body when present")
+	require.NoError(t, err, "hot miss 时必须从父表腿取到正文")
+	require.NotNil(t, reqBody, "父表腿的正文必须被取到")
+	require.NotNil(t, respBody)
+
+	rbJSON, ok := reqBody.(map[string]any)
+	require.True(t, ok, "request_body should decode to a JSON object, got %T", reqBody)
+	assert.Contains(t, rbJSON, "model", "父表腿的 request_body 必须完整")
+	assert.Equal(t, "cold-model", rbJSON["model"])
 }
 
 // TestFetchRequestBodies_TotalMissReturnsErrNoRows verifies the
@@ -163,33 +169,44 @@ func TestFetchRequestBodies_CancelledParentCtx_DoesNotHang(t *testing.T) {
 		"cancelled parent ctx must propagate to cold path immediately (got %s; if this hangs the ctx hierarchy regressed)", elapsed)
 }
 
-// insertBodyIntoPartitionedOnly writes a body row directly into
-// _request_logs_bodies (no hot counterpart). Used to exercise the cold
-// fallback path in fetchRequestBodies.
+// insertBodyIntoPartitionedOnly writes a body row directly into the
+// **parent tier** of the session family's body source (session_bodies), with
+// no hot counterpart (session_bodies_hot). Used to exercise the cold/parent
+// leg in fetchRequestBodies.
+//
+// ★ R68 改瞄（2026-10-21，v1 族退役）：
+//
+//	原来写的是 v1 的 `_request_logs_bodies`（列名 request_body/response_body）。
+//	890 之后 v1 族不存在 ⇒ 该 INSERT 必然 42P01。
+//	⇒ 换成会话族的**父表腿** `session_bodies`（列名 request_delta/response_delta），
+//	  语义完全对应：「hot 没有、只有父表有」。
 func insertBodyIntoPartitionedOnly(t *testing.T, pool *pgxpool.Pool, requestID string) error {
 	t.Helper()
 	ctx := context.Background()
 	_, err := pool.Exec(ctx, `
-		INSERT INTO _request_logs_bodies (request_id, ts, request_body, response_body)
+		INSERT INTO session_bodies
+			(session_id, turn_no, tenant_id, request_id,
+			 request_delta, response_delta)
 		VALUES (
-			$1,
-			now(),
+			$1, 1, 'test-tenant', $2,
 			'{"model":"cold-model","messages":[{"role":"user","content":"cold"}]}'::jsonb,
 			'{"id":"cold-response","content":"cold-result"}'::jsonb
 		)
-	`, requestID)
+	`, sessionIDFor(requestID), requestID)
 	return err
 }
 
 // cleanupColdBody removes the cold-only row inserted by
-// insertBodyIntoPartitionedOnly. Columnar partitions disallow DELETE on
-// promoted rows, so we tolerate failures here and let the test harness
-// emit a warning instead of failing.
+// insertBodyIntoPartitionedOnly.
+//
+// ★ R68 改瞄：原来删的是 v1 的 `_request_logs_bodies`，且注释说「columnar 分区
+// 不支持 DELETE ⇒ 失败只告警」。会话族的父表当月分区实测是 **heap**
+// ⇒ DELETE 支持 ⇒ 这里失败就是**真失败**，应当让它响。
 func cleanupColdBody(t *testing.T, pool *pgxpool.Pool, requestID string) {
 	t.Helper()
 	ctx := context.Background()
-	if _, err := pool.Exec(ctx, `DELETE FROM _request_logs_bodies WHERE request_id = $1`, requestID); err != nil {
-		t.Logf("cleanupColdBody: best-effort delete failed (columnar partition may be read-only): %v", err)
+	if _, err := pool.Exec(ctx, `DELETE FROM session_bodies WHERE request_id = $1`, requestID); err != nil {
+		t.Logf("cleanupColdBody: delete failed: %v", err)
 	}
 }
 
@@ -207,7 +224,7 @@ func TestBodyFetchCache_HitUnderOneMillisecond(t *testing.T) {
 
 	ctx := context.Background()
 	requestID := "test-cache-hit-" + time.Now().Format("20060102-150405.000000")
-	insertTestRequestLogWithBodies(t, pool, requestID)
+	insertSessionTurnWithBodies(t, pool, requestID)
 	// R65 批判复审：t.Cleanup 晚于 defer pool.Close 执行，cleanup 打在已关池上
 	// 静默漏行（每轮全量漏 7 行实锤）——defer 注册晚于 Close，LIFO 先清后关。
 	defer cleanupTestRequestLog(t, pool, requestID)
@@ -246,7 +263,7 @@ func TestBodyFetchCache_TTLExpires(t *testing.T) {
 
 	ctx := context.Background()
 	requestID := "test-cache-ttl-" + time.Now().Format("20060102-150405.000000")
-	insertTestRequestLogWithBodies(t, pool, requestID)
+	insertSessionTurnWithBodies(t, pool, requestID)
 	// R65 批判复审：t.Cleanup 晚于 defer pool.Close 执行，cleanup 打在已关池上
 	// 静默漏行（每轮全量漏 7 行实锤）——defer 注册晚于 Close，LIFO 先清后关。
 	defer cleanupTestRequestLog(t, pool, requestID)
