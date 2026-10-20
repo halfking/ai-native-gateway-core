@@ -268,8 +268,8 @@ func (r *MaterializedViewRefresher) Start() {
 func (r *MaterializedViewRefresher) Stop() {
 	if r.cancel != nil {
 		r.cancel()
+		<-r.done
 	}
-	<-r.done
 	slog.Info("materialized_view_refresher stopped")
 }
 

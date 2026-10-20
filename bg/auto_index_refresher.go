@@ -168,8 +168,8 @@ func (r *AutoIndexRefresher) Start(ctx context.Context) {
 func (r *AutoIndexRefresher) Stop() {
 	if r.cancel != nil {
 		r.cancel()
+		<-r.done
 	}
-	<-r.done
 }
 
 // run is the periodic refresh loop.

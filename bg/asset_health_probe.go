@@ -17,6 +17,7 @@ import (
 	"context"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/apihub"
@@ -31,6 +32,10 @@ type AssetHealthProbe struct {
 	stop           chan struct{}
 	done           chan struct{}
 	stopOnce       sync.Once
+	// started records that Start() launched the run goroutine. Stop() must
+	// not wait on `done` when it was never started — `done` is closed by
+	// run() and would never be closed at all (2026-10-21 R71).
+	started atomic.Bool
 }
 
 // NewAssetHealthProbe constructs the probe with defaults: stale=6h, tick=1h.
@@ -60,6 +65,10 @@ func (p *AssetHealthProbe) WithTick(d time.Duration) *AssetHealthProbe {
 }
 
 func (p *AssetHealthProbe) Start(ctx context.Context) {
+	// 2026-10-21 (R71): mark the worker as running before the goroutine
+	// starts. Stop() waits on p.done, which is closed by run() — so a probe
+	// that was constructed but never started must not be waited on.
+	p.started.Store(true)
 	Go("asset_health_probe.run", func() { p.run(ctx) })
 	slog.Info("asset health probe started",
 		"stale_threshold", p.staleThreshold.String(),
@@ -68,6 +77,10 @@ func (p *AssetHealthProbe) Start(ctx context.Context) {
 
 func (p *AssetHealthProbe) Stop() {
 	p.stopOnce.Do(func() { close(p.stop) })
+	if !p.started.Load() {
+		// Never started: run() never launched, so p.done is never closed.
+		return
+	}
 	<-p.done
 }
 

@@ -18,39 +18,45 @@ TARGET = REPO / "autoroute" / "index.go"
 TEST = "./autoroute/"
 
 MUTATIONS = [
-    # (名称, 旧文本, 新文本, 期望: red=该腿必须红, green=必须仍绿)
+    # (名称, 旧文本, 新文本, 期望: red=该腿必须红, green=必须仍绿, 期望红的那条腿)
+    #
+    # ★★ 2026-10-21（批判式审计轮）：补上第 5 列「**期望红的那条腿**」。
+    #   原来只判「有断言红了」⇒ **红了 ≠ 验到了你想验的那条**：若上游把某条腿
+    #   改名/删除，剩余腿照样能红 ⇒ 脚本照样报「验证通过」⇒ **那条腿从未被验过**。
+    #   ⇒ 现在每条变异都**指名**它必须红在哪条腿上；不在这条腿上 ⇒ 判失败。
+    #   （腿名是 2026-10-21 **实跑读数**得来的，不是推的。）
     ("M1-DISTINCT-ON(性能腿)",
      "SELECT credential_id, raw_model, MAX(bucket) AS bucket",
      "SELECT DISTINCT ON (credential_id, raw_model) credential_id, raw_model, MAX(bucket) AS bucket",
-     "red"),
+     "red", "TestAutoRouteRefreshIndexRejectsDISTINCTON"),
     ("M2-去掉分组(语义腿)",
      "    GROUP BY credential_id, raw_model\n)",
      ")",
-     "red"),
+     "red", "TestAutoRouteRefreshIndexIsPerPairMax"),
     ("M3-换第三种形态(准入闸)",
      "JOIN latest_bucket",
      "JOIN lb_alias",
-     "red"),
+     "red", "TestAutoRouteRefreshIndexUsesKnownShape"),
     ("M4-把过滤推进去重段(位置腿)",
      "    FROM credential_model_index_with_current_month\n    GROUP BY credential_id, raw_model\n)",
      "    FROM credential_model_index_with_current_month\n    JOIN credentials cr2 ON cr2.id = credential_id\n    GROUP BY credential_id, raw_model\n)",
-     "red"),
+     "red", "TestAutoRouteRefreshIndexDedupStaysBeforeFilters"),
     ("M5-事实源换成冷父表(事实源腿)",
      "FROM credential_model_index_with_current_month",
      "FROM credential_model_index ",
-     "red"),
+     "red", "TestAutoRouteRefreshIndexReadsUnionView"),
     ("M6-去掉 ORDER BY(收尾腿)",
      "ORDER BY cmi.canonical_id, cmi.score_smart DESC",
      "",
-     "red"),
+     "red", "TestAutoRouteRefreshIndexKeepsOrderAndFilters"),
     ("M7-丢掉可用性过滤(收尾腿)",
      "  AND cmb.available = TRUE\n",
      "",
-     "red"),
+     "red", "TestAutoRouteRefreshIndexKeepsOrderAndFilters"),
     ("C0-只加注释(对照, 必须仍绿)",
      "const refreshIndexSQL = `\n",
      "const refreshIndexSQL = `\n-- 说明：这里刻意没用 DISTINCT ON，原因是 252 真库实测它慢 2~3 倍\n",
-     "green"),
+     "green", ""),
 ]
 
 
@@ -86,6 +92,20 @@ def compile_fails(out):
             or "declared and not used" in l or "imported and not used" in l]
 
 
+def no_tests_ran(out):
+    """★ harness 骗人的形态之一：**测试根本没跑** ⇒ 判**作废**（不是绿）。
+
+    ⚠ 2026-10-21（批判式审计轮）补上：本题脚本原先**没有**这道闸，而
+      `scripts/mutate-s4-recorded-cost-skip-gate.py` 记录过它当年正是**被这个坑
+      咬过**（旧的 `-run` 过滤漏掉一条腿 ⇒ `go test` 输出「no tests to run」且
+      退出码 0 ⇒ 脚本把它读成「全绿」⇒ **假绿**）。
+      ⇒ 一旦上游把某个测试函数改名 ⇒ `-run` 失配 ⇒ **全部变异会「全绿」** ⇒
+        脚本会报「验证通过」而实际上**一条腿都没跑**。
+      ⇒ 这道闸把「没跑」与「跑了且全绿」**区分开**：前者一律判**作废**。
+    """
+    return ("no tests to run" in out) or ("no test files" in out)
+
+
 def main():
     backup = pathlib.Path(tempfile.mkdtemp()) / "index.go.orig"
     shutil.copy2(TARGET, backup)
@@ -93,13 +113,18 @@ def main():
 
     failures = []
     try:
-        for name, old, new, expect in MUTATIONS:
+        for name, old, new, expect, expect_leg in MUTATIONS:
             if old not in orig:
                 print(f"!! {name}: 锚点文本在源文件里找不到，跳过")
                 failures.append(name)
                 continue
             TARGET.write_text(orig.replace(old, new))
             green, out = run_gate()
+            # ★ 作废闸：测试根本没跑 ⇒ 这条读数**不算绿**（见 no_tests_ran 的注释）。
+            if no_tests_ran(out):
+                print(f"!!   {name}: 输出含「no tests to run」⇒ **测试根本没跑** ⇒ 本条作废（不是绿）")
+                failures.append(name)
+                continue
             if expect == "red":
                 if green:
                     print(f"FAIL {name}: 变异后判据仍然全绿 ⇒ 这条腿抓不住该缺陷")
@@ -108,7 +133,14 @@ def main():
                     a = assertion_fails(out)
                     c = compile_fails(out)
                     if a:
-                        print(f"OK   {name}: 判据变红（**断言红**）: {'; '.join(a)}")
+                        # ★ 钉住「期望红的那条腿」：红了 ≠ 验到了你想验的那条。
+                        hit = [l for l in a if expect_leg and expect_leg in l]
+                        if expect_leg and not hit:
+                            print(f"!!   {name}: 判据变红了，但**没红在期望的腿**"
+                                  f"（期望 {expect_leg}；实红 {'; '.join(a)}）⇒ 变异验到的不是这条")
+                            failures.append(name)
+                        else:
+                            print(f"OK   {name}: 判据变红（**断言红**，且红在期望的腿 {expect_leg}）: {'; '.join(a)}")
                     elif c:
                         # ⚠ 只有编译级失败 ⇒ 门抓到了改动，但**没证明目标腿会触发**。
                         print(f"!!   {name}: 只有**编译级失败**（{'; '.join(c)}）"
@@ -129,7 +161,10 @@ def main():
                           f"{failing_lines(out) or '(未解析出腿名)'}；"
                           f"重跑一次判定是真假阳性还是不稳定")
                     green2, out2 = run_gate()
-                    if green2:
+                    if no_tests_ran(out2):
+                        print(f"!!   {name}: 重跑输出含「no tests to run」⇒ 作废")
+                        failures.append(name)
+                    elif green2:
                         print(f"OK   {name}: 重跑后全绿 ⇒ 上一轮是**不稳定**（不是门的假阳性）")
                     else:
                         print(f"FAIL {name}: 重跑仍然变红 ⇒ 门把注释当成了违规 / 有假阳性，"
