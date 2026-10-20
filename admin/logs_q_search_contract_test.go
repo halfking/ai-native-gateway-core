@@ -16,7 +16,12 @@ package admin
 //
 // 补上这一半之后，事实是：
 //
-//   admin/logs.go 的 `?q=` 谓词是 `rl.search_text ILIKE '%…%'`；
+//   admin/logs.go 的 `?q=` 谓词是 `rl.search_text ILIKE '%…%'`
+//   （★ 2026-10-20 G-5 轮起，谓词文本由 admin/logs.go 搬进
+//     admin/logs_search_predicate.go 的 buildSessionSearchPredicate ——
+//     因为要给它加一条全文检索腿，且那条腿必须与迁移 887 的索引表达式
+//     **逐字同形**；本门的断言已同步改成「logs.go 调 builder」+
+//     「builder 含 rl.search_text ILIKE」两段）；
 //   而 search_text 由 domains/hooks/observability/telemetry/client.go 的
 //   searchText() 拼成，成分只有**元数据**：
 //     ClientModel / OutboundModel / ClientProfile / RequestMode /
@@ -195,12 +200,35 @@ func TestLogsQPredicate_TargetsSearchText(t *testing.T) {
 			`前端 RequestLogsView 仍会发 q=，那会变成"发了但被忽略"的静默失效`)
 	}
 
-	src, err := os.ReadFile(filepath.Join(root, "admin", "logs.go"))
+	// ① 后端：`?q=` 必须仍然落在 `rl.search_text` 上。
+	//
+	// ★ 2026-10-20（G-5 会话族全文检索轮）本断言的**读法变了**，但**没变松**：
+	//   谓词文本从 admin/logs.go 搬进了 admin/logs_search_predicate.go
+	//   （buildSessionSearchPredicate —— 因为 G-5 要给同一处谓词加一条
+	//   **全文检索腿**（to_tsvector @@ plainto_tsquery），而那条腿的形态
+	//   必须与迁移 887 的索引表达式**逐字同形**，写在 builder 里才有一个
+	//   跨文件契约门可钉）。
+	//   ⇒ 断言改成**两段**：logs.go 必须**调用 builder**，builder 必须
+	//   **含** `rl.search_text ILIKE`。任一段缺失都红 ——
+	//   「builder 里有但 logs.go 没用」= 谓词没接上（静默失效）；
+	//   「logs.go 用了但 builder 里没有 ILIKE」= 谓词目标变了。
+	//   这比原来「logs.go 里有这个字面量」**更严**（原来只查一处，
+	//   现在查的是「接线 + 目标」两件事）。
+	logsSrc, err := os.ReadFile(filepath.Join(root, "admin", "logs.go"))
 	if err != nil {
 		t.Fatalf("read admin/logs.go: %v", err)
 	}
-	if !strings.Contains(string(src), "rl.search_text ILIKE") {
-		t.Errorf(`admin/logs.go 里没有 "rl.search_text ILIKE" ⇒ ?q= 的谓词目标变了；` +
+	if !strings.Contains(string(logsSrc), "buildSessionSearchPredicate") {
+		t.Errorf(`admin/logs.go 里没有引用 buildSessionSearchPredicate ⇒ ?q= 的谓词` +
+			`没有走 builder；G-5 的全文检索腿（与迁移 887 的索引表达式逐字同形的那条）` +
+			`接不上，谓词会退化成只有子串腿`)
+	}
+	builderSrc, err := os.ReadFile(filepath.Join(root, "admin", "logs_search_predicate.go"))
+	if err != nil {
+		t.Fatalf("read admin/logs_search_predicate.go: %v", err)
+	}
+	if !strings.Contains(string(builderSrc), "rl.search_text ILIKE") {
+		t.Errorf(`admin/logs_search_predicate.go 里没有 "rl.search_text ILIKE" ⇒ ?q= 的谓词目标变了；` +
 			`请同步核对 web/src/views/RequestLogsView.vue 的提示文案与 877 的索引前提`)
 	}
 }

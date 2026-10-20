@@ -1192,6 +1192,46 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			// 两条腿 hot ∪ parent UNION ALL（前提：hot ∩ parent 实测无重叠，
 			// 计数型指标不会被数两次）。
 			"884_session_family_v_analytics_views.sql",
+			// 885：给 session_turns **父表与 hot 表**各加 host（网关实例
+			// 身份）+ tags（轮次级标签数组）两列（审计 A5 缺口：全族此前
+			// 无任何主机/实例列，轮次级此前无标签位）。
+			// ★ 两侧必须同形：迁移 707 给 promote_session_turns_hot_to_partition
+			//   加了列集合契约校验（父表与 hot 的 (列名:类型:非空) 集合必须
+			//   全等，否则 promote 当场 RAISE EXCEPTION）⇒ 只加一侧会让
+			//   热表永远排不进月分区。
+			// promote 函数本身不用改：707 的搬行体是「目录派生列清单 +
+			//   RETURNING h.*」⇒ 对称加列自动流经。
+			"885_session_turns_host_tags.sql",
+			// 886：订正 public.session_bodies 的表注释（「使用 columnar 存储
+			// 格式」是**假注释** —— 该族自建表起就是 heap + lz4 TOAST，且因
+			// 唯一约束 / ON CONFLICT / UNION ALL 视图族三重互斥而**不可能**
+			// 是列存；论证见 765:13-21 与 829）。只改 pg_description，
+			// 零锁零 IO；**不改 430 本体**（已 applied + 已记账 + 校验和已登记）。
+			"886_session_bodies_storage_comment.sql",
+			// 887：给会话族的 search_text 建**全文检索**腿 —— 表达式 GIN 索引
+			// `USING gin (to_tsvector('simple', search_text))`。
+			// ★ **不得改用生成列**：promote_session_turns_hot_to_partition 会
+			//   因为 "cannot insert into a generated column" 报错 ⇒ 热表永远
+			//   排不进月分区（887 头部有完整论证）。
+			// ★ 含 CREATE INDEX CONCURRENTLY ⇒ 本文件带 dbinit:no-transaction
+			//   标记（首行），applySQL 据此不加 --single-transaction。
+			// ★ 只给**会话族**建，不给 v1 族（_request_logs）建：顶层 OR 要求
+			//   每条参与扫描的关系两条腿都有索引，而 v1 族 2026-10-20 实测 0 行
+			//   ⇒ 代价为零（前提与复核条件写在 887 头部）。
+			"887_session_turns_search_text_fts.sql",
+			// 888：补会话族的 join 索引缺口 —— session_bodies 父表与 hot 表各
+			// 补一条 (tenant_id, session_id, turn_no DESC, request_id)，
+			// sessions 补一条 (tenant_id, session_id, partition_date DESC)。
+			// ★ PG **不支持** ALTER INDEX … ADD COLUMN ⇒ 只能「建新 + 删旧」
+			//   （先建后删，无空窗）。
+			// ★ 含 CREATE/DROP INDEX CONCURRENTLY ⇒ 带 dbinit:no-transaction。
+			"888_session_family_join_index_gaps.sql",
+			// 889：裁决 session_turns.tools 死列 —— **填充**（不删列：710/816/817/824
+			// 的视图投影 + db/request_logs_view_schema.go 的 sessionFamilyProjection
+			// 都引用它，删列会撞依赖）。只订正 4 条列注释（tools × 2、turn_no × 2），
+			// 零锁零 IO；写路径的填充在 domains/session/v2/turn_writer.go
+			// （turnToolsJSONBExpr，从 session_tools_hot 按 session_id+request_id 聚合）。
+			"889_session_turns_tools_population.sql",
 		},
 	}
 }

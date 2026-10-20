@@ -537,7 +537,20 @@ func (h *Handler) listLogs(w http.ResponseWriter, r *http.Request) {
 		addFilter("rl.identity_hash = $%d", v)
 	}
 	if v := strings.TrimSpace(queryString(r, "q")); v != "" {
-		addFilter("rl.search_text ILIKE $%d", "%"+v+"%")
+		// G-5（2026-10-20 会话族审计）：词形搜索词**并联**一条全文检索腿，
+		// 与迁移 887 的索引表达式 to_tsvector('simple', search_text) **逐字同形**
+		// —— 不同形时 planner 静默不用那条索引（不报错，只是顺序扫描）。
+		//
+		// ★ 子串腿**永远保留**（OR 而不是 AND）：FTS 词元严格窄于子串
+		//   （"eepseek" 是 "deepseekchat" 的子串但不是它的词元）⇒ 用 AND
+		//   会砍掉子串召回，那是「破坏子串检索」。
+		// ★ 不用 addFilter：全文形态要绑**两个**参数（ILIKE 侧绑 '%词%'，
+		//   FTS 侧绑原词 —— plainto_tsquery 自己会切分与加引号），
+		//   而 addFilter 只推进一个 argIdx。
+		clause, qArgs := buildSessionSearchPredicate(v, argIdx)
+		clauses = append(clauses, clause)
+		args = append(args, qArgs...)
+		argIdx += len(qArgs)
 	}
 	if v := strings.TrimSpace(queryString(r, "error_kind")); v != "" {
 		addFilter("rl.error_kind = $%d", v)

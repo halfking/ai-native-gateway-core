@@ -118,6 +118,36 @@ var knownStartupChainConcurrencyViolations = map[string]int{
 	// 计数 5：两条生成器里的字符串字面量 + 校验块 RAISE 文案里的一处提及
 	// （countConcurrently 按剥注释后的正文做子串统计，字符串字面量算正文）。
 	"877_session_turns_search_text_trgm.sql": 5,
+	// 887（2026-10-20 会话族审计 G-5）与 871/877 **同类**：携带
+	// dbinit:no-transaction 标记 ⇒ applySQL 不加 --single-transaction
+	// ⇒ 走非事务通道，能正常应用（不是「跑不起来」的债，是「已复核的豁免」）。
+	//
+	// 它是**表达式 GIN 索引** `USING gin (to_tsvector('simple', search_text))`：
+	// ★ **刻意不用生成列** —— promote_session_turns_hot_to_partition 会报
+	//   「cannot insert into a generated column」⇒ 热表永远排不进月分区；
+	// ★ 走三段式 CONCURRENTLY（877 同款）：逐分区建 → 建父壳（ON ONLY）→ ATTACH。
+	//
+	// ⚠️ 与 877 同样的 5 分钟 applySQL ctx 风险：CONCURRENTLY 被掐断会留下
+	//   **invalid 索引**。⇒ 887 自带 ① 建之前自愈 indisvalid=false 的同名索引、
+	//   ② 建之后校验 indisvalid 并显式报错，让「上次被掐断」变成可自愈 +
+	//   可诊断，而不是静默的半成品索引。
+	//
+	// 计数 5：三条 CREATE INDEX CONCURRENTLY + 一条 DROP INDEX CONCURRENTLY
+	// + 校验块 RAISE 文案里的一处提及（countConcurrently 按剥注释后的正文
+	// 做子串统计，字符串字面量算正文）。
+	"887_session_turns_search_text_fts.sql": 5,
+	// 888（2026-10-20 会话族审计 G-7）同类：携带 dbinit:no-transaction 标记
+	// ⇒ 走非事务通道，能正常应用。
+	//
+	// 它补会话族的 join 索引缺口（session_bodies 父表/hot 表各一条
+	// (tenant_id, session_id, turn_no DESC, request_id)，sessions 一条
+	// (tenant_id, session_id, partition_date DESC)）。
+	// ★ PG 不支持 ALTER INDEX … ADD COLUMN ⇒ 只能「建新 + 删旧」；
+	//   删旧的那两条走 **DROP INDEX CONCURRENTLY**（不能拿强锁堵住活写表）。
+	//
+	// 计数 5：三条 CREATE INDEX CONCURRENTLY + 一条 DROP INDEX CONCURRENTLY
+	// + 形状校验块里的一处提及。
+	"888_session_family_join_index_gaps.sql": 5,
 }
 
 func countConcurrently(t *testing.T, path string) int {
