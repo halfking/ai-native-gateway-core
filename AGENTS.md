@@ -3584,3 +3584,29 @@ To codeup.aliyun.com:kaixuan/official-deploy/llm-gateway-go.git
 - **待属主拍板**：**D1** 要不要把那 5 个文件登记进 `StartupFiles`（**改可部署链** ⇒ 需拍板；
   ★ 先例在仓内、★ 全 `IF NOT EXISTS` ⇒ 幂等）／**D2** domain·root 通道的 7 列怎么办／
   **D3** R59 的 **C1**（结算源族缺省值）。
+
+### 2026-10-21 R60 轮后段：补齐 B11 ⇒ ★★ **C 类真缺陷：fault 列表接口在生产上必然 500**（§十八 §18.10）
+
+> 完整记录：`docs/96小时内修订审计-20261007-1350.md` §18.10~§18.11；
+> 逐条证据：`docs/audit/2026-10-21-R60-新装缺列族.md` §9~§10。
+
+- ★★★ **本段最重要的发现（C 类，生产影响）**：`fault_events.acked_by` / `resolved_by` 是**可空** `text`，
+  而 `fault.Event` 对**时间戳**用 `*time.Time`（NULL 容错）、对**文本**却用 `string`
+  ⇒ ⇒ **同一张表两种 NULL 语义** ⇒ `fault.PgxStore` 的**三个**读方法
+  （`GetEvent` / `GetOpenEventsByRule` / `ListEvents`）扫 NULL ⇒ `cannot scan NULL into *string`。
+  ⇒ **生产实测**：`public.fault_events` **9 行全部为 NULL** + 路由**真的挂着**
+  （`cmd/gateway/main.go:7216` ⇒ `GET /api/admin/faults/events`）⇒ ⇒ **该接口现在就是坏的**。
+  ⇒ **已修**：三处 SELECT 改 `COALESCE`（不改 Go 结构体、不改 API 形状）。
+  ⚠ 顺带：**同表的 UPDATE 臂本来就有这个保护** ⇒ 「INSERT 臂漏了」＝ 同一语义两条路径不一致。
+- ★★ **生产侧台账漂移（新发现）**：`handoff_pending_confirmations` 的外键**在生产上不存在**
+  （只有 PK + CHECK）⇒ 根因：台账记「已应用 517（2026-08-16）」，但生产跑的是 `076a8ebc1` 的**旧字节**；
+  建 FK 的动态 DO 块是 `37099db23`（**2026-10-11**）才加的 ⇒ ⇒ **已记账 ⇒ 永不重跑 ⇒ 缺口永久**
+  ⇒ ⇒ **该表生产 0 行 ⇒ 补约束无数据风险** ⇒ 待属主拍板。
+- **B11 补齐后的失败数**：**75 → 66**（去重名 66 → 57），本轮共修 **9 条**
+  （`fault` 4 ★产品修法 / `tests-integration` 2 / `domains/session/v2` 2 / `domains-hooks-handoff` 1）。
+- ⚠ **两处「不是产品缺陷」的判读（本轮被误判过一次，值得记）**：
+  ① `tests-integration` 的 22P02：`TurnRecord.DigestJSON` 的注释**已写明**
+     「生产侧不会踩到：唯一赋值点永不为 nil」⇒ ⇒ **是测试没满足被记录的前置**；
+  ② `domains-hooks-handoff` 的 23503：FK 目标表是**动态**的（`handoff_logs_hot` 存在就指它），
+     而**产品**写的正是 hot 表并取它的 id ⇒ ⇒ **是测试插错了父表**。
+  ⇒ ⇒ **「红在哪」不等于「谁错了」**：都要回到「产品/被测对象的契约原文」去找依据。
