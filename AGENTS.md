@@ -5097,6 +5097,44 @@ To codeup.aliyun.com:kaixuan/official-deploy/llm-gateway-go.git
 > + `scripts/mutate-14342-reclaim-gate.py`（变异，隔离副本）。
 > ⇒ ★ **本地真库实测（一次性库 `itgate_14342`）**：复刻「0 行 + TOAST 膨胀」形态 ⇒
 > `TRUNCATE` 与 `VACUUM FULL` 都把 1.35 MB 收到 16 KB ⇒ ⇒ **生产配方取 `VACUUM FULL`**。
+
+> **2026-10-21 R80 轮（本会话）**：★★★★ **形态门补 `customer_id` 契约（2 → 3）＋ 两条 PG 机制实测**
+> ⇒ **对生产的写入 = 0**（全程只读 + 一次性库 `itgate_r80_shape`）｜基线 `611fd46e1`：
+> ★ **需求来自并行会话 R77 轮订正**（canonical 视图 118 列、`customer_id`/`request_class`/`due_at` 3/3 在位
+> ⇒ 只差 `customer_id` 没被钉住；★ 同时订正了我「钉 118 列」的建议 ⇒ **绝对数 pin 必然腐烂**
+> ⇒ **本轮口径 = 零语义风险的改瞄**：「视图必须存在且必须投影这几列」⇒ **集合投影，不是列数 pin**）。
+> ⇒ ★★ **改动只动一个测试文件**（`db/db_fresh_install_runtime_shape_test.go`，**零 schema 变更**）：
+> 契约集合提升为具名切片 `canonicalMustProjectColumns`；④ 段判据改成
+> `column_name::text = ANY($1::text[])` ＋ 阈值 = `len(集合)` ⇒ ★ **阈值不再有第二处手写数字**
+> ⇒ 集合与阈值不可能不同步；★ **新增静态 pin 门 `TestCanonicalMustProjectColumnsIsPinned`**
+> （纯静态、不需 DSN ⇒ 不会被 SKIP 读成绿）。
+> ⇒ ★★★ **变异三条全红**（形态层 / 源码层 / 削弱层）：
+> ① **M1**：`ALTER VIEW … RENAME COLUMN customer_id TO customer_id_dropped` ⇒ 形态门红且报契约原文
+> （`只投影了 2/3 个必投影列`），还原 ⇒ PASS；
+> ② **M2**：同删 `canonicalColumnOrderV2` 的 `"customer_id"` ＋ `projectionExprsV2` 的 `"t.customer_id"`
+> （两处必须同删，否则 `init()` 期长度自校验先 panic）⇒ `TestMigration890ProjectionMatchesComposer` 红
+> ⇒ ★★ **源码层已有锁，本轮不需要新加**；
+> ③ **M3**：把 `customer_id` 从契约集合里删掉 ⇒ **静态 pin 门红**（形态门仍绿 = 正是被堵住的那条路）。
+> ⇒ ★★ **第一版 M1 是无效变异**（只改断言 ⇒ 门照样绿）⇒ ★★ **那不是「门没牙」，是「门可被无声削弱」**
+> ⇒ ⇒ **这才是静态 pin 门的由来**。
+> ⇒ ★★★★ **两条此前未被记录的 PG 机制**：
+> ① ★★ **`CREATE OR REPLACE VIEW` 不能删列**（实测 `ERROR:  cannot drop columns from view`）
+> ⇒ ⇒ **视图在既有库上的列集单调不减** ⇒ ⇒ ★★ **从最后一个迁移的 `$proj$` 里删一列，永远不会让视图少这一列
+> —— 它只会让那个迁移失败** ⇒ ⇒ **视图列集的 SSOT = 链上所有视图体的并集**（`448/459/532/575/610/696/700/
+> 710/734/738/740/815/816/817/824/890`）⇒ ⇒ 要真删一列只能 `DROP VIEW` ＋ `CREATE VIEW`（破坏性 ⇒ 属主定）；
+> ② ★★ **ensure 链的守卫只判「族形态」、不判「列形状」**
+> （`if canonicalExists && bodyIsSessionOnly && !bodyHasV1Arm { return nil }`）
+> ⇒ 实测把 Go 渲染器改成 117 列后跑形态门 ⇒ **视图仍是 118 列、门照样 PASS**
+> ⇒ ⇒ ⇒ **canonical 视图一旦装成会话族两臂形态，ensure 链就永远不会重建它**
+> ⇒ ⇒ ⇒ **列形状的收敛 100% 由迁移链负责** ⇒ ★★ **这道门不可省**（是「迁移链有没有把列投影对」的唯一运行时证据）。
+> ⇒ ⇒ ★ **净结论**：「迁移链写错列」在**既有库**上 ⇒ 视图停在旧形状；在**新装库**上 ⇒ 读方直接 42703
+> ⇒ ⇒ **新装路径才是列形状的暴露面**。
+> ⇒ ⚠ **诚实边界**：本轮**没有**重建一次性库（读数来自既有的产品真实形态库）、**没有**实测真·全新安装路径
+> ⇒ 上面「新装路径是暴露面」是**机制推论**；M1 是**改名**不是**删列** ⇒ 它证明「门能发现列不在」，
+> 不证明「门能发现列被删」（后者在既有库上不可达）。
+> ⇒ ★ **并行会话在 `db/` 包的未提交文件本轮一个都没碰**；⚠ `db/db_package_isolation_gate_test.go`
+> 当前有语法错误（`t.Helper.TODO()`）⇒ **共享工作树上 `./db/` 包级 vet 会红**（不是本轮改动）。
+> ⇒ 完整记录见 handoff `§19.20.18` ＋ `docs/audit/2026-10-21-R80-形态门-customer_id契约.md`。
 > **2026-10-21 R76 轮（本会话）—— 批判式审计轮**：**把 R51 续轮自己的结论逐条挑毛病**，
 > 而不是再加功能。⇒ ★ **本轮最大的收获是推翻了我自己的一条判词**：
 > 我据 `pg_stat_statements` 的 `mean_exec_time = 9.17 s / calls = 287` 判「生产上这条检查
