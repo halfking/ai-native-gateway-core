@@ -5,7 +5,7 @@
 // 漂移检测器空转。本次接线：handler emitTelemetry 盖章 entry.SystemFingerprint
 // → persistSystemFingerprint 落列 → 迁移 697 起随 promote 进分区。
 //
-// ★ 2026-10-20（迁移 885，v1 族退役）：本文件**改指**。
+// ★ 2026-10-20（迁移 890，v1 族退役）：本文件**改指**。
 //
 // 被改指的对象：「指纹值被落进 v1 宽表的专用列」这条**落库级**契约。
 // persistSystemFingerprint（写 _request_logs_hot.system_fingerprint）随 v1

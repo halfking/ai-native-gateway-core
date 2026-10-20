@@ -128,16 +128,16 @@ func TestLoadFinalRequestMetricsScopesTenantAndFilters(t *testing.T) {
 	if err != nil || got.SuccessRate != 0.75 || got.TotalTokens != 99 {
 		t.Fatalf("loadFinalRequestMetrics() = (%+v, %v)", got, err)
 	}
-	// ★ 2026-10-20（885 真删轮）：读面断言**反转**。
+	// ★ 2026-10-20（890 真删轮）：读面断言**反转**。
 	//
 	// 原断言钉「读面必须是 `request_logs_with_current_month_without_request_class_due_at`」
 	// —— 那张包装视图**直读 v1 族**（真库实测其定义体第一行就是 `FROM _request_logs_hot`），
 	// 而 v1 族自 2026-10-13 停写后**恒 0 行** ⇒ 本端点此前**恒返回 0**（不报错）；
-	// 885 删掉 v1 族后它会变成 **42P01**。
+	// 890 删掉 v1 族后它会变成 **42P01**。
 	//
 	// ⇒ 读面改成**会话族原生源** db.SessionFamilyTurnsSourceSQL()
 	// （hot ∪ parent + details 特征层 LEFT JOIN）⇒ 断言随之反转：
-	//   · **负向**：不得再出现那两张 885 已 DROP 的包装视图；
+	//   · **负向**：不得再出现那两张 890 已 DROP 的包装视图；
 	//   · **正向**：必须读到会话族的**两条腿**与 details 特征层
 	//     （少一条腿 = 漏读一侧表，是这一族最贵的静默缺陷）。
 	for _, forbidden := range []string{

@@ -75,7 +75,7 @@ var retirementColumnsWithoutReaders = map[string]string{
 	"quality_fix_actions": "只出现在 db/db.go 的 **DDL** 里：`ALTER TABLE _request_logs … SET storage` " +
 		"的列名清单（:2056）与 `ADD COLUMN IF NOT EXISTS quality_fix_actions JSONB`（:2158）。" +
 		"两者都不是 SELECT。⇒ 它的降级不构成任何读方风险。",
-	"client_request_id": "★ 2026-10-20（迁移 885）新增登记：**读方存在，但本门口径看不见它**。\n" +
+	"client_request_id": "★ 2026-10-20（迁移 890）新增登记：**读方存在，但本门口径看不见它**。\n" +
 		"真实读方有两处：① `admin/logs.go:1010` 的 getLog 腿 2 —— " +
 		"`scanDetailRow(\"rl.client_request_id = $1\")`；" +
 		"② `admin/unified_detail.go:205-212` 的第二条查询 —— " +
@@ -87,13 +87,13 @@ var retirementColumnsWithoutReaders = map[string]string{
 		"⚠ **这不是「没有读方」**：读方确实存在，且读的是会话族原生源" +
 		"（`client_request_id` 在会话臂有真值，迁移 874 还给它建了部分索引）。" +
 		"⇒ 退化对它不构成读方风险；登记它是为了把这条**口径盲区**显式记下来。",
-	"credits_rate_multiplier": "★ 2026-10-20（迁移 885）新增登记：**读方存在，但本门口径看不见它**。\n" +
+	"credits_rate_multiplier": "★ 2026-10-20（迁移 890）新增登记：**读方存在，但本门口径看不见它**。\n" +
 		"真实读方：`maas/credits_sql.go:25` —— " +
 		"`COALESCE(` + alias + `.credits_rate_multiplier, 1.0)::float8`。" +
 		"那是一个**表达式片段**（既无 SELECT 也无 FROM，逗号分隔项 < 3 ⇒ " +
 		"既不是读区、也不像投影清单）⇒ 本门口径看不见它 ⇒ 登记。\n" +
 		"⚠ **这不是「没有读方」**。而且它本来就是一个**结构性缺口列**：" +
-		"会话臂上恒为 NULL（迁移 738 建的 v1 侧列，来源是 885 已删的中间包装视图），" +
+		"会话臂上恒为 NULL（迁移 738 建的 v1 侧列，来源是 890 已删的中间包装视图），" +
 		"读方拿到的永远是 COALESCE 的兜底 1.0 ⇒ 退化对它不构成读方风险。",
 	"client_forwarded_for": "只有写方：`telemetry/context_attrs.go:159/190`（写 entry + 写列）、" +
 		"`domains/session/v2/turn_writer.go` 的写列。816/817 把它从 NULL 补位改成有源投影，" +

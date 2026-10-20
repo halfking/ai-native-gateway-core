@@ -1,7 +1,7 @@
 // unified_detail.go — GET /api/admin/request-detail/{request_id}
 // Unified request detail facade: memory → file → 会话族（session_turns）。
 //
-// 2026-10-20（迁移 885，v1 族整体退役）：facade 的第三段（v1 请求日志）
+// 2026-10-20（迁移 890，v1 族整体退役）：facade 的第三段（v1 请求日志）
 // 删除，元数据与正文都从会话族读（db.SessionFamilyTurnsSourceSQL /
 // db.SessionFamilyBodiesSourceSQL）。
 package admin
@@ -178,7 +178,7 @@ func (r *pgBodyReader) loadRequestLogMeta(ctx context.Context, requestID string,
 	// The previous OR query prevented efficient index usage. Now we try request_id first
 	// (primary key lookup), then client_request_id if not found (indexed lookup).
 
-	// 2026-10-20（迁移 885）：v1 族整体退役 ⇒ 原来的「v1 hot 表 → 视图冷扫」
+	// 2026-10-20（迁移 890）：v1 族整体退役 ⇒ 原来的「v1 hot 表 → 视图冷扫」
 	// 四腿退化为两腿：两条都读会话族原生源
 	// （db.SessionFamilyTurnsSourceSQL，hot ∪ 母表 + 734 details 层）。
 	//
@@ -261,7 +261,7 @@ func (r *pgBodyReader) loadOutboundBody(ctx context.Context, requestID string) (
 	// canonical request ID was resolved through a tenant-scoped metadata query;
 	// use that immutable identity for the body lookup rather than duplicating a
 	// removed tenant_id column in the body schema.
-	// 2026-10-20（迁移 885）：v1 族整体退役 ⇒ 正文只有一条腿：会话族
+	// 2026-10-20（迁移 890）：v1 族整体退役 ⇒ 正文只有一条腿：会话族
 	// （session_bodies hot ∪ 父表，db.SessionFamilyBodiesSourceSQL）。
 	//
 	// 被删掉的两条腿分别是「v1 hot 正文表」与「v1 bodies 视图冷扫」；

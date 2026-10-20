@@ -33,7 +33,7 @@ import (
 // 旧判据（已退役）：纯函数 `usageCreditComparability(logsWriteEnabled)` +
 // 常量 `usageArmEmptySkipReason`，输入是 S4 停写键。它的两个前提都已消失：
 //
-//	① 885 把 v1 族整体 DROP、usage 侧随之迁到**会话族**（写入路径无条件）
+//	① 890 把 v1 族整体 DROP、usage 侧随之迁到**会话族**（写入路径无条件）
 //	   ⇒ 「门一关两侧就不同期」不再成立；
 //	② 该键的**代码默认**被并行审计轮改成 false ⇒ 这条**财务**比对在任何
 //	   未显式配置它的环境上永久停摆（findings 恒 0 ⇒ 运维读到「账务无差异」）。
@@ -85,7 +85,7 @@ func TestUsageCreditComparabilityIsDataDriven(t *testing.T) {
 	}
 	if mentionsRequestLogsWriteEnabledExpr(fn) {
 		t.Error("checkUsageCredit 又读起了 settings.RequestLogsWriteEnabled —— " +
-			"那个键的 subject（v1 族）已被 885 删除、代码默认已被翻成 false；" +
+			"那个键的 subject（v1 族）已被 890 删除、代码默认已被翻成 false；" +
 			"读它等于让这条财务比对在未显式配置它的环境上永久停摆")
 	}
 	// 判定必须真的发生：既要有 markSkipped，也必须**调用那个纯函数判定**。
@@ -232,7 +232,7 @@ func TestUsageCreditCheckIsNotGatedByRetiredV1Key(t *testing.T) {
 	// ① 旧判据已退役。
 	if findIfCalling(t, fn, "usageCreditComparability") != nil {
 		t.Error("checkUsageCredit 又咨询了 usageCreditComparability —— " +
-			"它连同常量 usageCreditSkipS4StopWrite 已随 885 + D0 退役（理由已过期、输入恒为假）")
+			"它连同常量 usageCreditSkipS4StopWrite 已随 890 + D0 退役（理由已过期、输入恒为假）")
 	}
 
 	// ② 判定必须在查询之后：判定依赖查询结果（usage 臂行数）。

@@ -31,7 +31,7 @@ import (
 // **request key** rather than by a session predicate
 // (request_id / client_request_id / parent_request_id).
 //
-// # ★ 2026-10-20（迁移 885，v1 族真删）：判据从「必须留在视图上」换成
+// # ★ 2026-10-20（迁移 890，v1 族真删）：判据从「必须留在视图上」换成
 // 「读的源必须覆盖会话族的两条腿」
 //
 // 原判据（forbiddenViewReaders）是「这些读方**必须**继续用
@@ -39,7 +39,7 @@ import (
 // 「原生源会漏 27.6% 的行 —— 那些行只存在于 v1（探针/自检、无会话头流量、
 // in_progress 占位行、标题/摘要回环）」。
 //
-// 那条理由的**前提是「v1 还在」**。885 之后 canonical 视图**本身就是**
+// 那条理由的**前提是「v1 还在」**。890 之后 canonical 视图**本身就是**
 // 会话族两臂体（hot ∪ 母表 + 734 details 层）⇒ 视图与原生源返回**同样的行**
 // ⇒ 「视图 vs 原生源」这个区分**已经没有对象**。
 //
@@ -62,7 +62,7 @@ type sessionKeyedReaders = []struct {
 // coversBothSessionLegs 报告一段源码里读的源是否覆盖会话族两条腿。
 //
 // 允许的三种形态（都是 hot ∪ 母表）：
-//   - canonical 视图 request_logs_with_current_month（885 之后 = 会话族两臂体）
+//   - canonical 视图 request_logs_with_current_month（890 之后 = 会话族两臂体）
 //   - db.SessionFamilyTurnsSourceSQL()（原生源，hot ∪ 母表）
 //   - db.SessionFamilyTurnsForSessionSQL()（原生源，会话谓词内推版）
 func coversBothSessionLegs(span string) bool {
@@ -159,9 +159,9 @@ func funcSpan(src, marker string) (string, bool) {
 // TestSessionRequestKeyedReadersStayOnView is the executable form of the
 // §5.5.5 classification.
 //
-// ★ 2026-10-20（885）：判据从「必须在视图上、不得用原生源」换成
+// ★ 2026-10-20（890）：判据从「必须在视图上、不得用原生源」换成
 // 「读的源必须覆盖会话族两条腿（hot ∪ 母表）」—— 理由见
-// sessionKeyedReaderTable 的头注（canonical 视图在 885 之后就是会话族两臂体，
+// sessionKeyedReaderTable 的头注（canonical 视图在 890 之后就是会话族两臂体，
 // 「视图 vs 原生源」已无对象）。
 //
 // Discriminating power was verified by mutation: pointing any one of these

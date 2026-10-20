@@ -60,10 +60,10 @@ const (
 
 // s4ScanSkipReason* 是 reason 维度的闭集。
 //
-// ★ 2026-10-20（迁移 885 + 并行审计轮 D0）：
+// ★ 2026-10-20（迁移 890 + 并行审计轮 D0）：
 //
 //	s4_stop_write —— **历史** reason。三条「可比性门」（凭据恢复 36h 回看、
-//	  usage↔credit 账务比对、recorded_cost_is_negative 健康检查）随 885 与
+//	  usage↔credit 账务比对、recorded_cost_is_negative 健康检查）随 890 与
 //	  D0 的默认值翻转**退役**：它们读的是 storage.request_logs_write_enabled，
 //	  而该键的 subject（v1 族）已被删除、代码默认已被翻成 false ⇒
 //	  「门关着的理由已过期、后果却不可逆」。⇒ 现在**没有**任何检查产出它。

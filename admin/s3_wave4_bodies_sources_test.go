@@ -32,7 +32,7 @@ func s3Wave4ReadFile(t *testing.T, rel string) string {
 
 // TestS3Wave4BatchFetcherFamilySplit 钉住「两个取数器都读会话族 hot∪父表两腿」。
 //
-// ★ 2026-10-20（迁移 885，v1 族真删）：原来是**三分格局**——
+// ★ 2026-10-20（迁移 890，v1 族真删）：原来是**三分格局**——
 // 主取数器=会话族、summary 回退变体=**v1 视图**、元组变体=**v1 视图**。
 // v1 族被 DROP ⇒ 后两个的 v1 臂必须消失（读了就是 42P01）。
 //
@@ -51,7 +51,7 @@ func TestS3Wave4BatchFetcherFamilySplit(t *testing.T) {
 		}
 		// ★ 反转后的负向判据：v1 族关系名必须不在场（按标识符边界）。
 		if hits := retiredV1RelationsInSQL(sql); len(hits) > 0 {
-			t.Errorf("%s 仍出现已退役 v1 族关系名 %v —— v1 族已随 885 被 DROP，读它 = 42P01：\n%s", name, hits, sql)
+			t.Errorf("%s 仍出现已退役 v1 族关系名 %v —— v1 族已随 890 被 DROP，读它 = 42P01：\n%s", name, hits, sql)
 		}
 		// 就地阳性对照：同一把尺子必须能认出 v1 形态（否则上面那条恒绿）。
 		if hits := retiredV1RelationsInSQL("FROM request_logs_bodies_with_current_month rb"); len(hits) == 0 {

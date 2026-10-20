@@ -12,7 +12,7 @@ import (
 // 让门槛恒 0、自动摘要停摆。判据同层：断言驱动包级 SQL 变量——它们就是
 // CountNewTurns/CountTotalTurns 实际发给 PostgreSQL 的文本。
 //
-// ★ 2026-10-20（迁移 885，v1 族整体退役）：本门**反转**了 v1 那一段。
+// ★ 2026-10-20（迁移 890，v1 族整体退役）：本门**反转**了 v1 那一段。
 //
 // 原来这里钉的是「v1 回退腿必须直读 _request_logs 分区父表」「必须带
 // gw_session_id = $1 AND success = TRUE 谓词」——回退腿服务的是「镜像链
@@ -49,7 +49,7 @@ func TestS3Wave2TurnCountSources(t *testing.T) {
 		"request_logs_with_current_month",
 	} {
 		if strings.Contains(countTurnsSessionSQL, v1) {
-			t.Errorf("计数 SQL 里出现了 v1 族引用 %q —— v1 族已被迁移 885 DROP，"+
+			t.Errorf("计数 SQL 里出现了 v1 族引用 %q —— v1 族已被迁移 890 DROP，"+
 				"任何提到它的语句整条 42P01 ⇒ 自动摘要的门槛计数会直接失败。", v1)
 		}
 	}

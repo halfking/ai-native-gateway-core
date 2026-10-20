@@ -642,13 +642,13 @@ func (pm *PartitionManager) archiveOldPartitionsIfNeeded(ctx context.Context) {
 	pm.cleanupOldCredentialProbeModelLog(ctx)
 
 	// 5. 2026-07-14: _request_logs_bodies partition cleanup — **已于 2026-10-20
-	// 随迁移 885 退役**（v1 正文族已被物理删除，见下方注释块）。
+	// 随迁移 890 退役**（v1 正文族已被物理删除，见下方注释块）。
 	//
 	//    退役了什么：每 tick 调用 `drop_old_request_logs_bodies_partitions($1)`
-	//    的那一步（以及它对应的 Go 函数）。该 SQL 函数被 885 一并 DROP ⇒
-	//    885 之后每次 tick 都会 42P01（未定义函数），每 tick 一条 ERROR。
+	//    的那一步（以及它对应的 Go 函数）。该 SQL 函数被 890 一并 DROP ⇒
+	//    890 之后每次 tick 都会 42P01（未定义函数），每 tick 一条 ERROR。
 	//    为什么退役：它清理的是 v1 正文族 `_request_logs_bodies` 的月分区；
-	//    885 之后那张表连同族内其余表/分区/函数一起没了 ⇒ **没有对象可清**。
+	//    890 之后那张表连同族内其余表/分区/函数一起没了 ⇒ **没有对象可清**。
 	//    现在由什么承担：会话族正文（`session_bodies`）走另一条链：
 	//      · hot → 月分区：`promote_session_bodies_hot_to_partition`（614 建，
 	//        见 promoteSpecs；它只搬运、不删除）；
@@ -799,11 +799,11 @@ func shouldRunRequestLogsArchive(now time.Time) bool {
 // 驱动层语句，函数内的批游标不稀释 statement_timeout；252 角色级 30s 会
 // 击杀大积压首跑并整批回滚（活锁，同 R72 F2 对 753 的诊断）。
 //
-// ── 2026-10-20（迁移 885 真删族）：本作业**已退役**，下面这段函数体不会再被执行 ──
+// ── 2026-10-20（迁移 890 真删族）：本作业**已退役**，下面这段函数体不会再被执行 ──
 //
 // 退役了什么：`archive_request_logs_default($1)` 这条 v1 族归档调用。
-// 为什么退役：885 把 v1 族（表 + 视图 + 只服务它的分区管理函数）整体删除，
-// `archive_request_logs_default` 在 885 的 DROP 列表里 ⇒ 885 之后调用它必然
+// 为什么退役：890 把 v1 族（表 + 视图 + 只服务它的分区管理函数）整体删除，
+// `archive_request_logs_default` 在 890 的 DROP 列表里 ⇒ 890 之后调用它必然
 // 42P01（未定义函数）。旧闸（v1LifecycleRetired = !写开关）只是**恰好**挡住了
 // 这条路（停写时为真）；但那是个**偶然**的护栏，不是设计——写开关一翻就漏。
 // ⇒ 现在由 v1LifecycleRetired **恒 true** 无条件挡住（见其注释）。
@@ -812,7 +812,7 @@ func shouldRunRequestLogsArchive(now time.Time) bool {
 // 归档作业，这些必须一起回来，否则会重犯「相位锁死 + 角色级 30s 击杀大积压」。
 func (pm *PartitionManager) archiveOldRequestLogs(ctx context.Context) {
 	if v1LifecycleRetired() {
-		// 885 之后 v1 族已不存在 ⇒ 没有可归档的对象，也没有可调用的函数。
+		// 890 之后 v1 族已不存在 ⇒ 没有可归档的对象，也没有可调用的函数。
 		// 回写开关不再能把它打开（v1LifecycleRetired 恒 true）。
 		return
 	}
@@ -1420,22 +1420,22 @@ func (pm *PartitionManager) runArchive(ctx context.Context, s archiveSpec, twoMo
 // v1LifecycleRetired reports whether the v1 request_logs family's lifecycle
 // jobs (ensure/promote/archive) are retired.
 //
-// 2026-10-20（迁移 885 真删族）：**本函数恒为 true**。
+// 2026-10-20（迁移 890 真删族）：**本函数恒为 true**。
 //
 // 旧语义（2026-10-13 起）：S4 停写把 storage.request_logs_write_enabled 翻成
 // false，迁移 860 再把族改名成 `_request_logs*` 作为「待删除标志」。旧闸的前提是
 // **「族还在，只是被冻结」** ⇒ 停写时暂停维护（预建未来分区 / 排空恒空的 hot 表
 // / 归档没人读的摘要都是纯浪费），回写开启时自动恢复维护。
 //
-// 885 之后这个前提**已不存在**：族（表 + 分区 + 序列 + 只服务它的分区管理函数）
+// 890 之后这个前提**已不存在**：族（表 + 分区 + 序列 + 只服务它的分区管理函数）
 // 被物理删除。于是「恢复写 ⇒ 恢复维护」没有对象可维护 —— 恢复维护只会把
 // 「调用已被 DROP 的函数」重新变成每 tick 一次的 42P01。⇒ 维护侧**无条件**退役：
 // ensure/promote 的 v1 条目已从清单里移除（见 ensureSpecs / promoteSpecs 的注释），
 // archive 的调用由本函数的恒 true 挡在门外。
 //
 // ⚠ 与写开关的关系：storage.request_logs_write_enabled 现在只影响**写面**，
-// 而写面在 885 之后已无落库对象（族表没了）⇒ 「回切到 v1 写」这条路本身已由
-// 885 关闭，不是本函数关的。本函数不再读该设置，是为了让「维护侧无条件退役」
+// 而写面在 890 之后已无落库对象（族表没了）⇒ 「回切到 v1 写」这条路本身已由
+// 890 关闭，不是本函数关的。本函数不再读该设置，是为了让「维护侧无条件退役」
 // 这一事实**不依赖任何设置的状态**。
 func v1LifecycleRetired() bool {
 	return true
@@ -1444,12 +1444,12 @@ func v1LifecycleRetired() bool {
 // ensureSpecs returns the ensure_<table>_partition() functions we
 // invoke on every tick. Add a row here when a new table is onboarded.
 //
-// 2026-10-20（迁移 885 真删族）：**v1 request_logs 族的两条 ensure 条目已从本
+// 2026-10-20（迁移 890 真删族）：**v1 request_logs 族的两条 ensure 条目已从本
 // 清单移除**（`ensure_request_logs_partition` / `ensure_request_logs_bodies_partition`）。
 //
-// 退役了什么：这两条 v1 族生命周期条目（它们调用的是 885 已 DROP 的函数）。
+// 退役了什么：这两条 v1 族生命周期条目（它们调用的是 890 已 DROP 的函数）。
 // 为什么退役：旧闸（filterRetiredV1Lifecycle）的前提是「族还在但冻结」——
-// 停写时维护一个冻结的族是浪费，回写时自动恢复维护。885 之后族已被物理删除，
+// 停写时维护一个冻结的族是浪费，回写时自动恢复维护。890 之后族已被物理删除，
 // 前提消失 ⇒ 「恢复维护」没有对象可维护，而继续调用必然 42P01。
 // ⇒ 条目**无条件移除**（不再随写开关出现/消失），避免「看起来还在管、其实管的是空气」。
 // 现在由什么承担：会话族的分区预建由 `ensure_sessions_v2_partitions`（430，
@@ -1461,7 +1461,7 @@ func v1LifecycleRetired() bool {
 // _request_logs into request_logs_bodies. The bodies partition was
 // paired with the metadata partition by (target_ts → month), so we
 // used to ensure both at the same time. That pairing is gone with the
-// v1 family itself (885).
+// v1 family itself (890).
 func ensureSpecs() []archiveSpec {
 	specs := []archiveSpec{
 		{fnName: "ensure_request_wal_partition", label: "request_wal"},
@@ -1579,13 +1579,13 @@ func archiveSpecs() []archiveSpec {
 // p_batch_size int) RETURNS bigint; the caller loops until the function
 // returns 0 (no more eligible cold rows for this table).
 //
-// 2026-10-20（迁移 885 真删族）：**v1 request_logs 族的两条 promote 条目已从本
+// 2026-10-20（迁移 890 真删族）：**v1 request_logs 族的两条 promote 条目已从本
 // 清单移除**（`promote_request_logs_hot_to_partition` /
 // `promote_request_logs_bodies_hot_to_partition`）。
 //
-// 退役了什么：这两条 v1 族生命周期条目（它们调用的是 885 已 DROP 的函数）。
+// 退役了什么：这两条 v1 族生命周期条目（它们调用的是 890 已 DROP 的函数）。
 // 为什么退役：旧闸（filterRetiredV1Lifecycle，已随之删除）的前提是「族还在但
-// 冻结」⇒ 排空一个恒空的 hot 表是纯浪费，回写时又自动恢复维护。885 之后族已被
+// 冻结」⇒ 排空一个恒空的 hot 表是纯浪费，回写时又自动恢复维护。890 之后族已被
 // 物理删除 ⇒ 前提消失 ⇒ 条目**无条件移除**；继续调用必然 42P01。
 // 现在由什么承担：会话族的 hot 排水由 `promote_session_turns_hot_to_partition`
 // （526）、`promote_session_turn_details_hot_to_partition`（733）、
@@ -1729,7 +1729,7 @@ func (pm *PartitionManager) promoteDefaultToPartitions(ctx context.Context) {
 	cycleCtx, cycleCancel := context.WithTimeout(ctx, promoteCycleTimeout)
 	defer cycleCancel()
 	// R51 (2026-09-21)：batches 是全周期共享预算，排位靠后的表（如
-	// session_turn_details_hot，promoteSpecs 第 9 位——885 退役掉两条 v1 条目后
+	// session_turn_details_hot，promoteSpecs 第 9 位——890 退役掉两条 v1 条目后
 	// 由第 11 位前移）在前序大表积压耗尽
 	// 预算后整个周期颗粒无收。改为每表保底至少 1 批：预算耗尽后，尚未跑过
 	// 批的表仍允许再跑一批才让位；外层循环因此遍历全部 spec，不再提前 break。

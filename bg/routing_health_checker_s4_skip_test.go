@@ -1,7 +1,7 @@
 package bg
 
 // routing_health_checker_s4_skip_test.go —— 2026-10-20（R51 续轮建；
-// ★ 2026-10-20 迁移 885 + 并行审计轮 D0 轮**退役换题**）
+// ★ 2026-10-20 迁移 890 + 并行审计轮 D0 轮**退役换题**）
 //
 // # 退役了什么
 //
@@ -16,7 +16,7 @@ package bg
 //
 // # 为什么退役
 //
-// ① **前提没了**：885 把 v1 族整体 DROP，这条检查的源随之迁到**会话族**
+// ① **前提没了**：890 把 v1 族整体 DROP，这条检查的源随之迁到**会话族**
 //    （db.SessionFamilyTurnsSourceSQL()，写入路径无条件）⇒「源不再前进 ⇒
 //    『有没有新出现的负成本』不可判定」这个前提**不再成立**。
 // ② **门恒闭**：守卫读的是 settings.RequestLogsWriteEnabled()，而该键的
@@ -85,7 +85,7 @@ func s4TestCheckDefByID(t *testing.T, id string) HealthCheckDef {
 // s4TestSyntheticSkippedCheck 造一条**带 SkipWhen** 的合成检查，用来驱动
 // SkipWhen 这套**机制**。
 //
-// ⚠ 为什么必须用合成检查：885 之后真实世界里**没有**任何检查挂 SkipWhen
+// ⚠ 为什么必须用合成检查：890 之后真实世界里**没有**任何检查挂 SkipWhen
 // （唯一挂的那个随 v1 族退役）⇒ 若机制的覆盖只依赖真实检查，
 // 机制就会静默腐烂（改了 SkipWhen 的短路语义也没人发现）。
 //
@@ -106,7 +106,7 @@ func s4TestSyntheticSkippedCheck(skip bool) HealthCheckDef {
 func TestRecordedCostCheckCarriesNoS4Guard(t *testing.T) {
 	def := s4TestCheckDefByID(t, "recorded_cost_is_negative")
 	require.Nil(t, def.SkipWhen,
-		"这条检查不得再挂前提守卫 —— 它的源已随 885 迁到会话族（写入路径无条件），"+
+		"这条检查不得再挂前提守卫 —— 它的源已随 890 迁到会话族（写入路径无条件），"+
 			"『源不再前进 ⇒ 问题不可判定』的前提已不存在；而守卫读的键（"+
 			"storage.request_logs_write_enabled）的代码默认已被并行审计轮改成 false "+
 			"⇒ 挂上去等于让这条检查在未显式配置该键的环境上永久不发 SQL，"+

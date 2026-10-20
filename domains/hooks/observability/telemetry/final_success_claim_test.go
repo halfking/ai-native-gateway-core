@@ -8,7 +8,7 @@
 //	          entry 触发 claim，失败/取消/空会话路径完全不触碰 claim
 //	          （库级唯一性由部分唯一索引保证，集成测试覆盖）。
 //
-// ★ 2026-10-20（迁移 885，v1 族退役）：v1 族（_request_logs / _request_logs_hot
+// ★ 2026-10-20（迁移 890，v1 族退役）：v1 族（_request_logs / _request_logs_hot
 // / _request_logs_bodies*）连同它的终态成功认领入口 claimSessionFinalSuccess
 // 一起落库删除 ⇒ 本文件**整体重写**。
 //
@@ -18,7 +18,7 @@
 //     退役对象：v1 的 claim UPDATE（`UPDATE _request_logs_hot SET
 //     is_final_success = TRUE ... NOT EXISTS(other)`）+ SAVEPOINT/RELEASE 序列 +
 //     D12 的 session_mirror_outbox 补偿登记。
-//     原因：claim 的目标表随 885 删除；且**仲裁职责已迁出本包**——会话族用
+//     原因：claim 的目标表随 890 删除；且**仲裁职责已迁出本包**——会话族用
 //     partial 唯一索引 uq_session_turns_hot_final_success + markTurnFinalSuccess
 //     做仲裁（internal/sessionv2mirror/final_success_turn.go）。
 //     现在由谁承载：internal/sessionv2mirror 自己的判据
@@ -53,8 +53,8 @@
 //  6. TestClaimSessionFinalSuccess_HeapPartitionsGuard
 //     退役对象：v1 月度分区名缓存（heapPartitions / heapPartitionsCachedAt）
 //     驱动的 promoted guard（UNION ALL 多个 heap 月度分区，排除 columnar 月份）。
-//     原因：v1 宽表及其月度分区随 885 删除，promoted/columnar 晋级机制也一并
-//     删除（885 同时删掉了 ensure_request_logs_partition / promote_* 系列函数）。
+//     原因：v1 宽表及其月度分区随 890 删除，promoted/columnar 晋级机制也一并
+//     删除（890 同时删掉了 ensure_request_logs_partition / promote_* 系列函数）。
 //     现在由谁承载：**本包侧无**（会话族没有 promoted/columnar 分区晋级这条线）。
 //
 //  7. TestUpdateRequestLog_AppendsFinalSuccessClaimOnTerminalSuccess
@@ -91,7 +91,7 @@ func TestClaimSessionFinalSuccess_RetiredWithV1Family(t *testing.T) {
 	// 使「这些判据已经不在了」这件事在 go test 的输出里可见——
 	// 免得下一个会话以为它们还在、或者以为漏跑了什么。
 	t.Log("claimSessionFinalSuccess 与 v1 月度分区缓存（heapPartitions）" +
-		"随迁移 885 整条删除；终态成功的仲裁迁到 internal/sessionv2mirror " +
+		"随迁移 890 整条删除；终态成功的仲裁迁到 internal/sessionv2mirror " +
 		"（uq_session_turns_hot_final_success + markTurnFinalSuccess），" +
 		"本包只保留『资格判定 + 把资格挂到 entry.FinalSuccessClaimed』。")
 }
@@ -158,7 +158,7 @@ func TestShouldClaimFinalSuccess_ExcludesInternalLoopbacks(t *testing.T) {
 }
 
 // UT-FS-02（写路径回归，★ 改指）：updateRequestLog 在成功终态事务内**不再**
-// 发任何 v1 claim 语句（claimSessionFinalSuccess 随 885 整条删除），只把
+// 发任何 v1 claim 语句（claimSessionFinalSuccess 随 890 整条删除），只把
 // **认领资格**挂到 entry.FinalSuccessClaimed 上——真正的仲裁由
 // internal/sessionv2mirror 的 markTurnFinalSuccess 承担
 // （uq_session_turns_hot_final_success 部分唯一索引）。
@@ -206,14 +206,14 @@ func TestUpdateRequestLog_TerminalSuccessMarksFinalSuccessClaimed(t *testing.T) 
 		"updateRequestLog 应当只发一条 UPDATE（正向对照：录制器抓到了语句）")
 	require.Contains(t, statements[0], "UPDATE usage_ledger_hot")
 	require.NotContains(t, statements[0], "is_final_success",
-		"v1 的终态成功认领随 885 退役，本包不得再发 is_final_success 的 UPDATE")
+		"v1 的终态成功认领随 890 退役，本包不得再发 is_final_success 的 UPDATE")
 }
 
 // 失败路径不认领：除了主语句外不应出现任何 claim 相关的语句，
 // 也不得把 entry.FinalSuccessClaimed 置位（否则 sessionv2mirror 会把
 // 一次失败当成会话的终态成功去仲裁）。
 //
-// ★ 2026-10-20（迁移 885，v1 族退役）：本用例由
+// ★ 2026-10-20（迁移 890，v1 族退役）：本用例由
 // TestUpdateRequestLog_FailurePathSkipsClaim **改指**——「跳过 claim 语句」
 // 那一半随 v1 退役，但「失败不得置位认领资格」这半个跨包契约还在。
 func TestUpdateRequestLog_FailurePathSkipsFinalSuccessClaim(t *testing.T) {

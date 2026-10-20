@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-// ★ 2026-10-20（迁移 885 + 并行审计轮 D0）：本文件的门控类判据**退役换题**。
+// ★ 2026-10-20（迁移 890 + 并行审计轮 D0）：本文件的门控类判据**退役换题**。
 //
 // # 退役了什么
 //
@@ -23,7 +23,7 @@ import (
 //
 // # 为什么退役（两个前提同时消失，而门仍然闭合）
 //
-// ① **证据源换了**：885 把 v1 族整体 DROP，36h 回看的证据源随之迁到
+// ① **证据源换了**：890 把 v1 族整体 DROP，36h 回看的证据源随之迁到
 //    **会话族**（hot ∪ parent，写入路径**无条件**、不读任何停写键）⇒
 //    「证据源会因某个开关被关掉而冻结 ⇒ 问题不可判定」这个前提**不再成立**。
 // ② **门的输入恒为假**：`lookbackComparability` 读的是
@@ -61,7 +61,7 @@ import (
 // 36h 回看扫描**不得**再被已退役的 v1 停写键门控。
 //
 // 守的不变量：scanLookbackRecoveries 的函数体里**不得**出现
-//   - `settings.RequestLogsWriteEnabled` 的调用（那个键的 subject 已被 885
+//   - `settings.RequestLogsWriteEnabled` 的调用（那个键的 subject 已被 890
 //     删除，且代码默认已被翻成 false），也**不得**出现
 //   - `lookbackComparability`（已随门退役删除；若有人把它加回来，这条同时红）。
 //
@@ -98,13 +98,13 @@ func TestLookbackScanIsNotGatedByRetiredV1Key(t *testing.T) {
 
 	if mentionsRequestLogsWriteEnabledExpr(scan) {
 		t.Error("scanLookbackRecoveries 又读起了 settings.RequestLogsWriteEnabled —— " +
-			"那道门的前两个前提都已消失（证据源随 885 迁到会话族、该键的代码默认被翻成 false），" +
+			"那道门的前两个前提都已消失（证据源随 890 迁到会话族、该键的代码默认被翻成 false），" +
 			"门若还挂着，这条扫描会在任何未显式配置该键的环境上永久停摆，"+
 			"把「不再具备判定能力」读成「没有需要恢复的绑定」")
 	}
 	if findIfCallingCred(t, scan, "lookbackComparability") != nil {
 		t.Error("scanLookbackRecoveries 又调用了 lookbackComparability —— " +
-			"那道门已随 885 + D0 退役（连同它的常量与纯函数一并删除）")
+			"那道门已随 890 + D0 退役（连同它的常量与纯函数一并删除）")
 	}
 
 	// 扫描**必须**仍然发查询 —— 否则「不门控」就变成了「不扫描」，

@@ -76,12 +76,12 @@ var noopTextCasts = map[string]string{}
 
 // noopTextCastsDB 同上，但在 db 包。
 var noopTextCastsDB = map[string]string{
-	// ★ 2026-10-20（迁移 885）：routing_analytics_source 的取数源从
+	// ★ 2026-10-20（迁移 890）：routing_analytics_source 的取数源从
 	// `_request_logs_hot` / `_request_logs` 换成 **canonical 视图**
-	// （request_logs_with_current_month；885 之后它是会话族两臂体）。
+	// （request_logs_with_current_month；890 之后它是会话族两臂体）。
 	// 结论不变：那一列仍是 text（session_turns.request_id text NOT NULL）
 	// ⇒ `request_id::text` 仍是空操作。
-	"db.go:request_id::text AS request_id": "routing_analytics_source 从 canonical 视图 request_logs_with_current_month 取数（885 之后是会话族两臂体），session_turns.request_id 是 text ⇒ 空操作",
+	"db.go:request_id::text AS request_id": "routing_analytics_source 从 canonical 视图 request_logs_with_current_month 取数（890 之后是会话族两臂体），session_turns.request_id 是 text ⇒ 空操作",
 }
 
 func readSource(t *testing.T, path string) string {
@@ -184,8 +184,8 @@ func TestCrossTableRequestIDRepresentation(t *testing.T) {
 				t.Errorf("db 包白名单项 %q 已不存在：请删除或更新（否则恒绿）", key)
 			}
 		}
-		// ★ 2026-10-20（885）：取数源从 `_request_logs_hot` / `_request_logs`
-		// 换成 canonical 视图（request_logs_with_current_month，885 之后是
+		// ★ 2026-10-20（890）：取数源从 `_request_logs_hot` / `_request_logs`
+		// 换成 canonical 视图（request_logs_with_current_month，890 之后是
 		// 会话族两臂体）。⇒ 白名单的**放行理由**跟着换，结论不变。
 		//
 		// ⚠ 判据的作用是「取数源变了就逼人复核」⇒ 标记必须跟着换；否则它会

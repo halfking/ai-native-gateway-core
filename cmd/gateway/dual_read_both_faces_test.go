@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-// ── 退役记录（2026-10-20，迁移 885：v1 request_logs 族整体退役）─────────────
+// ── 退役记录（2026-10-20，迁移 890：v1 request_logs 族整体退役）─────────────
 //
 // 本文件原先只有一道门：`TestS4DriftScopeReadsBothStorageFaces`，钉的是
 // **一条 SQL 常量的形状**——对账范围 SQL（`mirrorDriftScopeSQL`）必须同时读
@@ -16,7 +16,7 @@ import (
 //
 // # 那道门为什么退役
 //
-//  1. **被测对象不存在了**：v1 族被 885 整体 DROP，那条对账范围 SQL 已随生产
+//  1. **被测对象不存在了**：v1 族被 890 整体 DROP，那条对账范围 SQL 已随生产
 //     代码一起删除（`dual_read_validator.go` 里现在只剩一段说明为什么删）。
 //     门还在、对象没了 ⇒ 它只能靠「把断言删掉」变绿，而那不是门。
 //  2. **它守的不变量整体换题了**：「读全两个存储面」守的是「只读父表会把
@@ -47,7 +47,7 @@ func TestDriftReconciliationMentionsNoRetiredV1Relation(t *testing.T) {
 	clean := stripGoComments(readGoSource(t, "dual_read_validator.go"))
 	if mentionsRetiredV1Family(clean) {
 		t.Error("dual_read_validator.go 的**代码**里仍然出现 v1 族的关系名 —— " +
-			"那一族已被迁移 885 整体 DROP，任何提到它的语句都是 42P01（整条语句失败，" +
+			"那一族已被迁移 890 整体 DROP，任何提到它的语句都是 42P01（整条语句失败，" +
 			"不是那条腿失败）。对账已退役 ⇒ 这条路上不该再有 v1 SQL。")
 	}
 
@@ -56,7 +56,7 @@ func TestDriftReconciliationMentionsNoRetiredV1Relation(t *testing.T) {
 		t.Fatal("判据没有牙：一个确实提到 _request_logs_hot 的片段被判成「没提到」")
 	}
 	// 负控制：不能误伤会话族，也不能误伤规范视图 public.request_logs
-	//（那是**另一个**关系，迁移 885 之后是会话族的两臂视图）。
+	//（那是**另一个**关系，迁移 890 之后是会话族的两臂视图）。
 	for _, other := range []string{
 		"SELECT 1 FROM session_turns_hot",
 		"SELECT 1 FROM public.request_logs",
@@ -98,7 +98,7 @@ func mentionsRetiredV1Family(code string) bool {
 // 把 spec 改成 24h 会放宽一个危险开关的书面条件。
 // 所以本测试只**把它打印出来**，不判定对错。
 //
-// ★ 2026-10-20（迁移 885，v1 族整体退役）：对账退役后，`s4GateVerdictOf`
+// ★ 2026-10-20（迁移 890，v1 族整体退役）：对账退役后，`s4GateVerdictOf`
 // 在生产里**已无调用点**（SummarizeFrom 不再调用它），这个纯函数现在只被测试
 // 调用。所以这道门记录的是「这个函数**如果**被重新接上，窗口下限有多宽」——
 // 别把它读成「现网正在用 24 小时窗口放行停写」：现网根本没在测。

@@ -521,7 +521,7 @@ func (b *sessionRequestStatusBackfill) sampleRemaining(ctx context.Context) {
 // window-less, because "rows that would be lost at retirement" is a different
 // question from "rows this job can still fix" and _hot holds only ~6k rows.
 const sessionRequestStatusRemainingSQL = `
-	-- ★ 2026-10-20（迁移 885，v1 族退役）：标签源（v1 族）已整体 DROP ⇒
+	-- ★ 2026-10-20（迁移 890，v1 族退役）：标签源（v1 族）已整体 DROP ⇒
 	-- 没有任何 turn 还有「可抄的孪生源行」⇒ **剩余量恒为 0**。
 	--
 	-- 这正是这个量表的定义（见文件头「v1-side IS NOT NULL mirrors the
@@ -594,7 +594,7 @@ const sessionRequestStatusSourceProbeSQL = `
 // window-less gauge keeps reporting the backlog and the release gate stays
 // honest. See the file header for the full argument.
 const sessionRequestStatusCandidateSQL = `
-	-- ★ 2026-10-20（迁移 885，v1 族退役）：标签源已整体 DROP ⇒ 候选集**恒为空**。
+	-- ★ 2026-10-20（迁移 890，v1 族退役）：标签源已整体 DROP ⇒ 候选集**恒为空**。
 	--
 	-- 保留这条语句的形状（键集分页 + LIMIT + 同样的投影列）是为了让 drain 的
 	-- 「没有候选」路径仍然是一次**廉价查询**（而不是「没有查询」），也让
@@ -761,7 +761,7 @@ func buildRequestStatusUpdateSQL(batch []requestStatusBackfillRow) (string, []an
 		args = append(args, r.id, r.partitionDate, r.requestID)
 	}
 	sb.WriteString(") AS v(id, partition_date, request_id) ")
-	// ★ 2026-10-20（迁移 885，v1 族退役）：标签源（v1 族）已整体 DROP ⇒
+	// ★ 2026-10-20（迁移 890，v1 族退役）：标签源（v1 族）已整体 DROP ⇒
 	// 本语句**永远匹配不到任何行**（候选集恒为空，见
 	// sessionRequestStatusCandidateSQL）。保留 FROM-VALUES + 同样的 $N 占位
 	// 是为了让参数个数与形状不变（pgx 会拒绝「语句没引用却传了参数」）。

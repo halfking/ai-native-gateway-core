@@ -7,7 +7,7 @@
 // 对分区父表执行 VACUUM FULL 无存储可重写、只会空耗全集群
 // VacuumFullMutex 窗口，故移除；本 worker 保留对 hot 表的普通 VACUUM。
 //
-// ★ 2026-10-20（迁移 885，v1 族退役）：v1 正文族整体被 DROP ⇒ 本 worker
+// ★ 2026-10-20（迁移 890，v1 族退役）：v1 正文族整体被 DROP ⇒ 本 worker
 // 唯一的目标表不再存在。**不留着让它每周撞一次 42P01**：见 vacuum 里的
 // to_regclass 存在性探测（自描述，不依赖写门）。
 //
@@ -145,11 +145,11 @@ func (w *VacuumWorker) vacuum(ctx context.Context) {
 		return
 	}
 
-	// ★ 885（v1 族退役）：目标表已随 v1 族一起被 DROP ⇒ 直接 VACUUM 会
+	// ★ 890（v1 族退役）：目标表已随 v1 族一起被 DROP ⇒ 直接 VACUUM 会
 	// 每周期撞 42P01。这里用 to_regclass 做**存在性探测**而不是读写门：
 	//
 	//   - 写门（storage.request_logs_write_enabled）只说明「还在双写吗」，
-	//     与「表还在吗」不是同一件事；885 之后两者永久脱钩（表没了，门还
+	//     与「表还在吗」不是同一件事；890 之后两者永久脱钩（表没了，门还
 	//     可能被翻回 true）⇒ 用门当退役信号会漏。
 	//   - to_regclass 对不存在的表返回 NULL 而**不抛错** ⇒ 探测本身不会
 	//     把 worker 带崩（对比 information_schema 视图或 pg_class 查询，
@@ -196,7 +196,7 @@ func (w *VacuumWorker) vacuum(ctx context.Context) {
 
 // vacuumTargetTable 是本 worker 唯一 VACUUM 的目标表。
 //
-// ⚠ 它是 v1 族的一张表，885 之后默认不存在 —— 保留这个名字是为了让
+// ⚠ 它是 v1 族的一张表，890 之后默认不存在 —— 保留这个名字是为了让
 // 「退役后还在这儿」这件事在代码里一眼可见，而不是被一个拼接出来的字符串
 // 藏起来（§「判据必须与被测函数在同一层」的同款纪律：常量要在被读的地方
 // 看得见）。

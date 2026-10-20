@@ -905,7 +905,7 @@ func slidingWindowQuery() string {
 //   - session_turns_hot 臂：idx_session_turns_hot_credential_ts
 //     ((CASE credential)::bigint, ts) 表达式索引伺服 credential+窗过滤。
 //
-// 2026-10-20（迁移 885，v1 族整体退役）：原来的第二条臂（v1 hot 表 +
+// 2026-10-20（迁移 890，v1 族整体退役）：原来的第二条臂（v1 hot 表 +
 // 对会话腿的反连接）删除。反连接的对象已不存在，留着就是 42P01；
 // 而两条臂之间本来就不重叠（promote 把 hot 搬进母表、hot 被排空）。
 // ⇒ 现在只剩一条臂，外层 UNION ALL 的「两臂列序必须逐位一致」约束随之

@@ -26,7 +26,7 @@ import (
 // still hands the operator the flag value to re-run with. It is now derived
 // from MaxTS (the newest day that actually has data) rather than from a probe.
 //
-// ★ 2026-10-20（迁移 885，v1 族整体退役）：本守卫**已不在生产路径上**。
+// ★ 2026-10-20（迁移 890，v1 族整体退役）：本守卫**已不在生产路径上**。
 // validateBatch 现在在更早一步就中止——候选集 `LoadSessionsInRange` 返回
 // errV1FamilyRetired（它原本读的那张 v1 表已被 DROP）⇒ 流程根本走不到
 // `LoadV1TimeRange` / `WindowExceedsV1Data` 这一段。
@@ -261,7 +261,7 @@ func TestEndDayExclusiveBound(t *testing.T) {
 // TestQueryBoundsIncludeTheNamedEndDay 是 end-boundary 缺陷的**接线**回归门：
 // 绑到半开 `ts < $3` 上的值必须是「被点名那一天的**次日**零点」。
 //
-// ★ 2026-10-20（迁移 885，v1 族整体退役）：**接线本身已不存在**。
+// ★ 2026-10-20（迁移 890，v1 族整体退役）：**接线本身已不存在**。
 //
 // 原门断言的是 `buildSessionRangeQuery` 交给 SQL 的**实参表**（而不只是
 // 源文本——原注释专门记了「早一版是 grep loader.go，那版对着回退的实现

@@ -9,7 +9,7 @@ package main
 // `go vet -tags=integration ./...` the moment the other shape uses it —
 // exactly the break 0490235bb shipped (guards red on the integration tree).
 //
-// ★ 2026-10-20 (migration 885, v1 family retired): the untagged shape
+// ★ 2026-10-20 (migration 890, v1 family retired): the untagged shape
 // (s4_gate_coverage_faces_test.go) no longer uses this helper — its gate now
 // asserts on the retired summary's *behaviour* (coverage reports "not
 // measured") rather than on the text of a SQL constant, and the SQL constant it

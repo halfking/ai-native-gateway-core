@@ -262,7 +262,7 @@ func (s *Store) LastSummarized(ctx context.Context, sessionKey string) (time.Tim
 var countTurnsSessionSQL = `SELECT COUNT(*)::int FROM ` + db.SessionFamilyTurnsForSessionSQL() + ` rl
 		WHERE rl.success = TRUE`
 
-// ★ 2026-10-20（迁移 885，v1 族退役）：v1 回退腿**整条删除**。
+// ★ 2026-10-20（迁移 890，v1 族退役）：v1 回退腿**整条删除**。
 //
 // 它当初服务的是「镜像链启用前的历史会话」（计数只数得到 v1 母表的行）。
 // v1 族被整体 DROP 后：① 那条 SQL 必然 42P01；② 那些历史会话**本身**
@@ -290,7 +290,7 @@ func (s *Store) CountNewTurns(ctx context.Context, sessionKey string, since time
 	if err != nil && !strings.Contains(err.Error(), "no rows") {
 		return 0, err
 	}
-	// ★ 885：v1 回退腿已删（见上方说明）⇒ 会话族计数就是全部计数。
+	// ★ 890：v1 回退腿已删（见上方说明）⇒ 会话族计数就是全部计数。
 	return n, err
 }
 
@@ -316,6 +316,6 @@ func (s *Store) CountTotalTurns(ctx context.Context, sessionKey string) (int, er
 	if err != nil && !strings.Contains(err.Error(), "no rows") {
 		return 0, err
 	}
-	// ★ 885：v1 回退腿已删（见上方说明）⇒ 会话族计数就是全部计数。
+	// ★ 890：v1 回退腿已删（见上方说明）⇒ 会话族计数就是全部计数。
 	return n, err
 }

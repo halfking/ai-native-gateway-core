@@ -16,8 +16,8 @@ import (
 // on the V371 deploy track; migration 703 pinned it and the baselines
 // carry the 703 body, asserted by name below (F13 closure).
 //
-// ★ 2026-10-20（迁移 885 真删 v1 族）：原先本表还含 `request_logs` 与
-// `request_logs_bodies` 两条 v1 族条目。885 把 v1 族连同只服务它的分区管理
+// ★ 2026-10-20（迁移 890 真删 v1 族）：原先本表还含 `request_logs` 与
+// `request_logs_bodies` 两条 v1 族条目。890 把 v1 族连同只服务它的分区管理
 // 函数一起 DROP ⇒ 它们的 objects/ 正典（promote_request_logs_hot_to_partition_
 // interval_integer.sql / promote_request_logs_bodies_hot_to_partition_
 // interval_integer.sql）**已随族退役**（被 5f64031cb 删除）。
@@ -33,17 +33,17 @@ var migration698Tables = []string{
 	"usage_ledger",
 }
 
-// retiredV1PromoteTables 是**已随 885 退役**的 v1 族 promote 函数。
+// retiredV1PromoteTables 是**已随 890 退役**的 v1 族 promote 函数。
 //
 // 退役了什么：这两个函数的 objects/ 正典（唯一「正典 vs 基线」的比对基准）。
-// 为什么退役：885 把 v1 族（表 + 分区 + 只服务它的分区管理函数）整体删除 ⇒
+// 为什么退役：890 把 v1 族（表 + 分区 + 只服务它的分区管理函数）整体删除 ⇒
 // 正典留着就成了一份「指向已不存在的关系」的规格。
 //
 // ★ 幸存的不变量（比「正典逐字一致」更弱但仍有效）：
 //
 //	三份基线副本仍然带着这两个函数体，而且**互相逐字一致** —— 它们是这些
-//	函数体的**唯一现存副本**（885 的 down 只重建了 ensure/create_next_month
-//	那四个函数，没有重建 promote 两个；885 的 up 把它们 DROP 掉了）。
+//	函数体的**唯一现存副本**（890 的 down 只重建了 ensure/create_next_month
+//	那四个函数，没有重建 promote 两个；890 的 up 把它们 DROP 掉了）。
 //	⇒ 基线若漂移，就再也没有别的地方能拿回 698 钉过的那份体。
 //
 //	另外两条内容级不变量也继续守（它们不依赖正典）：
@@ -159,7 +159,7 @@ var baselinePromoteFunctionsNoObjectsFile = []string{
 // re-import would run unpinned month routing against 694-pinned partition
 // bounds — the exact 23514 failure mode migration 698 closed.
 //
-// ★ 2026-10-20（迁移 885 真删 v1 族）：v1 族的两条 promote 函数的正典已随族
+// ★ 2026-10-20（迁移 890 真删 v1 族）：v1 族的两条 promote 函数的正典已随族
 // 退役 ⇒ 它们不再走「正典 vs 基线」这条路，改走**基线互相一致**（见
 // retiredV1PromoteTables 的注释）。其余 8 条的口径**不变**。
 func TestBaselinePromoteHotFunctionsThreeWayConsistency(t *testing.T) {
@@ -231,7 +231,7 @@ func TestBaselinePromoteHotFunctionsThreeWayConsistency(t *testing.T) {
 	}
 
 	// ── 已退役的 v1 族 promote：正典没了，幸存的不变量是「三份基线互相一致」──
-	// 它们是这些函数体的唯一现存副本（885 的 down 没重建 promote 两个）。
+	// 它们是这些函数体的唯一现存副本（890 的 down 没重建 promote 两个）。
 	// 阳性对照：基线里必须**找得到**这两个函数（找不到 ⇒ 副本已丢失，本门红）。
 	for _, table := range retiredV1PromoteTables {
 		name := "promote_" + table + "_hot_to_partition"
@@ -243,7 +243,7 @@ func TestBaselinePromoteHotFunctionsThreeWayConsistency(t *testing.T) {
 		for _, label := range labels {
 			body, ok := extracted[label][name]
 			if !ok {
-				t.Errorf("%s baseline missing retired v1 promote function %s —— 正典已随 885 退役，基线副本是它唯一的存在形式", label, name)
+				t.Errorf("%s baseline missing retired v1 promote function %s —— 正典已随 890 退役，基线副本是它唯一的存在形式", label, name)
 				continue
 			}
 			if body != want {
@@ -285,7 +285,7 @@ func TestBaselinePromoteHotFunctionsThreeWayConsistency(t *testing.T) {
 // of partitioned row found", and the same oldest batch is retried every
 // scheduler tick (head-of-line blocking) until months rotate through.
 //
-// ★ 2026-10-20（迁移 885 真删 v1 族）：v1 族那两条的正典已随族退役 ⇒ 它们的
+// ★ 2026-10-20（迁移 890 真删 v1 族）：v1 族那两条的正典已随族退役 ⇒ 它们的
 // C-F-2 检查改用**基线副本的体**（唯一现存副本）执行，同一条规则不降级。
 func TestPromoteMonthsCTEHasDeterministicOrder(t *testing.T) {
 	monthsLimitRe := regexp.MustCompile(`(?s)LIMIT 12`)

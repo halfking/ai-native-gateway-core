@@ -14,7 +14,7 @@ import (
 // 而聚合里的两条合成流量排除臂（NOT EXISTS ... FROM _request_logs_hot / _request_logs）
 // 整体在门内。
 //
-// ★ 2026-10-20（迁移 885，v1 族退役）：上面那两条 v1 臂已被**删除**（提到
+// ★ 2026-10-20（迁移 890，v1 族退役）：上面那两条 v1 臂已被**删除**（提到
 // 已 DROP 的关系会让整条聚合语句 42P01），会话族那条臂成为唯一承重臂。
 // 本文件下半段的门相应**反转**：v1 臂从「必须保留」变成「必须不在」。
 //
@@ -80,8 +80,8 @@ func TestAffinitySynthesisExclusionCoversSessionFamily(t *testing.T) {
 				"三条臂必须用同一套 actor 集合，否则口径漂移（v1 兜住的 session 未必兜得住，反之亦然）", want)
 		}
 	}
-	// ★ 2026-10-20（迁移 885，v1 族退役）：原先这里要求「两条 v1 臂必须保留」
-	// （双写期它们是主覆盖，真库 131/131）。迁移 885 把 v1 族连表带分区一起
+	// ★ 2026-10-20（迁移 890，v1 族退役）：原先这里要求「两条 v1 臂必须保留」
+	// （双写期它们是主覆盖，真库 131/131）。迁移 890 把 v1 族连表带分区一起
 	// DROP ⇒ 提到 v1 关系会让**整条聚合语句** 42P01 ⇒ 这两条臂必须**删除**。
 	// ⇒ 本门从「v1 臂必须在」**反转**为「v1 臂必须不在」。
 	//
@@ -89,7 +89,7 @@ func TestAffinitySynthesisExclusionCoversSessionFamily(t *testing.T) {
 	// 集合一致」就是对照项 —— 删掉会话臂本门会红，删掉 v1 臂本门绿。
 	// （两侧同时删 = 两边都红，不会出现「全删了还绿」的空窗。）
 	if strings.Contains(src, "FROM _request_logs_hot rl") || strings.Contains(src, "FROM _request_logs rl") {
-		t.Errorf("合成流量排除臂不得再引用退役的 v1 族（迁移 885 已 DROP，提及即整条语句 42P01）：\n%s", src)
+		t.Errorf("合成流量排除臂不得再引用退役的 v1 族（迁移 890 已 DROP，提及即整条语句 42P01）：\n%s", src)
 	}
 }
 

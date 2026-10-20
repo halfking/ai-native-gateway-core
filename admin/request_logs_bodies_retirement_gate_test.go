@@ -222,9 +222,9 @@ const bodiesSwitchRetireNote = "退役后替代：切换层 v1 臂删除，Sessi
 	"2026-10-13 停写复审计实测带会话头未镜像行=844 全为回环/非终态（真损失 0），会话臂覆盖全部用户可见正文。"
 
 var v1BodiesReaders = map[string]indirectReader{
-	// ★ 2026-10-20（迁移 885，v1 族真删）：本表**已清空**。
+	// ★ 2026-10-20（迁移 890，v1 族真删）：本表**已清空**。
 	//
-	// 24 条登记的对象全是「读 v1 bodies 腿」的文件；而 885 之后
+	// 24 条登记的对象全是「读 v1 bodies 腿」的文件；而 890 之后
 	// **没有任何生产文件再读 v1 bodies 腿**（bodies 读端只剩会话族）⇒
 	// 「bodies 退役评估」这件事已经没有对象。
 	//
@@ -245,13 +245,13 @@ func TestV1BodiesReadersAreAssessed(t *testing.T) {
 	root := repoRootFromCaller(t)
 	measured := scanV1BodiesReaders(t, root)
 
-	// ★ 885 之后（2026-10-20）：总体与登记表都必须为空。
+	// ★ 890 之后（2026-10-20）：总体与登记表都必须为空。
 	//
 	// v1 族被物理删除 ⇒ bodies 腿没有 v1 可退役 ⇒ 「bodies 退役评估」没有对象。
 	// ⇒ 本门从「登记表覆盖全部 bodies 读方」翻成
 	//「**登记表必须为空，且实测 bodies 读方必须为空**」。
 	if len(v1BodiesReaders) > 0 {
-		t.Errorf("v1 bodies 读方登记仍有 %d 条 —— 885 之后 v1 族已物理删除，"+
+		t.Errorf("v1 bodies 读方登记仍有 %d 条 —— 890 之后 v1 族已物理删除，"+
 			"没有任何生产文件再读 v1 bodies 腿。", len(v1BodiesReaders))
 	}
 	if len(measured) > 0 {
@@ -261,7 +261,7 @@ func TestV1BodiesReadersAreAssessed(t *testing.T) {
 		}
 		sort.Strings(names)
 		t.Errorf("%d 个文件仍被实测为读 v1 bodies 腿：\n  %s\n"+
-			"⇒ 它们运行时会 42P01（885 已删这些关系）。", len(measured), strings.Join(names, "\n  "))
+			"⇒ 它们运行时会 42P01（890 已删这些关系）。", len(measured), strings.Join(names, "\n  "))
 	}
 
 	var unregistered, stale []string
@@ -323,10 +323,10 @@ func TestV1BodiesGateIsNotSilentlyVacuous(t *testing.T) {
 	root := repoRootFromCaller(t)
 	measured := scanV1BodiesReaders(t, root)
 
-	// ★ 885 之后（2026-10-20）：**总体为空是正确状态**，不是「量具坏了」。
+	// ★ 890 之后（2026-10-20）：**总体为空是正确状态**，不是「量具坏了」。
 	//
 	// 原来这里是一条地板（总体为 0 ⇒ Fatal），因为那时总体为空只可能意味着
-	// 「扫描器坏了」。885 之后 v1 族被物理删除 ⇒ bodies 读方总体真的归零。
+	// 「扫描器坏了」。890 之后 v1 族被物理删除 ⇒ bodies 读方总体真的归零。
 	//
 	// ⇒ 地板翻成：**总量为空必须是因为扫描器扫过而没命中**。
 	// 判据：扫描器的模式必须仍能认出 v1 bodies 形态（阳性对照）。
@@ -379,14 +379,14 @@ func TestV1BodiesScanIncludesRegisteredIndirectReaders(t *testing.T) {
 	sort.Strings(missing)
 	t.Logf("登记为间接 bodies 读方的文件 %d 个：%v", len(want), want)
 
-	// ★ 885 之后（2026-10-20）：间接读方表已清空 ⇒ 「间接 bodies 读方」必须为空。
+	// ★ 890 之后（2026-10-20）：间接读方表已清空 ⇒ 「间接 bodies 读方」必须为空。
 	//
 	// 原来这里是一条地板（want 为 0 ⇒ Fatal），因为那时它只可能意味着
-	// 「登记被删了 / SSOT 推不出 bodies 关系名」。885 之后 bodies 腿的切换层
+	// 「登记被删了 / SSOT 推不出 bodies 关系名」。890 之后 bodies 腿的切换层
 	// 已经恒等于会话族（db.SessionBodiesSourceSQL = SessionFamilyBodiesSourceSQL），
 	// **不再存在间接读 v1 bodies 的文件** ⇒ 0 是正确值。
 	if len(want) > 0 {
-		t.Errorf("仍有 %d 个文件被登记为间接 bodies 读方 —— 885 之后 bodies 切换层恒为会话族，"+
+		t.Errorf("仍有 %d 个文件被登记为间接 bodies 读方 —— 890 之后 bodies 切换层恒为会话族，"+
 			"不再有间接读 v1 bodies 的文件：\n  %s", len(want), strings.Join(want, "\n  "))
 	}
 	if len(missing) > 0 {
@@ -412,7 +412,7 @@ func TestV1BodiesScanIncludesRegisteredIndirectReaders(t *testing.T) {
 // mergeIndirectBodiesReaders 是 scanV1BodiesReaders 末尾「把间接 bodies 读方
 // 与其消费点并入总体」那段逻辑的**可测版本**。
 //
-// 为什么抽成函数：885 之后间接读方表为空 ⇒ 那段逻辑在真实数据上不再执行 ⇒
+// 为什么抽成函数：890 之后间接读方表为空 ⇒ 那段逻辑在真实数据上不再执行 ⇒
 // 「它还在不在、还对不对」没人能证明。抽出来才能用合成数据直接驱动它。
 //
 // 参数：
@@ -474,16 +474,16 @@ func TestV1BodiesScanSeesJoinOnlyReaders(t *testing.T) {
 	}
 	sort.Strings(joinOnly)
 
-	// ★ 885 之后（2026-10-20）：**「只 JOIN 不 FROM」的读方为 0 是正确状态**。
+	// ★ 890 之后（2026-10-20）：**「只 JOIN 不 FROM」的读方为 0 是正确状态**。
 	//
 	// 原来这里是一条「必须 ≥1」的地板，因为那时总体里至少有两个只 JOIN 的读方
-	// （admin/session_export.go / admin/session_compare.go）。885 之后没有文件
+	// （admin/session_export.go / admin/session_compare.go）。890 之后没有文件
 	// 再读 v1 bodies ⇒ 这个盲区**在总体里已经不存在**。
 	//
 	// ⇒ 地板翻成：**总体为 0 是正确的，但「只 JOIN 也能被看见」这条能力必须仍在**。
 	// 判据：用**合成源码**证明 isJoinOnlyBodiesReader 仍能认出只 JOIN 的形态。
 	if len(joinOnly) > 0 {
-		t.Errorf("总体里出现了 %d 个「只 JOIN 不 FROM」的 bodies 读方 —— 885 之后不该再有：\n  %v",
+		t.Errorf("总体里出现了 %d 个「只 JOIN 不 FROM」的 bodies 读方 —— 890 之后不该再有：\n  %v",
 			len(joinOnly), joinOnly)
 	}
 	joinOnlySynthetic := "SELECT rl.request_id\n" +
@@ -560,7 +560,7 @@ func TestV1BodiesReadersAreDeclaredWell(t *testing.T) {
 		}
 	}
 
-	// ★ 885 之后（2026-10-20）：表为空 ⇒ 逐条校验不执行 ⇒ 判据必须有牙。
+	// ★ 890 之后（2026-10-20）：表为空 ⇒ 逐条校验不执行 ⇒ 判据必须有牙。
 	//
 	// ⇒ 用**合成条目**证明自检逻辑有效：缺 Reason / 缺 ResolvesTo /
 	// ResolvesTo 不在 bodies 族里 / Family 为空 —— 四种都必须被判出问题；

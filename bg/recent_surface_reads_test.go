@@ -46,7 +46,7 @@ import (
 // 豁免以 _hot 后缀放行 + 读点数钉死（下方案数断言），新读点必须先过
 // 对拍门再扩名单——与 opslog_trimmer/integrity_fingerprint 两个先例同款。
 //
-// ★ 2026-10-20（迁移 885，v1 族退役）：v1 族（_request_logs*）整族被 DROP
+// ★ 2026-10-20（迁移 890，v1 族退役）：v1 族（_request_logs*）整族被 DROP
 // ⇒ 「读 v1 族」不再是另一种读面，而是一个**必须为零**的违规（提及即 42P01）。
 // ⇒ 本门从「v1 读面要么是 canonical 视图、要么是 hot 表」**收紧**为
 // 「这三个文件里不得再有任何 `FROM _request_logs*`」。
@@ -67,14 +67,14 @@ func TestRecentWindowReadsUseCurrentMonthSurface(t *testing.T) {
 		}
 		src := string(contents)
 		matches := re.FindAllStringSubmatch(src, -1)
-		// ★ 885：v1 族已退役 ⇒ 唯一还允许的 v1 名字是 canonical **视图**
-		// request_logs_with_current_month（885 之后它是会话两臂体）。
+		// ★ 890：v1 族已退役 ⇒ 唯一还允许的 v1 名字是 canonical **视图**
+		// request_logs_with_current_month（890 之后它是会话两臂体）。
 		// 任何其它后缀（裸父表 / _hot / _bodies…）都是已 DROP 的族。
 		for _, m := range matches {
 			if m[1] == "_with_current_month" {
 				continue
 			}
-			t.Fatalf("%s 仍读已退役的 v1 族 %q —— 迁移 885 把它整族 DROP 了，"+
+			t.Fatalf("%s 仍读已退役的 v1 族 %q —— 迁移 890 把它整族 DROP 了，"+
 				"提及即整条语句 42P01（近窗读改读会话族热腿或 canonical 视图）",
 				file, m[0])
 		}
@@ -85,7 +85,7 @@ func TestRecentWindowReadsUseCurrentMonthSurface(t *testing.T) {
 	// candidate_failure_logs_hot（cfl 臂）读点。数字变了=有新近窗读点或
 	// 旧读点被改面，必须先过 auto_cool_hot_realdb_test.go 对拍门再改这里。
 	//
-	// ★ 885：v1 hot 读点归零（那条臂随 v1 族一起退役）；cfl 臂读点数不变；
+	// ★ 890：v1 hot 读点归零（那条臂随 v1 族一起退役）；cfl 臂读点数不变；
 	// 同时新增**会话族热腿**的读点钉子（近窗纪律在会话族上的落点）。
 	monSrc, err := os.ReadFile("candidate_failure_monitor.go")
 	if err != nil {
@@ -95,10 +95,10 @@ func TestRecentWindowReadsUseCurrentMonthSurface(t *testing.T) {
 		re   string
 		want int
 	}{
-		{`(?i)FROM\s+_request_logs_hot\b`, 0},          // ★ 885：v1 族已退役 ⇒ 归零
+		{`(?i)FROM\s+_request_logs_hot\b`, 0},          // ★ 890：v1 族已退役 ⇒ 归零
 		{`(?i)FROM\s+candidate_failure_logs_hot\b`, 1}, // cfl 族未退役，读点不变
-		{`(?i)FROM\s+session_turns_hot\b`, 1},          // ★ 885：auto-cool 腿读会话族热腿
-		{`db\.SessionFamilyTurnsHotSourceSQL\(\)`, 1},  // ★ 885：staleness 源读会话族热腿
+		{`(?i)FROM\s+session_turns_hot\b`, 1},          // ★ 890：auto-cool 腿读会话族热腿
+		{`db\.SessionFamilyTurnsHotSourceSQL\(\)`, 1},  // ★ 890：staleness 源读会话族热腿
 	} {
 		if got := len(regexp.MustCompile(pin.re).FindAllStringSubmatch(string(monSrc), -1)); got != pin.want {
 			t.Fatalf("candidate_failure_monitor.go hot 读点数变化 (%s): got=%d want=%d — "+

@@ -130,12 +130,12 @@ func loadFinalRequestMetrics(ctx context.Context, queryRow func(context.Context,
 	if queryRow == nil {
 		return finalRequestMetrics{}, nil
 	}
-	// ★ 2026-10-20（885 真删轮）：读面换成**会话族原生源** db.SessionFamilyTurnsSourceSQL()
+	// ★ 2026-10-20（890 真删轮）：读面换成**会话族原生源** db.SessionFamilyTurnsSourceSQL()
 	// （hot ∪ parent + details 特征层 LEFT JOIN）。
 	//
 	// 为什么必须换：旧读面 `request_logs_with_current_month_without_request_class_due_at`
 	// **直读 v1 族**（真库实测）⇒ v1 停写后恒 0 行 ⇒ 本端点此前恒返回 0；
-	// 885 删族后它会变成 **42P01**。
+	// 890 删族后它会变成 **42P01**。
 	//
 	// 为什么「按 provider 过滤不会静默丢行」仍成立（旧注释担心的点）：
 	// 会话族原生源的 `provider_id` 来自 **details 特征层**（`d.provider_id`），

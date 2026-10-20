@@ -99,7 +99,7 @@ func TestPumpDueStatesSQLErrorEvidenceGate(t *testing.T) {
 // deep-ping: 3-day per-credential usage (probe traffic excluded), credential
 // failure evidence, and the two-consecutive-success gate.
 //
-// ★ 2026-10-20（迁移 885，v1 族退役）：usage 证据源从 v1 热表换成**会话族热腿**，
+// ★ 2026-10-20（迁移 890，v1 族退役）：usage 证据源从 v1 热表换成**会话族热腿**，
 // 探针排除谓词随之从 v1 物理双臂（quality_flags + origin_stage）换成**会话族**
 // 三臂（origin_stage + task_type + origin_actor）——会话族没有 quality_flags 列。
 func TestFeaturedCycleErrorGated(t *testing.T) {
@@ -122,10 +122,10 @@ func TestFeaturedCycleErrorGated(t *testing.T) {
 	for _, want := range []string{
 		`credentialFailureEvidenceSQL("c.id", probeFailureEvidenceWindowSQL)`,
 		`credentialTwoProbeSuccessGateSQL("c.id")`,
-		// ★ 885：usage 证据源是会话族热腿（v1 热表已 DROP）。
+		// ★ 890：usage 证据源是会话族热腿（v1 热表已 DROP）。
 		"SELECT 1 FROM `+db.SessionFamilyTurnsHotSourceSQL()+` rl",
 		"probeUsageWindowInterval",
-		// ★ 885：会话族没有 quality_flags ⇒ 必须用会话族那条谓词。
+		// ★ 890：会话族没有 quality_flags ⇒ 必须用会话族那条谓词。
 		`fmt.Sprintf(probeTrafficExclusionPredicateSession, "rl", "rl", "rl")`,
 	} {
 		if !strings.Contains(body, want) {
@@ -242,7 +242,7 @@ func readSource(name string) (string, error) {
 //     shared_pick/passive_probe_listener 的视图查询上，必 42703——本测试
 //     按读面分治后的真实不变量钉桩。
 //
-// ★ 2026-10-20（迁移 885，v1 族退役）：v1 族整体被 DROP ⇒ 原先「物理 v1 表」
+// ★ 2026-10-20（迁移 890，v1 族退役）：v1 族整体被 DROP ⇒ 原先「物理 v1 表」
 // 这一类读面**整类消失**，直接读 v1 物理表的调用点全部改读会话族原生源 ⇒
 // 本门的「physical」一栏改成「session」（会话族谓词），「view」一栏不变
 // （canonical 视图仍投影那三列，视图谓词照旧可用）。
@@ -272,7 +272,7 @@ func TestProbeExclusionPredicateCallSitesR50(t *testing.T) {
 			t.Errorf("%s has %d frozen-view exclusion sites, want >= %d", tc.file, got, tc.view)
 		}
 	}
-	// ★ 885 之后新增的一条**方向性**门：直读会话族原生源的读面**不得**用
+	// ★ 890 之后新增的一条**方向性**门：直读会话族原生源的读面**不得**用
 	// 视图谓词（视图谓词引用 quality_flags，会话族没有这一列 ⇒ 每次 42703）。
 	// ⚠ 正向对照：上表里 session 一栏 > 0 的那几个文件都必须命中会话族谓词。
 	// ⚠ 边界：`ProbeTrafficExclusionPredicateView,` 与
@@ -371,7 +371,7 @@ func TestFilterRecentEntriesByUsage(t *testing.T) {
 // selection, and the filter query must carry the probe traffic exclusion
 // (probe traffic must not keep a model "in-window").
 //
-// ★ 2026-10-20（迁移 885，v1 族退役）：过滤查询的读面已迁到会话族 ⇒ 排除谓词
+// ★ 2026-10-20（迁移 890，v1 族退役）：过滤查询的读面已迁到会话族 ⇒ 排除谓词
 // 必须用会话族那条（origin_stage + task_type + origin_actor）；会话族没有
 // quality_flags 列，用 v1 那条会 42703。
 func TestSelfcheckPrimaryGatedByThreeDayUsage(t *testing.T) {

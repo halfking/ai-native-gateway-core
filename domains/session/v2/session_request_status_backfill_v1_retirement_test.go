@@ -1,10 +1,10 @@
-// 门：迁移 885（v1 族退役）之后，这个包里的运行时 SQL 与夹具形态。
+// 门：迁移 890（v1 族退役）之后，这个包里的运行时 SQL 与夹具形态。
 //
-// 背景（2026-10-21 / R65 轮实测）：迁移 885 删掉了 `_request_logs` v1 族，
+// 背景（2026-10-21 / R65 轮实测）：迁移 890 删掉了 `_request_logs` v1 族，
 // 把这个包的 SQL 常量与**夹具**一起改了形态，但**没有**把两边的判据一起改。
 // 后果有两类，都不是「一条红」那么简单：
 //
-//  1. ★★ 实现侧留了一颗定时炸弹：885 把 UPDATE 里的
+//  1. ★★ 实现侧留了一颗定时炸弹：890 把 UPDATE 里的
 //     `JOIN public._request_logs l` 删掉了，**却没改 SET 子句**——SET 仍在写
 //     `l.request_status`，而别名 `l` 已随 v1 族一起消失 ⇒ 这条语句**根本无法被
 //     解析**：`ERROR: missing FROM-clause entry for table "l"` (42P01)。
@@ -32,14 +32,14 @@ import (
 // skip it, because it necessarily contains the very patterns it forbids.
 const statusBackfillGateFile = "session_request_status_backfill_v1_retirement_test.go"
 
-// retiredV1Relation is the relation family migration 885 dropped.
+// retiredV1Relation is the relation family migration 890 dropped.
 const retiredV1Relation = "public._request_logs"
 
 // TestStatusBackfillRuntimeSQLNeverReferencesTheRetiredV1Family 钉住
 // 「运行时 SQL 不得引用已删的 v1 族」。
 //
 // 引用即 42P01，而且**在解析期**就炸——不是「查出来是空」，是「语句根本不
-// 能送」。这一族里已经有一个实例（885 留下的 `l` 别名），所以这条不是
+// 能送」。这一族里已经有一个实例（890 留下的 `l` 别名），所以这条不是
 // 假想。
 //
 // 例外只有一处：**探针** sessionRequestStatusSourceProbeSQL 故意用
@@ -58,7 +58,7 @@ func TestStatusBackfillRuntimeSQLNeverReferencesTheRetiredV1Family(t *testing.T)
 		{"batch update", batchSQL},
 	} {
 		if strings.Contains(strings.ToLower(executableSQL(stmt.sql)), retiredV1Relation) {
-			t.Errorf("%s references the retired v1 family (%s) — migration 885 DROPPED "+
+			t.Errorf("%s references the retired v1 family (%s) — migration 890 DROPPED "+
 				"it, so any reference is a 42P01 at parse time, not an empty result.\n"+
 				"--- statement ---\n%s", stmt.name, retiredV1Relation, stmt.sql)
 		}
@@ -72,11 +72,11 @@ func TestStatusBackfillRuntimeSQLNeverReferencesTheRetiredV1Family(t *testing.T)
 	}
 }
 
-// TestStatusBackfillBatchUpdateNeverNamesTheVanishedAlias 钉住 885 留下的那颗
+// TestStatusBackfillBatchUpdateNeverNamesTheVanishedAlias 钉住 890 留下的那颗
 // 定时炸弹的**类别**：语句里不得出现一个「没有定义的别名」。
 //
 // 这一条今天唯一的具体形态是 `l.`：别名 l 原本由 `JOIN public._request_logs l`
-// 引入，885 删掉 JOIN 时没删 SET 子句里的引用 ⇒ 42P01。
+// 引入，890 删掉 JOIN 时没删 SET 子句里的引用 ⇒ 42P01。
 func TestStatusBackfillBatchUpdateNeverNamesTheVanishedAlias(t *testing.T) {
 	batchSQL, _ := buildRequestStatusUpdateSQL([]requestStatusBackfillRow{
 		{id: 42, partitionDate: statusFixedDate(), tenantID: "tenant_a", requestID: "req_42"},

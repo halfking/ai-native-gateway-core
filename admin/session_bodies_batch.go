@@ -86,11 +86,11 @@ var sessionBodiesByRequestIDSQL = `
 
 // v1BodiesByRequestIDSQL 是 session_summary_v2 的 **回退路径**专用的正文腿。
 //
-// 2026-10-20（迁移 885）：v1 族整体退役 ⇒ 这条语句的取数源从 v1 bodies
+// 2026-10-20（迁移 890）：v1 族整体退役 ⇒ 这条语句的取数源从 v1 bodies
 // 视图换成**会话族正文源**（与主批量取数器同源）。
 //
 // 为什么换源而不是删掉整条回退路径：回退路径的 turns 腿读的是 canonical
-// 视图（`request_logs_with_current_month`），而该视图在 885 之后是
+// 视图（`request_logs_with_current_month`），而该视图在 890 之后是
 // session-only 的两臂体 ⇒ 遗留会话（镜像链开启之前、只存在于 v1 的那些）
 // 在 turns 腿就查不到行，`queryRequestLogsFallback` 会在
 // 「len(keys)==0」处提前返回，正文腿根本不会被调用。
@@ -122,7 +122,7 @@ var v1BodiesByRequestIDSQL = `
 // 101.302 ms。上一轮曾把它一并列入待改清单，实测后撤销 —— 它没有可改之处，
 // 改它只会让 diff 看起来比实际变更大。
 //
-// 2026-10-20（迁移 885）：v1 族整体退役 ⇒ 取数源从 v1 bodies 视图换成
+// 2026-10-20（迁移 890）：v1 族整体退役 ⇒ 取数源从 v1 bodies 视图换成
 // 会话族正文源（hot ∪ 父表两腿）。形状契约**原样保留**：仍是 unnest 半连接、
 // 仍只绑两个数组参数、不引入 JOIN。
 //

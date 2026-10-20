@@ -9,7 +9,7 @@ import (
 	"github.com/pashagolub/pgxmock/v4"
 )
 
-// ★ 2026-10-20（迁移 885，v1 族真删）：本文件的两道门**改名并反转**。
+// ★ 2026-10-20（迁移 890，v1 族真删）：本文件的两道门**改名并反转**。
 //
 // # 退役了什么
 //
@@ -17,7 +17,7 @@ import (
 // 事务里 `DELETE FROM _request_logs_hot WHERE credential_id = ? AND …`，把某个
 // (凭据, 模型) 对的**失败请求日志行**删掉，好让成功率统计立刻重算。
 //
-// 885 删掉了 v1 请求日志族 ⇒ **没有可删的行**了。
+// 890 删掉了 v1 请求日志族 ⇒ **没有可删的行**了。
 //
 // # 为什么没有等价物（这是 (b) 而不是 (c) 的分界）
 //
@@ -65,7 +65,7 @@ func TestResetCredentialSuccessRateRowsIsANoOpAfterV1Retirement(t *testing.T) {
 		t.Fatalf("err = %v, want nil", err)
 	}
 	if deleted != 0 {
-		t.Fatalf("deleted = %d, want 0 —— v1 族已随 885 退役，没有任何可删的行", deleted)
+		t.Fatalf("deleted = %d, want 0 —— v1 族已随 890 退役，没有任何可删的行", deleted)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("resetCredentialSuccessRateRows 不得发起任何 DB 调用（v1 族已退役）：%v", err)
@@ -90,7 +90,7 @@ func TestResetCredentialSuccessRateRowsNeverTouchesTheSessionFamily(t *testing.T
 
 	// ① 不得出现已退役 v1 族关系名（它已经没有可删的对象了）。
 	if hits := retiredV1RelationsInSQL(body); len(hits) > 0 {
-		t.Errorf("resetCredentialSuccessRateRows 仍引用已退役 v1 族关系名 %v —— v1 族已随 885 被 DROP", hits)
+		t.Errorf("resetCredentialSuccessRateRows 仍引用已退役 v1 族关系名 %v —— v1 族已随 890 被 DROP", hits)
 	}
 	// ② 不得对**会话族**执行 DELETE（会话本体不可删）。
 	for _, forbidden := range []string{"DELETE FROM session_turns", "DELETE FROM public.session_turns",

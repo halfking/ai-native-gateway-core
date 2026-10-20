@@ -11,9 +11,9 @@ import (
 
 // requestLogsReadInventory 是「仍读**已退役 v1 族**的生产文件」清单。
 //
-// # 这张表现在是空的（迁移 885，2026-10-20）
+// # 这张表现在是空的（迁移 890，2026-10-20）
 //
-// 迁移 885 把 v1 族**物理删除**了（10 张底表 + 4 张 v1-only 视图 + 序列/索引/RLS）。
+// 迁移 890 把 v1 族**物理删除**了（10 张底表 + 4 张 v1-only 视图 + 序列/索引/RLS）。
 // v1 读方随之归零 ⇒ 这张表随之清空。
 //
 // 但「清空」不是「删掉这张表」：它现在守的是**反向**的不变式 ——
@@ -22,7 +22,7 @@ import (
 //
 // 这正是本表从建表起就在守的东西（§8.5 的原话：「新增一个读 _request_logs 的文件
 // ⇒ 有人开始读一张 S4 将停写的表；某个文件的读点数变了 ⇒ 这张表已陈旧，
-// 而它的下游每一个数都跟着陈旧」），只是 885 之后那张表**不存在了**，
+// 而它的下游每一个数都跟着陈旧」），只是 890 之后那张表**不存在了**，
 // 于是不变式从「不许有新的」升级成「一个都不许有」。
 //
 // # 口径（换正则就不是这个数，改这里之前先读审计 §8.5）
@@ -30,8 +30,8 @@ import (
 //	grep -rniE "(from|join)[[:space:]]+_request_logs(_[a-z_]+)?\b" --include=*.go . \
 //	  | grep -v "_test\.go" | grep -v "^\./docs"
 //
-// ⚠ **2026-10-20（迁移 885）收窄**：原来 `(_[a-z_]+)?` 把 **canonical 视图**
-// `request_logs_with_current_month` 也算成 v1 读点 —— 而 885 之后那张视图**仍然存在**
+// ⚠ **2026-10-20（迁移 890）收窄**：原来 `(_[a-z_]+)?` 把 **canonical 视图**
+// `request_logs_with_current_month` 也算成 v1 读点 —— 而 890 之后那张视图**仍然存在**
 // （内容换成会话族两臂体，118 列同名同序）⇒ 读它**不是**读 v1。
 // ⇒ 扫描口径改成「**已退役**的 v1 族关系」闭合集（retiredV1RelationNames：
 // 5 张底表 × 两种拼写 + 4 张 v1-only 视图）。
@@ -48,7 +48,7 @@ import (
 //	① **切换层读方**（§9.49）：把表名收进 Go 标识符再拼进 SQL ——
 //	   `maas.requestLogsSource(days)`、`db.SessionBodiesSourceSQL()`、
 //	   `admin.logsSourceFromSQL()`。⇒ 登记在 indirectRequestLogsReaders。
-//	② **已退役关系的残留引用**：885 之后仍引用被删关系的位置 ——
+//	② **已退役关系的残留引用**：890 之后仍引用被删关系的位置 ——
 //	   登记在 retiredV1ReferenceExceptions（生产缺陷台账，本轮只报告不修）。
 //
 // # 历史（保留口径变更的理由，不删）
@@ -60,7 +60,7 @@ import (
 //
 //	2026-10-01 实测：**277 命中 − 40 条注释行 = 237 真实调用点 / 104 个文件**。
 //	2026-10-05 加 `join` ⇒ **109 文件 / 271 调用点**。
-//	2026-10-20（885 之后）收窄到「已退役关系」⇒ **0 文件 / 0 调用点**。
+//	2026-10-20（890 之后）收窄到「已退役关系」⇒ **0 文件 / 0 调用点**。
 //
 // ★★ **§9.259：这张表**不是**读方全集，别拿它当退役工作量。**
 //
@@ -73,22 +73,22 @@ import (
 // 我试过按「语句窗口内有无 gw_session_id / request_id =」自动分 A/B/C/D，
 // 拿 §5.5.5 已人工核定的 14 个点交叉验证，**判错 5 个**。**所以这道门只数个数，不下判定。**
 var requestLogsReadInventory = map[string]int{
-	// 885 之后：已退役 v1 族的读方为零。
+	// 890 之后：已退役 v1 族的读方为零。
 	// ⚠ **不要在这里手填「已知的例外」** —— 已退役关系的残留引用登记在
 	// retiredV1ReferenceExceptions（那是生产缺陷台账，不是 v1 读方清单）。
 }
 
 // TestRequestLogsReadInventoryIsComplete 守「已退役 v1 族的读方为零」这条不变式。
 //
-// # 885 之后这张门的语义变了（2026-10-20）
+// # 890 之后这张门的语义变了（2026-10-20）
 //
 // 建表时它守的是**双向漂移**：「新增读方」与「清单陈旧」都要红。
-// 885 把 v1 族删掉之后，读方总体归零 ⇒ 清单随之清空 ⇒
+// 890 把 v1 族删掉之后，读方总体归零 ⇒ 清单随之清空 ⇒
 //
 //	**清单必须为空，且实测读方必须为空。**
 //
 // 实测读方 = 扫描结果 − 已退役关系的**具名例外**
-// （retiredV1ReferenceExceptions：那是 885 已删、但生产侧还没改的残留引用，
+// （retiredV1ReferenceExceptions：那是 890 已删、但生产侧还没改的残留引用，
 //
 //	属生产缺陷台账，登记在别处；它们运行时会 42P01，已在审计文档里报告）。
 //
@@ -124,7 +124,7 @@ func TestRequestLogsReadInventoryIsComplete(t *testing.T) {
 			files = append(files, f)
 		}
 		sort.Strings(files)
-		t.Errorf("requestLogsReadInventory 仍有 %d 条登记 —— 885 之后 v1 族已物理删除，"+
+		t.Errorf("requestLogsReadInventory 仍有 %d 条登记 —— 890 之后 v1 族已物理删除，"+
 			"这张表必须为空（残留引用登记在 retiredV1ReferenceExceptions）：\n  %s",
 			len(files), strings.Join(files, "\n  "))
 	}
@@ -140,7 +140,7 @@ func TestRequestLogsReadInventoryIsComplete(t *testing.T) {
 	sort.Strings(unregistered)
 	if len(unregistered) > 0 {
 		t.Errorf("%d 个生产文件读**已退役**的 v1 族关系（未登记为已知例外）：\n  %s\n"+
-			"885 已经把它们从库里删了 ⇒ 这些代码运行时会 42P01。"+
+			"890 已经把它们从库里删了 ⇒ 这些代码运行时会 42P01。"+
 			"处置：生产侧改指（会话族 / canonical 视图），或具名登记进 retiredV1ReferenceExceptions。",
 			len(unregistered), strings.Join(unregistered, "\n  "))
 	}
@@ -211,11 +211,11 @@ func sumInventory() int {
 // 标识符里而不在本表，登记在间接表。⇒ 本表从 109 降到 107，**不是读方变少了**。
 // `_?` 前缀（迁移 860）：v1 底表物理名已带待删除标志前缀，源码字面量同步；
 // 后缀通配的既有语义不变（canonical 视图读方本来就经 `(_[a-z_]+)?` 计入）。
-// ★ 2026-10-20（迁移 885，v1 族真删）：扫描口径从「任何 request_logs* 关系」
+// ★ 2026-10-20（迁移 890，v1 族真删）：扫描口径从「任何 request_logs* 关系」
 // 收窄为「**已退役的 v1 族关系**」。
 //
 // 原来 `(_[a-z_]+)?` 把 **canonical 视图** `request_logs_with_current_month`
-// 也算成 v1 读点 —— 而 885 之后那张视图**仍然存在**，内容是会话族两臂体
+// 也算成 v1 读点 —— 而 890 之后那张视图**仍然存在**，内容是会话族两臂体
 // （118 列同名同序）⇒ 读它**不是**读 v1。
 //
 // ⇒ 「v1 读方总体」必须只由**已退役**的关系构成（retiredV1RelationNames：
@@ -233,7 +233,7 @@ var requestLogsReadPattern = retiredV1ReadPattern
 // `storage/sqlite/request_log_store.go` 里的 `request_logs` 是它自己那张
 // **SQLite** 表（列是 request_id / tenant_id / session_id / ts / method /
 // path / status_code / duration_ms / has_body，参数占位符是 `?`），
-// 与 PostgreSQL 侧被 885 删除的 118 列 v1 族毫无关系。
+// 与 PostgreSQL 侧被 890 删除的 118 列 v1 族毫无关系。
 //
 // ⇒ 它命中 retiredV1RelationNames 里的 "request_logs" 是**同名假阳性**：
 // 把它算成 v1 读方，会让「v1 读方总体」永远清不干净。

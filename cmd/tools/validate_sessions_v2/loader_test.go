@@ -12,7 +12,7 @@ import (
 
 // TestLoadV1TurnsReportsV1FamilyRetired 钉住 v1 腿退役后的**失败方式**。
 //
-// ★ 2026-10-20（迁移 885，v1 族整体退役）：原门
+// ★ 2026-10-20（迁移 890，v1 族整体退役）：原门
 // `TestLoadV1TurnsJoinsBodiesByRequestIDAndTimestampAcrossStores` 钉的是
 // 「v1 源按 request_id + ts 跨两个存储面 JOIN 出 bodies」——那个源**已经被
 // DROP**，那句话描述的形状永远不会再存在。
@@ -150,7 +150,7 @@ func TestV2SessionStructure(t *testing.T) {
 
 // TestCanonicalQueryContracts 钉住 loader 读的是**哪些关系**。
 //
-// ★ 2026-10-20（迁移 885，v1 族整体退役）：契约表里 `gw_session_id` 换成
+// ★ 2026-10-20（迁移 890，v1 族整体退役）：契约表里 `gw_session_id` 换成
 // `session_id`。
 //
 // 为什么：`gw_session_id` 是 **v1 族**的会话内谓词列（loader 里
@@ -177,7 +177,7 @@ func TestCanonicalQueryContracts(t *testing.T) {
 		// 该关系在真库不存在（只作为 UNIQUE 约束名存在于迁移 614/645），
 		// parity 门一直产出零证据。改指真实存在的合并视图。
 		"public.session_bodies_unified",
-		// 2026-10-20（885）：会话族的会话内谓词列。
+		// 2026-10-20（890）：会话族的会话内谓词列。
 		"session_id",
 	} {
 		if !strings.Contains(source, want) {

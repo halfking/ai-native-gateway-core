@@ -84,7 +84,7 @@ type indirectReader struct {
 }
 
 var indirectRequestLogsReaders = map[string]indirectReader{
-	// 885 之后：间接读 v1 的文件为零。
+	// 890 之后：间接读 v1 的文件为零。
 	//
 	// 三条曾经在这里的登记为什么都走了（2026-10-20 实测）：
 	//
@@ -107,7 +107,7 @@ var indirectRequestLogsReaders = map[string]indirectReader{
 
 // TestIndirectRequestLogsReadersAreDeclaredWell 挡住「登记了但说不清」。
 //
-// # 885 之后（2026-10-20）：本表为空 ⇒ 循环体空转 ⇒ 判据必须有牙
+// # 890 之后（2026-10-20）：本表为空 ⇒ 循环体空转 ⇒ 判据必须有牙
 //
 // 空表 + 循环 = **恒绿**。⇒ 本门拆成两半：
 //
@@ -132,7 +132,7 @@ func TestIndirectRequestLogsReadersAreDeclaredWell(t *testing.T) {
 			files = append(files, f)
 		}
 		sort.Strings(files)
-		t.Errorf("indirectRequestLogsReaders 仍有 %d 条登记 —— 885 之后 v1 族已物理删除，"+
+		t.Errorf("indirectRequestLogsReaders 仍有 %d 条登记 —— 890 之后 v1 族已物理删除，"+
 			"不再存在间接读 v1 的文件：\n  %s\n"+
 			"若某条登记其实已改指会话族，请删掉它；若它仍能解析到 v1，那是生产缺陷，"+
 			"请登记进 retiredV1ReferenceExceptions 而不是留在这里。",
@@ -188,7 +188,7 @@ func indirectReaderProblems(file string, e indirectReader, families map[string]b
 
 // TestIndirectRequestLogsReadersAreStillIndirect 是这张表的失效自检。
 //
-// # 885 之后（2026-10-20）：从「登记不许腐烂」翻成「切换层不许再能选到 v1 臂」
+// # 890 之后（2026-10-20）：从「登记不许腐烂」翻成「切换层不许再能选到 v1 臂」
 //
 // 原两道检查（① 登记的文件必须仍然读不到直接字面量；② 文件必须仍然存在）
 // 在表清空之后都变成空转 ⇒ 本门改守**它们当初要防的那个东西本身**：
@@ -208,7 +208,7 @@ func TestIndirectRequestLogsReadersAreStillIndirect(t *testing.T) {
 
 	// ① 表必须为空（总体归零）。逐条检查见上一道门。
 	if len(indirectRequestLogsReaders) > 0 {
-		t.Errorf("indirectRequestLogsReaders 仍有 %d 条登记 —— 885 之后不存在间接读 v1 的文件", len(indirectRequestLogsReaders))
+		t.Errorf("indirectRequestLogsReaders 仍有 %d 条登记 —— 890 之后不存在间接读 v1 的文件", len(indirectRequestLogsReaders))
 	}
 
 	// ② 切换层当前解析到的关系必须不是已退役的 v1 族。
@@ -232,7 +232,7 @@ func TestIndirectRequestLogsReadersAreStillIndirect(t *testing.T) {
 	}
 	if settleTable != "session_turns_hot" {
 		t.Errorf("bg.ActiveSettleTurnsTable() = %q，期望 session_turns_hot —— "+
-			"写门不再决定读哪一族（885 之后恒为会话族热表）", settleTable)
+			"写门不再决定读哪一族（890 之后恒为会话族热表）", settleTable)
 	}
 
 	// ③ 同一文件不得同时出现在直接表与间接表。

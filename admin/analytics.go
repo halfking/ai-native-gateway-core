@@ -814,7 +814,7 @@ func (h *AnalyticsHandlers) handleDecisionReplay(w http.ResponseWriter, r *http.
 		              AND partition_date = t.partition_date
 		        ) details ORDER BY detail_rank LIMIT 1
 		    ) d ON true
-		    -- 2026-10-20（迁移 885）：v1 族（_request_logs / _request_logs_hot）整体
+		    -- 2026-10-20（迁移 890）：v1 族（_request_logs / _request_logs_hot）整体
 		    -- 退役，本查询原来的第 3/4 臂（v1 hot ∪ v1 母表）随之删除。
 		    -- 剩下的两臂（session_turns_hot ∪ session_turns + 734 details 层）
 		    -- 就是会话族本身：同一批轮次、同名列；source_rank 0/1 仍保证「先热

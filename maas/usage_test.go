@@ -25,7 +25,7 @@ func TestClampUsageDays(t *testing.T) {
 
 // TestRequestLogsSource 钉住用量查询的**源**。
 //
-// ★ 2026-10-20（迁移 885，v1 族最终删除）：本门**反转为单源**。
+// ★ 2026-10-20（迁移 890，v1 族最终删除）：本门**反转为单源**。
 //
 // 原门断言 `days<=7 → _request_logs_hot AS r`、`days>7 → request_logs_with_current_month AS r`。
 // 那个分流是灰度期的产物：**hot 表只保留 8h**，而 canonical 视图是 hot ∪ 月度分区
@@ -49,7 +49,7 @@ func TestRequestLogsSource(t *testing.T) {
 		// v1 族必须不在场（两个代际的物理名都算：部署通道会词法改写）。
 		for _, v1 := range []string{"_request_logs", "request_logs_hot", "_request_logs_hot"} {
 			if strings.Contains(source, v1) {
-				t.Errorf("requestLogsSource(%d) = %q —— v1 族已被迁移 885 整体 DROP，"+
+				t.Errorf("requestLogsSource(%d) = %q —— v1 族已被迁移 890 整体 DROP，"+
 					"任何提到它的语句整条 42P01。", days, source)
 			}
 		}

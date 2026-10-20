@@ -13,7 +13,7 @@ import (
 // 时刻后 samples 恒 0、rate 恒 NULL，而消费方把零读成「正常」
 // （BelowThreshold=false），凭据健康体系的降级/恢复机制静默失灵。
 //
-// ★ 2026-10-20（迁移 885，v1 族最终删除）：本门**反转为单腿**。
+// ★ 2026-10-20（迁移 890，v1 族最终删除）：本门**反转为单腿**。
 //
 // 原门钉的是「两族热腿都在场（`FROM _request_logs_hot` ∪
 // `FROM public.session_turns_hot`，UNION ALL 并集取样，探针排除谓词出现
@@ -41,7 +41,7 @@ func TestRecentSuccessRateBodyServesBothHotFamilies(t *testing.T) {
 		t.Error("recent_success_rate 函数体缺少会话族热腿：凭据成功率将供不出样本")
 	}
 
-	// ---- v1 腿必须**不在场**（885 之后它必然 42P01）----
+	// ---- v1 腿必须**不在场**（890 之后它必然 42P01）----
 	//
 	// ⚠ 量具按**标识符边界**判：`request_logs` 是 `request_logs_hot` 的前缀，
 	// 朴素包含会把热表判成母表。这里两条都列出来，两条都不该命中。
@@ -50,7 +50,7 @@ func TestRecentSuccessRateBodyServesBothHotFamilies(t *testing.T) {
 		"FROM request_logs_hot", "FROM request_logs",
 	} {
 		if strings.Contains(body, unwanted) {
-			t.Errorf("recent_success_rate 函数体仍含 %q —— v1 族已被迁移 885 整体 DROP，"+
+			t.Errorf("recent_success_rate 函数体仍含 %q —— v1 族已被迁移 890 整体 DROP，"+
 				"该函数经 CROSS JOIN LATERAL 被候选查询调用 ⇒ 42P01 ⇒ "+
 				"选不出任何上游凭据 ⇒ 100%% 流量失败。", unwanted)
 		}
@@ -66,10 +66,10 @@ func TestRecentSuccessRateBodyServesBothHotFamilies(t *testing.T) {
 	if !strings.Contains(body, "credential_id ~ '^[0-9]+$'") {
 		t.Error("会话腿 credential_id 缺数字守卫 CAST（TEXT 列直接 ::bigint 会 22P02）")
 	}
-	// 探针排除谓词必须保留（885 之后它是**唯一的**防御腿：v1 腿没了，
+	// 探针排除谓词必须保留（890 之后它是**唯一的**防御腿：v1 腿没了，
 	// 它是唯一挡住探针/自检行污染样本的地方）。
 	if !strings.Contains(body, "NOT IN ('self_check', 'node_probe', 'system_health')") {
-		t.Error("探针排除谓词丢失：探针/自检行会污染成功率样本（885 之后它是唯一的防御）")
+		t.Error("探针排除谓词丢失：探针/自检行会污染成功率样本（890 之后它是唯一的防御）")
 	}
 	// 函数签名与默认值不变：调用点传参 (id, raw_model, 50, 3) 逐位对应。
 	if !strings.Contains(body, "p_sample_n      INT DEFAULT 50") ||

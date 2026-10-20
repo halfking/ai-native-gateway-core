@@ -570,7 +570,7 @@ func (api *SessionDetailV2API) resolveSessionID(
 		      -- 历史行已被 promote 进母表；单腿母表只能解析 8h 前的
 		      -- gw_session_id，热窗内反向臂恒 miss。
 		      --
-		      -- 2026-10-20（迁移 885）：v1 族整体退役 ⇒ 原来的两条 v1 腿
+		      -- 2026-10-20（迁移 890）：v1 族整体退役 ⇒ 原来的两条 v1 腿
 		      -- （_request_logs_hot ∪ _request_logs）删除。会话族是唯一事实源，
 		      -- 仍以 gw_session_id 形式寻址的旧客户端在会话族里查不到就是
 		      -- 查不到（errSessionNotFound / 404），与其它读端一致。

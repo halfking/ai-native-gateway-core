@@ -47,16 +47,16 @@ func TestDataLifecycleTrendServesBothFamiliesWithFaithfulPredicate(t *testing.T)
 			sql := stripSQLComments(dataLifecycleTrendSQL(tc.tenantFilter))
 			bodies := sql
 
-			// ★ 2026-10-20（迁移 885，v1 族真删）：**跨族**这件事本身退役了。
+			// ★ 2026-10-20（迁移 890，v1 族真删）：**跨族**这件事本身退役了。
 			// 原来的两腿是「v1 bodies 视图腿（冻结点之前的停写前历史）」+
 			// 「会话族腿」；v1 族被 DROP ⇒ v1 腿必然 42P01 ⇒ 它必须消失。
 			// 冻结点 db.V1FreezeCutoffSQL 此刻是常数 '-infinity'（db 侧
-			// v1_freeze_cutoff.go 的 885 注释），所以会话腿覆盖全部时间，
+			// v1_freeze_cutoff.go 的 890 注释），所以会话腿覆盖全部时间，
 			// 与删掉 v1 腿之前的实际取值**逐字相同**（v1 腿在冻结点之下恒空）。
 			//
 			// ⇒ 本门从「两条腿都必须在场」**反转**为「v1 族关系名必须不在场」。
 			if hits := retiredV1RelationsInSQL(bodies); len(hits) > 0 {
-				t.Errorf("压缩率的 v1 腿仍出现已退役 v1 族关系名 %v —— v1 族已随 885 被 DROP，读它 = 42P01：\n%s", hits, sql)
+				t.Errorf("压缩率的 v1 腿仍出现已退役 v1 族关系名 %v —— v1 族已随 890 被 DROP，读它 = 42P01：\n%s", hits, sql)
 			}
 			// 就地阳性对照：同一把尺子必须能认出 v1 形态（否则上面那条恒绿）。
 			if hits := retiredV1RelationsInSQL("FROM request_logs_bodies_with_current_month rb"); len(hits) == 0 {
@@ -97,10 +97,10 @@ func TestDataLifecycleScopedBranchUsesExistenceNotJoin(t *testing.T) {
 	// 带租户那一支要数的是「有多少轮带出站正文」——存在性问题，EXISTS 就够，
 	// 且天然免疫镜像双生（本地实测 11,711 个 request_id 同时存在于两族）。
 	// 换回 JOIN 形态必须先撞这里：那会让 COUNT 随双生膨胀。
-	// ★ 2026-10-20（迁移 885）：跨族的 v1 腿退役 ⇒ EXISTS 分支从 2 个
+	// ★ 2026-10-20（迁移 890）：跨族的 v1 腿退役 ⇒ EXISTS 分支从 2 个
 	// （v1 腿 + 会话族腿）收敛为 **1 个**（只剩会话族腿）。
 	if got := countOccurrences(scoped, "EXISTS (SELECT 1 FROM"); got != 1 {
-		t.Errorf("带租户那一支有 %d 个 EXISTS 分支，期望 1（v1 腿已随 885 退役，只剩会话族腿）：\n%s", got, scoped)
+		t.Errorf("带租户那一支有 %d 个 EXISTS 分支，期望 1（v1 腿已随 890 退役，只剩会话族腿）：\n%s", got, scoped)
 	}
 	if !strings.Contains(scoped, dataLifecycleCompressedExists) {
 		t.Errorf("带租户那一支没有内嵌 dataLifecycleCompressedExists：\n%s", scoped)

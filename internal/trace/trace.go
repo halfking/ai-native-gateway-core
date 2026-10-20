@@ -480,7 +480,7 @@ func (r *RedisRecorder) FlushToPG(ctx context.Context, db *pgxpool.Pool, request
 		return err
 	}
 
-	// ★ 2026-10-20（迁移 885，v1 族退役）：原先在写门开着时还会追加一条
+	// ★ 2026-10-20（迁移 890，v1 族退役）：原先在写门开着时还会追加一条
 	// 「回退 legacy 热表」的 UPDATE。v1 族被整体 DROP 后那条语句必然 42P01
 	// ⇒ 删除。写门在本函数里**不再**决定写哪一族：trace_events 的唯一归宿
 	// 是会话族（session_turns_hot / session_turns 两面都试）。
@@ -607,7 +607,7 @@ func LoadFromPG(ctx context.Context, db *pgxpool.Pool, requestID string) (*Reque
 	if db == nil {
 		return nil, nil
 	}
-	// ★ 2026-10-20（迁移 885，v1 族退役）：原先的第二条查询（v1 热表 ∪ v1 母表）
+	// ★ 2026-10-20（迁移 890，v1 族退役）：原先的第二条查询（v1 热表 ∪ v1 母表）
 	// **整条删除**——v1 族被整体 DROP 后它必然 42P01，而同一条语句里的
 	// 会话族腿已经覆盖了两个存储面（hot ∪ 父表）。
 	queries := []string{

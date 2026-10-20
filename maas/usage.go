@@ -60,7 +60,7 @@ func ClampUsageLimit(limit int) int {
 // requestLogsSource keeps usage queries working during upgrades where the
 // optional union view has not been created yet.
 //
-// ★ 2026-10-20（迁移 885，v1 族最终删除）：**两个分支合并成一个**。
+// ★ 2026-10-20（迁移 890，v1 族最终删除）：**两个分支合并成一个**。
 //
 // 原实现对 `days <= 7` 返回 `_request_logs_hot AS r`（v1 族的独立热表），
 // 对 `days > 7` 返回 `request_logs_with_current_month AS r`（canonical 视图）。
@@ -75,7 +75,7 @@ func ClampUsageLimit(limit int) int {
 // ⇒ 恒返回 canonical 视图。
 //
 // ⚠ 口径变化（写在这里，免得被当成纯重构）：canonical 视图不含
-// **镜像链建立之前的历史**（那批行只存在于 v1 族，已随 885 删除）⇒
+// **镜像链建立之前的历史**（那批行只存在于 v1 族，已随 890 删除）⇒
 // 7 天窗的计数会变少——那不是 bug，是「那段历史已经不在库里了」。
 //
 // The subquery MUST be aliased because PostgreSQL requires every FROM

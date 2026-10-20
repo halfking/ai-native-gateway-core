@@ -92,10 +92,10 @@ func TestNullPaddedFamilyHitsAreVisible(t *testing.T) {
 		t.Fatalf("补位列清单为空（实测 6 列，由 db.RequestLogsViewPaddedSessionColumns() 派生）：" +
 			"判据退化成「没有命中」，下面的报告与结论全部无效")
 	}
-	// ★ 885 之后（2026-10-20）：**分类表为空是正确状态**，不是「无分类可报」。
+	// ★ 890 之后（2026-10-20）：**分类表为空是正确状态**，不是「无分类可报」。
 	//
 	// 原来这里是一条地板（分类表为空 ⇒ Fatal），因为那时停写分级表覆盖了全部
-	// v1 读方。885 之后 v1 族被物理删除 ⇒ 读方总体归零 ⇒ 分级表随之清空。
+	// v1 读方。890 之后 v1 族被物理删除 ⇒ 读方总体归零 ⇒ 分级表随之清空。
 	//
 	// ⇒ 地板翻成：**报告必须为空**（没有 v1 读方 ⇒ 没有 null-padded 族的成员），
 	// 而「抽取器还有效」这条能力由下面的**阳性对照**守住。
@@ -103,7 +103,7 @@ func TestNullPaddedFamilyHitsAreVisible(t *testing.T) {
 	// ⚠ 没有阳性对照的话，「报告为空」与「抽取器坏了」无法区分 —— 那正是
 	// 201 号 §102 记的那类恒真陷阱。
 	if len(requestLogsStopWriteClassification) == 0 {
-		t.Logf("★ 885 之后停写分级表为空（v1 族已物理删除）—— 这是正确状态，" +
+		t.Logf("★ 890 之后停写分级表为空（v1 族已物理删除）—— 这是正确状态，" +
 			"本门改守「报告为空 + 抽取器仍有效」。")
 	}
 
@@ -143,9 +143,9 @@ func TestNullPaddedFamilyHitsAreVisible(t *testing.T) {
 	}
 	sort.Slice(rows, func(i, j int) bool { return rows[i].file < rows[j].file })
 
-	// ★ 885 之后（2026-10-20）：报告**必须为空**（没有 v1 读方 ⇒ 没有该族成员）。
+	// ★ 890 之后（2026-10-20）：报告**必须为空**（没有 v1 读方 ⇒ 没有该族成员）。
 	//
-	// 原来这里是一条「报告不得为空（实测 14）」的下限。885 之后该族没有成员。
+	// 原来这里是一条「报告不得为空（实测 14）」的下限。890 之后该族没有成员。
 	// ⇒ 下限翻成：**空必须是因为抽取器还有效**，由下面的阳性对照证明。
 	if len(rows) > 0 {
 		var names []string
@@ -153,7 +153,7 @@ func TestNullPaddedFamilyHitsAreVisible(t *testing.T) {
 			names = append(names, r.file)
 		}
 		sort.Strings(names)
-		t.Errorf("`%s` 族仍有 %d 个成员 —— 885 之后没有 v1 读方：\n  %s",
+		t.Errorf("`%s` 族仍有 %d 个成员 —— 890 之后没有 v1 读方：\n  %s",
 			familyViewNullPadded, len(rows), strings.Join(names, "\n  "))
 	}
 
@@ -299,10 +299,10 @@ func TestNullPaddedFamilyHitsAreVisible(t *testing.T) {
 // 哪些命中是噪音」变成一份有名有姓的清单**：本门**不能**判 SQL-LIT 那一半
 // （跨表 `id` 分不出来），所以这一半也不能自动接受。
 var nullPaddedNonSqlOnlyJustified = map[string]string{
-	// ★ 2026-10-20（迁移 885，v1 族真删）：本表**已清空**。
+	// ★ 2026-10-20（迁移 890，v1 族真删）：本表**已清空**。
 	//
 	// 五条登记的对象都是「被分类器分进 reads_view_with_null_padded_predicate 族的
-	// 文件」——而 885 之后 **没有任何生产文件再读 v1** ⇒ 那个族**没有成员**
+	// 文件」——而 890 之后 **没有任何生产文件再读 v1** ⇒ 那个族**没有成员**
 	// ⇒ 「已证假阳性」的清单随之清空。
 	//
 	// ⚠ 本表**保留**（不删）：它守的是「凡被本族收下的命中，若其 via 列在任何

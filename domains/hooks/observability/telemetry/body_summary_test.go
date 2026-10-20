@@ -13,10 +13,10 @@ import (
 	"github.com/kaixuan/llm-gateway-go/settings"
 )
 
-// ★ 2026-10-20（迁移 885，v1 族退役）：本文件整体**改指**。
+// ★ 2026-10-20（迁移 890，v1 族退役）：本文件整体**改指**。
 //
 // 被改指的对象：「v1 正文族（_request_logs_bodies_hot）的写入路径」——
-// upsertRequestLogBodies 随 885 整条删除 ⇒ 本包**不再有任何 PG 正文写入**，
+// upsertRequestLogBodies 随 890 整条删除 ⇒ 本包**不再有任何 PG 正文写入**，
 // 正文落点迁到会话族（session_bodies / session_bodies_hot，由
 // internal/sessionv2mirror 承接）。
 //
@@ -172,7 +172,7 @@ func requireNoBodyStatement(t *testing.T, statements []string) {
 		"录制器一条语句都没抓到 ⇒ 下面的否定断言是假绿（检查没跑成 ≠ 检查通过）")
 	for _, statement := range statements {
 		require.NotContains(t, statement, "_request_logs_bodies",
-			"v1 正文族随迁移 885 退役，本包不得再写正文表")
+			"v1 正文族随迁移 890 退役，本包不得再写正文表")
 		require.NotContains(t, statement, "request_body",
 			"正文列不属于本包的写路径（正文落点归会话族）")
 		require.NotContains(t, statement, "response_body",
@@ -185,7 +185,7 @@ func requireNoBodyStatement(t *testing.T, statements []string) {
 // TestUpdateRequestLog_BodiesSummaryModeWritesNoBodyRow（★ 改指）：
 // 摘要模式开着时，updateRequestLog **不得**发出任何正文语句。
 //
-// 旧门断言的是「摘要信封被写进 _request_logs_bodies_hot」——该落点随 885
+// 旧门断言的是「摘要信封被写进 _request_logs_bodies_hot」——该落点随 890
 // 删除 ⇒ 断言对象已不存在。
 //
 // 改指后的不变式（仍成立、仍有牙）：摘要模式**不得改变写路径**——
@@ -226,7 +226,7 @@ func TestUpdateRequestLog_BodiesSummaryModeWritesNoBodyRow(t *testing.T) {
 // （默认部署形态）同样不写正文——且**正文的大小/有无不得改变写路径**。
 //
 // 旧门（TestUpdateRequestLog_BodiesFullModeUnchanged）守的是「full 模式把
-// 正文原样落库」；落点已随 885 删除 ⇒ 断言对象已不存在。
+// 正文原样落库」；落点已随 890 删除 ⇒ 断言对象已不存在。
 //
 // 改指后保留的是它的**形状**（三档正文：超大 / 小 / 缺失）：三档必须产出
 // **同一条**语句集合——正文内容不得影响本包的写路径。

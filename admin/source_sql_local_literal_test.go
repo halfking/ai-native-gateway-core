@@ -63,7 +63,7 @@ func TestSourceFamilyLocalUnionProof(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// ★ 2026-10-20（迁移 885，v1 族真删）：tenant stats 的四臂收敛成两臂
+	// ★ 2026-10-20（迁移 890，v1 族真删）：tenant stats 的四臂收敛成两臂
 	// （会话 hot ∪ 母表）⇒ 它的族从「混合（会话 + 基表）」变成
 	// **「只读会话族」**（familySessionOnly）。
 	//
@@ -82,7 +82,7 @@ func TestSourceFamilyLocalUnionProof(t *testing.T) {
 			t.Errorf("tenant stats SQL（writeEnabled=%v）不是「只有会话族两腿」的 UNION：\n%s", enabled, query)
 		}
 		if hits := retiredV1RelationsInSQL(query); len(hits) > 0 {
-			t.Errorf("tenant stats SQL（writeEnabled=%v）仍引用已退役 v1 族关系名 %v —— v1 族已随 885 被 DROP：\n%s",
+			t.Errorf("tenant stats SQL（writeEnabled=%v）仍引用已退役 v1 族关系名 %v —— v1 族已随 890 被 DROP：\n%s",
 				enabled, hits, query)
 		}
 	}
@@ -97,7 +97,7 @@ func TestSourceFamilyProofIsFileScoped(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// ★ 2026-10-20（迁移 885）：**按路径的证明已退役**（见
+	// ★ 2026-10-20（迁移 890）：**按路径的证明已退役**（见
 	// sourceFamilyForFile 的头注）⇒ 这道门的形态从「路径相关的证明不许
 	// 泄漏」换成「**分类不得依赖路径**」。
 	//

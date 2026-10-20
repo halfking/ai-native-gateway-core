@@ -12,7 +12,7 @@ import (
 // 判据同层：断言驱动包级 SQL 变量——它们就是 FetchBySession 实际发给
 // PostgreSQL 的文本。
 //
-// ★ 2026-10-20（迁移 885，v1 族整体退役）：本门**反转**了 v1 那一段。
+// ★ 2026-10-20（迁移 890，v1 族整体退役）：本门**反转**了 v1 那一段。
 //
 // 原来这里断言「v1 回退腿必须存在」（historyV1SQL 必须含
 // "FROM _request_logs rl" / "_request_logs_bodies rb" / "rl.gw_session_id = $1"）。
@@ -59,7 +59,7 @@ func TestS3Wave2HistorySources(t *testing.T) {
 		"request_logs_bodies",
 	} {
 		if strings.Contains(s, v1) {
-			t.Errorf("会话族 SQL 里出现了 v1 族引用 %q —— v1 族已被迁移 885 DROP，"+
+			t.Errorf("会话族 SQL 里出现了 v1 族引用 %q —— v1 族已被迁移 890 DROP，"+
 				"任何提到它的语句整条 42P01（不是那条腿失败）⇒ 历史重建在每次审计里都会炸。",
 				v1)
 		}

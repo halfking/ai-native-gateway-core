@@ -26,7 +26,7 @@ import (
 // `pg_column_size` 的列值，只能 JOIN + `DISTINCT ON`；这边只要「有没有」。
 // 两处形态不同不是不一致，是各自的最省形态。
 //
-// 2026-10-20（迁移 885）：v1 族整体退役 ⇒ 跨族的 v1 腿删除，只剩会话族
+// 2026-10-20（迁移 890）：v1 族整体退役 ⇒ 跨族的 v1 腿删除，只剩会话族
 // 一条腿。会话族的「无正文」是 jsonb null 而不是 SQL NULL，所以判据用
 // db.SessionBodiesHasOutboundPredicate（IS NOT NULL **且** <> 'null'::jsonb），
 // 裸 IS NOT NULL 在会话族上是恒真（会把当天每一个 turn 都算成压缩过）。
@@ -72,7 +72,7 @@ type dailyGrowth struct {
 // 去掉列膨胀之后的等价源。⚠ 这不是「换个便宜表」，是**逐条核对过视图语义**的结果，
 // 第一版我按「视图 = v1 减去与 session_turns 重复的部分」去写，数字错了近 4 倍。
 //
-// 视图在 885 之前的真实构成（pg_get_viewdef 实读，560 行）:
+// 视图在 890 之前的真实构成（pg_get_viewdef 实读，560 行）:
 //
 //	leg 1  FROM session_turns_hot  t LEFT JOIN session_turn_details_hot d
 //	leg 2  FROM session_turns      t LEFT JOIN session_turn_details     d
@@ -86,7 +86,7 @@ type dailyGrowth struct {
 //
 //		会话族（hot ∪ 父表分区）∪（v1 里没被会话族覆盖的那些行）
 //
-// 2026-10-20（迁移 885）：v1 族整体退役 ⇒ leg 3 随之消失，canonical 视图
+// 2026-10-20（迁移 890）：v1 族整体退役 ⇒ leg 3 随之消失，canonical 视图
 // 变成 session-only 的两臂体（leg 1/2），本函数去掉自己的 v1 臂之后与
 // 视图**逐条等价**（两臂的投影文本与 710/734/815/816/817/824 装出来的
 // 逐字相同，118 列同名同序）。
@@ -160,7 +160,7 @@ func dataLifecycleCanonicalSegmentsSQL(tenantFilter string) string {
 		       sz.total_size AS table_size
 		  FROM agg a
 		  CROSS JOIN grand g
-		  -- 2026-10-20（迁移 885）：v1 族退役 ⇒ 尺寸源换成会话族母表。
+		  -- 2026-10-20（迁移 890）：v1 族退役 ⇒ 尺寸源换成会话族母表。
 		  -- ⚠ pg_total_relation_size 对**分区父表**返回 0（父表自身没有存储），
 		  --   v1 母表当年也是分区父表、同样是 0 ⇒ 这个数字换源前后**逐字相同**，
 		  --   没有引入新的口径。若要报真实占用得改成按 pg_partition_tree 求和，
@@ -215,9 +215,9 @@ func dataLifecycleTrendSQL(tenantFilter string) string {
 				-- 「没有正文」（实测 11,420 行），裸 IS NOT NULL 恒真 ⇒ 会把
 				-- 当天**每一个** turn 都算成压缩过（实测 993 vs 真实 250）。
 				--
-				-- 2026-10-20（迁移 885）：v1 腿（冻结点及之前的停写前历史）随 v1
+				-- 2026-10-20（迁移 890）：v1 腿（冻结点及之前的停写前历史）随 v1
 				-- 族退役而删除。冻结点本身已是常数 '-infinity'（db/v1_freeze_cutoff.go
-				-- 的 885 注释），所以剩下的会话腿覆盖全部时间，与删掉 v1 腿之前的
+				-- 的 890 注释），所以剩下的会话腿覆盖全部时间，与删掉 v1 腿之前的
 				-- 实际取值**逐字相同**（v1 腿在冻结点之下恒空）。
 				SELECT request_id, ts, (` + dbpkg.SessionBodiesHasOutboundPredicate("s") + `) AS has_outbound
 				  FROM public.session_bodies_unified s
@@ -475,7 +475,7 @@ func (h *Handler) handleDataLifecycleCleanupPreview(w http.ResponseWriter, r *ht
 
 	var resp cleanupPreviewResponse
 	err := h.db.QueryRow(ctx, `
-		-- 2026-10-20（迁移 885）：v1 族退役 ⇒ 尺寸源与分母都换成会话族母表。
+		-- 2026-10-20（迁移 890）：v1 族退役 ⇒ 尺寸源与分母都换成会话族母表。
 		-- pg_total_relation_size 对分区父表返回 0（父表自身无存储），v1 母表
 		-- 当年同理 ⇒ 换源前后这个估算值**逐字相同**。
 		SELECT 

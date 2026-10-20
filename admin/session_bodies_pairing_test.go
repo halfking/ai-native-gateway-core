@@ -122,7 +122,7 @@ func TestSessionBodiesBatchSQLIsNotALefiJoin(t *testing.T) {
 	if got := strings.Count(sessionBodiesByRequestIDSQL, "session_bodies"); got != 2 {
 		t.Errorf("byRequestID SQL must read BOTH session family legs (hot ∪ parent), got %d:\n%s", got, sessionBodiesByRequestIDSQL)
 	}
-	// ★ 2026-10-20（迁移 885，v1 族真删）：这两个变体原来钉住 v1 视图，
+	// ★ 2026-10-20（迁移 890，v1 族真删）：这两个变体原来钉住 v1 视图，
 	// 随 v1 DROP 一并退役 ⇒ 它们的取数源换成**会话族正文源**。
 	// ⇒ 判据从「必须读 v1 视图」**反转**为「必须读会话族两腿，且不得再
 	// 出现 v1 族关系名」。
@@ -137,7 +137,7 @@ func TestSessionBodiesBatchSQLIsNotALefiJoin(t *testing.T) {
 			t.Errorf("%s SQL must read BOTH session family legs (hot ∪ parent), got %d:\n%s", name, got, sql)
 		}
 		if hits := retiredV1RelationsInSQL(sql); len(hits) > 0 {
-			t.Errorf("%s SQL must not reference the retired v1 family %v —— v1 族已随 885 被 DROP，读它 = 42P01:\n%s", name, hits, sql)
+			t.Errorf("%s SQL must not reference the retired v1 family %v —— v1 族已随 890 被 DROP，读它 = 42P01:\n%s", name, hits, sql)
 		}
 	}
 	// 就地阳性对照：同一把尺子必须能认出 v1 形态（否则上面那条恒绿）。

@@ -12,7 +12,7 @@ import (
 
 // errV1FamilyRetired 是「v1 族已退役」的唯一错误出口。
 //
-// ★ 2026-10-20（迁移 885，v1 族整体退役）：v1 族（`_request_logs*`）被 DROP，
+// ★ 2026-10-20（迁移 890，v1 族整体退役）：v1 族（`_request_logs*`）被 DROP，
 // 任何提到它的语句都会 42P01。而本工具的**全部存在意义**就是「v1 vs 会话族」
 // 的对拍——v1 那一侧没了，这个比较就永远得不出结果。
 //
@@ -24,7 +24,7 @@ import (
 //
 // 错误文案里带上族名与迁移号，是为了让看到它的人**立刻知道这不是环境问题**。
 var errV1FamilyRetired = errors.New(
-	"v1 family retired: the v1 request-log family was dropped (migration 885); " +
+	"v1 family retired: the v1 request-log family was dropped (migration 890); " +
 		"this validator's v1 leg no longer exists, so there is nothing to compare")
 
 // V1Turn represents a turn from the (retired) v1 request-log family.
@@ -136,7 +136,7 @@ type sessionDB interface {
 	QueryRow(context.Context, string, ...any) pgx.Row
 }
 
-// ★ 2026-10-20（迁移 885，v1 族整体退役）：原先那两条 v1 bodies 腿
+// ★ 2026-10-20（迁移 890，v1 族整体退役）：原先那两条 v1 bodies 腿
 // （`v1BodyQuery` / `v1BodyQueryParent`）与它们背后的一大段注记已删除。
 //
 // 为什么连注记一起删：那段注记记的是「Citus columnar 分区 + 未命名子查询 ⇒
@@ -159,7 +159,7 @@ func NewSessionLoader(db sessionDB) *SessionLoader {
 
 // LoadV1Turns loads the v1 turns of a session.
 //
-// ★ 2026-10-20（迁移 885，v1 族整体退役）：**这条腿退役**，本方法返回
+// ★ 2026-10-20（迁移 890，v1 族整体退役）：**这条腿退役**，本方法返回
 // errV1FamilyRetired，不发任何查询。
 //
 // 为什么不把 v1 那一腿改指会话族再继续比：那会让工具**拿自己比自己**
@@ -394,7 +394,7 @@ func (l *SessionLoader) LoadV2Session(ctx context.Context, tenantID, sessionID s
 
 // V1TimeRange is the span of rows that actually exist for a tenant.
 //
-// ★ 2026-10-20（迁移 885，v1 族整体退役）：名字里的 "V1" 保留了——
+// ★ 2026-10-20（迁移 890，v1 族整体退役）：名字里的 "V1" 保留了——
 // 调用点（main.go 的批处理流程、window_guard_test.go）都不在本轮范围内，
 // 改名会让它们编译不过。但**它描述的对象已经退役**：v1 族被 DROP ⇒
 // LoadV1TimeRange 现在返回 errV1FamilyRetired ⇒ 这个结构不再被填出。
@@ -415,7 +415,7 @@ type V1TimeRange struct {
 // report over a truncated window reads exactly like a parity report over the
 // window that was asked for.
 //
-// ★ 2026-10-20（迁移 885，v1 族整体退役）：**这条腿退役**，本方法返回
+// ★ 2026-10-20（迁移 890，v1 族整体退役）：**这条腿退役**，本方法返回
 // errV1FamilyRetired。
 //
 // 为什么连「把窗口守卫改问会话族」都不做：那个守卫（WindowExceedsV1Data）
@@ -506,7 +506,7 @@ func endDayExclusiveBound(namedEndDay time.Time) time.Time {
 
 // LoadSessionsInRange loads session IDs within a date range for batch validation.
 //
-// ★ 2026-10-20（迁移 885，v1 族整体退役）：**这条腿退役**，本方法返回
+// ★ 2026-10-20（迁移 890，v1 族整体退役）：**这条腿退役**，本方法返回
 // errV1FamilyRetired（候选集原本来自 v1 族的那张表，而它已被 DROP）。
 //
 // 为什么不把候选集改问会话族：候选集是**为 v1↔v2 对拍挑靶子**用的，
@@ -517,7 +517,7 @@ func (l *SessionLoader) LoadSessionsInRange(ctx context.Context, tenantID string
 	return nil, errV1FamilyRetired
 }
 
-// ★ 2026-10-20（迁移 885，v1 族整体退役）：原先那条构造候选集 SQL 的
+// ★ 2026-10-20（迁移 890，v1 族整体退役）：原先那条构造候选集 SQL 的
 // 纯函数（buildSessionRangeQuery）已删除——它唯一的调用点
 // （LoadSessionsInRange）随 v1 候选集一起退役，而留着一条没人调用的
 // SQL 构造函数只会让人以为这条路径还活着。

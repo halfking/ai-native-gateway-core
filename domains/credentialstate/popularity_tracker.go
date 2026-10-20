@@ -82,7 +82,7 @@ func (t *ModelPopularityTracker) refresh(ctx context.Context) error {
 
 	// 2026-07-05 migration 341: 查询热表（1 小时窗口完全在热表范围内）
 	//
-	// ★ 885（v1 族退役）：源换成会话族热腿（v1 热表已 DROP）。client_model 在
+	// ★ 890（v1 族退役）：源换成会话族热腿（v1 热表已 DROP）。client_model 在
 	// 会话族里同名同义（来自 session_turn_details 特征层）。
 	//
 	// ⚠ 顺带修一个**既有**缺陷：这条语句原来按 created_at 过滤，而 v1 热表

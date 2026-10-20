@@ -18,7 +18,7 @@ import (
 // auto-route endpoints return is **not measured** by the request being served —
 // it is produced later by bg.AutoRouteSettleWorker, which fills in the outcome
 // by joining that worker's selection row back to the turns table the worker
-// is reading (2026-10-20 迁移 885 之后是会话族 `session_turns_hot`；
+// is reading (2026-10-20 迁移 890 之后是会话族 `session_turns_hot`；
 // `settleBatch` 把 selection 行接回同一张 turns 表，键是 request_id).
 // The cohort baselines the reward normalises against come from the same table
 // (`loadTaskBaselines`: percentiles over the same turns table).

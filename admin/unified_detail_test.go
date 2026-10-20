@@ -55,13 +55,13 @@ func TestPGBodyReaderResolvesClientRequestIDToCanonicalID(t *testing.T) {
 	require.NoError(t, err)
 	defer mock.Close()
 
-	// ★ 2026-10-20（迁移 885，v1 族退役）：元数据解析的两条腿都读**会话族**
+	// ★ 2026-10-20（迁移 890，v1 族退役）：元数据解析的两条腿都读**会话族**
 	// 原生源（db.SessionFamilyTurnsSourceSQL：hot ∪ 母表 + 734 details 层）。
 	//
 	// 原来的形态是四条腿：`_request_logs_hot`（request_id）→
 	// `_request_logs_hot`（client_request_id）→ canonical 视图（request_id）
 	// → canonical 视图（client_request_id）。v1 族被 DROP 之后那四条腿里的
-	// 两条（v1 热表）根本不存在，另两条（canonical 视图）在 885 之后**就是**
+	// 两条（v1 热表）根本不存在，另两条（canonical 视图）在 890 之后**就是**
 	// 会话族两臂体 ⇒ 走视图等于把同一份会话族数据查两遍。
 	//
 	// ⇒ 现在是两条腿，都在会话族原生源上。判据用**结构**（两腿 + 关系名），
@@ -98,7 +98,7 @@ func TestPGBodyReaderFillsPartialBodiesFromSessionTurns(t *testing.T) {
 	require.NoError(t, err)
 	defer mock.Close()
 
-	// ★ 2026-10-20（885）：元数据腿与正文腿都从 v1 切到会话族；第三条腿
+	// ★ 2026-10-20（890）：元数据腿与正文腿都从 v1 切到会话族；第三条腿
 	// （session_turns 补空）不变。
 	metaCols := []string{
 		"request_id", "tenant_id", "gw_session_id", "gw_task_id", "client_model", "request_status", "success", "latency_ms",
@@ -132,7 +132,7 @@ func TestPGBodyReaderOmitBodySkipsBodyQueries(t *testing.T) {
 	require.NoError(t, err)
 	defer mock.Close()
 
-	// ★ 2026-10-20（885）：元数据腿从 v1 热表切到会话族原生源。
+	// ★ 2026-10-20（890）：元数据腿从 v1 热表切到会话族原生源。
 	metaCols := []string{
 		"request_id", "tenant_id", "gw_session_id", "gw_task_id", "client_model", "request_status", "success", "latency_ms",
 	}
@@ -434,7 +434,7 @@ func TestPGBodyReader_ClientRequestIDCollision_RespectsTenantScope(t *testing.T)
 	require.NoError(t, err)
 	defer mock.Close()
 
-	// ★ 2026-10-20（885）：元数据腿从「v1 热表 + canonical 视图」四条腿
+	// ★ 2026-10-20（890）：元数据腿从「v1 热表 + canonical 视图」四条腿
 	// 收敛为「会话族原生源」两条腿。租户谓词（AND tenant_id = $2）仍在，
 	// 这道门守的正是它。
 	metaCols := []string{
@@ -467,7 +467,7 @@ func TestPGBodyReader_ClientRequestIDCollision_AllowsOwnTenant(t *testing.T) {
 	metaCols := []string{
 		"request_id", "tenant_id", "gw_session_id", "gw_task_id", "client_model", "request_status", "success", "latency_ms",
 	}
-	// ★ 2026-10-20（885）：元数据腿读会话族原生源；正文腿读会话族正文源。
+	// ★ 2026-10-20（890）：元数据腿读会话族原生源；正文腿读会话族正文源。
 	// Body tables are keyed only by the canonical request ID; tenant scope was
 	// enforced while resolving that ID from the session-family turns source.
 	mock.ExpectQuery(sessionFamilyTurnsLookupRE(true)).
@@ -503,7 +503,7 @@ func TestPGBodyReader_DefenseInDepth_TenantMismatch(t *testing.T) {
 	metaCols := []string{
 		"request_id", "tenant_id", "gw_session_id", "gw_task_id", "client_model", "request_status", "success", "latency_ms",
 	}
-	// ★ 2026-10-20（885）：元数据腿读会话族原生源。
+	// ★ 2026-10-20（890）：元数据腿读会话族原生源。
 	mock.ExpectQuery(sessionFamilyTurnsLookupRE(true)).
 		WithArgs("client-req-defense", "tenant-a").
 		WillReturnRows(pgxmock.NewRows(metaCols).

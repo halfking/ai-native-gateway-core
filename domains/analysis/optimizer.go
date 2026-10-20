@@ -194,7 +194,7 @@ func (a *OptimizationAdviser) loadStats(ctx context.Context, tenantID, gwSession
 		       ss.total_prompt_tokens, ss.total_completion_tokens,
 		       ss.total_cost_usd, ss.input_cost_usd,
 		       ss.user_intent, ss.primary_model, ss.model_switch_count,
-		       -- ★ 885（v1 族退役）：三条聚合子查询的源从 v1 母表换成**会话族原生源**
+		       -- ★ 890（v1 族退役）：三条聚合子查询的源从 v1 母表换成**会话族原生源**
 		       -- （db.SessionFamilyTurnsForSessionSQL：会话谓词内推到 t.session_id = $1，
 		       -- idx_session_turns_session 可用）。$1 与外层 ss.session_key = $1 是同
 		       -- 一个值（外层 WHERE 保证了这点）⇒ 语义与退役前逐字相同。

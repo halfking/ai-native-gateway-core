@@ -3,7 +3,7 @@
 // 2026-10-08 Phase B：成功 ASR 后把 audio_seconds + credits_charged
 // 写入 v1 宽表（轻量 INSERT，不走完整 telemetry 列对齐）。
 //
-// ★ 2026-10-20（迁移 885，v1 族退役）：v1 族被整体 DROP，且会话族**没有**
+// ★ 2026-10-20（迁移 890，v1 族退役）：v1 族被整体 DROP，且会话族**没有**
 // audio_seconds 列 ⇒ 本 logger 现在是**有文档的 no-op**（见 LogAudioUsage）。
 // 公开接口与调用点不变。
 package streaming
@@ -42,7 +42,7 @@ func (l *pgAudioUsageLogger) LogAudioUsage(ctx context.Context, tenantID, reques
 	if l == nil || l.pool == nil || requestID == "" {
 		return
 	}
-	// ★ 2026-10-20（迁移 885，v1 族退役）：本方法**不再写任何库**。
+	// ★ 2026-10-20（迁移 890，v1 族退役）：本方法**不再写任何库**。
 	//
 	// 原来这里向 v1 宽表族写一行「音频计量行」（audio_seconds +
 	// credits_charged）。v1 族被整体 DROP 后，这个写点**没有去处**：

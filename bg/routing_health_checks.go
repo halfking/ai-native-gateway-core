@@ -48,7 +48,7 @@ type HealthCheckDef struct {
 	SkipWhen func() (bool, string)
 }
 
-// ★ 2026-10-20（迁移 885 + 并行审计轮 D0）：`recordedCostComparability`
+// ★ 2026-10-20（迁移 890 + 并行审计轮 D0）：`recordedCostComparability`
 // **这道前提守卫退役**（连同它唯一的常量用法 `s4ScanSkipReasonStopWrite`
 // 在本文件里的引用）。
 //
@@ -56,7 +56,7 @@ type HealthCheckDef struct {
 // 结构上无法回答 ⇒ 跳过并把『跳过』做成可观测，而不是安静 return 0」。
 //
 // 退役理由（两个前提同时消失，而守卫仍然闭合）：
-//   ① 源已随 885 从 v1 族迁到**会话族**（`db.SessionFamilyTurnsSourceSQL()`，
+//   ① 源已随 890 从 v1 族迁到**会话族**（`db.SessionFamilyTurnsSourceSQL()`，
 //      写入路径无条件）⇒ 「源不再前进」不再成立；
 //   ② 守卫读的是 `settings.RequestLogsWriteEnabled()`，而该键的**代码默认**
 //      已被改成 false（origin/main 的 D0）⇒ 在任何未显式配置它的环境上，
@@ -857,11 +857,11 @@ SELECT
 			// 「有没有新出现的负成本」不可判定；且续轮实测该查询已恒返回 0 行
 			// （表被运维清到 339K 行），每 ~7.5 分钟白扫一次。
 			// 「跳过了」通过 s4ScanSkipMetrics 族可观测，不被读成「没有问题」。
-			// ★ 2026-10-20（885 + D0）：本检查的**前提守卫已退役**
+			// ★ 2026-10-20（890 + D0）：本检查的**前提守卫已退役**
 			// （理由见文件里 recordedCostComparability 的退役记录）⇒
 			// 这条检查**恒执行**。
 			//
-			// 「有没有负成本」现在**是**可判定的问题：源已随 885 迁到会话族，
+			// 「有没有负成本」现在**是**可判定的问题：源已随 890 迁到会话族，
 			// 写入路径无条件 ⇒ 源在前进。
 			//
 			// ⚠ 保留 SkipWhen 的**机制**（不是保留这道守卫）：如果将来某条
@@ -870,7 +870,7 @@ SELECT
 			Query: `
 WITH neg AS (
     SELECT r.credential_id,
-           -- ★ 885（v1 族退役）：源换成会话族（hot ∪ parent，30 天窗必须
+           -- ★ 890（v1 族退役）：源换成会话族（hot ∪ parent，30 天窗必须
            -- 读两个存储面）。模型名列用 rl.raw_model_name —— 会话族里它就是
            -- v1 outbound_model 的同义列（COALESCE(outbound_model, client_model)），
            -- 保留 outbound_model 这个别名是为了外层报文逐字不变。
@@ -878,7 +878,7 @@ WITH neg AS (
            count(*)::int      AS neg_rows,
            sum(r.cost_usd)    AS neg_usd,
            sum(COALESCE(r.cache_read_tokens, 0) - COALESCE(r.prompt_tokens, 0)) AS excess_cache
-           -- ★ 2026-10-20（885 + D0）：**源形态从宽源改成窄源**。
+           -- ★ 2026-10-20（890 + D0）：**源形态从宽源改成窄源**。
            --   旧写法用 db.SessionFamilyTurnsSourceSQL()：那是给「日志列表」型
            --   读方准备的**宽源** —— 118 列投影 + 与 session_turn_details* 的
            --   LEFT JOIN。对本检查（一个窄聚合：6 列、按 2 列分组）它是纯浪费：
@@ -888,7 +888,7 @@ WITH neg AS (
            --       慢查的真正来源不是 turns 表，而是 details 表。
            --   ⇒ 改成直接读会话族两张表、只取本检查真正用到的 6 列。
            --   同款窄读的先例：domains/streaming/anomaly_harvester.go:228。
-           --   配套的索引（cost_usd < 0 的部分索引）见迁移 886。
+           --   配套的索引（cost_usd < 0 的部分索引）见迁移 891。
       FROM (
             SELECT credential_id, raw_model_name, cost_usd,
                    cache_read_tokens, prompt_tokens, ts

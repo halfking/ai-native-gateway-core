@@ -397,7 +397,7 @@ func loadCorrectionScores(ctx context.Context, pool *pgxpool.Pool, sessionID str
 			COALESCE(NULLIF(rl.model_chosen, ''), NULLIF(rl.client_model, ''), '') AS last_model,
 			rl.success,
 			COALESCE(rl.latency_ms, 0) AS last_latency_ms
-		-- ★ 885（v1 族退役）：源换成**会话族原生源**
+		-- ★ 890（v1 族退役）：源换成**会话族原生源**
 		-- （db.SessionFamilyTurnsForSessionSQL：会话谓词内推到 t.session_id = $1，
 		-- idx_session_turns_session 可用）。$1 仍是会话 id，占位符不变。
 		FROM `+db.SessionFamilyTurnsForSessionSQL()+` rl
@@ -546,7 +546,7 @@ func (idx *Index) getHotTop3Canonicals(ctx context.Context) []int {
 
 	rows, err := pool.Query(ctx, `
 		SELECT rl.canonical_id, count(*) as usage_count
-		-- ★ 885（v1 族退役）：源换成**会话族原生源**（hot ∪ parent）。
+		-- ★ 890（v1 族退役）：源换成**会话族原生源**（hot ∪ parent）。
 		-- 原口径是 v1 母表（48h 窗跨过 hot 保留期）⇒ 会话族同款两个存储面。
 		FROM `+db.SessionFamilyTurnsSourceSQL()+` rl
 		WHERE rl.ts > NOW() - INTERVAL '48 hours'

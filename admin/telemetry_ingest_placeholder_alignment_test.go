@@ -19,7 +19,7 @@ import (
 // telemetry-package guard that was installed after the 2026-08-25 client.go
 // incident.
 //
-// ★ 2026-10-20（迁移 885，v1 族退役）：被守的那条 INSERT **换了对象**。
+// ★ 2026-10-20（迁移 890，v1 族退役）：被守的那条 INSERT **换了对象**。
 //
 //	原来：INSERT INTO _request_logs_hot (37 列)  —— v1 宽元数据表
 //	现在：INSERT INTO usage_ledger_hot (19 列) —— 计费行（v1 表已 DROP）
@@ -48,7 +48,7 @@ func TestPersistRequestLogPlaceholderAlignment(t *testing.T) {
 		rest = rest[:j+1]
 	}
 
-	// ★ 被守的 INSERT 已从 v1 宽表换成 usage_ledger 计费行（885）。
+	// ★ 被守的 INSERT 已从 v1 宽表换成 usage_ledger 计费行（890）。
 	sqlStart := strings.Index(rest, "INSERT INTO usage_ledger_hot (")
 	if sqlStart < 0 {
 		t.Fatalf("INSERT INTO usage_ledger_hot not found —— " +

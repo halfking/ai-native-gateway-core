@@ -107,7 +107,7 @@ func TestDualReadValidator_NilPoolSummarize(t *testing.T) {
 //
 // # 为什么这道门存在
 //
-// 迁移 885 把 v1 族整体 DROP 之后，对账（v1 ↔ 会话族）在**语义上**就没有对象了：
+// 迁移 890 把 v1 族整体 DROP 之后，对账（v1 ↔ 会话族）在**语义上**就没有对象了：
 // 差集需要「另一侧」，而另一侧已经不存在。剩下的风险有两个方向：
 //
 //	(a) **还在量**：把「没量」报成「量了 0」——`zero_drift=true`、
@@ -225,7 +225,7 @@ func TestMirrorDriftClassSQLCoversThreeBuckets(t *testing.T) {
 	if !strings.Contains(mirrorDriftClassSQL, "COALESCE(rl.is_auto_request, false)") {
 		t.Fatal("internal_loopback arm must be gated on COALESCE(is_auto_request,false); a NULL is_auto_request is not an internal loopback")
 	}
-	// ★ 2026-10-20（迁移 885，v1 族整体退役）：本函数原先还有**三段**关于
+	// ★ 2026-10-20（迁移 890，v1 族整体退役）：本函数原先还有**三段**关于
 	// 「对账范围 SQL」（mirrorDriftScopeSQL）的断言：
 	//
 	//	- 范围必须反连接会话族的**两条腿**（NOT EXISTS × 2）；

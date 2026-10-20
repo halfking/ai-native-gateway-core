@@ -101,6 +101,8 @@ func TestRunbook14323NotYetLanded(t *testing.T) {
 		"生产上跑的还是 654",
 		"生产行为未变",
 		"installer/internal/dbinit/runner.go",
+		// ⚠★ 这个 885 是**当时的**孤儿表修复号（§143.23 写作时它还没被上游占用），
+		//   与本会话的 v1 族退役迁移（890）/ 配套索引（891）**无关** ⇒ 不做改号。
 		"embeddata/startup/885",
 		"installed_startup_migrations.tsv",
 		"docs/db-changelog.md",

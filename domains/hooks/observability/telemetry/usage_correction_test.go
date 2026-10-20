@@ -16,10 +16,10 @@ import (
 // _request_logs 行从 usage_source='estimated' 修正为 'corrected' 并覆盖
 // token 列。只在 estimated 行生效 —— llm/corrected 行不受影响（幂等）。
 //
-// ★ 2026-10-20（迁移 885，v1 族退役）：本文件整体**改指**。
+// ★ 2026-10-20（迁移 890，v1 族退役）：本文件整体**改指**。
 //
 // 被改指的对象：「v1 宽表 usage_source 列上的 estimated → corrected 状态机」。
-// usage_source 是 v1 族的列，随 885 整族删除 ⇒ CorrectEstimatedUsage 现在
+// usage_source 是 v1 族的列，随 890 整族删除 ⇒ CorrectEstimatedUsage 现在
 // **不改写任何行**（生产注释已写明：它只是历史兼容入口，恒返回 (0, nil)）。
 //
 // 改指后守的两条不变式：

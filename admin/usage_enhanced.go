@@ -69,7 +69,7 @@ type costTrendPlan struct {
 
 // planCostTrend 返回某个 group_by 的取数方案；维度未知时 ok=false。
 //
-// work_type / intent 是「请求侧」维度：原生归属是请求日志族（885 之后是
+// work_type / intent 是「请求侧」维度：原生归属是请求日志族（890 之后是
 // session_turns）。usage_ledger
 // 是计费宽表，只有 20 列（2026-10-03 实测 information_schema），从未投影
 // work_type / gw_session_id —— 在它上面引用必然 42703。
@@ -78,7 +78,7 @@ type costTrendPlan struct {
 //
 //	A. 从 ledger LEFT JOIN 请求日志宽表补列 —— 2M×2M 嵌套循环，30 天窗口
 //	   实测 28s，超过本端点 15s 预算，且随窗口线性劣化；
-//	   （当时的宽表是 v1 家族，2026-10-20 迁移 885 整体退役；
+//	   （当时的宽表是 v1 家族，2026-10-20 迁移 890 整体退役；
 //	   会话族侧同理，session_turns 与 usage_ledger 也没有共同键。）
 //	B. 继续报错让 IsSchemaBehindError 降级 —— 得到 200 + 全 0，而 intent 是
 //	   UsageCost.vue 下拉框里的可选项，用户一点就中招。
@@ -657,7 +657,7 @@ func (h *Handler) usageCacheEconomics(w http.ResponseWriter, r *http.Request) {
 
 	// 主聚合只碰 usage_ledger 真实拥有的四列。
 	// 压缩请求数不在这里算：compression_strategy 只存在于请求日志族
-	// （885 之后是 session_turns），
+	// （890 之后是 session_turns），
 	// 在这里 FILTER 它必然 42703 → 整条查询失败 → IsSchemaBehindError 降级成
 	// 200 + 全 0，而 UsageCost.vue 的缓存经济卡片 6 个指标全渲染 0。
 	// 拿不到就降级整页，比拿错数字更糟：用户看到的是「本月没花钱」。
@@ -671,7 +671,7 @@ func (h *Handler) usageCacheEconomics(w http.ResponseWriter, r *http.Request) {
 		%s
 	`, whereClause)
 
-	// compression_strategy 的原生归属是请求日志族（885 之后是 session_turns）。
+	// compression_strategy 的原生归属是请求日志族（890 之后是 session_turns）。
 	//
 	// 2026-10-18（873 上线后的残余项）：这条查询原先读 canonical 视图
 	// request_logs_with_current_month，30 天窗口**跑不完**——实测 3s 子预算
@@ -706,7 +706,7 @@ func (h *Handler) usageCacheEconomics(w http.ResponseWriter, r *http.Request) {
 	//
 	// 口径变化如实记录：本指标此前**从未返回过真值**（恒为降级的 0），
 	// 因此不存在「与旧值不一致」的回归面；现在是第一次给出真实数字。
-	// 2026-10-20（迁移 885）：v1 族整体退役 ⇒ 取数源从 v1 母表换成会话族
+	// 2026-10-20（迁移 890）：v1 族整体退役 ⇒ 取数源从 v1 母表换成会话族
 	// 母表 session_turns（compression_strategy 在会话族的落点就是这一列，
 	// 真库 information_schema 核对过）。「单腿母表」这条取舍**原样保留**：
 	// 它换来的是 ≤8h 盲区而不是双计，与换源是两件独立的事。

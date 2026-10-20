@@ -109,7 +109,7 @@ func HandleCredentialSuccessRates(db *pgxpool.Pool) http.HandlerFunc {
 // were set in this transaction — on a bare pooled connection the predicate is
 // NULL and the delete silently matches nothing (R38 fixed shape).
 //
-// 2026-10-20（迁移 885，v1 族整体退役）：这个 DELETE **没有等价物**，本函数
+// 2026-10-20（迁移 890，v1 族整体退役）：这个 DELETE **没有等价物**，本函数
 // 变成**空操作**（返回 0，不执行任何语句）。理由是三条，缺一条都会写错：
 //
 //  1. v1 族已删除。原来的目标表不存在 ⇒ 留着这条 DELETE 就是 42P01 ⇒
@@ -159,7 +159,7 @@ func HandleResetCredentialSuccessRate(db *pgxpool.Pool) http.HandlerFunc {
 
 		// Delete failed requests older than 10 minutes to allow immediate recovery
 		//
-		// 2026-10-20（迁移 885）：v1 请求日志族整体退役 ⇒ 这次删除**没有等价物**：
+		// 2026-10-20（迁移 890）：v1 请求日志族整体退役 ⇒ 这次删除**没有等价物**：
 		// 删的是派生日志行（代价为零），而会话族是会话本体（删一行 = 少一轮
 		// 对话）。详见 resetCredentialSuccessRateRows 的头注。
 		// ⇒ 本端点退化为「不删任何行、照常回读当前成功率」。
@@ -193,10 +193,10 @@ func HandleResetCredentialSuccessRate(db *pgxpool.Pool) http.HandlerFunc {
 			"new_rate":    newRate,
 			"new_samples": newSamples,
 			"success":     true,
-			// 消息如实反映「没有删任何行」：v1 请求日志族已退役（迁移 885），
+			// 消息如实反映「没有删任何行」：v1 请求日志族已退役（迁移 890），
 			// 会话族是唯一事实源、不会由本端点裁剪。JSON 的**键集合不变**。
 			"message": "no request rows deleted: the request-log family was retired " +
-				"(migration 885) and the session family is never pruned here — " +
+				"(migration 890) and the session family is never pruned here — " +
 				"the rate below is the current value",
 		})
 	}

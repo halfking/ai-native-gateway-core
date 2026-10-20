@@ -10,7 +10,7 @@ import (
 
 // TestV1WriteLivenessSQLReadsBothFaces 把「读哪两个面」钉住。
 //
-// ★ 2026-10-20（迁移 885，v1 族整体退役）：这道门**反转**了。
+// ★ 2026-10-20（迁移 890，v1 族整体退役）：这道门**反转**了。
 //
 // 原门要求读数必须读 **v1 族的两个面**（`_request_logs_hot` ∪ `_request_logs`），
 // 理由是本地真库父表落后 hot 约 491 分钟，只读一个面会把健康的写腿报成 dead。
@@ -44,7 +44,7 @@ func TestV1WriteLivenessSQLReadsBothFaces(t *testing.T) {
 	// 反过来，族名前缀带下划线 ⇒ 规范视图 public.request_logs（**另一个**关系）
 	// 不会被误伤（下面的负控制钉住这一点）。
 	if containsSub(v1WriteLivenessSQL, "_request_logs") {
-		t.Errorf("存活读数仍然提到 v1 族（_request_logs*）—— 那一族已被迁移 885 整体 DROP，" +
+		t.Errorf("存活读数仍然提到 v1 族（_request_logs*）—— 那一族已被迁移 890 整体 DROP，" +
 			"任何提到它的语句都是 42P01（整条语句失败，不是那条腿失败）")
 	}
 

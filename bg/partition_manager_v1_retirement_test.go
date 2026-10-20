@@ -33,11 +33,11 @@ func goCodeWithoutComments(t *testing.T, path string) string {
 	return buf.String()
 }
 
-// 本文件是**迁移 885（v1 族真删）**在分区管理器侧的退役门。
+// 本文件是**迁移 890（v1 族真删）**在分区管理器侧的退役门。
 //
 // 旧门（2026-10-13 / 迁移 860 轮）守的是「停写 ⇒ v1 族生命周期作业下线」：
 // 前提是**族还在、只是被冻结**，所以门是可逆的（回写 ⇒ 自动恢复维护）。
-// 885 把族（表 + 分区 + 序列 + 只服务它的分区管理函数）**物理删除** ⇒ 前提消失 ⇒
+// 890 把族（表 + 分区 + 序列 + 只服务它的分区管理函数）**物理删除** ⇒ 前提消失 ⇒
 // 维护侧必须**无条件**退役：恢复维护没有对象可维护，继续调用必然 42P01。
 //
 // ⇒ 本文件的门从「条件退役」改成「**无条件退役**」，并且每条负向断言都配一条
@@ -71,11 +71,11 @@ func withV1WriteEnabled(t *testing.T, enabled string) {
 	settings.Global = registry
 }
 
-// v1LifecycleFnNames 是**已随 885 退役**的四个 v1 族生命周期条目。
+// v1LifecycleFnNames 是**已随 890 退役**的四个 v1 族生命周期条目。
 //
 // 这四个函数（ensure_request_logs_partition / ensure_request_logs_bodies_partition /
 // promote_request_logs_hot_to_partition / promote_request_logs_bodies_hot_to_partition）
-// 都被 885 的 DROP 列表删除 ⇒ 885 之后调用必然 42P01（未定义函数）。
+// 都被 890 的 DROP 列表删除 ⇒ 890 之后调用必然 42P01（未定义函数）。
 var v1LifecycleFnNames = map[string]bool{
 	"ensure_request_logs_partition":                true,
 	"ensure_request_logs_bodies_partition":         true,
@@ -83,12 +83,12 @@ var v1LifecycleFnNames = map[string]bool{
 	"promote_request_logs_bodies_hot_to_partition": true,
 }
 
-// TestV1LifecycleSpecsAreUnconditionallyRetired 钉住 885 之后的**无条件**退役：
+// TestV1LifecycleSpecsAreUnconditionallyRetired 钉住 890 之后的**无条件**退役：
 // 无论写开关开还是关，ensure/promote 清单里都**不得**再出现 v1 族条目。
 //
 // 为什么必须是「无条件」：旧实现靠 filterRetiredV1Lifecycle 过滤，而过滤器本身
 // 由 v1LifecycleRetired()（= !写开关）决定 ⇒ 写开关一翻回 true，四条 v1 条目
-// 就会重新出现在清单里，而它们对应的 SQL 函数已被 885 删除 ⇒ 每 tick 一次
+// 就会重新出现在清单里，而它们对应的 SQL 函数已被 890 删除 ⇒ 每 tick 一次
 // 42P01。这条门把「过滤器恒滤 / 过滤器被删 / 条目被删」三种实现都钉成同一个
 // 可观测事实：清单里没有它们。
 //
@@ -99,12 +99,12 @@ func TestV1LifecycleSpecsAreUnconditionallyRetired(t *testing.T) {
 		withV1WriteEnabled(t, writeEnabled)
 		for _, spec := range ensureSpecs() {
 			if v1LifecycleFnNames[spec.fnName] {
-				t.Errorf("写开关=%s 时 ensureSpecs 仍含 v1 族条目 %q —— 885 已删该族与其函数，调用必然 42P01", writeEnabled, spec.fnName)
+				t.Errorf("写开关=%s 时 ensureSpecs 仍含 v1 族条目 %q —— 890 已删该族与其函数，调用必然 42P01", writeEnabled, spec.fnName)
 			}
 		}
 		for _, spec := range promoteSpecs() {
 			if v1LifecycleFnNames[spec.fnName] {
-				t.Errorf("写开关=%s 时 promoteSpecs 仍含 v1 族条目 %q —— 885 已删该族与其函数，调用必然 42P01", writeEnabled, spec.fnName)
+				t.Errorf("写开关=%s 时 promoteSpecs 仍含 v1 族条目 %q —— 890 已删该族与其函数，调用必然 42P01", writeEnabled, spec.fnName)
 			}
 		}
 	}
@@ -114,14 +114,14 @@ func TestV1LifecycleSpecsAreUnconditionallyRetired(t *testing.T) {
 // **恒为 true**，不读写开关。
 //
 // 为什么单独一条：archiveOldRequestLogs 的归档调用（archive_request_logs_default，
-// 同样被 885 删除）就靠这个闸挡在门外。旧实现里它是设置驱动的（!写开关）⇒
+// 同样被 890 删除）就靠这个闸挡在门外。旧实现里它是设置驱动的（!写开关）⇒
 // 那只是**偶然**的护栏：写开关一翻就漏。这里把它钉成恒定，避免「靠设置挡
 // 42P01」这种把故障概率绑在运维配置上的设计。
 func TestV1LifecycleRetiredIsUnconditional(t *testing.T) {
 	for _, writeEnabled := range []string{"true", "false"} {
 		withV1WriteEnabled(t, writeEnabled)
 		if !v1LifecycleRetired() {
-			t.Errorf("写开关=%s 时 v1LifecycleRetired() = false —— 885 之后 v1 族已不存在，退役必须是无条件的", writeEnabled)
+			t.Errorf("写开关=%s 时 v1LifecycleRetired() = false —— 890 之后 v1 族已不存在，退役必须是无条件的", writeEnabled)
 		}
 	}
 }
@@ -130,7 +130,7 @@ func TestV1LifecycleRetiredIsUnconditional(t *testing.T) {
 //
 // 退役了什么：每 tick 调用 `drop_old_request_logs_bodies_partitions($1)` 的那一步
 // （Go 侧函数 dropOldRequestLogsBodiesPartitions + 它在 runCleanup 里的调用点）。
-// 885 把该函数 DROP ⇒ 885 之后每次 tick 都会 42P01。
+// 890 把该函数 DROP ⇒ 890 之后每次 tick 都会 42P01。
 //
 // 判据打在**去掉注释后**的源码上（stripLineComments）：否则本文件自己写的退役
 // 说明（里面就出现了这个函数名）会把门变成永绿。
@@ -142,10 +142,10 @@ func TestV1BodyTTLCleanupCallIsGone(t *testing.T) {
 	code := goCodeWithoutComments(t, "partition_manager.go")
 
 	if strings.Contains(code, "drop_old_request_logs_bodies_partitions") {
-		t.Error("partition_manager.go 仍在调用 drop_old_request_logs_bodies_partitions —— 885 已 DROP 该函数，885 之后每 tick 必然 42P01")
+		t.Error("partition_manager.go 仍在调用 drop_old_request_logs_bodies_partitions —— 890 已 DROP 该函数，890 之后每 tick 必然 42P01")
 	}
 	if strings.Contains(code, "lifecycle.request_logs_bodies_ttl_days") {
-		t.Error("partition_manager.go 仍在读 lifecycle.request_logs_bodies_ttl_days —— 该键服务的对象（v1 正文族）已被 885 删除")
+		t.Error("partition_manager.go 仍在读 lifecycle.request_logs_bodies_ttl_days —— 该键服务的对象（v1 正文族）已被 890 删除")
 	}
 	// 阳性对照：扫描器必须看得见活着的路径。
 	if !strings.Contains(code, "promote_session_bodies_hot_to_partition") {

@@ -175,7 +175,7 @@ func extractData() ([]ExtractedContent, error) {
 		fmt.Sscanf(limitStr, "%d", &limit)
 	}
 
-	// ★ 2026-10-20（迁移 885，v1 族整体退役）：取数改读**会话族**。
+	// ★ 2026-10-20（迁移 890，v1 族整体退役）：取数改读**会话族**。
 	//
 	// 口径对应（v1 → 会话族）：
 	//   request_id    → session_turns.request_id ✔
