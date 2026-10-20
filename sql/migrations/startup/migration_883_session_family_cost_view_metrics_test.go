@@ -58,6 +58,27 @@ func mig883Read(t *testing.T, root, rel string) string {
 	return string(b)
 }
 
+// mig883StripLineComments 去掉 `--` 行注释，只留可执行 SQL。
+//
+// 为什么需要：基线与 `sql/objects/views/*.sql` 里大量出现 `session_turns_hot`
+// 是**注释**（本轮加的说明头、pg_dump 风格的 `-- Name: …` 注释块）。
+// 注释不是关系引用、PG 不会校验它 ⇒ 用整文件文本判会**误报**，
+// 而误报会让门失去可信度（门红了没人当真 ⇒ 门退化成摆设）。
+//
+// 口径：只处理**整行都是注释**的行（`--` 前面只有空白）——
+// 本仓的 SQL 风格里没有行尾注释依赖；若将来出现行尾注释，
+// 这条会**低估**（宁可漏报也不误报），届时再补行尾解析。
+func mig883StripLineComments(content string) string {
+	var out []string
+	for _, line := range strings.Split(content, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "--") {
+			continue
+		}
+		out = append(out, line)
+	}
+	return strings.Join(out, "\n")
+}
+
 // mig883ViewBody 取出文件里某条 CREATE OR REPLACE VIEW 的定义体。
 func mig883ViewBody(t *testing.T, content, viewName string) string {
 	t.Helper()
@@ -146,34 +167,72 @@ func TestMigration883_DownRestoresV1Bodies(t *testing.T) {
 	}
 }
 
-// TestMigration883_CanonicalAndBaselineInSync 钉 ① 的另一半：
-// canonical 视图文件 + 正典 schema dump + baseline schema dump 三处都读会话族，
-// 且两份 01-schema.sql 逐字节相同（deploy/sql/verify-migration.sh 会 diff）。
+// TestMigration883_CanonicalAndBaselineInSync 钉 ① 的另一半。
+//
+// ⚠ **2026-10-20 订正**：这道门的第一版要求
+// 「canonical 视图文件 + 正典 schema dump + baseline schema dump **四处都读会话族**」，
+// 那个前提**是错的** —— 它把「部署形态」与「基线形态」当成了同一件事。
+//
+// 事实（2026-10-20 真库临时库实测）：
+//
+//	· 迁移 883 的 **up 体**（部署形态）读会话族 `session_turns_hot` ✔
+//	· 而**基线**（3 份 `01-schema.sql`）是**逐语句**应用的，`CREATE VIEW` 会
+//	  **急切校验**它引用的关系，而 `session_turns_hot` 是**启动序列**建的
+//	  （`session_turns_hot_bootstrap.sql`，TSV index 9）⇒ **基线时点还不存在**
+//	  ⇒ 基线里只要写 `FROM public.session_turns_hot`，**新装就会报 42P01 并中止整个安装**
+//	  （而**升级路径是绿的** ⇒ 「升级路径绿」≠「新装路径绿」）。
+//
+// ⇒ 正确的分工是：
+//
+//	· **基线副本保留 v1 fallback 体**（基线自建 `public.request_logs` / `request_logs_hot`
+//	  ⇒ 该体在基线时点**有效**）；
+//	· **部署形态由迁移 883 / 884 换上** ⇒ 两条路径跑完启动序列后**形态一致**。
+//
+// 下面这条门现在钉的正是这个分工（而不是第一版那个会破新装的要求）。
+// 另见 `sql/schema/baseline_view_refs_test.go`（基线自洽门，通用版）。
 func TestMigration883_CanonicalAndBaselineInSync(t *testing.T) {
 	root := mig883Tree(t)
 
-	files := []struct {
+	// ① 基线副本 + 「不是部署形态」的视图文件：必须是 v1 fallback 体，
+	//    且**不得**引用启动序列才建的关系。
+	fallbackFiles := []struct {
 		rel string
 	}{
 		{filepath.Join("sql", "objects", "views", "customer_cost_view.sql")},
 		{filepath.Join("sql", "objects", "views", "model_cost_per_task_view.sql")},
 		{filepath.Join("sql", "schema", "01-schema.sql")},
 		{filepath.Join("deploy", "sql", "schemas", "baseline", "01-schema.sql")},
+		{filepath.Join("installer", "cmd", "llm-gw-installer", "embeddata", "01-schema.sql")},
 	}
-	for _, f := range files {
+	for _, f := range fallbackFiles {
 		content := mig883Read(t, root, f.rel)
-		if strings.Contains(content, "FROM public._request_logs rl") {
-			t.Errorf("%s 仍读 v1 族（_request_logs）—— 新装环境会拿到与存量环境不同的视图形状", f.rel)
+		// ⚠ 只看**可执行 SQL**：这些文件里大量出现 `session_turns_hot` 是**注释**
+		// （本轮给 `sql/objects/views/*.sql` 加的说明头、基线里 pg_dump 风格的
+		// `-- Name: …` 注释块）⇒ 用整文件文本判会**误报**。
+		// 注释不是关系引用，PG 不会去校验它 ⇒ 它不构成新装风险。
+		exec := mig883StripLineComments(content)
+		if strings.Contains(exec, "session_turns_hot") {
+			t.Errorf("%s 的**可执行 SQL** 引用了 session_turns_hot —— 它由**启动序列**建、基线时点不存在 ⇒ "+
+				"新装环境会在此报 42P01 并**中止整个安装**（2026-10-20 真库临时库实测）。"+
+				"基线必须保留 v1 fallback 体，部署形态交给迁移换上", f.rel)
 		}
-		if strings.Contains(content, "FROM public.request_logs rl") {
-			t.Errorf("%s 仍读 v1 族（request_logs）", f.rel)
-		}
-		if !strings.Contains(content, "session_turns_hot") {
-			t.Errorf("%s 没有会话族读源", f.rel)
+		if !strings.Contains(exec, "FROM public.request_logs rl") {
+			t.Errorf("%s 不是 v1 fallback 体（缺 FROM public.request_logs rl）—— "+
+				"基线自建 public.request_logs，该体在基线时点有效；形状不明 ⇒ 门失去判别力", f.rel)
 		}
 	}
 
-	// 两份 01-schema.sql 必须逐字节相同
+	// ② 部署形态（迁移 883 的 up 体）必须读会话族 —— 这才是「活指标不再读冻结族」的载体。
+	up := mig883Read(t, root, filepath.Join("sql", "migrations", "startup", mig883Name))
+	if !strings.Contains(up, "session_turns_hot") {
+		t.Errorf("%s 的 up 体没有会话族读源 —— 部署形态没换上，退役族的指标仍是冻结值", mig883Name)
+	}
+	if !strings.Contains(up, "CREATE OR REPLACE VIEW public.customer_cost_view") ||
+		!strings.Contains(up, "CREATE OR REPLACE VIEW public.model_cost_per_task_view") {
+		t.Errorf("%s 的 up 体必须重建这两个视图，否则部署形态换不上", mig883Name)
+	}
+
+	// ③ 两份 01-schema.sql 必须逐字节相同
 	canonical := mig883Read(t, root, filepath.Join("sql", "schema", "01-schema.sql"))
 	baseline := mig883Read(t, root, filepath.Join("deploy", "sql", "schemas", "baseline", "01-schema.sql"))
 	if canonical != baseline {

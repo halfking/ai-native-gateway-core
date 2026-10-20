@@ -7790,7 +7790,6 @@ COMMENT ON COLUMN public.request_logs.canonical_model IS 'Standard/canonical mod
 
 
 --
---
 -- Name: customer_cost_view; Type: VIEW; Schema: public; Owner: -
 --
 
@@ -7817,8 +7816,8 @@ CREATE VIEW public.customer_cost_view AS
     sum(akmc.requests_total) AS total_auto_requests,
     sum(akmc.requests_success) AS total_auto_success,
     ( SELECT count(*) AS count
-           FROM public.session_turns_hot st
-          WHERE ((st.api_key_id = akmc.api_key_id::text) AND (st.is_auto_request = true) AND (st.ts >= (now() - '00:05:00'::interval)) AND (st.success IS NOT NULL))) AS active_concurrent,
+           FROM public.request_logs rl
+          WHERE ((rl.api_key_id = akmc.api_key_id) AND (rl.is_auto_request = true) AND (rl.ts >= (now() - '00:05:00'::interval)) AND (rl.success IS NOT NULL) AND (rl.ts IS NOT NULL))) AS active_concurrent,
     max(akmc.concurrency_limit) AS concurrency_limit,
     avg(
         CASE
@@ -7838,7 +7837,7 @@ CREATE VIEW public.customer_cost_view AS
 -- Name: VIEW customer_cost_view; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON VIEW public.customer_cost_view IS 'Auto route: per-API-Key customer cost dashboard (1h/24h/7d windows + concurrency + scores). active_concurrent is computed live from the session family (session_turns_hot, 5min window) — 883 migrated it off the frozen v1 family.';
+COMMENT ON VIEW public.customer_cost_view IS 'Auto route: per-API-Key customer cost dashboard (1h/24h/7d windows + concurrency + scores). active_concurrent is computed live from request_logs (5min window).';
 
 
 --
@@ -9468,7 +9467,6 @@ ALTER SEQUENCE public.model_aliases_id_seq OWNED BY public.model_aliases.id;
 
 
 --
---
 -- Name: model_cost_per_task_view; Type: VIEW; Schema: public; Owner: -
 --
 
@@ -9485,19 +9483,9 @@ CREATE VIEW public.model_cost_per_task_view AS
             WHEN (sum(requests_total) > 0) THEN ((sum(requests_success))::numeric / (sum(requests_total))::numeric)
             ELSE (0)::numeric
         END AS success_rate,
-    ( SELECT avg(st.latency_ms) AS avg
-           FROM (SELECT st_hot.latency_ms,
-                        st_hot.raw_model_name,
-                        st_hot.success,
-                        st_hot.ts
-                   FROM public.session_turns_hot st_hot
-                 UNION ALL
-                 SELECT st_par.latency_ms,
-                        st_par.raw_model_name,
-                        st_par.success,
-                        st_par.ts
-                   FROM public.session_turns st_par) st
-          WHERE ((st.raw_model_name = mcp.raw_model) AND (st.success = true) AND (st.ts >= (now() - '7 days'::interval)))) AS avg_latency_ms,
+    ( SELECT avg(rl.latency_ms) AS avg
+           FROM public.request_logs rl
+          WHERE ((rl.outbound_model = mcp.raw_model) AND (rl.success = true) AND (rl.ts >= (now() - '7 days'::interval)))) AS avg_latency_ms,
     sum(requests_total) AS total_requests,
     count(DISTINCT api_key_id) AS unique_api_keys
    FROM public.api_key_model_cost mcp
@@ -9509,7 +9497,7 @@ CREATE VIEW public.model_cost_per_task_view AS
 -- Name: VIEW model_cost_per_task_view; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON VIEW public.model_cost_per_task_view IS 'Auto route: per-model aggregated cost for last 7 days. avg_latency_ms is computed live from the session family (session_turns_hot ∪ session_turns) — 883 migrated it off the frozen v1 family.';
+COMMENT ON VIEW public.model_cost_per_task_view IS 'Auto route: per-model aggregated cost for last 7 days';
 
 
 --

@@ -445,6 +445,20 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			// defaults and indexes match 469/478 exactly. 045/422/451 are also
 			// unregistered but fully covered by the baseline (verified live).
 			"852_models_canonical_column_set_reconcile.sql",
+			// 489/490 (wired 2026-10-20): 853 自己在文件头声明依赖
+			// 「489/490_credential_probe_queue_*（队列表本体）」，而那两条**从未**
+			// 登记进本链 ⇒ 新装环境在 853 处报
+			//   ERROR: relation "public.credential_probe_queue" does not exist
+			// 并**中止整个安装**（真库临时库实测；pristine HEAD 同样失败 ⇒ 既有缺陷，
+			// 与 2026-10-20 的 request_logs→session_turns 退役轮无关，但挡住了
+			// 「新装路径可跑通」这个交付物）。
+			// 853 的注释本就写着「once 489/490 create the queue」——事实是它们没被登记。
+			// 489 自称「startup mirror of domain migrations 343/347/349」，490 补齐运行时列；
+			// 两条都幂等（CREATE TABLE IF NOT EXISTS / ADD COLUMN IF NOT EXISTS /
+			// CREATE INDEX IF NOT EXISTS）且自包含（不引用其它关系）⇒ 可直接登记。
+			// 排位：必须在 853 **之前**（853 是 ALTER TABLE 那张表）。
+			"489_credential_probe_queue_startup_backfill.sql",
+			"490_credential_probe_queue_runtime_columns.sql",
 			// 853 (wired 2026-10-12): deploy-chain V360's automatic column on
 			// credential_probe_queue was never mirrored into the startup chain
 			// — no startup/domain migration adds it, yet bg/probe_queue.go's
@@ -1164,6 +1178,20 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			// SessionFamilyTurnsSourceSQL）。⚠ 会话族 api_key_id 是 text 而
 			// api_key_model_cost.api_key_id 是 integer ⇒ 必须显式 ::text。
 			"883_session_family_cost_view_metrics.sql",
+			// 884：把 3 张 **v1 裸母表** 分析视图改读会话族 ——
+			// v_continuation_effectiveness / v_node_switch_analysis /
+			// v_timeout_effectiveness。它们读的是 `_request_logs`（v1 自
+			// 2026-10-13 停写且历史数据已清空 ⇒ 真库恒 0 行、且不报任何错），
+			// 同时是「后期删除 _request_logs」的依赖阻塞项。
+			// 这 3 张是唯一**没有任何 API/Go 代码消费**的 v1 读面。
+			// 6 个细节语义列（is_continuation / cached_response_id /
+			// context_size_tokens / node_switch_count / timeout_mode /
+			// effective_timeout_seconds）在 `session_turn_details` 上都有
+			// （真库 1:1 填满）⇒ 能改读且**不丢能力**；canonical 视图
+			// `request_logs_with_current_month` 不投影这 6 列 ⇒ 只能用会话族直连。
+			// 两条腿 hot ∪ parent UNION ALL（前提：hot ∩ parent 实测无重叠，
+			// 计数型指标不会被数两次）。
+			"884_session_family_v_analytics_views.sql",
 		},
 	}
 }

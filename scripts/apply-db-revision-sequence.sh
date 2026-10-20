@@ -1754,6 +1754,14 @@ files=(
   # ⚠ 会话族 api_key_id 是 text、api_key_model_cost.api_key_id 是 integer
   #   ⇒ 比较必须显式 ::text（否则建视图时报 text = integer）。
   "$ROOT_DIR/sql/migrations/startup/883_session_family_cost_view_metrics.sql"
+  # 884：3 张 v_* 分析视图（v_continuation_effectiveness / v_node_switch_analysis /
+  # v_timeout_effectiveness）从 v1 裸母表改读会话族。它们读 `_request_logs`
+  # （v1 停写且历史已清空 ⇒ 真库恒 0 行、无错误信号），同时是「后期删除
+  # _request_logs」的依赖阻塞项；这 3 张是唯一没有任何 API/Go 代码消费的 v1 读面。
+  # 会话族 `session_turn_details` 上有全部 6 个细节语义列（真库 1:1 填满）
+  # ⇒ 能改读且不丢能力；canonical 视图不投影这 6 列 ⇒ 只能用会话族直连形态。
+  # 两条腿 hot ∪ parent UNION ALL（前提：hot ∩ parent 实测无重叠）。
+  "$ROOT_DIR/sql/migrations/startup/884_session_family_v_analytics_views.sql"
 
   # ── 2026-10-16 孤儿迁移 044 补登（health_source 白名单缺 probe_now）──────
   #

@@ -1,3 +1,20 @@
+-- ⚠️ **本文件不是部署形态的视图定义**，它是 **v1 fallback 体**（两个活指标子查询
+-- 仍读 v1 族 `request_logs`），只在「基线时点」成立。
+--
+-- 为什么基线必须留 v1 体（2026-10-20 实测）：基线 schema 是**逐语句**应用的，
+-- 而 `CREATE VIEW` 会**急切校验**它引用的关系 ⇒ 若这里写成会话族形态
+-- （`session_turns_hot` / `session_turn_details*`），新装环境会在此处报
+-- **42P01: relation "public.session_turns_hot" does not exist** 并中止
+-- （那两张表由**启动序列**的 `session_turns_hot_bootstrap.sql` 与迁移 734 建，
+-- 基线时点还不存在）。升级路径绿是因为那些表早就存在
+-- ⇒ **「升级路径绿」≠「新装路径绿」**。
+--
+-- 部署形态（会话族）由 **迁移 883** 换上：
+-- `sql/migrations/startup/883_session_family_cost_view_metrics.sql`
+-- （5 分钟窗 = hot 单腿、7 天窗 = hot ∪ parent；匹配键 `raw_model_name`；
+--  会话族 `api_key_id` 是 text ⇒ 显式 `::text`）。
+-- 两条路径（全新安装 / 存量升级）跑完启动序列后**形态一致**。
+--
 --
 -- Name: customer_cost_view; Type: VIEW; Schema: public; Owner: -
 --
@@ -25,8 +42,8 @@ CREATE VIEW public.customer_cost_view AS
     sum(akmc.requests_total) AS total_auto_requests,
     sum(akmc.requests_success) AS total_auto_success,
     ( SELECT count(*) AS count
-           FROM public.session_turns_hot st
-          WHERE ((st.api_key_id = akmc.api_key_id::text) AND (st.is_auto_request = true) AND (st.ts >= (now() - '00:05:00'::interval)) AND (st.success IS NOT NULL))) AS active_concurrent,
+           FROM public.request_logs rl
+          WHERE ((rl.api_key_id = akmc.api_key_id) AND (rl.is_auto_request = true) AND (rl.ts >= (now() - '00:05:00'::interval)) AND (rl.success IS NOT NULL) AND (rl.ts IS NOT NULL))) AS active_concurrent,
     max(akmc.concurrency_limit) AS concurrency_limit,
     avg(
         CASE
@@ -46,5 +63,5 @@ CREATE VIEW public.customer_cost_view AS
 -- Name: VIEW customer_cost_view; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON VIEW public.customer_cost_view IS 'Auto route: per-API-Key customer cost dashboard (1h/24h/7d windows + concurrency + scores). active_concurrent is computed live from the session family (session_turns_hot, 5min window) — 883 migrated it off the frozen v1 family.';
+COMMENT ON VIEW public.customer_cost_view IS 'Auto route: per-API-Key customer cost dashboard (1h/24h/7d windows + concurrency + scores). active_concurrent is computed live from request_logs (5min window).';
 

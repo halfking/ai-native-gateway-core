@@ -126,12 +126,27 @@ var sqlReadGuardAllowFiles = map[string]string{
 var sqlReadGuardAllowSQLFiles = map[string]string{
 	"sql/objects/views/request_logs_with_current_month.sql": "LEGIT: v1 回退体（两条臂）视图定义体。⚠️ 它**不是**部署形态——部署形态是 db/request_logs_view_schema.go 的三臂会话体（session_turns_hot ∪ session_turns ∪ v1 臂 + 双反连接去重）。别把本文件当该视图的定义引用（203/204 号都栽在这里，205 号更正）；世代由 db/request_logs_view_dump_generation_test.go 钉住",
 	"sql/objects/views/request_logs_bodies_progress.sql":    "LEGIT: 视图定义体",
-	"sql/objects/views/v_node_switch_analysis.sql":          "DEBT(R47): 视图定义裸母表",
-	// customer_cost_view / model_cost_per_task_view 两条已于 2026-10-20 复核轮
-	// 移除（迁移 883 把两个**活指标**子查询从 v1 冻结族切到会话族后，
-	// 这两个定义体已无裸母表读；由 TestSQLReadGuardWhitelistCurrent 自清洁报出）。
-	"sql/objects/views/v_timeout_effectiveness.sql":                                   "DEBT(R47): 视图定义裸母表",
-	"sql/objects/views/v_continuation_effectiveness.sql":                              "DEBT(R47): 视图定义裸母表",
+	// ── 2026-10-20 复核轮：下面 5 个文件是 **v1 fallback 体**（基线时点有效），
+	// 不是部署形态 —— 与上一行 `request_logs_with_current_month.sql` 同款。
+	//
+	// ⚠ 2026-10-20 的一次返工：迁移 883 / 884 把这 5 张视图的**部署形态**改读了
+	// 会话族，而**同步改了基线 schema** ⇒ 基线里出现了「基线自己不创建的关系」
+	// （`session_turns_hot` / `session_turn_details*` 由**启动序列**的
+	// `session_turns_hot_bootstrap.sql` 与迁移 734 建，基线时点还不存在）⇒
+	// `CREATE VIEW` 的**急切校验**让**新装环境**报
+	// **42P01: relation "public.session_turns_hot" does not exist** 并中止
+	// （真库临时库实测，2026-10-20）。升级路径绿是因为那些表早就存在
+	// ⇒ **「升级路径绿」≠「新装路径绿」**。
+	//
+	// ⇒ 改法（照 canonical 视图的既有先例）：**4 份基线副本一律保留 v1 fallback 体**
+	// （基线自建 `request_logs` / `request_logs_hot` ⇒ 该体在基线时点有效），
+	// **部署形态由迁移 883 / 884 换上** ⇒ 两条路径跑完启动序列后形态一致。
+	// ⇒ 这 5 条因此是 **LEGIT**（fallback 体），**不是 DEBT**。
+	"sql/objects/views/customer_cost_view.sql":                                        "LEGIT: v1 fallback 体（两个活指标子查询读 v1 族）——⚠️ 不是部署形态：部署形态由迁移 883 换成会话族。基线必须留 fallback 体（CREATE VIEW 急切校验 ⇒ 引用基线不创建的关系会让新装报 42P01）",
+	"sql/objects/views/model_cost_per_task_view.sql":                                  "LEGIT: v1 fallback 体（7 天窗平均延迟子查询读 v1 族）——⚠️ 不是部署形态：部署形态由迁移 883 换成会话族。基线必须留 fallback 体（CREATE VIEW 急切校验 ⇒ 引用基线不创建的关系会让新装报 42P01）",
+	"sql/objects/views/v_continuation_effectiveness.sql":                              "LEGIT: v1 fallback 体——⚠️ 不是部署形态：部署形态由迁移 884 换成会话族。基线必须留 fallback 体（CREATE VIEW 急切校验 ⇒ 引用基线不创建的关系会让新装报 42P01）",
+	"sql/objects/views/v_node_switch_analysis.sql":                                    "LEGIT: v1 fallback 体——⚠️ 不是部署形态：部署形态由迁移 884 换成会话族（改读后从恒 0 行变成真实数据）。基线必须留 fallback 体（CREATE VIEW 急切校验 ⇒ 引用基线不创建的关系会让新装报 42P01）",
+	"sql/objects/views/v_timeout_effectiveness.sql":                                   "LEGIT: v1 fallback 体——⚠️ 不是部署形态：部署形态由迁移 884 换成会话族。基线必须留 fallback 体（CREATE VIEW 急切校验 ⇒ 引用基线不创建的关系会让新装报 42P01）",
 	"sql/objects/functions/credential_most_used_model_integer_integer.sql":            "DEBT(R47): 函数体裸母表",
 	"sql/objects/functions/get_last_successful_request_character_varying_integer.sql": "DEBT(R47): 函数体裸母表",
 	"sql/objects/tables/passive_probe_state.sql":                                      "LEGIT: DDL 体",
@@ -314,13 +329,18 @@ func TestDebtRatchetDoesNotGrow(t *testing.T) {
 	// model_cost_per_task_view 两个**活指标**子查询从 v1 冻结族切到会话族，
 	// 这两个定义体已无裸母表读 ⇒ TestSQLReadGuardWhitelistCurrent 报出
 	// （自清洁门要求删条目）⇒ DEBT 由 17 降为 15。
+	// ⚠️ 2026-10-20 下限 15 → 12：迁移 884 把 v_node_switch_analysis /
+	// v_timeout_effectiveness / v_continuation_effectiveness 三张 **v1 裸母表**
+	// 分析视图改读会话族（这 3 张是**唯一没有任何 API/Go 代码消费**的 v1 读面，
+	// 同时是「后期删除 _request_logs」的依赖阻塞项）⇒ 同样由自清洁门报出
+	// ⇒ DEBT 由 15 降为 12。
 	// 下调理由与 2026-10-14 那次（18→17）同源：**下限必须 ≤ 真实债条数**，
 	// 否则债务被真实偿还后这道门永远转绿不了（自清洁守卫要求删条目，
 	// 删条目又把计数压到下限以下 ⇒ 两道门互相锁死）。
 	// 这不是「把门放松」：该门的判据是**相对 debtBaseline 不得新增**，
-	// 下限只是抽取有效性的兜底；15 条仍远高于空集，抽取坏掉仍会红。
-	if len(debt) < 15 {
-		t.Fatalf("只从白名单里抽出 %d 条 DEBT 条目（下限 15）：DEBT 识别很可能已失效，"+
+	// 下限只是抽取有效性的兜底；12 条仍远高于空集，抽取坏掉仍会红。
+	if len(debt) < 12 {
+		t.Fatalf("只从白名单里抽出 %d 条 DEBT 条目（下限 12）：DEBT 识别很可能已失效，"+
 			"此时「没有新增」会与「一条都没抽到」同步为真。抽到的：%v", len(debt), keysSorted(debt))
 	}
 

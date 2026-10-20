@@ -187,9 +187,15 @@ COMMENT ON VIEW public.model_cost_per_task_view IS 'Auto route: per-model aggreg
 COMMIT;
 
 -- POST_CONDITION:
---   -- 两张视图的定义体里不再出现 v1 母表读（真库读数；期望 false / false）：
---   SELECT pg_get_viewdef('public.customer_cost_view'::regclass, true) LIKE '%_request_logs%';
---   SELECT pg_get_viewdef('public.model_cost_per_task_view'::regclass, true) LIKE '%_request_logs%';
+--   -- 两张视图的定义体里不再出现**任何** request_logs 族引用
+--   -- （真库读数；期望 false / false）：
+--   -- ⚠ 必须用 `strpos`（精确子串），**不要**用 `LIKE '%_request_logs%'`——
+--   --   SQL 的 `LIKE` 里 `_` 是**单字符通配符** ⇒ 那条写法会把 canonical
+--   --   视图名 `request_logs_with_current_month` 也判成命中 ⇒ 上一轮就是
+--   --   因此把「5 张 v_* 视图读 v1」多算了 2 张（实为假阳性）。
+--   --   本仓自己的门 `internal/sqlreadguard` 用的是正则 + 词边界，那个门是对的。
+--   SELECT strpos(pg_get_viewdef('public.customer_cost_view'::regclass, true), 'request_logs') > 0;
+--   SELECT strpos(pg_get_viewdef('public.model_cost_per_task_view'::regclass, true), 'request_logs') > 0;
 --   -- 会话族两腿都在（期望 true / true / true；注意 pg_get_viewdef 渲染时
 --   -- **不带 public. 前缀**，核对要用渲染后的形态）：
 --   SELECT pg_get_viewdef('public.customer_cost_view'::regclass, true) LIKE '%FROM session_turns_hot st%';

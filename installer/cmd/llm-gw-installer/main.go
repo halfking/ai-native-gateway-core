@@ -915,11 +915,31 @@ var requestLogsCostNegativePartialIdx882 []byte
 //go:embed embeddata/startup/883_session_family_cost_view_metrics.sql
 var sessionFamilyCostViewMetrics883 []byte
 
+//go:embed embeddata/startup/884_session_family_v_analytics_views.sql
+var sessionFamilyVAnalyticsViews884 []byte
+
 //go:embed embeddata/startup/859_tighten_pii_phone_intl_regex.sql
 var tightenPiiPhoneIntlRegex859 []byte
 
 //go:embed embeddata/startup/852_models_canonical_column_set_reconcile.sql
 var modelsCanonicalColumnSetReconcile852 []byte
+
+// 489/490 (wired 2026-10-20)：853 自己在文件头声明依赖「489/490_credential_probe_queue_*」
+// （队列表本体），而**那两条从未进入 fresh-install 链** ⇒ 新装环境在 853 处报
+//
+//	ERROR:  relation "public.credential_probe_queue" does not exist
+//
+// 并**中止整个安装**（真库临时库实测，2026-10-20；pristine HEAD 同样失败 ⇒ 既有缺陷）。
+// 489 是「startup mirror of domain migrations 343/347/349」，490 补齐运行时列；
+// 两条都幂等（CREATE TABLE IF NOT EXISTS / ADD COLUMN IF NOT EXISTS /
+// CREATE INDEX IF NOT EXISTS），且自包含（不引用其它关系）⇒ 可直接登记。
+// 853 的 runner 注释本来就写着「once 489/490 create the queue」—— 事实是它们没被登记。
+//
+//go:embed embeddata/startup/489_credential_probe_queue_startup_backfill.sql
+var credentialProbeQueueStartupBackfill489 []byte
+
+//go:embed embeddata/startup/490_credential_probe_queue_runtime_columns.sql
+var credentialProbeQueueRuntimeColumns490 []byte
 
 //go:embed embeddata/startup/853_credential_probe_queue_automatic.sql
 var credentialProbeQueueAutomatic853 []byte
@@ -1224,8 +1244,11 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/881_drop_attack_vectors_embedding_index.sql":                            dropAttackVectorsEmbeddingIndex881,
 	"startup/882_request_logs_cost_negative_partial_idx.sql":                         requestLogsCostNegativePartialIdx882,
 	"startup/883_session_family_cost_view_metrics.sql":                               sessionFamilyCostViewMetrics883,
+	"startup/884_session_family_v_analytics_views.sql":                               sessionFamilyVAnalyticsViews884,
 	"startup/859_tighten_pii_phone_intl_regex.sql":                                   tightenPiiPhoneIntlRegex859,
 	"startup/852_models_canonical_column_set_reconcile.sql":                          modelsCanonicalColumnSetReconcile852,
+	"startup/489_credential_probe_queue_startup_backfill.sql":                        credentialProbeQueueStartupBackfill489,
+	"startup/490_credential_probe_queue_runtime_columns.sql":                         credentialProbeQueueRuntimeColumns490,
 	"startup/853_credential_probe_queue_automatic.sql":                               credentialProbeQueueAutomatic853,
 	"startup/854_session_turns_advisory_lock_key.sql":                                sessionTurnsAdvisoryLockKey854,
 	"startup/855_session_analytics_time_window.sql":                                  sessionAnalyticsTimeWindow855,

@@ -62,13 +62,22 @@ func TestFreshInstallerSessionTurnsHotBootstrap(t *testing.T) {
 		// view rebuilds). The historical 51-column pins predate the
 		// baseline-gap fixes that let fresh installs reach this state.
 		//
+		// 2026-10-20 订正：hot 表的列数从 104 变成 **106**。差的 2 列是
+		//   · 821_session_turns_abandoned_marker.sql → is_abandoned
+		//   · 823_session_turns_request_status.sql   → request_status
+		// 两条都在链里（821 是 sessionv2mirror 的「sync point 5」）。
+		// **口径**：106 是**实测值**——2026-10-20 用真库分别量了
+		//   · 全新安装链跑完的临时库（scratch_fresh_full）：106
+		//   · 生产形态的真库（llm_gateway）：106
+		// 两者一致 ⇒ 该 pin 现在钉的是「新装与生产同形」，而不是一个过期的数字。
+		//
 		// security_invoker note: the 526-era bootstrap created this view WITH
 		// (security_invoker = true), but 713's in-place rebuild dropped the
 		// option — live production has it unset today (reloptions empty).
 		// Restoring it via a 625/627-style hardening step is a candidate
 		// follow-up pending a ruling; until then absence is the canonical
 		// state and is covered by the "current-month view" existence check.
-		"hot table column count": `SELECT count(*) = 104 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'session_turns_hot'`,
+		"hot table column count": `SELECT count(*) = 106 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'session_turns_hot'`,
 		"view column count":      `SELECT count(*) = 55 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'session_turns_with_current_month'`,
 		"nullable JSONB digest": `
 			SELECT count(*) = 2
@@ -239,8 +248,17 @@ func TestFreshInstallerSessionTurnsHotBootstrap(t *testing.T) {
 			)`,
 		"details promote callable on fresh install": `
 			SELECT promote_session_turn_details_hot_to_partition('8 hours'::interval, 1000) = 0`,
+		// 2026-10-20 订正：族名是 **`_request_logs`**，不是 `request_logs`。
+		// 迁移 860（860_rename_request_logs_family_pending_delete，链内 index 257）
+		// 把 request_logs 族整体改名成 `_` 前缀的「待删标志」形态
+		// （`_request_logs` / `_request_logs_hot` / `_request_logs_bodies` /
+		// `_request_logs_bodies_hot` / `_request_logs_archive` / `_request_logs_id_seq`），
+		// 而本条断言写的是**改名前**的名字 ⇒ 新装链跑完后报 42P01。
+		// 口径：860 也在**部署通道**（scripts/apply-db-revision-sequence.sh）里，
+		// 所以生产真库同样是 renamed 代（2026-10-20 实测：`_request_logs` 存在、
+		// `request_logs` 不存在）⇒ 这里跟改名后的名字走，两条路径同形。
 		"734 details join keeps the request_logs view chain planable": `
-			SELECT count(*) >= 0 FROM public.request_logs`,
+			SELECT count(*) >= 0 FROM public._request_logs`,
 	} {
 		if got := psqlScalar(t, dsn, query); got != "t" {
 			t.Errorf("fresh installer 733+802 chain %s check failed: got %q", name, got)

@@ -1,3 +1,16 @@
+-- ⚠️ **本文件不是部署形态的视图定义**，它是 **v1 fallback 体**（7 天窗的平均延迟
+-- 子查询仍读 v1 族 `request_logs`），只在「基线时点」成立。
+--
+-- 为什么基线必须留 v1 体（2026-10-20 实测）：基线 schema 是**逐语句**应用的，
+-- 而 `CREATE VIEW` 会**急切校验**它引用的关系 ⇒ 若这里写成会话族形态
+-- （`session_turns_hot` / `session_turn_details*`），新装环境会在此处报
+-- **42P01: relation "public.session_turns_hot" does not exist** 并中止。
+-- 升级路径绿是因为那些表早就存在 ⇒ **「升级路径绿」≠「新装路径绿」**。
+--
+-- 部署形态（会话族）由 **迁移 883** 换上：
+-- `sql/migrations/startup/883_session_family_cost_view_metrics.sql`。
+-- 两条路径跑完启动序列后**形态一致**。
+--
 --
 -- Name: model_cost_per_task_view; Type: VIEW; Schema: public; Owner: -
 --
@@ -15,19 +28,9 @@ CREATE VIEW public.model_cost_per_task_view AS
             WHEN (sum(requests_total) > 0) THEN ((sum(requests_success))::numeric / (sum(requests_total))::numeric)
             ELSE (0)::numeric
         END AS success_rate,
-    ( SELECT avg(st.latency_ms) AS avg
-           FROM (SELECT st_hot.latency_ms,
-                        st_hot.raw_model_name,
-                        st_hot.success,
-                        st_hot.ts
-                   FROM public.session_turns_hot st_hot
-                 UNION ALL
-                 SELECT st_par.latency_ms,
-                        st_par.raw_model_name,
-                        st_par.success,
-                        st_par.ts
-                   FROM public.session_turns st_par) st
-          WHERE ((st.raw_model_name = mcp.raw_model) AND (st.success = true) AND (st.ts >= (now() - '7 days'::interval)))) AS avg_latency_ms,
+    ( SELECT avg(rl.latency_ms) AS avg
+           FROM public.request_logs rl
+          WHERE ((rl.outbound_model = mcp.raw_model) AND (rl.success = true) AND (rl.ts >= (now() - '7 days'::interval)))) AS avg_latency_ms,
     sum(requests_total) AS total_requests,
     count(DISTINCT api_key_id) AS unique_api_keys
    FROM public.api_key_model_cost mcp
@@ -39,5 +42,5 @@ CREATE VIEW public.model_cost_per_task_view AS
 -- Name: VIEW model_cost_per_task_view; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON VIEW public.model_cost_per_task_view IS 'Auto route: per-model aggregated cost for last 7 days. avg_latency_ms is computed live from the session family (session_turns_hot ∪ session_turns) — 883 migrated it off the frozen v1 family.';
+COMMENT ON VIEW public.model_cost_per_task_view IS 'Auto route: per-model aggregated cost for last 7 days';
 
