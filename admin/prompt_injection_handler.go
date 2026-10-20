@@ -372,11 +372,11 @@ const promptInjectionRuleSelectCols = `id, rule_name, rule_type, category, COALE
 // prompt_injection_rules.category_new 是 injection_category 枚举、
 // action_override 是 injection_action 枚举，**两列都允许 NULL**。
 // 但前端表单在「没选」时给的是**空串**而不是 null（新建规则的表单默认值就是
-// ''）⇒ 直接把空串塞进 SQL 会得到
+// ""）⇒ 直接把空串塞进 SQL 会得到
 //
 //	ERROR: invalid input value for enum injection_action: "" (SQLSTATE 22P02)
 //
-// 表现是 500，而且**从 UI 新建自定义规则必失败**（每次都带上 action_override:''）。
+// 表现是 500，而且**从 UI 新建自定义规则必失败**（每次都带上 action_override:""）。
 // 同样的坑在 updateRule 上：把动作覆盖清空再保存，同样 500。
 //
 // ⇒ 空串的语义是「不覆盖 / 没有覆盖动作」，落库必须是 NULL。
