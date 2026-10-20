@@ -91,14 +91,39 @@ func TestS4GateMeasurement(t *testing.T) {
 	// ⇒ 迁移后的库**跳过**（并说清为什么），迁移前的库照常跑完整测量。
 	// 这条 skip 的措辞里写明了「被测对象已退役」，不许被读成「跑过了」——
 	// skip 不构成证据（同款自述见本文件里其它 skip）。
-	var v1FamilyPresent bool
+	//
+	// ★★ **R69 轮：守卫必须探测「测量 SQL 用到的全部关系」，而不是其中一个。**
+	//
+	// 原守卫只查 `to_regclass('public._request_logs')`（**母表**），
+	// 而下面的测量 SQL（`s4ScopeBody`）读的是
+	// **`_request_logs_hot` ∪ `_request_logs`**（**hot 表 + 母表**）⇒
+	// ⇒ **母表在、hot 表不在**时（这正是「v1 族只被删了一半」的形态，
+	// 实测：一次性库里 `_request_logs` 在、`_request_logs_hot` 不在）
+	// ⇒ 守卫**假阳性** ⇒ 门继续往下跑 ⇒ 在 hot 表上 42P01
+	// ⇒ ⇒ 报出来像「代码坏了」，其实是**守卫问错了问题**。
+	//
+	// ⇒ 正确的问法是：**测量要用的两个关系都在吗？**
+	// ⇒ 少一个 ⇒ 第二侧**不完整** ⇒ 跳过（并说清缺哪一个）。
+	var v1HotPresent, v1ParentPresent bool
 	if err := conn.QueryRow(ctx,
-		`SELECT to_regclass('public._request_logs') IS NOT NULL`).Scan(&v1FamilyPresent); err != nil {
+		`SELECT to_regclass('public._request_logs_hot') IS NOT NULL,
+		        to_regclass('public._request_logs') IS NOT NULL`,
+	).Scan(&v1HotPresent, &v1ParentPresent); err != nil {
 		t.Fatalf("probe v1 family: %v", err)
 	}
-	if !v1FamilyPresent {
-		t.Skip("v1 族已被迁移 890 整体 DROP —— 这道门测的是 v1↔会话族的漂移，第二侧已不存在" +
-			"（对账已退役，见 dual_read_validator.go）。「对账退役」这个不变量由 " +
+	if !v1HotPresent || !v1ParentPresent {
+		var missing []string
+		if !v1HotPresent {
+			missing = append(missing, "_request_logs_hot")
+		}
+		if !v1ParentPresent {
+			missing = append(missing, "_request_logs")
+		}
+		t.Skip("v1 族的**测量对象不完整**（缺 " + strings.Join(missing, " / ") +
+			"）—— 这道门测的是 v1↔会话族的漂移，测量 SQL（s4ScopeBody）读的是 " +
+			"`_request_logs_hot` ∪ `_request_logs`，**两个都要在**才能测。" +
+			"（v1 族已随迁移 885/890 退役；此时只剩其中一半，是**半退役**形态 ⇒ 漂移本身已无法测量。）" +
+			"⚠ skip 不构成证据。「对账退役」这个不变量由 " +
 			"cmd/gateway/dual_read_validator_test.go（零查询 + 未测量标记）与 " +
 			"dual_read_both_faces_test.go（生产源码里不再出现 v1 族关系名）承担。")
 	}

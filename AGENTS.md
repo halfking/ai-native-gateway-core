@@ -4573,3 +4573,43 @@ To codeup.aliyun.com:kaixuan/official-deploy/llm-gateway-go.git
   ⇒ ⇒ ★★ **教训：★ 变异必须真的改变被测行为，否则「门绿」是假读数。**
 - ⚠ **未修（已定位）**：4 个夹具缺陷（`outbox_events` 表不存在 / 种子列已改名 / 漏 3 个 NOT NULL 列 /
   `_request_logs` 已退役）⇒ ★ **`_request_logs` 那条属并行会话 D3 范围，已通报**。
+
+### 2026-10-21 R69 轮（**D3 侧·批次二**）：**v1 族退役后的第二层红门** ＋ **两处量具级方法学修正**（变异 5/5 全红）
+
+> 明细：`docs/audit/2026-10-21-R69-D3-v1族退役后第二层红门.md`；handoff `§19.19`。
+> ★ 本轮**只改测试面 + 一个 build 修复** ⇒ **对生产零写入**。
+
+- ★★★★ **本轮最有价值的产出不是那 5 条门，而是 3 处方法学修正**：
+  1. ★★ **「全仓 `go test ./...`」在共享真库上**不是有效读数** —— 包是**并行**跑的 ⇒ 包间互相污染
+     （实测：`admin/v_analytics_views_session_source_test.go` 全仓跑红「premise broken: `_request_logs` 又存在了」，
+     **逐包跑是绿的** ⇒ 那是污染产物）
+     ⇒ ⇒ **R59 / R67 的「全仓 75 条 / 57 条」口径要打折**；
+  2. ★★ **同一个包、同一份代码，全新库与用过的库失败数不同**（实测 `db/` = **4** vs **11**）
+     ⇒ ⇒ **一次性库必须每次新建**（`probe-onetime-db-shape.sh` 的 `DB_NAME` 覆盖就是为此）；
+  3. ★★ **integration 树编译不过**（共享 helper `stripGoCommentsKeepingStrings` 的定义文件
+     `admin/request_logs_retirement_tiering_test.go` 带 `//go:build !integration`，而
+     `admin/section_14336_board_single_scan_test.go` 在两种 build 里都要用它）
+     ⇒ 连带拉红 `sql/schema::TestIntegrationTaggedTreeCompiles`（★ 那道门本来就是为抓这种问题而存在的）
+     ⇒ ⇒ **挡住所有 `-tags=integration` 的跑法**
+     ⇒ ★ **修法**：helper 移到**不带 build tag** 的新文件 `admin/go_comment_strip_test.go`（**不碰那一会话的文件**）
+     ⇒ ⇒ ★ **通用式：共享 helper 的定义文件不能带任何 build tag**（只要有一个使用方在另一种 build 里）。
+- ★★ **改瞄 5 条门**（逐包隔离 + 全新库口径：**11 → 6**，新增 0，另有 1 条由红转「诚实 skip」）：
+  | 门 | 要点 |
+  |---|---|
+  | `db/TestSessionFamilyBodiesSourceColumnParity` | ★★ **A 类空证据**（探针依赖有数据 ⇒ 空表恒红）⇒ 改成**与数据无关**的 `LEFT JOIN LATERAL`（错列名仍 42703）；★ v1 臂已退役 ⇒ 换成 **③a v1 关系必须不存在** + **③b 会话 hot 臂与父表臂同形** |
+  | `db/TestBodiesCutoverGapBlocksCutover` | ★ 题目换了（v1 族已删）⇒ 改成**退役守卫** `TestBodiesCutoverV1ArmStaysRetired`；纯函数门保留（它守**口径**坑） |
+  | `cmd/gateway/TestV1WriteLiveness_RealDB` | ★ **产品侧已退役感知**、测试侧停在 4 个落点 ⇒ 改 2 个落点 + 判决按退役形态（`alive` 不可达）+ **负控制换成「分类器不能被写死」**（原「单面实现」负控制在退役形态下**不可证伪**） |
+  | `telemetry/TestRequestClassPGRoundTrip` | ★★ **语义没丢，载体换了**：`request_class`/`due_at` 现在在 **`session_turn_details(_hot)`** ⇒ 钉现行载体 + 客户端不变式 + **活的 writer 真往返**；★ 登记「**DB 侧兜底没了**」（可空/无 DEFAULT/无 CHECK ⇒ 不变式只由代码保证） |
+  | `cmd/gateway/TestS4GateMeasurement` | ★★ **守卫问错了问题**（查母表、测量要 hot 表 ⇒ 假阳性）⇒ 改成**探测测量要用的全部关系** ⇒ 由红转**诚实 skip** |
+- ★★ **变异 5/5 全红**（M1 探针列名改错 / M2 **把 v1 关系建回来**（DB 语义变异）/ M3 判决恒 dead /
+  M4 载体表名改错 / M5 s4 守卫退回只查母表）⇒ 还原按**原路径** md5 **5/5 逐字一致**。
+- ★★★★ **未闭合：`v1 族只被删了一半`** —— `_request_logs_hot` 已不在，**`_request_logs` 父表仍在**
+  ⇒ 「族已退役」在父表上不成立 ⇒ 多道门的前提探测失真。
+  ⇒ 线索：① ★ 890 的台账自登记写 `public.schema_migrations`，而 018 造的是 `schema_migration_audit`
+  ⇒ **若 018 改了台账名，890 会整笔回滚**；② ★ **两条基线不一样**
+  （`sql/schema/01-schema.sql` 有 `schema_migrations`；`installer/.../embeddata/01-schema.sql` 有
+  `schema_migration_audit`）⇒ **probe 建的库可能不是产品的真实形态**。
+  ⇒ ★ **下一轮第一件事**：在**真实安装链**上复核「890 之后 `_request_logs` 还在不在」。
+- ⚠ **已接手但未做**：`telemetry/TestRequestLogInsertParamCount`（★ 并行会话 R70 段已通报给 D3 侧）——
+  它的前提「**单表**全字段落地」已结构性不成立（字段散到 `usage_ledger_hot` / `routing_decision_log_hot` /
+  会话族三处）⇒ 需要一份跨表契约 ⇒ **半改会造恒绿门** ⇒ 本轮**不做**，登记为下一轮。
