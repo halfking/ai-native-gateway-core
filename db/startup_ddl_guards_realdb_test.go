@@ -2,7 +2,6 @@ package db
 
 import (
 	"context"
-	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -29,7 +28,8 @@ import (
 // C 的「没超时」才有意义。否则 C 可能只是「根本没锁冲突」。
 //
 // 无 TEST_DATABASE_URL / TEST_DB_URL 时跳过（与 749/750 真库回归同门控）。
-// 纪律：本测试只跑一次性 scratch 容器，绝不连 154/245/252。
+// 纪律：本测试**自带一次性空库**（db/scratch_db_test.go），
+// 绝不连 154/245/252，也绝不连 DSN 指向的那个库。
 // guardEnv 是行为验证的共享脚手架：一次性真库 + 并发持锁 + 带 lock_timeout 的执行。
 // 两组测试（§10.98.7~§10.98.9 新增的三条、§10.98.12 更早的三条）共用同一套读数，
 // 避免"新验证自己另发明一套判据"导致两边的通过/失败不可比。
@@ -46,23 +46,20 @@ const (
 	guardLockTimout = 1200 * time.Millisecond
 )
 
+// newGuardEnv 分配**一次性空库**上的行为验证脚手架。
+//
+// ⚠ R78 轮改造：本脚手架原本直连 TEST_DATABASE_URL 指向的库，
+// 而本文件的首个动作是 `DROP TABLE IF EXISTS provider_models, providers,
+// credentials, session_summaries, goal_sessions, schema_migrations CASCADE`
+// ⇒ 跑一次就把形态库的 6 张产品表 + CASCADE 带走的 25 视图 / 5 物化视图 /
+// 103 索引 / 5 序列全洗掉，还用 3 列玩具形态重建。
+// ⇒ 现在自己带一个一次性空库（db/scratch_db_test.go），DSN 指向的那个库分毫不动。
 func newGuardEnv(t *testing.T) *guardEnv {
 	t.Helper()
-	dsn := os.Getenv("TEST_DATABASE_URL")
-	if dsn == "" {
-		dsn = os.Getenv("TEST_DB_URL")
-	}
-	if dsn == "" {
-		t.Skip("TEST_DATABASE_URL / TEST_DB_URL 未设置，跳过真库行为验证")
-	}
+	pool := scratchPool(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	t.Cleanup(cancel)
-	pool, err := pgxpool.New(ctx, dsn)
-	if err != nil {
-		t.Skipf("connect real db: %v", err)
-	}
-	t.Cleanup(pool.Close)
-	return &guardEnv{dsn: dsn, ctx: ctx, pool: pool, d: &DB{pool: pool}}
+	return &guardEnv{dsn: scratchDSN(pool), ctx: ctx, pool: pool, d: &DB{pool: pool}}
 }
 
 func (e *guardEnv) exec(t *testing.T, q string) {

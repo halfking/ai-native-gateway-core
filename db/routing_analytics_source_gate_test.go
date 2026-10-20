@@ -81,12 +81,21 @@ func TestRoutingAnalyticsMVSQLUsesOrdinalGroupBy(t *testing.T) {
 // This test requires a dedicated scratch database: the gates explicitly inspect
 // public catalogs. All fixture DDL is rolled back, and existing routing objects
 // cause a failure rather than being dropped. A bad supplied DSN fails, not skips.
+//
+// R78 轮改造：**「空库」不再是由调用方承担的前提**，门自己从 base DSN 派生
+// 一个一次性空库（db/scratch_db_test.go）。改造前把 base DSN 指向一个非空库
+// 就会得到 "routing fixture names already exist; supply an empty scratch
+// database" 的失败 —— 那是**调用姿势**的问题，不是被测对象的问题，
+// 但在「整包跑 db」的读数里它长得和真红一模一样。
 func TestRoutingAnalyticsSourceGates_RealDB(t *testing.T) {
 	queries := routingAnalyticsSourceGateQueries(t)
-	dsn := os.Getenv("ROUTING_ANALYTICS_GATE_TEST_DATABASE_URL")
-	if dsn == "" {
+	base := os.Getenv("ROUTING_ANALYTICS_GATE_TEST_DATABASE_URL")
+	if base == "" {
 		t.Skip("ROUTING_ANALYTICS_GATE_TEST_DATABASE_URL not set — isolated PostgreSQL required")
 	}
+	// 自己派生一次性空库：base DSN 只当「服务器地址 + 权限」用。
+	// 坏 DSN ⇒ 硬失败（下面的 policy 是 scratchFail），不静默跳过。
+	dsn := scratchDSNFor(t, base, scratchFail)
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
 	conn, err := pgx.Connect(ctx, dsn)
@@ -116,7 +125,8 @@ func TestRoutingAnalyticsSourceGates_RealDB(t *testing.T) {
 		t.Fatal(err)
 	}
 	if occupied {
-		t.Fatal("routing fixture names already exist; supply an empty scratch database")
+		t.Fatal("routing fixture names already exist in the derived scratch database — " +
+			"the scratch database must start empty for this gate to mean anything")
 	}
 	exec(t, `
 		CREATE TABLE public.request_logs_hot (id bigint, origin_stage text, auto_profile text);

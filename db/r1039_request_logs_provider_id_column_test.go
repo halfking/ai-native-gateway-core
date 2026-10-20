@@ -6,8 +6,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // r1039_request_logs_provider_id_column_test.go —— boot ensure 链**自己索引的
@@ -45,10 +43,17 @@ import (
 //   - 「检查没跑成」与「检查通过」必须长得不一样 ⇒ 真库判据缺环境时**显式
 //     说明本次没跑**（不是安静地跳过）。
 //
-// 真库判据需要专用的一次性库（会 DROP _request_logs）：
+// 真库判据**自带一次性库**（R78 轮改造）：
 //
-//	createdb itgate_r1039 && \
-//	TEST_DATABASE_URL='postgres://…/itgate_r1039?sslmode=disable' go test ./db/ -run TestR1039
+//	TEST_DATABASE_URL='postgres://…/<任意库>?sslmode=disable' go test ./db/ -run TestR1039
+//
+// 门会从该 DSN **派生一个一次性空库**（internal/testdb.Create），
+// 所有 DROP/CREATE 都发生在那个一次性库上 ⇒ DSN 指向的那个库**分毫不动**。
+// ⚠ 改造前（本文件直连 DSN 库）这三个门会把产品表
+// `_request_logs` / `_request_logs_hot` / `session_turns_hot` /
+// `model_probe_state` / `provider_models` / `credential_model_bindings`
+// DROP 掉并用玩具形态重建 ⇒ 跑一次 db 包就洗掉一次形态库。
+// 见 db/scratch_db_test.go 文件头。
 
 // r1039EnsureBody 抽出 ensureRequestLogSchema 的函数体（源码级判据用）。
 func r1039EnsureBody(t *testing.T) string {
@@ -122,20 +127,9 @@ func TestR1039RequestLogsProviderIDColumnOrderInEnsureBody(t *testing.T) {
 // 修复前：A 报 42703（provider_id 缺列）、B 报 42P01（_request_logs_hot 不存在）、
 // C 报 42P01 ⇒ 三种形态都起不来。
 func TestR1039RequestLogsProviderIDColumnRealDB(t *testing.T) {
-	dsn := os.Getenv("TEST_DATABASE_URL")
-	if dsn == "" {
-		dsn = os.Getenv("TEST_DB_URL")
-	}
-	if dsn == "" {
-		t.Skip("TEST_DATABASE_URL / TEST_DB_URL 未设置 —— 本次**没有**跑真库行为验证（只跑了源码级判据）")
-	}
+	pool := scratchPool(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	t.Cleanup(cancel)
-	pool, err := pgxpool.New(ctx, dsn)
-	if err != nil {
-		t.Skipf("connect real db: %v", err)
-	}
-	t.Cleanup(pool.Close)
 	d := &DB{pool: pool}
 
 	exec := func(q string) {
@@ -248,20 +242,9 @@ func TestR1039RequestLogsProviderIDColumnRealDB(t *testing.T) {
 // 判据同层：驱动的是 boot 链上真正调用的 db.ensureRoutingRecentSuccessRate，
 // 断言的是 PostgreSQL 里 pg_proc.prosrc 的**实际函数体**（不是另抄一份）。
 func TestR1039RecentSuccessRateEnsureRealDB(t *testing.T) {
-	dsn := os.Getenv("TEST_DATABASE_URL")
-	if dsn == "" {
-		dsn = os.Getenv("TEST_DB_URL")
-	}
-	if dsn == "" {
-		t.Skip("TEST_DATABASE_URL / TEST_DB_URL 未设置 —— 本次**没有**跑真库行为验证（只跑了源码级判据）")
-	}
+	pool := scratchPool(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	t.Cleanup(cancel)
-	pool, err := pgxpool.New(ctx, dsn)
-	if err != nil {
-		t.Skipf("connect real db: %v", err)
-	}
-	t.Cleanup(pool.Close)
 	d := &DB{pool: pool}
 
 	exec := func(q string) {
@@ -373,20 +356,9 @@ func TestR1039RecentSuccessRateEnsureRealDB(t *testing.T) {
 // ⇒ 本条是**防御性**判据：把那条 landmine 钉死，免得哪天族退休提前或 848 被
 // 跳过时又炸一次 boot。
 func TestR1039BillingUnitEnsureSurvivesRetiredFamily(t *testing.T) {
-	dsn := os.Getenv("TEST_DATABASE_URL")
-	if dsn == "" {
-		dsn = os.Getenv("TEST_DB_URL")
-	}
-	if dsn == "" {
-		t.Skip("TEST_DATABASE_URL / TEST_DB_URL 未设置 —— 本次**没有**跑真库行为验证（只跑了源码级判据）")
-	}
+	pool := scratchPool(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	t.Cleanup(cancel)
-	pool, err := pgxpool.New(ctx, dsn)
-	if err != nil {
-		t.Skipf("connect real db: %v", err)
-	}
-	t.Cleanup(pool.Close)
 	d := &DB{pool: pool}
 
 	exec := func(q string) {
