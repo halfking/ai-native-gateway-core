@@ -128,8 +128,52 @@ import "net/http"
 func helper(x int) int { return x }
 
 func usesMux(mux *http.ServeMux) {
-	// no literal route path ⇒ not a registration
-	mux.HandleFunc(pathVar, nil)
+	// not a route registration at all ⇒ must not become a candidate
+	mux.HandleFunc("/api/admin/thing", nil)
+	muxOther(mux)
+}
+
+func muxOther(mux *http.ServeMux) {}
+`,
+	})
+
+	findings, disabledList, err := ScanWithDisabled(root)
+	if err != nil {
+		t.Fatalf("ScanWithDisabled: %v", err)
+	}
+	if len(findings) != 1 || findings[0].Func != "usesMux" {
+		t.Fatalf("want exactly 1 finding (usesMux, never called), got %d: %v", len(findings), findings)
+	}
+	if len(disabledList) != 0 {
+		t.Fatalf("want 0 disabled entries, got %d: %v", len(disabledList), disabledList)
+	}
+}
+
+// TestScannerSeesDynamicRoutePatterns is the **blind-spot regression test**.
+//
+// The first version of this scanner only collected *literal* route patterns.
+// A registration whose pattern is a variable (or a `+` concatenation) was
+// therefore dropped silently — and a function registering such a route was
+// never even a candidate, so the gate stayed green while the endpoint was
+// never mounted. That is the "恒绿盲区" family: the scan leg reads as
+// working while it quietly skips exactly the shape it must catch.
+//
+// This repository has four such registrations today
+// (admin/sanitize_rules_handler.go, admin/journal_handlers.go), so the
+// scanner must report them as DynamicRouteMarker instead of dropping them.
+func TestScannerSeesDynamicRoutePatterns(t *testing.T) {
+	root := writeTree(t, map[string]string{
+		"go.mod": "module example.com/x\n",
+		"admin/admin.go": `package admin
+
+import "net/http"
+
+type Handler struct{}
+
+const somePath = "/api/admin/dynamic"
+
+func (h *Handler) RegisterDynamicRoutes(mux *http.ServeMux) {
+	mux.HandleFunc(somePath, nil)
 }
 `,
 	})
@@ -138,8 +182,42 @@ func usesMux(mux *http.ServeMux) {
 	if err != nil {
 		t.Fatalf("Scan: %v", err)
 	}
-	if len(findings) != 0 {
-		t.Fatalf("want 0 findings, got %d: %v", len(findings), findings)
+	if len(findings) != 1 {
+		t.Fatalf("want 1 finding (the dynamic-pattern registration), got %d: %v", len(findings), findings)
+	}
+	if len(findings[0].Routes) != 1 || findings[0].Routes[0] != DynamicRouteMarker {
+		t.Fatalf("routes = %v, want [%s]", findings[0].Routes, DynamicRouteMarker)
+	}
+}
+
+// TestScannerSeesGo122MethodPrefixedPatterns pins the second blind spot:
+// Go 1.22's `mux.Handle("GET /path", h)` form. This repository has eleven
+// such registrations in production code (plugin proxy/canon routes, the
+// quota webhook, the plugin admin endpoints, the storage metrics endpoint).
+func TestScannerSeesGo122MethodPrefixedPatterns(t *testing.T) {
+	root := writeTree(t, map[string]string{
+		"go.mod": "module example.com/x\n",
+		"admin/admin.go": `package admin
+
+import "net/http"
+
+type Handler struct{}
+
+func (h *Handler) RegisterMethodPatternRoutes(mux *http.ServeMux) {
+	mux.Handle("GET /api/admin/thing", nil)
+}
+`,
+	})
+
+	findings, err := Scan(root)
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	if len(findings) != 1 {
+		t.Fatalf("want 1 finding, got %d: %v", len(findings), findings)
+	}
+	if len(findings[0].Routes) != 1 || findings[0].Routes[0] != "/api/admin/thing" {
+		t.Fatalf("routes = %v, want [/api/admin/thing] (method prefix stripped)", findings[0].Routes)
 	}
 }
 

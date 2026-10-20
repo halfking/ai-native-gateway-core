@@ -286,20 +286,52 @@ func calleeName(fun ast.Expr) string {
 	return ""
 }
 
-// registeredRoutes returns the literal route paths a function registers.
+// DynamicRouteMarker is the placeholder recorded for a route whose pattern is
+// not a literal (a variable, or a `+` concatenation).
 //
-// Only literal string arguments are collected: a route built from a variable
-// cannot be resolved statically, and guessing would produce false findings.
+// ★ 为什么不能「解析不出来就跳过」：那样这条注册就**根本不会进候选集**
+// ⇒ 它的注册函数即使永远不被调用，门也照样绿 —— 正是「恒绿盲区」。
+//
+//	（2026-10-21，llm-gateway-go R73：兄弟会话在自家门里踩到同族缺陷 ——
+//	Go 字符串拼接把一条 SQL 拆成两个字面量 ⇒ 只扫单字面体漏掉了写路径。
+//	本门的第一版同样只认字面量路径 ⇒ 同一族盲区。）
+//
+// ⇒ 所以：**解析不出来也要记**，记成 <dynamic>，让「这个函数到底有没有被调用」
+//
+//	仍然由门来回答。
+const DynamicRouteMarker = "<dynamic>"
+
+// registeredRoutes returns the route patterns a function registers.
+//
+// Three shapes are recognised, because all three exist in this repository:
+//
+//	mux.HandleFunc("/api/admin/x", h)              ← 经典形态
+//	mux.Handle("GET /api/admin/x", h)               ← Go 1.22 方法前缀形态（本仓 11 处）
+//	mux.HandleFunc(somePathVar, h)                  ← 路径是变量/拼接（本仓 4 处）
+//
+// A pattern that is not a literal is recorded as DynamicRouteMarker rather
+// than skipped (see its doc comment).
 func registeredRoutes(fd *ast.FuncDecl) []string {
 	var routes []string
 	seen := map[string]bool{}
+	add := func(p string) {
+		if !seen[p] {
+			seen[p] = true
+			routes = append(routes, p)
+		}
+	}
 	ast.Inspect(fd.Body, func(n ast.Node) bool {
 		call, ok := n.(*ast.CallExpr)
 		if !ok {
 			return true
 		}
 		sel, ok := call.Fun.(*ast.SelectorExpr)
-		if !ok || sel.Sel.Name != "HandleFunc" {
+		if !ok {
+			return true
+		}
+		switch sel.Sel.Name {
+		case "HandleFunc", "Handle":
+		default:
 			return true
 		}
 		if len(call.Args) == 0 {
@@ -307,16 +339,21 @@ func registeredRoutes(fd *ast.FuncDecl) []string {
 		}
 		lit, ok := call.Args[0].(*ast.BasicLit)
 		if !ok || lit.Kind != token.STRING {
+			// 路径不是字面量 ⇒ 仍然算「这个函数注册了路由」。
+			add(DynamicRouteMarker)
 			return true
 		}
-		path := strings.Trim(lit.Value, `"`)
-		if !strings.HasPrefix(path, "/") {
+		pattern := strings.Trim(lit.Value, `"`)
+		// Go 1.22 的 "GET /path" 形态：去掉方法前缀，只留路径。
+		if sel.Sel.Name == "Handle" {
+			if sp := strings.IndexByte(pattern, ' '); sp > 0 {
+				pattern = pattern[sp+1:]
+			}
+		}
+		if !strings.HasPrefix(pattern, "/") {
 			return true
 		}
-		if !seen[path] {
-			seen[path] = true
-			routes = append(routes, path)
-		}
+		add(pattern)
 		return true
 	})
 	sort.Strings(routes)
