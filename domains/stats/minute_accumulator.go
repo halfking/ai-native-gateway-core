@@ -43,8 +43,8 @@ func (a *MinuteAccumulator) Start(ctx context.Context) {
 func (a *MinuteAccumulator) Stop() {
 	if a.cancel != nil {
 		a.cancel()
+		<-a.done
 	}
-	<-a.done
 }
 
 func (a *MinuteAccumulator) loop(ctx context.Context) {

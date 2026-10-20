@@ -2,19 +2,21 @@
 // rollupCredentialModelIndexSQL 的**真库可执行性**门。
 //
 // ★ 这道门存在的理由（缺陷本体）：
-//   890（v1 族真删）把 half-1 的 v1 腿整条删掉、换成会话腿。会话腿内层投影
-//   是 8 个**表达式**，而外层沿用 v1 腿的列名引用它们
-//   （rl.credential_id / rl.model_key / rl.mo_canonical_id / rl.mo_billing_mode /
-//     rl.mo_price_in / rl.mo_price_out / rl.success / rl.latency_ms）。
-//   未补别名 ⇒ PG 把表达式列命名成 "?column?" ⇒ 外层 42703
-//   （column rl.credential_id does not exist）⇒ **整条 rollup 失败** ⇒
-//   autoroute 每 5s 刷新报错、凭据健康/压力指标停更（活库日志实测每 5s 一条）。
+//
+//	890（v1 族真删）把 half-1 的 v1 腿整条删掉、换成会话腿。会话腿内层投影
+//	是 8 个**表达式**，而外层沿用 v1 腿的列名引用它们
+//	（rl.credential_id / rl.model_key / rl.mo_canonical_id / rl.mo_billing_mode /
+//	  rl.mo_price_in / rl.mo_price_out / rl.success / rl.latency_ms）。
+//	未补别名 ⇒ PG 把表达式列命名成 "?column?" ⇒ 外层 42703
+//	（column rl.credential_id does not exist）⇒ **整条 rollup 失败** ⇒
+//	autoroute 每 5s 刷新报错、凭据健康/压力指标停更（活库日志实测每 5s 一条）。
 //
 // ★ 为什么不能用「纯文本形状门」兜住：既有门
-//   （auto_index_refresher_s3_wave3_test.go）只数 "FROM session_turns_hot t"
-//   的出现次数、查 "FROM _request_logs_hot" 是否消失、查 alias 链子串——
-//   这些**都不涉及列解析** ⇒ 少一个别名它照样绿。
-//   ⇒ 只能靠「真库执行」把这类错误钉住。
+//
+//	（auto_index_refresher_s3_wave3_test.go）只数 "FROM session_turns_hot t"
+//	的出现次数、查 "FROM _request_logs_hot" 是否消失、查 alias 链子串——
+//	这些**都不涉及列解析** ⇒ 少一个别名它照样绿。
+//	⇒ 只能靠「真库执行」把这类错误钉住。
 //
 // 零足迹：整条语句在显式事务里跑，末尾 ROLLBACK（不落任何行）。
 // 无 TEST_DATABASE_URL / TEST_DB_URL 时跳过。

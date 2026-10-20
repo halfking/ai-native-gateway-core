@@ -95,8 +95,8 @@ func (a *FeedbackAnalyzer) Start(ctx context.Context) {
 func (a *FeedbackAnalyzer) Stop() {
 	if a.cancel != nil {
 		a.cancel()
+		<-a.done
 	}
-	<-a.done
 }
 
 func (a *FeedbackAnalyzer) run(ctx context.Context) {

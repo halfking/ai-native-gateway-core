@@ -70,8 +70,8 @@ func (l *PassiveProbeListener) Start(ctx context.Context) {
 func (l *PassiveProbeListener) Stop() {
 	if l.cancel != nil {
 		l.cancel()
+		<-l.done
 	}
-	<-l.done
 }
 
 func (l *PassiveProbeListener) run(ctx context.Context) {

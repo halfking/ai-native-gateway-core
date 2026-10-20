@@ -162,7 +162,7 @@ func TestRollupCredentialModelIndex_DeleteInsertAreAtomicAndLockGuarded(t *testi
 	})
 
 	if txVar == "" {
-		t.Fatalf("rollupCredentialModelIndex 里找不到 `tx, err := r.db.Begin(...)` 形态的事务变量；"+
+		t.Fatalf("rollupCredentialModelIndex 里找不到 `tx, err := r.db.Begin(...)` 形态的事务变量；" +
 			"DELETE 与 INSERT 必须落在同一个事务里（跨进程互斥 + 读者不可见中间态）")
 	}
 
@@ -192,7 +192,7 @@ func TestRollupCredentialModelIndex_DeleteInsertAreAtomicAndLockGuarded(t *testi
 		}
 	}
 	if lockIdx < 0 {
-		t.Fatalf("rollup 里没有 pg_advisory_xact_lock —— 同库多实例（蓝绿部署窗口）"+
+		t.Fatalf("rollup 里没有 pg_advisory_xact_lock —— 同库多实例（蓝绿部署窗口）" +
 			"会互相删掉对方刚写的行")
 	}
 	if lockIdx != 0 {
