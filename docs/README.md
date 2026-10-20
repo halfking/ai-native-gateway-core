@@ -72,9 +72,9 @@ docs/
 │
 ├── 01-requirements/         需求（13 篇）
 ├── 02-resources/            资源（研究/合规等，29 篇；含 research/pricing、compliance/legal）
-├── 03-design/               设计（137 篇；architecture/API 契约、feature-design/model-iq·model-quality·i18n、data-design/partition 等）
+├── 03-design/               设计（157 篇；architecture/API 契约、feature-design/model-iq·model-quality·i18n、data-design/partition 等）
 ├── 04-implementation/       实现（38 篇；含 deliverables/user-guide）
-├── 05-testing/              测试（17 篇）
+├── 05-testing/              测试（19 篇）
 ├── 06-deployment/           部署/运维（59 篇）
 ├── 07-reporting/            报告（13 篇）
 │
