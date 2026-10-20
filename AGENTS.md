@@ -200,6 +200,44 @@
 > 可重跑脚本入仓 `scripts/audit/verify_columnar_bulk_write_local.py`
 > （函数体由脚本从仓内 654 迁移提取，不手抄）。
 > 完整记录见 runbook `§143.25`。
+> **2026-10-20 §143.26 轮（本会话）**：**把「看不见的成本」量化掉，并推翻本会话自己先前的判词**
+> （**订正横幅七**）。**对生产的写入 = 0**。
+> ★★★★★ **自我订正**：先前判「约 **32–33 次/天**的 `REFRESH` 被 `statement timeout` 杀掉」= **误报**。
+> 实测（252 PG 日志 10-19+10-20，**逐条重建 PG 记录 + 多行 `STATEMENT:` 归属 + 按语句语法头部判定**）
+> ⇒ **2 天只有 2 次 timeout 杀 + 3 次 ctx 取消 = 5 次 / 385 次（1.3%）**。
+> ⇒ **误报成因 = 「上下文命中」不是归属判定**；且抓到两个同类污染实例
+> （① 有人在 psql 里粘的交接说明被折进 `STATEMENT:`；② **本会话自己的审计探测 SQL**
+> 的 `ILIKE` 模式里写着 "REFRESH MATERIALIZED VIEW …" ⇒ 把自己数成了 3 次刷新）
+> ⇒ ⇒ **纪律：指纹归属必须按语句的语法头部；审计会话本身也算「读数污染源」**。
+> ★★★★★ **两把尺子的共同盲区**：`pg_stat_statements` **只记成功语句**、PG 日志 `duration:`
+> **只记 >1s** ⇒ 实测 2 天 **349 次 `statement timeout` 杀 + 2,473 次 ctx 取消**，
+> **对 `pg_stat_statements` 100% 隐形** ⇒ 之前的成本排行**系统性偏低**。
+> ★★★★ **真凶不是物化视图，是后台作业被角色级 `statement_timeout=30s` 截断**
+> （`pg_roles.rolconfig` 实测 `{statement_timeout=30s,idle_in_transaction_session_timeout=60s}`）：
+> 唯一会自己抬高的只有刷新器（`bg/materialized_view_refresher.go:106`）；
+> 而 `domains/stats/daily_monthly_rollup.go:94` 的 `context.WithTimeout(ctx, 2*time.Minute)`
+> = **Go 侧死代码**（DB 的 30 s 先到）⇒ **Go 的 ctx 超时必须 ≤ DB 的 statement_timeout，否则够不着**。
+> top 指纹：stats 聚合 90、**外传守卫 69（在请求热路径）**、负成本告警 35、
+> `session_summaries` 分块 UPDATE 18、`ursm_node_snapshot_min` 巡检 17；ctx 取消里
+> `domains/streaming/model_alternatives.go:186` 独占 **1,316 次（53%）**。
+> ★★★ **阴性结论（挡住误报级判断）**：`stats_usage_daily` **仍在被填**（113,952 行，最新 10-20）
+> ⇒ **失败是浪费不是数据空洞**；但 `ursm_node_snapshot_min` 已 **27,806,075 行 / 仅 7.4 天**
+> ⇒ 巡检 SQL 注释里的「7 天 ≈ 600 万行 / 44.5 s」基线**已过期 4.6×**
+> ⇒ 「7 天窗 + `count(DISTINCT date_trunc('minute',…))` 在 30 s 内跑不完」**已是结构性的**。
+> ★★★★ **本节唯一「可动手」的结构点**：`request_logs_with_current_month` 的**第 3 臂**是
+> **逐行、且无时间关联**的 `NOT EXISTS` 反连接 ⇒ 每个全量扫描都要把整个 `session_turns`
+> （1,058,025 行 / 1.5 GB）的 `request_id` 哈希出来（EXPLAIN：`Parallel Hash Right Anti Join`，
+> **438,962 行 / cost 171,357**，其中 09 月 heap 分区 **1,162,493,952 字节**全表顺序扫描）。
+> ⇒ **但第 3 臂不能删**：实测产出 **203,430 行 = `_request_logs`（338,976）的 60.0%**。
+> ⇒ ⇒ 优化方向 **O1 时间化 / O2 一次性物化去重判定**（`_request_logs` 已冻结 ⇒ 可物化）。
+> ★★★ **另两条本会话的猜测被自己的 EXPLAIN 推翻**（诚实记录）：① 「`gw_session_id` 点查无可用索引」
+> = **错**（叶实例有 CASE 表达式索引，cost 13,746）；② 「dedup join 该加时间范围」= **错**
+> （现状是 `Nested Loop` + `Index Only Scan`，加范围反而变成 `Parallel Seq Scan` 134 MB）
+> ⇒ ⇒ **EXPLAIN 只证明「计划会选」⇒ 改 SQL 前必须 A/B 两个版本的 plan**。
+> 门 `scripts/ursmcheck/section_14326_invisible_cost_test.go`（新，**10 条**，含
+> 「解析器必须按语法头部归属」的守卫）；可重跑解析器入仓 `scripts/audit/parse_pg_kills.py`；
+> 待拍板 **P0~P8**（P0 = 先量真实耗时，**必须先做**）。
+> 完整记录见 runbook `§143.26`。
 
 ## 经验反馈闭环（vibe-coding Rule 66）
 
