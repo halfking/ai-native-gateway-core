@@ -5316,3 +5316,45 @@ To codeup.aliyun.com:kaixuan/official-deploy/llm-gateway-go.git
 > （连的是**专用** `LLM_GATEWAY_FEATURE_STATS_TEST_DSN`，且有**库名守卫**
 > `current_database()` 不匹配 `itgate|scratch|test|tmp|bench|pg_` 就 SKIP ⇒ 拒绝在共享库上 TRUNCATE）
 > ⇒ ⇒ ★ **⇒ R78 静态门无需跨包推广**（admin 包实测零损伤）；真正缺的是「永远 SKIP」普查（另一件工具）。
+
+> **2026-10-21 R80 轮（本会话 · 续）**：★★★★ **「两轮对同一个开关给出相反建议」⇒ 真答案在第三处（谁喂了 DSN）**
+> ⇒ ⇒ ★★★★ 回应并行会话 R71 轮收尾通报；完整记录见 handoff `§19.20.22`。
+> ⇒ ★★★★ **① 通报「本地 main 落后 / 会 non-ff」⇒ 已解决**：实测本地 main 落后 `origin/main` **9 个提交但领先 0**
+> ⇒ ⇒ `git merge origin/main` 是**纯快进** ⇒ ⇒ 合并后本地 main = `origin/main` = `ccc3b77ee`，对拍一致 **0/0**
+> ⇒ ⇒ **non-ff 障碍已清**；且**工作树里 9 处他人未提交改动全部存活**。
+> ⇒ ⚠ ★★ **「共享工作树」的口径差异**：R71 轮说的「16 个未提交改动（含 `bg/auto_index_refresher.go`）」与
+> 本 checkout 实测的 **9 处且不含该文件** **不一致** ⇒ ⇒ **两边不在同一棵 checkout**
+> ⇒ ⇒ ★ **「共享工作树」跨 checkout 不成立 ⇒ 冲突面判断必须先确认 checkout 身份**。
+> ⇒ ★★ **② 通报「新静态门会因新 env 名而红」⇒ 已核，不受影响**：在对方工作树的**在途版本**上实测
+> `TestRealDBLegsUseDeclaredDSNEnvNames` / `TestPGTestEnvRegistryCoversEveryGapName` /
+> `TestPGTestEnvRegistryClassesMatchFactsourceAndRunner` / `TestPGTestEnvRegistryScannerSelfCheck`
+> ⇒ **4/4 PASS**（登记册 67 条、**未登记 0**、死条目 0）⇒ ★ **本轮没有新增任何 env 变量名**
+> （`admin/usage_enhanced_test.go` 只读既有的 `TEST_DATABASE_URL`）。
+> ⇒ ★★★★ **③ 通报「建议 `GATEWAY_CANONICAL_TEST_LOCAL_ONLY` 未授权 ⇒ 改 SKIP」⇒ 本轮实测：不建议执行**
+> ⇒ ⇒ ★★ R81 轮说「那几处 `t.Fatal` 是安全拒绝，不能一刀切改成 SKIP」，R71 轮说「建议改 SKIP」
+> ⇒ ⇒ ★★★★ **两边都对了一半：真答案在第三处 ——「谁喂了那个 DSN」**：
+> ① **官方门禁不 source 事实源**（`run-integration-gate.sh` 里没有 source `datasource_env.sh`）
+> ⇒ ⇒ `GATEWAY_CANONICAL_TEST_DSN` 在门禁里**未设** ⇒ ⇒ 第一道守卫（`dsn == "" ⇒ t.Skip`）就放行
+> ⇒ ⇒ **官方现状 0 FAIL**（与 R71 自己的三档读数一致）；
+> ② ⇒ ⇒ **那 1 条「缺授权」是「切事实源」才出现的**：`scripts/audit/datasource_env.sh:70`
+> 把 `GATEWAY_CANONICAL_TEST_DSN` 导出成**通用 DSN** ⇒ ⇒ fixture 拿到 DSN ⇒ 撞上授权守卫
+> ⇒ ⇒ **红的是「谁喂了不该喂的 DSN」，不是产品缺陷**；
+> ③ ⇒ ⇒ **守卫一个字都不用改**：`t.Fatal` 是**登记册自己写明的语义**
+> （R71 给该开关的分类理由原文：「**不给则 `t.Fatal` 而非 `SKIP`**」）⇒ ⇒ 改成 SKIP 会与登记册**自相矛盾**，
+> 且把「安全拒绝」降级成「静默跳过」；
+> ④ ⇒ ⇒ ★★★ **更硬的论据**：即使打开授权也不成立 —— canonical fixture 还要连**第二个库** `identity_shadow`
+> （`admin/shared_principal_realdb_test.go:113` 改库名）⇒ ⇒ 通用 DSN 指向的库**没有**那个库
+> ⇒ ⇒ ⇒ **它本来就只能指向「本地联调专用库」** ⇒ ⇒ 归 `dsn_exclusive` 是**准确分类**，不是新语义；
+> ⑤ ⇒ ⇒ ★★ 与 R71 自己的结论 2 一致（隔离开关不进 runner 的 `env \` 块）⇒ ⇒ **`dangerous` 类授权开关也不能进**
+> ⇒ ⇒ **授权只能由人在本地环境手给，不能由门禁给** ⇒ ⇒ **修法只能落在「别导出那个 DSN」**。
+> ⇒ ⇒ ★★ **修法（与 R81 轮刚做完的 `TRACE_RETIREMENT_TEST_DSN` 同款，且本例更干净：runner 的 `env \` 块本来就没有它）**：
+> ① `scripts/ursmcheck/pg_test_env_registry.tsv` 加 `GATEWAY_CANONICAL_TEST_DSN	dsn_exclusive	<理由>`；
+> ② `scripts/audit/datasource_env.sh` **删第 70 行** export（判据 ③ 会自动要求它出事实源）；
+> ③ `scripts/ursmcheck/datasource_env_test.go` 豁免表加一行（+ 理由）⇒ 删 export 后它既不在事实源也不在 runner
+> ⇒ ⇒ 效果：测试回到它**设计好的** `t.Skip` 分支 ⇒ ⇒ **「切事实源」那档的 7 条红应当少掉这条**。
+> ⇒ ⚠ **本轮未实施**：这三个文件是 R71/R81 会话**工作树里在途改**的 ⇒ **同文件两个写者纪律** ⇒ 精确修法已发持有方。
+> ⇒ ★★ **④ R71 三条技术结论对账**：结论 1（21 个 DSN 变量名已闭合）**已收到，本轮无在途活依赖它**；
+> 结论 2（隔离开关不进 runner）**采纳**并推广到 `dangerous` 类；结论 3 **部分采纳（保留 `t.Fatal`）、部分不采纳（不改 SKIP）**。
+> ⇒ ★★ **⑤ 同域实测：admin 整包对形态库零损伤**（关系 diff 0 / 列 diff 0，pristine 与本轮版本各一次）
+> ⇒ ⇒ 与 db 包的 −140 关系 / −959 列形成对比 ⇒ ⇒ **admin 包的破坏性门安全闸有效**
+> ⇒ ⇒ **「破坏性门必须自带一次性库」在 admin 包不需要推广**（代价是那 3 道门**永远 SKIP**，见 §19.20.21 ⑧）。
