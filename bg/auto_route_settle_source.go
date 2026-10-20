@@ -35,10 +35,14 @@ import (
 // 「写门开着时才走的分支」，而是「永远走不到的分支」**。留着它有两重害处：
 //
 //  1. `settings.RequestLogsWriteEnabled()` 在 **settings 存储未初始化**时回落
-//     **默认 true**（见 settings/key_request_logs_write_enabled.go 的
+//     **代码默认**（见 settings/key_request_logs_write_enabled.go 的
 //     GetPlatformBool 默认值）⇒ 新装/早启进程会读 v1 ⇒ 42P01 ⇒ 结算 worker
 //     每轮失败，reward 永久 NULL。**「写门生产上是关的」不等于「写门读出来是
 //     关的」**。
+//     ★ 2026-10-20 订正：G-0 已把**代码默认**翻成 `false` ⇒ 这条隐患的
+//     **前提已不成立**（新装/早启现在读到 false ⇒ 不会读 v1）。
+//     v1 臂删除**仍然是对的**——它是纵深防御，且不依赖任何默认值；
+//     但上面这条理由现在只是「历史动机」，不再是「当前风险」。
 //  2. 运维把写门翻回 true（本意是回滚）会直接踩 42P01。
 //
 // ⇒ v1 臂删除，`settleSourceFor` 恒返回会话族规格。**参数保留**是因为它的

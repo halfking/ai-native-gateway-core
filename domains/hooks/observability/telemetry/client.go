@@ -28,8 +28,8 @@ import (
 var errNoTelemetryDB = errors.New("telemetry database not configured")
 
 // requestLogsWriteEnabled 报告宽表家族的写入开关 —— S4 停写 gate（存储优化
-// 方案 v2，settings 键 storage.request_logs_write_enabled，默认 true = 维持
-// 现状双写；HotReload 即时生效）。
+// 方案 v2，settings 键 storage.request_logs_write_enabled，★ **代码默认 =
+// false** ⇒ 未显式配置即**不双写**；HotReload 即时生效）。
 //
 // ★ 2026-10-20（迁移 890，v1 族退役）：v1 宽表的 PG 写入分支已整段删除，本包
 // 剩下的唯一消费点是**文件系统**正文镜像（persistRequestLog →

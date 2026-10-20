@@ -3,6 +3,25 @@ package sessionv2mirror
 // final_success_turn.go — the session family's final-success landing pad,
 // applied to session_turns.is_final_success (audit §9.203).
 //
+// # ★ 认领形态在迁移 890（v1 族退役）后变了（2026-10-21 记录）
+//
+// 旧形态：v1 的终态成功认领在 `updateRequestLog` 的 upsert-race 分支里，
+// 该分支会 `fallback := *entry` 再 `insertRequestLog(&fallback)` ⇒
+// 认领记在 **copy** 上 ⇒ 必须把 flag 从 copy **拷回** caller's entry。
+//
+// 新形态：v1 的终态成功认领**整段删除**，认领资格直接挂到 entry 上：
+//
+//	if shouldClaimFinalSuccess(entry) {
+//	    entry.FinalSuccessClaimed = true
+//	}
+//
+// ⇒ **不再有 copy，也不再需要拷回**；会话族自己仲裁
+//   （session_turns 的 partial 唯一索引 + 本 pad）。
+//
+// ⇒ 因此旧门里「`entry.FinalSuccessClaimed = fallback.FinalSuccessClaimed`
+//   必须存在」这条断言**已随旧形态一同退役** ⇒ 门改成钉**新形态**
+//   （final_success_turn_gate_test.go 的 TestFinalSuccessClaimIsSetOnTheEntry）。
+//
 // # What was broken
 //
 // `session_turns.is_final_success` was **never written by anything**. Measured
