@@ -30315,6 +30315,17 @@ COMMENT ON COLUMN public.session_turns.parent_request_id IS
     'Request identifier of the parent turn for derived or subordinate work.';
 COMMENT ON COLUMN public.session_turns.task_type IS
     'Task classification copied onto the turn to avoid a sessions join.';
+COMMENT ON COLUMN public.session_turns.tools IS
+    'Tools invoked during this turn (JSON array). ★ 2026-10-20 起由写路径填充（审计 G-6，迁移 889）：
+本列此前**从未被写过**（domains/session/v2/turn_writer.go 的 INSERT 列清单里没有它）
+⇒ 每一行都停在默认值 ''[]''::jsonb ⇒ 视图 request_logs_with_current_month
+投影出的 tool_calls 恒为空数组（不是「该请求没有工具调用」，是「没人写过这一列」）。
+现在由 turn_writer.go 的 turnToolsJSONBExpr 在 INSERT 的**同一条语句**里用子查询
+从 public.session_tools_hot 聚合（按 session_id + request_id），元素是
+{tool_name, tool_call_id, status, duration_ms, error_type} 的摘要
+（**不含** arguments/result —— 那两份正文在 session_bodies 与 session_tools 里）。
+★ 历史行**不回填**（工具行可能已被 promote 搬走，回填值会不完整）。
+原始注释（456）：Tools invoked during this turn (JSON array of tool_use records).';
 
 -- These are partitioned parent indexes. PostgreSQL creates or attaches matching
 -- child indexes for existing partitions and propagates them to new partitions.

@@ -1226,6 +1226,12 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			//   （先建后删，无空窗）。
 			// ★ 含 CREATE/DROP INDEX CONCURRENTLY ⇒ 带 dbinit:no-transaction。
 			"888_session_family_join_index_gaps.sql",
+			// 889：裁决 session_turns.tools 死列 —— **填充**（不删列：710/816/817/824
+			// 的视图投影 + db/request_logs_view_schema.go 的 sessionFamilyProjection
+			// 都引用它，删列会撞依赖）。只订正 4 条列注释（tools × 2、turn_no × 2），
+			// 零锁零 IO；写路径的填充在 domains/session/v2/turn_writer.go
+			// （turnToolsJSONBExpr，从 session_tools_hot 按 session_id+request_id 聚合）。
+			"889_session_turns_tools_population.sql",
 		},
 	}
 }

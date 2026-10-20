@@ -1786,9 +1786,11 @@ files=(
   # (tenant_id, session_id, partition_date DESC)。
   # ★ PG 不支持 ALTER INDEX … ADD COLUMN ⇒ 只能「建新 + 删旧」（先建后删）。
   "$ROOT_DIR/sql/migrations/startup/888_session_family_join_index_gaps.sql"
+  # 889：裁决 session_turns.tools 死列 —— **填充**（不删列：710/816/817/824 的
   # 视图投影与 db/request_logs_view_schema.go 的 sessionFamilyProjection 都
   # 引用它）。本迁移只订正 4 条列注释；填充由写路径承担
   # （domains/session/v2/turn_writer.go 的 turnToolsJSONBExpr）。
+  "$ROOT_DIR/sql/migrations/startup/889_session_turns_tools_population.sql"
 
   # ── 2026-10-16 孤儿迁移 044 补登（health_source 白名单缺 probe_now）──────
   #
