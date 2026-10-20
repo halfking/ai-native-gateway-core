@@ -68,6 +68,21 @@ var datasourceEnvExemptions = map[string]string{
 	//   产品守卫会正确地拒绝它 ⇒ ⇒ 门禁得到 4 条**假红**（红的原因不是产品缺陷）。
 	//   ⇒ 不进事实源 ⇒ 那条腿改走它本来就设计好的 t.Skip 分支。
 	"TRACE_RETIREMENT_TEST_DSN": "破坏性 trace-retirement 腿的专用 DSN：必须指向名为 trace_retirement* 的隔离库（或显式授权的本地 54318 schema）⇒ 不能与通用 DSN 同值",
+	// ★★ R85 轮新增：与 TRACE_RETIREMENT_TEST_DSN **同族**（dsn_exclusive）。
+	//
+	// ★ 它为什么必须豁免（而不进事实源）：canonical fixture 除主库外**还要连第二个库**
+	//   `identity_shadow`（admin/shared_principal_realdb_test.go:113）⇒ 它本来就只能
+	//   指向「本地联调专用库」。
+	// ⇒ 与通用 DSN 同值 = 把「连本地库」的前提给了一个通用库。
+	// ⇒ 产品侧自己的守卫会正确地拒绝它（授权开关 GATEWAY_CANONICAL_TEST_LOCAL_ONLY
+	//   未开 ⇒ t.Fatal）⇒ ⇒ 事实源默认注入它，只会把「靶子不对」显示成红。
+	// ⇒ 不进事实源 ⇒ 那条腿改走它本来就设计好的 t.Skip 分支（dsn == "" ⇒ Skip）。
+	// ★ ★ 与「把 t.Fatal 改成 t.Skip」是**两件事**：守卫一个字都不用改 ——
+	//   「没配 ⇒ Skip」与「配了但没授权 ⇒ Fatal」是**互补的两条边界**，
+	//   而 t.Fatal 那一侧是**安全拒绝**（不是「跑不起来」）⇒ 改成 SKIP 会把安全拒绝降级成静默跳过。
+	// ★ 授权开关本身（GATEWAY_CANONICAL_TEST_LOCAL_ONLY，dangerous 类）**绝不由事实源打开**
+	//   ⇒ 门禁不能替人授予「连本地库」的权限。
+	"GATEWAY_CANONICAL_TEST_DSN": "canonical fixture 的专用 DSN：还要连第二个库 `identity_shadow` ⇒ 只能指向「本地联调专用库」⇒ 不能与通用 DSN 同值",
 }
 
 // ── 匹配器（纯函数，可被自检直接调用）──────────────────────────────────────────

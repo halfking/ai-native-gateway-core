@@ -67,7 +67,15 @@ export D07_S01_PG_URL="$__datasource_dsn"
 export DATABASE_URL="$__datasource_dsn"
 export DB_TEST_URL="$__datasource_dsn"
 export DECISION_RETIREMENT_TEST_DATABASE_URL="$__datasource_dsn"
-export GATEWAY_CANONICAL_TEST_DSN="$__datasource_dsn"
+# ⚠ GATEWAY_CANONICAL_TEST_DSN **不在事实源里**（R85 轮）：
+#   它是 dsn_exclusive（专用值）—— canonical fixture 除主库外**还要连第二个库**
+#   `identity_shadow`（admin/shared_principal_realdb_test.go:113 改库名）
+#   ⇒ ⇒ 它本来就只能指向「本地联调专用库」。
+#   ⇒ 与通用 DSN 同值 = 把「连本地库」的前提给了一个通用库。
+#   ⇒ 产品侧自己的守卫会正确地拒绝这种 DSN（授权开关未开 ⇒ t.Fatal）
+#     ⇒ 事实源默认注入它，只会把「靶子不对」显示成红。
+#   ★ 授权开关本身（GATEWAY_CANONICAL_TEST_LOCAL_ONLY，dangerous 类）**绝不由事实源
+#     打开** ⇒ 门禁不能替人授予「连本地库」的权限。
 export GUARD_IT_DSN="$__datasource_dsn"
 export IDENTITY_SHADOW_DSN="$__datasource_dsn"
 export LICENSE_AUTHORITY_DATABASE_URL="$__datasource_dsn"
