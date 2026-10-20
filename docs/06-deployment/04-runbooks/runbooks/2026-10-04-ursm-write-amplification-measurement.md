@@ -40147,6 +40147,35 @@ WHERE %s
 
 ### §143.36.8 ★ 本节遗留与待拍板
 
+> **订正横幅十八（2026-10-21，§143.37 就地订正本节 §143.36.8 的第 1 条与第 3 条）**
+>
+> ★★★★ **第 1 条的判词被证伪（原文保留）：**
+> - 原文写的是「**看板 fallback 只在【分钟统计缺覆盖】时触发**」⇒ ★ **这在本节指的那条链上不成立。**
+> - §143.37.3 实测（`git log -L` + 源码）：`queryOverviewCounts` 里的
+>   `return h.fillOverviewCountsFromLogs(...)` **落在 `if` 块【外面】**
+>   ⇒ **分钟路径成功时也照跑日志回退** ⇒ ★★ **那 412 次调用没有一次是「降级触发」的**，
+>   它们是**无条件**发生的。
+>   （来历可查：`272e1bf93` 引入分钟路径时，把收尾的 `return` 留在了 `if` 之外
+>   ⇒ **快路径加上了，慢路径却从没被关掉**。）
+> - ⇒ ⇒ ★★ **「为什么跑 410 次」的答案不是「覆盖率不够」，而是「门控从来没关上过」**
+>   ⇒ ⇒ ★ **§143.28 P15（巡检/rollup 覆盖率 ⇒ 看板降级频次）解释不了这 412 次里的任何一次**
+>   ⇒ ★ P15 的方向对**饼图/趋势**那两个读面仍然成立，但对 P12 这条链不成立。
+> - ⇒ ⇒ ★★★ **而且比「触发过频」更糟：那 412 次扫描算出来的两个数字，
+>   在生产上【一次都没有被采用过】** ——
+>   `fillOverviewCountsFromLogs` 只在计数为 0 时才写回 ⇒ 两个计数非零时结果被**逐字丢弃**
+>   ⇒ 生产实测 **6/6 组合**（1/7/30 天 × 平台/租户）两个计数都非零
+>   ⇒ ⇒ **21.8 GB 物理读 / 1,108.7 s 库时间换了个寂寞。**
+> - ⇒ ⇒ ★★ **修法**：只在「真的需要补 0」时才回退（`overviewCountsNeedsLogFallback`），
+>   生产 A/B **6/6 组合逐值等价** ⇒ 仓内已落地（**未部署**）⇒ 详见 **§143.37**。
+>
+> ★★ **第 3 条待办已闭合（原文保留）：**
+> - 原文写的是「`admin` 包已全扫（仅此一处），★ **其他包（`maas` / `bg` / `domains`）本轮未扫**」。
+> - §143.37.2 已做**全仓**普查（脚本 `scripts/audit/scan_14337_heavy_source.py`，
+>   ★ 含**子串修正**：parent 计数 = count(parent) − count(parent_hot)）：
+>   命中 **6 处**，**全部在 `admin/columnar_surface_servable_realdb_test.go` 一个测试文件里**
+>   ⇒ ⇒ ★★★ **产品代码命中数 = 0** ⇒ 结论**比原文更强**
+>   （原文只说「admin 包外没有」，实测是「**全仓产品代码里没有**」）。
+
 - ★★ **部署需授权**（改 Go 代码 ⇒ 改生产行为）⇒ **本节对生产写入 = 0、未部署**。
 - ★★ **P12 的「为什么它跑 410 次」尚未归因** ——
   看板 fallback 只在**分钟统计缺覆盖**时触发 ⇒ ★ **这指向 §143.28 P15
@@ -40228,3 +40257,316 @@ docker exec -i llm-gateway-pg psql -U llm_gateway -d llm_gateway \
   M4 替换串含 needle、M5 方向反了）⇒ ★ **作废的那几轮不能算「门没牙」**。
   ⇒ ★★ 且 **M5 修好后仍要做【双向验】**：既证明「注释里藏着形态 ⇒ 门红」，
   也要确认「正常形态 ⇒ 门绿」（基线绿已实测）。
+
+## §143.37 ★★★★★ P20：P12 的「为什么被调用」⇒ **无条件 fall-through** ⇒ 门控改法（对生产写入 = 0）
+
+> **本节对生产的写入 = 0**（全部只读：`pg_stat_statements` / `pg_class` /
+> `request_stats_minute` 与 `request_stats_dim_minute` 的 SELECT /
+> EXPLAIN (ANALYZE)（只对 SELECT，护栏放行且 SELECT 不写库））。
+> **本节未改任何生产对象、未改生产脚本、未改生产配置。**
+>
+> ⚠ **本节改了 1 处【产品代码】**（`admin/dashboard_board_queries.go` 的门控）
+> ⇒ 改的是看板读面的**执行路径**，**未部署** ⇒ **生产行为仍未变**。
+> ⚠ **生产读数被本轮自己的 EXPLAIN ANALYZE 污染过 1 次**（见 §143.37.4 的说明）。
+
+### §143.37.0 本节一句话
+
+★★ **P12 那条语句 2 天被调用 412 次、读了 21.8 GB 物理读、占了 1,108.7 s 库时间，
+而它算出来的两个数字在生产上【一次都没有被采用过】** ⇒
+根因不是「回退被误触发」，而是 **`queryOverviewCounts` 里的无条件 fall-through**
+（`272e1bf93` 引入分钟路径时，把收尾的 `return` 留在了 `if` 块**外面**）
+⇒ 修法 = **只在真的需要补 0 时才回退**（生产 A/B：**6/6 组合逐值等价**）
+⇒ ★★ **仓内已落地 + 6 条门 + 7 个变异**。
+⇒ ★ 附带闭合 §143.36.8 的两条遗留（全仓普查 + 触发归因）。
+
+### §143.37.1 起点：§143.36.8 留下的那个问题
+
+§143.36.8 写了两条遗留：
+
+1. ★★ **P12 的「为什么它跑 410 次」尚未归因** —— 原文写的是
+   「看板 fallback 只在**分钟统计缺覆盖**时触发」⇒ 指向 §143.28 P15。
+2. ★★ **同类双扫形态是否存在于其他包** —— `admin` 包已全扫（仅此一处），
+   **其他包（`maas` / `bg` / `domains`）本轮未扫**。
+
+⇒ 本节把这两条都做完了。★ **第 1 条的既有判词被证伪**（见 §143.37.3 与订正横幅十八），
+**第 2 条闭合**（见 §143.37.2）。
+
+### §143.37.2 ★★ 全仓普查（闭合 §143.36.8 的待办）：**产品代码 0 处**
+
+判据（★ 与 §143.36.8 记的「admin 包全扫」同一套口径）：
+
+- 逐个 `.go` 文件抽出所有 `fmt.Sprintf(`…`)` 的**反引号 SQL 模板**；
+- 在**同一个模板内**统计「重型源占位符」被引用的次数；
+- 重型源清单 = 会话族 / 日志族的 FROM 占位形态
+  （`FROM %s`、`FROM public.session_turns[_hot]`、`FROM public._request_logs[_hot]`、
+  `FROM request_logs_with_current_month`、`SessionFamilyTurnsSourceSQL()` 等）。
+
+★ **口径纪律（这一版又踩了一次子串坑）**：
+
+- ⚠★ 第一版报「**9 处**命中」，其中 **3 处是子串误计** ——
+  `FROM public.session_turns` 是 `FROM public.session_turns_hot` 的【子串】
+  ⇒ 朴素 `count()` 把 hot 腿也计进 parent 腿 ⇒ **假命中**。
+- ⇒ 修正口径：**parent 计数 = count(parent) − count(parent_hot)**（`_request_logs` 同理）。
+- ⇒ ★ 与 §143.36.8 记的「`AS r` 子串计数 50」是**同一族坑**（子串计数）。
+
+**修正后的结果（脚本 `scripts/audit/scan_14337_heavy_source.py`，可重跑）**：
+
+| 命中 | 位置 | 形态 | 性质 |
+|---|---|---|---|
+| 6 处 | `admin/columnar_surface_servable_realdb_test.go` | `FROM %s` × 2~3 | **测试代码**（统计表与其分区的行数，形态合理） |
+
+⇒ ★★★★ **产品代码命中数 = 0** ⇒ 「同一份重型源在同一 SQL 模板里被引用 ≥2 次」
+这个 P12 的失败形态，**在全仓产品代码里一处都没有**。
+⇒ ★ §143.36.8 的「其他包未扫」待办**闭合**，且结论比原判词更强
+（原判词只说「admin 包外没有」，实测是「**全仓产品代码里没有**」）。
+
+⚠ **诚实边界**：普查的判据是「**占位符被引用 ≥2 次**」。它**不覆盖**
+「同一份源被两个不同模板各读一次」这种跨模板形态 —— 后者属于
+「同一份数据被读几遍」的另一族问题，需要跨模板的调用点分析，本轮未做。
+
+### §143.37.3 ★★★★ 触发链的代码级归因：**无条件 fall-through**
+
+看板概览计数（「活跃模型数 / 活跃供应商数」）的取数链是：
+
+```
+handleDashboardBoard / buildBoardPayload
+  └─ queryBoardSummary            (admin/dashboard_board_queries.go)
+       ├─ queryOverviewCountsMinute   ← 快路径（读 request_stats_dim_minute）
+       └─ queryOverviewCounts
+            └─ fillOverviewCountsFromLogs  ← ★ 本节的主角（P12 那条语句）
+```
+
+★ **`queryOverviewCounts` 的改前形态（`272e1bf93` 引入）**：
+
+```go
+func (h *Handler) queryOverviewCounts(ctx context.Context, tenantID string, tr boardTimeRange, keys, models, providers *int) error {
+	if err := h.queryOverviewCountsMinute(ctx, tenantID, tr, keys, models, providers); err != nil {
+		if !IsMissingRelationError(err) {
+			return err
+		}
+	}
+	return h.fillOverviewCountsFromLogs(ctx, tenantID, tr, keys, models, providers)
+	// ★★★ 这个 return 落在 if 块【外面】⇒ 分钟路径成功时也照跑日志回退
+}
+```
+
+★★ **`git log -L` 的来历可查**（`272e1bf93 fix(dashboard): reorder board trend and harden stats API fallbacks`）：
+
+- `9ef13731f` 引入 `queryOverviewCounts` 时**只有**日志回退（还没有分钟路径）；
+- `272e1bf93` 加上了分钟路径（`queryOverviewCountsMinute`）**和** `IsMissingRelationError` 的
+  42P01 判据 —— ★ 意图显然是「分钟路径当主、**关系缺失时**才回退」；
+- ★★ 但收尾的 `return h.fillOverviewCountsFromLogs(...)` **被留在了 `if` 之外**
+  ⇒ **快路径加上了，慢路径却从没被关掉** ⇒ 一次「加个快路径」的改动，
+  顺手把一条重量级读面变成了**每次必跑**。
+
+⇒ ★★ **所以「它为什么被调用 412 次」的答案是：**
+**它一直都在被调用** —— 不是被某个降级判据触发的，而是**无条件**的。
+⇒ ★ 这直接**推翻**了 §143.36.8 的既有判词（订正横幅十八）。
+
+⚠ **别把这一族误伤到别的读面上**：`resolveBoardPies` / `resolveBoardTrends` 走的是
+`shouldUseBoardLogsFallback`（有真正的覆盖判据：分钟统计 `min(bucket)` 是否早于窗口起点）
+⇒ **那两个读面的门控是对的**，本节不动它们。
+★ 唯一的例外是 `shouldUseBoardLogsFallback` 本身**也**没有覆盖判据以外的检查
+（`tr.Days <= 1` 时直接 false）—— 那是**另一个**读面的口径，本轮未查。
+
+### §143.37.4 ★★★★ 生产只读取证：**结果从未被采用**，成本却是实打实的
+
+**① 两个读面的调用频次（`pg_stat_statements`，`dbid=16384`，
+`stats_reset = 2026-10-18 22:03:37+08` ⇒ 约 2 天窗口）**：
+
+| 读面 | queryid | calls | 均时 | 累计库时间 | 累计物理读 | 每次块数 |
+|---|---|---|---|---|---|---|
+| ★ **日志回退**（有 tenant 过滤） | `8961579589194073112` | **343** | 1,813.4 ms | 622.0 s | **18,876.9 MB** | 7,044 |
+| ★ **日志回退**（平台口径） | `395297407534424939` | **69** | 7,052.9 ms | 486.7 s | **3,492.6 MB** | 6,479 |
+| 分钟路径（有 tenant 过滤） | `-729629758807494072` | 384 | 69.9 ms | 26.8 s | 14.9 MB | 5 |
+| 分钟路径（平台口径） | `3875312947288648312` | 128 | 2,049.3 ms | 262.3 s | 367.2 MB | 367 |
+
+⇒ ★★ **日志回退合计 412 次 / 22,369.5 MB（≈ 21.8 GiB）/ 1,108.7 s 库时间**，
+而分钟路径只要 **289.1 s** ⇒ ★ **重的那条比快的那条贵 3.8 倍的库时间、60 倍的物理读**。
+⚠ **口径说明**：日志回退的 calls 在本轮从 342 变成 343 ⇒ **多出来的那 1 次是本轮自己的
+`EXPLAIN (ANALYZE)`**（`pg_stat_statements` 把它记成独立条目）⇒ 本节引用时按 343/69 记。
+
+**② 为什么「结果从未被采用」** —— `fillOverviewCountsFromLogs` 的收尾：
+
+```go
+if *models == 0 && logModels > 0 { *models = logModels }
+if *providers == 0 && logProviders > 0 { *providers = logProviders }
+```
+
+⇒ ★★ **两个计数都非零时，这个函数的返回值【一行都不会被写回】**
+⇒ 那一整扫（会话族 hot ∪ parent 两腿 UNION ALL + 118 列投影 + details LEFT JOIN）
+**扫了、付了钱、什么也没换到**。
+
+**③ 生产实测：分钟路径在 6/6 个组合里都给出两个非零计数**（§143.37.5 的 A/B 表）：
+1 天 79/8、7 天 165/10、30 天 488/19（平台口径与 `default` 租户口径**数值相同**
+—— 因为 `request_stats_dim_minute` 里 228,415 / 228,408 行属于 `default`，
+另一个租户 `hansi` 只有 9 行）。
+
+⇒ ★★★ **⇒ 那 412 次扫描，412 次都是纯浪费。**
+
+### §143.37.5 ★★★★ 门控修法：零语义风险（生产 A/B 逐值等价）
+
+**改法**（`admin/dashboard_board_queries.go`）：
+
+```go
+// overviewCountsNeedsLogFallback 判定「看板概览计数还要不要跑日志回退」。
+func overviewCountsNeedsLogFallback(minuteErr error, models, providers int) bool {
+	if minuteErr != nil {
+		return IsMissingRelationError(minuteErr)   // 只有 42P01 才回退
+	}
+	return models == 0 || providers == 0              // 只在需要补 0 时才回退
+}
+```
+
+**★ 为什么逐值不变（不是「大概等价」）** —— 设分钟路径结果 (m, p)、日志回退结果 (lm, lp)：
+
+| 情形 | 改前 | 改后 | 结论 |
+|---|---|---|---|
+| m≠0 且 p≠0 | 跑了回退，但两个 `if` 都不成立 ⇒ **状态不变** | 不跑 ⇒ **状态不变** | ★ **逐值相等** |
+| m=0 或 p=0 | 跑了回退 | 跑了回退（**逐字相同的代码路径**） | ★ **逐值相等** |
+
+⚠ **诚实边界（唯一的差别，不是「零风险」）**：改前在 (m≠0 且 p≠0) 时
+**可能把日志查询的错误返回给调用方**，改后返回 nil。
+⇒ ★ 之所以可判定为「调用点不可观测」，是因为**两个调用点都用 `_ =` 丢弃了它**
+（`queryBoardSummary` 与 `fallbackBoardSummary`）⇒ 由门
+`TestSection14337CallSitesDiscardOverviewCountsError` 钉住。
+
+⚠ **边界②**：分钟路径报 **42P01（关系缺失）时仍然回退** —— 那正是回退存在的理由
+（聚合表没装 ⇒ 只能从明细表算）；**非 42P01 的错误仍直接上抛**，与改前一致。
+
+**★ 生产 A/B（真实数据，6/6 组合逐值等价）** ——
+脚本 `scripts/audit/verify_14337_overview_gate_ab.py`（只读，可重跑）：
+
+| 窗口 | 范围 | 分钟路径 (m/p) | 日志回退 (lm/lp) | 改前最终值 | 改后最终值 | 逐值等价 | 被门控跳过 |
+|---|---|---|---|---|---|---|---|
+| 1 天 | 平台 | 79 / 8 | 85 / 7 | 79 / 8 | 79 / 8 | **t** | **t** |
+| 1 天 | default | 79 / 8 | 85 / 7 | 79 / 8 | 79 / 8 | **t** | **t** |
+| 7 天 | 平台 | 165 / 10 | 184 / 9 | 165 / 10 | 165 / 10 | **t** | **t** |
+| 7 天 | default | 165 / 10 | 184 / 9 | 165 / 10 | 165 / 10 | **t** | **t** |
+| 30 天 | 平台 | **488** / **19** | **731** / **15** | 488 / 19 | 488 / 19 | **t** | **t** |
+| 30 天 | default | **488** / **19** | **731** / **15** | 488 / 19 | 488 / 19 | **t** | **t** |
+
+⇒ ★★ **6/6 组合 `value_equivalent = t`** ⇒ 门控**逐值**不改变载荷。
+⇒ ★★ **6/6 组合 `log_scan_skipped_by_gate = t`** ⇒ 门控**确实**跳过了那一扫。
+
+**★ 被跳过那一扫的单次成本**（单遍形态 = 仓内现行形态，EXPLAIN (ANALYZE, BUFFERS)）：
+
+| 窗口 | 平台口径 | default 租户口径 |
+|---|---|---|
+| 1 天 | 37,665 块 / 193.6 ms | 37,665 块 / 146.0 ms |
+| 7 天 | 488,520 块 / 914.9 ms | 488,517 块 / 928.6 ms |
+| 30 天 | **1,439,987 块 / 3,598.5 ms** | 1,435,859 块 / 3,683.5 ms |
+
+⇒ ★ **30 天窗那一扫单次就是 140 万块 / 3.6 s** ⇒ 门控省掉它比 §143.36 的
+「减半」还彻底（**那一扫根本不发生**）。
+⇒ ★★ **P12 与 P20 是叠加的**：P12（单遍）让这一扫便宜一半，P20（门控）让它**大多数时候不发生**。
+
+### §143.37.6 ★★★ 六道新门 + 七个变异
+
+门文件：`admin/section_14337_overview_counts_gate_test.go`（**6 条**）
+
+| # | 门 | 挡什么 |
+|---|---|---|
+| 1 | `TestSection14337NeedsLogFallbackDecisionTable` | ★ **行为表**（8 个输入分支）：判定写反 / 只判一个计数 / 42P01 与非 42P01 混淆 |
+| 2 | `TestSection14337LogFallbackOnlyFillsZeroCounts` | ★ **门控的前提**被破坏（回退不再只补 0 ⇒ 跳过就不再是零语义风险） |
+| 3 | `TestSection14337QueryOverviewCountsIsGated` | 门控被删 / 判定被挪到回退之后 |
+| 4 | `TestSection14337CallSitesDiscardOverviewCountsError` | ★ **诚实边界**：调用点开始使用错误 ⇒ 错误面从不可观测变成可观测 |
+| 5 | `TestSection14337NoHeavySourceDoubleScanInProductCode` | ★ **全仓普查**（§143.37.2 的口径进仓）：产品代码里再出现双扫 |
+| 6 | `TestSection14337RunbookHasSection` | 本节在 runbook 里 |
+
+★ **门 1 用的是【行为表】而不是文本判据** —— 理由：门要挡的失败模式
+（门控被删 / 判定写反 / 只判一个计数）在源码文本上都能长得「很像有门控」，
+只有**真的调用判定函数**才能区分。
+★ **门 2 是门 1 的前提门**：没有它，「跳过是零语义风险」这句话就没有依据。
+
+变异脚本：`scripts/mutate-14337-overview-counts-gate.py`（**隔离副本模式**，M1~M7）
+
+| # | 变异 | 期望红 |
+|---|---|---|
+| M1 | 还原成改前的**无条件 fall-through** | 门 3 |
+| M2 | 判定写反（`!= 0` 时反而回退） | 门 1 |
+| M3 | 只判一个计数（漏掉 `providers`） | 门 1 |
+| M4 | ★ 破坏门控的前提（回退不再只补 0） | 门 2 |
+| M5 | 把判定挪到回退**之后** | 门 3 |
+| M6 | 调用点 1 开始使用错误 | 门 4 |
+| M7 | 调用点 2 开始使用错误 | 门 4 |
+
+⇒ ★ **隔离副本模式**（`git archive HEAD | tar -x`）：全部变异只在副本里发生，
+共享工作树**一个字节都不动**；收尾核「共享工作树的已跟踪文件未被改动」。
+
+### §143.37.7 ★★ 本节对既有结论的影响
+
+- ★★★ **§143.36.8 的既有判词被证伪**（「看板 fallback 只在分钟统计缺覆盖时触发」
+  ⇒ 对 `queryOverviewCounts` 这条链**不成立**）⇒ 订正横幅十八。
+- ★★ **§143.28 P15（巡检/rollup 覆盖率 ⇒ 看板降级频次）的方向被降级**：
+  分钟统计的覆盖率**确实**影响 `resolveBoardPies` / `resolveBoardTrends`，
+  但**不影响**本节这条链 ⇒ P15 解释不了 412 次里的任何一次。
+- ★★ **§143.26.3 记的「2 天 69 次被 statement timeout 杀」**：
+  ★ 本节的 A/B 复现了 30 天窗那一扫单次 3.6 s（单遍形态）⇒ **改前的双扫形态
+  才会撞满 30 s** ⇒ 该记录的成因与 §143.36 的结论一致（**根因是扫两遍**），
+  ★ **不是**「被降级判据误触发」造成的。
+- ★★ **§143.36 的 P12 单遍改法**在本节之后**不再是「必须部署」的那一半** ——
+  P20 门控在多数情况下让那一扫**根本不发生** ⇒ 两者的部署优先级可以重排
+  （P20 收益更大且不依赖迁移 892）。
+
+### §143.37.8 ★★ 本节遗留与待拍板
+
+- 🚨 **P20 部署需授权**（改 Go 代码 ⇒ 改生产行为）⇒ **本节未部署**，生产行为未变。
+- 🚨 ★★ **【语义决策】30 天 tab 的「活跃模型数 / 活跃供应商数」报哪个口径？**
+  实测：分钟口径 **488 / 19** vs 明细口径 **731 / 15**
+  ⇒ **模型少报 33%（488 vs 731）**，供应商多报 27%（19 vs 15）。
+  - 差异来源有两个，**必须分开看**：
+    ① **TTL 截断**（只影响 30 天窗）：`request_stats_dim_minute` 的保留期
+       = `lifecycle.request_stats_minute_ttl_days`（**默认 14 天**、Max 90，
+       `settings/spec_lifecycle.go:27`，`bg/partition_manager.go:1234` 消费，
+       覆盖 `request_stats_minute` / `_dim_minute` / `_error_drill_minute` 三张表）
+       ⇒ 实测覆盖跨度 **14 天 06:12:32**（正好卡在 TTL 边界上）
+       ⇒ 30 天窗的「去重模型集合」实际只覆盖最近 14 天。
+    ② **两个口径的定义差异**（1 天窗也在 TTL 内，但 79 vs 85 / 8 vs 7 仍有差）
+       ⇒ status 白名单、探针排除、dim 表的聚合口径三者不完全同源。
+  - 候选处置：① 提高 `lifecycle.request_stats_minute_ttl_days`（Max 90；
+    存储代价实测：`request_stats_dim_minute` 140 MB / 14 天 ⇒ 30 天约 300 MB，
+    `request_stats_minute` 19 MB ⇒ 30 天约 41 MB ⇒ **代价很小**）
+    ② 30 天 tab 改口径 / 明确标「降级口径」 ③ 保持现状（接受 488）
+  - ⚠ ★★ **本轮门控与这个决策有耦合**：门控让 30 天窗**继续用分钟口径**（488），
+    ⇒ **若属主决定 30 天 tab 应该报明细口径（731），则该窗口不能被门控跳过**
+    ⇒ ⇒ **这个决策必须在 P20 部署前拍板**（否则可能要返工）。
+  - ⇒ **本轮未做任何改动**（纯读数 + 门控的**通用**部分）。
+- ★★ **门控的通用部分 vs 窗口特例**：本轮的门控是**通用**的
+  （「两个计数都非零就不回退」），**不含**任何 30 天窗的特例
+  ⇒ ⇒ **先拍板、再决定要不要加特例**，不要在门控里预埋窗口判断。
+- ⚠ **本节未查的相邻读面**：`shouldUseBoardLogsFallback` 的调用方
+  （`resolveBoardPies` / `resolveBoardTrends`）本轮**只确认了它们的门控是对的**，
+  **没有**测它们的触发频次与成本 ⇒ 登记为下一轮线索。
+- ⚠ **跨模板形态未普查**（见 §143.37.2 的诚实边界）。
+
+### §143.37.9 ★ 本节的可重跑脚本
+
+★ `scripts/audit/verify_14337_overview_gate_ab.py` —— 生成
+「语义对照（before/after 并排 + `value_equivalent` 标志）+ 成本（buffers / exec time）」
+的 SQL，**只读**（全部 SELECT / EXPLAIN ANALYZE 对 SELECT）：
+
+```bash
+# 生产（走既有只读护栏）
+python3 scripts/audit/verify_14337_overview_gate_ab.py > /tmp/p14337_ab.sql
+bash ~/.mavis-tools/lgwp-prod.sh /tmp/p14337_ab.sql 600
+
+# 本地真库
+python3 scripts/audit/verify_14337_overview_gate_ab.py > /tmp/p14337_ab.sql
+docker exec -i llm-gateway-pg psql -U llm_gateway -d llm_gateway -f /tmp/p14337_ab.sql
+```
+
+★ `scripts/audit/scan_14337_heavy_source.py` —— 全仓普查
+「同一 SQL 模板里重复引用同一份重型源」，**含子串修正**
+（parent 计数 = count(parent) − count(parent_hot)）：
+
+```bash
+python3 scripts/audit/scan_14337_heavy_source.py .
+```
+
+⇒ ★★ **两个脚本都把本节的结论变成可复现的读数**，而不是「本轮实测过一次」的口头断言。
+⇒ ⚠ 脚本里的会话族投影是【12 列子集快照】：§143.36.6 已实测「裁剪投影对 buffers
+**零影响**」（planner 会裁掉未引用的投影列）⇒ 用它测**成本**有效；
+**数值**只依赖 `client_model` / `outbound_model` / `provider_id` / `ts` / `tenant_id`
+⇒ **语义对照不受投影宽度影响**。
+
