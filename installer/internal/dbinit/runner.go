@@ -1202,6 +1202,12 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			// promote 函数本身不用改：707 的搬行体是「目录派生列清单 +
 			//   RETURNING h.*」⇒ 对称加列自动流经。
 			"885_session_turns_host_tags.sql",
+			// 886：订正 public.session_bodies 的表注释（「使用 columnar 存储
+			// 格式」是**假注释** —— 该族自建表起就是 heap + lz4 TOAST，且因
+			// 唯一约束 / ON CONFLICT / UNION ALL 视图族三重互斥而**不可能**
+			// 是列存；论证见 765:13-21 与 829）。只改 pg_description，
+			// 零锁零 IO；**不改 430 本体**（已 applied + 已记账 + 校验和已登记）。
+			"886_session_bodies_storage_comment.sql",
 		},
 	}
 }
