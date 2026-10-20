@@ -11,6 +11,11 @@ import (
 )
 
 func TestEnsureSpecsCoversAllPartitionedTables(t *testing.T) {
+	// v1 族生命周期条目在停写时被 filterRetiredV1Lifecycle 滤掉（见
+	// partition_manager_v1_retirement_test.go 的停写门）。本用例断言的是
+	// **v1 仍在写**时的完整清单，所以把前提显式钉住 —— 2026-10-20 起该键的
+	// 代码默认是 false（审计 D0），不钉住的话本清单默认会少四条。
+	withV1WriteEnabled(t, "true")
 	specs := ensureSpecs()
 
 	// Migration 330 (2026-07-04) added usage_ledger. Migration 328a
@@ -75,6 +80,8 @@ func TestEnsureSpecsCoversAllPartitionedTables(t *testing.T) {
 }
 
 func TestPromoteSpecsCoversAllDefaultPartitions(t *testing.T) {
+	// 同上：本清单在停写（v1 族退休）时会少四条 v1 条目，钉住前提。
+	withV1WriteEnabled(t, "true")
 	specs := promoteSpecs()
 
 	// Migration 341-350 (2026-07-05) replaced *_default catch-all
@@ -251,6 +258,8 @@ func TestResolvePromoteConfigHandoffRetention(t *testing.T) {
 // tool_usage_stats[_hot]). The fnName is what selects the SQL function,
 // so set equality on fnNames is the invariant that matters.
 func TestPromoteSpecsCoverAdminHotPromoteTableMap(t *testing.T) {
+	// 同上：两侧清单在停写（v1 族退休）时都会少 v1 条目，钉住前提。
+	withV1WriteEnabled(t, "true")
 	source, err := os.ReadFile(filepath.Join("..", "admin", "data_lifecycle_hot_partition.go"))
 	if err != nil {
 		t.Fatalf("read admin registry source: %v", err)

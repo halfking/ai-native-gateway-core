@@ -368,14 +368,20 @@ func withSessionsV2Settings(t *testing.T, overrides map[string]bool) {
 		}
 	})
 
-	store := map[string][]byte{}
+	store := map[string][]byte{
+		// v1 写门显式打开：本 helper 会**替换**掉 settings.Global，替换后的
+		// registry 若不显式钉住该键，读到的就是新的代码默认 false（审计 D0），
+		// 于是测 bodies 写法的用例里 v1 写路径整段被跳过。前提从隐式变显式，
+		// 断言强度不变（下面 overrides 里的同名键仍然优先）。
+		settings.KeyRequestLogsWriteEnabled: []byte("true"),
+	}
 	for key, val := range overrides {
 		store[key] = []byte(strconvFormatBool(val))
 	}
 	registry := settings.NewRegistry()
 	registry.RegisterBackend(settings.ScopePlatform, &fakeSettingsBackend{store: store})
 	registry.RegisterBackend(settings.EnvBackendScope, settings.NewStoreEnv())
-	for _, spec := range settings.SessionsV2Specs() {
+	for _, spec := range append(settings.StorageSpecs(), settings.SessionsV2Specs()...) {
 		registry.MustRegisterSpec(spec)
 	}
 	settings.Global = registry

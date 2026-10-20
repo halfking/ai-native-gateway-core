@@ -28,6 +28,17 @@
 > ⇒ 4 份基线副本全回 **v1 fallback 体**、部署形态交给迁移换上，并立**基线自洽门**；
 > 另修**既有**新装断链（853 缺 489/490）⇒ fresh-install 链 **0 of 282 fail**。
 > 新装路径的硬约束见下方「★ 基线自洽」一节。
+> **2026-10-20 §143.19 轮（本会话）**：把「读数手段本身」纳入审计 ——
+> **252 的 PG 日志通道从未断过**（§143.17 的「日志是空的」判词被证伪，**错的是读法**：
+> `docker logs` 走 journald/k8s-file 驱动，真实通道是 conmon 的
+> `overlay-containers/<id>/userdata/ctr.log` + `/etc/cron.d/pg17-ctrlog-snapshot` 小时级外抄）；
+> **慢查询清单必须按 `dbid` 拆库**（本实例混库，`pg_stat_statements` 1.11 只有 `dbid`）；
+> ★★ `refreshIndexSQL` 成本根因 = **全扫 434,658 行**（不是索引/形态）⇒ 冷分区
+> **每组只留 `MAX(bucket)` 一行**可让扫描 −69.1% 且**语义逐行全绿**；
+> ★★ **872 的真实收益**：结构侧闭环但**均值未降**（窗口不可比 + 噪声 > 均值）⇒ 不可归因；
+> ★★ 「前提漂移」缺陷：`cleanup_old_credential_model_index()` 自 317 起未改，
+> 而 872 已把冷月分区转成 heap ⇒ **7 天 TTL 在冷族上是空文**（93.2% 的行超期）。
+> 完整记录见 runbook `§143.19`。
 > 复盘见 `docs/audit/2026-10-20-request-logs-session-turns-复核轮.md` §5.13。
 
 ## 经验反馈闭环（vibe-coding Rule 66）

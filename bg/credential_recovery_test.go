@@ -888,6 +888,9 @@ func TestLookbackIntervalAndWindowResolution(t *testing.T) {
 // success predicate) is claimed via the SKIP LOCKED lease tx, receives the
 // Recover(30) success write, and is handed to the dual-round probe entry.
 func TestScanLookbackTriggersRecoveryAndProbe(t *testing.T) {
+	// 回溯扫描要求 v1 侧可比（lookbackComparability：停写即跳过），
+	// 而 2026-10-20 起该键的代码默认是 false（审计 D0）—— 钉住前提。
+	withV1WriteEnabled(t, "true")
 	mock, err := pgxmock.NewPool()
 	if err != nil {
 		t.Fatalf("pgxmock.NewPool: %v", err)
@@ -950,6 +953,7 @@ func TestScanLookbackTriggersRecoveryAndProbe(t *testing.T) {
 // unit level: no candidate rows (SQL excluded them — no in-window success)
 // → zero recover writes, zero probe submissions, no claim transactions.
 func TestScanLookbackNoRowsNoTrigger(t *testing.T) {
+	withV1WriteEnabled(t, "true")
 	mock, err := pgxmock.NewPool()
 	if err != nil {
 		t.Fatalf("pgxmock.NewPool: %v", err)
@@ -982,6 +986,7 @@ func TestScanLookbackNoRowsNoTrigger(t *testing.T) {
 // CONFLICT race (row exists, leased/paused elsewhere) reports claimed=false
 // and the scan skips both the recover write and the probe submission.
 func TestScanLookbackSkipsLeasedOrPausedRows(t *testing.T) {
+	withV1WriteEnabled(t, "true")
 	mock, err := pgxmock.NewPool()
 	if err != nil {
 		t.Fatalf("pgxmock.NewPool: %v", err)

@@ -368,11 +368,18 @@ func TestFingerprintArmIsNotGatedByStopWrite(t *testing.T) {
 //	   镜像**；两个 PG 写路径（insertRequestLog / updateRequestLog）**不得**
 //	   再读它——v1 宽表写入已退役，计费写入（usage_ledger）必须恒写。
 //	② requestLogsWriteEnabled() { return settings.RequestLogsWriteEnabled() }
-//	③ settings.KeyRequestLogsWriteEnabled = "storage.request_logs_write_enabled"
+//	③ settings.RequestLogsWriteEnabled() { return GetPlatformBool(KeyRequestLogsWriteEnabled, false) }
+//	     └─ KeyRequestLogsWriteEnabled = "storage.request_logs_write_enabled"
 //
 // ★ 2026-10-20（迁移 885）：原来的跳 1 是「两个写路径各取一次
 // `logsWrite := requestLogsWriteEnabled()` 快照」——那个快照随 v1 写入分支
 // 整段删除 ⇒ 改指为「两个写路径**一次都不得**读这个键；唯一读点是镜像」。
+//
+// ★ 2026-10-20（并行审计轮 D0，origin/main）：跳 3 的**默认值**由 true 改成
+// false —— 合并后本门必须与之一致（否则注释与代码分叉，下一个人会照着注释
+// 以为「默认双写」）。语义上这仍然是自洽的：v1 族已被 885 整体 DROP，
+// 「是否允许写 v1」这个问题的答案恒为「否」⇒ 默认 false 与事实一致，
+// 且未显式配置的环境（新装 / 克隆 / 灾备）不会再以为自己在双写。
 func TestStopWriteKeyGatesOnlyTheBodyMirror(t *testing.T) {
 	fset := token.NewFileSet()
 	file, err := parser.ParseFile(fset, "client.go", nil, 0)
