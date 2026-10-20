@@ -1203,6 +1203,22 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			//    scripts/apply-db-revision-sequence.sh 会做词法改写，
 			//    安装器**不做**（逐字执行）⇒ 两种名字都试，三条通道都正确。
 			"885_drop_request_logs_v1_family.sql",
+			// 886：给**会话族**建 `WHERE cost_usd < 0` 的部分索引 ——
+			// 根修 bg/routing_health_checks.go recorded_cost_is_negative
+			// 检查的全表扫描。
+			// ★ 起因：885 把 v1 `_request_logs` 族**真删掉** ⇒ **882 给它建
+			//   的那条同款索引随表消亡**（索引活不过它的表）；而检查的源
+			//   随 885 迁到了会话族 ⇒ 会话族上**一条 cost_usd 索引都没有**。
+			// 实测（本地 PG17 真库）：hot 表 Seq Scan，父表每个分区一次
+			//   Seq Scan（4 个分区），谓词挂在 Filter 上。
+			// 形态：两条部分索引（父表 + hot），键序 (ts, credential_id,
+			//   raw_model_name) 服务 30 天窗范围谓词与 GROUP BY，INCLUDE
+			//   (cost_usd, cache_read_tokens, prompt_tokens) 让聚合 index-only。
+			//   谓词 `cost_usd < 0`；条目数 = 负成本行数（实测 0）⇒ 索引本体几页。
+			// 建在父表上 ⇒ 未来月分区自动继承（877 台账口径，882/874 同款）。
+			// ★ 顺序前提：两表与 raw_model_name（707 补列）都由启动序列建 ⇒
+			//   886 编号在其后，天然排在它们之后。
+			"886_session_turns_cost_negative_partial_idx.sql",
 		},
 	}
 }

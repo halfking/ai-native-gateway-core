@@ -188,7 +188,7 @@ func TestStoragePrewarmSharesOneFlightWithFirstRequest(t *testing.T) {
 	close(start)
 	wg.Wait()
 
-// 两边都跑完后，预热必然已经落地（它自己就是其中一个 goroutine）。
+	// 两边都跑完后，预热必然已经落地（它自己就是其中一个 goroutine）。
 	waitPrewarmSettled(t, pool)
 	// 留一点余量让可能仍在飞的采集落地，再断言恰好一次。
 	time.Sleep(300 * time.Millisecond)

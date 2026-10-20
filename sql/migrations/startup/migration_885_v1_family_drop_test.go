@@ -229,6 +229,229 @@ func TestMigration885EmbeddataCopyIsByteIdentical(t *testing.T) {
 	}
 }
 
+// TestMigration885DownRestoresEveryDroppedFunction —— ★ down 必须把 up 删掉的
+// **每一个**函数/过程都装回去。
+//
+// 这道门是 2026-10-20 补的：885 的 down 此前**只恢复了 4 个**函数
+// （ensure_request_logs_partition / ensure_request_logs_bodies_partition /
+// create_next_month_partitions / ensure_next_month_archive_partition），
+// 而 up 删掉的是 **20 个**⇒ 回滚后 v1 族「表回来了、promote / TTL / 归档
+// 函数没回来」= **半活**：表在、分区不产、正文不清理；而且旧代码
+// （回滚通常连代码一起回滚）会调用那些函数 ⇒ 每 tick 42P01。
+//
+// 判据是**集合比对**（up 的 DROP 清单 ⇔ down 的 CREATE 清单），不是数个数：
+// 数个数挡不住「补了 4 个、漏了 4 个、总数不变」。
+func TestMigration885DownRestoresEveryDroppedFunction(t *testing.T) {
+	up := readMig885(t)
+	downBytes, err := os.ReadFile(filepath.Join(".", "885_drop_request_logs_v1_family.down.sql"))
+	if err != nil {
+		t.Fatalf("read 885 down: %v", err)
+	}
+	down := string(downBytes)
+
+	dropRe := regexp.MustCompile(`(?m)^DROP (FUNCTION|PROCEDURE) IF EXISTS public\.([a-z_0-9]+)\(`)
+	dropMatches := dropRe.FindAllStringSubmatch(up, -1)
+	// ── 阳性对照：检测器必须真的抓得到东西（否则下面的比对是空集比空集）──
+	if len(dropMatches) != 20 {
+		t.Fatalf("885 drops %d functions/procedures, expected 20 — "+
+			"the detector (or 885 itself) changed; update this gate together with it",
+			len(dropMatches))
+	}
+	dropped := map[string]bool{}
+	for _, m := range dropMatches {
+		dropped[m[1]+":"+m[2]] = true
+	}
+
+	createRe := regexp.MustCompile(`(?m)^CREATE OR REPLACE (FUNCTION|PROCEDURE) public\.([a-z_0-9]+)\(`)
+	createMatches := createRe.FindAllStringSubmatch(down, -1)
+	created := map[string]bool{}
+	for _, m := range createMatches {
+		created[m[1]+":"+m[2]] = true
+	}
+	// 语句条数必须相等（**重载也算数**）：`credential_most_used_model` 有
+	// (bigint,int) 与 (int,int) 两个重载 ⇒ 20 个对象只有 19 个**名字**。
+	// 只比名字集合会漏掉「少复原一个重载」⇒ 这里比**条数**，比集合。
+	if len(createMatches) != len(dropMatches) {
+		t.Errorf("885's down creates %d functions/procedures but the up drops %d "+
+			"(overloads count separately: credential_most_used_model has two)",
+			len(createMatches), len(dropMatches))
+	}
+
+	for key := range dropped {
+		if !created[key] {
+			t.Errorf("885's down must restore %s — restoring the tables without the "+
+				"functions leaves the v1 family half-alive (tables back, partitions "+
+				"never created, bodies never cleaned) and the pre-885 code hits 42P01 "+
+				"on every tick", key)
+		}
+	}
+	// 反向：down 复原的对象必须是 up **删掉**的那些（防止 down 里塞进不属于
+	// v1 族的函数，或把「被替换」的函数当成「被删除」的函数混进来）。
+	for key := range created {
+		if !dropped[key] {
+			t.Errorf("885's down restores %s, but 885 never dropped it — "+
+				"the down and the up must operate on the same object set", key)
+		}
+	}
+}
+
+// TestMigration885DownRestoresTheTwoTriggers —— 触发器随表消失，
+// 触发器**函数**由上一道门覆盖，但两个触发器本身也要复原。
+//
+// 实测：这两个触发器**只**挂在 v1 族上（真库 pg_trigger 清点：
+// `trg_session_tenant_binding` → `_request_logs` 及其分区，
+// `trg_update_session_summary` → `_request_logs_hot`）；
+// 它们写的 `session_tenant_binding` / `session_summaries` 是**会话族**的表。
+func TestMigration885DownRestoresTheTwoTriggers(t *testing.T) {
+	downBytes, err := os.ReadFile(filepath.Join(".", "885_drop_request_logs_v1_family.down.sql"))
+	if err != nil {
+		t.Fatalf("read 885 down: %v", err)
+	}
+	down := string(downBytes)
+	for _, want := range []string{
+		"CREATE TRIGGER trg_session_tenant_binding AFTER INSERT ON public._request_logs",
+		"CREATE TRIGGER trg_update_session_summary AFTER INSERT ON public._request_logs_hot",
+	} {
+		if !strings.Contains(down, want) {
+			t.Errorf("885's down must re-create the v1 triggers; missing: %q "+
+				"(triggers die with their table, so only the down can bring them back)", want)
+		}
+	}
+}
+
+// TestMigration885DownEmbeddataCopyIsByteIdentical —— down 的两份副本也必须
+// 逐字节相同（up 的那道门只覆盖 up）。
+func TestMigration885DownEmbeddataCopyIsByteIdentical(t *testing.T) {
+	const downName = "885_drop_request_logs_v1_family.down.sql"
+	canonical, err := os.ReadFile(filepath.Join(".", downName))
+	if err != nil {
+		t.Fatalf("read canonical down: %v", err)
+	}
+	embed, err := os.ReadFile(filepath.Join(
+		"..", "..", "..", "installer", "cmd", "llm-gw-installer", "embeddata", "startup", downName))
+	if err != nil {
+		t.Fatalf("read embeddata down copy: %v", err)
+	}
+	if string(canonical) != string(embed) {
+		t.Fatalf("885's down embeddata copy has drifted from the canonical file "+
+			"(canonical %d bytes, embeddata %d bytes)", len(canonical), len(embed))
+	}
+}
+
+// TestMigration885CutsV1DependentEdgesBeforeDropping —— ★ 依赖边必须在**删表之前**切断。
+//
+// 这道门是 2026-10-20 新装链实测逼出来的：885 在**新装路径**上被 PostgreSQL
+// 直接拒绝：
+//
+//	cannot drop table _request_logs_hot because other objects depend on it
+//	DETAIL: policy session_turns_owner_filter on table session_turns depends on table _request_logs_hot
+//
+// 根因是**两条**还在指向 v1 族的依赖边（**升级路径上看不见，因为生产上它们
+// 早就不存在/早已是 canonical 形态**）：
+//
+//	① `routing_analytics_source`：由迁移 649 建，body 直读 `_request_logs_hot`；
+//	   生产上 2026-10-13 被**应用启动期**的 CREATE OR REPLACE 换成 canonical 形态
+//	   ⇒ 新装路径上应用**从没启动过** ⇒ 仍是 v1 直读形态。
+//	② 两条 RESTRICTIVE `*_owner_filter` 策略（`session_turns_owner_filter` /
+//
+// //	   `session_turns_hot_owner_filter`）：策略表达式**内部** UNION ALL 读
+//
+//	`_request_logs_hot` ∪ `_request_logs` 取最早那行的 `owner_user`。
+//
+// ⚠ 仓库里早有权威决策（不是本门临时发明的）：`docs/audit/2026-10-04-session-migration-decision-sheet.md`
+// 的 **D9**（并援引审计 §9.137 / §9.139 的真库实测）写明整改路径三步、**顺序不能换**：
+// ① `sessions.owner_user` 已存在 ⇒ ② 把 `*_owner_filter` 策略改写成读
+// `sessions.owner_user`、不再引用 `request_logs` ⇒ ③ **最后才** DROP TABLE。
+//
+// 本门钉的是**顺序**：两条切边的语句必须在删表步骤**之前**。顺序反了 ⇒
+// DROP 照样被拒（而且失败信息只说「有依赖」，不说是哪条边）。
+func TestMigration885CutsV1DependentEdgesBeforeDropping(t *testing.T) {
+	src := readMig885(t)
+
+	// ── 阳性对照：删表步骤本身必须在（否则这道门没有对象）──
+	dropIdx := strings.Index(src, "DROP TABLE IF EXISTS public.%I")
+	if dropIdx < 0 {
+		t.Fatal("885 no longer drops the v1 tables (DROP TABLE step missing) — " +
+			"update this gate together with the migration")
+	}
+
+	// ── ① routing_analytics_source 必须被换成 canonical 形态，且在删表之前 ──
+	rasIdx := strings.Index(src, "CREATE OR REPLACE VIEW public.routing_analytics_source")
+	if rasIdx < 0 {
+		t.Errorf("885 must re-point public.routing_analytics_source at the canonical view " +
+			"(the fresh-install path keeps 649's v1-direct body because the app never boots " +
+			"during an install) — otherwise DROP TABLE _request_logs_hot is refused by PostgreSQL")
+	} else if rasIdx > dropIdx {
+		t.Errorf("885 must re-point public.routing_analytics_source BEFORE dropping the v1 "+
+			"tables (re-point at offset %d, DROP TABLE at %d) — the dependency edge has to be "+
+			"cut first", rasIdx, dropIdx)
+	}
+
+	// ── ② 两条 owner_filter 策略必须被改写成读 sessions.owner_user，且在删表之前 ──
+	for _, pol := range []string{"session_turns_owner_filter", "session_turns_hot_owner_filter"} {
+		idx := strings.Index(src, "CREATE POLICY "+pol)
+		if idx < 0 {
+			t.Errorf("885 must rewrite the RESTRICTIVE policy %q so it resolves owner from "+
+				"public.sessions.owner_user instead of the retired v1 family "+
+				"(decision sheet D9 step 2; PostgreSQL refuses DROP TABLE otherwise)", pol)
+			continue
+		}
+		if idx > dropIdx {
+			t.Errorf("885 must rewrite the policy %q BEFORE dropping the v1 tables "+
+				"(rewrite at offset %d, DROP TABLE at %d)", pol, idx, dropIdx)
+		}
+	}
+	// 改写后的策略必须读会话族自己的 owner 列（而不是把 owner 过滤**删掉**）：
+	// 决策清单明写「只做 2+3 步会把 owner 过滤直接删掉（不是迁移，是丢失）」。
+	//
+	// ⚠ 判据必须挑**完整表达式**，不能只挑字段名：写 `s.owner_user` 会被注释里的
+	// `sessions.owner_user` 顶住（子串）⇒ 变异「把 owner 来源换成别的列」照样全绿
+	// ⇒ 那是**假绿**。这里钉的是「`s.owner_user = current_setting('app.current_user', true)`」
+	// 这条**完整**比较式。
+	if !strings.Contains(src, "s.owner_user = current_setting('app.current_user', true)") {
+		t.Errorf("885's rewritten owner_filter policies must resolve owner from " +
+			"public.sessions.owner_user (s.owner_user = current_setting('app.current_user', true)) — " +
+			"dropping the owner filter is NOT a migration")
+	}
+}
+
+// TestMigration885DownRestoresTheOwnerFilterPolicies —— down 必须把 2c 步改写的
+// 策略**还原成 v1 形态**（否则回滚后的库与回滚前不等价）。
+//
+// ⚠ 判据要点：down 只在「策略存在 **且** 其表达式**不再**引用 v1 族」时才还原 ⇒
+// 生产形态（本来就没有这两条策略）下是 no-op ⇒ 不会凭空造出生产从来没有的策略。
+func TestMigration885DownRestoresTheOwnerFilterPolicies(t *testing.T) {
+	downBytes, err := os.ReadFile(filepath.Join(".", "885_drop_request_logs_v1_family.down.sql"))
+	if err != nil {
+		t.Fatalf("read 885 down: %v", err)
+	}
+	down := string(downBytes)
+	// ⚠ 判据必须挑**整行**，不能只挑子串：策略名在 down 的注释与
+	// `DROP POLICY IF EXISTS` 行里都出现 ⇒ 只查「文件里有没有这个名字」
+	// ⇒ 变异「把复原语句注释掉」照样全绿 ⇒ 那是**假绿**。
+	for _, want := range []string{
+		"CREATE POLICY session_turns_owner_filter ON public.session_turns",
+		"CREATE POLICY session_turns_hot_owner_filter ON public.session_turns_hot",
+	} {
+		found := false
+		for _, line := range strings.Split(down, "\n") {
+			if strings.TrimSpace(line) == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("885's down must re-create the owner_filter policies (missing the whole line %q) — "+
+				"the rollback must leave the same owner-isolation semantics it found", want)
+		}
+	}
+	// 还原必须**有守卫**：只在「策略存在且不再引用 v1」时才还原 ⇒ 生产形态是 no-op。
+	if !strings.Contains(down, "strpos(v_expr, '_request_logs') = 0") {
+		t.Errorf("885's down must guard the policy restoration (strpos(v_expr, '_request_logs') = 0) — " +
+			"without the guard it would CREATE policies on environments that never had them")
+	}
+}
+
 func min(a, b int) int {
 	if a < b {
 		return a

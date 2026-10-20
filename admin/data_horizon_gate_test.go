@@ -40,9 +40,9 @@ func dhCanary(id string, age time.Duration) requestMirrorCanary {
 
 func TestDataHorizonCanaryVerdictMatrix(t *testing.T) {
 	cases := []struct {
-		name     string
-		canaries []requestMirrorCanary
-		present  map[string]bool
+		name      string
+		canaries  []requestMirrorCanary
+		present   map[string]bool
 		wantStale bool
 	}{
 		{
@@ -70,7 +70,7 @@ func TestDataHorizonCanaryVerdictMatrix(t *testing.T) {
 			wantStale: true,
 		},
 		{
-			name: "another gateway fresh request cannot mask local missing id",
+			name:     "another gateway fresh request cannot mask local missing id",
 			canaries: []requestMirrorCanary{dhCanary("req-local-missing", dataHorizonLagTolerance+time.Second)},
 			// "req-other-gateway-fresh" deliberately is not the local id. The old
 			// MAX(ts) gate would call this healthy; identity matching must not.

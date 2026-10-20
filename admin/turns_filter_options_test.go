@@ -174,7 +174,7 @@ func TestFilterOptionsNeverReturns500(t *testing.T) {
 	}
 	body := src[i : i+end]
 	if strings.Contains(body, "writeError(w, http.StatusInternalServerError") {
-		t.Error("handleTurnsFilterOptions 里仍有 500 分支：任一维度失败都会让整页报错，"+
+		t.Error("handleTurnsFilterOptions 里仍有 500 分支：任一维度失败都会让整页报错，" +
 			"而修复前 ss 臂正是这样在冷缓存时连出 3 次 500@12.05s")
 	}
 	// 三条臂都必须**有界**：无界的那条冷缓存时会独占总预算。

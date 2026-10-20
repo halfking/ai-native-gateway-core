@@ -253,6 +253,168 @@ NULL::bigint AS id,
     'trace_events 刻意未投影（镜像从不写，近窗非空率 0，投影即净数据损失）。';
 END $$;
 
+-- ── 2b. ★ 把 `routing_analytics_source` 换成 **canonical 形态** ──────────────
+--
+-- ⚠⚠⚠ 这一步是 **2026-10-20 新装链实测抓到的**：**没有它，885 在新装路径上直接中止**
+--   （实测报错：`cannot drop table _request_logs_hot because other objects depend on it`，
+--   出处：installer 的 fresh-install 链门 `TestStartupChainGapsMatchReviewedSet`）。
+--
+-- 缺陷本体（三层）：
+--   ① `routing_analytics_source` 由**迁移 649** 创建，body 是
+--      `FROM public.request_logs_hot UNION ALL …`（**直读 v1**）；
+--   ② **生产**上它在 2026-10-13（S3 波 2 停写切换）被**应用启动期**的
+--      `CREATE OR REPLACE VIEW` 换成了 `FROM request_logs_with_current_month`
+--      （`db/db.go` 的 `routingAnalyticsMVSQL`）⇒ 升级路径上它早就不依赖 v1；
+--   ③ **新装路径**上应用**从没启动过**（安装器只跑迁移，不跑二进制）
+--      ⇒ 它仍是 649 的 v1 直读形态 ⇒ 885 步骤 5 的 `DROP TABLE`
+--      （**刻意不用 CASCADE**，见该步注释）被它挡住 ⇒ **整个新装被 885 中止**。
+--
+-- 修法：把它换成**与生产逐字相同**的 canonical 形态（15 列，列名/类型/次序
+--   与旧体逐位一致 ⇒ `CREATE OR REPLACE` 的列契约成立）：
+--   · **生产**上这一步是幂等 no-op（body 已相同）；
+--   · **新装**上它切断 v1 依赖边 ⇒ 步骤 5 的删表不再被挡。
+--
+-- ⚠ 为什么**不能**靠「应用启动时自愈」兜底：生产的推荐顺序是
+--   **先上新二进制（885 延后）再落 schema**（见文件头与 runbook）⇒ 那时应用
+--   **已经启动过、早于 885** ⇒ 它的自愈**不会**在 885 之后再跑一次
+--   ⇒ 视图会停留在 v1 形态 ⇒ 删表照样被挡。
+--   ⇒ **依赖边必须由迁移自己切断**，不能指望「下一个会来的进程」。
+--
+-- ⚠ 649 是**历史迁移**，其字节不可变（sha 台账 + 「历史 SQL 字节不可变」原则）
+--   ⇒ 这里只能在**退役迁移**里修。这也是本轮第 3 次撞到「基线/历史形态 ≠ 生产形态」
+--   （前两次：5 张分析视图、2 张中层包装视图）。
+DO $$
+BEGIN
+  IF to_regclass('public.routing_analytics_source') IS NOT NULL THEN
+    EXECUTE $ddl$
+      CREATE OR REPLACE VIEW public.routing_analytics_source AS
+      SELECT
+        ts,
+        task_type::text AS task_type,
+        outbound_model::text AS outbound_model,
+        client_model::text AS client_model,
+        work_type::text AS work_type,
+        provider_id::bigint AS provider_id,
+        credential_id::bigint AS credential_id,
+        is_auto_request::boolean AS is_auto_request,
+        tenant_id::text AS tenant_id,
+        request_id::text AS request_id,
+        success::boolean AS success,
+        latency_ms::numeric AS latency_ms,
+        cost_usd::numeric AS cost_usd,
+        origin_stage::text AS origin_stage,
+        auto_profile::text AS auto_profile
+      FROM public.request_logs_with_current_month
+    $ddl$;
+  END IF;
+END $$;
+
+-- ── 2c. ★★ 把两条 `*_owner_filter`（RESTRICTIVE）策略改写成读 `sessions.owner_user` ──
+--
+-- ⚠⚠⚠ 这是**退役的硬前置**，不是「退役之后可以再看的事」。
+--   仓库里早有权威决策：`docs/audit/2026-10-04-session-migration-decision-sheet.md`
+--   的 **D9**（并援引审计 §9.137 / §9.139 的真库实测）：
+--     整改路径三步、**顺序不能换**：
+--       ① `sessions.owner_user` 已存在（§9.141.1）⇒ 不需要新增字段；
+--       ② **把 `*_owner_filter` 策略改写成读 `sessions.owner_user`，不再引用 `request_logs`**；
+--       ③ **最后才 `DROP TABLE request_logs`**。
+--   而 §9.139 的实测已经给出失败形态：
+--     「`DROP TABLE request_logs`（策略仍在）⇒ **ERROR: cannot drop table … because
+--     other objects depend on it** / DETAIL: policy … depends on table …」
+--   ⇒ 只做 ③ 会被 PostgreSQL **直接拦下** ⇒ 整条启动链中止 ⇒ **新装被 885 中止**。
+--   （2026-10-20 新装链实测复现了这条报错，本步就是它的修法。）
+--
+-- 缺陷本体：`session_turns` / `session_turns_hot` 上的两条 RESTRICTIVE 策略
+--   （457 建、526 给 hot 表补上）用
+--     `SELECT DISTINCT ON (gw_session_id, tenant_id) … FROM _request_logs_hot
+--       UNION ALL … FROM _request_logs … ORDER BY ts`
+--   取**最早那行的 owner_user** 来判「这一行归谁可见」
+--   ⇒ 策略表达式**内部**引用 v1 族 ⇒ v1 一删，策略就变成**每次行访问都 42P01**。
+--
+-- 修法：把 owner 的解析源从 v1 族换成**会话族自己的** `sessions.owner_user`：
+--   `sessions.session_id`（text）与 `session_turns.session_id`（text）**同型** ⇒
+--   可直接等值连接；`sessions.owner_user` 是 text，`current_setting('app.current_user', true)`
+--   也是 text ⇒ 同型可比。
+--
+-- ⚠ **安全语义没有被悄悄改变**（逐条核对）：
+--   · 改写**前**（现状）：owner 来自 v1 族，而 v1 族自 2026-10-13 停写后**恒空**
+--     ⇒ `EXISTS(...)` 恒假 ⇒ **对非超管一律不可见**（fail-closed）。
+--   · 改写**后**：owner 来自 `sessions.owner_user`；而 `app.current_user`
+--     在**生产里零设置点**（审计 R38 `agent-guc-surface.md` 实测：仅测试 set_config）
+--     ⇒ `current_setting('app.current_user', true)` 返回 NULL ⇒
+--     `s.owner_user = NULL` ⇒ NULL ⇒ `EXISTS` 恒假 ⇒ **仍然 fail-closed**。
+--   ⇒ 在今天的部署形态下**可见性完全不变**；本步只把「owner 的来源」从
+--     一张**即将被删的表**换成会话族自己 ⇒ 依赖边消失、语义不变。
+--   · 超管旁路（`app.current_role='super_admin'` / `app.bypass_rls='true'）**原样保留**。
+--
+-- ⚠ 只在策略**存在时**才改写（`IF EXISTS`）：
+--   · **生产**上这两条策略**已经不在**（实测本地真库：0 条 owner_filter 策略）⇒ 本步是 no-op；
+--   · **新装**上它们在（457/526 建）⇒ 本步把它们从 v1 依赖切到会话族。
+--   ⇒ 不在策略不存在时**凭空造**一条（那会把生产变成更严的形态 ⇒ 环境分叉）。
+--
+-- ⚠ down 侧的对称复原见 down 文件的「v1 owner 过滤策略复原」节：
+--   只在「当前策略是本步改写后的形态」时才还原成 v1 形态 ⇒ 生产（本来就没有）仍是 no-op。
+DO $$
+DECLARE
+  v_exists boolean;
+BEGIN
+  -- session_turns ────────────────────────────────────────────────────────
+  SELECT EXISTS (
+    SELECT 1 FROM pg_policy p
+      JOIN pg_class c ON c.oid = p.polrelid
+      JOIN pg_namespace n ON n.oid = c.relnamespace
+     WHERE n.nspname = 'public' AND c.relname = 'session_turns'
+       AND p.polname = 'session_turns_owner_filter'
+  ) INTO v_exists;
+  IF v_exists THEN
+    EXECUTE $ddl$
+      DROP POLICY IF EXISTS session_turns_owner_filter ON public.session_turns;
+      CREATE POLICY session_turns_owner_filter ON public.session_turns
+        AS RESTRICTIVE
+        FOR ALL
+        TO PUBLIC
+        USING (
+          (current_setting('app.current_role', true) = 'super_admin')
+          OR (current_setting('app.bypass_rls', true) = 'true')
+          OR EXISTS (
+            SELECT 1
+              FROM public.sessions s
+             WHERE s.session_id = public.session_turns.session_id
+               AND s.owner_user = current_setting('app.current_user', true)
+          )
+        );
+    $ddl$;
+  END IF;
+
+  -- session_turns_hot ───────────────────────────────────────────────────
+  SELECT EXISTS (
+    SELECT 1 FROM pg_policy p
+      JOIN pg_class c ON c.oid = p.polrelid
+      JOIN pg_namespace n ON n.oid = c.relnamespace
+     WHERE n.nspname = 'public' AND c.relname = 'session_turns_hot'
+       AND p.polname = 'session_turns_hot_owner_filter'
+  ) INTO v_exists;
+  IF v_exists THEN
+    EXECUTE $ddl$
+      DROP POLICY IF EXISTS session_turns_hot_owner_filter ON public.session_turns_hot;
+      CREATE POLICY session_turns_hot_owner_filter ON public.session_turns_hot
+        AS RESTRICTIVE
+        FOR ALL
+        TO PUBLIC
+        USING (
+          (current_setting('app.current_role', true) = 'super_admin')
+          OR (current_setting('app.bypass_rls', true) = 'true')
+          OR EXISTS (
+            SELECT 1
+              FROM public.sessions s
+             WHERE s.session_id = public.session_turns_hot.session_id
+               AND s.owner_user = current_setting('app.current_user', true)
+          )
+        );
+    $ddl$;
+  END IF;
+END $$;
+
 -- ── 3. ★ 把**两个仍然静态读 v1 的函数**换成会话族形态 ────────────────────────
 --
 -- ⚠⚠ 为什么必须在这一步、而不是留给二进制启动时自愈：

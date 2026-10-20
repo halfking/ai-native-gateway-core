@@ -84,23 +84,22 @@ func TestRoutingCandidateBindingUpdate_InputValidation(t *testing.T) {
 			wantStatus: http.StatusBadRequest,
 			wantSubstr: "weight must be in",
 		},
-			{
-				name:       "manual_priority out of range",
-				method:     http.MethodPatch,
-				path:       "/api/routing/candidate-binding/123?raw_model=gpt-4",
-				body:       `{"manual_priority": 150}`,
-				wantStatus: http.StatusBadRequest,
-				wantSubstr: "manual_priority must be in",
-			},
-			{
-				name:       "invalid stream mode",
-				method:     http.MethodPatch,
-				path:       "/api/routing/candidate-binding/123?raw_model=gpt-4",
-				body:       `{"stream_mode":"sometimes"}`,
-				wantStatus: http.StatusBadRequest,
-				wantSubstr: "stream_mode must be one of",
-			},
-
+		{
+			name:       "manual_priority out of range",
+			method:     http.MethodPatch,
+			path:       "/api/routing/candidate-binding/123?raw_model=gpt-4",
+			body:       `{"manual_priority": 150}`,
+			wantStatus: http.StatusBadRequest,
+			wantSubstr: "manual_priority must be in",
+		},
+		{
+			name:       "invalid stream mode",
+			method:     http.MethodPatch,
+			path:       "/api/routing/candidate-binding/123?raw_model=gpt-4",
+			body:       `{"stream_mode":"sometimes"}`,
+			wantStatus: http.StatusBadRequest,
+			wantSubstr: "stream_mode must be one of",
+		},
 	}
 
 	for _, tc := range cases {

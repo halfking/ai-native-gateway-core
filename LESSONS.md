@@ -3704,7 +3704,7 @@ PostgreSQL 解析调用时，**带默认值的那个也能接 3 参调用**，
 - 证据：三条通道的差异逐条读代码确认（部署通道 adapter 的代际探测 + 安装器
   无改写）；885 的删除步骤用「两种拼写都试 + `to_regclass` 存在才删」；
   真库往返验证 up→down 后族与三臂视图逐字还原。§6.4。
-- 溯源：request_logs→session_turns 复核轮 §6.4；[复盘](docs/audit/2026-10-20-request-logs-session-turns-复核轮.md) §6.4。
+- 溯源：request_logs→session_turns 复核轮 §6.3；[复盘](docs/audit/2026-10-20-request-logs-session-turns-复核轮.md) §6.3。
 
 ## 2026-10-20 — ★ 变异验证必须先确认「**变异真的应用了**」（Seen: 1/3）
 - 场景：给 885 的 6 道契约门做变异验证。5 处按预期变红，**1 处没红**。
@@ -3721,4 +3721,136 @@ PostgreSQL 解析调用时，**带默认值的那个也能接 3 参调用**，
   而不是「该处门能发现这类问题」——后者在变异没应用时也是成立的。
 - 证据：改用 tab 缩进后重跑 ⇒ 该处**变红**；把 Go 侧投影也改一次 ⇒
   **同一个门双向都红**（迁移侧漂移与代码侧漂移都能被抓）。
+- 溯源：request_logs→session_turns 复核轮 §6.9；[复盘](docs/audit/2026-10-20-request-logs-session-turns-复核轮.md) §6.9。
+
+## 2026-10-20 — ★ `sql/objects/` 是「**从不应用、但对基线承重**」的**第四份**表示（Seen: 1/3）
+- 场景：真删 v1 族时，我判定 `sql/objects/` 是「部署后形态的 SSOT」，把 5 张分析视图改成了会话族形态 ⇒ 883/884 的门红了。
+- 根因：`sql/objects/` **不是**部署形态的 SSOT。仓库自己的 `scripts/audit/baseline-reconcile.py` 明写它是
+  「**第四份表示、从不应用**（唯一引用是 `deploy/sql/sync-objects.sh` 的单向拷贝）、但**对基线承重**
+  （部分基线对象的**唯一出处**）」；`sql/schema/objects_registry_test.go` 同款结论。
+  ⇒ 改了它 ⇒ **新装路径**的基线 `CREATE VIEW` 急切校验了**尚不存在**的 `session_turns_hot`
+  （它由**启动序列**建、基线不建）⇒ 42P01 **中止整个安装**；
+  ⚠ 而**升级路径是绿的**（升级路径上启动序列先跑）⇒ 「升级绿」会骗人。
+- 防复发检查：① 动 `sql/objects/` 之前先问「**这份表示被谁消费**」——
+  审计器明说它**从不应用** ⇒ 它的价值在**基线**，不在部署形态；
+  ② 「部署形态」交给**迁移**换上（883/884 先例），`sql/objects/` 保持**基线 fallback 溯源体**；
+  ③ 这类对象要在 `internal/sqlreadguard` 里登记成 **LEGIT（基线 fallback 溯源体，非生产读面）**，
+  否则零债棘轮会逼着人去改它 ⇒ 白白破掉新装路径；
+  ④ 改完必须跑**新装链**（不是只跑升级链）。
+- 证据：真库临时库实测——新装路径报 42P01 中止，而升级路径绿；
+  回退 5 张视图到 v1 fallback 体后新装链 **0 of 282 fail**；
+  `internal/sqlreadguard` 白名单 1 → 6 条 LEGIT、`debtBaseline` 仍为空。
+- 溯源：request_logs→session_turns 复核轮 §6.8；[复盘](docs/audit/2026-10-20-request-logs-session-turns-复核轮.md) §6.8。
+
+## 2026-10-20 — ★ `pg_get_functiondef` 的输出**没有结尾分号**，而 dollar-quote 的**开引号行**与**闭合行**几乎一样（Seen: 1/3）
+- 场景：把真库的函数定义灌进 down 迁移脚本来「逐字复原被删的函数」，psql 报
+  `syntax error at or near "CREATE"`。
+- 根因（两层）：① `pg_get_functiondef` 的输出**不带结尾分号** ⇒ 直接拼进脚本时，
+  psql 会把下一个 `CREATE OR REPLACE` **并进同一条语句**；
+  ② 更阴的一层：我用「行尾是 `$function$`」来找**闭合定界符行**，
+  而**开引号行** `AS $function$` 也满足这个条件 ⇒ 分号补到了**开引号**上，
+  并且补完就 `i = j+1` **跳过了整个函数体** ⇒ 20 个函数只剩 19 个、其中一个被吞掉。
+- 防复发检查：① 往脚本里灌 DDL 时，**先确认每条语句的分号**（`pg_get_functiondef` / `pg_dump` 的输出都不带）；
+  ② 找 dollar-quote 的**闭合行**要用「**整行恰好等于** `$function$` / `$$`」，
+  **不是**「行尾包含」——`AS $function$` 与 `$function$` 只差一个前缀；
+  ③ 灌完**数语句条数**并与源对象数对账（本轮：20 个函数/过程 + 1 个重载 ⇒ 期望 20 条 CREATE，
+  实测 19 ⇒ 当场抓到）；④ 灌完**真库往返**（up → down → 比对 `pg_get_functiondef` 全等），
+  这道真库门才是最终裁判，静态数数只是它的前置。
+- 证据：补分号后重灌 → 20/20；真库往返实测 20/20 函数定义与 up 前**逐字一致**、2 个触发器复原。
+- 溯源：request_logs→session_turns 复核轮 §6.7；[复盘](docs/audit/2026-10-20-request-logs-session-turns-复核轮.md) §6.7。
+
+## 2026-10-20 — ★ down 迁移的「文件头声称」要用**集合比对**钉住，数个数挡不住「补了 4 个、漏了 4 个」（Seen: 1/3）
+- 场景：885 的 down 文件头写着「那些函数**也**被 885 删了，所以本 down 一并把它们装回去」，
+  而 885 up 删的是 **20 个**函数/过程 + 2 个触发器函数 —— down 实际只复原了 **4 个**。
+- 根因：门只检查了「down 里有这几个名字」（**存在性**），没检查「**up 删掉的都在**」（**完备性**）。
+  ⇒ 文件头与实现不符这件事，在「只查存在性」的门下**永远绿**。
+  ⚠ 更隐蔽的一层：已复原的那 4 个，函数体取自**陈旧正典** `sql/objects/functions/`，
+  与**真库部署版**逐字比对后**实质不同**（真库版多了 advisory lock 串行、默认分区约束处理、
+  legacy shell 重挂）⇒ 回滚会装回一个**更弱**的分区函数 ⇒ **存在性绿 ≠ 有用**。
+- 防复发检查：① down 类迁移的门要比**集合**（up 的 DROP 清单 ⇔ down 的 CREATE 清单），
+  不是比「有没有某个名字」；② **重载按条数比**（本轮 `credential_most_used_model` 有两个重载 ⇒
+  20 个对象只有 19 个名字，只比名字集合会漏掉「少复原一个重载」）；
+  ③ down 的函数体**优先取真库定义**（`pg_get_functiondef` / `pg_get_triggerdef` / `obj_description`），
+  正典 objects 层是**静态 SSOT**，可能比部署版旧；④ 文件头与实现不一致时，
+  优先怀疑**文件头**（它是给人读的承诺，代码才是事实）。
+- 证据：885 down 由「4 个」补到「20 个函数/过程 + 2 个触发器」；真库往返实测 20/20 逐字一致；
+  三道新门 + 3 项变异（删函数体 / 删触发器 / 改函数名）全部转红、源文件按字节还原。
+- 溯源：request_logs→session_turns 复核轮 §6.7；[复盘](docs/audit/2026-10-20-request-logs-session-turns-复核轮.md) §6.7。
+
+## 2026-10-20 — ★ 负向判定必须按**标识符边界**：canonical 视图名里就含 `request_logs`（Seen: 1/3）
+- 场景：要给「`bg/routing_health_checks.go` 不再读 v1 族」写负向断言，第一版用
+  `strings.Contains(sql, "public.request_logs")`。
+- 根因：canonical 视图叫 **`request_logs_with_current_month`**（它**活着**，只是从三臂变两臂）
+  ⇒ `Contains` 会把它判成 v1 读点 ⇒ 负向断言**假红**；
+  反过来，若把判据放宽成「只看 `request_logs` 子串」，又会把**视图名**漏掉（真阳性丢失）。
+  ⚠ 与已有的「`LIKE` 配 `_`」是同一族陷阱（`_` 是单字符通配符），但这次是**子串 vs 标识符**的版本。
+- 防复发检查：① 判「SQL 里有没有提到某个关系」要**剥掉注释与字符串字面量**后按**标识符**切分再**精确匹配**；
+  ② 每条负向断言配**阳性对照**（同一判据必须能对真读点报红）与**阴性对照**
+  （必须对那个「名字里含关键词」的合法对象**不**报红）——没有对照的负向断言恒绿；
+  ③ 阴性对照必须**非空洞**：断言那个名字里**确实含**关键词子串（否则对照证明不了任何事）。
+- 证据：判据自检门（正例 `public._request_logs` 必报、负例 `public.request_logs_with_current_month` 必不报）
+  + 3 项变异（重新引入 v1 读点 / 改掉会话族源 / 把视图名塞进 v1 清单）全部转红。
+- 溯源：request_logs→session_turns 复核轮 §6.6；[复盘](docs/audit/2026-10-20-request-logs-session-turns-复核轮.md) §6.6。
+
+## 2026-10-20 — ★ Go 侧判「SQL 里有没有提到某关系」必须走 `go/ast` 取**字符串字面量**（Seen: 1/3）
+- 场景：要给 bg 的检查侧写「不再读 v1 族」的负向断言。
+- 根因：按行剥 `//` 会把 Go 字符串字面量**截断**（字面量里可以含 `//`、`--`）；
+  而直接扫全文又会把源码里的**退役说明注释**判成读点 ⇒ 门恒绿。
+  ⚠ 本仓的 `stripSQLComments` 只剥 **SQL** 注释（`--` / `/* */`），**剥不掉 Go 注释**（`//`）
+  ⇒ 用它处理 Go 源文件是**用错了尺子**。
+- 防复发检查：① Go 侧一律用 `go/ast` 取**字符串字面量**（本仓 `goStringLiterals` 已是公共写法）；
+  ② 解析失败按 `t.Fatal` 处理 —— 宁可红在「读不到」，也不要静默放行；
+  ③ 「SQL 文本」与「Go 源码」是两种材料，**量具不能互换**。
+- 证据：F1 三道门（退役守卫的读点检测）全部用 AST 判定；把源码注释里加一句「读 `_request_logs`」后门仍绿（正确）。
+- 溯源：request_logs→session_turns 复核轮 §6.5；[复盘](docs/audit/2026-10-20-request-logs-session-turns-复核轮.md) §6.5。
+
+## 2026-10-20 — ★ text 型的 `credential_id` 用**空字符串**表示「无凭据」（不是 NULL）（Seen: 1/3）
+- 场景：把负成本导出行从 v1 族迁到会话族时，`credential_id` 的类型从 bigint 变成 **text**。
+- 根因：会话族的 `credential_id` 是 text，且「无凭据」用**空字符串**表示（真库实测 535 行里 **453 行是空串**，
+  不是 NULL）⇒ `IS NULL` 判不出来；直接 `::bigint` 转换会在空串上**报错**（22P02）。
+- 防复发检查：① 任何 text→数字的转换都要**安全转换**：
+  `CASE WHEN credential_id ~ '^[0-9]+$' THEN credential_id::bigint END`（本仓既有先例：
+  `idx_session_turns_hot_credential_ts` 用的就是同一形态）；② 「无凭据」要同时判
+  `IS NULL` **与** `= ''`；③ 导出脚本的表头/列序变了 ⇒ **对拍门**要跟着换口径（本轮
+  `TestNegativeCostExportParity` 从「已登记漂移」升级成**完整对拍**）。
+- 证据：真库端到端跑通（EXIT=0、9 个小节齐全、CSV 表头 `credential_id,raw_model_name,…`）；
+  分组列从 `outbound_model` 改为 `raw_model_name`（会话族的 `model` 列落的是 **client_model**，不是出站模型）。
+- 溯源：request_logs→session_turns 复核轮 §6.3；[复盘](docs/audit/2026-10-20-request-logs-session-turns-复核轮.md) §6.3。
+
+## 2026-10-20 — ★ 两个 `WITH` 不能串联 ⇒ 多源并集要写成**括号化子查询**（Seen: 1/3）
+- 场景：把导出脚本的 v1 源换成会话族两臂（`session_turns_hot ∪ session_turns`）并「与别的 CTE 共存」。
+- 根因：写成 `WITH a AS (...), b AS (WITH c AS (...) SELECT ...)` ⇒ PostgreSQL 报
+  `syntax error at or near "WITH"` ⇒ **嵌套 WITH 在这个位置不被接受**。
+- 防复发检查：① 多个来源要并集时，写成**括号化子查询**形态
+  `FROM ( SELECT … FROM a UNION ALL SELECT … FROM b ) r`（可以与外层 CTE 共存）；
+  ② 改完必须**真库跑一遍**（本轮是端到端跑导出脚本，EXIT=0 才算过），
+  静态看 SQL 读不出「这个位置能不能嵌 WITH」。
+- 证据：改括号化子查询后导出脚本端到端通过；真库实测 details 侧 JOIN **1:1**（535/535、1002/1002 ⇒ 不扇出）。
+- 溯源：request_logs→session_turns 复核轮 §6.3；[复盘](docs/audit/2026-10-20-request-logs-session-turns-复核轮.md) §6.3。
+
+## 2026-10-20 — ★ 「零命中」有两种成因：真干净 / 扫描器坏了 ⇒ 零债棘轮要用**合成样本**自证（Seen: 1/3）
+- 场景：把 `internal/sqlreadguard` 的 v1 读面债棘轮推到 **0**（v1 桶 0 文件 / 0 处）。
+- 根因：「0 命中」既可能是「真的没有读点」，也可能是「**扫描器没扫到**」⇒ 两者在输出上**一模一样**。
+  ⇒ 零债棘轮越严，越可能**锁死一把坏尺子**。
+- 防复发检查：① 零债棘轮必须配**合成样本**：故意放一条 v1 读点进临时目录，
+  断言扫描器**能报出来**（本轮用 LEGIT 白名单 + 判据自检两道）；
+  ② 白名单从 1 条增到 6 条时，每条都要写明**为什么它是合法豁免**（本轮 5 条是「基线 fallback 溯源体」）；
+  ③ 「债为 0」不是「没问题」——它只说明**这把尺子**此刻没报。
+- 证据：LEGIT 6 条 + `debtBaseline` 仍为空；判据自检（正例必报、负例必不报）+ 变异全部转红。
+- 溯源：request_logs→session_turns 复核轮 §6.8；[复盘](docs/audit/2026-10-20-request-logs-session-turns-复核轮.md) §6.8。
+
+## 2026-10-20 — ★ 停写键的**代码默认**被翻转 ⇒ 「门关着的理由已过期、后果却不可逆」（Seen: 1/3）
+- 场景：上游把 `storage.request_logs_write_enabled` 的**代码默认**由 true 改成 false，
+  而 bg 里三条扫描的「可比性守卫」仍读这个键。
+- 根因：守卫的**前提**（证据源不再前进 ⇒ 不可判定 ⇒ 跳过）在证据源随 885 迁到会话族之后**已过期**，
+  但守卫**还在** ⇒ 在任何**未显式配置**该键的环境（新装 / 克隆 / 灾备）上，扫描**永久停摆**，
+  且跳过被记成正常 skip ⇒ **零错误信号**。
+  ⚠ 关键在于「**默认值的翻转把「显式关闭」变成了「默认关闭」**」——出问题的不是配置，是**默认**。
+- 防复发检查：① 任何「按某个键决定跳过」的守卫，键的**默认值**翻转时必须**重新评估**该守卫的前提；
+  ② 守卫的**前提**与守卫的**输入**要分开评估：本例是「输入（读已退役的键）与前提（源不前进）双双失效」；
+  ③ 处置不是「保留旧行为」，而是**退役过期守卫 + 保留每条扫描自己的开关/判据**
+  （本轮：36h 回看有独立 interval 开关、健康检查恒执行、账务比对换成**数据驱动**判据
+  `usageCreditComparable(usageArmRows, diffRows)`）；④ 退役后的 reason 要进**闭集**并保持指标序列连续。
+- 证据：三条扫描的守卫全部退役；`bg/` 全绿（34.5s）；4 道新门 + 9 项变异全部转红；
+  `deploy/prometheus/rules/s4-scan-skip.yml` 的 reason 闭集同步更新为 {s4_stop_write, usage_arm_empty}。
 - 溯源：request_logs→session_turns 复核轮 §6.5；[复盘](docs/audit/2026-10-20-request-logs-session-turns-复核轮.md) §6.5。

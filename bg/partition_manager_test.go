@@ -11,11 +11,10 @@ import (
 )
 
 func TestEnsureSpecsCoversAllPartitionedTables(t *testing.T) {
-	// v1 族生命周期条目在停写时被 filterRetiredV1Lifecycle 滤掉（见
-	// partition_manager_v1_retirement_test.go 的停写门）。本用例断言的是
-	// **v1 仍在写**时的完整清单，所以把前提显式钉住 —— 2026-10-20 起该键的
-	// 代码默认是 false（审计 D0），不钉住的话本清单默认会少四条。
-	withV1WriteEnabled(t, "true")
+	// 2026-10-20（迁移 885 真删族）：v1 族的两条 ensure 条目已**无条件**从
+	// ensureSpecs() 移除（旧行为是「停写时滤掉、回写时又出现」，前提是族还在
+	// 只是冻结；885 之后族已被物理删除 ⇒ 前提消失）。因此本清单**不再依赖**
+	// 写开关，无需钉住前提。
 	specs := ensureSpecs()
 
 	// Migration 330 (2026-07-04) added usage_ledger. Migration 328a
@@ -26,8 +25,6 @@ func TestEnsureSpecsCoversAllPartitionedTables(t *testing.T) {
 	// current set so a future onboarding bumps this expectation
 	// together with the migration.
 	expected := map[string]bool{
-		"ensure_request_logs_partition":           false,
-		"ensure_request_logs_bodies_partition":    false,
 		"ensure_request_wal_partition":            false,
 		"ensure_routing_decision_log_partition":   false,
 		"ensure_credential_model_index_partition": false,
@@ -80,8 +77,8 @@ func TestEnsureSpecsCoversAllPartitionedTables(t *testing.T) {
 }
 
 func TestPromoteSpecsCoversAllDefaultPartitions(t *testing.T) {
-	// 同上：本清单在停写（v1 族退休）时会少四条 v1 条目，钉住前提。
-	withV1WriteEnabled(t, "true")
+	// 同上（2026-10-20 / 885）：v1 族的两条 promote 条目已无条件移除，
+	// 本清单不再依赖写开关。
 	specs := promoteSpecs()
 
 	// Migration 341-350 (2026-07-05) replaced *_default catch-all
@@ -89,12 +86,10 @@ func TestPromoteSpecsCoversAllDefaultPartitions(t *testing.T) {
 	// added model_probe_runs_hot, but 2026-07-14 retired it (pure-hot-table
 	// strategy). Migration 392 (2026-07-13) added candidate_failure_logs_hot.
 	expected := map[string]bool{
-		"promote_request_logs_hot_to_partition":              false,
 		"promote_usage_ledger_hot_to_partition":              false,
 		"promote_request_wal_hot_to_partition":               false,
 		"promote_routing_decision_log_hot_to_partition":      false,
 		"promote_credential_model_index_hot_to_partition":    false,
-		"promote_request_logs_bodies_hot_to_partition":       false,
 		"promote_credit_ledger_hot_to_partition":             false,
 		"promote_tool_usage_stats_hot_to_partition":          false,
 		"promote_candidate_failure_logs_hot_to_partition":    false, // Migration 392
@@ -257,9 +252,12 @@ func TestResolvePromoteConfigHandoffRetention(t *testing.T) {
 // legacy tables (_request_logs_bodies[_hot], credit_ledger[_hot],
 // tool_usage_stats[_hot]). The fnName is what selects the SQL function,
 // so set equality on fnNames is the invariant that matters.
+//
+// 2026-10-20（迁移 885 真删族）：两侧清单**不再完全相等** —— admin 侧仍登记着
+// v1 族的两条（它要靠这张表回答「这个表已退役」的 409，而不是「未知表」），而
+// bg 侧已无条件移除（族被物理删除，继续调用必然 42P01）。⇒ 下面把这两条钉成
+// **唯一且显式**的例外：多一条/少一条都会红，避免例外本身悄悄变宽。
 func TestPromoteSpecsCoverAdminHotPromoteTableMap(t *testing.T) {
-	// 同上：两侧清单在停写（v1 族退休）时都会少 v1 条目，钉住前提。
-	withV1WriteEnabled(t, "true")
 	source, err := os.ReadFile(filepath.Join("..", "admin", "data_lifecycle_hot_partition.go"))
 	if err != nil {
 		t.Fatalf("read admin registry source: %v", err)
@@ -287,7 +285,25 @@ func TestPromoteSpecsCoverAdminHotPromoteTableMap(t *testing.T) {
 		promoteByFn[s.fnName] = s.label
 	}
 
+	// 已退役的 v1 族 promote 函数：admin 侧保留登记（用于回 409 退役说明），
+	// bg 侧无条件移除（885 删了族与函数）。
+	retiredV1PromoteFns := map[string]bool{
+		"promote_request_logs_hot_to_partition":        true,
+		"promote_request_logs_bodies_hot_to_partition": true,
+	}
+	for fn := range retiredV1PromoteFns {
+		if _, ok := adminByFn[fn]; !ok {
+			t.Errorf("admin hotPromoteTableMap 少了已退役的 %q —— admin 侧靠它回 409 退役说明，删了就变成『未知表』", fn)
+		}
+		if _, ok := promoteByFn[fn]; ok {
+			t.Errorf("promoteSpecs() 仍调度已退役的 %q —— 885 之后调用它必然 42P01", fn)
+		}
+	}
+
 	for fn, adminLabel := range adminByFn {
+		if retiredV1PromoteFns[fn] {
+			continue // 已退役：bg 侧不调度，见上
+		}
 		label, ok := promoteByFn[fn]
 		if !ok {
 			t.Errorf("admin hotPromoteTableMap registers %q (label %q) but promoteSpecs() does not schedule it — background promote never runs for this hot table (D-2#1 regression)", fn, adminLabel)

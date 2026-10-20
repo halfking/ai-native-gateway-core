@@ -459,8 +459,8 @@ func (r *AutoIndexRefresher) rollupCredentialModelIndex(ctx context.Context, buc
 // 那条测量的两侧口径**不同**，这才是它看起来矛盾的原因：
 //
 //   - v1 侧那 3,420 条里含**内部** auto 流量（探针 / 内部回环）；
-//   - 会话族**按设计**排除内部 auto 条目（internal/sessionv2mirror/hook.go 的
-//     4 臂分类：IsInternalAutoEntry 命中即 return，不镜像），
+//   - 会话族**按设计**把内部 auto 条目排除（internal/sessionv2mirror/hook.go 的
+//     4 臂分类：IsInternalAutoEntry 命中即 return，**不镜像进 session_turns 家族**），
 //     但**业务** auto 请求是镜像的 —— 镜像侧写 is_auto_request
 //     （internal/sessionv2mirror/s1a_fields.go:75-76）。
 //

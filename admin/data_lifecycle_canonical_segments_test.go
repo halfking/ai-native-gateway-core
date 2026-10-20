@@ -165,12 +165,30 @@ func TestDataLifecycleCanonicalSQLDropsOnlyTheColumnBloat(t *testing.T) {
 		t.Error("折叠后的查询里仍有 request_logs_with_current_month：" +
 			"该视图真库 >60s 跑不完（母表单腿 280ms），端点会重新变回 500@30s")
 	}
-	if !strings.Contains(sql, "_request_logs p") {
-		t.Error("折叠后的查询没有读 _request_logs 母表")
+	// ★ 2026-10-20（迁移 885，v1 族真删）：这条查询的 v1 臂（`_request_logs p`
+	// 母表）随之退役 ⇒ 它必须**不在场**（读了就是 42P01）。
+	//
+	// 反连接也是同一件事的另一半：原来那两条 NOT EXISTS 是「会话腿不重复
+	// 计入 v1 臂」的去重腿；v1 臂没了 ⇒ 两条反连接一起消失。
+	// ⇒ 本门从「必须读 v1 母表 + 两条反连接」**反转**为「v1 族关系名不得
+	// 在场，且反连接数必须是 0」。
+	if hits := retiredV1RelationsInSQL(sql); len(hits) > 0 {
+		t.Errorf("折叠后的查询里仍出现已退役 v1 族关系名 %v —— v1 族已随 885 被 DROP，读它 = 42P01", hits)
 	}
-	// 两条反连接都要在：少一条就会把 hot 或分区里的重复 request_id 算回去。
-	if n := strings.Count(sql, "NOT EXISTS"); n != 2 {
-		t.Errorf("反连接只有 %d 条，应为 2 条（session_turns_hot + session_turns）", n)
+	if n := strings.Count(sql, "NOT EXISTS"); n != 0 {
+		t.Errorf("反连接有 %d 条，应为 0 条（v1 臂退役后反连接的对象已不存在，留着 = 42P01）", n)
+	}
+	// 就地阳性对照：同一把尺子必须能认出 v1 形态（否则上面两条负向断言恒绿）。
+	if hits := retiredV1RelationsInSQL("FROM _request_logs p"); len(hits) == 0 {
+		t.Error("retiredV1RelationsInSQL 认不出 v1 形态 —— 负向断言已恒绿，判据坏了")
+	}
+	// 会话族两腿必须在场（少一条腿 = 少算一半行数）。
+	// ⚠ 母表腿的标记必须带行尾：`FROM session_turns` 是 `FROM session_turns_hot`
+	// 的**前缀**，不加行尾边界就会把 hot 腿当成母表腿（判据恒绿）。
+	for _, leg := range []string{"FROM session_turns_hot", "FROM session_turns\n"} {
+		if !strings.Contains(sql, leg) {
+			t.Errorf("折叠后的查询少了会话族腿 %q", leg)
+		}
 	}
 	// 必须单次扫描出全局+按租户，不是两次。
 	if !strings.Contains(sql, "GROUPING SETS ((tenant_id), ())") {

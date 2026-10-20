@@ -10,9 +10,6 @@ import (
 
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
-
-	"github.com/kaixuan/llm-gateway-go/db"
-	"github.com/kaixuan/llm-gateway-go/settings"
 )
 
 type HealthCheckDef struct {
@@ -51,48 +48,30 @@ type HealthCheckDef struct {
 	SkipWhen func() (bool, string)
 }
 
-// recordedCostComparability 判定「已记账成本里有没有负数」这个问题
-// **当前是否还可判定**。
+// ★ 2026-10-20（迁移 885 + 并行审计轮 D0）：`recordedCostComparability`
+// **这道前提守卫退役**（连同它唯一的常量用法 `s4ScanSkipReasonStopWrite`
+// 在本文件里的引用）。
 //
-// 背景（2026-10-20 续轮实测，252 生产库只读）：
-// `_request_logs` 属 S4 停写门覆盖的宽族（settings.KeyRequestLogsWriteEnabled），
-// 停写后**不再有新行**（生产实测 max(ts) = 2026-10-13 20:18，查询时刻已停写 6 天）。
-// 而写入侧在 2026-10-06 已加 `if total < 0 { return nil }`（成本算不出来就不记），
-// ⇒ 停写期间**不可能再产生新的负成本行**，这条检查想问的
-// 「有没有新出现的负成本」**结构上无法回答**。
+// 旧守卫守的是：「源表被停写 ⇒ 不再有新行 ⇒ 『有没有新出现的负成本』这个问题
+// 结构上无法回答 ⇒ 跳过并把『跳过』做成可观测，而不是安静 return 0」。
 //
-// 为什么还要扫：停写之前写下的负成本行仍然存在，而检查的价值恰恰是
-// 「**写入侧的守卫不修复已记账的历史行**」（见该检查定义里的说明）。
-// ⇒ 但那是**一次性的历史核对**，不是每 15 分钟重跑一遍的监控。
-// 续轮实测：表已从 2.08M 行缩到 339K 行（9 月分区被运维 DELETE 清空），
-// 负成本行**已归零**，该查询现在每次 0.2~0.6 s、**恒返回 0 行**
-// ⇒ 每 15 分钟（两个实例 ⇒ 每 ~7.5 分钟）重扫一次一个**永远不会再变**的源，
-// 是纯浪费；而它恒返回 0 行这件事，在 findings 计数上与「扫了没发现问题」
-// **完全不可区分** —— 运维会读到「没有负成本」，而真相是「这个问题已不可判定」。
+// 退役理由（两个前提同时消失，而守卫仍然闭合）：
+//   ① 源已随 885 从 v1 族迁到**会话族**（`db.SessionFamilyTurnsSourceSQL()`，
+//      写入路径无条件）⇒ 「源不再前进」不再成立；
+//   ② 守卫读的是 `settings.RequestLogsWriteEnabled()`，而该键的**代码默认**
+//      已被改成 false（origin/main 的 D0）⇒ 在任何未显式配置它的环境上，
+//      这条检查**永久不发 SQL** ⇒ 「不可判定」被当成「没问题」上报。
 //
-// ⇒ 停写期间**跳过**这条检查，并把「跳过了」做成可观测的
-// （llm_gateway_bg_s4_scan_skipped_last_run{worker="routing_health_checker",
-// reason="s4_stop_write"} = 1），而不是安静地 return 0。
+// ⇒ 守卫退役 ⇒ 检查**恒执行**。它现在的真实语义是：
+//   「会话族里有没有负成本行」——而这**是**可判定的（源在前进）。
 //
-// 刻意做成**纯函数**：判定必须能脱离数据库、脱离 settings 全局态被单测驱动，
-// 否则「守卫到底生效没有」就只能靠读代码猜（与 usageCreditComparability 同思路）。
-func recordedCostComparability(logsWriteEnabled bool) (comparable bool, reason string) {
-	if !logsWriteEnabled {
-		return false, s4ScanSkipReasonStopWrite
-	}
-	return true, ""
-}
-
-// requestLogsWriteEnabled 是 S4 停写门的读法。
+// ⚠ SkipWhen 这个**机制**本身保留（别的检查可能还要用）：退役的是这条检查
+//   的前提守卫，不是机制。机制的价值恰恰在于「跳过必须可观测」：
+//   `llm_gateway_bg_s4_scan_skipped_last_run{worker,reason}`。
 //
-// 抽出成变量是为了让判据能在**不初始化 settings 全局态**的条件下驱动它
-// （settings.Global 为 nil 时 GetPlatformBool 回落默认值 true ⇒ 守卫在测试里
-// 永远不会触发，于是「守卫到底生效没有」就只能靠读代码猜）。
-// 与 bg/tuning_view_refresher.go 的 refreshViewFn 同一思路：
-// 把策略参数化，判据才能在无外部依赖的条件下驱动它。
-//
-// ⚠ 只在测试里替换；生产代码不要写它。
-var requestLogsWriteEnabled = settings.RequestLogsWriteEnabled
+// （退役记录：纯函数 `recordedCostComparability` 与本文件的
+//   `requestLogsWriteEnabled` 变量一并删除 —— 它们的唯一用途就是这道守卫，
+//   留着就成了「看起来还在防守」的僵尸判据。）
 
 func AllHealthChecks() []HealthCheckDef {
 	return []HealthCheckDef{
@@ -878,18 +857,16 @@ SELECT
 			// 「有没有新出现的负成本」不可判定；且续轮实测该查询已恒返回 0 行
 			// （表被运维清到 339K 行），每 ~7.5 分钟白扫一次。
 			// 「跳过了」通过 s4ScanSkipMetrics 族可观测，不被读成「没有问题」。
-			SkipWhen: func() (bool, string) {
-				// ⚠ 注意取反：recordedCostComparability 回答的是「**还能不能判定**」，
-				// 而 SkipWhen 回答的是「**要不要跳过**」——两个问题的极性相反。
-				// 直连会写成「不可判定 ⇒ 不跳过」，守卫于是**永远不生效**，
-				// 而所有「守卫生效了吗」的判据在「守卫生效」时看起来都是绿的
-				// （判定函数本身仍对）。本轮这条取反是判据抓出来的。
-				comparable, reason := recordedCostComparability(requestLogsWriteEnabled())
-				if comparable {
-					return false, ""
-				}
-				return true, reason
-			},
+			// ★ 2026-10-20（885 + D0）：本检查的**前提守卫已退役**
+			// （理由见文件里 recordedCostComparability 的退役记录）⇒
+			// 这条检查**恒执行**。
+			//
+			// 「有没有负成本」现在**是**可判定的问题：源已随 885 迁到会话族，
+			// 写入路径无条件 ⇒ 源在前进。
+			//
+			// ⚠ 保留 SkipWhen 的**机制**（不是保留这道守卫）：如果将来某条
+			// 检查的源又出现「不再前进」的情形，SkipWhen + 闭集 reason
+			// 正是「把不可判定说成没问题」的对治手段。
 			Query: `
 WITH neg AS (
     SELECT r.credential_id,
@@ -901,7 +878,26 @@ WITH neg AS (
            count(*)::int      AS neg_rows,
            sum(r.cost_usd)    AS neg_usd,
            sum(COALESCE(r.cache_read_tokens, 0) - COALESCE(r.prompt_tokens, 0)) AS excess_cache
-      FROM ` + db.SessionFamilyTurnsSourceSQL() + ` r
+           -- ★ 2026-10-20（885 + D0）：**源形态从宽源改成窄源**。
+           --   旧写法用 db.SessionFamilyTurnsSourceSQL()：那是给「日志列表」型
+           --   读方准备的**宽源** —— 118 列投影 + 与 session_turn_details* 的
+           --   LEFT JOIN。对本检查（一个窄聚合：6 列、按 2 列分组）它是纯浪费：
+           --     · 宽投影把每行的宽度推到 ~677 字节（实测 EXPLAIN），
+           --     · **details 的 LEFT JOIN 更贵**：即使 turns 侧被过滤到 0 行，
+           --       哈希连接仍要**扫完整个 details 面**来建哈希表 ⇒
+           --       慢查的真正来源不是 turns 表，而是 details 表。
+           --   ⇒ 改成直接读会话族两张表、只取本检查真正用到的 6 列。
+           --   同款窄读的先例：domains/streaming/anomaly_harvester.go:228。
+           --   配套的索引（cost_usd < 0 的部分索引）见迁移 886。
+      FROM (
+            SELECT credential_id, raw_model_name, cost_usd,
+                   cache_read_tokens, prompt_tokens, ts
+              FROM public.session_turns_hot
+            UNION ALL
+            SELECT credential_id, raw_model_name, cost_usd,
+                   cache_read_tokens, prompt_tokens, ts
+              FROM public.session_turns
+           ) r
      WHERE r.cost_usd < 0
        AND r.ts > now() - interval '30 days'
      GROUP BY r.credential_id, r.raw_model_name
