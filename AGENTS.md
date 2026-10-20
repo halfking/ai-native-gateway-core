@@ -5176,7 +5176,7 @@ To codeup.aliyun.com:kaixuan/official-deploy/llm-gateway-go.git
 > 不证明「门能发现列被删」（后者在既有库上不可达）。
 > ⇒ ★ **并行会话在 `db/` 包的未提交文件本轮一个都没碰**；⚠ `db/db_package_isolation_gate_test.go`
 > 当前有语法错误（`t.Helper.TODO()`）⇒ **共享工作树上 `./db/` 包级 vet 会红**（不是本轮改动）。
-> ⇒ 完整记录见 handoff `§19.20.18` ＋ `docs/audit/2026-10-21-R80-形态门-customer_id契约.md`。
+> ⇒ 完整记录见 handoff `§19.20.24` ＋ `docs/audit/2026-10-21-R80-形态门-customer_id契约.md`。
 > **2026-10-21 R76 轮（本会话）—— 批判式审计轮**：**把 R51 续轮自己的结论逐条挑毛病**，
 > 而不是再加功能。⇒ ★ **本轮最大的收获是推翻了我自己的一条判词**：
 > 我据 `pg_stat_statements` 的 `mean_exec_time = 9.17 s / calls = 287` 判「生产上这条检查
@@ -5260,7 +5260,7 @@ To codeup.aliyun.com:kaixuan/official-deploy/llm-gateway-go.git
 > ⇒ ⚠ **诚实边界**：**没有**改 573/603 本身（它们仍失败，只是不再 abort ⇒ 真修 = E1/E3，**属主决策**）；
 > ⇒ 门禁跑的是 **一条腿**（`./internal/sessionv2mirror/`）⇒ 「exit=0」适用范围 = 该腿 + rerun 阶段；
 > ⇒ 那 4 条 trace-retirement 测试**在本机仍没跑过**（本轮产出是「它们不再假装红」，**不是**「它们跑过了」）。
-> ⇒ ⇒ 完整记录见 handoff `§19.20.20` ＋ `docs/audit/2026-10-21-R81-第二遍失败573-603与事实源盲区.md`。
+> ⇒ ⇒ 完整记录见 handoff `§19.20.25` ＋ `docs/audit/2026-10-21-R81-第二遍失败573-603与事实源盲区.md`。
 
 > **2026-10-21 R80 轮（本会话 · admin 用量门族）**：★★★★ **「夹具插错了表 ⇒ 9 个门全是 SKIP」**
 > ⇒ ★★★ **守卫连坐的是 2 个文件 / 11 个用例，而守卫问错了对象**
