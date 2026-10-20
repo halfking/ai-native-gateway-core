@@ -311,3 +311,4 @@
 293	387_session_analysis_inference.sql
 294	427_task_type_centroids_model.sql
 295	893_fresh_install_partition_prereq.sql
+296	894_rebind_candidate_failure_logs_diagnosis_view.sql
