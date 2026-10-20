@@ -285,10 +285,23 @@ func TestSection14342ReclaimScriptUsesExactMeasurement(t *testing.T) {
 	}
 	code := stripSQLCommentsForReclaimGate(string(raw))
 
-	// 纪律①：判空必须用 EXISTS。
-	if !strings.Contains(code, "EXISTS") {
-		t.Error("★ 判定脚本里没有 EXISTS ⇒ 判空没有用精确探针 " +
-			"（§143.42 纪律①：EXISTS(SELECT 1 FROM t LIMIT 1)，禁用 n_live_tup）")
+	// 纪律①：判空必须用 EXISTS(SELECT 1 FROM … LIMIT 1) 这个**精确探针形态**。
+	//
+	// ★★ 第一版这里只断言 `strings.Contains(code, "EXISTS")` ⇒ 被**变异 M3 打红失败**
+	//   （门没牙）：`COMMENT ON FUNCTION … IS '…EXISTS+LIMIT 1…'` 这条
+	//   **字符串字面量**照样喂饱了断言 ⇒ ★★ **剥掉 `--` 注释还不够**：
+	//   **任何字符串字面量都能喂饱「存在类」断言** ⇒ ⇒ 存在类断言必须钉住
+	//   **形态**（`EXISTS (SELECT 1 FROM`）而不是关键词（`EXISTS`）。
+	// ⇒ 这也是「判据一旦能在注释里被满足就不是判据」的**第二个变体**：
+	//   「在注释里」只是最常见的一种，**在字符串字面量里**同样成立。
+	if !strings.Contains(code, "EXISTS (SELECT 1 FROM") {
+		t.Error("★ 判定脚本里没有 `EXISTS (SELECT 1 FROM` 这个精确探针形态 ⇒ " +
+			"判空没有用精确探针（§143.42 纪律①：EXISTS(SELECT 1 FROM t LIMIT 1)，" +
+			"禁用 n_live_tup）⇒ ★ 断言必须钉住形态而不是关键词，" +
+			"否则字符串字面量就能把它喂饱")
+	}
+	if !strings.Contains(code, "LIMIT 1") {
+		t.Error("★ 判定脚本里没有 `LIMIT 1` ⇒ 判空探针没有界（EXISTS 必须是 O(1) 的）")
 	}
 	// 纪律①的禁令：n_live_tup 不得出现在剥完注释的脚本里。
 	if strings.Contains(code, "n_live_tup") {

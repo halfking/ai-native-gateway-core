@@ -60,7 +60,7 @@ MUTATIONS = [
     # M8：登记册少一行 ⇒ 绝对条数钉住红 ⇒ 逼人重新定性而不是悄悄放过。
     ("M8", "登记册被悄悄删掉一行（★ 候选集变化必须重新定性）",
      TSV_REL,
-     "session_censors_2026_09\t29728768\tNO\tt\tf\t0\tNOT_RECLAIMABLE\t-\t非空\n",
+     "session_censors_2026_09\t29728768\tNO\tt\tt\tf\t0\tNOT_RECLAIMABLE\t-\t非空\n",
      "",
      "TestSection14342ReclaimRegistryVerdictsAreDerived"),
 
@@ -68,8 +68,8 @@ MUTATIONS = [
     # M3：判空从 EXISTS 退回 count(*) ⇒ 「EXISTS 必须存在」这条断言红。
     ("M3", "判定脚本的判空从 EXISTS 退回 count(*)(⇒ 量具纪律①失守)",
      SQL_REL,
-     "SELECT EXISTS (SELECT 1 FROM %s LIMIT 1)",
-     "SELECT count(*) > 0 FROM %s",
+     "EXISTS (SELECT 1 FROM %s LIMIT 1)",
+     "count(*) > 0 FROM %s",
      "TestSection14342ReclaimScriptUsesExactMeasurement"),
 
     # M4：判定脚本里把 n_live_tup 放回**代码**（不是注释）⇒ 禁令断言红。

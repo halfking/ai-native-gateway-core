@@ -115,4 +115,4 @@ END;
 $$;
 
 COMMENT ON FUNCTION pg_temp.reclaim_is_empty(regclass) IS
-    '§143.42：精确判空（EXISTS+LIMIT 1）。禁用统计估算量具 —— 见脚本头纪律①。';
+    '§143.42：精确判空探针（形态见脚本头纪律①）。禁用统计估算量具。';
