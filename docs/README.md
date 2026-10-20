@@ -64,7 +64,7 @@
 
 ## 目录结构（现行）
 
-> 2026-08-17 重构时的 27 目录结构已进一步演化：2026-09-07 起重组为 `01-requirements`～`07-reporting` 编号结构（详见 [archive/2026-09/INDEX.md](./archive/2026-09/INDEX.md)），原 `api/`、`domains/`、`features/`、`i18n/`、`legal/`、`model-iq/`、`model-quality/`、`modules/`、`ops/`、`partition/`、`pricing/`、`testing/`、`user-guide/` 等 13 个目录已并入编号结构，不再存在。当前 docs/ 顶层共 181 个条目，主体如下：
+> 2026-08-17 重构时的 27 目录结构已进一步演化：2026-09-07 起重组为 `01-requirements`～`07-reporting` 编号结构（详见 [archive/2026-09/INDEX.md](./archive/2026-09/INDEX.md)），原 `api/`、`domains/`、`features/`、`i18n/`、`legal/`、`model-iq/`、`model-quality/`、`modules/`、`ops/`、`partition/`、`pricing/`、`testing/`、`user-guide/` 等 13 个目录已并入编号结构，不再存在。当前 docs/ 顶层共 182 个条目，主体如下：
 
 ```
 docs/
