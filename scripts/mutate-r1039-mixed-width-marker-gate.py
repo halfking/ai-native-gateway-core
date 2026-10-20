@@ -59,8 +59,8 @@ MUTATIONS = [
     ("M3",
      "门永远为真（=「修漏检」的最省事写法）⇒ 普通中文全被拖进昂贵路径 ⇒ 误报 + 成本双杀",
      SANITIZE_REL,
-     "func containsMarkerWordAnyWidth(text string) bool {\n",
-     "func containsMarkerWordAnyWidth(text string) bool {\n\tif true {\n\t\treturn true\n\t}\n",
+     "func containsMarkerWordAnyWidth(text string) bool {\n\t// 候选 1：",
+     "func containsMarkerWordAnyWidth(text string) bool {\n\tif true {\n\t\treturn true\n\t}\n\t// 候选 1：",
      "TestR1039MixedWidth"),
 
     ("M4",
