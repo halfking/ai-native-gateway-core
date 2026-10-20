@@ -129,8 +129,8 @@ check() {  # check <label> <expected: PASS|FAIL> <output>
 
 echo
 echo "== 2/5 baseline: all legs green =="
-BASE_OUT=$(run_leg 'TestTurnWriterHostTagsRealDB|TestPromoteColumnContractRealDB|TestSessionTurnsFTSIndexUsableRealDB|TestSessionBodiesRequestIDJoinIndexRealDB' baseline)
-check "baseline (4 legs)" PASS "$BASE_OUT"
+BASE_OUT=$(run_leg 'TestTurnWriterHostTagsRealDB|TestPromoteColumnContractRealDB|TestSessionTurnsFTSIndexUsableRealDB|TestSessionBodiesRequestIDJoinIndexRealDB|TestSessionsPartitionDateAntiJoinUsesIndexRealDB' baseline)
+check "baseline (5 legs)" PASS "$BASE_OUT"
 if echo "$BASE_OUT" | grep -q "^FAIL"; then
   echo "ERROR: baseline is not green — the legs are broken, not the mutations" >&2
   echo "$BASE_OUT" | tail -40 >&2
@@ -205,9 +205,30 @@ PSQL_CLONE -c "DROP INDEX IF EXISTS public.idx_session_bodies_hot_tenant_session
 check "M4 bodies join leg -> RED" FAIL "$(run_leg 'TestSessionBodiesRequestIDJoinIndexRealDB' m4)"
 PSQL_CLONE -c "CREATE INDEX idx_session_bodies_hot_tenant_session_turn_request ON public.session_bodies_hot USING btree (tenant_id, session_id, turn_no DESC, request_id)" >/dev/null
 
+# --- M5: drop the sessions latest-partition index -------------------------
+# The G-7(2) leg claims "the 888 sessions index really carries the
+# latest-partition anti-join". That index is a **partitioned** index (built
+# ON ONLY the parent), so dropping the parent drops every partition child
+# with it -- which is exactly the shape a reader would hit if the migration
+# had never been applied to that database.
+echo "   [M5] DROP INDEX idx_sessions_tenant_session_partition_date"
+PSQL_CLONE -c "DROP INDEX IF EXISTS public.idx_sessions_tenant_session_partition_date" >/dev/null
+check "M5 sessions anti-join leg -> RED" FAIL "$(run_leg 'TestSessionsPartitionDateAntiJoinUsesIndexRealDB' m5)"
+# 还原：**重跑迁移 888**，而不是手写一条 CREATE INDEX。
+#
+# ⚠⚠ 第一版还原写成 `CREATE INDEX ... ON ONLY public.sessions` ⇒ **没有子索引** ⇒
+# 还原后的门仍然红（前提自证②「分区索引必须有子索引」当场抓到）。
+# ⇒ 这不是门太严，是还原写错了：888 的真实机制是**三段式** ——
+#   3a 逐分区 CREATE INDEX CONCURRENTLY → 3b 父表 ON ONLY 壳 → 3c ATTACH 挂上。
+#   只写 3b 就等于只造了壳 ⇒ 计划里根本不出现（正是「catalog 查得到、EXPLAIN 看不到」）。
+# 888 全程幂等（CREATE INDEX IF NOT EXISTS / DROP INDEX IF EXISTS / ATTACH 有守卫）
+# ⇒ 「重跑迁移」是最忠实的还原。
+docker exec -i "$PG_CONTAINER" psql -U "$PG_USER" -d "$CLONE_DB" -v ON_ERROR_STOP=1 -f - \
+  < sql/migrations/startup/888_session_family_join_index_gaps.sql >/dev/null
+
 echo
 echo "== 4/5 restore check: legs green again =="
-RESTORE_OUT=$(run_leg 'TestTurnWriterHostTagsRealDB|TestPromoteColumnContractRealDB|TestSessionTurnsFTSIndexUsableRealDB|TestSessionBodiesRequestIDJoinIndexRealDB' restore)
+RESTORE_OUT=$(run_leg 'TestTurnWriterHostTagsRealDB|TestPromoteColumnContractRealDB|TestSessionTurnsFTSIndexUsableRealDB|TestSessionBodiesRequestIDJoinIndexRealDB|TestSessionsPartitionDateAntiJoinUsesIndexRealDB' restore)
 check "after restoring every mutation -> PASS" PASS "$RESTORE_OUT"
 
 echo
