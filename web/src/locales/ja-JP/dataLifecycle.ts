@@ -358,6 +358,46 @@ export default {
     storageConfig: 'ストレージ設定',
     logManagement: 'ログ管理',
     usageCost: '利用コスト',
+    usageEnhanced: '利用率詳細分析',
+  },
+
+  usageEnhanced: {
+    refresh: '更新',
+    loading: '読み込み中…',
+    empty: 'データがありません',
+    cards: {
+      totalCost: '総コスト',
+      totalRequests: '総リクエスト数',
+      periodDelta: '期間比較 Δ コスト',
+      cacheHitRate: 'キャッシュヒット率',
+    },
+    trend: {
+      title: 'コスト推移（直近 {days} 日間）',
+    },
+    hotKeys: {
+      title: '上位 API キー（トークン消費順）',
+      colId: 'API キー ID',
+      colPrefix: 'プレフィックス',
+      colApplication: 'アプリケーション',
+      colRequests: 'リクエスト数',
+      colTokens: 'トークン数',
+      colCost: '総コスト',
+    },
+    degraded: {
+      title: '一部の指標は利用できません: ',
+      hint: 'データベーススキーマがこのビルドより古くなっています。以下の数値は「計算できない」を示すプレースホルダであり、実測値ではありません。',
+    },
+    errors: {
+      load: '利用率詳細データの読み込みに失敗しました',
+    },
+    sources: {
+      summary: '利用率サマリー',
+      costTrend: 'コスト推移',
+      periodCompare: '期間比較',
+      cacheEconomics: 'キャッシュ経済性',
+      hotKeys: 'ホット API キー',
+    },
+    footer: '最終更新: {time}',
   },
 
   usageCost: {

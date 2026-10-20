@@ -186,6 +186,28 @@ func (db *DB) ApplyMigrations(ctx context.Context) error {
 // 部署安全网回滚（245 07:23/07:26/07:35 三连败实证，PG 日志逐字归因）。
 // 守卫语义：全部列在位 → true（调用方跳过 DDL，幂等 stamp 类语句照常执行）；
 // 表不存在 / 任一列缺失 / 探测出错 → false（走原 ensure 路径，自含幂等）。
+// tableExists reports whether a relation exists in the public schema.
+//
+// 2026-10-21（r1039 续轮）：request_logs 族退役（request_logs → session_turns）后，
+// 「这张表**在不在**」是**部署形态**的问题，不是「列缺不缺」的问题。ensure 链的
+// 目录短路清单早就用 to_regclass(...) IS NOT NULL 把这些表的列算成「可选」，
+// 而 ensure 体却**无条件** ALTER 它们 ⇒ 族退役的库上 boot 迁移直接 42P01 中止
+// （2026-10-21 本机 deploy-local 实测中止）。
+//
+// ⇒ 用**同一把尺子**（to_regclass）判断，别用 information_schema.tables
+// （视图/外表也会命中，与 ensure 体 ALTER 的对象集合不是一回事）。
+func (d *DB) tableExists(ctx context.Context, name string) bool {
+	if d == nil || d.pool == nil {
+		return false
+	}
+	var exists bool
+	if err := d.pool.QueryRow(ctx, `SELECT to_regclass($1) IS NOT NULL`, "public."+name).Scan(&exists); err != nil {
+		slog.Warn("table existence probe failed", "table", name, "error", err)
+		return false
+	}
+	return exists
+}
+
 func (db *DB) columnsAllPresent(ctx context.Context, table string, cols []string) bool {
 	if db == nil || db.pool == nil || len(cols) == 0 {
 		return false
@@ -2593,6 +2615,12 @@ func (d *DB) ensureRequestLogSchema(ctx context.Context) error {
 	if d == nil || d.pool == nil {
 		return nil
 	}
+	// 2026-10-21（r1039 续轮）：与目录短路清单同口径——族表不在 ⇒ 整个 ensure
+	// 跳过（而不是 ALTER 一张不存在的表 ⇒ 42P01 ⇒ boot 中止）。
+	if !d.tableExists(ctx, "_request_logs") {
+		slog.Info("_request_logs 不存在（request_logs 族未安装或已退役）—— 跳过该族 schema 自愈")
+		return nil
+	}
 	// 2026-09-23 252 SQL 日志审计轮（D1 残余根修，07:23/07:26 245 蓝绿两连败
 	// 实证）：下方 ADD COLUMN IF NOT EXISTS 即使全部列已存在，也要对
 	// _request_logs 父表 + 全部月分区取 ACCESS EXCLUSIVE 锁才能逐列 no-op。
@@ -2609,7 +2637,8 @@ func (d *DB) ensureRequestLogSchema(ctx context.Context) error {
 		     'compression_reason','compression_strategy','compression_meta',
 		     'outbound_body','outbound_msg_count','outbound_token_est',
 		     'outbound_msg_hashes','quality_flags','quality_fix_actions',
-		     'quality_score','client_request_id','upstream_finish_reason',
+		     'quality_score','client_request_id','provider_id',
+		     'upstream_finish_reason',
 		     'tool_calls','t0_arrived_at','t1_total_enqueued_at',
 		     't2_total_dequeued_at','t3_model_enqueued_at','t4_model_dequeued_at',
 		     't5_cred_enqueued_at','t6_cred_dequeued_at','t7_forward_start_at',
@@ -2680,7 +2709,19 @@ func (d *DB) ensureRequestLogSchema(ctx context.Context) error {
 		    -- request_id (_request_logs.request_id) is forced server-side
 		    -- to prevent client retries from collapsing into a single
 		    -- audit row. See db/migrations/054_request_logs_client_request_id.sql.
-		    ADD COLUMN IF NOT EXISTS client_request_id TEXT;
+		    ADD COLUMN IF NOT EXISTS client_request_id TEXT,
+		    -- 2026-10-20（r1039 续轮）：provider_id —— 本 ensure 链**自己**
+		    -- 要在下面给 _request_logs 建 (provider_id, …) 索引（2026-06-19
+		    -- 9cd51d8a7 引入，随 v2 改名 request_logs→_request_logs 一起搬过来），
+		    -- 却**从没补过这一列**。
+		    -- ⇒ 任何 _request_logs 不带 provider_id 的库（最小/新装基线、
+		    --   由 v1 fallback 体灌入的基线副本）上，整条 boot 迁移在
+		    --   CREATE INDEX idx_request_logs_provider_quality 处报
+		    --   42703（column "provider_id" does not exist）⇒ 迁移中止 ⇒
+		    --   **网关起不来**（2026-10-21 本机 deploy-local 实测中止）。
+		    -- 已是 v1→v2 改名产物的库（211/252 等）本来就有这一列 ⇒
+		    -- ADD COLUMN IF NOT EXISTS 是 no-op ⇒ 零影响。
+		    ADD COLUMN IF NOT EXISTS provider_id BIGINT;
 		CREATE INDEX IF NOT EXISTS idx_request_logs_gw_session_ts
 		    ON _request_logs (gw_session_id, ts DESC)
 		    WHERE gw_session_id IS NOT NULL AND gw_session_id <> '';
@@ -2746,7 +2787,16 @@ func (d *DB) ensureRequestLogSchema(ctx context.Context) error {
 
 	// V3.1 (migration 491): 9-stage dispatch queue timestamps on hot + parent.
 	// Startup ensure so environments that have not yet run 491 still accept INSERTs.
-	_, err = d.pool.Exec(ctx, `
+	//
+	// 2026-10-21（r1039 续轮）：request_logs 族已退役（request_logs → session_turns），
+	// 「这张表**在不在**」是**部署形态**的问题，不是「列缺不缺」的问题 ——
+	// 目录短路清单一直用 to_regclass(...) IS NOT NULL 把这些表的列算成「可选」，
+	// 而 ensure 体却**无条件** ALTER 它们 ⇒ 族退役后（_request_logs_hot 不存在）
+	// boot 迁移直接 42P01 中止（2026-10-21 本机 deploy-local 实测中止）。
+	// ⇒ 体与清单口径必须一致：表不在 ⇒ 这一族的 DDL 整个跳过。
+	hotTableExists := d.tableExists(ctx, "_request_logs_hot")
+	if hotTableExists {
+		_, err = d.pool.Exec(ctx, `
 		ALTER TABLE _request_logs_hot
 		    ADD COLUMN IF NOT EXISTS t0_arrived_at TIMESTAMPTZ,
 		    ADD COLUMN IF NOT EXISTS t1_total_enqueued_at TIMESTAMPTZ,
@@ -2758,6 +2808,12 @@ func (d *DB) ensureRequestLogSchema(ctx context.Context) error {
 		    ADD COLUMN IF NOT EXISTS t7_forward_start_at TIMESTAMPTZ,
 		    ADD COLUMN IF NOT EXISTS t8_response_start_at TIMESTAMPTZ,
 		    ADD COLUMN IF NOT EXISTS t9_response_end_at TIMESTAMPTZ;
+	`)
+		if err != nil {
+			return err
+		}
+	}
+	_, err = d.pool.Exec(ctx, `
 		ALTER TABLE _request_logs
 		    ADD COLUMN IF NOT EXISTS t0_arrived_at TIMESTAMPTZ,
 		    ADD COLUMN IF NOT EXISTS t1_total_enqueued_at TIMESTAMPTZ,
@@ -2779,14 +2835,23 @@ func (d *DB) ensureRequestLogSchema(ctx context.Context) error {
 	// 空集，054 时代重复数据不会阻塞索引构建）；分区侧由 SQL migration 的
 	// ensure_request_logs_partition 为新分区补建（columnar AM 可能拒建唯一
 	// 索引，故此处只做 hot 侧 Go 镜像）。
-	_, err = d.pool.Exec(ctx, `
+	//
+	// 2026-10-21（r1039 续轮）：hot 侧与上面同理——表不在（族退役）⇒ 跳过。
+	if hotTableExists {
+		_, err = d.pool.Exec(ctx, `
 		ALTER TABLE _request_logs_hot
-		    ADD COLUMN IF NOT EXISTS is_final_success BOOLEAN NOT NULL DEFAULT FALSE;
-		ALTER TABLE _request_logs
 		    ADD COLUMN IF NOT EXISTS is_final_success BOOLEAN NOT NULL DEFAULT FALSE;
 		CREATE UNIQUE INDEX IF NOT EXISTS uq_request_logs_hot_final_success_session
 		    ON _request_logs_hot (gw_session_id)
 		    WHERE is_final_success AND gw_session_id IS NOT NULL AND gw_session_id <> '';
+	`)
+		if err != nil {
+			return err
+		}
+	}
+	_, err = d.pool.Exec(ctx, `
+		ALTER TABLE _request_logs
+		    ADD COLUMN IF NOT EXISTS is_final_success BOOLEAN NOT NULL DEFAULT FALSE;
 	`)
 	if err != nil {
 		return err
@@ -3102,11 +3167,25 @@ func (d *DB) ensureBillingUnitAndAudioSeconds(ctx context.Context) error {
 		END
 		$do$;
 
-		ALTER TABLE _request_logs_hot
-		    ADD COLUMN IF NOT EXISTS audio_seconds double precision;
-
-		ALTER TABLE _request_logs
-		    ADD COLUMN IF NOT EXISTS audio_seconds double precision;
+		-- 2026-10-21（r1039 续轮）：族侧 DDL **按表存在性条件化**。
+		-- request_logs 族退役后（request_logs → session_turns）_request_logs /
+		-- _request_logs_hot 不在新装库里 ⇒ 上面的 ALTER 必然 42P01 ⇒
+		-- 整条 boot 迁移中止。
+		-- ⚠ 这不是假想：短路条件是 cmbOK && hotOK，而 hotOK 里的
+		--   columnsAllPresent 在**表不在**时返回 true ⇒ 只要 cmb.billing_unit
+		--   缺（正是这段 DDL 要修的东西）就会落进本分支 ⇒ 42P01。
+		-- 用 to_regclass 守卫 + EXECUTE：表在时行为与原来逐字一致，
+		-- 表不在时该族侧列无处可加（本来也没有族表）⇒ 跳过。
+		DO $do$
+		BEGIN
+		    IF to_regclass('public._request_logs_hot') IS NOT NULL THEN
+		        EXECUTE 'ALTER TABLE public._request_logs_hot ADD COLUMN IF NOT EXISTS audio_seconds double precision';
+		    END IF;
+		    IF to_regclass('public._request_logs') IS NOT NULL THEN
+		        EXECUTE 'ALTER TABLE public._request_logs ADD COLUMN IF NOT EXISTS audio_seconds double precision';
+		    END IF;
+		END
+		$do$;
 
 		INSERT INTO public.schema_migrations (version, description)
 		VALUES ('848', 'cmb.billing_unit + _request_logs.audio_seconds for media duration billing')
@@ -4455,6 +4534,20 @@ CREATE INDEX IF NOT EXISTS idx_request_logs_work_type
 // work_type column and its index, i.e. whether workTypeRequestLogsDDL would be
 // a pure no-op. Both are checked because the DDL is applied as one unit: the
 // index cannot be created before the column exists.
+//
+// 2026-10-21（r1039 续轮）：**索引探针必须与列探针同一把尺子**。
+// 原来列探针带 `to_regclass('public._request_logs') IS NOT NULL` 守卫、索引探针
+// 不带 ⇒ 在「族已退役」（request_logs → session_turns，族表不在）的新装库上：
+//
+//	missing = 0（列探针：表不在 ⇒ 没缺列）
+//	       + 1（索引探针：表不在 ⇒ 索引当然也不在）
+//	⇒ missing=1 ⇒ 判定「需要 DDL」⇒ 执行
+//	ALTER TABLE _request_logs ADD COLUMN IF NOT EXISTS work_type TEXT;
+//	⇒ ERROR: relation "_request_logs" does not exist (SQLSTATE 42P01)
+//	⇒ 整条 boot 迁移中止 ⇒ 网关起不来（2026-10-21 本机 deploy-local 实测中止）。
+//
+// ⇒ 索引探针同样加 `to_regclass` 守卫：表不在 ⇒ 「没缺列、没缺索引」⇒ 跳过 DDL。
+//    表在时的语义**逐字不变**（列缺 / 索引缺 → 仍然执行 DDL）。
 func (d *DB) workTypeRequestLogsCurrent(ctx context.Context) bool {
 	var missing int
 	err := d.pool.QueryRow(ctx, `
@@ -4467,7 +4560,8 @@ func (d *DB) workTypeRequestLogsCurrent(ctx context.Context) bool {
 		          AND column_name = want.name))
 		  +
 		  (SELECT count(*) FROM (VALUES ('idx_request_logs_work_type')) AS want(name)
-		   WHERE NOT EXISTS (
+		   WHERE to_regclass('public._request_logs') IS NOT NULL
+		     AND NOT EXISTS (
 		       SELECT 1 FROM pg_indexes
 		        WHERE schemaname='public' AND indexname = want.name))
 	`).Scan(&missing)
@@ -6973,7 +7067,7 @@ func (d *DB) ensureRoutingRecentSuccessRate(ctx context.Context) error {
 			return err
 		}
 	}
-	_, err := d.pool.Exec(ctx, recentSuccessRateEnsureSQL)
+	_, err := d.pool.Exec(ctx, recentSuccessRateEnsureSQL(d.tableExists(ctx, "_request_logs_hot")))
 	if err != nil {
 		return err
 	}
@@ -6996,7 +7090,47 @@ func (d *DB) ensureRoutingRecentSuccessRate(ctx context.Context) error {
 // 性的——探针轮次本就不镜像。
 //
 // ⚠ 注释里不许出现反引号：本段 SQL 在 Go raw string 里。
-const recentSuccessRateEnsureSQL = `
+// recentSuccessRateEnsureSQL 返回 recent_success_rate 的 CREATE OR REPLACE 文本。
+//
+// 2026-10-21（r1039 续轮）：函数体是 **LANGUAGE sql** ⇒ PostgreSQL 在 CREATE 时
+// 就**校验体里的表引用** ⇒ 族退役 / 新装的库（没有 _request_logs_hot）上
+// CREATE OR REPLACE 直接 42P01 ⇒ 整条 boot 迁移中止（2026-10-21 本机新装实测中止）。
+//
+// ⇒ 旧腿（_request_logs_hot）按**表在不在**决定要不要进 UNION ALL：
+//   · 表在（旧族仍在写）⇒ 双腿，与既有语义逐字一致；
+//   · 表不在 ⇒ 只剩 session_turns_hot 一条腿 —— 那才是当前写入面
+//     （停写切换后新流量只落 session_turns(_hot)）。
+//     ⚠ 语义不丢：旧腿存在的库上双腿仍原样保留
+//     （判据见 db/db_recent_success_rate_body_test.go）。
+//
+// 2026-10-13 S3 波 2（停写切换）：双热腿取样。原体只读 _request_logs_hot；
+// S4 停写后新流量只落 session_turns_hot，3 小时窗口滑过停写时刻后 samples
+// 恒 0、rate 恒 NULL——消费方把零读成「正常」，凭据健康体系的
+// BelowThreshold 恢复机制全体失灵（request_logs_stop_write_classification_test
+// 登记的主失效源）。会话腿口径：credential_id 是 TEXT（707 S1a），数字守卫
+// CAST 后比较；模型键 model/canonical_model 回退链对应 v1 的 outbound/client
+// COALESCE（会话侧 outbound=t.model，值可能归一化，失配只损失样本量不产生
+// 错误样本）。探针排除谓词对会话腿是防御性的——探针轮次本就不镜像。
+//
+// ⚠ 注释里不许出现反引号：本段 SQL 在 Go raw string 里。
+func recentSuccessRateEnsureSQL(legacyHotExists bool) string {
+	legacyLeg := ""
+	if legacyHotExists {
+		legacyLeg = `
+			        SELECT success, ts
+			            FROM _request_logs_hot
+			            WHERE credential_id = p_credential_id
+			              AND lower(COALESCE(outbound_model, client_model)) = lower(p_raw_model)
+			              AND ts > NOW() - (p_window_hours || ' hours')::interval
+			              -- Probe/self-check rows measure the health worker, not the
+			              -- business route. Legacy probe IDs are retained for old rows
+			              -- created before origin_stage/task_type was added.
+			              AND COALESCE(task_type, '') <> 'probe_triggered'
+			              AND COALESCE(origin_stage, '') NOT IN ('self_check', 'node_probe', 'system_health')
+			              AND request_id NOT LIKE 'probe-%'
+			    UNION ALL`
+	}
+	return `
 		CREATE OR REPLACE FUNCTION recent_success_rate(p_credential_id BIGINT,
 		                                    p_raw_model     TEXT,
 		                                    p_sample_n      INT DEFAULT 50,
@@ -7005,29 +7139,17 @@ const recentSuccessRateEnsureSQL = `
 		LANGUAGE sql
 		STABLE
 		AS $$
-			    WITH recent AS (
+		    WITH recent AS (` + legacyLeg + `
 			        SELECT success, ts
-				    FROM _request_logs_hot
-				    WHERE credential_id = p_credential_id
-				      AND lower(COALESCE(outbound_model, client_model)) = lower(p_raw_model)
-				      AND ts > NOW() - (p_window_hours || ' hours')::interval
-				      -- Probe/self-check rows measure the health worker, not the
-				      -- business route. Legacy probe IDs are retained for old rows
-				      -- created before origin_stage/task_type was added.
-				      AND COALESCE(task_type, '') <> 'probe_triggered'
-				      AND COALESCE(origin_stage, '') NOT IN ('self_check', 'node_probe', 'system_health')
-				      AND request_id NOT LIKE 'probe-%'
-				    UNION ALL
-			        SELECT success, ts
-				    FROM public.session_turns_hot
-				    WHERE credential_id ~ '^[0-9]+$'
-				      AND credential_id::bigint = p_credential_id
-				      AND lower(COALESCE(model, canonical_model)) = lower(p_raw_model)
-				      AND ts > NOW() - (p_window_hours || ' hours')::interval
-				      AND COALESCE(task_type, '') <> 'probe_triggered'
-				      AND COALESCE(origin_stage, '') NOT IN ('self_check', 'node_probe', 'system_health')
-				      AND request_id NOT LIKE 'probe-%'
-			    )
+			            FROM public.session_turns_hot
+			            WHERE credential_id ~ '^[0-9]+$'
+			              AND credential_id::bigint = p_credential_id
+			              AND lower(COALESCE(model, canonical_model)) = lower(p_raw_model)
+			              AND ts > NOW() - (p_window_hours || ' hours')::interval
+			              AND COALESCE(task_type, '') <> 'probe_triggered'
+			              AND COALESCE(origin_stage, '') NOT IN ('self_check', 'node_probe', 'system_health')
+			              AND request_id NOT LIKE 'probe-%'
+		    )
 
 		    SELECT AVG(CASE WHEN success THEN 1.0 ELSE 0.0 END)::double precision,
 		           COUNT(*)::int
@@ -7036,6 +7158,7 @@ const recentSuccessRateEnsureSQL = `
 		    ) newest_samples;
 		$$;
 	`
+}
 
 // ensureUnavailableRecoverAtSchema mirrors db/migrations/292_unavailable_recover_at.sql.
 func (d *DB) ensureUnavailableRecoverAtSchema(ctx context.Context) error {

@@ -358,6 +358,46 @@ export default {
     storageConfig: '儲存設定',
     logManagement: '日誌管理',
     usageCost: '用量成本',
+    usageEnhanced: '用量增強分析',
+  },
+
+  usageEnhanced: {
+    refresh: '重新整理',
+    loading: '載入中…',
+    empty: '無資料',
+    cards: {
+      totalCost: '總成本',
+      totalRequests: '總請求數',
+      periodDelta: '同期比較 Δ 成本',
+      cacheHitRate: '快取命中率',
+    },
+    trend: {
+      title: '成本趨勢（最近 {days} 天）',
+    },
+    hotKeys: {
+      title: 'Top API keys（依 token 消耗排序）',
+      colId: 'API 金鑰 ID',
+      colPrefix: 'Key 前綴',
+      colApplication: '應用程式',
+      colRequests: '請求數',
+      colTokens: 'Token 數',
+      colCost: '總成本',
+    },
+    degraded: {
+      title: '部分指標不可用：',
+      hint: '資料庫結構落後於目前版本，以下數字是「無法計算」的佔位值，不是真實量測值。',
+    },
+    errors: {
+      load: '載入用量增強資料失敗',
+    },
+    sources: {
+      summary: '用量總覽',
+      costTrend: '成本趨勢',
+      periodCompare: '週期比較',
+      cacheEconomics: '快取經濟學',
+      hotKeys: '熱門 API Key',
+    },
+    footer: '最近重新整理：{time}',
   },
 
   usageCost: {

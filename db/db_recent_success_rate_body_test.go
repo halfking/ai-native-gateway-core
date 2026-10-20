@@ -17,8 +17,14 @@ import (
 //
 // 判据同层：断言直接驱动 boot 时真正发给 PostgreSQL 的那段文本
 // （recentSuccessRateEnsureSQL），不是测试里另抄的一份。
+//
+// 2026-10-21（r1039 续轮）：recentSuccessRateEnsureSQL 从常量变成**函数**
+// （入参 = 旧族热表在不在）。旧族在场 ⇒ 双腿（原语义逐字不变）；
+// 旧族退役 ⇒ 只剩 session_turns_hot 一条腿（当前唯一写入面）。
+// ⇒ 两个形态都要钉：否则「flag 恒 true / 恒 false」任一漂移都会静默
+//     要么 42P01（族退役库 CREATE 校验表引用）要么丢样本（恒 false 砍掉旧腿）。
 func TestRecentSuccessRateBodyServesBothHotFamilies(t *testing.T) {
-	body := recentSuccessRateEnsureSQL
+	body := recentSuccessRateEnsureSQL(true)
 
 	// 两族热腿都必须在场——缺任何一腿，停写切换的某一侧就是盲区。
 	for _, leg := range []string{"FROM _request_logs_hot", "FROM public.session_turns_hot"} {
@@ -50,6 +56,53 @@ func TestRecentSuccessRateBodyServesBothHotFamilies(t *testing.T) {
 	if !strings.Contains(body, "p_sample_n      INT DEFAULT 50") ||
 		!strings.Contains(body, "p_window_hours  INT DEFAULT 3") {
 		t.Error("函数签名/默认值漂移会打碎 CROSS JOIN LATERAL 调用点")
+	}
+}
+
+// TestRecentSuccessRateBodyDropsLegacyLegWhenHotFamilyRetired（2026-10-21 r1039 续轮）
+// 钉住「旧族退役」形态：recent_success_rate 是 **LANGUAGE sql** ⇒ PostgreSQL 在
+// CREATE 时就校验体里的表引用 ⇒ 族退役的库上仍写 _request_logs_hot ⇒ 42P01 ⇒
+// **整条 boot 迁移中止**（2026-10-21 本机新装实测中止）。
+//
+// ⇒ flag=false 时体里**不能**出现 _request_logs_hot；只剩 session_turns_hot 一条腿
+// （停写切换后新流量唯一落点），且**不能**留下悬空的 UNION ALL（那是语法错，
+// 会把 42P01 换成 42601，缺陷还在）。
+//
+// 判据同层：直接驱动 boot 时真正发给 PostgreSQL 的那段文本。
+func TestRecentSuccessRateBodyDropsLegacyLegWhenHotFamilyRetired(t *testing.T) {
+	body := recentSuccessRateEnsureSQL(false)
+
+	// 旧族退役 ⇒ 体里不得再提它的表名（CREATE 时校验表引用 ⇒ 42P01 ⇒ boot 中止）。
+	if strings.Contains(body, "_request_logs_hot") {
+		t.Error("旧族热表已退役，函数体仍引用 _request_logs_hot：CREATE 校验表引用即 42P01，boot 迁移中止")
+	}
+	// 会话腿必须仍在——那是停写切换后新流量的唯一落点。
+	if !strings.Contains(body, "FROM public.session_turns_hot") {
+		t.Error("旧族退役后会话腿 session_turns_hot 必须在场（否则 samples 恒 0、rate 恒 NULL）")
+	}
+	// 单腿 ⇒ 不能留悬空 UNION ALL（42601 语法错，缺陷等价）。
+	if strings.Contains(body, "UNION ALL") {
+		t.Error("旧族退役后只剩一条腿，UNION ALL 会变成悬空语法错")
+	}
+	// 单腿形态下探针排除谓词只剩会话腿那一处（防御性），计数必须恰好 1。
+	probeArms := strings.Count(body, "NOT IN ('self_check', 'node_probe', 'system_health')")
+	if probeArms != 1 {
+		t.Errorf("旧族退役形态的探针排除谓词应恰好 1 处（实存 %d 处）", probeArms)
+	}
+	// 取样语义与签名不随形态漂移。
+	for _, needle := range []string{
+		"ORDER BY ts DESC LIMIT p_sample_n",
+		"credential_id ~ '^[0-9]+$'",
+		"p_sample_n      INT DEFAULT 50",
+		"p_window_hours  INT DEFAULT 3",
+	} {
+		if !strings.Contains(body, needle) {
+			t.Errorf("旧族退役形态丢失取样/签名契约 %q", needle)
+		}
+	}
+	// 两种形态必须**真的不同**——否则 flag 形同虚设（恒真/恒假都会通过上面两条）。
+	if recentSuccessRateEnsureSQL(true) == body {
+		t.Error("legacyHotExists=true/false 两种形态产出了同一段 SQL：flag 没有生效")
 	}
 }
 

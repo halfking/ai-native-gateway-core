@@ -100,13 +100,20 @@ func (d *DB) ensureRequestLogsCurrentMonthView(ctx context.Context) error {
 	if !baseWrapperExists {
 		// 基础 108 列 UNION：hot∩parent 交集（按 hot 列序），排除 575/608
 		// 时代后追加的 customer_id/request_class/due_at。
+		//
+		// 2026-10-21（r1039 续轮）：`('public._request_logs')::regclass` 换成
+		// `to_regclass(...)` —— **裸 ::regclass 在目标不存在时直接 42P01**，
+		// 而 request_logs 族退役后 _request_logs 恰恰不在新装库里 ⇒
+		// 「视图被带外删掉 ⇒ 自愈」这条路径自己先炸掉（正是本函数存在的理由）。
+		// to_regclass 对不存在的名字返回 NULL ⇒ JOIN 不命中 ⇒ baseCols 为空
+		// ⇒ 下面按「族不在」分支跳过 v1 链重建（表在时语义**逐字不变**）。
 		var baseCols string
 		if err := d.pool.QueryRow(ctx, `
-			SELECT string_agg(quote_ident(h.attname), ', ' ORDER BY h.attnum)
+			SELECT COALESCE(string_agg(quote_ident(h.attname), ', ' ORDER BY h.attnum), '')
 			  FROM pg_attribute h
 			  JOIN pg_class hc ON hc.oid = h.attrelid
 			  JOIN pg_namespace hn ON hn.oid = hc.relnamespace
-			  JOIN pg_attribute p ON p.attrelid = ('public._request_logs')::regclass
+			  JOIN pg_attribute p ON p.attrelid = to_regclass('public._request_logs')
 			                     AND p.attname = h.attname
 			  JOIN pg_class pc ON pc.oid = p.attrelid
 			  JOIN pg_namespace pn ON pn.oid = pc.relnamespace
@@ -121,6 +128,16 @@ func (d *DB) ensureRequestLogsCurrentMonthView(ctx context.Context) error {
 			return fmt.Errorf("derive _request_logs base view columns: %w", err)
 		}
 		if baseCols == "" {
+			// 族退役（request_logs → session_turns）：v1 体**物理上建不出来**
+			// —— 没有 v1 表就没有 hot∩parent 交集。此时唯一可建的形态是会话族
+			// v2 体（下面 sessionTurnsExist 分支），而 v2 体的列清单来自
+			// 中间包装视图 —— 那条链也得在中间包装视图不在时优雅退出。
+			// ⇒ 这里**不**再硬报错（那会把「族退役」变成 boot 中止），
+			//    交给下面的分支处理；族在但 hot 缺失的极简库仍走原错误路径。
+			if !d.tableExists(ctx, "_request_logs") {
+				slog.Info("request_logs_with_current_month 族已退役（_request_logs 不存在）—— 跳过 v1 基础包装链重建")
+				return nil
+			}
 			return fmt.Errorf("_request_logs view self-heal: empty base column list " +
 				"(_request_logs_hot/request_logs missing? run migration 341 first)")
 		}
@@ -628,10 +645,13 @@ var projectionExprByColumn = func() map[string]string {
 // render identically.
 func (d *DB) middleWrapperCols(ctx context.Context) (string, error) {
 	var cols string
+	// 2026-10-21（r1039 续轮）：`::regclass` → `to_regclass`（目标不存在时
+	// 返回 NULL 而不是 42P01）—— 中间包装视图在族退役库上根本不存在，
+	// 裸 ::regclass 会把「自愈」变成中止。
 	if err := d.pool.QueryRow(ctx, `
 		SELECT COALESCE(string_agg(quote_ident(a.attname), ', ' ORDER BY a.attnum), '')
 		  FROM pg_attribute a
-		 WHERE a.attrelid = 'public.request_logs_with_current_month_without_request_class_due_at'::regclass
+		 WHERE a.attrelid = to_regclass('public.request_logs_with_current_month_without_request_class_due_at')
 		   AND a.attnum > 0 AND NOT a.attisdropped
 		   AND a.attname NOT IN ('credits_rate_multiplier', 'client_ip')
 	`).Scan(&cols); err != nil {
