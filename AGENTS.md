@@ -3412,6 +3412,47 @@ To codeup.aliyun.com:kaixuan/official-deploy/llm-gateway-go.git
   假 `timeout` 仍是纯 shell 实现（依赖 `set -m`），换 `perl`/`python` 内核定时器更稳但引入新依赖 ⇒ 本轮不做。
 
 
+## 2026-10-21 R59 轮：真库腿 75 条失败分流 + 一个**缺省值翻转**的二阶效应（§十七）
+
+> 完整记录见 `docs/96小时内修订审计-20261007-1350.md` §十七；
+> 逐条分流见 `docs/audit/2026-10-21-R59-真库失败分流.md`；三条新经验见 `LESSONS.md`（2026-10-21 末三条）。
+
+- **本轮结论（一句）**：R57 登记的「66 条失败名待分流」做完了（连子用例 75 条）：
+  **A 14 / B ≈31 / C 15 / D 1**，**没有一条能直接判成生产缺陷**；
+  但**挖出一个被漏记的二阶效应** ⇒ 见下。
+- ★★★ **本轮最重要的发现（属主决策项）**：
+  `settleSourceFor`（`bg/auto_route_settle_source.go`）选族 = `settleSourceFor(settings.RequestLogsWriteEnabled())`，
+  而该键的**缺省值**在 **2026-10-20（audit D0）被从 true 改成 false**
+  （`settings/key_request_logs_write_enabled.go`：「It used to be true, and that fallback was the load-bearing half of the defect」）
+  ⇒ **`settleSourceFor` 里「判定刻意做成默认 v1」那句注释的前提已不成立**
+  ⇒ ⇒ **凡没显式配置该键的部署，结算基线会读 `session_turns_hot` 而不是 `_request_logs_hot`**
+  ⇒ ⇒ cohort 取自另一族 ⇒ **基线静默变空 ⇒ 每条结算的延迟项与成本项同时塌成中性 0.5**
+  （`settleBaselinesSQL` 注释里写的最坏形态：「没有错误信号的静默退化」）。
+  ⇒ **本轮没有替属主选边**：只订正了失效的注释（写成事实陈述 + 标注决策项）、
+  让结算腿**显式钉族**、并把决策写进留证。
+- **本轮修掉的 6 条**（全在测试侧，对生产写入 = 0）：
+  ① 夹具补列（`_request_logs_hot` 加 `quality_flags`/`origin_stage`；`session_turns_hot` 加 `origin_stage`）
+  ⇒ 5 条 42703 绿；
+  ② 结算腿 `withSettleSourceV1(t)` 显式钉族 ⇒ 5 条「cohort 空」绿。
+- **4 道新门**（`bg/probe_policy_fixture_gate_test.go`，带 `//go:build integration`）：
+  `TestProbePredicateColumnsExistOnTheIntegrationFixture`（谓词列必须在**该族的夹具表**上 +
+  反向「不得有别族列」）、`TestSettleFixtureCoversEveryPredicateColumnOnBothFamilies`、
+  `TestSettleFixtureHasExactlyTheTwoFamilyTables`、`TestSettleLegsPinTheirFamily`。
+  ★ **新门补的是判据层错位**（判据纪律第 1 条）：既有门
+  `TestProbeTrafficExclusionPredicateColumnsExistOnTheirFamily` 查的是**仓内迁移声明的列**（与生产一致 ⇒ 绿），
+  而失败发生在**测试自己手写的夹具**上 ⇒ **门绿不是因为没缺陷，是因为它没看缺陷所在的那一层**。
+  变异 M1/M2/M3 全红且 md5 逐字还原。
+- ★ **新工具** `scripts/audit/probe-onetime-db-shape.sh`：建一次性库（链**跑一遍**）并打印**形态事实**
+  （热族表的列、canonical 视图的列、各族月分区、其它腿要读的关系在不在）⇒ **可重跑的量具**。
+- **三组坐实读数**（分流的事实基础）：
+  ① 一次性库月分区只有 **2026_07/2026_08**（无当月 2026_10），且
+     `session_turns`/`sessions`/`session_bodies`/`usage_ledger` **无 default 兜底** ⇒ 3 条 23514；
+  ② **生产（252，只读实测）** 这几族都有 **2026_10 + default** ⇒ **生产没问题** ⇒ 那 3 条是**夹具形态**（B 类）；
+  ③ installer 注册链 **282** 条 vs 仓内 `sql/migrations/startup/` **556** 个 up 文件 ⇒ 差集 276
+     ⇒ ★ **但绝大多数是同号替代版本** ⇒ **不能当「276 条迁移缺失」**（未逐条定性 ⇒ 登记为待办）。
+- **可低成本修的下一步**：harness 的库名 `itgate_<pid>_<rand>` 不匹配
+  `bench|test|tmp|scratch|pg_` ⇒ 改成含 `test` 的形式即可让那两道**自带拒绝**的门跑起来（`TestMigration877WriteAmplification`）。
+
 ## 2026-10-19 SSE流量审计续轮
 
 - source78b32c7d6修复每连接queue/node周期重复发送；digest忽略外层时间戳与每次采样递增的SourceVersion，wire真实版本保留。普通成功写失效cache以纠正晚initial_data，keepalive不失效；每类最多补一帧。
