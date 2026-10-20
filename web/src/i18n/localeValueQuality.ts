@@ -38,7 +38,7 @@ import { fileURLToPath } from 'node:url'
 // ⚠️ 显式带 `.ts` 扩展：CLI 用 `node --experimental-strip-types` 跑本文件，
 //   Node 的 ESM 解析**不认**无扩展名的相对导入（vitest 认）⇒ 不带扩展名会让
 //   `npm run i18n:locale-value:check` 直接 ERR_MODULE_NOT_FOUND。
-import { loadLocale, scanAll } from './scanner.ts'
+import { loadLocale, scanAll, collectLeafKeys } from './scanner.ts'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = dirname(__filename)
@@ -104,6 +104,46 @@ export function localeValues(locale: string, localesDir: string = LOCALES_DIR): 
 //   用途：① 测试里改了 locale 文件要复测时必须先调 clearMeasureCache()；
 //        ② CLI 每次是新进程，不受影响。
 let cachedValues: Map<string, LocaleValues> | null = null
+let cachedModules: Map<string, Record<string, unknown>> | null = null
+
+/**
+ * 取全部语种的**模块对象**（运行时求值结果，带进程内缓存）。
+ *
+ * ⚠️ **R56 轮增补的第三道门需要的是「键集合」而不是「值表」**：
+ *   键集合的口径**必须与 scanner.ts 的 `collectLeafKeys` 一致**
+ *   （数组也算一个键 —— vue-i18n 允许 `t('path')` 返回整个数组供 `v-for` 渲染；
+ *   实测 `modulesView.integration.feishuSteps` 就是这种形态）。
+ *   ⇒ 若用 `collectLeafValues`（只收字符串）算键集合 ⇒ **口径比 scanner.ts 窄**
+ *   ⇒ 会把「数组型键」误判成「该语种缺这个键」（R56 实测：3 个键被误报成「8 语种全缺」）。
+ *   ⇒ ★ 这就是「两套量具互相抵消比一个明显错的量具更危险」的实例：
+ *     **键集合必须与引用扫描用同一套口径** ⇒ 复用 scanner.ts 的 `collectLeafKeys`。
+ *
+ * ⚠️ 缓存挂在「模块对象」这一层 ⇒ 值表与键集合**共享同一次加载**
+ *   （加载 8 个语种实测 20~40s；各加载一次 ⇒ 门自己变成计时敏感门）。
+ */
+export function allLocaleModules(
+  localesDir: string = LOCALES_DIR,
+): Map<string, Record<string, unknown>> {
+  if (cachedModules && localesDir === LOCALES_DIR) return cachedModules
+  const m = new Map<string, Record<string, unknown>>()
+  for (const loc of ALL_LOCALES) m.set(loc, loadLocale(loc, localesDir))
+  if (localesDir === LOCALES_DIR) cachedModules = m
+  return m
+}
+
+/**
+ * 取全部语种的**键集合**（与 scanner.ts 的 `collectLeafKeys` 同口径：数组算一个键）。
+ * ⚠️ 这是「键**存在性**」的唯一口径来源 —— 引用扫描（scanner.ts）用的就是它。
+ */
+export function allLocaleKeySets(
+  localesDir: string = LOCALES_DIR,
+): Map<string, Set<string>> {
+  const m = new Map<string, Set<string>>()
+  for (const [loc, mod] of allLocaleModules(localesDir)) {
+    m.set(loc, collectLeafKeys(mod))
+  }
+  return m
+}
 
 /** 取全部语种的运行时真值展平表（带进程内缓存）。 */
 export function allLocaleValues(
@@ -111,7 +151,9 @@ export function allLocaleValues(
 ): Map<string, LocaleValues> {
   if (cachedValues && localesDir === LOCALES_DIR) return cachedValues
   const m = new Map<string, LocaleValues>()
-  for (const loc of ALL_LOCALES) m.set(loc, localeValues(loc, localesDir))
+  for (const [loc, mod] of allLocaleModules(localesDir)) {
+    m.set(loc, collectLeafValues(mod))
+  }
   if (localesDir === LOCALES_DIR) cachedValues = m
   return m
 }
@@ -176,6 +218,7 @@ let cachedAll: { byLocale: Map<string, LocaleQuality>; referencedCount: number }
 export function clearMeasureCache(): void {
   cachedAll = null
   cachedValues = null
+  cachedModules = null
 }
 
 export function measureAll(
