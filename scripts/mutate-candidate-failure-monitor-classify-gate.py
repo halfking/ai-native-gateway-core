@@ -12,6 +12,16 @@
 
 每条变异改坏一处 ⇒ **指定的**判据必须变红；另有一条**对照变异**（只改注释）⇒ 必须仍然绿。
 
+★ 2026-10-21（批判式审计轮）新增两条：
+  ① **M10-关系腿**（红）：把 `switch` 的实参换成另一个变量 ⇒ 日志透传的标识符与
+     被分类的值**不再是同一个** ⇒ 判据必须红（这钉的是「关系不变式」，
+     而不是「某个名字出现过」）。
+  ② **R1-反向变异**（必须仍绿）：把局部变量 `fid` **改名**成 `failureID`
+     ——**语义完全不变**的重构 ⇒ 判据必须仍然全绿。
+     ⇒ 这条是「判据钉的是关系、不是名字」的**唯一直接证据**：
+       旧版 needle（`"source_max_failure_id"\\s*,\\s*fid`）在 R1 下**必然变红**
+       ⇒ 那就是「钉太紧 ⇒ 假红」的实证。
+
 ★ 为什么本脚本用「**隔离副本**」而不是就地改共享工作树：
   本仓是**共享仓 + 并行会话**（实测 10 个会话并发）。就地改源文件的那 1~2 分钟窗口里，
   若并行会话恰好 `git commit -a`，**被故意改坏的源码就会被推上 main**
@@ -104,6 +114,35 @@ MUTATIONS = [
         "red", LEG_QUIET,
         [("if lastRequest == nil {\n\t\treturn false\n\t}",
           "if lastRequest == nil {\n\t\treturn true\n\t}", 1)],
+    ),
+    (
+        "M10-switch 实参换成另一个变量(关系腿·2026-10-21 新增)",
+        "red", LEG_SHAPE,
+        # ★ 判据第二处修复后新增的**关系不变式**：日志里透传的标识符必须与
+        #   分类器 switch 的实参是**同一个**。这里把 switch 的实参换成 `rid`
+        #   （request 侧的 max id）⇒ 日志仍透传 `fid` ⇒ 两者**不一致**
+        #   ⇒ 透传的不是「被分类的那个值」⇒ 门必须红。
+        #   ⚠ 语义上这也是真实缺陷：拿 request 侧的 max id 去分类，
+        #   会把「failure writer 从未写过」误判成「曾活跃过」（或反之）。
+        [("\tswitch candidateFailureMonitorClassifyStale(fid) {\n",
+          "\tswitch candidateFailureMonitorClassifyStale(rid) {\n", 1)],
+    ),
+    (
+        "R1-语义不变的变量改名(fid→failureID) ★反向变异·必须仍绿",
+        "green", "",
+        # ★★ 这条是**反向变异**：判据必须钉「关系」而不是「名字」。
+        #   `fid` → `failureID` 是**语义完全不变**的重构（局部变量改名，
+        #   分类器实参与日志透传值都还是同一个值）⇒ 判据**必须仍然全绿**。
+        #   ⇒ 若它变红 ⇒ 判据把「实现的命名」当成了「行为不变式」
+        #     ⇒ 判据会反向保护命名 ⇒ 假红会让人习惯性忽略这道门。
+        #   （反向验证：旧版 needle `"source_max_failure_id"\s*,\s*fid`
+        #     在这条变异下**必然变红** ⇒ 那就是「钉太紧」的实证。）
+        [("\tfid := int64(0)\n", "\tfailureID := int64(0)\n", 1),
+         ("\t\tfid = *failureSourceMaxID\n", "\t\tfailureID = *failureSourceMaxID\n", 1),
+         ("\tswitch candidateFailureMonitorClassifyStale(fid) {\n",
+          "\tswitch candidateFailureMonitorClassifyStale(failureID) {\n", 1),
+         ('\t\t\t"source_max_failure_id", fid,\n',
+          '\t\t\t"source_max_failure_id", failureID,\n', 2)],
     ),
     (
         "C0-只改注释(对照, 必须仍绿)",

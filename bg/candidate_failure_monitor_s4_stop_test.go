@@ -96,11 +96,42 @@ func TestCheckStalenessLogsWarnOnS4StopScenario(t *testing.T) {
 	//   之前）⇒ 光靠「这个字面量出现过」仍然会被**常量声明**满足 ⇒
 	//   下面两条断言钉的是**键值对形状**（key + value 变量），那个形状只出现在
 	//   日志调用里。
-	if !cfmFailureIDFieldRE.MatchString(clean) {
+	// ★★ 2026-10-21（批判式审计轮）：断言不再只判「形状」，还要判**关系**——
+	//   日志透传的标识符必须与分类器 switch 的实参**是同一个**（见下面 ③）。
+	//   值标识符**不钉死** ⇒ 语义不变的改名必须仍然绿（反向变异 R1）。
+	failureVals := cfmFailureIDFieldRE.FindAllStringSubmatch(clean, -1)
+	if len(failureVals) == 0 {
 		t.Fatalf("checkStaleness 必须透传 source_max_failure_id 字段（键值对形状）；got:\n%s", clean)
 	}
-	if !cfmRequestIDFieldRE.MatchString(clean) {
+	requestVals := cfmRequestIDFieldRE.FindAllStringSubmatch(clean, -1)
+	if len(requestVals) == 0 {
 		t.Fatalf("checkStaleness 必须透传 %s 字段（键值对形状）；got:\n%s", sourceMaxRequestIDKey, clean)
+	}
+	// 分类器必须被调用（不直接写 if-else，必须走纯函数，否则单测覆盖不到）。
+	callVals := cfmClassifierCallRE.FindAllStringSubmatch(clean, -1)
+	if len(callVals) == 0 {
+		t.Fatalf("checkStaleness 必须调用 candidateFailureMonitorClassifyStale(<某个标识符>)；got:\n%s", clean)
+	}
+	// switch 必须落在分类器调用上（而不是别的表达式）。
+	switchVals := cfmClassifierSwitchRE.FindAllStringSubmatch(clean, -1)
+	if len(switchVals) == 0 {
+		t.Fatalf("checkStaleness 必须用 switch <classifier>(<某个标识符>)；got:\n%s", clean)
+	}
+	// ③ ★ 关系不变式（2026-10-21 新增）：日志里透传的 failure id 标识符必须与
+	//    分类器 switch 的实参**是同一个标识符** —— 否则日志透传的根本不是
+	//    「被分类的那个值」（例如把 request 侧的 max id 当成 failure 侧透传）。
+	//    ⚠ 两处日志（WARN 分支 + ERROR 分支）透传的必须是**同一个**标识符。
+	classifierArg := switchVals[0][1]
+	for _, m := range failureVals {
+		if m[1] != classifierArg {
+			t.Fatalf("日志里的 source_max_failure_id 透传的标识符 %q 与分类器实参 %q 不是同一个 ⇒ 透传的不是被分类的那个值；got:\n%s",
+				m[1], classifierArg, clean)
+		}
+	}
+	for _, m := range callVals {
+		if m[1] != classifierArg {
+			t.Fatalf("分类器调用点的实参 %q 与 switch 的实参 %q 不是同一个；got:\n%s", m[1], classifierArg, clean)
+		}
 	}
 
 	// 2. SQL 必须同时读 max(aggregation_id)（failure 侧）与 max(id)（request 侧）。
@@ -129,9 +160,9 @@ func TestCheckStalenessLogsWarnOnS4StopScenario(t *testing.T) {
 	}
 
 	// 5. 分类器必须被调用（不直接写 if-else，必须走纯函数，否则单测覆盖不到）：
-	if !strings.Contains(clean, "candidateFailureMonitorClassifyStale(fid)") {
-		t.Fatalf("checkStaleness 必须调用 candidateFailureMonitorClassifyStale(fid)；got:\n%s", clean)
-	}
+	//    ★ 2026-10-21：这一条已由上面的 cfmClassifierCallRE（callVals）承担 ——
+	//    旧写法 `strings.Contains(clean, "candidateFailureMonitorClassifyStale(fid)")`
+	//    把实参名 `fid` 写死 ⇒ 语义不变的改名会假红 ⇒ 改成「捕获实参标识符」。
 
 	// 6. S4 停写判定方向正确：分类器把 fid>0 映射为 stalenessLikelyStopWrite，
 	//    该 case 标签必须驱动 slog.Warn(「failure writer previously active…」)
@@ -143,10 +174,15 @@ func TestCheckStalenessLogsWarnOnS4StopScenario(t *testing.T) {
 	// ⚠ 不再用「slog.Warn 与 slog.Error 之间的子串」那种位置断言：switch 的写法
 	// 可以把 case 标签放在 slog.Warn 之前也可以放在之后，单测不该把实现绑死到
 	// 某一种排版。改为「switch 块内文本满足三个不变式」即可。
-	switchStart := strings.Index(clean, "switch candidateFailureMonitorClassifyStale(fid)")
-	if switchStart < 0 {
-		t.Fatalf("checkStaleness 必须用 switch candidateFailureMonitorClassifyStale(fid)；got:\n%s", clean)
+	//
+	// ★ 2026-10-21：定位 switch 块也**不钉实参名**（旧写法钉的是
+	//   "switch candidateFailureMonitorClassifyStale(fid)"）⇒ 改用正则定位
+	//   「switch <任意函数名>(<标识符>)」这一段，取其起始下标。
+	switchLoc := cfmClassifierSwitchRE.FindStringIndex(clean)
+	if switchLoc == nil {
+		t.Fatalf("checkStaleness 必须用 switch <classifier>(<某个标识符>)；got:\n%s", clean)
 	}
+	switchStart := switchLoc[0]
 	switchEnd := strings.Index(clean[switchStart:], "\n\t}")
 	if switchEnd < 0 {
 		t.Fatalf("switch 块找不到收尾 \\n\\t}；got:\n%s", clean[switchStart:])
@@ -217,15 +253,56 @@ func TestFailureLogIsStaleKeepsQuietGatewayBaseline(t *testing.T) {
 // 修法：① 先剥注释（下面的 stripGoSourceComments）；② needle 改成 key+value 的
 //   **键值对形状**（只可能出现在日志调用里）。两处都改完，M5 变异转红。
 // ─────────────────────────────────────────────────────────────────────────────
+//
+// 2026-10-21（批判式审计轮 · 第二处判据缺陷）：**needle 钉死了变量名** ⇒ 假红
+//
+// 现象：把 checkStaleness 里的局部变量 `fid` **改名**成 `failureID`
+//   （语义完全不变的重构）⇒ 这道门**变红**。
+//
+// 根因：needle 写的是 `"source_max_failure_id"\s*,\s*fid` ⇒ 判据把「实现的
+//   命名」当成了「行为不变式」⇒ ① 任何人做一次无害改名就得先改判据；
+//   ② 更坏的是：改判据比改实现「省事」⇒ 判据会开始**反向保护命名**，
+//   而命名不是行为 ⇒ 判据的**信噪比**在下降（假红会让人习惯性地忽略这道门）。
+//
+// ★ 通用式：**判据要钉「关系」，不要钉「名字」**。名字是实现的自由度，
+//   关系（「透传的必须是**被分类的那个值**」）才是行为不变式。
+//
+// 修法：needle 改成**捕获标识符**（见下面 var 块），断言改为：
+//   ① 日志透传的标识符（所有出现处）**彼此一致**；
+//   ② 分类器 switch 的实参标识符；
+//   ③ ①与②**相等**。
+//   ⇒ 改名 ⇒ 三者一起变 ⇒ 仍然一致 ⇒ **门必须仍绿**（反向变异 R1 钉这条）；
+//   ⇒ 换成别的 key（M5）/ 透传另一个变量（M10）⇒ 必红。
+// ─────────────────────────────────────────────────────────────────────────────
 
-// cfmFailureIDFieldRE / cfmRequestIDFieldRE 钉「诊断字段以**键值对**形式出现在日志里」。
+// cfmFailureIDFieldRE / cfmRequestIDFieldRE 钉「诊断字段以**键值对**形式出现在日志里」；
+// cfmClassifierCallRE / cfmClassifierSwitchRE 捕获「分类器被调用」与「switch 的实参」。
 //
 // ⚠ 为什么不用裸字面量：裸字面量会被**注释**（根因①）与**常量声明**（根因②）满足；
 //
 //	而键值对形状（key 紧跟 value 变量）只出现在 slog 调用里 ⇒ 删掉字段必红。
+//
+// ★★ 2026-10-21（批判式审计轮）：**这四条 needle 都不钉变量名**，只把值标识符
+//
+//	**捕获出来**。旧版写的是 `"source_max_failure_id"\s*,\s*fid` ⇒ 把局部变量名
+//	`fid` **写死进判据** ⇒ 一次**语义不变**的重命名（fid → failureID）就会让这道门
+//	**假红** ⇒ 判据把「实现命名」当成了「行为不变式」⇒ 早晚会有人为了「让门绿」
+//	而把改名改回去 ⇒ 判据开始**反向保护命名**（坏味道）。
+//
+// ✅ 改成「**捕获标识符 + 断言它们彼此一致**」——这才是真正的不变式：
+//
+//	① 日志里 source_max_failure_id 后面跟的标识符（**所有出现处**必须同一个）；
+//	② 分类器 switch 的实参标识符；
+//	③ ①与②必须**相等**（日志透传的必须是**被分类的那个值**）。
+//
+//	⇒ 改名 ⇒ ①②③**一起变** ⇒ 仍然一致 ⇒ 门**必须仍绿**（反向变异 R1 钉这条）。
+//	⇒ 日志换成别的 key ⇒ ①无匹配 ⇒ 必红（M5 钉这条）。
+//	⇒ 日志透传**另一个**变量 / switch 换了实参 ⇒ ①②不相等 ⇒ 必红（M10 钉这条）。
 var (
-	cfmFailureIDFieldRE = regexp.MustCompile(`"source_max_failure_id"\s*,\s*fid`)
-	cfmRequestIDFieldRE = regexp.MustCompile(`sourceMaxRequestIDKey\s*,\s*rid`)
+	cfmFailureIDFieldRE   = regexp.MustCompile(`"source_max_failure_id"\s*,\s*([A-Za-z_][A-Za-z0-9_]*)`)
+	cfmRequestIDFieldRE   = regexp.MustCompile(`sourceMaxRequestIDKey\s*,\s*([A-Za-z_][A-Za-z0-9_]*)`)
+	cfmClassifierCallRE   = regexp.MustCompile(`candidateFailureMonitorClassifyStale\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*\)`)
+	cfmClassifierSwitchRE = regexp.MustCompile(`switch\s+[A-Za-z_][A-Za-z0-9_]*\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*\)`)
 )
 
 // stripGoSourceComments 去掉 Go 源码里的行注释与块注释，**保留字符串字面量**。
