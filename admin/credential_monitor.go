@@ -903,19 +903,16 @@ func slidingWindowQuery() string {
 // slidingWindowHotMaxMinutes）。与 canonical 视图的窗内等价性论证见
 // slidingWindowQuery 头注；列投影与视图回退查询逐列一致，扫描面：
 //   - session_turns_hot 臂：idx_session_turns_hot_credential_ts
-//     ((CASE credential)::bigint, ts) 表达式索引伺服 credential+窗过滤；
-//   - _request_logs_hot 臂：idx_request_logs_hot_credential_model_ts
-//     (credential, lower(COALESCE(model)), ts) 表达式索引把模型过滤
-//     一并推入索引条件，反连接探测走
-//     idx_session_turns_hot_request 的 Index Only。
+//     ((CASE credential)::bigint, ts) 表达式索引伺服 credential+窗过滤。
 //
-// UNION ALL 按位置而非名字配对（外层 WHERE 的 cand.credential_id /
-// cand.tenant_id 取自首臂列名）——两臂投影顺序必须逐位一致，改任一臂
-// 的列序必须同步另一臂（2026-10-16 #153 曾把 tenant_id 插进两臂的不同
-// 位置，varchar/bigint 在解析期恒炸，245 上 ~12/s 报了 8 小时）。
+// 2026-10-20（迁移 885，v1 族整体退役）：原来的第二条臂（v1 hot 表 +
+// 对会话腿的反连接）删除。反连接的对象已不存在，留着就是 42P01；
+// 而两条臂之间本来就不重叠（promote 把 hot 搬进母表、hot 被排空）。
+// ⇒ 现在只剩一条臂，外层 UNION ALL 的「两臂列序必须逐位一致」约束随之
+// 变成「一条臂的列序必须与 canonical 视图一致」。
 //
-// 252 真库实测（2026-10-11）：EXPLAIN ANALYZE 0.644ms，全臂索引条件
-// 下推，无排序溢出；对拍 canonical 视图 EXCEPT 双向差集 0。
+// 252 真库实测（2026-10-11，退役前的两臂形态）：EXPLAIN ANALYZE 0.644ms，
+// 全臂索引条件下推，无排序溢出；对拍 canonical 视图 EXCEPT 双向差集 0。
 func slidingWindowHotQuery() string {
 	return `
 		SELECT COALESCE(request_id, ''), EXTRACT(EPOCH FROM ts)::bigint * 1000,
@@ -930,13 +927,6 @@ func slidingWindowHotQuery() string {
 		      ON d.tenant_id::text = t.tenant_id::text
 		     AND d.request_id = t.request_id
 		     AND d.partition_date = t.partition_date
-			    UNION ALL
-			    SELECT r.request_id, r.ts, r.success, r.latency_ms, r.error_kind,
-			           r.outbound_model, r.client_model,
-			           r.tenant_id AS tenant_id,
-			           r.credential_id
-			    FROM _request_logs_hot r
-		    WHERE NOT EXISTS (SELECT 1 FROM session_turns_hot th WHERE th.request_id = r.request_id)
 		) cand
 		WHERE credential_id = $1
 		  -- 与视图路径同款大小写折叠：outbound_model 与 model_offers 大小写

@@ -70,7 +70,7 @@ import (
 // `session_turns_tree.go` / `session_turns_unified.go`（`parent_request_id
 // = ANY` 被判成「无会话头谓词」）。**所以这道门只数个数，不下判定。**
 var requestLogsReadInventory = map[string]int{
-	"admin/analytics.go":               2,
+
 	"admin/attachments_routes.go":      2,
 	"admin/attempt_quality_api.go":     1,
 	"admin/auto_route.go":              1,
@@ -81,30 +81,30 @@ var requestLogsReadInventory = map[string]int{
 	// 与 bg/auto_route_settle_sql.go 完全同形（同一个 settleSourceFor 开关），
 	// 已按 §9.49 的分工登记进 indirectRequestLogsReaders。**不是读方变少了。**
 	"admin/auto_title_generator.go": 2,
-	"admin/body_resolver.go":        4,
+
 	// admin/compression_sessions.go 于 2026-10-13（S4 波 4）移出 v1 族：整只端点会话族化。
 	"admin/compression_stats.go":          4,
-	"admin/credential_monitor.go":         4,
+	"admin/credential_monitor.go":         3,
 	"admin/credential_monitor_heatmap.go": 1,
-	"admin/credential_success_rate.go":    2,
-	"admin/data_lifecycle.go":             7,
-	"admin/data_lifecycle_attachments.go": 6,
+	"admin/credential_success_rate.go":    1,
+	"admin/data_lifecycle.go":             2,
+
 	// admin/data_lifecycle_blobs.go 于 2026-10-13（S4 波 4）出列：会话臂治理。
-	"admin/data_lifecycle_metrics.go":   1,
-	"admin/diagnostics_credential.go":   1,
-	"admin/live_stream_sse.go":          2,
-	"admin/logs.go":                     4,
+
+	"admin/diagnostics_credential.go": 1,
+	"admin/live_stream_sse.go":        2,
+
 	"admin/logs_summary.go":             2,
 	"admin/memora_handlers.go":          4,
 	"admin/model_routing_diagnostic.go": 1,
 	"admin/model_status.go":             2,
 	"admin/no_topic_session.go":         4,
 	"admin/probe_history.go":            1,
-	"admin/provider_diagnose.go":        2,
-	"admin/provider_models.go":          2,
+
+	"admin/provider_models.go": 2,
 	// providers.go no longer reads this family; provider health uses credential state.
 	// admin/quality_correlations.go 于 2026-10-13（S4 波 4）出列：会话族重写。
-	"admin/request_trace.go":   4,
+	"admin/request_trace.go":   2,
 	"admin/route_incidents.go": 1,
 	// admin/routing.go 于 2026-10-13（S3 波 3 停写切换）除名：唯一的 v1 读点
 	// popularModelsHotSQL 改读会话族原生源（SessionFamilyTurnsSourceSQL），
@@ -113,8 +113,7 @@ var requestLogsReadInventory = map[string]int{
 	// 会话对比 API 的 bodies 腿；turn 腿早已走会话族。
 	"admin/session_analytics_breakdown.go":  2,
 	"admin/session_analytics_timeseries.go": 3,
-	"admin/session_bodies_batch.go":         2,
-	"admin/session_detail_v2.go":            2,
+
 	// 同上：只剩 JOIN 不 FROM。
 	// ⚠ §9.230 起**会话导出/对比那两个**（原 session_compare.go / session_export.go）
 	// 已不在本表：它们的 bodies 腿改走 db.SessionBodiesSourceSQL()，源码里不再有
@@ -124,23 +123,23 @@ var requestLogsReadInventory = map[string]int{
 	"admin/session_management_api.go": 1,
 	// admin/session_online.go 于 2026-10-15 出列：在线列表改读 session_summaries
 	// （旧 JOIN request_logs_with_current_month 生产 52s/0 行）。
-	"admin/session_sanitize_matches.go": 2,
+	"admin/session_sanitize_matches.go": 1,
 	"admin/session_summary_v2.go":       1,
-	"admin/session_tenant.go":           4,
-	"admin/session_timeline_query.go":   1,
-	"admin/session_title.go":            1,
-	"admin/session_turns_tree.go":       1,
-	"admin/session_turns_unified.go":    1,
-	"admin/swim_lane_init.go":           1,
-	"admin/telemetry.go":                1,
+
+	"admin/session_timeline_query.go": 1,
+	"admin/session_title.go":          1,
+	"admin/session_turns_tree.go":     1,
+	"admin/session_turns_unified.go":  1,
+	"admin/swim_lane_init.go":         1,
+
 	// 2026-10-13 S3 波 3：4→8——logsTable 补两条会话腿后，双子排除的
 	// NOT EXISTS（_request_logs_hot/request_logs 各 ×2）计入引用计数。
 	"admin/tenants.go": 2,
 	// The four-arm source moved out of tenants.go; includes four dedup subqueries.
-	"admin/tenant_stats_logs_table.go": 6,
-	"admin/top_problems.go":            2,
-	"admin/unified_detail.go":          6,
-	"admin/usage.go":                   3,
+
+	"admin/top_problems.go": 2,
+
+	"admin/usage.go": 3,
 	// 2026-10-02: usage trend-series detail 路径读当月视图（与 board fallback 同源）。
 	"admin/usage_trend_series.go": 2,
 	// 2026-10-03: usage_enhanced.go 读 _request_logs 两处，但扫描器只数到 1 处 ——
@@ -158,38 +157,29 @@ var requestLogsReadInventory = map[string]int{
 	// 基表就是 _request_logs rl，比 grep 计数强。扫描器看不见 ≠ 没有覆盖。
 	// 要把 ② 也数进来，得把模式扩到「裸表名字符串」，那会改动本表其余条目
 	// （审计 §8.5），留给需要它的那一轮单独评估。
-	"admin/usage_enhanced.go":           1,
-	"admin/work_types.go":               4,
-	"autoroute/recommend_v2.go":         2,
-	"bg/auto_index_refresher.go":        4,
-	"bg/auto_route_affinity_worker.go":  2,
-	"bg/candidate_failure_monitor.go":   1,
-	"bg/credential_recovery.go":         2,
-	"bg/credential_selfcheck.go":        3,
+
+	"admin/work_types.go": 4,
+
+	"bg/auto_index_refresher.go": 1,
+
 	"bg/daily_probe_audit.go":           1,
 	"bg/integrity_fingerprint_drift.go": 1,
-	"bg/integrity_fingerprint_probe.go": 2,
-	"bg/ledger_reconciliation.go":       1,
-	"bg/lite_retention_worker.go":       2,
-	"bg/model_probe.go":                 3,
-	"bg/model_tier.go":                  1,
-	"bg/passive_probe_listener.go":      4,
-	"bg/shared_pick.go":                 1,
-	"bg/stats_minute_rollup.go":         3,
-	"bg/stats_minute_rollup_retire.go":  3,
-	"bg/today_success_probe.go":         1,
-	"cmd/compression-bench/main.go":     2,
+
+	"bg/passive_probe_listener.go":     4,
+	"bg/shared_pick.go":                1,
+	"bg/stats_minute_rollup.go":        3,
+	"bg/stats_minute_rollup_retire.go": 3,
+
 	// §9.265：v1 写入腿存活读数。行存在性判据，**只按计数用**
 	// （v1_hot_rows / v1_parent_rows 两处 FROM），不看列。
 	// 取源分层：它读的是「v1 还在不在写」这个事实本身 ⇒ 消费面属 ③。
-	"cmd/gateway/v1_write_liveness.go":         2,
-	"cmd/gateway/dual_read_validator.go":       6, // 4 + §9.235 的 2 处存在性探测（L428/L430 `EXISTS(… FROM _request_logs_hot/request_logs WHERE ts >= h.b AND ts < h.b + interval '1 hour')`，只数「该小时有没有 v1」）；§9.235 漏登记，门当场转红但被当成基线混过去了
-	"cmd/gateway/main_v3_wiring.go":            1,
-	"cmd/gateway/output_compliance_control.go": 1,
-	"cmd/gateway/waterfall_by_request.go":      1,
-	"cmd/gateway/waterfall_db.go":              1,
+
+	// 4 + §9.235 的 2 处存在性探测（L428/L430 `EXISTS(… FROM _request_logs_hot/request_logs WHERE ts >= h.b AND ts < h.b + interval '1 hour')`，只数「该小时有没有 v1」）；§9.235 漏登记，门当场转红但被当成基线混过去了
+
+	"cmd/gateway/waterfall_by_request.go": 1,
+	"cmd/gateway/waterfall_db.go":         1,
 	// cmd/scenario_driver/main.go 于 2026-10-13（S4 波 4）移出 v1 族：断言改数会话族热表。
-	"cmd/tools/backfill_session_bodies/main.go": 2,
+
 	// 第 6 处 = HasV1RowsInRange（§R44/移交.1 端边界守门的实测探测，R45 轮加入）：
 	// LIMIT 1，家族过滤（tenant + 会话头）与同文件 LoadV1TimeRange 逐字一致——
 	// 探测必须对「窗口声称要比对的行」作答，母表腿是有意的。生命周期与该 loader
@@ -203,35 +193,28 @@ var requestLogsReadInventory = map[string]int{
 	//      （`e387213b3` 把 SQL 抽成 `buildSessionRangeQuery`）之后就一直是 5。
 	//   3. 性质：这是**一次性迁移工具**（§9.256 待拍板项 4），
 	//      S4 停写后应**随 v1 一起退役**，不是要迁的读方。
-	"cmd/tools/validate_sessions_v2/loader.go": 5,
-	"cmd/traffic-replay/main.go":               1,
-	"db/db.go":                                 2,
-	"db/probe_views_unified.go":                3,
-	"discovery/discovery.go":                   1,
-	"domains/analysis/optimizer.go":            3,
+
+	"db/db.go":                  1,
+	"db/probe_views_unified.go": 3,
+
 	// domains/analysis/request_summary.go 于 2026-10-13（S3 波 2 停写切换）
 	// 除名：loadRequestLogs 改读会话族原生源（SessionFamilyTurnsForSessionSQL），
 	// 与 _request_logs 族再无任何关系引用——不再是本清单（_request_logs 读方）的成员。
-	"domains/attachments/handler.go":                  1,
-	"domains/credentialstate/popularity_tracker.go":   1,
-	"domains/hooks/goal/history_store.go":             2,
-	"domains/hooks/observability/telemetry/client.go": 4,
-	"domains/providerprofile/adapters.go":             4,
-	"domains/routeincident/store.go":                  1,
-	"domains/sessionforensics/export.go":              3,
-	"domains/sessionsummary/summarizer.go":            3,
-	"domains/sessionsummary/system_prompt_prefix.go":  1,
-	"domains/streaming/anomaly_harvester.go":          1,
+	"domains/attachments/handler.go": 1,
+
+	"domains/providerprofile/adapters.go":            1,
+	"domains/routeincident/store.go":                 1,
+	"domains/sessionforensics/export.go":             3,
+	"domains/sessionsummary/summarizer.go":           3,
+	"domains/sessionsummary/system_prompt_prefix.go": 1,
+
 	// domains/streaming/model_alternatives.go 于 2026-10-13（S3 波 2 停写切换）
 	// 除名：usage_7d 热面改读会话族原生源（SessionFamilyTurnsSourceSQL），
 	// 同上，不再是 _request_logs 读方。
-	"internal/collector/gateway_adapters.go":     3,
-	"internal/quality/minute_aggregator.go":      1,
-	"internal/summarystore/store.go":             1,
-	"internal/trace/trace.go":                    2,
-	"storage/sqlite/request_log_store.go":        2,
-	"tests/session_audit/cmd/audit-test/main.go": 1,
-	"tests/test_popularity_tracker.go":           2,
+	"internal/collector/gateway_adapters.go": 3,
+	"internal/quality/minute_aggregator.go":  1,
+
+	"storage/sqlite/request_log_store.go": 2,
 }
 
 // TestRequestLogsReadInventoryIsComplete fails when the set of production files

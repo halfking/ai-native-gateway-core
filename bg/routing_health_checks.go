@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/kaixuan/llm-gateway-go/db"
 	"github.com/kaixuan/llm-gateway-go/settings"
 )
 
@@ -872,34 +873,38 @@ SELECT
 		// 基准价当前 0 条 ⇒ 算不出金额。能确定的是**有多少行的成本是负的**、
 		// **偏移了多少美元**，那就只报这两个。
 		{CheckID: "recorded_cost_is_negative", Severity: "warning", Optional: true,
-		// 2026-10-20（R51 续轮）：S4 停写期间**不发 SQL**。
-		// 理由与实测见 recordedCostComparability 的注释：源不再前进 ⇒
-		// 「有没有新出现的负成本」不可判定；且续轮实测该查询已恒返回 0 行
-		// （表被运维清到 339K 行），每 ~7.5 分钟白扫一次。
-		// 「跳过了」通过 s4ScanSkipMetrics 族可观测，不被读成「没有问题」。
-		SkipWhen: func() (bool, string) {
-			// ⚠ 注意取反：recordedCostComparability 回答的是「**还能不能判定**」，
-			// 而 SkipWhen 回答的是「**要不要跳过**」——两个问题的极性相反。
-			// 直连会写成「不可判定 ⇒ 不跳过」，守卫于是**永远不生效**，
-			// 而所有「守卫生效了吗」的判据在「守卫生效」时看起来都是绿的
-			// （判定函数本身仍对）。本轮这条取反是判据抓出来的。
-			comparable, reason := recordedCostComparability(requestLogsWriteEnabled())
-			if comparable {
-				return false, ""
-			}
-			return true, reason
-		},
-		Query: `
+			// 2026-10-20（R51 续轮）：S4 停写期间**不发 SQL**。
+			// 理由与实测见 recordedCostComparability 的注释：源不再前进 ⇒
+			// 「有没有新出现的负成本」不可判定；且续轮实测该查询已恒返回 0 行
+			// （表被运维清到 339K 行），每 ~7.5 分钟白扫一次。
+			// 「跳过了」通过 s4ScanSkipMetrics 族可观测，不被读成「没有问题」。
+			SkipWhen: func() (bool, string) {
+				// ⚠ 注意取反：recordedCostComparability 回答的是「**还能不能判定**」，
+				// 而 SkipWhen 回答的是「**要不要跳过**」——两个问题的极性相反。
+				// 直连会写成「不可判定 ⇒ 不跳过」，守卫于是**永远不生效**，
+				// 而所有「守卫生效了吗」的判据在「守卫生效」时看起来都是绿的
+				// （判定函数本身仍对）。本轮这条取反是判据抓出来的。
+				comparable, reason := recordedCostComparability(requestLogsWriteEnabled())
+				if comparable {
+					return false, ""
+				}
+				return true, reason
+			},
+			Query: `
 WITH neg AS (
     SELECT r.credential_id,
-           r.outbound_model,
+           -- ★ 885（v1 族退役）：源换成会话族（hot ∪ parent，30 天窗必须
+           -- 读两个存储面）。模型名列用 rl.raw_model_name —— 会话族里它就是
+           -- v1 outbound_model 的同义列（COALESCE(outbound_model, client_model)），
+           -- 保留 outbound_model 这个别名是为了外层报文逐字不变。
+           r.raw_model_name AS outbound_model,
            count(*)::int      AS neg_rows,
            sum(r.cost_usd)    AS neg_usd,
            sum(COALESCE(r.cache_read_tokens, 0) - COALESCE(r.prompt_tokens, 0)) AS excess_cache
-      FROM public._request_logs r
+      FROM ` + db.SessionFamilyTurnsSourceSQL() + ` r
      WHERE r.cost_usd < 0
        AND r.ts > now() - interval '30 days'
-     GROUP BY r.credential_id, r.outbound_model
+     GROUP BY r.credential_id, r.raw_model_name
 )
 SELECT neg.credential_id::text || '|' || neg.outbound_model,
        'credential#' || neg.credential_id || ':' || neg.outbound_model,

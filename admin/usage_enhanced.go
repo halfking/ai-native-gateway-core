@@ -69,19 +69,22 @@ type costTrendPlan struct {
 
 // planCostTrend 返回某个 group_by 的取数方案；维度未知时 ok=false。
 //
-// work_type / intent 是「请求侧」维度：原生归属是 _request_logs。usage_ledger
+// work_type / intent 是「请求侧」维度：原生归属是请求日志族（885 之后是
+// session_turns）。usage_ledger
 // 是计费宽表，只有 20 列（2026-10-03 实测 information_schema），从未投影
 // work_type / gw_session_id —— 在它上面引用必然 42703。
 //
 // 两个都不可接受的旧修法：
 //
-//	A. 从 ledger LEFT JOIN _request_logs 补列 —— 2M×2M 嵌套循环，30 天窗口
+//	A. 从 ledger LEFT JOIN 请求日志宽表补列 —— 2M×2M 嵌套循环，30 天窗口
 //	   实测 28s，超过本端点 15s 预算，且随窗口线性劣化；
+//	   （当时的宽表是 v1 家族，2026-10-20 迁移 885 整体退役；
+//	   会话族侧同理，session_turns 与 usage_ledger 也没有共同键。）
 //	B. 继续报错让 IsSchemaBehindError 降级 —— 得到 200 + 全 0，而 intent 是
 //	   UsageCost.vue 下拉框里的可选项，用户一点就中招。
 //
 // 采用：这两个维度以 request_logs_with_current_month 双腿视图为基表（39 轮
-// 2026-10-03 改，原为裸 _request_logs）。裸母表读不到 hot 腿里尚未 promote 的
+// 2026-10-03 改，原为裸请求日志母表）。裸母表读不到 hot 腿里尚未 promote 的
 // 最近 ≤8h 行——与 memora_context（206 号）/probe_history（204 号）同族的
 // 「近期流量盲区」。换视图后两条腿都吃同一条 ts 谓词，月分区剪枝不变
 // （204 号已验证同形换法）；视图列含 work_type / gw_session_id（两腿均有）。
@@ -653,7 +656,8 @@ func (h *Handler) usageCacheEconomics(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 主聚合只碰 usage_ledger 真实拥有的四列。
-	// 压缩请求数不在这里算：compression_strategy 只存在于 _request_logs，
+	// 压缩请求数不在这里算：compression_strategy 只存在于请求日志族
+	// （885 之后是 session_turns），
 	// 在这里 FILTER 它必然 42703 → 整条查询失败 → IsSchemaBehindError 降级成
 	// 200 + 全 0，而 UsageCost.vue 的缓存经济卡片 6 个指标全渲染 0。
 	// 拿不到就降级整页，比拿错数字更糟：用户看到的是「本月没花钱」。
@@ -667,7 +671,7 @@ func (h *Handler) usageCacheEconomics(w http.ResponseWriter, r *http.Request) {
 		%s
 	`, whereClause)
 
-	// compression_strategy 的原生归属是 _request_logs。
+	// compression_strategy 的原生归属是请求日志族（885 之后是 session_turns）。
 	//
 	// 2026-10-18（873 上线后的残余项）：这条查询原先读 canonical 视图
 	// request_logs_with_current_month，30 天窗口**跑不完**——实测 3s 子预算
@@ -682,15 +686,15 @@ func (h *Handler) usageCacheEconomics(w http.ResponseWriter, r *http.Request) {
 	// （LATERAL 补列 + NOT EXISTS 反连接），本端点只要一个 COUNT(*)，却要为
 	// 30 天 200 万行做整套补列。
 	//
-	// 实测对照（同一 30 天窗口）：
+	// 实测对照（同一 30 天窗口，v1 族时代）：
 	//   request_logs_with_current_month  >300s（跑不完）
-	//   _request_logs（母表单腿）           648 ms → **10,590 行**
-	//   _request_logs_hot                  3 ms  → 0 行
+	//   v1 母表单腿                        648 ms → **10,590 行**
+	//   v1 hot 单腿                        3 ms  → 0 行
 	// 母表命中 10,590 行 ⇒ 视图报出来的 0 确实是错的。
 	//
 	// ★ 为什么是**单腿母表**而不是 hot∪母表双腿（这是刻意取舍）：
 	//   sqlreadguard 的读面纪律要求读 hot∪母表双腿（最近 8h 的行只在
-	//   _request_logs_hot，裸母表读有 ≤8h 盲区）。但对**计数**指标来说，
+	//   热表，裸母表读有 ≤8h 盲区）。但对**计数**指标来说，
 	//   朴素的 UNION ALL 腿是更糟的错误方向：
 	//   promote 会把旧行从 hot 搬到母表，两腿同时存在时同一行会被数两次
 	//   （bg/routing_health_checks.go 的 DEBT(R47) 条目记的就是这件事，
@@ -702,9 +706,13 @@ func (h *Handler) usageCacheEconomics(w http.ResponseWriter, r *http.Request) {
 	//
 	// 口径变化如实记录：本指标此前**从未返回过真值**（恒为降级的 0），
 	// 因此不存在「与旧值不一致」的回归面；现在是第一次给出真实数字。
+	// 2026-10-20（迁移 885）：v1 族整体退役 ⇒ 取数源从 v1 母表换成会话族
+	// 母表 session_turns（compression_strategy 在会话族的落点就是这一列，
+	// 真库 information_schema 核对过）。「单腿母表」这条取舍**原样保留**：
+	// 它换来的是 ≤8h 盲区而不是双计，与换源是两件独立的事。
 	compressedQuery := `
 		SELECT COUNT(*)
-		FROM _request_logs rl
+		FROM session_turns rl
 		WHERE rl.ts >= $1 AND rl.ts < $2
 		  AND rl.compression_strategy IS NOT NULL
 		  AND rl.compression_strategy <> ''

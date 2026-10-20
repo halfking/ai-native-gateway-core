@@ -17,6 +17,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 
+	"github.com/kaixuan/llm-gateway-go/db"
 	"github.com/kaixuan/llm-gateway-go/internal/probemode"
 	"github.com/kaixuan/llm-gateway-go/settings"
 )
@@ -1709,10 +1710,12 @@ func (r *CredentialRecovery) runLookbackScan(ctx context.Context) {
 // availability_state='ready' (a credential in cooling/auth_failed is the
 // 30s tick's business, not this scan's).
 //
-// The 36h-success predicate searches _request_logs_hot first (hot rows,
-// ~7d retention) and falls back to _request_logs (archived/promoted rows).
-// The success-model join mirrors passive_probe_listener.go:
-// COALESCE(outbound_model, client_model) = raw_model_name.
+// The 36h-success predicate reads the **session-turn family** (hot ∪ parent;
+// the two storage faces, per §9.28) — since migration 885 the v1 family no
+// longer exists. The success-model join keeps the same comparison口径 as
+// passive_probe_listener.go: the session family's raw_model_name column IS
+// COALESCE(outbound_model, client_model) (see internal/sessionv2mirror/
+// s1a_fields.go for the registered取值口径).
 func lookbackCandidateSQL() string {
 	return `
 		SELECT cmb.credential_id, pm.raw_model_name, COALESCE(c.tenant_id, '')
@@ -1741,21 +1744,20 @@ func lookbackCandidateSQL() string {
 		  -- the direction is self-limiting (probe success restores
 		  -- availability and exits the recovery candidate set), unlike the
 		  -- usage scans where R49 F4/R50 closed the loop.
-		  AND (
-		      EXISTS (
-		          SELECT 1 FROM _request_logs_hot rl
-		          WHERE rl.credential_id = cmb.credential_id
-		            AND COALESCE(rl.outbound_model, rl.client_model) = pm.raw_model_name
-		            AND rl.success = TRUE
-		            AND rl.ts > now() - make_interval(hours => $1)
-		      )
-		      OR EXISTS (
-		          SELECT 1 FROM _request_logs rl
-		          WHERE rl.credential_id = cmb.credential_id
-		            AND COALESCE(rl.outbound_model, rl.client_model) = pm.raw_model_name
-		            AND rl.success = TRUE
-		            AND rl.ts > now() - make_interval(hours => $1)
-		      )
+		-- ★ 885（v1 族退役）：证据源从 v1 hot ∪ v1 母表换成**会话族**
+		-- （hot ∪ parent，同款两个存储面惯例，§9.28）。原两臂合并成一条
+		-- EXISTS：会话族原生源本身就是 hot ∪ parent 的并集，语义逐字相同。
+		--
+		-- 模型名口径用 rl.raw_model_name —— 会话族里它就是
+		-- COALESCE(outbound_model, client_model) 的同义列（取值口径登记见
+		-- internal/sessionv2mirror/s1a_fields.go）；拿投影的 outbound_model 列
+		-- 去比 pm.raw_model_name 会在别名映射行上系统性误判。
+		AND EXISTS (
+		    SELECT 1 FROM ` + db.SessionFamilyTurnsSourceSQL() + ` rl
+		    WHERE rl.credential_id = cmb.credential_id
+		      AND rl.raw_model_name = pm.raw_model_name
+		      AND rl.success = TRUE
+		      AND rl.ts > now() - make_interval(hours => $1)
 		  )
 		ORDER BY cmb.unavailable_at ASC NULLS LAST
 		LIMIT $2
@@ -1769,21 +1771,11 @@ const lookbackSkipS4StopWrite = "s4_stop_write"
 // lookbackComparability reports whether the 36h lookback question — "did this
 // binding demonstrably serve a success recently?" — is currently *decidable*.
 //
-// lookbackCandidateSQL answers it from _request_logs_hot ∪ request_logs. Both are
-// INSIDE the _request_logs wide family, i.e. exactly what
-// settings.KeyRequestLogsWriteEnabled gates. The scan did not consult the gate,
-// and the two other recovery sub-scans in this same file do not need to:
-// expiredCmbRecoverySQL and recoverFreshDegradedSQL both key off
-// credential_model_bindings / node_probe_state, which are not gated (their
-// NOT EXISTS reads node_probe_state, not _request_logs).
-//
-// So under S4 stop-write the failure is the mirror image of the ledger
-// reconciler's, and just as structural:
-//
-//	evidence source freezes → after the window elapses with no new rows,
-//	the EXISTS(...) predicate goes permanently empty → NO binding ever
-//	qualifies as a lookback candidate again → degraded/offline bindings are
-//	never handed to NodeProbeWorker by this route.
+// lookbackCandidateSQL answers it from the **session-turn family** (hot ∪ parent).
+// Since migration 885 the v1 family no longer exists, so the original
+// rationale — "the evidence source freezes when the write gate flips, so the
+// question stops being decidable" — no longer holds: the session family is
+// live and is not gated.
 //
 // The scan is SELECT-only (it never writes cmb.available itself), but its output
 // drives claimLookbackCandidate, which leases the row and submits a probe — so
@@ -1792,10 +1784,11 @@ const lookbackSkipS4StopWrite = "s4_stop_write"
 // NOT continuous_failure / probe!_% / auto!_%, because those are the ones the
 // two ungated sub-scans cannot pick up.
 //
-// The premise ("there is evidence in the last window") disappears when the gate
-// flips, so the correct action is to stop and say so — not to keep querying and
-// report an empty result as a finding. Deliberately a pure function so the
-// decision is testable without a database.
+// ★ 2026-10-20（885 退役轮）：**跳过行为保持不变**（写门关 ⇒ 本扫描不执行），
+// 因为「重新启用这条恢复路径」是独立的策略决定，不属于退役范围；退役轮只把
+// 证据源迁到会话族，使写门一旦被翻回 true 时扫描仍能正确执行（而不是 42P01）。
+//
+// 刻意保持为纯函数：判据可脱离数据库被测。
 func lookbackComparability(logsWriteEnabled bool) (comparable bool, reason string) {
 	if !logsWriteEnabled {
 		return false, lookbackSkipS4StopWrite
@@ -1928,19 +1921,24 @@ func (r *CredentialRecovery) scanLookbackRecoveries(ctx context.Context) {
 	scanCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
 	defer cancel()
 
-	// S4 停写门控（2026-10-02 审计）：本扫描的证据源 _request_logs_hot ∪
-	// _request_logs 整体在门内。停写生效后证据源冻结，"窗口内是否有成功"这个问题
-	// 从「可判定」变成「不可判定」——继续查只会得到一个恒空的候选集，把
-	// "不再具备判定能力" 读成 "没有需要恢复的绑定"。与 ledger_reconciliation 的
-	// usage_credit_mismatch 是同一个结构的两种方向（那边是假报机，这边是静默洞）。
+	// S4 停写门控（2026-10-02 审计）：本扫描的证据源当时整体在门内。停写生效后
+	// 证据源冻结，"窗口内是否有成功"这个问题从「可判定」变成「不可判定」——继续查
+	// 只会得到一个恒空的候选集，把 "不再具备判定能力" 读成 "没有需要恢复的绑定"。
+	// 与 ledger_reconciliation 的 usage_credit_mismatch 是同一个结构的两种方向
+	//（那边是假报机，这边是静默洞）。
+	//
+	// ★ 885（v1 族退役）：证据源已迁到**会话族**（不再是冻结的 v1），所以「证据源
+	// 冻结」这个理由本身已经过期。**但跳过行为保持不变**（写门关 ⇒ 不执行）：
+	// 「重新启用这条恢复路径」是独立的策略决定，不属于退役范围；退役轮只保证
+	// 写门一旦被翻回 true 时扫描仍能正确执行（而不是 42P01）。
 	//（reset 已移到函数顶部，覆盖下面的 hook 早退分支。）
 	if ok, reason := lookbackComparability(settings.RequestLogsWriteEnabled()); !ok {
 		r.markSkipped(reason)
 		recoveryLookbackTriggers.WithLabelValues("skipped_" + reason).Inc()
 		slog.Info("credential_recovery: 36h lookback 扫描已跳过（本轮未执行，非「无候选」）",
 			"reason", reason,
-			"detail", "证据源 _request_logs_hot/request_logs 已停写，窗口内不会有新行；"+
-				"继续扫描会让降级绑定在这条路径上永久失去恢复机会而不留痕迹")
+			"detail", "写门关闭，本扫描不执行（行为与 885 之前逐字相同）；证据源已迁到会话族，"+
+				"重新启用这条恢复路径是独立的策略决定，不在本次 v1 退役范围内")
 		return
 	}
 

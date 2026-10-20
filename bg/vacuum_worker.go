@@ -1,11 +1,15 @@
 // bg/vacuum_worker.go — 2026-08-29
 //
-// 审计修复 (2026-08-29)：P1-7 - _request_logs_bodies VACUUM自动化
+// 审计修复 (2026-08-29)：P1-7 - v1 正文族 VACUUM自动化
 //
-// 2026-09-17 审计修订：_request_logs_bodies 已改为按月分区（叶子表由
+// 2026-09-17 审计修订：v1 正文族已改为按月分区（叶子表由
 // drop_old_request_logs_bodies_partitions 负责回收，分区 DROP 即归还空间），
 // 对分区父表执行 VACUUM FULL 无存储可重写、只会空耗全集群
 // VacuumFullMutex 窗口，故移除；本 worker 保留对 hot 表的普通 VACUUM。
+//
+// ★ 2026-10-20（迁移 885，v1 族退役）：v1 正文族整体被 DROP ⇒ 本 worker
+// 唯一的目标表不再存在。**不留着让它每周撞一次 42P01**：见 vacuum 里的
+// to_regclass 存在性探测（自描述，不依赖写门）。
 //
 // 接入点：cmd/gateway/main.go 在 init bg services 时构造 + Start。
 
@@ -20,7 +24,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// VacuumWorker 定期对 _request_logs_bodies 的 hot 表执行普通 VACUUM。
+// VacuumWorker 定期对 v1 正文族的 hot 表执行普通 VACUUM。
 type VacuumWorker struct {
 	db *pgxpool.Pool
 
@@ -141,9 +145,34 @@ func (w *VacuumWorker) vacuum(ctx context.Context) {
 		return
 	}
 
+	// ★ 885（v1 族退役）：目标表已随 v1 族一起被 DROP ⇒ 直接 VACUUM 会
+	// 每周期撞 42P01。这里用 to_regclass 做**存在性探测**而不是读写门：
+	//
+	//   - 写门（storage.request_logs_write_enabled）只说明「还在双写吗」，
+	//     与「表还在吗」不是同一件事；885 之后两者永久脱钩（表没了，门还
+	//     可能被翻回 true）⇒ 用门当退役信号会漏。
+	//   - to_regclass 对不存在的表返回 NULL 而**不抛错** ⇒ 探测本身不会
+	//     把 worker 带崩（对比 information_schema 视图或 pg_class 查询，
+	//     那些在权限/类型上有边角差异）。
+	//
+	// 判据用「表不存在就跳过」而不是「表存在才 VACUUM」的同一形状：退役是
+	// **终态**，不是故障，所以跳过时记 Info 而不是 Warn（§12 轮「跳过 ≠
+	// 失败」的可观测性纪律：跳过必须出声，但不得被读成故障）。
+	exists, err := w.vacuumTargetExists(ctx)
+	if err != nil {
+		slog.Warn("vacuum worker: target existence probe failed, skipping VACUUM",
+			"error", err)
+		return
+	}
+	if !exists {
+		slog.Info("vacuum worker: v1 正文族已退役（目标表不存在），跳过 VACUUM",
+			"target", vacuumTargetTable)
+		return
+	}
+
 	start := time.Now()
 
-	// 2026-09-17 audit: _request_logs_bodies is a RANGE-partitioned parent
+	// 2026-09-17 audit: v1 正文族是 RANGE 分区父表
 	// (monthly leaves, reclaimed by drop_old_request_logs_bodies_partitions).
 	// VACUUM FULL against a partitioned parent either errors or no-ops —
 	// there is no storage on the parent to rewrite — so the weekly job only
@@ -153,7 +182,7 @@ func (w *VacuumWorker) vacuum(ctx context.Context) {
 	hotCtx, hotCancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer hotCancel()
 
-	_, hotErr := w.db.Exec(hotCtx, "VACUUM (ANALYZE) _request_logs_bodies_hot")
+	_, hotErr := w.db.Exec(hotCtx, "VACUUM (ANALYZE) "+vacuumTargetTable)
 	elapsed := time.Since(start)
 	if hotErr != nil {
 		slog.Warn("vacuum worker: VACUUM on hot table failed",
@@ -163,4 +192,25 @@ func (w *VacuumWorker) vacuum(ctx context.Context) {
 	}
 	slog.Info("vacuum worker: VACUUM on hot table completed",
 		"elapsed_seconds", elapsed.Seconds())
+}
+
+// vacuumTargetTable 是本 worker 唯一 VACUUM 的目标表。
+//
+// ⚠ 它是 v1 族的一张表，885 之后默认不存在 —— 保留这个名字是为了让
+// 「退役后还在这儿」这件事在代码里一眼可见，而不是被一个拼接出来的字符串
+// 藏起来（§「判据必须与被测函数在同一层」的同款纪律：常量要在被读的地方
+// 看得见）。
+const vacuumTargetTable = "_request_logs_bodies_hot"
+
+// vacuumTargetExists 探测 vacuumTargetTable 是否仍然存在。
+func (w *VacuumWorker) vacuumTargetExists(ctx context.Context) (bool, error) {
+	probeCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	var exists bool
+	err := w.db.QueryRow(probeCtx,
+		`SELECT to_regclass('public.'||$1) IS NOT NULL`, vacuumTargetTable).Scan(&exists)
+	if err != nil {
+		return false, err
+	}
+	return exists, nil
 }

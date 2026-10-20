@@ -16,16 +16,22 @@
 #   The damage record is FRAGMENTED across four tables with FOUR DIFFERENT
 #   RETENTION WINDOWS, and the oldest damage survives only in the rollups where
 #   it can no longer be traced back to a source row. An operator who "repairs
-#   from _request_logs" and stops will leave real money unaccounted for:
+#   from the request rows" and stops will leave real money unaccounted for:
 #     - usage_ledger holds negative-cost history for credentials that
-#       _request_logs no longer has any row for;
+#       the request-row source no longer has any row for;
 #     - stats_usage_daily holds negative-cost buckets whose source events are
-#       older than anything still in _request_logs or usage_ledger;
+#       older than anything still in the request-row source or usage_ledger;
 #     - usage_facts, the reconciliation's ground truth, has no row for events
 #       the inbox already marked processed, so the cost-drift signal is blind
 #       no matter what the sections below report.
 #   Section 4, Section 6 and Section 7 exist specifically to make that visible
 #   instead of letting it look finished.
+#
+# ★ 2026-10-20（迁移 885）：「request rows」这一族的名字变了 ——
+#   v1 族（_request_logs / _request_logs_hot）已被整体 DROP，源现在是
+#   **会话族**（session_turns_hot ∪ session_turns）。本节里的四张表、
+#   四个保留窗、四个「谁比谁窄」的结论**一个字都没变** —— 变的只是源表的
+#   名字与分组列的口径（见 NOTE ON MODEL COLUMNS）。
 #
 # READ-ONLY
 #   Every query is prefixed with `SET TRANSACTION READ ONLY` in the SAME -c
@@ -64,14 +70,69 @@ scalar() {
     -c "SET TRANSACTION READ ONLY; $1"
 }
 
+# ★ 2026-10-20（迁移 885，v1 request_logs 族整体退役）：请求行源换成**会话族**。
+#
+# 为什么必须换：v1 族被 885 DROP 之后，`public._request_logs` 指向一张**不存在
+# 的表** ⇒ 每条查询都 42P01 ⇒ psql（ON_ERROR_STOP=1）退出码非零、导出产物为空
+# ⇒ 运维把「导出根本没跑起来」误读成「没有负成本行」。**空导出是最危险的
+# 输出形态**，所以这一处不是「顺手改一下」，是必须跟着 885 一起改的。
+#
+# 源的形状**与健康检查同形**（db.SessionFamilyTurnsSourceSQL()）：
+# hot 面 ∪ 父表面，各自 LEFT JOIN 同名 details 面。
+# ⇒ 导出报告与检查报告回答的是**同一批行**，两者的差异只剩时间窗。
+# （details 面在真库上是 1:1 —— 实测 details_hot 535/535、details 1002/1002
+#   按 (tenant_id, request_id, partition_date) 去重后行数不变 ⇒ 不会扇出。）
+#
+# 命名：统一叫 `src`，列取本脚本真正用到的六个。
+#
+# ⚠ 形态选「括号化子查询」而不是 `WITH src AS (...)`：
+#   CTE 只能在一个语句里出现一次，而 §4 的第二条查询需要**同时**有 src 与
+#   rl/lg 两个 CTE —— 写成两个 WITH 就是语法错（实测 psql 报
+#   "syntax error at or near WITH"）。子查询形态可以出现在任意 FROM 位置，
+#   与别的 CTE 共存无冲突。
+#
+# ⚠ credential_id 要**安全转换**成数值：
+#   会话族的 credential_id 是 **text**（v1 是 bigint、usage_ledger 是
+#   integer）⇒ 直接 `= usage_ledger.credential_id` 会报
+#   "operator does not exist: text = integer"（实测）。
+#   且「无凭据」在会话族里是**空字符串**而不是 NULL（实测 535 行里 453 行
+#   是 ''）⇒ 不转换的话 §3 会多出一个「空凭据」的组合，§4 的连接也接不上。
+#   ⇒ 用「全数字才转、否则 NULL」的安全转换：'' 与任何非数字串都落到 NULL，
+#   与 v1 的 NULL 语义一致，且不会因一个脏值让整条查询报错。
+SESSION_ROWS="(
+    SELECT CASE WHEN t.credential_id ~ '^[0-9]+$' THEN t.credential_id::bigint END
+           AS credential_id,
+           t.raw_model_name, t.cost_usd, t.ts,
+           t.prompt_tokens, t.cache_read_tokens
+      FROM public.session_turns_hot t
+      LEFT JOIN public.session_turn_details_hot d
+        ON d.tenant_id = t.tenant_id
+       AND d.request_id = t.request_id
+       AND d.partition_date = t.partition_date
+    UNION ALL
+    SELECT CASE WHEN t.credential_id ~ '^[0-9]+$' THEN t.credential_id::bigint END
+           AS credential_id,
+           t.raw_model_name, t.cost_usd, t.ts,
+           t.prompt_tokens, t.cache_read_tokens
+      FROM public.session_turns t
+      LEFT JOIN public.session_turn_details d
+        ON d.tenant_id = t.tenant_id
+       AND d.request_id = t.request_id
+       AND d.partition_date = t.partition_date
+)"
+
 # NOTE ON MODEL COLUMNS
-#   _request_logs has SIX model-ish columns: client_model, raw_model_name,
-#   canonical_model, model_chosen, outbound_model, provider_model.
-#   The grouping column below is outbound_model. raw_model_name is NOT a
-#   synonym: on the real database it is empty on every negative-cost row, so
-#   grouping by it yields fake "one credential, blank model" groups. A comment
-#   in routing_health_checks.go once called this column "raw_model" and sent
-#   the next reader at the unusable one.
+#   会话族（session_turns / session_turns_hot）里与「出站模型」同义的列是
+#   **raw_model_name**：镜像侧写的是 COALESCE(entry.OutboundModel,
+#   entry.ClientModel)（internal/sessionv2mirror/s1a_fields.go:109），
+#   也就是 v1 的 outbound_model 那一列的口径。
+#
+# ⚠ **不要**按会话族的 `model` 列分组：它落的是 `req.ClientModel`
+#   （domains/session/v2/session_writer_v2.go:556）= **客户端请求的模型**，
+#   不是**实际出站**的模型 —— 按它分组答的是另一个问题。
+#   也不要按 canonical 视图的 `outbound_model` 列分组：视图把它投影成
+#   `t.model AS outbound_model`，同样是 client_model 的同义列。
+#   （v1 族的反面坑是 raw_model_name 在每条负成本行上都为空；会话族正好相反。）
 
 {
 printf '# Export: rows whose recorded cost is already wrong\n\n'
@@ -92,7 +153,7 @@ scalar "SELECT 'models_canonical rows with a baseline input price: ' || count(*)
 scalar "SELECT 'models_canonical rows total: ' || count(*) FROM public.models_canonical"
 printf '```\n'
 
-printf '\n## 2. Source rows: _request_logs (the traceable tail)\n\n'
+printf '\n## 2. Source rows: the session family (the traceable tail)\n\n'
 printf '```text\n'
 q 'all-time vs the 30-day window the health check uses' "
 SELECT count(*)                                            AS all_time_rows,
@@ -102,17 +163,17 @@ SELECT count(*)                                            AS all_time_rows,
                                                            AS usd_in_30d_window,
        min(ts)::date                                       AS oldest,
        max(ts)::date                                       AS newest
-  FROM public._request_logs
- WHERE cost_usd < 0;"
+  FROM $SESSION_ROWS src
+ WHERE src.cost_usd < 0;"
 printf '```\n'
 printf '\n> The health check only looks 30 days back, while the historical damage\n'
 printf '> starts earlier. As old rows age out, the alert goes quiet while the\n'
 printf '> ledger stays wrong. Silence here is not repair.\n'
 
-printf '\n## 3. Source rows grouped by (credential_id, outbound_model) -> %s\n\n' "$CSV"
+printf '\n## 3. Source rows grouped by (credential_id, raw_model_name) -> %s\n\n' "$CSV"
 q 'per-combination breakdown (also written to CSV)' "
 SELECT r.credential_id,
-       r.outbound_model,
+       r.raw_model_name,
        count(*)::int                                                             AS neg_rows,
        round(sum(r.cost_usd)::numeric, 6)                                        AS neg_usd,
        sum(COALESCE(r.prompt_tokens, 0))                                         AS prompt_tokens,
@@ -120,25 +181,25 @@ SELECT r.credential_id,
        sum(COALESCE(r.cache_read_tokens, 0) - COALESCE(r.prompt_tokens, 0))      AS cache_exceeds_prompt_by,
        min(r.ts)::date                                                           AS first_day,
        max(r.ts)::date                                                           AS last_day
-  FROM public._request_logs r
+  FROM $SESSION_ROWS r
  WHERE r.cost_usd < 0
- GROUP BY r.credential_id, r.outbound_model
+ GROUP BY r.credential_id, r.raw_model_name
  ORDER BY neg_usd;"
 cp_out="$(mktemp)"; trap 'rm -f "$cp_out"' EXIT
 psql -X -q -v ON_ERROR_STOP=1 --csv "$DATABASE_URL" \
   -c "SET TRANSACTION READ ONLY;
-      SELECT r.credential_id, r.outbound_model, count(*)::int AS neg_rows,
+      SELECT r.credential_id, r.raw_model_name, count(*)::int AS neg_rows,
              round(sum(r.cost_usd)::numeric, 6) AS neg_usd,
              sum(COALESCE(r.prompt_tokens,0)) AS prompt_tokens,
              sum(COALESCE(r.cache_read_tokens,0)) AS cache_read_tokens,
              min(r.ts)::date AS first_day, max(r.ts)::date AS last_day
-        FROM public._request_logs r
+        FROM $SESSION_ROWS r
        WHERE r.cost_usd < 0
-       GROUP BY r.credential_id, r.outbound_model ORDER BY neg_usd;" >"$cp_out"
+       GROUP BY r.credential_id, r.raw_model_name ORDER BY neg_usd;" >"$cp_out"
 mv "$cp_out" "$CSV"; chmod 0600 "$CSV"
 trap - EXIT
 
-printf '\n## 4. usage_ledger: WIDER than _request_logs\n\n'
+printf '\n## 4. usage_ledger: WIDER than the request-row source\n\n'
 printf '```text\n'
 q 'negative-cost ledger rows per credential' "
 SELECT credential_id,
@@ -150,8 +211,8 @@ SELECT credential_id,
  WHERE cost_usd < 0
  GROUP BY 1
  ORDER BY 1;"
-q 'credentials damaged in the ledger but with NO traceable row left in _request_logs' "
-WITH rl AS (SELECT DISTINCT credential_id FROM public._request_logs  WHERE cost_usd < 0),
+q 'credentials damaged in the ledger but with NO traceable row left in the request-row source' "
+WITH rl AS (SELECT DISTINCT credential_id FROM $SESSION_ROWS WHERE cost_usd < 0),
      lg AS (SELECT DISTINCT credential_id FROM public.usage_ledger  WHERE cost_usd < 0)
 SELECT lg.credential_id,
        (SELECT count(*)::int FROM public.usage_ledger u
@@ -209,7 +270,7 @@ printf "> not carry it over from the other one.\n"
 printf '\n## 6. Retention gap: damage older than any surviving source row\n\n'
 printf '```text\n'
 q 'oldest surviving source row vs oldest damaged rollup bucket' "
-SELECT (SELECT min(ts)::date  FROM public._request_logs WHERE cost_usd < 0) AS oldest_negative_request_log,
+SELECT (SELECT min(ts)::date  FROM $SESSION_ROWS WHERE cost_usd < 0) AS oldest_negative_request_log,
        (SELECT min(ts)::date  FROM public.usage_ledger WHERE cost_usd < 0) AS oldest_negative_ledger_row,
        (SELECT min(day_utc)   FROM public.stats_usage_daily WHERE cost_usd < 0) AS oldest_negative_daily_bucket,
        (SELECT min(month_start) FROM public.stats_usage_monthly WHERE cost_usd < 0) AS oldest_negative_month;"
@@ -218,7 +279,7 @@ SELECT dimension_type, count(*)::int AS buckets, min(day_utc) AS oldest, max(day
        round(sum(cost_usd)::numeric, 6) AS usd
   FROM public.stats_usage_daily
  WHERE cost_usd < 0
-   AND day_utc < (SELECT min(ts)::date FROM public._request_logs WHERE cost_usd < 0)
+   AND day_utc < (SELECT min(ts)::date FROM $SESSION_ROWS WHERE cost_usd < 0)
  GROUP BY 1 ORDER BY 1;"
 printf '```\n'
 printf '\n> A non-empty second table means: those buckets are wrong, their events\n'

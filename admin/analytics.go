@@ -814,19 +814,11 @@ func (h *AnalyticsHandlers) handleDecisionReplay(w http.ResponseWriter, r *http.
 		              AND partition_date = t.partition_date
 		        ) details ORDER BY detail_rank LIMIT 1
 		    ) d ON true
-		    UNION ALL
-		    SELECT ts, task_type, auto_profile, auto_confidence,
-		           client_model, outbound_model, api_key_id, credential_id,
-		           auto_decision::text, success, latency_ms, tenant_id::text, 2 AS source_rank
-		    FROM _request_logs_hot
-		    WHERE request_id = ANY($1::text[])
-		    UNION ALL
-		    SELECT ts, task_type, auto_profile, auto_confidence,
-		           client_model, outbound_model, api_key_id, credential_id,
-		           auto_decision::text, success, latency_ms, tenant_id::text, 3 AS source_rank
-		    FROM _request_logs
-		    WHERE ts >= NOW() - INTERVAL '30 days'
-		      AND request_id = ANY($1::text[])
+		    -- 2026-10-20（迁移 885）：v1 族（_request_logs / _request_logs_hot）整体
+		    -- 退役，本查询原来的第 3/4 臂（v1 hot ∪ v1 母表）随之删除。
+		    -- 剩下的两臂（session_turns_hot ∪ session_turns + 734 details 层）
+		    -- 就是会话族本身：同一批轮次、同名列；source_rank 0/1 仍保证「先热
+		    -- 后冷」的取行顺序与删除前逐位一致。
 		) rl
 		WHERE true`+replayTenantFrag+`
 		ORDER BY source_rank, ts DESC

@@ -33,6 +33,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -41,6 +42,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/kaixuan/llm-gateway-go/db"
 	"github.com/kaixuan/llm-gateway-go/internal/dbrows"
 )
 
@@ -208,7 +210,61 @@ func (m *CandidateFailureMonitor) tick(ctx context.Context) {
 // ⇒ 若哪天该视图被删，本检查会**每 tick 报错**（而不是静默漏告警），
 //
 //	处置顺序是：先改这条常量，再同步那份登记表，两处一起改才算闭环。
-const checkStalenessLastRequestSurface = "request_logs_with_current_month_without_request_class_due_at"
+//
+// ★ 2026-10-20（迁移 885，v1 族退役）：**那一天到了**——885 删掉了这张
+// v1-only 视图（连同另外三张 v1-only 包装视图），本检查的源已换成会话族原生源
+// （见下面的 checkStalenessLastRequestSurface）。
+// ⚠ 那个「靠冻结腿关掉假阳性」的 workaround 随之作废：885 之后只剩一个请求面，
+// 不存在「v1 冻结、session 照写」的分裂态 ⇒ 本检查重新变回它本来的形状。
+// ⇒ cmd/gateway/request_logs_view_session_arm_pin_test.go 的 v1OnlyRequestLogsViews
+// 登记表里那一项、以及 admin/request_logs_stop_write_classification_test.go 里
+// 「staleness 读的是 v1-only 腿」的断言，**都需要父会话同步**（不在本文件范围）。
+//
+// checkStalenessLastRequestSurface 是「最近请求活动」信号所读的源。
+//
+// ★ 2026-10-20（迁移 885，v1 族退役）：原值是 v1-only 视图
+// `request_logs_with_current_month_without_request_class_due_at`（读 v1 族的
+// hot ∪ parent）——**该视图随 885 一起被 DROP**（它是 577/734 为规避投影缺失
+// 而故意建成的 v1-only 中间层，见 885 迁移第 4 步）⇒ 继续读它必然 42P01。
+// ⇒ 换成会话族原生源（热腿）。
+//
+// ⚠ 为什么是**热腿**而不是 hot ∪ parent（与被删视图的读取范围相比是收窄的）：
+//
+//	① 语义上等价：这条查询只问「最近 5 分钟有没有请求活动」，而
+//	   promote_session_turns_hot_to_partition 的保留期默认 **7 天**
+//	   （实测该函数签名 p_retention interval DEFAULT '7 days'）⇒ 5 分钟内的行
+//	   必然还在热表里，冷腿不可能持有更新的行。真库核对：两条腿返回的
+//	   lastRequest 完全相同（2026-10-20 13:11:03）。
+//	② 成本上不等价：会话族原生源是 118 列投影 + UNION ALL + LEFT JOIN 特征层，
+//	   **规划**成本实测 ~390 ms（其中执行仅 0.7 ms；热腿 5 ms）。这条查询按
+//	   monitor 的 tick（默认 1 分钟）跑 ⇒ 每次 tick 付 0.4 s 规划只为算一个
+//	   max(ts)，不划算。热腿实测 5 ms。
+//
+// ⚠⚠ **语义变化，父会话须知悉**——这是本轮里唯一一处「原设计前提被抽掉」的
+// 改动，结论不是「换个源就行」，而是「**原来那条 v1-only 腿是在替谁挡**」：
+//
+//	2026-10-18 那一轮特意挑 v1-only 腿（不含 session_turns UNION），是因为
+//	S4 停写期「v1 冻结、session 臂照写」⇒ 读 v1 腿能让 lastRequest 恒为
+//	NULL，从根上关掉「网关没流量却报管道僵死」的假阳性。**它挡的其实是探针
+//	流量**：停写期会话族照写的那批行，是 model-probe / credential-selfcheck
+//	这些探针写出来的（探针也走 telemetry ⇒ 也进会话族），而真用户流量确实
+//	没有 ⇒ 于是 lastRequest 非 nil、lastFailure 为 nil ⇒ 假阳性。
+//
+//	⇒ 885 之后**只剩一个请求面**（会话族），「靠冻结腿把探针挡在外面」这条
+//	路不存在了 ⇒ 挡探针这件事必须**显式**做：下面这条查询加了会话族的探针
+//	排除谓词（origin_stage / task_type / origin_actor 三臂，见
+//	bg/probe_policy.go 的 probeTrafficExclusionPredicateSession）。
+//	⇒ 换句话说：**「只允许 read 端 request_logs 形态」这条旧纪律的意图被保留
+//	下来了，实现方式从「换一族」变成了「同一族里排探针」。**
+//
+//	⚠ 由此产生的两处父会话动作（不在本文件范围）：
+//	① bg/candidate_failure_monitor_logic_test.go 的
+//	   TestStalenessLastRequestSurfaceExcludesSessionTurns 断言「源里不能出现
+//	   session_turns」——这条断言的前提（存在一条非 session 的请求面）已不存在，
+//	   需改写成「源是会话族热腿 **且** 带会话族探针排除谓词」。
+//	② admin/request_logs_stop_write_classification_test.go 里
+//	   「staleness 读的是 v1-only 腿」的证据登记同样需要更新。
+var checkStalenessLastRequestSurface = db.SessionFamilyTurnsHotSourceSQL()
 
 // checkStaleness detects a dead or unwired failure-log pipeline when the
 // gateway has recent request activity. A quiet gateway must not alert merely
@@ -218,15 +274,21 @@ func (m *CandidateFailureMonitor) checkStaleness(ctx context.Context) error {
 	// 2026-09-12: candidate_failure_logs 视图必需 — bare 父表只 hold cold
 	// rows，partition promote 失败时（09-10 P5 duplicate key）父表 max(ts)
 	// 会 8h+ stale 而 hot 表每分钟在写，旧 surface 报警假阴性。
-	// 2026-10-18: lastRequest 改读 `request_logs_with_current_month_
-	// without_request_class_due_at`，剔除 session_turns UNION。旧 surface
-	// 在 S4 停写 + 仅 session 写时假阳性（lastRequest 来自 session_turns，
-	// 与 failure writer 入口不同源）。S4 停写时本视图也 0 行 ⇒ lastRequest
-	// =nil ⇒ 不告警（与「网关真在跑、就是没有上游调用」语义对齐）。
+	// 2026-10-18: lastRequest 改读 v1-only 腿，剔除 session_turns UNION。
+	// ★ 2026-10-20（迁移 885，v1 族退役）：那个 v1-only 视图已被 885 删掉 ⇒
+	// 源换成会话族热腿（见 checkStalenessLastRequestSurface 的注释）。
+	// ⚠ 探针排除谓词是**必需**的，不是锦上添花：v1-only 腿原来顺带把探针流量
+	// 挡在了外面（停写期会话族照写的那批行是探针写的 ⇒ 假阳性）；885 之后只有
+	// 一个请求面，必须显式排探针才能保住同一条纪律。
+	// 5 分钟窗口保留：它把「最近有请求活动」这个前提钉死，也是这条查询的
+	// 成本边界（谓词可下推到 session_turns_hot 的 ts 索引）。
 	checkStalenessSQL := `
 		SELECT
 			(SELECT max(ts) FROM candidate_failure_logs_with_current_month),
-			(SELECT max(ts) FROM ` + checkStalenessLastRequestSurface + ` WHERE ts >= now() - interval '5 minutes')
+			(SELECT max(ts) FROM ` + checkStalenessLastRequestSurface + ` rl
+			  WHERE rl.ts >= now() - interval '5 minutes'
+			    AND ` + fmt.Sprintf(probeTrafficExclusionPredicateSession, "rl", "rl", "rl") + `
+			)
 	`
 	if err := m.db.QueryRow(ctx, checkStalenessSQL).Scan(&lastFailure, &lastRequest); err != nil {
 		return err
@@ -385,11 +447,10 @@ func (m *CandidateFailureMonitor) checkAutoCool(ctx context.Context) error {
 		               t.error_kind
 		        FROM session_turns_hot t
 		        WHERE t.ts >= now() - interval '5 minutes'
-		        UNION ALL
-		        SELECT r.credential_id, r.request_status, r.error_kind
-		        FROM _request_logs_hot r
-		        WHERE r.ts >= now() - interval '5 minutes'
-		          AND NOT EXISTS (SELECT 1 FROM session_turns_hot th WHERE th.request_id = r.request_id)
+		        -- ★ 885（v1 族退役）：原先的第二条臂（v1 hot 表 + 对会话族热腿的
+		        -- 反连接）整条删除。v1 族被 DROP 后，同一条 FROM 里提到 v1 关系
+		        -- 会让**整条语句** 42P01 ⇒ auto-cool 巡检整体挂掉。
+		        -- 删除不损失口径：那条臂在停写后本就恒空（v1 hot 冻结）。
 		    ) cand
 		    WHERE credential_id IS NOT NULL
 		    GROUP BY credential_id

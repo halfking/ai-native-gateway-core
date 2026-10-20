@@ -3614,3 +3614,111 @@ PostgreSQL 解析调用时，**带默认值的那个也能接 3 参调用**，
   正文三列全 `array`）、两个 deepseek 5/5=503（`success=f` 落库、B/C 按前提 SKIP）、
   退役族零新增（15 次请求后 4 张退役表仍全 0）。
 - 溯源：request_logs→session_turns 复核轮 §5.13.11 / §10.14；[复盘](docs/audit/2026-10-20-request-logs-session-turns-复核轮.md) §5.13.11 / §10.14。
+
+## 2026-10-20 — ★ 「缺什么」的短路判据在对象**被删之后**反而**不**短路（Seen: 1/3）
+- 场景：v1 `request_logs` 族退役（迁移 885 真删表）。删表前，一切正常；删表后，
+  网关**起不来**，而症状是「**readyz 仍返 200**、但网关没有数据库」。
+- 根因：启动路径的三个 ensure 都用同一把尺子——**catalog 短路**：
+  「期望的列与索引全部在位 ⇒ 零 DDL」。这把尺子算的是「**缺多少**」：
+  ```sql
+  (列项)   WHERE to_regclass('public._request_logs') IS NOT NULL AND NOT EXISTS(…)
+  + (索引项) WHERE NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = want.name)
+  ```
+  退役后：列项因 `to_regclass` 为 NULL 而计 **0**（"没缺列"），
+  **索引项却计 13**（索引随表一起消失 ⇒ "缺 13 个索引"）⇒ `missing = 13 ≠ 0`
+  ⇒ **短路不触发** ⇒ 继续跑 `ALTER TABLE _request_logs …` ⇒ **42P01**。
+- 放大成事故的那一步：`42P01` 命中 `db.IsSchemaMismatchError` ⇒ 启动快速失败
+  ⇒ `db.Open` 返回 `(nil, err)` ⇒ `dbConn == nil` ⇒ `SetDepsOptional(true)`
+  ⇒ **`/readyz` 返 200** ⇒ 部署安全网放行 ⇒ 网关「就绪但没有数据库」。
+  ⇒ **一个 DDL 形状问题，最终表现成"部署成功但服务是空壳"**。
+- 防复发检查：① 任何「**存在性**」当前提的 ensure，判据必须先问
+  **「对象在不在」**（`to_regclass(...) IS NOT NULL`），再问「缺什么」——
+  顺序反了就会在对象消失时短路失效；② 短路判据里只要有**「按名字数」**的项
+  （索引/触发器/约束），就必须确认这些名字**与被删对象同生共死**——
+  否则删对象会让计数失真；③ 启动路径的每个 ensure 都要有一条
+  **「族已退役 ⇒ 本函数无事可做 ⇒ 早退」**的显式分支，别指望短路兜底；
+  ④ boot 失败时 `readyz` 必须能反映"没有数据库"（否则部署安全网会放行空壳）。
+- 证据：真库 3 个 ensure（`ensureRequestLogSchema` / `ensureWorkTypeSchema` /
+  `EnsureMaasSchema`）逐一实测：退役后 `missing` 分别为 13 / 1 / 1 ⇒ 短路全部失效；
+  补上存在性早退后三者均零 DDL 通过。§5.13 复核轮 §6.2。
+- 溯源：request_logs→session_turns 复核轮 §6.2；[复盘](docs/audit/2026-10-20-request-logs-session-turns-复核轮.md) §6.2。
+
+## 2026-10-20 — ★ `CREATE OR REPLACE FUNCTION` 对 SQL 函数体**不在创建时解析**（Seen: 1/3）
+- 场景：`recent_success_rate` 被 provider 的候选查询以 `CROSS JOIN LATERAL` 调用。
+  退役 v1 时把它的 v1 腿摘掉；迁移文件与 Go 侧运行时 SSOT 各写了一份函数体。
+- 根因：`CREATE OR REPLACE FUNCTION … LANGUAGE sql` **不解析函数体** ⇒
+  函数体里引用一张**不存在的表**也**建得成功** ⇒ 直到**第一次被调用**才 42P01。
+  ⇒ 后果的爆炸半径与"漂移"的严重程度**不成比例**：
+  一份 30 行的函数体里差一个表名，症状是
+  **「选不出任何上游凭据 ⇒ 100% 流量失败」**，
+  而日志里只有一句 `relation "_request_logs_hot" does not exist`——
+  根因在一次字符串手术上，症状却像"上游全挂"。
+- 防复发检查：① 凡是**函数体**（不是视图体）跨文件存在两份 ⇒ 必须有
+  **文本等价**的门（`sql/migrations/startup/migration_885_v1_family_drop_test.go`
+  的 `TestMigration885RecentSuccessRateMatchesRuntimeSSOT`）；
+  ② 视图体同理（`TestMigration885ProjectionMatchesComposer`）——
+  视图体**会**在创建时被解析，但漂移的后果是"自愈把两臂换成三臂 ⇒ 42P01 ⇒ 面板全 500"；
+  ③ 改这类函数体时，先问「**谁在调用它、调用失败长什么样**」——
+  调用点在请求路径上还是后台任务上，决定了事故形态是"流量全断"还是"面板变暗"。
+- 证据：把迁移里的函数体改一行（`probe-%` → `probe-XX%`）⇒ 等价门红；
+  还原 ⇒ 绿。`recent_success_rate` 的调用点：`provider/client.go` 候选查询。
+- 溯源：request_logs→session_turns 复核轮 §6.3；[复盘](docs/audit/2026-10-20-request-logs-session-turns-复核轮.md) §6.3。
+
+## 2026-10-20 — ★ 「真删表」的第一顺位不是删，是**删完之后谁会 42P01**（Seen: 1/3）
+- 场景：目标要求"把 `_request` 前缀的待删表**真正删掉**"。删表本身只有 6 条
+  `DROP`；但真正的工作量在**删表之后**。
+- 根因：v1 族被 286 处 Go SQL 引用（其中 ~168 处是**基表**直读，不是走 canonical
+  视图的）⇒ 删表后**任何提到 v1 关系的语句整条 42P01**（不是"那条腿空"，
+  是**整条语句失败**）⇒ 覆盖 admin 读面、bg 后台任务、请求路径上的凭据解析。
+  ⇒ 真正的工作量是**把 168 处读面迁到会话族**，不是写 DROP。
+- 防复发检查：① 「删对象」类变更的清单必须先列**引用图**
+  （基表 / 视图 / 函数 / 触发器 / 启动路径 DDL），再动手；
+  ② **启动路径的 DDL 优先于读面**——它决定网关能不能起来；
+  ③ 读面按「**会不会让请求路径失败**」排序（凭据候选查询 > 请求体读 > 后台聚合）；
+  ④ 「整条语句失败」这条语义决定了**UNION 的一条腿**也必须删，
+  不能只把 v1 腿换成"空集"。
+- 证据：真库 `pg_depend` + 逐文件扫描得 168 处基表直读；`recent_success_rate`
+  一处就足以让 100% 流量失败；`bg/` 20 处 + `admin/` 136 处会让 30+ 个面板/探针
+  同时变暗。§6.1。
+- 溯源：request_logs→session_turns 复核轮 §6.1；[复盘](docs/audit/2026-10-20-request-logs-session-turns-复核轮.md) §6.1。
+
+## 2026-10-20 — ★ 投递通道对「改名后」的处理**不一致** ⇒ 迁移要同时写两种物理名（Seen: 1/3）
+- 场景：860 把 `request_logs` 族改名成 `_request_logs`（"待删标志"）。
+  885 要把它删掉。写下 `DROP TABLE public.request_logs` 之后发现：
+  部署通道会把它**自动改写**成 `_request_logs`，而**安装器不会**。
+- 根因：三条投递路径对"改名后"的处理**不是同一套**：
+  · 部署通道 `scripts/apply-db-revision-sequence.sh` 有 runtime adapter，
+    按真库探测代际（legacy / renamed / mixed / ambiguous）后**词法改写**
+    `request_logs` → `_request_logs`；
+  · 安装器 `installer/internal/dbinit/runner.go` **逐字执行**迁移文件；
+  · 新装路径在 860 之后族已经是 `_request_logs`。
+  ⇒ 写死任一种拼写，都会让**另一条通道**的 DROP 静默不生效
+  （`DROP TABLE IF EXISTS` 不报错 ⇒ **零信号** ⇒ 族还在那儿，
+  而所有读面已经按"族没了"改过了 ⇒ 下次启动 42P01）。
+- 防复发检查：① 任何触及**被改过名**的族的迁移，必须同时写**两种物理名**
+  （`request_logs` 与 `_request_logs`），并用「**存在才删**」的动态 SQL；
+  ② 改写正则只认**整词**（`(?<![\w$])request_logs(?:_bodies_hot|_bodies|_hot|_archive|_id_seq)?(?![\w$])`）
+  ⇒ 视图名（`request_logs_with_current_month…`）**不会**被改写
+  ⇒ 视图名写原名、表名写两种拼写，**别弄反**；
+  ③ 判"某个名字出现了没有"**绝不用 `LIKE` 配 `_`**（`_` 是单字符通配符）。
+- 证据：三条通道的差异逐条读代码确认（部署通道 adapter 的代际探测 + 安装器
+  无改写）；885 的删除步骤用「两种拼写都试 + `to_regclass` 存在才删」；
+  真库往返验证 up→down 后族与三臂视图逐字还原。§6.4。
+- 溯源：request_logs→session_turns 复核轮 §6.4；[复盘](docs/audit/2026-10-20-request-logs-session-turns-复核轮.md) §6.4。
+
+## 2026-10-20 — ★ 变异验证必须先确认「**变异真的应用了**」（Seen: 1/3）
+- 场景：给 885 的 6 道契约门做变异验证。5 处按预期变红，**1 处没红**。
+- 根因：那一处的变异是"把投影里的 `t.ts AS ts,` 改成 `t.ts + interval '0 seconds' AS ts,`"，
+  而迁移文件里那行是**制表符缩进**、我按**四个空格**写的替换串 ⇒
+  `str.replace` **没匹配上** ⇒ 文件**没变** ⇒ 门当然绿。
+  ⇒ **"门绿了"这件事，当时既可能是"门在工作"，也可能是"文件根本没被改"**——
+  两者在输出上**长得一模一样**。
+- 防复发检查：① 变异脚本**必须自证**：`assert new != old`（或打印 sha 对比），
+  没应用就**直接失败**，不许"继续跑测试看颜色"；
+  ② 变异的目标串要用**从文件里读出来的**内容（而不是手打的字面量），
+  或至少在替换后校验命中次数 == 期望次数；
+  ③ 变异验证的结论要写成「**该处变异应用后门变红**」，
+  而不是「该处门能发现这类问题」——后者在变异没应用时也是成立的。
+- 证据：改用 tab 缩进后重跑 ⇒ 该处**变红**；把 Go 侧投影也改一次 ⇒
+  **同一个门双向都红**（迁移侧漂移与代码侧漂移都能被抓）。
+- 溯源：request_logs→session_turns 复核轮 §6.5；[复盘](docs/audit/2026-10-20-request-logs-session-turns-复核轮.md) §6.5。

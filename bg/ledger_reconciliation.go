@@ -44,6 +44,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 
+	"github.com/kaixuan/llm-gateway-go/db"
 	"github.com/kaixuan/llm-gateway-go/settings"
 )
 
@@ -349,7 +350,9 @@ func usageCreditSQL() string {
 	return `
 		WITH usage AS (
 		    SELECT tenant_id, request_id, SUM(credits_charged) AS charged
-		    FROM _request_logs_hot
+		    -- ★ 885（v1 族退役）：源换成会话族热腿（v1 热表已 DROP）。
+		    -- credits_charged / tenant_id / request_id / ts 在会话族投影里同名同义。
+		    FROM ` + db.SessionFamilyTurnsHotSourceSQL() + `
 		    WHERE ts > now() - $1::interval
 		      AND ts < now() - $2::interval
 		      AND credits_charged IS NOT NULL AND credits_charged <> 0

@@ -1192,6 +1192,17 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			// 两条腿 hot ∪ parent UNION ALL（前提：hot ∩ parent 实测无重叠，
 			// 计数型指标不会被数两次）。
 			"884_session_family_v_analytics_views.sql",
+			// 885：退役 v1 request_logs 族的**最后一步**（真删表）。
+			// ① canonical 视图 `request_logs_with_current_month` 去掉第三臂
+			//    （冻结 v1 体 + 双反连接去重），只剩两臂 session_turns_hot ∪
+			//    session_turns；② 删 4 张 v1-only 视图；③ 删 v1 族全部表
+			//    （母表带分区）+ hot 表 + 序列；④ 删只服务 v1 族的分区管理
+			//    函数与两个触发器函数。
+			// ⚠ 本文件按**两种物理名**都写（`request_logs` 与 `_request_logs`），
+			//    因为投递通道对"改名后"的处理**不一致**：部署通道
+			//    scripts/apply-db-revision-sequence.sh 会做词法改写，
+			//    安装器**不做**（逐字执行）⇒ 两种名字都试，三条通道都正确。
+			"885_drop_request_logs_v1_family.sql",
 		},
 	}
 }
