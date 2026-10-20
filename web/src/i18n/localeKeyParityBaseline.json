@@ -4,12 +4,12 @@
   "missingVsUnion": {
     "ar-SA": 130,
     "de-DE": 125,
-    "en-US": 459,
+    "en-US": 443,
     "es-ES": 125,
     "fr-FR": 125,
     "ja-JP": 130,
-    "zh-CN": 793,
+    "zh-CN": 777,
     "zh-TW": 132
   },
-  "asymmetricKeys": 793
+  "asymmetricKeys": 777
 }

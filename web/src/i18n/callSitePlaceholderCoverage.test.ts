@@ -128,6 +128,10 @@ describe('i18n 调用点参数 → 占位符覆盖（所有语种都不显示 = 
     // 2026-10-21 实测缺陷：zh-CN 只把 1 个分类键放在调用点请求的路径上，
     //   其余 16 个被塞进零消费者的 `sessions.promptInjectionCategories.*` 死命名空间
     //   ⇒ 中文用户看到的是原始点号键路径。
+    //   ★ 2026-10-21（R57 轮）后续：那个**死命名空间已按属主拍板删除**
+    //     （1112 条死翻译，8 语种）⇒ 而本用例钉的 `sessions.config.promptInjectionCategory*`
+    //     是 R55 轮补到**调用点请求路径**上的那份（R55 `bd7efecc5`）⇒ **不受删除影响**，
+    //     仍须在 8 语种齐备 ⇒ 本用例继续有效。
     const values = allLocaleValues()
     const CATS = [
       'RoleHijack', 'InstructionOverride', 'InstructionLeak', 'Jailbreak',
