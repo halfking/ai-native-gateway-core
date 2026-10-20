@@ -238,18 +238,38 @@ func fullWidthLetterAt[T ~string | ~[]byte](text T, i int) (byte, bool) {
 	return 0, false
 }
 
-// matchFullWidthMarkerWordAt reports whether the full-width spelling of the
-// marker word starts at byte offset i.
+// matchMarkerWordAnyWidthAt reports whether the marker word starts at byte
+// offset i, with **each of its characters independently** spelled either in
+// ASCII or in the full-width form.
 //
-// The comparison is ASCII case-insensitive, exactly like the span pattern's
-// "(?i:sensitive)": a CJK input method may emit ＳＥＮＳＩＴＩＶＥ or
-// ｓｅｎｓｉｔｉｖｅ or any mix of the two.
-func matchFullWidthMarkerWordAt[T ~string | ~[]byte](text T, i int) bool {
+// 2026-10-21（r1039 续轮第三轮）：**半角全角混拼**此前两种门都不认——
+//
+//   - containsFoldCaseWord 要求 9 个字符**全是** ASCII；
+//   - matchFullWidthMarkerWordAt 要求 9 个字符**全是**全角。
+//
+// 而 foldMarkerWidth 的**前置门**正是这两者的析取 ⇒ 混拼两者皆不成立 ⇒
+// **折宽副本根本不构造** ⇒ 生产扫描器看不见这种形态（实测 0 spans）⇒
+// 标记原样到达客户端。这比先前登记的「便宜门漏检」更重：**扫描器本体也看不见**。
+//
+// ⇒ 修法落在**逐字符**这一层：每个位置各自决定宽度（ASCII 大小写不敏感，
+// 或全角字母 Ａ-Ｚ/ａ-ｚ），于是混拼形态被认出来；折宽副本照旧由
+// foldMarkerWidth 构造 ⇒ **扫描器本体一个字都不用改**。
+func matchMarkerWordAnyWidthAt[T ~string | ~[]byte](text T, i int) bool {
 	const word = "sensitive"
-	if i < 0 || i+3*len(word) > len(text) {
-		return false
-	}
 	for k := 0; k < len(word); k++ {
+		if i >= len(text) {
+			return false
+		}
+		if text[i] < 0x80 {
+			// ASCII 拼写：大小写不敏感
+			if asciiLower(text[i]) != word[k] {
+				return false
+			}
+			i++
+			continue
+		}
+		// 非 ASCII：只接受全角**字母**（Ａ-Ｚ / ａ-ｚ）。
+		// 全角冒号、全角数字等一律不认 —— 它们不是标记词的字符。
 		letter, ok := fullWidthLetterAt(text, i)
 		if !ok || asciiLower(letter) != word[k] {
 			return false
@@ -257,6 +277,49 @@ func matchFullWidthMarkerWordAt[T ~string | ~[]byte](text T, i int) bool {
 		i += 3
 	}
 	return true
+}
+
+// containsMarkerWordAnyWidth reports whether text contains the marker word
+// spelled in any mix of ASCII and full-width characters.
+//
+// 它取代的是「全 ASCII 词」与「全全角词」这两条门（containsFoldCaseWord /
+// containsFullWidthMarkerWord）——那两条在混拼形态上都不成立。
+//
+// 成本形状与被它取代的两条**相同**：两条 memchr（ASCII 的 's'/'S' 与全角字母的
+// 0xEF 首字节）各自定位候选，命中处做定长比较；全程不拷贝 body。
+// ⇒ 便宜门没有被「为修漏判而放大常态成本」（hop.go mayCarryMarker 的注释
+// 里记着上一次教训：16KB body 上 5.6ns/0-alloc → 2477ns/12KB-alloc，~444×）。
+//
+// 为什么普通中文不会被拖进昂贵路径：汉字的首字节是 0xE4-0xE9，**不是** 0xEF；
+// 全角字母才是 0xEF。而 0xEF 候选处的比较要求前 9 个字符**逐个**是标记词
+// 的字母 —— 汉字、全角数字、全角标点都在第一个字符处就被否掉。
+func containsMarkerWordAnyWidth(text string) bool {
+	// 候选 1：ASCII 的 's' / 'S'（纯 ASCII 拼写与「尾字全角」的混拼都从这里进）
+	for i := 0; i < len(text); {
+		idx := indexAnyByteString(text[i:], 's', 'S')
+		if idx < 0 {
+			break
+		}
+		i += idx
+		if matchMarkerWordAnyWidthAt(text, i) {
+			return true
+		}
+		i++
+	}
+	// 候选 2：全角字母的首字节 0xEF（'Ｓ' / 'ｓ' 都以它开头 ⇒「首字全角」的混拼
+	// 从这里进）。全角码位一律 0xEF，与全角花括号共用同一条 memchr。
+	for i := 0; i < len(text); {
+		idx := strings.IndexByte(text[i:], fullWidthBraceLeadByte)
+		if idx < 0 {
+			break
+		}
+		i += idx
+		if matchMarkerWordAnyWidthAt(text, i) {
+			return true
+		}
+		i++
+	}
+	return false
 }
 
 // foldMarkerWidth returns a copy of text in which every full-width form the
@@ -274,7 +337,7 @@ func matchFullWidthMarkerWordAt[T ~string | ~[]byte](text T, i int) bool {
 //     The grammar cannot match anything else, so folding every response body
 //     would put an O(n) copy on the hot path for no possible gain.
 func foldMarkerWidth(text string) (string, bool) {
-	if !containsFoldCaseWord(text, placeholderMarkerWord) && !containsFullWidthMarkerWord(text) {
+	if !containsMarkerWordAnyWidth(text) {
 		return "", false
 	}
 	var b strings.Builder
