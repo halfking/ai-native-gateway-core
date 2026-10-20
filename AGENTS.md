@@ -5215,3 +5215,104 @@ To codeup.aliyun.com:kaixuan/official-deploy/llm-gateway-go.git
 > 要真正翻转成「假绿通过」，需要「全部变异都期望绿」或「红变异恰好红在别的腿上」的脚本
 > ⇒ **本仓逐份核过，无此类脚本** ⇒ ⇒ **危害分级必须按每份脚本单独判，且必须用实测给**。
 > ⇒ ⇒ **本轮不改上游那份脚本**（它正被上游迭代 ⇒ 并发写同一文件风险不对称）⇒ 登记为遗留。
+
+> **2026-10-21 R81 轮（本会话）**：★★★★★ **官方门禁第一次 `exit=0`** —— 573/603 定性（新机制 **[M10]**）＋ **「事实源承载 ⇒ 免于被分类」盲区**（破坏性测试被指向共享库的注入错误）
+> ⇒ ★★ **本轮把「官方跑法读数不存在」这个长期挡路项解掉了**（此前门禁 `exit=2` ⇒ 跑不完 ⇒ 任何引用官方读数的话都不成立）
+> ⇒ ★★★ **before → after（官方跑法）**：`startup rerun` **2 条未登记 ⇒ 0 条**；
+> ⇒ **门禁 `exit=2` ⇒ `exit=0`**（`PASS=181 SKIP=8 FAIL=0`）⇒ ★★ **官方门禁第一次走完全程**。
+> ⇒ ★★★★ **573/603 定性（三路取证：官方 runner / 克隆重放拿完整 DETAIL / 单条语句实测）**：
+> ⇒ **新机制 [M10] = 「第二遍把已退役的 v1 族按旧名复活 ⇒ 它的 DROP 撞上依赖方」** ——
+> ⇒ 官方重跑 = **baseline 三件套 → 链**，而 `01-schema.sql` 是**裸 pgdump 基线**
+> ⇒ ⇒ 它把 v1 族**按旧名**重新建出来（`341` 建 `request_logs_hot`、`448` 按旧名重建 v1 臂视图）
+> ⇒ ⇒ **573/603 因此「有对象可动」⇒ 但对象已被视图依赖 ⇒ DROP 被挡**
+> ⇒ ⇒ 佐证：860 改名成 `_request_logs*`、890 再删 ⇒ **第二遍对 v1 族净效果为零**（kept 库 4 个名字全无）。
+> ⇒ ★★★★ **573 与 603 报错不同但根因同**：573 = DROP **视图**被挡（`routing_analytics_source`
+> ⇒ ⇒ **再往下两个物化视图** `routing_analytics_7d` / `routing_audit_summary_7d`）；
+> ⇒ 603 = DROP **列**被挡 ⇒ ⇒ **一条机制、两个条目**。
+> ⇒ ★★ **方向对比**：**[M8] 向后级联** vs **[M10] 向前依赖**（上一遍留下的依赖方⇒挡住本遍的 DROP）
+> ⇒ ⇒ **判别动作 = 问「依赖方是本遍之前建的，还是本遍建的」**。
+> ⇒ ⚠ **不能靠 `CASCADE` 消掉 573**：会连带删掉 canonical 视图 + `routing_analytics_source` + 两个物化视图
+> ⇒ ⇒ 把「重跑失败」升级成「**静默毁掉下游对象**」。
+> ⇒ ★★ **登记原因必须引官方跑法的报错原文**（手工变体是 `relation "public.request_logs" does not exist`
+> ⇒ ⇒ 根因 = ★★ **`DROP COLUMN IF EXISTS` 的 IF EXISTS 只覆盖「列」不覆盖「表」** ⇒ 另一条机制，另标）。
+> ⇒ ★★★★★ **顺带挖出「让门禁永远红」的注入错误**：rerun 段不再 die 之后门禁**继续往下走**，真库腿报 4 条红
+> ⇒ ⇒ `requires loopback trace_retirement database or explicitly authorized local 54318 schema isolation`
+> ⇒ ⇒ ★★★★ **那 4 条红不是「`t.Fatal` 该改成 `t.Skip`」** —— 看守卫完整结构：「**没配** ⇒ 已经 `t.Skip`」，
+> ⇒ ⇒ 只有「**配了但指向不安全的地方**」才 `t.Fatal` ⇒ ⇒ **那是安全拒绝** ⇒ ⇒
+> ⇒ **红的原因是「谁喂了不该喂的 DSN」** ⇒ ⇒ **喂它的是官方 runner 自己**
+> ⇒ ⇒ `run-integration-gate.sh:850` 把 `TRACE_RETIREMENT_TEST_DSN` 绑成 `"$GATE_URL"`（门禁自己那个**共享**库）
+> ⇒ ⇒ **破坏性测试被指向共享库** ⇒ ⇒ 守卫正确拒绝 ⇒ ⇒ **门禁永远红，而红的原因不是产品缺陷**。
+> ⇒ ★★★★ **为什么能活这么久？——「豁免即盲区」**：登记册的差集完备判据是 `if 在事实源 { continue }`
+> ⇒ ⇒ **凡被事实源导出的名字，永远不会被要求分类** ⇒ ⇒ `TRACE_RETIREMENT_TEST_DSN` 本该是 `dsn_exclusive`，
+> ⇒ ⇒ 却因为**先被塞进事实源**而**从未被分类** ⇒ ⇒ ★★ **通用式：任何「豁免规则」都会变成盲区**。
+> ⇒ ★★★★ **修法（每一步都被既有门自证）**：登记 `dsn_exclusive` ⇒ **既有判据 ③ 立刻要求它出事实源**
+> ⇒ ⇒ 从 `datasource_env.sh` 删 export ＋ 从 runner 删注入 ⇒ ⇒ 测试改走它**本来就设计好的** `t.Skip` 分支；
+> ⇒ ★★ **新增判据**：`dsn_exclusive` 若出现在 runner 的 `env \` 块里，**其值不得是通用值 `$GATE_URL`**
+> ⇒ ⇒（`dsn_exclusive` 本就**允许**出现在 runner 里 —— `TEST_TENANT_DATABASE_URL` 拿 `$TENANT_DSN` 是**专用值**）
+> ⇒ ⇒ ⇒ **只看名字分不出「专用值」与「通用值」⇒ 必须看值**）＋ 值解析器 ＋ **自检 (f)**；
+> ⇒ ⇒ **变异 M1**（把注入塞回 runner）⇒ 判据**红** ⇒ **有牙**；还原按**被改路径** `shasum -a 256` 逐字一致。
+> ⇒ ★★★★ **附带修掉 `origin/main` 上既有的红**：`MEMORA_REPO_PATH` 未登记 ⇒ 登记为 `component`
+> ⇒ ⇒ `TestPGTestEnvRegistryCoversEveryGapName` 由红转绿 ⇒ ★★ 证据 = **干净树集合对照**（pristine main 上同一组红）。
+> ⇒ ★★ **零迁移改动 ⇒ 零生产 schema 变更 ⇒ 零产品行为变更**。
+> ⇒ ★★ **附带发现：登记册里 9 条已不复现**（`562/610/680/696/700/710/733/808/860`，**2/2 次独立运行都缺**）
+> ⇒ ⇒ **登记册可从 26 条缩到 17 条** ⇒ ⚠ **但删之前必须查清「为什么不再复现」**
+> ⇒ ⇒ （若是链序/状态的偶然，删了将来会变成「新增未登记」而 die）⇒ ⇒ **登记为下一轮第一件事**。
+> ⇒ ⚠ **诚实边界**：**没有**改 573/603 本身（它们仍失败，只是不再 abort ⇒ 真修 = E1/E3，**属主决策**）；
+> ⇒ 门禁跑的是 **一条腿**（`./internal/sessionv2mirror/`）⇒ 「exit=0」适用范围 = 该腿 + rerun 阶段；
+> ⇒ 那 4 条 trace-retirement 测试**在本机仍没跑过**（本轮产出是「它们不再假装红」，**不是**「它们跑过了」）。
+> ⇒ ⇒ 完整记录见 handoff `§19.20.20` ＋ `docs/audit/2026-10-21-R81-第二遍失败573-603与事实源盲区.md`。
+
+> **2026-10-21 R80 轮（本会话 · admin 用量门族）**：★★★★ **「夹具插错了表 ⇒ 9 个门全是 SKIP」**
+> ⇒ ★★★ **守卫连坐的是 2 个文件 / 11 个用例，而守卫问错了对象**
+> ⇒ ⇒ ★★★ **改瞄到 `usage_ledger` 后 9 个门从「全 SKIP」变「全真跑」，变异 M1~M3 全红**
+> ⇒ ⇒ ★★★ 完整记录见 handoff `§19.20.21`。
+> ⇒ ★★★★ **起因**：R70 轮（`1d469fb89`）在**共享 helper** `testDB()` 里加了**文件级守卫**
+> （查 `public._request_logs` 不在 ⇒ 整个文件 SKIP）
+> ⇒ ⇒ 爆炸半径实测 = **2 文件 / 11 用例**：`usage_enhanced_test.go` 9 个（其中 **4 个根本不插种子**）
+> + `usage_trend_series_test.go` 2 个（种子在 `request_stats_dim_minute`，**另一个族**）
+> ⇒ ⇒ **R79「永远 SKIP」家族第二例（共用入口连坐）**。
+> ⇒ ★★★★ **决定性事实①：取数源是 `usage_ledger`，不是会话族** ⇒ **订正 R70 轮「改瞄会话族」的表述**：
+> `planCostTrend`（`admin/usage_enhanced.go:94-129`）把维度分两侧 ——
+> **计费侧**（`model`/`provider`/`api_key`）⇒ 基表 `usage_ledger_with_current_month`；
+> **请求侧**（`work_type`/`intent`）⇒ `request_logs_with_current_month`。
+> ⇒ ★★ `usage_ledger_with_current_month` 真身 = `usage_ledger_hot UNION ALL usage_ledger`
+> ⇒ **名字有误导，但不按月过滤** ⇒ 动态周期（当月+上月）完全可用。
+> ⇒ ★★ 种子列是 `raw_model_name`；旧夹具的 **`outbound_model` 在 `usage_ledger` 不存在**。
+> ⇒ ★★★★ **决定性事实②：租户过滤靠 auth context，不靠 header** ——
+> `EffectiveTenantIDAll`（`admin/context.go:69`）读 `GetTenantID(r)`（`context.go:37`），
+> 而后者**只读 request context 里的 `AuthContext`，不读任何 header**
+> ⇒ ⇒ ★★ 旧夹具那句 `X-Tenant-ID` **从未参与过 SQL** ⇒ 统计口径一直是「所有租户」
+> ⇒ ⇒ 在共享库上 `COUNT(*)` 会把别人的行算进来 ⇒ ⇒ 修法是
+> `SetAuthContext(req, &AuthContext{Role:"tenant_admin", TenantID: tenantID})`。
+> ⇒ ★★★ **决定性事实③：`INSERT INTO tenants (id, name)` 一直 42703 且被吞** ——
+> `tenants` 主键是 **`code`**（真库 `tenants_pkey PRIMARY KEY (code)`），**没有 `id` 列**
+> ⇒ ⇒ 那条语句从未成功过；且 `usage_ledger`/`session_turns` **都没有**指向 `tenants` 的外键 ⇒ 对断言无影响。
+> ⇒ ★★★★ **落地（只改 `admin/usage_enhanced_test.go` 一个文件 ⇒ 生产零影响）**：
+> 种子改瞄 `usage_ledger` + `session_turns`（压缩计数的唯一落点）｜守卫**下沉到用例级** `requireRelations`
+> （点名缺哪个关系）｜**删掉** `isSchemaShapeMismatch` 的 SKIP 分支（插入失败现在**红**）｜
+> 3 个纯参数用例**不再被连坐**（不查库的路径 ⇒ 无 DSN 也跑）｜3 条弱断言收紧
+> （`至少一条`⇒`恰好 3 组 + gpt-4o 合计 3.50`；period-compare 的 `t.Logf`⇒`t.Errorf` + 条数 + trend + significant）｜
+> 周期改**动态**（当月+上月 ⇒ 不再是绝对月 pin，且覆盖生产命中的当月分区）｜
+> 清理改 `t.Cleanup`（旧写法在 `t.Fatalf` 之后**不执行** ⇒ 留孤儿行）｜租户 id **每次运行唯一**
+> ｜★★ **负控：邻居租户的行** ⇒ **「租户过滤真的生效」第一次有断言在守**。
+> ⇒ ★★★★ **验收**：有 DSN **9/9 PASS**（此前 9/9 SKIP）｜无 DSN **3 PASS + 6 SKIP + 零 FAIL**｜
+> 被解放的 `usage_trend_series` 2 个用例 **PASS**｜形态库跑前跑后 **rel diff 0 / col diff 0**、**零残留行**。
+> ⇒ ★★★★ **变异 M1~M3 全红且红因逐条对得上**（还原按被改路径 md5 逐字一致）：
+> M1 期望成本改错 ⇒ 红在「want 3.50」；M2 摘掉 `SetAuthContext` ⇒ 红在「got 4 个分组 / 890888 cache_read」
+> ⇒ **租户过滤有牙**；M3 种子改回 `_request_logs` ⇒ 红在 `42P01` ⇒ **插入失败不再被 SKIP 吞掉**。
+> ⇒ ★★★★ **干净树集合对照**（pristine `git archive HEAD` + 另建形态库）：
+> 只在「本轮版本」= **1 条**（在并行会话**未跟踪的新文件**里 ⇒ 不是本轮引入）／只在 pristine = **0 条**／
+> 共有 **8 条**逐条同名复现 ⇒ ⇒ **本轮零新红**；且**两个版本跑完 admin 整包，形态库损伤都是 0 行**
+> ⇒ ⇒ ★★ **admin 包的破坏性门安全闸有效**（与 db 包的 −140 关系 / −959 列形成对比）。
+> ⇒ ★★★★ **附带发现：admin 包里 3 道破坏性门**永远 SKIP**（安全闸的副作用）** ——
+> `admin/models_modality_source_realdb_test.go:68-75` 的闸是「8 张夹具表存在一张就 SKIP」
+> ⇒ **产品形态库里这 8 张表永远存在** ⇒ ⇒ **这道门从未真正跑过**
+> ⇒ ★★ **作者自己的注释就写着**「人看到的是『通过』，实际一次都没跑」—— **防住了残桩，却制造了永久 SKIP**
+> ⇒ ⇒ **R79 家族第三类**：**契约要空库，而事实源给的是产品形态库 ⇒ 门永远不跑**；
+> 修法方向（R78 的 `db/scratch_db_test.go` 已有同款机制）**本轮未实施 ⇒ 登记为 R80-A 属主项**。
+> ⇒ ★★ **R80-B 属主项**：R70 轮那套「插入失败 ⇒ SKIP」模式在仓库里**共 5 个文件**
+> （`admin`/`domains/credential`/`bg`/`bg/systemmonitor`/`internal/outbox`）⇒ 要不要全族收敛。
+> ⇒ ★★ **R70 轮报的 `bg/feature_stats_worker_test.go` 的 `TRUNCATE … CASCADE` 危害 ⇒ 本轮复核：已被代码自守**
+> （连的是**专用** `LLM_GATEWAY_FEATURE_STATS_TEST_DSN`，且有**库名守卫**
+> `current_database()` 不匹配 `itgate|scratch|test|tmp|bench|pg_` 就 SKIP ⇒ 拒绝在共享库上 TRUNCATE）
+> ⇒ ⇒ ★ **⇒ R78 静态门无需跨包推广**（admin 包实测零损伤）；真正缺的是「永远 SKIP」普查（另一件工具）。
