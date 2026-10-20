@@ -22,7 +22,7 @@
   `git status --short` 仍为空。
   ⇒ 存量三份脚本（`mutate-s4-recorded-cost-skip-gate.py` /
   `mutate-tuning-view-coordination-gate.py` / `mutate-autoroute-index-sql-gate.py`）
-  仍是**就地形态** ⇒ 已登记为遗留项（handoff §12.5-15）。
+  仍是**就地形态** ⇒ 已登记为遗留项（handoff §12.5-14）。
 
 用法：python3 scripts/mutate-candidate-failure-monitor-classify-gate.py
 """
