@@ -1933,6 +1933,52 @@ git worktree add /tmp/lgw-pristine-20261020 HEAD        # = 7c8aad856
 ——生产真库已有该表（33 列 + `automatic` 列、173 行，2026-10-20 实测）⇒ 对存量库是 no-op；
 进通道只会在生产上新建一个用不到的对象。
 
+### 5.13.9 ★ 部署后读回（`2.5.8.2758`，`VERIFY_PASS=1`）
+
+发布产物身份：`2.5.8-1c09647e-20261020-2758`（`git_sha=1c09647e`，`build_seq=2758`）
+⇒ 构建时工作区干净且 HEAD==`1c09647e`（版本号类提交不改 Go 树）。
+
+> 取数命令（口径与覆盖范围）：
+> ```bash
+> # 视图读源（**精确仪器**：strpos，不用 LIKE 配 `_`）
+> psql "$DATABASE_URL" -tAF'|' -c "
+> SELECT v.relname, strpos(pg_get_viewdef(v.oid,true),'session_turns')>0 AS sess,
+>        strpos(pg_get_viewdef(v.oid,true),'_request_logs')>0 AS lit_v1
+> FROM pg_class v JOIN pg_namespace n ON n.oid=v.relnamespace
+> WHERE v.relkind='v' AND n.nspname='public' AND v.relname IN
+>  ('customer_cost_view','model_cost_per_task_view','v_continuation_effectiveness',
+>   'v_node_switch_analysis','v_timeout_effectiveness') ORDER BY v.relname;"
+> # 退役族行数：_request_logs / _request_logs_hot / _request_logs_bodies / _request_logs_bodies_hot
+> # 端点：curl -H "Authorization: Bearer $ADMIN_TOKEN" "http://127.0.0.1:8782/api/logs?page=1&page_size=3"
+> ```
+> 覆盖范围：本机 PG 18.10（127.0.0.1:54318）+ 本机网关 8782；**只写实测到的**。
+
+| 项 | 读数 | 判定 |
+|---|---|---|
+| `readyz` | 8782 = **200**（8781 无监听 = 只启了活跃槽） | ✅ |
+| 5 张视图读源 | 全部 `sess=t` / `lit_v1=f` | ✅ 会话族形态 |
+| `v_node_switch_analysis` | **16 行** | ✅ 与改后口径一致（改前 0 行） |
+| `v_continuation_effectiveness` / `v_timeout_effectiveness` | 0 / 0 | ✅ 成因可证明（底层列确实 0 行，§5.13.4） |
+| 退役族 4 张表行数 | **全 0** | ✅ 停写仍然成立 |
+| `/api/logs?page=1&page_size=3` | **200 / 86ms**；`count=327`、`total_requests=327`、`by_model` **20 项** | ✅ 与 2757 同口径（324→327 的 3 条增量是**失败的探针请求**：`is_auto_request=f`、24–31 prompt tokens、0 completion，非用户流量） |
+| 部署通道台账 | 883 = `cb0da6adfb7c`、884 = `5d7efd281152` | ✅ 与当前文件 sha256 一致（无需内容重放） |
+
+**模型请求与写入测试（部署后）**：3 轮累积式对话（`ping` / `say OK.` / 中文指令）⇒
+**第 1 轮 200**（`deepseek-v4-flash`，`prompt=88 completion=37`）且**落库**
+（`session_turns_hot` 10:01:04 `success=t`）⇒ **部署后写侧可用**；
+第 2/3 轮 **503**，失败请求**同样落库**（`status_code=503`）⇒ 失败也留痕。
+
+**503 的归因（逐条可证，不是推测）**：`no_candidate` ⇒ 三个候选绑定**各自**不可用：
+
+| 绑定 | 凭据 | `is_routable` | `unavailable_reason` |
+|---|---|---|---|
+| `deepseek-v4-flash` | 1（provider 2453 `token.sensenova.cn`） | f | `binding_unavailable`（上游 **429** → 熔断，§L9 族） |
+| `z-ai/glm-5.3-flash` | 2（provider 2452） | f | `availability_cooling`（我的请求同样把它 429 进了冷却） |
+| `deepseek-v4-flash-0731` | 3（provider 2454） | f | `availability_suspended` |
+
+⇒ 且 `proxy_nodes` **0 行** ⇒ **没有第二候选** ⇒ 503 是环境的**真实状态**，
+**不是仓库缺陷**（网关在该状态下如实返回 503 并把失败写进会话族）。
+
 ---
 
 ## 7. 本轮新增的经验
