@@ -5397,3 +5397,46 @@ To codeup.aliyun.com:kaixuan/official-deploy/llm-gateway-go.git
 > ⇒ ★ **剩余同族缺口**：`admin/session_retirement_http_test.go` 要
 > `ALTER TABLE session_summaries DROP COLUMN` ⇒ 需要的是**产品形态的隔离库**（不是空库）
 > ⇒ ⇒ 它缺的是「专用的产品形态隔离 DSN」⇒ ⇒ 登记为下一项。
+> **2026-10-21 §143.43 轮（本会话）**：**推翻我上一轮自己的三处判词**（订正横幅二十二）
+> ⇒ ★★★★★ **真相：快照族的留存是【双模】的，形态由 `pg_class.relkind` 自答**
+> （`domains/ursm/v2/persist/retention_partition.go`，2026-10-04 落地）：
+> **分区父表 ⇒ 逐分区 DROP（空间真归还）** / **普通 heap ⇒ 行级 DELETE（空间不归还）**。
+> ⇒ ★★★ **生产日志闭环（决定性证据）**：
+> 154（252 侧）：`mode=partition-drop`、`retention=168h0m0s`、
+> **2026-10-21T00:01:21 `partitions_dropped=1` / `bytes_reclaimed=293322752`**（回收 280 MB）；
+> 211：`mode=row-delete`，每小时 DELETE 3.8~4.0 万行。
+> ⇒ ★★★ **两实例形态分叉（实测）**：**252 = 分区父表**（8 个日分区 20261014..20261021，
+> 族 10,033,619,520 B）⇒ 占用 **O(保留天数)**；
+> **211 = 普通表**（6,042,257 行 / 2,411,266,048 B，死元组 942,614 = 13.56%）
+> ⇒ 占用 **O(7 天高水位) + bloat**，堆内可回收 **367,839,785 B**。
+> ⇒ ★★★ **被推翻的三处判词**（原文保留在 runbook §143.43.1）：
+> ①「行级 DELETE ⇒ 分区文件永不收缩 ⇒ O(总天数)」⇒ **两实例都不成立**
+> （超期 7 天的行数两实例都是 **0** ⇒ 行数有界 ⇒ 高水位有界）；
+> ②「需要新造按日 DROP helper」⇒ **仓内早就有，且已在生产跑通**；
+> ③「`drop_old_state_partition_table` 只管月度 ⇒ 快照族掉不了分区」
+> ⇒ **两个不相干的机制被我接在了一起**（它归 `routing_decision_log` 等 7 个月度族管，
+> 快照族由 URSM 留存器独立负责）。
+> ⇒ ★★★★ **根因（方法论）**：★ **我只 grep 了 `bg/` 与 `sql/migrations/`，没 grep
+> `domains/ursm/v2/persist/` ⇒ ⇒ 「仓里没有」的结论整体作废**
+> ⇒ ⇒ **纪律：「缺失」类结论必须先列全「可能存在的位置」并逐个排除**。
+> ⇒ ★★★★ **订正后的三条真实缺口**：
+> **A** 211 快照族非分区 ⇒ 空间不归还（`VACUUM FULL` 可回收 ≈351 MiB；长期解 = 830 手工迁移）；
+> **B** **830 是 manual-by-design（`.sql.skip`，未注册进 installer/启动序列）**
+> ⇒ **新装库与 211 永远拿不到分区形态** ⇒ 每个新环境都会重现 211 的 bloat 形态（属主决策）；
+> **C** **`usage_facts` 两实例均无任何留存**（`settings_kv` 里 11 个 `lifecycle.*_ttl_days` 键
+> 两实例完全一致、**其中没有 usage_facts** ⇒ 无 TTL、无 worker、无 DROP 登记）
+> ⇒ **唯一真正的无界增长族**（252 ≈1.5 MB/天、211 ≈0.9 MB/天；**TTL 天数属计费语义 ⇒ 属主拍板**）。
+> ⇒ ★★ **C 的零语义风险即时项**：252 `usage_facts_default` **heap 0 B + index 83,476,480 B / 0 行**
+> ⇒ **纯索引膨胀 ≈80 MB**（`REINDEX` 或 `VACUUM FULL`；**不是 DELETE、不是 DROP 整表**）；
+> 252 `usage_facts_20260926..20261005` 10 个空日分区 ≈34 MiB（`DROP` 空分区）。
+> ⇒ ★ **仓内交付**：`scripts/audit/verify_snapshot_retention_shape.sql`（**只读**判定脚本，
+> 两实例实跑通过）+ `scripts/audit/retention_shape_findings.tsv`（9 行机器可读登记册）+
+> `admin/retention_shape_verdict.go`（纯决策表，**回滚锚点优先于「0 行 ⇒ 可回收」**）+
+> `admin/section_14343_retention_shape_test.go`（门：决策表 8 例自测 / 登记册逐行重算 +
+> 绝对条数与字节数钉住 / **缺口打桩用 go/ast**（不看注释）/ **证据字符串钉住** /
+> 陈旧引用） + `scripts/mutate-14343-retention-shape-gate.py`（变异，隔离副本 M1~M7）。
+> ⇒ ★ **顺带修掉两处陈旧引用**：`bg/partition_825_contract_test.go` → `bg/partition_830_contract_test.go`
+> （文件早已改名 ⇒ 注释指向不存在的文件 ⇒ 「830 不进自动序列」这条决策**看起来没有 pin**）。
+> ⇒ ⚠ **本轮对生产的写入 = 0**（两实例查询 + 两台网关日志读取，全只读）。
+> ⇒ ⚠ **观测点（样本量 = 1）**：DROP 路径只有 1 次成功样本 ⇒ 证明「可用」不证明「稳定」
+> ⇒ **明日起每天核对「252 分区数是否稳定在 8 个」**（>9 ⇒ DROP 路径没跑）。
