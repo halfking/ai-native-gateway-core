@@ -3862,14 +3862,17 @@ PostgreSQL 解析调用时，**带默认值的那个也能接 3 参调用**，
   （`docker run` 报 `Bind for 127.0.0.1:5432 failed: port is already allocated`，网关没起来）。
 - 根因：判定用**字符串**比两条路径，而宿主机上共享目录是**软链**
   （`~/kaixuan/postgres -> postgres-citus`）⇒ 判成「未绑定」⇒ 触发几百 MB 级数据搬迁 +
-  容器重建；而重建那一步**硬编码 5432**（同仓 compose 模板却是 `${LLM_GATEWAY_PG_PORT:-5432}`），
-  该端口已被别的实例占住 ⇒ **重建必失败 ⇒ 整条部署中止**。
+  容器重建；而（**本轮改动前**的）重建那一步**硬编码 5432**（同仓 compose 模板却是
+  `${LLM_GATEWAY_PG_PORT:-5432}`），该端口已被别的实例占住 ⇒ **重建必失败 ⇒ 整条部署中止**。
+  ★ 合并上游后查实：上游**已把重建端口改成沿用旧容器已发布的 host 端口**
+  （`dl_pg_publish_spec`）⇒ 这一层在当前树上**已不存在** ⇒ 排查时要用**当前树**的代码，
+  不要拿合并前的分支去归因。
   真正要问的不是「路径写法一样吗」，而是「**是不是同一份数据**」。
 - 防复发检查：① 凡是「这两个路径是不是同一个东西」的判定，都用**物理路径**
   （`cd … && pwd -P`）而不是字符串，并先问「有没有可能是同物异名」（软链、绑定挂载、`/private/var` 别名）；
   ② 判定函数放进**可 source 的 lib** 并配契约门（软链==目标、不同==不同、空输入==不同、
   不存在路径回退非空、脚本必须走该函数），本轮 2 项变异全红；
-  ③ 部署脚本里凡有「固定端口」与「模板端口」两处，视为**不一致缺陷**（本轮遗留登记，未改）。
+  ③ 部署脚本里凡有「固定端口」与「模板端口」两处，视为**不一致缺陷**；本轮登记后经合并查实**上游已修**（沿用旧容器端口）⇒ 登记要在合并后**复核一次**再定遗留。
 - 证据：`scripts/deploy-local-lib.sh`（`dl_physical_path` / `dl_same_physical_dir`）、
   `scripts/deploy-local.sh`（判定改造）、`tests/deploy_local_contract_test.sh`（新门 + 2 项变异全红）；
   宿主机 `~/kaixuan/postgres -> postgres-citus`；部署后 `VERIFY_PASS=1`（release 2.5.8.2766）。
@@ -5198,3 +5201,37 @@ PostgreSQL 解析调用时，**带默认值的那个也能接 3 参调用**，
   4. ⭐⭐⭐ **修法（守卫 / 台账 / 显式拒绝）都改可部署链 ⇒ 属主拍板** ⇒ 审计轮只做实测 + 留证。
 - 证据：handoff `§19.13.5`；审计文档 §5；量具 `scripts/audit/replay-startup-chain.sh`。
 - 溯源：R67 轮（2026-10-21）。
+
+## 2026-10-20 — ★★★★ **「读数手段本身」会带偏结论**：判据里的路径 / 字段名 / 范围都该先核（llm-gateway-go R68）
+- 场景：本轮按 objective 的判据跑 `grep "failure log is stale\|watermark stalled past promote retention" /opt/llm-gateway-go/run/*.log | tail`，
+  本机无 `/opt/llm-gateway-go/run/`（host-first 在 `~/kaixuan/llm-gateway-go-v2/logs/`）⇒ **判据里的路径是错的**，grep 出空结论。
+  把路径换成真实位置后，`tail` 又把**最新的 2026-10-20 行全吃掉**（最后 50 行只到 10-19）⇒ **「binary 没换」是误判**：
+  2026-10-20T03:41:22 的 WARN + `source_max_aggregation_id:0` 实测在场，provider 修法已生效。
+- 实测根因：**判据（路径 + tail 范围 + 字段名）三条都错了**：
+  1. **路径错了**：本机是 host-first 部署，`/opt/llm-gateway-go/` 是 154/245 的蓝绿布局；
+  2. **`tail` 范围**：跨多天的 ERROR/WARN 同形态，tail 默认拿文件最后 50 行 = 把「修复后」的几条剪掉 = 把「修好」误读成「没修」；
+  3. **字段名混用**：判据 `source_max_aggregation_id` 是 **provider 侧**字段，candidate 侧用 `last_insert_at / last_request_at / age / threshold` ⇒ 即便按判据「无 source_max_aggregation_id 字段 ⇒ 没修」也对 candidate 侧**恒假**。
+- ⇒ ⇒ ★ **通用式**：
+  1. ⭐⭐⭐⭐⭐ **判据里的「路径 / 字段 / 范围」三件套必须先核**——同一个组件的判据**不能照搬**给同链路上的另一个组件（provider / candidate 是两条；
+     `request_logs_*` 与 `session_turns_*` 是两条；`_v1_hot` 与 `_with_current_month` 是两条）。**一句话：**判据跨组件复制 ⇒ 恒假阴性或恒假阳性。
+  2. ⭐⭐⭐⭐⭐ **`tail` 是把「已修」误读成「没修」的直接原因**：跨日的同一形态 ERROR / WARN 同居一文件 ⇒ **时间窗必须显式选定**（grep 全窗口后再筛，或加 `--since=YYYY-MM-DD`），
+     别让 `tail -50` 替我做「最近事件」的判断。
+  3. ⭐⭐⭐⭐⭐ **跑测先于结论文**：本轮「binary 没换 / 需重部署」是先写结论再补证据，写出来后被打脸 ⇒ **grep 完先看「有 / 无 / 时间窗对不对」再下结论**。
+  4. ⭐⭐⭐⭐ **失败测试要写明「红的归因」**：本轮 M3 第一版用 `_ = rid,` 替 `sourceMaxRequestIDKey, rid,` ⇒ 整包 build failed ⇒ 看起来红但**不是因为门有牙**，要明确说「编译错不算有效变异」。**重做**后用 `max(NULL)` 才给出可读且可编译的失败。
+- 证据：handoff `§0/§1`；本轮 `docs/audit/2026-10-20-candidate-failure-monitor-S4停写假阳性二分类.md` §1 / §3；变异 M1~M5 还原 md5 `0e65f167e6f93a2418fb26e57d25de02`。
+- 溯源：R68 轮（2026-10-20）。
+
+## 2026-10-20 — ★★★ **`max(ts)` 形态相同 ⇒ 两种成因**：`source_max_*_id` 把「停写 / 真坏」拆开（llm-gateway-go R68）
+- 场景：`candidate_failure_monitor` 在 S4 退役期持续 ERROR，root cause 是
+  **「failure 冻结 + request 活跃」这一形态同时承载 S4 停写（预期内） 与 writer 真坏（真故障）**。
+  旧实现用 `lastRequest=nil` 关门，但 S4 停写**只切 v1 族写**、**不切 session mirror** ⇒ lastRequest 恒有值 ⇒ 门永远打不开。
+- 修法：加 `source_max_failure_id` / `source_max_request_id` 字段 +
+  `candidateFailureMonitorClassifyStale(fid)` 纯函数按 `fid > 0` 二分类
+  （LikelyStopWrite → WARN / WriterNeverWrote → ERROR）。
+- ⇒ ⇒ ★ **通用式**：
+  1. ⭐⭐⭐⭐ **「单一形态 + 多种成因」必须**用历史最值（max(id)）把「曾经活跃」 vs 「从未写入」分开——光看时间戳不够；
+  2. ⭐⭐⭐⭐ **告警的「关门条件」必须经受住「writer 停了，但其它表面还活」的现实**——
+     本轮 `lastRequest=nil` 之所以失败，就是因为「会话族照写」是 S4 之后**强制要求**的（`ValidateSessionWriteState` 拒绝 `!v1 && !(enabled && shadow)`）；
+  3. ⭐⭐⭐ **fireAlert 与 slog 等级要解耦**：本轮保留两条分支都 fire，但 slog 降级 ⇒ webhook 仍能审计台账，错误指标不刷。
+- 证据：`aee31a117`；docs/audit/2026-10-20-candidate-failure-monitor-S4停写假阳性二分类.md §2 / §3。
+- 溯源：R68 轮（2026-10-20）。
