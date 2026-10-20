@@ -238,6 +238,47 @@
 > 「解析器必须按语法头部归属」的守卫）；可重跑解析器入仓 `scripts/audit/parse_pg_kills.py`；
 > 待拍板 **P0~P8**（P0 = 先量真实耗时，**必须先做**）。
 > 完整记录见 runbook `§143.26`。
+> **2026-10-20 §143.27 轮（本会话）**：**把 §143.26.8 的 P0 做掉了** —— 在真库上量出
+> rollup 的真实数据量与真实耗时，**并正面回答「抬超时是不是盲改」**。
+> **对生产的写入 = 0**。
+> ★★★★★ **P0 的答案**：`latest` CTE = **73,520 行**（3 天窗）；
+> `DELETE FROM stats_usage_daily` = **均值 4,818 ms**（**生产 110 次真实调用**的读数，
+> 每次删 6,879 行，`shared_blks_read` 95,530 ⇒ 6.8 MB/次 ⇒ **I/O 等待**）；
+> `INSERT`（6 臂聚合）= **热态中位 3,758 ms** / **冷态 12,804~26,295 ms**（73,520 次随机索引探测
+> 打进 134 MB 的 `stats_event_dedup`）⇒ **冷/热 ≈ 5.1×**。
+> ⇒ ★★ **单事务里串了 4 段语句**（daily DELETE / daily INSERT / monthly DELETE / monthly INSERT）
+> ⇒ **总耗时必然 > 30 s ⇒ 必然被角色级 30 s 杀掉**；而 **DELETE 在每次失败尝试里都被回滚**
+> ⇒ **每次失败白烧 ≈ 4.8 s I/O + 12.8~26.3 s 冷态聚合**。
+> ★★★★★ **「抬超时」确实是盲改**：热态只要 3.8 s ⇒ 坏的不是「超时太短」，是
+> **冷态惩罚 + 同事务串 4 段 + 一段 4.8 s 的无效 DELETE** ⇒ 抬到 60 s 只会把 30 s 的失败
+> 变成 45 s 的**慢失败**。
+> ★★★★ **那条 join 是「可证明的 no-op」**：作业窗内 **一行都没丢**（0）、
+> **也永远不会重复**（1,139,786 行 = 1,139,786 distinct `event_id` = 1,139,786 distinct
+> `(event_id, occurred_at)`）⇒ ⇒ **冷态那 12.8~26.3 s 里买的是「什么都没发生」**；
+> ★ **但不能直接删 join**（它的语义是「只算当前修订」：`usage_facts` 的键含 `revision`）
+> ⇒ **正确形态是换成半连接（`EXISTS`）**（语义等价、允许哈希半连接 ⇒ 冷态更友好）。
+> ★★★★ **存储侧一个 151 MB 的零语义优化**：`stats_event_dedup` = **134 MB heap / 395 MB total**，
+> 其中 `idx_stats_event_dedup_event_id_occurred_at (event_id, occurred_at)` = **151 MB**，
+> 而 `stats_event_dedup_pkey (event_id)` = **110 MB 且是前者的严格前缀**
+> ⇒ ⇒ **改成 `UNIQUE (event_id) INCLUDE (occurred_at)`** ⇒ **一个索引当两个索引用**
+> ⇒ **净省 151 MB（该表 −38%）**；★ `INCLUDE` 列**不参与**唯一性判定、
+> **不参与**冲突目标推断 ⇒ `ON CONFLICT (event_id)` 逐字不用改。
+> ★★ **差点误判的地方**：`pkey` **不能直接删**（`domains/stats/event_writer.go:176` 的
+> `ON CONFLICT (event_id) DO UPDATE SET occurred_at = EXCLUDED.occurred_at`
+> 让它成为「occurred_at 可被改写」的载体 ⇒ 删它 = 改不变式）。
+> ★★★ **订正横幅八**：§143.26.6 第 ② 行的「现状才是好计划」**过强** —— 当时只有 EXPLAIN
+> （EXPLAIN 只证明「计划会选」）⇒ 补上热态交错 A/B 后是「**热态两者无显著差异；冷态未测到**」。
+> ★★ **夹具缺陷（诚实记录）**：第一次跑冷态 A/B 时**两臂预热是顺序的** ⇒ V1 的预热把页拉进了
+> shared_buffers ⇒ **V2 的「预热」根本不冷** ⇒ ⇒ ★ **要测冷态，每一臂都必须有自己的
+> 冷窗口**（用互不重叠的旧窗口）—— 与「审计自己的查询污染自己的读数」同族。
+> 门 `scripts/ursmcheck/section_14327_rollup_cost_test.go`（新，**10 条**）；
+> 可重跑 A/B 生成器入仓 `scripts/audit/build_rollup_ab.py`
+> （**从 Go 源码机械提取 `dailyInsertSQL`，只剥离 INSERT 头与 ON CONFLICT 尾** ⇒ 只读且不与生产漂移；
+> `--cold-pair` 支持给每臂一个互不重叠的冷窗口）；
+> 变异 **M1~M20 全红且按预期红**并全部还原（md5 逐字校验）。
+> 待拍板 **P1~P8**（**P1 = 把 4 段语句拆成独立事务**，性价比最高；
+> **P5 = 151 MB 的 pkey INCLUDE 改造**，需**现场取迁移号**）。
+> 完整记录见 runbook `§143.27`。
 
 ## 经验反馈闭环（vibe-coding Rule 66）
 

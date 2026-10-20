@@ -37670,6 +37670,21 @@ Limit  (cost=13606.18..171357.55 rows=1 width=4)
 | 「`WHERE gw_session_id = ?` 走这个视图**没有可用索引**（唯一匹配索引 `idx_session_turns_effective_session` 是 `tenant_id` 前导）」 | EXPLAIN：`session_turns_2026_09_heap_tenant_id_session_id_idx` / `session_turns_2026_10_effective_session` **都建在 CASE 表达式上**，`Index Cond` 直接命中 ⇒ 总 cost 13,746 | ★ **猜错** ⇒ **不是缺陷**（若按猜测去加索引，就是白加） |
 | 「`usage_facts ⋈ stats_event_dedup` 的 dedup 侧该加时间范围（现在每次重读 1.14M 行）」 | EXPLAIN A/B：**现状** = `Nested Loop` + `Index Only Scan using idx_stats_event_dedup_event_id_occurred_at`（每次探测 cost 0.55..0.99）；**加范围** = `Parallel Hash Join` + `Parallel Seq Scan on stats_event_dedup`（134 MB 全扫） | ★ **猜错** ⇒ **现状才是好计划** ⇒ 不该改 |
 
+> **订正横幅八（2026-10-20，§143.27 就地订正本表第 ② 行）**
+>
+> ★★★ **第 ② 行的「现状才是好计划」过强**，就地订正（**原文保留**）：
+> - **本表当时只有 EXPLAIN（无实测）** ⇒ ★ **EXPLAIN 只证明「计划会选」**，
+>   **不能证明「哪个更快」** ⇒ 那条结论当时**只该写到「现状是计划」为止**。
+> - **§143.27 补上了热态交错 A/B（预热后 ABAB×4）**：V1 中位 **3,757.6 ms** vs V2 中位 **3,101.5 ms**，
+>   **两组组内极差完全重叠**（3,467~5,105 vs 2,441~5,093）⇒ ⇒ **热态下两者无显著差异**
+>   ⇒ ⇒ **「现状更好」不成立**。
+> - ⇒ ⇒ ★★ **订正后的判词**：
+>   **「热态：两者无显著差异；冷态：未测到（夹具缺陷：两臂预热互相污染）⇒ 仍是待测项」**
+>   ⇒ ⇒ ★ **V2 的真正价值假设是「冷态更友好」**（顺序读 vs 73,520 次随机索引探测），
+>   **需要一次真正的冷态 A/B 证实或证伪** ⇒ 已登记为 §143.27.7 的 **P3**。
+> - ⇒ ⇒ ★★★ **本条同时是「自己上一节的结论也要复核」的一个实例**：
+>   上一节用 EXPLAIN 下了一个**超出 EXPLAIN 能证明的范围**的判词。
+
 ⇒ ⇒ ★★★ **通用式**：★ **EXPLAIN 只证明「计划会选」**（本节两条都是 plan 层面的判断），
 ⇒ ⇒ ⇒ **在改 SQL 之前必须先 A/B 两个版本的 plan**，否则很容易「优化」成更差的计划。
 
@@ -37757,3 +37772,292 @@ GOCACHE=/tmp/gocache-p1437 go test ./scripts/ursmcheck/ -run 'TestRunbook14326' 
 [[跨节订正前先自问「我要订正的这条真的错了吗」]] ·
 [[Go 的 ctx 超时够不着 DB 的 statement_timeout 时，Go 侧是死代码]] ·
 [[变异后门仍绿=没有守卫力]]。
+
+## §143.27 「P0 的答案」：rollup 的真实成本分解 + 为什么「抬超时」是盲改 + 一个 151 MB 的零语义存储优化（2026-10-20）
+
+### §143.27.0 结论先行
+
+§143.26.8 的 **P0** 写着：「**在真库上量一次 `dailyInsertSQL` 的真实耗时与真实数据量**
+⇒ 没有它，「抬超时」就是盲改」。本节把 P0 做掉了，产出五条：
+
+1. ★★★★★ **P0 的答案（真实数据量 + 真实耗时）**：
+   - **真实数据量**：`latest` CTE = **73,520 行**（3 天窗；`usage_facts` 共 **271,087 行** / 15 天）；
+   - **真实耗时（生产 110 次真实调用的读数）**：
+     `DELETE FROM stats_usage_daily` = **均值 4,818 ms**（删 6,879 行/次）
+     ＋ `INSERT`（6 臂聚合）= **热态中位 3,758 ms** / **冷态 12,804~26,295 ms**；
+   - ⇒ ⇒ **单事务里串了 4 段语句（daily DELETE / daily INSERT / monthly DELETE / monthly INSERT）**
+     ⇒ ⇒ **总耗时必然 > 30 s ⇒ 必然被角色级 `statement_timeout=30s` 杀掉**。
+2. ★★★★★ **「抬超时」确实是盲改**（本节正面回答 P0 的后半句）：
+   **热态只要 3.8 s**（远低于 30 s）⇒ **坏的不是「超时太短」，是「冷态惩罚 + 同事务串了 4 段语句 + 一段 4.8 s 的无效 DELETE」**
+   ⇒ ⇒ **抬到 60 s 只会把 30 s 的失败变成 45 s 的慢失败**。
+3. ★★★★ **那条 join 是「可证明的 no-op」**：
+   `usage_facts ⋈ stats_event_dedup` 在作业窗内 **一行都没丢**（0 行）、
+   **也永远不会重复**（join 键唯一：1,139,786 行 = 1,139,786 distinct `event_id` = 1,139,786 distinct `(event_id, occurred_at)`）
+   ⇒ ⇒ **冷态那 12.8~26.3 s 里的绝大部分，是买「什么都没发生」的钱**。
+4. ★★★★ **存储侧有一个 151 MB 的零语义优化**：
+   `stats_event_dedup` = **134 MB heap / 395 MB total**，
+   其中 `idx_stats_event_dedup_event_id_occurred_at (event_id, occurred_at)` = **151 MB**，
+   而 `stats_event_dedup_pkey (event_id)` = **110 MB** 且是前者的**严格前缀**
+   ⇒ ⇒ **把 pkey 改成 `UNIQUE (event_id) INCLUDE (occurred_at)`** 就能**一个索引同时当两种索引用**
+   ⇒ ⇒ **净省 151 MB（该表 −38%）**，`ON CONFLICT (event_id)` 语义不变（INCLUDE 列不参与冲突目标推断）。
+5. ★★★ **订正横幅八**：§143.26.6 第 ② 条的判词**过强** ⇒ 「现状才是好计划」应改为
+   **「热态两者无显著差异；冷态未测」**（见 §143.27.2 的交错 A/B 读数）。
+
+⚠ **本节对生产的写入 = 0**：全部只读
+（`pg_stat_statements` / `pg_stat_user_tables` / `pg_class` / `pg_index` / `pg_indexes` /
+`pg_roles` / `pg_settings` / `pg_stat_activity` / `EXPLAIN`（**不带 ANALYZE**）
++ 生产上的**只读 SELECT 计时**（`dailyInsertSQL` 的只读等价体，**INSERT 头与 ON CONFLICT 尾被机械剥离**）
++ 252 的 PG 日志**只读**解析）。
+**没有** DELETE / TRUNCATE / DROP / REINDEX / ANALYZE / 建索引 / 迁移 / 改配置 / 改 cron。
+
+### §143.27.1 P0 的答案：真实数据量与真实耗时
+
+#### §143.27.1.1 数据量（生产实测）
+
+| 对象 | 行数 | 时间范围 |
+|---|---:|---|
+| `usage_facts`（源） | **271,087** | 10-06 02:24 → 10-20 16:31 |
+| `stats_event_dedup`（去重台账） | **1,139,786** | 08-19 → 10-20 16:31 |
+| **作业窗内的 `latest`** | **73,520** | 10-17 00:00 → 10-20 00:00（UTC，3 天边界） |
+| `stats_usage_daily`（产物） | 113,952 | 08-18 → 10-20 |
+
+⇒ ⇒ ★★ **`latest` 的 73,520 行** = 6 臂 UNION ALL 的输入
+⇒ ⇒ ★★ **6 臂 × 73,520 = 441,120 行** 的中间集，再 `GROUP BY 9 列`。
+
+#### §143.27.1.2 耗时（两把尺子交叉验证）
+
+**尺子一｜`pg_stat_statements`（41 h 窗口，**只记成功语句** ⇒ 记的是「能跑通」的那些次）**
+
+| 语句 | calls | 均时 | 累计 | rows | `shared_blks_hit` | `shared_blks_read` |
+|---|---:|---:|---:|---:|---:|---:|
+| `DELETE FROM stats_usage_daily WHERE day_utc >= …` | **110** | **4,818.0 ms** | 529,974 ms | 756,663 | 1,131,219 | **95,530** |
+| `INSERT INTO stats_event_dedup …`（写侧，对照） | 45,825 | 16.6 ms | 760,462 ms | 45,825 | 560,432 | 99,122 |
+
+⇒ ⇒ ★★★ **DELETE 每次删 756,663 / 110 = 6,879 行，耗时 4,818 ms**
+⇒ ⇒ ★★★ **而且它的 `shared_blks_read = 95,530`（8 kB/块 ⇒ 745 MB 物理读 / 110 次 = 6.8 MB/次）**
+⇒ ⇒ ★★ **⇒ 这 4.8 s 是 I/O 等待**（252 宿主 load 14 / 4 核）⇒ **不是 CPU 成本**。
+
+**尺子二｜PG 日志（`duration:` 行，>1s 才记 ⇒ 只记尾部）**
+- 同一 pid 的相邻两条：`DELETE …` **4,162.319 ms**（00:03:47.721）→ `INSERT …` **在 00:04:17.729 被杀**
+  ⇒ ⇒ ★★★ **两条之间正好 30.0 s** ⇒ ⇒ **角色级 `statement_timeout=30s` 被精确命中**（不是超时预算算错）。
+
+#### §143.27.1.3 ★★★★ 单事务里串了 4 段语句
+
+`domains/stats/daily_monthly_rollup.go` 的 `Refresh` 在**一个事务**里依次做：
+
+```
+1. DELETE FROM stats_usage_daily WHERE day_utc >= … AND day_utc < …   （实测 4,818 ms）
+2. dailyInsertSQL   （6 臂聚合 + INSERT … ON CONFLICT DO UPDATE）        （冷态 12.8~26.3 s）
+3. DELETE FROM stats_usage_monthly WHERE month_start >= … AND status <> 'closed'
+4. monthlyInsertSQL （从 daily 行重建 monthly 桶）                      （日志实测 7 次 / 均 2,909 ms）
+⇒ tx.Commit()
+```
+
+⇒ ⇒ ★★★★★ **⇒ 任何一段失败 ⇒ 整个事务回滚 ⇒ 前面几段的工作全部白做**
+⇒ ⇒ ★★★★ **⇒ 而第 1 段的 DELETE 在每次「INSERT 被杀」的尝试里都被回滚了**
+⇒ ⇒ **⇒ 每次失败尝试白烧 ≈ 4.8 s 的 I/O + 12.8~26.3 s 的冷态聚合**。
+
+### §143.27.2 ★★★★ 冷态 vs 热态：26.3 s 是**冷缓存的账**，不是计算的账
+
+#### §143.27.2.1 热态交错 A/B（ABAB×4，预热后）
+
+同一时刻、同一条 SQL（只改 dedup 侧是否加时间范围），窗口 10-17→10-20（73,520 行）：
+
+| 轮 | V1（现状：Nested Loop + 索引探测） | V2（dedup 侧加时间范围：哈希连接候选） |
+|---|---:|---:|
+| 预热 | 4,974.558 ms | 5,446.323 ms |
+| 1 | 5,104.577 ms | 5,093.444 ms |
+| 2 | 3,466.997 ms | 2,441.267 ms |
+| 3 | 3,817.934 ms | 3,423.533 ms |
+| 4 | 3,697.357 ms | 2,779.419 ms |
+| **中位** | **3,757.6 ms** | **3,101.5 ms** |
+| **组内极差** | 3,467.0 ~ 5,104.6 ms | 2,441.3 ~ 5,093.4 ms |
+
+⇒ ⇒ ★★★ **两组极差完全重叠 ⇒ 热态下 V1 与 V2 无显著差异**（V2 中位低 17.5%，但落在噪声带内）
+⇒ ⇒ ★★ **⇒ 热态聚合只要 ~3.8 s**，远低于 30 s。
+
+#### §143.27.2.2 冷态读数（同一台机器、同一形态）
+
+| 读数 | 窗口 | 数值 | 性质 |
+|---|---|---:|---|
+| 我第一次跑 V0（`latest` CTE 单独） | 10-17→10-20 | **26,295.081 ms** | ★ **冷**（当天第一次碰这批页） |
+| V1 的预热（老窗口 10-08→10-12，70,444 行） | 10-08→10-12 | **12,803.644 ms** | ★ **冷**（12 天前的页） |
+| 同臂热态 | 10-08→10-12 | 2,028 ~ 3,257 ms | 热 |
+
+⇒ ⇒ ★★★★ **冷/热 ≈ 5.1×（12.8 s vs 2.5 s）** ⇒ ⇒ **成本的主体是「冷页的随机索引探测」**，
+不是聚合的计算量。
+
+⇒ ⇒ ★★★ **诚实记录本节的一个夹具缺陷**（★ 重要，否则读数会骗人）：
+第一次跑「冷态 A/B」时，**两臂的预热是顺序的**（先 V1 后 V2）⇒ **V1 的预热把页拉进了 shared_buffers**
+⇒ ⇒ **V2 的「预热」根本不是冷的**（2,511 ms）⇒ ⇒ **该次 A/B 的冷态读数只有 V1 一臂有效**。
+⇒ ★ **可复用纪律**：★ **要测冷态，每一臂都必须有自己的冷窗口**（用互不重叠的旧窗口），
+否则「预热」会互相污染 —— 这与「审计自己的查询会污染自己的读数」是同一族。
+
+#### §143.27.2.3 冷态的代价从哪来：随机索引探测
+
+`latest` 的 join 计划是 `Nested Loop` + `Index Only Scan using idx_stats_event_dedup_event_id_occurred_at`
+⇒ **73,520 次精确匹配索引探测**打进一张 **134 MB / 1.14M 行**的表
+⇒ ⇒ **冷态下 = 73,520 次随机物理读** ⇒ ⇒ **这就是那 12.8~26.3 s**。
+⇒ ⇒ ★★ **V2（加时间范围）会把计划变成 `Parallel Hash Join` + `Parallel Seq Scan`（顺序读 134 MB）**
+⇒ ⇒ **理论上冷态更友好** ⇒ ⚠ **但本节没测到冷态 A/B**（夹具缺陷）⇒ ⇒ **留作待测**。
+
+### §143.27.3 ★★★★ 那条 join 是「可证明的 no-op」
+
+生产实测（只读）：
+
+```
+1. 作业窗内 usage_facts 行数（不加 join）              = 73,520
+2. 作业窗内加 join 之后的行数                          = 73,520
+3. 被 join 丢掉的行（NOT EXISTS 无匹配）               = 0
+4. stats_event_dedup: 1,139,786 行 = 1,139,786 distinct event_id
+                     = 1,139,786 distinct (event_id, occurred_at)   ⇒ join 键唯一
+6. 存在多于一行 dedup 的 event_id 数                    = 0
+```
+
+⇒ ⇒ ★★★★★ **⇒ 这条 join 在当前数据上：既不丢行、也不可能重复**
+⇒ ⇒ ★★★★ **⇒ 它的 12.8~26.3 s（冷态）买的是「什么都没发生」**
+⇒ ⇒ ★★★ **但它不能直接删** —— 它的**语义**是「只算当前修订」：
+`usage_facts` 的键是 `(event_id, revision, occurred_at)`，
+若某事件被**修订**（`occurred_at` 变了），dedup 行仍保留旧的 `occurred_at` ⇒ 该行**就该被滤掉**。
+⇒ ⇒ ★★ **⇒ 正确形态不是「删 join」，而是「把它换成半连接（`EXISTS`）」**：
+半连接语义等价（只丢不重，而唯一性已证）⇒ 且**允许规划器选哈希半连接**（顺序读）⇒ **冷态更友好**。
+
+⇒ ⇒ ★★ **诚实边界**：★ 本节**没有**证明「修订日」不存在
+（只证明了 10-06→10-19 的**逐日行数完全相等** ⇒ 那段时间没有发生过 `occurred_at` 修订）。
+⇒ ⇒ **改成半连接是零语义风险的**；**直接删 join 不是**。
+
+### §143.27.4 ★★★★ 存储侧：一个 151 MB 的零语义优化
+
+#### §143.27.4.1 读数
+
+| 对象 | live tuples | heap | total（含索引） | `n_tup_ins` | `n_tup_del` | `n_tup_upd` | `n_dead_tup` |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| `stats_event_dedup` | 1,139,114 | **134 MB** | **395 MB** | 207,285 | 6 | 118 | 11,258 |
+| `stats_usage_daily` | 113,952 | 49 MB | 80 MB | 1,010,884 | **4,450,440** | 50,456 | 0 |
+| `stats_usage_monthly` | 27,789 | 18 MB | 26 MB | 971,122 | **964,940** | 0 | 0 |
+
+索引明细（`stats_event_dedup`）：
+
+| 索引 | 大小 | 定义 |
+|---|---:|---|
+| `idx_stats_event_dedup_event_id_occurred_at` | **151 MB** | `btree (event_id, occurred_at)` |
+| `stats_event_dedup_pkey` | **110 MB** | `UNIQUE btree (event_id)` |
+
+⇒ ⇒ ★★★★ **★ `stats_event_dedup_pkey` 是 `idx_stats_event_dedup_event_id_occurred_at` 的严格前缀**
+（`(event_id)` ⊂ `(event_id, occurred_at)`）⇒ ⇒ **凡是用 pkey 查的，都能用另一个索引查**
+⇒ ⇒ **两个索引并存 = 同一份 `event_id` 排序存了两遍**。
+
+#### §143.27.4.2 为什么 pkey 不能直接删（★ 差点误判的地方）
+
+`domains/stats/event_writer.go:176` 的写侧是：
+
+```sql
+INSERT INTO stats_event_dedup (event_id, occurred_at) VALUES (...)
+ON CONFLICT (event_id) DO UPDATE SET occurred_at = EXCLUDED.occurred_at
+```
+
+⇒ ⇒ ★★★★ **pkey 的唯一性是「一个 event_id 只有一行、且 `occurred_at` 可被改写」的载体**
+⇒ ⇒ **把唯一性搬到 `(event_id, occurred_at)` 会改变不变式**（同一 event_id 换个 occurred_at 就能再插一行）
+⇒ ⇒ ★★ **且 `ON CONFLICT (event_id)` 的冲突目标推断要求唯一索引的键列**恰好是 `(event_id)`
+⇒ ⇒ ★★ **⇒ 「删掉 pkey，把唯一性搬到另一个索引」= 错**（我先想到这条，被写侧代码否掉了）。
+
+#### §143.27.4.3 ★★★ 正确的形态：**一个索引当两个索引用**
+
+```sql
+-- 现状：两个索引
+CREATE UNIQUE INDEX stats_event_dedup_pkey            ON stats_event_dedup USING btree (event_id);
+CREATE        INDEX idx_stats_event_dedup_event_id_occurred_at
+                                     ON stats_event_dedup USING btree (event_id, occurred_at);
+
+-- 建议形态：一个索引
+CREATE UNIQUE INDEX stats_event_dedup_pkey
+  ON stats_event_dedup USING btree (event_id) INCLUDE (occurred_at);
+```
+
+⇒ ⇒ ★★★ **为什么这在 PG 上成立**：
+- `INCLUDE` 列**不参与**唯一性判定 ⇒ 唯一性仍是 **`event_id` 唯一** ⇒ 不变式不变；
+- `INCLUDE` 列**不参与**冲突目标推断 ⇒ `ON CONFLICT (event_id)` 仍能命中它 ⇒ **写侧 SQL 逐字不用改**；
+- `occurred_at` 作为 **payload** 存在索引里 ⇒ join `(event_id, occurred_at)` 可用
+  **`Index Only Scan`** 在 pkey 上完成 ⇒ ⇒ **另一个索引的 151 MB 变成冗余**。
+
+⇒ ⇒ ★★★★★ **⇒ 净收益：省 151 MB（该表 395 MB → 244 MB，−38%）**，
+⇒ ⇒ **且语义零变化**（唯一性不变、冲突目标不变、查询能力不减）
+⇒ ⇒ **★ 且顺带减负**：该表 `n_tup_ins = 207,285` ⇒ 每次写少维护一个索引 ⇒ **WAL 与写入路径都减**。
+
+⇒ ⇒ ⚠ **本节未写迁移、未改索引** ⇒ **生产行为未变**；落地需要：
+① **现场取迁移号**（§143.25.8 的纪律）；② **先验 `Index Only Scan` 在新形态下仍被选**（否则收益不成立）。
+
+### §143.27.5 ★★★ 订正横幅八：§143.26.6 第 ② 条的判词过强
+
+> **订正横幅八（2026-10-20，§143.27 就地订正 §143.26.6）**
+>
+> §143.26.6 的表格里，第 ② 行写的是：
+> 「『`usage_facts ⋈ stats_event_dedup` 的 dedup 侧该加时间范围』= **错**
+> ⇒ 现状是 `Nested Loop` + `Index Only Scan`；加范围后反而变成 `Parallel Hash Join` + `Parallel Seq Scan`（134 MB 全扫）
+> ⇒ ⇒ **现状才是好计划**」。
+>
+> ★★★ **「现状才是好计划」这句过强**，本节就地订正（**原文保留**）：
+> - **§143.26.6 当时只有 EXPLAIN（无实测）** ⇒ ★ **EXPLAIN 只证明「计划会选」**（既有纪律），
+>   **不能证明「哪个更快」** ⇒ 那条结论当时**只该写到「现状是计划」为止**。
+> - **本节补上了热态交错 A/B（ABAB×4）**：V1 中位 **3,757.6 ms** vs V2 中位 **3,101.5 ms**，
+>   **两组极差完全重叠** ⇒ ⇒ **热态下两者无显著差异** ⇒ 「现状更好」**不成立**。
+> - ⇒ ⇒ ★★ **订正后的判词**：
+>   **「热态：两者无显著差异；冷态：本节未测到（夹具缺陷，§143.27.2.2）⇒ 仍是待测项」**
+>   ⇒ ⇒ ★ **V2 的真正价值假设是「冷态更友好」**（顺序读 vs 73,520 次随机探测），
+>   **它需要一次真正的冷态 A/B 来证实或证伪** ⇒ 已登记为 §143.27.8 的 **P3**。
+
+### §143.27.6 诚实边界与本节**没做**的事
+
+- ★★★ **冷态 A/B 没做成**（两臂预热互相污染）⇒ ⇒ **「V2 冷态更好」仍是假设，不是结论**。
+- ★★ **没量到「作业一次成功的完整耗时」** ⇒ 4 段语句的串行耗时是**从各自读数拼出来的**，
+  不是一次端到端测量 ⇒ ⇒ **不能承诺「拆成 4 个事务后一定成功」**。
+- ★★ **「6,879 行/次」是 110 次调用的平均值** ⇒ 逐次波动未测。
+- ★★ **211 侧完全没查**（`pg_stat_statements` 未进 preload）⇒ ⇒ **211 上这个作业是不是也在被杀，无从得知**。
+- ★★ **改索引/改事务边界都是生产行为变更** ⇒ **本节全部只读** ⇒ **生产行为未变**。
+- ★★ **「join 是 no-op」的结论只对 10-06→10-19 成立**（那段时间 `occurred_at` 没有被修订）
+  ⇒ ⇒ **改成半连接是零风险的；删 join 不是。**
+
+### §143.27.7 待拍板（本节新增）
+
+| 编号 | 事项 | 性质 | 成本 | 备注 |
+|---|---|---|---|---|
+| **P1** | **把 rollup 的 4 段语句拆成独立事务**（至少让 daily DELETE 独立提交） | 代码 | 小 | ★ **最高性价比**：失败时 DELETE 不被回滚，且不再占 INSERT 的 30 s 预算 |
+| **P2** | **去掉「先删后插」**：INSERT 已带 `ON CONFLICT DO UPDATE` ⇒ DELETE 只为清理「源里已消失的 key」⇒ 改成只删不在新集合里的 key | SQL | 中 | ⇒ 顺带把 `n_tup_del 4,450,440` 降下来 |
+| **P3** | **冷态 A/B**（用互不重叠的旧窗口，给每一臂自己的冷窗口） | 只读 | 低 | ★ 验/证伪「V2 冷态更友好」⇒ §143.27.5 留下的口子 |
+| **P4** | **把 join 换成半连接（`EXISTS`）** | SQL | 小 | 语义等价（唯一性已证）⇒ 允许哈希半连接 ⇒ 冷态更友好 |
+| **P5** | **`stats_event_dedup_pkey` 改 `UNIQUE (event_id) INCLUDE (occurred_at)`** ⇒ 删掉那个 151 MB 的索引 | 迁移 | 中 | ★ **省 151 MB（−38%）**；需**现场取迁移号** + 先验 `Index Only Scan` 仍被选 |
+| **P6** | **窗口从 48 h 缩成增量**（每小时只算新到的那 1 小时） | 代码 | 中 | 根治「每小时重算 2 天」 |
+| **P7** | **`stats_usage_daily` 的 churn**（`n_tup_del` 是 `n_tup_ins` 的 4.4 倍）⇒ 复核 autovacuum 参数 | 配置 | 小 | `n_dead_tup = 0` ⇒ 目前被 autovacuum 兜住了 |
+| **P8** | **C4**：211 的 `pg_stat_statements` 进 preload | 配置 | 中 | ⇒ 211 上这类失败才可被量化（§143.26.8 的 P7 仍在） |
+
+⚠ **P1/P2/P4/P6 是「改生产行为」⇒ 需属主显式授权**；**本节对生产的写入仍为 0**。
+
+### §143.27.8 复核方法（可原样重跑）
+
+```bash
+# ── 1) ★ 生产只读：rollup 的真实耗时（pg_stat_statements：DELETE 与写侧对照）
+bash ~/.mavis-tools/lgwp-prod.sh /private/tmp/p14321/rollup_pgss.sql 300
+
+# ── 2) ★ 生产只读：join 是否真的 no-op（丢行数 / 唯一性 / 重复）
+bash ~/.mavis-tools/lgwp-prod.sh /private/tmp/p14321/join_noop.sql 600
+
+# ── 3) ★ 生产只读：存储与 churn（表大小 / 索引大小 / n_tup_del）
+bash ~/.mavis-tools/lgwp-prod.sh /private/tmp/p14321/storage.sql    300
+bash ~/.mavis-tools/lgwp-prod.sh /private/tmp/p14321/dedup_idx.sql  300
+
+# ── 4) ★ 生产只读：交错 A/B（SELECT 等价体，INSERT 头与 ON CONFLICT 尾机械剥离）
+python3 scripts/audit/build_rollup_ab.py      # 预热 + 交错 ABAB×N
+bash ~/.mavis-tools/lgwp-prod.sh /private/tmp/p14321/rollup_ab.sql 1500
+```
+
+⇒ ⇒ ★ **本节落地的门**（不连库，可原样重跑）：
+
+```bash
+# §143.27 文档门：P0 的答案 / 冷热分解 / join no-op 证明 / 151 MB 零语义优化 / 横幅八
+GOCACHE=/tmp/gocache-p1437 go test ./scripts/ursmcheck/ -run 'TestRunbook14327' -count=1 -v
+```
+
+★ 同族：[[先读量具再读产物]] · [[EXPLAIN 只证明「计划会选」]] ·
+[[阴性结论要当缺陷一样复核]] · [[自己上一节的结论也要复核]] ·
+[[跨节订正前先自问「我要订正的这条真的错了吗」]] · [[Go 的 ctx 超时够不着 DB 的 statement_timeout 时，Go 侧是死代码]] ·
+[[审计自己的查询会污染自己的读数]] · [[变异后门仍绿=没有守卫力]]。
