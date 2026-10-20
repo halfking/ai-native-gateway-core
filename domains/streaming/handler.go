@@ -116,6 +116,9 @@ type interceptingStreamWriter struct {
 	// blockRule 是把这次流掐断的规则 ID。owner 口径（2026-10-20）：拦截必须
 	// 让客户知道**因为什么规则**被拦，而不是只给一个空响应。
 	blockRule string
+	// blockReason 是同一次拦截的**人类可读**原因短语（r1039/D4）。客户端拿
+	// 它去提示用户「这次调用被拦了，要不要继续执行」。
+	blockReason string
 }
 
 func newInterceptingStreamWriter(w http.ResponseWriter, chain ResponseInterceptor, ctx context.Context, meta response.StreamMeta) *interceptingStreamWriter {
@@ -268,6 +271,7 @@ func (w *interceptingStreamWriter) finish() {
 				if rule := errorsx.PolicyBlockRuleID(err); rule != "" {
 					w.blockRule = rule
 				}
+				w.blockReason = policyBlockReasonFromError(err)
 			}
 			if w.blocked {
 				_ = pending
@@ -294,7 +298,7 @@ func (w *interceptingStreamWriter) finish() {
 	// protocol-shaped failure envelope so the client sees a recognisable
 	// terminal instead of a truncated connection.
 	if w.blocked && !w.terminalRendered {
-		w.writeTrustedTerminal(nativeStreamPolicyFailureFrame(w.meta.ClientProtocol, w.blockRule))
+		w.writeTrustedTerminal(nativeStreamPolicyFailureFrame(w.meta.ClientProtocol, w.blockRule, w.blockReason))
 	}
 }
 
@@ -307,25 +311,45 @@ func (w *interceptingStreamWriter) finish() {
 // 的只有 empty_model_response，因为它既没读到规则名，也没读到可解析的失败信封。
 //
 // ruleID 为空时仍然渲染终帧（形状合法、码可机器分类），只是没有规则名可报。
-func nativeStreamPolicyFailureFrame(protocol, ruleID string) []byte {
+//
+// r1039（D4）：extra[0] 是人类可读的原因短语（可选）——客户端要拿它提示用户
+// 「这次调用被拦了，要不要继续执行」。变参而不是新参数：既有调用点（与
+// domains/streaming/r1037_policy_rule_terminal_test.go 的判据）保持原样。
+func nativeStreamPolicyFailureFrame(protocol, ruleID string, extra ...string) []byte {
 	rule := ""
 	if ruleID != "" {
 		rule = `,"rule":"` + ruleID + `"`
 	}
+	reason := ""
+	if len(extra) > 0 && extra[0] != "" {
+		reason = `,"reason":"` + jsonEscapeSSEField(extra[0]) + `"`
+	}
 	switch protocol {
 	case "anthropic-messages":
-		return []byte("event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"api_error\",\"code\":\"output_policy_blocked\",\"message\":\"Response blocked by output policy\"" + rule + "}}\n\n")
+		return []byte("event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"api_error\",\"code\":\"output_policy_blocked\",\"message\":\"Response blocked by output policy\"" + rule + reason + "}}\n\n")
 	case "openai-responses":
 		// response 里的 id/status 是 Responses 协议形状的一部分：客户端的
 		// 解析器按 response 对象校验，缺字段会让整帧被丢掉——那正是
 		// 「客户端只看到空响应」的成因之一。
-		return []byte("event: response.failed\ndata: {\"type\":\"response.failed\",\"response\":{\"id\":\"resp_output_policy_blocked\",\"object\":\"response\",\"status\":\"failed\",\"error\":{\"code\":\"output_policy_blocked\",\"message\":\"Response blocked by output policy\"" + rule + "}}}\n\n")
+		return []byte("event: response.failed\ndata: {\"type\":\"response.failed\",\"response\":{\"id\":\"resp_output_policy_blocked\",\"object\":\"response\",\"status\":\"failed\",\"error\":{\"code\":\"output_policy_blocked\",\"message\":\"Response blocked by output policy\"" + rule + reason + "}}}\n\n")
 	default:
 		// r1028: carry a machine-classifiable code — agent clients (ZCode)
 		// map unknown api_error shapes to "reason=unknown retryable=false";
 		// the code lets them distinguish policy blocks from provider faults.
-		return []byte("data: {\"error\":{\"type\":\"api_error\",\"code\":\"output_policy_blocked\",\"message\":\"Response blocked by output policy\"" + rule + "}}\n\ndata: [DONE]\n\n")
+		return []byte("data: {\"error\":{\"type\":\"api_error\",\"code\":\"output_policy_blocked\",\"message\":\"Response blocked by output policy\"" + rule + reason + "}}\n\ndata: [DONE]\n\n")
 	}
+}
+
+// jsonEscapeSSEField 转义放进 SSE JSON 字符串里的文本。
+//
+// 原因短语里可能带引号/换行（参数位置、模型写的内容），不转义会让整帧
+// 变成非法 JSON —— 客户端按 JSON 解析失败就把帧丢掉，表现与「空响应」一样。
+func jsonEscapeSSEField(s string) string {
+	b, err := json.Marshal(s)
+	if err != nil {
+		return ""
+	}
+	return string(b[1 : len(b)-1])
 }
 
 // policyRuleFromChunkResult 取拦截结果里的规则 ID。
@@ -335,6 +359,24 @@ func policyRuleFromChunkResult(result *response.ChunkResult) string {
 	}
 	rule, _ := result.Metadata["policy_rule"].(string)
 	return rule
+}
+
+// policyReasonFromChunkResult 取拦截结果里的**人类可读**原因短语（r1039/D4）。
+func policyReasonFromChunkResult(result *response.ChunkResult) string {
+	if result == nil || result.Metadata == nil {
+		return ""
+	}
+	reason, _ := result.Metadata["policy_reason"].(string)
+	return reason
+}
+
+// policyBlockReasonFromError 从策略拦截错误里取人类可读原因短语。
+func policyBlockReasonFromError(err error) string {
+	var pbe *errorsx.PolicyBlockError
+	if errors.As(err, &pbe) && pbe != nil {
+		return pbe.Reason
+	}
+	return ""
 }
 
 // writeTrustedTerminal bypasses output interception only for a gateway-owned
@@ -375,6 +417,7 @@ func (w *interceptingStreamWriter) writeFrame(frame []byte) {
 			if result.ShouldBlock {
 				w.blocked = true
 				w.blockRule = policyRuleFromChunkResult(result)
+				w.blockReason = policyReasonFromChunkResult(result)
 				// R25-F: wrap the protocol-terminal sentinel so the handler's
 				// execErr fallback recognizes the policy terminal frame we
 				// already rendered and does not emit a second terminal.
@@ -4874,8 +4917,12 @@ goalRetryLoopDone:
 		auditBuilder.Success(false)
 		rt.Emit(state.EventFailed)
 		captureAndEmitFailure("output_policy_blocked", "Response blocked by output policy", p, c, http.StatusForbidden)
-		writeErrorJSONWithDebugProto(protocolOfRequest(r), w, http.StatusForbidden, requestID,
-			"Response blocked by output policy", "policy_violation", "output_policy_blocked", nil)
+		// r1039（D3）：非流式 403 必须带上**规则名**——流式终帧带（见
+		// nativeStreamPolicyFailureFrame），非流式原来不带，客户端因此无法
+		// 告诉用户「因为什么规则被拦、要不要继续执行」。
+		rule, reason := policyBlockErrorDetail(execErr)
+		writeOutputPolicyBlockedJSON(protocolOfRequest(r), w, http.StatusForbidden, requestID,
+			"Response blocked by output policy", "policy_violation", "output_policy_blocked", rule, reason, "")
 		return
 	}
 	// A held tool lane may be rejected while survival reports its write error
@@ -5851,8 +5898,12 @@ goalRetryLoopDone:
 					outputGovernanceTerminal = "output_policy_blocked"
 					p, c := candidateAttribution(result)
 					captureAndEmitFailure("output_policy_blocked", "Response blocked by output policy", p, c, http.StatusForbidden)
-					writeErrorJSON(w, http.StatusForbidden, requestID,
-						"Response blocked by output policy", "api_error", "output_policy_blocked")
+					// r1039（D3）：响应体带上规则名 + 人类可读原因 + 出问题的参数
+					// （拦截器在拦截那一刻记下的，见 outputcompliance 的
+					// policyBlockMetadata）——客户端据此提示用户「要不要继续」。
+					rule, reason, field := policyBlockMetadataFrom(interceptResult)
+					writeOutputPolicyBlockedJSON(protocolOfRequest(r), w, http.StatusForbidden, requestID,
+						"Response blocked by output policy", "api_error", "output_policy_blocked", rule, reason, field)
 					return
 				}
 				if interceptResult.ClientSignalKind != "" && !clientSignalKindAllowed(r, interceptResult.ClientSignalKind) {
@@ -8792,6 +8843,77 @@ func generateRequestID() string {
 
 func writeErrorJSON(w http.ResponseWriter, status int, requestID, msg, errType, code string) {
 	writeErrorJSONWithDebug(w, status, requestID, msg, errType, code, nil)
+}
+
+// policyBlockMetadataFrom 从拦截结果里取「规则名 / 人类可读原因 / 出问题的参数」。
+//
+// r1039（D3）：拦截器在拦截那一刻把三样东西记进 Metadata（见
+// domains/hooks/outputcompliance 的 policyBlockMetadata），写者据此渲染
+// 客户端可见的失败信封。缺项返回空串 ⇒ 响应里不出现该键。
+func policyBlockMetadataFrom(result *response.InterceptResult) (rule, reason, field string) {
+	if result == nil || result.Metadata == nil {
+		return "", "", ""
+	}
+	rule, _ = result.Metadata["policy_rule"].(string)
+	reason, _ = result.Metadata["policy_reason"].(string)
+	field, _ = result.Metadata["policy_field"].(string)
+	return rule, reason, field
+}
+
+// policyBlockErrorDetail 从策略拦截错误里取规则名与原因。
+//
+// 流式与非流式两条路径都把规则名装在 errorsx.PolicyBlockError 里；错误链
+// 上取不到就是空串（渲染时不出现该键），不影响失败信封的形状。
+func policyBlockErrorDetail(err error) (rule, reason string) {
+	var pbe *errorsx.PolicyBlockError
+	if errors.As(err, &pbe) && pbe != nil {
+		return pbe.RuleID, pbe.Reason
+	}
+	return "", ""
+}
+
+// writeOutputPolicyBlockedJSON 写非流式的策略拦截响应。
+//
+// r1039（D3）：非流式 403 原来只有 message/type/code/request_id，**丢了规则名**
+// ——流式终帧带 rule（nativeStreamPolicyFailureFrame），非流式不带，客户端因此
+// 既说不出因为什么规则被拦，也没法据此提示用户「这次调用被拦了，要不要继续
+// 执行」（owner 口径 2026-10-20）。
+//
+// 既有键（message / type / code / request_id）原样保留 ⇒ 向后兼容；新增
+// rule / reason / field 三个键，缺省时不出现。Anthropic 形状沿用既有约定
+// （顶层 type=error，error 对象里只放 type/message + 本次新增项）。
+func writeOutputPolicyBlockedJSON(proto string, w http.ResponseWriter, status int, requestID, msg, errType, code, rule, reason, field string) {
+	w.Header().Set("Content-Type", "application/json")
+	if requestID != "" {
+		w.Header().Set("X-Request-Id", requestID)
+	}
+	w.WriteHeader(status)
+	errObj := map[string]any{
+		"message": msg,
+		"type":    errType,
+	}
+	if proto == "anthropic" {
+		errObj["type"] = anthropicErrorType(errType, code)
+	} else {
+		errObj["code"] = code
+		errObj["request_id"] = requestID
+	}
+	if rule != "" {
+		errObj["rule"] = rule
+	}
+	if reason != "" {
+		errObj["reason"] = reason
+	}
+	if field != "" {
+		errObj["field"] = field
+	}
+	if proto == "anthropic" {
+		//nolint:errcheck // HTTP write error non-recoverable
+		json.NewEncoder(w).Encode(map[string]any{"type": "error", "error": errObj})
+		return
+	}
+	//nolint:errcheck // HTTP write error non-recoverable
+	json.NewEncoder(w).Encode(map[string]any{"error": errObj})
 }
 
 // writeErrorJSONCtx emits an error response whose message is translated via

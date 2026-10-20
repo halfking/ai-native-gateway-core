@@ -128,9 +128,39 @@ func TestLoadFinalRequestMetricsScopesTenantAndFilters(t *testing.T) {
 	if err != nil || got.SuccessRate != 0.75 || got.TotalTokens != 99 {
 		t.Fatalf("loadFinalRequestMetrics() = (%+v, %v)", got, err)
 	}
-	// R46 F3: 读面必须是 _request_logs 侧 hot∪母表视图（裸 hot 表对 8h 前
-	// 静默少报；turns 优先视图丢 provider 归属）。
-	for _, required := range []string{"FROM request_logs_with_current_month_without_request_class_due_at", "tenant_id = $1", "provider_id = $4", "credential_id = $5", "COALESCE(outbound_model, client_model) = $6"} {
+	// ★ 2026-10-20（890 真删轮）：读面断言**反转**。
+	//
+	// 原断言钉「读面必须是 `request_logs_with_current_month_without_request_class_due_at`」
+	// —— 那张包装视图**直读 v1 族**（真库实测其定义体第一行就是 `FROM _request_logs_hot`），
+	// 而 v1 族自 2026-10-13 停写后**恒 0 行** ⇒ 本端点此前**恒返回 0**（不报错）；
+	// 890 删掉 v1 族后它会变成 **42P01**。
+	//
+	// ⇒ 读面改成**会话族原生源** db.SessionFamilyTurnsSourceSQL()
+	// （hot ∪ parent + details 特征层 LEFT JOIN）⇒ 断言随之反转：
+	//   · **负向**：不得再出现那两张 890 已 DROP 的包装视图；
+	//   · **正向**：必须读到会话族的**两条腿**与 details 特征层
+	//     （少一条腿 = 漏读一侧表，是这一族最贵的静默缺陷）。
+	for _, forbidden := range []string{
+		"request_logs_with_current_month_without_request_class_due_at",
+		"request_logs_with_current_month_without_customer_id",
+		"public._request_logs",
+	} {
+		if strings.Contains(query, forbidden) {
+			t.Fatalf("final metrics query must not read the retired v1 relations (%q): %s", forbidden, query)
+		}
+	}
+	//
+	// ⚠ 两条腿必须用**各自的完整标记**断言，不能只写 "session_turns"：
+	// "session_turns" 是 "session_turns_hot" 的**子串** ⇒ 只判子串时
+	// 「只读 hot 一条腿」也能过 ⇒ **假绿**（实测：把源换成
+	// db.SessionFamilyTurnsHotSourceSQL() 后，子串版断言仍绿）。
+	for _, required := range []string{
+		"FROM public.session_turns_hot t", // 热表腿
+		"FROM public.session_turns t",     // 母表腿（漏它 = 漏读一侧表）
+		"session_turn_details",            // 特征层（provider_id / model_chosen 的来源）
+		"tenant_id = $1", "provider_id = $4", "credential_id = $5",
+		"COALESCE(outbound_model, client_model) = $6",
+	} {
 		if !strings.Contains(query, required) {
 			t.Fatalf("final metrics query missing %q: %s", required, query)
 		}

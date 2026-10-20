@@ -355,10 +355,19 @@ func TestSessionDigestBackfill_MetaKeysPinWriterContract(t *testing.T) {
 
 // TestSessionDigestBackfill_NilPoolLifecycle guards the defensive boot path:
 // a nil (or typed-nil) pool must not panic, and Start/Stop stay idempotent.
+//
+// ★ 2026-10-21 (R65 round): the ctx is bounded on purpose. This job's run()
+// has the same retry-backoff loop as the request_status one, so an unbounded
+// ctx would let a fixture regression hang until go test's default 600s
+// timeout. The package gate
+// (TestStatusBackfillTestsNeverHandAnUnboundedContextToTheRetryLoop) enforces
+// that rule.
 func TestSessionDigestBackfill_NilPoolLifecycle(t *testing.T) {
 	b := newSessionDigestBackfillForTest(nil, 0, 0, 0)
-	b.Start(context.Background())
-	b.Start(context.Background()) // second start is a no-op
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	b.Start(ctx)
+	b.Start(ctx) // second start is a no-op
 	b.Stop()
 	b.Stop() // second stop is a no-op
 }

@@ -55,7 +55,7 @@ func TestHealthWarnsWhenBaselineHasTooFewDays(t *testing.T) {
 	stub := `
 case "$1" in
   *"last_10minutes"*)      echo 30010 ;;
-  *"_([0-9]{8})"*)         echo "2026-10-18|2026-10-11|3" ;;   # ← 只剩 3 天
+  *"_([0-9]{8})"*)         echo "2026-10-18|2026-10-11|3|p|8" ;;   # ← 只剩 3 天（relkind=p, 分区总数 8）
   *ref_act*|*"WITHIN GROUP"*) echo '` + okSummary + `' ;;
   *)                        echo '` + okSummary + `' ;;
 esac`
@@ -73,7 +73,7 @@ func TestHealthStaysQuietWhenBaselineIsAdequate(t *testing.T) {
 	stub := `
 case "$1" in
   *"last_10minutes"*)      echo 30010 ;;
-  *"_([0-9]{8})"*)         echo "2026-10-18|2026-10-11|8" ;;
+  *"_([0-9]{8})"*)         echo "2026-10-18|2026-10-11|8|p|9" ;;   # relkind=p, 9 个分区（8 有数据 + 1 预建空分区）
   *)                        echo '` + okSummary + `' ;;
 esac`
 	_, stdout, stderr := runHealth(t, stub)
@@ -113,7 +113,7 @@ func TestHealthSummaryCarriesBaselineThinSuffix(t *testing.T) {
 	stub := `
 case "$1" in
   *"last_10minutes"*)      echo 30010 ;;
-  *"_([0-9]{8})"*)         echo "2026-10-18|2026-10-11|3" ;;
+  *"_([0-9]{8})"*)         echo "2026-10-18|2026-10-11|3|p|8" ;;   # relkind=p, 分区总数 8
   *)                        echo '` + okSummary + `' ;;
 esac`
 	_, stdout, _ := runHealth(t, stub)
@@ -158,6 +158,81 @@ func TestHealthSpanSQLExcludesEmptyPartitions(t *testing.T) {
 			"partition_manager 会预建明天的分区而它是 0 字节（实测 20261019 = 0 bytes /\n"+
 			"reltuples = -1）；按分区名计数会把空占位算成「一天有数据」\n"+
 			"（实测：不过滤返回 9，过滤返回 8）。", healthPath)
+	}
+}
+
+// TestHealthSpanProbeStaysQuietOnNonPartitionedTable —— §143.32 的 P18。
+//
+// ★ 背景（211 实测）：`ursm_node_snapshot_min` 在 211 上是**普通表**（relkind='r'），
+//   而这条探针只数「带日期的分区」⇒ 在普通表上**恒返回 0 天**
+//   ⇒ 于是它每轮报「0 day(s) with data」+「基线样本不足 / OK 判定偏宽松」
+//   ⇒ ★ **那是假告警**：211 的表里实测有 7 天数据（5,933,760 行）。
+//
+// ★ 修法：探针对「不适用」的形态必须说 **n/a**，不能把「数不到」说成「没有」；
+//   而「基线真薄」的形态（分区表 + 天数不足）**必须继续告警**（见上面两条）。
+func TestHealthSpanProbeStaysQuietOnNonPartitionedTable(t *testing.T) {
+	stub := `
+case "$1" in
+  *"last_10minutes"*)      echo 30010 ;;
+  *"_([0-9]{8})"*)         echo "0|0|0|r|0" ;;   # relkind='r' ⇒ 非分区表
+  *)                        echo '` + okSummary + `' ;;
+esac`
+	_, stdout, stderr := runHealth(t, stub)
+	if strings.Contains(stderr, "基线样本不足") {
+		t.Fatalf("★ 假告警：非分区表上探针数不到分区，**不能**报「基线样本不足」\n"+
+			"（211 实测：表里其实有 7 天数据）\n%s", stderr)
+	}
+	if !strings.Contains(stdout, "baseline span: n/a") {
+		t.Fatalf("非分区表上探针必须明确说 n/a（不能把「数不到」说成「0 天」）\n%s", stdout)
+	}
+	// ★ 主判据仍然必须出结论 —— 探针不适用不等于巡检不可用。
+	if !strings.Contains(stdout, "OK: 无真空洞") {
+		t.Fatalf("探针不适用时主判据仍应正常出结论：\n%s", stdout)
+	}
+}
+
+// TestHealthSpanProbeStaysQuietWhenPartitionNamesDoNotMatch —— §143.32 的 P18 另一半。
+//
+// ★ 是分区父表、但没有一个分区名匹配 `_YYYYMMDD` ⇒ 命名约定不适用 ⇒ 同样不能报「0 天」。
+func TestHealthSpanProbeStaysQuietWhenPartitionNamesDoNotMatch(t *testing.T) {
+	stub := `
+case "$1" in
+  *"last_10minutes"*)      echo 30010 ;;
+  *"_([0-9]{8})"*)         echo "0|0|0|p|4" ;;   # relkind='p'，4 个分区但没有一个名字匹配
+  *)                        echo '` + okSummary + `' ;;
+esac`
+	_, stdout, stderr := runHealth(t, stub)
+	if strings.Contains(stderr, "基线样本不足") {
+		t.Fatalf("分区名不匹配时不能报「0 天数据」：\n%s", stderr)
+	}
+	if !strings.Contains(stdout, "baseline span: n/a") {
+		t.Fatalf("分区名不匹配时探针必须说 n/a：\n%s", stdout)
+	}
+}
+
+// TestHealthSpanProbeSQLCarriesShapeFields —— 钉住「探针必须带上形态判据」。
+//
+// ★ 为什么要有这条（源码文本断言）：上面的用例用的是**假 psql**，
+//   它按 SQL 文本分派返回固定值 ⇒ ★ **SQL 少返回了形态字段，桩照样吐 5 段**，
+//   ⇒ 脚本读到空的 relkind ⇒ 就会走进 n/a 分支 ⇒ ★ **「真薄基线要告警」那条会被静默跳过**。
+//   ⇒ 所以「探针到底返回了什么」必须被源码文本钉住。
+func TestHealthSpanProbeSQLCarriesShapeFields(t *testing.T) {
+	b, err := os.ReadFile(filepath.Join("..", healthPath))
+	if err != nil {
+		t.Fatalf("read %s: %v", healthPath, err)
+	}
+	src := stripFullLineComments(string(b))
+
+	for _, n := range []string{
+		"relkind::text",           // 表的形态
+		"FROM pg_inherits WHERE inhparent", // 分区总数
+		`!= "p"`,                  // 非分区父表 ⇒ n/a
+		"baseline span: n/a",      // 「不适用」必须有明确措辞
+	} {
+		if !strings.Contains(src, n) {
+			t.Fatalf("%s 的基线跨度探针必须包含 %q —— 探针要能区分「数不到」与「没有」。\n"+
+				"§143.32 P18：211 上该表是普通表，探针恒返回 0 天 ⇒ 假告警。", healthPath, n)
+		}
 	}
 }
 

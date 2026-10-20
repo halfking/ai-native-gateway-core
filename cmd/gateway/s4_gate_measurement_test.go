@@ -42,6 +42,12 @@ const (
 //
 //	TEST_DATABASE_URL='postgres://llm_gateway:…@127.0.0.1:5432/llm_gateway?sslmode=disable' \
 //	  go test ./cmd/gateway/ -run TestS4GateMeasurement -count=1 -v
+//
+// ★ 2026-10-20（迁移 890，v1 族整体退役）：v1 族被整体 DROP 之后，**这道测量
+// 门要测的「第二侧」已经不存在**（对账退役，见 dual_read_validator.go）。
+// ⇒ 迁移后的库会**跳过**整道测量（探测在函数开头），迁移前的库照常跑。
+// 「退役后不许再假装测过」这个不变量由 dual_read_validator_test.go 与
+// dual_read_both_faces_test.go 承担；本文件保留的是**测量方法本身**的历史副本。
 
 // s4Windows are the windows reported. 1h is the freshness probe (is the mirror
 // losing rows *right now*), 168h is the validator's own default and the number
@@ -75,6 +81,52 @@ func TestS4GateMeasurement(t *testing.T) {
 		t.Fatalf("connect: %v", err)
 	}
 	defer conn.Close(ctx)
+
+	// ★ 2026-10-20（迁移 890，v1 族整体退役）：这道测量门测的是
+	// **v1 ↔ 会话族的漂移**，而 v1 族已被整体 DROP ⇒ 这道门要测的
+	// 「第二侧」已经不存在。下面那些查询（`s4ScopeBody` 读
+	// `_request_logs_hot` ∪ `_request_logs`）在退役库上会 **42P01**，
+	// 报出来像「代码坏了」，其实是被测对象没了。
+	//
+	// ⇒ 迁移后的库**跳过**（并说清为什么），迁移前的库照常跑完整测量。
+	// 这条 skip 的措辞里写明了「被测对象已退役」，不许被读成「跑过了」——
+	// skip 不构成证据（同款自述见本文件里其它 skip）。
+	//
+	// ★★ **R69 轮：守卫必须探测「测量 SQL 用到的全部关系」，而不是其中一个。**
+	//
+	// 原守卫只查 `to_regclass('public._request_logs')`（**母表**），
+	// 而下面的测量 SQL（`s4ScopeBody`）读的是
+	// **`_request_logs_hot` ∪ `_request_logs`**（**hot 表 + 母表**）⇒
+	// ⇒ **母表在、hot 表不在**时（这正是「v1 族只被删了一半」的形态，
+	// 实测：一次性库里 `_request_logs` 在、`_request_logs_hot` 不在）
+	// ⇒ 守卫**假阳性** ⇒ 门继续往下跑 ⇒ 在 hot 表上 42P01
+	// ⇒ ⇒ 报出来像「代码坏了」，其实是**守卫问错了问题**。
+	//
+	// ⇒ 正确的问法是：**测量要用的两个关系都在吗？**
+	// ⇒ 少一个 ⇒ 第二侧**不完整** ⇒ 跳过（并说清缺哪一个）。
+	var v1HotPresent, v1ParentPresent bool
+	if err := conn.QueryRow(ctx,
+		`SELECT to_regclass('public._request_logs_hot') IS NOT NULL,
+		        to_regclass('public._request_logs') IS NOT NULL`,
+	).Scan(&v1HotPresent, &v1ParentPresent); err != nil {
+		t.Fatalf("probe v1 family: %v", err)
+	}
+	if !v1HotPresent || !v1ParentPresent {
+		var missing []string
+		if !v1HotPresent {
+			missing = append(missing, "_request_logs_hot")
+		}
+		if !v1ParentPresent {
+			missing = append(missing, "_request_logs")
+		}
+		t.Skip("v1 族的**测量对象不完整**（缺 " + strings.Join(missing, " / ") +
+			"）—— 这道门测的是 v1↔会话族的漂移，测量 SQL（s4ScopeBody）读的是 " +
+			"`_request_logs_hot` ∪ `_request_logs`，**两个都要在**才能测。" +
+			"（v1 族已随迁移 885/890 退役；此时只剩其中一半，是**半退役**形态 ⇒ 漂移本身已无法测量。）" +
+			"⚠ skip 不构成证据。「对账退役」这个不变量由 " +
+			"cmd/gateway/dual_read_validator_test.go（零查询 + 未测量标记）与 " +
+			"dual_read_both_faces_test.go（生产源码里不再出现 v1 族关系名）承担。")
+	}
 
 	// ⚠️ Everything below runs in **one REPEATABLE READ transaction**, and that
 	// is load-bearing, not style. This test issues five separate queries over
@@ -849,17 +901,19 @@ func TestBlockerSkippedByFirstGate_PositiveAndNegative(t *testing.T) {
 	}
 }
 
-// s4ScopeBody is the **row source only** of mirrorDriftScopeSQL (which
-// relations, which columns, which window predicate), inlined so the window can
-// be a bound parameter instead of string concatenation.
+// s4ScopeBody is the **row source only** of the retired mirrorDriftScopeSQL
+// (which relations, which columns, which window predicate), inlined so the
+// window can be a bound parameter instead of string concatenation.
 //
 // The anti-join is NOT part of it — see the comment at the query: omitting it is
 // the exact bug this file was written after, and it is repeated here verbatim as
 // a warning rather than abstracted away. mirrorDriftClassSQL (the classification)
 // is referenced from production, not copied.
 //
-// TestS4GateSourceMatchesValidator below pins this copy's column list against
-// the production constant, so the duplication cannot rot unnoticed.
+// ★ 2026-10-20（迁移 890，v1 族整体退役）：它抄的那份生产 SQL（mirrorDriftScopeSQL）
+// 已经不存在了，本拷贝因此**只剩一份历史记录**——它只在 890 之前的库上还有意义
+// （TestS4GateMeasurement 里的退役探测会让迁移后的库跳过整道测量）。
+// 保留它而不是删掉：它是那段实测记录的可执行副本，删了这段历史就只剩注释。
 const s4ScopeBody = `
 	SELECT request_id, gw_session_id, tenant_id, work_type, request_status, error_kind,
 	       is_auto_request, origin_actor, request_type, task_type, success, ts
@@ -878,6 +932,26 @@ const s4ScopeBody = `
 // match: mirrorDriftClassSQL references rl.<col> by name, so a reordering is
 // harmless and a renaming is fatal. A whole-text equality check would fail on a
 // harmless whitespace change and train people to ignore this test.
+//
+// ★ 2026-10-20（迁移 890，v1 族整体退役）：这道门原来有**两半**：
+//
+//	(a) 拷贝（本文件的 s4ScopeBody）与**生产常量** mirrorDriftScopeSQL 对齐；
+//	(b) 拷贝的列清单与 db.MirrorDriftClassSQL 引用的 rl.<col> 对齐。
+//
+// (a) 那一半**随被测对象一起退役**：mirrorDriftScopeSQL 已从
+// dual_read_validator.go 删除（v1 族被 DROP ⇒ 那条语句 42P01），
+// 而「拷贝必须与生产常量一致」在没有生产常量时**无法成立**——
+// 断言要么永远红，要么被删成恒绿，两条都不是门。
+// ⇒ 删除 (a)，并把风险改由**另外两道门**承担：
+//   - 退役态下对账路径一条查询都不发、且如实报「未测量」
+//     （dual_read_validator_test.go 的 TestDualReadValidator_RetiredFamilyIssuesNoQuery）；
+//   - 对账这条路上不再出现 v1 族的关系名
+//     （dual_read_both_faces_test.go 的 TestDriftReconciliationMentionsNoRetiredV1Relation）。
+//
+// (b) 那一半**仍然有效**：拷贝还在（890 之前的库上这道测量仍可跑，
+// 见 TestS4GateMeasurement 里的退役探测），而它读出的列必须仍与分类表达式
+// 引用的列一致——否则即便在 890 之前的库上，拷贝与分类也会各走各的。
+// 所以它保留。
 func TestS4GateSourceMatchesValidator(t *testing.T) {
 	for _, col := range []string{
 		"request_id", "gw_session_id", "tenant_id", "work_type", "request_status",
@@ -894,10 +968,5 @@ func TestS4GateSourceMatchesValidator(t *testing.T) {
 			t.Errorf("s4ScopeBody no longer reads %s; the two storage faces (hot ∪ parent) are "+
 				"what make the scope complete", rel)
 		}
-	}
-	if !containsIdentifier(mirrorDriftScopeSQL, "session_turns_hot") ||
-		!containsIdentifier(mirrorDriftScopeSQL, "session_turns") {
-		t.Error("the validator's scope lost its session-family anti-join; every v1 row would " +
-			"then look mirrored and s4_ready would be true by construction")
 	}
 }

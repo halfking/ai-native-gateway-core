@@ -6,6 +6,23 @@ import (
 
 // S4 gate verdicts. 2026-10-02.
 //
+// ★ 2026-10-20 (migration 890, the v1 request_logs family is retired):
+// **this rule set has no production call site any more.** The S4 stop-write
+// gate existed to answer one question — "may we stop writing v1?" — and v1 no
+// longer exists: migration 890 dropped the whole `_request_logs*` family, and
+// the request-log path now refuses at the candidate-set step instead (the
+// candidate-set query reads the session family only; naming the dropped family
+// anywhere in one statement would fail the *whole* statement with 42P01).
+// `SummarizeFrom` therefore reports `v1_family_retired` — "there is nothing to
+// evaluate" — instead of running these rules, and `s4GateVerdictOf` is now
+// exercised by tests only.
+//
+// The rules are kept, not deleted: they are the pre-retirement rule set, and
+// they are the thing a future gate over whatever the next storage family is
+// would have to re-derive rather than invent. But do **not** read them as
+// "still enforced" — nothing in production calls them, and a reader who
+// assumes otherwise will trust a gate that is not running.
+//
 // The defect this file exists to close: `Summarize` reported `s4_ready = true`
 // whenever `genuine_loss_rows == 0`, and `storage.request_logs_write_enabled =
 // false` makes that condition **permanent and unconditional** — once V1 stops

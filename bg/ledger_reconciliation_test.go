@@ -126,7 +126,7 @@ func TestLedgerReconciler_RunOnce_RealDB(t *testing.T) {
 	tenant := fmt.Sprintf("recon_it_%d", time.Now().UnixNano())
 	defer func() {
 		_, _ = pool.Exec(ctx, `DELETE FROM credit_ledger_hot WHERE tenant_id = $1`, tenant)
-		_, _ = pool.Exec(ctx, `DELETE FROM _request_logs_hot WHERE tenant_id = $1`, tenant)
+		_, _ = pool.Exec(ctx, `DELETE FROM session_turns_hot WHERE tenant_id = $1`, tenant)
 		_, _ = pool.Exec(ctx, `DELETE FROM maas_reconciliation_findings WHERE tenant_id = $1`, tenant)
 	}()
 
@@ -169,9 +169,19 @@ func TestLedgerReconciler_RunOnce_RealDB(t *testing.T) {
 	// 这比断链更隐蔽：门确实是红的，但红的原因不是它声称要验的东西。
 	//
 	// 该 consume 行同时参与余额链，故 balance_after 取 126 = 151-25 保持自洽。
+	//
+	// ★ R68 改瞄（2026-10-21，v1 族退役）：原来种在 v1 的 `_request_logs_hot`
+	// ⇒ 890 之后必然 42P01。而比对侧的 usage 臂**早已**迁到会话族热腿
+	// （bg/ledger_reconciliation.go 的 usageCreditSQL：
+	//   `FROM db.SessionFamilyTurnsHotSourceSQL()`）
+	// ⇒ 夹具必须种会话族，否则 usage 臂为空 ⇒ 比对被判「不可判定」而跳过
+	//   ⇒ 那正是 usageArmEmptySkipReason 说的「假发现」防线 ⇒ 门会拿不到差异。
 	if _, err := pool.Exec(ctx, `
-		INSERT INTO _request_logs_hot (request_id, ts, tenant_id, credits_charged, total_tokens, success)
-		VALUES ('recon_it_req', now() - interval '1 hour', $1, 30, 10, TRUE)
+		INSERT INTO session_turns_hot
+			(session_id, turn_no, request_id, ts, tenant_id,
+			 credits_charged, prompt_tokens, completion_tokens, success)
+		VALUES ('recon_it_sess', 1, 'recon_it_req', now() - interval '1 hour', $1,
+			30, 10, 0, TRUE)
 	`, tenant); err != nil {
 		t.Fatalf("seed usage: %v", err)
 	}

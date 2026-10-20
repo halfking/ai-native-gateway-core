@@ -259,7 +259,7 @@ func TestErrorsTrendTenantScopedForTenantAdmin(t *testing.T) {
 
 // 2026-10-16 audit #154: role gate on /api/errors/trend. Route is registered
 // under AdminMiddleware (any authenticated user), but the SQL filter is
-// `$N = '' OR tenant_id = $N` and EffectiveTenantIDAll returns "" for
+// `$N = ” OR tenant_id = $N` and EffectiveTenantIDAll returns "" for
 // non-tenant_admin — a role=user caller would read cross-tenant aggregates.
 // Block before any DB call.
 func TestGetErrorsTrend_UserRoleForbidden(t *testing.T) {

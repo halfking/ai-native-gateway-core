@@ -18,6 +18,9 @@ import (
 // and V2 (public.session_turns) for one session during the cut-over
 // observation window. Non-zero TokenDiff / CostDiff means V1 and V2
 // disagree, which must be reconciled before flipping the primary read.
+//
+// ★ 2026-10-20（迁移 890，v1 族整体退役）：这个类型描述的比较**已不存在**。
+// Compare 现在返回错误（而不是零差异的 diff）——见该方法的注释。
 type DualReadDiff struct {
 	SessionID string
 	Compared  int     // number of V1 rows seen for the session
@@ -37,10 +40,11 @@ type DualReadDiff struct {
 //   - drifted matched rows per field (tokens / cost / success /
 //     credits_charged), each with up to SampleLimit request_ids.
 //
-// Both sides read the BASE tables (hot ∪ parent), not the compatibility
-// views: post-710 request_logs_with_current_month already contains turns
-// rows, so view-vs-turns would self-compare and hide V1-side drift; the
-// turns view predates 707 and lacks credits_charged.
+// ★ 2026-10-20（迁移 890，v1 族整体退役）：这个对账**退役**。
+// 上面三类差集都需要「另一侧」；v1 族被 DROP 之后没有另一侧。
+// ⇒ CompareDetail 现在**不做任何比较**，如实报告 V1Retired=true，
+// 且 ZeroDriftEvaluable=false（= 本次运行没有验证任何漂移）。
+// 零差异与「没做对账」必须长得不一样，否则响应读起来像「两侧一致」。
 type DualReadDetail struct {
 	SessionID string    `json:"session_id"`
 	Tenant    string    `json:"tenant"`
@@ -72,9 +76,19 @@ type DualReadDetail struct {
 	// 「dual_read_validator 对账 7 天零漂移」——照字面读，这道门在停写之后
 	// 永远无法宣告完成。与 Summarize 的真空为绿是同一根因的两个方向：
 	// 一个恒真、一个恒假，都不是观测。
+	//
+	// ★ 2026-10-20（v1 族退役）：对账本身退役 ⇒ ZeroDriftEvaluable 恒为 false、
+	// ZeroDrift 恒为 false。两者含义不变（false = 没有证据，不是「有漂移」），
+	// 但**理由变了**：不再是「v1 冻结所以比不了」，而是「第二侧已经不存在」。
 	ZeroDrift          bool `json:"zero_drift"`
 	ZeroDriftEvaluable bool `json:"zero_drift_evaluable"`
 	V1WritesEnabled    bool `json:"v1_writes_enabled"`
+
+	// V1Retired 为真 = v1 族已整体退役（迁移 890），**本次运行没有做任何对账**。
+	//
+	// 它与「对账结果是零差异」必须可区分：退役态下 v1_rows / v2_rows /
+	// 各个差集与漂移计数都是**未测量**，不是「测到了 0」。
+	V1Retired bool `json:"v1_retired"`
 }
 
 // DualDriftSample is one drifted request with the offending fields.
@@ -235,6 +249,9 @@ type MirrorDriftSummary struct {
 	// 单纯是 `GenuineLossRows == 0`，而停写会让这个条件**恒真**——S4 一关，
 	// 窗口内 V1 行恒为 0，于是无行可缺、GenuineLoss 恒 0、Ready 恒 true，
 	// 且响应 JSON 与健康态逐字节相同。判定规则见 dual_read_gate.go。
+	//
+	// ★ 2026-10-20（迁移 890，v1 族整体退役）：对账退役 ⇒ S4Ready **恒为
+	// false**，且它恒为 false 的理由是「没有第二侧可比」，不是「测到了漂移」。
 	S4Ready bool `json:"s4_ready"`
 
 	// 以下三项让「没验证」与「验证了、有漂移」在响应里可区分。把两者都折成
@@ -254,67 +271,61 @@ type MirrorDriftSummary struct {
 	// compared against its own sample size without a second query. `-1` means
 	// "not measured because the window had no traffic-bearing hours at all",
 	// which is distinct from a measured 0.
+	//
+	// ★ 2026-10-20（v1 族退役）：退役态下它恒为 -1，含义是「**未测量**」——
+	// 第二侧不存在，连「窗口里有没有 v1 流量」这个问题都不存在了。
 	V1CoveragePP float64 `json:"v1_coverage_pp"`
+
+	// V1Retired 为真 = v1 族已整体退役（迁移 890），**本次运行没有做任何对账**。
+	//
+	// ★ 它与「对账结果是零漂移」必须可区分：本结构里所有与 v1 有关的数字
+	// 在退役态下都是**未测量**（0 / -1），不是「测到了 0」。
+	// 「没验证」与「验证了、没有问题」长得一样，就是本仓反复吃过亏的那条
+	// （S4 的真空为绿）。所以这里给一个显式标记，而不是靠数字自证。
+	V1Retired bool `json:"v1_retired"`
 }
 
 // mirrorDriftClassSQL classifies a drifting V1 row into the three buckets.
 // Kept as one expression so the aggregate and the breakdown cannot disagree.
 //
-// The two exclusion arms are a statement-by-statement transcription of the
-// Go gates in internal/sessionv2mirror/hook.go — NOT an independent guess at
-// "what looks internal". Divergence here is not cosmetic: a row the hook
-// deliberately skipped but this expression calls genuine_loss keeps s4_ready
-// false forever and blocks the cutover that is actually safe.
-//
-//	internal_loopback ← hook.go:102 `!synthetic && IsInternalAutoEntry(entry)`
-//	    IsInternalAutoEntry (telemetry/internal_loopback.go:23-39):
-//	      1. requires is_auto_request IS TRUE (a NULL is NOT internal);
-//	      2. request_type  ∈ {title_gen, summary};
-//	      3. origin_actor  ∈ {auto-title-generator, auto-summary-generator,
-//	                          session-summary};
-//	      4. otherwise task_type IS NULL/'' (taskless auto entry).
-//	    work_type is deliberately NOT an arm: the Go gate never reads it, so
-//	    keying on it would mask real loss (is_auto_request=TRUE + task_type
-//	    set + work_type='session_title' is a business turn the hook mirrors).
-//	non_terminal ← hook.go:71 `!entry.Success && !isTerminalFailure(entry)`
-//	    isTerminalFailure (hook.go:991-1002) is true when request_status ∈
-//	    {failure, rate_limited} OR error_kind is non-empty; the row is
-//	    mirrored when Success is true. Negating both yields the arm below.
-//
-// SSOT: db.MirrorDriftClassSQL. 定义搬到 db 包是因为 admin 侧也需要同一个
-// 排除谓词（session_summary_v2 的 fallback turns 腿，见审计缺陷 7），
-// 留在 package main 就只能复制一份。
+// ★ 2026-10-20（迁移 890，v1 族整体退役）：本文件**不再使用**它——
+// 对账退役后没有「漂移的 v1 行」这个集合。保留这条转发是为了让既有门
+// （cmd/gateway/dual_read_class_parity_test.go 等按这个名字引用它）继续
+// 编译并**自行变红**，而不是让整个 cmd/gateway 的测试包编译失败。
+// SSOT 仍在 db.MirrorDriftClassSQL（admin 侧在用）。
 const mirrorDriftClassSQL = db.MirrorDriftClassSQL
 
-// mirrorDriftScopeSQL yields the drifting V1 rows for the window: rows that
-// have a gw_session_id but no session_turns counterpart. Reads BASE tables
-// (hot ∪ parent) on both sides for the same reason as CompareDetail — the
-// 710 view already contains turns rows, so view-vs-view would self-compare.
-const mirrorDriftScopeSQL = `
-SELECT rl.request_id, rl.gw_session_id, rl.tenant_id::text AS tenant_id,
-       rl.work_type, rl.request_status, ` + mirrorDriftClassSQL + ` AS drift_class
-FROM (
-    SELECT request_id, gw_session_id, tenant_id, work_type, request_status, error_kind,
-           is_auto_request, origin_actor, request_type, task_type, success, ts
-    FROM _request_logs_hot
-    WHERE ts >= $2 AND gw_session_id IS NOT NULL AND gw_session_id <> ''
-    UNION ALL
-    SELECT request_id, gw_session_id, tenant_id, work_type, request_status, error_kind,
-           is_auto_request, origin_actor, request_type, task_type, success, ts
-    FROM _request_logs
-    WHERE ts >= $2 AND gw_session_id IS NOT NULL AND gw_session_id <> ''
-) rl
-WHERE ($1 = '' OR rl.tenant_id = $1)
-  AND NOT EXISTS (SELECT 1 FROM session_turns_hot th WHERE th.request_id = rl.request_id)
-  AND NOT EXISTS (SELECT 1 FROM session_turns     tp WHERE tp.request_id = rl.request_id)`
+// s4GateReasonV1FamilyRetired 是退役态的 void 原因（2026-10-20，迁移 890）。
+//
+// 它与 dual_read_gate.go 里那三条**不是同一类**：
+//
+//	s4GateReasonV1WritesDisabled   v1 还在，只是没在写 ⇒ 「这次没法评估漂移」
+//	s4GateReasonNoV1Traffic         v1 还在，窗口里恰好没流量 ⇒ 同上
+//	s4GateReasonInsufficientV1Coverage / …WindowTooShort
+//	                               v1 还在，样本不够 ⇒ 同上
+//	s4GateReasonV1FamilyRetired     **第二侧已经不存在** ⇒ 不是「没法评估」，
+//	                               是「没有东西可评估」
+//
+// 之所以单列一条：前三条都在说「证据不足」，这一条在说「题目没了」。
+// 复用前三条中的任何一条，都会让读者去找「把 v1 写打开」这个 remedy——
+// 而那个 remedy 在退役之后**有害**（v1 族已 DROP）。
+const s4GateReasonV1FamilyRetired = "v1_family_retired"
+
+// ★ 2026-10-20（迁移 890，v1 族整体退役）：「漂移的 v1 行」这个集合
+// **不再存在**，所以本文件原先那条对账范围 SQL（读 v1 族两个面、
+// 配两个 NOT EXISTS 反连接）已删除。
+//
+// 删它的理由不是「v1 表空了」——空表也还能查；是**那一族被 DROP 了**：
+// 任何提到它的语句都会 42P01（整条语句失败，不是那条腿失败）。
+// 而即便查得出来，零行的一侧也不能支撑任何「零漂移」的结论。
+// ⇒ 对账退役，端点如实报告「没有对账可做」（见 SummarizeFrom）。
 
 // Summarize computes the population-level drift summary over the last
 // windowHours (1..720, default 168 = 7 days). tenant "" = all tenants.
 //
-// Cost note: the two NOT EXISTS probes are index lookups on
-// session_turns(request_id) per V1 row in the window. That is fine for the
-// default 7-day window but grows linearly; the endpoint is a diagnostic and
-// an S4 pre-gate, not a hot-path metric.
+// ★ 2026-10-20（迁移 890，v1 族整体退役）：对账退役 ⇒ 这个端点**不再测量**，
+// 如实报告「没有对账可做」。原先的成本注记（每行 v1 两个 NOT EXISTS 索引
+// 探针）随之作废：现在**一条查询都不发**。
 func (v *DualReadValidator) Summarize(ctx context.Context, tenant string, windowHours int) (*MirrorDriftSummary, error) {
 	return v.SummarizeFrom(ctx, tenant, time.Now(), windowHours)
 }
@@ -355,46 +366,34 @@ func clampWindowHours(h int) int {
 	return h
 }
 
-// v1CoverageHoursSQL measures, per hour of the window, whether v1 has rows and
-// whether either side has rows (§9.235 rule 3). One statement so numerator and
-// denominator come from the same snapshot.
+// ★ 2026-10-20（迁移 890，v1 族整体退役）：原先那条「按小时量 v1 覆盖率」的
+// SQL 已删除——它读 v1 族的两个面，那一族被 DROP 之后整条语句 42P01。
+// 而覆盖率这个量本身也失去了对象：没有第二侧，「窗口里 v1 覆盖了多少小时」
+// 这个问题不存在了（V1CoveragePP 恒为 -1 = 未测量）。
 //
-// ★ Both storage faces are read, and that is load-bearing, not stylistic.
-// `_request_logs_hot` is a **separate, disjoint table** (§9.160.7): reading only
-// the parent misses the newest rows, so a window that ends in the last hours
-// would score V1CoveragePP ≈ 0 and the gate would report a *false* void.
-//
-// That failure is tempting to "fix" by lowering s4MinV1CoveragePP, which
-// destroys the rule instead of the bug. §9.238 re-measured this window on the
-// real database: v1 genuinely wrote **zero** rows for 5 days (2026-09-06
-// 21:00:27 → 2026-09-11 21:21:10) while session_turns and request_wal both
-// kept writing — i.e. the false void and the true void look identical from the
-// verdict string. Only the measurement tells them apart, so the measurement
-// must not be the thing that silently degrades.
-//
-// TestS4GateCoverageSQLReadsBothFaces pins the four relations.
-const v1CoverageHoursSQL = `
-		WITH h AS (
-			SELECT generate_series($2::timestamptz, $3::timestamptz, interval '1 hour') AS b
-		), per_hour AS (
-			SELECT
-			  EXISTS (SELECT 1 FROM (
-			        SELECT tenant_id FROM _request_logs_hot WHERE ts >= h.b AND ts < h.b + interval '1 hour'
-			        UNION ALL
-			        SELECT tenant_id FROM _request_logs      WHERE ts >= h.b AND ts < h.b + interval '1 hour'
-			      ) rv WHERE $1 = '' OR rv.tenant_id::text = $1) AS has_v1,
-			  EXISTS (SELECT 1 FROM (
-			        SELECT tenant_id FROM session_turns_hot WHERE ts >= h.b AND ts < h.b + interval '1 hour'
-			        UNION ALL
-			        SELECT tenant_id FROM session_turns      WHERE ts >= h.b AND ts < h.b + interval '1 hour'
-			      ) sv WHERE $1 = '' OR sv.tenant_id::text = $1) AS has_session
-			FROM h
-		)
-		SELECT
-		  count(*) FILTER (WHERE has_v1),
-		  count(*) FILTER (WHERE has_v1 OR has_session)
-		FROM per_hour`
+// 保留这段注记是因为它记着一条**仍然有效**的教训：把「阈值调松」当成
+// 「修好覆盖率不足」是修错了方向——真正的修法是让测量本身不失真。
+// 覆盖率规则（dual_read_gate.go 的 s4MinV1CoveragePP）随对账一起退役；
+// 若将来要恢复任何「按小时的覆盖面」度量，先读那段注记里的三条坑。
 
+// SummarizeFrom is Summarize with the observation instant supplied by the
+// caller. It exists for callers that must take **two** measurements of the
+// same thing and compare them — see the note on dualReadQuerier and
+// TestS4GateStopsClaimingReadyAfterStopWrite.
+//
+// ★ 2026-10-20（迁移 890，v1 族整体退役）：**对账退役**，本函数**不发任何查询**。
+//
+// 为什么不是「把 v1 侧换成会话侧、继续比」：那会比的是**同一族的两张表**
+// （session_turns_hot vs session_turns），它的差集是**晋级延迟**，不是镜像漂移——
+// 把晋级延迟当成漂移，会让 S4 门永远红；而把它当成「零漂移」，就是本仓反复
+// 吃过亏的「真空为绿」。⇒ 诚实做法是**不测**，并把「没测」如实说出来。
+//
+// 为什么不能只把 v1 那一腿删掉、留下会话侧的数字：那些数字是**未测量**，
+// 而响应里如果只有数字没有标记，读者会把「没量」读成「量了，0」。
+// ⇒ 显式的 v1_retired 标记 + s4_gate_void=true + v1_coverage_pp=-1。
+//
+// 窗口参数（windowHours / now）仍然被如实回显：它们描述的是「本来会看的窗口」，
+// 便于把退役前后的读数并排看。
 func (v *DualReadValidator) SummarizeFrom(ctx context.Context, tenant string, now time.Time, windowHours int) (*MirrorDriftSummary, error) {
 	if v == nil || v.db == nil {
 		return nil, errors.New("dual-read validator not configured")
@@ -402,157 +401,27 @@ func (v *DualReadValidator) SummarizeFrom(ctx context.Context, tenant string, no
 	windowHours = clampWindowHours(windowHours)
 	start := now.Add(-time.Duration(windowHours) * time.Hour)
 
+	// 门控读数只取一次：settings.GetPlatformBool 每次调用都是一次
+	// settings_kv 往返（Global.EffectiveValue），取两次既多一次 DB 往返，
+	// 又让「两次读到的值可能不同」成为一个本不该存在的分支。
+	//
+	// ★ 注意语义：v1_writes_enabled 如实反映**开关读数**，而 v1_retired
+	// 说的是**对账路径已退役**。两者不是一回事：开关开着而族已退役，
+	// 意味着「v1 写入会失败」——那是要有人去处理的配置错误，
+	// 两个字段都如实报出来，矛盾就摆在那里而不是被藏起来。
 	sum := &MirrorDriftSummary{
 		WindowHours: windowHours,
 		WindowStart: start,
 		SampledAt:   now,
-		// -1 until measured; a zero here would be indistinguishable from a
-		// measured "v1 covered none of the window's hours", which is a real
-		// and much worse state.
-		V1CoveragePP: -1,
+		// -1 = 未测量（不是「测到 0%」）。
+		V1CoveragePP:     -1,
+		V1Retired:        true,
+		V1WritesEnabled:  currentV1WritesEnabled(),
+		S4Ready:          false,
+		S4GateVoid:       true,
+		S4GateVoidReason: s4GateReasonV1FamilyRetired,
 	}
-
-	// V1Rows in window (denominator, before the anti-join). Mirrors the scope
-	// filter of mirrorDriftScopeSQL so the ratio is meaningful.
-	if err := v.db.QueryRow(ctx, `
-		SELECT COUNT(*) FROM (
-			SELECT tenant_id FROM _request_logs_hot
-			WHERE ts >= $2 AND gw_session_id IS NOT NULL AND gw_session_id <> ''
-			UNION ALL
-			SELECT tenant_id FROM _request_logs
-			WHERE ts >= $2 AND gw_session_id IS NOT NULL AND gw_session_id <> ''
-		) x
-		WHERE ($1 = '' OR x.tenant_id::text = $1)`,
-		tenant, start,
-	).Scan(&sum.V1Rows); err != nil {
-		return nil, fmt.Errorf("v1 rows: %w", err)
-	}
-
-	// v1 coverage of the window, over hours that saw traffic on EITHER side
-	// (§9.235). Rule 3 of the S4 pre-gate needs this: a window where v1 wrote
-	// for one hour out of a hundred has v1Rows > 0 and would pass the older
-	// binary "any v1 traffic" rule, then report s4_ready=true on a 1% sample.
-	//
-	// ⚠ The series must span `generate_series(start, now, …)` — the window
-	// START and its END. Passing `start` as both arguments yields a one-hour
-	// series, and then coverage is 100% whenever that single hour happened to
-	// contain v1 data: rule 3 becomes dead code that reports "fully covered"
-	// forever. The offline control pair never saw it, because it feeds the
-	// verdict function a number instead of computing one; what caught it was
-	// the real-database assertion that V1CoveragePP must actually be measured.
-	//
-	// ⚠ $1 (tenant) must be **referenced** by the query, not merely passed.
-	// A parameter that appears in no expression leaves PostgreSQL with nothing
-	// to infer its type from: `could not determine data type of parameter $1
-	// (42P18)`. The first version of this query filtered nothing and had this
-	// bug, and it only surfaced because a real-database test called Summarize —
-	// the offline control pair was perfectly happy.
-	//
-	// The tenant filter is not decoration either: V1Rows above is tenant-scoped
-	// (`$1 = '' OR tenant_id::text = $1`), so an unfiltered coverage number
-	// would be measuring a different population than the row count it is
-	// supposed to qualify.
-	//
-	// One statement, so the numerator and the denominator come from the same
-	// snapshot — the same rule that §9.234 had to add to its own gate after a
-	// full-suite run went red while an isolated run stayed green. v1 rows and
-	// v1 traffic-hours are two different measurements; taking them at different
-	// instants can push the ratio across the floor.
-	var covered, trafficBearing int64
-	if err := v.db.QueryRow(ctx, v1CoverageHoursSQL, tenant, start, now).Scan(&covered, &trafficBearing); err != nil {
-		return nil, fmt.Errorf("v1 coverage: %w", err)
-	}
-	if trafficBearing > 0 {
-		sum.V1CoveragePP = 100 * float64(covered) / float64(trafficBearing)
-	}
-
-	// Class breakdown + row total, computed in one pass.
-	rows, err := v.db.Query(ctx, `
-		SELECT drift_class, COUNT(*), COUNT(DISTINCT gw_session_id)
-		FROM (`+mirrorDriftScopeSQL+`) d
-		GROUP BY drift_class`, tenant, start)
-	if err != nil {
-		return nil, fmt.Errorf("drift breakdown: %w", err)
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var class string
-		var n, sess int64
-		if err := rows.Scan(&class, &n, &sess); err != nil {
-			return nil, fmt.Errorf("drift scan: %w", err)
-		}
-		sum.V1RowsWithoutTurns += n
-		switch class {
-		case "internal_loopback":
-			sum.InternalLoopbackRows = n
-		case "non_terminal":
-			sum.NonTerminalRows = n
-		default:
-			sum.GenuineLossRows = n
-			sum.GenuineLossSessions = sess
-		}
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("drift rows: %w", err)
-	}
-
-	// Sessions entirely absent from the session family (any class) — this is
-	// what a session-scoped native read would return empty for.
-	if err := v.db.QueryRow(ctx, `
-		SELECT COUNT(DISTINCT gw_session_id) FROM (`+mirrorDriftScopeSQL+`) d`,
-		tenant, start,
-	).Scan(&sum.SessionsWithoutTurns); err != nil {
-		return nil, fmt.Errorf("sessions without turns: %w", err)
-	}
-
-	sum.ByWorkType, err = v.driftBuckets(ctx, "COALESCE(work_type, '<null>')", tenant, start)
-	if err != nil {
-		return nil, err
-	}
-	sum.ByRequestStatus, err = v.driftBuckets(ctx, "COALESCE(request_status, '<null>')", tenant, start)
-	if err != nil {
-		return nil, err
-	}
-
-	// 门控读数只取一次：settings.GetPlatformBool 每次调用都是一次
-	// settings_kv 往返（Global.EffectiveValue），取两次既多一次 DB 往返，
-	// 又让「两次读到的值可能不同」成为一个本不该存在的分支。
-	v1WritesOn := currentV1WritesEnabled()
-	sum.V1WritesEnabled = v1WritesOn
-	verdict := s4GateVerdictOf(s4GateInput{
-		v1Rows:       sum.V1Rows,
-		genuineLoss:  sum.GenuineLossRows,
-		v1WritesOn:   v1WritesOn,
-		v1CoveragePP: sum.V1CoveragePP,
-		windowHours:  sum.WindowHours,
-	})
-	sum.S4Ready = verdict.Ready
-	sum.S4GateVoid = verdict.Void
-	sum.S4GateVoidReason = verdict.Reason
 	return sum, nil
-}
-
-// driftBuckets groups the drifting rows by one projected key, tagging each
-// bucket with its dominant class so the breakdown explains itself.
-func (v *DualReadValidator) driftBuckets(ctx context.Context, keyExpr, tenant string, start time.Time) ([]MirrorDriftBucket, error) {
-	rows, err := v.db.Query(ctx, `
-		SELECT `+keyExpr+` AS k, drift_class, COUNT(*) AS n
-		FROM (`+mirrorDriftScopeSQL+`) d
-		GROUP BY 1, 2
-		ORDER BY 3 DESC`, tenant, start)
-	if err != nil {
-		return nil, fmt.Errorf("drift buckets: %w", err)
-	}
-	defer rows.Close()
-	out := make([]MirrorDriftBucket, 0, 8)
-	for rows.Next() {
-		var b MirrorDriftBucket
-		if err := rows.Scan(&b.Key, &b.Class, &b.Rows); err != nil {
-			return nil, fmt.Errorf("drift bucket scan: %w", err)
-		}
-		out = append(out, b)
-	}
-	return out, rows.Err()
 }
 
 func (v *DualReadValidator) handleDualReadDrift(w http.ResponseWriter, r *http.Request) {
@@ -614,46 +483,20 @@ func (v *DualReadValidator) handleDualRead(w http.ResponseWriter, r *http.Reques
 }
 
 // Compare runs the V1 vs V2 diff for (tenant, session).
-// lastN bounds how many V1 rows we look at; 0 / negative defaults to 10.
+//
+// ★ 2026-10-20（迁移 890，v1 族整体退役）：**这个比较退役**，本方法返回错误。
+//
+// 为什么是错误而不是「零差异的 diff」：零差异在这个语义下是**假的**——
+// 它会被读成「两侧一致」，而事实是「只有一侧，而且它没被读过」。
+// ⇒ 与其让一个不读 v1 的实现返回 (0, 0)，不如让它**响亮地失败**，
+// 让调用方知道这里已经没有什么可比的（CompareDetail / Summarize 走 HTTP，
+// 那里不能是 500，所以它们返回带 v1_retired 标记的报告）。
 func (v *DualReadValidator) Compare(ctx context.Context, tenant, session string, lastN int) (DualReadDiff, error) {
 	d := DualReadDiff{SessionID: session, SampleAt: time.Now()}
-	if v.db == nil {
+	if v == nil || v.db == nil {
 		return d, fmt.Errorf("dual-read: nil pool")
 	}
-	if lastN <= 0 {
-		lastN = 10
-	}
-
-	var count int
-	if err := v.db.QueryRow(ctx, `
-		SELECT count(*) FROM public._request_logs
-		WHERE tenant_id::TEXT=$1 AND gw_session_id=$2
-	`, tenant, session).Scan(&count); err != nil {
-		return d, fmt.Errorf("count v1: %w", err)
-	}
-	d.Compared = count
-
-	err := v.db.QueryRow(ctx, `
-		WITH v1 AS (
-			SELECT COALESCE(prompt_tokens + completion_tokens, 0) AS total_tokens,
-			       COALESCE(cost_usd, 0) AS cost
-			FROM public._request_logs
-			WHERE tenant_id::TEXT=$1 AND gw_session_id=$2
-		),
-		v2 AS (
-			SELECT COALESCE(prompt_tokens + completion_tokens, 0) AS total_tokens,
-			       COALESCE(cost_usd, 0) AS cost
-			FROM public.session_turns_with_current_month
-			WHERE tenant_id=$1 AND session_id=$2
-		)
-		SELECT
-			COALESCE((SELECT sum(total_tokens) FROM v1) - (SELECT sum(total_tokens) FROM v2), 0),
-			COALESCE((SELECT sum(cost) FROM v1) - (SELECT sum(cost) FROM v2), 0)
-	`, tenant, session).Scan(&d.TokenDiff, &d.CostDiff)
-	if err != nil {
-		return d, fmt.Errorf("diff query: %w", err)
-	}
-	return d, nil
+	return d, fmt.Errorf("dual-read: v1 family retired — no dual-read to perform")
 }
 
 // CompareDetail runs the row-level V1 vs V2 reconciliation for one session.
@@ -676,158 +519,28 @@ func (v *DualReadValidator) CompareDetail(ctx context.Context, tenant, session s
 		sampleLimit = 50
 	}
 
-	// Base tables both sides. v1: _request_logs_hot holds the pre-promote
-	// window, _request_logs the promoted partitions. v2: same family shape.
-	// token 表达式双侧同构（NULLIF(COALESCE(p,0)+COALESCE(c,0),0)）以便
-	// 等值比较而非口径比较。
-	const v1CTE = `
-		SELECT request_id,
-		       NULLIF(COALESCE(prompt_tokens, 0) + COALESCE(completion_tokens, 0), 0) AS tokens,
-		       cost_usd, success, credits_charged
-		FROM public._request_logs_hot
-		WHERE gw_session_id = $2 AND ($1 = '' OR tenant_id::TEXT = $1)
-		UNION ALL
-		SELECT request_id,
-		       NULLIF(COALESCE(prompt_tokens, 0) + COALESCE(completion_tokens, 0), 0) AS tokens,
-		       cost_usd, success, credits_charged
-		FROM public._request_logs
-		WHERE gw_session_id = $2 AND ($1 = '' OR tenant_id::TEXT = $1)
-	`
-	const v2CTE = `
-		SELECT request_id,
-		       NULLIF(COALESCE(prompt_tokens, 0) + COALESCE(completion_tokens, 0), 0) AS tokens,
-		       cost_usd, success, credits_charged
-		FROM public.session_turns_hot
-		WHERE session_id = $2 AND ($1 = '' OR tenant_id::TEXT = $1)
-		UNION ALL
-		SELECT request_id,
-		       NULLIF(COALESCE(prompt_tokens, 0) + COALESCE(completion_tokens, 0), 0) AS tokens,
-		       cost_usd, success, credits_charged
-		FROM public.session_turns
-		WHERE session_id = $2 AND ($1 = '' OR tenant_id::TEXT = $1)
-	`
-
-	// Row counts + credit totals (plan §8-D).
-	err := v.db.QueryRow(ctx, `
-		WITH v1 AS (`+v1CTE+`), v2 AS (`+v2CTE+`)
-		SELECT
-			(SELECT count(*) FROM v1), (SELECT count(*) FROM v2),
-			COALESCE((SELECT sum(credits_charged) FROM v1), 0),
-			COALESCE((SELECT sum(credits_charged) FROM v2), 0)
-	`, tenant, session).Scan(&d.V1Rows, &d.V2Rows, &d.V1CreditsTotal, &d.V2CreditsTotal)
-	if err != nil {
-		return d, fmt.Errorf("counts query: %w", err)
-	}
-
-	// Set difference both ways (plan §8-C).
-	if err := v.db.QueryRow(ctx, `
-		WITH v1 AS (`+v1CTE+`), v2 AS (`+v2CTE+`)
-		SELECT
-		  count(*) FILTER (WHERE side = 'v1'),
-		  count(*) FILTER (WHERE side = 'v2')
-		FROM (
-		  (
-		    SELECT request_id, 'v1' AS side FROM v1 WHERE request_id IS NOT NULL
-		    EXCEPT
-		    SELECT request_id, 'v1' FROM v2 WHERE request_id IS NOT NULL
-		  )
-		  UNION ALL
-		  (
-		    SELECT request_id, 'v2' AS side FROM v2 WHERE request_id IS NOT NULL
-		    EXCEPT
-		    SELECT request_id, 'v2' FROM v1 WHERE request_id IS NOT NULL
-		  )
-		) d
-	`, tenant, session).Scan(&d.OnlyInV1Count, &d.OnlyInV2Count); err != nil {
-		return d, fmt.Errorf("set-diff query: %w", err)
-	}
-
-	// Matched-row field drift + samples (single scan).
-	rows, err := v.db.Query(ctx, `
-		WITH v1 AS (`+v1CTE+`), v2 AS (`+v2CTE+`),
-		m AS (
-		  SELECT COALESCE(v1.request_id, v2.request_id) AS request_id,
-		         v1.tokens AS tok1, v2.tokens AS tok2,
-		         v1.cost_usd AS cost1, v2.cost_usd AS cost2,
-		         v1.success AS succ1, v2.success AS succ2,
-		         v1.credits_charged AS cred1, v2.credits_charged AS cred2
-		  FROM v1 FULL OUTER JOIN v2 ON v1.request_id = v2.request_id
-		  WHERE v1.request_id IS NOT NULL AND v2.request_id IS NOT NULL
-		)
-		SELECT request_id, tok1, tok2, cost1, cost2, succ1, succ2, cred1, cred2
-		FROM m
-		-- 计费/用量数值按 NULL↔0 归一化比较：v1 失败行 cost/credits 为 NULL
-		-- 而 turns 落 0（占位零值）不是计费事实漂移；真实数值差异仍然报告。
-		WHERE COALESCE(tok1, 0)  IS DISTINCT FROM COALESCE(tok2, 0)
-		   OR COALESCE(cost1, 0) IS DISTINCT FROM COALESCE(cost2, 0)
-		   OR COALESCE(succ1, false) IS DISTINCT FROM COALESCE(succ2, false)
-		   OR COALESCE(cred1, 0) IS DISTINCT FROM COALESCE(cred2, 0)
-		LIMIT $3
-	`, tenant, session, sampleLimit)
-	if err != nil {
-		return d, fmt.Errorf("drift query: %w", err)
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var s DualDriftSample
-		if err := rows.Scan(&s.RequestID, &s.TokenV1, &s.TokenV2, &s.CostV1, &s.CostV2,
-			&s.SuccessV1, &s.SuccessV2, &s.CreditsV1, &s.CreditsV2); err != nil {
-			return d, fmt.Errorf("scan drift sample: %w", err)
-		}
-		d.DriftSamples = append(d.DriftSamples, s)
-	}
-	if err := rows.Err(); err != nil {
-		return d, fmt.Errorf("drift samples: %w", err)
-	}
-	for _, s := range d.DriftSamples {
-		if normI(s.TokenV1) != normI(s.TokenV2) {
-			d.TokenDriftCount++
-		}
-		if normF(s.CostV1) != normF(s.CostV2) {
-			d.CostDriftCount++
-		}
-		if normB(s.SuccessV1) != normB(s.SuccessV2) {
-			d.SuccessDriftCount++
-		}
-		if normI(s.CreditsV1) != normI(s.CreditsV2) {
-			d.CreditsDriftCount++
-		}
-	}
-	// Drift counts are capped by sampleLimit; when the cap is hit, report the
-	// capped value conservatively (the zero-drift gate treats >0 as fail).
+	// ★ 2026-10-20（迁移 890，v1 族整体退役）：**对账退役**，下面那段
+	// 「两侧 CTE + 三个查询」的比较**整体删除**，本方法**不发任何查询**。
 	//
-	// Evaluability, not the verdict, is what the S4 gate changes here: with
-	// v1 writes off the v1 side is a frozen snapshot, so a set difference
-	// against it measures "time passed", not "data disagrees". Callers must
-	// read ZeroDriftEvaluable before treating false as evidence of drift.
+	// 删掉的理由（不是「v1 表空了」）：
+	//   - v1 族被 DROP ⇒ 任何提到它的语句 42P01（整条语句失败）；
+	//   - 就算能查，「只有一侧」也比不出漂移：零行的一侧不是「零漂移」的证据。
+	//
+	// 响应里剩下的数字全部是**未测量**（0），所以必须靠 v1_retired 标记与
+	// zero_drift_evaluable=false 把「没做对账」与「对账结果为零」区分开。
+	//
+	// 顺带说明：v2 侧（会话族）**仍然可用**，本次没有用它，是因为剩下的
+	// 「v2 有几行」在「没有 v1」的前提下没有可比对象——报了反而像是在做比较。
+	d.V1Retired = true
 	d.V1WritesEnabled = currentV1WritesEnabled()
-	d.ZeroDriftEvaluable = d.V1WritesEnabled
-	if !d.ZeroDriftEvaluable {
-		d.ZeroDrift = false
-		return d, nil
-	}
-	d.ZeroDrift = d.OnlyInV1Count == 0 && d.OnlyInV2Count == 0 && len(d.DriftSamples) == 0
+	// ZeroDriftEvaluable=false = 本次运行**没有验证任何漂移**；
+	// ZeroDrift=false = 没有证据说漂移为零（两者不是一回事，见字段注释）。
+	d.ZeroDriftEvaluable = false
+	d.ZeroDrift = false
 	return d, nil
 }
 
-// NULL↔0 / NULL↔false normalizers mirroring the drift WHERE clause.
-func normI(v *int64) int64 {
-	if v == nil {
-		return 0
-	}
-	return *v
-}
-
-func normF(v *float64) float64 {
-	if v == nil {
-		return 0
-	}
-	return *v
-}
-
-func normB(v *bool) bool {
-	if v == nil {
-		return false
-	}
-	return *v
-}
+// ★ 2026-10-20（迁移 890）：原先那三个 NULL↔0 / NULL↔false 归一化助手
+// （normI / normF / normB）随漂移计数一起删除——它们唯一的用途是把
+// 「两侧字段是否相等」判出来，而那个判断已经不存在了。
+// 留着它们会让下一个读代码的人以为对账还在跑。

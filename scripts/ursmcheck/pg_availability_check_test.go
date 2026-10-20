@@ -68,9 +68,30 @@ const fakeTimeoutBody = `#!/bin/sh
 #   到点 SIGTERM，被调用方以「被信号杀死」结束 ⇒ 本进程转成 124。
 #   124 与真 timeout 一致：被测脚本靠它区分「PG 卡死」和「PG 拒连」。
 #   透传实测过：rc=7 原样返回 7，rc=0 原样返回 0。
+#
+# ★★★ 2026-10-21 修（宿主负载型假红，形态二）：**父进程的 stderr 必须与子进程的分开**。
+#   bash 的 job control（set -m）在 fork 之后要调 setpgid，把后台作业放进新进程组；
+#   极端负载下这一步会失败，bash 把失败写成一行
+#     「bin/timeout: child setpgid (NNN to NNN): Operation not permitted」
+#   打到**它自己的 stderr**。而被测脚本正是用 "timeout ... 2>&1" 捕获这一路的
+#   ⇒ 那行噪声混进「psql 的输出」⇒ 字段数从 4 变成 1
+#   ⇒ 判据报「期望 4 个字段，实得 1」—— **症状指向被测脚本，真因在夹具**。
+#   （2026-10-21 实测命中一次：scripts/ursmcheck 整包红在
+#     TestOnconflictMatchExitsZero，失败消息里就带着这行 setpgid。）
+#   ⇒ 修法：**先把真 stderr 存进 fd 9，再把父的 stderr 静音**，
+#     子进程 exec 之前用 "exec 2>&9" 把 stderr 还原回真管道。
+#     ⇒ bash 自己的抱怨（父的、watcher 的）全进 /dev/null；
+#       而**被调用方的 stderr 一行不少**地回到被测脚本的捕获面。
+#     ⇒ 这不是「放宽断言」，是**把噪声从量具里拿掉**：判据本身没错。
+[ $# -ge 2 ] || exit 125
+exec 9>&2
+exec 2>/dev/null
 set -m 2>/dev/null
 d=$1; shift
-"$@" & pid=$!
+# ★ 子进程要**自己**是进程组长：set -m 之后 bash 给**后台作业**新进程组，
+#   而这里的后台作业是下面那个子 shell ⇒ 它 exec 成被调方后 pid/pgid 不变
+#   ⇒ 「kill -TERM -$pid」仍然能打到整个组（含被调方的孙进程）。
+( exec 2>&9; exec "$@" ) & pid=$!
 # ★ 必须杀**进程组**（负号），且必须 set -m 让后台作业自成一组。
 #   只 kill $pid 杀不掉：被调方是个 shell 正阻塞在 wait 子进程上，
 #   bash 推迟处理信号直到前台命令结束 ⇒ 「1 秒超时」实际要等满 5 秒。
@@ -314,7 +335,14 @@ func TestAvailabilitySeparatesTimeoutFromRefusal(t *testing.T) {
 	completed := filepath.Join(e.bin, "psql-completed")
 	// A slow notification is outside the query timeout. Observe whether the
 	// query completed, so scheduler/notification time cannot mimic a lost timer.
-	r := e.run(t, "FAKE_STATE=running", "FAKE_PSQL_SLEEP=5", "PG17_QUERY_TIMEOUT=1",
+	//
+	// ★ 2026-10-21：替身跑 **60s**（原 5s）。这道门用「完成标记」判别
+	//   （标记不存在 = 查询确实被截断），而替身**太短**会把「夹具的击杀晚到了」
+	//   误判成「查询没被截断」⇒ 负载一高就假红。
+	//   2026-10-21 实测：同族 onconflict 门的替身跑 5s 时，宿主 load 39 下
+	//   出现过 15.48s 的慢跑 ⇒ 击杀能晚到十几秒 ⇒ 替身必须比它长得多。
+	//   代价只落在变异验证（没有超时包裹 ⇒ 替身跑满 60s ⇒ 门红）。
+	r := e.run(t, "FAKE_STATE=running", "FAKE_PSQL_SLEEP=60", "PG17_QUERY_TIMEOUT=1",
 		"FAKE_PSQL_COMPLETED="+completed, "FAKE_NOTIFY_SLEEP=4")
 	if r.rc != 1 {
 		t.Fatalf("查询超时期望 rc=1，实得 %d。\n输出:\n%s", r.rc, r.out)

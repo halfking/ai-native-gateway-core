@@ -46,9 +46,30 @@ var requestLogsViewsWithSessionArm = map[string]struct{}{
 	"request_logs_with_current_month": {},
 }
 
-// v1OnlyRequestLogsViews 是本机实测为纯 v1 的视图。登记它们是为了让门能区分
-// 「忘了登记」与「确认过是 v1-only」——前者是缺口，后者是结论。
-var v1OnlyRequestLogsViews = map[string]struct{}{
+// v1OnlyRequestLogsViews 是**曾经**为纯 v1 的视图。
+//
+// ★ 890（v1 族退役）：这 3 张视图已随 v1 族**一起被删掉**（迁移 890 的步骤 4）
+// ⇒ 登记表随之清空。
+//
+// ⇒ 本表从"v1-only 视图的名单"变成了"**曾经**是 v1-only、现在应当已被删掉"的
+// 负向名单？—— **不是**。清空它，是因为这张表的语义是"真库上现在存在的纯 v1
+// 视图"，而它们已经不存在了。留在表里会让人以为"还有 3 张纯 v1 视图在服役"。
+//
+// ⇒ 但"删掉了"这件事必须**有门看着**，否则将来有人重建一张同名视图，门不会响。
+// ⇒ 新的负向断言在本文件下方：v1OnlyRequestLogsViews 里的名字**不允许**重新
+// 出现在真库上（要么真不存在，要么已被改造成含 session 臂）。
+var v1OnlyRequestLogsViews = map[string]struct{}{}
+
+// retiredV1OnlyRequestLogsViews 是 890 之后**被删掉**的纯 v1 视图名单。
+//
+// 它的作用是**负向**的：这三张名字在真库上**不允许**再以"纯 v1"形态出现。
+//   · 重新出现（纯 v1）⇒ 有人在重建它们 ⇒ 违反"v1 族已退役"的决定；
+//   · 以含 session 臂的形态出现 ⇒ 那是一次**合法**的重建（读面改读会话族），
+//     不算违规，但**必须**登记进 requestLogsViewsWithSessionArm。
+//
+// 为什么需要这张表：v1 族退役是**终态**，不是"暂时没有数据"。让"又有一张纯 v1
+// 视图"重新出现而无门可拦，等于把终态悄悄退回中间态。
+var retiredV1OnlyRequestLogsViews = map[string]struct{}{
 	"request_logs_bodies_with_current_month":                       {},
 	"request_logs_with_current_month_without_customer_id":          {},
 	"request_logs_with_current_month_without_request_class_due_at": {},
@@ -118,6 +139,28 @@ func TestRequestLogsViewSessionArmPinIsCurrent(t *testing.T) {
 				"（不影响本门判定，登记只是为了让「已确认」与「忘了看」可区分）", name)
 		}
 	}
-	t.Logf("真库实测：含 session 臂 %d 个，纯 v1 %d 个",
-		len(gotArm), len(gotOnly))
+	// ★ 890：退役名单的**负向**断言。
+	//
+	// ⚠ 这里必须用 `strpos` 类的**精确**判定，而不是 `LIKE` 配 `_`：
+	// SQL 的 LIKE 里 `_` 是**单字符通配符**（审计 §10.8 的坏尺子），
+	// 用它判"这个名字出现了没有"会把别的名字误判成命中。
+	//
+	// 语义：retiredV1OnlyRequestLogsViews 里的名字在真库上**不允许**以
+	// "纯 v1"形态存在（要么不存在，要么已被改造成含 session 臂）。
+	for name := range retiredV1OnlyRequestLogsViews {
+		if _, stillV1 := gotOnly[name]; stillV1 {
+			t.Errorf("视图 %s 已在 890 随 v1 族一并退役，却仍以**纯 v1**形态存在 —— "+
+				"v1 族退役是终态；要么它不存在，要么它已被改造成含 session 臂", name)
+		}
+	}
+	// 反向：v1OnlyRequestLogsViews 登记的名字必须**真的不存在**（登记的是
+	//"现在存在的纯 v1 视图"，而 890 之后这张表应当是空的）。
+	for name := range v1OnlyRequestLogsViews {
+		if _, exists := gotOnly[name]; !exists {
+			t.Errorf("v1OnlyRequestLogsViews 里的 %s 在真库上已不存在（890 已删）—— "+
+				"登记表陈旧：它是「现在存在的纯 v1 视图」名单", name)
+		}
+	}
+	t.Logf("真库实测：含 session 臂 %d 个，纯 v1 %d 个，退役名单 %d 个",
+		len(gotArm), len(gotOnly), len(retiredV1OnlyRequestLogsViews))
 }

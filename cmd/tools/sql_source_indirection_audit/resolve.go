@@ -126,22 +126,77 @@ func isRelationFragmentTail(frag string) bool {
 	return !strings.EqualFold(trimmed[i:], "distinct")
 }
 
-// sqlLineCommentRE 剥掉解析结果里的 SQL 行注释。
+// stripSQLComments 剥掉 SQL 注释：**行注释 `--` + 块注释 `/* */`**（块注释支持嵌套）。
 //
-// ⚠ **它今天不改变任何一条真实判定，别把它当门来依赖。**
-// 实测（2026-10-05，逐字 diff 全仓输出）：剥与不剥，输出**完全相同**。
-// 原因是仓库里唯一挂在解析结果上的 SQL 注释是 tenants.go 那句
-// `-- sqlreadguard:allow …（hot 腿同查询内联；… UNION ALL）`——它里面有
-// "UNION ALL" 但**没有** `from`/`join` 加标识符，所以扫不到。
+// # 为什么是手写扫描器而不是正则
 //
-// 留着它只有一个理由，且必须写明：它**只可能减少误报、不可能制造漏报**
-// （剥掉一段注释只会让可扫的关系名变少，而少的那部分本来就不是查询）。
-// 曾经为它写过一道门，夹具是
-// `-- 历史实现读 _request_logs，已改`——**仓库里不存在这种注释**，
-// 于是那道门在「删掉剥注释」这个变异下依然绿：一个为虚构场景写的判据，
-// 测不出任何东西。⇒ 门已删，只留这一行归一化，并把这个测量结果记在这里，
-// 免得下一个人再拿它当「必须有门」的理由。
-var sqlLineCommentRE = regexp.MustCompile(`--[^\n]*`)
+// PostgreSQL 的块注释**可以嵌套**（`/* /* … */ … */`）⇒ 正则**配不了对**嵌套
+// ⇒ 只能扫。
+//
+// # 为什么需要它（2026-10-21 R65 轮，跨会话通报带来的自查）
+//
+// 另一个会话实测过一条通用陷阱：**凡对 SQL 文本做子串断言/解析，先剥注释** ——
+// 注释里出现 `FROM public._request_logs` 足以让「这个视图有 v1 臂」的判定变成**假的**。
+// 本工具原来只剥行注释（`--`），**不剥块注释** ⇒ 那是一个**潜在**缺口：
+//
+//	★ 实测（2026-10-21 R65 轮）：加上块注释剥离后，工具输出与剥离前**逐字相同**
+//	  （canonical 122 处 / v1 0 处 / unresolved 19 处，报告全文 diff 为空）
+//	  ⇒ **今天没有一条判定受影响** ⇒ 是潜在缺口，不是活雷。
+//	★ 仓库现状也印证了它：`sql/objects/`（1767 个 .sql）、composer、883/884
+//	  里**一个块注释都没有**。
+//
+// ⚠ **已知局限（登记，不修）**：它**不识别字符串字面量** ⇒ 字面量里的 `--` / `/*`
+//
+//	会被当成注释起点。
+//	⇒ 今天实测零影响（同上逐字 diff）；若将来输出开始对不上，**先查这里**。
+//
+// # 它「只可能减少误报、不可能制造漏报」
+//
+// 剥掉一段注释只会让可扫的关系名变少，而少的那部分本来就不是查询。
+// 曾经为剥行注释写过一道门，夹具是 `-- 历史实现读 _request_logs，已改` ——
+// **仓库里不存在这种注释** ⇒ 那道门在「删掉剥注释」这个变异下依然绿：
+// 一个为虚构场景写的判据，测不出任何东西。⇒ 门已删。
+// ⇒ 但「没有门」不等于「不测」：**现在这道门测的是「剥注释器自己」**（能剥、且不剥过头），
+//
+//	夹具是**合成**的（真造一个块注释里带 v1 表名的视图）⇒ 不再依赖仓库里恰好存在。
+func stripSQLComments(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for i := 0; i < len(s); {
+		// 行注释：`--` 到行尾（行尾的 \n 保留，它不影响关系名识别）
+		if s[i] == '-' && i+1 < len(s) && s[i+1] == '-' {
+			for i < len(s) && s[i] != '\n' {
+				i++
+			}
+			continue
+		}
+		// 块注释：`/* … */`，**支持嵌套**（PG 允许）
+		if s[i] == '/' && i+1 < len(s) && s[i+1] == '*' {
+			depth := 0
+			for i < len(s) {
+				if i+1 < len(s) && s[i] == '/' && s[i+1] == '*' {
+					depth++
+					i += 2
+					continue
+				}
+				if i+1 < len(s) && s[i] == '*' && s[i+1] == '/' {
+					depth--
+					i += 2
+					if depth == 0 {
+						break
+					}
+					continue
+				}
+				i++
+			}
+			b.WriteByte(' ')
+			continue
+		}
+		b.WriteByte(s[i])
+		i++
+	}
+	return b.String()
+}
 
 // Site 是一个「关系名不是字面量」的 SQL 拼接点。
 type Site struct {
@@ -256,7 +311,7 @@ func isV1Relation(name string) bool {
 		return true
 	}
 	// 子查询形态：剥掉 SQL 行注释后逐个 FROM/JOIN 取关系名。
-	stripped := sqlLineCommentRE.ReplaceAllString(raw, " ")
+	stripped := stripSQLComments(raw)
 	for _, m := range fromRelationRE.FindAllStringSubmatch(stripped, -1) {
 		if v1Tables[firstRelationToken(m[1])] {
 			return true
@@ -368,7 +423,14 @@ func AuditRepo(root string) ([]Site, error) {
 	// §9.258：把「含 v1 臂的视图」集合挂到每个点位上。
 	// 放在最后统一挂，而不是让 auditPackage 一路透传 —— 集合是**全仓**推导的
 	// （读 sql/objects/views/），与被扫的包无关。
-	arms := viewsWithV1Arm(root)
+	//
+	// ★ §19.10 跨会话订正：这里必须用**部署时点**的集合，不是「源文件里有 v1 臂」。
+	//   `sql/objects/views/` 里有 5 个文件是**基线形态**的 v1 fallback 体
+	//   （基线逐语句应用 + CREATE VIEW 急切校验 ⇒ 写成会话族形态会让全新安装
+	//   42P01 中止），它们的**部署形态**由 883 / 884 换上（会话族，无 v1 臂）。
+	//   ⇒ 读这些视图的读方在运行期读的是会话族 ⇒ 判成 reads-v1-arm 是**假**的
+	//   （分类语义 =「行集会变小、不报错」⇒ 假阳性方向）。
+	arms := AuditV1Arms(root).DeploymentArmSet()
 	final := dedupeSites(out)
 	for i := range final {
 		final[i].v1ArmViews = arms

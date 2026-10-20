@@ -31,6 +31,8 @@ import (
 	"github.com/kaixuan/llm-gateway-go/i18n"
 	"github.com/kaixuan/llm-gateway-go/internal/httpx"
 	"github.com/kaixuan/llm-gateway-go/internal/jsonbody"
+
+	dbpkg "github.com/kaixuan/llm-gateway-go/db"
 )
 
 // AutoRouteHandlers groups the 5 admin endpoints for autoroute.
@@ -155,7 +157,7 @@ func (h *AutoRouteHandlers) handleDecisions(w http.ResponseWriter, r *http.Reque
 		SELECT ts, request_id, api_key_id, task_type, auto_profile,
 		       auto_confidence, client_model, outbound_model,
 		       credential_id, auto_decision, success, latency_ms, work_type
-		FROM request_logs_with_current_month_without_customer_id
+		FROM ` + dbpkg.SessionFamilyTurnsSourceSQL() + ` r
 		WHERE is_auto_request = TRUE
 		  AND ts >= NOW() - INTERVAL '7 days'
 	`

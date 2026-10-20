@@ -2,7 +2,11 @@ package db
 
 import (
 	"context"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -11,10 +15,31 @@ import (
 )
 
 // Contract test: db.go must wire ensureRequestLogsCurrentMonthView into the
-// startup migration chain, and the ensure must pin the 577+610 wrapper-chain
-// column contract (base UNION + customer_id + request_class/due_at) — the
-// shape whose loss broke every /api/logs request in the 2026-09-07 42P01
-// incident.
+// startup migration chain, and the ensure must pin the **session-only** view
+// contract — the shape whose loss broke every /api/logs request in the
+// 2026-09-07 42P01 incident.
+//
+// ★ 2026-10-20（迁移 890，v1 族最终删除）：本门的契约表**整体反转**。
+//
+// 原契约表钉的是 v1 时代的形状：v1 宽表的两条包装链
+// （`…_without_customer_id` / `…_without_request_class_due_at`）、
+// v1 基表字面量（`public._request_logs` / `public._request_logs_hot`）、
+// 以及为**冻结链**准备的 696/700 条件 lateral
+// （`baseHasFingerprint` / `hotHasRawModelName` / `LEFT JOIN LATERAL` …）。
+//
+// v1 族被 DROP 之后，那些形状**一个字都不该再出现**：canonical 视图只剩
+// 两臂（`session_turns_hot ∪ session_turns` + 734 details LEFT JOIN），
+// 包装链没有对象（那两张视图被 890 一起删了），条件 lateral 也没有对象
+// （它们是为「基线链是冻结的」这件事准备的）。
+//
+// ⇒ 反转后的契约表有两类条目，缺一不可：
+//
+//	① **必须在场**（正向）：canonical 视图名、投影列、两条会话臂、
+//	   details 家族、幂等探针的三个量（canonicalExists / bodyIsSessionOnly /
+//	   bodyHasV1Arm）、快路径短路。
+//	② **必须不在场**（负向）：v1 族的任何字面量与包装链视图名。
+//	   这一类必须有**阳性对照**（见下）——否则「负向断言恒绿」与
+//	   「它真的在查」不可区分。
 func TestApplyMigrationsIncludesRequestLogsViewEnsure(t *testing.T) {
 	source, err := os.ReadFile("db.go")
 	if err != nil {
@@ -28,38 +53,188 @@ func TestApplyMigrationsIncludesRequestLogsViewEnsure(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(ensureSrc)
+
+	// ---- ① 必须在场的正向契约 ----
+	for _, want := range []string{
+		// The three probe quantities the idempotent fast path is built on.
+		// bodyHasV1Arm is the **negative** one: it is what lets the composer
+		// notice that a pre-890 view (with a v1 arm) is still installed and
+		// replace it. Without it, a v1-arm view would survive the boot and
+		// every read of it would 42P01 on the dropped family.
+		"canonicalExists",
+		"bodyIsSessionOnly",
+		"bodyHasV1Arm",
+		// The shared projection builders (the two arms must project the same
+		// columns, in the same order, or the UNION's positional typing breaks).
+		"sessionFamilyProjection",
+		"SessionFamilyTurnsForSessionSQL",
+		// The v4 view comment (the operator-visible statement of which
+		// generation is installed).
+		"canonicalSessionOnlyComment",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("request_logs_view_schema.go missing contract %q", want)
+		}
+	}
+
+	// ---- ①' 必须在场的正向契约（SQL 字面量层）----
+	//
+	// 这一层查的是**字符串字面量**里的 SQL：视图名、投影列、两条会话臂、
+	// details 家族、UNION ALL。
+	//
+	// ⚠ 为什么把「标识符层」与「SQL 层」分开：注释里也会出现这些名字
+	//（本仓的注记文化是**大量**在注释里讲历史），而 `stripSQLComments`
+	//（同包已有）剥的是 **SQL 注释**（`--` / `/* */`），剥不掉 **Go 注释**
+	//（`//`）⇒ 用它当量具会把注记判成活代码。
+	// ⇒ 正确量具是**只取字符串字面量**（go/ast 精确到字面量）。
+	lits := goStringLiterals(t, "request_logs_view_schema.go")
 	for _, want := range []string{
 		"request_logs_with_current_month",
-		"request_logs_with_current_month_without_request_class_due_at",
-		"request_logs_with_current_month_without_customer_id",
-		"public._request_logs_hot",
-		"public._request_logs",
 		"customer_id",
 		"request_class",
 		"due_at",
-		// Migration 696 contract: system_fingerprint rides the canonical
-		// lateral stage when the base wrapper's frozen intersection lacks it;
-		// the shape probe keeps both wrapper generations idempotent.
+		// The session family's two arms + the 734 details feature layer.
+		"session_turns_hot",
+		"session_turns",
+		"session_turn_details",
+		"UNION ALL",
+	} {
+		if !containsIdentifierIn(lits, want) {
+			t.Errorf("request_logs_view_schema.go 的 SQL 字面量里缺少 %q", want)
+		}
+	}
+
+	// ---- ② 必须不在场的负向契约 ----
+	//
+	// ⚠ 为什么这一类必须有**阳性对照**：负向断言（"文件里不该有 X"）在
+	// 判据写坏时（例如误写成检查一个永远不出现的串）会**恒绿**，
+	// 而「检查没跑成」与「检查通过」必须长得不一样。
+	//
+	// ⚠ 为什么用 `containsSQLIdentifier` 而不是 `strings.Contains`：
+	// 朴素包含会把 `public.request_logs_with_current_month`（**必须在场**的
+	// canonical 视图名）判成「出现了 public.request_logs」——那是假阳性，
+	// 而且是那种「改对代码后门反而更红」的方向。⇒ 判定必须按**标识符边界**。
+	//
+	// ⚠ 为什么按**标识符边界**判：`public.request_logs` 是
+	// `public.request_logs_with_current_month` 的**前缀**，朴素包含会把
+	// 「必须在场」的 canonical 视图名判成「必须不在场」——那是「改对代码后
+	// 门反而更红」的方向。
+	for _, unwanted := range []string{
+		// v1 族基表（两代物理名都算：部署通道会词法改写）。
+		"public._request_logs",
+		"public.request_logs",
+		"_request_logs_hot",
+		"request_logs_hot",
+		"_request_logs_bodies",
+		// 890 一起删掉的那两张包装链视图：composer 不该再重建它们。
+		"request_logs_with_current_month_without_customer_id",
+		"request_logs_with_current_month_without_request_class_due_at",
+		// 为冻结链准备的 696/700 条件 lateral（其对象已不存在）。
 		"baseHasFingerprint",
-		// Migration 700 contract: raw_model_name rides the same conditional
-		// lateral stage (the frozen base intersection predates 485, so the
-		// drift scanner's SELECT hit 42703 on every cycle until 700), and the
-		// lateral itself is trimmed to columns the hot table actually has so
-		// self-heal never regresses on tables lagging 485/603.
 		"baseHasRawModelName",
 		"hotHasFingerprint",
 		"hotHasRawModelName",
 		"source.raw_model_name",
 		"NOT IN ('customer_id', 'request_class', 'due_at')",
 		"LEFT JOIN LATERAL",
-		// The fast path must short-circuit on a healthy view so a no-op boot
-		// never takes DDL locks.
-		"canonicalExists",
 	} {
-		if !strings.Contains(text, want) {
-			t.Errorf("request_logs_view_schema.go missing contract %q", want)
+		if containsIdentifierIn(lits, unwanted) {
+			t.Errorf("request_logs_view_schema.go 的 SQL 字面量里仍出现 %q —— v1 族已被迁移 890 整体 DROP，"+
+				"composer 里任何提到它（或为冻结链准备的包装/条件 lateral）的语句都会 42P01，"+
+				"而 CREATE OR REPLACE VIEW 是**即时**校验的 ⇒ 整个 boot 失败。",
+				unwanted)
 		}
 	}
+
+	// ---- 阳性对照：证明上面那条负向判据**分得清** ----
+	//
+	// 喂一段确实含 v1 族引用的文本，断言它**会**被同一条判据抓到。
+	// 没有它，上面那个循环若把判据写坏（例如比较了一个永远不出现的串），
+	// 整段会恒绿。
+	//
+	// ⚠ 对照里**必须包含** `public.request_logs_with_current_month`
+	//（canonical 视图名）—— 否则这条对照就测不到「边界判定」这件事本身：
+	// 一个只做朴素包含的判据也会通过它，而它恰恰是这里要防的失效。
+	sample := []string{
+		"SELECT * FROM public._request_logs_hot rl UNION ALL SELECT * FROM public.session_turns t",
+		"-- canonical view: public.request_logs_with_current_month",
+	}
+	if !containsIdentifierIn(sample, "public._request_logs_hot") {
+		t.Error("阳性对照失效：含 v1 族引用的样本没有被负向判据抓到 —— " +
+			"上面那个负向断言此时恒绿，测不到任何东西")
+	}
+	if containsIdentifierIn(sample, "public.request_logs") {
+		t.Error("阳性对照失效：canonical 视图名 public.request_logs_with_current_month " +
+			"被当成了 v1 基表 public.request_logs —— 判据没有按标识符边界判定，" +
+			"它会把「必须在场」的 canonical 视图名判成「必须不在场」")
+	}
+	// 反向对照：v1 **母表**与 v1 **hot 表**是两个不同的关系，
+	// 边界判定必须分得开（`public._request_logs` 不该匹配 `public._request_logs_hot`）。
+	if containsIdentifierIn(sample, "public._request_logs") {
+		t.Error("边界判定过宽：public._request_logs_hot 被当成了 public._request_logs —— " +
+			"两者是不同的关系（母表 vs 热表），判据必须按标识符边界区分")
+	}
+}
+
+// goStringLiterals 解析一个 Go 文件，返回它**全部字符串字面量**的值
+// （含解释型字符串与 raw string）。
+//
+// 为什么需要它：判定「composer 的 SQL 里有没有提到 v1 族」时，量具必须是
+// **可执行的那部分**——Go 注释里讲历史时也会提到这些名字，而本仓的注记文化
+// 是**大量**讲历史。用整份源码当量具会把注记判成活代码（假阳性，
+// 且方向是「改对代码后门反而更红」）；用「剥 SQL 注释」的量具也不行
+// （`stripSQLComments` 剥 `--` / `/* */`，剥不掉 Go 的 `//`）。
+//
+// ⇒ 精确量具 = **字符串字面量集合**。go/ast 给出它，不需要正则。
+func goStringLiterals(t *testing.T, path string) []string {
+	t.Helper()
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, path, nil, 0)
+	if err != nil {
+		t.Fatalf("parse %s: %v", path, err)
+	}
+	var out []string
+	ast.Inspect(f, func(n ast.Node) bool {
+		lit, ok := n.(*ast.BasicLit)
+		if !ok || lit.Kind != token.STRING {
+			return true
+		}
+		v, err := strconv.Unquote(lit.Value)
+		if err != nil {
+			// raw string 用 strconv.Unquote 也能解；解不了就退回字面量原文。
+			v = lit.Value
+		}
+		out = append(out, v)
+		return true
+	})
+	return out
+}
+
+// containsIdentifierIn 报告 lits 里是否出现了**独立**的标识符 ident。
+//
+// 「独立」= 前后两侧都不是 [A-Za-z0-9_]。这条边界是必须的：
+// `public.request_logs` 是 `public.request_logs_with_current_month` 的**前缀**，
+// 朴素包含会把「必须在场」的 canonical 视图名判成「必须不在场」。
+func containsIdentifierIn(lits []string, ident string) bool {
+	isWord := func(b byte) bool {
+		return b == '_' || (b >= '0' && b <= '9') || (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z')
+	}
+	for _, s := range lits {
+		for i := 0; i+len(ident) <= len(s); i++ {
+			if s[i:i+len(ident)] != ident {
+				continue
+			}
+			if i > 0 && isWord(s[i-1]) {
+				continue
+			}
+			end := i + len(ident)
+			if end < len(s) && isWord(s[end]) {
+				continue
+			}
+			return true
+		}
+	}
+	return false
 }
 
 // Live round-trip: rebuild the whole wrapper chain from scratch hot/parent

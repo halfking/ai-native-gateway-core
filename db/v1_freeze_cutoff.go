@@ -40,6 +40,18 @@ package db
 // （autoroute 指标 rollup）共用——**冻结点只允许这一种拼写**（与
 // settings.KeyRequestLogsWriteEnabled 同一教训：分界值散写多处的门，
 // 早晚有一处被单独改掉）。
-const V1FreezeCutoffSQL = `(SELECT GREATEST(
-	COALESCE((SELECT max(ts) FROM public._request_logs_hot), '-infinity'::timestamptz),
-	COALESCE((SELECT max(ts) FROM public._request_logs), '-infinity'::timestamptz)))`
+//
+// ★ 890（v1 族退役）：冻结点**退化为常数 -infinity**。
+//
+// 为什么不是「让 SQL 自己报错」：冻结点是**拼进大查询**的标量子句，
+// 42P01 会把整条查询（租户统计四聚合 / autoroute 指标 rollup）一起带走，
+// 而它的语义后果只是「会话腿多收几行历史」——一个**可精确表达**的常量。
+// ⇒ 与 v1 族退役后的真实状态一致：v1 腿恒空 ⇒ 冻结点 = -infinity ⇒
+// 会话腿收全部行。
+//
+// ⚠ 这条常量与 890 迁移是**同一个决定的两半**：迁移删表、代码把冻结点
+// 钉成常数。缺任一半 ⇒ 另一半要么 42P01（代码仍读 v1），要么恒 -infinity
+// 而**遮住**迁移没跑的事实（v1 还在、还有历史行、冻结点却说"没有历史"）。
+// ⇒ 有门钉住两者同时到位（见 db/request_logs_view_schema_test.go 的
+// 「冻结点常数 ⇔ v1 族不存在」互钉断言）。
+const V1FreezeCutoffSQL = `(SELECT '-infinity'::timestamptz)`

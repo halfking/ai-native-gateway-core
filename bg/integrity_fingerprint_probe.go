@@ -17,6 +17,8 @@ package bg
 
 import (
 	"context"
+
+	"github.com/kaixuan/llm-gateway-go/db"
 )
 
 // probeFingerprintTraffic reports whether any fingerprint-carrying row
@@ -34,7 +36,7 @@ func (w *IntegrityFingerprintDrift) probeFingerprintTraffic(ctx context.Context)
 	if err := w.db.QueryRow(ctx, `
 		SELECT EXISTS (
 		    SELECT 1
-		      FROM _request_logs_hot
+		      FROM `+db.SessionFamilyTurnsHotSourceSQL()+`
 		     WHERE ts > NOW() - ($1::int * INTERVAL '1 day')
 		       AND system_fingerprint IS NOT NULL
 		     LIMIT 1
@@ -48,7 +50,7 @@ func (w *IntegrityFingerprintDrift) probeFingerprintTraffic(ctx context.Context)
 	err := w.db.QueryRow(ctx, `
 		SELECT EXISTS (
 		    SELECT 1
-		      FROM _request_logs -- sqlreadguard:allow D11 probe parent arm (hot arm checked first; existence superset of the view)
+		      FROM `+db.SessionFamilyTurnsSourceSQL()+`
 		     WHERE ts > NOW() - ($1::int * INTERVAL '1 day')
 		       AND system_fingerprint IS NOT NULL
 		     LIMIT 1

@@ -536,11 +536,11 @@ func applyWorkTypeField(entry *telemetry.RequestLogEntry, c *RequestLogContext) 
 // request:
 //
 //	SELECT child.request_id, child.parent_request_id, child.origin_actor
-//	FROM _request_logs_hot child
+//	FROM session_turns_hot child
 //	WHERE child.origin_actor = 'auto-title-generator'
 //	  AND child.ts > now() - interval '1 hour';
 //
-// Without this, _request_logs_hot.parent_request_id is always NULL on title
+// Without this, the turn row's parent_request_id is always NULL on title
 // rows and operators have no way to correlate "08aa2a8a → 3a03f7db".
 func applyParentCorrelationFields(entry *telemetry.RequestLogEntry, c *RequestLogContext) {
 	if entry == nil || c == nil {

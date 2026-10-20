@@ -462,7 +462,23 @@ func TestRenamedGenerationTriggerLandsOnPrefixedRequestLogs(t *testing.T) {
 		t.Fatalf("probe _request_logs: %v", err)
 	}
 	if !prefixedPresent {
-		t.Fatal("real database has neither request_logs nor _request_logs; cannot evaluate the renamed branch")
+		// ★ 2026-10-21（R67 / C10 改判）：**代际二分法已整体退役**。
+		//
+		//   v1 族（request_logs → _request_logs）随迁移 890 真删 ⇒
+		//   「改名分支」在当前世界**不存在**；连「两边都没有」也是**常态**，
+		//   不是缺陷。原门在这里 t.Fatal ⇒ 恒红，而它守的**意图**
+		//   （租户绑定必须生效）**依然有效** —— 只是承担者换了：
+		//   会话族（session_turns / session_turns_hot）用 **RLS** 承担隔离。
+		//
+		//   实测（一次性库）：会话族两张表 relrowsecurity=t，各带三条策略
+		//   （tenant_isolation / owner_filter / super_admin_bypass），
+		//   且 hot 族的 tenant_isolation **带 WITH CHECK**
+		//   ⇒ 读**与写**都受约束 ⇒ 比只管 AFTER INSERT 的触发器**更强**。
+		//
+		//   ⇒ 改判：代际判定保留为 Skip 分支；
+		//     租户隔离的断言改瞄 **RLS**（下面 assertSessionFamilyTenantRLS）。
+		assertSessionFamilyTenantRLS(t, pool)
+		return
 	}
 
 	var attached []string
@@ -506,6 +522,55 @@ func TestRenamedGenerationTriggerLandsOnPrefixedRequestLogs(t *testing.T) {
 	if len(stray) > 0 {
 		t.Errorf("trigger also attached to non-descendant relations %v; "+
 			"on a renamed database every other target must be a partition of _request_logs", stray)
+	}
+}
+
+// assertSessionFamilyTenantRLS 断言会话族的租户隔离由 **RLS** 承担。
+//
+// ★ 这是 R67 / C10 改判后的**接手方**：v1 族的 trg_session_tenant_binding
+//
+//	触发器随迁移 890 真删 ⇒ 隔离落到 RLS 上（读 + 写都覆盖）。
+//
+// 三条断言，缺一即红：
+//
+//	① 两张表 relrowsecurity = true（有策略但没启用 = 隔离无效）；
+//	② 存在 tenant_isolation 策略，且谓词用 tenant_id 对齐 app.current_tenant；
+//	③ hot 族的 tenant_isolation 带 **WITH CHECK** —— 只有 USING 的话，
+//	   INSERT 能写进别的租户的行（写侧漏 ⇒ 读侧再严也白搭）。
+func assertSessionFamilyTenantRLS(t *testing.T, pool *pgxpool.Pool) {
+	t.Helper()
+	ctx := context.Background()
+	for _, rel := range []string{"session_turns", "session_turns_hot"} {
+		var rls bool
+		if err := pool.QueryRow(ctx,
+			`SELECT c.relrowsecurity FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
+			  WHERE n.nspname='public' AND c.relname=$1`, rel).Scan(&rls); err != nil {
+			t.Fatalf("读 %s 的 RLS 开关失败：%v", rel, err)
+		}
+		if !rls {
+			t.Errorf("%s 没有启用 RLS（relrowsecurity=false）—— 租户隔离对它无效", rel)
+			continue
+		}
+		var using, check string
+		err := pool.QueryRow(ctx,
+			`SELECT COALESCE(pg_get_expr(p.polqual, p.polrelid), ''),
+			        COALESCE(pg_get_expr(p.polwithcheck, p.polrelid), '')
+			   FROM pg_policy p
+			   JOIN pg_class c ON c.oid=p.polrelid
+			   JOIN pg_namespace n ON n.oid=c.relnamespace
+			  WHERE n.nspname='public' AND c.relname=$1 AND p.polname LIKE '%tenant_isolation%'`, rel).
+			Scan(&using, &check)
+		if err != nil {
+			t.Errorf("%s 没有 tenant_isolation 策略：%v", rel, err)
+			continue
+		}
+		if !strings.Contains(using, "tenant_id") || !strings.Contains(using, "app.current_tenant") {
+			t.Errorf("%s 的 tenant_isolation 策略没有用 tenant_id 对齐 app.current_tenant：%s", rel, using)
+		}
+		if rel == "session_turns_hot" && strings.TrimSpace(check) == "" {
+			t.Errorf("%s 的 tenant_isolation 策略没有 WITH CHECK —— 只有 USING 的话，"+
+				"INSERT 能写进别的租户的行", rel)
+		}
 	}
 }
 
@@ -553,10 +618,10 @@ func TestDataLifecycleMetricsNullScanRealDB(t *testing.T) {
 	ctx := context.Background()
 	pool, ctx, _ := newGapDatabase(t, dsn)
 	if _, err := pool.Exec(ctx, `
-		CREATE TABLE public._request_logs (
+		CREATE TABLE public.session_turns (
 			id bigserial primary key, gw_session_id text, tenant_id text, ts timestamptz);
 	`); err != nil {
-		t.Fatalf("seed _request_logs: %v", err)
+		t.Fatalf("seed session_turns: %v", err)
 	}
 
 	h := &Handler{db: pool}
@@ -586,7 +651,7 @@ func TestDataLifecycleMetricsNullScanRealDB(t *testing.T) {
 		t.Fatalf("total_rows unreadable: %v", err)
 	}
 	if total.String() != "0" {
-		t.Fatalf("premise broken: expected an empty _request_logs, total_rows=%s", total)
+		t.Fatalf("premise broken: expected an empty session_turns, total_rows=%s", total)
 	}
 	for _, k := range sizeKeys {
 		if _, present := empty[k]; present {
@@ -607,7 +672,7 @@ func TestDataLifecycleMetricsNullScanRealDB(t *testing.T) {
 	// 是一个真实测得的 0（分母非 0）。这正是「真实 0」与「分母为 0 的缺席」
 	// 必须可区分的用例——把 NULL 悄悄 COALESCE 成 0 的改法会在这里失去判据力。
 	if _, err := pool.Exec(ctx, `
-		INSERT INTO public._request_logs (gw_session_id, tenant_id, ts) VALUES
+		INSERT INTO public.session_turns (gw_session_id, tenant_id, ts) VALUES
 		('s1','acme', NOW() - INTERVAL '2 days'),
 		('s2','acme', NOW() - INTERVAL '40 days'),
 		('s3','acme', NOW() - INTERVAL '60 days'),

@@ -77,7 +77,7 @@ var viewSourceFiles = []string{
 func viewsWithV1Arm(root string) map[string]bool {
 	edges := map[string]map[string]bool{} // 视图 → 它引用的关系
 	addView := func(name, body string) {
-		body = sqlLineCommentRE.ReplaceAllString(body, " ")
+		body = stripSQLComments(body)
 		refs := map[string]bool{}
 		for _, m := range fromRelationRE.FindAllStringSubmatch(body, -1) {
 			refs[firstRelationToken(m[1])] = true
@@ -127,6 +127,17 @@ func viewsWithV1Arm(root string) map[string]bool {
 	// ★ 传递闭包：一个视图可能只引用**另一个** v1 臂视图
 	// （`…_without_request_class_due_at` 就是从 `…_without_customer_id` 转包的），
 	// 只看「直接 FROM 了基表」会漏掉整条包装链。
+	out := closureV1Arm(edges, nil)
+	return out
+}
+
+// closureV1Arm 算「体里含 v1 臂（直接或传递）」的视图名集合。
+//
+// excluded 里的视图名在这次计算里**既不算命中、也不被穿过**
+// ⇒ 用于「部署时点」口径：基线形态 fallback 体的源文件体不是部署形态，
+// 它的部署形态由切换迁移给出 ⇒ 穿过它继续找 v1 臂是**错的**方向
+// （会把「部署形态干净」误判成「有 v1 臂」）。
+func closureV1Arm(edges map[string]map[string]bool, excluded map[string]bool) map[string]bool {
 	out := map[string]bool{}
 	for v := range edges {
 		seen := map[string]bool{}
@@ -139,6 +150,9 @@ func viewsWithV1Arm(root string) map[string]bool {
 				continue
 			}
 			seen[cur] = true
+			if excluded != nil && excluded[cur] {
+				continue
+			}
 			if v1Tables[cur] {
 				hit = true
 				break

@@ -27,8 +27,8 @@ func (c *EnvelopeCleaner) Start(ctx context.Context) {
 func (c *EnvelopeCleaner) Stop() {
 	if c.cancel != nil {
 		c.cancel()
+		<-c.done
 	}
-	<-c.done
 }
 
 func (c *EnvelopeCleaner) run(ctx context.Context) {

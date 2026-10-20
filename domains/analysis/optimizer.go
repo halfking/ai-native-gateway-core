@@ -15,6 +15,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+
+	"github.com/kaixuan/llm-gateway-go/db"
 )
 
 // OptimizationAdviser 检测会话可优化空间并写入建议。
@@ -184,7 +186,7 @@ func (a *OptimizationAdviser) detect(s *sessionStatsForOpt) []suggestion {
 	return out
 }
 
-// loadStats 读取会话统计（session_summaries + _request_logs 聚合）。
+// loadStats 读取会话统计（session_summaries + 会话族聚合）。
 func (a *OptimizationAdviser) loadStats(ctx context.Context, tenantID, gwSessionID string) (*sessionStatsForOpt, error) {
 	query := `
 		SELECT ss.session_key, ss.tenant_id,
@@ -192,9 +194,16 @@ func (a *OptimizationAdviser) loadStats(ctx context.Context, tenantID, gwSession
 		       ss.total_prompt_tokens, ss.total_completion_tokens,
 		       ss.total_cost_usd, ss.input_cost_usd,
 		       ss.user_intent, ss.primary_model, ss.model_switch_count,
-		       COALESCE((SELECT SUM(COALESCE(cache_read_tokens,0)) FROM _request_logs WHERE gw_session_id = ss.session_key), 0),
-		       COALESCE((SELECT COUNT(*) FROM _request_logs WHERE gw_session_id = ss.session_key AND compression_strategy IS NOT NULL AND compression_strategy != ''), 0),
-		       COALESCE((SELECT SUM(COALESCE(outbound_token_est,0)) FROM _request_logs WHERE gw_session_id = ss.session_key), 0)
+		       -- ★ 890（v1 族退役）：三条聚合子查询的源从 v1 母表换成**会话族原生源**
+		       -- （db.SessionFamilyTurnsForSessionSQL：会话谓词内推到 t.session_id = $1，
+		       -- idx_session_turns_session 可用）。$1 与外层 ss.session_key = $1 是同
+		       -- 一个值（外层 WHERE 保证了这点）⇒ 语义与退役前逐字相同。
+		       --
+		       -- ⚠ 口径损失（如实登记）：outbound_token_est 在会话族里**恒为 NULL**
+		       -- （会话族没有这个事实来源，投影里是 NULL 补位）⇒ 第三条聚合恒为 0。
+		       COALESCE((SELECT SUM(COALESCE(rl.cache_read_tokens,0)) FROM ` + db.SessionFamilyTurnsForSessionSQL() + ` rl), 0),
+		       COALESCE((SELECT COUNT(*) FROM ` + db.SessionFamilyTurnsForSessionSQL() + ` rl WHERE rl.compression_strategy IS NOT NULL AND rl.compression_strategy != ''), 0),
+		       COALESCE((SELECT SUM(COALESCE(rl.outbound_token_est,0)) FROM ` + db.SessionFamilyTurnsForSessionSQL() + ` rl), 0)
 		FROM session_summaries ss
 		WHERE ss.session_key = $1`
 	args := []any{gwSessionID}

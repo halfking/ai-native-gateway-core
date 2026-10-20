@@ -21,6 +21,8 @@ export default {
   pattern: "Expresión RE2",
   group: "Grupo de captura",
   scopes: "Etapas",
+  perMode: "Activar por fase",
+  perModeHint: "Marcado = la regla está activa en esa fase; sin marcar = la regla está detenida para esa fase. La columna «Activado» es el interruptor maestro.",
   action: "Acción",
   priority: "Prioridad",
   tenant: "Inquilino (vacío = todos)",

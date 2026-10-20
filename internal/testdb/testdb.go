@@ -9,8 +9,8 @@
 //
 // Migration behaviour tests cannot use that. The SQL they execute is PRODUCTION
 // code — sql/migrations/startup/*.sql — and it says `public.` explicitly
-// throughout (ALTER TABLE public._request_logs, CREATE FUNCTION
-// public.repair_…(), CREATE TABLE public.request_logs_default). That is not
+// throughout (ALTER TABLE public.session_turns, CREATE FUNCTION
+// public.repair_…(), CREATE TABLE public.session_turns_hot). That is not
 // test code, so it cannot be edited to drop the qualifier, and unqualified
 // DDL would create a different object than the one production ships. For this
 // family the only honest unit of isolation is a whole database.

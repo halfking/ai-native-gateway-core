@@ -34488,6 +34488,39 @@ bash ~/.mavis-tools/lgwp-prod.sh /private/tmp/pmm_explain2.sql 180 > /private/tm
 4. ★★ **252 上没有可用的 PG 查询日志**：`logging_collector=off`（无日志文件），
    容器 stdout 近 96h **只有 1 行** ⇒ ⇒ **「靠日志判断慢查询」这条线在 252 上目前是断的**。
 
+> ⚠⚠ **订正横幅（2026-10-20，§143.19.1.1 就地订正；上面第 4 条原文保留）**
+>
+> ★★ **上面第 4 条的判词已被生产实测证伪**：
+> **252 的 PG 日志通道从未断过** —— 错的是**读法**，不是「日志不存在」。
+> - **真实通道**：podman **conmon** 把容器 stderr 落盘到
+>   `/var/lib/containers/storage/overlay-containers/<container-id>/userdata/ctr.log`
+>   （容器 ID `dc5e54272d7a…` = 本节记的同一个 ⇒ 容器没换过），
+>   实测 `ctr.log` 870 MB 活跃 + 3 个轮转文件（835 MB / 61 MB / 27 MB）⇒ 合计 1.8 GB。
+> - **还有小时级外抄**：`/etc/cron.d/pg17-ctrlog-snapshot`（`47 * * * *`）
+>   → `/opt/scripts/pg17-ctrlog-snapshot.sh`（只读，**绝不 truncate**）
+>   ⇒ `/var/log/pg17-ctrlog-archive/ctrlog-YYYYMMDD.log`（实测 2.0 GB / 10-05→10-20 共 17 天；
+>   2 天 gzip、30 天删除）。
+> - **为什么当初读成「只有 1 行」**：`docker logs` / `podman logs` 走 podman 的
+>   **journald / k8s-file 驱动**，**读不到 conmon 的 `ctr.log`**
+>   ⇒ **「读不到」被当成了「没有」**。
+> ⇒ ⇒ **正确读法 + 完整证据见 §143.19.1.1**；
+
+> ⚠⚠ **订正横幅二（2026-10-20，§143.20.6 就地补订；本横幅不改上面第一条，只补「读法分叉」）**
+>
+> ★★★ **「`docker logs` 读不到」是 252（podman）独有的现象，不是通用规律** ——
+> **211 跑的是 docker 运行时 ⇒ `docker logs` 恰恰是唯一读法**。
+>
+> | 实例 | 运行时 | 日志落盘 | `docker logs` |
+> |---|---|---|---|
+> | **252** | **podman 4.9.4**（conmon） | `/var/lib/containers/storage/overlay-containers/<id>/userdata/ctr.log`（+ `ctr.log-YYYYMMDD` 轮转 + `/var/log/pg17-ctrlog-archive/` 每日归档） | ❌ **读不到**（走 journald / k8s-file 驱动）⇒ 必须直读 `ctr.log` |
+> | **211** | **docker**（json-file） | `/var/lib/docker/containers/<id>/<id>-json.log`（+ `.1` / `.2`，共 3 个） | ✅ **能读**（实测 48h 5,197 行 / 179 个 duration 块） |
+>
+> ⇒ ⇒ ★ **正确读法必须按运行时分叉**，不能把 252 的结论套到 211 上，反之亦然。
+> ⇒ ⇒ ★ **211 侧没有 `ctr.log` 归档机制** ⇒ 它的日志只留 docker 自己的轮转
+> （实测 3 个文件 / 约 250 MB）⇒ **历史窗口比 252 短**。
+> ⇒ ⇒ **完整证据见 §143.20.4.2**。
+> ⇒ ⇒ **C1 的处置项（开 `logging_collector=on`）也一并订正**（会与 conmon 通道**重复落盘**）。
+
 ⚠ **本节对生产的写入 = 0**：全部只读（`pg_inherits` / `pg_stat_*` / `pg_stat_statements` /
 `EXPLAIN` / `pg_class`）+ 252 的 `docker logs` 只读查看。
 
@@ -34746,6 +34779,29 @@ applied+磁盘是改写后的 `ed604aa5…`）、**704**（pending 行 `e99d9aa3
 但它们与 877 **同形**（同一文件两条指纹、没人说清哪条旧）⇒ 同一个门覆盖。
 
 ### §143.17.5 ★★ 252 的 PG 查询日志目前是**空的**（观测缺口）
+> ⚠⚠⚠ **订正横幅（2026-10-20，§143.19.1.1 就地订正；本小节原文整体保留）**
+>
+> ★★★ **本小节的标题与结论（「252 的 PG 查询日志目前是**空的**」「没有可用的 PG 查询日志」）
+> 已被生产实测证伪** —— **日志通道从未断过，错的是读法**。
+>
+> | 原判词 | 生产实测（2026-10-20） | 谁对 |
+> |---|---|---|
+> | 「`logging_collector=off` ⇒ 不产生日志文件 ⇒ 252 上没有可用的 PG 查询日志」 | **错**：PG 日志走 **stderr → podman conmon → `ctr.log`**（`overlay-containers/<id>/userdata/`，实测 870 MB 活跃 + 3 个轮转）；另有 `/etc/cron.d/pg17-ctrlog-snapshot` 小时级只读外抄（归档 2.0 GB / 17 天） | ★ **实测对** |
+> | 「`docker logs pg-252-pg17 --since 96h` 只有 1 行」 | **读法失败**：`docker logs`/`podman logs` 走 journald/k8s-file 驱动，**读不到 conmon 的 `ctr.log`** ⇒ 「读不到」≠「没有」 | ★ **实测对**（原句是**读法**错，不是**对象**错） |
+> | 「含 `search_text` 的语句 0 条、含 `session_turns` 的语句 0 条」 | 同源错误（读的是空壳）⇒ 该阴性结论**不成立** | ★ **实测对** |
+> | 「1s 阈值在这套库上几乎抓不到东西」 | **不成立**：本轮窗口解析出 **35,992 个 ≥1s 慢查块** | ★ **实测对** |
+> | 动作项「① `logging_collector=on` ② 调阈值 ③ 配套轮转与保留期」 | ★ **① 应撤销**（会与 conmon 通道**重复落盘**）；② 阈值 1s **已够用**；③ 轮转/保留期**已有**（1 GB 轮转 + 30 天归档） | ★ **实测对** |
+>
+> ⇒ ⇒ ★★ **修正后的 C1 动作项**：
+> ① **把正确读法写进 runbook**（✅ §143.19.1.1 已完成）；
+> ② **归档保留期确认**：30 天 / 2.0 GB / 17 天；磁盘 `/dev/vda3` 197 G / 已用 119 G /
+> **可用 70 G（64%）** ⇒ **不紧张，登记即可**；
+> ③ **不再建议 `logging_collector=on`**。
+> ⇒ ⇒ ★★ **另有一条价值判断本节是对的**：
+> 「靠日志判断慢查询这条线**有价值**」—— 本轮实测证实：
+> **`pg_stat_statements` 看不见错误**（55,870 个错误块只有 `ctr.log` 能看到）⇒
+> **错误清单只能靠日志**，慢查询清单则两边互证。
+> ⇒ ⇒ ★ **完整证据与新清单见 §143.19.1.1 / §143.19.3.3**。
 
 252 的 PG 实际配置（实测）：
 
@@ -34786,6 +34842,14 @@ log_statement            = none
 | **B4** | `idx_session_turns_req_status_backfill{,_cov}`（75 MB / 6,382 + 8,905 次） | 75 MB | 中 | ★ **回填是否已完结**？完结即可删 ⇒ 要核回填覆盖率 |
 | **B5** | 2026_09 上那条死实例（58 MB / 0） | 58 MB | 低 | ⚠ **重跑父表 DDL 会复活它** ⇒ 告示要写进迁移文件 |
 | **C1** | **打开 252 的 PG 日志**（`logging_collector=on` + 阈值 + 轮转） | 磁盘 | 低 | ⇒ 恢复「靠日志判断慢查询」这条线 |
+
+> ⚠ **订正横幅（2026-10-20，§143.19.1.1）**：上面 C1 的**动作项已被订正** ——
+> **日志通道从未断过**（真实通道 = conmon 的 `ctr.log` + 小时级只读外抄），
+> **不需要 `logging_collector=on`**（会与 conmon 通道**重复落盘**），
+> 且 `log_min_duration_statement=1s` **已足够**（本轮抓到 35,992 个 ≥1s 块）。
+> ⇒ ⇒ **C1 降级为「只需把正确读法写进 runbook」**（✅ §143.19.1.1 已完成）
+> +「确认 30 天归档 / 2.0 GB / 磁盘 70 G 可用是否维持现状」。
+> ⇒ ⇒ **详见 §143.19.1.1 与 §143.19.7-C1**。
 
 ### §143.17.7 诚实边界与本轮**没做**的事
 
@@ -35398,3 +35462,7051 @@ GOCACHE=/tmp/gocache-p1437 go test ./scripts/ursmcheck/ -run 'TestRunbook14318' 
 [[阴性结论要当缺陷一样复核]] · [[自己上一节的结论也要复核]] ·
 [[对照组不是同一条件下造的]] · [[判据红了先怀疑自己的前提]] ·
 [[进临界区的新探测先量挂钟成本]]。
+
+## §143.19 252 PG 日志通道的真实拓扑 + 生产慢查询清单（按库拆）+ `refreshIndexSQL` 的成本根因（2026-10-20）
+
+### §143.19.0 结论先行
+
+本节把 §143.16~§143.18 的「读数」手段从**单一量具**扩到**两个独立量具**，并产出三条新结论：
+
+1. ★★★★★ **252 的 PG 日志通道从未断过** —— §143.17.0 第 4 条与 §143.17.5 的判词
+   （「252 上没有可用的 PG 查询日志」「靠日志判断慢查询这条线在 252 上目前是断的」）
+   **被证伪**。真实通道是 **podman conmon 落盘的 `ctr.log`**（不是 `docker logs`），
+   加上 `/etc/cron.d/pg17-ctrlog-snapshot` 的**小时级只读外抄**（2 天 gzip / 30 天删除）。
+   ⇒ **已就地加订正横幅**（§143.17.0 / §143.17.5 / §143.17.6-C1 三处），原文保留。
+2. ★★★★★ **生产慢查询清单必须先按 `dbid` 拆库** —— 本实例是**混库**
+   （llm_gateway / smm / postgres / pocket / redclaw / kxmemory / memora…）。
+   `pg_stat_statements` 1.11 **只有 `dbid`、没有 `database` 列** ⇒ 不拆库就会把
+   smm 的 `daily_kline` 混进本库清单。拆库后本库读数：
+   **351 条慢语句 / 7,414 次调用 / 12.36 小时 DB 时间**（均值 ≥1s 的口径），
+   同期 smm 7 条、postgres 4 条。**本节所有清单均已拆库。**
+3. ★★★★ **两条独立量具交叉互证通过** —— `pg_stat_statements`（按库拆）
+   与 `ctr.log` 逐块解析（35,992 个 ≥1s 慢查块 / 55,870 个错误块）
+   在**家族排名**上高度吻合（`routing_analytics_7d` / `credential_model_index` /
+   `session_summaries` / `daily_kline` 四族两边同序）⇒ 结论不依赖单一量具。
+4. ★★★★ **`refreshIndexSQL`（auto-route 热路径）的成本根因是「冷分区存了
+   5 分钟粒度的全历史」**，不是索引、不是形态：它**必须**全扫
+   **434,658 行**才能算出每组的 `MAX(bucket)`。
+   872（columnar→heap）修掉了 stripe 碎裂（16,308 hits 放大已除），
+   **但没有减少一行扫描量** ⇒ 均值不降。
+   ⇒ **同口径 A/B 实测**：去掉 09 月分区（−301,255 行）⇒ 880.963 ms → **155.358 ms**
+   （−82%），buffers 7,553 → 2,347（−69%）。
+   ⇒ **可落地方案**（语义对账全绿）：冷分区只保留**每组最新一行** ⇒
+   301,255 → 1,018 行（−99.66%），`refreshIndexSQL` 结果**逐行完全等价**
+   （1,079 行，双向差集 0/0）。
+5. ★★ **`DISTINCT ON` 这条路被生产实测彻底封死**：走已有索引
+   `(credential_id, raw_model, bucket DESC)` 的 `DISTINCT ON` 实测
+   **161,495.853 ms（161 秒）**；强制走索引后仍 **7,412.081 ms** ⇒ 比现形态慢 **8.4 倍**。
+   ⇒ 这**独立印证并加重**了 `autoroute/index_sql_shape_test.go` 里
+   「C = DISTINCT ON 真慢」的结论（该门记的是 2~3 倍，生产实测是 8.4 倍）。
+6. ★★ **自订正（本会话内）**：压缩前我曾判定「§143.17.4 的『命名形态 ⇒ 新版从未执行』被证伪」
+   —— **这个判断本身是无效推理**，理由见 §143.19.5。**§143.17.4 的结论是对的，不需要订正。**
+
+⚠ **本节对生产的写入 = 0**：全部只读（`pg_stat_statements` / `pg_stat_statements_info` /
+`pg_class` / `pg_index` / `pg_inherits` / `pg_proc` / `pg_stat_all_indexes` /
+`columnar_healthcheck()` / `EXPLAIN` / `EXPLAIN (ANALYZE, BUFFERS)`）
++ 252 的日志文件**只读**解析（`zcat` / `grep` / Python 逐行状态机）。
+**没有** DELETE、**没有** TRUNCATE、**没有** DROP、**没有**改任何生产配置。
+
+### §143.19.1 ★★★★★ 订正 §143.17 的两条判词（就地横幅，原文保留）
+
+#### §143.19.1.1 C1「252 的 PG 日志是空的」——**证伪**
+
+**原判词**（§143.17.0 第 4 条 + §143.17.5 小节标题「252 的 PG 查询日志目前是**空的**（观测缺口）」）：
+
+> `logging_collector=off` ⇒ 不产生日志文件；语句只走 stderr ⇒ 进容器 stdout
+> ⇒ ⇒ **`docker logs pg-252-pg17 --since 96h` 只有 1 行**；
+> ⇒ ⇒ ★ **结论：252 上没有可用的 PG 查询日志**。
+> ⇒ ⇒ ★ **动作项（属主）**：要恢复「靠日志判断慢查询」这条线，需要
+> ① `logging_collector=on`（落文件，可轮转、可归档），② `log_min_duration_statement` 调到有用阈值，
+> ③ 配套日志轮转与保留期。
+
+**证伪证据（2026-10-20 实测，四条）**：
+
+| # | 证据 | 读数 |
+|---|---|---|
+| 1 | **真实通道存在**：podman conmon 把容器 stderr 落盘到 `overlay-containers/<container-id>/userdata/ctr.log` | 容器 ID `dc5e54272d7a35612cf32a1dd993d0e0610c36a9bf877c305bca4e8607fe2f5a`（= §143.17.5 里记的同一个 `dc5e…` ⇒ **容器没换过**）；`userdata/` 目录 1.1 GB |
+| 2 | **它一直在滚**：`ctr.log` 870 MB 活跃 + `ctr.log-20261020` 835 MB + `ctr.log-20261019.gz` 61 MB + `ctr.log-20261018.gz` 27 MB | 4 个文件 ≈ **1.8 GB**；`ctr.log` 的 mtime = 本轮测量时刻（活文件） |
+| 3 | **它有小时级外抄**：`/etc/cron.d/pg17-ctrlog-snapshot`（`47 * * * *`）→ `/opt/scripts/pg17-ctrlog-snapshot.sh`（R25 部署 / R26 修复） | 脚本**只读** `ctr.log`（注释明写「绝不 truncate/轮转它」）⇒ 按偏移增量外抄到 `/var/log/pg17-ctrlog-archive/ctrlog-YYYYMMDD.log`；`-mtime +2` gzip、`-mtime +30` 删除 ⇒ **30 天保留** |
+| 4 | **归档目录在产** | `/var/log/pg17-ctrlog-archive/` 2.0 GB，**10-05 → 10-20 共 17 天**逐日文件；`/var/log/pg17-ctrlog-snapshot.log` 有 `boundary: prev_ctr=… prev_offset=… cur_size=…` 的界标记录 |
+
+⇒ ⇒ ★★★ **错的不是「日志不存在」，是「读法」**：
+`docker logs` / `podman logs` 走的是 podman 的 **journald/k8s-file 驱动**，
+**读不到 conmon 的 `ctr.log`** ⇒ 那个「只有 1 行」是**读法失败**，不是数据缺失。
+⇒ ⇒ ★ **正确读法**（本节全部读数都走这条路）：
+
+```bash
+# 252：PG 容器 stderr 的真实落盘位置（★ 容器 ID 会变，先查再读）
+D=/var/lib/containers/storage/overlay-containers/$(podman inspect pg-252-pg17 --format '{{.Id}}')/userdata
+ls -la $D/ctr.log*                       # 活跃 + 轮转
+# 历史归档（更方便，含 17 天）
+ls -la /var/log/pg17-ctrlog-archive/
+```
+
+⇒ ⇒ ★ **对 C1 处置项的订正**：
+**不需要** `logging_collector=on`（那会**再开一套**文件通道，与 conmon 通道**重复落盘**）。
+真正该做的是三件小事：
+① **把读法写进 runbook**（本节即是）；
+② **确认归档保留期**（30 天、2.0 GB、17 天）够用 ⇒ 磁盘实测 `/dev/vda3` 197 G / 已用 119 G / **可用 70 G（64%）** ⇒ **不紧张，登记即可**；
+③ **`log_min_duration_statement` 阈值**：现值 1s，**实测 1s 阈值已能抓到 35,992 个块**（本节窗口）⇒ 原文「1s 几乎抓不到东西」这句**也不成立**（它当时是被 `docker logs` 的空读数误导的）。
+
+#### §143.19.1.2 §143.17.4 的「命名形态 ⇒ 新版从未执行」——**不订正（结论正确）**
+
+⚠ **本节要专门写一条自我订正**，因为本会话前半段（压缩前）曾把它判成「被证伪」：
+
+**当时的（错误）推理**：生产 `session_turns` 上唯一的 GIN 父声明叫
+`idx_session_turns_search_trgm`，而这个名字**看起来是新版**的命名 ⇒ ⇒ 「新版执行过」。
+
+**这个推理无效，两处错**：
+1. **父声明名不是版本判别器** —— `git show 37944e9d2:sql/migrations/startup/877_session_turns_search_text_trgm.sql`
+   第 80 行（旧版）写的是 `CREATE INDEX IF NOT EXISTS idx_session_turns_search_trgm`，
+   而当前文件（新版）第 142 行写的是
+   `CREATE INDEX IF NOT EXISTS idx_session_turns_search_trgm ON ONLY public.session_turns …`
+   ⇒ ⇒ **两版父声明同名** ⇒ 父声明名**不能**区分版本。
+2. **真正的判别器是「叶实例名」**（旧版 PG 自动改名 `<分区>_<列名>_idx` = `..._search_text_idx`；
+   新版 stage 1 显式命名 `<分区>_search_trgm`）**与「DDL 原文」**。
+
+**生产实测（2026-10-20，三条独立证据）**：
+
+| # | 证据 | 读数 | 指向 |
+|---|---|---|---|
+| 1 | 叶实例名（`pg_inherits` 索引级父子关系 + `pg_class`） | **6 个叶实例全部是 `session_turns_2026_07/08/09/10/11/default_search_text_idx`**（旧版形态）；全库 `session_turns%_search_trgm` 命名对象 **0 个** | **新版 stage 1 没跑** |
+| 2 | `pg_stat_statements` 里的 DDL 原文（定向查 `query LIKE '%search_trgm%'`，**只有 2 条**） | ① `CREATE INDEX IF NOT EXISTS idx_session_turns_search_trgm ON public.session_turns USING gin (search_text gin_trgm_ops)` —— **无 `ON ONLY`**（= 旧版形态），耗时 127,274.8 ms；② `CREATE INDEX IF NOT EXISTS idx_session_turns_hot_search_trgm ON public.session_turns_hot …`（两版同形），2,768.5 ms | **新版 stage 3（带 `ON ONLY`）与 stage 1（带 `CONCURRENTLY`）都不在统计里** |
+| 3 | 新版 stage 4 的 `ALTER INDEX … ATTACH PARTITION` | `pg_stat_statements` 里唯一的 `ATTACH PARTITION` 记录是**另一个迁移**的 `DO $$ … _digest_null_idx …`（22 次）⇒ **877 的 ATTACH 没跑过** | 一致 |
+
+⇒ ⇒ ★★★ **结论：§143.17.4 第 4 条（「旧版已上、新版未上」）成立，不需要订正。**
+⇒ ⇒ ★★ **而且它与台账读数互相独立**：台账那条是 `schema_migrations` 有
+`877 @ 2026-10-19 16:59:08.656651+08`（**表只有 `version/description/applied_at` 三列、没有 SHA** ⇒ 它只能证明「877 记过账」，**不能**证明「哪一版」）⇒ 真正区分版本的是上面第 1、2 条。
+⇒ ⇒ ★ **§143.17.4 那个订正横幅（另一会话写的）「本节的第 4 条证据被对方生产读数独立印证 ✅」是对的，本节确认它。**
+⇒ ⇒ ★★ **本节新增的方法论**（比「877 结论」本身更值钱）：
+> **「迁移文件的版本形态」有三层名字，判别力从强到弱是：
+> ① DDL 原文（`pg_stat_statements`）＞ ② 产物对象名（叶实例名）＞ ③ 父声明名（两版常同名，无判别力）。**
+> ⇒ 只看③会把「新版跑过」和「旧版跑过」读成同一件事。
+
+### §143.19.2 ★★★★★ 量具一：`pg_stat_statements`（按 `dbid` 拆库）
+
+#### §143.19.2.1 为什么必须拆库
+
+- 本实例 `pg-252-pg17` 是**混库**：`llm_gateway` / `smm` / `postgres` / `pocket` / `redclaw` /
+  `kxmemory` / `memora` 等**全部业务库共用**（§143.18 已有同款纪律，repo R28）。
+- `pg_stat_statements` **1.11 只有 `dbid`（oid），没有 `database` 列** ⇒ 必须自己 join `pg_database`。
+- ⚠ **本节踩过一次**：第一版查询混库，`SELECT source, MAX(date) FROM daily_kline GROUP BY source`
+  进了本库 top-6 —— 那是 **smm 股票库**的表（本轮实测 `smm` 7 条 / 3,073.2 s）。
+
+#### §143.19.2.2 本库慢查询总账（2026-10-20 13:2x 实测）
+
+口径：`pg_stat_statements` 窗口 = `stats_reset 2026-10-18 22:03:37` 起（**1 天 15 小时**），
+筛选 `mean_exec_time >= 1000`（毫秒），`dbid → datname = 'llm_gateway'`。
+
+| 指标 | 读数 |
+|---|---|
+| 慢语句条数 | **351** |
+| 总调用次数 | **7,414** |
+| **总 DB 时间** | **12.36 小时**（44,496.0 s） |
+| 平均 `mean_exec_time` | 13,248.6 ms |
+| 最大 `mean_exec_time` | **340,826 ms**（= `SELECT COUNT(*) FROM request_logs_with_current_month`） |
+| 同期其它库 | `smm` 7 条 / 3,073.2 s；`postgres` 4 条 / 255.8 s |
+
+⇒ ⇒ ★ **这 12.36 小时是「本库慢查询吃掉的总 DB 时间」**，而窗口只有 39 小时
+⇒ ⇒ ★ **平均每分钟 19 秒的 DB 时间花在 mean ≥1s 的语句上**（39 h × 60 × 19 s ≈ 12.4 h，自洽）。
+
+#### §143.19.2.3 集中度（**用 SQL 算，不手算**）
+
+| 排名 | 家族 | 次数 | 总耗时(s) | 单次均值(ms) | 累计占比 |
+|---|---|---|---|---|---|
+| 1 | `REFRESH MATERIALIZED VIEW CONCURRENTLY routing_analytics_7d` | 104 | 6,186.1 | 59,482 | **14.1%** |
+| 2 | `WITH win AS (…)`（`ursm_node_snapshot_min` 小时桶） | 24 | 4,196.4 | 174,849 | 23.6% |
+| 3 | `WITH targets AS (session_summaries JOIN session_dim …)` | 619 | 3,590.1 | 5,800 | 31.8% |
+| 4 | `REFRESH … session_client_stats` | 57 | 3,102.8 | 54,434 | 38.8% |
+| 5 | `WITH latest_bucket AS (credential_model_index_with_current_month …)` | 963 | 2,910.4 | 3,022 | **45.4%** |
+| 6 | `WITH neg AS (… _request_logs cost_usd < 0 …)` | 286 | 2,631.0 | 9,199 | 51.4% |
+| 7 | `REFRESH … session_task_stats` | 56 | 1,365.5 | 24,384 | 54.5% |
+| 8 | `WITH pick AS (DISTINCT ON … credential errors)` | 225 | 1,216.0 | 5,405 | 57.3% |
+| 9 | `promote_session_turns_hot_to_partition` | 230 | 1,057.7 | 4,599 | 59.7% |
+| 10 | `SELECT c.id FROM credentials c -- v1 臂 …` | 418 | 1,021.8 | 2,445 | 62.0% |
+| 11 | `SELECT (SELECT COUNT(DISTINCT …)) FROM (… )` | 351 | 1,021.4 | 7,326 | 64.3% |
+| 12 | `promote_session_bodies_hot_to_partition` | 285 | 937.0 | 3,288 | 66.5% |
+| 13 | `SELECT c.relname, … pg_total_relation_size …`（**巡检**） | 114 | 913.3 | 8,055 | 68.5% |
+| 14 | `SELECT s.task_type, s.profile, s.canonical_id, … COUNT(*) …` | 321 | 900.3 | 2,805 | 70.6% |
+| 15 | `REFRESH … routing_audit_summary_7d` | 93 | 613.5 | 6,596 | **72.0%** |
+
+⇒ ⇒ ★ **前 15 家族占 72.0%** ⇒ 治理面**很窄**（改 15 处能拿掉 3/4 的慢查询时间）。
+⇒ ⇒ ★★ **matview 家族合计**：第 1、4、7、15 四条 REFRESH =
+6,186.1 + 3,102.8 + 1,365.5 + 613.5 = **11,267.9 s = 3.13 h**
+（占 12.36 h 的 **25.3%**）⇒ **单一最大的可攻面是 4 个物化视图的 CONCURRENTLY 刷新**。
+
+### §143.19.3 ★★★★ 量具二：252 `ctr.log` 逐块解析（独立于 `pg_stat_statements`）
+
+#### §143.19.3.1 解析口径（写清楚，下一个人才能复现）
+
+- **源**：4 个文件（`ctr.log` + `ctr.log-20261020` + `ctr.log-20261019.gz` + `ctr.log-20261018.gz`），
+  合计 **1.8 GB**、**6,753,453 行**。
+- **剥壳**：podman 每行前缀 `<iso-ts> <stream> <F|T> ` ⇒ 剥掉后再看 PG 行首
+  `YYYY-MM-DD HH:MM:SS.mmm TZ [pid] LEVEL:`。
+- **慢查块**：`LOG:  duration: N ms  statement: <sql>`（或 `execute/parse/bind`）；
+  **续行并入当前块**（podman 对多行语句按行打前缀，续行**没有** PG 行首）。
+- **家族归一**：数字字面量 → `?`、空白折叠 ⇒ 取前 100 字符作家族键。
+
+⚠⚠ **量具坑（本轮踩了两次，两次都靠「量具坏了」先验救回来）**：
+1. ★ **第一版解析器的慢查块数是 0**（错误块却解析出 43,408 条）⇒
+   **0 命中的第一嫌疑是量具坏了** —— 真因：PG 的 `"LOG:  duration: …"` 里
+   `LOG:` 之后有**两个**空格，而正则写的是 `^duration:` ⇒ 恒不匹配。
+   **改正则（允许前导空白）后：慢查块 0 → 35,992**。
+2. ★ **「筛选家族」用 `ILIKE '%ON ONLY%'` 会出假阳性**：
+   15 条 `WITH matched AS MATERIALIZED (…)` 命中 —— 因为 `%` 是通配符，
+   那些语句正文里确实含 "ON ONLY" 字样。
+   ⇒ **定向查必须用 `position('X' in query) > 0` 或 `query LIKE '%精确串%'`**，
+   不能用宽 `ILIKE`（这与本仓「判据的关键词匹配要剥注释」是同族纪律）。
+
+#### §143.19.3.2 读数（2026-10-20 13:2x）
+
+| 指标 | 读数 |
+|---|---|
+| 慢查块（≥1s） | **35,992** |
+| 错误块（ERROR/FATAL/PANIC） | **55,870** |
+| 慢查块总耗时 | **178,901,682.5 ms = 49.7 小时** |
+| 按日 | 10-17: 5,100 块 / 35,135,521 ms；10-18: 20,816 块 / 85,907,568 ms；10-19: 6,579 块 / 36,561,562 ms；10-20: 3,497 块 / 21,297,032 ms |
+| 按 kind | `statement` 35,173 / `execute` 580 / `bind` 186 / `parse` 53 |
+
+**TOP 家族（按总耗时）**：
+
+| 家族 | 次数 | 总耗时(ms) | 单次最大(ms) |
+|---|---|---|---|
+| `REFRESH MATERIALIZED VIEW CONCURRENTLY routing_analytics_7d` | 185 | 14,008,626 | 163,041 |
+| `WITH matched AS MATERIALIZED (…)`（provider/client.go） | 3,787 | 11,388,910 | 27,788 |
+| `WITH latest_bucket AS (credential_model_index …)` | 1,623 | 8,019,614 | 26,418 |
+| `WITH targets AS (session_summaries …)` | 542 | 8,012,757 | 118,920 |
+| `SELECT source, MAX(date) FROM daily_kline GROUP BY source`（**smm 库**） | 748 | 7,767,777 | 59,759 |
+| `WITH win AS (… 'hour' …)` | 48 | 7,243,401 | 319,211 |
+| `REFRESH … session_client_stats` | 120 | 6,019,384 | 175,786 |
+| `INSERT INTO provider_metrics_minute (…)` | 1,407 | 4,928,667 | 28,292 |
+| `WITH neg AS (… cost_usd …)` | 433 | 4,707,935 | 29,841 |
+
+⇒ ⇒ ★★★ **两个量具交叉互证通过**：`routing_analytics_7d`（两边都是第一/第四）、
+`credential_model_index`（第 3 / 第 5）、`session_summaries`（第 4 / 第 3）、
+`daily_kline`（第 5 / 属 smm 已标注）⇒ **家族层面的结论不依赖单一量具**。
+⚠ **两量具的窗口不同**（`pg_stat_statements` 39 h vs `ctr.log` ~3.5 天）⇒
+**只比「家族排序」，不比绝对值**（绝对值口径见 §143.19.6）。
+
+#### §143.19.3.3 错误家族（`ctr.log` 独有 —— `pg_stat_statements` 看不见错误）
+
+| 家族 | 条数 | 判词 |
+|---|---|---|
+| `UNION types character varying and bigint cannot be matched at character 766` | **40,160** | ★ **已被 10-18 轮覆盖并修复**（`24748e233`，245=2687/154=2688）；本窗口 10-17 08:30 后**零复发**。**不重复立项** |
+| `canceling statement due to user request` | 7,434 | 客户端中断（流式请求）⇒ 流量形态非缺陷 |
+| `connection to client lost` | 3,885 | 与上行 cancel 成对（pgx 弃连） |
+| `canceling statement due to statement timeout` | 1,497 | 30s rolconfig 击杀；**pocket `scheduled_tasks` $4 双型错仍在烧**（953 条，见下） |
+| `terminating background worker "parallel worker" due to administrator command` | 1,387 | 领头语句被杀的陪葬 ⇒ 症状非病因 |
+| `inconsistent types deduced for parameter $4 at character 135` | **953** | ★ **pocket（仓外）**：`UPDATE scheduled_tasks SET … next_run_at=$4, … CASE WHEN $4=0 …` ⇒ 修复 `fa20e648` **至今未上线**（10-17/10-18 两轮已登记，本轮**再次复登**） |
+| `could not attach to dynamic shared area` | 56 | DSM 已知噪音（10-13 轮登记） |
+| `could not map dynamic shared memory segment` | 24 | 同上 |
+| `syntax error at or near "同属"` / `relation "llm_optimization_reports" does not exist` 等 | 各 ≤ 11 | 10-18 轮已定性并闭环（`e8f186916` 修复；外部工具打错库）⇒ **不重复立项** |
+
+⇒ ⇒ ★★ **本节最重要的产出是「两个量具的分工」**：
+**`pg_stat_statements` 只记成功/被计时的语句，错误完全不可见** ⇒
+**慢查询清单必须配 `ctr.log`，错误清单只能靠 `ctr.log`**。
+⇒ ⇒ ★ **这正是 §143.17.5 那条判词虽然结论错、但「日志这条线有价值」是对的** ——
+错在「日志读不到」，不在「日志有用」。
+
+### §143.19.4 ★★★★ `refreshIndexSQL` 的成本根因（872 收益复核 + 裁剪方案）
+
+#### §143.19.4.1 872 的真实收益（10-18 轮遗留项 #1 的答案）
+
+| 项 | 10-18 轮记录（`docs/audit/2026-10-18-252-sql-log-audit-round.md` §六.1） | 本轮实测（2026-10-20 13:2x） |
+|---|---|---|
+| `refreshIndexSQL` 的 `pg_stat_statements` 均值 | **2,310.8 ms**（calls 4,383 / max 25,229 ms） | **3,022.3 ms**（calls **963** / max 23,650 ms / **stddev 3,690.2 ms**） |
+| 2026_10 分区的 buffer 命中 | **16,308**（121k 行却吃 16k hits ⇒ 25× 放大） | **2,302**（131,878 行 / 2,295 页 ⇒ 1.0×）★ **放大已除** |
+| 存储形态 | columnar | **heap**（`relam` = 2）；`columnar_healthcheck()` 三行 **compliant = t** |
+| `columnar_insert_only_parents()` | `{routing_decision_log}` | `{routing_decision_log}`（**已不含本族**） |
+
+⇒ ⇒ ★★★ **结构侧完全闭环**：872 的自证门全绿（3/3 `compliant=t`）、白名单已摘、
+**stripe 放大（25×）已除**（16,308 → 2,302 hits）。
+⇒ ⇒ ⚠⚠ **但均值没降（2,310.8 → 3,022.3 ms）** ⇒ **这不能归因于 872**，理由有两条**硬口径**：
+1. **窗口不可比**：`pg_stat_statements` 的 `stats_reset` = **2026-10-18 22:03:37**，
+   而 872 应用于 **2026-10-18 12:59:42** ⇒ **整个窗口都在 872 之后**，
+   **窗口内不存在「872 前」的对照** ⇒ 跨窗口的 2,310.8 → 3,022.3 **不能**当成「872 变慢了」。
+2. **噪声大于均值**：`stddev 3,690.2 ms` > `mean 3,022.3 ms` ⇒ 分布极宽，
+   且 `autoroute/index_sql_shape_test.go`（2026-10-20 R51 轮落的门）**已用交错 ABAB×6 实测过同一族**：
+   形态 A 现形态 min 297.9 / 中位 339.9 / max 439.9 / 均值 355.0 ms ⇒ **单条查询 ~300~440 ms**。
+   ⇒ **3,022 ms 是含并发排队与主备负载的均值，单条语句本身没有 3 秒那么慢。**
+⇒ ⇒ ★★ **诚实的判词**：
+> **872 修好了它要修的东西（存储形态 + stripe 放大），但 `refreshIndexSQL` 的成本结构没变 ——
+> 因为成本从来不在「怎么读」，而在「读多少行」。**
+
+#### §143.19.4.2 成本根因：必须全扫 434,658 行
+
+`autoroute/index.go:520` 的 `refreshIndexSQL` 的第一段是：
+
+```sql
+WITH latest_bucket AS (
+    SELECT credential_id, raw_model, MAX(bucket) AS bucket
+    FROM credential_model_index_with_current_month
+    GROUP BY credential_id, raw_model
+)
+```
+
+`credential_model_index_with_current_month` = `credential_model_index_hot` ∪ `credential_model_index`（冷父表，UNION ALL）。
+
+**生产实测（2026-10-20 13:2x）**：
+
+| 源 | 行数 | 大小 | 备注 |
+|---|---|---|---|
+| `credential_model_index_hot` | 1,537 | 6.2 MB | 时间跨度 **05:10 → 13:10（8 小时）** |
+| `credential_model_index_2026_09` | **301,255** | 84 MB | 跨度 **2026-09-04 → 09-30（26 天）** |
+| `credential_model_index_2026_10` | 131,937 | 38 MB | 跨度 10-01 → 10-20 |
+| `credential_model_index_2026_11` | 0 | 24 kB | 空 |
+| **合计** | **434,729** | | 组数（`credential_id, raw_model`）= **1,079** |
+
+⇒ ⇒ ★★★ **每组平均 403 行**（434,729 / 1,079）——
+因为它是 **5 分钟一桶的 rollup**，一天 288 桶 × 26 天 ⇒ 冷分区天然堆了**每组每桶一行**。
+⇒ ⇒ ★★ **`MAX(bucket) GROUP BY` 在语义上就要求扫到「每组的最大桶」**，
+而**没有任何索引能免掉这个扫描**（要免，就得先知道每组的最大桶 —— 那正是要算的东西）。
+
+**EXPLAIN (ANALYZE, BUFFERS) 实测**：
+
+```
+Limit (actual rows=50)                                    Buffers: shared hit=7553
+  -> Sort  (top-N heapsort)                               Buffers: shared hit=7553
+    -> HashAggregate (actual rows=1079)                    Buffers: shared hit=7550
+      -> Append (actual rows=434658)                      Buffers: shared hit=7550
+        -> Seq Scan on credential_model_index_hot          (actual rows=1525)   Buffers: 45
+        -> Seq Scan on credential_model_index_2026_09      (actual rows=301255) Buffers: 5203
+        -> Seq Scan on credential_model_index_2026_10      (actual rows=131878) Buffers: 2302
+        -> Seq Scan on credential_model_index_2026_11      (actual rows=0)      Buffers: 1
+Execution Time: 752.408 ms
+```
+
+⇒ ⇒ ★ **计划是 `HashAggregate` + 4 路 Seq Scan** ⇒ **7,553 buffers 全是全表扫描的代价**。
+
+#### §143.19.4.3 同口径 A/B：行数就是成本（**同一条 SQL、同一时刻、只改扫描范围**）
+
+| 形态 | 扫描行数 | Buffers | 执行时间 | 相对现形态 |
+|---|---|---|---|---|
+| **A 现状**（4 分区全扫） | **434,658** | 7,553 | **880.963 ms** | — |
+| **B 去掉 09 月**（hot + 10 月） | 133,439 | 2,347 | **155.358 ms** | **−82.4% 时间 / −68.9% buffers** |
+
+⇒ ⇒ ★★★ **行数是成本的直接驱动**（不是算术巧合：**同一条 SQL、同一时刻、只少扫 301,255 行**）。
+⇒ ⇒ ⚠⚠ **但 B 形态不能直接采用** —— 语义会坏：
+**09 月独有组 = 235 个（21.8%）**（`full_groups 1079` vs `partial_groups 844`，
+`groups_only_in_0909 = 235`）⇒ **裁掉 09 月会漏掉 21.8% 的组**。
+
+#### §143.19.4.4 ★★★★ 可落地方案：冷分区只保留「每组最新一行」
+
+**方案**：`credential_model_index` 的冷月分区里，**每个 `(credential_id, raw_model)`
+只保留 `MAX(bucket)` 那一行**，其余历史桶行删掉。
+
+**为什么安全 —— 三个读方全部只取「每组最新一行」**（仓内全量 grep，只读方无遗漏）：
+
+| 读方 | 位置 | 取数形态 | 需要历史行吗 |
+|---|---|---|---|
+| auto-route 热路径 | `autoroute/index.go:520` `refreshIndexSQL` | `MAX(bucket) GROUP BY` + JOIN 回视图 | **不需要** |
+| admin 索引快照 | `admin/auto_route.go:326` `autoRouteIndexSnapshotSQL` | `(credential_id, raw_model, MAX(bucket)) IN (…)` | **不需要** |
+| 凭据监控 P95 | `admin/credential_monitor.go:457` | `ORDER BY bucket DESC LIMIT 1`（单组） | **不需要** |
+
+⇒ ⇒ ★★★ **语义对账（生产实测，逐行）**：
+
+| 对账 | 读数 | 判词 |
+|---|---|---|
+| `latest_bucket` 集合（现状 vs 裁剪后） | 1,079 行 vs 1,079 行，**`only_in_full = 0` / `only_in_kept = 0`** | ★ **完全等价** |
+| 整条 `refreshIndexSQL` 的结果（现状 vs 裁剪后） | 1,079 行 vs 1,079 行，**`only_now = 0` / `only_trim = 0`**（EXCEPT ALL 双向） | ★ **完全等价** |
+| 09 月行数 | **301,255 → 1,018 行（−99.66%）** | |
+| 09 月字节（数据行层面） | **88,367,104 → 约 64,837 B（−99.93%）** | |
+
+⇒ ⇒ ★★ **规模**：09 月分区 84 MB ⇒ 裁剪后约 **0.1~1 MB**（含 2 条索引）
+⇒ ⇒ ★★ **对 `refreshIndexSQL` 的收益**：扫描行数 434,658 → **134,457（−69.1%）**
+⇒ ⇒ ★★★ **并且这一刀同时治了「冷族 93.2% 的行超过 7 天 TTL」**：
+实测 `credential_model_index` 全表 **433,133 行里 403,878 行（93.2%）超过 7 天**。
+⇒ ⇒ ★★ **但执行前必须先确认「7 天 TTL 语义」**：
+`cleanup_old_credential_model_index()` 的函数体**只 DELETE `credential_model_index_hot`**，
+**明文跳过冷月分区**（理由写在函数注释里：「Columnar 月分区不支持 DELETE/CTID scans」）
+⇒ ⚠ **那个理由在 872 之后已经不成立了**（872 已把冷月分区转成 **heap**，`relam` = 2 ⇒ DELETE 可用）
+⇒ ⇒ ★★★ **这是一条典型的「前提漂移」缺陷**：
+> **317 时代冷月分区是 columnar ⇒ 跳过 DELETE 是正确的；
+> 872（2026-10-18）把它们全转成 heap ⇒ 前提变了，但 `cleanup_old_credential_model_index()`
+> 自 317 起从未被改过（`grep` 全仓：只有 `317_partition_credential_model_index.sql` 定义它）**
+> ⇒ **「7-day TTL cleanup」这个注释在冷族上是空文。**
+⇒ ⇒ ★ **归档不是替代品**：`archive_credential_model_index(month)` 跑在**每月 3 号**，
+参数是 `twoMonthsAgo = now.AddDate(0, -2, 0)`（`bg/partition_manager.go:603`）
+⇒ **它归档的是两个月前的月** ⇒ **2026_09 分区要到 2026-11-03 才会被归档**
+⇒ ⇒ ★★ **这不是缺陷，是设计**（保留两个月热数据；与 09 月分区实测跨度 26 天自洽）
+⇒ ⇒ ★★ **所以「冷族多留了两个月」是设计，「冷族留了每组 26 天的 5 分钟桶」是缺陷。**
+
+#### §143.19.4.5 ★★ `DISTINCT ON` 这条路被生产实测封死
+
+`autoroute/index_sql_shape_test.go`（R51 轮落的门）已把 `DISTINCT ON`（形态 C）标为
+「真慢 2~3 倍」。**本轮生产实测更严重**：
+
+| 形态 | 计划 | Buffers | 执行时间 | 相对现形态（880.963 ms） |
+|---|---|---|---|---|
+| 现形态（`MAX(bucket) GROUP BY`） | HashAggregate + 4× Seq Scan | 7,553 | **880.963 ms** | 1× |
+| `DISTINCT ON`（规划器自主选） | Merge Append + 4× **Index Only Scan**（Heap Fetches 301,255 + 131,878） | 386,033 + 4,853 | **161,495.853 ms** | **183×** |
+| `DISTINCT ON` + `enable_seqscan=off` | 同上 | 390,886 | **7,412.081 ms** | **8.4×** |
+
+⇒ ⇒ ★★★ **这条路彻底封死**：即便强制走索引（`Index Only Scan`）仍比现形态慢 8.4 倍，
+因为**索引扫描 43 万次 Heap Fetch 的代价远高于顺序扫 43 万行**
+（09 月的可见性地图已过期 ⇒ Heap Fetches = 301,255 = 全部行）。
+⇒ ⇒ ★ **结论不变但更强**：**该动的是「读多少行」，不是「怎么读」** ——
+与 `autoroute/index_sql_shape_test.go` 的判词**方向一致**，本节只是把「为什么」测到了根上。
+⚠ **该门已在本仓存在 ⇒ 任何改写 `refreshIndexSQL` 的提案必须先过它**，
+本节**不建议改 SQL 形态**（建议改**数据保留**）。
+
+### §143.19.5 ★★ 本节的两条「自订正」与两条「不订正」（防后人重犯）
+
+| # | 事项 | 判定 | 依据 |
+|---|---|---|---|
+| 1 | **§143.17.0 第 4 条 + §143.17.5「252 的 PG 日志是空的」** | ★★ **订正**（就地横幅，原文保留） | §143.19.1.1 的四条证据 |
+| 2 | **§143.17.6 的 C1 动作项「`logging_collector=on` + 阈值 + 轮转」** | ★★ **订正**（横幅内） | 真实通道已经是 stderr→conmon→`ctr.log`+小时外抄；再开 `logging_collector` 会**重复落盘** |
+| 3 | **§143.17.4 第 4 条「命名形态 ⇒ 新版从未执行」** | ★ **不订正**（结论正确） | §143.19.1.2 的三条生产证据；**且被本节反向印证** |
+| 4 | **本会话前半段我自己的「877 前提被证伪」判断** | ★★★ **自订正** | 父声明名两版同名 ⇒ 父声明名无判别力；判别力在 DDL 原文与叶实例名 |
+
+⇒ ⇒ ★★★ **第 4 条的教训（比 877 结论本身更值钱）**：
+> **「A 与 B 长得不一样，所以现场是 A」这类推理，只有在「A 的名字与 B 的名字不同」
+> **且**「现场那个名字确实只可能来自 A」时才成立。
+> 本轮里「父声明名」在两版中**相同** ⇒ 「父声明叫新版名」**不能**推出「新版跑过」。
+> ⇒ **纪律**：判「某迁移的哪一版在生产跑过」时，
+> **必须至少两条独立证据**（DDL 原文 + 产物对象名），
+> **且要先确认「该名字在两版里是否真的不同」。**
+
+### §143.19.6 诚实边界与本轮**没做**的事
+
+- ⚠ **本节对生产的写入 = 0**（见 §143.19.0 末尾）。**没有** DELETE / TRUNCATE / DROP /
+  REINDEX / ANALYZE / 迁移 / 改配置 / 改 cron。
+  ⇒ **§143.19.4.4 的裁剪方案只是「方案」**，**执行需要属主授权**。
+- ⚠ **`EXPLAIN (ANALYZE, BUFFERS)` 会真的执行语句**（本节用的都是 SELECT ⇒ 只读安全）。
+- ⚠ **两个量具的窗口不同**：`pg_stat_statements` 39 h vs `ctr.log` ~3.5 天（10-17 → 10-20 13:xx）
+  ⇒ §143.19.3.2 的交叉只比**家族排序**，**不比绝对耗时**。
+- ⚠ **`pg_stat_statements` 的 `total_exec_time` / `mean_exec_time` 单位是毫秒**
+  （PG 17 的该扩展版本）⇒ 本节所有「小时」都是 `/1000/3600` 换算来的。
+  ⚠ 另：`pg_stat_statements` 1.11 **没有 `database` 列**（只有 `dbid`）、**没有 `info` 视图**。
+- ⚠ **「零扫描/零复发」这类阴性结论都复核过**：UNION 洪水 40,160 条 ⇒ 10-18 轮已修且
+  10-17 08:30 后零复发；`archive_credential_model_index` 在 `pg_stat_statements` 里 0 条
+  ⇒ 但**它本该在 11-03 才跑**（`twoMonthsAgo`）⇒ **不是缺陷**，已按「阴性结论要当缺陷一样复核」处理。
+- ⚠ **本节没有覆盖**：其余 10 个 `REFRESH` 家族（`tuning_signals_5m` 952 次 / 218.3 s、
+  `session_client_task_matrix` 57 次 / 155.2 s、`tuning_signals_daily` 952 次 / 123.9 s 等）
+  逐个的根因；`WITH win`（4,196.4 s）、`WITH targets`（3,590.1 s）、`WITH neg`（2,631.0 s）
+  三族的内部结构（10-18 轮已把 `WITH neg` 定为「bg 对账读，登记」）；
+  `provider_metrics_minute` 的 4,691 次写入（均值 16.9 ms ⇒ 健康）。
+- ⚠ **裁剪方案的两条未决边界**（执行前必须定）：
+  ① **「每组只留最新一行」会不会伤到「历史趋势」类需求** ——
+  本轮 grep 到的三个读方都只要最新行，但**仓外**（admin UI 的图表/导出）未穷举；
+  ② **裁剪后 `credential_model_index` 的 UNIQUE `(bucket, credential_id, raw_model)` 仍在**
+  ⇒ 裁剪不破坏约束，但**重复写同一 bucket 的 upsert 路径**（promote）会否重新堆积
+  ⇒ 需在 `promote_credential_model_index_hot_to_partition` 侧另做「只 promote 每组最新行」的收口。
+
+### §143.19.7 待拍板（本节新增）
+
+| 优先级 | 动作 | 量 | 语义风险 | 决策要点 |
+|---|---|---|---|---|
+| **A1** | ★★★★ **裁剪 `credential_model_index` 冷月分区：每组只留 `MAX(bucket)` 一行** | 09 月 **301,255 → 1,018 行**；**84 MB → ~1 MB**；`refreshIndexSQL` 扫描 **−69.1%**（880.963 → 155.358 ms 量级） | **中**（只影响「最新桶」语义；仓内三个读方已对账全绿，**仓外未穷举**） | ⚠ **先决**：① 仓外读方确认（admin 图表/导出是否要历史桶）；② promote 侧收口（否则会重新堆积）；③ **需属主授权**（生产写） |
+| **A2** | ★★★★ **修 `cleanup_old_credential_model_index()`：872 之后冷月分区已是 heap，TTL 可用** | 恢复「7 天 TTL」在冷族上的实际效果 | 低（函数体只裁 `>7d` 的行） | ⚠ **这条与 A1 互补**：A1 是一次性裁剪，A2 是持续机制。**只做 A2 不够**（它删的是 7 天前的桶，但组还在 ⇒ 仍需至少一行） |
+| **A3** | ★★ **`archive_credential_model_index` 保留两个月（`twoMonthsAgo`）是否要缩短** | 09 月分区 84 MB（且在 11-03 会被归档） | 低 | ⇒ **本轮判定为「设计而非缺陷」**（`bg/partition_manager.go:603` 的注释明写）；**不建议改**，但需在台账写明「冷族天然保有 ~2 个月」 |
+| **B1** | ★★★ **4 个物化视图的 `REFRESH CONCURRENTLY`（本库慢查询的最大单一面）** | 合计 **11,267.9 s = 3.13 h = 12.36 h 的 25.3%** | 中 | `routing_analytics_7d` 单条 59,482 ms 均值；`db/db.go:8440-8447`（迁移 856）已记「ANALYZE 巡检持快照 ⇒ 阻塞 REFRESH」；⇒ **需先量「刷新慢是因为源表大还是因为被阻塞」**（EXPLAIN 不适用，得看等待事件） |
+| **B2** | ★★ **`ursm_node_snapshot_min` 小时桶查询（`WITH win AS …`，4,196.4 s / 24 次 / 174,849 ms）** | 4,196.4 s = 12.36 h 的 **9.4%** | 低 | 与 §143.18.8 的保留期杠杆同族（该族 8.4 GB / 7 天 / 日增 1.2~1.5 GB）⇒ **建议合并立项** |
+| **C1** | ★★ **把「252 PG 日志的正确读法」写进 runbook 并停止建议 `logging_collector=on`** | 0 | 无 | ✅ **本节已完成**（§143.19.1.1）；⇒ **属主只需确认「归档 30 天 / 2.0 GB / 磁盘 70 G 可用」是否继续维持现状** |
+| **C2** | ★ **pocket `scheduled_tasks` $4 双型错（953 条）** | 0 | 无 | **仓外**（`opencode-pocket`）；修复 `fa20e648` 已在仓内但**至今未上线**（10-17/10-18/本轮**三轮复登**）⇒ **建议升级给 owner** |
+| **C3** | ★ **`columnar_healthcheck()` 里 3 行 `expected=unknown`（`_request_logs_bodies` / `candidate_failure_logs`）** | 0 | 无 | 10-18 轮已见；**本轮未查因（不是本轮增量）** ⇒ 登记 |
+
+
+> ⚠⚠⚠ **订正横幅三（2026-10-20，§143.21.2 / §143.21.3 就地订正；上表 A1 / A2 / A3 三行原文保留）**
+>
+> 本表把 **A1 标为「中」、A2 标为「低」、并称两者「互补」、把 A3 判为「设计而非缺陷」** ——
+> **§143.21 查清冷族的真实形态后，这四点都要改**：
+>
+> 1. ⬆️ **A1 的语义风险「中」→「高」**：冷族存的不是冗余桶，而是
+>    **5 分钟粒度的凭据健康度历史快照**（252 09 月 **1,018 组 × 平均 295.9 个 bucket**、
+>    单组最多 3,635；机制 = `DefaultRetentionWindow = 8 * time.Hour` 的 promote 窗口，
+>    实测 hot 跨度 8.4 h 吻合）⇒ **「每组只留 `MAX(bucket)` 一行」= 永久销毁这批历史曲线**。
+> 2. ⬆️ **A2 的语义风险「低」→「中-高」**：654 的 archive 语义是
+>    **「INSERT 进 archive 的 columnar 月分区 → DETACH → DROP 源分区」**
+>    ⇒ **archive 表是真正的历史存储** ⇒ A2 若「直接 DELETE」，
+>    **archive 就再也搬不到那些行 ⇒ 历史被静默丢弃** ⇒
+>    **A2 的正确形态是「先搬进 archive 再删」**，不是直接删。
+> 3. ⚠ **A1 与 A2 不是「互补」而是「同一决策的两个参数」**：
+>    「冷族保留期取多少天」+「超期数据是先搬进 archive 还是直接丢」
+>    ⇒ A1 做完则 A2 几乎无物可删；A2 先做则 A1 的量随之变小。
+> 4. ⚠ **A3 的「设计而非缺陷」要改写**：「冷族天然保有 ~2 个月」在机制上成立，
+>    **但事实是 archive 几乎零产出**（252 的 `credential_model_index_archive` **0 行**、
+>    `archive_credential_model_index` 在 `pg_stat_statements` 里 **0 次调用**；
+>    211 的 archive **0 行 / 0 分区**）⇒ **它靠的是「archive 没跑」这个巧合，不是设计在起作用**。
+>
+> 另：⭐ **§143.19.7-A1 的量要更新** —— 「`refreshIndexSQL` 扫描 −69.1%」只算了 09 月；
+> **两个冷月分区都裁 ⇒ 433,258 → 1,862 行（−99.57%）**（211 侧 40,524 → 702 行，−98.27%）。
+>
+> 详见 runbook `§143.21`。
+
+### §143.19.8 复核方法（可原样重跑）
+
+```bash
+# ── 0) 先读量具口径（★ 本节两条判词都栽在「量具读法」上）
+#    252 PG 日志的真实通道（★ 容器 ID 会变，先查再读）
+ssh 252 'D=/var/lib/containers/storage/overlay-containers/$(podman inspect pg-252-pg17 --format "{{.Id}}")/userdata; ls -la $D/ctr.log*'
+ssh 252 'ls -la /var/log/pg17-ctrlog-archive/; cat /etc/cron.d/pg17-ctrlog-snapshot'
+#    ★ 护栏只放行 4 个 SET：SET enable_seqscan 会被拒 ⇒ 用 set_config('enable_seqscan','off',false)
+
+# ── 1) 慢查询清单：★ 必须按 dbid 拆库（不拆会把 smm 的 daily_kline 混进来）
+bash ~/.mavis-tools/lgwp-prod.sh /private/tmp/p14319/slow_by_db.sql 300 > /private/tmp/p14319/slow_by_db.out 2>&1
+bash ~/.mavis-tools/lgwp-prod.sh /private/tmp/p14319/conc.sql        300 > /private/tmp/p14319/conc.out 2>&1
+bash ~/.mavis-tools/lgwp-prod.sh /private/tmp/p14319/final_facts.sql 300 > /private/tmp/p14319/final_facts.out 2>&1
+
+# ── 2) 877 版本判别：DDL 原文（定向，★ 不要用宽 ILIKE）
+bash ~/.mavis-tools/lgwp-prod.sh /private/tmp/p14319/ver877c.sql 300 > /private/tmp/p14319/ver877c.out 2>&1
+bash ~/.mavis-tools/lgwp-prod.sh /private/tmp/p14319/ver877d.sql 300 > /private/tmp/p14319/ver877d.out 2>&1
+#    ★ 父声明名两版相同：git show 37944e9d2:sql/migrations/startup/877_session_turns_search_text_trgm.sql | grep -n 'CREATE INDEX'
+#    ★ relkind 陷阱：分区父表上的索引 relkind='I'（大写），不是 'i' ⇒ 用 relkind='i' 会漏掉全部
+
+# ── 3) 872 收益 + refreshIndexSQL 根因
+bash ~/.mavis-tools/lgwp-prod.sh /private/tmp/p14319/mv_health.sql   300 > /private/tmp/p14319/mv_health.out 2>&1
+bash ~/.mavis-tools/lgwp-prod.sh /private/tmp/p14319/cmi_diag2.sql  300 > /private/tmp/p14319/cmi_diag2.out 2>&1
+bash ~/.mavis-tools/lgwp-prod.sh /private/tmp/p14319/ab_rows.sql    300 > /private/tmp/p14319/ab_rows.out 2>&1
+bash ~/.mavis-tools/lgwp-prod.sh /private/tmp/p14319/lad2.sql       300 > /private/tmp/p14319/lad2.out 2>&1
+bash ~/.mavis-tools/lgwp-prod.sh /private/tmp/p14319/keep2.sql      300 > /private/tmp/p14319/keep2.out 2>&1
+bash ~/.mavis-tools/lgwp-prod.sh /private/tmp/p14319/ttl.sql        300 > /private/tmp/p14319/ttl.out 2>&1
+
+# ── 4) 252 ctr.log 逐块解析（本地跑，不过网；脚本见 §143.19.9）
+scp /private/tmp/p14319/parse_ctr.py 252:/tmp/parse_ctr_p14319.py
+ssh 252 'python3 /tmp/parse_ctr_p14319.py > /tmp/p14319_ctr_parse.out 2>/tmp/p14319_ctr_parse.err'
+```
+
+⇒ ⇒ ★ **本节落地的门**（不连库，可原样重跑）：
+
+```bash
+# §143.19 文档门：日志通道拓扑 / 按库拆库 / 两条订正 / refreshIndexSQL 根因 / 裁剪语义对账
+GOCACHE=/tmp/gocache-p1437 go test ./scripts/ursmcheck/ -run 'TestRunbook14319' -count=1 -v
+```
+
+★ 同族：[[先读量具再读产物]] · [[0 命中的第一嫌疑是量具坏了]] ·
+[[阴性结论要当缺陷一样复核]] · [[自己上一节的结论也要复核]] ·
+[[对照组不是同一条件下造的]] · [[判据红了先怀疑自己的前提]] ·
+[[「读不到」与「没有」返回值同形]] · [[算术巧合不能当因果]]。
+
+## §143.20 四个物化视图的刷新成本根因 + 211 侧独立实例普查（2026-10-20）
+
+### §143.20.0 结论先行
+
+本节接着 §143.19 的两条待拍板项（B1 = 4 个 matview 的 `REFRESH CONCURRENTLY`）
+往下做，并把「211 与 252」里此前**只审计过 252** 的那半边补上。产出五条：
+
+1. ★★★★ **B1 的根因不是索引、不是 JOIN 形态，是「7 天窗的全量重算」**：
+   同口径交错 A/B（预热后 3 轮）：**7 天窗 3,518~9,809 ms vs 1 天窗 442~724 ms**
+   ⇒ **慢 8.0~13.6 倍**，两组**完全不重叠** ⇒ 远超噪声带，成立。
+   源数据量对应：`session_turns` **7 天窗 130,126 行 vs 1 天窗 15,868 行（−87.8%）**。
+2. ★★★★ **「把 JOIN 换成 LATERAL」被实测证伪（阴性结论，但过程里踩了三次坑）**：
+   忠实 A/B（只改 JOIN 形态、其余逐字一致）+ **预热后交错 ABAB×4**：
+   现状中位 **99.05 ms** vs LATERAL 中位 **107.94 ms** ⇒ **LATERAL 反而慢 8.9%**，
+   两组组内极差 27.4 / 32.6 ms **完全重叠** ⇒ **落在噪声带内 ⇒ 无实质差异**。
+   ⇒ ⇒ **本节实测推翻了本会话先前自己算出的 −23.6% / −33% / −69%**（原因见 §143.20.3.4）。
+3. ★★★★ **REFRESH 的方差比均值更值得看**：`routing_analytics_7d`
+   **min 6,875 / mean 58,849 / max 121,833 / stddev 31,462 ms** ⇒ **max 是 min 的 17.7 倍**、
+   **stddev > mean/2** ⇒ 典型**负载依赖**形态。现场噪声底：252 宿主
+   **load 14.17 / 4 核**（超载 3.5 倍）⇒ 「59.5 秒」里有多少是查询本身、多少是排队，
+   **在当前负载下不可分离** ⇒ ⇒ **任何「单次读数 × 假设」的收益承诺都不可信**。
+4. ★★★ **陈旧度预算的算术仍成立（阴性结论已按纪律复核）**：
+   门 `admin/session_analytics_view_freshness_test.go` 用
+   `routingMeasuredRefreshSeconds = 30 s`（注释说「252 日志均值上沿 ~26 s」）。
+   本轮实测均值已 **58.8 s（2.26×）**、max **121.8 s**；
+   session 侧 `session_client_stats` max **175.5 s**
+   ⇒ ⇒ **算术仍成立**（最坏稳定态年龄 1,975.5 s < 预算 2,700 s）⇒ **契约未破，不改门**；
+   ⚠ **但门注释里的基准过期了 2.26 倍** ⇒ 本节把它写进 runbook（**不擅自改门的常量**）。
+5. ★★★★ **211 是一个此前未被审计的独立生产实例**（§143.19 全程只查 252）：
+   - `acc-pg17`（127.0.0.1:5432，PG **17.10**）里有自己的 `llm_gateway`（**6,018 MB**），
+     **混库**（acc / crm / goacos / kaixuan / llm_gateway / memora / pocket …）；
+   - ⚠ **`pg_stat_statements` 扩展已装（1.11）但未进 `shared_preload_libraries`**
+     （该实例只有 `citus`）⇒ **慢查询量具在 211 上完全不可用**
+     ⇒ 211 的慢查询**只剩容器日志一条线**（实测 48h 内 179 个 duration 块）；
+   - ★★ **同一迁移 877 在两实例上是两个不同版本**：211 上**新版已执行**
+     （叶实例 `session_turns_2026_10_search_trgm`，**4 个新版命名叶实例**挂在
+     `idx_session_turns_search_trgm` 父声明下），而 252 上是**旧版**
+     （叶实例 `..._search_text_idx`）⇒ ⇒ **§143.17.4 的「叶实例名判别法」在两个实例上都成立**
+     （252 判「新版没跑」、211 判「新版跑过」）⇒ **方法被跨实例验证**；
+     ⚠ **但 211 的 `schema_migrations` 只有 63 条、最大 869，877 那行没有** ⇒
+     **对象在、台账无** ⇒ 台账缺口（跨实例版）。
+   - `llm_gateway_pre_cutover_20261014`（**1,169 MB**）是 10-14 切换遗留，未清理 ⇒ 磁盘登记项；
+   - ★ 211 的**同一个** `routing_analytics_7d` 也慢：48h 内 **103 次 / 568,908.9 ms**
+     （占该实例 179 个 duration 块的 **57.5%**），单次 **6,182~6,189 ms**
+     （比 252 的 58.8 s **快 9.5 倍** ⇒ 与数据量差 3 倍一致 ⇒ **同一个设计问题，不同的数据规模**）。
+
+⚠ **本节对生产的写入 = 0**：全部只读（`pg_stat_statements` / `pg_stat_statements_info` /
+`pg_class` / `pg_index` / `pg_inherits` / `pg_settings` / `pg_stat_activity` /
+`columnar_healthcheck()` / `EXPLAIN` / `EXPLAIN (ANALYZE, BUFFERS)`）
++ 211 的容器日志**只读**解析（`docker logs`）。
+**没有** DELETE / TRUNCATE / DROP / REINDEX / ANALYZE / 迁移 / 改配置 / 改 cron。
+
+### §143.20.1 ★★★★ B1 的根因：7 天窗的全量重算
+
+#### §143.20.1.1 物化视图本身很小，慢的是它的源表
+
+| matview | 堆大小 | est_rows | 实测 mean | 实测 max | stddev | calls |
+|---|---|---|---|---|---|---|
+| `routing_analytics_7d` | **3,568 kB** | 5,073 | **58,849 ms** | 121,833 ms | 31,462 ms | 107 |
+| `session_client_stats` | 664 kB | 751 | **53,034 ms** | **175,530 ms** | 38,634 ms | 59 |
+| `session_task_stats` | 824 kB | 6 | 24,524 ms | 75,064 ms | 19,770 ms | 59 |
+| `routing_audit_summary_7d` | 64 kB | 1 | 7,021 ms | 38,292 ms | 4,198 ms | 96 |
+| `session_client_task_matrix` | 2,056 kB | 1,370 | 2,736 ms | 5,188 ms | 890 ms | 59 |
+| `tuning_signals_5m` | 168 kB | 10 | 236 ms | 5,260 ms | 348 ms | 966 |
+| `tuning_signals_daily` | 80 kB | 40 | 137 ms | 8,617 ms | 376 ms | 966 |
+
+⇒ ⇒ ★★ **物化视图只有几 MB，刷新要几十秒** ⇒ ⇒ **成本全在「重算源表」上**。
+⇒ ⇒ ★ **`routing_analytics_7d` 的定义**（生产 `pg_get_viewdef`）：
+`SELECT … FROM routing_analytics_source WHERE ts >= now() - '7 days'::interval AND <6 条过滤> GROUP BY <7 个维度>`，
+而 `routing_analytics_source` = **`request_logs_with_current_month`**（v1 拼装视图）
+⇒ ⇒ ★ **源表 5 条 UNION ALL 臂**（`session_turns_hot` / `session_turns` /
+`_request_logs_hot` / `_request_logs` + 一条派生臂）。
+
+#### §143.20.1.2 源表的时间分布（成本随「窗内行数」走）
+
+| 源 | 7 天窗 | 1 天窗 | 全表 |
+|---|---|---|---|
+| `session_turns` | **130,126** | **15,868** | 1,056,422 |
+| `session_turns_hot` | 3,862 | — | 3,861 |
+| `_request_logs` | 8,877 | — | 338,976 |
+| `_request_logs_hot` | 0 | — | 0 |
+
+⇒ ⇒ ★★ **物化视图的分组维度**：`hours=169`（7 天 × 24.2）、`models=459`、`tenants=1`
+⇒ ⇒ **5,061 行结果**（`routing_analytics_7d`）来自 **130,126 行源数据** ⇒ **放大比 1:25.7**。
+
+#### §143.20.1.3 ★★★★ 决定性 A/B：7 天窗 vs 1 天窗（预热后交错 3 轮）
+
+**同一条 SQL、同一时刻、只改 `ts >= now() - interval` 的长度**：
+
+| 轮 | 7 天窗 | 1 天窗 | 比值 |
+|---|---|---|---|
+| 1 | **3,517.948 ms** | **441.874 ms** | 8.0× |
+| 2 | **9,808.550 ms** | **723.521 ms** | 13.6× |
+| 3 | **6,848.252 ms** | **520.239 ms** | 13.2× |
+
+⇒ ⇒ ★★★ **两组完全不重叠**（7 天窗 3.5~9.8 s vs 1 天窗 0.44~0.72 s）⇒ **远超噪声带，成立**。
+⇒ ⇒ ★★ **这解释了均值为什么是 59 s**：单次 7 天窗全量重算本身就要 3.5~9.8 s，
+**`REFRESH CONCURRENTLY` 的额外机制**（建临时影子表 + 比对差异 + 两遍写）
+**再乘一个量级** ⇒ ⇒ ★ **「均值 59 s」里，「重算源表」与「CONCURRENTLY 机制」各占多少，
+本节没有分离**（`EXPLAIN` 只覆盖前者）⇒ ⇒ **诚实边界**（见 §143.20.5）。
+⇒ ⇒ ⚠⚠ **但 1 天窗不是免费的**：视图名 `routing_analytics_7d` 与读方
+（`admin/analytics_materialized.go:166/180/198` 的 7 天窗口面板、
+`metrics/routing_analytics_mv_drift.go:79` 的 drift 监控）**都把 7 天当语义契约**
+⇒ ⇒ **改窗 = 改语义 ⇒ 属主决策，不是优化**。
+
+### §143.20.2 ★★★★ 换 JOIN 形态是死路（阴性结论，且过程中踩了三次坑）
+
+#### §143.20.2.1 起点：计划里有一个很贵的 Nested Loop
+
+`routing_analytics_7d` 刷新查询的 `EXPLAIN (ANALYZE, BUFFERS)`（简化投影）：
+
+```
+GroupAggregate (actual rows=4307)                      Buffers: shared hit=583058
+  -> Sort (actual rows=115213)                         Buffers: shared hit=583049
+    -> Subquery Scan on request_logs_with_current_month (actual rows=115213)
+      -> Append (actual rows=133886)                   Buffers: shared hit=583043
+        -> Hash Left Join (session_turns_hot)           Buffers: shared hit=2836
+        -> Gather (actual rows=129743)                 Buffers: shared hit=550272
+          -> Parallel Append
+            -> Parallel Index Scan using session_turns_2026_09_ts_idx (actual rows=0)   Buffers: 4
+            -> Parallel Index Scan using session_turns_2026_10_ts_idx (actual rows=43310 loops=3)
+              -> Append (actual rows=1 loops=129930)    Buffers: shared hit=519722
+                -> Index Scan using session_turn_details_2026_10_tenant_id_request_id_partition_key
+                   (actual rows=1 loops=129930)         Buffers: shared hit=519722
+```
+
+⇒ ⇒ ★★★ **热点是 `session_turn_details_2026_10` 的 `Index Scan`：`loops=129,930`** ⇒
+**519,722 buffers = 全查询 583,058 的 89.1%** ⇒ 典型「逐行索引探测」。
+⇒ ⇒ ★ **同时注意 09 月臂**：`Parallel Index Scan using session_turns_2026_09_ts_idx`
+（**actual rows=0**）⇒ **索引是生效的**（`ts >= now()-7d` 可 sargable）⇒
+**「09 月分区 2,734 MB / 798,278 行」不是本次慢的原因**（它在窗外，索引直接剪掉）。
+⇒ ⇒ ★★ **换形态候选**：`LEFT JOIN LATERAL`（734 迁移的 session 臂现在是**普通** `LEFT JOIN`）。
+
+#### §143.20.2.2 ★ 坑一：**第一版 A/B 两侧都不是现状**
+
+第一版 A/B 写成了「普通 JOIN（**无 `::text`**）vs LATERAL（**无 `::text`**）」，
+得到 3,482.245 ms vs 1,082.137 ms（**−69%**）⇒ ★★ **这个数不能用**：
+现状视图的 JOIN 键是 **`d.tenant_id::text = t.tenant_id::text`**（生产 `pg_get_viewdef` 实测），
+而我两侧都去掉了 `::text` ⇒ **两个都不是现状** ⇒ **比较的不是「谁更好」，是「两个自定义形态谁更好」**。
+
+⇒ ⇒ ★★ **纪律**：**A/B 的两个形态必须有一个是「现状的逐字复现」**，
+否则你测的是自己的两个草稿，不是现状 vs 候选。
+
+#### §143.20.2.3 ★ 坑二：**`::text` 没有破坏索引**（我的推断错了）
+
+我曾据「JOIN 键带 `::text` ⇒ `tenant_id` 索引前缀失效」推断这是慢因 ⇒
+**实测否掉**：`d.tenant_id::text = t.tenant_id::text` 与原列比较**两者 buffers 完全相同**（30,204），
+且计划里的 `Index Cond` 照旧 ⇒ ⇒ ★ **规划器识别了 `varchar → text` 的隐式转换，索引仍然可用**。
+⇒ ⇒ ★★ **纪律**：「`::text` 一定废索引」是**常见但错误的先验**；
+「EXPLAIN 只证明『计划会选』」这条纪律在这里的反向用法同样成立 ——
+**要先量，再下结论**。
+
+#### §143.20.2.4 ★★ 坑三：单次读数与「先跑的是冷的」
+
+忠实 A/B（只改 JOIN 形态、含 `::text`、真实 30 列投影）**单次**读数：
+现状 1,669.761 ms vs LATERAL 1,276.192 ms（**−23.6%**）⇒ ★ **但这个数也不可用**：
+**预热后交错 ABAB×4** 的结果推翻了它：
+
+| 轮 | A 现状 | B LATERAL |
+|---|---|---|
+| 1 | 94.178 ms | 123.859 ms |
+| 2 | 99.051 ms | 91.270 ms |
+| 3 | 121.627 ms | 107.304 ms |
+| 4 | 95.855 ms | 108.584 ms |
+
+⇒ A 中位 **99.05**、B 中位 **107.94** ⇒ **LATERAL 慢 8.9%**；
+两组组内极差 **27.4 / 32.6 ms**（**完全重叠**）⇒ ⇒ ★★★ **落在噪声带内 ⇒ 无实质差异**。
+⇒ ⇒ ★★ **「先跑的那条是冷的」**（`autoroute/index_sql_shape_test.go` 已写明这条纪律）
+在本节再次生效：预热前 A 的首轮是 187.7 ms（冷），预热后 94~122 ms。
+⇒ ⇒ ★★★ **最终判词**：
+> **`LEFT JOIN LATERAL` 对这条热路径没有实质收益。**
+> ⇒ 成本不在「怎么 JOIN」，在「要重算 7 天的 13 万行」。
+> ⇒ ⇒ **与 §143.19 的 `DISTINCT ON` 结论同构**（都是「换形态是死路，该动的是读多少行」），
+> 但**这次是在 matview 刷新路径上**独立得到的。
+
+#### §143.20.2.5 ★★ LATERAL 的语义安全性（结论是「安全但没用」）
+
+即便收益为负，**语义等价性仍要核**（万一将来有人要用）：
+
+| 项 | 实测 |
+|---|---|
+| `session_turn_details` 是否有 UNIQUE `(tenant_id, request_id, partition_date)` | ✅ 有（`session_turn_details_request_id_key`）⇒ **LATERAL 不会行放大** |
+| 行数是否一对一 | ✅ 1,043,956 行 = 1,043,956 distinct keys |
+| 7 天窗内两形态行集 | ✅ **129,916 vs 129,916，`EXCEPT ALL` 双向差集 0/0** |
+
+⇒ ⇒ ★ **语义安全，但无收益** ⇒ ⇒ **不建议改**（改了要动 824 迁移 + 同步
+`admin/board_time_range_test.go:54` 的逐字断言）。
+
+### §143.20.3 ★★★ 刷新成本里有多少是「排队」？（诚实边界）
+
+#### §143.20.3.1 方差本身就是判据
+
+`routing_analytics_7d`：min 6,875 / mean 58,849 / max 121,833 / stddev **31,462** ms
+⇒ **max 是 min 的 17.7 倍**，**stddev > mean/2**
+⇒ ⇒ ★★★ **这是「负载依赖」的典型形态**，不是「查询本身稳定地慢」。
+`session_client_stats` 更极端：max **175,530 ms** / stddev 38,634 ms。
+
+#### §143.20.3.2 现场噪声底
+
+- 252 宿主：**load 14.17 / 17.15 / 20.22（4 核）** ⇒ **超载 3.5 倍**；
+- 采样时刻 `pg_stat_activity`：51 个 backend，**1 个 active**、**0 个 waiting**
+  ⇒ 采样点本身不拥挤 ⇒ **但采样点不等于刷新时刻的负载**（刷新是每 30 分钟一轮的尖峰）。
+
+⇒ ⇒ ★★★ **因此**：
+> **「59.5 秒」这个数不能直接当作「查询需要 59.5 秒」**。
+> 它是「3.5~9.8 s 的重算」+「CONCURRENTLY 机制」+「过载下的排队」的合成读数。
+> ⇒ ⇒ **在当前负载下，三者不可分离** ⇒ ⇒ **任何基于单次读数的收益承诺都不可信**
+> ⇒ ⇒ ★ **这也是为什么 §143.20.2.4 必须用交错重复**：不重复就分不出信号与噪声。
+
+#### §143.20.3.3 ★ 顺带发现：`db/db.go` 记的「ANALYZE 巡检持快照 ⇒ 阻塞 REFRESH」
+
+`db/db.go:8440-8447`（迁移 856，2026-10-13）已记：
+「它持有的快照会让每次 `REFRESH MATERIALIZED VIEW CONCURRENTLY` 等它」。
+⇒ ⇒ ★★ **本轮未能证实也未能否证这条**（采样点没有抓到正在跑的 REFRESH 的等待事件，
+`pg_stat_activity` 抓到的是 `LISTEN auto_route_refresh` 的 idle 连接）⇒ **登记为未闭合**。
+
+#### §143.20.3.4 ★★ 陈旧度预算的算术：**仍成立**（阴性结论已复核）
+
+门：`admin/session_analytics_view_freshness_test.go`
+- `routingMeasuredRefreshSeconds = 30 * time.Second`
+  （注释：「取 pg_stat_statements / 252 日志里 `routing_analytics_7d` CONCURRENTLY 均值上沿（~26s）」）
+- `sessionMeasuredRefreshSeconds = 64 * time.Second`
+- `RefreshInterval = 30m` / `mvFreshnessBudget = 45m` / `RefreshTimeout = 5m`
+
+**本轮实测代入**：
+
+| 视图 | 实测 mean | 实测 max | 稳定态最坏年龄（30m + 该值） | 预算 2,700 s |
+|---|---|---|---|---|
+| `routing_analytics_7d` | 58.8 s | 121.8 s | 1,858.8 s / **1,921.8 s** | ✅ 成立 |
+| `session_client_stats` | 53.0 s | **175.5 s** | 1,853.0 s / **1,975.5 s** | ✅ 成立 |
+
+⇒ ⇒ ★★★ **算术仍成立 ⇒ 契约未破 ⇒ 不改门的常量**。
+⇒ ⇒ ⚠ **但门注释里的「~26 s」已过期 2.26 倍** ⇒ ⇒ **本节把它写进 runbook**，
+**不擅自改注释/常量**（那会让「实测基准」变成又一个会漂移的硬编码 ⇒ 正确做法是**引用本节**）。
+
+### §143.20.4 ★★★★ 211 侧普查：一个此前未被审计的独立生产实例
+
+⚠ **§143.19 全程只查了 252**（因为目标库 `172.16.2.210` 在 252 上）⇒
+本节补上「211 与 252」里的另一半。
+
+#### §143.20.4.1 211 的 PG 拓扑
+
+| 容器 | 端口 | 镜像 | 库 | 备注 |
+|---|---|---|---|---|
+| `acc-pg17` | **127.0.0.1:5432** | `kx-citus-pg17:amd64` | `acc_db` / `acc_multinode` / `crm` / `goacos` / `kaixuan` / **`llm_gateway`** / `llm_gateway_pre_cutover_20261014` / `memora` / `pocket` / `pocket_test` … | ★ **混库**（10 个业务库）；PG **17.10** |
+| `wa-pg17` | 0.0.0.0:15432 | `postgres:17-alpine` | `postgres` / `wa_quiet` / `wabench` | 与本仓无关 |
+
+⇒ ⇒ ★ **211 的网关连的是 `acc-pg17` 的 `llm_gateway`**：
+`LLM_GATEWAY_DATABASE_URL=postgres://acc_super:***@acc-pg17:5432/llm_gateway?sslmode=disable`
+⇒ ⇒ ★★ **⇒ 211 与 252 是两个独立的 `llm_gateway` 库，两套数据、两套慢查询、两套迁移水位**。
+
+#### §143.20.4.2 ★★ 211 的慢查询量具**不可用**（真实观测缺口）
+
+```
+shared_preload_libraries   = citus          ← ★ 没有 pg_stat_statements
+pg_stat_statements 扩展    = 1.11（已装，但没进 preload）
+log_min_duration_statement = 500            ← 比 252 的 1s 更敏感
+logging_collector          = off
+```
+
+⇒ ⇒ ★★★ **扩展装了 ≠ 能用**：`pg_stat_statements` 必须经 `shared_preload_libraries` 预加载，
+否则视图查询直接报错（实测：`ERROR: pg_stat_statements must be loaded via "shared_preload_libraries"`）
+⇒ ⇒ ★★ **⇒ 211 侧慢查询**只剩**容器日志**一条线（48h 内 179 个 duration 块）。
+⇒ ⇒ ★★★ **⇒ 容器运行时不同 ⇒ 读法不同（这是 §143.19 的「正确读法」必须补的分叉）**：
+
+| 实例 | 运行时 | 日志落盘 | `docker logs` 能读吗 |
+|---|---|---|---|
+| **252** | **podman 4.9.4**（conmon） | `/var/lib/containers/storage/overlay-containers/<id>/userdata/ctr.log` | ❌ **读不到**（走 journald/k8s-file 驱动）⇒ 必须直读 `ctr.log` + 归档目录 |
+| **211** | **docker**（json-file） | `/var/lib/docker/containers/<id>/<id>-json.log`（+ `.1` / `.2` 轮转，共 3 个） | ✅ **能读**（实测 48h 5,197 行 / 179 个 duration 块） |
+
+⇒ ⇒ ★★ **⇒ §143.19.1.1 的「正确读法」必须补上这个分叉**：
+**「`docker logs` 读不到」是 252（podman）独有的现象，不是通用规律** ——
+在 211（docker）上 `docker logs` 恰恰是**唯一**的读法（无 `ctr.log` 归档机制）。
+⇒ ⇒ ★ **本节已在 §143.19 就地补订正横幅**（见 §143.20.6）。
+
+#### §143.20.4.3 ★★ 211 的慢查询画像：与 252 同一个病
+
+48h 内 179 个 duration 块的家族聚合（`docker logs` 只读解析）：
+
+| 次数 | 总耗时(ms) | 家族 |
+|---|---|---|
+| **103** | **568,908.9** | `REFRESH MATERIALIZED VIEW CONCURRENTLY routing_analytics_7d` |
+| 54 | 129,494.3 | （语句体为空 ⇒ 解析伪影/被取消查询） |
+| 1 | 17,605.9 | `SELECT count(*) AS rows, …` |
+| 1 | 6,271.9 | `SELECT date_trunc('day', snapshot_ts)::date AS d, …` |
+| 1 | 3,988.4 | `SELECT w.label, count(*) AS rows, pg_size_pretty(sum(pg_column_size(ursm_node_sn…` |
+| 1 | 1,008.8 | `CREATE INDEX CONCURRENTLY IF NOT EXISTS session_turns_2026_10_search_trgm ON pub…` |
+
+⇒ ⇒ ★★★ **103/179 = 57.5% 的慢查块是同一个 matview 刷新**，单次 **6,182~6,189 ms**
+⇒ ⇒ ★★ **与 252 是同一个设计问题**（7 天窗全量重算），
+但 **211 更快（6.2 s vs 58.8 s）**，与数据量差一致
+（211 `session_turns_2026_10` **345 MB / 70,290 行** vs 252 **1,417 MB / 240,614 行**，
+且 211 **没有 09 月分区**）⇒ ⇒ ★ **再次印证「成本 ∝ 窗内行数」**。
+
+#### §143.20.4.4 ★★★ 同一迁移 877 在两实例上是两个不同版本（跨实例订正）
+
+**211（`acc-pg17`）实测**：
+
+| 项 | 读数 |
+|---|---|
+| `idx_session_turns_search_trgm`（父声明） | 存在（relkind `I` = 分区索引） |
+| 它的叶实例 | **`session_turns_2026_07/08/10/11_search_trgm`**（**新版形态**）共 4 个 |
+| 父声明→叶实例的 `pg_inherits`（索引级） | ✅ 4 条全挂在新版父声明下 |
+| 全库 `session_turns%_search_trgm` 命名对象 | **4 个**（252 是 **0 个**） |
+| **对照：252 的同族叶实例** | **`session_turns_2026_10_search_text_idx`**（**旧版形态**，6 个，79.27 MB）⇒ **两实例的叶实例名形态不同** |
+| `schema_migrations` 里 877 的行 | ❌ **没有**（该表只有 **63 条**记录、最大 **869**） |
+| 211 的 `schema_migrations` 最大版本 | **869**（252 是 **882**） |
+
+⇒ ⇒ ★★★ **两条结论**：
+1. ★★ **§143.17.4 的「叶实例名判别法」被跨实例验证**：
+   252 现场是旧版形态 ⇒ 判「新版没跑」✅；211 现场是新版形态 ⇒ 判「新版跑过」✅
+   ⇒ ⇒ **方法有效**（§143.19.1.2 的「判别力排序：DDL 原文 > 产物对象名 > 父声明名」也再次成立 ——
+   两实例的**父声明名相同**，只有**叶实例名**能区分）。
+2. ⚠★ **台账缺口（跨实例版）**：211 上 **877 的对象完整存在但迁移没记账**
+   ⇒ ⇒ **「对象存在」≠「迁移已应用并记账」** ⇒ ⇒ **两实例的迁移状态必须分别核**
+   ⇒ ⇒ **本仓的 `docs/db-changelog.md` 与 `schema_migrations` 是单实例口径 ⇒ 跨实例会漏**。
+
+⇒ ⇒ ★ **附带**：211 的 `llm_gateway` **落后 13 个迁移**（869 vs 882）⇒
+且 `llm_gateway_pre_cutover_20261014`（**1,169 MB**）是 10-14 切换遗留、未清理 ⇒ **磁盘登记项**。
+
+> **订正横幅十九（2026-10-21，§143.39 就地订正本节 §143.20.4 的「附带」与 C5 行）**
+>
+> ★★★★ **原文保留**：
+> > 「⇒ ⇒ ★ **附带**：211 的 `llm_gateway` **落后 13 个迁移**（869 vs 882）⇒
+> > 且 `llm_gateway_pre_cutover_20261014`（**1,169 MB**）是 10-14 切换遗留、未清理 ⇒ **磁盘登记项**。」
+> > （C5 行同义：「★★★ **211 迁移落后 13 个（869 vs 882）+ `llm_gateway_pre_cutover_20261014` 1,169 MB 未清理**」）
+>
+> ⇒ ★★★ **「落后 13 个迁移」这个表述是错的** —— 它是**台账口径**（`schema_migrations` 最大 869），
+>   不是**形态口径**。
+> ⇒ ★ **实测反证**：211 上 870~889 里**绝大多数对象都已存在**（870/871/873/874/877/878/882
+>   的索引、883/884 的视图全在）⇒ **台账稀疏 ≠ 形态落后**。
+> ⇒ ⇒ ★★ **211 与 252 的真实形态差集 = 5 个对象**（`host`/`tags` 两列 × 两侧 +
+>   `idx_session_turns_search_fts` + 888 的两个 join 索引），另有 2 个 888 要删的索引还在。
+> ⇒ ⇒ ★★★ **而那 2 个列缺口带来一条**与 §143.38 方向相反**的顺序约束**：
+>   **211 必须「先应用迁移 885 → 再部署新二进制」**，否则写路径 42703（且 boot 不会失败）。
+> ⇒ ⇒ ★★ **方法论**：**「迁移水位」是台账口径，「形态」是对象存在性口径**；
+>   ★ **量具背离一旦被观察到一次，就必须推广到全量** —— 本节 §143.20 当时只对 877 一条
+>   观察到，却把结论留在了「附带」的位置，还用了一个会被误读成「形态差」的措辞。
+>
+> ⇒ ★ **完整订正与证据见 §143.39**（含逐对象的 211/252 对照表与预检脚本）。
+
+### §143.20.5 诚实边界与本轮**没做**的事
+
+- ⚠ **本节对生产的写入 = 0**（见 §143.20.0 末尾）。**没有** DELETE / TRUNCATE / DROP /
+  REINDEX / ANALYZE / 迁移 / 改配置 / 改 cron / 改 preload。
+- ⚠ **「59.5 s」的构成未分离**：§143.20.1.3 的 A/B 只覆盖「重算源表」那部分
+  （3.5~9.8 s）；`REFRESH CONCURRENTLY` 机制（影子表 + 差异比对 + 两遍写）
+  与「过载排队」**在当前负载下不可分离** ⇒ ⇒ **本节不给「修完能省多少秒」的承诺**。
+- ⚠ **`db/db.go:8440-8447` 记的「ANALYZE 巡检持快照 ⇒ 阻塞 REFRESH」本轮未闭合**
+  （采样点没抓到正在跑的 REFRESH 的等待事件）⇒ 登记为未闭合。
+- ⚠ **1 天窗 A/B 不可直接采用**：视图名与读方都把 7 天当**语义契约** ⇒ 改窗 = 改语义。
+- ⚠ **LATERAL 的语义等价虽已核（双向差集 0/0），但**结论是**无收益** ⇒ 不建议改；
+  且真要改会撞 `admin/board_time_range_test.go:54` 的逐字断言 + 需要新迁移（824 不可改）。
+- ⚠ **211 侧只做了普查**：`pg_stat_statements` 未 preload ⇒ **211 没有任何
+  `pg_stat_statements` 读数**；本节的 211 慢查询读数**全部来自容器日志**（48h 窗口）。
+  ⇒ **211 的慢查询全貌未知**（日志只留 48h 的 179 个块）。
+- ⚠ **本节没有覆盖**：4 个 matview 的**刷新调度器**本身
+  （`bg/materialized_view_refresher.go` 的 token-bucket 协调、`bg/tuning_view_refresher.go`）的
+  正确性与重叠度；`session_client_stats` 的 max 175.5 s 是否逼近 `RefreshTimeout`（5 分钟）——
+  实测 175.5 s 只用掉 58%，但 stddev 38.6 s 意味着尾部可能更远 ⇒ **未闭合**。
+- ⚠ **宿主机负载是本轮的公共放大器**：252 load 14/4 核 ⇒ 本节所有单点读数都要按这个噪声底读。
+
+### §143.20.6 §143.19 的就地补订（读法分叉）
+
+⚠ **本节给 §143.19.1.1 补一条订正横幅**（跨实例分叉）：
+**「`docker logs` 读不到」是 252（podman）独有的现象**；
+**211 是 docker 运行时 ⇒ `docker logs` 恰恰是唯一读法**（无 `ctr.log` 归档机制）。
+⇒ ⇒ ★ **正确读法必须按运行时分叉**，不能把 252 的结论套到 211 上，反之亦然。
+
+### §143.20.7 待拍板（本节新增）
+
+| 优先级 | 动作 | 量 | 语义风险 | 决策要点 |
+|---|---|---|---|---|
+| **A1** | ★★★★ **`credential_model_index` 冷分区裁剪（每组只留 `MAX(bucket)` 一行）** | 09 月 301,255 → 1,018 行；**84 MB → ~1 MB**；`refreshIndexSQL` 扫描 **−69.1%** | 中 | ⬅️ §143.19.7-A1，本节**未推翻**；新增前置条件：**仓外读方（admin 图表/导出）确认** + **promote 侧收口**（否则会重新堆积） |
+| **A2** | ★★★★ **修 `cleanup_old_credential_model_index()`（872 后冷族已是 heap ⇒ 7 天 TTL 可用）** | 恢复冷族 TTL（现 93.2% 的行超期） | 低 | ⬅️ §143.19.7-A2；**与 A1 互补**：A1 是一次性裁剪，A2 是持续机制 |
+| **B1** | ★★★★ **matview 刷新成本** | 4 个视图合计 **3.13 h = 12.36 h 的 25.3%** | 中 | ⬅️ §143.19.7-B1，本节把根因钉到「**7 天窗全量重算**」并**证伪了「换 JOIN 形态」**；⇒ **剩下的路只有三条**：① 降窗（改语义）② 增量物化（结构性改造）③ **降主机负载**（R31/R32 已登记）；**且本节不给秒数承诺** |
+| **B1b** | ★★★ **「ANALYZE 巡检持快照 ⇒ 阻塞 REFRESH」本轮未闭合** | 未量化 | 低 | ⇒ 需在**刷新时刻**采样 `pg_stat_activity.wait_event`（本轮采样点没抓到） |
+| **C4** | ★★★★ **211 的 `pg_stat_statements` 加进 `shared_preload_libraries`** | 0 | 低（需重启实例） | ⇒ **211 侧慢查询量具从「没有」变成「有」**；⚠ 需重启 ⇒ **需属主授权**；⇒ 改完必须**回读 `pg_settings` 确认**（`shared_preload_libraries` 是 sighup/restart 级） |
+| **C5** | ★★★ **211 的迁移水位落后 13 个（869 vs 882）+ `llm_gateway_pre_cutover_20261014` 1,169 MB 未清理** | 1,169 MB | 中（迁移可能改行为） | ⇒ **迁移升级要单独评估**（211 上 877 已是新版形态 ⇒ 升级路径与 252 不同）⇒ ⇒ **建议先做 C4（量具）再评估升级** |
+| **C6** | ★★ **211 上 877「对象在、台账无」** | 0 | 低 | ⇒ 台账缺口（跨实例版）⇒ ⇒ 需要一种「按实例核迁移状态」的口径（本仓 `docs/db-changelog.md` 是单实例的） |
+| **C7** | ★★ **§143.19.1.1 的读法补订正横幅（按运行时分叉）** | 0 | 无 | ✅ **本节已完成**（§143.20.6） |
+
+### §143.20.8 复核方法（可原样重跑）
+
+```bash
+# ── 1) 4 个 matview 的实测读数（均值/max/stddev 是判据的关键，缺一不可）
+bash ~/.mavis-tools/lgwp-prod.sh /private/tmp/p14319/budget.sql 300 > /private/tmp/p14319/budget.out 2>&1
+# ── 2) 源表时间分布（7 天 vs 1 天）—— 成本 ∝ 窗内行数
+bash ~/.mavis-tools/lgwp-prod.sh /private/tmp/p14319/retention.sql 300 > /private/tmp/p14319/retention.out 2>&1
+# ── 3) ★ 决定性 A/B：7 天窗 vs 1 天窗（预热后交错 3 轮；★ 预热不可省）
+bash ~/.mavis-tools/lgwp-prod.sh /private/tmp/p14319/win_ab.sql 300 > /private/tmp/p14319/win_ab.out 2>&1
+# ── 4) ★ 证伪「换 JOIN 形态」：忠实 A/B（只改 JOIN 形态）+ 预热后交错 ABAB×4
+bash ~/.mavis-tools/lgwp-prod.sh /private/tmp/p14319/lat_faithful.sql 300 > /private/tmp/p14319/lat_faithful.out 2>&1
+bash ~/.mavis-tools/lgwp-prod.sh /private/tmp/p14319/final_ab_all.sql 300 > /private/tmp/p14319/final_ab.out 2>&1
+# ── 5) LATERAL 的语义等价（UNIQUE 键 + 行集双向差集）
+bash ~/.mavis-tools/lgwp-prod.sh /private/tmp/p14319/lat_sem.sql 300 > /private/tmp/p14319/lat_sem.out 2>&1
+# ── 6) 噪声底（宿主 load + pg_stat_activity）
+bash ~/.mavis-tools/lgwp-prod.sh /private/tmp/p14319/load.sql 300 > /private/tmp/p14319/load.out 2>&1
+ssh 252 'cat /proc/loadavg; nproc'
+# ── 7) ★ 211 侧（独立实例，运行时是 docker ⇒ docker logs 能读）
+ssh 211 'docker exec -i acc-pg17 psql -U acc_super -d llm_gateway -f - < /tmp/211_slow.sql'
+ssh 211 'docker logs acc-pg17 --since 48h 2>&1 | grep -ac "duration:"'
+ssh 211 'docker exec -i acc-pg17 psql -U acc_super -d llm_gateway -f - < /tmp/211_877b.sql'
+```
+
+⇒ ⇒ ★ **本节落地的门**（不连库，可原样重跑）：
+
+```bash
+# §143.20 文档门：7 天窗根因 / LATERAL 证伪 / 211 独立实例 / 877 跨实例版本差异 / 预算算术仍成立
+GOCACHE=/tmp/gocache-p1437 go test ./scripts/ursmcheck/ -run 'TestRunbook14320' -count=1 -v
+```
+
+★ 同族：[[先读量具再读产物]] · [[0 命中的第一嫌疑是量具坏了]] ·
+[[对照组不是同一条件下造的]] · [[阴性结论要当缺陷一样复核]] ·
+[[算术巧合不能当因果]] · [[自己上一节的结论也要复核]] ·
+[[「读不到」与「没有」返回值同形]] · [[EXPLAIN 只证明「计划会选」]]。
+
+## §143.21 `credential_model_index` 冷族的真实形态 + A2 重新裁决 + 211 侧同形态（2026-10-20）
+
+### §143.21.0 结论先行
+
+本节把 §143.19 的 **A1 / A2** 从「量已量、风险已标」推进到**形态已查清、风险已重定级**，
+并把 §143.20 的「211 是独立实例」从「盘点过」推进到「同族缺陷逐字同源」。
+产出五条：
+
+1. ★★★★ **冷族存的是「5 分钟粒度的凭据健康度历史快照」，不是冗余桶** ⇒
+   §143.19.7-A1 把语义风险标成「**中**」**偏低**，本节按证据**上调为「高」**：
+   - 252 冷族 09 月：**301,255 行 = 1,018 组 × 平均 295.9 个 bucket**（单组最多 **3,635**）；
+   - 211 冷族 10 月：**40,524 行 = 702 组**（平均 57.7 个 bucket）；
+   - 机制：`bg/partition_manager.go:52` 的 `DefaultRetentionWindow = 8 * time.Hour`
+     ⇒ promote 每小时把 hot 里「`updated_at < now() - 8h`」的行搬进月分区；
+     **实测 hot 跨度 05:45~14:10 = 8.4 h**，与 8 h 窗口**吻合** ✔
+     ⇒ ⇒ **每个组的健康度时间序列被逐点搬进冷族**（不是每组一行）。
+   ⇒ ⇒ 「每组只留 `MAX(bucket)` 一行」= **永久销毁这批历史曲线** ⇒ **必须仓外读方确认**，
+   不能按「仓内三个读方只用最新一行」就动手。
+2. ★★★★ **A2 的语义风险被 §143.19 标成「低」是错的** —— 它与 654 的 archive **抢同一批数据**：
+   - 654（`archive_credential_model_index`）的语义是
+     **「INSERT 进 archive 的 columnar 月分区 → DETACH → DROP 源分区」**
+     ⇒ **archive 表是真正的历史存储**（不是丢弃）；
+   - 若 A2 先把冷族 >7 天的行 DELETE 掉 ⇒ **archive 就再也搬不到它们**
+     ⇒ **历史数据被静默丢弃**（archive 表里就缺了那几个月）。
+   ⇒ ⇒ **A2 的正确形态不是「直接 DELETE」，而是「先搬到 archive 再删」**（与 archive 语义一致）。
+   ⇒ ⇒ **且 A2 与 A1 不是「互补」而是「冲突」**：A2 先做会削弱 A1 的归档完整性，
+   A1 先做会让 A2 的增量（只删 7 天前的桶）几乎无物可删。
+3. ★★★ **archive 路径几乎零产出**（252 与 211 都是）：
+   - 252：`credential_model_index_archive` **0 行**，只有 **1 个 32 kB 的空子分区**
+     （`credential_model_index_archive_2026_07`）；211：**0 行 / 0 分区**；
+   - `pg_stat_statements`（本库 dbid 16384）：`archive_credential_model_index` **0 次调用**，
+     而 `promote_credential_model_index_hot_to_partition` **193 次 / 18.2 s**、
+     `cleanup_old_credential_model_index()` **24 次 / 252.3 ms**；
+   - ⇒ ⇒ **冷族的回收完全押在 archive 上，而它基本没跑**
+     ⇒ **「冷族天然保有 ~2 个月」这个设计意图，实际靠的是「archive 没跑」这个巧合**。
+4. ★★★ **Go 侧 `lifecycle.credential_model_index_ttl_days` 是空转配置**：
+   `bg/partition_manager.go:1085-1097` 读了 `ttlDays` **只写进日志**，
+   执行的却是无参 `SELECT cleanup_old_credential_model_index()`，
+   而函数体里 `cutoff_ts` **写死 `NOW() - INTERVAL '7 days'`** ⇒
+   **运维改这个设置对生产零效果**（252 与 211 的函数定义**逐字相同**，同缺陷）。
+5. ★★★ **211 侧同形态、同缺陷，且台账缺口比 §143.20 说的更广**：
+   - 211 的 `cleanup_old_credential_model_index()` 定义与 252 **逐字相同** ⇒ 同一缺陷；
+   - 211 的冷族 `credential_model_index_2026_10` **40,524 行 / 702 组**（12 MB）⇒ **可裁剪 −98.27%**；
+   - ⚠⚠ **211 的 `schema_migrations` 里 `317 / 653 / 654 / 688 / 726 / 872` 一行都没有**
+     （而这些迁移的对象**全部存在**）⇒ §143.20 的 C6（「对象在、台账无」）
+     **不是 877 的孤例，而是整批** ⇒ 「单实例口径的台账」在 211 上**大面积失真**。
+
+⚠ **本节对生产的写入 = 0**（全只读：`pg_class` / `pg_index` / `pg_inherits` / `pg_stat_statements` /
+`pg_get_functiondef` / 聚合 COUNT）+ 211 的 `docker exec psql` 只读查询。
+**没有** DELETE / TRUNCATE / DROP / REINDEX / ANALYZE / 迁移 / 改配置 / 改 cron。
+
+### §143.21.1 冷族的真实形态：它是健康度时间序列
+
+#### §143.21.1.1 分区清单（252）
+
+| 分区 | relkind | access_method | 大小 | 实际行数 | 其中 >7 天 | distinct 组 | 组均 bucket |
+|---|---|---|---|---|---|---|---|
+| `credential_model_index_2026_09` | r | **heap** | **84 MB** | **301,255** | **301,255（100%）** | **1,018** | **295.9**（max 3,635） |
+| `credential_model_index_2026_10` | r | **heap** | 38 MB | 132,003 | 102,965（78.0%） | 844 | — |
+| `credential_model_index_2026_11` | r | heap | 24 kB | 0 | 0 | 0 | — |
+| `credential_model_index_hot` | r | heap | 6,216 kB | 1,612 | 0 | — | — |
+
+⚠★ **冷族三个分区全部是 `heap`**（872 于 2026-10-18 12:59:42 应用）⇒
+§143.19.1.3 的「冷族已是 heap ⇒ DELETE 技术可行」**成立**。
+
+#### §143.21.1.2 ★ 机制：8 小时 promote 窗口 ⇒ 冷族是逐点快照
+
+- `bg/partition_manager.go:52`：`const DefaultRetentionWindow = 8 * time.Hour`
+- promote 函数体（659 / 688）：`WHERE updated_at < now() - p_retention LIMIT p_batch_size`
+  ⇒ **搬的是「hot 里已稳定不再更新」的行**，搬完从 hot 删除；
+- **实测 hot 的 bucket 跨度 = 05:45~14:10 = 8.4 h** ⇒ 与 8 h 窗口吻合 ✔
+  ⇒ ⇒ **hot 每组只保留最近 8 小时的「最后一次更新」**，
+  **每次 promote 周期每组搬走一行**（值变化时才有新行）
+  ⇒ ⇒ **冷族每组的行数 = 该组在保留期内的更新次数**，09 月平均 **295.9 次/组** ✔；
+- ⇒ ★★ **这些行是 `success_rate` / `p95_latency_ms` / `unit_price_*` / `score_*` 的时间序列**
+  ⇒ **是真实历史，不是可以随手丢的重复桶**。
+
+#### §143.21.1.3 裁剪潜力的实测上限（不是估算）
+
+| 对象 | 现存行 | 「每组只留 MAX(bucket)」后 | 可回收 |
+|---|---|---|---|
+| 252 09 月 | 301,255 | **1,018** | **300,237（99.66%）** |
+| 252 10 月 | 132,003 | **844** | **131,159（99.36%）** |
+| **252 合计** | **433,258** | **1,862** | **431,396（99.57%）** |
+| 211 10 月 | 40,524 | **702** | **39,822（98.27%）** |
+
+⇒ ★ **比 §143.19.7-A1 估的「扫描 −69.1%」更好**：那个数字只算了 09 月；
+**两月都裁 ⇒ `refreshIndexSQL` 的源扫描 434,658 → ~2,000 行（−99.5%）**。
+⚠ **但这仍然只是「数字」，不是「授权」** —— 见 §143.21.1.1 的语义风险上调。
+
+### §143.21.2 ★★★★ A2 重新裁决：与 archive 抢数据，不是「低风险」
+
+#### §143.21.2.1 654 的 archive 语义是「搬走」，不是「丢弃」
+
+`sql/migrations/startup/654_archive_credential_model_index_detach_drop.sql` 的函数体顺序：
+
+```
+1) 若 dst 分区不存在 → CREATE TABLE ... PARTITION OF credential_model_index_archive ... USING columnar
+2) INSERT INTO dst SELECT ... FROM src        ← ★ 先搬到 archive（columnar）
+3) ALTER TABLE credential_model_index DETACH PARTITION src
+4) DROP TABLE src                              ← ★ 再删源分区
+```
+
+⇒ ⇒ ★★ **archive 表 = 真正的历史存储**（columnar），
+**冷族不是「等回收的垃圾」，而是「还没被搬进 archive 的历史」**。
+
+#### §143.21.2.2 ★★ A2 若「直接 DELETE」，archive 表会静默缺数据
+
+- A2 的字面做法 = `DELETE FROM credential_model_index_<month> WHERE bucket < cutoff`
+- 但 654 的 archive 是**整月搬**（`src_part` → `dst_part`）⇒
+  **若 A2 已经删掉其中一部分，archive 搬走的就只剩剩下的** ⇒
+  **archive 表里那几个月就是残缺的** ⇒ **历史被静默丢弃，无任何报错**。
+- ⇒ ⇒ **A2 的正确形态**：
+  **「先把要删的行搬进 archive 对应月分区（columnar，INSERT 安全），再 DELETE」**
+  ⇒ 这样：① 7 天 TTL 名副其实 ② **历史不丢** ③ archive 变成真正的历史存储
+  ④ **冷族 heap 变小 ⇒ `refreshIndexSQL` 扫描降**（存储与效率同向）。
+- ⚠ **仍需属主拍板**：这等于把冷族的**实际保留期从「~2 个月」缩短到「7 天」**
+  ⇒ **保留期是语义决策**（与 §143.18「保留期才是杠杆」同源）。
+
+#### §143.21.2.3 ★ A1 与 A2 是「冲突」而不是「互补」
+
+- §143.19.7 写的是「**A1 是一次性裁剪，A2 是持续机制**」⇒ **该表述本节订正**（见横幅三）；
+- 实际关系：
+  - A1 做完 ⇒ 冷族只剩「每组 1 行」⇒ A2 要删的「>7 天的桶」**几乎不存在** ⇒ **A2 变得无意义**；
+  - A2 先做 ⇒ 冷族历史被提前搬进 archive（若按 §143.21.2.2 的正确形态）
+    ⇒ **A1 裁剪的量随之变小**（因为超期的已被搬走），且 A1 的「归档完整性」前提被改变；
+- ⇒ ⇒ **两条应当合并成一个决策**：
+  **「冷族保留期取多少天」+「超期数据是先搬进 archive 还是直接丢」** ⇒ 两个参数一起拍。
+
+### §143.21.3 ★★★ archive 路径几乎零产出
+
+| 读数 | 252 | 211 |
+|---|---|---|
+| `credential_model_index_archive` 行数 | **0** | **0** |
+| archive 的子分区 | **1 个**（`..._2026_07`，**32 kB**，**heap**，**0 行**） | **0 个** |
+| `archive_credential_model_index` 在 `pg_stat_statements` 的调用 | **0 次** | 量具不可用（§143.20.5-C4） |
+| `promote_credential_model_index_hot_to_partition` | **193 次 / 18.2 s** | — |
+| `cleanup_old_credential_model_index()` | **24 次 / 252.3 ms** | — |
+| 653 / 654 的应用时间 | 2026-09-04 07:41:50 / 07:41:51 | **台账无** |
+
+⚠★ **`credential_model_index_archive_2026_07` 是 `heap` 而不是 `columnar`**
+⇒ 它是 **654 之前的老路径**建的 ⇒ **654 之后一次归档都没成功**（否则会有 `_2026_08` 子分区，
+且新分区会是 columnar）。
+
+⇒ ⇒ ★★ **「冷族天然保有 ~2 个月」（§143.19.7-A3 的判定）在机制上成立，
+但在事实上是「archive 没跑」的结果，不是设计在起作用** ⇒
+**A3 的判定需要改写**（见横幅三）。
+
+
+> ⚠⚠⚠ **订正横幅四（2026-10-20，§143.22.1 就地订正；上面 §143.21.3 的表格与结论原文保留）**
+>
+> 本节写「**archive 路径几乎零产出** ⇒ 冷族回收完全押在 archive 上，而它基本没跑」
+> ⇒ **§143.22 查清后，这个判词过于笼统，需要改判**：
+>
+> 1. ★★★★ **归档机制本身是通的**（不是坏掉）—— 证据：RDL 族的 dst
+>    `routing_decision_log_archive_2026_08 / routing_decision_log_archive_2026_09 / routing_decision_log_archive_2026_10` **三个分区都存在**
+>    （而 `routing_decision_log_2026_08` 已不在父表下 ⇒ **说明它被 DETACH+DROP 过**
+>    ⇒ ⇒ 归档**完整走完了**「建 dst → 搬 → DETACH → DROP」）⇒ 只是**搬了 0 行**。
+> 2. ★★ **零产出有三个不同原因**（不是一个）：
+>    ① **目标月分区本来就是空的**（数据 2026-09-04 才开始进这张表）；
+>    ② **目标月分区已被 DETACH 出父表**（孤儿表）⇒ 654 的
+>    `ALTER TABLE ... DETACH PARTITION` 对它**必然报错** ⇒ 归档静默失败；
+>    ③ **skipped**（目标分区根本不存在 ⇒ 不建 dst、不报错）。
+> 3. ★★★★ **「冷族靠『archive 没跑』的巧合留存」这个说法要改**：
+>    **2026-11-03 是这个库上 `archive_credential_model_index` 第一次「真归档」**
+>    （目标 = `2026_09`，301,255 行 / 84 MB / **在父表下**）⇒
+>    ⇒ **A1′（裁剪冷月分区）的效果会「自动达成」，且历史完整保留在 archive 表里**。
+>
+> ⇒ **对属主的意义**：A3′ **不是** A1′/A2′ 的前置 ⇒ 反而是 **11-03 会自己动**
+> ⇒ **A1′/A2′ 的决策窗口因此变紧（14 天）**。
+> ⇒ 详见 runbook `§143.22`。
+
+### §143.21.4 ★★★ Go 侧 TTL 配置空转
+
+```go
+// bg/partition_manager.go:1085-1097
+ttlDays := settings.GetPlatformInt("lifecycle.credential_model_index_ttl_days", 7)
+...
+err := pm.db.QueryRow(timeoutCtx,
+    "SELECT cleanup_old_credential_model_index()",   // ← 无参：ttlDays 没传进去
+).Scan(&deleted)
+```
+
+⇒ ★ **`ttlDays` 只进了 `slog.Info` 的字段**；SQL 侧 `cutoff_ts` 写死 `INTERVAL '7 days'`。
+⇒ ⇒ **运维改 `lifecycle.credential_model_index_ttl_days` 对生产零效果**。
+⇒ ★ 修法（**待属主授权后随迁移一起上**）：
+给函数加 `p_ttl_days int DEFAULT 7` 并 `DROP` 旧的无参重载，
+Go 侧改成 `SELECT cleanup_old_credential_model_index($1)`。
+⚠ **必须 DROP 旧重载**，否则无参调用会**静默解析到旧函数** ⇒ 改了等于没改。
+
+### §143.21.5 ★★★ 211 侧：同形态、同缺陷、台账缺口更广
+
+| 项 | 211 实测 |
+|---|---|
+| `cleanup_old_credential_model_index()` 定义 | 与 252 **逐字相同** ⇒ 同一缺陷 |
+| 冷族分区 | `2026_07`（0 行）、`2026_08`（0 行）、`2026_10`（**40,524 行 / 702 组**）、`2026_11`（0 行） |
+| 冷族大小 | 12 MB（vs 252 的 122 MB）⇒ **裁剪可回收 −98.27%** |
+| archive | 父表存在，**0 行 / 0 分区** |
+| `schema_migrations` 里的 `317/653/654/688/726/872` | **一行都没有**（而对象全部存在） |
+| 分区索引父声明 | `credential_model_index_bucket_cred_model_key` / `cred_model_bucket_idx` relkind **`'I'`** ✔（§143.19 的 relkind 陷阱在 211 同样适用） |
+
+⇒ ⇒ ★ **§143.20 的 C6 要扩写**：不是「877 一条没记账」，而是
+**「317/653/654/688/726/872 整整七条都没记账，但对象全在」**
+⇒ ⇒ **本仓 `docs/db-changelog.md` 与 `schema_migrations` 都是单实例口径，
+在 211 上大面积失真** ⇒ **跨实例审计必须按「对象 + DDL 原文」核，而不是查台账**。
+
+### §143.21.6 ★★ 阴性结论复核：「08 月数据丢失」是假命题
+
+- 本轮初查：252 上 `credential_model_index_2026_08` **不存在**，
+  archive 表里也没有 `_2026_08` ⇒ 看起来像「08 月既没归档也不在主表」＝ **数据丢失**；
+- ★ **复核（211 给出的反证）**：211 上 `credential_model_index_2026_07` 与 `_2026_08`
+  **分区存在、各 0 行、24 kB** ⇒ **这些月本来就是空分区**
+  ⇒ 252 上 06/07/08 消失属于「空分区被清掉」，**不是数据丢失**；
+- ⇒ ⇒ ★ **归档表 0 行也就不再是「归档失败」的证据**（搬的是 0 行，成功），
+  而是「**没有非空月被归档过**」的证据；
+- ⚠ 但 §143.21.3 的「654 之后一次都没成功」仍成立（依据是
+  **无 `_2026_08` 子分区 + 新分区会是 columnar 而现存那个是 heap**）。
+
+### §143.21.7 待拍板（本节重新表述）
+
+| 优先级 | 动作 | 量 | 语义风险 | 决策要点 |
+|---|---|---|---|---|
+| **A1′** | ★★★★ **裁剪冷月分区：每组只留 `MAX(bucket)` 一行**（**两个实例都做**） | 252 433,258 → 1,862 行（**−99.57%**）；211 40,524 → 702 行（**−98.27%**） | ⬆️ **高**（§143.19.7-A1 标的「中」**上调**） | ⚠ **冷族是 5 分钟粒度健康度历史**（每组 296 次快照）⇒ **必须仓外读方确认是否要历史曲线**；且需 **promote 侧收口**（否则按当前 ~7,900 行/天重新堆积） |
+| **A2′** | ★★★★ **修 `cleanup_old_credential_model_index()`：冷族「先搬进 archive 再删」** | 恢复「7 天 TTL」在冷族上的实际效果 | ⬆️ **中-高**（§143.19.7-A2 标的「低」**上调**） | ⚠ **不能直接 DELETE**（§143.21.2.2 ⇒ archive 表会静默缺数据）⇒ 必须先搬后删；⚠ 与 A1′ **不是互补而是同一决策的两个参数**（保留期天数 + 超期数据去留） |
+| **A3′** | ★★ **`archive_credential_model_index` 实际零产出** | archive 表 0 行 / 0 数据 | 低 | ⚠ 「冷族保有 ~2 个月」是「archive 没跑」的巧合而非设计 ⇒ 要么让 archive 真跑（day 3 / twoMonthsAgo），要么明确把冷族保留期交给 A2′ |
+| **A4** | ★★★ **修 Go 侧 TTL 空转**（`lifecycle.credential_model_index_ttl_days` 无效） | 0 | 低 | ⇒ 函数加 `p_ttl_days` 参数 + **DROP 旧重载**（否则静默走旧函数）+ Go 侧传参 ⇒ **需新迁移 + 部署授权** |
+| **C4** | ★★★★ **211 的 `pg_stat_statements` 加进 `shared_preload_libraries`** | 0 | 低（需重启实例） | ⇒ 211 慢查询量具从「没有」变成「有」；⚠ 需重启 ⇒ **需属主授权** |
+| **C6′** | ★★ **211 的迁移台账大面积失真**（`317/653/654/688/726/872` 全无记录） | 0 | 低 | ⇒ 需要一种「按实例核迁移状态」的口径（对象 + DDL 原文优先于台账） |
+| **C5** | ★★★ **211 迁移落后 13 个（869 vs 882）+ `llm_gateway_pre_cutover_20261014` 1,169 MB** | 1,169 MB | 中 | ⇒ 迁移升级要单独评估（211 上 877 已是新版形态 ⇒ 升级路径与 252 不同）⇒ 建议先做 C4 |
+
+⚠ **A1′ / A2′ 都需要生产写授权**（DELETE / 新迁移）⇒ **本节仍为 0 生产写**。
+
+### §143.21.8 复核方法（可原样重跑）
+
+```bash
+# ── 1) 冷族分区清单：relkind / access_method / 大小（★ relkind='i' 会漏父声明，要用 'I'）
+bash ~/.mavis-tools/lgwp-prod.sh /private/tmp/p14321/cold_family_state.sql 300 > /private/tmp/p14321/cold_family_state.out 2>&1
+# ── 2) archive 状态 + 关键迁移应用时间 + 冷族每组 bucket 数 + 可回收上限
+bash ~/.mavis-tools/lgwp-prod.sh /private/tmp/p14321/verify_cmi2.sql  300 > /private/tmp/p14321/verify_cmi2.out  2>&1
+# ── 3) archive / promote / cleanup 的调用记录（★ 本库 dbid=16384）
+bash ~/.mavis-tools/lgwp-prod.sh /private/tmp/p14321/pgss_cmi.sql      300 > /private/tmp/p14321/pgss_cmi.out      2>&1
+# ── 4) 211 侧同形态普查（★ 211 是 docker 运行时；用 heredoc 传 SQL，不要用 $$ 转义）
+scp -q /tmp/211_cmi.sql 211:/tmp/ && ssh 211 'docker exec -i acc-pg17 psql -U acc_super -d llm_gateway -f - < /tmp/211_cmi.sql'
+```
+
+⇒ ⇒ ★ **本节落地的门**（不连库，可原样重跑）：
+
+```bash
+# §143.21 文档门：冷族形态 / A2 重新裁决 / archive 零产出 / TTL 空转 / 211 同源 / 阴性结论复核
+GOCACHE=/tmp/gocache-p1437 go test ./scripts/ursmcheck/ -run 'TestRunbook14321' -count=1 -v
+```
+
+
+### §143.21.9 ★★ 已知 flaky 名单**扩充一条**（同族第三条）
+
+本节收尾时跑整包 `scripts/ursmcheck` 出现一条 FAIL：
+
+```
+--- FAIL: TestAvailabilityDoesNotClaimOutageLengthItNeverObserved (0.92s)
+    pg_availability_check_test.go:379: 期望 3 条通知（down / 巡检失效 / 恢复），实得 2:
+        [--level critical --title PG 不可用：pg-252-pg17 ...
+         --level critical --title PG 可用性巡检失效：pg-252-pg17 ...]
+```
+
+⇒ ⇒ **少的是第三条「恢复」通知** ⇒ 与该文件另外两条已登记 flaky 的形态一致。
+
+#### §143.21.9.1 ★ 它是**已登记 flaky 家族的第三条**，不是新缺陷
+
+§143.7.9（runbook 32114-32141）已登记的两条是：
+
+| # | 用例名 | 位置 |
+|---|---|---|
+| 1 | `TestAvailabilityReportsHealthyOnlyWhenQueryProvesIt` | `scripts/ursmcheck/pg_availability_check_test.go` |
+| 2 | `TestAvailabilityRejectsReadOnlyAndRecovery` | 同上 |
+| **3（新增）** | **`TestAvailabilityDoesNotClaimOutageLengthItNeverObserved`** | 同上 |
+
+⇒ ★ **同一个文件、同一个机制**。§143.7.9 已写明的机制是：
+**「这两条 availability 用例只在**全量负载下**才失败（隔离单跑 6 次全过）」**
+⇒ 本条完全吻合 ⇒ **应归入同一族**，而不是当作新缺陷另立项。
+
+#### §143.21.9.2 归属证据链（三步，缺一不可）
+
+| 步骤 | 读数 |
+|---|---|
+| ① **单跑 3 次**（隔离） | **全绿**（2.083 s / 1.379 s / 1.722 s） |
+| ② **独立副本复现**：`git archive HEAD~1 \| tar -x -C /tmp/pristine` ⇒ 整包 | **exit=0 全绿**（不含本节任何改动） |
+| ③ **本节改动的因果排除** | 本节只碰了 2 个 `.md` + 1 个**新增的纯文档门文件**；该文件只 `import os/strings/testing`、只读文件、**无 goroutine、无全局状态** ⇒ **在因果上不可能**影响巡检通知的条数 |
+
+⇒ ⇒ ★ **判定：压力型 flaky，与本节无关**。
+⚠ **诚实边界**：② 只跑了 **1 轮** ⇒ §143.7.9 已写明「样本小 ⇒ 统计上不可区分」
+⇒ **本节不声称「零影响」**，只声称「**三处读数一致地指向 flaky**」。
+⚠ 另：本节提交后**整包复跑一次即绿**（72.435 s）⇒ 与 §143.7.9 的「约 1/3 失败率」相符。
+
+#### §143.21.9.3 ★ 为什么**不为它加门**
+
+⚠ **flaky 本身无法被门证明**（门跑起来可能绿）⇒ 加一道「断言它是 flaky」的门
+⇒ 要么恒绿（假门）⇒ 要么变成**新的 flaky 源**（多一条 spawn bash 子进程的用例）
+⇒ ⇒ **只做文字登记，不加门**（本仓纪律：判据管不到的东西 ⇒ 不要造一道假装管到的门）。
+
+⇒ 📌 **待办（不变，且范围扩大）**：把 `pg_availability_check_test.go` 这一族
+（**现为 3 条**）的根因查掉；在那之前，**全包偶发 FAIL 不作为任何一轮改动的阻塞项**，
+但也**不许被当成「已知问题就忽略」**（§143.7.9 的原话，此处沿用并把名单扩到 3 条）。
+
+★ 同族：[[性能读数必须给噪声带]] · [[判据红了先怀疑自己的前提]] ·
+[[阴性结论要当缺陷一样复核]] · [[自己写的探针也会有量具 bug]]。
+
+★ 同族：[[先读量具再读产物]] · [[0 命中的第一嫌疑是量具坏了]] ·
+[[阴性结论要当缺陷一样复核]] · [[跨节订正前先自问「我要订正的这条真的错了吗」]] ·
+[[保留期是最大杠杆]] · [[「迁移的哪一版在生产跑过」判别力排序]] ·
+[[跨实例审计必做]] · [[「扩展装了」≠「量具能用」]]。
+
+## §143.22 archive 链路的根因链 + 「11-03 第一次真归档」预警（2026-10-20）
+
+### §143.22.0 结论先行
+
+本节把 §143.21.3 的「archive 路径几乎零产出」**从「路径坏掉」改判为「三个不同的原因」**，
+并识别出一个**有时限的事件**（11 天后）。产出四条：
+
+1. ★★★★ **归档机制本身是通的**（不是坏掉）⇒ 证据：RDL 族的 dst
+   `routing_decision_log_archive_2026_08 / routing_decision_log_archive_2026_09 / routing_decision_log_archive_2026_10` **三个分区都存在**
+   （`routing_decision_log_2026_08` 已不在父表下 ⇒ **说明它被 DETACH+DROP 过**
+   ⇒ ⇒ **归档确实完整走完了「建 dst → 搬 → DETACH → DROP」**），只是**搬了 0 行**
+   ⇒ ⇒ **零产出的第一因 = 目标月分区本来就是空的**。
+2. ★★★★ **机制性缺陷（可从 DDL 直接推出，无需复现）**：654 的收尾是
+   `ALTER TABLE credential_model_index DETACH PARTITION src_part`
+   ⇒ ★ **对「已被 DETACH 出父表的同名表」必然报错** ⇒ 归档必然失败且**静默**
+   （`pg_stat_statements` **只记成功语句** ⇒ §143.19 已证 ⇒ 失败在量具上完全不可见）。
+   ⇒ 而迁移 **337（`337_detach_current_future_partitions.sql`）确实把
+   `credential_model_index_2026_07` 与 `_2026_08` DETACH 了**（仓内 DDL 逐字可查）
+   ⇒ ⇒ **「目标月是孤儿表」不是假想，是库里已存在的形态**。
+3. ★★★★ ★★ **2026-11-03 是这个库上 `archive_credential_model_index` 第一次「真归档」**：
+   调度是 `bg/partition_manager.go:598-620` 的「`now.Day() <= 3` 且 `s.day == today`」
+   + `twoMonthsAgo = now.AddDate(0, -2, 0)` ⇒
+   **11-03 的目标是 `2026_09`**（**301,255 行 / 84 MB / 在父表下 ⇒ 不触发缺陷 2**）
+   ⇒ ⇒ **它会第一次真正把 301,255 行搬进 `credential_model_index_archive_2026_09`（columnar）
+   并 DETACH+DROP 源分区** ⇒ ⇒ ★★ **A1′（裁剪冷月分区）的效果会「自动达成」**，
+   **且历史完整保留在 archive 表里**（不是销毁）⇒ ⇒ **属主的决策题因此简化**。
+4. ★★★ **11-03 剩下的唯一真实风险 = 「301,255 行单事务搬进 columnar」的耗时 vs
+   `runArchive` 的 10 分钟 timeout**（`bg/partition_manager.go:1359`）
+   ⇒ 252 宿主 **load 14.17 / 4 核（超载 3.5 倍，§143.20.3 实测）** ⇒ 风险不可忽略；
+   ⇒ **失败是安全的**（单事务回滚 ⇒ 源分区完好 ⇒ 下月再试），
+   ⇒ **但失败是静默的**（量具只记成功语句）⇒ ⇒ **必须在 11-03 之前安排观测点**。
+
+⚠ **本节对生产的写入 = 0**（全只读：`pg_class` / `pg_index` / `pg_inherits` /
+`pg_get_functiondef` / `pg_proc` / 聚合 COUNT）+ 仓内 DDL 逐字比对。
+**没有** DELETE / TRUNCATE / DROP / REINDEX / ANALYZE / 迁移 / 改配置 / 改 cron。
+
+
+> ⚠⚠⚠ **订正横幅五（2026-10-20，§143.24.0 就地订正；上面 §143.22.0 第 3 条与 §143.23.4 的「7 处注册点」原文保留）**
+>
+> §143.22 结论 3 写「**A1′ 的效果会『自动达成』⇒ 属主的决策窗口因此变紧（14 天）**」，
+> 并在 §143.23.4 列出了「落地还差 7 处」的清单 ⇒ ⇒ **本节复核这条紧迫性本身：它是误报**。
+>
+> 1. ★★★★ **11-03 的目标分区在父表下 ⇒ 不触发缺陷 ② ⇒ 11-03 不需要迁移 885**
+>    - 实测：`pg_inherits` 按 `credential_model_index` 父表逐分区查
+>      ⇒ `credential_model_index_2026_09` → **attached = 1**、**301,255 行**
+>      ⇒ ⇒ 654 的 `DETACH PARTITION` **合法** ⇒ ⇒ **迁移 885 与 11-03 无关**
+>      ⇒ ⇒ **属主没有 14 天的时间压力**。
+> 2. ★★★★ **孤儿表只有 337 一处来源，且它是一次性治理 ⇒ 不会再产生新的孤儿表**
+>    - 仓内「谁 DETACH CMI 分区」只有 3 个命中：**337**（DETACH 月分区）、
+>      **347**（DETACH+DROP 的是 `credential_model_index_default`）、**872**（DETACH→**同边界重建**→ATTACH ⇒ **不留孤儿**）；
+>    - 实测 337 当年 DETACH 的 6 个月现在的归属：**07 / 08 / 12 = 不在父表下，09 / 10 / 11 = 在父表下**（被 872 重建回来）。
+> 3. ★★★ **迁移 885 重新裁决为「防御性修复，当前无收益」**
+>    ⇒ 既有孤儿表（07 / 08 / 12）要么已被 DROP、要么是 **0 行的空分区** ⇒ 修它们**搬 0 行**
+>    ⇒ ⇒ **建议不为了赶 11-03 而上线**（§143.23.4 的 7 处清单仍有效，只是不急）
+>    ⇒ ⇒ **真正的时限只剩「11-03 的观测点」**。
+>
+> ⇒ **同时关闭一个旧命题**：「08 月数据丢失」**彻底**关闭
+> （252 上 07 / 08 分区**已被 DROP**，211 上是 **0 行的空分区** ⇒ 那些月本来就没数据）。
+>
+> ⇒ 详见 runbook `§143.24`。
+
+### §143.22.1 ★ 归档「零产出」的三个不同原因（§143.21.3 的改判）
+
+| 原因 | 机制 | 证据 |
+|---|---|---|
+| ① **目标月分区是空的**（最常见） | 数据 2026-09-04 才开始进这张表（252 冷族 09 月 min_bucket = 2026-09-04 23:55）⇒ 06/07/08 天然为空 | 211 上 `credential_model_index_2026_07` / `_2026_08` **分区存在、各 0 行** |
+| ② **目标月分区已被 DETACH 出父表**（孤儿表） | 654 收尾的 `ALTER TABLE ... DETACH PARTITION` 对孤儿表**必然报错** ⇒ 事务回滚 ⇒ dst 也不留下 | 迁移 337 逐字 DETACH 了 `_2026_07` / `_2026_08`；库中**只有** `archive_credential_model_index` 会 DROP CMI 分区（`pg_proc.prosrc` 全扫） |
+| ③ **skipped**（目标分区根本不存在） | 654 的 `IF NOT EXISTS (src_part) THEN RETURN 'skipped'` ⇒ **不建 dst、不报错** | 生产上 CMI 的 archive 只有 `_2026_07`，**没有 `_2026_08` / `_2026_09`** |
+
+⇒ ⇒ ★★ **改判**：§143.21.3 写的「archive 路径几乎零产出 ⇒ 冷族回收完全押在 archive 上，
+而它基本没跑」**过于笼统** —— **路径是通的**，只是**还没到能搬的月份**（原因 ①）
+或**目标形态让它必然失败**（原因 ②）。
+⇒ ⇒ **对属主的意义**：A3′「archive 零产出」**不是要先修好才谈 A1′/A2′ 的前置**，
+而是**「11-03 它会自己动」**（结论 3）⇒ **A1′/A2′ 的窗口因此变紧**（14 天后冷族会自行搬家）。
+
+### §143.22.2 ★★ 11-03 事件预演（逐步）
+
+| 步 | 动作 | 依据 | 风险 |
+|---|---|---|---|
+| 1 | 主 ticker（`pm.interval`，默认 24h）触发 `archiveOldPartitionsIfNeeded` | `bg/partition_manager.go:261-290` | tick 时刻若跨过午夜则 day 3 可能错过（**低概率，未闭合**） |
+| 2 | `now.Day() <= 3` 且 `s.day == today`（3）⇒ 命中 `archive_credential_model_index` | `bg/partition_manager.go:604-620`、`archiveSpecs()` | — |
+| 3 | `twoMonthsAgo = now.AddDate(0,-2,0)` = **2026-09-03** ⇒ `src_part = credential_model_index_2026_09` | 同上 | 目标**在父表下** ✔（分区清单实测）⇒ **不触发缺陷 ②** |
+| 4 | dst `credential_model_index_archive_2026_09` 不存在 ⇒ `CREATE TABLE ... PARTITION OF ... USING columnar` | 654 第 57-66 行 | ★ **有先例**：`routing_decision_log` 父表带 **6 个 `ON ONLY` 索引** + **3 个 columnar 子分区**（各带 6 个 btree 索引）⇒ **组合在活库已验证** |
+| 5 | `INSERT INTO dst SELECT ... FROM src`（**301,255 行**，17 列同名同序同类型） | 654 第 92-113 行 | ★ **无唯一冲突**：archive 父表的 3 个索引**都不是 UNIQUE**；`distinct(bucket,credential_id,raw_model)` = 301,255 = 行数 ⇒ 654 的 `EXCEPT ALL` 比对逻辑成立 |
+| 6 | `ALTER TABLE credential_model_index DETACH PARTITION src` + `DROP TABLE src` | 654 第 115-116 行 | ★ **ACCESS EXCLUSIVE 锁**（对 84 MB 分区） |
+| 7 | `RETURN QUERY SELECT 'success', row_count, true` | 654 第 118 行 | — |
+
+⇒ ⇒ ★★★ **结论：技术上全程可行**（每一步都有活库先例或实测读数支撑），
+**唯一未量化的是第 5 步的耗时** ⇒ ⇒ **11-03 之前应安排观测**（见 §143.22.7-D1）。
+
+### §143.22.3 ★★ 缺陷 ② 的可修形态（**不需要属主语义拍板**）
+
+**问题**：654 的收尾对**孤儿表**必然报错 ⇒ 归档静默失败。
+
+| 修法 | 改哪 | 语义影响 | 备注 |
+|---|---|---|---|
+| **A. 目标分区不在父表下 ⇒ 走「直接搬 + DROP」而不是「DETACH + DROP」** | 654 函数体 | **无**（孤儿表本来就不在父表下 ⇒ DETACH 无意义） | ★ 最小改动；把「必然失败」变成「能搬完」 |
+| **B. 目标分区不在父表下 ⇒ 先 ATTACH 回来再走原路径** | 654 函数体 | **无** | ⚠ ATTACH 需要 ACCESS EXCLUSIVE + 校验区间；比 A 复杂 |
+| **C. 调用前先校验 src 仍挂在父表下，不在则返回 `skipped` 并告警** | 654 函数体 | **无** | ★ 最小且最安全：把**静默失败**变成**可观测**（配合 Go 侧 error 日志） |
+
+⇒ ⇒ ★★ **推荐 A + C 并用** ⇒ ★ **这是「缺陷修复」，不是「策略变更」**
+⇒ ⇒ **不撞属主的语义决策**（保留期不变、archive 语义不变）⇒ **可以在仓内直接落地**。
+
+### §143.22.4 ★★ 缺陷 ① 的一个反向问题：孤儿分区对读方不可见
+
+⚠★ 迁移 337 把 CMI 的 `_2026_07` / `_2026_08` **DETACH 成孤儿表** ⇒
+**它们不在 `credential_model_index` 父表下 ⇒ `credential_model_index_with_current_month`
+（= `refreshIndexSQL` 的源）查不到它们** ⇒
+⇒ ★★ **若某个月有数据，它就「既不在父表、也不在 archive」⇒ 对读方完全不可见**
+⇒ ⇒ 本次实测这两个月**都是空的**（211 上 0 行）⇒ **本次没有数据损失**
+⇒ ⇒ ⚠ **但机制性隐患成立**（**211 上 07/08 仍挂在父表下** ⇒ 两实例形态不一致）
+⇒ ⇒ 登记为 **D2**（见 §143.22.7）。
+
+### §143.22.5 诚实边界
+
+- ⚠ **本节对生产的写入 = 0**（见 §143.22.0 末尾）。
+- ⚠ **「11-03 会成功」是**推演**，不是实测**：
+  每一步都有活库先例或实测读数支撑，但**第 5 步的耗时未量化**
+  ⇒ **不给「一定会成功」的承诺**，只给「技术上可行 + 失败是安全的」。
+- ⚠ **tick 跨午夜导致 day-3 错过**这一路径**未闭合**（24h ticker 的漂移未量化）。
+- ⚠ **CMI 的 `_2026_08` 分区与其 dst 双双消失的完整路径未闭合**：
+  已知「库中只有 `archive_credential_model_index` 会 DROP CMI 分区」，
+  但按 654 的语义，成功的归档必留下 dst ⇒ **存在未解释的缺口** ⇒ 只登记，不强推。
+- ⚠ **缺陷 ② 的修法（A/C）尚未写成迁移**（本节只给形态与判据）⇒
+  **是否在 11-03 前落地，属主决定**（见 D1）。
+- ⚠ **未覆盖**：archive 表的**自身**保留期（archive 的月分区也只增不减）、
+  `request_logs_archive_2026_08` / `_request_logs_archive` / `request_wal_archive`
+  这三个 **0 行的 archive 表**（331 已把它们从调度里移除 ⇒ 属遗留对象）。
+
+### §143.22.6 复核方法（可原样重跑）
+
+```bash
+# ── 1) archive 表的真实行数 + 各 archive 族的 dst 分区清单（判「机制通」）
+bash ~/.mavis-tools/lgwp-prod.sh /private/tmp/p14321/archive_all.sql        300 > /private/tmp/p14321/archive_all.out        2>&1
+# ── 2) 654 在 11-03 会命中什么（twoMonthsAgo 推导 + dst/列/索引/行数）
+bash ~/.mavis-tools/lgwp-prod.sh /private/tmp/p14321/archive_preflight.sql  300 > /private/tmp/p14321/archive_preflight.out  2>&1
+# ── 3) 唯一冲突风险（archive 索引是否 UNIQUE + canonical_id 基数）
+bash ~/.mavis-tools/lgwp-prod.sh /private/tmp/p14321/archive_conflict.sql  300 > /private/tmp/p14321/archive_conflict.out  2>&1
+# ── 4) ★「columnar 子分区挂带索引的父表」先例 + 逐列一致性
+bash ~/.mavis-tools/lgwp-prod.sh /private/tmp/p14321/columnar_idx.sql      300 > /private/tmp/p14321/columnar_idx.out      2>&1
+# ── 5) 库里谁会 DROP CMI 分区（pg_proc.prosrc 全扫）
+bash ~/.mavis-tools/lgwp-prod.sh /private/tmp/p14321/drop_hunter2.sql     300 > /private/tmp/p14321/drop_hunter2.out     2>&1
+# ── 6) ★ 337 对 CMI 07/08 的 DETACH（仓内 DDL，逐字可查）
+grep -n "credential_model_index_2026_0[78]" -B 3 -A 3 sql/migrations/startup/337_detach_current_future_partitions.sql
+```
+
+⇒ ⇒ ★ **本节落地的门**（不连库，可原样重跑）：
+
+```bash
+# §143.22 文档门：根因链 / 11-03 事件 / 修法 / 诚实边界
+GOCACHE=/tmp/gocache-p1437 go test ./scripts/ursmcheck/ -run 'TestRunbook14322' -count=1 -v
+```
+
+★ 同族：[[先读量具再读产物]] · [[0 命中的第一嫌疑是量具坏了]] ·
+[[阴性结论要当缺陷一样复核]] · [[自己上一节的结论也要复核]] ·
+[[跨节订正前先自问「我要订正的这条真的错了吗」]] · [[保留期是最大杠杆]] ·
+[[「读不到」与「没有」返回值同形]]。
+
+## §143.23 本地真库实测：缺陷②复现 + 修法 A/C 验证（2026-10-20）
+
+### §143.23.0 结论先行
+
+§143.22 留下一个明确的缺口：**「11-03 会成功」是推演，不是实测**（第 5 步耗时未量化）。
+本节用**本地真库**把这个缺口从「推演」变成「实测」——**对生产的写入 = 0**
+（一次性库 `itgate_14323`，退出即 DROP）。产出三条：
+
+1. ★★★★★ **缺陷 ② 已实测复现**，并拿到**报错原文**（不是 DDL 推理）：
+   ```
+   ERROR:  relation "credential_model_index_2026_09" is not a partition of relation "credential_model_index"
+   CONTEXT:  SQL statement "ALTER TABLE credential_model_index DETACH PARTITION credential_model_index_2026_09"
+   PL/pgSQL function archive_credential_model_index(date) line 82 at EXECUTE
+   ```
+   ⇒ 事务回滚可验证：**dst 分区 0 个**、**源孤儿表 345,600 行仍在** ⇒
+   ⇒ **「静默失败」得到实测确认**（失败语句在 `pg_stat_statements` 里完全不可见）。
+2. ★★★★★ **修法 A + C 实测有效**（同一孤儿表场景）：
+   `status='success' / rows_migrated=345,600 / partition_dropped=t`，
+   **archive 拿到全部 345,600 行**、**源表消失**、**WARNING 正确发出**
+   （`target ... is detached from credential_model_index (orphan table); archiving via direct copy + DROP`）。
+3. ★★★★ **回归与幂等同时通过**：修法版对**仍在父表下**的 10 月分区
+   ⇒ `success / 14,400 / t` ⇒ **原 DETACH+DROP 路径未被破坏**；
+   再跑一次 ⇒ `skipped / 0 / f` ⇒ **幂等成立**。
+   ⇒ ⇒ **修法 A/C 是零语义风险的缺陷修复**，且**函数签名与返回形状逐字不变**
+   ⇒ ⇒ **Go 侧 `runArchive` 零改动**。
+
+⚠ **诚实边界（关键）**：本地镜像 `llm-gateway-pg` 的 citus 13.3-1 **不含 `columnar` access method**
+（实测 `access method "columnar" does not exist`）⇒ **本地只测了 heap 路径**。
+⇒ ⚠★ **生产 11-03 的「30 万行搬进 columnar」的耗时**仍然**未量化**
+（本地是 heap + 本地盘，量级不可搬用）⇒ ⇒ **11-03 的超时风险仍在**（见 §143.22 结论 4）。
+
+### §143.23.1 ★ 本地为什么能测、怎么保证测的是「同一份逻辑」
+
+| 约束 | 处理 |
+|---|---|
+| 本地无 `columnar` AM | 被测函数体里的 **`USING columnar` → `USING heap`（唯一一处替换）** |
+| 其余逻辑 | ★ **逐字不变**：DETACH 收尾、`col_list` 构造、`EXCEPT ALL` 幂等比对、`skipped` 分支、advisory lock |
+| 「抄错版本」风险 | ★ **函数体由脚本从仓内 `sql/migrations/startup/654_archive_credential_model_index_detach_drop.sql` 提取**（正则取 `CREATE OR REPLACE FUNCTION … $$;` 段）⇒ 不手抄 |
+| 场景同构 | 父表 RANGE 分区 + 月分区 + archive 父表 + **3 个 `ON ONLY` 索引**（与生产同形态） |
+| 数据量 | 09 月分区 **345,600 行**（5 分钟粒度 × 40 组 × 26 天）、10 月分区 **14,400 行** ⇒ 与生产的 301,255 行**同量级** |
+
+⇒ ⇒ ★★ **可重跑脚本（入仓）**：`scripts/audit/verify_archive_orphan_local.py`
+⇒ ★ **它不硬编码任何密码**（`docker exec` 走容器内本地认证）⇒ 可安全入仓。
+
+### §143.23.2 ★ 五个场景的实测读数
+
+| 场景 | 前置 | 期望 | 实测 |
+|---|---|---|---|
+| **S1** | 目标分区**在父表下** | 654 走原路径 | ✔ 成功（见 S4 回归） |
+| **S2** | 09 月分区被 `ALTER TABLE … DETACH PARTITION`（**复现迁移 337 的形态**） | **654 报错 + 事务回滚** | ✔ **ERROR**：`relation "credential_model_index_2026_09" is not a partition of relation "credential_model_index"`；`dst_2026_09_exists=0`；`src_orphan_rows=345,600`（**回滚确认**） |
+| **S3** | 同一孤儿表 | **885 修法版 success** | ✔ `success / 345,600 / t`；`archived_rows=345,600`；`src_still_exists=0`；WARNING 正确发出 |
+| **S4** | 10 月分区**仍在父表下** | **回归：仍走 DETACH+DROP** | ✔ `success / 14,400 / t`；`src_2026_10_exists=0`；`parent_visible_rows=0`；`archived_2026_10=14,400` |
+| **S5** | 再跑一次（源已不存在） | **skipped** | ✔ `skipped / 0 / f` |
+
+⇒ ⇒ ★★ **「孤儿表对读方不可见」也被实测**：S2 前置读数
+`orphan_readable=345,600`（直读孤儿表可读）而 `visible_via_parent=0`（父表查不到）
+⇒ ⇒ 与 §143.22.4 的推论一致 ⇒ **这是「数据还在但读方看不见」的机制**（不是丢失）。
+
+### §143.23.3 ★ 修法 A/C 的已验证实现（**函数签名与返回形状逐字不变 ⇒ Go 侧零改动**）
+
+```sql
+-- ① 判定源表是否仍在父表下（孤儿表 ⇒ src_attached = false）
+SELECT EXISTS (
+    SELECT 1 FROM pg_inherits i
+    JOIN pg_class p ON p.oid = i.inhparent
+    WHERE i.inhrelid = to_regclass(src_part)
+      AND p.relname = 'credential_model_index'
+) INTO src_attached;
+
+-- ② 修法 C：不是父表分区 ⇒ 告警（把「静默失败」变成可观测）
+IF NOT src_attached THEN
+    RAISE WARNING 'archive_credential_model_index: target % is detached from credential_model_index (orphan table); archiving via direct copy + DROP', src_part;
+END IF;
+
+-- ③ 修法 A：仍在父表下 ⇒ DETACH + DROP；是孤儿表 ⇒ 只 DROP
+--   （对孤儿表执行 DETACH PARTITION 必然报错 —— 654 的收尾动作，已实测复现）
+IF src_attached THEN
+    EXECUTE format('ALTER TABLE credential_model_index DETACH PARTITION %I', src_part);
+END IF;
+EXECUTE format('DROP TABLE %I', src_part);
+```
+
+⇒ ⇒ ★ **为什么不需要 DROP 旧函数**：`CREATE OR REPLACE FUNCTION` 在**签名与返回形状不变**时
+是**替换**而非**新增重载** ⇒ ⇒ 无重载残留、无「无参调用静默走旧函数」的坑（§143.21.4 记的陷阱），
+且 ⇒ **没有 DROP 造成的调用窗口**。
+
+### §143.23.4 ★ 落地还差什么（**待办，不是已完成**）
+
+⚠⚠⚠ **本节没有写迁移文件，也没有改任何注册点** ⇒ **生产上跑的还是 654**（缺陷仍在）。
+落地需要（**每一步都容易漏，漏了就是「改了等于没改」**）：
+
+| # | 位置 | 动作 |
+|---|---|---|
+| 1 | `sql/migrations/startup/885_archive_credential_model_index_orphan.sql` | 新建（§143.23.3 的实现，`CREATE OR REPLACE`，**不 DROP**） |
+| 2 | `sql/migrations/startup/885_….down.sql` | 回滚体（恢复 654 的函数体） |
+| 3 | `installer/cmd/llm-gw-installer/embeddata/startup/885_….sql` + `.down.sql` | installer 实际执行的副本 |
+| 4 | `installer/cmd/llm-gw-installer/main.go` | `//go:embed` + map 条目 |
+| 5 | `installer/internal/dbinit/runner.go` | 迁移顺序列表 |
+| 6 | `scripts/apply-db-revision-sequence.sh` + `sql/schema/installed_startup_migrations.tsv` + `docs/db-changelog.md` | 台账三处 |
+| 7 | `sql/objects/functions/`（若该族有对象源） | 对象源同步 |
+
+⇒ ⇒ ★ **本节不代做这一步的原因**：它属于**生产写**（部署后改变行为）⇒ 需属主授权；
+⇒ 且 §143.22 已判定它「不撞语义决策」⇒ **可以随时落地，不需要重新论证**。
+
+### §143.23.5 诚实边界
+
+> ⚠⚠⚠ **订正横幅六（2026-10-20，§143.25.4 就地订正；下面 §143.23.5 第 2 条与 §143.23.1 的「本地为什么能测」原文保留）**
+>
+> §143.23 写「**本地 citus 13.3-1 不含 `columnar` access method ⇒ 只能测 heap 路径
+> ⇒ 生产 columnar 路径的耗时仍未量化**」⇒ ⇒ **这条的前提是错的**，应当订正：
+>
+> 1. ★★★★ **本地镜像带 columnar 扩展，只是没装**
+>    - 实测：`pg_available_extensions` 里是 **`citus_columnar 13.3-1`**（**扩展名不是 `columnar`**），
+>      `/usr/share/postgresql/17/extension/citus_columnar.control` 与 `$libdir/citus_columnar` 都在；
+>    - ⇒ `CREATE EXTENSION citus_columnar;` 之后 **`pg_am` 里出现 `columnar`**，
+>      **能建 columnar 表、能插数据**（实测 `CREATE TABLE … USING columnar` + INSERT 1,000 行成功）。
+> 2. ★★★★ **⇒ §143.23 的「诚实边界」应改为**：本地**能**测 columnar 路径；
+>    §143.23 之所以只测 heap，是**当时主动选择「只替换 `USING columnar`→`USING heap`」这一个变量**，
+>    **不是被本地能力所限**（该选择的纪律价值仍然成立，保留）。
+> 3. ★★★★ **⇒ 「生产 columnar 路径的耗时仍未量化」这条缺口已在 §143.25 闭合**：
+>    **654 函数体逐字（`USING columnar` 不改）在本地真库跑通**，
+>    **301,255 行搬进全新 columnar 分区 = 中位 3,410 ms**（10 分钟预算的 0.6%，裕量 176×）
+>    ⇒ ⇒ **11-03 的超时风险从「未量化」降级为「量级上极不可能触发」。**
+>
+> ⇒ 详见 runbook `§143.25`。
+
+- ⚠ **本节对生产的写入 = 0**（一次性本地库 `itgate_14323`，已 DROP）。
+- ⚠ **本地只测了 heap 路径**（无 columnar AM）⇒ **生产 columnar 路径的耗时仍未量化**
+  ⇒ ⇒ **11-03 的超时风险没有被本节消除**（§143.22 结论 4 仍然成立）。
+- ⚠ **本节未写迁移、未改注册点** ⇒ **生产行为未变**（见 §143.23.4）。
+- ⚠ **本地测的是「函数行为」，不是「整条调度链」**：
+  调度（`now.Day() <= 3` + `twoMonthsAgo`）与 tick 时机的风险（跨午夜导致 day-3 错过）
+  **仍未闭合**（§143.22 已登记）。
+- ⚠ **「行数守恒」在本地成立**（345,600 = 345,600）⇒ 但生产 301,255 行的 columnar 写入
+  是否同样守恒，**属推演**（生产侧唯一的 columnar 先例是 `routing_decision_log` 族）。
+
+### §143.23.6 复核方法（可原样重跑）
+
+```bash
+# ★ 本地真库实测（一次性库，退出即 DROP；不硬编码密码）
+python3 scripts/audit/verify_archive_orphan_local.py
+```
+
+⇒ ⇒ ★ **本节落地的门**（不连库，可原样重跑）：
+
+```bash
+# §143.23 文档门：实测读数 / 修法实现 / 落地待办 / 诚实边界
+GOCACHE=/tmp/gocache-p1437 go test ./scripts/ursmcheck/ -run 'TestRunbook14323' -count=1 -v
+```
+
+★ 同族：[[先读量具再读产物]] · [[0 命中的第一嫌疑是量具坏了]] ·
+[[阴性结论要当缺陷一样复核]] · [[自己上一节的结论也要复核]] ·
+[[形变类缺陷可从 DDL 直接推出]] · [[「0 调用」有三种成因]] ·
+[[本地真库是一次性库不是共享库]]。
+
+## §143.24 ★ 订正「11-03 的 14 天决策窗口」—— 它是误报（2026-10-20）
+
+### §143.24.0 结论先行
+
+§143.22 结论 3 写「**A1′ 的效果会『自动达成』⇒ 属主的决策窗口因此变紧（14 天）**」，
+并在 §143.23.4 列了「落地还差 7 处」的清单。
+本节**复核这条紧迫性本身** ⇒ ★★★★ **它是误报**，应当订正。三条：
+
+1. ★★★★ **11-03 的目标分区在父表下 ⇒ 不触发缺陷 ② ⇒ 11-03 不需要迁移 885**
+   - 实测（`pg_inherits` 按 `credential_model_index` 父表逐分区查）：
+     `credential_model_index_2026_09` → **attached = 1**、**301,255 行**
+     ⇒ ⇒ 654 的 `ALTER TABLE credential_model_index DETACH PARTITION src_part` **合法**
+     ⇒ ⇒ **11-03 会正常走完「建 dst → 搬 → DETACH → DROP」**
+     ⇒ ⇒ **迁移 885 与 11-03 无关** ⇒ **属主没有 14 天的时间压力**。
+2. ★★★★ **孤儿表只有 337 一处来源，且它是一次性治理 ⇒ 不会再产生新的孤儿表**
+   - 全仓扫描「谁 DETACH CMI 分区」只有 3 个命中：
+     **337**（`ALTER TABLE credential_model_index DETACH PARTITION credential_model_index_2026_0[78]`）、
+     **347**（DETACH + DROP 的是 `credential_model_index_default`，不是月分区）、
+     **872**（DETACH → **同边界重建** → ATTACH ⇒ **不留孤儿**）；
+   - 实测 337 当年 DETACH 的 6 个月现在的父表归属：
+     `2026_07 / 08 / 12` **不在父表下**，`2026_09 / 10 / 11` **在父表下**（被 872 重建回来了）
+     ⇒ ⇒ **孤儿表是历史存量，不是会再生的机制**。
+3. ★★★ **迁移 885 应重新裁决为「防御性修复，当前无收益」**
+   - 既有孤儿表（07 / 08 / 12）**要么已被 DROP、要么是 0 行的空分区**
+     ⇒ 修它们**搬 0 行** ⇒ **无当前收益**；
+   - ⇒ ⇒ **建议：不为了赶 11-03 而上线**（§143.23 的 7 处注册点清单仍然有效，只是不急）；
+   - ⇒ ⇒ **真正的时限只有一件事：11-03 的观测点**（§143.22 结论 4 的超时风险，见 §143.24.3）。
+
+⚠ **本节对生产的写入 = 0**（全只读：`pg_class` / `pg_inherits` / `pg_am` / 聚合 COUNT + 仓内 DDL 扫描）。
+**没有** DELETE / TRUNCATE / DROP / REINDEX / ANALYZE / 迁移 / 改配置 / 改 cron。
+
+### §143.24.1 ★ 证据（逐条可复核）
+
+| 读数 | 值 | 出处 |
+|---|---|---|
+| `credential_model_index_2026_09` 是否挂 CMI 父表 | **attached = 1** | `pg_inherits` × `pg_class`（`p.relname='credential_model_index'`） |
+| 09 月行数 | **301,255** | 聚合计数 |
+| `credential_model_index_2026_10` / `_2026_11` | **attached = 1** / 1 | 同上 |
+| `credential_model_index_archive_2026_07` | 挂在 **archive** 父表下（**不是** CMI 父表） | 同上 |
+| 337 当年 DETACH 的 6 个月现在的归属 | 07/08/12 = **0**，09/10/11 = **1** | 同上（`to_regclass` 逐月查） |
+| 仓内 DETACH CMI 分区的迁移 | **337 / 347 / 872**（872 是「DETACH→重建→ATTACH」） | `grep -n "DETACH PARTITION" sql/migrations/startup/*.sql` |
+
+⇒ ⇒ ★★ **口径诚实（不要误读）**：上表的 `attached` 只匹配 **`credential_model_index`** 这一个父表
+⇒ ⇒ `credential_model_index_archive_2026_07` 显示 **0** 是**口径产物**（它挂在 **archive** 父表下）
+⇒ ⇒ **不可**据此说「archive 的子分区是孤儿表」。
+
+### §143.24.2 ★★ 附带关闭一个旧命题：「08 月数据丢失」**彻底**关闭
+
+§143.21.6 用 211 的空分区证伪了「08 月数据丢失」；本节补上**完整机制**：
+
+- **337（2026-07）** DETACH 了 `2026_07` ~ `2026_12` 的月分区（目的：让 `*_default` 接收写入）
+  ⇒ 那些分区**脱离父表 ⇒ 对读方不可见**；
+- **347** DETACH + DROP 了 `credential_model_index_default` ⇒ **default 也没了**
+  ⇒ 写入回到月分区路径；
+- **872（2026-10-18）** 把**现存**分区 DETACH → 同边界重建为 heap → ATTACH 回去
+  ⇒ ⇒ **09 / 10 / 11 回到父表下**（实测 attached=1）；
+- **07 / 08 / 12** ⇒ 在 252 上**表对象已不存在**（= 已被 DROP），在 211 上是 **0 行的空分区**
+  ⇒ ⇒ **那些月本来就没有数据** ⇒ ⇒ **无数据丢失**（第三次复核，结论不变）。
+
+⇒ ⇒ ★★ **机制性隐患仍成立**：若将来某月的分区再次被 DETACH（不再是 337 那次一次性治理），
+则该月数据会「既不在父表、也不在 archive」⇒ **这才是 885 未来的适用场景**
+⇒ ⇒ **885 作为「防御」保留是合理的**（成本已实测为低：函数签名不变 ⇒ Go 零改动），
+**但它不是 11-03 的前置**。
+
+### §143.24.3 ★ 11-03 真正需要的只剩「观测点」
+
+⚠ **11-03 的唯一真实风险仍是超时**（§143.22 结论 4，**未被本节消除**）：
+「301,255 行单事务搬进 columnar」vs `runArchive` 的 **10 分钟** timeout
+（252 宿主 load 14.17 / 4 核）⇒ 失败是安全的（回滚、源分区完好）但**静默**。
+⇒ ⇒ **观测点要做的是「看到它成功 / 看到它超时失败」**，**不需要**先改代码。
+⇒ ⇒ ★ **观测口径建议**（供属主参考）：
+① 11-03 当天查 `pg_class` 里 `credential_model_index_archive_2026_09` 是否出现
+（**出现 = 成功**；**不出现 + 源分区仍在 = 失败并回滚**）；
+② 查 `credential_model_index_2026_09` 是否还在（**不在 = 已 DETACH+DROP**）；
+③ 查 `credential_model_index_archive` 的总行数是否 ≈ 301,255（**守恒**）。
+
+### §143.24.4 诚实边界
+
+- ⚠ **本节对生产的写入 = 0**（见 §143.24.0 末尾）。
+- ⚠ **「11-03 会成功」仍是推演**（耗时未量化）—— 本节只是**排除了「会因缺陷②而失败」这条**，
+  **没有**排除「会因超时而失败」⇒ ⇒ **§143.22 结论 4 仍然成立**。
+- ⚠ **「337 之后再无孤儿表」的结论范围**：基于**当前仓内**的迁移集合
+  （`sql/migrations/startup/` 全量扫描）+ **当前活库的**父表归属实测
+  ⇒ **未来新增迁移仍可能制造孤儿表** ⇒ ⇒ **885 作为防御仍有意义**。
+- ⚠ **本节没有写迁移、没有改注册点** ⇒ **生产行为未变**（生产仍跑 654）。
+- ⚠ **未覆盖**：archive 表**自身**的保留期（它的月分区也只增不减）；
+  `request_logs_archive_2026_08` / `_request_logs_archive` / `request_wal_archive`
+  这三个 **0 行的 archive 表**（331 已把它们移出调度 ⇒ 属遗留对象）。
+
+### §143.24.5 复核方法（可原样重跑）
+
+```bash
+# ── 1) CMI 每个分区的父表归属（决定 11-03 会不会触发缺陷②）
+bash ~/.mavis-tools/lgwp-prod.sh /private/tmp/p14321/parent_attach.sql 300 > /private/tmp/p14321/parent_attach.out 2>&1
+# ── 2) ★ 仓内「谁 DETACH CMI 分区」全量扫描（337 / 347 / 872）
+grep -n "DETACH PARTITION" sql/migrations/startup/*.sql | grep -i "credential_model_index"
+# ── 3) ★ 本地真库实测（缺陷复现 + 修法验证 + 回归 + 幂等）
+python3 scripts/audit/verify_archive_orphan_local.py
+```
+
+⇒ ⇒ ★ **本节落地的门**（不连库，可原样重跑）：
+
+```bash
+# §143.24 文档门：订正「14 天窗口」/ 孤儿表来源单一 / 885 重新裁决 / 观测口径
+GOCACHE=/tmp/gocache-p1437 go test ./scripts/ursmcheck/ -run 'TestRunbook14324' -count=1 -v
+```
+
+★ 同族：[[自己上一节的结论也要复核]] · [[阴性结论要当缺陷一样复核]] ·
+[[跨节订正前先自问「我要订正的这条真的错了吗」]] · [[0 命中的第一嫌疑是量具坏了]] ·
+[[「0 调用」有三种成因]] · [[先读量具再读产物]]。
+
+## §143.25 ★★★ 11-03 的超时风险**量化**：本地真库实测 3.4 秒（预算 600 秒，裕量 176×）—— 并订正 §143.23 的「本地无 columnar」（2026-10-20）
+
+### §143.25.0 结论先行
+
+§143.22 结论 4 / §143.23.5 / §143.24.3 一致留下同一个未闭合的口子：
+「**301,255 行单事务搬进 columnar**」vs `runArchive` 的 **10 分钟** timeout，**耗时始终未被量化**。
+本节把它**实测掉**（生产只读 + 本地一次性真库，**对生产写入 = 0**）。五条：
+
+1. ★★★★★ **超时风险从「未量化、可能很高」降级为「量级上极不可能触发」**
+   - 本地真库、**654 函数体逐字不改**（`USING columnar` 保留）、**生产同构 schema**（17 列 + 3 个 `ON ONLY` 索引 + 源分区 2 个索引）、
+     **行数与生产一致（301,255）**、**数据取值域取自生产**（43 个 credential_id / 12 个真实模型名 / 4 种 billing_mode）：
+   - 实测 **中位 3,410 ms**（3 轮交错，组内极差 3,099–9,073 ms）；独立复跑 **3,488 ms**；
+   - ⇒ ⇒ **10 分钟预算（600,000 ms）的 0.6%，裕量 176×**；
+   - ⇒ ⇒ 退一步按「252 宿主 load 14.17/4 核（超载 3.5 倍）再劣化 10 倍」估，也只剩 **34 秒**（裕量仍 17×）。
+2. ★★★★ **「columnar 批量写更慢」这个直觉假设被实测推翻**
+   - heap 对照臂（只把 `USING columnar` 换成 `USING heap`，其余逐字相同）：**中位 4,213 ms**；
+   - ⇒ ⇒ **columnar 臂比 heap 臂还快**（0.81×；复跑 0.77×）；
+   - ⇒ ⇒ 对这类**窄表**（17 列、数值 + 短文本），列式批量写入**不吃亏**，而 heap 臂还要额外写数据页 + 维护 3 个 btree；
+   - ⇒ ⇒ ★ **这条对本项目后续「往 columnar 搬数据」的决策有直接参考价值**（别再默认 columnar 慢）。
+3. ★★★★ **失败模式要重新定级——但方向变了：风险从「超时」移到「静默且不可恢复」**
+   - archive 调度门 = **`now.Day() <= 3` 且 `s.day == today`**（`bg/partition_manager.go:602-610`），
+     节拍是 **24h ticker + 进程启动时也跑一次** ⇒ ⇒ **11-03 当天是 09 月分区的唯一归档窗口**；
+   - 11-04 起门关闭；12-03 的 `twoMonthsAgo` 已是 `2026-10-03` ⇒ ⇒ **09 月分区再无归档机会**；
+   - archive 失败**只有一行 `slog.Error`**（全仓 grep：archive 路径**没有任何 metric / counter / gauge**）⇒ **无指标、无告警**；
+   - **人工补跑没有产品入口**（`admin/data_lifecycle_hot_partition.go` 的手动 promote 是 hot→月分区，**不是**月→archive）；
+   - 841 的月分区 DROP 清扫配置表 `public.llm_gateway_partition_retention` **生产实测 0 行**
+     ⇒ ⇒ **失败不会丢数据**（源分区完好），**但也不会自愈** ⇒ 09 月的 84 MB 会一直堆着。
+4. ★★★ **对属主决策的影响：11-03 既不需要赶上线，也不需要为「防超时」改代码**
+   - 与 §143.24 的「无 14 天压力」**互相独立地印证**（一条是「不触发缺陷②」，一条是「跑得完」）；
+   - ⇒ ⇒ **真正该补的是「让失败可见 + 给一次补跑窗口」**，而不是「防超时」（见 §143.25.6 的 R1/R2/R3）。
+5. ★★★ **订正 §143.23 的诚实边界（横幅六）**：「本地 citus 不含 `columnar` ⇒ 只能测 heap」**不成立**——
+   - 镜像**带** columnar 扩展（**扩展名是 `citus_columnar`，不是 `columnar`**），只是**没装**；
+     `CREATE EXTENSION citus_columnar;` 之后 `pg_am` 里就有 `columnar`，能建表能插数；
+   - ⇒ ⇒ §143.23 当时只测 heap 是**主动选择「只换一个变量」**，**不是被本地能力所限**；
+   - ⇒ ⇒ **「生产 columnar 路径的耗时仍未量化」这条缺口，本节已闭合。**
+
+⚠ **本节对生产的写入 = 0**：生产侧全只读（`pg_stat_statements` / `pg_stat_user_tables` /
+`pg_class` / `pg_am` / `pg_inherits` / `pg_settings` / 聚合 COUNT / 网关 journal 只读）；
+本地侧是**一次性库 `itgate_14325`**（退出即 DROP，不硬编码密码，走容器内本地认证）。
+**没有** DELETE / TRUNCATE / DROP / REINDEX / VACUUM / ANALYZE / 迁移 / 改配置 / 改 cron。
+
+### §143.25.1 ★★ 先钉死四把尺子的口径（否则读数会被误读）
+
+本轮一开始就踩了两个口径坑，**先登记、后读数**：
+
+| 量具 | 本轮实测口径 | 对结论的影响 |
+|---|---|---|
+| `pg_stat_statements` | **`track = top`** ⇒ **函数内层语句没有独立读数** | promote 的内层 INSERT 耗时**看不到** ⇒ 只能看外层整句 |
+| 同上 | **`pg_stat_statements_info.stats_reset = 2026-10-18 22:03:37`** ⇒ 统计窗口**只有 ~41 小时** | ⇒ **分区行数与 promote 调用数不可相除**（窗口 ≠ 分区生命周期） |
+| 同上 | ⚠ **本会话此前把 `rows` 读成「每次均值」，实为「总行数」**（判据：`credential_model_index_hot` 的 `rows` 在 15 分钟内从 15,188 涨到 15,268，而 calls 只 +4 ⇒ 是累计量在涨） | ⇒ §143.21 之前引用过的「每次均值」口径**作废**，本节全部重算 |
+| 252 的 PG 日志 | **`log_min_duration_statement = 1000`** ⇒ `duration:` 行是**尾部样本**（10-20 只记到 39 条 promote，而同窗口实际执行 ~2,000 条） | ⇒ **不能用日志的 duration 均值当总体** |
+| `pg_stat_user_tables` | **columnar 表 `n_tup_ins` 恒 0**（`routing_decision_log_2026_09/10` 实测 0）⇒ **columnar 没有行数仪** | ⇒ columnar 侧的「搬了多少行」**只能靠函数返回值 / 日志** |
+| 同上 | heap 侧可用（`credential_model_index_2026_09.n_tup_ins = 301,255`） | ⇒ 源分区的 301,255 行有**独立第二把尺子**佐证 |
+| `pg_stat_database.stats_reset` | `llm_gateway` 为 **NULL** ⇒ 累计计数**从未被重置** | ⇒ 累计计数覆盖分区整个生命周期 |
+| 网关 journal（154） | `partition_manager: promote batch` 带 **`label` + `rows=N`**（`bg/partition_manager.go:1841-1843`） | ⇒ **唯一能拿到「每批搬了多少行」的尺子** |
+
+⇒ ⇒ ★ **纪律落点**：**四把尺子各有一处口径洞，全部先钉死再读数**；
+本节所有数字都标了出处，**没有任何一个数字来自「看起来像」的读法**。
+
+### §143.25.2 ★★★ 为什么「历史读数」量不出这次的成本（决定性阴性结论）
+
+先说**为什么不能用生产历史外推**（这是本节真正的难点，不是回避实测）：
+
+- **库内不存在「一次批量写 columnar」的生产先例**：
+  - 41 小时窗口内，**唯一**直接写 columnar 的语句是 `INSERT INTO provider_events`：
+    **720 次 / 720 行 / 每次 1 行 / 7.48 ms**（`rows_per_call = 1.0`）⇒ **全是单行插**；
+  - 其余 columnar 写入全部藏在 promote 函数内层（`track=top` ⇒ 无独立读数）。
+- **promote 的批次太小 ⇒ 固定开销主导 ⇒ 不可外推**：
+  - 154 journal（48h）：`routing_decision_log_hot` **26 批 / 3,059 行 / 均 117.7 行 / 最大 638 行**；
+    `session_censors_hot` 最大 5,000 行（= `promoteBatchSize` 上限）；
+  - ⇒ ⇒ 每次调用的耗时（`promote_routing_decision_log_hot_to_partition` 均 512 ms）
+    **主要不是每行成本** ⇒ ⇒ **拿它除以 301,255 是错的**。
+- ⇒ ⇒ ★★ **结论：11-03 的成本「不可从历史推断」⇒ 只能实测**（下一节）。
+  ⇒ ★ 这本身就是可交付的结论：它把「未知」变成「**已知不可知 + 可测量**」。
+
+### §143.25.3 ★★★ 本地真库实测（654 逐字，**真 columnar 路径**）
+
+脚本（**可原样重跑**，一次性库、不硬编码密码）：
+`scripts/audit/verify_columnar_bulk_write_local.py`
+
+★ **证据力设计**：
+- **被测函数体由脚本从仓内 `sql/migrations/startup/654_archive_credential_model_index_detach_drop.sql` 提取**（不是手抄）
+  ⇒ 杜绝「抄错版本」；**columnar 臂逐字不改**（含 `USING columnar`），**heap 对照臂只替换这一处** ⇒ 单一变量；
+- **schema 与生产同构**：17 列（列名/类型/顺序逐字对齐）+ archive 父表 **3 个 `ON ONLY` btree 索引**（逐字）
+  + 源分区 **2 个索引**（1 UNIQUE + 1 btree，逐字）；
+- **数据同形**：取值域取自生产只读读数（`credential_model_index_2026_09`）
+  ⇒ 43 个 credential_id（2–73）/ 12 个**真实模型名** / 4 种 billing_mode（`per_token` 79% + `token_plan` 10.5% + `free` 9.4% + NULL 0.7%）
+  / canonical_id 418 个取值；
+  ⇒ ★ **体积对照：本地源 86 MB vs 生产源 84 MB** ⇒ **同形成立**；dst（columnar）42 MB。
+
+**A/B 交错结果（3 轮，columnar / heap 交替执行，报中位与组内极差）**：
+
+| 臂 | n | 中位 | 极差 | 相对 heap |
+|---|---|---|---|---|
+| **columnar（生产同款路径）** | 3 | **3,410 ms** | [3,099, 9,073] ms | **0.81×** |
+| heap（对照，仅换 AM） | 3 | 4,213 ms | [3,611, 5,217] ms | 1.00× |
+| columnar（独立复跑） | 1 | 3,488 ms | — | 0.77× |
+| heap（独立复跑） | 1 | 4,508 ms | — | 1.00× |
+
+**逐步拆解（654 的等价动作，columnar）**：
+
+| 步骤 | 耗时 |
+|---|---|
+| `CREATE TABLE ... PARTITION OF ... USING columnar`（含 3 个索引） | **9 ms** |
+| `INSERT INTO dst (17 列) SELECT ... FROM src`（301,255 行） | **2,780 / 3,716 ms**（两轮） |
+| `ALTER TABLE ... DETACH PARTITION` | 3 ms |
+| `DROP TABLE src` | 2 ms |
+| `COMMIT` | 1–8 ms |
+| **合计（函数调用整体）** | **3,410 / 3,488 ms** |
+| 其后的 `CHECKPOINT`（columnar 刷盘/压缩的**延迟**成本，**不在 10 分钟预算内**） | **346 ms** |
+
+**缩放曲线（columnar 臂）**：30,000 → 中位 **317 ms**；100,000 → 中位 **857 ms**；301,255 → 中位 **3,410 ms**
+⇒ ⇒ **近似线性、固定开销≈0**，边际约 **11.4 µs/行（≈ 87,700 行/秒）**
+⇒ ⇒ ★ **301,255 行是直接实测，不是外推**。
+
+⇒ ⇒ ★★★ **与 10 分钟预算（`runArchive` 的 `context.WithTimeout(ctx, 10*time.Minute)`，
+`bg/partition_manager.go:1360`）对比**：**3,410 / 600,000 = 0.6%** ⇒ **裕量 176×**。
+
+★ **本轮顺带闭合的两件事**：
+- ✅ **654 的 DDL 在真 columnar 上跑通**（此前只验过 heap 路径）：`status=success / rows_migrated=301255 / partition_dropped=t`
+  ⇒ ⇒ §143.22「技术可行性」的**推演**现在有了**本地实证**支撑；
+- ✅ **654 的幂等保护有效**：实测第二臂命中 `EXCEPT ALL` 分支时**正确报错**
+  「archive target … contains partial or mismatched rows (source 3000, target 3000)」⇒
+  ⇒ **「dst 已存在且内容不符 ⇒ 拒绝，而不是静默覆盖」这条行为被实测确认**。
+
+### §143.25.4 ★★ 订正横幅六（就地订正 §143.23 的诚实边界）
+
+> ⚠⚠⚠ **订正横幅六（2026-10-20，§143.25.4 就地订正；下面 §143.23.5 第 2 条与 §143.23.1 的「本地为什么能测」原文保留）**
+>
+> §143.23 写「**本地 citus 13.3-1 不含 `columnar` access method ⇒ 只能测 heap 路径
+> ⇒ 生产 columnar 路径的耗时仍未量化**」⇒ ⇒ **这条的前提是错的**，应当订正：
+>
+> 1. ★★★★ **本地镜像带 columnar 扩展，只是没装**
+>    - 实测：`pg_available_extensions` 里是 **`citus_columnar 13.3-1`**（**扩展名不是 `columnar`**），
+>      `/usr/share/postgresql/17/extension/citus_columnar.control` 与 `$libdir/citus_columnar` 都在；
+>    - ⇒ `CREATE EXTENSION citus_columnar;` 之后 **`pg_am` 里出现 `columnar`**，
+>      **能建 columnar 表、能插数据**（实测 `CREATE TABLE … USING columnar` + INSERT 1,000 行成功）。
+> 2. ★★★★ **⇒ §143.23 的「诚实边界」应改为**：本地**能**测 columnar 路径；
+>    §143.23 之所以只测 heap，是**当时主动选择「只替换 `USING columnar`→`USING heap`」这一个变量**，
+>    **不是被本地能力所限**（该选择的纪律价值仍然成立，保留）。
+> 3. ★★★★ **⇒ 「生产 columnar 路径的耗时仍未量化」这条缺口已在 §143.25 闭合**：
+>    **654 函数体逐字（`USING columnar` 不改）在本地真库跑通**，
+>    **301,255 行搬进全新 columnar 分区 = 中位 3,410 ms**（10 分钟预算的 0.6%，裕量 176×）
+>    ⇒ ⇒ **11-03 的超时风险从「未量化」降级为「量级上极不可能触发」。**
+>
+> ⇒ 详见 runbook `§143.25`。
+
+### §143.25.5 ★★ 失败模式与观测口径（**新增「失败判定」**）
+
+既然「超时」基本不成立，风险就落在**失败之后没人知道**上。实测的调度事实：
+
+- **唯一窗口**：`now.Day() <= 3` 且 `s.day == today`（`credential_model_index` 的 spec 是 **day=3**）
+  ⇒ **11-03 00:00 ~ 23:59**（期间任何一次进程启动/重启都会再触发一次）；
+  ⇒ **11-04 起门关闭**；12-03 的目标已是 `2026_10` ⇒ ⇒ **09 月分区再无自动归档机会**。
+- **失败不留痕**：archive 失败只有 `slog.Error("partition_manager: archive failed", …)`
+  ⇒ **无指标、无告警**（全仓 grep：archive 路径没有任何 metric/counter/gauge 注册）。
+- **失败不丢数据、也不自愈**：源分区在事务回滚后完好；841 的 DROP 清扫配置表生产实测 **0 行**
+  ⇒ **不会有人来删它** ⇒ 09 月的 84 MB 会一直留在 `credential_model_index` 下。
+
+⇒ ⇒ ★ **观测口径（在 §143.24.3 三条之外补一条「失败判定」）**：
+
+| 查法 | 读数 | 判定 |
+|---|---|---|
+| ① `pg_class` 里 `credential_model_index_archive_2026_09` | **存在** | 成功（建了 dst） |
+| ② `credential_model_index_2026_09` 是否还在父表下 | **不在** | 成功（已 DETACH+DROP） |
+| ③ `credential_model_index_archive` 总行数 | **≈ 301,255** | 成功（守恒） |
+| ④ **①不存在 且 ②还在** | — | ★ **失败并回滚**（超时的特征形态） |
+| ⑤ ④成立时的后续动作 | — | ★ **09 月永久不归档**（12-03 的目标已是 10 月）⇒ **必须人工补跑** |
+
+⇒ ⇒ ★ **人工补跑的形态**（不是产品入口，是运维动作）：
+`SELECT * FROM public.archive_credential_model_index(date '2026-09-03');`
+⇒ ★ **它是幂等的**（dst 不存在 ⇒ 走 INSERT 分支；dst 存在且内容一致 ⇒ 走 `EXCEPT ALL` 比对分支返回 `success/0/f`）
+⇒ ⇒ **补跑是安全的、可重复的**（但**属生产写，需属主授权**）。
+
+### §143.25.6 ★★ 建议（**待属主拍板**，按成本从低到高）
+
+| 编号 | 动作 | 成本 | 解决什么 |
+|---|---|---|---|
+| **R1** | 11-03 当天按 §143.25.5 的 5 条查法观测一次（含新增的失败判定 ④） | **0**（只读） | 知道这次到底成没成 |
+| **R2** | 给 archive 失败加**一个指标 / 告警**（现在只有 slog.Error） | 小（Go 改动 + 部署） | ★ **消除「静默」**（本节认为这是最高性价比的一条） |
+| **R3** | 把归档窗口从「每月 3 号一天」放宽（如 `now.Day() <= 5`），或改成「**目标月尚未归档则每天重试**」 | 小（Go 改动 + 部署） | ★ **让失败可自愈**（根治「一次失败 = 永久不归档」） |
+| **R4** | 迁移 **890**（原预留号 885 **已被并行会话占用**，见 §143.25.8） | §143.23.4 的注册点清单（**号已漂移**） | §143.24 已裁决「不急」；**本轮进一步确认不急**（11-03 的目标 attached=1，不触发缺陷②） |
+| **R5** | 在生产上做一次**回滚式预飞**（`BEGIN; CREATE dst…; INSERT…; ROLLBACK;`）以取得**生产宿主**的每行成本 | 需**生产写授权** | ★ **不再必要**：裕量 176×，按 10 倍劣化估仍剩 17× ⇒ **建议不做**（除非要消除最后一点不确定性） |
+
+⇒ ⇒ ★ **明确不推荐**：**不要**为了「防超时」去改 `runArchive` 的 10 分钟超时
+⇒ **实测已经把超时从风险清单里划掉**，改它属于为不存在的问题付代价。
+
+> ⚠⚠⚠ **订正横幅七（2026-10-20，v1 族退役轮就地订正 §143.25.6；上面 R1~R5 表原文保留）**：
+>
+> 1. ★★ **R4 行里的「迁移 890」这个号，后来被本会话占了** ⇒
+>    890 现在是 **v1 族退役迁移**（`890_drop_request_logs_v1_family.sql`），
+>    配套索引迁移是 **891**（`891_session_turns_cost_negative_partial_idx.sql`）。
+> 2. ⇒ ⇒ ★ **R4 那个「CMI 归档孤儿表修复」迁移最终压根没创建**
+>    （§143.24 已裁决「不急、当前无收益 ⇒ 建议不为了赶 11-03 而上线」）
+>    ⇒ **不存在**「R4 = 某个号」这回事 ⇒ R4 行的号面已作废。
+> 3. ⇒ ⇒ 这恰好是 §143.25.8 讲的那件事的**活样本**：
+>    「预留号」会在别的会话手里漂移 ⇒ ★ **动迁移号之前必须现场取号**
+>    （`ls sql/migrations/startup/*.sql | grep -v down | cut -d_ -f1 | sort -n | tail -1`，
+>    且**同时看台账** `sql/schema/installed_startup_migrations.tsv`）。
+> 4. ⚠ **本横幅不改变 R4 的语义裁决**（「不急」仍然成立）⇒ 只是把号面订正成实况。
+
+### §143.25.7 诚实边界
+
+- ⚠ **本节对生产的写入 = 0**（见 §143.25.0 末尾）。
+- ⚠ **本地实测 ≠ 生产实测**，差在：① 机器（本地 macOS vs 252 宿主 4 核、load 14.17 超载 3.5 倍）；
+  ② 数据是**同形合成**（取值域/基数/体积贴近生产，但熵与真实数据不完全相同 ⇒ 压缩率可能不同）；
+  ③ 本地**无并发负载**（生产归档时刻可能有其它负载）。
+  ⇒ ⇒ **本节给的是「裕量 176×」这个量级判断，不是「生产上一定是 3.4 秒」**。
+  ⇒ ⇒ ★ **即使按 10 倍劣化估（34 s），仍然远低于 600 s** ⇒ ⇒ **结论方向不因这三条边界翻转**。
+- ⚠ **只测了 09 月这一种规模**（301,255 行 / 17 列 / 窄表）；
+  ⇒ **不要**把「87,700 行/秒」外推到宽表或含 TOAST 大列的族（如 `request_logs_bodies`，行宽 ~350 KB）。
+- ⚠ **COLUMNAR 的压缩成本部分落在 `CHECKPOINT`**（实测 346 ms）⇒ **不在 10 分钟预算内，但会产生后续 I/O**。
+- ⚠ **本节没有写迁移、没有改注册点、没有改 Go 代码** ⇒ **生产行为未变**（生产仍跑 654，仍是 10 分钟超时，仍无告警）。
+- ⚠ **未覆盖**：archive 表**自身**的月分区保留期（archive 表只增不减，§143.24.4 已登记）；
+  211 侧同族的归档行为（211 的 CMI 冷族形态不同，本节未测）。
+- ⚠ **未改 §143.21/§143.22 的语义裁决**（A1′/A2′/A3′/A4 等仍待属主拍板）；
+  本节只把「11-03 的超时」这一条从待办里**划掉**。
+
+### §143.25.8 ★★ 并发漂移：迁移号 **885 已被并行会话占用** ⇒ 下一个空号是 **890**
+
+> ⚠⚠⚠ **订正横幅八（2026-10-20，v1 族退役轮就地订正；本节原文保留）**：
+>
+> ★★ **本节记的是「当时」的取号现场，不是今天的号面**：
+> 1. **885 被并行会话占用**（host/tags 那组 885~889）⇒ **当时**的下一个空号是 **890** ——
+>    这条历史判断本身**没错**，保留。
+> 2. ⇒ ⇒ 但 **890 随后被本会话占用**（v1 族退役迁移 = 890，配套索引 = 891），
+>    而 R4 那个孤儿表修复迁移**最终没创建**（§143.24 裁决「不急」）
+>    ⇒ ⇒ **「下一个空号是 890」这句话对今天的读者已经过时**
+>    ⇒ ★ **号面以 `sql/schema/installed_startup_migrations.tsv` 台账为准**。
+> 3. ⇒ ⇒ 这就是本节要钉住的那条纪律的**最强证据**：
+>    **同一个号（890）在两天里既是「下一个空号」又是「已占用」**
+>    ⇒ ⇒ **动迁移号之前必须现场取号**（并同时看台账）。
+
+§143.21 ~ §143.25 连续五节都记着「**最新迁移号 = 884 ⇒ 新迁移用 885**」
+（那是给「CMI 归档孤儿表修复」预留的号）。本节提交时 rebase 拉进来并行会话的
+「迁移 885-889 + 正典 DDL 订正」（`a6cec1f0e`）⇒ ★★ **885 已经被别人用了**：
+
+| 迁移号 | 文件 | 注册状态（实测） |
+|---|---|---|
+| **885** | `885_session_turns_host_tags.sql`（`session_turns` 加 `host`/`tags` 两列，**与 CMI 归档无关**） | 源文件 + embeddata×2 + `main.go` + `runner.go` + `installed_startup_migrations.tsv` **全部已注册** |
+| 886 | `886_session_bodies_storage_comment.sql` | 同上 |
+| 887 | `887_session_turns_search_text_fts.sql` | 同上 |
+| 888 | `888_session_family_join_index_gaps.sql` | 同上 |
+| 889 | `889_session_turns_tools_population.sql` | 同上 |
+
+⇒ ⇒ ★★ **因此**：
+
+1. **§143.23.4 的注册点清单里的文件名必须换号** ⇒ 用 **890**
+   （`sql/migrations/startup/890_archive_credential_model_index_orphan.sql` + `.down.sql`）；
+2. ⇒ ⇒ §143.24.0 / 订正横幅五 / §143.25.6 的 **R4** 里写的「迁移 885」，
+   **指的是「那个修复」，不是「那个号」** ⇒ **语义不变，号变了**；
+3. ⇒ ⇒ ★★ **纪律（共享仓库的硬约束）**：**任何「预留某个迁移号」的结论都会漂移**
+   ⇒ ⇒ **动迁移号之前必须现场取号**：
+
+   ```bash
+   ls sql/migrations/startup/*.sql | grep -v down | cut -d_ -f1 | sort -n | tail -1
+   ```
+
+   ⇒ ⇒ 且**必须同时补齐注册点与台账**
+   （源文件 + `.down.sql` + embeddata×2 + `main.go` + `runner.go`；
+   `sql/schema/installed_startup_migrations.tsv` + `docs/db-changelog.md`）
+   ⇒ ⇒ ★ **只加源文件 = 迁移不会生效**
+   （连续性门 `internal/sqlguard.TestMigrationRegistryStaysContinuous` 也会红）。
+
+⚠ **口径诚实**：本节只登记「号被占用」这一事实，**没有**改动 §143.24 / §143.25 的任何裁决
+（那个修复**仍然不急**、**仍然与 11-03 无关**）；**本节未写任何迁移、未改任何注册点** ⇒ **生产行为未变**。
+
+### §143.25.9 复核方法（可原样重跑）
+
+```bash
+# ── 1) ★ 本地真库实测（654 逐字，真 columnar 路径；一次性库，退出即 DROP）
+python3 scripts/audit/verify_columnar_bulk_write_local.py --rows 301255 --reps 3 --scale
+
+# ── 2) 生产只读：量具口径自检（track / stats_reset / log_min_duration_statement）
+bash ~/.mavis-tools/lgwp-prod.sh /private/tmp/p14321/columnar_cost_probe.sql  300
+bash ~/.mavis-tools/lgwp-prod.sh /private/tmp/p14321/columnar_cost_probe2.sql 300
+bash ~/.mavis-tools/lgwp-prod.sh /private/tmp/p14321/columnar_cost_probe3.sql 300
+
+# ── 3) 网关 journal 的 promote 行数（唯一能拿到「每批搬了多少行」的尺子）
+ssh 154 'journalctl -u "llm-gateway-go-canary@8781.service" --since "48 hours ago" --no-pager \
+  | grep -o "promote batch\",\"label\":\"[a-z_]*\",\"rows\":[0-9]*"'
+```
+
+⇒ ⇒ ★ **本节落地的门**（不连库，可原样重跑）：
+
+```bash
+# §143.25 文档门：实测读数 / 失败模式重定级 / 订正横幅六 / 建议清单
+GOCACHE=/tmp/gocache-p1437 go test ./scripts/ursmcheck/ -run 'TestRunbook14325' -count=1 -v
+```
+
+★ 同族：[[先读量具再读产物]] · [[0 命中的第一嫌疑是量具坏了]] ·
+[[阴性结论要当缺陷一样复核]] · [[自己上一节的结论也要复核]] ·
+[[跨节订正前先自问「我要订正的这条真的错了吗」]] · [[「0 调用」有三种成因]] ·
+[[本地真库是一次性库不是共享库]] · [[「我没跑成」和「我跑过」必须长得不一样]] ·
+[[变异后门仍绿=没有守卫力]]。
+
+## §143.26 「看不见的成本」：两把尺子的共同盲区 + 三条自我订正 + 一处真正可动手的结构点（2026-10-20）
+
+### §143.26.0 结论先行
+
+本节接着 §143.20 的 **B1**（四个 matview 的 `REFRESH CONCURRENTLY`）往下做。
+**开头的结论是本会话自己推翻自己**——先记下来，因为它是本节最有价值的产出：
+
+1. ★★★★★ **自我订正（订正横幅七）**：本会话先前判「约 **32–33 次/天**的 `REFRESH`
+   被 `statement timeout` 杀掉」= **误报**。
+   实测（252 PG 日志 2026-10-19 + 2026-10-20，**逐条解析 PG 记录 + 多行 `STATEMENT:` 归属**）：
+   **2 天里 `REFRESH` 被 `statement timeout` 杀 = 2 次**（不是 32–33 次/天）。
+   ⇒ **误报成因**：用「错误行**上下文窗口**里出现了 REFRESH」判定语句归属
+   ⇒ 窗口里的 REFRESH 是**另一条语句**的日志。
+2. ★★★★★ **两把常用的尺子都看不见「被杀掉的语句」**：
+   `pg_stat_statements` **只记成功语句**；PG 日志的 `duration:` **只记 >1s**（`log_min_duration_statement=1000`）。
+   ⇒ 实测 2 天内 **349 次 `statement timeout` 杀 + 2,473 次 `user request`（ctx 取消）**
+   ⇒ **对 `pg_stat_statements` 100% 隐形** ⇒ 之前的成本排行**系统性偏低**。
+3. ★★★★ **真凶不是物化视图，是后台作业被角色级 `statement_timeout=30s` 截断**：
+   `pg_roles.rolconfig` 实测 `llm_gateway|{statement_timeout=30s,idle_in_transaction_session_timeout=60s}`。
+   ⇒ **唯一会自己抬高的作业是物化视图刷新器**（`bg/materialized_view_refresher.go:106`
+   `mvRefreshStatementTimeout = "180s"` + `:604` / `:703` 的 `SET statement_timeout`）。
+   ⇒ 而 `domains/stats/daily_monthly_rollup.go:94` 的
+   `context.WithTimeout(ctx, 2*time.Minute)` = **2 分钟的 Go 死代码**
+   （DB 侧 30 s 先到 ⇒ Go 那 2 分钟**永远等不到**）。
+4. ★★★★ **REFRESH 只被杀 5 次 / 385 次（1.3%）** ⇒ 「刷新被超时杀」**不是真风险**；
+   REFRESH 的**成本**是真的（**1.53 h/day**，见 §143.26.1），但不是被超时杀掉的那种。
+5. ★★★★ **本节唯一「可动手」的结构点**：`request_logs_with_current_month` 的**第 3 臂**
+   是一条**逐行、且无时间关联**的 `NOT EXISTS` 反连接
+   ⇒ 每个全量扫描都要把整个 `session_turns`（**1,058,025 行 / 1.5 GB**）的 `request_id` 集合哈希出来
+   ⇒ 而 `_request_logs` 早已**冻结** ⇒ **这是下一步最值得做的结构优化**。
+6. ★★★ **另两条本会话的猜测被自己的 EXPLAIN 推翻**（见 §143.26.6）——
+   写在这里，因为「猜错过」比「猜对了」更能防后人重蹈。
+
+⚠ **本节对生产的写入 = 0**：全部只读
+（`pg_stat_statements` / `pg_roles` / `pg_settings` / `pg_class` / `pg_inherits` /
+`pg_index` / `pg_stat_user_tables` / `pg_stat_activity` / `EXPLAIN`（**不带 ANALYZE**））
++ 252 的 PG 日志**只读**解析（`/var/log/pg17-ctrlog-archive/ctrlog-202610{19,20}.log`）。
+**没有** DELETE / TRUNCATE / DROP / REINDEX / ANALYZE / 建索引 / 迁移 / 改配置 / 改 cron。
+
+### §143.26.1 量具纠偏：两把尺子的盲区，以及它们各自的适用范围
+
+#### §143.26.1.1 PG 日志的 `duration:` 是**尾部样本**，不是总体
+
+`pg_settings` 实测：`log_min_duration_statement = 1000`（`source = command line`）
+⇒ **只有跑超过 1 秒的语句**才有 `duration:` 行。
+⇒ ⇒ ★★ **PG 日志可以回答「最慢的那批有多慢」，不能回答「总成本是多少」**。
+
+⇒ ⇒ ★★★ **正确用法（本节采用）**：
+- **总体** ⇒ `pg_stat_statements`（41h 窗口，`stats_reset = 2026-10-18 22:03:37` ⇒ 窗口 ≈ 41h）；
+- **分布与尾部** ⇒ PG 日志（`duration:` 行）；
+- **被杀掉的部分** ⇒ PG 日志的 `ERROR:` 记录（**`pg_stat_statements` 完全不记**）。
+
+#### §143.26.1.2 REFRESH 的真实成本（PG 日志独立量具，按视图拆）
+
+2026-10-19 + 2026-10-20 两天，**385 条 `REFRESH` 的 `duration:` 行**：
+
+| matview | n | min (ms) | 中位 (ms) | max (ms) | 合计 (s) |
+|---|---:|---:|---:|---:|---:|
+| `routing_analytics_7d` | 100 | 6,902 | 50,718 | 117,991 | **5,599.8** |
+| `session_client_stats` | 53 | 1,552 | **57,267** | **175,786** | **3,100.4** |
+| `session_task_stats` | 53 | 2,209 | 19,369 | 99,528 | 1,461.4 |
+| `routing_audit_summary_7d` | 90 | 3,604 | 6,046 | 38,362 | 651.9 |
+| `session_client_task_matrix` | 53 | 1,621 | 2,591 | 6,091 | 151.3 |
+| `tuning_signals_5m` | 21 | 1,009 | 1,404 | 6,233 | 42.8 |
+| `tuning_signals_daily` | 15 | 1,090 | 1,658 | 8,688 | 34.6 |
+| **合计** | **385** | | | | **11,042.1** |
+
+⇒ ⇒ ★★★ **两把尺子同量级互证**：
+PG 日志口径 **11,042.1 s / 2 天 = 5,521 s/day ≈ 1.53 h/day**（只含 >1s）；
+`pg_stat_statements` 口径 **12,770,774 ms / 41h ≈ 2.08 h/day**（含全部成功语句）。
+⇒ **差值 = 那些 <1s 的刷新 + 41h 窗口 ≠ 恰好 2 天的边界差** ⇒ 两把尺子**不冲突**。
+
+⇒ ⇒ ★★ **一条被读数直接印证的推论**：
+`session_client_stats` 的 **max = 175,786 ms**，而刷新器自己的 `statement_timeout` 是 **180,000 ms**
+⇒ ⇒ **实测峰值已达预算的 97.7%** ⇒ 「刷新随时可能被超时杀」在**统计上**是成立的
+（尽管 2 天里只真的发生了 2 次）⇒ **这条要留给属主当「B1 的真实风险」**。
+
+### §143.26.2 ★★★★★ 订正横幅七：「32–33 次/天的 REFRESH 被超时杀」是误报
+
+> **订正横幅七（2026-10-20，§143.26 就地订正）**
+>
+> 本会话在 §143.26 取证过程中**先写下**过一个判断：
+> 「2026-10-19 有 32 次、2026-10-20 有 33 次 `ERROR: canceling statement due to statement timeout`
+> （上下文命中 REFRESH）⇒ 约 32–33 次/天的 REFRESH 被 statement timeout 杀掉
+> ⇒ 且 `pg_stat_statements` 只记成功语句 ⇒ 这部分完全隐形」。
+>
+> ★★★★★ **这条判词是错的**，本节把它**就地订正**（原文保留，不静默改写）：
+> - **实测**：把 252 PG 日志按 PG 记录逐条重建（**多行 `STATEMENT:` 正确归属到同一条记录**）后，
+>   2 天（10-19 + 10-20）里 **`REFRESH` 被 `statement timeout` 杀 = 2 次**，
+>   另有 **3 次**被 `user request`（ctx 取消 / 客户端断连）杀 ⇒ **合计 5 次 / 385 次 = 1.3%**。
+> - **误报成因**：用「错误行**上下文中**出现 REFRESH」判定语句归属
+>   ⇒ 上下文窗口里的 REFRESH 属于**另一条语句**（本节实测里，`WITH latest AS (usage_facts …)`
+>   那条被杀的语句，其上下文窗口里就正好压着一条 `REFRESH … routing_analytics_7d`）。
+> - ★★★★★ **本节抓到了一个「教科书级」的同类误判**（值得单独记）：
+>   初次解析时，13:11:27 那次 `user request` 取消被判成了「REFRESH 被杀」——
+>   而它真正的语句是 **`INSERT INTO public.session_bodies_hot …`**。
+>   为什么指纹里会出现 "REFRESH MATERIALIZED VIEW CONCURRENTLY routing_analytics_7d"？
+>   ⇒ 因为**有人在 psql 里粘了一大段含这句话的文本**（本仓的交接说明/runbook 片段），
+>   ⇒ 它被折进了同一条 `STATEMENT:` 记录 ⇒ ⇒ **「语句文本里含 REFRESH」≠「它就是 REFRESH」**。
+>   ⇒ ⇒ ★ **新增一条可复用纪律**：
+>   **指纹分析会被「操作员粘进来的文本」污染** ⇒ 归属判定必须靠**语句的语法头部**
+>   （`REFRESH MATERIALIZED VIEW` / `INSERT INTO` / `SELECT`），
+>   **不能靠「正文里含某个词」**。
+>   ⇒ ⇒ ★ **推论**：★ **审计会话本身要算作「读数污染源」** ——
+>   凡是在生产上跑过的探测 SQL，都必须假定它出现在被解析的日志里。
+> - ★★★★ **同一节里还抓到了第二个、且更尴尬的例子**（**污染源是本会话自己的审计查询**）：
+>   上一版解析器把 `tuning_signals_5m` 数成 **24 次**，按语法头部重算是 **21 次**
+>   ⇒ 差的 3 条是 **本会话自己跑的那几条探测 SQL**
+>   （`SELECT 'check', calls FROM pg_stat_statements WHERE query ILIKE '…'`，
+>   其 ILIKE 模式里恰好写着 "REFRESH MATERIALIZED VIEW CONCURRENTLY tuning_signals_5m"）
+>   ⇒ ⇒ **审计自己的查询，会污染审计自己的读数**。
+> - **教训（可复用）**：★ **「上下文命中」不是归属判定**；
+>   要判定「被杀的语句是哪条」，必须**把 `STATEMENT:` 记录连同它的续行一起重建**，
+>   然后**逐条比对指纹**。本节因此新增了可重跑的解析器
+>   `scripts/audit/parse_pg_kills.py`（它按**语法头部**判定 REFRESH，
+>   **不是**按「正文含 REFRESH」）。
+> - **订正带来的真实结论（比原判词更有价值）**：被超时杀的**真凶另有其人**——见 §143.26.3。
+>
+> —— 原文保留在本节上方（§143.26.0 第 1 条），**不删改**。
+
+### §143.26.3 ★★★★★ 真凶：2 天 349 次 `statement timeout` 杀 + 2,473 次 ctx 取消
+
+#### §143.26.3.1 被 `statement timeout` 杀的语句（2 天 349 次，top 指纹）
+
+> **订正横幅十七（2026-10-21，§143.36 就地订正 §143.26.3 / §143.26.8 / §143.29 里的
+> 「外传守卫（请求热路径）」判词）**
+>
+> ★★★★★ **本节上面的「外传守卫（**请求热路径**）」这个判词已被生产只读归因【证伪】。**
+> - ⇒ ⇒ ★★★★ **归属**：该语句 = 仓内 `admin/dashboard_board_fallback.go` 的
+>   `fillOverviewCountsFromLogs`（**看板降级读面**：活跃模型数 / 活跃供应商数），
+>   **逐字同构**（骨架序列 21,135 字符逐字相等 + 结构计数全等）⇒ **不在请求热路径上**。
+> - ⇒ ⇒ ★★★ **它也不是「守卫」**：那个名字来自语句里
+>   `COUNT(DISTINCT client_model/outbound_model)` 的字面（哪些模型被外发），
+>   但它**没有任何拦截/守卫语义**，只是一张看板上的计数。
+> - ⇒ ⇒ ★★★★ **根因（实测）**：**不是「投影太宽」，而是「同一个派生表被独立扫描了两遍」**
+>   （顶层 2 个标量子查询 ⇒ 一次调用 4 次会话族扫描）
+>   ⇒ ★★ **把 118 列裁成 9 列零收益**（100.0% / 100.9%，planner 已裁列）⇒ **那条路已排除**。
+> - ⇒ ⇒ ★★★★ **修法 = 改单遍**（零语义风险：`COUNT(DISTINCT)` 忽略 NULL ⇒
+>   尾臂 `IS NOT NULL` 是 no-op ⇒ **逐值**相等；生产实测 30 天窗
+>   **2,827,731 块 / 37,328 ms → 1,426,254 块 / 4,587 ms** ⇒ buffers **50.4%**、
+>   exec **−87.7%**）⇒ **已仓内落地**（`admin/dashboard_board_fallback.go` + 6 道新门），
+>   **对生产写入 = 0、未部署**。
+> - ⇒ ⇒ ★★★ **「2 天 69 次被 `statement timeout` 杀」的物理原因已找到**：
+>   30 天窗上它**实测 37.3 s** ⇒ **它本来就跑不完 30 s**（不是「请求热路径敏感」）。
+> - ⇒ ⇒ ★★ **对优先级的影响**：「因为在请求热路径上所以更敏感」这条理由**不成立**；
+>   但 ★ **P12 仍值得做**（它仍是 §143.26.3 的第 2 名超时被杀者，且改法已就绪）。
+> - ⇒ ⇒ ★★ **完整记录见 §143.36**（含 A/B 纪律遵守情况与门的判据口径）。
+>
+> —— **原文保留在上方，不删改。**
+
+| # | 指纹（截断） | 次数 | 归属（仓内） |
+|---:|---|---:|---|
+| 1 | `WITH latest AS ( SELECT f.* FROM usage_facts f JOIN stats_event_dedup d …` → `INSERT INTO stats_usage_daily` | **90** | `domains/stats/daily_monthly_rollup.go:198`（`dailyInsertSQL`） |
+| 2 | `SELECT (SELECT COUNT(DISTINCT COALESCE(NULLIF(r.client_model,''),NULLIF(r.outbound_model,''))) FROM (SELECT NULL::bigint AS id, t.request_id …` | **69** | 外传守卫（**请求热路径**） |
+| 3 | `WITH neg AS ( SELECT r.credential_id, r.outbound_model, count(*)::int AS neg_rows … FROM public._request_logs r WHERE r.cost_usd < 0 AND r.ts > now() - interval '30 days' …` | **35** | 负成本告警 |
+| 4 | `WITH chunk AS ( SELECT session_key, max(session_key) OVER () AS chunk_max FROM public.session_summaries …` → `UPDATE public.session_summaries` | **18** | `db/db.go:1088` |
+| 5 | `WITH win AS ( SELECT date_trunc('hour', now() - make_interval(hours => 3)) …` on `ursm_node_snapshot_min` | **17** | 快照健康巡检 |
+| 6 | `INSERT INTO maas_credit_consumption_buckets …` | 11 | — |
+| 7 | `WITH merged AS MATERIALIZED ( SELECT s.tenant_id, s.ts FROM (SELECT tenant_id::text …` | 8 | — |
+| 8 | `UPDATE public.session_turns SET aggregate_applied_at = NOW() WHERE session_id = …` | 8 | — |
+| 9 | `WITH used AS ( SELECT rl.credential_id AS id, pm.raw_model_name, MAX(rl.ts) … FROM request_logs_with_current_month …` | 7 | — |
+
+⇒ ⇒ ★★ **top 9 = 263 / 349 = 75.4%** ⇒ **真凶高度集中，不是弥散的**。
+
+#### §143.26.3.2 被 ctx 取消（`user request`）的语句（2 天 2,473 次，top 指纹）
+
+| 指纹 | 次数 | 归属 |
+|---|---:|---|
+| `WITH policy AS ( SELECT COALESCE(featured_models, ARRAY[]::TEXT[]) AS featured F…` | **1,316** | `domains/streaming/model_alternatives.go:186` |
+| `SELECT request_id, request_status FROM request_logs_with_current_month WHERE req…` | 168 | 请求状态回查 |
+| `SELECT COALESCE(cmb.available, TRUE) = TRUE AND (nps.credential_id IS NULL OR (n…` | 151 | 可用性判定 |
+| `SELECT EXISTS( SELECT 1 FROM request_logs_with_current_month WHERE gw_session_id…` | 80 | 会话存在性判定 |
+| `SELECT c.id FROM credentials c -- v1 臂改为 LEFT JOIN…` | 44 | 凭据选取 |
+| `SELECT mps.credential_id, mps.raw_model_name, mps.state, mps.consecutive_failure…` | 36 | 凭据模型健康 |
+
+⇒ ⇒ ★★★ **`domains/streaming/model_alternatives.go` 那一族独占 53%**
+⇒ ⇒ ★★ **「ctx 取消」≠「数据库慢」**：多数是**客户端先放弃**（请求超时 / 断连），
+⇒ **不能直接读成 DB 成本**；但它同样**对 `pg_stat_statements` 隐形** ⇒ 成本记账必须补这一路。
+
+#### §143.26.3.3 ★★★★ 根因：角色级 `statement_timeout=30s` 把后台作业截断
+
+`pg_roles.rolconfig` 实测：
+
+```
+llm_gateway|{statement_timeout=30s,idle_in_transaction_session_timeout=60s}
+```
+
+⇒ ⇒ ★★★★ **仓里对这件事**不是**无知的**——已有多处显式抬高的先例：
+
+| 位置 | 手法 |
+|---|---|
+| `bg/materialized_view_refresher.go:106,604,703` | `SET statement_timeout = '180s'`（会话级 + `RESET`） |
+| `domains/providerprofile/pg_reconciliation_store.go:271` | `SELECT set_config('statement_timeout', $1, false)` |
+| `domains/session/v2/session_request_status_backfill.go:442` | `SELECT set_config('statement_timeout', $1, true)`（事务级） |
+| `domains/routeincident/retention.go:174` | ⚠ **已把同款缺陷写进注释**：「全索引扫描（生产实测 1,699,257 行冷缓存 25.7 s vs statement_timeout 30 s）」 |
+
+⇒ ⇒ ★★★★ **但 `domains/stats/daily_monthly_rollup.go:94` 没有抬**：
+`context.WithTimeout(ctx, 2*time.Minute)` ⇒ **Go 侧的 2 分钟是死代码**（DB 侧 30 s 先到）。
+
+⇒ ⇒ ★★★ **这是一类**复发**缺陷**，不是单点事故：
+「**全表 / 大范围扫描类后台作业** × **角色级 30 s**」⇒ 至少 3 处已知实例
+（`routeincident/retention` 已记、`stats` 聚合未记、`ursm` 巡检未记、`session_summaries` 分块 UPDATE 未记）。
+⇒ ⇒ ★ **正确解法有两个方向，属主选**：
+- **A：抬超时**（同 refresher 手法）⇒ 只是把「失败」变成「慢」，**不解决 30 s 内跑不完**；
+- **B：让作业在 30 s 内跑完**（缩短窗口 / 增量 / 改聚合形态）⇒ ★ **根治**。
+⇒ ⇒ ⚠ **本节不擅自改任何一处**（属生产行为变更 ⇒ 需授权）。
+
+### §143.26.4 ★★★ 阴性结论（重要）：失败是**浪费**，不是**数据空洞**
+
+> ★★★ **必须先答「这批数据是怎么长出来的」，再答「失败了会怎样」**（本仓既有纪律）。
+> 这次的第一反应是「聚合作业 45 次/天被杀 ⇒ `stats_usage_daily` 根本没被填上」
+> ⇒ **实测否掉了这个推断**：
+
+| 表 | 行数 | 时间范围 |
+|---|---:|---|
+| `usage_facts` | 271,087 | 10-06 02:24 → 10-20 16:31 |
+| `stats_event_dedup` | 1,139,561 | 08-19 → 10-20 16:31 |
+| **`stats_usage_daily`** | **113,952** | **08-18 → 10-20**（10-20 当天 2,081 行） |
+| `ursm_node_snapshot_min` | **27,806,075** | **10-13 00:01 → 10-20 16:30（仅 7.4 天）** |
+| `session_summaries` | 823,413 | 08-06 → 10-20 16:31 |
+
+⇒ ⇒ ★★ **`stats_usage_daily` 仍在被正常填** ⇒ ⇒ **失败造成的是「反复重试的浪费」，不是「数据缺失」**
+⇒ ⇒ ★ **不要把这类失败升级成数据事故**（会误导属主优先级）。
+
+⇒ ⇒ ★★★★ **但 `ursm_node_snapshot_min` 的规模把巡检的结构性问题坐实了**：
+**27,806,075 行 / 仅 7.4 天 = 375.8 万行/天**；
+而那条巡检 SQL **自带的注释基线**是「252，7 天 ≈ 600 万行 … `count(DISTINCT date_trunc('minute', ts))`
+7 天 = 44.5 s ← 不可接受」
+⇒ ⇒ ★★★ **实际数据量已经是那条基线的 4.6×** ⇒
+⇒ ⇒ ★★ **「7 天窗口 + `count(DISTINCT date_trunc('minute', ts))`」在 30 s 内跑不完，已经是结构性的**
+⇒ ⇒ ★ **注释里的基线已过期 4.6×，按既有纪律应当就地更新**（本节只记录，未改代码注释）。
+
+### §143.26.5 ★★★★ 唯一「可动手」的结构点：视图第 3 臂的无时间关联反连接
+
+#### §143.26.5.1 视图的血缘（**不能按名字推断**）
+
+`request_logs_with_current_month` = **3 条 `UNION ALL` 臂**（生产 `pg_get_viewdef` 原文）：
+
+1. `session_turns_hot t LEFT JOIN session_turn_details_hot d`；
+2. `session_turns t LEFT JOIN session_turn_details d`；
+3. **遗产臂**——形态如下（原文压缩）：
+
+```sql
+FROM (
+  SELECT v.*
+  FROM <legacy base> v
+  LEFT JOIN LATERAL (
+    SELECT ... FROM _request_logs p
+     WHERE p.request_id = v.request_id AND p.ts = v.ts
+     LIMIT 1
+  ) source ON (true)
+) rl
+WHERE ( NOT EXISTS (SELECT 1 FROM session_turns_hot th WHERE th.request_id = rl.request_id)
+   AND NOT EXISTS (SELECT 1 FROM session_turns tp  WHERE tp.request_id = rl.request_id) )
+```
+
+⇒ ⇒ ★★★★ **第 3 臂是「遗产族里那些还没迁到 `session_turns` 的行」**
+⇒ ⇒ ★★ **反连接是逐行的，且 `request_id` 两侧**没有时间关联**
+⇒ ⇒ ⇒ ★ **因此每个全量扫描都要处理整个 `session_turns` 家族**。
+
+#### §143.26.5.2 三族的真实形态（实测）
+
+| 家族 | 行数 | 时间范围 | 状态 |
+|---|---:|---|---|
+| `session_turns` | 1,058,025 | 09-06 11:03 → 10-20 08:27 | 活 |
+| `session_turns_hot` | 3,634 | 10-20 08:28 → 16:29 | 活 |
+| **`_request_logs`** | **338,976** | **09-30 18:54 → 10-13 20:18** | **已冻结（停写 7 天）** |
+
+⇒ ⇒ ★★★★ **两族在 09-30 → 10-13 这 13 天里重叠** ⇒ **反连接跨全时段是必需的，不是冗余**。
+
+#### §143.26.5.3 第 3 臂**不能删**（实测产出）
+
+```
+SELECT count(*) FROM public._request_logs rl
+WHERE NOT EXISTS (SELECT 1 FROM public.session_turns_hot th WHERE th.request_id = rl.request_id)
+  AND NOT EXISTS (SELECT 1 FROM public.session_turns tp  WHERE tp.request_id = rl.request_id);
+```
+
+⇒ ⇒ ★★★★★ **203,430 行 = `_request_logs`（338,976）的 60.0%**
+⇒ ⇒ ★★ **反连接只滤掉 135,546 行（40.0%）** ⇒ ⇒ **删臂 = 丢 60% 的历史行** ⇒ **绝不可删**。
+
+#### §143.26.5.4 反连接的实际代价（EXPLAIN，只读）
+
+把反连接单独拿出来、**不加 `request_id` 过滤**跑 `EXPLAIN`（生产）：
+
+```
+Limit  (cost=13606.18..171357.55 rows=1 width=4)
+  ->  Nested Loop Anti Join
+        ->  Gather (Workers Planned: 2)
+              ->  Parallel Hash Right Anti Join
+                    Hash Cond: (tp.request_id = rl.request_id)
+                    ->  Parallel Append (cost=0.00..155516.57 rows=438962)
+                          ->  Parallel Seq Scan on session_turns_2026_09 (rows=332616, cost=145232.16)  ← ★
+                          ->  Parallel Index Only Scan on session_turns_2026_10 (rows=106342, cost=8089.62)
+```
+
+⇒ ⇒ ★★★★ **要哈希 438,962 个 `session_turns` 行**（其中 **332,616 行来自 09 月分区的全表顺序扫描**）
+⇒ ⇒ ★★ 而 `session_turns_2026_09` 是 **1,162,493,952 字节（1.16 GB）** 的 **heap** 分区
+（§143.21 的 872 迁移把冷月分区转成了 heap ⇒ **没有列存压缩，也没有分区裁剪可依**）
+⇒ ⇒ ★ **总 cost 171,357** ⇒ **这才是 B1 的真实成本来源**（§143.20 测到的 3.5–9.8 s 只是「重算源表」那一段）。
+
+⇒ ⇒ ★★★ **优化方向（两条，都是结构改动 ⇒ 需属主拍板 + 生产写授权）**：
+- **O1｜时间化反连接**：给 `NOT EXISTS` 的 `tp` 侧加上与 `rl.ts` 相关的时间窗口
+  ⇒ 语义需证明「同一 `request_id` 的两族行必然时间相近」；
+  ⚠ **本轮未做**（不能凭直觉改语义）。
+- **O2｜物化去重判定**：`_request_logs` 已**冻结** ⇒ 「哪些 `request_id` 已被 `session_turns` 覆盖」
+  是一个**可一次性物化、且此后基本不变**的事实
+  ⇒ 建一张小表（135,546 行量级）替代逐行反连接 ⇒ **每次全量扫描省掉 1.5 GB 的哈希构建**。
+  ⚠ **本轮未做**（需迁移 + 语义评估 + 编号现场取号）。
+
+### §143.26.6 ★★★ 两条本会话的猜测被自己的 EXPLAIN 推翻（诚实记录）
+
+| 猜测 | 实测 | 结论 |
+|---|---|---|
+| 「`WHERE gw_session_id = ?` 走这个视图**没有可用索引**（唯一匹配索引 `idx_session_turns_effective_session` 是 `tenant_id` 前导）」 | EXPLAIN：`session_turns_2026_09_heap_tenant_id_session_id_idx` / `session_turns_2026_10_effective_session` **都建在 CASE 表达式上**，`Index Cond` 直接命中 ⇒ 总 cost 13,746 | ★ **猜错** ⇒ **不是缺陷**（若按猜测去加索引，就是白加） |
+| 「`usage_facts ⋈ stats_event_dedup` 的 dedup 侧该加时间范围（现在每次重读 1.14M 行）」 | EXPLAIN A/B：**现状** = `Nested Loop` + `Index Only Scan using idx_stats_event_dedup_event_id_occurred_at`（每次探测 cost 0.55..0.99）；**加范围** = `Parallel Hash Join` + `Parallel Seq Scan on stats_event_dedup`（134 MB 全扫） | ★ **猜错** ⇒ **现状才是好计划** ⇒ 不该改 |
+
+> **订正横幅八（2026-10-20，§143.27 就地订正本表第 ② 行）**
+>
+> ★★★ **第 ② 行的「现状才是好计划」过强**，就地订正（**原文保留**）：
+> - **本表当时只有 EXPLAIN（无实测）** ⇒ ★ **EXPLAIN 只证明「计划会选」**，
+>   **不能证明「哪个更快」** ⇒ 那条结论当时**只该写到「现状是计划」为止**。
+> - **§143.27 补上了热态交错 A/B（预热后 ABAB×4）**：V1 中位 **3,757.6 ms** vs V2 中位 **3,101.5 ms**，
+>   **两组组内极差完全重叠**（3,467~5,105 vs 2,441~5,093）⇒ ⇒ **热态下两者无显著差异**
+>   ⇒ ⇒ **「现状更好」不成立**。
+> - ⇒ ⇒ ★★ **订正后的判词**：
+>   **「热态：两者无显著差异；冷态：未测到（夹具缺陷：两臂预热互相污染）⇒ 仍是待测项」**
+>   ⇒ ⇒ ★ **V2 的真正价值假设是「冷态更友好」**（顺序读 vs 73,520 次随机索引探测），
+>   **需要一次真正的冷态 A/B 证实或证伪** ⇒ 已登记为 §143.27.7 的 **P3**。
+> - ⇒ ⇒ ★★★ **本条同时是「自己上一节的结论也要复核」的一个实例**：
+>   上一节用 EXPLAIN 下了一个**超出 EXPLAIN 能证明的范围**的判词。
+
+⇒ ⇒ ★★★ **通用式**：★ **EXPLAIN 只证明「计划会选」**（本节两条都是 plan 层面的判断），
+⇒ ⇒ ⇒ **在改 SQL 之前必须先 A/B 两个版本的 plan**，否则很容易「优化」成更差的计划。
+
+### §143.26.7 诚实边界与本节**没做**的事
+
+- ★★★ **本节没有量到「每个作业的真实耗时」**：
+  `EXPLAIN`（不带 ANALYZE）**不给实际耗时**，`pg_stat_statements` **不给被杀掉的那部分**
+  ⇒ ⇒ **「`stats_usage_daily` 聚合到底跑了多久」至今未知** ⇒
+  ⇒ **不能承诺「抬超时就能跑完」** ⇒ ⇒ **下一轮要在真库上量一次**（§143.26.8 的 P0）。
+- ★★ **252 宿主 load 14.17 / 4 核（超载 3.5 倍）** ⇒ 单点读数不可信；
+  本节尽量用**计数 + 分布**（而非单次耗时）下结论。
+- ★★ **本节只覆盖 252 侧**；**211 的 `pg_stat_statements` 仍未进 preload**（§143.20.4 的 C4）
+  ⇒ ⇒ **211 上这类失败连日志都看不到**（211 只有容器日志一条线）。
+- ★★ **本节未写任何迁移、未改任何注册点、未改任何生产代码/注释** ⇒ **生产行为未变**。
+- ★★ **§143.20 的 B1 裁决**（「7 天窗全量重算」是根因）**本节不推翻**：
+  本节只是把**成本归属**从「刷新本身」细化到「**反连接**」这一层。
+
+### §143.26.8 待拍板（本节新增，按成本排序）
+
+| 编号 | 事项 | 性质 | 成本 | 备注 |
+|---|---|---|---|---|
+| **P0** | 在真库上量一次 `dailyInsertSQL` 的**真实耗时**与真实数据量 | 只读 | 低 | ★ **必须先做** ⇒ 没有它，「抬超时」是盲改 |
+| **P1** | `domains/stats/daily_monthly_rollup.go:94`：Go 的 2 min ctx **够不着**（DB 30 s 先到） | 代码 | 小 | 属主选 A（抬超时）或 B（让它 30 s 内跑完）⇒ **B 是根治** |
+| **P2** | 快照健康巡检：7 天 / 27.8M 行 / `count(DISTINCT date_trunc('minute',…))` ⇒ **30 s 内跑不完已是结构性** | SQL + 注释 | 中 | 注释基线已过期 **4.6×** ⇒ 需就地更新 |
+| **P3** | `db/db.go:1088` 的 `session_summaries` 分块 UPDATE 被截断 | SQL | 小 | 2 天 18 次 |
+| **P4** | 视图第 3 臂反连接 **O2 物化** | 迁移 | 中 | 需语义评估 + **现场取迁移号**（890 已被占） |
+| **P5** | 视图第 3 臂反连接 **O1 时间化** | 迁移 | 中 | 需证明同 `request_id` 的两族行时间相近 |
+| **P6** | 给外传守卫（请求热路径，2 天 69 次被杀）定超时/改形态 | 代码 | 中 | ★ 在**请求热路径**上，比后台作业更敏感 |
+| **P7** | **C4**：211 的 `pg_stat_statements` 进 preload | 配置 | 中 | ⇒ 211 上这类失败才可被量化 |
+| **P8** | `domains/streaming/model_alternatives.go:186` 的 ctx 取消（2 天 1,316 次） | 代码 | 中 | ★ 占比 53% ⇒ 先量它到底在等什么 |
+
+⚠ **P1/P2/P3/P6/P8 全部是「改生产行为」⇒ 需属主显式授权**；
+**本节对生产的写入仍为 0**。
+
+### §143.26.10 ★★★★ 本节门设计的一条自省：**「Contains 型门」只保护「至少有一处」**
+
+这一条是**做门的过程中被自己的门绊了一次**才浮出来的，值得单独记：
+
+- 本节的门用 `strings.Contains` 断言关键读数（既有门一律如此）。
+- 第一次跑变异时，**6 个变异「仍是绿的」**（M4 / M9 / M10 / M11 / M14 / M15）
+  ⇒ 看起来像「这 6 条判据没有守卫力」。
+- ★★★★★ **真因不是判据没守卫力，是变异做弱了**：
+  那些读数（如 `349`、`statement_timeout=30s`、`1,316`）**在 §143.26 节内出现了 2~4 次**
+  ⇒ 我只替换了**第一次**出现 ⇒ 该读数**仍然存在** ⇒ `Contains` 成立 ⇒ 门保持绿。
+- ⇒ ⇒ ★★★★ **通用式**：
+  1. ★ **验证门守卫力时，变异必须移除该读数的「全部出现」**
+     （= 模拟「这条读数从文档里彻底没了」），否则会**误判成「门没有守卫力」**。
+  2. ★ **反过来也要知道这是门的一个真实盲区**：
+     `Contains` 型门**只保证「读数存在」**，**不保证「每处都对」**
+     ⇒ ⇒ **若某条读数在节内出现多次，就应改用「读数 + 上下文」的唯一 needle**，
+     或**在门里加计数断言**（本节已把短 needle 收紧成
+     「349 次 `statement timeout` 杀」/「2,473 次」/「1,316 次」/「现状才是好计划」）。
+  3. ★⇒ **「变异后门仍绿」的第一反应是「量具错了」**，不是「门坏了」——
+     ★ 这与「0 命中的第一嫌疑是量具坏了」是同一条纪律的两种形态。
+- ⇒ 本节最终 **M1~M18 全部「按预期红」**，且所有文件 **md5 逐字还原**、门复跑为绿。
+
+### §143.26.9 复核方法（可原样重跑）
+
+```bash
+# ── 1) ★ PG 日志解析器（本节新增，入仓）：重建 PG 记录 + 多行 STATEMENT 归属
+python3 scripts/audit/parse_pg_kills.py \
+        /var/log/pg17-ctrlog-archive/ctrlog-20261019.log \
+        /var/log/pg17-ctrlog-archive/ctrlog-20261020.log
+
+# ── 2) 生产只读：角色级超时 / 家族规模 / 视图第 3 臂产出
+bash ~/.mavis-tools/lgwp-prod.sh /private/tmp/p14321/timeouts.sql  200
+bash ~/.mavis-tools/lgwp-prod.sh /private/tmp/p14321/arm3b.sql     320
+bash ~/.mavis-tools/lgwp-prod.sh /private/tmp/p14321/offenders.sql  260
+
+# ── 3) 生产只读：视图第 3 臂的 EXPLAIN（不带 ANALYZE）
+bash ~/.mavis-tools/lgwp-prod.sh /private/tmp/p14321/rlcm_plan.sql   200
+bash ~/.mavis-tools/lgwp-prod.sh /private/tmp/p14321/rollup_plan.sql 200
+```
+
+⇒ ⇒ ★ **本节落地的门**（不连库，可原样重跑）：
+
+```bash
+# §143.26 文档门：自我订正横幅七 / 真凶指纹 / 角色级 30s / 阴性结论 / 两条被推翻的猜测
+GOCACHE=/tmp/gocache-p1437 go test ./scripts/ursmcheck/ -run 'TestRunbook14326' -count=1 -v
+```
+
+★ 同族：[[先读量具再读产物]] · [[0 命中的第一嫌疑是量具坏了]] ·
+[[阴性结论要当缺陷一样复核]] · [[自己上一节的结论也要复核]] ·
+[[「上下文命中」不是归属判定]] · [[EXPLAIN 只证明「计划会选」]] ·
+[[跨节订正前先自问「我要订正的这条真的错了吗」]] ·
+[[Go 的 ctx 超时够不着 DB 的 statement_timeout 时，Go 侧是死代码]] ·
+[[变异后门仍绿=没有守卫力]]。
+
+## §143.27 「P0 的答案」：rollup 的真实成本分解 + 为什么「抬超时」是盲改 + 一个 151 MB 的零语义存储优化（2026-10-20）
+
+### §143.27.0 结论先行
+
+§143.26.8 的 **P0** 写着：「**在真库上量一次 `dailyInsertSQL` 的真实耗时与真实数据量**
+⇒ 没有它，「抬超时」就是盲改」。本节把 P0 做掉了，产出五条：
+
+1. ★★★★★ **P0 的答案（真实数据量 + 真实耗时）**：
+   - **真实数据量**：`latest` CTE = **73,520 行**（3 天窗；`usage_facts` 共 **271,087 行** / 15 天）；
+   - **真实耗时（生产 110 次真实调用的读数）**：
+     `DELETE FROM stats_usage_daily` = **均值 4,818 ms**（删 6,879 行/次）
+     ＋ `INSERT`（6 臂聚合）= **热态中位 3,758 ms** / **冷态 12,804~26,295 ms**；
+   - ⇒ ⇒ **单事务里串了 4 段语句（daily DELETE / daily INSERT / monthly DELETE / monthly INSERT）**
+     ⇒ ⇒ **总耗时必然 > 30 s ⇒ 必然被角色级 `statement_timeout=30s` 杀掉**。
+2. ★★★★★ **「抬超时」确实是盲改**（本节正面回答 P0 的后半句）：
+   **热态只要 3.8 s**（远低于 30 s）⇒ **坏的不是「超时太短」，是「冷态惩罚 + 同事务串了 4 段语句 + 一段 4.8 s 的无效 DELETE」**
+   ⇒ ⇒ **抬到 60 s 只会把 30 s 的失败变成 45 s 的慢失败**。
+3. ★★★★ **那条 join 是「可证明的 no-op」**：
+   `usage_facts ⋈ stats_event_dedup` 在作业窗内 **一行都没丢**（0 行）、
+   **也永远不会重复**（join 键唯一：1,139,786 行 = 1,139,786 distinct `event_id` = 1,139,786 distinct `(event_id, occurred_at)`）
+   ⇒ ⇒ **冷态那 12.8~26.3 s 里的绝大部分，是买「什么都没发生」的钱**。
+4. ★★★★ **存储侧有一个 151 MB 的零语义优化**：
+   `stats_event_dedup` = **134 MB heap / 395 MB total**，
+   其中 `idx_stats_event_dedup_event_id_occurred_at (event_id, occurred_at)` = **151 MB**，
+   而 `stats_event_dedup_pkey (event_id)` = **110 MB** 且是前者的**严格前缀**
+   ⇒ ⇒ **把 pkey 改成 `UNIQUE (event_id) INCLUDE (occurred_at)`** 就能**一个索引同时当两种索引用**
+   ⇒ ⇒ **净省 151 MB（该表 −38%）**，`ON CONFLICT (event_id)` 语义不变（INCLUDE 列不参与冲突目标推断）。
+5. ★★★ **订正横幅八**：§143.26.6 第 ② 条的判词**过强** ⇒ 「现状才是好计划」应改为
+   **「热态两者无显著差异；冷态未测」**（见 §143.27.2 的交错 A/B 读数）。
+
+⚠ **本节对生产的写入 = 0**：全部只读
+（`pg_stat_statements` / `pg_stat_user_tables` / `pg_class` / `pg_index` / `pg_indexes` /
+`pg_roles` / `pg_settings` / `pg_stat_activity` / `EXPLAIN`（**不带 ANALYZE**）
++ 生产上的**只读 SELECT 计时**（`dailyInsertSQL` 的只读等价体，**INSERT 头与 ON CONFLICT 尾被机械剥离**）
++ 252 的 PG 日志**只读**解析）。
+**没有** DELETE / TRUNCATE / DROP / REINDEX / ANALYZE / 建索引 / 迁移 / 改配置 / 改 cron。
+
+### §143.27.1 P0 的答案：真实数据量与真实耗时
+
+#### §143.27.1.1 数据量（生产实测）
+
+| 对象 | 行数 | 时间范围 |
+|---|---:|---|
+| `usage_facts`（源） | **271,087** | 10-06 02:24 → 10-20 16:31 |
+| `stats_event_dedup`（去重台账） | **1,139,786** | 08-19 → 10-20 16:31 |
+| **作业窗内的 `latest`** | **73,520** | 10-17 00:00 → 10-20 00:00（UTC，3 天边界） |
+| `stats_usage_daily`（产物） | 113,952 | 08-18 → 10-20 |
+
+⇒ ⇒ ★★ **`latest` 的 73,520 行** = 6 臂 UNION ALL 的输入
+⇒ ⇒ ★★ **6 臂 × 73,520 = 441,120 行** 的中间集，再 `GROUP BY 9 列`。
+
+#### §143.27.1.2 耗时（两把尺子交叉验证）
+
+**尺子一｜`pg_stat_statements`（41 h 窗口，**只记成功语句** ⇒ 记的是「能跑通」的那些次）**
+
+| 语句 | calls | 均时 | 累计 | rows | `shared_blks_hit` | `shared_blks_read` |
+|---|---:|---:|---:|---:|---:|---:|
+| `DELETE FROM stats_usage_daily WHERE day_utc >= …` | **110** | **4,818.0 ms** | 529,974 ms | 756,663 | 1,131,219 | **95,530** |
+| `INSERT INTO stats_event_dedup …`（写侧，对照） | 45,825 | 16.6 ms | 760,462 ms | 45,825 | 560,432 | 99,122 |
+
+⇒ ⇒ ★★★ **DELETE 每次删 756,663 / 110 = 6,879 行，耗时 4,818 ms**
+⇒ ⇒ ★★★ **而且它的 `shared_blks_read = 95,530`（8 kB/块 ⇒ 745 MB 物理读 / 110 次 = 6.8 MB/次）**
+⇒ ⇒ ★★ **⇒ 这 4.8 s 是 I/O 等待**（252 宿主 load 14 / 4 核）⇒ **不是 CPU 成本**。
+
+**尺子二｜PG 日志（`duration:` 行，>1s 才记 ⇒ 只记尾部）**
+- 同一 pid 的相邻两条：`DELETE …` **4,162.319 ms**（00:03:47.721）→ `INSERT …` **在 00:04:17.729 被杀**
+  ⇒ ⇒ ★★★ **两条之间正好 30.0 s** ⇒ ⇒ **角色级 `statement_timeout=30s` 被精确命中**（不是超时预算算错）。
+
+#### §143.27.1.3 ★★★★ 单事务里串了 4 段语句
+
+`domains/stats/daily_monthly_rollup.go` 的 `Refresh` 在**一个事务**里依次做：
+
+```
+1. DELETE FROM stats_usage_daily WHERE day_utc >= … AND day_utc < …   （实测 4,818 ms）
+2. dailyInsertSQL   （6 臂聚合 + INSERT … ON CONFLICT DO UPDATE）        （冷态 12.8~26.3 s）
+3. DELETE FROM stats_usage_monthly WHERE month_start >= … AND status <> 'closed'
+4. monthlyInsertSQL （从 daily 行重建 monthly 桶）                      （日志实测 7 次 / 均 2,909 ms）
+⇒ tx.Commit()
+```
+
+⇒ ⇒ ★★★★★ **⇒ 任何一段失败 ⇒ 整个事务回滚 ⇒ 前面几段的工作全部白做**
+⇒ ⇒ ★★★★ **⇒ 而第 1 段的 DELETE 在每次「INSERT 被杀」的尝试里都被回滚了**
+⇒ ⇒ **⇒ 每次失败尝试白烧 ≈ 4.8 s 的 I/O + 12.8~26.3 s 的冷态聚合**。
+
+### §143.27.2 ★★★★ 冷态 vs 热态：26.3 s 是**冷缓存的账**，不是计算的账
+
+#### §143.27.2.1 热态交错 A/B（ABAB×4，预热后）
+
+同一时刻、同一条 SQL（只改 dedup 侧是否加时间范围），窗口 10-17→10-20（73,520 行）：
+
+| 轮 | V1（现状：Nested Loop + 索引探测） | V2（dedup 侧加时间范围：哈希连接候选） |
+|---|---:|---:|
+| 预热 | 4,974.558 ms | 5,446.323 ms |
+| 1 | 5,104.577 ms | 5,093.444 ms |
+| 2 | 3,466.997 ms | 2,441.267 ms |
+| 3 | 3,817.934 ms | 3,423.533 ms |
+| 4 | 3,697.357 ms | 2,779.419 ms |
+| **中位** | **3,757.6 ms** | **3,101.5 ms** |
+| **组内极差** | 3,467.0 ~ 5,104.6 ms | 2,441.3 ~ 5,093.4 ms |
+
+⇒ ⇒ ★★★ **两组极差完全重叠 ⇒ 热态下 V1 与 V2 无显著差异**（V2 中位低 17.5%，但落在噪声带内）
+⇒ ⇒ ★★ **⇒ 热态聚合只要 ~3.8 s**，远低于 30 s。
+
+#### §143.27.2.2 冷态读数（同一台机器、同一形态）
+
+| 读数 | 窗口 | 数值 | 性质 |
+|---|---|---:|---|
+| 我第一次跑 V0（`latest` CTE 单独） | 10-17→10-20 | **26,295.081 ms** | ★ **冷**（当天第一次碰这批页） |
+| V1 的预热（老窗口 10-08→10-12，70,444 行） | 10-08→10-12 | **12,803.644 ms** | ★ **冷**（12 天前的页） |
+| 同臂热态 | 10-08→10-12 | 2,028 ~ 3,257 ms | 热 |
+
+⇒ ⇒ ★★★★ **冷/热 ≈ 5.1×（12.8 s vs 2.5 s）** ⇒ ⇒ **成本的主体是「冷页的随机索引探测」**，
+
+> **订正横幅九（2026-10-20，§143.28 就地订正本节 §143.27.2.2）**
+>
+> ★★★★★ **本节写的「冷态 12,804 ~ 26,295 ms」与「冷/热 ≈ 5.1×」，以及据此推出的
+> 「V2 冷态更友好」，都是【误判】。** 本节（§143.28）用**两轮冷态 A/B**（含**窗口对调**）把它证伪了：
+> - **离散度吃掉了信号**：V1 同一形态 **3,172 ~ 8,587 ms（2.71×）**、V2 **2,664 ~ 6,868 ms（2.58×）**
+>   ⇒ ⇒ ★ **同一臂、同一窗口的波动就有 2.6~2.7 倍** ⇒ **这个箱子的单点读数没有判别力**
+>   （与 §143.26.0「252 load 14 / 4 核 ⇒ 单点读数不可信」一致，**这里把它量化了**）。
+> - **「冷/热」标签随窗口翻转**：第一轮 V1 冷/热 = **2.71×**；**窗口对调**后 V1 冷/热 = **0.76×**
+>   ⇒ ⇒ ★★ **⇒ 「冷态惩罚」这个效应量不出来** ⇒ ⇒ **⇒「V2 冷态更友好」被证伪**。
+> - ⇒ ⇒ ★★★ **本节的两条「冷态」读数因此都失去了证据力**（它们在后续 18 次读数的分布之外，
+>   **既可能是「真冷」，也可能是「负载尖峰」** ⇒ **本节不替它们定性，但也不再依赖它们**）。
+> - ⇒ ⇒ ★★★★ **P0 的答案随之重写**：**单条语句的常态成本 = 4,421~5,209 ms（中位，18 次读数）**
+>   ⇒ ⇒ **远低于 30 s** ⇒ ⇒ **「这条语句本身跑不完 30 s」这个前提被推翻**
+>   ⇒ ⇒ **生产上那 30 s 里绝大部分不是「这条语句的计算」⇒ 是与同机其它作业的【争用】**
+>   ⇒ ⇒ **⇒ 定位只能靠生产现场的 `pg_stat_activity` 采样（`wait_event`）**（§143.28.5 的判别表）。
+> - ⇒ ⇒ ★★★ **方向性修正**：既然成本不在单条语句上，**「优化这条 join」不是正确方向**；
+>   **「每小时少做一遍」（P1 拆事务 / P2 去删插 / P6 增量）才是**。
+> - ⇒ ⇒ ★★★ **方法论的一条**：★ **「两臂各有自己的冷窗口」还不够** ——
+>   ★ **只要两臂用了不同窗口，就必须再做一轮「窗口对调」**，
+>   否则**臂效应与窗口效应被绑死**（第一轮若不对调，会得出「V2 冷态好 2.8 倍」的错误结论）。
+不是聚合的计算量。
+
+⇒ ⇒ ★★★ **诚实记录本节的一个夹具缺陷**（★ 重要，否则读数会骗人）：
+第一次跑「冷态 A/B」时，**两臂的预热是顺序的**（先 V1 后 V2）⇒ **V1 的预热把页拉进了 shared_buffers**
+⇒ ⇒ **V2 的「预热」根本不是冷的**（2,511 ms）⇒ ⇒ **该次 A/B 的冷态读数只有 V1 一臂有效**。
+⇒ ★ **可复用纪律**：★ **要测冷态，每一臂都必须有自己的冷窗口**（用互不重叠的旧窗口），
+否则「预热」会互相污染 —— 这与「审计自己的查询会污染自己的读数」是同一族。
+
+#### §143.27.2.3 冷态的代价从哪来：随机索引探测
+
+`latest` 的 join 计划是 `Nested Loop` + `Index Only Scan using idx_stats_event_dedup_event_id_occurred_at`
+⇒ **73,520 次精确匹配索引探测**打进一张 **134 MB / 1.14M 行**的表
+⇒ ⇒ **冷态下 = 73,520 次随机物理读** ⇒ ⇒ **这就是那 12.8~26.3 s**。
+⇒ ⇒ ★★ **V2（加时间范围）会把计划变成 `Parallel Hash Join` + `Parallel Seq Scan`（顺序读 134 MB）**
+⇒ ⇒ **理论上冷态更友好** ⇒ ⚠ **但本节没测到冷态 A/B**（夹具缺陷）⇒ ⇒ **留作待测**。
+
+### §143.27.3 ★★★★ 那条 join 是「可证明的 no-op」
+
+生产实测（只读）：
+
+```
+1. 作业窗内 usage_facts 行数（不加 join）              = 73,520
+2. 作业窗内加 join 之后的行数                          = 73,520
+3. 被 join 丢掉的行（NOT EXISTS 无匹配）               = 0
+4. stats_event_dedup: 1,139,786 行 = 1,139,786 distinct event_id
+                     = 1,139,786 distinct (event_id, occurred_at)   ⇒ join 键唯一
+6. 存在多于一行 dedup 的 event_id 数                    = 0
+```
+
+⇒ ⇒ ★★★★★ **⇒ 这条 join 在当前数据上：既不丢行、也不可能重复**
+⇒ ⇒ ★★★★ **⇒ 它的 12.8~26.3 s（冷态）买的是「什么都没发生」**
+⇒ ⇒ ★★★ **但它不能直接删** —— 它的**语义**是「只算当前修订」：
+`usage_facts` 的键是 `(event_id, revision, occurred_at)`，
+若某事件被**修订**（`occurred_at` 变了），dedup 行仍保留旧的 `occurred_at` ⇒ 该行**就该被滤掉**。
+⇒ ⇒ ★★ **⇒ 正确形态不是「删 join」，而是「把它换成半连接（`EXISTS`）」**：
+半连接语义等价（只丢不重，而唯一性已证）⇒ 且**允许规划器选哈希半连接**（顺序读）⇒ **冷态更友好**。
+
+⇒ ⇒ ★★ **诚实边界**：★ 本节**没有**证明「修订日」不存在
+（只证明了 10-06→10-19 的**逐日行数完全相等** ⇒ 那段时间没有发生过 `occurred_at` 修订）。
+⇒ ⇒ **改成半连接是零语义风险的**；**直接删 join 不是**。
+
+### §143.27.4 ★★★★ 存储侧：一个 151 MB 的零语义优化
+
+#### §143.27.4.1 读数
+
+| 对象 | live tuples | heap | total（含索引） | `n_tup_ins` | `n_tup_del` | `n_tup_upd` | `n_dead_tup` |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| `stats_event_dedup` | 1,139,114 | **134 MB** | **395 MB** | 207,285 | 6 | 118 | 11,258 |
+| `stats_usage_daily` | 113,952 | 49 MB | 80 MB | 1,010,884 | **4,450,440** | 50,456 | 0 |
+| `stats_usage_monthly` | 27,789 | 18 MB | 26 MB | 971,122 | **964,940** | 0 | 0 |
+
+索引明细（`stats_event_dedup`）：
+
+| 索引 | 大小 | 定义 |
+|---|---:|---|
+| `idx_stats_event_dedup_event_id_occurred_at` | **151 MB** | `btree (event_id, occurred_at)` |
+| `stats_event_dedup_pkey` | **110 MB** | `UNIQUE btree (event_id)` |
+
+⇒ ⇒ ★★★★ **★ `stats_event_dedup_pkey` 是 `idx_stats_event_dedup_event_id_occurred_at` 的严格前缀**
+（`(event_id)` ⊂ `(event_id, occurred_at)`）⇒ ⇒ **凡是用 pkey 查的，都能用另一个索引查**
+⇒ ⇒ **两个索引并存 = 同一份 `event_id` 排序存了两遍**。
+
+#### §143.27.4.2 为什么 pkey 不能直接删（★ 差点误判的地方）
+
+`domains/stats/event_writer.go:176` 的写侧是：
+
+```sql
+INSERT INTO stats_event_dedup (event_id, occurred_at) VALUES (...)
+ON CONFLICT (event_id) DO UPDATE SET occurred_at = EXCLUDED.occurred_at
+```
+
+⇒ ⇒ ★★★★ **pkey 的唯一性是「一个 event_id 只有一行、且 `occurred_at` 可被改写」的载体**
+⇒ ⇒ **把唯一性搬到 `(event_id, occurred_at)` 会改变不变式**（同一 event_id 换个 occurred_at 就能再插一行）
+⇒ ⇒ ★★ **且 `ON CONFLICT (event_id)` 的冲突目标推断要求唯一索引的键列**恰好是 `(event_id)`
+⇒ ⇒ ★★ **⇒ 「删掉 pkey，把唯一性搬到另一个索引」= 错**（我先想到这条，被写侧代码否掉了）。
+
+#### §143.27.4.3 ★★★ 正确的形态：**一个索引当两个索引用**
+
+```sql
+-- 现状：两个索引
+CREATE UNIQUE INDEX stats_event_dedup_pkey            ON stats_event_dedup USING btree (event_id);
+CREATE        INDEX idx_stats_event_dedup_event_id_occurred_at
+                                     ON stats_event_dedup USING btree (event_id, occurred_at);
+
+-- 建议形态：一个索引
+CREATE UNIQUE INDEX stats_event_dedup_pkey
+  ON stats_event_dedup USING btree (event_id) INCLUDE (occurred_at);
+```
+
+⇒ ⇒ ★★★ **为什么这在 PG 上成立**：
+- `INCLUDE` 列**不参与**唯一性判定 ⇒ 唯一性仍是 **`event_id` 唯一** ⇒ 不变式不变；
+- `INCLUDE` 列**不参与**冲突目标推断 ⇒ `ON CONFLICT (event_id)` 仍能命中它 ⇒ **写侧 SQL 逐字不用改**；
+- `occurred_at` 作为 **payload** 存在索引里 ⇒ join `(event_id, occurred_at)` 可用
+  **`Index Only Scan`** 在 pkey 上完成 ⇒ ⇒ **另一个索引的 151 MB 变成冗余**。
+
+⇒ ⇒ ★★★★★ **⇒ 净收益：省 151 MB（该表 395 MB → 244 MB，−38%）**，
+⇒ ⇒ **且语义零变化**（唯一性不变、冲突目标不变、查询能力不减）
+⇒ ⇒ **★ 且顺带减负**：该表 `n_tup_ins = 207,285` ⇒ 每次写少维护一个索引 ⇒ **WAL 与写入路径都减**。
+
+⇒ ⇒ ⚠ **本节未写迁移、未改索引** ⇒ **生产行为未变**；落地需要：
+① **现场取迁移号**（§143.25.8 的纪律）；② **先验 `Index Only Scan` 在新形态下仍被选**（否则收益不成立）。
+
+### §143.27.5 ★★★ 订正横幅八：§143.26.6 第 ② 条的判词过强
+
+> **订正横幅八（2026-10-20，§143.27 就地订正 §143.26.6）**
+>
+> §143.26.6 的表格里，第 ② 行写的是：
+> 「『`usage_facts ⋈ stats_event_dedup` 的 dedup 侧该加时间范围』= **错**
+> ⇒ 现状是 `Nested Loop` + `Index Only Scan`；加范围后反而变成 `Parallel Hash Join` + `Parallel Seq Scan`（134 MB 全扫）
+> ⇒ ⇒ **现状才是好计划**」。
+>
+> ★★★ **「现状才是好计划」这句过强**，本节就地订正（**原文保留**）：
+> - **§143.26.6 当时只有 EXPLAIN（无实测）** ⇒ ★ **EXPLAIN 只证明「计划会选」**（既有纪律），
+>   **不能证明「哪个更快」** ⇒ 那条结论当时**只该写到「现状是计划」为止**。
+> - **本节补上了热态交错 A/B（ABAB×4）**：V1 中位 **3,757.6 ms** vs V2 中位 **3,101.5 ms**，
+>   **两组极差完全重叠** ⇒ ⇒ **热态下两者无显著差异** ⇒ 「现状更好」**不成立**。
+> - ⇒ ⇒ ★★ **订正后的判词**：
+>   **「热态：两者无显著差异；冷态：本节未测到（夹具缺陷，§143.27.2.2）⇒ 仍是待测项」**
+>   ⇒ ⇒ ★ **V2 的真正价值假设是「冷态更友好」**（顺序读 vs 73,520 次随机探测），
+>   **它需要一次真正的冷态 A/B 来证实或证伪** ⇒ 已登记为 §143.27.8 的 **P3**。
+
+### §143.27.6 诚实边界与本节**没做**的事
+
+- ★★★ **冷态 A/B 没做成**（两臂预热互相污染）⇒ ⇒ **「V2 冷态更好」仍是假设，不是结论**。
+- ★★ **没量到「作业一次成功的完整耗时」** ⇒ 4 段语句的串行耗时是**从各自读数拼出来的**，
+  不是一次端到端测量 ⇒ ⇒ **不能承诺「拆成 4 个事务后一定成功」**。
+- ★★ **「6,879 行/次」是 110 次调用的平均值** ⇒ 逐次波动未测。
+- ★★ **211 侧完全没查**（`pg_stat_statements` 未进 preload）⇒ ⇒ **211 上这个作业是不是也在被杀，无从得知**。
+- ★★ **改索引/改事务边界都是生产行为变更** ⇒ **本节全部只读** ⇒ **生产行为未变**。
+- ★★ **「join 是 no-op」的结论只对 10-06→10-19 成立**（那段时间 `occurred_at` 没有被修订）
+  ⇒ ⇒ **改成半连接是零风险的；删 join 不是。**
+
+### §143.27.7 待拍板（本节新增）
+
+| 编号 | 事项 | 性质 | 成本 | 备注 |
+|---|---|---|---|---|
+| **P1** | **把 rollup 的 4 段语句拆成独立事务**（至少让 daily DELETE 独立提交） | 代码 | 小 | ★ **最高性价比**：失败时 DELETE 不被回滚，且不再占 INSERT 的 30 s 预算 |
+| **P2** | **去掉「先删后插」**：INSERT 已带 `ON CONFLICT DO UPDATE` ⇒ DELETE 只为清理「源里已消失的 key」⇒ 改成只删不在新集合里的 key | SQL | 中 | ⇒ 顺带把 `n_tup_del 4,450,440` 降下来 |
+| **P3** | **冷态 A/B**（用互不重叠的旧窗口，给每一臂自己的冷窗口） | 只读 | 低 | ★ 验/证伪「V2 冷态更友好」⇒ §143.27.5 留下的口子 |
+| **P4** | **把 join 换成半连接（`EXISTS`）** | SQL | 小 | 语义等价（唯一性已证）⇒ 允许哈希半连接 ⇒ 冷态更友好 |
+| **P5** | **`stats_event_dedup_pkey` 改 `UNIQUE (event_id) INCLUDE (occurred_at)`** ⇒ 删掉那个 151 MB 的索引 | 迁移 | 中 | ★ **省 151 MB（−38%）**；需**现场取迁移号** + 先验 `Index Only Scan` 仍被选 |
+| **P6** | **窗口从 48 h 缩成增量**（每小时只算新到的那 1 小时） | 代码 | 中 | 根治「每小时重算 2 天」 |
+| **P7** | **`stats_usage_daily` 的 churn**（`n_tup_del` 是 `n_tup_ins` 的 4.4 倍）⇒ 复核 autovacuum 参数 | 配置 | 小 | `n_dead_tup = 0` ⇒ 目前被 autovacuum 兜住了 |
+| **P8** | **C4**：211 的 `pg_stat_statements` 进 preload | 配置 | 中 | ⇒ 211 上这类失败才可被量化（§143.26.8 的 P7 仍在） |
+
+⚠ **P1/P2/P4/P6 是「改生产行为」⇒ 需属主显式授权**；**本节对生产的写入仍为 0**。
+
+### §143.27.8 复核方法（可原样重跑）
+
+```bash
+# ── 1) ★ 生产只读：rollup 的真实耗时（pg_stat_statements：DELETE 与写侧对照）
+bash ~/.mavis-tools/lgwp-prod.sh /private/tmp/p14321/rollup_pgss.sql 300
+
+# ── 2) ★ 生产只读：join 是否真的 no-op（丢行数 / 唯一性 / 重复）
+bash ~/.mavis-tools/lgwp-prod.sh /private/tmp/p14321/join_noop.sql 600
+
+# ── 3) ★ 生产只读：存储与 churn（表大小 / 索引大小 / n_tup_del）
+bash ~/.mavis-tools/lgwp-prod.sh /private/tmp/p14321/storage.sql    300
+bash ~/.mavis-tools/lgwp-prod.sh /private/tmp/p14321/dedup_idx.sql  300
+
+# ── 4) ★ 生产只读：交错 A/B（SELECT 等价体，INSERT 头与 ON CONFLICT 尾机械剥离）
+python3 scripts/audit/build_rollup_ab.py      # 预热 + 交错 ABAB×N
+bash ~/.mavis-tools/lgwp-prod.sh /private/tmp/p14321/rollup_ab.sql 1500
+```
+
+⇒ ⇒ ★ **本节落地的门**（不连库，可原样重跑）：
+
+```bash
+# §143.27 文档门：P0 的答案 / 冷热分解 / join no-op 证明 / 151 MB 零语义优化 / 横幅八
+GOCACHE=/tmp/gocache-p1437 go test ./scripts/ursmcheck/ -run 'TestRunbook14327' -count=1 -v
+```
+
+★ 同族：[[先读量具再读产物]] · [[EXPLAIN 只证明「计划会选」]] ·
+[[阴性结论要当缺陷一样复核]] · [[自己上一节的结论也要复核]] ·
+[[跨节订正前先自问「我要订正的这条真的错了吗」]] · [[Go 的 ctx 超时够不着 DB 的 statement_timeout 时，Go 侧是死代码]] ·
+[[审计自己的查询会污染自己的读数]] · [[变异后门仍绿=没有守卫力]]。
+
+## §143.28 冷态 A/B 做掉了：**结论是「不成立」** + P0 的答案重写（2026-10-20）
+
+### §143.28.0 结论先行
+
+§143.27.7 的 **P3** 写着：「**冷态 A/B**（用互不重叠的旧窗口，给每一臂自己的冷窗口）
+⇒ 验/证伪「V2 冷态更友好」」。本节把它做掉了，**结论是：假设【不成立】，而方法本身也不成立**：
+
+1. ★★★★★ **订正横幅九**：§143.27 写的「**冷态 12,804~26,295 ms**」与「**冷/热 ≈ 5.1×**」，
+   以及由此推出的「**V2 冷态更友好**」= **误判** ⇒ 就地订正（原文保留）。
+2. ★★★★★ **为什么误判**：**18 次读数的离散度**。
+   V1 同一形态 **3,172 ~ 8,587 ms（2.71×）**、V2 **2,664 ~ 6,868 ms（2.58×）**
+   ⇒ ⇒ **同一臂、同一窗口的波动就有 2.6~2.7 倍** ⇒ ⇒ ★ **这个箱子上的单点读数没有判别力**。
+3. ★★★★★ **决定性的一步是「窗口对调」**：第二轮把两臂的冷窗口**互换**后，
+   「冷/热」标签**跟着窗口翻转**（V1 从 2.71× 变成 **0.76×**）
+   ⇒ ⇒ **⇒ 「冷态惩罚」这个效应量不出来** ⇒ ⇒ **「V2 冷态更友好」被证伪**。
+4. ★★★★ **P0 的答案重写**：
+   **单条语句的常态成本 = V1 中位 5,209 ms / V2 中位 4,421 ms（18 次读数）**
+   ⇒ ⇒ **远低于 30 s** ⇒ ⇒ ★★ **「这条语句本身跑不完 30 s」这个前提【被推翻】**
+   ⇒ ⇒ ★★★ **⇒ 生产上那 30 s 里，绝大部分不是「这条语句的计算」**
+   ⇒ ⇒ **⇒ 真正的定位只能靠生产现场的 `pg_stat_activity` 快照（`wait_event`）**。
+5. ★★★ **方向性修正（比数字更重要）**：既然成本不在单条语句上，
+   ⇒ ⇒ **「优化这条 join」（P3/P4）不是正确方向**；
+   ⇒ ⇒ **「每小时少做一遍」（P1 拆事务 / P2 去删插 / P6 增量）才是**。
+
+⚠ **本节对生产的写入 = 0**：全部只读
+（生产上的**只读 SELECT 计时**（`dailyInsertSQL` 的只读等价体）+ `pg_stat_activity` 轮询采样）。
+**没有** DELETE / TRUNCATE / DROP / REINDEX / ANALYZE / 建索引 / 迁移 / 改配置 / 改 cron。
+
+### §143.28.1 方法：为什么必须「两臂各有自己的冷窗口 + 窗口对调」
+
+§143.27.2.2 记过一个夹具缺陷：「**两臂的预热是顺序的 ⇒ 臂1 的预热把页拉进 shared_buffers
+⇒ 臂2 的「预热」根本不冷**」。修法是**给每臂一个互不重叠的旧窗口**
+（仓内工具 `scripts/audit/build_rollup_ab.py --cold-pair FROM1,TO1,FROM2,TO2`）。
+
+⇒ ⇒ ★★ **但第一轮做完之后，又暴露了第二层夹具缺陷**：
+**两臂用了不同的窗口** ⇒ ⇒ **「臂的差异」与「窗口的差异」被绑在一起了** ⇒
+⇒ ★★★ **⇒ 补救的唯一办法：把窗口对调，跑第二轮**（V1 用 B 窗、V2 用 A 窗）
+⇒ ⇒ **⇒ 只有当两轮都指向同一个方向时，结论才成立**。
+
+⇒ ★★ **窗口选择**（`usage_facts` 逐日行数，生产实测）：
+
+| 窗口 | 天数 | `usage_facts` 行数 | 距今 |
+|---|---:|---:|---|
+| A = 10-06→10-10 | 4 | **64,292** | 10~14 天 |
+| B = 10-10→10-14 | 4 | **66,279** | 6~10 天 |
+
+⇒ ⇒ ★★ **两个窗口互不重叠**（A = 10-06..10-09，B = 10-10..10-13）
+⇒ ⇒ ★★ **行数比 1.031**（差 3%）⇒ ⇒ **足够做等体积对比**。
+
+### §143.28.2 读数（两轮，各 9 次执行）
+
+**第一轮（V1@A / V2@B）**
+
+| 执行 | 窗口 | ms |
+|---|---|---:|
+| COLD V1 | A | **8,586.814** |
+| COLD V2 | B | **4,450.600** |
+| WARM V1 | A | 3,172.411 |
+| WARM V2 | B | 4,570.898 |
+| ROUND 1 V1 / V2 | A / B | 4,557.288 / 3,755.961 |
+| ROUND 2 V1 / V2 | A / B | 5,416.056 / 6,868.354 |
+| ROUND 3 V1 / V2 | A / B | 5,209.098 / 4,421.162 |
+
+**第二轮（窗口对调：V1@B / V2@A）**
+
+| 执行 | 窗口 | ms |
+|---|---|---:|
+| COLD V1 | B | **5,622.696** |
+| COLD V2 | A | **4,453.768** |
+| WARM V1 | B | **7,402.193** |
+| WARM V2 | A | 4,392.425 |
+| ROUND 1 V1 / V2 | B / A | 4,345.405 / 2,663.996 |
+| ROUND 2 V1 / V2 | B / A | 4,018.187 / 2,961.577 |
+
+⇒ ⇒ ★★ **「WARM V1 = 7,402 ms」比「COLD V1 = 5,623 ms」还慢** ⇒ ⇒ **「冷/热」标签失效了**。
+
+### §143.28.3 ★★★★★ 判决：离散度吃掉了信号
+
+**18 次读数的汇总**
+
+| 臂 | n | min | 中位 | max | 极差 |
+|---|---:|---:|---:|---:|---:|
+| V1（现状） | 9 | 3,172 | **5,209** | 8,587 | **2.71×** |
+| V2（dedup 侧加时间范围） | 9 | 2,664 | **4,421** | 6,868 | **2.58×** |
+
+⇒ ⇒ ★★★★★ **① 同一臂、同一形态的极差就有 2.6~2.7 倍** ⇒ ⇒
+★ **这个箱子上，任何单点读数都没有判别力**（与 §143.26.0「252 load 14 / 4 核 ⇒ 单点读数不可信」一致，
+**这里把它量化了**）。
+
+⇒ ⇒ ★★★★★ **② 「冷/热」比值随窗口翻转**：
+
+| | V1 冷/热 | V2 冷/热 |
+|---|---:|---:|
+| 第一轮（V1@A, V2@B） | **2.71×** | 0.97× |
+| 第二轮（**窗口对调**） | **0.76×** | 1.01× |
+
+⇒ ⇒ ★★★ **⇒ 「冷态惩罚」这个效应量不出来** ⇒ ⇒ **⇒ 「V2 冷态更友好」【被证伪】**
+⇒ ⇒ ★★ **⇒ 第一轮若不做「窗口对调」，会得出「V2 冷态好 2.8 倍」的错误结论**
+⇒ ⇒ ★★★★ **⇒ 这是一条可复用的方法论**：
+★★ **「两臂各有冷窗口」还不够** —— ★ **只要两臂用了不同窗口，就必须再做一轮「窗口对调」**，
+否则**臂效应与窗口效应绑死在一起**。
+
+⇒ ⇒ ★★★ **③ 两臂中位比较**：V2 / V1 = 4,421 / 5,209 = **0.85×**，
+但**两组极差完全重叠**（V1 3,172~8,587 vs V2 2,664~6,868）⇒ ⇒ **无显著差异**。
+
+⇒ ⇒ ★★ **④ 诚实边界**：★ **本节没有证明「冷态惩罚不存在」** ——
+只能说「**用两次配对执行去量它，在本箱上不成立**」⇒ ⇒ **⇒ 这个问题必须换一把尺子**（见 §143.28.5）。
+
+### §143.28.4 ★★★★ P0 的答案（重写版）
+
+| | §143.27 写的（**已订正**） | §143.28 实测 |
+|---|---|---|
+| 单条语句成本 | 热态 3,758 ms / 冷态 12,804~26,295 ms | **常态 4,421~5,209 ms（中位，18 次读数，极差 2.6~2.7×）** |
+| 冷/热关系 | 冷/热 ≈ 5.1× | **量不出来（标签随窗口翻转）** |
+| 「30 s 跑不完」的成因 | 冷态惩罚 | **★ 不是语句成本 ⇒ 只能是「与同机其它作业的争用」** |
+
+⇒ ⇒ ★★★★ **⇒ P0 的最终答案**：
+- **单条语句的常态成本 ≈ 4.4~5.2 s** ⇒ **比 30 s 的预算小一个量级**；
+- ⇒ ⇒ **⇒ 「优化这条 join」不可能把作业从「30 s 失败」救活**（它本来就只花 4~5 s）；
+- ⇒ ⇒ ★★★ **⇒ 生产上那 30 s 花在哪，只有生产现场能回答**：
+  **是「在算」（那就得再查执行计划）、是「在等 I/O」、还是「在等锁」**
+  ⇒ ⇒ **⇒ 这必须靠 `pg_stat_activity` 的 `wait_event_type` / `wait_event` 现场采样**。
+
+⇒ ⇒ ★★★ **⇒ 方向性修正（比数字更重要）**：
+| 方向 | §143.27 的判断 | §143.28 的判断 |
+|---|---|---|
+| P3 冷态 A/B | 「验/证伪 V2 冷态更友好」 | ★ **已做 ⇒ 证伪 ⇒ 这条路放下** |
+| P4 换半连接 | 「允许哈希半连接 ⇒ 冷态更友好」 | ★ **收益前提已被证伪 ⇒ 不再推荐**（改成「若将来真的要换，理由是别的」） |
+| **P1 拆事务** | 「性价比最高」 | ★★ **更该做了** —— 争用是主因 ⇒ **少占一次事务、少做一遍**才是降争用的办法 |
+| **P2 去删插** | 「顺带降 churn」 | ★★ **更该做了** —— 每小时白删 6,879 行再重插 |
+| **P6 窗口改增量** | 「根治」 | ★★ **最该做** —— 每小时重算 2 天（≈ 48× 的重复劳动） |
+
+⇒ ⇒ ★★ **⇒ 一句话**：★ **本轮把「优化单条 SQL」这条路证伪了，把「减少每小时重复做的工作量」这条路的分量抬起来了。**
+
+### §143.28.5 ★★★ 下一把尺子：生产现场的 `pg_stat_activity` 采样
+
+既然单条语句只花 4~5 s，而生产上它被恰好 30 s 杀掉 ⇒ ⇒ **那 20+ s 一定花在别处**。
+⇒ ⇒ ★★ **判别式**（只需看一个字段）：
+
+| 现场看到的 | 结论 | 对应动作 |
+|---|---|---|
+| `wait_event_type = 'IO'` / `wait_event` 是读/写 | ★ **在等 I/O** ⇒ 争用成立 | **P1/P2/P6（减少工作量）** |
+| `wait_event_type = 'Lock'` | ★ **在等锁** | 查谁持有锁（多半是 hourly 作业撞车） |
+| `wait_event_type` 为空 + `state = 'active'` | ★ **在算** ⇒ 那 30 s 是真算出来的 | ⇒ 回到执行计划/数据量 |
+| `wait_event_type = 'Client'` | ★ 客户端先放弃 | 查 Go 侧 ctx |
+
+⇒ ⇒ ★★ **本节已把采样器做好并起跑**（`scripts/audit/build_rollup_ab.py` 之外另附轮询 SQL 生成器），
+⇒ ⇒ ★ **但采样窗口是否覆盖到该作业的运行时刻，取决于它下一次跑的时间** ⇒
+⇒ ⇒ **诚实边界**：本节**没有**保证抓到 ⇒ **见 §143.28.6**。
+
+### §143.28.6 诚实边界与本节**没做**的事
+
+- ★★★ **本节没有证明「冷态惩罚不存在」**，只证明了「**用配对执行量它在本箱上不成立**」。
+- ★★★ **本节的 18 次读数全部来自同一台 252 宿主**（load 14 / 4 核）
+  ⇒ ⇒ **代表的是「这台机器在这个负载下的方差」，不是「这条 SQL 的方差」**。
+- ★★ **没有抓到作业运行时的 `pg_stat_activity` 现场**（采样窗口是否覆盖到运行时刻未保证）
+  ⇒ ⇒ **⇒ §143.28.5 的判别表仍是「待用」状态** ⇒ ⇒ **这是下一轮的第一件事**。
+- ★★ **两臂用了不同窗口**（行数比 1.031）⇒ 即使第二轮对调，仍有 3% 的体积差。
+- ★★ **没有重测 §143.27 的「26,295 ms」与「12,803 ms」** ⇒ ⇒ **这两个数在本次 18 次读数分布之外**
+  ⇒ ⇒ **它们可能是「真冷」的，也可能是「负载尖峰」** ⇒ ⇒ **本节不替它们定性**（但也不再依赖它们）。
+- ★★ **本节未写迁移、未改生产代码** ⇒ **生产行为未变**。
+
+### §143.28.7 待拍板（本节更新）
+
+| 编号 | 事项 | 相对 §143.27 的变化 |
+|---|---|---|
+| **P1** | 把 rollup 的 4 段语句拆成独立事务 | ★★ **分量上升**（争用是主因 ⇒ 少占事务） |
+| **P2** | 去掉「先删后插」 | ★★ **分量上升**（每小时白删 6,879 行再重插） |
+| **P6** | 窗口从 48 h 缩成增量 | ★★★ **分量最高**（每小时重算 2 天 ⇒ ≈ 48× 重复劳动） |
+| **P3** | 冷态 A/B | ★ **已做 ⇒ 证伪 ⇒ 关闭** |
+| **P4** | 把 join 换成半连接 | ★ **收益前提已被证伪 ⇒ 不再推荐**（除非有别的理由） |
+| **P5** | `stats_event_dedup_pkey` 改 `UNIQUE (event_id) INCLUDE (occurred_at)` ⇒ 省 151 MB | ★ **不变**（存储侧结论与本节的噪声无关） |
+| **P7** | `stats_usage_daily` 的 churn 复核 | ★ 不变 |
+| **P8** | C4：211 的 `pg_stat_statements` 进 preload | ★ 不变 |
+| **P9（新增）** | **抓作业运行时的 `pg_stat_activity`（`wait_event`）⇒ 定位那 30 s** | ★★ **下一轮的第一件事**（§143.28.5 的判别表） |
+
+⚠ **P1/P2/P6 是「改生产行为」⇒ 需属主显式授权**；**本节对生产的写入仍为 0**。
+
+### §143.28.8 复核方法（可原样重跑）
+
+```bash
+# ── 1) ★ 冷态 A/B（两臂各有互不重叠的冷窗口）
+python3 scripts/audit/build_rollup_ab.py \
+  --cold-pair "2026-10-06T00:00:00Z,2026-10-10T00:00:00Z,2026-10-10T00:00:00Z,2026-10-14T00:00:00Z" \
+  --rounds 3 --out /tmp/rollup_ab_cold.sql
+bash ~/.mavis-tools/lgwp-prod.sh /tmp/rollup_ab_cold.sql 1500
+
+# ── 2) ★ 窗口对调（第二轮 —— 缺这一步，第一轮会得出错误结论）
+python3 scripts/audit/build_rollup_ab.py \
+  --cold-pair "2026-10-10T00:00:00Z,2026-10-14T00:00:00Z,2026-10-06T00:00:00Z,2026-10-10T00:00:00Z" \
+  --rounds 2 --out /tmp/rollup_ab_cold2.sql
+bash ~/.mavis-tools/lgwp-prod.sh /tmp/rollup_ab_cold2.sql 1500
+```
+
+⇒ ⇒ ★ **本节落地的门**（不连库，可原样重跑）：
+
+```bash
+# §143.28 文档门：订正横幅九 / 离散度 / 窗口对调 / P0 重写 / 方向性修正
+GOCACHE=/tmp/gocache-p1437 go test ./scripts/ursmcheck/ -run 'TestRunbook14328' -count=1 -v
+```
+
+★ 同族：[[先读量具再读产物]] · [[阈值型判据先量噪声底]] ·
+[[量具之间矛盾时先怀疑量具]] · [[阴性结论要当缺陷一样复核]] ·
+[[自己上一节的结论也要复核]] · [[跨节订正前先自问「我要订正的这条真的错了吗」]] ·
+[[要测冷态每一臂都要有自己的冷窗口]] · [[0 命中的第一嫌疑是量具坏了]]。
+
+## §143.29 换一把「不受负载影响」的尺子：**`shared_blks_read / calls`** ⇒ 成本中心的真实排名（2026-10-20）
+
+### §143.29.0 结论先行
+
+§143.28 留下一个口：「**生产上那 30 s 里绝大部分不是「这条语句的计算」⇒ 是与同机其它作业的争用**
+⇒ ⇒ **定位只能靠生产现场的 `pg_stat_activity` 采样**」（P9）。本节**用另一把尺子**把「争用的来源」查出来了：
+
+1. ★★★★★ **★ 换尺子**：在 252（load 14 / 4 核）这台机器上，**墙钟时间不可用作成本度量**
+   （§143.28 实测：同一臂同一形态的波动就有 **2.71×**）
+   ⇒ ⇒ **但 `pg_stat_statements.shared_blks_read / calls`（每次执行的物理块数）是可用的** ——
+   ⇒ ⇒ ★★ **它是「这次执行读了多少块磁盘」的计数，**不受同机并发负载影响**
+   ⇒ ⇒ ★★★★ **⇒ 这一列直接给出了成本中心的真实排名。**
+2. ★★★★★ **成本中心的真实排名（按物理块/次，41 h 窗口，`calls >= 3` 过滤掉一次性审计查询）**：
+
+| 排名 | 语句 | calls | **物理块/次** | 每次的物理读 | 均时 | 每次写盘 |
+|---:|---|---:|---:|---:|---:|---:|
+| **1** | `WITH win AS (SELECT date_trunc($1, now() - make_interval(hours=>$2)) …)` —— **ursm 快照健康巡检** | 26 | **374,496** | **2.9 GB** | **190,473 ms** | 189,231 块 |
+| 2 | `WITH merged AS MATERIALIZED (SELECT s.tenant_id, s.ts …)` | 28 | 59,319 | 742 MB | 13,866 ms | — |
+| 3 | `WITH dedup AS MATERIALIZED (SELECT p.tenant_id::text …)` | 3 | 55,563 | 695 MB | 5,402 ms | — |
+| 4 | `SELECT round(dead_tuple_percent::numeric,$1) FROM pg_stat…`（膨胀巡检） | 8 | 35,285 | 441 MB | 7,664 ms | — |
+| 5 | `REFRESH MATERIALIZED VIEW CONCURRENTLY session_task_stats` | 65 | 16,570 | 207 MB | 27,302 ms | — |
+| 6 | `REFRESH MATERIALIZED VIEW CONCURRENTLY routing_analytics_7d` | 115 | 14,761 | 185 MB | 60,568 ms | — |
+| 7 | `REFRESH MATERIALIZED VIEW CONCURRENTLY session_client_stats` | 65 | 13,806 | 173 MB | 54,653 ms | 144,739 块 |
+| 8 | `SELECT COALESCE(SUM(cost_usd),$1)::float8 FROM (SELECT …)` | 3 | 12,035 | 150 MB | 2,536 ms | — |
+| 9 | `SELECT COALESCE(MAX(f.occurred_at),$1) FROM usage_facts f JOIN stats_event_dedup …` | 9 | 11,317 | 142 MB | 14,670 ms | — |
+| 10 | `SELECT * FROM pgstatindex($1)` | 15 | 10,854 | 136 MB | 2,101 ms | — |
+| **11** | `WITH latest AS (SELECT f.* FROM usage_facts f JOIN stats_event_dedup …)` —— **rollup 聚合** | 7 | **9,512** | 119 MB | 15,029 ms | — |
+
+3. ★★★★★ **⇒ 按「总物理读」排（含一次性查询，仅作参考）**：
+   ① 巡检 **76,069.6 MB（74 GB）** ② **外传守卫（请求热路径）18,876.9 MB** ③ 膨胀巡检 14,512.3 MB
+   ④ `routing_analytics_7d` 13,261.4 MB ⑤ `merged` 12,976.1 MB ⑥ 负成本告警 9,166.4 MB
+   ⑦ `session_task_stats` 8,414.3 MB ⑧ `session_client_stats` 7,010.9 MB
+   ⇒ ⇒ ★★ **⇒ 单条语句的累计物理读冠军是那个巡检（74 GB），比第二名高 4 倍。**
+4. ★★★★ **⇒ 印证 §143.28 的判决**：**rollup 的聚合排第 11 位（9,512 块/次）**
+   ⇒ ⇒ **它本来就不是成本中心** ⇒ ⇒ **「优化这条 join」确实救不了它**。
+5. ★★★★ **⇒ 因果链闭合**：
+   **巡检每跑一次烧 2.9 GB 物理读 + 190 s** ⇒ ⇒ **它在 30 s 的角色级超时下根本跑不完**
+   ⇒ ⇒ **每次重试再烧一遍** ⇒ ⇒ **⇒ I/O 被这条「永远成功不了」的查询占满**
+   ⇒ ⇒ **⇒ rollup 那 4~5 s 的 CPU 活儿抢不到 I/O ⇒ 于是被 30 s 杀掉**
+   ⇒ ⇒ ★★★★ **⇒ 修一个查询（巡检的窗口与算法）⇒ 整个盘解压** ⇒ ⇒ **这是全局第一优先**。
+
+⚠ **本节对生产的写入 = 0**：全部只读
+（`pg_stat_statements` / `pg_stat_database` / `pg_settings` / `pg_class` / `pg_index` /
+`pg_stat_activity` 轮询采样）。**没有** DELETE / TRUNCATE / DROP / REINDEX / ANALYZE / 建索引 / 迁移 / 改配置。
+
+### §143.29.1 为什么「墙钟时间」在这台机器上不能用来排名
+
+§143.28 的实测（18 次读数）：
+
+| 臂 | n | min | 中位 | max | 极差 |
+|---|---:|---:|---:|---:|---:|
+| V1 | 9 | 3,172 | 5,209 | 8,587 | **2.71×** |
+| V2 | 9 | 2,664 | 4,421 | 6,868 | **2.58×** |
+
+⇒ ⇒ ★★★ **⇒ 同一个形态的波动就有 2.6~2.7 倍** ⇒ ⇒
+★ **任何「取一次读数然后比大小」的排名方法在这台机器上都不成立**
+⇒ ⇒ ★★ **⇒ 必须换一把不受并发影响的尺子。**
+
+⇒ ⇒ ★★★★ **`shared_blks_read / calls` 为什么合适**：
+- 它是**计数器**（累计物理读块数）⇒ **不随当时的负载起伏**；
+- 它直接对应「这次执行从磁盘搬了多少数据」⇒ **与成本成正比**；
+- ★ **它不区分「这次执行快不快」，只区分「这次执行搬了多少」**
+  ⇒ ⇒ **在超载机器上，它比墙钟时间更接近「结构性成本」**。
+
+⇒ ⇒ ★★ **因此本节的排名是「结构性成本排名」，不是「耗时排名」** ——
+★ **两者会给出不同的答案，而且在这台机器上，结构性成本才是该优化的东西。**
+
+⇒ ⇒ ★★★ **诚实边界**：★ **`shared_blks_read` 只统计「从操作系统读入的块」**
+⇒ 若数据在 OS 页缓存里（不在 PG 的 shared_buffers），PG 也算作 physical read
+⇒ ⇒ **它高估了「必须从磁盘读」的部分**；但**作为相对排名**它依然稳定且可用。
+
+### §143.29.2 头号成本中心：ursm 快照健康巡检
+
+#### §143.29.2.1 读数
+
+```
+WITH win AS ( SELECT date_trunc($1, now() - make_interval(hours => $2)) AS lo, … )
+  FROM ursm_node_snapshot_min, win … GROUP BY 1 …
+```
+- calls = **26**（41 h 窗口）
+- `shared_blks_read` = **9,736,905** ⇒ **总 76,069.6 MB = 74 GB**
+- ⇒ **每次 374,496 块 = 2.9 GB**
+- `mean_exec_time` = **190,473 ms（190 s）**，`max_exec_time` = **591,621 ms（9.9 分钟）**
+- `temp_blks_read` = 188,923 / `temp_blks_written` = 189,231 ⇒ **每次还往临时文件倒 ~1.5 GB**
+
+⇒ ⇒ ★★★★★ **★ 每次执行 = 2.9 GB 磁盘读 + ~1.5 GB 临时文件写 + 190 s**
+⇒ ⇒ ★★★ **⇒ 这与 §143.26.4 的读数严丝合缝**：
+`ursm_node_snapshot_min` = **27,806,075 行 / 仅 7.4 天**（375.8 万行/天），
+而巡检 SQL **自带注释**的基线是「252，7 天 ≈ 600 万行 … `count(DISTINCT date_trunc('minute', ts))`
+7 天 = 44.5 s ← 不可接受」
+⇒ ⇒ ★★★ **⇒ 那条基线已经过期 4.6×，而实际的成本是「注释里写的 44.5 s 的 4.3 倍」= 190 s**
+⇒ ⇒ ★★ **⇒ 30 s 的角色级超时 ⇒ 它【一次也跑不完】**。
+
+> **订正横幅十（2026-10-20，§143.30 就地订正本节 §143.29.2.1）**
+>
+> ★★★★★ **本节上面这句「⇒ ⇒ 30 s 的角色级超时 ⇒ 它【一次也跑不完】」是错的。**
+> - **实测**：这条查询在 252 的**全部 124 次「被 `statement timeout` 杀掉」里，最短的一次是 187 s**
+>   （**没有任何一次 < 180 s**）⇒ ⇒ **「30 s 的角色级超时杀了它」在事实上不成立。**
+> - ⇒ ⇒ **角色级 `statement_timeout=30s`（`llm_gateway`）从未作用于此查询** ——
+>   执行它的巡检脚本用 `PGOPTIONS=-c statement_timeout=${STMT_TIMEOUT}` **在连接建立时就覆盖了它**
+>   （`scripts/252-monitor/ursm-snapshot-health.sh` 的 `de()`）。
+> - ⇒ ⇒ **真正的上限是脚本自己的 `STMT_TIMEOUT`**：
+>   **180 s（10-04 ~ 10-20 00:14）→ 600 s（10-20 00:31 起）**（5 份部署备份逐字证明）。
+> - ⇒ ⇒ ★★★ **可复用的纪律**：★ **「PG 日志说 `statement timeout`」≠「被角色级超时杀了」** ——
+>   ★ **会话级（`PGOPTIONS` / `SET`）会覆盖角色级**，而**自己抬超时的客户端会让角色级的值完全失效**
+>   ⇒ ⇒ ★★ **判据必须配一个【实测 elapsed】，不能只靠日志里的那句错误文本。**
+> - ⇒ ⇒ **本节其余读数不受影响**（每次 2.9 GB、均时 190 s、74 GB 累计仍是成本 #1）。
+>   完整取证见 runbook `§143.30`。
+
+#### §143.29.2.2 ⚠ 一个必须记下来的**矛盾**（⇒ 下一个待查项）
+
+§143.26.3.1 实测：这条语句**2 天被 `statement timeout` 杀 17 次**
+（⇒ 平均 8.5 次/天被砍在 30 s）。
+**但 `pg_stat_statements` 里它有 26 次「成功」记录，均时 190 s。**
+
+⇒ ⇒ ★★★ **⇒ 两者不可能同时成立**：★ **一次 190 s 的执行在角色级 `statement_timeout=30s` 下必然被杀**
+⇒ ⇒ ★★ **⇒ 所以这 26 次调用必定来自一个「抬高了 statement_timeout」的会话**
+（就像物化视图刷新器那样：`bg/materialized_view_refresher.go:106` 自己抬到 180 s）
+⇒ ⇒ ★★ **⇒ 也就是说：同一个查询有【两条调用路径】，一条抬了超时（能跑完但要 190 s），一条没抬（每次 30 s 被砍）」**
+⇒ ⇒ ★★★ **⇒ 这是本节留下的最大一个待查项**（**P10**）：
+**谁在跑它？抬超时的那条路径在哪？**（**本节未查 ⇒ 诚实边界**）
+
+> **订正横幅十一（2026-10-20，§143.30 就地订正本节 §143.29.2.2）**
+>
+> ★★★★★ **本节上面这个「矛盾」是【假矛盾】，「两条调用路径」不存在。**
+> - ★★★★★ **「26 次成功」与「17~18 次被杀」本来就【不矛盾】** ——
+>   ★ **`pg_stat_statements` 只记成功语句**（§143.26.0 已记的盲区）⇒ ⇒
+>   **「26」= 窗口内的成功次数，「17~18」= 窗口内的失败次数**
+>   ⇒ ⇒ **它们是【同一个脚本的两种结局】，不是两条路径的调用数。**
+> - ★★★★★ **实测对账（pgss 41 h 窗口 ↔ 脚本自己的日志，去重后）**：
+>   | 量 | pgss | 脚本日志 | 吻合 |
+>   |---|---:|---:|---|
+>   | 成功次数 | calls = **26** | OK = **23** | ★ 同量级 |
+>   | 失败次数 | 「被杀 17 次」 | ABORT = **18** | ★ 吻合 |
+>   | 成功执行均时 | mean = **190,473 ms** | **202 s** | ★ 吻合 |
+>   | 成功执行最长 | max = **591,621 ms** | **603 s**（客户端侧） | ★ 吻合 |
+> - ★★★★ **⇒ 「两者不可能同时成立 ⇒ 必有第二条路径」这一步的推理本身是错的** ——
+>   ★ **用「pgss 只记成功」这一个已知盲区，去推「存在第二条调用路径」，必然推错。**
+> - ★★★★★ **⇒ 真相是「同一个脚本的两个版本」**：
+>   唯一调度方 = `/etc/cron.d/pg17:106`（每小时 :17）⇒ 唯一脚本 = `/opt/scripts/ursm-snapshot-health.sh`
+>   ⇒ 部署件 md5 与仓库副本**逐字相同** ⇒ **它的 `STMT_TIMEOUT` 在 10-20 00:31 由 180 s 改成 600 s**
+>   ⇒ ⇒ **「抬了超时的那条路径」= 「这个脚本的新版本」；「被 30 s 砍的那条」= 「不存在的路径」。**
+> - ⇒ ⇒ ★★★ **⇒ P10 关闭**（结论：**不存在两条路径**）；完整取证见 runbook `§143.30`。
+
+### §143.29.3 头号之外的三个值得注意的读数
+
+| 语句 | 读数 | 为什么重要 |
+|---|---|---|
+| **外传守卫**（`SELECT (SELECT COUNT(DISTINCT COALESCE(NULLIF(r.client_model,''),…))`） | 332 calls、**18,876.9 MB 总 / 56.8 MB 每次**、均时 1,862 ms | ★★ **它在请求热路径上** ⇒ 累计物理读**第 2 名**（巡检之后）⇒ §143.26.8 的 **P6**（给外传守卫定超时/改形态）**分量上升** |
+| `REFRESH … routing_analytics_7d` | 115 calls、**14,761 块/次**、均时 **60,568 ms**、max 131,122 ms | ★★ **B1 确实是真的**（每次 185 MB 物理读）⇒ 但它**排第 6**，**排在巡检后面** ⇒ ⇒ **先修巡检，收益更大** |
+| `REFRESH … session_client_stats` | 65 calls、**13,806 块/次**、均时 54,653 ms、max 175,530 ms、**temp 写 144,739 块/次** | ★★ max 175,530 ms **已达 180 s 预算的 97.5%**（§143.26.1.2 已记）⇒ **它离被砍只差 4.5 s** |
+
+⇒ ⇒ ★★ **⇒ 一个新的排序事实**：★ **按结构性成本排，「巡检 > 外传守卫 > matview 刷新 > rollup」**
+⇒ ⇒ ★★★ **⇒ 这与 §143.26.8（把 B1 排在前面）、§143.27（把 rollup 排在前面）都不同**
+⇒ ⇒ **⇒ 但这三个排序的**尺子不同**：**
+| 排序 | 尺子 | 结论 |
+|---|---|---|
+| §143.26.8 | 墙钟总时间 | B1（matview）在前 |
+| §143.27 | 单条语句的墙钟 | rollup 在前 |
+| **§143.29** | **物理块/次（不受负载影响）** | **巡检在前，其次外传守卫，再次 matview，rollup 第 11** |
+
+⇒ ⇒ ★★★★ **⇒ 由此得到一条可复用的排序纪律**：
+★ **「哪个作业最该优化」这个问题，换一把尺子就会换一个答案**
+⇒ ⇒ ★★ **⇒ 在超载机器上，应当用「结构性成本」（物理读/次）来定优先级，
+用墙钟时间只用来回答「这次跑多久」** ⇒ ⇒ ★ **两者都不该单独用。**
+
+### §143.29.4 对既有结论的影响（重排）
+
+| 既有条目 | 原来的位置 | 按新尺子 |
+|---|---|---|
+| §143.26.8 **P2**（ursm 巡检的 7 天窗 / 基线过期 4.6×） | 「顺带」 | ★★★★★ **全局第一优先**（每次 2.9 GB + 190 s，且永远跑不完） |
+| §143.26.8 **P6**（外传守卫，**请求热路径**） | 中 | ★★★★ **升为第二**（18.4 GB 累计，在请求路径上） |
+| §143.26.8 **P1**（B1：matview 刷新） | 第一 | ★★★ 降到第三（每次 13.8k~16.6k 块） |
+| §143.27 **P1/P2/P6**（rollup 拆事务 / 去删插 / 改增量） | 第一 | ★★ **降到第四**（rollup 排第 11）—— **但仍值得做**（它每小时被反复重做） |
+| §143.27 **P5**（`stats_event_dedup` 省 151 MB） | 第五 | ★★ 不变（**存储侧结论与本节的尺子无关**） |
+| §143.27 **P4**（换半连接） | 第四 | ★ **撤下**（收益前提已被 §143.28 证伪） |
+
+⇒ ⇒ ★★★ **⇒ 一句话**：★ **先把那个每次烧 2.9 GB、且永远跑不完的巡检停下来，
+其余排序都会自己重排。**
+
+### §143.29.5 诚实边界与本节**没做**的事
+
+- ★★★ **本节的排名是 41 h 窗口的 `pg_stat_statements`** ⇒ **含一次性审计查询**
+  ⇒ ⇒ **排名表已按 `calls >= 3` 过滤**（§143.29.0 表 2）⇒
+  ⇒ ★ **「总物理读」那张表未过滤 ⇒ 里面混着我与前几轮自己跑的一次性索引审计** ⇒ **只作参考**。
+- ★★ **`pg_buffercache` 未安装**（实测 0 行）⇒ ⇒ **无法直接量「缓存驻留率」**
+  ⇒ ⇒ **⇒ 「2.9 GB 每次」是 PG 口径的 physical read（含 OS 页缓存命中）**，不是纯磁盘读。
+- ★★ **「巡检 2.9 GB/次」是累计值**（74 GB / 26 次）⇒ **不是瞬时带宽**；
+  ⇒ ⇒ **它在同机争用中的实际影响未单独量化**。
+- ★★★ **§143.29.2.2 的矛盾（26 次成功 vs 17 次被杀）本节没有查清** ⇒ **P10**。
+- ★★ **「修好巡检 ⇒ 整个盘解压」是因果推断，不是实测** ⇒ ⇒ **它需要一次验证**
+  （★ 属主授权后：把巡检的窗口缩短 ⇒ 观察 rollup 的成功率是否上升 ⇒ **那才是 P9/P10 的闭环**）。
+- ★★ **本节未写迁移、未改任何作业** ⇒ **生产行为未变**。
+
+### §143.29.6 待拍板（本节新增 / 重排）
+
+| 编号 | 事项 | 变化 |
+|---|---|---|
+| **P10（新增）** | **查清 ursm 巡检的「两条调用路径」**（谁在跑、哪条抬了超时、另一条为何没抬） | ★★ **新的第一优先**（它是 §143.29.2.2 那个矛盾的唯一出口） |
+| **P11（新增）** | **缩短/改写 ursm 巡检**（7 天窗 + `count(DISTINCT date_trunc('minute', ts))`）⇒ 目标：**每次 ≤ 30 s、每次物理读 ≤ 300 MB** | ★★★★★ **全局第一优先**（§143.29.2 的读数） |
+| **P12（新增）** | **外传守卫**（请求热路径，56.8 MB/次，332 次 ⇒ 18.4 GB）⇒ 降它的物理读 | ★★★★ 新增（原 §143.26.8 的 P6） |
+| **P2** | 巡检的基线注释（已过期 4.6×） | ★★★ 随 P11 一起做 |
+| **P1** | B1：matview 刷新 | ★★★ 降为第三 |
+| §143.27 **P1/P2/P6** | rollup 拆事务 / 去删插 / 改增量 | ★★ 降为第四（但仍值得做） |
+| §143.27 **P5** | `stats_event_dedup` 省 151 MB | ★★ 不变 |
+| **P13（新增）** | **用 `shared_blks_read / calls` 给「哪个作业最该优化」定优先级**（而不是墙钟） | ★★★ 方法论沉淀 |
+
+⚠ **P11/P12 是「改生产行为」⇒ 需属主显式授权**；**本节对生产的写入仍为 0**。
+
+### §143.29.7 复核方法（可原样重跑）
+
+```bash
+# ── 1) ★ 生产只读：按「物理块/次」排名（不受负载影响的尺子）
+bash ~/.mavis-tools/lgwp-prod.sh /private/tmp/p14321/rank_by_reads.sql 300
+
+# ── 2) ★ 生产只读：shared_buffers vs 目标表体积 + 全库物理读比例
+bash ~/.mavis-tools/lgwp-prod.sh /private/tmp/p14321/cache_pressure.sql 300
+```
+
+⇒ ⇒ ★ **本节落地的门**（不连库，可原样重跑）：
+
+```bash
+# §143.29 文档门：新尺子 / 成本中心排名 / 因果链 / 对既有结论的重排
+GOCACHE=/tmp/gocache-p1437 go test ./scripts/ursmcheck/ -run 'TestRunbook14329' -count=1 -v
+```
+
+★ 同族：[[先读量具再读产物]] · [[0 命中的第一嫌疑是量具坏了]] ·
+[[量具之间矛盾时先怀疑量具]] · [[阈值型判据先量噪声底]] ·
+[[阴性结论要当缺陷一样复核]] · [[自己上一节的结论也要复核]] ·
+[[跨节订正前先自问「我要订正的这条真的错了吗」]] ·
+[[要测冷态每一臂都要有自己的冷窗口]]。
+
+## §143.30 **P10 闭合**：「两条调用路径」不存在 —— 是**同一个脚本的两个版本**（180s → 600s）（2026-10-20）
+
+### §143.30.0 结论先行
+
+§143.29.2.2 留下一个**矛盾**，并把它列为「本节最大的待查项 P10」：
+> 「这条语句 2 天被 `statement timeout` 杀 17 次，**但** `pg_stat_statements` 里它有 26 次『成功』记录、均时 190 s
+> ⇒ ⇒ **两者不可能同时成立** ⇒ ⇒ **必定来自一个『抬高了 statement_timeout』的会话**
+> ⇒ ⇒ **同一个查询有【两条调用路径】**」
+
+★ **本节把这个矛盾彻底关掉了 —— 它是一个【假矛盾】，由两个未验证的假设叠出来：**
+
+1. ★★★★★ **假设①「被砍在 30 s」是从来没有量过的** ——
+   PG 日志只写 `canceling statement due to statement timeout`，**它不写是哪一个超时生效**。
+   ⇒ ⇒ ★★★ **实测：这条查询在 252 的全部 124 次「被超时杀掉」里，最短的一次是 187 s**
+   ⇒ ⇒ **没有任何一次落在 30 s 附近** ⇒ ⇒ **「30 s 的角色级超时杀了它」在事实上是错的。**
+2. ★★★★★ **假设②「26 次成功」与「17 次被杀」来自两条路径** ——
+   ★ **`pg_stat_statements` 只记成功语句**（§143.26.0 已记的盲区）⇒ ⇒
+   **「26」= 窗口内的成功次数，「17~18」= 窗口内的失败次数**
+   ⇒ ⇒ **它们本来就是同一个脚本的两种结局，不是两条路径。**
+3. ★★★★★ **⇒ 真正的机制是「同一个脚本的两个版本」** ——
+   脚本用 `PGOPTIONS=-c statement_timeout=${STMT_TIMEOUT}` **自己抬超时**，
+   而这个默认值在 **10-20 00:31 被从 180 s 改成了 600 s**（仓库提交 `71c5bc1de`，§143.14）。
+
+⇒ ⇒ ★★★★★ **⇒ 「角色级 `statement_timeout=30s` 从未作用于此查询**（`PGOPTIONS` 覆盖了它）
+⇒ ⇒ **⇒ §143.29.2.1 的「⇒ ⇒ 30 s 的角色级超时 ⇒ 它【一次也跑不完】」是错的** ⇒ **就地加订正横幅十**。
+
+⚠ **本节对生产的写入 = 0**：全部只读
+（脚本自己的日志 `/var/log/ursm-snapshot-health.log`、脚本的 5 份备份、`/etc/cron.d/pg17`、
+`pg_roles.rolconfig`、`pg_stat_statements`）。
+**没有**改脚本 / 改 cron / 改 `PGOPTIONS` / 改超时 / 改表 / 跑迁移。
+
+### §143.30.1 取证链（五步，每步都可原样复核）
+
+**① 指纹归属：pgss 里那条语句就是巡检脚本的 `BUCKETS_SQL`**
+`pg_stat_statements` 里的指纹 `WITH win AS (SELECT date_trunc($1, now() - make_interval(hours=>$2)) AS lo, …)
+FROM ursm_node_snapshot_min, win … GROUP BY 1 …`
+逐字对应 `scripts/252-monitor/ursm-snapshot-health.sh` 的 `BUCKETS_SQL`（`:294` 起）：
+```sql
+WITH win AS (
+  SELECT $G_TRUNC $NOW_EXPR - make_interval(hours => $WINDOW_HOURS)) AS lo,
+         $G_TRUNC $NOW_EXPR)                                          AS hi_excl
+),
+...
+FROM ursm_node_snapshot_min, win
+```
+（pgss 把字面量归一化成 `$1/$2`，所以指纹里的 `$1`/`$2` 就是 `'hour'` 与 `3`。）
+
+**② 唯一调度方**（`crontab -l` / `/etc/cron.d/*` / `systemctl list-timers` 全查过）：
+```
+/etc/cron.d/pg17:106
+17 * * * * root llmgw-source /opt/scripts/ursm-snapshot-health.sh 2>&1 | tee -a /var/log/ursm-snapshot-health.log; ...
+```
+⇒ ★ **`llmgw-source` 只是一个包装**（内容是 `source /etc/llmgw/notify.conf` 拿告警 webhook）
+⇒ **它不设 `PGOPTIONS`、不设 `STMT_TIMEOUT`** ⇒ **不是「另一条路径」。**
+
+**③ 超时是脚本自己设的**（`de()` 的默认形态）：
+```bash
+${PSQL_CMD:-podman exec -e "PGOPTIONS=-c statement_timeout=${STMT_TIMEOUT:-600s}" \
+  "$CONTAINER" psql -U "$PG_USER" -d "$PG_DB" -tAX -c} "$1" 2>&1 || true
+```
+⇒ ⇒ ★★★ **`PGOPTIONS` 在连接建立时生效 ⇒ 覆盖角色级 `statement_timeout=30s`**
+⇒ ⇒ **⇒ 角色级 30 s 对这条查询从来没有生效过。**
+
+**④ 版本史（252 上的 5 份备份逐字证明，不是推测）**：
+
+| 252 上的文件 | 原文件 mtime | `STMT_TIMEOUT` |
+|---|---|---|
+| `/opt/scripts/backups/ursm-snapshot-health.sh.bak.20261010-161145` | 2026-10-04 02:00 | **180s** |
+| `/opt/scripts/backups/ursm-snapshot-health.sh.bak.20261011-012117` | 2026-10-10 16:11 | **180s** |
+| `/opt/scripts/ursm-snapshot-health.sh.bak.20261019-215927` | 2026-10-11 01:21 | **180s** |
+| `/opt/backups/pg17/ursm-snapshot-health.sh.bak.20261020-001347` | 2026-10-19 21:59 | **180s** |
+| `/opt/backups/pg17/ursm-snapshot-health.sh.bak.20261020-003051` | 2026-10-20 00:14 | **180s** |
+| **`/opt/scripts/ursm-snapshot-health.sh`（现行）** | **2026-10-20 00:31:04** | **600s** |
+
+⇒ ⇒ ★★★★★ **从 10-04 到 10-20 00:14 的每一个版本都是 180 s；只有 00:31 换上去的那一版是 600 s。**
+⇒ ⇒ 与仓库历史逐字吻合：`ec3acdc73`（2026-10-04 01:20）引入 `STMT_TIMEOUT:=180s`
+⇒ ⇒ `71c5bc1de`（2026-10-20 00:50，§143.14）把它改成 `:=600s`（**部署 00:31 早于提交 00:50**）。
+
+**⑤ 部署件 = 仓库副本**（不是「服务器上还有另一份」）：
+```
+仓库  scripts/252-monitor/ursm-snapshot-health.sh  md5 = b5aaa384104fb5f45478cae50cd4ef5e
+252   /opt/scripts/ursm-snapshot-health.sh        md5 = b5aaa384104fb5f45478cae50cd4ef5e
+```
+⇒ ⇒ ★★★ **⇒ 结论：只有一条调用路径。**（本节**只覆盖 252 本机**；见 §143.30.8 的边界。）
+
+### §143.30.2 「26 次成功 vs 17 次被杀」的真相：**pgss 只记成功**
+
+把 §143.29 的 pgss 41 h 窗口（`rank_by_reads.out` 的时间戳 2026-10-20 17:15:37 往前 41 h
+⇒ **2026-10-19 00:15:37 ~ 2026-10-20 17:15:37**）
+与脚本自己的日志逐次对齐：
+
+| 量 | pgss（§143.29 的读数） | 脚本日志（去重后） | 是否吻合 |
+|---|---:|---:|---|
+| 窗口内运行次数 | — | **41** | — |
+| 成功（OK） | **calls = 26** | **23** | ★ 同一量级（窗口边缘差 3） |
+| 失败（ABORT） | 「被杀 17 次」（§143.26.3.1） | **18** | ★ 吻合 |
+| 成功执行的平均耗时 | **mean_exec_time = 190,473 ms（190.5 s）** | **202 s** | ★ 吻合 |
+| 成功执行的最长耗时 | **max_exec_time = 591,621 ms（591.6 s）** | **603 s**（客户端侧） | ★ 吻合 |
+
+⇒ ⇒ ★★★★★ **⇒ 「26」与「17~18」不是两条路径的调用数，而是同一个脚本的【成功数】与【失败数】**
+⇒ ⇒ ★★★★ **⇒ §143.29.2.2 的推理链「两者不可能同时成立 ⇒ 必有第二条路径」在这一步就断了** ——
+★ **「成功次数」与「失败次数」本来就可以同时成立**，它们不矛盾。
+⇒ ⇒ ★★★ **⇒ 这是一个【量具口径】问题，不是【机制】问题** ——
+**用「pgss 只记成功」这一个已知盲区，去推「存在第二条调用路径」，必然推错。**
+
+### §143.30.3 **订正横幅十（就地订正 §143.29.2.1 与 §143.29.2.2，原文保留）**
+
+> **订正横幅十（2026-10-20，§143.30 就地订正 §143.29.2.1 与 §143.29.2.2）**
+>
+> ★★★★★ **§143.29.2.2 的「两条调用路径」= 假矛盾；「被砍在 30 s」= 从未测量的假设。**
+> - **实测**：这条查询在 252 的**全部 124 次「被 statement_timeout 杀掉」里，最短的一次是 187 s**，
+>   **没有任何一次 < 180 s** ⇒ ⇒ **「30 s 的角色级超时杀了它」在事实上不成立。**
+> - ⇒ ⇒ **角色级 `statement_timeout=30s`（`llm_gateway`）从未作用于此查询** ——
+>   脚本的 `de()` 用 `PGOPTIONS=-c statement_timeout=${STMT_TIMEOUT}` **在连接建立时就覆盖了它**。
+> - ⇒ ⇒ **§143.29.2.1 的「⇒ ⇒ 30 s 的角色级超时 ⇒ 它【一次也跑不完】」作废**：
+>   **真正的上限是脚本自己的 `STMT_TIMEOUT`** —— **180 s（10-04 ~ 10-20 00:14）→ 600 s（10-20 00:31 起）**。
+> - ⇒ ⇒ **「两条调用路径」= 「同一个脚本的两个版本」**（5 份备份逐字证明，见 §143.30.1④）。
+> - ⇒ ⇒ **「26 次成功」与「17~18 次被杀」是同一个脚本的两种结局**（pgss 只记成功），**不矛盾**。
+> - ⇒ ⇒ ★★ **§143.29 的方向性结论不变**：**巡检仍是结构性成本 #1**（每次 2.9 GB 物理读）
+>   ⇒ ⇒ **但机制要改**：**不是「被 30 s 杀掉」，而是「在自己的预算里跑到超时」**。
+> - ⇒ ⇒ ★★ **§143.29.2.1 的另一个读数仍成立**：注释里的 44.5 s 基线 vs 实测 190 s（≈4.3×）——
+>   **pgss mean 190.5 s ↔ 脚本日志 202 s，两把尺子互证。**
+> - ⇒ ⇒ ★★★ **可复用的纪律**：★ **「PG 日志说 `statement timeout`」≠「被角色级超时杀了」** ——
+>   ★ **必须问「是哪一个超时」**：★ **会话级（`PGOPTIONS` / `SET`）会覆盖角色级**，
+>   ★ **而客户端自己抬超时的脚本，会让角色级的值完全失效。**
+>   ★ **⇒ 判据必须配一个【实测 elapsed】，不能只靠日志里的那句错误文本。**
+
+### §143.30.4 副产品发现 A：**在超载机器上，`statement_timeout` 不是墙钟上限**
+
+| 时期 | 预算 | ABORT elapsed（主判据查询） | n | p50 | max |
+|---|---:|---|---:|---:|---:|
+| 180 s 时代（10-04 ~ 10-20 00:14） | 180 s | 客户端侧总耗时 | 120 | **210 s** | **3,198 s（53 分钟）** |
+| 600 s 时代（10-20 00:31 起） | 600 s | 客户端侧总耗时 | 4 | **618 s** | **639 s**（609/613/618/639） |
+
+⇒ ⇒ ★★★★★ **★ 10-10 那天（OK=0 / ABORT=24）的 24 次超时杀里，有 8 次 elapsed > 1,200 s，
+最长 3,198 s** ⇒ ⇒ **⇒ 在 180 s 的预算下跑了 1,299 ~ 3,198 s ⇒ 超期 7.2× ~ 17.8×**
+⇒ ⇒ ★★★★ **⇒ PG 的 `statement_timeout` 是在【检查点】抛错的，不是硬中断** ——
+★ **查询卡在单个长算子（27M 行的 hash/sort）里时，检查点迟迟不到 ⇒ 错误被推迟到算子结束**
+⇒ ⇒ ★★★★ **⇒ 纪律：在超载机器上，「被超时杀掉」这个判据【必须配一个实测 elapsed】才可用**
+⇒ ⇒ ★★ **⇒ 这也解释了 §143.26.3.1 的「17 次被杀」**：★ **次数对，时长对不上** ——
+★ **§143.26 把「PG 日志说超时」直接当成了「30 s 的角色级超时」，这一步没有验证。**
+
+⇒ ⇒ ★★★ **而 600 s 时代是精确的**（609 / 613 / 618 / 639 s）⇒ ⇒ **⇒ 超时被突破只在灾难日出现**
+⇒ ⇒ **⇒ 也就是说：「超时」在常态下是可靠的上限，在极端负载下会失准 —— 这个区别必须写进判据。**
+
+### §143.30.5 副产品发现 B：**10-20 的 180→600 s 改动把成本放大了 2.9 倍**
+
+- 同一批脚本、同一条查询，**失败时的数据库占用从 p50 210 s 变成 p50 618 s** ⇒ **2.9×**
+- ⇒ ⇒ ★★★ **§143.14.8 自己已经写了**：「⚠ **`STMT_TIMEOUT` 600s 只解决了「出不了结论」，**没有解决成本**：
+  每小时扫 7 天 ~2,370 万行是真的」
+  ⇒ ⇒ ★★★★ **⇒ 本节补上那个成本的数字：它同时把每次失败运行的占用放大了 2.9 倍**
+  ⇒ ⇒ ★★★ **⇒ 「调超时」在这个场景是「【用成本换结论】」** ——
+  **这不是一个免费的动作，它有可测量的价格。**
+- ⇒ ⇒ ★★★ **⇒ 于是「修法收敛」**：★ **降超时会让巡检回到「出不了结论」（§143.14 实测 318 s > 180 s）**，
+  ★ **抬超时已经抬过一次且代价是 2.9× 的占用**
+  ⇒ ⇒ **⇒ 唯一的正路是【降成本】**（P11：基线物化/缓存）⇒ **这与 §143.14 的建议同路。**
+
+### §143.30.6 副产品发现 C：**巡检成功率只有 56%，提高超时后仍未解决**
+
+| 日期 | OK | ABORT | 成功率 |
+|---|---:|---:|---:|
+| 10-04 ~ 10-08 | 95 | 2 | **98%** |
+| 10-09 | 22 | 2 | 92% |
+| **10-10** | **0** | **24** | **0%** |
+| 10-12 | 2 | 22 | 8% |
+| 10-13 ~ 10-17 | 79 | 41 | 66% |
+| 10-18 | 9 | 15 | 38% |
+| 10-19 | 10 | 14 | 42% |
+| 10-20（至 17:17） | 13 | 5 | 72% |
+| **pgss 41 h 窗口** | **23** | **18** | **56%** |
+
+⇒ ⇒ ★★★★ **⇒ 「每小时都失败一次的健康巡检等于没有巡检」这个 §143.14 引用的老问题，
+在把超时从 180 s 抬到 600 s 之后【依然成立】**（56%）
+⇒ ⇒ ★★★ **⇒ 而且失败不是「没数据」，是脚本自己措辞的「量具不可用」（exit 3）**
+⇒ ⇒ ★★★ **⇒ ⇒ 告警面是空的：这一半的小时里，运维看不到任何「快照写入是否健康」的结论。**
+⇒ ⇒ ★★ **⇒ 顺带修正一处旧叙事**：§143.14 说「自 10-10 起大面积出不了结论」——
+★ **实测 10-12 ~ 10-19 的成功率长期在 38%~66% 徘徊，10-10 只是最极端的一天。**
+
+### §143.30.7 对既有结论的重排（**增量**，不改 §143.29 的排名）
+
+| 条目 | 变化 |
+|---|---|
+| **P10**（查清「两条调用路径」） | ★★★★★ **关闭** —— 查清了，**结论是「不存在」** |
+| **P11**（缩短/改写巡检） | ★★★★★ **不变，全局第一** —— ★★ **但它不是新提案**：**§143.14 已提「每日基线物化表」**，本节只是把它的收益从「估计」变成「每次 2.9 GB × 24 次/天 = 74 GB/天的物理读」 |
+| **P14（新增）** | **超时策略**（降回 180 s / 动态 / 与成本联动）—— ★★ **本节的证据说明「单纯调超时」是死路**：降回去就出不了结论，抬上来就 2.9× 占用 ⇒ ⇒ **要么降成本（P11），要么接受「一半的巡检是量具不可用」** |
+| **P15（新增）** | **巡检成功率可观测**（把 56% 这个数做成指标/告警）—— ★★★ **成本最低、收益立即**：★ **现在「量具不可用」只写在一行日志里，告警面是空的** |
+| §143.29 的 P1/P2/P12/P13 | ★ 不变（与本节无关） |
+
+⇒ ⇒ ★★★ **⇒ 一句话**：★ **「谁在跑它」已经查清了（cron :17，一个脚本）；
+★ 「它为什么这么贵」也已经查清了（每小时重扫 7 天基线）；
+⇒ ⇒ 剩下的唯一未解决项是「怎么让它变便宜」⇒ ⇒ 那就是 P11。**
+
+### §143.30.8 诚实边界与本节**没做**的事
+
+- ★★★ **本节只覆盖 252 本机**：★ **没有**排查 211 / 154 / 245 上是否有同名巡检或同形查询
+  ⇒ ⇒ **「只有一条调用路径」这句话的范围是 252**。
+- ★★★ **没有**量出「缩短基线后成本降到多少」⇒ ⇒ **P11 的收益仍然是估计**（不是实测）。
+- ★★ **没有**抓到 10-10 当天的 PG 日志（归档只有 `ctrlog-20261019.log` / `ctrlog-20261020.log`）
+  ⇒ ⇒ **「超时被突破到 3,198 s」是由脚本日志的 elapsed 推出来的**，★ **不是 PG 日志的直接证据**。
+- ★★ **脚本日志有缺口**：解析出 **409 次运行，其中 30 次没有收尾行**（日志轮转/覆盖）
+  ⇒ ⇒ **成功率 56% 是按有收尾的 41 次算的**；缺收尾的那 30 次**没有**被计入失败。
+- ★★ **「P9（抓作业运行时的 `pg_stat_activity`）」本节只拿到一半**：
+  ★ **已抓到**：`INSERT INTO stats_event_dedup` ⇒ **`wait_event_type=IO` / `wait_event=DataFileRead`**
+  （多次采样），以及另一条 `WITH facts AS (SELECT min(occurred_at)::date AS oldest …)`
+  ⇒ **无 `wait_event` 且 `state='active'` ⇒ 它在算，不是在等 I/O、也不是在等锁**；
+  ★ ★★ **样本里没有出现 `Lock`，也没有出现 `Client`**（=「客户端先放弃」）
+  ⇒ ⇒ **⇒ 这与 §143.29 的因果链方向一致（是 I/O 争用），但还没有直接抓到 rollup 自己的那一条**。
+- ★★ **本节没有重跑 §143.29 的排名** ⇒ ⇒ **§143.29 的成本排名仍然成立**（本节只换机制，不换排名）。
+- ★★ **本节未写迁移、未改脚本 / 未改 cron / 未改超时** ⇒ ⇒ **生产行为未变**。
+
+### §143.30.9 待拍板（本节新增 / 变更）
+
+| 编号 | 事项 | 变化 |
+|---|---|---|
+| **P10** | 查清巡检的「两条调用路径」 | ★★★★★ **关闭**（结论：不存在；是同一脚本的 180 s / 600 s 两版） |
+| **P11** | 缩短/改写巡检（**基线物化 / 缓存**） | ★★★★★ **不变，全局第一**；★★ **与 §143.14 的「每日基线物化表」是同一件事** |
+| **P14（新增）** | **超时策略**：降回 180 s / 动态 / 与成本联动 | ★★★★ 新增 —— 本节证明「单纯调超时」是死路（降回去出不了结论、抬上来 3.2× 占用） |
+| **P15（新增）** | **巡检成功率可观测**（56% 这个数做成指标/告警） | ★★★★ 新增 —— 成本最低、收益立即（现在「量具不可用」只在日志里） |
+
+⚠ **P11/P14/P15 是「改生产行为」⇒ 需属主显式授权**；**本节对生产的写入仍为 0**。
+
+### §143.30.10 复核方法（可原样重跑）
+
+```bash
+# ── 1) ★ 唯一调度方（cron / crontab / systemd timer 全查）
+ssh 252 'grep -n "ursm-snapshot-health" /etc/cron.d/* ; crontab -l | grep -i ursm ; \
+         systemctl list-timers --all | grep -i ursm'
+
+# ── 2) ★ 超时是脚本自己设的（PGOPTIONS 覆盖角色级 30s）
+ssh 252 'grep -n "STMT_TIMEOUT\|PGOPTIONS" /opt/scripts/ursm-snapshot-health.sh'
+
+# ── 3) ★ 版本史（5 份备份逐字证明 180s → 600s）
+ssh 252 'for f in /opt/scripts/backups/ursm-snapshot-health.sh.bak.* \
+           /opt/backups/pg17/ursm-snapshot-health.sh.bak.* \
+           /opt/scripts/ursm-snapshot-health.sh; do \
+           echo "--- $f"; stat -c "    mtime=%y" $f; grep -n "STMT_TIMEOUT:=" $f; done'
+
+# ── 4) ★ 部署件 == 仓库副本
+md5 -q scripts/252-monitor/ursm-snapshot-health.sh
+ssh 252 'md5sum /opt/scripts/ursm-snapshot-health.sh'
+
+# ── 5) ★ 脚本自己的日志（唯一能给出【实测 elapsed】的尺子）
+ssh 252 'grep -a -E "^\[20[0-9-]+ [0-9:]+\] (start ursm-snapshot-health|control ok|baseline span|ABORT|summary: |OK: )" \
+         /var/log/ursm-snapshot-health.log | sort -u'
+```
+
+⇒ ⇒ ★ **本节落地的门**（不连库，可原样重跑）：
+
+```bash
+# §143.30 文档门：P10 闭合 / 订正横幅十 / 30s 假设被证伪 / 两个副产品发现 / P14~P15
+GOCACHE=/tmp/gocache-p1437 go test ./scripts/ursmcheck/ -run 'TestRunbook14330' -count=1 -v
+```
+
+★ 同族：[[先读量具再读产物]] · [[0 命中的第一嫌疑是量具坏了]] ·
+[[量具之间矛盾时先怀疑量具]] · [[阴性结论要当缺陷一样复核]] ·
+[[自己上一节的结论也要复核]] · [[跨节订正前先自问「我要订正的这条真的错了吗」]] ·
+[[PG 日志说超时 ≠ 被角色级超时杀了]] · [[要测冷态每一臂都要有自己的冷窗口]]。
+
+## §143.31 **P9 闭环**：rollup 在生产上**等的是 I/O**；⇒ **P11 有了明确落点，且是零语义风险**（2026-10-20）
+
+### §143.31.0 结论先行
+
+1. ★★★★★ **P9 闭合（§143.28.5 的判别表落地）** ——
+   在生产上以 **2 s 采样 `pg_stat_activity`** 抓到了 rollup 的运行现场：
+
+   | 时刻 | 语句 | state | wait_event_type | wait_event | age |
+   |---|---|---|---|---|---:|
+   | 17:50:36.038 | `DELETE FROM stats_usage_daily WHERE day_utc >= (…)` | active | **IO** | **DataFileRead** | 0.11 s |
+   | 17:50:38.046 | 同上 | active | **IO** | **DataFileRead** | 2.12 s |
+   | 17:50:40.055 | 同上 | active | **IO** | **DataFileRead** | 4.12 s |
+   | 17:50:42.076 | `WITH latest AS (SELECT f.* FROM usage_facts f JOIN stats_event_dedup …)`（= `dailyInsertSQL`，`domains/stats/daily_monthly_rollup.go:195`） | active | **IO** | **DataFileRead** | 0.91 s |
+
+   ⇒ ⇒ ★★★★★ **⇒ 两条语句【全部】在等物理 I/O**（`DataFileRead`）
+   ⇒ ⇒ ★★★★ **⇒ 没有一条是 `Lock`（撞车）、没有一条是 `Client`（客户端先放弃）**
+   ⇒ ⇒ ★★★★★ **⇒ §143.28 的「争用」判断成立**：**rollup 不是在算，是在等磁盘**
+   ⇒ ⇒ ★★★★ **⇒ §143.29 的因果链里最关键的那一环，从「推断」变成了「实测」**
+   （★ 完整的因果闭环仍需 P11 的授权验证，但「rollup 在等 I/O」这一环已是现场读数。）
+
+2. ★★★★ **⇒ 两条读数互相印证（第三把尺子对上）**：
+   ★ **DELETE 的 age 0.11 → 2.12 → 4.12 s**，紧接着聚合语句在 **17:50:42** 启动（age 0.91 s）
+   ⇒ ⇒ **DELETE 实测 ≥ 4.12 s** ⇒ 与 §143.27 的 **`DELETE` = 4,818 ms**（生产 110 次真实调用）**吻合**
+   ⇒ ⇒ **⇒ 三把尺子（脚本侧计时 / pgss / 现场 pg_stat_activity）第一次三方对上。**
+
+3. ★★★★★ **★ 由此得到一个更硬的结论**：★ **聚合语句一启动就 `IO|DataFileRead`**
+   ⇒ ⇒ **它不是「先算一段、再等 I/O」，而是【一上来就在等磁盘】**
+   ⇒ ⇒ ★★★ **⇒ 「换 JOIN 形态（LATERAL / 半连接）」确实救不了它** ——
+   ⇒ ⇒ **§143.28 的方向性结论（「优化单条 join」不是正确方向）现在有了生产现场的直接支持。**
+
+4. ★★★★★ **P11 有了明确落点，而且【是零语义风险的】**（详见 §143.31.2）：
+   巡检的三个 CTE 里，**`base_buckets` 是唯一贵的那条**：
+   **每小时把 7 天（≈ 2,600 万行）全扫一遍 + `GROUP BY (slot, date_trunc)`**
+   ⇒ ⇒ ★★★ **⇒ 它的产出只依赖「(天, 小时位, 桶) 的行数」，这个量【每天只变一次】**
+   ⇒ ⇒ **⇒ 物化成一张每日汇总表即可 ⇒ 每小时只查几百行 ⇒ 扫描量 −96%，判定输入逐字不变**
+   ⇒ ⇒ **⇒ 它【不是】「缩短 7 天窗」（那是属主的语义决策），而是【换个地方算】（零语义风险）**
+   ⇒ ⇒ ★★★ **⇒ 与 §143.27 的 151 MB 索引改造同属「零语义风险」那一类
+   ⇒ ⇒ ⇒ 只需要属主授权「写迁移 + 改脚本」，不需要语义拍板。**
+
+⚠ **本节对生产的写入 = 0**：全部只读
+（`pg_stat_activity` 轮询采样 + 巡检脚本源码阅读 + 仓库源码阅读）。**没有**改脚本 / 改 cron /
+改超时 / 建表 / 建索引 / 跑迁移 / 改任何配置。
+
+### §143.31.1 P9 的取证细节（可原样重跑）
+
+**采样器**（只读，2 s 一次，命中即打印）：
+```sql
+SELECT to_char(clock_timestamp(),'HH24:MI:SS.MS') AS t, pid, state,
+       coalesce(wait_event_type,'-') AS wt, coalesce(wait_event,'-') AS we,
+       round(extract(epoch from (clock_timestamp()-query_start))::numeric,2) AS age_s,
+       left(regexp_replace(query,'\s+',' ','g'),70) AS q
+FROM pg_stat_activity
+WHERE datname = current_database() AND state <> 'idle'
+AND (query ILIKE '%stats_usage_daily%' OR query ILIKE '%stats_event_dedup%')
+```
+
+★ **为什么这样选**：
+- ★ **`state <> 'idle'`** ⇒ 只要连接在跑就算数（idle in transaction 也会暴露）；
+- ★ **`wait_event_type` / `wait_event`** ⇒ PG 17 的**等待事件分类**（`IO` / `Lock` / `Client` / 空）；
+  ★ **空 + `state='active'` ⇒ 它在【算】**（这是 §143.28.5 判别表的第三档）；
+- ★ **`age_s` 用 `query_start` 算** ⇒ 拿到的是**这条语句已经跑了多久**，而不是事务年龄。
+
+★ **同批采样里的其它读数**（同样有诊断价值）：
+| 观察到的语句 | wait_event_type | wait_event | 判读 |
+|---|---|---|---|
+| `INSERT INTO stats_event_dedup (…)`（`domains/stats/event_writer.go:176` 的写手） | **IO** | **DataFileRead** | ★ **stats 写手也在等物理 I/O** ⇒ ★ **它与 rollup 抢的是同一块盘** |
+| `WITH facts AS (SELECT min(occurred_at)::date AS oldest FROM public.usage_facts …)` | （空） | （空） | ★ **在算**，而且**同一条带 3 个并行 worker**（3 个 pid 的 age 相同）⇒ ★ **它开并行抢 CPU** |
+| `WITH facts AS …` 的来源 | — | — | ★ **`bg/routing_health_checks.go:947` 的 `stats_ground_truth_gap` 检查** |
+
+⇒ ⇒ ★★★ **⇒ 顺带发现：CPU 侧也有竞争者** ——
+`stats_ground_truth_gap` 是**路由健康检查**，它在 4 核机上开**并行 worker** 扫
+`usage_facts` + `stats_usage_daily` ⇒ ⇒ **它与 rollup 抢 CPU，而 rollup 与巡检抢 I/O**
+⇒ ⇒ **⇒ 252 的 load 14/4 核 是【多个作业】共同造成的，不是单点**（与 §143.28 的「墙钟不可信」一致）。
+
+> **订正横幅十二（2026-10-20，§143.33 就地订正本节 §143.31.1）**
+>
+> ★★★★★ **本节上面这句「它与 rollup 抢 CPU，而 rollup 与巡检抢 I/O ⇒ ⇒ ⇒ 252 的 load 14/4 核 是【多个作业】共同造成的」——【前半成立、后半站不住】。**
+> - ★ **前半成立**：`stats_ground_truth_gap` **确实开并行 worker**
+>   （本节 §143.31.1 现场抓到同一条带 3 个 pid、age 相同）。
+> - ★★★★ **但「抢 CPU」这半句没有证据支撑 ⇒ 作废** ——
+>   §143.33 已把它量化（`pg_stat_statements`，窗口 `stats_reset` = **2026-10-18 22:03:37** → ≈ **44.3 h**）：
+>   | 量 | 读数 |
+>   |---|---|
+>   | `calls` | **331**（≈ 7.5 次/小时） |
+>   | `total_exec_time` | **264,220.1 ms（264.2 s）** ⇒ **占 44.3 h 墙钟的 0.17%** |
+>   | `mean_exec_time` | **798.2 ms** |
+>   | `max_exec_time` | **15,910.5 ms（15.9 s）** |
+>   | `shared_blks_read` | **76,147** ⇒ **230 块/次（≈ 1.8 MB）** |
+>   ⇒ ⇒ **它总 DB 时间只有 0.17% 墙钟、物理读只有 230 块/次 ⇒ ⇒ 它抢不走 CPU，也不吃 I/O。**
+> - ★★★★ **⇒ 而且 §143.31.1 对 rollup 的现场读数是 `wait_event_type=IO` / `DataFileRead`，
+>   【不是】CPU 等待** ⇒ ⇒ **⇒ rollup 的瓶颈是【I/O】，与它无关 ⇒ ⇒ 「它与 rollup 抢 CPU」这条因果链不成立。**
+> - ⇒ ⇒ ★★★ **⇒ 252 上其实有【两条独立的瓶颈线】，不要混谈**：
+>   | 线 | 谁 | 证据 |
+>   |---|---|---|
+>   | **I/O** | **ursm 快照健康巡检** | 每次 **2.9 GB** 物理读、累计 **74 GB**（§143.29） |
+>   | **总 DB 时间 / CPU** | **matview 刷新**（`routing_analytics_7d` 等） | 115 次 × 60.6 s ≈ **6,965 s**（§143.33） |
+>   | （之前被当成一条线的）rollup | rollup | 现场 `IO|DataFileRead` ⇒ **它等的是 I/O，不是 CPU**（§143.31） |
+> - ⇒ ⇒ ★★★ **⇒ P16 降级**（从「新的第一优先候选」→「已量化 ⇒ 降级」）；完整取证见 runbook `§143.33`。
+
+### §143.31.2 P11 的具体落点：**把 `base_buckets` 从「每小时全扫 7 天」换成「每天一次物化」**
+
+#### §143.31.2.1 现状（脚本源码逐字，`scripts/252-monitor/ursm-snapshot-health.sh`）
+
+```sql
+base_buckets AS (
+  SELECT $G_SLOT_TS AS slot, count(*) AS c
+  FROM ursm_node_snapshot_min
+  WHERE snapshot_ts >= $NOW_EXPR - make_interval(days => $BASELINE_DAYS)  -- 7 天
+    AND snapshot_ts < (SELECT lo FROM win)
+  GROUP BY 1, $G_TRUNC snapshot_ts)),
+```
+⇒ ⇒ ★★★ **这是唯一贵的那条**：★ **7 天 × ≈375 万行/天 ≈ 2,600 万行，每小时全扫一遍**
+⇒ ⇒ **§85 的成本分解**：`base_buckets` **61%** + `base_active` 35% + `cur` 4%
+⇒ ⇒ **⇒ 物化 `base_buckets` ⇒ 直接砍掉巡检 61% 的成本**
+
+#### §143.31.2.2 ★ 为什么这是**零语义风险**的（关键论证）
+
+★ **`base_buckets` 的产出只有两个用途**：
+① 按小时位 `slot` 分组，每组取**中位数**（与同时段基线比大小）；
+② 输出 `c`（行数基线）。
+
+★ **这两个用途都只依赖「每个 (天, 小时位, 桶) 的行数」这一个量** ——
+★ **而这个量在一天之内是不变的**（只在跨天时新增一批）
+⇒ ⇒ ★★★★★ **⇒ 把「(天, slot, 桶) → 行数」每天算一次存起来，
+   巡检时用最近 7 天的这张表算中位数 ⇒ 【判定输入逐字相同】**
+⇒ ⇒ ★★★ **⇒ 与「缩短 7 天窗」完全不同**：
+- 「缩短窗口」= **改判据的语义** ⇒ **属主的决策**（§143.21/§143.22 那一族的「保留期」语义）；
+- ★ **「换个地方算」= 改实现，不改判定** ⇒ **零语义风险** ⇒ **可仓内直接落地**（仍需写生产迁移的授权）。
+
+#### §143.31.2.3 落地形态（草案，未实施）
+
+| 项 | 内容 |
+|---|---|
+| 新表 | `ursm_snapshot_slot_daily(day date, slot int, bucket_ts timestamptz, rows bigint)`，主键 `(day, slot, bucket_ts)` |
+| 体积 | 小时粒度：24 slot × 24 桶 = **576 行/天**；分钟粒度：34,560 行/天 ⇒ ★ **7 天窗口只需几千行** |
+| 填充 | 每天一次（或每小时滚动补「昨天」）算「前一天的每个 (slot, 桶) 的行数」⇒ **3.75M 行/天扫一次**，而不是 26M 行 × 24 次 |
+| 巡检侧 | `base_buckets` 改为读这张表 ⇒ **每小时从 2,600 万行全扫降到几千行** |
+| 语义 | ★ **判定输入不变** ⇒ ★ **零语义风险** |
+| 扫描量 | **26M 行/小时 → 3.75M 行/天 ⇒ −96%**（★ **估算，未实测**） |
+
+> **订正横幅十六（2026-10-20，§143.35 就地订正本节 §143.31.2.3）**
+>
+> ★★★★ **本节上面的「−96%（估，未实测）」与「物理读 −85%（估，未实测）」现在【有实测了】。**
+> - ⇒ ⇒ ★★★★ **P11 已仓内落地**（迁移 892 + 巡检基线来源二选一），**对生产的写入 = 0、未部署**。
+> - ⇒ ⇒ ★★★★★ **★★ 「零语义风险」这句话原本【不是】零的 —— 是被实测修正的**：
+>   ★★★ **第一次 A/B 实测 FAIL**（先失败、后改设计）：
+>   - 现象：**16 行 `OLD_ONLY`，全部是【今天】的桶**；
+>   - 根因：★ **汇总表的填充范围是 `[today - N, today)`，【不含今天】**
+>     （今天的数据还在写，不能算「每天一次」的稳定值）
+>     ⇒ 而源表路读 `now - 7 days` 起 ⇒ **含今天** ⇒ ⇒ 两路键集合不同；
+>   - ⇒ ⇒ ★★★ **⇒ 修正 = 方案 B**：【过去的完整天】走汇总表 + 【今天】仍实时读源表
+>     ⇒ ★★ **【今天实时读】本来就对**（今天的数据在变）。
+> - ⇒ ⇒ ★★★★★ **★★ 「回退机制」原本是【假的】—— 也是被端到端实测抓出来的**：
+>   ★ 最初设计「同一段 SQL 里用 `CASE` 选源」⇒ ★★★ **实测直接崩**：
+>   `ERROR: relation "public.ursm_snapshot_slot_daily" does not exist`
+>   ⇒ ⇒ ★★★ **根因：PG 在【规划期】就解析表名** ⇒ 即使 `WHERE 'source'='daily'`
+>   是常量（会被折叠），**只要 SQL 文本里出现了那个不存在的表，整条语句就报错**
+>   ⇒ ⇒ ★★★★ **⇒ 「把两路写进同一段 SQL」在表不存在时【行不通】**
+>   ⇒ ⇒ ★★ **⇒ 正确形态：两段各自完整的 SQL，在 shell 里按探测结果二选一**
+>   ⇒ ⇒ ★★★ **⇒ 这不是洁癖，是「回退必须是真回退」的前提** ——
+>   表不存在时若脚本直接崩，那不是回退，而是**巡检失明**。
+> - ⇒ ⇒ ★★★★ **★ 一处【判定输入的真实改动】**：
+>   ★★★ **窗口下界从「行时间」改成「桶对齐」**（旧：边界桶只算半截；新：整桶）
+>   ⇒ ⇒ **⇒ 这是一处真实的语义改动 ⇒ 必须由属主知情并拍板**
+>   ⇒ ⇒ 门 `TestSection14335PatrolUsesBucketAlignedWindow` 钉住它（防止被当成「零成本改动」）。
+> - ⇒ ⇒ ★★★★ **本节上表那两行「估算」现在的准确说法**：
+>   | 量 | 本节原来写的 | §143.35 的实测状态 |
+>   |---|---|---|
+>   | 扫描量 | −96%（估） | ★★ **未实测**（汇总表路读几千行是【结构性】的，量级确定，但没在生产量过） |
+>   | 物理读 | −85%（估） | ★★ **未实测**（同理） |
+>   | ★★ **判定等价** | ★ **未验证** | ★★★★★ **三层断言全 PASS**（`ab_identical` / `p50_identical` / `verdict_identical`） |
+>   ⇒ ⇒ ★★★ **⇒ 「判定等价」从【论证】升级为【实测】**；
+>   ⇒ ⇒ ★★ **而「省多少」仍然是【估】** ⇒ ⇒ **不因等价性已证就承诺收益数字**（§143.28 的纪律）。
+>   完整记录见 runbook `§143.35`。
+| 物理读 | ★ **巡检每次 2.9 GB ⇒ 估 0.2~0.4 GB（估，未实测）** ⇒ ★ **−85% 上下（估）** |
+| 次级杠杆 | `base_active`（2 天 + `count(DISTINCT date_trunc('minute', ts))`，35%）⇒ 可同样按「(天, slot) 的活跃分钟数」物化 |
+
+⚠ **上表的收益数字是估算，不是实测** —— ★ **本节没有跑过一次物化后的查询**（那是生产写，需授权）。
+
+### §143.31.3 对既有结论的增量
+
+| 条目 | 变化 |
+|---|---|
+| **P9** | ★★★★★ **关闭** —— 现场读数已拿到：`IO|DataFileRead`（两条语句都是），**无 `Lock`、无 `Client`** |
+| **P11** | ★★★★★ **仍是全局第一**，★ **但从「方向」变成「有落点」**：★ **落点 = `base_buckets` 每日物化**，★ **且是零语义风险**（§143.31.2） |
+| **P16（新增）** | **CPU 侧也要看**：`stats_ground_truth_gap`（`bg/routing_health_checks.go:947`）在 4 核机上开**并行 worker** 扫 `usage_facts`+`stats_usage_daily` ⇒ ★ **它与 rollup 抢 CPU** ⇒ ★ **是否该限制它的并行度/频率，值得单查**（★★ **本节未查 ⇒ 诚实边界**） |
+| §143.29 的排名 / §143.30 的机制 | ★ 不变（本节只补现场证据，不改排名） |
+
+> **订正横幅十三（2026-10-20，§143.33 就地订正本节 §143.31.3 的 P16 行）**
+>
+> ★★★★ **上表 P16 那一行的两处结论都要改（原表保留原文）：**
+> - ★★★★ **① 「它与 rollup 抢 CPU」= 没有证据支撑 ⇒ 作废** ——
+>   §143.33 实测：总 DB 时间 **264.2 s / 44.3 h（0.17% 墙钟）**、物理读 **230 块/次**
+>   ⇒ ⇒ **它不是 rollup 的瓶颈**（§143.31 的 rollup 现场读数是 `IO|DataFileRead`，**不是 CPU 等待**）。
+>   详见**订正横幅十二**。
+> - ★★★★ **② 「本节未查 ⇒ 诚实边界」已闭合 ⇒ 结论【降级】而不是升级** ——
+>   §143.33 已把它量化：**331 calls / 均时 798.2 ms / max 15.9 s / 230 块每次**。
+>   ⇒ ⇒ ★★★ **⇒ 它不是 CPU 侧大户 ⇒ 「CPU 侧真正的大户」是 matview 刷新**
+>   （115 次 × 60.6 s ≈ **6,965 s**）⇒ ⇒ ★★ **⇒ 也就是 §143.26.8 的 P1 / B1**
+>   ⇒ ⇒ ★★★ **⇒ §143.29 把 P1「降为第三」，§143.33 要把它【调回】**
+>   ⇒ ⇒ ★ **但注意两把尺子的口径**：P13 的「物理读/次」把 matview 排在巡检后面；
+>   §143.33 的「总 DB 时间」把 matview 排在巡检前面 ⇒ ⇒ ★★★ **两条线都要修，顺序取决于【要解决磁盘还是 CPU】**
+>   ⇒ ⇒ ★★ **⇒ 而 §143.31 已证明 rollup 的瓶颈是 I/O ⇒ ⇒ 先修巡检（P11）。**
+> - ★★★ **⇒ P16 降级后，它剩下的真价值只有一条**：`max_exec_time = 15.9 s`
+>   （离 30 s 的角色级超时只差一半）⇒ **值得盯，但不值得为它单独做动作。**
+
+### §143.31.4 诚实边界与本节**没做**的事
+
+- ⚠ **本节对生产的写入 = 0**；**未写迁移、未改脚本、未改 cron、未改超时** ⇒ **生产行为未变**。
+- ★★ **P11 的收益（−96% 扫描量 / −85% 物理读）是估算，未实测** ——
+  ★ 要实测需要「建表 + 写迁移 + 改脚本 + 部署」⇒ **需属主授权**。
+- ★★ **没有抓到 rollup 那一轮是否最终被 30 s 杀掉** ——
+  ★ 抓到的只是它的**两条语句的等待事件**；
+  ★ 252 的 PG 容器日志路径在采样后发生了变化（容器被重建），154 上网关服务名下的日志没取到
+  ⇒ ⇒ **诚实边界：本节只回答了「它在等什么」，没回答「它最后成没成功」。**
+- ★★ **`stats_ground_truth_gap` 只被识别出来，**没有被量化**（不知道它每次跑多久、多占多少 CPU）。
+
+> **订正横幅十四（2026-10-20，§143.33 就地订正本节 §143.31.4 的这条诚实边界）**
+>
+> ★★★★ **上面这条「`stats_ground_truth_gap` 只被识别出来，**没有被量化**」已被 §143.33 闭合。**
+> - ⇒ ⇒ **量化结果**（`pg_stat_statements`，窗口 44.3 h）：
+>   **331 calls / 总 264,220.1 ms（264.2 s）/ 均时 798.2 ms / max 15,910.5 ms / 76,147 块（230 块每次）**。
+> - ⇒ ⇒ ★★★ **⇒ 方向与本节 §143.31 的预设【相反】** ——
+>   本节把它登记成「CPU 侧竞争者」是**推测**，量化后它**不是**
+>   ⇒ ⇒ ★★★ **⇒ 「未查」被查清后，结论可以与登记时相反 ⇒ 这正是【必须补量化】而不能只登记的理由。**
+> - ⇒ ⇒ ★ **⇒ P16 相应降级**（订正横幅十二 / 十三）；完整取证见 runbook `§143.33`。
+- ★★ **采样只覆盖了 1 次 rollup 运行**（17:50 那一轮）⇒ ★ **不能据此说「每一次都是 IO 阻塞」**
+  ⇒ ★ **「这一轮在等 I/O」是实测；「每轮都在等 I/O」是外推。**
+- ★★★ **采样器本身有盲区**：★ 它按 `query ILIKE` 匹配 ⇒ ★ **一条语句若不含
+  `stats_usage_daily` / `stats_event_dedup` 字样就抓不到** ⇒ ★ **例如聚合语句是因为含
+  `stats_event_dedup` 才被匹配到的** ⇒ ★ **漏抓是可能的**（★ 这也是「阴性结论要当缺陷一样复核」的同族）。
+
+### §143.31.5 待拍板（本节新增 / 变更）
+
+| 编号 | 事项 | 变化 |
+|---|---|---|
+| **P9** | 抓作业运行时的 `pg_stat_activity` | ★★★★★ **关闭**（`IO|DataFileRead`；无 Lock、无 Client） |
+| **P11** | 缩短/改写巡检 | ★★★★★ **仍是全局第一**；★★ **落点 = `base_buckets` 每日物化（零语义风险）**；★★ **与 §143.14 的「每日基线物化表」同一件事** |
+| **P16（新增）** | **CPU 侧竞争者**：`stats_ground_truth_gap` 的并行度/频率 | ★★★ 新增 —— 本节只识别，未量化 |
+| **P14 / P15** | 超时策略 / 巡检成功率可观测 | ★ 不变（§143.30） |
+
+⚠ **P11/P16 是「改生产行为」⇒ 需属主显式授权**；**本节对生产的写入仍为 0**。
+
+### §143.31.6 复核方法（可原样重跑）
+
+```bash
+# ── 1) ★ 生产只读：抓 rollup 运行时的等待事件（2 s 采样）
+#    采样 SQL 见 §143.31.1（只读 SELECT）
+
+# ── 2) ★ 巡检脚本的三条 CTE 与成本归属（仓库侧，不连库）
+grep -n "base_buckets\|base_active\|G_ACTIVE\|BASELINE_DAYS" scripts/252-monitor/ursm-snapshot-health.sh
+
+# ── 3) ★ rollup 的两条语句与调度
+grep -n "DELETE FROM stats_usage_daily\|WITH latest AS\|defaultRollupInterval" \
+     domains/stats/daily_monthly_rollup.go
+
+# ── 4) ★ CPU 侧竞争者的来源
+sed -n '940,960p' bg/routing_health_checks.go
+```
+
+⇒ ⇒ ★ **本节落地的门**（不连库，可原样重跑）：
+
+```bash
+# §143.31 文档门：P9 现场读数 / P11 的落点与零语义论证 / CPU 侧竞争者 / 诚实边界
+GOCACHE=/tmp/gocache-p1437 go test ./scripts/ursmcheck/ -run 'TestRunbook14331' -count=1 -v
+```
+
+★ 同族：[[先读量具再读产物]] · [[量具之间矛盾时先怀疑量具]] ·
+[[EXPLAIN 只证明「计划会选」]] · [[阴性结论要当缺陷一样复核]] ·
+[[自己上一节的结论也要复核]] · [[PG 日志说超时 ≠ 被角色级超时杀了]] ·
+[[阈值型判据先量噪声底]]。
+
+## §143.32 补上 §143.30 的边界缺口：**211 也跑同一个巡检** —— 而 211 缺的是【分区】与【可观测性面】（2026-10-20）
+
+### §143.32.0 结论先行
+
+§143.30.8 留了一条诚实边界：「**『只有一条调用路径』这句话的范围是 252**」
+⇒ ★ **本节把 211 / 154 / 245 查了一遍**，结论如下：
+
+1. ★★★★★ **211 也跑同一个巡检**（此前**没有任何文档写过**这件事）：
+   `/etc/cron.d/llmgw-ursm-snapshot-health:21` ⇒ **同样是每小时 :17**
+   ⇒ 脚本 `/opt/llm-gateway-go-211/scripts/ursm-snapshot-health.sh`
+   ⇒ ★ **它用 211 自己的适配层**（`/etc/llmgw/pg17.conf`：`CONTAINER=acc-pg17` +
+   `PSQL_CMD=…/psql-acc-pg17.sh`）⇒ ★ **仓内脚本一个字都没改**（`LLMGW_PG17_CONF` 扩展点）。
+   ⇒ ⇒ **两台机器各跑各的 PG ⇒ 不构成竞争** ⇒ ★ **§143.30 的「只有一条调用路径」在 252 库里依然成立。**
+
+2. ★★★★ **⇒ 211 上发现一个【真缺陷】：巡检探针失准 ⇒ 假告警**
+   211 的巡检日志**每轮**都写：
+   `baseline span: 0 day(s) with data (oldest 0, newest 0)` + `baseline_thin=thin:0d/7d`
+   + 「本次 OK 判定是**偏宽松**的」
+   ⇒ ⇒ **但 211 的表里【有】7 天数据**（实测 **5,933,760 行**，min `2026-10-13 17:30`，max `2026-10-20 18:02`）
+   ⇒ ⇒ ★★★ **⇒ 根因：211 的 `ursm_node_snapshot_min` 是【普通表】（`relkind='r'`）不是分区表**
+   ⇒ ⇒ **⇒ 探针走 `pg_inherits` + 分区名正则 `_[0-9]{8}$` ⇒ 在普通表上必然返回 `0|0|0`**
+   ⇒ ⇒ ★★★ **⇒ 这是一个【假告警】：它在报一个不存在的「基线样本不足」**
+   ⇒ ⇒ ★★ **且它【不】影响判定**：主判据 `base_buckets` 走的是**数据**不是分区目录
+   ⇒ ⇒ **⇒ 211 的 `ref_p50` 实测 = 39,494（> 0）⇒ 判定是对的**
+   （★ `ref_p50` 取自 `summary` 行的第 8 个字段 —— 脚本 `ref_p50=$(… awk '{print $8+0}')`。）
+
+3. ★★★★★ **⇒⇒⇒ 211 上的三件事其实是【同一件】—— 表没分区**：
+
+   | 现象 | 机制（仓内源码/实测） | 执行 830 之后 |
+   |---|---|---|
+   | 巡检探针报「0 天数据」（**假告警**） | 表不是分区表 ⇒ `pg_inherits` 无子分区 ⇒ 探针恒返回 0 | ★ **自动恢复** —— 830 的分区名是 `ursm_node_snapshot_min_YYYYMMDD`（`830_…sql.skip:206`）⇒ **正好匹配探针的 `_[0-9]{8}$`** |
+   | 留存走 **DELETE** ⇒ 磁盘单调增长 | `domains/ursm/v2/persist/retention_partition.go:17` 每轮探测 `pg_class.relkind='p'` ⇒ 非分区表 ⇒ 走 `deleteBatch`（`retention.go:344`） | ★ **自动切路** ⇒ ★★ **零 Go 改动** |
+   | 表占库 **38.0%**（2,296 MB / 6,047 MB） | DELETE 只把行变成死元组，空页留在堆的物理头部 ⇒ VACUUM 截不掉（830 设计稿 §1.3 原文） | ★ **DROP 分区 ⇒ 整块回收** |
+
+   ⇒ ⇒ ★★★ **⇒ 211 缺的正是迁移 830（分区化），而它【是 `.skip` 的】** ——
+   ★★ **`.skip` 是设计如此**（文件头：「手工执行迁移，**不在 installer 自动启动序列里**」，
+   理由是「步骤 1 会对一张 10 GB 的活表做 RENAME」）
+   ⇒ ⇒ **⇒ 211 要修，就得在可控窗口里人工跑一次 830 ⇒ 这是属主的授权项。**
+
+4. ★★★★ **⇒ P11 的适用范围因此被收窄（重要！）**：
+   | | 252 | 211 |
+   |---|---|---|
+   | 表形态 | 分区表 | **普通表** |
+   | 7 天行数 | **27,806,075** | **5,933,760**（**1/4.7**） |
+   | 每桶行数（基线中位） | 177,910 | **39,494**（**1/4.5**） |
+   | **巡检一轮耗时** | **170 ~ 731 s**（p50 210 s） | **~4 s** |
+   ⇒ ⇒ ★★ **⇒ `base_buckets` 每日物化（P11）只对 252 有收益；211 不需要**
+   ⇒ ⇒ ★★★ **⇒ ⇒ 「把同一套改动推到两台机器」在这里是错的 ⇒ 必须按实例分别裁决**
+   ⇒ ⇒ ★★ **⇒ 顺带一个【天然对照】**：★ **同一份脚本在两台实例上的耗时差 40~180×，
+   远超行数比 4.7×** ⇒ ⇒ ⇒ **【提示】252 的额外开销来自 I/O 争用而不只是数据量**
+   ⇒ ⇒ ★ **但两台不是同一台机器 ⇒ 这只是【提示】，不是【证明】**（诚实边界）
+
+5. ★★★★ **⇒⇒⇒ 211 的【可观测性面】比 252 窄得多**（本轮实测）：
+   - ★ **211 的 `/etc/cron.d` 只登记了 1 个巡检脚本**（`llmgw-ursm-snapshot-health`）
+     ⇒ ★★ **252 登记了 12 个** ⇒ ⇒ **⇒ 211 上没有：可用性心跳、disk-watch、emergency-cleanup、
+     index-bloat、duplicate-index-check、table-bloat、onconflict-constraint-check…**
+   - ★★ **211 也没有部署台账**：仓内只有 `scripts/252-monitor/deployed-252.tsv` 与
+     `deployed-cron-252.tsv` ⇒ ⇒ **⇒ 「改了仓内脚本却没部署」在 211 上【完全无人察觉】**
+     ⇒ ★ **而 211 的巡检脚本 md5 确实与 252 的不同**（`c6d25bde…` vs `b5aaa384…`，
+     前者是 **180 s** 版、后者是 **600 s** 版 ⇒ ★ 211 的脚本比 252 的旧一代）
+   - ★★★ **⇒⇒ 由此，§143.26 的 P8（211 的 `pg_stat_statements` 进 preload）从「次要」升级为
+     「211 可观测性的前提」**：★ **慢查询量具在 211 上根本不可用**
+     ⇒ ⇒ **⇒ 没有量具 ⇒ 上面这些结论只能靠「读脚本 + 读日志 + 读目录」拿 ⇒ 这就是本节的取证方式。**
+
+⚠ **本节对生产的写入 = 0**：全部只读
+（211 的脚本 / cron / 配置 / 巡检日志、`pg_class` / `pg_inherits` / `pg_stat_user_tables` /
+`pg_settings` 的只读查询 + 仓内源码与迁移阅读）。**没有**改脚本 / 改 cron / 改配置 /
+建表 / 建索引 / 跑迁移 / 部署任何东西。
+
+### §143.32.1 211 的巡检长什么样（实测）
+
+```
+/etc/cron.d/llmgw-ursm-snapshot-health:21
+17 * * * * root LLMGW_PG17_CONF=/etc/llmgw/pg17.conf \
+     /opt/llm-gateway-go-211/scripts/ursm-snapshot-health.sh \
+     >> /opt/llm-gateway-go-211/logs/ursm-snapshot-health.log 2>&1
+```
+⇒ ★ **与 252 同一分钟（:17）**、同一份仓内脚本（`scripts/252-monitor/ursm-snapshot-health.sh`）、
+★ **同一套判据参数**（`WINDOW_HOURS=3`、`BASELINE_DAYS=7`）。
+
+★ **211 的适配层**（`/etc/llmgw/pg17.conf`，2026-10-19 建）已经把 211 的差异吸收掉了：
+```ini
+CONTAINER=acc-pg17
+PSQL_CMD=/opt/llm-gateway-go-211/scripts/psql-acc-pg17.sh
+PG_USER=llm_gateway
+PG_DB=llm_gateway
+```
+⇒ ★ **「不改仓内脚本一个字」的适配约定成立** ⇒ ★★ **⇒ 任何仓内修复（含 §143.31 的探针修法）
+都能用同一份脚本落到 211 上**（只要部署）。
+
+★ **211 的运行样本**（每轮 4 秒）：
+```
+[2026-10-20 17:17:01] start ursm-snapshot-health mode=report now=now() window=3h granularity=hour baseline=7d ratio=0.5
+[2026-10-20 17:17:01] control ok: rows_in_last_10min=9240
+[2026-10-20 17:17:01] baseline span: 0 day(s) with data (oldest 0, newest 0), BASELINE_DAYS=7
+[2026-10-20 17:17:05] summary: 3|0|0|0|0|3|37831|39494|55285|100 | baseline_thin=thin:0d/7d
+[2026-10-20 17:17:05] OK: 无真空洞，无降级
+```
+⇒ ★★★ **注意第 3 行**：`0 day(s) with data` —— **这就是假告警的现场**
+⇒ ★★ 而第 4 行的 `ref_p50` = **39,494**（> 0）⇒ ★★ **所以最后的 `OK` 是【对的】**。
+
+### §143.32.2 探针为什么在 211 上必然返回 0（源码级）
+
+探针（仓内 `scripts/252-monitor/ursm-snapshot-health.sh`，211 部署版 `:360` 附近同源）：
+```sql
+SELECT coalesce(max((regexp_match(c.relname, '_([0-9]{8})$'))[1]::date)::text, '0') || '|' ||
+       coalesce(min((regexp_match(c.relname, '_([0-9]{8})$'))[1]::date)::text, '0') || '|' ||
+       count(*) FILTER (WHERE pg_relation_size(c.oid) > 0)
+FROM pg_class c
+JOIN pg_inherits h ON h.inhrelid = c.oid
+WHERE h.inhparent = 'ursm_node_snapshot_min'::regclass
+  AND c.relname ~ '_[0-9]{8}$';
+```
+⇒ ★ **它有两重依赖**：① `pg_inherits`（分区目录）② 分区名形如 `_<8 位数字>$`
+⇒ ⇒ ★★★ **⇒ 211 的表是 `relkind='r'`（普通表）⇒ `pg_inherits` 里没有它 ⇒ 命中 0 行**
+⇒ ⇒ **⇒ 返回 `0|0|0`** ⇒ ⇒ **⇒ 于是 `span_ndays=0 < BASELINE_DAYS=7` ⇒ 报「基线样本不足」**
+⇒ ⇒ ★★ **⇒ 探针的注释其实已经写明了它为什么不能改成扫表**：
+「实测 `SELECT min(snapshot_ts) … GROUP BY tableoid` 在这张 23.7M 行表上直接打满 30s
+statement_timeout（§86 实测）」⇒ ⇒ **⇒ 在 252 上不能回退，在 211 上根本不需要回退（表小 4.7×）**
+⇒ ⇒ ★★★ **⇒ 但 211 的「0 天」是【错的】⇒ ⇒ 必须有一条对两种形态都对的读法。**
+
+★★ **⇒ 修法方向（两条，尚未实施）**：
+- **(a) ★ 探针改为「问主判据已经算出来的东西」**：
+  ★ **主判据的 `base_buckets` 本来就扫了那 7 天** ⇒ ★★ **在它旁边加一个
+  `count(DISTINCT date_trunc('day', snapshot_ts))` 就是「基线窗里有几天数据」**
+  ⇒ ⇒ ★★★ **⇒ 零额外扫描、两种表形态都对 ⇒ 这是正解。**
+- **(b) 探针改成读分区边界（`pg_get_expr(relpartbound)`）而不是分区名**：
+  ⇒ **能对付「命名不规整的分区表」，但对普通表仍然无解** ⇒ ⇒ ★ **不解决 211 的问题。**
+
+⇒ ⇒ ★★★ **⇒ 结论：(a) 才是正解；(b) 解决不了 211。**
+⇒ ⇒ ★★ **⇒ 而更根本的修法是 §143.32.0-3 的【执行 830】** ——
+★★ **执行 830 后探针自动恢复正常（分区名正好匹配），不需要改脚本。**
+⇒ ⇒ ⇒ **⇒ 两个修法【不冲突】：(a) 让探针对两种形态都成立（仓内改，不需授权），
+830 让 211 变成「本来就该有的形态」（生产操作，需授权）。**
+
+### §143.32.3 211 的量级读数（本轮实测，只读）
+
+```
+relkind  ursm_node_snapshot_min = 'r'                       ← 普通表（非分区）
+size     total 2,296 MB  =  heap 1,683 MB + pkey 549 MB + ts_idx 64 MB
+rows     5,913,625（relkind=r，reltuples 5,913,625）   span 2026-10-13 17:30 → 2026-10-20 18:02
+db       6,047 MB；该表占 38.0%；全库剩余可用空间仅 35 MB；public 下 432 个非空关系
+tabstat  n_live_tup 5,950,538  n_dead_tup 652,856（≈10.9% of live）
+         n_tup_ins 7,839,593   n_tup_del 1,903,989（= 插入量的 24.3%）
+         autovacuum_count 7    last_autovacuum 2026-10-20 00:51:40
+```
+⇒ ⇒ ★★★★ **⇒ 三个可行动的读数**：
+- ★★★ **死元组 652,856（占活行 10.9%）** ⇒ ★★ **DELETE 型留存已经在制造垃圾**
+  ⇒ ★ **而 DELETE 造出的空页 VACUUM 截不掉 ⇒ 磁盘单调增长**（830 设计稿 §1.3 原文）
+  ⇒ ⇒ **⇒ 211 的 6,047 MB 里，free 只剩 35 MB ⇒ 磁盘压力的真实来源就在这里。**
+- ★★ **全库只剩 35 MB 可用** ⇒ ★★ **211 的磁盘比 252 更紧**
+  ⇒ ⇒ ★★★ **⇒ 这把「211 执行 830」的收益从「结构性」升级为「【救急】」**
+  ⇒ ★★ **（DROP 分区能整块回收，而 DELETE 型留存只把空间变成死元组。）**
+- ★★ **`session_bodies_2026_10` 1,199 MB（19.8%）是 211 的第二大户** ⇒ ★ **下一刀该看它**（本节未查）。
+
+### §143.32.4 211 与 252 的巡检对比表（本节的核心对照）
+
+| 维度 | 252 | 211 |
+|---|---|---|
+| 巡检脚本 | `/opt/scripts/ursm-snapshot-health.sh` | `/opt/llm-gateway-go-211/scripts/ursm-snapshot-health.sh` |
+| 脚本 md5 | `b5aaa384104fb5f45478cae50cd4ef5e` | `c6d25bde6bede767b021e87629cad047` |
+| 部署时间 | 2026-10-20 00:31 | 2026-10-19 17:44 |
+| `STMT_TIMEOUT` | **600 s** | **180 s** |
+| 调度 | `/etc/cron.d/pg17:106`（:17） | `/etc/cron.d/llmgw-ursm-snapshot-health:21`（:17） |
+| 容器/连接 | podman `pg-252-pg17` | docker `acc-pg17`（`psql-acc-pg17.sh` 包装） |
+| 表形态 | 分区表 | **普通表** |
+| 7 天行数 | 27,806,075 | 5,933,760 |
+| 表占库 | 8.4 GB（族，§143.18） | 2,296 MB（**38.0%**） |
+| 探针读数 | `8 day(s) with data` ✅ | **`0 day(s) with data`** ❌ **假告警** |
+| 巡检一轮 | **170~731 s** | **~4 s** |
+| 巡检成功率 | **56%**（41h 窗口 23/41） | 本节未统计（日志仅 531 行，起于 10-19 17:46） |
+| 部署台账 | ✅ `deployed-252.tsv` + `deployed-cron-252.tsv` | ❌ **无** |
+| cron 登记的巡检脚本数 | **12** | **1** |
+
+⇒ ⇒ ★★★ **⇒ 一句话**：★ **211 跑的是【同一份判据、同一套参数】的缩小版** ——
+★★ **它的问题【不是】巡检本身，而是【表没分区】与【可观测性面窄 11 项】。**
+
+### §143.32.5 对既有结论的增量
+
+| 条目 | 变化 |
+|---|---|
+| **P11** | ★★★★ **适用范围收窄**：★ **只对 252 有收益**（211 的巡检只要 4 s）；★★ **并且它【不是】 211 的修法** —— 211 要的是 **830（分区化）** |
+| **P8**（211 的 `pg_stat_statements` 进 preload） | ★★★★ **升级**：★ **它是 211 可观测性的前提**（没有量具 ⇒ 本节的结论只能靠读脚本/日志/目录） |
+| **P17（新增）** | **211 执行迁移 830（分区化）** ⇒ ★★★ **零 Go 改动**（`retention_partition.go` 按 `relkind` 自动选路）⇒ **一次解决三件事**（假告警 / DELETE 型留存 / 38% 库占比）⇒ ⚠ **需属主授权**（它 RENAME 一张活表，`.skip` 是设计如此） |
+| **P18（新增）** | **巡检探针改为对「普通表 / 分区表」两种形态都成立**（让主判据顺带返回基线天数）⇒ ★★ **纯仓内改动，零语义风险、不需生产写** |
+| **P19（新增）** | **211 的可观测性面**：把 252 那 12 个巡检脚本按需落到 211 + **给 211 建部署台账**（否则「改了不部署」永远无人察觉） |
+| §143.30 的「只有一条调用路径」 | ★ **范围补注**：★ **成立范围是「252 的库」**；★★ **211 跑的是同一份脚本、另一套 PG ⇒ 不构成第二条路径** |
+
+### §143.32.6 诚实边界与本节**没做**的事
+
+- ⚠ **本节对生产的写入 = 0**；**未改脚本 / 未改 cron / 未改配置 / 未跑迁移 / 未部署** ⇒ **生产行为未变**。
+- ★★ **211 的巡检成功率没统计**（日志只有 531 行、起于 2026-10-19 17:46）⇒ ★ **不能与 252 的 56% 横向比较**。
+- ★★★ **「252 慢是因为争用而不只是数据量」是【提示】不是【证明】** ——
+  ★ **两台不是同一台机器**（CPU/内存/磁盘/负载都不同）⇒ ⇒ **要证成它，只能在 252 上做
+  「缩短基线 ⇒ 观察巡检耗时与 rollup 成功率」的 A/B**（= P11 的授权验证）。
+- ★★ **211 上没有 `pg_stat_statements` 的读数可用**（未进 preload，§143.20 已记）
+  ⇒ ⇒ **⇒ 本节对 211 的全部结论都来自「读脚本 + 读日志 + 读目录」** ⇒ ★ **与 252 的证据强度不同**。
+- ★★ **没有查 154 / 245 上有没有同名巡检**（本节只查了 211）⇒ ★ **边界仍未完全闭合**。
+
+> **订正横幅十五（2026-10-20，§143.34 就地订正本节 §143.32.6）**
+>
+> ★★★★ **本节上面这条边界缺口已被 §143.34 闭合：154 / 245 上【没有】这个巡检。**
+> - ★★★★★ **四路并查（`/etc/cron.d` 全量 + `crontab -l` 全量 + `systemctl list-timers`
+>   + **按名字全盘 `find`**）读数**：
+>   | 主机 | `/etc/cron.d/` 全部条目 | `crontab -l` | systemd timer | 同名脚本 |
+>   |---|---|---|---|---|
+>   | **154** | `0hourly` / `cleanup-known-junk` / `llm-gateway-feishu` / `llm-gateway-prune` / `sysstat` | fail2ban + sing-box 6 条（**无 ursm**） | **无** | **不存在** |
+>   | **245** | `0hourly` / `cleanup-known-junk` / `raid-check` / `update-motd` | **空** | **无** | **不存在** |
+> - ⇒ ⇒ ★★★★ **⇒ 两台上连「同名脚本」都不存在** ⇒ ⇒ **这比「cron 里没有」更强**：
+>   ★ **它排除了「脚本已部署、只是调度没配」这种中间形态** ⇒ ⇒ ★★★
+>   **⇒⇒ 侦察必须补「按名字全盘找脚本」那一路** —— 只看 cron 会漏掉那一形态
+>   ⇒ ⇒ **⇒ 而那正是会让人误判「这台没跑」的那一种**。
+> - ⇒ ⇒ ★★★★ **⇒⇒ 全网只有 252 与 211 两台在跑这个巡检** ⇒ ⇒ ★★★
+>   **⇒ 「巡检是 I/O 头号大户（74 GB）」这个判断【不会】被第三个实例稀释**。
+> - ⇒ ⇒ ★★★ **⇒ §143.32.3 那条「提示不是证明」的限定【继续有效】** ——
+>   本节没有改变两台机器的差异 ⇒ **要分开「数据量」与「机器差异」，仍然只能靠 P11 的 A/B**。
+> - ★★ **⇒ 154 / 245 上【有】别的 cron**（网关侧 + fail2ban + sing-box）⇒ ★★★
+>   **⇒ 「没有这个巡检」≠「不需要审计」** —— 它们是网关主机，不是这台 PG 的宿主。
+>   完整记录见 runbook `§143.34`。
+- ★★ **`session_bodies_2026_10`（1,199 MB）只是被看见，没有被诊断**。
+- ★★ **830 的执行成本与风险本节没有评估**（设计稿 §5.2 有步骤，本节未读）⇒ ★ **P17 的授权建议需要先读那份设计稿**。
+
+### §143.32.7 待拍板（本节新增）
+
+| 编号 | 事项 | 变化 |
+|---|---|---|
+| **P11** | `base_buckets` 每日物化 | ★★★★ **范围收窄为【只对 252】**；落点不变（§143.31.2） |
+| **P17（新增）** | **211 执行迁移 830（分区化）** | ★★★★ 新增 —— **零 Go 改动**、一次解决三件事、**且 211 只剩 35 MB 可用空间 ⇒ 收益是救急级** ⇒ ⚠ **需授权**（RENAME 活表） |
+| **P18（新增）** | **巡检探针对两种表形态都成立** | ★★★ 新增 —— ★ **纯仓内改动，零语义风险，不需生产写** ⇒ 可直接落地 |
+| **P19（新增）** | **211 的可观测性面**：12 个巡检脚本按需落地 + **211 的部署台账** | ★★★ 新增 —— ★ **台账是「改了不部署」的唯一防线** |
+| **P8** | 211 的 `pg_stat_statements` 进 preload | ★★★★ **升级为「211 可观测性的前提」** |
+
+⚠ **P17/P19 是「改生产行为」⇒ 需属主显式授权**；**P18 是仓内改动 ⇒ 可直接做**；
+**本节对生产的写入仍为 0**。
+
+### §143.32.8 复核方法（可原样重跑）
+
+```bash
+# ── 1) ★ 211 的巡检存在性与调度
+ssh 211 'cat /etc/cron.d/llmgw-ursm-snapshot-health; ls -la /opt/llm-gateway-go-211/scripts/ursm-snapshot-health.sh; \
+          md5sum /opt/llm-gateway-go-211/scripts/ursm-snapshot-health.sh; \
+          grep -n "STMT_TIMEOUT:=\|CONTAINER:=\|LLMGW_PG17_CONF" /opt/llm-gateway-go-211/scripts/ursm-snapshot-health.sh'
+
+# ── 2) ★ 211 的假告警现场（探针返回 0）与表里【有】7 天数据
+ssh 211 'grep -a "baseline span" /opt/llm-gateway-go-211/logs/ursm-snapshot-health.log | tail -3'
+ssh 211 'docker exec -i acc-pg17 psql -U llm_gateway -d llm_gateway -tAX -c \
+          "SELECT min(snapshot_ts), max(snapshot_ts), count(*) FROM ursm_node_snapshot_min"'
+
+# ── 3) ★ 根因：211 的表不是分区表（探针的 pg_inherits 命中 0 行）
+ssh 211 'docker exec -i acc-pg17 psql -U llm_gateway -d llm_gateway -tAX -c \
+          "SELECT c.relname, c.relkind FROM pg_class c WHERE c.relname = '\''ursm_node_snapshot_min'\''"'
+
+# ── 4) ★ 仓内：830 的分区命名与 Go 侧的两栖选路
+grep -n "ursm_node_snapshot_min_%s" sql/migrations/startup/830_ursm_node_snapshot_min_partitioned.sql.skip
+grep -n "relkind" domains/ursm/v2/persist/retention_partition.go
+```
+
+⇒ ⇒ ★ **本节落地的门**（不连库，可原样重跑）：
+
+```bash
+# §143.32 文档门：211 的同族巡检 / 探针假告警 / 三件事同一件 / P11 范围收窄 / 可观测性缺口
+GOCACHE=/tmp/gocache-p1437 go test ./scripts/ursmcheck/ -run 'TestRunbook14332' -count=1 -v
+```
+
+★ 同族：[[先读量具再读产物]] · [[阴性结论要当缺陷一样复核]] ·
+[[自己上一节的结论也要复核]] · [[跨节订正前先自问「我要订正的这条真的错了吗」]] ·
+[[共享仓库迁移号必然漂移]] · [[PG 日志说超时 ≠ 被角色级超时杀了]]。
+
+## §143.33 **P16 量化 ⇒ 它不是瓶颈 ⇒ 降级**；并**订正 §143.31 的推断**（252 上其实有【两条独立的瓶颈线】，不要混谈）（2026-10-20）
+
+### §143.33.0 结论先行
+
+§143.31 在采样时顺带发现 `bg/routing_health_checks.go` 的 **`stats_ground_truth_gap`**
+检查**带 3 个并行 worker**，于是本节把它列为 **P16**（CPU 侧竞争者）。
+★ **本节把它量了 —— 结论是：它【不是】瓶颈 ⇒ P16 降级**，并且
+★ **§143.31 里「它与 rollup 抢 CPU」那条因果链，量完之后站不住 ⇒ 就地订正**（订正横幅十二）。
+
+1. ★★★★ **P16 的量化读数**（生产只读，`pg_stat_statements`，
+   窗口 = `stats_reset` **2026-10-18 22:03:37** → 本节读取时刻 **2026-10-20 18:20:57** ≈ **44.3 h**）：
+
+   | 量 | 读数（主读数，18:20:57） |
+   |---|---|
+   | `calls` | **331** ⇒ **≈ 7.5 次/小时** |
+   | `total_exec_time` | **264,220.1 ms（264.2 s）** ⇒ **占 44.3 h 墙钟的 0.17%** |
+   | `mean_exec_time` | **798.2 ms** |
+   | `max_exec_time` | **15,910.5 ms（15.9 s）** |
+   | `shared_blks_read` | **76,147** ⇒ **230 块/次（≈ 1.8 MB）** |
+   | `rows` | 331（每次 1 行） |
+
+   ★★ **稳定性复读（同一窗口，18:0x → 18:20:57 又跑了 2 次）**：
+   `calls` **329 → 331**、`total_exec_time` **256,837 → 264,220.1 ms**、`mean` **780.7 → 798.2 ms**、
+   `max` **15,910.5 ms（不变）**、`shared_blks_read` **76,147（不变）**
+   ⇒ ⇒ ★★★ **⇒ 新增的 2 次调用读了 0 个块** ⇒ ⇒ **⇒ 进一步印证「它读的数据全在缓存里」**
+   ⇒ ⇒ ★ **均值漂移 2.2%、max 与物理读完全不动 ⇒ 这条读数是稳定的，不是噪声**。
+
+2. ★★★★ **⇒ 它【不吃 I/O】**：`shared_blks_read` 每次只有 **230 块**（≈1.8 MB）
+   ⇒ ⇒ **它读的数据全在缓存里** ⇒ ⇒ ★★ **它是【CPU/计划】型，不是 I/O 型**
+   ⇒ ⇒ ★★ **⇒ 它与 §143.29/§143.31 的「I/O 争用」这条线【无关】**。
+
+3. ★★★★★ **⇒ 但它也不是 CPU 大户 ⇒ P16 降级** ——
+   把同一窗口内**各语句的总 DB 时间**并排（§143.29 的读数 + 本节实测）：
+
+   | 语句 | calls | 均时 | 总 DB 时间 | 相对 `stats_ground_truth_gap` |
+   |---|---:|---:|---:|---:|
+   | `REFRESH … routing_analytics_7d` | 115 | 60,568 ms | **≈ 6,965 s** | **26.4×** |
+   | `REFRESH … session_client_stats` | 65 | 54,653 ms | ≈ 3,552 s | **13.4×** |
+   | ursm 快照健康巡检（§143.30） | 26 | 190,473 ms | ≈ 4,952 s | **18.7×** |
+   | `REFRESH … session_task_stats` | 65 | 27,302 ms | ≈ 1,775 s | **6.7×** |
+   | **`stats_ground_truth_gap`** | **331** | **798.2 ms** | **264.2 s** | **1×** |
+
+   ⇒ ⇒ ★★★★★ **⇒ `stats_ground_truth_gap` 的总 DB 时间只有 matview 刷新的 1/13 ~ 1/26**
+   ⇒ ⇒ ★★★★ **⇒ 它不是 CPU 瓶颈 ⇒ ⇒ P16 从「新的第一优先候选」降级为「次要」**
+   ⇒ ⇒ ★★★ **⇒ 而 CPU/DB 时间的真正大户是【matview 刷新】**（B1，§143.26.8 的 P1）
+   ⇒ ⇒ **⇒ 这与 §143.29 的 P13（用物理读/次定优先级）不是同一把尺子**：
+   ★ **P13 排的是「结构性成本（物理读）」，而这张表排的是「总 DB 时间」**
+   ⇒ ⇒ ★★ **⇒ 两把尺子给出不同的名次 —— 而这正是 §143.29.3 要记的那条纪律。**
+
+4. ★★★★★ **⇒ 订正 §143.31 的一句推断（原文保留，见订正横幅十二）** ——
+   §143.31.1 写过：「★ **`stats_ground_truth_gap` 是**路由健康检查**，它**开并行 worker** 扫
+   `usage_facts` + `stats_usage_daily` ⇒ ⇒ **它与 rollup 抢 CPU，而 rollup 与巡检抢 I/O**
+   ⇒ ⇒ **⇒ 252 的 load 14/4 核 是【多个作业】共同造成的，不是单点**」
+   ⇒ ⇒ ★★★★ **本节实测后，这句话的【前半】站得住、【后半】站不住**：
+   - ★ **它确实开并行 worker**（§143.31 现场抓到同一条带 3 个 pid、age 相同）—— **前半成立**；
+   - ★★ **但它抢不走多少 CPU**：总 DB 时间只有 **264.2 s / 44.3 h（0.17%）**
+     ⇒ ⇒ **它不是 rollup 的瓶颈** —— ★★ **§143.31 对 rollup 的现场读数是
+     `wait_event_type=IO` / `DataFileRead`，【不是】CPU 等待**
+     ⇒ ⇒ **⇒ 「它与 rollup 抢 CPU」这条因果链没有证据支撑 ⇒ 作废。**
+   - ⇒ ⇒ ★★★ **⇒ 252 上其实有【两条独立的瓶颈线】，不要混谈**：
+
+   | 线 | 谁 | 证据 |
+   |---|---|---|
+   | **I/O** | **ursm 快照健康巡检** | 每次 **2.9 GB** 物理读、累计 **74 GB**（§143.29） |
+   | **总 DB 时间 / CPU** | **matview 刷新**（`routing_analytics_7d` 等） | 115 次 × 60.6 s ≈ **6,965 s**（本节） |
+   | **（之前被当成一条线的）rollup** | rollup | 现场 `IO|DataFileRead` ⇒ **它等的是 I/O，不是 CPU**（§143.31） |
+
+5. ★★★ **⇒⇒ 所以本节把 §143.31.3 的「P16（新增）」就地订正**（订正横幅十三，**原表保留**）
+   ⇒ **它从「新的第一优先候选」变成「已量化 ⇒ 降级」** ——
+   ★★ **它剩下的真价值只有一条**：`max_exec_time = 15.9 s`（离 30 s 的角色级超时只差一半）
+   ⇒ ⇒ ★ **⇒ 值得盯，但不值得为它单独做动作**；
+   ⇒ ⇒ ★★ **⇒ 真正的「CPU 侧」该盯的是 matview 刷新** —— **而它就是 §143.26.8 的 P1 / B1**
+   ⇒ ⇒ ★★★ **⇒ 也就是说：§143.29 把 P1「降为第三」，这一节要把它【调回】**
+   ⇒ ⇒ **但注意两把尺子的口径**：
+   ★ **P13 的「物理读/次」排名**把 matview 排在巡检后面（第 5~7 位）；
+   ★ **本节的「总 DB 时间」**把 matview 排在巡检前面（6,965 s vs 4,952 s）
+   ⇒ ⇒ ★★★ **⇒ 两条线都要修，但顺序取决于【你要解决的是磁盘还是 CPU】**
+   ⇒ ⇒ ★★ **⇒ 而 §143.31 已经证明：rollup 的瓶颈是【I/O】⇒ ⇒ 先修巡检（P11）**。
+
+6. ★★★ **⇒⇒ §143.31.4 的诚实边界「`stats_ground_truth_gap` 没有被量化」已被 §143.33 闭合**
+   （订正横幅十四）⇒ ⇒ ★ **注意方向与 §143.31 的预设【相反】**：
+   §143.31 把它登记成「CPU 侧竞争者」是**推测**，量化后它**不是**
+   ⇒ ⇒ ★★★ **⇒ 「未查」被查清后，结论可以与登记时相反 —— 这正是【必须补量化】而不能只登记的理由。**
+
+7. ★★ **⇒ 顺带发现一处【文档引用漂移】**（不属主问题，但值得记）——
+   §143.31 的 P16 行写的是 **`bg/routing_health_checks.go:947`**，
+   而 HEAD（`8531596a6` 等并行会话提交之后）该行已是 **948**
+   ⇒ ⇒ ★★★ **⇒ ⇒ 「文档里引用的行号」本身就是一种【前提】，会被别人的提交漂移**
+   ⇒ ⇒ ★★ **⇒ 引用时最好钉【符号/字符串】而不是【行号】** ——
+   ★ **`stats_ground_truth_gap` 这个 `CheckID` 才是稳定锚点**
+   （`grep -n 'stats_ground_truth_gap", Severity' bg/routing_health_checks.go` ⇒ 稳定命中一行）
+   ⇒ ⇒ ★★ **⇒ 而本节的门（§143.33 的判据）刻意【不钉行号】，改钉 `CheckID` + 读数** ⇒ **⇒ 避免同类漂移把门打红**。
+
+⚠ **本节对生产的写入 = 0**：全部只读（`pg_stat_statements` / `pg_stat_statements_info` /
+`pg_postmaster_start_time`）。**没有**改任何代码 / 配置 / 调度。
+
+★ **量具入仓**：`scripts/audit/sql/p16_ground_truth_gap_cost.sql`（**只读**，可直接
+`bash ~/.mavis-tools/lgwp-prod.sh scripts/audit/sql/p16_ground_truth_gap_cost.sql 180`）。
+⇒ ★★★ **它的第 4 段独立算出 `v5_pct_of_window = 0.166%`** ⇒ ⇒ **与本节正文写的 0.17% 交叉验证成立**
+（⇒ **不是抄一个数字，是两条独立路径算出来的同一个量**）。
+⇒ ⚠ ★★ **但它第一次跑是红的**：`s.stats_reset` 应为 `s2.stats_reset`
+（`stats_reset` 在 `pg_stat_statements_info` 上，不在 `pg_stat_statements` 上）
+⇒ ⇒ ★★★ **⇒ 「写了没验的量具」会立刻在第一次真跑时暴露** ——
+⇒ ★★ **⇒ 凡是入仓的量具脚本，必须先在真库上跑通一次再 commit**（★ 本轮是入仓后立刻真跑 ⇒ 抓到）。
+
+### §143.33.1 复核方法（可原样重跑）
+
+```bash
+# ── ★ 1) P16 的成本 + 统计窗口 + 占墙钟比例（生产只读，★ 已在仓内）
+bash ~/.mavis-tools/lgwp-prod.sh scripts/audit/sql/p16_ground_truth_gap_cost.sql 180
+
+# ── 2) ★ 与 matview 刷新的总 DB 时间并排（§143.29 的读数已在 runbook 里）
+
+# ── 3) ★ 本门（不连库）
+GOCACHE=/tmp/gocache-p1437 go test ./scripts/ursmcheck/ -run 'TestRunbook14333' -count=1 -v
+```
+
+⇒ ⇒ ★ **本节落地的门**（不连库，可原样重跑）：
+
+```bash
+# §143.33 文档门：P16 的量化 / 降级 / 订正 §143.31 / 两条瓶颈线
+GOCACHE=/tmp/gocache-p1437 go test ./scripts/ursmcheck/ -run 'TestRunbook14333' -count=1 -v
+```
+
+★ 同族：[[阴性结论要当缺陷一样复核]] · [[自己上一节的结论也要复核]] ·
+[[先读量具再读产物]] · [[换一把尺子就会换一个答案]] · [[阈值型判据先量噪声底]] ·
+[[前提漂移]]。
+
+## §143.34 **边界缺口闭合**：154 / 245 上【没有】这个巡检 ⇒ 全网只有 252 与 211 两台在跑（2026-10-20）
+
+### §143.34.0 结论先行
+
+§143.30.8、§143.31.4、§143.32.6 三处都留了**同一个**边界缺口：
+★ **「154 / 245 上有没有同名巡检，没查」**。
+本节把它查完了 ⇒ **结论是「没有」** ⇒ ⇒ **全网只有 252 与 211 两台在跑 `ursm-snapshot-health.sh`**。
+
+1. ★★★★★ **侦察读数（只读，2026-10-20 18:4x）**：
+
+   | 主机 | `/etc/cron.d/` 全部条目 | `crontab -l` | systemd timer | 同名脚本 |
+   |---|---|---|---|---|
+   | **154** | `0hourly` / `cleanup-known-junk` / `llm-gateway-feishu` / `llm-gateway-prune` / `sysstat` | fail2ban + sing-box 6 条（**无 ursm**） | **无** | **不存在** |
+   | **245** | `0hourly` / `cleanup-known-junk` / `raid-check` / `update-motd` | **空** | **无** | **不存在** |
+
+   ⇒ ⇒ ★★★★ **⇒ 两台上连「同名脚本」都不存在**（不是「装了但没排 cron」）
+   ⇒ ⇒ ★★★ **⇒ 这一点比「cron 里没有」更强**：★ **它排除了「脚本在、调度没配」这种中间形态**
+   ⇒ ⇒ ★★ **⇒ 侦察方式 = 四路并查**（`/etc/cron.d` 全量 + `crontab -l` 全量
+   + `systemctl list-timers` + **按名字全盘 find**）
+   ⇒ ⇒ ★★★ **⇒⇒ 「cron 里没有」这一条【不够】** —— ★ **必须补「按名字全盘找脚本」那一路**，
+   否则会漏掉「脚本已部署、只是调度没配」⇒ ⇒ **⇒ 那正是会让人误判「这台没跑」的那一种形态**。
+
+2. ★★★★ **⇒⇒ 完整的一览（这是本节真正的交付物）**：
+
+   | 实例 | 跑 `ursm-snapshot-health.sh`？ | 调度 | 脚本位置 | 版本 |
+   |---|---|---|---|---|
+   | **252** | ★ **是** | `/etc/cron.d/pg17:106` ⇒ 每小时 `:17` | `/opt/scripts/ursm-snapshot-health.sh` | md5 `b5aaa384…`（**600 s**） |
+   | **211** | ★ **是** | `/etc/cron.d/llmgw-ursm-snapshot-health:21` ⇒ 每小时 `:17` | `/opt/llm-gateway-go-211/scripts/ursm-snapshot-health.sh` | md5 `c6d25bde…`（**180 s**，旧一代） |
+   | **154** | ★ **否** | —— | —— | —— |
+   | **245** | ★ **否** | —— | —— | —— |
+
+   ⇒ ⇒ ★★★★ **⇒ §143.30 的「只有一条调用路径」在 252 库里依然成立**（§143.32 已证 211 是**另一台 PG**）
+   ⇒ ⇒ ★★★ **⇒ 而 §143.31 / §143.33 的所有结论，作用域就是这两台** ——
+   ★ **既没有第三个实例在抢同一块盘，也没有第三个巡检在贡献 74 GB 物理读**
+   ⇒ ⇒ ★★ **⇒ 「巡检是 I/O 头号大户」这个判断【不会】被第三个实例稀释**。
+
+3. ★★★ **⇒⇒ 顺带把 §143.32 的一条【提示】升级成【排除】** ——
+   §143.32.3 写过：「同脚本在两台耗时差 **40~180×**，远超行数比 4.7×
+   ⇒ ⇒ 【提示】252 的额外开销来自争用 ⇒ ⚠ **但两台不是同一台机器 ⇒ 只是提示，不是证明**」。
+   ⇒ ⇒ ★★★★ **⇒ 本节没有改变那两条机器的差异** ⇒ **那条「提示不是证明」的限定【继续有效】**
+   ⇒ ⇒ ★★★ **⇒ 但本节把「第三个变量」排除了**：★ **既然没有第三台在跑同一个巡检**
+   ⇒ ⇒ **⇒ 「252 的额外开销」就只剩「数据量」与「机器差异」两个来源**
+   ⇒ ⇒ ★★ **⇒ ⇒ 要把它们分开，仍然只能靠 §143.32.6 说的那条路**：
+   ★ **在 252 上做「缩短基线 ⇒ 观察巡检耗时与 rollup 成功率」的 A/B**（= P11 的授权验证）。
+
+4. ★★ **⇒ 154 / 245 上【有】什么（避免把「没这个巡检」误读成「什么都没跑」）**：
+   ★ **154 跑的是 `llm-gateway-feishu` / `llm-gateway-prune` 两个网关侧 cron + fail2ban + sing-box**
+   ⇒ ★★ **它们的作用对象是网关进程与代理，不是 PG 的 ursm 快照表**
+   ⇒ ⇒ ★★★ **⇒ 「154/245 没有这个巡检」**与**「154/245 不在优化范围内」是两件事** ——
+   ★ **154/245 仍然要按 §143.30/§143.31 的口径单独审计**（它们是网关主机，不是这台 PG 的宿主）。
+
+⚠ **本节对生产的写入 = 0**：全部只读（`ls` / `grep` / `crontab -l` / `systemctl list-timers` / `find`）。
+
+### §143.34.1 复核方法（可原样重跑）
+
+★ **侦察脚本已入仓**：`scripts/audit/recon_patrol_hosts.sh`（**只读**）⇒ **它实现了下面这四路**。
+
+```bash
+# ── ★ 1) 154 / 245：四路并查（★ 已在仓内，一条命令跑两台）
+bash scripts/audit/recon_patrol_hosts.sh 154 245
+
+# ── 2) 若要手工展开（即脚本内部执行的四路）
+ssh 245 'ls -1 /etc/cron.d/; crontab -l; \
+          systemctl list-timers --all --no-pager | grep -i "ursm\|snapshot\|health"; \
+          find / -xdev -maxdepth 5 \( -name "*ursm-snapshot*" -o -name "*snapshot-health*" \) 2>/dev/null'
+
+# ── 3) 对照：252 / 211（§143.30 / §143.32 已查，此处只列形态）
+ssh 252 'grep -n "ursm" /etc/cron.d/pg17; ls -la /opt/scripts/ursm-snapshot-health.sh'
+ssh 211 'cat /etc/cron.d/llmgw-ursm-snapshot-health; \
+          ls -la /opt/llm-gateway-go-211/scripts/ursm-snapshot-health.sh'
+```
+
+⇒ ⇒ ★★ **★ 四路缺一不可的理由（这是本节最容易被后人省掉的一步）**：
+① `/etc/cron.d` **全量列出**（不只 grep 关键词 —— 要看到「那里本来有什么」）；
+② `crontab -l` **全量**（root 的 crontab 常常不在 `/etc/cron.d`）；
+③ `systemctl list-timers --all`（**timer 是第三条路径**，只查 cron 会漏）；
+④ **按名字全盘 `find` 脚本本体**（★ 这一路把「装了没排期」与「压根没有」区分开）
+⇒ ⇒ ★★★ **⇒⇒ 只查 ①②【不够】**：★ **它们排除不掉「脚本已部署、只是调度没配」**
+⇒ ⇒ **⇒ 而那正是最容易让人误判「这台没跑」的那一种形态（两个方向都会误判）。**
+
+⇒ ⇒ ★ **本节落地的门**（不连库，可原样重跑）：
+
+```bash
+# §143.34 文档门：154/245 的四路侦察读数 / 全网只有两台 / 提示 vs 证明的边界
+GOCACHE=/tmp/gocache-p1437 go test ./scripts/ursmcheck/ -run 'TestRunbook14334' -count=1 -v
+```
+
+★ 同族：[[阴性结论要当缺陷一样复核]] · [[自己上一节的结论也要复核]] ·
+[[先读量具再读产物]] · [[0 命中的第一嫌疑是量具坏了]] · [[前提漂移]] ·
+[[禁止【提及】≠ 禁止【依赖】]]。
+
+## §143.35 **P11 仓内落地**：每日 slot 汇总表（迁移 892）+ 巡检基线来源二选一（2026-10-20）
+
+### §143.35.0 结论先行
+
+P11（缩短/改写巡检）是 §143.29 的**成本 #1**（每次 **2.9 GB** 物理读 / **190 s**、累计 **74 GB**），
+§143.31.2 已把落点定死：**`base_buckets` 每日物化**（零语义风险）。
+★ **本节把它做出来了** —— 仓内完成，**对生产的写入 = 0**，**未部署**。
+
+1. ★★★★★ **三层等价性已在【本地真库】实测通过**（不是推理）：
+
+   | 验证 | 脚本 | 断言 |
+   |---|---|---|
+   | 迁移单测 | `scripts/audit/verify_892_local.sh` | **10 项全 PASS**（表/函数/回填/幂等/守卫/保留期/down） |
+   | 逻辑 A/B | `scripts/audit/verify_892_patrol_ab.sh` | **`ab_identical` / `p50_identical` / `verdict_identical` 全 PASS** |
+   | ★★ 端到端 | `scripts/audit/verify_892_patrol_e2e.sh` | ★★ **`E2E_VERDICT: PASS`（两路判定逐字相同）** |
+
+   ⇒ ⇒ ★★★★ **⇒ 「零语义风险」这句话现在有硬证据**（此前只是论证）。
+
+2. ★★★★★ **⇒ 但「零语义风险」被实测修正过一次** —— **它原本不是零的**：
+   ★★★ **第一次 A/B 实测 FAIL**（不是 PASS 后补记，是**先失败后改设计**）：
+   - 现象：**16 行 `OLD_ONLY`，全部是【今天】的桶**；
+   - 根因：★ **汇总表的填充范围是 `[today - N, today)`，【不含今天】**
+     （今天的数据还在写，不能算「每天一次」的稳定值）
+     ⇒ 而源表路读 `now - 7 days` 起 ⇒ **含今天** ⇒ ⇒ 两路键集合不同；
+   - ⇒ ⇒ ★★★ **⇒ 修正 = 方案 B**：【过去的完整天】走汇总表 + 【今天】仍实时读源表；
+   - ⇒ ⇒ ★★ **【今天实时读】本来就对**（今天的数据在变，汇总表按设计不含今天）。
+
+3. ★★★★★ **★★ 「回退机制」原本是【假的】—— 也是被端到端实测抓出来的**：
+   ★ 最初的设计是「同一段 SQL 里用 `CASE` 选源」⇒ ★★★ **实测直接崩**：
+   ```
+   ERROR: relation "public.ursm_snapshot_slot_daily" does not exist
+   ```
+   ⇒ ⇒ ★★★ **根因：PG 在【规划期】就解析表名** ⇒ 即使 `WHERE 'source'='daily'`
+   是常量（会被折叠），**只要 SQL 文本里出现了那个不存在的表，整条语句就报错**
+   ⇒ ⇒ ★★★★ **⇒ 「把两路写进同一段 SQL」在表不存在时【行不通】**
+   ⇒ ⇒ ★★ **⇒ 正确形态：两段各自完整的 SQL，在 shell 里按探测结果二选一**
+   （`BUCKETS_SQL_SOURCE` / `BUCKETS_SQL_DAILY`）。
+   ⇒ ⇒ ★★★ **⇒ 这不是洁癖，是「回退必须是真回退」的前提** ——
+   表不存在时若脚本直接崩，那不是回退，而是**巡检失明**。
+
+4. ★★★★ **⇒ 一处【判定输入的真实改动】（必须由属主知情）**：
+   ★★★ **窗口下界从「行时间」改成「桶对齐」**：
+   - 旧：`snapshot_ts >= $NOW_EXPR - make_interval(days => $BASELINE_DAYS)`
+     ⇒ **边界桶只算半截**（窗切在桶中间）；
+   - 新：`snapshot_ts >= date_trunc($G_UNIT, $NOW_EXPR - make_interval(days => ...))`
+     ⇒ **边界桶算整桶**；
+   - ⇒ ⇒ ★★★ **⇒ 两路必须用同一个下界，否则边界桶不一致**
+     ⇒ ⇒ ★★ **⇒ 这是一处【真实的语义改动】**（边界桶的行数会变大）
+     ⇒ ⇒ **⇒⇒ 属主必须知情并拍板**（★★ 门 `TestSection14335PatrolUsesBucketAlignedWindow` 钉住它，
+     防止后人以为「零成本改动」）。
+
+⚠ **本节对生产的写入 = 0**：全部在**本地一次性库**（`itgate_892` / `itgate_ab892` / `itgate_e2e892`，退出即 DROP）。
+**没有**改任何生产表 / 配置 / 调度；**巡检脚本未部署**（线上仍是 `b5aaa384…`）。
+
+### §143.35.1 交付物（全部仓内）
+
+| 文件 | 作用 |
+|---|---|
+| `sql/migrations/startup/892_ursm_snapshot_slot_daily.sql` | 表 + 幂等填充函数 + **迁移内首次回填** |
+| `sql/migrations/startup/892_ursm_snapshot_slot_daily.down.sql` | 回滚（★ 写清了回滚顺序约束） |
+| `installer/cmd/llm-gw-installer/embeddata/startup/892_*.sql` | installer 的 embed 副本（★ 与 canonical **逐字相同**，有门钉住） |
+| `installer/cmd/llm-gw-installer/main.go` | `//go:embed` + 投递映射 |
+| `installer/internal/dbinit/runner.go` | 启动序列登记（**现场取号 892**） |
+| `sql/schema/installed_startup_migrations.tsv` | ★ TSV 登记（**第 284 位**；★ 派生文件 ⇒ 用它自己的 `-update` 命令重建，**不手改**） |
+| `scripts/apply-db-revision-sequence.sh` | ★ 投递通道 `files=()` 登记（★ **漏过一处 ⇒ 见 §143.35.4**） |
+| `docs/db-changelog.md` | ★ 台账 + **sha 实测值**（★ **漏过一处 ⇒ 见 §143.35.4**） |
+| `scripts/252-monitor/ursm-snapshot-health.sh` | ★ 巡检基线来源二选一（**未部署**） |
+| `scripts/252-monitor/deployed-252.tsv` | 台账：仓内 md5 已更新、状态仍 `drift`、原因写清 |
+| `scripts/audit/verify_892_local.sh` + `.sql` | 迁移单测（10 项断言） |
+| `scripts/audit/verify_892_patrol_ab.sh` + `.sql` | 逻辑 A/B（3 项断言） |
+| `scripts/audit/verify_892_patrol_e2e.sh` | ★★ 端到端（脚本实际生成的 SQL，两路判定对比） |
+| `scripts/ursmcheck/section_14335_test.go` | 仓内门（**21 条**） |
+
+### §143.35.2 迁移 892 的形态要点
+
+- **表**：`ursm_snapshot_slot_daily(day, granularity, slot, bucket_ts, rows)`，
+  主键 `(day, granularity, slot, bucket_ts)`；
+  ★ **`granularity` 必须有** —— hour 的桶是小时对齐、minute 是分钟对齐 ⇒ 混存会读出错的桶。
+- **函数**：`refresh_ursm_snapshot_slot_daily(p_days_back integer DEFAULT 1, p_granularity text DEFAULT 'hour')`
+  ⇒ ★★ **只有一个重载**（本地真库实测：两个都带默认参数 ⇒ `f(1)` 报 `not unique`；
+  ★ 而「给单参数版去掉默认值」**也救不了** ⇒ ⇒ **只保留一个函数是唯一可行形态**）。
+- **填充范围**：`[today - p_days_back, today)` ⇒ ★ **不含今天**（今天还在写）。
+- **保留期**：9 天（基线窗 7 天 + 2 天余量）⇒ 表本身不会单调增长。
+- ★★★ **迁移内做首次回填（8 天，两种粒度）** ——
+  ⇒ **这是部署的前置条件**：表若是空的，巡检读到「没有基线」⇒ 所有桶 NO-BASELINE
+  ⇒ ⇒ ★★★ **巡检会【安静地失明】**（比慢更坏：脚本照样成功退出，外部看不出来）。
+
+### §143.35.3 复核方法（可原样重跑）
+
+```bash
+# ── 1) ★ 迁移单测（本地真库，一次性库）
+bash scripts/audit/verify_892_local.sh
+
+# ── 2) ★ 逻辑 A/B（两路是否逐字等价）
+bash scripts/audit/verify_892_patrol_ab.sh
+
+# ── 3) ★★ 端到端（脚本实际生成的 SQL，两路判定是否一致）
+bash scripts/audit/verify_892_patrol_e2e.sh
+
+# ── 4) 仓内门
+GOCACHE=/tmp/gocache-p1437 go test ./scripts/ursmcheck/ -run 'TestSection14335' -count=1 -v
+```
+
+⇒ ⇒ ★ **本节落地的门**：
+
+```bash
+# §143.35 仓内门：迁移形态 / 回填 / 无重载歧义 / 两段独立 SQL / 桶对齐窗口 / 注册点 / 台账
+GOCACHE=/tmp/gocache-p1437 go test ./scripts/ursmcheck/ -run 'TestSection14335' -count=1 -v
+```
+
+### §143.35.4 ★ 收尾时才发现的登记点缺口（本轮真实缺陷，非事后补记）
+
+- **缺口本体**：892 起初只登记了 **5 处注册点里的 2 处**：
+
+  | 登记点 | 起初 | 现状 |
+  |---|---|---|
+  | `installer/cmd/llm-gw-installer/main.go`（`//go:embed` + 投递映射） | ✅ | ✅ |
+  | `installer/internal/dbinit/runner.go`（`StartupFiles`） | ✅ | ✅ |
+  | `installer/cmd/llm-gw-installer/embeddata/startup/892_*.sql`（副本） | ✅ | ✅ |
+  | `sql/schema/installed_startup_migrations.tsv`（TSV 登记） | ❌ **漏** | ✅ 用 `-update` 重建 |
+  | `scripts/apply-db-revision-sequence.sh`（投递通道 `files=()`） | ❌ **漏** | ✅ 补上 |
+  | `docs/db-changelog.md`（台账 + sha） | ❌ **漏** | ✅ 补上 |
+  | `sql/migrations/startup/892_*.down.sql`（回滚） | ✅ | ✅ |
+
+- ★★★ **为什么漏掉还能过「整包回归」**：§143.35 的门 `TestSection14335RegistrationPoints`
+  **只钉了 2 处**（runner.go + main.go）⇒ 其余 3 处漏了而门仍绿；
+  而 TSV 那条其实**是有门的**（`installer/internal/dbinit/startup_manifest_test.go`）——
+  ★★ **但它住在 `installer` 包里，不在 `./scripts/ursmcheck/` 的回归范围内**
+  ⇒ ⇒ ★★★ **「跑过了整包回归」不等于「所有包都跑过了」**
+  ⇒ ⇒ **同一仓里，一个门住在哪个包，决定了它默认会不会被执行**。
+- ★★★ **三处缺口的暴露方式各不相同**（这才是本节最值得记的）：
+  ① **TSV** —— 被 `installer/internal/dbinit` 的 manifest 门抓到
+     （门红原文：`manifest has 294 entries, StartupFiles has 295`）
+     ⇒ 修法是**用它自己的重建命令**
+     （`cd installer && go test ./internal/dbinit/ -run TestStartupManifest -update`）
+     ⇒ ★ **不要手改派生文件**（文件头自己写着「DO NOT EDIT BY HAND」）
+     ⇒ ★ 实测重建后 **diff 只新增 1 行**（后续索引整体 +1，头部未变）；
+  ② **db-changelog** —— 被 `internal/sqlguard.TestMigrationRegistryStaysContinuous` 抓到
+     （门红原文：`892_ursm_snapshot_slot_daily.sql（编号 892，在近邻窗口 [873, 892] 内）未登记进 docs/db-changelog.md`）
+     ⇒ ★ 该门按**磁盘侧最大编号**取窗口锚点（刻意不用台账侧）
+     ⇒ ⇒ **「磁盘上最新但台账没登记」必然落窗内**；
+  ③ **投递通道 `files=()`** —— ★★★ **当时【没有任何门能抓到】**
+     ⇒ ⇒ ★★ 这才是真正的死缺口：**迁移在升级库上会被静默跳过**
+     （脚本 warn-only + 部署侧只查文件存在）⇒ ⇒ **必须自己补门**。
+- ★★★★ **本轮的修法（门补进 ursmcheck 包）**：
+  `TestSection14335RegistrationPoints` 从 2 处扩到 **6 条断言 / 5 个文件**
+  （runner.go、`main.go` 的两处、`apply-db-revision-sequence.sh`、TSV、db-changelog）
+  ⇒ ★★ 每条断言**要求 needle 恰好出现一次**（`strings.Count(...) != 1` 即判红）
+  ⇒ ⇒ ★ **Contains 型门只保护「至少有一处」⇒ needle 不唯一会假绿**
+  （本轮已实测踩过：台账里「迁移 892」出现两次 ⇒ 改一处门仍绿）；
+  另加两条新门：`TestSection14335EmbeddataCopyIsByteIdentical`（两份副本**逐字**相同）
+  + `TestSection14335ChangelogShaIsMeasured`（台账 sha 必须是**文件实测值**）。
+  ⇒ 门 **19 条 → 21 条**；变异 **M1~M39 → M1~M44**
+  （新增 M40~M44 覆盖本节 4 类缺口）**44/44 全红且按预期红**，postflight 门绿 + 文件逐字还原。
+- ⚠★ **顺手订正一处自带的事实错误**：892 在 `runner.go` 的注释原写
+  「源表 `ursm_node_snapshot_min` 由启动序列建（**453/818**）」
+  ⇒ ★ **错**：`453_ursm_v2_node_snapshot_min.sql` **未在任何通道登记**
+  （投递通道 `files=()` / installer `StartupFiles` / TSV **三处都没有它**）
+  ⇒ 它已被 **baseline `sql/schema/01-schema.sql`** 吸收；
+  且 892 只用 baseline 的 `snapshot_ts` 一列 ⇒ **不依赖** 818 的 typed 列
+  ⇒ ⇒ **无迁移间顺序依赖**。
+  ⇒ ★ 教训：**注释里的「依赖某某迁移建的」本身也是断言**
+  ⇒ ⇒ 写的时候要**现场查那一条是否真在通道里**，而不是看它躺在 `sql/migrations/startup/` 目录下。
+
+### §143.35.5 ★ 顺带收窄一条守护 P0 的门（范围过宽 ⇒ 误伤下一个）
+
+- **触发**：本轮新增迁移 892 后，`sql/migrations/startup` 包的门
+  `TestUpMigrationsDoNotRecreateTheBrokenShape` 判红（门红原文）：
+
+  ```
+  892_ursm_snapshot_slot_daily.sql
+  declares PK [bucket_ts,day,granularity,slot]
+  writer needs [credential_id,raw_model_name,snapshot_ts,tenant_id]
+  ```
+
+- **根因（一行）**：★★ **那门的取法是「文件正文里【提到】`ursm_node_snapshot_min`
+  ⇒ 取文件里的【第一个】`PRIMARY KEY (…)`」** ⇒ ⇒ **范围过宽**：
+  任何「建了【另一张】带主键的表、同时又提到这张表」的迁移都会被误判成 offender。
+  ⇒ 而 892 建的是 `ursm_snapshot_slot_daily`（**它自己的表**），它只是**读**源表
+  ⇒ ⇒ **重放 892 根本不会碰 `ursm_node_snapshot_min` 的主键**
+  ⇒ ⇒ **它不是 landmine，是量具的盲区被我的迁移撞上了**。
+- ⚠★★ **这不是「一次误伤」，是【留给下一个人的同类陷阱】**：
+  今后任何「建带主键的新表、又提到 `ursm_node_snapshot_min`」的迁移都会撞上同一堵墙。
+- **修法（收窄取法，不改判据）**：把主键提取**限定到该表自身的声明语句**：
+  ① `ALTER TABLE [ONLY] [public.]<表> … ADD [CONSTRAINT x] PRIMARY KEY (…)` —— **优先**
+     （它是后发生的，对**最终形态**权威）；
+  ② 内联 `CREATE TABLE [IF NOT EXISTS] [public.]<表> ( … PRIMARY KEY (…) )`
+     —— 只看**建表语句自己的括号块**
+     （★ 必须做括号配对：PG 列类型自带括号 `numeric(10,2)`、
+     默认值可能是表达式 `DEFAULT (now())` ⇒ 一路正则扫会取错位置）。
+- ★★★ **收窄后【守卫力未被削弱】—— 三条变异逐条验证**
+  （可重跑脚本 `mutation_up_gate_narrow.py`）：
+
+  | 变异 | 做法 | 期望 | 实测 |
+  |---|---|---|---|
+  | N1 | 把 453 从 `knownUpReplayLandmines` 摘掉 | 红（**真凶仍被识别**） | **RED(as expected)** |
+  | N2 | 把 830 的 ALTER 主键改成 3 列 | 红（**ALTER 分支有力量**） | **RED(as expected)** |
+  | N3 | 把 453 的内联主键改成正确的 4 列 | 绿（**判据是数据驱动的**） | **GREEN(as expected)** |
+
+  ⇒ postflight：门绿 + 三个目标文件**逐字还原**（md5 校验）。
+  ⇒ 逐条复核覆盖：453（内联 3 列）**仍是 offender** ✔ /
+  463（ALTER 4 列）OK ✔ / 830（ALTER 4 列）OK ✔ /
+  818、875（只提到、不声明）跳过 ✔ / 892（建的是另一张表）跳过 ✔。
+- ★ **纪律**：★★ **改一条守护真实事故的门，必须用变异证明它的力量没被削弱** ——
+  「让门变绿」和「把门变准」是两件事，**前者容易得多**。
+
+### §143.35.6 ⚠ 回归中发现的【既有失败】（非本轮引入，已在干净 HEAD 上复核）
+
+- `internal/sessionv2mirror` 有 **3 条**门红：
+  `TestAbandonedTurnFlagIsSetOnEntryNotOnACopy` /
+  `TestAbandonedTurnPredicateIsGuardedByExistsFalse` /
+  `TestFinalSuccessFlagIsSetOnTheCallersEntry`。
+- ★★★ **已用 `git worktree` 拉 HEAD（`812e85c0f`）的干净副本复核：同样红**
+  ⇒ ⇒ **既有失败，与 §143.35 无关**（不涉及 892 / TSV / 巡检脚本）。
+- 它们的断言内容是「`client.go` 没在调用方的 entry 上设 `T0Missing` 标志
+  ⇒ 该标志会【每个走到该分支的请求都丢失】」⇒ 指向的是**产品侧**（v2 镜像写入路径），
+  **不在本轮 P11 的范围内** ⇒ ⇒ **登记为待查项，本轮不动**（动它要另开一轮并单独取证）。
+- ★ 教训：**「回归全绿」要问「在哪个提交上全绿」** ——
+  与否，本轮这条都不是「整包全绿」，如实记。
+
+★ 同族：[[先读量具再读产物]] · [[阴性结论要当缺陷一样复核]] ·
+[[自己上一节的结论也要复核]] · [[EXPLAIN 只证明「计划会选」]] ·
+[[PG 在规划期解析表名 ⇒ 「同一段 SQL 里写两路」行不通]] ·
+[[双引号里的反引号把 SQL 注释当命令执行]] · [[前提漂移]] ·
+[[「只改文件」≠「生效」：登记点要逐处对齐且每处都有门]] ·
+[[一个门住在哪个包，决定了它默认会不会被执行]]。
+
+### §143.35.7 ★ rebase 冲突处置 + 上游台账【编号列笔误】的订正（共享仓库）
+
+- **背景**：§143.35 提交后推送时，共享仓库已前进 **15 个提交**（`origin/main` = `8aac7b92a`）
+  ⇒ `git rebase origin/main` 撞上三个高危文件。
+
+- **① `sql/schema/installed_startup_migrations.tsv` ⇒ 【不用手改，用它自己的生成命令重建】**
+  ★ 冲突原因：上游新增了 `893_fresh_install_partition_prereq.sql`（`StartupFiles` 第 295 位），
+  而本轮的 892 在第 284 位 ⇒ 两边的尾部索引整体错位。
+  ⇒ 处置：`cd installer && go test ./internal/dbinit/ -run TestStartupManifest -update`
+  ⇒ 重建结果：**296 条**，892 在第 284 位、893 在第 295 位，**无冲突标记**。
+  ⇒ ★ **这个文件的头写着「DO NOT EDIT BY HAND」** ⇒ 派生文件一律用生成命令重建。
+
+- **② `LESSONS.md` ⇒ 追加型 ⇒ 冲突按【两侧全保留】解**
+  ★ 上游侧 394 行 + 本轮侧 135 行 ⇒ 合并后 **527,487 bytes**（上游 517,590 + 本轮增量）
+  ⇒ 逐行核对「每一侧的每一行都还在」⇒ **无内容丢失**。
+  ⇒ ★ 教训：这类文件**只能增不能减** ⇒ 解冲突时**选一侧 = 蒸发另一会话的过程记录**。
+
+- **③ `docs/db-changelog.md` ⇒ 追加型 ⇒ 同样两侧全保留，但发现上游一处笔误**
+  ⚠⚠ **上游 `7de986e78` 把「`890_drop_request_logs_v1_family.sql`」那行的
+  【编号列】改成了 `892`** —— 而**文件没改名、TSV 没改、`StartupFiles` 没改、
+  行内自述仍写着「本条**改号为 890**」** ⇒ ⇒ **且与本轮自己的 `| 892 |` 行撞号**。
+
+  ★★ **为什么 890 才是权威编号**（五个独立事实一致）：
+
+  | # | 事实源 | 值 |
+  |---|---|---|
+  | ① | 磁盘文件名 | `890_drop_request_logs_v1_family.sql` |
+  | ② | `installed_startup_migrations.tsv` | `282	890_drop_request_logs_v1_family.sql` |
+  | ③ | installer `StartupFiles` | `"890_drop_request_logs_v1_family.sql"` |
+  | ④ | 该行自述 | 「本条**改号为 890**」 |
+  | ⑤ | 生产 | 台账记着两次真实部署 `applying …/890_…` ⇒ ★ **文件名被生产 checksum 台账【冻结】** |
+
+  ⇒ ⇒ ★★ **处置：只订正台账里与事实不符的那一列**（编号列 892 → 890），
+  **不重命名文件** —— 因为生产已应用过该文件名 ⇒ 改名会让 checksum 台账
+  的文件名失配 ⇒ **有重放风险**。
+  ⇒ ⇒ 同一次提交里把 891 行的交叉引用「随 **892** 的 `DROP TABLE` 一起消失」
+  一并订正回「随 **890** 的 `DROP TABLE` 一起消失」（**做 DROP 的正是 890**）
+  ⇒ ⇒ 两行 891 去重保留一份（订正后两行只差这一个词）。
+  ⇒ ⇒ 订正后 postflight 断言全过：无「编号 892 指向 890 文件」的残留、
+  890 行恰好 1 行、891 行恰好 1 行且引用 890、本轮 `| 892 |` 行恰好 1 行。
+
+- ★ **通用式：两行台账抢同一个迁移号时，不要「选一行」——要先定【哪个号是权威】**：
+  ★ 判别动作 = 逐个列出事实源（**磁盘 / TSV / 注册表 / 行内自述 / 生产**）
+  ⇒ ★ **多数一致的那个才是权威** ⇒ ⇒ 少数派的那一列是笔误。
+  ⇒ ★★ 且要同时问一句「**改号/改名会不会动到生产**」
+  ⇒ 本例答案 = 会（文件名被 checksum 台账冻结）⇒ ⇒ **只改台账列，不改文件名**。
+
+### §143.35.8 ★ 顺手修掉 origin/main 上的【既有红】：上游 893 违反本仓锁守卫规则
+
+- **症状**：post-rebase 回归里 `installer/cmd/llm-gw-installer` 判红：
+
+  ```
+  迁移 893_fresh_install_partition_prereq.sql（#893）：含强锁 DDL 但没有
+  lock_timeout —— 它可能在等锁期间堵住全库（参见 §44）
+  ```
+
+- ★★★ **已用 `git worktree` 拉 `origin/main`（`e33e382d7`）的干净副本复核：同样红**
+  ⇒ ⇒ **上游本来就有的红**，不是本轮引入的。
+  ⇒ ⇒ **但本轮要推的提交正落在它上面** ⇒ 若不处理，main 保持红，
+  而下一个跑 installer 包测试的人会**误判成自己的锅** ⇒ ⇒ 顺手修掉。
+
+- **缺陷本体**：893 建当月/次月分区 ⇒ `CREATE TABLE ... PARTITION OF`
+  要拿父表的 **AccessExclusiveLock** ⇒ 无上限的锁等待会在等锁期间堵住全库
+  （2026-10-18 生产实测：一次迁移把 14 个网关会话堵了约 1.5 分钟）。
+  ⇒ **本仓规则**：870 号之后的迁移必须自带 `lock_timeout`
+  （门 `installer/cmd/llm-gw-installer/startup_ddl_lock_guard_gate_test.go`）。
+
+- **修法用本仓【既有惯例】，不是新发明**：
+  ★ 893 **没有显式事务**（三个 DO 块各自独立）⇒ `SET LOCAL` 离开事务块
+  只会被 PG 当成无效而告警 ⇒ **不生效**；
+  ⇒ ⇒ 而**本仓对同一形态的既有惯例就是 session 级 `SET`**：
+  871 / 877 / 887 / 888 四个迁移同样无显式事务、同样用 `SET lock_timeout`。
+  ⇒ ★ **不外泄**：installer 的 `applySQL` 对**每个文件单独起一次 psql**
+  ⇒ ⇒ session 级设置只作用于本文件这次执行。
+  ⇒ 取值 60s：与 870+ 迁移的通行值一致（872~892 的 `SET LOCAL` 都是 60s）；
+  命中即失败（55P03）而不是继续堵库 ⇒ **宁可让迁移失败，也不要让整库被一条迁移卡住**。
+
+- **连带同步（改一个迁移 ⇒ 三处必须一起动）**：
+  ① `embeddata/startup/893_*.sql` 副本（与 canonical **逐字相同**）；
+  ② `docs/db-changelog.md` 的 893 行 **sha**（实测值）：
+  `ffd47ced…` → `94b304545d6c3d6a641df938429e0ae39ba15854527c37fd7a3dedd22efbd2a3`；
+  ③ 迁移号与文件名**不变** ⇒ `installed_startup_migrations.tsv` 与投递通道
+  `files=()`（登记的是**文件名**，不是内容）⇒ **无需改动**。
+
+- **验证**：`installer/cmd/llm-gw-installer` 整包 **ok**（锁守卫门转绿）；
+  ★ **本地真库 ROLLBACK 实测**（`llm-gateway-pg`）：893 全文（含新增的 `SET`）
+  跑通，**exit=0**，18 个 default 分区 NOTICE 正常，**ROLLBACK 后无残留对象**；
+  三方 sha 现场一致（canonical / embeddata / 台账）。
+
+### §143.35.9 ★ 第二个 origin/main 既有红：冲突标记门的【子串】口径误伤散文引用
+
+- **症状**：rebase 后 `scripts/ursmcheck` 判红：
+
+  ```
+  LESSONS.md 里还有合并冲突标记 "<<<<<<< " —— 冲突没有被真正解决
+  ```
+
+- ★★★ **已用 `git worktree` 拉 `origin/main`（`a4d8a13bb`）的干净副本复核：同样红**
+  ⇒ ⇒ **上游本来就有的红**（与 §143.35.8 的 893 锁守卫同批）。
+
+- **根因（一行）**：★ 门 `TestLessonsFileHasNoConflictMarkers` 的检测口径是
+  **`strings.Contains(text, "<<<<<<< ")`（子串）** ⇒ ⇒ **把正文里【引用】这些标记的散文
+  也判成冲突**。
+  ⇒ ⇒ **实测踩到的那一段就是上游自己写的**：他们记「为了『两侧都保留』，写了个 Python
+  脚本按 `<<<<<<< HEAD` / `=======` / `>>>>>>> <sha> (message)` 三个标记**切片拼接**」
+  ⇒ 那些标记写在**反引号里、行中** ⇒ 被子串检查误判。
+
+- **修法（口径从子串改成行首锚定）**：
+  ★ git 写出的真冲突标记**必在第 0 列**（opener / closer 行首、separator 独占一行）
+  ⇒ ⇒ **行首锚定既不漏真冲突、也不再误伤行中的散文引用**。
+  ⇒ ★ separator 那条本来就要求「独占一行」⇒ 也保留。
+  ⇒ ★★ 顺带把「只查 separator」那条**降级去掉**：git 的冲突区**必然同时**有
+  opener 与 closer ⇒ 只看 opener/closer 就够；而「一行正好是七个等号」与
+  markdown 的 setext 标题下划线**不可区分** ⇒ 过程文档里引用这个形态是合法的
+  ⇒ 单查它会把「文档在讲这件事」判成冲突（★ 本轮 §143.35.9 自己就踩到了）。
+
+- ★★ **改检测口径必须双向验**（否则「把门改得不那么红」很容易）：
+  | 用例 | 做法 | 期望 | 实测 |
+  |---|---|---|---|
+  | P1 | 在 LESSONS.md 末尾注入**行首**的真冲突标记 | 红 | **RED(as expected)** |
+  | P2 | 保留仓库里那段**行中散文引用** | 绿 | **GREEN(as expected)** |
+  ⇒ postflight：门绿 + LESSONS.md **逐字还原**（md5 校验）。
+  ⇒ ★ P2 是**阳性对照**（若 P2 变红 ⇒ 说明口径没改对）；P1 是**守卫力对照**
+  （若 P1 变绿 ⇒ 说明门被改成了恒绿门）。
+
+---
+
+## §143.36 ★★★★★ P12「外传守卫」的生产只读归因 ⇒ **归属订正** + **根因实测** + **仓内修法**
+
+> **本节对生产的写入 = 0**（全部只读：pg_stat_statements / pg_class / pg_index /
+> pg_stat_statements_info / EXPLAIN（不带 ANALYZE）与 EXPLAIN (ANALYZE)（只对 SELECT，
+> 护栏放行且 SELECT 不写库））。
+> **本节未改任何生产对象、未改生产脚本、未改生产配置。**
+
+### §143.36.0 本节一句话
+
+★★ **「外传守卫（请求热路径）」这个既有判词被证伪** ⇒ 它其实是
+**看板降级读面** `admin/dashboard_board_fallback.go` 的 `fillOverviewCountsFromLogs`；
+★★★ **根因不是「投影太宽」，而是「同一个派生表被独立扫描了两遍」** ⇒
+**修法 = 改成单遍**（零语义风险、逐值等价、生产实测 buffers **恰好减半**）⇒ **已仓内落地**。
+
+### §143.36.1 起点：既有判词与它要修的东西
+
+§143.26.3（第 2 名）与 §143.26.8（P6）、§143.29（P12）都把这条语句记作
+**「外传守卫（请求热路径）」**，并据此把它排到结构性成本的**第 2 位**。
+§143.29.3 的读数是：
+
+| 指标 | 读数 |
+|---|---|
+| calls | 332（§143.29 口径）/ **342 + 68**（本节实测，见 §143.36.2） |
+| 累计物理读 | **18,876.9 MB**（巡检之后第 2 名） |
+| 每次物理读 | 56.8 MB（7,065 块/次） |
+| 均时 / max | 1,862 ms / **29,524 ms**（撞 30 s `statement_timeout`） |
+| 被杀 | §143.26.3 记「2 天 69 次」 |
+
+### §143.36.2 ★★ 先证「前提漂移」不成立（这是本轮的第一道门）
+
+§143.35 的通用式：★ **当「读数变慢」时，先查它是不是「前提漂移」** ——
+本条的待验前提是「迁移 890 退役了 v1 `request_logs` 族 ⇒ 若该守卫读 v1 族，
+它现在应当**报错**而不是变慢」。
+
+**实测（生产只读）**：
+
+| queryid | calls | mean | max | 物理读 | 形态 |
+|---|---|---|---|---|---|
+| `8961579589194073112` | **342** | 1,818.2 ms | 29,524.4 ms | 18,876.9 MB / **7,065 块/次** | 顶层 2 个标量子查询；**有** `tenant_id` 过滤 |
+| `395297407534424939` | **68** | 6,996.8 ms | 29,577.5 ms | 3,492.6 MB / 6,574 块/次 | 顶层 2 个标量子查询；**无** `tenant_id` 过滤 |
+
+⇒ ⇒ ★★★ **前提漂移不成立**：该语句**活着**（342 + 68 = 410 次 / 2 天），
+且**读的不是 v1 族** —— 它的 FROM 是 `public.session_turns` ∪ `public.session_turns_hot`
+（**v2 会话族**）+ `session_turn_details` LEFT JOIN。
+
+⇒ ⇒ ★ **统计窗口**：`pg_stat_statements_info.stats_reset = 2026-10-18 22:03:37+08`
+⇒ 本节所有读数覆盖 **2 天 00:29:31**。
+
+### §143.36.3 ★★★★ 归属锁定：**逐字同构**，不是「上下文命中」
+
+§143.26.0 第 1 条已记教训：★ **「上下文命中」不是归属判定**。
+本节因此取**生产语句的逐字原文**（`pg_stat_statements.query` 全量取回，单条取、不分段）
+再与仓内源码生成物做**同构判定**。
+
+**判据（三条同时过）**：
+
+| 判据 | 生产原文 | 仓内生成物 | 结果 |
+|---|---|---|---|
+| ① **骨架序列**（抹掉全部常量/占位符后的字符序列） | 21,135 字符 | 21,135 字符 | ★ **逐字相等** |
+| ② 结构计数 | 顶层子查询 2 / `UNION ALL` 2 / turns 腿 2 / hot 腿 2 / details JOIN 4 / 投影项 474 | 同 | ★ **全等** |
+| ③ token 多重集合 | 4,222 | 4,342 | **必然不等**（见下） |
+
+⇒ ⇒ ★★★ **判据③ 的「不等」是表征差异、不是结构差异**：
+`pg_stat_statements` 存的是**常量归一化**后的形态（字面量被写成 `$N`），
+仓内生成物是字面量形态 ⇒ **常量 token 数必然不同** ⇒ ③ 不是同构判据，①② 才是。
+（★ 这是本轮第二个量具坑：先写了「token 集合必须相等」，那是**恒假**判据。）
+
+⇒ ⇒ ★★ **仓内归属**：`admin/dashboard_board_fallback.go:38`
+`func (h *Handler) fillOverviewCountsFromLogs(...)` —— 调用链
+`queryOverviewCounts` → `fillOverviewCountsFromLogs`（看板「活跃模型数 / 活跃供应商数」）。
+
+⇒ ⇒ ★★★ **★ 既有判词「外传守卫（请求热路径）」被证伪**：
+- 它**不是**「外传守卫」—— 那个名字来自语句里 `COUNT(DISTINCT client_model/outbound_model)`
+  的**字面**（哪些模型被外发），但**它没有任何拦截/守卫语义**，只是一张看板上的计数；
+- 它**不在请求热路径上** —— 它是 **admin 看板的降级读面**
+  （`fallbackBoardSummary` → `queryOverviewCounts` → `fillOverviewCountsFromLogs`），
+  **只在分钟统计缺覆盖时触发**；
+- ⇒ ⇒ ★★★ **这个订正改变了 P12 的性质**：
+  「因为在请求热路径上所以比后台作业更敏感」这个**优先级理由不成立**；
+  但 ★ **P12 仍是值得做的** —— 因为它是 §143.26.3 记录的**「2 天 69 次被
+  `statement timeout` 杀」的第 2 名**，而 30 天窗上它**实测 37.3 s**（正撞 30 s 上限）。
+
+### §143.36.4 ★★★★ 根因实测：**扫两遍**，不是「列太宽」
+
+**形态解剖**（生产原文逐字）：
+
+```
+SELECT
+  (SELECT COUNT(DISTINCT COALESCE(NULLIF(r.client_model,…),NULLIF(r.outbound_model,…)))
+     FROM ( <118 列投影> FROM public.session_turns_hot t LEFT JOIN public.session_turn_details_hot d …
+            UNION ALL
+            <118 列投影> FROM public.session_turns t LEFT JOIN public.session_turn_details d … ) AS r
+    WHERE r.ts >= … AND r.ts < … AND r.tenant_id = … AND <探针排除谓词>
+      AND r.request_status IN ('success','failure','rate_limited')
+      AND COALESCE(NULLIF(r.client_model,…),NULLIF(r.outbound_model,…)) IS NOT NULL),
+  (SELECT COUNT(DISTINCT r.provider_id) FROM ( <同一份派生表> ) AS r
+    WHERE <同一组谓词> AND r.provider_id IS NOT NULL)
+```
+
+⇒ ★★★ **顶层 2 个标量子查询 ⇒ 同一份派生表被独立扫描 2 遍**
+（每遍 = hot 腿 + parent 腿 UNION ALL + 118 列投影 + details LEFT JOIN）
+⇒ 一次调用 = **4 次会话族扫描**。
+
+**决定性 A/B（生产只读，EXPLAIN (ANALYZE, BUFFERS)）**：
+
+| 形态 | 7 天窗·default | 30 天窗·无租户 | 结果值 |
+|---|---|---|---|
+| **改前**（宽投影 × 2 子查询） | 937,846 块 / 3,246 ms | **2,827,731 块 / 37,328 ms**（+ 26,331 物理读） | 731 / 15 |
+| **窄投影**（9 列 × 2 子查询） | 937,815 块（**100.0%**） | 2,852,990 块（**100.9%**） | — |
+| **改后**（9 列 × **单遍**） | **468,863 块（50.0%）/ 2,443 ms** | **1,426,254 块（50.4%）/ 4,587 ms** | **731 / 15** |
+
+⇒ ⇒ ★★★★★ **三个结论，每一个都推翻了既有假设**：
+
+1. ★★★ **根因是「扫两遍」，不是「列太宽」** ——
+   ★ **把 118 列投影裁成 9 列【零收益】**（100.0% / 100.9%）
+   ⇒ 因为 **PostgreSQL 的 planner 已经把未引用的投影列裁掉了**
+   （EXPLAIN 里 `width` 从 700 降到 40）⇒ **裁剪投影这条路已由实测排除，不要再走**。
+2. ★★★ **单遍 = 恰好减半**（50.0% / 50.4%）⇒ 这是「2 次独立扫描 → 1 次」的线性预期，
+   ★★ **实测与模型完全吻合** ⇒ 归因闭环。
+3. ★★★★ **30 天窗上改前实测 37,328 ms** ⇒ **正撞 30 s `statement_timeout`**
+   ⇒ ★★ **这才是 §143.26.3「2 天 69 次被杀」的物理原因**（不是「请求热路径敏感」，
+   而是**它本来就跑不完**）。
+
+⇒ ⇒ ★★ **语义「逐值」不变**（不是「大概等价」）：
+★ `COUNT(DISTINCT x)` **按定义忽略 NULL**（SQL 标准：COUNT 只计非 NULL）
+⇒ 改前那两条 `… AND <expr> IS NOT NULL` 尾臂都是 **no-op**
+（它们只是把本来就不会被计入的行提前滤掉，不改变去重集合）
+⇒ **改后与改前逐值相等** ⇒ ★ 实测印证：30 天窗 (731, 15) == (731, 15)；
+1 天窗 (60, 6) == (60, 6)。
+
+⇒ ⇒ ★ **A/B 纪律遵守情况**：
+① **现状逐字复现** —— §143.36.3 的骨架序列 21,135 字符逐字相等；
+② **预热** —— 每个形态先跑一次不计；
+③ **交错 ABAB×4** —— 12 轮交错（不是 AAAA 再 BBBB）；
+④ **报中位与组内极差** —— Exec 中位：current 129.8 ms（极差 175.3）、
+narrow 127.9 ms（极差 79.1）、single 65.0 ms（极差 192.6）
+⇒ ★★ **组内极差 > 组间差** ⇒ **时间不可作主判据**（宿主负载噪声 > 效应）
+⇒ ★★ **主判据取 buffers**（确定性量，不受负载影响）⇒ 50.0% / 50.4% / 100.0%。
+
+### §143.36.5 ★★ 仓内修法（已落地，**对生产写入 = 0**）
+
+**改一个函数**：`admin/dashboard_board_fallback.go` 的 `fillOverviewCountsFromLogs`：
+
+```go
+// 改前（两个标量子查询 ⇒ 派生表被独立扫描两遍）
+SELECT
+  (SELECT COUNT(DISTINCT %s) FROM %s WHERE %s AND %s IS NOT NULL),
+  (SELECT COUNT(DISTINCT %s.provider_id) FROM %s WHERE %s AND %s.provider_id IS NOT NULL)
+
+// 改后（单遍 ⇒ 一次扫描同时算两个聚合）
+SELECT COUNT(DISTINCT %s), COUNT(DISTINCT %s.provider_id)
+FROM %s
+WHERE %s
+```
+
+⇒ ★★★ **零语义风险**（`COUNT(DISTINCT)` 忽略 NULL ⇒ 尾臂是 no-op ⇒ 逐值相等）
+⇒ ★★★ **零形状风险**（返回仍是 1 行 2 列，`.Scan(&logModels, &logProviders)` 不变）
+⇒ ★★ **零 SQL 契约风险**（不碰 `boardLogsWhere`、不碰探针排除谓词、不碰投影 helper）
+⇒ ★ **只动这一处**：全 admin 包扫描确认「同一 SQL 模板里 ≥ 2 个 `FROM %s`
+且含 `(SELECT COUNT(DISTINCT`」的形态**仅此一处**（其余 3 个看板读面
+`fallbackBoardSummary` / `fallbackBoardTrends` / `fallbackDimPie` 都是**单次 FROM 扫描**）。
+
+⚠ **免检许可的边界（写进代码注释了）**：★ 「可以省掉 `IS NOT NULL` 臂」这条许可
+**只对 `COUNT(DISTINCT)` 成立** ⇒ 若将来把聚合换成 `SUM`/`AVG`/`COUNT(*)`
+（它们对 NULL 敏感），**必须把 `IS NOT NULL` 臂加回去**。
+
+### §143.36.6 ★★★ 三道新门 + 变异（`admin/section_14336_board_single_scan_test.go`）
+
+| # | 门 | 守什么 |
+|---|---|---|
+| 1 | `TestSection14336OverviewCountsIsSingleScan` | ★ **派生表占位符在同一个 SQL 模板里被引用恰好 1 次**（退化回双子查询 ⇒ 红） |
+| 2 | `TestSection14336NoScalarSubqueryInOverviewCounts` | 顶层无 `(SELECT` 标量子查询；`COUNT(DISTINCT` 恰好 2 处 |
+| 3 | `TestSection14336DistinctAggregatesIgnoreNulls` | ★ 聚合保持 `COUNT(DISTINCT)` 形态（禁 `SUM`/`AVG`/`COUNT(*)`）—— **免检许可的边界** |
+| 4 | `TestSection14336NarrowProjectionIsNotTheFix` | ★ 登记阴性结论：继续用完整投影 helper（裁剪投影收益实测为 0） |
+| 5 | `TestSection14336OnlyOneDoubleScanSiteInAdmin` | 全 admin 包扫「双扫形态」—— 防止又埋一处 |
+| 6 | `TestSection14336RunbookHasSection` | 本节在场（关键读数在册） |
+
+⇒ ★★★ **★ 门的判据口径（★ 三处量具坑都在本轮踩到并修掉了）**：
+- **(a)** 用 `strings.Index(body, "fmt.Sprintf(`")` 找 SQL 模板会**先命中 `modelExpr`**
+  （它在函数体前面）⇒ 必须**遍历所有反引号模板**并挑出含 `SELECT` 的那个
+  ⇒ 第一版门在这里读到 `modelExpr` ⇒ **门红而产品是对的**（量具 bug，不是产品 bug）。
+- **(b)** 「数 `FROM %s`」必须**限定在同一个 SQL 模板内** ⇒ 按**文件**计数会把同文件的
+  另外两个正常单扫读面也算进来 ⇒ **恒红**。
+- **(c)** 门自己所在的 `.go` 文件含这些字面量 ⇒ 扫描时必须**排除自己**。
+- **(d)** ★ **判据不能数「FROM」「SELECT」这类关键词**（改前改后数字巧合接近）⇒
+  唯一稳的口径是「**派生表占位符在同一个模板里被引用了几次**」。
+
+### §143.36.7 ★★ 本节对既有结论的影响
+
+| 既有条目 | 原判词 | 本节订正后 |
+|---|---|---|
+| §143.26.3 第 2 名 | 「外传守卫（**请求热路径**）」 | ★ **归属 = 看板降级读面** `fillOverviewCountsFromLogs`；**不在请求热路径上** |
+| §143.26.8 **P6**（给外传守卫定超时/改形态） | 「在请求热路径上，比后台作业更敏感」 | ★★ **优先级理由不成立**（不是请求热路径）；但 ★ **「改形态」这半条已被本节的单遍改法覆盖**（30 天窗 37.3 s → 4.6 s ⇒ 不再撞超时） |
+| §143.29 **P12**（降它的物理读） | 「新增，★★★★」 | ★★ **已归因 + 已给修法 + 已仓内落地**；**收益已实测**（buffers 50.4%、exec −87.7%）⇒ **待部署** |
+| §143.29.3 的排序（「巡检 > 外传守卫 > matview > rollup」） | 按结构性成本排 | ★ **排序不变**（物理读总量未变，**变的是每次的量**）⇒ 但 ★ **「它是请求热路径」这条理由被撤** |
+| §143.26.3「2 天 69 次被杀」 | 归因到外传守卫 | ★★ **物理原因已找到**：30 天窗实测 37.3 s ⇒ **它本来就跑不完 30 s** ⇒ **单遍改法直接消除** |
+
+⇒ ⇒ ★★★ **一句话**：★ **P12 从「一个待定超时的请求热路径守卫」变成
+「一个已归因、已实测、已修好、待部署的看板降级读面」**。
+
+### §143.36.8 ★ 本节遗留与待拍板
+
+> **订正横幅十八（2026-10-21，§143.37 就地订正本节 §143.36.8 的第 1 条与第 3 条）**
+>
+> ★★★★ **第 1 条的判词被证伪（原文保留）：**
+> - 原文写的是「**看板 fallback 只在【分钟统计缺覆盖】时触发**」⇒ ★ **这在本节指的那条链上不成立。**
+> - §143.37.3 实测（`git log -L` + 源码）：`queryOverviewCounts` 里的
+>   `return h.fillOverviewCountsFromLogs(...)` **落在 `if` 块【外面】**
+>   ⇒ **分钟路径成功时也照跑日志回退** ⇒ ★★ **那 412 次调用没有一次是「降级触发」的**，
+>   它们是**无条件**发生的。
+>   （来历可查：`272e1bf93` 引入分钟路径时，把收尾的 `return` 留在了 `if` 之外
+>   ⇒ **快路径加上了，慢路径却从没被关掉**。）
+> - ⇒ ⇒ ★★ **「为什么跑 410 次」的答案不是「覆盖率不够」，而是「门控从来没关上过」**
+>   ⇒ ⇒ ★ **§143.28 P15（巡检/rollup 覆盖率 ⇒ 看板降级频次）解释不了这 412 次里的任何一次**
+>   ⇒ ★ P15 的方向对**饼图/趋势**那两个读面仍然成立，但对 P12 这条链不成立。
+> - ⇒ ⇒ ★★★ **而且比「触发过频」更糟：那 412 次扫描算出来的两个数字，
+>   在生产上【一次都没有被采用过】** ——
+>   `fillOverviewCountsFromLogs` 只在计数为 0 时才写回 ⇒ 两个计数非零时结果被**逐字丢弃**
+>   ⇒ 生产实测 **6/6 组合**（1/7/30 天 × 平台/租户）两个计数都非零
+>   ⇒ ⇒ **21.8 GB 物理读 / 1,108.7 s 库时间换了个寂寞。**
+> - ⇒ ⇒ ★★ **修法**：只在「真的需要补 0」时才回退（`overviewCountsNeedsLogFallback`），
+>   生产 A/B **6/6 组合逐值等价** ⇒ 仓内已落地（**未部署**）⇒ 详见 **§143.37**。
+>
+> ★★ **第 3 条待办已闭合（原文保留）：**
+> - 原文写的是「`admin` 包已全扫（仅此一处），★ **其他包（`maas` / `bg` / `domains`）本轮未扫**」。
+> - §143.37.2 已做**全仓**普查（脚本 `scripts/audit/scan_14337_heavy_source.py`，
+>   ★ 含**子串修正**：parent 计数 = count(parent) − count(parent_hot)）：
+>   命中 **6 处**，**全部在 `admin/columnar_surface_servable_realdb_test.go` 一个测试文件里**
+>   ⇒ ⇒ ★★★ **产品代码命中数 = 0** ⇒ 结论**比原文更强**
+>   （原文只说「admin 包外没有」，实测是「**全仓产品代码里没有**」）。
+
+- ★★ **部署需授权**（改 Go 代码 ⇒ 改生产行为）⇒ **本节对生产写入 = 0、未部署**。
+- ★★ **P12 的「为什么它跑 410 次」尚未归因** ——
+  看板 fallback 只在**分钟统计缺覆盖**时触发 ⇒ ★ **这指向 §143.28 P15
+  （巡检/rollup 覆盖率 ⇒ 看板降级频次）**，是**下一轮**的线索。
+  ⇒ ★ **本节只解决「每次有多贵」，没解决「它为什么被触发这么多次」**。
+- ★★ **同类双扫形态是否存在于其他包**：`admin` 包已全扫（仅此一处），
+  ★ **其他包（`maas` / `bg` / `domains`）本轮未扫** ⇒ 登记为待办。
+
+### §143.36.9 ★ 本节的可重跑脚本（收益数字不是口头断言）
+
+★ `scripts/audit/verify_14336_board_ab.py` —— 生成「语义对照 + 预热 + **交错 ABAB×4**」
+的 SQL（782 行 / 62,606 B），**只读**（全部 SELECT / EXPLAIN ANALYZE 对 SELECT）：
+
+```bash
+# 生产（走既有只读护栏）
+bash ~/.mavis-tools/lgwp-prod.sh scripts/audit/verify_14336_board_ab.sql 600
+
+# 本地真库
+docker exec -i llm-gateway-pg psql -U llm_gateway -d llm_gateway \
+  -f scripts/audit/verify_14336_board_ab.sql
+```
+
+⇒ ★★ **它把「逐值等价」与「buffers 减半」两件事都变成可复现的读数**，
+而不是「本轮实测过一次」的口头结论。
+⇒ ⚠ **脚本里的宽投影列表达式是【快照】**（与仓内 `db.SessionFamilyTurnsSourceSQL()`
+  逐字一致，由 §143.36.3 的骨架序列判定保证）⇒ ★ **改仓内投影时必须同步这个脚本**，
+  否则 A/B 测的不是现网形态。
+⇒ ★ 窗口/租户在脚本顶部两个变量里（默认 30 天窗 + 平台口径 = **最重的那个变体**）。
+
+
+
+### §143.36.10 ★★★ 收尾时自查抓到的**门自身的缺陷**（两条，都是本轮新增的量具纪律）
+
+★★ **本节的门第一版有真实缺陷**，在准备推送时自查抓到 ⇒ 记在这里（不是「一开始就想对了」）。
+
+**① 判据可被【注释】满足（仓内第 5 处同款坑）**
+
+- 现象：门第一版用 `strings.Contains` 断言源码文本，其中两个 needle
+  —— **`(SELECT`**（顶层标量子查询标记）与 **`AVG(`**（禁项）——
+  **剥掉注释后就消失了** ⇒ ⇒ **改前的双扫形态恰好写在本函数上方的注释里**
+  ⇒ ⇒ **不改剥注释层 ⇒ 改前形态会被判绿 ⇒ 门没有牙**。
+- 修法：读源码一律先剥注释；★ **剥注释器复用【同包】状态机实现**
+  `admin/request_logs_retirement_tiering_test.go` 的 `stripGoCommentsKeepingStrings`。
+  ⚠ **第一版我自己写的是正则版**（行注释 / 块注释两条正则）
+  ⇒ ★★ **自证门当场抓到它把字符串字面量里的 `//` 与 `/* */` 也吃掉了**
+  （"http://…" 这种 URL 字面量会被整行吃掉）⇒ **正则实现不够用**。
+- 新增门 `TestSection14336StripCommentsHasTeeth`（**两腿自证**：
+  该剥的剥掉了 / **不该剥的没剥**）。
+- ⇒ ⇒ ★★★★ **通用式（承远端 LESSONS 2026-10-21 第一条）**：
+  ★ **纪律不会自动覆盖新写的门** ⇒ **写任何源码文本判据前，先 grep 整个仓里
+  同类判据怎么做的**（本仓已有 10+ 处剥注释实现，注释里都写着同一句话：
+  「判据一旦能在注释里被满足，就不是判据」）。
+  ⇒ ★★ **剥完注释还要问「这个 needle 还能被什么满足」**。
+
+**② 变异脚本必须用【隔离副本】（共享仓 + 并行会话）**
+
+- 现象：仓内存量三份变异脚本都是**就地改共享工作树**的源文件，跑一轮 1~2 分钟。
+- ⇒ ⇒ ★★ **风险**：那个窗口里若并行会话恰好 `git commit -a`
+  ⇒ **被故意改坏的那一行会被推上 main** ⇒ 那是**一个活着的缺陷**，不是「一个脏文件」。
+- 修法：★ **本轮的新脚本 `scripts/mutate-14336-board-single-scan-gate.py` 改隔离副本模式** ——
+  `git archive HEAD | tar -x` 导出 HEAD（`vendor/` 被 git 跟踪 ⇒ 副本可独立编译）
+  ⇒ **全部变异只在副本里发生**，共享工作树**一个字节都不动**；
+  ★ 前置条件写进脚本：工作树里**已跟踪文件**若有未提交改动 ⇒ 副本就不是
+  HEAD 那棵树 ⇒ **脚本先拒绝运行**（未跟踪文件 `??` 不算）；
+  ★ 收尾再核一次「共享工作树的已跟踪文件未被改动」。
+- ⇒ ⇒ ★★ **实测读数**：M1~M5 全红 + 副本内逐字还原（md5 一致）
+  + **「共享工作树的已跟踪文件：未被改动 OK」**。
+
+**③ 变异设计的两个坑（第一版 M5 做反了）**
+
+- ⚠ **「把改前形态追加进注释」是【错的 M5】** ⇒ 门仍绿 —— 而**绿是对的**
+  （剥注释后源码里没有那个形态）⇒ ★ **先问「我要证明什么」**：
+  正确的 M5 = **把真正的代码删掉、只留注释里的形态** ⇒ 剥注释后源码里没有形态
+  ⇒ 门**必须红** ⇒ 证明剥注释层**承重**。
+- ⚠ **改 SQL 形态必须同步改 `fmt.Sprintf` 的实参个数**，否则
+  `go vet` 报 "call needs N args but has M args" / "declared and not used"
+  ⇒ **编译红 ≠ 断言红** ⇒ 读数作废。
+  ⇒ ★★ **本轮 4 个变异第一版全部作废**（M1/M2 实参个数、M3 needle 不唯一、
+  M4 替换串含 needle、M5 方向反了）⇒ ★ **作废的那几轮不能算「门没牙」**。
+  ⇒ ★★ 且 **M5 修好后仍要做【双向验】**：既证明「注释里藏着形态 ⇒ 门红」，
+  也要确认「正常形态 ⇒ 门绿」（基线绿已实测）。
+
+## §143.37 ★★★★★ P20：P12 的「为什么被调用」⇒ **无条件 fall-through** ⇒ 门控改法（对生产写入 = 0）
+
+> **本节对生产的写入 = 0**（全部只读：`pg_stat_statements` / `pg_class` /
+> `request_stats_minute` 与 `request_stats_dim_minute` 的 SELECT /
+> EXPLAIN (ANALYZE)（只对 SELECT，护栏放行且 SELECT 不写库））。
+> **本节未改任何生产对象、未改生产脚本、未改生产配置。**
+>
+> ⚠ **本节改了 1 处【产品代码】**（`admin/dashboard_board_queries.go` 的门控）
+> ⇒ 改的是看板读面的**执行路径**，**未部署** ⇒ **生产行为仍未变**。
+> ⚠ **生产读数被本轮自己的 EXPLAIN ANALYZE 污染过 1 次**（见 §143.37.4 的说明）。
+
+### §143.37.0 本节一句话
+
+★★ **P12 那条语句 2 天被调用 412 次、读了 21.8 GB 物理读、占了 1,108.7 s 库时间，
+而它算出来的两个数字在生产上【一次都没有被采用过】** ⇒
+根因不是「回退被误触发」，而是 **`queryOverviewCounts` 里的无条件 fall-through**
+（`272e1bf93` 引入分钟路径时，把收尾的 `return` 留在了 `if` 块**外面**）
+⇒ 修法 = **只在真的需要补 0 时才回退**（生产 A/B：**6/6 组合逐值等价**）
+⇒ ★★ **仓内已落地 + 6 条门 + 7 个变异**。
+⇒ ★ 附带闭合 §143.36.8 的两条遗留（全仓普查 + 触发归因）。
+
+### §143.37.1 起点：§143.36.8 留下的那个问题
+
+§143.36.8 写了两条遗留：
+
+1. ★★ **P12 的「为什么它跑 410 次」尚未归因** —— 原文写的是
+   「看板 fallback 只在**分钟统计缺覆盖**时触发」⇒ 指向 §143.28 P15。
+2. ★★ **同类双扫形态是否存在于其他包** —— `admin` 包已全扫（仅此一处），
+   **其他包（`maas` / `bg` / `domains`）本轮未扫**。
+
+⇒ 本节把这两条都做完了。★ **第 1 条的既有判词被证伪**（见 §143.37.3 与订正横幅十八），
+**第 2 条闭合**（见 §143.37.2）。
+
+### §143.37.2 ★★ 全仓普查（闭合 §143.36.8 的待办）：**产品代码 0 处**
+
+判据（★ 与 §143.36.8 记的「admin 包全扫」同一套口径）：
+
+- 逐个 `.go` 文件抽出所有 `fmt.Sprintf(`…`)` 的**反引号 SQL 模板**；
+- 在**同一个模板内**统计「重型源占位符」被引用的次数；
+- 重型源清单 = 会话族 / 日志族的 FROM 占位形态
+  （`FROM %s`、`FROM public.session_turns[_hot]`、`FROM public._request_logs[_hot]`、
+  `FROM request_logs_with_current_month`、`SessionFamilyTurnsSourceSQL()` 等）。
+
+★ **口径纪律（这一版又踩了一次子串坑）**：
+
+- ⚠★ 第一版报「**9 处**命中」，其中 **3 处是子串误计** ——
+  `FROM public.session_turns` 是 `FROM public.session_turns_hot` 的【子串】
+  ⇒ 朴素 `count()` 把 hot 腿也计进 parent 腿 ⇒ **假命中**。
+- ⇒ 修正口径：**parent 计数 = count(parent) − count(parent_hot)**（`_request_logs` 同理）。
+- ⇒ ★ 与 §143.36.8 记的「`AS r` 子串计数 50」是**同一族坑**（子串计数）。
+
+**修正后的结果（脚本 `scripts/audit/scan_14337_heavy_source.py`，可重跑）**：
+
+| 命中 | 位置 | 形态 | 性质 |
+|---|---|---|---|
+| 6 处 | `admin/columnar_surface_servable_realdb_test.go` | `FROM %s` × 2~3 | **测试代码**（统计表与其分区的行数，形态合理） |
+
+⇒ ★★★★ **产品代码命中数 = 0** ⇒ 「同一份重型源在同一 SQL 模板里被引用 ≥2 次」
+这个 P12 的失败形态，**在全仓产品代码里一处都没有**。
+⇒ ★ §143.36.8 的「其他包未扫」待办**闭合**，且结论比原判词更强
+（原判词只说「admin 包外没有」，实测是「**全仓产品代码里没有**」）。
+
+⚠ **诚实边界**：普查的判据是「**占位符被引用 ≥2 次**」。它**不覆盖**
+「同一份源被两个不同模板各读一次」这种跨模板形态 —— 后者属于
+「同一份数据被读几遍」的另一族问题，需要跨模板的调用点分析，本轮未做。
+
+### §143.37.3 ★★★★ 触发链的代码级归因：**无条件 fall-through**
+
+看板概览计数（「活跃模型数 / 活跃供应商数」）的取数链是：
+
+```
+handleDashboardBoard / buildBoardPayload
+  └─ queryBoardSummary            (admin/dashboard_board_queries.go)
+       ├─ queryOverviewCountsMinute   ← 快路径（读 request_stats_dim_minute）
+       └─ queryOverviewCounts
+            └─ fillOverviewCountsFromLogs  ← ★ 本节的主角（P12 那条语句）
+```
+
+★ **`queryOverviewCounts` 的改前形态（`272e1bf93` 引入）**：
+
+```go
+func (h *Handler) queryOverviewCounts(ctx context.Context, tenantID string, tr boardTimeRange, keys, models, providers *int) error {
+	if err := h.queryOverviewCountsMinute(ctx, tenantID, tr, keys, models, providers); err != nil {
+		if !IsMissingRelationError(err) {
+			return err
+		}
+	}
+	return h.fillOverviewCountsFromLogs(ctx, tenantID, tr, keys, models, providers)
+	// ★★★ 这个 return 落在 if 块【外面】⇒ 分钟路径成功时也照跑日志回退
+}
+```
+
+★★ **`git log -L` 的来历可查**（`272e1bf93 fix(dashboard): reorder board trend and harden stats API fallbacks`）：
+
+- `9ef13731f` 引入 `queryOverviewCounts` 时**只有**日志回退（还没有分钟路径）；
+- `272e1bf93` 加上了分钟路径（`queryOverviewCountsMinute`）**和** `IsMissingRelationError` 的
+  42P01 判据 —— ★ 意图显然是「分钟路径当主、**关系缺失时**才回退」；
+- ★★ 但收尾的 `return h.fillOverviewCountsFromLogs(...)` **被留在了 `if` 之外**
+  ⇒ **快路径加上了，慢路径却从没被关掉** ⇒ 一次「加个快路径」的改动，
+  顺手把一条重量级读面变成了**每次必跑**。
+
+⇒ ★★ **所以「它为什么被调用 412 次」的答案是：**
+**它一直都在被调用** —— 不是被某个降级判据触发的，而是**无条件**的。
+⇒ ★ 这直接**推翻**了 §143.36.8 的既有判词（订正横幅十八）。
+
+⚠ **别把这一族误伤到别的读面上**：`resolveBoardPies` / `resolveBoardTrends` 走的是
+`shouldUseBoardLogsFallback`（有真正的覆盖判据：分钟统计 `min(bucket)` 是否早于窗口起点）
+⇒ **那两个读面的门控是对的**，本节不动它们。
+★ 唯一的例外是 `shouldUseBoardLogsFallback` 本身**也**没有覆盖判据以外的检查
+（`tr.Days <= 1` 时直接 false）—— 那是**另一个**读面的口径，本轮未查。
+
+### §143.37.4 ★★★★ 生产只读取证：**结果从未被采用**，成本却是实打实的
+
+**① 两个读面的调用频次（`pg_stat_statements`，`dbid=16384`，
+`stats_reset = 2026-10-18 22:03:37+08` ⇒ 约 2 天窗口）**：
+
+| 读面 | queryid | calls | 均时 | 累计库时间 | 累计物理读 | 每次块数 |
+|---|---|---|---|---|---|---|
+| ★ **日志回退**（有 tenant 过滤） | `8961579589194073112` | **343** | 1,813.4 ms | 622.0 s | **18,876.9 MB** | 7,044 |
+| ★ **日志回退**（平台口径） | `395297407534424939` | **69** | 7,052.9 ms | 486.7 s | **3,492.6 MB** | 6,479 |
+| 分钟路径（有 tenant 过滤） | `-729629758807494072` | 384 | 69.9 ms | 26.8 s | 14.9 MB | 5 |
+| 分钟路径（平台口径） | `3875312947288648312` | 128 | 2,049.3 ms | 262.3 s | 367.2 MB | 367 |
+
+⇒ ★★ **日志回退合计 412 次 / 22,369.5 MB（≈ 21.8 GiB）/ 1,108.7 s 库时间**，
+而分钟路径只要 **289.1 s** ⇒ ★ **重的那条比快的那条贵 3.8 倍的库时间、60 倍的物理读**。
+⚠ **口径说明**：日志回退的 calls 在本轮从 342 变成 343 ⇒ **多出来的那 1 次是本轮自己的
+`EXPLAIN (ANALYZE)`**（`pg_stat_statements` 把它记成独立条目）⇒ 本节引用时按 343/69 记。
+
+**② 为什么「结果从未被采用」** —— `fillOverviewCountsFromLogs` 的收尾：
+
+```go
+if *models == 0 && logModels > 0 { *models = logModels }
+if *providers == 0 && logProviders > 0 { *providers = logProviders }
+```
+
+⇒ ★★ **两个计数都非零时，这个函数的返回值【一行都不会被写回】**
+⇒ 那一整扫（会话族 hot ∪ parent 两腿 UNION ALL + 118 列投影 + details LEFT JOIN）
+**扫了、付了钱、什么也没换到**。
+
+**③ 生产实测：分钟路径在 6/6 个组合里都给出两个非零计数**（§143.37.5 的 A/B 表）：
+1 天 79/8、7 天 165/10、30 天 488/19（平台口径与 `default` 租户口径**数值相同**
+—— 因为 `request_stats_dim_minute` 里 228,415 / 228,408 行属于 `default`，
+另一个租户 `hansi` 只有 9 行）。
+
+⇒ ★★★ **⇒ 那 412 次扫描，412 次都是纯浪费。**
+
+### §143.37.5 ★★★★ 门控修法：零语义风险（生产 A/B 逐值等价）
+
+**改法**（`admin/dashboard_board_queries.go`）：
+
+```go
+// overviewCountsNeedsLogFallback 判定「看板概览计数还要不要跑日志回退」。
+func overviewCountsNeedsLogFallback(minuteErr error, models, providers int) bool {
+	if minuteErr != nil {
+		return IsMissingRelationError(minuteErr)   // 只有 42P01 才回退
+	}
+	return models == 0 || providers == 0              // 只在需要补 0 时才回退
+}
+```
+
+**★ 为什么逐值不变（不是「大概等价」）** —— 设分钟路径结果 (m, p)、日志回退结果 (lm, lp)：
+
+| 情形 | 改前 | 改后 | 结论 |
+|---|---|---|---|
+| m≠0 且 p≠0 | 跑了回退，但两个 `if` 都不成立 ⇒ **状态不变** | 不跑 ⇒ **状态不变** | ★ **逐值相等** |
+| m=0 或 p=0 | 跑了回退 | 跑了回退（**逐字相同的代码路径**） | ★ **逐值相等** |
+
+⚠ **诚实边界（唯一的差别，不是「零风险」）**：改前在 (m≠0 且 p≠0) 时
+**可能把日志查询的错误返回给调用方**，改后返回 nil。
+⇒ ★ 之所以可判定为「调用点不可观测」，是因为**两个调用点都用 `_ =` 丢弃了它**
+（`queryBoardSummary` 与 `fallbackBoardSummary`）⇒ 由门
+`TestSection14337CallSitesDiscardOverviewCountsError` 钉住。
+
+⚠ **边界②**：分钟路径报 **42P01（关系缺失）时仍然回退** —— 那正是回退存在的理由
+（聚合表没装 ⇒ 只能从明细表算）；**非 42P01 的错误仍直接上抛**，与改前一致。
+
+**★ 生产 A/B（真实数据，6/6 组合逐值等价）** ——
+脚本 `scripts/audit/verify_14337_overview_gate_ab.py`（只读，可重跑）：
+
+| 窗口 | 范围 | 分钟路径 (m/p) | 日志回退 (lm/lp) | 改前最终值 | 改后最终值 | 逐值等价 | 被门控跳过 |
+|---|---|---|---|---|---|---|---|
+| 1 天 | 平台 | 79 / 8 | 85 / 7 | 79 / 8 | 79 / 8 | **t** | **t** |
+| 1 天 | default | 79 / 8 | 85 / 7 | 79 / 8 | 79 / 8 | **t** | **t** |
+| 7 天 | 平台 | 165 / 10 | 184 / 9 | 165 / 10 | 165 / 10 | **t** | **t** |
+| 7 天 | default | 165 / 10 | 184 / 9 | 165 / 10 | 165 / 10 | **t** | **t** |
+| 30 天 | 平台 | **488** / **19** | **731** / **15** | 488 / 19 | 488 / 19 | **t** | **t** |
+| 30 天 | default | **488** / **19** | **731** / **15** | 488 / 19 | 488 / 19 | **t** | **t** |
+
+⇒ ★★ **6/6 组合 `value_equivalent = t`** ⇒ 门控**逐值**不改变载荷。
+⇒ ★★ **6/6 组合 `log_scan_skipped_by_gate = t`** ⇒ 门控**确实**跳过了那一扫。
+
+**★ 被跳过那一扫的单次成本**（单遍形态 = 仓内现行形态，EXPLAIN (ANALYZE, BUFFERS)）：
+
+| 窗口 | 平台口径 | default 租户口径 |
+|---|---|---|
+| 1 天 | 37,665 块 / 193.6 ms | 37,665 块 / 146.0 ms |
+| 7 天 | 488,520 块 / 914.9 ms | 488,517 块 / 928.6 ms |
+| 30 天 | **1,439,987 块 / 3,598.5 ms** | 1,435,859 块 / 3,683.5 ms |
+
+⇒ ★ **30 天窗那一扫单次就是 140 万块 / 3.6 s** ⇒ 门控省掉它比 §143.36 的
+「减半」还彻底（**那一扫根本不发生**）。
+⇒ ★★ **P12 与 P20 是叠加的**：P12（单遍）让这一扫便宜一半，P20（门控）让它**大多数时候不发生**。
+
+### §143.37.6 ★★★ 六道新门 + 七个变异
+
+门文件：`admin/section_14337_overview_counts_gate_test.go`（**6 条**）
+
+| # | 门 | 挡什么 |
+|---|---|---|
+| 1 | `TestSection14337NeedsLogFallbackDecisionTable` | ★ **行为表**（8 个输入分支）：判定写反 / 只判一个计数 / 42P01 与非 42P01 混淆 |
+| 2 | `TestSection14337LogFallbackOnlyFillsZeroCounts` | ★ **门控的前提**被破坏（回退不再只补 0 ⇒ 跳过就不再是零语义风险） |
+| 3 | `TestSection14337QueryOverviewCountsIsGated` | 门控被删 / 判定被挪到回退之后 |
+| 4 | `TestSection14337CallSitesDiscardOverviewCountsError` | ★ **诚实边界**：调用点开始使用错误 ⇒ 错误面从不可观测变成可观测 |
+| 5 | `TestSection14337NoHeavySourceDoubleScanInProductCode` | ★ **全仓普查**（§143.37.2 的口径进仓）：产品代码里再出现双扫 |
+| 6 | `TestSection14337RunbookHasSection` | 本节在 runbook 里 |
+
+★ **门 1 用的是【行为表】而不是文本判据** —— 理由：门要挡的失败模式
+（门控被删 / 判定写反 / 只判一个计数）在源码文本上都能长得「很像有门控」，
+只有**真的调用判定函数**才能区分。
+★ **门 2 是门 1 的前提门**：没有它，「跳过是零语义风险」这句话就没有依据。
+
+变异脚本：`scripts/mutate-14337-overview-counts-gate.py`（**隔离副本模式**，M1~M7）
+
+| # | 变异 | 期望红 |
+|---|---|---|
+| M1 | 还原成改前的**无条件 fall-through** | 门 3 |
+| M2 | 判定写反（`!= 0` 时反而回退） | 门 1 |
+| M3 | 只判一个计数（漏掉 `providers`） | 门 1 |
+| M4 | ★ 破坏门控的前提（回退不再只补 0） | 门 2 |
+| M5 | 把判定挪到回退**之后** | 门 3 |
+| M6 | 调用点 1 开始使用错误 | 门 4 |
+| M7 | 调用点 2 开始使用错误 | 门 4 |
+
+⇒ ★ **隔离副本模式**（`git archive HEAD | tar -x`）：全部变异只在副本里发生，
+共享工作树**一个字节都不动**；收尾核「共享工作树的已跟踪文件未被改动」。
+
+**★ 实测读数（2026-10-21）**：**M1~M7 全红（7 / 7）** + 副本内**逐字还原**
+（两个目标文件 md5 与原始一致）+ **「共享工作树的已跟踪文件：未被改动 OK」**
+⇒ **VERDICT: PASS**。
+⇒ ★ 顺带记一个**本轮自己犯的 harness 错**：变异脚本第一版**只记了备份路径、没有真的落盘**
+⇒ 还原步骤 `FileNotFoundError` ⇒ ★ **好在它大声失败了**（没有静默放过任何一轮）
+⇒ 修法：建 `targets` 时立刻 `shutil.copy2` ⇒ **「还原」能力必须先被证明存在，再谈变异读数**。
+
+### §143.37.7 ★★ 本节对既有结论的影响
+
+- ★★★ **§143.36.8 的既有判词被证伪**（「看板 fallback 只在分钟统计缺覆盖时触发」
+  ⇒ 对 `queryOverviewCounts` 这条链**不成立**）⇒ 订正横幅十八。
+- ★★ **§143.28 P15（巡检/rollup 覆盖率 ⇒ 看板降级频次）的方向被降级**：
+  分钟统计的覆盖率**确实**影响 `resolveBoardPies` / `resolveBoardTrends`，
+  但**不影响**本节这条链 ⇒ P15 解释不了 412 次里的任何一次。
+- ★★ **§143.26.3 记的「2 天 69 次被 statement timeout 杀」**：
+  ★ 本节的 A/B 复现了 30 天窗那一扫单次 3.6 s（单遍形态）⇒ **改前的双扫形态
+  才会撞满 30 s** ⇒ 该记录的成因与 §143.36 的结论一致（**根因是扫两遍**），
+  ★ **不是**「被降级判据误触发」造成的。
+- ★★ **§143.36 的 P12 单遍改法**在本节之后**不再是「必须部署」的那一半** ——
+  P20 门控在多数情况下让那一扫**根本不发生** ⇒ 两者的部署优先级可以重排
+  （P20 收益更大且不依赖迁移 892）。
+
+### §143.37.8 ★★ 本节遗留与待拍板
+
+- 🚨 **P20 部署需授权**（改 Go 代码 ⇒ 改生产行为）⇒ **本节未部署**，生产行为未变。
+- 🚨 ★★ **【语义决策】30 天 tab 的「活跃模型数 / 活跃供应商数」报哪个口径？**
+  实测：分钟口径 **488 / 19** vs 明细口径 **731 / 15**
+  ⇒ **模型少报 33%（488 vs 731）**，供应商多报 27%（19 vs 15）。
+  - 差异来源有两个，**必须分开看**：
+    ① **TTL 截断**（只影响 30 天窗）：`request_stats_dim_minute` 的保留期
+       = `lifecycle.request_stats_minute_ttl_days`（**默认 14 天**、Max 90，
+       `settings/spec_lifecycle.go:27`，`bg/partition_manager.go:1234` 消费，
+       覆盖 `request_stats_minute` / `_dim_minute` / `_error_drill_minute` 三张表）
+       ⇒ 实测覆盖跨度 **14 天 06:12:32**（正好卡在 TTL 边界上）
+       ⇒ 30 天窗的「去重模型集合」实际只覆盖最近 14 天。
+    ② **两个口径的定义差异**（1 天窗也在 TTL 内，但 79 vs 85 / 8 vs 7 仍有差）
+       ⇒ status 白名单、探针排除、dim 表的聚合口径三者不完全同源。
+  - 候选处置：① 提高 `lifecycle.request_stats_minute_ttl_days`（Max 90；
+    存储代价实测：`request_stats_dim_minute` 140 MB / 14 天 ⇒ 30 天约 300 MB，
+    `request_stats_minute` 19 MB ⇒ 30 天约 41 MB ⇒ **代价很小**）
+    ② 30 天 tab 改口径 / 明确标「降级口径」 ③ 保持现状（接受 488）
+  - ⚠ ★★ **本轮门控与这个决策有耦合**：门控让 30 天窗**继续用分钟口径**（488），
+    ⇒ **若属主决定 30 天 tab 应该报明细口径（731），则该窗口不能被门控跳过**
+    ⇒ ⇒ **这个决策必须在 P20 部署前拍板**（否则可能要返工）。
+  - ⇒ **本轮未做任何改动**（纯读数 + 门控的**通用**部分）。
+- ★★ **门控的通用部分 vs 窗口特例**：本轮的门控是**通用**的
+  （「两个计数都非零就不回退」），**不含**任何 30 天窗的特例
+  ⇒ ⇒ **先拍板、再决定要不要加特例**，不要在门控里预埋窗口判断。
+- ⚠ **本节未查的相邻读面**：`shouldUseBoardLogsFallback` 的调用方
+  （`resolveBoardPies` / `resolveBoardTrends`）本轮**只确认了它们的门控是对的**，
+  **没有**测它们的触发频次与成本 ⇒ 登记为下一轮线索。
+- ⚠ **跨模板形态未普查**（见 §143.37.2 的诚实边界）。
+
+### §143.37.9 ★ 本节的可重跑脚本
+
+★ `scripts/audit/verify_14337_overview_gate_ab.py` —— 生成
+「语义对照（before/after 并排 + `value_equivalent` 标志）+ 成本（buffers / exec time）」
+的 SQL，**只读**（全部 SELECT / EXPLAIN ANALYZE 对 SELECT）：
+
+```bash
+# 生产（走既有只读护栏）
+python3 scripts/audit/verify_14337_overview_gate_ab.py > /tmp/p14337_ab.sql
+bash ~/.mavis-tools/lgwp-prod.sh /tmp/p14337_ab.sql 600
+
+# 本地真库
+python3 scripts/audit/verify_14337_overview_gate_ab.py > /tmp/p14337_ab.sql
+docker exec -i llm-gateway-pg psql -U llm_gateway -d llm_gateway -f /tmp/p14337_ab.sql
+```
+
+★ `scripts/audit/scan_14337_heavy_source.py` —— 全仓普查
+「同一 SQL 模板里重复引用同一份重型源」，**含子串修正**
+（parent 计数 = count(parent) − count(parent_hot)）：
+
+```bash
+python3 scripts/audit/scan_14337_heavy_source.py .
+```
+
+⇒ ★★ **两个脚本都把本节的结论变成可复现的读数**，而不是「本轮实测过一次」的口头断言。
+⇒ ⚠ 脚本里的会话族投影是【12 列子集快照】：§143.36.6 已实测「裁剪投影对 buffers
+**零影响**」（planner 会裁掉未引用的投影列）⇒ 用它测**成本**有效；
+**数值**只依赖 `client_model` / `outbound_model` / `provider_id` / `ts` / `tenant_id`
+⇒ **语义对照不受投影宽度影响**。
+
+
+## §143.38 ★★★★ 「v1 族退役（迁移 890）」的**执行顺序**：生产二进制仍是**三臂** ⇒ **必须先部署、后执行迁移**
+
+> **本节对生产的写入 = 0**（全部只读：`pg_stat_statements` / `pg_class` /
+> `schema_migrations` / v1 族表的 SELECT / EXPLAIN）。
+> **本节未改任何生产对象、未改生产脚本、未改生产配置。**
+>
+> ⚠ **本节改了 1 处仓内 Go 代码**：`admin/data_lifecycle_partition.go` 新增一个
+> **纯元数据**字段 `RetiredByMigration`（**运行期不读** ⇒ 零行为影响），
+> 用来把「退役链」在 Go 侧显式登记出来（否则仓内受管表清单与 890 的 DROP 清单会漂）。
+
+### §143.38.0 本节一句话
+
+★★ **生产上正在跑的 auto-route 亲和度聚合仍是【三条 v1 臂】（引用 `_request_logs_hot` /
+`_request_logs`），而仓内 HEAD 早已切成【一条臂】** ⇒
+**若先执行迁移 890 再部署新二进制 ⇒ 那条聚合会【整句 42P01】**
+（同一条 FROM 里任何被提及的关系不存在 ⇒ 整句失败，不是那条臂失败）
+⇒ ⇒ **亲和度学习链断裂，而且【静默】**（stale-while-error ⇒ 仍服务旧快照，无告警）。
+⇒ ⇒ ★★ **890 的执行前置条件 = 生产二进制必须已部署** ⇒ 本节把它落成**一条可执行的只读核验**
+（`scripts/audit/verify_890_cutover_precheck.sql`），**已在生产上实测跑出 BLOCKED 判词**。
+
+### §143.38.1 起点：§143.37 自己登记的下一轮线索
+
+§143.37.8 写着：「★ **本节未查的相邻读面**：`shouldUseBoardLogsFallback` 的调用方
+（`resolveBoardPies` / `resolveBoardTrends`）本轮**只确认了它们的门控是对的**，
+**没有**测它们的触发频次与成本 ⇒ 登记为下一轮线索。」
+
+⇒ 本节从这条线索出发。
+
+### §143.38.2 ★ 相邻读面复核（**阴性结论**，但按缺陷一样复核过）
+
+| 读面 | 门控形态 | 结论 |
+|---|---|---|
+| `resolveBoardPies` | `if piesEmpty(pies) && h.shouldUseBoardLogsFallback(...)` | ★ **形态正确**（两条件都成立才回退） |
+| `resolveBoardTrends` | `if len(points) > 0 { return points }` ⇒ 只有**一个点都没有**才回退 | ★ **形态正确** |
+
+⇒ ★ **⇒ 这两条链上没有 §143.37 那种「无条件 fall-through」。**
+⇒ ★ 但**阴性结论不能只靠读代码** ⇒ 本节继续用生产量具查「会话族来源被哪些语句引用」。
+
+### §143.38.3 ★★★★ 新的重读面：auto-route 亲和度聚合
+
+生产只读普查（`pg_stat_statements`，`dbid=16384`，按 `total_exec_time` 排序）
+里，引用会话族 / `request_logs_with_current_month` 的语句中，排第二的重读面是：
+
+| 指标 | 读数 |
+|---|---|
+| queryid | `-7870179464850598482` |
+| calls | **408**（2 天） |
+| 累计库时间 | **1,209.0 s** |
+| 均时 / max | **2,972.5 ms** / **28,931.3 ms**（★ 撞 30 s `statement_timeout`） |
+| 累计物理读 | **1,407.8 MB** |
+| 每次块数 | 444 |
+
+★ **归属锁定（逐字取回原文，不是「上下文命中」）**：这条语句是
+
+```sql
+SELECT s.task_type, s.profile, s.canonical_id, s.chosen_model, COALESCE(s.tenant_id, $1),
+       COUNT(*)::int, COUNT(*) FILTER (WHERE s.success)::int,
+       COALESCE(AVG(s.latency_ms), $2)::int, COALESCE(AVG(s.cost_usd), $3),
+       COALESCE(AVG(ss.health_score), $4), AVG(s.reward)
+  FROM auto_route_selections_all s
+  LEFT JOIN session_summaries ss ON ss.session_key = s.session_id
+ WHERE s.reward IS NOT NULL AND s.canonical_id IS NOT NULL
+   AND s.settled_at >= NOW() - $5::interval
+   AND NOT EXISTS (SELECT 1 FROM _request_logs_hot rl WHERE ...)   ← 臂①
+   AND NOT EXISTS (SELECT 1 FROM _request_logs     rl WHERE ...)   ← 臂②
+   AND NOT EXISTS (SELECT 1 FROM (SELECT request_id, origin_actor FROM session_turns
+                                   UNION ALL
+                                   SELECT request_id, origin_actor FROM session_turns_hot) st
+                    WHERE ...)                                        ← 臂③（会话族）
+ GROUP BY s.task_type, s.profile, s.canonical_id, s.chosen_model, COALESCE(s.tenant_id, '')
+```
+
+⇒ 仓内对应代码：`bg/auto_route_affinity_worker.go` 的 `AutoRouteAffinityWorker.aggregate()`。
+
+### §143.38.4 ★★★★ 生产实测：部署漂移被【逐字】证实
+
+★ **同一个函数，仓内 HEAD 是【一条臂】**（`5f64031cb feat(db): 退役 request_logs v1 族
+（迁移 885 真删表）+ 全仓读面切会话族` 已删掉臂①②，文件里的注释写明
+「890 之后它们不是『恒真』而是『**42P01**』——整条聚合查询会失败」）
+⇒ ★★ **生产上跑的仍是三臂 ⇒ 部署漂移成立（不是推测，是逐字比出来的）**。
+
+★ **其它读数（全部只读）**：
+
+| 项 | 读数 |
+|---|---|
+| 生产迁移水位 | **889**（`889 session_turns_tools_population`，2026-10-20 16:49:37）⇒ **890 未执行** |
+| v1 族是否还在 | 在：`_request_logs`（relkind=p）、`_request_logs_hot`（59 MB）、`_request_logs_bodies_hot`（291 MB） |
+| `request_logs_2026_10` | **334,669 行 / 1,015 MB** |
+| `request_logs_bodies_2026_10` | 816,144 行 / 579 MB |
+| `request_logs_2026_09` | 4,307 行 / 14 MB |
+| **停写是否真的停了** | ✔ **停了**：`_request_logs_hot` = **0 行**；`request_logs_2026_10` 的 `max_ts` = **2026-10-13 20:18:11**（7 天前）；每日行数 10-10: 282 / 10-11: 35,090 / 10-12: 37,586 / 10-13: 27,172 / **10-14 起 0** |
+| 亲和度表是否还在更新 | ✔ **在更新**：`task_model_affinity` 132 行，`max(updated_at)` = **22 秒前** ⇒ worker 活着 |
+
+⇒ ★★★ **⇒ 当前【没有】实时故障**（v1 表还在 ⇒ 三臂查询能跑；闸与顺序都还没被触发）。
+⇒ ★★ **⇒ 但闸会挡住**：迁移 890 带**非空闸**（族里有行就 `RAISE EXCEPTION`）
+⇒ **它今天执行会拒绝**（334,669 行 + 816,144 行 bodies）
+⇒ ⇒ ★ **这既是保护，也是把退役堵住了**（v1 族仍占 **≈1.9 GB** 不回收）。
+
+### §143.38.5 ★★★ 顺序约束：为什么「先执行 890」会**整句** 42P01
+
+★ **机制**：PostgreSQL 的解析期语义 —— 同一条语句的 FROM 里**任何**被提及的关系不存在
+⇒ **整条语句** 失败（不是「那条臂失败、其余照跑」）。
+
+⇒ ★★ **⇒ 执行 890 之前必须先部署新二进制**，否则：
+
+```
+生产旧二进制（三臂） + 890 已执行（v1 表已 DROP）
+  ⇒ 亲和度聚合语句引用 `_request_logs_hot` / `_request_logs`
+  ⇒ 整句 42P01
+  ⇒ aggregate() 返回 error ⇒ worker 记一条 Warn
+  ⇒ task_model_affinity 不再被刷新
+  ⇒ AffinityStore 继续服务**旧快照**（stale-while-error）
+  ⇒ ★★ 无告警、载荷不变、看板/路由一切正常 —— **只有亲和度学习悄悄停了**
+```
+
+⇒ ⚠ **这条断链在 `pg_stat_statements` 里【不可见】**（只记成功执行的语句）
+⇒ ⇒ ★★ **所以必须有「执行前核验」，而且核验必须看「生产上正在跑的那条语句」**。
+
+### §143.38.6 ★★★ 仓内复核：★ **「优雅降级」不等于「不是缺陷」**（本节自订正）
+
+★ 既然 890 会 DROP v1 族 ⇒ 仓内还有谁引用它们？逐条查：
+
+| 位置 | 形态 | 结论 |
+|---|---|---|
+| `admin/data_lifecycle_partition.go` 的 `partitionedTables` | 表名写在 Go 结构体里 ⇒ **审计工具看不见** | ★★★ **是缺陷**（见下面的自订正）⇒ ★ **已被并行会话修掉** |
+| `internal/partguard/parents.go` 的父表名单 | 同上 | ★ **无害**：它守的是「别往这些分区父表**写**」⇒ 890 之后不写就无害 |
+| `cmd/tools/sql_source_indirection_audit` 的 `v1Tables` | 覆盖 8 个名字（两代命名 + bodies 族） | ★ **覆盖住了**：门 `go test ./cmd/tools/sql_source_indirection_audit/` 全绿 |
+
+> **★ 本小节自订正（2026-10-21，本节发布前的同一轮内）**
+>
+> ★★ **本节第一版把 `partitionedTables` 那条判成「不是故障」** —— 理由是
+> 「错误被调用方 `slog.Warn` + `continue` 吞掉 ⇒ 优雅降级 ⇒ 不是崩溃」。
+> ⇒ ★★★ **这个判词太宽松了** —— **并行会话 `14b64ddf4`（2026-10-21 00:14）
+> 把同一条定性为缺陷并已修掉**，它的说法更准：
+>
+> - 现象：**每次** `/api/admin/data-lifecycle/partitions` 调用都刷一条
+>   `data_lifecycle_partitions: failed to get status … 42P01` 的 WARN，
+>   **且该表的状态永远拿不到** ⇒ 页面上「看不出报错」，但那块信息**恒空**；
+> - 修法：`getPartitionTableStatus` 先用 `to_regclass` 探表在不在；
+>   不在 ⇒ 返回「已退役」状态（新增 `retired` 字段，JSON 加法式变更）⇒ **不再查它**；
+>   清单条目**保留**（既有端点契约：UI 仍列出该表名）；
+> - 门：`admin/session_family_runtime_sql_test.go`（**5 条**，含
+>   `TestRetiredPartitionTableStatusIsNotAnError` 与
+>   `TestPartitionStatusProbesTableExistence`）。
+>
+> ⇒ ⇒ ★★★★ **⇒ 本轮据此撤回了自己的两件产物**（都**未发布**）：
+> ① `partitionedTableConfig.RetiredByMigration` 元数据字段
+>    —— ★ **行为化修法（探表 + 端到端门）比元数据登记更强**，
+>    而且元数据登记**运行期不读** ⇒ 只能被门看见，挡不住任何运行期行为；
+> ② 与它配套的「受管表清单 ⇄ DROP 清单一致性」那道门（⇒ **重复的门只会变成噪声**）。
+> ⇒ ⇒ ★★ **⇒ 本门只保留并行会话没有覆盖的那一块**：
+> **仓内任何 Go 的「类 SQL 字符串字面量」都不得含 890 要 DROP 的表名**（T3）
+> —— 这正是 `sql_source_indirection_audit` 的视野之外（它扫的是 SQL 的 FROM/JOIN 片段）。
+>
+> ⇒ ⇒ ★★★★★ **⇒ 通用式（本轮最值钱的一条元教训）**：
+> ★★ **「优雅降级」≠「不是缺陷」** ——
+> ★ **降级可以接受，但「每次调用都刷一条错误」+「那块信息恒空」就是缺陷类**
+> （并行会话的原话：**「降级可接受，降级原因必须留痕」**）
+> ⇒ ⇒ ★★ **⇒ 判「是不是缺陷」时，要问的不是「会不会崩」，而是
+> 「① 会不会每次都产生错误 ② 用户能不能分辨『本来没数据』与『坏了』」**
+> ⇒ ⇒ ★★ **⇒ 只读错误路径不足以定性**：读到「错误被吞掉」就该停吗？**不该** ——
+> ★ **还要看「吞掉之后，用户看到的是什么」**。
+
+### §143.38.7 ★★★ 可执行的生产前置核验（已落仓 + **生产实测**）
+
+★ `scripts/audit/verify_890_cutover_precheck.sql`（**只读**，无 DDL/写语句）
+
+```bash
+python3 - <<'EOF' >/dev/null   # 占位：脚本已在仓内
+EOF
+bash ~/.mavis-tools/lgwp-prod.sh scripts/audit/verify_890_cutover_precheck.sql 120
+```
+
+★ **判据 = 直接看生产上活跃的那条语句本身**：
+
+```sql
+SELECT count(*) FILTER (WHERE s.query LIKE '%_request_logs%') AS v1_referencing_statements,
+       CASE WHEN count(*) FILTER (WHERE s.query LIKE '%_request_logs%') = 0
+            THEN 'OK: 生产已切会话族 ⇒ 可以执行 890'
+            ELSE 'BLOCKED: 仍有活跃语句引用 v1 族 ⇒ 【禁止执行 890】，先部署新二进制'
+       END AS verdict
+  FROM pg_stat_statements s
+ WHERE s.dbid = (SELECT oid FROM pg_database WHERE datname = current_database())
+   AND s.query LIKE '%auto_route_selections_all%';
+```
+
+★★ **生产实测（2026-10-21）**：
+
+| 项 | 读数 |
+|---|---|
+| 本库里 `auto_route_selections_all` 相关语句 | 8 条 |
+| 其中**仍引用 v1 族**的（脚本第 ① 段的 `still_references_v1 = t`） | **1 条**（queryid `-7870179464850598482`，408 次） |
+| **verdict** | **`BLOCKED: 仍有活跃语句引用 v1 族 ⇒ 【禁止执行 890】，先部署新二进制`** |
+
+⇒ ★★ **⇒ 这条核验在生产上给出了明确的「现在不能执行 890」**，
+而且它**测的是真正在跑的东西**（不依赖版本号、部署记录或二进制反编译）。
+
+⚠ **诚实边界**：`pg_stat_statements` 只记**成功**执行过的语句 ⇒ 若聚合查询**已经**因 42P01
+失败，它在统计表里**不可见** ⇒ 本核验会误报「已切换」。
+⇒ ⇒ 脚本的第 ③ 段给了旁证（检查 v1 族是否还在 + 会话族 hot 行数）；
+★ **真正的兜底是「部署后再跑一次本核验」**，且 890 本身带非空闸 ⇒ 双重保险。
+
+### §143.38.8 ★★★ 六道新门 + 六个变异
+
+门文件：`admin/section_14338_retirement_consistency_test.go`（**6 条**）
+
+| # | 门 | 挡什么 |
+|---|---|---|
+| 1 | `TestSection14338DropListParserSeesTheRealTables` | ★ **解析器自证**（量具必须先证明自己看得见目标） |
+| 2 | `TestSection14338ManagedTableListMatchesDropList` | ★ 受管表清单与 890 的 DROP 清单**不一致**（漏登记 / 登记了空 / 迁移号写错） |
+| 3 | `TestSection14338NoGoSQLLiteralReadsADroppedV1Table` | ★ 全仓 Go 的**类 SQL 字符串字面量**引用了 890 要 DROP 的表 |
+| 4 | `TestSection14338RelationMatcherSemantics` | ★ **判据语义自测**（8 个用例：注释/散文/canonical 视图/词边界/schema 限定） |
+| 5 | `TestSection14338CutoverPrecheckScriptExists` | 前置核验脚本缺失 / 被改成非只读 |
+| 6 | `TestSection14338RunbookHasSection` | 本节在 runbook 里 |
+
+★ **门 3 的口径是被自己的门 4 逼出来的**（★ 这是本轮最值钱的一处量具纪律）：
+
+- 第一版口径 = 「像 SQL 的字符串字面量 + 子串包含表名」⇒ **442 处假阳性**
+  （测试夹具 + 中文散文 + canonical 视图前缀）;
+- 收窄后仍差两处：① **SQLite** 存储（`storage/sqlite/request_log_store.go`、
+  `bg/lite_retention_worker.go` —— `?` 占位符 / `rowid` / `main.`）⇒ 与 PostgreSQL 的 890 无关;
+- ⇒ 最终口径 = **两个条件同时成立**：
+  ① 字面量含**语句**关键字（SELECT / INSERT INTO / UPDATE / DELETE FROM / WITH）
+  —— ★ **不能**把裸 `from`/`join` 当信号（中文散文里到处是「读 FROM public.request_logs rl」）；
+  ② 关系名在 **FROM/JOIN 位置**（可选 schema 限定）+ **词边界**成立
+  ⇒ ⇒ ★★ **「位置」与「像不像 SQL」是两个独立条件，缺一个就是噪声源。**
+
+★ **变异脚本**：`scripts/mutate-14338-retirement-gate.py`（**隔离副本模式**，M1~M6）。
+
+### §143.38.9 ★ 本节遗留与待拍板
+
+- 🚨 **★ 新增待拍板：迁移 890 的执行顺序** ——
+  **必须「先部署新二进制（切会话族）→ 再执行 890」**，否则亲和度学习链静默断裂。
+  ⇒ ★ **本节只提供核验手段，未改任何生产状态，也未改迁移 890 的文件**
+  （改它会动 checksum 与 2 处台账 ⇒ 留给属主决定）。
+- ★★ **v1 族的 ≈1.9 GB 现在回收不了**：890 的非空闸会拒（334,669 行 + 816,144 行 bodies）
+  ⇒ ⇒ **要么归档/核账后清空再执行，要么先做一次「只删 bodies / 只删旧月」的窄口径回收**
+  ⇒ ★ **本节未评估任何回收方案**（属 §143.27 P5 的同族问题，需单独取号与拍板）。
+- ★ **本节未查**：211 实例的迁移水位与 v1 族现状（211 没有 `pg_stat_statements` ⇒
+  **无法用同一条核验** ⇒ 需按 §143.20 的办法走「读脚本 + 读日志 + 读目录」）。
+- ⚠ **本节没有碰 §143.37 的 P20 门控**，也没有碰 P11/P12 —— 那些待拍板项状态不变。
+
+## §143.39 211 独立生产实例的同族取证 —— 台账口径的伪影 + **方向相反**的顺序约束
+
+> **本节对生产的写入 = 0**。全部只读：211 的 `docker ps` / `docker exec`（读 `version.json`、
+> `strings` 抽二进制里的 SQL 文本）、`acc-pg17` 里的 SELECT（`pg_class` / `pg_index` /
+> `pg_inherits` / `information_schema` / `settings_kv` / `schema_migrations` / 视图定义），
+> 以及 211 部署树与容器的目录读取。
+> **没有** DELETE / TRUNCATE / DROP / ALTER / CREATE / REINDEX / VACUUM / ANALYZE /
+> 迁移 / 改配置 / 改 cron / 改 preload / 部署。
+
+### §143.39.0 为什么 211 需要**另一把**尺（§143.38 的脚本在 211 上是瞎的）
+
+§143.38 交付的核验脚本 `scripts/audit/verify_890_cutover_precheck.sql`，判据是
+**`pg_stat_statements` 里「生产上正在跑的那条语句」还有没有引用 v1 族**
+⇒ 它是 §143.38 选它当判据的唯一理由（因为 `pg_stat_statements` **只记成功语句**，
+断裂后那条语句会从统计里消失 ⇒ 核验必须跑在断裂**之前**）。
+
+⇒ ★★★★ **但 211 上这条路根本走不通**：
+
+| 项 | 211 | 252 |
+|---|---|---|
+| `pg_stat_statements` 扩展 | **已装**（1.11） | 已装 |
+| `shared_preload_libraries` | **只有 `citus`** ⇒ **扩展没进 preload** | 含 `pg_stat_statements` |
+| 「活跃语句」判据 | **不可用**（量具不存在） | 可用 |
+
+⇒ ⇒ ★★ **「在断裂之前跑」这个时点约束，在 211 上根本无法满足**
+⇒ ⇒ ★★★ **本节因此交付**另一把**不依赖任何数据库量具**的尺：
+**读产物**（已部署二进制里的 SQL 文本）+ **读目录**（对象存在性）
+⇒ ⇒ ★ **两把尺看的是同一份东西的两个来源**（DB 侧统计 vs 产物侧文本）⇒ **互为交叉验证，不是替代**。
+
+### §143.39.1 211 的实况（逐条实测）
+
+**实例形态**
+
+| 项 | 实测值 |
+|---|---|
+| 主机 | `192.168.31.211`（ssh 别名 `211`，LAN 直连），docker 形态 |
+| PG | 容器 `acc-pg17`（`kx-citus-pg17:amd64`），**PG 17.10**，**127.0.0.1:5432** |
+| 网关连接串 | `postgres://acc_super:***@acc-pg17:5432/llm_gateway?sslmode=disable` |
+| 活跃槽 | 容器 `llm-gateway-211-b`（`0.0.0.0:8782`，healthy），**启动于 2026-10-20 05:29Z** |
+| 已部署二进制 | `version.json` = `2.5.8-7a60b1b1-dirty-20261020-211`，`git_sha=7a60b1b1-dirty`，`build_seq=2760` |
+| 部署树 | `/root/llm-gateway-go-211`（**无 git**），`sql/migrations/startup/` **1093** 个文件，**最大编号 884** |
+| 库 | `llm_gateway` **6,168 MB**；另有 `llm_gateway_pre_cutover_20261014` **1,169 MB**（**未清理**） |
+
+**★ 二进制形态（`strings` 抽出的**逐字** SQL，不是推断）**
+
+从 `/app/llm-gateway` 里以 `FROM auto_route_selections_all s` 为锚点抽出那 120 行，
+实测三条臂**逐字在位**：
+
+```
+AND NOT EXISTS (
+    SELECT 1 FROM _request_logs_hot rl
+    WHERE rl.request_id = s.request_id
+      AND (COALESCE(rl.origin_actor, '') LIKE 'goal-%' ...))
+AND NOT EXISTS (
+    SELECT 1 FROM _request_logs rl
+    WHERE rl.request_id = s.request_id
+      AND (COALESCE(rl.origin_actor, '') LIKE 'goal-%' ...))
+AND NOT EXISTS (
+    SELECT 1 FROM (
+        SELECT request_id, origin_actor FROM session_turns
+        UNION ALL
+        SELECT request_id, origin_actor FROM session_turns_hot
+    ) st ...)
+```
+
+⇒ ⇒ ★★★ **211 的部署形态与 252 完全同构**：**旧二进制 + 两条 v1 臂**
+⇒ ⇒ **§143.38 的机制在 211 上原样成立**（890 执行 ⇒ 整句 42P01 ⇒ 亲和度学习静默断裂）。
+
+**★ 库内实况**
+
+| 项 | 实测值 |
+|---|---|
+| 停写门 `storage.request_logs_write_enabled` | **`false`**，更新于 **2026-10-13 07:01:08** |
+| `sessions_v2.enabled` / `sessions_v2.shadow_write` | `true` / `true`（2026-07-21） |
+| v1 父表 `request_logs_2026_10` | **35,506 行**，ts 跨度 **2026-10-12 01:46:31 → 2026-10-13 07:01:04** |
+| v1 bodies `request_logs_bodies_2026_10` | **35,506 行**（与父分区 1:1） |
+| v1 hot `_request_logs_hot` | **0 行** |
+| 其余 v1 月分区（07/08/11/default） | **0 行** |
+| v1 族合计 | **≈107 MB**（83 MB + 24 MB）⇒ **对比 252 的 ≈1.9 GB，差 18×** |
+| 会话族 hot `session_turns_hot` | **2,993 行 / 34 MB**，max ts **2026-10-21 00:33:25**（实时） |
+| 会话族父表 `session_turns` | **0 行 / 0 bytes** ⇒ ★ **211 的 promote 从没搬过行** |
+| `session_bodies_2026_10` | **1,214 MB**（211 上的存储大头） |
+| `session_bodies_hot` | **111 MB** |
+| 驱动表 `auto_route_selections` | **3 行**，max settled **2026-10-15 20:17** ⇒ ★ **6 天无新行** |
+| 亲和度表 `task_model_affinity` | 132 行，max `updated_at` **2026-10-21 00:29:30** ⇒ worker **活着** |
+| canonical 视图 `request_logs_with_current_month` | **与 252 逐字同形**（会话族两臂 + LATERAL 里带 v1 臂）⇒ 883/884 的**对象已生效** |
+| 台账 `schema_migrations` | **63 行**，最大版本 **869** |
+
+★ **v1 族的静止时刻与停写门逐字吻合**（数据末端 `07:01:04` vs 门写入 `07:01:08`）
+⇒ ★ **211 的 v1 族是「停写后立即冻结」的纯历史**。
+
+### §143.39.2 ★★★★ 台账口径被证伪：「211 落后 13 个迁移」是**伪影**
+
+> **订正横幅十九（2026-10-21，§143.39 就地订正 §143.20 的 C5 结论）**
+>
+> ★★★★ **原文保留**（§143.20.4 结尾 / §143.20 的 C5 行）：
+> > 「⇒ ⇒ ★ **附带**：211 的 `llm_gateway` **落后 13 个迁移**（869 vs 882）⇒
+> > 且 `llm_gateway_pre_cutover_20261014`（**1,169 MB**）是 10-14 切换遗留、未清理 ⇒ **磁盘登记项**。」
+> > C5 行：「★★★ **211 迁移落后 13 个（869 vs 882）+ `llm_gateway_pre_cutover_20261014` 1,169 MB 未清理**」
+>
+> ⇒ ★★★ **「落后 13 个迁移」这个表述是错的** —— 它是**台账口径**，不是**形态口径**。
+> ⇒ ★ **实测反证**：211 的台账虽然只到 **869**，但 870~889 里**绝大多数对象都已经存在**：
+>
+> | 迁移 | 对象 | 211 上 |
+> |---|---|---|
+> | 870 | `idx_usage_ledger_recon_cover` | ✅ 在 |
+> | 871 | `idx_route_incident_events_created_at` | ✅ 在（**台账无行**） |
+> | 873 | `usage_ledger{,_hot}_ts_tenant_cache_agg_idx` | ✅ 在 |
+> | 874 | `idx_session_turns_client_request_id` | ✅ 在 |
+> | 877 | `idx_session_turns_search_trgm` | ✅ 在（**台账无行**） |
+> | 878 | `idx_supplier_errors_part_*`（5 个） | ✅ 全在 |
+> | 882 | `idx_request_logs_cost_negative` | ✅ 在（**台账无行**） |
+> | 883 | `customer_cost_view` / `model_cost_per_task_view` | ✅ 在 |
+> | 884 | `v_continuation_effectiveness` / `v_node_switch_analysis` / `v_timeout_effectiveness` | ✅ 在 |
+>
+> ⇒ ⇒ ★★★ **211 与 252 的**真实**形态差集 = 5 个对象**（不是 13~20 个迁移）：
+>
+> | 缺口对象 | 来自 | 影响 |
+> |---|---|---|
+> | `session_turns.host` | 885 | ★ **写路径 42703**（见 §143.39.3） |
+> | `session_turns_hot.host` | 885 | ★ 同上 |
+> | `session_turns.tags` | 885 | ★ 同上（`tags` 同样缺） |
+> | `session_turns_hot.tags` | 885 | ★ 同上 |
+> | `idx_session_turns_search_fts` | 887 | 词形词搜索退化为**顺序扫描**（见下） |
+> | `idx_session_bodies_tenant_session_turn_request` | 888 | join 覆盖缺口 |
+> | `idx_sessions_tenant_session_partition_date` | 888 | join 覆盖缺口 |
+>
+> ⇒ ★ 另有 **2 个 888 要删的索引还在 211 上**（`idx_session_bodies_hot_lookup`、
+>   `idx_session_bodies_tenant_session_turn`）⇒ **既占空间又缺覆盖**。
+>
+> ⇒ ⇒ ★★ **方法论结论（比结论本身更值钱）**：
+> ★★ **「迁移水位」是**台账**口径；「形态」是**对象存在性**口径。
+> ⇒ ★★ **两者在稀疏台账的实例上会**大幅背离** ⇒ ★ **判断一个实例的形态，
+> 必须逐个对象核存在性，不能看台账最大版本。**
+> ⇒ ★ ★ **§143.20 当时其实已经摸到边了**（它写了「对象在、台账无」）
+> —— ★ **但只对 877 这一条成立**，没有推广到全部迁移 ⇒ ⇒ **结论被留在了
+> 「附带」的位置，还用了一个会被误读成「形态差」的措辞。**
+> ⇒ ★ **教训：量具背离一旦被观察到一次，就必须推广到全量，否则下一个会话会拿它当定论。**
+
+### §143.39.3 ★★★★ 新发现：升级链的列前提 ⇒ **先迁移 885，后部署新二进制**（与 §143.38 方向相反）
+
+§143.38 的顺序约束是**退役链**的方向：890 **删**对象 ⇒ 旧二进制会 42P01 ⇒
+**必须先部署新二进制**。
+
+⇒ ★★★★ **本节发现的是**升级链**的方向，与之**相反**：**
+
+- 迁移 **885** 给 `session_turns` / `session_turns_hot` 各加 **`host` TEXT** 与
+  **`tags TEXT[]`**（两侧**必须同形** —— 迁移 707 的 promote 列集合契约）；
+- 仓内 HEAD 的写路径（`domains/session/v2/turn_host_tags.go` + `TurnRecord`）
+  **显式列** `host` / `tags` 写进 `session_turns_hot`；
+- ⇒ ★★ **211 上这两列都不存在** ⇒ ⇒ **先部署新二进制 ⇒ 写路径 42703**。
+
+⇒ ★★★ **为什么这个陷阱特别危险（三重放大）**：
+
+1. ★ **boot 不会失败** —— `db.Open` 的 ensure 链**只补它自己知道的那几十列**
+   （`ensureRequestLogSchema` / `ensureRequestLogsCurrentMonthView` / …），
+   **不含** `host` / `tags` ⇒ ⇒ **迁移链不报错、容器正常起来、健康检查全绿**；
+2. ★ **验收不覆盖写路径** —— 蓝绿引擎的候选验收是
+   `readyz`(DB+Redis) / `version` / 网页面(HTML + 入口 JS MIME) / 公网入口
+   ⇒ ⇒ **没有任何一条会写一条 session turn** ⇒ ⇒ **42703 不会被切流验收拦住**；
+3. ★ **错误被吞** —— 会话写失败走的是「记 WARN + 跳过」的路
+   ⇒ ⇒ **页面上看不出报错，流量在静默地丢**。
+
+⇒ ⇒ ★★★ **与 890 的顺序约束叠在一起 ⇒ 顺序被完全钉死**：
+
+```
+211：  ① 应用迁移 885（补 host/tags）  →  ② 部署新二进制  →  ③ 执行 890（退役 v1 族）
+252：  （885/887/888 已在位）      →  ② 部署新二进制  →  ③ 执行 890
+```
+
+⇒ ★ **两个方向相反的约束不能同时满足** ⇒ ⇒ **必须**有一个「混合窗口」：
+在 ① 与 ② 之间，旧二进制对着**多了两列**的库跑 ⇒ **安全**
+（`INSERT` 显式列清单 ⇒ 多出的可空列取 NULL；且 885 两侧同形 ⇒ promote 列集合契约不破）。
+
+### §143.39.4 ★★ 211 上的 42P01 影响面很小（但机制面成立）—— 必须把两件事分开说
+
+| 维度 | 252 | 211 |
+|---|---|---|
+| **机制面**（会不会 42P01） | 会 | **会**（同一条语句形态） |
+| **影响面**（断了会丢什么） | 驱动表有量 ⇒ 聚合整句失败 ⇒ 亲和度学习断 | ★ **驱动表 `auto_route_selections` 只有 3 行、6 天无新行** ⇒ 聚合本就近乎空转 |
+
+⇒ ⇒ ★★ **211 上「先部署后退役」的风险是「几乎零」** ⇒ ⇒ **但这不构成「可以先执行 890」的理由**：
+⇒ ★★ **理由是「没必要在 211 上急着退役」**（v1 族只有 **107 MB**，对比 252 的 1.9 GB）
+⇒ ⇒ ★ **211 的 890 非空闸同样会拒**（35,506 行 + 35,506 行 bodies 在库里）
+⇒ ⇒ ★ **回收代价低 18 倍** ⇒ **211 是更适合先做「归档核账 + 清空 + 退役」的那台**。
+
+★ 另两条 211 独有的观察：
+
+- ★★ **211 的 promote 从没搬过行**（`session_turns` 父表 **0 行 / 0 bytes**，
+  而 hot 侧有 2,993 行）⇒ ⇒ ★ **§9.28 的「会话族是两个存储面」在 211 上只成立一半**
+  ⇒ ⇒ **好消息**：合成流量排除臂只查 hot ⇒ **反而更实时**（不会漏最新那批）；
+  ⇒ ⇒ **坏消息**：211 的月分区机制**从未被真实流量走过** ⇒
+  **211 上 promote 的正确性只有「0 行」这一个观测点** ⇒ ⚠ **不能拿 211 的 promote 表现
+  来给 252 的 promote 背书**。
+- ★★ **211 缺 `idx_session_turns_search_fts`（迁移 887）** ⇒
+  `admin/logs_search_predicate.go` 的 FTS 臂
+  （`to_tsvector('simple', rl.search_text) @@ plainto_tsquery('simple', $N+1)`）
+  在 211 上**没有索引可用** ⇒ ⇒ **词形词查询退化为顺序扫描**
+  ⇒ ★ 当前 session 族只有 34 MB，代价还小 ⇒ **但它是随流量增长的**。
+
+### §143.39.5 交付物：211 侧只读预检脚本 + 仓内门
+
+**★ `scripts/audit/verify_890_cutover_precheck_211.sh`**（新）
+—— 不依赖 `pg_stat_statements` 的 890 前置核验；**211 上实跑通过**：
+
+| 检查 | 手段 | 判据 |
+|---|---|---|
+| ① 已部署二进制形态 | `docker exec <容器> strings /app/llm-gateway` | v1 臂计数 ≥1 ⇒ **BLOCKER-1** |
+| ② 停写门 | `settings_kv` | `storage.request_logs_write_enabled` |
+| ③ v1 族现状 | `pg_class` + 分区行数 | 非 0 ⇒ **INFO-1**（非空闸会拒） |
+| ④ **升级链列前提** | `information_schema.columns` | `host`/`tags` 缺一 ⇒ **BLOCKER-2** |
+| ⑤ canonical 视图来源段 | `pg_get_viewdef` | 890 会 `CREATE OR REPLACE` 它 ⇒ 非阻塞 |
+| ⑥ 台账 | `schema_migrations` | ⚠ **仅供参考，不能当形态口径** |
+
+⇒ **211 实跑判词**：`VERDICT: BLOCKED —— 2 项阻塞`
+（BLOCKER-1 旧二进制仍含 v1 臂；BLOCKER-2 缺 host/tags 列）
+⇒ ★ 与 252 侧 §143.38 的 `verdict=BLOCKED` **同构** ⇒ ⇒ **两台机器的同一个门，
+判词一致**。
+
+**★ 仓内门** `admin/section_14339_retirement_precheck_test.go`（新，5 条）：
+
+| 门 | 挡什么 |
+|---|---|
+| `TestSection14339Precheck211ScriptExists` | 脚本缺失 / 判据 needle 缺失 / **只读性**（here-doc SQL 尺 + shell 代码尺，两把尺） |
+| `TestSection14339Precheck211DoesNotDependOnPgStatStatements` | 脚本又依赖上了 211 上不可用的量具 |
+| `TestSection14339V1ArmMatcherSemantics` | **判据语义自测**（7 个用例：旧二进制 2 臂 / 单臂 / 新二进制 0 臂 / canonical 视图 0 / bodies 0 / 注释 0 / schema 限定 1） |
+| `TestSection14339ShellPatternMatchesGoMatcher` | **两把尺对拍**（脚本里的 shell `grep` pattern 与 Go 判据逐夹具比） |
+| `TestSection14339GapListMatchesMigrationFiles` | **缺口清单防漂移**（从 885/887/888 解析出新对象，与清单对拍；并断言 885 父表与 hot 表**列集合同形**） |
+| `TestSection14339RunbookHasSection` | 本节 + 订正横幅十九在位 |
+
+★ **变异脚本**：`scripts/mutate-14339-retirement-gate.py`（**隔离副本模式**，`git archive HEAD`），
+**M1~M8 全红 8/8**（2026-10-21），收尾核「共享工作树的已跟踪文件**未被改动**」+ 4 个目标文件
+**md5 逐字还原**。
+
+★★ **M1 是本轮最有价值的一条**（它证明「两把尺对拍」那一条门真的有牙）：
+
+| 变异 | 改了什么 | 谁抓到了 |
+|---|---|---|
+| M1 | 预检脚本的 v1 臂 pattern **收窄**成只认 hot 表 ⇒ 母表那条臂数不到 ⇒ 臂数 2→1 ⇒ **判词被悄悄降级** | ★ **只有「shell 尺 vs Go 尺」对拍能抓**（语义自测会绿，因为 Go 判据没动） |
+| M2 | `BLOCKER-2` 判词被改成「建议」 | 脚本 needle 尺 |
+| M3 | 脚本的 here-doc SQL 里混进真 DDL | 只读性尺（here-doc 主体） |
+| M4 | 脚本又依赖上 `pg_stat_statements` | 依赖尺（here-doc + psql 调用行） |
+| M5 | 迁移 885 的父表/hot 表**列集合不同形** | 缺口清单门（连带守 707 的 promote 契约） |
+| M6 | runbook 里的预检脚本名被抹掉 | runbook 在场门 |
+| M7 | runbook 里的**已部署二进制版本串**被改 | runbook 在场门（★ 钉的是**唯一**的完整串，不是裸 SHA） |
+| M8 | Go 判据被**改宽**（canonical 视图也算 v1 臂） | 判据语义自测 |
+
+⚠ **M8 的第一版作废**（替换串是「在 needle 后面追加一段」⇒ **替换串包含 needle
+作为子串** ⇒ 纪律拦下）⇒ ★ **作废的轮次不算「门没牙」** ⇒ 改成「**换掉整行**」后重跑，
+**才拿到 8/8**。
+
+### §143.39.6 ★ 门把判据**自己**推翻了一次（here-doc 提取器的真 bug）
+
+⇒ ★★★ **这是本节最值钱的一条量具纪律**（与 §143.37/§143.38 同族但形态更新）：
+
+- 门的第一版「只读性」判据 = **按 SQL 剥注释 + 全文扫 DDL 关键字**
+  ⇒ **当场假红 4 条**（`CREATE ` / `DROP ` / `ALTER ` / `TRUNCATE`）；
+- ⇒ ★ **根因不是脚本有毒，是**判据不懂语言**：脚本是 **shell**，
+  而剥注释器只认 SQL 的 `--` / `/* */` ⇒ **文件头那段 shell 注释
+  （「不做 DELETE / TRUNCATE / DROP / ALTER / CREATE」）被当成真 DDL**；
+- ⇒ ★ **改法不是放宽判据，而是把判据改成语言感知的**：
+  只读性 = 「**here-doc 主体**（真正发给 psql 的那段 SQL）是只读的」
+  + 「**shell 代码**里没有 `rm -rf` / `pg_dump` / `pg_restore` / `docker rm`」；
+- ⇒ ★★ **改完仍然红** —— 而这次**红得对**：改版后的提取器**只剥了前引号、没剥尾引号**
+  ⇒ 定界符变成 `SQL'` ⇒ **永远匹配不到终止行** ⇒ 块一路吞到**文件尾**
+  ⇒ ⇒ ★★★ **判据把脚本后半段（散文 + 别的代码）也当成 SQL 查了**。
+  ⇒ ★ **这是判据自己的真 bug，被门当场抓住**（不是脚本的问题）。
+  ⇒ 修法：连尾引号一起剥 + **没找到终止行就不收这个块**（宁可「块数=0」响亮失败）。
+
+⇒ ⇒ ★★★★ **通用式（本轮新增）**：
+★ **判据出假红时，先问「判据懂不懂这门语言」** ——
+★★ **剥注释器、here-doc 提取器、模式匹配器，都是「量具」**
+⇒ ★ **量具必须先在自己的语义上被自测**（否则它会把「判错」伪装成「有毒」）。
+⇒ ★★ **而「先改判据」还是「先改产物」要分清**：
+★ **本例两者都要改**（判据的语言感知 + 产物的真实缺陷）⇒
+★ **但顺序必须是：先让判据说清自己在判什么**（否则你会去改一个没毒的东西）。
+
+### §143.39.7 诚实边界与本节**没做**的事
+
+- ⚠ **本节对生产的写入 = 0**（见 §143.39.0 开头）。**没有**改任何生产状态。
+- ⚠ **211 的 `pg_stat_statements` 仍然不可用** ⇒ ★ **211 的慢查询面依然只有
+  「容器日志」一条线** ⇒ ★ **本节没有补上这个量具**（补它要改
+  `shared_preload_libraries` ⇒ **生产写 ⇒ 需授权**，见 P8）。
+- ⚠ **本节没有评估 211 的 v1 族回收方案**（107 MB）⇒ 归档/核账是**语义决策**。
+- ⚠ **本节没有动迁移 885/887/888 的文件**（改它们会动 checksum 与 2 处台账）
+  ⇒ ⇒ **顺序约束目前只以「文档 + 预检脚本 + 门」的形式存在**，
+  **没有任何自动机制会阻止人先部署再迁移**。
+- ⚠ **本节没有改 ensure 链去自愈 `host` / `tags`** —— 那是**另一种修法**
+  （让 boot 绿 ⇒ 写路径不 42703），但它要求 ensure 链**两侧同形地**加列
+  （否则破坏 707 的 promote 列集合契约）⇒ ⇒ **风险高于「按顺序执行」** ⇒ 未做。
+- ⚠ **211 的 promote 只走过 0 行** ⇒ **211 的月分区机制缺真实流量观测点**。
+- ⚠ **本节未查 211 的 `llm_gateway_pre_cutover_20261014`（1,169 MB）的可回收性**
+  ⇒ 只登记了存在与大小。
+
+### §143.39.8 待拍板（本节新增）
+
+- 🚨 ★★★★ **211 的升级顺序**：**必须「先应用迁移 885 → 再部署新二进制」**，
+  否则**写路径 42703 且 boot 不会失败**（绿着启动、静默丢流量）。
+  ⇒ ★ **本节提供了核验手段（预检脚本 + 门），但没有强制机制**。
+  ⇒ ★ **属主可选**：① 按顺序执行（零代码改动）；② **给 ensure 链加自愈**
+  （改产品 ⇒ 需评估 707 列集合契约风险）；③ **给蓝绿验收加「写路径 schema 兼容」探针**
+  （改部署引擎 ⇒ 需评估与并行会话的冲突面）。
+- 🚨 ★★★ **跨实例的完整顺序**：`885 → 部署新二进制 → 890`（两台都要走）
+  ⇒ **任何一台跳过 ① 都是断写**。
+- 🚨 ★★ **211 是否先做「归档核账 + 清空 + 退役」**：211 的 v1 族只有 107 MB
+  ⇒ **代价是 252 的 1/18** ⇒ ⇒ **建议把 211 当作 v1 族退役的「先行验证实例」**。
+- 🚨 ★★ **211 补 887/888 的三个索引**（FTS + 2 个 join 覆盖）⇒ 纯性能，无语义风险。
+- ⚠ **本节没有改变** §143.38 遗留的任何待拍板项（890 顺序、v1 族 ≈1.9 GB 回收），
+  **也没有碰** P11 / P12 / P20 / 30 天 tab 口径语义。
+
+## §143.40 252 的整库存储画像 —— v1 族只占 7%，真正的三个杠杆在别处
+
+> **本节对生产的写入 = 0**。全部只读：252 生产库（经 154 跳板）的
+> `pg_database_size` / `pg_class` / `pg_index` / `pg_stat_user_tables` / `pg_inherits` /
+> `pg_total_relation_size` / `pg_relation_size` / `pg_column_size` 与**少量**带
+> `statement_timeout` 的 `count(*)`（其中 3 条**超时**，见 §143.40.6）。
+> **没有** DELETE / TRUNCATE / DROP / ALTER / CREATE / REINDEX / VACUUM / ANALYZE /
+> 迁移 / 改配置 / 改 cron / 部署。
+
+### §143.40.1 ★★★★★ 整库画像：既有的「v1 族 1.9 GB」叙事在整库尺度上是**小的**
+
+`pg_database_size('llm_gateway')` = **31 GB**（注：这是**整库**，含混库里的其它 schema 无关内容
+与本库全部表；211 的 `llm_gateway` 是 6,168 MB）。
+
+| 族 | 占用 | 占整库 | 性质 |
+|---|---|---|---|
+| **`ursm_node_snapshot_min*`（分钟级健康度快照）** | **12 GB** | **37.4%** | ★★★★★ **头号** |
+| `session_turns*` | 5,714 MB | 17.9% | 活数据 |
+| `session_bodies*` | 4,946 MB | 15.5% | ★ 宽列族（TOAST 94%） |
+| v1 族（`_request_logs*` **与** `request_logs*` 两套） | 2,235 MB | 7% | 需语义决策（§143.38 的 890） |
+| **`ursm_node_snapshot_min_legacy`**（孤儿表，0 行） | 852 MB | 2.7% | ★ 零语义风险 |
+| **全库零行对象（20 个，> 10 MB）** | **3,426 MB** | **10.6%** | ★★ 其中 **1,293 MB 是 orphan** |
+
+⇒ ⇒ ★★★★ **⇒ 结论（可拍板）**：
+★ **「退役 v1 族省 1.9~2.2 GB」只占整库的 7%** ⇒ ⇒ **它不是 252 存储优化的主线**；
+⇒ ★★★ **真正的主线是 ① 快照族 12 GB（37.4%）、② `session_bodies` 4,946 MB（15.5%）、
+③ 零行对象 3,426 MB（10.6%）** ⇒ ⇒ **v1 族退役应按「清理 7% 的尾巴」来排期，而不是主线。**
+
+### §143.40.2 ★★★★ 头号存储族 = 快照族 12 GB，机制是「**行级保留 + 每日一个分区**」
+
+**实测的族构成**（`ursm_node_snapshot_min*`）：
+
+| 对象 | 占用 | 估算行数 |
+|---|---|---|
+| `_20261014` / `_20261015` / `_20261016` / `_20261017` / `_20261018` / `_20261019` / `_20261020` | 716 / 1,280 / 1,443 / 1,554 / 1,186 / 1,373 / 1,006 MB | 229 万 ~ 512 万 |
+| `_20261021`（当天） | 55 MB | 19.6 万 |
+| **各分区 `_pkey`** | 196 ~ 398 MB（**合计 ≈2.5 GB**） | — |
+| `ursm_node_snapshot_min_ts_idx` | 20 MB | — |
+| **`ursm_node_snapshot_min_legacy`**（**不在父表下**） | **852 MB** | **0** |
+
+**机制（仓内可查）**：
+- 保留期 = **7 天**，来自 `URSM_SNAPSHOT_RETENTION_DAYS`
+  （`domains/ursm/v2/persist/retention.go:33`「保留窗口，默认 7 天」）；
+- 保留的实现是**行级 DELETE**（`retention.go:348-357`：
+  `DELETE FROM ursm_node_snapshot_min t ... WHERE snapshot_ts < NOW() - $1::interval ... LIMIT $2`）；
+- 存储是**每日一个分区**（`ensure_ursm_node_snapshot_min_daily_partition`）；
+- ★★ **采样粒度 = 每分钟每凭据一行** ⇒ 20261017 有 **5,124,998 行**；
+  一天 1,440 个分钟点 ⇒ ⇒ **≈3,560 个凭据 × 1,440 = 510 万行/天**；
+  ⇒ **7 天窗口 ≈ 3,500 万行 ≈ 11 GB**。
+
+⇒ ⇒ ★★★★ **⇒ 结构性结论（不是泄漏，是设计成本）**：
+★ **行级 DELETE 不会让分区文件缩小** ⇒ ⇒ **7 天窗口 ⇒ 稳态永远占着 ≈10.5 GB**
+（7 份分区文件 + 2.5 GB 主键索引）⇒ ⇒ **这不是「可以清一次的垃圾」，是「每天都要再付一遍的房租」**。
+
+⇒ ⇒ ★★★ **⇒ 优化只能从三处下手（全部是【建模/策略】，不是【清理】）**：
+
+| 方向 | 机制依据 | 预期量级 |
+|---|---|---|
+| **A. 降采样 / 只存变化** | 表里**已经**有 `sr_5m` / `sr_30m` / `samples_5m` / `samples_30m` ⇒ **1m 是原始采样，5m/30m 是派生** ⇒ 若下游只用 5m/30m，则 **1m 原始行是最大的冗余** | ★ 理论上限 **≈5~6×**（把 1m 换成 5m ⇒ 5,100 万 → 1,020 万行） |
+| **B. 缩短保留期** | 7 天 → N 天 ⇒ 稳态占用线性下降 | 7→3 天 ⇒ **≈ −4.4 GB** |
+| **C. 过期分区直接 DROP** | 分区边界是**按天**的 ⇒ 整份过期即可 DROP（不是行级 DELETE） | 同 B，且**回收立刻生效**（行级 DELETE 只让文件变小、不让分区消失） |
+
+⇒ ⚠ **本节【未】评估 A/B/C 的任何方案可行性**（需要核对下游读面实际用哪些粒度、
+以及 733/734/884 系列视图读的是哪些列）⇒ ⇒ **登记为待拍板**。
+
+> **订正横幅二十一（2026-10-21，§143.42 就地订正 §143.40.3 的「零行对象清单」与两个回收包）**
+>
+> ★★ **编号说明（并发会话撞号）**：并行会话的 **R79 轮（`7fb76c6fd`）独立复核出同一假读数**
+> （同样用 `EXISTS` 判空、同样得出「20 个里 17 个实际有行」、同样把回收包修正为 350 MB）
+> ⇒ ⇒ **两个会话同结论，互为佐证** ⇒ ⇒ ★ **但两边都用了「订正横幅二十」这个全局序号**
+> ⇒ ⇒ **编号撞车** ⇒ ⇒ **处置：保留已推送的 R79 那一个（本横幅改为「二十一」）**
+> ⇒ ⇒ ★ **通用式：并发会话共用同一个「订正横幅全局序号」⇒ 撞车是常态不是意外**
+> ⇒ ⇒ **发现即改号，且两边的横幅都必须留档（不许删掉一边）**。
+>
+> ★★★★ **原文保留**（§143.40.3 全文不动），但下面这份清单**已撤回**：
+> > 「**包一（完全零风险，1,293 MB）**：4 个 **orphan + 0 行** 的对象 ⇒
+> > `ursm_node_snapshot_min_legacy`（852）+ `_request_logs_bodies_hot`（291）
+> > + `session_title_states`（91）+ `_request_logs_hot`（59）= 1,293 MB
+> > ⇒ ⇒ **它们既不在父表下、又一行都没有 ⇒ 任何读面都碰不到它们**」
+> > 「**包二（需逐个确认，≈2,133 MB）**：9 月的**空分区**」
+>
+> ⇒ ★★★★ **这份清单是假读数。若照单执行，会跨 17 张表不可逆销毁 300 万+ 行。**
+> ⇒ ★ **根因是量具，不是判断**：
+>   ① 判空用了 `pg_stat_user_tables.n_live_tup` ⇒ 它对「长期无写入 + 从未 analyze」的表**恒为 0** ⇒ 系统性假空；
+>   ② 判「orphan」用了「`pg_inherits` 里没有父」⇒ 它对**普通表恒真** ⇒ 空命题。
+>
+> ⇒ ★★★★ **实测复核（252，2026-10-21，只读；判空用 `EXISTS(SELECT 1 … LIMIT 1)`）**：
+>
+> | 对象 | §143.40 判定 | 实测 | 结论 |
+> |---|---|---|---|
+> | `ursm_node_snapshot_min_legacy` 852 MB | orphan + 0 行 | **2,836,620 行**（`snapshot_ts` 跨度 10-06 15:50 ~ 10-07 13:03） | **不可回收**：父表最早分区是 `20261014` ⇒ **这段历史只此一份**；且它是迁移 830 的**回滚锚点**（830 down 脚本会 `RENAME` 它）⇒ DROP = 毁历史 + 断回滚路径 |
+> | `session_title_states` 91 MB | orphan + 0 行 | **175,975 行** | **不可回收**：迁移 550 建的活跃业务表（PK=`(tenant_id, scoped_session_id)`，带 fencing/tombstone）；它是**普通表** ⇒ 「不在父表下」是恒真命题 |
+> | `_request_logs_bodies_hot` 291 MB | orphan + 0 行 | 0 行，但**被 1 个 public 函数体引用** | **可回收**，但**手段是 `VACUUM FULL` 而不是 `DROP`** |
+> | `_request_logs_hot` 59 MB | orphan + 0 行 | 0 行，但**被 6 个 public 函数体引用** | 同上 |
+> | 9 月「空分区包」11 个 ≈2,133 MB | 空分区 | **11/11 全部非空**（`usage_ledger_2026_09` 1,416,772 / `session_turn_details_2026_09` 786,036 / `request_wal_2026_09` 446,777 / `routing_decision_log_2026_09` 440,138 / `sessions_2026_09` 163,682 …） | **整包撤回** |
+>
+> ⇒ ⇒ ★ **修正后的 P0 回收包 = 350 MB（不是 1,293 MB）；9 月「空分区包」2,133 MB 整包消失**：
+>   **回收对象只有 2 个**（`_request_logs_bodies_hot` 291 MB + `_request_logs_hot` 59 MB），
+>   **手段是 `VACUUM FULL`**（保表名、保结构、被引用的 6 个函数体完全不受影响），
+>   **绝不是 `DROP`** ⇒ ⇒ **零数据损失 + 零 schema 破坏 + 零迁移 + 零代码改动**。
+>
+> ⇒ ★★★ **「真 orphan 分区」在 252 上一个都没有**（`relispartition = true` 且 `pg_inherits` 无父 ⇒ **0 个**）
+>   ⇒ ⇒ **当前没有任何 DROP 安全的对象** ⇒ ⇒ §143.40 的「DROP 即可回收」这个**手段本身**不成立。
+>
+> ⇒ ★ **顺带关掉一个待定性项**：§143.40 记「9 月 `session_turns` 799,243 行 vs `session_turn_details` 0 行 ⇒ details 没接线」
+>   ——**错**：`session_turn_details_2026_09` 实有 **786,036 行**（对照 `session_turns_2026_09` 的 **798,278 行** = **98.5%**）
+>   ⇒ ⇒ **details 写入正常**，那条待定性项**可以关闭**。
+>
+> ⇒ ★ 复核用的**机器可读登记册**：`scripts/audit/reclaim_candidates.tsv`（20 行，逐行带实测事实 + verdict）
+>   ⇒ 只读判定脚本：`scripts/audit/verify_reclaim_candidates.sql`
+>   ⇒ 门：`admin/section_14342_reclaim_measurement_test.go` + 决策表 `admin/reclaim_verdict.go`
+>   ⇒ 详见 `§143.42`。
+
+### §143.40.3 ★★★★ 零行对象清单：3,426 MB，其中 **1,293 MB 是完全孤立的 orphan**
+
+> 🚨🚨🚨 **订正横幅二十（§143.42-B · 2026-10-21）—— 本节整份「零行对象清单」是**假读数**，
+> **已撤回** ⇒ ★★★ **请勿执行包一/包二里的任何 `TRUNCATE` / `DROP`**
+>
+> - **根因**：本节用 `pg_stat_user_tables.n_live_tup` 判「零行」。
+>   ⇒ ★★★ 该字段对「**长期无写入 + 从未 analyze**」的表**恒为 0**（陈旧估算）⇒ **系统性假空**
+>   ⇒ ⇒ **本节 20 个「零行对象」里 17 个实际有行**。
+> - **复算（252 生产，只读；用 `EXISTS(SELECT 1 … LIMIT 1)` 精确判空）**：
+>   | 对象 | 本节写的 | **实测** |
+>   |---|---|---|
+>   | `ursm_node_snapshot_min_legacy` 852 MB | 0 行 | **2,836,620 行** |
+>   | `session_title_states` 91 MB | 0 行 | **175,975 行** |
+>   | `usage_ledger_2026_09` 742 MB | 空分区 | **1,416,772 行** |
+>   | `session_turn_details_2026_09` 603 MB | 空分区 | **786,036 行** |
+>   | `request_wal_2026_09` 193 MB | 空分区 | **446,777 行** |
+>   | `routing_decision_log_2026_09` 137 MB | 空分区 | **440,138 行** |
+>   | `sessions_2026_09` 91 MB | 空分区 | **163,682 行** |
+>   | （9 月「空分区包」其余 4 个） | 空分区 | **11/11 全部非空** |
+>
+>   ⇒ ⇒ ★★ **包一（1,293 MB）实际只剩 350 MB**：真正真空只有 3 个 ——
+>   `_request_logs_bodies_hot` 291 MB（orphan）/ `_request_logs_hot` 59 MB（orphan）/
+>   `usage_facts_default` 80 MB（attached）⇒ ⇒ **包二（≈2,133 MB）整包撤回**。
+> - **本节 §143.40.6 的待定性项同时解掉**：「`session_turns_2026_09` 799,243 行 而
+>   `session_turn_details_2026_09` 0 行 ⇒ details 没接线」—— **错**：details 实有
+>   **786,036 行**（≈98.3%）⇒ **写入正常，无需定性**。
+> - ★★ **为什么这次格外危险**：包一被标为「**完全零风险**……任何读面都碰不到它们」
+>   ⇒ ⇒ **读清单的人会直接照着删** ⇒ ⇒ **假空的方向永远是「让人以为可以删」**。
+> - ★ **执行层是安全的（已复核）**：`scripts/252-monitor/pg17-emergency-cleanup.sh` 的 L1 与
+>   `pg17-proactive-empty-table-cleanup.sh` **都已有 `COUNT(*)` 第三道闸**（在 `DROP` 之前）
+>   ⇒ ⇒ **假读数只污染了文档层** ⇒ ★★ **「文档层」与「执行层」的风险必须分开评估**。
+> - ★ **纪律（凡「空表 ⇒ 可回收」的判据，一律照此）**：**判空必须用 `EXISTS(SELECT 1 … LIMIT 1)`
+>   或精确 `count(*)`，不得用 `n_live_tup`** ⇒ 且 **清单本身必须标注它用的判据**。
+> - ★ **本轮独立复核（R76 轮会话，生产只读）**：对订正列的 10 个对象逐个跑 `EXISTS` 复判
+>   ⇒ **7 个判非空、3 个判真空**，与订正口径**逐条一致** ⇒ 订正成立。
+>   现场证据：`n_live_tup=0` 而 `n_tup_ins=109,447`（`_request_logs_bodies_hot`）、
+>   多个对象 `last_analyze` 为空 ⇒ 估算从未更新。
+
+**全库零行对象（> 10 MB，20 个，合计 3,426 MB）**：
+
+| 对象 | 大小 | 父表状态 | 备注 |
+|---|---|---|---|
+| **`ursm_node_snapshot_min_legacy`** | **852 MB** | **orphan** | ★ 迁移 453→830 分区化前的遗留表，**不在父表下** ⇒ 迁移 830 的产物没清它 |
+| `usage_ledger_2026_09` | 742 MB | attached | 9 月空分区 |
+| `session_turn_details_2026_09` | 603 MB | attached | 9 月空分区（见 §143.40.6） |
+| **`_request_logs_bodies_hot`** | **291 MB** | **orphan** | ★ **0 行**；229 MB 在 **TOAST 索引**上、55 MB 在 TOAST 表上 |
+| `request_wal_2026_09` | 193 MB | attached | |
+| `routing_decision_log_2026_09` | 137 MB | attached | |
+| `supplier_errors_2026_09` | 114 MB | attached | |
+| **`session_title_states`** | **91 MB** | **orphan** | ★ 0 行 |
+| `sessions_2026_09` | 91 MB | attached | |
+| `usage_facts_default` | 80 MB | attached | |
+| **`_request_logs_hot`** | **59 MB** | **orphan** | ★ 0 行 |
+| `session_memora_2026_09` | 53 MB | attached | |
+| （其余 8 个，各 10~50 MB） | — | — | |
+
+⇒ ⇒ ★★★★ **⇒ 两个零语义风险的回收包**：
+
+- ★★★ **包一（完全零风险，1,293 MB）**：4 个 **orphan + 0 行** 的对象
+  ⇒ **`ursm_node_snapshot_min_legacy`（852）+ `_request_logs_bodies_hot`（291）
+  + `session_title_states`（91）+ `_request_logs_hot`（59）= 1,293 MB**
+  ⇒ ⇒ **它们既不在父表下、又一行都没有 ⇒ 任何读面都碰不到它们**
+  ⇒ ⇒ **不需要任何历史取舍决策、不需要归档、不需要核账**；
+- ★★ **包二（需逐个确认，≈2,133 MB）**：9 月的**空分区**（挂在父表下的）
+  ⇒ ⇒ ★ **这批比 v1 族的 2,235 MB 还大** ⇒ ⇒ **但要逐个确认「空是正常（数据已搬走 / 尚未写入）
+  还是异常（数据丢了）」** ⇒ ★ **`session_turns_2026_09` 有 799,243 行而
+  `session_turn_details_2026_09` 是 0 行 ⇒ 这不是「同族的两个表都空」，必须分开看**（§143.40.6）。
+
+⇒ ⇒ ★★★ **⇒ 对「v1 族 ≈1.9 GB 回收不了」这个既有结论的直接修正**：
+★★ **回收不了的不是「v1 族」，是「v1 族里有数据的那些部分」** ⇒
+⇒ ★★ **v1 族里的两张 hot 表（`_request_logs_hot` 59 MB + `_request_logs_bodies_hot` 291 MB）
+本来就是 0 行、且是 orphan ⇒ ⇒ 它们不在非空闸的射程内 ⇒ ⇒ **可以先被回收**。
+
+⇒ ⇒ ★★ **★ 关键技术点：为什么「0 行的表」还有 291 MB？**
+⇒ 分解（`pg_relation_size` / 索引 / TOAST 表 / TOAST 索引 四项，加总与
+`pg_total_relation_size` **逐字对齐**）：
+
+| 对象 | heap | 索引 | TOAST 表 | **TOAST 索引** | 合计 |
+|---|---|---|---|---|---|
+| `_request_logs_bodies_hot` | **0** | 6.2 MB | 55 MB | **229 MB** | **291 MB** |
+| `_request_logs_hot` | 12 MB | 40 MB | 3.9 MB | 2 MB | 59 MB |
+| `request_logs_2026_10` | 372 MB | 266 MB | 370 MB | 6 MB | 1,015 MB |
+| `request_logs_bodies_2026_10` | 579 MB | 0 | 0 | 0 | 579 MB |
+
+⇒ ⇒ ★★★★ **⇒ 「VACUUM 清不掉」的技术原因**：该表 `last_vacuum = 2026-10-20 02:08`
+（**昨天刚 VACUUM 过**）⇒ **堆已被清空（0 bytes）** ⇒
+⇒ ★★★ **但 `VACUUM` 不会收缩 TOAST 索引的文件** ⇒ ⇒ **229 MB 永久留在盘上** ⇒
+⇒ ⇒ ★ **⇒ 能真正回收它的只有 `TRUNCATE`（表本身 0 行 ⇒ 零数据损失）
+或 `VACUUM FULL` / `REINDEX`** ⇒ ⇒ ★★ **⇒ 这是「零语义风险回收」的技术依据。**
+
+### §143.40.4 ★★★ `session_bodies_2026_10`：4,595 MB，其中 **TOAST 占 4,322 MB（94%）**
+
+- 堆 **97 MB** / TOAST **4,322 MB** / 估算 **263,650 行** ⇒ ★ **平均每行约 16 KB 的 TOAST**
+  ⇒ ⇒ ★★ **这是真正的「宽列」形态**（`body` 列存请求/响应正文 ⇒ 超 TOAST 阈值 ⇒ 外置 + 压缩）
+- ⇒ ★★ **与 `request_logs_2026_10` 的对照**：那张表 334,902 行、TOAST 仅 370 MB
+  ⇒ ⇒ ★ **同样的行数级，bodies 的 TOAST 是它的 11.7 倍** ⇒ ⇒ **因为 bodies 存的是正文**
+- ⇒ ⇒ ★★★ **⇒ 这是一个「数据结构」靶子而不是「清理」靶子**：
+  ★ **bodies 是不是应该按行存 16 KB 正文？**（正文通常也可由 request/response 的引用重建？
+  还是本来就该只留摘要 + 指针？）⇒ ⇒ **这是语义决策**，本节**不预设答案**。
+- ⇒ ★★ **附带**：`session_bodies_2026_09` 在 211 上是 **1,214 MB** ⇒ 两台机器都有这个形态。
+
+### §143.40.5 ★★★ 一次自我纠正：「保留机制没生效」被**证伪**
+
+本节中途，我根据「7 天前的分区（20261014）里还有 229 万行」推断
+**「保留机制根本没在删」** ⇒ ★★★ **实测推翻**：
+
+| 分区 | `min(snapshot_ts)` | `max(snapshot_ts)` | 超过 7 天的行数 |
+|---|---|---|---|
+| `20261014` | 2026-10-14 06:06:54 | 2026-10-14 23:59:48 | **0** |
+| `20261017` | 2026-10-17 00:00:26 | 2026-10-17 23:59:57 | **0** |
+| `20261020` | 2026-10-20 00:00:03 | 2026-10-20 23:59:58 | **0** |
+
+⇒ ⇒ ★ **「0 行超期」⇒ 保留机制【是生效的】** ⇒ ⇒ ★★ **我的推断错在
+「7 天前的分区」这个说法本身**（NOW = 10-21 01:00 ⇒ 7 天前 = 10-14 01:00
+⇒ 10-14 06:06 之后的行**还没超期**）⇒ ⇒ ★★★ **⇒ 真因是「行级保留 + 每日分区 ⇒
+稳态占用 = 7 份峰值文件」，不是「删不掉」。**
+
+⇒ ⇒ ★★★★ **⇒ 通用式（又一次量具自证）**：
+★ **「分区里还有 N 行」不能推出「保留机制没生效」** ——
+★ **必须问「这些行【相对于保留窗口】超期了吗」**（本例：`snapshot_ts < NOW() - 7 days`）。
+⇒ ★★ **⇒ 「看起来像 bug 的现象」往往只是「窗口边界还没到」**。
+
+### §143.40.6 ★★ 一个【待核】的不对称：9 月的 details 是 0 行，而 9 月的 turns 有 799,243 行
+
+| 分区 | 占用 | 估算行数 |
+|---|---|---|
+| `session_turns_2026_09` | 2,735 MB | **799,243** |
+| `session_turn_details_2026_09` | **603 MB** | **0** |
+| `session_turns_2026_10` | 1,538 MB | 263,654 |
+| `session_turn_details_2026_10` | 140 MB | **263,665**（★ 与 turns 1:1，正常） |
+
+⇒ ⇒ ★★ **10 月是 1:1 匹配（正常），9 月是 0:799,243** ⇒
+⇒ ⇒ ★ **⇒ 有一个【可能的】解释：`session_turn_details` 是迁移 733 引入的
+（2026-09-21 提交 `35bab24a6`）⇒ 9 月只有 9-21 之后才有 details 的写入方** ⇒
+⇒ ⇒ ★ **⇒ 但 9-21~9-30 那 10 天的 turn 仍应有 details ⇒ 0 行仍需解释**
+⇒ ⇒ ★ **本节不下缺陷结论**（★ 中间踩过的坑：过早上定性）⇒
+⇒ ⇒ ★★ **⇒ 登记一条【可执行的核验】（下一轮做）**：
+★ **查 9 月 turn 的写入方是否曾写 details**（按 `session_turn_details` 的写路径
+在仓内的启用时间点 vs 9-21~9-30 的写入记录对齐）
+⇒ ⇒ ★★ **若确认是「从未写过」⇒ 那是 80 万条 turn 在 canonical 视图里 details 侧恒为 NULL**
+⇒ ⇒ ★★ **⇒ 影响面 = 看板/分析视图的 734 特征列** ⇒ ★ **值得单独一轮。**
+
+### §143.40.7 ★★★ 存储优化的优先级重排（供拍板）
+
+| 优先级 | 动作 | 量级 | 语义风险 | 需要的决策 |
+|---|---|---|---|---|
+| **P0** | **回收 4 个 orphan + 0 行对象**（`ursm_node_snapshot_min_legacy` 852 / `_request_logs_bodies_hot` 291 / `session_title_states` 91 / `_request_logs_hot` 59） | **1,293 MB** | **零**（0 行 + 不在父表下） | 只差**生产写授权** |
+| **P1** | 回收 9 月的空分区（逐个确认「空是正常」之后） | ≈2,133 MB | 低（需逐个确认） | 逐个确认 + 授权 |
+| **P2** | **快照族建模**（A 降采样 / B 缩短保留期 / C 过期分区 DROP） | **最大可到数 GB** | 中（语义） | ★ **需先核对下游读面用哪些粒度** |
+| **P3** | `session_bodies` 的 16 KB/行 TOAST 形态 | ≤4.9 GB | 中（语义） | ★ **需先定「正文要不要留」** |
+| **P4** | v1 族退役（迁移 890） | 2,235 MB | 中（历史核账） | 已有 §143.38 的顺序约束 + 本节的零风险子集 |
+
+⇒ ⇒ ★★★ **⇒ 一句话**：
+★ **「退役 v1 族」是 P4；P0 的 1.29 GB 零风险回收与 P2 的 12 GB 建模才是主线。**
+
+### §143.40.8 诚实边界与本节**没做**的事
+
+- ⚠ **本节对生产的写入 = 0**（见开头）。**没有**执行任何回收动作 ——
+  ★ **P0 的 1,293 MB 已经在账上等着，只差一次授权**。
+- ⚠ **本节没有验证**「TRUNCATE 那 4 个 orphan 表」在**生产上**的效果
+  ⇒ ★ **P0 的执行细节（先 `REINDEX` 还是直接 `TRUNCATE`、是否需要先摘 RLS/依赖）
+  需在执行前用一次性本地库复核**（★ §143.23 的「本地真库」手法可复用）。
+- ⚠ **本节没有核对**快照族的下游读面实际使用哪些粒度
+  ⇒ ⇒ **P2 的「5~6×」是【按粒度比推算的理论上限】，不是实测收益**
+  ⇒ ★ **不给「改完能省 N GB」的承诺**。
+- ⚠ **§143.40.6 的 9 月 details 缺口未定性**（只登记了不对称与核验路径）。
+- ⚠ **本节只查了 252**（211 的对应画像未做；211 的 `session_bodies_2026_10` 是 1,214 MB
+  ⇒ ★ **211 也有 bodies 宽列形态** ⇒ 但 211 的快照族规模未知）。
+- ⚠ **3 条带 `count(*)` 的查询在生产上超时**（`statement_timeout`）⇒
+  ★ **⇒ 精确行数取不到时，用 `pg_stat_user_tables.n_live_tup`（估算）并显式标注**。
+
+## §143.41 快照族 12 GB 的成因分解 —— 三个乘数 + 一次被证伪的「白捡 22%」
+
+> **本节对生产的写入 = 0**。全部只读：252 生产库（经 154 跳板）的
+> `pg_class` / `pg_stat_user_tables` / `pg_inherits` / 窄窗口聚合（10~30 分钟），
+> 以及仓内源码与提交历史。**没有** DELETE / TRUNCATE / DROP / ALTER / CREATE /
+> REINDEX / VACUUM / ANALYZE / 迁移 / 改配置 / 部署。
+> ⚠ **本节改了 1 个仓内文件**（`domains/ursm/v2/config.go` 的**注释订正**，
+> 零行为变更）⇒ 见 §143.41.6。
+
+### §143.41.0 起点：§143.40 认定快照族 = 12 GB（整库 37.4%）是头号存储族
+
+§143.40.2 已定性机制 =「**行级保留 + 每日一个分区**」⇒ **7 天窗口 ⇒ 稳态 ≈10.5 GB**。
+⇒ ★★ **本节回答的是「这 12 GB 里的行【为什么是这些行】」**
+⇒ ⇒ **把一个 12 GB 的黑箱分解成可独立消除的乘数**。
+
+### §143.41.1 ★★★★★ 一次「白捡 22%」的发现 —— **然后被载荷比对证伪**
+
+**发现**（252 生产只读，20261020 分区 03:00~03:10 窗口）：
+
+| `tenant_id` | 行数 | (凭据×模型) 对 | 凭据数 |
+|---|---|---|---|
+| `default` | 14,516 | 1,453 | 60 |
+| **`''`（空串）** | **4,130** | **413** | 50 |
+
+⇒ ★★★ **同一 `(snapshot_ts, credential_id, raw_model_name)` 下，同时存在
+`tenant_id=''` 的一行与 `tenant_id='default'` 的一行** ⇒ **3,739 对**，
+**每对恰好 1 + 1**，且两行的 `min(snapshot_ts)` **逐字相同**
+（如 `credential 34 / gpt-5.6-sol`：两边的 first 都是 `2026-10-20 03:00:03.98199+08`）
+⇒ ⇒ ★★ **看起来**：把 `tenant_id` 归一化 ⇒ 两行变成同一 PK ⇒
+`ON CONFLICT DO NOTHING` 去重 ⇒ ⇒ **★ 白捡 22.2% 的行（≈2.6 GB）**
+
+⇒ ⇒ ★★★★ **★ 但载荷比对把它证伪了**（同一 3,739 对，逐列 `IS DISTINCT FROM`）：
+
+| 列 | 差异对数 | 占比 |
+|---|---|---|
+| `updated_at_ms` | **3,739** | **100%** |
+| `last_probe_at_ms` | 3,309 | 88.5% |
+| **`generation`** | **3,299** | **88.3%** |
+| `available` | 1,703 | 45.6% |
+| `health_status` / `samples_1m` / `payload` | 1,254 | 33.5% |
+| `fail_streak` | 1,220 | 32.6% |
+| `sr_1m` / `sr_5m` | 332 | 8.9% |
+| `sr_30m` | 342 | 9.1% |
+| `lat_p50_ms` / `score` / `provider_id` / `recovery_epoch` | **0** | 0% |
+
+⇒ ⇒ ★★★★ **⇒ 这两行【不是】同一份采样的两份拷贝**：
+★ `generation`（代次）**88.3% 不同** + `updated_at_ms` **100% 不同**
+⇒ ⇒ **⇒ 真正的成因是「Redis 侧有【两个 key 集合】指向同一 (凭据, 模型)，
+其中一个是【陈旧代次】」**，不是「tenant 标签写错了」
+⇒ ⇒ ★★★ **⇒ 归一化会丢掉一份【不同的】观测 ⇒ 不是零语义损失 ⇒ 【不可做】**
+⇒ ⇒ ★★ **⇒ 而且归一化方向也定错了**：全库惯例是 **`'default'`**
+（`session_turns_hot` / `credentials` / `api_keys` 里**空串 0 条**；
+且快照表里 `tenant_id=''` 的那些凭据在 `credentials` 表里 **50/50 全是 default 租户**）
+⇒ ⇒ ★★ **⇒ 结论：这不是「标签写错」，是「多了一个陈旧来源」**
+⇒ ⇒ ★★ **⇒ 正确修法不是「归一化」，而是「让陈旧的那份不再写」**。
+
+⇒ ⇒ ★★★★ **★ 本节最重要的一条方法论**：
+★★ **「同一主键的两行」不等于「同一份数据的两个副本」** ——
+★★ **判「能不能去重」必须比【载荷】，而不是比【键】**
+⇒ ★★ **⇒ 键相同而载荷不同 ⇒ 那不是冗余，是两个不同的观测**
+⇒ ★★ **⇒ 「白捡 X%」这种话，只有在【载荷逐字相同】被实测确认之后才能写进结论。**
+
+### §143.41.2 ★★★★ 跨网关双写：实测时间线（**已登记现象，但「2 倍」是条件命题**）
+
+**仓内既有登记**（`domains/ursm/v2/config.go:134` 的注释，2026-10-07 写下）：
+「两台网关的 `snapshot_ts` 相差 ~17s ⇒ 四元组主键不同 ⇒ **0% 被拒、100% 双份落库**
+（17 分钟实测 dup_ratio=2.000）⇒ **真实浪费是存储与写放大的 2 倍**」。
+
+**本轮生产实测（逐分区，同一形状的 10 分钟窗口，自适应各分区自己的 `min(snapshot_ts)`）**：
+
+| 分区 | `dup_by_minute` | `dup_by_pair` |
+|---|---|---|
+| 20261014 | **2.000** | 8.000 |
+| 20261015 | **2.000** | 19.992 |
+| 20261016 | **2.000** | 19.978 |
+| 20261017 | **2.000** | 20.000 |
+| 20261018 | 1.909 | 21.000 |
+| 20261019 | **2.000** | 20.000 |
+| **20261020** | **1.000** | 10.000 |
+| **20261021**（今天） | **1.910** | 19.167 |
+
+⇒ ⇒ ★★★★ **⇒ 关键事实：10-20 那天是 1.000（无浪费），10-21 又回到 1.910**
+⇒ ⇒ ★★★ **⇒ 所以「100% 双份落库 / 浪费 2 倍」是【条件命题】，
+取决于「当时有几台在写」**，不是恒定事实
+⇒ ⇒ ★★ **⇒ 该现象的开关就是「有几台在写」**
+⇒ ⇒ ★★ **⇒ 而仓内**已经有**针对它的守卫**：
+`438a24653 feat(ursm): §61 — 跨实例写入者守卫（PG 会话级 advisory lock）`
+（2026-10-18 12:58）⇒ ★★ **该提交的信息明说「本节未部署」**
+⇒ ⇒ ⇒ ★★★ **⇒ 零迁移修法 = ① 部署 §61 守卫 ② 停掉陈旧槽位
+（§61 的提交信息也点明：「停掉残留槽位仍必须做」）**
+
+### §143.41.3 ★★★★ 三个乘数的合成（相对「每 (凭据,模型,分钟) 一行、单一租户标签」的理想基线）
+
+| 乘数 | 倍数 | 证据 | 语义代价 | 修法形态 |
+|---|---|---|---|---|
+| **A. 跨网关双写** | **2.000**（写者数=2 时） | §143.41.2 逐分区实测 | **零** | ★ **部署 §61 守卫 + 停陈旧槽位**（零迁移） |
+| **B. tenant 双标签** | 1.251（22.2% 的行） | §143.41.1 | ⚠ **非零**（载荷不同） | ★ **不可用归一化**；真实成因 = 陈旧 key 集合 ⇒ 与 A 同源 |
+| **C. 分钟内多批** | 1.25 | §143.11 实测「每 20~40 秒一批」；本轮 `rows_per_minute = 1.514` | **零**（分钟粒度下 20~40 s 的两个采样是同一个分钟桶） | ★ **归一化 `snapshot_ts` 到分钟桶** ⇒ 需改 PK ⇒ 一次迁移 |
+| **D. 模型维度** | 29.6（889 模型 / 63 凭据） | §143.40 / 本轮：1,535 个 (凭据,模型) 对、1,435 个分钟点、覆盖率 90.6% | ★ **高**（丢模型级成功率/延迟） | ★ **建模决策**（凭据级 vs 模型级） |
+
+⇒ ⇒ ★★★★ **⇒ 12 GB 的合成解释**：
+★ **(2.0 × 1.25) × 1.25 ≈ 3.1×**（相对「每 (凭据,模型,分钟) 一行、单一标签」）
+⇒ ⇒ ★★ **⇒ 只做 A（零迁移、零语义代价）⇒ 12 GB ⇒ ≈6 GB**
+⇒ ⇒ ★★ **⇒ 再做 C（一次迁移）⇒ ≈4.8 GB**
+⇒ ⇒ ★★ **⇒ D 是语义决策（最大杠杆，理论上可到 1/30，但会丢模型级指标）**
+
+### §143.41.4 ★★ 行数构成的精确画像（20261020 分区）
+
+| 量 | 实测 |
+|---|---|
+| 一天的行数 | **3,675,561** |
+| 不同的 (凭据, 模型) 对 | **1,535** |
+| 不同的分钟点 | **1,435** / 1,440（**99.7%**） |
+| 单个 (凭据,模型) 对的平均分钟覆盖率 | **1,299.73 / 1,435 = 90.6%** |
+| 单个 (凭据,模型) 对的 `rows_per_minute` | **1.514** |
+| 不同的 `credential_id` | **63** |
+| 不同的 `raw_model_name` | **889** |
+| 每凭据的模型数 | **29.6** |
+| `tenant_id` 取值 | `default` 77.8% / `''` 22.2% |
+
+### §143.41.5 ★★★ 两条**已在仓内就绪**的零迁移动作（只需部署授权）
+
+| 提交 | 内容 | 收益 | 状态 |
+|---|---|---|---|
+| `438a24653` | **§61 跨实例写入者守卫**（PG 会话级 `pg_try_advisory_lock` + 专用连接，罩住整轮 Collect+Flush） | ★ **止住 A 的 ×2.0** | **未部署**（提交信息明说）⇒ 且**建议与「停掉 8782 残留槽位」同批** |
+| `99aca741c` | **§143.11 pkey 插入排序**（排序列从 `ON CONFLICT` 列派生 ⇒ 结构上不可能漂移） | ★ **pkey 索引体积 −22%**（叶页密度 70.25% → 89.82%） | 仓内已落地（纯代码，无迁移） |
+
+⇒ ⇒ ★★ **⇒ 这两条都不需要生产写、只需要部署** ⇒ ⇒ **⇒ P2 的第一步应该是「部署这两条」，
+而不是「设计新迁移」**。
+
+### §143.41.6 ★★ 仓内改动：订正一条**已过期**的注释（零行为变更）
+
+**改的文件**：`domains/ursm/v2/config.go`（`ShadowPersist` 字段的文档注释）
+⇒ ⇒ **只加订正段，原文逐字保留**：
+
+1. ★★ 订正「100% 双份落库 / 浪费 2 倍」⇒ **条件命题**（附 §143.41.2 的逐分区实测表）；
+2. ★★ 订正「That table is 10 GB, 45% of the database」⇒ **实测 12 GB / 37.4%**；
+3. ⚠ **留档「被证伪的 22% 归一化优化」** ⇒ ★ **防止下一个会话重提这条已被载荷比对否掉的方案**
+   （★ 这是本次改动的最大价值：不是加信息，是**堵住一个看起来很划算的错误方向**）。
+
+### §143.41.7 ★★ 新登记的待查项（下一轮）
+
+- ★★★★ **★ Redis 侧为什么有【两个 key 集合】指向同一 (凭据, 模型)？**
+  ⇒ ★★ 形态：同一 `snapshot_ts` 下两行，`generation` 88.3% 不同、`updated_at_ms` 100% 不同
+  ⇒ ⇒ ★★ **判别路径**：`store.ParseNodeKeyAny` 的 key 前缀/代次语义
+  ⇒ ⇒ ★★ **★ 候选解释**：① 陈旧代次的 key 未被清理；
+  ② 两个不同的 schema/key 前缀 指向同一凭据；③ `recovery_epoch` 切换前后的双写
+  ⇒ ⇒ ★★ **⇒ 这一条查清 ⇒ A/B 两个乘数可能一次性归零**
+  （⇒ 因为「陈旧代次在写」正是 §61 守卫要治的近亲）。
+- ★★ **C（分钟内多批）的收益量化**：把 `snapshot_ts` 归一化到分钟桶需要改 PK
+  ⇒ ⇒ ★★ **须评估**：改 PK 的一次迁移 + 存量去重回填的代价
+  ⇒ ⇒ ★★ **且它与 §143.11 的「插入排序」优化同源**（都指向 pkey 重建）⇒ **合并做最省**。
+
+### §143.41.8 诚实边界与本节**没做**的事
+
+- ⚠ **本节对生产的写入 = 0**（见开头）。唯一的仓内改动是**注释订正**（零行为变更）。
+- ⚠ **本节没有部署 §61 守卫、没有部署 §143.11 的排序、没有做任何迁移** ⇒ **全部待授权**。
+- ⚠ **本节的 dup_ratio 读数是「同一形状的 10 分钟窗口」的抽样**，
+  ⚠ **不是全分区全量**（全量 `DISTINCT` 在 30 s `statement_timeout` 下会超时
+  ⇒ ★ **本节据此改用窄窗口** ⇒ ★ **⇒ 结论的适用范围是「该窗口」，不是「全表」**）。
+- ⚠ **20261018 的窗口返回 0 行**（该分区在 03:00~03:10 无数据）⇒
+  ⚠ **该分区的读数是自适应窗口（取各分区自己的 `min(snapshot_ts)`）**。
+- ⚠ **本节没有查清**「两个 key 集合」的成因（§143.41.7）⇒ **不排除 B 的真实修法
+  与 A 同源** ⇒ ⇒ ★ **⇒ §143.41.3 的乘数表是「当前可解释的分解」，不是「最终成因」**。
+- ⚠ **本节没有评估 D（模型维度）**的语义代价 ⇒ **不给「改完能省 N GB」的承诺**。
+- ⚠ **§143.40.6 的 9 月 `session_turn_details` 缺口仍未定性**（与本节无关，未推进）。
+
+### §143.42 ★★★★ 「可回收对象」清单的假读数根因 + 快照族 25% 无信息行的根因
+
+> ★★ **互证说明**：并行会话的 **R79 轮（`7fb76c6fd`）独立复核出同一假读数**并加了自己的
+> 「订正横幅二十」⇒ ⇒ **两个会话同结论（17/20 有行、350 MB 修正值、9 月包整包撤回）**
+> ⇒ ⇒ **本节是【更完整的一侧】**：它额外给出「三条量具纪律」「快照族 25.2% 无信息行的根因」
+> 与**机器可读的登记册 + 决策表 + 门** ⇒ ⇒ **两边横幅都保留**（编号撞车处置见「订正横幅二十一」）。
+>
+> 本节两条主线：
+> ① **§143.40 的 P0 回收包是假读数**（订正横幅二十一；并行会话 R79 轮的「订正横幅二十」
+>    独立复核出同一结论）—— 已撤回并重算；
+> ② **§143.41 悬而未决的「两个 key 集合 / 陈旧代次」查清了** ⇒ 空标签快照行的
+>    根因是 **`MigrateFpSlotsNodeStates` 播下的退化种子**，且**只写不读**。
+
+#### §143.42.1 ★★★★ 快照族里 25.2% 的行**不携带任何观测信息**
+
+**逐日读数（252，只读，`EXISTS`/精确 `count(*)`）**：
+
+| 日期 | 空标签行 | `default` 行 | 合计 | 空标签占比 |
+|---|---|---|---|---|
+| 2026-10-14 | 669,060 | 1,628,446 | 2,297,506 | 29.1% |
+| 2026-10-15 | 1,177,463 | 2,829,114 | 4,006,577 | 29.4% |
+| 2026-10-16 | 1,174,985 | 3,457,354 | 4,632,339 | 25.4% |
+| 2026-10-17 | 1,176,637 | 3,946,402 | 5,123,039 | 23.0% |
+| 2026-10-18 | 909,839 | 3,027,695 | 3,937,534 | 23.1% |
+| 2026-10-19 | 1,140,293 | 3,589,183 | 4,729,476 | 24.1% |
+| 2026-10-20 | 897,036 | 2,778,525 | 3,675,561 | 24.4% |
+| 2026-10-21（部分） | 83,839 | 224,794 | 308,633 | 27.2% |
+| **合计** | **7,229,152** | **21,481,513** | **28,710,665** | **25.2%** |
+
+⇒ ★★★ **占比 23%~29% 且逐日稳定 ⇒ 这不是事故，是结构性浪费。**
+
+**空标签行的载荷是「常数退化」的**（2026-10-20 分区，按 `tenant_id` 聚合）：
+
+| 列 | 空标签行（897,036 行） | `default` 行（2,778,525 行） |
+|---|---|---|
+| `updated_at_ms = 0` | **897,036（100%）** | 0 |
+| `generation = 1` | **897,036（100%）** | 971,587 |
+| `generation` 极差 | **min = max = 1** | 1 ~ 18,025 |
+| `lat_p50_ms = 0` | **897,036（100%）** | 2,778,525 |
+| `samples_1m = 0` | **897,036（100%）** | 2,264,052 |
+| `payload IS NULL` | **897,036（100%）** | 2,264,052 |
+| `source_priority` | **恒 10** | — |
+| 行宽（`pg_column_size`） | **154 B** | 235 B |
+
+⇒ ⇒ ★★★★ **⇒ 订正 §143.41 的推理（结论不变，理由变了）**：
+§143.41 看到「同一 `(snapshot_ts, credential_id, raw_model_name)` 下 `''` 与 `'default'` 两行
+的 `generation` 差 88.3%、`updated_at_ms` 差 100%、`available` 差 45.6%、`health_status` 差 33.5%」
+⇒ 推断「那是**两个不同的观测** ⇒ 归一化会丢观测 ⇒ 不可做」。
+
+★ **实测推翻这个推理**：空标签那一侧的 `updated_at_ms` **恒为 0**、`generation` **恒为 1**、
+`lat_p50_ms`/`samples_1m` **恒为 0**、`payload` **恒为 NULL**
+⇒ ⇒ **它不是「另一个观测」，它是「**没有观测**」** ⇒ ⇒ **差异的成因不是「两次采样不同」，
+而是「一侧是个退化空壳」** ⇒ ⇒ **归一化/删除它**不丢任何观测。
+
+⇒ ★★ **⇒ 通用式**：★ **「A 与 B 的载荷不同」这个观测，在下结论前必须先问
+「**B 是不是根本没载荷**」** ⇒ ★ **「差 100%」既可能是「两个真值不同」，
+也可能是「一边全是常数」** ⇒ ★ **判据：看极差（`min`/`max`）与零值占比，不要只看「差多少」**。
+
+#### §143.42.2 ★★★★ 根因：**`MigrateFpSlotsNodeStates` 播下的退化种子，只写不读**
+
+**证据链（仓内源码 + 生产实测双侧）**：
+
+| # | 事实 | 依据 |
+|---|---|---|
+| 1 | 空标签行的种子特征 = `generation=1` / `updated_at_ms=0` / `source_priority=10` / `success_count` 来自 legacy fp 状态 | 生产实测（§143.42.1 表） |
+| 2 | `MigrateFpSlotsNodeStates` 播的字段**逐字吻合**：`generation="1"`、`updated_at_ms="0"`、`source_priority="10"`、`success_count`/`failure_count`/`disable_count`/`available`/`disabled` | `domains/ursm/v2/cache/migrate_fpslots.go:96-113` |
+| 3 | 它播到的键**租户为空** ⇒ legacy 无租户文法 `ursm:v2:node:<cid>:<model>` | `migrate_fpslots.go:88`：`store.NodeKeyForTenant(fpSlotsTargetPrefix, "", st.CredentialID, st.Model)` |
+| 4 | ★ **`NodeKeyForTenant(prefix, "", …)` 在全仓非测试代码里只有这一个调用点** | `grep -rn "NodeKeyForTenant(" --include=*.go`（排除 `_test.go` 与 store 定义）⇒ 其余 12 处调用全部传真实租户 |
+| 5 | ★ **没有任何读路径会用空租户构造 node 键**（`probe.go` / `admin.go` / `pipeline.go` / `probe_evidence.go` / `warmup.go` / `bootstrap.go` / `config_sync.go` 的租户都来自请求、DB 行或 seed） | 同上 + 逐个读 `domains/ursm/v2/` |
+| 6 | 写入侧扫描 `ursm:v2:node:*` **全量** ⇒ 这批键必然被扫到、必然落库 | `domains/ursm/v2/persist/writer.go:258` |
+| 7 | ★ **每次网关启动都会重播一次** | `cmd/gateway/main.go:1309` → `ursmcache.MigrateFpSlotsNodeStates(ctx, ursmV2Redis)` |
+| 8 | legacy 源 `llmgw:cred_fp_node:*` **仍是活跃运行时**（`credentialfpslot` 在写、`domains/streaming/executors/responses_durable_verdict.go` 在读 capabilities）⇒ 种子源不是死代码 | `credentialfpslot/node_state.go:274` / `responses_durable_verdict.go:5` |
+
+⇒ ⇒ ★★★★★ **⇒ 结论**：
+**空标签快照行 = 「一次性迁移种子的远古状态」被每分钟重播一次** ⇒
+**它只写不读 ⇒ 25.2% 的快照行是纯浪费** ⇒ ⇒ **写路径没有任何消费者**。
+
+**覆盖度核对（是否丢观测）**（2026-10-20 分区）：
+`(credential_id, raw_model_name)` 对：空标签 **413** 个 / `default` **1,518** 个 /
+**交集 396** / **空标签独有 17**（4.1%）；
+凭据级：空标签 **50** / `default` **62** / 交集 **49**。
+⇒ ⇒ ★ **被「空壳」覆盖的 396 对，其 `default` 侧是有真实载荷的**；
+⇒ ⇒ ★ **那 17 个「空壳独有」的对** ⇒ **它们在 `default` 侧根本没有对应行**
+⇒ ⇒ ★★ **所以「删掉空标签行」会丢掉 17 对（4.1%）的（凭据,模型）覆盖**
+⇒ ⇒ ★★ **但那些行本来就没有观测**（`updated_at_ms ≡ 0`）⇒ ⇒ **丢的是「空壳覆盖」，不是观测**
+⇒ ⇒ ★★★ **⇒ 修法必须是【源头治理】（让这批键不再进快照），不是【读侧归一化】**。
+
+**存储影响（2026-10-20 分区）**：堆字节 137,948,064（空标签） vs 652,874,833（`default`）
+⇒ **堆占比 17.4%**；但**索引条目按行数计** ⇒ 索引占比 **24.4%**
+⇒ 活分区族（10-14~10-21）**索引占 2,344 MB / 9,063 MB = 25.9%**
+⇒ ⇒ ★ **删掉这 25.2% 的行 ⇒ 堆省 ≈17.4% + 索引省 ≈25.2% ⇒ 快照族（≈9.7 GB 活分区）
+约可回收 1.7 GB，同时省掉约 90 万次/天 的 INSERT。**
+
+**修法选项（★ 全部待属主拍板，本轮对生产的写入仍为 0）**：
+
+| 选项 | 动作 | 收益 | 风险 |
+|---|---|---|---|
+| **A（推荐，零迁移）** | **在 persist writer 里跳过「解析出的租户为空」的 node 键**（并 WARN 计数） | 立即止血 25.2% 的行 | ⚠ **必须先确认「无租户部署」不是合法形态**：本仓所有读路径都带租户 ⇒ 生产上不成立；但 legacy 部署需豁免开关 |
+| **B（零迁移，需一次 Redis 写）** | 删除 Redis 里那批 untagged 键，并让 `MigrateFpSlotsNodeStates` **不再重播**（`main.go:1309`） | 同 A | ⚠ 是**生产写**；⚠ 若 legacy 源键还在 ⇒ 会被重播回来（必须同时改播种逻辑） |
+| **C（一次迁移）** | 把 `snapshot_ts` 归一化到分钟桶 | 只解决 §143.41 的因子 C（1.25×） | ★ **不解决本节的 25.2%**（键集合仍不同）⇒ **不要与本节混淆** |
+| **D（语义决策）** | 模型维度降采样（29.6×） | 最大头 | 需产品语义拍板 |
+
+⇒ ⇒ ★★ **⇒ §143.41 的「P2 第一步」应当改写**：
+**不是「部署 §61 守卫 + 停陈旧槽位」（那是因子 A 的 2.000），而是「先处理这 25.2% 的空壳行」（因子 B 的 1.251）**
+⇒ ⇒ ★★ **两者可叠加**：因子 A（跨网关双写）解决后 12 GB ⇒ ≈6 GB；
+**再解决因子 B ⇒ ≈4.4 GB**（本节这 25.2% 是在因子 A 之后的占比，需重新实测）。
+
+#### §143.42.3 ★★★★ 「可回收对象」清单的假读数：三条量具纪律
+
+**§143.40 的 P0 清单为什么错**（订正横幅二十一已给逐条复核表；R79 轮另有「订正横幅二十」）⇒ 这里只沉淀**三条量具纪律**：
+
+1. ★★★★ **判「某表是空的」必须用 `EXISTS(SELECT 1 FROM t LIMIT 1)`（O(1) 且精确）
+   或精确 `count(*)`；**禁用 `pg_stat_user_tables.n_live_tup`**。**
+   ⇒ ★ 它对「长期无写入 + 从未 analyze」的表**恒为 0** ⇒ **它是「假空」的产生器**。
+   ⇒ ★ 252 上 n_live_tup = 0 的 20 个对象里 **17 个实际有行**。
+   ⇒ ★ **「0 行的第一嫌疑也是量具坏了」——上一轮只知道「0 命中的第一嫌疑是量具坏了」，
+   现在补上「**0 行**」这一侧。**
+2. ★★★★ **判「孤儿分区」必须用 `pg_class.relispartition`；**
+   **「`pg_inherits` 里没有父」对普通表恒真 ⇒ 不是孤儿证据。**
+   ⇒ ★ 252 上 `relispartition = true` 且无父的对象 = **0 个** ⇒ §143.40 的 4 个「orphan」
+   **全是普通表** ⇒ ⇒ 「不在父表下 ⇒ 任何读面都碰不到」是**空命题**。
+3. ★★★ **判「回收了多少字节」看磁盘，不看 catalog 汇总。**
+   ⇒ ★ `TRUNCATE` 后 `pg_relation_size()` 仍可能报告旧 TOAST 文件的大小
+   ⇒ ★ **回收手段的正确选择要靠本地实测**（§143.42.4）。
+
+#### §143.42.4 ★★★★ 回收手段的本地真库实测（一次性库 `itgate_14342`，退出即 DROP）
+
+**复刻生产形态**：宽 `text` 列（TOAST 外置）→ 灌 60,000 行 → `DELETE` 全删 → `VACUUM`
+⇒ 得到「0 行但仍占盘」的形态，再逐手段量：
+
+| 步骤 | 库目录 `du` | `pg_total_relation_size` | 结论 |
+|---|---|---|---|
+| 灌数据后 | — | 6,463,488 | 基线 |
+| `DELETE` + `VACUUM`（生产同形态） | 8,968 KB | 1,384,448 | **0 行但仍占 1.35 MB** |
+| **`TRUNCATE`** | **7,632 KB** | **16,384** | **回收 1,336 KB** |
+| `TRUNCATE` + `VACUUM` | 7,632 KB | 16,384 | 不再额外回收 |
+| `VACUUM FULL` | 7,632 KB | 16,384 | 同上 |
+
+⇒ ⇒ ★★★ **⇒ 生产配方 = 单条 `VACUUM FULL public._request_logs_bodies_hot;`
+（以及 `public._request_logs_hot;`）**：
+· 0 行 ⇒ **零数据损失**；
+· 表名/结构不变 ⇒ **被 6+1 个 public 函数体引用依然有效** ⇒ **零 schema 破坏、零迁移、零代码改动**；
+· `VACUUM FULL` 重写 heap + 全部索引 + TOAST ⇒ **回收那 291 MB 里的大头（229 MB 在 TOAST 索引）**；
+· 代价：`ACCESS EXCLUSIVE` 锁（0 行表 ⇒ 瞬时）。
+
+⇒ ★★ **⇒ 修正后的 P0 回收包（待授权执行）**：
+
+| 对象 | 大小 | 手段 | 依据 |
+|---|---|---|---|
+| `_request_logs_bodies_hot` | **291 MB** | `VACUUM FULL` | 0 行；堆已 0 bytes；229 MB 在 TOAST 索引、55 MB 在 TOAST 表；**不可 DROP**（被 `promote_request_logs_bodies_hot_to_partition` 引用） |
+| `_request_logs_hot` | **59 MB** | `VACUUM FULL` | 0 行；**不可 DROP**（被 6 个 public 函数体引用） |
+| **合计** | **350 MB** | | ⇒ **零语义风险 + 零 schema 破坏** |
+
+⇒ ★★ **⇒ 与仓内既有闸的关系**：`scripts/ursmcheck/emergency_cleanup_l1_drop_guard_test.go`
+早就记录了「252 实测形态：`public._request_logs_bodies_hot` 0 行 / 291 MB ⇒ 前三道闸全过，
+**但它被 7 个 public 函数体按名字引用**」⇒ ⇒ **仓内的 L1 DROP 闸本来就会挡住它**
+⇒ ⇒ ★★★ **⇒ §143.40 的清单会让属主绕过仓内既有的安全闸** ⇒ ⇒ **这是「量具坏了」的代价**。
+
+#### §143.42.5 ★ 仓内交付物与门
+
+| 交付物 | 作用 |
+|---|---|
+| `scripts/audit/verify_reclaim_candidates.sql` | **只读**判定脚本（事实层）：`EXISTS` 判空 / `relispartition` 判孤儿 / `relpartbound` 判 DEFAULT / `pg_proc.prosrc` 判函数引用 |
+| `scripts/audit/reclaim_candidates.tsv` | **机器可读**登记册（20 行，逐行带实测事实 + verdict）⇒ 清单不再是散文 |
+| `admin/reclaim_verdict.go` | **判定层**（纯函数、零 IO）：决策表 + 三条量具纪律 |
+| `admin/section_14342_reclaim_measurement_test.go` | 门：① 决策表逐条自测 ② **量具纪律静态断言**（脚本必须用 `EXISTS`/`relispartition`、**不得**出现 `n_live_tup`、只读）③ **登记表逐行重算**（登记册不可能自说自话）+ 绝对条数/绝对字节数钉住 + 被撤回对象必须仍在表里且不可回收 |
+| `scripts/mutate-14342-reclaim-gate.py` | 变异（隔离副本）⇒ M1~M7 全红 |
+
+⇒ ★ **判据纪律的落点**：★ **「判据一旦能在注释里被满足就不是判据」**
+⇒ ⇒ 门对脚本文本的断言**先剥注释**（自写状态机：处理 `'…'`（含 `''`/`\'`）、`$tag$`、
+`--`、`/* */`（可嵌套））⇒ ⇒ ★ **「脚本头里写着『禁用 n_live_tup』」不会把断言喂饱**。
+
+
+### §143.43 ★★★★ 快照族留存形态复核 —— **推翻我上一轮的三处判词**（两实例实测 + 生产日志闭环）
+
+> 🚨🚨🚨 **订正横幅二十二（§143.43）** —— 本节**推翻我自己在 §143.43-A/B/C 的三处判词**。
+> 原判词**逐字保留**在 §143.43.1 供对照。
+>
+> ① 原判词：「快照族的保留机制 = **行级 DELETE ⇒ 分区文件永不收缩 ⇒ 占用 O(总天数) 而非 O(保留天数)**」
+>    ⇒ **已被推翻**：生产实际走的是 **DROP 型留存**（`mode=partition-drop`），
+>    分区文件**整个被 DROP**、空间**真归还文件系统** ⇒ 占用是 **O(保留天数 = 7 天)**。
+> ② 原判词：「需要**新造**一个按日分区 DROP helper（仓内没有）」⇒ **已被推翻**：
+>    仓内**早就有**（`domains/ursm/v2/persist/retention_partition.go`，2026-10-04 落地），
+>    且**已在生产跑通**（2026-10-21T00:01 回收 293,322,752 B）。
+> ③ 原判词：「`drop_old_state_partition_table` 只枚举月度 ⇒ 快照族一个分区也掉不了
+>    ⇒ 缺的是『按日 helper + 注册表一行』」⇒ **已被推翻**：快照族**根本不归那个 helper 管**
+>    （它管 `routing_decision_log` 等 7 个月度族），它由 **URSM 留存器独立负责** ⇒
+>    我把**两个不相干的机制接在了一起**。
+>
+> ⚠ **教训（已写进 LESSONS）**：★ **「源里没有」不等于「仓里没有」** ——
+>   我只 grep 了 `bg/partition_manager.go` 与 SQL 迁移目录，**没 grep `domains/ursm/v2/persist/`**
+>   ⇒ ⇒ **同一段逻辑藏在另一个包里 ⇒ 「需要新造」的结论整体作废**。
+> ⇒ ⇒ **推论一律来自「读过的代码」**；没读过的机制**不得**作为「缺失」的证据。
+>
+> ⇒ **本节对生产的写入 = 0**（全部只读：两实例查询 + 两台网关的日志读取）。
+
+> 🚨🚨🚨 **订正横幅二十三（§143.45 追加 · 订正 §143.43 的三处「现状」）** ——
+> 本横幅**不推翻** §143.43 的方法与量具，只更新它的**现状**；被更新的判词**原文保留**在
+> §143.43 与 §143.43.1 供对照。
+>
+> ① §143.43 的中心结论「**两实例形态分叉**（252 = 分区父表 / 211 = 普通 heap）」⇒ **已闭合**：
+>    §143.44 把 211 也分区化了（830 列驱动 + 历史搬运 6,065,757 行）⇒
+>    两实例现已**同款**（都是 `relkind='p'`，都走 `mode=partition-drop`）
+>    ⇒ 登记册里 211 快照族那一行**已改写**（`r` / 2,411,266,048 B ⇒ `p` / 2,029,412,736 B）。
+> ② §143.43 的结论「`usage_facts` 是两实例上**唯一**没有任何留存的族」⇒ **分两侧看**：
+>    **仓内已闭合**（§143.44 加了 `lifecycle.usage_facts_ttl_days` = 365 + 按日 DROP helper），
+>    **生产未闭合**（两项代码改动**尚未部署** ⇒ 两实例 `settings_kv` 里仍无该键）
+>    ⇒ ⇒ 登记册的 `ttl_registered` 仍是 `no`、`verdict` 仍是 `GAP_NO_RETENTION`、
+>    `method` 改为 `TTL_DECIDED_PENDING_DEPLOY`（能区分「已拍板待部署」与「还没拍板」）。
+> ③ §143.43 登记册钉住的**绝对字节数**已被 §143.44 的生产写入改变
+>    （211 VACUUM FULL −509,108,224 B + 分区化；252 VACUUM FULL + DROP 10 个空日分区 −119,685,120 B）
+>    ⇒ ⇒ 登记册**整体刷新**到 post-§143.44 的生产事实（§143.45.2），行数 9 ⇒ **10**
+>    （新增 211 的 `ursm_node_snapshot_min_legacy` 回滚锚点行）。
+> ④ ★ **缺口打桩的形状变了**：§143.43 那根钉是**单向**的
+>    （「`usage_facts` 必须**不**在 `stateTableTTLSpecs()` 里」），
+>    而 §143.44 正是**为了填这个缺口**才加的登记 ⇒ ⇒ **提交即自红**（本轮实测：`admin` 包红）。
+>    ⇒ 已在 §143.45.3 把它翻成**双向钉**：
+>    **仓内那侧**（必须已登记：parent/setting/fallback/partitionUnit 四个值都对）
+>    + **生产那侧**（登记册必须**如实**说还没闭合：`ttl_registered=no` + `GAP_NO_RETENTION`
+>    + `method=TTL_DECIDED_PENDING_DEPLOY`）⇒ ★ **仓内闭合 ≠ 生产闭合**，两者必须分开记账。
+>
+> ⚠ **诚实边界**：§143.43 的**量具**（`relkind` 自答形态、双模留存、绝对字节钉住、
+> 决策表重算）**一条都没变**，也仍然有效；被更新的只有「读数指向哪个世界」。
+>
+#### §143.43.1 上一轮的三处判词（**逐字保留**，供对照）
+
+> 以下三句是我在 §143.43-A/B/C（**本节之前、本轮之内**）写下的判词。**原文保留**，
+> 以便读者看清「改了什么、为什么改」—— 本轮的订正不是偷偷改口，是**被证据推翻**。
+
+1. 「快照族保留机制 = **行级 DELETE ⇒ 分区文件永不收缩 ⇒ 占用 O(总天数) 而非 O(保留天数)**」
+2. 「修法所需分件已定位：`drop_old_state_partition_table` 只枚举 `^<parent>_\d{4}_\d{2}$`（月度）
+   ⇒ **生产实测命中 0 个** ⇒ **即使加登记行，一个分区也掉不了** ⇒ 修法必须两块
+   （按日 helper + 登记行）」
+3. 「分区 DROP 方案 ⇒ **7 天封顶 ≈6.6 GB**；行级保留 ⇒ **30 天 ≈27 GB / 90 天 ≈81 GB**」
+
+#### §143.43.2 ★★★★ 真相：留存是**双模**的，形态由**数据库自己**回答
+
+`domains/ursm/v2/persist/retention_partition.go`（2026-10-04 落地，设计稿
+`2026-10-04-ursm-snapshot-partitioning-design.md` §4.2）每轮探测 `pg_class.relkind`：
+
+| 形态 | 留存路径 | 空间语义 | 证据字符串 |
+|---|---|---|---|
+| `relkind='p'`（分区父表） | **逐分区 DROP**（独立事务 + `pg_try_advisory_xact_lock` 跨实例互斥 + `lock_timeout=5min`） | 空间**真归还**文件系统 | `mode=partition-drop` |
+| `relkind='r'`（普通 heap） | **行级 DELETE**（pkey 游标分批、每批独立事务、10 min 墙钟上限） | 行数被窗口限定，但**空间不归还**（死元组 + 索引膨胀留在文件里） | `mode=row-delete` |
+
+★ **它不读任何配置开关** ⇒ 「先部署代码、后执行迁移」不需要协调，也不存在
+「开关忘了翻、于是 DROP 打到了非分区表」的状态 ⇒ **形态由数据库回答**。
+
+#### §143.43.3 ★★★★★ 两实例实测（**形态分叉的完整证据链**）
+
+**形态与占用（只读）**：
+
+| 实例 | `relkind` | 行数 | 总字节 | 留存路径 | 关键读数 |
+|---|---|---|---|---|---|
+| **252** | `p` | 28,969,382 | **10,033,619,520 B（9.35 GiB）** | `mode=partition-drop` | 8 个日分区 `20261014`..`20261021`（9,139,774,016 B）+ `ursm_node_snapshot_min_legacy` 852 MB（回滚锚点） |
+| **211** | `r` | 6,042,257 | **2,411,266,048 B（2.25 GiB）** | `mode=row-delete` | heap 1,764,524,032 + index 646,225,920；**死元组 942,614（13.56%）**；活元组字节 1,396,684,247 ⇒ 堆内可回收 ≈ **367,839,785 B** |
+
+**生产日志（两台网关，只读）**：
+
+```
+154/252（/opt/llm-gateway-go/logs/gateway-canary-8782.log）
+{"time":"2026-10-21T00:01:21.156537233+08:00","level":"INFO",
+ "msg":"ursm.v2: snapshot retention dropped expired partitions",
+ "mode":"partition-drop","partitions_dropped":1,"bytes_reclaimed":293322752,"retention":"168h0m0s"}
+⇒ ★★★ **DROP 型留存在生产真的跑过，并回收了 280 MB**（此前 23 次 "nothing reclaimed" 是因为
+   快照族当时**只有 7 天历史**，还没到第一个分区过期的时刻）
+
+211（docker logs llm-gateway-211-b）
+2026/10/20 16:29:31 INFO ursm.v2: snapshot retention removed expired snapshots mode=row-delete deleted=38130 retention=168h0m0s
+⇒ ★★★ **行级 DELETE 也在工作**（每小时删 3.8~4.0 万行）
+```
+
+**⇒ 三条独立证据（分区清单 / 日志 mode / 超期行 = 0）互相闭合**：
+
+| 断言 | 252 | 211 |
+|---|---|---|
+| 超期 7 天的行数 | **0** | **0** |
+| 占用形态 | O(保留天数) | O(7 天高水位) + bloat |
+| 空间是否归还 FS | **是**（DROP） | **否**（DELETE 后死元组/索引膨胀留存） |
+| 最早分区是否已被回收 | **是**（`20261014` 之前的分区已不在清单里，与 00:01 那次 DROP 吻合） | 不适用（非分区） |
+
+⇒ ⇒ ★★★ **「O(总天数) / 无限增长」这个判词对两个实例都不成立**：
+252 是 O(7 天)，211 是 O(7 天高水位)。**真正的差异不是「会不会涨」，而是「涨的空间还不还」。**
+
+#### §143.43.4 ★★★★ 订正后的**真实缺口**（三条，按可动手程度排序）
+
+| # | 缺口 | 性质 | 量化 | 修法 | 授权需求 |
+|---|---|---|---|---|---|
+| **A** | **211 的快照族是非分区形态** ⇒ 走 `mode=row-delete` ⇒ 空间不归还 | 实例形态差异 | 堆内可回收 **367,839,785 B**（≈351 MiB）；死元组 13.56% | 立即：`VACUUM FULL public.ursm_node_snapshot_min`（保名保结构；`ACCESS EXCLUSIVE` 锁，需低峰窗口）<br>长期：跑 **830 手工迁移**分区化 ⇒ 此后与 252 同款 | 生产写（`VACUUM FULL`）+ 迁移窗口（830） |
+| **B** | **新装库与 211 永远拿不到分区形态** ⇒ 每个新环境都会重现 A | **结构性**（机制缺口） | 830 是 **manual-by-design**：`.sql.skip`，**既未注册进 installer 的 `StartupFiles`，也未进 `embeddedSQLFiles`** ⇒ 自动序列永不应用它 | 三个可选：① 维持现状（每个新环境手工跑 830）② 新增一条**只对空表生效**的启动迁移（安装期表为空 ⇒ 转换廉价）③ 让 installer 支持「manual-by-design 豁免」并把 830 挂进人工确认点 | **属主决策**（改新装库形态 = 改 schema 形态语义） |
+| **C** | **`usage_facts` 族在两实例上都没有任何留存** | **唯一真正的无界增长** | 252：275,828 行 / 10-06..10-21（15 天）⇒ **≈1.5 MB/天**（年 ≈550 MB）；211：88,689 行 ⇒ ≈0.9 MB/天。<br>**值无关判据**：两实例 `settings_kv` 里 11 个 `lifecycle.*_ttl_days` 键**完全一致**，其中**没有** `usage_facts` ⇒ 无 TTL、无 worker、无 DROP 登记 | 给该族加 TTL 登记 + 按日 DROP 登记（机制现成：`stateTableTTLSpecs()` + `drop_old_state_partition_table` 的按日扩展） | **TTL 天数是计费语义 ⇒ 属主拍板**（账期/审计窗口） |
+
+★ **C 的即时可回收项（与 TTL 决策无关，0 行 ⇒ 零语义风险）**：
+
+| 实例 | 对象 | 读数 | 手段 | 量 |
+|---|---|---|---|---|
+| 252 | `usage_facts_default` | heap **0 B** + index **83,476,480 B**，**0 行** | `REINDEX`（只动索引，最省）/ `VACUUM FULL` | **≈80 MB** |
+| 252 | `usage_facts_20260926`..`20261005`（10 个空日分区） | 0 行，仅索引 36,052,992 B | `DROP` 空日分区 | **≈34 MiB** |
+| 211 | `usage_facts_20261011`（空日分区） | 0 行，65,536 B | `DROP` 空日分区 | 64 KiB |
+
+⇒ ★★★ **② 的 80 MB 不是「分区大」，是**默认分区**曾经收过行、索引页永不回收**
+⇒ ⇒ 与 §143.42 的 `_request_logs_bodies_hot`（229 MB 在 TOAST 索引）**同族**：
+**「0 行 + 大占用」几乎总是索引/TOAST 膨胀，不是堆膨胀** ⇒ ⇒ **回收手段是 `REINDEX`/`VACUUM FULL`，
+不是 `DELETE`（更不是 `DROP` 整表）**。
+
+#### §143.43.5 ★ 仓内交付物与门
+
+| 交付物 | 作用 |
+|---|---|
+| `scripts/audit/verify_snapshot_retention_shape.sql` | **只读**判定脚本（两实例通用、已在 211 与 252 实跑通过）：A 形态（`relkind` ⇒ 哪条留存路径）B 分区清单 + `day_end` + `expired_at_7d` C 超期行数 D 死元组与可回收估算 E `usage_facts` 分区 + DEFAULT 膨胀 F 数据跨度与日均增长 G **值无关**的 TTL 键存在性 H 判读要点 |
+| `scripts/audit/retention_shape_findings.tsv` | **机器可读**登记册（9 行：两实例 × {快照族, 快照锚点, usage_facts 族, usage_facts 对象} + 机制缺口）⇒ 结论不再是散文 |
+| `admin/retention_shape_verdict.go` | **判定层**（纯函数、零 IO）：决策表 `ClassifyRetentionShape`，含**回滚锚点优先于「0 行 ⇒ 可回收」**这条语义分支 |
+| `admin/section_14343_retention_shape_test.go` | 门：① 决策表 8 例自测（**含 0 行锚点仍不可回收**的承重例）② 登记册**逐行重算** + 绝对条数 9 + 绝对字节钉住 + 两实例形态分叉必须在册 + 缺口必须两实例都在册 ③ **缺口打桩**（`usage_facts` 一旦被加进 `stateTableTTLSpecs()` ⇒ 门红，强制同步证据链；判据用 **go/ast**，不被注释喂饱）④ **证据字符串钉住**（`mode=partition-drop` / `mode=row-delete` / `relkind = 'p'` / 横幅编号 / 被推翻的原判词逐字保留）⑤ **陈旧引用**（`bg/partition_825_contract_test.go` → `bg/partition_830_contract_test.go`） |
+| `scripts/mutate-14343-retention-shape-gate.py` | 变异（隔离副本）⇒ M1~M6 全红 |
+
+⇒ ★ **既有机制先复用再新造**：`bg/partition_830_contract_test.go` 早已 pin 住
+「830 不进自动启动序列」「分区名契约 ↔ 留存解析器」⇒ ⇒ **本门不重复造**，
+只补**本轮新增**的四件事（决策表 / 登记册重算 / 缺口打桩 / 证据字符串钉住）。
+
+#### §143.43.6 ★★ 诚实边界与本节**没做**的事
+
+- ⚠ **本节对生产的写入 = 0** ⇒ 缺口 A/C 的回收**全部待授权**。
+- ⚠ **「252 的 DROP 路径跑通」目前只有 1 次成功样本**（2026-10-21T00:01）⇒
+  **样本量 = 1** ⇒ 它证明「机制可用」，**不证明**「长期稳定」⇒
+  ⇒ ★ **观测点**：明日起每天核对「分区清单是否稳定在 8 个（7 天窗口 + 今天）」，
+  以及日志里 `partitions_dropped` 是否逐日递增。**若某天分区数 > 9 ⇒ DROP 路径没跑。**
+- ⚠ **211 的 `VACUUM FULL` 回收量是**估算**（367,839,785 B 来自「堆字节 − 活元组字节」）
+  ⇒ **实测值须以执行后的 `pg_total_relation_size` 为准**。
+- ⚠ **本节没有评估 `usage_facts` 的 TTL 取值** ⇒ 那是**计费语义**（账期/审计窗口）⇒ **属主拍板**。
+- ⚠ **本节没有触碰 `ursm_node_snapshot_min_legacy`**（852 MB）⇒ 它是 **830 的回滚锚点**
+  ⇒ 删它就断了 830 的唯一退路 ⇒ **不可回收**（§143.42 同一结论）。
+- ⚠ **本节没有评估 §143.42 的 25.2% 空壳行治理**（那才是快照族**真正的**存储优化点）
+  ⇒ ⇒ **本节是「机制复核」，不是「存储优化」**。
+
+### §143.44 ★★★★★ 830 列驱动化 —— **211 的 57 列差点让分区化直接打断写路径**（+ 252 授权回收落地）
+
+> ★★★ **本节是 §143.43 的续篇**：属主授权了四项（零语义风险回收包 / `usage_facts` TTL=365 /
+> 211 的 830 分区化 / 快照族 25.2% 空壳行选 A）。本节记录**已执行**部分与**执行前发现**的缺陷。
+>
+> ⚠ **本节对生产的写入**：252 = **114 MiB（已执行并验证）**；211 = **0（执行前发现的缺陷已修，窗口待定）**。
+
+#### §143.44.1 ★★★★★ 执行前的预检抓到：**同一迁移在两个实例上是两个不同版本**
+
+**211 预检**（`scripts/audit/verify_830_precheck_211.sql`，只读）：
+
+| 判据 | 实测 | 含义 |
+|---|---|---|
+| 830 三条前置守卫 | 全 `t` | 未执行过，可执行 |
+| 旧表形态 | `relkind='r'`、5,933,664 行、**2,411,405,312 B** | 普通表 ⇒ 走行级 DELETE |
+| **列数** | **57 列** | ★★ **830 硬编码的是 56 列**（252 当时的列集） |
+| 主键 | `(snapshot_ts, tenant_id, credential_id, raw_model_name)` ✔ | arbiter 无虞 |
+| 第 57 列 | **`empty_response_rate_5m real`** | 后续迁移补的，**writer 的 INSERT 确实写它** |
+
+⇒ ⇒ ★★★★★ **「830 原样在 211 上执行」会直接打断写路径**：
+
+```
+新父表没有 empty_response_rate_5m
+⇒ writer 的 INSERT 报 42703 column "empty_response_rate_5m" does not exist
+⇒ 而 boot 不失败、迁移 RC=0、日志无任何异常 ⇒ 静默 + 致命
+```
+
+⇒ ⇒ ★★ 这就是「**同一迁移在两个实例上是两个不同版本**」的典型形态
+（与 §143.42 的「不能直接登记旧文件」同族）⇒ ⇒ **凡是要在多实例上跑的迁移，
+它的正确性必须由「列集/形态」这类**结构属性**来保证，而不是由一份人肉维护的清单**。
+
+#### §143.44.2 ★★★★★ 修法：830 改为**列驱动**（`LIKE`），把「列集一致」变成结构属性
+
+```sql
+-- 改前：硬编码 56 列（252 当时的列集）
+CREATE TABLE public.ursm_node_snapshot_min (
+    snapshot_ts timestamp with time zone NOT NULL,
+    recovery_epoch bigint NOT NULL,
+    ... 56 列逐字列出 ...
+) PARTITION BY RANGE (snapshot_ts);
+
+-- 改后：列集跟着源表走
+CREATE TABLE public.ursm_node_snapshot_min (
+    LIKE public.ursm_node_snapshot_min_legacy
+        INCLUDING DEFAULTS INCLUDING GENERATED INCLUDING IDENTITY
+        INCLUDING STORAGE INCLUDING COMMENTS
+) PARTITION BY RANGE (snapshot_ts);
+```
+
+★ **刻意不选的选项**：`INCLUDING INDEXES`（会复制旧表 PK 索引名 ⇒ 1c 建同名 PK 撞名）、
+`INCLUDING CONSTRAINTS`（复制 CHECK；旧表实测无 CHECK）；**`INCLUDING DEFAULTS` 必须有**
+（`tenant_id DEFAULT ''` 是硬约束）；`NOT NULL` 由 `LIKE` **总是**复制。
+
+⇒ ★★ **对 252 行为完全不变**（LIKE 出来仍是那 56 列、同一顺序、同一 DEFAULT/NOT NULL）。
+
+#### §143.44.3 ★★★★★ 本地真库 A/B 验证（**用 211 的真实 57 列做夹具**）
+
+一次性库 `itgate_14344`（本地 PG 17.10），夹具 = 211 实测列集（57 列）+ writer 的真实 48 列 INSERT：
+
+| 断言 | 实测 |
+|---|---|
+| 新父表形态 | `relkind='p'` ✔ |
+| **新父表列数 == 旧表列数** | **57 == 57** ✔ |
+| `empty_response_rate_5m` 在位 | ✔ |
+| 主键 | 四列、顺序不变 ✔ |
+| 日分区 | 3 个，边界 **`+08`** ✔ |
+| legacy 保留 | ✔（1 行） |
+| **writer 的 48 列 INSERT** | **INSERT 0 1** ✔ |
+| 写入落点 | `ursm_node_snapshot_min_20261021`（**日分区，非 default**）✔ |
+
+⇒ ⇒ ★★★ **⇒ 改后的 830 在 211 的真实列形态下安全可用**（A/B 到判定层，不是推理）。
+
+#### §143.44.4 ★★ 门：既有断言「56 列」是**实现细节**，必须改成**性质**
+
+| 门 | 改动 |
+|---|---|
+| `bg/ursm_830_realdb_test.go` | 「56 列且无 ts 单列索引」⇒ **「列集与旧表一致（逐列名对照）+ 无 ts 单列索引」** |
+| 同文件的 `makePreMigrationTable` 夹具 | 原注释「列不需要与生产一致：830 不读旧表结构，只 RENAME」**在列驱动后不成立** ⇒ 夹具改为带齐 writer 会写的列（否则实测 42703 红） |
+| `bg/section_14344_830_column_completeness_test.go`（新） | ① **静态**：830 必须用 `LIKE` 建父表、不得再出现硬编码列定义、`INCLUDING INDEXES/CONSTRAINTS` 必须缺席、`INCLUDING DEFAULTS` 必须在场<br>② **真库性质**：夹具**故意多带一列** ⇒ 新父表必须**多出同一列**（只比数量不够：可能多一列少一列而总数相同） |
+
+⇒ ★★ **★ 本门第一版被自己的注释喂饱**（用 `strings.Contains(整文件, "INCLUDING INDEXES")` 判禁令，
+而 830 的注释里正写着「· 不写 INCLUDING INDEXES」）⇒ **门恒绿、毫无意义**
+⇒ ⇒ 改成**只对 CREATE TABLE 语句本身**断言（`extractCreateParentStmt`）
+⇒ ⇒ **这是本仓 LESSONS「判据一旦能在注释里被满足就不是判据」的又一次现场复现**。
+
+#### §143.44.5 ★★★ 252 授权回收：**已执行并验证**
+
+授权：属主答「三项全部授权（252 两项立即执行，211 那项先确认低峰时段）」。
+执行通道：`~/.mavis-tools/lgwp-prod-write.sh`（与只读护栏 `lgwp-prod.sh` 配套；
+**必须显式 `LGWP_PROD_WRITE=1`**，且会把 SQL 全文打进 stdout 供审计）。
+
+**执行前预检（只读）**：10 个待删日分区逐个 `EXISTS (SELECT 1 … LIMIT 1)` = **f**（真空）、
+合计 **36,249,600 B**（**纯索引**，堆 0 B）；`usage_facts` 数据最早 `2026-10-06 02:24:36` ⇒ 分区区间本就没有数据。
+
+**执行**：
+
+```sql
+VACUUM FULL public.usage_facts_default;
+DROP TABLE public.usage_facts_20260926, …, public.usage_facts_20261005;  -- 10 个空日分区
+```
+
+**执行后验证（只读）**：
+
+| 指标 | 执行前 | 执行后 | 变化 |
+|---|---|---|---|
+| `pg_database_size` | 33,681,446,579 B | **33,561,761,459 B** | **−119,685,120 B（114 MiB）** |
+| `usage_facts_default` | 83,492,864 B | **57,344 B** | −83,435,520 B（≈79.6 MiB，收到空索引最小尺寸） |
+| `usage_facts` 分区数 | 27 | **17** | −10 |
+| `usage_facts` 行数 | 275,930 | **275,930** | **未损** |
+| 最新一条事实 | — | `2026-10-21 03:43:12` | **写入路径正常** |
+
+⇒ ★★ **`usage_facts_default` 的 80 MB 不是「分区大」，是纯索引膨胀**（heap 0 B + index 83,476,480 B）
+⇒ ⇒ 与 §143.42 的 `_request_logs_bodies_hot`（229 MB 在 TOAST 索引）**同族**
+⇒ ⇒ **回收手段是 `REINDEX`/`VACUUM FULL`，不是 DELETE、更不是 DROP 整表**
+⇒ ⇒ ★★ **本地真库实测**：分区上的 `VACUUM FULL` 合法（`VACUUM` ⇒ heap 8,192→0、idx 16,384→8,192）
+⇒ ⇒ ★★ **「0 行 + 大占用」几乎总是索引膨胀** ⇒ **判空必须 `EXISTS`，判占用必须拆 heap/index**。
+
+#### §143.44.6 ⚠ 211 的执行方案（**待属主确认时刻**）与一个**必须摊开说**的语义后果
+
+★ **830 不搬数据**（只 RENAME + 建空父表）⇒ 执行后：
+
+- 6,042,257 行历史 ⇒ 全部落进 `ursm_node_snapshot_min_legacy`（**回滚锚点，无任何读路径**）；
+- 新的分区父表**从零开始** ⇒ **活动表里读不到那 7 天历史**（数据没丢，但在没人读的那张表里）。
+
+⇒ ⇒ ★★★ **⇒ 推荐的执行形态 = 830 + 历史搬运**：
+① 跑 830（列驱动版）；② 为历史区间逐日 `ensure_ursm_node_snapshot_min_daily_partition(<日>)`；
+③ `INSERT INTO ursm_node_snapshot_min SELECT * FROM ursm_node_snapshot_min_legacy`
+⇒ ⇒ **活动表恢复完整 7 天历史，且这些历史分区会被 DROP 型留存按天自然回收**
+⇒ ⇒ **211 最终与 252 同款形态**（8 个日分区、7 天窗口）。
+⇒ ⚠ 代价：一次性多写 ≈6.04M 行（≈1.4 GB 数据 + 索引 + WAL）⇒ **需先量 211 的磁盘余量**。
+⇒ ⚠ 若**不**搬：执行更快，但活动表读不到历史 ⇒ 与「尽量不破坏现有系统运行情况」相悖 ⇒ **需属主明说**。
+
+#### §143.44.7 ★★ 本节诚实边界
+
+- ⚠ **211 的写入仍是 0**（830 的执行时刻待属主确认；VACUUM FULL 的低峰窗口待定）。
+- ⚠ **830 的列驱动化只在本轮验证了「211 的 57 列」这一种形态** ⇒ **任意列集都能过**是**结构性质**
+  （`LIKE` 语义），但**新装库**（基线 32 列 + 818 的 24 列）未在本节实跑 ⇒ 已登记为待验证。
+- ⚠ **`usage_facts` 的 TTL=365 与「25.2% 空壳行选 A」两项代码改动尚未落地**（下一节）。
+- ⚠ **本节没有评估 830 在 252 上「重跑」的后果** ⇒ 830 在 252 已执行过，其前置守卫会直接 RAISE
+  （`ursm_node_snapshot_min_legacy` 已存在）⇒ **幂等重放不安全，这是设计意图**。
+
+#### §143.44.8 ★★★★★ 211 的执行记录（**三阶段，逐项复核**）
+
+属主确认：形态 = **830 + 历史搬运**、VACUUM FULL = **同窗口**、时刻 = **立即**。
+
+**Phase 1 — `VACUUM FULL public.ursm_node_snapshot_min`**：
+
+| 指标 | 执行前 | 执行后 | 变化 |
+|---|---|---|---|
+| 总字节 | 2,411,470,848 | **1,902,362,624** | **−509,108,224 B（485.4 MiB）** |
+| 堆 | 1,764,524,032 | 1,460,953,088 | −303.6 MB |
+| 索引 | 646,430,720 | **441,401,344** | **−205.0 MB（索引也被重建！）** |
+| 行数 | 6,065,287 | 6,065,287 | **未损** |
+| 耗时 | — | **19.2 s** | 远低于 30~60 s 的估计 |
+
+⇒ ★★ **比估计多回收 134 MiB**：我估的是「堆内可回收 351 MiB」（= 堆字节 − 活元组字节），
+**漏了索引也会被重建收缩**（646 → 441 MB）⇒ ⇒ **「0 行/高占用」类对象的可回收量
+必须把索引算进去**（同 §143.44.5 的 DEFAULT 分区那条）。
+
+**Phase 2 — 830（列驱动版）**：**0.455 s**（RENAME + 建空父表 + 建 3 个日分区，无数据拷贝）✔
+
+**Phase 3 — 历史搬运**（逐日 ensure + 逐日 `INSERT … SELECT`，每条独立事务）：
+
+| 日（Shanghai） | 行数 | 耗时 |
+|---|---|---|
+| 2026-10-14 | 15,018 | 0.07 s |
+| 2026-10-15 | 956,997 | 5.91 s |
+| 2026-10-16 | 1,020,895 | 6.37 s |
+| 2026-10-17 | 1,156,556 | 7.05 s |
+| 2026-10-18 | 881,173 | 5.85 s |
+| 2026-10-19 | 977,066 | 6.15 s |
+| 2026-10-20 | 943,017 | 4.28 s |
+| 2026-10-21 | 115,035 | 0.67 s |
+| **合计** | **6,065,757** | **36.7 s** |
+
+**执行后复核（只读）**：
+
+| 判据 | 实测 |
+|---|---|
+| 父表形态 | `relkind='p'` ✔ |
+| 父表列数 == 旧表列数 | **57 == 57** ✔（逐列名 ordinal 对照：**0 处错位** ⇒ `SELECT *` 安全） |
+| 父表行数 | **6,066,697** = legacy 6,065,757 + 940 新写入 ✔ |
+| 分区 | 10 个日分区（10-14..10-23），边界 **`+08`** ✔ |
+| **写入落点** | **全部在日分区**（无 default）✔ |
+| 写入面健康 | `persist committed rows=470` **每 60 s 一次，迁移后仍在写**（20:05:30 UTC = 04:05:30 +08）✔ |
+| PK / ensure 函数 | 4 列 PK ✔ / `ensure_ursm_node_snapshot_min_daily_partition(date)` 在位 ✔ |
+| 库大小 | 8,010,970,803 B（7.64 GB）= 父表 ≈2.0 GB + **legacy 1.90 GB（回滚锚点，按设计保留）** |
+
+⇒ ⇒ ★★★ **⇒ 211 现在与 252 同款形态**（分区父表 + 按日分区 + DROP 型留存）。
+⇒ ⚠ **legacy 仍占 1.90 GB** ⇒ 830 的步骤 3 写着「**观察 ≥ 7 天后再 DROP 旧表（须人工单独跑）**」
+⇒ ⇒ ⇒ **本轮不删**（它是唯一退路）⇒ **登记为待办：7 天后评估 DROP `ursm_node_snapshot_min_legacy`**。
+
+#### §143.44.9 ★★★★ 选项 A 的**判据被实测推翻并订正**（「空租户」→「种子签名」）
+
+⚠ **属主授权的字面形式**是「persist writer 跳过『**租户为空**』的 node 键」⇒
+**实现它时，既有测试 `TestWriterSkipsRequestDedupMarkerKeys` 直接变红**
+（它断言一个空租户键**要**产出 1 行）⇒ ⇒ **按字面实现会误伤真实观测**。
+
+⇒ ⇒ ★★ 于是**去两实例实测**（而不是照着字面实现）：
+
+| 实例 | 租户分布 | `generation=1` | `updated_at_ms=0` | **种子签名**（两者同时） |
+|---|---|---|---|---|
+| **211**（分区化后全量 6,070,457 行） | **只有 `default`**，空租户行 = **0** | 1,166,352（19.2%） | **0** | **0** |
+| **252**（20261020 分区） | `default` 2,778,525 + **空租户 897,036** | default 971,587 / 空租户 **897,036（100%）** | default **0** / 空租户 **897,036（100%）** | default **0** / 空租户 **897,036（100%）** |
+
+⇒ ⇒ ★★★ **两个结论**：
+
+1. ★★ **211 根本没有「无信息行」**：它那 19.2% 的 `generation=1` 行 **updated_at_ms ≠ 0**
+   ⇒ ⇒ **种子早已被真实观测覆盖过** ⇒ ⇒ **它们携带观测，不是垃圾**
+   ⇒ ⇒ **「跳过空租户」在 211 上收益 = 0**，而「跳过空租户」在**无租户部署**形态下**会误伤真实观测**。
+2. ★★ **252 的空租户行 100% 命中「种子签名」**（`generation=1 ∧ updated_at_ms=0`，
+   且 `payload IS NULL`、`source_priority=10`）；而 `default` 组里 `updated_at_ms=0` 的行 = **0**
+   ⇒ ⇒ **这个签名精确命中退化行、对真实观测零命中**。
+
+⇒ ⇒ ⇒ **⇒ 判据改为「种子签名」**（`generation == 1 ∧ updated_at_ms == 0`）：
+252 命中 24~25%（要砍的那 25.2%）、211 命中 0（无收益也无损害）、**两实例真实观测零误伤**。
+⇒ ⇒ ★★ **⇒ 同时订正 §143.42 的一处措辞**：「快照族 25.2% 的行不携带任何观测信息」
+是 **252 特有**的读数，**不是两实例通用**（211 上那 19.2% 是「有观测的旧种子」）。
+
+#### §143.44.10 ★★ 两项代码改动的仓内落地（**尚未部署**）
+
+| 改动 | 文件 | 门 |
+|---|---|---|
+| **种子签名跳过**（选项 A，判据已按 §143.44.9 订正） | `domains/ursm/v2/persist/writer.go` | `domains/ursm/v2/persist/section_14344_seed_signature_skip_test.go`（4 条：种子行被跳 / **四类真实观测零误伤** / **两个条件缺一不可**） |
+| **`usage_facts` 留存登记（TTL=365）** | `bg/partition_manager.go` + `settings/spec_lifecycle.go` | `bg/section_14344_daily_partition_drop_test.go`（登记 + 行为 + 诚实计数） |
+| **按日分区 DROP**（新 helper `dropOldDailyStatePartitions`） | `bg/partition_manager.go` | 同上（pgxmock：过期被 DROP / 未过期不碰 / 对端已删⇒跳过不计数 / **无 `IF EXISTS`**） |
+| **830 列驱动** | `sql/migrations/startup/830_ursm_node_snapshot_min_partitioned.sql.skip` | `bg/section_14344_830_column_completeness_test.go` |
+| 变异 | — | `scripts/mutate-14344-retention-gate.py`（M1~M9，隔离副本） |
+
+★ **按日 DROP 的关键设计**：既有 SQL helper `drop_old_state_partition_table`
+只枚举**月度**分区（`^<parent>_\d{4}_\d{2}$`）⇒ **对 `usage_facts_20261021` 一个都不匹配**
+⇒ ⇒ 只加登记行 = **什么都没做** ⇒ ⇒ 必须另写按日 helper（`partitionUnit="day"` 分派）。
+★ 判据：① 整天已过去（分区右开边界 ≤ NOW() − days）② 只回收契约名 `^<parent>_\d{8}$`
+⇒ **不碰今天/未来 ⇒ 写入永不 23514**；**DROP 不带 `IF EXISTS`** ⇒ 对端已删 ⇒ 42P01 ⇒ 跳过不计数。
+
+#### §143.44.11 ⚠ 本节诚实边界（**部署尚未发生**）
+
+- ⚠ **上述两项代码改动已实现 + 有门 + 有变异，但【未部署】** ⇒ 生产行为**尚未**改变。
+- ⚠ **部署的前置依赖**（既有待拍板项，未动）：211 的迁移水位落后（需先补迁移再上新二进制）；
+  252 侧 154/245 的水位亦需核对 ⇒ ⇒ **本轮不做部署**（避免「先部署后迁移」把写路径打断）。
+- ⚠ **`usage_facts` 的 TTL=365 对存量无影响**（现存分区最老 2026-09-26，距今不足一年）⇒
+  ⇒ 它的作用是**给未来划界**：252 年增 ≈550 MB、211 ≈330 MB（可预期、可预算）。
+- ⚠ **`ursm_node_snapshot_min_legacy`（211，1.90 GB）暂留** ⇒ 7 天后按 830 的步骤 3 评估 DROP。
+- ⚠ **新装库的形态仍未变**（830 是 manual-by-design）⇒ **缺口 B 依然存在**（属主未拍板）。
+- ⚠ **本节没有复核 211 的留存是否已切到 `mode=partition-drop`** ⇒ 已挂一个跟进观测点
+  （worker 每小时跑一次 ⇒ 下个整点后复核日志里的 `mode=` 字段）。
+
+### §143.45 ★★★★ 跨轮次自相矛盾的**钉子翻转** —— 提交即自红，以及登记册整体刷新
+
+> 本节起因是一个**自己造成的**红：`rebase` 后复跑门 ⇒ `admin` 包红
+> ⇒ `TestSection14343UsageFactsGapIsPinned` 失败 ⇒ ★ **门没有做错什么**：
+> 它忠实地报告了「你上一轮钉住的东西，被你这一轮填掉了」。
+
+#### §143.45.1 ★★★★ 根因：**缺口打桩是单向的**
+
+- §143.43 的钉：「`stateTableTTLSpecs()` 里**不许**出现 `usage_facts`」
+  （动机正确：缺口若无人守着就会悄悄消失）。
+- §143.44 的动作：**正是为了填这个缺口**才加了 TTL 登记（属主拍板 TTL=365）。
+- ⇒ ⇒ **同一个提交里，前一轮的门与后一轮的修复互相打架** ⇒ `admin` 包**提交即红**。
+- ⇒ ⇒ ★★ **通用式**：
+  1. ⭐⭐⭐⭐⭐ **「缺口打桩」必须是可翻转的**：缺口被填上时，钉子要从「缺口存在」
+     翻成「缺口已闭合 **且** 登记册/文档已同步」，而不是让门一直红到有人删证据为止。
+  2. ⭐⭐⭐⭐⭐ **翻转后的最佳形状是「双向钉」**：**仓内那侧**与**生产那侧**各一根。
+     本例正好出现了这个区分（仓内已加登记，但**未部署** ⇒ 生产仍是老二进制）⇒
+     单向钉无论朝哪边都会把另一半说错。
+  3. ⭐⭐⭐⭐ **翻转时必须两处同动**（登记册 + 门）⇒ 只动一处会得到一个**恒绿门**
+     （门里断言的登记册状态与真实登记册不一致 ⇒ 要么恒红要么恒绿）。
+  4. ⭐⭐⭐ **钉的措辞要自带翻转说明**（「部署之后请连同登记册一起翻面」）
+     ⇒ 否则下一个会话只会看到一根红钉，然后去删门。
+
+#### §143.45.2 ★★★★ 登记册整体刷新（**两实例只读重测**）
+
+- 新脚本：`scripts/audit/refresh_retention_registry.sql`（**只读**：全部 SELECT/SET）
+  ⇒ 登记册的每一行都有可复现的取数命令（表头已写明）。
+- ★★ **量具坑（两个实例都踩到）**：`pg_total_relation_size(parent)` 对**分区父表返回 0**
+  （父表自己没有存储）⇒ ★ **族总量必须逐分区求和**。
+  - 252 快照族：父表 0 B / 子分区合计 **9,226,485,760 B**；
+  - 211 快照族：父表 0 B / 子分区合计 **2,029,412,736 B**；
+  - 252 `usage_facts` 族：**254,402,560 B** / 276,190 行；
+  - 211 `usage_facts` 族：**80,232,448 B** / 88,883 行。
+  - ⇒ ★ 登记册里分区父表行的 `total_bytes` 一律是**求和值**；门新增一条「族总量必须 > 0」
+    专门盯这个坑（抄了父表函数的 0 值 ⇒ 看起来"很干净" ⇒ 更不容易被察觉）。
+- ★ **行数用 `count(*)` 精确口径**，**不用** `reltuples`/`n_live_tup` 估算
+  （空分区的估算值是 −1 或 0 ⇒ 会造出"假空"，正是 §143.42 踩过的坑）。
+- ★ **TTL 键存在性**（值无关判据）：两实例的 `settings_kv` 里
+  **仍无** `lifecycle.usage_facts_ttl_days` ⇒ **生产缺口确实未闭合**（未部署）⇒
+  ⇒ 「仓内闭合 ≠ 生产闭合」有了**实测**支撑，不是推断。
+
+#### §143.45.3 ★★★ 门改造（`admin/section_14343_retention_shape_test.go`）
+
+| 改动 | 内容 |
+|---|---|
+| **缺口双向钉** | 原 `TestSection14343UsageFactsGapIsPinned` → `TestSection14343UsageFactsGapIsOpenInProductionAndClosedInRepo`：仓内侧（parent 精确等于 `usage_facts` + setting/fallback/partitionUnit 三值）+ 生产侧（`ttl_registered=no` + `GAP_NO_RETENTION` + `method=TTL_DECIDED_PENDING_DEPLOY` + 两实例都在） |
+| **登记册行数** | 9 ⇒ **10**（新增 211 的 legacy 回滚锚点行） |
+| **绝对字节重钉** | 全部刷新到 post-§143.44 事实（211 快照族 2,029,412,736 / 252 快照族 9,226,485,760 / 211 legacy 1,902,911,488 / 252 `usage_facts_default` 57,344 …） |
+| **形态结论翻转** | 「两实例形态分叉（都必须在册）」⇒ 改为「**两个实例都必须是分区父表**（分叉已闭合）+ 登记册里**不许**再有 `relkind=r` 的快照族行」 |
+| **量具口径新钉** | 分区父表行的 `total_bytes` 必须 > 0（盯 `pg_total_relation_size(父表)=0` 那个坑） |
+| **决策表自测** | 10 例（新增「usage_facts 已登记 TTL ⇒ 与快照族同构」与「211 分区化后 ⇒ 与 252 同款」） |
+| **解析面自检** | AST 解析条数 ≥ 8（解析面漏了 ⇒ 断言会变成**恒绿门**） |
+| **解析共用** | 登记册读取抽成 `readRetentionShapeRows`（两道门共用一份解析 ⇒ 不会各自漂移） |
+
+★ **父表名用精确匹配**（`parent == "usage_facts"`）而不是 `Contains` ——
+`Contains` 会把 `usage_facts_archive` 之类也算进去（假绿）。
+
+#### §143.45.4 ★★★ 211 留存观测点回填（§143.44.11 挂的那个点）
+
+- 211 生产日志（`docker logs llm-gateway-211-b`）：
+  - `2026-10-20T05:29:30Z` 起：`mode=row-delete deleted=14369…41195`（每小时 ~3.8~4.1 万行）
+  - `2026-10-20T17:29:30Z` 起：`mode=row-delete` + `nothing reclaimed`（行删已无超期行 ⇒ 行数有界）
+  - ★★ **`2026-10-20T20:29:30Z` 起：`mode=partition-drop`**（`degraded=false yielded=false`）
+- ⇒ ⇒ ★★★ **形态切换无需部署**（双模探针读的是 `pg_class.relkind`）
+  ⇒ §143.44 的 830 一落地，**跑着的旧二进制**下一轮就自动切到 DROP 型留存 ⇒
+  ⇒ 「先部署代码、后执行迁移」这条设计在**生产上得到了实证**（不是本地推演）。
+- ★★ **「nothing reclaimed」不是故障**：判据是 `day_end <= now() - 168h`
+  （`day_end` = 分区名日期 +1 天的 Asia/Shanghai 右开边界）⇒
+  211 最早的分区是 `…_20261014`（`day_end` = 2026-10-15 00:00+08 = 2026-10-14 16:00Z）
+  ⇒ **首次回收 = 2026-10-21T16:29:30Z**（= 2026-10-22 00:29 +08），之后每小时回收一个日分区。
+- 对照 252（154 日志）：`2026-10-21T00:01:21+08` `dropped=1 bytes_reclaimed=293322752`
+  ⇒ 两实例的判据模型**逐字吻合**（252 的 `…_20261013` 在那一刻恰好到期）。
+
+#### §143.45.5 ★★ 变异更新（`scripts/mutate-14343-retention-shape-gate.py`）
+
+- **M3 重指**：原 needle 是 §143.43 的旧读数（`6042257\t2411266048…`）⇒ 刷新后已不存在
+  ⇒ 改指 post-§143.44 的读数（否则该轮会「SKIP-needle-count」作废 ⇒ 变异统计失真）。
+- **M4 反向**：原变异是「把 `cache_metrics` **换成** `usage_facts`」（那时缺口未填）
+  ⇒ 现在 `usage_facts` **已经在**册 ⇒ 该变异变成了「加一条重复登记」⇒ **不再能让门红**
+  ⇒ 改为**删掉** `usage_facts` 那条登记 ⇒ 仓内那根钉必须红。
+- 新增 M8~M11：生产侧谎报（`ttl_registered` 改 yes）、`method` 漂移、族总量写成 0、
+  §143.45 的订正横幅被删。
+- ★ 纪律：**门改了 ⇒ 变异必须跟着改**；否则「变异全绿」只是变异没打到点上。
+
+#### §143.45.6 ⚠ 本节诚实边界
+
+- ⚠ **生产行为仍未改变**：本节只动**登记册 / 门 / 变异 / 文档**，不改产品代码 ⇒
+  §143.44 的两项代码改动（选项 A 种子签名跳过、`usage_facts` TTL=365 + 按日 DROP）**仍未部署**。
+- ⚠ **登记册是快照**：它是**某个时点**的生产事实（2026-10-21 ~04:40 +08）⇒
+  ★ 任何对这两个族的生产写入都必须回来刷新它，否则门钉住的是一个已经不存在的世界，
+  而**门自己不会知道**（这是静态门的固有边界，已写进登记册表头）。
+- ⚠ **首次 DROP 回收尚未观测到**：211 的首次回收时点是 2026-10-21T16:29:30Z ⇒ 本节**未**验证
+  「分区被 DROP 后空间真归还」在 211 上发生过 ⇒ §143.45.4 的结论目前是**判据推导 + 252 实测**，
+  211 侧仍待观测。
+
+### §143.46 ★★★★ 月度分区留存的**机制空转** ＋ 会话原始数据族在 PG 路径上**无任何留存**（两实例只读普查 + 量化决策表）
+
+#### §143.46.0 本节一句话结论
+
+- ★★★★ **月度分区 DROP 的机制早就建好了，但「建好了」不等于「在回收」**：
+  迁移 841 建的策略表 `public.llm_gateway_partition_retention` **两实例都是 0 行**，
+  审计表 `public.llm_gateway_partition_drop_log` **两实例也是 0 行** ⇒
+  ⇒ **从未删过任何一个月度分区**；154 生产日志却是
+  `partition_manager: monthly partition retention sweep dropped=0 partitions=[]`
+  ⇒ ⇒ **sweep 每轮都在跑，只是每轮都空转**。
+- ★★★★ **会话原始数据族在 PG 路径上没有任何留存**（穷举 DB 侧 `public` 函数 ＋ Go 侧
+  `DELETE`/`DROP` 后确认）：`session_turns` / `session_turn_details` / `sessions` /
+  `session_censors` / `session_memora` / `session_bodies` / `session_tools` /
+  `auto_route_selections` / `usage_ledger` / `credit_ledger` / `tool_usage_stats`
+  ⇒ 252 上 `session_turns_2026_09` 单分区 **2,867,773,440 B（2.67 GB）**。
+- ★★★★ **杠杆只在 252**：按 841 的口径（过期 ⇔ `months_old >= N`），
+  252 保留 1 个月可回收 **5,213,446,144 B（4,971.9 MB）**、保留 2 个月只剩 **1.6 MB**、
+  保留 3 个月只剩 **424 KB** ⇒ ⇒ **这是一个「要不要保留 9 月会话原始数据」的语义决策，
+  不是「清理一下垃圾」的运维动作**；211 同口径只有 **2.34 MB** ⇒ **该杠杆对 211 没有意义**。
+- ⚠ **本节对生产的写入 = 0**：只做只读普查 ＋ 仓内登记册/决策表/门/脚本/文档。
+  「给 841 的策略表配 `retain_months`」是**生产写**，**待属主拍板**（§143.46.9）。
+
+#### §143.46.1 ★★★★ 841 的月度 DROP 机制：四件套都在，策略表是空的
+
+| 机制件 | 位置 | 实测（252 / 211） |
+|---|---|---|
+| 策略表 | `public.llm_gateway_partition_retention(family PK, retain_months, enabled, note, updated_at)` | **0 行 / 0 行** |
+| 只读列举 | `public.llm_gateway_expired_month_partitions()` | 在（调用即返回 0 行） |
+| 真正 DROP | `public.llm_gateway_drop_expired_month_partitions()` | 在（每轮返回 0） |
+| 审计表 | `public.llm_gateway_partition_drop_log` | **0 行 / 0 行** |
+| Go 侧调用点 | `bg/partition_manager.go` 的 `SELECT llm_gateway_drop_expired_month_partitions()` | 在 |
+
+- ★ **两个 0 是同一件事的两面**：策略表 0 行 ⇒ 没有任何族进入判定循环 ⇒
+  审计表 0 行 ⇒ **一次都没删过**。⇒ ★★ **不能只读日志里的 `dropped=0` 就断言「机制是坏的」** ——
+  它没坏，**它没有策略**。
+- ★ 与 §143.45 的形态切换是**同一类判别**（`relkind` 自答「该不该删」）：**机制健康 ≠ 机制在工作**。
+  ⇒ 本节因此把「策略表行数」与「审计表行数」**分别**登记，而不是合并成一个结论。
+
+#### §143.46.2 ★★★★ 三类留存机制必须分开数 —— 「无界」是一个需要穷举才能下的结论
+
+| 路径 | 位置 | 口径 | 现状 |
+|---|---|---|---|
+| A（Go 侧按天 TTL） | `bg/partition_manager.go` 的 `stateTableTTLSpecs()`（8 族） | 按**天**声明，但**每月 2 号**才扫 ⇒ 实际留存 **TTL..TTL+30 天** | 覆盖 8 族 |
+| B（SQL 侧按月） | 迁移 841 的策略表 ＋ `llm_gateway_drop_expired_month_partitions()` | 按**月** | **配置为空 ⇒ 空转** |
+| C（各族专门机制） | `archive_*` / 专门的分区 `DROP` helper / 只剪 hot 表（`HOT_TRIM` ⇒ 月分区仍累积） | 按族 | 覆盖 9 族 |
+
+- ★★ **路径 A 的「TTL=7 天」会给出「比真实更干净」的错误预期** ⇒
+  它是 7..37 天（每月 2 号才扫）。这个区间已进决策表（`EffectiveRetentionDays`），
+  并被门钉住。
+- ★★ **路径 C 的 `HOT_TRIM` 是「半覆盖」**：hot 表被剪了，**月分区照样累积** ⇒
+  不能算作「有留存」。登记册里它单独成一个机制值（`HOT_TRIM`），理由里写明是半覆盖。
+- ⇒ **只有「三条路径都不覆盖」的族才是真无界** ⇒ 这就是本节穷举的全部理由。
+
+#### §143.46.3 ★★ 救回 5 族误判（「无界」结论的第一嫌疑是量具漏了）
+
+- ★ **初判把 5 个族判成无界，穷举后全部改判**：
+  `request_wal`（`archive_request_wal`）、`_request_logs`（`archive_request_logs`）、
+  `_request_logs_bodies`（`drop_old_request_logs_bodies_partitions`）、
+  `dashboard_access_events`、`session_module_executions`（各有 `archive_*`）。
+- ⇒ ⇒ ★★★★ **通用式：「缺失 / 无界」这类结论必须先列全可能存在的位置** ——
+  本节若停在「grep 不到 DELETE 就是无界」，就会把 5 个**有留存**的族写成无界，
+  而这类错误会**直接把属主带向错误的清理动作**（删掉正在被归档的数据）。
+- ⚠ **穷举的边界**：只穷举了 **DB 侧 `public` 函数** ＋ **Go 侧 `DELETE`/`DROP` 字面量**；
+  若某条留存走的是**别的名字**（比如运维脚本、外部任务、pg_cron 里的裸 SQL），
+  本节**看不见** ⇒ 登记册的 `NONE` 是「**本仓 + 本库可见面**里没有」，不是「宇宙里没有」。
+- ★ 另一个常见误判源：**lite 路径不作用于 PG** ——
+  `bg/lite_retention_worker.go` 与 `retention_session_bodies_days` 是 SQLite 侧配置，
+  **不得**据此判 PG 表的留存状态。
+
+#### §143.46.4 ★★★ 量化决策表（口径与 841 逐字一致：过期 ⇔ `months_old >= N`）
+
+- 252（库总 31 GB）：
+
+| 保留月数 | 可回收字节 | 折合 | 备注 |
+|---|---|---|---|
+| 1 个月 | **5,213,446,144** | **4,971.9 MB** | 全部来自 9 月及更早 |
+| 2 个月 | **1,630,208** | 1.6 MB | 9 月被保留 ⇒ 几乎归零 |
+| 3 个月 | **434,176** | 424 KB | 同上 |
+
+- 211：保留 1 个月仅 **2,457,600 B（2.34 MB）** ⇒ ★ **该杠杆对 211 无意义**
+  ⇒ ⇒ **同一个「配 `retain_months`」的动作，在两实例上的收益差 3 个数量级** ⇒
+  ⇒ **不能当成一个统一动作下发**。
+- 252 上按族拆（保留 1 个月口径，MB）：
+
+| 族 | 可回收 | 机制 | 结论 |
+|---|---|---|---|
+| `session_turns` | 2,735.3 | NONE | ★ 无界 |
+| `usage_ledger` | 741.6 | NONE | ★ 无界 |
+| `session_turn_details` | 603.1 | NONE | ★ 无界 |
+| `request_wal` | 192.6 | ARCHIVE | 已被归档机制覆盖 |
+| `candidate_failure_logs` | 147.7 | STATE_TABLE_TTL | 路径 A 覆盖 |
+| `routing_decision_log` | 137.1 | STATE_TABLE_TTL | 路径 A 覆盖 |
+| `supplier_errors` | 113.7 | STATE_TABLE_TTL | 路径 A 覆盖 |
+| `sessions` | 90.7 | NONE | ★ 无界 |
+| `credential_model_index` | 84.3 | STATE_TABLE_TTL | 路径 A 覆盖 |
+| `session_memora` | 52.5 | NONE | ★ 无界 |
+
+- ★★ **前 3 个无界族占 252 可回收量的 82%** ⇒ ⇒ **属主的决策实际上只需要回答一件事：
+  「9 月的会话原始数据（turns / details / usage_ledger）还要不要留」**。
+- ★★ **`session_bodies` 在 252 上 total = 4,644.8 MB 但 keep1 只有 17.6 MB** ——
+  因为它的**当月分区才是大头**（10 月仍在长）⇒ 这正是
+  §143.45 那条纪律的另一个实例：**钉「可回收量」而不是「族总量」**。
+
+#### §143.46.5 ★★★ 量具坑（本轮自己踩了两次，方向很危险）
+
+- ★★★ **坑①：`timestamp - date` 得到的是「以天计」的 interval** ⇒
+  `EXTRACT(month FROM (ts - d))` **恒为 0** ⇒ 「几个月前」全算成 0。
+  ⇒ ★★ 在「算过期」的方向上，这会把**一切**判成过期 ⇒ **数字会骗人且骗得很安全**
+  （看起来「有很多可回收」，实际口径是坏的）。
+  ⇒ 正确做法：**月序号差**（`year*12 + month` 之差）。
+  ⇒ 841 自己用的是 `date - interval 'N months'`（**对的**），只有测量脚本踩了这个坑。
+- ★★★ **坑②：过期方向** ⇒ 过期 ⇔ `months_old >= N`；写成 `< N` 会得到
+  「**保留越多回收越多**」的反向数字。
+- ⇒ ⇒ ★★★★ **通用式：「算过期」的判据必须用一组「已知答案的语料」验一遍** ——
+  同一个语义在**三个地方**各写了一遍（841 的 SQL / 判定脚本 / Go 决策表），
+  ⇒ 本节为此专门加了一道门（`TestSection14346ExpirySemanticsAlignAcrossThreePlaces`），
+  用 14 个月 × 5 档 `retain` 的笛卡尔积**逐字对拍** 841 的公式。
+- ★ **841 自己的注释里就记着同族的致命 bug**（`right(relname,6)` 会把 `2026_07` 取成 `026_07`
+  ⇒ 一切过期）⇒ ⇒ **同族缺陷在同一文件里留过疤 ⇒ 新写同族判据必须先读那段注释**。
+
+#### §143.46.6 ★★ 9 月族间不对称（**登记为待查，本节不下结论**）
+
+- 252 的 9 月分区里，`session_turns` / `session_turn_details` / `sessions` 的最小 ts
+  **完全相同**（`2026-09-06 11:03:50.985994+08`）⇒ 像是**一起被回填**的；
+  而 `session_bodies_2026_09` 只有 **3,749 行**，ts 全部落在
+  `2026-10-01 00:00~07:59` ⇒ 这是 **UTC 日切**的边界行（`partition_date` 按 UTC 日切）。
+- ⇒ 另一个锚点：v2 会话族的整体起点 = **`2026-10-01 08:00:34.096036+08`**。
+- ⇒ ⇒ ★ **本节不下结论**（「9 月 bodies 未回填」只是一个**形态观察**，可能是
+  「回填脚本本来就不搬 bodies」，也可能是「搬了但 bodies 当时还没有数据」）。
+  ⇒ 登记为**下一轮的专项排查项**（可能涉及历史数据缺失，但**证据不足**）。
+- ⚠ **不要把它当成「已确认的数据丢失」**：§143.24 已经吃过一次教训
+  （「08 月数据丢失」是假命题 —— 那些月本来就是空分区）。
+
+#### §143.46.7 ★★ 仓内落地（**全部零生产影响**）
+
+| 产物 | 作用 |
+|---|---|
+| `scripts/audit/verify_monthly_partition_retention.sql` | **只读**判定脚本（8 段：机制三件套 / 策略表 / 审计表 / 会被列为过期的分区 / 族体积 / 逐分区清单+`months_old` / 按 N 量化 / 按族量化）⇒ 两实例各跑一遍即可复现 |
+| `scripts/audit/monthly_partition_retention.tsv` | **登记册 52 行 / 13 列**（事实层）：`instance / scope / family / n_month_parts / total_bytes / reclaim_keep{1,2,3} / policy_registered / ttl_declared_days / mechanism / verdict / note` ⇒ 由脚本实跑输出解析生成，**刻意不手抄** |
+| `admin/monthly_retention_verdict.go` | **纯决策表**（零 IO）：`ClassifyMonthlyRetention` / `EffectiveRetentionDays` / `IsMonthlyPartitionExpired` / `MonthlyMonthDistance` ⇒ 「哪些族该被 DROP」不再只写在散文里 |
+| `admin/section_14346_monthly_retention_test.go` | 门 4 条：决策表自测（含「当月/未来月永不过期」这条**承重性质**）/ 登记册**逐行重算** + 可回收量钉 + 中心结论集合 / 机制不许被拆 / **三处口径对齐** |
+| `scripts/mutate-14346-monthly-retention-gate.py` | 变异 M1~M10（决策表 3 / 口径对齐 4 / 登记册 1 / 机制 2）⇒ 证明门有牙 |
+
+- ★★★ **登记册 = 事实层、决策表 = 结论层**：门**逐行重算**登记册的 `verdict`
+  ⇒ 登记册**不可能自说自话**（承 §143.43）。
+- ★★ **门不钉「策略表必须为空」** —— 那是一根**不可翻转**的钉（属主一旦配了策略就红，
+  下一个会话只会去删门）。真正该守的是「机制不许被拆」＋「口径不许漂」。
+
+#### §143.46.8 ⚠ 本节诚实边界
+
+- ⚠ **对生产的写入 = 0**：本节只做了两实例的**只读**普查；§143.44 的两项代码改动
+  （选项 A 种子签名跳过、`usage_facts` TTL=365 + 按日 DROP）**仍未部署**。
+- ⚠ **登记册是快照**：它是 **2026-10-21 05:1x +08** 的生产事实 ⇒
+  ★ 任何对月度分区的生产写入/回收之后都必须回来刷新它，否则门钉住的是一个已经不存在的世界，
+  而**门自己不会知道**（静态门的固有边界，已写进登记册表头）。
+- ⚠ **「无界」是穷举可见面内的结论**（DB 侧 `public` 函数 + Go 侧 `DELETE`/`DROP` 字面量），
+  不是绝对断言（见 §143.46.3 的边界说明）。
+- ⚠ **保留月数是属主的语义决策**（审计/账期窗口），本节**不代拍板**，只给量化表。
+- ⚠ **9 月 bodies 的不对称未定论**（§143.46.6）。
+
+#### §143.46.9 ⚠ 待属主拍板（本节唯一的「要动手」入口）
+
+- ★★★★ **是否给 841 的策略表配 `retain_months`**（**生产写**，未授权）：
+  252 保留 1 个月 ⇒ 回收 **4,971.9 MB**；保留 2 个月 ⇒ 仅 **1.6 MB**；
+  211 保留 1 个月 ⇒ 仅 **2.34 MB**。
+  ⇒ 实质是「**要不要保留 9 月的会话原始数据**」⇒ 属主决策，本节不代劳。
+  ⇒ 形态（`INSERT` 一行即可，未执行）：
+  `INSERT INTO public.llm_gateway_partition_retention(family, retain_months, enabled, note) VALUES (...)`
+  ⇒ ★ 841 的语义是「保留 N 个月（含当月）」⇒ `retain_months=1` ⇒ **只保留当月**。
+- ⚠ **不建议用本节的数字直接推「两实例统一动作」**：211 的同口径收益只有 2.34 MB。
+
+#### §143.46.10 ★★★ 变异首轮 **5/10 红** ⇒ 归因出「两处真实判据漏洞」与「三条无效变异」
+
+- **首轮读数**：M2 / M4 / M5 / M6 / M8 红；**M1 / M9 / M10 绿**；**M3 编译红（作废）**；
+  **M7 因 needle 出现 3 次（作废）**。
+- ⇒ ★★★ **这不是「门没牙」的单一结论** —— 「变异没红」有**两种完全不同的原因**：
+  ① **门真的没牙**（判据可以被别处喂饱）；
+  ② **变异本身无效**（它根本没改变行为）。
+  ⇒ ★ **判别动作（顺序不能反）**：先验「**这条变异真的改变了行为吗**」
+  （看它的 diff、看编译读数）⇒ **再**问「门为什么没红」。
+  ⇒ ⇒ ★★ 顺序反了会把「变异无效」误判成「门没牙」⇒ 进而去**加固一个没问题的门**
+  （本轮 M1 正是这个坑）。
+- **M9 = 真实判据漏洞**：841 的**函数体里还有 5 处**引用策略表名
+  ⇒ 「名字还在」**证明不了「表还在」** ⇒ 把表改名后门照样绿。
+  ⇒ 修法：门改为钉**建表语句本身**（`CREATE TABLE IF NOT EXISTS public.<名> (`）。
+- **M10 = 真实判据漏洞**（且是**注释喂饱**的老形状）：那个函数名在
+  `bg/partition_manager.go:657` 的**注释**里也出现 ⇒ 只删掉真正的调用语句，门照样绿。
+  ⇒ 修法：改走 **go/ast**。
+  ⇒ ★★ **实现的坑**：Go 侧**不是直接调**那个 SQL 函数，而是把它当**字符串**传给 `QueryRow`
+  ⇒ 判据**不能**找 Go 的「函数调用节点」（那会恒空 ⇒ 变成**恒红的假阳性**）
+  ⇒ 正确形态是「**某个调用的实参里有含该函数的 SQL 字符串**」。
+- **M1 = 无效变异**：删掉 `MonthlyMechNone` 分支**不改变 verdict** ——
+  因为 `switch` 下面有 `default:` 把**未知机制**也判成 UNBOUNDED（保守）
+  ⇒ NONE 掉进 default ⇒ verdict 不变 ⇒ ★★ **门绿是「正确」的**。
+  ⇒ ⇒ ★★ **顺带一个好消息**：这证明「未知机制 ⇒ 按无留存处理」这条**保守兜底**真的在起作用。
+  ⇒ 修法：变异改成直接把 NONE 判成 COVERED。
+- **M3 = 编译红**：只把 `return (cy*12+cm)-(py*12+pm)` 换成 `return 0`
+  ⇒ py/pm 变成未使用变量 ⇒ **编译红** ⇒ 读数作废（编译红 ≠ 断言红）
+  ⇒ 修法：连声明一起替换，并用 `_ =` 保持编译干净。
+- **M7 = needle 不唯一**：那个 `EXTRACT(year FROM date_trunc(...))` 片段在 F/G/H **三段**各出现一次
+  ⇒ 触发脚本的「needle 必须恰好 1 次」检查 ⇒ 该条作废
+  ⇒ 修法：改成只打 **F 段**（F 段的缩进与 G/H 不同 ⇒ 逐字唯一）。
+  ⇒ ★ 附带修掉一个隐蔽坑：raw 字符串里的 `\n` 是**字面反斜杠+n**，不是换行
+  ⇒ ⇒ **needle 必须用 `repr` 对拍文件真实字节**，不能靠肉眼转写。
+- ⇒ ⇒ ★ **收口读数：10/10 全红**（隔离副本内跑，共享工作树一个字节未动；收尾 md5 逐字还原）。
+
+#### §143.46.11 ★★ 共享仓里 rebase 的一个**真实副作用**：`--autostash` 会抹掉别人的「已暂存」状态
+
+- **场景**：共享工作树里有并行会话的 **15 个「已暂存」**改动 ⇒ 本轮要 rebase
+  ⇒ `git rebase --autostash origin/main` ⇒ rebase 成功、自动贮藏也「已应用」。
+- ⇒ ★★★ **那 15 个改动的内容一字不差地变成了「未暂存」** —— 根因：
+  **stash 的 pop 不带 `--index`**。
+- ⇒ ⇒ ★★ **危害不是数据丢失，而是「对方下一次 `git commit`（无 pathspec）会变成 nothing to commit」**。
+- ⇒ ⇒ ★ **判别动作**：rebase 前后都记 **`git diff --cached | shasum -a 256`**（**索引内容的指纹**）
+  ⇒ 变了 = staged/unstaged 的**分界**被抹掉了。
+  ⇒ ★★ **注意**：只记 `git diff`（工作树 vs 索引）**看不出问题** ——
+  在「已暂存 ＋ 无未暂存」时它**恒为空** ⇒ **看起来「没问题」实则什么都没验**。
+- ⇒ ⇒ ★ **复原动作**：`git diff --name-only > f` ⇒ `git add --pathspec-from-file=f` ⇒ 再比指纹
+  ⇒ 本轮实测：rebase 后指纹变成「空 diff」⇒ 复原 ⇒ 回到 `7869077a…`
+  ⇒ **与 rebase 前逐字一致** ✓（15 个文件一个不少、内容不变）。
+- ⇒ ★★ **教训**：★ **内容相同 ≠ 状态相同** ⇒ 共享仓里任何会重写索引的操作
+  （`rebase` / `stash` / `checkout` / `reset`）都要把「**索引状态**」当作**独立的一维**来守。
+- ⇒ ★★ **本轮的处置与更稳的形态**：
+  - **第一次 rebase** 在**共享工作树**里做（用了 `--autostash`）⇒ 事后按指纹复原；
+  - **第二次 rebase**（远端又前进 2 个提交、且对方正在写入工作区）改在
+    **隔离 worktree**（`git worktree add --detach`）里做 ⇒ **完全不碰**对方的工作区。
+  ⇒ ⇒ ★★ **结论：能隔离就别在共享树里 rebase** —— 隔离形态下，共享树的内容与索引**一个字节都不动**。
+- ⇒ ⚠ **诚实的后果（不隐瞒）**：第二次 rebase 在隔离 worktree 里完成 ⇒
+  **共享工作树的 `main` 停在 rebase 前的那两个提交** ⇒ 与 `origin/main` **分叉**
+  ⇒ ⇒ 下一个会话 `git fetch && git rebase origin/main` 时，
+  这两个提交会因 **patch-id 相同**被 git 判为「skipped previously applied commit」⇒
+  ⇒ **自动收敛，不产生重复历史**（本轮实测过同族：rebase 会提示并跳过）。

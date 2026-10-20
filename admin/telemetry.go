@@ -351,9 +351,9 @@ func (t *telemetryIngester) persistDecisionLog(ctx context.Context, e *decisionL
 
 // requestLogsWriteEnabled 报告 _request_logs 宽表家族（_request_logs_hot 主行 +
 // _request_logs_bodies_hot 正文）当前是否允许写入 —— S4 停写 gate，键
-// storage.request_logs_write_enabled（默认 true = 维持现状双写，HotReload
-// 即时生效）。与 telemetry 包的 requestLogsWriteEnabled()、Lite sink 同一键、
-// 同一默认。
+// storage.request_logs_write_enabled（★ **代码默认 = false** ⇒ 未显式配置
+// 即**不双写**；HotReload 即时生效）。与 telemetry 包的 requestLogsWriteEnabled()、
+// Lite sink 同一键、同一默认。
 //
 // 2026-10-01 审计修正：F5 接线时把 S4 门内联成 settings.GetPlatformBool 的
 // 一处字面量，镜像门又需要判同一个键。抽成本 helper 是为了**两处判定与键名
@@ -375,9 +375,8 @@ func requestLogsWriteEnabled() bool {
 func (t *telemetryIngester) persistRequestLog(ctx context.Context, e *requestLogInput) {
 	totalTok := calcTotal(e.PromptTokens, e.CompletionTokens)
 	rawModel := firstNonEmptyStr(e.OutboundModel, e.ClientModel)
-	search := buildSearchText(e)
 
-	// 2026-10-01 F5：本路径是 _request_logs_bodies_hot 的第三落库点
+	// 2026-10-01 F5：本路径曾是 v1 正文表的第三个落库点
 	// （方案 §3-H3 只点了 telemetry client 与 session v2），此前未接热区镜像。
 	// 投递点选在入口（Begin 之前）：与 telemetry client.persistRequestLog 顶部
 	// 同一边界语义——入口即投递，PG 停机/degraded 早退都不会让这批正文失去
@@ -386,15 +385,18 @@ func (t *telemetryIngester) persistRequestLog(ctx context.Context, e *requestLog
 	//
 	// S4 停写门必须同键同门（2026-10-01 审计修正，见 requestLogsWriteEnabled
 	// 与 storage/file/request_mirror.go 头注「S4 停写门同键同门」）：镜像写的是
-	// _request_logs_bodies_hot 的同一批正文，运维关停该键的目的是止血磁盘，
-	// 若镜像绕过该门就是「停写却仍落盘」，且镜像与 PG 两侧行为分裂。
+	// 与 PG 侧同一批正文，运维关停该键的目的是止血磁盘，若镜像绕过该门就是
+	// 「停写却仍落盘」，且镜像与 PG 两侧行为分裂。
+	//
+	// 2026-10-20（迁移 890）：v1 族退役后，PG 侧已不再落 v1 正文，镜像这道
+	// 灾备副本是本批正文的**唯一**副本 ⇒ 这道门更不能被绕过。
 	if requestLogsWriteEnabled() {
 		t.mirrorRequestBodies(e)
 	}
 
 	// 2026-07-21: Implement proper two-table separation (Ticket #10, Issue #8)
-	// - _request_logs_hot: stores metadata + preview fields (first ~500 chars)
-	// - _request_logs_bodies_hot: stores complete request/response/outbound bodies
+	// - 元数据表：metadata + preview fields (first ~500 chars)
+	// - 正文表：complete request/response/outbound bodies
 	//
 	// Phase 1 routes outbound_body to the dedicated body table as well, so the
 	// wide metadata table does not duplicate TOAST-heavy payloads.
@@ -406,6 +408,9 @@ func (t *telemetryIngester) persistRequestLog(ctx context.Context, e *requestLog
 	// Historical context (dcd3bd55b): Temporary fix disabled body dropping to
 	// resolve context-loss issue. This implementation completes the proper
 	// architectural solution referenced in that commit's TODO comment.
+	//
+	// ★ 2026-10-20（迁移 890）：这两张 v1 表已随 v1 族整体退役，本路径的
+	// v1 写入删除（见下方 usage_ledger 之后的说明）。本段保留为历史背景。
 
 	tx, err := t.db.Begin(ctx)
 	if err != nil {
@@ -447,147 +452,29 @@ func (t *telemetryIngester) persistRequestLog(ctx context.Context, e *requestLog
 		return
 	}
 
-	// S4 停写门控（storage.request_logs_write_enabled，与 telemetry client /
-	// Lite sink 同门）：关停后本路径只保留上方 usage_ledger 计费行，跳过
-	// _request_logs_hot 主行与 _request_logs_bodies_hot 正文（session 六表族是
-	// 唯一事实源）；提交逻辑不变。
-	if requestLogsWriteEnabled() {
-		// 2026-07-05 migration 341: INSERT directly targets _request_logs_hot
-		// (独立热表，0-7 天数据窗口)。所有 INSERT/UPDATE/DELETE 统一写入 _hot 表，
-		// 后台 partition_manager 会定期将冷数据（>7 天）迁移到月度分区。
-		//
-		// 2026-07-21 Ticket #10: Modified to NOT include request_body/response_body.
-		// These are now written to _request_logs_bodies_hot (see below).
-		// Only preview fields remain in the metadata table.
-		_, err = tx.Exec(ctx, `
-			INSERT INTO _request_logs_hot (
-				request_id, ts, tenant_id, application_id, api_key_id,
-				end_user_id, client_model, outbound_model,
-				credential_id, provider_id, canonical_id,
-				client_profile, request_mode,
-				prompt_tokens, completion_tokens,
-				cache_read_tokens, cache_write_tokens, total_tokens,
-				cost_usd, latency_ms, success, error_kind, search_text,
-				identity_hash, response_checksum,
-				transform_rule_id, egress_protocol, failure_detail_code,
-				request_preview, transform_summary, response_preview,
-				stream_first_chunk_ms, stream_chunk_count, stream_done_received,
-				stream_interrupted,
-				stream_chunks_sent,
-				upstream_finish_reason
-			) VALUES (
-				$1, now(), $2, $3, $4,
-				$5, $6, $7,
-				$8, $9, $10,
-				$11, $12,
-				$13, $14,
-				$15, $16, $17,
-				$18, $19, $20, $21, $22,
-				$23, $24,
-				$25, $26, $27,
-				$28, $29, $30,
-				$31,
-				COALESCE($32, 0),
-				$33,
-				$34, COALESCE($35, 0), $36
-			)
-			ON CONFLICT (request_id) DO UPDATE SET
-				ts = EXCLUDED.ts
-		`,
-			e.RequestID, nonEmptyDefault(e.TenantID), e.ApplicationID, e.APIKeyID,
-			e.EndUserID, e.ClientModel, e.OutboundModel,
-			e.CredentialID, e.ProviderID, e.CanonicalID,
-			e.ClientProfile, e.RequestMode,
-			e.PromptTokens, e.CompletionTokens,
-			e.CacheReadTokens, e.CacheWriteTokens, totalTok,
-			e.CostUSD, e.LatencyMs, e.Success, e.ErrorKind, search,
-			e.IdentityHash, e.ResponseChecksum,
-			e.TransformRuleID, e.EgressProtocol, e.FailureDetailCode,
-			e.RequestPreview, e.TransformSummary, e.ResponsePreview,
-			e.StreamFirstChunkMs, e.StreamChunkCount, e.StreamDoneReceived,
-			e.StreamInterrupted,
-			// R52：stream_chunks_sent 是 NOT NULL 列（migration 320），JSON
-			// 入口省略该字段时指针为 nil，裸绑即 23502 使整事务（含同事务
-			// 已写的 usage_ledger 计费行）回滚。与 telemetry 包
-			// streamChunksSentArg（client.go）同语义：nil 收敛为 0。
-			e.StreamChunksSent,
-			e.UpstreamFinishReason,
-		)
-		if err != nil {
-			t.classifyAndCount("_request_logs_hot", e.RequestID, err)
-			slog.Warn("telemetry ingest _request_logs failed", "request_id", e.RequestID, "error", err)
-			return
-		}
-
-		// 2026-07-21 Ticket #10: Persist full bodies in request_logs_bodies_hot.
-		// This path must tolerate both historical UNIQUE (request_id, ts) and
-		// migration-455 UNIQUE (request_id) deployments, because live hosts can
-		// report schema_migrations=455 while still serving the old unique index.
-		//
-		// 正文留存策略（2026-10-01 owner 拍板 F5-R2）：本路径对成功/失败行
-		// **一律落全量正文**，无 success 过滤。历史上的 keepAllBodies()
-		// 及其「只留失败行、省 ~90% 磁盘」的文档描述是**死代码**（定义即无
-		// 调用），已按裁决删除；文档与实现的偏差即本次清理的目标。
-		// 运维侧当前唯一生效的止血手段是关停 S4 键
-		// storage.request_logs_write_enabled（见 requestLogsWriteEnabled）。
-		// F5 接镜像后同一批正文另落一份热区，故镜像与 PG 共用该键同门。
-		err = upsertRequestLogBodies(ctx, tx, e.RequestID, e.RequestBody, e.ResponseBody)
-
-		if err != nil {
-			t.classifyAndCount("_request_logs_bodies_hot", e.RequestID, err)
-			slog.Warn("telemetry ingest bodies failed", "request_id", e.RequestID, "error", err)
-			return
-		}
-
-		// 2026-08-26: bump the recently-used ZSET so the admin "凭据路由模型"
-		// picker has a Redis fast path mirroring the _request_logs_hot aggregate.
-		// Fires only on successful user requests (probes do not write here) and
-		// only when the row actually persisted. Best-effort: Redis errors are
-		// swallowed so the ingest contract is unchanged. ClientModel is the
-		// canonical name the gateway resolves before writing _request_logs_hot
-		// (the request_log_ingest schema does not carry a separate canonical
-		// field — ClientModel is the lower-cased canonical form on this path).
-		if rc := t.redisClient.Load(); rc != nil && e.Success {
-			RecordRecentlyUsedModel(ctx, rc, nonEmptyDefault(e.TenantID), derefStr(e.ClientModel), false)
-		}
+	// 2026-10-20（迁移 890）：v1 族整体退役 ⇒ 本路径的 v1 写入（主行
+	// `_request_logs_hot` + 正文 `_request_logs_bodies_hot`）整体删除。
+	//
+	// 剩下的写入只有上方那条 usage_ledger 计费行（会话族由镜像桥写，
+	// 本路径不重复写），提交逻辑不变。
+	//
+	// 为什么必须删而不是留着：S4 停写门（storage.request_logs_write_enabled）
+	// 一旦被运维重新打开，这两条语句就会对着**已删除的表**执行 ⇒ 42P01
+	// ⇒ 整条 ingest 事务回滚（连同同事务已写的 usage_ledger 计费行）。
+	// 那道门是运维的止血开关，不能被一块已经不存在的表变成一颗地雷。
+	//
+	// 下面这条 Redis 记账**不是 v1 写入**：它服务 admin「凭据路由模型」
+	// 选择器的快路径（recentmodels ZSET）。原来它关在停写门里，是因为它
+	// 挂在「v1 主行写成功」之后；v1 退役后若继续挂在同一道门后，这张 ZSET
+	// 就永远不更新、选择器的快路径静默失效。故把它移出停写门，保留它自己
+	// 的条件（仅成功请求、Redis 可用）；Redis 失败仍被吞掉，ingest 契约不变。
+	if rc := t.redisClient.Load(); rc != nil && e.Success {
+		RecordRecentlyUsedModel(ctx, rc, nonEmptyDefault(e.TenantID), derefStr(e.ClientModel), false)
 	}
 
 	if err := tx.Commit(ctx); err != nil {
 		slog.Warn("telemetry ingest commit failed", "error", err)
 	}
-}
-
-func upsertRequestLogBodies(ctx context.Context, tx pgx.Tx, requestID string, requestBody, responseBody *string) error {
-	_, err := tx.Exec(ctx, `
-		UPDATE _request_logs_bodies_hot
-		   SET request_body = COALESCE($2::jsonb, request_body),
-		       response_body = COALESCE($3::jsonb, response_body)
-		 WHERE request_id = $1
-	`, requestID, requestBody, responseBody)
-	if err != nil {
-		return err
-	}
-
-	_, err = tx.Exec(ctx, `
-		INSERT INTO _request_logs_bodies_hot (
-			request_id, ts, request_body, response_body
-		)
-		SELECT $1, rl.ts, $2::jsonb, $3::jsonb
-		  FROM _request_logs_hot rl
-		 WHERE rl.request_id = $1
-		ON CONFLICT DO NOTHING
-	`, requestID, requestBody, responseBody)
-	if err != nil {
-		return err
-	}
-
-	_, err = tx.Exec(ctx, `
-		UPDATE _request_logs_bodies_hot
-		   SET request_body = COALESCE($2::jsonb, request_body),
-		       response_body = COALESCE($3::jsonb, response_body)
-		 WHERE request_id = $1
-	`, requestID, requestBody, responseBody)
-	return err
 }
 
 // execWithRetry runs op with up to 2 retries on transient PG errors.

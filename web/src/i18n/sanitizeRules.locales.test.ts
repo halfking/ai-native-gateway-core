@@ -23,7 +23,9 @@ const expectedKeys = Object.keys(en.sanitizeRules).sort();
 
 describe("sanitize rules in actual bundled and lazy locale exports", () => {
   it("pins the complete source namespace", () =>
-    expect(expectedKeys).toHaveLength(117));
+    // 2026-10-20：+2（perMode / perModeHint）—— 按模式启停矩阵的表头与说明。
+    // 计数只许增：每加一个键都要同步 8 个语种 + 这里。
+    expect(expectedKeys).toHaveLength(119));
   for (const [locale, bundle] of Object.entries(bundles)) {
     it(`${locale} exports and resolves every rule-management message`, () => {
       const namespace = bundle.sanitizeRules as

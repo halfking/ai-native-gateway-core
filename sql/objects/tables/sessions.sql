@@ -1,6 +1,15 @@
 --
 -- Name: sessions; Type: TABLE; Schema: public; Owner: -
 --
+-- ⚠ 正典快照说明（2026-10-20，审计 D3c；2026-10-21 补实测列数）：本文件是
+--   **pre-706/707 快照**（sessions 22 列），与真实库**已漂移**：
+--   迁移 706 加了 8 列、730 加了 3 列，**截至 2026-10-21 生产 252 实测为
+--   39 列**（⚠ 这是**时点值**，此后随迁移继续增长 —— 读的时候别把它当定数）。
+--   **本族以 sql/migrations/startup/ 为权威**；本目录只作
+--   「静态 jsonb lint 的列映射来源」与历史快照用途（见
+--   sql/schema/objects_registry_test.go 关于本目录双重身份的结论）。
+--   要改本表的形状，请改 sql/migrations/startup/ 下的迁移，不要改这里。
+--
 
 CREATE TABLE public.sessions (
     id bigint NOT NULL,

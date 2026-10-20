@@ -51,12 +51,12 @@ const canonicalBaselineWriter = "bg/pricing_baseline_sync.go"
 // ★ 只用这一条形态，且列名里必须含 `price`，因为第一版写成 `\bSET\s+baseline_`
 // 时实测抓到两个**假阳性**（都已订正，记录在此因为这是本判据最容易重犯的错）：
 //
-//	- bg/routing_health_checks.go 的告警英文散文
-//	  '…not being monitored. **Set baseline_price_currency from** the vendor
-//	  pricing page.' —— 列名后面跟的是 from 不是 =，所以要求 `\s*=` 就排除了它。
-//	- bg/integrity_fingerprint_drift.go 的 `DO UPDATE SET
-//	  baseline_fingerprint = EXCLUDED.baseline_fingerprint` —— 那是**另一张表的
-//	  另一列**，名字里没有 price，所以列名必须含 price 才算命中。
+//   - bg/routing_health_checks.go 的告警英文散文
+//     '…not being monitored. **Set baseline_price_currency from** the vendor
+//     pricing page.' —— 列名后面跟的是 from 不是 =，所以要求 `\s*=` 就排除了它。
+//   - bg/integrity_fingerprint_drift.go 的 `DO UPDATE SET
+//     baseline_fingerprint = EXCLUDED.baseline_fingerprint` —— 那是**另一张表的
+//     另一列**，名字里没有 price，所以列名必须含 price 才算命中。
 //
 // 要求 `SET <含 price 的列> =` 而不是任意 `SET baseline_`：前者只匹配真写入。
 var writePatterns = []*regexp.Regexp{

@@ -2,6 +2,7 @@ package db
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 )
 
@@ -59,7 +60,25 @@ func (d *DB) EnsureMaasSchema(ctx context.Context) error {
 	if d == nil || d.pool == nil {
 		return nil
 	}
-	if d.maasRequestLogsCurrent(ctx) {
+	// ★ 890（v1 族退役）：族不存在 ⇒ 这段 DDL 不是「no-op」而是 **42P01**
+	// （ALTER TABLE 一个不存在的表）。
+	//
+	// ⚠ 为什么 catalog 短路救不了：短路算的是「**缺多少**」——列项因
+	// to_regclass 为 NULL 而计 0，**索引项计 1** ⇒ missing ≠ 0 ⇒ 判定
+	// 「不 current」⇒ 继续执行 DDL ⇒ 42P01 ⇒ 整个 EnsureMaasSchema 失败 ⇒
+	// boot 失败 ⇒ 网关「就绪但没有数据库」（readyz 在 SetDepsOptional(true)
+	// 下仍返 200）。
+	// ⇒ 判据必须从「缺什么」改成「**在不在**」，与 ensureRequestLogSchema /
+	// ensureWorkTypeSchema 同一条纪律。
+	var v1TablePresent bool
+	if err := d.pool.QueryRow(ctx, `
+		SELECT to_regclass('public._request_logs') IS NOT NULL
+	`).Scan(&v1TablePresent); err != nil {
+		return fmt.Errorf("probe v1 request_logs presence for maas DDL: %w", err)
+	}
+	if !v1TablePresent {
+		slog.Info("v1 request_logs family is retired (890) — maas credits_charged DDL skipped")
+	} else if d.maasRequestLogsCurrent(ctx) {
 		slog.Info("maas schema ensured (pricing v2 columns); _request_logs credits_charged " +
 			"column and index already present, DDL skipped")
 	} else if _, err := d.pool.Exec(ctx, maasRequestLogsDDL); err != nil {

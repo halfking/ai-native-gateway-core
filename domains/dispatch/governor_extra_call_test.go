@@ -37,6 +37,14 @@ func TestRPMGovernorRecordExtraCallChargesBucket(t *testing.T) {
 	if err := g.Acquire(ctx, nil, time.Now().Add(30*time.Millisecond)); err == nil {
 		t.Fatal("acquire under debt should pace-timeout within 30ms")
 	}
+	// ★ R68 轮实测（探针复制本等待序列，30 次，宿主 16 核超载 3.5×）：
+	//   自然值 ∈ [30.03ms, 32.01ms]，均值 30.77ms
+	//   ⇒ 下界 25ms 的**实测余量 ≥ 5.03ms**（余量/阈值 = 20.1%）
+	//   ⇒ 这是全仓 8 处判别型下界里**余量最紧的一处**。
+	//   ⇒ 但它仍然安全：自然值 = 上面那个 **giveUp 30ms 截止时间**，
+	//     而截止时间是**定时器**（只晚不早）⇒ 下界恒成立 ⇒ 不会被判成假红。
+	//   ⇒ 结构性理由：定时器保证；观测余量：5.03ms。
+	//   台账：internal/clockguard/measured_margins.tsv（门会在下界被改大时变红）。
 	if elapsed := time.Since(start); elapsed < 25*time.Millisecond {
 		t.Fatalf("acquire returned too fast (%v): debt not honored", elapsed)
 	}

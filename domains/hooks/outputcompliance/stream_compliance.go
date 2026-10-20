@@ -76,16 +76,58 @@ func policyRuleFromIssues(issues []outputcompliance.ComplianceIssue) string {
 	return ""
 }
 
+// policyIssueLocation 取第一条带位置的问题（tool 参数是 JSON 路径，纯文本是
+// 字符区间）。
+func policyIssueLocation(issues []outputcompliance.ComplianceIssue) string {
+	for _, issue := range issues {
+		if issue.Location != "" {
+			return issue.Location
+		}
+	}
+	return ""
+}
+
 // blockedChunkResult 把策略拦截错误转成**带规则名**的阻断结果。
 //
 // 写者据此渲染协议终帧，客户端因此能区分「策略拦截」与「上游故障」，
 // 而不是只看到一个空响应（211 事故：zcode 只拿到 empty_model_response）。
+//
+// r1039（D4）：一并带上**人类可读**原因短语——客户端要拿它提示用户
+// 「这次调用被拦了，要不要继续执行」。
 func blockedChunkResult(err error) *response.ChunkResult {
 	ruleID := errorsx.PolicyBlockRuleID(err)
 	if ruleID == "" {
 		return &response.ChunkResult{ShouldBlock: true}
 	}
-	return &response.ChunkResult{ShouldBlock: true, Metadata: map[string]interface{}{"policy_rule": ruleID}}
+	meta := map[string]interface{}{"policy_rule": ruleID}
+	if reason := policyBlockReasonFromError(err); reason != "" {
+		meta["policy_reason"] = reason
+	}
+	return &response.ChunkResult{ShouldBlock: true, Metadata: meta}
+}
+
+// policyBlockReasonFromError 从策略拦截错误里取人类可读原因短语。
+func policyBlockReasonFromError(err error) string {
+	var pbe *errorsx.PolicyBlockError
+	if errors.As(err, &pbe) && pbe != nil {
+		return pbe.Reason
+	}
+	return ""
+}
+
+// policyBlockErrorReason 组装策略拦截错误的原因短语。
+//
+// 形如「output policy blocked stream lane（rule builtin.egress_sink）at $.command」
+// ——规则名给机器看，位置给人看。
+func policyBlockErrorReason(situation, ruleID, location string) string {
+	reason := situation
+	if ruleID != "" {
+		reason += " (rule " + ruleID + ")"
+	}
+	if location != "" {
+		reason += " at " + location
+	}
+	return reason
 }
 
 type complianceStreamState struct {
@@ -267,7 +309,10 @@ func (it *OutputComplianceInterceptor) releaseCheckedFrames(ctx context.Context,
 				"reason_codes", reasons,
 				"rule_id", ruleID,
 			)
-			return nil, &errorsx.PolicyBlockError{RuleID: ruleID, Reason: "output policy blocked stream lane"}
+			return nil, &errorsx.PolicyBlockError{
+				RuleID: ruleID,
+				Reason: policyBlockErrorReason("output policy blocked stream lane", ruleID, policyIssueLocation(result.Issues)),
+			}
 		}
 		if !state.redact || result.RedactedOutput == "" || result.RedactedOutput == original {
 			continue
@@ -536,7 +581,10 @@ func (it *OutputComplianceInterceptor) inspectSSEFrame(ctx context.Context, fram
 				"reason_codes", reasons,
 				"rule_id", ruleID,
 			)
-			return nil, &errorsx.PolicyBlockError{RuleID: ruleID, Reason: "output policy blocked stream event"}
+			return nil, &errorsx.PolicyBlockError{
+				RuleID: ruleID,
+				Reason: policyBlockErrorReason("output policy blocked stream event", ruleID, policyIssueLocation(result.Issues)),
+			}
 		}
 		if incremental {
 			checked.parts = append(checked.parts, &streamTextPart{

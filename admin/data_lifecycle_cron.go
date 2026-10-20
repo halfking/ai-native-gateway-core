@@ -5,8 +5,11 @@ import (
 	"fmt"
 	"log/slog"
 	"math/rand"
+	"runtime/debug"
 	"sync"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 )
 
 // HotCronConfig 夜间 cron 调度配置
@@ -52,6 +55,19 @@ func (c *HotCronConfig) defaults() {
 	}
 }
 
+// hotCronDB 是 hot cron 的最小查询面：能力探针（查 pg_proc）与 promote 调用
+// 各只需要 QueryRow 一个方法。
+//
+// 为什么要开窄接口（2026-10-21，§19.20.24）：
+// Handler.db 是**具体的** *pgxpool.Pool，无法在单测里注入 ⇒ 这条路径此前
+// 只能靠「构造一个 db=nil 的 Handler，让它 nil 解引用 panic」来"覆盖"
+// （见 data_lifecycle_cron_test.go 的旧 TestMaybeRunAt_MatchTime）⇒
+// 测出来的只是「panic 被 recover 兜住了」，行为一个都没钉住。
+// 与 handler.go 的 controlledBodyDB / topologyStatsDB 同款范式。
+type hotCronDB interface {
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}
+
 // HotCronScheduler 是 hot 表夜间自动迁移调度器
 //
 // 设计要点：
@@ -60,8 +76,11 @@ func (c *HotCronConfig) defaults() {
 //   - 单表迁移失败按指数退避重试 3 次，全部失败时记录 alert（写到 slog + 入 job 状态）
 //   - 不阻塞主进程：使用独立 context，重启即终止（不需要持久化 cron 调度状态）
 type HotCronScheduler struct {
-	h       *Handler
-	cfg     HotCronConfig
+	h   *Handler
+	cfg HotCronConfig
+	// db 是 h.db 的窄接口视图（见 hotCronDB）。生产上由 NewHotCronScheduler
+	// 从 h.db 接线；单测可直接注入假实现。
+	db      hotCronDB
 	cancel  context.CancelFunc
 	stopped chan struct{}
 
@@ -87,11 +106,20 @@ func NewHotCronScheduler(h *Handler, cfg HotCronConfig) *HotCronScheduler {
 		cfg.MaxRetries = -1
 	}
 	cfg.defaults()
-	return &HotCronScheduler{
+	s := &HotCronScheduler{
 		h:       h,
 		cfg:     cfg,
 		stopped: make(chan struct{}),
 	}
+	// 接线：db 取 h.db 的窄接口视图。
+	//
+	// ⚠ 必须显式判 h.db != nil 再赋值：否则 h.db（一个 nil 的 *pgxpool.Pool）
+	// 会被装进接口 ⇒ s.db 变成「非 nil 的接口持有 nil 指针」⇒ s.db == nil 为假
+	// ⇒ runOnce 开头的 nil 守卫会失效 ⇒ 又回到 nil 解引用 panic 那条老路。
+	if h != nil && h.db != nil {
+		s.db = h.db
+	}
+	return s
 }
 
 // Start 启动 cron 调度 goroutine。
@@ -162,7 +190,12 @@ func (s *HotCronScheduler) maybeRun(ctx context.Context) {
 			s.running = false
 			s.mu.Unlock()
 			if r := recover(); r != nil {
-				slog.Error("data-lifecycle: hot cron panic", "panic", r)
+				// ★ 必须带堆栈（2026-10-21，§19.20.24）：此前只记 panic 值。
+				// panic 值常常是 "runtime error: invalid memory address or nil
+				// pointer dereference" 这种**不带位置**的文本 ⇒ 线上真 panic
+				// 时无从定位是哪一行炸的。debug.Stack() 在 panic 尚未展开时
+				// 调用 ⇒ 栈里**同时含原始出错点**与本 defer 帧。
+				slog.Error("data-lifecycle: hot cron panic", "panic", r, "stack", string(debug.Stack()))
 			}
 		}()
 		s.runOnce(ctx)
@@ -175,6 +208,20 @@ func (s *HotCronScheduler) runOnce(ctx context.Context) {
 	slog.Info("data-lifecycle: hot cron run start",
 		"retention_hours", s.cfg.RetentionHours,
 		"tables", len(hotPromoteTableMap))
+
+	// ★ 没有 DB 句柄 ⇒ 直接跳过，并**记 ERROR**（这是真故障，不是噪声）。
+	//
+	// 可达性（2026-10-21 实测，§19.20.24）：生产上唯一构造点是
+	// cmd/gateway/main.go:NewHotCronScheduler(adminHandler, cfg)，而 adminHandler
+	// 由 admin.NewHandler(adminDB, ...) 构造、db 是活连接池 ⇒ **生产不可达**。
+	// 它守的是「构造出错（h 为 nil / db 没接线）」这类编程错误：此前这类错误
+	// 表现为 s.h.db 的 nil 解引用 panic ⇒ 被 recover 兜住 ⇒ 只留一条不带位置
+	// 的 ERROR ⇒ 定位不到根因。守卫把它变成一条自解释的 ERROR。
+	if s.db == nil {
+		slog.Error("data-lifecycle: hot cron run skipped (no database handle)",
+			"tables", len(hotPromoteTableMap))
+		return
+	}
 
 	totalRows := int64(0)
 	failures := make(map[string]string)
@@ -190,6 +237,34 @@ func (s *HotCronScheduler) runOnce(ctx context.Context) {
 		if existing := s.h.findRunningJobForTable(table); existing != nil {
 			slog.Info("data-lifecycle: hot cron skip table (manual job in progress)",
 				"table", table, "running_job_id", existing.ID)
+			continue
+		}
+
+		// ★ 890（v1 族真删）后的**能力探针**：promote 函数不存在 ⇒ 该表/该族
+		// 已经不存在（表与函数被一起 DROP）⇒ **SKIP**，不是 ERROR。
+		//
+		// ⚠ 为什么需要它（缺陷本体）：自动 hot cron 原本直接调 promote 函数，
+		// 而 890 把 v1 族与它的 promote 函数一起 DROP ⇒ 每轮 cron 都得到
+		// 42883（function promote_request_logs_hot_to_partition does not
+		// exist）⇒ 每轮 2 条 WARN + 1 条 ERROR 的噪声，而被调用的表**根本
+		// 不存在**、没有任何东西可搬 ⇒ 纯噪声 + 掩盖真实故障。
+		//
+		// ⇒ 探针让「函数没了」变成一条 INFO 的 SKIP，同时保留真正执行失败
+		// 时的 ERROR 语义（这是本门要守的不变量：噪声不得冒充故障）。
+		fnName := hotPromoteTableMap[table]
+		var fnPresent bool
+		if err := s.db.QueryRow(ctx, `
+			SELECT EXISTS (
+				SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+				WHERE n.nspname = 'public' AND p.proname = $1)
+		`, fnName).Scan(&fnPresent); err != nil {
+			slog.Warn("data-lifecycle: hot cron skip table (promote function probe failed)",
+				"table", table, "function", fnName, "error", err)
+			continue
+		}
+		if !fnPresent {
+			slog.Info("data-lifecycle: hot cron skip table (promote function absent — table/family retired)",
+				"table", table, "function", fnName)
 			continue
 		}
 
@@ -249,7 +324,7 @@ func (s *HotCronScheduler) runOneTableWithRetry(ctx context.Context, table strin
 				return total, ctx.Err()
 			}
 			var migrated int64
-			err := s.h.db.QueryRow(ctx,
+			err := s.db.QueryRow(ctx,
 				fmt.Sprintf("SELECT %s($1::interval, $2::int)", fnName),
 				retentionInterval,
 				s.cfg.BatchSize,
