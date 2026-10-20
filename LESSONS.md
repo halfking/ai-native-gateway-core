@@ -5345,8 +5345,7 @@ PostgreSQL 解析调用时，**带默认值的那个也能接 3 参调用**，
 - 证据：`ai-session-manager/internal/projectinfer/infer.go` 的 `writeInferredTags` 注释。
 ## 2026-10-20 — ★★★★★ **解冲突时手写字符串拼接 = 可能把几千行文件拼没**：用 git 两侧原文重建，别用脚本「切」（三项目会话治理续做）
 - 场景：并行会话同时给 `LESSONS.md` 追加条目 ⇒ 本轮 rebase 时 `LESSONS.md` 冲突。
-- 实测翻车：为了「两侧都保留」，写了个 Python 脚本按 `<<<<<<< HEAD` / `=======` /
-  `>>>>>>> <sha> (message)` 三个标记**切片拼接** ⇒ 切片边界算错 ⇒
+- 实测翻车：为了「两侧都保留」，写了个 Python 脚本按 `  `>>>>>>> <sha> (message)` 三个标记**切片拼接** ⇒ 切片边界算错 ⇒
   ★ **5309 行的文件被拼成 142 行**（只剩并行会话那 8 条）⇒
   **已提交的 commit 里 LESSONS.md 少了 134 条经验**。
   ⇒ 察觉方式：`git show HEAD~1:LESSONS.md | wc -l`（5237）与
@@ -6332,6 +6331,99 @@ PostgreSQL 解析调用时，**带默认值的那个也能接 3 参调用**，
   而写方 `domains/toolexecution/postgres_store.go:61` 与接线
   `cmd/gateway/tool_execution_integration.go` 都是**活的** ⇒ 收窄到「上游零流量」。
 - 状态：待观察
+
+## 2026-10-21 — 进程内互斥 ≠ 互斥：同库多实例会互删对方的写入（Seen: 1/2）
+- 任务 / 缺陷：`credential_model_index` rollup 是 **DELETE + INSERT 两条语句**，
+  两条各走一次 `r.db.Exec`（= 两个隐式事务）。两个网关实例共用同一个库时，
+  旧构建的 rollup（INSERT 42703 失败）**每 5 秒把新构建刚写的 75 行删掉且补不回来**
+  ⇒ `credential_model_index_hot` 的 `n_live_tup=0`（实测 `n_tup_ins=1036` / `n_tup_del=968`）。
+- 根因：
+  ① **非原子**：中间态对读者可见；
+  ② **进程内 singleflight 只覆盖本进程**（ticker / LISTEN / admin 手动接口三个触发源），
+     跨进程完全无效；
+  ③ 后果不是「指标陈旧」而是**功能缺失**：autoroute 候选池读
+     `credential_model_index_with_current_month`（hot ∪ 月分区），
+     新出现的 `(credential_id, raw_model)` 在月分区里要等 **8h** 排水窗口才可见
+     ⇒ 在此之前该组合**根本不在候选池里** ⇒ `model_not_found` / `no_candidate` ⇒ **100% 流量失败**。
+- 防复发检查：
+  1. ★ 凡「先删再写」的周期性刷新，**两条语句必须同事务**，且**先取跨进程 advisory lock**
+     （`pg_advisory_xact_lock(hashtextextended('<literal>', 0))`）——
+     本仓约定见 `settings/session_write_safety.go`；
+  2. ★ 部署形态里只要存在**两个实例同时对着同一个库**（本仓蓝绿部署
+     `scripts/deploy-seamless-docker.sh` 的候选槽 + 旧槽窗口**自带**这个风险面），
+     就要逐个清点「哪些后台 worker 会写库」，并给每条写路径配锁；
+  3. ★ 诚实边界：锁只对**同样会取锁的构建**有效 ⇒ 对方没升级时，锁不解决问题，
+     必须靠把对方升级（**别把「我加了锁」当成「问题消失了」**）。
+- 证据：`docs/audit/2026-10-21-R69-R70-跨进程竞态与静默降级残留.md` §2；
+  活库读数 `pg_stat_user_tables`；门 `bg/auto_index_refresher_rollup_atomic_test.go`
+  （AST 形状门 + 真库阻塞门，变异 M1/M2 全红 + sha256 逐字还原）。
+- 状态：已修（cecf1460b）
+
+## 2026-10-21 — 「接口返回 200」≠「功能可用」：被吞掉的错误会让面板恒空（Seen: 1/4）
+- 任务 / 缺陷：本轮从 PG 错误日志里一次挖出**四处**「页面上看不出报错」的残留 ——
+  ① `sd.session_id`（42703，列不存在）⇒ 任务分析详情页两个面板**恒空**；
+  ② `ARRAY_AGG(...)[1:5]`（42601）+ `COALESCE(tags,'[]'::jsonb)`（42804，列实为 `text[]`）⇒ 标签列表**恒空**；
+  ③ 已 DROP 的 `_request_logs` 仍在分区清单里 ⇒ 每次查状态 42P01 + WARN 噪声；
+  ④ `system_probe_runs.total_tokens`（42703）⇒ 系统监控「近 1 小时」四个计数**恒为 0**。
+  它们的共同点：**错误被 `if err == nil {…}` 或 `_ =` 吞掉**，接口照样 200。
+- 根因：① 降级可以接受，但**降级原因必须留痕**；② 列名/字面量漂移（列改名、类型变更）
+  在「内联 SQL + 吞错」的结构里**没有任何可见信号**；
+  ③ 「接口 200」只证明**请求处理完了**，不证明**查到了东西**。
+- 防复发检查：
+  1. ★ 内联 SQL 里的 `if err == nil {…}` / `_ =` 必须补 WARN 日志；
+  2. ★ 凡是「面板/列表恒空」类症状，**先问「SQL 是不是根本没跑成」**，
+     而不是先怀疑「本来就没数据」；
+  3. ★ 把这类 SQL **提成包级常量**并配一道**真库执行门**（只读 SELECT ⇒ 零足迹）——
+     形状门/文本门抓不到「列在不在」「类型对不对」「语法成不成立」；
+  4. ★ 保留响应字段但值不可得时，**在代码里写明原因**，别让「恒 0」冒充「真实计数」。
+- 证据：`docs/audit/2026-10-21-R69-R70-跨进程竞态与静默降级残留.md` §3；
+  门 `admin/session_family_runtime_sql_test.go`（真库执行 + 端到端 + 两条静态守卫），
+  变异 A/B/B2/C/D 全红 + sha256 逐字还原。
+- 状态：已修（14b64ddf4 / 695c1c59a）
+
+## 2026-10-21 — 新量具能一次性挖出旧量具看不见的缺陷族；但量具自己要先自证可用（Seen: 1/3）
+- 任务 / 缺陷：慢 SQL 这一维此前**没有可用量具** ——
+  本地 PG 装了 `pg_stat_statements` 却**没进 `shared_preload_libraries`**
+  （与 §143.20 在 211 上的发现同源）⇒ 查询直接报
+  `pg_stat_statements must be loaded via "shared_preload_libraries"`。
+  改走 PG 错误日志通道（`log_destination=stderr` ⇒ 进 `docker logs`），
+  `ALTER DATABASE … SET log_min_duration_statement = 2000` 后**一次挖出 4 处残留**（见上一条）。
+- 根因：① 缺陷族是「**运行时**残留」，而此前的验收面全是「接口返回 200」；
+  ② 慢 SQL/错误日志是**唯一**能覆盖「SQL 跑失败但被吞」的通道；
+  ③ 量具本身也会坏（扩展装了没 preload / 日志目录为空 / docker logs 写 stderr 而不是 stdout）。
+- 防复发检查：
+  1. ★ 判「有没有慢 SQL」之前先确认量具**真的可用**：
+     `SELECT count(*) FROM pg_extension WHERE extname='pg_stat_statements'` **不等于**可用 ——
+     必须再确认它在 `shared_preload_libraries` 里（否则查询直接报错）；
+  2. ★ 本地 PG 的慢查询/错误通道优先级：
+     `pg_stat_statements`（可用时）→ PG 错误日志（`docker logs <pg容器>`）→ 应用日志；
+     macOS 上**拿不到** `/var/lib/docker/containers/<id>/userdata/ctr.log`（Docker Desktop 不暴露）；
+  3. ★ 临时打开的阈值类设置**必须复原**（`ALTER DATABASE … RESET`），否则量具留在生产配置里；
+  4. ★ `docker logs` 写 **stderr** ⇒ 重定向要写 `> file`（`2>&1 > file` 会得到空文件）。
+- 证据：`docs/audit/2026-10-21-R69-R70-跨进程竞态与静默降级残留.md` §3.1、§4.3；
+  慢 SQL 读数：1 小时窗口内 8 条 >2s，**全部是 `COPY … TO stdout`（后台导出）**，页面路径 0 条。
+- 状态：已用（阈值已复原）
+
+## 2026-10-21 — 静态守卫自己会有假阳性：门红了先读门在守什么（Seen: 1/3）
+- 任务 / 缺陷：§3 那道静态守卫的第一版，**两处判红都是误判** ——
+  ① 用「`session_dim` 之后 400 字符内出现 `.session_id`」判 ⇒ 误判了
+  `admin/session_turns_v2.go:766` 与 `admin/turns_sessions.go:167`
+  （那两处是正确写法 `sd.gw_session_id = s.session_id`，窗口跨到了下一张表的合法列）；
+  ② 「`ARRAY_AGG` 前面有没有左括号」⇒ 误判了 `ARRAY_AGG(ma.raw_name ORDER BY ma.raw_name) AS aliases`
+  这种**根本没有下标**的写法；
+  ③ 断言前没剥注释 ⇒ 把自己注释里的说明文字当成代码判红。
+- 根因：文本匹配的**窗口**与**作用域**都没有对齐语义：
+  「某个别名下的某个列」「某个表达式后面有没有下标」都得按语法边界判，不能按字符邻近判。
+- 防复发检查：
+  1. ★ 静态门命中后**逐条人工核对**再改代码 —— 门红 ≠ 代码错（这条与
+     §R65「门红了先读门在守什么」同族）；
+  2. ★ 别名/表达式级别的判据要**按语法边界**取（先取别名、先配平括号），
+     不用「窗口内出现」这种近似；
+  3. ★ 断言 SQL/代码文本前**剥注释**（复用仓内既有的 `stripGoComments`，不重复实现）；
+  4. ★ 门自己要有**变异验证**（改坏 ⇒ 必须红；红因必须是这条门），
+     否则「恒绿门」会以「门绿」的形式骗过所有人。
+- 证据：`docs/audit/2026-10-21-R69-R70-跨进程竞态与静默降级残留.md` §3.6。
+- 状态：已修（门收紧后全绿）
 
 ## 2026-10-21 — ★★★★★ **「跑过了」≠「形态对了」：量具必须断言形态，而且漏检的门比红门更危险**（llm-gateway-go R69 · D3 批次二 收尾）
 - 场景：合并 35 个提交后，在**全新 probe 库**上复验，本轮改好的两条门**变红**

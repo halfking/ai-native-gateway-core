@@ -119,6 +119,10 @@ func TestSessionFamilyRuntimeSQL_ExecutesOnRealDB(t *testing.T) {
 			name: "list_tags",
 			sql:  listTagsSQL,
 		},
+		{
+			name: "system_monitor_probe_run_counters",
+			sql:  systemMonitorProbeRunCountersSQL,
+		},
 	}
 
 	for _, tc := range cases {
