@@ -408,27 +408,51 @@ func TestR1039MixedWidthMarkerReservedOnInputSide(t *testing.T) {
 	}
 }
 
-// BenchmarkMayContainMarkerTextMixedWidth 是混拼判据的**成本**基准。
+// 下面是混拼判据的**成本**基准。
 //
-// 跑法：go test ./security/sanitize/ -run XXX -bench MayContainMarkerText -benchmem
-// 门槛：allocs/op 必须为 0，且 ns/op 与 BenchmarkMayContainMarkerTextAscii 同量级
+// 跑法：go test ./security/sanitize/ -run '^$' -bench MayContainMarkerText -benchmem
+// 门槛：allocs/op 必须为 0，且 ns/op 与 ASCII 路径**同量级**
 // （混拼检测不得比纯 ASCII 判定贵一个数量级）。
+//
+// ⚠ 基准的**输入必须彼此不同**才有意义：第一版我把 "Ascii" 与 "MixedWidth"
+// 两条基准指向了**同一份中文语料** ⇒ 两条读数必然相同 ⇒ 什么也没证明。
+// 现在每条基准一个**确定的语料种类**，并注明它走哪条候选路径。
 var (
-	benchMixedWidthQuiet = strings.Repeat("这是敏感数据，请妥善保管。", 320)
-	benchMixedWidthHit   = strings.Repeat("x", 400) + "ＳENSITIVE：phone" + strings.Repeat("y", 400)
+	// benchQuietASCII：纯 ASCII 英文正文 ⇒ 只走候选 1（memchr 's'/'S'）
+	// ⇒ 这是便宜门的**下界**（旧门在这上面也只走一条 memchr）。
+	benchQuietASCII = strings.Repeat("The quick brown fox jumps over the lazy dog. ", 320)
+
+	// benchQuietChinese：中文正文，**含全角标点**（，。）⇒
+	// 全角标点的 UTF-8 首字节是 0xEF（与全角字母同首字节）⇒ 候选 2
+	// （memchr 0xEF）**会被进入** ⇒ 汉字本身在候选 2 里立刻被否掉。
+	// ⚠ 这条是新门的**上界**，也是旧门的上界（旧门同样 memchr 0xEF）。
+	benchQuietChinese = strings.Repeat("这是敏感数据，请妥善保管。", 320)
+
+	// benchQuietFullwidth：全角字母/数字正文 ⇒ 候选 2 在**每一个**字符处被进入。
+	benchQuietFullwidth = strings.Repeat("ＡＢＣ：ＡＢＣ，１３８００１３８００。", 320)
+
+	// benchMixedWidthHit：含混拼标记 ⇒ 命中路径（候选 2 在标记词处一次成功）。
+	benchMixedWidthHit = strings.Repeat("x", 400) + "ＳENSITIVE：phone" + strings.Repeat("y", 400)
 )
 
 func BenchmarkMayContainMarkerTextAscii(b *testing.B) {
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
-		_ = mayContainMarkerText(benchMixedWidthQuiet)
+		_ = mayContainMarkerText(benchQuietASCII)
 	}
 }
 
-func BenchmarkMayContainMarkerTextMixedWidth(b *testing.B) {
+func BenchmarkMayContainMarkerTextChinese(b *testing.B) {
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
-		_ = mayContainMarkerText(benchMixedWidthQuiet)
+		_ = mayContainMarkerText(benchQuietChinese)
+	}
+}
+
+func BenchmarkMayContainMarkerTextFullwidth(b *testing.B) {
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_ = mayContainMarkerText(benchQuietFullwidth)
 	}
 }
 
