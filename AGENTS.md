@@ -4873,3 +4873,21 @@ To codeup.aliyun.com:kaixuan/official-deploy/llm-gateway-go.git
 > P1 回收 9 月空分区 ≈2,133 MB（需逐个确认）/ **P2 快照族建模（最大杠杆）**/
 > P3 `session_bodies` 16 KB/行 TOAST 形态 / **P4 = v1 族退役（原主线，现降级）**。
 > ⇒ 完整记录见 runbook `§143.40`。
+
+> **2026-10-21 R77 轮（db 包形态线 · 本会话）**：接并行会话通报的**两条 db 包 v1 时代夹具**
+> ⇒ ★★ **复现逐字属实**，但 **★ 订正通报对 (B) 的定性**（说「断言全是会话族形态」**不准确**）：
+> **(B) 是「混合门」** —— 会话族一半在位，**v1 一半（`h.` 三条断言 / v1 数据语义 / 710 三臂重放 /
+> 已退役 wrapper 链）必红** ⇒ ★★ **修夹具救不回来** ⇒ **处置要按半门拆**
+> ⇒ ★★ **订正通报选项 B 里埋的绝对数 pin**（「+ 118 列」⇒ 必然腐烂；★ 实测 (A) 的本意在 v4 载体里
+> **还活着**：三列 `customer_id`/`request_class`/`due_at` **3/3 在位** ⇒ 改瞄应是「**钉形态不钉 118**」）。
+> ⇒ ★★★★ **本轮补了一个今天真实存在的覆盖缺口**：canonical 视图的 **FROM/JOIN 结构无人守**
+> （890 契约门只比 projection；而 `db.CanonicalSessionOnlyDDLForTest()` 这个整段 DDL 的导出
+> **全仓零调用** ⇒ 它就是一道缺失的门）⇒ 新门
+> `sql/migrations/startup/migration_890_v1_family_drop_test.go::TestMigration890ViewBodyMatchesComposer`
+> （组装 `$ddl$`+`$proj$` 与 Go 整段 DDL 逐字比，**不 grep 关键字**）⇒ 变异 **2/2 全红** + md5 还原。
+> ⇒ ★★★ **顺带两条方法学**：① **「包级测试靶子」与「形态测量对象」必须分库** ——
+> ★ 实测 `go test ./db/` 会把产品形态库**掏空**（`schema_migrations`/canonical 视图/`session_turns_hot` 全没了）
+> ⇒ ★★ **这解释了「db 包 2 条 vs 10/11 条」的全部差异（是坐标不同，不是谁漏报）**；
+> ② **「导出的常量没人用」= 覆盖缺口的信号**。
+> ⇒ 对生产**零写入**（只加一道门 + 只增文档）。留证：
+> `docs/audit/2026-10-21-R77-db包v1时代夹具与canonical结构覆盖缺口.md` ＋ handoff `§19.20.17`。
