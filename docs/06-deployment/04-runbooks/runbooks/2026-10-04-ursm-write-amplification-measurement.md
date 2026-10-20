@@ -36523,6 +36523,30 @@ GOCACHE=/tmp/gocache-p1437 go test ./scripts/ursmcheck/ -run 'TestRunbook14320' 
 但在事实上是「archive 没跑」的结果，不是设计在起作用** ⇒
 **A3 的判定需要改写**（见横幅三）。
 
+
+> ⚠⚠⚠ **订正横幅四（2026-10-20，§143.22.1 就地订正；上面 §143.21.3 的表格与结论原文保留）**
+>
+> 本节写「**archive 路径几乎零产出** ⇒ 冷族回收完全押在 archive 上，而它基本没跑」
+> ⇒ **§143.22 查清后，这个判词过于笼统，需要改判**：
+>
+> 1. ★★★★ **归档机制本身是通的**（不是坏掉）—— 证据：RDL 族的 dst
+>    `routing_decision_log_archive_2026_08 / routing_decision_log_archive_2026_09 / routing_decision_log_archive_2026_10` **三个分区都存在**
+>    （而 `routing_decision_log_2026_08` 已不在父表下 ⇒ **说明它被 DETACH+DROP 过**
+>    ⇒ ⇒ 归档**完整走完了**「建 dst → 搬 → DETACH → DROP」）⇒ 只是**搬了 0 行**。
+> 2. ★★ **零产出有三个不同原因**（不是一个）：
+>    ① **目标月分区本来就是空的**（数据 2026-09-04 才开始进这张表）；
+>    ② **目标月分区已被 DETACH 出父表**（孤儿表）⇒ 654 的
+>    `ALTER TABLE ... DETACH PARTITION` 对它**必然报错** ⇒ 归档静默失败；
+>    ③ **skipped**（目标分区根本不存在 ⇒ 不建 dst、不报错）。
+> 3. ★★★★ **「冷族靠『archive 没跑』的巧合留存」这个说法要改**：
+>    **2026-11-03 是这个库上 `archive_credential_model_index` 第一次「真归档」**
+>    （目标 = `2026_09`，301,255 行 / 84 MB / **在父表下**）⇒
+>    ⇒ **A1′（裁剪冷月分区）的效果会「自动达成」，且历史完整保留在 archive 表里**。
+>
+> ⇒ **对属主的意义**：A3′ **不是** A1′/A2′ 的前置 ⇒ 反而是 **11-03 会自己动**
+> ⇒ **A1′/A2′ 的决策窗口因此变紧（14 天）**。
+> ⇒ 详见 runbook `§143.22`。
+
 ### §143.21.4 ★★★ Go 侧 TTL 配置空转
 
 ```go
@@ -36661,3 +36685,136 @@ GOCACHE=/tmp/gocache-p1437 go test ./scripts/ursmcheck/ -run 'TestRunbook14321' 
 [[阴性结论要当缺陷一样复核]] · [[跨节订正前先自问「我要订正的这条真的错了吗」]] ·
 [[保留期是最大杠杆]] · [[「迁移的哪一版在生产跑过」判别力排序]] ·
 [[跨实例审计必做]] · [[「扩展装了」≠「量具能用」]]。
+
+## §143.22 archive 链路的根因链 + 「11-03 第一次真归档」预警（2026-10-20）
+
+### §143.22.0 结论先行
+
+本节把 §143.21.3 的「archive 路径几乎零产出」**从「路径坏掉」改判为「三个不同的原因」**，
+并识别出一个**有时限的事件**（11 天后）。产出四条：
+
+1. ★★★★ **归档机制本身是通的**（不是坏掉）⇒ 证据：RDL 族的 dst
+   `routing_decision_log_archive_2026_08 / routing_decision_log_archive_2026_09 / routing_decision_log_archive_2026_10` **三个分区都存在**
+   （`routing_decision_log_2026_08` 已不在父表下 ⇒ **说明它被 DETACH+DROP 过**
+   ⇒ ⇒ **归档确实完整走完了「建 dst → 搬 → DETACH → DROP」**），只是**搬了 0 行**
+   ⇒ ⇒ **零产出的第一因 = 目标月分区本来就是空的**。
+2. ★★★★ **机制性缺陷（可从 DDL 直接推出，无需复现）**：654 的收尾是
+   `ALTER TABLE credential_model_index DETACH PARTITION src_part`
+   ⇒ ★ **对「已被 DETACH 出父表的同名表」必然报错** ⇒ 归档必然失败且**静默**
+   （`pg_stat_statements` **只记成功语句** ⇒ §143.19 已证 ⇒ 失败在量具上完全不可见）。
+   ⇒ 而迁移 **337（`337_detach_current_future_partitions.sql`）确实把
+   `credential_model_index_2026_07` 与 `_2026_08` DETACH 了**（仓内 DDL 逐字可查）
+   ⇒ ⇒ **「目标月是孤儿表」不是假想，是库里已存在的形态**。
+3. ★★★★ ★★ **2026-11-03 是这个库上 `archive_credential_model_index` 第一次「真归档」**：
+   调度是 `bg/partition_manager.go:598-620` 的「`now.Day() <= 3` 且 `s.day == today`」
+   + `twoMonthsAgo = now.AddDate(0, -2, 0)` ⇒
+   **11-03 的目标是 `2026_09`**（**301,255 行 / 84 MB / 在父表下 ⇒ 不触发缺陷 2**）
+   ⇒ ⇒ **它会第一次真正把 301,255 行搬进 `credential_model_index_archive_2026_09`（columnar）
+   并 DETACH+DROP 源分区** ⇒ ⇒ ★★ **A1′（裁剪冷月分区）的效果会「自动达成」**，
+   **且历史完整保留在 archive 表里**（不是销毁）⇒ ⇒ **属主的决策题因此简化**。
+4. ★★★ **11-03 剩下的唯一真实风险 = 「301,255 行单事务搬进 columnar」的耗时 vs
+   `runArchive` 的 10 分钟 timeout**（`bg/partition_manager.go:1359`）
+   ⇒ 252 宿主 **load 14.17 / 4 核（超载 3.5 倍，§143.20.3 实测）** ⇒ 风险不可忽略；
+   ⇒ **失败是安全的**（单事务回滚 ⇒ 源分区完好 ⇒ 下月再试），
+   ⇒ **但失败是静默的**（量具只记成功语句）⇒ ⇒ **必须在 11-03 之前安排观测点**。
+
+⚠ **本节对生产的写入 = 0**（全只读：`pg_class` / `pg_index` / `pg_inherits` /
+`pg_get_functiondef` / `pg_proc` / 聚合 COUNT）+ 仓内 DDL 逐字比对。
+**没有** DELETE / TRUNCATE / DROP / REINDEX / ANALYZE / 迁移 / 改配置 / 改 cron。
+
+### §143.22.1 ★ 归档「零产出」的三个不同原因（§143.21.3 的改判）
+
+| 原因 | 机制 | 证据 |
+|---|---|---|
+| ① **目标月分区是空的**（最常见） | 数据 2026-09-04 才开始进这张表（252 冷族 09 月 min_bucket = 2026-09-04 23:55）⇒ 06/07/08 天然为空 | 211 上 `credential_model_index_2026_07` / `_2026_08` **分区存在、各 0 行** |
+| ② **目标月分区已被 DETACH 出父表**（孤儿表） | 654 收尾的 `ALTER TABLE ... DETACH PARTITION` 对孤儿表**必然报错** ⇒ 事务回滚 ⇒ dst 也不留下 | 迁移 337 逐字 DETACH 了 `_2026_07` / `_2026_08`；库中**只有** `archive_credential_model_index` 会 DROP CMI 分区（`pg_proc.prosrc` 全扫） |
+| ③ **skipped**（目标分区根本不存在） | 654 的 `IF NOT EXISTS (src_part) THEN RETURN 'skipped'` ⇒ **不建 dst、不报错** | 生产上 CMI 的 archive 只有 `_2026_07`，**没有 `_2026_08` / `_2026_09`** |
+
+⇒ ⇒ ★★ **改判**：§143.21.3 写的「archive 路径几乎零产出 ⇒ 冷族回收完全押在 archive 上，
+而它基本没跑」**过于笼统** —— **路径是通的**，只是**还没到能搬的月份**（原因 ①）
+或**目标形态让它必然失败**（原因 ②）。
+⇒ ⇒ **对属主的意义**：A3′「archive 零产出」**不是要先修好才谈 A1′/A2′ 的前置**，
+而是**「11-03 它会自己动」**（结论 3）⇒ **A1′/A2′ 的窗口因此变紧**（14 天后冷族会自行搬家）。
+
+### §143.22.2 ★★ 11-03 事件预演（逐步）
+
+| 步 | 动作 | 依据 | 风险 |
+|---|---|---|---|
+| 1 | 主 ticker（`pm.interval`，默认 24h）触发 `archiveOldPartitionsIfNeeded` | `bg/partition_manager.go:261-290` | tick 时刻若跨过午夜则 day 3 可能错过（**低概率，未闭合**） |
+| 2 | `now.Day() <= 3` 且 `s.day == today`（3）⇒ 命中 `archive_credential_model_index` | `bg/partition_manager.go:604-620`、`archiveSpecs()` | — |
+| 3 | `twoMonthsAgo = now.AddDate(0,-2,0)` = **2026-09-03** ⇒ `src_part = credential_model_index_2026_09` | 同上 | 目标**在父表下** ✔（分区清单实测）⇒ **不触发缺陷 ②** |
+| 4 | dst `credential_model_index_archive_2026_09` 不存在 ⇒ `CREATE TABLE ... PARTITION OF ... USING columnar` | 654 第 57-66 行 | ★ **有先例**：`routing_decision_log` 父表带 **6 个 `ON ONLY` 索引** + **3 个 columnar 子分区**（各带 6 个 btree 索引）⇒ **组合在活库已验证** |
+| 5 | `INSERT INTO dst SELECT ... FROM src`（**301,255 行**，17 列同名同序同类型） | 654 第 92-113 行 | ★ **无唯一冲突**：archive 父表的 3 个索引**都不是 UNIQUE**；`distinct(bucket,credential_id,raw_model)` = 301,255 = 行数 ⇒ 654 的 `EXCEPT ALL` 比对逻辑成立 |
+| 6 | `ALTER TABLE credential_model_index DETACH PARTITION src` + `DROP TABLE src` | 654 第 115-116 行 | ★ **ACCESS EXCLUSIVE 锁**（对 84 MB 分区） |
+| 7 | `RETURN QUERY SELECT 'success', row_count, true` | 654 第 118 行 | — |
+
+⇒ ⇒ ★★★ **结论：技术上全程可行**（每一步都有活库先例或实测读数支撑），
+**唯一未量化的是第 5 步的耗时** ⇒ ⇒ **11-03 之前应安排观测**（见 §143.22.7-D1）。
+
+### §143.22.3 ★★ 缺陷 ② 的可修形态（**不需要属主语义拍板**）
+
+**问题**：654 的收尾对**孤儿表**必然报错 ⇒ 归档静默失败。
+
+| 修法 | 改哪 | 语义影响 | 备注 |
+|---|---|---|---|
+| **A. 目标分区不在父表下 ⇒ 走「直接搬 + DROP」而不是「DETACH + DROP」** | 654 函数体 | **无**（孤儿表本来就不在父表下 ⇒ DETACH 无意义） | ★ 最小改动；把「必然失败」变成「能搬完」 |
+| **B. 目标分区不在父表下 ⇒ 先 ATTACH 回来再走原路径** | 654 函数体 | **无** | ⚠ ATTACH 需要 ACCESS EXCLUSIVE + 校验区间；比 A 复杂 |
+| **C. 调用前先校验 src 仍挂在父表下，不在则返回 `skipped` 并告警** | 654 函数体 | **无** | ★ 最小且最安全：把**静默失败**变成**可观测**（配合 Go 侧 error 日志） |
+
+⇒ ⇒ ★★ **推荐 A + C 并用** ⇒ ★ **这是「缺陷修复」，不是「策略变更」**
+⇒ ⇒ **不撞属主的语义决策**（保留期不变、archive 语义不变）⇒ **可以在仓内直接落地**。
+
+### §143.22.4 ★★ 缺陷 ① 的一个反向问题：孤儿分区对读方不可见
+
+⚠★ 迁移 337 把 CMI 的 `_2026_07` / `_2026_08` **DETACH 成孤儿表** ⇒
+**它们不在 `credential_model_index` 父表下 ⇒ `credential_model_index_with_current_month`
+（= `refreshIndexSQL` 的源）查不到它们** ⇒
+⇒ ★★ **若某个月有数据，它就「既不在父表、也不在 archive」⇒ 对读方完全不可见**
+⇒ ⇒ 本次实测这两个月**都是空的**（211 上 0 行）⇒ **本次没有数据损失**
+⇒ ⇒ ⚠ **但机制性隐患成立**（**211 上 07/08 仍挂在父表下** ⇒ 两实例形态不一致）
+⇒ ⇒ 登记为 **D2**（见 §143.22.7）。
+
+### §143.22.5 诚实边界
+
+- ⚠ **本节对生产的写入 = 0**（见 §143.22.0 末尾）。
+- ⚠ **「11-03 会成功」是**推演**，不是实测**：
+  每一步都有活库先例或实测读数支撑，但**第 5 步的耗时未量化**
+  ⇒ **不给「一定会成功」的承诺**，只给「技术上可行 + 失败是安全的」。
+- ⚠ **tick 跨午夜导致 day-3 错过**这一路径**未闭合**（24h ticker 的漂移未量化）。
+- ⚠ **CMI 的 `_2026_08` 分区与其 dst 双双消失的完整路径未闭合**：
+  已知「库中只有 `archive_credential_model_index` 会 DROP CMI 分区」，
+  但按 654 的语义，成功的归档必留下 dst ⇒ **存在未解释的缺口** ⇒ 只登记，不强推。
+- ⚠ **缺陷 ② 的修法（A/C）尚未写成迁移**（本节只给形态与判据）⇒
+  **是否在 11-03 前落地，属主决定**（见 D1）。
+- ⚠ **未覆盖**：archive 表的**自身**保留期（archive 的月分区也只增不减）、
+  `request_logs_archive_2026_08` / `_request_logs_archive` / `request_wal_archive`
+  这三个 **0 行的 archive 表**（331 已把它们从调度里移除 ⇒ 属遗留对象）。
+
+### §143.22.6 复核方法（可原样重跑）
+
+```bash
+# ── 1) archive 表的真实行数 + 各 archive 族的 dst 分区清单（判「机制通」）
+bash ~/.mavis-tools/lgwp-prod.sh /private/tmp/p14321/archive_all.sql        300 > /private/tmp/p14321/archive_all.out        2>&1
+# ── 2) 654 在 11-03 会命中什么（twoMonthsAgo 推导 + dst/列/索引/行数）
+bash ~/.mavis-tools/lgwp-prod.sh /private/tmp/p14321/archive_preflight.sql  300 > /private/tmp/p14321/archive_preflight.out  2>&1
+# ── 3) 唯一冲突风险（archive 索引是否 UNIQUE + canonical_id 基数）
+bash ~/.mavis-tools/lgwp-prod.sh /private/tmp/p14321/archive_conflict.sql  300 > /private/tmp/p14321/archive_conflict.out  2>&1
+# ── 4) ★「columnar 子分区挂带索引的父表」先例 + 逐列一致性
+bash ~/.mavis-tools/lgwp-prod.sh /private/tmp/p14321/columnar_idx.sql      300 > /private/tmp/p14321/columnar_idx.out      2>&1
+# ── 5) 库里谁会 DROP CMI 分区（pg_proc.prosrc 全扫）
+bash ~/.mavis-tools/lgwp-prod.sh /private/tmp/p14321/drop_hunter2.sql     300 > /private/tmp/p14321/drop_hunter2.out     2>&1
+# ── 6) ★ 337 对 CMI 07/08 的 DETACH（仓内 DDL，逐字可查）
+grep -n "credential_model_index_2026_0[78]" -B 3 -A 3 sql/migrations/startup/337_detach_current_future_partitions.sql
+```
+
+⇒ ⇒ ★ **本节落地的门**（不连库，可原样重跑）：
+
+```bash
+# §143.22 文档门：根因链 / 11-03 事件 / 修法 / 诚实边界
+GOCACHE=/tmp/gocache-p1437 go test ./scripts/ursmcheck/ -run 'TestRunbook14322' -count=1 -v
+```
+
+★ 同族：[[先读量具再读产物]] · [[0 命中的第一嫌疑是量具坏了]] ·
+[[阴性结论要当缺陷一样复核]] · [[自己上一节的结论也要复核]] ·
+[[跨节订正前先自问「我要订正的这条真的错了吗」]] · [[保留期是最大杠杆]] ·
+[[「读不到」与「没有」返回值同形]]。
