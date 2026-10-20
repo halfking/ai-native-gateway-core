@@ -4573,6 +4573,46 @@ To codeup.aliyun.com:kaixuan/official-deploy/llm-gateway-go.git
   ⇒ ⇒ ★★ **教训：★ 变异必须真的改变被测行为，否则「门绿」是假读数。**
 - ⚠ **未修（已定位）**：4 个夹具缺陷（`outbox_events` 表不存在 / 种子列已改名 / 漏 3 个 NOT NULL 列 /
   `_request_logs` 已退役）⇒ ★ **`_request_logs` 那条属并行会话 D3 范围，已通报**。
+
+### 2026-10-21 R69 轮（**D3 侧·批次二**）：**v1 族退役后的第二层红门** ＋ **两处量具级方法学修正**（变异 5/5 全红）
+
+> 明细：`docs/audit/2026-10-21-R69-D3-v1族退役后第二层红门.md`；handoff `§19.19`。
+> ★ 本轮**只改测试面 + 一个 build 修复** ⇒ **对生产零写入**。
+
+- ★★★★ **本轮最有价值的产出不是那 5 条门，而是 3 处方法学修正**：
+  1. ★★ **「全仓 `go test ./...`」在共享真库上**不是有效读数** —— 包是**并行**跑的 ⇒ 包间互相污染
+     （实测：`admin/v_analytics_views_session_source_test.go` 全仓跑红「premise broken: `_request_logs` 又存在了」，
+     **逐包跑是绿的** ⇒ 那是污染产物）
+     ⇒ ⇒ **R59 / R67 的「全仓 75 条 / 57 条」口径要打折**；
+  2. ★★ **同一个包、同一份代码，全新库与用过的库失败数不同**（实测 `db/` = **4** vs **11**）
+     ⇒ ⇒ **一次性库必须每次新建**（`probe-onetime-db-shape.sh` 的 `DB_NAME` 覆盖就是为此）；
+  3. ★★ **integration 树编译不过**（共享 helper `stripGoCommentsKeepingStrings` 的定义文件
+     `admin/request_logs_retirement_tiering_test.go` 带 `//go:build !integration`，而
+     `admin/section_14336_board_single_scan_test.go` 在两种 build 里都要用它）
+     ⇒ 连带拉红 `sql/schema::TestIntegrationTaggedTreeCompiles`（★ 那道门本来就是为抓这种问题而存在的）
+     ⇒ ⇒ **挡住所有 `-tags=integration` 的跑法**
+     ⇒ ★ **修法**：helper 移到**不带 build tag** 的新文件 `admin/go_comment_strip_test.go`（**不碰那一会话的文件**）
+     ⇒ ⇒ ★ **通用式：共享 helper 的定义文件不能带任何 build tag**（只要有一个使用方在另一种 build 里）。
+- ★★ **改瞄 5 条门**（逐包隔离 + 全新库口径：**11 → 6**，新增 0，另有 1 条由红转「诚实 skip」）：
+  | 门 | 要点 |
+  |---|---|
+  | `db/TestSessionFamilyBodiesSourceColumnParity` | ★★ **A 类空证据**（探针依赖有数据 ⇒ 空表恒红）⇒ 改成**与数据无关**的 `LEFT JOIN LATERAL`（错列名仍 42703）；★ v1 臂已退役 ⇒ 换成 **③a v1 关系必须不存在** + **③b 会话 hot 臂与父表臂同形** |
+  | `db/TestBodiesCutoverGapBlocksCutover` | ★ 题目换了（v1 族已删）⇒ 改成**退役守卫** `TestBodiesCutoverV1ArmStaysRetired`；纯函数门保留（它守**口径**坑） |
+  | `cmd/gateway/TestV1WriteLiveness_RealDB` | ★ **产品侧已退役感知**、测试侧停在 4 个落点 ⇒ 改 2 个落点 + 判决按退役形态（`alive` 不可达）+ **负控制换成「分类器不能被写死」**（原「单面实现」负控制在退役形态下**不可证伪**） |
+  | `telemetry/TestRequestClassPGRoundTrip` | ★★ **语义没丢，载体换了**：`request_class`/`due_at` 现在在 **`session_turn_details(_hot)`** ⇒ 钉现行载体 + 客户端不变式 + **活的 writer 真往返**；★ 登记「**DB 侧兜底没了**」（可空/无 DEFAULT/无 CHECK ⇒ 不变式只由代码保证） |
+  | `cmd/gateway/TestS4GateMeasurement` | ★★ **守卫问错了问题**（查母表、测量要 hot 表 ⇒ 假阳性）⇒ 改成**探测测量要用的全部关系** ⇒ 由红转**诚实 skip** |
+- ★★ **变异 5/5 全红**（M1 探针列名改错 / M2 **把 v1 关系建回来**（DB 语义变异）/ M3 判决恒 dead /
+  M4 载体表名改错 / M5 s4 守卫退回只查母表）⇒ 还原按**原路径** md5 **5/5 逐字一致**。
+- ★★★★ **未闭合：`v1 族只被删了一半`** —— `_request_logs_hot` 已不在，**`_request_logs` 父表仍在**
+  ⇒ 「族已退役」在父表上不成立 ⇒ 多道门的前提探测失真。
+  ⇒ 线索：① ★ 890 的台账自登记写 `public.schema_migrations`，而 018 造的是 `schema_migration_audit`
+  ⇒ **若 018 改了台账名，890 会整笔回滚**；② ★ **两条基线不一样**
+  （`sql/schema/01-schema.sql` 有 `schema_migrations`；`installer/.../embeddata/01-schema.sql` 有
+  `schema_migration_audit`）⇒ **probe 建的库可能不是产品的真实形态**。
+  ⇒ ★ **下一轮第一件事**：在**真实安装链**上复核「890 之后 `_request_logs` 还在不在」。
+- ⚠ **已接手但未做**：`telemetry/TestRequestLogInsertParamCount`（★ 并行会话 R70 段已通报给 D3 侧）——
+  它的前提「**单表**全字段落地」已结构性不成立（字段散到 `usage_ledger_hot` / `routing_decision_log_hot` /
+  会话族三处）⇒ 需要一份跨表契约 ⇒ **半改会造恒绿门** ⇒ 本轮**不做**，登记为下一轮。
 > **2026-10-21 §143.37 轮（本会话）**：**「P12 为什么被调用」的归因 ⇒ 不是降级误触发，
 > 而是【无条件 fall-through】** ⇒ **对生产写入 = 0**：
 > ★★★★★ **`queryOverviewCounts` 里的 `return h.fillOverviewCountsFromLogs(...)`
@@ -4627,3 +4667,85 @@ To codeup.aliyun.com:kaixuan/official-deploy/llm-gateway-go.git
 >   隔离/授权开关的授权模型（`GATEWAY_CANONICAL_TEST_LOCAL_ONLY` 现为 `t.Fatal`，建议改 SKIP）、
 >   Citus 一次性库形态的 `pg_dist_local_group` 错误、A 类 6 条、db/ 两条 v1 夹具、**D2**、**C1**。
 > ⇒ 完整记录见 `docs/audit/2026-10-21-R71-测试env事实源边界与五类分类学.md` 与本文件 `§19.20`。
+- ★★★★★ **收尾复验的决定性发现：probe 建出来的库**不是产品的真实形态** ——
+  `scripts/audit/probe-onetime-db-shape.sh` 建出来的库**缺 `session_turns_hot`**
+  （母表 `session_turns` 在、hot 表不在、details 在），
+  而脚本跑完 ensure 链打印的是「✓ ensure 链已跑（**库现在 = 产品真实形态**）」⇒ **这句话是错的**；
+  ⇒ ★★ 且 ensure 链自己的门 `db::TestFreshInstallRuntimeShape_EnsureChain` 在这个状态下**PASS**
+  ⇒ ⇒ **它没检 hot 表** ⇒ **一道漏检门**。
+  ⇒ ⇒ ★★ 本轮追的「v1 族退役后的红门」里**相当一部分是在这个不完整形态上测出来的**
+  ⇒ ⇒ **「canonical 视图 0 列」「`_request_logs` 父表在、hot 表不在」「会话族两腿不同形」都要重新定性**。
+  ⇒ ⇒ ★ **通用式**：★ **量具要断言「形态」，不能只断言「跑过了」**；
+  ★ **一条门在自己缺关键对象时仍然绿 ⇒ 它是漏检门** ⇒ 判据里必须有「那个对象在不在」；
+  ★ **自己新写的门变红 ⇒ 先确认是不是环境变了**（本轮的红来自 incoming 提交 + probe 库形态，**不是代码坏了**）。
+
+> **2026-10-21 R72 轮订正（本会话）**：**把 R71 轮的一处推理链整个推翻** —— 守卫语义被我读反了
+> ⇒ ⇒ ★★★ **根因**：守卫条件 `!strings.HasSuffix(db,"_test") || os.Getenv("TEST_SESSION_INGEST_ISOLATED")!="1"`
+>   ⇒ 「拦人」= 库名不合规 **OR** 开关≠1 ⇒ 「放行」= **库名合规 AND 开关=1**
+>   ⇒ ⇒ ★★ **合规库名本身不够**，隔离开关也必须显式 `=1`
+>   ⇒ ⇒ R71 轮的「库名那半边已经满足 ⇒ 缺的是开关」**把 AND 读成 OR ⇒ 整条推理链反向**
+>   ⇒ ⇒ ★ **教训：谓词含 `||` 时，放行条件是它的否定 ⇒ 必须先写成「放行 = A AND B」再动手**。
+> ⇒ ★★ **可信三档（R72 实测，合规库名 `itgate_r72_test`，同库同基线，显式 `env -u`，同 5 条隔离型腿）**：
+>   官方现状（20 名）**0 PASS / 5 SKIP / 0 FAIL**（静默 SKIP）；切事实源（40 名）**不开开关 = 5 条守卫红**；
+>   **开开关 = 5 条环境红** ⇒ ⇒ ★★ **切事实源 ⇒ 这 5 条腿由「静默 SKIP」变「红」**，且红的性质取决于是否配开关
+>   ⇒ ⇒ **属主决策①的真实代价 = 5 条腿由绿变红 + 2 组前置**（① 库名合规∧开关=1 ② Citus 节点注册）。
+> ⇒ ★★★ **Citus 节点缺失（新查清，属「基础设施级前置」）**：容器 `citus_nodes` = **0 行**
+>   ⇒ 分布组元数据缓存拿不到 ⇒ `pg_dist_local_group` XX000 / `could not open relation with OID` XX000 /
+>   `deadlock detected` 40P01 ⇒ ★ **官方 runner 建库只做 `CREATE EXTENSION citus`、无节点注册 ⇒ 官方跑法同样会撞**
+>   ⇒ ★ 本容器**无法无侵入注册节点**（`citus_add_node` 第三参是 worker group id 不是密码；
+>   `citus_set_node_role()` 不存在；`citus.node_conninfo` 是 postmaster 级 ⇒ 需重启共享容器 ⇒ **不做**）
+>   ⇒ ⇒ ★★ **它装不进 env 名维度**（它根本没有 env 名）⇒ ⇒ **天然落在登记册之外**
+>   ⇒ ⇒ ★ 需另一份「容器/基础设施级前置」清单 ⇒ **本轮只登记为待办**。
+> ⇒ ★ 顺带查清 `GATEWAY_CANONICAL_TEST_LOCAL_ONLY` = **授权开关**（必须 `=yes`，
+>   **不给就 `t.Fatal` 连 SKIP 都不是**）⇒ 建议改成「未授权 ⇒ SKIP」，否则「缺授权」被读成「产品红」。
+> ⇒ ⚠ **对 R71 轮门判据③ 的理由已就地改写**（判据不变）：理由是「官方库名不合规 + 注入隔离开关 = **解除守卫**
+>   ⇒ 一次性门禁库变可破坏」，**不是**「合规库名下开关多余」。
+> ⇒ 完整记录见 `docs/audit/2026-10-21-R71-测试env事实源边界与五类分类学.md` 文首「R72 轮订正横幅」与本文件 `§19.20.11`。
+
+> **2026-10-21 R73 轮（本会话）**：**官方 runner 真跑** ⇒ ★★★★ **门禁今天在 startup 重跑阶段就 abort ⇒ 连测试都没跑到**
+> ⇒ ⇒ ★★★ **R71/R72 轮的「官方现状」数字是用 env 集手工注入的【模拟读数】，不是 runner 实跑** ⇒ 已在审计文档加来源标注。
+> ⇒ ★★★ **官方 runner 真跑**（`scripts/audit/run-integration-gate.sh`，origin/main@76564629a）= **`exit=2`**：
+>   startup 第二遍 `applied=276 failed=20` ⇒ 15 条已知缺口 + **5 条未登记** ⇒ **abort 在跑测试之前**
+>   ⇒ ⇒ **官方门禁今天的真实状态 = 「不可用」**（不是绿、也不是红）⇒ **不是没人跑，是跑不通**。
+> ⇒ ★★ **D2 清单（此前只是属主决策项，现在逐条指名）**：`573`/`603`（v1 族视图
+>   `request_logs_with_current_month` 的依赖冲突）+ `877`/`887`/`888`（`cannot attach index …`）。
+> ⇒ ★★★★ **根因定性（★ 我第一眼判断错了，读 DETAIL 后推翻）**：
+>   `DETAIL: Another index is already attached for partition "session_turns_2026_10"`
+>   ⇒ **PG 硬约束：一个分区表在同一个父索引下只能有一个成员索引**
+>   ⇒ ⇒ **不是幂等性缺陷，而是迁移链内部抢同一个挂载槽位**
+>   ⇒ ⇒ 实测：父索引 `idx_session_turns_search_trgm` 的 2026_10 成员是
+>   **`session_turns_2026_10_search_text_idx`**（不是 `_search_trgm`）
+>   ⇒ ⇒ ★★★ **⇒ 首次安装时同样冲突 ⇒ 新装库很可能是「子索引存在、没挂到父索引」**
+>   ⇒ ⇒ ★ **⚠ 下一轮待查：生产 252 是否同形态**（若是 ⇒ 产品级缺陷：planner 用不上这些父索引）。
+> ⇒ ★★ **官方库实测（证实 R72 的推断）**：runner 真建的 `itgate_54451_10493`
+>   ⇒ `citus_nodes` = **0**、`pg_dist_local_group` = 20、库名**不合规**
+>   ⇒ ⇒ **官方跑法与隔离型腿天然互斥**。
+> ⇒ ★★ **交付**：`scripts/audit/check-gate-preconditions.sh` —— **只读**体检脚本
+>   （① Citus 节点 ② 隔离放行条件 ③ runner(20) vs 事实源(40) 的 DSN 覆盖面）
+>   ⇒ 属主切事实源前一条命令看清还差哪些前置（实测报「4 项未齐备」）。
+> ⇒ 完整记录见 `docs/audit/2026-10-21-R71-测试env事实源边界与五类分类学.md` §9 与本文件 `§19.20.12`。
+
+> **2026-10-21 §143.38 轮（本会话）**：**「v1 族退役（迁移 890）」的执行顺序** ⇒
+> **必须「先部署新二进制、后执行迁移」** ⇒ **对生产写入 = 0**：
+> ★★★★★ **生产上正在跑的 auto-route 亲和度聚合（queryid `-7870179464850598482`，
+> 408 次 / 1,209.0 s / max 28,931 ms）逐字仍是【三条 v1 臂】**
+> （引用 `_request_logs_hot` / `_request_logs`），**而仓内 HEAD 早已是【一条臂】**
+> （`5f64031cb`「退役 v1 族 + 全仓读面切会话族」）⇒ ★★ **部署漂移被逐字证实**。
+> ⇒ ★★★ **若先执行 890 ⇒ 那条聚合【整句 42P01】**（同一 FROM 里任何被提及的关系不存在
+> ⇒ 整句失败）⇒ **亲和度学习链断裂且静默**（stale-while-error ⇒ 无告警、载荷不变）。
+> ⇒ ★★ **当前无实时故障**：生产水位 = **889**（890 未执行）⇒ v1 族还在
+> （`request_logs_2026_10` **334,669 行 / 1,015 MB**）⇒ 890 的**非空闸会拒绝执行**；
+> 停写已确认（`_request_logs_hot` = 0 行、`max_ts` 7 天前）⇒ 亲和度表 **22 秒前**还在更新。
+> ⇒ ★★★ **⇒ 已落一条可执行的只读前置核验** `scripts/audit/verify_890_cutover_precheck.sql`
+> **（生产实测 verdict = BLOCKED：禁止执行 890，先部署新二进制）**。
+> ⇒ ★★★ **仓内复核（★ 本轮自订正）**：`partitionedTables` 那条**是缺陷**
+> （**每次**调用刷一条 42P01 WARN + 该表状态永远拿不到 ⇒ 「静默降级」）⇒ ★ **已被并行会话
+> `14b64ddf4` 修掉**（`to_regclass` 探表 + `retired` 字段 + 端到端门）⇒ ⇒ **本轮据此撤回了
+> 自己的两件未发布产物**（`RetiredByMigration` 元数据字段 + 与之重复的门）
+> ⇒ ⇒ ★★ **⇒ 「优雅降级」≠「不是缺陷」**：判缺陷要问「会不会每次都产生错误」
+> +「用户能不能分辨『本来没数据』与『坏了』」。
+> ⇒ ⇒ 本门只保留并行会话没覆盖的那块：**全仓 Go 的类 SQL 字符串字面量不得含 890 的 DROP 表**
+> + 解析器自证 + **判据语义自测** + 核验脚本 + runbook 在场（**5 条**）。
+> ⇒ 🚨 **新增待拍板：890 的执行顺序 + v1 族 ≈1.9 GB 的回收路径**（本节未改迁移 890 的文件）。
+> ⇒ 完整记录见 runbook `§143.38`。
+
