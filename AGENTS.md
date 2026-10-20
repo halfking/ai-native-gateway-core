@@ -85,6 +85,13 @@
 > 211 **40,524 → 702 行（−98.27%）** ⇒ 比 §143.19.7-A1 估的 −69.1% 更好。
 > 门 `scripts/ursmcheck/section_14321_credential_model_index_test.go`（新，8 条）、
 > 变异 M1~M12 全红并全部还原（md5 逐字校验）。
+> ★★ **已知 flaky 名单扩到 3 条**：本轮整包出现
+> `TestAvailabilityDoesNotClaimOutageLengthItNeverObserved` 红 ⇒ 与 §143.7.9 已登记的
+> 两条**同文件同机制**（availability 用例只在**全量负载下**才失败）
+> ⇒ **归入同一族，不是新缺陷**（证据：单跑 3 次全绿 / `git archive HEAD~1` 独立副本整包
+> exit=0 全绿 / 本节改动只碰 `.md` 与一个纯文档门文件 ⇒ 因果上不可能）。
+> ⚠ **不为它加门**（flaky 本身无法被门证明 ⇒ 加门要么恒绿、要么变成新的 flaky 源）
+> ⇒ 只做文字登记。详见 runbook `§143.21.9`。
 > 完整记录见 runbook `§143.21`。
 
 ## 经验反馈闭环（vibe-coding Rule 66）

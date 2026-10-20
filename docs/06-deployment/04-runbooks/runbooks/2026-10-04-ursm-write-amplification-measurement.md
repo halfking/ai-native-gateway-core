@@ -36603,6 +36603,60 @@ scp -q /tmp/211_cmi.sql 211:/tmp/ && ssh 211 'docker exec -i acc-pg17 psql -U ac
 GOCACHE=/tmp/gocache-p1437 go test ./scripts/ursmcheck/ -run 'TestRunbook14321' -count=1 -v
 ```
 
+
+### §143.21.9 ★★ 已知 flaky 名单**扩充一条**（同族第三条）
+
+本节收尾时跑整包 `scripts/ursmcheck` 出现一条 FAIL：
+
+```
+--- FAIL: TestAvailabilityDoesNotClaimOutageLengthItNeverObserved (0.92s)
+    pg_availability_check_test.go:379: 期望 3 条通知（down / 巡检失效 / 恢复），实得 2:
+        [--level critical --title PG 不可用：pg-252-pg17 ...
+         --level critical --title PG 可用性巡检失效：pg-252-pg17 ...]
+```
+
+⇒ ⇒ **少的是第三条「恢复」通知** ⇒ 与该文件另外两条已登记 flaky 的形态一致。
+
+#### §143.21.9.1 ★ 它是**已登记 flaky 家族的第三条**，不是新缺陷
+
+§143.7.9（runbook 32114-32141）已登记的两条是：
+
+| # | 用例名 | 位置 |
+|---|---|---|
+| 1 | `TestAvailabilityReportsHealthyOnlyWhenQueryProvesIt` | `scripts/ursmcheck/pg_availability_check_test.go` |
+| 2 | `TestAvailabilityRejectsReadOnlyAndRecovery` | 同上 |
+| **3（新增）** | **`TestAvailabilityDoesNotClaimOutageLengthItNeverObserved`** | 同上 |
+
+⇒ ★ **同一个文件、同一个机制**。§143.7.9 已写明的机制是：
+**「这两条 availability 用例只在**全量负载下**才失败（隔离单跑 6 次全过）」**
+⇒ 本条完全吻合 ⇒ **应归入同一族**，而不是当作新缺陷另立项。
+
+#### §143.21.9.2 归属证据链（三步，缺一不可）
+
+| 步骤 | 读数 |
+|---|---|
+| ① **单跑 3 次**（隔离） | **全绿**（2.083 s / 1.379 s / 1.722 s） |
+| ② **独立副本复现**：`git archive HEAD~1 \| tar -x -C /tmp/pristine` ⇒ 整包 | **exit=0 全绿**（不含本节任何改动） |
+| ③ **本节改动的因果排除** | 本节只碰了 2 个 `.md` + 1 个**新增的纯文档门文件**；该文件只 `import os/strings/testing`、只读文件、**无 goroutine、无全局状态** ⇒ **在因果上不可能**影响巡检通知的条数 |
+
+⇒ ⇒ ★ **判定：压力型 flaky，与本节无关**。
+⚠ **诚实边界**：② 只跑了 **1 轮** ⇒ §143.7.9 已写明「样本小 ⇒ 统计上不可区分」
+⇒ **本节不声称「零影响」**，只声称「**三处读数一致地指向 flaky**」。
+⚠ 另：本节提交后**整包复跑一次即绿**（72.435 s）⇒ 与 §143.7.9 的「约 1/3 失败率」相符。
+
+#### §143.21.9.3 ★ 为什么**不为它加门**
+
+⚠ **flaky 本身无法被门证明**（门跑起来可能绿）⇒ 加一道「断言它是 flaky」的门
+⇒ 要么恒绿（假门）⇒ 要么变成**新的 flaky 源**（多一条 spawn bash 子进程的用例）
+⇒ ⇒ **只做文字登记，不加门**（本仓纪律：判据管不到的东西 ⇒ 不要造一道假装管到的门）。
+
+⇒ 📌 **待办（不变，且范围扩大）**：把 `pg_availability_check_test.go` 这一族
+（**现为 3 条**）的根因查掉；在那之前，**全包偶发 FAIL 不作为任何一轮改动的阻塞项**，
+但也**不许被当成「已知问题就忽略」**（§143.7.9 的原话，此处沿用并把名单扩到 3 条）。
+
+★ 同族：[[性能读数必须给噪声带]] · [[判据红了先怀疑自己的前提]] ·
+[[阴性结论要当缺陷一样复核]] · [[自己写的探针也会有量具 bug]]。
+
 ★ 同族：[[先读量具再读产物]] · [[0 命中的第一嫌疑是量具坏了]] ·
 [[阴性结论要当缺陷一样复核]] · [[跨节订正前先自问「我要订正的这条真的错了吗」]] ·
 [[保留期是最大杠杆]] · [[「迁移的哪一版在生产跑过」判别力排序]] ·
