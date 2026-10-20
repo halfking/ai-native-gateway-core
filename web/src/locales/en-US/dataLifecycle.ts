@@ -124,6 +124,46 @@ export default {
     storageConfig: 'Storage config',
     logManagement: 'Log management',
     usageCost: 'Usage & cost',
+    usageEnhanced: 'Enhanced usage analytics',
+  },
+
+  usageEnhanced: {
+    refresh: 'Refresh',
+    loading: 'Loading…',
+    empty: 'No data',
+    cards: {
+      totalCost: 'Total cost',
+      totalRequests: 'Total requests',
+      periodDelta: 'Period-over-period Δ cost',
+      cacheHitRate: 'Cache hit rate',
+    },
+    trend: {
+      title: 'Cost trend (last {days} days)',
+    },
+    hotKeys: {
+      title: 'Top API keys (by token usage)',
+      colId: 'API Key ID',
+      colPrefix: 'Key prefix',
+      colApplication: 'Application',
+      colRequests: 'Requests',
+      colTokens: 'Tokens',
+      colCost: 'Total cost',
+    },
+    degraded: {
+      title: 'Some metrics are unavailable: ',
+      hint: 'The database schema is behind this build; the figures below are placeholders for "cannot be computed", not real measurements.',
+    },
+    errors: {
+      load: 'Failed to load enhanced usage data',
+    },
+    sources: {
+      summary: 'Usage summary',
+      costTrend: 'Cost trend',
+      periodCompare: 'Period comparison',
+      cacheEconomics: 'Cache economics',
+      hotKeys: 'Hot API keys',
+    },
+    footer: 'Last refreshed: {time}',
   },
 
   usageCost: {

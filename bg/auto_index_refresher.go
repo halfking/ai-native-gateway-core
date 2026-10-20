@@ -463,9 +463,10 @@ const credentialModelIndexRollupLockKey = "llmgw:credential-model-index-rollup"
 // 先取跨进程 advisory lock（credentialModelIndexRollupLockKey）。
 //
 // 改之前：两条语句各走一次 r.db.Exec（= 两个隐式事务）⇒
-//   1. 中间态对读者可见（读者能在 DELETE 与 INSERT 之间看到 hot 表空）；
-//   2. 另一个实例可以在两条语句之间插进来，把我们写的行删掉（见
-//      credentialModelIndexRollupLockKey 的注释里的本机实测）。
+//  1. 中间态对读者可见（读者能在 DELETE 与 INSERT 之间看到 hot 表空）；
+//  2. 另一个实例可以在两条语句之间插进来，把我们写的行删掉（见
+//     credentialModelIndexRollupLockKey 的注释里的本机实测）。
+//
 // 改之后：两条语句同事务提交 ⇒ 读者只看到「旧态」或「新态」；且同库实例
 // 之间用 advisory lock 串行 ⇒ 不再互删。
 //
@@ -548,11 +549,12 @@ func (r *AutoIndexRefresher) rollupCredentialModelIndex(ctx context.Context, buc
 //     "model_task_index is empty; awaiting first bg worker refresh"）。
 //
 // ⚠ 口径前提（本轮未改，但会决定这个索引有没有内容）：
-//   业务 auto 请求必须**真的**流经网关并带上 is_auto_request —— 实测本地真库
-//   session_turns_hot 535 行里 is_auto_request 非空 0 行、origin_actor 非空
-//   0 行 ⇒ 本地环境**从未产生过业务 auto 流量**（不是映射坏了）。
-//   读这个索引之前先确认那件事，否则会把「本地没有 auto 流量」读成「自动
-//   路由坏了」。
+//
+//	业务 auto 请求必须**真的**流经网关并带上 is_auto_request —— 实测本地真库
+//	session_turns_hot 535 行里 is_auto_request 非空 0 行、origin_actor 非空
+//	0 行 ⇒ 本地环境**从未产生过业务 auto 流量**（不是映射坏了）。
+//	读这个索引之前先确认那件事，否则会把「本地没有 auto 流量」读成「自动
+//	路由坏了」。
 func (r *AutoIndexRefresher) rollupModelTaskIndex(ctx context.Context, bucket time.Time) (int, error) {
 	tag, err := r.db.Exec(ctx, rollupModelTaskIndexSQL, bucket)
 	if err != nil {

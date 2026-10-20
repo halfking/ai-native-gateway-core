@@ -358,6 +358,46 @@ export default {
     storageConfig: 'إعداد التخزين',
     logManagement: 'إدارة السجلات',
     usageCost: 'تكلفة الاستخدام',
+    usageEnhanced: 'تحليلات الاستخدام المتقدمة',
+  },
+
+  usageEnhanced: {
+    refresh: 'تحديث',
+    loading: 'جارٍ التحميل…',
+    empty: 'لا توجد بيانات',
+    cards: {
+      totalCost: 'التكلفة الإجمالية',
+      totalRequests: 'إجمالي الطلبات',
+      periodDelta: 'فارق التكلفة بين الفترتين',
+      cacheHitRate: 'معدل إصابة الذاكرة المؤقتة',
+    },
+    trend: {
+      title: 'اتجاه التكلفة (آخر {days} يومًا)',
+    },
+    hotKeys: {
+      title: 'أبرز مفاتيح API (حسب استهلاك الرموز)',
+      colId: 'معرّف مفتاح API',
+      colPrefix: 'بادئة المفتاح',
+      colApplication: 'التطبيق',
+      colRequests: 'الطلبات',
+      colTokens: 'الرموز',
+      colCost: 'التكلفة الإجمالية',
+    },
+    degraded: {
+      title: 'بعض المقاييس غير متاحة: ',
+      hint: 'مخطط قاعدة البيانات أقدم من هذا الإصدار؛ الأرقام التالية قيم بديلة تعني «تعذّر الحساب» وليست قياسات حقيقية.',
+    },
+    errors: {
+      load: 'تعذّر تحميل بيانات الاستخدام المتقدمة',
+    },
+    sources: {
+      summary: 'ملخص الاستخدام',
+      costTrend: 'اتجاه التكلفة',
+      periodCompare: 'مقارنة الفترات',
+      cacheEconomics: 'اقتصاديات الذاكرة المؤقتة',
+      hotKeys: 'مفاتيح API النشطة',
+    },
+    footer: 'آخر تحديث: {time}',
   },
 
   usageCost: {

@@ -4573,6 +4573,46 @@ To codeup.aliyun.com:kaixuan/official-deploy/llm-gateway-go.git
   ⇒ ⇒ ★★ **教训：★ 变异必须真的改变被测行为，否则「门绿」是假读数。**
 - ⚠ **未修（已定位）**：4 个夹具缺陷（`outbox_events` 表不存在 / 种子列已改名 / 漏 3 个 NOT NULL 列 /
   `_request_logs` 已退役）⇒ ★ **`_request_logs` 那条属并行会话 D3 范围，已通报**。
+
+### 2026-10-21 R69 轮（**D3 侧·批次二**）：**v1 族退役后的第二层红门** ＋ **两处量具级方法学修正**（变异 5/5 全红）
+
+> 明细：`docs/audit/2026-10-21-R69-D3-v1族退役后第二层红门.md`；handoff `§19.19`。
+> ★ 本轮**只改测试面 + 一个 build 修复** ⇒ **对生产零写入**。
+
+- ★★★★ **本轮最有价值的产出不是那 5 条门，而是 3 处方法学修正**：
+  1. ★★ **「全仓 `go test ./...`」在共享真库上**不是有效读数** —— 包是**并行**跑的 ⇒ 包间互相污染
+     （实测：`admin/v_analytics_views_session_source_test.go` 全仓跑红「premise broken: `_request_logs` 又存在了」，
+     **逐包跑是绿的** ⇒ 那是污染产物）
+     ⇒ ⇒ **R59 / R67 的「全仓 75 条 / 57 条」口径要打折**；
+  2. ★★ **同一个包、同一份代码，全新库与用过的库失败数不同**（实测 `db/` = **4** vs **11**）
+     ⇒ ⇒ **一次性库必须每次新建**（`probe-onetime-db-shape.sh` 的 `DB_NAME` 覆盖就是为此）；
+  3. ★★ **integration 树编译不过**（共享 helper `stripGoCommentsKeepingStrings` 的定义文件
+     `admin/request_logs_retirement_tiering_test.go` 带 `//go:build !integration`，而
+     `admin/section_14336_board_single_scan_test.go` 在两种 build 里都要用它）
+     ⇒ 连带拉红 `sql/schema::TestIntegrationTaggedTreeCompiles`（★ 那道门本来就是为抓这种问题而存在的）
+     ⇒ ⇒ **挡住所有 `-tags=integration` 的跑法**
+     ⇒ ★ **修法**：helper 移到**不带 build tag** 的新文件 `admin/go_comment_strip_test.go`（**不碰那一会话的文件**）
+     ⇒ ⇒ ★ **通用式：共享 helper 的定义文件不能带任何 build tag**（只要有一个使用方在另一种 build 里）。
+- ★★ **改瞄 5 条门**（逐包隔离 + 全新库口径：**11 → 6**，新增 0，另有 1 条由红转「诚实 skip」）：
+  | 门 | 要点 |
+  |---|---|
+  | `db/TestSessionFamilyBodiesSourceColumnParity` | ★★ **A 类空证据**（探针依赖有数据 ⇒ 空表恒红）⇒ 改成**与数据无关**的 `LEFT JOIN LATERAL`（错列名仍 42703）；★ v1 臂已退役 ⇒ 换成 **③a v1 关系必须不存在** + **③b 会话 hot 臂与父表臂同形** |
+  | `db/TestBodiesCutoverGapBlocksCutover` | ★ 题目换了（v1 族已删）⇒ 改成**退役守卫** `TestBodiesCutoverV1ArmStaysRetired`；纯函数门保留（它守**口径**坑） |
+  | `cmd/gateway/TestV1WriteLiveness_RealDB` | ★ **产品侧已退役感知**、测试侧停在 4 个落点 ⇒ 改 2 个落点 + 判决按退役形态（`alive` 不可达）+ **负控制换成「分类器不能被写死」**（原「单面实现」负控制在退役形态下**不可证伪**） |
+  | `telemetry/TestRequestClassPGRoundTrip` | ★★ **语义没丢，载体换了**：`request_class`/`due_at` 现在在 **`session_turn_details(_hot)`** ⇒ 钉现行载体 + 客户端不变式 + **活的 writer 真往返**；★ 登记「**DB 侧兜底没了**」（可空/无 DEFAULT/无 CHECK ⇒ 不变式只由代码保证） |
+  | `cmd/gateway/TestS4GateMeasurement` | ★★ **守卫问错了问题**（查母表、测量要 hot 表 ⇒ 假阳性）⇒ 改成**探测测量要用的全部关系** ⇒ 由红转**诚实 skip** |
+- ★★ **变异 5/5 全红**（M1 探针列名改错 / M2 **把 v1 关系建回来**（DB 语义变异）/ M3 判决恒 dead /
+  M4 载体表名改错 / M5 s4 守卫退回只查母表）⇒ 还原按**原路径** md5 **5/5 逐字一致**。
+- ★★★★ **未闭合：`v1 族只被删了一半`** —— `_request_logs_hot` 已不在，**`_request_logs` 父表仍在**
+  ⇒ 「族已退役」在父表上不成立 ⇒ 多道门的前提探测失真。
+  ⇒ 线索：① ★ 890 的台账自登记写 `public.schema_migrations`，而 018 造的是 `schema_migration_audit`
+  ⇒ **若 018 改了台账名，890 会整笔回滚**；② ★ **两条基线不一样**
+  （`sql/schema/01-schema.sql` 有 `schema_migrations`；`installer/.../embeddata/01-schema.sql` 有
+  `schema_migration_audit`）⇒ **probe 建的库可能不是产品的真实形态**。
+  ⇒ ★ **下一轮第一件事**：在**真实安装链**上复核「890 之后 `_request_logs` 还在不在」。
+- ⚠ **已接手但未做**：`telemetry/TestRequestLogInsertParamCount`（★ 并行会话 R70 段已通报给 D3 侧）——
+  它的前提「**单表**全字段落地」已结构性不成立（字段散到 `usage_ledger_hot` / `routing_decision_log_hot` /
+  会话族三处）⇒ 需要一份跨表契约 ⇒ **半改会造恒绿门** ⇒ 本轮**不做**，登记为下一轮。
 > **2026-10-21 §143.37 轮（本会话）**：**「P12 为什么被调用」的归因 ⇒ 不是降级误触发，
 > 而是【无条件 fall-through】** ⇒ **对生产写入 = 0**：
 > ★★★★★ **`queryOverviewCounts` 里的 `return h.fillOverviewCountsFromLogs(...)`
@@ -4594,3 +4634,59 @@ To codeup.aliyun.com:kaixuan/official-deploy/llm-gateway-go.git
 > ⇒ 根因 = 分钟统计保留期 `lifecycle.request_stats_minute_ttl_days` **默认 14 天**（Max 90）
 > ⇒ ★★ **必须在 P20 部署前拍板**（若决定 30 天 tab 走明细口径，该窗口就不能被门控跳过）。
 > ⇒ 完整记录见 runbook `§143.37`。
+
+> **2026-10-21 R71 轮（本会话）**：**「真库腿的环境前置」此前不存在清单** ⇒ 落成登记册 + 完备性门
+> ⇒ ★★★★ **头条**：官方 runner 的名单推导门（`sql/schema/integration_gate_test.go::TestGateInjectsEveryDBCredentialName`）
+>   **只按「DB URL 形状」扫描** ⇒ 实测推导 **21 个**；而 AST 实测「全仓测试文件读到的 env 名」
+>   = **98 个** ⇒ ⇒ **77 个落在它的视野外**，而这 77 个里**恰好包含全部 8 个隔离/危险开关**
+>   （`TEST_SESSION_INGEST_ISOLATED`、`TEST_PG_CONTRACTS_ISOLATED`、`REPORT_E2E_ALLOW_DESTRUCTIVE`、
+>   `URSM_830_ALLOW_ANY_DB`、`WA877_ALLOW_ANY_DSN`、`TRACE_RETIREMENT_LOCAL_SCHEMA`、
+>   `GATEWAY_CANONICAL_TEST_LOCAL_ONLY`、`USAGE_OBSERVATION_LOCAL_PG`）
+>   ⇒ ⇒ ★★ **R69 轮的「官方 runner 漏 21 个 DSN 变量名」已被后续提交修复（实测绿）⇒ DSN 侧已闭合；
+>   缺口在「开关/前置侧」** —— 那 8 条红不是产品缺陷，而是**一份不存在的清单在报错**。
+> ⇒ ★★★★ **三档实测（同库同基线，一次性库 `itgate_r71_test` 合规名）**：
+>   官方现状 **26 PASS / 18 SKIP / 0 FAIL**；切事实源 **36 / 4 / 7**；切事实源 + 隔离开关 **36 / 4 / 7**
+>   ⇒ **收益 = 16 条腿从静默 SKIP 变真跑**（18 条 SKIP 逐条指名缺哪个变量，16/18 就在事实源里）
+>   ⇒ **代价 = 7 红 / 0 产品缺陷**（5 条 Citus 元数据缓存错误 + 1 条缺表 + 1 条缺授权）。
+> ⇒ ★★★★ **订正上轮读数（量具口径被库名污染）**：上轮那「7 条隔离守卫红」是**库名不带 `_test` 后缀**
+>   时守卫按设计拦人的产物，**不是切事实源的代价** ⇒ ⇒ 由此得机制性结论：官方 runner 的库名
+>   `itgate_${$}_${RANDOM}` **天然不合规** ⇒ 隔离开关守卫**天然成立** ⇒ **官方跑法不需要、也不该**
+>   注入隔离开关（注入 ⇒ 一次性门禁库变「可破坏」）⇒ ⇒ 这就是门判据③ 的**机制性理由**。
+> ⇒ ★★ **交付**：`scripts/ursmcheck/pg_test_env_registry.tsv`（**65 条**登记册 + **五类分类学**
+>   `dsn`/`dsn_exclusive`/`isolation`/`dangerous`/`component`，逐条有理由）
+>   ＋ `scripts/ursmcheck/pg_test_env_registry_test.go`（**5 判据** + AST 扫描器 + 自检）
+>   ⇒ 变异 **M1~M6 全红（6/6）**，还原按**被改的那个路径** `shasum -a 256` 逐字校验。
+> ⇒ ★★★ **本轮三条量具层自我订正**：① 分类轴第一版「文件内出现 `pgxpool.New`」⇒ **漏 17 个名字**
+>   （含最关键的 `TEST_SESSION_INGEST_ISOLATED`）⇒ 改为「读了环境变量」；
+>   ② runner env 块解析第一版 `(?ms)`+`.*\n` ⇒ `.*` 贪婪跨行 ⇒ **28 个假名** ⇒ 改 `[^\n]*`；
+>   ③ 变异脚本的还原校验用 `md5 -q`（本机不可用）⇒ before/now 皆空 ⇒ **「还原 OK」是假读数**
+>   ⇒ 换 `shasum` 重跑才是真读数 ⇒ ★ **「还原校验」本身也是量具**。
+> ⇒ ★★ **最强的一条旁证**：SKIP 消息里**测试代码自己写着**「请 source scripts/audit/datasource_env.sh」
+>   ⇒ ⇒ **仓库的测试代码已经在要求「用事实源」** ⇒ 官方 runner 不切 = **这条指引根本执行不了**。
+> ⇒ ⚠ **属主决策项仍未拍板**：`run-integration-gate.sh` 是否切事实源（证据与改法已就绪）、
+>   隔离/授权开关的授权模型（`GATEWAY_CANONICAL_TEST_LOCAL_ONLY` 现为 `t.Fatal`，建议改 SKIP）、
+>   Citus 一次性库形态的 `pg_dist_local_group` 错误、A 类 6 条、db/ 两条 v1 夹具、**D2**、**C1**。
+> ⇒ 完整记录见 `docs/audit/2026-10-21-R71-测试env事实源边界与五类分类学.md` 与本文件 `§19.20`。
+
+> **2026-10-21 R72 轮订正（本会话）**：**把 R71 轮的一处推理链整个推翻** —— 守卫语义被我读反了
+> ⇒ ⇒ ★★★ **根因**：守卫条件 `!strings.HasSuffix(db,"_test") || os.Getenv("TEST_SESSION_INGEST_ISOLATED")!="1"`
+>   ⇒ 「拦人」= 库名不合规 **OR** 开关≠1 ⇒ 「放行」= **库名合规 AND 开关=1**
+>   ⇒ ⇒ ★★ **合规库名本身不够**，隔离开关也必须显式 `=1`
+>   ⇒ ⇒ R71 轮的「库名那半边已经满足 ⇒ 缺的是开关」**把 AND 读成 OR ⇒ 整条推理链反向**
+>   ⇒ ⇒ ★ **教训：谓词含 `||` 时，放行条件是它的否定 ⇒ 必须先写成「放行 = A AND B」再动手**。
+> ⇒ ★★ **可信三档（R72 实测，合规库名 `itgate_r72_test`，同库同基线，显式 `env -u`，同 5 条隔离型腿）**：
+>   官方现状（20 名）**0 PASS / 5 SKIP / 0 FAIL**（静默 SKIP）；切事实源（40 名）**不开开关 = 5 条守卫红**；
+>   **开开关 = 5 条环境红** ⇒ ⇒ ★★ **切事实源 ⇒ 这 5 条腿由「静默 SKIP」变「红」**，且红的性质取决于是否配开关
+>   ⇒ ⇒ **属主决策①的真实代价 = 5 条腿由绿变红 + 2 组前置**（① 库名合规∧开关=1 ② Citus 节点注册）。
+> ⇒ ★★★ **Citus 节点缺失（新查清，属「基础设施级前置」）**：容器 `citus_nodes` = **0 行**
+>   ⇒ 分布组元数据缓存拿不到 ⇒ `pg_dist_local_group` XX000 / `could not open relation with OID` XX000 /
+>   `deadlock detected` 40P01 ⇒ ★ **官方 runner 建库只做 `CREATE EXTENSION citus`、无节点注册 ⇒ 官方跑法同样会撞**
+>   ⇒ ★ 本容器**无法无侵入注册节点**（`citus_add_node` 第三参是 worker group id 不是密码；
+>   `citus_set_node_role()` 不存在；`citus.node_conninfo` 是 postmaster 级 ⇒ 需重启共享容器 ⇒ **不做**）
+>   ⇒ ⇒ ★★ **它装不进 env 名维度**（它根本没有 env 名）⇒ ⇒ **天然落在登记册之外**
+>   ⇒ ⇒ ★ 需另一份「容器/基础设施级前置」清单 ⇒ **本轮只登记为待办**。
+> ⇒ ★ 顺带查清 `GATEWAY_CANONICAL_TEST_LOCAL_ONLY` = **授权开关**（必须 `=yes`，
+>   **不给就 `t.Fatal` 连 SKIP 都不是**）⇒ 建议改成「未授权 ⇒ SKIP」，否则「缺授权」被读成「产品红」。
+> ⇒ ⚠ **对 R71 轮门判据③ 的理由已就地改写**（判据不变）：理由是「官方库名不合规 + 注入隔离开关 = **解除守卫**
+>   ⇒ 一次性门禁库变可破坏」，**不是**「合规库名下开关多余」。
+> ⇒ 完整记录见 `docs/audit/2026-10-21-R71-测试env事实源边界与五类分类学.md` 文首「R72 轮订正横幅」与本文件 `§19.20.11`。

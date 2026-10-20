@@ -197,6 +197,31 @@ func (db *DB) ApplyMigrations(ctx context.Context) error {
 // ⇒ 848 已改为**显式存在性闸**（见 ensureBillingUnitAndAudioSeconds），
 //   本函数这条语义**不再**是任何调用方的承重前提 ⇒ 未来若要把它改成
 //   「表不存在 ⇒ false」，只需重跑 848 的显式闸（那才是真正的契约所在）。
+//
+// ── tableExists（r1039 续轮新增，2026-10-21）─────────────────────
+// 报告某个关系在 public schema 里在不在。
+//
+// 2026-10-21（r1039 续轮）：request_logs 族退役（860 改名 → 890 删除）之后，
+// 「这张表**在不在**」是**部署形态**的问题，不是「列缺不缺」的问题。
+// ensure 链里多处按「列缺不缺」判断是否要 ALTER，但**族退役后表本身没了**，
+// 而 `columnsAllPresent` 在**表不在**时返回 true（missing=0 ⇒ 没缺列）
+// ⇒ 于是「缺列」这条路被正确跳过，「缺表」那条路没人管 ⇒ ALTER 一张不存在
+// 的表 ⇒ 42P01 ⇒ 整条 boot 迁移中止。
+//
+// ⇒ 用 to_regclass 口径（与目录短路清单、890 的族探测**同一把尺子**）判断
+//    「在不在」。不用 information_schema.tables：视图/外表也会命中，
+//    与 ensure 体的 ALTER 对象集合不是一回事。
+func (d *DB) tableExists(ctx context.Context, name string) bool {
+	if d == nil || d.pool == nil {
+		return false
+	}
+	var exists bool
+	if err := d.pool.QueryRow(ctx, `SELECT to_regclass($1) IS NOT NULL`, "public."+name).Scan(&exists); err != nil {
+		slog.Warn("table existence probe failed", "table", name, "error", err)
+		return false
+	}
+	return exists
+}
 func (db *DB) columnsAllPresent(ctx context.Context, table string, cols []string) bool {
 	if db == nil || db.pool == nil || len(cols) == 0 {
 		return false
@@ -2646,7 +2671,7 @@ func (d *DB) ensureRequestLogSchema(ctx context.Context) error {
 		     'compression_reason','compression_strategy','compression_meta',
 		     'outbound_body','outbound_msg_count','outbound_token_est',
 		     'outbound_msg_hashes','quality_flags','quality_fix_actions',
-		     'quality_score','client_request_id','upstream_finish_reason',
+		     'quality_score','client_request_id','provider_id','upstream_finish_reason',
 		     'tool_calls','t0_arrived_at','t1_total_enqueued_at',
 		     't2_total_dequeued_at','t3_model_enqueued_at','t4_model_dequeued_at',
 		     't5_cred_enqueued_at','t6_cred_dequeued_at','t7_forward_start_at',
@@ -2717,6 +2742,21 @@ func (d *DB) ensureRequestLogSchema(ctx context.Context) error {
 		    -- request_id (_request_logs.request_id) is forced server-side
 		    -- to prevent client retries from collapsing into a single
 		    -- audit row. See db/migrations/054_request_logs_client_request_id.sql.
+		    -- 2026-10-21（r1039 续轮）：provider_id —— 本 ensure 链**自己**
+		    -- 要在下面给 _request_logs 建 (provider_id, …) 索引（2026-06-19
+		    -- 9cd51d8a7「per-provider tool_call quality fix mode」引入，随 v2
+		    -- 改名 request_logs→_request_logs 一起搬过来），却**从没补过这一列**。
+		    -- ⇒ 任何 _request_logs 不带 provider_id 的库（最小/新装基线、
+		    --   由 v1 fallback 体灌入的基线副本）上，整条 boot 迁移在
+		    --   CREATE INDEX idx_request_logs_provider_quality 处报
+		    --   42703（column "provider_id" does not exist）⇒ 迁移中止 ⇒
+		    --   **网关起不来**（2026-10-21 本机 deploy-local 实测中止）。
+		    -- 已是 v1→v2 改名产物的库（211/252 等）本来就有这一列 ⇒
+		    -- ADD COLUMN IF NOT EXISTS 是 no-op ⇒ 零影响。
+		    --
+		    -- ⚠ 列序无语义要求：provider_id 插在 client_request_id 之前，
+		    --   只为把 client_request_id 的分号结尾改成逗号续行。
+		    ADD COLUMN IF NOT EXISTS provider_id BIGINT,
 		    ADD COLUMN IF NOT EXISTS client_request_id TEXT;
 		CREATE INDEX IF NOT EXISTS idx_request_logs_gw_session_ts
 		    ON _request_logs (gw_session_id, ts DESC)
@@ -2783,7 +2823,15 @@ func (d *DB) ensureRequestLogSchema(ctx context.Context) error {
 
 	// V3.1 (migration 491): 9-stage dispatch queue timestamps on hot + parent.
 	// Startup ensure so environments that have not yet run 491 still accept INSERTs.
-	_, err = d.pool.Exec(ctx, `
+	//
+	// 2026-10-21（r1039 续轮）：hot 侧按**表在不在**条件化。
+	// 族退役（860 改名 → 890 删除）后 _request_logs_hot 与 _request_logs 是
+	// **两个独立关系**，各自消失 —— 上面的族级早退只兜住「两个都不在」，
+	// 兜不住「母表在、hot 表不在」（形态 B：860 改名跑完、890 删除前中断，
+	// 或部分退役的库）⇒ hot 侧 ALTER 仍然 42P01 ⇒ boot 中止。
+	hotTableExists := d.tableExists(ctx, "_request_logs_hot")
+	if hotTableExists {
+		_, err = d.pool.Exec(ctx, `
 		ALTER TABLE _request_logs_hot
 		    ADD COLUMN IF NOT EXISTS t0_arrived_at TIMESTAMPTZ,
 		    ADD COLUMN IF NOT EXISTS t1_total_enqueued_at TIMESTAMPTZ,
@@ -2795,6 +2843,12 @@ func (d *DB) ensureRequestLogSchema(ctx context.Context) error {
 		    ADD COLUMN IF NOT EXISTS t7_forward_start_at TIMESTAMPTZ,
 		    ADD COLUMN IF NOT EXISTS t8_response_start_at TIMESTAMPTZ,
 		    ADD COLUMN IF NOT EXISTS t9_response_end_at TIMESTAMPTZ;
+	`)
+		if err != nil {
+			return err
+		}
+	}
+	_, err = d.pool.Exec(ctx, `
 		ALTER TABLE _request_logs
 		    ADD COLUMN IF NOT EXISTS t0_arrived_at TIMESTAMPTZ,
 		    ADD COLUMN IF NOT EXISTS t1_total_enqueued_at TIMESTAMPTZ,
@@ -2816,14 +2870,24 @@ func (d *DB) ensureRequestLogSchema(ctx context.Context) error {
 	// 空集，054 时代重复数据不会阻塞索引构建）；分区侧由 SQL migration 的
 	// ensure_request_logs_partition 为新分区补建（columnar AM 可能拒建唯一
 	// 索引，故此处只做 hot 侧 Go 镜像）。
-	_, err = d.pool.Exec(ctx, `
+	//
+	// 2026-10-21（r1039 续轮）：hot 侧同样按**表在不在**条件化（母表在、
+	// hot 表不在的形态 B 下，无条件 ALTER hot 表 ⇒ 42P01 ⇒ boot 中止）。
+	if hotTableExists {
+		_, err = d.pool.Exec(ctx, `
 		ALTER TABLE _request_logs_hot
-		    ADD COLUMN IF NOT EXISTS is_final_success BOOLEAN NOT NULL DEFAULT FALSE;
-		ALTER TABLE _request_logs
 		    ADD COLUMN IF NOT EXISTS is_final_success BOOLEAN NOT NULL DEFAULT FALSE;
 		CREATE UNIQUE INDEX IF NOT EXISTS uq_request_logs_hot_final_success_session
 		    ON _request_logs_hot (gw_session_id)
 		    WHERE is_final_success AND gw_session_id IS NOT NULL AND gw_session_id <> '';
+	`)
+		if err != nil {
+			return err
+		}
+	}
+	_, err = d.pool.Exec(ctx, `
+		ALTER TABLE _request_logs
+		    ADD COLUMN IF NOT EXISTS is_final_success BOOLEAN NOT NULL DEFAULT FALSE;
 	`)
 	if err != nil {
 		return err
