@@ -39771,6 +39771,95 @@ GOCACHE=/tmp/gocache-p1437 go test ./scripts/ursmcheck/ -run 'TestSection14335' 
 - ★ **纪律**：★★ **改一条守护真实事故的门，必须用变异证明它的力量没被削弱** ——
   「让门变绿」和「把门变准」是两件事，**前者容易得多**。
 
+### §143.35.7 ★ rebase 冲突处置 + 上游台账【编号列笔误】的订正（共享仓库）
+
+- **背景**：§143.35 提交后推送时，共享仓库已前进 **15 个提交**（`origin/main` = `8aac7b92a`）
+  ⇒ `git rebase origin/main` 撞上三个高危文件。
+
+- **① `sql/schema/installed_startup_migrations.tsv` ⇒ 【不用手改，用它自己的生成命令重建】**
+  ★ 冲突原因：上游新增了 `893_fresh_install_partition_prereq.sql`（`StartupFiles` 第 295 位），
+  而本轮的 892 在第 284 位 ⇒ 两边的尾部索引整体错位。
+  ⇒ 处置：`cd installer && go test ./internal/dbinit/ -run TestStartupManifest -update`
+  ⇒ 重建结果：**296 条**，892 在第 284 位、893 在第 295 位，**无冲突标记**。
+  ⇒ ★ **这个文件的头写着「DO NOT EDIT BY HAND」** ⇒ 派生文件一律用生成命令重建。
+
+- **② `LESSONS.md` ⇒ 追加型 ⇒ 冲突按【两侧全保留】解**
+  ★ 上游侧 394 行 + 本轮侧 135 行 ⇒ 合并后 **527,487 bytes**（上游 517,590 + 本轮增量）
+  ⇒ 逐行核对「每一侧的每一行都还在」⇒ **无内容丢失**。
+  ⇒ ★ 教训：这类文件**只能增不能减** ⇒ 解冲突时**选一侧 = 蒸发另一会话的过程记录**。
+
+- **③ `docs/db-changelog.md` ⇒ 追加型 ⇒ 同样两侧全保留，但发现上游一处笔误**
+  ⚠⚠ **上游 `7de986e78` 把「`890_drop_request_logs_v1_family.sql`」那行的
+  【编号列】改成了 `892`** —— 而**文件没改名、TSV 没改、`StartupFiles` 没改、
+  行内自述仍写着「本条**改号为 890**」** ⇒ ⇒ **且与本轮自己的 `| 892 |` 行撞号**。
+
+  ★★ **为什么 890 才是权威编号**（五个独立事实一致）：
+
+  | # | 事实源 | 值 |
+  |---|---|---|
+  | ① | 磁盘文件名 | `890_drop_request_logs_v1_family.sql` |
+  | ② | `installed_startup_migrations.tsv` | `282	890_drop_request_logs_v1_family.sql` |
+  | ③ | installer `StartupFiles` | `"890_drop_request_logs_v1_family.sql"` |
+  | ④ | 该行自述 | 「本条**改号为 890**」 |
+  | ⑤ | 生产 | 台账记着两次真实部署 `applying …/890_…` ⇒ ★ **文件名被生产 checksum 台账【冻结】** |
+
+  ⇒ ⇒ ★★ **处置：只订正台账里与事实不符的那一列**（编号列 892 → 890），
+  **不重命名文件** —— 因为生产已应用过该文件名 ⇒ 改名会让 checksum 台账
+  的文件名失配 ⇒ **有重放风险**。
+  ⇒ ⇒ 同一次提交里把 891 行的交叉引用「随 **892** 的 `DROP TABLE` 一起消失」
+  一并订正回「随 **890** 的 `DROP TABLE` 一起消失」（**做 DROP 的正是 890**）
+  ⇒ ⇒ 两行 891 去重保留一份（订正后两行只差这一个词）。
+  ⇒ ⇒ 订正后 postflight 断言全过：无「编号 892 指向 890 文件」的残留、
+  890 行恰好 1 行、891 行恰好 1 行且引用 890、本轮 `| 892 |` 行恰好 1 行。
+
+- ★ **通用式：两行台账抢同一个迁移号时，不要「选一行」——要先定【哪个号是权威】**：
+  ★ 判别动作 = 逐个列出事实源（**磁盘 / TSV / 注册表 / 行内自述 / 生产**）
+  ⇒ ★ **多数一致的那个才是权威** ⇒ ⇒ 少数派的那一列是笔误。
+  ⇒ ★★ 且要同时问一句「**改号/改名会不会动到生产**」
+  ⇒ 本例答案 = 会（文件名被 checksum 台账冻结）⇒ ⇒ **只改台账列，不改文件名**。
+
+### §143.35.8 ★ 顺手修掉 origin/main 上的【既有红】：上游 893 违反本仓锁守卫规则
+
+- **症状**：post-rebase 回归里 `installer/cmd/llm-gw-installer` 判红：
+
+  ```
+  迁移 893_fresh_install_partition_prereq.sql（#893）：含强锁 DDL 但没有
+  lock_timeout —— 它可能在等锁期间堵住全库（参见 §44）
+  ```
+
+- ★★★ **已用 `git worktree` 拉 `origin/main`（`e33e382d7`）的干净副本复核：同样红**
+  ⇒ ⇒ **上游本来就有的红**，不是本轮引入的。
+  ⇒ ⇒ **但本轮要推的提交正落在它上面** ⇒ 若不处理，main 保持红，
+  而下一个跑 installer 包测试的人会**误判成自己的锅** ⇒ ⇒ 顺手修掉。
+
+- **缺陷本体**：893 建当月/次月分区 ⇒ `CREATE TABLE ... PARTITION OF`
+  要拿父表的 **AccessExclusiveLock** ⇒ 无上限的锁等待会在等锁期间堵住全库
+  （2026-10-18 生产实测：一次迁移把 14 个网关会话堵了约 1.5 分钟）。
+  ⇒ **本仓规则**：870 号之后的迁移必须自带 `lock_timeout`
+  （门 `installer/cmd/llm-gw-installer/startup_ddl_lock_guard_gate_test.go`）。
+
+- **修法用本仓【既有惯例】，不是新发明**：
+  ★ 893 **没有显式事务**（三个 DO 块各自独立）⇒ `SET LOCAL` 离开事务块
+  只会被 PG 当成无效而告警 ⇒ **不生效**；
+  ⇒ ⇒ 而**本仓对同一形态的既有惯例就是 session 级 `SET`**：
+  871 / 877 / 887 / 888 四个迁移同样无显式事务、同样用 `SET lock_timeout`。
+  ⇒ ★ **不外泄**：installer 的 `applySQL` 对**每个文件单独起一次 psql**
+  ⇒ ⇒ session 级设置只作用于本文件这次执行。
+  ⇒ 取值 60s：与 870+ 迁移的通行值一致（872~892 的 `SET LOCAL` 都是 60s）；
+  命中即失败（55P03）而不是继续堵库 ⇒ **宁可让迁移失败，也不要让整库被一条迁移卡住**。
+
+- **连带同步（改一个迁移 ⇒ 三处必须一起动）**：
+  ① `embeddata/startup/893_*.sql` 副本（与 canonical **逐字相同**）；
+  ② `docs/db-changelog.md` 的 893 行 **sha**（实测值）：
+  `ffd47ced…` → `94b304545d6c3d6a641df938429e0ae39ba15854527c37fd7a3dedd22efbd2a3`；
+  ③ 迁移号与文件名**不变** ⇒ `installed_startup_migrations.tsv` 与投递通道
+  `files=()`（登记的是**文件名**，不是内容）⇒ **无需改动**。
+
+- **验证**：`installer/cmd/llm-gw-installer` 整包 **ok**（锁守卫门转绿）；
+  ★ **本地真库 ROLLBACK 实测**（`llm-gateway-pg`）：893 全文（含新增的 `SET`）
+  跑通，**exit=0**，18 个 default 分区 NOTICE 正常，**ROLLBACK 后无残留对象**；
+  三方 sha 现场一致（canonical / embeddata / 台账）。
+
 ### §143.35.6 ⚠ 回归中发现的【既有失败】（非本轮引入，已在干净 HEAD 上复核）
 
 - `internal/sessionv2mirror` 有 **3 条**门红：
