@@ -37378,3 +37378,382 @@ GOCACHE=/tmp/gocache-p1437 go test ./scripts/ursmcheck/ -run 'TestRunbook14325' 
 [[跨节订正前先自问「我要订正的这条真的错了吗」]] · [[「0 调用」有三种成因]] ·
 [[本地真库是一次性库不是共享库]] · [[「我没跑成」和「我跑过」必须长得不一样]] ·
 [[变异后门仍绿=没有守卫力]]。
+
+## §143.26 「看不见的成本」：两把尺子的共同盲区 + 三条自我订正 + 一处真正可动手的结构点（2026-10-20）
+
+### §143.26.0 结论先行
+
+本节接着 §143.20 的 **B1**（四个 matview 的 `REFRESH CONCURRENTLY`）往下做。
+**开头的结论是本会话自己推翻自己**——先记下来，因为它是本节最有价值的产出：
+
+1. ★★★★★ **自我订正（订正横幅七）**：本会话先前判「约 **32–33 次/天**的 `REFRESH`
+   被 `statement timeout` 杀掉」= **误报**。
+   实测（252 PG 日志 2026-10-19 + 2026-10-20，**逐条解析 PG 记录 + 多行 `STATEMENT:` 归属**）：
+   **2 天里 `REFRESH` 被 `statement timeout` 杀 = 2 次**（不是 32–33 次/天）。
+   ⇒ **误报成因**：用「错误行**上下文窗口**里出现了 REFRESH」判定语句归属
+   ⇒ 窗口里的 REFRESH 是**另一条语句**的日志。
+2. ★★★★★ **两把常用的尺子都看不见「被杀掉的语句」**：
+   `pg_stat_statements` **只记成功语句**；PG 日志的 `duration:` **只记 >1s**（`log_min_duration_statement=1000`）。
+   ⇒ 实测 2 天内 **349 次 `statement timeout` 杀 + 2,473 次 `user request`（ctx 取消）**
+   ⇒ **对 `pg_stat_statements` 100% 隐形** ⇒ 之前的成本排行**系统性偏低**。
+3. ★★★★ **真凶不是物化视图，是后台作业被角色级 `statement_timeout=30s` 截断**：
+   `pg_roles.rolconfig` 实测 `llm_gateway|{statement_timeout=30s,idle_in_transaction_session_timeout=60s}`。
+   ⇒ **唯一会自己抬高的作业是物化视图刷新器**（`bg/materialized_view_refresher.go:106`
+   `mvRefreshStatementTimeout = "180s"` + `:604` / `:703` 的 `SET statement_timeout`）。
+   ⇒ 而 `domains/stats/daily_monthly_rollup.go:94` 的
+   `context.WithTimeout(ctx, 2*time.Minute)` = **2 分钟的 Go 死代码**
+   （DB 侧 30 s 先到 ⇒ Go 那 2 分钟**永远等不到**）。
+4. ★★★★ **REFRESH 只被杀 5 次 / 385 次（1.3%）** ⇒ 「刷新被超时杀」**不是真风险**；
+   REFRESH 的**成本**是真的（**1.53 h/day**，见 §143.26.1），但不是被超时杀掉的那种。
+5. ★★★★ **本节唯一「可动手」的结构点**：`request_logs_with_current_month` 的**第 3 臂**
+   是一条**逐行、且无时间关联**的 `NOT EXISTS` 反连接
+   ⇒ 每个全量扫描都要把整个 `session_turns`（**1,058,025 行 / 1.5 GB**）的 `request_id` 集合哈希出来
+   ⇒ 而 `_request_logs` 早已**冻结** ⇒ **这是下一步最值得做的结构优化**。
+6. ★★★ **另两条本会话的猜测被自己的 EXPLAIN 推翻**（见 §143.26.6）——
+   写在这里，因为「猜错过」比「猜对了」更能防后人重蹈。
+
+⚠ **本节对生产的写入 = 0**：全部只读
+（`pg_stat_statements` / `pg_roles` / `pg_settings` / `pg_class` / `pg_inherits` /
+`pg_index` / `pg_stat_user_tables` / `pg_stat_activity` / `EXPLAIN`（**不带 ANALYZE**））
++ 252 的 PG 日志**只读**解析（`/var/log/pg17-ctrlog-archive/ctrlog-202610{19,20}.log`）。
+**没有** DELETE / TRUNCATE / DROP / REINDEX / ANALYZE / 建索引 / 迁移 / 改配置 / 改 cron。
+
+### §143.26.1 量具纠偏：两把尺子的盲区，以及它们各自的适用范围
+
+#### §143.26.1.1 PG 日志的 `duration:` 是**尾部样本**，不是总体
+
+`pg_settings` 实测：`log_min_duration_statement = 1000`（`source = command line`）
+⇒ **只有跑超过 1 秒的语句**才有 `duration:` 行。
+⇒ ⇒ ★★ **PG 日志可以回答「最慢的那批有多慢」，不能回答「总成本是多少」**。
+
+⇒ ⇒ ★★★ **正确用法（本节采用）**：
+- **总体** ⇒ `pg_stat_statements`（41h 窗口，`stats_reset = 2026-10-18 22:03:37` ⇒ 窗口 ≈ 41h）；
+- **分布与尾部** ⇒ PG 日志（`duration:` 行）；
+- **被杀掉的部分** ⇒ PG 日志的 `ERROR:` 记录（**`pg_stat_statements` 完全不记**）。
+
+#### §143.26.1.2 REFRESH 的真实成本（PG 日志独立量具，按视图拆）
+
+2026-10-19 + 2026-10-20 两天，**385 条 `REFRESH` 的 `duration:` 行**：
+
+| matview | n | min (ms) | 中位 (ms) | max (ms) | 合计 (s) |
+|---|---:|---:|---:|---:|---:|
+| `routing_analytics_7d` | 100 | 6,902 | 50,718 | 117,991 | **5,599.8** |
+| `session_client_stats` | 53 | 1,552 | **57,267** | **175,786** | **3,100.4** |
+| `session_task_stats` | 53 | 2,209 | 19,369 | 99,528 | 1,461.4 |
+| `routing_audit_summary_7d` | 90 | 3,604 | 6,046 | 38,362 | 651.9 |
+| `session_client_task_matrix` | 53 | 1,621 | 2,591 | 6,091 | 151.3 |
+| `tuning_signals_5m` | 21 | 1,009 | 1,404 | 6,233 | 42.8 |
+| `tuning_signals_daily` | 15 | 1,090 | 1,658 | 8,688 | 34.6 |
+| **合计** | **385** | | | | **11,042.1** |
+
+⇒ ⇒ ★★★ **两把尺子同量级互证**：
+PG 日志口径 **11,042.1 s / 2 天 = 5,521 s/day ≈ 1.53 h/day**（只含 >1s）；
+`pg_stat_statements` 口径 **12,770,774 ms / 41h ≈ 2.08 h/day**（含全部成功语句）。
+⇒ **差值 = 那些 <1s 的刷新 + 41h 窗口 ≠ 恰好 2 天的边界差** ⇒ 两把尺子**不冲突**。
+
+⇒ ⇒ ★★ **一条被读数直接印证的推论**：
+`session_client_stats` 的 **max = 175,786 ms**，而刷新器自己的 `statement_timeout` 是 **180,000 ms**
+⇒ ⇒ **实测峰值已达预算的 97.7%** ⇒ 「刷新随时可能被超时杀」在**统计上**是成立的
+（尽管 2 天里只真的发生了 2 次）⇒ **这条要留给属主当「B1 的真实风险」**。
+
+### §143.26.2 ★★★★★ 订正横幅七：「32–33 次/天的 REFRESH 被超时杀」是误报
+
+> **订正横幅七（2026-10-20，§143.26 就地订正）**
+>
+> 本会话在 §143.26 取证过程中**先写下**过一个判断：
+> 「2026-10-19 有 32 次、2026-10-20 有 33 次 `ERROR: canceling statement due to statement timeout`
+> （上下文命中 REFRESH）⇒ 约 32–33 次/天的 REFRESH 被 statement timeout 杀掉
+> ⇒ 且 `pg_stat_statements` 只记成功语句 ⇒ 这部分完全隐形」。
+>
+> ★★★★★ **这条判词是错的**，本节把它**就地订正**（原文保留，不静默改写）：
+> - **实测**：把 252 PG 日志按 PG 记录逐条重建（**多行 `STATEMENT:` 正确归属到同一条记录**）后，
+>   2 天（10-19 + 10-20）里 **`REFRESH` 被 `statement timeout` 杀 = 2 次**，
+>   另有 **3 次**被 `user request`（ctx 取消 / 客户端断连）杀 ⇒ **合计 5 次 / 385 次 = 1.3%**。
+> - **误报成因**：用「错误行**上下文中**出现 REFRESH」判定语句归属
+>   ⇒ 上下文窗口里的 REFRESH 属于**另一条语句**（本节实测里，`WITH latest AS (usage_facts …)`
+>   那条被杀的语句，其上下文窗口里就正好压着一条 `REFRESH … routing_analytics_7d`）。
+> - ★★★★★ **本节抓到了一个「教科书级」的同类误判**（值得单独记）：
+>   初次解析时，13:11:27 那次 `user request` 取消被判成了「REFRESH 被杀」——
+>   而它真正的语句是 **`INSERT INTO public.session_bodies_hot …`**。
+>   为什么指纹里会出现 "REFRESH MATERIALIZED VIEW CONCURRENTLY routing_analytics_7d"？
+>   ⇒ 因为**有人在 psql 里粘了一大段含这句话的文本**（本仓的交接说明/runbook 片段），
+>   ⇒ 它被折进了同一条 `STATEMENT:` 记录 ⇒ ⇒ **「语句文本里含 REFRESH」≠「它就是 REFRESH」**。
+>   ⇒ ⇒ ★ **新增一条可复用纪律**：
+>   **指纹分析会被「操作员粘进来的文本」污染** ⇒ 归属判定必须靠**语句的语法头部**
+>   （`REFRESH MATERIALIZED VIEW` / `INSERT INTO` / `SELECT`），
+>   **不能靠「正文里含某个词」**。
+>   ⇒ ⇒ ★ **推论**：★ **审计会话本身要算作「读数污染源」** ——
+>   凡是在生产上跑过的探测 SQL，都必须假定它出现在被解析的日志里。
+> - ★★★★ **同一节里还抓到了第二个、且更尴尬的例子**（**污染源是本会话自己的审计查询**）：
+>   上一版解析器把 `tuning_signals_5m` 数成 **24 次**，按语法头部重算是 **21 次**
+>   ⇒ 差的 3 条是 **本会话自己跑的那几条探测 SQL**
+>   （`SELECT 'check', calls FROM pg_stat_statements WHERE query ILIKE '…'`，
+>   其 ILIKE 模式里恰好写着 "REFRESH MATERIALIZED VIEW CONCURRENTLY tuning_signals_5m"）
+>   ⇒ ⇒ **审计自己的查询，会污染审计自己的读数**。
+> - **教训（可复用）**：★ **「上下文命中」不是归属判定**；
+>   要判定「被杀的语句是哪条」，必须**把 `STATEMENT:` 记录连同它的续行一起重建**，
+>   然后**逐条比对指纹**。本节因此新增了可重跑的解析器
+>   `scripts/audit/parse_pg_kills.py`（它按**语法头部**判定 REFRESH，
+>   **不是**按「正文含 REFRESH」）。
+> - **订正带来的真实结论（比原判词更有价值）**：被超时杀的**真凶另有其人**——见 §143.26.3。
+>
+> —— 原文保留在本节上方（§143.26.0 第 1 条），**不删改**。
+
+### §143.26.3 ★★★★★ 真凶：2 天 349 次 `statement timeout` 杀 + 2,473 次 ctx 取消
+
+#### §143.26.3.1 被 `statement timeout` 杀的语句（2 天 349 次，top 指纹）
+
+| # | 指纹（截断） | 次数 | 归属（仓内） |
+|---:|---|---:|---|
+| 1 | `WITH latest AS ( SELECT f.* FROM usage_facts f JOIN stats_event_dedup d …` → `INSERT INTO stats_usage_daily` | **90** | `domains/stats/daily_monthly_rollup.go:198`（`dailyInsertSQL`） |
+| 2 | `SELECT (SELECT COUNT(DISTINCT COALESCE(NULLIF(r.client_model,''),NULLIF(r.outbound_model,''))) FROM (SELECT NULL::bigint AS id, t.request_id …` | **69** | 外传守卫（**请求热路径**） |
+| 3 | `WITH neg AS ( SELECT r.credential_id, r.outbound_model, count(*)::int AS neg_rows … FROM public._request_logs r WHERE r.cost_usd < 0 AND r.ts > now() - interval '30 days' …` | **35** | 负成本告警 |
+| 4 | `WITH chunk AS ( SELECT session_key, max(session_key) OVER () AS chunk_max FROM public.session_summaries …` → `UPDATE public.session_summaries` | **18** | `db/db.go:1088` |
+| 5 | `WITH win AS ( SELECT date_trunc('hour', now() - make_interval(hours => 3)) …` on `ursm_node_snapshot_min` | **17** | 快照健康巡检 |
+| 6 | `INSERT INTO maas_credit_consumption_buckets …` | 11 | — |
+| 7 | `WITH merged AS MATERIALIZED ( SELECT s.tenant_id, s.ts FROM (SELECT tenant_id::text …` | 8 | — |
+| 8 | `UPDATE public.session_turns SET aggregate_applied_at = NOW() WHERE session_id = …` | 8 | — |
+| 9 | `WITH used AS ( SELECT rl.credential_id AS id, pm.raw_model_name, MAX(rl.ts) … FROM request_logs_with_current_month …` | 7 | — |
+
+⇒ ⇒ ★★ **top 9 = 263 / 349 = 75.4%** ⇒ **真凶高度集中，不是弥散的**。
+
+#### §143.26.3.2 被 ctx 取消（`user request`）的语句（2 天 2,473 次，top 指纹）
+
+| 指纹 | 次数 | 归属 |
+|---|---:|---|
+| `WITH policy AS ( SELECT COALESCE(featured_models, ARRAY[]::TEXT[]) AS featured F…` | **1,316** | `domains/streaming/model_alternatives.go:186` |
+| `SELECT request_id, request_status FROM request_logs_with_current_month WHERE req…` | 168 | 请求状态回查 |
+| `SELECT COALESCE(cmb.available, TRUE) = TRUE AND (nps.credential_id IS NULL OR (n…` | 151 | 可用性判定 |
+| `SELECT EXISTS( SELECT 1 FROM request_logs_with_current_month WHERE gw_session_id…` | 80 | 会话存在性判定 |
+| `SELECT c.id FROM credentials c -- v1 臂改为 LEFT JOIN…` | 44 | 凭据选取 |
+| `SELECT mps.credential_id, mps.raw_model_name, mps.state, mps.consecutive_failure…` | 36 | 凭据模型健康 |
+
+⇒ ⇒ ★★★ **`domains/streaming/model_alternatives.go` 那一族独占 53%**
+⇒ ⇒ ★★ **「ctx 取消」≠「数据库慢」**：多数是**客户端先放弃**（请求超时 / 断连），
+⇒ **不能直接读成 DB 成本**；但它同样**对 `pg_stat_statements` 隐形** ⇒ 成本记账必须补这一路。
+
+#### §143.26.3.3 ★★★★ 根因：角色级 `statement_timeout=30s` 把后台作业截断
+
+`pg_roles.rolconfig` 实测：
+
+```
+llm_gateway|{statement_timeout=30s,idle_in_transaction_session_timeout=60s}
+```
+
+⇒ ⇒ ★★★★ **仓里对这件事**不是**无知的**——已有多处显式抬高的先例：
+
+| 位置 | 手法 |
+|---|---|
+| `bg/materialized_view_refresher.go:106,604,703` | `SET statement_timeout = '180s'`（会话级 + `RESET`） |
+| `domains/providerprofile/pg_reconciliation_store.go:271` | `SELECT set_config('statement_timeout', $1, false)` |
+| `domains/session/v2/session_request_status_backfill.go:442` | `SELECT set_config('statement_timeout', $1, true)`（事务级） |
+| `domains/routeincident/retention.go:174` | ⚠ **已把同款缺陷写进注释**：「全索引扫描（生产实测 1,699,257 行冷缓存 25.7 s vs statement_timeout 30 s）」 |
+
+⇒ ⇒ ★★★★ **但 `domains/stats/daily_monthly_rollup.go:94` 没有抬**：
+`context.WithTimeout(ctx, 2*time.Minute)` ⇒ **Go 侧的 2 分钟是死代码**（DB 侧 30 s 先到）。
+
+⇒ ⇒ ★★★ **这是一类**复发**缺陷**，不是单点事故：
+「**全表 / 大范围扫描类后台作业** × **角色级 30 s**」⇒ 至少 3 处已知实例
+（`routeincident/retention` 已记、`stats` 聚合未记、`ursm` 巡检未记、`session_summaries` 分块 UPDATE 未记）。
+⇒ ⇒ ★ **正确解法有两个方向，属主选**：
+- **A：抬超时**（同 refresher 手法）⇒ 只是把「失败」变成「慢」，**不解决 30 s 内跑不完**；
+- **B：让作业在 30 s 内跑完**（缩短窗口 / 增量 / 改聚合形态）⇒ ★ **根治**。
+⇒ ⇒ ⚠ **本节不擅自改任何一处**（属生产行为变更 ⇒ 需授权）。
+
+### §143.26.4 ★★★ 阴性结论（重要）：失败是**浪费**，不是**数据空洞**
+
+> ★★★ **必须先答「这批数据是怎么长出来的」，再答「失败了会怎样」**（本仓既有纪律）。
+> 这次的第一反应是「聚合作业 45 次/天被杀 ⇒ `stats_usage_daily` 根本没被填上」
+> ⇒ **实测否掉了这个推断**：
+
+| 表 | 行数 | 时间范围 |
+|---|---:|---|
+| `usage_facts` | 271,087 | 10-06 02:24 → 10-20 16:31 |
+| `stats_event_dedup` | 1,139,561 | 08-19 → 10-20 16:31 |
+| **`stats_usage_daily`** | **113,952** | **08-18 → 10-20**（10-20 当天 2,081 行） |
+| `ursm_node_snapshot_min` | **27,806,075** | **10-13 00:01 → 10-20 16:30（仅 7.4 天）** |
+| `session_summaries` | 823,413 | 08-06 → 10-20 16:31 |
+
+⇒ ⇒ ★★ **`stats_usage_daily` 仍在被正常填** ⇒ ⇒ **失败造成的是「反复重试的浪费」，不是「数据缺失」**
+⇒ ⇒ ★ **不要把这类失败升级成数据事故**（会误导属主优先级）。
+
+⇒ ⇒ ★★★★ **但 `ursm_node_snapshot_min` 的规模把巡检的结构性问题坐实了**：
+**27,806,075 行 / 仅 7.4 天 = 375.8 万行/天**；
+而那条巡检 SQL **自带的注释基线**是「252，7 天 ≈ 600 万行 … `count(DISTINCT date_trunc('minute', ts))`
+7 天 = 44.5 s ← 不可接受」
+⇒ ⇒ ★★★ **实际数据量已经是那条基线的 4.6×** ⇒
+⇒ ⇒ ★★ **「7 天窗口 + `count(DISTINCT date_trunc('minute', ts))`」在 30 s 内跑不完，已经是结构性的**
+⇒ ⇒ ★ **注释里的基线已过期 4.6×，按既有纪律应当就地更新**（本节只记录，未改代码注释）。
+
+### §143.26.5 ★★★★ 唯一「可动手」的结构点：视图第 3 臂的无时间关联反连接
+
+#### §143.26.5.1 视图的血缘（**不能按名字推断**）
+
+`request_logs_with_current_month` = **3 条 `UNION ALL` 臂**（生产 `pg_get_viewdef` 原文）：
+
+1. `session_turns_hot t LEFT JOIN session_turn_details_hot d`；
+2. `session_turns t LEFT JOIN session_turn_details d`；
+3. **遗产臂**——形态如下（原文压缩）：
+
+```sql
+FROM (
+  SELECT v.*
+  FROM <legacy base> v
+  LEFT JOIN LATERAL (
+    SELECT ... FROM _request_logs p
+     WHERE p.request_id = v.request_id AND p.ts = v.ts
+     LIMIT 1
+  ) source ON (true)
+) rl
+WHERE ( NOT EXISTS (SELECT 1 FROM session_turns_hot th WHERE th.request_id = rl.request_id)
+   AND NOT EXISTS (SELECT 1 FROM session_turns tp  WHERE tp.request_id = rl.request_id) )
+```
+
+⇒ ⇒ ★★★★ **第 3 臂是「遗产族里那些还没迁到 `session_turns` 的行」**
+⇒ ⇒ ★★ **反连接是逐行的，且 `request_id` 两侧**没有时间关联**
+⇒ ⇒ ⇒ ★ **因此每个全量扫描都要处理整个 `session_turns` 家族**。
+
+#### §143.26.5.2 三族的真实形态（实测）
+
+| 家族 | 行数 | 时间范围 | 状态 |
+|---|---:|---|---|
+| `session_turns` | 1,058,025 | 09-06 11:03 → 10-20 08:27 | 活 |
+| `session_turns_hot` | 3,634 | 10-20 08:28 → 16:29 | 活 |
+| **`_request_logs`** | **338,976** | **09-30 18:54 → 10-13 20:18** | **已冻结（停写 7 天）** |
+
+⇒ ⇒ ★★★★ **两族在 09-30 → 10-13 这 13 天里重叠** ⇒ **反连接跨全时段是必需的，不是冗余**。
+
+#### §143.26.5.3 第 3 臂**不能删**（实测产出）
+
+```
+SELECT count(*) FROM public._request_logs rl
+WHERE NOT EXISTS (SELECT 1 FROM public.session_turns_hot th WHERE th.request_id = rl.request_id)
+  AND NOT EXISTS (SELECT 1 FROM public.session_turns tp  WHERE tp.request_id = rl.request_id);
+```
+
+⇒ ⇒ ★★★★★ **203,430 行 = `_request_logs`（338,976）的 60.0%**
+⇒ ⇒ ★★ **反连接只滤掉 135,546 行（40.0%）** ⇒ ⇒ **删臂 = 丢 60% 的历史行** ⇒ **绝不可删**。
+
+#### §143.26.5.4 反连接的实际代价（EXPLAIN，只读）
+
+把反连接单独拿出来、**不加 `request_id` 过滤**跑 `EXPLAIN`（生产）：
+
+```
+Limit  (cost=13606.18..171357.55 rows=1 width=4)
+  ->  Nested Loop Anti Join
+        ->  Gather (Workers Planned: 2)
+              ->  Parallel Hash Right Anti Join
+                    Hash Cond: (tp.request_id = rl.request_id)
+                    ->  Parallel Append (cost=0.00..155516.57 rows=438962)
+                          ->  Parallel Seq Scan on session_turns_2026_09 (rows=332616, cost=145232.16)  ← ★
+                          ->  Parallel Index Only Scan on session_turns_2026_10 (rows=106342, cost=8089.62)
+```
+
+⇒ ⇒ ★★★★ **要哈希 438,962 个 `session_turns` 行**（其中 **332,616 行来自 09 月分区的全表顺序扫描**）
+⇒ ⇒ ★★ 而 `session_turns_2026_09` 是 **1,162,493,952 字节（1.16 GB）** 的 **heap** 分区
+（§143.21 的 872 迁移把冷月分区转成了 heap ⇒ **没有列存压缩，也没有分区裁剪可依**）
+⇒ ⇒ ★ **总 cost 171,357** ⇒ **这才是 B1 的真实成本来源**（§143.20 测到的 3.5–9.8 s 只是「重算源表」那一段）。
+
+⇒ ⇒ ★★★ **优化方向（两条，都是结构改动 ⇒ 需属主拍板 + 生产写授权）**：
+- **O1｜时间化反连接**：给 `NOT EXISTS` 的 `tp` 侧加上与 `rl.ts` 相关的时间窗口
+  ⇒ 语义需证明「同一 `request_id` 的两族行必然时间相近」；
+  ⚠ **本轮未做**（不能凭直觉改语义）。
+- **O2｜物化去重判定**：`_request_logs` 已**冻结** ⇒ 「哪些 `request_id` 已被 `session_turns` 覆盖」
+  是一个**可一次性物化、且此后基本不变**的事实
+  ⇒ 建一张小表（135,546 行量级）替代逐行反连接 ⇒ **每次全量扫描省掉 1.5 GB 的哈希构建**。
+  ⚠ **本轮未做**（需迁移 + 语义评估 + 编号现场取号）。
+
+### §143.26.6 ★★★ 两条本会话的猜测被自己的 EXPLAIN 推翻（诚实记录）
+
+| 猜测 | 实测 | 结论 |
+|---|---|---|
+| 「`WHERE gw_session_id = ?` 走这个视图**没有可用索引**（唯一匹配索引 `idx_session_turns_effective_session` 是 `tenant_id` 前导）」 | EXPLAIN：`session_turns_2026_09_heap_tenant_id_session_id_idx` / `session_turns_2026_10_effective_session` **都建在 CASE 表达式上**，`Index Cond` 直接命中 ⇒ 总 cost 13,746 | ★ **猜错** ⇒ **不是缺陷**（若按猜测去加索引，就是白加） |
+| 「`usage_facts ⋈ stats_event_dedup` 的 dedup 侧该加时间范围（现在每次重读 1.14M 行）」 | EXPLAIN A/B：**现状** = `Nested Loop` + `Index Only Scan using idx_stats_event_dedup_event_id_occurred_at`（每次探测 cost 0.55..0.99）；**加范围** = `Parallel Hash Join` + `Parallel Seq Scan on stats_event_dedup`（134 MB 全扫） | ★ **猜错** ⇒ **现状才是好计划** ⇒ 不该改 |
+
+⇒ ⇒ ★★★ **通用式**：★ **EXPLAIN 只证明「计划会选」**（本节两条都是 plan 层面的判断），
+⇒ ⇒ ⇒ **在改 SQL 之前必须先 A/B 两个版本的 plan**，否则很容易「优化」成更差的计划。
+
+### §143.26.7 诚实边界与本节**没做**的事
+
+- ★★★ **本节没有量到「每个作业的真实耗时」**：
+  `EXPLAIN`（不带 ANALYZE）**不给实际耗时**，`pg_stat_statements` **不给被杀掉的那部分**
+  ⇒ ⇒ **「`stats_usage_daily` 聚合到底跑了多久」至今未知** ⇒
+  ⇒ **不能承诺「抬超时就能跑完」** ⇒ ⇒ **下一轮要在真库上量一次**（§143.26.8 的 P0）。
+- ★★ **252 宿主 load 14.17 / 4 核（超载 3.5 倍）** ⇒ 单点读数不可信；
+  本节尽量用**计数 + 分布**（而非单次耗时）下结论。
+- ★★ **本节只覆盖 252 侧**；**211 的 `pg_stat_statements` 仍未进 preload**（§143.20.4 的 C4）
+  ⇒ ⇒ **211 上这类失败连日志都看不到**（211 只有容器日志一条线）。
+- ★★ **本节未写任何迁移、未改任何注册点、未改任何生产代码/注释** ⇒ **生产行为未变**。
+- ★★ **§143.20 的 B1 裁决**（「7 天窗全量重算」是根因）**本节不推翻**：
+  本节只是把**成本归属**从「刷新本身」细化到「**反连接**」这一层。
+
+### §143.26.8 待拍板（本节新增，按成本排序）
+
+| 编号 | 事项 | 性质 | 成本 | 备注 |
+|---|---|---|---|---|
+| **P0** | 在真库上量一次 `dailyInsertSQL` 的**真实耗时**与真实数据量 | 只读 | 低 | ★ **必须先做** ⇒ 没有它，「抬超时」是盲改 |
+| **P1** | `domains/stats/daily_monthly_rollup.go:94`：Go 的 2 min ctx **够不着**（DB 30 s 先到） | 代码 | 小 | 属主选 A（抬超时）或 B（让它 30 s 内跑完）⇒ **B 是根治** |
+| **P2** | 快照健康巡检：7 天 / 27.8M 行 / `count(DISTINCT date_trunc('minute',…))` ⇒ **30 s 内跑不完已是结构性** | SQL + 注释 | 中 | 注释基线已过期 **4.6×** ⇒ 需就地更新 |
+| **P3** | `db/db.go:1088` 的 `session_summaries` 分块 UPDATE 被截断 | SQL | 小 | 2 天 18 次 |
+| **P4** | 视图第 3 臂反连接 **O2 物化** | 迁移 | 中 | 需语义评估 + **现场取迁移号**（890 已被占） |
+| **P5** | 视图第 3 臂反连接 **O1 时间化** | 迁移 | 中 | 需证明同 `request_id` 的两族行时间相近 |
+| **P6** | 给外传守卫（请求热路径，2 天 69 次被杀）定超时/改形态 | 代码 | 中 | ★ 在**请求热路径**上，比后台作业更敏感 |
+| **P7** | **C4**：211 的 `pg_stat_statements` 进 preload | 配置 | 中 | ⇒ 211 上这类失败才可被量化 |
+| **P8** | `domains/streaming/model_alternatives.go:186` 的 ctx 取消（2 天 1,316 次） | 代码 | 中 | ★ 占比 53% ⇒ 先量它到底在等什么 |
+
+⚠ **P1/P2/P3/P6/P8 全部是「改生产行为」⇒ 需属主显式授权**；
+**本节对生产的写入仍为 0**。
+
+### §143.26.10 ★★★★ 本节门设计的一条自省：**「Contains 型门」只保护「至少有一处」**
+
+这一条是**做门的过程中被自己的门绊了一次**才浮出来的，值得单独记：
+
+- 本节的门用 `strings.Contains` 断言关键读数（既有门一律如此）。
+- 第一次跑变异时，**6 个变异「仍是绿的」**（M4 / M9 / M10 / M11 / M14 / M15）
+  ⇒ 看起来像「这 6 条判据没有守卫力」。
+- ★★★★★ **真因不是判据没守卫力，是变异做弱了**：
+  那些读数（如 `349`、`statement_timeout=30s`、`1,316`）**在 §143.26 节内出现了 2~4 次**
+  ⇒ 我只替换了**第一次**出现 ⇒ 该读数**仍然存在** ⇒ `Contains` 成立 ⇒ 门保持绿。
+- ⇒ ⇒ ★★★★ **通用式**：
+  1. ★ **验证门守卫力时，变异必须移除该读数的「全部出现」**
+     （= 模拟「这条读数从文档里彻底没了」），否则会**误判成「门没有守卫力」**。
+  2. ★ **反过来也要知道这是门的一个真实盲区**：
+     `Contains` 型门**只保证「读数存在」**，**不保证「每处都对」**
+     ⇒ ⇒ **若某条读数在节内出现多次，就应改用「读数 + 上下文」的唯一 needle**，
+     或**在门里加计数断言**（本节已把短 needle 收紧成
+     「349 次 `statement timeout` 杀」/「2,473 次」/「1,316 次」/「现状才是好计划」）。
+  3. ★⇒ **「变异后门仍绿」的第一反应是「量具错了」**，不是「门坏了」——
+     ★ 这与「0 命中的第一嫌疑是量具坏了」是同一条纪律的两种形态。
+- ⇒ 本节最终 **M1~M18 全部「按预期红」**，且所有文件 **md5 逐字还原**、门复跑为绿。
+
+### §143.26.9 复核方法（可原样重跑）
+
+```bash
+# ── 1) ★ PG 日志解析器（本节新增，入仓）：重建 PG 记录 + 多行 STATEMENT 归属
+python3 scripts/audit/parse_pg_kills.py \
+        /var/log/pg17-ctrlog-archive/ctrlog-20261019.log \
+        /var/log/pg17-ctrlog-archive/ctrlog-20261020.log
+
+# ── 2) 生产只读：角色级超时 / 家族规模 / 视图第 3 臂产出
+bash ~/.mavis-tools/lgwp-prod.sh /private/tmp/p14321/timeouts.sql  200
+bash ~/.mavis-tools/lgwp-prod.sh /private/tmp/p14321/arm3b.sql     320
+bash ~/.mavis-tools/lgwp-prod.sh /private/tmp/p14321/offenders.sql  260
+
+# ── 3) 生产只读：视图第 3 臂的 EXPLAIN（不带 ANALYZE）
+bash ~/.mavis-tools/lgwp-prod.sh /private/tmp/p14321/rlcm_plan.sql   200
+bash ~/.mavis-tools/lgwp-prod.sh /private/tmp/p14321/rollup_plan.sql 200
+```
+
+⇒ ⇒ ★ **本节落地的门**（不连库，可原样重跑）：
+
+```bash
+# §143.26 文档门：自我订正横幅七 / 真凶指纹 / 角色级 30s / 阴性结论 / 两条被推翻的猜测
+GOCACHE=/tmp/gocache-p1437 go test ./scripts/ursmcheck/ -run 'TestRunbook14326' -count=1 -v
+```
+
+★ 同族：[[先读量具再读产物]] · [[0 命中的第一嫌疑是量具坏了]] ·
+[[阴性结论要当缺陷一样复核]] · [[自己上一节的结论也要复核]] ·
+[[「上下文命中」不是归属判定]] · [[EXPLAIN 只证明「计划会选」]] ·
+[[跨节订正前先自问「我要订正的这条真的错了吗」]] ·
+[[Go 的 ctx 超时够不着 DB 的 statement_timeout 时，Go 侧是死代码]] ·
+[[变异后门仍绿=没有守卫力]]。
