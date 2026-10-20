@@ -28,7 +28,7 @@ spread.  Each arm needs its **own** cold window if the cold case is being measur
 Usage:
     python3 build_rollup_ab.py [--from 2026-10-17T00:00:00Z] [--to 2026-10-20T00:00:00Z]
                                [--rounds 4] [--out /tmp/rollup_ab.sql]
-                               [--cold-pair FROM1:TO1:FROM2:TO2]
+                               [--cold-pair FROM1,TO1,FROM2,TO2]
 """
 
 import argparse
@@ -83,7 +83,7 @@ def main():
     ap.add_argument("--rounds", type=int, default=4)
     ap.add_argument("--out", default="/tmp/rollup_ab.sql")
     ap.add_argument("--cold-pair", default="",
-                    help="FROM1:TO1:FROM2:TO2 -- two DISJOINT windows so each arm "
+                    help="FROM1,TO1,FROM2,TO2 -- two DISJOINT windows so each arm "
                          "gets its own cold start (a sequential warm-up would warm "
                          "the other arm's pages)")
     args = ap.parse_args()
@@ -109,13 +109,22 @@ def main():
         out.append("")
 
     if args.cold_pair:
-        f1, t1, f2, t2 = args.cold_pair.split(":")
+        f1, t1, f2, t2 = args.cold_pair.split(",")
         cte1, body1 = bound(cte0, body0, "'%s'::timestamptz" % f1, "'%s'::timestamptz" % t1)
         cte2, body2 = bound(cte0, body0, "'%s'::timestamptz" % f2, "'%s'::timestamptz" % t2)
         # Each arm gets its own DISJOINT window => each first run is genuinely cold.
         emit("COLD V1-current (own window %s..%s)" % (f1, t1), cte1, body1)
         emit("COLD V2-timebounded-dedup (own window %s..%s)" % (f2, t2),
              time_bound_dedup(cte2, "'%s'::timestamptz" % f2, "'%s'::timestamptz" % t2), body2)
+        # Then a WARM repeat of each arm on the SAME window => the cold penalty
+        # of each arm is measurable, and the warm numbers are volume-comparable.
+        emit("WARM V1-current (same window %s..%s)" % (f1, t1), cte1, body1)
+        emit("WARM V2-timebounded-dedup (same window %s..%s)" % (f2, t2),
+             time_bound_dedup(cte2, "'%s'::timestamptz" % f2, "'%s'::timestamptz" % t2), body2)
+        for r in range(args.rounds):
+            emit("ROUND %d V1-current" % (r + 1), cte1, body1)
+            emit("ROUND %d V2-timebounded-dedup" % (r + 1),
+                 time_bound_dedup(cte2, "'%s'::timestamptz" % f2, "'%s'::timestamptz" % t2), body2)
     else:
         cte, body = bound(cte0, body0, w0, w1)
         cte_v2 = time_bound_dedup(cte, w0, w1)
