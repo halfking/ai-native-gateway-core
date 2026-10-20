@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/testcontainers/testcontainers-go/modules/postgres"
 )
 
 // TestMigrationR76AttachSlotRealDB —— 真库门：复现**原缺陷形态**并断言零孤儿 + 零报错。
@@ -37,22 +38,23 @@ import (
 //	P2 补丁后**零孤儿**（没有「同义但不同名、且未挂父」的重复索引）；
 //	P3 每个分区在父索引下**确实有成员**（能力没有因为跳过 ATTACH 而丢）。
 func TestMigrationR76AttachSlotRealDB(t *testing.T) {
-	dsn := os.Getenv("TEST_PG_URL")
-	if dsn == "" {
-		t.Skip("TEST_PG_URL 未设置（真库门需要一次性库）")
-	}
-	if !r76DisposableDBName(dsn) {
-		t.Skipf("库名不匹配 bench|test|tmp|scratch|pg_ ⇒ 拒绝在可能不可丢弃的库上跑本门")
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
 	defer cancel()
 
-	conn, err := pgx.Connect(ctx, dsn)
+	dsn, terminate := r76RealDB(ctx, t)
+	defer terminate()
+
+	conn, err := r76Connect(ctx, dsn)
 	if err != nil {
-		t.Fatalf("TEST_PG_URL 已设但连不上：%v", err)
+		t.Fatalf("连不上目标库：%v", err)
 	}
 	defer conn.Close(ctx)
+
+	// ★ pg_trgm 是 trigram 索引的前提（877/887 的定义依赖 gin_trgm_ops）。
+	//   外部库未必装了这个扩展 ⇒ 门自己幂等补上（测试库，允许）。
+	if _, err := conn.Exec(ctx, "CREATE EXTENSION IF NOT EXISTS pg_trgm"); err != nil {
+		t.Fatalf("建 pg_trgm 扩展失败：%v", err)
+	}
 
 	// ── 夹具：会话族父表 + 两个分区 + hot 表 ────────────────────────────
 	// ⚠ 用真名（与迁移里的 regclass 字面量一致）⇒ 否则迁移会因找不到关系而失败，
@@ -247,4 +249,68 @@ func r76DisposableDBName(dsn string) bool {
 		}
 	}
 	return false
+}
+
+// r76RealDB 给出真库 DSN 与清理函数。
+//
+// ★★ **为什么必须有 testcontainers 这条腿**（2026-10-21 R76 轮自查发现）：
+//
+//	CI 的 integration job（.github/workflows/integration-testcontainers-ci.yml）
+//	只设 `TESTCONTAINERS_*`，**不设 `TEST_PG_URL`** ⇒ 任何以 `TEST_PG_URL` 为唯一
+//	入口的真库门在 CI 里都会**静默 SKIP** ⇒ ⇒ **落进「从未被执行过」那一类**
+//	（同款问题：R74 轮实测 `installer/` 的形态门从未被跑过）。
+//	⇒ 本门按仓内既有范式（taskprofile/e2e_loop_integration_test.go 同款）：
+//	**有 TEST_PG_URL 就用它，没有就自己起一个 postgres 容器** ⇒ CI 里真跑。
+//
+// ⚠ 用外部 DSN 时仍要求库名像一次性库（**绝不能落在业务库上**）：
+//
+//	本门会建表、建索引、跑整份迁移。
+func r76RealDB(ctx context.Context, t *testing.T) (string, func()) {
+	t.Helper()
+	if dsn := os.Getenv("TEST_PG_URL"); dsn != "" {
+		if !r76DisposableDBName(dsn) {
+			t.Skipf("TEST_PG_URL 的库名不匹配 bench|test|tmp|scratch|pg_ ⇒ " +
+				"拒绝在可能不可丢弃的库上跑本门（本门会建表、建索引、跑整份迁移）")
+		}
+		return dsn, func() {}
+	}
+	container, err := postgres.Run(ctx, "postgres:16-alpine",
+		postgres.WithDatabase("r76_attach_slot"),
+		postgres.WithUsername("r76_attach_slot"),
+		postgres.WithPassword("r76_attach_slot"),
+	)
+	if err != nil {
+		t.Fatalf("起 postgres 容器失败：%v", err)
+	}
+	dsn, err := container.ConnectionString(ctx, "sslmode=disable")
+	if err != nil {
+		_ = container.Terminate(ctx)
+		t.Fatalf("取容器连接串失败：%v", err)
+	}
+	return dsn, func() { _ = container.Terminate(ctx) }
+}
+
+// r76Connect 连库并带**就绪重试**。
+//
+// ★ 为什么需要重试：testcontainers 的容器「已启动」≠「PG 已就绪」——
+//
+//	PG 初始化期会**主动 reset 掉早到的连接**（实测报
+//	"connection reset by peer"）⇒ 一次 Connect 失败就 Fatalf 会让这道门
+//	**在 CI 里随机红** ⇒ ⇒ 必须重试到就绪。
+//	（仓内同款范式见 taskprofile/e2e_loop_integration_test.go 的 waitFor。）
+func r76Connect(ctx context.Context, dsn string) (*pgx.Conn, error) {
+	var lastErr error
+	for i := 0; i < 30; i++ {
+		conn, err := pgx.Connect(ctx, dsn)
+		if err == nil {
+			return conn, nil
+		}
+		lastErr = err
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(time.Second):
+		}
+	}
+	return nil, lastErr
 }
