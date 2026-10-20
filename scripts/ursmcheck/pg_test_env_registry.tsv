@@ -9,7 +9,7 @@
 ABS_SESSIONS_DIR	component	会话快照目录（路径），与「连哪个库」无关
 AUTO_USE_CHANNEL_QUALITY_ROUTING	component	特性开关（布尔），不改变连库目标
 FREEDISCOVERY_DEFINITELY_UNSET_VAR_2	component	哨兵变量：用来断言某变量「确实未被设置」
-GATEWAY_CANONICAL_TEST_LOCAL_ONLY	dangerous	允许把 canonical 探测指向本地库；打开即取消「只打线上」的约束
+GATEWAY_CANONICAL_TEST_LOCAL_ONLY	dangerous	授权开关：=yes 才允许 canonical fixture 连本地库（不给则 t.Fatal 而非 SKIP）；打开即授予「连本地库」的权限
 GATEWAY_URL	component	网关 HTTP 地址（不是 DSN），真库腿打的是 API 不是库
 HOME	component	环境杂项（HOME），测试只用来拼路径
 INSTALL_DIR	component	安装目录（路径），与库无关
