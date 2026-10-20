@@ -30,6 +30,7 @@ package schema
 //   （否则「所有对象都被标成基线形态」也是一种绿）。
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -39,6 +40,7 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 )
 
 // baselineFallbackMarkerRE 匹配「本对象是基线形态 fallback 体」这一行声明。
@@ -222,9 +224,19 @@ func TestBaselineFallbackObjectsAreNotAppliedByGeneratedReadme(t *testing.T) {
 	scriptDst := filepath.Join(tmp, "deploy", "sql", "sync-objects.sh")
 	copyFile(t, scriptSrc, scriptDst)
 
-	run := exec.Command("bash", scriptDst)
+	// ★ 外部命令必须**有界 ctx**（R65 轮 606.375s 挂起归因的同族教训）：
+	//   无界的 exec.Command 一旦卡住，得到的**不是「红」而是「挂起」** ——
+	//   挂到 go test 的 10 分钟默认超时才退出，而且挂起会**掩盖别的红**
+	//   （那轮挂起下藏着另一个文件的 3 条从未执行到的红）。
+	//   ⇒ 这里给 2 分钟上限，并在超时时说清是「超时」而不是「失败」。
+	genCtx, cancelGen := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancelGen()
+	run := exec.CommandContext(genCtx, "bash", scriptDst)
 	run.Dir = tmp
 	if out, err := run.CombinedOutput(); err != nil {
+		if genCtx.Err() != nil {
+			t.Fatalf("sync-objects.sh 在隔离树里**超时**（上限 2 分钟）⇒ 这道门会挂起而不是报错\n%s", out)
+		}
 		t.Fatalf("sync-objects.sh 在隔离树里跑失败：%v\n%s", err, out)
 	}
 
@@ -357,7 +369,12 @@ func runApplyLoop(t *testing.T, workDir, md string) (map[string]bool, error) {
 		return nil, err
 	}
 
-	cmd := exec.Command("bash", script)
+	// ★ 同上：apply 循环也是外部命令 ⇒ 必须有界 ctx。
+	//   这条循环**理论上**该秒退（假 psql 只回显），所以 1 分钟上限足够宽；
+	//   真要挂住，说明 README 里生成了某种会阻塞的命令 ⇒ 那本身就是缺陷。
+	loopCtx, cancelLoop := context.WithTimeout(context.Background(), time.Minute)
+	defer cancelLoop()
+	cmd := exec.CommandContext(loopCtx, "bash", script)
 	cmd.Dir = workDir
 	cmd.Env = append(os.Environ(),
 		"PATH="+binDir+string(os.PathListSeparator)+os.Getenv("PATH"),
@@ -365,6 +382,9 @@ func runApplyLoop(t *testing.T, workDir, md string) (map[string]bool, error) {
 	)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
+		if loopCtx.Err() != nil {
+			return nil, fmt.Errorf("apply 循环**超时**（上限 1 分钟）⇒ README 里生成了会阻塞的命令\n输出：\n%s", out)
+		}
 		return nil, fmt.Errorf("%v\n输出：\n%s", err, out)
 	}
 

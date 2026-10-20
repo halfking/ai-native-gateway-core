@@ -77,7 +77,7 @@ var viewSourceFiles = []string{
 func viewsWithV1Arm(root string) map[string]bool {
 	edges := map[string]map[string]bool{} // 视图 → 它引用的关系
 	addView := func(name, body string) {
-		body = sqlLineCommentRE.ReplaceAllString(body, " ")
+		body = stripSQLComments(body)
 		refs := map[string]bool{}
 		for _, m := range fromRelationRE.FindAllStringSubmatch(body, -1) {
 			refs[firstRelationToken(m[1])] = true

@@ -202,7 +202,7 @@ func v1DropMigrationIndex(root string, chain []string) (int, string) {
 // sqlFileViewEdges 解析一个 SQL 文件里的 CREATE VIEW 体，返回 视图 → 引用关系。
 func sqlFileViewEdges(body string) map[string]map[string]bool {
 	out := map[string]map[string]bool{}
-	body = sqlLineCommentRE.ReplaceAllString(body, " ")
+	body = stripSQLComments(body)
 	locs := createViewRE.FindAllStringSubmatchIndex(body, -1)
 	for i, loc := range locs {
 		end := len(body)
