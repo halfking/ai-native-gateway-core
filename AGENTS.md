@@ -6011,3 +6011,17 @@ index b953a6f03..555ef83c4 100644
 > ⇒ ★★ **结论（可直接拍板）**：**切事实源**（净收益 8 条真跑、净代价 1 条形态差异）＋ **把 `pkg/identity-migrate` 的形态差异登记掉** ⇒ ⇒ **届时代价 = 0 红、收益 = 8 条真跑。**
 > ⇒ ★ **★ P1 现状补记**：登记册 32 个文件的**最近提交作者全不是 R85 会话**（halfking 23／zcode 3／huang-mini 3／huangxt 1／opencode-agent 1／Merge Bot 1）⇒ ⇒ **「批量修」本质是跨 6 位作者改他人文件** ⇒ ⇒ **仍需属主拍板**（用户那条「同步更新主分支」的指令约束的是**自己的代码**，不是授权改他人文件）⇒ **本轮不擅自动手**。
 > ⇒ 完整记录见 handoff `§19.20.35` ＋ 审计档 `docs/audit/2026-10-21-R85-探针形态假绿与CJK变量名地雷.md` §15。
+
+>
+> **2026-10-21 R87 轮（破坏性腿 · 目标库守卫线）**：★★★★ **「事实源给的值这条腿会不会用」答不了「这条腿要打的库对不对」** ⇒ 4 条真高危腿补守卫 ＋ 新门「破坏性腿 × 事实源承载名 × 无目标库判定」
+> ⇒ ★★★ **缺口**：R86 那道门的判据是「按库名做决定」⇒ ⇒ **破坏性腿**（读事实源导出的 DSN 名 ⇒ 直接 `TRUNCATE`/`DROP` **产品表** ⇒ **从不对目标库做任何判定**）整族落在口径外 ⇒ ⇒ **契约只写在注释里，代码里没有**：例 `scripts/audit/promote_integration_test.go` 头写「against the isolated audit PostgreSQL container」，而它读的 `TEST_AUDIT_ISOLATED_DB_URL` 在事实源里**就是产品库**（名字含义是「隔离审计库」，`verify-outbox-reaper.sh` 给的是隔离容器 `127.0.0.1:15433`）⇒ **名字与值互相矛盾**。
+> ⇒ ★★★★ **4 条真高危（人工逐条定性）**：`scripts/audit/promote_integration_test.go`／`domains/session/v2/session_aggregate_outbox_reaper_integration_test.go`／`admin/data_lifecycle_attachments_integration_test.go`（三条都读 `TEST_AUDIT_ISOLATED_DB_URL`）／**`deploy/sql/verify/supplier_errors_pg_test.go`（本轮新发现：读 `TEST_PG_DSN` = 产品库 ⇒ DROP `supplier_errors` 族）**。
+> ⇒ ★★ **改判一条**：`domains/routeincident/retention_integration_test.go` **不属这一族**（已有读 DSN 的 loopback 守卫 ⇒ 打不到生产库，最坏打本地开发库）⇒ 本轮不动它。
+> ⇒ ★★★ **守卫落法**（新 `internal/testguard`）：**建连之前**用 **DSN 解析**判目标（库名是一次性库 `scratch|e2e|tmp|bench|itgate|_it` **或** 本仓审计容器端口 15433/55432）⇒ 不满足 ⇒ **跳过**（环境不满足 ≠ 代码缺陷；跳过不构成证据，但至少不清库）⇒ 连上后再核对落点（`current_database()` 必须 = DSN 指名的库，否则**失败**）。
+> ⇒ ★★★★ **运行时实证**（比门更硬）：事实源档（产品库 DSN）跑这 4 条腿 ⇒ **全部 SKIP**；★ **产品库 `public.session_bodies` 的 67 行跑前跑后逐字相同** ⇒ 破坏性 SQL 一次都没执行。
+> ⇒ ★★★ **新门 `scripts/ursmcheck/destructive_target_guard_test.go`**（10 个判据夹具自检）＋ **台账 `destructive_target_ledger.tsv`**（5 行 / 3 文件，每行写明「删的是它自己建的什么、为什么是空的」）⇒ **BEFORE 10 对红 → AFTER 5 对绿**（同一把量具）⇒ **变异 M1/M2/M3 全红**（摘守卫 / 删台账行 / 加腐化行）。
+> ⇒ ★★★★ **变异 M1 揭穿了门自己的洞**：第一版 M1 **是绿的** ⇒ 根因＝跨包识别只问「这个包**有没有**做过目标库判定」⇒ **`RequireDatabaseMatchesDSN`（只核对落点、不决定跑不跑）被当成了守卫** ⇒ ⇒ **修法不是加规则，而是把「谁是闸门」交还守卫包自己**：`internal/testguard` 导出 `var GuardFunctions = []string{"RequireIsolatedTarget"}` ⇒ 本门按名单解析跨包调用 ⇒ M1 立刻转红。
+> ⇒ ★★★ **探测器收敛史＝堵漏史**（每一次都不是放宽）：初版 21 对 → 逐条定性后**全是假阳性** ⇒ 连修 6 处口径漏洞（`strings.*` 里的字面量是**对 SQL 文本的断言**｜`Errorf/Fatalf` 里的字面量是**散文**｜切片字面量 + `range` + `Exec`｜库名标记当读形态守卫｜**函数内** `const` 也要进常量表｜拼接要**部分解析**且建/删走**同一套**解析）⇒ ★★ **把解析做得更彻底反而让假阳性变多**（散文里的关键字被认成语句）⇒ **修法是按实参用途分类，不是少解析**。
+> ⇒ ⚠ **属主决策项（刻意没做）**：修正 `TEST_AUDIT_ISOLATED_DB_URL` 的分类要**同时**改事实源 ＋ 登记册 ＋ **官方 runner**（`dsn_exclusive` 绑 `$GATE_URL` ⇒ 撞 R71 判据）⇒ **改可部署链 ⇒ 属主拍板**。⇒ ★ 当前状态**安全**（守卫已拦住；官方档 `$GATE_URL` = `itgate_*` 照常跑 ⇒ 覆盖未丢）。
+> ⇒ ⚠ **诚实边界**：事实源档下这 4 条腿**覆盖变 0**（改跳过）｜「**跨文件**自建库」静态判不出（只能人工判词登记）｜仓内守卫口径**仍有多份漂移副本**（本轮新增第 6 份权威实现，未统一收口）。
+> ⇒ 完整记录见 handoff `§19.20.36` ＋ 审计档 `docs/audit/2026-10-21-R87-破坏性腿的目标库守卫.md`。
