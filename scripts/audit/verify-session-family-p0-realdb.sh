@@ -80,7 +80,10 @@ PSQL_ADMIN() { docker exec -i "$PG_CONTAINER" psql -U "$PG_USER" -d postgres -v 
 
 cleanup() {
   if [[ "$KEEP_CLONE" != "1" ]]; then
-    PSQL_ADMIN -c "DROP DATABASE IF EXISTS $CLONE_DB WITH (FORCE)" >/dev/null 2>&1 \
+    # ★ 防卡保护：SET / terminate / DROP 三条独立 -c（DROP 放最后 ⇒ 退出码仍反映它）
+    PSQL_ADMIN -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname='$CLONE_DB' AND pid <> pg_backend_pid();" >/dev/null 2>&1 || true
+    PSQL_ADMIN -c "SET statement_timeout = '15s'" \
+      -c "DROP DATABASE IF EXISTS $CLONE_DB WITH (FORCE);" >/dev/null 2>&1 \
       || echo "WARN: could not drop $CLONE_DB (leaving it behind)" >&2
   else
     echo "KEEP_CLONE=1: $CLONE_DB left in place" >&2

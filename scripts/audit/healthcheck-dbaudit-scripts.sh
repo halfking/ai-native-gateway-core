@@ -140,8 +140,12 @@ cleanup() {
   fi
   # ② 再回收库
   if [ "$CREATED" = "1" ] && [ "$KEEP" = "0" ] && [ -n "$DB" ]; then
+    # ★ 防卡保护：SET / terminate / DROP 三条独立 -c（DROP 放最后 ⇒ 退出码仍反映它）
     docker exec -i llm-gateway-pg psql -U llm_gateway -d postgres -q \
-      -c "DROP DATABASE IF EXISTS \"${DB}\" WITH (FORCE)" >/dev/null 2>&1
+      -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname='${DB}' AND pid <> pg_backend_pid();" >/dev/null 2>&1 || true
+    docker exec -i llm-gateway-pg psql -U llm_gateway -d postgres -q \
+      -c "SET statement_timeout = '15s'" \
+      -c "DROP DATABASE IF EXISTS \"${DB}\" WITH (FORCE);" >/dev/null 2>&1
     return $?
   fi
   return 0
