@@ -844,7 +844,7 @@ else
   reclaimed=0
 fi
 if [ "$KEEP_DB" = "1" ]; then
-  say "  ⚠ KEEP_DB=1 ⇒ 保留形态库（$SHAPE_DB）"
+  say "  ⚠ KEEP_DB=1 ⇒ 保留形态库（${SHAPE_DB}）"
 fi
 say "  原始日志留在 ${OUT}（可复算）"
 say "★ 提示：worktree 留在 ${WT}（origin/main 的干净副本）⇒ 复核可重复跑。"
