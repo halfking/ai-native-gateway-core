@@ -16,15 +16,15 @@ import (
 )
 
 // last_outbound_final_full_realdb_test.go —— E1（final_full）读侧的**真库行为门**
-// （§143.55，2026-10-21）。
+// （§143.55，2026-10-21；★ §143.56 订正夹具形态并扩判据）。
 //
 // # 这道门补的是哪个盲点
 //
 // §143.55 修掉的是 `lastOutboundSessionSQL` 的一个**行为**缺陷：
 // E1 门（`storage.session_final_full_enabled`）开着时，逐轮行的 outbound_body
-// 是 SQL NULL、快照行的 request_id 是 `'final_full:<session>'`
+// 停写、快照行的 request_id 是 `'final_full:<session>'`
 // ⇒ 原式（`JOIN … ON sb.request_id = rl.request_id` + `WHERE sb.outbound_body IS NOT NULL`）
-// **恒返 0 行**。
+// **读不到快照**。
 //
 // 而门开之前**没有任何判据**能看见它：
 //
@@ -36,10 +36,28 @@ import (
 // ⇒ 与本仓反复记下的那条同族：**一条只被字符串断言过的 SQL，可以「看起来对」
 // 很久**。本门照抄真库集成门的做法：**真跑一次**，而且**两种形态都跑**。
 //
-// # 五条判据，各钉一件会独立坏掉的事
+// # ★★★ 订正（2026-10-21，§143.56）：第一版的夹具形态与生产**不符**
 //
-//	① **门开形态**：逐轮 outbound_body = SQL NULL + 有 final_full 快照行
-//	   ⇒ 旧式返 **0 行**（bug 现场）、新式返**快照正文**。
+// 第一版夹具把「门开时逐轮行没有正文」写成 **SQL NULL**
+// （`jsonTextOrNullBody(nil)` 返回 Go 的 nil）。
+// 而生产的真实形态是 **jsonb `null`**（9 字节）—— 写侧
+// `domains/session/v2/bodies_writer.go` 的 `jsonTextOrNull(data)` 在空时返回
+// **文本 `"null"`** ⇒ 入库是 `('null'::jsonb)`，不是 SQL NULL。
+//
+// ⇒ ★★ **夹具形态错了 ⇒ 判据会以「错的理由」变绿**：
+// 第一版的判据 ① 断言「旧式返 0 行」—— 那只在 SQL NULL 形态下成立；
+// 在生产的 jsonb-null 形态下，旧式返的是 **1 行、正文是 jsonb `null`**
+// （`IS NOT NULL` 对 jsonb null 恒真）。
+// ⇒ 同理，第一版的判据 ③（删掉快照 ⇒ 新式返 0 行）在生产形态下
+// **本来就不成立**（jsonb null 行会通过裸 `IS NOT NULL`）—— 但夹具用 SQL NULL，
+// 所以那道门「绿」了，而生产形态是红的。
+//
+// ⇒ 本版把夹具改成**生产的 jsonb-null 形态**，并补两条判据把上面这两个洞钉住。
+//
+// # 判据清单（各钉一件会独立坏掉的事）
+//
+//	① **门开形态**：逐轮 outbound_body = jsonb `null` + 有 final_full 快照行
+//	   ⇒ 旧式返 **1 行、正文是 jsonb `null`**（bug 现场）、新式返**快照正文**。
 //	② **门关形态**：逐轮有正文、无快照行 ⇒ 新式与旧式**逐列相同**。
 //	③ **快照腿是它答的**：把快照行删掉 ⇒ 新式对同一会话返 **0 行**
 //	   ⇒ 证明 ① 的命中来自快照腿，不是逐轮行恰好也有正文。
@@ -49,6 +67,14 @@ import (
 //	   ⇒ 新式仍须返**快照**。这一条是 **LEFT JOIN 存在的理由**：
 //	   内连接要求「该轮必须有 bodies 行」，而 bodies 行会先于 turns 行被
 //	   保留策略清掉 ⇒ 内连接会让快照腿**没机会答**。
+//	⑥ **★ 门开形态但快照缺失**（门开之前就存在的历史会话 / final_full 还没写成功）
+//	   ⇒ 新式必须返 **0 行**，**不能**返出 jsonb-null 正文。
+//	   ★ 这一条正是 §143.55 落仓那一版修法的**残余缺陷**：它的 WHERE 用裸
+//	   `IS NOT NULL`（会话族上恒真）⇒ 快照缺失时照样返 jsonb null。
+//	⑦ **★ 门关形态 + 逐轮没有正文**（jsonb null）⇒ 旧式返 1 行（jsonb null）、
+//	   新式返 **0 行**。这是**有意**的口径差：旧式把「没有正文」当「有正文」，
+//	   新式与 `SessionCacheDB` 的接口合同（「the most recent row **that has an
+//	   outbound_body**」）同口径。
 //
 // # 为什么旧式 SQL 是**抄**进来的，而新式是**引用**真常量
 //
@@ -96,6 +122,12 @@ const (
 	e1GateSessionOff  = "e1gate_off"
 	e1GateSessionBoth = "e1gate_both"
 	e1GateSessionNone = "e1gate_nobody"
+	// e1GateSessionNoSnap = 「逐轮无正文（jsonb null）**且没有快照行**」的形态。
+	//
+	// ★ 它同时承载判据 ⑥ 与 ⑦ —— 因为「有没有快照行」才是门开关在库里的
+	// 标志，而这个形态**两者都没有** ⇒ 门开/门关对它**无从区分**。
+	// 这恰恰是最该钉住的形态：门开之前就存在的历史会话就是这个形状。
+	e1GateSessionNoSnap = "e1gate_nosnap"
 
 	e1GateSnapshotJSON = `[{"role":"user","content":"snapshot-body"}]`
 	e1GateLegacyJSON   = `[{"role":"user","content":"legacy-body"}]`
@@ -237,8 +269,9 @@ func e1GateJSONText(t *testing.T, tx pgx.Tx, raw string) string {
 
 // e1GateInsertTurn 造一轮「turns + details + bodies 逐轮行」。
 //
-// ⚠ outboundBody == nil ⇒ 写成 **SQL NULL**（这正是 E1 门开时逐轮行的形态：
-// `bodiesRec.OutboundBody = nil` ⇒ `jsonTextOrNull(nil)`）。
+// ⚠ outboundBody == nil ⇒ 写成 **jsonb `null`**（这正是 E1 门开时逐轮行的形态：
+// `bodiesRec.OutboundBody = nil` ⇒ `jsonTextOrNull(nil)` ⇒ 文本 `"null"`
+// ⇒ `('null'::jsonb)`）。
 // ⚠ kind 固定 'turn_delta'；final_full 行由 e1GateInsertFinalFull 单独造。
 func e1GateInsertTurn(t *testing.T, tx pgx.Tx, sessionID, requestID string, turnNo int, outboundBody []byte) {
 	t.Helper()
@@ -248,7 +281,7 @@ func e1GateInsertTurn(t *testing.T, tx pgx.Tx, sessionID, requestID string, turn
 		INSERT INTO public.session_bodies_hot
 			(session_id, turn_no, tenant_id, request_id, ts, outbound_body, kind, partition_date)
 		VALUES ($1, $2, $3, $4, now(), $5::text::jsonb, 'turn_delta', CURRENT_DATE)`,
-		sessionID, turnNo, e1GateTenant, requestID, jsonTextOrNullBody(outboundBody)); err != nil {
+		sessionID, turnNo, e1GateTenant, requestID, e1GateJSONTextOrNull(outboundBody)); err != nil {
 		t.Fatalf("insert session_bodies_hot %s: %v", requestID, err)
 	}
 }
@@ -289,14 +322,21 @@ func e1GateInsertFinalFull(t *testing.T, tx pgx.Tx, sessionID, outboundJSON stri
 	}
 }
 
-// jsonTextOrNullBody 复刻写侧的 `jsonTextOrNull`：空 ⇒ SQL NULL。
+// e1GateJSONTextOrNull 复刻写侧的 `jsonTextOrNull`：空 ⇒ **文本 "null"**。
 //
 // ⚠ 复刻而不是引用 domains/session/v2 的那个函数：那个是**未导出**的，
 // 而本门必须在 package main 里自足（cmd/gateway 不能 import domains/session/v2
-// 的私有符号）。⚠ 语义必须一致：E1 门开时逐轮行就是 **SQL NULL**。
-func jsonTextOrNullBody(b []byte) any {
+// 的私有符号）。
+//
+// ★★ 语义必须**逐字**一致（§143.56 订正的第一版就在这里错了）：
+// 写侧 `jsonTextOrNull(data)` 返回的是**字符串 `"null"`**，不是 Go 的 nil
+// ⇒ 入库形态是 `('null'::jsonb)`，即 **jsonb null**（PG 里 9 字节），
+// **不是 SQL NULL**（0 字节）。
+// ⇒ 第一版这里返回 `nil` ⇒ 夹具是 SQL NULL 形态 ⇒ 与生产不符 ⇒ 判据以
+// 「错的理由」变绿（见文件头「订正」一节）。
+func e1GateJSONTextOrNull(b []byte) any {
 	if len(b) == 0 {
-		return nil
+		return "null"
 	}
 	return string(b)
 }
@@ -320,7 +360,7 @@ func TestE1FinalFullReadSide(t *testing.T) {
 
 	// ── 造数据 ────────────────────────────────────────────────────────────
 	//
-	// ① e1gate_on：门开形态（逐轮 outbound_body = SQL NULL + 有快照行）
+	// ① e1gate_on：门开形态（逐轮 outbound_body = **jsonb `null`** + 有快照行）
 	e1GateInsertTurn(t, tx, e1GateSessionOn, "e1gate_on_r1", 1, nil)
 	e1GateInsertFinalFull(t, tx, e1GateSessionOn, e1GateSnapshotJSON)
 
@@ -336,15 +376,27 @@ func TestE1FinalFullReadSide(t *testing.T) {
 	e1GateInsertTurnMeta(t, tx, e1GateSessionNone, "e1gate_nobody_r1", 1)
 	e1GateInsertFinalFull(t, tx, e1GateSessionNone, e1GateSnapshotJSON)
 
-	// ── 判据 ①：门开形态下，旧式返 0 行、新式返快照正文 ──────────────────
+	// ⑥⑦ e1gate_nosnap：逐轮**无正文**（jsonb `null`）**且没有快照行**
+	//    ⇒ 门开之前就存在的历史会话就是这个形状。
+	e1GateInsertTurn(t, tx, e1GateSessionNoSnap, "e1gate_nosnap_r1", 1, nil)
+
+	// ── 判据 ①：门开形态下，旧式返 1 行且正文是 jsonb `null`、新式返快照正文 ─
+	//
+	// ★ 订正（§143.56）：第一版这里断言「旧式返 0 行」—— 那**只在 SQL NULL 形态下
+	// 成立**。生产的形态是 jsonb `null` ⇒ `IS NOT NULL` 恒真 ⇒ 旧式返 **1 行**、
+	// 正文是 4 字节的 `null`。**这才是 bug 现场**。
 	oldRows, err := e1GateQuery(t, tx, lastOutboundSessionSQLPreE1, e1GateSessionOn, e1GateTenant)
 	if err != nil {
 		t.Fatalf("旧式查询（门开形态）: %v", err)
 	}
-	if len(oldRows) != 0 {
-		t.Errorf("★ 旧式 SQL 在「门开形态」下返了 %d 行（期望 0）—— "+
-			"这说明本门造的数据**没有复现** E1 的现场（逐轮 outbound_body 必须是 SQL NULL），"+
-			"门开形态这一半的判据失去意义", len(oldRows))
+	if len(oldRows) != 1 {
+		t.Fatalf("★ 旧式 SQL 在「门开形态」下返了 %d 行（期望 1）—— "+
+			"这说明本门造的数据**没有复现** E1 的现场（逐轮 outbound_body 必须是 "+
+			"jsonb `null` ⇒ 裸 `IS NOT NULL` 恒真 ⇒ 旧式会返出那一行）", len(oldRows))
+	}
+	if got := string(oldRows[0].body); got != "null" {
+		t.Errorf("★ 旧式 SQL 在「门开形态」下返的正文不是 jsonb `null`（got %q）—— "+
+			"若它是真正文，说明夹具形态又变了（生产形态是 jsonb null，不是 SQL NULL）", got)
 	}
 
 	newRows, err := e1GateQuery(t, tx, lastOutboundSessionSQL, e1GateSessionOn, e1GateTenant)
@@ -370,7 +422,11 @@ func TestE1FinalFullReadSide(t *testing.T) {
 		t.Errorf("★ outbound_token_est 不等于 details 里写的 11（got %v）", newRows[0].tokens)
 	}
 
-	// ── 判据 ②：门关形态下，新式与旧式逐列相同 ───────────────────────────
+	// ── 判据 ②：门关形态下（逐轮**有正文**），新式与旧式逐列相同 ───────────
+	//
+	// ★ 订正（§143.56）：「门关时逐行等价」这句话要**加限定** ——
+	// 等价只成立于「有正文的轮次」上。旧式把 jsonb-null 行也算成「有正文」
+	// ⇒ 差别全部落在「没有正文的轮次」上（那是判据 ⑦）。
 	oldOff, err := e1GateQuery(t, tx, lastOutboundSessionSQLPreE1, e1GateSessionOff, e1GateTenant)
 	if err != nil {
 		t.Fatalf("旧式查询（门关形态）: %v", err)
@@ -380,8 +436,8 @@ func TestE1FinalFullReadSide(t *testing.T) {
 		t.Fatalf("新式查询（门关形态）: %v", err)
 	}
 	if len(oldOff) != 1 || len(newOff) != 1 {
-		t.Fatalf("门关形态下旧式返 %d 行、新式返 %d 行（期望各 1 行）—— "+
-			"「门关时语义不变」的前提不成立", len(oldOff), len(newOff))
+		t.Fatalf("门关形态（逐轮有正文）下旧式返 %d 行、新式返 %d 行（期望各 1 行）—— "+
+			"「门关时有正文的轮次上逐列相同」的前提不成立", len(oldOff), len(newOff))
 	}
 	wantLegacy := e1GateJSONText(t, tx, e1GateLegacyJSON)
 	if got := string(newOff[0].body); got != wantLegacy {
@@ -441,5 +497,59 @@ func TestE1FinalFullReadSide(t *testing.T) {
 	if len(afterDelete) != 0 {
 		t.Errorf("★ 删掉快照行后新式仍返 %d 行（期望 0）—— "+
 			"说明 ① 的命中**不是**来自快照腿（逐轮行自己答了）", len(afterDelete))
+	}
+
+	// ── 判据 ⑥：门开形态但**快照缺失** ⇒ 新式必须返 0 行 ──────────────────
+	//
+	// ★ 这是 §143.55 落仓那一版修法的**残余缺陷**：它的 WHERE 用裸
+	// `IS NOT NULL`（会话族上对 jsonb null 恒真）⇒ 快照缺失时，逐轮那行
+	// jsonb null 照样通过过滤 ⇒ 返出 jsonb-null 正文。
+	// ⇒ 门开之前就存在的历史会话就是这个形态（它没有 final_full 快照）。
+	noSnapRows, err := e1GateQuery(t, tx, lastOutboundSessionSQL, e1GateSessionNoSnap, e1GateTenant)
+	if err != nil {
+		t.Fatalf("新式查询（快照缺失）: %v", err)
+	}
+	if len(noSnapRows) != 0 {
+		t.Errorf("★ 快照缺失时新式返了 %d 行（期望 0）—— "+
+			"若返出的正文是 jsonb `null`，说明「有正文」判据又退回了裸 `IS NOT NULL`"+
+			"（会话族上对 jsonb null 恒真）⇒ 这正是 §143.55 那一版的残余缺陷；"+
+			"本形态就是「门开之前就存在的历史会话」", len(noSnapRows))
+	}
+
+	// ── 判据 ⑦：同一形态下，旧式返 1 行（jsonb null）⇒ 口径差是**有意的** ──
+	//
+	// ★ 这一条把「旧式 vs 新式」的差异写死成**期望**，防止有人日后把新式
+	// 「修回」成也返 jsonb null 行（那会把 bug 放回来）。
+	oldNoSnap, err := e1GateQuery(t, tx, lastOutboundSessionSQLPreE1, e1GateSessionNoSnap, e1GateTenant)
+	if err != nil {
+		t.Fatalf("旧式查询（快照缺失）: %v", err)
+	}
+	if len(oldNoSnap) != 1 || string(oldNoSnap[0].body) != "null" {
+		t.Errorf("★ 旧式在「无正文、无快照」形态下应返 1 行且正文是 jsonb `null`"+
+			"（实得 %d 行）—— 变了就说明夹具形态又漂了，这条判据的前提不成立",
+			len(oldNoSnap))
+	}
+
+	// ── 判据 ⑧：0 行必须被映射成 (nil, nil)，**不是错误** ──────────────────
+	//
+	// ★ §143.56 追加（真库门 + 一条【适配器层】的判据）：
+	// `domains/hooks/compression/session_cache.go` 的 `getLocal` 会把
+	// `loadFromDB` 的错误 **warn 掉并返回 (nil,nil,nil)**；
+	// 而 `domains/hooks/compression/session_cache_shared.go` 的 `loadSharedLocked`
+	// 会把同一个错误 **直接 return err**（往上抛到 `GetOrLoad` 的调用方）。
+	// ⇒ ⇒ 「这个会话没有 outbound」如果用**错误**表达 ⇒ ⇒ **Redis 共享路径
+	// 会把它当成硬错误** ⇒ ⇒ ⇒ 适配器必须把 0 行收口成 (nil, nil)。
+	//
+	// ★ 触发面（本轮实测，252 共享库）：**没有正文**的会话 = **24,229 个（9.68%）**
+	// ⇒ ⇒ 不收口 ⇒ 共享路径会开始报错。
+	absentRow, err := scanLastOutboundRow(tx.QueryRow(ctx, lastOutboundSessionSQL,
+		"e1gate_absent_session", e1GateTenant))
+	if err != nil {
+		t.Errorf("★ 0 行被当成了错误（%v）—— "+
+			"「这个会话没有 outbound」不是「数据库出错」⇒ "+
+			"共享路径（loadSharedLocked）会把它直接往上抛", err)
+	}
+	if absentRow != nil {
+		t.Errorf("★ 0 行却返回了非空 row（%+v）—— 期望 (nil, nil)", absentRow)
 	}
 }
