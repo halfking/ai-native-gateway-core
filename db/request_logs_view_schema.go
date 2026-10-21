@@ -758,6 +758,20 @@ var sessionBodiesSourceProjection = "sb.request_id, sb.request_delta AS request_
 //
 // ⚠ 同一条陷阱适用于 `request_body`（投影名 request_delta）：会话族的
 // "无请求体"同样是 jsonb null，用 `IS NOT NULL` 会把 1,892 行算成有正文。
+//
+// # 适用范围（2026-10-21 §143.56 扩记）
+//
+//	原始合同是「喂给 SessionFamilyBodiesSourceSQL 的列别名」。本轮起它**也**被
+//	用在两个不在那个源上的别名上：
+//
+//	- `f`  = `public.session_bodies_unified` 的别名（final_full 快照腿）
+//	- `ff` = 同上的 LATERAL 结果别名
+//
+//	⇒ 成立条件只有一条：**该别名下有一个 jsonb 类型的 `outbound_body` 列**。
+//	这三处都满足（会话族与 unified 视图同源于 `session_bodies*`）。
+//	⇒ ★ 判据**只有一个事实源**：`cmd/gateway` 的 L3 冷启动式
+//	（`lastOutboundSessionSQL`）三处「有正文」判据都调它，
+//	与 `admin/data_lifecycle.go`、`cmd/compression-bench/main.go` 同口径。
 func SessionBodiesHasOutboundPredicate(alias string) string {
 	return alias + `.outbound_body IS NOT NULL AND ` + alias + `.outbound_body <> 'null'::jsonb`
 }

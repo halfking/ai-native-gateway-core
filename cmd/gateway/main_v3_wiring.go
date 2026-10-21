@@ -9,6 +9,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/kaixuan/llm-gateway-go/db"
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/compression"       //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/memory"                  //nolint:depguard // historical violation, B1 routing.go CQRS will fix
@@ -97,29 +99,72 @@ func dbBackendFromPool(dbConn *db.DB) compression.SessionCacheDB {
 // SessionFamilyTurnsForSessionSQL 内推消费），$2 = 租户。提升为包级变量
 // 是给形状钉桩用的。
 //
-// # ★★ 2026-10-21（§143.55，E1 读侧落地）：本式原来在 final_full 门下**必然落空**
+// # ★★ 2026-10-21（§143.55，E1 读侧落地）：本式原来在 final_full 门下**读不到快照**
 //
 // 原式是 `JOIN <bodies 源> sb ON sb.request_id = rl.request_id` + `WHERE sb.outbound_body IS NOT NULL`。
 // 而 E1（迁移 708 / 开关 `storage.session_final_full_enabled`）的写入形态是：
 //
-//	逐轮行：outbound_body = **SQL NULL**（`bodiesRec.OutboundBody = nil` ⇒ `jsonTextOrNull(nil)`）
+//	逐轮行：outbound_body = **jsonb `null`**（★ §143.56 实测订正，见下方横幅）
 //	快照行：request_id = 'final_full:<session>'、turn_no = 0、kind = 'final_full'
 //
-// ⇒ 两个条件同时把门关上：
+// ⇒ 快照行的 request_id 与任何一轮的 request_id 都不相等 ⇒ 永远匹配不上 turns 侧
+// 的任何一行 ⇒ 本式读不到快照。
 //
-//	① JOIN 键：快照行的 request_id 是 `'final_full:<session>'`，**与任何一轮的
-//	   request_id 都不相等** ⇒ 快照行永远匹配不上 turns 侧的任何一行；
-//	② 过滤：逐轮行的 outbound_body 是 SQL NULL ⇒ `IS NOT NULL` 把它们全部滤掉。
+// # ★★★ 订正横幅（2026-10-21，§143.56）—— §143.55 的根因表述与修法**都不准确**
 //
-// ⇒ 门一开，本式恒返回 **0 行** ⇒ L3 冷启动拿不到任何 outbound ⇒ 压缩会话缓存
-// 冷启动退化成「无历史」。
+// ★ **订正 1：逐轮行是 jsonb `null`，不是 SQL NULL。**
+//
+//	写侧 `domains/session/v2/bodies_writer.go` 的 `jsonTextOrNull(data)` 在空时返回
+//	**文本 `"null"`**（不是 Go 的 nil）⇒ 入库形态是 `('null'::jsonb)`。
+//	⇒ 211 生产实测（2026-10-21 17:55 开门后）：逐轮行
+//	  `pg_column_size(outbound_body) = 9`（jsonb null 的字节数；SQL NULL 会是 0）。
+//	⇒ ★ §143.55 写的「逐轮 outbound_body = SQL NULL」**是错的**。
+//
+// ★ **订正 2：原式不是「恒返 0 行」，而是「返出 1 行、正文是 jsonb `null`」。**
+//
+//	`sb.outbound_body IS NOT NULL` 对 **jsonb null 恒真**（jsonb null 不是 SQL NULL）
+//	⇒ 原式把「这一轮没有 outbound 正文」当成了「有正文」。
+//	⇒ 所以 L3 冷启动拿到的是 **4 字节的 `null`**，不是 0 行。
+//	（`db.SessionBodiesHasOutboundPredicate` 的文件头早就记着这条：会话族的
+//	  「没有正文」一律是 jsonb null，裸 `IS NOT NULL` 在会话族上是恒真 —— 实测
+//	  20,643 行里 20,643 行通过，判据等于没写。）
+//	⇒ ★ §143.55 的「恒返 0 行 / IS NOT NULL 全滤掉」表述**作废**。
+//
+// ★ **订正 3：§143.55 落仓的那一版修法只修了一半。**
+//
+//	那一版是 LEFT JOIN + LATERAL 快照腿 +
+//	`WHERE (sb.outbound_body IS NOT NULL OR ff.outbound_body IS NOT NULL)`：
+//	快照**存在**时它答对了；快照**缺失**时（门开之前就存在的历史会话、或
+//	final_full 还没写成功），`sb` 腿的 jsonb null 行仍然通过那个恒真的
+//	`IS NOT NULL` ⇒ 照样返出 jsonb null 正文。
+//	⇒ ⇒ 本轮（§143.56）把「有正文」判据换成 jsonb 口径，这一半才补上。
+//
+// ★ **订正 4：「门关时逐行等价」不成立**，差别不在 final_full，而在
+//
+//	「**没有正文**的轮次」上：
+//
+//	旧式（裸 `IS NOT NULL`）把 jsonb-null 行算成「有正文」⇒ 命中的可能是
+//	「**最新一轮没有正文**」那一行，而不是「最新一轮有正文」那一行；
+//	新式只认真有正文的轮次 ⇒ 命中「最近一个**真的有正文**的轮次」。
+//	⇒ 这与 `domains/hooks/compression/session_cache.go` 里 `SessionCacheDB` 的
+//	接口合同（「the most recent row **that has an outbound_body**」）**同口径**
+//	⇒ 新式才是合同要求的那个，旧式是过宽的那个。
+//
+// ★ 诚实边界（§143.56 实测得出，别外推）：
+//
+//	本式是 L3 冷启动的**兜底**腿。生产的主路径是
+//	`domains/session/v2/turn_reader.go` 的 `LoadLatestOutbound`
+//	（**已 final_full-first**，且自带 `string(raw) == "null"` 护栏）
+//	⇒ 只有「既没有快照、也没有 delta chain」的会话才会走到本式。
+//	⇒ 所以本式的缺陷是**真缺陷**（真库可复现），但**不是**「E1 门一开就必炸」。
 //
 // # 修法：三条腿（turns 元数据 + 逐轮正文 + final_full 快照），COALESCE 取优先级
 //
 //	final_full 优先、逐轮兜底 —— 与 `domains/session/v2/turn_reader.go`
 //
 // 的 `LoadLatestOutbound`（方案 D2「差集提取改读 final_full；未命中回退旧
-// outbound_body」）**同一口径**。
+//
+//	outbound_body」）**同一口径**。
 //
 // ★ 为什么 final_full 腿用 `session_bodies_unified` 视图、而不是改
 // `db.SessionFamilyBodiesSourceSQL()` 的投影：
@@ -139,23 +184,17 @@ func dbBackendFromPool(dbConn *db.DB) compression.SessionCacheDB {
 //   - LATERAL 的结果列 `ff.outbound_body` 可以同时进 SELECT（COALESCE）与
 //     WHERE（"有正文"过滤）⇒ 不用重复求值。
 //
-// ★ 为什么 WHERE 保留 `sb.outbound_body IS NOT NULL` 这一条（而不是删掉）：
+// ★ 为什么 WHERE 保留「有正文」过滤（而不是删掉）：
 //
-//	删掉 ⇒ LEFT JOIN 会把「本轮没有正文」的 turns 行也放进来 ⇒ **门关时结果集
-//	被放大**（LEFT JOIN 的右侧无匹配 ⇒ 该 turns 行照样成行）。
-//	保留 ⇒ `LEFT JOIN ... WHERE sb.outbound_body IS NOT NULL` 与原来的
-//	`INNER JOIN ... WHERE sb.outbound_body IS NOT NULL` **逐行等价**
-//	（无匹配的右行被 WHERE 滤掉 ⇒ 等价于内连接）⇒ 门关时语义不变。
+//	删掉 ⇒ LEFT JOIN 会把「本轮没有正文」的 turns 行也放进来 ⇒ **结果集被放大**
+//	（LEFT JOIN 的右侧无匹配 ⇒ 该 turns 行照样成行）。
+//	保留 ⇒ 无匹配的右行被 WHERE 滤掉 ⇒ 与内连接同形。
 //
-// ★ 「门关时语义不变」的边界（诚实声明）：
+// ★★ 2026-10-21（§143.56）：三处「有正文」判据全部改用
 //
-//  1. **门关**（库里没有 final_full 行）⇒ 快照腿恒 NULL ⇒ COALESCE 恒取
-//     `sb.outbound_body` ⇒ 返回行集与原式**逐行相同**；
-//  2. **门开**（有 final_full 行）⇒ 返回 final_full 快照（更新的完整 outbound），
-//     这正是 E1 的目的；
-//  3. **门曾经开过又关掉**（库里还留着 final_full 行）⇒ 本式仍优先读快照
-//     （与 `LoadLatestOutbound` 同口径）⇒ 与原式**不同**（原式只读逐轮）。
-//     这是**有意的**：快照行比逐轮行新，且它才是「最后完整 outbound」。
+//	`db.SessionBodiesHasOutboundPredicate(alias)`（`IS NOT NULL AND <> 'null'::jsonb`）
+//	—— 与 `admin/data_lifecycle.go`、`cmd/compression-bench/main.go` 同一口径，
+//	且**判据只有一个事实源**（抄一份进 SQL 就等于多了一个会漂移的副本）。
 var lastOutboundSessionSQL = `
 		SELECT COALESCE(ff.outbound_body, sb.outbound_body),
 		       rl.outbound_msg_count, rl.outbound_token_est,
@@ -169,13 +208,13 @@ var lastOutboundSessionSQL = `
 		  WHERE f.tenant_id = $2
 		    AND f.session_id = $1
 		    AND f.kind = 'final_full'
-		    AND f.outbound_body IS NOT NULL
-		    AND f.outbound_body <> 'null'::jsonb
+		    AND ` + db.SessionBodiesHasOutboundPredicate("f") + `
 		  ORDER BY f.ts DESC
 		  LIMIT 1
 		) ff ON TRUE
 		WHERE rl.tenant_id = $2
-		  AND (sb.outbound_body IS NOT NULL OR ff.outbound_body IS NOT NULL)
+		  AND ((` + db.SessionBodiesHasOutboundPredicate("sb") + `)
+		       OR (` + db.SessionBodiesHasOutboundPredicate("ff") + `))
 		ORDER BY rl.ts DESC
 		LIMIT 1
 	`
@@ -216,6 +255,28 @@ func scanLastOutboundRow(row interface{ Scan(dest ...any) error }) (*compression
 		meta   []byte
 	)
 	if err := row.Scan(&ob, &mc, &te, &hashes, &meta); err != nil {
+		// ★★ 2026-10-21（§143.56）：**0 行不是错误** ⇒ 映射成 (nil, nil)。
+		//
+		// 理由（两条调用路径的实测差）：
+		//
+		//	`domains/hooks/compression/session_cache.go` 的 `getLocal`
+		//	→ `loadFromDB` 出错 ⇒ **warn + 返回 (nil,nil,nil)** ⇒ 吞掉；
+		//	`domains/hooks/compression/session_cache_shared.go` 的 `loadSharedLocked`
+		//	→ `loadFromDB` 出错 ⇒ **直接 return err** ⇒ **往上抛**。
+		//
+		// ⇒ ⇒ 「没有 outbound」与「数据库出错」必须分开表达，否则
+		// ⇒ ⇒ **Redis 共享路径会把「这个会话没有历史」当成硬错误**。
+		//
+		// ★ 触发面：① 迁移 890 之后，会话族里查不到轮次的**历史会话**
+		//　（既有形态，见本文件 LastOutboundForSession 的注释）；
+		//　② §143.56 把「有正文」判据换成 jsonb 口径之后，**没有正文**的
+		//　　会话（252 共享库实测 **24,229 个 = 9.68%**）会正确地返 0 行
+		//　　⇒ ⇒ **不映射 ⇒ 共享路径会开始报错** ⇒ ⇒ 必须在这里收口。
+		//
+		// ★ 真库门判据 ⑧ 钉住这一条（去掉本映射 ⇒ 判据 ⑧ 立刻红）。
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil
+		}
 		return nil, err
 	}
 	out := &compression.LastOutboundRow{}

@@ -549,6 +549,11 @@ VALID_VERDICTS = {
 }
 RE_HEAD_C = re.compile(r"head\s+-c")
 
+# ★★★ **占位证据串**（R98 轮新增）：自动初稿里这两个串是「等人工/实测」的占位，
+#   **不是依据** ⇒ ⇒ 补齐零证据时**不能**拿它们当证据填进去
+#   ⇒⇒ 否则会出现「证据非空但内容是『待裁决』」的假通过。
+R97_PLACEHOLDER_EVIDENCE = ("待裁决", "待实测写端体量")
+
 
 def auto_verdict(site):
     """自动初稿。★ 只对「读码/实测可机械判定」的两桶给终值，其余一律 pending。
@@ -718,6 +723,9 @@ def build_ledger(cand, ledger_path, groups=None, occ=None):
     ★ 两个分母分别发布：候选处数（消费者处）/ 台账行数（物理行）。
 
     ★★★ **carry-over 的六步匹配级联**（★ 本轮实测踩出来的真缺陷的修法）：
+      0. ★★ **前置闸（R98 轮修正）**：**同形组行数变了 ⇒ occ 锚失效**
+         （occ 是位置序号 ⇒ 组内插删一行 ⇒ 其余成员 occ 全部位移）
+         ⇒ ⇒ 组大小**稳定**才允许第 1 步；否则只信**行号锚**（第 2 步）。
       1. 主键精确命中 (file, fp, occ)              ⇒ 直接沿用；
       2. 同 (file, fp) 组内**行号未变**            ⇒ 沿用（行号是更强的锚）；
       3. 同 (file, fp) 组内**组内行数未变** ⇒ 按序重锚 ⇒ 沿用（附注「顺序重锚」）；
@@ -729,6 +737,15 @@ def build_ledger(cand, ledger_path, groups=None, occ=None):
     ★★ 第 1 步之所以要 occ：形态指纹**同文件内不唯一** ⇒ 拿 (file, fp) 当键
       ⇒ `old[(file,fp)] = cols` 后写覆盖先写 ⇒ **同形行互相冒用裁决**
       ⇒ 真缺陷的 risk 裁决可能被邻行的 benign 裁决洗掉 ⇒ 本轮核心不变量被破。
+
+    ★★★★ **R98 轮的实测订正（★ 这段曾经是「写在纸上、没落在代码里」）**：
+      第 4 步原先写在 `if old is not None:` 的 `elif` 里 ⇒ **不可达**
+      （该分支里 `old` 恒为 None）⇒ ⇒ 「不许自动重锚」这条约束**从未生效**
+      ⇒ 实测：该类行走「新增 ⇒ 自动初稿」⇒ **人工裁决被自动初稿的终值顶替**
+      ⇒ 且 `stats["shift"]` 恒 0 ⇒ **量具自己都报不出这件事**。
+      ⇒ ⇒ 本轮把第 4 步提到顶层（`status == "shift"`）⇒ 并加了第 0 步前置闸
+      ⇒ ⇒ 修完实测：真实台账**只有 evidence 列变 34 行、verdict 变 0 行**
+      ⇒⇒ （见 handoff §19.20.68 —— ★ 节号是活事实，落笔时当场查过一次。）
     """
     if groups is None:
         groups = group_sites(cand)
@@ -761,13 +778,21 @@ def build_ledger(cand, ledger_path, groups=None, occ=None):
         note = ""
         near = None
         grp = old_by_fp.get((path, fp), [])
-        if (path, fp, o) in old_by_key:
+        # ★★ **组大小是否稳定 = 「occ 还值不值得信」**（R98 轮修正，★ 见下方说明）。
+        #
+        # ★ occ 是**位置序号** ⇒ 同形组里插入/删除一行 ⇒ 其余成员 occ **全部位移**
+        #   ⇒ ⇒ 组大小变了 ⇒ occ 锚失效 ⇒ **不许再按 occ 命中**（否则会串味：
+        #   新行会冒用旧行的裁决，而旧行的裁决会被顶到别的行上）。
+        # ⇒ ⇒ 所以：**组大小稳定才允许 exact（occ）命中**；否则只信**行号锚**。
+        size_stable = (len(grp) == cur_cnt[(path, fp)])
+        if size_stable and (path, fp, o) in old_by_key:
             old, status = old_by_key[(path, fp, o)], "exact"
         elif grp:
             same_line = [r for r in grp if r["line"] == line_s]
             if len(same_line) == 1:
+                # ★ 行号锚 = 最强的身份证据（这行还在、形态也没变 ⇒ 裁决依据未变）
                 old, status = same_line[0], "line"
-            elif len(grp) == cur_cnt[(path, fp)]:
+            elif size_stable:
                 old, status = grp[o - 1], "order"
                 note = "（顺序重锚：同形组行数未变）"
             else:
@@ -786,7 +811,22 @@ def build_ledger(cand, ledger_path, groups=None, occ=None):
 
         v, reason, evid, own = av, ar, ae, owner_of(path)
         invalidated = False
-        if old is not None:
+        if status == "shift":
+            # ★★★ **同形组行数变化 ⇒ occ 位移 ⇒ 无法安全重锚 ⇒ 回 pending**
+            #   （★ R98 轮实测发现：这段原先写在 `if old is not None:` 里 ⇒ **不可达**
+            #    —— 该分支里 `old` 恒为 None ⇒ ⇒ 「不许自动重锚」这条约束**从未落地**
+            #    ⇒ 该类行走「新增 ⇒ 自动初稿」⇒ 人工裁决被自动初稿的终值顶替
+            #    ⇒（可把 risk 静默降级成 benign）⇒ 且 stats["shift"] 恒 0 ⇒ 无任何信号。）
+            src = near if near is not None else None
+            v = "pending"
+            reason = ("★ 同形组行数变化 ⇒ occ 位移 ⇒ **无法安全重锚** ⇒ 需人工重裁"
+                      "（原证据保留供重裁参考）")
+            evid = src["evidence"] if src is not None else "待裁决"
+            own = src["owner"] if src is not None else owner_of(path)
+            stats["invalidated"] += 1
+            stats["shift"] += 1
+            invalidated = True
+        elif old is not None:
             drift = []
             if old["kind"] != "+".join(kinds):
                 drift.append("kind %s→%s" % (old["kind"], "+".join(kinds)))
@@ -809,21 +849,16 @@ def build_ledger(cand, ledger_path, groups=None, occ=None):
                 stats["invalidated"] += 1
                 stats["drift"] += 1
                 invalidated = True
-            elif status == "shift":
-                # ★ 同形组行数变化 ⇒ occ 位移 ⇒ **无法安全重锚** ⇒ 回 pending
-                src = near if near is not None else old
-                v = "pending"
-                reason = ("★ 同形组行数变化 ⇒ occ 位移 ⇒ **无法安全重锚** ⇒ 需人工重裁"
-                          "（原证据保留供重裁参考）")
-                evid = src["evidence"]
-                own = src["owner"]
-                stats["invalidated"] += 1
-                stats["shift"] += 1
-                invalidated = True
             else:
                 v = old["verdict"]
                 reason = old["reason"] + note
                 evid = old["evidence"]
+                # ★★ **零证据补齐**（R98 轮修正）：旧行证据为空 ⇒ 用**该行的机械判据**补上；
+                #   ★ 只在自动初稿给的是**真依据**时补（排除两个占位串）
+                #   ⇒ 真实台账里有 34 行「零证据的终值」（R97 之前的旧行）⇒ 门抓不到
+                #   ⇒ 补齐后门才能对**全表**要求证据非空。
+                if not evid.strip() and ae not in R97_PLACEHOLDER_EVIDENCE:
+                    evid = ae
                 own = old["owner"]
                 stats["kept"] += 1
                 if status in ("line", "order"):

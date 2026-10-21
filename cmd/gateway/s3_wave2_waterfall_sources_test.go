@@ -42,8 +42,26 @@ import (
 //	   `Contains("JOIN …")` —— ⚠ 后者会把 `LEFT JOIN` 也算进去 ⇒ **恒绿**。
 //	② COALESCE **顺序**：必须是 `COALESCE(ff.outbound_body, sb.outbound_body)`
 //	   —— 反过来（先逐轮后快照）就取错了源，而两条腿都在时**不报错**。
-//	③ WHERE 的**形状**：必须是 `sb… IS NOT NULL OR ff… IS NOT NULL`
+//	③ WHERE 的**形状**：必须是「sb 腿的正文判据 **OR** ff 腿的正文判据」
 //	   —— 少了它 ⇒ LEFT JOIN 会把「本轮没有正文」的行也放进来 ⇒ 行集被放大。
+//
+// # ★★ 2026-10-21（§143.56）：判据 ③ 的「正文判据」本身被换掉了
+//
+// §143.55 那一版把 ③ 写成「必须存在 `sb.outbound_body IS NOT NULL OR
+// ff.outbound_body IS NOT NULL`」—— ★ **那条判据本身就是恒真的**：
+// 会话族的「没有正文」是 **jsonb `null`**（不是 SQL NULL）⇒ 裸 `IS NOT NULL`
+// 在会话族上恒真（实测 20,643 行里 20,643 行通过）⇒
+// 「这轮有正文」被写成了「这轮有行」。
+//
+// ⇒ 本轮把 ③ 改成「必须存在 `db.SessionBodiesHasOutboundPredicate(alias)` 的
+// **展开文本**（`IS NOT NULL AND <> 'null'::jsonb`）」+ 一条**反向**判据
+// （裸形态必须不在）⇒ 判据从「恒真」变成「有牙」。
+//
+// ⇒ ★ 同族教训（与「门红了先读门在守什么」同源）：
+//
+//	**判据本身恒真时，它会把「什么都没检查」伪装成「检查通过」。**
+//	判据的强度要单独审：问「这条判据在**错误形态**下会不会红」，
+//	而不只是问「它在**正确形态**下会不会绿」。
 func TestS3Wave2WaterfallSources(t *testing.T) {
 	t.Run("点查走 canonical 视图", func(t *testing.T) {
 		q := waterfallByRequestSQL
@@ -141,8 +159,10 @@ func TestS3Wave2WaterfallSources(t *testing.T) {
 			"f.tenant_id = $2",
 			"f.session_id = $1",
 			"f.kind = 'final_full'",
-			"f.outbound_body IS NOT NULL",
-			"f.outbound_body <> 'null'::jsonb",
+			// ★ 用 helper 的**展开文本**断言（§143.56）：判据只认
+			// 「jsonb 口径」（IS NOT NULL AND <> 'null'::jsonb），
+			// 不接受裸 `IS NOT NULL`（会话族上对 jsonb null 恒真）。
+			db.SessionBodiesHasOutboundPredicate("f"),
 			"ORDER BY f.ts DESC",
 			"LIMIT 1",
 		} {
@@ -164,17 +184,44 @@ func TestS3Wave2WaterfallSources(t *testing.T) {
 		}
 
 		// ── ⑤ WHERE 块：保留「有正文」过滤（LEFT JOIN 不放大行集）──────────
+		//
+		// ★ 2026-10-21（§143.56）：判据从「裸 `IS NOT NULL`」换成
+		// **jsonb 口径**（`IS NOT NULL AND <> 'null'::jsonb`）——
+		// 会话族的「没有正文」是 jsonb null，裸 `IS NOT NULL` 在会话族上**恒真**
+		// （实测 20,643/20,643 通过）⇒ 那个判据等于没写。
 		iWhere := strings.Index(q, "WHERE rl.tenant_id = $2")
 		iOrder := strings.Index(q, "ORDER BY rl.ts DESC")
 		if iWhere < 0 || iOrder < 0 || iOrder < iWhere {
 			t.Fatalf("WHERE/ORDER BY 块定位失败（iWhere=%d iOrder=%d）", iWhere, iOrder)
 		}
 		whereBlock := q[iWhere:iOrder]
-		if !strings.Contains(whereBlock,
+		for _, alias := range []string{"sb", "ff"} {
+			needle := db.SessionBodiesHasOutboundPredicate(alias)
+			if !strings.Contains(whereBlock, needle) {
+				t.Errorf("WHERE 缺 %s 腿的「有正文」判据 %q —— "+
+					"裸 `IS NOT NULL` 在会话族上恒真（jsonb null）⇒ 它当不了「这轮有正文」",
+					alias, needle)
+			}
+		}
+		// ★ 反向判据：裸形态必须**不在**。
+		//
+		// ⚠ 判别力说明：正确的展开文本是
+		//	`(sb.outbound_body IS NOT NULL AND sb.outbound_body <> 'null'::jsonb)`
+		// 而裸形态是
+		//	`sb.outbound_body IS NOT NULL OR ff.outbound_body IS NOT NULL`
+		// 后者**不是**前者的子串（第一个 `IS NOT NULL` 后面跟的是 `AND` 不是 `OR`）
+		// ⇒ 这条反向判据有牙。
+		if strings.Contains(whereBlock,
 			"sb.outbound_body IS NOT NULL OR ff.outbound_body IS NOT NULL") {
-			t.Errorf("WHERE 必须保留「有正文」过滤（sb… OR ff…）—— "+
-				"少了它，LEFT JOIN 会把「本轮没有正文」的 turns 行也放进来；实得 %q",
-				firstN(whereBlock, 120))
+			t.Error("★ WHERE 退回裸 `IS NOT NULL` 形态（sb… OR ff…）—— " +
+				"会话族的「没有正文」是 jsonb null ⇒ 裸判据恒真 ⇒ " +
+				"「这轮有正文」变成了「这轮有行」")
+		}
+		// WHERE 块必须**同时**含 jsonb 判据（防止有人把 helper 换成一个
+		// 语义等价的自造文本时悄悄漏掉 jsonb 那一半）。
+		if !strings.Contains(whereBlock, "<> 'null'::jsonb") {
+			t.Error("★ WHERE 块里没有 jsonb null 排除（`<> 'null'::jsonb`）—— " +
+				"会话族的「没有正文」是 jsonb null，不是 SQL NULL")
 		}
 	})
 }
