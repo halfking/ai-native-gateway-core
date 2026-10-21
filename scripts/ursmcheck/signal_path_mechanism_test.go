@@ -560,7 +560,7 @@ func TestSignalPathReadingsMatrix(t *testing.T) {
 							obs.ExitTrapMS, status)
 					}
 					if mode == "none" && !obs.exitTrapRan() {
-						t.Logf("   ⚠⚠ 上一格：★ EXIT trap **未执行** ⇒ ★ 同上 ⇒「不保证」的可复现证据",
+						t.Logf("   ⚠⚠ 上一格：★ EXIT trap **未执行**（EXIT trap=%dms）⇒ ★ 同上 ⇒「不保证」的可复现证据",
 							obs.ExitTrapMS)
 					}
 				}

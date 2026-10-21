@@ -26,9 +26,6 @@ package admin
 // 以及「db 那一层的默认臂确实返回 v1 视图」这个**端到端**事实。
 
 import (
-	"os"
-	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 
@@ -147,36 +144,13 @@ func specSegmentForKey(src, key string) string {
 	return src[start : i+end]
 }
 
-// readRepoFile 按**仓库根**解析路径（parts 里带包名，如 "admin/session_export.go"）。
+// ⚠ readRepoFile 原先定义在本文件（带 `//go:build !integration`）⇒ 在
+// `-tags=integration` 树下它不存在，而 admin/admin_500_channel_gap_realdb_test.go
+// （无 build tag）在 :281 调用它 ⇒ **集成标签树编译不过**
+// （vet: undefined: readRepoFile）⇒ `sql/schema` 的集成树编译门恒红。
+// ⇒ 已于 2026-10-22 把它提到无 build tag 的 admin/repo_file_reader_test.go（**定义没变，
+// 只是换了个文件**）⇒ 两棵树都编译、两棵树的腿都不丢。
 //
-// ⚠ 第一版我把它写成 `readRepoFile(t, ".", rel)` 与 `readRepoFile(t, "..", "settings", …)`，
-// 报 `open /tmp/.../session_export.go` 与 `open /tmp/settings/spec_storage.go`
-// —— 因为这个 helper 向上找的是 **go.mod 所在的仓根**，不是包目录。
-// 「.」= 仓根，「..」= 仓的父目录。⇒ 量具的路径语义要先确认，再写。
-func readRepoFile(t *testing.T, parts ...string) string {
-	t.Helper()
-	_, thisFile, _, ok := runtime.Caller(0)
-	if !ok {
-		t.Fatal("runtime.Caller failed")
-	}
-	dir := filepath.Dir(thisFile)
-	for {
-		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
-			break
-		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			t.Fatalf("no go.mod above %s", filepath.Dir(thisFile))
-		}
-		dir = parent
-	}
-	b, err := os.ReadFile(filepath.Join(append([]string{dir}, parts...)...))
-	if err != nil {
-		t.Fatalf("read %v: %v", parts, err)
-	}
-	return string(b)
-}
-
 // ⚠ 包内已有 **三份**「剥 Go 注释」的实现（本文件写第三份时才发现）：
 //
 //	admin/session_view_dependency_risk_test.go      stripGoComments（正则版）
