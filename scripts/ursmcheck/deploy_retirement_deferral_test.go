@@ -118,6 +118,11 @@ func retireGaps(stripped string) []string {
 		{"必须有可撤销的 undo 模式", "--undo-defer"},
 		{"必须有真正退役的模式", "--execute"},
 		{"defer 必须写自述标记（常量名）", "DEFER_MARKER="},
+		// ★★★ 台账 marker 按【basename】派生 ⇒ 文件改名 ⇒ marker 变 ⇒ 静默失效
+		//   （2026-10-21 实踩：在 211 上把文件传成 890.sql ⇒ marker 变成 ...:890.sql
+		//     ⇒ 自动通道查 ...:890_drop_request_logs_v1_family.sql 查不到 ⇒ 照样执行 890）
+		{"必须钉住 canonical basename（台账 marker 按它派生）", `CANONICAL_BASE="890_drop_request_logs_v1_family.sql"`},
+		{"basename 不符时必须响亮失败（不能静默写没用的台账）", `ACTUAL_BASE" != "$CANONICAL_BASE`},
 		{"defer 标记的字面量不得被改", "deferred-to-explicit-retirement"},
 	}
 	var gaps []string
@@ -414,7 +419,17 @@ func TestRetirementScriptReferencesRealMigration(t *testing.T) {
 		t.Fatal("退役脚本没有指向 890 迁移文件")
 	}
 	// ★ 退役脚本必须**读同一个文件**（否则 sha 对不上 ⇒ defer 无效）。
-	if !strings.Contains(src, `RETIREMENT_SQL="$ROOT_DIR/sql/migrations/startup/890_drop_request_logs_v1_family.sql"`) {
-		t.Error("退役脚本的 RETIREMENT_SQL 路径与本门假定的不一致 ⇒ 请同步更新本门")
+	// ⚠ 断言【语义】而不是某个字面量：RETIREMENT_SQL 的默认值可以被
+	//   LLM_GATEWAY_RETIREMENT_SQL 覆盖（远端主机上没有仓库副本）⇒
+	//   ⇒ 判据是「赋值里指向 890 迁移文件」，而不是「赋值长什么样」。
+	if !strings.Contains(src, "sql/migrations/startup/890_drop_request_logs_v1_family.sql") {
+		t.Error("退役脚本的 RETIREMENT_SQL 没有指向 890 迁移文件")
+	}
+	if !strings.Contains(src, "RETIREMENT_SQL=") {
+		t.Error("退役脚本没有 RETIREMENT_SQL 赋值")
+	}
+	// ★ 覆盖路径必须能指到 890 迁移文件（远端执行用）⇒ 否则远端没法用。
+	if !strings.Contains(src, "LLM_GATEWAY_RETIREMENT_SQL") {
+		t.Error("退役脚本不支持 LLM_GATEWAY_RETIREMENT_SQL 覆盖 ⇒ 远端主机（无仓库副本）上无法执行")
 	}
 }

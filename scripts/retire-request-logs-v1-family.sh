@@ -65,7 +65,25 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-RETIREMENT_SQL="$ROOT_DIR/sql/migrations/startup/890_drop_request_logs_v1_family.sql"
+# ★ 路径可被环境变量覆盖：远端主机（211/154/245）上通常**没有仓库副本**
+#   ⇒ ⇒ 只把本脚本 + 890 迁移文件带过去执行时，用 LLM_GATEWAY_RETIREMENT_SQL 指过去。
+#   ⚠ 覆盖路径下的文件必须与仓内 890 **逐字一致**（sha 相同）⇒ 否则 defer 写的
+#   content_sha256 与自动通道算出的 sha 不一致 ⇒ ⇒ 自动通道【不会】跳过 ⇒ 静默失效。
+RETIREMENT_SQL="${LLM_GATEWAY_RETIREMENT_SQL:-$ROOT_DIR/sql/migrations/startup/890_drop_request_logs_v1_family.sql}"
+
+# ★★★ 台账 marker 是按【basename】派生的：`<序列名>:<basename>`
+#   ⇒ ⇒ **文件内容 sha 一致 ≠ 身份一致**：若把 890 传到远端时改了文件名，
+#     defer 写进去的 marker 就与自动通道查找的 marker **不是同一个 key**
+#     ⇒ ⇒ 自动通道查不到那一行 ⇒ ⇒ **照样会执行 890** ⇒ ⇒ 静默失效。
+#   ⇒ ⇒ 这里**响亮失败**（不静默写一行没用的台账）。
+CANONICAL_BASE="890_drop_request_logs_v1_family.sql"
+ACTUAL_BASE="$(basename "$RETIREMENT_SQL")"
+if [[ "$ACTUAL_BASE" != "$CANONICAL_BASE" ]]; then
+  printf 'error: 退役迁移的文件名必须是 %s（台账 marker 按 basename 派生，改名 ⇒ 静默失效）\n' \
+    "$CANONICAL_BASE" >&2
+  printf '       当前：%s\n' "$ACTUAL_BASE" >&2
+  exit 4
+fi
 LEDGER_TABLE="public.gateway_db_revision_sequences"
 SEQUENCE_NAME="session-summary-and-integrity-2026-09"
 DEFER_MARKER="deferred-to-explicit-retirement"

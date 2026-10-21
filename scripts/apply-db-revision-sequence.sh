@@ -1844,7 +1844,22 @@ files=(
   # ⚠ 本文件按**两种物理名**都写（request_logs 与 _request_logs）：本通道的
   #    runtime adapter（:38-134）会把 `request_logs` 词法改写成 `_request_logs`，
   #    而**安装器不做这个改写**（逐字执行）⇒ 两种名字都试，三条通道都正确。
-  "$ROOT_DIR/sql/migrations/startup/890_drop_request_logs_v1_family.sql"
+  #
+  # ★★★ 2026-10-21（§143.53）：本条目**已移出自动重放列表**（整行注释掉）。
+  #   理由：890 自带**非空闸** ⇒ **天然不可自动重放**（有行就 RAISE）
+  #     ⇒ 躺在「每次部署都跑」的列表里 ⇒ ⇒ 自动通道每次部署都撞闸
+  #     ⇒ ⇒ 迁移腿立即中止（set -euo pipefail + ON_ERROR_STOP=1）
+  #     ⇒ ⇒ **部署中止，且它后面的 891/892 永远上不去**（890 在列表里倒数第二）。
+  #   实测（2026-10-21，生产只读）：211 v1 族真计数 35,506 / 35,506 行；
+  #     252 38,193 / 23,830 / 22,656 行 ⇒ 两实例的闸都会 RAISE。
+  #   ★ 闸本身是**对的**（删表 = 删历史，不可回滚 ⇒ 把决定交回人）；
+  #     **错的是它的位置** ⇒ ⇒ 退役必须是**显式的、属主授权的**步骤。
+  #   ★ 显式退役步骤：`scripts/retire-request-logs-v1-family.sh`
+  #       （--preflight 只读计数 / --defer 登记「不由自动通道执行」/
+  #         --execute 真正退役 / --undo-defer 撤销）
+  #     ⇒ ⚠ 若要用 --defer 让已存在的库跳过 890，**台账 marker 按 basename 派生**
+  #       ⇒ 远端执行时文件名必须保持 `890_drop_request_logs_v1_family.sql`。
+  #"$ROOT_DIR/sql/migrations/startup/890_drop_request_logs_v1_family.sql"
 
   # ── 891（2026-10-20）：会话族负成本部分索引 ────────────────────────────────
   #
