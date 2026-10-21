@@ -39,7 +39,7 @@ fi
 # 如果 LOCAL_CONFIG.md 存在，检查权限
 if [[ -f LOCAL_CONFIG.md ]]; then
   mode=$(stat -c %a LOCAL_CONFIG.md 2>/dev/null || stat -f %Lp LOCAL_CONFIG.md)
-  [[ "$mode" == "600" ]] && check_pass "LOCAL_CONFIG.md 权限 600" || check_warn "LOCAL_CONFIG.md 权限 $mode（建议 600）"
+  [[ "$mode" == "600" ]] && check_pass "LOCAL_CONFIG.md 权限 600" || check_warn "LOCAL_CONFIG.md 权限 ${mode}（建议 600）"
 fi
 
 # ── 5. 端口检查（可选） ────────────────────────────────────────────

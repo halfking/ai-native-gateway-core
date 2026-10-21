@@ -423,7 +423,7 @@ log "summary: measured=$measured unmeasured=$unmeasured flagged=$flagged headroo
 # === 汇总必须能区分「没有」与「没测到」==============================
 if [ "$measured" -eq 0 ]; then
   log "ABORT: 0 indexes measurable (unmeasured=$unmeasured) — 不是「无膨胀」，是「测不了」"
-  echo "ABORT: 成功量到 0 个索引（unmeasured=$unmeasured），本轮结论不成立" >&2
+  echo "ABORT: 成功量到 0 个索引（unmeasured=${unmeasured}），本轮结论不成立" >&2
   exit 2
 fi
 if [ "$flagged" -eq 0 ] && [ "$unmeasured" -gt 0 ]; then
@@ -478,7 +478,7 @@ if [ "$MODE" = "fix" ] && [ "$flagged" -gt 0 ]; then
           { [ -f "$STATE" ] && awk -F'\t' -v k="$fam_key" '$1!=k' "$STATE" || true; \
             printf '%s\t%s\n' "$fam_key" "$post_d"; } > "$tmp_state"
           mv "$tmp_state" "$STATE"
-          log "baseline  $idx : post-reindex density=${post_d}% 记入 $STATE（族键 ${fam_key}）"
+          log "baseline  $idx : post-reindex density=${post_d}% 记入 ${STATE}（族键 ${fam_key}）"
         else
           log "baseline  $idx : 重建后密度读取失败（${post_d}），基线未更新"
         fi
@@ -506,7 +506,7 @@ if [ -x "$NOTIFY" ]; then
     # 契约见 notify.sh 用法：notify.sh <title> <body>。
     # 同时不要用 `2>&1` 吞掉 notify 自己的错误输出 —— 那正是根因消失的原因。
     "$NOTIFY" \
-      "252 索引巡检：膨胀候选 $flagged 个（约 ${cand_mb}MB，已测 $measured / 未测 $unmeasured）；INVALID 未测 $invalid_count 个" \
+      "252 索引巡检：膨胀候选 $flagged 个（约 ${cand_mb}MB，已测 $measured / 未测 ${unmeasured}）；INVALID 未测 $invalid_count 个" \
       "候选索引：$(cut -f1 <<<"$flag_list" 2>/dev/null | paste -sd, -)" \
       || log "notify FAILED (exit=$?): 见上方 notify.sh 的 stderr"
   fi

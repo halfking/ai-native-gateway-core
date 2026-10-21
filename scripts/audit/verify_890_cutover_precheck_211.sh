@@ -145,7 +145,7 @@ SQL
 PSQL_OUT="$(docker exec -i "$PG_CONTAINER" psql -X -U "$PG_USER" -d "$PG_DB" -v ON_ERROR_STOP=1 -tA -F'|' -f - <<< "$SQL" 2>&1)"
 PSQL_RC=$?
 if [[ $PSQL_RC -ne 0 ]]; then
-  echo "FATAL: 库内核验失败（rc=$PSQL_RC）—— 量具不可用，不给判词：" >&2
+  echo "FATAL: 库内核验失败（rc=${PSQL_RC}）—— 量具不可用，不给判词：" >&2
   printf '%s\n' "$PSQL_OUT" >&2
   exit 4
 fi
@@ -208,7 +208,7 @@ if [[ "$BLOCK_COLS" -eq 1 ]]; then
   BLOCKERS=$((BLOCKERS+1))
 fi
 if [[ "${V1P10:-0}" != "0" || "${V1HOT:-0}" != "0" ]]; then
-  echo "INFO-1    v1 族仍有行（$V1P10 / hot $V1HOT）⇒ 890 的**非空闸会拒绝执行**"
+  echo "INFO-1    v1 族仍有行（$V1P10 / hot ${V1HOT}）⇒ 890 的**非空闸会拒绝执行**"
   echo "          ⇒ 需要「先归档核账再清空」的属主决策（语义决策，不是机械前置）"
 fi
 if [[ "$BLOCKERS" -eq 0 ]]; then

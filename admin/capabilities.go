@@ -68,5 +68,10 @@ func (h *Handler) RegisterCapabilityRoutes(mux *http.ServeMux) {
 	if mux == nil {
 		return
 	}
-	mux.HandleFunc("/api/admin/capabilities", h.admin(h.handleCapabilities))
+	// ★ 2026-10-22 12h 审计轮（A8）：改为**方法限定的路由模式**。
+	// 原形态 `mux.HandleFunc("/api/admin/capabilities", …)` 对**任何**方法都注册
+	// ⇒ POST / DELETE / PUT 也会进同一个 handler ⇒ 返回 200 + 能力位 JSON
+	// ⇒ 一个**只读**端点被写方法打中也报「成功」⇒ 调用方会以为写成功了。
+	// ⇒ Go 1.22+ 的 ServeMux 支持 "METHOD /path" 模式 ⇒ 直接限死 GET。
+	mux.HandleFunc("GET /api/admin/capabilities", h.admin(h.handleCapabilities))
 }

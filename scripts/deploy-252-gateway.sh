@@ -44,7 +44,7 @@ source "$INJECTOR" inject 252 >/dev/null 2>&1
 set +u
 for k in LLM_GATEWAY_DATABASE_URL LLM_GATEWAY_JWT_SECRET LLM_GATEWAY_TEST_KEY SSH_KEY_252; do
   v="${!k:-}"
-  [[ -n "$v" ]] || { log "ERROR: SSOT KEY 未注入：$k（先 source env-injector inject 252）"; exit 2; }
+  [[ -n "$v" ]] || { log "ERROR: SSOT KEY 未注入：${k}（先 source env-injector inject 252）"; exit 2; }
 done
 [[ -f "$SSH_KEY_252" ]] || { log "ERROR: SSH_KEY_252 不是可读文件"; exit 2; }
 # R37 fix (D14): the `set +e`/`set +u` above were never restored — every

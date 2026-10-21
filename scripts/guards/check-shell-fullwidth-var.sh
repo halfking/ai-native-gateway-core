@@ -1,34 +1,71 @@
 #!/usr/bin/env bash
-# 扫描「$变量 紧跟全角逗号」的 shell 隐患。
+# 扫描「$变量 紧跟非 ASCII 字节」的 shell 隐患。
 #
 # 背景（2026-10-03，818 部署在第 2/9 步被它挡住）：
 #   scripts/lib/node-pm.sh 报「行 72: pm?: 未绑定的变量」，
 #   而 pm_resolve 其实成功返回了 pnpm —— 诊断把方向完全指错了。
 #
-# 已实证的精确规则（bash 5.3 / macOS 默认）：
-#   吞掉变量名的是紧跟其后的**全角逗号 U+FF0C**。
-#     "（$pm，y）"   -> 炸：$pm 与全角逗号的字节被并成一个不存在的标识符
-#     "（$pm, y）"   -> 正常：半角逗号
-#     "值：$pm/x"    -> 正常：全角冒号、斜杠都不构成标识符延续
-#   所以**不是所有中文标点都有问题**，只有全角逗号这一种。
-#   早先按「所有中文标点」扫出 31 行，绝大多数是误报（变量本就已定义）；
-#   收窄到全角逗号后只剩 5 处（其中部分「侥幸安全」：变量恰好已定义，
-#   一旦有人改成未定义就立刻炸）。
+# -----------------------------------------------------------------------------
+# ★★★ 2026-10-22 12h 审计轮：**判据被证明是错的，本轮订正**
+# -----------------------------------------------------------------------------
+# 原判据：「吞掉变量名的是紧跟其后的**全角逗号 U+FF0C**」，
+#   「**不是所有中文标点都有问题**，只有全角逗号这一种」，
+#   扫描式：`\$[A-Za-z_][A-Za-z0-9_]*，`（只认全角逗号）。
 #
+# ⇒ **那个断言是错的。** 本轮用 bash 3.2.57（macOS）实测了字符矩阵：
+#
+#   locale=en_US.UTF-8，set -u，形态 `v=VAL; printf "%s" "X$v<字符>Y"`：
+#     ASCII 逗号 / 右括号 / 空格      ⇒ SAFE（值保留）
+#     U+FF09 全角右括号 ）            ⇒ ★ 变量名被吞 ⇒ set -u 下脚本中止
+#     U+FF08 全角左括号 （            ⇒ ★ 同上
+#     U+FF0C 全角逗号 ，              ⇒ ★ 同上
+#     U+FF1A 全角冒号 ：              ⇒ ★ 同上
+#     U+3002 表意句号 。              ⇒ ★ 同上
+#     U+4E2D 汉字「中」               ⇒ ★ 同上
+#
+#   ⇒ 规律是「**任意 >= 0x80 的字节**」，**不是**某一种标点。
+#   ⇒ 而按仓内 Go 门（scripts/ursmcheck/cjk_var_expansion_test.go）的扫描口径
+#     全仓实测 **50 处**站点里：
+#       U+FF09 ）29 处 + U+FF08 （18 处 = 47 处（94%）
+#       U+FF0C ，**只有 1 处**
+#   ⇒ ⇒ ★ **旧判据恰好只抓最罕见的那一种，漏掉 49 处（98%）**。
+#   ⇒ ⇒ 最刺眼的一例：2026-10-22 崩掉的那个并行会话，它要修的
+#        `$label（助手报错）`（**全角左括号**）就在
+#        scripts/audit/verify-l11b-cost-view-rowset.sh:233,250
+#        ⇒ **旧判据对那个真实缺陷完全隐形**。
+#
+# ⚠★ **且这个缺陷是【locale 依赖】的**（本轮实测）：
+#   LC_ALL=en_US.UTF-8 ⇒ 变量名被吞（set -u 下中止 / 否则静默失真）
+#   LC_ALL=C 或未设置    ⇒ **完全正常**（值保留）
+#   ⇒ 所以「生产是否中招」取决于宿主机 locale ⇒ 巡检/部署脚本
+#      **不要依赖宿主 locale**，要么显式 `LC_ALL=C`，要么把 `$VAR` 写成 `${VAR}`。
+#
+# -----------------------------------------------------------------------------
 # 为什么要有门：这类缺陷不报错、不留痕，只在「变量恰好未定义」的那一次
 # 炸掉某个部署步骤，而部署到第 N 步才炸 ⇒ 前面 N-1 步已经改了生产。
+#
+# ★ 本门与仓内 Go 门（cjk_var_expansion_test.go）**判据现已一致**：
+#   两个都认「裸 $VAR 后紧跟 >= 0x80 的字节」；
+#   两个都跳过整行注释与单引号区段。
+#   ⇒ Go 门是 CI 的**强制路径**（本轮已把 ./scripts/ursmcheck 接进
+#     GUARD_PACKAGES_SLOW）；本门保留为**不依赖 Go 的独立探针**，
+#     便于在只拿到脚本的机器上就地检查。
 set -euo pipefail
 
 # 向上找仓库根，不要手写 ../../..：
 # 我最初写的是 ../../..，但本文件在 scripts/guards/（两层深），
 # 上溯三层落到 syncfield —— 那里不是 git 仓库，
 # 于是 `git ls-files` 枚举到 0 个文件，**门静默全绿**。
-# 硬编码层数就是会数错；改成「找到 .git 为止」，顺带对任意深度都对。
+# 硬编码层数就会数错；改成「找到 .git 为止」，顺带对任意深度都对。
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-while [ "$REPO_ROOT" != "/" ] && [ ! -d "$REPO_ROOT/.git" ]; do
+# ★ 2026-10-22 订正：`-d` 只认**目录**，而 git worktree 里的 `.git` 是一个
+#   **文件**（里面写着一行 `gitdir: …`）⇒ 在任何 worktree 里跑本门都会
+#   「找不到 .git ⇒ ABORT exit 2」⇒ ⇒ 门在 worktree 里**根本跑不起来**。
+#   ⇒ 改成 `-e`（文件或目录都算）。
+while [ "$REPO_ROOT" != "/" ] && [ ! -e "$REPO_ROOT/.git" ]; do
   REPO_ROOT="$(dirname "$REPO_ROOT")"
 done
-[ -d "$REPO_ROOT/.git" ] || { echo "ABORT: 找不到 .git，仓库根推断失败" >&2; exit 2; }
+[ -e "$REPO_ROOT/.git" ] || { echo "ABORT: 找不到 .git，仓库根推断失败" >&2; exit 2; }
 cd "$REPO_ROOT"
 
 # 枚举面自检：找不到任何 .sh 就说明根算错了，而不是「仓库里没有 shell 脚本」。
@@ -45,35 +82,30 @@ _is_unbound() { printf '%s' "$1" | LC_ALL=C grep -qE 'pm[^ -~]'; }
 
 # 探针：先证明本门自己会咬（否则「0 命中」分不清是真干净还是门失效了）。
 #
-# 探针**不能免疫**：它必须真的复现「$变量 + 全角逗号」才能验证规则。
-# 但它也不该需要豁免 —— 所以把全角逗号的字节用 '"$FW_COMMA"' 拼进去，
-# 源码里就没有「$变量 紧跟全角逗号」这一形态，天然不被自己的规则命中。
-# （第一版用行号白名单豁免自己：文件一编辑行号就漂、豁免静默失效，
-#   门于是开始报自己的探针；改内容匹配后，M1 变异又因循环里 cd 改了工作
-#   目录而失效。豁免机制本身就是负债。）
-#
-# 整段用单引号包住：里面的 $pm 必须保持字面、不被本脚本提前展开；
-# 全角逗号则在单引号段之间用 '"…"' 拼进去。
-FW_COMMA=$(printf '\xef\xbc\x8c')          # U+FF0C 全角逗号的 UTF-8 字节
-probe_out=$(bash -c 'set -u; pm=X; echo "（$pm'"$FW_COMMA"'y）"' 2>&1 >/dev/null || true)
+# ★★ 2026-10-22 订正：探针改用**全角左括号**（真实缺陷里最常见的一种，
+#   且**旧探针用的全角逗号恰恰是最罕见的一种**）⇒
+#   探针覆盖的是「本轮实测会咬」的那一类，而不是「旧判据自认会咬」的那一类。
+probe_out=$(LC_ALL=en_US.UTF-8 bash -c 'set -u; pm=X; printf "%s" "（$pm'"$(printf '\xef\xbc\x88')"'y）"' 2>&1 >/dev/null || true)
 if ! _is_unbound "$probe_out"; then
   echo "ABORT: 探针未复现，本 bash 的行为已变或规则已失效，结论不可信" >&2
+  echo "       （探针用的是全角左括号 U+FF08，且显式 LC_ALL=en_US.UTF-8）" >&2
   echo "       probe stderr: ${probe_out}" >&2
   exit 2
 fi
 
-# 反向对照：半角逗号必须不炸，否则说明我们对规则的理解是错的
-ctl_out=$(bash -c 'set -u; pm=X; echo "（$pm, y）"' 2>&1 >/dev/null || true)
+# 反向对照：ASCII 括号必须不炸，否则说明我们对规则的理解是错的
+ctl_out=$(LC_ALL=en_US.UTF-8 bash -c 'set -u; pm=X; printf "%s" "（$pm, y）"' 2>&1 >/dev/null || true)
 if _is_unbound "$ctl_out"; then
-  echo "ABORT: 半角逗号也炸 —— 规则已失效，不要按本门结论改代码" >&2
+  echo "ABORT: ASCII 字符也炸 —— 规则已失效，不要按本门结论改代码" >&2
   exit 2
 fi
 
 hits=0
-# pattern 放变量再传双引号是对的：`\$` 已在单引号里定死为正则锚点，
-# 变量展开不会二次解释它。写成双引号字面量才会被 shell 折成非法正则。
-PATTERN='\$[A-Za-z_][A-Za-z0-9_]*，'
-FILTER=':\s*#|:\s*\*'
+# ★★★ 判据订正（2026-10-22）：从「只认全角逗号 U+FF0C」改为
+#   「**裸 $VAR 后紧跟任意 >= 0x80 的字节**」——与仓内 Go 门一致。
+#   pattern 放变量再传双引号是对的：`\$` 已在单引号里定死为正则锚点，
+#   变量展开不会二次解释它。写成双引号字面量才会被 shell 折成非法正则。
+PATTERN='\$[A-Za-z_][A-Za-z0-9_]*[^ -~]'
 
 # 枚举面 = 已跟踪 ∪ 未跟踪但未忽略。
 # ★ 2026-10-03 补：原先只有 `git ls-files`，于是「新建但还没 git add」的
@@ -85,25 +117,54 @@ FILTER=':\s*#|:\s*\*'
 scan_list() {
   {
     git ls-files '*.sh'
+    git ls-files '*.bash'
     git ls-files --others --exclude-standard '*.sh'
+    git ls-files --others --exclude-standard '*.bash'
   } | sort -u
+}
+
+# ★ 跳过口径与 Go 门一致：整行注释 + 单引号区段（单引号里不发生展开）。
+#   用 awk 做：把单引号区段整段挖掉，再判剩余部分。
+_scan_line() {
+  # $1 = 整行内容；命中则 echo 1
+  printf '%s\n' "$1" | awk '
+    BEGIN { inq = 0 }
+    {
+      line = $0
+      out = ""
+      n = length(line)
+      for (i = 1; i <= n; i++) {
+        c = substr(line, i, 1)
+        if (c == "\047") { inq = !inq; continue }   # 单引号
+        if (!inq) out = out c
+      }
+      if (match(out, /\$[A-Za-z_][A-Za-z0-9_]*[^ -~]/)) { print "1"; exit }
+    }'
 }
 
 while IFS= read -r f; do
   [ -f "$f" ] || continue
   while IFS= read -r line; do
     ln="${line%%:*}"; body="${line#*:}"
-    printf '  %s:%s\n    %s\n' "$f" "$ln" "$body"
-    hits=$((hits + 1))
-  done < <(grep -nE "$PATTERN" "$f" 2>/dev/null | grep -vE "$FILTER")
+    # 整行注释跳过（Go 门同款口径：首个非空白字符是 #）
+    trimmed="$(printf '%s' "$body" | sed 's/^[[:space:]]*//')"
+    case "$trimmed" in
+      '#'*) continue ;;
+    esac
+    if [ -n "$(_scan_line "$body")" ]; then
+      printf '  %s:%s\n    %s\n' "$f" "$ln" "$body"
+      hits=$((hits + 1))
+    fi
+  done < <(grep -nE "$PATTERN" "$f" 2>/dev/null)
 done < <(scan_list)
 
 if [ "$hits" -gt 0 ]; then
   echo ""
-  echo "发现 ${hits} 处「\$变量紧跟全角逗号」。这类写法一旦变量未定义就报"
+  echo "发现 ${hits} 处「\$变量紧跟非 ASCII 字节」。这类写法一旦变量未定义就报"
   echo "「未绑定的变量 var?」，且往往炸在部署的中途（前面的步骤已改生产）。"
-  echo "修法：改用 \${var} 界定。已实证半角逗号 / 全角冒号 / 斜杠都不受影响。"
+  echo "★ 只在 **UTF-8 locale**（en_US.UTF-8 / zh_CN.UTF-8）下发生；LC_ALL=C 下正常。"
+  echo "★ 修法：改用 \${var} 界定。"
   exit 1
 fi
 
-echo "✓ 无「\$变量紧跟全角逗号」隐患（探针与反向对照均已通过）"
+echo "✓ 无「\$变量紧跟非 ASCII 字节」隐患（探针与反向对照均已通过）"

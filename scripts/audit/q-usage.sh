@@ -228,7 +228,7 @@ trap 'rm -f "$ERR"' EXIT
 zcat -f -- "${all[@]}" 2>"$ERR" | count_q > "$ERR.count"
 rc=${PIPESTATUS[0]}
 if [ "$rc" -ne 0 ] || [ -s "$ERR" ]; then
-  echo "WARN: 解压/读取有告警（zcat exit=$rc），计数结果可能偏低：" >&2
+  echo "WARN: 解压/读取有告警（zcat exit=${rc}），计数结果可能偏低：" >&2
   head -3 "$ERR" >&2
 fi
 read -r TOTAL WITHQ LINES < "$ERR.count" || {

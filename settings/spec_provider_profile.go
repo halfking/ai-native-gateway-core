@@ -25,21 +25,49 @@ package settings
 //
 // ★ 零语义风险承诺：★ 注册本身**不改生效值** —— `getPlatformBool`
 //
-//	（settings/helpers.go:83）在「spec 存在但 kv 无行」时**仍然返回调用方的
-//	fallback**（不是 spec 的 Default）⇒ ⇒ ⇒ 所以只要 kv 里没行，注册前后
-//	行为逐字一致；★ 而 `Default` 字段必须与读方的 fallback **对齐**，这样
-//	即使将来有别的读法（如 `Global.EffectiveValue` 直接取值）也不会漂移。
+//	（settings/helpers.go:83）在「spec 存在但 kv 无行」时返回的是
+//	**spec 的 Default**（走 EffectiveValue 的第 3 步，见 settings/spec.go
+//	的 `EffectiveValue` / registry_test.go 的 TestRegistry_EffectiveValue_FallbackChain：
+//	源="default" 时取值="the-default"）—— **不是**调用方传的 fallback。
+//	⇒ ⇒ 因此「注册前后行为逐字一致」这个结论，**完全依赖那 16 个 Default
+//	    被手工对齐到读方 fallback** ⇒ 这是**一条未被任何门钉住的不变量**
+//	    （scripts/ursmcheck/settings_spec_registration_test.go 只钉「键已登记」
+//	    与「Scope 已填」，**不钉 Default↔fallback 对齐**）。
+//	⇒ ⇒ 本轮逐个核对过 16 个 Default 目前**确实对齐**，所以当前没有行为偏差；
+//	    但那句注释此前把机制**说反了** ⇒ 下一个作者会据此相信一个并不存在的保证。
+//	⇒ ⇒ 已订正，并登记「补一道 Default↔fallback 对齐门」为待办。
 func ProviderProfileSpecs() []*Spec {
 	return []*Spec{
 		{
-			Key:         "provider_profile.enabled",
-			Type:        TypeBool,
-			EnvName:     "LLM_GATEWAY_PROVIDER_PROFILE_ENABLED",
-			Scope:       ScopePlatform,
-			Default:     false,
-			Category:    CategoryGeneral,
-			HotReload:   true,
+			Key:      "provider_profile.enabled",
+			Type:     TypeBool,
+			EnvName:  "LLM_GATEWAY_PROVIDER_PROFILE_ENABLED",
+			Scope:    ScopePlatform,
+			Default:  false,
+			Category: CategoryGeneral,
+			// ★★★ 2026-10-22 12h 审计轮（B3）：DangerLevel 由零值 Safe 改为
+			//   **Dangerous**，HotReload 由 true 改为 **false**。
+			//
+			//   ① DangerLevel：零值 = Safe ⇒ 管理端只拦 `>= Dangerous`
+			//      （admin/settings.go）⇒ 此前**任何 admin**（不只 super_admin）
+			//      都能开这个总开关。而它一旦开启就会启动 ProfileAlertWorker，
+			//      该 worker 会真的**翻转凭据生命周期**
+			//      （`UPDATE credentials SET lifecycle_status='disabled'`）。
+			//      ⇒ ⇒ 一个会批量停用凭据的开关，元数据却写着「改完无副作用」。
+			//   ② HotReload：读方 `cmd/gateway/provider_profile_init.go` 只在
+			//      **启动时**读一次 ⇒ 运行中改配置**不会停掉**已启动的 worker。
+			//      ⇒ ⇒ 「改了不生效」比「不可改」更伤人 ⇒ 如实标注需重启。
+			//
+			//   ★ 属主已在 211/252 的 settings_kv 里写了 enabled=true（**授权**）；
+			//     本次改的是**元数据与授权边界**，不是那个值本身。
+			//   ★ 真正的停机热路径（运行中关掉总开关）本轮未做，登记为待办。
+			DangerLevel: Dangerous,
+			HotReload:   false,
 			Description: "启用供应商画像系统（7维度供应商质量评分）",
+			DescriptionLong: "供应商画像系统的总开关。★ **开启后会启动 ProfileAlertWorker，" +
+				"该 worker 真的会翻转凭据生命周期（把命中告警的凭据置为 disabled）** ⇒ " +
+				"属 super_admin 权限域（DangerLevel=Dangerous）。" +
+				"★ 读方：cmd/gateway/provider_profile_init.go（启动时读一次 ⇒ 改动需重启进程）。",
 		},
 		{
 			Key:         "provider_profile.collection_interval",

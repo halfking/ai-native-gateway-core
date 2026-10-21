@@ -46,7 +46,7 @@ require_snapshot() {
   local snap="$1" where="$2"
   local lines
   lines="$(printf '%s\n' "$snap" | grep -c '|' || true)"
-  [ "$lines" -eq 4 ] || fail "$where：快照只有 $lines 行（期望 4），后面的比较会是恒真 —— 拒绝比较。原始输出：[$snap]"
+  [ "$lines" -eq 4 ] || fail "${where}：快照只有 $lines 行（期望 4），后面的比较会是恒真 —— 拒绝比较。原始输出：[$snap]"
 }
 prev_rel_name() { psql_in -t -A -c "SELECT 'request_logs_' || to_char(date_trunc('month', now()) - interval '1 month', 'YYYY_MM');"; }
 stamp_of() { printf '%s\n' "$1" | awk -F'|' -v k="$2" '$1==k {print $2}'; }

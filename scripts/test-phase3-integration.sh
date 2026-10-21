@@ -224,7 +224,7 @@ if [[ $REPLY =~ ^[Yy]es$ ]]; then
         "DELETE FROM releases WHERE id=$RELEASE_ID;" > /dev/null
     echo "   ✅ 测试数据已清理"
 else
-    echo "   ℹ️  保留测试数据（ID: $RELEASE_ID）"
+    echo "   ℹ️  保留测试数据（ID: ${RELEASE_ID}）"
 fi
 
 # ============================================================================

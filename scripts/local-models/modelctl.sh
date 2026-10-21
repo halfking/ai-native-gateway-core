@@ -81,9 +81,9 @@ start_server() {
     llamacpp)
       echo "✗ llamacpp 启动命令依赖 GGUF 模型路径（LLAMA_CPP_MODEL），请手工启动"; exit 1 ;;
     lmstudio)
-      echo "✗ LM Studio 需在 GUI 中启动 Local Server（端口 $port）"; exit 1 ;;
+      echo "✗ LM Studio 需在 GUI 中启动 Local Server（端口 ${port}）"; exit 1 ;;
     *)
-      echo "✗ 未知托管类型: $type（支持: ${!DEFAULT_PORT[@]}）"; exit 1 ;;
+      echo "✗ 未知托管类型: ${type}（支持: ${!DEFAULT_PORT[@]}）"; exit 1 ;;
   esac
   echo "$log"
 }

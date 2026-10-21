@@ -39,6 +39,30 @@ registered_all="$(sed -n 's/^GUARD_PACKAGES[[:space:]]*:*=//p' Makefile \
   | tr -d '\\' | tr ' ' '\n' | sed 's|^\\$||' | grep '^\./' || true)"
 registered="$(printf '%s\n' "$registered_all" | grep '^\./internal/' || true)"
 
+# ★★★ 2026-10-22 12h 审计轮：第二条清单 GUARD_PACKAGES_SLOW。
+#   ./scripts/ursmcheck（94 个门文件）此前**不在任何执行路径**上 ⇒ CI 从未跑过它。
+#   ⇒ 它必须被登记，且登记项必须真实存在于磁盘上（反向检查同样覆盖）。
+missing_slow=0
+registered_slow="$(sed -n 's/^GUARD_PACKAGES_SLOW[[:space:]]*:*=//p' Makefile \
+  | tr -d '\\' | tr ' ' '\n' | sed 's|^\\$||' | grep '^\./' || true)"
+if ! printf '%s\n' "$registered_slow" | grep -qx './scripts/ursmcheck'; then
+  echo "❌ ./scripts/ursmcheck 未登记进 Makefile 的 GUARD_PACKAGES_SLOW" >&2
+  echo "   ⇒ 它有 94 个门文件（含 CJK 变量名棘轮、R75 巡检快路门、投递门…）" >&2
+  echo "   ⇒ 不登记 ⇒ 它们在 CI 上一次都不会跑 ⇒ 门只是文档，不是门。" >&2
+  missing_slow=1
+fi
+# 反向：慢速清单里的每一项都必须真实存在于磁盘上。
+while IFS= read -r entry; do
+  [[ -n "$entry" ]] || continue
+  dir="$repo_root/${entry#./}"
+  if [[ ! -d "$dir" ]]; then
+    echo "❌ GUARD_PACKAGES_SLOW 登记了不存在的目录: ${entry#./}" >&2
+    missing_slow=1
+  fi
+done <<<"$registered_slow"
+# 慢速清单也纳入总清单 ⇒ 反向存在性检查一次覆盖两张表。
+registered_all="$(printf '%s\n%s\n' "$registered_all" "$registered_slow" | sed '/^$/d')"
+
 # 实际存在的守卫包（目录名以 guard 结尾）
 declare -a on_disk=()
 while IFS= read -r d; do
@@ -102,10 +126,10 @@ while IFS= read -r entry; do
   fi
 done <<<"$registered"
 
-if [[ $missing -ne 0 ]]; then
+if [[ $missing -ne 0 || $missing_slow -ne 0 ]]; then
   echo "" >&2
   echo "   新增审计守卫时必须把它接进执行路径，否则它只是文档、不是门。" >&2
-  echo "   请在 Makefile 的 GUARD_PACKAGES 里登记后重跑本脚本。" >&2
+  echo "   请在 Makefile 的 GUARD_PACKAGES / GUARD_PACKAGES_SLOW 里登记后重跑本脚本。" >&2
   exit 1
 fi
 

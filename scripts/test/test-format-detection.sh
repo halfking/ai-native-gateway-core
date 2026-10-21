@@ -309,7 +309,7 @@ test_prometheus_metrics() {
         log_info "尝试 $metrics_url ..."
         
         if metrics=$(curl -s -m 5 "$metrics_url" 2>/dev/null); then
-            log_success "成功获取指标（端口 $port）"
+            log_success "成功获取指标（端口 ${port}）"
             
             echo ""
             log_info "检查格式检测相关指标..."

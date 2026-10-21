@@ -76,7 +76,8 @@ type cjkVarSite struct {
 // scanCJKVarInText 按判据口径扫描一段文本，返回站点列表。
 //
 // ★ 抽成独立函数是为了让**扫描器自检**能直接喂合成输入
-//   （否则「扫描器扫了个寂寞」= 门恒绿）。
+//
+//	（否则「扫描器扫了个寂寞」= 门恒绿）。
 func scanCJKVarInText(text string) []cjkVarSite {
 	var sites []cjkVarSite
 	for i, line := range strings.Split(text, "\n") {
@@ -137,7 +138,8 @@ func stripBracedVars(s string) string {
 // bareVarMatches 返回所有**裸** `$NAME` 的 [起始, 结束) 字节偏移。
 //
 // ★ 手工扫描而不是用 regexp：需要精确定位「$ 之后连续的名字字节」的**结束位置**，
-//   而 regexp 的 FindAllStringIndex 给的是整个匹配（含名字），拿不到结束偏移。
+//
+//	而 regexp 的 FindAllStringIndex 给的是整个匹配（含名字），拿不到结束偏移。
 func bareVarMatches(s string) [][2]int {
 	var out [][2]int
 	for i := 0; i < len(s); i++ {
@@ -269,7 +271,8 @@ func writeCJKVarRegistry(path string, counts map[string]int, details map[string]
 }
 
 // ★ 旗标名带前缀：同包已有人占用 `-update`（hardcoded_dsn_fallback_test.go）
-//   ⇒ 用 `-cjk-var-update` 免得 init 阶段直接 panic（同包旗标重复定义）。
+//
+//	⇒ 用 `-cjk-var-update` 免得 init 阶段直接 panic（同包旗标重复定义）。
 var cjkVarUpdate = flag.Bool("cjk-var-update", false, "重算并覆盖 CJK 变量名登记册")
 
 // TestCJKVarExpansionNoNewSites 是本轮的门：**存量棘轮**。
@@ -300,7 +303,23 @@ func TestCJKVarExpansionNoNewSites(t *testing.T) {
 			cjkVarRegistry, err)
 	}
 	if len(reg) == 0 {
-		t.Fatalf("登记册是空的 ⇒ 门会**恒绿**（等于没有门）")
+		// ★★★ 2026-10-22 12h 审计轮：**「登记册为空」不再等于「没有门」**。
+		//
+		// 背景：本轮把全仓存量的 **52 处**站点全部修掉（裸 `$VAR` ⇒ `${VAR}`）
+		//   ⇒ 登记册被清空 ⇒ 而旧判据是「登记册为空 ⇒ 门恒绿 ⇒ 直接红」。
+		//   ⇒ 那条判据当初是**对的**（那时登记册就是事实源，清空＝事实源丢失），
+		//   但在「存量归零」之后它变成了**错误的阻碍**。
+		//
+		// ⇒ 所以现在必须把两种含义**区分开**：
+		//   · 登记册空 **且** 全仓零站点 ⇒ 零容忍生效 ⇒ 绿（任何新增站点都会红）；
+		//   · 登记册空 **但** 全仓仍扫到站点 ⇒ 登记册被误删 ⇒ 红（事实源丢了）。
+		if len(counts) == 0 {
+			t.Logf("✔ 登记册已清空且全仓零站点 ⇒ 零容忍生效（任何新增站点都会红）")
+			return
+		}
+		t.Fatalf("登记册是空的，但全仓仍扫到 %d 个文件 / %d 处站点 ⇒ 登记册被误删 ⇒ 门不能退化成「什么都不查就绿」\n"+
+			"★ 修法：go test ./scripts/ursmcheck/ -run TestCJKVarExpansionNoNewSites -cjk-var-update",
+			len(counts), totalSites(counts))
 	}
 
 	// ① 登记过的文件：站点数不得增加
@@ -360,12 +379,13 @@ func totalSites(counts map[string]int) int {
 // TestCJKVarScannerHasTeeth 证明**扫描器本身有牙**。
 //
 // ★ 没有这道自检，一个「扫了个寂寞」的扫描器会让上面那道门**恒绿**。
-//   用合成输入断言：
-//	① 裸 `$VAR` 紧跟汉字 ⇒ 命中；
-//	② `${VAR}` 紧跟汉字 ⇒ **不**命中（花括号终止变量名）；
-//	③ 行尾注释里的 `$VAR中` ⇒ **不**命中（注释不执行）；
-//	④ 单引号里的 `$VAR中` ⇒ **不**命中（单引号不展开）；
-//	⑤ ASCII 紧跟（`$VAR)`）⇒ **不**命中。
+//
+//	  用合成输入断言：
+//		① 裸 `$VAR` 紧跟汉字 ⇒ 命中；
+//		② `${VAR}` 紧跟汉字 ⇒ **不**命中（花括号终止变量名）；
+//		③ 行尾注释里的 `$VAR中` ⇒ **不**命中（注释不执行）；
+//		④ 单引号里的 `$VAR中` ⇒ **不**命中（单引号不展开）；
+//		⑤ ASCII 紧跟（`$VAR)`）⇒ **不**命中。
 func TestCJKVarScannerHasTeeth(t *testing.T) {
 	cases := []struct {
 		name string
