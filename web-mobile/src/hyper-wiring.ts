@@ -2,6 +2,7 @@ import type { Router } from 'vue-router'
 import { initHyper } from '@/hyper'
 import { bindAuthContext, setUnauthorizedHandler } from '@/api/client'
 import { useAuthStore } from '@/stores/auth'
+import { useCapabilitiesStore } from '@/stores/capabilities'
 import { routeAllowedFor } from '@/config/appNav'
 import { t } from '@/i18n'
 
@@ -10,6 +11,7 @@ import { t } from '@/i18n'
 
 export function wireApp(router: Router): void {
   const auth = useAuthStore()
+  const capabilities = useCapabilitiesStore()
 
   bindAuthContext({
     getUserInfo: () => auth.userInfo,
@@ -45,7 +47,16 @@ export function wireApp(router: Router): void {
       //   视图内兜底（format-anomalies / model-integrity-drift 见对应 .vue）也独立判断同一个 role，
       //   ⇒ 路由被绕过（程序化导航）时仍有兜底。
       // ★ 与 RestrictedPageTitle 8-4 互证：本行存在 ⇒ beforeEach 真消费 requiresRole ⇒ 缺口合上。
-      if (!routeAllowedFor(to.path, auth.role)) {
+      //
+      // ★ 2026-10-21（R72f）：同时消费 `nav.requiresCapability` —— 功能没装配时
+      //   **直接访问该路由也进不去**（不只是抽屉里不显示）⇒ 与抽屉口径同源、
+      //   同 fail-closed（能力位未加载 ⇒ 按「没开」处理）。
+      //   ★ 能力位在**水合之后**取一次：未登录时取不到（401）⇒ 保持空集 ⇒
+      //     登录后由 `capabilities.refresh()` 补齐。
+      if (auth.isAuthenticated && !capabilities.loaded) {
+        void capabilities.refresh()
+      }
+      if (!routeAllowedFor(to.path, auth.role, capabilities.enabled)) {
         return { path: '/restricted', query: { from: to.fullPath } }
       }
       return true

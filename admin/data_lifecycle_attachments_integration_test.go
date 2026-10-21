@@ -30,6 +30,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/kaixuan/llm-gateway-go/internal/testguard"
 )
 
 const (
@@ -42,6 +43,16 @@ func openAttachPool(t *testing.T) *pgxpool.Pool {
 	if dsn == "" {
 		t.Skipf("%s not set; skipping integration test", auditAttachDBEnv)
 	}
+	// ★★★ R87 轮：**目标库守卫**，必须在建池之前、也就是在任何破坏性 SQL 之前。
+	//
+	//   这条腿会 TRUNCATE public._request_logs_hot 与两张 audit_attachments_* 表
+	//   —— 全是**产品表**（_request_logs_hot 是热写表）。它读的名字叫
+	//   TEST_AUDIT_ISOLATED_DB_URL（含义是「隔离审计库」），事实源却把它指向
+	//   **产品库** ⇒⇒ 破坏性 SQL 落在产品库上。
+	//
+	//   ⇒ 守卫的放行条件：库名是一次性库，或目标是本仓的本地审计容器。
+	//   ⇒ 不满足 ⇒ **跳过**（环境不满足，不是代码缺陷）。
+	target := testguard.RequireIsolatedTarget(t, dsn)
 	cfg, err := pgxpool.ParseConfig(dsn)
 	if err != nil {
 		t.Fatalf("parse dsn: %v", err)
@@ -55,6 +66,8 @@ func openAttachPool(t *testing.T) *pgxpool.Pool {
 	if err := pool.Ping(context.Background()); err != nil {
 		t.Fatalf("ping: %v", err)
 	}
+	// 守卫的第二层：连接落到的库必须就是 DSN 指名的那个（DSN 撒谎 ⇒ 失败）。
+	testguard.RequireDatabaseMatchesDSN(t, pool, target)
 	return pool
 }
 

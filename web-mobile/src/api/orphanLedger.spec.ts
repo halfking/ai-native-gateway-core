@@ -712,7 +712,7 @@ describe('孤儿棘轮', () => {
 
   it('★★ 已接线的哨兵：reportRollup 不在孤儿里（第一百一十一批）', () => {
     // ★ 对账报表接上了抽屉席与路由 ⇒ 棘轮清单同步删掉那一行。
-    //   该族是 **superAdmin 档**（admin/handler.go:1123，整个 `/api/admin/report-rollup/`
+    //   该族是 **superAdmin 档**（admin/handler.go:1130，整个 `/api/admin/report-rollup/`
     //   前缀带尾斜杠都是 h.superAdmin）⇒ 席**要** requiresRole，
     //   所以 `AppDrawer.spec.ts` 的排序白名单里**必须**出现 report-rollup。
     //   ⇒ 两条判据合起来才覆盖「接上了」+「档位挂对了」。
@@ -733,10 +733,10 @@ describe('孤儿棘轮', () => {
 
   it('★★ 已接线的哨兵：opsOverview 不在孤儿里（第一百一十七批）', () => {
     // ★ 运维总览接上了抽屉席与路由 ⇒ 棘轮清单同步删掉那一行。
-    //   权限成因是**第三类**：注册处 `admin/handler.go:1091` 是 `admin(...)`
-    //   （`AdminMiddleware` 只认证不检 role ⇒ 后端 tenant_admin **可读**），
-    //   但 `handleOpsOverview` 自己不检 role、11 条子查询**全是全局表**
-    //   ⇒ 服务端**完全没有租户维度** ⇒ 只能过度限制成 `requiresRole: 'super_admin'`，
+    //   权限成因是**第三类**：注册处 `admin/handler.go:1141` 是 `h.superAdmin(...)`
+    //   （`SuperAdminMiddleware` 逐字比 role ⇒ 后端 tenant_admin **读不到**），
+    //   且 `handleOpsOverview` 自己不检 role、11 条子查询**全是全局表**
+    //   ⇒ 服务端**完全没有租户维度** ⇒ 前端只能对齐成 `requiresRole: 'super_admin'`，
     //   所以 `AppDrawer.spec.ts` 的排序白名单里**必须**出现 ops-overview。
     // ⇒ 两条判据合起来才覆盖「接上了」+「档位挂对了」；
     //   只加抽屉席不改正那份白名单，「tenant_admin 少掉的只有这些」那条立刻红。
@@ -836,15 +836,23 @@ describe('孤儿棘轮', () => {
   })
 
   it('⑥-2 ★★★★★ 「可达但无 views 直接引用」的模块必须逐个点名', () => {
-    // 这 5 个都是**有正当理由**的例外，必须逐个写下来：
+    // 这 6 个都是**有正当理由**的例外，必须逐个写下来：
     //   · credentialWriteOps / mobileNode / nodeAudit —— 由共用面板引入
     //     （⑥-3 会验这些面板**确实被挂载**）
     //   · nodeHealthTimeline —— api→api 委托（nodeHealth 转发）
     //   · transport —— api→api 委托
-    // ⚠️ 若有人新接了「经由面板/委托」而没进这张表，这条会红 ——
-    //   那正是它该做的：例外必须被登记，不能悄悄存在。
+    //   · featureCapabilities（2026-10-21 R72f）—— **经 store 引入**：
+    //     能力位的唯一消费者是 `stores/capabilities.ts`，再由
+    //     `hyper-wiring.ts`（路由守卫）与 `components/shell/AppDrawer.vue`
+    //     （抽屉）使用。⇒ 视图**不直接**引用它 ⇒ 但它**确实在运行时路径上**
+    //     （⑥-3 会验它的引用方 `stores/capabilities.ts` 确实被挂载）。
+    //     ⚠️ 若有人新接了「经由面板/委托」而没进这张表，这条会红 ——
+    //       那正是它该做的：例外必须被登记，不能悄悄存在。
     const seen = reachableFromUi()
-    const EXPECTED = ['credentialWriteOps', 'mobileNode', 'nodeAudit', 'nodeHealthTimeline', 'transport']
+    const EXPECTED = [
+      'credentialWriteOps', 'featureCapabilities', 'mobileNode',
+      'nodeAudit', 'nodeHealthTimeline', 'transport',
+    ]
     const actual = apiModules()
       .filter((m) => seen.has(m))
       .filter((m) => uiImportersOf(m).every((f) => !f.startsWith('views/')))

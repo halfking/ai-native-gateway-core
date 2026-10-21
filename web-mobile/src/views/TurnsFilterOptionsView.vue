@@ -6,9 +6,9 @@
 // ══ 权限 ══════════════════════════════════════════════════════════════════
 // ★★★★★ `requiresRole: 'admin'` —— 而**不是**「admin 档所以不设」。
 //
-//   注册 `admin/handler.go:1342`：`admin(h.handleTurnsFilterOptions)`
-//   而 `admin` 是 `admin/handler.go:958` 的**局部别名** `admin := h.admin`
-//   ⇒ `h.admin` = `AdminMiddleware`（`admin/auth.go:85` 起）
+//   注册 `admin/handler.go:1349`：`admin(h.handleTurnsFilterOptions)`
+//   而 `admin` 是 `admin/handler.go:962` 的**局部别名** `admin := h.admin`
+//   ⇒ `h.admin` = `AdminMiddleware`（`admin/auth.go:86` 起）
 //     ⇒ ★★ **全文无任何 `claims.Role` 比对** ⇒ **服务端没有角色下限**
 //   ⇒ 「admin 档」在注册行里的真实含义是「**已认证**」，不是「管理员」。
 //
@@ -18,7 +18,9 @@
 //        ⇒ 一个只该看**自己**请求的普通用户，没理由看到整个租户的
 //          负责人名单与客户端清单。
 //   （乙）**不过度限制到 super_admin**：载荷是**租户内**的 —— handler 对每个
-//        维度都拼了 `tenantWhere`（`turns_filter_options.go:66-70`）
+//        维度都拼了租户条件（ss 臂 `turns_filter_options.go:125`
+//        `tenantWhere = " AND ss.tenant_id = $1"`；turns 臂 `:199`
+//        `h.turnMergedSource(tenantID)`，由它内部拼 ` AND tenant_id = $1`）
 //        ⇒ 没有「别人的东西」⇒ 按批 119 的边界**不过度限制**。
 //
 //   ⚠️ 与本模块头原写的「admin 档 ⇒ 抽屉席不设 requiresRole」**正好相反**
@@ -27,7 +29,7 @@
 //
 // ══ 本页只读 ══════════════════════════════════════════════════════════════
 // ★ 本模块只导出一个 GET。真正的筛选**由** `turnsSessions` 列表端点执行
-//   （`/api/admin/turns/sessions`，`handler.go:1340`），本页只负责**取候选值**。
+//   （`/api/admin/turns/sessions`，`handler.go:1347`），本页只负责**取候选值**。
 import { computed, ref } from 'vue'
 import { useHyperPage } from '@/hyper'
 import { t } from '@/i18n'

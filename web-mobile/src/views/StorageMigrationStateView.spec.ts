@@ -227,15 +227,15 @@ describe('① 权限档「admin」（服务端无角色下限 ⇒ 前端是唯�
     expect(sup).toMatch(/case "user"/)
   })
 
-  it('①-5 ★★★★★★ 读 Go 源码：`:1172`（superAdmin）与 `:1175`（admin）相邻两行两种档位', () => {
+  it('①-5 ★★★★★★ 读 Go 源码：`:1179`（superAdmin）与 `:1182`（admin）相邻两行两种档位', () => {
     // ★★★ 本族结论的直接依据：档位由**那一行**决定，不由前缀决定。
     const lines = goSrc('admin/handler.go').split('\n')
     const mig = lines.findIndex((l) => l.includes('"/api/admin/storage/migration-state"'))
-    expect(mig + 1, '模块头原写 :1111 → :1140（批153）→ 实为 :1175（12h-audit 20261017）').toBe(1175)
+    expect(mig + 1, '模块头原写 :1111 → :1140（批153）→ :1175（12h-audit 20261017）→ 实为 :1182（2026-10-21 views 行号订正轮）').toBe(1182)
     expect(lines[mig]).toMatch(/admin\(h\.handleMigrationState\)/)
     const cfg = lines.findIndex((l) => l.includes('"/api/admin/storage/config"'))
     expect(lines[cfg]).toMatch(/h\.superAdmin\(h\.handleStorageConfig\)/)
-    // ★ 相邻：1172 与 1175 之间只隔着 test-path 那一行
+    // ★ 相邻：1179 与 1182 之间只隔着 test-path 那一行
     expect(cfg).toBeLessThan(mig)
     expect(mig - cfg).toBeLessThanOrEqual(3)
   })

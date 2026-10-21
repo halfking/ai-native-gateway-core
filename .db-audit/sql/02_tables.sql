@@ -16,13 +16,13 @@ echo "===== INDEX TOTALS BY TABLE (top 30 idx size) ====="
 $PSQL -c "SELECT c.relname||' | indexes='||pg_size_pretty(pg_indexes_size(c.oid))||' | heap='||pg_size_pretty(pg_relation_size(c.oid))||' | ratio='||round(100.0*pg_indexes_size(c.oid)/nullif(pg_total_relation_size(c.oid),0),1)||'%' FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND c.relkind IN ('r','p') AND pg_indexes_size(c.oid) > 0 ORDER BY pg_indexes_size(c.oid) DESC LIMIT 30;"
 
 echo "===== INDEX ACCESS SCANS (top 40) ====="
-$PSQL -c "SELECT s.relname||' | idx_scan='||s.idx_scan||' | idx_tup_read='||s.idx_tup_fetch||' | seq_scan='||s.seq_scan||' | seq_tup_read='||s.seq_tup_read||' | rows='||greatest(s.reltuples,0)::bigint||' | size='||pg_size_pretty(pg_total_relation_size(s.relid)) FROM pg_stat_user_tables s WHERE s.seq_scan+s.idx_scan > 0 ORDER BY pg_total_relation_size(s.relid) DESC LIMIT 40;"
+$PSQL -c "SELECT s.relname||' | idx_scan='||s.idx_scan||' | idx_tup_read='||s.idx_tup_fetch||' | seq_scan='||s.seq_scan||' | seq_tup_read='||s.seq_tup_read||' | rows='||greatest(c.reltuples,0)::bigint||' | size='||pg_size_pretty(pg_total_relation_size(s.relid)) FROM pg_stat_user_tables s JOIN pg_class c ON c.oid=s.relid WHERE s.seq_scan+s.idx_scan > 0 ORDER BY pg_total_relation_size(s.relid) DESC LIMIT 40;"
 
 echo "===== HIGHEST SEQ_SCAN (top 25, excluding tiny) ====="
-$PSQL -c "SELECT s.relname||' | seq_scan='||s.seq_scan||' | seq_tup_read='||s.seq_tup_read||' | idx_scan='||s.idx_scan||' | rows='||greatest(s.reltuples,0)::bigint||' | size='||pg_size_pretty(pg_total_relation_size(s.relid)) FROM pg_stat_user_tables s WHERE s.seq_scan>0 ORDER BY s.seq_tup_read DESC LIMIT 25;"
+$PSQL -c "SELECT s.relname||' | seq_scan='||s.seq_scan||' | seq_tup_read='||s.seq_tup_read||' | idx_scan='||s.idx_scan||' | rows='||greatest(c.reltuples,0)::bigint||' | size='||pg_size_pretty(pg_total_relation_size(s.relid)) FROM pg_stat_user_tables s JOIN pg_class c ON c.oid=s.relid WHERE s.seq_scan>0 ORDER BY s.seq_tup_read DESC LIMIT 25;"
 
 echo "===== DEAD TUPLES / BLOAT CANDIDATES (top 25) ====="
-$PSQL -c "SELECT s.relname||' | n_live='||n_live||' | n_dead='||n_dead||' | dead_pct='||round(100.0*n_dead/nullif(n_live+n_dead,0),1)||'%' ||' | autovac='||coalesce(s.autovacuum_count,0)||' | autoan='||coalesce(s.autoanalyze_count,0)||' | last_vac='||coalesce(s.last_vacuum::text,'-')||' | last_auto_vac='||coalesce(s.last_autovacuum::text,'-')||' | size='||pg_size_pretty(pg_total_relation_size(s.relid)) FROM pg_stat_user_tables s WHERE n_live+n_dead > 0 ORDER BY n_dead DESC LIMIT 25;"
+$PSQL -c "SELECT s.relname||' | n_live='||s.n_live_tup||' | n_dead='||s.n_dead_tup||' | dead_pct='||round(100.0*s.n_dead_tup/nullif(s.n_live_tup+s.n_dead_tup,0),1)||'%' ||' | autovac='||coalesce(s.autovacuum_count,0)||' | autoan='||coalesce(s.autoanalyze_count,0)||' | last_vac='||coalesce(s.last_vacuum::text,'-')||' | last_auto_vac='||coalesce(s.last_autovacuum::text,'-')||' | size='||pg_size_pretty(pg_total_relation_size(s.relid)) FROM pg_stat_user_tables s WHERE s.n_live_tup+s.n_dead_tup > 0 ORDER BY s.n_dead_tup DESC LIMIT 25;"
 
 echo "===== TABLES NEVER ANALYZED ====="
 $PSQL -c "SELECT count(*) FROM pg_stat_user_tables WHERE last_analyze IS NULL AND last_autoanalyze IS NULL;"

@@ -3,8 +3,8 @@ import { req, type RequestOptions } from './client'
 /**
  * approvals.ts — 审批查询面的两条只读端点（2026-10-08，第六十四批）。
  *
- * GET /api/admin/approvals         （cmd/gateway/main.go:7518，wrapAdmin 档）
- * GET /api/admin/approvals/stats   （cmd/gateway/main.go:7519，wrapAdmin 档）
+ * GET /api/admin/approvals         （cmd/gateway/main.go:7621，wrapAdmin 档）
+ * GET /api/admin/approvals/stats   （cmd/gateway/main.go:7622，wrapAdmin 档）
  *
  * ★ 两者都是 `wrapAdmin(...)` ⇒ tenant_admin 可用 ⇒ 抽屉席不设 `requiresRole`。
  *

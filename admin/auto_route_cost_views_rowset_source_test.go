@@ -62,11 +62,19 @@ package admin
 // （改掉 883 那份，基线那份还在 ⇒ 集合没变）⇒ 门会放过形态被改。
 // ⇒ ★ **变异的价值就是把「文档里写的意图」与「代码实际断言的东西」对齐**。
 //
-// 变异验证：scripts/audit/verify-l11b-cost-view-rowset.sh（6 条全红）。
+// ★★ **「形态源穷举」这四个字是被第二次变异逼出来的**（2026-10-21 续做轮）：
+// 门自己的注释写着「真正被应用的是**三份** 01-schema.sql」，而代码只钉了**两份**
+// —— `deploy/sql/schemas/baseline/01-schema.sql`（部署基线，**随包分发**）
+// 里同样定义着这两个视图，却不在形态源清单里 ⇒ ★ **实测：改掉它的顶层 FROM，
+// 门照样绿** ⇒ 门是瞎的而外观完全正常 ⇒ ⇒ 现在形态源 9 个、判定**穷举全仓 .sql**。
+//
+// 变异验证：scripts/audit/verify-l11b-cost-view-rowset.sh（15 条全红）。
 
 import (
 	"os"
 	"path/filepath"
+	"regexp"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -103,18 +111,30 @@ type costViewRowsetEntry struct {
 var costViewRowsetRegistry = map[string]costViewRowsetEntry{
 	"customer_cost_view": {
 		shapes: map[string]string{
-			"deployed:883":      costViewFrozenRowsetTable,
-			"baseline:customer": costViewFrozenRowsetTable,
+			"deployed:883":                costViewFrozenRowsetTable,
+			"deployed:883-down":           costViewFrozenRowsetTable,
+			"deployed:883-embeddata":      costViewFrozenRowsetTable,
+			"deployed:883-down-embeddata": costViewFrozenRowsetTable,
+			"baseline:schema":             costViewFrozenRowsetTable,
+			"baseline:embeddata":          costViewFrozenRowsetTable,
+			"baseline:deploy":             costViewFrozenRowsetTable,
+			"baseline:objects-customer":   costViewFrozenRowsetTable,
 		},
 		note: "行集来自 2026-06-19 冻结的 api_key_model_cost（写方随迁移 890 删除）⇒ " +
 			"生产上该视图只有 5 行（api_key_id 1/10/11/17/29），" +
-			"而近 30 天真正在跑 auto 的是 3/6/7/89/105/114/199 ⇒ 零交集；" +
-			"active_concurrent 恒 0、cost_usd_24h 恒 0、last_request_at 停在 6 月。",
+			"而近 30 天有 auto 流量的 api_key 是 3/6/7/89/105/114/199（近 7 天仍在跑的是 89/114/199）" +
+			"⇒ 零交集；active_concurrent 恒 0、cost_usd_24h 恒 0、last_request_at 停在 6 月。",
 	},
 	"model_cost_per_task_view": {
 		shapes: map[string]string{
-			"deployed:883":   costViewFrozenRowsetTable,
-			"baseline:model": costViewFrozenRowsetTable,
+			"deployed:883":                costViewFrozenRowsetTable,
+			"deployed:883-down":           costViewFrozenRowsetTable,
+			"deployed:883-embeddata":      costViewFrozenRowsetTable,
+			"deployed:883-down-embeddata": costViewFrozenRowsetTable,
+			"baseline:schema":             costViewFrozenRowsetTable,
+			"baseline:embeddata":          costViewFrozenRowsetTable,
+			"baseline:deploy":             costViewFrozenRowsetTable,
+			"baseline:objects-model":      costViewFrozenRowsetTable,
 		},
 		note: "同上（同一张冻结表）；额外叠一层「7 天窗」谓词 ⇒ " +
 			"生产上该视图 0 行（bucket 全在 6 月，WHERE bucket >= now()-7d 全被滤掉）" +
@@ -122,22 +142,124 @@ var costViewRowsetRegistry = map[string]costViewRowsetEntry{
 	},
 }
 
-// costViewRowsetShapes 是本门要看的**形态来源**文件。
+// costViewRowsetShapes 是本门要看的**形态来源**文件（= 会被真正执行到的定义体）。
 //
-// ⚠ 两种形态都要看，因为它们**同时存在**：
+// ⚠⚠ **这里踩过两次坑（2026-10-21 审计轮 + 同日续做轮）**：
+//
+//	(a) 第一版只把 `sql/objects/views/*.sql` 当「基线形态」的来源 ⇒
+//	    **但那目录根本没有任何 apply 通道**（`sql/objects/` 对部署**惰性**）
+//	    ⇒ 真正被应用的是三份 `01-schema.sql` ⇒ 只钉 objects 副本 ⇒
+//	    **被 apply 的那份改了也不会红** ⇒ 门是瞎的。
+//
+//	(b) ★★ **续做轮实测抓到的第二例**：R81 修完 (a) 后，门**自己的注释**写着
+//	    「真正被应用的是**三份** 01-schema.sql（正典 / 部署基线 / 安装器内嵌）」，
+//	    而**代码只钉了其中两份** —— `deploy/sql/schemas/baseline/01-schema.sql`
+//	    （**部署基线**，随离线包与一键安装分发到 `sql/baseline/`）里同样
+//	    `CREATE VIEW` 了这两个视图，却**不在形态源清单里**
+//	    ⇒ ★ **实测复现：改掉它的顶层 FROM ⇒ 门照样绿**（门是瞎的，
+//	      而外观上完全正常）。
+//	    ⇒ ⇒ **同一个病的第二例**：上一轮问的是「我钉的是不是**被 apply**的那一份」，
+//	      这一轮必须问「我钉的是不是**全部**形态源」。
+//
+// ⚠ **「三份基线一起钉」是仓内既有约定**，别的门早就这么做了
+//
+//	（`sql/migrations/startup/baseline_ensure_functions_contract_test.go`：
+//	 canonical + deploy-baseline + installer-embed 三份并列）
+//	⇒ 本门上一版偏离了这个约定 ⇒ 现在改回。
+//
+// ⚠ **四种形态都要看，因为它们同时存在**：
 //   - 部署形态 = 迁移 883 的 up 体（存量升级 / 新装跑完启动序列后的最终形态）；
-//   - 基线形态 = sql/objects/views/*.sql（基线 schema 逐语句应用时的形态，
-//     两条路径跑完启动序列后形态一致 —— 见 §19.10 跨会话订正）。
-//
-// 只看一种形态 ⇒ 另一种形态悄悄改掉时门看不见。
+//   - ★ **回滚形态 = 迁移 883 的 down 体**（回滚会把视图换回 v1 形状）——
+//     上一版只把 down 体**列进白名单**（「不是它」），**没钉它的形状**
+//     ⇒ 回滚之后的行集来源无人看管 ⇒ 现在一起钉；
+//   - 基线形态 = 01-schema.sql（基线 schema 逐语句应用时的形态，
+//     两条路径跑完启动序列后形态一致 —— 见 §19.10 跨会话订正）；
+//   - 溯源形态 = sql/objects/views/*.sql（源文件，非 apply 通道，
+//     但 883 的门要求它们与基线逐字同步 ⇒ 钉住更严）。
 var costViewRowsetShapes = []struct {
 	name string
 	rel  string
 }{
 	{"deployed:883", filepath.Join("sql", "migrations", "startup", "883_session_family_cost_view_metrics.sql")},
-	{"baseline:customer", filepath.Join("sql", "objects", "views", "customer_cost_view.sql")},
-	{"baseline:model", filepath.Join("sql", "objects", "views", "model_cost_per_task_view.sql")},
+	{"deployed:883-down", filepath.Join("sql", "migrations", "startup", "883_session_family_cost_view_metrics.down.sql")},
+	{"deployed:883-embeddata", filepath.Join("installer", "cmd", "llm-gw-installer", "embeddata", "startup", "883_session_family_cost_view_metrics.sql")},
+	{"deployed:883-down-embeddata", filepath.Join("installer", "cmd", "llm-gw-installer", "embeddata", "startup", "883_session_family_cost_view_metrics.down.sql")},
+	{"baseline:schema", filepath.Join("sql", "schema", "01-schema.sql")},
+	{"baseline:embeddata", filepath.Join("installer", "cmd", "llm-gw-installer", "embeddata", "01-schema.sql")},
+	{"baseline:deploy", filepath.Join("deploy", "sql", "schemas", "baseline", "01-schema.sql")},
+	{"baseline:objects-customer", filepath.Join("sql", "objects", "views", "customer_cost_view.sql")},
+	{"baseline:objects-model", filepath.Join("sql", "objects", "views", "model_cost_per_task_view.sql")},
 }
+
+// costViewDefinerRole 标注一个「允许含定义体」的文件**扮演什么角色**。
+type costViewDefinerRole int
+
+const (
+	// costViewRoleShape = 这个文件是**形态源**：它的形状会被本门逐形态钉住
+	// ⇒ 它必须同时出现在 costViewRowsetShapes 里（否则「钉了形状却没钉来源」）。
+	costViewRoleShape costViewDefinerRole = iota
+	// costViewRoleArchived = 归档/文档副本：**从不执行、也不随包分发**
+	// ⇒ 不钉形状，但必须登记 —— 否则下面的穷举扫描会把它当成「新定义体」。
+	costViewRoleArchived
+)
+
+// costViewAllowedDefiners 是**允许**含这两个视图定义体的文件（相对仓根）→ 角色。
+//
+// ⚠⚠ **这是一份「穷举」清单**，不是「几个已知目录」。
+//
+//	上一版用的是「扫描根清单」（sql/migrations + installer 内嵌 startup）：
+//	⇒ **新开一个目录**（比如 deploy/sql/schemas/baseline/）放定义体 ⇒ 扫不到
+//	⇒ **这正是上一轮补 `baseline:deploy` 时踩到的坑**（它就在第三个目录里）。
+//	⇒ 现在改成：**全仓 .sql 逐个扫**，命中集必须**恰好**等于本清单。
+//	⇒ ⇒ **「以后再开新目录」不再是一个需要人记得的活事实**。
+//
+// ⚠ 清单里每一条都必须**真的**含定义体（见判据的「不许有陈旧条目」）：
+//
+//	否则删了定义体却留着条目 ⇒ 清单在自说自话 ⇒ 判据失去判别力。
+var costViewAllowedDefiners = map[string]costViewDefinerRole{
+	// —— 形态源（9 个，与 costViewRowsetShapes 一一对应）——
+	filepath.Join("sql", "migrations", "startup", "883_session_family_cost_view_metrics.sql"):                                      costViewRoleShape,
+	filepath.Join("sql", "migrations", "startup", "883_session_family_cost_view_metrics.down.sql"):                                 costViewRoleShape,
+	filepath.Join("installer", "cmd", "llm-gw-installer", "embeddata", "startup", "883_session_family_cost_view_metrics.sql"):      costViewRoleShape,
+	filepath.Join("installer", "cmd", "llm-gw-installer", "embeddata", "startup", "883_session_family_cost_view_metrics.down.sql"): costViewRoleShape,
+	filepath.Join("sql", "schema", "01-schema.sql"):                                                                                costViewRoleShape,
+	filepath.Join("installer", "cmd", "llm-gw-installer", "embeddata", "01-schema.sql"):                                            costViewRoleShape,
+	filepath.Join("deploy", "sql", "schemas", "baseline", "01-schema.sql"):                                                         costViewRoleShape,
+	filepath.Join("sql", "objects", "views", "customer_cost_view.sql"):                                                             costViewRoleShape,
+	filepath.Join("sql", "objects", "views", "model_cost_per_task_view.sql"):                                                       costViewRoleShape,
+
+	// —— 归档副本：v1 形态的**历史文档**（不执行、不分发）——
+	// ⚠ 它们用的是**无 schema 限定**的 `CREATE VIEW customer_cost_view`，
+	//   行集来源也是无限定名的 `api_key_model_cost` ⇒ 与形态源**不是同一形状**
+	//   ⇒ 登记为 archived，不钉形状。
+	filepath.Join("deploy", "sql", "docs", "features", "2026-06-15-auto-route-mode-cost-table.sql"):            costViewRoleArchived,
+	filepath.Join("docs", "archive", "process", "schema-history", "2026-06-15-auto-route-mode-cost-table.sql"): costViewRoleArchived,
+}
+
+// costViewScanSkipDirs 是穷举扫描时**跳过**的目录。
+//
+// ⚠ 只跳过与 SQL 源无关的东西（版本库对象 / 依赖树）——
+//
+//	**绝不能按「看起来像文档」跳过**：上一轮正是因为「这个目录不会被执行」
+//	才漏掉了 deploy/sql/schemas/baseline/ ⇒ 而它恰恰**会被分发**。
+var costViewScanSkipDirs = map[string]bool{
+	".git":         true,
+	"node_modules": true,
+}
+
+// costViewCreateViewForThese 匹配「用 CREATE 定义这两个视图」的 DDL。
+//
+// ⚠ 口径必须是 **CREATE … VIEW**，不能是 "VIEW public.x" ——
+// 否则 `COMMENT ON VIEW public.customer_cost_view` 也会命中（883 的 up/down 里就有）
+// ⇒ 假红。
+//
+// ⚠ **schema 限定必须可选**（`public.` 可有可无）：仓内两份**归档副本**用的就是
+//
+//	无限定写法 `CREATE VIEW customer_cost_view AS`（2026-06-15 那版）。
+//	⇒ 若只认 `public.`，这两份文件对判据**完全隐形** ⇒
+//	  「以后有人写一份无 schema 限定的定义体」也是隐形的 ⇒
+//	⇒ 现在认两种写法（★ 变异 M14 专门打这条）。
+var costViewCreateViewForThese = regexp.MustCompile(`(?i)CREATE\s+(OR\s+REPLACE\s+)?VIEW\s+(public\.)?(customer_cost_view|model_cost_per_task_view)\b`)
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 工具
@@ -368,6 +490,17 @@ func costViewFindAs(s string, i int) int {
 	return -1
 }
 
+// costViewCreateViewPattern 匹配 `CREATE [OR REPLACE] VIEW`（大小写不敏感）。
+//
+// 用途：**解析完整性自检** —— 文件里有几条 CREATE VIEW，解析器就该认出几个；
+// 少认 ⇒ 说明解析器漏了某种形态 ⇒ 下面的「反向」检查（缺陷有没有扩散）**不可信**。
+var costViewCreateViewPattern = regexp.MustCompile(`(?i)\bCREATE\s+(OR\s+REPLACE\s+)?VIEW\b`)
+
+// costViewCountCreateView 数出剥过注释的文本里 `CREATE [OR REPLACE] VIEW` 的条数。
+func costViewCountCreateView(stripped string) int {
+	return len(costViewCreateViewPattern.FindAllString(stripped, -1))
+}
+
 // costViewBodies 抽出 content 里所有 `CREATE [OR REPLACE] VIEW public.<name> AS`
 // 的定义体，返回 视图名 → 定义体。
 //
@@ -442,6 +575,13 @@ func TestAutoRouteCostViewsRowsetSourceIsRegistered(t *testing.T) {
 		if len(bodies) == 0 {
 			t.Fatalf("%s 里没有解析出任何视图定义体 —— 解析器或文件形态变了（形状不明 ⇒ 门失去判别力）", shape.rel)
 		}
+		// ★ 解析完整性：文件里有几条 CREATE VIEW，就必须认出几个。
+		//   少认 ⇒ 解析器漏了某种形态 ⇒ ②「反向」检查不可信 ⇒ 必须红。
+		if want := costViewCountCreateView(costViewStripSQL(content)); want != len(bodies) {
+			t.Errorf("%s 里 `CREATE [OR REPLACE] VIEW` 出现 %d 次，但解析器只认出 %d 个视图 ⇒ "+
+				"**解析不完整** ⇒ 下面的「反向」检查（缺陷有没有扩散）不可信 ⇒ 必须先修解析器",
+				shape.rel, want, len(bodies))
+		}
 		m := map[string]string{}
 		for name, body := range bodies {
 			m[name] = costViewTopLevelFromSource(body)
@@ -501,6 +641,117 @@ func TestAutoRouteCostViewsRowsetSourceIsRegistered(t *testing.T) {
 	}
 }
 
+// TestCostViewRowsetNoOtherMigrationRedefinesTheViews 守住「**形态源穷举**」：
+// 仓内**任何** `.sql` 文件都不得在允许清单之外定义这两个视图。
+//
+// ★ 为什么必须是「穷举」而不是「扫几个已知目录」（2026-10-21 续做轮实测）：
+//
+//	上一版扫的是「迁移目录 + 安装器内嵌 startup」**两个根** ⇒
+//	**第三个目录 `deploy/sql/schemas/baseline/`（部署基线，随离线包与一键安装
+//	分发到 `sql/baseline/`）根本不在眼里** ⇒ 而它恰恰定义着这两个视图 ⇒
+//	⇒ ★ **实测复现：改掉它的顶层 FROM ⇒ 门照样绿**（门是瞎的，外观完全正常）。
+//	⇒ ⇒ 「以后再开一个目录放定义体」也一样静默 ⇒ **扫描根清单是活事实**。
+//	⇒ 现在改成：**全仓 .sql 逐个扫** ⇒ 命中集必须**恰好**等于允许清单
+//	⇒ ⇒ 「新开目录」不再需要人记得 ⇒ ★ 这也正是「部署链按 ^[0-9]{3}_ 挑迁移」
+//	  那条规则**缺门**的同族问题（手挑规则 ⇒ 需要门守着）。
+//
+// ★ 本判据的三条断言（缺一条，下面那条就不可信）：
+//
+//	① 命中集 ⊆ 允许清单：多出来的 = 有人在**别处**定义了这两个视图 ⇒ 形态源漂移；
+//	② 允许清单 ⊆ 命中集：清单里有条目却没命中 = **陈旧条目** = 清单在自说自话；
+//	③ 角色为「形态源」的条目 ↔ costViewRowsetShapes **一一对应**：
+//	   登记了角色却没钉形状 / 钉了形状却没登记角色 ⇒ 两份清单漂移。
+func TestCostViewRowsetNoOtherMigrationRedefinesTheViews(t *testing.T) {
+	root := repoRoot(t)
+
+	// ── 穷举扫描：全仓 .sql，找出所有含这两个视图定义体的文件 ──
+	hits := map[string][]string{} // rel → 命中的视图名
+	walkErr := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if info.IsDir() {
+			if path != root && costViewScanSkipDirs[info.Name()] {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(path, ".sql") {
+			return nil
+		}
+		rel, rerr := filepath.Rel(root, path)
+		if rerr != nil {
+			rel = path
+		}
+		content, rerr := os.ReadFile(path)
+		if rerr != nil {
+			return rerr
+		}
+		for _, m := range costViewCreateViewForThese.FindAllStringSubmatch(string(content), -1) {
+			hits[rel] = append(hits[rel], m[3])
+		}
+		return nil
+	})
+	if walkErr != nil {
+		t.Fatalf("walk repo: %v", walkErr)
+	}
+	if len(hits) == 0 {
+		t.Fatalf("全仓扫下来一个定义体都没有 ⇒ 判据前提失效（正则/文件形态变了？）")
+	}
+
+	// ① 命中集 ⊆ 允许清单。
+	extra := []string{}
+	for rel, views := range hits {
+		if _, ok := costViewAllowedDefiners[rel]; !ok {
+			extra = append(extra, rel+" → "+strings.Join(views, ","))
+		}
+	}
+	if len(extra) > 0 {
+		sort.Strings(extra)
+		t.Errorf("全仓有 %d 个文件在允许清单之外用 `CREATE … VIEW` 定义这两个视图：%v ⇒ "+
+			"**真正被执行的定义体已经换了**（或者只是换了地方）⇒ "+
+			"本门钉的形态源过期 ⇒ 必须把它加进允许清单；"+
+			"若它**会被执行**，还必须加进 costViewRowsetShapes 并**重判**登记册",
+			len(extra), extra)
+	}
+
+	// ② 允许清单 ⊆ 命中集（不许有陈旧条目）。
+	stale := []string{}
+	for rel := range costViewAllowedDefiners {
+		if _, ok := hits[rel]; !ok {
+			stale = append(stale, rel)
+		}
+	}
+	if len(stale) > 0 {
+		sort.Strings(stale)
+		t.Errorf("允许清单里有 %d 个条目**已经不含**这两个视图的定义体：%v ⇒ "+
+			"陈旧条目 = 清单在自说自话 ⇒ 必须删掉它（否则清单会越来越假）",
+			len(stale), stale)
+	}
+
+	// ③ 角色为「形态源」的条目 ↔ costViewRowsetShapes 一一对应。
+	shapeRels := map[string]bool{}
+	for _, shape := range costViewRowsetShapes {
+		shapeRels[shape.rel] = true
+	}
+	for rel, role := range costViewAllowedDefiners {
+		if role != costViewRoleShape {
+			continue
+		}
+		if !shapeRels[rel] {
+			t.Errorf("允许清单把 %s 标成「形态源」，但它不在 costViewRowsetShapes 里 ⇒ "+
+				"它的形状**没被钉住** ⇒ 必须加进形态源清单（并登记册里补这个形态）", rel)
+		}
+	}
+	for _, shape := range costViewRowsetShapes {
+		if role, ok := costViewAllowedDefiners[shape.rel]; !ok {
+			t.Errorf("形态源 %s 不在允许清单里 ⇒ 两份清单漂移 ⇒ 必须登记它", shape.rel)
+		} else if role != costViewRoleShape {
+			t.Errorf("形态源 %s 在允许清单里的角色不是「形态源」⇒ 两份清单漂移", shape.rel)
+		}
+	}
+}
+
 // TestCostViewRowsetParserSelfCheck 证明解析器**不是恒返回某个值**。
 //
 // ★ 没有这条，上面那条判据就是「恒绿门」：解析器若永远返回
@@ -535,6 +786,16 @@ func TestCostViewRowsetParserSelfCheck(t *testing.T) {
 	// 没有 FROM ⇒ 空串（不是 nil、也不是猜一个）。
 	if src := costViewTopLevelFromSource("SELECT 1"); src != "" {
 		t.Errorf("解析器自检失败：没有 FROM 的 SQL 应解析出空串，实得 %q", src)
+	}
+
+	// ★ 完整性计数器自证：注释里的 CREATE VIEW 不算数；
+	//   CREATE / CREATE OR REPLACE 两种形态都要数到。
+	counter := costViewCountCreateView(costViewStripSQL(
+		"-- CREATE VIEW public.commented_out AS SELECT 1;\n" +
+			"CREATE VIEW public.a AS SELECT 1;\n" +
+			"CREATE OR REPLACE VIEW public.b AS SELECT 1;\n"))
+	if counter != 2 {
+		t.Errorf("完整性计数器自检失败：期望 2（注释里那条不算），实得 %d", counter)
 	}
 }
 

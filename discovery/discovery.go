@@ -23,7 +23,6 @@ import (
 	"github.com/kaixuan/llm-gateway-go/modelname"
 	providercatalog "github.com/kaixuan/llm-gateway-go/provider/catalog"
 	"github.com/kaixuan/llm-gateway-go/secret"
-	"github.com/kaixuan/llm-gateway-go/settings"
 )
 
 // Service manages model discovery from providers.
@@ -1101,10 +1100,10 @@ func seedCanonicalAliases(ctx context.Context, db modelcatalog.Querier, rawName 
 // omitting a model, or list pagination) from disabling the only working
 // credential for a model. The grace period is configurable via
 // DISCOVERY_GRACE_HOURS (default 24).
-// staleExpiryBlockedS4Reason 非空表示下架被禁止，原因见此常量。
+// staleExpiryBlockedEvidenceReason 非空表示下架被禁止，原因见此常量。
 //
 // 2026-10-02（审计 §9.10.2）：下面 model_offers 的宽限守卫是
-// `NOT EXISTS (_request_logs 近 N 小时成功)` —— 一条**否定式守卫**。S4 停写后
+// `NOT EXISTS (近 N 小时成功)` —— 一条**否定式守卫**。当**证据源停止写入**时
 // 该子查询不是「查不到」，而是**结构性恒空**：守卫从「已验证近期无成功」
 // 退化成「根本没有证据」，而代码会照常执行下架 ⇒ 无论模型是否真在用，
 // 都被判为 auto_discovery_expired。这不是降级，是主动禁用仍在工作的凭据模型，
@@ -1112,28 +1111,106 @@ func seedCanonicalAliases(ctx context.Context, db modelcatalog.Querier, rawName 
 //
 // 否定式比肯定式危险一个量级：肯定式在证据消失时不做动作（安全降级），
 // 否定式在证据消失时**做动作**。
-// staleExpiryBlockedS4Reason 是「不下架」的对外说明（运维读日志时看到的那句）。
 //
-// ★ 2026-10-20（迁移 890，v1 族退役）：证据源已换成会话族，**这道护栏的判据
-// 其实已经失效**——会话族一直在写、从不冻结，「证据源停止写入」这个前提不再
-// 成立 ⇒ 严格说它现在只会「永远阻断下架」。
-// 但「要不要退役这道护栏」是**产品决策**（打开它意味着生产开始真的下架
-// stale 模型），不在本轮「删表」的范围内 ⇒ 本轮只换证据源、护栏本身不动，
-// 并把「判据已失效」写进注释与交接。
-// ⇒ 消息里仍点名 _request_logs：那是这道护栏**当初依赖的证据源**（运维要查
+// ★ 2026-10-21（§143.19 轮 R72g，属主裁决「退役该护栏」）：**判据换源，
+// 护栏不撤**。原判据是 `settings.RequestLogsWriteEnabled()`（v1 是否可写），
+// 而 890 之后 v1 族已退役 ⇒ 该判据恒不成立 ⇒ 护栏恒 skip ⇒ 陈旧模型
+// **永不再自动下架**（211 生产日志实证）。
+//
+// ⇒ 退役**不是删掉安全网**：安全网的**目的**（否定式守卫在证据缺失时必须不动）
+// 依然成立，只是**证据源**从 v1 换成了会话族。所以判据换成
+// **「会话族证据源在近 N 小时内是否有成功行」**——它直接问「证据在不在」，
+// 而不是问「另一个（已退役的）源是否可写」。
+//
+// ★ 为什么不能简单删除这个判断：会话族**也可能**停止写入
+// （例：R62 修过的 23514——新装库缺当月分区 ⇒ 写路径直接失败）。
+// 那一刻否定式守卫同样会结构性恒空 ⇒ 在用模型会被全量下架。
+// ⇒ 判据必须保留，只是要问对问题。
+//
+// 消息里仍点名 _request_logs：那是这道护栏**当初依赖的证据源**（运维要查
 // 它的来历），也是本仓对「v1 裸读」检测器（internal/sqlreadguard）仅剩的
 // 那个可解释的白名单命中点。
-const staleExpiryBlockedS4Reason = "S4 停写中：宽限守卫依赖 v1 证据源（_request_logs，已随 890 退役），证据源停止写入 ⇒ 下架判定不成立；⚠ 该护栏判据现已失效（证据源已是会话族，一直在写），待父会话裁决是否退役它"
+const staleExpiryBlockedEvidenceReason = "宽限守卫的证据源（会话族）近期没有成功行 ⇒ 下架判定不成立（证据缺失时不做动作）；★ 该守卫的判据历经两代：初版依赖 v1 证据源（_request_logs，已随 890 退役 ⇒ 旧判据恒不成立、护栏恒 skip），现版直接问会话族证据源本身"
 
-// staleExpiryMayRun 判定「能否基于 v1 证据执行 stale 下架」。
+// staleExpiryMayRun 判定「能否基于证据源执行 stale 下架」。
 //
 // 抽成纯函数是为了可无库测试：缺陷所在的正是「证据源停止」这个分支，
 // 而它在线上是停写之后才出现的，集成测试永远撞不到。
-func staleExpiryMayRun(requestLogsWritable bool) (bool, string) {
-	if !requestLogsWritable {
-		return false, staleExpiryBlockedS4Reason
+//
+// ★ 2026-10-21：参数语义从「v1 是否可写」改为「**会话族证据源近期是否有
+// 成功行**」（见 staleExpiryBlockedEvidenceReason 的完整论证）。
+func staleExpiryMayRun(evidenceHasRecentSuccess bool) (bool, string) {
+	if !evidenceHasRecentSuccess {
+		return false, staleExpiryBlockedEvidenceReason
 	}
 	return true, ""
+}
+
+// sessionFamilyHasRecentSuccess reports whether the session-turn family
+// (the grace guard's evidence source since migration 890) has recorded any
+// successful turn recently.
+//
+// Why this is a **measurement** and not another switch:
+//
+//	The guard below is a *negative* guard (`NOT EXISTS (recent success)`).
+//	When the evidence source stops writing, that subquery becomes
+//	structurally empty and the guard degenerates from "verified: no recent
+//	success" into "no evidence at all" — while the code still expires the
+//	model. That is the failure mode §9.10.2 was written to prevent.
+//
+//	The previous criterion (`settings.RequestLogsWriteEnabled()`) asked
+//	whether a *different* source (v1) could be written. That question is
+//	only a proxy for "does the evidence source have data", and the proxy
+//	became permanently false once 890 retired v1 — so the guard skipped
+//	forever and stale models were never expired again.
+//
+//	Asking the source directly removes the proxy. It also keeps the guard
+//	armed for the case where the session family itself stops writing (e.g.
+//	the 23514 "no partition of relation session_turns" failure that R62
+//	fixed on fresh installs): in that case the guard still refuses to act.
+//
+//	Window: DISCOVERY_GRACE_HOURS (default 24h) — the same window the grace
+//	guard itself uses, so "no evidence" and "no recent success" can never
+//	disagree about which rows the guard would have seen.
+//
+//	Query shape: EXISTS over both arms of the session family (hot ∪ parent)
+//	with LIMIT-1 semantics, so it stops at the first hit and never scans the
+//	whole family.
+func (s *Service) sessionFamilyHasRecentSuccess(ctx context.Context) bool {
+	window := s.staleExpiryGraceHours()
+
+	const q = `SELECT EXISTS (
+	  SELECT 1 FROM public.session_turns_hot
+	  WHERE success = TRUE AND ts > now() - ($1 || ' hours')::interval
+	  UNION ALL
+	  SELECT 1 FROM public.session_turns
+	  WHERE success = TRUE AND ts > now() - ($1 || ' hours')::interval
+	)`
+	var ok bool
+	if err := s.db.QueryRow(ctx, q, window).Scan(&ok); err != nil {
+		// 查不到证据 ⇒ 按「证据缺失时不动」处理（安全方向）。
+		// slog 而非 return：这是运维必须看见的信号。
+		slog.Warn("discovery: stale-expiry evidence probe failed, treating as no evidence",
+			"error", err, "window_hours", window)
+		return false
+	}
+	return ok
+}
+
+// staleExpiryGraceHours returns the grace window used both by the evidence
+// probe above and by the guard's own `ts >` predicate.
+//
+// Extracted so the two can never drift apart (they must agree about which
+// rows count as "recent success"), and so the env override has exactly one
+// implementation site.
+func (s *Service) staleExpiryGraceHours() int {
+	hours := 24
+	if v := os.Getenv("DISCOVERY_GRACE_HOURS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			hours = n
+		}
+	}
+	return hours
 }
 
 func (s *Service) expireStaleModels(ctx context.Context, seen []modelOffer) {
@@ -1155,9 +1232,16 @@ func (s *Service) expireStaleModels(ctx context.Context, seen []modelOffer) {
 	// ⚠ 而「拿 session_turns.model 代替是错的」那条**仍然成立**（model 恒等于
 	// client_model，是客户端名不是上游名）⇒ 这里比的是 raw_model_name，不是 model。
 	//
-	// ⚠ 护栏本身（staleExpiryMayRun）保留不动：它的判据（证据源冻结）现已
-	// 失效，但「要不要退役它」是产品决策，见 staleExpiryBlockedS4Reason。
-	if mayExpire, blockedReason := staleExpiryMayRun(settings.RequestLogsWriteEnabled()); !mayExpire {
+	// ★ 2026-10-21（属主裁决「退役该护栏」）：判据**换源不撤网**——
+	// 原判据 `settings.RequestLogsWriteEnabled()` 问的是「v1 能否写」，
+	// 而 v1 已随 890 退役 ⇒ 该问法恒为 false ⇒ 护栏恒 skip
+	// （211 生产日志实证："skip stale-model expiry"）。
+	// 新判据直接问**要问的那个问题**：「会话族证据源近期有没有成功行」。
+	// 这既让护栏重新有判据（不再恒 skip），又保住了它的安全方向
+	// （证据缺失时不动）。
+	// ⚠ 判据本身是**实测事实**（一次只读计数查询），不是另一个源的开关 ——
+	// 「问 A 是否可写来推断 B 是否有数据」正是当初把判据问错的原因。
+	if mayExpire, blockedReason := staleExpiryMayRun(s.sessionFamilyHasRecentSuccess(ctx)); !mayExpire {
 		slog.Info("discovery: skip stale-model expiry",
 			"reason", blockedReason,
 			"would_expire", "model_offers(available=FALSE) + credential_model_bindings(opt-in)")
@@ -1176,12 +1260,11 @@ func (s *Service) expireStaleModels(ctx context.Context, seen []modelOffer) {
 
 	// BUG-2 fix: grace period in hours. Bindings with at least one
 	// successful request within this window are immune to expiry.
-	graceHours := 24
-	if v := os.Getenv("DISCOVERY_GRACE_HOURS"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
-			graceHours = n
-		}
-	}
+	//
+	// ★ 2026-10-21：改用 staleExpiryGraceHours()（与证据探针同一个实现点）——
+	// 探针问的窗口必须与守卫自己的 `ts >` 窗口一致，否则两者可能对
+	// 「哪些行算近期成功」给出不同答案（探针说有证据、守卫说没有）。
+	graceHours := s.staleExpiryGraceHours()
 
 	expired := 0
 	for credID, modelSet := range credModels {

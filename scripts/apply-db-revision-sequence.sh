@@ -385,21 +385,36 @@ files=(
   # 前导索引（canonical 视图窗口臂 + V1FreezeCutoffSQL 母表臂；842/846/858
   # 普通父表级联先例）。request_logs 腿引用 860 后的 `_` 前缀名。
   "$ROOT_DIR/sql/migrations/startup/862_partition_family_leading_ts_idx.sql"
-  # ── 2026-10-16：sql/migrations/domain/032（session-crosstalk 端点）──────
+  # ── 2026-10-21（R74）：sql/migrations/domain/032 从本通道**退役** ──────────
   #
-  # session_tenant_binding 表 + update_session_tenant_binding() 触发器函数，
-  # admin/handler.go:1328 的 /api/admin/session-crosstalk 读它，缺失即 42P01。
+  # 退役理由（生产实测，不是推断）：
+  #   · 032 建 `session_tenant_binding` + `update_session_tenant_binding()`
+  #     触发器函数；触发器挂在 **v1 `request_logs`** 上，是那张表**唯一**的
+  #     写入者。v1 族真删（迁移 890）后触发器随表消失 ⇒ 表永远不会再被写入
+  #     ⇒ 这张表就是 v1 族的**侧效应垃圾**。
+  #   · 它在生产 252 上**从来没建过**：部署台账
+  #     `gateway_db_revision_sequences` 里没有 032 的记录（同一张表里
+  #     860/862/864 也没有 —— 那批是 installer 跑的，不是本通道），
+  #     `to_regclass('public.session_tenant_binding')` = NULL
+  #     ⇒ `/api/admin/session-crosstalk` 长期 **HTTP 500（42P01）**。
+  #   · **更要紧的是：它现在必然失败** —— 032:80 的
+  #     `DROP TRIGGER IF EXISTS … ON request_logs` 会被本通道的 token 机制
+  #     改写成 `_request_logs`，而该表已被 890 DROP ⇒ 42P01 ⇒ 在
+  #     `set -euo pipefail` + `ON_ERROR_STOP=1` 下**整条迁移腿就此中断**
+  #     ⇒ 032 之后的每一条迁移都不会被投递。
   #
-  # 顺序约束：032:80 的 `DROP TRIGGER IF EXISTS … ON request_logs` 目标表在
-  # 860 之后叫 `_request_logs`。本通道既有的封闭 token 机制
-  # （prepare_runtime_sql / request_logs_sql，见文件头注释）按运行期代际自动
-  # 改写这六个精确 token，**不需要**为本文件另造机制；排在 860 之后即拿到
-  # request-logs-physical-v1 改写（legacy 库上则原样用 request_logs，两种
-  # 代际都正确）。
+  # ⇒ 因此**不能靠「把它跑通」来解决**：那张表一旦建成也是**永远为空**
+  #   （唯一写入者已随 v1 一起消失）⇒ 端点会静默返回 0 条串话
+  #   ⇒ 对一个安全控制来说，「静默失效」比「显式 500」更危险。
+  # ⇒ 正确形态 = **端点换源**：`/api/admin/session-crosstalk` 改为从会话族
+  #   `session_turns`（每行带 session_id + tenant_id）**派生**「同一 session
+  #   出现在多个 tenant 下」⇒ 零 DDL、零迁移，且真的在检测。
+  #   判据见 admin/admin_500_channel_gap_realdb_test.go 的
+  #   TestCrosstalkEndpointIsSourcedFromSessionFamily（静态，CI 可跑）。
   #
-  # 函数唯一性：update_session_tenant_binding() 在整个 sql/ 树下只由本文件
-  # CREATE OR REPLACE 一处定义，故不需要登记进 intentional_function_chains。
-  "$ROOT_DIR/sql/migrations/domain/032_session_tenant_binding.sql"
+  # ⚠ 文件本身保留在 sql/migrations/domain/032_session_tenant_binding.sql：
+  #   历史字节不可变（sha256 登记在 docs/db-changelog.md），且它是
+  #   「032 建过什么」的唯一凭证。**本通道不再投递它。**
   # 864（2026-10-15）：model_aliases 裸列 (raw_name, canonical_id) WHERE active
   # 部分索引 —— S3 波 3 alias 链（raw_name = lower(外列)）在全部生产读点
   # 无法用 lower(raw_name) 表达式索引与 uq 第二列，CMI rollup 68/h 被 30s
@@ -1545,6 +1560,25 @@ files=(
   "$ROOT_DIR/sql/migrations/startup/387_session_analysis_inference.sql"
   "$ROOT_DIR/sql/migrations/startup/427_task_type_centroids_model.sql"
   "$ROOT_DIR/sql/migrations/startup/893_fresh_install_partition_prereq.sql"
+  # 2026-10-21（R72 轮）：把 v_candidate_failure_logs_diagnosis **重新绑回活表**
+  # public.candidate_failure_logs。
+  #
+  # 机制：**视图绑的是关系 OID，不是名字** ⇒ 392 把老堆表改名成
+  # candidate_failure_logs_columnar_archive（保留旧数据）并新建同名空分区表时，
+  # **既有视图不会跟着换表** ⇒ 它仍绑在老表 OID 上，而 pg_get_viewdef 打印的是
+  # 那个 OID 的**当前名字** ⇒ 视图的 FROM 变成 archive 表 ⇒ **新形态的数据对它不可见**。
+  #
+  # 实测（2026-10-21，只读）：
+  #   · 211：视图读 archive ⇒ 0 行，而活表 91,935 行（2026-10-12~10-20）⇒ 恒空；
+  #   · 252：392 走「已分区则跳过」分支（从未改名）⇒ 视图读活表 ⇒ 187,907 行；
+  #   · 一次性库（基线 + 392）复现：392 之前读 LIVE，392 之后自动变 ARCHIVE。
+  # ⇒ **同一个视图在两个生产实例返回不同数据集**。
+  #
+  # 本条只做 CREATE OR REPLACE VIEW（视图体与仓内两处真相源逐字同形：
+  # sql/schema/01-schema.sql 与 sql/objects/views/v_candidate_failure_logs_diagnosis.sql），
+  # **不改表、不动数据、不删 archive 表**；archive 表实测三处皆 0 行 ⇒ 重绑不丢历史。
+  # 幂等：可重复应用；252 上是同体替换（no-op 语义）。
+  "$ROOT_DIR/sql/migrations/startup/894_rebind_candidate_failure_logs_diagnosis_view.sql"
 
   # 2026-10-07（844）：给 v_supplier_price_vs_baseline 补两个缓存基准价的投影。
   #
@@ -1825,7 +1859,22 @@ files=(
   # ⚠ 本文件按**两种物理名**都写（request_logs 与 _request_logs）：本通道的
   #    runtime adapter（:38-134）会把 `request_logs` 词法改写成 `_request_logs`，
   #    而**安装器不做这个改写**（逐字执行）⇒ 两种名字都试，三条通道都正确。
-  "$ROOT_DIR/sql/migrations/startup/890_drop_request_logs_v1_family.sql"
+  #
+  # ★★★ 2026-10-21（§143.53）：本条目**已移出自动重放列表**（整行注释掉）。
+  #   理由：890 自带**非空闸** ⇒ **天然不可自动重放**（有行就 RAISE）
+  #     ⇒ 躺在「每次部署都跑」的列表里 ⇒ ⇒ 自动通道每次部署都撞闸
+  #     ⇒ ⇒ 迁移腿立即中止（set -euo pipefail + ON_ERROR_STOP=1）
+  #     ⇒ ⇒ **部署中止，且它后面的 891/892 永远上不去**（890 在列表里倒数第二）。
+  #   实测（2026-10-21，生产只读）：211 v1 族真计数 35,506 / 35,506 行；
+  #     252 38,193 / 23,830 / 22,656 行 ⇒ 两实例的闸都会 RAISE。
+  #   ★ 闸本身是**对的**（删表 = 删历史，不可回滚 ⇒ 把决定交回人）；
+  #     **错的是它的位置** ⇒ ⇒ 退役必须是**显式的、属主授权的**步骤。
+  #   ★ 显式退役步骤：`scripts/retire-request-logs-v1-family.sh`
+  #       （--preflight 只读计数 / --defer 登记「不由自动通道执行」/
+  #         --execute 真正退役 / --undo-defer 撤销）
+  #     ⇒ ⚠ 若要用 --defer 让已存在的库跳过 890，**台账 marker 按 basename 派生**
+  #       ⇒ 远端执行时文件名必须保持 `890_drop_request_logs_v1_family.sql`。
+  #"$ROOT_DIR/sql/migrations/startup/890_drop_request_logs_v1_family.sql"
 
   # ── 891（2026-10-20）：会话族负成本部分索引 ────────────────────────────────
   #

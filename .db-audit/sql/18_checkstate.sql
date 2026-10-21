@@ -8,4 +8,4 @@ $P -c "SELECT n.nspname||'.'||c.relname||' | '||c.relkind::text FROM pg_class c 
 echo "===== columnar table count (unchanged?) ====="
 $P -c "SELECT 'columnar tables = '||count(*) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND c.relkind='c';"
 echo "===== idle-in-transaction sessions (rolled back cleanly?) ====="
-$P -c "SELECT state||' = '||count(*) FROM pg_stat_activity WHERE datname='llm_gateway' AND state LIKE '%idle in transaction%';"
+$P -c "SELECT state||' = '||count(*) FROM pg_stat_activity WHERE datname='llm_gateway' AND state LIKE '%idle in transaction%' GROUP BY state;"

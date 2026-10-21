@@ -1,0 +1,99 @@
+# monthly_partition_retention.tsv - 月度分区族「留存覆盖 x 可回收空间」登记册
+#
+# 产出轮次：§143.46（2026-10-21）。事实全部来自**只读**判定脚本
+#   scripts/audit/verify_monthly_partition_retention.sql 的实跑输出（两实例各跑一遍）。
+#   复现命令：
+#     252：bash ~/.mavis-tools/lgwp-prod.sh scripts/audit/verify_monthly_partition_retention.sql 300
+#     211：ssh 211 'docker exec -i acc-pg17 psql -U acc_super -d llm_gateway -f -' #            < scripts/audit/verify_monthly_partition_retention.sql
+#
+# 本表是**某个时点**的生产快照（2026-10-21 ~05:30 +08）=> 生产一改就要刷新。
+#
+# 机制事实（三类**独立**的留存机制，别混成一条）：
+#   路径 A（Go 侧）：bg/partition_manager.go 的 stateTableTTLSpecs() 登记 8 个族的 TTL
+#                    => SQL helper drop_old_state_partition_table(parent, days)
+#                    => **按天算**，但**只在每月 2 号那轮跑** => 实际留存 = TTL..TTL+30 天
+#   路径 B（SQL 侧）：迁移 841 的配置表 llm_gateway_partition_retention（每族 retain_months）
+#                    => llm_gateway_drop_expired_month_partitions()
+#                    => **按月算**；**配置表两实例都是 0 行 => 机制空转**
+#                    => 审计表 llm_gateway_partition_drop_log 也是 0 行 => 从未删过任何月度分区
+#   路径 C（各族的专门机制）：archive_*（整月搬进 *_archive_*）/ 专门的分区 DROP helper /
+#                    只剪 hot 表（HOT_TRIM => 月分区仍累积）
+#   => 一个族若三类路径都没覆盖 => **真正无界增长**（本表 verdict=UNBOUNDED）
+#
+# 过期口径（与迁移 841 逐字一致，**方向别搞反**）：
+#   841: cutoff := cur_month - ((retain_months - 1) || ' months')::interval
+#        过期 <=> 分区月 < cutoff <=> months_old >= retain_months
+#   写成 months_old < retain_months => 数字反向（保留越多回收越多）=> 本轮踩过。
+#   `timestamp - date` 得到的是**以天计**的 interval => EXTRACT(month) 恒 0
+#      => 「几个月前」全算成 0 => 在「算过期」方向上极危险 => 本轮也踩过。
+#
+# 列：
+#   instance            211 / 252 / both
+#   scope               MONTHLY_FAMILY | MECHANISM_STATE
+#   family              族名（父表名）
+#   n_month_parts       该族的月度分区个数（只认直接子分区且名形如 _YYYY_MM）
+#   total_bytes         族内全部分区合计（pg_total_relation_size 求和）
+#   reclaim_keep1       若路径 B 对该族配 retain_months=1 => 可回收字节
+#   reclaim_keep2       retain_months=2 => 可回收字节
+#   reclaim_keep3       retain_months=3 => 可回收字节
+#   policy_registered   路径 B：配置表里有没有该族（值无关判据）=> 两实例都是 no
+#   ttl_declared_days   路径 A：声明的 TTL 天数（-1 = 未声明；usage_facts 是按日族 => -1）
+#   mechanism           真实覆盖机制：NONE / STATE_TABLE_TTL / ARCHIVE / PARTITION_DROP /
+#                       HOT_TRIM / POLICY_TABLE（NONE = 穷举后仍无任何留存机制）
+#   verdict             必须等于 ClassifyMonthlyRetention 的输出（UNBOUNDED <=> mechanism=NONE）
+#   note                依据与风险
+#
+
+instance	scope	family	n_month_parts	total_bytes	reclaim_keep1	reclaim_keep2	reclaim_keep3	policy_registered	ttl_declared_days	mechanism	verdict	note
+252	MONTHLY_FAMILY	session_bodies	5	4870471680	18489344	131072	65536	no	-1	NONE	UNBOUNDED	PG 路径无留存：retention_session_bodies_days 是 lite 模式配置（文件侧 BodiesTrimmer） => **月度分区只会被清空、不会被丢弃**（841 迁移头注释描述的机制）
+252	MONTHLY_FAMILY	session_turns	5	4497375232	2868215808	442368	221184	no	-1	NONE	UNBOUNDED	PG 路径无留存：仅 bg/lite_retention_worker.go（lite/SQLite）与 cmd/tools/validate_sessions_v2/repair.go（手工工具）会 DELETE => **月度分区只会被清空、不会被丢弃**（841 迁移头注释描述的机制）
+252	MONTHLY_FAMILY	usage_ledger	4	1087389696	777576448	40960	0	no	-1	NONE	UNBOUNDED	PG 路径无留存：无 archive_* 函数、不在 stateTableTTLSpecs；只有 promote_usage_ledger_hot_to_partition（搬运） => **月度分区只会被清空、不会被丢弃**（841 迁移头注释描述的机制）
+252	MONTHLY_FAMILY	_request_logs	4	1079721984	15286272	385024	0	no	-1	ARCHIVE	COVERED	archive_request_logs(archive_month)：整月搬进 request_logs_archive_YYYY_MM
+252	MONTHLY_FAMILY	session_turn_details	2	780427264	632389632	0	0	no	-1	NONE	UNBOUNDED	PG 路径无留存：仅 lite worker 与 repair 工具 => **月度分区只会被清空、不会被丢弃**（841 迁移头注释描述的机制）
+252	MONTHLY_FAMILY	_request_logs_bodies	2	606961664	0	0	0	no	-1	PARTITION_DROP	COVERED	drop_old_request_logs_bodies_partitions(cutoff_date)
+252	MONTHLY_FAMILY	candidate_failure_logs	3	345571328	154918912	0	0	no	7	STATE_TABLE_TTL	COVERED	路径 A：drop_old_state_partition_table(parent,7)
+252	MONTHLY_FAMILY	request_wal	4	332636160	201908224	40960	0	no	-1	ARCHIVE	COVERED	archive_request_wal(archive_month)：整月搬进 request_wal_archive_YYYY_MM
+252	MONTHLY_FAMILY	sessions	5	270622720	95100928	147456	73728	no	-1	NONE	UNBOUNDED	PG 路径无留存：仅 lite worker 与 repair 工具 => **月度分区只会被清空、不会被丢弃**（841 迁移头注释描述的机制）
+252	MONTHLY_FAMILY	supplier_errors	4	263962624	119177216	49152	0	no	90	STATE_TABLE_TTL	COVERED	路径 A：drop_old_state_partition_table(parent,90)
+252	MONTHLY_FAMILY	session_censors	3	224452608	29728768	0	0	no	-1	NONE	UNBOUNDED	PG 路径无留存：只有 promote_session_censors_hot_to_partition（搬运，不是留存） => **月度分区只会被清空、不会被丢弃**（841 迁移头注释描述的机制）
+252	MONTHLY_FAMILY	routing_decision_log	3	203735040	143810560	0	0	no	30	STATE_TABLE_TTL	COVERED	路径 A：drop_old_state_partition_table(parent,30)
+252	MONTHLY_FAMILY	session_memora	3	199221248	55099392	0	0	no	-1	NONE	UNBOUNDED	PG 路径无留存：只有 promote_session_memora_hot_to_partition（搬运，不是留存） => **月度分区只会被清空、不会被丢弃**（841 迁移头注释描述的机制）
+252	MONTHLY_FAMILY	credential_model_index	3	128884736	88367104	0	0	no	7	STATE_TABLE_TTL	COVERED	路径 A：drop_old_state_partition_table(parent,7) + cleanup_old_credential_model_index()
+252	MONTHLY_FAMILY	auto_route_selections	4	13983744	12779520	49152	0	no	-1	NONE	UNBOUNDED	PG 路径无留存：只有 promote_auto_route_selections_hot_to_partition（搬运，不是留存） => **月度分区只会被清空、不会被丢弃**（841 迁移头注释描述的机制）
+252	MONTHLY_FAMILY	credit_ledger	4	262144	188416	155648	0	no	-1	NONE	UNBOUNDED	PG 路径无留存：只有 promote_credit_ledger_hot_to_partition（搬运） => **月度分区只会被清空、不会被丢弃**（841 迁移头注释描述的机制）
+252	MONTHLY_FAMILY	tool_usage_stats	4	204800	98304	49152	0	no	-1	NONE	UNBOUNDED	PG 路径无留存：只有 promote_tool_usage_stats_hot_to_partition（搬运） => **月度分区只会被清空、不会被丢弃**（841 迁移头注释描述的机制）
+252	MONTHLY_FAMILY	session_tools	3	172032	57344	0	0	no	-1	NONE	UNBOUNDED	PG 路径无留存：只有 promote_session_tools_hot_to_partition（搬运，不是留存） => **月度分区只会被清空、不会被丢弃**（841 迁移头注释描述的机制）
+252	MONTHLY_FAMILY	session_module_executions	5	122880	73728	49152	24576	no	-1	HOT_TRIM	COVERED	archive_session_module_executions(retention_days)：DELETE hot + INSERT 分区 -> 月分区仍累积
+252	MONTHLY_FAMILY	handoff_logs	3	122880	40960	0	0	no	30	STATE_TABLE_TTL	COVERED	路径 A：drop_old_state_partition_table(parent,30)
+252	MONTHLY_FAMILY	cache_metrics	4	81920	32768	16384	0	no	90	STATE_TABLE_TTL	COVERED	路径 A：drop_old_state_partition_table(parent,90)
+252	MONTHLY_FAMILY	dashboard_access_events	5	81920	49152	32768	16384	no	-1	HOT_TRIM	COVERED	archive_dashboard_events(retention_days)：DELETE hot + INSERT 分区 -> 月分区仍累积
+252	MONTHLY_FAMILY	credential_model_index_archive	1	32768	32768	32768	32768	no	-1	ARCHIVE	COVERED	archive 路径的目的地表（源月分区被搬空）；archive 表自身无清理路径 => 缓慢累积
+252	MONTHLY_FAMILY	routing_decision_log_archive	3	24576	16384	8192	0	no	-1	ARCHIVE	COVERED	archive 路径的目的地表（源月分区被搬空）；archive 表自身无清理路径 => 缓慢累积
+252	MONTHLY_FAMILY	model_probe_runs	2	16384	8192	0	0	no	14	STATE_TABLE_TTL	COVERED	路径 A：drop_old_state_partition_table(parent,14)
+211	MONTHLY_FAMILY	session_bodies	4	1352368128	163840	163840	81920	no	-1	NONE	UNBOUNDED	PG 路径无留存：retention_session_bodies_days 是 lite 模式配置（文件侧 BodiesTrimmer） => **月度分区只会被清空、不会被丢弃**（841 迁移头注释描述的机制）
+211	MONTHLY_FAMILY	session_turns	4	390078464	409600	409600	204800	no	-1	NONE	UNBOUNDED	PG 路径无留存：仅 bg/lite_retention_worker.go（lite/SQLite）与 cmd/tools/validate_sessions_v2/repair.go（手工工具）会 DELETE => **月度分区只会被清空、不会被丢弃**（841 迁移头注释描述的机制）
+211	MONTHLY_FAMILY	usage_ledger	4	121454592	98304	98304	57344	no	-1	NONE	UNBOUNDED	PG 路径无留存：无 archive_* 函数、不在 stateTableTTLSpecs；只有 promote_usage_ledger_hot_to_partition（搬运） => **月度分区只会被清空、不会被丢弃**（841 迁移头注释描述的机制）
+211	MONTHLY_FAMILY	_request_logs	4	88588288	802816	802816	409600	no	-1	ARCHIVE	COVERED	archive_request_logs(archive_month)：整月搬进 request_logs_archive_YYYY_MM
+211	MONTHLY_FAMILY	supplier_errors	3	86704128	49152	0	0	no	90	STATE_TABLE_TTL	COVERED	路径 A：drop_old_state_partition_table(parent,90)
+211	MONTHLY_FAMILY	candidate_failure_logs	2	79159296	0	0	0	no	7	STATE_TABLE_TTL	COVERED	路径 A：drop_old_state_partition_table(parent,7)
+211	MONTHLY_FAMILY	session_censors	2	50167808	0	0	0	no	-1	NONE	UNBOUNDED	PG 路径无留存：只有 promote_session_censors_hot_to_partition（搬运，不是留存） => **月度分区只会被清空、不会被丢弃**（841 迁移头注释描述的机制）
+211	MONTHLY_FAMILY	sessions	4	48398336	163840	163840	81920	no	-1	NONE	UNBOUNDED	PG 路径无留存：仅 lite worker 与 repair 工具 => **月度分区只会被清空、不会被丢弃**（841 迁移头注释描述的机制）
+211	MONTHLY_FAMILY	routing_decision_log	4	46882816	114688	114688	57344	no	30	STATE_TABLE_TTL	COVERED	路径 A：drop_old_state_partition_table(parent,30)
+211	MONTHLY_FAMILY	session_memora	2	46129152	0	0	0	no	-1	NONE	UNBOUNDED	PG 路径无留存：只有 promote_session_memora_hot_to_partition（搬运，不是留存） => **月度分区只会被清空、不会被丢弃**（841 迁移头注释描述的机制）
+211	MONTHLY_FAMILY	session_turn_details	2	42475520	0	0	0	no	-1	NONE	UNBOUNDED	PG 路径无留存：仅 lite worker 与 repair 工具 => **月度分区只会被清空、不会被丢弃**（841 迁移头注释描述的机制）
+211	MONTHLY_FAMILY	request_wal	4	36978688	98304	98304	57344	no	-1	ARCHIVE	COVERED	archive_request_wal(archive_month)：整月搬进 request_wal_archive_YYYY_MM
+211	MONTHLY_FAMILY	_request_logs_bodies	2	25108480	0	0	0	no	-1	PARTITION_DROP	COVERED	drop_old_request_logs_bodies_partitions(cutoff_date)
+211	MONTHLY_FAMILY	credential_model_index	4	13590528	49152	49152	24576	no	7	STATE_TABLE_TTL	COVERED	路径 A：drop_old_state_partition_table(parent,7) + cleanup_old_credential_model_index()
+211	MONTHLY_FAMILY	auto_route_selections	4	278528	114688	57344	0	no	-1	NONE	UNBOUNDED	PG 路径无留存：只有 promote_auto_route_selections_hot_to_partition（搬运，不是留存） => **月度分区只会被清空、不会被丢弃**（841 迁移头注释描述的机制）
+211	MONTHLY_FAMILY	tool_usage_stats	4	229376	114688	114688	57344	no	-1	NONE	UNBOUNDED	PG 路径无留存：只有 promote_tool_usage_stats_hot_to_partition（搬运） => **月度分区只会被清空、不会被丢弃**（841 迁移头注释描述的机制）
+211	MONTHLY_FAMILY	credit_ledger	4	163840	81920	81920	40960	no	-1	NONE	UNBOUNDED	PG 路径无留存：只有 promote_credit_ledger_hot_to_partition（搬运） => **月度分区只会被清空、不会被丢弃**（841 迁移头注释描述的机制）
+211	MONTHLY_FAMILY	session_module_executions	4	131072	65536	65536	32768	no	-1	HOT_TRIM	COVERED	archive_session_module_executions(retention_days)：DELETE hot + INSERT 分区 -> 月分区仍累积
+211	MONTHLY_FAMILY	session_tools	2	114688	0	0	0	no	-1	NONE	UNBOUNDED	PG 路径无留存：只有 promote_session_tools_hot_to_partition（搬运，不是留存） => **月度分区只会被清空、不会被丢弃**（841 迁移头注释描述的机制）
+211	MONTHLY_FAMILY	cache_metrics	4	114688	65536	32768	0	no	90	STATE_TABLE_TTL	COVERED	路径 A：drop_old_state_partition_table(parent,90)
+211	MONTHLY_FAMILY	dashboard_access_events	4	98304	49152	49152	24576	no	-1	HOT_TRIM	COVERED	archive_dashboard_events(retention_days)：DELETE hot + INSERT 分区 -> 月分区仍累积
+211	MONTHLY_FAMILY	handoff_logs	2	81920	0	0	0	no	30	STATE_TABLE_TTL	COVERED	路径 A：drop_old_state_partition_table(parent,30)
+211	MONTHLY_FAMILY	model_probe_runs	1	8192	8192	8192	8192	no	14	STATE_TABLE_TTL	COVERED	路径 A：drop_old_state_partition_table(parent,14)
+211	MONTHLY_FAMILY	routing_decision_log_archive	1	8192	8192	8192	0	no	-1	ARCHIVE	COVERED	archive 路径的目的地表（源月分区被搬空）；archive 表自身无清理路径 => 缓慢累积
+both	MECHANISM_STATE	llm_gateway_partition_retention	-	0	0	0	0	no	-1	POLICY_TABLE	UNBOUNDED	路径 B 的配置表：**两实例都是 0 行** => 841 的 DROP 机制空转；这是「机制建好了但策略没填」的典型形态
+both	MECHANISM_STATE	llm_gateway_partition_drop_log	-	0	0	0	0	no	-1	PARTITION_DROP	UNBOUNDED	路径 B 的审计表：**两实例都是 0 行** => 从未删过任何月度分区（不是「删了没记」）
+252	MECHANISM_STATE	monthly_partition_sweep	-	88	5213446144	1630208	434176	no	-1	POLICY_TABLE	UNBOUNDED	154 生产日志：「partition_manager: monthly partition retention sweep」dropped=0 partitions=[] => sweep **在跑**，但配置表空 => 每次都是空转；上列三个数字分别是 retain_months=1/2/3 时的可回收字节
