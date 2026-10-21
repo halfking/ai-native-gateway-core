@@ -44601,3 +44601,237 @@ fi
 3. ⚠ **X-Real-IP 补丁的形态漂移**：引擎按固定形态给 nginx 配置打补丁 ⇒ 配置块一变就「第一次没打上」
    ⇒ ⇒ 该告警**当前不影响结果**（重试成功）⇒ ⇒ 但它是一条**未来会咬人**的脆弱点 ⇒ 登记。
 4. ⚠ **本次部署的可测收益 ≈ 0**（见上）⇒ ⇒ **不要把「部署成功」读成「优化生效」**。
+
+### §143.55 E1 读侧落地：`final_full` 快照行读得到（**对生产的写入 = 0**）
+
+#### §143.55.0 本节结论（先给结论）
+
+1. ★★★★ **坏点坐实**：`cmd/gateway/main_v3_wiring.go` 的 `lastOutboundSessionSQL`
+   在 **E1 门开着时恒返 0 行**（**两个互相独立的原因**，见 §143.55.1）
+   ⇒ ⇒ 压缩层 **L3 冷启动**（`domains/hooks/compression/session_cache.go:638` 的 `loadFromDB`）
+   拿不到「最后完整 outbound」⇒ ⇒ 冷启动退化成「无历史」。
+2. ★★★★ **这不是新发现**：仓内**早有登记**（`AGENTS.md` 的「订正横幅三十四」那一段）：
+   「★★ `cmd/gateway/main_v3_wiring.go:100-105` 的 `lastOutboundSessionSQL`
+   （按 `request_id` 关联 + `sb.outbound_body IS NOT NULL`）会落空
+   ⇒ ⇒ 需把关联形态改成『按 session 取 final_full 行』」
+   ⇒ ⇒ **本节是把它落地**（写侧 §143.52 早已 90% 实现，缺的是读侧）。
+3. ★★★★ **★ 形状门原来正在【钉住这个 bug】**：
+   `cmd/gateway/s3_wave2_waterfall_sources_test.go` 的原三条断言
+   （全局 `session_id = $1` 计数 == 2 / 必须有 `ON sb.request_id = rl.request_id` /
+   必须有 `sb.outbound_body IS NOT NULL`）**恰好要求这种形态继续存在**
+   ⇒ ⇒ 门把 bug 守住了 ⇒ ⇒ **已重写为按块断言**（§143.55.3）。
+4. ★★★★ **新增真库行为门**（`cmd/gateway/last_outbound_final_full_realdb_test.go`）：
+   **5 条判据**，跑在**新装库形态**的真库上（读的是**生产常量本身**）⇒ 全绿。
+5. ★★★ **变异 M1~M7：7/7 全红**（形状门 7/7；真库门 5/7，M6/M7 是防御性过滤 ⇒ 只有形状门抓）。
+6. ⚠ **本轮对生产的写入 = 0**（未部署、开关默认 false）⇒ ⇒
+   **门关时的行为逐行不变**（真库实测）；**门开时的行为是本节新增的【能力】，不是本轮生效的变更**。
+7. 🚨 **仍未拍板**：E1 门要不要开（**中间轮 outbound 不再保留** ⇒ 取证语义取舍）、
+   E1 要不要部署到 211、252 的去留（§143.55.7）。
+
+#### §143.55.1 坏点：两个**互相独立**的原因（缺一不可）
+
+E1 的**写侧**形态（§143.52 已落地 90%）：
+
+| 行 | 形态 | 出处 |
+|---|---|---|
+| 逐轮行 | `outbound_body` = **SQL NULL** | `domains/session/v2/session_writer_v2.go:717-719`（`bodiesRec.OutboundBody = nil`）⇒ `domains/session/v2/bodies_writer.go:342`（`jsonTextOrNull(nil)` ⇒ NULL） |
+| 快照行 | `request_id = 'final_full:<session>'`、`turn_no = 0`、`kind = 'final_full'` | `domains/session/v2/bodies_writer.go:361-386`（`WriteFinalFullInTx`） |
+
+原式（§143.55 之前）：
+
+```sql
+SELECT sb.outbound_body, rl.outbound_msg_count, rl.outbound_token_est,
+       rl.outbound_msg_hashes, rl.compression_meta
+FROM <turns 源> rl
+JOIN <bodies 源> sb
+  ON sb.request_id = rl.request_id
+WHERE rl.tenant_id = $2 AND sb.outbound_body IS NOT NULL
+ORDER BY rl.ts DESC
+LIMIT 1
+```
+
+⇒ **门一开，两个条件同时把路堵死**：
+
+| # | 原因 | 机制 |
+|---|---|---|
+| ① | **JOIN 键不匹配** | 快照行的 `request_id` 是 `'final_full:<session>'`，**与任何一轮的 `request_id` 都不相等** ⇒ 快照行永远匹配不上 turns 侧 ⇒ 它根本进不了结果集 |
+| ② | **过滤把逐轮行全滤掉** | 门开时逐轮行的 `outbound_body` 是 **SQL NULL** ⇒ `sb.outbound_body IS NOT NULL` 为假 ⇒ 逐轮行也全部出局 |
+
+⇒ ⇒ **两个原因任一存在，原式就恒 0 行** ⇒ ⇒ 这解释了为什么「只修 JOIN 键」不够，
+⇒ ⇒ 也解释了为什么**形状门钉不住它**（原三条断言恰恰在要求「只按 request_id 关联 + 逐轮必须有正文」）。
+
+⚠ **一条容易被忽略的语义陷阱**：会话族的「没有正文」有**两种**表达
+（`db/request_logs_view_schema.go` 的 `SessionBodiesHasOutboundPredicate` 注释里有实测）：
+**逐轮历史行**用 **jsonb `null`**（⇒ `IS NOT NULL` **恒真**），
+而 **E1 门开时新写的逐轮行**用 **SQL NULL**（⇒ `IS NOT NULL` **为假**）
+⇒ ⇒ 同一条 `IS NOT NULL` 在**两种形态里含义相反** ⇒ ⇒ 这是 §143.55.3 那条通用式的根因。
+
+#### §143.55.2 修法：三条腿 + COALESCE 取优先级
+
+新式（`cmd/gateway/main_v3_wiring.go` 的 `lastOutboundSessionSQL`）：
+
+```sql
+SELECT COALESCE(ff.outbound_body, sb.outbound_body),
+       rl.outbound_msg_count, rl.outbound_token_est,
+       rl.outbound_msg_hashes, rl.compression_meta
+FROM <turns 源> rl
+LEFT JOIN <bodies 源> sb
+  ON sb.request_id = rl.request_id
+LEFT JOIN LATERAL (
+  SELECT f.outbound_body
+  FROM public.session_bodies_unified f
+  WHERE f.tenant_id = $2 AND f.session_id = $1
+    AND f.kind = 'final_full'
+    AND f.outbound_body IS NOT NULL
+    AND f.outbound_body <> 'null'::jsonb
+  ORDER BY f.ts DESC
+  LIMIT 1
+) ff ON TRUE
+WHERE rl.tenant_id = $2
+  AND (sb.outbound_body IS NOT NULL OR ff.outbound_body IS NOT NULL)
+ORDER BY rl.ts DESC
+LIMIT 1
+```
+
+★ **四个设计决定，各自都有「不那么写会怎样」**：
+
+| 决定 | 为什么不那么写 |
+|---|---|
+| **快照腿读 `public.session_bodies_unified`**（而不是给 `db.SessionFamilyBodiesSourceSQL()` 扩列） | 那个 helper 的**列集合是合同**（§9.231）：它**刻意不投影 ts**，且投影的是 `request_delta AS request_body` 这类 v1 同形别名。要在它上面按 `(tenant_id, session_id, kind)` 定位快照行，就得把 `session_id`/`kind`/`ts` 加进它的投影 ⇒ ⇒ **改的是合同本身**（波及 admin 的 14 个消费点）⇒ ⇒ 快照腿要的正是这三列 ⇒ ⇒ 直接读既有视图（708 起带 `kind`），与 `domains/session/v2/turn_reader.go` / `bodies_writer.go` 的既有读法**同一口径** |
+| **用 `LEFT JOIN LATERAL`（而不是标量子查询）** | 标量子查询在 SELECT 与 WHERE 里各写一遍 ⇒ **同一子查询被算两次**；LATERAL 只算一次，`LIMIT 1` 保证**不放大行**，且 `ff.outbound_body` 可同时进 SELECT（COALESCE）与 WHERE（「有正文」过滤）⇒ 不用重复求值 |
+| **bodies 那一腿用 `LEFT JOIN`** | 内连接要求「该轮**必须有** bodies 行」⇒ 而 bodies 行会**先于** turns 元数据被保留策略清掉 ⇒ ⇒ 内连接会让快照腿**永远没机会答**（真库门的判据 ⑤ 专测这条）⇒ ⇒ 而 `LEFT JOIN` + `WHERE sb.outbound_body IS NOT NULL` 与原来的「内连接 + 同一条 WHERE」**逐行等价**（无匹配的右行被 WHERE 滤掉 ⇒ 等价于内连接） |
+| **WHERE 保留 `sb.outbound_body IS NOT NULL` 这一条** | 删掉 ⇒ LEFT JOIN 会把「本轮没有正文」的 turns 行也放进来 ⇒ **门关时结果集被放大** ⇒ 保留 ⇒ 门关时语义不变 |
+
+★ **优先级口径**：`final_full` 优先、逐轮兜底 ⇒ 与 `domains/session/v2/turn_reader.go` 的
+`LoadLatestOutbound`（方案 D2「差集提取改读 final_full；未命中回退旧 outbound_body」）**完全一致**
+⇒ ⇒ 两处读端不会给出互相矛盾的答案。
+
+★ **「门关时语义不变」的边界（诚实声明，三条）**：
+
+1. **门关**（库里没有 final_full 行）⇒ 快照腿恒 NULL ⇒ COALESCE 恒取逐轮正文 ⇒ 返回行集与原式**逐行相同**
+   （真库门判据 ② 实测：正文 / `outbound_msg_hashes` / `outbound_msg_count` 逐列相同）。
+2. **门开**（有 final_full 行）⇒ 返回**快照**（更新的完整 outbound）⇒ 这正是 E1 的目的（**本节新增的能力**）。
+3. **门曾经开过又关掉**（库里还留着 final_full 行）⇒ 本式**仍优先读快照** ⇒ 与原式**不同**（原式只读逐轮）
+   ⇒ ⇒ 这是**有意的**（快照比逐轮新，且它才是「最后完整 outbound」），
+   ⇒ ⇒ 但它与第 1 条的「不变」**不是同一句话**，不要混着引用。
+
+#### §143.55.3 ★★★★ 形状门原来在钉住这个 bug（订正）
+
+**原断言**（`cmd/gateway/s3_wave2_waterfall_sources_test.go`）：
+
+```go
+if got := strings.Count(q, "session_id = $1"); got != 2 { ... }   // ① 全局计数
+if !strings.Contains(q, "ON sb.request_id = rl.request_id") { ... } // ② JOIN 键
+if !strings.Contains(q, "sb.outbound_body IS NOT NULL") { ... }   // ③ 逐轮必须有正文
+```
+
+⇒ ★ **① + ② + ③ 合起来 = 「逐轮正文只能按 `request_id` 关联、且逐轮必须有正文」**
+⇒ ⇒ 而这条合同**只对逐轮正文成立** ⇒ ⇒ 对快照腿（final_full）它**恰恰是错的**
+⇒ ⇒ ⇒ **原门要求 bug 形态继续存在** ⇒ ⇒ ⇒ **门把 bug 守住了**。
+
+⇒ ⇒ ★★★★ **通用式（本节最值钱的一条）**：
+
+> **判据要问「对的是哪个形态」，不是问「字符串在不在」。**
+> ★ 同一个子串（`sb.outbound_body IS NOT NULL`）在**两种形态**里含义**相反**：
+> 逐轮正文它是「这轮有正文」，快照正文它是「这轮没有正文、快照才有」。
+> ⇒ ⇒ **门红了先读门在守什么**（本轮是反过来的读法：门是绿的，但它守的东西是 bug）。
+
+**新判据：按【块】抽取再断言**（每一条都对应一种「貌似合理的错误形态」）：
+
+| # | 判据 | 它能挡住什么 |
+|---|---|---|
+| ① | 两条腿必须是**真 helper 的文本**（`db.SessionFamilyTurnsForSessionSQL()` / `db.SessionFamilyBodiesSourceSQL()`） | 抄一份进 SQL ⇒ 多一个事实源（helper 改了、SQL 没改 ⇒ 两边对不上而门全绿） |
+| ② | `session_id = $1` 的计数在 **turns 块内** == 2（**不是全局**） | 全局计数会被快照腿的 `$1` 污染（全局是 3）；而「3」这个数本身不说明任何事 |
+| ③ | bodies JOIN 块必须以 **`LEFT JOIN ` 开头**（`HasPrefix`） | ⚠ **不能**用 `Contains("JOIN …")` ⇒ 那会把 `LEFT JOIN` 也算进去 ⇒ **恒绿**；内连接 ⇒ 快照腿永远没机会答 |
+| ④ | JOIN 块里**不得**出现 `sb.ts` / `sb.session_id` | §9.231 合同：bodies 源**刻意不投影 ts**（按 ts 等值 JOIN 是解析期 42703 / 静默改行）；扩列会波及 14 个消费点 |
+| ⑤ | 快照腿块必须含 **7 根 needle**（源 / `$2` / `$1` / `kind='final_full'` / 有正文 / 非 jsonb-null / `ORDER BY ts DESC LIMIT 1`） | 找错行、少过滤、返回多行 |
+| ⑥ | 投影必须是 `COALESCE(ff.outbound_body, sb.outbound_body)`（**顺序 ff 在前**） | ★ 反过来（先逐轮后快照）⇒ 两条腿都在时**不报错**、但取到旧值 ⇒ **只能靠顺序断言挡住** |
+| ⑦ | WHERE 块必须是 `sb… IS NOT NULL **OR** ff… IS NOT NULL` | 少了它 ⇒ LEFT JOIN 放大行集 |
+
+#### §143.55.4 真库行为门（5 条判据，跑在新装库形态上）
+
+位置：`cmd/gateway/last_outbound_final_full_realdb_test.go`（**package main** ⇒ 直接引用
+`lastOutboundSessionSQL` **生产常量本身** ⇒ 不存在「副本漂移」）。
+
+| # | 判据 | 形态 |
+|---|---|---|
+| ① | **门开**：旧式返 **0 行**（bug 现场）、新式返**快照正文** | 逐轮 `outbound_body` = SQL NULL + 有快照行 |
+| ② | **门关**：新式与旧式**逐列相同** | 逐轮有正文、无快照行 |
+| ③ | **快照腿是它答的**：删掉快照行 ⇒ 新式返 0 行 | 证明 ① 的命中来自快照腿 |
+| ④ | **优先级**：逐轮有正文 **且** 有快照行 ⇒ 必须返**快照** | 门开过又关掉的库形态 |
+| ⑤ | **没有逐轮 bodies 行** ⇒ 仍须返**快照** | ★ 这是 `LEFT JOIN` 存在的理由（bodies 行会先于 turns 元数据被清掉） |
+
+★★ **为什么这道门以前不存在（可复现的读数）**：
+**本机 40+ 个本地库，没有一个能跑这条 SQL** ——
+逐库普查 `session_turns_hot` 是否带 `outbound_msg_count` / `outbound_token_est` / `outbound_msg_hashes`
+⇒ 命中 **0 个** ⇒ ⇒ 连**解析期**都过不去 ⇒ ⇒ 必须新建库。
+⇒ ⇒ 造库配方（**仓内标准件，22.9 s**）：
+
+```bash
+docker exec -i llm-gateway-pg psql -U llm_gateway -d postgres -c "CREATE DATABASE itgate_14355;"
+cd installer && TEST_INSTALLER_FRESH_DB_URL='postgres://…/itgate_14355?sslmode=disable' \
+  go test -tags integration ./cmd/llm-gw-installer/ -run TestStartupChainGapsMatchReviewedSet
+# ⇒ startup chain: 0 of 298 registered migrations fail, 0 expected
+```
+
+⇒ ⇒ 跑完的库形态（实测）：`session_turns_hot` **108** 列 / `session_turn_details_hot` **61** 列 /
+`session_bodies_hot` **13** 列 / `session_bodies_unified` 带 `kind` /
+`session_turns` 与 `session_bodies` 各 **5** 个分区 / **2** 条 `final_full` 部分索引。
+
+★ **造数据的一条冷知识**：三列元数据
+（`outbound_msg_count` / `outbound_token_est` / `outbound_msg_hashes`）在 **details 侧**
+（`db/request_logs_view_schema.go` 的 `detailsProjectionColumns`），
+`compression_meta` 才在 **turns 侧**
+⇒ ⇒ 只写 turns ⇒ 四个元数据列全 NULL ⇒ 门会以「假红」面貌失败。
+
+★ **无副作用**：所有 INSERT/DELETE 在**同一个事务**里，结尾无条件 `ROLLBACK`
+⇒ ⇒ 误把 `TEST_DATABASE_URL` 指到生产的代价 = 一次事务往返（**不是**生产写入）。
+⚠ 仍建议指向一次性库：生产有 RLS / 租户守卫，探针 INSERT 可能被拒 ⇒ 那会是**假红**。
+
+#### §143.55.5 变异 M1~M7（证明两道门有牙）
+
+★ 逐个变异 ⇒ 逐个还原 ⇒ **还原校验读的是被改的那个路径**（R65 教训：曾经把还原校验读成
+仓库根目录 ⇒ 源文件从未还原 ⇒ 读数作废）；**编译红 ≠ 断言红**（先验 `gofmt` 干净）。
+
+| # | 变异 | 形状门 | 真库门 | 读数要点 |
+|---|---|---|---|---|
+| M1 | 整式退回 §143.55 之前（内连接 + 无快照腿 + 无 COALESCE） | ★ 红 | ★ 红 | 真库门红在「门开形态下返了 0 行（期望 1）」= **缺陷本身** |
+| M2 | bodies JOIN 由 `LEFT` 改回内连接（**只改一个词**） | ★ 红 | ★ 红 | ⚠ 第一轮真库门**没红**（逐轮 bodies 行仍在 ⇒ 内连接照样匹配上）⇒ ⇒ **补了判据 ⑤（没有逐轮 bodies 行）之后才红** ⇒ ★★ **门的判据不覆盖真实形态时，它会「看起来有牙」** |
+| M3 | COALESCE 顺序颠倒 | ★ 红 | ★ 红 | 真库门红在「逐轮与快照同时存在时没有优先取快照」 |
+| M4 | WHERE 的「有正文」过滤退回逐轮单腿 | ★ 红 | ★ 红 | 真库门红在「门开形态下返了 0 行」 |
+| M5 | 快照腿 `kind` 字面量改成 `turn_delta` | ★ 红 | ★ 红 | 真库门红在「门开形态下返了 0 行」 |
+| M6 | 快照腿去掉「必须有正文」过滤 | ★ 红 | 绿 | ★ **防御性过滤**：真库形态下不发作 ⇒ 只有形状门抓 |
+| M7 | 快照腿去掉 jsonb-null 排除 | ★ 红 | 绿 | ★ 同上（防御性） |
+
+⇒ ⇒ 汇总：**形状门 7/7 红；真库门 5/7 红（M6/M7 是防御性过滤，本就不该在真库形态上发作）**
+⇒ ⇒ **七个变异的最终 md5 与基线逐字一致**（还原校验按原路径读数）。
+
+#### §143.55.6 本节诚实边界
+
+1. ⚠ **对生产的写入 = 0**：未部署 211/252、未改任何生产开关、未改任何迁移。
+2. ⚠ **门关时的行为不变**（真库实测：正文 / `outbound_msg_hashes` / `outbound_msg_count` 逐列相同）；
+   **门开时的行为是本节新增的【能力】** ⇒ ⇒ **本轮不产生任何现网行为变化**。
+3. ⚠ **真库门跑的是「新装库形态」（无数据）** ⇒ ⇒ **这条 SQL 尚未在 211/252 的真实数据上跑过**
+   ⇒ ⇒ 「解析得过 + 行为对」两件事都只在本地新装库上验证过。
+4. ⚠ **取证语义未拍板**：门开 ⇒ **中间轮的 outbound 不再保留**（写侧既有语义，`session_writer_v2.go:717-719`）
+   ⇒ ⇒ `domains/sessionforensics`（取证/回放）会看不到中间轮 outbound ⇒ ⇒ **属主决策，本轮未开**。
+5. ⚠ **门开 ⇒ 每轮一次额外 upsert**（`WriteFinalFullInTx`）⇒ ⇒ 写放大与
+   §143.52 的 E2（写侧 WAL）尚未立项 ⇒ ⇒ **收益尚未实测**。
+6. ⚠ **E1 的存储收益全在 252**（种子签名 25.29% + 35.11%，§143.53.5 实测），
+   而 **252 的服务仍 `inactive + disabled`**（§143.53.4 实测）⇒ ⇒ **E1 的收益要等 252 重新上线**。
+
+#### §143.55.7 待属主拍板（本节不推进，等决定）
+
+| # | 事项 | 备注 |
+|---|---|---|
+| ① | **E1 门要不要在 211（或 252）打开** | ★ 前置 = 「取证语义」：中间轮 outbound 不再保留 ⇒ `domains/sessionforensics` 的取舍；⚠ 252 是收益所在，但服务仍停用 |
+| ② | **E1 读侧要不要先部署到 211** | ⚠ 门关 ⇒ **行为无变化** ⇒ 部署本身收益 ≈ 0（与 §143.54 同一判断）；它的价值是「把能力对齐到代码」 |
+| ③ | **E2（写侧 WAL）是否立项** | final_full 快照不再每轮整体重写 ⇒ 收益未实测 |
+| ④ | **252 的去留** | v1 族 ≈1.91 GB 仍在 + 服务停用 + E1 收益全在它身上 |
+| ⑤ | **841 `retain_months`** | 252 回收 4,971.9 MB / 211 2.34 MB；含「每次 DROP 吃掉保留窗口头 8 小时」的隐藏代价 |
+
+> ★ **§143.55 的方法论落点**：
+> ★ **「写方已实现」≠「可以开」** ⇒ ⇒ 落地成本几乎全在**读侧**，而读侧的形态
+> ⇒ ⇒ **对同一个子串的含义会随形态翻转** ⇒ ⇒ ⇒ **判据必须按块、按形态来写**。
+> ★ ⇒ 而且 ★★ **形状门可能正在钉住 bug**：当「合同的适用范围」比「门断言的范围」窄时
+> ⇒ ⇒ ⇒ **门会把错误形态守成不变量** ⇒ ⇒ ⇒ **门绿不等于对，要问门在守什么**。

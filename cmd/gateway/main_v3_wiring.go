@@ -96,13 +96,86 @@ func dbBackendFromPool(dbConn *db.DB) compression.SessionCacheDB {
 // 停写切换，见 LastOutboundForSession 注释）。占位符：$1 = 会话 ID（由
 // SessionFamilyTurnsForSessionSQL 内推消费），$2 = 租户。提升为包级变量
 // 是给形状钉桩用的。
+//
+// # ★★ 2026-10-21（§143.55，E1 读侧落地）：本式原来在 final_full 门下**必然落空**
+//
+// 原式是 `JOIN <bodies 源> sb ON sb.request_id = rl.request_id` + `WHERE sb.outbound_body IS NOT NULL`。
+// 而 E1（迁移 708 / 开关 `storage.session_final_full_enabled`）的写入形态是：
+//
+//	逐轮行：outbound_body = **SQL NULL**（`bodiesRec.OutboundBody = nil` ⇒ `jsonTextOrNull(nil)`）
+//	快照行：request_id = 'final_full:<session>'、turn_no = 0、kind = 'final_full'
+//
+// ⇒ 两个条件同时把门关上：
+//
+//	① JOIN 键：快照行的 request_id 是 `'final_full:<session>'`，**与任何一轮的
+//	   request_id 都不相等** ⇒ 快照行永远匹配不上 turns 侧的任何一行；
+//	② 过滤：逐轮行的 outbound_body 是 SQL NULL ⇒ `IS NOT NULL` 把它们全部滤掉。
+//
+// ⇒ 门一开，本式恒返回 **0 行** ⇒ L3 冷启动拿不到任何 outbound ⇒ 压缩会话缓存
+// 冷启动退化成「无历史」。
+//
+// # 修法：三条腿（turns 元数据 + 逐轮正文 + final_full 快照），COALESCE 取优先级
+//
+//	final_full 优先、逐轮兜底 —— 与 `domains/session/v2/turn_reader.go`
+//
+// 的 `LoadLatestOutbound`（方案 D2「差集提取改读 final_full；未命中回退旧
+// outbound_body」）**同一口径**。
+//
+// ★ 为什么 final_full 腿用 `session_bodies_unified` 视图、而不是改
+// `db.SessionFamilyBodiesSourceSQL()` 的投影：
+//
+//	那个 helper 的列集合是**合同**（§9.231），它**刻意不投影 ts**，而且它投影的是
+//	`request_delta AS request_body` 这类 v1 同形别名 —— 要在它上面按
+//	`(tenant_id, session_id, kind)` 定位快照行，就得把 `session_id`/`kind`/`ts`
+//	加进它的投影 ⇒ **改的是合同本身**（会波及 admin 的 14 个消费点）。
+//	⇒ 而 final_full 腿要的就是这三个列 ⇒ 直接读既有视图
+//	（`public.session_bodies_unified` = hot ∪ parent，708 起带 kind 列），
+//	与 `turn_reader.go` / `bodies_writer.go` 的既有读法一致。
+//
+// ★ 为什么用 LEFT JOIN LATERAL 而不是标量子查询：
+//
+//   - 标量子查询在 SELECT 与 WHERE 里各写一遍 ⇒ **同一子查询被算两次**；
+//   - LATERAL 只算一次，且 `LIMIT 1` 保证**不放大行**（一个外层行最多配 1 行）；
+//   - LATERAL 的结果列 `ff.outbound_body` 可以同时进 SELECT（COALESCE）与
+//     WHERE（"有正文"过滤）⇒ 不用重复求值。
+//
+// ★ 为什么 WHERE 保留 `sb.outbound_body IS NOT NULL` 这一条（而不是删掉）：
+//
+//	删掉 ⇒ LEFT JOIN 会把「本轮没有正文」的 turns 行也放进来 ⇒ **门关时结果集
+//	被放大**（LEFT JOIN 的右侧无匹配 ⇒ 该 turns 行照样成行）。
+//	保留 ⇒ `LEFT JOIN ... WHERE sb.outbound_body IS NOT NULL` 与原来的
+//	`INNER JOIN ... WHERE sb.outbound_body IS NOT NULL` **逐行等价**
+//	（无匹配的右行被 WHERE 滤掉 ⇒ 等价于内连接）⇒ 门关时语义不变。
+//
+// ★ 「门关时语义不变」的边界（诚实声明）：
+//
+//  1. **门关**（库里没有 final_full 行）⇒ 快照腿恒 NULL ⇒ COALESCE 恒取
+//     `sb.outbound_body` ⇒ 返回行集与原式**逐行相同**；
+//  2. **门开**（有 final_full 行）⇒ 返回 final_full 快照（更新的完整 outbound），
+//     这正是 E1 的目的；
+//  3. **门曾经开过又关掉**（库里还留着 final_full 行）⇒ 本式仍优先读快照
+//     （与 `LoadLatestOutbound` 同口径）⇒ 与原式**不同**（原式只读逐轮）。
+//     这是**有意的**：快照行比逐轮行新，且它才是「最后完整 outbound」。
 var lastOutboundSessionSQL = `
-		SELECT sb.outbound_body, rl.outbound_msg_count, rl.outbound_token_est,
+		SELECT COALESCE(ff.outbound_body, sb.outbound_body),
+		       rl.outbound_msg_count, rl.outbound_token_est,
 		       rl.outbound_msg_hashes, rl.compression_meta
 		FROM ` + db.SessionFamilyTurnsForSessionSQL() + ` rl
-		JOIN ` + db.SessionFamilyBodiesSourceSQL() + ` sb
+		LEFT JOIN ` + db.SessionFamilyBodiesSourceSQL() + ` sb
 		  ON sb.request_id = rl.request_id
-		WHERE rl.tenant_id = $2 AND sb.outbound_body IS NOT NULL
+		LEFT JOIN LATERAL (
+		  SELECT f.outbound_body
+		  FROM public.session_bodies_unified f
+		  WHERE f.tenant_id = $2
+		    AND f.session_id = $1
+		    AND f.kind = 'final_full'
+		    AND f.outbound_body IS NOT NULL
+		    AND f.outbound_body <> 'null'::jsonb
+		  ORDER BY f.ts DESC
+		  LIMIT 1
+		) ff ON TRUE
+		WHERE rl.tenant_id = $2
+		  AND (sb.outbound_body IS NOT NULL OR ff.outbound_body IS NOT NULL)
 		ORDER BY rl.ts DESC
 		LIMIT 1
 	`
