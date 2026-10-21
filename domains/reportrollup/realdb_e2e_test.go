@@ -11,8 +11,19 @@ package reportrollup
 // SQL 正确性（jsonb GROUP BY、percentile FILTER、ON CONFLICT 四键）只有
 // 真 PG 能验证——pgxmock 单测不覆盖这一层。
 //
-// 门控：TEST_DATABASE_URL / TEST_DB_URL 未设置时跳过。目标库应为一次性
+// 门控：REPORT_E2E_TEST_DATABASE_URL 未设置时跳过。目标库应为一次性
 // scratch 库（本测试只写 usage_facts/report_snapshots 并在结束时清理行）。
+//
+// ★★ R86 轮：**门控名从共享名换成了专用名**。
+//
+//	原先读的是 TEST_DATABASE_URL / TEST_DB_URL —— 两个**共享名**，
+//	而事实源（scripts/audit/datasource_env.sh）把共享名统一指向**产品库**
+//	⇒ ⇒ 本测试在事实源档下必然命中护栏的 t.Fatal（**响亮假红**：红的不是产品缺陷，
+//	   是「事实源把破坏性腿的靶子喂错了」）。
+//	⇒ 共享名不能只服务这一条破坏性腿（同一批名字还有 100+ 条要产品形态库的腿）
+//	⇒ ⇒ 正解是**拆名**：破坏性腿用专用名，事实源不承载它。
+//	★ 护栏语义**一字未改**（非 scratch 库仍然 t.Fatal，仍可用
+//	  REPORT_E2E_ALLOW_DESTRUCTIVE=1 显式放行）。
 
 import (
 	"archive/zip"
@@ -30,12 +41,13 @@ import (
 
 func e2eDSN(t *testing.T) string {
 	t.Helper()
-	dsn := os.Getenv("TEST_DATABASE_URL")
+	// ★★ R86 轮：**专用名**（不再读共享名 TEST_DATABASE_URL / TEST_DB_URL）。
+	//   理由见文件头：共享名被事实源指向产品库 ⇒ 本腿在事实源档下必假红。
+	dsn := os.Getenv("REPORT_E2E_TEST_DATABASE_URL")
 	if dsn == "" {
-		dsn = os.Getenv("TEST_DB_URL")
-	}
-	if dsn == "" {
-		t.Skip("TEST_DATABASE_URL / TEST_DB_URL 未设置，跳过真库 E2E")
+		t.Skip("REPORT_E2E_TEST_DATABASE_URL 未设置，跳过真库 E2E —— " +
+			"本测试是破坏性的（DELETE report_snapshots / usage_facts）⇒ 必须显式指向一次性 scratch 库" +
+			"（库名需含独立词 scratch / e2e，或显式设 REPORT_E2E_ALLOW_DESTRUCTIVE=1）")
 	}
 	guardDestructiveE2E(t, dsn)
 	return dsn

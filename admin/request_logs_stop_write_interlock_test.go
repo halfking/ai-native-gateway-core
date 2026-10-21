@@ -339,8 +339,21 @@ func TestStopWriteInterlock_UnclassifiedReadersKeepTheFlagOn(t *testing.T) {
 			t.Logf("（无法读真实 settings_kv：%v —— 本条只报状态，不报违规）", err)
 		} else {
 			t.Logf("真实库 settings_kv 里该键的行数 = %d", rows)
-			if rows == 0 && !enabled {
-				t.Error("真实库里没有该行，却读到 false —— 默认语义不符（应回落到 true）")
+			// ★ 2026-10-21 订正（R88 轮 · 形态量具线）：这条断言原先写的是
+			//   「没有该行却读到 false ⇒ 违规（应回落到 true）」——那是 **G-0 之前**的契约。
+			//   2026-10-20 的 c2fae70ea「request_logs 停写门的代码默认由 true 改为 false」
+			//   之后，正确预期是「没有该行 ⇒ 读到**代码默认 false**」。
+			//   ⇒ 同一文件里**上面那条**子断言（:259-268「删掉必须读回 false」）
+			//     在 2026-10-20 的 a2ac50e37 里已经按新契约改过，**唯独漏了本条**
+			//     ⇒ ⇒ 这就是「同一作者、同一轮、同族漏项」的第 N 例。
+			//   ⇒ ★ 而本条的**自相矛盾**就在它自己的注释里：上面三行写着
+			//     「真实库里若本来就没有该行，读到的必须是代码默认（false）」
+			//     ⇒ 断言却要求它读到 true ⇒ ⇒ 断言与自己的注释对着干。
+			//   ⇒ 订正后判据仍然**有牙**：代码默认若被翻回 true（spec 的 Default 变了），
+			//     「缺行 ⇒ 读到 true」⇒ 本条立即转红（变异 M1 实测）。
+			if rows == 0 && enabled {
+				t.Error("真实库里没有该行，却读到 true —— 与 spec 不符" +
+					"（Default: false = 不双写；c2fae70ea 起代码默认是 false）")
 			}
 		}
 	})

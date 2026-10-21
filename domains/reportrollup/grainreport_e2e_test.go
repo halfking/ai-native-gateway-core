@@ -13,8 +13,17 @@ package reportrollup
 //   ② 任意维度组合过滤后 ① 仍成立（旧读面只在单维过滤时成立）；
 //   ③ 区间内只有旧口径快照的日期回落计入总计与按天，不进维度分组。
 //
-// 门控：TEST_DATABASE_URL / TEST_DB_URL 未设置时跳过。本测试只在
+// 门控：REPORT_E2E_TEST_DATABASE_URL 未设置时跳过。本测试只在
 // scratch schema 内写读，不碰 public。
+//
+// ★★ R86 轮：**门控名从共享名换成了专用名**（与同包 realdb_e2e_test.go 同步）。
+//
+//	原先读的是共享名 TEST_DATABASE_URL / TEST_DB_URL，而事实源把共享名统一指向
+//	**产品库** ⇒ ⇒ 本腿在事实源档下会拿到产品库当靶子。
+//	⇒ 共享名不能只服务破坏性腿 ⇒ ⇒ 拆成专用名 REPORT_E2E_TEST_DATABASE_URL。
+//	★ 且本腿原先**没有**破坏性护栏（它的兄弟 e2eDSN 有）⇒ R86 轮一并补上
+//	  （guardDestructiveE2E 语义与兄弟一致：非 scratch 库 t.Fatal，
+//	   REPORT_E2E_ALLOW_DESTRUCTIVE=1 可显式放行）。
 
 import (
 	"archive/zip"
@@ -134,13 +143,17 @@ func xlsxSheet3Text(t *testing.T, b []byte) string {
 
 func grainE2EDSN(t *testing.T) string {
 	t.Helper()
-	dsn := os.Getenv("TEST_DATABASE_URL")
+	// ★★ R86 轮：**专用名**（不再读共享名 TEST_DATABASE_URL / TEST_DB_URL）。
+	dsn := os.Getenv("REPORT_E2E_TEST_DATABASE_URL")
 	if dsn == "" {
-		dsn = os.Getenv("TEST_DB_URL")
+		t.Skip("REPORT_E2E_TEST_DATABASE_URL 未设置，跳过真库 E2E —— " +
+			"本测试建/删自己的 scratch schema ⇒ 必须显式指向一次性 scratch 库" +
+			"（库名需含独立词 scratch / e2e，或显式设 REPORT_E2E_ALLOW_DESTRUCTIVE=1）")
 	}
-	if dsn == "" {
-		t.Skip("TEST_DATABASE_URL / TEST_DB_URL 未设置，跳过真库 E2E")
-	}
+	// ★★ R86 轮补：**破坏性护栏**（原先本腿没有，同包的 e2eDSN 有）。
+	//   本腿会 `DROP SCHEMA IF EXISTS <schema> CASCADE` + `CREATE SCHEMA <schema>`
+	//   ⇒ 它在目标库里建/删 schema ⇒ 目标库必须是一次性库。
+	guardDestructiveE2E(t, dsn)
 	return dsn
 }
 
