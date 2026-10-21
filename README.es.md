@@ -114,7 +114,7 @@ HTTP/SSE → middleware chain → protocol/IR normalization → session assignme
 | `installer/` | Módulo instalador/actualizador autónomo multiplataforma |
 | `scripts/`, `deploy/` | Herramientas de build, despliegue, espejo y verificación |
 
-Instantánea de escala (escaneo de código del 2026-10-06): **~4,967 ficheros Go · 2,728 ficheros de test · 1,016 SQLs de migración · 67 paquetes de dominio · 44 binarios** bajo `cmd/`.
+Instantánea de escala (escaneo de código del 2026-10-22 @26ebb346c): **~5,677 ficheros Go · 3,330 ficheros de test · 1,119 SQLs de migración · 68 paquetes de dominio · 44 binarios** bajo `cmd/` (recuentos sin `vendor/` ni `installer/`; SQLs de migración = árbol completo de `sql/migrations/`; binarios = paquetes main según `go list`).
 
 **Lecturas adicionales**
 
@@ -435,7 +435,7 @@ Véase [ROADMAP.md](ROADMAP.md) para todos los detalles.
 | Ciclo de vida de sesión | [docs/session-lifecycle.md](docs/session-lifecycle.md) — ciclo de vida del procesamiento de sesiones, totalmente diagramado |
 | Arquitectura (gradación de evidencia) | [docs/03-design/01-architecture/architecture/ARCHITECTURE.md](docs/03-design/01-architecture/architecture/ARCHITECTURE.md) — autoridad interna (gradación CURRENT/SHADOW/PARALLEL) |
 | Arquitectura (visión general) | [docs/architecture.md](docs/architecture.md) — diseño del sistema y componentes |
-| Requisitos | [docs/01-requirements/SYSTEM_REQUIREMENTS.md](docs/01-requirements/SYSTEM_REQUIREMENTS.md) — FR×19 dominios / NFR×13 |
+| Requisitos | [docs/01-requirements/SYSTEM_REQUIREMENTS.md](docs/01-requirements/SYSTEM_REQUIREMENTS.md) — FR×16 dominios / NFR×13 |
 | Catálogo de funciones | [docs/01-requirements/functional/FEATURES_CATALOG.md](docs/01-requirements/functional/FEATURES_CATALOG.md) — mapa función → código → API → página de administración |
 | API | [docs/03-design/01-architecture/architecture/API.md](docs/03-design/01-architecture/architecture/API.md) — especificaciones del plano de datos y la API de administración |
 | Entorno | [docs/environment.md](docs/environment.md) — entornos de despliegue y variables |
