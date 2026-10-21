@@ -183,7 +183,7 @@ print_modes() {
       Docker 编排 + PostgreSQL + Redis
       前置：bash curl sha256 docker（含 docker compose）
       适合：生产、多副本、高并发
-      编排目录：$COMPOSE_DIR（默认 $PWD/llm-gateway-docker）
+      编排目录：${COMPOSE_DIR}（默认 $PWD/llm-gateway-docker）
 
 MODEEOF
 }

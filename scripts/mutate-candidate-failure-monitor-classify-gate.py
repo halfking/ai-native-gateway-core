@@ -36,6 +36,10 @@
 
 用法：python3 scripts/mutate-candidate-failure-monitor-classify-gate.py
 """
+# encoding 必须显式指定：read_text()/write_text() 的缺省编码取自 locale，
+# 在非 UTF-8 locale（Windows 中文默认 cp936 / GBK）下：读会 UnicodeDecodeError
+# （门在判据之前就崩），写会把 UTF-8 源码静默改写成 GBK（门把源码改成乱码）。
+
 import pathlib
 import shutil
 import subprocess
@@ -158,10 +162,20 @@ _RUN_DIR = pathlib.Path(tempfile.gettempdir()) / "mutate-cfm-classify-gate"
 _run_seq = [0]
 
 
+
+# stdout/stderr 必须显式配 UTF-8：这些脚本会打印含「⇒」等字符的中文，
+# 而 cp936（Windows 中文默认）编码不了 ⇒ print() 抛 UnicodeEncodeError
+# ⇒ 门在出读数时就崩了。在 UTF-8 locale 下本段是 no-op，POSIX 行为不变。
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding='utf-8')
+    except (AttributeError, ValueError):
+        pass
+
 def run_gate(cwd):
     r = subprocess.run(
         ["go", "test", TEST, "-run", RUN_FILTER, "-count=1"],
-        cwd=cwd, capture_output=True, text=True,
+        cwd=cwd, capture_output=True, encoding='utf-8', errors='replace',
     )
     out = r.stdout + r.stderr
     _run_seq[0] += 1
@@ -199,7 +213,7 @@ def make_isolated_copy(dst):
     """把 HEAD 导出成一个**可独立编译**的副本（`vendor/` 被 git 跟踪 ⇒ 一并导出）。"""
     r = subprocess.run(
         "git archive HEAD | tar -x -C " + str(dst),
-        shell=True, cwd=REPO, capture_output=True, text=True,
+        shell=True, cwd=REPO, capture_output=True, encoding='utf-8', errors='replace',
     )
     if r.returncode != 0:
         raise RuntimeError("git archive 失败: " + (r.stderr or r.stdout))
@@ -210,7 +224,7 @@ def main():
     #   未提交的改动**不会**进副本 ⇒ 若已跟踪文件是脏的，副本就不是你以为的那棵树。
     #   ⚠ **未跟踪文件（`??`）不算**：新建的脚本/文档不进副本，也不影响被测代码。
     st = subprocess.run(["git", "status", "--porcelain"], cwd=REPO,
-                        capture_output=True, text=True)
+                        capture_output=True, encoding='utf-8', errors='replace')
     tracked_dirty = [l for l in st.stdout.splitlines()
                      if l.strip() and not l.startswith("??")]
     if tracked_dirty:
@@ -224,7 +238,7 @@ def main():
     if not target.exists():
         print(f"!! 隔离副本里没有 {TARGET}")
         return 2
-    orig = target.read_text()
+    orig = target.read_text(encoding='utf-8')
 
     # ★ 锚点唯一性**先验**（不等变异跑到一半才发现）：出现次数必须**恰好**等于期望。
     bad_anchor = []
@@ -242,9 +256,9 @@ def main():
     try:
         for name, expect, expect_leg, edits in MUTATIONS:
             # 每条变异之前把目标文件还原回原始态（上一条的残留会污染下一条）。
-            target.write_text(orig)
+            target.write_text(orig, encoding='utf-8')
             for old, new, _want_n in edits:
-                target.write_text(target.read_text().replace(old, new))
+                target.write_text(target.read_text(encoding='utf-8').replace(old, new))
 
             green, out = run_gate(iso)
 
@@ -298,15 +312,15 @@ def main():
                     print(f"FAIL {name}: 重跑仍然变红 ⇒ 门有假阳性")
                     failures.append(name)
     finally:
-        target.write_text(orig)
+        target.write_text(orig, encoding='utf-8')
         shutil.rmtree(iso, ignore_errors=True)
 
     # 还原校验（副本侧）+ **共享工作树未被改动**校验（真实工作树侧）。
-    if target.exists() and target.read_text() != orig:
+    if target.exists() and target.read_text(encoding='utf-8') != orig:
         print(f"!! 隔离副本里的 {TARGET} 未还原干净")
         failures.append("restore")
     st2 = subprocess.run(["git", "status", "--porcelain"], cwd=REPO,
-                         capture_output=True, text=True)
+                         capture_output=True, encoding='utf-8', errors='replace')
     tracked_dirty2 = [l for l in st2.stdout.splitlines()
                       if l.strip() and not l.startswith("??")]
     if tracked_dirty2:

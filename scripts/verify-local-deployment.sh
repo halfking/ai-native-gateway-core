@@ -317,9 +317,9 @@ verify_l3_functional() {
   else
     ADMIN_CODE=$(curl -s -o /dev/null -w "%{http_code}" --max-time "$TIMEOUT" "$GATEWAY_URL/api/admin/providers" 2>/dev/null || echo "000")
     if [ "$ADMIN_CODE" = "401" ] || [ "$ADMIN_CODE" = "403" ]; then
-      pass "Admin API 端点可达（HTTP $ADMIN_CODE）"
+      pass "Admin API 端点可达（HTTP ${ADMIN_CODE}）"
     else
-      fail "Admin API 端点不可达或响应异常（HTTP $ADMIN_CODE）"
+      fail "Admin API 端点不可达或响应异常（HTTP ${ADMIN_CODE}）"
     fi
   fi
   set -u  # Re-enable unbound variable check
@@ -330,7 +330,7 @@ verify_l3_functional() {
   # /v1/models
   MODELS_RESPONSE=$(curl -sf --max-time "$TIMEOUT" "$GATEWAY_URL/v1/models" 2>/dev/null || true)
   if [ -n "$MODELS_RESPONSE" ]; then
-    if echo "$MODELS_RESPONSE" | grep -qE '"data"|"models"'; then
+    if grep -qE '"data"|"models"' <<<"$MODELS_RESPONSE"; then
       pass "/v1/models 端点可达"
     else
       warn "/v1/models 端点响应格式异常"
@@ -340,7 +340,7 @@ verify_l3_functional() {
     if [ "$MODELS_CODE" = "401" ]; then
       pass "/v1/models 端点可达（需要认证）"
     else
-      fail "/v1/models 端点不可达（HTTP $MODELS_CODE）"
+      fail "/v1/models 端点不可达（HTTP ${MODELS_CODE}）"
     fi
   fi
 
@@ -358,7 +358,7 @@ verify_l3_functional() {
     if [ "$INDEX_CODE" = "200" ]; then
       pass "前端静态文件可访问（HTTP 200）"
     else
-      fail "前端静态文件不可访问（HTTP $INDEX_CODE）"
+      fail "前端静态文件不可访问（HTTP ${INDEX_CODE}）"
     fi
   fi
 }
@@ -422,7 +422,7 @@ verify_l4_business() {
   info "检查网关进程..."
   GREP_PATTERN="gateway.*${CURRENT_PORT}"
   if ps aux | grep -v grep | grep -q "$GREP_PATTERN"; then
-    pass "网关进程运行中（端口 $CURRENT_PORT）"
+    pass "网关进程运行中（端口 ${CURRENT_PORT}）"
     
     # 获取进程信息
     PID=$(ps aux | grep -v grep | grep "$GREP_PATTERN" | awk '{print $2}' | head -1)
@@ -438,7 +438,7 @@ verify_l4_business() {
       info "  资源使用: $CPU_MEM (CPU% MEM%)"
     fi
   else
-    fail "网关进程未运行（端口 $CURRENT_PORT）"
+    fail "网关进程未运行（端口 ${CURRENT_PORT}）"
   fi
 
   # 4.3 Mock Provider 测试（可选）

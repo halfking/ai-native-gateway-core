@@ -663,7 +663,7 @@ for _pat in 'LLM_GATEWAY_STATIC_DIR=/app/web/dist' 'MOBILE_WEB_DIST=/app/web-mob
   if grep -qF "$_pat" "$SCRIPT"; then
     ok "web 腿契约在场: $_pat"
   else
-    bad "web 腿契约缺失: $_pat（SPA/移动端/版本元数据将回落或不可用）"
+    bad "web 腿契约缺失: ${_pat}（SPA/移动端/版本元数据将回落或不可用）"
   fi
 done
 # 版本戳：仓库 version.json 是别的部署留下的戳，211 必须用部署机真实 HEAD 改写，

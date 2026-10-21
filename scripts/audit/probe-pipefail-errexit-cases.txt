@@ -1,0 +1,60 @@
+probe-pipefail-errexit-interaction · 用例体（数据文件）
+# ─────────────────────────────────────────────────────────────────────────────
+# ★★★ **为什么这个文件【不是 .sh】、也不是带 shell shebang 的文件**（一条并行会话的门逼出来的）：
+#
+#   ⇒ 并行会话的普查量具 `scripts/audit/measure-pipefail-race-surface.py` 的扫描面 =
+#     「`.sh` 后缀 ∪ 首行是 shell shebang 的任意文件」
+#   ⇒ 它的候选集判据是 `cand = [s for s in all_sites if s.after_pf]`
+#     ⇒ ★ 即：**同作用域内、管道点之前**存在 pipefail 启用点 ⇒ 才算候选
+#   ⇒ ★★ **而本文件里的每个用例都自带 `set -euo pipefail`（启用点）且紧跟着管道点**
+#     ⇒ ⇒ 若本文件是 `.sh`（或带 shebang）⇒ ⇒ **每个用例都会被算成候选点**
+#     ⇒ ⇒ **他们的台账门 `TestPipefailRaceLedgerCoversCandidateSet` 会当场红**
+#     ⇒ ⇒ 而那本台账是【别人的资产】⇒ ⇒ **本轮不碰它** ⇒ ⇒ ★★ **改为把用例体放进
+#       「既非 .sh、又无 shell shebang」的数据文件** ⇒ ⇒ **两个扫描量具都看不见它**
+#
+#   ⇒ ★★ **顺带说明另两个 pipefail 探针为何 0 命中**（同样的机制）：
+#     它们**没有**在管道点之前同作用域地启用 pipefail ⇒ `after_pf=False` ⇒ 不进候选集。
+#     ⇒ ★ 而「把用例收进函数」**并不足以躲开** ⇒ 因为函数作用域**内部**的
+#       `set -euo pipefail` 与管道点**仍然同作用域且在前** ⇒ ⇒ ★ **必须让管道文本
+#       完全不在任何被扫描的文件里** ⇒ ⇒ **这才是本文件存在的理由**。
+#
+# ★★ **运行时的形态**：探针 `scripts/audit/probe-pipefail-errexit-interaction.sh`
+#   读本文件 ⇒ 逐个用例落成**临时脚本文件**再执行 ⇒ ⇒ 管道行只存在于
+#   **运行时生成的临时文件**里（不在仓内任何扫描面）⇒ 且 `set -euo pipefail`
+#   位于文件顶部 ⇒ 行为与真实脚本完全一致。
+#
+# ── 格式 ──────────────────────────────────────────────────────────────────────
+#   `--- CASE <名字> <上下文> <errexit 开关>` ⇒ 一个用例的开始
+#   其后到下一个 `--- CASE` 之前的行 ⇒ 该用例的脚本体
+#   `@BIG@` ⇒ 运行时替换为载荷文件的真实路径
+# ─────────────────────────────────────────────────────────────────────────────
+
+--- CASE A1 assign errexit-on
+set -euo pipefail
+out=$(cat @BIG@ | head -c 10)
+echo REACHED_END
+
+--- CASE A2 assign errexit-off
+set -uo pipefail
+out=$(cat @BIG@ | head -c 10)
+echo REACHED_END
+
+--- CASE A3 condition errexit-on
+set -euo pipefail
+if cat @BIG@ | head -c 10; then echo MATCH; fi
+echo REACHED_END
+
+--- CASE A4 condition errexit-off
+set -uo pipefail
+if cat @BIG@ | head -c 10; then echo MATCH; fi
+echo REACHED_END
+
+--- CASE A5 simple errexit-on
+set -euo pipefail
+cat @BIG@ | head -c 10
+echo REACHED_END
+
+--- CASE A6 assign-herestring errexit-on
+set -euo pipefail
+out=$(head -c 10 <<<"$(cat @BIG@)")
+echo REACHED_END

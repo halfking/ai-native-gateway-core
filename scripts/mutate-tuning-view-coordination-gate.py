@@ -7,6 +7,10 @@
 
 用法：python3 scripts/mutate-tuning-view-coordination-gate.py
 """
+# encoding 必须显式指定：read_text()/write_text() 的缺省编码取自 locale，
+# 在非 UTF-8 locale（Windows 中文默认 cp936 / GBK）下：读会 UnicodeDecodeError
+# （门在判据之前就崩），写会把 UTF-8 源码静默改写成 GBK（门把源码改成乱码）。
+
 import pathlib
 import shutil
 import subprocess
@@ -79,10 +83,20 @@ MUTATIONS = [
 ]
 
 
+
+# stdout/stderr 必须显式配 UTF-8：这些脚本会打印含「⇒」等字符的中文，
+# 而 cp936（Windows 中文默认）编码不了 ⇒ print() 抛 UnicodeEncodeError
+# ⇒ 门在出读数时就崩了。在 UTF-8 locale 下本段是 no-op，POSIX 行为不变。
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding='utf-8')
+    except (AttributeError, ValueError):
+        pass
+
 def run_gate():
     r = subprocess.run(
         ["go", "test", TEST, "-run", "TuningViewRefresher", "-count=1"],
-        cwd=REPO, capture_output=True, text=True,
+        cwd=REPO, capture_output=True, encoding='utf-8', errors='replace',
     )
     return r.returncode == 0, r.stdout + r.stderr
 
@@ -129,7 +143,7 @@ def no_tests_ran(out):
 def main():
     backup = pathlib.Path(tempfile.mkdtemp()) / "tvr.go.orig"
     shutil.copy2(TARGET, backup)
-    orig = backup.read_text()
+    orig = backup.read_text(encoding='utf-8')
 
     failures = []
     try:
@@ -138,7 +152,7 @@ def main():
                 print(f"!! {name}: 锚点文本在源文件里找不到，跳过")
                 failures.append(name)
                 continue
-            TARGET.write_text(orig.replace(old, new, 1))
+            TARGET.write_text(orig.replace(old, new, 1), encoding='utf-8')
             green, out = run_gate()
             # ★ 作废闸：测试根本没跑 ⇒ 这条读数**不算绿**（见 no_tests_ran 的注释）。
             if no_tests_ran(out):
@@ -199,10 +213,10 @@ def main():
                         print(f"FAIL {name}: 重跑仍然变红 ⇒ 门有假阳性，失败腿 = {failing_lines(out2)}")
                         failures.append(name)
     finally:
-        TARGET.write_text(orig)
+        TARGET.write_text(orig, encoding='utf-8')
         shutil.rmtree(backup.parent, ignore_errors=True)
 
-    if TARGET.read_text() != orig:
+    if TARGET.read_text(encoding='utf-8') != orig:
         print("!! 源文件未还原干净")
         failures.append("restore")
 

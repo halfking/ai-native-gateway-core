@@ -142,7 +142,7 @@ grep -q 'CGO_ENABLED=0' "$DRV_NOCGO" \
 
 if ! CGO_ENABLED=0 go build ./storage/sqlite >/dev/null 2>&1; then
   rc=$?
-  fail "CGO_ENABLED=0 go build ./storage/sqlite 失败（rc=$rc）—— 本机默认口径的地基没了"
+  fail "CGO_ENABLED=0 go build ./storage/sqlite 失败（rc=${rc}）—— 本机默认口径的地基没了"
 fi
 pass 'CGO_ENABLED=0 builds storage/sqlite (both driver forms coexist)'
 

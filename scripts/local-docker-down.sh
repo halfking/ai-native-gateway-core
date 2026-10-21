@@ -29,7 +29,7 @@ COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-llm-gateway-go-local}"
 ENV_FILE="$INSTALL_ROOT/.env"
 
 if [[ ! -f "$COMPOSE_FILE" ]]; then
-  err "未找到 $COMPOSE_FILE（先跑 scripts/local-docker-up.sh）"
+  err "未找到 ${COMPOSE_FILE}（先跑 scripts/local-docker-up.sh）"
   exit 1
 fi
 

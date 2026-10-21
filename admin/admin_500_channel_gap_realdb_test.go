@@ -231,6 +231,21 @@ func TestChannelRegistersUndeliveredSessionGapMigrations(t *testing.T) {
 //	(iii) 端点走 `withAllTenantReadOnlyTx`（显式 RLS bypass）——
 //	      `session_turns` 开了 RLS（tenant_isolation / owner_filter），
 //	      不 bypass 会被**静默**收成 0 行 ⇒ 对一个安全控制来说那等于失效。
+//
+// crosstalkParentLegRE 匹配串话查询里**独立的父表**那条腿。
+//
+// ★ 为什么需要正则而不是 strings.Contains：
+//
+//	`public.session_turns` 是 `public.session_turns_hot` 的**前缀** ⇒
+//	用 Contains 判「父表那条腿在不在」时，**只写 hot 也会被判成通过** ⇒
+//	门会**假绿** ⇒ 于是「hot ∪ parent 两条腿」这条要求就落空了。
+//	⇒ 负向断言（后面不能再跟标识符字符）把 hot 排除掉。
+//
+// ★ 注意：Go 的 regexp 是 RE2，**不支持负向断言 `(?!...)`** ⇒ 这里用
+//
+//	「后面必须跟一个非标识符字符或行尾」来表达同一个意思。
+var crosstalkParentLegRE = regexp.MustCompile(`FROM\s+public\.session_turns([^_A-Za-z0-9]|$)`)
+
 func TestCrosstalkEndpointIsSourcedFromSessionFamily(t *testing.T) {
 	root := repoRoot(t)
 	rel := filepath.Join("admin", "session_crosstalk_check.go")
@@ -267,9 +282,23 @@ func TestCrosstalkEndpointIsSourcedFromSessionFamily(t *testing.T) {
 			rel)
 	}
 
-	if !strings.Contains(joined, "FROM session_turns") {
-		t.Errorf("%s 的字符串字面量里没有 `FROM session_turns` ⇒\n"+
-			"  ⇒ 端点没有从会话族派生 ⇒ 它要么还在读退役对象，要么已经什么都不查了", rel)
+	// ★★ 【D2 订正，2026-10-22 12h 审计轮】本门原先断言 `FROM session_turns`
+	//   ——而那**正是缺陷本身**：只读分区父表 ⇒ 漏掉 `session_turns_hot`
+	//   ⇒ 最近 8 小时的串话一条都看不到（活 turn 全写进 hot）。
+	//   ⇒ 一个把缺陷钉死的门，会**挡住缺陷的修复** ⇒ 本门必须钉「两条腿都在」。
+	//   ⇒ 判据用正则 + 负向断言，避免 `session_turns` 是 `session_turns_hot`
+	//   的前缀导致「只写 hot 也算过」。
+	if !strings.Contains(joined, "session_turns_hot") {
+		t.Errorf("%s 的串话查询里没有 `session_turns_hot` ⇒\n"+
+			"  ⇒ 活的 turn 全部写进 hot 表（domains/session/v2/turn_writer.go），\n"+
+			"    要等保留窗口（lifecycle.hot_retention_hours，默认 8h）过后才被 promote 进父表\n"+
+			"  ⇒ 只读父表 ⇒ **最近 8 小时的串话一条都看不到** ⇒ 端点返回 200 + 空列表\n"+
+			"  ⇒ ★ 静默失明（与 892 迁移头写的「回填 0 行 ⇒ 安静地失明」同型）", rel)
+	}
+	if !crosstalkParentLegRE.MatchString(joined) {
+		t.Errorf("%s 的串话查询里没有独立的 `public.session_turns`（父表）那条腿 ⇒\n"+
+			"  ⇒ hot ∪ parent 两条腿缺一不可：只有 hot 会漏掉 8 小时之前的旧串话\n"+
+			"  ⇒ （仓内正典是 db.SessionFamilyTurnsSourceSQL()，形状为 hot ∪ parent）", rel)
 	}
 
 	if !strings.Contains(joined, "count(DISTINCT tenant_id) > 1") {

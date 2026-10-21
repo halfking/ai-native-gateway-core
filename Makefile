@@ -84,11 +84,41 @@ test-short: ## 短模式，跳过 -short=false 的测试
 # 却照样返回 HTTP 200 与「已恢复」语义（待裁决 85）。
 # ⚠️ 同样**必须**登记：guards-sync.sh 按磁盘 `find internal -name '*guard'`
 #   **发现式**枚举 ⇒ 漏登记直接让 CI 转红。
-GUARD_PACKAGES := ./internal/rowsguard ./internal/errdiscard ./internal/dbrows ./internal/jsoncol ./internal/paramguard ./internal/sqlguard ./internal/sqlreadguard ./internal/metricguard ./internal/partguard ./internal/routeguard ./internal/ingressguard ./internal/healthstateguard ./internal/billguard ./internal/jsonbguard ./sql/schema
+# ★★★ 2026-10-22 12h 审计轮：补登 **3 个从未被执行**的守卫包。
+#
+#   internal/clockguard（R68 轮：判别型下界「已分析、未实测」的余量棘轮门）
+#   internal/stopguard （R71 轮：关闭序列永久卡死 ⇒ 僵尸进程）
+#   internal/testguard （R87 轮：破坏性腿 × 目标库守卫线）
+#
+#   这三个包**在磁盘上存在**（最早的已存在数日），却**从未写进 GUARD_PACKAGES**
+#   ⇒ ⇒ `make guards` 从不执行它们 ⇒ **CI 从未跑过这三道门**。
+#   ⇒ ⇒ 更糟：`scripts/checks/guards-sync.sh`（CI 的第 1 步，无 continue-on-error）
+#   因此**一直是红的** ⇒ 整个 audit-guards-ci 专用 job 一直是失败的
+#   ⇒ ⇒ 仓库里一直没有任何人真正看到过绿色的审计门。
+#   ⇒ ⇒ 这是本轮挖到的最刺眼的一条**流程闭环**断裂：**门写了、没接线，
+#      而接线的那道门自己也是红的 ⇒ 没人发现。**
+GUARD_PACKAGES := ./internal/rowsguard ./internal/errdiscard ./internal/dbrows ./internal/jsoncol ./internal/paramguard ./internal/sqlguard ./internal/sqlreadguard ./internal/metricguard ./internal/partguard ./internal/routeguard ./internal/ingressguard ./internal/healthstateguard ./internal/billguard ./internal/jsonbguard ./internal/clockguard ./internal/stopguard ./internal/testguard ./sql/schema
+
+# ★★★ 2026-10-22 12h 审计轮：./scripts/ursmcheck 此前**不在任何强制执行路径**上。
+#
+#   它有 94 个门文件（CJK 变量名棘轮、R75 巡检基线快路门、pipefail 台账门、
+#   cron 注册门、投递门、变更点门…）⇒ 这些门在 CI 上**一次都没跑过**。
+#   ⇒ 一门没人跑的守卫是文档，不是门（这正是本文件上方 R69 的判词）。
+#   ⇒ 单独一个 target：它比主门慢一个量级（实测 ~5~6 分钟 vs 主门 120s 上限），
+#     挂在 `guards` 的依赖里 ⇒ CI 现有的 `make guards` 一步自动覆盖它，
+#     不需要改 workflow。
+#   ⇒ 登记进 GUARD_PACKAGES_SLOW ⇒ scripts/checks/guards-sync.sh 的双向检查
+#     同样覆盖它（漏登记/登记错了会红）。
+GUARD_PACKAGES_SLOW := ./scripts/ursmcheck
 
 .PHONY: guards
-guards: guards-installer ## 运行全部审计守卫（快速、无外部依赖；含 installer 跨模块门）
+guards: guards-installer guards-ursmcheck ## 运行全部审计守卫（快速、无外部依赖；含 installer 跨模块门 + ursmcheck 全量门）
 	$(GO) test $(GUARD_PACKAGES) -count=1 -timeout=120s
+
+# scripts/ursmcheck 的 94 个门文件（≈5~6 分钟，比主门慢一个量级 ⇒ 独立 timeout）
+.PHONY: guards-ursmcheck
+guards-ursmcheck: ## scripts/ursmcheck 全量门（94 个门文件；CI 上此前从未执行过）
+	$(GO) test $(GUARD_PACKAGES_SLOW) -count=1 -timeout=900s
 
 # R48-B1 后续（R48 报告 §五-3）：installer 是独立 go.mod，根目录
 # `go test ./...` 永远不跑它的门——tsv 派生清单缺 831 的红因此在

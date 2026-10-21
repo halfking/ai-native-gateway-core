@@ -17,6 +17,7 @@ import { useAuthStore } from '@/stores/auth'
 import { fetchCaptcha } from '@/api/auth'
 import { ApiError } from '@/api/client'
 import { GATEWAY_SITES, currentSite, isCurrentSite, siteLoginUrl, type GatewaySite } from '@/api/gatewaySites'
+import { isMaintenanceMode } from '@/api/client'
 import { t } from '@/i18n'
 import AppIcon from '@/components/common/AppIcon.vue'
 
@@ -118,6 +119,10 @@ async function submit(): Promise<void> {
       // 否则用户对着一个死验证码反复输，必然第二次也失败。
       // refreshCaptcha 会用服务端返回的 required 把「是否强制」同步回来。
       await refreshCaptcha()
+    } else if (isMaintenanceMode(err)) {
+      // 2026-10-22：维护态不是凭据问题 —— 展示服务端原话（如「网关维护中，
+      // 请稍后重试。」），用户才知道该等而不是改密码重试。
+      errorText.value = err instanceof Error && err.message ? err.message : t('login.failed')
     } else {
       errorText.value = t('login.failed')
     }

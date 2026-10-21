@@ -114,7 +114,7 @@ HTTP/SSE → middleware chain → protocol/IR normalization → session assignme
 | `installer/` | スタンドアロンのクロスプラットフォームインストーラ / アップグレーダーモジュール |
 | `scripts/`、`deploy/` | ビルド、デプロイ、ミラー、検証ツール |
 
-スケールスナップショット（2026-10-06 のコードスキャン）：`cmd/` 配下に **~4,967 Go ファイル · 2,728 テストファイル · 1,016 マイグレーション SQL · 67 ドメインパッケージ · 44 バイナリ**。
+スケールスナップショット（2026-10-22 のコードスキャン @26ebb346c）：`cmd/` 配下に **~5,677 Go ファイル · 3,330 テストファイル · 1,119 マイグレーション SQL · 68 ドメインパッケージ · 44 バイナリ**（ファイル数は `vendor/` と `installer/` を除外；マイグレーション SQL は `sql/migrations/` 全量；バイナリは `go list` の main パッケージ基準）。
 
 **さらに詳しく**
 
@@ -435,7 +435,7 @@ GOOS=windows GOARCH=arm64  go build -o dist/llm-gw-installer-windows-arm64.exe .
 | セッションライフサイクル | [docs/session-lifecycle.md](docs/session-lifecycle.md) — セッション処理ライフサイクル、完全図解 |
 | アーキテクチャ（エビデンスグレード） | [docs/03-design/01-architecture/architecture/ARCHITECTURE.md](docs/03-design/01-architecture/architecture/ARCHITECTURE.md) — 内部権威（CURRENT/SHADOW/PARALLEL グレーディング） |
 | アーキテクチャ（概観） | [docs/architecture.md](docs/architecture.md) — システム設計とコンポーネント |
-| 要件 | [docs/01-requirements/SYSTEM_REQUIREMENTS.md](docs/01-requirements/SYSTEM_REQUIREMENTS.md) — FR×19 ドメイン / NFR×13 |
+| 要件 | [docs/01-requirements/SYSTEM_REQUIREMENTS.md](docs/01-requirements/SYSTEM_REQUIREMENTS.md) — FR×16 ドメイン / NFR×13 |
 | 機能カタログ | [docs/01-requirements/functional/FEATURES_CATALOG.md](docs/01-requirements/functional/FEATURES_CATALOG.md) — 機能 → コード → API → 管理画面マップ |
 | API | [docs/03-design/01-architecture/architecture/API.md](docs/03-design/01-architecture/architecture/API.md) — データプレーンと管理 API 仕様 |
 | 環境 | [docs/environment.md](docs/environment.md) — デプロイ環境と変数 |

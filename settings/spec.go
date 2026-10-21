@@ -287,7 +287,16 @@ func (r *Registry) EffectiveValue(scope Scope, key, tenantID string) (jsonRawMes
 		return nil, "", fmt.Errorf("unknown setting %q", key)
 	}
 	// 1. DB
-	if b, ok := r.backends[scope]; ok {
+	// ★ 2026-10-22 12h 审计轮（B5）：`r.backends` 的**读**原先**没有持锁**，
+	//   而 `RegisterBackend` 的**写**是在 `r.mu.Lock()` 下做的
+	//   ⇒ ⇒ 并发读写同一个 map ⇒ Go runtime 直接
+	//   `fatal error: concurrent map read and map write`（**不可 recover** ⇒ 整进程死）。
+	//   ⇒ 本轮把 11 个新键的读路径引到了这一行 ⇒ 把一个潜伏的竞态变成热路径上的竞态。
+	//   ⇒ 修法：读侧也取读锁（RLock 与写侧的 Lock 不冲突）。
+	r.mu.RLock()
+	backend, hasBackend := r.backends[scope]
+	r.mu.RUnlock()
+	if b, ok := backend, hasBackend; ok {
 		var v jsonRawMessage
 		var err error
 		if scope == ScopeTenant {

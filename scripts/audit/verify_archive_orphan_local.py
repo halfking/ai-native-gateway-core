@@ -141,6 +141,16 @@ CREATE OR REPLACE FUNCTION public.archive_credential_model_index(archive_month d
 """
 
 
+
+# stdout/stderr 必须显式配 UTF-8：这些脚本会打印含「⇒」等字符的中文，
+# 而 cp936（Windows 中文默认）编码不了 ⇒ print() 抛 UnicodeEncodeError
+# ⇒ 门在出读数时就崩了。在 UTF-8 locale 下本段是 no-op，POSIX 行为不变。
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding='utf-8')
+    except (AttributeError, ValueError):
+        pass
+
 def extract_654_body() -> str:
     """从仓内 654 迁移里提取 CREATE OR REPLACE FUNCTION 段（不手抄）。"""
     with open(MIG654, encoding="utf-8") as f:
@@ -160,18 +170,25 @@ def extract_654_body() -> str:
 def run_sql(sql: str, db: str = "postgres", stop_on_error: bool = False) -> str:
     """跑一段 SQL。
 
-    ★★ 【失败可见性】实测（PG 17.10）：psql 的退出码**由「读入方式」决定**，
-    **不由「语句是否出错」决定**：
-      · `-c` 形态      ⇒ 语句失败 ⇒ **exit 1**（失败可见）
-      · stdin 脚本形态 ⇒ 语句失败 ⇒ **exit 0**（失败【不可见】！）⇒ 除非 ON_ERROR_STOP=1 ⇒ exit 3
-    ⇒ 本脚本走 stdin 脚本形态（`-f -`）⇒ ⇒ 【清理路径必须显式 ON_ERROR_STOP=1】，
+    ★★ 【失败可见性】实测（PG 17.10；★ R102 轮在 PG 17.11 + psql 18.6 上复验并**扩一维**）：
+    psql 的失败可见性**由「读入方式」决定**，**不由「语句是否出错」决定**：
+      · `-c` 形态（**一条 `-c` 内多条语句**）⇒ 失败 ⇒ **exit 1**，
+        且**整串回滚**（前面已成功的语句也一并回滚 ⇒ 落点**干净**）
+      · stdin 形态 ⇒ 失败 ⇒ **exit 0**（**仅当 ON_ERROR_STOP=0**）
+        ⇒ 且**后续语句照常执行** ⇒ ★★ 这是「**半执行**」⇒ 落点**不干净**
+        ⇒ ⇒ 「退出码」与「落点」是**两个轴**，不是一个
+      · stdin 形态 + ON_ERROR_STOP=1 ⇒ **exit 3**，且**后续语句不再执行**
+        ⇒ ★★ 「失败可检出」**≠**「落点干净」⇒ ⇒ 【查落点】**不可省**
+      ★ R102 轮实测：三种 stdin 读入方式（**裸 stdin / `-f -` / `-f /dev/stdin`**）
+        的失败语义**完全一致** ⇒ ⇒ 叫法差异（交互模式 vs 脚本模式）不影响结论。
+    ⇒ 本脚本走 stdin 形态（`-f -`）⇒ ⇒ 【清理路径必须显式 ON_ERROR_STOP=1】，
       否则「DROP 被 statement_timeout 取消」会**静默**⇒ 而「清理失败」＝「库泄漏」。
     ⇒ 其它路径保持 ON_ERROR_STOP=0：S2 场景**要**复现 654 的报错并继续往下跑。
     """
     p = subprocess.run(
         ["docker", "exec", "-i", CONTAINER, "psql", "-U", PGUSER, "-d", db,
          "-v", "ON_ERROR_STOP=" + ("1" if stop_on_error else "0"), "-f", "-"],
-        input=sql, capture_output=True, text=True)
+        input=sql, capture_output=True, encoding='utf-8', errors='replace')
     return p.stdout + p.stderr
 
 
@@ -201,17 +218,23 @@ def _residual() -> str:
 #        SIGTERM 的后端收尾」可达数十秒（PG 17.10 / 高负载下实测到 89.37s）
 #        ⇒ ⇒ 15s 会把【合法】的清理砍成「被超时取消」⇒ ⇒ 而「清理失败」＝
 #        「库泄漏」⇒ ⇒ 与守卫的目的**正好相反**。
-#      ★★ SET 与 DROP 必须【逐条发送】：run_sql 走 psql -f - 的 stdin 脚本模式
+#      ★★ SET 与 DROP 必须【逐条发送】：run_sql 走 psql -f - 的 stdin 形态
 #        ⇒ 每条语句各自独立事务 ⇒ SET 对后面的 DROP 生效；
 #        ★★ 若把两条塞进同一条 -c ⇒ PG 报「DROP DATABASE cannot run inside a
 #          transaction block」⇒ 清理【直接失败且静默】。
+#        ★★ R102 轮订正：「逐条发送」的准确含义是【**不把两条并进同一条 `-c`**】，
+#          而**不是**【必须换形态】⇒ ★ 「同一 psql 进程的**多条独立 `-c`**」是**合法**的
+#          （各自独立事务、SET 对后续生效）⇒ ★ 段八 的 shell 腿正是这个形态。
 def _drop_db() -> str:
     try:
         run_sql(f"SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '{DB}' AND pid <> pg_backend_pid();")
         out = run_sql(f"SET statement_timeout = '120s'; DROP DATABASE IF EXISTS {DB} WITH (FORCE);",
                       stop_on_error=True)
-        # ★ 查落点：psql 在 stdin 脚本形态下【失败也 exit 0】⇒ 退出码不可信
+        # ★ 查落点：psql 在 stdin 形态下【ON_ERROR_STOP=0 时失败也 exit 0】⇒ 退出码不可信
         #   ⇒ ⇒ 「命令成功」必须由「库里还有没有」来判。
+        #   ★★ R102 轮补一维：OES=1 时虽 exit 3（失败**可检出**），但 psql 会**在错误处中止**
+        #     ⇒ 后续语句**不执行** ⇒ ★★ 「失败可检出」**≠**「落点干净」
+        #     ⇒ ⇒ 【查落点】是**必需项**，不是可选项。
         left = _residual()
         if left != "0":
             out += f"\n⚠ 回收未完成：pg_database 里仍有 {left} 行匹配 {DB}"

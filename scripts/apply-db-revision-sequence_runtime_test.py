@@ -17,7 +17,10 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / 'scripts/apply-db-revision-sequence.sh'
-SOURCE = SCRIPT.read_text()
+# encoding 必须显式指定：read_text() 的缺省编码取自 locale，在非 UTF-8 locale
+# （Windows 中文默认 cp936 / GBK）下解不出仓库脚本里的 UTF-8 中文 ⇒
+# UnicodeDecodeError ⇒ 这道门在任何非 UTF-8 机器上必然崩（而不是红在判据上）。
+SOURCE = SCRIPT.read_text(encoding='utf-8')
 PREFIX = 'session-summary-and-integrity-2026-09:'
 
 SHIM = r'''import json, os, re, sys
@@ -75,6 +78,41 @@ SELECT 'promote_request_logs_hot_to_partition', 'request_logs_with_current_month
 DO $body$ BEGIN PERFORM 'request_logs'; END $body$;
 '''
 RENAME = "-- fixture860\nSELECT to_regclass('public.request_logs'), to_regclass('public._request_logs');\n"
+
+# 这道门在设计上就依赖 POSIX 语义，无法在 Windows 上运行：
+#   ① fixture 用 symlink 把 bash/psql/python3 等可执行文件放进一个「封闭 PATH」目录，
+#      而 Windows 的 symlink 创建需要 SeCreateSymbolicLinkPrivilege（管理员或开发者模式）
+#      ⇒ 未启用时抛 OSError [WinError 1314]；
+#   ② 被测脚本以 '/bin/bash' 绝对路径启动，Windows 上没有这个路径。
+# ⇒ 在不满足前置条件时**显式跳过**并说明原因，而不是让它崩成 10 个 ERROR ——
+#    崩在 setup 里看不出「这是环境限制」，而「跳过了」才是诚实的读数。
+#    判据本身（投递路径契约）在 scripts/apply-db-revision-sequence_test.sh 里，
+#    那部分跨平台可用，不受此跳过影响。
+#
+# ★ 判据用「**实测能力**」而不是「平台名」：
+#   平台名（os.name / sys.platform）会把「Windows 开发者模式已开、symlink 可用」
+#   这种真实可跑的情况误判成不可跑；而 macOS/Linux 恒满足。
+#   ⇒ 这里直接探测「能否创建 symlink」＋「有没有 /bin/bash」，两个条件都是这道门
+#     真正依赖的东西，探测本身零副作用（在临时目录里建一个链接再删掉）。
+_POSIX_ONLY_REASON = 'requires POSIX symlinks + /bin/bash (symlink creation or /bin/bash unavailable)'
+
+
+def _posix_runtime_available():
+    """True iff this host can actually run this gate's fixture."""
+    if not os.path.isfile('/bin/bash'):
+        return False
+    probe_dir = tempfile.mkdtemp(prefix='symlink-probe-')
+    try:
+        target = Path(probe_dir) / 'target'
+        link = Path(probe_dir) / 'link'
+        target.write_text('probe')
+        try:
+            link.symlink_to(target)
+        except (OSError, NotImplementedError, AttributeError):
+            return False
+        return True
+    finally:
+        shutil.rmtree(probe_dir, ignore_errors=True)
 
 
 class RuntimeFixture(unittest.TestCase):
@@ -334,6 +372,10 @@ ROLLBACK;
         expected = expected.replace(b'public.request_logs ADD', b'public._request_logs ADD')
         expected = expected.replace(b"'public.request_logs'", b"'public._request_logs'")
         self.assertEqual(result.stdout, expected)
+
+
+if not _posix_runtime_available():
+    RuntimeFixture = unittest.skip(_POSIX_ONLY_REASON)(RuntimeFixture)
 
 
 if __name__ == '__main__':

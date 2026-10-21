@@ -23,6 +23,10 @@
 
 用法：python3 scripts/mutate-s4-recorded-cost-skip-gate.py
 """
+# encoding 必须显式指定：read_text()/write_text() 的缺省编码取自 locale，
+# 在非 UTF-8 locale（Windows 中文默认 cp936 / GBK）下：读会 UnicodeDecodeError
+# （门在判据之前就崩），写会把 UTF-8 源码静默改写成 GBK（门把源码改成乱码）。
+
 import pathlib
 import shutil
 import subprocess
@@ -100,10 +104,20 @@ _RUN_DIR = pathlib.Path(tempfile.gettempdir()) / "mutate-s4-recorded-cost-skip-g
 _run_seq = [0]
 
 
+
+# stdout/stderr 必须显式配 UTF-8：这些脚本会打印含「⇒」等字符的中文，
+# 而 cp936（Windows 中文默认）编码不了 ⇒ print() 抛 UnicodeEncodeError
+# ⇒ 门在出读数时就崩了。在 UTF-8 locale 下本段是 no-op，POSIX 行为不变。
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding='utf-8')
+    except (AttributeError, ValueError):
+        pass
+
 def run_gate():
     r = subprocess.run(
         ["go", "test", TEST, "-run", RUN_FILTER, "-count=1"],
-        cwd=REPO, capture_output=True, text=True,
+        cwd=REPO, capture_output=True, encoding='utf-8', errors='replace',
     )
     out = r.stdout + r.stderr
     _run_seq[0] += 1
@@ -158,7 +172,7 @@ def main():
     for rel, _, _, _, _, _ in MUTATIONS:
         p = REPO / rel
         if rel not in originals:
-            originals[rel] = (p, p.read_text())
+            originals[rel] = (p, p.read_text(encoding='utf-8'))
 
     failures = []
     try:
@@ -174,9 +188,9 @@ def main():
             # 残留会污染下一条 ⇒ 表现为「对照变异变红」这种**看似门的假阳性**。
             # （本轮真踩到过：M5 删掉闭集里的 worker 后没还原 ⇒ C0 在缺 worker 的树上跑 ⇒ 红。）
             for p, o in originals.values():
-                p.write_text(o)
+                p.write_text(o, encoding='utf-8')
 
-            path.write_text(orig.replace(old, new, 1))
+            path.write_text(orig.replace(old, new, 1), encoding='utf-8')
             green, out = run_gate()
 
             # ★ 先判「测试到底跑了没」——这是**作废条件**，不是绿/红。
@@ -244,11 +258,11 @@ def main():
                     failures.append(name)
     finally:
         for path, orig in originals.values():
-            path.write_text(orig)
+            path.write_text(orig, encoding='utf-8')
         shutil.rmtree(tmp, ignore_errors=True)
 
     for path, orig in originals.values():
-        if path.read_text() != orig:
+        if path.read_text(encoding='utf-8') != orig:
             print(f"!! {path} 未还原干净")
             failures.append("restore")
 
