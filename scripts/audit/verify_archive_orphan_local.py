@@ -141,6 +141,16 @@ CREATE OR REPLACE FUNCTION public.archive_credential_model_index(archive_month d
 """
 
 
+
+# stdout/stderr 必须显式配 UTF-8：这些脚本会打印含「⇒」等字符的中文，
+# 而 cp936（Windows 中文默认）编码不了 ⇒ print() 抛 UnicodeEncodeError
+# ⇒ 门在出读数时就崩了。在 UTF-8 locale 下本段是 no-op，POSIX 行为不变。
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding='utf-8')
+    except (AttributeError, ValueError):
+        pass
+
 def extract_654_body() -> str:
     """从仓内 654 迁移里提取 CREATE OR REPLACE FUNCTION 段（不手抄）。"""
     with open(MIG654, encoding="utf-8") as f:
@@ -171,7 +181,7 @@ def run_sql(sql: str, db: str = "postgres", stop_on_error: bool = False) -> str:
     p = subprocess.run(
         ["docker", "exec", "-i", CONTAINER, "psql", "-U", PGUSER, "-d", db,
          "-v", "ON_ERROR_STOP=" + ("1" if stop_on_error else "0"), "-f", "-"],
-        input=sql, capture_output=True, text=True)
+        input=sql, capture_output=True, encoding='utf-8', errors='replace')
     return p.stdout + p.stderr
 
 

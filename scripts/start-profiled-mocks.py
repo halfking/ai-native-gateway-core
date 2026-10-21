@@ -25,12 +25,24 @@ MOCK_DIR = os.path.join(SCRIPT_DIR, "mocks", "llm-mock-upstream")
 SERVER_V3 = os.path.join(MOCK_DIR, "server-v3.py")
 PROFILE_DIR = "/tmp/mock-profiles"
 
-with open(PROFILES_FILE) as f:
+# encoding 必须显式指定：open() 的缺省编码取自 locale，在非 UTF-8 locale
+# （Windows 中文默认 cp936 / GBK）下解不出 UTF-8 的 JSON ⇒ UnicodeDecodeError。
+with open(PROFILES_FILE, encoding="utf-8") as f:
     CONFIG = json.load(f)
 
 PROFILES = CONFIG["profiles"]
 GROUP_PORTS = CONFIG["group_port_map"]
 
+
+
+# stdout/stderr 必须显式配 UTF-8：这些脚本会打印含「⇒」等字符的中文，
+# 而 cp936（Windows 中文默认）编码不了 ⇒ print() 抛 UnicodeEncodeError
+# ⇒ 门在出读数时就崩了。在 UTF-8 locale 下本段是 no-op，POSIX 行为不变。
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding='utf-8')
+    except (AttributeError, ValueError):
+        pass
 
 def kill_existing():
     """Kill all running server-v3.py and server-v2.py instances."""
