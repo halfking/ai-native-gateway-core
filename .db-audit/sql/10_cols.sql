@@ -12,10 +12,10 @@ echo "===== request_state_transitions INDEX BREAKDOWN ====="
 $PSQL -c "SELECT i.relname||' | '||pg_size_pretty(pg_relation_size(i.oid))||' | idx_scan='||s.idx_scan||' | '||left(pg_get_indexdef(i.oid),120) FROM pg_class i JOIN pg_index x ON x.indexrelid=i.oid JOIN pg_class t ON t.oid=x.indrelid JOIN pg_stat_user_indexes s ON s.indexrelid=i.oid WHERE t.relname='request_state_transitions' ORDER BY pg_relation_size(i.oid) DESC;"
 
 echo "===== TABLE SIZE BUCKETS ====="
-$PSQL -c "SELECT CASE WHEN pg_total_relation_size(c.oid) < 10*1024*1024 THEN 'a <10MB' WHEN pg_total_relation_size(c.oid) < 100*1024*1024 THEN 'b 10-100MB' WHEN pg_total_relation_size(c.oid) < 1024*1024*1024 THEN 'c 100MB-1GB' WHEN pg_total_relation_size(c.oid) < 4*1024*1024*1024 THEN 'd 1-4GB' ELSE 'e >4GB' END AS bucket, count(*) AS cnt FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND c.relkind='r' GROUP BY 1 ORDER BY 1;"
+$PSQL -c "SELECT CASE WHEN pg_total_relation_size(c.oid) < 10*1024*1024 THEN 'a <10MB' WHEN pg_total_relation_size(c.oid) < 100*1024*1024 THEN 'b 10-100MB' WHEN pg_total_relation_size(c.oid) < 1024*1024*1024 THEN 'c 100MB-1GB' WHEN pg_total_relation_size(c.oid) < 4::bigint*1024*1024*1024 THEN 'd 1-4GB' ELSE 'e >4GB' END AS bucket, count(*) AS cnt FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND c.relkind='r' GROUP BY 1 ORDER BY 1;"
 
 echo "===== assets: what is written? ====="
-$PSQL -c "SELECT kind||' = '||count(*) FROM assets GROUP BY 1 ORDER BY 2 DESC LIMIT 10;"
+$PSQL -c "SELECT kind||' = '||count(*) FROM assets GROUP BY kind ORDER BY count(*) DESC LIMIT 10;"
 $PSQL -c "SELECT 'max version churn: '||relname FROM pg_stat_user_tables WHERE relname='assets';"
 $PSQL -c "SELECT 'assets size='||pg_size_pretty(pg_total_relation_size('assets'))||' heap='||pg_size_pretty(pg_relation_size('assets'))||' idx='||pg_size_pretty(pg_indexes_size('assets'))||' toast='||pg_size_pretty(coalesce(pg_total_relation_size((SELECT reltoastrelid FROM pg_class WHERE relname='assets')),0));"
 
