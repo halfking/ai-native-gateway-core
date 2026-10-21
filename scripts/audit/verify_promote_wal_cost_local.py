@@ -131,12 +131,18 @@ FROM generate_series(1, %d) g;
 def psql(sql, db=DB, stdin=False, check=True):
     """跑一段 SQL。
 
-    ★ stdin=True ⇒ 走 psql 的【脚本模式】（从 stdin 读）⇒ 里面的多条语句
-      **逐条发送、各自独立事务** ⇒ 「SET x; DROP y;」写在同一行是**合法**的。
-      ★★ 而默认的 -c 模式 ⇒ 整串当成**一个**隐式事务 ⇒ 「DROP DATABASE cannot run
+    ★ stdin=True ⇒ 走 psql 的【**裸 stdin（交互模式）**】（★ 注意：这条路径**没有** `-f`
+      ⇒ **不是**脚本模式；★ R102 轮实测：**裸 stdin / `-f -` / `-f /dev/stdin`** 三种
+      stdin 读入方式的失败语义**完全一致** ⇒ 叫法差异**不影响结论**）
+      ⇒ 里面的多条语句**逐条发送、各自独立事务** ⇒ 「SET x; DROP y;」写在同一行是**合法**的。
+      ★★ 而**一条 `-c` 里**写多条 ⇒ 整串当成**一个**隐式事务 ⇒ 「DROP DATABASE cannot run
         inside a transaction block」⇒ 清理**直接失败且静默**。
+        ★★ 但「同一 psql 进程的**多条独立 `-c`**」是**合法**的（各自独立事务、SET 对后续生效）
+          ⇒ ⇒ 「逐条发送」的准确含义是【**不把两条并进同一条 `-c`**】，
+          而**不是**【必须换形态】⇒ ★ 段八 的 shell 腿正是这个形态。
       ★ check=False ⇒ 失败只返回、不 raise ⇒ 用于【清理路径】：
         清理失败不得盖掉真正的错误（与 python 侧 atexit 兜底的约定一致）。
+        ★★ 但 check=False ⇒ **失败在调用侧不可见** ⇒ ⇒ 清理路径**必须另查落点**。
     """
     cmd = ["docker", "exec", "-i", "llm-gateway-pg", "psql", "-U", "llm_gateway", "-d", db,
            "-v", "ON_ERROR_STOP=1", "-P", "pager=off", "-t", "-A", "-F", "|"]
@@ -162,8 +168,16 @@ def _drop_db() -> str:
     try:
         psql("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '%s';" % DB,
              db="postgres", check=False)
-        return psql("SET statement_timeout='120s'; DROP DATABASE IF EXISTS %s WITH (FORCE);" % DB,
-                    db="postgres", stdin=True, check=False)
+        out = psql("SET statement_timeout='120s'; DROP DATABASE IF EXISTS %s WITH (FORCE);" % DB,
+                   db="postgres", stdin=True, check=False)
+        # ★★ R102 轮补：【查落点】——check=False ⇒ 失败在调用侧**不可见**
+        #   ⇒ ⇒ 「清理是否真的成功」只能由「库里还有没有」来判
+        #   ⇒ ⇒ 与 finally 块里的同形态查询是**同一套**（改一处必须改另一处）。
+        left = psql("SELECT 'LEFT=' || count(*) FROM pg_database WHERE datname = '%s';" % DB,
+                    db="postgres", check=False).strip()
+        if left != "LEFT=0":
+            out += "\n[cleanup] ⚠ 回收未完成：%s" % left
+        return out
     except Exception as e:  # noqa: BLE001
         return "[cleanup] WARN: %s" % e
 
@@ -192,7 +206,13 @@ def wal():
 
 def build(hot_idx, part_idx):
     # ★ 预清理也走守卫形态（_drop_db）⇒ 与 finally 块同一套（见 _drop_db 的注释）
-    _drop_db()
+    # ★★ R102 轮补：原先**返回值被丢弃** ⇒ 预清理失败【当场静默】
+    #   ⇒ ⇒ 现在把结果打出来（失败会带 ⚠ 标记）
+    #   ⇒ 诚实边界：预清理失败**并非完全无声** ⇒ 后续 CREATE DATABASE 会因「库还在」而失败
+    #   ⇒（check=True ⇒ SystemExit(1)）⇒ 但那是**间接**证据，不如当场可见。
+    _pre = _drop_db()
+    if _pre and ("⚠" in _pre or "WARN" in _pre):
+        print("[cleanup] ⚠ 预清理未完全成功：%s" % _pre.strip(), file=sys.stderr)
     psql("CREATE DATABASE %s;" % DB, db="postgres")
     # ★★ 这里的 statement_timeout='300s' 属于【建库 DDL】，**不是**清理语句 ⇒ 不动它
     psql("SET statement_timeout='300s';\n"
@@ -244,15 +264,20 @@ def main():
         #     包着回收动作」⇒ 把 DROP 抽走 ⇒ 载体就【不覆盖】回收 ⇒ 会被判不合格。
         #     ⇒ 所以这里【必须】字面写 DROP DATABASE（另一处同形态的清理由
         #     _drop_db() 负责 ⇒ 两处是同一形态，改一处必须改另一处）。
-        #   ★★ SET 与 DROP 必须【逐条发送】⇒ ⇒ 必须走 stdin=True（脚本模式）
-        #     ⇒ -c 模式会把两条并进一个隐式事务 ⇒ PG 直接拒绝 ⇒ 清理静默失败。
+        #   ★★ SET 与 DROP 必须【逐条发送】⇒ ⇒ 走 stdin=True（★ **裸 stdin 交互模式**，
+        #     **不是**脚本模式 —— R102 轮订正；三种 stdin 读入方式的失败语义一致）
+        #     ⇒ 一条 `-c` 里把两条并进去 ⇒ 一个隐式事务 ⇒ PG 直接拒绝 ⇒ 清理静默失败。
+        #     ⇒ ★★ 但「同一 psql 进程的**多条独立 `-c`**」是**合法**的（各自独立事务、
+        #       SET 对后续生效）⇒ ⇒ 「逐条发送」的准确含义是【**不把两条并进同一条 `-c`**】
+        #       而**不是**【必须换形态】⇒ ★ 段八 的 shell 腿正是这个形态。
         #   ★★ 超时 120s：实测「terminate 之后 DROP 仍要等被 SIGTERM 的后端收尾」
         #     可达数十秒 ⇒ 15s 会把合法清理砍成失败 ⇒ 失败＝泄漏。
         try:
             psql("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '%s';" % DB, db="postgres", check=False)
             psql("SET statement_timeout='120s'; DROP DATABASE IF EXISTS %s WITH (FORCE);" % DB, db="postgres", stdin=True, check=False)
             # ★ 查落点：「清理是否真的成功」只能由「库里还有没有」来判
-            #   （本函数走 psql 的 stdin 脚本形态 ⇒ 失败时 psql 的退出码不可信）
+            #   （★ R102 轮订正：本函数走 stdin 形态 ⇒ check=False ⇒ **调用侧也收不到退出码**
+            #    ⇒ ⇒ 这里查落点是【唯一】的失败可见性来源 ⇒ 不可省）
             left = psql("SELECT 'LEFT=' || count(*) FROM pg_database WHERE datname = '%s';" % DB, db="postgres", check=False).strip()
             if left != "LEFT=0":
                 print("[cleanup] ⚠ 回收未完成：%s" % left)
