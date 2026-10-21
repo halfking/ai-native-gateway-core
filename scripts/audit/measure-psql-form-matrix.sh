@@ -15,6 +15,8 @@
 #      ★ 只看退出码 ⇒ 分不出「整串回滚」与「半执行」⇒ 两种语义的落点状态完全不同。
 #      ★ 只测一个落点表 ⇒ 会漏掉另一维（本脚本第一版就栽在这里：只放了一个表
 #        在坏语句之前 ⇒ 只能测「回滚」⇒ 测不出「后续是否执行」）。
+#   ③★ 「ON_ERROR_STOP=1 ⇒ 在错误处中止、后续语句不执行」是**跨形态**的一致语义
+#      （一条 -c 内多语句 / 同进程多条 -c / 三种 stdin 形态）⇒ 补充 E 守住它。
 #   ④ 期望值表在下方 EXPECT_* 常量里 ⇒ psql 升级导致语义变化时，**改这里**，
 #      并同步订正仓内所有引用该语义的注释（脚本会告诉你哪一格变了）。
 #
@@ -49,6 +51,7 @@ EXPECT_CT_FDEV_OFF=y;  EXPECT_CT_FDEV_ON=n
 PGARGS=(-U postgres -d postgres)
 PRE=r102_pre_marker
 POST=r102_post_marker
+AFTERERR=r102_aftererr_marker
 ERRF=$(mktemp /tmp/r102_psql_form_err.XXXXXX)
 FAIL=0
 TOTAL=0
@@ -198,6 +201,48 @@ else
   log "  ⇒ **FAIL**"; FAIL=$((FAIL+1))
 fi
 docker exec "$CONTAINER" psql "${PGARGS[@]}" -qc "DROP DATABASE IF EXISTS r102_droptarget WITH (FORCE);" >/dev/null 2>&1
+
+log ""
+log "=== 补充 C：同一 psql 进程的【多条独立 -c】⇒ 退出码只反映最后一条（段八机制②）==="
+docker exec "$CONTAINER" psql "${PGARGS[@]}" -c "SELECT 1" -c "SELECT * FROM r102_no_such_table_xyz;" >/dev/null 2>"$ERRF"
+RC=$?
+log "  [ok, err] ⇒ rc=$RC （期望 1）"
+TOTAL=$((TOTAL+1))
+if [ "$RC" = "1" ]; then log "  ⇒ PASS"; else log "  ⇒ **FAIL**"; FAIL=$((FAIL+1)); fi
+docker exec "$CONTAINER" psql "${PGARGS[@]}" -c "SELECT * FROM r102_no_such_table_xyz;" -c "SELECT 1" >/dev/null 2>"$ERRF"
+RC=$?
+log "  [err, ok] ⇒ rc=$RC （期望 0）"
+TOTAL=$((TOTAL+1))
+if [ "$RC" = "0" ]; then log "  ⇒ PASS"; else log "  ⇒ **FAIL**"; FAIL=$((FAIL+1)); fi
+
+log ""
+log "=== 补充 D：某条 -c 失败后 ⇒ 后续 -c 仍会执行（无 OES；段八机制③）==="
+docker exec "$CONTAINER" psql "${PGARGS[@]}" -c "SELECT * FROM r102_no_such_table_xyz;" \
+  -c "CREATE TABLE $AFTERERR(id int);" >/dev/null 2>"$ERRF"
+RC=$?
+GOT=$(exists "$AFTERERR")
+log "  rc=$RC  后续 -c 建表成功=$GOT （期望 t）"
+TOTAL=$((TOTAL+1))
+if [ "$GOT" = "t" ]; then log "  ⇒ PASS"; else log "  ⇒ **FAIL**"; FAIL=$((FAIL+1)); fi
+docker exec "$CONTAINER" psql "${PGARGS[@]}" -qc "DROP TABLE IF EXISTS $AFTERERR;" >/dev/null 2>&1
+
+log ""
+log "=== 补充 E：★ OES=1 ⇒ 后续 -c 【不】执行 ⇒ 「中止」在所有形态上一致 ==="
+docker exec "$CONTAINER" psql "${PGARGS[@]}" -v ON_ERROR_STOP=1 \
+  -c "SELECT * FROM r102_no_such_table_xyz;" -c "CREATE TABLE $AFTERERR(id int);" >/dev/null 2>"$ERRF"
+RC=$?
+GOT=$(exists "$AFTERERR")
+log "  rc=$RC  后续 -c 建表成功=$GOT （期望 f）"
+TOTAL=$((TOTAL+1))
+if [ "$GOT" = "f" ]; then
+  log "  ⇒ PASS（★ 「ON_ERROR_STOP=1 ⇒ 在错误处中止、后续不执行」在【所有形态】上都成立："
+  log "     一条 -c 内多语句 / 同进程多条 -c / 三种 stdin 形态 ⇒ ⇒ 而「无 OES ⇒ 后续继续」"
+  log "     【只在 stdin 形态与多条 -c 形态成立】⇒ ⇒ 「OES=1」保证的是「失败可检出 + 后续不再执行」，"
+  log "     【不保证落点干净】⇒ ⇒ ⇒ 查落点仍是必需项）"
+else
+  log "  ⇒ **FAIL**"; FAIL=$((FAIL+1))
+fi
+docker exec "$CONTAINER" psql "${PGARGS[@]}" -qc "DROP TABLE IF EXISTS $AFTERERR;" >/dev/null 2>&1
 
 log ""
 if [ "$FAIL" -eq 0 ]; then
