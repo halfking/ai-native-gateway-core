@@ -75,20 +75,34 @@ func TestR88LegLevelDominanceSelfCheck(t *testing.T) {
 	}
 	dir := t.TempDir()
 
-	write := func(fn, body string) string {
-		p := filepath.Join(dir, fn)
+	// ★ R89 轮：**每个夹具一个独立子目录**（= 独立包）。
+	//
+	// ★ 为什么必须这样：判据是**包级**的（包索引按**函数名**建）⇒⇒ 若多个夹具共用
+	//   一个目录且**函数重名**（本文件的夹具里 `openPool` / `reset` 就重名了），
+	//   它们会被**合并成同一个函数** ⇒⇒ 一个夹具的守卫会污染另一个夹具
+	//   ⇒⇒ 读数失去意义（实测：R87 的老夹具就是这样串味的）。
+	//   ⇒ ⇒ 每个夹具自成一个包 ⇒ 互不干扰。
+	write := func(fixture, fn, body string) string {
+		p := filepath.Join(dir, fixture, fn)
+		if err := os.MkdirAll(filepath.Dir(p), 0o750); err != nil {
+			t.Fatalf("mkdir fixture dir: %v", err)
+		}
 		if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
 			t.Fatalf("write fixture: %v", err)
 		}
 		return p
 	}
-	analyze := func(fn string) []r87Pair {
-		p := filepath.Join(dir, fn)
+	// pkgs 在**所有夹具写完之后**才建（包索引要看得见全部夹具文件）。
+	var pkgs map[string]*r87PkgFacts
+	analyze := func(rel string) []r87Pair {
+		p := filepath.Join(dir, rel)
 		raw, err := os.ReadFile(p)
 		if err != nil {
 			t.Fatalf("read %s: %v", p, err)
 		}
-		return r87AnalyzeFile(t, p, fn, string(raw), exported, r87BuildPkgFacts(t, dir), "example.com/x", dir)
+		// ★ 最后一个参数是**导入解析根目录**（跨包闸门要用），不是包目录
+		//   ⇒⇒ 包目录由 `r87AnalyzeFile` 内部按 `filepath.Dir(path)` 推导。
+		return r87AnalyzeFile(t, p, rel, string(raw), exported, pkgs, "example.com/x", dir)
 	}
 
 	// ── 夹具 ⑪：兄弟 helper + 调用者侧支配 ⇒ 必须判成「有守卫」（零候选）────
@@ -96,7 +110,7 @@ func TestR88LegLevelDominanceSelfCheck(t *testing.T) {
 	// ★ 这是仓内四条真腿的**真实形状**：破坏性字面量住在 `reset` 里，
 	//   守卫住在 `openPool` 里，两个是**兄弟** ⇒⇒ 支配关系在测试函数那一侧。
 	//   ⇒ 若判据只看「语句所在函数」，这四条真腿会全被判成没守卫（假阳性）。
-	f11 := write("sibling_guard_test.go", "package fx\n\nimport (\n\t\"context\"\n\t\"os\"\n\t\"testing\"\n\n"+
+	write("fx1", "sibling_guard_test.go", "package fx\n\nimport (\n\t\"context\"\n\t\"os\"\n\t\"testing\"\n\n"+
 		"\"github.com/jackc/pgx/v5/pgxpool\"\n)\n\n"+
 		"func openPool(t *testing.T) *pgxpool.Pool {\n\t_ = \"SELECT current_database()\"\n\treturn nil\n}\n\n"+
 		"func reset(pool *pgxpool.Pool) {\n"+
@@ -108,7 +122,7 @@ func TestR88LegLevelDominanceSelfCheck(t *testing.T) {
 	//
 	// ★★★ 这就是 R88 变异 M1 的形态：文件级口径看到「判定在前面」⇒ 放行整文件；
 	//   腿级口径必须**只**抓出那条没守卫的腿。
-	f12 := write("mixed_legs_test.go", "package fx\n\nimport (\n\t\"context\"\n\t\"os\"\n\t\"testing\"\n\n"+
+	write("fx2", "mixed_legs_test.go", "package fx\n\nimport (\n\t\"context\"\n\t\"os\"\n\t\"testing\"\n\n"+
 		"\"github.com/jackc/pgx/v5/pgxpool\"\n)\n\n"+
 		"func openPool(t *testing.T) *pgxpool.Pool {\n\t_ = \"SELECT current_database()\"\n\treturn nil\n}\n\n"+
 		"func reset(pool *pgxpool.Pool) {\n"+
@@ -120,7 +134,7 @@ func TestR88LegLevelDominanceSelfCheck(t *testing.T) {
 		"\t_, _ = pool.Exec(context.Background(), \"TRUNCATE public.other_table\")\n}\n")
 
 	// ── 夹具 ⑬：判定就在测试函数自己体内 ⇒ 必须判成「有守卫」────────────────
-	f13 := write("inline_guard_test.go", "package fx\n\nimport (\n\t\"context\"\n\t\"os\"\n\t\"testing\"\n\n"+
+	write("fx3", "inline_guard_test.go", "package fx\n\nimport (\n\t\"context\"\n\t\"os\"\n\t\"testing\"\n\n"+
 		"\"github.com/jackc/pgx/v5/pgxpool\"\n)\n\n"+
 		"func TestInlineGuard(t *testing.T) {\n\t_ = os.Getenv(\""+name+"\")\n"+
 		"\t_ = \"SELECT current_database()\"\n"+
@@ -131,7 +145,7 @@ func TestR88LegLevelDominanceSelfCheck(t *testing.T) {
 	//
 	// ★ 与夹具 ⑫ 的区别：这里守卫**在文件里**，但破坏性那条腿**够不到它**
 	//   ⇒⇒ 「文件里有判定」不等于「这条腿有判定」。
-	f14 := write("unreachable_guard_test.go", "package fx\n\nimport (\n\t\"context\"\n\t\"os\"\n\t\"testing\"\n\n"+
+	write("fx4", "unreachable_guard_test.go", "package fx\n\nimport (\n\t\"context\"\n\t\"os\"\n\t\"testing\"\n\n"+
 		"\"github.com/jackc/pgx/v5/pgxpool\"\n)\n\n"+
 		"func guardedHelper() {\n\t_ = \"SELECT current_database()\"\n}\n\n"+
 		"func TestUnreachableGuard(t *testing.T) {\n\t_ = os.Getenv(\""+name+"\")\n"+
@@ -142,7 +156,7 @@ func TestR88LegLevelDominanceSelfCheck(t *testing.T) {
 	//
 	// ★ 这条断言的是**支配方向**：同一个破坏性 helper 被两条腿调用，
 	//   只要其中一条够不到守卫 ⇒ 那条腿就是事故级 ⇒ 必须被抓出来。
-	f15 := write("shared_helper_test.go", "package fx\n\nimport (\n\t\"context\"\n\t\"os\"\n\t\"testing\"\n\n"+
+	write("fx5", "shared_helper_test.go", "package fx\n\nimport (\n\t\"context\"\n\t\"os\"\n\t\"testing\"\n\n"+
 		"\"github.com/jackc/pgx/v5/pgxpool\"\n)\n\n"+
 		"func openPool(t *testing.T) *pgxpool.Pool {\n\t_ = \"SELECT current_database()\"\n\treturn nil\n}\n\n"+
 		"func sharedReset(pool *pgxpool.Pool) {\n"+
@@ -164,7 +178,7 @@ func TestR88LegLevelDominanceSelfCheck(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(gateDir, "gate.go"), []byte(gateSrc), 0o600); err != nil {
 		t.Fatalf("write r88gate: %v", err)
 	}
-	f16 := write("cross_package_gate_test.go", "package fx\n\nimport (\n\t\"context\"\n\t\"os\"\n\t\"testing\"\n\n"+
+	write("fx6", "cross_package_gate_test.go", "package fx\n\nimport (\n\t\"context\"\n\t\"os\"\n\t\"testing\"\n\n"+
 		"\"example.com/x/r88gate\"\n\"github.com/jackc/pgx/v5/pgxpool\"\n)\n\n"+
 		"func openPool(t *testing.T) *pgxpool.Pool {\n\t_ = r88gate.Gate()\n\treturn nil\n}\n\n"+
 		"func reset(pool *pgxpool.Pool) {\n"+
@@ -172,16 +186,18 @@ func TestR88LegLevelDominanceSelfCheck(t *testing.T) {
 		"func TestCrossPackageGate(t *testing.T) {\n\t_ = os.Getenv(\""+name+"\")\n"+
 		"\tpool := openPool(t)\n\treset(pool)\n}\n")
 
+	pkgs = r87BuildPkgFacts(t, dir, "example.com/x")
+
 	// ── 断言 ────────────────────────────────────────────────────────────────
 
 	// ⑪ 兄弟 helper 形态 ⇒ 零候选（假阳性控制）。
-	if got := analyze(filepath.Base(f11)); len(got) != 0 {
+	if got := analyze(filepath.Join("fx1", "sibling_guard_test.go")); len(got) != 0 {
 		t.Fatalf("夹具 ⑪（兄弟 helper + 调用者侧支配）被判成 %d 条候选（%v）⇒ "+
 			"腿级判据把「兄弟」当成了「无支配」⇒ 仓内四条真腿会被误报", len(got), got)
 	}
 
 	// ⑫ ★ 洞的固化：必须**恰好**抓出一条（那条没守卫的腿）。
-	got12 := analyze(filepath.Base(f12))
+	got12 := analyze(filepath.Join("fx2", "mixed_legs_test.go"))
 	if len(got12) != 1 {
 		t.Fatalf("夹具 ⑫（同文件里一有守卫一无守卫）应判出**恰好 1 条**（那条没守卫的腿），实得 %d 条（%v）⇒ "+
 			"★ 腿级判据失效 ⇒ R88 变异 M1 那种「追加一条没守卫的第二入口」会漏放", len(got12), got12)
@@ -191,25 +207,25 @@ func TestR88LegLevelDominanceSelfCheck(t *testing.T) {
 	}
 
 	// ⑬ 判定在测试函数自己体内 ⇒ 零候选。
-	if got := analyze(filepath.Base(f13)); len(got) != 0 {
+	if got := analyze(filepath.Join("fx3", "inline_guard_test.go")); len(got) != 0 {
 		t.Fatalf("夹具 ⑬（判定在测试函数自己体内）被判成 %d 条候选（%v）⇒ 判据过宽", len(got), got)
 	}
 
 	// ⑭ 守卫在不可达函数里 ⇒ 恰好一条。
-	if got := analyze(filepath.Base(f14)); len(got) != 1 {
+	if got := analyze(filepath.Join("fx4", "unreachable_guard_test.go")); len(got) != 1 {
 		t.Fatalf("夹具 ⑭（守卫在另一个不可达函数里）应判出 1 条，实得 %d 条（%v）⇒ "+
 			"★「文件里有判定」被当成了「这条腿有判定」", len(got), got)
 	}
 
 	// ⑮ 被共用的破坏性 helper + 其中一条腿无守卫 ⇒ 恰好一条。
-	got15 := analyze(filepath.Base(f15))
+	got15 := analyze(filepath.Join("fx5", "shared_helper_test.go"))
 	if len(got15) != 1 || got15[0].Root != "TestUnguardedCaller" {
 		t.Fatalf("夹具 ⑮（共用 helper + 一条腿无守卫）应判出恰好 1 条且腿根为 TestUnguardedCaller，实得 %d 条（%v）",
 			len(got15), got15)
 	}
 
 	// ⑯ 跨包闸门在可达链上 ⇒ 零候选。
-	if got := analyze(filepath.Base(f16)); len(got) != 0 {
+	if got := analyze(filepath.Join("fx6", "cross_package_gate_test.go")); len(got) != 0 {
 		t.Fatalf("夹具 ⑯（跨包闸门在可达链上）被判成 %d 条候选（%v）⇒ 跨包守卫被误判成无守卫", len(got), got)
 	}
 }
