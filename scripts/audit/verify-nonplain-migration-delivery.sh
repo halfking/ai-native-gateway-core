@@ -298,7 +298,7 @@ run_mutation() {
   local before after
   before="$(md5_of "$file")"
   if ! "$@"; then
-    echo "   ✘ MUTATION FAILED TO APPLY — $label（助手报错）⇒ 本条的「红」不可归因 ⇒ 判红"
+    echo "   ✘ MUTATION FAILED TO APPLY — ${label}（助手报错）⇒ 本条的「红」不可归因 ⇒ 判红"
     FAILED+=("$label(not-applied)")
     return 1
   fi
@@ -314,7 +314,7 @@ run_mutation() {
 run_mutation_new() {
   local label="$1" file="$2"; shift 2
   if ! "$@"; then
-    echo "   ✘ MUTATION FAILED TO APPLY — $label（助手报错）⇒ 判红"
+    echo "   ✘ MUTATION FAILED TO APPLY — ${label}（助手报错）⇒ 判红"
     FAILED+=("$label(not-applied)")
     return 1
   fi
