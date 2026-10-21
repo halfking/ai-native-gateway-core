@@ -66,7 +66,7 @@ cleanup_db() {
     docker exec -i "$PG_CONTAINER" psql -U "$PG_USER" -d postgres -q \
       -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname='$DB' AND pid <> pg_backend_pid();" >/dev/null 2>&1 || true
     docker exec -i "$PG_CONTAINER" psql -U "$PG_USER" -d postgres -q \
-      -c "SET statement_timeout = '15s'" \
+      -c "SET statement_timeout = '120s'" \
       -c "DROP DATABASE IF EXISTS $DB WITH (FORCE);" >/dev/null 2>&1 || true
   fi
 }
@@ -78,7 +78,7 @@ echo "== 建一次性库 ${DB}（容器=${PG_CONTAINER}）=="
 docker exec -i "$PG_CONTAINER" psql -U "$PG_USER" -d postgres -q \
   -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname='$DB' AND pid <> pg_backend_pid();" >/dev/null 2>&1 || true
 docker exec -i "$PG_CONTAINER" psql -U "$PG_USER" -d postgres -q \
-  -c "SET statement_timeout = '15s'" \
+  -c "SET statement_timeout = '120s'" \
   -c "DROP DATABASE IF EXISTS $DB WITH (FORCE);" >/dev/null 2>&1
 # ★ 先注册 trap：建库过程中失败 ⇒ 也要回收
 trap cleanup_db EXIT

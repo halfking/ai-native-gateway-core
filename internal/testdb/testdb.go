@@ -46,9 +46,12 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"os/signal"
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -57,6 +60,98 @@ import (
 )
 
 var plainIdentifier = regexp.MustCompile(`^[a-z0-9_]+$`)
+
+// cleanupTimeout bounds every administrative statement this package issues
+// against the base server (CREATE DATABASE / DROP DATABASE).
+//
+// Why 120s and not less: measured 2026-10-21 on PG 17.10 under heavy load —
+// after pg_terminate_backend, DROP DATABASE still waits for the SIGTERM'd
+// backend to finish, and that wait was observed at 4.28s, 38.60s and 89.37s.
+// A shorter bound turns a legitimate cleanup into a failed one, and a failed
+// cleanup is a leaked database — the opposite of what the bound is for. The
+// bound still has to exist: an unbounded statement is the failure mode this
+// package's cleanup exists to remove.
+const cleanupTimeout = 120 * time.Second
+
+// ── Signal-path cleanup ───────────────────────────────────────────────────
+//
+// t.Cleanup runs on the normal test path and on t.Fatal, but NOT when the
+// process is terminated by a signal: the Go runtime does not run deferred
+// functions on SIGTERM/SIGINT. Measured consequence: a test run killed by a CI
+// timeout (or Ctrl-C) leaves its throwaway database behind — the exact case
+// the cleanup exists to prevent.
+//
+// The handler below closes that path. It keeps a process-wide registry of the
+// databases this package created, drops them when a signal arrives, then
+// restores the default disposition and re-raises the signal, so the process
+// still dies "because it was signalled" instead of exiting quietly with a
+// different status.
+//
+// The registry is process-wide rather than per-test because signal.Notify
+// installs a process-wide handler: one per test would let the last test's
+// handler replace the first's, and the earlier databases would be orphaned.
+var (
+	dropMu      sync.Mutex
+	dropTargets = map[string]string{} // database name -> base DSN
+	dropOnce    sync.Once
+)
+
+// registerDropTarget records a database that must be dropped if this process
+// is terminated by a signal.
+func registerDropTarget(baseDSN, name string) {
+	dropMu.Lock()
+	dropTargets[name] = baseDSN
+	dropMu.Unlock()
+	dropOnce.Do(installSignalDrop)
+}
+
+// unregisterDropTarget forgets a database that has already been dropped.
+func unregisterDropTarget(name string) {
+	dropMu.Lock()
+	delete(dropTargets, name)
+	dropMu.Unlock()
+}
+
+// installSignalDrop wires the single process-wide signal handler.
+func installSignalDrop() {
+	ch := make(chan os.Signal, 1)
+	signal.Notify(ch, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		sig, ok := <-ch
+		if !ok {
+			return
+		}
+		dropAllForSignal()
+		// Restore the default disposition and re-raise, so the process still
+		// dies from the signal — the supervisor sees a signalled death, not a
+		// clean exit that looks like a successful test run.
+		signal.Stop(ch)
+		if s, ok := sig.(syscall.Signal); ok {
+			signal.Reset(s)
+			if p, err := os.FindProcess(os.Getpid()); err == nil {
+				_ = p.Signal(s)
+			}
+		}
+		// Fallback for a signal that could not be re-raised: still exit
+		// non-zero, never 0 — a killed run must not look like a passing one.
+		os.Exit(143)
+	}()
+}
+
+// dropAllForSignal drops every registered database.
+func dropAllForSignal() {
+	dropMu.Lock()
+	targets := make(map[string]string, len(dropTargets))
+	for k, v := range dropTargets {
+		targets[k] = v
+	}
+	dropMu.Unlock()
+	for name, dsn := range targets {
+		if err := dropDatabase(dsn, name); err != nil {
+			fmt.Fprintf(os.Stderr, "testdb: signal cleanup DROP DATABASE %s: %v\n", name, err)
+		}
+	}
+}
 
 // GuardFunctions lists the exported functions of this package that are
 // **target-safety gates**.
@@ -75,7 +170,12 @@ func Create(t *testing.T, baseDSN string) string {
 
 	scratch := scratchName(t, baseDSN)
 
-	adminCtx, cancelAdmin := context.WithTimeout(context.Background(), 60*time.Second)
+	// ★ Register before the CREATE so a signal arriving mid-setup still finds
+	//   the name registered. DROP DATABASE IF EXISTS makes a registration for a
+	//   database that never came up harmless.
+	registerDropTarget(baseDSN, scratch)
+
+	adminCtx, cancelAdmin := context.WithTimeout(context.Background(), cleanupTimeout)
 	defer cancelAdmin()
 
 	admin, err := pgconn.Connect(adminCtx, baseDSN)
@@ -110,6 +210,7 @@ func Create(t *testing.T, baseDSN string) string {
 		if err := dropDatabase(baseDSN, scratch); err != nil {
 			t.Logf("testdb: cleanup DROP DATABASE %s: %v", scratch, err)
 		}
+		unregisterDropTarget(scratch)
 	})
 
 	// Rewrite the database component through the parsed config rather than by
@@ -134,7 +235,7 @@ func Create(t *testing.T, baseDSN string) string {
 // close turns cleanup into a silent leak and every later run pays for the
 // accumulating databases.
 func dropDatabase(baseDSN, name string) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), cleanupTimeout)
 	defer cancel()
 	conn, err := pgconn.Connect(ctx, baseDSN)
 	if err != nil {

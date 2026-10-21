@@ -782,7 +782,7 @@ db_init::verify() {
   psql "$base" \
     -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname='${db}_verify' AND pid <> pg_backend_pid();" >/dev/null 2>&1 || true
   if ! psql "$base" \
-      -c "SET statement_timeout = '15s'" \
+      -c "SET statement_timeout = '120s'" \
       -c "DROP DATABASE IF EXISTS \"${db}_verify\" WITH (FORCE);" 2>&1; then
     echo "WARN: drop failed (likely no such DB), continuing" >&2
   fi
@@ -803,7 +803,7 @@ db_init::verify() {
     psql "${_DB_INIT_VERIFY_BASE}" \
       -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname='${_DB_INIT_VERIFY_DB}' AND pid <> pg_backend_pid();" >/dev/null 2>&1 || true
     psql "${_DB_INIT_VERIFY_BASE}" \
-      -c "SET statement_timeout = '15s'" \
+      -c "SET statement_timeout = '120s'" \
       -c "DROP DATABASE IF EXISTS \"${_DB_INIT_VERIFY_DB}\" WITH (FORCE);" >/dev/null 2>&1 || true
   }
   trap 'db_init::_drop_verify_db' EXIT

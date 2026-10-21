@@ -105,7 +105,7 @@ cleanup() {
     PSQL_ADMIN -q \
       -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname='$FRESH_DB' AND pid <> pg_backend_pid();" >/dev/null 2>&1 || true
     PSQL_ADMIN -q \
-      -c "SET statement_timeout = '15s'" \
+      -c "SET statement_timeout = '120s'" \
       -c "DROP DATABASE IF EXISTS $FRESH_DB WITH (FORCE);" >/dev/null 2>&1 || true
   fi
 }

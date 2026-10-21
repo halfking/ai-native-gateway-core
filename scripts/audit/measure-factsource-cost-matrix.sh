@@ -109,7 +109,7 @@ cleanup_dbs() {
     docker exec -i "$PG_CONTAINER" psql -U "$PG_USER" -d postgres -q \
       -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname='$db' AND pid <> pg_backend_pid();" >/dev/null 2>&1 || true
     err="$(docker exec -i "$PG_CONTAINER" psql -U "$PG_USER" -d postgres -q \
-      -c "SET statement_timeout = '15s'" \
+      -c "SET statement_timeout = '120s'" \
       -c "DROP DATABASE IF EXISTS \"$db\" WITH (FORCE);" 2>&1)"
     rc=$?
     if [ "$rc" -ne 0 ]; then
@@ -258,7 +258,7 @@ shape_drop() {
   docker exec -i "$PG_CONTAINER" psql -U "$PG_USER" -d postgres -q \
     -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname='$SHAPE_DB' AND pid <> pg_backend_pid();" >/dev/null 2>&1 || true
   docker exec -i "$PG_CONTAINER" psql -U "$PG_USER" -d postgres -q \
-    -c "SET statement_timeout = '15s'" \
+    -c "SET statement_timeout = '120s'" \
     -c "DROP DATABASE IF EXISTS \"$SHAPE_DB\" WITH (FORCE);" >/dev/null 2>&1 || true
 }
 
@@ -648,7 +648,7 @@ mk_db() {
   docker exec -i "$PG_CONTAINER" psql -U "$PG_USER" -d postgres -q \
     -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname='$1' AND pid <> pg_backend_pid();" >/dev/null 2>&1 || true
   docker exec -i "$PG_CONTAINER" psql -U "$PG_USER" -d postgres -q \
-    -c "SET statement_timeout = '15s'" \
+    -c "SET statement_timeout = '120s'" \
     -c "DROP DATABASE IF EXISTS \"$1\" WITH (FORCE);" >/dev/null 2>&1
   local out
   out=$(docker exec -i "$PG_CONTAINER" psql -U "$PG_USER" -d postgres -q \
