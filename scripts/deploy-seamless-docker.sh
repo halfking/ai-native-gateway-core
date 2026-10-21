@@ -1540,6 +1540,43 @@ if [[ -n "$HARD_BLOCK_RULES" && ! "$HARD_BLOCK_RULES" =~ ^[A-Za-z0-9:_.*,-]+$ ]]
   HARD_BLOCK_RULES=""
 fi
 
+# ── 网关 → ASM 事件投递开关（2026-10-21）──────────────────────────────
+# 网关把 outbox 事件投给 ai-session-manager，需要**两个开关同时非空**：
+#   ASM_INTERNAL_ENDPOINT                    —— ASM 的 /internal/v1/events 地址
+#   AI_SESSION_MANAGER_GATEWAY_EVENT_SECRET  —— 双方共用的 HMAC 密钥
+# 网关侧是双开关 opt-in（cmd/gateway/main.go：两个都齐才起 outbox dispatcher
+# 与 outbox writer，否则**一条事件都不投**）；ASM 侧用同一个密钥校验签名。
+# 只配一个 = 仍然不投 ⇒ 两个要么都配要么都不配。
+#
+# 取值优先级：部署机环境变量 > env 文件里上次落下的值（运维手工改过的那份，
+# 跨部署保留） > 不设（不投事件）。
+# ⚠ env 文件每次部署都被重写 ⇒ 只在部署机 export 一次的话，下一次部署就没了
+#   ⇒ 运维要长期开，就改 env 文件里的这两行（引擎会保留它们）。
+#
+# ── ASM-ENV-BLOCK:BEGIN ──
+# 单独成函数是为了能被判据门**真实执行**（scripts/deploy-seamless-asm_env_test.sh
+# 按哨兵抽取本函数在沙箱里跑 ⇒ 测的是真代码，不是复制一份的假实现）。
+dd_asm_event_env() {
+  local env_file="${1:-$ENV_FILE}"
+  ASM_INTERNAL_ENDPOINT="${ASM_INTERNAL_ENDPOINT:-}"
+  ASM_EVENT_SECRET="${AI_SESSION_MANAGER_GATEWAY_EVENT_SECRET:-}"
+  if [[ -f "$env_file" ]]; then
+    if [[ -z "$ASM_INTERNAL_ENDPOINT" ]]; then
+      ASM_INTERNAL_ENDPOINT="$(sed -nE 's/^(export )?ASM_INTERNAL_ENDPOINT=(.*)$/\2/p' "$env_file" | tail -1)"
+    fi
+    if [[ -z "$ASM_EVENT_SECRET" ]]; then
+      ASM_EVENT_SECRET="$(sed -nE 's/^(export )?AI_SESSION_MANAGER_GATEWAY_EVENT_SECRET=(.*)$/\2/p' "$env_file" | tail -1)"
+    fi
+    # 去掉 shell 引号形态（bash %q 对空串会写成 ''，对含空格的值会加反斜杠）。
+    ASM_INTERNAL_ENDPOINT="${ASM_INTERNAL_ENDPOINT%\'}"; ASM_INTERNAL_ENDPOINT="${ASM_INTERNAL_ENDPOINT#\'}"
+    ASM_INTERNAL_ENDPOINT="${ASM_INTERNAL_ENDPOINT%\"}"; ASM_INTERNAL_ENDPOINT="${ASM_INTERNAL_ENDPOINT#\"}"
+    ASM_EVENT_SECRET="${ASM_EVENT_SECRET%\'}"; ASM_EVENT_SECRET="${ASM_EVENT_SECRET#\'}"
+    ASM_EVENT_SECRET="${ASM_EVENT_SECRET%\"}"; ASM_EVENT_SECRET="${ASM_EVENT_SECRET#\"}"
+  fi
+}
+# ── ASM-ENV-BLOCK:END ──
+dd_asm_event_env "$ENV_FILE"
+
 {
   printf '# llm-gateway-go @ %s（由 deploy-seamless-docker.sh 生成，勿提交）\n' "${DD_HOST:-目标机}"
   printf '# shell 可 source；容器用 -e 注入，不走 docker 的 env 文件参数\n'
@@ -1573,6 +1610,14 @@ fi
   if [[ -n "$HARD_BLOCK_RULES" ]]; then
     printf 'export LLM_GATEWAY_HARD_BLOCK_RULES=%q\n' "$HARD_BLOCK_RULES"
   fi
+  # 网关 → ASM 事件投递开关（空 = 不投事件）。写进 env 文件是为了**跨部署保留**
+  # （运维手工改过的值下次部署还在），不是给 docker --env-file 用的。
+  if [[ -n "$ASM_INTERNAL_ENDPOINT" ]]; then
+    printf 'export ASM_INTERNAL_ENDPOINT=%q\n' "$ASM_INTERNAL_ENDPOINT"
+  fi
+  if [[ -n "$ASM_EVENT_SECRET" ]]; then
+    printf 'export AI_SESSION_MANAGER_GATEWAY_EVENT_SECRET=%q\n' "$ASM_EVENT_SECRET"
+  fi
 } > "$ENV_FILE"
 chmod 600 "$ENV_FILE"
 
@@ -1602,6 +1647,18 @@ if [[ -n "$HARD_BLOCK_RULES" ]]; then
 else
   log "硬阻断清单未配置 → 用网关内置默认（只有 input 允许硬阻断，egress/output 不终止回合）"
 fi
+
+# ── ASM-ENV-INJECT:BEGIN ──
+# 网关 → ASM 事件投递：两个开关都齐才注入（网关侧是双开关 opt-in，
+# 只给一个 = 网关照样不投事件）。★ 密钥不进日志。
+if [[ -n "$ASM_INTERNAL_ENDPOINT" && -n "$ASM_EVENT_SECRET" ]]; then
+  GW_ENV+=( -e "ASM_INTERNAL_ENDPOINT=${ASM_INTERNAL_ENDPOINT}" )
+  GW_ENV+=( -e "AI_SESSION_MANAGER_GATEWAY_EVENT_SECRET=${ASM_EVENT_SECRET}" )
+  log "ASM 事件投递已启用：${ASM_INTERNAL_ENDPOINT}（共享密钥已配，值不打印）"
+else
+  log "ASM 事件投递未启用（endpoint_configured=$([[ -n "$ASM_INTERNAL_ENDPOINT" ]] && echo true || echo false) secret_configured=$([[ -n "$ASM_EVENT_SECRET" ]] && echo true || echo false)）—— 网关不会投任何事件"
+fi
+# ── ASM-ENV-INJECT:END ──
 
 # ── 状态目录出容器（2026-10-13，对齐 211 机 DEPLOY-STANDARDS 总纲）──────
 # /app/data（keystore/hotzone/attachments/backups/model-quality）与 /app/logs

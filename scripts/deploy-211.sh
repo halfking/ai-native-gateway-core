@@ -16,7 +16,16 @@
 #                   **路径不可改**：SECRET_KEY 与库内 api_keys.key_hash 的
 #                   HMAC 绑定，换路径 ⇒ 换密钥 ⇒ 全部 key 失效。
 #   远端仓库根    /root/llm-gateway-go-211
-#   蓝绿槽位      a=8781（当前活跃） / b=8782（候选）
+#   蓝绿槽位      a=8781（当前活跃） / b=8783（候选）
+#                 ⚠ **b 不是 8782**：同机另一个产品 `ai-session-manager-asm-1`
+#                 （docker compose，2026-10-21 17:0x 起）已占用 127.0.0.1:8782
+#                 ⇒ ⇒ 候选槽 b 在 8782 上 `docker run` 必失败：
+#                 `Bind for 127.0.0.1:8782 failed: port is already allocated`
+#                 ⇒ ⇒ 端口被**别的产品**占住 ⇒ **不是僵尸 proxy、不是本仓的问题**
+#                 ⇒ ⇒ 处置 = 换一个空闲端口（8783 实测空闲：211 上 8783-8787 无监听）
+#                 ⇒ ⇒ ★ **槽位端口必须是静态的**：引擎用 nginx upstream 的端口
+#                 反推「谁是活跃槽」（`dd_active_slot` 把端口与 a/b 槽位配对），
+#                 ⇒ ⇒ 端口一动态，活跃槽判定就失效 ⇒ ⇒ 不能做「自动挑空闲端口」。
 #   容器名        llm-gateway-211-<slot>
 #   nginx         /etc/nginx/conf.d/ns-gateway-211.conf
 #                 upstream ns_llm_gateway_upstream（主 server 行 = 活跃槽端口）
@@ -43,6 +52,17 @@
 # =====================================================================
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# 蓝绿两槽的固定发布端口：**必须在这里定义**（而不是等到下面的「主机信息」块）——
+# 因为 `--dry-run` 的合同 JSON 在参数分派段就要打印这两个端口
+# ⇒ ⇒ 定义晚了，dry-run 会报旧端口 ⇒ ⇒ 合同与实际不一致。
+# ⚠ b 槽 = 8783 而**不是 8782**：8782 已被同机另一个产品
+#   （ai-session-manager-asm-1，docker compose）占用 ⇒ 候选槽在 8782 上起不来
+#   （`Bind for 127.0.0.1:8782 failed: port is already allocated`）。
+#   ★ 端口必须静态：引擎靠 nginx upstream 的端口反推活跃槽（dd_active_slot），
+#   动态端口会让「谁是活跃槽」判定失效 ⇒ 切流方向可能反了。
+export DD_SLOT_A_PORT="${DD_SLOT_A_PORT:-8781}"
+export DD_SLOT_B_PORT="${DD_SLOT_B_PORT:-8783}"
 
 # Password authentication is never used by the canonical deploy path. Clear a
 # stale inherited value so unrelated shell configuration cannot block a key-only
@@ -73,7 +93,10 @@ if (( ${#ARGS[@]} > 0 )); then
   if [[ " ${ARGS[*]} " == *' --dry-run '* ]]; then
     # 211 是 Docker 形态的**蓝绿**部署：两个槽各绑一个固定端口，活跃槽由
     # nginx upstream 实际指向的端口决定（事实优先于状态文件）。
-    printf '{"target":"211","slot_a_port":"8781","slot_b_port":"8782","active_slot":null,"candidate_slot":null}\n'
+    # ⚠ 端口从下面的 export 读，**不写死字面量** ⇒ 改了 DD_SLOT_*_PORT 时
+    #   dry-run 的合同 JSON 不会继续报旧端口（否则合同与实际不一致）。
+    printf '{"target":"211","slot_a_port":"%s","slot_b_port":"%s","active_slot":null,"candidate_slot":null}\n' \
+      "${DD_SLOT_A_PORT:-8781}" "${DD_SLOT_B_PORT:-8783}"
     exit 0
   fi
 fi
@@ -100,9 +123,9 @@ export DD_HOST="${DD_HOST:-192.168.31.211}"
 export DD_STATE_DIR="${DD_STATE_DIR:-/opt/llm-gateway-go-211}"
 export DD_REMOTE_ROOT="${DD_REMOTE_ROOT:-/root/llm-gateway-go-211}"
 export DD_NETWORK="${DD_NETWORK:-llm-gateway-net}"
-# 蓝绿两槽的固定发布端口：槽位与端口绑定，活跃槽由 nginx upstream 判定。
-export DD_SLOT_A_PORT="${DD_SLOT_A_PORT:-8781}"
-export DD_SLOT_B_PORT="${DD_SLOT_B_PORT:-8782}"
+# ★ 蓝绿两槽的固定发布端口（槽位与端口绑定，活跃槽由 nginx upstream 判定）
+#   **定义在文件头**（set -euo pipefail 之后）—— `--dry-run` 的合同 JSON 在
+#   参数分派段就要打印它们 ⇒ 定义在这里会报旧端口 ⇒ 合同与实际不一致。
 export DD_CONTAINER_PREFIX="${DD_CONTAINER_PREFIX:-llm-gateway-211}"
 export DD_IMAGE="${DD_IMAGE:-llm-gateway-211}"
 export DD_GW_DATA_ROOT="${DD_GW_DATA_ROOT:-/opt/kaixuan/data/llm-gateway}"

@@ -1,0 +1,31 @@
+# R87 轮台账：**破坏性真库腿 × 事实源承载的 DSN 名** —— 已人工定性为「可放行」的条目。
+#
+# 列：name<TAB>file<TAB>verdict
+#   name    = 事实源导出的 DSN 名（scripts/audit/datasource_env.sh）
+#   file    = 测试文件（相对仓库根）
+#   verdict = 为什么这条腿在事实源档下**不构成数据事故**（必须可核对）
+#
+# ★ 与 R86 的 `dsn_target_mismatch_ledger.tsv` 的区别（别混用）：
+#   · R86 的台账 = **错配**登记（事实源给的值这条腿一定会拒绝）⇒ 棘轮：只减不增；
+#   · 本台账 = **风险分类**登记（这条腿确实有破坏性 SQL，但删的是它自己建的东西）
+#     ⇒ 可以增（每增一条都要有人工判词），但同时有**腐化红**：
+#     台账里的一行若探测不到了 ⇒ 判红（请删行；该风险已消失）。
+#
+# ★★ 登记的门槛：**必须有可核对的判词**，且判词必须指出
+#   「被删的那个对象是这条腿自己建的」+「它为什么是空的 / 为什么是隔离的」。
+#   ⇒ 只写「看起来安全」的一律不算登记。
+#
+# ── 三条真高危已在本轮修掉（不再在本台账里，因为它们**不再**是候选）────────
+#   · scripts/audit/promote_integration_test.go
+#   · domains/session/v2/session_aggregate_outbox_reaper_integration_test.go
+#   · admin/data_lifecycle_attachments_integration_test.go
+#   · deploy/sql/verify/supplier_errors_pg_test.go
+#   ⇒ 四条都补了 `internal/testguard.RequireIsolatedTarget`（建连/建池之前）。
+#
+# ── 本台账现存 3 个文件 / 5 条 ──────────────────────────────────────────────
+
+TEST_DATABASE_URL	db/db_750_ensure_realdb_test.go	DROP 的是本腿**自己建**的探测分区 `usage_facts_<current_date+40>`（名字由 SQL 表达式在运行时算出 ⇒ 静态解析不出 ⇒ 人工核对）：该分区由 `ensure_usage_facts_daily_partition(current_date+40)` 创建；搬进它的 3 行是本腿自己插的（event_id = overlap-probe-*）；探测日是**未来 40 天** ⇒ 产品库上该分区必为空 ⇒ 删空分区不构成数据损失。
+TEST_DB_URL	db/db_750_ensure_realdb_test.go	同上（该腿先读 TEST_DATABASE_URL，未设时回退 TEST_DB_URL）⇒ 同一个判词：删的是本腿自建的未来日期探测分区（空）。
+TEST_DATABASE_URL	db/db_751_tz_pin_realdb_test.go	DROP 的是本腿**自己建**的探测分区 `usage_facts_<上海日历今天+41 天>`（由 `ensure_usage_facts_daily_partition` 创建，名字在运行时算出 ⇒ 静态解析不出 ⇒ 人工核对）：未来日期分区必为空 ⇒ 删的是空分区。
+TEST_DB_URL	db/db_751_tz_pin_realdb_test.go	同上（该腿先读 TEST_DATABASE_URL，未设时回退 TEST_DB_URL）⇒ 同一个判词：删的是本腿自建的未来日期探测分区（空）。
+TEST_DATABASE_URL	domains/session/v2/session_duration_ms_realdb_test.go	DROP 的是**一次性库**，不是产品库：库由**同包的另一个文件**里的 `statusBackfillFixtureDB(t, dsn)` 创建（`domains/session/v2/session_request_status_backfill_test.go`），本文件只在 `t.Cleanup` 里关池后整库 DROP。★ **跨文件** ⇒ 单文件静态判不出来 ⇒ 人工核对后登记；判据缺口见审计档（下一轮可考虑把「跨文件自建库」也做成可判形态）。

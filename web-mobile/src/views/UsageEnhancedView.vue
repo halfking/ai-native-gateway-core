@@ -8,7 +8,7 @@
 // ══ 权限 ══════════════════════════════════════════════════════════════════
 // ★★★★★★ 权限档**第一类（有租户维度）**，但**本族是第一个「服务端缺角色下限」的**。
 //
-//   三条端点都挂在 `admin/handler.go:1297` 的**前缀子路由**上：
+//   三条端点都挂在 `admin/handler.go:1339` 的**前缀子路由**上：
 //     `mux.HandleFunc("/api/admin/usage/", h.admin(h.HandleUsageAdmin))`
 //   → `admin/usage.go:49` `HandleUsageAdmin` 按 path 尾段分发到
 //     `usageCostTrend`(`usage_enhanced.go:128`) / `usagePeriodCompare`(`:347`)

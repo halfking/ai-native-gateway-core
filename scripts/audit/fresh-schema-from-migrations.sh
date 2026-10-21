@@ -100,7 +100,13 @@ cleanup() {
   if [[ "$KEEP_FRESH_DB" == "1" ]]; then
     echo "  keeping $FRESH_DB (point TEST_AUDIT_FRESH_SCHEMA_DB_URL at it)"
   else
-    PSQL_ADMIN -q -c "DROP DATABASE IF EXISTS $FRESH_DB" >/dev/null 2>&1 || true
+    # ★ 防卡保护：SET / terminate / DROP 三条独立 -c（SET 与 DROP 不能串在同一个 -c，
+    #   否则 PG 报「DROP DATABASE cannot run inside a transaction block」⇒ 清理直接失败）
+    PSQL_ADMIN -q \
+      -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname='$FRESH_DB' AND pid <> pg_backend_pid();" >/dev/null 2>&1 || true
+    PSQL_ADMIN -q \
+      -c "SET statement_timeout = '120s'" \
+      -c "DROP DATABASE IF EXISTS $FRESH_DB WITH (FORCE);" >/dev/null 2>&1 || true
   fi
 }
 trap cleanup EXIT

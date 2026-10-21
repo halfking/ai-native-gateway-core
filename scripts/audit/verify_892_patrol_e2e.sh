@@ -18,7 +18,25 @@ DB="itgate_e2e892"
 SCRIPT="$REPO_ROOT/scripts/252-monitor/ursm-snapshot-health.sh"
 
 TMP="$(mktemp /tmp/verify_892e2e_XXXXXX.sql)"
-trap 'rm -f "$TMP"' EXIT
+
+# ★★ 兜底载体（§19.20.62 修）：★ 一次性【库】的回收必须挂在这个载体上。
+#   ⇒ ★ 原先这里只有 `trap 'rm -f "$TMP"' EXIT` ⇒ 它只删临时 SQL 文件、**不回收库**
+#   ⇒ ⇒ 而库回收只在【正常路径】末尾 ⇒ 任何提前退出（建库失败 `|| exit 2` /
+#      `set -u` 报错 / Ctrl-C / 被杀）都**泄漏一次性库** ⇒ ⇒ 这是**真缺陷**
+#      （不是「存在性」问题：★ 实测「中途 SIGTERM」⇒ 未修版残留 1 个库、修后版残留 0 个）。
+#   ⇒ ⇒ ★「回收」与「收割」挂【同一个】载体；★ **不挂 INT/TERM**
+#      （实测 bash 会把 trap 推迟到当前前台命令结束 ⇒ 挂信号 trap 反而让回收更晚 ⇒ 详见 §19.20.59）。
+cleanup() {
+  # ★ 防卡保护（三件）：
+  #   ① 先踢掉残留连接（否则 DROP 会卡在别的会话上 ⇒ 整个脚本卡死）
+  #   ② statement_timeout（给 DROP 自己设上限 ⇒ 防「慢 DROP 把退出卡住」）
+  #   ③ WITH (FORCE)（PG 13+ ⇒ 兜底再踢一次连接）
+  docker exec -i "$CONTAINER" psql -U "$DBUSER" -d postgres -q \
+    -c "SET statement_timeout = '120s'" \
+    -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname='$DB' AND pid <> pg_backend_pid();" \
+    -c "DROP DATABASE IF EXISTS \"$DB\" WITH (FORCE);" >/dev/null 2>&1 || true
+}
+trap 'cleanup; rm -f "$TMP"' EXIT
 
 # ── 1) 造库 + 造数 + 应用迁移 ───────────────────────────────────────────
 cat > "$TMP" <<'SQL'
@@ -50,8 +68,9 @@ with open(out, "a", encoding="utf-8") as fh:
 PY
 
 echo "== 重建一次性库 $DB =="
-docker exec -i "$CONTAINER" psql -U "$DBUSER" -d postgres \
-  -c "DROP DATABASE IF EXISTS $DB;" -c "CREATE DATABASE $DB;" >/dev/null || exit 2
+# ★ 删旧库走【同一个】cleanup（★ 避免两份 DROP 实现漂移 ⇒ 也顺带拿到防卡保护）
+cleanup
+docker exec -i "$CONTAINER" psql -U "$DBUSER" -d postgres -c "CREATE DATABASE $DB;" >/dev/null || exit 2
 docker exec -i "$CONTAINER" psql -U "$DBUSER" -d "$DB" -q -f /dev/stdin < "$TMP" >/dev/null || exit 2
 
 # ── 2) 让脚本在真库上跑两次：旧路 / 新路 ─────────────────────────────────
@@ -118,5 +137,6 @@ for f in /tmp/e2e_old.out /tmp/e2e_new.out; do
 done
 
 echo "== 清理一次性库 =="
-docker exec -i "$CONTAINER" psql -U "$DBUSER" -d postgres -c "DROP DATABASE IF EXISTS $DB;" >/dev/null
+# ★ 正常跑完也走同一个 cleanup（★ EXIT trap 还会再跑一次 ⇒ DROP IF EXISTS ⇒ 无害）
+cleanup
 exit $rc

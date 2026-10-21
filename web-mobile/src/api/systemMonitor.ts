@@ -4,7 +4,7 @@ import { req, type RequestOptions } from './client'
 //   GET /api/admin/system-monitor/stats         队列/并发/近 1 小时计数
 //   GET /api/admin/system-monitor/recent-runs    最近结束的探针运行明细
 //
-// 鉴权：两条都挂 `adminWrap`（admin/systemmonitor_handlers.go:636-637）
+// 鉴权：两条都挂 `adminWrap`（admin/systemmonitor_handlers.go:672-673）
 // ⇒ **admin 档，tenant_admin 可用**。
 //
 // ★ 同族的其它端点**档位不一样**，照抄会 403：

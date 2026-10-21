@@ -83,5 +83,40 @@ func LifecycleSpecs() []*Spec {
 		{Key: "lifecycle.request_wal_ttl_days", Type: TypeInt, Scope: ScopePlatform, Category: CategoryLifecycle, Min: floatPtr(1), Max: floatPtr(30), Default: 1, DangerLevel: Warning, HotReload: true, Description: "request_wal 保留天数", DescriptionLong: "request_wal 月度分区保留天数。默认 1 天。", Unit: "天"},
 		{Key: "lifecycle.credit_ledger_ttl_days", Type: TypeInt, Scope: ScopePlatform, Category: CategoryLifecycle, Min: floatPtr(1), Max: floatPtr(30), Default: 1, DangerLevel: Warning, HotReload: true, Description: "credit_ledger 保留天数", DescriptionLong: "credit_ledger 月度分区保留天数。默认 1 天。", Unit: "天"},
 		{Key: "lifecycle.tool_usage_stats_ttl_days", Type: TypeInt, Scope: ScopePlatform, Category: CategoryLifecycle, Min: floatPtr(1), Max: floatPtr(30), Default: 1, DangerLevel: Warning, HotReload: true, Description: "tool_usage_stats 保留天数", DescriptionLong: "tool_usage_stats 月度分区保留天数。默认 1 天。", Unit: "天"},
+
+		// 2026-10-21（§143.44）：usage_facts —— **两实例上唯一没有任何留存的族**。
+		//
+		// 证据（值无关判据）：211 与 252 的 settings_kv 里 11 个
+		// `lifecycle.*_ttl_days` 键**完全一致**，其中**没有** usage_facts
+		// ⇒ 该族逐日分区 + DEFAULT 分区**无界增长**（252 ≈1.5 MB/天）。
+		//
+		// ★ 保留期 = **365 天**（属主 2026-10-21 定）：它是**计费事实**族，
+		//   保留期属于账期/审计语义（年审窗口），不是技术参数。
+		//   回收方式 = 按日分区 DROP（bg/partition_manager.go 的
+		//   dropOldDailyStatePartitions；既有月度 SQL helper 只认
+		//   ^<parent>_\d{4}_\d{2}$，对日分区名一个都不匹配）。
+		{Key: "lifecycle.usage_facts_ttl_days", Type: TypeInt, Scope: ScopePlatform, Category: CategoryLifecycle, Min: floatPtr(1), Max: floatPtr(3650), Default: 365, DangerLevel: Warning, HotReload: true, Description: "usage_facts 保留天数", DescriptionLong: "usage_facts 按日分区（usage_facts_YYYYMMDD）的保留天数。默认 365 天（计费事实族，对齐年度审计/账期窗口）。超过保留期的**整个日分区**被 DROP 回收空间（不是逐行 DELETE）。", Unit: "天"},
+
+		// ====================================================================
+		// 2026-10-21 R72f（属主决策项 #10 的前半）：补注册 10 个**只出现在读方**
+		// 的键。★ 它们此前从未 Register ⇒ `Global.Spec(key)` 返回 nil ⇒
+		// `GetPlatformInt` 直接回退 fallback ⇒ ⇒ **写 settings_kv 完全无效**。
+		//
+		// ★ 每个键的 Default 都与读方的 fallback **逐字对齐**
+		//   （见各行注释里的读方位置）⇒ ⇒ ⇒ 「kv 无行时」注册前后行为一致。
+		// ★ 唯一一处**行为会变**的：`lifecycle.request_logs_bodies_retention_hours`
+		//   —— 211/252 的 settings_kv 里已写着 `8`，而读方 fallback 是 `24`
+		//   ⇒ ⇒ 注册后保留期从 24h 变 8h（hot 表清理更早）⇒ ⇒ 上线前必须知情。
+		// ====================================================================
+		{Key: "lifecycle.analysis_events_ttl_days", Type: TypeInt, Scope: ScopePlatform, Category: CategoryLifecycle, Min: floatPtr(1), Max: floatPtr(3650), Default: 7, DangerLevel: Warning, HotReload: true, Description: "analysis_events 保留天数", DescriptionLong: "analysis_events 的清理保留天数。读方：bg/partition_manager.go（fallback 7）。", Unit: "天"},
+		{Key: "lifecycle.credential_model_index_ttl_days", Type: TypeInt, Scope: ScopePlatform, Category: CategoryLifecycle, Min: floatPtr(1), Max: floatPtr(3650), Default: 7, DangerLevel: Warning, HotReload: true, Description: "credential_model_index 保留天数", DescriptionLong: "credential_model_index 的冷分区裁剪保留天数。读方：bg/partition_manager.go:1288（fallback 7）。★ 与 §143.21 的「冷族 TTL 空文」问题同源：冷月分区已转 heap ⇒ 7 天 TTL 在冷族上是空文。", Unit: "天"},
+		{Key: "lifecycle.provider_error_details_ttl_days", Type: TypeInt, Scope: ScopePlatform, Category: CategoryLifecycle, Min: floatPtr(1), Max: floatPtr(3650), Default: 30, DangerLevel: Warning, HotReload: true, Description: "provider_error_details 保留天数", DescriptionLong: "provider_error_details 的保留天数。读方：bg/partition_manager.go（fallback 30）。", Unit: "天"},
+		{Key: "lifecycle.request_logs_bodies_promote_batch_size", Type: TypeInt, Scope: ScopePlatform, Category: CategoryLifecycle, Min: floatPtr(100), Max: floatPtr(50000), Default: 500, DangerLevel: Warning, HotReload: true, Description: "request_logs_bodies 搬迁批大小", DescriptionLong: "request_logs_bodies 从 hot 搬迁到分区的单批行数。读方：bg/partition_manager.go:2345（fallback 500）。★ 代码侧另有 ≥100 的安全下限。", Unit: "行"},
+		{Key: "lifecycle.request_logs_bodies_retention_hours", Type: TypeInt, Scope: ScopePlatform, Category: CategoryLifecycle, Min: floatPtr(1), Max: floatPtr(720), Default: 24, DangerLevel: Warning, HotReload: true, Description: "request_logs_bodies 保留小时数", DescriptionLong: "request_logs_bodies 的保留小时数。读方：bg/partition_manager.go:2339（fallback 24）。★★ 211/252 的 settings_kv 里已写着 8 ⇒ 本键注册后**保留期从 24h 变 8h** ⇒ 上线前必须知情。", Unit: "小时"},
+		{Key: "lifecycle.routing_feedback_log_ttl_days", Type: TypeInt, Scope: ScopePlatform, Category: CategoryLifecycle, Min: floatPtr(1), Max: floatPtr(3650), Default: 14, DangerLevel: Warning, HotReload: true, Description: "routing_feedback_log 保留天数", DescriptionLong: "routing_feedback_log 的保留天数。读方：bg/partition_manager.go（fallback 14）。", Unit: "天"},
+		{Key: "lifecycle.routing_optimization_metrics_ttl_days", Type: TypeInt, Scope: ScopePlatform, Category: CategoryLifecycle, Min: floatPtr(1), Max: floatPtr(3650), Default: 30, DangerLevel: Warning, HotReload: true, Description: "routing_optimization_metrics 保留天数", DescriptionLong: "routing_optimization_metrics 的保留天数。读方：bg/partition_manager.go（fallback 30）。", Unit: "天"},
+		{Key: "lifecycle.session_project_backfill_batches", Type: TypeInt, Scope: ScopePlatform, Category: CategoryLifecycle, Min: floatPtr(1), Max: floatPtr(10000), Default: 50, DangerLevel: Warning, HotReload: true, Description: "project_dim 回填单轮最大批数", DescriptionLong: "project_dim 回填 worker 单轮最多跑多少批。读方：bg/project_backfill_worker.go:167（fallback 50）。★ 代码侧另有 ≥1 的安全下限。", Unit: "批"},
+		{Key: "lifecycle.stats_event_inbox_ttl_days", Type: TypeInt, Scope: ScopePlatform, Category: CategoryLifecycle, Min: floatPtr(1), Max: floatPtr(3650), Default: 7, DangerLevel: Warning, HotReload: true, Description: "stats_event_inbox 保留天数", DescriptionLong: "stats_event_inbox 的保留天数。读方：bg/partition_manager.go（fallback 7）。", Unit: "天"},
+		{Key: "lifecycle.supplier_error_stats_ttl_days", Type: TypeInt, Scope: ScopePlatform, Category: CategoryLifecycle, Min: floatPtr(1), Max: floatPtr(3650), Default: 30, DangerLevel: Warning, HotReload: true, Description: "supplier_error_stats 保留天数", DescriptionLong: "supplier_error_stats 的保留天数。读方：bg/partition_manager.go（fallback 30）。", Unit: "天"},
 	}
 }

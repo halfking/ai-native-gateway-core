@@ -1,6 +1,7 @@
 # LLM Gateway Go — 快速参考手册
 
-> **版本**: v2.5.3  
+> **版本**: 2.5.8-5e14ede2-20261020-2794
+  
 > **最后更新**: 2026-09-06  
 > **适用场景**: 快速查询、问题排查、日常开发  
 
@@ -25,7 +26,7 @@
 ```
 项目名称:     LLM Gateway Go
 当前版本:     见仓库根 VERSION 文件（构建时生成，如 2.5.4-8125a06a-20260917-2121）
-Go版本:       1.27.1
+Go版本:       1.27.2
 主入口:       cmd/gateway/main.go
 默认端口:     8781 (Gateway 与 Admin 同端口，/api/admin/*)
 ```
@@ -41,12 +42,12 @@ git remote add github git@github.com:halfking/ai-native-gateway-core.git
 
 ### 代码统计（基于真实扫描，2026-10-16；2026-10-17 订正迁移数与可执行程序口径）
 ```
-Go源文件:       10,399 个    (find . -name "*.go" -type f | wc -l)
-Admin API:       667 个    (find ./admin -name "*.go" -type f | wc -l)
-后台Worker:      412 个    (find ./bg -name "*.go" -type f | wc -l)
+Go源文件:       10,723 个    (find . -name "*.go" -type f | wc -l)
+Admin API:       732 个    (find ./admin -name "*.go" -type f | wc -l)
+后台Worker:      426 个    (find ./bg -name "*.go" -type f | wc -l)
 领域模块:        68 个    (ls ./domains/ | wc -l)
-数据库迁移:     1088 个    (find ./sql/migrations -name "*.sql" | wc -l；2026-10-19 订正，877/878 迁移入库后)
-单元测试:     3,118 个    (*_test.go 文件)
+数据库迁移:     1,119 个    (find ./sql/migrations -name "*.sql" | wc -l；2026-10-19 订正，877/878 迁移入库后)
+单元测试:     3,336 个    (*_test.go 文件)
 可执行程序:      44 个    (go list ./cmd/... main 包口径；顶层 cmd/ 目录 34 个，go list 全量 46 含 2 个非 main 辅助包——R48-B4 订正)
 ```
 
@@ -60,8 +61,8 @@ Admin API:       667 个    (find ./admin -name "*.go" -type f | wc -l)
 │   ├── gateway/   # 主网关程序 ⭐
 │   └── tools/     # 工具程序
 ├── domains/       # 领域模型（68个）⭐
-├── admin/         # Admin API（667文件）⭐
-├── bg/            # 后台Worker（403文件）⭐
+├── admin/         # Admin API（732文件）⭐
+├── bg/            # 后台Worker（426文件）⭐
 ├── web/           # Vue管理面板 ⭐
 ├── installer/     # 安装器（独立模块）⭐
 ├── adapter/       # 协议适配器
@@ -86,7 +87,7 @@ domains/
 ├── security/          # 安全引擎
 ├── hooks/             # 钩子系统
 ├── autoroute/         # 自动路由（model=auto）
-└── ...               # 其他75+领域
+└── ...               # 其他58领域
 ```
 
 ---
@@ -142,18 +143,16 @@ goimports -w .
 
 ### 数据库操作
 ```bash
-# 运行迁移（升级）
-migrate -path migrations -database "postgres://..." up
+# ⚠ 本项目**不使用 golang-migrate**（go.mod 里没有该依赖），
+#    迁移由 Go 原生 runner 统一执行：installer/internal/dbinit（Runner.StartupFiles）
+#    —— 主迁移在 sql/migrations/startup/，注册进 Runner.StartupFiles 后随网关/安装器启动自动跑。
 
-# 回滚最后一次迁移
-migrate -path migrations -database "postgres://..." down 1
-
-# 查看迁移状态
-migrate -path migrations -database "postgres://..." version
-
-# 创建新迁移
-migrate create -ext sql -dir migrations -seq add_new_feature
+# 新建迁移（放 sql/migrations/startup/，并在 runner.go 的 StartupFiles 里登记）
+#   约定见 AGENTS.md「新增迁移」一节
 ```
+
+⚠ 仓库根的 `migrations/` 目录**不是**迁移入口（里面只有 2 个零散文件），
+按 `migrate -path migrations` 操作会写到永远不会被执行的地方。
 
 ### 部署相关
 ```bash
@@ -422,7 +421,7 @@ SELECT
   r.client_model,
   r.outbound_model,
   r.provider_id,
-  r.status_code,
+  r.upstream_status_code,
   r.latency_ms,
   r.ts
 FROM request_logs r
@@ -486,9 +485,10 @@ VALUES ('xxx', 'openai', 'OpenAI Key 1', 'sk-xxx', 'active');
 curl http://localhost:8781/api/admin/connection-registry/req_xxx \
   -H "Authorization: Bearer xxx"
 
-# 通过SQL
-SELECT * FROM requests WHERE id = 'req_xxx';
-SELECT * FROM routing_attempts WHERE request_id = 'req_xxx';
+# 通过SQL（请求轨迹落在 request_logs；路由尝试内联在 request_logs.routing_attempts（jsonb），
+# 没有独立的 requests / routing_attempts 表）
+SELECT * FROM request_logs WHERE request_id = 'req_xxx';
+SELECT routing_attempts FROM request_logs WHERE request_id = 'req_xxx';
 ```
 
 ### Q3: 如何重启Gateway？
@@ -518,9 +518,10 @@ WHERE id = 'cred_xxx';
 # 使用内置Worker（自动）
 # bg/audit_trimmer.go 会自动清理90天以上的数据
 
-# 手动清理
-DELETE FROM requests 
-WHERE created_at < NOW() - INTERVAL '90 days';
+# 手动清理（与内置 Worker 同一批审计表）
+DELETE FROM routing_overrides_audit WHERE ts < NOW() - INTERVAL '90 days';
+DELETE FROM routing_audit_log      WHERE ts < NOW() - INTERVAL '90 days';
+DELETE FROM armor_judgments        WHERE created_at < NOW() - INTERVAL '90 days';
 ```
 
 ---
@@ -549,8 +550,9 @@ redis-cli -h localhost -p 6379 ping
 # 5. 查看日志
 tail -f /var/log/llm-gateway/gateway.log
 
-# 6. 检查License
-./installer/llm-gw-installer license status
+# 6. 检查版本/激活状态（⚠ 没有 `license` 子命令）
+./installer/llm-gw-installer version
+./installer/llm-gw-installer activate --mode key --license-key <KEY>
 ```
 
 ### 请求失败率高
@@ -559,12 +561,12 @@ tail -f /var/log/llm-gateway/gateway.log
 
 **排查步骤**:
 ```sql
--- 1. 查看错误类型分布
-SELECT error_type, COUNT(*) 
-FROM requests 
-WHERE status = 'error' 
-  AND created_at >= NOW() - INTERVAL '1 hour'
-GROUP BY error_type
+-- 1. 查看错误类型分布（request_logs 用 success 布尔列 + error_kind 维度）
+SELECT error_kind, COUNT(*) 
+FROM request_logs 
+WHERE success = false 
+  AND ts >= NOW() - INTERVAL '1 hour'
+GROUP BY error_kind
 ORDER BY COUNT(*) DESC;
 
 -- 2. 查看凭据健康状态
@@ -572,17 +574,19 @@ SELECT provider, status, COUNT(*)
 FROM credentials
 GROUP BY provider, status;
 
--- 3. 查看路由失败原因
-SELECT failure_reason, COUNT(*)
-FROM routing_attempts
-WHERE success = false
-  AND created_at >= NOW() - INTERVAL '1 hour'
-GROUP BY failure_reason;
+-- 3. 查看路由失败原因（routing_attempts 是 request_logs 上的 jsonb 数组列，
+--    每项含 result / error_kind / stage / provider_id 等字段）
+SELECT a->>'error_kind' AS error_kind, COUNT(*)
+FROM request_logs, LATERAL jsonb_array_elements(routing_attempts) AS a
+WHERE a->>'result' <> 'success'
+  AND ts >= NOW() - INTERVAL '1 hour'
+GROUP BY 1
+ORDER BY 2 DESC;
 ```
 
 ```bash
-# 4. 手动探测凭据
-./cmd/probe-cred/probe-cred --credential-id cred_xxx --model gpt-4
+# 4. 手动探测凭据（⚠ 实际只有 -cred / -chat 两个 flag）
+go run ./cmd/probe-cred -cred 123 -chat gpt-4
 
 # 5. 查看Worker日志
 tail -f /var/log/llm-gateway/workers.log | grep "active_probe"
@@ -595,10 +599,10 @@ tail -f /var/log/llm-gateway/workers.log | grep "active_probe"
 **排查步骤**:
 ```sql
 -- 1. 查看慢请求
-SELECT id, outbound_model, provider, latency_ms, created_at
-FROM requests
+SELECT request_id, outbound_model, provider_id, latency_ms, ts
+FROM request_logs
 WHERE latency_ms > 5000
-  AND created_at >= NOW() - INTERVAL '1 hour'
+  AND ts >= NOW() - INTERVAL '1 hour'
 ORDER BY latency_ms DESC
 LIMIT 20;
 

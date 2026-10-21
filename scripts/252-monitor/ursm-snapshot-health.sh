@@ -267,6 +267,15 @@ de() {
   # _test.go 只钉住「它被注册了」，不钉它跑出什么 —— 而「量具跑不通却报绿」
   # 正是这道脚本最贵的失效形态。形态照抄 payload-bloat 脚本的同名注入点。
   # shellcheck disable=SC2086 # PSQL_CMD 刻意按多词命令传入
+  # ★★ 【PSQL_CMD 注入点的契约，2026-10-22 R75 轮补记（此前只有 e2e 脚本里的
+  #   用例隐含着它，没写在这里 ⇒ 踩坑者会浪费很久）】：
+  #     注入的 PSQL_CMD **必须自带结尾的 -c**。
+  #   ★ 原因：`-c` 写在【默认值】里 ⇒ 一旦注入 PSQL_CMD，整个默认值被替换
+  #     ⇒ 漏了 -c ⇒ psql 把 SQL 当成【位置参数】⇒ 报
+  #     「extra command-line argument "SELECT ..."」——
+  #     ★★ 这个报错**完全不像**「你少写了 -c」，会把人引到 SQL 语法/引号的方向。
+  #   ★ 正确写法：`PSQL_CMD="docker exec -i $CONTAINER psql -U $DBUSER -d $DB -tAX -c"`
+  #     （scripts/audit/verify_892_patrol_e2e.sh 就是这么写的 ⇒ 可直接抄）
   ${PSQL_CMD:-podman exec -e "PGOPTIONS=-c statement_timeout=${STMT_TIMEOUT:-600s}" \
     "$CONTAINER" psql -U "$PG_USER" -d "$PG_DB" -tAX -c} "$1" 2>&1 || true
 }
@@ -428,31 +437,56 @@ base_active AS (
 # ★ 探测三条（一次极轻量的查询）：
 #   ① 表存在吗（to_regclass）
 #   ② 有当前粒度的行吗（granularity = 当前粒度）
-#   ③ 覆盖了基线窗吗（最早一天不晚于「今天 - 基线天数」）
+#   ③ ★★【覆盖了基线窗吗】—— 2026-10-22 R75 轮修正（P11-R75），见下。
 #   ★ 三条都满足才走汇总表路。
 BASE_SRC="source"
+# ★★★ 覆盖判据的修正（2026-10-22 R75 轮，P11-R75）：
+#
+#   ★★★ 原判据是 `min(day) <= 今天 - 基线天数` ⇒ 它只问「表里有没有【足够老】的数据」。
+#   ★★★ 而快路真正需要的是「表里有没有【足够新】的数据」——
+#   ★   快路读的窗口是 [今天-基线天数, 今天)，**缺一天就少一天样本**。
+#   ★★★ ⇒ 原判据在【表停更】时依然成立（min(day) 不会随时间前进）
+#   ★★★   ⇒ 巡检会【继续走快路】，而快路此时读到的基线一天比一天少
+#   ★★★   ⇒ 到第 8 天左右，快路在窗口内【一行都读不到】
+#   ★★★   ⇒ 全部桶判成 NO-BASELINE ⇒ ★★ **巡检静默失明**
+#   ★★★     （★ 与 892 迁移头里「回填 0 行 ⇒ 巡检安静地失明」是**同一族**失败模式）
+#   ★ ⇒ 正确判据 = 「窗口内的【每一天】都有数据」
+#   ★   = count(DISTINCT day) over [今天-基线天数, 今天) == 基线天数。
+#   ★   任何一天缺 ⇒ 探测失败 ⇒ 回退源表路 ⇒ **慢，但不失明**
+#   ★   （★ 与本脚本既有哲学一致：「探测失败 ⇒ 一律走源表路 ⇒ 慢，但不失明」）。
+#   ★ ⇒ 而且它是【第一天就退化】的（不是第八天）⇒ 停更一次就立刻回到慢路。
 base_probe=$(de "SELECT coalesce(to_regclass('public.ursm_snapshot_slot_daily')::text, '')
                          || '|' || coalesce((SELECT count(*)::text FROM public.ursm_snapshot_slot_daily
                                               WHERE granularity = '$G_UNIT'), '0')
                          || '|' || coalesce((SELECT min(day)::text FROM public.ursm_snapshot_slot_daily
-                                              WHERE granularity = '$G_UNIT'), '')")
+                                              WHERE granularity = '$G_UNIT'), '')
+                         || '|' || coalesce((SELECT max(day)::text FROM public.ursm_snapshot_slot_daily
+                                              WHERE granularity = '$G_UNIT'), '')
+                         || '|' || coalesce((SELECT count(DISTINCT day)::text FROM public.ursm_snapshot_slot_daily
+                                              WHERE granularity = '$G_UNIT'
+                                                AND day >= ((now() AT TIME ZONE current_setting('TimeZone'))::date
+                                                            - make_interval(days => $BASELINE_DAYS))::date
+                                                AND day <  (now() AT TIME ZONE current_setting('TimeZone'))::date), '0')")
 if ! sql_failed "$base_probe"; then
   base_tbl=$(printf '%s' "$base_probe" | cut -d'|' -f1)
   base_cnt=$(printf '%s' "$base_probe" | cut -d'|' -f2)
   base_min=$(printf '%s' "$base_probe" | cut -d'|' -f3)
+  base_max=$(printf '%s' "$base_probe" | cut -d'|' -f4)
+  base_cov=$(printf '%s' "$base_probe" | cut -d'|' -f5)
   need_min=$(de "SELECT ((now() AT TIME ZONE current_setting('TimeZone'))::date - make_interval(days => $BASELINE_DAYS))::date")
   if [ "$base_tbl" = "ursm_snapshot_slot_daily" ] \
      && [ -n "$base_cnt" ] && [ "$base_cnt" -gt 0 ] 2>/dev/null \
      && ! sql_failed "$need_min" && [ -n "$need_min" ] && [ -n "$base_min" ]; then
-    # ★ 日期比较用【字典序】：两个都是 YYYY-MM-DD（同一 ISO 格式）⇒ 字典序 == 日期序。
-    #   ⚠ bash 的 [ a <= b ] 会把 <= 当成两个参数（实测报「需要二元运算符」），
-    #   即使写成转义的也仍会被解析成两段 ⇒ ⇒ 这里只用 < 与 = 两个可用的比较。
-    if [ "$base_min" \< "$need_min" ] || [ "$base_min" = "$need_min" ]; then
+    # ★ 覆盖判据：窗口内【每一天】都有数据 ⇒ count(DISTINCT day) >= 基线天数。
+    #   ⚠ 数字比较用 [ ... -ge ... ]（bash 3.2 可用）。
+    #   ⚠ 旧判据用的是【字典序】日期比较（YYYY-MM-DD），现已不再用于决策，
+    #     但 min/max 仍打进日志，便于运维一眼看出「表停在哪天」。
+    if [ -n "$base_cov" ] && [ "$base_cov" -ge "$BASELINE_DAYS" ] 2>/dev/null; then
       BASE_SRC="daily"
     fi
   fi
 fi
-log "base_source=${BASE_SRC} granularity=${G_UNIT} baseline_days=${BASELINE_DAYS}"
+log "base_source=${BASE_SRC} granularity=${G_UNIT} baseline_days=${BASELINE_DAYS} slot_daily_cov_days=${base_cov:-?} slot_daily_min=${base_min:-?} slot_daily_max=${base_max:-?} slot_daily_need_from=${need_min:-?}"
 if [ "$BASE_SRC" = "daily" ]; then
   BUCKETS_SQL="$BUCKETS_SQL_DAILY"
 else

@@ -28,7 +28,7 @@ import {
  * ★★★★★★ **权限档第四类登场：不是第三类，是「真门」。**
  *   批 115/117/118 都归第三类（服务端没有租户维度 ⇒ 载荷含别人的数据 ⇒ 过度限制）。
  *   本批**同样没有租户维度**（读全局 `subscription_tiers`），
- *   **但**中间件 `requireSuperAdmin`（`cmd/gateway/main_jwt_middleware.go:65-73`）
+ *   **但**中间件 `requireSuperAdmin`（`cmd/gateway/main_jwt_middleware.go:93-102`）
  *   逐字就是 `if role != "super_admin" { 403 }`
  *   ⇒ 权限由**中间件**给出，不靠前端推断 ⇒ 抽屉席设 `requiresRole` 即完整处置。
  *   ⇒ ★★★★ 与批 116 `modelIQ` 同款，与前三批相反：**别把「没有租户维度」自动读成第三类**。

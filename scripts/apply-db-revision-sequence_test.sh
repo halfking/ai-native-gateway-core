@@ -256,7 +256,7 @@ done
 # db.ensureURSMNodeSnapshotMinDailyPartition mirrors only the post-migration
 # half and probes (to_regprocedure) rather than erroring, keeping the two steps
 # order-independent. The no-registration decision is pinned by
-# bg/partition_825_contract_test.go Test830IsDeliberatelyNotInTheAutoStartupSequence.
+# bg/partition_830_contract_test.go Test830IsDeliberatelyNotInTheAutoStartupSequence.
 # ⚠ This is the **channel-side copy** of the same decision; the Go-side copy is
 #   manualByDesign in installer/cmd/llm-gw-installer/stats_migrations_test.go.
 #   Editing one without the other leaves the other gate red — "已豁免" must hold
@@ -325,6 +325,17 @@ channel_gap_allowlist=$(cat <<'EOF'
 748_selfcheck_system_key_tier.sql
 759_report_snapshots_grain_dims.sql
 830_ursm_node_snapshot_min_partitioned.sql
+# ★ 890（2026-10-21，§143.53）：**out-of-band / installer-only 交付**。
+#   理由：890 自带**非空闸**（v1 族有行就 RAISE）⇒ **天然不可自动重放**
+#   ⇒ 躺在「每次部署都跑」的通道数组里 ⇒ 自动通道每次部署都撞闸
+#   ⇒ 迁移腿立即中止（set -euo pipefail + ON_ERROR_STOP=1）
+#   ⇒ 且它后面的 891/892 永远上不去（890 在通道数组里倒数第二）。
+#   ⚠ 它**不是** superseded（不是「绝不可跑」）：新装库由 installer 腿交付；
+#     升级库由**显式的、属主授权的**退役步骤交付
+#     ⇒ scripts/retire-request-logs-v1-family.sh（--preflight / --defer /
+#       --execute / --undo-defer）。
+#   ⇒ 本文件只登记「交付路径」；通道数组里那一行已同步注释掉。
+890_drop_request_logs_v1_family.sql
 EOF
 )
 
@@ -471,7 +482,12 @@ ensure_allowlist=$(cat <<'EOF'
 820_audio_modality_backfill.sql
 EOF
 )
-canonical_files=$(find "$ROOT_DIR/sql/migrations/startup" -maxdepth 1 -type f -name '[0-9][0-9][0-9]_*.sql' \
+# ★ R82 轮（2026-10-22）：这一行原先是 `find -maxdepth 1` ⇒ **子目录 `up/` 里的
+#   14 条迁移对整条投递路径规则完全隐形**（同一个病的第二例：枚举面被目录层级
+#   而不是被规则定义）。⇒ 去掉 -maxdepth，改为**递归**穷举。
+#   ⚠ 无实害（up/ 里 14 条全部 <690，规则不适用）—— 但「今天无实害」不等于
+#   「明天仍无实害」：将来落进 up/ 的 ≥690 迁移同样会静默不投递。
+canonical_files=$(find "$ROOT_DIR/sql/migrations/startup" -type f -name '[0-9][0-9][0-9]_*.sql' \
   ! -name '*.down.sql' ! -name '755_drop_dead_cleanup_expired_session_turn_logs.sql' -exec basename {} \; | sort)
 # 755 contains its own BEGIN/COMMIT and drops a legacy function. It is
 # intentionally excluded from both the installer's single transaction and
@@ -492,6 +508,120 @@ if ! delivery_path_output=$(canonical_delivery_path_check "$canonical_files" "$s
     [[ -n "$line" ]] && gate_fail "$line"
   done <<<"$delivery_path_output"
 fi
+
+# ── R82 轮（2026-10-22）：投递**视野**补齐 —— 非纯数字前缀 + 子目录 ─────────────
+#
+# ★★ 本块要修的缺陷（**实测复现**，不是推演）：
+#   上面那道 canonical_delivery_path_check 与 installer 的强制 embed 门，
+#   **两道**都用「文件名里能不能解析出一个纯整数」来回答
+#   「这条 startup 迁移在自己的视野里吗」：
+#     · 本门：      [[ "$name" =~ ^[0-9]{3}_.*\.sql$ ]] || continue
+#     · installer 门：strconv.Atoi(name[:idx]) 失败即 continue
+#   ⇒ 任何**解析不出纯三位数字前缀**的迁移（`NNNb_` / `NNNpN_` / 日期名）
+#     对这两道门**完全隐形**。
+#   ⇒ 而 `NNNb_` **是本仓正在使用的命名约定**（361b/487b/487c/680b/682b/683b/
+#     706b/707b 共 8 条已交付件，其中 706b/707b 是 2026-10 的近期件）。
+#   ⇒ ★★ 实测复现（2026-10-22，工作树内新建 `912b_zzz_probe_delivery.sql`）：
+#     本门 GREEN；installer 强制 embed 门 GREEN
+#     ⇒ 该迁移既不在通道 files=()、也不在 embeddata/StartupFiles
+#     ⇒ **升级库拿不到、新装库也拿不到，而没有任何一道门会红**。
+#
+# ★ 修法的性质（与 R81 轮 L11-b 门**同款**）：把「手挑的扫描根清单」换成
+#   ★ **穷举全目录 ＋ 显式清单**。
+#   · 穷举：`sql/migrations/startup/` **递归**全量 up 体（当前 580 条 =
+#     顶层 566 + `up/` 子目录 14），不再按目录层级挑扫描根；
+#   · 显式清单：`sql/schema/startup_migration_nonplain.tsv` 逐条写明
+#     **非纯数字前缀**那部分（当前 13 条）的投递腿与理由。
+#
+# ⚠ 「穷举」这一侧还有**第二处隐形**：子目录 `up/`（14 条）此前也不在
+#   canonical_files 的枚举里（那里是 `find -maxdepth 1`）⇒ **同一个病的第二例**
+#   （今天无实害：14 条全部 <690；但「今天无实害」不等于「明天仍无实害」——
+#   门若看不见 `up/`，将来落进 `up/` 的 ≥690 迁移同样会静默不投递）。
+#   ⇒ 本块按**递归**枚举，子目录里的文件一并纳入。
+#
+# 门的形态：三条判据 + 一条量具自检，全部**一次报全**（沿用本脚本的收集器）。
+nonplain_registry="$ROOT_DIR/sql/schema/startup_migration_nonplain.tsv"
+if [[ ! -f "$nonplain_registry" ]]; then
+  printf 'startup 非纯数字前缀迁移的投递登记册缺失：%s\n' "$nonplain_registry" >&2
+  exit 1
+fi
+# 穷举：**递归**全目录的 up 体。
+# ⚠ `down/` 子目录里的件全部带 `.down.sql` 后缀 ⇒ 这一条 -name 过滤同时排掉了
+#   down/ 与顶层的 .down.sql ⇒ 留下来的就是「会被投递的 up 体」。
+startup_up_bodies=$(find "$ROOT_DIR/sql/migrations/startup" -type f -name '*.sql' \
+  ! -name '*.down.sql' \
+  | sed "s#^$ROOT_DIR/sql/migrations/startup/##" | sort)
+# 两条腿的**全名**提取（既有的 sequence_files / startup_files 只认纯数字前缀名，
+# 而本册子登记的恰恰是那些**非**纯数字前缀的名 ⇒ 必须另取一份全名视图）。
+sequence_files_all=$(printf '%s\n' "$sequence" \
+  | sed -nE 's#^[[:space:]]*"\$ROOT_DIR/sql/migrations/startup/([^"]+)"[,]?.*#\1#p' \
+  | sort -u)
+startup_files_all=$(grep -E '^[[:space:]]*"[^"]+\.sql",?$' "$ROOT_DIR/installer/internal/dbinit/runner.go" \
+  | sed -E 's/^[[:space:]]*"([^"]+)".*/\1/' | sort -u)
+# ⚠ 分类必须看**文件名**（basename），不能看相对路径 ——
+#   `up/376_autoupdate.sql` 的 basename 是**纯数字前缀名** ⇒ 它**不是**非前缀迁移。
+#   本轮第一版用相对路径判（`grep -vE '^[0-9]{3}_'`）⇒ 把整个 up/ 子目录
+#   误判成「非前缀」⇒ 门当场红在 13 条 up/ 文件上 —— **这是门自己抓到的自己的错**。
+nonplain_actual=$(printf '%s\n' "$startup_up_bodies" | awk -F/ '$NF !~ /^[0-9][0-9][0-9]_/ {print}')
+nonplain_declared=$(awk -F'\t' '!/^#/ && NF>=2 {print $1}' "$nonplain_registry" | sort)
+
+# ⓪ 量具自检：穷举必须真的扫到东西，且**必须扫到子目录**。
+#   ⇒ 否则「目录里多一条」这条判据会**恒绿**（门看上去正常、实际扫了个寂寞）。
+for must_see in \
+  "700_request_logs_view_raw_model_name.sql" \
+  "up/600_outbound_body_to_bodies_hot.sql"; do
+  if ! grep -Fxq "$must_see" <<<"$startup_up_bodies"; then
+    gate_fail "startup 迁移穷举没有扫到 ${must_see} ⇒ 枚举面漂移（find 的递归/过滤被改？）⇒ 本块全部判据都不可信"
+  fi
+done
+if [[ -z "$nonplain_actual" ]]; then
+  gate_fail "startup 迁移穷举没有扫到任何非纯数字前缀的 up 体 ⇒ 枚举面失效 ⇒ 本块的『漏登记』判据会恒绿"
+fi
+
+# ① 目录里有、册子里没有 ⇒ 红（漏登记 ⇒ 会静默不投递）
+while IFS= read -r name; do
+  [[ -n "$name" ]] || continue
+  if ! grep -Fxq "$name" <<<"$nonplain_declared"; then
+    gate_fail "startup 迁移 ${name} 的文件名解析不出纯三位数字前缀 ⇒ 它对**投递路径契约门**与**installer 强制 embed 门**都完全隐形（两道门都靠 ^[0-9]{3}_ 判视野）⇒ 它既不在通道 files=()、也不在 embeddata/StartupFiles ⇒ 升级库与新装库都拿不到 ⇒ 必须先在 sql/schema/startup_migration_nonplain.tsv 登记投递腿，再登记进对应通道"
+  fi
+done <<<"$nonplain_actual"
+
+# ② 册子里有、目录里没有 ⇒ 红（陈旧条目 ⇒ 登记册自己漂移）
+while IFS= read -r name; do
+  [[ -n "$name" ]] || continue
+  if [[ ! -f "$ROOT_DIR/sql/migrations/startup/$name" ]]; then
+    gate_fail "startup_migration_nonplain.tsv 登记了 ${name}，但 sql/migrations/startup/ 下没有这个文件 ⇒ 登记册陈旧"
+  fi
+done <<<"$nonplain_declared"
+
+# ③ 册子里的投递腿必须与两条腿的**真实登记**一致（声明 ≠ 事实 ⇒ 红）
+while IFS=$'\t' read -r name leg reason; do
+  [[ -n "$name" ]] || continue
+  case "$leg" in
+    channel|both)
+      if ! grep -Fxq "$name" <<<"$sequence_files_all"; then
+        gate_fail "startup_migration_nonplain.tsv 声明 ${name} 走通道腿，但它不在 scripts/apply-db-revision-sequence.sh 的 files=() 里 ⇒ 升级库拿不到"
+      fi
+      ;;
+  esac
+  case "$leg" in
+    installer|both)
+      if ! grep -Fxq "$name" <<<"$startup_files_all"; then
+        gate_fail "startup_migration_nonplain.tsv 声明 ${name} 走安装器腿，但它不在 installer/internal/dbinit/runner.go 的 StartupFiles 里 ⇒ 新装库拿不到"
+      fi
+      ;;
+  esac
+  case "$leg" in
+    none)
+      if grep -Fxq "$name" <<<"$sequence_files_all"; then
+        gate_fail "startup_migration_nonplain.tsv 声明 ${name} 有意不投递，但它**在**通道 files=() 里 ⇒ 声明与事实不符"
+      fi
+      if grep -Fxq "$name" <<<"$startup_files_all"; then
+        gate_fail "startup_migration_nonplain.tsv 声明 ${name} 有意不投递，但它**在**安装器 StartupFiles 里 ⇒ 声明与事实不符"
+      fi
+      ;;
+  esac
+done < <(awk -F'\t' '!/^#/ && NF>=2 {print}' "$nonplain_registry")
 
 # R33 (2026-10-03) channel-leg completeness — structural closeout of the
 # five-recurrence class (693/699/701/703, then 815/816, then 817): each landed

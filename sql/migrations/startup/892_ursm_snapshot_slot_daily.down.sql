@@ -18,7 +18,17 @@ BEGIN;
 SET LOCAL lock_timeout = '60s';
 SET LOCAL statement_timeout = '300s';
 
-DROP FUNCTION IF EXISTS public.refresh_ursm_snapshot_slot_daily(integer);
+-- ★★★ 2026-10-22（R75 轮）修正一处【真缺陷】：本 down 原来写的是
+--   DROP FUNCTION IF EXISTS public.refresh_ursm_snapshot_slot_daily(integer);
+--   ★★ 但 892 明确【只建一个重载】(integer, text) —— 文件头自己写明了
+--   「不要再为单参数建一个兼容重载」（两个都带默认参数时 f(1) 报 not unique，
+--   本地 PG 17.10 实测）⇒ **单参数版本根本不存在**。
+--   ⇒ ⇒ 原 down 的那条 DROP 是**静默空操作** ⇒ 回滚后**函数残留在库里**，
+--     而表已被删 ⇒ 巡检脚本的探测会看到「表不在」而回退源表路（安全），
+--     但库里留着一个**指向已删表的函数** ⇒ 后续任何 `SELECT refresh_...(1)`
+--     都会报「relation does not exist」⇒ 每日刷新作业会**每次失败**。
+--   ⇒ 修正为**实际存在的签名** (integer, text)。
+DROP FUNCTION IF EXISTS public.refresh_ursm_snapshot_slot_daily(integer, text);
 DROP TABLE IF EXISTS public.ursm_snapshot_slot_daily;
 
 COMMIT;

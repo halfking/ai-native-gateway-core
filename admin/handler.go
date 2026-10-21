@@ -1546,6 +1546,9 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 
 		h.registerMaasRoutes(mux)
 	}
+
+	// 2026-10-21 R72f：功能能力位端点（**无条件注册** —— 理由见 admin/capabilities.go）
+	h.RegisterCapabilityRoutes(mux)
 }
 
 // writeJSON 写 JSON 响应；marshal 失败时记日志并返回 500 兜底体。

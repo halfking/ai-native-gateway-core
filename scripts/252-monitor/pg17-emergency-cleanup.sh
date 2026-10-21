@@ -338,14 +338,44 @@ if [ "$LEVEL" = "L3" ]; then
   fi
 
   # 清零的小表（casdoor token/record/session 等）
+  #
+  # ★★★ 2026-10-21 R85 轮修：本分支此前**只有「n_live_tup = 0」一个判据就裸 TRUNCATE** ——
+  #   而 L1 的死表分支早在 §116 轮就补上了「DROP 前 COUNT(*) 复核」这道闸
+  #   ⇒ ⇒ **同一个错误只修了一半**（本轮发现，由并行会话的 §143.42-B 订正牵出）。
+  #
+  #   ★★ 为什么必须补：`n_live_tup` 是**陈旧估算**，不是行数 ——
+  #     对「长期无写入 + 从未 analyze」的表**恒为 0**（252 实测：
+  #     `ursm_node_snapshot_min_legacy` 真实 **2,836,620** 行，n_live_tup 报 **0**）。
+  #   ⇒ 本分支虽然只覆盖 casdoor/kaixuan/crm/kxmemory 四个库（**不含 llm_gateway** ⇒
+  #     9 月分区那批不在 L3 射程内），但一个真人输 "yes" 仍可能清掉这四个库里
+  #     「估算为 0、实际有行」的非空表 ⇒ ⇒ **清掉的是数据，不是空间**。
+  #
+  #   ⇒ 修法 = 与 L1 **同款**的两道闸（形态刻意对齐，不发明新形态）：
+  #     ① 分区不在本脚本射程（L1 第二道闸的同一口径：分区生命周期要先 DETACH）；
+  #     ② TRUNCATE 前 COUNT(*) 复核；非 0 一律跳过并留痕。
+  #   ⇒ 两道闸都只**减少**破坏性动作 ⇒ 零语义风险。
   for db in casdoor kaixuan crm kxmemory; do
     ZERO_TABLES=$(docker_exec psql -U "$PG_USER" -d "$db" -tAc "
-      SELECT format('%I.%I', schemaname, relname)
-      FROM pg_stat_user_tables
-      WHERE n_live_tup = 0 AND pg_total_relation_size(relid) >= 1024*1024;
+      SELECT format('%I.%I', s.schemaname, s.relname), c.relispartition::int
+      FROM pg_stat_user_tables s
+      JOIN pg_class c ON c.oid = s.relid
+      WHERE s.n_live_tup = 0 AND pg_total_relation_size(s.relid) >= 1024*1024
+      ORDER BY pg_total_relation_size(s.relid) DESC;
     " 2>/dev/null || echo "")
-    while IFS= read -r tname; do
+    while IFS='|' read -r tname is_part; do
       [ -z "$tname" ] && continue
+      # 第三道闸（同 L1）：分区生命周期不归本脚本（TRUNCATE 一个已 ATTACH 的分区
+      # 会静默丢掉该范围的行，之后该范围 INSERT 直接报 no partition of relation found）。
+      if [ "$is_part" = "1" ]; then
+        echo "[$(date -Iseconds)] L3 SKIP ${tname}: 是分区，分区生命周期不归本脚本（需先 DETACH）" >> "$LOG"
+        continue
+      fi
+      # 第四道闸（同 L1）：n_live_tup 只是估计，TRUNCATE 前必须 COUNT(*) 复核。
+      actual_count=$(docker_exec psql -U "$PG_USER" -d "$db" -tAc "SELECT COUNT(*) FROM $tname" 2>/dev/null || echo "-1")
+      if [ "$actual_count" != "0" ]; then
+        echo "[$(date -Iseconds)] L3 SKIP ${tname}: n_live_tup=0 但 COUNT(*)=${actual_count}（统计不可信，拒绝 TRUNCATE）" >> "$LOG"
+        continue
+      fi
       echo "[$(date -Iseconds)] L3 TRUNCATE $tname (in $db)" >> "$LOG"
       docker_exec psql -U "$PG_USER" -d "$db" -tAc "TRUNCATE TABLE $tname" >> "$LOG" 2>&1 || true
     done <<< "$ZERO_TABLES"

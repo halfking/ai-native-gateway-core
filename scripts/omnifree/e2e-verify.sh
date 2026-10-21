@@ -61,7 +61,15 @@ cleanup() {
     # 在测试 DB 内收回 test user 拥有的对象, 再 drop user.
     PGPASSWORD="$ADMIN_PASS" psql -h "$PG_HOST" -p "$PG_PORT" -U "$ADMIN_USER" -d "${TEST_DB_NAME}" \
       -c "DROP OWNED BY ${TEST_USER} CASCADE;" 2>&1 | grep -v "^$" || true
-    PGPASSWORD="$ADMIN_PASS" psql -h "$PG_HOST" -p "$PG_PORT" -U "$ADMIN_USER" -d "${TEST_DB_NAME}" \
+    # ★★ 两个问题一起修：
+    #   ① ★★ 真缺陷：原来连的是 **${TEST_DB_NAME} 本身** ⇒ PG 报
+    #      「cannot drop the currently open database」⇒ 这次清理**从来就没成功过**
+    #      ⇒ 一次性测试库每次跑都泄漏 ⇒ 改成连 postgres 再删
+    #   ② ★ 防卡保护：SET / terminate / DROP 三条独立 -c
+    PGPASSWORD="$ADMIN_PASS" psql -h "$PG_HOST" -p "$PG_PORT" -U "$ADMIN_USER" -d postgres \
+      -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname='${TEST_DB_NAME}' AND pid <> pg_backend_pid();" >/dev/null 2>&1 || true
+    PGPASSWORD="$ADMIN_PASS" psql -h "$PG_HOST" -p "$PG_PORT" -U "$ADMIN_USER" -d postgres \
+      -c "SET statement_timeout = '120s'" \
       -c "DROP DATABASE IF EXISTS ${TEST_DB_NAME};" 2>&1 | grep -v "^$" || true
     # 在 postgres DB 内再次收回 (兼容测试创建过的对象).
     PGPASSWORD="$ADMIN_PASS" psql -h "$PG_HOST" -p "$PG_PORT" -U "$ADMIN_USER" -d postgres \
