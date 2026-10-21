@@ -114,7 +114,7 @@ HTTP/SSE → middleware chain → protocol/IR normalization → session assignme
 | `installer/` | وحدة تثبيت/ترقية مستقلة متعددة المنصات |
 | `scripts/`، `deploy/` | أدوات البناء والنشر والمرايا والتحقق |
 
-لقطة الحجم (مسح كود بتاريخ 2026-10-06): **~4,967 ملف Go · 2,728 ملف اختبارات · 1,016 ملف SQL ترحيل · 67 حزمة نطاقات · 44 ثنائيًا** داخل `cmd/`.
+لقطة الحجم (مسح كود بتاريخ 2026-10-22 @26ebb346c): **~5,677 ملف Go · 3,330 ملف اختبارات · 1,119 ملف SQL ترحيل · 68 حزمة نطاقات · 44 ثنائيًا** داخل `cmd/` (عدّ الملفات بدون `vendor/` و`installer/`؛ ملفات SQL الترحيل = شجرة `sql/migrations/` كاملة؛ الثنائيات = حزم main بحسب `go list`).
 
 **قراءات أعمق**
 
@@ -435,7 +435,7 @@ GOOS=windows GOARCH=arm64  go build -o dist/llm-gw-installer-windows-arm64.exe .
 | دورة حياة الجلسة | [docs/session-lifecycle.md](docs/session-lifecycle.md) — دورة معالجة الجلسة، بمخططات كاملة |
 | المعمارية (بتصنيف الأدلة) | [docs/03-design/01-architecture/architecture/ARCHITECTURE.md](docs/03-design/01-architecture/architecture/ARCHITECTURE.md) — المرجع الداخلي (تصنيف CURRENT/SHADOW/PARALLEL) |
 | المعمارية (نظرة عامة) | [docs/architecture.md](docs/architecture.md) — تصميم النظام ومكوناته |
-| المتطلبات | [docs/01-requirements/SYSTEM_REQUIREMENTS.md](docs/01-requirements/SYSTEM_REQUIREMENTS.md) — FR×19 نطاقات / NFR×13 |
+| المتطلبات | [docs/01-requirements/SYSTEM_REQUIREMENTS.md](docs/01-requirements/SYSTEM_REQUIREMENTS.md) — FR×16 نطاقات / NFR×13 |
 | كتالوج الميزات | [docs/01-requirements/functional/FEATURES_CATALOG.md](docs/01-requirements/functional/FEATURES_CATALOG.md) — خريطة ميزة → كود → API → صفحة إدارة |
 | API | [docs/03-design/01-architecture/architecture/API.md](docs/03-design/01-architecture/architecture/API.md) — مواصفات مستوى البيانات وواجهة الإدارة |
 | البيئة | [docs/environment.md](docs/environment.md) — بيئات النشر والمتغيرات |

@@ -114,7 +114,7 @@ HTTP/SSE → middleware chain → protocol/IR normalization → session assignme
 | `installer/` | 獨立跨平台安裝器 / 升級器模組 |
 | `scripts/`、`deploy/` | 建置、部署、鏡像與驗證工具 |
 
-規模快照（2026-10-06 程式碼掃描）：`cmd/` 下共 **~4,967 個 Go 檔案 · 2,728 個測試檔案 · 1,016 個遷移 SQL · 67 個領域套件 · 44 個二進位**。
+規模快照（2026-10-22 程式碼掃描 @26ebb346c）：`cmd/` 下共 **~5,677 個 Go 檔案 · 3,330 個測試檔案 · 1,119 個遷移 SQL · 68 個領域套件 · 44 個二進位**（檔案數不含 `vendor/` 與 `installer/`；遷移 SQL 為 `sql/migrations/` 全量；二進位依 `go list` 的 main 套件計）。
 
 **深入閱讀**
 
@@ -435,7 +435,7 @@ Installer 完整設計見 [installer/README.md](installer/README.md)。
 | 工作階段生命週期 | [docs/session-lifecycle.md](docs/session-lifecycle.md)——工作階段處理生命週期，完整圖解 |
 | 架構（證據分級） | [docs/03-design/01-architecture/architecture/ARCHITECTURE.md](docs/03-design/01-architecture/architecture/ARCHITECTURE.md)——內部權威文件（CURRENT/SHADOW/PARALLEL 分級） |
 | 架構（總覽） | [docs/architecture.md](docs/architecture.md)——系統設計與元件 |
-| 需求 | [docs/01-requirements/SYSTEM_REQUIREMENTS.md](docs/01-requirements/SYSTEM_REQUIREMENTS.md)——FR×19 領域 / NFR×13 |
+| 需求 | [docs/01-requirements/SYSTEM_REQUIREMENTS.md](docs/01-requirements/SYSTEM_REQUIREMENTS.md)——FR×16 領域 / NFR×13 |
 | 功能目錄 | [docs/01-requirements/functional/FEATURES_CATALOG.md](docs/01-requirements/functional/FEATURES_CATALOG.md)——功能 → 程式碼 → API → 管理頁面對應 |
 | API | [docs/03-design/01-architecture/architecture/API.md](docs/03-design/01-architecture/architecture/API.md)——資料面與管理 API 規格 |
 | 環境 | [docs/environment.md](docs/environment.md)——部署環境與變數 |
