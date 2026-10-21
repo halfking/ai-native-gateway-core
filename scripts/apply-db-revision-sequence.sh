@@ -385,21 +385,36 @@ files=(
   # 前导索引（canonical 视图窗口臂 + V1FreezeCutoffSQL 母表臂；842/846/858
   # 普通父表级联先例）。request_logs 腿引用 860 后的 `_` 前缀名。
   "$ROOT_DIR/sql/migrations/startup/862_partition_family_leading_ts_idx.sql"
-  # ── 2026-10-16：sql/migrations/domain/032（session-crosstalk 端点）──────
+  # ── 2026-10-21（R74）：sql/migrations/domain/032 从本通道**退役** ──────────
   #
-  # session_tenant_binding 表 + update_session_tenant_binding() 触发器函数，
-  # admin/handler.go:1328 的 /api/admin/session-crosstalk 读它，缺失即 42P01。
+  # 退役理由（生产实测，不是推断）：
+  #   · 032 建 `session_tenant_binding` + `update_session_tenant_binding()`
+  #     触发器函数；触发器挂在 **v1 `request_logs`** 上，是那张表**唯一**的
+  #     写入者。v1 族真删（迁移 890）后触发器随表消失 ⇒ 表永远不会再被写入
+  #     ⇒ 这张表就是 v1 族的**侧效应垃圾**。
+  #   · 它在生产 252 上**从来没建过**：部署台账
+  #     `gateway_db_revision_sequences` 里没有 032 的记录（同一张表里
+  #     860/862/864 也没有 —— 那批是 installer 跑的，不是本通道），
+  #     `to_regclass('public.session_tenant_binding')` = NULL
+  #     ⇒ `/api/admin/session-crosstalk` 长期 **HTTP 500（42P01）**。
+  #   · **更要紧的是：它现在必然失败** —— 032:80 的
+  #     `DROP TRIGGER IF EXISTS … ON request_logs` 会被本通道的 token 机制
+  #     改写成 `_request_logs`，而该表已被 890 DROP ⇒ 42P01 ⇒ 在
+  #     `set -euo pipefail` + `ON_ERROR_STOP=1` 下**整条迁移腿就此中断**
+  #     ⇒ 032 之后的每一条迁移都不会被投递。
   #
-  # 顺序约束：032:80 的 `DROP TRIGGER IF EXISTS … ON request_logs` 目标表在
-  # 860 之后叫 `_request_logs`。本通道既有的封闭 token 机制
-  # （prepare_runtime_sql / request_logs_sql，见文件头注释）按运行期代际自动
-  # 改写这六个精确 token，**不需要**为本文件另造机制；排在 860 之后即拿到
-  # request-logs-physical-v1 改写（legacy 库上则原样用 request_logs，两种
-  # 代际都正确）。
+  # ⇒ 因此**不能靠「把它跑通」来解决**：那张表一旦建成也是**永远为空**
+  #   （唯一写入者已随 v1 一起消失）⇒ 端点会静默返回 0 条串话
+  #   ⇒ 对一个安全控制来说，「静默失效」比「显式 500」更危险。
+  # ⇒ 正确形态 = **端点换源**：`/api/admin/session-crosstalk` 改为从会话族
+  #   `session_turns`（每行带 session_id + tenant_id）**派生**「同一 session
+  #   出现在多个 tenant 下」⇒ 零 DDL、零迁移，且真的在检测。
+  #   判据见 admin/admin_500_channel_gap_realdb_test.go 的
+  #   TestCrosstalkEndpointIsSourcedFromSessionFamily（静态，CI 可跑）。
   #
-  # 函数唯一性：update_session_tenant_binding() 在整个 sql/ 树下只由本文件
-  # CREATE OR REPLACE 一处定义，故不需要登记进 intentional_function_chains。
-  "$ROOT_DIR/sql/migrations/domain/032_session_tenant_binding.sql"
+  # ⚠ 文件本身保留在 sql/migrations/domain/032_session_tenant_binding.sql：
+  #   历史字节不可变（sha256 登记在 docs/db-changelog.md），且它是
+  #   「032 建过什么」的唯一凭证。**本通道不再投递它。**
   # 864（2026-10-15）：model_aliases 裸列 (raw_name, canonical_id) WHERE active
   # 部分索引 —— S3 波 3 alias 链（raw_name = lower(外列)）在全部生产读点
   # 无法用 lower(raw_name) 表达式索引与 uq 第二列，CMI rollup 68/h 被 30s
