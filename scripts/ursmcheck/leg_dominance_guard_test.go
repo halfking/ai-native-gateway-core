@@ -186,7 +186,7 @@ func TestR88LegLevelDominanceSelfCheck(t *testing.T) {
 		"func TestCrossPackageGate(t *testing.T) {\n\t_ = os.Getenv(\""+name+"\")\n"+
 		"\tpool := openPool(t)\n\treset(pool)\n}\n")
 
-	pkgs = r87BuildPkgFacts(t, dir, "example.com/x")
+	pkgs = r87BuildPkgFacts(t, dir, "example.com/x", exported)
 
 	// ── 断言 ────────────────────────────────────────────────────────────────
 
