@@ -301,19 +301,47 @@ func r98RunTool(t *testing.T, toolPath string, fx *r98Fixture, ledgerPath, tag s
 	return code, byLine
 }
 
-// r98MutateTool 复制量具源码 ⇒ 施加若干处定向变异 ⇒ 写到临时目录 ⇒ 返回副本路径。
-// ★★ **仓内真文件零改动** ⇒ 不需要还原 ⇒ 没有「还原失败＝把仓改坏」的风险。
-// ★★ 锚点必须**恰好命中一次** ⇒ 否则这个变异改的就不是我以为的地方 ⇒ 直接失败。
-func r98MutateTool(t *testing.T, muts []r98Mut) string {
-	t.Helper()
-	src := r98ToolSource(t)
+// ★★★★ **变异自检（并行会话 R95 轮·段 B 通报的量具纪律，★ 本轮落地）**：
+// **「门绿」≠「变异真的发生了」** —— 若一条变异的 `old == new`（写错了、复制粘贴漏改、
+// 或替换串与原串等价），则「锚点命中 1 次」照样成立 ⇒ **变异静默未发生** ⇒
+// ⇒ **门会绿，而它绿得毫无意义**（测的是一个没被改过的工具）。
+// ⇒ ⇒ 实测形态（`/tmp/r99probe2/m.go`）：`anchor_hits=1  mutated==original? true`
+// ⇒ ⇒ 所以：**每施加一条变异，就断言副本确实与原文不同** ⇒ 否则直接失败。
+// ⇒ ⇒ ★ 这条比「比对 md5」更强：md5 只能证明「变了」，**「变了吗」这件事本身**
+// ⇒ ⇒ 在**施加时**就被断言 ⇒ 不会出现「先写错、后才发现」的空窗。
+// ★★ **实现形态**：自检逻辑放在**可判定的纯函数** `r98ApplyMuts` 里（返回错误），
+// ★★ `r98MutateTool` 只做「调用它 + 出错就 Fatal」⇒ ⇒ ★★ 这样护栏本身才能被**测到**
+// ★★ （若护栏只存在于 `t.Fatalf` 分支里 ⇒ 测它就得靠子测试失败 ⇒ 父测试必红 ⇒ 恒红门）。
+func r98ApplyMuts(src string, muts []r98Mut) (string, error) {
 	for _, m := range muts {
 		n := strings.Count(src, m.old)
 		if n != 1 {
-			t.Fatalf("★ 变异 %s 的锚点命中 %d 次（必须恰好 1 次 ⇒ 否则它改的不是你以为的地方）：\n%s",
+			return "", fmt.Errorf("★ 变异 %s 的锚点命中 %d 次（必须恰好 1 次 ⇒ 否则它改的不是你以为的地方）：\n%s",
 				m.name, n, m.old)
 		}
+		before := src
 		src = strings.Replace(src, m.old, m.new, 1)
+		// ★★ **变异自检**：替换后必须与替换前不同 ⇒ 否则这条变异**没有真正发生**
+		//   （典型成因：`old == new`，或替换串与原串等价）
+		//   ⇒ ⇒ 此时门会绿，但绿得毫无意义 ⇒ 必须在这里失败。
+		if src == before {
+			return "", fmt.Errorf("★ 变异 %s 施加后源码**逐字节未变** ⇒ 该变异没有真正发生 ⇒ 门会绿但无意义"+
+				"（★ 典型成因：`old == new`；★ 「门绿」≠「变异真的发生了」）：\nold=%q\nnew=%q",
+				m.name, m.old, m.new)
+		}
+	}
+	return src, nil
+}
+
+// r98MutateTool 复制量具源码 ⇒ 施加若干处定向变异 ⇒ 写到临时目录 ⇒ 返回副本路径。
+// ★★ **仓内真文件零改动** ⇒ 不需要还原 ⇒ 没有「还原失败＝把仓改坏」的风险。
+// ★★ 锚点必须**恰好命中一次** ⇒ 否则这个变异改的就不是我以为的地方 ⇒ 直接失败。
+// ★★ 变异必须**真的发生** ⇒ 见 r98ApplyMuts 的变异自检。
+func r98MutateTool(t *testing.T, muts []r98Mut) string {
+	t.Helper()
+	src, err := r98ApplyMuts(r98ToolSource(t), muts)
+	if err != nil {
+		t.Fatalf("%v", err)
 	}
 	p := filepath.Join(t.TempDir(), "mutated_"+strings.ReplaceAll(muts[0].name, "/", "_")+".py")
 	if err := os.WriteFile(p, []byte(src), 0o644); err != nil {
@@ -642,4 +670,62 @@ func TestPipefailRaceToolMutationAnchorsStayUnique(t *testing.T) {
 				"变异套件会**变异到别的地方**⇒ 门会假装自己有牙", m.name, n)
 		}
 	}
+}
+
+// TestPipefailRaceToolMutationSelfCheckHasTeeth：★ **变异自检本身必须有牙**。
+//
+// ★ 这条测的是【护栏自己】，不是量具：
+// ★ 并行会话 R95 轮·段 B 通报的量具纪律 —— 「**门绿」≠「变异真的发生了**」。
+// ★ 具体形态：`old == new` ⇒ 锚点照样命中 1 次 ⇒ 变异**静默未发生** ⇒ 门会绿，
+// ★ 而它绿得毫无意义（测的是一个**没被改过**的工具）。
+//
+// ⇒ ⇒ 所以这里构造一条**故意写错的变异**（`old == new`）⇒
+// ⇒ ⇒ 期望：护栏**拒绝**它（返回错误）。
+// ⇒ ⇒ ★ 断言形态必须是「护栏拒绝了它」，而不是「变异后门抓到了它」
+// ⇒ ⇒ （后者在 `old == new` 时**永远不可能发生** ⇒ 那才是恒绿门）。
+// ★★ **为什么判据落在纯函数 `r98ApplyMuts` 上**：
+// ★★ 若护栏只存在于 `t.Fatalf` 分支里 ⇒ 要测它就只能靠「子测试失败」⇒
+// ★★ 而子测试失败会**连带把父测试标红** ⇒ ⇒ **那条测试永远红** ⇒ 恒红门。
+// ★★ ⇒ 所以护栏必须是**可返回错误的纯逻辑** ⇒ 它的「有牙」才能被**正面判定**。
+func TestPipefailRaceToolMutationSelfCheckHasTeeth(t *testing.T) {
+	src := r98ToolSource(t)
+	const anchor = `if bleed_errors:`
+	if n := strings.Count(src, anchor); n != 1 {
+		t.Skipf("★ 阳性对照锚点命中 %d 次（期望 1）⇒ 量具措辞已变 ⇒ 本门需重写锚点", n)
+	}
+
+	// ★ 阳性对照：这条假变异的 old 与 new **逐字相同** ⇒ 替换是恒等替换
+	//   ⇒ 「锚点命中 1 次」照样成立 ⇒ 若无变异自检，它会**静默通过**。
+	fake := r98Mut{name: "FAKE-noop", old: anchor, new: anchor}
+	if fake.old != fake.new {
+		t.Fatalf("★ 阳性对照构造错了：old != new ⇒ 这不是一条假变异")
+	}
+	out, err := r98ApplyMuts(src, []r98Mut{fake})
+	if err == nil {
+		t.Fatalf("★ 变异自检没有牙：一条 `old == new` 的假变异竟然被静默接受了（输出与原文相同? %v）⇒ "+
+			"⇒ 任何「复制粘贴漏改 / 替换串与原串等价」的变异都会**静默通过** ⇒ "+
+			"⇒ 门会绿，但绿得毫无意义", out == src)
+	}
+	if out != "" {
+		t.Fatalf("★ 护栏失败时应返回空源码，实际返回了非空内容 ⇒ 失败路径的语义不对")
+	}
+	t.Logf("✔ 变异自检有牙：`old == new` 的假变异在**施加时**就被拒绝了 ⇒ %v", err)
+
+	// ★ 阴性对照：一条**真的会改**的变异 ⇒ 必须被接受 ⇒ 否则护栏是「逢变异必杀」的恒红门。
+	real := r98Mut{name: "REAL", old: anchor, new: anchor + "\n    pass"}
+	out2, err2 := r98ApplyMuts(src, []r98Mut{real})
+	if err2 != nil {
+		t.Fatalf("★ 阴性对照失败：一条**真的会改**的变异被拒了 ⇒ 护栏成了「逢变异必杀」⇒ %v", err2)
+	}
+	if out2 == src {
+		t.Fatalf("★ 阴性对照失败：真变异接受但输出与原文相同 ⇒ 护栏逻辑不对")
+	}
+	t.Logf("✔ 阴性对照通过：一条真变异被正常接受（输出确实变了）")
+
+	// ★ 锚点护栏的阴性对照：锚点命中 2 次 ⇒ 必须被拒（否则它改的不是你以为的地方）。
+	dup := r98Mut{name: "DUP", old: "    ", new: "    "} // 空格在量具里出现多次
+	if _, err3 := r98ApplyMuts(src, []r98Mut{dup}); err3 == nil {
+		t.Fatalf("★ 锚点护栏没有牙：一个命中多次的锚点竟然被接受了 ⇒ 变异会改到别的地方")
+	}
+	t.Logf("✔ 锚点护栏有牙：命中多次的锚点被拒绝")
 }
