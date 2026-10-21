@@ -1,20 +1,21 @@
 package ursm_test
 
-// R95 轮 · 段 D 的门：**「自建资源回收」的兜底【质量】守卫**。
+// R95 轮 · 段 D 建 / ★ 段 E 改轴的门：**「自建资源回收」的兜底【质量】守卫**。
 //
-// 被测对象：scripts/ursmcheck/selfcreated_cleanup_quality_ledger.tsv
+// 被测对象：
+//
+//	scripts/ursmcheck/selfcreated_cleanup_quality_ledger.tsv   （台账：逐条人工裁决）
+//	scripts/ursmcheck/selfcreated_cleanup_language_map.tsv     （★ 语言映射表：判据的唯一语义事实源）
 //
 // ── 为什么需要它 ────────────────────────────────────────────────────────────
 //
 // 已有纪律：「自己建的资源必须用 trap 兜住所有退出路径」（R94 轮续九已落地）。
-// ★★ 但本轮实测证明：**「有 trap」≠「兜底合格」**。兜底有 4 个独立可失效的轴：
+// ★★ 但实测证明：**「有 trap」≠「兜底合格」**。兜底有 4 个独立可失效的轴：
 //
-//	A exit_trap       有没有 trap … EXIT
+//	A fallback_covers ★★ 兜底【载体】里是否**真的包着回收动作**（★ 不是「有没有 trap」！）
 //	                 ⇒ 缺了它：提前退出（return/exit N）跳过回收（实测攒下 7 个残留库）
-//	B signal_trap     有没有 trap … INT/TERM
-//	                 ⇒ ★ **实测：bash 的 EXIT trap 在 SIGTERM/SIGINT 下【照样会跑】**
-//	                   ⇒ 所以 B 的价值**不在「让 cleanup 跑」**，而在「它是执行收割的分支」
-//	                 ⇒ ⇒ **⇒ B 只在【脚本确实会起后台子进程】时才是必需的**（见下）
+//	                 ⇒ ★★ 段 E 订正：段 D 判的是【存在性】，实测反例见下
+//	B signal_trap     有没有接管信号（★ 是否【必需】按语言判，见「合格兜底」的定义）
 //	C cleanup_guard   清理语句自带【防卡保护】（两种机制任一）
 //	                 ⇒ C1 statement_timeout 类（中止语句）
 //	                 ⇒ C2 pg_terminate_backend 类（先把阻塞会话踢掉再 DROP）
@@ -24,28 +25,50 @@ package ursm_test
 //	D child_reap      有后台子进程时，清理前有没有 kill + wait 收割
 //	                 ⇒ ★ 缺了它：子进程被孤儿化 ⇒ 它在父进程 cleanup【之后】才把资源建出来 ⇒ 依然泄漏
 //
-// ★★ 本轮的三变体最小复现（实测）是把 B 与 D 的关系钉死的关键：
+// ── ★★ 段 E 的三组实测（判据的来源，全部可复现）─────────────────────────────
 //
-//	变体 A：只有 trap cleanup EXIT                               ⇒ ★ 泄漏
-//	变体 B：EXIT + trap cleanup INT TERM（TERM 分支只是再 cleanup 一次，**不收割**） ⇒ ★ 泄漏
-//	变体 C：EXIT + trap reap_and_cleanup INT TERM（**先 kill+wait 收割**再 cleanup）   ⇒ ✔ 无泄漏
+// 【实测 1】跨语言：兜底在【信号终止】下会不会执行
 //
-//	⇒⇒⇒ **⇒ 「接管信号」本身【不解决泄漏】；真正解决它的是「收割子进程」。**
-//	⇒⇒⇒ ⇒ B 只是 D 的**载体**（需要一个信号分支来执行收割）。
-//	⇒⇒⇒ ⇒ ★★ 所以判据不能停在「有没有 trap INT/TERM」—— 那测不出 D 缺没缺。
+//	语言   兜底机制                 SIGTERM 下清理是否执行
+//	──────────────────────────────────────────────────────────────
+//	shell  trap ... EXIT            ✔ 会执行
+//	python atexit.register          ★ 不执行
+//	python try-finally              ★ 不执行
+//	go     defer                    ★ 不执行
+//
+//	⇒⇒⇒ **⇒ 「合格兜底」的定义是 f(语言) 的** ⇒⇒⇒ 判据必须【语言感知】。
+//	⇒⇒⇒ ⇒ 该结论的唯一事实源 = selfcreated_cleanup_language_map.tsv（★ 表驱动 ⇒ 代码与表不可能不一致）。
+//
+// 【实测 2】shell 的 trap 执行时机（★ 段 E 新增，承重）
+//
+//	变体                                  SIGTERM 后                          读数
+//	────────────────────────────────────────────────────────────────────────
+//	P1 有 INT/TERM trap（不 exit）        trap 在【前台命令结束】才 fire    ★ 被推迟
+//	P2 无 INT/TERM trap、只有 EXIT        t0+1.01s 退出，EXIT 立即执行      ★ 立即
+//	P3 INT/TERM trap 里带 exit            trap 在【前台命令结束】才 fire    ★ 一样被推迟
+//
+//	⇒⇒⇒ **⇒ bash 会把 trap 的执行推迟到当前前台命令结束** ⇒⇒⇒
+//	⇒⇒⇒ ⇒ 「挂信号 trap」不是「让回收更及时」，而是**让回收更晚**（或让进程不立即死）。
+//	⇒⇒⇒ ⇒ ★★ 这不改变「shell 的 EXIT trap 在信号下会跑」这个结论，但它是那条结论的**机制解释**。
+//
+// 【实测 3】★ 「存在性 ≠ 覆盖性」（★ 段 E 对段 D 的订正）
+//
+//	scripts/audit/verify_892_local.sh 第 26 行 = `trap 'rm -f "$TMP"' EXIT`
+//	⇒ ★ 它只删【临时 SQL 文件】，**不回收库**（库回收在第 46 行 = 正常路径末尾）
+//	⇒ ⇒ 「有 trap」≠「trap 覆盖了要回收的资源」
+//	⇒ ⇒ ★ 存在性轴是**假阳性方向**（会把真会泄漏的脚本判成合格）⇒ ⇒ 本门改判【覆盖性】。
 //
 // ── 「合格兜底」的定义（★ 按实测定，不按直觉定）──────────────────────────
 //
-//	合格 = A=yes
+//	合格 = A=yes（兜底载体覆盖回收动作）
 //	    ∧ 防卡保护（C1 ∨ C2）
-//	    ∧ (没有后台子进程 ∨ (B=yes ∧ D=yes))
+//	    ∧ (没有后台子进程 ∨ D=yes)
+//	    ∧ (该语言需要信号接管 ⇒ B=yes)      ← ★ 由语言映射表的 signal_covers_sigterm 决定
 //
-// ★★ 为什么 B（信号接管）**不是**无条件的必需项：
-//   实测 bash 的 EXIT trap 在 SIGTERM/SIGINT 下【照样会跑】⇒ ⇒ 对**没有后台子进程**的脚本，
-//   不接信号没有任何风险 ⇒ ⇒ ⇒ 若把 B 列为无条件必需项，那这条断言在防一个【不存在的风险】
-//   ⇒ ⇒ ⇒ ⇒ 而且它会让 9 个脚本「因为一个无关的缺口」被判不合格 ⇒ ⇒ ⇒ ⇒ 假红。
-//   ⇒ ⇒ ⇒ ⇒ **B 只在「脚本确实会起后台子进程」时才是必需的** —— 因为那时需要一条信号分支
-//   来执行收割。
+// ★★ 为什么 B（信号接管）**不是**对所有语言都必需：
+//   实测 shell 的 EXIT trap 在 SIGTERM/SIGINT 下【照样会跑】⇒ ⇒ shell 侧不接信号**零风险**
+//   ⇒ ⇒ ⇒ 若把 B 列为 shell 的无条件必需项，那这条断言在防一个【不存在的风险】⇒ ⇒ ⇒ 假红。
+//   ⇒ ⇒ ⇒ 而 python/go 侧实测【不跑】⇒ ⇒ 它们【必须】显式接管信号 ⇒ ⇒ 缺了就是真缺口。
 //
 // ── 门的形态：台账 + 棘轮 ───────────────────────────────────────────────────
 //
@@ -53,20 +76,23 @@ package ursm_test
 //	他们做的是**修复轴**（加 trap）；本门做的是**验收轴**（什么算「兜底合格」）。
 //	⇒ ⇒ 二者互补：他们的推广若只加 trap 而不加防卡保护 ⇒ 本门会红 ⇒ ⇒ 这就是「什么时候算修完」。
 //
-// ★ 本门**不阻塞**存量：今天已知的缺陷在台账里显式登记为 verdict=待修 + defects=<缺失项>
+// ★ 本门**不阻塞**存量：今天已知的缺陷在台账里显式登记为 verdict=待修 + deficits=<缺失项>
 //	⇒ ⇒ 门是绿的。⇒ ⇒ 存量缺陷只减不增：源码里补上保护 ⇒ 重算的缺陷集少了 ⇒
 //	⇒ ⇒ 台账没同步 ⇒ **门红** ⇒ ⇒ ⇒ 强制登记 ⇒ ⇒ ⇒ 缺陷集单调下降。
+//	⇒ ⇒ ★ 诚实边界：段 E 把 A 从存在性改成覆盖性 ⇒ 缺陷集**变大**了（3 行）⇒
+//	⇒ ⇒   这是**订正**不是退化 ⇒ 「单调下降」是【订正之后】才成立的性质。
 //
 // 判据：
-//	① 账实相符：台账的 6 个轴值必须与【从源码重算】的逐字一致
+//	① 账实相符：台账的 5 个轴值必须与【从源码重算】的逐字一致
 //	② 双向候选集：候选集（源码里自建资源 + 自回收的脚本）必须与台账行集完全一致
-//	③ verdict=合格 ⇒ defects 必须为空（即重算出来确实合格）
-//	④ verdict=待修 ⇒ defects 必须【逐项等于】重算出来的缺失项集合（⇒ 缺陷集单调下降）
-//	⑤ verdict=无回收义务 ⇒ evidence 必须写明「建的是长驻资源」
+//	③ verdict=合格 ⇒ deficits 必须为空（即重算出来确实合格）
+//	④ verdict=待修 ⇒ deficits 必须【逐项等于】重算出来的缺失项集合（⇒ 缺陷集单调下降）
+//	⑤ verdict=无回收义务 ⇒ evidence 必须写明「长驻」/「假阳性」/「不建库」
 //	⑥ 结构不变量：取值域合法 / evidence 非空 / 台账非空 / 每个文件只出现一次
+//	⑦ 语言映射表覆盖：台账里出现的每种语言都必须在映射表里有行（★ 否则该语言的语义无依据）
 //
-// ★★ 量具自检（防恒绿门）：本门必须在**探针**上验证「合格 / 待修 / 超时标记误命中」
-//	三种形态给出**不同读数** ⇒ ⇒ 否则整门可能恒绿。
+// ★★ 量具自检（防恒绿门）：本门必须在**探针**上验证 8 种形态给出**两两不同的缺失项集合**
+//	⇒ ⇒ 否则整门可能恒绿。★ 且探针里必须有一条「存在性 ≠ 覆盖性」的反例（探针 7）。
 
 import (
 	"bufio"
@@ -79,7 +105,85 @@ import (
 	"testing"
 )
 
-const scqLedger = "selfcreated_cleanup_quality_ledger.tsv"
+const (
+	scqLedger     = "selfcreated_cleanup_quality_ledger.tsv"
+	scqLangMapTSV = "selfcreated_cleanup_language_map.tsv"
+)
+
+// ── 语言映射表（★ 表驱动：判据的唯一语义事实源）───────────────────────────
+//
+// ★★★ 为什么要有这张表（★ 段五的实测结论）：
+//   「合格兜底」的定义是 **f(语言)** 的 ——
+//     shell  的 `trap … EXIT`  在 SIGTERM/SIGINT 下【会执行】
+//     python 的 atexit / try-finally 【不会执行】
+//     go     的 defer          【不会执行】
+//   ⇒ ⇒ 「信号接管」这一项对 shell 是**多余的**，对 python/go 是**必需的**。
+//   ⇒ ⇒⇒ ⇒ 若把这个判据写死在代码里，语义就散在两处 ⇒ ⇒⇒ ⇒ 改成【表驱动】：
+//   ⇒ ⇒⇒ ⇒ 门的语义只有一处事实源（这张表）⇒ ⇒⇒ ⇒ 代码与表**不可能**不一致。
+//
+// ★ 这张表同时是**可审计的证据**（每行带实测依据）⇒ 属主/协作者可以直接核。
+
+// scqLangInfo 是语言映射表的一行。
+type scqLangInfo struct {
+	Language            string
+	FallbackMech        string
+	SignalCoversSigterm bool
+	GuardForm           string
+	Evidence            string
+}
+
+var (
+	scqLangMap    map[string]scqLangInfo
+	scqLangMapErr error
+)
+
+func init() {
+	scqLangMap, scqLangMapErr = scqReadLangMap()
+}
+
+// scqReadLangMap 读语言映射表。
+func scqReadLangMap() (map[string]scqLangInfo, error) {
+	out := map[string]scqLangInfo{}
+	fh, err := os.Open(scqLangMapTSV)
+	if err != nil {
+		return out, fmt.Errorf("打开语言映射表失败: %w", err)
+	}
+	defer fh.Close()
+	sc := bufio.NewScanner(fh)
+	sc.Buffer(make([]byte, 1<<20), 1<<20)
+	ln := 0
+	for sc.Scan() {
+		ln++
+		text := sc.Text()
+		if strings.TrimSpace(text) == "" || strings.HasPrefix(strings.TrimSpace(text), "#") {
+			continue
+		}
+		f := strings.Split(text, "\t")
+		if len(f) != 5 {
+			return out, fmt.Errorf("语言映射表第 %d 行列数 = %d，期望 5", ln, len(f))
+		}
+		if f[2] != "yes" && f[2] != "no" {
+			return out, fmt.Errorf("语言映射表第 %d 行 signal_covers_sigterm = %q 非法（yes/no）", ln, f[2])
+		}
+		if strings.TrimSpace(f[4]) == "" {
+			return out, fmt.Errorf("语言映射表第 %d 行 evidence 为空", ln)
+		}
+		out[f[0]] = scqLangInfo{
+			Language:            f[0],
+			FallbackMech:        f[1],
+			SignalCoversSigterm: f[2] == "yes",
+			GuardForm:           f[3],
+			Evidence:            f[4],
+		}
+	}
+	if err := sc.Err(); err != nil {
+		return out, fmt.Errorf("读语言映射表失败: %w", err)
+	}
+	if len(out) == 0 {
+		return out, fmt.Errorf("语言映射表为空 ⇒ 判据无事实源 ⇒ 拒绝给结论")
+	}
+	return out, nil
+}
 
 // ── 判据用的正则 ────────────────────────────────────────────────────────────
 
@@ -89,7 +193,20 @@ var (
 	scqReDropDB   = regexp.MustCompile(`(?i)\bDROP\s+DATABASE\b`)
 
 	scqReTrapLine = regexp.MustCompile(`(?m)^\s*trap\s+.*$`)
+	scqReExitTrap = regexp.MustCompile(`(?m)^\s*trap\s+[^\n]*\bEXIT\b`)
 	scqReSignal   = regexp.MustCompile(`\b(EXIT|INT|TERM|QUIT|HUP)\b`)
+	// ★ 语言感知的【兜底存在性】判据 —— 形态复用并行会话 R94 续九那套量具的 C2 判据
+	//   （scripts/audit/measure-selfcreated-cleanup.sh 第 316–324 行）：
+	//     shell ⇒ `trap ... EXIT`；python ⇒ atexit.register / try+finally；go ⇒ defer
+	// ★★ ★ 而本轮实测证明：**这三者在【信号终止】下并不等价** ——
+	//   shell 的 EXIT trap 在 SIGTERM/SIGINT 下【会跑】；python 的 atexit/finally 与
+	//   go 的 defer 【都不会跑】⇒ ⇒ ⇒ 「合格兜底」的定义必须【语言感知】。
+	scqRePyFallback = regexp.MustCompile(`atexit\.register|finally\s*:`)
+	scqReGoFallback = regexp.MustCompile(`(^|[^A-Za-z0-9_])defer\s`)
+	scqReGoTimeout  = regexp.MustCompile(`context\.WithTimeout`)
+	// ★ 信号接管的判据（python/go 侧必需：实测它们的兜底不覆盖信号）
+	scqRePySignal = regexp.MustCompile(`signal\.signal\s*\(|SIGTERM|SIGINT`)
+	scqReGoSignal = regexp.MustCompile(`os\.Signal|signal\.Notify`)
 
 	// ★ 清理语句的「自带超时」标记（C1）。
 	//
@@ -121,11 +238,77 @@ var (
 	//   「剥注释、排除正则字面量后仍能匹配到 CREATE DATABASE / createdb」
 	//   且「匹配行 **或它 ±3 行窗口内** 含执行上下文」。
 	// ★★ 但他们的版本对「第 88 行是注释、注释里含 psql」这一类会漏 ⇒ ⇒ 加上「剥注释」这步就闭合。
-	scqReExecCtx  = regexp.MustCompile(`(?i)psql|createdb|\bexec\b|run_psql|pg_exec|docker\s+exec`)
-	scqReKillWait = regexp.MustCompile(`(?i)\bkill\b|\bwait\b`)
-	scqReFuncHead = regexp.MustCompile(`^\s*(?:function\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*\(\s*\)\s*\{`)
-	scqReFuncTail = regexp.MustCompile(`^\}\s*$`)
+	//
+	// ★★★ ★★ 【语言感知】——★ 这是本轮实测抓到的**我自己写的判据 bug**：
+	//   第一版的非 shell 分支【根本没检查 re 参数】⇒ 只要文件里有任意一行命中执行上下文
+	//   就返回 true ⇒⇒ 「有 CREATE DATABASE」这个必要条件被丢掉 ⇒⇒
+	//   ⇒⇒ 判据退化成【恒真】⇒⇒ 整个 Go 树（几百个文件）全成了候选 ⇒⇒ 门会红成一片。
+	//   ⇒⇒⇒ **⇒ 通用式：谓词函数收了参数却没用它 ⇒ 判据恒真 ⇒ 先查「参数有没有被用」。**
+	scqReExecCtx = regexp.MustCompile(`(?i)psql|createdb|\bexec\b|run_psql|pg_exec|docker\s+exec`)
+	// ★ python 的执行上下文：SQL 真正落地的那几个形态
+	//   （仓内实例：scripts/audit/verify_archive_orphan_local.py 用 run_sql(…)，
+	//    scripts/audit/verify_columnar_bulk_write_local.py 用 psql(…)）
+	scqReExecCtxPy = regexp.MustCompile(`(?i)psycopg|run_sql\s*\(|psql\s*\(|\.execute\s*\(|cursor|subprocess\.`)
+	// ★ go 的执行上下文：pgx 的 Exec/Query 家族（仓内实例：admin.Exec / root.Exec / conn.ExecContext）
+	scqReExecCtxGo = regexp.MustCompile(`(?i)\.Exec(Context)?\s*\(|pgx\.|QueryRow|\.Query\s*\(|ExecContext`)
+	scqReKillWait  = regexp.MustCompile(`(?i)\bkill\b|\bwait\b`)
+	scqReFuncHead  = regexp.MustCompile(`^\s*(?:function\s+)?((?:[A-Za-z_][A-Za-z0-9_]*::)*[A-Za-z_][A-Za-z0-9_]*)\s*\(\s*\)\s*\{`)
+	scqReFuncTail  = regexp.MustCompile(`^\}\s*$`)
+
+	// ── 覆盖性判据（★ 段五新增）：兜底「载体」里到底包不包着回收动作 ──────────
+	//
+	// ★★★ 为什么要把「存在性」升级成「覆盖性」（★ 本轮实测抓到的**假阳性方向**）：
+	//   段四的门判「fallback = 文件里有没有 trap … EXIT」⇒ 读数是**存在性**。
+	//   ★★ 但实测发现：scripts/audit/verify_892_local.sh 第 26 行是
+	//      `trap 'rm -f "$TMP"' EXIT` ⇒ ★ 它只删**临时 SQL 文件**，**不回收库**；
+	//      库回收在第 46 行（正常路径末尾）⇒ ⇒ 提前退出 ⇒ 库留下。
+	//   ⇒ ⇒ 「有 trap」≠「trap 覆盖了要回收的资源」⇒ ⇒ 存在性轴是**假阳性方向**
+	//   ⇒ ⇒ （假阳性方向最危险：门会把真会泄漏的脚本判成合格。）
+	scqReTrapExitCmd = regexp.MustCompile(`(?m)^\s*trap\s+(.+?)\s+EXIT\s*$`)
+	scqIdentRe       = regexp.MustCompile(`[A-Za-z_][A-Za-z0-9_]*`)
+
+	scqRePyAtexitReg = regexp.MustCompile(`atexit\.register\s*\(\s*([A-Za-z_][A-Za-z0-9_]*)`)
+	scqRePyDef       = regexp.MustCompile(`^([ \t]*)def[ \t]+([A-Za-z_][A-Za-z0-9_]*)\s*\(`)
+	scqRePyFinally   = regexp.MustCompile(`^([ \t]*)finally\s*:`)
+
+	scqReGoCleanupFn = regexp.MustCompile(`t\.Cleanup\s*\(\s*func\s*\(\s*\)\s*\{`)
+	scqReGoDeferFn   = regexp.MustCompile(`defer\s+func\s*\(\s*\)\s*\{`)
+	scqReGoCleanupNm = regexp.MustCompile(`t\.Cleanup\s*\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*\)`)
+	scqReGoFuncDef   = regexp.MustCompile(`(?m)^func\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(`)
 )
+
+// scqExecCtxFor 按语言取「执行上下文」正则。
+func scqExecCtxFor(lang string) *regexp.Regexp {
+	switch lang {
+	case "python":
+		return scqReExecCtxPy
+	case "go":
+		return scqReExecCtxGo
+	default:
+		return scqReExecCtx
+	}
+}
+
+// scqScopeDirs 是本门的**候选集扫描口径**。
+//
+// ★★ 口径必须与并行会话那套量具（scripts/audit/measure-selfcreated-cleanup.sh 的
+//
+//	`grep -rl --include='*.sh' --include='*.bash' --include='*.py' --include='*.go'
+//	 … scripts internal cmd`）**一致** ⇒⇒ 理由有二：
+//	① 【可比性】两个台账的差集才有意义 ⇒ 否则差集里混着「口径差」而不是「轴差」；
+//	② 【范围纪律】产品代码（admin/ domains/ sql/ …）不是「自建一次性资源并自己回收」的审计对象。
+//
+// ★⚠ **诚实边界（已知局限，本轮未消）**：口径之外，Go 测试文件里【自己】建库并回收的
+//
+//	（例：admin/admin_500_channel_gap_realdb_test.go 第 294/317 行自建隔离库 + t.Cleanup 回收）
+//	**不在本门覆盖内** ⇒ 它们靠共享 helper（internal/testdb/testdb.go，已在口径内）
+//	与自身的 t.Cleanup 兜底 ⇒ ⇒ 属主决策项：是否把口径扩到 admin/ domains/ tests/。
+var scqScopeDirs = []string{"scripts", "internal", "cmd"}
+
+// scqSelfFiles 是本门【自己】的文件 ⇒ 必须从候选集里排除（量具脚本自匹配）。
+var scqSelfFiles = map[string]bool{
+	"scripts/ursmcheck/selfcreated_cleanup_quality_test.go": true,
+}
 
 // scqShellFuncs 抽出 shell 的 `name() {` … `^}` 函数体。
 func scqShellFuncs(src string) map[string]string {
@@ -193,10 +376,25 @@ func scqLogicalCommands(src string) []string {
 }
 
 // scqStripComments 把「整行都是注释」的行清空（保留行数，便于 ±N 窗口定位）。
-func scqStripComments(src string) []string {
+//
+// ★★ 【语言感知】：第一版只认 shell/python 的 `#` 前缀 ⇒⇒ Go 文件的 `//` 注释
+//
+//	**没被剥掉** ⇒⇒ 注释里的 "CREATE DATABASE" 被当成真语句 ⇒⇒ 假阳性。
+//	⇒⇒ ⇒ shell/python ⇒ `#`；go ⇒ `//`。
+func scqStripComments(src string, lang string) []string {
 	out := make([]string, 0, 64)
 	for _, ln := range strings.Split(src, "\n") {
-		if strings.HasPrefix(strings.TrimSpace(ln), "#") {
+		t := strings.TrimSpace(ln)
+		if t == "" {
+			out = append(out, "")
+			continue
+		}
+		if lang == "go" {
+			if strings.HasPrefix(t, "//") {
+				out = append(out, "")
+				continue
+			}
+		} else if strings.HasPrefix(t, "#") {
 			out = append(out, "")
 			continue
 		}
@@ -217,7 +415,34 @@ func scqStripComments(src string) []string {
 //	「CREATE DATABASE」「DROP DATABASE」「psql」全是【分析用的正则与标签】
 //	⇒ 不剥注释 ⇒ 它会被判成「自建资源 + 自回收」⇒ ⇒ 而它根本不建库
 //	⇒ ⇒ ★ 这正是并行会话台账里点名的第 ③ 类假阳性「量具脚本自匹配」。
-func scqHasExecContext(lines []string, re *regexp.Regexp) bool {
+func scqHasExecContext(lines []string, re *regexp.Regexp, lang string) bool {
+	ctxRe := scqExecCtxFor(lang)
+	// ★★ 【必要条件】文件里必须真的出现这条 SQL 文本（剥注释后）。
+	//   ★★★ 第一版的非 shell 分支【漏了这一步】⇒ 判据恒真 ⇒ Go 树全成候选
+	//   ⇒⇒⇒ ⇒ 所以两条分支都必须先过这一关。
+	found := false
+	for _, ln := range lines {
+		if re.MatchString(ln) {
+			found = true
+			break
+		}
+	}
+	if !found {
+		return false
+	}
+	// ★★ 窗口宽度必须【语言感知】：
+	//   shell ⇒ psql 调用与 SQL 紧邻 ⇒ ±3 行窗口成立（沿用并行会话那套量具的判据形态）
+	//   python/go ⇒ SQL 常写在**多行 f-string / 反引号**里，真正执行它的
+	//   `run_sql(...)` / `admin.Exec(...)` 可能隔了十几行 ⇒ ⇒ ±3 窗口会漏
+	//   ⇒ ⇒ ★ 所以这两类语言用【文件级】执行上下文判定。
+	if lang != "shell" {
+		for _, ln := range lines {
+			if ctxRe.MatchString(ln) {
+				return true
+			}
+		}
+		return false
+	}
 	for i, ln := range lines {
 		if !re.MatchString(ln) {
 			continue
@@ -230,10 +455,10 @@ func scqHasExecContext(lines []string, re *regexp.Regexp) bool {
 			hi = len(lines) - 1
 		}
 		for j := lo; j <= hi; j++ {
-			if j == i && !scqReExecCtx.MatchString(ln) {
+			if j == i && !ctxRe.MatchString(ln) {
 				continue
 			}
-			if scqReExecCtx.MatchString(lines[j]) {
+			if ctxRe.MatchString(lines[j]) {
 				return true
 			}
 		}
@@ -303,14 +528,202 @@ func scqTrapSignals(src string) map[string]bool {
 	return sigs
 }
 
+// ── 覆盖性判据：兜底「载体」是否真的包着回收动作 ───────────────────────────
+//
+// ★★★ 这是段五对段四的**订正**：段四判「有没有 trap」（存在性），
+//   段五判「trap/atexit/defer **指到的那个载体**里有没有 DROP DATABASE」（覆盖性）。
+//   ⇒ 差别不是措辞：★ 三个 verify_892_*.sh 的 trap 只删临时文件 ⇒ 存在性=yes、覆盖性=no。
+
+// scqLastSeg 取标识符的最后一段（去掉命名空间前缀）。
+//
+// ★ 仓内实例：scripts/_lib/db-init-lib.sh 第 793 行是 `db_init::_drop_verify_db() {`，
+//
+//	第 798 行是 `trap 'db_init::_drop_verify_db' EXIT` ⇒ ⇒ 两侧都要按最后一段比对。
+func scqLastSeg(s string) string {
+	if i := strings.LastIndex(s, "::"); i >= 0 {
+		return s[i+2:]
+	}
+	return s
+}
+
+// scqShellFallbackCoversDrop：有没有一个 `trap <cmd> EXIT`，其 <cmd> 指向的函数体里含 DROP。
+//
+// ★★ 两个必须处理的细节：
+//
+//	① `trap - EXIT` 是【解除 trap】（正常跑完时交还调用方）⇒ 必须排除
+//	  （仓内实例：measure-factsource-cost-matrix.sh 第 333 行、probe-onetime-db-shape.sh 第 247 行）；
+//	② shell 的函数名可能带命名空间前缀（db_init::_drop_verify_db）⇒ 按最后一段比对。
+func scqShellFallbackCoversDrop(src string) bool {
+	funcs := scqShellFuncs(src)
+	bySeg := map[string]string{}
+	for k, v := range funcs {
+		bySeg[scqLastSeg(k)] = v
+	}
+	for _, m := range scqReTrapExitCmd.FindAllStringSubmatch(src, -1) {
+		cmd := strings.TrimSpace(m[1])
+		if cmd == "-" || cmd == "--" {
+			continue // ★ trap - EXIT = 解除，不是兜底
+		}
+		for _, id := range scqIdentRe.FindAllString(cmd, -1) {
+			if body, ok := bySeg[scqLastSeg(id)]; ok && scqReDropDB.MatchString(body) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// scqPyBlockOf 取 lines[defIdx] 之后、缩进大于 indent 的那一段（python 的函数体/finally 块）。
+func scqPyBlockOf(lines []string, defIdx int, indent int) string {
+	var out []string
+	for i := defIdx + 1; i < len(lines); i++ {
+		t := strings.TrimSpace(lines[i])
+		if t == "" {
+			out = append(out, lines[i])
+			continue
+		}
+		ind := len(lines[i]) - len(strings.TrimLeft(lines[i], " \t"))
+		if ind <= indent {
+			break
+		}
+		out = append(out, lines[i])
+	}
+	return strings.Join(out, "\n")
+}
+
+// scqPyFallbackCoversDrop：python 侧两种载体 —— ① atexit.register(fn)，fn 的函数体里有 DROP；
+// ② `finally:` 块里有 DROP。
+func scqPyFallbackCoversDrop(src string) bool {
+	lines := strings.Split(src, "\n")
+	// ① atexit.register(fn)
+	for _, m := range scqRePyAtexitReg.FindAllStringSubmatch(src, -1) {
+		name := m[1]
+		for i, ln := range lines {
+			mm := scqRePyDef.FindStringSubmatch(ln)
+			if mm == nil || mm[2] != name {
+				continue
+			}
+			if scqReDropDB.MatchString(scqPyBlockOf(lines, i, len(mm[1]))) {
+				return true
+			}
+		}
+	}
+	// ② finally: 块
+	for i, ln := range lines {
+		mm := scqRePyFinally.FindStringSubmatch(ln)
+		if mm == nil {
+			continue
+		}
+		if scqReDropDB.MatchString(scqPyBlockOf(lines, i, len(mm[1]))) {
+			return true
+		}
+	}
+	return false
+}
+
+// scqGoBraceBlock 从 src[openIdx]（必须是 '{'）起做花括号配对，返回整个块。
+//
+// ★ 跳过字符串字面量（"…" / `…` / '…'）与 // 行注释 ⇒ 否则 SQL 里的 '{' 会让配对跑偏。
+func scqGoBraceBlock(src string, openIdx int) string {
+	depth := 0
+	i := openIdx
+	for i < len(src) {
+		c := src[i]
+		switch {
+		case c == '/' && i+1 < len(src) && src[i+1] == '/':
+			for i < len(src) && src[i] != '\n' {
+				i++
+			}
+			continue
+		case c == '"' || c == '\'':
+			q := c
+			i++
+			for i < len(src) && src[i] != q {
+				if src[i] == '\\' {
+					i++
+				}
+				i++
+			}
+			i++
+			continue
+		case c == '`':
+			i++
+			for i < len(src) && src[i] != '`' {
+				i++
+			}
+			i++
+			continue
+		case c == '{':
+			depth++
+		case c == '}':
+			depth--
+			if depth == 0 {
+				return src[openIdx : i+1]
+			}
+		}
+		i++
+	}
+	return src[openIdx:]
+}
+
+// scqGoFallbackCoversDrop：go 侧三种载体 —— ① t.Cleanup(func(){…})；② defer func(){…}()；
+// ③ t.Cleanup(具名函数) / defer 具名函数。
+//
+// ★★ 判据只认「**闭包/函数**形态」⇒ 不会把 `defer cancel()` / `defer conn.Close()`
+//
+//	这种【取消 ctx / 关连接】的 defer 误认成「回收兜底」。
+func scqGoFallbackCoversDrop(src string) bool {
+	for _, re := range []*regexp.Regexp{scqReGoCleanupFn, scqReGoDeferFn} {
+		for _, loc := range re.FindAllStringIndex(src, -1) {
+			open := strings.Index(src[loc[0]:loc[1]], "{")
+			if open < 0 {
+				continue
+			}
+			if scqReDropDB.MatchString(scqGoBraceBlock(src, loc[0]+open)) {
+				return true
+			}
+		}
+	}
+	// ③ 具名函数形态
+	for _, m := range scqReGoCleanupNm.FindAllStringSubmatch(src, -1) {
+		name := m[1]
+		for _, fm := range scqReGoFuncDef.FindAllStringSubmatchIndex(src, -1) {
+			if src[fm[2]:fm[3]] != name {
+				continue
+			}
+			open := strings.Index(src[fm[1]:], "{")
+			if open < 0 {
+				continue
+			}
+			if scqReDropDB.MatchString(scqGoBraceBlock(src, fm[1]+open)) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// scqFallbackCoversDrop 按语言判「兜底载体是否包着回收动作」。
+func scqFallbackCoversDrop(src string, lang string) bool {
+	switch lang {
+	case "python":
+		return scqPyFallbackCoversDrop(src)
+	case "go":
+		return scqGoFallbackCoversDrop(src)
+	default:
+		return scqShellFallbackCoversDrop(src)
+	}
+}
+
 // scqAxes 是一个脚本的兜底质量轴。
 type scqAxes struct {
-	ExitTrap          bool // A
-	SignalTrap        bool // B
-	CleanupTimeout    bool // C1
-	CleanupDisconnect bool // C2
-	ChildReap         bool // D
-	ChildApplies      bool // D 是否适用（文件确实会起后台子进程）
+	Lang              string // shell / python / go
+	FallbackCovers    bool   // ★ A：兜底「载体」里确实包着回收动作（★ 覆盖性，不是存在性）
+	SignalTrap        bool   // B：有没有接管信号（存在性；★ 是否必需由【语言映射表】决定）
+	CleanupTimeout    bool   // C1
+	CleanupDisconnect bool   // C2
+	ChildReap         bool   // D
+	ChildApplies      bool   // D 是否适用（文件确实会起后台子进程）
 }
 
 // scqGuarded 清理语句是否带【防卡保护】（两种机制任一）。
@@ -319,36 +732,76 @@ func (a scqAxes) scqGuarded() bool { return a.CleanupTimeout || a.CleanupDisconn
 // scqDeficits 算出「为了合格还缺什么」。
 //
 // ★★ 缺陷名只取【真正有风险的缺口】：
-//   - exit_trap     缺 EXIT trap ⇒ 提前退出跳过回收
+//   - fallback      ★ 兜底载体**不覆盖回收动作**（★ 段五订正：段四判的是「存在性」）
+//     ⇒ 提前退出跳过回收（实测攒下 7 个残留库）
+//     ⇒ ★★ 存在性 ≠ 覆盖性：verify_892_local.sh 的 `trap 'rm -f "$TMP"' EXIT`
+//     ⇒   只删临时文件、**不回收库** ⇒ 段四读成「有兜底」是**假阳性方向**。
 //   - cleanup_guard 清理语句无防卡保护 ⇒ 慢 DROP 会在退出时卡死
-//   - signal_trap   【仅当有后台子进程】没接管信号 ⇒ 信号路径上无处执行收割
+//   - signal_trap   没接管信号 ⇒ ★★ 仅 python/go 必需（实测：atexit / try-finally / defer
+//     在 SIGTERM 下【不执行】；而 shell 的 EXIT trap【会执行】⇒ shell 无需信号分支）
 //   - child_reap    【仅当有后台子进程】没 kill+wait ⇒ 孤儿子进程在 cleanup 之后建出资源
 func scqDeficits(a scqAxes) []string {
 	var miss []string
-	if !a.ExitTrap {
-		miss = append(miss, "exit_trap")
+	if !a.FallbackCovers {
+		miss = append(miss, "fallback")
 	}
 	if !a.scqGuarded() {
 		miss = append(miss, "cleanup_guard")
 	}
-	if a.ChildApplies {
-		if !a.SignalTrap {
-			miss = append(miss, "signal_trap")
-		}
-		if !a.ChildReap {
-			miss = append(miss, "child_reap")
-		}
+	// ★★ 「信号接管」是否必需，**由语言映射表决定**（scripts/ursmcheck/selfcreated_cleanup_language_map.tsv）
+	//   ⇒ 表里 signal_covers_sigterm=yes ⇒ 该语言的兜底在信号终止下会执行 ⇒ 不必额外接管信号
+	//   ⇒ 表里 no ⇒ 必须显式接管信号
+	//   ⇒★ ★ 判据的唯一依据是那张表（表驱动）⇒ 代码与表不可能不一致。
+	if !a.SignalCoversSigterm() && !a.SignalTrap {
+		miss = append(miss, "signal_trap")
+	}
+	if a.ChildApplies && !a.ChildReap {
+		miss = append(miss, "child_reap")
 	}
 	sort.Strings(miss)
 	return miss
 }
 
-// scqCompute 从源码重算 6 个轴。
-func scqCompute(src string) scqAxes {
-	ax := scqAxes{}
-	sigs := scqTrapSignals(src)
-	ax.ExitTrap = sigs["EXIT"]
-	ax.SignalTrap = sigs["INT"] || sigs["TERM"] || sigs["QUIT"] || sigs["HUP"]
+// SignalCoversSigterm 该语言的兜底机制在【进程被 SIGTERM 终止】时会不会执行。
+//
+// ★ 读自语言映射表（表驱动 ⇒ 语义只有一处事实源）。
+func (a scqAxes) SignalCoversSigterm() bool {
+	return scqLangMap[a.Lang].SignalCoversSigterm
+}
+
+// scqLangOf 按扩展名判语言。
+func scqLangOf(path string) string {
+	switch {
+	case strings.HasSuffix(path, ".py"):
+		return "python"
+	case strings.HasSuffix(path, ".go"):
+		return "go"
+	default:
+		return "shell"
+	}
+}
+
+// scqCompute 从源码重算各轴（★ 语言感知）。
+func scqCompute(src string, lang string) scqAxes {
+	ax := scqAxes{Lang: lang}
+	// ★ A：兜底【覆盖性】—— 载体里是否真的包着回收动作（★ 段五新增，见 scqFallbackCoversDrop）。
+	ax.FallbackCovers = scqFallbackCoversDrop(src, lang)
+	// ★ B：信号接管的【存在性】—— 按语言各认各的形态。
+	//   ★ 是否【必需】不由这里决定，而由语言映射表的 signal_covers_sigterm 决定（见 scqDeficits）。
+	switch lang {
+	case "python":
+		ax.SignalTrap = scqRePySignal.MatchString(src)
+	case "go":
+		ax.SignalTrap = scqReGoSignal.MatchString(src)
+	default:
+		sigs := scqTrapSignals(src)
+		ax.SignalTrap = sigs["INT"] || sigs["TERM"] || sigs["QUIT"] || sigs["HUP"]
+	}
+	// ★ 防卡保护：go 侧还有「客户端 ctx」这一种形态（context.WithTimeout）
+	//   ⇒ shell/python 只能用服务端的 statement_timeout / pg_terminate_backend。
+	if lang == "go" && scqReGoTimeout.MatchString(src) {
+		ax.CleanupTimeout = true
+	}
 
 	funcs := scqShellFuncs(src)
 	cmds := scqLogicalCommands(src)
@@ -419,7 +872,8 @@ func scqCompute(src string) scqAxes {
 // scqRow 是台账的一行。
 type scqRow struct {
 	File              string
-	ExitTrap          string // yes/no
+	Language          string // shell/python/go
+	FallbackCovers    string // yes/no —— ★ 兜底【覆盖性】：载体里是否包着回收动作
 	SignalTrap        string // yes/no
 	CleanupTimeout    string // yes/no
 	CleanupDisconnect string // yes/no
@@ -451,19 +905,23 @@ func scqReadLedger(t *testing.T) []scqRow {
 			continue
 		}
 		f := strings.Split(text, "\t")
-		if len(f) != 10 {
-			t.Fatalf("台账第 %d 行列数 = %d，期望 10\n%s", ln, len(f), text)
+		if len(f) != 11 {
+			t.Fatalf("台账第 %d 行列数 = %d，期望 11\n%s", ln, len(f), text)
 		}
 		rows = append(rows, scqRow{
-			File: f[0], ExitTrap: f[1], SignalTrap: f[2], CleanupTimeout: f[3],
-			CleanupDisconnect: f[4], ChildReap: f[5], Origin: f[6], Verdict: f[7],
-			Deficits: f[8], Evidence: f[9],
+			File: f[0], Language: f[1], FallbackCovers: f[2], SignalTrap: f[3],
+			CleanupTimeout: f[4], CleanupDisconnect: f[5], ChildReap: f[6],
+			Origin: f[7], Verdict: f[8], Deficits: f[9], Evidence: f[10],
 		})
 	}
 	return rows
 }
 
 // scqCandidateFiles 扫全仓，找出「自建资源 + 自己回收（DROP DATABASE）」的脚本。
+//
+// ★★ 扫描口径 = scqScopeDirs（scripts/ + internal/ + cmd/）⇒ 与并行会话那套量具一致
+//
+//	⇒⇒ 两个台账的差集才是【轴差】而不是【口径差】。
 func scqCandidateFiles(t *testing.T) []string {
 	t.Helper()
 	root, err := filepath.Abs("../..")
@@ -480,32 +938,60 @@ func scqCandidateFiles(t *testing.T) []string {
 			if base == ".git" || base == "vendor" || base == "node_modules" {
 				return filepath.SkipDir
 			}
+			// ★ 口径外的一级目录直接跳过（不逐目录枚举再比对，避免口径漂移）
+			rel, rerr := filepath.Rel(root, p)
+			if rerr != nil {
+				return nil
+			}
+			rel = filepath.ToSlash(rel)
+			if rel != "." {
+				top := rel
+				if i := strings.IndexByte(rel, '/'); i >= 0 {
+					top = rel[:i]
+				}
+				inScope := false
+				for _, d := range scqScopeDirs {
+					if top == d {
+						inScope = true
+						break
+					}
+				}
+				if !inScope {
+					return filepath.SkipDir
+				}
+			}
 			return nil
 		}
-		if !strings.HasSuffix(p, ".sh") {
+		ext := filepath.Ext(p)
+		if ext != ".sh" && ext != ".py" && ext != ".go" {
 			return nil
 		}
 		rel, rerr := filepath.Rel(root, p)
 		if rerr != nil {
 			return nil
 		}
+		rel = filepath.ToSlash(rel)
+		if scqSelfFiles[rel] {
+			return nil // ★ 量具脚本自匹配 ⇒ 排除自己
+		}
 		data, rerr2 := os.ReadFile(p)
 		if rerr2 != nil {
 			return nil
 		}
 		src := string(data)
-		lines := scqStripComments(src)
-		// ★ 「自建」：CREATE DATABASE 真在执行（剥注释 + ±3 行执行上下文）
+		lang := scqLangOf(rel)
+		lines := scqStripComments(src, lang)
+		// ★ 「自建」：CREATE DATABASE 真在执行（剥注释 + 执行上下文）
 		//   ⇒ 或它会起 docker 容器（容器里的库是它自己建的）
-		creates := scqHasExecContext(lines, scqReCreateDB) || scqReCreateCT.MatchString(src)
+		creates := scqHasExecContext(lines, scqReCreateDB, lang) || scqReCreateCT.MatchString(src)
 		if !creates {
 			return nil
 		}
 		// ★ 「自回收」：DROP DATABASE 真在执行
-		if !scqHasExecContext(lines, scqReDropDB) {
+		if !scqHasExecContext(lines, scqReDropDB, lang) {
 			return nil
 		}
-		out = append(out, filepath.ToSlash(rel))
+		out = append(out, rel)
 		return nil
 	})
 	if err != nil {
@@ -535,7 +1021,10 @@ func TestSelfCreatedCleanupQualityLedger(t *testing.T) {
 			t.Errorf("台账里 %s 出现多次", r.File)
 		}
 		seen[r.File] = true
-		for _, v := range []string{r.ExitTrap, r.SignalTrap, r.CleanupTimeout, r.CleanupDisconnect} {
+		if r.Language != "shell" && r.Language != "python" && r.Language != "go" {
+			t.Errorf("台账 %s：language = %q 非法（只允许 shell/python/go）", r.File, r.Language)
+		}
+		for _, v := range []string{r.FallbackCovers, r.SignalTrap, r.CleanupTimeout, r.CleanupDisconnect} {
 			if v != "yes" && v != "no" {
 				t.Errorf("台账 %s：轴值 %q 非法（只允许 yes/no）", r.File, v)
 			}
@@ -597,7 +1086,7 @@ func TestSelfCreatedCleanupQualityLedger(t *testing.T) {
 			t.Errorf("读 %s 失败: %v", r.File, err)
 			continue
 		}
-		ax := scqCompute(string(data))
+		ax := scqCompute(string(data), scqLangOf(r.File))
 		yn := func(b bool) string {
 			if b {
 				return "yes"
@@ -608,14 +1097,18 @@ func TestSelfCreatedCleanupQualityLedger(t *testing.T) {
 		if ax.ChildApplies {
 			gotReap = yn(ax.ChildReap)
 		}
-		if r.ExitTrap != yn(ax.ExitTrap) || r.SignalTrap != yn(ax.SignalTrap) ||
+		if r.Language != ax.Lang {
+			t.Errorf("★ %s 的 language 与从扩展名推出的不一致：台账=%s 重算=%s",
+				r.File, r.Language, ax.Lang)
+		}
+		if r.FallbackCovers != yn(ax.FallbackCovers) || r.SignalTrap != yn(ax.SignalTrap) ||
 			r.CleanupTimeout != yn(ax.CleanupTimeout) || r.CleanupDisconnect != yn(ax.CleanupDisconnect) ||
 			r.ChildReap != gotReap {
-			t.Errorf("★ %s 账实不符\n  台账: exit=%s signal=%s timeout=%s disconnect=%s reap=%s\n"+
-				"  重算: exit=%s signal=%s timeout=%s disconnect=%s reap=%s\n"+
+			t.Errorf("★ %s 账实不符\n  台账: fallback=%s signal=%s timeout=%s disconnect=%s reap=%s\n"+
+				"  重算: fallback=%s signal=%s timeout=%s disconnect=%s reap=%s\n"+
 				"  ⇒ 源码改了必须同步台账（这正是本门要抓的「改了没登记」）",
-				r.File, r.ExitTrap, r.SignalTrap, r.CleanupTimeout, r.CleanupDisconnect, r.ChildReap,
-				yn(ax.ExitTrap), yn(ax.SignalTrap), yn(ax.CleanupTimeout), yn(ax.CleanupDisconnect), gotReap)
+				r.File, r.FallbackCovers, r.SignalTrap, r.CleanupTimeout, r.CleanupDisconnect, r.ChildReap,
+				yn(ax.FallbackCovers), yn(ax.SignalTrap), yn(ax.CleanupTimeout), yn(ax.CleanupDisconnect), gotReap)
 		}
 
 		miss := strings.Join(scqDeficits(ax), ",")
@@ -693,18 +1186,71 @@ cleanup() {
 trap cleanup EXIT
 `
 
-	axOK := scqCompute(ok)
-	if !axOK.ExitTrap || !axOK.SignalTrap || !axOK.CleanupTimeout || !axOK.ChildApplies || !axOK.ChildReap {
+	// ★★ 探针 5（★ 段五新增）：python 形态 —— atexit 注册的函数里包着回收
+	//   ⇒ 兜底【覆盖性】= yes；但【无信号接管】⇒ ★ 必须缺 signal_trap
+	py := `import atexit, os
+
+def _drop_db() -> None:
+    try:
+        run_sql("DROP DATABASE IF EXISTS x;")
+    except Exception:
+        pass
+
+atexit.register(_drop_db)
+`
+	// ★★ 探针 6（★ 段五新增）：go 形态 —— t.Cleanup 闭包里包着回收 + context.WithTimeout
+	//   ⇒ 覆盖性=yes、防卡=yes（客户端 ctx）；但【无信号接管】⇒ ★ 必须缺 signal_trap
+	goSrc := `package main
+
+import "context"
+
+func main() {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	t.Cleanup(func() {
+		admin.Exec(ctx, "DROP DATABASE IF EXISTS x")
+	})
+}
+`
+	// ★★ 探针 7（★ 段五新增）：★ 「存在性 ≠ 覆盖性」的反例 ——
+	//   EXIT trap 只删临时文件，**不包着回收** ⇒ 覆盖性 = no ⇒ 必须缺 fallback。
+	//   ★★ 这正是仓内 verify_892_local.sh 第 26 行的真实形态
+	//   （段四把它读成「有兜底」⇒ 假阳性方向）。
+	notCovered := `#!/usr/bin/env bash
+TMP="$(mktemp /tmp/x_XXXXXX.sql)"
+trap 'rm -f "$TMP"' EXIT
+psql -c "SET statement_timeout='15s'; DROP DATABASE IF EXISTS x" || true
+psql -c "CREATE DATABASE x" || true
+`
+	// ★★ 探针 8（★ 段五新增）：python 的合格形态（atexit + 信号接管 + 服务端超时）
+	pyOK := `import atexit, os, signal, sys
+
+def _drop_db() -> None:
+    try:
+        run_sql("SET statement_timeout='15s'; DROP DATABASE IF EXISTS x;")
+    except Exception:
+        pass
+
+def _on_term(signum, frame):
+    _drop_db()
+    sys.exit(143)
+
+signal.signal(signal.SIGTERM, _on_term)
+atexit.register(_drop_db)
+`
+
+	axOK := scqCompute(ok, "shell")
+	if !axOK.FallbackCovers || !axOK.SignalTrap || !axOK.CleanupTimeout || !axOK.ChildApplies || !axOK.ChildReap {
 		t.Errorf("探针 1（合格形态）判据读数不对: %+v\n"+
-			"  ⇒ 期望 exit=yes signal=yes timeout=yes reap=yes", axOK)
+			"  ⇒ 期望 fallback=yes signal=yes timeout=yes reap=yes", axOK)
 	}
 	if d := scqDeficits(axOK); len(d) != 0 {
 		t.Errorf("探针 1（合格形态）不应有缺失项，实际 = %v", d)
 	}
 
-	axBad := scqCompute(bad)
-	if !axBad.ExitTrap {
-		t.Errorf("探针 2 应认出 EXIT trap: %+v", axBad)
+	axBad := scqCompute(bad, "shell")
+	if !axBad.FallbackCovers {
+		t.Errorf("探针 2 应认出「EXIT trap 包着回收」: %+v", axBad)
 	}
 	if axBad.CleanupTimeout || axBad.CleanupDisconnect {
 		t.Errorf("★ 探针 2 不该判成「清理语句带防卡保护」: %+v", axBad)
@@ -716,12 +1262,12 @@ trap cleanup EXIT
 		t.Errorf("探针 2 有后台子进程但无收割 ⇒ 期望 reap=no: %+v", axBad)
 	}
 
-	axMis := scqCompute(mis)
+	axMis := scqCompute(mis, "shell")
 	if axMis.CleanupTimeout || axMis.CleanupDisconnect {
 		t.Errorf("★ 探针 3：`go test -timeout 600s` 不在清理命令里 ⇒ 不得判成「清理语句带防卡保护」: %+v", axMis)
 	}
 
-	axDis := scqCompute(dis)
+	axDis := scqCompute(dis, "shell")
 	if !axDis.CleanupDisconnect {
 		t.Errorf("探针 4 应认出 pg_terminate_backend 类防卡保护: %+v", axDis)
 	}
@@ -729,23 +1275,150 @@ trap cleanup EXIT
 		t.Errorf("探针 4（pg_terminate_backend 形态）不应有缺失项，实际 = %v", d)
 	}
 
+	// ★★ 探针 5/6：python 与 go 的兜底【覆盖性】要成立，且【信号接管】必须成为缺失项
+	axPy := scqCompute(py, "python")
+	if !axPy.FallbackCovers {
+		t.Errorf("★ 探针 5：atexit 注册的函数里包着回收 ⇒ 覆盖性应为 yes: %+v", axPy)
+	}
+	if axPy.SignalTrap {
+		t.Errorf("探针 5：python 无信号接管 ⇒ 应判成 no: %+v", axPy)
+	}
+	if d := strings.Join(scqDeficits(axPy), ","); d != "cleanup_guard,signal_trap" {
+		t.Errorf("★ 探针 5 的缺失项 = %q，期望 %q\n"+
+			"  ⇒ python 侧：atexit 在 SIGTERM 下【不执行】⇒ signal_trap 必须无条件必需", d, "cleanup_guard,signal_trap")
+	}
+
+	axGo := scqCompute(goSrc, "go")
+	if !axGo.FallbackCovers {
+		t.Errorf("★ 探针 6：t.Cleanup 闭包里包着回收 ⇒ 覆盖性应为 yes: %+v", axGo)
+	}
+	if !axGo.CleanupTimeout {
+		t.Errorf("探针 6：context.WithTimeout 应判成「客户端防卡保护」: %+v", axGo)
+	}
+	if d := strings.Join(scqDeficits(axGo), ","); d != "signal_trap" {
+		t.Errorf("★ 探针 6 的缺失项 = %q，期望 %q\n"+
+			"  ⇒ go 侧：defer 在 SIGTERM 下【不执行】⇒ signal_trap 必须无条件必需", d, "signal_trap")
+	}
+
+	// ★★ 探针 7：★ 「存在性 ≠ 覆盖性」—— trap 只删临时文件 ⇒ 覆盖性 = no
+	axNC := scqCompute(notCovered, "shell")
+	if axNC.FallbackCovers {
+		t.Errorf("★ 探针 7：EXIT trap 只 `rm -f $TMP`、不包着 DROP ⇒ 覆盖性必须判成 no: %+v", axNC)
+	}
+	if d := strings.Join(scqDeficits(axNC), ","); d != "fallback" {
+		t.Errorf("★ 探针 7 的缺失项 = %q，期望 %q\n"+
+			"  ⇒ ★ 这就是「有 trap ≠ 兜底覆盖了要回收的资源」的判据落点", d, "fallback")
+	}
+
+	// ★★ 探针 8：python 的合格形态 ⇒ 无缺失项
+	axPyOK := scqCompute(pyOK, "python")
+	if !axPyOK.FallbackCovers || !axPyOK.SignalTrap {
+		t.Errorf("探针 8（python 合格形态）读数不对: %+v", axPyOK)
+	}
+	if d := scqDeficits(axPyOK); len(d) != 0 {
+		t.Errorf("探针 8（python 合格形态）不应有缺失项，实际 = %v", d)
+	}
+
 	// ★★ 区分度的正确要求（★ 第一版写成「四个探针两两不同」是错的：
 	//   探针 1 与探针 4 都是**合格**形态 ⇒ 它们的缺失项集合【本来就该相同】⇒
 	//   ⇒ 那样写等于要求「合格形态之间必须不同」⇒ ⇒ 门会红在一个假问题上）。
-	// ⇒ 正确要求：① 两个合格形态都无缺失项；② 两个不合格形态都有缺失项；
-	//   ③ 两个不合格形态之间【必须不同】（否则其中一条判据其实没生效）。
-	dOK := strings.Join(scqDeficits(axOK), ",")
-	dDis := strings.Join(scqDeficits(axDis), ",")
-	dBad := strings.Join(scqDeficits(axBad), ",")
-	dMis := strings.Join(scqDeficits(axMis), ",")
-	if dOK != "" || dDis != "" {
-		t.Errorf("合格形态的探针不该有缺失项: ok=%q dis=%q", dOK, dDis)
+	// ⇒ 正确要求：① 合格形态都无缺失项；② 不合格形态都有缺失项；
+	//   ③ 不合格形态之间【必须两两不同】（否则其中一条判据其实没生效）。
+	type probeCase struct {
+		label string
+		ax    scqAxes
 	}
-	if dBad == "" || dMis == "" {
-		t.Errorf("不合格形态的探针必须有缺失项: bad=%q mis=%q", dBad, dMis)
+	passCases := []probeCase{
+		{"1-合格shell", axOK}, {"4-合格disconnect", axDis}, {"8-合格python", axPyOK},
 	}
-	if dBad == dMis {
-		t.Errorf("★ 两个不合格探针的缺失项集合相同（%q）⇒ 其中一条判据其实没生效（判据无区分度）", dBad)
+	failCases := []probeCase{
+		{"2-无防卡无收割", axBad}, {"3-超时标记误命中", axMis},
+		{"5-python无信号", axPy}, {"6-go无信号", axGo}, {"7-载体不覆盖回收", axNC},
+	}
+	for _, p := range passCases {
+		if d := scqDeficits(p.ax); len(d) != 0 {
+			t.Errorf("合格形态的探针不该有缺失项: %s ⇒ %v", p.label, d)
+		}
+	}
+	seen := map[string]string{}
+	for _, p := range failCases {
+		d := strings.Join(scqDeficits(p.ax), ",")
+		if d == "" {
+			t.Errorf("不合格形态的探针必须有缺失项: %s", p.label)
+			continue
+		}
+		if prev, dup := seen[d]; dup {
+			t.Errorf("★ 两个不合格探针的缺失项集合相同（%q）：%s 与 %s\n"+
+				"  ⇒ 其中一条判据其实没生效（判据无区分度）", d, prev, p.label)
+		}
+		seen[d] = p.label
+	}
+}
+
+// ── 量具自检：语言映射表是判据的唯一语义事实源 ─────────────────────────────
+
+// TestSelfCreatedCleanupLanguageMapCoversLedger 验证「语言映射表」与台账/代码三方自洽。
+//
+// ★ 三条不变量：
+//
+//	① 台账里出现的每种语言，映射表里必须有行（否则该语言的语义无依据）；
+//	② 映射表里的 fallback_mech 必须与代码侧认的机制一致（表与代码不许各说各话）；
+//	③ 映射表里 signal_covers_sigterm=yes ⇒ 该语言【不需要】signal_trap 这一项；
+//	   no ⇒ 【需要】⇒ ⇒ 也就是「判据的必需项由表驱动」。
+func TestSelfCreatedCleanupLanguageMapCoversLedger(t *testing.T) {
+	if scqLangMapErr != nil {
+		t.Fatalf("★ 语言映射表读不出来 ⇒ 判据无事实源: %v", scqLangMapErr)
+	}
+	// ② 表里的机制名必须与代码侧一致
+	wantMech := map[string][]string{
+		"shell":  {"trap", "EXIT"},
+		"python": {"atexit", "finally"},
+		"go":     {"defer", "Cleanup"},
+	}
+	for lang, info := range scqLangMap {
+		toks, ok := wantMech[lang]
+		if !ok {
+			t.Errorf("★ 语言映射表里的 %q 不在本门认识的语言集合内（shell/python/go）", lang)
+			continue
+		}
+		hit := false
+		for _, tk := range toks {
+			if strings.Contains(info.FallbackMech, tk) {
+				hit = true
+				break
+			}
+		}
+		if !hit {
+			t.Errorf("★ 语言映射表 %s 的 fallback_mech = %q，与代码侧认识的机制（%v）对不上\n"+
+				"  ⇒ 表与代码必须一致 ⇒ 要么改表，要么改代码", lang, info.FallbackMech, toks)
+		}
+	}
+	// ① 台账里的每种语言都要在表内
+	rows := scqReadLedger(t)
+	langs := map[string]bool{}
+	for _, r := range rows {
+		langs[r.Language] = true
+	}
+	for lang := range langs {
+		if _, ok := scqLangMap[lang]; !ok {
+			t.Errorf("★ 台账里出现了语言 %q，但语言映射表里没有它\n"+
+				"  ⇒ 该语言的「合格兜底」语义无依据 ⇒ 必须补映射表", lang)
+		}
+	}
+	// ③ 必需项由表驱动：表里 signal_covers_sigterm=no 的语言 ⇒ 必须缺 signal_trap
+	for _, r := range rows {
+		info, ok := scqLangMap[r.Language]
+		if !ok {
+			continue
+		}
+		if info.SignalCoversSigterm {
+			continue
+		}
+		ax := scqAxes{Lang: r.Language}
+		if d := strings.Join(scqDeficits(ax), ","); !strings.Contains(d, "signal_trap") {
+			t.Errorf("★ 语言 %s 的映射表说 signal_covers_sigterm=no ⇒ 缺 signal_trap 时必须报出来\n"+
+				"  ⇒ 实际缺失项 = %q", r.Language, d)
+		}
 	}
 }
 
