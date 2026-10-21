@@ -26,6 +26,71 @@ func dedicatedSessionDB(name string) (sessionDBContract, bool) {
 
 type sessionGateSources struct{ generic, runner, gate, verify, fixture string }
 
+// destructiveGuardedDB names a DSN that must **never** be injected by the
+// integration-gate fact source, and which protects itself instead: the test
+// skips when the variable is unset, and a runtime guard rejects any database
+// that does not look like a disposable scratch/e2e library.
+//
+// R86 轮 introduced REPORT_E2E_TEST_DATABASE_URL when it split the shared
+// TEST_DATABASE_URL / TEST_DB_URL away from the destructive reportrollup legs,
+// and registered it as `dsn_exclusive` — but this gate kept its own two-entry
+// switch, so it demanded the exact injection that the registry forbids.
+// The red was the gate being right about the shape and wrong about the
+// bookkeeping.
+//
+// ★ Why this cannot be folded into dedicatedSessionDB: those two own a
+// **required dedicated runner** (createdb + isolation opt-in + a -run filter).
+// reportrollup has no runner on purpose — the 2026-09-29 incident (~978k
+// usage_facts rows deleted because a developer library was passed as a
+// scratch library) is why it stays opt-in and guard-enforced rather than
+// being wired into a populated gate run.
+var destructiveGuardedDB = map[string]string{
+	"REPORT_E2E_TEST_DATABASE_URL": "domains/reportrollup/realdb_e2e_test.go",
+}
+
+// destructiveGuardedDBProblems asserts the "must stay out of the fact source"
+// property. Registration is only half the claim; the guard has to keep
+// rejecting real databases, otherwise dropping it would silently re-open the
+// destructive path while the gate stayed green.
+func destructiveGuardedDBProblems(name, fixture string, src sessionGateSources) []string {
+	var problems []string
+	require := func(ok bool, property string) {
+		if !ok {
+			problems = append(problems, property)
+		}
+	}
+	require(!regexp.MustCompile(regexp.QuoteMeta(name)+`="\$GATE_URL"`).MatchString(active(src.generic)),
+		"shared DSN injection")
+	read := func(path string) string {
+		data, err := os.ReadFile("../../" + path)
+		if err != nil {
+			problems = append(problems, "read fixture: "+err.Error())
+			return ""
+		}
+		return string(data)
+	}
+	body := read(fixture)
+	if body == "" {
+		return problems
+	}
+	require(strings.Contains(body, `os.Getenv("`+name+`")`), "fixture DSN consumer")
+	// The skip arm is what makes "unset" the safe state.
+	require(regexp.MustCompile(`(?s)os\.Getenv\("`+regexp.QuoteMeta(name)+`"\)\s*\n\s*if [^{]*\{\s*\n?\s*t\.Skip\(`).MatchString(body),
+		"unset skips instead of failing open")
+	// The scratch-library guard is what makes "wrong DSN" fail loudly.
+	//
+	// ★ Must assert the guard is **called** on the resolved DSN, not merely
+	// that its definition still sits in the file. Checking for the name alone
+	// is satisfied by an uncalled helper — mutation M3 removed the single call
+	// site and the gate stayed green, which is precisely the regression this
+	// registration exists to catch.
+	require(strings.Contains(body, "func guardDestructiveE2E(") &&
+		strings.Contains(body, `REPORT_E2E_ALLOW_DESTRUCTIVE`), "destructive scratch guard")
+	require(regexp.MustCompile(`guardDestructiveE2E\(\s*t\s*,\s*dsn\s*\)`).MatchString(body),
+		"destructive guard call site")
+	return problems
+}
+
 func sessionStorageGateSources(t *testing.T, contract sessionDBContract, generic string) sessionGateSources {
 	t.Helper()
 	read := func(path string) string {
@@ -35,9 +100,19 @@ func sessionStorageGateSources(t *testing.T, contract sessionDBContract, generic
 		}
 		return string(data)
 	}
-	return sessionGateSources{generic,
-		read("scripts/audit/run-session-storage-stream.sh"),
-		read("tests/session_storage_audit_gate.sh"), read("verify.sh"), read(contract.fixture)}
+	src := sessionGateSources{generic, "", "", "", ""}
+	if contract == (sessionDBContract{}) {
+		// A self-guarded destructive leg owns no dedicated runner: it has no
+		// createdb, no isolation opt-in and no -run filter to prove. Reading
+		// those files would assert nothing and only couple this guard to
+		// unrelated scripts.
+		return src
+	}
+	src.runner = read("scripts/audit/run-session-storage-stream.sh")
+	src.gate = read("tests/session_storage_audit_gate.sh")
+	src.verify = read("verify.sh")
+	src.fixture = read(contract.fixture)
+	return src
 }
 
 func sessionStorageGateProblems(name string, contract sessionDBContract, src sessionGateSources) []string {

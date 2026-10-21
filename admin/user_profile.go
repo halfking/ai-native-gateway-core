@@ -61,7 +61,15 @@ type UserProfileSummary struct {
 // UserProfileDetailResponse 用户画像详情
 type UserProfileDetailResponse struct {
 	UserProfileSummary
-	DailyCostTrend []DailyCostPoint    `json:"daily_cost_trend"`
+	DailyCostTrend []DailyCostPoint `json:"daily_cost_trend"`
+	// Degraded 恒发（2026-10-20 部署后复验轮）：字段缺失与 false 在 API 语义上
+	// **无法区分**（前端读到 undefined 与 false 都会当「服务端确认过是好的」）
+	// ⇒ 不能用 omitempty，否则这个标记自己废掉一半。
+	//
+	// 什么时候会 true：schema 落后于代码（生产共享库缺 session_owners）⇒
+	// 降级成 200 + 空载荷，而不是整页 500。口径与同文件的列表端点一致。
+	Degraded       bool                `json:"degraded"`
+	DegradedReason string              `json:"degraded_reason,omitempty"`
 	TopTasks       []TaskRankItem      `json:"top_tasks"`
 	TopEndUsers    []EndUserRankItem   `json:"top_end_users"`
 	RecentSessions []RecentSessionItem `json:"recent_sessions"`
@@ -316,6 +324,39 @@ func (h *Handler) handleUserAnalyticsDetail(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	if err != nil {
+		// 2026-10-20 部署后复验轮（245/154 生产）：详情端点恒 500，根因是
+		// **生产共享库缺 session_owners**（迁移 358 的版本号低于部署通道的
+		// 账本对账下限 412 ⇒ 存量库永远拿不到它）⇒ 基础聚合直接 42P01。
+		//
+		// 口径与同文件的**列表端点**一致（见上方 handleUserAnalyticsList）：
+		// schema 落后于代码 ⇒ 降级成 200 + 空载荷 + 自报家门的 degraded 标记，
+		// 而不是整页 500。理由是「没有会话」与「聚合表没迁移」在页面上都长成
+		// 一个空列表 ⇒ 不自报家门就是撒谎。
+		//
+		// ⚠ 降级载荷用**同一个结构体**构造 ⇒ 正常路径与降级路径的 JSON 形状
+		// 由编译器保证一致（不会出现「降级时少几个字段」的前端崩溃）。
+		if IsSchemaBehindError(err) {
+			reason := ReportSchemaBehind(slog.Default(), "userProfile.detail", err)
+			writeJSON(w, http.StatusOK, &UserProfileDetailResponse{
+				UserProfileSummary: UserProfileSummary{
+					OwnerUser:   ownerUser,
+					ModelsUsed:  []string{},
+					FirstSeenAt: time.Time{},
+					LastSeenAt:  time.Time{},
+				},
+				DailyCostTrend: []DailyCostPoint{},
+				TopTasks:       []TaskRankItem{},
+				TopEndUsers:    []EndUserRankItem{},
+				RecentSessions: []RecentSessionItem{},
+				HealthDist:     HealthDistribution{},
+				// ★ 与同文件的列表端点（:208 `"degraded": true`）**同口径**：
+				// 降级路径必须**自报家门** —— 只写 reason 不写标志 ⇒ 前端按
+				// `degraded:false` 当正常数据处理 ⇒ 比不报更坏（谎报降级状态）。
+				Degraded:       true,
+				DegradedReason: reason,
+			})
+			return
+		}
 		writeInternalErr(w, "stats query", err)
 		return
 	}

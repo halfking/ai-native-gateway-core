@@ -30,14 +30,14 @@ ssh 154 'curl -sS -X POST http://127.0.0.1:8782/api/keys/ \
 返回：
 ```
 HTTP:200
-{"api_key":"sk-eFBORt9QFxuENgjfqA9f8L5JWJ0gXPTc8F0daT4kBFufk15w","id":194,"key_prefix":"sk-eFBORt9****","message":"ok"}
+{"api_key":"sk-__REDACTED_REAL_KEY__","id":194,"key_prefix":"sk-eFBORt9****","message":"ok"}
 ```
 
 ### 步骤 B：E2E #1（chat-shape + 短 prompt）
 
 ```bash
 curl -sS -X POST 'https://llm.kxpms.cn/v1/chat/completions' \
-  -H "Authorization: Bearer sk-eFBORt9QFxuENgjfqA9f8L5JWJ0gXPTc8F0daT4kBFufk15w" \
+  -H "Authorization: Bearer sk-__REDACTED_REAL_KEY__" \
   -H 'Content-Type: application/json' \
   -d '{
     "model":"grok-4.6",
@@ -68,7 +68,7 @@ curl -sS -X POST 'https://llm.kxpms.cn/v1/chat/completions' \
 
 ```bash
 curl -sS -X POST 'https://llm.kxpms.cn/v1/chat/completions' \
-  -H "Authorization: Bearer sk-eFBORt9QFxuENgjfqA9f8L5JWJ0gXPTc8F0daT4kBFufk15w" \
+  -H "Authorization: Bearer sk-__REDACTED_REAL_KEY__" \
   -H 'Content-Type: application/json' \
   -d '{
     "model":"grok-4.6",
@@ -190,7 +190,7 @@ WHERE request_id IN (
 ## 遗留事项（与本修复无关）
 
 1. **`docs/audit/2026-10-12-migration-358-end-user-id-overflow.md`**：迁移 358 的 `session_owners.end_user_id VARCHAR(128)` 在 source data `request_logs.end_user_id max=150` 下溢出，host-first fresh DB blocker。生产不受影响（迁移 4.2 是 `ON CONFLICT DO NOTHING` 幂等）。owner 拍板方案 A/B/C 后由运维独立修复。
-2. **E2E 用的 API key `sk-eFBORt9QFxuENgjfqA9f8L5JWJ0gXPTc8F0daT4kBFufk15w` 是临时的**：
+2. **E2E 用的 API key `sk-__REDACTED_REAL_KEY__` 是临时的**：
    - 用途 R-vapeur4 验证
    - 建议测试完后手动吊销：`curl -X DELETE http://127.0.0.1:8782/api/keys/194 -H "Authorization: Bearer $ADMIN_TOKEN"`
 3. **fail-closed + fail-open 兜底**：本次 E2E 触发了一次 `URSM v2 authoritative view filtered out every candidate`（vapor 节点 `avail=false`），gateway 走 `node_probe_worker: sync probe recovered`（direct 200）后 `sync_no_candidate_probe_recovered` 走通——属于正常自愈路径，与 R-vapeur4 无关。

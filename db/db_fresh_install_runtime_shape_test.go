@@ -175,6 +175,9 @@ func TestFreshInstallRuntimeShape_EnsureChain(t *testing.T) {
 	//
 	// ★ 两条不变量：
 	//   (a) `session_turns_hot` 必须存在；
+	//       ★★ 但「缺它」有两种可能，必须**同源判别**（见下面实现处的注释）：
+	//       「安装链跑过却没建出来」（真缺陷 ⇒ 红）
+	//       vs「这个库压根没跑过安装链」（靶子不对 ⇒ 诚实 SKIP）。
 	//   (b) hot 面与父表 `session_turns` 必须**逐列同形**
 	//       （column_name / data_type / is_nullable / ordinal_position 四元组）
 	//       —— 这是 707/869 维持的 lock-step 扩列不变量；
@@ -195,9 +198,51 @@ func TestFreshInstallRuntimeShape_EnsureChain(t *testing.T) {
 			t.Fatalf("查 session_turns_hot 是否存在: %v", err)
 		}
 		if !hotExists {
-			t.Errorf("public.session_turns_hot 在「装完」时就不存在 ⇒ " +
-				"安装链的 session_turns_hot_bootstrap 没生效（它由 installer 的启动迁移链建，" +
-				"ensure 链不建它 ⇒ 这里没人替它兜底）")
+			// ★★★★ **同源判别**：这是本轮（2026-10-21 R80 续四）修掉的**假红**。
+			//
+			// ★ 机制：`session_turns_hot` **不由基线建**（`sql/schema/01-schema.sql`
+			//   末尾自己写明：「Migration 526 historically owns session_turns_hot …
+			//   Fresh installer bootstrap supplies their current final-state form
+			//   through session_turns_hot_bootstrap.sql」）⇒ ⇒ **基线形态的库里
+			//   它本来就不存在** ⇒ ⇒ 「它不在」**不能**直接判成「安装链没生效」。
+			//
+			// ★ 判别式 = **同一个 bootstrap 文件建的另一个产物**：
+			//   `public.promote_session_turns_hot_to_partition`（函数）。
+			//   ⇒ 选**函数**而不选视图，是因为视图依赖这张表 ⇒ 缺表时视图已被
+			//     CASCADE 带走 ⇒ 拿它当判别式会在「真缺陷」那一支永远判错。
+			//   ⇒ 该函数**基线里 0 命中**（实测）⇒ 它是**启动序列专属标记**。
+			//
+			// ★ 两条分支：
+			//   函数**在** ⇒ 安装链**跑过** ⇒ 表不该缺 ⇒ ★ **真缺陷** ⇒ 红；
+			//   函数**不在** ⇒ 这个库**根本没跑过安装链** ⇒ ★ **靶子不对**
+			//     ⇒ 本门的前提（「全新安装形态」）不成立 ⇒ **诚实 SKIP**，
+			//     而不是报一条会把人引向「产品缺陷」的假红。
+			//
+			// ★ 为什么必须修：R74 轮实测的 R69「手工子集库」正是这一类
+			//   （缺 credentials / session_turns_hot / schema_migrations /
+			//   request_logs_with_current_month，但**有** session_turns）
+			//   ⇒ 旧写法在那上面会报「安装链的 session_turns_hot_bootstrap 没生效」
+			//   ⇒ ⇒ **把量具失效报成了产品缺陷**。
+			var promoteFnExists bool
+			if err := probe.QueryRow(ctx, `
+				SELECT EXISTS (
+					SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+					WHERE n.nspname = 'public'
+					  AND p.proname = 'promote_session_turns_hot_to_partition'
+				)`).Scan(&promoteFnExists); err != nil {
+				t.Fatalf("查同源 promote 函数是否存在: %v", err)
+			}
+			if promoteFnExists {
+				t.Errorf("public.session_turns_hot 在「装完」时就不存在，**但同一个 bootstrap " +
+					"文件建的 promote 函数在** ⇒ 安装链**跑过**却没建出这张表 ⇒ " +
+					"真缺陷（安装链的 session_turns_hot_bootstrap 没生效）")
+			} else {
+				t.Skipf("目标库不是「全新安装」形态：public.session_turns_hot 缺，**且同一个 " +
+					"bootstrap 文件建的 promote 函数也缺** ⇒ 这个库**没跑过安装链** " +
+					"（基线形态里本来就没有这张表 ⇒ sql/schema/01-schema.sql 末尾有说明）⇒ " +
+					"本门量的是「全新安装形态」，前提不成立 ⇒ 跳过，避免把**靶子不对**报成产品缺陷。" +
+					"★ 要跑这道门，请用 scripts/audit/probe-onetime-db-shape.sh 建的「装完且启动过」形态库。")
+			}
 		} else {
 			var sameShape bool
 			if err := probe.QueryRow(ctx, `

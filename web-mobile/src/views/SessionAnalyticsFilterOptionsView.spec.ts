@@ -39,7 +39,7 @@ import {
  *   | 超时           | 10s                             | 12s                          |
  *
  * ★★★★★★ **注册形态是第六种：前缀 catch-all + 方法内分发器**
- *   （`cmd/gateway/main.go:7286` → `admin/session_analytics_handler.go:728-729`）
+ *   （`cmd/gateway/main.go:7409` → `admin/session_analytics_handler.go:728-729`）
  *   ⇒ 只查 `admin/handler.go` 的 `mux.HandleFunc` 会判「端点不存在」。这是最容易抄错的一处。
  *
  * ★★★★★★ **权限档 `'admin'` 的依据比兄弟面多一层**：鉴权是**双模式**的
@@ -280,13 +280,20 @@ describe('② ★★★★★★ 无数据是 null 不是 []，半空形状可�
     // ★★★ 绝不能出现显式赋空切片 —— 那会把 null 变成 []
     expect(stripComments(h)).not.toMatch(/(models|providers)\s*=\s*\[\]string\{\}/)
     expect(stripComments(h)).not.toMatch(/(models|providers)\s*:\s*\[\]string\{\}/)
-    // ★★ 对照兄弟面：那边**确实**显式赋空 —— 但要注意它在**另一个函数**里
-    //   （`runFilterOptionQueries`，`admin/turns_filter_options.go:157` 起，
-    //   第 166 行 `*targets[i] = []string{}`），**不在** `handleTurnsFilterOptions` 段内。
-    //   ⇒ 锚错函数会让这条判据**恒红**（本批真踩到了）。
-    const sib = goFunc(goSrc('admin/turns_filter_options.go'), 'runFilterOptionQueries')
-    expect(stripComments(sib), '兄弟面不再显式赋空 ⇒ 「两族空值编码相反」这条前提变了').toMatch(
-      /\*targets\[i\] = \[\]string\{\}/,
+    // ★★ 对照兄弟面：那边**确实**显式赋空 —— 但**位置换了**（2026-10-21 订正）：
+    //   ① 降级路径：`resetFilterOptionGroups`（`admin/turns_filter_options.go:81-87`）
+    //      体内 `*dst = []string{}`（nil ⇒ 空数组）；
+    //   ② 正常路径：`queryFilterOptionValues`（`:434-453`）体内 `vals := []string{}`。
+    //   ⇒ 「两族空值编码相反」这条前提**仍然成立**，只是**不再**写在
+    //     `runFilterOptionQueries` 里 —— 它现在只做 `*targets[i] = vals`。
+    //   ⇒ 锚错函数会让这条判据**恒红**（本批真踩到了：它锚的是 `runFilterOptionQueries`）。
+    const sibReset = goFunc(goSrc('admin/turns_filter_options.go'), 'resetFilterOptionGroups')
+    expect(stripComments(sibReset), '兄弟面降级路径不再显式赋空 ⇒ 「两族空值编码相反」这条前提变了').toMatch(
+      /\*dst = \[\]string\{\}/,
+    )
+    const sibVals = goFunc(goSrc('admin/turns_filter_options.go'), 'queryFilterOptionValues')
+    expect(stripComments(sibVals), '兄弟面正常路径不再从空数组起步 ⇒ 「两族空值编码相反」这条前提变了').toMatch(
+      /vals := \[\]string\{\}/,
     )
   })
 

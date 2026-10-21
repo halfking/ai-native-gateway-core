@@ -1029,6 +1029,16 @@ type stateTableTTLSpec struct {
 	parent   string // partitioned parent table name
 	setting  string // lifecycle.*_ttl_days settings_kv key
 	fallback int    // default when the setting is absent
+
+	// partitionUnit selects the DROP strategy:
+	//   "" / "month" ⇒ 既有 SQL helper（只枚举 ^<parent>_\d{4}_\d{2}$ 的月分区）
+	//   "day"        ⇒ 按日 helper（dropOldDailyStatePartitions）
+	//
+	// ★ 为什么必须分派（§143.44 实测）：既有 helper 的正则对**日分区名**
+	//   （`usage_facts_20261021`）**一个都不匹配** ⇒ 把它登记进这张表
+	//   **等于什么都没做**（分区一个也掉不了）—— 这正是我上一轮推理里
+	//   犯过的同类错误（把两个不相干的机制接在一起）。
+	partitionUnit string
 }
 
 // stateTableTTLSpecs mirrors the target_tables list inside
@@ -1058,6 +1068,21 @@ func stateTableTTLSpecs() []stateTableTTLSpec {
 		// ^<parent>_\d{4}_\d{2}$ 枚举正则匹配，直接复用调度。诊断写侧
 		// 数据（cachemetrics recorder），fallback 90 天对齐诊断类保留。
 		{parent: "cache_metrics", setting: "lifecycle.cache_metrics_ttl_days", fallback: 90},
+		// §143.44（2026-10-21）：usage_facts —— **两实例上唯一没有任何留存的族**。
+		//
+		// 证据（值无关判据）：211 与 252 的 settings_kv 里 11 个
+		// `lifecycle.*_ttl_days` 键**完全一致**，其中**没有** usage_facts
+		// ⇒ 无 TTL、无 worker、无 DROP 登记 ⇒ 逐日分区 + DEFAULT 分区无限增长。
+		// 实测增速：252 ≈1.5 MB/天（275,828 行 / 15 天）、211 ≈0.9 MB/天。
+		//
+		// ★ 该族是**按日分区**（`usage_facts_YYYYMMDD`，迁移 750），
+		//   而 689 helper 只枚举**月度**分区（^<parent>_\d{4}_\d{2}$）
+		//   ⇒ 必须走 partitionUnit="day" 的按日 helper。
+		//
+		// ★ TTL = 365 天（属主 2026-10-21 定）：它是**计费事实**族，
+		//   保留期是账期/审计语义（年审窗口），不是技术参数。
+		//   ⇒ 代价要说清：252 年增 ≈550 MB（可预期、可预算）。
+		{parent: "usage_facts", setting: "lifecycle.usage_facts_ttl_days", fallback: 365, partitionUnit: "day"},
 	}
 }
 
@@ -1083,6 +1108,23 @@ func (pm *PartitionManager) dropOldStatePartitions(ctx context.Context, s archiv
 			days = spec.fallback // safety floor — never 0 (would wipe history)
 		}
 
+		// ★ 按日族走按日 helper（§143.44）：既有 SQL helper 只认月度分区名。
+		if spec.partitionUnit == "day" {
+			dropped, err := pm.dropOldDailyStatePartitions(ctx, spec.parent, days)
+			if err != nil {
+				slog.Error("partition_manager: daily state partition drop failed",
+					"label", s.label, "parent", spec.parent,
+					"ttl_days", days, "error", err)
+				continue
+			}
+			if dropped > 0 {
+				slog.Info("partition_manager: daily state partition drop ran",
+					"label", s.label, "parent", spec.parent,
+					"ttl_days", days, "partitions_dropped", dropped)
+			}
+			continue
+		}
+
 		timeoutCtx, cancel := context.WithTimeout(ctx, 10*time.Minute)
 		var dropped int64
 		err := pm.db.QueryRow(timeoutCtx,
@@ -1102,6 +1144,140 @@ func (pm *PartitionManager) dropOldStatePartitions(ctx context.Context, s archiv
 		}
 	}
 }
+
+// dailyStateDropLockKey 是按日分区 DROP 的跨实例互斥 advisory lock 键。
+//
+// ★ 与快照族的 632_2026_10_14 **刻意用不同键**（两族互不干扰，
+//   否则两族会互相「让位」，一个族的锁会把另一个族的回收饿死）。
+const dailyStateDropLockKey int64 = 632_2026_10_21
+
+// dropOldDailyStatePartitions 按【日】粒度回收「整天已过去」的分区。
+//
+// ★ 为什么必须有它（§143.44 实测）：
+//
+//	既有的 SQL helper `drop_old_state_partition_table(parent, days)`
+//	只枚举**月度**分区（正则 `^<parent>_\d{4}_\d{2}$`）
+//	⇒ 它的正则对 `usage_facts_20261021` **一个都不匹配**
+//	⇒ usage_facts 的日分区从来不会被回收 ⇒ 该族是全库唯一「无界增长」的族。
+//
+// ★ 判据（零数据损失 + 永不打断写入）：
+//
+//	① 整天已在过去（分区的右开边界 ≤ NOW() - days）
+//	② 只回收**契约名**的分区（`^<parent>_\d{8}$`）—— 名字不符的**永不删**
+//	   （宁可留垃圾也不误删）
+//	⇒ 不碰今天/未来 ⇒ 写入路径永远不受影响（23514 不可能发生）
+//	⇒ TTL 仍是唯一的语义来源（「保多少天」由配置决定）
+//
+// ★ 计数诚实：**不用** `DROP TABLE IF EXISTS` —— 对端实例删过时它同样「成功」
+//	⇒ 计数被虚增（这正是 retention_partition.go 里已登记的教训）
+//	⇒ 改用 42P01（对象不存在）归类为「跳过」。
+func (pm *PartitionManager) dropOldDailyStatePartitions(ctx context.Context, parent string, days int) (int64, error) {
+	if days < 1 {
+		days = 1 // safety floor — 0 会把历史全删光
+	}
+	cutoff := time.Now().AddDate(0, 0, -days)
+
+	// 候选：只认 ^<parent>_\d{8}$ 的日分区。
+	rows, err := pm.db.Query(ctx, `
+		SELECT c.relname
+		  FROM pg_inherits i
+		  JOIN pg_class c ON c.oid = i.inhrelid
+		 WHERE i.inhparent = to_regclass('public.' || $1)
+		   AND c.relname ~ ('^' || $1 || '_\d{8}$')
+		 ORDER BY c.relname`,
+		parent)
+	if err != nil {
+		return 0, fmt.Errorf("list daily partitions of %s: %w", parent, err)
+	}
+	var names []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			rows.Close()
+			return 0, fmt.Errorf("scan daily partition name of %s: %w", parent, err)
+		}
+		names = append(names, name)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0, fmt.Errorf("iterate daily partitions of %s: %w", parent, err)
+	}
+
+	var dropped int64
+	for _, name := range names {
+		// 解析名字里的日期 → 分区右开边界（Asia/Shanghai 日历，与建分区同源）。
+		suffix := strings.TrimPrefix(name, parent+"_")
+		day, perr := time.ParseInLocation("20060102", suffix, partitionTZ)
+		if perr != nil {
+			// 名字不合契约 ⇒ 永不删（上面 SQL 已过滤，这里是双保险）。
+			slog.Warn("partition_manager: daily partition name does not follow the YYYYMMDD contract; never dropped",
+				"parent", parent, "partition", name)
+			continue
+		}
+		dayEnd := day.AddDate(0, 0, 1) // 右开边界：次日零点
+		if dayEnd.After(cutoff) {
+			continue // 还没过期（含今天/未来）⇒ 不碰
+		}
+
+		if err := pm.dropDailyPartition(ctx, name); err != nil {
+			if errors.Is(err, errDailyPartitionGone) {
+				slog.Info("partition_manager: daily partition already absent; not counted as reclaimed",
+					"parent", parent, "partition", name)
+				continue
+			}
+			return dropped, err
+		}
+		dropped++
+	}
+	return dropped, nil
+}
+
+// errDailyPartitionGone 表示「分区在我们列完目录、拿锁之前已经不存在」
+// （对端实例刚删完，或运维手工删过）—— 它**不是错误**，只是「没删成」。
+var errDailyPartitionGone = errors.New("daily partition already absent before drop")
+
+// dropDailyPartition 在独立事务里拿留存锁后 DROP 一个日分区。
+//
+// ★ 锁的处理与快照族一致（retention_partition.go 的 dropPartition）：
+//   - `SET LOCAL lock_timeout = '0'` 让 advisory **try** 锁立即返回
+//     （否则 try 语义也会等满 lock_timeout 才返回 false）；
+//   - 拿到锁后恢复 `lock_timeout = 5min` 保护 DROP TABLE 的表锁等待；
+//   - **不用** IF EXISTS ⇒ 对端已删 ⇒ 42P01 ⇒ 归类为「跳过」，计数不虚增。
+func (pm *PartitionManager) dropDailyPartition(ctx context.Context, name string) error {
+	tx, err := pm.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck // safe no-op if Commit succeeds
+
+	if _, err := tx.Exec(ctx, `SET LOCAL lock_timeout = '0'`); err != nil {
+		return fmt.Errorf("set lock_timeout=0 for advisory lock: %w", err)
+	}
+	var gotLock bool
+	if err := tx.QueryRow(ctx, `SELECT pg_try_advisory_xact_lock($1)`, dailyStateDropLockKey).
+		Scan(&gotLock); err != nil {
+		return fmt.Errorf("acquire daily drop lock for %s: %w", name, err)
+	}
+	if !gotLock {
+		return fmt.Errorf("%s: %w", name, errDailyPartitionHeldByPeer)
+	}
+	if _, err := tx.Exec(ctx, `SET LOCAL lock_timeout = '5min'`); err != nil {
+		return fmt.Errorf("restore lock_timeout=5min for drop: %w", err)
+	}
+
+	stmt := `DROP TABLE ` + pgx.Identifier{"public", name}.Sanitize()
+	if _, err := tx.Exec(ctx, stmt); err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "42P01" {
+			return fmt.Errorf("%s: %w", name, errDailyPartitionGone)
+		}
+		return fmt.Errorf("drop daily partition %s: %w", name, err)
+	}
+	return tx.Commit(ctx)
+}
+
+// errDailyPartitionHeldByPeer 表示另一实例正在删 ⇒ 本轮让位（不计数、不报错）。
+var errDailyPartitionHeldByPeer = errors.New("daily partition drop lock held by another instance")
 
 // cleanupOldCredentialModelIndex calls the SQL helper
 // `cleanup_old_credential_model_index()` which deletes rows older than

@@ -91,7 +91,32 @@ var s4GateIdentifierRE = regexp.MustCompile(
 // 并写下它到底是什么。空缺项会被本门判红。
 //
 // 每条必须回答同一个问题：**该标识符在这个文件里，落在谁头上？**
-var gatedFlagExemption = map[string]string{
+//
+// ★ 2026-10-21（890 轮清空控制面登记表后的收口）：本表**必须为空**。
+//
+// 判据前提的迁移链（每一步都有实测依据）：
+//
+//	① 本表的存在意义 = 「某个**已登记的 v1 读点**在某个文件里，而那个文件有
+//	   S4 门控标识符」⇒ 所以它必须是 requestLogsControlPlaneReaders 的**子集**。
+//	② 890 把 v1 族物理删除 ⇒ 没有读点读 v1 ⇒ **控制面登记表被清空**
+//	   （requestLogsControlPlaneReaders 现在是空表，见该表的注释）。
+//	③ 子集关系下，父表为空 ⇒ **本表必须为空** —— 继续留着 2 条，
+//	   就是让 TestGatedFlagExemptionIsNotStale 这道双向门**永久失效**
+//	   （它查的正是「本表条目是否仍在父表里」）。
+//
+// ⇒ 那 2 条曾经解释过的事实（trace.go 的门控在写路径、telemetry/client.go 的
+// 门控全在写路径）**并没有消失**；消失的是「它们所解释的那个读点登记」——
+// 读点已随 v1 族退役而不在任何登记表里。
+// ⇒ 保留解释作为**历史文档**在下面（原样保留措辞），但**不再登记在豁免表**。
+var gatedFlagExemption = map[string]string{}
+
+// retiredGatedFlagExemptionsKeptForHistory 保留了 2026-10-21 之前那 2 条豁免
+// 的**原始措辞**。它们不再是豁免（豁免表已清空，见上），但它们解释过的
+// 事实——「这两个文件里的 S4 门控标识符落在写路径上，不是读点」——仍然有效。
+//
+// ⚠ 这张表**不参与任何判定**：它只是文档。⇒ 没有「失效豁免」的风险。
+// （改它不会让任何门变红，也不会让任何门变绿。）
+var retiredGatedFlagExemptionsKeptForHistory = map[string]string{
 	"internal/trace/trace.go": "文件里唯一的门控是 `if !settings.RequestLogsWriteEnabled()`（:473），" +
 		"但它在 **`FlushToPG`（:463-525）** 里，护的是 Redis→PG 的 **UPDATE 写入**（:495-496），" +
 		"**不是本条登记的读点**。登记的 Evidence `SELECT trace_events, ts FROM _request_logs_hot WHERE request_id = $1` " +
@@ -99,7 +124,9 @@ var gatedFlagExemption = map[string]string{
 		":601 之前只有 `requestID == \"\"` / `db == nil` 两个 nil 检查。调用方 " +
 		"`admin/request_trace.go:148-156` 也无门控（:149 先试 Redis，miss 后直接进 LoadFromPG）。" +
 		"⇒ 该读点**确实未被门控**，Gated:false 是对的。判据的另一半是：它虽然 Live:false（dormant），" +
-		"但 §9.36 batch7 已把它按读端 `errors_out` 登记（停写后 PG 腿 0 行 ⇒ handleTrace 显式 404，响亮失败）。",
+		"但 §9.36 batch7 已把它按读端 `errors_out` 登记（停写后 PG 腿 0 行 ⇒ handleTrace 显式 404，响亮失败）。" +
+		"★ 2026-10-21：v1 族已随 890 退役 ⇒ 该读点登记随之消失 ⇒ 本条豁免不再需要" +
+		"（控制面登记表已空 ⇒ 豁免表必须为空，否则双向门永久失效）。",
 
 	"domains/hooks/observability/telemetry/client.go": "本文件**有**门控，但**全部在写路径**：" +
 		"`requestLogsWriteEnabled()`(:38-40) 的调用点是 :1140（mirrorRequestBodies）、:1284 与 :2067（写事务快照 " +
@@ -111,7 +138,8 @@ var gatedFlagExemption = map[string]string{
 		"`outboxWriter != nil && GwSessionID != \"\" && requestLogEntryTerminal`，**不含 logsWrite**——" +
 		":2122-2125 的注释明确写「outbox request-completed 会话事件在门控外照常提交」。" +
 		"⇒ 两个读点**确实未被门控**，Gated:false 是对的。⚠ 这一条比 trace.go 更隐蔽：**护栏与读点在同一文件、同一包**，" +
-		"只看「文件有没有门」必然误判，所以它必须留在豁免表里由人具名承担。",
+		"只看「文件有没有门」必然误判，所以它必须留在豁免表里由人具名承担。" +
+		"★ 2026-10-21：v1 族已随 890 退役 ⇒ 这两个读点登记随之消失 ⇒ 本条豁免不再需要。",
 }
 
 // TestControlPlaneGatedFlagAgreesWithCode 是那道「Gated 从不被验证」的补口。
@@ -158,26 +186,40 @@ func TestControlPlaneGatedFlagAgreesWithCode(t *testing.T) {
 func TestGatedFlagExemptionIsNotStale(t *testing.T) {
 	root := repoRootFromCaller(t)
 
-	var stale []string
+	// ★ 2026-10-21：父表（控制面登记表）已被 890 清空 ⇒ 豁免表必须为空。
+	//
+	// 判据的迁移链见 gatedFlagExemption 的注释。⇒ 本门从「逐条查豁免是否
+	// 仍有效」翻成「**豁免表必须为空**」——因为父表为空时，任何豁免都必然
+	// 悬空（子集关系）。
+	//
+	// ⚠ 这不是「把门放松」：留着的豁免会让本门对那些文件**永久失效**
+	// （它查的正是「豁免是否仍在父表里」，而父表已空 ⇒ 恒红或恒失效）。
+	if len(gatedFlagExemption) > 0 {
+		var files []string
+		for f := range gatedFlagExemption {
+			files = append(files, f)
+		}
+		sort.Strings(files)
+		t.Errorf("gatedFlagExemption 仍有 %d 条（期望 0）：\n  %s\n"+
+			"890 之后 v1 族已物理删除 ⇒ 控制面登记表已空 ⇒ 豁免表必须为空。\n"+
+			"留着它们会让本门对这些文件**永久失效**（失效的豁免比没有豁免更坏）。\n"+
+			"若确有需要豁免的读点，先把它登记进 requestLogsControlPlaneReaders。",
+			len(files), strings.Join(files, "\n  "))
+	}
+
+	// 父表非空时，豁免表必须是它的**子集**（这条断言在父表重新长起来时
+	// 仍然有效 ⇒ 不是恒绿门）。
 	for file := range gatedFlagExemption {
 		if _, registered := requestLogsControlPlaneReaders[file]; !registered {
-			stale = append(stale, file+"（不在控制面登记表里）")
-			continue
-		}
-		raw, err := os.ReadFile(filepath.Join(root, file))
-		if err != nil {
-			t.Errorf("%s: 读取失败 %v", file, err)
-			continue
-		}
-		if !s4GateIdentifierRE.MatchString(stripCommentsForGatePresence(string(raw))) {
-			stale = append(stale, file+"（剥注释后已无门控标识符——护栏可能被删了，该重判）")
+			t.Errorf("豁免 %s 不在控制面登记表里 —— 豁免必须锚在一个已登记的读点上", file)
 		}
 	}
-	if len(stale) > 0 {
-		sort.Strings(stale)
-		t.Errorf("gatedFlagExemption 里有 %d 条已失效的豁免：\n  %s\n"+
-			"失效的豁免比没有豁免更坏：它让本门对这些文件**永久失效**，\n"+
-			"而护栏的增删正是本门要盯的那件事。请删除或重写。",
-			len(stale), strings.Join(stale, "\n  "))
+
+	// 历史表必须**不参与判定**（否则它会变成第二份豁免表）⇒ 它不得与豁免表重叠。
+	for file := range retiredGatedFlagExemptionsKeptForHistory {
+		if _, dup := gatedFlagExemption[file]; dup {
+			t.Errorf("%s 同时出现在豁免表与历史表里 —— 历史表不参与判定，重复登记会让判据分叉", file)
+		}
 	}
+	_ = root
 }

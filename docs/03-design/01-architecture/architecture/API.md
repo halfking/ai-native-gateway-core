@@ -458,6 +458,6 @@ X-Signature = base64_encode(signature)
 
 ## 相关文档
 
-- [部署指南](DEPLOYMENT.md) — M1-M4 四种部署模式
-- [升级指南](UPGRADE.md) — 在线/离线升级流程
-- [架构文档](architecture/ARCHITECTURE.md) — 系统架构设计
+- [部署指南](../../../archive/process/process/2026-07/DEPLOYMENT.md) — M1-M4 四种部署模式（⚠ 2026-10-21 订正：原链 `DEPLOYMENT.md` 在本目录下**不存在**，实际文档在 `docs/archive/process/process/2026-07/`）
+- [升级指南](../../../06-deployment/04-runbooks/operations/UPGRADE.md) — 在线/离线升级流程（⚠ 2026-10-21 订正：原链 `UPGRADE.md` 在本目录下**不存在**）
+- [架构文档](ARCHITECTURE.md) — 系统架构设计（⚠ 2026-10-21 订正：原链 `architecture/ARCHITECTURE.md` 多了一层目录，**死链**）

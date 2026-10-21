@@ -4,6 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -11,6 +14,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -19,6 +23,18 @@ import (
 )
 
 // 2026-10-16「迁移已存在但从未在部署通道登记」修复轮的判据。
+//
+// ★ 2026-10-21（R74）补记：本文件的 domain/032 部分**已退役**。
+//   · 032 的触发器挂在 v1 `request_logs` 上 ⇒ v1 族真删（890）之后它
+//     **永远不可应用**（留在通道里 ⇒ 跑到它就 42P01 ⇒ 整条腿中断）。
+//   · 它建的 `session_tenant_binding` 也**永远不会被写入**（唯一写入者随
+//     v1 一起消失）⇒ `/api/admin/session-crosstalk` 改为从会话族派生，
+//     并**移出**本文件的 realdb 用例清单。
+//   · ⇒ 新判据是**静态**的（不需要 DSN ⇒ CI 可跑）：
+//     TestCrosstalkEndpointIsSourcedFromSessionFamily。
+//     ★ 原用例是 realdb ⇒ 本地/CI 从不执行 ⇒ 这条缺口才能一直活到今天。
+//   · ⇒ 通道侧另加一条禁令：domain/032 **必须不在**通道 files=() 里
+//     （见 TestChannelRegistersUndeliveredSessionGapMigrations 的 forbidden 段）。
 //
 // 缺陷形态：四个 startup 文件**已**登记在 installer 的
 // sql/schema/installed_startup_migrations.tsv（456→index 6、351→index 8、
@@ -117,7 +133,11 @@ func TestChannelRegistersUndeliveredSessionGapMigrations(t *testing.T) {
 		{"567_session_analysis_metadata.sql", "session_analysis_metadata", "/api/admin/turns/sessions (LEFT JOIN LATERAL)"},
 		{"470_cache_metrics.sql", "cache_metrics 分区父表", "/api/admin/cache-metrics/*"},
 		{"472_cache_metrics_partitions.sql", "cache_metrics default / 月分区", "/api/admin/cache-metrics/*"},
-		{"032_session_tenant_binding.sql", "session_tenant_binding", "/api/admin/session-crosstalk"},
+		// ★ 2026-10-21（R74）：domain/032 **从必登记清单里移出** ——
+		// 它的触发器挂在 v1 `request_logs` 上，890 真删之后**永远不可应用**
+		// （留在通道里 ⇒ 跑到它就 42P01 ⇒ 整条腿中断），而它建的表也永远
+		// 不会被写入（唯一写入者随 v1 一起消失）⇒ 端点改为从会话族派生。
+		// 详见 forbidden 清单里那条与 TestCrosstalkEndpointIsSourcedFromSessionFamily。
 	}
 	for _, r := range required {
 		if idx := indexOfChannelFile(files, r.suffix); idx < 0 {
@@ -161,6 +181,109 @@ func TestChannelRegistersUndeliveredSessionGapMigrations(t *testing.T) {
 				"A higher-numbered incremental migration must resolve the baseline conflict first.",
 				forbidden, idx)
 		}
+	}
+
+	// ★ 2026-10-21（R74）：domain/032 **必须不在**通道里。
+	//
+	// 它在 2026-10-16 被登记进通道（那一轮修的正是「迁移已存在但从未在通道
+	// 登记」），但 2026-10-20 的 v1 族真删（890）改变了前提：
+	//   · 032:80/82/87 的触发器目标 `request_logs` 在改名后叫 `_request_logs`，
+	//     而该表已被 890 DROP ⇒ 032 现在**必然 42P01**
+	//   · 本通道是 `set -euo pipefail` + `psql -v ON_ERROR_STOP=1` 的流式执行
+	//     ⇒ 一条失败就**整条腿中断** ⇒ 032 之后的每一条迁移都不会被投递。
+	//
+	// ⇒ 所以「留在通道里」不是「漏登记」，而是**一颗定时炸弹**：通道每跑一次
+	//   都会在 032 处停下。而它建的表在生产上又**从来没出现过**
+	//   （`to_regclass` = NULL；部署台账 `gateway_db_revision_sequences`
+	//   里没有它的记录）⇒ `/api/admin/session-crosstalk` 长期 500。
+	//
+	// ⇒ 退役 + 端点换源（会话族派生）才是正解，见
+	//   TestCrosstalkEndpointIsSourcedFromSessionFamily。
+	if idx := indexOfChannelFile(files, "032_session_tenant_binding.sql"); idx >= 0 {
+		t.Errorf("channel files= still registers domain/032 at index %d, but it can never be applied again: "+
+			"its trigger target is the v1 request_logs table (renamed to _request_logs by 860), which 890 dropped, "+
+			"so `DROP TRIGGER IF EXISTS … ON _request_logs` raises 42P01 and, under set -euo pipefail + ON_ERROR_STOP=1, "+
+			"aborts the whole migration leg. The table it builds is also write-never (its only writer was the v1 trigger), "+
+			"so the endpoint must derive cross-talk from the session family instead — see "+
+			"TestCrosstalkEndpointIsSourcedFromSessionFamily.",
+			idx)
+	}
+}
+
+// TestCrosstalkEndpointIsSourcedFromSessionFamily 是 2026-10-21（R74）的**静态**
+// 判据（**不需要 DSN ⇒ CI 可跑**）：`/api/admin/session-crosstalk` 必须从
+// **会话族**派生串话，不得再读 v1 族的侧效应表 `session_tenant_binding`。
+//
+// # 为什么这道门是静态的（而不是像原用例那样 realdb）
+//
+// 原用例是 realdb（要 TEST_ADMIN_500_DSN）⇒ 本地/CI **从不执行**
+// ⇒ ⇒★ 这条缺口才能从 2026-10-16 一直活到 2026-10-21 都没被抓住。
+// ⇒ ⇒ 把「端点读什么对象」这条判据搬进**不需要 DSN** 的静态门，
+// 才能让 CI 真正守住它。
+//
+// # 三条断言（成对出现，避免「只断言一半」的假绿）
+//
+//	(i)   端点源码的**字符串字面量**里不再出现 `session_tenant_binding`
+//	      ⇒ ★ 只看字面量、不看整份文本：**注释里提到它是允许的**
+//	      （本判据的文档注释就提到了它）⇒ 断言必须剥掉注释。
+//	(ii)  端点读的是会话族 `session_turns`，且带串话判定
+//	      `count(DISTINCT tenant_id) > 1`。
+//	(iii) 端点走 `withAllTenantReadOnlyTx`（显式 RLS bypass）——
+//	      `session_turns` 开了 RLS（tenant_isolation / owner_filter），
+//	      不 bypass 会被**静默**收成 0 行 ⇒ 对一个安全控制来说那等于失效。
+func TestCrosstalkEndpointIsSourcedFromSessionFamily(t *testing.T) {
+	root := repoRoot(t)
+	rel := filepath.Join("admin", "session_crosstalk_check.go")
+	path := filepath.Join(root, rel)
+
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, path, nil, parser.SkipObjectResolution)
+	if err != nil {
+		t.Fatalf("parse %s: %v", rel, err)
+	}
+
+	// ★ 只收集字符串字面量（注释天然不在其中）。
+	var literals []string
+	ast.Inspect(f, func(n ast.Node) bool {
+		lit, ok := n.(*ast.BasicLit)
+		if !ok || lit.Kind != token.STRING {
+			return true
+		}
+		v, err := strconv.Unquote(lit.Value)
+		if err != nil {
+			return true
+		}
+		literals = append(literals, v)
+		return true
+	})
+
+	joined := strings.Join(literals, "\n")
+
+	if strings.Contains(joined, "session_tenant_binding") {
+		t.Errorf("%s 的字符串字面量里仍出现 session_tenant_binding ⇒\n"+
+			"  ⇒ 那张表由挂在 v1 request_logs 上的触发器写入，v1 真删（890）后永远为空，"+
+			"且它在生产 252 上从来没建过（端点长期 500/42P01）⇒\n"+
+			"  ⇒ 串话必须从会话族 session_turns 派生（同一 session 出现在多个 tenant 下）",
+			rel)
+	}
+
+	if !strings.Contains(joined, "FROM session_turns") {
+		t.Errorf("%s 的字符串字面量里没有 `FROM session_turns` ⇒\n"+
+			"  ⇒ 端点没有从会话族派生 ⇒ 它要么还在读退役对象，要么已经什么都不查了", rel)
+	}
+
+	if !strings.Contains(joined, "count(DISTINCT tenant_id) > 1") {
+		t.Errorf("%s 的字符串字面量里没有串话判定 `count(DISTINCT tenant_id) > 1` ⇒\n"+
+			"  ⇒ 「同一 session 出现在多个 tenant 下」这个定义被改掉了 ⇒\n"+
+			"  ⇒ 它要么恒为空（静默失效），要么报了别的东西", rel)
+	}
+
+	src := readRepoFile(t, rel)
+	if !strings.Contains(src, "withAllTenantReadOnlyTx") {
+		t.Errorf("%s 没有走 withAllTenantReadOnlyTx ⇒\n"+
+			"  ⇒ session_turns 开着 RLS（session_turns_tenant_isolation / "+
+			"session_turns_owner_filter），不显式 bypass 会被静默收成 0 行 ⇒\n"+
+			"  ⇒ 一个安全控制「永远返回没有串话」比「报错」更危险", rel)
 	}
 }
 
@@ -237,13 +360,14 @@ func gapChecks() []gapCheck {
 			after:    `SELECT count(*) FROM public.cache_metrics_default`,
 			handlers: []handlerPin{{"admin/cache_metrics_handler.go", "FROM cache_metrics"}},
 		},
-		{
-			name: "domain/032 session_tenant_binding", object: "public.session_tenant_binding",
-			file:     "032_session_tenant_binding.sql",
-			before:   `SELECT count(*) FROM public.session_tenant_binding`,
-			after:    `SELECT count(*) FROM public.session_tenant_binding`,
-			handlers: []handlerPin{{"admin/session_crosstalk_check.go", "session_tenant_binding"}},
-		},
+		// ★ 2026-10-21（R74）：domain/032 的用例被**移除**。
+		// 原用例钉着「`public.session_tenant_binding` 必须存在」+「端点必须引用
+		// 它」—— 那两条都是**旧决策**：那张表由挂在 v1 `request_logs` 上的触发器
+		// 写入，v1 真删（890）后它永远为空；而且它从来就没在生产上建起来
+		// （端点长期 500）。⇒ 端点改为从会话族 `session_turns` 派生串话，
+		// 新判据见 TestCrosstalkEndpointIsSourcedFromSessionFamily（静态，
+		// **不需要 DSN ⇒ CI 可跑**——这正是原用例最大的短板：它是 realdb 用例，
+		// 本地/CI 从不执行 ⇒ 这条缺口才能一直活到今天）。
 	}
 }
 

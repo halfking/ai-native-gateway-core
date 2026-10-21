@@ -745,7 +745,7 @@ const routes: RouteRecordRaw[] = [
   },
   {
     // ★★ 凭据模型状态变更历史（2026-10-14 第一百一十四批）。
-    //   挂载 `admin/handler.go:1475` `monitorH.RegisterMonitorRoutes(mux, h.admin)`
+    //   挂载 `admin/handler.go:1525` `monitorH.RegisterMonitorRoutes(mux, h.admin)`
     //   ⇒ **admin 档**，tenant_admin 本该可用。
     // ⚠️⚠️ 但 `requiresRole` 设的是 **`'admin'` 而不是缺省**，与「admin 档 ⇒ 不设」
     //   的旧口径相反。根因（`api/modelHistory.ts` 文件头 (1b)）：
@@ -766,19 +766,19 @@ const routes: RouteRecordRaw[] = [
   },
   {
     // ★★ 凭据模型滑窗调用明细（2026-10-14 第一百一十五批）。
-    //   注册 `admin/handler.go:1475` `monitorH.RegisterMonitorRoutes(mux, h.admin)`
+    //   注册 `admin/handler.go:1525` `monitorH.RegisterMonitorRoutes(mux, h.admin)`
     //   ⇒ 是 **admin 档**，与批 113/114 那两族同注册处。
-    // ⚠️⚠️ 但 `requiresRole` 是 **`'super_admin'`**，与那两族**相反** ——
-    //   因为本族**连租户维度都没有**：`handleSlidingWindow`
-    //   （admin/credential_monitor.go:704-782）里既没有 `tenantID` 变量、
-    //   也没有任何 `IsTenantAdmin`，两条数据腿（Redis 与 _request_logs 回退）
-    //   的 WHERE 都只有 `credential_id = $1 AND lower(...) = lower($2)`。
-    //   而 `credential_id` 是**全局唯一**主键 ⇒ 任何通过认证的主体报出别的
-    //   租户的 credential_id 就能读到它的逐次调用明细。
-    //   ⇒ `'admin'` 档在这里会给出**虚假的安全感**（按钮写着「我的租户」，
-    //     后端根本不理这句）⇒ 必须过度限制。
-    // ⚠️ `meta.requiresRole` 目前**全仓无人消费**（守卫只查登录态）
-    //   ⇒ 这一行是为将来的守卫预留的，不是生效中的拦截。
+    // ⚠️⚠️ `requiresRole` 是 **`'super_admin'`**，与那两族**相反**。
+    // ★★★★★ 订正（2026-10-21 行号订正轮）：原引用 `:704-782` → 实为
+    //   `admin/credential_monitor.go:747-854`（`handleSlidingWindow` 全函数体）；原文据此断言
+    //   「既没有 `tenantID` 变量、也没有任何 `IsTenantAdmin`」⇒ ★ **已不成立**：
+    //   2026-10-16 audit #153 + 2026-10-17 12h-audit 已把门补上 ——
+    //   · 角色门 `admin/credential_monitor.go:759-762`（非 super_admin/admin_key/tenant_admin 即 403）；
+    //   · 租户作用域 `admin/credential_monitor.go:787-792`（`tenantID` 由 `IsTenantAdmin` 决定）；
+    //   · Redis 快腿 `:803` 对 tenant_admin 直接跳过，两条 SQL（`:896`/`:941`）都带 `AND ($5 = '' OR
+    //     tenant_id = $5)`，`tenantID` 当 `$5` 传下去（`:816`/`:963`）。
+    //   ⇒ **后端自己已做租户隔离** ⇒ `'super_admin'` 现在是**保守取值**（非被逼的过度限制）。
+    // ⚠️ `meta.requiresRole` 目前**全仓无人消费**（守卫只查登录态）⇒ 真正生效的是后端那道 403 + 租户过滤。
     path: '/sliding-window',
     name: 'sliding-window',
     component: () => import('@/views/SlidingWindowView.vue'),
@@ -802,18 +802,18 @@ const routes: RouteRecordRaw[] = [
   },
   {
     // ★ 运维总览（2026-10-14 第一百一十七批）。
-    //   注册 `admin/handler.go:1134` `mux.HandleFunc("/api/admin/ops/overview", admin(h.handleOpsOverview))`
-    //   —— 注册处**确实**是 admin 档（`AdminMiddleware`，`admin/auth.go:85-140` **只认证不检 role**），
-    //   而 `handleOpsOverview` 自己既不读 AuthContext 也不看 role。
-    // ★★★★ 但**归第三类**：本族**完全没有租户维度** —— 11 条子查询全是全局表，
-    //   取租户键的代码**根本不存在**（`grep tenant` 打不到不是遗漏，是设计上就没有）。
-    //   ⇒ 与批 115/116 同处置：**过度限制**到 'super_admin'。
-    //   理由不是洁癖：`offline_requests` 每行带别人的 `license_key` / `hardware_hash` /
-    //   `activation_code`，`deployment_nodes` 是全平台机队的 IP 与版本。
-    // ⚠️ `meta.requiresRole` 目前**全仓无人消费**（守卫只查 requiresAuth 与登录态）
-    //   ⇒ 这一行是为将来的守卫预留的，不是生效中的拦截；
-    //   视图内另有一层兜底（`OpsOverviewView.vue` 的 `opsv-nope` 段，兜的是「不发请求」）。
-    // ⚠️ 前端严于后端是**兜底不是修复** —— 后端这一族**没有门**可修。
+    //   注册 `admin/handler.go:1141` `mux.HandleFunc("/api/admin/ops/overview", h.superAdmin(h.handleOpsOverview))`
+    //   —— ★ 订正（2026-10-21 行号订正轮）：原引用 `:1134`（那一行逐字是 `/api/admin/dashboard/rollup/rebuild`
+    //     的注册）→ 实为 `:1141`；且原写「注册处**确实**是 admin 档」**也已过期** —— 后端批 158e（2026-10-17）
+    //     已降为 **superAdmin 档**（`SuperAdminMiddleware`，`admin/auth.go:467-475`：`claims.Role != "super_admin"` 即 403）；
+    //   而 `admin/ops_overview.go:48` 的 `handleOpsOverview` 自己既不读 AuthContext 也不看 role。
+    // ★★★★ 但**归第三类**：本族**完全没有租户维度** —— 11 条子查询全是全局表，取租户键的代码**根本不存在**（`grep tenant` 打不到不是遗漏）。
+    //   ⇒ `requiresRole: 'super_admin'` 现在与后端**同档**（不再是「前端过度限制」那套说法）；理由
+    //   不是洁癖：`offline_requests` 每行带别人的 `license_key`/`hardware_hash`/`activation_code`，
+    //   `deployment_nodes` 是全平台机队的 IP 与版本。
+    // ⚠️ `meta.requiresRole` 目前**全仓无人消费**（守卫只查 requiresAuth 与登录态）⇒ 这一行还不是生效中的
+    //   拦截；视图内另有一层兜底（`OpsOverviewView.vue` 的 `opsv-nope` 段）。⚠️ 前端严于后端是**兜底不是修复**
+    //   —— 后端这一族**没有门**可修 ⇒ ★ 订正（2026-10-21）：**这句已过期**（批 158e 已补门，前后端**同档**）。
     path: '/ops-overview',
     name: 'ops-overview',
     component: () => import('@/views/OpsOverviewView.vue'),

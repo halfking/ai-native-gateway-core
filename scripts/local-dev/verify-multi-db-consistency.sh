@@ -48,7 +48,7 @@ LIST_DBS_SQL="SELECT datname FROM pg_database WHERE datistemplate=false AND datn
 COL_SIG_SQL="SELECT table_name||'|'||column_name||'|'||data_type||'|'||is_nullable||'|'||coalesce(column_default,'') FROM information_schema.columns WHERE table_schema='public' ORDER BY 1,2"
 VIEW_SQL="SELECT viewname||'|'||md5(definition) FROM pg_views WHERE schemaname='public' ORDER BY 1"
 IDX_SQL="SELECT t.relname||'.'||i.relname||'|'||coalesce(pg_get_indexdef(i.oid),'') FROM pg_class t JOIN pg_index x ON x.indrelid=t.oid JOIN pg_class i ON i.oid=x.indexrelid JOIN pg_namespace n ON n.oid=t.relnamespace WHERE n.nspname='public' AND x.indisprimary=false ORDER BY 1"
-CON_SQL="SELECT conrelid::regclass::text||'|'||conname||'|'||contype||'|'||coalesce(pg_get_constraintdef(oid),'') FROM pg_constraint WHERE conrelid::regclass::text LIKE 'public.%' ORDER BY 1,2"
+CON_SQL="SELECT conrelid::regclass::text||'|'||conname||'|'||contype::text||'|'||coalesce(pg_get_constraintdef(oid),'') FROM pg_constraint WHERE conrelid::regclass::text LIKE 'public.%' ORDER BY 1,2"
 SEQ_SQL="SELECT sequence_name||'|'||last_value FROM information_schema.sequences WHERE sequence_schema='public' ORDER BY 1"
 FUNC_SQL="SELECT p.proname||'|'||pg_get_function_identity_arguments(p.oid)||'|'||md5(p.prosrc) FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='public' ORDER BY 1,2"
 

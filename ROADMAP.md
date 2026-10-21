@@ -23,7 +23,7 @@ This roadmap outlines current capabilities, near-term plans, and long-term explo
 - Backup and rollback support
 
 ### Developer Experience ✅
-- Go 1.21+ codebase with comprehensive tests
+- Go 1.27.2+ codebase with comprehensive tests
 - Makefile targets for common tasks
 - GitHub Actions CI (tests, integration, security)
 - Multi-arch support (amd64, arm64)

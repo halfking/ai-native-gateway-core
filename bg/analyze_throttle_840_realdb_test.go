@@ -184,7 +184,16 @@ func TestThrottle840_RejectsInsideWindowThenAcceptsOutside(t *testing.T) {
 	defer cancel()
 
 	const task = "test_throttle_840_window"
-	if _, err := p.Exec(ctx, `DELETE FROM public.llm_gateway_task_state WHERE task_name = $1`, task); err != nil {
+	// ★ 清场必须覆盖【两个】任务名：本用例第 ③ 步会用 task+"_other" 另占一槽，
+	//   而 claim 的冷却期是 50 分钟 ⇒ 上一轮遗留的 _other 行会把自己这一轮的
+	//   claim 拒掉（ON CONFLICT 的 WHERE 不成立 ⇒ 0 行 ⇒ 返回 false）⇒
+	//   「不同 task_name 必须互不影响」在【同一个库上跑第二遍】变红。
+	//   ★ 实测（2026-10-21，itgate_r85_p5）：修复前首跑绿、第二跑红，
+	//     库里 _other 行的 last_started_at 比其它行早一轮、年龄 12 分 < 50 分。
+	//     两个基线库首跑时 _other 行不存在 ⇒ 走 INSERT 分支 ⇒ 绿 ⇒ 复现条件
+	//     正是「同一个库跑第二遍」，与别的族无关。
+	if _, err := p.Exec(ctx, `DELETE FROM public.llm_gateway_task_state WHERE task_name = ANY($1)`,
+		[]string{task, task + "_other"}); err != nil {
 		t.Fatalf("清场失败：%v", err)
 	}
 

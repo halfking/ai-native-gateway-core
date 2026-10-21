@@ -334,6 +334,11 @@ func (w *Writer) Collect(ctx context.Context) ([]Row, error) {
 	}
 
 	// 阶段 3：按扫描顺序建行（first_cid 语义与改动前一致）。
+	//
+	// ★ skippedSeedRows 统计「命中种子签名」而被跳过的行（§143.44 选项 A）。
+	//   它必须**可观测**：若某天它从几十万掉到 0，说明种子源停了（或判据被改坏）
+	//   ⇒ 只有日志能让人立刻发现。
+	skippedSeedRows := 0
 	for _, c := range candidates {
 		parsed := c.parsed
 		hash, present := hashes[c.key]
@@ -351,6 +356,36 @@ func (w *Writer) Collect(ctx context.Context) ([]Row, error) {
 				continue
 			}
 			tenantID = hashTenant
+		}
+
+		// ★★ §143.44 选项 A（**按实证修订后的判据**）：跳过「**种子签名**」的行。
+		//
+		// 背景（§143.42 实测）：这些行是 `MigrateFpSlotsNodeStates`
+		//（domains/ursm/v2/cache/migrate_fpslots.go:88 —— 全仓**唯一**
+		// `NodeKeyForTenant(prefix, "", …)` 的非测试调用点）播下的**退化种子**：
+		// 它把 legacy fp 状态铺成一个 node hash，但**不携带任何观测信息**。
+		//
+		// ★★★ 判据为什么是「generation==1 ∧ updated_at_ms==0」而不是「租户为空」
+		// （2026-10-21 两实例实测推翻了字面版本）：
+		//
+		//	211（分区化后的全量 6,070,457 行）：租户分布**只有 `default`**，
+		//	  空租户行 = **0**；gen1 = 1,166,352（19.2%）但 **updated_at_ms=0 的行 = 0**
+		//	  ⇒ ⇒ 211 的那些 gen1 行**已经被真实观测覆盖过**（updated_at_ms ≠ 0）
+		//	  ⇒ ⇒ **它们携带观测，不是垃圾** ⇒ 「跳过空租户」在 211 上收益 = 0，
+		//	  而且「跳过空租户」会误伤「无租户部署」形态下的真实观测。
+		//	252（20261020 分区）：空租户组 897,036 行 **100%** 命中
+		//	  `generation=1 ∧ updated_at_ms=0`（且 payload IS NULL、source_priority=10）；
+		//	  而 `default` 组里 updated_at_ms=0 的行 = **0**
+		//	  ⇒ ⇒ **这个签名在 252 上精确命中退化行、在真实观测上零命中**。
+		//
+		// ⇒ ⇒ **种子签名 = 「generation==1 ∧ updated_at_ms==0」**：
+		//   252 命中 24~25%（要砍的那 25.2%），211 命中 0（无收益也无损害），
+		//   两实例的真实观测**零误伤**（真实观测的 updated_at_ms 恒 > 0）。
+		//
+		// ⚠ 判据落在**最终行**上（不是 key 的租户）⇒ 「无租户部署」形态免疫。
+		if atoi64(hash["generation"]) == 1 && atoi64(hash["updated_at_ms"]) == 0 {
+			skippedSeedRows++
+			continue
 		}
 
 		// 6. Construct the audit row from the authoritative key and hash.
@@ -477,6 +512,16 @@ func (w *Writer) Collect(ctx context.Context) ([]Row, error) {
 			"pattern", pattern,
 			"recovery_epoch", recoveryEpoch,
 		)
+	}
+
+	// ★ §143.44 选项 A 的可观测点：命中种子签名（generation=1 ∧ updated_at_ms=0）
+	//   而被跳过的行数。实测基线：252 ≈ 占扫描键数 24~25%；211 = 0
+	//   （211 的种子早已被真实观测覆盖 ⇒ 那里没有无信息行 ⇒ 这是正常值，不是故障）。
+	if skippedSeedRows > 0 {
+		slog.Info("ursm.v2: persist skipped legacy-seed rows",
+			"skipped", skippedSeedRows,
+			"scanned", len(candidates),
+			"rows", len(out))
 	}
 
 	return out, nil

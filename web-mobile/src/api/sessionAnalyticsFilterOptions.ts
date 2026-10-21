@@ -15,7 +15,7 @@ import { req, type RequestOptions } from './client'
  *   ⇒ ★★ 注意它**不在** `admin/handler.go` 的 `mux.HandleFunc` 里，
  *   只查 `admin/handler.go` 会判「端点不存在」。
  * - **实现**：`admin/session_analytics_top.go:190-272`（handler）
- *   · `:47-50`（`FilterOptionsResponse`）· `admin/session_tenant.go:189-195`（`effectiveScopeTenant`）
+ *   · `:47-50`（`FilterOptionsResponse`）· `admin/session_tenant.go:180-185`（`effectiveScopeTenant`）
  *   · `cmd/gateway/main_admin_wrappers.go:42-64`（鉴权包装）。
  * - **桌面调用方**：**没有**。全仓 `web/src/` 只出现 `/api/admin/turns/sessions/filter-options`
  *   ⇒ ★★★ **移动端会是第一个调用方**。
@@ -75,7 +75,7 @@ import { req, type RequestOptions } from './client'
  *     ⇒ ★★ 想要单租户视图，唯一办法是**用那个租户的账号登录**。
  *
  * (6) ★★★★ **★ 整条 `/api/admin/session-analytics/` 树只在 `dbConn != nil` 时注册**
- *     （`cmd/gateway/main.go:7218-7222`：`wrapSessionAnalytics` 只在有 DB 时才被赋值）
+ *     （`cmd/gateway/main.go:7307-7312`：`wrapSessionAnalytics` 只在有 DB 时才被赋值）
  *     ⇒ ⇒ **没有数据库时这个路径是 404，而不是 503** ——
  *       对照兄弟端点它恒注册（`admin/handler.go:1277`）才在 handler 内判 `h.db == nil` 返 503。
  *
@@ -270,7 +270,7 @@ export function filterOptionValuesAreSortedUnique(values: readonly string[]): bo
  *          ⇒ 非 super_admin 拿到的是**自己租户内**的 ⇒ 按批 119 的边界不过度限制。
  *
  * ⚠️ 与兄弟端点的**方向相反**（模块头 (4)）：
- *   `effectiveScopeTenant`（`admin/session_tenant.go:189`）对
+ *   `effectiveScopeTenant`（`admin/session_tenant.go:180-185`）对
  *   `super_admin` / `admin_key` 返回 **空串** ⇒ `if tenantID != ""` 不成立
  *   ⇒ ★★ **super_admin 看的是全部租户的聚合，且没有 `?tenant=` 收窄手段。**
  *   兄弟端点（`turns/sessions`）永远租户内。⇒ **两个解包器/门都不能互相套用。**

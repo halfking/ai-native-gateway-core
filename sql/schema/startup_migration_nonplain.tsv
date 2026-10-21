@@ -1,0 +1,65 @@
+# startup_migration_nonplain.tsv — 「非三位数字前缀」startup 迁移的**投递登记册**
+#
+# ── 为什么要这份册子（2026-10-22 R82 轮**实测复现**）────────────────────────────
+#
+# 仓库里有两道门决定「一条 startup 迁移在自己的视野里吗」，而**两道都靠解析文件名**：
+#
+#   ① scripts/apply-db-revision-sequence_test.sh（投递路径契约门）
+#      canonical_delivery_path_check: `[[ "$name" =~ ^[0-9]{3}_.*\.sql$ ]] || continue`
+#   ② installer/cmd/llm-gw-installer/migration_embed_sync_gate_test.go（强制 embed 门）
+#      migrationNumber(): `strconv.Atoi(name[:idx])` 失败即 `continue`
+#
+# ⇒ **文件名里解析不出「纯三位数字前缀」的迁移，对这两道门完全隐形。**
+#
+# ★ 实测复现（2026-10-22）：在工作树里新建 `912b_zzz_probe_delivery.sql` ⇒
+#   两道门**都绿** ⇒ 该迁移既不在通道 `files=()`、也不在 embeddata/StartupFiles
+#   ⇒ **升级库拿不到、新装库也拿不到，而没有任何一道门会红**。
+#   （`NNNb_` / `NNNpN_` **是本仓正在使用的命名约定**，已交付件有 8 条：
+#    361b / 487b / 487c / 680b / 682b / 683b / 706b / 707b。）
+#
+# ── 修法的性质 ────────────────────────────────────────────────────────────────
+#
+# 与 R81 轮的 L11-b 门**完全同款**：把「手挑的扫描根清单」换成
+# ★ **穷举全目录 ＋ 显式清单**。
+#   · **穷举**：`sql/migrations/startup/` 下全部 `*.sql` up 体（566 条）逐条分类；
+#   · **显式清单**：本文件逐条写明**非纯数字前缀**那部分（当前 13 条）的投递处置。
+#
+# 门会做**双向**核对：
+#   · 目录里有、册子里没有 ⇒ **红**（漏登记 ⇒ 会静默不投递）；
+#   · 册子里有、目录里没有 ⇒ **红**（陈旧条目 ⇒ 登记册自己漂移）。
+#
+# ── 格式 ─────────────────────────────────────────────────────────────────────
+#
+#   <文件名> <TAB> <投递腿> <TAB> <理由>
+#
+#   投递腿 = channel     只走部署通道腿（scripts/apply-db-revision-sequence.sh 的 files=()）
+#           = installer  只走安装器腿（installer/internal/dbinit/runner.go 的 StartupFiles + embeddata）
+#           = both       两条腿都走
+#           = none       有意不投递（**理由列必须写清「效果落在哪里」**）
+#
+#   纯三位数字前缀的迁移**不在本册子里**：它们的投递义务由既有规则承担
+#   （≥690 的必须有一条投递路径，见 apply-db-revision-sequence_test.sh 的
+#   canonical_delivery_path_check），本册只补上「文件名解析不出来的那部分」。
+#
+# ── 维护规则 ─────────────────────────────────────────────────────────────────
+#
+# 新增一条**非纯数字前缀**的 startup 迁移时：
+#   ① 在本册子加一行，写清投递腿与理由；
+#   ② 若投递腿是 channel/both ⇒ 把它加进 scripts/apply-db-revision-sequence.sh 的 files=()；
+#   ③ 若投递腿是 installer/both ⇒ 把它加进 StartupFiles 并把字节相同的副本放进
+#      installer/cmd/llm-gw-installer/embeddata/startup/；
+#   ④ 跑 `bash scripts/apply-db-revision-sequence_test.sh` 与 installer 模块的门。
+#
+2026-07-13-multimodal-token-fields-hot.sql	none	文件名是日期而不是编号（2026-07-13 的补丁件）。给 v1 族 request_logs_hot / usage_ledger_hot / request_logs 补 5 个多模态 token 列。v1 族已随 890 退役；同名列在会话族基线里（01-schema.sql:7365-7369 session_turns.reasoning_tokens / image_tokens / audio_tokens / video_tokens / provider_tokens）。
+328a_request_logs_bodies_table.sql	none	v1 族 request_logs_bodies 的建表件（正文的 body 分表，正文阶段 1）。v1 族已随 890 退役；替代物是会话族的 session_bodies / session_bodies_hot。
+361b_provider_models_source_prelude.sql	both	provider_models.source 的前置补列（原出处是 domain/361，domain 通道安装器不跑 ⇒ host-first 部署只走 startup 通道时会缺列，ensure 链在 db open 即 42703）。新装库与升级库都要 ⇒ 两条腿都登记。
+395b_dedup_provider_models_and_aliases.sql	none	provider_models / model_aliases 的历史去重件（395 的唯一索引因存量重复而失败后的补救）。去重后的形态已并入基线：uq_provider_models_canonical_raw_name 见 01-schema.sql:27500；新装库无重复行可去，升级库在 395/395c 链上早已应用。
+395c_canonical_raw_name_unprefix.sql	none	同族：canonical_raw_name 去厂商前缀，并把唯一索引加宽到 (provider_id, canonical_raw_name, raw_model_name)。加宽后的形态**就是**基线里那个唯一索引（01-schema.sql:27500）。
+478p2_affinity_indexes.sql	none	给 v1 族 request_logs_hot 建 gw_session_id / auto_task 两个索引。v1 族已随 890 退役。
+487b_request_logs_hot_system_fingerprint.sql	channel	v1 族 request_logs_hot 的 system_fingerprint 列。**只登记通道腿**：v1 族在通道里并未被删除（890 在 files=() 中是注释掉的，v1 族退役由显式的 scripts/retire-request-logs-v1-family.sh 交付）⇒ 升级库仍要它。
+487c_request_logs_hot_raw_model_name.sql	channel	v1 族 request_logs_hot 的 raw_model_name 列，供 request_logs_with_current_month 包装链读。同上：只走通道腿。
+680b_request_logs_helper_view_column_resync.sql	channel	v1 族 request_logs_with_current_month 三层包装链的冷启动重同步。同上：只走通道腿。
+682b_model_offers_context_window_columns_prelude.sql	channel	model_offers 视图重建（682）要读 cmb.context_window_source / context_window_updated_at，而基线只建了 context_window_override ⇒ host-first 部署（Go ensure 链还没启动过）会在 682 中断。只走通道腿。
+683b_session_dim_table_prelude.sql	channel	session_dim 表的前置件：357 的聚合视图要 LEFT JOIN session_dim，而基线不建这张表、350 又故意不在通道里 ⇒ host-first 部署必须由 683b 建出来。只走通道腿。
+706b_session_turns_hot_prelude.sql	channel	706 的前置件：通道腿跑在 Go ensure 链首次启动之前 ⇒ public.session_turns_hot 还不存在 ⇒ 706b 先建它，707 才敢 ALTER。注册 526 本身不可行（硬契约 + 列清单早于 706 的加宽）。只走通道腿。
+707b_session_bodies_hot_prelude.sql	channel	707 的前置件：public.session_bodies_hot 由 614 建、614 不在通道里 ⇒ 707b 先建它，708 才敢 ALTER。理由同 706b。只走通道腿。

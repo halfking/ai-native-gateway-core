@@ -1,0 +1,51 @@
+# R85 轮登记册：shell 脚本里「裸 $VAR 紧跟非 ASCII 字节」的站点
+#
+# ★ 背景：bash 会把 $ 之后紧跟的非 ASCII 字节**并入变量名**
+#   ⇒ 变量名变成 `$VAR中` ⇒ 从没人定义过 ⇒
+#     - set -u ⇒ 报「未绑定的变量」并**中止脚本**（实测 exit 127）；
+#     - 无 set -u ⇒ 展开成空串 ⇒ **原值与那个字符一起消失**（静默失真）。
+#   ⇒ 修法：把裸 `$VAR` 写成 `${VAR}`（花括号终止变量名）。
+#
+# 列：path<TAB>count<TAB>note
+#   count = 该文件当前的站点数（**棘轮上界**：只许减不许增）
+#   note  = 一句话说明（人工口径）
+#
+# ★ 门：scripts/ursmcheck/cjk_var_expansion_test.go
+#   新增文件出现站点 ⇒ 红；登记过的文件站点数增加 ⇒ 红；减少 ⇒ 绿（修好了）。
+# ★ 诚实的边界：按**文件**计数 ⇒ 同一文件「修一处 + 加一处」会互相抵消。
+#
+# 存量来源：R85 轮全仓实测（52 处 / 33 文件；其中 49 处在 set -u 脚本里）。
+# ★ 存量未批量修的原因：47 处落在**别人正在改**的脚本上 ⇒ 跨写者改动需属主拍板。
+#
+docs/全面测试/stress/scripts/capacity_matrix.sh	1	第 388 行等 1 处
+scripts/.asset-heartbeat-realdb.sh	2	第 51 行等 2 处
+scripts/.verify-analyze-838-behavior.sh	1	第 49 行等 1 处
+scripts/.verify-autovac-handoff-mechanism.sh	1	第 128 行等 1 处
+scripts/252-monitor/manual/pg17-start.sh	1	第 54 行等 1 处
+scripts/252-monitor/pg17-index-bloat.sh	3	第 426 行等 3 处
+scripts/252-monitor/pg17-pg-availability-check.sh	3	第 213 行等 3 处
+scripts/audit/q-usage.sh	1	第 231 行等 1 处
+scripts/audit/verify_890_cutover_precheck_211.sh	2	第 148 行等 2 处
+scripts/checks/user-scripts-sync-test.sh	1	第 37 行等 1 处
+scripts/deploy-252-gateway.sh	1	第 47 行等 1 处
+scripts/deploy-seamless.sh	1	第 854 行等 1 处
+scripts/diag/245-minimax-m3-requestlog-investigation.sh	1	第 96 行等 1 处
+scripts/fuzz/fuzz-regress.sh	1	第 109 行等 1 处
+scripts/local-docker-down.sh	1	第 32 行等 1 处
+scripts/local-docker-up.sh	2	第 73 行等 2 处
+scripts/local-models/modelctl.sh	2	第 84 行等 2 处
+scripts/ops/doctor.sh	1	第 42 行等 1 处
+scripts/pre-deploy-check.sh	1	第 338 行等 1 处
+scripts/sanitize-e2e-154.sh	1	第 137 行等 1 处
+scripts/test-partition-api-e2e.sh	1	第 263 行等 1 处
+scripts/test-phase3-integration.sh	1	第 227 行等 1 处
+scripts/test-runtime-tc.sh	2	第 139 行等 2 处
+scripts/test/test-format-detection.sh	1	第 312 行等 1 处
+scripts/ursm-redis-db-migrate.sh	1	第 272 行等 1 处
+scripts/user/client-deploy.sh	3	第 1138 行等 3 处
+scripts/user/install.sh	1	第 186 行等 1 处
+scripts/user/lib/backup-db.sh	1	第 48 行等 1 处
+scripts/verify-local-deployment.sh	6	第 320 行等 6 处
+tests/deploy_211_contract_test.sh	1	第 666 行等 1 处
+tests/e2e/test_happy_path.sh	3	第 228 行等 3 处
+tests/verify_cgo_convention_test.sh	1	第 145 行等 1 处

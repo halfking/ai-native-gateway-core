@@ -456,9 +456,12 @@ var indirectSiteAssessments = map[string]siteAssessment{
 		Consequence: "本拼接点与 v1 无关。★ 890 之后 hot/view 字面腿也一并没了 ⇒ 本文件只剩会话族一条腿。",
 	},
 	"cmd/gateway/main_v3_wiring.go": {
-		Verdict:     verdictNonV1ByInspection,
-		Via:         ":99-102 lastOutboundSessionSQL：SessionFamilyTurnsForSessionSQL() turns 腿 + SessionFamilyBodiesSourceSQL() bodies 腿（压缩缓存 L3 冷启动回退）。",
-		Consequence: "与 v1 无关（两会话族源直连）。",
+		Verdict: verdictNonV1ByInspection,
+		Via: ":159-181 lastOutboundSessionSQL：SessionFamilyTurnsForSessionSQL() turns 腿 + " +
+			"SessionFamilyBodiesSourceSQL() bodies 腿（LEFT JOIN）+ " +
+			"public.session_bodies_unified 快照腿（LEFT JOIN LATERAL，kind='final_full'）" +
+			"（压缩缓存 L3 冷启动回退，§143.55 补上 final_full 读侧）。",
+		Consequence: "与 v1 无关（两会话族源直连 + 会话族 bodies 视图）。",
 	},
 	"domains/analysis/request_summary.go": {
 		Verdict:     verdictNonV1ByInspection,

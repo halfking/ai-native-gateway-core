@@ -14,6 +14,8 @@ import (
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/stdlib"
+
+	"github.com/kaixuan/llm-gateway-go/internal/testguard"
 )
 
 func TestPostgresDoesNotRunDDLAndSanitizesErrors(t *testing.T) {
@@ -41,6 +43,21 @@ func integrationStoreMode(t *testing.T, mode pgx.QueryExecMode) *PostgresStore {
 	if dsn == "" {
 		t.Skip("SANITIZE_RULES_TEST_DSN unset; isolated PostgreSQL required")
 	}
+	// ★★ R92 轮（守卫线 · 续六）：下面那段 DROP 打的是**产品表**
+	//   （252 生产只读核实：public.sanitize_rule_instances / sanitize_rule_events /
+	//   sanitize_rule_head / sanitize_rule_versions 四张表**都存在**，relkind='r'）。
+	//   ⇒ 原来只有一句注释保护（"This opt-in DSN MUST point to a disposable
+	//   test database"）⇒ ★ **注释不是守卫** ⇒⇒ 一旦有人手工把这个 DSN 指向
+	//   产品库，这条腿就会**真删四张产品表**。
+	//   ⇒ 补真正的守卫：目标不是隔离库 ⇒ 这条腿不跑。
+	//   ⇒ 零行为变化：本测试读的那个 DSN 名**不在**事实源导出名单里
+	//   （事实源导出的是**同前缀的 BROWSER 版** DSN，给 admin 的浏览器夹具用）
+	//   ⇒⇒ 默认本来就 skip ⇒⇒ 本处是**纯防御**。
+	//
+	// ★★ 注释里**刻意不写出任何事实源变量名**（本仓有一道「在范围」判据是
+	//   文件级 grep 事实源变量名 ⇒ 注释里写出来会把**整个文件**拉进受测范围
+	//   ⇒⇒ 分母被无意义地顶大）。⇒ 详见 handoff §19.20.47 ⑩。
+	testguard.RequireIsolatedTarget(t, dsn)
 	cfg, err := pgx.ParseConfig(dsn)
 	if err != nil {
 		t.Fatal(err)
