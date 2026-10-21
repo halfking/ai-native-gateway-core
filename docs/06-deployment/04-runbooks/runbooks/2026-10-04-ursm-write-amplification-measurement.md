@@ -44380,3 +44380,172 @@ if [[ -n "$stored_sha" ]]; then
 > ⇒ ⇒ **四样都要读，缺一样就会得出相反的结论**（本轮「211 落后 20 个版本」就是这么错的）。
 > ★ ⇒ 而且 ★ **退役类迁移的「不可自动重放性」必须由【非空闸】这种机制来保证，而不是靠人的记忆** ——
 > ⇒ ⇒ 一旦它躺进自动列表，闸就会把「部署」变成「每次都失败」⇒ ⇒ ⇒ **闸是对的，位置是错的。**
+
+---
+
+## §143.54 执行轮：按属主拍板把 890 退役在 211 上真正做完
+
+> 轮次：2026-10-21（本会话，续 §143.53）。**本节含生产写，已获属主逐项授权**。
+> 授权原文：① 「两者都做：先 `--defer` 解当下，再把 890 移出自动列表（结构性修法）」
+> ② 「直接删（不归档）」 ③ 「保持停用，本轮不碰 252」。
+
+### §143.54.0 本节结论先行
+
+| # | 动作 | 状态 |
+|---|---|---|
+| 1 | ★★★ **211 跑 `--defer`**（台账一行，可逆） | ✅ 已执行；**真实跳过判据在 211 真库实测 = SKIP** |
+| 2 | ★★★ **890 移出自动重放列表**（结构性修法） | ✅ 已落地：通道数组注释掉 + 登入 `channel_gap_allowlist` |
+| 3 | ★★★ **211 v1 历史直接删（不归档）** | ✅ 已完成：清空 + 890 应用 + 记账，终态已逐项验证 |
+| 4 | ★★ **252** | ✅ 按拍板**未触碰**（服务保持 `inactive + disabled`） |
+| 5 | ★★ **211 部署新二进制** | ⏳ 前置已查清（14 条未记账迁移全部幂等）；前端重建中 |
+
+### §143.54.1 ★★★ 实踩出来的真 bug：**内容 sha 一致 ≠ 身份一致**
+
+★★ 第一次在 211 上执行 `--defer` 时，我为了省事把 890 迁移文件传成了 `890.sql`
+⇒ ⇒ 脚本按 `basename` 派生台账 marker ⇒ ⇒ 写进去的是
+
+```
+session-summary-and-integrity-2026-09:890.sql      ← 错
+```
+
+而自动通道查找的是
+
+```
+session-summary-and-integrity-2026-09:890_drop_request_logs_v1_family.sql   ← 对
+```
+
+⇒ ⇒ **两个不是同一个 key** ⇒ ⇒ 自动通道查不到那一行 ⇒ ⇒ **照样会执行 890**
+⇒ ⇒ ⇒ ★★ **defer 静默失效**（而且台账里明明有一行 sha 相同的记录，看起来一切正常）。
+
+⇒ ⇒ ★★★ **修法（把静默失效变成响亮失败）**：
+
+```bash
+CANONICAL_BASE="890_drop_request_logs_v1_family.sql"
+ACTUAL_BASE="$(basename "$RETIREMENT_SQL")"
+if [[ "$ACTUAL_BASE" != "$CANONICAL_BASE" ]]; then
+  printf 'error: 退役迁移的文件名必须是 %s（台账 marker 按 basename 派生，改名 ⇒ 静默失效）\n' ...
+  exit 4
+fi
+```
+
+⇒ ⇒ ★ 门同步加断言（`deploy_retirement_deferral_test.go`）：
+「必须钉住 canonical basename」+「basename 不符时必须响亮失败」。
+
+⇒ ⇒ ★★ **通用式**：★ **当某个键是按【文件名】派生时，「内容一致」远不足以保证「身份一致」**
+⇒ ⇒ ⇒ 覆盖路径时必须连**文件名**一起保持；⇒ ⇒ 且**要在工具里响亮拒绝**，而不是靠人记得。
+
+### §143.54.2 ★★ 结构性修法：仓里有**正式注册表**，注释掉行不是正确姿势
+
+★★ 我第一次的修法是「把 890 那一行注释掉」⇒ ⇒ **合同测试立刻变红**：
+
+```
+[1] startup migration 890_drop_request_logs_v1_family.sql has an installer leg but no upgrade path;
+    register it in the channel files array, the Go-ensure allowlist,
+    (installer-only by design) channel_gap_allowlist, or
+    (overturned, must never run) superseded_migrations
+```
+
+⇒ ⇒ ★★ 判据的语义：★ **每个 ≥690 的启动迁移必须有一条【被认可的交付路径】**
+⇒ ⇒ 而「通道数组里没有它」**不等于**「它没有交付路径」⇒ ⇒ ⇒ 必须登记它**真正的**交付路径。
+
+| 注册表 | 语义 | 890 归哪张 |
+|---|---|---|
+| 通道 `files=(...)` | 正常升级通道 | ✗（**正是要移出的地方**） |
+| `ensure_allowlist` | Go 启动 ensure 链在流量前应用 | ✗ |
+| `channel_gap_allowlist` | **out-of-band / installer-only 交付** | ★★ **890 归这里** |
+| `superseded_migrations` | **已推翻、绝不可跑**（819 那一类） | ✗（890 不是被推翻，是**延后**） |
+
+⇒ ⇒ ★★ 890 的真实交付路径是**两条**：
+★ **新装库 = installer 腿交付**（startup 链确实会跑它）
+★ **升级库 = 显式的、属主授权的退役步骤交付**（`scripts/retire-request-logs-v1-family.sh`）
+⇒ ⇒ ⇒ 这正是 `channel_gap_allowlist` 的定义 ⇒ ⇒ 登记后合同测试**绿**。
+
+⇒ ⇒ ★ 顺带确认合同测试的判据细节：`grep -v '^[[:space:]]*#' "$SCRIPT"`
+⇒ ⇒ **行首是 `#` 的条目不检查** ⇒ ⇒ 所以「注释掉那一行」是**合法**的停用手法（与注册表配套）。
+
+### §143.54.3 ★★★ 211 v1 退役：前置核查 → 清空 → 应用 → 终态验证
+
+#### §143.54.3.1 退役前置核查（只读，全部通过）
+
+| 检查项 | 读数 | 结论 |
+|---|---|---|
+| v1 hot 表是否还在被写 | `_request_logs_hot` / `_bodies_hot` **0 行、无 max ts** | ★ 不在被写 |
+| v1 族最后写入时间 | **`_request_logs` max ts = 2026-10-13 07:01:04+08** | ★ **已停写 8 天** |
+| 会话族是否在承接写入 | `session_turns_hot` max ts = **2026-10-21 14:13:09**（当时） | ★ 写入路径在会话族 |
+| 890 的 4 个依赖对象 | `session_turns` / `session_turns_hot` / `session_turn_details` / `session_turn_details_hot` | ★ 全部在位 |
+| 是否有外键指向 v1 族 | **0 条** | ★ TRUNCATE 不会被挡 |
+
+#### §143.54.3.2 执行
+
+1. **审计快照**（清空前的行数，已记入本节）：`request_logs` 35,506 ／ `request_logs_bodies` 35,506 ／
+   `request_logs_hot` 0 ／ `request_logs_bodies_hot` 0 ／ `request_logs_archive` 0。
+2. **清空**：`SET lock_timeout='15s'; TRUNCATE public._request_logs, public._request_logs_bodies,
+   public._request_logs_hot, public._request_logs_bodies_hot, public._request_logs_archive;`
+   ⇒ ★ 用 TRUNCATE（不走 DELETE ⇒ 空间立即回收、不留死元组）
+   ⇒ ★ `lock_timeout=15s` ⇒ 抢不到锁就**快速失败**而不是排队堵住在线流量。
+3. **应用 890**：`scripts/retire-request-logs-v1-family.sh --execute`
+   ⇒ ★ 脚本先删 defer 行 → 再以 **`psql -1`（单事务）** 应用 890 → 最后记 `executed-via-explicit-retirement`
+   ⇒ ⇒ ★ **要么整体成功，要么整体回滚**（890 会 DROP TABLE + 换视图 + 换函数 ⇒ 半途失败会留下「半退役」形态）。
+
+#### §143.54.3.3 终态验证（逐项实测）
+
+| # | 判据 | 结果 |
+|---|---|---|
+| ① | v1 族对象是否消失 | ★ **全部消失**（`_request_logs` / `_request_logs_bodies` / 两个 hot / `_request_logs_archive` 均不在） |
+| ② | canonical 视图 `request_logs_with_current_month` 读什么 | ★ `reads_session_turns = t`、**`still_reads_v1 = f`** |
+| ③ | `recent_success_rate` / `system_health_status` | ★ 两者均 `reads_session_turns = t`、**`still_reads_v1 = f`** |
+| ④ | 台账记账 | ★ `execution_sha256` 已填、`runtime_adaptation = executed-via-explicit-retirement` |
+| ⑤ | **应用是否被打断** | ★ `session_turns_hot` max ts = **2026-10-21 14:19:42**（退役过程中持续增长）｜网关容器 `llm-gateway-211-b` **Up 25 hours (healthy)** |
+
+⇒ ⇒ ★★★★ **⇒ 退役完成且现网无感**。
+
+#### §143.54.3.4 残留：两个 0 行孤儿归档分区（与 §143.24 的预判一致）
+
+`request_logs_archive_2026_07` / `request_logs_archive_2026_08` **仍在**：
+★ `parent_links = 0`（**已不在父表下** ⇒ 孤儿）｜★ `count(*) = 0`（**0 行**）｜★ 各 24 kB（合计 48 kB）。
+
+⇒ ⇒ ★★ 这**正是 §143.24 的预判**（「既有孤儿表要么已被 DROP、要么是 0 行空分区」）
+⇒ ⇒ ⇒ **它们不承载任何历史** ⇒ ⇒ ⇒ **不构成数据丢失** ⇒ ⇒ ⇒ 合计 48 kB ⇒ ⇒
+⇒ ⇒ ⇒ **本轮不做第二次生产写去清它们**（收益 48 kB，风险 = 一次多余的生产 DDL）⇒ ⇒ 登记为已知残留。
+
+### §143.54.4 ★★ 211 部署的前置核查（迁移腿到底会跑什么）
+
+★★ **先纠正一个口径错误**：我第一次比较「通道清单 vs 台账」时，
+**台账存的是 basename、清单带路径前缀** ⇒ ⇒ 算出「250 条未记账」⇒ ⇒ **假读数**。
+⇒ ⇒ 同口径（都取 basename）后真相是：★ **211 上只有 14 条未记账** ⇒ ⇒ 迁移腿会跑它们。
+
+| 类别 | 条目 |
+|---|---|
+| 早期补登 | `375_offline_requests_status` / `376_offline_activation_code` / `387_session_analysis_inference` / `427_task_type_centroids_model` |
+| 新增 | `885` / `886` / `887` / `888` / `889` / `891` / `892` / `893` / `894` / `895` |
+
+⇒ ⇒ ★ 逐条核了幂等性：375/376/387/427 全是 `ADD COLUMN IF NOT EXISTS` / `CREATE INDEX IF NOT EXISTS`
+⇒ ⇒ 且它们的目标表在 211 上**全部存在**（`offline_activation_requests` / `session_embeddings` /
+`analysis_events` / `task_type_centroids`）⇒ ⇒ **不会 42P01 中止**
+⇒ ⇒ ★ 注：`offline_activation_requests` 在 211 上**没有** `status` / `reject_reason` / `activation_code` 三列
+⇒ ⇒ ⇒ 所以 375/376 在 211 上是**真加列**（不是 no-op）⇒ ⇒ 这正是 895 要「重新交付」的东西。
+
+⇒ ⇒ ★★ **一个顺带发现（对本轮不阻塞，但要记）**：★ **895 救不了 375/376**
+⇒ ⇒ 因为 375/376 在通道数组里排在**前面** ⇒ ⇒ 若它们失败，腿会在第一条就中止 ⇒ ⇒ **895 永远轮不到**
+⇒ ⇒ ⇒ 本例中它们幂等且表都在 ⇒ ⇒ 侥幸无碍 ⇒ ⇒ ⇒ **但这条依赖是隐式的**，已登记。
+
+### §143.54.5 本轮的四处诚实边界
+
+1. ⚠ **「直接删」= 不可恢复**：v1 族 35,506 + 35,506 行历史**已删除且未归档**（属主明示选择）。
+   ⇒ ⇒ 唯一的还原途径是 down 脚本**重建骨架**（无行）。
+2. ⚠ **252 完全未触碰**：v1 族 1,191 MB 分区 + 350 MB hot 表（≈1.91 GB）**仍在**；
+   252 的服务仍是 `inactive + disabled`。⇒ ⇒ 本节的结论**不可外推到 252**。
+3. ⚠ **「跳过 890」与「保留 v1 族」自洽**这一点，仍是**读 890 的函数体得出的**；
+   本轮在 211 上把它**实测**了（撤掉 v1 表后，canonical 视图与两个函数全部改为读会话族）⇒ ⇒ 该假设**已在 211 上证实**。
+4. ⚠ **211 部署尚未执行**：前置已查清（14 条全幂等、4 个依赖表在位），但
+   ★ **前端产物比源码旧** ⇒ 必须先重建（`web/dist` / `web-mobile/dist` 已被 `.gitignore` 排除，不进版本库）。
+   ⇒ ⇒ ⇒ **本节不声称「211 已部署」**。
+5. ⚠ **本轮仍未做**：E1（`final_full` 落地）未实现 ⇒ ⇒ **部署新二进制的可测收益在 211 上仍 ≈ 0**
+   （§143.53.5 已实测种子签名在 211 命中 0 行）⇒ ⇒ ⇒ **「部署本身」不是收益来源，E1 才是**。
+
+> ★ **§143.54 的方法论落点**：
+> ★ **「退役」不是一个动作，是一个【交付路径】问题** ——
+> ⇒ ⇒ 闸（该不该删）是对的；**位置（谁来投递、什么时候投递）**才是缺陷；
+> ⇒ ⇒ ⇒ 而仓里**已经有正式的表达方式**（`channel_gap_allowlist`）⇒ ⇒ ⇒ **先去找现成的表达方式，别自己发明**。
+> ★ ⇒ 而且 ★ **「内容一致」不等于「身份一致」** ⇒ ⇒ 当键由文件名派生时，
+> ⇒ ⇒ ⇒ **工具必须响亮拒绝，而不是靠人记得**。
