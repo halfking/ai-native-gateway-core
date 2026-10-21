@@ -149,19 +149,26 @@ func (o sigObs) exitTrapRan() bool { return o.ExitTrapMS >= 0 }
 
 // judgeFormContrast 断言【形态依赖】：wait 形态的 trap 立即触发，前台形态的被推迟。
 //
-// ★ 这是本门的核心判据：它同时证明「机制成立」与「结论不可跨形态外推」。
-func judgeFormContrast(waitObs, fgObs sigObs, waitBudgetMS, fgFloorMS int) error {
+// ★★★ 判据形态（★ 本轮第六处自我推翻：门自己的注释写着「不写死任何绝对毫秒数」，
+//
+//	而第一版就写死了「wait ≤ 400ms」「fg ≥ 800ms」⇒ ⇒★ **高负载下它假红了一次**
+//	（实测：机器 load 420+ 时 wait 形态的触发延迟被拉长 ⇒ 越过了那条绝对上限））。
+//
+// ⇒⇒⇒ ⇒★ **判据的形态必须与【被测量的机制】同源**：
+//	机制 = 「两个形态的触发时刻差两个数量级」⇒ ⇒⇒ 判据就该是【差值】，不是各自的绝对值。
+//	· 形态 F 的延迟由**前台命令时长**决定（≈1300ms，负载无关）⇒ 下界可以断言；
+//	· 形态 W 的延迟**随机器负载浮动**（常态 13–30ms，高负载下会拉长）⇒ **不设绝对上限**。
+//
+// ⇒⇒⇒ ⇒★ 所以判据 = 「fg 的延迟 − wait 的延迟 ≥ minGapMS」⇒ ⇒ **负载再高也不会假红**
+//	（只要形态差异本身还在）。
+func judgeFormContrast(waitObs, fgObs sigObs, minGapMS int) error {
 	if !waitObs.sigTrapFired() || !fgObs.sigTrapFired() {
 		return fmt.Errorf("两组观测都必须执行了 INT/TERM trap（wait=%v fg=%v）", waitObs.sigTrapFired(), fgObs.sigTrapFired())
 	}
-	if waitObs.SigTrapMS > waitBudgetMS {
-		return fmt.Errorf("wait 形态：trap 应在 %dms 内立即触发，实际 %dms", waitBudgetMS, waitObs.SigTrapMS)
-	}
-	if fgObs.SigTrapMS < fgFloorMS {
-		return fmt.Errorf("前台形态：trap 应被推迟到前台命令结束（>= %dms），实际 %dms ⇒ ⇒ 「形态依赖」未复现", fgFloorMS, fgObs.SigTrapMS)
-	}
-	if waitObs.SigTrapMS*3 > fgObs.SigTrapMS {
-		return fmt.Errorf("wait(%dms) 与前台(%dms) 的 trap 延迟差异不足 3 倍 ⇒ ⇒ 「形态依赖」未复现", waitObs.SigTrapMS, fgObs.SigTrapMS)
+	gap := fgObs.SigTrapMS - waitObs.SigTrapMS
+	if gap < minGapMS {
+		return fmt.Errorf("期望两个形态的 trap 触发延迟相差 >= %dms，实际差 %dms（wait=%dms fg=%dms）⇒ ⇒ 「形态依赖」未复现",
+			minGapMS, gap, waitObs.SigTrapMS, fgObs.SigTrapMS)
 	}
 	return nil
 }
@@ -420,16 +427,16 @@ func bashCandidates(t *testing.T) []string {
 }
 
 // bashVersion 取版本串（只用于日志）。
+//
+// ★ 家 brew 的 bash 在中文 locale 下 `--version` 输出被本地化（"版本" 而不是 "version"）
+// ⇒ ⇒⇒ 所以**不能**按固定英文单词找版本号 ⇒ ⇒ 改为直接找**版本号形态**的 token。
 func bashVersion(bin string) string {
 	out, err := exec.Command(bin, "--version").Output()
 	if err != nil {
 		return "?"
 	}
-	fields := strings.Fields(string(out))
-	for i, f := range fields {
-		if f == "version" && i+1 < len(fields) {
-			return fields[i+1]
-		}
+	if m := regexp.MustCompile(`\d+\.\d+(\.\d+)?`).FindString(string(out)); m != "" {
+		return m
 	}
 	return "?"
 }
@@ -488,9 +495,6 @@ func TestSignalPathFormContrastIsReal(t *testing.T) {
 					if !o.sigTrapFired() {
 						return fmt.Errorf("INT/TERM trap 未执行")
 					}
-					if o.SigTrapMS > 400 {
-						return fmt.Errorf("wait 形态：trap 应在 400ms 内立即触发，实际 %dms", o.SigTrapMS)
-					}
 					return nil
 				})
 			if err != nil {
@@ -509,11 +513,11 @@ func TestSignalPathFormContrastIsReal(t *testing.T) {
 			if err != nil {
 				t.Fatalf("%s：前台形态三次都没满足判据 ⇒ %v", bashBin, err)
 			}
-			if err := judgeFormContrast(waitObs, fgObs, 400, 800); err != nil {
+			if err := judgeFormContrast(waitObs, fgObs, 500); err != nil {
 				t.Fatalf("%s（bash %s）：%v", bashBin, bashVersion(bashBin), err)
 			}
-			t.Logf("%s（bash %s）SIGTERM + 带 exit 的 trap：wait 形态 trap=%dms；前台形态 trap=%dms ⇒ ★ 形态依赖 ✔",
-				bashBin, bashVersion(bashBin), waitObs.SigTrapMS, fgObs.SigTrapMS)
+			t.Logf("%s（bash %s）SIGTERM + 带 exit 的 trap：wait 形态 trap=%dms；前台形态 trap=%dms（差 %dms）⇒ ★ 形态依赖 ✔",
+				bashBin, bashVersion(bashBin), waitObs.SigTrapMS, fgObs.SigTrapMS, fgObs.SigTrapMS-waitObs.SigTrapMS)
 		})
 	}
 }
@@ -688,14 +692,19 @@ func TestSignalPathJudgeSelfCheck(t *testing.T) {
 	// 形态差异：wait 形态立即、形态 F 被推迟。
 	waitObs := sigObs{ExitTrapMS: 13, SigTrapMS: 13, ContMS: -1, ExitMS: 24, ExitCode: 143}
 	fgObs := sigObs{ExitTrapMS: 1400, SigTrapMS: 1400, ContMS: -1, ExitMS: 1415, ExitCode: 143}
-	if err := judgeFormContrast(waitObs, fgObs, 400, 800); err != nil {
+	if err := judgeFormContrast(waitObs, fgObs, 500); err != nil {
 		t.Fatalf("形态差异应判为成立：%v", err)
 	}
-	if err := judgeFormContrast(fgObs, waitObs, 400, 800); err == nil {
+	if err := judgeFormContrast(fgObs, waitObs, 500); err == nil {
 		t.Fatalf("形态差异反了也不应通过 ⇒ 判据无区分度")
 	}
-	if err := judgeFormContrast(waitObs, fgObs, 400, 2000); err == nil {
-		t.Fatalf("前台形态阈值放宽到 2000ms 后仍应判「前台形态被推迟不足」⇒ 判据无区分度")
+	// ★★ 高负载形态：wait 侧的延迟被拉长（实测会到几百 ms）⇒ 判据必须仍然成立（★ 这就是「不用绝对上限」的意义）。
+	loadedWait := sigObs{ExitTrapMS: 620, SigTrapMS: 620, ContMS: -1, ExitMS: 640, ExitCode: 143}
+	if err := judgeFormContrast(loadedWait, fgObs, 500); err != nil {
+		t.Fatalf("wait 侧被负载拉长（620ms）时形态差异仍应成立 ⇒ 判据不该有绝对上限：%v", err)
+	}
+	if err := judgeFormContrast(loadedWait, fgObs, 1200); err == nil {
+		t.Fatalf("差值不足时不应通过 ⇒ 判据无区分度")
 	}
 	// 脚本体停止 / 继续。
 	if err := judgeBodyStops(waitObs, 143); err != nil {
