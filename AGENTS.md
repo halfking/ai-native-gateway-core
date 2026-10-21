@@ -914,6 +914,15 @@
 > ⇒ 892 只用 baseline 的 `snapshot_ts` 一列 ⇒ **无迁移间顺序依赖**
 > ⇒ ★ **注释里的「依赖某某迁移建的」本身也是断言**。
 > 完整记录见 runbook `§143.35`。
+>
+> **2026-10-22 §145 轮（本会话）**：252 PG 日志全窗口审计（10-20 23:47 → 10-22 05:47）⇒ **三个真缺陷，两个已上生产、一个随下次发布**。完整记录见 `docs/audit/2026-10-22-252-sql-log-audit-round.md`。
+> ⇒ ★★★★ **D3（生产写，已验证）**：`recorded_cost_is_negative` 随 890 换源会话族后，**配套索引 891 没赶上 10-21 17:34 的发布包**（252 水位只到 890）⇒ 查询在生产 2 次/小时被 30s 击杀（首杀 17:30:26 = 换源二进制上线时刻；此前为 0）⇒ **负成本检查实质失明**。修复 = 定向预应用 891（契约门先绿、自带 lock_timeout、`schema_migrations` 记账）⇒ **EXPLAIN ANALYZE 16.457ms 全 Index Only**（此前 >30s）。⇒ ★ **「索引比二进制晚到」是发布序列缺口族**：882→890→891 链在仓内自洽，缺的只是发布时点对齐。
+> ⇒ ★★★★ **D2（仓内已修，随下次发布）**：discovery stale 下架 UPDATE 把 `SessionFamilyTurnsSourceSQL()` 拼进 `fmt.Sprintf` **格式串** ⇒ 投影里的字面 `%`（`LIKE 'sys:%'`）成未知动词 ⇒ 生产日志原文 `LIKE 'sys:%!'(int=24)` + `interval '%!d(MISSING) hours'` ⇒ 语法错 10-21 100 条 + 10-22 半天 111 条（首错 = 部署后 2 分钟）⇒ **stale 下架功能自部署起全灭**（只记 Debug）。修复 = SQL 组装抽纯函数 + 字符串拼接不过 Sprintf；`cmd/compression-bench/main.go` 同型同修。
+> ⇒ ★★★★ **D2 门（数据流版）**：`scripts/ursmcheck/sqlfmt_sessionfamily_gate_test.go` —— helper 进格式串即红，且**污染集按包作用域传播**（函数体间接含 helper ⇒ 其返回值进格式串同样红）；变异 M1（包装形态）/ M2（原始形态）全红并逐字还原。⇒ ★ M1 首轮绿 = 门的盲区被变异当场揭穿（修复把 SQL 搬进纯函数后，把纯函数返回值再包进 Sprintf 的形态门是瞎的）⇒ 与 R72 续「同族盲区」同款教训。⇒ ★ 门自身两次自踩：夹具反引号写进双引号串内部（拼接不存在 ⇒ 阳性对照红要先查夹具）；污染集按函数名跨包传播撞 vendor 同名（改包作用域 + 跳 vendor）。
+> ⇒ ★★★ **D1（已修+已部署 252）**：`pg17-disk-watch.sh` 每 10 分钟点查已退役的 `_request_logs_hot`（890 真删）⇒ 42P01 ~144 条/天 + **hot 表膨胀告警静默失效**（空值过阈值恒 0）。监视对象换 `session_turns_hot`（现值 71MB，阈值沿用）；部署后两个 cron 周期 42P01 = 0；台账双侧 md5 in-sync。⇒ ★ 排除面：drop-old-columnar/emergency-cleanup 里的 v1 表名是 IN 列表死项（`pg_inherits` 名字比对），无 42P01，不动。
+> ⇒ ★ 对账阴性结论：外部 admin 杀查询（§144 遗留 192/天）**自行收敛到 2 次/2 天**；pocket `$4`、rollup、REFRESH、巡检 `WITH win` 全部与既登记一致；`session_owners`/`schema_migrations` 缺表探针 = 外部产品连错库，非本仓缺陷。
+> ⇒ ★ 量具坑：**裸 grep 在 conmon 日志上会中途转 binary 模式**（输出 `Binary file matches` ⇒ 下游 uniq 假频次 55 vs 真值 1167）⇒ 一律 `grep -a`。
+> ⇒ ⚠ 部署边界：D2 修复**未**重发网关——现役 `b23a24c1` 落后 origin/main **89 提交**，单缺陷修复不该替发布列车做主。
 
 ## 经验反馈闭环（vibe-coding Rule 66）
 

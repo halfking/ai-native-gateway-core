@@ -113,7 +113,11 @@ func TestExpireStaleModelsConsultsTheGate(t *testing.T) {
 
 	guardIdx, updateIdx := -1, -1
 	for i, stmt := range fn.Body.List {
-		if updateIdx < 0 && stmtMentions(stmt, "UPDATE model_offers") {
+		// ★ 2026-10-22（§145 轮）：UPDATE 字面量搬进了纯函数
+		// staleExpiryOffersSQL（因为它不能再过 fmt.Sprintf——投影里有字面 %，
+		// 生产实证 2026-10-21 语法错事故）。这里改钉「调用了那个纯函数」，
+		// 并在下方单独钉住 UPDATE 字面量仍在纯函数体内、没有漂走。
+		if updateIdx < 0 && callsName(stmt, "staleExpiryOffersSQL") {
 			updateIdx = i
 		}
 		if ifStmt, ok := stmt.(*ast.IfStmt); ok &&
@@ -133,13 +137,40 @@ func TestExpireStaleModelsConsultsTheGate(t *testing.T) {
 			"仍在工作的凭据模型判为 auto_discovery_expired 并下架。")
 	}
 	if updateIdx < 0 {
-		t.Fatal("expireStaleModels 里找不到 UPDATE model_offers——本测试的前提变了，请重新核对")
+		t.Fatal("expireStaleModels 里找不到 staleExpiryOffersSQL 调用——本测试的前提变了，请重新核对")
+	}
+	// 断言 A′：UPDATE model_offers 字面量必须仍住在 staleExpiryOffersSQL 里。
+	// （SQL 搬家时若无此钉，写下架行的那条语句可以整条消失而本门照绿。）
+	var sqlFn *ast.FuncDecl
+	for _, decl := range f.Decls {
+		if d, ok := decl.(*ast.FuncDecl); ok && d.Name.Name == "staleExpiryOffersSQL" {
+			sqlFn = d
+			break
+		}
+	}
+	if sqlFn == nil {
+		t.Fatal("discovery.go 里找不到 staleExpiryOffersSQL——SQL 组装被再度搬家，请同步更新本门")
+	}
+	if !stmtMentionsFuncBody(sqlFn, "UPDATE model_offers") {
+		t.Fatal("staleExpiryOffersSQL 体内不再含 UPDATE model_offers——下架 SQL 漂走了")
 	}
 	// 断言 C：护栏必须在下架写入**之前**。
 	if guardIdx > updateIdx {
-		t.Errorf("护栏在第 %d 条语句，UPDATE model_offers 在第 %d 条——护栏在下架之后才执行，等于没有",
+		t.Errorf("护栏在第 %d 条语句，staleExpiryOffersSQL（下架写入）在第 %d 条——护栏在下架之后才执行，等于没有",
 			guardIdx, updateIdx)
 	}
+}
+
+// stmtMentionsFuncBody 判定函数体源码里是否含 needle（原文形态，剥不剥空白均可）。
+func stmtMentionsFuncBody(fn *ast.FuncDecl, needle string) bool {
+	var body string
+	ast.Inspect(fn, func(n ast.Node) bool {
+		if bl, ok := n.(*ast.BasicLit); ok {
+			body += bl.Value
+		}
+		return true
+	})
+	return strings.Contains(body, needle)
 }
 
 // TestStaleExpiryCriterionIsTheEvidenceProbe 钉住**调用点的实参**必须是
