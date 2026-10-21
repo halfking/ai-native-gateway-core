@@ -155,7 +155,7 @@ if shape_exists; then
     say "  [形态库] $SHAPE_DB 的基线指纹 ≠ 当前基线 ⇒ **重建**（旧指纹: ${_mark:-（无）}）"
     shape_drop
   else
-    say "  [形态库] 复用已存在的 $SHAPE_DB（基线指纹一致 ✓）"
+    say "  [形态库] 复用已存在的 ${SHAPE_DB}（基线指纹一致 ✓）"
   fi
 fi
 if ! shape_exists; then

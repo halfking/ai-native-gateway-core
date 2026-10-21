@@ -1,0 +1,67 @@
+# scripts/ursmcheck/selfcreated_cleanup_quality_ledger.tsv
+# 「自建资源回收」的兜底【质量】台账（R95 轮 · 段 D）
+#
+# ★ 与并行会话 R94 续九的 scripts/audit/selfcreated-cleanup-ledger.tsv 的分工：
+#   · 那张台账 = 【有没有兜底】的裁决（建的是什么 / 一次性? / 兜底机制 / 有提前退出? / 裁决）
+#   · 本台账   = 【兜底合不合格】的量化轴（4 个独立可失效的轴 + 缺什么）
+#   ⇒ ⇒ 二者互补：那张回答「要不要兜底」，这张回答「兜底到不到位」。
+#
+# 列：file<TAB>exit_trap<TAB>signal_trap<TAB>cleanup_timeout<TAB>cleanup_disconnect<TAB>child_reap<TAB>origin<TAB>verdict<TAB>deficits<TAB>evidence
+#   exit_trap          yes/no  —— 有没有 trap … EXIT
+#   signal_trap        yes/no  —— 有没有 trap … INT/TERM
+#   cleanup_timeout    yes/no  —— 清理语句自带 statement_timeout 类（中止语句）
+#   cleanup_disconnect yes/no  —— 清理语句自带 pg_terminate_backend 类（先踢掉阻塞会话再 DROP）
+#   child_reap         yes/no/na —— 有后台子进程时，清理前有没有 kill + wait 收割（na = 不适用）
+#   origin             static/manual
+#                       static = 能被静态候选集判据认出
+#                       manual = 静态判据认不出（★ 存在理由见下）
+#   verdict            合格 / 待修 / 无回收义务
+#   deficits           逗号分隔的缺失项名（待修行用；取值：exit_trap / cleanup_guard /
+#                       signal_trap / child_reap）
+#   evidence           依据（必填；verdict=无回收义务 时必须写明「长驻」或「假阳性」或「不建库」）
+#
+# ★★ 为什么需要「origin=manual」这一档（★ 本轮实测抓到的判据盲区）：
+#   静态候选集判据 = 「文件里真在执行 CREATE DATABASE 且真在执行 DROP DATABASE」。
+#   ⇒ ⇒ **它会漏掉「经由调用别的脚本自建资源」的对象** ⇒ ⇒ 而那个对象恰恰是本仓
+#   唯一有「后台子进程 + kill+wait 收割」形态的脚本
+#   （scripts/audit/healthcheck-dbaudit-scripts.sh ⇒ 它调
+#    scripts/audit/probe-onetime-db-shape.sh 建库，自己不写 CREATE DATABASE）
+#   ⇒ ⇒ ★ 若只靠静态候选集，child_reap 那一轴就永远无对象 ⇒ ⇒ 门会漏掉真正需要收割的那个。
+#
+# ★★ 「合格」的判定（★ 按实测定，不按直觉定 —— 判据见
+#    scripts/ursmcheck/selfcreated_cleanup_quality_test.go 文件头）：
+#   合格 = exit_trap=yes
+#       ∧ （cleanup_timeout=yes ∨ cleanup_disconnect=yes）    ← 防卡保护
+#       ∧ （没有后台子进程 ∨ （signal_trap=yes ∧ child_reap=yes））
+#   ★★ signal_trap **不是**无条件必需项：实测 bash 的 EXIT trap 在 SIGTERM/SIGINT 下
+#      【照样会跑】⇒ ⇒ 对没有后台子进程的脚本，不接信号没有任何风险
+#      ⇒ ⇒ 若把它列为无条件必需项，就是「防一个不存在的风险」⇒ ⇒ 假红。
+#
+# ★★ 当前读数（2026-10-21）：13 行；**合格 0 行**；待修 11 行（全部只缺 cleanup_guard）；
+#   无回收义务 2 行。
+#   ⇒ ⇒ ★★ 也就是说：**仓内自建资源并自己回收的脚本，没有一个的清理语句自带防卡保护** ⇒ ⇒
+#   ⇒ ★★ 其中 11 个的 DROP 走的是 `DROP DATABASE …`（在 llm-gateway-pg 上实测卡 ≈13 分钟
+#   ⇒ ★★ 后被 `Killed: 9`；而该实例 statement_timeout=0 / lock_timeout=0 ⇒ 无服务端兜底）
+#   ⇒ ★★ ⇒ 「有 trap」≠「兜底合格」，缺的是【防卡保护】这一件。
+#   ⇒ ★★ ★ 仓内已有两个正确范例（pg_terminate_backend 类）：
+#   ⇒ ★★   scripts/local-r112-migrate.sh、scripts/sync-gateway-db-to-211.sh
+#   ⇒ ★★ ⇒ 修法不用外来建议，照这两个的形态改即可。
+#
+# ★ 静态假阳性（★ 本轮实测到的两类，均已排除在候选集外）：
+#   ① scripts/audit/measure-selfcreated-cleanup.sh —— 量具脚本自匹配：
+#      它的「CREATE DATABASE / DROP DATABASE / psql」全是【分析用的正则与标签】，它不建库。
+#   ② tests/deploy_211_contract_test.sh —— 契约测试 grep 别的脚本文本，
+#      它自己既不建库也不删库。
+scripts/_lib/db-init-lib.sh	yes	no	no	no	na	static	待修	cleanup_guard	★本轮加的 EXIT trap（保存并恢复调用方的 trap）；但清理语句是裸 psql -c "DROP DATABASE IF EXISTS …" ⇒ 无 statement_timeout、无 pg_terminate_backend ⇒ 缺防卡保护
+scripts/audit/fresh-schema-from-migrations.sh	yes	no	no	no	na	static	待修	cleanup_guard	trap cleanup EXIT + 建库前 DROP（自愈）；但清理语句裸 DROP ⇒ 无防卡保护
+scripts/audit/healthcheck-dbaudit-scripts.sh	yes	yes	no	no	yes	manual	待修	cleanup_guard	★origin=manual：它调 scripts/audit/probe-onetime-db-shape.sh 建库（自己不含 CREATE DATABASE ⇒ 静态候选集认不出）★ 已有 EXIT trap + INT/TERM 接管 + 先 kill/wait 收割建库子进程（child_reap=yes）★ 但第 144 行的 DROP DATABASE … WITH (FORCE) 仍无防卡保护 ⇒ 这正是 R95 段 C 实测「卡 ≈13 分钟后被 Killed: 9」的那条语句
+scripts/audit/measure-factsource-cost-matrix.sh	yes	no	no	no	na	static	待修	cleanup_guard	★本轮加的 EXIT trap（cleanup_dbs）★ 清理语句是 DROP DATABASE IF EXISTS "$db" WITH (FORCE) ⇒ 无防卡保护 ⇒ 这正是 R95 段 C 实测被 Killed: 9 的那条语句
+scripts/audit/probe-onetime-db-shape.sh	yes	no	no	no	na	static	待修	cleanup_guard	★本轮加的 EXIT trap（cleanup_db）★ 清理语句是 DROP DATABASE IF EXISTS $DB ⇒ 无防卡保护 ⇒ DB_NAME 每会话独立 ⇒ 泄漏后无法按名自愈
+scripts/audit/run-integration-gate.sh	yes	no	no	no	na	static	待修	cleanup_guard	trap + 建库前 DROP；清理语句裸 DROP ⇒ 无防卡保护
+scripts/audit/verify_892_local.sh	yes	no	no	no	na	static	待修	cleanup_guard	trap + 建库前 DROP（自愈）；清理语句裸 DROP ⇒ 无防卡保护
+scripts/audit/verify_892_patrol_ab.sh	yes	no	no	no	na	static	待修	cleanup_guard	trap + 建库前 DROP（自愈）；清理语句裸 DROP ⇒ 无防卡保护
+scripts/audit/verify_892_patrol_e2e.sh	yes	no	no	no	na	static	待修	cleanup_guard	trap + 建库前 DROP（自愈）；清理语句裸 DROP ⇒ 无防卡保护
+scripts/audit/verify-session-family-p0-realdb.sh	yes	no	no	no	na	static	待修	cleanup_guard	trap；清理语句裸 DROP ⇒ 无防卡保护
+scripts/local-r112-migrate.sh	no	no	no	yes	na	static	无回收义务		★长驻：迁移目标库是长驻的（与 scripts/audit/selfcreated-cleanup-ledger.tsv 同一裁决）★ 它的清理形态反而是【正确范例】：先 pg_terminate_backend 踢掉阻塞会话（cleanup_disconnect=yes）再 DROP ⇒ ★ 修法可照此形
+scripts/omnifree/e2e-verify.sh	yes	no	no	no	na	static	待修	cleanup_guard	trap cleanup EXIT；清理语句裸 DROP ⇒ 无防卡保护
+scripts/sync-gateway-db-to-211.sh	no	no	no	yes	na	static	无回收义务		★长驻：同步到 211 的目标库是长驻的（与 scripts/audit/selfcreated-cleanup-ledger.tsv 同一裁决）★ 清理形态是【正确范例】：先 pg_terminate_backend 再 DROP ⇒ ★ 修法可照此形
