@@ -59,6 +59,19 @@ package ursm_test
 //	   ⇒⇒⇒ ⇒ ★★ 推论：既然 trap 可能一次都不跑 ⇒ 一次性库脚本的回收动作
 //	   ⇒⇒⇒ ⇒   **必须可事后核对**（查落点），不能只看「trap 跑没跑」。
 //
+// ── ★★★ 静态守卫的【形态约束】（★ 并行会话 R97 段七 ① 的提醒 ⇒ 落进文件头）──
+//
+// ★★ 下一个人不必靠撞墙发现这条：
+//
+//	① 本门 ⑤ 判「INT/TERM trap 能不能让进程停下来」⇒ 认**两种**合法形态：
+//	   · trap 动作里**直接**写 `exit`（仓内现有写法）
+//	   · `exit` 被**抽进** trap 动作调用的函数体（★ 工程上更漂亮、去重更好 ⇒ 合法形态）
+//	   ⇒ ⇒ 判据**顺着代码形态长**，而不是逼代码长成判据的样子。
+//	② 反过来说：**判据若只认某一种写法**，下一个人会把「更好的写法」写成「更差的读数」，
+//	   还会以为门在报错 ⇒ ⇒ ⇒ 形态约束必须**写在文件头**，而不是让人撞墙发现。
+//	③ 同族提醒（并行会话原话，保留）：★ 「代码要照判据的形态写；这不是门的错」
+//	   ⇒ ⇒★ 两边都成立：**判据要能容纳好写法**（本门已照此改），**代码也要照判据写**（写进文件头）。
+//
 // ── ★★ 门为什么断言【关系】而不只是【绝对时刻】────────────────────────────────
 //
 // ★ 本轮踩到的三个坑，都是门当场抓出来的：
@@ -180,12 +193,72 @@ func judgeExitTrapRan(o sigObs) error {
 	return nil
 }
 
-// judgeTrapActionExits 断言 trap 动作里带 `exit`（★ 静态守卫：带 exit 才不会让脚本体继续）。
-func judgeTrapActionExits(action string) error {
-	if !strings.Contains(action, "exit") {
-		return fmt.Errorf("trap 动作里没有 exit ⇒ ⇒ 收到终止信号后脚本体会继续执行（实测反模式）：%q", action)
+// judgeTrapActionExits 断言 trap 动作**能让进程停下来**。
+//
+// ★★★ 形态约束（★ 并行会话 R97 段七 ① 的提醒 ⇒ 已落进本文件头）：
+//
+//	判据认两种形态：
+//	  ① trap 动作里**直接**出现 `exit`（仓内现有写法）；
+//	  ② trap 动作调用的**函数体里**出现 `exit`（★ 把 `exit 143` 抽进 cleanup/helper ——
+//	     工程上更漂亮、去重更好 ⇒ **合法形态**，不该被判成「没带 exit」）。
+//	⇒ ⇒⇒ ★★ 判据要顺着【代码形态】长，而不是逼代码长成【判据】的样子；
+//	⇒ ⇒⇒ 否则「更好的写法」会被写成「更差的读数」⇒ ⇒⇒ ⇒★ 下一个人会以为门在报错。
+func judgeTrapActionExits(action, fileBody string) error {
+	if strings.Contains(action, "exit") {
+		return nil
 	}
-	return nil
+	for _, fn := range trapActionCallers(action) {
+		if shellFuncBodyHasExit(fileBody, fn) {
+			return nil
+		}
+	}
+	return fmt.Errorf("trap 动作里没有 exit（既不在动作里、也不在被调用函数的函数体里）⇒ ⇒ 收到终止信号后脚本体会继续执行（实测反模式）：%q", action)
+}
+
+// trapActionCallers 从 trap 动作里挑出**看起来是 shell 函数调用**的词。
+func trapActionCallers(action string) []string {
+	var out []string
+	for _, part := range strings.FieldsFunc(action, func(r rune) bool {
+		return r == ';' || r == '|' || r == '&' || r == '(' || r == ')' || r == ' ' || r == '\t' || r == '\n'
+	}) {
+		if part == "" || strings.ContainsAny(part, "$'\"") {
+			continue
+		}
+		if !regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`).MatchString(part) {
+			continue
+		}
+		// 排除 shell 内建（它们没有函数体可查）。
+		switch part {
+		case "true", "false", "exit", "rm", "echo", "printf", "kill", "wait", "sleep", "test":
+			continue
+		}
+		out = append(out, part)
+	}
+	return out
+}
+
+// shellFuncBodyHasExit 判断文件里定义的某个 shell 函数体里是否出现 `exit`。
+//
+// ★ 口径：函数定义行形如 `name() {`；函数体到**独占一行**的 `}` 为止。
+func shellFuncBodyHasExit(fileBody, fn string) bool {
+	lines := strings.Split(fileBody, "\n")
+	defRe := regexp.MustCompile(`^\s*` + regexp.QuoteMeta(fn) + `\s*\(\)\s*\{`)
+	inBody := false
+	for _, ln := range lines {
+		if !inBody {
+			if defRe.MatchString(ln) {
+				inBody = true
+			}
+			continue
+		}
+		if strings.TrimSpace(ln) == "}" {
+			return false
+		}
+		if strings.Contains(ln, "exit") {
+			return true
+		}
+	}
+	return false
 }
 
 // ── 观测侧：真跑 bash ───────────────────────────────────────────────────────
@@ -599,7 +672,7 @@ func TestSignalPathRepoTrapsMustExit(t *testing.T) {
 			if m == nil {
 				t.Fatalf("%s：找不到 INT/TERM trap 行 ⇒ ⇒ 本门守的形态消失了（要么被改掉、要么本门该退役）", rel)
 			}
-			if err := judgeTrapActionExits(m[1]); err != nil {
+			if err := judgeTrapActionExits(m[1], string(b)); err != nil {
 				t.Fatalf("%s：%v", rel, err)
 			}
 		})
@@ -652,12 +725,19 @@ func TestSignalPathJudgeSelfCheck(t *testing.T) {
 	if err := judgeExitTrapRan(sigObs{ExitTrapMS: -1}); err == nil {
 		t.Fatalf("EXIT trap 未执行必须被判为不合形态")
 	}
-	// trap 动作带不带 exit。
-	if err := judgeTrapActionExits("cleanup || true; exit 143"); err != nil {
+	// trap 动作带不带 exit（★ 两种合法形态都要过：动作里直接 exit / exit 抽进被调函数体）。
+	if err := judgeTrapActionExits("cleanup || true; exit 143", ""); err != nil {
 		t.Fatalf("带 exit 的动作应通过：%v", err)
 	}
-	if err := judgeTrapActionExits("cleanup || true"); err == nil {
+	if err := judgeTrapActionExits("cleanup || true", ""); err == nil {
 		t.Fatalf("不带 exit 的动作不应通过 ⇒ 判据无区分度")
+	}
+	helperBody := "cleanup() {\n  drop_db\n  exit 143\n}\n"
+	if err := judgeTrapActionExits("cleanup || true", helperBody); err != nil {
+		t.Fatalf("★ 把 exit 抽进被调函数体是【合法形态】⇒ 应通过：%v", err)
+	}
+	if err := judgeTrapActionExits("cleanup || true", "cleanup() {\n  drop_db\n}\n"); err == nil {
+		t.Fatalf("被调函数体里也没有 exit ⇒ 应判红 ⇒ 判据无区分度")
 	}
 }
 
