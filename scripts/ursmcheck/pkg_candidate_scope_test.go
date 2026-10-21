@@ -27,7 +27,7 @@ package ursm_test
 // ⇒ 原因：包级索引按**函数名**建 ⇒ 同名函数会被合并 ⇒ 夹具互相污染（R89 轮实测）。
 //
 //	⑲ 跨文件候选：**破坏性在 A 文件、读 DSN 在 B 文件**（同包、腿可达）⇒ 必须**看得见**
-//	⑳ 跨**包**边界：读 DSN 在另一个包 ⇒ **看不见**（已知边界，登记）
+//	⑳ 跨**包**消费：读 DSN 在另一个包 ⇒ ★★ R91 轮**必须看得见**（R90 轮时是 0 ⇒ 边界已闭合）
 //	㉑ 同包但**不可达**：腿不调用那个读 DSN 的函数 ⇒ **看不见**（不该误报）
 //	㉒ **包作用域**读 DSN（`var dsn = os.Getenv(…)`）⇒ 必须看得见
 //	㉓ **`TestMain`** 读 DSN ⇒ 必须看得见（TestMain 跑在本包所有测试之前）
@@ -92,7 +92,7 @@ func TestR90PkgCandidateScopeSelfCheck(t *testing.T) {
 		"\tpool, _ := pgxpool.New(context.Background(), dsn)\n\treturn pool\n}\n")
 	write("fx20", "destructive_test.go", destructiveBody)
 	write("fx20", "leg_test.go", "package fx\n\nimport (\n\t\"testing\"\n\n"+
-		"\"example.com/x/otherpkg\"\n)\n\n"+
+		"\"example.com/x/fx20/otherpkg\"\n)\n\n"+
 		"func TestCrossPackageCandidate(t *testing.T) {\n"+
 		"\tpool := otherpkg.FactSourcePool()\n\tcrossFileReset(pool)\n}\n")
 
@@ -169,7 +169,7 @@ func TestR90PkgCandidateScopeSelfCheck(t *testing.T) {
 		"\tpool, err := pgxpool.New(context.Background(), dsn)\n\tif err != nil {\n\t\tt.Skip(\"no pg\")\n\t}\n"+
 		"\tt.Cleanup(pool.Close)\n\tresetWithRuntimeName(pool, \"some_table\")\n}\n")
 
-	pkgs := r87BuildPkgFacts(t, dir, "example.com/x", exported)
+	pkgs, gidx := r87BuildPkgFacts(t, dir, "example.com/x", exported)
 
 	analyze := func(fixture, fn string) []r87Pair {
 		p := filepath.Join(dir, fixture, fn)
@@ -179,7 +179,7 @@ func TestR90PkgCandidateScopeSelfCheck(t *testing.T) {
 		}
 		// ★ 最后一个参数是**导入解析根目录**（跨包闸门要用），不是包目录
 		//   ⇒⇒ 包目录由 `r87AnalyzeFile` 内部按 `filepath.Dir(path)` 推导。
-		return r87AnalyzeFile(t, p, fn, string(raw), exported, pkgs, "example.com/x", dir)
+		return r87AnalyzeFile(t, p, fn, string(raw), exported, pkgs, gidx, "example.com/x", dir)
 	}
 
 	// ⑲ ★★ 本轮核心：**破坏性在 A 文件、读 DSN 在 B 文件** ⇒ 必须**看得见**。
@@ -192,10 +192,15 @@ func TestR90PkgCandidateScopeSelfCheck(t *testing.T) {
 			"**压根进不了候选集** ⇒ 门连看都没看见它（R89 轮实测：106 个文件）", len(got), got)
 	}
 
-	// ⑳ 跨**包** ⇒ 看不见（**已知边界**，登记；跨包可达性是下一项）。
-	if got := analyze("fx20", "destructive_test.go"); len(got) != 0 {
-		t.Fatalf("夹具 ⑳（读 DSN 在另一个包）被判成 %d 条候选（%v）⇒ "+
-			"跨包可达性一旦被实现，这个夹具的期望就要改（现在它是**已知边界**的钉子）", len(got), got)
+	// ⑳ ★★ R91 轮**翻转**：跨**包** ⇒ 现在**看得见**了（期望从 0 改成 1）。
+	//
+	// ★ R90 轮时它是「已知边界」的钉子（跨包可达性未实现 ⇒ 0 条）；
+	//   R91 轮实现了跨包可达 ⇒⇒ 「DSN 在另一个包里被读取并连上」的腿
+	//   ⇒⇒ **必须**进候选集 ⇒⇒ 这就是**漏放方向被闭合**的证明。
+	if got := analyze("fx20", "destructive_test.go"); len(got) != 1 {
+		t.Fatalf("夹具 ⑳（读 DSN 在**另一个包**）应判出 1 条候选，实得 %d 条（%v）⇒ "+
+			"★ 跨包可达性退回去了 ⇒ 「DSN 在别的包里被读取并连上」的腿"+
+			"**进不了候选集** ⇒ 门看不见它 ⇒ **漏放**（数据事故级）", len(got), got)
 	}
 
 	// ㉑ 同包但**不可达** ⇒ 看不见（这条腿压根没消费事实源的 DSN）。

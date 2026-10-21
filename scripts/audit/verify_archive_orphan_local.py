@@ -18,6 +18,7 @@
   S4 回归：修法版对**在父表下**的分区 ⇒ 应 success 且仍走 DETACH + DROP
   S5 幂等：再跑一次 ⇒ 应 skipped（源已不存在）
 """
+import atexit
 import os
 import re
 import subprocess
@@ -160,6 +161,22 @@ def run_sql(sql: str, db: str = "postgres") -> str:
         ["docker", "exec", "-i", CONTAINER, "psql", "-U", PGUSER, "-d", db, "-v", "ON_ERROR_STOP=0", "-f", "-"],
         input=sql, capture_output=True, text=True)
     return p.stdout + p.stderr
+
+
+# ★★★ 回收兜底（R94 轮实测修）：本脚本原本只在**正常跑完**时 DROP 一次性库
+#   ⇒ `main()` 里的 `return 2`（setup 失败）经 `sys.exit(main())` 变成**脚本退出**
+#   ⇒ **跳过回收** ⇒ 每次失败都在容器里留一个 `itgate_14323`。
+#   ⇒ 修法：atexit 钩子 ⇒ 覆盖 sys.exit / 未捕获异常 / 正常返回 三种路径。
+#   ★ Python 的 atexit ≈ shell 的 trap ≈ Go 的 defer ⇒ 同一个机制的三种语言实现。
+#   ⚠ 诚实边界：atexit **不覆盖** os._exit 与 SIGKILL。
+def _drop_db() -> None:
+    try:
+        run_sql(f"DROP DATABASE IF EXISTS {DB};")
+    except Exception:  # noqa: BLE001 —— 回收失败不得盖掉真正的错误
+        pass
+
+
+atexit.register(_drop_db)
 
 
 def main() -> int:

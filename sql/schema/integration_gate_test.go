@@ -104,6 +104,15 @@ func TestGateInjectsEveryDBCredentialName(t *testing.T) {
 			}
 			continue
 		}
+		// dsn_exclusive that guards itself: injecting the populated gate
+		// database is forbidden, and the fixture has to keep guarding.
+		if fixture, ok := destructiveGuardedDB[name]; ok {
+			src := sessionStorageGateSources(t, sessionDBContract{}, act)
+			for _, problem := range destructiveGuardedDBProblems(name, fixture, src) {
+				t.Errorf("%s 事实源注入检查：%s", name, problem)
+			}
+			continue
+		}
 		if !regexp.MustCompile(regexp.QuoteMeta(name) + `="\$GATE_URL"`).MatchString(act) {
 			t.Errorf("harness 未注入 %s=$GATE_URL；只注入一部分名字会让读该变量的 "+
 				"integration 文件全部 skip 而门禁仍显示绿", name)
@@ -1390,12 +1399,12 @@ echo "--- rr_failed ---"; for e in "${rr_failed[@]}"; do echo "ENTRY|$e"; done
 //
 // So this gate pins three things:
 //
-//	1. every entry's [Mx] tag has a group header that DECLARES a count
-//	   (a group header without a count is either an explicit "说明块" or a bug);
-//	2. each declaring group's claimed count equals the number of entries that
-//	   actually carry that tag;
-//	3. each declaring group's parenthesised file list equals the set of
-//	   entries carrying that tag.
+//  1. every entry's [Mx] tag has a group header that DECLARES a count
+//     (a group header without a count is either an explicit "说明块" or a bug);
+//  2. each declaring group's claimed count equals the number of entries that
+//     actually carry that tag;
+//  3. each declaring group's parenthesised file list equals the set of
+//     entries carrying that tag.
 //
 // The file list is what makes (2) useful: a count alone cannot tell you that
 // the group names 716 while the entry for 716 was re-classified.

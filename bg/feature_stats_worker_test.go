@@ -379,7 +379,21 @@ func setupTestDB(t *testing.T) *pgxpool.Pool {
 	if dsn == "" {
 		// ★ R70 轮：原先 fallback 到写死的 `postgres://localhost/llm_gateway_test` ⇒
 		//   连不上 ⇒ 静默 SKIP 被 `go test` 记成绿（R69 §19.18 记的两种形态之一）⇒ 不再 fallback。
-		t.Skip("LLM_GATEWAY_FEATURE_STATS_TEST_DSN not set —— 请 source scripts/audit/datasource_env.sh \"$DSN\"（未设时本门不构成证据）")
+		//
+		// ★★ R89 轮订正（R86 轮回执要求的第 ① 条）：**原先那句提示已经过期。**
+		//   它让人「source scripts/audit/datasource_env.sh」⇒ 但 R86 轮把这个变量
+		//   **移出了事实源**（`datasource_env.sh:89` 起逐条写明「不在事实源里」）
+		//   ⇒ ⇒ **source 那个脚本也拿不到它** ⇒ 照旧提示做的人会**永远卡在这条 SKIP 上**。
+		//   ⇒ 事实源自己的注释（`datasource_env.sh:98`）已经把正确做法写出来了：
+		//   「★ 真要跑它 ⇒ 显式 export 一个指向一次性库的 DSN。」⇒ 这里对齐它。
+		//   ⚠ 而「指向一次性库」不是客气话：本函数会 `TRUNCATE … CASCADE` 三张表，
+		//     而下面的库名守卫只放行 itgate|scratch|test|tmp|bench|pg_ ⇒
+		//     **库名 llm_gateway 必被拒绝**（这是安全拒绝，不是缺陷）。
+		t.Skip("LLM_GATEWAY_FEATURE_STATS_TEST_DSN not set —— ★ 它是 dsn_exclusive（专用值），" +
+			"**不在事实源里**（scripts/audit/datasource_env.sh 不导出它 ⇒ source 那个脚本也拿不到）⇒ " +
+			"真要跑这条腿 ⇒ 显式 export 一个指向一次性库的 DSN" +
+			"（库名须含 itgate|scratch|test|tmp|bench|pg_，否则下面的库名守卫会拒绝）；" +
+			"未设时本门不构成证据")
 	}
 
 	db, err := pgxpool.New(context.Background(), dsn)

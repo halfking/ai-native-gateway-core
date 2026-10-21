@@ -1,0 +1,99 @@
+# scripts/ursmcheck/selfcreated_cleanup_quality_ledger.tsv
+# 「自建资源回收」的兜底【质量】台账（R95 轮 · 段 D 建，★ 段 E 改轴）
+#
+# ★ 与并行会话 R94 续九的 scripts/audit/selfcreated-cleanup-ledger.tsv 的分工（★ 两张表答的是【两个正交轴】）：
+#   · 那张台账 = 【会不会泄漏】的裁决（建的是什么 / 一次性? / 兜底机制 / 有提前退出? / 裁决）
+#   · 本台账   = 【兜底合不合格】的量化轴（覆盖性 + 信号 + 防卡 + 收割 + 缺什么）
+#   ⇒ ⇒ 二者互补：那张回答「要不要兜底」，这张回答「兜底到不到位」。
+#   ⇒⇒★ 实测：同一个对象可以在那张表里判「无泄漏」，在本表里判「待修」
+#   ⇒⇒★   （例：internal/testdb/testdb.go 在对方表里是「无泄漏」，在本表里是「待修: signal_trap」）
+#   ⇒⇒★   ⇒⇒ ★★ 差集里有 12 个交集对象，其中 10 个正是这种「一轴合格、另一轴待修」⇒⇒ 两轴确实正交。
+#
+# 列：file<TAB>language<TAB>fallback_covers<TAB>signal_trap<TAB>cleanup_timeout<TAB>cleanup_disconnect<TAB>child_reap<TAB>origin<TAB>verdict<TAB>deficits<TAB>evidence
+#   language           shell / python / go（★ 由扩展名推出）
+#   fallback_covers    yes/no —— ★★ 【覆盖性】：兜底「载体」里是否**真的包着回收动作**
+#                       （不是「有没有 trap」！★ 见下方「★ 段 E 的判据订正」）
+#   signal_trap        yes/no —— 有没有接管信号（存在性；★ 是否【必需】由语言映射表决定）
+#   cleanup_timeout    yes/no —— 清理语句自带 statement_timeout 类（中止语句）
+#   cleanup_disconnect yes/no —— 清理语句自带 pg_terminate_backend 类（先踢掉阻塞会话再 DROP）
+#   child_reap         yes/no/na —— 有后台子进程时，清理前有没有 kill + wait 收割（na = 不适用）
+#   origin             static/manual
+#                       static = 能被静态候选集判据认出
+#                       manual = 静态判据认不出（★ 存在理由见下）
+#   verdict            合格 / 待修 / 无回收义务
+#   deficits           逗号分隔的缺失项名（待修行用；取值：fallback / cleanup_guard /
+#                       signal_trap / child_reap）
+#   evidence           依据（必填；verdict=无回收义务 时必须写明「长驻」或「假阳性」或「不建库」）
+#
+# ★★ 【扫描口径】= scripts/ + internal/ + cmd/
+#   ⇒ 与并行会话那套量具（scripts/audit/measure-selfcreated-cleanup.sh 的
+#     `grep -rl --include='*.sh' --include='*.bash' --include='*.py' --include='*.go' … scripts internal cmd`）
+#     【完全一致】⇒⇒ 理由：两个台账的差集才有意义，否则差集里混着「口径差」而不是「轴差」。
+#   ⚠ 已知局限（属主决策项）：口径之外 Go 测试文件里【自己】建库并回收的
+#     （例：admin/admin_500_channel_gap_realdb_test.go 第 294/317 行）不在本门覆盖内。
+#
+# ★★ 「合格」的判定（★ 段 E 实测订正后的定义）：
+#   合格 = fallback_covers = yes
+#       ∧ （cleanup_timeout = yes ∨ cleanup_disconnect = yes）        ← 防卡保护
+#       ∧ （没有后台子进程 ∨ child_reap = yes）                        ← 收割
+#       ∧ （signal_trap = yes）                                        ← ★ 仅对 python/go 必需
+#   ★★ signal_trap **不是**对所有语言都必需：
+#   ★ 实测（R95 段 E 跨语言探针）：shell 的 `trap … EXIT` 在 SIGTERM/SIGINT 下【会执行】；
+#     而 python 的 atexit / try-finally 与 go 的 defer 【都不会执行】
+#     ⇒ ⇒ shell 侧不需要额外挂信号分支；python/go 侧【必须】显式接管信号。
+#   ★ 该结论的**唯一事实源** = scripts/ursmcheck/selfcreated_cleanup_language_map.tsv（表驱动）。
+#
+# ★★ 【段 E 的判据订正】——★ 段 D 判的是【存在性】，段 E 判的是【覆盖性】：
+#   段 D：fallback = 「文件里有没有 trap … EXIT」⇒ 读数是存在性。
+#   ★★ 实测反例：scripts/audit/verify_892_local.sh 第 26 行是 `trap 'rm -f "$TMP"' EXIT`
+#     ⇒ 它只删【临时 SQL 文件】，**不回收库**（库回收在第 46 行 = 正常路径末尾）
+#     ⇒ ⇒ 「有 trap」≠「trap 覆盖了要回收的资源」
+#     ⇒ ⇒ ★ 存在性轴是**假阳性方向**（会把真会泄漏的脚本判成合格）⇒ ⇒ 本台账订正之。
+#   ⇒ 读数变化：verify_892_local / verify_892_patrol_ab / verify_892_patrol_e2e 三行
+#     由「待修: cleanup_guard」⇒ 「待修: cleanup_guard,fallback」。
+#
+# ★★ 「origin=manual」这一档的��在理由（★ 段 D 实测抓到的判据盲区）：
+#   静态候选集判据 = 「文件里真在执行 CREATE DATABASE 且真在执行 DROP DATABASE」。
+#   ⇒ ⇒ **它会漏掉「经由调用别的脚本自建资源」的对象** ⇒ ⇒ 而那个对象恰恰是本仓
+#   唯一有「后台子进程 + kill+wait 收割」形态的脚本
+#   （scripts/audit/healthcheck-dbaudit-scripts.sh ⇒ 它调
+#    scripts/audit/probe-onetime-db-shape.sh 建库，自己不写 CREATE DATABASE）
+#   ⇒ ⇒ ★ 若只靠静态候选集，child_reap 那一轴就永远无对象 ⇒ ⇒ 门会漏掉真正需要收割的那个。
+#
+# ★★ 当前读数（2026-10-21 · 段 E）：**18 行**（17 个静态候选 + 1 个 manual）；
+#   **合格 0 行**；**待修 16 行**；无回收义务 2 行。
+#   ⇒ 待修行的缺失项分布：
+#     cleanup_guard            13 行（无防卡保护）
+#     cleanup_guard,fallback    3 行（★ verify_892_* ⇒ 载体不覆盖回收）
+#     cleanup_guard,signal_trap 2 行（python：两个 atexit/finally 腿）
+#     signal_trap              3 行（★ 2 个 Go 腿 + 1 个 python finally 腿）
+#   ⇒⇒ ★★ 也就是说：**没有一个对象的回收动作被「防卡保护」兜住**。
+#   ⇒⇒ ★★ 且 **5 条非 shell 腿全部缺「信号接管」** ⇒ ★ 它们在「进程被 SIGTERM 终止」时
+#   ⇒⇒   兜底【不执行】⇒ ⇒ 对方的「已修 / 无泄漏」裁决在**信号路径**上不成立。
+#   ⇒ ⇒ 仓内已有两个正确范例（pg_terminate_backend 类防卡）：
+#   ⇒ ⇒   scripts/local-r112-migrate.sh、scripts/sync-gateway-db-to-211.sh
+#   ⇒ ⇒ ⇒ 修法不用外来建议，照这两个的形态改即可。
+#
+# ★ 静态假阳性（★ 段 D 实测到的两类，均已排除在候选集外）：
+#   ① scripts/audit/measure-selfcreated-cleanup.sh —— 量具脚本自匹配：
+#      它的「CREATE DATABASE / DROP DATABASE / psql」全是【分析用的正则与标签】，它不建库。
+#   ② tests/deploy_211_contract_test.sh —— 契约测试 grep 别的脚本文本，
+#      它自己既不建库也不删库。
+scripts/_lib/db-init-lib.sh	shell	yes	no	no	no	na	static	待修	cleanup_guard	★ 本轮加的 EXIT trap（第 798 行 `trap 'db_init::_drop_verify_db' EXIT`）⇒ 兜底【覆盖】回收（★ 函数名带命名空间前缀，按最后一段比对）；但清理语句是裸 psql -c "DROP DATABASE IF EXISTS \"${db}_verify\"" ⇒ 无 statement_timeout、无 pg_terminate_backend ⇒ 缺防卡保护
+scripts/audit/fresh-schema-from-migrations.sh	shell	yes	no	no	no	na	static	待修	cleanup_guard	cleanup()（第 99 行）+ trap cleanup EXIT（第 106 行）⇒ 兜底【覆盖】回收；★ 清理语句裸 DROP（第 103 行）⇒ 缺防卡保护
+scripts/audit/healthcheck-dbaudit-scripts.sh	shell	yes	yes	no	no	yes	manual	待修	cleanup_guard	★origin=manual：它调 scripts/audit/probe-onetime-db-shape.sh 建库（自己不含 CREATE DATABASE ⇒ 静态候选集认不出）★ 已有 EXIT trap（第 154 行）+ INT/TERM 接管（第 156 行）+ 先 kill/wait 收割 ⇒ 兜底【覆盖】回收 + child_reap=yes；★ 但清理语句裸 DROP（第 144 行）⇒ 缺防卡保护；★ 附带实测发现：它挂了 INT/TERM trap ⇒ bash 会把 trap 推迟到当前前台命令（`wait "$BUILD_PID"`）结束 ⇒ 收割被推迟（详见 §19.20.59）
+scripts/audit/measure-factsource-cost-matrix.sh	shell	yes	yes	no	no	na	static	待修	cleanup_guard	trap cleanup_dbs EXIT（第 75 行）⇒ 兜底【覆盖】回收；★ 清理语句是 DROP DATABASE IF EXISTS "$db" WITH (FORCE)（第 71 行）⇒ 无防卡保护 ⇒ 这正是 R95 段 C 实测被 Killed: 9 的那条语句；★ 第 333 行 `trap - EXIT` 是「正常跑完交还 trap」⇒ 不算兜底载体；★ R96 轮补了 INT/TERM trap（探针回收要兜住信号路径）⇒ signal_trap 由 no 变 yes
+scripts/audit/probe-onetime-db-shape.sh	shell	yes	no	no	no	na	static	待修	cleanup_guard	trap cleanup_db EXIT（第 75 行）⇒ 兜底【覆盖】回收；清理语句裸 DROP（第 66 行）⇒ 缺防卡保护；★ DB_NAME 每会话独立 ⇒ 泄漏后无法按名自愈；★ 第 247 行 `trap - EXIT` 是交还
+scripts/audit/run-integration-gate.sh	shell	yes	no	no	no	na	static	待修	cleanup_guard	cleanup()（第 227 行）+ trap cleanup EXIT（第 242 行）⇒ 兜底【覆盖】回收；清理语句裸 DROP（第 239 行）⇒ 缺防卡保护
+scripts/audit/verify-session-family-p0-realdb.sh	shell	yes	no	no	no	na	static	待修	cleanup_guard	cleanup()（第 81 行）+ trap cleanup EXIT（第 89 行）⇒ 兜底【覆盖】回收；清理语句裸 DROP（第 83 行）⇒ 缺防卡保护
+scripts/audit/verify_892_local.sh	shell	no	no	no	no	na	static	待修	cleanup_guard,fallback	★★ 段 E 订正段 D：第 26 行 `trap 'rm -f "$TMP"' EXIT` ⇒ 它只删【临时 SQL 文件】，**不回收库** ⇒ 段 D 按「存在性」读成 exit_trap=yes 是【假阳性方向】；★ 库回收在第 46 行（正常路径末尾）⇒ 提前退出（set -u 下引用未定义变量等）⇒ 库留下；★ 清理语句裸 DROP ⇒ 另缺防卡保护
+scripts/audit/verify_892_patrol_ab.sh	shell	no	no	no	no	na	static	待修	cleanup_guard,fallback	★★ 同 verify_892_local.sh：第 28 行 `trap 'rm -f "$TMP"' EXIT` 只删临时文件、不覆盖库的回收 ⇒ 段 D 读成「有兜底」是假阳性方向；库回收在正常路径末尾（第 47 行）⇒ 提前退出即泄漏；清理语句裸 DROP ⇒ 另缺防卡保护
+scripts/audit/verify_892_patrol_e2e.sh	shell	no	no	no	no	na	static	待修	cleanup_guard,fallback	★★ 同 verify_892_local.sh：第 21 行 `trap 'rm -f "$TMP"' EXIT` 只删临时文件、不覆盖库的回收 ⇒ 段 D 读成「有兜底」是假阳性方向；库回收在正常路径末尾（第 121 行）⇒ 提前退出即泄漏；清理语句裸 DROP ⇒ 另缺防卡保护
+scripts/audit/verify_archive_orphan_local.py	python	yes	no	no	no	na	static	待修	cleanup_guard,signal_trap	★ Python 腿：atexit.register(_drop_db)（第 179 行）⇒ 兜底【覆盖】回收；★★ 但实测 atexit 在 SIGTERM 下【不执行】⇒ 必须显式接管信号；★ 清理语句裸 DROP（第 174 行）⇒ 另缺防卡保护
+scripts/audit/verify_columnar_bulk_write_local.py	python	yes	no	no	no	na	static	待修	cleanup_guard,signal_trap	★ Python 腿：atexit.register(_drop_db)（第 119 行）⇒ 兜底【覆盖】回收；★★ 但实测 atexit 在 SIGTERM 下【不执行】⇒ 必须显式接管信号；★ 清理语句裸 DROP（第 114 行）⇒ 另缺防卡保护
+scripts/audit/verify_promote_wal_cost_local.py	python	yes	no	no	no	na	static	待修	cleanup_guard,signal_trap	★ Python 腿：try/finally（第 191 行 finally 里 DROP）⇒ 兜底【覆盖】回收；★★ 但实测 finally 在 SIGTERM 下【不执行】⇒ 必须显式接管信号；★★ 第 148 行的 `SET statement_timeout='300s'` 属于【建库 DDL】、不属于清理语句（第 192 行）⇒ 清理语句仍无防卡保护（★ 这是判据「收窄到含 DROP 的那条逻辑命令」抓出的一处误读）
+scripts/local-r112-migrate.sh	shell	no	no	no	yes	na	static	无回收义务		★长驻：迁移目标库是长驻的（与 scripts/audit/selfcreated-cleanup-ledger.tsv 同一裁决）★ 它的清理形态反而是【正确范例】：先 pg_terminate_backend 踢掉阻塞会话（cleanup_disconnect=yes）再 DROP ⇒ ★ 修法可照此形
+scripts/omnifree/e2e-verify.sh	shell	yes	no	no	no	na	static	待修	cleanup_guard	cleanup()（第 58 行）+ trap cleanup EXIT（第 76 行）⇒ 兜底【覆盖】回收；清理语句裸 DROP（第 65 行）⇒ 缺防卡保护
+scripts/sync-gateway-db-to-211.sh	shell	no	no	no	yes	na	static	无回收义务		★长驻：同步到 211 的目标库是长驻的（与 scripts/audit/selfcreated-cleanup-ledger.tsv 同一裁决）★ 清理形态是【正确范例】：先 pg_terminate_backend 再 DROP ⇒ ★ 修法可照此形
+internal/testdb/testdb.go	go	yes	no	yes	no	na	static	待修	signal_trap	★ Go 腿：t.Cleanup 闭包（第 109 行）里 DROP ⇒ 兜底【覆盖】回收；context.WithTimeout(60s)（第 78/137 行）⇒ 客户端防卡（★ go 侧防卡形态与 shell/python 不同：pgx 尊重 ctx）；★★ 但实测 defer / t.Cleanup 在 SIGTERM 下【不执行】⇒ 必须显式接管信号；★ 源文件第 102–110 行记着一次老坑：曾泄漏 10 个库，且泄漏检查的 LIKE 模式匹配不到、一直报「0」
+scripts/audit/fresh_schema_integration_test.go	go	yes	no	no	yes	na	static	待修	signal_trap	★ Go 腿：defer 闭包（第 190 行）里先 pg_terminate_backend 再 DROP ⇒ 兜底【覆盖】回收 + 有防卡（服务端踢阻塞会话）；★★ 但实测 defer 在 SIGTERM 下【不执行】⇒ 必须显式接管信号
