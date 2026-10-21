@@ -69,7 +69,7 @@ cleanup() {
     PGPASSWORD="$ADMIN_PASS" psql -h "$PG_HOST" -p "$PG_PORT" -U "$ADMIN_USER" -d postgres \
       -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname='${TEST_DB_NAME}' AND pid <> pg_backend_pid();" >/dev/null 2>&1 || true
     PGPASSWORD="$ADMIN_PASS" psql -h "$PG_HOST" -p "$PG_PORT" -U "$ADMIN_USER" -d postgres \
-      -c "SET statement_timeout = '15s'" \
+      -c "SET statement_timeout = '120s'" \
       -c "DROP DATABASE IF EXISTS ${TEST_DB_NAME};" 2>&1 | grep -v "^$" || true
     # 在 postgres DB 内再次收回 (兼容测试创建过的对象).
     PGPASSWORD="$ADMIN_PASS" psql -h "$PG_HOST" -p "$PG_PORT" -U "$ADMIN_USER" -d postgres \

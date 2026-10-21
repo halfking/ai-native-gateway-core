@@ -39,7 +39,7 @@ cleanup() {
   #   ② statement_timeout（给 DROP 自己设上限 ⇒ 防「慢 DROP 把退出卡住」）
   #   ③ WITH (FORCE)（PG 13+ ⇒ 兜底再踢一次连接）
   docker exec -i "$CONTAINER" psql -U "$DBUSER" -d postgres -q \
-    -c "SET statement_timeout = '15s'" \
+    -c "SET statement_timeout = '120s'" \
     -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname='$DB' AND pid <> pg_backend_pid();" \
     -c "DROP DATABASE IF EXISTS \"$DB\" WITH (FORCE);" >/dev/null 2>&1 || true
 }

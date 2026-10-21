@@ -144,7 +144,7 @@ cleanup() {
     docker exec -i llm-gateway-pg psql -U llm_gateway -d postgres -q \
       -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname='${DB}' AND pid <> pg_backend_pid();" >/dev/null 2>&1 || true
     docker exec -i llm-gateway-pg psql -U llm_gateway -d postgres -q \
-      -c "SET statement_timeout = '15s'" \
+      -c "SET statement_timeout = '120s'" \
       -c "DROP DATABASE IF EXISTS \"${DB}\" WITH (FORCE);" >/dev/null 2>&1
     return $?
   fi

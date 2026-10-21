@@ -25,6 +25,7 @@
 
 ★ 用法（本地）：python3 scripts/audit/verify_promote_wal_cost_local.py
 """
+import signal
 import subprocess
 import sys
 
@@ -127,15 +128,62 @@ FROM generate_series(1, %d) g;
 """
 
 
-def psql(sql, db=DB, stdin=False):
+def psql(sql, db=DB, stdin=False, check=True):
+    """跑一段 SQL。
+
+    ★ stdin=True ⇒ 走 psql 的【脚本模式】（从 stdin 读）⇒ 里面的多条语句
+      **逐条发送、各自独立事务** ⇒ 「SET x; DROP y;」写在同一行是**合法**的。
+      ★★ 而默认的 -c 模式 ⇒ 整串当成**一个**隐式事务 ⇒ 「DROP DATABASE cannot run
+        inside a transaction block」⇒ 清理**直接失败且静默**。
+      ★ check=False ⇒ 失败只返回、不 raise ⇒ 用于【清理路径】：
+        清理失败不得盖掉真正的错误（与 python 侧 atexit 兜底的约定一致）。
+    """
     cmd = ["docker", "exec", "-i", "llm-gateway-pg", "psql", "-U", "llm_gateway", "-d", db,
            "-v", "ON_ERROR_STOP=1", "-P", "pager=off", "-t", "-A", "-F", "|"]
     r = subprocess.run(cmd, input=sql, capture_output=True, text=True) if stdin \
         else subprocess.run(cmd + ["-c", sql], capture_output=True, text=True)
-    if r.returncode != 0:
+    if check and r.returncode != 0:
         print("SQL FAILED rc=%d\n%s\n%s" % (r.returncode, sql[:300], r.stderr[:1000]))
         raise SystemExit(1)
     return r.stdout.strip()
+
+
+# ★★★ 清理形态（R99 轮 · §19.20.65）——**四处**共用同一套：
+#   ① 先 terminate 踢掉占用会话（把「阻塞者」清掉）
+#   ② 再【带 statement_timeout】地 DROP
+#   ★★ 超时取 **120s**：实测「terminate 之后 DROP 仍要等被 SIGTERM 的后端收尾」
+#     可达数十秒（PG 17.10 / 高负载下实测到 89.37s）⇒ ⇒ 15s 会把【合法】的清理
+#     砍成「被超时取消」⇒ ⇒ 「清理失败」＝「库泄漏」⇒ ⇒ 与守卫目的**正好相反**。
+#   ★★ SET 与 DROP 必须【逐条发送】⇒ ⇒ 必须走 stdin=True 的脚本模式
+#     （-c 模式会把两条并进一个隐式事务 ⇒ PG 直接拒绝 ⇒ 清理静默失败）。
+#   ★★ WITH (FORCE) 兜住「还有连接没断干净」。
+def _drop_db() -> str:
+    """回收一次性库（★ 不抛异常 ⇒ 清理失败不得盖掉真正的错误）。"""
+    try:
+        psql("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '%s';" % DB,
+             db="postgres", check=False)
+        return psql("SET statement_timeout='120s'; DROP DATABASE IF EXISTS %s WITH (FORCE);" % DB,
+                    db="postgres", stdin=True, check=False)
+    except Exception as e:  # noqa: BLE001
+        return "[cleanup] WARN: %s" % e
+
+
+# ★ 信号接管（R99 轮 · §19.20.65）⇒ 让 finally 块在【被信号终止】时也真的跑。
+#   ★ 实测：python 的 try/finally 在进程被 SIGTERM 终止时【不执行】
+#   ⇒ ⇒ 「被 CI / Ctrl-C / 编排器超时杀掉」⇒ 一次性库留下。
+#   ★ 手法：处理器【抛异常】⇒ 异常沿栈展开 ⇒ finally 块【真的】执行。
+class _Terminated(BaseException):
+    """收到 SIGTERM / SIGINT ⇒ 抛出来让 finally 真的跑。"""
+
+
+def _on_signal(signum, _frame):
+    raise _Terminated(f"收到信号 {signum}")
+
+
+def _install_signal_handlers() -> None:
+    """接管 SIGTERM / SIGINT ⇒ 走「异常展开」路径 ⇒ finally 真的跑。"""
+    signal.signal(signal.SIGTERM, _on_signal)
+    signal.signal(signal.SIGINT, _on_signal)
 
 
 def wal():
@@ -143,8 +191,10 @@ def wal():
 
 
 def build(hot_idx, part_idx):
-    psql("DROP DATABASE IF EXISTS %s;" % DB, db="postgres")
+    # ★ 预清理也走守卫形态（_drop_db）⇒ 与 finally 块同一套（见 _drop_db 的注释）
+    _drop_db()
     psql("CREATE DATABASE %s;" % DB, db="postgres")
+    # ★★ 这里的 statement_timeout='300s' 属于【建库 DDL】，**不是**清理语句 ⇒ 不动它
     psql("SET statement_timeout='300s';\n"
          + DDL_TMPL.replace("--HOTIDX--", hot_idx).replace("--PARTIDX--", part_idx), stdin=True)
 
@@ -189,8 +239,26 @@ def main():
             print("   ⇒ ★★ 每行 WAL / 逻辑行宽 = %.2f  ⇒ ★ WAL ≈ 逻辑行宽 × ~1.1" % (w_ins / N / max(rw_b, 1)))
             out[label] = (nh, np_, w_ins / N, w_pro / N, rw_b)
     finally:
-        psql("DROP DATABASE IF EXISTS %s;" % DB, db="postgres")
-        print("\n[cleanup] DROP %s" % DB)
+        # ★★★ 回收（R99 轮 · §19.20.65）：守卫形态 + 字面留在 finally 块里
+        #   ★★ 【为什么不在这里抽成 helper】——判据判的是「兜底**载体**里是否真的
+        #     包着回收动作」⇒ 把 DROP 抽走 ⇒ 载体就【不覆盖】回收 ⇒ 会被判不合格。
+        #     ⇒ 所以这里【必须】字面写 DROP DATABASE（另一处同形态的清理由
+        #     _drop_db() 负责 ⇒ 两处是同一形态，改一处必须改另一处）。
+        #   ★★ SET 与 DROP 必须【逐条发送】⇒ ⇒ 必须走 stdin=True（脚本模式）
+        #     ⇒ -c 模式会把两条并进一个隐式事务 ⇒ PG 直接拒绝 ⇒ 清理静默失败。
+        #   ★★ 超时 120s：实测「terminate 之后 DROP 仍要等被 SIGTERM 的后端收尾」
+        #     可达数十秒 ⇒ 15s 会把合法清理砍成失败 ⇒ 失败＝泄漏。
+        try:
+            psql("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '%s';" % DB, db="postgres", check=False)
+            psql("SET statement_timeout='120s'; DROP DATABASE IF EXISTS %s WITH (FORCE);" % DB, db="postgres", stdin=True, check=False)
+            # ★ 查落点：「清理是否真的成功」只能由「库里还有没有」来判
+            #   （本函数走 psql 的 stdin 脚本形态 ⇒ 失败时 psql 的退出码不可信）
+            left = psql("SELECT 'LEFT=' || count(*) FROM pg_database WHERE datname = '%s';" % DB, db="postgres", check=False).strip()
+            if left != "LEFT=0":
+                print("[cleanup] ⚠ 回收未完成：%s" % left)
+            print("\n[cleanup] DROP %s" % DB)
+        except Exception as e:  # noqa: BLE001 —— 回收失败不得盖掉真正的错误
+            print("[cleanup] WARN: %s" % e)
 
     ks = list(out.keys())
     a, b = out[ks[0]], out[ks[1]]
@@ -203,4 +271,11 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    _install_signal_handlers()
+    try:
+        main()
+    except _Terminated as e:
+        # ★ 信号路径：异常已沿栈展开 ⇒ finally 块【真的】跑过（库已回收）
+        #   ⇒ 这里只把退出码还原成「被信号终止」的形状（128+15）。
+        print("⚠ %s ⇒ finally 块的清理已执行" % e, file=sys.stderr)
+        sys.exit(143)
