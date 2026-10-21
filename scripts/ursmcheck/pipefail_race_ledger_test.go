@@ -40,6 +40,21 @@ package ursm_test
 // `TestPipefailRaceLedgerGateHasTeeth` 会**删掉台账的一行**（只动临时副本），
 // 然后断言比对函数**必须**报出那一行缺失 ⇒ 证明判据 ① 真的在检查，
 // 而不是恒真。
+//
+// # ★★★★ R98 轮补的两块（R98 = 审计 R97 轮自己的门）
+//
+// ① **本门现在跑 carry-over 路径了**（R97 轮**只跑扫描路径** ⇒ 那条路径没人看守）：
+//   · 门调用量具时**一次扫描、两个产物**（候选集 + 台账副本的重生成结果）
+//   · 新增 `TestPipefailRaceLedgerCarryOverPreservesVerdicts`：逐键比对
+//     verdict / reason / evidence ⇒ **carry-over 不得改动人工裁决**。
+//   ⇒ 额外成本 = 0（量具单次运行实测 ≈ 170 s ⇒ 绝不能多跑一次）。
+//
+// ② **证据断言收紧到全表**（R97 轮按 `usage ∈ {bare,value}` 整段跳过
+//   ⇒ 实测只覆盖 116/354 行 ⇒ 被跳过的行里有 34 行零证据）。
+//
+// ③ **carry-over 路径的不变量由**另一个门**用合成夹具 + 量具级变异守住**：
+//   `scripts/ursmcheck/pipefail_race_tool_mutation_test.go`
+//   ⇒ 三条核心不变量 + 5 条量具级变异（变异在**副本**上做 ⇒ 仓内真文件零改动）。
 
 import (
 	"bufio"
@@ -99,51 +114,85 @@ func r97RepoRootErr() (string, error) {
 	return filepath.Dir(filepath.Dir(filepath.Dir(thisFile))), nil
 }
 
-// r97Candidates 跑仓内普查量具，返回**物理行**键集合。
-// ★ 返回的键是 "file\tfingerprint\tocc"（已把同一物理行的多个消费者去重）。
-// ★ 用 sync.Once 缓存：整包门禁里只跑一次量具（实测每次 ≈45 s，×4 会拖垮 CI）。
-var r97CandOnce sync.Once
-var r97CandSet map[string]bool
-var r97CandErr error
-
-func r97Candidates(t *testing.T) map[string]bool {
-	t.Helper()
-	r97CandOnce.Do(func() {
-		r97CandSet, r97CandErr = r97CandidatesRun()
-	})
-	if r97CandErr != nil {
-		t.Fatalf("★ 普查量具不可用 ⇒ 分母不可信 ⇒ 拒绝出读数：\n%v", r97CandErr)
-	}
-	return r97CandSet
+// r97Scan = 一次量具运行的**两个产物**。
+//
+// ★★ R98 轮修正：R97 轮的门调用量具时**只带 `--out`**（候选集）
+//
+//	⇒ ⇒ `build_ledger` / carry-over 六步级联 / 口径漂移作废 / 裁决串味自检
+//	⇒ ⇒ **整条路径从来没被门跑到** ⇒ ⇒ 门守不住 R97 自己的核心不变量。
+//
+// ⇒ ⇒ 现在**一次扫描、两个产物**（候选集 + 台账副本的重生成结果）
+//
+//	⇒ ⇒ 额外成本 = 0（量具单次运行实测 ≈ 170 s ⇒ 绝不能再多跑一次）。
+type r97Scan struct {
+	cands   map[string]bool     // 候选集键集
+	carried map[string][]string // 重生成台账：key → 列切片
 }
 
-func r97CandidatesRun() (map[string]bool, error) {
+var r97ScanOnce sync.Once
+var r97ScanRes r97Scan
+var r97ScanErr error
+
+// r97ScanRepo 跑一次仓内普查量具（候选集 + 台账副本重生成），结果缓存。
+func r97ScanRepo(t *testing.T) r97Scan {
+	t.Helper()
+	r97ScanOnce.Do(func() {
+		r97ScanRes, r97ScanErr = r97ScanRun()
+	})
+	if r97ScanErr != nil {
+		t.Fatalf("★ 普查量具不可用 ⇒ 分母不可信 ⇒ 拒绝出读数：\n%v", r97ScanErr)
+	}
+	return r97ScanRes
+}
+
+// r97Candidates = 候选集键集合（★ 历史接口，保持不变）。
+func r97Candidates(t *testing.T) map[string]bool {
+	t.Helper()
+	return r97ScanRepo(t).cands
+}
+
+func r97ScanRun() (r97Scan, error) {
 	root, err := r97RepoRootErr()
 	if err != nil {
-		return nil, err
+		return r97Scan{}, err
 	}
 	tool := filepath.Join(root, r97ToolRel)
 	if _, err := os.Stat(tool); err != nil {
-		return nil, fmt.Errorf("普查量具不存在：%s ⇒ %v", tool, err)
+		return r97Scan{}, fmt.Errorf("普查量具不存在：%s ⇒ %v", tool, err)
 	}
 	if _, err := exec.LookPath("python3"); err != nil {
-		return nil, fmt.Errorf("★ 门依赖 python3（执行仓内普查量具 %s），本机没有 ⇒ 显式 SKIP：%w", r97ToolRel, err)
+		return r97Scan{}, fmt.Errorf("★ 门依赖 python3（执行仓内普查量具 %s），本机没有 ⇒ 显式 SKIP：%w", r97ToolRel, err)
 	}
 	dir, err := os.MkdirTemp("", "r97cand")
 	if err != nil {
-		return nil, err
+		return r97Scan{}, err
 	}
 	defer os.RemoveAll(dir)
 	out := filepath.Join(dir, "cand.tsv")
-	cmd := exec.Command("python3", tool, "--root", root, "--out", out)
+
+	// ★★ 台账副本：把**已提交台账**复制一份交给量具重生成
+	//   ⇒ 量具走的是「带 --ledger」的路径 ⇒ **carry-over 路径被真正跑到**
+	//   ⇒ ⇒ 产出的台账可与已提交台账逐键比对（见 TestPipefailRaceLedgerCarryOverPreservesVerdicts）。
+	//   ⇒ 真台账**只读**（量具只写副本）⇒ 对仓零写入。
+	ledgerSrc := filepath.Join(root, "scripts", "ursmcheck", r97LedgerFile)
+	raw, err := os.ReadFile(ledgerSrc)
+	if err != nil {
+		return r97Scan{}, fmt.Errorf("读已提交台账失败（%s）：%v", ledgerSrc, err)
+	}
+	ledgerCopy := filepath.Join(dir, "ledger.tsv")
+	if err := os.WriteFile(ledgerCopy, raw, 0o644); err != nil {
+		return r97Scan{}, fmt.Errorf("写台账副本失败：%v", err)
+	}
+
+	cmd := exec.Command("python3", tool, "--root", root, "--out", out, "--ledger", ledgerCopy)
 	// ★ 量具自检失败 ⇒ exit 3 ⇒ 门必须红（分母不可信 ⇒ 拒绝出读数）
 	combined, err := cmd.CombinedOutput()
 	if err != nil {
-		return nil, fmt.Errorf("★ 普查量具执行失败（自检没过 ⇒ 分母不可信）⇒ 拒绝出读数：\n%s", string(combined))
+		return r97Scan{}, fmt.Errorf("★ 普查量具执行失败（自检没过 ⇒ 分母不可信）⇒ 拒绝出读数：\n%s", string(combined))
 	}
 	f, err := os.Open(out)
 	if err != nil {
-		return nil, fmt.Errorf("打不开候选集 %s：%v", out, err)
+		return r97Scan{}, fmt.Errorf("打不开候选集 %s：%v", out, err)
 	}
 	defer f.Close()
 	cands := map[string]bool{}
@@ -155,7 +204,7 @@ func r97CandidatesRun() (map[string]bool, error) {
 		if first {
 			first = false
 			if !strings.HasPrefix(line, "file\t") {
-				return nil, fmt.Errorf("候选集表头不对：%q", line)
+				return r97Scan{}, fmt.Errorf("候选集表头不对：%q", line)
 			}
 			continue
 		}
@@ -164,7 +213,7 @@ func r97CandidatesRun() (map[string]bool, error) {
 		}
 		cols := strings.Split(line, "\t")
 		if len(cols) < 12 {
-			return nil, fmt.Errorf("候选集行列数 = %d，不足 12（末列必须是 fingerprint）：%q", len(cols), line)
+			return r97Scan{}, fmt.Errorf("候选集行列数 = %d，不足 12（末列必须是 fingerprint）：%q", len(cols), line)
 		}
 		// ★★★ 主键 = (file, fingerprint, occ)。
 		//
@@ -179,17 +228,51 @@ func r97CandidatesRun() (map[string]bool, error) {
 		//   唯一 ✓ / 抗行号漂移 ✓（顺序位不随行号变）/ 顺序稳定 ✓。
 		key := cols[0] + "\t" + cols[11] + "\t" + cols[2]
 		if cands[key] {
-			return nil, fmt.Errorf("★ 候选集主键重复：%q ⇒ 主键不唯一 ⇒ 键方案已退化", key)
+			return r97Scan{}, fmt.Errorf("★ 候选集主键重复：%q ⇒ 主键不唯一 ⇒ 键方案已退化", key)
 		}
 		cands[key] = true
 	}
 	if err := sc.Err(); err != nil {
-		return nil, fmt.Errorf("读候选集出错：%v", err)
+		return r97Scan{}, fmt.Errorf("读候选集出错：%v", err)
 	}
 	if len(cands) == 0 {
-		return nil, fmt.Errorf("★ 候选集为空 ⇒ 分母为 0 ⇒ 空集上的「零风险」是恒等式，不是发现")
+		return r97Scan{}, fmt.Errorf("★ 候选集为空 ⇒ 分母为 0 ⇒ 空集上的「零风险」是恒等式，不是发现")
 	}
-	return cands, nil
+
+	// ★ 重生成台账 ⇒ 逐键索引（主键与台账**逐字同构**：(file, fingerprint, occ)）。
+	carried := map[string][]string{}
+	lf, err := os.Open(ledgerCopy)
+	if err != nil {
+		return r97Scan{}, fmt.Errorf("打不开重生成台账 %s：%v", ledgerCopy, err)
+	}
+	defer lf.Close()
+	lsc := bufio.NewScanner(lf)
+	lsc.Buffer(make([]byte, 0, 1<<20), 1<<20)
+	for lsc.Scan() {
+		line := lsc.Text()
+		if strings.HasPrefix(line, "#") || strings.TrimSpace(line) == "" {
+			continue
+		}
+		cols := strings.Split(strings.TrimRight(line, "\n"), "\t")
+		if cols[0] == "file" {
+			continue
+		}
+		if len(cols) < 13 {
+			return r97Scan{}, fmt.Errorf("重生成台账行列数 = %d，不足 13：%q", len(cols), line)
+		}
+		key := cols[0] + "\t" + cols[12] + "\t" + cols[2]
+		if _, dup := carried[key]; dup {
+			return r97Scan{}, fmt.Errorf("★ 重生成台账主键重复：%q", key)
+		}
+		carried[key] = cols
+	}
+	if err := lsc.Err(); err != nil {
+		return r97Scan{}, fmt.Errorf("读重生成台账出错：%v", err)
+	}
+	if len(carried) == 0 {
+		return r97Scan{}, fmt.Errorf("★ 重生成台账为空 ⇒ 拒绝出结论")
+	}
+	return r97Scan{cands: cands, carried: carried}, nil
 }
 
 // r97Ledger 读台账 ⇒ key → 列切片。
@@ -269,10 +352,12 @@ func TestPipefailRaceLedgerCoversCandidateSet(t *testing.T) {
 // TestPipefailRaceLedgerOccIsContiguous：同形组内的 occ 必须恰好是 1..N（连续、不重、不缺）。
 //
 // ★ 这条断言守的是**键方案本身**：
-//   主键 = (file, fingerprint, occ)，其中 occ = 「同 (file,fingerprint) 组内按行号排序的序号」。
-//   ⇒ occ 一旦不连续（例如被手工改成两行同号、或某个序号缺失），
-//   **同形行就会共用主键** ⇒ carry-over 时互相冒用裁决
-//   ⇒ 真缺陷的 risk 裁决可能被邻行的 benign 裁决洗掉（本轮核心不变量被破）。
+//
+//	主键 = (file, fingerprint, occ)，其中 occ = 「同 (file,fingerprint) 组内按行号排序的序号」。
+//	⇒ occ 一旦不连续（例如被手工改成两行同号、或某个序号缺失），
+//	**同形行就会共用主键** ⇒ carry-over 时互相冒用裁决
+//	⇒ 真缺陷的 risk 裁决可能被邻行的 benign 裁决洗掉（本轮核心不变量被破）。
+//
 // ⇒ 所以「键唯一」还不够 ⇒ 还要「序连续」⇒ 才保证 occ 是**真序号**。
 func TestPipefailRaceLedgerOccIsContiguous(t *testing.T) {
 	ledger := r97Ledger(t)
@@ -328,23 +413,27 @@ func TestPipefailRaceLedgerHasNoPending(t *testing.T) {
 	}
 }
 
-// TestPipefailRaceLedgerRiskRowsHaveEvidence：risk/conditional 行必须带证据。
+// TestPipefailRaceLedgerRiskRowsHaveEvidence：每一行终值裁决都**必须带证据**。
 // ★★ **本轮的关键教训落成门**：本轮曾出现过「86 行裁决的 evidence 列是空的」
 //
 //	（根因是量具的写端量级正则**末位分支为空 ⇒ 匹配一切 ⇒ 判据恒真**，
 //	而这种缺陷从输出格式上完全看不出来）⇒⇒ **量具输出「看起来正常」不是它没坏的证据**
 //	⇒⇒ 所以这里把判据放宽到【**所有 judgment 行的证据都必须非空**】，
 //	而不只是 risk/conditional 行 ⇒⇒ 空证据会当场暴露。
+//
+// ★★★★ **R98 轮再收紧一格**：原实现按 `usage ∈ {bare, value}` **整段跳过**
+//
+//	（理由：这两类「退出码不参与语义判断 ⇒ 体量与证据都无关」）
+//	⇒ ⇒ 实测该跳过让本断言**只覆盖 116/354 行**，被跳过的 238 行里有
+//	⇒ ⇒ **34 行 evidence 为空**（R97 之前的旧行，carry-over 原样带过来的）
+//	⇒ ⇒ **「空证据 = 不许」这条纪律在三分之二的行上从未生效**。
+//	⇒ ⇒ 现在改成：**全表 354 行都要有非空证据**（体量无关的判据也必须写出依据）。
 func TestPipefailRaceLedgerRiskRowsHaveEvidence(t *testing.T) {
 	ledger := r97Ledger(t)
 	for k, cols := range ledger {
 		v, reason, evid, usage := cols[8], cols[9], cols[10], cols[5]
 		if v == "pending" {
 			continue // 另一条断言专门查它
-		}
-		// ★ 退出码不参与语义判断的用法（bare/value）⇒ 体量与证据都无关
-		if usage == "bare" || usage == "value" {
-			continue
 		}
 		if strings.TrimSpace(evid) == "" {
 			t.Errorf("★ %s 的裁决是 %s（usage=%s），但**证据列为空** ⇒ "+
@@ -354,6 +443,48 @@ func TestPipefailRaceLedgerRiskRowsHaveEvidence(t *testing.T) {
 			t.Errorf("★ %s 的裁决是 %s，但没有理由", k, v)
 		}
 	}
+}
+
+// TestPipefailRaceLedgerCarryOverPreservesVerdicts：**carry-over 不得改动人工裁决**。
+//
+// ★★ R98 轮新增（★ 补的是 R97 轮的门**根本没覆盖**的那条路径）：
+//
+//	R97 的门调用量具时**只带 `--out`** ⇒ `build_ledger` / carry-over 六步 /
+//	口径漂移作废 / 裁决串味自检**整条路径没人跑** ⇒ ⇒ 门守不住 R97 自己的核心不变量。
+//
+// ⇒ ⇒ 现在门**一次扫描、两个产物**：候选集 + **台账副本的重生成结果**
+//
+//	⇒ ⇒ 本断言逐键比对「已提交台账」与「重生成台账」的 verdict / reason / evidence。
+//
+// ★ 职责分离（★ 别和「键集一致」那条混）：
+//
+//	· 键集漂移（上游改了文件）⇒ 由 TestPipefailRaceLedgerCoversCandidateSet 报
+//	· **裁决被 carry-over 改坏**（同一批键、内容却变了）⇒ 由本断言报
+//	⇒ 两条断言各管一件事 ⇒ 上游推进时不会「一起红」而失去指向性。
+func TestPipefailRaceLedgerCarryOverPreservesVerdicts(t *testing.T) {
+	sc := r97ScanRepo(t)
+	ledger := r97Ledger(t)
+	var diffs []string
+	checked := 0
+	for k, cols := range ledger {
+		carried, ok := sc.carried[k]
+		if !ok {
+			continue // 键集漂移由另一条断言负责
+		}
+		checked++
+		for _, ci := range []int{8, 9, 10} { // verdict / reason / evidence
+			if cols[ci] != carried[ci] {
+				diffs = append(diffs, fmt.Sprintf("%s 的第 %d 列：已提交=%q / 重生成=%q",
+					k, ci, cols[ci], carried[ci]))
+			}
+		}
+	}
+	sort.Strings(diffs)
+	if len(diffs) > 0 {
+		t.Errorf("★ carry-over 改动了人工裁决（%d 处 / 比对 %d 个共有键）⇒ "+
+			"台账不再是「人工裁决的 SSOT」：\n%s", len(diffs), checked, strings.Join(diffs, "\n"))
+	}
+	t.Logf("carry-over 幂等 ✔ 比对 %d 个共有键，verdict/reason/evidence 全部一致", checked)
 }
 
 // TestPipefailRaceLedgerGateHasTeeth：删掉台账一行 ⇒ 比对**必须**报出缺行。
