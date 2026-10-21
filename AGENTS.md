@@ -6001,6 +6001,60 @@ index b953a6f03..555ef83c4 100644
 > ⇒ ⇒ ★★★★ **新增待属主拍板 3 条**（#6 已订正收益、#7 沿用、**#8 新增：252 共享库的 IO 争用要不要单独立项**——同一时刻吃 IO 的还有 4 个 matview 的 `REFRESH CONCURRENTLY`（§143.20：占本库慢查询 DB 时间 25.3%）与并行会话的只读全表审计）
 > ⇒ ⇒ ★★ **本轮零产品代码改动** ⇒ ⇒ ★★ **⇒ 正确顺序：先定位 IO 来源（已完成：=`session_dim`）⇒ 再决定改不改。**
 > ⇒ 完整记录见审计档 `docs/audit/2026-10-21-R72e-project_backfill_worker慢查询成本结构.md` §3.3 / §3.4 / §4.1 / §4.3 ＋ LESSONS `§159`（含订正横幅）/ `§160`。
+
+> **2026-10-21 R72f 轮（部署线 · 本会话）**：★ **合并上游后必须重新部署本地 ⇒ 第一次部署失败 ⇒ 真因是「部署形态」决定编译目标平台**
+> ⇒ ★★★★ **背景**：R72e 合并上游 28 提交后，**上游动了产品代码**（`bg/feature_stats_worker.go` 的 `fill_rate_pct` NULL 扫描修复 ＋ 新增 `admin/monthly_retention_verdict.go`）
+>   ⇒ 按目标契约「重新用 `deploy-local.sh` 部署本地，确保本地网关与数据库是最新版本」必须重部署 ⇒ ★ **无新 SQL 迁移** ⇒ 只需换二进制。
+> ⇒ ★★★★★ **① 第一次部署失败，报错链指向错了地方**：表面 `[cutover] readiness gate failed; retry 2/3` ×3 ⇒ `active cutover failed; previous release was restarted`；
+>   ★★ **真因在 8782 运行日志末尾一行**：`bin/current/gateway: cannot execute binary file`（★ 旧容器一直占着 8782 ⇒ 探针看到的永远是旧版本）。
+> ⇒ ★★★★ **② 真因 = 「产物平台」与「运行形态」不匹配**：`file bin/current/gateway` = **ELF ARM64（Linux，容器用）**、
+>   `file bin/2.5.8.2795/gateway` = **Mach-O arm64（macOS，宿主用）** ⇒ ★★ 8782 是**容器**形态 ⇒ 需要 Linux 二进制。
+> ⇒ ★★★★ **③ 开关是 `DL_DOCKER`**：`deploy-local.sh:981` `(( DL_DOCKER )) && target_os=linux` ⇒ ★★ **⇒ 形态决定编译目标平台，不是「启动方式」这种可临时切换的开关。**
+> ⇒ ★★★★ **④ 形态判定被我的入参改歪**：★ **我传了 `LLM_GATEWAY_DATABASE_URL` ⇒ `dl_detect_resources()` 的 Tier 1 判 `DL_DB_MODE=external`
+>   ⇒ Tier 2 跳过 ⇒ Tier 3 的守卫（`deploy-local-lib.sh:459`：`DB_MODE==none || REDIS_MODE==none`）不成立 ⇒ **`DL_DOCKER` 恒 0 ⇒ 整条 docker 路径被跳过。**
+>   ⇒ ★★★ **⇒ 修法 = 不传外部 DSN**：Tier 2 的宿主 PG 探测用 `-U $USER`（宿主用户名，容器里无此角色）⇒ 必然落空 ⇒ `DB_MODE=none` ⇒ Tier 3 进 ⇒ 找到 `llm-gateway-pg`
+>   ⇒ ★★ **⇒ 且不传 DSN 不丢口令**：docker 模式下脚本从 **PG 容器自己的环境变量**取 `POSTGRES_USER/PASSWORD/DB` ＋ 宿主发布端口（`deploy-local.sh:270-275`）。
+> ⇒ ★★★★ **⑤ 验证通过（形态与端口均未变）**：重跑 ⇒ `docker=1 pg_container=llm-gateway-pg` ⇒ **release `2.5.8.2796`** ⇒ **`VERIFY_PASS=1`**
+>   ⇒ 容器 `llm-gateway-local-8782` 镜像 `kx-llm-gateway-local:2.5.8.2796` ⇒ `bin/current` → `2.5.8.2796`（ELF）⇒ `/version` = `2.5.8-f0a1af2b`（= 合并提交）
+>   ⇒ ★★ **部署后核实**：ledger max = **894** ✔｜`_request_logs%` 关系数（`relkind IN ('r','p')`）= **0** ✔｜`v_candidate_failure_logs_diagnosis` = **214 行**（LIVE）✔
+>   ⇒ ★★ **写路径复验**：`glm-5.2` 4 次请求全 **200** 且全部落 `session_turns_hot`（`success=t`）；503 的请求同样落库（`success=f`）⇒ **v1 族零写入** ✔
+> ⇒ ★★★★ **⑥ 顺带订正一条认知**：★ **8781 不是「空端口 / 可供别人用」，它是部署机制里的 **cutover 候选槽**（`deploy-local.sh:1664-1669`：active=8782 ⇒ candidate=8781）**
+>   ⇒ ⇒ **⇒ 部署期间 8781 上必然有实例，这是设计，不是占用。**
+> ⇒ ★★★★★ **⑦ 页面巡检挖出真缺陷：`.env.local` 里的 feature flag **进不了容器**（26 个里 23 个收不到）**
+>   ⇒ ★★ **移动端 97 页里 1 页 failed**（`/m/reconciliation`，`404 /api/admin/provider-cost-reconciliation?month=2026-10`）⇒ ★★★ **⇒ R72 时同页同 404 ⇒ 不是回归** ⇒ ⇒ ★★★ **⇒ 但根因不在前端**：
+>   ★★ **根因链（逐段实测）**：① 前端无条件调（`web-mobile/src/api/costReconciliation.ts:29`，nav 席 `requiresRole: 'super_admin'` ⇒ **对超级管理员一直可见**）
+>   → ② 后端按设计不注册（`admin/handler.go:192-196`，handler 默认 nil ⇒ flag-off 与 main 一致）
+>   → ③ 开关**第一优先**读 env（`cmd/gateway/provider_profile_init.go:256`）
+>   → ④ ★★ **env 在容器形态下收不到**：`dl_write_env()`（`scripts/deploy-local-lib.sh:824`）是**白名单式**的（38 键）⇒ `.env.local` 的键被**静默丢弃** ⇒ ★ **实测容器 env 里没有**
+>   → ⑤ ★★ **settings 后备路也是死的**：该键**从未 `Register` 成 spec** ⇒ `Global.Spec(key)` 返回 nil ⇒ `GetPlatformBool` **直接回退 fallback(false)** ⇒ **写 `settings_kv` 也没用**
+>   ⇒ ⇒ ★★★★ **⇒ 「费用对账」在容器形态下永久不可开启。**
+> ⇒ ★★★★★ **⑧ 这不是孤例 —— 26 个 feature flag 里 23 个收不到**：★ 新门 `scripts/ursmcheck/deploy_env_flag_passthrough_test.go` 的只读清单：
+>   代码用 env 读的 `*ENABLED` flag **26 个**、白名单覆盖 **3 个** ⇒ ⇒ ★★★ **⇒ 含 `LLM_GATEWAY_V2_ENABLED`（26 处引用，v1/v2 双写**总开关**）**
+>   ⇒ ⇒ ★★★ **⇒ 在容器形态下那个开关是不通的 ⇒ ⇒ ⇒ 「关停 request_logs 写入」只能靠迁移 890 硬删、不能靠开关 ⇒ ⇒ ⇒ ★★ **这正好解释了本任务为什么必须走「迁移 ＋ 真删表」。**
+>   ⇒ ⇒ ★★ **纯实测旁证**：`.env.local` 里本来就写着 `LLM_GATEWAY_MOCK_PROBE_ENABLED` ＋ `..._INTERVAL_SECONDS` ⇒ ★ **实测容器 env 里两个都没有**。
+> ⇒ ★★★★ **⑨ 修法 = 白名单补一行（零语义风险，与 hotzone 先例同构）**：`dl_emit_env_line LLM_GATEWAY_PROVIDER_COST_RECONCILIATION_ENABLED "${…:-}"`
+>   ⇒ ★★ **⇒ 实测闭环**：容器 env **没有 → 有**；`GET /api/admin/provider-cost-reconciliation` **404 → 200（count=4）**；`?month=2026-10` **404 → 200（count=4）**；`/bill` **404 → 405**（POST 端点）⇒ ⇒ ⇒ **根因链完整闭合。**
+> ⇒ ⇒ ★★★ **⑩ 诚实边界**：★ **只补了受害的那一个 flag**，其余 22 个仍收不到 ⇒ **属主决策 #9**；★ **settings 的 spec 未注册没修**（要动 `settings` 注册面）⇒ **属主决策 #10**；★ **前端入口可见性没动**。
+> ⇒ ⇒ ★★ **本轮改动**：`scripts/deploy-local-lib.sh` 一行白名单 ＋ 新门 `scripts/ursmcheck/deploy_env_flag_passthrough_test.go`（3 条：2 条有牙 ＋ 1 条只读清单）
+> ⇒ ⇒ ★★★★ **⑪ flag 修好后的全量复验（release `2.5.8.2798`）——★ 用「逐条状态码对照」而不是聚合分布**
+>   ⇒ ★★ **API 全量扫 259 端点**：★ **按路由键 join 后逐条比状态码 ⇒ 差异恰好 2 条**（`provider-cost-reconciliation` **404→200**、`…/bill` **404→405**）⇒ ⇒ ★★★ **⇒ 差分 100% 由本轮修复解释 ⇒ 零回归**；非 SSE 最慢 `/api/admin/sessions` **265 ms**
+>   ⇒ ★★ **移动端页面巡检**：★ `pages=97` **`failed=1` → `failed=0`**（`/m/reconciliation` 的 `fail`/`badStatus` 双双转空）⇒ ⇒ ★★★ **⇒ 缺陷在 API 层与页面层双双闭合**
+>   ⇒ ★★ **写路径复验**（2798 上重跑 12 轮 `ping`/`say OK.`）：★ **3×200（`glm-5.2` 真实上游）/ 9×503** ⇒ ⇒ **12 次全部落 `session_turns_hot`**（`success` 标记正确：200→t、503→f；8 条 503 的 `t9_response_end_at=NULL` ⇒ 从未触达上游、本机无该 provider）
+>   ⇒ ⇒ ★★★ **⇒ v1 族连视图/物化视图/外表在内一共 0 个关系 ⇒ 写入在物理上不可能发生**
+> ⇒ ⇒ ★★★★★ **⑫ 桌面 `/login` 首轮 2022ms：★ 是「尺子」的问题，不是页面的问题**
+>   ⇒ ★★ **先看服务端**（从容器日志切出那 2.03 秒窗口内的全部 82 个请求）：★ **服务端 duration > 50ms 的只有 3 个、最长 83ms** ⇒ ⇒ ★★★ **⇒ 无表扫描、无慢 SQL**
+>   ⇒ ★★ **再看量具**（三档判别实验 `--idle-ms` 300/1000/2000）：★ **`idleMs ≈ idle-ms + 250~280ms`，而 `apiCount`/`apiSumMs`/`docMs` 恒定** ⇒ ⇒ ★★★ **⇒ 「慢页」判定与尺子参数**同量纲** ⇒ ⇒ ⇒ 阈值天然被尺子自己触发**
+>   ⇒ ★★ **最后复现**（去掉并发客户端后重跑整包扫）：★ **`/login idle=676ms`、`apiN=16`、整包 `pages=87 failed=0 slow=0`** ⇒ ⇒ ★★★★ **⇒ 2022ms **不可复现** ⇒ ⇒ ⇒ 是**同源并发客户端**的污染**（本机 Chrome 与 headless Chrome **UA 同族**、按 UA 分不出来）
+>   ⇒ ⇒ ★★★ **⇒ `/login` 自身成本 = `doc` 130~200ms + 16 个 XHR + 服务端最长 113ms ⇒ ≈ 550~720ms**（17 次隔离采样一致）
+>   ⇒ ⇒ ★★★ **⇒ 顺带一条**真实**效率观察**：一次页面初始化打 **49 次 `/api/routing/resolve`** ＋ 80 KB `available-models` **重复拉 8 次**（服务端不慢，浪费在往返）⇒ 来源**不是登录页**（`LoginView.vue` 零命中）⇒ ⇒ **属主决策 #12**
+> ⇒ ⇒ ★★★ **⑬ 本轮新增两条属主决策**：**#11** `page-sweep-cdp.mjs` 的「慢页」判据口径要不要改（量具下限 + 并发污染探测）｜**#12** 前端 49 次 `routing/resolve` 扇出要不要做批量接口
+> ⇒ ⇒ ★★★★★ **⑭ 为 211/252 排期时，★ 订正了一条根子上的口径错误：「按台账水位对齐多环境」是错的**
+>   ⇒ ★★ **实测三处台账（全程只读、零写入）**：本地 **295 行 / max 894**；**211 = 63 行 / max 869**（★ **多个 schema 里各有一张同名表** ⇒ `information_schema` 里 `version` 列有 **4 份** `text`/`bigint`/`bigint`/`bigint`）；**252 = 433 行 / max 999**（★ `version` 是 **text**、格式混杂：**`V359`**、两条 `2026-07-…-hot`、**一条 `999` 噪声行**）
+>   ⇒ ⇒ ★★★★ **⇒ 表面读数「211 落后 25 条、252 落后 5 条」——★ 但这个算法是错的**：`installer/internal/dbinit/runner.go` 的 `InitSchema`（:1349）**逐条应用 `StartupFiles` 里的每个文件、完全不查 `schema_migrations`**；★ **全仓唯一的 `SELECT … FROM schema_migrations` 只有两处**（一条手工校验脚本 + 一个测试）⇒ ⇒ ⇒ **台账是「记录」，不是「闸门」**
+>   ⇒ ⇒ ★★★★ **⇒ ⇒ 正确口径 = 「按 `StartupFiles`（**295 条**）的文件顺序逐条幂等应用」；★ 拿 `max(version)` 当水位 ⇒ 252 会被那条 `999` 直接卡死**
+>   ⇒ ⇒ ★★★ **⇒ 排期的真实内容**：★ **211**：v1 族退役链（`890` 及其后续）未应用，**且实测 211 仍在读 v1** ⇒ ★★ **⇒ 部署新二进制前必须先跑 `890`**；★ **252**：**`890` 是不可逆的真删**，而 v1 族仍有 **67 万行**历史（`_request_logs` 338,976 ＋ `_request_logs_bodies` 330,463，止于 2026-10-13 20:18）⇒ ⇒ **⇒ 「数据去留」必须先拍板**
+> ⇒ ⇒ ★★ **本轮改动**：`scripts/deploy-local-lib.sh` 一行白名单 ＋ 新门 `scripts/ursmcheck/deploy_env_flag_passthrough_test.go`（3 条：2 条有牙 ＋ 1 条只读清单）＋ 行为级 shell 门 `scripts/deploy-local-lib-envflag_test.sh`
+> ⇒ ⇒ ★★ **⇒ 完整记录见审计档 `docs/audit/2026-10-21-R72f-本地部署形态判定与二进制平台耦合.md` §3.6 / §3.7 / §3.8 / §3.9 / §4.5 ＋ LESSONS `§161` / `§162` / `§163` / `§164`。**
 > **2026-10-21 R86 轮（事实源线 · 续）**：★ **「事实源承载 ⇒ 免于被分类」是结构盲区** ⇒ 六例落地 ＋ 新门「(事实源导出名 × 消费腿) 靶子错配探测器」。
 > ⇒ ★★ **盲区现场**：登记册门 `scripts/ursmcheck/pg_test_env_registry_test.go` 的差集完备判据里写着
 > `if _, ok := ds[name]; ok { continue } // 事实源承载的 dsn 类，不进登记册`

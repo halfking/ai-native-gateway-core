@@ -920,6 +920,17 @@ dl_write_env() {
     dl_emit_env_line LLM_GATEWAY_HOTZONE_RETENTION_HOURS "${LLM_GATEWAY_HOTZONE_RETENTION_HOURS:-}"
     dl_emit_env_line LLM_GATEWAY_HOTZONE_MAX_SIZE_GB "${LLM_GATEWAY_HOTZONE_MAX_SIZE_GB:-}"
     dl_emit_env_line LLM_GATEWAY_HOTZONE_REQUEST_MIRROR "${LLM_GATEWAY_HOTZONE_REQUEST_MIRROR:-}"
+    # 2026-10-21 R72f：费用对账（provider cost reconciliation）子开关透传。
+    # 与上面 hotzone 同一族：白名单缺失 ⇒ `.env.local` 里写
+    # LLM_GATEWAY_PROVIDER_COST_RECONCILIATION_ENABLED=true 被**静默丢弃**
+    # ⇒ 容器形态下该功能永远 off ⇒ `/api/admin/provider-cost-reconciliation*`
+    # 永远 404 ⇒ 移动端 `/m/reconciliation` 席（super_admin 可见）点进去必然失败。
+    # 该 env 是 `costReconciliationEnabled()` 的**第一优先**读法
+    # （cmd/gateway/provider_profile_init.go:256）；而 settings 那条路的键
+    # `provider_profile.cost_reconciliation.enabled` **从未 Register 成 spec**
+    # ⇒ `Global.Spec(key)` 返回 nil ⇒ `GetPlatformBool` 直接回退 false
+    # ⇒ ⇒ 补这一行是让 env 那条路可达的**最小修法**（未设时写空行，行为不变）。
+    dl_emit_env_line LLM_GATEWAY_PROVIDER_COST_RECONCILIATION_ENABLED "${LLM_GATEWAY_PROVIDER_COST_RECONCILIATION_ENABLED:-}"
   } > "$file"
   chmod 0600 "$file"
 }
