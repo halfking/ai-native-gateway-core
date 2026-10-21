@@ -6101,6 +6101,28 @@ index b953a6f03..555ef83c4 100644
 >   ★★ **执行顺序（已被生产证据钉死）**：**换二进制（252 必需）→ 清空 v1 族 → 跑 890**；211 只需换二进制 ＋ 清 2 张孤儿表。**不可逆点 = 清空那一步** ⇒ ⇒ 二进制可回滚、数据不能 ⇒ 顺序不能反。
 > ⇒ ⇒ ★ **⇒ 完整记录见审计档 `docs/audit/2026-10-21-R72g-生产落地执行包-v1族真删.md` ＋ LESSONS `§166` ~ `§172`。**
 
+> **2026-10-21 R72g 轮（执行线 · 续 · 本会话）**：★ **属主 4 项已拍板（16:46）⇒ 进入生产执行线** ⇒ ★★★ **执行前实测挖出授权范围之外的事实 ⇒ 顺序被改写** ＋ ★ **护栏退役（Q4）落成仓内改动**。
+> ⇒ ★★★★ **★ 最重要的事实：252 的 PG 是【共享生产库】** —— 154（生产）与 245（预发布）两个 gateway 实例**正连着它**：
+>   ★ `/etc/hosts` 实测：`172.16.2.209` = `aliyun-154-internal`、`172.16.2.241` = `aliyun-245-internal`；
+>     两者 `/proc/<pid>/environ` 的 `LLM_GATEWAY_DATABASE_URL` 都指向 **`172.16.2.210:5432`（= 252 的 `pg-252-pg17` 容器 IP）**。
+>   ★ **产物层同口径三方 diff**（`strings`）：HEAD-2802（阳性对照）`FROM public._request_logs` = **0** / `FROM _request_logs` = **0** / 唯一 v1 串 **141** 行；**154/245 现役（2767-8a826814, Oct 20）= 26 / 90 / 317 行** ⇒ 差集里是**真·表直读**（`SELECT customer_id FROM public._request_logs`、`SELECT request_status, trace_events, ts FROM _request_logs WHERE request_id = $1`、小时聚合 `SELECT tenant_id FROM _request_logs WHERE ts >= h.b`、正文读 `FROM _request_logs_bodies_hot`）。
+>   ★ **运行时活性（`pg_stat_statements` 两次快照差值，75s 窗）**：v1 语句**新增调用 50 次**，含 `Δ+2` 正文读 / `Δ+2` `request_logs_with_current_month` 状态读 / `Δ+1` `_request_logs_hot` 计数 ⇒ ⇒ **此刻活跃**。
+>   ★ **写侧已停、读侧仍活**：`_request_logs_hot` **0 行**、09:07 后无新行；`settings_kv` 无 `request_logs.write_enabled` 行 ⇒ fallback false。
+>   ⇒ ⇒ ★★ **推论**：**清空 ⇒ 154/245 静默读空**（比 42P01 更隐蔽）；**跑 890 ⇒ 154/245 表直读 42P01** ⇒ ⇒ **两者都超出属主对 252 的授权** ⇒ ⇒ **唯一安全路径 = 先把 154/245 升到 890-safe 产物**（属主已确认：245 先、验证后 154）。
+>   ⇒ ⇒ ★★ **同时订正 R72g 上一段的「顺序论证」**：**「252 换二进制是 890 的硬前置」在 252 上【当前不成立】** —— ★ **252 的网关根本没在跑**（`ps` 无 gateway；systemd `llmgo-252-dev` = `inactive (dead)` + `disabled`；`ExecMainStartTimestamp` **为空** ⇒ 该单元**从未启动过**；journal 无条目；8780 **无监听**）⇒ ⇒ **旧二进制不会产生 42P01** ⇒ **真正的前置是 154/245**。
+>   ⇒ ⇒ ★★★ **252 的「换二进制」形态 = 只换文件、不启服务**：`deploy-252-gateway.sh` 自陈「共享 DB 中加密凭据在该实例 decrypt_failed 是预期行为」⇒ 一旦启动会对**共享库**做解密探针 ⇒ 必然 decrypt_failed ⇒ **污染 154/245 共用**的 `credential_model_index` / `model_probe_runs` ⇒ ⇒ **换文件安全、启动危险**；且 `.env.dev` **绝不可重新生成**（`SECRET_KEY` 是 `api_keys.key_hash` 的 HMAC 密钥 ⇒ 轮换 ⇒ **全量 API key 失效**）。
+> ⇒ ★★★ **护栏退役（Q4）＝ 换源，不删网**（`discovery/discovery.go`）：
+>   ★ **判据**：旧 = `settings.RequestLogsWriteEnabled()`（问「v1 能否写」）⇒ v1 退役后**恒 false** ⇒ **护栏恒 skip**（211 生产日志实证）；新 = **会话族证据源近期有无成功行**（`sessionFamilyHasRecentSuccess`：EXISTS 查 **hot ∪ parent** 两臂的 `success=TRUE`）。
+>   ★★ **为什么不能删掉判断**：这道守卫是**否定式**的（`NOT EXISTS`）⇒ **证据源停写时**它**结构性恒空** ⇒ 在用模型被全量下架且**无异常信号** ⇒ ★ **会话族也会停写**（R62 修过的 23514：新装库缺当月分区 ⇒ 写路径直接失败）⇒ ⇒ **删判断 = 把安全网一起删了** ⇒ ⇒ **通用式：「问 A 是否可写来推断 B 是否有数据」是判据问错的标准形态**。
+>   ★ **窗口单实现点**（`staleExpiryGraceHours`）：探针窗口与守卫窗口必须同源，否则「探针说有证据（48h 里看到行）而守卫自己在 24h 里看不到」⇒ 否定式守卫退化成「没有证据」。
+>   ★ **影响面实测（252 共享库，单事务 REPEATABLE READ 快照）**：候选（available ∧ 未保护）**1851** = would_expire **1826** ＋ 宽限挡住 **25** ✅ 算术自洽；★ **收紧口径**（`last_seen_at` 早于 24h ⇒ provider 很可能已不再提供）⇒ **真候选 ≈ 1109 行**，其中**仅 1 行**有 24h 成功会话 ⇒ ⇒ **符合 stale expiry 的设计本意**。211 库：1904 = 1893 ＋ 11。证据源活性：211 24h 47＋830 行、252 319＋1470 行 ⇒ **判据会放行** ⇒ 退役后下架**真的会开始**（属主已批准该语义）。
+>   ★ **两道门（独立视角）**：`discovery/stale_expiry_gate_test.go`（包内白盒，7 条）＋ `scripts/ursmcheck/stale_expiry_criterion_test.go`（仓外跨包静态，5 条）；**变异 M1~M5' 全红**（M1 传常量 / M2 删 return / M3 探针改查 v1 / M4 探针函数删掉 / M5' 守卫侧内联窗口）＋ **原路径 md5 逐字还原**。
+>   ★★ **本轮挖出 4 个【量具缺陷】（量具坏了 ≠ 被测坏了）**：① **`-run 'StaleExpiry'` 匹配不到** `TestExpireStaleModelsConsultsTheGate`（名字里没这个子串）⇒ 那道断言**根本没执行** ⇒ M2 看起来「没牙」⇒ **变异验证必须全包跑**；② `callsName` 只认 `*ast.Ident` ⇒ `s.method()`（SelectorExpr）被判「没调用」⇒ 断言恒红；③ **文本计数把注释算进去**（`DISCOVERY_GRACE_HOURS` 注释 2 次 ＋ 代码 1 次）⇒ 改用 AST **只数 `os.Getenv` 的字面量实参**；④ `public.session_turns` 是 `public.session_turns_hot` 的**前缀** ⇒ 朴素子串匹配假阳性 ⇒ 改用**标识符边界**。
+>   ★ **顺手清掉的既有债（stash A/B 基线确认：干净 HEAD 上就红）**：`admin/request_logs_control_plane_gated_flag_test.go` 的 `TestGatedFlagExemptionIsNotStale` —— 根因是 **890 轮清空了控制面登记表** ⇒ 豁免表是它的**子集** ⇒ 父表为空 ⇒ **豁免表必须为空** ⇒ 处置：豁免表清空 ＋ 那 2 条**原始措辞**降级为 `retiredGatedFlagExemptionsKeptForHistory`（**不参与任何判定**的文档表）＋ 加断言「历史表与豁免表不得重叠」。
+>   ⇒ ⇒ ★ **记录**：`docs/audit/2026-10-21-R72g-护栏退役-stale下架判据换源.md`；执行包 §4.2 已按实测重写并新增 §4.1.5（共享库）。
+> ⇒ ⇒ ★★ **同时清理了一处生产债**：252 共享库上挂着一条**我们自己的**盘点查询（`pg_stat_activity` 显示 **running 1h08m / 69% CPU**）⇒ **已 cancel**（`pg_cancel_backend` = t）⇒ ★ **教训：盘点类聚合查询在生产共享库上必须带窗口/超时**。
+
+
 > **2026-10-21 R86 轮（事实源线 · 续）**：★ **「事实源承载 ⇒ 免于被分类」是结构盲区** ⇒ 六例落地 ＋ 新门「(事实源导出名 × 消费腿) 靶子错配探测器」。
 > ⇒ ★★ **盲区现场**：登记册门 `scripts/ursmcheck/pg_test_env_registry_test.go` 的差集完备判据里写着
 > `if _, ok := ds[name]; ok { continue } // 事实源承载的 dsn 类，不进登记册`
