@@ -77,6 +77,7 @@ WT="${WT:-/tmp/factsource-matrix-wt}"
 OUT="${OUT:-/tmp/factsource_matrix_out}"
 KEEP_DB="${KEEP_DB:-0}"
 SCOPE_ONLY="${SCOPE_ONLY:-0}"
+RECLAIM_ONLY="${RECLAIM_ONLY:-0}"
 SCOPE_TSV="$OUT/scope.tsv"
 SCOPE_LEGACY_TSV="$OUT/scope_legacy.tsv"
 SCOPE_LEGACY_FILES="$OUT/scope_legacy_files.tsv"
@@ -93,15 +94,70 @@ PROBE_SRC_REL="scripts/ursmcheck/zz_matrix_scope_probe_test.go"
 #   ⇒ 修法：trap 兜住所有退出路径（★ shell 的 trap ≈ python 的 atexit ≈ go 的 defer）。
 cleanup_dbs() {
   if [ "${KEEP_DB:-0}" = "1" ]; then return 0; fi
+  # ★ 回收路径已经跑过（并核实过）⇒ 退出 trap 不必再来一次（避免重复报错）
+  if [ "${RECLAIMED:-0}" = "1" ]; then return 0; fi
   # ★ 用数组：写成 "for db in \"$LIST\"" 会因引号而不分词 ⇒ 循环只跑一次 ⇒ 库不被删
-  local db
+  local db err rc failed=0
   for db in "${FACTMATRIX_DBS[@]}"; do
     [ -n "$db" ] || continue
-    docker exec -i "$PG_CONTAINER" psql -U "$PG_USER" -d postgres -q \
-      -c "DROP DATABASE IF EXISTS \"$db\" WITH (FORCE)" >/dev/null 2>&1 || true
+    # ★★ R96 轮修：原来把 stderr 一起丢掉 + `|| true` ⇒ **DROP 失败会被完全吞掉**
+    #   ⇒ 脚本第 4 节打印「DROP xxx」但库其实还在 ⇒ **回收是【声称】不是【核实】**。
+    #   ⇒ 现在把真实报错**留下来**（供第 4 节核对用），但不让它污染读数 stdout。
+    err="$(docker exec -i "$PG_CONTAINER" psql -U "$PG_USER" -d postgres -q \
+      -c "DROP DATABASE IF EXISTS \"$db\" WITH (FORCE)" 2>&1)"
+    rc=$?
+    if [ "$rc" -ne 0 ]; then
+      failed=1
+      say "  ✗ DROP $db 失败：$(printf '%s' "$err" | grep -vE '^(WARNING|HINT|NOTICE|INFO|DETAIL)' | head -2 | tr '\n' ' ')"
+    fi
   done
+  return "$failed"
 }
 FACTMATRIX_DBS=("itgate_factmatrix_a1" "itgate_factmatrix_b1" "factmatrixprod_b2" "$SHAPE_DB")
+
+# ★★ R96 轮新增：通用的「库还在不在」判据（回收核实要用）
+#   ★ **三态**（与 R94 量具的 C5 同一纪律）：0=存在 / 1=不存在 / **2=查不到**
+#   ★ 「查不到」（容器不在 / 连不上）**不等于「不存在」** ⇒ ⇒ 不能算「已回收」。
+db_state() {
+  local raw n
+  raw="$(docker exec -i "$PG_CONTAINER" psql -U "$PG_USER" -d postgres -tAc \
+    "SELECT count(*) FROM pg_database WHERE datname='$1'" 2>&1)"
+  n="$(printf '%s' "$raw" | grep -vE '^(WARNING|HINT|NOTICE|INFO|DETAIL)' | tail -1)"
+  case "$n" in
+    ''|*[!0-9]*) return 2 ;;
+  esac
+  [ "$n" = "0" ] && return 1
+  return 0
+}
+shape_exists() {
+  if db_state "$SHAPE_DB"; then return 0; else return 1; fi
+}
+
+# ★★ 回收 + **核实**（★ 回收不是「打印一行 DROP」，是「查库确认真的没了」）
+#   ★ 三态判据：查不到（容器/连接不可用）⇒ **不能算已回收** ⇒ 报出来。
+reclaim_dbs() {
+  local db leaked=0 st
+  if [ "${KEEP_DB:-0}" = "1" ]; then
+    say "  ⚠ KEEP_DB=1 ⇒ 保留本脚本建的一次性库（$SHAPE_DB 等）⇒ **不做回收也不做核实**"
+    return 0
+  fi
+  cleanup_dbs || say "  ⚠ 有库删不掉（真实报错见上）"
+  RECLAIMED=1
+  for db in "${FACTMATRIX_DBS[@]}"; do
+    [ -n "$db" ] || continue
+    if db_state "$db"; then
+      st=0
+    else
+      st=$?
+    fi
+    case "$st" in
+      0) say "  ✗ 回收未生效：$db 仍在库里 ⇒ ⇒ 一次性库泄漏 ⇒ **不把本轮当成功**"; leaked=1 ;;
+      1) say "  ✓ 已回收 $db" ;;
+      2) say "  ✗ 查不到 $db 是否还在（容器/连接不可用）⇒ ⇒ **不能算已回收**"; leaked=1 ;;
+    esac
+  done
+  return "$leaked"
+}
 
 # ★ 探针回收（本脚本自己生成的临时文件 ⇒ 必须被回收，**不受 KEEP_DB 影响**）。
 #   ★ 同 R93/R94 轮的教训：只挂 EXIT trap 不够 ⇒ INT/TERM 也要显式接管。
@@ -131,6 +187,20 @@ say "── 0. 准备 ──"
 git fetch origin --quiet || { say "!! fetch 失败"; exit 1; }
 BASE_COMMIT="$(git rev-parse origin/main)"
 say "  基线提交 = ${BASE_COMMIT}"
+
+# ★ 回收模式：只做「回收 + 核实」，不建库、不跑读数
+#   ⇒ 用途一：单独清掉上一次跑批残留的一次性库（可复算、可核实）
+#   ⇒ 用途二：★ 单独验证「回收」这条路径本身（否则它只在大跑批末尾被执行一次）
+#   ⇒ ★★ 放在 worktree 基线自检【之前】⇒ 回收与「读数基线」无关，不该被读数门拦住。
+if [ "$RECLAIM_ONLY" = "1" ]; then
+  say "── 回收模式（只回收 + 核实，不建库、不跑读数）──"
+  if reclaim_dbs; then
+    say "  ✓ 全部回收并核实通过"
+    exit 0
+  fi
+  say "!! 有一次性库没删干净 ⇒ exit 3"
+  exit 3
+fi
 
 if [ ! -d "$WT" ]; then
   git worktree add --detach "$WT" "$BASE_COMMIT" >/dev/null 2>&1 || { say "!! worktree 创建失败"; exit 1; }
@@ -169,10 +239,6 @@ fi
 say "  worktree = $WT @ $(git -C "$WT" rev-parse --short HEAD)  ✓ 与基线一致"
 
 SHAPE_MARK="matrix-baseline:${BASE_COMMIT}"
-shape_exists() {
-  docker exec -i "$PG_CONTAINER" psql -U "$PG_USER" -d postgres -tAc \
-    "SELECT 1 FROM pg_database WHERE datname='$SHAPE_DB'" 2>/dev/null | grep -q 1
-}
 shape_mark() {
   docker exec -i "$PG_CONTAINER" psql -U "$PG_USER" -d postgres -tAc \
     "SELECT COALESCE(shobj_description(oid,'pg_database'),'') FROM pg_database WHERE datname='$SHAPE_DB'" 2>/dev/null | head -1
@@ -768,15 +834,21 @@ then
   exit 3
 fi
 
-# ── 4. 回收（形态库按 KEEP_DB，其余全删）─────────────────────────────────────
+# ── 4. 回收（★ 回收必须【核实】：查库确认，不得只打印一行「DROP」）──────────
 say "── 4. 回收 ──"
-cleanup_dbs
 trap - EXIT   # ★ 正常跑完 ⇒ 交回 trap（避免退出时重复 DROP）
-for db in itgate_factmatrix_a1 itgate_factmatrix_b1 factmatrixprod_b2; do
-  say "  DROP $db"
-done
-if [ "$KEEP_DB" != "1" ]; then
-  say "  DROP $SHAPE_DB"
+               #   ⇒ ★ 顺序：先交还 trap 再回收 ⇒ 免得 EXIT trap 再跑一次 cleanup
+if reclaim_dbs; then
+  reclaimed=1
+else
+  reclaimed=0
+fi
+if [ "$KEEP_DB" = "1" ]; then
+  say "  ⚠ KEEP_DB=1 ⇒ 保留形态库（$SHAPE_DB）"
 fi
 say "  原始日志留在 ${OUT}（可复算）"
 say "★ 提示：worktree 留在 ${WT}（origin/main 的干净副本）⇒ 复核可重复跑。"
+if [ "$reclaimed" != "1" ]; then
+  say "!! 有一次性库没删干净 ⇒ **本轮不成立**（exit 3）"
+  exit 3
+fi
