@@ -109,6 +109,24 @@ func (h *SessionHealthHandler) queryDistribution(ctx context.Context, params Que
 	args := []interface{}{}
 	argIdx := 1
 
+	// 2026-10-21（R73 复验轮）：本查询**原来没有时间窗** ⇒ 对 session_summaries
+	// （生产 830,913 行 / 825 MB）做**全表聚合** ⇒ 生产 154 实测本端点
+	// 15s ctx deadline ⇒ HTTP 500。而**同一个响应**里的 queryHealthTrend
+	// **本来就带窗口**（下方 `first_request_at >= NOW() - INTERVAL 'N days'`）
+	// ⇒ ⇒ 一次响应里两个数字**口径不一致**（分布=全量、趋势=近 N 天）
+	// ⇒ ⇒ 这里补上**与 trend 逐字同款**的窗口谓词。
+	//
+	// ⚠ 只补窗口，**不补** trend 那条 `health_score IS NOT NULL`：distribution 的
+	// `total` 口径包含「没有 health_score 的会话」，加了那条会把 total 改窄
+	// ⇒ 那是另一个口径变更，不在本次修复范围内。
+	//
+	// ⚠ 窗口谓词用 `first_request_at` ⇒ 该列**没有前导索引** ⇒ 规划器只能
+	// Seq Scan 后过滤（生产实测 1,451ms → 660ms，扫描量降到 ~13% 但**没有**
+	// 索引支撑）⇒ 彻底解决要靠 `session_summaries` 的窗口列索引（待属主批
+	// DDL 窗口），或把窗口列换成 `last_request_at`（能走
+	// `idx_session_summaries_last_request_recent`，实测 330ms，但**口径会变**
+	// ⇒ 语义变更，需属主拍板）。
+	where = append(where, fmt.Sprintf("first_request_at >= NOW() - INTERVAL '%d days'", params.Days))
 	appendDashboardScope(&where, params, &args, &argIdx, "", true)
 	whereClause := ""
 	if len(where) > 0 {
@@ -192,6 +210,10 @@ func (h *SessionHealthHandler) queryTopIssues(ctx context.Context, params QueryP
 	args := []interface{}{}
 	argIdx := 1
 
+	// 2026-10-21（R73 复验轮）：与 queryDistribution 同一个遗漏 —— 本查询
+	// **原来没有时间窗** ⇒ 同样是全表聚合（且多一个 `GROUP BY issue`）。
+	// 补上**与 queryHealthTrend 逐字同款**的窗口谓词。
+	where = append(where, fmt.Sprintf("first_request_at >= NOW() - INTERVAL '%d days'", params.Days))
 	where = append(where, "health_score < 60")
 	appendDashboardScope(&where, params, &args, &argIdx, "", true)
 	whereClause := "WHERE " + joinStrings(where, " AND ")

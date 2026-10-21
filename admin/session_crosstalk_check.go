@@ -4,7 +4,10 @@ import (
 	"context"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 )
 
 // handleSessionCrosstalkCheck returns sessions that have been accessed by
@@ -12,8 +15,33 @@ import (
 //
 // GET /api/admin/session-crosstalk?hours=24
 //
-// Returns sessions where tenant_id starts with "CONFLICT:" indicating
-// the session was used by multiple tenants.
+// ★ 2026-10-21（R74）换源：原实现读 `session_tenant_binding`。
+//
+//	那是一张 **v1 族的侧效应表**：唯一写入者是挂在 v1 `request_logs` 上的
+//	触发器 `update_session_tenant_binding()`（domain 链 032 建）。
+//	v1 族真删（迁移 890）后该触发器随表消失 ⇒ 表**永远不会再被写入**；
+//	而且生产 252 上这张表**从来就没建过**（实测 `to_regclass` = NULL，
+//	部署台账 `gateway_db_revision_sequences` 里也没有 032 的记录）⇒
+//	本端点长期 **HTTP 500（42P01）** —— 属既有缺陷，不是 v1 退役造成的。
+//
+//	⇒ 改读**会话族**：`session_turns` 每行带 (session_id, tenant_id)
+//	⇒ **同一个 session_id 出现在多个 tenant_id 下** = 串话 ⇒ 直接派生，
+//	不需要旁路表，也不需要 v1 侧的写入副作用。
+//
+//	⚠ 口径变化（必须写清楚）：
+//	  · 旧实现读的是**历史累积**的绑定表（一个 session 一旦串话过，
+//	    tenant_id 就永久变成 `CONFLICT:t1,t2`），`hours` 参数只过滤
+//	    `last_seen_at` ⇒ 串话**发生在窗口之外**也会被列出来。
+//	  · 新实现按 `hours` 窗口**实时派生** ⇒ 只报告窗口内出现的串话。
+//	    ⇒ `hours` 这个参数第一次真正生效。
+//
+//	⚠ 为什么走 `withAllTenantReadOnlyTx`（显式 super-admin bypass）：
+//	  · `session_turns` 开了 RLS（`session_turns_tenant_isolation` /
+//	    `session_turns_owner_filter` / `session_turns_super_admin_bypass`），
+//	    而「检测跨租户访问」按定义就要**跨租户**看 ⇒ 必须 bypass。
+//	  · 旧实现没有设任何 GUC —— 那张表在生产上根本不存在，所以没暴露；
+//	    换源后必须显式设，否则 RLS 会把结果收成 0 行（静默失效）。
+//	  · 授权前提：本端点挂在 `h.admin(...)` 之后 ⇒ 调用方已是 admin。
 func (h *Handler) handleSessionCrosstalkCheck(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -43,38 +71,53 @@ func (h *Handler) handleSessionCrosstalkCheck(w http.ResponseWriter, r *http.Req
 		RequestCount int    `json:"request_count"`
 	}
 
-	rows, err := h.db.Query(ctx, `
-		SELECT gw_session_id, tenant_id, first_seen_at, last_seen_at, request_count
-		FROM session_tenant_binding
-		WHERE tenant_id LIKE 'CONFLICT:%'
-		  AND last_seen_at >= NOW() - INTERVAL '1 hour' * $1
+	conflicts := make([]conflict, 0)
+
+	// ★ 派生查询：会话族里「同一个 session 出现在多个 tenant 下」。
+	//   - `ts` 是 `session_turns` 的分区键 ⇒ 分区裁剪 + 前导 ts 索引
+	//     （生产实测：cost=779 / buffers=2,441 ⇒ 毫秒级，不扫全表）。
+	//   - `HAVING count(DISTINCT tenant_id) > 1` 就是串话的定义。
+	//   - `LIMIT 100` 与旧实现一致（响应体 contract 不变）。
+	const crosstalkSQL = `
+		SELECT session_id,
+		       array_agg(DISTINCT tenant_id) AS tenant_ids,
+		       min(ts) AS first_seen_at,
+		       max(ts) AS last_seen_at,
+		       count(*) AS request_count
+		FROM session_turns
+		WHERE ts >= NOW() - INTERVAL '1 hour' * $1
+		GROUP BY session_id
+		HAVING count(DISTINCT tenant_id) > 1
 		ORDER BY last_seen_at DESC
 		LIMIT 100
-	`, hours)
+	`
+
+	err := withAllTenantReadOnlyTx(ctx, h.db, func(tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, crosstalkSQL, hours)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var c conflict
+			var tenantIDs []string
+			var firstSeen, lastSeen time.Time
+			if err := rows.Scan(&c.SessionID, &tenantIDs, &firstSeen, &lastSeen, &c.RequestCount); err != nil {
+				warnRowSkip("sessionCrosstalkCheck", err)
+				continue
+			}
+			c.FirstSeenAt = firstSeen.Format(time.RFC3339)
+			c.LastSeenAt = lastSeen.Format(time.RFC3339)
+			// ★ 保留旧 contract 的 `CONFLICT:` 前缀约定（旧表的列注释
+			//   就是「CONFLICT: 前缀表示跨租户访问」）⇒ 下游识别逻辑不用改。
+			c.TenantIDs = "CONFLICT:" + strings.Join(tenantIDs, ",")
+			conflicts = append(conflicts, c)
+		}
+		return rows.Err()
+	})
 	if err != nil {
 		writeInternalErr(w, "query failed", err)
 		return
-	}
-	defer rows.Close()
-
-	var conflicts []conflict
-	for rows.Next() {
-		var c conflict
-		var firstSeen, lastSeen time.Time
-		if err := rows.Scan(&c.SessionID, &c.TenantIDs, &firstSeen, &lastSeen, &c.RequestCount); err != nil {
-			warnRowSkip("sessionCrosstalkCheck", err)
-			continue
-		}
-		c.FirstSeenAt = firstSeen.Format(time.RFC3339)
-		c.LastSeenAt = lastSeen.Format(time.RFC3339)
-		conflicts = append(conflicts, c)
-	}
-	if writeAggRowsErr(w, "sessionCrosstalkCheck", rows.Err()) {
-		return
-	}
-
-	if conflicts == nil {
-		conflicts = []conflict{}
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
