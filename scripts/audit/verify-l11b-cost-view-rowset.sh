@@ -311,7 +311,7 @@ expect_red() {
   echo "── MUTATION $label: expect RED"
   local output
   output="$(go test ./admin/ -run "$pattern" -count=1 2>&1)"
-  if echo "$output" | grep -qE '\[build failed\]|^# |cannot use|undefined:'; then
+  if grep -qE '\[build failed\]|^# |cannot use|undefined:' <<<"$output"; then
     echo "   ✘ BUILD FAILED — the mutation does not compile; not a valid mutation"
     echo "$output" | head -10
     FAILED+=("$label(build)")

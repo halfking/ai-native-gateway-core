@@ -48,7 +48,13 @@ PEER_TOOL = os.path.join(REPO, "scripts/audit/measure-pipefail-race-surface.py")
 
 SKIP_DIRS = {".git", "vendor", "node_modules", ".venv"}
 # ★ 量具自身（被测形态是其【设计目标】⇒ 必须排除）
-EXCLUDE_MEASURE = {"scripts/audit/probe-pipefail-sigpipe-shape.sh"}
+EXCLUDE_MEASURE = {
+    "scripts/audit/probe-pipefail-sigpipe-shape.sh",
+    # ★ 段十四新增的探针（同样**故意**要制造 SIGPIPE ⇒ 命中被测形态是设计如此）
+    "scripts/audit/probe-pipefail-harm-conditions.sh",
+    # ★★ 段十四第十一小节新增的探针（测 errexit × pipefail ⇒ 同样要跑管道）
+    "scripts/audit/probe-pipefail-errexit-interaction.sh",
+}
 
 RE_VAR = re.compile(
     r"(?:\becho\b|\bprintf\b)[^|;&]*\$[A-Za-z_{@*0-9][^|;&]*\|\s*"
@@ -60,6 +66,85 @@ BULK_CMDS = ("cat", "awk", "grep", "egrep", "sed", "find", "tail", "head", "dock
              "go ", "psql", "curl", "wget", "sort", "uniq", "tr", "cut", "xargs",
              "kubectl", "journalctl", "npm", "make", "git ")
 SCALAR_CMDS = ("read", "wc ", "printf", "echo", "basename", "dirname", "pwd", "date")
+
+
+
+# ── 段十四（§19.20.75）· 「管道退出码是否真被消费」判定 ────────────────────────
+# ★ 为什么要有这一列（段十三的三个必要条件不够）：
+#   危害成立还需要【条件④】：管道退出码必须【真的】被消费 ⇒ 否则 141 只是一条被忽略的
+#   退出码 ⇒ 无害。消费方式只有四种：
+#     (a) `if <管道>; then` / elif / while / until ⇒ 判据
+#     (b) `<管道> && cmd` / `<管道> || cmd` ⇒ 左侧状态
+#     (c) `x="$(<管道>)"` ⇒ **赋值语句的状态 = 命令替换的状态** ⇒ 消费
+#     (d) `echo "$(<管道>)"` ⇒ **命令替换的退出码被丢弃** ⇒ **不消费** ⇒ 假阳性
+#   ★ 对方的 `classify_usage` 只看管道前缀有没有 if/&&/|| ⇒ (d) 这种形态会被误判成 judgment。
+#
+# ★★ bash 语义要点：`$( )` 内部**引号上下文重置** ⇒ `echo "$(echo "$x" | head)"` 里那个
+#   `|` 是【未加引号】的管道 ⇒ 扫描器必须为每个 `$( )` 开一层新的引号上下文
+#   （我自己第一版就栽在这里：把外层引号一路带进去 ⇒ 漏掉了管道）。
+
+
+def scan_pipes(line):
+    """按 bash 语义分层扫描 ⇒ [(管道位置, 是否在命令替换内, 替换是否在赋值右侧)]。"""
+    stack = [[False, False, False]]     # (单引号内, 双引号内, 赋值右侧)
+    pipes = []
+    i, n = 0, len(line)
+    while i < n:
+        c = line[i]
+        ctx = stack[-1]
+        if ctx[0]:
+            if c == "'":
+                ctx[0] = False
+            i += 1
+            continue
+        if ctx[1]:
+            if c == "\\":
+                i += 2
+                continue
+            if c == '"':
+                ctx[1] = False
+                i += 1
+                continue
+            if line.startswith("$(", i):
+                stack.append([False, False, bool(re.search(r"=\s*$", line[:i].rstrip()))])
+                i += 2
+                continue
+            i += 1
+            continue
+        if c == "'":
+            ctx[0] = True
+        elif c == '"':
+            ctx[1] = True
+        elif c == "\\":
+            i += 2
+            continue
+        elif line.startswith("$(", i):
+            stack.append([False, False, bool(re.search(r"=\s*$", line[:i].rstrip()))])
+            i += 2
+            continue
+        elif c == "(":
+            stack.append([False, False, False])
+        elif c == ")":
+            if len(stack) > 1:
+                stack.pop()
+        elif c == "|" and not (i + 1 < n and line[i + 1] == "|"):
+            pipes.append((i, len(stack) > 1, stack[-1][2] if len(stack) > 1 else False))
+        i += 1
+    return pipes
+
+
+def exit_consumed(line):
+    """返回 'consumed' / 'discarded' / 'unknown'。"""
+    ps = scan_pipes(line)
+    if not ps:
+        return "unknown"
+    p, in_subst, is_assign = ps[0]
+    if in_subst:
+        return "consumed" if is_assign else "discarded"
+    pre = line[:p]
+    if re.search(r"\b(if|elif|while|until)\b", pre) or re.search(r"&&|\|\|", pre):
+        return "consumed"
+    return "discarded"
 
 
 def load_peer():
@@ -152,12 +237,19 @@ def collect(pp):
                 form = classify_var(lines, wm.group(1)) if wm else "unknown"
                 hint = {"bulk": "real-defect-candidate",
                         "scalar": "safe-single-line"}.get(form, "needs-human-read")
-                rows.append((rel, str(i), sc, "var-write", usage, form, hint, consumer, ln.strip()))
+                raw_line = raw.split("\n")[i - 1] if i - 1 < len(raw.split("\n")) else ln
+                ec = exit_consumed(raw_line)
+                rows.append((rel, str(i), sc, "var-write", usage, form, hint, consumer,
+                             ec, ln.strip()))
     rows.sort()
     return rows
 
 
-HEADER = """# R99 轮 · 段十三（§19.20.72）· 「作用域模型盲区」候选清单（重生成 + 写端形态定性版）
+HEADER = """# R99 轮 · 段十四（§19.20.75）· 「作用域模型盲区」候选清单（**五条件收敛版**）
+#
+# ★★★★★★ **本文件是 `scripts/audit/measure-pipefail-scope-drop.py` 的【逐字产物】**
+#   ⇒ ★ **禁止手改**；★ **改了生成器就必须重跑本文件**；★ 门判据⑤保证二者逐字一致
+#   ⇒ ★ 引用本文件任何计数都必须带【时点 + 树】（本文件随仓内形态漂移）
 #
 # ★ 口径（三条同时成立）：
 #   ① 该行命中「变量写端 → 单管道 → 早退消费者」形态（echo/printf + 变量展开 | grep -[qm]/head）
@@ -166,52 +258,73 @@ HEADER = """# R99 轮 · 段十三（§19.20.72）· 「作用域模型盲区」
 #   ③ 对方量具 `measure-pipefail-race-surface.py` 的 after_pf=False
 #      ⇒ 它的轴 2 要求「启用点与管道点作用域完全相同」⇒ 函数体里的点被**静默丢弃**
 #
-# 列：file\tline\tscope\tkind\tusage\twrite_end_form\tverdict_hint\tconsumer\tfull_line
+# 列：file\tline\tscope\tkind\tusage\twrite_end_form\tverdict_hint\tconsumer\texit_consumed\tfull_line
 # ★ usage = 对方 classify_usage 的读数：judgment=退出码被当判据消费｜bare=未被消费｜value=从管道取值
-#     ★ judgment **不等于真缺陷面** ⇒ 真缺陷面要看 write_end_form + 人工回读
+#     ★ ★ judgment **不等于真缺陷面** ⇒ 还要看 exit_consumed + write_end_form + 人工回读
+# ★ exit_consumed = **本清单自算**（段十四新增）：管道退出码是否【真的】被消费
+#     consumed  = 被消费（if/elif/while/until 判据 ｜ &&/|| 左侧 ｜ x="$(管道)" 赋值）
+#     discarded = **被丢弃** ⇒ 假非零只是一条被忽略的退出码 ⇒ **无危害**
+#     ★ ★ 对方的 `usage=judgment` 在 `echo "$(管道)"` 这种形态上会**误判**（命令替换的退出码
+#        被丢弃）⇒ 本轮实测到 **2 处假阳性**（pg-error-classifier.sh:151、scan-secrets.sh:196）
 # ★ write_end_form = **写端输出的行数形态**（危害成立的必要条件之一）：
 #     bulk   = 变量来自无上界的多行来源（命令替换里是 cat/awk/grep/sed/find/docker logs/go test…）
 #     scalar = 变量来自单条记录 / 单行标量（read / head -1 / grep -m1 / 字面量）
 #     unknown= 静态判不了 ⇒ 必须人工回读源码
-# ★ verdict_hint：bulk ⇒ real-defect-candidate（**真缺陷面**）｜scalar ⇒ safe-single-line（**无危害**）
-#   ｜unknown ⇒ needs-human-read
+# ★ verdict_hint：bulk ⇒ real-defect-candidate（**只是分诊线索**）｜scalar ⇒ safe-single-line｜unknown ⇒ needs-human-read
+#     ★ ★ 它**只说明「多行」，不说明「能超 64 KiB」** ⇒ 抽样核对抓到两个方向的错
+#       （假阳性 scripts/audit-all-tables.sh:268：单条 SQL 结果；假阴性 scripts/health-check-154.sh:138：
+#        HTTP 响应体可能多行但远小于 64 KiB ⇒ 人工回读结论 = 无害）⇒ **代理只可分诊、不可定性**
 #
-# ★★★★★★ 【重要】write_end_form / verdict_hint 是【静态代理】，只可当【分诊线索】，
-#   ★★ **不可当【定性】用** ⇒ 抽样核对当场抓到【两个方向的错】：
-#   ① 假阳性方向（把无害报成缺陷）：`scripts/audit-all-tables.sh:268`
-#      `if echo "$updated" | grep -q "completed"; then` ⇒ 代理判 bulk，但 `$updated` 需人工回读
-#      （大概率是单条更新消息 ⇒ 实际应为 safe-single-line）
-#   ② 假阴性方向（把缺陷报成无害）：`scripts/health-check-154.sh:138`
-#      `if [[ -n "$health_response" ]] && echo "$health_response" | grep -q "healthy"; then`
-#      ⇒ 代理判 scalar，但 `$health_response` 是 HTTP 响应体 ⇒ **可能多行** ⇒ 需人工回读
-#   ③ 未找到赋值 ⇒ unknown（例：`scripts/.coverage-820-probe.sh:33`）
-#   ⇒⇒★ **通用式**：★ 静态代理分类可以用来【分诊】，但**不能用来【定性】**
-#      ⇒ 一旦拿它批量改代码，就会在【最危险的维度】上造假阳性（把无害的点报成缺陷）
-#      ⇒ ⇒ **抽样核对是最低要求**；⇒ 本族**必须逐处人工回读**
+# ★★★★★★ **危害成立的【五个必要条件】（段十三三条 + 段十四两条，缺一即无害）**：
+#   ① 写端输出【多行】（grep 按行匹配 ⇒ 必须读到行尾才敢判 ⇒ 单行时它读完整条 ⇒ 写端也写完 ⇒ 无害）
+#   ② 写端可能【超管道缓冲 64 KiB】（★ 段十三只写了「多行」⇒ 漏了「上界」这一维）
+#   ③ 命中【靠前】（命中在末尾 ⇒ grep 也要读到末尾 ⇒ 写端写完 ⇒ 无害）
+#   ④ ★★ **管道退出码【真被消费】**（段十四新增 ⇒ 对方的 usage=judgment 会误判 `echo "$(管道)"`）
+#   ⑤ 消费者【早退】（grep -q / head -c）
+#   ⇒ ★ **118 → 110 的收敛**（★ 段十四当时的树）：118 候选 ⇒ 条件④后 89 ⇒ 逐处人工回读
+#     ⇒ **真缺陷面 8 处**（已改 herestring：verify-g1-route-contract.sh:127、
+#     verify-l11b-cost-view-rowset.sh:175、deploy-seamless.sh:1401/1403/1405/1407、
+#     verify-ursm-v2-rollout.sh:112、verify-local-deployment.sh:333）
+#   ⇒ ★★ **当前树上是 120 行 / 43 文件** ⇒ 与 110 的差额 **+10 = 对方的两笔提交**
+#     （R82 `459d80a3c` 引入 verify-nonplain-migration-delivery.sh 的 9 处管道
+#       ＋ R75 `dea4eda4d` 引入 ursm-snapshot-slot-refresh.sh 的 1 处）
+#     ⇒ ★ **不是**本轮扫描口径变化（口径的差值「剥注释 −2 / 顶层收紧 ±0」**不变**）
 #
-# ★★ **量具自身被显式排除**：`scripts/audit/probe-pipefail-sigpipe-shape.sh`
-#   （它的测试管道**故意**要制造 SIGPIPE ⇒ 命中被测形态是【设计如此】
-#     ⇒ 不排除的话，消费方会把它当成待修的缺陷 ⇒ ★ 扫描面必须显式排除量具自身）
-#
-# ★★ 机制依据（可重跑，bash 5.3.9/darwin-arm64）：`scripts/audit/probe-pipefail-sigpipe-shape.sh`
-#   ⇒ `grep -q` 只有在写端【多行】时才可能早退（单行时 grep 必须读到行尾才敢判）
+# ★★ **机制依据（可重跑，bash 5.3.9/darwin-arm64）**：`scripts/audit/probe-pipefail-sigpipe-shape.sh`
 #   ⇒ 多行 + 超管道缓冲(64 KiB) + 命中靠前 ⇒ 写端被 SIGPIPE ⇒ 管道退出码 141
 #     ⇒ pipefail ⇒ 假非零 ⇒ 判定塌成「没匹配」
-#   ⇒ 而消费者是 `head -c` ⇒ 无论行数都早退 ⇒ **有害**
+#   ⇒ ★★ **段十四实测的两条边界事实**（段十三的表格说「任意」是过宽表述）：
+#     · `head -c` 消费者**同样要求写端 > 64 KiB**（60,000 B ⇒ 0；70,000 B ⇒ 141）
+#       ⇒ ★ **且紧邻边界【有竞态】**：70,000 B 连跑 8 次 ⇒ 0 出现 3 次、141 出现 5 次
+#         ⇒ **边界读数不可钉进门**（只可钉 100 KB / 200 KB 这类远离边界的点）
+#     · `grep -q` 的同一边界是【确定的】：65,537 B ⇒ 0、70,000 B ⇒ 141（6/6 稳定）
 #
-# ★★ **四变体单变量对照（同一棵树、逐项开关、含量具排除）＝真实归因**：
-#      A 段十一口径（不剥注释 + 顶层宽松）= 120 处 / 43 文件
-#      B 只剥注释                        = 118 处 / 42 文件 ⇒ **剥注释 = −2**
-#      C 只收紧顶层                      = 120 处 / 43 文件 ⇒ **顶层收紧 = ±0**
-#      D 段十三现状（剥注释 + 顶层收紧）   = 118 处 / 42 文件
-#      ⇒ ⇒ ★ 「顶层收紧」让口径更严谨但**不改任何一条的归属**（该保留，但不可声称它改了几个数）
-#      ⇒ ⇒ ★★ **段十一清单的 120 ⇒ 多报 2 条**（它把「修复注释里引用旧写法」的注释行收进了候选集）
-#           ⇒ ★ 引用任何计数都必须带口径（同一棵树上 A 与 D 差 2）
+# ★★ **四变体单变量对照（同一棵树、逐项开关、含量具排除）＝真实归因**
+#    （★ 段十四**定稿时在当前树重测** ⇒ 不抄旧值）：
+#      A 段十一口径（不剥注释 + 顶层宽松）= 122 处 / 44 文件
+#      B 只剥注释                        = 120 处 / 43 文件 ⇒ **剥注释 = −2**
+#      C 只收紧顶层                      = 122 处 / 44 文件 ⇒ **顶层收紧 = ±0**
+#      D 段十四现状（剥注释 + 顶层收紧）   = 120 处 / 43 文件
+#      ⇒ ⇒ ★ **差值不变**（剥注释 −2、顶层收紧 ±0）⇒ ★ **差值是结构性的、绝对值随树漂移**
+#      ⇒ ⇒ ★ 引用任何计数都必须带口径 + 带时点 + 带【树】（同一棵树上 A 与 D 差 2；跨轮次全部变）
+#      ⇒ ⇒ ★ 那 2 条幽灵注释行已定位到具体站点：scripts/audit/verify-session-family-p0-realdb.sh:116/124
 #
-# ★ 本版相对段十一那版的三处修正：① 剥注释（段十一版把「修复注释里引用旧写法」的
-#   注释行也收进来了 ⇒ 多报 2 条）② 顶层覆盖判据收紧为「只认 <top> 作用域的 enable」
-#   （段十一版用「任何作用域的 enable」⇒ 太宽；但实测**不改任何一条的归属**）
-#   ③ 加 write_end_form / verdict_hint 两列
+# ★ 本版相对段十一那版的三处修正：① 剥注释（多报 2 条）② 顶层覆盖判据收紧为「只认 <top> 作用域」
+#   （口径该严谨，但实测不改任何一条的归属）③ 加 write_end_form / verdict_hint 两列
+#   ④ ★★ 段十四：加 exit_consumed 列 + 修掉 8 处真缺陷 ⇒ 118 → 110 行 / 42 → 41 文件
+#   ⑤ ★★ 段十四定稿：并入对方的 R82/R75 共 10 处新站点 ⇒ 110 → 120 行 / 41 → 43 文件
+#
+# ★★★★★★ **本文件【禁止手改】** ⇒ 它是本生成器的【逐字产物】
+#   ⇒ ★ **改了生成器就必须重跑本文件**（`python3 scripts/audit/measure-pipefail-scope-drop.py`）
+#     ⇒ 否则仓内形态与本清单【脱节】⇒ 而这种脱节**行数基线挡不住**（行数可能不变、内容已过期）
+#   ⇒ ★ 由 §19.20.75 的门判据⑤保证：**清单 ↔ 生成器产出必须逐字一致**（强判据）
+#   ⇒ ★★ 本轮就栽在这上面：段十四初版清单是【跨一次 merge 未重跑】的过期值（110 vs 实际 120）
+#     ⇒ 而当时的门只比【行数】、基线又是【从清单抄的】⇒ ★ **门绿、量具瞎了**（自证）
+#
+# ★★ **量具自身被显式排除**：`scripts/audit/probe-pipefail-sigpipe-shape.sh`（段十三）
+#   与 `scripts/audit/probe-pipefail-harm-conditions.sh`（段十四）
+#   （它的测试管道**故意**要制造 SIGPIPE ⇒ 命中被测形态是【设计如此】
+#     ⇒ 不排除的话，消费方会把它当成待修的缺陷 ⇒ ★ 扫描面必须显式排除量具自身）
 """
 
 
@@ -235,6 +348,7 @@ def main():
     print("写出 %s" % out)
     print("  行数 = %d ；文件 = %d" % (len(rows), len(set(r[0] for r in rows))))
     print("  usage 分布 = %s" % dict(c))
+    print("  exit_consumed 分布 = %s" % dict(Counter(r[8] for r in rows)))
     print("  verdict_hint 分布 = %s" % dict(h))
     return 0
 
