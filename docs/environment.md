@@ -197,14 +197,14 @@ sum(rate(llm_gateway_malformed_sse_frame_total[5m])) by (stage)
 #### 请求统计指标
 ```promql
 # 请求总数
-llm_gateway_requests_total
+gateway_survival_requests_total
 
 # 请求成功率
-rate(llm_gateway_requests_total{status="success"}[5m]) / 
-rate(llm_gateway_requests_total[5m])
+rate(gateway_survival_requests_total{status="success"}[5m]) / 
+rate(gateway_survival_requests_total[5m])
 
 # 延迟分布
-histogram_quantile(0.95, rate(llm_gateway_request_duration_seconds_bucket[5m]))
+histogram_quantile(0.95, rate(gateway_survival_recovery_latency_seconds_bucket[5m]))
 ```
 
 #### 流式处理指标
@@ -213,7 +213,7 @@ histogram_quantile(0.95, rate(llm_gateway_request_duration_seconds_bucket[5m]))
 llm_gateway_stream_synthesized_done_total
 
 # Resume blocked 事件
-llm_gateway_survival_resume_blocked_total
+gateway_survival_resume_safety_blocked_total
 ```
 
 ---

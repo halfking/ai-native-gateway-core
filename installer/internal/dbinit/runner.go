@@ -1315,6 +1315,20 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			// 427：task_type_centroids 补 embedding_model（任务类型质心用的模型名列）。
 			"427_task_type_centroids_model.sql",
 			"893_fresh_install_partition_prereq.sql",
+			// 894：把 v_candidate_failure_logs_diagnosis **重新绑回活表**
+			//   public.candidate_failure_logs（修 392 的改名副作用）。
+			//
+			//   机制：视图绑的是关系 OID，不是名字 ⇒ 392 把老堆表改名成
+			//   candidate_failure_logs_columnar_archive 并新建同名空分区表时，
+			//   **既有视图不会跟着换表** ⇒ 它仍绑在老表 OID 上 ⇒ 视图读不到新数据。
+			//   实测：211 = 0 行（活表 91,935 行）、新装链终态同样脱靶；
+			//   而 252 因 392 走「已分区则跳过」分支没被改名 ⇒ 187,907 行。
+			//   ⇒ 同一个视图在两个生产实例返回不同数据集。
+			//
+			//   视图体与仓内两处真相源（基线 sql/schema/01-schema.sql、
+			//   对象源文件 sql/objects/views/v_candidate_failure_logs_diagnosis.sql）
+			//   逐字同形 ⇒ 本迁移只把链终态**对齐真相源**，不改语义。
+			"894_rebind_candidate_failure_logs_diagnosis_view.sql",
 		},
 	}
 }

@@ -26,7 +26,7 @@ import {
  * ★★★★★ 本族是**第四个**写下「admin 档 ⇒ 抽屉席不设 `requiresRole`」的模块
  *   —— 那句话让第一百二十一 / 一百二十二 / 一百二十三批连续返工。
  *   本模块（第九十六批写的）的原文是：
- *   「⇒ ★★ **admin 档**（`h.admin` = `AdminMiddleware`，`handler.go:880`）⇒ 抽屉席不设 `requiresRole`。」
+ *   「⇒ ★★ **admin 档**（`h.admin` = `AdminMiddleware`，`handler.go:962`）⇒ 抽屉席不设 `requiresRole`。」
  *
  * ⇒ ★★ 结论**正好相反**，理由是两条独立的：
  *   （甲）**需要 admin**：载荷是**租户级聚合清单** —— 8 个维度是这个租户
@@ -227,22 +227,32 @@ describe('① 权限档「admin」（第四个写下错话的模块）', () => {
     expect(sup).toMatch(/case "user"/)
   })
 
-  it('①-6 ★★★★★★ 读 Go 源码：注册行 `:1277` → `:1307`（批153）→ 实为 `:1342`（12h-audit 20261017）且是 admin 档', () => {
+  it('①-6 ★★★★★★ 读 Go 源码：注册行 `:1277` → `:1307`（批153）→ `:1342`（12h-audit 20261017）→ 实为 `:1349`（2026-10-21 views 行号订正轮）且是 admin 档', () => {
     const lines = goSrc('admin/handler.go').split('\n')
     const i = lines.findIndex((l) => l.includes('"/api/admin/turns/sessions/filter-options"'))
-    expect(i + 1, '模块头原写 :1277 → :1307 → 实为 :1342').toBe(1342)
+    expect(i + 1, '模块头原写 :1277 → :1307 → :1342 → 实为 :1349').toBe(1349)
+    // ★★★ 逐字复核：这一行必须是 `admin(...)` 档，**不是** `superAdmin(...)`。
     expect(lines[i]).toMatch(/admin\(h\.handleTurnsFilterOptions\)/)
+    expect(lines[i]).not.toMatch(/superAdmin/)
     // ★ 相邻的列表端点也是 admin 档（不是 superAdmin）⇒ 不能按前缀推
     const j = lines.findIndex((l) => l.includes('"/api/admin/turns/sessions"'))
     expect(lines[j]).toMatch(/admin\(h\.handleTurnsSessions\)/)
   })
 
-  it('①-7 ★★★★★★ 读 Go 源码：每个维度都带 `tenantWhere` ⇒ 载荷是**租户内**的', () => {
+  it('①-7 ★★★★★★ 读 Go 源码：每个维度都带租户条件 ⇒ 载荷是**租户内**的（2026-10-21 订正：turns 臂改传 tenantID 本身）', () => {
     // ★★ 这是「不过度限制到 super_admin」的**事实侧**（理由乙）。
-    const body = goFunc(goSrc('admin/turns_filter_options.go'), 'handleTurnsFilterOptions')
+    const src = goSrc('admin/turns_filter_options.go')
+    const body = goFunc(src, 'handleTurnsFilterOptions')
     expect(body).toMatch(/if IsTenantAdmin\(r\) \{\s*\n\s*tenantID = GetTenantID\(r\)/)
     expect(body).toMatch(/tenantWhere = " AND ss\.tenant_id = \$1"/)
-    expect(body).toMatch(/turnTenantWhere = " AND t\.tenant_id = \$1"/)
+    // ★★ 2026-10-18 起 turns 臂不再拼 `turnTenantWhere` 串，而是**把 tenantID 本身**
+    //   交给 `turnMergedSource(tenantID)`，由它在 SQL 里拼 ` AND tenant_id = $1`。
+    //   ⇒ 租户条件**仍在**（只是拼法换了位置）⇒「载荷是租户内的」这条结论**不变**。
+    expect(body).toMatch(/h\.turnMergedSource\(tenantID\)/)
+    const turnSrc = goFunc(src, 'turnMergedSource')
+    expect(stripComments(turnSrc), 'turns 臂的租户条件没了 ⇒ 「载荷是租户内的」这条结论不再成立').toMatch(
+      /tc = " AND tenant_id = \$1"/,
+    )
     // ⇒ 两个租户键都被拼进了查询，不存在「某个维度漏了租户条件」
     expect(body).not.toMatch(/lastActiveSource\(\s*"[^"]*"\s*,\s*joinDim,\s*"[^"]*"\s*\)/)
   })
@@ -378,34 +388,44 @@ describe('③ 「近 30 天」这句话只对 3 个维度成立', () => {
     }
   })
 
-  it('③-3 ★★★★★★ 读 Go 源码：只有 3 个维度走带窗口的查询函数', () => {
-    // ★★★ 这条钉的是**事实侧**：文件头注释写「基于近 30 天」而代码里 5 个维度没有。
+  it('③-3 ★★★★★★ 读 Go 源码：8 个维度现在**全部**受 30 天窗约束（2026-10-21 订正：turns 臂合并成一条 GROUPING SETS，ss 臂也统一加窗）', () => {
+    // ★★★ 这条钉的是**事实侧**。
+    // ★★★★★★ **2026-10-21 订正（Go 侧 2026-10-18 两次重构之后）**：
+    //   旧结论「**只有 3 个维度**走带窗口的查询函数」**已不成立**：
+    //   ① turns 臂的 3 个维度（models/providers/status_codes）合并成**一条**
+    //      GROUPING SETS 查询（`h.turnMergedSource(tenantID)`）⇒
+    //      `h.lastActiveTurnQuery(` 的调用点**归零**（函数本身仍在 `:246`，已无调用者）；
+    //   ② ss 臂的 5 个维度也合并成一条（`h.ssMergedSource(tenantWhere)`），
+    //      且经 `windowClause()` **统一加上了 30 天窗**（owner 裁定），
+    //      tags 臂经 `lastActiveSource` 同样带窗
+    //      ⇒ **8 个维度现在全部受 30 天窗约束**。
+    //   ⇒ 维度归属（谁走哪条查询）改由**映射表**钉住，不再靠「数调用点」。
+    // ⚠️ **与 ③-2 的矛盾（前端文案尚未跟上，待上游修）**：③-2 断言前端仍写
+    //   「5 个维度不受时间窗口约束」—— 那是 `src/api/turnsFilterOptions.ts` 与
+    //   i18n 文案的**现状**（不在本次 views 范围），但**与 Go 侧现状矛盾**。
     const src = goSrc('admin/turns_filter_options.go')
-    const turnQ = goFunc(src, 'lastActiveTurnQuery')
-    // ★★ 首版断言 `INTERVAL '30 days'` —— 首跑就红：**源码里根本没有这个字面量**，
-    //   它是 `fmt.Sprintf(..., INTERVAL '%d days', turnsFilterOptionsWindowDays, ...)`。
-    //   ⇒ 正确断言两件事：模板里有 `%d days`，且那个常量**真的是 30**。
-    expect(turnQ).toMatch(/INTERVAL '%d days'/)
-    expect(turnQ).toMatch(/turnsFilterOptionsWindowDays/)
     expect(src).toMatch(/turnsFilterOptionsWindowDays\s*=\s*30/)
     const body = goFunc(src, 'handleTurnsFilterOptions')
-    // 3 个走 lastActiveTurnQuery（models / providers / status_codes）
-    // ★★ 必须数**带接收者的调用形态** `h.lastActiveTurnQuery(` ——
-    //   只数裸名会把**函数声明**那行也算进去（首版正是这样，4 ≠ 3 而红）。
-    expect(body.match(/h\.lastActiveTurnQuery\(/g) ?? []).toHaveLength(3)
-    // ★★ 首版这里写的是「`lastActiveQuery(` 出现 5 次」—— **错**，实测 4 次。
-    //   原因：**`clients` 维度根本没有走 `lastActiveQuery` 包装**，
-    //   它是内联的 `"SELECT v FROM (" … " UNION " … ") t ORDER BY last_at DESC LIMIT …"`。
-    //   ⇒ 我照模块头的「5 个维度无窗口」去数**调用形态**，把「维度数」与「调用数」搞混了。
-    // ⇒ ★★★ 教训：**「维度」与「调用点」是两个数**；数调用点必须逐形态数，别照抄维度计数。
-    //   （这是「照抄摘要里的数字」的同族 —— 与孤儿清单删掉那个「当前 N 项」一模一样。）
-    expect(body.match(/h\.lastActiveQuery\(/g) ?? []).toHaveLength(4) // projects / tasks / owners / tags
-    expect(body.match(/h\.lastActiveSource\(/g) ?? []).toHaveLength(6) // 上 4 个 + clients 的 UNION 两段
-    // ⇒ 且 clients 真的是内联 UNION（不是走包装），否则上面的 4/6 会自相矛盾
-    expect(body).toMatch(/" UNION "/)
-    // ⇒ 而 lastActiveQuery 里**没有任何时间条件**
-    const ssQ = goFunc(src, 'lastActiveQuery')
-    expect(ssQ).not.toMatch(/INTERVAL/)
+    // 维度 → 查询臂的映射（结构性事实，不受「合并成一条」影响）
+    expect(body).toMatch(/"1": &resp\.Models, "2": &resp\.Providers, "3": &resp\.StatusCodes/)
+    expect(body).toMatch(/"1": &resp\.Projects, "2": &resp\.Tasks, "3": &resp\.Owners/)
+    // ★★ 三条查询源各一份：ss 臂（5 维）/ tags 臂（1 维）/ turns 臂（3 维）
+    expect(body.match(/h\.ssMergedSource\(/g) ?? []).toHaveLength(1)
+    expect(body.match(/h\.turnMergedSource\(/g) ?? []).toHaveLength(1)
+    expect(body.match(/h\.lastActiveSource\(/g) ?? []).toHaveLength(1)
+    // ⇒ 三条源**都**带 30 天窗（ss 臂走 windowClause()，另两条走 INTERVAL 模板）
+    const ssQ = goFunc(src, 'ssMergedSource')
+    expect(ssQ).toMatch(/windowClause\(\)/)
+    const turnQ = goFunc(src, 'turnMergedSource')
+    expect(turnQ).toMatch(/INTERVAL '%d days'/)
+    const tagQ = goFunc(src, 'lastActiveSource')
+    expect(tagQ).toMatch(/INTERVAL '%d days'/)
+    // ⇒ 旧形态（逐维调 `h.lastActiveTurnQuery(`）已归零
+    expect(body.match(/h\.lastActiveTurnQuery\(/g) ?? []).toHaveLength(0)
+    // ⇒ 而 `lastActiveQuery` 只是外层包装（`SELECT v FROM (…) t ORDER BY …`），
+    //   时间条件**不在**它体内 —— 断言的是「窗在内层 source 里」。
+    const wrapper = goFunc(src, 'lastActiveQuery')
+    expect(wrapper).not.toMatch(/INTERVAL/)
   })
 
   it('③-4 ★★★★ `TURNS_TURN_DIMENSION_WINDOW_DAYS` 的注释也只说 3 个维度', () => {

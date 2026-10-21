@@ -1,0 +1,38 @@
+# scripts/ursmcheck/selfcreated_cleanup_language_map.tsv
+# 「自建资源回收」的【语言 × 兜底机制】映射表（R95 轮 · 段 E）
+#
+# ★★ 这不是文档，是**机器可校验的判据依据** ⇒ 门会核对台账里出现的每种语言都在本表内。
+#
+# 列：language<TAB>fallback_mech<TAB>signal_covers_sigterm<TAB>guard_form<TAB>evidence
+#   language              shell / python / go
+#   fallback_mech         该语言下「覆盖所有退出路径」的机制（形态复用并行会话 R94 续九
+#                         那套量具的 C2 判据：scripts/audit/measure-selfcreated-cleanup.sh
+#                         第 316–324 行）
+#   signal_covers_sigterm yes/no —— ★★ 【实测值】：该语言的兜底机制在【进程被 SIGTERM
+#                         终止】时会不会执行
+#   guard_form            「防卡保护」在该语言里的形态
+#   evidence              依据（实测）
+#
+# ★★★ 为什么必须有这张表（★ 本轮实测的核心结论）：
+#   三个语言都有「退出时清理」的机制，形态也相似 ⇒ 很容易被当成【同一档】⇒
+#   ★★ 但实测它们在【信号终止】下【并不等价】：
+#
+#   语言   兜底机制                 SIGTERM 下清理是否执行
+#   ──────────────────────────────────────────────────────────────
+#   shell  trap ... EXIT            ✔ 会执行（★ shell 独有）
+#   python atexit.register          ★ 不执行
+#   python try/finally              ★ 不执行
+#   go     defer                    ★ 不执行
+#
+#   ⇒⇒⇒ **⇒ shell 的 EXIT trap 在信号终止下【会跑】⇒ 纯 shell 脚本不接信号没有任何风险**
+#   ⇒⇒⇒ **⇒⇒ 而 python/go 的兜底【不覆盖信号】⇒⇒ 它们【必须】显式接管 SIGTERM/SIGINT**
+#   ⇒⇒⇒ **⇒⇒⇒ ⇒ 「合格兜底」的定义是 f(语言) 的 ⇒ 同一个判据不能跨语言直接套用。**
+#
+# ★★ 另一处语言差异：**「防卡保护」的形态不同** ⇒ 静态判据也必须语言感知：
+#   shell / python ⇒ 客户端（psql / psycopg）没有超时包装 ⇒ 必须用**服务端**
+#                     `statement_timeout`（或先 `pg_terminate_backend` 踢掉阻塞会话）
+#   go             ⇒ `pgx` 尊重 ctx ⇒ `context.WithTimeout(...)` 就是有效的客户端超时
+#                     （⇒ 仓内实例：internal/testdb/testdb.go:137）
+shell	trap ... EXIT	yes	statement_timeout（服务端）/ pg_terminate_backend（服务端）	★ 实测：SIGTERM 与 SIGINT 下 EXIT trap 都会执行 ⇒ 纯 shell 脚本不接信号零风险
+python	atexit.register / try-finally	no	statement_timeout（服务端）/ pg_terminate_backend（服务端）	★ 实测：atexit 与 try-finally 在 SIGTERM 下都【不执行】⇒ 必须显式接管信号
+go	defer	no	context.WithTimeout（客户端 ctx，pgx 尊重）/ statement_timeout（服务端）	★ 实测：defer 在 SIGTERM 下【不执行】⇒ 必须显式接管信号

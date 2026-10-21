@@ -58,6 +58,40 @@ import (
 	dbpkg "github.com/kaixuan/llm-gateway-go/db"
 )
 
+// attachmentsPresencePredicate 是「该请求有附件」的会话族谓词。
+//
+// ★ 为什么不是 `rl.attachments IS NOT NULL`（2026-10-21 实测改判）：
+//
+//  1) **语义**：会话族特征层 `session_turn_details.attachments` 在
+//     2026-09-06～09-20 那一段历史分区里，空附件被写成 **JSON `null`**
+//     （jsonb 标量），而不是 SQL NULL；2026-09-21 起才改成 SQL NULL。
+//     ⇒ 生产实测（252 共享库，2026-10-21）：`attachments IS NOT NULL`
+//     命中 **454,963** 行（其中 446,891 行是 JSON null ⇒ 根本没有附件），
+//     而「真的有附件（非空数组）」只有 **8,072** 行。
+//     ⇒ 旧谓词既**语义错**（把无附件的请求列进来），又**极慢**。
+//
+//  2) **性能**：谓词落在 LEFT JOIN 的**右表**（details 侧）⇒ 规划器无法
+//     用会话族的任何索引去满足 `ORDER BY ts DESC LIMIT 50`，只能
+//     全扫 session_turns(1,067,701 行) + session_turn_details(1,055,459 行)
+//     再 hash join + top-N sort。
+//     生产实测（252，EXPLAIN ANALYZE）：
+//       旧谓词 `rl.attachments IS NOT NULL` ⇒ **Execution Time 17,582 ms**
+//         （255k buffers + 17k temp 溢写）⇒ 撞 10s ctx deadline ⇒ HTTP 500
+//       本谓词 `rl.attachment_count > 0`  ⇒ **Execution Time 1,317 ms**
+//         （13.4×）⇒ 谓词被下推进两臂，用上分区部分索引
+//         `session_turns_2026_09_heap_attachment_count_idx` /
+//         `session_turns_2026_10_attachment_count_idx`（谓词逐字相同）。
+//
+//  3) **不丢行**：`{attachment_count > 0}` ⊇ `{details 有非空数组}`
+//     （实测 8,090 ⊃ 8,072，差 18 行是 count>0 但 details 无数组），
+//     ⇒ 换成它只会**多**出行，不会少掉真正带附件的请求。
+//
+//  4) **不能用 `rl.has_attachments IS TRUE`**：那一列是
+//     `CASE WHEN attachment_count IS NULL THEN NULL WHEN >0 THEN true
+//      ELSE false END`，规划器**推不出**它蕴含索引谓词
+//     `attachment_count > 0`（NULL 分支），⇒ 部分索引用不上 ⇒ 退回全扫。
+const attachmentsPresencePredicate = "rl.attachment_count > 0"
+
 // attachmentRow 是 attachments 列表查询的单行结果。
 type attachmentRow struct { //nolint:unused
 	RequestID   string          `json:"request_id"`
@@ -180,7 +214,7 @@ func (h *Handler) handleDataLifecycleAttachments(w http.ResponseWriter, r *http.
 	args = append(args, limit, offset)
 	// 列名带 rl. 前缀：FROM 是会话族原生源（子查询），限定名免得与子查询
 	// 内部的列名混淆。
-	where := "WHERE rl.attachments IS NOT NULL" + tenantPred
+	where := "WHERE " + attachmentsPresencePredicate + tenantPred
 	if !since.IsZero() {
 		args = append(args, since)
 		where += " AND rl.ts >= $" + strconv.Itoa(len(args))
@@ -254,22 +288,28 @@ func (h *Handler) handleDataLifecycleAttachmentStats(w http.ResponseWriter, r *h
 	// (18k+ rows in _request_logs_hot); jsonb_array_elements raises
 	// `cannot extract elements from a scalar` on it, so gate the LATERAL on
 	// array-ness (jsonb_typeof is NULL for SQL NULL → also excluded here).
-	where := "WHERE attachments IS NOT NULL AND jsonb_typeof(attachments) = 'array'" + tenantPred
+	//
+	// 2026-10-21: 谓词换成 attachmentsPresencePredicate（= `rl.attachment_count > 0`）：
+	//  ① 它与「details 有非空数组」等价（jsonb_typeof='array' 已蕴含 NOT NULL），
+	//     ⇒ 结果集不变；② 它逐字等于分区部分索引的谓词 ⇒ 规划器可下推并用上索引，
+	//     生产实测 942ms → 量级下降（旧谓词在 LEFT JOIN 右表侧，扫全表）。
+	where := "WHERE " + attachmentsPresencePredicate +
+		" AND jsonb_typeof(rl.attachments) = 'array'" + tenantPred
 	if !since.IsZero() {
 		args = append(args, since)
-		where += " AND ts >= $" + strconv.Itoa(len(args))
+		where += " AND rl.ts >= $" + strconv.Itoa(len(args))
 	}
 	if !until.IsZero() {
 		args = append(args, until)
-		where += " AND ts < $" + strconv.Itoa(len(args))
+		where += " AND rl.ts < $" + strconv.Itoa(len(args))
 	}
 	if !since.IsZero() {
 		args = append(args, since)
-		where += " AND ts >= $" + strconv.Itoa(len(args))
+		where += " AND rl.ts >= $" + strconv.Itoa(len(args))
 	}
 	if !until.IsZero() {
 		args = append(args, until)
-		where += " AND ts < $" + strconv.Itoa(len(args))
+		where += " AND rl.ts < $" + strconv.Itoa(len(args))
 	}
 
 	// audit-data-closure-2: defensively filter malformed-size elements at
@@ -377,7 +417,7 @@ func (h *Handler) handleDataLifecycleAttachmentCleanupPreview(w http.ResponseWri
 		                         ELSE 0 END), 0)
 		FROM `+dbpkg.SessionFamilyTurnsSourceSQL()+` rl,
 		     LATERAL jsonb_array_elements(rl.attachments) AS elem
-		WHERE rl.attachments IS NOT NULL
+		WHERE `+attachmentsPresencePredicate+`
 		  AND jsonb_typeof(rl.attachments) = 'array'
 		  AND rl.ts < NOW() - make_interval(days => $`+strconv.Itoa(daysIdx)+`::int)
 		  `+tenantPred,

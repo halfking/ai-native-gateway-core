@@ -21,8 +21,10 @@
   python3 scripts/audit/verify_columnar_bulk_write_local.py --rows 30000 --reps 2
 """
 import argparse
+import atexit
 import os
 import re
+import signal
 import statistics
 import subprocess
 import sys
@@ -85,9 +87,18 @@ def extract_654_body(am: str) -> str:
     return body
 
 
-def psql(sql: str, db: str = "postgres", timing: bool = False) -> str:
+def psql(sql: str, db: str = "postgres", timing: bool = False, stop_on_error: bool = False) -> str:
+    """跑一段 SQL。
+
+    ★★ 【失败可见性】实测（PG 17.10）：psql 的退出码**由「读入方式」决定**，
+    **不由「语句是否出错」决定**：
+      · `-c` 形态      ⇒ 语句失败 ⇒ **exit 1**（失败可见）
+      · stdin 脚本形态 ⇒ 语句失败 ⇒ **exit 0**（失败【不可见】！）⇒ 除非 ON_ERROR_STOP=1 ⇒ exit 3
+    ⇒ 本函数走 stdin 脚本形态（`-f -`）⇒ ⇒ 【清理路径必须显式 ON_ERROR_STOP=1】，
+      否则「DROP 被 statement_timeout 取消」会**静默**⇒ 而「清理失败」＝「库泄漏」。
+    """
     args = ["docker", "exec", "-i", CONTAINER, "psql", "-U", PGUSER, "-d", db,
-            "-v", "ON_ERROR_STOP=0", "-P", "pager=off"]
+            "-v", "ON_ERROR_STOP=" + ("1" if stop_on_error else "0"), "-P", "pager=off"]
     if timing:
         args += ["-c", r"\timing on"]
     args += ["-f", "-"]
@@ -95,11 +106,76 @@ def psql(sql: str, db: str = "postgres", timing: bool = False) -> str:
     return p.stdout + p.stderr
 
 
+def _residual() -> str:
+    """库里还有几个同名库（★ 清理是否真的成功，只能【查落点】，不能看退出码）。"""
+    out = psql(f"SELECT 'LEFT=' || count(*) FROM pg_database WHERE datname = '{DB}';")
+    m = re.search(r"LEFT=(\d+)", out)
+    return m.group(1) if m else "?"
+
+
 def timed(sql: str, db: str) -> tuple[float, str]:
     """跑一段 SQL 并返回 (psql 报的毫秒数, 原始输出)。"""
     out = psql(sql, db, timing=True)
     times = [float(x) for x in re.findall(r"^Time:\s+([0-9.]+)\s+ms", out, re.M)]
     return (times[-1] if times else float("nan")), out
+
+
+# ★★★ 回收兜底（R94 轮实测修）：本脚本原本只在**正常跑完**时 DROP 一次性库
+#   ⇒ setup() / rebuild_source() 里的 `sys.exit(2)`（失败路径）**全部跳过回收**
+#   ⇒ 每次失败都在容器里留一个 `itgate_14325`。
+#   ⇒ 修法：atexit 钩子 ⇒ 覆盖 sys.exit / 未捕获异常 / 正常返回 三种路径。
+#   ★ Python 侧的 atexit ≈ shell 的 trap ≈ Go 的 defer ⇒ 同一个机制的三种语言实现。
+#   ⚠ 诚实边界：atexit **不覆盖** os._exit 与 SIGKILL。
+#
+# ★★★★ R99 轮（§19.20.65）补两处 —— 上一版的兜底在**两个方向**上是空的：
+#   ① 【信号路径】实测：python 的 atexit 在进程被 SIGTERM 终止时【不执行】
+#      ⇒ ⇒ 「被 CI / Ctrl-C / 编排器超时杀掉」⇒ 一次性库留下
+#      ⇒ ⇒ 修法：显式接管 SIGTERM/SIGINT ⇒ 处理器【抛异常】⇒ 异常沿栈展开
+#      ⇒ ⇒ finally 与 atexit 钩子【真的】跑起来 ⇒ ⇒ 复用既有的兜底。
+#   ② 【防卡】上一版的 DROP 是【裸】的 ⇒ 遇到「还有连接没断干净」就无限期挂着
+#      ⇒ ⇒ 修法：先 terminate 踢掉占用会话，再【带 statement_timeout】地 DROP。
+#      ★★ 超时取 **120s**：实测「terminate 之后 DROP 仍要等被 SIGTERM 的后端
+#        收尾」可达数十秒（PG 17.10 / 高负载下实测到 89.37s）⇒ ⇒ 15s 会把
+#        【合法】的清理砍成「被超时取消」⇒ ⇒ 「清理失败」＝「库泄漏」
+#        ⇒ ⇒ 与守卫的目的**正好相反**。
+#      ★★ SET 与 DROP 必须【逐条发送】：psql 走 psql -f - 的 stdin 脚本模式
+#        ⇒ 每条语句各自独立事务 ⇒ SET 对后面的 DROP 生效；
+#        ★★ 若把两条塞进同一条 -c ⇒ PG 报「DROP DATABASE cannot run inside a
+#          transaction block」⇒ 清理【直接失败且静默】。
+def _drop_db() -> str:
+    try:
+        psql(f"SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '{DB}' AND pid <> pg_backend_pid();")
+        out = psql(f"SET statement_timeout = '120s'; DROP DATABASE IF EXISTS {DB} WITH (FORCE);",
+                   stop_on_error=True)
+        # ★ 查落点：psql 在 stdin 脚本形态下【失败也 exit 0】⇒ 退出码不可信
+        #   ⇒ ⇒ 「命令成功」必须由「库里还有没有」来判。
+        left = _residual()
+        if left != "0":
+            out += f"\n⚠ 回收未完成：pg_database 里仍有 {left} 行匹配 {DB}"
+        return out
+    except Exception:  # noqa: BLE001 —— 回收失败不得盖掉真正的错误
+        return ""
+
+
+atexit.register(_drop_db)
+
+
+# ★ 信号接管（R99 轮 · §19.20.65）⇒ 让上面的兜底在【信号路径】上也真的执行。
+#   ★ 为什么抛自定义的 BaseException 而不是用 KeyboardInterrupt：
+#     KeyboardInterrupt 会被 subprocess.run 特殊对待，而这里要的是
+#     「异常展开（让 finally / atexit 真的跑）」+「保留被信号终止的语义」。
+class _Terminated(BaseException):
+    """收到 SIGTERM / SIGINT ⇒ 抛出来让兜底回收真的执行。"""
+
+
+def _on_signal(signum, _frame):
+    raise _Terminated(f"收到信号 {signum}")
+
+
+def _install_signal_handlers() -> None:
+    """接管 SIGTERM / SIGINT ⇒ 走「异常展开」路径 ⇒ finally / atexit 真的跑。"""
+    signal.signal(signal.SIGTERM, _on_signal)
+    signal.signal(signal.SIGINT, _on_signal)
 
 
 def setup(rows: int) -> None:
@@ -281,7 +357,7 @@ def main() -> int:
             print(f"--- rep{rep} {arm}: {ms:,.0f} ms ---")
             if "ERROR" in out:
                 print("★ 该臂报错，停止", file=sys.stderr)
-                psql(f"DROP DATABASE IF EXISTS {DB};")
+                _drop_db()
                 return 2
 
     print()
@@ -324,10 +400,18 @@ def main() -> int:
         else:
             print("  ★ 结论：在本地量级下**未超过** 10 分钟超时（但这不是生产承诺，见 runbook 边界）")
 
-    psql(f"DROP DATABASE IF EXISTS {DB};")
+    # ── 清理（★ 与 atexit 兜底【同一个】实现 ⇒ 只留一份 DROP，不漂移）
+    _drop_db()
     print(f"\n（一次性库 {DB} 已 DROP）")
     return 0
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    _install_signal_handlers()
+    try:
+        sys.exit(main())
+    except _Terminated as e:
+        # ★ 信号路径：异常已沿栈展开 ⇒ finally / atexit 钩子已真的跑过
+        #   ⇒ 这里只把退出码还原成「被信号终止」的形状（128+15）。
+        print(f"⚠ {e} ⇒ 兜底回收已执行（atexit）", file=sys.stderr)
+        sys.exit(143)

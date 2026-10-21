@@ -1,13 +1,13 @@
 <script setup lang="ts">
 // StorageAndLogConfigView — 存储配置 + 日志轮转配置（2026-10-14，第一百二十四批）。
 //
-// GET /api/admin/storage/config   （admin/handler.go:1172 h.superAdmin）
-// GET /api/admin/logs/config      （admin/handler.go:1178 h.superAdmin）
+// GET /api/admin/storage/config   （admin/handler.go:1179 h.superAdmin）
+// GET /api/admin/logs/config      （admin/handler.go:1185 h.superAdmin）
 //
 // ══ 权限 ══════════════════════════════════════════════════════════════════
 // ★★★★★ `requiresRole: 'super_admin'` —— 而且**服务端是真门**（第二类）。
 //
-//   `h.superAdmin` → `SuperAdminMiddleware`（`admin/auth.go:376`）逐字：
+//   `h.superAdmin` → `SuperAdminMiddleware`（`admin/auth.go:467`）逐字：
 //     `if claims.Role != "super_admin" { 403 "super_admin role required for this endpoint" }`
 //   ⇒ ★★ 越权请求**会被服务端挡下来** ⇒ 视图内这一层兜的是**体验**
 //     （不发请求、不显示一屏 403），**不是**安全边界。

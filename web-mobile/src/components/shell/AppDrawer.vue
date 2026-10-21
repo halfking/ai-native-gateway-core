@@ -6,6 +6,7 @@ import { useRoute } from 'vue-router'
 import { useHyperOverlay } from '@/hyper'
 import { DRAWER_NAV, isNavItemActive, navItemsFor } from '@/config/appNav'
 import { useAuthStore } from '@/stores/auth'
+import { useCapabilitiesStore } from '@/stores/capabilities'
 import { t } from '@/i18n'
 import AppIcon from '@/components/common/AppIcon.vue'
 
@@ -14,14 +15,20 @@ const emit = defineEmits<{ 'update:modelValue': [value: boolean]; account: [] }>
 
 const route = useRoute()
 const auth = useAuthStore()
+const capabilities = useCapabilitiesStore()
 const panelRef = ref<HTMLElement | null>(null)
 
 /**
  * ★ 2026-10-06：按角色过滤。此前 v-for 直接铺 DRAWER_NAV 全量，
  *   于是 tenant_admin 会看到 /integrity（后端 h.superAdmin，必然 403）。
  *   导航是权限问题的上游 —— 在这一层挡住，而不是让用户点进去吃报错。
+ *
+ * ★ 2026-10-21（R72f）：再叠一层**能力位**过滤。有些功能的端点只在开关
+ *   打开时才注册 ⇒ 那一席若照常显示，super_admin 点进去必然 404 ⇒
+ *   ⇒ `capabilities.enabled` 为空集时（未加载/取失败，fail-closed）
+ *   ⇒ 带 `requiresCapability` 的席**一律不显示**。
  */
-const drawerItems = computed(() => navItemsFor(DRAWER_NAV, auth.role))
+const drawerItems = computed(() => navItemsFor(DRAWER_NAV, auth.role, capabilities.enabled))
 
 /**
  * ★ 2026-10-15：抽屉搜索。DRAWER_NAV 已 85 席（还会继续涨），深页要滚

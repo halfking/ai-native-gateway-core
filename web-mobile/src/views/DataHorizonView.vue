@@ -11,9 +11,9 @@
 //   `session_turns_hot` 的 MAX(ts) × hub 的 lastActivity。
 //
 // ══ 权限：抽屉席**不设** `requiresRole`（admin 档，且这是有理由的）══
-//   注册 `admin/handler.go:1152`：`mux.HandleFunc("/api/admin/data-horizon", admin(h.handleDataHorizon))`
-//   而 `admin := h.admin` 是 `admin/handler.go:933` 的局部别名，
-//   `h.admin` = `AdminMiddleware`（`admin/auth.go:85` 起，**全文无 `claims.Role` 比对**）
+//   注册 `admin/handler.go:1159`：`mux.HandleFunc("/api/admin/data-horizon", admin(h.handleDataHorizon))`
+//   而 `admin := h.admin` 是 `admin/handler.go:962` 的局部别名，
+//   `h.admin` = `AdminMiddleware`（`admin/auth.go:86` 起，**全文无 `claims.Role` 比对**）
 //   ⇒ 「admin 档」在注册行里的真实含义是「**已认证**」。
 //
 //   ★★★ 但**不能**因此就放行所有角色 —— 也不能收窄到 `super_admin`：

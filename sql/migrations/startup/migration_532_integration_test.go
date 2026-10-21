@@ -36,6 +36,8 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/kaixuan/llm-gateway-go/internal/testdb"
 )
 
 // claimSQLFinalSuccess 与 telemetry/client.go claimSessionFinalSuccess 的语句
@@ -112,6 +114,16 @@ func TestMigration532FinalSuccessUniqueness(t *testing.T) {
 	if dsn == "" {
 		t.Skip("TEST_PG_URL not set; migration 532 integration test requires a live PostgreSQL (convention: tests/integration gating)")
 	}
+	// ★★ R92 轮（守卫线 · 续六）：fixtureCleanup532 里有
+	//   `DROP TABLE IF EXISTS request_logs CASCADE` / `request_logs_hot`
+	//   / `DROP FUNCTION IF EXISTS ensure_request_logs_partition(...)`。
+	//   request_logs 族在 2026-10-20 之前是**产品表族**，迁移
+	//   890_drop_request_logs_v1_family.sql 带**非空闸**（族里有行就
+	//   RAISE EXCEPTION 拒绝删表）⇒ 在没跑过 890 的实例上，
+	//   这条 DROP 会**真删掉产品表族**。
+	//   ⇒ 必须派生一次性库：目标落点 = 一次性库，事实源只提供服务器与权限。
+	//   （原注释只写了「TEST_PG_URL 必须指向一次性库」——注释不是守卫。）
+	dsn = testdb.Create(t, dsn)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()

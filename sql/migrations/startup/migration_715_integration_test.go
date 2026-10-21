@@ -332,6 +332,14 @@ func TestMigration715PendingStateLifecycle(t *testing.T) {
 	if dsn == "" {
 		t.Skip("TEST_PG_URL not set; migration 715 integration test requires a live PostgreSQL (convention: tests/integration gating)")
 	}
+	// ★★ R92 轮（守卫线 · 续六）：本测试的 setup715Fixture 先跑
+	//   `DROP TABLE IF EXISTS route_incidents CASCADE`（夹具清理）再建 389 旧形态。
+	//   route_incidents 是**产品表**（252 生产核实：public.route_incidents，
+	//   relkind='r'；仓内 sql/objects/tables/route_incidents.sql + 迁移 389 建它）
+	//   ⇒ 在事实源指的那一个库上跑，会**真删掉产品表**。
+	//   ⇒ 必须派生一次性库：目标落点 = 一次性库，事实源只用来提供服务器与权限。
+	//   （同文件 TestMigration715FreshChainApplyMigrations 已是这个形态。）
+	dsn = testdb.Create(t, dsn)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
