@@ -112,10 +112,20 @@ PASS=0
 FAIL=0
 check() {  # check <label> <expected: PASS|FAIL> <output>
   local label="$1" expected="$2" out="$3"
-  if echo "$out" | grep -qE '^(ok|PASS)|FAIL'; then :; fi
-  if echo "$out" | grep -q "^FAIL" || echo "$out" | grep -q "^--- FAIL"; then
+  # ★★★ R99 轮 · §19.20.67 修（缺陷由并行会话的 SIGPIPE 语义普查发现，并由我独立复现）：
+  #   原来的写法是 `echo "$out" | grep -q …` ⇒ 在 `set -o pipefail` 下：
+  #     · `grep -q` 是**早退**消费者 ⇒ 命中即退 ⇒ 写端 `echo` 在输出超过管道缓冲
+  #       （65,536 B）时被 **SIGPIPE** 杀（141）⇒ pipefail 取**最右非零** = 141
+  #     ⇒ ⇒ `if` 的条件变成 141（非零）⇒ ⇒ **判成「不是失败」**
+  #     ⇒ ⇒ ★★ 而 `$out` 是 **go test 的输出（无上界）** ⇒ 大输出时
+  #       【失败的腿会被报成 PASS/UNKNOWN】⇒ ⇒ 假绿 ⇒ ⇒ 正是本函数要防的事。
+  #   ⇒ ★★ 修法：改用 **herestring**（`grep … <<<"$out"`）⇒ bash 把它写到临时文件
+  #     ⇒ 文件没有 SIGPIPE ⇒ 退出码**只反映 grep 自己的判定**（0/1）⇒ 语义等价。
+  #   ★★ 顺带删掉原来那行 `if echo "$out" | grep -qE …; then :; fi` —— 它的 then 分支
+  #     是 `:` ⇒ **整行是死代码**（看着像个检查、其实什么都不做）⇒ 留着只会误导。
+  if grep -q "^FAIL" <<<"$out" || grep -q "^--- FAIL" <<<"$out"; then
     actual=FAIL
-  elif echo "$out" | grep -q "^ok" || echo "$out" | grep -q "^PASS"; then
+  elif grep -q "^ok" <<<"$out" || grep -q "^PASS" <<<"$out"; then
     actual=PASS
   else
     actual=UNKNOWN
@@ -125,7 +135,7 @@ check() {  # check <label> <expected: PASS|FAIL> <output>
     PASS=$((PASS+1))
   else
     printf '   %-58s %s\n' "$label" "MISMATCH (expected $expected, got $actual)"
-    echo "$out" | tail -25 | sed 's/^/      | /'
+    tail -25 <<<"$out" | sed 's/^/      | /'
     FAIL=$((FAIL+1))
   fi
 }
@@ -134,7 +144,7 @@ echo
 echo "== 2/5 baseline: all legs green =="
 BASE_OUT=$(run_leg 'TestTurnWriterHostTagsRealDB|TestPromoteColumnContractRealDB|TestSessionTurnsFTSIndexUsableRealDB|TestSessionBodiesRequestIDJoinIndexRealDB|TestSessionsPartitionDateAntiJoinUsesIndexRealDB|TestSessionTurnsDeadColumnRealDB|TestSessionTurnsNoUnregisteredWritePath|TestSessionTurnsWritePathRegistryHonest' baseline)
 check "baseline (8 legs)" PASS "$BASE_OUT"
-if echo "$BASE_OUT" | grep -q "^FAIL"; then
+if grep -q "^FAIL" <<<"$BASE_OUT"; then
   echo "ERROR: baseline is not green — the legs are broken, not the mutations" >&2
   echo "$BASE_OUT" | tail -40 >&2
   exit 2

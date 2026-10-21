@@ -107,7 +107,7 @@ func StorageSpecs() []*Spec {
 			Category:        CategoryStorage,
 			Default:         false,
 			Description:     "会话最后完整快照（final_full）+ 停写 outbound_body",
-			DescriptionLong: "开启后 SessionWriterV2 每轮把完整 outbound upsert 进 session_bodies(kind='final_full', turn_no=0) 一行，并停止逐轮写 outbound_body（差集读端优先读 final_full、未命中回退旧行）。关闭时完全回到旧行为。**生产实测（2026-10-02）：真实流量 98~99.9% 为单轮会话，存储收益近似为零——payload 不变、每会话反增 1 行 + 索引项 + 1 次冷启动探测；且中间轮 outbound_body 会永久丢失，构成审计/取证回退。故保持默认关闭**，仅在流量转向多轮形态时按 storage-optimization-plan §4-12 重新评估。",
+			DescriptionLong: "开启后 SessionWriterV2 每轮把完整 outbound upsert 进 session_bodies(kind='final_full', turn_no=0) 一行，并停止逐轮写 outbound_body（差集读端优先读 final_full、未命中回退旧行）。关闭时完全回到旧行为。**2026-10-21 复测（§143.56）：收益要分三层口径看——①「毛额」= 现有逐轮 outbound 总体积（252 共享库 1,814 MB / 211 394 MB），门开了这些行一条都不会消失（门只影响新增写入）；②「毛节省」= 被收敛的副本数×平均正文体积（252 407 MB / 211 28 MB）；③「净收益」= ②−每会话新增 1 行 final_full 的成本（实测 589 B/行 ⇒ 252 ≈ +369 MB、211 ≈ +9 MB）。2026-10-02 那条「98~99.9% 为单轮会话、收益近似为零」的结论已不成立：单轮会话确实占 99.6%，但那 0.4% 的多轮会话贡献了绝大多数被收敛的副本。取舍：中间轮 outbound_body 永久丢失（252 实测受影响会话 300 个 = 0.12%；最后一轮的完整 outbound 不丢，保留在 final_full 行里）。**门是库级设置** ⇒ 在共享库上打开会同时切该库的所有网关实例。**未显式配置时保持关闭**。",
 			DangerLevel:     Dangerous,
 			HotReload:       true,
 		},
