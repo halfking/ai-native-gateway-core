@@ -245,3 +245,153 @@ SELECT n.nspname AS schema, c.relname AS object,
 --   `checkpoints_timed` 列了 ⇒ 直接查 pg_stat_bgwriter 会 42703）。
 SELECT num_timed, num_requested, write_time, sync_time, buffers_written, stats_reset
   FROM pg_stat_checkpointer;
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- §143.50 追加段（W12~W16）：★ 把 §143.49 的三个「疑似口径错」逐一钉死
+--   W12/W13：promote 家族的【确定口径】与「每行 WAL」的真实值
+--   W14    ：hot 表 vs 分区表的【索引数】（解释搬运成本）
+--   W15    ：行宽的【全表/分层】口径（★ 推翻「无序 LIMIT 抽样」的读数）
+--   W16    ：hot 表的 kind 分布（★ 判 final_full 开关当前是否真的关着）
+-- ═══════════════════════════════════════════════════════════════════════════
+
+\echo '### W12. ★★★★★ 按【INSERT 目标表】聚合 WAL（★ 比 LIKE 模式匹配更确定）'
+-- ★ 动机：§143.49 的 W5 用 `ILIKE '%_hot %'` 归「hot 家族」⇒ 漏不漏无法证伪。
+--   ★ 本段从 query 文本里【提取目标表名】⇒ 确定口径。
+-- ★ ★ 注意：★ 「hot 家族」的判定正则**不能**用 `_hot\b` ——
+--   `_hot` 后面紧跟的是词字符（表名继续），`\b` 不成立 ⇒ **会把 hot 表全漏掉**（实测）。
+--   ⇒ 用 `_hot(\s|\(|$)` 判定。
+WITH t AS (
+  SELECT calls, rows, wal_bytes, query
+    FROM pg_stat_statements
+   WHERE dbid = (SELECT oid FROM pg_database WHERE datname = current_database())
+     AND query ~* '^\s*insert'
+)
+SELECT CASE
+         WHEN regexp_replace(query, '^\s*INSERT\s+INTO\s+', '', 'i') ~* '^(public\.)?[a-z0-9_]+_hot(\s|\(|$)'
+              THEN '★_hot 表族（直接 INSERT）'
+         ELSE regexp_replace(
+                regexp_replace(query, '^\s*INSERT\s+INTO\s+', '', 'i'),
+                '\s*\(.*', '', 'g')
+       END AS target_table,
+       count(*) AS stmts,
+       sum(calls) AS calls,
+       sum(rows) AS rows,
+       pg_size_pretty(sum(wal_bytes)) AS wal,
+       pg_size_pretty((sum(wal_bytes) / NULLIF(sum(rows), 0))::bigint) AS wal_per_row
+  FROM t
+ GROUP BY 1
+ ORDER BY sum(wal_bytes) DESC
+ LIMIT 30;
+
+\echo '### W13. ★★★★★ promote 家族 vs hot 表族：确定口径的两桶对比'
+-- ★ ★ 口径要点：`promote_*` 是 `SELECT promote_xxx(...)` ⇒ 它内部的 INSERT 在
+--   `track = top` 下【不单独记账】⇒ ⇒ promote 的 WAL **全部记在函数调用那条语句上**
+--   ⇒ ⇒ 「hot 表的直接 INSERT」与「promote 调用」必须**分成两个桶**比。
+--   ★ ★★ 且 `pg_stat_statements.rows` 对函数调用记的是【返回行数 = 调用次数】，
+--   **不是被搬走的行数** ⇒ ⇒ 「每行 WAL」在 promote 桶里【没有意义】，
+--   只有「每次调用的 WAL」可比；被搬走的行数要用**表级 `n_tup_del`** 去反推。
+WITH hot AS (
+  SELECT sum(calls) AS calls, sum(rows) AS rows, sum(wal_bytes) AS wal
+    FROM pg_stat_statements
+   WHERE dbid = (SELECT oid FROM pg_database WHERE datname = current_database())
+     AND query ~* '^\s*insert'
+     AND regexp_replace(query, '^\s*INSERT\s+INTO\s+', '', 'i') ~* '^(public\.)?[a-z0-9_]+_hot(\s|\(|$)'
+), pro AS (
+  SELECT sum(calls) AS calls, sum(rows) AS rows, sum(wal_bytes) AS wal
+    FROM pg_stat_statements
+   WHERE dbid = (SELECT oid FROM pg_database WHERE datname = current_database())
+     AND query ~* '^\s*select\s+promote_'
+)
+SELECT 'hot 表族：直接 INSERT' AS bucket, calls, rows, pg_size_pretty(wal) AS wal FROM hot
+UNION ALL
+SELECT 'promote 家族：搬进分区', calls, rows, pg_size_pretty(wal) FROM pro;
+
+\echo '### W13b. ★★ 每个 promote 函数的明细（★ 每次调用的 WAL 与 mean_ms）'
+SELECT calls, rows,
+       pg_size_pretty(wal_bytes) AS wal,
+       pg_size_pretty((wal_bytes / calls)::bigint) AS wal_per_call,
+       round(mean_exec_time::numeric, 1) AS mean_ms,
+       regexp_replace(query, '\s+', ' ', 'g') AS q
+  FROM pg_stat_statements
+ WHERE dbid = (SELECT oid FROM pg_database WHERE datname = current_database())
+   AND query ~* '^\s*select\s+promote_'
+ ORDER BY wal_bytes DESC;
+
+\echo '### W14. ★★ hot 表 vs 分区表的索引数（★ 解释「搬进分区要维护几套索引」）'
+SELECT c.relname AS tbl,
+       (SELECT count(*) FROM pg_index i WHERE i.indrelid = c.oid) AS n_indexes,
+       pg_size_pretty(pg_indexes_size(c.oid)) AS idx_size,
+       pg_size_pretty(pg_relation_size(c.oid)) AS heap_size
+  FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+ WHERE n.nspname = 'public'
+   AND c.relname IN ('session_bodies_hot','session_bodies',
+                     'session_turns_hot','session_turns',
+                     'session_turn_details_hot','session_turn_details')
+ ORDER BY c.relname;
+
+\echo '### W15. ★★★★ 行宽对比：hot 表【全表】vs 分区表【代表日窗口】（★ IO 可控）'
+-- ★ ★★ 口径纪律：★ 【不要用无序 LIMIT 抽样】——
+--   实测「LIMIT 2000 无序抽样」给出 hot 平均 3,075 B，而**全表是 13 kB**（差 4.2 倍）
+--   ⇒ ⇒ hot 表里约 14.6% 的行极度巨大（平均约 69 kB/行）⇒ ⇒ 无序抽样会完全错过尾部。
+-- ★ ★ 分区表【全表扫】实测 60 s 超时（259,916 行 × 大 TOAST）⇒ ⇒ 改「按 ts 索引取代表日」。
+SELECT 'session_bodies_hot (全表)' AS tbl,
+       count(*) AS rows,
+       pg_size_pretty(sum(pg_column_size(t))::bigint) AS total_row_bytes,
+       pg_size_pretty(avg(pg_column_size(t))::bigint) AS avg_row_bytes,
+       pg_size_pretty(max(pg_column_size(t))::bigint) AS max_row_bytes
+  FROM public.session_bodies_hot t
+UNION ALL
+SELECT 'session_bodies_2026_10 (代表日)',
+       count(*),
+       pg_size_pretty(sum(pg_column_size(t))::bigint),
+       pg_size_pretty(avg(pg_column_size(t))::bigint),
+       pg_size_pretty(max(pg_column_size(t))::bigint)
+  FROM public.session_bodies_2026_10 t
+ WHERE ts >= '2026-10-15 00:00:00+00' AND ts < '2026-10-16 00:00:00+00';
+
+\echo '### W15b. ★★★★ 胖在哪一列：有/无 outbound_body 的每列字节（★ 分区表代表日）'
+SELECT (outbound_body IS NOT NULL AND outbound_body <> 'null'::jsonb) AS has_outbound,
+       count(*) AS rows,
+       pg_size_pretty(avg(pg_column_size(t))::bigint) AS avg_row_bytes,
+       pg_size_pretty(avg(pg_column_size(t.outbound_body))::bigint) AS avg_outbound_bytes,
+       pg_size_pretty(avg(pg_column_size(t.request_delta))::bigint) AS avg_request_delta_bytes,
+       pg_size_pretty(avg(pg_column_size(t.response_delta))::bigint) AS avg_response_delta_bytes
+  FROM public.session_bodies_2026_10 t
+ WHERE ts >= '2026-10-15 00:00:00+00' AND ts < '2026-10-16 00:00:00+00'
+ GROUP BY 1 ORDER BY 1;
+
+\echo '### W15c. ★★★ hot 表同样口径（★ 与 W15b 对照）'
+SELECT (outbound_body IS NOT NULL AND outbound_body <> 'null'::jsonb) AS has_outbound,
+       count(*) AS rows,
+       pg_size_pretty(avg(pg_column_size(t))::bigint) AS avg_row_bytes,
+       pg_size_pretty(avg(pg_column_size(t.outbound_body))::bigint) AS avg_outbound_bytes,
+       pg_size_pretty(avg(pg_column_size(t.request_delta))::bigint) AS avg_request_delta_bytes,
+       pg_size_pretty(avg(pg_column_size(t.response_delta))::bigint) AS avg_response_delta_bytes
+  FROM public.session_bodies_hot t
+ GROUP BY 1 ORDER BY 1;
+
+\echo '### W16. ★★ hot 表的 kind 分布（★ 判 final_full 开关当前是否真的关着）'
+-- ★ 仓内事实源：`domains/session/v2/bodies_writer.go` 的
+--   `WriteFinalFullInTx` 也写 `session_bodies_hot`（kind='final_full'），
+--   而 `WriteTurnDelta` 写 kind='turn_delta'
+--   ⇒ ⇒ ★ hot 表里若【没有 final_full】⇒ ⇒ 说明该开关当前确实是关的
+--   （§143.48 已读 `storage.session_final_full_enabled = false` ⇒ 两边可交叉验证）。
+SELECT kind,
+       count(*) AS rows,
+       pg_size_pretty(avg(pg_column_size(t))::bigint) AS avg_row_bytes,
+       pg_size_pretty(sum(pg_column_size(t))::bigint) AS total_bytes
+  FROM public.session_bodies_hot t
+ GROUP BY 1 ORDER BY 3 DESC;
+
+\echo '### W17. ★★ hot 表的行级计数（★ ★ 用 n_tup_del 反推「每次 promote 搬多少行」）'
+-- ★ ★★ 这是本节最关键的一个交叉核对：
+--   `pg_stat_statements.rows` 对 promote 记的是【调用次数】，不是被搬走的行数
+--   ⇒ ⇒ 「每次 promote 搬 N 行」必须由【表级 n_tup_del ÷ promote 调用次数】反推
+--   ⇒ ⇒ 再与仓内 `promoteBatchSize`（默认 5000）对照 ⇒ 看「批量」是否真的在起作用。
+SELECT relname, n_tup_ins, n_tup_upd, n_tup_del, n_live_tup, n_dead_tup,
+       pg_size_pretty(pg_total_relation_size(relid)) AS total
+  FROM pg_stat_user_tables
+ WHERE relname ~* '_hot$'
+ ORDER BY (n_tup_ins + n_tup_upd + n_tup_del) DESC
+ LIMIT 15;
+
