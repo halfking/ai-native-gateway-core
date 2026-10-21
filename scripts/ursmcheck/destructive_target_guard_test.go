@@ -168,6 +168,21 @@ type r89PkgFunc struct {
 	//   （例：`dsn := os.Getenv("TEST_DATABASE_URL")` 之后拿它去连 SQLite）
 	//   ⇒⇒ 必须要求「腿的可达范围里确实有 PG 连接被打开」。
 	opensPG bool
+	// cross：这个函数**跨包**调用到的目标（R91 轮新增）。
+	//
+	// ★ 为什么要有这一层：R87~R90 轮的可达性是**同包**的
+	//   ⇒⇒ 「事实源的 DSN 在另一个包里被读取并连上」的形态**判不出来**
+	//   ⇒⇒ 方向是**漏放**（数据事故级）。
+	//   ⇒⇒ 本层把跨包调用边也记下来 ⇒⇒ 全局调用图才建得起来。
+	cross []r91CrossRef
+}
+
+// r91CrossRef 一个**跨包**调用的目标（R91 轮）。
+type r91CrossRef struct {
+	// Dir 是被调函数所在包的**绝对目录**（仓内包才非空）。
+	Dir string
+	// Name 是被调函数名。
+	Name string
 }
 
 // r87GuardHit 一次守卫证据。
@@ -754,7 +769,7 @@ func r87ResolveString(a ast.Expr, consts map[string]string) (string, bool) {
 //
 // ★ R90 轮新增参数 `exported`（事实源导出的 DSN 名集合）⇒⇒ 因为「这条腿
 //   消费不消费事实源的 DSN」必须按**函数粒度**回答 ⇒⇒ 逐函数记它读了哪些名。
-func r87BuildPkgFacts(t *testing.T, root, modulePath string, exported map[string]bool) map[string]*r87PkgFacts {
+func r87BuildPkgFacts(t *testing.T, root, modulePath string, exported map[string]bool) (map[string]*r87PkgFacts, map[string]*r91Node) {
 	t.Helper()
 	out := map[string]*r87PkgFacts{}
 	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
@@ -918,6 +933,11 @@ func r87BuildPkgFacts(t *testing.T, root, modulePath string, exported map[string
 			cur.isTest = cur.isTest || fi.isTest
 			// ★ R90 轮：把「读了哪些事实源名 / 开不开 PG 连接」也并进包索引。
 			cur.opensPG = cur.opensPG || fi.opensPG
+			for _, c := range fi.cross {
+				if !r91HasCross(cur.cross, c) {
+					cur.cross = append(cur.cross, c)
+				}
+			}
 			for _, d := range fi.dsnNames {
 				if !r89Contains(cur.dsnNames, d) {
 					cur.dsnNames = append(cur.dsnNames, d)
@@ -938,7 +958,10 @@ func r87BuildPkgFacts(t *testing.T, root, modulePath string, exported map[string
 	if walkErr != nil {
 		t.Fatalf("walk %s (pkg index): %v", root, walkErr)
 	}
-	return out
+	// ── R91 轮：把包索引拼成**全局**调用图并做不动点传播（跨包可达）。────
+	gidx := r91BuildGlobal(out)
+	r91Propagate(gidx, out)
+	return out, gidx
 }
 
 // r89Contains 判断名字是否已在列表里。
@@ -976,7 +999,7 @@ func r89Contains(list []string, name string) bool {
 //
 //	读了 DSN 名 ≠ 那个值进了连接（例：读出来拿去连 SQLite / 只做断言）。
 //	⇒⇒ 两个条件都要，才不会把「读了名但没用」的腿误报成高危。
-func r87AnalyzeFile(t *testing.T, path, rel, src string, exported map[string]bool, pkgs map[string]*r87PkgFacts, modulePath, root string) []r87Pair {
+func r87AnalyzeFile(t *testing.T, path, rel, src string, exported map[string]bool, pkgs map[string]*r87PkgFacts, gidx map[string]*r91Node, modulePath, root string) []r87Pair {
 	t.Helper()
 	fset := token.NewFileSet()
 	f, err := parser.ParseFile(fset, path, nil, parser.ParseComments)
@@ -1046,7 +1069,7 @@ func r87AnalyzeFile(t *testing.T, path, rel, src string, exported map[string]boo
 	//
 	// ★ R90 轮追加：腿根还要**消费事实源的 DSN**（包级可达）
 	//   ⇒⇒ 「读 DSN 在别的文件」的腿这次进得来候选集了。
-	legs := r88AnalyzeLegs(f, fset, pkgs, filepath.Dir(path), modulePath, root, src, exported, live)
+	legs := r88AnalyzeLegs(f, fset, pkgs, gidx, filepath.Dir(path), modulePath, root, src, exported, live)
 	if len(legs) == 0 {
 		return nil
 	}
@@ -1119,6 +1142,8 @@ type r88FuncInfo struct {
 	dsnNames []string
 	// opensPG：体内是否打开 PG 连接（R90 轮新增）。
 	opensPG bool
+	// cross：体内**跨包**调用到的目标（R91 轮新增）。
+	cross []r91CrossRef
 }
 
 // r88Leg 一条「没有被守卫支配」的破坏性腿。
@@ -1170,6 +1195,20 @@ func r88CollectFuncs(f *ast.File, fset *token.FileSet, pkgs map[string]*r87PkgFa
 			switch fun := call.Fun.(type) {
 			case *ast.Ident:
 				fi.calls[fun.Name] = true
+				// ★ R91 轮：**同包**调用本包自己声明的闸门 ⇒ 记为「调用了闸门」。
+				//
+				// ★ 为什么必须加：原先 `callsGate` 只在**限定名调用**
+				//   （`otherpkg.Gate()`）上设置 ⇒⇒ 同包内写成 `Gate()` 时**不算**
+				//   ⇒⇒ 跨包链式闸门（腿 → P.helper → Q.Helper → `Q.Gate()`）
+				//   ⇒⇒ 中间那一环**接不上** ⇒⇒ 腿被误判成「没守卫」。
+				//
+				// ★ 为什么安全：同包调用本包**声明**的闸门，在同包口径下
+				//   本来就被「闸门函数自身的内联证据」覆盖（`Gate` 的体内有
+				//   `current_database()`）⇒⇒ 加这一条**不改变**同包读数
+				//   ⇒⇒ 只是让**跨包**那一侧接得上。
+				if facts := pkgs[dir]; facts != nil && facts.declaredGuards[fun.Name] {
+					fi.callsGate = true
+				}
 			case *ast.SelectorExpr:
 				pkgName, ok := fun.X.(*ast.Ident)
 				if !ok {
@@ -1183,17 +1222,30 @@ func r88CollectFuncs(f *ast.File, fset *token.FileSet, pkgs map[string]*r87PkgFa
 				if d == "" {
 					return true
 				}
+				// ★ R91 轮：记录**跨包**调用边（同包内的调用走 `calls` 即可）。
+				if d != dir {
+					fi.cross = append(fi.cross, r91CrossRef{Dir: d, Name: fun.Sel.Name})
+				}
 				facts := pkgs[d]
 				if facts == nil {
 					return true
 				}
-				// ★ 跨包闸门：**优先按包自己声明的名单**；包没声明才退回包级粗口径。
-				guarded := false
-				if len(facts.declaredGuards) > 0 {
-					guarded = facts.declaredGuards[fun.Sel.Name]
-				} else {
-					guarded = facts.hasCheck
-				}
+				// ★★ R91 轮：**跨包闸门只认「包自己声明的名单」**，
+				//   **不再退回包级粗口径**（`facts.hasCheck`）。
+				//
+				// ★★★ 为什么必须去掉那个兜底（实测逼出来的）：
+				//   仓内 **18 个包**「体内有目标库判定证据、但**没**声明 `GuardFunctions`」
+				//   ⇒⇒ 旧口径下，**任何**跨包调用进这 18 个包都会被当成「调用了闸门」
+				//   ⇒⇒ 一条腿只要调了 `bg`/`admin`/`db` 里的任意一个函数
+				//   ⇒⇒ 就被判成「有守卫」⇒⇒ ⇒ **漏放**（数据事故级）。
+				//
+				//   而「这个包**恰好**含有目标库判定」**不是**「这个函数是闸门」：
+				//   前者是**包级事实**，后者是**函数级承诺**
+				//   ⇒⇒ 只有**声明名单**才是承诺。
+				//
+				// ★ 与 R87 轮的用意一致（那轮引入 `GuardFunctions` 正是为了摆脱
+				//   包级粗口径）⇒⇒ 本轮把残留的兜底也收掉。
+				guarded := facts.declaredGuards[fun.Sel.Name]
 				if guarded {
 					fi.callsGate = true
 				}
@@ -1221,6 +1273,11 @@ func r89Merged(funcs map[string]*r88FuncInfo, pkg map[string]r89PkgFunc) map[str
 		cur.isTest = cur.isTest || f.isTest
 		// ★ R90 轮：合并「读了哪些事实源名」与「开不开 PG 连接」。
 		cur.opensPG = cur.opensPG || f.opensPG
+		for _, c := range f.cross {
+			if !r91HasCross(cur.cross, c) {
+				cur.cross = append(cur.cross, c)
+			}
+		}
 		for _, d := range f.dsnNames {
 			if !r89Contains(cur.dsnNames, d) {
 				cur.dsnNames = append(cur.dsnNames, d)
@@ -1257,6 +1314,244 @@ func r89ReachNames(rootName string, g map[string]r89PkgFunc) map[string]bool {
 		}
 	}
 	return seen
+}
+
+// ── R91 轮：全局调用图（跨包可达）──────────────────────────────────────────
+//
+// ★★★ 为什么要做这一层 ─────────────────────────────────────────────────────
+//
+//	R87~R90 轮的可达性是**同包**的 ⇒⇒ 于是三件事判不出来：
+//
+//	① **跨包消费事实源 DSN**（★ **漏放**方向，数据事故级）
+//	   —— 腿在包 A、DSN 在包 B 被读取并连上 ⇒⇒ 门**看不见**这条腿。
+//	② **跨包链式闸门**：腿 → 包 B 的 helper → `internal/testguard` 的**声明闸门**
+//	   ⇒⇒ 直接跨包调用早被 `declaredGuards` 覆盖，**跨包的一跳间接**没有。
+//	③ **跨包 PG 连接打开点**：腿在包 A，连库在包 B。
+//
+// ★★ 而**跨包内联判定**（目标库判定写在另一个包里）**故意不闭合** ——
+//
+//	`internal/testguard.RequireDatabaseMatchesDSN` 的**体内**就有目标库判定证据，
+//	但 R87 轮刻意**不**把它列入 `GuardFunctions` 名单：
+//	它只核对「连接落在 DSN 指的那个库」，**不决定这条腿跑不跑**
+//	⇒⇒ DSN 指产品库时它照样通过 ⇒⇒ 破坏性 SQL 照样落在产品库上
+//	⇒⇒ ⇒ 它**不是**安全闸门 ⇒⇒ 跨包传播内联判定 ⇒⇒ 会把真腿误判成「有守卫」
+//	⇒⇒ ⇒ **跨包只传播「声明闸门调用」，不传播内联判定。**
+//
+// ★★ 仓内实测（R91 轮诊断）：跨包被调函数**自己读了事实源 DSN** 的有 **11** 处
+//   （`config.Load` × 8 读 `DATABASE_URL`/`LLM_GATEWAY_DATABASE_URL`；
+//   `pkg/identity.ShadowDatabase` × 3 读 `IDENTITY_SHADOW_DSN`）
+//   ⇒⇒ 形态**真实存在**，只是当前没有和破坏性语句落在同一条腿上
+//   ⇒⇒ ⇒ 这是**结构上开着**的洞 ⇒ 本轮闭合。
+
+// r91HasCross 判断跨包目标是否已在列表里。
+func r91HasCross(list []r91CrossRef, c r91CrossRef) bool {
+	for _, x := range list {
+		if x.Dir == c.Dir && x.Name == c.Name {
+			return true
+		}
+	}
+	return false
+}
+
+// r91Key 节点的全局键（包目录 + 函数名）。
+//
+// ★ 为什么必须带包目录：同一个包里函数名唯一 ⇒ 名即实体；
+//   **跨包就不唯一了**（两个包都可能有 `reset`）⇒⇒ 只用函数名做键会串包。
+func r91Key(dir, name string) string { return dir + "\x00" + name }
+
+// r91Node 全局调用图的一个节点（= 某个包里的某个函数）。
+type r91Node struct {
+	dir  string
+	name string
+	// same：包内被调（函数名）。
+	same []string
+	// cross：跨包被调。
+	cross []r91CrossRef
+	// predsSame：同包内谁调用它（**反向边**，汇总性质靠它回流）。
+	predsSame []*r91Node
+	// predsCross：跨包谁调用它（**反向边**）。
+	//
+	// ★ 与 predsSame 分开：R91 轮的传播规则对两类边**同规则**，
+	//   但分开放是为了让变异（M15）能**只**掐断跨包那一半。
+	predsCross []*r91Node
+	// 自身性质。
+	dsnNames   []string
+	openPG     bool
+	callsGuard bool
+	guarded    bool
+	isTest     bool
+	// 汇总（沿调用边传播后的结果）。
+	reachDSN    map[string]bool
+	reachOpenPG bool
+	reachGate   bool
+}
+
+// r91BuildGlobal 把所有包的包索引拼成一张**全局**调用图。
+func r91BuildGlobal(pkgs map[string]*r87PkgFacts) map[string]*r91Node {
+	out := map[string]*r91Node{}
+	for dir, facts := range pkgs {
+		for name, fn := range facts.pkgFuncs {
+			key := r91Key(dir, name)
+			n := out[key]
+			if n == nil {
+				n = &r91Node{dir: dir, name: name, reachDSN: map[string]bool{}}
+				out[key] = n
+			}
+			n.same = append(n.same, fn.calls...)
+			n.cross = append(n.cross, fn.cross...)
+			n.dsnNames = append(n.dsnNames, fn.dsnNames...)
+			n.openPG = n.openPG || fn.opensPG
+			n.callsGuard = n.callsGuard || fn.callsGuard
+			n.guarded = n.guarded || fn.guarded
+			n.isTest = n.isTest || fn.isTest
+		}
+	}
+	return out
+}
+
+// r91Succ 取一个节点的全部后继（同包 + 跨包）。
+func r91Succ(nodes map[string]*r91Node, n *r91Node) []*r91Node {
+	var out []*r91Node
+	for _, c := range n.same {
+		if s := nodes[r91Key(n.dir, c)]; s != nil {
+			out = append(out, s)
+		}
+	}
+	for _, c := range n.cross {
+		if s := nodes[r91Key(c.Dir, c.Name)]; s != nil {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// ★★ 汇总性质的语义是「**从**这个节点出发**可达**的东西」，
+//   即 `reach(X) = 自身 ∪ ⋃ reach(后继)` ⇒⇒ 汇总要**从后继流回前驱**
+//   ⇒⇒ 传播必须沿**反向边**做。
+//   ⇒⇒ ★ 第一版写成「把自己的汇总推给后继」⇒ **方向反了**
+//   ⇒⇒ 后果：调用者**拿不到**被调用者读到的 DSN 名 ⇒⇒ 跨包消费判不出来
+//   ⇒⇒ （R91 轮实测：R90 夹具 ⑲ 因此变红 ⇒ 当场暴露）
+
+// r91Propagate 沿调用边传播三种汇总性质（不动点）。
+//
+// ★ 传播规则（R91 轮的关键判据）：
+//
+//	· `reachDSN`（读到了哪些事实源名）/ `reachOpenPG`（开不开 PG）
+//	  / `reachGate`（调用了**声明闸门**）⇒ **沿全部边**（同包 + 跨包）传播；
+//	· **内联判定（`guarded`）不跨包传播** ⇒ 见本节头的说明。
+func r91Propagate(nodes map[string]*r91Node, pkgs map[string]*r87PkgFacts) {
+	for _, n := range nodes {
+		for _, d := range n.dsnNames {
+			n.reachDSN[d] = true
+		}
+		if n.openPG {
+			n.reachOpenPG = true
+		}
+		if n.callsGuard {
+			n.reachGate = true
+		}
+		// 包作用域 / TestMain 的 DSN 读取（**本包**内算 ⇒ R90 轮的规则）。
+		if f := pkgs[n.dir]; f != nil {
+			for d := range f.pkgScopeDSN {
+				n.reachDSN[d] = true
+			}
+			for d := range f.pkgTestMainDSN {
+				n.reachDSN[d] = true
+			}
+		}
+	}
+	// ── 建**反向边**（谁调谁）⇒ 汇总沿它回流。
+	for _, n := range nodes {
+		for _, c := range n.same {
+			if succ := nodes[r91Key(n.dir, c)]; succ != nil {
+				succ.predsSame = append(succ.predsSame, n)
+			}
+		}
+		for _, c := range n.cross {
+			if succ := nodes[r91Key(c.Dir, c.Name)]; succ != nil {
+				succ.predsCross = append(succ.predsCross, n)
+			}
+		}
+	}
+	queue := make([]*r91Node, 0, len(nodes))
+	for _, n := range nodes {
+		queue = append(queue, n)
+	}
+	for len(queue) > 0 {
+		n := queue[0]
+		queue = queue[1:]
+		// ★ 沿**反向边**把 n 的汇总回流给它的调用者。
+		//
+		// ★ 分成两段（同包 / 跨包）是有意的：传播规则对两类边**目前相同**，
+		//   但分开写才能让变异**只**掐断跨包那一半（M15）。
+		for _, pred := range n.predsSame {
+			r91Flow(pred, n, true, &queue)
+		}
+		for _, pred := range n.predsCross {
+			// ★ `withGate=true`：「调用了**声明**闸门」是**函数级承诺**，
+			//   与包无关 ⇒⇒ 必须跨包传。
+			//   ⇒⇒ ★ **不**跨包传的是「体内写了判定」（`guarded`）——
+			//     它从来不进这套传播（见本节头：跨包内联判定不是闸门）。
+			r91Flow(pred, n, true, &queue)
+		}
+	}
+}
+
+// r91Flow 把 n 的汇总回流给它的调用者 pred。
+//
+// ★ `withGate` = 这一段边**要不要**传递「调用了声明闸门」。
+//   ⇒ 同包边：传（`callsGate` 是函数级承诺，与包无关）。
+//   ⇒ 跨包边：传（同样是函数级承诺）。
+//   ⇒ ★ **不传**的是「体内写了判定」那个性质（`guarded`）——
+//     它**从来不跨包传播**（见本节头：跨包内联判定不是闸门）。
+func r91Flow(pred, n *r91Node, withGate bool, queue *[]*r91Node) {
+	changed := false
+	for d := range n.reachDSN {
+		if !pred.reachDSN[d] {
+			pred.reachDSN[d] = true
+			changed = true
+		}
+	}
+	if n.reachOpenPG && !pred.reachOpenPG {
+		pred.reachOpenPG = true
+		changed = true
+	}
+	if withGate && n.reachGate && !pred.reachGate {
+		pred.reachGate = true
+		changed = true
+	}
+	if changed {
+		*queue = append(*queue, pred)
+	}
+}
+
+// r91LegDSNNames 这条腿（连同**跨包**可达范围）读到的全部事实源导出名。
+func r91LegDSNNames(rootName, dir string, gidx map[string]*r91Node) []string {
+	n := gidx[r91Key(dir, rootName)]
+	if n == nil {
+		return nil
+	}
+	var out []string
+	for d := range n.reachDSN {
+		out = append(out, d)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// r91LegOpensPG 这条腿（连同**跨包**可达范围）里有没有打开 PG 连接。
+func r91LegOpensPG(rootName, dir string, gidx map[string]*r91Node) bool {
+	n := gidx[r91Key(dir, rootName)]
+	return n != nil && n.reachOpenPG
+}
+
+// r91LegCallsGate 这条腿（连同**跨包**可达范围）里有没有调用**声明闸门**。
+//
+// ★ 注意：这里**只**认「调用了声明闸门」，**不**认跨包的内联判定
+//   ⇒⇒ `RequireDatabaseMatchesDSN`（R87 刻意不列入名单的那个核对函数）不会被当成闸门。
+func r91LegCallsGate(rootName, dir string, gidx map[string]*r91Node) bool {
+	n := gidx[r91Key(dir, rootName)]
+	return n != nil && n.reachGate
 }
 
 // r89NodeGuarded：这张图里，从 rootName 可达的范围内有没有目标库判定。
@@ -1463,13 +1758,12 @@ func r88Enclosing(pos int, funcs map[string]*r88FuncInfo) *r88FuncInfo {
 //
 // ★ R90 轮：新增**消费判定**（`dsnNames` 非空 且 腿的可达范围里确实开了 PG 连接）
 //   ⇒⇒ 候选集由**文件级**放宽到**包级（腿级）**。
-func r88AnalyzeLegs(f *ast.File, fset *token.FileSet, pkgs map[string]*r87PkgFacts, dir, modulePath, root string, src string, exported map[string]bool, live []r87DestructiveStmt) []r88Leg {
+func r88AnalyzeLegs(f *ast.File, fset *token.FileSet, pkgs map[string]*r87PkgFacts, gidx map[string]*r91Node, dir, modulePath, root string, src string, exported map[string]bool, live []r87DestructiveStmt) []r88Leg {
 	funcs := r88CollectFuncs(f, fset, pkgs, dir, modulePath, root, src, exported)
 	// ★ R89 轮：同包**跨文件**的函数索引（守卫状态 + 调用边 + 是不是测试入口）。
 	var pkg map[string]r89PkgFunc
-	var facts *r87PkgFacts
-	if facts = pkgs[dir]; facts != nil {
-		pkg = facts.pkgFuncs
+	if f := pkgs[dir]; f != nil {
+		pkg = f.pkgFuncs
 	}
 	g := r89Merged(funcs, pkg)
 	var out []r88Leg
@@ -1500,7 +1794,21 @@ func r88AnalyzeLegs(f *ast.File, fset *token.FileSet, pkgs map[string]*r87PkgFac
 			roots = []string{ownerName}
 		}
 		for _, r := range roots {
-			if r89NodeGuarded(r, g) {
+			// ★ R91 轮：守卫判定**拆成两半**（跨包只传播「声明闸门调用」）。
+			//
+			// ① **内联判定**（函数体内自己写的目标库判定）⇒ **只限同包**。
+			//    ⇒⇒ 因为 `internal/testguard.RequireDatabaseMatchesDSN` 的体内
+			//    就有目标库判定证据，但 R87 刻意**不**把它当闸门
+			//    ⇒⇒ 跨包传播它会把真腿误判成「有守卫」。
+			inlineGuard := false
+			for name := range r89ReachNames(r, g) {
+				if node, ok := g[name]; ok && node.guarded {
+					inlineGuard = true
+					break
+				}
+			}
+			// ② **声明闸门调用** ⇒ **全局**可达范围（跨包链式也覆盖）。
+			if inlineGuard || r91LegCallsGate(r, dir, gidx) {
 				continue
 			}
 			// ★★★★★ R90 轮：**消费判定** —— 这条腿会不会真的把事实源给的
@@ -1511,11 +1819,11 @@ func r88AnalyzeLegs(f *ast.File, fset *token.FileSet, pkgs map[string]*r87PkgFac
 			//
 			//   ⇒⇒ ①②都成立 ⇒⇒ 这条腿连的是「事实源给什么就连什么」的库
 			//   ⇒⇒ 而它没守卫 ⇒⇒ 事实源给产品库的值，它就会清空产品表。
-			dsnNames := r90LegDSNNames(r, g, facts)
+			dsnNames := r91LegDSNNames(r, dir, gidx)
 			if len(dsnNames) == 0 {
 				continue
 			}
-			if !r90LegOpensPG(r, g, facts) {
+			if !r91LegOpensPG(r, dir, gidx) {
 				continue
 			}
 			key := r + "\t" + d.sql
@@ -1605,7 +1913,7 @@ func TestDestructiveTargetGuardNoUnguardedLeg(t *testing.T) {
 		t.Fatalf("事实源 %s 只解析出 %d 个 export ⇒ 扫描口径失效（门会恒绿）", r86DSPath, len(exported))
 	}
 	modulePath := r87ModulePath(t, root)
-	pkgs := r87BuildPkgFacts(t, root, modulePath, exported)
+	pkgs, gidx := r87BuildPkgFacts(t, root, modulePath, exported)
 
 	var candidates []r87Pair
 	walkErr := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
@@ -1631,7 +1939,7 @@ func TestDestructiveTargetGuardNoUnguardedLeg(t *testing.T) {
 		}
 		src := string(raw)
 		rel, _ := filepath.Rel(root, path)
-		candidates = append(candidates, r87AnalyzeFile(t, path, rel, src, exported, pkgs, modulePath, root)...)
+		candidates = append(candidates, r87AnalyzeFile(t, path, rel, src, exported, pkgs, gidx, modulePath, root)...)
 		return nil
 	})
 	if walkErr != nil {
@@ -1711,6 +2019,7 @@ func TestR87DestructiveTargetDetectorSelfCheck(t *testing.T) {
 	}
 	dir := t.TempDir()
 	pkgs := map[string]*r87PkgFacts{}
+	var gidx map[string]*r91Node
 
 	// ★ R89 轮：**每个夹具一个独立子目录**（= 独立包）。
 	//
@@ -1788,7 +2097,14 @@ func TestR87DestructiveTargetDetectorSelfCheck(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(gateDir, "gate.go"), []byte(gateSrc), 0o600); err != nil {
 		t.Fatalf("write gatepkg: %v", err)
 	}
-	pkgs = r87BuildPkgFacts(t, dir, "example.com/x", exported)
+	// ★ R91 轮：包索引 + 全局图必须在**所有夹具写完之后**才建。
+	//
+	// ★ 为什么现在才变成硬要求：R87~R90 轮的判据只用**同包**可达
+	//   ⇒⇒ 「当前文件自己的函数」由 `r89Merged` 的**本地优先**兜住
+	//   ⇒⇒ 索引建得早一点也不影响读数。
+	//   ⇒⇒ R91 轮改成**全局**可达后，判据要问「全局图里有没有这个节点」
+	//   ⇒⇒ 索引必须**包含**所有夹具文件 ⇒⇒ 建早了 ⇒ 节点缺失 ⇒ **夹具恒绿**。
+	//   ⇒⇒ ★ 与 R88 夹具同款纪律（「pkgs 在**所有夹具写完之后**才建」）。
 
 	// 夹具 ⑨：调用**名单里的闸门** ⇒ 不得被判成候选。
 	f9 := write("fx9", "declared_gate_test.go", "package fx\n\nimport (\n\t\"os\"\n\n"+
@@ -1801,34 +2117,37 @@ func TestR87DestructiveTargetDetectorSelfCheck(t *testing.T) {
 		"func f() {\n\t_ = os.Getenv(\""+name+"\")\n\t_ = pgxpool.New\n"+
 		"\t_ = gatepkg.Verify()\n\t_, _ = os.ReadFile(\"TRUNCATE public.some_table\")\n}\n")
 
-	if got := r87AnalyzeFile(t, f1, "unguarded_test.go", mustRead(t, f1), exported, pkgs, "example.com/x", dir); len(got) != 1 || got[0].Name != name {
+	// ★ 包索引 + 全局图：**所有夹具写完之后**才建（见上面的说明）。
+	pkgs, gidx = r87BuildPkgFacts(t, dir, "example.com/x", exported)
+
+	if got := r87AnalyzeFile(t, f1, "unguarded_test.go", mustRead(t, f1), exported, pkgs, gidx, "example.com/x", dir); len(got) != 1 || got[0].Name != name {
 		t.Fatalf("探测器没认出「真读 + 破坏性 + 无守卫」的夹具（应判 1 条，实得 %d 条：%v）⇒ 探测器失效（门会恒绿）", len(got), got)
 	}
-	if got := r87AnalyzeFile(t, f2, "guarded_dbname_test.go", mustRead(t, f2), exported, pkgs, "example.com/x", dir); len(got) != 0 {
+	if got := r87AnalyzeFile(t, f2, "guarded_dbname_test.go", mustRead(t, f2), exported, pkgs, gidx, "example.com/x", dir); len(got) != 0 {
 		t.Fatalf("探测器把「有 current_database() 守卫」的夹具也判成候选（%v）⇒ 判据过宽", got)
 	}
-	if got := r87AnalyzeFile(t, f3, "forbidden_only_test.go", mustRead(t, f3), exported, pkgs, "example.com/x", dir); len(got) != 0 {
+	if got := r87AnalyzeFile(t, f3, "forbidden_only_test.go", mustRead(t, f3), exported, pkgs, gidx, "example.com/x", dir); len(got) != 0 {
 		t.Fatalf("探测器把「禁用串断言（切片字面量）」的夹具也判成候选（%v）⇒ 判据过宽", got)
 	}
-	if got := r87AnalyzeFile(t, f4, "self_created_test.go", mustRead(t, f4), exported, pkgs, "example.com/x", dir); len(got) != 0 {
+	if got := r87AnalyzeFile(t, f4, "self_created_test.go", mustRead(t, f4), exported, pkgs, gidx, "example.com/x", dir); len(got) != 0 {
 		t.Fatalf("探测器把「自己建的对象」的夹具也判成候选（%v）⇒ 判据过宽", got)
 	}
-	if got := r87AnalyzeFile(t, f5, "sql_text_assertion_test.go", mustRead(t, f5), exported, pkgs, "example.com/x", dir); len(got) != 0 {
+	if got := r87AnalyzeFile(t, f5, "sql_text_assertion_test.go", mustRead(t, f5), exported, pkgs, gidx, "example.com/x", dir); len(got) != 0 {
 		t.Fatalf("探测器把「SQL 文本断言（strings.Index）」的夹具也判成候选（%v）⇒ 判据过宽", got)
 	}
-	if got := r87AnalyzeFile(t, f6, "slice_exec_test.go", mustRead(t, f6), exported, pkgs, "example.com/x", dir); len(got) != 1 {
+	if got := r87AnalyzeFile(t, f6, "slice_exec_test.go", mustRead(t, f6), exported, pkgs, gidx, "example.com/x", dir); len(got) != 1 {
 		t.Fatalf("探测器没认出「切片字面量 + range + Exec」的破坏性形态（实得 %d 条：%v）⇒ 探测器有盲区（会漏掉真高危腿）", len(got), got)
 	}
-	if got := r87AnalyzeFile(t, f7, "probe_then_skip_test.go", mustRead(t, f7), exported, pkgs, "example.com/x", dir); len(got) != 0 {
+	if got := r87AnalyzeFile(t, f7, "probe_then_skip_test.go", mustRead(t, f7), exported, pkgs, gidx, "example.com/x", dir); len(got) != 0 {
 		t.Fatalf("探测器把「先探后建（已存在即跳过）」的夹具也判成候选（%v）⇒ 判据过宽", got)
 	}
-	if got := r87AnalyzeFile(t, f8, "prose_only_test.go", mustRead(t, f8), exported, pkgs, "example.com/x", dir); len(got) != 0 {
+	if got := r87AnalyzeFile(t, f8, "prose_only_test.go", mustRead(t, f8), exported, pkgs, gidx, "example.com/x", dir); len(got) != 0 {
 		t.Fatalf("探测器把「散文里提到 DROP TABLE」的夹具也判成候选（%v）⇒ 判据过宽", got)
 	}
-	if got := r87AnalyzeFile(t, f9, "declared_gate_test.go", mustRead(t, f9), exported, pkgs, "example.com/x", dir); len(got) != 0 {
+	if got := r87AnalyzeFile(t, f9, "declared_gate_test.go", mustRead(t, f9), exported, pkgs, gidx, "example.com/x", dir); len(got) != 0 {
 		t.Fatalf("探测器把「调用了包自己声明的闸门」的夹具也判成候选（%v）⇒ 判据过宽", got)
 	}
-	if got := r87AnalyzeFile(t, f10, "verify_only_test.go", mustRead(t, f10), exported, pkgs, "example.com/x", dir); len(got) != 1 {
+	if got := r87AnalyzeFile(t, f10, "verify_only_test.go", mustRead(t, f10), exported, pkgs, gidx, "example.com/x", dir); len(got) != 1 {
 		t.Fatalf("探测器把「只调用核对函数（不在闸门名单里）」的夹具判成有守卫（实得 %d 条：%v）⇒ "+
 			"跨包守卫口径太粗（包级 ⇒ 函数级）⇒ 变异 M1 那种「摘掉真闸门」就抓不到", len(got), got)
 	}

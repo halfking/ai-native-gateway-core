@@ -94,6 +94,7 @@ func TestR88LegLevelDominanceSelfCheck(t *testing.T) {
 	}
 	// pkgs 在**所有夹具写完之后**才建（包索引要看得见全部夹具文件）。
 	var pkgs map[string]*r87PkgFacts
+	var gidx map[string]*r91Node
 	analyze := func(rel string) []r87Pair {
 		p := filepath.Join(dir, rel)
 		raw, err := os.ReadFile(p)
@@ -102,7 +103,7 @@ func TestR88LegLevelDominanceSelfCheck(t *testing.T) {
 		}
 		// ★ 最后一个参数是**导入解析根目录**（跨包闸门要用），不是包目录
 		//   ⇒⇒ 包目录由 `r87AnalyzeFile` 内部按 `filepath.Dir(path)` 推导。
-		return r87AnalyzeFile(t, p, rel, string(raw), exported, pkgs, "example.com/x", dir)
+		return r87AnalyzeFile(t, p, rel, string(raw), exported, pkgs, gidx, "example.com/x", dir)
 	}
 
 	// ── 夹具 ⑪：兄弟 helper + 调用者侧支配 ⇒ 必须判成「有守卫」（零候选）────
@@ -186,7 +187,7 @@ func TestR88LegLevelDominanceSelfCheck(t *testing.T) {
 		"func TestCrossPackageGate(t *testing.T) {\n\t_ = os.Getenv(\""+name+"\")\n"+
 		"\tpool := openPool(t)\n\treset(pool)\n}\n")
 
-	pkgs = r87BuildPkgFacts(t, dir, "example.com/x", exported)
+	pkgs, gidx = r87BuildPkgFacts(t, dir, "example.com/x", exported)
 
 	// ── 断言 ────────────────────────────────────────────────────────────────
 

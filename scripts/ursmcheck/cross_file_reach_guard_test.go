@@ -92,7 +92,7 @@ func TestR89CrossFileReachabilitySelfCheck(t *testing.T) {
 		"\tt.Cleanup(pool.Close)\n"+
 		"\t_, _ = pool.Exec(context.Background(), \"TRUNCATE public.other_table\")\n}\n")
 
-	pkgs := r87BuildPkgFacts(t, dir, "example.com/x", exported)
+	pkgs, gidx := r87BuildPkgFacts(t, dir, "example.com/x", exported)
 
 	analyze := func(fn string) []r87Pair {
 		p := filepath.Join(dir, fn)
@@ -102,7 +102,7 @@ func TestR89CrossFileReachabilitySelfCheck(t *testing.T) {
 		}
 		// ★ 最后一个参数是**导入解析根目录**（跨包闸门要用），不是包目录
 		//   ⇒⇒ 包目录由 `r87AnalyzeFile` 内部按 `filepath.Dir(path)` 推导。
-		return r87AnalyzeFile(t, p, fn, string(raw), exported, pkgs, "example.com/x", dir)
+		return r87AnalyzeFile(t, p, fn, string(raw), exported, pkgs, gidx, "example.com/x", dir)
 	}
 
 	// ⑰ 跨文件可达 ⇒ 零候选（**假阳性控制**：旧口径在这里会误报）。
