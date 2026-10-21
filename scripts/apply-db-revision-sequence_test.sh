@@ -325,6 +325,17 @@ channel_gap_allowlist=$(cat <<'EOF'
 748_selfcheck_system_key_tier.sql
 759_report_snapshots_grain_dims.sql
 830_ursm_node_snapshot_min_partitioned.sql
+# ★ 890（2026-10-21，§143.53）：**out-of-band / installer-only 交付**。
+#   理由：890 自带**非空闸**（v1 族有行就 RAISE）⇒ **天然不可自动重放**
+#   ⇒ 躺在「每次部署都跑」的通道数组里 ⇒ 自动通道每次部署都撞闸
+#   ⇒ 迁移腿立即中止（set -euo pipefail + ON_ERROR_STOP=1）
+#   ⇒ 且它后面的 891/892 永远上不去（890 在通道数组里倒数第二）。
+#   ⚠ 它**不是** superseded（不是「绝不可跑」）：新装库由 installer 腿交付；
+#     升级库由**显式的、属主授权的**退役步骤交付
+#     ⇒ scripts/retire-request-logs-v1-family.sh（--preflight / --defer /
+#       --execute / --undo-defer）。
+#   ⇒ 本文件只登记「交付路径」；通道数组里那一行已同步注释掉。
+890_drop_request_logs_v1_family.sql
 EOF
 )
 

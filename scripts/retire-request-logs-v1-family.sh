@@ -112,7 +112,11 @@ fi
 # ── psql 通道（与 apply-db-revision-sequence.sh 同款：直连 or 容器）────
 if [[ -n "${DATABASE_URL:-}" ]]; then
   psql_q() { psql -X -v ON_ERROR_STOP=1 "$DATABASE_URL" -Atqc "$1"; }
-  psql_f() { psql -X -v ON_ERROR_STOP=1 "$DATABASE_URL" -f -; }
+  psql_f() {
+    # ★ -1 = 单事务：退役要么整体成功，要么整体回滚
+    #   （890 会 DROP TABLE + 换视图 + 换函数 ⇒ 半途失败会留下「半退役」形态）
+    psql -X -v ON_ERROR_STOP=1 "$DATABASE_URL" -1 -f -
+  }
 elif [[ -n "${LLM_GATEWAY_PG_CONTAINER:-}" ]]; then
   : "${LLM_GATEWAY_PG_PASSWORD:?set LLM_GATEWAY_PG_PASSWORD for Docker execution}"
   psql_q() {
@@ -121,9 +125,11 @@ elif [[ -n "${LLM_GATEWAY_PG_CONTAINER:-}" ]]; then
       -d "${LLM_GATEWAY_PG_DATABASE:-llm_gateway}" -Atqc "$1"
   }
   psql_f() {
+    # ★ -1 = 单事务：退役要么整体成功，要么整体回滚
+    #   （890 会 DROP TABLE + 换视图 + 换函数 ⇒ 半途失败会留下「半退役」形态）
     docker exec -i -e PGPASSWORD="$LLM_GATEWAY_PG_PASSWORD" "$LLM_GATEWAY_PG_CONTAINER" \
       psql -X -v ON_ERROR_STOP=1 -U "${LLM_GATEWAY_PG_USER:-llm_gateway}" \
-      -d "${LLM_GATEWAY_PG_DATABASE:-llm_gateway}" -f -
+      -d "${LLM_GATEWAY_PG_DATABASE:-llm_gateway}" -1 -f -
   }
 else
   printf 'error: set DATABASE_URL or LLM_GATEWAY_PG_CONTAINER\n' >&2
