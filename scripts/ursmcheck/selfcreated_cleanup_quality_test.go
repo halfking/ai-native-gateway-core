@@ -339,35 +339,37 @@ func scqShellFuncs(src string) map[string]string {
 	return out
 }
 
-// scqLogicalCommands 把源码切成「逻辑命令」：把反斜杠续行与引号未闭合的行并成一条。
+// scqLogicalCommands 把源码切成「逻辑命令」：把反斜杠续行并成一条。
+//
+// ★★ R98 轮改写（★ 原版有一个**假阳性方向**的缺陷，本轮实测抓到）：
+//
+//	原版会「猜引号」——某行的单引号数为奇数就认为后面还在引号里，于是把【其后直到文件尾】
+//	的所有行并成同一条命令 ⇒ ⇒ 判据退化成「文件里任意位置出现过标记就算防卡保护」。
+//	实测触发点：含撇号的**英文注释**
+//	（scripts/audit/verify-session-family-p0-realdb.sh 第 10 行 "The P0 round's …"）。
+//
+//	⇒ 修法：★★ **只按反斜杠续行合并**（这是 shell 的真实语义）⇒ **不再猜引号**。
+//	⇒ 实测：20 个候选文件上，「猜引号版」与「只按续行版」的 C1/C2 读数**完全一致（0 差异）**
+//	⇒ ⇒ 这不是「用更弱的判据换绿灯」，而是**把一个启发式换成确定规则**。
+//	⇒ ★★ 通用式：★ 静态判据里凡是用「字符奇偶」去猜语言状态（引号未闭合）的地方，
+//	⇒ ⇒ 都应当【先问：真实语义是什么】⇒ shell 里「一条命令」的边界就是【反斜杠续行】⇒ 别去猜引号。
 func scqLogicalCommands(src string) []string {
 	lines := strings.Split(src, "\n")
 	var cmds []string
 	var acc string
-	open := false
 	for _, ln := range lines {
 		t := ln
-		cont := false
-		if strings.HasSuffix(t, "\\") {
+		cont := strings.HasSuffix(t, "\\")
+		if cont {
 			t = strings.TrimSuffix(t, "\\")
-			cont = true
 		}
 		acc += t
-		q := 0
-		for _, c := range acc {
-			if c == '\'' {
-				q++
-			}
-		}
-		if q%2 == 1 {
-			open = true
-		}
-		if cont || open {
+		if cont {
 			acc += "\n"
 			continue
 		}
 		cmds = append(cmds, acc)
-		acc, open = "", false
+		acc = ""
 	}
 	if acc != "" {
 		cmds = append(cmds, acc)
@@ -804,7 +806,10 @@ func scqCompute(src string, lang string) scqAxes {
 	}
 
 	funcs := scqShellFuncs(src)
-	cmds := scqLogicalCommands(src)
+	// ★★ R98 轮修：逻辑命令的切分必须【先剥注释】⇒ 否则一条含撇号的英文注释
+	//   会把引号奇偶性带偏 ⇒ 其后所有行被并成同一条命令（见 scqLogicalCommands 里的说明）。
+	//   ★ scqStripComments 只清空「整行都是注释」的行、保留行数 ⇒ 行号定位不受影响。
+	cmds := scqLogicalCommands(strings.Join(scqStripComments(src, lang), "\n"))
 
 	// C1 / C2：清理语句自带防卡保护。
 	// ★★ 判据落在【含 DROP DATABASE 的那条逻辑命令】上（或紧邻它的前一条命令）
@@ -822,11 +827,22 @@ func scqCompute(src string, lang string) scqAxes {
 			hitDC = true
 		}
 		if i > 0 {
-			if scqReTimeout.MatchString(cmds[i-1]) {
-				hitTO = true
-			}
-			if scqReDisconnect.MatchString(cmds[i-1]) {
-				hitDC = true
+			// ★★ R98 轮修：往回找【最近的一条非空命令】⇒ 注释/空行（已被剥成空串）
+			//   **不打断**相邻性（注释不改变执行顺序）⇒ 而一条【真命令】会打断。
+			//   ★ 这条修法的由来：scripts/sync-gateway-db-to-211.sh 的 terminate 与 DROP
+			//   之间只隔着 3 行注释 ⇒ 语义上相邻，却因「相邻 = 上一条命令」而断链
+			//   ⇒ 而那个文件自己的注释里就写着「先 pg_terminate_backend 再 DROP」的范例。
+			for j := i - 1; j >= 0; j-- {
+				if strings.TrimSpace(cmds[j]) == "" {
+					continue
+				}
+				if scqReTimeout.MatchString(cmds[j]) {
+					hitTO = true
+				}
+				if scqReDisconnect.MatchString(cmds[j]) {
+					hitDC = true
+				}
+				break
 			}
 		}
 		if hitTO {
@@ -1319,6 +1335,64 @@ atexit.register(_drop_db)
 		t.Errorf("探针 8（python 合格形态）不应有缺失项，实际 = %v", d)
 	}
 
+	// ★★ 探针 9/10/11（★ R98 轮新增）：★★ 把「逻辑命令切分 + 相邻性」这两条规则钉死。
+	//
+	//   探针 9  ★「非注释行里的奇数撇号」不得把后续行全并成一条命令
+	//   探针 10 ★「紧邻的前一条命令」必须真的生效（中间隔一条**真命令** ⇒ 断链）
+	//   探针 11 ★ 注释/空行**不打断**相邻性（语义上相邻 ⇒ 仍算守卫）
+	//
+	//   ⇒ 三条合起来覆盖了 R98 轮修的三处：切分只按续行 / 相邻性跳过空命令 / 剥注释。
+	oddQuote := `#!/usr/bin/env bash
+x="don't"
+psql -c "DROP DATABASE IF EXISTS x WITH (FORCE);"
+psql -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname='x';" >/dev/null 2>&1 || true
+`
+	axOdd := scqCompute(oddQuote, "shell")
+	if axOdd.CleanupDisconnect {
+		t.Errorf("★ 探针 9：守卫标记在 DROP【之后】⇒ 不得判成 disconnect=yes: %+v\n"+
+			"  ⇒ ★ 若这里判成 yes，说明切分器把「含奇数撇号的那行」之后的全部行并成了一条命令", axOdd)
+	}
+	if axOdd.CleanupTimeout {
+		t.Errorf("★ 探针 9：DROP 所在命令里没有 SET ⇒ timeout 必须是 no: %+v", axOdd)
+	}
+
+	notAdjacent := `#!/usr/bin/env bash
+cleanup() {
+  psql -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname='x' AND pid <> pg_backend_pid();" >/dev/null 2>&1 || true
+  echo "中间隔一条真命令：terminate 与 DROP 不再相邻"
+  psql -c "SET statement_timeout = '15s'" -c "DROP DATABASE IF EXISTS x WITH (FORCE);"
+}
+trap cleanup EXIT
+`
+	axNA := scqCompute(notAdjacent, "shell")
+	if axNA.CleanupDisconnect {
+		t.Errorf("★ 探针 10：terminate 与 DROP 之间隔了一条真命令 ⇒ 不得判成 disconnect=yes: %+v\n"+
+			"  ⇒ 「紧邻的前一条命令」这条规则必须真的生效", axNA)
+	}
+	if !axNA.CleanupTimeout {
+		t.Errorf("★ 探针 10：SET 与 DROP 在同一条命令里 ⇒ timeout 应判成 yes: %+v", axNA)
+	}
+	if !axNA.FallbackCovers {
+		t.Errorf("★ 探针 10：trap → cleanup → DROP 的链条必须成立: %+v", axNA)
+	}
+
+	commentBetween := `#!/usr/bin/env bash
+cleanup() {
+  psql -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname='x' AND pid <> pg_backend_pid();" >/dev/null 2>&1 || true
+  # 中间隔一行注释：注释不改变执行顺序 ⇒ 语义上仍然相邻
+  psql -c "SET statement_timeout = '15s'" -c "DROP DATABASE IF EXISTS x WITH (FORCE);"
+}
+trap cleanup EXIT
+`
+	axCB := scqCompute(commentBetween, "shell")
+	if !axCB.CleanupDisconnect {
+		t.Errorf("★ 探针 11：terminate 与 DROP 之间只隔着注释 ⇒ 语义上相邻 ⇒ disconnect 应判成 yes: %+v\n"+
+			"  ⇒ ★ 真实文件 scripts/sync-gateway-db-to-211.sh 就是这个形态（它自己写着「先 terminate 再 DROP」）", axCB)
+	}
+	if !axCB.CleanupTimeout {
+		t.Errorf("★ 探针 11：SET 与 DROP 在同一条命令里 ⇒ timeout 应判成 yes: %+v", axCB)
+	}
+
 	// ★★ 区分度的正确要求（★ 第一版写成「四个探针两两不同」是错的：
 	//   探针 1 与探针 4 都是**合格**形态 ⇒ 它们的缺失项集合【本来就该相同】⇒
 	//   ⇒ 那样写等于要求「合格形态之间必须不同」⇒ ⇒ 门会红在一个假问题上）。
@@ -1330,10 +1404,12 @@ atexit.register(_drop_db)
 	}
 	passCases := []probeCase{
 		{"1-合格shell", axOK}, {"4-合格disconnect", axDis}, {"8-合格python", axPyOK},
+		{"10-真命令打断相邻", axNA}, {"11-注释不打断相邻", axCB},
 	}
 	failCases := []probeCase{
 		{"2-无防卡无收割", axBad}, {"3-超时标记误命中", axMis},
 		{"5-python无信号", axPy}, {"6-go无信号", axGo}, {"7-载体不覆盖回收", axNC},
+		{"9-撇号把后续行并成一条", axOdd},
 	}
 	for _, p := range passCases {
 		if d := scqDeficits(p.ax); len(d) != 0 {

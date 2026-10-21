@@ -103,8 +103,14 @@ cleanup_dbs() {
     # ★★ R96 轮修：原来把 stderr 一起丢掉 + `|| true` ⇒ **DROP 失败会被完全吞掉**
     #   ⇒ 脚本第 4 节打印「DROP xxx」但库其实还在 ⇒ **回收是【声称】不是【核实】**。
     #   ⇒ 现在把真实报错**留下来**（供第 4 节核对用），但不让它污染读数 stdout。
+    # ★ 防卡保护：SET / terminate / DROP 三条独立 -c
+    #   ★ terminate 单独一条（输出丢 /dev/null）⇒ 下面 err 里只剩 DROP 的真实报错
+    #   ★ DROP 放最后一条 ⇒ psql 退出码仍反映它 ⇒ 「失败可检出」不被削弱
+    docker exec -i "$PG_CONTAINER" psql -U "$PG_USER" -d postgres -q \
+      -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname='$db' AND pid <> pg_backend_pid();" >/dev/null 2>&1 || true
     err="$(docker exec -i "$PG_CONTAINER" psql -U "$PG_USER" -d postgres -q \
-      -c "DROP DATABASE IF EXISTS \"$db\" WITH (FORCE)" 2>&1)"
+      -c "SET statement_timeout = '15s'" \
+      -c "DROP DATABASE IF EXISTS \"$db\" WITH (FORCE);" 2>&1)"
     rc=$?
     if [ "$rc" -ne 0 ]; then
       failed=1
@@ -248,8 +254,12 @@ shape_set_mark() {
     -c "COMMENT ON DATABASE \"$SHAPE_DB\" IS '$SHAPE_MARK'" >/dev/null 2>&1 || true
 }
 shape_drop() {
+  # ★ 防卡保护：SET / terminate / DROP 三条独立 -c
   docker exec -i "$PG_CONTAINER" psql -U "$PG_USER" -d postgres -q \
-    -c "DROP DATABASE IF EXISTS \"$SHAPE_DB\" WITH (FORCE)" >/dev/null 2>&1 || true
+    -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname='$SHAPE_DB' AND pid <> pg_backend_pid();" >/dev/null 2>&1 || true
+  docker exec -i "$PG_CONTAINER" psql -U "$PG_USER" -d postgres -q \
+    -c "SET statement_timeout = '15s'" \
+    -c "DROP DATABASE IF EXISTS \"$SHAPE_DB\" WITH (FORCE);" >/dev/null 2>&1 || true
 }
 
 if [ "$SCOPE_ONLY" = "1" ]; then
@@ -634,8 +644,12 @@ BASE_ENV=(PATH="$PATH" HOME="$HOME" TMPDIR="${TMPDIR:-/tmp}" GOPATH="${GOPATH:-$
           GOPROXY="${GOPROXY:-off}" GOFLAGS="${GOFLAGS:-}" GOTOOLCHAIN="${GOTOOLCHAIN:-local}")
 
 mk_db() {
+  # ★ 防卡保护：SET / terminate / DROP 三条独立 -c
   docker exec -i "$PG_CONTAINER" psql -U "$PG_USER" -d postgres -q \
-    -c "DROP DATABASE IF EXISTS \"$1\" WITH (FORCE)" >/dev/null 2>&1
+    -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname='$1' AND pid <> pg_backend_pid();" >/dev/null 2>&1 || true
+  docker exec -i "$PG_CONTAINER" psql -U "$PG_USER" -d postgres -q \
+    -c "SET statement_timeout = '15s'" \
+    -c "DROP DATABASE IF EXISTS \"$1\" WITH (FORCE);" >/dev/null 2>&1
   local out
   out=$(docker exec -i "$PG_CONTAINER" psql -U "$PG_USER" -d postgres -q \
         -c "CREATE DATABASE \"$1\" TEMPLATE $SHAPE_DB" 2>&1)

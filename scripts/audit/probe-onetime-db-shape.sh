@@ -62,15 +62,24 @@ psql_() { docker exec -i "$PG_CONTAINER" psql -U "$PG_USER" -d "$DB" -q -A -t "$
 cleanup_db() {
   if [[ "$KEEP_DB" == "1" ]]; then return 0; fi
   if [[ -n "${DB:-}" ]]; then
+    # ★ 防卡保护：SET / terminate / DROP 三条独立 -c
     docker exec -i "$PG_CONTAINER" psql -U "$PG_USER" -d postgres -q \
-      -c "DROP DATABASE IF EXISTS $DB" >/dev/null 2>&1 || true
+      -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname='$DB' AND pid <> pg_backend_pid();" >/dev/null 2>&1 || true
+    docker exec -i "$PG_CONTAINER" psql -U "$PG_USER" -d postgres -q \
+      -c "SET statement_timeout = '15s'" \
+      -c "DROP DATABASE IF EXISTS $DB WITH (FORCE);" >/dev/null 2>&1 || true
   fi
 }
 
 echo "== 建一次性库 ${DB}（容器=${PG_CONTAINER}）=="
 
 # 1) 空库
-docker exec -i "$PG_CONTAINER" psql -U "$PG_USER" -d postgres -q -c "DROP DATABASE IF EXISTS $DB" >/dev/null 2>&1
+# ★ 防卡保护：SET / terminate / DROP 三条独立 -c
+docker exec -i "$PG_CONTAINER" psql -U "$PG_USER" -d postgres -q \
+  -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname='$DB' AND pid <> pg_backend_pid();" >/dev/null 2>&1 || true
+docker exec -i "$PG_CONTAINER" psql -U "$PG_USER" -d postgres -q \
+  -c "SET statement_timeout = '15s'" \
+  -c "DROP DATABASE IF EXISTS $DB WITH (FORCE);" >/dev/null 2>&1
 # ★ 先注册 trap：建库过程中失败 ⇒ 也要回收
 trap cleanup_db EXIT
 if ! docker exec -i "$PG_CONTAINER" psql -U "$PG_USER" -d postgres -q -c "CREATE DATABASE $DB" >/dev/null 2>/tmp/r59-create.err; then

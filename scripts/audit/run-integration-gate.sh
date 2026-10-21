@@ -235,8 +235,12 @@ cleanup() {
     fi
     docker exec "$PG_CONTAINER" psql -U "$PG_USER" -d postgres -q \
       -c "DROP ROLE IF EXISTS ${TENANT_ROLE:-itgate_tenant}" >/dev/null 2>&1 || true
+    # ★ 防卡保护：SET / terminate / DROP 三条独立 -c
     docker exec "$PG_CONTAINER" psql -U "$PG_USER" -d postgres -q \
-      -c "DROP DATABASE IF EXISTS $GATE_DB" >/dev/null 2>&1 || true
+      -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname='$GATE_DB' AND pid <> pg_backend_pid();" >/dev/null 2>&1 || true
+    docker exec "$PG_CONTAINER" psql -U "$PG_USER" -d postgres -q \
+      -c "SET statement_timeout = '15s'" \
+      -c "DROP DATABASE IF EXISTS $GATE_DB WITH (FORCE);" >/dev/null 2>&1 || true
   fi
 }
 trap cleanup EXIT
@@ -244,8 +248,12 @@ trap cleanup EXIT
 echo "═══ integration gate: $PKG ${TEST_NAME:+(run=$TEST_NAME)} ═══"
 echo "═══ disposable db=$GATE_DB container=$PG_CONTAINER ═══"
 
+# ★ 防卡保护：SET / terminate / DROP 三条独立 -c
 docker exec "$PG_CONTAINER" psql -U "$PG_USER" -d postgres -q \
-  -c "DROP DATABASE IF EXISTS $GATE_DB" >/dev/null 2>&1
+  -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname='$GATE_DB' AND pid <> pg_backend_pid();" >/dev/null 2>&1 || true
+docker exec "$PG_CONTAINER" psql -U "$PG_USER" -d postgres -q \
+  -c "SET statement_timeout = '15s'" \
+  -c "DROP DATABASE IF EXISTS $GATE_DB WITH (FORCE);" >/dev/null 2>&1
 if ! docker exec "$PG_CONTAINER" psql -U "$PG_USER" -d postgres -q \
      -c "CREATE DATABASE $GATE_DB" >/dev/null 2>/tmp/itgate-create.err; then
   echo "--- stderr ---" >&2; cat /tmp/itgate-create.err >&2

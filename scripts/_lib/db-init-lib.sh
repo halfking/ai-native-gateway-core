@@ -777,7 +777,13 @@ db_init::verify() {
   if ! psql "$base" -c "SELECT 1" -t -A >/dev/null 2>&1; then
     echo "ERROR: cannot connect to $base" >&2; return 1
   fi
-  if ! psql "$base" -c "DROP DATABASE IF EXISTS \"${db}_verify\"" 2>&1; then
+  # ★ 防卡保护：先踢掉残留连接，再给 DROP 自己设上限（实测：裸 DROP 遇到别的会话
+  #   挂在该库上时会一直等下去 ⇒ 整个脚本卡在退出路径上）。
+  psql "$base" \
+    -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname='${db}_verify' AND pid <> pg_backend_pid();" >/dev/null 2>&1 || true
+  if ! psql "$base" \
+      -c "SET statement_timeout = '15s'" \
+      -c "DROP DATABASE IF EXISTS \"${db}_verify\" WITH (FORCE);" 2>&1; then
     echo "WARN: drop failed (likely no such DB), continuing" >&2
   fi
   # ★★★ 回收兜底（R94 轮实测修）：本函数原本在**尾部** DROP verify 库
@@ -793,7 +799,12 @@ db_init::verify() {
   db_init::_drop_verify_db() {
     [[ "${_DB_INIT_VERIFY_KEEP:-0}" == "1" ]] && return 0
     [[ -n "${_DB_INIT_VERIFY_DB:-}" ]] || return 0
-    psql "${_DB_INIT_VERIFY_BASE}" -c "DROP DATABASE IF EXISTS \"${_DB_INIT_VERIFY_DB}\"" >/dev/null 2>&1 || true
+    # ★ 防卡保护：与上面【建库前的预 DROP】同一形态（SET / terminate / DROP 三条独立 -c）
+    psql "${_DB_INIT_VERIFY_BASE}" \
+      -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname='${_DB_INIT_VERIFY_DB}' AND pid <> pg_backend_pid();" >/dev/null 2>&1 || true
+    psql "${_DB_INIT_VERIFY_BASE}" \
+      -c "SET statement_timeout = '15s'" \
+      -c "DROP DATABASE IF EXISTS \"${_DB_INIT_VERIFY_DB}\" WITH (FORCE);" >/dev/null 2>&1 || true
   }
   trap 'db_init::_drop_verify_db' EXIT
   if ! psql "$base" -c "CREATE DATABASE \"${db}_verify\"" 2>&1; then
