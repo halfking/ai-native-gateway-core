@@ -509,7 +509,7 @@ if ! delivery_path_output=$(canonical_delivery_path_check "$canonical_files" "$s
   done <<<"$delivery_path_output"
 fi
 
-# ── R82 轮（2026-10-22）：投递**视野**补齐 —— 非纯数字前缀 + 子目录 ─────────────
+# ── R82/R83 轮（2026-10-22）：投递**视野**补齐 —— 两个宇宙 ＋ 效果落点核对 ─────────
 #
 # ★★ 本块要修的缺陷（**实测复现**，不是推演）：
 #   上面那道 canonical_delivery_path_check 与 installer 的强制 embed 门，
@@ -528,29 +528,52 @@ fi
 #
 # ★ 修法的性质（与 R81 轮 L11-b 门**同款**）：把「手挑的扫描根清单」换成
 #   ★ **穷举全目录 ＋ 显式清单**。
-#   · 穷举：`sql/migrations/startup/` **递归**全量 up 体（当前 580 条 =
-#     顶层 566 + `up/` 子目录 14），不再按目录层级挑扫描根；
-#   · 显式清单：`sql/schema/startup_migration_nonplain.tsv` 逐条写明
-#     **非纯数字前缀**那部分（当前 13 条）的投递腿与理由。
 #
-# ⚠ 「穷举」这一侧还有**第二处隐形**：子目录 `up/`（14 条）此前也不在
-#   canonical_files 的枚举里（那里是 `find -maxdepth 1`）⇒ **同一个病的第二例**
-#   （今天无实害：14 条全部 <690；但「今天无实害」不等于「明天仍无实害」——
-#   门若看不见 `up/`，将来落进 `up/` 的 ≥690 迁移同样会静默不投递）。
-#   ⇒ 本块按**递归**枚举，子目录里的文件一并纳入。
+# ⚠⚠⚠ **R83 轮实测出的第二宇宙**（R82 轮自己的遗漏）：
+#   R82 轮的登记册**只穷举了 canonical 目录**（`sql/migrations/startup/`）
+#   ⇒ ⇒ **installer 的 embeddata 目录**是**另一个独立的文件宇宙**
+#   ⇒ ⇒ 而它里面有**非前缀名**的文件：`session_turns_hot_bootstrap.sql`
+#        —— ★★ **canonical 目录里根本没有这个文件**
+#   ⇒ ⇒ ⇒ **R82 轮的门在 embeddata 宇宙上仍然是瞎的**
+#   ⇒ ⇒ ★★ **这个文件恰好是 `session_turns_hot` 那张表及其 11 个索引的载体**
+#        （settle worker 读的就是这张表）⇒ ⇒ **它必须被登记、必须有投递腿**
+#   ⇒ ⇒ 本块改为**两个宇宙各穷举一次**。
 #
-# 门的形态：三条判据 + 一条量具自检，全部**一次报全**（沿用本脚本的收集器）。
+# ⚠ 枚举面此前还有第二处隐形：子目录 `up/`（14 条）不在 canonical_files 的
+#   枚举里（那里是 `find -maxdepth 1`）⇒ **同一个病的第二例**
+#   （今天无实害：14 条全部 <690；但「今天无实害」不等于「明天仍无实害」）。
+#
+# ★★ **R83 轮的第二处升级：把「有意不投递」从散文变成可核对的事实。**
+#   R82 轮的登记册里，每条 `none` 只有一句**散文理由** ⇒ **门一个字都不核对**
+#   ⇒ ⇒ 那就是「只是声名一下」⇒ ⇒ ★ 而且它**当场被证伪过一次**：R82 轮给
+#   `2026-07-13-multimodal-token-fields-hot.sql` 写的理由引用了
+#   `session_turns.reasoning_tokens` ⇒ ★★ **实测基线里 session_turns 这 5 列全缺**
+#   （多模态列在 `usage_ledger` / `usage_ledger_hot`）⇒ ⇒ **理由是错的**
+#   ⇒ ⇒ 根因：R82 轮用宽松 grep 取了行号，**没有反查那些行属于哪张表**
+#   ⇒ ⇒ 修法 = 登记册加**效果落点**列（机器可核）⇒ 散文只留给人读。
+#
+# 门的形态（全部**一次报全**，沿用本脚本的收集器）：
+#   ⓪ 量具自检：两个宇宙都要真的扫到东西
+#   ① 目录里有、册子里没有 ⇒ 红（漏登记 ⇒ 会静默不投递）
+#   ② 册子里有、目录里没有 ⇒ 红（陈旧条目 ⇒ 登记册自己漂移）
+#   ③ 投递腿必须与两条腿的**真实登记**一致（声明 ≠ 事实 ⇒ 红）
+#   ④ **效果落点**逐项核对（baseline 表/列/索引、890 解析出的退役对象、bootstrap 文件）
 nonplain_registry="$ROOT_DIR/sql/schema/startup_migration_nonplain.tsv"
+nonplain_baseline="$ROOT_DIR/sql/schema/01-schema.sql"
+nonplain_mig890="$ROOT_DIR/sql/migrations/startup/890_drop_request_logs_v1_family.sql"
 if [[ ! -f "$nonplain_registry" ]]; then
   printf 'startup 非纯数字前缀迁移的投递登记册缺失：%s\n' "$nonplain_registry" >&2
   exit 1
 fi
-# 穷举：**递归**全目录的 up 体。
+# 穷举**两个宇宙**。
+# ⚠ 用 `cd` + `find .` 而不是 `sed "s#^$ROOT_DIR/...##"` ⇒ 后者的路径里含正则
+#   元字符（`.` 等）⇒ 仓库根一旦带特殊字符就会静默失配 ⇒ **量具自己的路径语义要稳**。
 # ⚠ `down/` 子目录里的件全部带 `.down.sql` 后缀 ⇒ 这一条 -name 过滤同时排掉了
 #   down/ 与顶层的 .down.sql ⇒ 留下来的就是「会被投递的 up 体」。
-startup_up_bodies=$(find "$ROOT_DIR/sql/migrations/startup" -type f -name '*.sql' \
-  ! -name '*.down.sql' \
-  | sed "s#^$ROOT_DIR/sql/migrations/startup/##" | sort)
+canon_up_bodies=$(cd "$ROOT_DIR/sql/migrations/startup" \
+  && find . -type f -name '*.sql' ! -name '*.down.sql' | sed 's|^\./||' | sort)
+embed_up_bodies=$(cd "$ROOT_DIR/installer/cmd/llm-gw-installer/embeddata/startup" \
+  && find . -maxdepth 1 -type f -name '*.sql' ! -name '*.down.sql' | sed 's|^\./||' | sort)
 # 两条腿的**全名**提取（既有的 sequence_files / startup_files 只认纯数字前缀名，
 # 而本册子登记的恰恰是那些**非**纯数字前缀的名 ⇒ 必须另取一份全名视图）。
 sequence_files_all=$(printf '%s\n' "$sequence" \
@@ -560,68 +583,230 @@ startup_files_all=$(grep -E '^[[:space:]]*"[^"]+\.sql",?$' "$ROOT_DIR/installer/
   | sed -E 's/^[[:space:]]*"([^"]+)".*/\1/' | sort -u)
 # ⚠ 分类必须看**文件名**（basename），不能看相对路径 ——
 #   `up/376_autoupdate.sql` 的 basename 是**纯数字前缀名** ⇒ 它**不是**非前缀迁移。
-#   本轮第一版用相对路径判（`grep -vE '^[0-9]{3}_'`）⇒ 把整个 up/ 子目录
-#   误判成「非前缀」⇒ 门当场红在 13 条 up/ 文件上 —— **这是门自己抓到的自己的错**。
-nonplain_actual=$(printf '%s\n' "$startup_up_bodies" | awk -F/ '$NF !~ /^[0-9][0-9][0-9]_/ {print}')
+#   R82 轮第一版用相对路径判 ⇒ 把整个 up/ 子目录误判成「非前缀」
+#   ⇒ 门当场红在 13 条 up/ 文件上 —— **这是门自己抓到的自己的错**。
+nonplain_actual=$(
+  {
+    printf '%s\n' "$canon_up_bodies" | awk -F/ '$NF !~ /^[0-9][0-9][0-9]_/ {print "canonical/" $0}'
+    printf '%s\n' "$embed_up_bodies" | awk -F/ '$NF !~ /^[0-9][0-9][0-9]_/ {print "embeddata/" $0}'
+  } | sort
+)
 nonplain_declared=$(awk -F'\t' '!/^#/ && NF>=2 {print $1}' "$nonplain_registry" | sort)
 
-# ⓪ 量具自检：穷举必须真的扫到东西，且**必须扫到子目录**。
+# ⚠⚠⚠ **读登记册必须用 \x1f 而不是 TAB**（★ R83 轮实测出的**真缺陷**，
+#   是本门自己写出来的）：
+#
+#   bash 的 `read` 在 IFS 是**空白字符**（空格 / TAB / 换行）时，会把**连续分隔符
+#   折叠成一个**、并**剥掉首尾的空白** ⇒ 登记册里
+#   「效果落点为空、理由非空」（`键<TAB>none<TAB><TAB>理由` —— **人最自然的写法**）
+#   会被读成 **落点=理由、理由=空** ⇒ ⇒ 「none 条目没有写效果落点」这条判据
+#   **在这种写法下是瞎的**（判据恒绿）⇒ ⇒ ★ **它抓的正是自己声称要抓的东西，
+#   却抓不到最常见的那种写法**。
+#
+#   实测（macOS bash 3.2）：`printf 'a\tb\t\tc\n' | { IFS=$'\t' read -r k l g r; }`
+#   ⇒ landing=[c]、reason=[] —— **空的中段字段整个消失了**。
+#
+#   \x1f（unit separator）**不是** IFS 空白 ⇒ 空字段被原样保留 ✓
+#   ⇒ ⇒ 与 Go 侧 `strings.Split(line, "\t")` 的语义**对齐**（Go 的 Split 不折叠）。
+#
+# ★★ 这是本仓**第四次**栽在「判据的观测手段自己有语义偏差」这一族上
+#   （R81 轮 M15 的变异没落地、R82 轮第一版的分类粒度、R83 轮第一版的自检锚点、
+#   本条）⇒ ⇒ **通用式：判据读自己的输入时，必须先验证「读出来的形状」与
+#   写进去的形状一致**。
+registry_rows() {
+  # 输出：每行「键 \x1f 投递腿 \x1f 效果落点 \x1f 理由」
+  # ⚠ 只取 $1..$4（登记册约定恰好 4 列）⇒ 多于 4 列的行会被截断 ⇒
+  #   那种行由 Go 侧的列数门单独拦（见 migration_nonplain_delivery_gate_test.go）。
+  #
+  # ⚠⚠⚠ **每行末尾必须有 \n**（R83 轮实测出的**真缺陷**）：
+  #   ★ 第一版**漏了换行** ⇒ **15 行被拼成 1 行** ⇒ ⇒ ★★ **③/④ 两个循环
+  #     只检查了登记册的第一行**（其余 14 行**根本没被读**）⇒ ⇒ **门「有牙」是假的**。
+  #   ⇒ 而且它在**基线上是绿的** ⇒ ⇒ **只有「针对非第一行的变异」才抓得到它**
+  #     （M7 就是这样抓到它的）⇒ ⇒ **「基线绿 + 全部变异红」也可能是假绿**。
+  #   ⇒ ⇒ 下面加了**行数自检**，把「读到几行」变成一条判据。
+  awk -F'\t' '!/^#/ && NF>=2 {printf "%s%c%s%c%s%c%s\n", $1, 31, $2, 31, $3, 31, $4}' \
+    "$nonplain_registry"
+}
+
+# ⓪ 量具自检：穷举必须真的扫到东西，且**必须扫到两个宇宙**。
 #   ⇒ 否则「目录里多一条」这条判据会**恒绿**（门看上去正常、实际扫了个寂寞）。
+#
+# ⚠⚠ **锚点必须打在【原始枚举】上，不能打在「非前缀集合」上** ——
+#   R83 轮第一版把锚点写成 `canonical/700_...`（**纯数字前缀**文件）并去
+#   `nonplain_actual` 里找 ⇒ ⇒ **自检恒红**（纯数字前缀文件按定义就不在非前缀集合里）
+#   ⇒ ⇒ ★ **这是本仓第三次栽在「自检的锚点选错集合」上**（R81 轮 M15、
+#   R82 轮第一版分类粒度、本条）⇒ ⇒ **通用式：自检锚点必须选在【被检集合里】**。
 for must_see in \
   "700_request_logs_view_raw_model_name.sql" \
   "up/600_outbound_body_to_bodies_hot.sql"; do
-  if ! grep -Fxq "$must_see" <<<"$startup_up_bodies"; then
-    gate_fail "startup 迁移穷举没有扫到 ${must_see} ⇒ 枚举面漂移（find 的递归/过滤被改？）⇒ 本块全部判据都不可信"
+  if ! grep -Fxq "$must_see" <<<"$canon_up_bodies"; then
+    gate_fail "canonical 宇宙的穷举没有扫到 ${must_see} ⇒ 枚举面漂移（find 的递归/过滤被改？）⇒ 本块全部判据都不可信"
   fi
 done
+if ! grep -Fxq "session_turns_hot_bootstrap.sql" <<<"$embed_up_bodies"; then
+  gate_fail "embeddata 宇宙的穷举没有扫到 session_turns_hot_bootstrap.sql ⇒ 枚举面漂移 ⇒ 本块全部判据都不可信"
+fi
 if [[ -z "$nonplain_actual" ]]; then
   gate_fail "startup 迁移穷举没有扫到任何非纯数字前缀的 up 体 ⇒ 枚举面失效 ⇒ 本块的『漏登记』判据会恒绿"
 fi
+# ★★ **登记册「读到几行」自检**（R83 轮实测出的真缺陷的守门人）：
+#   第一版 `registry_rows()` 的 printf **漏了换行** ⇒ 15 行被拼成 1 行
+#   ⇒ ⇒ ③/④ 两个循环**只检查了第一行** ⇒ ⇒ **门在基线上是绿的、但 90% 是瞎的**。
+#   ⇒ ⇒ ★ **基线绿 + 全部变异红，也可能是假绿** ⇒ ⇒ 必须把「读到几行」本身变成判据。
+registry_rows_read=$(registry_rows | awk 'END{print NR+0}')
+# ⚠ 用 `awk END{print NR}` 而不是 `wc -l`：**`wc -l` 数的是换行符个数** ⇒
+#   一条**没有尾换行**的记录会被算成 **0 行**（而它明明是 1 条）⇒
+#   报出来的数字会误导人（实测：M20 变异的报错写的是「读取的行数（0）」）。
+#   ⇒ ⇒ `NR` 数的是**记录数**（最后一条无尾换行的也算 1 条）⇒ 语义与「我读到了几条」一致。
+registry_rows_data=$(awk -F'\t' '!/^#/ && NF>=2 {n++} END{print n+0}' "$nonplain_registry")
+if [[ "$registry_rows_read" != "$registry_rows_data" ]]; then
+  gate_fail "登记册读取的行数（${registry_rows_read}）与数据行数（${registry_rows_data}）不一致 ⇒ 读册子的口径坏了（行分隔符丢了？）⇒ 本块全部登记册判据都不可信"
+fi
+if [[ "$registry_rows_data" -lt 1 ]]; then
+  gate_fail "登记册一条数据行都没有 ⇒ 观测手段失效（读了个空文件？）⇒ 本块全部判据都不可信"
+fi
 
 # ① 目录里有、册子里没有 ⇒ 红（漏登记 ⇒ 会静默不投递）
-while IFS= read -r name; do
-  [[ -n "$name" ]] || continue
-  if ! grep -Fxq "$name" <<<"$nonplain_declared"; then
-    gate_fail "startup 迁移 ${name} 的文件名解析不出纯三位数字前缀 ⇒ 它对**投递路径契约门**与**installer 强制 embed 门**都完全隐形（两道门都靠 ^[0-9]{3}_ 判视野）⇒ 它既不在通道 files=()、也不在 embeddata/StartupFiles ⇒ 升级库与新装库都拿不到 ⇒ 必须先在 sql/schema/startup_migration_nonplain.tsv 登记投递腿，再登记进对应通道"
+while IFS= read -r key; do
+  [[ -n "$key" ]] || continue
+  if ! grep -Fxq "$key" <<<"$nonplain_declared"; then
+    gate_fail "startup 迁移 ${key} 的文件名解析不出纯三位数字前缀 ⇒ 它对**投递路径契约门**与**installer 强制 embed 门**都完全隐形（两道门都靠 ^[0-9]{3}_ 判视野）⇒ 它既不在通道 files=()、也不在 embeddata/StartupFiles ⇒ 升级库与新装库都拿不到 ⇒ 必须先在 sql/schema/startup_migration_nonplain.tsv 登记投递腿，再登记进对应通道"
   fi
 done <<<"$nonplain_actual"
 
 # ② 册子里有、目录里没有 ⇒ 红（陈旧条目 ⇒ 登记册自己漂移）
-while IFS= read -r name; do
-  [[ -n "$name" ]] || continue
-  if [[ ! -f "$ROOT_DIR/sql/migrations/startup/$name" ]]; then
-    gate_fail "startup_migration_nonplain.tsv 登记了 ${name}，但 sql/migrations/startup/ 下没有这个文件 ⇒ 登记册陈旧"
+while IFS= read -r key; do
+  [[ -n "$key" ]] || continue
+  case "$key" in
+    canonical/*) target="$ROOT_DIR/sql/migrations/startup/${key#canonical/}" ;;
+    embeddata/*) target="$ROOT_DIR/installer/cmd/llm-gw-installer/embeddata/startup/${key#embeddata/}" ;;
+    *) target="" ;;
+  esac
+  if [[ -z "$target" || ! -f "$target" ]]; then
+    gate_fail "startup_migration_nonplain.tsv 登记了 ${key}，但对应目录里没有这个文件 ⇒ 登记册陈旧（键的宇宙前缀也非法）"
   fi
 done <<<"$nonplain_declared"
 
-# ③ 册子里的投递腿必须与两条腿的**真实登记**一致（声明 ≠ 事实 ⇒ 红）
-while IFS=$'\t' read -r name leg reason; do
-  [[ -n "$name" ]] || continue
+# ③ 投递腿必须与两条腿的**真实登记**一致（声明 ≠ 事实 ⇒ 红）
+#   ⚠ 通道腿只能投递 **canonical** 路径（files=() 里写死的就是 canonical 路径）
+#     ⇒ embeddata 宇宙的键若声明 channel/both ⇒ 一定是错的。
+while IFS=$'\x1f' read -r key leg landing reason; do
+  [[ -n "$key" ]] || continue
+  base="${key##*/}"
   case "$leg" in
     channel|both)
-      if ! grep -Fxq "$name" <<<"$sequence_files_all"; then
-        gate_fail "startup_migration_nonplain.tsv 声明 ${name} 走通道腿，但它不在 scripts/apply-db-revision-sequence.sh 的 files=() 里 ⇒ 升级库拿不到"
+      if [[ "$key" != canonical/* ]]; then
+        gate_fail "startup_migration_nonplain.tsv 声明 ${key} 走通道腿，但通道 files=() 里写死的是 **canonical** 路径 ⇒ embeddata 宇宙的键不可能由通道投递 ⇒ 声明与事实不符"
+      elif ! grep -Fxq "$base" <<<"$sequence_files_all"; then
+        gate_fail "startup_migration_nonplain.tsv 声明 ${key} 走通道腿，但它不在 scripts/apply-db-revision-sequence.sh 的 files=() 里 ⇒ 升级库拿不到"
       fi
       ;;
   esac
   case "$leg" in
     installer|both)
-      if ! grep -Fxq "$name" <<<"$startup_files_all"; then
-        gate_fail "startup_migration_nonplain.tsv 声明 ${name} 走安装器腿，但它不在 installer/internal/dbinit/runner.go 的 StartupFiles 里 ⇒ 新装库拿不到"
+      if ! grep -Fxq "$base" <<<"$startup_files_all"; then
+        gate_fail "startup_migration_nonplain.tsv 声明 ${key} 走安装器腿，但它不在 installer/internal/dbinit/runner.go 的 StartupFiles 里 ⇒ 新装库拿不到"
       fi
       ;;
   esac
   case "$leg" in
     none)
-      if grep -Fxq "$name" <<<"$sequence_files_all"; then
-        gate_fail "startup_migration_nonplain.tsv 声明 ${name} 有意不投递，但它**在**通道 files=() 里 ⇒ 声明与事实不符"
+      if grep -Fxq "$base" <<<"$sequence_files_all"; then
+        gate_fail "startup_migration_nonplain.tsv 声明 ${key} 有意不投递，但它**在**通道 files=() 里 ⇒ 声明与事实不符"
       fi
-      if grep -Fxq "$name" <<<"$startup_files_all"; then
-        gate_fail "startup_migration_nonplain.tsv 声明 ${name} 有意不投递，但它**在**安装器 StartupFiles 里 ⇒ 声明与事实不符"
+      if grep -Fxq "$base" <<<"$startup_files_all"; then
+        gate_fail "startup_migration_nonplain.tsv 声明 ${key} 有意不投递，但它**在**安装器 StartupFiles 里 ⇒ 声明与事实不符"
       fi
       ;;
   esac
-done < <(awk -F'\t' '!/^#/ && NF>=2 {print}' "$nonplain_registry")
+done < <(registry_rows)
+
+# ④ ★★ **效果落点**逐项核对 —— 把「有意不投递」从散文变成可核对的事实。
+#
+#   ★ 退役对象清单**从迁移 890 自己解析**（它的 FOREACH 数组）⇒
+#     **不手工维护** ⇒ 890 改了清单，这道判据自动跟着改。
+baseline_table_exists() {
+  grep -qE "^CREATE TABLE (IF NOT EXISTS )?public\.$1 *\(" "$nonplain_baseline"
+}
+baseline_column_exists() {
+  local tbl="$1" col="$2"
+  awk -v t="public.$tbl" -v c="$col" '
+    $0 ~ ("^CREATE TABLE (IF NOT EXISTS )?" t " *\\(") { inblk=1; next }
+    inblk && $0 ~ "^CREATE TABLE " { inblk=0 }
+    inblk {
+      line=$0; sub(/^[ \t]+/, "", line);
+      if (line ~ ("^" c "([ \t]|$)")) { found=1 }
+    }
+    END { exit(found ? 0 : 1) }
+  ' "$nonplain_baseline"
+}
+baseline_index_exists() {
+  grep -qE "^CREATE (UNIQUE )?INDEX \"?$1\"? " "$nonplain_baseline"
+}
+retired_objects=$(awk '/FOREACH v_name IN ARRAY ARRAY\[/{f=1;next} f&&/\] LOOP/{f=0} f' "$nonplain_mig890" \
+  | grep -oE "'[a-z_][a-z0-9_]*'" | tr -d "'" | sort -u)
+if [[ -z "$retired_objects" ]]; then
+  gate_fail "从 ${nonplain_mig890} 解析不出退役对象清单 ⇒ 效果落点的 retired: 判据会恒绿（量具失效）"
+fi
+bootstrap_exists() {
+  local name="$1"
+  [[ -f "$ROOT_DIR/installer/cmd/llm-gw-installer/embeddata/startup/$name" ]] \
+    || [[ -f "$ROOT_DIR/sql/migrations/startup/$name" ]]
+}
+check_landing_spot() {
+  local key="$1" landing="$2" spot
+  if [[ "$landing" == "-" || -z "$landing" ]]; then
+    return 0
+  fi
+  local IFS=','
+  for spot in $landing; do
+    spot="$(printf '%s' "$spot" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
+    [[ -n "$spot" ]] || continue
+    case "$spot" in
+      baseline:*)
+        local obj="${spot#baseline:}"
+        if [[ "$obj" == *.* ]]; then
+          local tbl="${obj%%.*}" col="${obj#*.}"
+          if ! baseline_column_exists "$tbl" "$col"; then
+            gate_fail "startup_migration_nonplain.tsv 的 ${key} 声明效果落在 baseline:${obj}，但基线 sql/schema/01-schema.sql 里 **public.${tbl} 没有 ${col} 这一列** ⇒ 效果落点不成立 ⇒ 这条『有意不投递』的决定没有依据"
+          fi
+        else
+          if ! baseline_table_exists "$obj"; then
+            gate_fail "startup_migration_nonplain.tsv 的 ${key} 声明效果落在 baseline:${obj}，但基线 sql/schema/01-schema.sql 里没有这张表 ⇒ 效果落点不成立"
+          fi
+        fi
+        ;;
+      baseline-index:*)
+        local idx="${spot#baseline-index:}"
+        if ! baseline_index_exists "$idx"; then
+          gate_fail "startup_migration_nonplain.tsv 的 ${key} 声明效果落在 baseline-index:${idx}，但基线里没有这个索引 ⇒ 效果落点不成立"
+        fi
+        ;;
+      retired:*)
+        local obj="${spot#retired:}"
+        if ! grep -Fxq "$obj" <<<"$retired_objects"; then
+          gate_fail "startup_migration_nonplain.tsv 的 ${key} 声明效果落在 retired:${obj}，但该对象**不在迁移 890 自己列出的退役清单里** ⇒ 效果落点不成立（要么对象没退役，要么清单名字写错了）"
+        fi
+        ;;
+      bootstrap:*)
+        local obj="${spot#bootstrap:}"
+        if ! bootstrap_exists "$obj"; then
+          gate_fail "startup_migration_nonplain.tsv 的 ${key} 声明效果落在 bootstrap:${obj}，但 embeddata/startup/ 与 sql/migrations/startup/ 下都没有这个文件 ⇒ 效果落点不成立"
+        fi
+        ;;
+      *)
+        gate_fail "startup_migration_nonplain.tsv 的 ${key} 的效果落点 ${spot} 语法非法（合法：baseline:<表>[.<列>] / baseline-index:<索引> / retired:<对象> / bootstrap:<文件>）"
+        ;;
+    esac
+  done
+}
+while IFS=$'\x1f' read -r key leg landing reason; do
+  [[ -n "$key" ]] || continue
+  if [[ "$leg" == "none" && ( "$landing" == "-" || -z "$landing" ) ]]; then
+    gate_fail "startup_migration_nonplain.tsv 的 ${key} 声明「有意不投递」却没有写效果落点 ⇒ 这条决定没有任何可核对的依据（散文不算依据）"
+  fi
+  check_landing_spot "$key" "$landing"
+done < <(registry_rows)
 
 # R33 (2026-10-03) channel-leg completeness — structural closeout of the
 # five-recurrence class (693/699/701/703, then 815/816, then 817): each landed
