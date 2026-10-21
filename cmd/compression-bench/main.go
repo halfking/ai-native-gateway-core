@@ -239,7 +239,10 @@ func loadRequestLogs(ctx context.Context, pool *pgxpool.Pool, days, maxSamples i
 	//     会话族的「无正文」是 jsonb null 而不是 SQL NULL ⇒ 只写 IS NOT NULL
 	//     是**恒真**（db 包的 SessionBodiesHasOutboundPredicate 记着这条）。
 	//     这里用共享 helper，别自己再写一遍。
-	q := fmt.Sprintf(`
+	// ⚠ 两个 SessionFamily helper 的投影里都有字面 `%`（`LIKE 'sys:%'`），
+	// 拼好的 SQL 不能再过 fmt.Sprintf（`%` 会被当成未知动词损坏语句——
+	// discovery/discovery.go 2026-10-21 生产事故同族）⇒ limitClause 用拼接。
+	q := `
 		SELECT
 			rl.request_id,
 			rl.tenant_id,
@@ -249,13 +252,12 @@ func loadRequestLogs(ctx context.Context, pool *pgxpool.Pool, days, maxSamples i
 			COALESCE(rl.outbound_msg_count, 0) AS msg_count,
 			COALESCE(rl.compression_strategy, '') AS compression_strategy,
 			rl.ts
-		FROM `+dbpkg.SessionFamilyTurnsSourceSQL()+` rl
-		JOIN `+dbpkg.SessionFamilyBodiesSourceSQL()+` b ON b.request_id = rl.request_id
+		FROM ` + dbpkg.SessionFamilyTurnsSourceSQL() + ` rl
+		JOIN ` + dbpkg.SessionFamilyBodiesSourceSQL() + ` b ON b.request_id = rl.request_id
 		WHERE rl.ts >= NOW() - INTERVAL '1 day' * $1
-		  AND `+dbpkg.SessionBodiesHasOutboundPredicate("b")+`
+		  AND ` + dbpkg.SessionBodiesHasOutboundPredicate("b") + `
 		ORDER BY rl.ts DESC
-		%s
-	`, limitClause)
+		` + limitClause
 
 	rows, err := pool.Query(ctx, q, days)
 	if err != nil {

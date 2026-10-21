@@ -72,7 +72,7 @@
 | 系统盘 `df /` 已用% | ≥ 60% | ≥ 75% | 留出"还能跑清理"的时间窗 |
 | 系统盘剩余 GB | ≤ 30 GB | — | 200G 系统的 15% |
 | `llm_gateway` DB | ≥ 20 GB | ≥ 28 GB | 之前一次触发时 22 GB |
-| `request_logs_hot`（单表风险） | ≥ 2 GB | ≥ 3 GB | JSONB TOAST 风险 |
+| `session_turns_hot`（单表风险） | ≥ 2 GB | ≥ 3 GB | JSONB TOAST 风险（★ 2026-10-22 §145 换对象：原 `_request_logs_hot` 随迁移 890 退役） |
 | `model_probe_runs_hot` | ≥ 500 MB | — | 14 天 TTL 满约 1 GB |
 | `columnar_internal.chunk`（元数据） | ≥ 15 GB | — | DROP 列存表后未 VACUUM FULL 才会膨胀 |
 | `pg_wal` 拥堵 | ≥ 3 GB | — | `max_wal_size` 默认 2 GB |
