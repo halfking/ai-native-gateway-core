@@ -114,7 +114,7 @@ HTTP/SSE → middleware chain → protocol/IR normalization → session assignme
 | `installer/` | Eigenständiges plattformübergreifendes Installer-/Upgrader-Modul |
 | `scripts/`, `deploy/` | Build-, Deploy-, Mirror- und Verifikations-Werkzeuge |
 
-Skalierungs-Snapshot (Code-Scan vom 2026-10-22 @26ebb346c): **~5,677 Go-Dateien · 3,330 Testdateien · 1,119 Migrations-SQLs · 68 Domain-Packages · 44 Binaries** unter `cmd/` (Dateizahlen ohne `vendor/` und `installer/`; Migrations-SQLs = vollständiger `sql/migrations/`-Baum; Binaries = main-Pakete laut `go list`).
+Skalierungs-Snapshot (Code-Scan vom 2026-10-22 @fa89d61b2): **~5,679 Go-Dateien · 3,332 Testdateien · 1,119 Migrations-SQLs · 68 Domain-Packages · 44 Binaries** unter `cmd/` (Dateizahlen ohne `vendor/` und `installer/`; Migrations-SQLs = vollständiger `sql/migrations/`-Baum; Binaries = main-Pakete laut `go list`).
 
 **Vertiefende Lektüre**
 

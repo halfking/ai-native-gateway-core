@@ -114,7 +114,7 @@ HTTP/SSE → middleware chain → protocol/IR normalization → session assignme
 | `installer/` | スタンドアロンのクロスプラットフォームインストーラ / アップグレーダーモジュール |
 | `scripts/`、`deploy/` | ビルド、デプロイ、ミラー、検証ツール |
 
-スケールスナップショット（2026-10-22 のコードスキャン @26ebb346c）：`cmd/` 配下に **~5,677 Go ファイル · 3,330 テストファイル · 1,119 マイグレーション SQL · 68 ドメインパッケージ · 44 バイナリ**（ファイル数は `vendor/` と `installer/` を除外；マイグレーション SQL は `sql/migrations/` 全量；バイナリは `go list` の main パッケージ基準）。
+スケールスナップショット（2026-10-22 のコードスキャン @fa89d61b2）：`cmd/` 配下に **~5,679 Go ファイル · 3,332 テストファイル · 1,119 マイグレーション SQL · 68 ドメインパッケージ · 44 バイナリ**（ファイル数は `vendor/` と `installer/` を除外；マイグレーション SQL は `sql/migrations/` 全量；バイナリは `go list` の main パッケージ基準）。
 
 **さらに詳しく**
 

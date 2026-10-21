@@ -114,7 +114,7 @@ HTTP/SSE → middleware chain → protocol/IR normalization → session assignme
 | `installer/` | Módulo instalador/actualizador autónomo multiplataforma |
 | `scripts/`, `deploy/` | Herramientas de build, despliegue, espejo y verificación |
 
-Instantánea de escala (escaneo de código del 2026-10-22 @26ebb346c): **~5,677 ficheros Go · 3,330 ficheros de test · 1,119 SQLs de migración · 68 paquetes de dominio · 44 binarios** bajo `cmd/` (recuentos sin `vendor/` ni `installer/`; SQLs de migración = árbol completo de `sql/migrations/`; binarios = paquetes main según `go list`).
+Instantánea de escala (escaneo de código del 2026-10-22 @fa89d61b2): **~5,679 ficheros Go · 3,332 ficheros de test · 1,119 SQLs de migración · 68 paquetes de dominio · 44 binarios** bajo `cmd/` (recuentos sin `vendor/` ni `installer/`; SQLs de migración = árbol completo de `sql/migrations/`; binarios = paquetes main según `go list`).
 
 **Lecturas adicionales**
 
