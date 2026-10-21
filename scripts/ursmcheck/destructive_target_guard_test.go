@@ -413,6 +413,40 @@ func r87FirstIdent(s string) string {
 	return strings.ToLower(m[1])
 }
 
+
+// r87SelfCreatePositions 返回「本文件自己建的每个对象」的**最早 CREATE 位置**。
+//
+// ★★ R92 轮新增：R87 轮的「自建对象 ⇒ 删它安全」排除**只问「文件建不建」**，
+//   **不问「建在前还是落在后」** ⇒⇒ 「先 DROP 后 CREATE」的形态被误判成安全
+//   ⇒⇒ 漏放方向（数据事故级）。
+func r87SelfCreatePositions(f *ast.File, fset *token.FileSet, consts map[string]string) map[string]int {
+	out := map[string]int{}
+	ast.Inspect(f, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		if r87IsStringInspection(call) || r87IsMessageCall(call) || r87IsAssertionCarrier(call) {
+			return true
+		}
+		for _, a := range call.Args {
+			sql, ok := r87ResolveString(a, consts)
+			if !ok {
+				continue
+			}
+			for _, m := range r87ReCreateObject.FindAllStringSubmatch(sql, -1) {
+				name := strings.ToLower(m[2])
+				pos := fset.Position(a.Pos()).Offset
+				if p, ok := out[name]; !ok || pos < p {
+					out[name] = pos
+				}
+			}
+		}
+		return true
+	})
+	return out
+}
+
 // r87SelfCreatedObjects 收集本文件自己建的对象名（小写）。
 //
 // ★ 与「破坏性语句」走**同一套实参解析**（拼接、const 都能解析）⇒
@@ -1010,13 +1044,19 @@ func r87AnalyzeFile(t *testing.T, path, rel, src string, exported map[string]boo
 
 	// ① 破坏性语句（排除自己建的对象）。
 	self, createsDB, createsSchema := r87SelfCreatedObjects(f, fset, consts)
+	createPos := r87SelfCreatePositions(f, fset, consts)
 	probes := r87CollectProbes(fset, f)
 	var live []r87DestructiveStmt
 	for _, s := range r87DestructiveStmts(f, fset, consts) {
 		skip := false
 		for _, tg := range s.targets {
 			if self[tg] {
-				skip = true
+				// ★★ R92 轮：**位置敏感** —— 「自建 ⇒ 删它安全」只在
+				//   「**建在前**」时成立 ⇒⇒ 「先 DROP 后 CREATE」的形态
+				//   删掉的是**落点上已存在的那个对象**（产品表）⇒⇒ 不能排除。
+				if cp, ok := createPos[tg]; !ok || cp <= s.pos {
+					skip = true
+				}
 			}
 			if createsDB && strings.Contains(strings.ToUpper(s.sql), "DROP DATABASE") {
 				skip = true

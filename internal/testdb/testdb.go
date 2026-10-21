@@ -58,6 +58,12 @@ import (
 
 var plainIdentifier = regexp.MustCompile(`^[a-z0-9_]+$`)
 
+// GuardFunctions lists the exported functions of this package that are
+// **target-safety gates**.
+var GuardFunctions = []string{
+	"Create",
+}
+
 // Create makes a fresh empty database reachable through baseDSN's server and
 // registers its removal on t. The returned DSN points at the new database.
 //
