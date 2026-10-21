@@ -79,6 +79,16 @@ MUTATIONS = [
 ]
 
 
+
+# stdout/stderr 必须显式配 UTF-8：这些脚本会打印含「⇒」等字符的中文，
+# 而 cp936（Windows 中文默认）编码不了 ⇒ print() 抛 UnicodeEncodeError
+# ⇒ 门在出读数时就崩了。在 UTF-8 locale 下本段是 no-op，POSIX 行为不变。
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding='utf-8')
+    except (AttributeError, ValueError):
+        pass
+
 def md5(path):
     with open(path, "rb") as f:
         return hashlib.md5(f.read()).hexdigest()
@@ -88,13 +98,13 @@ def run_go(cwd, args):
     env = dict(os.environ)
     env.setdefault("GOCACHE", "/tmp/gocache-r1039-mut")
     env.setdefault("CGO_ENABLED", "0")
-    return subprocess.run(args, cwd=cwd, env=env, capture_output=True, text=True)
+    return subprocess.run(args, cwd=cwd, env=env, capture_output=True, encoding='utf-8', errors='replace')
 
 
 def tracked_dirty(repo):
     """返回工作树里【已跟踪文件】的改动列表（未跟踪文件不算）。"""
     p = subprocess.run(["git", "status", "--porcelain", "--untracked-files=no"],
-                       cwd=repo, capture_output=True, text=True)
+                       cwd=repo, capture_output=True, encoding='utf-8', errors='replace')
     return [l for l in p.stdout.splitlines() if l.strip()]
 
 
@@ -118,7 +128,7 @@ def main():
         f.write(p.stdout)
     tree = os.path.join(work, "tree")
     os.makedirs(tree, exist_ok=True)
-    p = subprocess.run(["tar", "-x", "-C", tree, "-f", tar], capture_output=True, text=True)
+    p = subprocess.run(["tar", "-x", "-C", tree, "-f", tar], capture_output=True, encoding='utf-8', errors='replace')
     if p.returncode != 0:
         print("REFUSED: 解包失败:", p.stderr[:400])
         return 2

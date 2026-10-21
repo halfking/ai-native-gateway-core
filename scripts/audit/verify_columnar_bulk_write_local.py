@@ -71,6 +71,16 @@ MODELS = ("deepseek-v4-flash", "deepseek-v4-pro", "kimi-k3", "glm-5.2", "claude-
 BILLING = ("per_token", "per_token", "per_token", "token_plan", "free")
 
 
+
+# stdout/stderr 必须显式配 UTF-8：这些脚本会打印含「⇒」等字符的中文，
+# 而 cp936（Windows 中文默认）编码不了 ⇒ print() 抛 UnicodeEncodeError
+# ⇒ 门在出读数时就崩了。在 UTF-8 locale 下本段是 no-op，POSIX 行为不变。
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding='utf-8')
+    except (AttributeError, ValueError):
+        pass
+
 def extract_654_body(am: str) -> str:
     """从仓内 654 迁移提取函数体；am='columnar' 时逐字不改，am='heap' 只替换这一处。"""
     with open(MIG654, encoding="utf-8") as f:
@@ -102,7 +112,7 @@ def psql(sql: str, db: str = "postgres", timing: bool = False, stop_on_error: bo
     if timing:
         args += ["-c", r"\timing on"]
     args += ["-f", "-"]
-    p = subprocess.run(args, input=sql, capture_output=True, text=True)
+    p = subprocess.run(args, input=sql, capture_output=True, encoding='utf-8', errors='replace')
     return p.stdout + p.stderr
 
 

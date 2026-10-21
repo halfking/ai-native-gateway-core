@@ -235,7 +235,13 @@ func Create(t *testing.T, baseDSN string) string {
 	// "0" the whole time.
 	t.Cleanup(func() {
 		if err := dropDatabase(baseDSN, scratch); err != nil {
-			t.Logf("testdb: cleanup DROP DATABASE %s: %v", scratch, err)
+			// ★ 2026-10-22 12h 审计轮（C5）：**DROP 失败时不得摘掉信号兜底**。
+			//   原形态：无论 DROP 成没成功都 `unregisterDropTarget(scratch)`
+			//   ⇒ DROP 失败（超时/连不上）⇒ **库已经泄漏** ⇒ 而它**恰好**
+			//     被从兜底注册表里移除 ⇒ 最需要信号路径兜住的那个库失去了兜底。
+			//   ⇒ 修法：只在成功时摘。
+			t.Logf("testdb: cleanup DROP DATABASE %s: %v (保留信号兜底登记)", scratch, err)
+			return
 		}
 		unregisterDropTarget(scratch)
 	})

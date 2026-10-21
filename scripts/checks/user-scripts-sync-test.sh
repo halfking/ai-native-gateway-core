@@ -34,7 +34,7 @@ ok()    { PASS=$((PASS + 1)); printf '[user-sync] ok: %s\n' "$1"; }
 bad()   { FAIL=$((FAIL + 1)); printf '[user-sync] FAIL: %s\n' "$1" >&2; }
 
 if [[ ! -f "$MANIFEST" ]]; then
-  bad "缺少清单 $MANIFEST（跑 scripts/checks/regen-user-scripts-manifest.sh 生成）"
+  bad "缺少清单 ${MANIFEST}（跑 scripts/checks/regen-user-scripts-manifest.sh 生成）"
   printf '[user-sync] pass=%s fail=%s\n' "$PASS" "$FAIL"
   exit 1
 fi

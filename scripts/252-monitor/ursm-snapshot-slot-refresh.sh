@@ -101,6 +101,19 @@ esac
 
 # 基线窗口天数（与巡检脚本的 BASELINE_DAYS 同义）。
 : "${BASELINE_DAYS:=7}"
+# ★ 2026-10-22 12h 审计轮补：BASELINE_DAYS **必须**是正整数。
+#   理由与 GRANULARITY 同款——但它的后果更隐蔽：BASELINE_DAYS 同时进 SQL
+#   （make_interval(days => $BASELINE_DAYS)）与数值判定（覆盖天数比较）。
+#   非正数（如 0）⇒ 窗口恒空 ⇒ 每次都落 repair 路、每次 exit 1，
+#   ⇒ **永不自我恢复**（作业看着在跑，永远是红的）。
+#   ⇒ 与 GRANULARITY 同款处理：非法即 exit 64（配置非法），不静默继续。
+case "$BASELINE_DAYS" in
+  ''|*[!0-9]*) echo "[$(date '+%F %T')] BASELINE_DAYS 必须是正整数，收到: $BASELINE_DAYS" >&2; exit 64 ;;
+esac
+if [ "$BASELINE_DAYS" -le 0 ]; then
+  echo "[$(date '+%F %T')] BASELINE_DAYS 必须是正整数，收到: $BASELINE_DAYS" >&2
+  exit 64
+fi
 
 # 语句超时。★ 本脚本要跑的聚合是**重量级**的（8 天 ≈ 30,311,927 行），
 #   而应用角色 llm_gateway 在库上带 statement_timeout=30s（应用侧保护）。
@@ -112,9 +125,32 @@ log() { printf '[%s] %s\n' "$(date '+%F %T')" "$*"; }
 de() {
   # 回显走 stderr：`x=$(de ...)` 会把 stdout 收进变量，回显混进去会污染取值。
   if [ -n "${PRINT_SQL:-}" ]; then printf '%s\n' "$1" >&2; printf '0\n'; return 0; fi
+  # ★★★ 【客户端侧失败必须看得见】—— 2026-10-22 12h 审计轮修掉的一处真缺陷。
+  #
+  #   原来的形态：`... 2>&1 || true` ⇒ **psql 的退出码被丢弃**。
+  #   而下面的 sql_failed() 只认**服务端** SQL 错误（输出里有 ERROR/FATAL 行）。
+  #   ⇒ 客户端侧的失败**根本不会产生那种文本**，于是全部漏判：
+  #       · 连接失败      → "psql: error: connection to server … failed"
+  #       · podman 不可用 → "Error: unable to connect to Podman socket"
+  #       · 命令不存在    → "bash: podman: command not found"
+  #   ⇒ 这三种都被当成「跑完了」，然后
+  #       log "refreshed rows=${out}" 把**错误文本当成刷新行数**打进日志。
+  #   ⇒ ★★ 这正是本目录同一族脚本在巡检侧写下的判词：
+  #        「量具坏了却在报绿」—— 最危险的一种故障形态。
+  #   ⇒ 修法：**保留退出码**，并把「退出码≠0」翻译成与服务端错误**同形**的
+  #     标记（ERROR: 前缀）⇒ 下游既有的 sql_failed() 判据一字不改就能判出来。
+  #     ★ 为什么翻译成同形而不是改所有调用点：本文件有 4 个调用点，
+  #       每个都是 `x=$(de …)` 形态；在 de() 里翻译 ⇒ 一处改动覆盖全部，
+  #       且**不改变任何调用点的语义**（失败仍然是失败，只是终于被看见）。
+  local out rc=0
   # shellcheck disable=SC2086 # PSQL_CMD 刻意按多词命令传入（与巡检脚本同款）
-  ${PSQL_CMD:-podman exec -e "PGOPTIONS=-c statement_timeout=${STMT_TIMEOUT}" \
-    "$CONTAINER" psql -U "$PG_USER" -d "$PG_DB" -tAX -c} "$1" 2>&1 || true
+  out=$( ${PSQL_CMD:-podman exec -e "PGOPTIONS=-c statement_timeout=${STMT_TIMEOUT}" \
+    "$CONTAINER" psql -U "$PG_USER" -d "$PG_DB" -tAX -c} "$1" 2>&1 ) || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    out="ERROR: psql exited ${rc}: ${out}"
+  fi
+  printf '%s' "$out"
+  return 0
 }
 
 # 任一行以 ERROR/FATAL 开头 ⇒ psql 整条挂掉（与巡检脚本同款判据）。

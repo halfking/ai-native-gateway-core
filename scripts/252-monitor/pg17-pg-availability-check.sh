@@ -210,8 +210,8 @@ verdict_ok() {
   if [ "$_S" = "down" ]; then
     local m; m=$(mins_since "$_SINCE")
     write_state up "$(date +%s)" "-"
-    log "RECOVERED: PG 恢复，中断 $m 分钟（原因 $_REASON）"
-    notify info "PG 已恢复：$CONTAINER" "中断 $m 分钟后恢复正常（原因：$_REASON）"
+    log "RECOVERED: PG 恢复，中断 $m 分钟（原因 ${_REASON}）"
+    notify info "PG 已恢复：$CONTAINER" "中断 $m 分钟后恢复正常（原因：${_REASON}）"
     return 0
   fi
   if [ "$_S" = "unknown" ]; then
@@ -272,7 +272,7 @@ if [ "$CSTATE" != "running" ]; then
   DETAIL=$("$RUNTIME" inspect -f \
     'exit={{.State.ExitCode}} oom={{.State.OOMKilled}} finished={{.State.FinishedAt}}' \
     "$CONTAINER" 2>/dev/null)
-  verdict_down "container_${CSTATE}" "容器 $CONTAINER 状态=$CSTATE（$DETAIL）"
+  verdict_down "container_${CSTATE}" "容器 $CONTAINER 状态=${CSTATE}（${DETAIL}）"
   exit 1
 fi
 

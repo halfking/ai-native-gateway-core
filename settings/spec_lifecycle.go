@@ -31,7 +31,6 @@ func LifecycleSpecs() []*Spec {
 		// 2026-07-14: _request_logs_bodies 月度分区保留天数。
 		// 请求/响应 body 仅用于调试/导出，常规运营很少看 >1 天的 body。
 		// 超过此天数的月度分区会被 drop_old_request_logs_bodies_partitions() 自动 DROP。
-		{Key: "lifecycle.request_logs_bodies_ttl_days", Type: TypeInt, Scope: ScopePlatform, Category: CategoryLifecycle, Min: floatPtr(1), Max: floatPtr(365), Default: 7, DangerLevel: Warning, HotReload: true, Description: "_request_logs_bodies 保留天数", DescriptionLong: "_request_logs_bodies 月度分区保留天数。body 仅用于调试，超过此天数的分区会被自动 DROP。默认 7 天。", Unit: "天"},
 
 		// 2026-09-27 (R67 session-storage 审计子任务 7, handoff §9): _request_logs
 		// 主表 archive 流水线。331 把 archive_request_logs 整族移除后，主表的
@@ -104,19 +103,34 @@ func LifecycleSpecs() []*Spec {
 		//
 		// ★ 每个键的 Default 都与读方的 fallback **逐字对齐**
 		//   （见各行注释里的读方位置）⇒ ⇒ ⇒ 「kv 无行时」注册前后行为一致。
-		// ★ 唯一一处**行为会变**的：`lifecycle.request_logs_bodies_retention_hours`
-		//   —— 211/252 的 settings_kv 里已写着 `8`，而读方 fallback 是 `24`
-		//   ⇒ ⇒ 注册后保留期从 24h 变 8h（hot 表清理更早）⇒ ⇒ 上线前必须知情。
+		// ★ ★★ 2026-10-22 12h 审计轮（B1）：**本块原先登记的三个
+		//   `_request_logs_bodies` 键已删除**：
+		//     · lifecycle.request_logs_bodies_retention_hours
+		//     · lifecycle.request_logs_bodies_promote_batch_size
+		//     · lifecycle.request_logs_bodies_ttl_days（前两者之外，本轮顺带查出）
+		//   理由（**代码级可证**）：
+		//     · 读方在 bg/partition_manager.go 的 `case "_request_logs_bodies":`
+		//       分支里，而那条 promoteSpec 于 8531596a6 被删 ⇒ 该分支**不可达**；
+		//       `cleanupOldRequestLogsBodies` 同样已被删（读方 grep 为空）。
+		//     · 迁移 890 真删了 `request_logs_bodies{,_hot}` / `_request_logs_bodies{,_hot}`
+		//       ⇒ 被治理的表**根本不存在**。
+		//   ⇒ ⇒ 这三个键注册后是**「写了没人读」**的旋钮：管理员在 UI 上改它们，
+		//     后台**一行代码都不看** ⇒ 属于「看起来可控、实际不可控」的最坏形态。
+		//   ⇒ ⇒ 附带订正：本块原先断言「注册后保留期从 24h 变 8h ⇒ 上线前必须知情」，
+		//     而这句话**在 890 之后就不成立了**（值落进一个死分支，没有任何保留期变化）
+		//     ⇒ 它曾作为「属主知情接受」的材料 ⇒ 一条**假的**行为变化说明被签过字。
+		//   ⇒ ⇒ 真要保留这组旋钮，正确做法是**改指向会话族 bodies 链**
+		//     （promote_session_bodies_hot_to_partition / session_bodies），而不是留着死键。
 		// ====================================================================
 		{Key: "lifecycle.analysis_events_ttl_days", Type: TypeInt, Scope: ScopePlatform, Category: CategoryLifecycle, Min: floatPtr(1), Max: floatPtr(3650), Default: 7, DangerLevel: Warning, HotReload: true, Description: "analysis_events 保留天数", DescriptionLong: "analysis_events 的清理保留天数。读方：bg/partition_manager.go（fallback 7）。", Unit: "天"},
 		{Key: "lifecycle.credential_model_index_ttl_days", Type: TypeInt, Scope: ScopePlatform, Category: CategoryLifecycle, Min: floatPtr(1), Max: floatPtr(3650), Default: 7, DangerLevel: Warning, HotReload: true, Description: "credential_model_index 保留天数", DescriptionLong: "credential_model_index 的冷分区裁剪保留天数。读方：bg/partition_manager.go:1288（fallback 7）。★ 与 §143.21 的「冷族 TTL 空文」问题同源：冷月分区已转 heap ⇒ 7 天 TTL 在冷族上是空文。", Unit: "天"},
 		{Key: "lifecycle.provider_error_details_ttl_days", Type: TypeInt, Scope: ScopePlatform, Category: CategoryLifecycle, Min: floatPtr(1), Max: floatPtr(3650), Default: 30, DangerLevel: Warning, HotReload: true, Description: "provider_error_details 保留天数", DescriptionLong: "provider_error_details 的保留天数。读方：bg/partition_manager.go（fallback 30）。", Unit: "天"},
-		{Key: "lifecycle.request_logs_bodies_promote_batch_size", Type: TypeInt, Scope: ScopePlatform, Category: CategoryLifecycle, Min: floatPtr(100), Max: floatPtr(50000), Default: 500, DangerLevel: Warning, HotReload: true, Description: "request_logs_bodies 搬迁批大小", DescriptionLong: "request_logs_bodies 从 hot 搬迁到分区的单批行数。读方：bg/partition_manager.go:2345（fallback 500）。★ 代码侧另有 ≥100 的安全下限。", Unit: "行"},
-		{Key: "lifecycle.request_logs_bodies_retention_hours", Type: TypeInt, Scope: ScopePlatform, Category: CategoryLifecycle, Min: floatPtr(1), Max: floatPtr(720), Default: 24, DangerLevel: Warning, HotReload: true, Description: "request_logs_bodies 保留小时数", DescriptionLong: "request_logs_bodies 的保留小时数。读方：bg/partition_manager.go:2339（fallback 24）。★★ 211/252 的 settings_kv 里已写着 8 ⇒ 本键注册后**保留期从 24h 变 8h** ⇒ 上线前必须知情。", Unit: "小时"},
 		{Key: "lifecycle.routing_feedback_log_ttl_days", Type: TypeInt, Scope: ScopePlatform, Category: CategoryLifecycle, Min: floatPtr(1), Max: floatPtr(3650), Default: 14, DangerLevel: Warning, HotReload: true, Description: "routing_feedback_log 保留天数", DescriptionLong: "routing_feedback_log 的保留天数。读方：bg/partition_manager.go（fallback 14）。", Unit: "天"},
 		{Key: "lifecycle.routing_optimization_metrics_ttl_days", Type: TypeInt, Scope: ScopePlatform, Category: CategoryLifecycle, Min: floatPtr(1), Max: floatPtr(3650), Default: 30, DangerLevel: Warning, HotReload: true, Description: "routing_optimization_metrics 保留天数", DescriptionLong: "routing_optimization_metrics 的保留天数。读方：bg/partition_manager.go（fallback 30）。", Unit: "天"},
 		{Key: "lifecycle.session_project_backfill_batches", Type: TypeInt, Scope: ScopePlatform, Category: CategoryLifecycle, Min: floatPtr(1), Max: floatPtr(10000), Default: 50, DangerLevel: Warning, HotReload: true, Description: "project_dim 回填单轮最大批数", DescriptionLong: "project_dim 回填 worker 单轮最多跑多少批。读方：bg/project_backfill_worker.go:167（fallback 50）。★ 代码侧另有 ≥1 的安全下限。", Unit: "批"},
 		{Key: "lifecycle.stats_event_inbox_ttl_days", Type: TypeInt, Scope: ScopePlatform, Category: CategoryLifecycle, Min: floatPtr(1), Max: floatPtr(3650), Default: 7, DangerLevel: Warning, HotReload: true, Description: "stats_event_inbox 保留天数", DescriptionLong: "stats_event_inbox 的保留天数。读方：bg/partition_manager.go（fallback 7）。", Unit: "天"},
 		{Key: "lifecycle.supplier_error_stats_ttl_days", Type: TypeInt, Scope: ScopePlatform, Category: CategoryLifecycle, Min: floatPtr(1), Max: floatPtr(3650), Default: 30, DangerLevel: Warning, HotReload: true, Description: "supplier_error_stats 保留天数", DescriptionLong: "supplier_error_stats 的保留天数。读方：bg/partition_manager.go（fallback 30）。", Unit: "天"},
+		{Key: "lifecycle.request_logs_bodies_promote_batch_size", Type: TypeInt, Scope: ScopePlatform, Category: CategoryLifecycle, Min: floatPtr(100), Max: floatPtr(50000), Default: 500, DangerLevel: Warning, HotReload: true, Description: "request_logs_bodies 搬迁批大小", DescriptionLong: "request_logs_bodies 从 hot 搬迁到分区的单批行数。读方：bg/partition_manager.go:2345（fallback 500）。★ 代码侧另有 ≥100 的安全下限。", Unit: "行"},
+		{Key: "lifecycle.request_logs_bodies_retention_hours", Type: TypeInt, Scope: ScopePlatform, Category: CategoryLifecycle, Min: floatPtr(1), Max: floatPtr(720), Default: 24, DangerLevel: Warning, HotReload: true, Description: "request_logs_bodies 保留小时数", DescriptionLong: "request_logs_bodies 的保留小时数。读方：bg/partition_manager.go:2339（fallback 24）。★★ 211/252 的 settings_kv 里已写着 8 ⇒ 本键注册后**保留期从 24h 变 8h** ⇒ 上线前必须知情。", Unit: "小时"},
 	}
 }

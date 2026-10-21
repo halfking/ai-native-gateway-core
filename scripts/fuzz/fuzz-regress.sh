@@ -106,7 +106,7 @@ do_install() {
   for t in "${FUZZ_TARGETS[@]}"; do
     [ "$t" = "$target" ] && known=1
   done
-  [ "$known" -eq 1 ] || { echo "未知 fuzz 目标: $target（已登记: ${FUZZ_TARGETS[*]}）" >&2; exit 2; }
+  [ "$known" -eq 1 ] || { echo "未知 fuzz 目标: ${target}（已登记: ${FUZZ_TARGETS[*]}）" >&2; exit 2; }
 
   if [ "${SKIP_SANITIZE:-0}" != "1" ]; then
     echo "==> 脱敏检查"

@@ -75,8 +75,23 @@ func (h *Handler) handleSessionCrosstalkCheck(w http.ResponseWriter, r *http.Req
 	var rowsErr error
 
 	// ★ 派生查询：会话族里「同一个 session 出现在多个 tenant 下」。
-	//   - `ts` 是 `session_turns` 的分区键 ⇒ 分区裁剪 + 前导 ts 索引
-	//     （生产实测端点实际形态：cost=752.53 / buffers=2,383 ⇒ 毫秒级）。
+	//   - ★★ 【数据来源修正，2026-10-22 12h 审计轮 D1】本查询原先只读
+	//     `FROM session_turns`（**分区父表**）⇒ **漏掉了 `session_turns_hot`**。
+	//     而所有**活的** turn 都写进 hot（`domains/session/v2/turn_writer.go`
+	//     的 `INSERT INTO public.session_turns_hot`），hot 行要等保留窗口过后
+	//     才被 promote 进父表（`lifecycle.hot_retention_hours`，默认 8h）。
+	//     ⇒ ⇒ **最近 8 小时内的串话一条都看不到** ⇒ 端点返回
+	//       `200 {"conflicts":[],"count":0}` ⇒ ★ **静默失明**
+	//       （与 892 迁移头自己写的「回填 0 行 ⇒ 安静地失明」同型）。
+	//     ⇒ 改读 **hot ∪ parent 两条腿**，与仓内正典
+	//       `db.SessionFamilyTurnsSourceSQL()` 的形状一致。
+	//   - ⚠ **D4：`ts` 不是 `session_turns` 的分区键**（分区键是
+	//     `partition_date`，见 `sql/schema/01-schema.sql`）⇒ `ts >= …`
+	//     **不触发分区裁剪**；而仓内正典索引是 `(tenant_id, ts)`，
+	//     `ts` 不在前导位 ⇒ 对「无 tenant 条件」的谓词不可用。
+	//     ⇒ 原注释里那句「ts 是分区键 ⇒ 分区裁剪 + 前导 ts 索引」**是错的**，
+	//     已订正。生产实测 cost=752.53 / buffers=2,383（毫秒级）是真的，
+	//     但**不能用那个机制解释**。
 	//   - `HAVING count(DISTINCT tenant_id) > 1` 就是串话的定义。
 	//   - `LIMIT 100` 与旧实现一致（响应体 contract 不变）。
 	const crosstalkSQL = `
@@ -85,7 +100,11 @@ func (h *Handler) handleSessionCrosstalkCheck(w http.ResponseWriter, r *http.Req
 		       min(ts) AS first_seen_at,
 		       max(ts) AS last_seen_at,
 		       count(*) AS request_count
-		FROM session_turns
+		FROM (
+			SELECT session_id, tenant_id, ts FROM public.session_turns_hot
+			UNION ALL
+			SELECT session_id, tenant_id, ts FROM public.session_turns
+		) t
 		WHERE ts >= NOW() - INTERVAL '1 hour' * $1
 		GROUP BY session_id
 		HAVING count(DISTINCT tenant_id) > 1

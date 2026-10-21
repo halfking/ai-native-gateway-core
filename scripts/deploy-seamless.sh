@@ -851,7 +851,7 @@ do_deploy() {
     # 移除可能的旧 false 行，追加 true
     $SSH_CMD "sed -i '/^TRANSPORT_LAYER_IR_ENABLED=/d' '$_env_file' && echo 'TRANSPORT_LAYER_IR_ENABLED=true' >> '$_env_file'" \
       && ok "IR 已注入 env (TRANSPORT_LAYER_IR_ENABLED=true)" \
-      || warn "IR env 注入失败（可手动: echo TRANSPORT_LAYER_IR_ENABLED=true >> $_env_file）"
+      || warn "IR env 注入失败（可手动: echo TRANSPORT_LAYER_IR_ENABLED=true >> ${_env_file}）"
   fi
 
   # Shared checkout build state (version files, web/dist, local staging) is

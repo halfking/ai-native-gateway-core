@@ -260,7 +260,7 @@ function test_update_operations() {
         log_info "✓ UPDATE 操作成功"
         ((PASSED_TESTS++))
     else
-        log_error "✗ UPDATE 操作失败（期望 200，实际 $updated_tokens）"
+        log_error "✗ UPDATE 操作失败（期望 200，实际 ${updated_tokens}）"
         ((FAILED_TESTS++))
     fi
     

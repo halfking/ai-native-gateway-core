@@ -45,7 +45,7 @@ fi
 # custom-format dump：支持并行恢复 + 单文件，比 plain SQL 更适合备份轮转。
 if ! docker exec -e PGPASSWORD="$POSTGRES_PASSWORD" "$PG_CONTAINER" \
   pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Fc -f /tmp/_bkup.dump; then
-  die "pg_dump 失败（容器 $PG_CONTAINER）"
+  die "pg_dump 失败（容器 ${PG_CONTAINER}）"
 fi
 docker cp "${PG_CONTAINER}:/tmp/_bkup.dump" "$out"
 docker exec "$PG_CONTAINER" rm -f /tmp/_bkup.dump

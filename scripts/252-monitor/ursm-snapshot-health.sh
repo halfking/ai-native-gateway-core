@@ -276,8 +276,27 @@ de() {
   #     ★★ 这个报错**完全不像**「你少写了 -c」，会把人引到 SQL 语法/引号的方向。
   #   ★ 正确写法：`PSQL_CMD="docker exec -i $CONTAINER psql -U $DBUSER -d $DB -tAX -c"`
   #     （scripts/audit/verify_892_patrol_e2e.sh 就是这么写的 ⇒ 可直接抄）
-  ${PSQL_CMD:-podman exec -e "PGOPTIONS=-c statement_timeout=${STMT_TIMEOUT:-600s}" \
-    "$CONTAINER" psql -U "$PG_USER" -d "$PG_DB" -tAX -c} "$1" 2>&1 || true
+  # ★★★ 【客户端侧失败必须看得见】—— 2026-10-22 12h 审计轮修掉的一处真缺陷。
+  #   原来的形态是 `... 2>&1 || true` ⇒ **psql 的退出码被丢弃**。
+  #   而 sql_failed() 只认**服务端** SQL 错误（输出里有 ERROR/FATAL 行）⇒
+  #   客户端侧失败（连不上 / podman socket 不可用 / 命令不存在）**根本不产生
+  #   那种文本** ⇒ 全部漏判。
+  #   ⇒ 后果（本脚本自己的判词：量具坏了却在报绿）：
+  #     · 量具自检 control=$(de …) 会拿到 "Error: unable to connect to Podman socket"
+  #       ⇒ sql_failed 不匹配、但 -z "$control" 也不成立（非空）⇒ **自检通过**
+  #       ⇒ 脚本继续跑到底并报 OK ⇒ 量具已经坏了，报告却写着「没问题」。
+  #     · 基线探针 base_probe 同理 ⇒ 快路判据读到的全是垃圾。
+  #   ⇒ 修法：保留退出码，并把「退出码≠0」翻译成与服务端错误**同形**的
+  #     ERROR: 前缀 ⇒ 下游既有的 sql_failed() 判据一字不改就能判出来。
+  local out rc=0
+  # shellcheck disable=SC2086 # PSQL_CMD 刻意按多词命令传入
+  out=$( ${PSQL_CMD:-podman exec -e "PGOPTIONS=-c statement_timeout=${STMT_TIMEOUT:-600s}" \
+    "$CONTAINER" psql -U "$PG_USER" -d "$PG_DB" -tAX -c} "$1" 2>&1 ) || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    out="ERROR: psql exited ${rc}: ${out}"
+  fi
+  printf '%s' "$out"
+  return 0
 }
 
 # 任一行以 ERROR/FATAL 开头 ⇒ psql 整条挂掉。
