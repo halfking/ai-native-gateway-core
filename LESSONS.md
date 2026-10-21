@@ -9260,8 +9260,9 @@ asr A-6「可续跑」在 §11.4 写着「❌ **仍未做**」，理由是「`re
 - ⇒ ⇒ ★★★ **本轮零产品代码改动**（只改调用方式：传参）⇒ ⇒ ★★ **⇒ 验证读数**：
   `docker=1 pg_container=llm-gateway-pg` ⇒ release **2.5.8.2796** ⇒ `VERIFY_PASS=1` ⇒
   容器 `llm-gateway-local-8782` 镜像 `kx-llm-gateway-local:2.5.8.2796` ⇒ `/version` = `2.5.8-f0a1af2b` ⇒ 形态与端口均未变
+- ⇒ ⇒ ★★★ **⇒ 顺带一条**部署机制**的坑（本轮自己踩的）**：★ `scripts/deploy-local.sh` 的 `bump_local_version`（:1208）**先把版本 bump 写进仓库里的 4 个版本文件**（`version.json` / `VERSION` / `web/public/version.json` / `web/dist/version.json`）**再编译** ⇒ ⇒ ★★★★ **⇒ 部署失败时仓库会处于「戳已 bump、产物没上」的**半成品状态** ⇒ ⇒ ⇒ **本轮实测**：漏 `export PATH="$HOME/sdk/go/bin:$PATH"` ⇒ 报 `error: go is required` ⇒ **但 4 个版本文件已经被改成 2799** ⇒ ⇒ ⇒ **修完必须重跑整个部署**（会再 bump 一次，seq 因此前进到 2800）⇒ ⇒ ⇒ **别以为「第一次失败没成功 ⇒ 什么都没变」。**
 - 溯源：llm-gateway-go R72f 轮（2026-10-21）；审计档 `docs/audit/2026-10-21-R72f-本地部署形态判定与二进制平台耦合.md`。
-★ 同族：[[先读量具再读产物]] · [[「我以为我核过了」≠「我核过」]] · [[报错指向症状层时要往底层追]] · [[「已提交 ≠ 已生效」]]。
+★ 同族：[[先读量具再读产物]] · [[「我以为我核过了」≠「我核过」]] · [[报错指向症状层时要往底层追]] · [[「已提交 ≠ 已生效」]] · [[失败不是「什么都没变」]]。
 
 ## §162（llm-gateway-go R72f · 部署线）★★★★★ **「本地配置写了」不等于「配置生效」—— 白名单式 env 透传会静默丢弃 feature flag**
 
