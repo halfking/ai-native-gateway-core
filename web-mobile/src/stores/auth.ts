@@ -153,8 +153,17 @@ export const useAuthStore = defineStore('auth', () => {
       //   又触发 login() 拿到新 token；只在 /me 真给了新 token 时才覆盖。
       if (refreshedToken) token.value = refreshedToken
       persistUser(me)
-    } catch {
+    } catch (err) {
       if (current !== generation) return
+      // 2026-10-22：只把「确定是会话死了」的失败（401）当登出处理。
+      // 维护态信封 / 断网 / 5xx 都是**瞬时故障**：此时清空 localStorage 会把
+      // 本地用户态连同主题/语言/节点配置一起抹掉（用户看到「登录状态丢失」），
+      // 而 HttpOnly 会话 cookie 其实还在。瞬时失败保持现状、不清任何状态，
+      // 服务端恢复后下一次冷启水合即可自愈。
+      const status = (err as unknown as { status?: unknown }).status
+      const transient =
+        typeof status === 'number' && (status === 0 || (status >= 500 && status !== 501))
+      if (transient) return
       userInfo.value = null
       token.value = ''
       safeClear(localStorage)
