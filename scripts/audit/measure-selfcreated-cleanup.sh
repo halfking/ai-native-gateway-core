@@ -50,9 +50,11 @@ cd "$ROOT" || exit 2
 
 VERIFY=0
 DEBUG=0
+DIGEST=0
 case "${1:-}" in
   --verify) VERIFY=1 ;;
   --debug)  DEBUG=1 ;;
+  --digest) DIGEST=1 ;;   # ★ 内部模式：只输出读数指纹（给「确定性自检」用）
 esac
 
 SELF="scripts/audit/measure-selfcreated-cleanup.sh"
@@ -315,17 +317,27 @@ for f in "${effective[@]}"; do
 
   # C2：有「覆盖所有退出路径」的机制（★ 语言感知：同一个机制的三种实现）
   #    shell ⇒ trap ... EXIT；python ⇒ atexit.register / try+finally；go ⇒ defer
+  #
+  # ★★★ R96 轮修掉的**真缺陷（随机翻转读数）**：
+  #   原写法是 `printf '%s' "$body" | grep -qE '…'`。
+  #   ★ `grep -q` 命中即退 ⇒ 写端 `printf` 会被 **SIGPIPE** 打死
+  #   ★ 而本脚本 `set -o pipefail` ⇒ 整条管道的退出码变成 141（SIGPIPE）
+  #   ★ ⇒ `if` 判据**随机地**走错分支 ⇒ 同一个文件在两次读数里 C2 一会儿 1 一会儿 0
+  #   ★ 实测（2026-10-21 R96 轮）：`scripts/deploy-seamless-docker.sh` 剥注释后
+  #     **65,937 字节 > 64 KB 管道缓冲** ⇒ 只有在写端先阻塞时才触发
+  #     ⇒ 40 次读数里出现 3 种输出（28×A / 2×B / 1×C）⇒ 危险候选在 7 与 8 之间漂。
+  #   ⇒ 修法：**去掉管道**（herestring 不产生 SIGPIPE 写端）⇒ 判据变成确定性的。
   case "$f" in
     *.py)
-      if printf '%s' "$body" | grep -qE 'atexit\.register|finally[[:space:]]*:'; then c2=1; else c2=0; fi ;;
+      if grep -qE 'atexit\.register|finally[[:space:]]*:' <<< "$body"; then c2=1; else c2=0; fi ;;
     *.go)
-      if printf '%s' "$body" | grep -qE '(^|[^A-Za-z0-9_])defer[[:space:]]'; then c2=1; else c2=0; fi ;;
+      if grep -qE '(^|[^A-Za-z0-9_])defer[[:space:]]' <<< "$body"; then c2=1; else c2=0; fi ;;
     *)
-      if printf '%s' "$body" | grep -qE '^[[:space:]]*trap[[:space:]]'; then c2=1; else c2=0; fi ;;
+      if grep -qE '^[[:space:]]*trap[[:space:]]' <<< "$body"; then c2=1; else c2=0; fi ;;
   esac
 
   # C3：有 DROP DATABASE
-  if printf '%s' "$body" | grep -qiE 'DROP[[:space:]]+DATABASE'; then c3=1; else c3=0; fi
+  if grep -qiE 'DROP[[:space:]]+DATABASE' <<< "$body"; then c3=1; else c3=0; fi
 
   # 建库行号（用「真的建库」的行，排除正则字面量 / 夹具 / 日志字符串）
   c_line="$(primary_create_line "$f")"
@@ -397,6 +409,37 @@ DBGEOF
   fi
   rows+=("${c2}${c3}${c4}${c5}${c6}${ctx_sig}${danger}$(printf '\t')${f}")
 done
+
+if [ "$DIGEST" = "1" ]; then
+  # ★ 内部模式：只输出读数指纹（给下面的「确定性自检」用）
+  printf '%s\n' "${rows[@]}"
+  printf 'COUNTS n_eff=%s n_c2=%s n_c3=%s n_c4=%s n_c5=%s n_c5u=%s n_c6=%s n_danger=%s\n' \
+    "$n_eff" "$n_c2" "$n_c3" "$n_c4" "$n_c5" "$n_c5u" "$n_c6" "$n_danger"
+  exit 0
+fi
+
+# ★★★ 读数【确定性】自检（R96 轮新增的一道量具自检）
+#   判据：同一个量具在**同一棵树**上必须给出**逐字相同**的读数。
+#   ⇒ 跑两遍比指纹；**不等 ⇒ 拒绝出结论（exit 3）**。
+#   ★ 这道门是给「判据里藏着竞态」兜底的 ——
+#     本轮就抓到过一个真例：`printf … | grep -q` + `set -o pipefail`
+#     ⇒ 写端被 SIGPIPE 打死 ⇒ 判据随机翻转 ⇒ 40 次读数出现 3 种输出。
+#   ⇒ ★ 通用式：**量具的输出必须【可复现】才算读数**；不可复现的量具不是「偶尔不准」，
+#     而是**根本不能用来发布结论**。
+if [ "${SKIP_DETERMINISM_CHECK:-0}" != "1" ]; then
+  d1="$(bash "$0" --digest 2>/dev/null)"
+  d2="$(bash "$0" --digest 2>/dev/null)"
+  if [ -z "$d1" ] || [ -z "$d2" ]; then
+    echo "!! 确定性自检拿不到读数指纹 ⇒ 拒绝出结论（exit 3）"
+    exit 3
+  fi
+  if [ "$d1" != "$d2" ]; then
+    echo "!! 读数确定性自检失败：两次读数不一致 ⇒ 读数不稳定 ⇒ 拒绝出结论（exit 3）"
+    echo "   ⇒ ★ 典型成因：判据里有【竞态】（本轮抓到过「printf … | grep -q」+ pipefail ⇒ SIGPIPE）"
+    exit 3
+  fi
+  echo "  ✓ 读数确定性自检：两次读数逐字一致"
+fi
 
 if [ "$VERIFY" = "1" ]; then
   echo "== 口径自检 =="

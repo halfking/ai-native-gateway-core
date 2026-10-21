@@ -33,6 +33,27 @@
 #   形态库构建 ≈ 10~15 min（探针脚本）；三档 × 15 包 ≈ 10~15 min。
 #   全部在**一次性库**上跑，退出即 DROP ⇒ **绝不指向真产品库**。
 #
+# # ★★★★ 「在范围」的口径（R96 轮订正 —— 这一条改的是**分母**）
+#
+#   ★ 旧口径（口径 A，本文件 R90 轮起的实现）：`grep -rl <变量名> *_test.go`
+#     ⇒ **文本里出现名字就算**，且**不要求该文件真的打开 PG 连接**。
+#   ★ 现口径（口径 D）：**官方门自己的口径** ——
+#     (1) 文件里出现「DSN 类环境变量名」的**字符串字面量**（不是随便提到这个名字）
+#         （注释里提到的不算 ⇒ 官方门用 `dsnNameLiterals`，它自己跳过注释）
+#     (2) 且该文件**打开 PG 连接**（分类轴：名字长得像 DSN 不算数，会不会连库才算数）
+#   ⇒ 为什么必须换成它：「切事实源」的成本 = **有多少测试会因为多注入 DSN 而行为改变**
+#     ⇒ 只有「**真的读这个变量去连库**」的文件才算 ⇒ 口径 A 把
+#     「注释里提一句」和「读了变量但压根不开 PG」的文件也算进去 ⇒ **分母被高估**。
+#   ⇒ 实测（基线 9e7a9242e）：口径 A = 29 文件 / 89 函数 ⇒ 口径 D = 19 文件 / 71 函数
+#     ⇒ **文件维 −34.6%、函数维 −20.2%** ⇒ 「切事实源」成本被高估了约 1/3。
+#
+#   ★★ **零漂移的做法**：本脚本**运行时**往 worktree 里生成一个 Go 探针，
+#     探针**直接调用官方门自己的未导出函数**（`dsnNameLiterals` / `opensPostgresConn`）
+#     ⇒ 官方门改了判据，本脚本的口径**自动跟着改** ⇒ 不存在「副本漂移」。
+#     探针跑完即删（trap 兜底）⇒ 不入仓、不长期存在。
+#     ⚠ 探针刻意**不含任何 DSN 名字面量**、**不含 PG 连接器** ⇒
+#       官方门扫全仓 `_test.go` 时既不会把它算成违规、也不会扰动 `pgFiles` 计数。
+#
 # # ★ 三个必须写进代码的量具纪律（都是 R89 轮真踩过的）
 #
 #   ① **库名全小写**：PostgreSQL 把未加引号的标识符折叠成小写 ⇒
@@ -55,7 +76,16 @@ SHAPE_DB="${SHAPE_DB:-itgate_factmatrix_shape}"
 WT="${WT:-/tmp/factsource-matrix-wt}"
 OUT="${OUT:-/tmp/factsource_matrix_out}"
 KEEP_DB="${KEEP_DB:-0}"
+SCOPE_ONLY="${SCOPE_ONLY:-0}"
 SCOPE_TSV="$OUT/scope.tsv"
+SCOPE_LEGACY_TSV="$OUT/scope_legacy.tsv"
+SCOPE_LEGACY_FILES="$OUT/scope_legacy_files.tsv"
+PROBE_TSV="$OUT/scope_probe.tsv"
+PROBE_FILES="$OUT/scope_probe_files.tsv"
+PROBE_A_FILES="$OUT/scope_probe_A_files.tsv"
+PROBE_LOG="$OUT/scope_probe.log"
+# ★ 探针文件写在 **worktree** 里（不是共享树）⇒ 共享树永远干净。
+PROBE_SRC_REL="scripts/ursmcheck/zz_matrix_scope_probe_test.go"
 
 # ★★★ 回收兜底（R94 轮实测修）：本脚本原本把 DROP 放在**尾部** ⇒
 #   `mk_db()` 里的量具自检失败会 `return 1` ⇒ 调用方 `continue`（不退出）
@@ -72,7 +102,16 @@ cleanup_dbs() {
   done
 }
 FACTMATRIX_DBS=("itgate_factmatrix_a1" "itgate_factmatrix_b1" "factmatrixprod_b2" "$SHAPE_DB")
-trap cleanup_dbs EXIT
+
+# ★ 探针回收（本脚本自己生成的临时文件 ⇒ 必须被回收，**不受 KEEP_DB 影响**）。
+#   ★ 同 R93/R94 轮的教训：只挂 EXIT trap 不够 ⇒ INT/TERM 也要显式接管。
+probe_cleanup() {
+  [ -n "${PROBE_SRC:-}" ] || return 0
+  # ★ 静默：回收是 best-effort；不让删除命令的输出污染读数 stdout
+  rm -f "$PROBE_SRC" >/dev/null 2>&1 || true
+}
+trap 'probe_cleanup || true; cleanup_dbs || true' EXIT
+trap 'probe_cleanup || true; cleanup_dbs || true; exit 143' INT TERM
 
 cd "$REPO_ROOT" || exit 1
 
@@ -147,31 +186,39 @@ shape_drop() {
     -c "DROP DATABASE IF EXISTS \"$SHAPE_DB\" WITH (FORCE)" >/dev/null 2>&1 || true
 }
 
-if shape_exists; then
-  # ★★★ 形态库也是「跨基线复用的产物」⇒ 必须校验它是不是**当前基线**建的
-  #   （同族缺陷：worktree 那个是「旧树算读数」，这个是「旧形态算读数」）
-  _mark="$(shape_mark)"
-  if [ "$_mark" != "$SHAPE_MARK" ]; then
-    say "  [形态库] $SHAPE_DB 的基线指纹 ≠ 当前基线 ⇒ **重建**（旧指纹: ${_mark:-（无）}）"
-    shape_drop
-  else
-    say "  [形态库] 复用已存在的 ${SHAPE_DB}（基线指纹一致 ✓）"
+if [ "$SCOPE_ONLY" = "1" ]; then
+  say "  [形态库] SCOPE_ONLY=1 ⇒ **跳过形态库**（scope 是纯静态计算，与库无关）"
+else
+  if shape_exists; then
+    # ★★★ 形态库也是「跨基线复用的产物」⇒ 必须校验它是不是**当前基线**建的
+    #   （同族缺陷：worktree 那个是「旧树算读数」，这个是「旧形态算读数」）
+    _mark="$(shape_mark)"
+    if [ "$_mark" != "$SHAPE_MARK" ]; then
+      say "  [形态库] $SHAPE_DB 的基线指纹 ≠ 当前基线 ⇒ **重建**（旧指纹: ${_mark:-（无）}）"
+      shape_drop
+    else
+      say "  [形态库] 复用已存在的 ${SHAPE_DB}（基线指纹一致 ✓）"
+    fi
   fi
-fi
-if ! shape_exists; then
-  say "  [形态库] 构建 ${SHAPE_DB}（探针脚本，ensure 链 PASS 才算产品形态）…"
-  DB_NAME="$SHAPE_DB" KEEP_DB=1 PG_CONTAINER="$PG_CONTAINER" PG_USER="$PG_USER" \
-    bash scripts/audit/probe-onetime-db-shape.sh >"$OUT/probe.log" 2>&1 \
-    || { say "!! 形态库构建失败（见 $OUT/probe.log）"; exit 1; }
-  shape_set_mark
-  say "  [形态库] 已标记基线指纹 = ${SHAPE_MARK}"
+  if ! shape_exists; then
+    say "  [形态库] 构建 ${SHAPE_DB}（探针脚本，ensure 链 PASS 才算产品形态）…"
+    DB_NAME="$SHAPE_DB" KEEP_DB=1 PG_CONTAINER="$PG_CONTAINER" PG_USER="$PG_USER" \
+      bash scripts/audit/probe-onetime-db-shape.sh >"$OUT/probe.log" 2>&1 \
+      || { say "!! 形态库构建失败（见 $OUT/probe.log）"; exit 1; }
+    shape_set_mark
+    say "  [形态库] 已标记基线指纹 = ${SHAPE_MARK}"
+  fi
 fi
 
 # ── 1. 在范围函数（★ 在**干净副本**里算 ⇒ 排除未跟踪文件）──────────────────
 say "── 1. 算在范围（15 个缺失变量 → 测试文件 → 测试函数）──"
-python3 - "$WT" "$MISSING_VARS" > "$SCOPE_TSV" <<'PY'
+
+# ── 1a. 旧口径 A（文本 grep）⇒ **只作对照 + 对拍**，不作结论口径 ────────────
+python3 - "$WT" "$MISSING_VARS" "$SCOPE_LEGACY_TSV" "$SCOPE_LEGACY_FILES" \
+  2>"$OUT/scope_legacy.count" >/dev/null <<'PY'
 import re, os, subprocess, sys
 REPO, missing = sys.argv[1], sys.argv[2].split()
+SCOPE_TSV, FILES_TSV = sys.argv[3], sys.argv[4]
 files = set()
 for v in missing:
     r = subprocess.run(["grep", "-rl", "--include=*_test.go", v, REPO],
@@ -180,18 +227,337 @@ for v in missing:
         if h.startswith(REPO + "/"):
             files.add(h[len(REPO) + 1:])
 tf = re.compile(r"^func (Test[A-Za-z0-9_]*)\(", re.M)
+# ★ 官方门**排除自己**（`datasource_env_test.go` 里全是这些变量名，
+#   但它是「定规矩的人」不是「被变量影响的人」）⇒ 口径 A 也不能把它算进去。
+#   ★ 不排 ⇒ 口径 A 会比官方门多 1 个文件 / 3 个函数（实测 30/92 vs 29/89）。
+kept = sorted(f for f in files if os.path.basename(f) != "datasource_env_test.go")
 bypkg = {}
-for f in sorted(files):
-    pkg = "./" + os.path.dirname(f).lstrip("./")
-    for n in tf.findall(open(os.path.join(REPO, f), errors="replace").read()):
-        bypkg.setdefault(pkg, set()).add(n)
-for pkg in sorted(bypkg):
-    names = sorted(bypkg[pkg])
-    print(pkg + "\t" + "^(" + "|".join(names) + ")$")
-print(f"# files={len(files)} functions={sum(len(v) for v in bypkg.values())} packages={len(bypkg)}",
+with open(FILES_TSV, "w") as fh:
+    for f in kept:
+        d = os.path.dirname(f).lstrip("./")
+        pkg = "./" + (d if d else ".")
+        fh.write(f + "\t" + pkg + "\n")
+        for n in tf.findall(open(os.path.join(REPO, f), errors="replace").read()):
+            bypkg.setdefault(pkg, set()).add(n)
+with open(SCOPE_TSV, "w") as fh:
+    for pkg in sorted(bypkg):
+        names = sorted(bypkg[pkg])
+        fh.write(pkg + "\t" + "^(" + "|".join(names) + ")$\n")
+print(f"files={len(kept)} functions={sum(len(v) for v in bypkg.values())} packages={len(bypkg)}",
       file=sys.stderr)
 PY
-say "  在范围：$(grep -vc '^#' "$SCOPE_TSV" 2>/dev/null || wc -l < "$SCOPE_TSV") 个包"
+LEGACY_COUNT="$(cat "$OUT/scope_legacy.count" 2>/dev/null)"
+if [ -z "$LEGACY_COUNT" ]; then
+  say "!! 旧口径统计为空 ⇒ 量具自检失败 ⇒ 拒绝出读数（exit 3）"
+  exit 3
+fi
+say "  口径 A（旧：文本 grep，不剥注释、不要求开 PG）= ${LEGACY_COUNT}"
+
+# ── 1b. 口径 D（官方门自己的实现）⇒ **结论口径**（零漂移）────────────────────
+PROBE_SRC="$WT/$PROBE_SRC_REL"
+mkdir -p "$(dirname "$PROBE_SRC")"
+cat > "$PROBE_SRC" <<'GO'
+package ursm_test
+
+// ⚠ 本文件由 scripts/audit/measure-factsource-cost-matrix.sh **运行时生成**，跑完即删。
+//   它存在的唯一理由：**用官方门自己的实现算「在范围」** ⇒ 口径零漂移。
+//
+// ⚠ 刻意【不含任何 DSN 名字面量】⇒ 官方门扫全仓 _test.go 时不会把它算成违规。
+// ⚠ 刻意【不含 pgxpool.New / pgx.Connect / sql.Open("postgres"】⇒ 不会被分类轴
+//   判成「打开 PG 的测试文件」⇒ 官方门的 pgFiles 计数不被扰动。
+//
+// ★ 口径（与官方门 TestRealDBLegsUseDeclaredDSNEnvNames 完全一致）：
+//   (1) 「DSN 类环境变量名」的**字符串字面量**（dsnNameLiterals：全部大写字面量
+//       + 含 DSN 或以 _URL 结尾；注释里的名字不算）
+//   (2) 该文件**打开 PG 连接**（opensPostgresConn）
+//   ⇒ 合起来 = 「这个名字真的决定了这个文件连不连得上库」。
+
+import (
+	"os"
+	"path/filepath"
+	"regexp"
+	"sort"
+	"strings"
+	"testing"
+)
+
+func TestMatrixScopeProbe(t *testing.T) {
+	root := filepath.Join("..", "..")
+	names := strings.Fields(os.Getenv("MATRIX_SCOPE_NAMES"))
+	if len(names) == 0 {
+		t.Fatalf("MATRIX_SCOPE_NAMES 未设置 ⇒ 探针无效（拒绝出读数）")
+	}
+	outPath := os.Getenv("MATRIX_SCOPE_OUT")
+	filesPath := os.Getenv("MATRIX_SCOPE_FILES_OUT")
+	aFilesPath := os.Getenv("MATRIX_SCOPE_A_FILES_OUT")
+	if outPath == "" || filesPath == "" || aFilesPath == "" {
+		t.Fatalf("MATRIX_SCOPE_OUT / MATRIX_SCOPE_FILES_OUT / MATRIX_SCOPE_A_FILES_OUT 未设置 ⇒ 探针无效")
+	}
+	nameSet := map[string]bool{}
+	for _, n := range names {
+		nameSet[n] = true
+	}
+	// ★★★ 名字形态自检（R96 轮自曝的**真实 bug 类别**）：
+	//   前一版探针用「从脚本文本里解析 MISSING_VARS=」拿名字 ⇒ 那一行带引号
+	//   ⇒ 首个名字粘上前引号、末个名字粘上后引号 ⇒ **静默少算 2 个文件 / 4 个函数**
+	//   ⇒ 而「19/71」这个数**看起来完全合理** ⇒ 没有任何一层会报警。
+	//   ⇒ 修法一：名字从**环境变量**来（已改，不再解析脚本文本）。
+	//   ⇒ 修法二：**名字必须过形态闸门**（与官方门 reRSNNameValue 同一个正则）——
+	//   ⇒ 带引号/带空格/带小写的名字在**出读数之前**就中止。
+	nameRe := regexp.MustCompile(`^[A-Z][A-Z0-9_]*$`)
+	for _, n := range names {
+		if !nameRe.MatchString(n) {
+			t.Fatalf("变量名 %q 不是合法环境变量名形态（^[A-Z][A-Z0-9_]*$）⇒ 探针口径会静默漏算 ⇒ 拒绝出读数", n)
+		}
+	}
+	tf := regexp.MustCompile(`(?m)^func (Test[A-Za-z0-9_]*)\(`)
+
+	bypkg := map[string]map[string]bool{}
+	files := map[string]string{}
+	aFiles := map[string]bool{}
+	perName := map[string]int{}
+	cal := map[string]int{}
+	calFn := map[string]int{}
+	keys := []string{"A", "B", "C", "D", "F", "E"}
+	for _, k := range keys {
+		cal[k] = 0
+		calFn[k] = 0
+	}
+
+	walkErr := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			switch d.Name() {
+			case ".git", "vendor", "node_modules", ".idea", "dist", "build":
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		base := filepath.Base(path)
+		if !strings.HasSuffix(base, "_test.go") {
+			return nil
+		}
+		// ★ 官方门排除自己；探针也排除自己（否则会把自己算进「在范围」）。
+		if base == "datasource_env_test.go" || base == "zz_matrix_scope_probe_test.go" {
+			return nil
+		}
+		raw, rerr := os.ReadFile(path)
+		if rerr != nil {
+			return rerr
+		}
+		src := string(raw)
+		rel, rerr := filepath.Rel(root, path)
+		if rerr != nil {
+			return rerr
+		}
+		nFuncs := len(tf.FindAllStringSubmatch(src, -1))
+		stripped := stripGoComments(src)
+		pg := opensPostgresConn(src)
+		textHit, stripHit, litHit := false, false, false
+		for _, n := range names {
+			if strings.Contains(src, n) {
+				textHit = true
+			}
+			if strings.Contains(stripped, n) {
+				stripHit = true
+			}
+		}
+		for _, v := range dsnNameLiterals(src) {
+			if nameSet[v] {
+				litHit = true
+				perName[v]++
+			}
+		}
+		rec := func(k string) {
+			cal[k]++
+			calFn[k] += nFuncs
+		}
+		if textHit {
+			rec("A")
+			aFiles[rel] = true
+		}
+		if stripHit {
+			rec("B")
+		}
+		if pg {
+			rec("E")
+			if textHit {
+				rec("C")
+			}
+			if stripHit {
+				rec("F")
+			}
+			if litHit {
+				rec("D")
+			}
+		}
+		if !(pg && litHit) {
+			return nil
+		}
+		dir := strings.TrimLeft(filepath.ToSlash(filepath.Dir(rel)), "./")
+		if dir == "" {
+			dir = "."
+		}
+		pkg := "./" + dir
+		files[rel] = pkg
+		if bypkg[pkg] == nil {
+			bypkg[pkg] = map[string]bool{}
+		}
+		for _, m := range tf.FindAllStringSubmatch(src, -1) {
+			bypkg[pkg][m[1]] = true
+		}
+		return nil
+	})
+	if walkErr != nil {
+		t.Fatalf("walk: %v", walkErr)
+	}
+	if len(files) == 0 {
+		t.Fatalf("在范围文件数 = 0 ⇒ 探针失效（拒绝出读数）")
+	}
+
+	pkgs := make([]string, 0, len(bypkg))
+	for p := range bypkg {
+		pkgs = append(pkgs, p)
+	}
+	sort.Strings(pkgs)
+	var sb strings.Builder
+	nf := 0
+	for _, p := range pkgs {
+		ns := make([]string, 0, len(bypkg[p]))
+		for n := range bypkg[p] {
+			ns = append(ns, n)
+		}
+		sort.Strings(ns)
+		if len(ns) == 0 {
+			t.Fatalf("包 %s 在范围内却没有测试函数 ⇒ 探针失效", p)
+		}
+		nf += len(ns)
+		sb.WriteString(p + "\t^(" + strings.Join(ns, "|") + ")$\n")
+	}
+	if err := os.WriteFile(outPath, []byte(sb.String()), 0o644); err != nil {
+		t.Fatalf("写 scope: %v", err)
+	}
+	rels := make([]string, 0, len(files))
+	for r := range files {
+		rels = append(rels, r)
+	}
+	sort.Strings(rels)
+	var fb strings.Builder
+	for _, r := range rels {
+		fb.WriteString(r + "\t" + files[r] + "\n")
+	}
+	if err := os.WriteFile(filesPath, []byte(fb.String()), 0o644); err != nil {
+		t.Fatalf("写文件清单: %v", err)
+	}
+	// ★ 口径 A 的文件清单（给脚本侧做**两实现对拍**：Go 走出来的 A 必须
+	//   与 python 文本 grep 走出来的 A **逐字相同** ⇒ 不等即 exit 3）。
+	arels := make([]string, 0, len(aFiles))
+	for r := range aFiles {
+		arels = append(arels, r)
+	}
+	sort.Strings(arels)
+	var ab strings.Builder
+	for _, r := range arels {
+		ab.WriteString(r + "\n")
+	}
+	if err := os.WriteFile(aFilesPath, []byte(ab.String()), 0o644); err != nil {
+		t.Fatalf("写 A 口径文件清单: %v", err)
+	}
+	labels := map[string]string{
+		"A": "文本含名字（不剥注释）+ 不要求开 PG",
+		"B": "剥注释后含名字 + 不要求开 PG",
+		"C": "文本含名字（不剥注释）+ 要求开 PG",
+		"D": "官方门口径：DSN 字面量 + 要求开 PG（结论口径）",
+		"F": "剥注释后【文本】含名字 + 要求开 PG",
+		"E": "官方门自己的分母：全部打开 PG 的 _test.go",
+	}
+	for _, k := range keys {
+		t.Logf("PROBE-CAL %s files=%d functions=%d  # %s", k, cal[k], calFn[k], labels[k])
+	}
+	t.Logf("PROBE files=%d functions=%d packages=%d", len(files), nf, len(bypkg))
+	// ★ 每个变量各自命中几个文件 ⇒ **哪个名字一个文件都没命中**必须一眼可见
+	//   （上一轮那个 bug 正好藏在这里：BOOTSTRAP_TEST_DSN 命中数 = 0 却没人报警）。
+	for _, n := range names {
+		t.Logf("PROBE-NAME %-32s 命中文件 %d", n, perName[n])
+	}
+}
+GO
+say "  [探针] 生成 ${PROBE_SRC_REL}（直接调官方门的 opensPostgresConn / dsnNameLiterals）"
+if ! ( cd "$WT" && MATRIX_SCOPE_NAMES="$MISSING_VARS" MATRIX_SCOPE_OUT="$PROBE_TSV" \
+        MATRIX_SCOPE_FILES_OUT="$PROBE_FILES" MATRIX_SCOPE_A_FILES_OUT="$PROBE_A_FILES" \
+        go test ./scripts/ursmcheck/ -run '^TestMatrixScopeProbe$' -count=1 -v ) >"$PROBE_LOG" 2>&1; then
+  say "!! 探针失败 ⇒ 拒绝出读数（exit 3）；见 $PROBE_LOG"
+  tail -20 "$PROBE_LOG"
+  exit 3
+fi
+probe_cleanup
+PROBE_COUNT="$(grep -om1 -E 'PROBE files=[0-9]+ functions=[0-9]+ packages=[0-9]+' "$PROBE_LOG" 2>/dev/null)"
+if [ -z "$PROBE_COUNT" ]; then
+  say "!! 探针没留下读数标记 ⇒ 探针没真的跑 ⇒ 拒绝出读数（exit 3）"
+  exit 3
+fi
+cp "$PROBE_TSV" "$SCOPE_TSV"
+say "  口径 D（现：官方门口径，**结论口径**）= ${PROBE_COUNT}"
+say "  ── 六套口径对照（探针实测，基线 ${BASE_COMMIT:0:8}）──"
+grep -oE 'PROBE-CAL [A-Z] files=[0-9]+ functions=[0-9]+.*' "$PROBE_LOG" 2>/dev/null | sed 's/^/  /'
+
+# ── 1c. 口径自检（★ 跑在读数之前；不一致即 exit 3）──────────────────────────
+#   ① **两实现对拍**：Go 走出来的「口径 A」必须与 python 文本 grep 走出来的
+#      「口径 A」**逐字相同** ⇒ 不等 ⇒ 两个实现里有一个坏了 ⇒ 拒绝出读数。
+#   ② **包含关系**：口径 D 的文件集必须 ⊆ 口径 A 的文件集 ——
+#      因为 A 是「文本里出现名字」的**超集**语义；
+#      若 D 认了某个「文本里压根没有那些变量名」的文件 ⇒ 探针坏了。
+CHECK_OUT=""
+if CHECK_OUT="$(python3 - "$PROBE_A_FILES" "$SCOPE_LEGACY_FILES" "$PROBE_FILES" 2>&1 <<'PY'
+import sys
+
+
+def load(p):
+    out = set()
+    for line in open(p):
+        line = line.strip()
+        if not line:
+            continue
+        out.add(line.split("\t")[0])
+    return out
+
+
+a_go = load(sys.argv[1])
+a_py = load(sys.argv[2])
+d_go = load(sys.argv[3])
+ok = True
+if a_go != a_py:
+    print("✗ 两实现对拍失败：Go 的口径 A 与 python 文本 grep 的口径 A 不一致 ⇒ 必有一侧坏了")
+    print(f"    只在 Go 侧（{len(a_go - a_py)} 个）: {sorted(a_go - a_py)[:10]}")
+    print(f"    只在 python 侧（{len(a_py - a_go)} 个）: {sorted(a_py - a_go)[:10]}")
+    ok = False
+else:
+    print(f"✓ 两实现对拍：口径 A 的文件集一致（{len(a_go)} 个）")
+bad = sorted(d_go - a_go)
+if bad:
+    print(f"✗ 包含关系失败：口径 D 认了 {len(bad)} 个「文本里压根没有那些变量名」的文件 ⇒ 探针坏了")
+    for x in bad[:10]:
+        print("    " + x)
+    ok = False
+else:
+    print(f"✓ 包含关系：口径 D（{len(d_go)} 个文件）⊆ 口径 A（{len(a_go)} 个文件）")
+sys.exit(0 if ok else 1)
+PY
+)"; then
+  say "  $CHECK_OUT"
+else
+  say "$CHECK_OUT"
+  say "!! 口径自检失败 ⇒ 拒绝出读数（exit 3）"
+  exit 3
+fi
+
+if [ "$SCOPE_ONLY" = "1" ]; then
+  say "★ SCOPE_ONLY=1 ⇒ 只算 scope，不建库、不跑三档"
+  say "  scope 文件 = $SCOPE_TSV"
+  exit 0
+fi
 
 # ── 2. 三档跑 ────────────────────────────────────────────────────────────────
 PW="$(docker exec "$PG_CONTAINER" printenv POSTGRES_PASSWORD 2>/dev/null | head -1)"
@@ -278,7 +644,14 @@ done
 
 # ── 3. 读数 ──────────────────────────────────────────────────────────────────
 say "── 3. 读数 ──"
-python3 - "$OUT" "$SCOPE_TSV" <<'PY'
+# ★★★ R96 轮改这里：verdict 是**三义**的 —— PASS / SKIP / FAIL / **未观测**。
+#   旧实现 `sx.get(k,"-") != sy.get(k,"-")` 把「某档没跑出这条 verdict」也算成
+#   「判定变化」⇒ ⇒ 实测（R90 轮旧日志）A1 档有个包只跑了一半（进程中断），
+#   4 条函数的 verdict 缺失 ⇒ **凭空多出 4 条「判定变化」** ⇒ 分母/分子都被污染。
+#   ⇒ 现实现：判定变化 = **两档都观测到**且 verdict 不同；
+#     「未观测」单列，**不计入判定变化**，并附另一档同一条的错误文本。
+#   ⇒ 再加一道**每包观测完整性**自检：期望函数数 vs 实测 verdict 数。
+if ! python3 - "$OUT" "$SCOPE_TSV" <<'PY'
 import re, os, sys
 from collections import defaultdict
 OUT, SCOPE_TSV = sys.argv[1], sys.argv[2]
@@ -294,11 +667,15 @@ for line in open(SCOPE_TSV):
         scope[(pkg, n)] = True
 
 
+def logpath(cfg, pkg):
+    slug = pkg.lstrip("./").replace("/", "_")
+    return os.path.join(OUT, f"{cfg}__{slug}.log")
+
+
 def collect(cfg):
     v = {}
     for pkg in slugs:
-        slug = pkg.lstrip("./").replace("/", "_")
-        p = os.path.join(OUT, f"{cfg}__{slug}.log")
+        p = logpath(cfg, pkg)
         if not os.path.exists(p):
             continue
         for line in open(p, errors="replace"):
@@ -308,24 +685,88 @@ def collect(cfg):
     return v
 
 
+def err_text(cfg, pkg, func):
+    """取该函数在日志里的错误文本（=== RUN 之后、verdict 行之前的缩进块）。"""
+    p = logpath(cfg, pkg)
+    if not os.path.exists(p):
+        return ""
+    out, grab = [], False
+    for line in open(p, errors="replace").read().splitlines():
+        if line.startswith("=== RUN") and line.rstrip().endswith(func):
+            grab = True
+            continue
+        if grab:
+            if re.match(r"^--- (PASS|SKIP|FAIL):", line) or line.startswith("=== RUN") \
+               or line.startswith("FAIL") or line.startswith("ok "):
+                break
+            if line.strip():
+                out.append(line.strip())
+    return " / ".join(out)[:300]
+
+
 data = {c: collect(c) for c in ("A1", "B1", "B2")}
-print(f"{'档':<5} {'PASS':>6} {'SKIP':>6} {'FAIL':>6} {'合计':>6}")
+
+# ★★★ 每包观测完整性：期望函数数 vs 实测 verdict 数
+pkg_expect = defaultdict(int)
+for (pkg, n) in scope:
+    pkg_expect[pkg] += 1
+pkg_got = {c: defaultdict(int) for c in ("A1", "B1", "B2")}
+for c in ("A1", "B1", "B2"):
+    for (p, n) in data[c]:
+        pkg_got[c][p] += 1
+incomplete = []
+for c in ("A1", "B1", "B2"):
+    for pkg in slugs:
+        if pkg_got[c][pkg] < pkg_expect[pkg]:
+            incomplete.append((c, pkg, pkg_expect[pkg], pkg_got[c][pkg]))
+
+print(f"{'档':<5} {'PASS':>6} {'SKIP':>6} {'FAIL':>6} {'合计':>6} {'未观测':>8}")
 for c in ("A1", "B1", "B2"):
     cnt = defaultdict(int)
     for x in data[c].values():
         cnt[x] += 1
-    print(f"{c:<5} {cnt['PASS']:>6} {cnt['SKIP']:>6} {cnt['FAIL']:>6} {sum(cnt.values()):>6}")
+    unobs = sum(1 for k in scope if k not in data[c])
+    print(f"{c:<5} {cnt['PASS']:>6} {cnt['SKIP']:>6} {cnt['FAIL']:>6} "
+          f"{sum(cnt.values()):>6} {unobs:>8}")
 print()
+if incomplete:
+    print("== 每包观测完整性（★ 不足 ⇒ 该档读数**不完整**，不得当作结论发布）==")
+    for c, pkg, exp, got in incomplete:
+        print(f"   {c}  {pkg}  期望 {exp} / 实测 {got}  ✗ 未完整观测")
+    print()
+
 for label, x, y in [("A1→B1（轴 1 = 变量集）", "A1", "B1"),
-                     ("B1→B2（轴 2 = DSN 指向）", "B1", "B2")]:
+                    ("B1→B2（轴 2 = DSN 指向）", "B1", "B2")]:
     sx, sy = data[x], data[y]
-    changed = [(k, sx.get(k, "-"), sy.get(k, "-")) for k in sorted(set(sx) | set(sy))
-               if sx.get(k) != sy.get(k)]
-    print(f"== {label}：判定变化 {len(changed)} 条 ==")
+    changed, unobs = [], []
+    for k in sorted(scope):
+        a, b = sx.get(k), sy.get(k)
+        if a is None or b is None:
+            unobs.append((k, a, b))
+        elif a != b:
+            changed.append((k, a, b))
+    print(f"== {label}：判定变化 {len(changed)} 条（**未观测不计入**）==")
     for k, a, b in changed:
         print(f"   {a} → {b}   {k[0]}::{k[1]}")
+    if unobs:
+        print(f"-- 未观测 {len(unobs)} 条（任一档缺 verdict ⇒ **不构成判定变化**）--")
+        for k, a, b in unobs:
+            other = y if a is None else x
+            print(f"   {x}={a or '未观测'} / {y}={b or '未观测'}   {k[0]}::{k[1]}")
+            t = err_text(other, k[0], k[1])
+            if t:
+                print(f"       {other} 侧错误文本: {t}")
     print()
+
+if incomplete:
+    print("★ 自检：存在「未完整观测」的包 ⇒ 本次读数**不完整** ⇒ 不得当作结论发布")
+    sys.exit(3)
+print("★ 自检：三档的每个包都观测到全部 verdict ✓")
 PY
+then
+  say "!! 读数自检未过 ⇒ 本次读数**不完整** ⇒ 不得当作结论发布（exit 3）"
+  exit 3
+fi
 
 # ── 4. 回收（形态库按 KEEP_DB，其余全删）─────────────────────────────────────
 say "── 4. 回收 ──"
