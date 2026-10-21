@@ -120,6 +120,24 @@ type r87PkgFacts struct {
 	// ★ 为什么用**函数名**做键：同一个包里函数名唯一 ⇒⇒ 名即实体；
 	//   且当前文件的本地定义与包索引指向**同一个函数** ⇒⇒ 本地优先、包索引兜底。
 	pkgFuncs map[string]r89PkgFunc
+	// pkgScopeDSN：**包作用域**（顶层 var/const 的初始化表达式）读到的
+	// **事实源导出名**（R90 轮新增）。
+	//
+	// ★ 为什么单列一层：包级 `var dsn = os.Getenv("TEST_DATABASE_URL")`
+	//   **不在任何函数体内** ⇒⇒ 函数级扫描看不见它
+	//   ⇒⇒ 而它流进的是**本包所有**测试 ⇒⇒ 必须整包算「消费」。
+	pkgScopeDSN map[string]bool
+	// pkgScopeOpensPG：包作用域是否打开 PG 连接（R90 轮新增）。
+	pkgScopeOpensPG bool
+	// pkgTestMainDSN：**`TestMain` 里**读到的事实源导出名（R90 轮新增）。
+	//
+	// ★ 为什么单列 `TestMain`：Go 的 `TestMain` 在**本包所有测试之前**运行
+	//   ⇒⇒ 它读到的 DSN 会流进本包**每一条**腿
+	//   ⇒⇒ 而 `TestMain` 既不是 `Test` 前缀（不是腿根），也常常不在别的腿的可达集里
+	//   ⇒⇒ 不单列就会漏掉「TestMain 建池 + 各测试各清各的表」这一整个形态。
+	pkgTestMainDSN map[string]bool
+	// pkgTestMainOpensPG：`TestMain` 是否打开 PG 连接（R90 轮新增）。
+	pkgTestMainOpensPG bool
 }
 
 // r89PkgFunc 一个包内某个函数的守卫状态与调用边。
@@ -136,6 +154,20 @@ type r89PkgFunc struct {
 	//   （Go 的测试惯例：共享 helper 放兄弟 `_test.go`，测试函数在另一个文件）
 	//   ⇒⇒ 腿根发现必须**按包**搜，不能只搜当前文件。
 	isTest bool
+	// dsnNames：这个函数体内读到的**事实源导出 DSN 名**（R90 轮新增）。
+	//
+	// ★ 为什么要有这一层：R89 轮登记的「候选集盲区」是——
+	//   「破坏性 SQL 在 A 文件、读 DSN 在 B 文件」的腿**进不了候选集**
+	//   ⇒⇒ 门连看都没看见它 ⇒⇒ 106 个破坏性文件在视野之外。
+	//   ⇒⇒ 本层把「这个函数读了哪些事实源导出的 DSN 名」**按函数名**建索引
+	//   ⇒⇒ 配合已有的包级可达图 ⇒⇒ 「腿能不能流到事实源的值」就判得出来了。
+	dsnNames []string
+	// opensPG：这个函数体内是否打开 PG 连接（R90 轮新增）。
+	//
+	// ★ 为什么要单列：读了 DSN 名 ≠ 那个值进了连接。
+	//   （例：`dsn := os.Getenv("TEST_DATABASE_URL")` 之后拿它去连 SQLite）
+	//   ⇒⇒ 必须要求「腿的可达范围里确实有 PG 连接被打开」。
+	opensPG bool
 }
 
 // r87GuardHit 一次守卫证据。
@@ -276,9 +308,38 @@ func r87ConstStrings(f *ast.File) map[string]string {
 	return out
 }
 
+// r87ReDestructiveTail 匹配「破坏性关键字**后面还有至少一个字符**」的形态。
+//
+// ★ R90 轮加这一层的理由（实测逼出来的）：探测器原来只认「**出现过**关键字」
+//   ⇒⇒ **非 SQL 的字符串**也会被当成破坏性语句：
+//     · `Strategy: "truncate"`（压缩策略名）
+//       —— domains/session/v2/cache_v2_integration_test.go
+//     · `ValidateOrderByColumn("session_summaries", "DROP TABLE")`
+//       —— admin/session_analytics_helpers_test.go
+//     · `require.Contains(t, hint, "TRUNCATE")`
+//       —— admin/data_lifecycle_hot_partition_reclaim_hint_test.go
+//   ⇒⇒ 读数被灌水（「有活破坏性语句的文件 38 / 语句 62」里有若干条根本不是 SQL）。
+//
+// ★ 为什么这条判据**不会漏掉真腿**：
+//   「恰好结束于关键字」的字面量**不可执行**（没有对象可删可截断）
+//   ⇒⇒ 而真腿的写法**至少带一个字符**：
+//     · `fmt.Sprintf("DROP TABLE IF EXISTS %s", pname)` ⇒ 解析出 "DROP TABLE IF EXISTS %s"
+//     · `"DROP TABLE " + tbl` ⇒ 解析出 "DROP TABLE "（末尾是**空格**，不是空）
+//   ⇒⇒ 判据是「关键字后面至少还有**一个字符**（空格也算）」，
+//     **不是**「能不能解析出对象名」——后者会把运行时变量形态的真腿漏掉
+//     （`"DROP DATABASE IF EXISTS " + name` 的对象名静态解析不出来）。
+//
+// ★ 方向说明：这一层只收紧**假阳性**（把不是 SQL 的串剔掉）
+//   ⇒⇒ 它让读数变准，但**不会**让门变松 ⇒ 真腿的可见性不变。
+var r87ReDestructiveTail = regexp.MustCompile(`(?is)\b(TRUNCATE|DROP\s+TABLE|DROP\s+SCHEMA|DROP\s+DATABASE).`)
+
 // r87DestructiveOf 判定一个 SQL 文本是不是硬破坏性，并取出被破坏的对象。
 func r87DestructiveOf(sql string) (bool, []string) {
 	if !r87ReDestructiveSQL.MatchString(sql) {
+		return false, nil
+	}
+	// ★ R90 轮：关键字**恰好结束于字面量末尾** ⇒ 不是可执行 SQL ⇒ 不算破坏性语句。
+	if !r87ReDestructiveTail.MatchString(sql) {
 		return false, nil
 	}
 	var targets []string
@@ -355,7 +416,7 @@ func r87SelfCreatedObjects(f *ast.File, fset *token.FileSet, consts map[string]s
 		if !ok {
 			return true
 		}
-		if r87IsStringInspection(call) || r87IsMessageCall(call) {
+		if r87IsStringInspection(call) || r87IsMessageCall(call) || r87IsAssertionCarrier(call) {
 			return true
 		}
 		for _, a := range call.Args {
@@ -457,7 +518,7 @@ func r87DestructiveStmts(f *ast.File, fset *token.FileSet, consts map[string]str
 		//     反而让假阳性变多** —— 因为散文里的关键字被认成了语句。
 		//     ⇒ ⇒ 修法不是「少解析」，而是**按实参的用途分类**：
 		//        执行类/本地 helper ⇒ 可能是 SQL；消息类 ⇒ 一定是散文。
-		if r87IsStringInspection(call) || r87IsMessageCall(call) {
+		if r87IsStringInspection(call) || r87IsMessageCall(call) || r87IsAssertionCarrier(call) {
 			return true
 		}
 		for _, a := range call.Args {
@@ -487,6 +548,39 @@ var r87ExecLike = map[string]bool{
 }
 
 // r87IsStringInspection 认「字符串检查」类调用（strings.* / bytes.*）。
+// r87IsAssertionCarrier 认「断言 / 正则」类调用 —— 它们的实参是**被检查的文本**，
+// 不是**被执行的 SQL**。
+//
+// ★ R90 轮加这一层的理由（实测）：探测器原来只排除「字符串检查类」与「消息类」，
+//   ⇒⇒ 下面这几种**根本不是 SQL**的字面量仍被算成破坏性语句：
+//     · `require.Contains(t, hint, "TRUNCATE")`
+//       —— admin/data_lifecycle_hot_partition_reclaim_hint_test.go（断言needle）
+//     · `regexp.MustCompile(`…TRUNCATE…`)` / `MustCompile(`…DROP\s+TABLE…`)`
+//       —— sql/schema/handrun_sql_inventory_test.go、internal/sqlguard/…、
+//         installer/cmd/llm-gw-installer/…（**正则模式**）
+//   ⇒⇒ 读数被灌水（⇒⇒ 「有活破坏性语句的文件 38 / 语句 62」里有若干条不是 SQL）。
+//
+// ★★ 为什么**排除整个调用**是安全的：ast.Inspect 会**逐个**访问调用节点
+//   ⇒⇒ `require.NoError(t, pool.Exec(ctx, "TRUNCATE x"))` 里
+//   **内层** `pool.Exec(...)` 是**另一个** CallExpr 节点 ⇒⇒ 照样算数
+//   ⇒⇒ 排除的只是「把 SQL 文本当断言材料」的那一层，不影响真腿。
+var r87AssertionCarriers = map[string]bool{
+	"regexp": true, "require": true, "assert": true,
+}
+
+func r87IsAssertionCarrier(call *ast.CallExpr) bool {
+	sel, ok := call.Fun.(*ast.SelectorExpr)
+	if !ok {
+		return false
+	}
+	x, ok := sel.X.(*ast.Ident)
+	if !ok {
+		return false
+	}
+	return r87AssertionCarriers[x.Name]
+}
+
+// r87IsStringInspection 认「字符串检查类」调用 —— 实参是**被检查的文本**，不是 SQL。
 func r87IsStringInspection(call *ast.CallExpr) bool {
 	sel, ok := call.Fun.(*ast.SelectorExpr)
 	if !ok {
@@ -657,7 +751,10 @@ func r87ResolveString(a ast.Expr, consts map[string]string) (string, bool) {
 // ── 包索引（跨包守卫识别）──────────────────────────────────────────────────
 
 // r87BuildPkgFacts 建全仓包索引：每个目录里哪些函数体内含目标库判定。
-func r87BuildPkgFacts(t *testing.T, root, modulePath string) map[string]*r87PkgFacts {
+//
+// ★ R90 轮新增参数 `exported`（事实源导出的 DSN 名集合）⇒⇒ 因为「这条腿
+//   消费不消费事实源的 DSN」必须按**函数粒度**回答 ⇒⇒ 逐函数记它读了哪些名。
+func r87BuildPkgFacts(t *testing.T, root, modulePath string, exported map[string]bool) map[string]*r87PkgFacts {
 	t.Helper()
 	out := map[string]*r87PkgFacts{}
 	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
@@ -689,8 +786,48 @@ func r87BuildPkgFacts(t *testing.T, root, modulePath string) map[string]*r87PkgF
 		dir := filepath.Dir(path)
 		facts := out[dir]
 		if facts == nil {
-			facts = &r87PkgFacts{funcsWithCheck: map[string]bool{}, declaredGuards: map[string]bool{}, pkgFuncs: map[string]r89PkgFunc{}}
+			facts = &r87PkgFacts{
+				funcsWithCheck: map[string]bool{},
+				declaredGuards: map[string]bool{},
+				pkgFuncs:       map[string]r89PkgFunc{},
+				pkgScopeDSN:    map[string]bool{},
+				pkgTestMainDSN: map[string]bool{},
+			}
 			out[dir] = facts
+		}
+		// ★ R90 轮：**包作用域**读到的导出名 + 包作用域是否打开 PG 连接。
+		//
+		// ★ 为什么必须单独算：包级 `var dsn = os.Getenv("TEST_DATABASE_URL")`
+		//   **不在任何函数体内** ⇒⇒ 逐函数扫描看不见它
+		//   ⇒⇒ 而它流进的是**本包所有**腿 ⇒⇒ 必须整包算「消费」。
+		consts := r87ConstStrings(f)
+		for _, decl := range f.Decls {
+			gd, ok := decl.(*ast.GenDecl)
+			if !ok || (gd.Tok != token.VAR && gd.Tok != token.CONST) {
+				continue
+			}
+			for _, n := range r90ScopeDSNNames(gd, consts, exported) {
+				facts.pkgScopeDSN[n] = true
+			}
+			if opensPostgresConn(r90SrcSlice(string(raw), fset, gd.Pos(), gd.End())) {
+				facts.pkgScopeOpensPG = true
+			}
+		}
+		// ★ R90 轮：**`TestMain`** 读到的导出名 / 是否开 PG 连接。
+		//
+		// ★ Go 语义：`TestMain` 在本包**所有**测试之前运行 ⇒⇒ 它读的 DSN
+		//   流进本包每一条腿 ⇒⇒ 包内每条腿都算「消费」。
+		for _, decl := range f.Decls {
+			fd, ok := decl.(*ast.FuncDecl)
+			if !ok || fd.Body == nil || fd.Name.Name != "TestMain" {
+				continue
+			}
+			for _, n := range r90FuncDSNNames(fd, consts, exported) {
+				facts.pkgTestMainDSN[n] = true
+			}
+			if opensPostgresConn(r90SrcSlice(string(raw), fset, fd.Pos(), fd.End())) {
+				facts.pkgTestMainOpensPG = true
+			}
 		}
 		// ★ 读这个包自己声明的闸门名单（`var GuardFunctions = []string{...}`）。
 		for _, decl := range f.Decls {
@@ -774,11 +911,18 @@ func r87BuildPkgFacts(t *testing.T, root, modulePath string) map[string]*r87PkgF
 		if facts == nil {
 			return nil
 		}
-		for name, fi := range r88CollectFuncs(f, fset, out, dir, modulePath, root) {
+		for name, fi := range r88CollectFuncs(f, fset, out, dir, modulePath, root, string(raw), exported) {
 			cur := facts.pkgFuncs[name]
 			cur.guarded = cur.guarded || fi.guarded
 			cur.callsGuard = cur.callsGuard || fi.callsGate
 			cur.isTest = cur.isTest || fi.isTest
+			// ★ R90 轮：把「读了哪些事实源名 / 开不开 PG 连接」也并进包索引。
+			cur.opensPG = cur.opensPG || fi.opensPG
+			for _, d := range fi.dsnNames {
+				if !r89Contains(cur.dsnNames, d) {
+					cur.dsnNames = append(cur.dsnNames, d)
+				}
+			}
 			for c := range fi.calls {
 				if c == name {
 					continue
@@ -810,11 +954,30 @@ func r89Contains(list []string, name string) bool {
 // ── 单文件分析 ─────────────────────────────────────────────────────────────
 
 // r87AnalyzeFile 判定一个测试文件是不是「破坏性且无目标库守卫」的候选腿。
+//
+// ★★★★★ R90 轮：**候选集从「文件级」放宽到「包级（腿级）」** ───────────────
+//
+// R87~R89 轮的候选口径是**文件级**的：**同一个文件**必须同时满足
+//
+//	① 自己读事实源导出的 DSN 名 ② 自己开 PG 连接 ③ 自己含硬破坏性 SQL
+//
+// ⇒⇒ ★★ 于是「破坏性 SQL 在 A 文件、读 DSN 在 B 文件」的腿
+//   **压根进不了候选集** ⇒⇒ 门**连看都没看见它**（R89 轮实测：106 个文件）。
+//
+// ⇒⇒ R90 轮把①②都改成**腿级**问法：
+//
+//	这条腿的**包级可达集**里，有没有函数读了事实源导出的 DSN 名？
+//	这条腿的**包级可达集**里，有没有函数打开了 PG 连接？
+//	这条腿**够不到**任何目标库判定（守卫）？
+//
+// ⇒⇒ 三条同时成立 ⇒⇒ 它才是候选（⇒⇒ 事实源给什么值它都会清空那张表）。
+//
+// ★ 为什么「读 DSN 名」与「开 PG 连接」要**分别**问：
+//
+//	读了 DSN 名 ≠ 那个值进了连接（例：读出来拿去连 SQLite / 只做断言）。
+//	⇒⇒ 两个条件都要，才不会把「读了名但没用」的腿误报成高危。
 func r87AnalyzeFile(t *testing.T, path, rel, src string, exported map[string]bool, pkgs map[string]*r87PkgFacts, modulePath, root string) []r87Pair {
 	t.Helper()
-	if !opensPostgresConn(src) {
-		return nil
-	}
 	fset := token.NewFileSet()
 	f, err := parser.ParseFile(fset, path, nil, parser.ParseComments)
 	if err != nil {
@@ -822,18 +985,7 @@ func r87AnalyzeFile(t *testing.T, path, rel, src string, exported map[string]boo
 	}
 	consts := r87ConstStrings(f)
 
-	// ① 真读事实源导出的 DSN 名。
-	var names []string
-	for _, n := range r71ScanFile([]byte(src)) {
-		if exported[n] {
-			names = append(names, n)
-		}
-	}
-	if len(names) == 0 {
-		return nil
-	}
-
-	// ② 破坏性语句（排除自己建的对象）。
+	// ① 破坏性语句（排除自己建的对象）。
 	self, createsDB, createsSchema := r87SelfCreatedObjects(f, fset, consts)
 	probes := r87CollectProbes(fset, f)
 	var live []r87DestructiveStmt
@@ -891,14 +1043,18 @@ func r87AnalyzeFile(t *testing.T, path, rel, src string, exported map[string]boo
 	//
 	// ⇒⇒ 所以改成：**每条破坏性语句，按它所在函数能被哪些测试入口到达来定腿根，
 	// 再看那个腿根能不能到达一个目标库判定**（同文件可达 + 跨包闸门名单）。
-	legs := r88AnalyzeLegs(f, fset, pkgs, filepath.Dir(path), modulePath, root, live)
+	//
+	// ★ R90 轮追加：腿根还要**消费事实源的 DSN**（包级可达）
+	//   ⇒⇒ 「读 DSN 在别的文件」的腿这次进得来候选集了。
+	legs := r88AnalyzeLegs(f, fset, pkgs, filepath.Dir(path), modulePath, root, src, exported, live)
 	if len(legs) == 0 {
 		return nil
 	}
 	var out []r87Pair
 	seen := map[string]bool{}
 	for _, leg := range legs {
-		for _, n := range names {
+		// ★ R90 轮：名字来自**这条腿**消费的事实源名（不再是「这个文件读到的名」）。
+		for _, n := range leg.DSNNames {
 			k := n + "\t" + rel
 			if seen[k] {
 				continue
@@ -959,17 +1115,32 @@ type r88FuncInfo struct {
 	callsGate bool            // 调用了跨包闸门函数（按包自己声明的名单）
 	calls     map[string]bool // 同文件调用的函数名
 	isTest    bool            // 测试入口（Test 前缀）
+	// dsnNames：体内读到的**事实源导出 DSN 名**（R90 轮新增）。
+	dsnNames []string
+	// opensPG：体内是否打开 PG 连接（R90 轮新增）。
+	opensPG bool
 }
 
 // r88Leg 一条「没有被守卫支配」的破坏性腿。
 type r88Leg struct {
 	Stmt string
 	Root string
+	// DSNNames：这条腿**消费**的事实源导出 DSN 名（R90 轮新增）。
+	//
+	// ★ 为什么挂在**腿**上而不是文件上：候选集包级化之后，
+	//   同一个文件里的不同腿可能消费**不同**的 DSN 名
+	//   ⇒⇒ 台账的键（name + file）必须按腿实际消费的名字来登记。
+	DSNNames []string
 }
 
 // r88CollectFuncs 收集一个文件里的函数及其判定证据与调用关系。
-func r88CollectFuncs(f *ast.File, fset *token.FileSet, pkgs map[string]*r87PkgFacts, dir, modulePath, root string) map[string]*r88FuncInfo {
+//
+// ★ R90 轮新增两个参数（`src` / `exported`）与两个产物（`dsnNames` / `opensPG`）：
+//   候选集从**文件级**放宽到**包级** ⇒⇒ 「这条腿消费不消费事实源的 DSN」
+//   必须能在**函数粒度**上回答 ⇒⇒ 逐函数记「读了哪些导出名 / 开不打开 PG」。
+func r88CollectFuncs(f *ast.File, fset *token.FileSet, pkgs map[string]*r87PkgFacts, dir, modulePath, root string, src string, exported map[string]bool) map[string]*r88FuncInfo {
 	assigned := r87AssignedNodes(f)
+	consts := r87ConstStrings(f)
 	out := map[string]*r88FuncInfo{}
 	for _, decl := range f.Decls {
 		fd, ok := decl.(*ast.FuncDecl)
@@ -985,6 +1156,11 @@ func r88CollectFuncs(f *ast.File, fset *token.FileSet, pkgs map[string]*r87PkgFa
 		}
 		// 体内判定证据：(a)current_database() /(b)读 .Database /(c)DSN 目标比较 /(e)先探后建。
 		fi.guarded = len(r87CollectHits(fset, fd, assigned)) > 0
+		// ★ R90 轮：体内读到的**事实源导出名**（AST 口径，与 `r71ScanFile` 同款：
+		//   `os.Getenv` / `os.LookupEnv` + 字面量或包级 const 名字）。
+		fi.dsnNames = r90FuncDSNNames(fd, consts, exported)
+		// ★ R90 轮：体内是否打开 PG 连接（文本口径，与仓内 `opensPostgresConn` 同款）。
+		fi.opensPG = opensPostgresConn(r90SrcSlice(src, fset, fd.Pos(), fd.End()))
 		// 调用关系 + 跨包闸门。
 		ast.Inspect(fd, func(n ast.Node) bool {
 			call, ok := n.(*ast.CallExpr)
@@ -1043,6 +1219,13 @@ func r89Merged(funcs map[string]*r88FuncInfo, pkg map[string]r89PkgFunc) map[str
 		cur.guarded = cur.guarded || f.guarded
 		cur.callsGuard = cur.callsGuard || f.callsGate
 		cur.isTest = cur.isTest || f.isTest
+		// ★ R90 轮：合并「读了哪些事实源名」与「开不开 PG 连接」。
+		cur.opensPG = cur.opensPG || f.opensPG
+		for _, d := range f.dsnNames {
+			if !r89Contains(cur.dsnNames, d) {
+				cur.dsnNames = append(cur.dsnNames, d)
+			}
+		}
 		for c := range f.calls {
 			if !r89Contains(cur.calls, c) {
 				cur.calls = append(cur.calls, c)
@@ -1088,6 +1271,180 @@ func r89NodeGuarded(rootName string, g map[string]r89PkgFunc) bool {
 	return false
 }
 
+// ── R90 轮：候选集包级化（腿的「事实源 DSN 消费」判定）─────────────────────
+//
+// ★★★ 本节要闭合的洞（R89 轮登记的「候选集盲区」）──────────────────────────
+//
+//	R87~R89 轮的候选集是**文件级**的 ⇒⇒ 「破坏性 SQL 在 A 文件、读 DSN 在 B 文件」
+//	的腿**进不了候选集** ⇒⇒ 门**连看都没看见它**（实测 106 个破坏性文件）。
+//
+//	⇒⇒ 本节把「这条腿消不消费事实源的 DSN」拆成两个**可判**的子问题：
+//
+//	  ① **消费名**：腿的**包级可达集**里，有没有函数读了事实源导出的 DSN 名？
+//	     （外加两条「不在函数体内」的来源：包作用域初始化、`TestMain`）
+//	  ② **真的连了 PG**：腿的可达范围（或包作用域 / `TestMain`）里，有没有打开 PG 连接？
+//
+//	⇒⇒ ①②都成立 ⇒⇒ 这条腿连的就是「事实源给什么就连什么」的库。
+//
+// ★ 为什么 ①② 要**分别**判：读了 DSN 名 ≠ 那个值进了连接
+//   （例：读出来只为打印，或拿它去连 SQLite）⇒⇒ 少一个条件就会误报。
+
+// r90SrcSlice 取出源码里 [from, to) 这一段文本（按字节偏移）。
+func r90SrcSlice(src string, fset *token.FileSet, from, to token.Pos) string {
+	if !from.IsValid() || !to.IsValid() {
+		return ""
+	}
+	s := fset.Position(from).Offset
+	e := fset.Position(to).Offset
+	if s < 0 || e > len(src) || s >= e {
+		return ""
+	}
+	return src[s:e]
+}
+
+// r90FuncDSNNames 返回这个函数体内读到的**事实源导出名**。
+//
+// ★ 口径与仓内 `r71ScanFile` 同款：`os.Getenv` / `os.LookupEnv` + 字面量
+//   或包级 const 名字 ⇒⇒ 两处口径不会漂移。
+func r90FuncDSNNames(fd *ast.FuncDecl, consts map[string]string, exported map[string]bool) []string {
+	seen := map[string]bool{}
+	var names []string
+	ast.Inspect(fd, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok || len(call.Args) == 0 {
+			return true
+		}
+		sel, ok := call.Fun.(*ast.SelectorExpr)
+		if !ok {
+			return true
+		}
+		if sel.Sel.Name != "Getenv" && sel.Sel.Name != "LookupEnv" {
+			return true
+		}
+		if x, ok := sel.X.(*ast.Ident); !ok || x.Name != "os" {
+			return true
+		}
+		var name string
+		switch a := call.Args[0].(type) {
+		case *ast.BasicLit:
+			if a.Kind != token.STRING {
+				return true
+			}
+			name, _ = strconv.Unquote(a.Value)
+		case *ast.Ident:
+			name = consts[a.Name]
+		default:
+			return true
+		}
+		if name == "" || seen[name] || !exported[name] {
+			return true
+		}
+		seen[name] = true
+		names = append(names, name)
+		return true
+	})
+	sort.Strings(names)
+	return names
+}
+
+// r90ScopeDSNNames 返回**包作用域**（顶层 var/const 初始化）读到的导出名。
+//
+// ★ 为什么必须单独算：包级 `var dsn = os.Getenv("TEST_DATABASE_URL")`
+//   **不在任何函数体内** ⇒⇒ 函数级扫描看不见它
+//   ⇒⇒ 而它流进的是**本包所有**测试 ⇒⇒ 必须整包算「消费」。
+func r90ScopeDSNNames(gd *ast.GenDecl, consts map[string]string, exported map[string]bool) []string {
+	seen := map[string]bool{}
+	var names []string
+	ast.Inspect(gd, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok || len(call.Args) == 0 {
+			return true
+		}
+		sel, ok := call.Fun.(*ast.SelectorExpr)
+		if !ok {
+			return true
+		}
+		if sel.Sel.Name != "Getenv" && sel.Sel.Name != "LookupEnv" {
+			return true
+		}
+		if x, ok := sel.X.(*ast.Ident); !ok || x.Name != "os" {
+			return true
+		}
+		var name string
+		switch a := call.Args[0].(type) {
+		case *ast.BasicLit:
+			if a.Kind != token.STRING {
+				return true
+			}
+			name, _ = strconv.Unquote(a.Value)
+		case *ast.Ident:
+			name = consts[a.Name]
+		default:
+			return true
+		}
+		if name == "" || seen[name] || !exported[name] {
+			return true
+		}
+		seen[name] = true
+		names = append(names, name)
+		return true
+	})
+	sort.Strings(names)
+	return names
+}
+
+// r90LegDSNNames 返回这条腿**消费**的事实源导出名。
+//
+// ★ 三条来源（缺一不可地都要）：
+//   ① 腿的**包级可达集**里**函数体内**读到的（覆盖「读 DSN 在另一个文件」）；
+//   ② **包作用域**读到的（包级 var/const 初始化）⇒⇒ 整包所有腿都算；
+//   ③ **`TestMain`** 里读到的 ⇒⇒ Go 的 `TestMain` 跑在本包所有测试之前
+//      ⇒⇒ 它读的 DSN 流进本包每一条腿。
+func r90LegDSNNames(rootName string, g map[string]r89PkgFunc, facts *r87PkgFacts) []string {
+	seen := map[string]bool{}
+	var names []string
+	add := func(n string) {
+		if n == "" || seen[n] {
+			return
+		}
+		seen[n] = true
+		names = append(names, n)
+	}
+	for n := range r89ReachNames(rootName, g) {
+		if node, ok := g[n]; ok {
+			for _, d := range node.dsnNames {
+				add(d)
+			}
+		}
+	}
+	if facts != nil {
+		for n := range facts.pkgScopeDSN {
+			add(n)
+		}
+		for n := range facts.pkgTestMainDSN {
+			add(n)
+		}
+	}
+	sort.Strings(names)
+	return names
+}
+
+// r90LegOpensPG：这条腿的可达范围（或包作用域 / `TestMain`）里有没有打开 PG 连接。
+//
+// ★ 为什么要单列：读了 DSN 名 ≠ 那个值进了连接
+//   ⇒⇒ 少了这一条，「读了名但拿它连 SQLite / 只做断言」的腿会被误报成高危。
+func r90LegOpensPG(rootName string, g map[string]r89PkgFunc, facts *r87PkgFacts) bool {
+	for n := range r89ReachNames(rootName, g) {
+		if node, ok := g[n]; ok && node.opensPG {
+			return true
+		}
+	}
+	if facts != nil && (facts.pkgScopeOpensPG || facts.pkgTestMainOpensPG) {
+		return true
+	}
+	return false
+}
+
 // r88Enclosing 找位置 pos 所在的最内层函数。
 func r88Enclosing(pos int, funcs map[string]*r88FuncInfo) *r88FuncInfo {
 	var best *r88FuncInfo
@@ -1102,12 +1459,16 @@ func r88Enclosing(pos int, funcs map[string]*r88FuncInfo) *r88FuncInfo {
 	return best
 }
 
-// r88AnalyzeLegs 返回「没有被守卫支配」的破坏性腿。
-func r88AnalyzeLegs(f *ast.File, fset *token.FileSet, pkgs map[string]*r87PkgFacts, dir, modulePath, root string, live []r87DestructiveStmt) []r88Leg {
-	funcs := r88CollectFuncs(f, fset, pkgs, dir, modulePath, root)
+// r88AnalyzeLegs 返回「没有被守卫支配、且消费事实源 DSN」的破坏性腿。
+//
+// ★ R90 轮：新增**消费判定**（`dsnNames` 非空 且 腿的可达范围里确实开了 PG 连接）
+//   ⇒⇒ 候选集由**文件级**放宽到**包级（腿级）**。
+func r88AnalyzeLegs(f *ast.File, fset *token.FileSet, pkgs map[string]*r87PkgFacts, dir, modulePath, root string, src string, exported map[string]bool, live []r87DestructiveStmt) []r88Leg {
+	funcs := r88CollectFuncs(f, fset, pkgs, dir, modulePath, root, src, exported)
 	// ★ R89 轮：同包**跨文件**的函数索引（守卫状态 + 调用边 + 是不是测试入口）。
 	var pkg map[string]r89PkgFunc
-	if facts := pkgs[dir]; facts != nil {
+	var facts *r87PkgFacts
+	if facts = pkgs[dir]; facts != nil {
 		pkg = facts.pkgFuncs
 	}
 	g := r89Merged(funcs, pkg)
@@ -1142,12 +1503,27 @@ func r88AnalyzeLegs(f *ast.File, fset *token.FileSet, pkgs map[string]*r87PkgFac
 			if r89NodeGuarded(r, g) {
 				continue
 			}
+			// ★★★★★ R90 轮：**消费判定** —— 这条腿会不会真的把事实源给的
+			//   DSN 值连到 PG 上？
+			//
+			//   ① 腿的**包级可达集**里有没有函数读了事实源导出的 DSN 名；
+			//   ② 同上可达范围（或包作用域 / TestMain）里有没有**打开 PG 连接**。
+			//
+			//   ⇒⇒ ①②都成立 ⇒⇒ 这条腿连的是「事实源给什么就连什么」的库
+			//   ⇒⇒ 而它没守卫 ⇒⇒ 事实源给产品库的值，它就会清空产品表。
+			dsnNames := r90LegDSNNames(r, g, facts)
+			if len(dsnNames) == 0 {
+				continue
+			}
+			if !r90LegOpensPG(r, g, facts) {
+				continue
+			}
 			key := r + "\t" + d.sql
 			if seen[key] {
 				continue
 			}
 			seen[key] = true
-			out = append(out, r88Leg{Stmt: d.sql, Root: r})
+			out = append(out, r88Leg{Stmt: d.sql, Root: r, DSNNames: dsnNames})
 		}
 	}
 	return out
@@ -1229,7 +1605,7 @@ func TestDestructiveTargetGuardNoUnguardedLeg(t *testing.T) {
 		t.Fatalf("事实源 %s 只解析出 %d 个 export ⇒ 扫描口径失效（门会恒绿）", r86DSPath, len(exported))
 	}
 	modulePath := r87ModulePath(t, root)
-	pkgs := r87BuildPkgFacts(t, root, modulePath)
+	pkgs := r87BuildPkgFacts(t, root, modulePath, exported)
 
 	var candidates []r87Pair
 	walkErr := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
@@ -1412,7 +1788,7 @@ func TestR87DestructiveTargetDetectorSelfCheck(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(gateDir, "gate.go"), []byte(gateSrc), 0o600); err != nil {
 		t.Fatalf("write gatepkg: %v", err)
 	}
-	pkgs = r87BuildPkgFacts(t, dir, "example.com/x")
+	pkgs = r87BuildPkgFacts(t, dir, "example.com/x", exported)
 
 	// 夹具 ⑨：调用**名单里的闸门** ⇒ 不得被判成候选。
 	f9 := write("fx9", "declared_gate_test.go", "package fx\n\nimport (\n\t\"os\"\n\n"+

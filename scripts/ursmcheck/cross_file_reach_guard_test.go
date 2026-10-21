@@ -92,7 +92,7 @@ func TestR89CrossFileReachabilitySelfCheck(t *testing.T) {
 		"\tt.Cleanup(pool.Close)\n"+
 		"\t_, _ = pool.Exec(context.Background(), \"TRUNCATE public.other_table\")\n}\n")
 
-	pkgs := r87BuildPkgFacts(t, dir, "example.com/x")
+	pkgs := r87BuildPkgFacts(t, dir, "example.com/x", exported)
 
 	analyze := func(fn string) []r87Pair {
 		p := filepath.Join(dir, fn)
