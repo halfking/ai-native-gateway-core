@@ -94,18 +94,77 @@ BASE_COMMIT="$(git rev-parse origin/main)"
 say "  基线提交 = ${BASE_COMMIT}"
 
 if [ ! -d "$WT" ]; then
-  git worktree add --detach "$WT" origin/main >/dev/null 2>&1 || { say "!! worktree 创建失败"; exit 1; }
+  git worktree add --detach "$WT" "$BASE_COMMIT" >/dev/null 2>&1 || { say "!! worktree 创建失败"; exit 1; }
 fi
-say "  worktree = $WT @ $(git -C "$WT" rev-parse --short HEAD)"
 
-if ! docker exec -i "$PG_CONTAINER" psql -U "$PG_USER" -d postgres -tAc \
-     "SELECT 1 FROM pg_database WHERE datname='$SHAPE_DB'" 2>/dev/null | grep -q 1; then
+# ★★★ ★ 量具自检：worktree 的**实际 HEAD**必须 == 宣称的基线（自检跑在读数之前）
+#   实测缺陷（并行会话 R92 回执 ②E 指出，本轮独立复核成立）：
+#   ★ 原实现是 `if [ ! -d "$WT" ]; then git worktree add …; fi`
+#     ⇒ **$WT 已存在时根本不更新** ⇒ 日志里「基线提交 = X」与「worktree @ Y」是
+#     **两个不同的提交** ⇒ 整份读数其实是从**旧树**算出来的，而日志宣称新基线
+#     ⇒ ⇒ **没有任何一层会报警**（上次侥幸无害，只是因为两次提交之间只差注释）。
+#   ⇒ 修法：自检 + **不一致即拒绝出结论（exit 3）**，而不是打一行需要人脑比对的日志。
+WT_HEAD="$(git -C "$WT" rev-parse HEAD 2>/dev/null || echo "")"
+if [ "$WT_HEAD" != "$BASE_COMMIT" ]; then
+  say "  ✗ ★ 量具自检失败：worktree 的实际 HEAD ≠ 宣称的基线"
+  say "      宣称基线   = ${BASE_COMMIT}"
+  say "      worktree 实际 = ${WT_HEAD:-（读不到）}   ($WT)"
+  say "      ⇒ 读数会从**旧树**算出来，而日志宣称新基线 ⇒ **拒绝出结论（exit 3）**"
+  say "      ⇒ 修法二选一："
+  say "        (a) 换一个 worktree 路径： WT=/tmp/新路径 bash $0"
+  say "        (b) 显式刷新（★ 会丢弃该 worktree 里的本地改动）： MATRIX_REFRESH_WT=1 bash $0"
+  if [ "${MATRIX_REFRESH_WT:-0}" = "1" ]; then
+    say "      MATRIX_REFRESH_WT=1 ⇒ 强制刷新 ${WT} → ${BASE_COMMIT}"
+    git -C "$WT" checkout --detach "$BASE_COMMIT" >/dev/null 2>&1 \
+      || git -C "$WT" reset --hard "$BASE_COMMIT" >/dev/null 2>&1
+    WT_HEAD="$(git -C "$WT" rev-parse HEAD 2>/dev/null || echo "")"
+    if [ "$WT_HEAD" != "$BASE_COMMIT" ]; then
+      say "      ✗ 刷新失败 ⇒ 拒绝出结论"
+      exit 3
+    fi
+    say "      ✓ 刷新完成"
+  else
+    exit 3
+  fi
+fi
+say "  worktree = $WT @ $(git -C "$WT" rev-parse --short HEAD)  ✓ 与基线一致"
+
+SHAPE_MARK="matrix-baseline:${BASE_COMMIT}"
+shape_exists() {
+  docker exec -i "$PG_CONTAINER" psql -U "$PG_USER" -d postgres -tAc \
+    "SELECT 1 FROM pg_database WHERE datname='$SHAPE_DB'" 2>/dev/null | grep -q 1
+}
+shape_mark() {
+  docker exec -i "$PG_CONTAINER" psql -U "$PG_USER" -d postgres -tAc \
+    "SELECT COALESCE(shobj_description(oid,'pg_database'),'') FROM pg_database WHERE datname='$SHAPE_DB'" 2>/dev/null | head -1
+}
+shape_set_mark() {
+  docker exec -i "$PG_CONTAINER" psql -U "$PG_USER" -d postgres -q \
+    -c "COMMENT ON DATABASE \"$SHAPE_DB\" IS '$SHAPE_MARK'" >/dev/null 2>&1 || true
+}
+shape_drop() {
+  docker exec -i "$PG_CONTAINER" psql -U "$PG_USER" -d postgres -q \
+    -c "DROP DATABASE IF EXISTS \"$SHAPE_DB\" WITH (FORCE)" >/dev/null 2>&1 || true
+}
+
+if shape_exists; then
+  # ★★★ 形态库也是「跨基线复用的产物」⇒ 必须校验它是不是**当前基线**建的
+  #   （同族缺陷：worktree 那个是「旧树算读数」，这个是「旧形态算读数」）
+  _mark="$(shape_mark)"
+  if [ "$_mark" != "$SHAPE_MARK" ]; then
+    say "  [形态库] $SHAPE_DB 的基线指纹 ≠ 当前基线 ⇒ **重建**（旧指纹: ${_mark:-（无）}）"
+    shape_drop
+  else
+    say "  [形态库] 复用已存在的 $SHAPE_DB（基线指纹一致 ✓）"
+  fi
+fi
+if ! shape_exists; then
   say "  [形态库] 构建 ${SHAPE_DB}（探针脚本，ensure 链 PASS 才算产品形态）…"
   DB_NAME="$SHAPE_DB" KEEP_DB=1 PG_CONTAINER="$PG_CONTAINER" PG_USER="$PG_USER" \
     bash scripts/audit/probe-onetime-db-shape.sh >"$OUT/probe.log" 2>&1 \
     || { say "!! 形态库构建失败（见 $OUT/probe.log）"; exit 1; }
-else
-  say "  [形态库] 复用已存在的 $SHAPE_DB"
+  shape_set_mark
+  say "  [形态库] 已标记基线指纹 = ${SHAPE_MARK}"
 fi
 
 # ── 1. 在范围函数（★ 在**干净副本**里算 ⇒ 排除未跟踪文件）──────────────────
