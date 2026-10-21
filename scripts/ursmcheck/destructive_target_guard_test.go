@@ -84,6 +84,11 @@ type r87Pair struct {
 	Name string
 	File string
 	Stmt string
+	// Root 是**腿根**：能到达这条破坏性语句的测试入口函数名（R88 轮新增）。
+	//
+	// ★ 为什么要有它：R88 轮把判定单位从「文件」降到「腿」⇒⇒ 报错必须点名
+	//   **是哪条腿**（哪个测试入口）没守卫，否则同一个文件里多条腿时无从下手。
+	Root string
 }
 
 func (p r87Pair) key() string { return p.Name + "\t" + p.File }
@@ -777,91 +782,246 @@ func r87AnalyzeFile(t *testing.T, path, rel, src string, exported map[string]boo
 			return nil
 		}
 	}
-	first := live[0].pos
-
-	// ③ 第一条破坏性语句之前有没有目标库判定证据。
-	if !r87HasGuardBefore(f, fset, first, pkgs, filepath.Dir(path), modulePath, root) {
-		var out []r87Pair
-		for _, n := range names {
-			out = append(out, r87Pair{Name: n, File: rel, Stmt: live[0].sql})
-		}
-		sort.Slice(out, func(i, j int) bool {
-			if out[i].Name != out[j].Name {
-				return out[i].Name < out[j].Name
-			}
-			return out[i].File < out[j].File
-		})
-		return out
+	// ③ ★★★★★ R88 轮：**判定单位从「文件」降到「腿」**。
+	//
+	// R87 轮的口径是「**这个文件里**在第一条破坏性语句之前有没有目标库判定」，
+	// 那是一条**文件级**的断言 ⇒⇒ 而危害的单位是**腿（一条会执行破坏性 SQL 的
+	// 测试路径）** ⇒⇒ 于是「一个文件里有一条腿带守卫 ⇒ 整个文件（含别的腿）
+	// 都被判成有守卫」成了恒真推论。
+	//
+	// ★ R88 轮实测出来的洞（R88 变异 M1）：给一条**已带守卫**的文件追加一个
+	// **不带守卫**的第二入口（自己建池、自己 TRUNCATE 产品表）⇒ 文件级口径
+	// 看到「判定在前面」⇒ **门仍然绿** ⇒ 事实源给什么值它都会清空产品表。
+	//
+	// ⇒⇒ 所以改成：**每条破坏性语句，按它所在函数能被哪些测试入口到达来定腿根，
+	// 再看那个腿根能不能到达一个目标库判定**（同文件可达 + 跨包闸门名单）。
+	legs := r88AnalyzeLegs(f, fset, pkgs, filepath.Dir(path), modulePath, root, live)
+	if len(legs) == 0 {
+		return nil
 	}
-	return nil
+	var out []r87Pair
+	seen := map[string]bool{}
+	for _, leg := range legs {
+		for _, n := range names {
+			k := n + "\t" + rel
+			if seen[k] {
+				continue
+			}
+			seen[k] = true
+			out = append(out, r87Pair{Name: n, File: rel, Stmt: leg.Stmt, Root: leg.Root})
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Name != out[j].Name {
+			return out[i].Name < out[j].Name
+		}
+		return out[i].File < out[j].File
+	})
+	return out
 }
 
-// r87HasGuardBefore 判定「在 pos 之前」有没有目标库判定证据。
-func r87HasGuardBefore(f *ast.File, fset *token.FileSet, pos int, pkgs map[string]*r87PkgFacts, dir, modulePath, root string) bool {
-	assigned := r87AssignedNodes(f)
+// ── R88 轮：腿级判定（同文件可达 + 跨包闸门名单）───────────────────────────
+//
+// ★★★ 为什么必须换掉 R87 的「文件级位置序」口径 ───────────────────────────
+//
+//	R87 轮的门问的是：「**这个文件里**在第一条破坏性语句之前，有没有目标库判定证据」。
+//	那是一条**文件级**断言。而危害的单位是**腿**（一条会真的执行破坏性 SQL 的
+//	测试路径）⇒⇒ 于是下面这条恒真推论成立：
+//
+//	    「一个文件里有一条腿带守卫 ⇒ 整个文件（含别的腿）都被判成有守卫」
+//
+//	⇒⇒ R88 变异 M1 实测：给一条**已带守卫**的文件追加一个**不带守卫**的第二入口
+//	    （自己建池、自己 TRUNCATE 产品表）⇒ 文件级口径看到「判定在前面」
+//	    ⇒ **门仍然绿** ⇒ 事实源给什么值它都会清空产品表。
+//
+//	⇒⇒ 换口径：**按腿判**。
+//	  · 腿根 = 能到达该破坏性语句的**测试入口**（`Test` 前缀的函数）；
+//	    若没有任何测试入口能到达它（退化形态，例如整个文件只有一个非 Test 函数），
+//	    则以**该语句所在函数**本身为腿根。
+//	  · 腿根**被守卫支配** ⇔ 它的同文件可达集合里，存在一个「体内含目标库判定」
+//	    或「调用了跨包闸门」的函数。
+//
+//	★ 为什么不是拿「语句所在函数」当腿根：仓内四条真腿的破坏性字面量住在**兄弟
+//	  helper** 里（`reset` / `resetOutboxAndSessions` / `attachFixtureReset` /
+//	  `bootstrapSupplierSchema`），而守卫住在**另一个** helper 里（`openPool` /
+//	  `openAuditPool` / `openAttachPool` / `openSupplierPG`）⇒⇒ 两者是**兄弟**，
+//	  不是祖先 ⇒⇒ 只看「语句所在函数」会把四条真腿全判成没守卫（假阳性）。
+//	  ⇒⇒ 真正的支配关系在**调用者**那一侧：测试函数同时调了那两个 helper。
+//
+//	★ 口径边界（登记，不掩饰）：可达性是**同文件**的。跨文件同包的 helper 调用
+//	  **判不出来** ⇒ 若守卫与破坏性语句分居同包的两个文件，本门会**判成无守卫**
+//	  （假阳性方向）。当前仓内四条真腿的守卫与破坏性语句同文件、台账三条也同文件
+//	  ⇒ 实测无影响；跨文件形态已登记为已知缺口（同 R87 台账里「跨文件自建库」
+//	  那条的缺口性质）。
 
-	// (a)(b)(c)：本文件里的直接证据。
-	for _, h := range r87CollectHits(fset, f, assigned) {
-		if h.pos < pos {
+// r88FuncInfo 一个文件内的函数：判定证据 + 调用关系。
+type r88FuncInfo struct {
+	name      string
+	start     int
+	end       int
+	guarded   bool            // 体内含目标库判定证据
+	callsGate bool            // 调用了跨包闸门函数（按包自己声明的名单）
+	calls     map[string]bool // 同文件调用的函数名
+	isTest    bool            // 测试入口（Test 前缀）
+}
+
+// r88Leg 一条「没有被守卫支配」的破坏性腿。
+type r88Leg struct {
+	Stmt string
+	Root string
+}
+
+// r88CollectFuncs 收集一个文件里的函数及其判定证据与调用关系。
+func r88CollectFuncs(f *ast.File, fset *token.FileSet, pkgs map[string]*r87PkgFacts, dir, modulePath, root string) map[string]*r88FuncInfo {
+	assigned := r87AssignedNodes(f)
+	out := map[string]*r88FuncInfo{}
+	for _, decl := range f.Decls {
+		fd, ok := decl.(*ast.FuncDecl)
+		if !ok || fd.Body == nil {
+			continue
+		}
+		fi := &r88FuncInfo{
+			name:   fd.Name.Name,
+			start:  fset.Position(fd.Pos()).Offset,
+			end:    fset.Position(fd.End()).Offset,
+			calls:  map[string]bool{},
+			isTest: strings.HasPrefix(fd.Name.Name, "Test"),
+		}
+		// 体内判定证据：(a)current_database() /(b)读 .Database /(c)DSN 目标比较 /(e)先探后建。
+		fi.guarded = len(r87CollectHits(fset, fd, assigned)) > 0
+		// 调用关系 + 跨包闸门。
+		ast.Inspect(fd, func(n ast.Node) bool {
+			call, ok := n.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			switch fun := call.Fun.(type) {
+			case *ast.Ident:
+				fi.calls[fun.Name] = true
+			case *ast.SelectorExpr:
+				pkgName, ok := fun.X.(*ast.Ident)
+				if !ok {
+					return true
+				}
+				imp, ok := r87ImportPath(f, pkgName.Name)
+				if !ok {
+					return true
+				}
+				d := r87ImportDir(root, modulePath, imp)
+				if d == "" {
+					return true
+				}
+				facts := pkgs[d]
+				if facts == nil {
+					return true
+				}
+				// ★ 跨包闸门：**优先按包自己声明的名单**；包没声明才退回包级粗口径。
+				guarded := false
+				if len(facts.declaredGuards) > 0 {
+					guarded = facts.declaredGuards[fun.Sel.Name]
+				} else {
+					guarded = facts.hasCheck
+				}
+				if guarded {
+					fi.callsGate = true
+				}
+			}
+			return true
+		})
+		out[fi.name] = fi
+	}
+	return out
+}
+
+// r88Reach 返回从 root 可达的同文件函数（含 root 自身）。
+func r88Reach(root *r88FuncInfo, funcs map[string]*r88FuncInfo) map[string]*r88FuncInfo {
+	seen := map[string]*r88FuncInfo{}
+	queue := []*r88FuncInfo{root}
+	for len(queue) > 0 {
+		cur := queue[0]
+		queue = queue[1:]
+		if _, dup := seen[cur.name]; dup {
+			continue
+		}
+		seen[cur.name] = cur
+		for name := range cur.calls {
+			if g, ok := funcs[name]; ok {
+				if _, dup := seen[g.name]; !dup {
+					queue = append(queue, g)
+				}
+			}
+		}
+	}
+	return seen
+}
+
+// r88Guarded 判断腿根是否被目标库判定支配。
+func r88Guarded(root *r88FuncInfo, funcs map[string]*r88FuncInfo) bool {
+	for _, f := range r88Reach(root, funcs) {
+		if f.guarded || f.callsGate {
 			return true
 		}
 	}
+	return false
+}
 
-	// (d)：调用了一个「体内含判定」的函数。
-	//     · 同包 helper：按函数名判定。
-	//     · import 进来的包：按**被调用的那个包**判定（不靠函数名猜测）。
-	local := pkgs[dir]
-	found := false
-	ast.Inspect(f, func(n ast.Node) bool {
-		if found {
-			return false
+// r88Enclosing 找位置 pos 所在的最内层函数。
+func r88Enclosing(pos int, funcs map[string]*r88FuncInfo) *r88FuncInfo {
+	var best *r88FuncInfo
+	for _, f := range funcs {
+		if pos < f.start || pos >= f.end {
+			continue
 		}
-		call, ok := n.(*ast.CallExpr)
-		if !ok {
-			return true
+		if best == nil || (f.end-f.start) < (best.end-best.start) {
+			best = f
 		}
-		if fset.Position(call.Pos()).Offset >= pos {
-			return true
+	}
+	return best
+}
+
+// r88AnalyzeLegs 返回「没有被守卫支配」的破坏性腿。
+func r88AnalyzeLegs(f *ast.File, fset *token.FileSet, pkgs map[string]*r87PkgFacts, dir, modulePath, root string, live []r87DestructiveStmt) []r88Leg {
+	funcs := r88CollectFuncs(f, fset, pkgs, dir, modulePath, root)
+	var out []r88Leg
+	seen := map[string]bool{}
+	for _, d := range live {
+		g := r88Enclosing(d.pos, funcs)
+		if g == nil {
+			// 不在任何函数体里（包级 var 初始化）⇒ 本身就是一条腿。
+			key := "<包级>\t" + d.sql
+			if !seen[key] {
+				seen[key] = true
+				out = append(out, r88Leg{Stmt: d.sql, Root: "<包级>"})
+			}
+			continue
 		}
-		switch fun := call.Fun.(type) {
-		case *ast.Ident:
-			if local != nil && local.funcsWithCheck[fun.Name] {
-				found = true
-				return false
+		// 腿根 = 所有能到达该语句的测试入口。
+		var roots []*r88FuncInfo
+		for _, cand := range funcs {
+			if !cand.isTest {
+				continue
 			}
-		case *ast.SelectorExpr:
-			pkgName, ok := fun.X.(*ast.Ident)
-			if !ok {
-				return true
-			}
-			imp, ok := r87ImportPath(f, pkgName.Name)
-			if !ok {
-				return true
-			}
-			d := r87ImportDir(root, modulePath, imp)
-			if d == "" {
-				return true
-			}
-			facts := pkgs[d]
-			if facts == nil {
-				return true
-			}
-			// ★ 跨包守卫的判定：**优先按包自己声明的闸门名单**；
-			//   包没声明时才退回「这个包做过目标库判定」的粗口径。
-			guarded := false
-			if len(facts.declaredGuards) > 0 {
-				guarded = facts.declaredGuards[fun.Sel.Name]
-			} else {
-				guarded = facts.hasCheck
-			}
-			if guarded {
-				found = true
-				return false
+			if _, ok := r88Reach(cand, funcs)[g.name]; ok {
+				roots = append(roots, cand)
 			}
 		}
-		return true
-	})
-	return found
+		if len(roots) == 0 {
+			// 退化形态：没有任何测试入口能到达它 ⇒ 以所在函数为腿根。
+			roots = []*r88FuncInfo{g}
+		}
+		for _, r := range roots {
+			if r88Guarded(r, funcs) {
+				continue
+			}
+			key := r.name + "\t" + d.sql
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			out = append(out, r88Leg{Stmt: d.sql, Root: r.name})
+		}
+	}
+	return out
 }
 
 // r87ImportPath 取 import 别名对应的导入路径。
@@ -987,10 +1147,11 @@ func TestDestructiveTargetGuardNoUnguardedLeg(t *testing.T) {
 		return unregistered[i].File < unregistered[j].File
 	})
 	for _, c := range unregistered {
-		t.Errorf("事实源承载的 %q 被 %s 消费，而那条腿在破坏性 SQL（%s）之前**没有任何目标库判定** ⇒ "+
-			"事实源给什么值它都会清空那张表（数据事故级）⇒ "+
+		t.Errorf("事实源承载的 %q 被 %s 消费，而**腿 %q**（能到达该破坏性 SQL 的测试入口）"+
+			"够不到任何目标库判定（破坏性 SQL：%s）⇒ "+
+			"事实源给什么值这条腿都会清空那张表（数据事故级）⇒ "+
 			"请给这条腿补目标库守卫（库名/host:port 判定），或登记进 %s 并写明判词",
-			c.Name, c.File, c.Stmt, r87LedgerPath)
+			c.Name, c.File, c.Root, c.Stmt, r87LedgerPath)
 	}
 
 	var stale []string
