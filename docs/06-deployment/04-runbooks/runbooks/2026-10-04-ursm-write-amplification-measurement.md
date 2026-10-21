@@ -36227,7 +36227,7 @@ GroupAggregate (actual rows=4307)                      Buffers: shared hit=58305
 | `wa-pg17` | 0.0.0.0:15432 | `postgres:17-alpine` | `postgres` / `wa_quiet` / `wabench` | 与本仓无关 |
 
 ⇒ ⇒ ★ **211 的网关连的是 `acc-pg17` 的 `llm_gateway`**：
-`LLM_GATEWAY_DATABASE_URL=postgres://acc_super:***@acc-pg17:5432/llm_gateway?sslmode=disable`
+`LLM_GATEWAY_DATABASE_URL=postgres://acc_super:__REDACTED__@acc-pg17:5432/llm_gateway?sslmode=disable`
 ⇒ ⇒ ★★ **⇒ 211 与 252 是两个独立的 `llm_gateway` 库，两套数据、两套慢查询、两套迁移水位**。
 
 #### §143.20.4.2 ★★ 211 的慢查询量具**不可用**（真实观测缺口）
@@ -40878,7 +40878,7 @@ SELECT count(*) FILTER (WHERE s.query LIKE '%_request_logs%') AS v1_referencing_
 |---|---|
 | 主机 | `192.168.31.211`（ssh 别名 `211`，LAN 直连），docker 形态 |
 | PG | 容器 `acc-pg17`（`kx-citus-pg17:amd64`），**PG 17.10**，**127.0.0.1:5432** |
-| 网关连接串 | `postgres://acc_super:***@acc-pg17:5432/llm_gateway?sslmode=disable` |
+| 网关连接串 | `postgres://acc_super:__REDACTED__@acc-pg17:5432/llm_gateway?sslmode=disable` |
 | 活跃槽 | 容器 `llm-gateway-211-b`（`0.0.0.0:8782`，healthy），**启动于 2026-10-20 05:29Z** |
 | 已部署二进制 | `version.json` = `2.5.8-7a60b1b1-dirty-20261020-211`，`git_sha=7a60b1b1-dirty`，`build_seq=2760` |
 | 部署树 | `/root/llm-gateway-go-211`（**无 git**），`sql/migrations/startup/` **1093** 个文件，**最大编号 884** |
