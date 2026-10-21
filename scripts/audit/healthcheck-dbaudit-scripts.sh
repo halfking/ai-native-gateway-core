@@ -118,12 +118,50 @@ fi
 
 # ── 建库（自建 or 复用）─────────────────────────────────────────────────
 CREATED=0
+BUILD_PID=""
+
+# ★★ 回收必须挂在「任何退出路径」上，不能只挂在函数尾部。
+#   事实依据（R93 第四版）：调试期连续 5 次**提前退出**（量具自检不过 ⇒ exit 2；
+#   双口径不一致 ⇒ exit 3）⇒ 每次都留下一整个形态库（每个 ~1 GB）
+#   ⇒ 容器里攒下 5 个 itgate_r93_health_* 残留。
+#   ⇒ ⇒ 纪律：**「自己建的资源」必须用 trap 兜住所有退出路径**（含信号），
+#         而不是指望「正常跑完」这一条路径。
+#
+# ★★★ 第二次实测补的坑：只挂 EXIT trap 还不够。
+#   实测：build 子进程**还在跑**时收到 SIGTERM ⇒ 父进程立刻死（退出码 143）
+#   ⇒ 建库子进程被**孤儿化**、继续跑 ⇒ 它在父进程的 DROP **之后**才把库建出来
+#   ⇒ 依然泄漏（实测残留 = 1）。
+#   ⇒ ⇒ 修法：cleanup 必须**先收割仍在跑的建库子进程**，再 DROP。
+cleanup() {
+  # ① 先杀/收割建库子进程：否则它会在我们 DROP 之后才把库建出来
+  if [ -n "$BUILD_PID" ] && kill -0 "$BUILD_PID" 2>/dev/null; then
+    kill -TERM "$BUILD_PID" 2>/dev/null || true
+    wait "$BUILD_PID" 2>/dev/null || true
+  fi
+  # ② 再回收库
+  if [ "$CREATED" = "1" ] && [ "$KEEP" = "0" ] && [ -n "$DB" ]; then
+    docker exec -i llm-gateway-pg psql -U llm_gateway -d postgres -q \
+      -c "DROP DATABASE IF EXISTS \"${DB}\" WITH (FORCE)" >/dev/null 2>&1
+    return $?
+  fi
+  return 0
+}
+
 if [ -z "$DB" ]; then
   DB="itgate_r93_health_$$"
-  echo "== 建一次性形态库 ${DB} =="
-  DB_NAME="${DB}" KEEP_DB=1 bash scripts/audit/probe-onetime-db-shape.sh >"${OUT}.build.log" 2>&1 || {
-    echo "✗ 建库失败："; tail -5 "${OUT}.build.log"; exit 2; }
+  # ★ 先置位 + 先注册：建库**过程中**失败、或量具自检不通过而提前退出 ⇒ 都要回收
   CREATED=1
+  trap 'cleanup || true' EXIT
+  # ★ 显式接管 INT/TERM：EXIT trap 在「父进程被信号打死」时**不保证**会跑
+  trap 'cleanup || true; exit 143' INT TERM
+  echo "== 建一次性形态库 ${DB} =="
+  # ★ 建库子进程必须**后台**跑：这样才能拿到 PID、在 cleanup 里收割它
+  DB_NAME="${DB}" KEEP_DB=1 bash scripts/audit/probe-onetime-db-shape.sh >"${OUT}.build.log" 2>&1 &
+  BUILD_PID=$!
+  if ! wait "$BUILD_PID"; then
+    echo "✗ 建库失败："; tail -5 "${OUT}.build.log"; exit 2
+  fi
+  BUILD_PID=""
 fi
 
 PW="$(docker exec llm-gateway-pg printenv POSTGRES_PASSWORD 2>/dev/null | head -1)"
@@ -312,7 +350,11 @@ fi
 if [ "$CREATED" = "1" ] && [ "$KEEP" = "0" ]; then
   echo
   echo "== 回收 ${DB} =="
-  docker exec -i llm-gateway-pg psql -U llm_gateway -d postgres -q -c "DROP DATABASE IF EXISTS \"${DB}\" WITH (FORCE)" >/dev/null 2>&1 \
-    && echo "  ✓ ${DB} 已 DROP" || echo "  ✗ 回收失败（请手工 DROP ${DB}）"
+  if cleanup; then
+    echo "  ✓ ${DB} 已 DROP"
+    CREATED=0   # ★ 交回 trap，避免重复 DROP
+  else
+    echo "  ✗ 回收失败（请手工 DROP ${DB}）"
+  fi
 fi
 exit 0
