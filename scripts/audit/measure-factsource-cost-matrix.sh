@@ -166,7 +166,7 @@ reclaim_dbs() {
 }
 
 # ★ 探针回收（本脚本自己生成的临时文件 ⇒ 必须被回收，**不受 KEEP_DB 影响**）。
-#   ★ 同 R93/R94 轮的教训：只挂 EXIT trap 不够 ⇒ INT/TERM 也要显式接管。
+#   ★ 同 R93/R94 轮的教训：只挂 EXIT trap 不够 ⇒ INT/TERM 也要显式接管。★★ R101 轮实测订正了这句的【理由】（结论不变）：真正让「必须接管」成立的不是「EXIT trap 不够」，而是【终止性 ≠ 清理性】—— 实测 bash 在「前台外部命令」形态下会**忽略未 trap 的 SIGINT**（脚体继续跑、退出码 0），且【INT/TERM trap 不带 exit ⇒ 脚体也会继续】⇒ ⇒ 两者都会让脚本在终止信号后继续建库 ⇒ ⇒ 详见 scripts/ursmcheck/signal_path_mechanism_test.go
 probe_cleanup() {
   [ -n "${PROBE_SRC:-}" ] || return 0
   # ★ 静默：回收是 best-effort；不让删除命令的输出污染读数 stdout
