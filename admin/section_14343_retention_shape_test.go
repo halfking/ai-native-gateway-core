@@ -75,6 +75,7 @@ func TestSection14343DecisionTableSelfTest(t *testing.T) {
 			in: RetentionShapeInput{
 				Scope: ScopeSnapshotFamily, Relkind: "p",
 				Rows: 28969382, TotalBytes: 10033619520, TTLRegistered: true,
+				MechanismState: MechanismStateActive,
 			},
 			want: VerdictPartitionDropActive,
 		},
@@ -83,7 +84,8 @@ func TestSection14343DecisionTableSelfTest(t *testing.T) {
 			in: RetentionShapeInput{
 				Scope: ScopeSnapshotFamily, Relkind: "r",
 				Rows: 6042257, TotalBytes: 2411266048, ReclaimableBytes: 367839785,
-				TTLRegistered: true,
+				TTLRegistered:  true,
+				MechanismState: MechanismStateActive,
 			},
 			want: VerdictRowDeleteBloat,
 		},
@@ -92,6 +94,7 @@ func TestSection14343DecisionTableSelfTest(t *testing.T) {
 			in: RetentionShapeInput{
 				Scope: ScopeSnapshotObject, Relkind: "r",
 				Rows: 0, TotalBytes: 4096, IsRollbackAnchor: true,
+				MechanismState: MechanismStateOutOfScope,
 			},
 			want: VerdictNotReclaimable,
 		},
@@ -100,6 +103,7 @@ func TestSection14343DecisionTableSelfTest(t *testing.T) {
 			in: RetentionShapeInput{
 				Scope: ScopeSnapshotObject, Relkind: "r",
 				Rows: 2614886, TotalBytes: 893845504,
+				MechanismState: MechanismStateOutOfScope,
 			},
 			want: VerdictNotReclaimable,
 		},
@@ -108,7 +112,8 @@ func TestSection14343DecisionTableSelfTest(t *testing.T) {
 			in: RetentionShapeInput{
 				Scope: ScopeUsageFactsObject, Relkind: "r",
 				Rows: 0, TotalBytes: 83492864, ReclaimableBytes: 83476480,
-				TTLRegistered: true,
+				TTLRegistered:  true,
+				MechanismState: MechanismStateActive,
 			},
 			want: VerdictReclaimableNow,
 		},
@@ -117,6 +122,7 @@ func TestSection14343DecisionTableSelfTest(t *testing.T) {
 			in: RetentionShapeInput{
 				Scope: ScopeUsageFactsObject, Relkind: "r",
 				Rows: 0, TotalBytes: 0, TTLRegistered: true,
+				MechanismState: MechanismStateActive,
 			},
 			want: VerdictNotReclaimable,
 		},
@@ -125,6 +131,7 @@ func TestSection14343DecisionTableSelfTest(t *testing.T) {
 			in: RetentionShapeInput{
 				Scope: ScopeUsageFactsFamily, Relkind: "p",
 				Rows: 275828, TotalBytes: 373678080, TTLRegistered: false,
+				MechanismState: MechanismStateNone,
 			},
 			want: VerdictGapNoRetention,
 		},
@@ -137,6 +144,7 @@ func TestSection14343DecisionTableSelfTest(t *testing.T) {
 			in: RetentionShapeInput{
 				Scope: ScopeUsageFactsFamily, Relkind: "p",
 				Rows: 276190, TotalBytes: 254402560, TTLRegistered: true,
+				MechanismState: MechanismStateActive,
 			},
 			want: VerdictPartitionDropActive,
 		},
@@ -148,6 +156,7 @@ func TestSection14343DecisionTableSelfTest(t *testing.T) {
 			in: RetentionShapeInput{
 				Scope: ScopeSnapshotFamily, Relkind: "p",
 				Rows: 6083147, TotalBytes: 2029412736, TTLRegistered: true,
+				MechanismState: MechanismStateActive,
 			},
 			want: VerdictPartitionDropActive,
 		},
@@ -155,8 +164,84 @@ func TestSection14343DecisionTableSelfTest(t *testing.T) {
 			name: "机制缺口 ⇒ 没有自动生效的路径",
 			in: RetentionShapeInput{
 				Scope: ScopeStructuralGap, Relkind: "-", TTLRegistered: false,
+				MechanismState: MechanismStateOutOfScope,
 			},
 			want: VerdictStructuralGapNoAutoPath,
+		},
+
+		// ── §143.59 新增：无回收路径对象的四种失效形态 ────────────────────
+		//
+		// ★ 为什么这四例必须分开写：同一个结论（"当前不回收"）背后是
+		//
+		//	四种**完全不同的处置**（等它到期 / 接线 / 改归档口径 / 不该由它管）
+		//	⇒ 混成一句话就会导致"归因错了、动作也就错了"。
+		{
+			name: "形态 B：机制实现完整但零生产调用方 ⇒ 当前不回收",
+			in: RetentionShapeInput{
+				Scope: ScopeRetentionGapObject, Relkind: "r",
+				Rows: 1832998, TotalBytes: 1213685760,
+				MechanismState: MechanismStateNotWired,
+			},
+			want: VerdictMechanismNotWired,
+		},
+		{
+			name: "形态 C：机制在跑但目标集恒空 ⇒ 实际不回收",
+			in: RetentionShapeInput{
+				Scope: ScopeRetentionGapObject, Relkind: "r",
+				Rows: 832953, TotalBytes: 866000896,
+				MechanismState: MechanismStateTargetEmpty,
+			},
+			want: VerdictMechanismTargetEmpty,
+		},
+		{
+			name: "形态 A：机制在跑但当前无对象到期 ⇒ 暂无可回收",
+			in: RetentionShapeInput{
+				Scope: ScopeRetentionGapObject, Relkind: "r",
+				Rows: 215915, TotalBytes: 154738688,
+				MechanismState: MechanismStateNotYetDue,
+			},
+			want: VerdictMechanismNotYetDue,
+		},
+		{
+			name: "形态 D：按设计不在机制范围内",
+			in: RetentionShapeInput{
+				Scope: ScopeRetentionGapObject, Relkind: "r",
+				Rows: 100, TotalBytes: 4096,
+				MechanismState: MechanismStateOutOfScope,
+			},
+			want: VerdictMechanismOutOfScope,
+		},
+		{
+			name: "压根没有机制 ⇒ 无界增长",
+			in: RetentionShapeInput{
+				Scope: ScopeRetentionGapObject, Relkind: "r",
+				Rows: 100, TotalBytes: 4096,
+				MechanismState: MechanismStateNone,
+			},
+			want: VerdictGapNoRetention,
+		},
+		{
+			// ★ 承重的**自相矛盾**例：scope 与 mechanism_state 不相容
+			//   ⇒ 决策表必须说"登记册坏了"，而不是照着矛盾数据算结论。
+			name: "登记册自相矛盾（scope 不接受该 mechanism_state）⇒ 判为数据坏了",
+			in: RetentionShapeInput{
+				// ★ 快照族的机制只能是 ACTIVE（逐分区 DROP）；
+				//   给它记 NOT_WIRED 就是自相矛盾 ⇒ 决策表必须说"数据坏了"，
+				//   而不是照着矛盾数据算出"分区 DROP 生效"这种看似合理的结论。
+				Scope: ScopeSnapshotFamily, Relkind: "p",
+				Rows: 30355931, TotalBytes: 9508798464, TTLRegistered: true,
+				MechanismState: MechanismStateNotWired,
+			},
+			want: VerdictRegistryInconsistent,
+		},
+		{
+			name: "参照基准行（库级总量）⇒ 不是留存形态",
+			in: RetentionShapeInput{
+				Scope: ScopeReferenceTotal, Relkind: "-",
+				Rows: 0, TotalBytes: 31848617651,
+				MechanismState: MechanismStateOutOfScope,
+			},
+			want: VerdictReferenceTotal,
 		},
 	}
 
@@ -177,8 +262,9 @@ func TestSection14343RegistryIsRecomputable(t *testing.T) {
 	rows := readRetentionShapeRows(t, tsvPath14343)
 
 	// 绝对条数：登记册被删行 ⇒ 红。
-	if len(rows) != 10 {
-		t.Fatalf("登记册行数 = %d，期望 10（少一行 = 一个缺口被悄悄抹掉）", len(rows))
+	// ★ §143.59：10 → 16 行（新增 2 个参照基准行 + 4 个无回收路径对象的行）。
+	if len(rows) != 16 {
+		t.Fatalf("登记册行数 = %d，期望 16（少一行 = 一个缺口被悄悄抹掉）", len(rows))
 	}
 
 	// 逐行重算 verdict。
@@ -190,18 +276,23 @@ func TestSection14343RegistryIsRecomputable(t *testing.T) {
 		}
 	}
 
-	// 绝对字节：关键读数被改动 ⇒ 红（防止「为了好看」调数字）。
-	// ★ 键是 instance|object —— **同名对象在两个实例上都有**（快照族两实例同名但形态不同），
-	//   只按 object 钉会把其中一个的读数错配到另一个身上。
-	// ★ §143.45：全部读数已刷新到 post-§143.44 的生产事实
-	//   （211 分区化 + VACUUM FULL；252 VACUUM FULL + DROP 10 个空日分区）。
+	// 绝对字节：**只钉静态对象**。
+	//
+	// ★ §143.59 订正（这是本轮最重要的一处门改造）：
+	//
+	//	对**按天增长的族**钉绝对字节数是**错误的钉法** —— 实测 252 快照族
+	//	10,193,199,104 B（§143.58 00:23）→ 9,508,798,464 B（§143.59 01:54）
+	//	⇒ **1.5 小时内 −6.7%**（7 天窗口的日分区到期被删，方向还是**下降**）
+	//	⇒ 那种钉法在 12 小时内就会过期，而且**过期与出错长得一模一样**。
+	//
+	//	⇒ 增长的族（快照族、usage_facts 族）改钉 **量级档位 + 相对量（族 ÷ 库）**
+	//	   —— 见 admin/section_14359_retention_registry_test.go。
+	//	⇒ **静态对象**（legacy 锚点、已回收的空分区、纯索引膨胀）**继续钉绝对值**：
+	//	   它们**不增长**，对它们钉绝对值是对的（§143.58 复读：两侧 legacy
+	//	   的行数与字节与 §143.43/§143.45 的读数**逐字相同**）。
 	wantBytes := map[string]int64{
-		"211|public.ursm_node_snapshot_min":         2029412736, // 211 快照族（分区父表 / partition-drop）
-		"252|public.ursm_node_snapshot_min":         9226485760, // 252 快照族（分区父表 / partition-drop）
-		"211|public.ursm_node_snapshot_min_legacy":  1902911488, // 211 回滚锚点（§143.44 新增行）
-		"252|public.ursm_node_snapshot_min_legacy":  893845504,  // 252 回滚锚点
-		"252|public.usage_facts":                    254402560,  // 252 usage_facts 族（子分区求和）
-		"211|public.usage_facts":                    80232448,   // 211 usage_facts 族（子分区求和）
+		"211|public.ursm_node_snapshot_min_legacy":  1902911488, // 211 回滚锚点（静态）
+		"252|public.ursm_node_snapshot_min_legacy":  893845504,  // 252 回滚锚点（静态）
 		"252|public.usage_facts_default":            57344,      // 252 纯索引膨胀（§143.44 已回收到索引最小尺寸）
 		"211|public.usage_facts_20261011":           65536,      // 211 空日分区
 		"252|public.usage_facts_20260926..20261005": 0,          // §143.44 已 DROP ⇒ 对象已不存在

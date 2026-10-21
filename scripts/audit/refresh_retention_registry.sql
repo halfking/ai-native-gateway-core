@@ -93,3 +93,61 @@ SELECT s.relname, s.n_live_tup, s.n_dead_tup,
        pg_total_relation_size(s.relid) AS total_bytes
   FROM pg_stat_user_tables s
  WHERE s.relname IN ('ursm_node_snapshot_min', 'ursm_node_snapshot_min_legacy');
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- §143.59 新增（R9~R13）：把「没有自动回收路径的大对象」纳入登记册覆盖面，
+-- 并提供**相对量锚点**（库级总量）⇒ 让门可以钉【比值/档位】而不是【绝对字节】。
+--
+-- ★ 为什么必须加 R11（库级总量）：
+--   §143.58 实测：252 快照族字节从 10,193,199,104 B 变成 9,502,662,656 B
+--   ——**1.4 小时内 −690 MB**（7 天窗口的日分区到期被删）⇒
+--   「钉绝对字节数」这个钉法**天然会过期**⇒ §143.59 把门改成
+--   **量级档位 + 相对量（族 ÷ 库总量）+ 读数日期戳 + 陈旧度上限**。
+--   相对量（29.8% / 27.4%）在两侧都被自然增长/自然回收抵消 ⇒ 比绝对值耐用得多。
+-- ═══════════════════════════════════════════════════════════════════════════
+
+\echo '### R9 route_incident_events（留存 worker 实现完整但【零生产调用方】）'
+SELECT count(*) AS rows_exact,
+       min(created_at) AS min_created,
+       max(created_at) AS max_created,
+       count(*) FILTER (WHERE created_at < now() - interval '30 days') AS older_30d,
+       count(*) FILTER (WHERE created_at < now() - interval '90 days') AS older_90d,
+       pg_total_relation_size('public.route_incident_events'::regclass) AS total_bytes
+  FROM public.route_incident_events;
+
+\echo '### R9b route_incident_events 的 created_at 首列索引（worker 的硬前提）'
+SELECT count(*) AS created_at_first_col_indexes
+  FROM pg_index i
+ WHERE i.indrelid = 'public.route_incident_events'::regclass
+   AND (SELECT a.attname FROM pg_attribute a
+         WHERE a.attrelid = i.indrelid AND a.attnum = i.indkey[0]) = 'created_at';
+
+\echo '### R10 session_summaries（trimmer 在跑，但【目标集恒空】）'
+SELECT count(*) AS rows_exact,
+       count(*) FILTER (WHERE archived_at IS NOT NULL) AS archived_rows,
+       count(*) FILTER (WHERE archived_at IS NULL)     AS active_rows,
+       min(archived_at) FILTER (WHERE archived_at IS NOT NULL) AS min_archived,
+       max(archived_at) FILTER (WHERE archived_at IS NOT NULL) AS max_archived,
+       pg_total_relation_size('public.session_summaries'::regclass) AS total_bytes
+  FROM public.session_summaries;
+
+\echo '### R11 库级总量 + 快照族总量（相对量锚点：族 ÷ 库）'
+SELECT pg_database_size(current_database()) AS db_total_bytes,
+       (SELECT sum(pg_total_relation_size(c.oid))
+          FROM pg_class c
+          JOIN pg_namespace n ON n.oid = c.relnamespace
+          JOIN pg_inherits i ON i.inhrelid = c.oid
+         WHERE n.nspname = 'public'
+           AND i.inhparent = 'public.ursm_node_snapshot_min'::regclass)
+         AS snapshot_family_bytes;
+
+\echo '### R12 机制存在性判据（settings_kv 里有没有那些键；刻意不读值）'
+SELECT key, value_type
+  FROM settings_kv
+ WHERE key LIKE 'lifecycle.%ttl\_days'
+    OR key = 'storage.session_final_full_enabled'
+ ORDER BY key;
+
+\echo '### R13 读数日期戳（★ 人工填表时**逐字复制**这一行到登记册表头）'
+SELECT '-- reading-date: ' || to_char(now() AT TIME ZONE 'Asia/Shanghai', 'YYYY-MM-DD')
+         AS header_line;
