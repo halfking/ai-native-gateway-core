@@ -84,6 +84,11 @@ type r87Pair struct {
 	Name string
 	File string
 	Stmt string
+	// Root 是**腿根**：能到达这条破坏性语句的测试入口函数名（R88 轮新增）。
+	//
+	// ★ 为什么要有它：R88 轮把判定单位从「文件」降到「腿」⇒⇒ 报错必须点名
+	//   **是哪条腿**（哪个测试入口）没守卫，否则同一个文件里多条腿时无从下手。
+	Root string
 }
 
 func (p r87Pair) key() string { return p.Name + "\t" + p.File }
@@ -103,6 +108,34 @@ type r87PkgFacts struct {
 	//   留下这个核对函数」时，门仍然绿 ⇒ ⇒ **门有洞**。
 	//   ⇒ ⇒ 闸门名单由**守卫包自己声明**，本门按名单解析跨包调用。
 	declaredGuards map[string]bool
+	// pkgFuncs：本包里**每个函数**的「守卫状态 + 调用边」（R89 轮新增）。
+	//
+	// ★ 为什么要有这一层（R89 轮补 R88 轮留下的边界）：
+	//
+	//	R88 轮的可达性是**同文件**的 ⇒⇒ 「守卫在同包的另一个文件里」判不出来
+	//	⇒⇒ 方向是**假阳性**（把有守卫的腿判成没守卫）。
+	//	⇒⇒ 本层把「这个包里每个函数的体内判定证据 / 跨包闸门调用 / 它调了谁」
+	//	**按函数名**建索引 ⇒⇒ 跨文件同包的调用链就接上了。
+	//
+	// ★ 为什么用**函数名**做键：同一个包里函数名唯一 ⇒⇒ 名即实体；
+	//   且当前文件的本地定义与包索引指向**同一个函数** ⇒⇒ 本地优先、包索引兜底。
+	pkgFuncs map[string]r89PkgFunc
+}
+
+// r89PkgFunc 一个包内某个函数的守卫状态与调用边。
+type r89PkgFunc struct {
+	// guarded：函数体内含目标库判定证据。
+	guarded bool
+	// callsGuard：函数调用了跨包闸门（按包自己声明的 `GuardFunctions` 名单）。
+	callsGuard bool
+	// calls：这个函数调用到的**同包**函数名。
+	calls []string
+	// isTest：是不是**测试入口**（`Test` 前缀）。
+	//
+	// ★ R89 轮新增：腿根（测试入口）**可能住在另一个文件**里
+	//   （Go 的测试惯例：共享 helper 放兄弟 `_test.go`，测试函数在另一个文件）
+	//   ⇒⇒ 腿根发现必须**按包**搜，不能只搜当前文件。
+	isTest bool
 }
 
 // r87GuardHit 一次守卫证据。
@@ -624,7 +657,7 @@ func r87ResolveString(a ast.Expr, consts map[string]string) (string, bool) {
 // ── 包索引（跨包守卫识别）──────────────────────────────────────────────────
 
 // r87BuildPkgFacts 建全仓包索引：每个目录里哪些函数体内含目标库判定。
-func r87BuildPkgFacts(t *testing.T, root string) map[string]*r87PkgFacts {
+func r87BuildPkgFacts(t *testing.T, root, modulePath string) map[string]*r87PkgFacts {
 	t.Helper()
 	out := map[string]*r87PkgFacts{}
 	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
@@ -656,7 +689,7 @@ func r87BuildPkgFacts(t *testing.T, root string) map[string]*r87PkgFacts {
 		dir := filepath.Dir(path)
 		facts := out[dir]
 		if facts == nil {
-			facts = &r87PkgFacts{funcsWithCheck: map[string]bool{}, declaredGuards: map[string]bool{}}
+			facts = &r87PkgFacts{funcsWithCheck: map[string]bool{}, declaredGuards: map[string]bool{}, pkgFuncs: map[string]r89PkgFunc{}}
 			out[dir] = facts
 		}
 		// ★ 读这个包自己声明的闸门名单（`var GuardFunctions = []string{...}`）。
@@ -703,7 +736,75 @@ func r87BuildPkgFacts(t *testing.T, root string) map[string]*r87PkgFacts {
 	if err != nil {
 		t.Fatalf("walk %s: %v", root, err)
 	}
+	// ── 第二遍：按**函数名**给每个包建「守卫状态 + 调用边」索引（R89 轮）────
+	//
+	// ★ 为什么必须单独一遍：第一遍算 `declaredGuards` 时，被 import 的那个包
+	//   可能还没被走到 ⇒⇒ 跨包闸门的判定必须等**所有包的名单都齐了**才能算。
+	//
+	// ★ 口径与单文件分析**同款**（同一个 `r88CollectFuncs`）⇒⇒ 不会出现
+	//   「索引与单文件分析两套口径」的漂移。
+	walkErr := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			switch d.Name() {
+			case ".git", "vendor", "node_modules", ".idea", "dist", "build":
+				return filepath.SkipDir
+			}
+			if d.Name() == "ursmcheck" && filepath.Base(filepath.Dir(path)) == "scripts" {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(d.Name(), ".go") {
+			return nil
+		}
+		raw, rerr := os.ReadFile(path)
+		if rerr != nil {
+			return rerr
+		}
+		fset := token.NewFileSet()
+		f, perr := parser.ParseFile(fset, path, raw, parser.ParseComments)
+		if perr != nil {
+			return nil
+		}
+		dir := filepath.Dir(path)
+		facts := out[dir]
+		if facts == nil {
+			return nil
+		}
+		for name, fi := range r88CollectFuncs(f, fset, out, dir, modulePath, root) {
+			cur := facts.pkgFuncs[name]
+			cur.guarded = cur.guarded || fi.guarded
+			cur.callsGuard = cur.callsGuard || fi.callsGate
+			cur.isTest = cur.isTest || fi.isTest
+			for c := range fi.calls {
+				if c == name {
+					continue
+				}
+				if !r89Contains(cur.calls, c) {
+					cur.calls = append(cur.calls, c)
+				}
+			}
+			facts.pkgFuncs[name] = cur
+		}
+		return nil
+	})
+	if walkErr != nil {
+		t.Fatalf("walk %s (pkg index): %v", root, walkErr)
+	}
 	return out
+}
+
+// r89Contains 判断名字是否已在列表里。
+func r89Contains(list []string, name string) bool {
+	for _, s := range list {
+		if s == name {
+			return true
+		}
+	}
+	return false
 }
 
 // ── 单文件分析 ─────────────────────────────────────────────────────────────
@@ -777,91 +878,279 @@ func r87AnalyzeFile(t *testing.T, path, rel, src string, exported map[string]boo
 			return nil
 		}
 	}
-	first := live[0].pos
-
-	// ③ 第一条破坏性语句之前有没有目标库判定证据。
-	if !r87HasGuardBefore(f, fset, first, pkgs, filepath.Dir(path), modulePath, root) {
-		var out []r87Pair
-		for _, n := range names {
-			out = append(out, r87Pair{Name: n, File: rel, Stmt: live[0].sql})
-		}
-		sort.Slice(out, func(i, j int) bool {
-			if out[i].Name != out[j].Name {
-				return out[i].Name < out[j].Name
-			}
-			return out[i].File < out[j].File
-		})
-		return out
+	// ③ ★★★★★ R88 轮：**判定单位从「文件」降到「腿」**。
+	//
+	// R87 轮的口径是「**这个文件里**在第一条破坏性语句之前有没有目标库判定」，
+	// 那是一条**文件级**的断言 ⇒⇒ 而危害的单位是**腿（一条会执行破坏性 SQL 的
+	// 测试路径）** ⇒⇒ 于是「一个文件里有一条腿带守卫 ⇒ 整个文件（含别的腿）
+	// 都被判成有守卫」成了恒真推论。
+	//
+	// ★ R88 轮实测出来的洞（R88 变异 M1）：给一条**已带守卫**的文件追加一个
+	// **不带守卫**的第二入口（自己建池、自己 TRUNCATE 产品表）⇒ 文件级口径
+	// 看到「判定在前面」⇒ **门仍然绿** ⇒ 事实源给什么值它都会清空产品表。
+	//
+	// ⇒⇒ 所以改成：**每条破坏性语句，按它所在函数能被哪些测试入口到达来定腿根，
+	// 再看那个腿根能不能到达一个目标库判定**（同文件可达 + 跨包闸门名单）。
+	legs := r88AnalyzeLegs(f, fset, pkgs, filepath.Dir(path), modulePath, root, live)
+	if len(legs) == 0 {
+		return nil
 	}
-	return nil
+	var out []r87Pair
+	seen := map[string]bool{}
+	for _, leg := range legs {
+		for _, n := range names {
+			k := n + "\t" + rel
+			if seen[k] {
+				continue
+			}
+			seen[k] = true
+			out = append(out, r87Pair{Name: n, File: rel, Stmt: leg.Stmt, Root: leg.Root})
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Name != out[j].Name {
+			return out[i].Name < out[j].Name
+		}
+		return out[i].File < out[j].File
+	})
+	return out
 }
 
-// r87HasGuardBefore 判定「在 pos 之前」有没有目标库判定证据。
-func r87HasGuardBefore(f *ast.File, fset *token.FileSet, pos int, pkgs map[string]*r87PkgFacts, dir, modulePath, root string) bool {
-	assigned := r87AssignedNodes(f)
+// ── R88 轮：腿级判定（同文件可达 + 跨包闸门名单）───────────────────────────
+//
+// ★★★ 为什么必须换掉 R87 的「文件级位置序」口径 ───────────────────────────
+//
+//	R87 轮的门问的是：「**这个文件里**在第一条破坏性语句之前，有没有目标库判定证据」。
+//	那是一条**文件级**断言。而危害的单位是**腿**（一条会真的执行破坏性 SQL 的
+//	测试路径）⇒⇒ 于是下面这条恒真推论成立：
+//
+//	    「一个文件里有一条腿带守卫 ⇒ 整个文件（含别的腿）都被判成有守卫」
+//
+//	⇒⇒ R88 变异 M1 实测：给一条**已带守卫**的文件追加一个**不带守卫**的第二入口
+//	    （自己建池、自己 TRUNCATE 产品表）⇒ 文件级口径看到「判定在前面」
+//	    ⇒ **门仍然绿** ⇒ 事实源给什么值它都会清空产品表。
+//
+//	⇒⇒ 换口径：**按腿判**。
+//	  · 腿根 = 能到达该破坏性语句的**测试入口**（`Test` 前缀的函数）；
+//	    若没有任何测试入口能到达它（退化形态，例如整个文件只有一个非 Test 函数），
+//	    则以**该语句所在函数**本身为腿根。
+//	  · 腿根**被守卫支配** ⇔ 它的同文件可达集合里，存在一个「体内含目标库判定」
+//	    或「调用了跨包闸门」的函数。
+//
+//	★ 为什么不是拿「语句所在函数」当腿根：仓内四条真腿的破坏性字面量住在**兄弟
+//	  helper** 里（`reset` / `resetOutboxAndSessions` / `attachFixtureReset` /
+//	  `bootstrapSupplierSchema`），而守卫住在**另一个** helper 里（`openPool` /
+//	  `openAuditPool` / `openAttachPool` / `openSupplierPG`）⇒⇒ 两者是**兄弟**，
+//	  不是祖先 ⇒⇒ 只看「语句所在函数」会把四条真腿全判成没守卫（假阳性）。
+//	  ⇒⇒ 真正的支配关系在**调用者**那一侧：测试函数同时调了那两个 helper。
+//
+//	★ 口径边界（登记，不掩饰）：可达性是**同文件**的。跨文件同包的 helper 调用
+//	  **判不出来** ⇒ 若守卫与破坏性语句分居同包的两个文件，本门会**判成无守卫**
+//	  （假阳性方向）。当前仓内四条真腿的守卫与破坏性语句同文件、台账三条也同文件
+//	  ⇒ 实测无影响；跨文件形态已登记为已知缺口（同 R87 台账里「跨文件自建库」
+//	  那条的缺口性质）。
 
-	// (a)(b)(c)：本文件里的直接证据。
-	for _, h := range r87CollectHits(fset, f, assigned) {
-		if h.pos < pos {
+// r88FuncInfo 一个文件内的函数：判定证据 + 调用关系。
+type r88FuncInfo struct {
+	name      string
+	start     int
+	end       int
+	guarded   bool            // 体内含目标库判定证据
+	callsGate bool            // 调用了跨包闸门函数（按包自己声明的名单）
+	calls     map[string]bool // 同文件调用的函数名
+	isTest    bool            // 测试入口（Test 前缀）
+}
+
+// r88Leg 一条「没有被守卫支配」的破坏性腿。
+type r88Leg struct {
+	Stmt string
+	Root string
+}
+
+// r88CollectFuncs 收集一个文件里的函数及其判定证据与调用关系。
+func r88CollectFuncs(f *ast.File, fset *token.FileSet, pkgs map[string]*r87PkgFacts, dir, modulePath, root string) map[string]*r88FuncInfo {
+	assigned := r87AssignedNodes(f)
+	out := map[string]*r88FuncInfo{}
+	for _, decl := range f.Decls {
+		fd, ok := decl.(*ast.FuncDecl)
+		if !ok || fd.Body == nil {
+			continue
+		}
+		fi := &r88FuncInfo{
+			name:   fd.Name.Name,
+			start:  fset.Position(fd.Pos()).Offset,
+			end:    fset.Position(fd.End()).Offset,
+			calls:  map[string]bool{},
+			isTest: strings.HasPrefix(fd.Name.Name, "Test"),
+		}
+		// 体内判定证据：(a)current_database() /(b)读 .Database /(c)DSN 目标比较 /(e)先探后建。
+		fi.guarded = len(r87CollectHits(fset, fd, assigned)) > 0
+		// 调用关系 + 跨包闸门。
+		ast.Inspect(fd, func(n ast.Node) bool {
+			call, ok := n.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			switch fun := call.Fun.(type) {
+			case *ast.Ident:
+				fi.calls[fun.Name] = true
+			case *ast.SelectorExpr:
+				pkgName, ok := fun.X.(*ast.Ident)
+				if !ok {
+					return true
+				}
+				imp, ok := r87ImportPath(f, pkgName.Name)
+				if !ok {
+					return true
+				}
+				d := r87ImportDir(root, modulePath, imp)
+				if d == "" {
+					return true
+				}
+				facts := pkgs[d]
+				if facts == nil {
+					return true
+				}
+				// ★ 跨包闸门：**优先按包自己声明的名单**；包没声明才退回包级粗口径。
+				guarded := false
+				if len(facts.declaredGuards) > 0 {
+					guarded = facts.declaredGuards[fun.Sel.Name]
+				} else {
+					guarded = facts.hasCheck
+				}
+				if guarded {
+					fi.callsGate = true
+				}
+			}
 			return true
+		})
+		out[fi.name] = fi
+	}
+	return out
+}
+
+// r89Merged 把「当前文件的函数」与「同包索引」合成一张**按函数名**的调用图。
+//
+// ★ 本地优先：同一个包里函数名唯一 ⇒⇒ 本地定义与包索引指向**同一个函数**
+//   ⇒⇒ 本地那份带位置与体内证据，更细 ⇒⇒ 覆盖包索引那份不会丢信息。
+func r89Merged(funcs map[string]*r88FuncInfo, pkg map[string]r89PkgFunc) map[string]r89PkgFunc {
+	out := make(map[string]r89PkgFunc, len(funcs)+len(pkg))
+	for name, pf := range pkg {
+		out[name] = pf
+	}
+	for name, f := range funcs {
+		cur := out[name]
+		cur.guarded = cur.guarded || f.guarded
+		cur.callsGuard = cur.callsGuard || f.callsGate
+		cur.isTest = cur.isTest || f.isTest
+		for c := range f.calls {
+			if !r89Contains(cur.calls, c) {
+				cur.calls = append(cur.calls, c)
+			}
+		}
+		out[name] = cur
+	}
+	return out
+}
+
+// r89ReachNames 从 rootName 出发可达的函数名集合（含 rootName 自身）。
+//
+// ★ R89 轮：可达域从**同文件**扩到**同包跨文件** ⇒⇒
+//   · 包索引里有、本文件里也有的 ⇒ 用合并后的那份；
+//   · 只有包索引里有的 ⇒ 用包索引里的调用边；
+//   · 两边都没有 ⇒ 名字不解析（那多半是外部函数、方法或变量）。
+func r89ReachNames(rootName string, g map[string]r89PkgFunc) map[string]bool {
+	seen := map[string]bool{}
+	queue := []string{rootName}
+	for len(queue) > 0 {
+		name := queue[0]
+		queue = queue[1:]
+		if seen[name] {
+			continue
+		}
+		seen[name] = true
+		if node, ok := g[name]; ok {
+			queue = append(queue, node.calls...)
 		}
 	}
+	return seen
+}
 
-	// (d)：调用了一个「体内含判定」的函数。
-	//     · 同包 helper：按函数名判定。
-	//     · import 进来的包：按**被调用的那个包**判定（不靠函数名猜测）。
-	local := pkgs[dir]
-	found := false
-	ast.Inspect(f, func(n ast.Node) bool {
-		if found {
-			return false
-		}
-		call, ok := n.(*ast.CallExpr)
-		if !ok {
-			return true
-		}
-		if fset.Position(call.Pos()).Offset >= pos {
-			return true
-		}
-		switch fun := call.Fun.(type) {
-		case *ast.Ident:
-			if local != nil && local.funcsWithCheck[fun.Name] {
-				found = true
-				return false
-			}
-		case *ast.SelectorExpr:
-			pkgName, ok := fun.X.(*ast.Ident)
-			if !ok {
+// r89NodeGuarded：这张图里，从 rootName 可达的范围内有没有目标库判定。
+func r89NodeGuarded(rootName string, g map[string]r89PkgFunc) bool {
+	for name := range r89ReachNames(rootName, g) {
+		if node, ok := g[name]; ok {
+			if node.guarded || node.callsGuard {
 				return true
 			}
-			imp, ok := r87ImportPath(f, pkgName.Name)
-			if !ok {
-				return true
+		}
+	}
+	return false
+}
+
+// r88Enclosing 找位置 pos 所在的最内层函数。
+func r88Enclosing(pos int, funcs map[string]*r88FuncInfo) *r88FuncInfo {
+	var best *r88FuncInfo
+	for _, f := range funcs {
+		if pos < f.start || pos >= f.end {
+			continue
+		}
+		if best == nil || (f.end-f.start) < (best.end-best.start) {
+			best = f
+		}
+	}
+	return best
+}
+
+// r88AnalyzeLegs 返回「没有被守卫支配」的破坏性腿。
+func r88AnalyzeLegs(f *ast.File, fset *token.FileSet, pkgs map[string]*r87PkgFacts, dir, modulePath, root string, live []r87DestructiveStmt) []r88Leg {
+	funcs := r88CollectFuncs(f, fset, pkgs, dir, modulePath, root)
+	// ★ R89 轮：同包**跨文件**的函数索引（守卫状态 + 调用边 + 是不是测试入口）。
+	var pkg map[string]r89PkgFunc
+	if facts := pkgs[dir]; facts != nil {
+		pkg = facts.pkgFuncs
+	}
+	g := r89Merged(funcs, pkg)
+	var out []r88Leg
+	seen := map[string]bool{}
+	for _, d := range live {
+		owner := r88Enclosing(d.pos, funcs)
+		ownerName := "<包级>"
+		if owner != nil {
+			ownerName = owner.name
+		}
+		// 腿根 = **包里**所有能到达该语句的测试入口。
+		//
+		// ★ R89 轮：腿根搜索从**当前文件**扩到**整个包** ——
+		//   Go 的测试惯例就是「共享 helper 放兄弟 `_test.go`、测试函数在另一个文件」
+		//   （仓内现成例子：`domains/session/v2/session_request_status_backfill_test.go`
+		//   的 `statusBackfillFixtureDB` 被 `session_duration_ms_realdb_test.go` 跨文件调用）。
+		var roots []string
+		for name, node := range g {
+			if !node.isTest {
+				continue
 			}
-			d := r87ImportDir(root, modulePath, imp)
-			if d == "" {
-				return true
-			}
-			facts := pkgs[d]
-			if facts == nil {
-				return true
-			}
-			// ★ 跨包守卫的判定：**优先按包自己声明的闸门名单**；
-			//   包没声明时才退回「这个包做过目标库判定」的粗口径。
-			guarded := false
-			if len(facts.declaredGuards) > 0 {
-				guarded = facts.declaredGuards[fun.Sel.Name]
-			} else {
-				guarded = facts.hasCheck
-			}
-			if guarded {
-				found = true
-				return false
+			if r89ReachNames(name, g)[ownerName] {
+				roots = append(roots, name)
 			}
 		}
-		return true
-	})
-	return found
+		if len(roots) == 0 {
+			// 退化形态：没有任何测试入口能到达它 ⇒ 以所在函数为腿根。
+			roots = []string{ownerName}
+		}
+		for _, r := range roots {
+			if r89NodeGuarded(r, g) {
+				continue
+			}
+			key := r + "\t" + d.sql
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			out = append(out, r88Leg{Stmt: d.sql, Root: r})
+		}
+	}
+	return out
 }
 
 // r87ImportPath 取 import 别名对应的导入路径。
@@ -940,7 +1229,7 @@ func TestDestructiveTargetGuardNoUnguardedLeg(t *testing.T) {
 		t.Fatalf("事实源 %s 只解析出 %d 个 export ⇒ 扫描口径失效（门会恒绿）", r86DSPath, len(exported))
 	}
 	modulePath := r87ModulePath(t, root)
-	pkgs := r87BuildPkgFacts(t, root)
+	pkgs := r87BuildPkgFacts(t, root, modulePath)
 
 	var candidates []r87Pair
 	walkErr := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
@@ -987,10 +1276,11 @@ func TestDestructiveTargetGuardNoUnguardedLeg(t *testing.T) {
 		return unregistered[i].File < unregistered[j].File
 	})
 	for _, c := range unregistered {
-		t.Errorf("事实源承载的 %q 被 %s 消费，而那条腿在破坏性 SQL（%s）之前**没有任何目标库判定** ⇒ "+
-			"事实源给什么值它都会清空那张表（数据事故级）⇒ "+
+		t.Errorf("事实源承载的 %q 被 %s 消费，而**腿 %q**（能到达该破坏性 SQL 的测试入口）"+
+			"够不到任何目标库判定（破坏性 SQL：%s）⇒ "+
+			"事实源给什么值这条腿都会清空那张表（数据事故级）⇒ "+
 			"请给这条腿补目标库守卫（库名/host:port 判定），或登记进 %s 并写明判词",
-			c.Name, c.File, c.Stmt, r87LedgerPath)
+			c.Name, c.File, c.Root, c.Stmt, r87LedgerPath)
 	}
 
 	var stale []string
@@ -1046,8 +1336,19 @@ func TestR87DestructiveTargetDetectorSelfCheck(t *testing.T) {
 	dir := t.TempDir()
 	pkgs := map[string]*r87PkgFacts{}
 
-	write := func(fn, body string) string {
-		p := filepath.Join(dir, fn)
+	// ★ R89 轮：**每个夹具一个独立子目录**（= 独立包）。
+	//
+	// ★ 为什么必须这样：判据从 R88 轮起是**包级**的 ⇒⇒ 包索引按**函数名**建
+	//   ⇒⇒ 若多个夹具共用一个目录且**函数重名**（本文件的老夹具全都叫 `f`），
+	//   它们会被**合并成同一个函数** ⇒⇒ 一个夹具的守卫会污染另一个夹具
+	//   ⇒⇒ 实测：夹具 ①（无守卫）被夹具 ②（有 current_database()）的同名 `f`
+	//   合并 ⇒⇒ 判成有守卫 ⇒⇒ 夹具 ① 红。
+	//   ⇒ ⇒ 每个夹具自成一个包 ⇒ 互不干扰。
+	write := func(fixture, fn, body string) string {
+		p := filepath.Join(dir, fixture, fn)
+		if err := os.MkdirAll(filepath.Dir(p), 0o750); err != nil {
+			t.Fatalf("mkdir fixture dir: %v", err)
+		}
 		if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
 			t.Fatalf("write fixture: %v", err)
 		}
@@ -1055,38 +1356,38 @@ func TestR87DestructiveTargetDetectorSelfCheck(t *testing.T) {
 	}
 
 	// 夹具 ①：真读 + 破坏性 + **无守卫** ⇒ 必须被判成候选。
-	f1 := write("unguarded_test.go", "package fx\n\nimport (\n\t\"os\"\n\t\"github.com/jackc/pgx/v5/pgxpool\"\n)\n\n"+
+	f1 := write("fx1", "unguarded_test.go", "package fx\n\nimport (\n\t\"os\"\n\t\"github.com/jackc/pgx/v5/pgxpool\"\n)\n\n"+
 		"func f() {\n\t_ = os.Getenv(\""+name+"\")\n\t_ = pgxpool.New\n"+
 		"\t_, _ = os.ReadFile(\"TRUNCATE public.some_table\")\n}\n")
 	// 夹具 ②：真读 + 破坏性 + **有守卫**（current_database() 在前）⇒ 不得被判成候选。
-	f2 := write("guarded_dbname_test.go", "package fx\n\nimport (\n\t\"os\"\n\t\"github.com/jackc/pgx/v5/pgxpool\"\n)\n\n"+
+	f2 := write("fx2", "guarded_dbname_test.go", "package fx\n\nimport (\n\t\"os\"\n\t\"github.com/jackc/pgx/v5/pgxpool\"\n)\n\n"+
 		"func f() {\n\t_ = os.Getenv(\""+name+"\")\n\t_ = pgxpool.New\n"+
 		"\t_ = \"SELECT current_database()\"\n\t_, _ = os.ReadFile(\"TRUNCATE public.some_table\")\n}\n")
 	// 夹具 ③：真读 + 破坏性 + **禁用串断言**（切片字面量，不是实参）⇒ 不得被判成候选。
-	f3 := write("forbidden_only_test.go", "package fx\n\nimport (\n\t\"os\"\n\t\"github.com/jackc/pgx/v5/pgxpool\"\n)\n\n"+
+	f3 := write("fx3", "forbidden_only_test.go", "package fx\n\nimport (\n\t\"os\"\n\t\"github.com/jackc/pgx/v5/pgxpool\"\n)\n\n"+
 		"func f() {\n\t_ = os.Getenv(\""+name+"\")\n\t_ = pgxpool.New\n"+
 		"\tfor _, forbidden := range []string{\"TRUNCATE public.some_table\"} {\n\t\t_ = forbidden\n\t}\n}\n")
 	// 夹具 ④：真读 + 破坏性 + **自己建的对象** ⇒ 不得被判成候选。
-	f4 := write("self_created_test.go", "package fx\n\nimport (\n\t\"os\"\n\t\"github.com/jackc/pgx/v5/pgxpool\"\n)\n\n"+
+	f4 := write("fx4", "self_created_test.go", "package fx\n\nimport (\n\t\"os\"\n\t\"github.com/jackc/pgx/v5/pgxpool\"\n)\n\n"+
 		"func f() {\n\t_ = os.Getenv(\""+name+"\")\n\t_ = pgxpool.New\n"+
 		"\t_, _ = os.ReadFile(\"CREATE TABLE public.some_table (id int)\")\n"+
 		"\t_, _ = os.ReadFile(\"TRUNCATE public.some_table\")\n}\n")
 	// 夹具 ⑤：真读 + **SQL 文本断言**（字面量在 strings.Index 里）⇒ 不得被判成候选。
-	f5 := write("sql_text_assertion_test.go", "package fx\n\nimport (\n\t\"os\"\n\t\"strings\"\n\t\"github.com/jackc/pgx/v5/pgxpool\"\n)\n\n"+
+	f5 := write("fx5", "sql_text_assertion_test.go", "package fx\n\nimport (\n\t\"os\"\n\t\"strings\"\n\t\"github.com/jackc/pgx/v5/pgxpool\"\n)\n\n"+
 		"func f() {\n\t_ = os.Getenv(\""+name+"\")\n\t_ = pgxpool.New\n"+
 		"\t_ = strings.Index(\"down sql\", \"DROP TABLE IF EXISTS some_table\")\n}\n")
 	// 夹具 ⑥：真读 + 破坏性写在**切片字面量**里、range 之后送进 Exec ⇒ **必须**被判成候选。
-	f6 := write("slice_exec_test.go", "package fx\n\nimport (\n\t\"context\"\n\t\"os\"\n\t\"testing\"\n\n"+
+	f6 := write("fx6", "slice_exec_test.go", "package fx\n\nimport (\n\t\"context\"\n\t\"os\"\n\t\"testing\"\n\n"+
 		"\"github.com/jackc/pgx/v5/pgxpool\"\n)\n\n"+
 		"func f(t *testing.T, pool *pgxpool.Pool) {\n\t_ = os.Getenv(\""+name+"\")\n\t_ = pgxpool.New\n"+
 		"\tfor _, stmt := range []string{\"TRUNCATE public.some_table\"} {\n"+
 		"\t\t_, _ = pool.Exec(context.Background(), stmt)\n\t}\n}\n")
 	// 夹具 ⑧：真读 + **散文里的关键字**（错误提示语里提到 DROP TABLE）⇒ 不得被判成候选。
-	f8 := write("prose_only_test.go", "package fx\n\nimport (\n\t\"fmt\"\n\t\"os\"\n\t\"github.com/jackc/pgx/v5/pgxpool\"\n)\n\n"+
+	f8 := write("fx7", "prose_only_test.go", "package fx\n\nimport (\n\t\"fmt\"\n\t\"os\"\n\t\"github.com/jackc/pgx/v5/pgxpool\"\n)\n\n"+
 		"func f() {\n\t_ = os.Getenv(\""+name+"\")\n\t_ = pgxpool.New\n"+
 		"\t_ = fmt.Errorf(\"本测试会 DROP TABLE public.some_table CASCADE，只允许对可丢弃的测试库运行\")\n}\n")
 	// 夹具 ⑦：真读 + 破坏性 + **先探后建**（已存在即跳过）⇒ 不得被判成候选。
-	f7 := write("probe_then_skip_test.go", "package fx\n\nimport (\n\t\"os\"\n\t\"github.com/jackc/pgx/v5/pgxpool\"\n)\n\n"+
+	f7 := write("fx8", "probe_then_skip_test.go", "package fx\n\nimport (\n\t\"os\"\n\t\"github.com/jackc/pgx/v5/pgxpool\"\n)\n\n"+
 		"func f() {\n\t_ = os.Getenv(\""+name+"\")\n\t_ = pgxpool.New\n"+
 		"\tt.Skipf(\"%d of the fixture tables already exist — this test drops them\", 1)\n"+
 		"\t_, _ = os.ReadFile(\"TRUNCATE public.some_table\")\n}\n")
@@ -1111,15 +1412,15 @@ func TestR87DestructiveTargetDetectorSelfCheck(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(gateDir, "gate.go"), []byte(gateSrc), 0o600); err != nil {
 		t.Fatalf("write gatepkg: %v", err)
 	}
-	pkgs = r87BuildPkgFacts(t, dir)
+	pkgs = r87BuildPkgFacts(t, dir, "example.com/x")
 
 	// 夹具 ⑨：调用**名单里的闸门** ⇒ 不得被判成候选。
-	f9 := write("declared_gate_test.go", "package fx\n\nimport (\n\t\"os\"\n\n"+
+	f9 := write("fx9", "declared_gate_test.go", "package fx\n\nimport (\n\t\"os\"\n\n"+
 		"\"example.com/x/gatepkg\"\n\t\"github.com/jackc/pgx/v5/pgxpool\"\n)\n\n"+
 		"func f() {\n\t_ = os.Getenv(\""+name+"\")\n\t_ = pgxpool.New\n"+
 		"\t_ = gatepkg.Gate()\n\t_, _ = os.ReadFile(\"TRUNCATE public.some_table\")\n}\n")
 	// 夹具 ⑩：只调用**不在名单里**的核对函数 ⇒ **必须**被判成候选。
-	f10 := write("verify_only_test.go", "package fx\n\nimport (\n\t\"os\"\n\n"+
+	f10 := write("fx10", "verify_only_test.go", "package fx\n\nimport (\n\t\"os\"\n\n"+
 		"\"example.com/x/gatepkg\"\n\t\"github.com/jackc/pgx/v5/pgxpool\"\n)\n\n"+
 		"func f() {\n\t_ = os.Getenv(\""+name+"\")\n\t_ = pgxpool.New\n"+
 		"\t_ = gatepkg.Verify()\n\t_, _ = os.ReadFile(\"TRUNCATE public.some_table\")\n}\n")
