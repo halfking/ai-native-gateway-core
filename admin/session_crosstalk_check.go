@@ -72,10 +72,11 @@ func (h *Handler) handleSessionCrosstalkCheck(w http.ResponseWriter, r *http.Req
 	}
 
 	conflicts := make([]conflict, 0)
+	var rowsErr error
 
 	// ★ 派生查询：会话族里「同一个 session 出现在多个 tenant 下」。
 	//   - `ts` 是 `session_turns` 的分区键 ⇒ 分区裁剪 + 前导 ts 索引
-	//     （生产实测：cost=779 / buffers=2,441 ⇒ 毫秒级，不扫全表）。
+	//     （生产实测端点实际形态：cost=752.53 / buffers=2,383 ⇒ 毫秒级）。
 	//   - `HAVING count(DISTINCT tenant_id) > 1` 就是串话的定义。
 	//   - `LIMIT 100` 与旧实现一致（响应体 contract 不变）。
 	const crosstalkSQL = `
@@ -113,10 +114,19 @@ func (h *Handler) handleSessionCrosstalkCheck(w http.ResponseWriter, r *http.Req
 			c.TenantIDs = "CONFLICT:" + strings.Join(tenantIDs, ",")
 			conflicts = append(conflicts, c)
 		}
-		return rows.Err()
+		rowsErr = rows.Err()
+		return nil
 	})
-	if err != nil {
-		writeInternalErr(w, "query failed", err)
+	// ★ 聚合读端的错误必须走**分类三门**（admin/aggregate_read_guard.go）：
+	//   42P01（关系不存在）⇒ 503 + `analytics_view_missing` + 迁移提示；
+	//   其它错误 ⇒ 500。⇒ 旧实现用裸 writeInternalErr ⇒ 42P01 只给一个
+	//   没有线索的 500（这正是本端点长期 500 却看不出缺哪张表的原因）。
+	//   `IsMissingRelationError` 用 errors.As ⇒ 能穿透 withTx 的 %w 包装。
+	if writeAggRowsErr(w, "sessionCrosstalkCheck", err) {
+		return
+	}
+	// ★ rows 迭代错误**不能**被当成成功响应吞掉（部分结果 ≠ 成功）。
+	if writeAggRowsErr(w, "sessionCrosstalkCheck", rowsErr) {
 		return
 	}
 
