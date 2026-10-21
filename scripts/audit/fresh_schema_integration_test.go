@@ -194,6 +194,14 @@ func TestFreshSchemaFromMigrations_BuildMigrationsSucceedOnFreshDB(t *testing.T)
 // statement could hang the whole test run.
 const throwawayCleanupTimeout = 120 * time.Second
 
+// throwawaySignalReraiseWindow 是「重发的信号」被投递的窗口。
+//
+// ★ 为什么需要它（2026-10-21 实测，Go 1.27.2 darwin/arm64）：
+// `Process.Signal` 是**异步**投递 ⇒ 若紧接着就 os.Exit，**兜底总是赢得竞争**
+// ⇒ 重发的信号从未被处理 ⇒ 进程是「退出码 143」而不是「死于信号」。
+// 实测：不等待 ⇒ 5/5 exited-with-code(143)；等 1s ⇒ 5/5 died-by-signal(terminated)。
+const throwawaySignalReraiseWindow = time.Second
+
 // ── Signal-path cleanup ──────────────────────────────────────────────────
 //
 // A defer does not run when the process is terminated by a signal: the Go
@@ -205,6 +213,12 @@ const throwawayCleanupTimeout = 120 * time.Second
 // The handler below closes that path: on a signal it drops every throwaway
 // database this file created, restores the default disposition and re-raises
 // the signal, so the process still dies "because it was signalled".
+//
+// ★★ R99 轮 · §19.20.70 实测订正：上面那句在 2026-10-21 之前是**失实**的 ——
+// `Process.Signal` 异步投递 ⇒ 紧跟着的 os.Exit(143) 总是赢得竞争 ⇒ 重发的信号
+// 从未生效 ⇒ 实际退出形态是「exited-with-code(143)」而不是「died-by-signal」。
+// ⇒ 现在重发之后有 throwawaySignalReraiseWindow 的等待窗口 ⇒ 实测 5/5
+// died-by-signal(terminated) ⇒ 注释与实现这才对齐。
 var (
 	throwawayMu   sync.Mutex
 	throwawayDbs  = map[string]*pgxpool.Pool{}
@@ -251,6 +265,13 @@ func installThrowawaySignalHandler() {
 				_ = p.Signal(s)
 			}
 		}
+		// ★★★ R99 轮 · §19.20.70 实测订正：`Process.Signal` 是【异步】投递 ⇒
+		//   紧跟着的 os.Exit(143) 总是赢得竞争 ⇒ 重发的信号**从未生效** ⇒
+		//   进程实际是「退出码 143」而不是「死于信号」（★ 这与本文件上方那句
+		//   「the process still dies 'because it was signalled'」在改之前是矛盾的）。
+		//   ⇒ 修法：重发之后给信号一个【被投递的窗口】⇒ 实测等 1s ⇒ 5/5 变成
+		//   died-by-signal(terminated) ⇒ 注释与实现这才对齐。
+		time.Sleep(throwawaySignalReraiseWindow)
 		// Fallback: a killed run must not look like a passing one.
 		os.Exit(143)
 	}()

@@ -73,6 +73,14 @@ var plainIdentifier = regexp.MustCompile(`^[a-z0-9_]+$`)
 // package's cleanup exists to remove.
 const cleanupTimeout = 120 * time.Second
 
+// signalReraiseWindow 是「重发的信号」被投递的窗口。
+//
+// ★ 为什么需要它（2026-10-21 实测，Go 1.27.2 darwin/arm64）：
+// `Process.Signal` 是**异步**投递 ⇒ 若紧接着就 os.Exit，**兜底总是赢得竞争**
+// ⇒ 重发的信号从未被处理 ⇒ 进程是「退出码 143」而不是「死于信号」。
+// 实测：不等待 ⇒ 5/5 exited-with-code(143)；等 1s ⇒ 5/5 died-by-signal(terminated)。
+const signalReraiseWindow = time.Second
+
 // ── Signal-path cleanup ───────────────────────────────────────────────────
 //
 // t.Cleanup runs on the normal test path and on t.Fatal, but NOT when the
@@ -86,6 +94,13 @@ const cleanupTimeout = 120 * time.Second
 // restores the default disposition and re-raises the signal, so the process
 // still dies "because it was signalled" instead of exiting quietly with a
 // different status.
+//
+// ★★ R99 轮 · §19.20.70 实测订正：上面那句「still dies 'because it was signalled'」
+// 在 2026-10-21 之前是**失实**的 —— `Process.Signal` 异步投递 ⇒ 紧跟着的
+// os.Exit(143) 总是赢得竞争 ⇒ 重发的信号从未生效 ⇒ 实际退出形态是
+// 「exited-with-code(143)」而不是「died-by-signal」。
+// ⇒ 现在重发之后有 signalReraiseWindow 的等待窗口 ⇒ 实测 5/5 died-by-signal ⇒
+// ⇒ 注释与实现这才对齐（★ 端到端真机门：internal/testdb/signal_cleanup_realdb_test.go）。
 //
 // The registry is process-wide rather than per-test because signal.Notify
 // installs a process-wide handler: one per test would let the last test's
@@ -125,6 +140,14 @@ func installSignalDrop() {
 		// Restore the default disposition and re-raise, so the process still
 		// dies from the signal — the supervisor sees a signalled death, not a
 		// clean exit that looks like a successful test run.
+		//
+		// ★★★ R99 轮 · §19.20.70 实测订正（★ 这段注释在改之前是**失实**的）：
+		//   `Process.Signal` 是【**异步**投递】⇒ 紧跟着的 os.Exit(143) **总是赢得竞争**
+		//   ⇒ 兜底先跑完 ⇒ 重发的信号**从未被处理** ⇒ 进程实际是「**退出码 143**」，
+		//   而不是「死于信号」（Go 的 exec 能分：ExitCode()==143 vs ExitCode()==-1
+		//   且 WaitStatus.Signaled()==true；★ bash 的 wait **分不出** ⇒ 别用 shell 观测）。
+		//   ⇒ 修法：重发之后给信号一个【被投递的窗口】—— 实测等 1s ⇒ 5/5 变成
+		//   died-by-signal(terminated) ⇒ 这时上面那句注释才与实现对齐。
 		signal.Stop(ch)
 		if s, ok := sig.(syscall.Signal); ok {
 			signal.Reset(s)
@@ -132,6 +155,10 @@ func installSignalDrop() {
 				_ = p.Signal(s)
 			}
 		}
+		// ★ Bounded window for the re-raised signal to actually be delivered.
+		//   Without it the fallback below always wins the race (measured
+		//   2026-10-21: 5/5 exited-with-code(143), 0/5 died-by-signal).
+		time.Sleep(signalReraiseWindow)
 		// Fallback for a signal that could not be re-raised: still exit
 		// non-zero, never 0 — a killed run must not look like a passing one.
 		os.Exit(143)

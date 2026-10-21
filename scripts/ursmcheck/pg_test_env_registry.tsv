@@ -35,6 +35,7 @@ LLM_GATEWAY_PROVIDER_COST_RECONCILIATION_ENABLED	component	特性开关：成本
 LLM_GATEWAY_REDIS_ADDR	component	Redis 地址（host:port），绝不能填 PG DSN
 LLM_GATEWAY_RUN_LIVE_OBSERVATION	component	允许打线上观测（布尔），与真库腿无关
 LLM_GATEWAY_SSOT_DRAFT	component	草稿文件路径（SSOT 导入用）
+LLM_GATEWAY_TESTDB_SIGNAL_CHILD	component	子进程模式标记（=1 时该进程走「建一次性库并阻塞等信号」分支，是父进程 spawn 出来的夹具参数）：不决定连哪个库、不取消任何保护 ⇒ 既非 DSN 也非隔离开关
 LLM_GATEWAY_USE_NEW_PROBE_MODE	component	特性开关：新探针模式
 MEMORA_REPO_PATH	component	外部仓库路径（memora 记忆仓的本地 checkout 路径）；不是 DSN，是拼装型外部依赖路径
 O5_FALLBACK_FILE_EVIDENCE	component	取证文件路径（降级读文件的真实样本）
