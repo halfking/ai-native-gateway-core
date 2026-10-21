@@ -931,6 +931,43 @@ dl_write_env() {
     # ⇒ `Global.Spec(key)` 返回 nil ⇒ `GetPlatformBool` 直接回退 false
     # ⇒ ⇒ 补这一行是让 env 那条路可达的**最小修法**（未设时写空行，行为不变）。
     dl_emit_env_line LLM_GATEWAY_PROVIDER_COST_RECONCILIATION_ENABLED "${LLM_GATEWAY_PROVIDER_COST_RECONCILIATION_ENABLED:-}"
+    # 2026-10-21 R72f（属主决策项 #9 = ★「逐个补进白名单」）：把「代码用 env 读、
+    # 但白名单漏掉」的那 23 个 feature flag 一次性补齐。
+    #
+    # ★ 为什么这一批必须补：白名单是**白名单式**的 ⇒ 白名单之外的一切**静默失效**
+    #   （不报错、不警告，只是配置不生效）⇒ ⇒ 「以为开了」比「没开」更危险。
+    # ★ 为什么现在补是安全的：**全部写成 `${KEY:-}`** ⇒ 未设时写**空行** ⇒
+    #   gateway 侧视为「未设置」⇒ 行为与改动前**逐字一致** ⇒ ⇒ 零语义风险。
+    #   ⇒ 「容器形态下这些开关是否开启」完全取决于 `.env.local` 里有没有写，
+    #     而 `.env.local` 是**逐环境**的（gitignored）⇒ ⇒ 不会把某个开关
+    #     意外带到所有环境。
+    # ★ 其中最要紧的一个：`LLM_GATEWAY_V2_ENABLED` —— 26 处引用，是
+    #   「v1/v2 双写」的**总开关** ⇒ ⇒ 容器形态下它此前**根本不通**
+    #   ⇒ ⇒ ⇒ 这正是「关停 request_logs 写入」只能靠迁移 890 硬删、
+    #   不能靠开关的根因（见审计档 §3.9 与 §3.6.1）。
+    dl_emit_env_line AUTO_ROUTE_FALLBACK_ENABLED "${AUTO_ROUTE_FALLBACK_ENABLED:-}"
+    dl_emit_env_line LLM_GATEWAY_ANOMALY_REPORTER_ENABLED "${LLM_GATEWAY_ANOMALY_REPORTER_ENABLED:-}"
+    dl_emit_env_line LLM_GATEWAY_COMPRESSION_STRATEGY_RUNNER_ENABLED "${LLM_GATEWAY_COMPRESSION_STRATEGY_RUNNER_ENABLED:-}"
+    dl_emit_env_line LLM_GATEWAY_CONSISTENCY_CHECK_ENABLED "${LLM_GATEWAY_CONSISTENCY_CHECK_ENABLED:-}"
+    dl_emit_env_line LLM_GATEWAY_HOSTED_TASKS_ENABLED "${LLM_GATEWAY_HOSTED_TASKS_ENABLED:-}"
+    dl_emit_env_line LLM_GATEWAY_INTEGRITY_HARVEST_ENABLED "${LLM_GATEWAY_INTEGRITY_HARVEST_ENABLED:-}"
+    dl_emit_env_line LLM_GATEWAY_LOG_BLEVE_ENABLED "${LLM_GATEWAY_LOG_BLEVE_ENABLED:-}"
+    dl_emit_env_line LLM_GATEWAY_MNF_STREAK_ENABLED "${LLM_GATEWAY_MNF_STREAK_ENABLED:-}"
+    dl_emit_env_line LLM_GATEWAY_MOCK_PROBE_ENABLED "${LLM_GATEWAY_MOCK_PROBE_ENABLED:-}"
+    dl_emit_env_line LLM_GATEWAY_PARTITION_MANAGER_ENABLED "${LLM_GATEWAY_PARTITION_MANAGER_ENABLED:-}"
+    dl_emit_env_line LLM_GATEWAY_PROVIDER_PROFILE_ENABLED "${LLM_GATEWAY_PROVIDER_PROFILE_ENABLED:-}"
+    dl_emit_env_line LLM_GATEWAY_RAW_LOG_ENABLED "${LLM_GATEWAY_RAW_LOG_ENABLED:-}"
+    dl_emit_env_line LLM_GATEWAY_RECOVERY_L2_ENABLED "${LLM_GATEWAY_RECOVERY_L2_ENABLED:-}"
+    dl_emit_env_line LLM_GATEWAY_REQUEST_SURVIVAL_DURABLE_ENABLED "${LLM_GATEWAY_REQUEST_SURVIVAL_DURABLE_ENABLED:-}"
+    dl_emit_env_line LLM_GATEWAY_REQUEST_SURVIVAL_ENABLED "${LLM_GATEWAY_REQUEST_SURVIVAL_ENABLED:-}"
+    dl_emit_env_line LLM_GATEWAY_SEMANTIC_ANALYSIS_ENABLED "${LLM_GATEWAY_SEMANTIC_ANALYSIS_ENABLED:-}"
+    dl_emit_env_line LLM_GATEWAY_STREAM_RETRY_ENABLED "${LLM_GATEWAY_STREAM_RETRY_ENABLED:-}"
+    dl_emit_env_line LLM_GATEWAY_V2_ENABLED "${LLM_GATEWAY_V2_ENABLED:-}"
+    dl_emit_env_line OMNIFREE_ENABLED "${OMNIFREE_ENABLED:-}"
+    dl_emit_env_line PARAMREG_ENABLED "${PARAMREG_ENABLED:-}"
+    dl_emit_env_line PROFILE_UPDATER_ENABLED "${PROFILE_UPDATER_ENABLED:-}"
+    dl_emit_env_line QUALITY_COLLECTOR_ENABLED "${QUALITY_COLLECTOR_ENABLED:-}"
+    dl_emit_env_line SANITIZE_SYSTEM_PROMPT_ENABLED "${SANITIZE_SYSTEM_PROMPT_ENABLED:-}"
   } > "$file"
   chmod 0600 "$file"
 }

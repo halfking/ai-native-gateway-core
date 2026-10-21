@@ -19,7 +19,10 @@ import {
  * 统一请求详情的契约测试（2026-10-08）。
  *
  * ★★ 夹具逐字抄自 `domains/requestdetail/types.go:12-80` 的 json tag
- *   与 `admin/unified_detail.go:474` 的 `writeJSON(w, 200, detail)`。
+ *   与 `admin/unified_detail.go:463` 的 `writeJSON(w, http.StatusOK, detail)`。
+ *   ⚠️ 2026-10-21 行号订正：原先写 `:474` —— **越界**（该文件只有 464 行），
+ *     实为 `:463`；引用的写法也从 `writeJSON(w, 200, detail)` 改成 Go 侧逐字
+ *     （`http.StatusOK` 恒等于 200）。
  *
  * 后端逐条对应：
  *   types.go:12-18   Source 5 值
@@ -28,7 +31,10 @@ import {
  *   types.go:74-80   Detail（**顶层无包装键**）
  *   store.go:43-45   safeRequestIDPattern（三形态）
  *   store.go:440-451 ValidateRequestID（长度 8..128）
- *   unified_detail.go:433/447/455/468/472  五个状态码
+ *   unified_detail.go:406/410/415/420/432/439/444/459  八个状态码点
+ *     （405/503/404/400/404/413/500/404；★ 原先写 `:433/447/455/468/472`
+ *       「五个状态码」，而 :468/:472 **已越界**（文件只有 464 行）——
+ *       2026-08-29 补了 413（`:439`）后是**六个**不同状态码）
  */
 
 const fetchMock = vi.fn()

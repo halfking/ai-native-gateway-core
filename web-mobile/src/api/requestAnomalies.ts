@@ -67,7 +67,7 @@ import { req, type RequestOptions } from './client'
 //     ★ 另注意 `param` 是**逗号连接的多个参数名**（一个请求可能被拒多个参数），
 //       不是单个值 —— 按逗号拆开显示。
 //
-// (9) ★ 错误信封走 `writeError`（`admin/handler.go:1560-1566`）⇒
+// (9) ★ 错误信封走 `writeError`（`admin/handler.go:1570-1574`）⇒
 //     `{"error":{"detail":…}}`，键是 **`detail`** 不是 `message`。
 //     ★ 这是本仓库见到的**第三个信封族**：
 //       pending-responses = `{"error":{"message":…,"code":…}}`
@@ -163,7 +163,7 @@ export function fetchAnomalyList(params: AnomalyListParams = {}, options?: Reque
     qs.set('trigger', params.trigger)
   }
   // ★ `unresolved_only` 的真值判定是 `EqualFold("true") || == "1"`
-  //   （`queryBool`，admin/handler.go:1612-1614）⇒ 只在这两种形态下发送。
+  //   （`queryBool`，admin/handler.go:1622-1624）⇒ 只在这两种形态下发送。
   if (params.unresolvedOnly === true) qs.set('unresolved_only', 'true')
   if (typeof params.limit === 'number' && Number.isFinite(params.limit)) {
     const n = Math.trunc(params.limit)

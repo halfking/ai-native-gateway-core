@@ -6067,6 +6067,40 @@ index b953a6f03..555ef83c4 100644
 >   ⇒ ⇒ ★★★ **⇒ 顺带记一条部署机制的坑**：`deploy-local.sh` 的 `bump_local_version`（:1208）**先把版本 bump 写进仓库的 4 个版本文件再编译** ⇒ ⇒ ★★ **⇒ 部署失败时仓库会处于「戳已 bump、产物没上」的半成品状态** ⇒ ⇒ ★★ **⇒ 修完必须重跑整个部署，别以为「第一次失败 ⇒ 什么都没变」**
 > ⇒ ⇒ ★★ **本轮改动**：`scripts/deploy-local-lib.sh` 一行白名单 ＋ 新门 `scripts/ursmcheck/deploy_env_flag_passthrough_test.go`（3 条：2 条有牙 ＋ 1 条只读清单）＋ 行为级 shell 门 `scripts/deploy-local-lib-envflag_test.sh`
 > ⇒ ⇒ ★★ **⇒ 完整记录见审计档 `docs/audit/2026-10-21-R72f-本地部署形态判定与二进制平台耦合.md` §3.6 / §3.7 / §3.8 / §3.9 / §3.10 / §4.5 ＋ LESSONS `§161` / `§162` / `§163` / `§164`。**
+>
+> **2026-10-21 R72g 轮（属主落地线 · 本会话）**：★ **把属主拍板的 4 项落成仓内改动 ＋ 产出生产执行包** ⇒ ★★ **并推翻 R72f §3.9.3 的中心结论**。
+> ⇒ ★★ **属主拍板（本轮之前）**：① v1 族 67 万行历史 ⇒ **连表带数据直接删除**；② 211/252 ⇒ **两台同窗口一起上**；③ feature flag 白名单 ⇒ **逐个补进白名单**；④ settings spec ⇒ **补 spec 注册 ＋ 前端按能力位隐藏入口**。
+> ⇒ ⇒ ★★ **A（flag 白名单）**：23 个 env 式 flag 逐个补进 `dl_write_env`（全 `${KEY:-}`）⇒ 27 条 `*ENABLED` 条目。
+>   **门升级为四道**（`scripts/ursmcheck/deploy_env_flag_passthrough_test.go`）：缺口必须为 **0**（由「只读清单」升为**红灯**）＋ 非空默认必须显式登记。
+>   ⇒ ★ **变异 M1（删白名单行）⇒ 缺口门红；M2（改非空默认）⇒ 显式门红**；两次 sha256 逐字还原。
+>   ⇒ ★★ **本地真机实测：容器 `llm-gateway-local-8782` 的 env 里 `*ENABLED=` = 27 条**（此前 env 式 flag 一条都进不去）。
+> ⇒ ⇒ ★★ **B（settings spec 注册）**：查出 `Registry.RegisterSpec`（`settings/spec.go:239`）**不归一化 `Scope`** ⇒ 零值 `""` ≠ `ScopePlatform` ⇒ **凡省略 Scope 的 spec = 彻底不可配**（全仓 4 个）⇒ 已补。
+>   注册 **15 个孤儿键**（`provider_profile.*` 5 / `lifecycle.*` 10 / `ursm.healthy_reconcile_interval_seconds` 1）⇒ **孤儿数从 19 订正为 15**（`sanitize.rules.*` 3 个是常量假阳性）。
+>   新门 `scripts/ursmcheck/settings_spec_registration_test.go`（`go/ast` 解析常量引用，**不用正则**）3 条 ⇒ **变异 M1/M2/M3 全红**。
+>   ⇒ ★ **行为影响矩阵（211/252/本地三处只读比对）**：只有 **2 处**真变化 ⇒ `provider_profile.enabled`（行值 true ⇒ **会启用 provider-profile worker**）、`lifecycle.request_logs_bodies_retention_hours`（行值 8 ⇒ **保留期 24h→8h**）⇒ ★ **属主尚未知情，已列入执行包 §7.3**。
+> ⇒ ⇒ ★★ **C（能力位）**：后端 `admin/capabilities.go`（`GET /api/admin/capabilities`，**无条件注册**，能力值由 `providerCostReconciliationHandler != nil` **派生**）＋ 前端 `web-mobile/src/api/featureCapabilities.ts` / `stores/capabilities.ts`（**fail-closed**）/ `config/appNav.ts`（`requiresCapability` ＋ `navItemsFor`/`routeAllowedFor` 增参）。
+>   ⇒ ★ **api 模块名带限定前缀 `featureCapabilities`**（**不是** `capabilities`）—— 仓里已有 `src/hyper/capabilities.ts`（浏览器能力）⇒ 同名会在孤儿台账的导入图里产生**假边**（LESSONS §170）。
+>   ⇒ ★★ **本地真机实测**：`GET /api/admin/capabilities` → **200 `{"cost_reconciliation":true}`**；4 个 settings 键都返回**完整 spec**。
+>   ⇒ ★ **后端单测 5 条**（`admin/capabilities_test.go`，含「tenant_admin 能取 ⇒ 证明是 `admin` 档而非 `superAdmin` 档」的**鉴别**断言）＋ **前端契约门 4 条**（`api/featureCapabilities.spec.ts`，含**类型级**对账 `Record<CapabilityName, keyof FeatureCapabilities>`）。
+> ⇒ ⇒ ★★★ **★ 移动端套件：从「12 red（既有债）」到「0 red」**
+>   ⇒ ★★ **先做 stash A/B 基线**（LESSONS §166）：**干净 HEAD 本就 12 red / 7 files**（上游合并累积的**行号漂移债**）⇒ 我净增 4 条（orphanLedger×2 ＋ AppDrawer×2）⇒ ⇒ **既有债也是债** ⇒ 一并清零。
+>   ⇒ ★★ **51 条「未登记漂移」三路并行清零**（api 33 / views 13 / router+config 5）⇒ **逐条定性**：真错 ⇒ 订正行号 **＋ 复核语义结论仍成立**（「光移行号不算修好」）；判据假阳性 ⇒ 登记 `KNOWN_FALSE_POSITIVE`。
+>   ⇒ ★★★ **挖出 3 处「语义已变、断言还守着旧事实」**：`ops/overview` 档位已从 `admin` 降为 `superAdmin`（批 158e）；`model-integrity` 已换成**双档**中间件；`handleModelHistory` 已加 **role gate**（⇒ 旧断言「不存在 role 检查」因正则太窄而**恒绿**）。
+>   ⇒ ★★ **5 条已登记项的 note/key 同源订正**（LESSONS §171：登记 key 含**双坐标**行号 ⇒ 改源码行号必须连 key 一起改）。
+>   ⇒ ★★★ **最终：241 files / 9020 passed / 1 skipped / 0 failed**；`vue-tsc` 绿；build 四道自检（css/touch/i18n/comment）全 PASS。
+> ⇒ ⇒ ★★★★ **★ 推翻 R72f §3.9.3 的中心结论**（「新二进制仍读 v1 ⇒ 顺序反了」）：
+>   ★ 那 5 处「v1 读点」逐条打开代码后：**2 处是陈旧错误文案**、2 处读 **canonical 视图**、1 处**优雅降级**、1 处**生命周期注册表 SKIP** ⇒ **真·v1 表直读 = 0**。
+>   ⇒ ★★ **决定性互证**：**211 已经跑过 890**（v1 表已删）且服务 9 小时，`docker logs --since 24h` 里 **`42P01` = 0** ⇒ ⇒ **「890 之后不 42P01」的机理是 890 把 canonical 视图换成会话两臂体** ⇒ ⇒ **读 v1 视图 ≠ 读 v1 表**（LESSONS §167）。
+>   ⇒ ★★ **真正的硬阻断只有一条**：**产物里直读 v1 表 / v1 视图的 SQL** ⇒ 252 现有产物（Oct 5）有 `FROM public.request_logs_hot` 5 处 ＋ 2 张 v1 视图 3 处 ⇒ **252 必须先换二进制**；**仓内 HEAD 产物这 5 类计数全为 0** ⇒ 新二进制 890-safe。
+>   ⇒ ★★★ **附带推翻一条量具结论**：`pg_stat_statements` **只累加不删** ⇒ 252 表里那条**三臂**语句（536 次调用）是**历史残留** ⇒ **权威判据是产物，不是统计表**（LESSONS §168）。
+>   ⇒ ★★ **211 的量具压根不可用**：`pg_stat_statements` **没进 `shared_preload_libraries`** ⇒ 查询**直接 ERROR** ⇒ 且仓里既有的 890 前置脚本**在 211 上也直接报错**（无条件引用已删对象）⇒ 新写**加固版** `scripts/audit/verify_890_cutover_precheck_v2.sql`（全 `to_regclass` 守卫 ＋ 量具不可用时**显式 SKIP 并说明** ＋ 统计表降级为旁证）。
+> ⇒ ⇒ ★★★★ **生产执行包（`docs/audit/2026-10-21-R72g-生产落地执行包-v1族真删.md`）** —— **本轮对生产的写入 = 0**（211/252 全程只读）：
+>   ★ **两台现状实测**：211 **已跑过 890**（v1 族已删、canonical 已是会话两臂体、只剩 2 张 **0 行**孤儿 archive 表）；252 **未跑**（canonical 仍含 v1 臂、`_request_logs` 338,976 行 ＋ `_request_logs_bodies` 330,463 行）。
+>   ★★ **数据可用性复核（属主裁定「直删」的前提）**：会话族的 `request_id` 集合**只差 78 行**（`request_status='success'` 且 76 行有 body，占 0.023%）；20 万「v1 独有」行里 **196,889 是自动路由探针**、4,206 是**空壳行**（`model` 全空、无 body）、2,189 是 `in_progress` 残骸 ⇒ ⇒ **v1 里没有「用户真正完成的会话」是会话族没有的** ⇒ 「直删」成立（但那 78 行的去向写进了执行包 §4.1）。
+>   ★★★ **操作件**：`scripts/audit/clear_v1_family_for_890.sql`（**确认令牌** ＋ **白名单枚举** ＋ TRUNCATE（瞬时、不膨胀）＋ **复核全 0**）⇒ ★ **在一次性库 `itgate_r72g` 上真跑验收**：① 无令牌 ⇒ **拒执行且行数不变**；② 带令牌 ⇒ v1 族归零而**会话族 9,000/50 行一字未动**；③ 再跑 ⇒ 幂等；④ **真跑抓出 2 个 bug**（`FOR…IN ARRAY` 应为 `FOREACH`；PG 的 `RAISE` **不认 `%s`**）＋ 1 个调用坑（`PGOPTIONS` 对自定义 GUC 无效 ⇒ 令牌必须**同会话 `SET`**）⇒ LESSONS §172。
+>   ★★ **执行顺序（已被生产证据钉死）**：**换二进制（252 必需）→ 清空 v1 族 → 跑 890**；211 只需换二进制 ＋ 清 2 张孤儿表。**不可逆点 = 清空那一步** ⇒ ⇒ 二进制可回滚、数据不能 ⇒ 顺序不能反。
+> ⇒ ⇒ ★ **⇒ 完整记录见审计档 `docs/audit/2026-10-21-R72g-生产落地执行包-v1族真删.md` ＋ LESSONS `§166` ~ `§172`。**
+
 > **2026-10-21 R86 轮（事实源线 · 续）**：★ **「事实源承载 ⇒ 免于被分类」是结构盲区** ⇒ 六例落地 ＋ 新门「(事实源导出名 × 消费腿) 靶子错配探测器」。
 > ⇒ ★★ **盲区现场**：登记册门 `scripts/ursmcheck/pg_test_env_registry_test.go` 的差集完备判据里写着
 > `if _, ok := ds[name]; ok { continue } // 事实源承载的 dsn 类，不进登记册`

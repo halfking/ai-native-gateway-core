@@ -7,8 +7,8 @@ import { req, type RequestOptions } from './client'
  *
  * - ★★★★★ **注册机制与本仓绝大多数端点不同**：它**不在** `admin/handler.go` 的
  *   `mux.HandleFunc` 里，而是在 **echo 的 group** 上：
- *   `cmd/gateway/main.go:7092`  `adminGroup := e.Group("/api/admin", requireSuperAdmin)`
- *   → `cmd/gateway/main.go:7094`  `licensing.RegisterModuleRoutes(adminGroup, licensingStore)`
+ *   `cmd/gateway/main.go:7181`  `adminGroup := e.Group("/api/admin", requireSuperAdmin)`
+ *   → `cmd/gateway/main.go:7183`  `licensing.RegisterModuleRoutes(adminGroup, licensingStore)`
  *   → `licensing/admin_api.go:33`  `func RegisterModuleRoutes(g *echo.Group, store Store)`
  *   → `licensing/module_api.go:22` `g.GET("/tiers", h.ListTiers)`
  *   ⇒ ★★★ **这是本仓第三种注册机制**（前两种：`admin/handler.go` 的 mux、
@@ -18,6 +18,10 @@ import { req, type RequestOptions } from './client'
  *     实况是 `:7027` / `:7029`，**漂了 63 行**。
  *     `:6966` 不是 `adminGroup` 那行，而是**上一句**
  *     `requireSuperAdmin := newRequireSuperAdminMiddleware()`。
+ *   ⚠️ **行号订正（2026-10-21）**：本段**又漂了** —— `:7092` / `:7094`
+ *     实况是 `:7181` / `:7183`，**漂 89 行**（`:7181` 才是 `adminGroup` 那行，
+ *     `:7183` 才是 `licensing.RegisterModuleRoutes`）。
+ *     ★ 档位结论（`requireSuperAdmin` ⇒ **superAdmin 档**）**未变**，仍然成立。
  *   ⇒ ★★ 中间件是 `requireSuperAdmin` ⇒ **superAdmin 档**
  *     （tenant_admin 403）⇒ 抽屉席须设 `requiresRole: 'super_admin'`
  *     并同步 `src/components/shell/AppDrawer.spec.ts` 白名单。

@@ -5,6 +5,7 @@ import { createRouter, createMemoryHistory } from 'vue-router'
 import AppDrawer from './AppDrawer.vue'
 import { DRAWER_NAV, BOTTOM_NAV, navItemsFor, isNavItemActive } from '@/config/appNav'
 import { useAuthStore } from '@/stores/auth'
+import { useCapabilitiesStore } from '@/stores/capabilities'
 
 /**
  * 导航权限门控（2026-10-06）。
@@ -20,6 +21,13 @@ import { useAuthStore } from '@/stores/auth'
  * ② super_admin 的抽屉里**有** /integrity；
  * ③ admin 档页面（/logs、/providers、/routing）对两者**都**可见 ——
  *    它们走 h.admin，tenant_admin 后端是允许的，挡掉反而是误伤。
+ *
+ * ★★ 2026-10-21（R72f）**加了一维**：**功能能力位**。
+ *   有些功能的端点只在开关打开时才注册（「费用对账」⇒ `admin/handler.go:1096`
+ *   的 `providerCostReconciliationHandler` 装配判断）⇒ ⇒ 那一席若照常显示，
+ *   super_admin 点进去必然 404 ⇒ ⇒ ★ **404 与「端点不存在」同形 ⇒ 没有一层
+ *   会说真话** ⇒ ⇒ 所以前端要**按能力位隐藏入口**。
+ *   ⇒ 口径是 **fail-closed**：能力位未加载 / 取失败 ⇒ 按「该能力没开」处理。
  */
 
 vi.mock('@/hyper', async (importOriginal) => {
@@ -29,13 +37,21 @@ vi.mock('@/hyper', async (importOriginal) => {
 
 let mounted: Array<{ unmount(): void }> = []
 
-async function mountDrawerAs(role: string, startPath = '/') {
+async function mountDrawerAs(role: string, startPath = '/', enabledCapabilities: readonly string[] = []) {
   const pinia = createPinia()
   setActivePinia(pinia)
   useAuthStore().userInfo = {
     id: 1, tenant_id: 't1', username: 'u', display_name: 'U',
     email: 'e', role, enabled: true,
   }
+  // ★ 2026-10-21（R72f）：能力位。★ **默认空集 = fail-closed**
+  //   （「未加载 / 取失败 ⇒ 该能力没开」）⇒ 带 requiresCapability 的席不显示。
+  //   ⇒ 要测「能力位开着时那一席在」，必须**显式**传入。
+  //   ⇒ ★ 这里**不**打真实网络：能力位是从 store 读的纯状态，
+  //     「端点返回什么形状」由 api/featureCapabilities.spec.ts 负责。
+  const caps = useCapabilitiesStore()
+  caps.caps = Object.fromEntries(enabledCapabilities.map((c) => [c, true]))
+  caps.loaded = true
   // AppDrawer 里 useRoute() + watch(route.fullPath)，必须挂真 router 上下文。
   // 用 memory history 而不是 mock useRoute —— 后者会让 isNavItemActive
   // 与真实路由表脱节，测出来的东西不成立。
@@ -98,6 +114,32 @@ describe('AppDrawer 权限门控', () => {
     for (const p of ['/logs', '/providers', '/routing']) {
       expect(hrefs.some((h) => h.includes(p))).toBe(true)
     }
+  })
+
+  it('★★ 能力位关 ⇒ 带 requiresCapability 的席**不渲染**；开着 ⇒ 渲染（2026-10-21）', async () => {
+    // ★★ 这一条钉的是**抽屉真实渲染**（不是 navItemsFor 这个纯函数）：
+    //   「能力位没开 ⇒ 那一席不出现」是本轮新契约的**唯一用户可见后果**。
+    // ★ 取「reconciliation」这一席做样本，但**不写死它的能力名** ——
+    //   能力名从 nav 项自身读（`requiresCapability`）⇒ 改名/加席都不会让本条失效。
+    const gated = DRAWER_NAV.find((i) => i.requiresCapability)
+    expect(gated, '★ 没有带 requiresCapability 的席 ⇒ 本组没测到东西').toBeTruthy()
+    const path = gated!.to
+    const capName = gated!.requiresCapability!
+
+    // ① fail-closed（不传能力位）⇒ 不渲染
+    const off = await mountDrawerAs('super_admin')
+    const offHrefs = Array.from(document.body.querySelectorAll('.drawer__link'))
+      .map((a) => a.getAttribute('href') ?? '')
+    expect(offHrefs, `能力位没开时 ${path} 不该出现`).not.toContain(path)
+    off.unmount()
+    document.body.innerHTML = ''
+    mounted = []
+
+    // ② 能力位开着 ⇒ 渲染
+    await mountDrawerAs('super_admin', '/', [capName])
+    const onHrefs = Array.from(document.body.querySelectorAll('.drawer__link'))
+      .map((a) => a.getAttribute('href') ?? '')
+    expect(onHrefs, `能力位开着时 ${path} 必须出现`).toContain(path)
   })
 })
 
@@ -209,8 +251,20 @@ describe('navItemsFor', () => {
     document.body.innerHTML = ''
   })
 
-  it('super_admin 看到全部', () => {
-    expect(navItemsFor(DRAWER_NAV, 'super_admin').length).toBe(DRAWER_NAV.length)
+  it('super_admin 看到全部（★ 能力位开着时）', () => {
+    // ★ 2026-10-21（R72f）：`reconciliation` 席新增了 `requiresCapability`
+    //   ⇒ 「看到全部」的前提变成「**该能力开着**」⇒ ⇒ 分两种口径分别钉住：
+    //   ① fail-closed（不给能力位）⇒ 带能力位的席**一律不显示**；
+    //   ② 能力位开着 ⇒ 全部可见，且**顺序不变**（顺序不是契约，但 key 集合是）。
+    const gated = DRAWER_NAV.filter((i) => i.requiresCapability)
+    expect(gated.length, '★ 本组的存在意义就是「有席带 requiresCapability」⇒ 一条都没有就白测了').toBeGreaterThan(0)
+    const withoutCaps = navItemsFor(DRAWER_NAV, 'super_admin')
+    expect(withoutCaps.length).toBe(DRAWER_NAV.length - gated.length)
+    expect(withoutCaps.some((i) => i.requiresCapability)).toBe(false)
+    const capNames = [...new Set(gated.map((i) => i.requiresCapability).filter((c): c is string => typeof c === 'string'))]
+    const withCaps = navItemsFor(DRAWER_NAV, 'super_admin', new Set(capNames))
+    expect(withCaps.length).toBe(DRAWER_NAV.length)
+    expect(withCaps.map((i) => i.key)).toEqual(DRAWER_NAV.map((i) => i.key))
   })
 
   it('tenant_admin 少掉的**只有** superAdmin 档那些', () => {
@@ -527,8 +581,14 @@ describe('AppDrawer 导航后收起', () => {
     // ⚠️ 注意这条不能靠「从 / 出发点每个链接」来写 —— 那条路径上
     // route.fullPath **会变**，watcher 会替 onNavClick 把活干完，
     // 把 onNavClick 整个删掉也照样全绿（已实测）。必须站在该项自己的路由上点它。
+    // ★ 2026-10-21（R72f）：**能力位开着**才挂全量 —— 否则带 requiresCapability
+    //   的席（fail-closed）根本不渲染 ⇒ 穷举会漏项 ⇒ 守卫被削弱。
+    //   ⇒ 穷举的是「**画出来的**每一席」，不是 DRAWER_NAV 的抽象全集。
+    const allCaps = [...new Set(
+      DRAWER_NAV.map((i) => i.requiresCapability).filter((c): c is string => typeof c === 'string'),
+    )]
     for (const item of DRAWER_NAV) {
-      const w = await mountDrawerAs('super_admin', item.to)
+      const w = await mountDrawerAs('super_admin', item.to, allCaps)
       // 只取 <a>：抽屉里「我的」也是 .drawer__link，但它是 <button>，
       // emit 的是 account 而非「收起」，混进来会让计数对不上。
       const self = Array.from(document.body.querySelectorAll<HTMLAnchorElement>('a.drawer__link'))
