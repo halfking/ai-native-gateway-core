@@ -159,6 +159,19 @@ SQL
 
 run_cfg() { # $1=cfg $2=A|B $3=db
   local cfg="$1" which="$2" db="$3"
+  # ★★ 这里**故意**写着真的 DSN 字面量 —— 本脚本真的要连库（不是夹具里的假 DSN）。
+  #
+  # ★ 扫描边界（写清楚，免得将来有人来「修」它）：
+  #   仓内那道「写死 DSN」门 `scripts/ursmcheck/hardcoded_dsn_fallback_test.go`
+  #   的 `collectHardcodedDSNTargets` 走全仓 WalkDir，但**只收 `*_test.go`**
+  #   （`if !strings.HasSuffix(d.Name(), "_test.go") { return nil }`）
+  #   ⇒ ⇒ **本脚本是 `.sh` ⇒ 不在那道门的射程内。**
+  #   ⇒ ★ 那道门真正会抓的是「**门文件（`_test.go`）里作为夹具源码嵌入的假 DSN**」
+  #   ⇒ ⇒ 那种假 DSN 要用**非 DSN 形态**的占位符（该门的 `reDSNShape` 只认
+  #   `^(postgres(ql)?://|host=)`，所以 `fixture://not-a-real-dsn` 不会被当成 DSN）。
+  #   ⇒ ⇒ **★ 若将来那道门扩到扫 `.sh`/`.sql`，本脚本会红 —— 那时请把本文件登记进
+  #   它的豁免表（它真要连库，不是「写死的库名」），而**不要**把这里的 DSN 改成
+  #   假形态 —— 改了脚本就跑不起来了。**
   local dsn="postgres://${PG_USER}:${PW}@127.0.0.1:${PGPORT}/${db}?sslmode=disable"
   local ten="postgres://factsource_tenant:factsource_tenant_pw@127.0.0.1:${PGPORT}/${db}?sslmode=disable"
   local vars="$A_VARS"; [ "$which" = "B" ] && vars="$B_VARS"
