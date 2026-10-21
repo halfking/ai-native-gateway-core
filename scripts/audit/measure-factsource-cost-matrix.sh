@@ -57,6 +57,23 @@ OUT="${OUT:-/tmp/factsource_matrix_out}"
 KEEP_DB="${KEEP_DB:-0}"
 SCOPE_TSV="$OUT/scope.tsv"
 
+# ★★★ 回收兜底（R94 轮实测修）：本脚本原本把 DROP 放在**尾部** ⇒
+#   `mk_db()` 里的量具自检失败会 `return 1` ⇒ 调用方 `continue`（不退出）
+#   ⇒ 已建好的 `itgate_factmatrix_a1` / `_b1` **留在库里**（尾部回收只在全部跑完后执行）
+#   ⇒ 修法：trap 兜住所有退出路径（★ shell 的 trap ≈ python 的 atexit ≈ go 的 defer）。
+cleanup_dbs() {
+  if [ "${KEEP_DB:-0}" = "1" ]; then return 0; fi
+  # ★ 用数组：写成 "for db in \"$LIST\"" 会因引号而不分词 ⇒ 循环只跑一次 ⇒ 库不被删
+  local db
+  for db in "${FACTMATRIX_DBS[@]}"; do
+    [ -n "$db" ] || continue
+    docker exec -i "$PG_CONTAINER" psql -U "$PG_USER" -d postgres -q \
+      -c "DROP DATABASE IF EXISTS \"$db\" WITH (FORCE)" >/dev/null 2>&1 || true
+  done
+}
+FACTMATRIX_DBS=("itgate_factmatrix_a1" "itgate_factmatrix_b1" "factmatrixprod_b2" "$SHAPE_DB")
+trap cleanup_dbs EXIT
+
 cd "$REPO_ROOT" || exit 1
 
 # ── 变量集：档 A（官方 19）与档 B（事实源 33）────────────────────────────────
@@ -253,14 +270,12 @@ PY
 
 # ── 4. 回收（形态库按 KEEP_DB，其余全删）─────────────────────────────────────
 say "── 4. 回收 ──"
+cleanup_dbs
+trap - EXIT   # ★ 正常跑完 ⇒ 交回 trap（避免退出时重复 DROP）
 for db in itgate_factmatrix_a1 itgate_factmatrix_b1 factmatrixprod_b2; do
-  docker exec -i "$PG_CONTAINER" psql -U "$PG_USER" -d postgres -q \
-    -c "DROP DATABASE IF EXISTS \"$db\" WITH (FORCE)" >/dev/null 2>&1
   say "  DROP $db"
 done
 if [ "$KEEP_DB" != "1" ]; then
-  docker exec -i "$PG_CONTAINER" psql -U "$PG_USER" -d postgres -q \
-    -c "DROP DATABASE IF EXISTS \"$SHAPE_DB\" WITH (FORCE)" >/dev/null 2>&1
   say "  DROP $SHAPE_DB"
 fi
 say "  原始日志留在 ${OUT}（可复算）"

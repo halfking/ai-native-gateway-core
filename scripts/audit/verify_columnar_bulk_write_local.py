@@ -21,6 +21,7 @@
   python3 scripts/audit/verify_columnar_bulk_write_local.py --rows 30000 --reps 2
 """
 import argparse
+import atexit
 import os
 import re
 import statistics
@@ -100,6 +101,22 @@ def timed(sql: str, db: str) -> tuple[float, str]:
     out = psql(sql, db, timing=True)
     times = [float(x) for x in re.findall(r"^Time:\s+([0-9.]+)\s+ms", out, re.M)]
     return (times[-1] if times else float("nan")), out
+
+
+# ★★★ 回收兜底（R94 轮实测修）：本脚本原本只在**正常跑完**时 DROP 一次性库
+#   ⇒ setup() / rebuild_source() 里的 `sys.exit(2)`（失败路径）**全部跳过回收**
+#   ⇒ 每次失败都在容器里留一个 `itgate_14325`。
+#   ⇒ 修法：atexit 钩子 ⇒ 覆盖 sys.exit / 未捕获异常 / 正常返回 三种路径。
+#   ★ Python 侧的 atexit ≈ shell 的 trap ≈ Go 的 defer ⇒ 同一个机制的三种语言实现。
+#   ⚠ 诚实边界：atexit **不覆盖** os._exit 与 SIGKILL。
+def _drop_db() -> None:
+    try:
+        psql(f"DROP DATABASE IF EXISTS {DB};")
+    except Exception:  # noqa: BLE001 —— 回收失败不得盖掉真正的错误
+        pass
+
+
+atexit.register(_drop_db)
 
 
 def setup(rows: int) -> None:

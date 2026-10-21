@@ -780,6 +780,22 @@ db_init::verify() {
   if ! psql "$base" -c "DROP DATABASE IF EXISTS \"${db}_verify\"" 2>&1; then
     echo "WARN: drop failed (likely no such DB), continuing" >&2
   fi
+  # ★★★ 回收兜底（R94 轮实测修）：本函数原本在**尾部** DROP verify 库
+  #   ⇒ 建库之后的 4 条提前终止（return 1 / exit 1 / exit 2 / exit 3）**全部跳过回收**
+  #   ⇒ 每次失败都在库里留一个 `${db}_verify`。
+  #   ⇒ 修法：注册 EXIT trap（覆盖所有退出路径），正常跑完时交回调用方的 trap。
+  #   ⚠ 本文件是**被 source 的库** ⇒ 必须保存并恢复调用方的 EXIT trap。
+  #   ⚠ 这些变量**不能是 local** ⇒ EXIT trap 触发时函数栈已退，local 已被销毁。
+  _DB_INIT_VERIFY_PREV_TRAP="$(trap -p EXIT)"
+  _DB_INIT_VERIFY_BASE="$base"
+  _DB_INIT_VERIFY_DB="${db}_verify"
+  _DB_INIT_VERIFY_KEEP="$keep"
+  db_init::_drop_verify_db() {
+    [[ "${_DB_INIT_VERIFY_KEEP:-0}" == "1" ]] && return 0
+    [[ -n "${_DB_INIT_VERIFY_DB:-}" ]] || return 0
+    psql "${_DB_INIT_VERIFY_BASE}" -c "DROP DATABASE IF EXISTS \"${_DB_INIT_VERIFY_DB}\"" >/dev/null 2>&1 || true
+  }
+  trap 'db_init::_drop_verify_db' EXIT
   if ! psql "$base" -c "CREATE DATABASE \"${db}_verify\"" 2>&1; then
     echo "ERROR: create database failed" >&2; return 1
   fi
@@ -926,7 +942,13 @@ PY
   fi
 
   if [[ "$keep" != "1" ]]; then
-    psql "$base" -c "DROP DATABASE \"${db}_verify\"" >/dev/null 2>&1
+    # ★ 复用 trap 里的同一个回收函数（避免两份 DROP 实现漂移；也让 shellcheck 看到直接调用）
+    db_init::_drop_verify_db
+  fi
+  # ★ 正常跑完 ⇒ 交回调用方的 EXIT trap（★ 本文件是被 source 的库 ⇒ 不能留自己的）
+  trap - EXIT
+  if [[ -n "${_DB_INIT_VERIFY_PREV_TRAP:-}" ]]; then
+    eval "$_DB_INIT_VERIFY_PREV_TRAP"
   fi
 
   if [[ "$failed" == "0" ]]; then

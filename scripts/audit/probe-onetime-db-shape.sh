@@ -52,10 +52,27 @@ SF_DIR="$REPO_ROOT/installer/cmd/llm-gw-installer/embeddata/startup"
 
 psql_() { docker exec -i "$PG_CONTAINER" psql -U "$PG_USER" -d "$DB" -q -A -t "$@"; }
 
+# ★★★ 回收必须兜住【所有】退出路径（R94 轮实测修）。
+#   事实：本脚本原本把 DROP 放在**尾部**（KEEP_DB != 1 时）⇒ 建库之后的三条
+#   `exit 2`（建库失败 / prereqs 失败 / 基线失败）**全部跳过回收** ⇒ 每次失败
+#   都在容器里留一个一次性库（每个 ~1 GB）。
+#   ⇒ 尤其危险的是：`DB_NAME` 是**每会话独立**的名字 ⇒ 开头的
+#   「先 DROP 再 CREATE」只能自愈**同名**的库 ⇒ 别的会话的残留救不了。
+#   ⇒ 修法：trap 兜底（★ Go 侧用 defer、shell 侧用 trap，是同一个机制）。
+cleanup_db() {
+  if [[ "$KEEP_DB" == "1" ]]; then return 0; fi
+  if [[ -n "${DB:-}" ]]; then
+    docker exec -i "$PG_CONTAINER" psql -U "$PG_USER" -d postgres -q \
+      -c "DROP DATABASE IF EXISTS $DB" >/dev/null 2>&1 || true
+  fi
+}
+
 echo "== 建一次性库 ${DB}（容器=${PG_CONTAINER}）=="
 
 # 1) 空库
 docker exec -i "$PG_CONTAINER" psql -U "$PG_USER" -d postgres -q -c "DROP DATABASE IF EXISTS $DB" >/dev/null 2>&1
+# ★ 先注册 trap：建库过程中失败 ⇒ 也要回收
+trap cleanup_db EXIT
 if ! docker exec -i "$PG_CONTAINER" psql -U "$PG_USER" -d postgres -q -c "CREATE DATABASE $DB" >/dev/null 2>/tmp/r59-create.err; then
   echo "  ✗ CREATE DATABASE 失败:"; head -3 /tmp/r59-create.err; exit 2
 fi
@@ -222,10 +239,12 @@ else
 fi
 
 if [[ "$KEEP_DB" != "1" ]]; then
-  docker exec -i "$PG_CONTAINER" psql -U "$PG_USER" -d postgres -q -c "DROP DATABASE IF EXISTS $DB" >/dev/null 2>&1
+  cleanup_db
   echo
   echo "== 已 DROP $DB =="
 fi
+# ★ 正常跑完 ⇒ 交回 trap（避免退出时重复 DROP）
+trap - EXIT
 
 # ★★★ 退出码契约（R85 轮加）：
 #   0 = 形态可信（= 产品真实形态，「装完且启动过」）
