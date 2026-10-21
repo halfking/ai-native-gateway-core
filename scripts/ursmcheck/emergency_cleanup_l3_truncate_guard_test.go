@@ -29,9 +29,11 @@ package ursm_test
 //   否则这道门可以靠「一律 SKIP」变绿，而线上唯一该清的表恰好也会被拒。
 
 import (
+	"bytes"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -48,6 +50,22 @@ const l3Candidate = `public."tok_table"`
 //	  - 其余三个库：候选查询空 ⇒ 不产生动作。
 //
 // ★ 所有调用都记进 $TRACE_FILE ⇒ 门能证明「脚本真的走到 TRUNCATE 之前」。
+//
+// ★★ R89 轮补：**stdin drain**（R86 轮回执要求的第 ② 条）。
+//
+// 为什么需要：真实的 `docker exec` 在**不带 `-i`** 时（本脚本的 `docker_exec`
+// 就是 `docker exec "$CONTAINER" …`，没有 `-i`）⇒ 容器进程的 stdin 被接成
+// /dev/null ⇒ **写侧立刻拿到 EOF，不会 EPIPE/SIGPIPE**。
+// 而这个假 docker 若**完全不读 stdin** ⇒ 写侧会拿到 EPIPE ⇒ **与真实行为不一致**。
+// ⇒ 一旦将来脚本改成用 stdin 传 SQL（`docker exec -i … psql < SQL`），
+// 门会读到「假 docker 没收到 SQL」⇒ **门静默失真**（而不是响亮地红）。
+// ⇒ 所以这里显式 drain：读到 EOF 为止，并把读到的字节数记进 $STDIN_TRACE_FILE。
+//
+// ⚠ 阻塞边界（必须写清，否则这条 drain 自己会变成新缺陷）：
+// 本门**刻意不设** `cmd.Stdin` ⇒ Go 会把子进程的 stdin 接成 **/dev/null**
+// ⇒ drain 立刻拿到 EOF ⇒ 不会挂住。
+// ⇒ 也正因为脚本的两次 `read -p`（`:106` 有 `[ -t 0 ]` 守卫、`:334` 被 `--yes` 旁路）
+// 在测试路径上**根本不执行** ⇒ drain 不可能抢走任何确认输入。
 func fakeL3Docker(t *testing.T, dir string) string {
 	t.Helper()
 	script := `#!/bin/sh
@@ -56,6 +74,12 @@ all="$*"
   echo "--- call ---"
   for a in "$@"; do echo "$a"; done
 } >> "$TRACE_FILE"
+
+# ★★ stdin drain（读到底，把字节数记进 $STDIN_TRACE_FILE）—— 理由见上方注释。
+_stdin_bytes=$(cat | wc -c | tr -d '[:space:]')
+if [ -n "${STDIN_TRACE_FILE:-}" ]; then
+  echo "stdin_bytes=${_stdin_bytes}" >> "$STDIN_TRACE_FILE"
+fi
 
 if [ "$1" != "exec" ]; then exit 0; fi
 
@@ -89,20 +113,28 @@ exit 0
 	return p
 }
 
-// runEmergencyL3 跑一轮 L3，返回（调用轨迹, 脚本日志）。
-func runEmergencyL3(t *testing.T, candidate, fakeCount string) (string, string) {
+// runEmergencyL3 跑一轮 L3，返回（调用轨迹, 脚本日志, stdin 轨迹）。
+//
+// ★ 第三个返回值是 R89 轮加的：它记录「假 docker 每次从 stdin 读到了多少字节」⇒
+// ① 自检用它证明 drain 真的在工作；
+// ② 另一条门用它钉住「被测脚本今天**不走 stdin**」这个事实。
+func runEmergencyL3(t *testing.T, candidate, fakeCount string) (string, string, string) {
 	t.Helper()
 	dir := t.TempDir()
 	fake := fakeL3Docker(t, dir)
 	trace := filepath.Join(dir, "trace.txt")
+	stdinTrace := filepath.Join(dir, "stdin.txt")
 	logPath := filepath.Join(dir, "emergency.log")
 
 	// ★ 必须带 --yes：L3 的确认是 `read -p`（**没有** `-t 0` 守卫）⇒
 	//   非交互环境下 `read` 立刻返回空 ⇒ 脚本会 abort L3 ⇒ 门会读到「什么都没做」。
+	// ★ 并且刻意**不设** cmd.Stdin ⇒ 子进程 stdin = /dev/null ⇒ 假 docker 的 drain
+	//   立刻拿到 EOF ⇒ 不会挂住（见 fakeL3Docker 的阻塞边界说明）。
 	cmd := exec.Command(bashForScriptFor(t, emergencyScript), emergencyScript, "--level", "L3", "--yes")
 	cmd.Env = append(os.Environ(),
 		"DOCKER_BIN="+fake,
 		"TRACE_FILE="+trace,
+		"STDIN_TRACE_FILE="+stdinTrace,
 		"L3_CANDIDATE="+candidate,
 		"FAKE_COUNT="+fakeCount,
 		"LOG="+logPath,
@@ -116,7 +148,8 @@ func runEmergencyL3(t *testing.T, candidate, fakeCount string) (string, string) 
 		t.Fatalf("读调用轨迹失败（脚本可能没跑到候选查询）: %v", err)
 	}
 	logBody, _ := os.ReadFile(logPath)
-	return string(traceBody), string(logBody)
+	stdinBody, _ := os.ReadFile(stdinTrace)
+	return string(traceBody), string(logBody), string(stdinBody)
 }
 
 // TestEmergencyL3RefusesToTruncateTableWithRows 钉住第三/第四道闸。
@@ -128,7 +161,7 @@ func runEmergencyL3(t *testing.T, candidate, fakeCount string) (string, string) 
 func TestEmergencyL3RefusesToTruncateTableWithRows(t *testing.T) {
 	skipWindows(t)
 
-	trace, logBody := runEmergencyL3(t, l3Candidate+"|0", "2836620")
+	trace, logBody, _ := runEmergencyL3(t, l3Candidate+"|0", "2836620")
 
 	requireCalls(t, trace)
 	if strings.Contains(trace, "TRUNCATE TABLE") {
@@ -148,7 +181,7 @@ func TestEmergencyL3RefusesToTruncateTableWithRows(t *testing.T) {
 func TestEmergencyL3StillTruncatesGenuinelyEmptyTable(t *testing.T) {
 	skipWindows(t)
 
-	trace, logBody := runEmergencyL3(t, l3Candidate+"|0", "0")
+	trace, logBody, _ := runEmergencyL3(t, l3Candidate+"|0", "0")
 
 	requireCalls(t, trace)
 	if !strings.Contains(trace, "TRUNCATE TABLE") {
@@ -165,7 +198,7 @@ func TestEmergencyL3StillTruncatesGenuinelyEmptyTable(t *testing.T) {
 func TestEmergencyL3RefusesToTruncatePartition(t *testing.T) {
 	skipWindows(t)
 
-	trace, logBody := runEmergencyL3(t, l3Candidate+"|1", "0")
+	trace, logBody, _ := runEmergencyL3(t, l3Candidate+"|1", "0")
 
 	requireCalls(t, trace)
 	if strings.Contains(trace, "TRUNCATE TABLE") {
@@ -174,5 +207,85 @@ func TestEmergencyL3RefusesToTruncatePartition(t *testing.T) {
 	}
 	if !strings.Contains(logBody, "是分区") {
 		t.Fatalf("必须在日志里说明「是分区」，否则事后无法反查为什么没清\nlog:\n%s", logBody)
+	}
+}
+
+// TestFakeL3DockerDrainsStdin 是**假 docker 自身的行为级自检**（R89 轮）。
+//
+// ★ 为什么这道自检不是「多写一条断言」而是必需：
+// 假 docker 的职责是**模拟真实 docker exec 的边界行为**。
+// 真实 `docker exec`（不带 `-i`）把容器进程的 stdin 接成 /dev/null ⇒
+// **写侧拿到 EOF，而不是 EPIPE**。
+// ⇒ 若假 docker 完全不读 stdin，它就与真实行为不一致 ⇒
+// **一旦被测脚本将来改用 stdin 传 SQL，门会读到「假 docker 没收到 SQL」**
+// ⇒ 而本门断言的是 **argv 里的 "TRUNCATE TABLE"**（SQL 走 argv 时才看得到）
+// ⇒ ⇒ 那种改动会让门**静默失真**（正控会红，但红的原因会被误读成「脚本被改瘫」）。
+//
+// ★ 所以这里直接灌 1MB payload 进假 docker 的 stdin，断言它**读满了**。
+// ⇒ 变异 M1（把 drain 换成 `_stdin_bytes=0`）必须让这道自检变红。
+func TestFakeL3DockerDrainsStdin(t *testing.T) {
+	skipWindows(t)
+
+	dir := t.TempDir()
+	fake := fakeL3Docker(t, dir)
+	trace := filepath.Join(dir, "trace.txt")
+	stdinTrace := filepath.Join(dir, "stdin.txt")
+
+	const payloadSize = 1024 * 1024
+	payload := bytes.Repeat([]byte("A"), payloadSize)
+
+	cmd := exec.Command(fake, "exec", "llm-gateway-pg", "psql", "-U", "u", "-d", "llm_gateway", "-tAc", "SELECT 1")
+	cmd.Env = append(os.Environ(),
+		"TRACE_FILE="+trace,
+		"STDIN_TRACE_FILE="+stdinTrace,
+	)
+	cmd.Stdin = bytes.NewReader(payload)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("★ 假 docker 消费 1MB stdin 之后不应失败 —— 真实 docker exec（不带 -i）给写侧的是 EOF 而不是 EPIPE；"+
+			"实测 err=%v\nout:\n%s", err, out)
+	}
+
+	body, readErr := os.ReadFile(stdinTrace)
+	if readErr != nil {
+		t.Fatalf("读 stdin 轨迹失败（假 docker 没有 drain stdin ⇒ 写侧会拿到 EPIPE，与真实 docker 不一致）: %v", readErr)
+	}
+	want := "stdin_bytes=" + strconv.Itoa(payloadSize)
+	if !strings.Contains(string(body), want) {
+		t.Fatalf("★ 假 docker 必须把 stdin 全部读完（期望 %s）—— 实测轨迹:\n%s", want, body)
+	}
+}
+
+// TestEmergencyL3ScriptNeverWritesToStdin 钉住「被测脚本今天**不走 stdin**」这个事实。
+//
+// ★ 它是上一条自检的**另一半**：自检证明「假 docker 能读 stdin」，
+// 而这一条证明「被测脚本今天不需要 stdin」⇒ 两者合起来才是完整的契约：
+// 「假 docker 忠实（能读）＋ 脚本现状（不写）」。
+//
+// ★ 为什么这条不是「过度约束」：
+// 被测脚本的 SQL **全部**走 `psql -tAc "<SQL>"` 的 argv（实测：脚本里 0 处
+// `docker exec -i`、0 处 `< SQL` 重定向、0 处 `| docker exec` 管道）。
+// ⇒ 一旦有人把 SQL 改成走 stdin，这道门会**响亮地红**，提醒维护者
+// 「假 docker 的解析要同步改」⇒ ⇒ 而不是让门悄悄失真。
+func TestEmergencyL3ScriptNeverWritesToStdin(t *testing.T) {
+	skipWindows(t)
+
+	_, _, stdinTrace := runEmergencyL3(t, l3Candidate+"|0", "0")
+
+	lines := 0
+	for _, line := range strings.Split(strings.TrimSpace(stdinTrace), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		lines++
+		if line != "stdin_bytes=0" {
+			t.Fatalf("★ 被测脚本今天**不走 stdin**（SQL 全部走 psql -c 的 argv）⇒ 假 docker 每次读到的 stdin 必须是 0 字节；"+
+				"实测 %q\n⇒ 若脚本改成了 `docker exec -i … psql < SQL`，本门会失真（假 docker 收不到 SQL）⇒ 请同步更新假 docker 的解析",
+				line)
+		}
+	}
+	if lines == 0 {
+		t.Fatalf("★ 一次 docker 调用都没记录到 stdin 轨迹 ⇒ drain 没生效（假 docker 没跑？）\nstdin trace:\n%s", stdinTrace)
 	}
 }
