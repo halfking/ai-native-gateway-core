@@ -12890,3 +12890,11 @@ R97 审计档 `§5.3'` 的六步级联表 vs R97 量具 `build_ledger` 的代码
 ★ **证据**：llm-gateway-go §143.59（变异 M1~M7；M6 前后共三轮写法，每轮都以「门仍然绿」暴露；
 最终形态 = `admin/section_14359_retention_registry_test.go` 的
 `TestSection14359ReadingDateIsStaleBounded` 里的「独立对照之零/一/二」三条）。
+
+## §220 ★★★★ **★ 拼 SQL 的共享 helper 输出里只要有字面 `%`，它的返回值就永远不能进 fmt.Sprintf 的格式串——且「直接调用」和「经组装函数包装」两种形态都要有门**（2026-10-22 实测，llm-gateway-go §145 轮 / 252 生产）
+
+- **场景**：890 把 discovery stale 下架 UPDATE 的证据源换成 `db.SessionFamilyTurnsSourceSQL()` 时，把 helper 拼接结果留在了 `fmt.Sprintf` 的**格式串**里。投影里有字面 `%`（`LIKE 'sys:%'`）⇒ Go fmt 把它当**未知动词**：生产日志原文 `LIKE 'sys:%!'(int=24)`（吃掉了下一个实参 graceHours）+ `interval '%!d(MISSING) hours'` ⇒ 每条 UPDATE 必然 `syntax error at or near "("`（10-21 100 条 + 10-22 半天 111 条，首错 = 部署后 2 分钟），**stale 下架功能自部署起全灭**，而 Go 侧只记 Debug。同函数里 `'manual%%'` 转义是对的——坏在「拼进格式串」这个动作本身。
+- ⇒ ⇒ ★★★★ **修法不是「记得转义 %%」**（投影是共享 helper，% 在它体内，调用方看不见）⇒ 正解是 **SQL 组装绝不过 Sprintf**：注入值用字符串拼接/`strconv`。`cmd/compression-bench` 同型同修（AST 扫描抓到的第二处）。
+- ⇒ ⇒ ★★★★ **门必须是数据流版**：首轮门只认「helper 直接进格式串」，变异 M1（修复把 SQL 抽成纯函数后、把**纯函数返回值**再包进 Sprintf）照样绿 ⇒ 盲区被自己的变异当场揭穿（R72 续「同族盲区」第二例）⇒ 污染集传播（函数体直接/间接含 helper ⇒ 该函数染毒）+ **按包作用域**（按函数名跨包传播会撞 vendor 同名误染）+ 阳性对照要有**直接/包装两个夹具**。
+- ⇒ ⇒ ★ **门的自证夹具也会写错**：第一版夹具把反引号写进双引号字符串**内部** ⇒ 拼接根本不存在 ⇒ 阳性对照红——先查夹具是不是真的含靶模式，再怀疑扫描器。
+- **同轮配套两条**：① ★★★★ **「索引比二进制晚到」是发布序列缺口族**——882 的索引随 890 DROP 表消亡、891 接棒但没赶上发布包（252 水位 890）⇒ 换源修复在生产回归成 2 次/小时 statement_timeout、检查失明；定向预应用后 16.457ms。**修查询的提交与修索引的迁移同车，才算一个修复。** ② ★ **裸 grep 在 conmon ctr.log 上会中途转 binary 模式**（输出 `Binary file matches`，下游 uniq 出 55 vs 真值 1167 的假频次）⇒ 一律 `grep -a`。

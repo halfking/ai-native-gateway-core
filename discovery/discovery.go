@@ -1280,32 +1280,7 @@ func (s *Service) expireStaleModels(ctx context.Context, seen []modelOffer) {
 			i++
 		}
 
-		tag, err := s.db.Exec(ctx, fmt.Sprintf(`
-			UPDATE model_offers
-			SET available = FALSE,
-			    unavailable_reason = 'auto_discovery_expired',
-			    unavailable_at = now()
-			WHERE credential_id = $1
-			  AND raw_model_name NOT IN (%s)
-			  AND available = TRUE
-			  AND COALESCE(admin_protected, FALSE) = FALSE
-			  -- ★ 890（v1 族退役）：证据源换成**会话族原生源**（hot ∪ parent）。
-			  -- 模型名口径用 rl.raw_model_name —— 会话族里它就是 v1 outbound_model
-			  -- 的同义列（COALESCE(outbound_model, client_model)），且是 v1 侧
-			  -- outbound_model 的**超集**（多了 client_model 回落）⇒ 守卫只会更
-			  -- 宽松（更少误下架），方向安全。
-			  AND NOT EXISTS (
-			    SELECT 1 FROM `+db.SessionFamilyTurnsSourceSQL()+` rl
-			    WHERE rl.credential_id = $1
-			      -- case-insensitive: the model name can differ in case from
-			      -- model_offers.raw_model_name (e.g. "MiniMax-M3" vs
-			      -- "minimax-m3"). A plain = would miss the rows and wrongly
-			      -- expire a model that's actively succeeding.
-			      AND lower(rl.raw_model_name) = lower(model_offers.raw_model_name)
-			      AND rl.success = TRUE
-			      AND rl.ts > now() - interval '%d hours'
-			  )
-		`, placeholders, graceHours), args...)
+		tag, err := s.db.Exec(ctx, staleExpiryOffersSQL(placeholders, graceHours), args...)
 		if err != nil {
 			slog.Debug("failed to expire stale models", "credential_id", credID, "error", err)
 			continue
@@ -1351,4 +1326,44 @@ func (s *Service) expireStaleModels(ctx context.Context, seen []modelOffer) {
 	if expired > 0 {
 		slog.Info("total stale models expired", "count", expired)
 	}
+}
+
+// staleExpiryOffersSQL composes the stale-expiry UPDATE over model_offers.
+//
+// ⚠ This SQL must never be routed through fmt.Sprintf: the shared projection
+// inside SessionFamilyTurnsSourceSQL() contains a literal `%`
+// (`LIKE 'sys:%'`), and as a format string Go treats it as an unknown verb —
+// production evidence 2026-10-21: `LIKE 'sys:%!'(int=24)` plus
+// `interval '%!d(MISSING) hours'`, so every UPDATE failed to parse
+// (syntax error at or near "(") and stale-model expiry was dead since the
+// 890 cutover deploy. Both injected values are therefore concatenated, never
+// formatted; scripts/ursmcheck's sqlfmt_sessionfamily_gate_test.go keeps the
+// whole repo to this rule.
+func staleExpiryOffersSQL(placeholders string, graceHours int) string {
+	return `
+		UPDATE model_offers
+		SET available = FALSE,
+		    unavailable_reason = 'auto_discovery_expired',
+		    unavailable_at = now()
+		WHERE credential_id = $1
+		  AND raw_model_name NOT IN (` + placeholders + `)
+		  AND available = TRUE
+		  AND COALESCE(admin_protected, FALSE) = FALSE
+		  -- ★ 890（v1 族退役）：证据源换成**会话族原生源**（hot ∪ parent）。
+		  -- 模型名口径用 rl.raw_model_name —— 会话族里它就是 v1 outbound_model
+		  -- 的同义列（COALESCE(outbound_model, client_model)），且是 v1 侧
+		  -- outbound_model 的**超集**（多了 client_model 回落）⇒ 守卫只会更
+		  -- 宽松（更少误下架），方向安全。
+		  AND NOT EXISTS (
+		    SELECT 1 FROM ` + db.SessionFamilyTurnsSourceSQL() + ` rl
+		    WHERE rl.credential_id = $1
+		      -- case-insensitive: the model name can differ in case from
+		      -- model_offers.raw_model_name (e.g. "MiniMax-M3" vs
+		      -- "minimax-m3"). A plain = would miss the rows and wrongly
+		      -- expire a model that's actively succeeding.
+		      AND lower(rl.raw_model_name) = lower(model_offers.raw_model_name)
+		      AND rl.success = TRUE
+		      AND rl.ts > now() - interval '` + strconv.Itoa(graceHours) + ` hours'
+		  )
+	`
 }
