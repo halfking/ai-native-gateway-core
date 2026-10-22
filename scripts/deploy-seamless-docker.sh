@@ -416,6 +416,22 @@ if [[ -n "$VIA" ]]; then
   else
     warn "deploy-lib lock.sh 不在场，本次无部署锁（并发部署可能互相踩）"
   fi
+  # ★ 构建提交号随行：目标树不带 .git，远端只能从这里拿到真实 HEAD，用来改写
+  #   种子 version.json（否则 /version 显示的是工作区里别的部署留下的戳）。
+  #
+  # ★★ 必须**在构建前端之前**取（2026-10-22 修）：前端构建会**重新生成**
+  #   web/public/menu-config.json（exported_at 每次都是当前时间戳）⇒ 构建一
+  #   跑，工作树就「脏」了 ⇒ 随后的 dirty 判定恒为真 ⇒ **每次部署都带
+  #   -dirty 后缀**，哪怕源码一个字没改 ⇒ 这个标记就永久失去了告警价值。
+  #   ⇒ 取值时机挪到构建之前：
+  #     · 源码真的漂了（有人改了 web/src 却没提交）⇒ 仍然是 -dirty（告警有效）；
+  #     · 只是构建产物的时间戳变了 ⇒ 不再误报。
+  #   （构建生成的那份 menu-config.json 仍会随 tar 上树 —— 那本来就是
+  #     要进 SPA 的构建产物。）
+  DD_BUILD_SHA="$(git -C "$DD_REPO_ROOT" rev-parse --short=8 HEAD 2>/dev/null || true)"
+  if [[ -n "$DD_BUILD_SHA" && -n "$(git -C "$DD_REPO_ROOT" status --porcelain --untracked-files=no 2>/dev/null)" ]]; then
+    DD_BUILD_SHA="${DD_BUILD_SHA}-dirty"
+  fi
   # ★ 前端自动构建（2026-10-22）：**先构建，再判新鲜度**。
   # 顺序不能反：门判的是「产物是否比源码新」，不构建就判 ⇒ 门只会把
   # 「运维忘了 build」翻译成一句 FATAL，而正确形态是「脚本自己把产物构建出来」。
@@ -475,12 +491,6 @@ if [[ -n "$VIA" ]]; then
     || die "同步后远端缺少 scripts/deploy-seamless-docker.sh（半截 tar？）；拒跑部署"
   # 基础镜像 build-arg 变量一并转发：权威仓 registry-<target>.itestu.cn（方案 42）；
   # 拉不到时引擎回落 /opt/kaixuan/base-images 离线包。空值 = 远端走脚本默认。
-  # 构建提交号随行：目标树不带 .git，远端只能从这里拿到真实 HEAD，用来改写
-  # 种子 version.json（否则 /version 显示的是工作区里别的部署留下的戳）。
-  DD_BUILD_SHA="$(git -C "$DD_REPO_ROOT" rev-parse --short=8 HEAD 2>/dev/null || true)"
-  if [[ -n "$DD_BUILD_SHA" && -n "$(git -C "$DD_REPO_ROOT" status --porcelain --untracked-files=no 2>/dev/null)" ]]; then
-    DD_BUILD_SHA="${DD_BUILD_SHA}-dirty"
-  fi
   # 入口未设时在 --via 侧按 target 拼 registry 默认，避免远端空值回落 docker.io。
   DD_BASE_REGISTRY="${DD_BASE_REGISTRY:-registry-${DD_TARGET}.itestu.cn}"
   DD_GO_BASE_IMAGE="${DD_GO_BASE_IMAGE:-${DD_BASE_REGISTRY}/lang-base/kx-base-golang:1.27-alpine-amd64}"
@@ -2079,7 +2089,19 @@ dd_fix_nginx_llm_real_ip() {
   fi
   # 只改「listen …443 ssl」那一段里的 X-Real-IP（mesh :8000 腿保留原 map，
   # 因为上跳 252 会带真实客户端 IP）。
-  if python3 - "$conf" <<'PY'
+  #
+  # ★★ 2026-10-22 修（这个函数此前**从来没有生效过**）：
+  #   调用点是 `python3 - "$conf" <<'PY'` —— 只传了**一个**参数（conf 路径），
+  #   而脚本里读的是 `sys.argv[2]`（host_ip）⇒ host_ip 恒为 "" ⇒
+  #   marker 变成空串 ⇒ `text.find("")` = 0 ⇒ idx=0（不是 -1，**绕过了正则
+  #   回退分支**）⇒ 窗口 = 「文件开头到第一个顶层 server {」⇒ 里面当然没有
+  #   llm.itestu.cn ⇒ 每次都打印 noop-wrong-server + 一条 WARN。
+  #   ⇒ ① 调用点补上 host_ip；② host_ip 为空时**必须**走正则回退分支
+  #     （空 marker 绝不能当成「匹配到位置 0」）。
+  #   ⇒ ③ 「已经是 $remote_addr」时**不 reload nginx**：原来 python 退出 0
+  #     就被当成「修补成功」⇒ 每次部署都白白 reload 一次 nginx。
+  _dd_realip_result=""
+  if ! _dd_realip_result="$(python3 - "$conf" "${DD_HOST:-}" <<'PY'
 import pathlib, sys
 p = pathlib.Path(sys.argv[1])
 text = p.read_text()
@@ -2087,7 +2109,7 @@ text = p.read_text()
 # （任意 listen ...:443 ssl + server_name llm.itestu.cn 的 server 块）。
 host_ip = sys.argv[2] if len(sys.argv) > 2 else ""
 marker = ("listen %s:443 ssl" % host_ip) if host_ip else ""
-idx = text.find(marker)
+idx = text.find(marker) if marker else -1
 if idx < 0:
     # 允许 IP 漂移：任意 listen …443 ssl 且随后 server_name llm.itestu.cn
     import re
@@ -2117,13 +2139,25 @@ if not bak.exists():
 p.write_text(new)
 print("patched")
 PY
-  then
-    if nginx -t >/dev/null 2>&1; then
-      nginx -s reload >/dev/null 2>&1 && log "nginx llm.itestu.cn TLS: X-Real-IP -> \$remote_addr (reloaded)" \
-        || warn "nginx reload 失败 (配置已改，需手工 reload)"
-    else
-      warn "nginx -t 失败，已保留 .bak-dd-realip; 未 reload"
-    fi
+  )"; then
+    case "$_dd_realip_result" in
+      patched)
+        if nginx -t >/dev/null 2>&1; then
+          nginx -s reload >/dev/null 2>&1 && log "nginx llm.itestu.cn TLS: X-Real-IP -> \$remote_addr (reloaded)" \
+            || warn "nginx reload 失败 (配置已改，需手工 reload)"
+        else
+          warn "nginx -t 失败，已保留 .bak-dd-realip; 未 reload"
+        fi
+        ;;
+      already)
+        # 已经是目标形态 ⇒ **不 reload**：reload 是有代价的（worker 换代会抖一下），
+        # 没必要为「什么都没改」付这个代价。
+        log "nginx llm.itestu.cn TLS: X-Real-IP 已是 \$remote_addr（无需改动，未 reload）"
+        ;;
+      *)
+        warn "nginx X-Real-IP 修补未应用 (结果=${_dd_realip_result:-empty})"
+        ;;
+    esac
   else
     warn "nginx X-Real-IP 修补未应用 (块形态变了?)"
   fi
