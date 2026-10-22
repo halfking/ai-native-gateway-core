@@ -975,6 +975,41 @@ func (w *SessionWriterV2) getPreviousBody(ctx context.Context, sessionID, tenant
 //   - If submit_mode is "delta" or "snapshot": entire RequestBody is the delta
 //   - If submit_mode is "full": extract messages not present in LastOutboundBody
 //   - If LastOutboundBody is empty: entire RequestBody is the delta (first turn)
+//
+// ★★★★★★ FIXME-14372（2026-10-22 §143.72 轮，只登记、★ 零行为变更）：
+//
+//	★ 本函数在 submit_mode == "full" 时的差集【基准与被减对象形态不匹配】，
+//	⇒ ⇒ 算出来的 request_delta 【不是「本轮新增」】。
+//
+//	★ 事实（代码自身可证）：ProcessedRequest 的三个字段注释写明——
+//
+//		RequestBody      []Message // Full request body from client
+//		LastOutboundBody []Message // Previous turn's outbound (for delta extraction)
+//		OutboundBody     []Message // Actual outbound sent to LLM (after compression)
+//
+//	  ⇒ ⇒ ★★ 被减对象 = 【客户端的完整历史】（未压缩）；
+//	  ⇒ ⇒ ★★ 差集基准 = 【上一轮压缩后的出站消息】（req.LastOutboundBody =
+//	      previousBody.OutboundBody，见本文件上方赋值处）；
+//	  ⇒ ⇒ ★★★ ⇒ 差集 = 「客户端完整历史中【没被压缩保留下来】的那些片段」
+//	      = ★【压缩残留】，而不是「本轮新增」。
+//
+//	★ 实测印证（252 共享库，2026-10-22，只读）：
+//	  ① 同一轮里 request_delta 与 outbound_body 的内容交集只有 9.5%（turn 16：2/21）
+//	     ⇒ 若它真是「本轮新增」，本就不该与 outbound 高度重合；
+//	  ② 多个轮的 request_delta 开头都重复着同一条固定前缀
+//	     [system, user×4] ⇒ ★ 正是「压缩时被丢掉的 system 与最早的 user」；
+//	  ③ 同一条累积体 1,468 条消息，而同轮 outbound_body 只有 6~46 条
+//	     ⇒ ⇒ 出站压缩掉约 97%。
+//
+//	★ 影响面（★ 与「容量」是两件事）：
+//	  ⇒ ★★ 内容正确性：库里 10 月起的 request_delta 存的是【压缩残留】，
+//	     ⇒ ⇒ 【历史正文即使存在也不可信】；
+//	  ⇒ ★ 容量：每行仍是有界的（实测约 18 KB/行）⇒ ⇒ §143.68 的「≈230 MB/天」
+//	     与「线性增长」的前提【仍然成立】⇒ ⇒ 属主决策 ⑪（保留期）不受影响。
+//
+//	★ 本轮【不改行为】：改它会改变生产正文的【内容口径】（历史正文会被重写）
+//	  ⇒ ⇒ 属主决策（⑭）拍板后再改。⇒ ⇒ 本处只做登记，
+//	  ⇒ ⇒ 并由门 `scripts/ursmcheck/section_14372_delta_semantics_test.go` 钉住。
 func extractRequestDelta(req *ProcessedRequest, submitMode string) []Message {
 	// Attachment-only turns carry no new message body; persist an empty delta
 	// while retaining attachment metadata on the turn row.
