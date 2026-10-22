@@ -153,3 +153,42 @@ func TestCapabilitiesJSONFieldNamesAreStable(t *testing.T) {
 		t.Fatalf("能力位响应应只有 1 个键，实际 %d 个 = %v", len(raw), raw)
 	}
 }
+
+// TestCapabilitiesEndpointRejectsWriteMethods ★★★★
+//
+// ★ 2026-10-22 12h 审计轮：能力位是**只读**端点，但旧注册形态
+// `mux.HandleFunc("/api/admin/capabilities", …)` 对**任何**方法都注册
+// ⇒ POST / PUT / DELETE 也会进同一个 handler ⇒ 返回 **200 + 能力位 JSON**
+// ⇒ 调用方会以为「写成功了」。这正是「只读端点被写方法打中也报成功」这一族。
+//
+// ★ 修法：注册改成方法限定模式 `"GET /api/admin/capabilities"`
+// （Go 1.22+ ServeMux）⇒ 写方法得到 405。
+//
+// ★ 本门的作用：**把这条修法钉住**。改回无方法限定的注册形态会静默回归，
+// 而「能通过鉴权的写请求」在旧测试集里一条都没有 ⇒ 没有这一条，
+// 回归不会被任何人发现。
+func TestCapabilitiesEndpointRejectsWriteMethods(t *testing.T) {
+	mux := http.NewServeMux()
+	capabilitiesTestHandler(true).RegisterCapabilityRoutes(mux)
+
+	tok, _, err := SignToken(42, "tenant-a", "ta", "tenant_admin", capabilitiesTestSecret, false)
+	if err != nil {
+		t.Fatalf("签发 token 失败：%v", err)
+	}
+
+	for _, method := range []string{http.MethodPost, http.MethodPut, http.MethodDelete, http.MethodPatch} {
+		req := httptest.NewRequest(method, "/api/admin/capabilities", nil)
+		req.Header.Set("Authorization", "Bearer "+tok)
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+
+		if rec.Code == http.StatusOK {
+			t.Fatalf("%s /api/admin/capabilities 应被拒绝，实际 200（body=%s）——"+
+				"只读端点被写方法打中也报成功", method, rec.Body.String())
+		}
+		if rec.Code != http.StatusMethodNotAllowed {
+			t.Fatalf("%s /api/admin/capabilities 应 405，实际 %d（body=%s）",
+				method, rec.Code, rec.Body.String())
+		}
+	}
+}
