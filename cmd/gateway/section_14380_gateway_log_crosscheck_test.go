@@ -101,6 +101,32 @@ func stripSQLComments14380(s string) string {
 	return out
 }
 
+// splitAfterUnionAll14380 把文本按 `UNION ALL` 切开，返回【紧跟每个 UNION ALL 的那一段】。
+//
+// ★ 用途：★ 判据「UNION 的分支里带 ORDER BY / LIMIT」必须只看【紧跟该 UNION 的分支】——
+// ★ 若看更长的窗口 ⇒ ⇒ 下一个分支的 ORDER BY 会混进来 ⇒ ⇒ 漏报（★ 本轮 M7 变异逃过门）。
+// ★ 若禁掉整个 UNION ⇒ ⇒ 误报（★ 安全的 UNION 是合法且必要的）。
+func splitAfterUnionAll14380(s string) []string {
+	var segs []string
+	rest := s
+	for {
+		i := strings.Index(rest, "UNION ALL")
+		if i < 0 {
+			break
+		}
+		rest = rest[i+len("UNION ALL"):]
+		// ★ 只取到下一个 UNION ALL / 语句分隔符为止
+		cut := len(rest)
+		for _, sep := range []string{"UNION ALL", ";\n", "ORDER BY"} {
+			if j := strings.Index(rest, sep); j >= 0 && j < cut {
+				cut = j
+			}
+		}
+		segs = append(segs, rest[:cut])
+	}
+	return segs
+}
+
 // TestSection14380GatewayLogEvidenceScriptExists（★ 判据①）
 //
 // ★★★★ 服务侧取证脚本必须存在，且【必须打在那条带 body_size 的日志上】——
@@ -166,11 +192,17 @@ func TestSection14380FifthLegMissReasonsScriptExists(t *testing.T) {
 		}
 	}
 	// ② ★ 必须分别统计「结构性」与「时序性」两类（★ 用可判别的 SQL 形态）
-	if !strings.Contains(code, "LIKE 'gt_%' OR t.session_id LIKE 'gs_%'") &&
-		!strings.Contains(code, "LIKE 'gt_%'") {
-		t.Error("★ 第五腿复算脚本没有用【分支会话前缀】判别结构性缺失 —— " +
+	//   ★★★ 判据必须查【完整形态】（★ §143.79 同族教训：裸子串会让「改名」变异逃过门）
+	//     ★ 第一版写的是「只要出现 `LIKE 'gt_%'` 就算过」⇒ ⇒ 变异把
+	//     ★ `t.session_id LIKE 'gt_%' OR t.session_id LIKE 'gs_%'` 整段改掉后，
+	//     ★ 脚本里【别处】的 `NOT LIKE 'gt_%'` 仍然命中 ⇒ ⇒ 门仍然绿 ⇒ ⇒ 没牙
+	//     ★ ⇒ ⇒ 修法：★ 查【两个前缀 + OR 的完整形态】
+	if !strings.Contains(code, "LIKE 'gt_%' OR t.session_id LIKE 'gs_%'") {
+		t.Error("★ 第五腿复算脚本没有用【分支会话前缀的完整形态】判别结构性缺失 —— " +
 			"★ 实测：`gt_gw_`/`gs_gw_` 分支会话 13,124 个，★ 100% 无 bodies 行 ⇒ ⇒ " +
-			"★ 这是【结构性】缺失 ⇒ ⇒ 判据必须能把它挑出来")
+			"★ 这是【结构性】缺失 ⇒ ⇒ 判据必须能把它挑出来 ⇒ ⇒ " +
+			"★ ★★ 而且必须查【完整形态】（★ 两个前缀 + OR）⇒ ⇒ " +
+			"★ 裸子串会让「把整段判据改掉」的变异逃过门")
 	}
 	// ③ 必须有「分支会话 vs 普通会话」的对照（★ 100% vs 36% 是本轮的关键对照）
 	if !strings.Contains(code, "branch") || !strings.Contains(code, "plain") {
@@ -181,19 +213,15 @@ func TestSection14380FifthLegMissReasonsScriptExists(t *testing.T) {
 	}
 	// ④ ★★ 反向判据：UNION 的【分支里带 ORDER BY / LIMIT】的形态不许出现
 	//   （★ 本轮又踩了一次同族坑：报 `syntax error at or near "UNION"`）
-	//   ★★★ 注意判据的精度（★ 第一版写「不许出现 UNION ALL」⇒ ⇒ 误报）：
-	//     ★ 安全的 UNION（分支不带 ORDER BY/LIMIT）是**合法且必要**的
-	//     ★ ⇒ ⇒ 判据必须针对【真正会炸的那一种形态】，★ 而不是禁掉整个语法
-	//   ★ ★ 判定方式：★ 找每一处 `UNION ALL` ⇒ ★ 看它【后面 200 字符内】
-	//     ★ 有没有 `ORDER BY` 或 `LIMIT` ⇒ ⇒ 有 ⇒ ⇒ 就是会炸的那种
-	for _, seg := range strings.Split(code, "UNION ALL") {
-		if i := strings.Index(seg, "ORDER BY"); i >= 0 && i < 200 {
-			t.Error("★ 第五腿复算脚本里出现了【UNION 分支带 ORDER BY / LIMIT】的形态 —— " +
-				"★ ★★ 它会报 `syntax error at or near \"UNION\"`（★ §143.77 已记录，★ 本轮又踩了一次）" +
-				"★ ⇒ ⇒ 最稳的写法是【拆成两个独立循环】")
-			break
-		}
-		if i := strings.Index(seg, "LIMIT"); i >= 0 && i < 200 {
+	//   ★★★ 判据的精度（★ 两处修正）：
+	//     ★ 第一版写「不许出现 UNION ALL」⇒ ⇒ 误报（★ 安全的 UNION 是合法且必要的）
+	//     ★ 第二版用「UNION ALL 之后 200 字符内」⇒ ⇒ 漏报（★ 脚本里 UNION 之后的
+	//       SELECT 很长，ORDER BY/LIMIT 落在窗口之外 ⇒ ⇒ ★ M7 变异逃过门）
+	//     ★ ⇒ ⇒ 第三版：★ **按【分支】切分**（★ UNION ALL 到下一个 UNION ALL / 语句末）
+	//       ⇒ ⇒ 判据只看【紧跟该 UNION 的那个分支】
+	segments := splitAfterUnionAll14380(code)
+	for _, seg := range segments {
+		if strings.Contains(seg, "ORDER BY") || strings.Contains(seg, "LIMIT") {
 			t.Error("★ 第五腿复算脚本里出现了【UNION 分支带 ORDER BY / LIMIT】的形态 —— " +
 				"★ ★★ 它会报 `syntax error at or near \"UNION\"`（★ §143.77 已记录，★ 本轮又踩了一次）" +
 				"★ ⇒ ⇒ 最稳的写法是【拆成两个独立循环】")
