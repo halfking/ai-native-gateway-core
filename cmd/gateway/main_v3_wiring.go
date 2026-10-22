@@ -603,6 +603,39 @@ func dbBackendFromPool(dbConn *db.DB) compression.SessionCacheDB {
 //	  ★★ 固定长会话（omp）为什么每会话冷启动 ~190 次：**未查实**（★ 已见它来自
 //	  ★★ 本机 127.0.0.1 的 `/v1/chat/completions`，★ `user_agent: Go-http-client/1.1`）。
 //	  ★★ 本轮【不改行为】：★ 写侧第五腿的处置动的是【写路径】⇒ ⇒ 风险等级高于读侧。
+// FIXME-14381（§143.81 · 2026-10-23 · 累计 vs 现时口径分离轮 · ★★★ 本块是【纯注释】，零行为变更）
+//
+// ★★★★ 为什么这个块在这里（★ 它是 L3 冷启动式的旁边，不是别处）：
+//
+//	★ 这条 SQL 就是「压缩器冷启动读链」的第 ③ 段（L3 兜底）。
+//	★ §143.79 / §143.80 把它的【累计耗时】当成【现时成本】（★「L3 占 88.1%」），
+//	★ §143.81 实测发现：★ 三条同族形态里有两条 `delta_calls` **恒为 0** ⇒ 已死。
+//	★ ⇒ ⇒ ★★ **判断一条 stats 记录是「历史形态」还是「当前形态」，
+//	★ 要看【形态指纹】（queryid = hash(规范化文本)），不要看时间窗口。**
+//
+// ★★★ 本文件这条形态的【指纹特征】（★ 库里实测的全文差异，§143.81）：
+//
+//	L3_alpha（旧）: SELECT sb.outbound_body, …                          ⇒ 无 COALESCE / 无 LATERAL
+//	L3_beta （中）: … IS NOT NULL OR … IS NOT NULL                       ⇒ §143.56 之前
+//	L3_gamma（★现）: … IS NOT NULL AND … <> 'null'::jsonb              ⇒ §143.56 之后 = 本文件这条
+//
+//	⇒ ★★ 判别器 = 「query 文本里含 outbound_body <> $n::jsonb」
+//	⇒ ⇒ ★★ **所以：只要这条 SQL 的「有正文」判据一改，形态指纹就换 ⇒ ⇒ 旧的 stats 读数立即作废。**
+//
+// ★★★ 与【现时成本】有关的三个量具事实（★ 全部本轮生产实测，★ 对生产的写入 = 0）：
+//
+//	① ★★ `pg_stat_statements` 的 calls/rows/total_exec_time **只增不减** ⇒ ⇒ 「累计大」≠「现在还在变大」
+//	   ⇒ ⇒ ★★ 判定「此刻还在不在跑」必须用**两次采样取增量**（★ 工具：scripts/audit/diff_l3_snapshots.py）。
+//	② ★★ `pg_stat_statements` **只记成功语句** ⇒ ⇒ 失败的读**在 stats 里完全隐形**
+//	   ⇒ ⇒ ★★ 「现时成本」是【可见语句】的下界，★ 不是全部成本。
+//	   ⇒ ⇒ ★★ **好消息**：★ 本文件这条读会话族（★ 不读 v1 族）⇒ ⇒ 它能成功执行 ⇒ ⇒ 它的成本是可见的。
+//	③ ★★ v1 族的兜底腿已在迁移 890 整体退役 ⇒ ⇒ **本文件【必须不含 `_request_logs`】**
+//	   ⇒ ⇒ ★★ 这条是**退役守卫**（★ 若它回来 ⇒ 必然 42P01 ⇒ 「会话族没命中」会从「回退」变成「整条查询报错」）。
+//
+// ★★ 门：cmd/gateway/section_14381_l3_shape_test.go（★ 含上述 ③ 的退役守卫）
+// ★★ 复算：scripts/audit/verify_l3_leg_value.sql（★ Q7 自动判定「当前形态的 queryid」）
+// ★★ 订正：runbook §143.81 + §143.79.3 的「订正横幅一（2026-10-23 §143.81 轮）」
+
 var lastOutboundSessionSQL = `
 		SELECT COALESCE(ff.outbound_body, sb.outbound_body),
 		       rl.outbound_msg_count, rl.outbound_token_est,
