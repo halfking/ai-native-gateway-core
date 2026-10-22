@@ -360,7 +360,7 @@ func testDDL() *ddlRelations {
 	d.add("table", "public.providers")
 	d.add("table", "public.real_table")
 	d.add("table", "public.keepme")
-	d.add("table", "public._request_logs")
+	d.add("table", "public.some_fixture_table")
 	return d
 }
 
