@@ -9386,3 +9386,32 @@ embeddata 逐字 + down 可逆 + **真库腿纯只读**）。
 本通道 `files=()`、本台账。
 ★ 留证：门文件 `scripts/ursmcheck/section_14360_domain_chain_startup_images_test.go`。
 
+## 2026-10-21 — 252 PG 日志审计轮：**生产升级通道的 412 地板 ⇒ 375/376 永远到不了生产**（896；已登记进生产升级序列）
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 896 | `896_offline_activation_requests_columns_reassert.sql` | `05d5b5d694ab3fcb0ce648a9b0c3975a1c311c14a3b80b027544772c6de8e871` | **registered in installer StartupFiles（链尾）+ 生产升级序列 `scripts/apply-db-revision-sequence.sh`**（★ 未在生产应用，随下次 154/245 部署由 `deploy-lib/db-changelog.sh` 作为 pending ≥ 412 自动应用）。只做 `ADD COLUMN IF NOT EXISTS` ×3 + `CREATE INDEX IF NOT EXISTS` ×2，**不改既有列、不动数据**；表不存在时 NOTICE 跳过；生产该表 0 行 ⇒ ACCESS EXCLUSIVE 毫秒级，且带 `SET LOCAL lock_timeout='60s'`。down：`896_offline_activation_requests_columns_reassert.down.sql`（sha256 `682de1643f658b3ec5808d5a673d87d1a6d8b693ce9f8c1a5dce87112d79d3a7`，**只删账本行、刻意不 DROP 列**：列的所有者是 375/376 且承载审批数据） |
+
+★ **缺陷机制（一句话）**：**生产升级通道 `deploy-lib/db-changelog.sh` 只把 `version >= DB_LEDGER_RECONCILE_FROM`（默认 412）当 pending；375/376 在地板下面。**
+2026-10-12 把 375/376 补登进 `scripts/apply-db-revision-sequence.sh` 只修了 docker 路径与新装 ——
+252 上该通道的账本 `gateway_db_revision_sequences` **停在 2026-09-12**（48 个 marker，连 `content_sha256` 列都没有）⇒ 生产从未收到。
+
+★ **实测读数（2026-10-21，全部只读）**：
+
+| 对象 | 新装一次性库（installer 链 297/297 绿） | 生产 252 `public` |
+|---|---|---|
+| `offline_activation_requests.status` | 在 | **缺** |
+| `offline_activation_requests.reject_reason` | 在 | **缺** |
+| `offline_activation_requests.activation_code` | 在 | **缺** |
+| 其它所有表的列（fresh-has / prod-lacks 差集） | — | **恰好只有这三列** |
+
+⇒ `licensing/store_pgx.go` 的离线激活管理 SQL（列出 / 审批 / 驳回）在生产恒 42703
+`column "activation_code" does not exist`（252 PG 日志 10-20 13:02 ×8，页面全扫触发）。
+252 上另有 `maintain.offline_activation_requests`（42 张 `maintain` 副本之一，形态完整）—— 不是网关
+`search_path` 解析到的那张，896 显式只碰 `public`。
+
+★ **为什么不是下调地板**：412 以下有 100+ 个被 baseline 吸收、从未记账的文件，整体放开会让通道在生产
+重放上百个历史文件（含非幂等者）⇒ 爆炸半径不可控。「新号重申旧内容」是本仓既有定式（683b / 803-806）。
+★ 门：`sql/migrations/startup/migration_895_columns_reassert_test.go`（与 375/376 逐字等价 + 7 点登记 +
+embeddata 逐字 + lock_timeout + 自证断言 + down 只删账本 + **真库腿：旧形态 → 三列到位 → 二次幂等**）。
+★ 留证：审计档 `docs/audit/2026-10-21-252-sql-log-audit-round.md`。

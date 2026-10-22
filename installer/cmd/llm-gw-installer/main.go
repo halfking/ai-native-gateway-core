@@ -926,6 +926,7 @@ var sessionTurnsCostNegativePartialIdx891 []byte
 
 //go:embed embeddata/startup/892_ursm_snapshot_slot_daily.sql
 var ursmSnapshotSlotDaily892 []byte
+
 //go:embed embeddata/startup/885_session_turns_host_tags.sql
 var sessionTurnsHostTags885 []byte
 
@@ -971,6 +972,9 @@ var rebindCandidateFailureLogsDiagnosisView894 []byte
 
 //go:embed embeddata/startup/895_domain_chain_startup_images.sql
 var domainChainStartupImages895 []byte
+
+//go:embed embeddata/startup/896_offline_activation_requests_columns_reassert.sql
+var offlineActivationRequestsColumnsReassert896 []byte
 
 //go:embed embeddata/startup/859_tighten_pii_phone_intl_regex.sql
 var tightenPiiPhoneIntlRegex859 []byte
@@ -1300,8 +1304,8 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/883_session_family_cost_view_metrics.sql":                               sessionFamilyCostViewMetrics883,
 	"startup/884_session_family_v_analytics_views.sql":                               sessionFamilyVAnalyticsViews884,
 	"startup/890_drop_request_logs_v1_family.sql":                                    dropRequestLogsV1Family890,
-	"startup/891_session_turns_cost_negative_partial_idx.sql":                         sessionTurnsCostNegativePartialIdx891,
-	"startup/892_ursm_snapshot_slot_daily.sql":                                         ursmSnapshotSlotDaily892,
+	"startup/891_session_turns_cost_negative_partial_idx.sql":                        sessionTurnsCostNegativePartialIdx891,
+	"startup/892_ursm_snapshot_slot_daily.sql":                                       ursmSnapshotSlotDaily892,
 	"startup/885_session_turns_host_tags.sql":                                        sessionTurnsHostTags885,
 	"startup/886_session_bodies_storage_comment.sql":                                 sessionBodiesStorageComment886,
 	"startup/887_session_turns_search_text_fts.sql":                                  sessionTurnsSearchTextFTS887,
@@ -1315,6 +1319,7 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/893_fresh_install_partition_prereq.sql":                                 freshInstallPartitionPrereq893,
 	"startup/894_rebind_candidate_failure_logs_diagnosis_view.sql":                   rebindCandidateFailureLogsDiagnosisView894,
 	"startup/895_domain_chain_startup_images.sql":                                    domainChainStartupImages895,
+	"startup/896_offline_activation_requests_columns_reassert.sql":                   offlineActivationRequestsColumnsReassert896,
 	"startup/859_tighten_pii_phone_intl_regex.sql":                                   tightenPiiPhoneIntlRegex859,
 	"startup/852_models_canonical_column_set_reconcile.sql":                          modelsCanonicalColumnSetReconcile852,
 	"startup/489_credential_probe_queue_startup_backfill.sql":                        credentialProbeQueueStartupBackfill489,

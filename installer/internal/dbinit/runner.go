@@ -1362,6 +1362,13 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			//   `public.credentials` 由**基线**建（01-schema.sql:6820）⇒ 生产已存在
 			//   ⇒ 链尾即可（与 893/894 同位置理由）。
 			"895_domain_chain_startup_images.sql",
+			// 896：把 375/376 给 offline_activation_requests 补的三列
+			//   （status / reject_reason / activation_code）+ 两索引重新交付到
+			//   只靠升级通道维护的存量库。生产通道 deploy-lib/db-changelog.sh 只把
+			//   version >= 412 当 pending ⇒ 375/376 永远到不了 252（实测缺列 ⇒
+			//   licensing 离线激活管理 SQL 42703）。本链上 375/376 已在前面应用
+			//   ⇒ 896 在新装库是 no-op（IF NOT EXISTS）；表不存在时 NOTICE 跳过。
+			"896_offline_activation_requests_columns_reassert.sql",
 		},
 	}
 }

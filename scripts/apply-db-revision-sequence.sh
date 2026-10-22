@@ -1580,6 +1580,13 @@ files=(
   # 幂等：可重复应用；252 上是同体替换（no-op 语义）。
   "$ROOT_DIR/sql/migrations/startup/894_rebind_candidate_failure_logs_diagnosis_view.sql"
 
+  # 2026-10-21（895，252 PG 日志审计轮）：把 375/376 的三列（status / reject_reason /
+  # activation_code）+ 两索引重新交付到升级通道维护的存量库。生产通道
+  # deploy-lib/db-changelog.sh 只把 version >= 412 当 pending ⇒ 375/376 永远到不了
+  # 252（实测缺列 ⇒ licensing 离线激活管理 SQL 42703）。IF NOT EXISTS 幂等，
+  # 新装库（375/376 已应用）上是 no-op；表不存在时 NOTICE 跳过。
+  "$ROOT_DIR/sql/migrations/startup/896_offline_activation_requests_columns_reassert.sql"
+
   # 2026-10-07（844）：给 v_supplier_price_vs_baseline 补两个缓存基准价的投影。
   #
   # 编号注（**本条让位两次**，最终 844）：
