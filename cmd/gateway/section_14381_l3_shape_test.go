@@ -243,11 +243,25 @@ func TestSection14381LegValueScriptMustMeasureIncrement(t *testing.T) {
 	//   ★ ⇒ ⇒ 原因：★ L3_beta 的 LATERAL 子查询里【已经】有 jsonb 判据
 	//   ★ ⇒ ⇒ 真正的差异在【主 WHERE】：gamma 有两处（sb 与 ff 各一处）
 	//   ★ ⇒ ⇒ ★ 判别点挑错 ⇒ ⇒ 「当前形态」判错 ⇒ ⇒ 后面全错
-	if !strings.Contains(code, "AND (sb.outbound_body IS NOT NULL AND sb.outbound_body <>") {
+	//
+	// ★★★★★★ 2026-10-23（§143.84）★ 本判据的 needle 【就地订正】，★ 原文保留：
+	//   ★ §143.84 用 Q8c 逐字量到【当前形态（gamma）的主 WHERE 真实文本】：
+	//   ★     AND ((sb.outbound_body IS NOT NULL AND sb.outbound_body <> $64::jsonb)
+	//   ★          OR (ff.outbound_body IS NOT NULL AND ff.outbound_body <> $65::jsonb))
+	//   ★ ⇒ ⇒ ★★ 【是【双左括号】】⇒ ⇒ 本判据原来写的【单左括号】needle
+	//   ★ ⇒ ⇒ ★★ 【只匹配 beta/alpha 那种【单分支】旧形态】⇒ ⇒ ★★ 也就是说：
+	//   ★ ⇒ ⇒ ★★★ 【这条门原本钉住的，是一个【会指向已死腿】的判别器】
+	//   ★ ⇒ ⇒ ★★★ 而 §143.84 修好脚本 needle 后，它与 §143.84 的门【互斥】
+	//   ★ ⇒ ⇒ ★★★ （★ 一个要求单括号存在、一个要求单括号出现 0 次 ⇒ ⇒ 必有一个红）
+	//   ★ ⇒ ⇒ ⇒⇒ **⇒ 修 needle 必须同步修【守这条 needle 的门】，★ 否则会出现互斥的门。**
+	//   ★ ⇒ ⇒ ⇒⇒ 双括号形态【恰好】能区分 gamma（当前形态）与 beta（旧形态）⇒ ⇒ 用它。
+	if !strings.Contains(code, "AND ((sb.outbound_body IS NOT NULL AND sb.outbound_body <>") {
 		t.Error("★ 复算脚本的【当前形态判别器】没有落在【主 WHERE 子句】上 —— " +
 			"★ ★★ 本轮实测：用「query 含 outbound_body <> $n::jsonb」当判别器会【同时命中 " +
 			"★ L3_beta 与 L3_gamma】（★ 因为 beta 的 LATERAL 子查询里已经有 jsonb 判据）" +
-			"★ ⇒ ⇒ 判出来的「当前形态」是【错的】⇒ ⇒ 必须查主 WHERE 的完整形态")
+			"★ ⇒ ⇒ 判出来的「当前形态」是【错的】⇒ ⇒ 必须查主 WHERE 的完整形态" +
+			"★ ⇒ ⇒ ★★ 且必须用【当前形态的真实形态】（★ 双左括号 `AND ((sb.…`）—— " +
+			"★ 单左括号只匹配 beta/alpha 那种【旧形态】⇒ ⇒ 会把【已死的腿】判成「当前形态」")
 	}
 	// ⑤ ★ 必须有【形态指纹】（★ 结构判据的库侧一半）
 	if !strings.Contains(code, "md5(query)") {

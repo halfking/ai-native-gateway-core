@@ -313,3 +313,4 @@
 295	893_fresh_install_partition_prereq.sql
 296	894_rebind_candidate_failure_logs_diagnosis_view.sql
 297	895_domain_chain_startup_images.sql
+298	896_offline_activation_requests_columns_reassert.sql

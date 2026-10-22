@@ -57,6 +57,16 @@ SET statement_timeout = '1200s';
 SET lock_timeout = '10s';
 
 \echo '=== 1/7: ★★★★★ Q1 现时速率（★ 两次采样取增量 ⇒ 判定每条腿【此刻】还在不在跑）==='
+-- ★★★★ 2026-10-23（§143.84）★ ★★ 窗口纪律（★ 本轮实测踩到）：
+--   ★ 本块内的窗口写死 60 s ⇒ ⇒ 对【突发型】腿【不足以判生死】。
+--   ★ 实测（252 共享库，同一时刻）：
+--     ★ 60 s 内采样   ⇒ L3_gamma delta_calls = 0  ⇒ 读成「已死」
+--     ★ 49 min 跨运行 ⇒ L3_gamma delta_calls = 293 ⇒ 实为「活的」
+--   ★ ⇒ ⇒ ★★ 「delta=0 ⇒ 死」这个结论在 60 s 窗口上【会给假死】。
+--   ★ ⇒ ⇒ ★★ 判生死必须用【≥10 分钟】窗口
+--   ★ ⇒ ⇒ ★★ 工具：★ scripts/audit/diff_l3_snapshots.py（★ 取首尾两份 SNAPSHOT 行做差）。
+--   ★ ⇒ ⇒ ★★ 下方 ALIVE 列对 60 s 窗口只作【参考】，★ 结论以长窗口为准。
+\echo '★ ★ 判生死请用【≥10 分钟窗口】（★ diff_l3_snapshots.py）⇒ ⇒ 本块 60 s 采样只作【参考】★'
 DO $do$
 DECLARE
   t0 JSONB; t1 JSONB; rec RECORD; k TEXT;
@@ -236,7 +246,14 @@ BEGIN
     INTO cur_qid, cur_calls, cur_rows, cur_ms
   FROM pg_stat_statements s
   WHERE s.queryid IN (8794675561828039885, 3955058327330889760, -7776241007544382269)
-    AND s.query LIKE '%AND (sb.outbound_body IS NOT NULL AND sb.outbound_body <>%'
+    -- ★★★★ 2026-10-23（§143.84）★ needle 修正（★ 本处与 Q7 两处【同样坏】⇒ 必须同改）：
+    --   ★ 原来写的是 'AND (sb.outbound_body IS NOT NULL AND sb.outbound_body <>%'
+    --   ★ ⇒ ⇒ 【少一个左括号】⇒ ⇒ 库内真实文本是
+    --   ★   AND ((sb.outbound_body IS NOT NULL AND sb.outbound_body <> $64::jsonb)
+    --   ★ ⇒ ⇒ 旧 needle 【恒不匹配】⇒ ⇒ 「自动判定当前形态」恒输出 NOT FOUND
+    --   ★ ⇒ ⇒ ★★ 这条判据【从未真正工作过】（★ 量具坏了 ⇒ 「0 命中的第一嫌疑是量具坏了」）
+    --   ★ ⇒ ⇒ 修法 = needle 与【主 WHERE 的真实形态】逐字对齐（★ 双左括号）
+    AND s.query LIKE '%AND ((sb.outbound_body IS NOT NULL AND sb.outbound_body <>%'
   ORDER BY s.calls DESC
   LIMIT 1;
 
@@ -292,7 +309,14 @@ BEGIN
     INTO cur_qid, cur_calls, cur_rows, cur_ms
   FROM pg_stat_statements s
   WHERE s.queryid IN (8794675561828039885, 3955058327330889760, -7776241007544382269)
-    AND s.query LIKE '%AND (sb.outbound_body IS NOT NULL AND sb.outbound_body <>%'
+    -- ★★★★ 2026-10-23（§143.84）★ needle 修正（★ 本处与 Q7 两处【同样坏】⇒ 必须同改）：
+    --   ★ 原来写的是 'AND (sb.outbound_body IS NOT NULL AND sb.outbound_body <>%'
+    --   ★ ⇒ ⇒ 【少一个左括号】⇒ ⇒ 库内真实文本是
+    --   ★   AND ((sb.outbound_body IS NOT NULL AND sb.outbound_body <> $64::jsonb)
+    --   ★ ⇒ ⇒ 旧 needle 【恒不匹配】⇒ ⇒ 「自动判定当前形态」恒输出 NOT FOUND
+    --   ★ ⇒ ⇒ ★★ 这条判据【从未真正工作过】（★ 量具坏了 ⇒ 「0 命中的第一嫌疑是量具坏了」）
+    --   ★ ⇒ ⇒ 修法 = needle 与【主 WHERE 的真实形态】逐字对齐（★ 双左括号）
+    AND s.query LIKE '%AND ((sb.outbound_body IS NOT NULL AND sb.outbound_body <>%'
   ORDER BY s.calls DESC
   LIMIT 1;
 
@@ -304,3 +328,70 @@ BEGIN
   END IF;
 END
 $do$;
+
+-- =====================================================================
+-- §143.84 新增 Q8：【调用方穷举 + 调用结构分解】
+--
+-- ★★★★★★ 为什么新增（★ 本轮实测的三条）：
+--
+--   ① ★★★★★ 【库侧是否存在【第二个 L3 文本生产者】】
+--      判据：query 文本里含 'ff.outbound_body'
+--      （★ 仓内 `ff.outbound_body` 全文【只出现在】cmd/gateway/main_v3_wiring.go
+--        的 lastOutboundSessionSQL ⇒ ⇒ 只有【一个】文本生产者）
+--      ⇒ ⇒ 库里若出现多条命中 ⇒ ⇒ 那些就是【审计脚本自身】
+--      ⇒ ⇒ ★★ 这是「观测手段污染被观测统计」的又一例（★ §143.81 已记过）
+--      ⇒ ⇒ ★★ 判读口径：★ 只有【qlen ≈ 11.8 KB 且 calls 很大】的那几条才是 L3 形态
+--                   ⇒ ⇒ 其余【qlen 小 / calls ≤ 几十】的 = 审计脚本 ⇒ ⇒ 不算贡献
+--
+--   ② ★★★★★★ 【各腿 queryid 的 SQL 身份】
+--      ⇒ ⇒ 没有这一步 ⇒ ⇒ 「L1_final_full / L1b_fallback / L2_delta_chain」这三个
+--         标签只是【名字】⇒ ⇒ 无法做【调用结构分解】
+--      ⇒ ⇒ 还原成 SQL 形态后 ⇒ ⇒ 才能算出「谁先谁后、命中即止、恒 0 行」
+--
+--   ③ ★★★ 【分解的关键恒等式】
+--      压缩路径（loadFromDB）是【命中即止】链：
+--        腿① LoadLatestOutbound(#1 kind='final_full')
+--          ↓ 未命中 ⇒ 腿② LoadLatestOutbound(#2 ORDER BY turn_no DESC)
+--            ↓ 未命中 ⇒ 腿③ LoadChain
+--              ↓ 未命中 ⇒ ⇒ L3
+--      ⇒ ⇒ 而 LoadChain 在 252 上【恒 0 行】（★ 累计 27,439 次 / rows 0）
+--      ⇒ ⇒ ★★ 于是【腿② 调用数 == 腿③ 调用数 == L3 调用数】必须成立
+--      ⇒ ⇒ ★★ 实测 49 min 窗口：★ 293 == 293 == 293 ✔ ⇒ ⇒ ★★ 链被【实证】
+--
+-- ★ 只读；★ 不建任何对象；★ 必须串行
+-- =====================================================================
+\echo '=== 8/8: ★★★★★★ Q8a 【库侧含 ff.outbound_body 的全部 queryid】（★ 找第二个 L3 文本生产者）==='
+SELECT s.queryid,
+       s.calls,
+       s.rows,
+       round(s.total_exec_time::numeric, 1) AS total_ms,
+       md5(s.query) AS q_md5,
+       length(s.query) AS qlen,
+       -- ★★ 判读列：★ L3 形态的 qlen ≈ 11.8 KB ⇒ ⇒ 小的是审计脚本
+       CASE WHEN length(s.query) > 10000 THEN '★ L3 形态（★ 待人工确认）'
+            ELSE '审计脚本/临时查询（★ 不算 L3 贡献）' END AS shape_hint
+  FROM pg_stat_statements s
+ WHERE s.query LIKE '%ff.outbound_body%'
+ ORDER BY s.calls DESC;
+
+\echo '=== 8/8: ★★★★★★ Q8b 【各腿 queryid 的 SQL 身份】（★ 分解的前提）==='
+SELECT l.label,
+       s.queryid,
+       s.calls,
+       s.rows,
+       round(s.total_exec_time::numeric, 1) AS total_ms,
+       left(regexp_replace(s.query, '\s+', ' ', 'g'), 400) AS shape
+  FROM (VALUES
+    ('L1_final_full_snapshot',   -7576398701530481720::bigint),
+    ('L1b_fallback_turnno',       -8278521907442285636::bigint),
+    ('L2_delta_chain',            -202669097973246213::bigint),
+    ('L3_gamma_coalesce_ff_v2',   -7776241007544382269::bigint),
+    ('L5_writepath_latest',        5347544359269580322::bigint)
+  ) AS l(label, qid)
+  LEFT JOIN pg_stat_statements s ON s.queryid = l.qid
+ ORDER BY l.label;
+
+\echo '=== 8/8: ★★★★★★ Q8c 【L3 gamma 主 WHERE 片段】（★ 供 Q7 needle 逐字核对）==='
+SELECT substring(s.query from position('AND ((' in s.query) for 220) AS main_where
+  FROM pg_stat_statements s
+ WHERE s.queryid = -7776241007544382269;
