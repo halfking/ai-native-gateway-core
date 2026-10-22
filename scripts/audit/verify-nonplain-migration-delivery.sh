@@ -79,6 +79,23 @@
 #          ⇒ ⇒ **门在基线上是绿的、但 90% 是瞎的**
 #          ⇒ ⇒ ★ **基线绿 + 全部变异红，也可能是假绿**）
 #
+#   ── C 组：R84 轮新增（5 条）—— 审 R83 轮自己交付的门时挖出的真缺陷 ──────
+#   M21 ★★★ **收窄「读册子」的过滤器**（只改读的那一处）⇒ bash 门必须红
+#        （★★ 这条覆盖 R84 轮修掉的**真缺陷**：R83 轮那条「行数自检」的
+#          【参考计数】与【读册子】**共用同一个谓词** ⇒ ⇒ **同源自证**
+#          ⇒ ⇒ 过滤器一旦被收窄、两边**同时**少读 ⇒ ⇒ 计数**仍然相等**
+#          ⇒ ⇒ 自检看不见 ⇒ ⇒ ③/④ 少检查了一行而门**是绿的**）
+#   M22 ★★★★ **复合变异**：收窄读册子的过滤器 ＋ 把那一行的投递腿改成假的
+#        ⇒ bash 门必须红（★★★★ 这条是 **R84 轮实测出的那个「假绿」的专属变异**：
+#          ①②**各自单做**都抓不到它（①不红、②红），**合起来才绿**
+#          ⇒ ⇒ ★ 通用式：★ **只做单点变异的集合【天然看不见】复合盲区**）
+#   M23 ★★ 登记册某行**只有 3 列** ⇒ bash 门必须红（R84 轮新增的**列数门**）
+#   M24 ★★ 登记册里加一行**带前导空白的注释行**（含 TAB）⇒ 两道门都**绿**
+#        （★ **期望绿**的用例：它证明 bash 与 Go 对「缩进注释」的理解**一致**）
+#   M25 ★★★ **清空登记册的数据行** ⇒ 两道门都**必须红**
+#        （★★★ 「观测手段失效」的行为化检验：门把登记册读成 0 条时**必须红**
+#          ⇒ 这也是 R84 轮**选题①普查**用的方法：把登记册掏空，看门的表现）
+#
 # 自我约束（沿用 verify-l11b-cost-view-rowset.sh 的教训）：
 #
 #   1. **编译红不算数**："build failed" 不是 "assertion went red"。
@@ -120,6 +137,10 @@ DIRS_LIST="$WORK_DIR/added_dirs.list"
 
 MUTATIONS_RUN=0
 MUTATIONS_RED=0
+# R84 轮：把「期望绿」的用例**单独计数** ⇒ 它们与「期望红」不是一回事
+# （期望绿 = 证明某条【对齐/收窄】确实生效；混进红绿一个计数器里会读不懂）
+GREEN_EXPECTED=0
+GREEN_OK=0
 FAILED=()
 
 REGISTRY="sql/schema/startup_migration_nonplain.tsv"
@@ -280,6 +301,87 @@ add_file() {
   echo "   mutation applied (new file) $file"
 }
 
+# ── R84 轮新增的三个变异助手 ────────────────────────────────────────────────
+#
+# mutate_append_line 在登记册**末尾追加一行**（用于「加一条带前导空白的注释行」
+#   这类**形状**变异）。追加时保证文件末尾有换行 ⇒ 不会把上一行黏住。
+mutate_append_line() {
+  local file="$1" line_b64="$2"
+  python3 - "$file" "$line_b64" <<'PY'
+import base64, sys
+path, line_b64 = sys.argv[1], sys.argv[2]
+line = base64.b64decode(line_b64).decode("utf-8")
+with open(path, "a", encoding="utf-8") as handle:
+    if handle.tell() > 0:
+        with open(path, "rb") as probe:
+            probe.seek(-1, 2)
+            if probe.read(1) != b"\n":
+                handle.write("\n")
+    handle.write(line + "\n")
+print("   mutation applied to %s (appended 1 line)" % path)
+PY
+}
+
+# mutate_empty_registry 把登记册的**数据行全部删掉**（只留注释行与空行）。
+#   ★ 这是「观测手段失效」的行为化检验：门必须**红**（读了个空册子还绿 = 瞎）。
+mutate_empty_registry() {
+  local file="$1"
+  python3 - "$file" <<'PY'
+import sys
+path = sys.argv[1]
+with open(path, encoding="utf-8") as handle:
+    lines = handle.read().split("\n")
+kept = [line for line in lines if line.startswith("#") or line.strip() == ""]
+with open(path, "w", encoding="utf-8") as handle:
+    handle.write("\n".join(kept))
+print("   mutation applied to %s (all data rows removed)" % path)
+PY
+}
+
+# ★★★★ R84 轮新增：变异落地的【后置条件】自检（选题⑥：补「读回来看一眼」）。
+#
+#   R83 轮的「变异落地」自检**只查 md5 变了** ⇒ ⇒ 查不出「变了但形状不对」
+#   （R83 轮第一版的 M11/M13 就是这么漏过去的：`\1` 反向引用在 lambda 里不生效
+#     ⇒ 落地的是**字面量 "\1"** ⇒ md5 变了、但形状不是要的 ⇒ 那两条是【假通过】）。
+#   ⇒ 这里补一条【读回来核对】的断言：变异落地后，把目标内容**读回来**核对。
+#   ⇒ ★ 通用式：★ **「md5 变了」≠「变异是想要的那个」** ⇒ 落地判据必须能表达【形状】。
+assert_contains() {
+  local label="$1" file="$2" needle="$3"
+  if ! grep -Fq -- "$needle" "$file"; then
+    echo "   ✘ MUTATION LANDED BUT NOT IN THE INTENDED SHAPE — ${label}：${file} 里读不到期望内容"
+    FAILED+=("$label(wrong-shape)")
+    return 1
+  fi
+  echo "   ✔ 形状核对通过（读回来看一眼）：${label}"
+  return 0
+}
+
+# assert_tsv_field 读回登记册某行的第 N 列（0-based）并与期望值比对。
+assert_tsv_field() {
+  local label="$1" file="$2" key="$3" col="$4" expected="$5"
+  local got
+  got=$(python3 - "$file" "$key" "$col" <<'PY'
+import sys
+path, key, col = sys.argv[1], sys.argv[2], int(sys.argv[3])
+found = "<找不到该行>"
+with open(path, encoding="utf-8") as handle:
+    for line in handle.read().split("\n"):
+        if line.startswith(key + "\t"):
+            fields = line.split("\t")
+            found = fields[col] if col < len(fields) else "<缺列>"
+            break
+print(found)
+PY
+)
+  if [ "$got" != "$expected" ]; then
+    echo "   ✘ MUTATION LANDED BUT NOT IN THE INTENDED SHAPE — ${label}：第 ${col} 列期望「${expected}」，实际「${got}」"
+    FAILED+=("$label(wrong-shape)")
+    return 1
+  fi
+  echo "   ✔ 形状核对通过（读回来看一眼）：${label}"
+  return 0
+}
+
 remove_added() {
   local file="$1"
   if [ -f "$file" ]; then
@@ -320,6 +422,60 @@ run_mutation_new() {
   fi
   if [ ! -f "$file" ]; then
     echo "   ✘ MUTATION NOT APPLIED — $label 没有造出 $file ⇒ 判红"
+    FAILED+=("$label(not-applied)")
+    return 1
+  fi
+  return 0
+}
+
+# ★★★★ R84 轮新增：run_mutation_pair —— **两个文件**上的复合变异。
+#
+#   ★ 为什么需要它：R83 轮的「变异必须打到非第一行」这条纪律**只能覆盖单点变异**；
+#     而 R84 轮实测出的那个**假绿**恰恰是**复合**的：
+#       ① 读册子的过滤器被收窄（少读一行）＋
+#       ② 那一行里的声明被改成假的（投递腿与事实不符）
+#     ⇒ 单点变异抓不到它（要么只是「少读」不红、要么「声明错」被抓到），
+#       **两个一起才绿** ⇒ ⇒ 只做单点变异的集合**天然看不见这一族**。
+#   ⇒ 用法：run_mutation_pair <标签> <文件A> <文件B> <A 的命令…> -- <B 的命令…>
+run_mutation_pair() {
+  local label="$1" file1="$2" file2="$3"; shift 3
+  local cmd1=()
+  local cmd2=()
+  local phase=1
+  local arg
+  for arg in "$@"; do
+    if [ "$arg" = "--" ]; then
+      phase=2
+      continue
+    fi
+    if [ "$phase" -eq 1 ]; then
+      cmd1+=("$arg")
+    else
+      cmd2+=("$arg")
+    fi
+  done
+  if [ "${#cmd1[@]}" -eq 0 ] || [ "${#cmd2[@]}" -eq 0 ]; then
+    echo "   ✘ MUTATION PAIR MALFORMED — ${label}（两段命令必须用 -- 分隔）⇒ 判红"
+    FAILED+=("$label(malformed)")
+    return 1
+  fi
+  local before1 before2 after1 after2
+  before1="$(md5_of "$file1")"
+  before2="$(md5_of "$file2")"
+  if ! "${cmd1[@]}"; then
+    echo "   ✘ MUTATION FAILED TO APPLY — ${label}（第一条助手报错）⇒ 判红"
+    FAILED+=("$label(not-applied)")
+    return 1
+  fi
+  if ! "${cmd2[@]}"; then
+    echo "   ✘ MUTATION FAILED TO APPLY — ${label}（第二条助手报错）⇒ 判红"
+    FAILED+=("$label(not-applied)")
+    return 1
+  fi
+  after1="$(md5_of "$file1")"
+  after2="$(md5_of "$file2")"
+  if [ "$before1" = "$after1" ] || [ "$before2" = "$after2" ]; then
+    echo "   ✘ MUTATION NOT APPLIED — ${label} 没有改变两个目标文件 ⇒ 不可归因 ⇒ 判红"
     FAILED+=("$label(not-applied)")
     return 1
   fi
@@ -388,6 +544,7 @@ expect_red_go() {
 
 expect_green_bash() {
   local label="$1"
+  GREEN_EXPECTED=$((GREEN_EXPECTED + 1))
   echo "── BASELINE $label: expect GREEN (bash gate)"
   local output
   output="$(bash "$BASH_GATE" 2>&1)"
@@ -397,11 +554,13 @@ expect_green_bash() {
     FAILED+=("$label(baseline-red)")
   else
     echo "   ✔ GREEN as expected"
+    GREEN_OK=$((GREEN_OK + 1))
   fi
 }
 
 expect_green_go() {
   local label="$1" test_pattern="$2"
+  GREEN_EXPECTED=$((GREEN_EXPECTED + 1))
   echo "── BASELINE $label: expect GREEN (go gate)"
   local output
   output="$(cd installer && go test ./cmd/llm-gw-installer/ -run "$test_pattern" -count=1 2>&1)"
@@ -411,6 +570,7 @@ expect_green_go() {
     FAILED+=("$label(baseline-red)")
   else
     echo "   ✔ GREEN as expected"
+    GREEN_OK=$((GREEN_OK + 1))
   fi
 }
 
@@ -521,6 +681,8 @@ fi
 if run_mutation "M7" "$REGISTRY" mutate_regex "$REGISTRY" \
   '^canonical/487b_request_logs_hot_system_fingerprint\.sql\tchannel\t' \
   "$(b64 'canonical/487b_request_logs_hot_system_fingerprint.sql	none	')"; then
+  assert_tsv_field "M7（487b 的投递腿被改成 none）" "$REGISTRY" \
+    "canonical/487b_request_logs_hot_system_fingerprint.sql" 1 "none"
   expect_red_bash "M7" 'canonical/487b_request_logs_hot_system_fingerprint\.sql.*声明与事实不符'
   restore "$REGISTRY"
 fi
@@ -531,6 +693,8 @@ fi
 if run_mutation "M8" "$REGISTRY" mutate_regex "$REGISTRY" \
   '^embeddata/361b_provider_models_source_prelude\.sql\tinstaller\t' \
   "$(b64 'embeddata/361b_provider_models_source_prelude.sql	none	')"; then
+  assert_tsv_field "M8（embeddata/361b 的投递腿被改成 none）" "$REGISTRY" \
+    "embeddata/361b_provider_models_source_prelude.sql" 1 "none"
   expect_red_go "M8" 'embeddata/361b_provider_models_source_prelude\.sql.*声明与事实不符' "$GO_MAIN"
   restore "$REGISTRY"
 fi
@@ -541,6 +705,8 @@ fi
 if run_mutation "M9" "$REGISTRY" mutate_regex "$REGISTRY" \
   '^canonical/487b_request_logs_hot_system_fingerprint\.sql\tchannel\t' \
   "$(b64 'canonical/487b_request_logs_hot_system_fingerprint.sql	installer	')"; then
+  assert_tsv_field "M9（487b 的投递腿被改成 installer）" "$REGISTRY" \
+    "canonical/487b_request_logs_hot_system_fingerprint.sql" 1 "installer"
   expect_red_bash "M9" 'canonical/487b_request_logs_hot_system_fingerprint\.sql.*StartupFiles'
   restore "$REGISTRY"
 fi
@@ -551,6 +717,8 @@ fi
 if run_mutation "M10" "$REGISTRY" mutate_regex "$REGISTRY" \
   '^canonical/487c_request_logs_hot_raw_model_name\.sql\tchannel\t' \
   "$(b64 'canonical/487c_request_logs_hot_raw_model_name.sql	unknown-leg	')"; then
+  assert_tsv_field "M10（487c 的投递腿被写成 unknown-leg）" "$REGISTRY" \
+    "canonical/487c_request_logs_hot_raw_model_name.sql" 1 "unknown-leg"
   expect_red_go "M10" '投递腿 .* 非法' "$GO_MAIN|$GO_LEG"
   restore "$REGISTRY"
 fi
@@ -560,6 +728,8 @@ fi
 # ---------------------------------------------------------------------------
 if run_mutation "M11" "$REGISTRY" mutate_clear_field "$REGISTRY" \
   "canonical/478p2_affinity_indexes.sql" 3; then
+  assert_tsv_field "M11（478p2 的理由列被清空）" "$REGISTRY" \
+    "canonical/478p2_affinity_indexes.sql" 3 ""
   expect_red_go "M11" '没有写理由' "$GO_LEG"
   restore "$REGISTRY"
 fi
@@ -570,9 +740,19 @@ fi
 #        R82 轮给 2026-07-13-… 写的理由引用了 `session_turns.reasoning_tokens`，
 #        而实测基线里 session_turns 这 5 列全缺）
 # ---------------------------------------------------------------------------
+# ⚠⚠⚠ **R84 轮实测出的第三处 harness 缺陷（本轮补断言后当场暴露）**：
+#   第一版的锚点只匹配到「键<TAB>投递腿<TAB>」⇒ ⇒ 替换后**旧的效果落点被留在
+#   后面** ⇒ ⇒ 那一行变成 **5 列**（不是 4 列）⇒ ⇒ ★ **红的理由变成了
+#   「列数是 5」**（新列数门抓到的）⇒ ⇒ **而不是**本条要测的
+#   「效果落点不成立」⇒ ⇒ ★ **「md5 变了」≠「变异是想要的那个」**
+#   ⇒ ★⇒ 修法 = 锚点**吃掉整个旧的效果落点字段**（`[^\t]*`）⇒ 保持 4 列
+#   ⇒ ★⇒ 并且**补上「读回来看一眼」断言** ⇒ ★⇒ 这条断言一加上就立刻
+#   把「变异落地了但形状不对」变成**可归因**的诊断。
 if run_mutation "M12" "$REGISTRY" mutate_regex "$REGISTRY" \
-  '^canonical/2026-07-13-multimodal-token-fields-hot\.sql\tnone\t' \
+  '^canonical/2026-07-13-multimodal-token-fields-hot\.sql\tnone\t[^\t]*\t' \
   "$(b64 'canonical/2026-07-13-multimodal-token-fields-hot.sql	none	baseline:session_turns.reasoning_tokens	')"; then
+  assert_tsv_field "M12（落点被换成基线里不存在的列 ⇒ 该行仍是 4 列）" "$REGISTRY" \
+    "canonical/2026-07-13-multimodal-token-fields-hot.sql" 2 "baseline:session_turns.reasoning_tokens"
   expect_red_bash "M12" 'public\.session_turns 没有 reasoning_tokens 这一列.*效果落点不成立'
   restore "$REGISTRY"
 fi
@@ -582,6 +762,8 @@ fi
 # ---------------------------------------------------------------------------
 if run_mutation "M13" "$REGISTRY" mutate_clear_field "$REGISTRY" \
   "canonical/395c_canonical_raw_name_unprefix.sql" 2; then
+  assert_tsv_field "M13（395c 的效果落点列被清空）" "$REGISTRY" \
+    "canonical/395c_canonical_raw_name_unprefix.sql" 2 ""
   expect_red_bash "M13" '声明「有意不投递」却没有写效果落点'
   restore "$REGISTRY"
 fi
@@ -680,6 +862,8 @@ fi
 # ---------------------------------------------------------------------------
 if run_mutation "M19" "$REGISTRY" mutate_drop_field "$REGISTRY" \
   "canonical/2026-07-13-multimodal-token-fields-hot.sql" 3; then
+  assert_tsv_field "M19（2026-07-13 那一行的理由列被删掉 ⇒ 3 列）" "$REGISTRY" \
+    "canonical/2026-07-13-multimodal-token-fields-hot.sql" 3 "<缺列>"
   expect_red_go "M19" '列数是 3' "$GO_MAIN|$GO_LEG"
   restore "$REGISTRY"
 fi
@@ -693,18 +877,118 @@ fi
 #        只有「针对非第一行的变异」（M7）才抓得到它）
 #      ⇒ 修法 = 给门加**行数自检**（「读到几行」本身变成一条判据）
 # ---------------------------------------------------------------------------
+# ⚠⚠⚠ **R84 轮实测出的第四处 harness 缺陷（★ 这次是 harness 自己抓到的）**：
+#   R84 轮把 `registry_rows()` 从「单行 awk」改写成「多行 awk」（注释口径对齐 ＋
+#   只输出 4 列的行）⇒ ⇒ **M20 的旧锚点不复存在** ⇒ ⇒ `mutate_text` 报
+#   「anchor found 0 times」⇒ ⇒ ★ **变异没落地** ⇒ ⇒ 旧的 harness 只会报
+#   「not-applied」（★ 这是**它自己的落地守卫**在起作用 —— ★ 若是更早的版本
+#   只比 md5，这条会变成【假通过】⇒ ⇒ ★★ **「变异必须真的落地」这条守卫，
+#   在本轮【替本轮挡住了一次】自欺**）。
+#   ⇒ ⇒ 修法 = 锚点跟着实现走（改成多行 awk 里那行 printf）。
 cat > "$WORK_DIR/m20_old.txt" <<'EOF'
-  awk -F'\t' '!/^#/ && NF>=2 {printf "%s%c%s%c%s%c%s\n", $1, 31, $2, 31, $3, 31, $4}' \
+    { printf "%s%c%s%c%s%c%s\n", $1, 31, $2, 31, $3, 31, $4 }
 EOF
 cat > "$WORK_DIR/m20_new.txt" <<'EOF'
-  awk -F'\t' '!/^#/ && NF>=2 {printf "%s%c%s%c%s%c%s", $1, 31, $2, 31, $3, 31, $4}' \
+    { printf "%s%c%s%c%s%c%s", $1, 31, $2, 31, $3, 31, $4 }
 EOF
 M20_OLD="$(cat "$WORK_DIR/m20_old.txt")"
 M20_NEW="$(cat "$WORK_DIR/m20_new.txt")"
 if run_mutation "M20" "$BASH_GATE" mutate_text "$BASH_GATE" \
   "$(b64 "$M20_OLD")" "$(b64 "$M20_NEW")"; then
+  assert_contains "M20（printf 的行分隔符被去掉）" "$BASH_GATE" "$M20_NEW"
   expect_red_bash "M20" '登记册读取的行数（[0-9]+）与数据行数（[0-9]+）不一致'
   restore "$BASH_GATE"
+fi
+
+# ---------------------------------------------------------------------------
+# M21 ★★★ **收窄「读册子」的过滤器**（只改读的那一处）⇒ bash 门必须红
+#      （★★ 这条覆盖 R84 轮修掉的那个**真缺陷**：
+#        R83 轮那条「行数自检」的【参考计数】与【读册子】**共用同一个谓词**
+#        ⇒ ⇒ **同源自证** ⇒ ⇒ 过滤器一旦被收窄、两边**同时**少读
+#        ⇒ ⇒ 计数**仍然相等** ⇒ ⇒ 自检看不见 ⇒ ⇒ ③/④ 少检查了一行而门是绿的）
+#      ⇒ 修法 = 参考计数改成**独立**口径（三个不同的工具算）⇒ ⇒ 本条必须红
+# ---------------------------------------------------------------------------
+cat > "$WORK_DIR/m21_old.txt" <<'EOF'
+    NF != 4 { next }
+EOF
+cat > "$WORK_DIR/m21_new.txt" <<'EOF'
+    NF != 4 || $1 ~ /^canonical\/395c_canonical_raw_name_unprefix\.sql$/ { next }
+EOF
+M21_OLD="$(cat "$WORK_DIR/m21_old.txt")"
+M21_NEW="$(cat "$WORK_DIR/m21_new.txt")"
+if run_mutation "M21" "$BASH_GATE" mutate_text "$BASH_GATE" \
+  "$(b64 "$M21_OLD")" "$(b64 "$M21_NEW")"; then
+  assert_contains "M21（读册子的过滤器被收窄）" "$BASH_GATE" "$M21_NEW"
+  expect_red_bash "M21" '登记册读取的行数（[0-9]+）与数据行数（[0-9]+）不一致'
+  restore "$BASH_GATE"
+fi
+
+# ---------------------------------------------------------------------------
+# M22 ★★★★ **复合变异**：收窄读册子的过滤器 **＋** 把那一行的投递腿改成假的
+#      ⇒ bash 门必须红
+#      （★★★★ 这条是 **R84 轮实测出的那个「假绿」的专属变异**：
+#        ① 只收窄过滤器 ⇒ 门绿（少读了一行，但没人知道）；
+#        ② 只改投递腿 ⇒ 门红（③ 判据抓得住）；
+#        ③ **两个一起** ⇒ ★★ **修复前是绿的**（实测：bash 门绿 + Go 门绿）
+#        ⇒ ⇒ ★ 通用式：★ **只做单点变异的集合【天然看不见】复合盲区**
+#          ⇒ 复合盲区的形状 = 「观测手段变窄」×「被观测内容变假」
+#      ⇒ 修复后：独立参考计数 ⇒ ① 立刻被抓 ⇒ 门红）
+# ---------------------------------------------------------------------------
+if run_mutation_pair "M22" "$BASH_GATE" "$REGISTRY" \
+  mutate_text "$BASH_GATE" "$(b64 "$M21_OLD")" "$(b64 "$M21_NEW")" -- \
+  mutate_regex "$REGISTRY" \
+  '^canonical/395c_canonical_raw_name_unprefix\.sql\tnone\t' \
+  "$(b64 'canonical/395c_canonical_raw_name_unprefix.sql	channel	')"; then
+  assert_contains "M22（读册子的过滤器被收窄）" "$BASH_GATE" "$M21_NEW"
+  assert_tsv_field "M22（395c 的投递腿被改成 channel）" "$REGISTRY" \
+    "canonical/395c_canonical_raw_name_unprefix.sql" 1 "channel"
+  expect_red_bash "M22" '登记册读取的行数（[0-9]+）与数据行数（[0-9]+）不一致'
+  restore "$BASH_GATE"
+  restore "$REGISTRY"
+fi
+
+# ---------------------------------------------------------------------------
+# M23 ★★ 登记册某行**只有 3 列** ⇒ bash 门必须红（R84 轮新增的**列数门**）
+#      （★ R83 轮把「列数 = 4」只放在 Go 侧 ⇒ bash 侧读到列数不对的行时
+#        会把「第 3 列」当成效果落点 ⇒ 报出「效果落点语法非法」这种看不懂的错
+#        ⇒ ⇒ 两道门对同一份册子的**形状**判断不一致 ⇒ 现在 bash 侧也核列数）
+# ---------------------------------------------------------------------------
+if run_mutation "M23" "$REGISTRY" mutate_drop_field "$REGISTRY" \
+  "canonical/395c_canonical_raw_name_unprefix.sql" 3; then
+  assert_tsv_field "M23（395c 的理由列被删掉 ⇒ 3 列）" "$REGISTRY" \
+    "canonical/395c_canonical_raw_name_unprefix.sql" 3 "<缺列>"
+  expect_red_bash "M23" '列数是 3'
+  restore "$REGISTRY"
+fi
+
+# ---------------------------------------------------------------------------
+# M24 ★★ 登记册里加一行**带前导空白的注释行**（且含一个 TAB）⇒ 两道门都**绿**
+#      （★ 这条是【期望绿】的：它证明 bash 侧与 Go 侧对「缩进注释」的理解**一致**。
+#        R83 轮的 bash 口径是 `!/^#/`（**不剥前导空白**）⇒ 一行带缩进的注释
+#        会被当**数据行** ⇒ ② 会拿它当键去查目录 ⇒ 报「登记册陈旧（键的宇宙
+#        前缀也非法）」这种**看不懂的假红** ⇒ ⇒ R84 轮把两侧口径对齐。
+#        ⇒ 期望绿 = 证明「对齐」这件事真的生效了）
+# ---------------------------------------------------------------------------
+INDENT_COMMENT_LINE=$'   # R84 轮：带前导空白的注释行\t第二段含一个制表符'
+if run_mutation "M24" "$REGISTRY" mutate_append_line "$REGISTRY" \
+  "$(b64 "$INDENT_COMMENT_LINE")"; then
+  expect_green_bash "M24"
+  expect_green_go "M24" "$GO_MAIN|$GO_LEG"
+  restore "$REGISTRY"
+fi
+
+# ---------------------------------------------------------------------------
+# M25 ★★★ **清空登记册的数据行**（只留注释）⇒ 两道门都**必须红**
+#      （★★★ 这条是「观测手段失效」的行为化检验：
+#        门把登记册读成 0 条时，**必须红**（「读了个空册子还绿」= 门是瞎的）。
+#        ★ 也是 R84 轮**选题①普查**用的那个方法：把登记册掏空，看门的表现。
+#        ⇒ 本仓已普查的 10 份登记册里，**唯一**能把门读空的读取路径，
+#          就是本门与 embed 门共享的那份 ⇒ 这条把它钉住）
+# ---------------------------------------------------------------------------
+if run_mutation "M25" "$REGISTRY" mutate_empty_registry "$REGISTRY"; then
+  expect_red_bash "M25" '登记册一条数据行都没有|登记册读取的行数（[0-9]+）与数据行数（[0-9]+）不一致'
+  expect_red_go "M25" '一条数据行都没有' "$GO_MAIN|$GO_LEG"
+  restore "$REGISTRY"
 fi
 
 # ---------------------------------------------------------------------------
@@ -755,7 +1039,7 @@ for f in "$REGISTRY" "$BASH_GATE" "$CHANNEL_SCRIPT"; do
 done
 
 echo
-echo "=== 结果：${MUTATIONS_RED}/${MUTATIONS_RUN} 条变异按预期变红 ==="
+echo "=== 结果：${MUTATIONS_RED}/${MUTATIONS_RUN} 条变异按预期变红；${GREEN_OK}/${GREEN_EXPECTED} 条「期望绿」用例保持绿 ==="
 if [ "${#FAILED[@]}" -gt 0 ]; then
   echo "FAILED:"
   for f in "${FAILED[@]}"; do echo "  - $f"; done

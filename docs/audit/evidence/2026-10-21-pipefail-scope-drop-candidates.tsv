@@ -93,15 +93,15 @@ scripts/audit/verify-g1-route-contract.sh	129	expect_red	var-write	bare	bulk	rea
 scripts/audit/verify-g1-route-contract.sh	156	expect_green	var-write	judgment	bulk	real-defect-candidate	grep-q	consumed	if echo "$output" | grep -qE '^--- FAIL:'; then
 scripts/audit/verify-l11b-cost-view-rowset.sh	316	expect_red	var-write	bare	bulk	real-defect-candidate	head	discarded	echo "$output" | head -10
 scripts/audit/verify-l11b-cost-view-rowset.sh	347	expect_green	var-write	judgment	bulk	real-defect-candidate	grep-q	consumed	if echo "$output" | grep -qE '^--- FAIL:'; then
-scripts/audit/verify-nonplain-migration-delivery.sh	335	expect_red_bash	var-write	judgment	unknown	needs-human-read	grep-q	consumed	if echo "$output" | grep -qE 'syntax error|command not found|unbound variable'; then
-scripts/audit/verify-nonplain-migration-delivery.sh	341	expect_red_bash	var-write	judgment	unknown	needs-human-read	grep-q	consumed	if ! echo "$output" | grep -q 'contract FAILED'; then
-scripts/audit/verify-nonplain-migration-delivery.sh	347	expect_red_bash	var-write	judgment	unknown	needs-human-read	grep-q	consumed	if ! echo "$output" | grep -qE "$reason_pattern"; then
-scripts/audit/verify-nonplain-migration-delivery.sh	365	expect_red_go	var-write	judgment	unknown	needs-human-read	grep-q	consumed	if echo "$output" | grep -qE '\[build failed\]|^# |cannot use|undefined:'; then
-scripts/audit/verify-nonplain-migration-delivery.sh	367	expect_red_go	var-write	bare	unknown	needs-human-read	head	discarded	echo "$output" | head -12
-scripts/audit/verify-nonplain-migration-delivery.sh	371	expect_red_go	var-write	judgment	unknown	needs-human-read	grep-q	consumed	if ! echo "$output" | grep -qE '^--- FAIL:'; then
-scripts/audit/verify-nonplain-migration-delivery.sh	377	expect_red_go	var-write	judgment	unknown	needs-human-read	grep-q	consumed	if ! echo "$output" | grep -qE "$reason_pattern"; then
-scripts/audit/verify-nonplain-migration-delivery.sh	394	expect_green_bash	var-write	judgment	unknown	needs-human-read	grep-q	consumed	if echo "$output" | grep -q 'contract FAILED'; then
-scripts/audit/verify-nonplain-migration-delivery.sh	408	expect_green_go	var-write	judgment	unknown	needs-human-read	grep-q	consumed	if echo "$output" | grep -qE '^--- FAIL:'; then
+scripts/audit/verify-nonplain-migration-delivery.sh	491	expect_red_bash	var-write	judgment	unknown	needs-human-read	grep-q	consumed	if echo "$output" | grep -qE 'syntax error|command not found|unbound variable'; then
+scripts/audit/verify-nonplain-migration-delivery.sh	497	expect_red_bash	var-write	judgment	unknown	needs-human-read	grep-q	consumed	if ! echo "$output" | grep -q 'contract FAILED'; then
+scripts/audit/verify-nonplain-migration-delivery.sh	503	expect_red_bash	var-write	judgment	unknown	needs-human-read	grep-q	consumed	if ! echo "$output" | grep -qE "$reason_pattern"; then
+scripts/audit/verify-nonplain-migration-delivery.sh	521	expect_red_go	var-write	judgment	unknown	needs-human-read	grep-q	consumed	if echo "$output" | grep -qE '\[build failed\]|^# |cannot use|undefined:'; then
+scripts/audit/verify-nonplain-migration-delivery.sh	523	expect_red_go	var-write	bare	unknown	needs-human-read	head	discarded	echo "$output" | head -12
+scripts/audit/verify-nonplain-migration-delivery.sh	527	expect_red_go	var-write	judgment	unknown	needs-human-read	grep-q	consumed	if ! echo "$output" | grep -qE '^--- FAIL:'; then
+scripts/audit/verify-nonplain-migration-delivery.sh	533	expect_red_go	var-write	judgment	unknown	needs-human-read	grep-q	consumed	if ! echo "$output" | grep -qE "$reason_pattern"; then
+scripts/audit/verify-nonplain-migration-delivery.sh	551	expect_green_bash	var-write	judgment	unknown	needs-human-read	grep-q	consumed	if echo "$output" | grep -q 'contract FAILED'; then
+scripts/audit/verify-nonplain-migration-delivery.sh	567	expect_green_go	var-write	judgment	unknown	needs-human-read	grep-q	consumed	if echo "$output" | grep -qE '^--- FAIL:'; then
 scripts/audit/verify-stop-write-interlock-realdb.sh	87	verdict	var-write	judgment	unknown	needs-human-read	grep-q	consumed	if echo "$1" | grep -qE '^--- FAIL:|^FAIL'; then echo FAIL
 scripts/audit/verify-stop-write-interlock-realdb.sh	88	verdict	var-write	judgment	unknown	needs-human-read	grep-q	consumed	elif echo "$1" | grep -qE '^--- PASS:|^ok |^PASS'; then echo PASS
 scripts/audit/verify-v1-retirement-red-gates.sh	109	expect_red	var-write	judgment	unknown	needs-human-read	grep-q	consumed	if printf '%s' "${out}" | grep -qE 'build failed|undefined:|cannot use|syntax error|declared and not used'; then
