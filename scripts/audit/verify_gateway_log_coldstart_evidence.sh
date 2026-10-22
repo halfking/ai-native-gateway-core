@@ -35,6 +35,22 @@ set -o pipefail
 WINDOW_MIN="${1:-80}"
 SSH_TIMEOUT="${SSH_TIMEOUT:-240}"
 
+# ★ timeout 可移植（2026-10-23 12h 审计轮修）：
+#   ★ 原写法直接用 `timeout "$SSH_TIMEOUT" ssh ...`，而 **macOS 自带没有 GNU
+#   coreutils 的 `timeout`**（本机实测 `timeout: command not found`）
+#   ⇒ ⇒ 在 macOS 上整脚本跑不起来（`set -e` ⇒ 退出 127）⇒ ⇒ 取证脚本等于没有。
+#   ⇒ 优先 `timeout`（GNU/Linux）→ 其次 `gtimeout`（brew coreutils）
+#   ⇒ 都没有就**直接跑**（只失去「SSH 超时上限」这一个保护，脚本本身仍可用）
+#   ⇒ ⇒ 并把这件事**显式说出来**（不能让「没有超时保护」被当成「有」）。
+if command -v timeout >/dev/null 2>&1; then
+  _timeout_cmd=(timeout "$SSH_TIMEOUT")
+elif command -v gtimeout >/dev/null 2>&1; then
+  _timeout_cmd=(gtimeout "$SSH_TIMEOUT")
+else
+  _timeout_cmd=()
+  echo "WARN: 本机没有 timeout/gtimeout ⇒ 去掉 SSH 超时上限（SSH_TIMEOUT=${SSH_TIMEOUT} 不生效）" >&2
+fi
+
 # ★ 自证：窗口参数必须是正整数（★ 避免 "80 min ago" 被拼成非法表达式而静默空跑）
 case "$WINDOW_MIN" in
   ''|*[!0-9]*) echo "window must be a positive integer (minutes), got: $WINDOW_MIN" >&2; exit 2 ;;
@@ -43,7 +59,7 @@ esac
 
 echo "=== §143.80 取证：154 网关日志（★ 只读；窗口 ${WINDOW_MIN} 分钟）==="
 
-timeout "$SSH_TIMEOUT" ssh 154 "set +u;
+"${_timeout_cmd[@]}" ssh 154 "set +u;
   journalctl -u llm-gateway-go-canary@8782.service --no-pager --since '${WINDOW_MIN} min ago' 2>/dev/null \
   | grep 'session_compressor: v2 cache loaded successfully' > /tmp/p14380_v2cache.txt || true
   echo '--- 采集到的冷启动条数 ---'
@@ -93,6 +109,7 @@ print()
 print('★★★ EXCLUDING_omp: records=%d body0=%d pct_zero=%.2f%%' % (len(non), zn, (100.0 * zn / len(non)) if non else 0))
 print('★★★ coldstarts_per_distinct_session=%.2f' % (len(recs) / float(len(set(s for s, _ in recs)))))
 PYEOF
+  rm -f /tmp/p14380_v2cache.txt
 "
 # ★★★ 显式捕获 ssh 的真实退出码（★ ★ 不用 `$?` 于任何管道之后）
 SSH_RC=$?
