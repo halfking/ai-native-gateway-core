@@ -105,12 +105,30 @@ onMounted(async () => {
       try {
         const me = await getAuthMe()
         const meAny = me as any
+        // 2026-10-22 审计修正：2xx 的维护信封 {"code":…,"message":…} 会被
+        //   当成 UserInfo 存进 store ⇒ 造出「假登录态」（已登录但 role 为空）。
+        //   判据用 UserInfo 的两个必填身份字段（id: number、username: string）。
+        if (!meAny || typeof meAny.id !== 'number' || typeof meAny.username !== 'string') {
+          throw new Error('unexpected /api/auth/me payload shape')
+        }
         if (meAny?.access_token) {
           setJwtToken(meAny.access_token)
         }
         setUserInfo(me)
-      } catch {
-        clearJwt()
+      } catch (e) {
+        // 2026-10-22 审计修正：旧实现对**任何**失败都 clearJwt() ⇒ 清掉
+        //   userInfo + localStorage ⇒ 维护窗口/断网/5xx 都把用户踢回登录页
+        //   （移动端同一处缺陷 web-mobile/src/stores/auth.ts 已在本轮修）。
+        //   瞬时故障（维护态信封 / 断网 / 5xx）**不清任何状态**：
+        //   HttpOnly 会话 cookie 还在，服务端恢复后下一次冷启水合即可自愈。
+        const err = e as { status?: unknown; code?: unknown }
+        const status = err?.status
+        const code = err?.code
+        const maintenance =
+          typeof code === 'string' && (code === 'maintenance_mode' || code.startsWith('maintain.'))
+        const transient =
+          status === 0 || (typeof status === 'number' && status >= 500 && status !== 501)
+        if (!maintenance && !transient) clearJwt()
       }
     }
   } finally {

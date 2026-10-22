@@ -40,12 +40,12 @@ LLM Gateway Go 是一个**企业级大语言模型网关系统**，为企业提�
 
 | 指标 | 数值 | 说明 |
 |------|------|------|
-| Go源文件总数 | 5,679 个 | `find . -name "*.go" -not -path "./vendor/*" -not -path "./installer/*" \| wc -l` |
+| Go源文件总数 | 5,680 个 | `find . -name "*.go" -not -path "./vendor/*" -not -path "./installer/*" \| wc -l` |
 | Admin API文件 | 737 个 | `find ./admin -name "*.go" -type f \| wc -l` |
 | 后台Worker文件 | 426 个 | `find ./bg -name "*.go" -type f \| wc -l` |
 | 领域模块数量 | 68 个 | `ls ./domains/ \| wc -l` (一级目录) |
 | 数据库迁移 | 1,119 个 SQL | `sql/migrations/` 全量；startup 数字序列活跃至 **894**（work_type 路由来源） |
-| 单元测试文件 | 3,332 个 | `find . -name "*_test.go" -not -path "./vendor/*" -not -path "./installer/*" \| wc -l` |
+| 单元测试文件 | 3,333 个 | `find . -name "*_test.go" -not -path "./vendor/*" -not -path "./installer/*" \| wc -l` |
 | 可执行程序 | 34 个 | `ls ./cmd/ \| wc -l` |
 
 ---
@@ -407,12 +407,12 @@ Client Request
 ## 5. 代码统计
 
 ```
-Go源文件总数:     5,679 个 (不含 vendor/installer；快照 @fa89d61b2)
+Go源文件总数:     5,680 个 (不含 vendor/installer；快照 @31466a01d)
 Admin API文件:      737 个
 后台Worker文件:     426 个
 领域模块:            68 个 (domains/ 一级目录)
 数据库迁移:         1,119 个 SQL (sql/migrations/; startup 活跃序列最新 894)
-测试文件:         3,332 个 (*_test.go, 不含 vendor/installer)
+测试文件:         3,333 个 (*_test.go, 不含 vendor/installer)
 可执行程序:           34 个 (cmd/)
 ```
 

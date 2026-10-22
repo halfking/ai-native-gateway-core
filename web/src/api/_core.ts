@@ -124,12 +124,38 @@ export interface RequestOptions {
 export class ApiError extends Error {
   status: number
   detail: string
-  constructor(status: number, detail: string) {
+  /**
+   * 2026-10-22 审计修正：维护/边缘组件下发的是**顶层**信封
+   * {"code":"maintenance_mode"|"maintain.*","message":…,"request_id":…}
+   * （无 .error 包装）。桌面端此前**不提取** code ⇒ 任何按 code 分支的
+   * UI 都认不出维护态 ⇒ 水合失败一律走 clearJwt() ⇒ 维护窗口把用户踢登录。
+   * 与移动端 web-mobile/src/api/client.ts 的 errorCode() 同一口径。
+   */
+  code: string
+  constructor(status: number, detail: string, code = '') {
     super(detail)
     this.name = 'ApiError'
     this.status = status
     this.detail = detail
+    this.code = code
   }
+}
+
+/** 从错误响应体里取业务错误码（`error.code` 或顶层 `code`；取不到就是空串）。 */
+export function envelopeCode(text: string): string {
+  if (!text) return ''
+  try {
+    const j = JSON.parse(text) as Record<string, unknown>
+    const err = j.error
+    if (err && typeof err === 'object') {
+      const code = (err as Record<string, unknown>).code
+      if (typeof code === 'string') return code
+    }
+    if (typeof j.code === 'string' && j.code) return j.code
+  } catch {
+    /* 非 JSON 错误体：没有 code */
+  }
+  return ''
 }
 
 function errorMessage(statusText: string, text: string): string {
@@ -246,12 +272,15 @@ export async function req<T>(method: string, path: string, body?: unknown, optio
   }
   if (!r.ok) {
     let msg = r.statusText
+    let code = ''
     try {
-      msg = errorMessage(r.statusText, await r.text())
+      const body = await r.text()
+      msg = errorMessage(r.statusText, body)
+      code = envelopeCode(body)
     } catch {
       // network/abort error reading body; keep statusText
     }
-    throw new ApiError(r.status, msg)
+    throw new ApiError(r.status, msg, code)
   }
   if (r.status === 204 || r.status === 205) return undefined as T
   const text = await r.text()

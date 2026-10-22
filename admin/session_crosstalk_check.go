@@ -96,7 +96,7 @@ func (h *Handler) handleSessionCrosstalkCheck(w http.ResponseWriter, r *http.Req
 	//   - `LIMIT 100` 与旧实现一致（响应体 contract 不变）。
 	const crosstalkSQL = `
 		SELECT session_id,
-		       array_agg(DISTINCT tenant_id) AS tenant_ids,
+		       array_agg(DISTINCT tenant_id ORDER BY tenant_id) AS tenant_ids,
 		       min(ts) AS first_seen_at,
 		       max(ts) AS last_seen_at,
 		       count(*) AS request_count

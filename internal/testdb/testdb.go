@@ -81,6 +81,21 @@ const cleanupTimeout = 120 * time.Second
 // 实测：不等待 ⇒ 5/5 exited-with-code(143)；等 1s ⇒ 5/5 died-by-signal(terminated)。
 const signalReraiseWindow = time.Second
 
+// signalDropBudget 是**信号路径上「全部 DROP」的总预算**。
+//
+// 2026-10-22 审计修正：此前各库的 DROP 串行、且每个各带一份 cleanupTimeout
+// （120s）⇒ N 个库的最坏总时长 = 120s×N ⇒ 进程可能在 DROP 落库前被
+// supervisor 的 SIGKILL 打死 ⇒ 库残留（恰是这个 handler 要防的形态）。
+// ⇒ 信号路径：并发 DROP + 一个总预算。
+//
+// 为什么是 20s 而不是 cleanupTimeout 的 120s：信号路径的目标是
+// 「在被打死**之前**把库清掉并退出」，而不是「无限期等数据库」。
+// 预算耗尽 ⇒ 放弃剩余的并**如实报告**（stderr）—— 可见的残余
+// 优于「进程占着 SIGTERM 不退、最后被 SIGKILL 静默打死」那种不可见的残余。
+// 注意 DROP 的等待实测可达 89.37s ⇒ 20s 预算下**可能**真的清不掉；
+// 这是有意的取舍：留痕比假装清干净重要。
+const signalDropBudget = 20 * time.Second
+
 // ── Signal-path cleanup ───────────────────────────────────────────────────
 //
 // t.Cleanup runs on the normal test path and on t.Fatal, but NOT when the
@@ -161,11 +176,27 @@ func installSignalDrop() {
 		time.Sleep(signalReraiseWindow)
 		// Fallback for a signal that could not be re-raised: still exit
 		// non-zero, never 0 — a killed run must not look like a passing one.
-		os.Exit(143)
+		//
+		// 2026-10-22 审计修正：退出码按**实际信号**取 128+signo
+		// （惯例：SIGINT⇒130、SIGTERM⇒143）。此前恒用 143 ⇒ 触发方是
+		// SIGINT 时退出码谎报成 SIGTERM，调用方分辨不出是哪一类中断。
+		exitCode := 143
+		if s, ok := sig.(syscall.Signal); ok && s == syscall.SIGINT {
+			exitCode = 130
+		}
+		os.Exit(exitCode)
 	}()
 }
 
 // dropAllForSignal drops every registered database.
+//
+// 2026-10-22 审计修正：此前**串行**、且每个库的 DROP 各自带 120s 超时
+// ⇒ N 个库的最坏总时长 = 120s×N + 重发窗口 ⇒ 进程可能在 DROP 落库前被
+// supervisor 的 SIGKILL 打死 ⇒ **库残留** —— 恰是这个 handler 要防的形态。
+// 实测单库 DROP 等待已达 4.28 / 38.60 / 89.37s（见本文件 cleanupTimeout 注释）。
+// ⇒ 改成：**并发** DROP + 一个**总预算** signalDropBudget。
+// 预算耗尽 ⇒ 放弃剩余的并**如实报告**（stderr）—— 宁可留可见的残余，
+// 也不要「进程无限期占着 SIGTERM、最后被 SIGKILL 静默打死」那种看不见的残余。
 func dropAllForSignal() {
 	dropMu.Lock()
 	targets := make(map[string]string, len(dropTargets))
@@ -173,10 +204,26 @@ func dropAllForSignal() {
 		targets[k] = v
 	}
 	dropMu.Unlock()
+	if len(targets) == 0 {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), signalDropBudget)
+	defer cancel()
+	var wg sync.WaitGroup
 	for name, dsn := range targets {
-		if err := dropDatabase(dsn, name); err != nil {
-			fmt.Fprintf(os.Stderr, "testdb: signal cleanup DROP DATABASE %s: %v\n", name, err)
-		}
+		wg.Add(1)
+		go func(name, dsn string) {
+			defer wg.Done()
+			if err := dropDatabaseCtx(ctx, dsn, name); err != nil {
+				fmt.Fprintf(os.Stderr, "testdb: signal cleanup DROP DATABASE %s: %v\n", name, err)
+			}
+		}(name, dsn)
+	}
+	wg.Wait()
+	if err := ctx.Err(); err != nil {
+		fmt.Fprintf(os.Stderr,
+			"testdb: signal cleanup budget %s exhausted — some scratch databases may survive\n",
+			signalDropBudget)
 	}
 }
 
@@ -270,6 +317,13 @@ func Create(t *testing.T, baseDSN string) string {
 func dropDatabase(baseDSN, name string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), cleanupTimeout)
 	defer cancel()
+	return dropDatabaseCtx(ctx, baseDSN, name)
+}
+
+// dropDatabaseCtx 是 dropDatabase 的 ctx 感知版本：信号路径用它把
+// 「全部 DROP」压进一个**总预算**（signalDropBudget），而不是每个库各吃
+// 一份 cleanupTimeout。
+func dropDatabaseCtx(ctx context.Context, baseDSN, name string) error {
 	conn, err := pgconn.Connect(ctx, baseDSN)
 	if err != nil {
 		return fmt.Errorf("connect for DROP: %w", err)

@@ -1282,7 +1282,14 @@ func (s *Service) expireStaleModels(ctx context.Context, seen []modelOffer) {
 
 		tag, err := s.db.Exec(ctx, staleExpiryOffersSQL(placeholders, graceHours), args...)
 		if err != nil {
-			slog.Debug("failed to expire stale models", "credential_id", credID, "error", err)
+			// 2026-10-22 审计修正：Debug → Warn。
+			// 默认日志级别是 INFO（cmd/gateway/main.go 的 level := slog.LevelInfo）
+			// ⇒ Debug **不落盘**；而「成功过期 0 条」这一路也不出 Info
+			// ⇒ 下架整轮静默失效时**零可见性**。
+			// 2026-10-21 的 252 生产事故（stale 下架 UPDATE 被 Sprintf % 损坏）
+			// 被漏掉的原因正是这一条：功能全灭、而日志里什么都没有。
+			// ⇒ 失败必须至少 Warn：可发现性与「修好了」同等重要。
+			slog.Warn("failed to expire stale models", "credential_id", credID, "error", err)
 			continue
 		}
 		if tag.RowsAffected() > 0 {
@@ -1312,7 +1319,7 @@ func (s *Service) expireStaleModels(ctx context.Context, seen []modelOffer) {
 			  AND COALESCE(cmb.admin_protected, FALSE) = FALSE
 		`, placeholders), args...)
 		if err != nil {
-			slog.Debug("failed to expire stale cmb rows", "credential_id", credID, "error", err)
+			slog.Warn("failed to expire stale cmb rows", "credential_id", credID, "error", err)
 			continue
 		}
 		if cmbTag.RowsAffected() > 0 {

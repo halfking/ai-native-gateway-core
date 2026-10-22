@@ -1,4 +1,4 @@
-import { req, type RequestOptions, type UserInfo } from './client'
+import { req, ApiError, type RequestOptions, type UserInfo } from './client'
 
 export interface LoginResponse {
   access_token: string
@@ -113,5 +113,27 @@ export function unwrapMe(resp: MeResponse): UserInfo {
   if (resp && typeof resp === 'object' && resp.user && typeof resp.user === 'object') {
     return resp.user
   }
-  return resp as UserInfo
+  const bare = resp as UserInfo
+  // 2026-10-22 审计修正：2xx 的**维护信封**（{"code":…,"message":…,"request_id":…}）
+  // 会被这一行原样当成 UserInfo 存进 store ⇒ isAuthenticated 变 true、
+  // role 是 undefined ⇒ 路由守卫放行 ⇒ 造出「假登录态」（用户看到已登录，
+  // 但所有请求都带着空角色）。实测形态：维护组件回 2xx + HTML/信封体。
+  //
+  // 判据用 UserInfo 的两个**必填**身份字段（id: number、username: string）——
+  // 两种真实响应形态（包裹态的内层 user、裸态）都带齐它们，维护信封不带。
+  // 缺字段且带 code ⇒ 是维护/错误信封 ⇒ 抛 ApiError(503, code)，
+  // 让上层按「维护态」处理（不踢登录、不清本地态），而不是造出假登录态。
+  if (
+    bare &&
+    typeof bare === 'object' &&
+    typeof (bare as { id?: unknown }).id === 'number' &&
+    typeof (bare as { username?: unknown }).username === 'string'
+  ) {
+    return bare
+  }
+  const code = (bare as { code?: unknown })?.code
+  if (typeof code === 'string' && code) {
+    throw new ApiError(503, 'gateway returned an envelope instead of /api/auth/me', code)
+  }
+  throw new Error('unexpected /api/auth/me payload shape')
 }
