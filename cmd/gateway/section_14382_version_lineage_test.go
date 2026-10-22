@@ -251,3 +251,62 @@ func TestSection14382HandoffSurfacesExist(t *testing.T) {
 			"★ ⇒ ⇒ 本轮的结论（★ ⑰ 关闭 / 两处自我订正 / 速率突变待查）必须落在交接段")
 	}
 }
+
+// TestSection14382BRateSpikeMustBeCorrected（★ 判据⑧）
+//
+// ★★★★ 【一条被写进仓的【错结论】必须被【就地作废】⇒ ⇒ 否则它会被后人当事实用】。
+//
+//	★ §143.82.5 曾写「部署后 L3 调用速率涨约 20 倍」⇒ ★ §143.82-B 实测作废
+//	★ （★ 真相是【流量恢复】：★ 245 的日志有 22 小时空档 ⇒ ⇒ 与部署无关）。
+//
+// ★★ 判据要钉的不是「文档里没有『20 倍』这几个字」（★ 原文保留是纪律），
+// ★★ 而是【那段必须带着作废标志】⇒ ⇒ 否则「原文保留」会变成「错结论继续流传」。
+func TestSection14382BRateSpikeMustBeCorrected(t *testing.T) {
+	runbook := readRepoFile14382(t, section14382Runbook)
+
+	// ① §143.82-B 段必须存在
+	i := strings.Index(runbook, "### §143.82-B")
+	if i < 0 {
+		t.Fatal("★ runbook 里找不到 §143.82-B 段 —— ★ 本轮的【作废 + 补齐 245 样本】必须落在仓内")
+	}
+	segB := runbook[i:]
+
+	// ② §143.82.5 那一段必须带【作废】标志（★ 原文保留，但不许无标志）
+	i5 := strings.Index(runbook, "#### §143.82.5 ")
+	if i5 < 0 {
+		t.Fatal("★ runbook 里找不到 §143.82.5 段")
+	}
+	seg5 := runbook[i5:]
+	if j := strings.Index(seg5, "\n#### §143.82."); j > 0 {
+		seg5 = seg5[:j]
+	}
+	if !strings.Contains(seg5, "已作废") {
+		t.Error("★ §143.82.5 段没有「已作废」标志 —— " +
+			"★ ★★ 该段写的「部署后 L3 调用速率涨约 20 倍」已被 §143.82-B 实测推翻" +
+			"★ ⇒ ⇒ 「原文保留」必须配「作废标志」⇒ ⇒ 否则错结论会被当事实用")
+	}
+
+	// ③ §143.82-B 段必须带【真正���】与【两条关键读数】
+	for _, needle := range []string{
+		"22 小时", // ★★ 245 的日志空档（★ 「是流量恢复」的直接证据）
+		"1,361", // ★★ 245 服务侧的冷启动条数（★ 跨 3 天 body_size 全 0）
+		"流量恢复",  // ★★ 真正的归因
+	} {
+		if !strings.Contains(segB, needle) {
+			t.Errorf("★ §143.82-B 段里没有 %q —— "+
+				"★ 订正面必须留下【可复核的关键读数】⇒ ⇒ 否则「作废」变成了「没有替代说法」", needle)
+		}
+	}
+
+	// ④ 交接面
+	lessons := readRepoFile14382(t, section14382Lessons)
+	if !strings.Contains(lessons, "## §273") {
+		t.Error("★ LESSONS.md 里没有 §273 —— " +
+			"★ ⇒ ⇒ 「速率变化先分清行为与流量」这条通用式必须落进去")
+	}
+	agents := readRepoFile14382(t, section14382Agents)
+	if !strings.Contains(agents, "R125") {
+		t.Error("★ AGENTS.md 里没有 R125 —— " +
+			"★ ⇒ ⇒ 本轮的作废与补齐必须落在交接段（★ 否则下一轮会重走一遍并再写一次「20 倍」）")
+	}
+}
