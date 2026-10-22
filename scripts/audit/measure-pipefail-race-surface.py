@@ -361,7 +361,7 @@ def writer_volume_hint(writer):
 class Site(object):
     __slots__ = ("path", "line", "scope", "consumer", "kind", "writer", "pf_line",
                  "pf_scope", "after_pf", "usage", "usage_basis", "volume",
-                 "full_line")
+                 "full_line", "dropped_by_scope")
 
     def __init__(self, **kw):
         for k in self.__slots__:
@@ -404,13 +404,25 @@ def scan_file(path, rel):
             off_after = [pl for pl, ps in pf_off if ps == sc and on_before and pl > max(on_before)]
             pf_line = max(on_before) if on_before else 0
             after_pf = bool(on_before) and not off_after
+            # ★★ R103 轮：把【被作用域模型静默丢弃】的点标出来（★ 只标不改）
+            #   ★ 真实 shell 语义：`set -o pipefail` 是**进程级**选项 ⇒ **函数体继承**
+            #     ⇒ 顶层的 pipefail 对函数体内的管道点**是生效**的
+            #   ★ 本量具口径（after_pf）：要求 pipefail 的作用域与 site 的作用域**完全相同**
+            #     ⇒ ⇒ 函数体里的管道点 after_pf=False ⇒ **不进候选集** ⇒ 静默丢弃
+            #   ⇒ 这里只统计 + 打印，**不改 after_pf 的判定** ⇒ 候选集/台账/门零影响
+            top_on = [pl for pl, ps in pf_on if ps == "<top>" and pl < i]
+            top_off = [pl for pl, ps in pf_off
+                       if ps == "<top>" and top_on and pl > max(top_on)]
+            real_covered = bool(top_on) and not top_off
+            dropped_by_scope = real_covered and not after_pf
             writer = ln[: m.start()].strip()
             usage, basis = classify_usage(ln, m.start())
             sites.append(Site(path=rel, line=i, scope=sc, consumer=m.group("c").strip(),
                               kind=kind, writer=writer, pf_line=pf_line,
                               pf_scope=sc, after_pf=after_pf, usage=usage,
                               usage_basis=basis, volume=writer_volume_hint(writer),
-                              full_line=ln.strip()))
+                              full_line=ln.strip(),
+                              dropped_by_scope=dropped_by_scope))
     return sites, (len(pf_on), len(pf_off))
 
 
@@ -992,6 +1004,50 @@ def main():
     print("== 启用 pipefail 的脚本（轴 1）==")
     for f in sorted(pf_files):
         print("    %s" % f)
+
+    # ★★ R103 轮：把「被【作用域模型】静默丢弃」的点**显式印出来**（★ 零判定语义变化）
+    #   ★ 为什么要印：**误报会被看见、丢弃不会** ⇒ ⇒ 丢弃是比误报更危险的方向
+    #   ★ 真实语义：pipefail 是**进程级**选项、函数体**继承**
+    #   ★ 本量具口径：要求作用域**完全相同** ⇒ 函数体里的点不进候选集
+    #   ⇒ ⇒ 这一段让「被丢弃的部分」从【不可见】变成【可见】⇒ 属主据此决定是否收紧口径
+    #   ★ R103 轮补：collect_scripts **不去重** ⇒ 同一文件可能被收两次
+    #     ⇒ 同一 (file,line) 会出现多次 ⇒ ★ 这里按 (file,line) 去重再计数
+    #     （★ 只改【显示】，不动候选集/台账/判定）
+    dropped_all = [s for s in all_sites if getattr(s, "dropped_by_scope", False)]
+    dropped_map = {}
+    for s in dropped_all:
+        dropped_map.setdefault((s.path, s.line), s)
+    dropped = list(dropped_map.values())
+    #   ★ 量具自身探针**不在候选集**（实测 0 处）⇒ ⇒ 把它从主计数里**单列**
+    #     ⇒ 【零判定影响】（候选集/台账不变）⇒ 且主计数干净
+    SELF_PROBE = "probe-pipefail-sigpipe-shape.sh"
+    dropped_self = [s for s in dropped if SELF_PROBE in s.path]
+    dropped = [s for s in dropped if SELF_PROBE not in s.path]
+    dropped_files = sorted(set(s.path for s in dropped))
+    #   ★ 量具自身的探针：它的测试管道【故意】要制造 SIGPIPE ⇒ 命中被测形态是【设计如此】
+    #     ⇒ ★ 这里只【标注】，不排除（★ 排除属口径变更 ⇒ 属主决策；且必须先确认
+    #     它不在候选集里才谈得上「排除不影响判定」）
+    print("")
+    print("== ★★ 被【作用域模型】静默丢弃的管道点（真实语义下受顶层 pipefail 覆盖、"
+          "但本量具按「同作用域」口径丢弃）==")
+    print("   共 %d 处 / %d 个文件（★ 已按 (file,line) 去重；原始条目 %d 条）"
+          % (len(dropped), len(dropped_files), len(dropped_all)))
+    if dropped_self:
+        print("   ★ 另单列：量具自身探针 %s 的 %d 处"
+              % (SELF_PROBE, len(dropped_self)))
+        print("     ⇒ ★ 它的测试管道【故意】要制造 SIGPIPE ⇒ 命中被测形态是【设计如此】")
+        print("     ⇒ ★ 实测它**不在候选集**（0 处）⇒ ⇒ 【排除它零判定影响】")
+        print("     ⇒ ★ 但「要不要把它作为待修项呈现」= 口径决策 ⇒ **属主决策**")
+    print("   ⇒ ★ 丢弃是**静默**的（误报会被看见、丢弃不会）⇒ 这一段就是让它可见")
+    print("   ⇒ ★ 是否收紧口径（顶层覆盖 + 函数体继承）⇒ **属主决策**；本轮**只让丢弃可见、不改判定**")
+    for s in sorted(dropped, key=lambda x: (x.path, x.line))[:40]:
+        tag = ("　← ★ 量具自身探针（命中是【设计如此】⇒ 是否排除 = 属主决策）"
+               if SELF_PROBE in s.path else "")
+        print("    %s:%d  scope=%s  kind=%s  usage=%s%s"
+              % (s.path, s.line, s.scope, s.kind, s.usage, tag))
+    if len(dropped) > 40:
+        print("    …（其余 %d 处省略；全量见并行会话的 scope-drop 候选清单）"
+              % (len(dropped) - 40))
 
     # ★ 候选集 TSV = **物理行**粒度（与台账同粒度 ⇒ 键集可比）
     #   列：file line occ scope kind usage volume consumer writer pf_line full_line fingerprint

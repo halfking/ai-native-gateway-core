@@ -114,7 +114,7 @@ HTTP/SSE → middleware chain → protocol/IR normalization → session assignme
 | `installer/` | 独立跨平台安装器 / 升级器模块 |
 | `scripts/`、`deploy/` | 构建、部署、镜像与校验工具 |
 
-规模快照（2026-10-06 代码扫描）：`cmd/` 下共 **~4,967 Go files · 2,728 test files · 1,016 migration SQLs · 67 domain packages · 44 binaries**。
+规模快照（2026-10-22 代码扫描 @31466a01d）：`cmd/` 下共 **~5,680 Go files · 3,333 test files · 1,119 migration SQLs · 68 domain packages · 44 binaries**（文件数不含 `vendor/` 与 `installer/`；迁移 SQL 为 `sql/migrations/` 全量；二进制按 `go list` 的 main 包计）。
 
 **延伸阅读**
 
@@ -456,7 +456,7 @@ Installer 完整设计见 [installer/README.md](installer/README.md)。
 | 会话生命周期 | [docs/session-lifecycle.md](docs/session-lifecycle.md) — 会话处理生命周期，全流程图解 |
 | 架构（证据分级） | [docs/03-design/01-architecture/architecture/ARCHITECTURE.md](docs/03-design/01-architecture/architecture/ARCHITECTURE.md) — 内部权威文档（CURRENT/SHADOW/PARALLEL 分级） |
 | 架构（总览） | [docs/architecture.md](docs/architecture.md) — 系统设计与组件 |
-| 需求 | [docs/01-requirements/SYSTEM_REQUIREMENTS.md](docs/01-requirements/SYSTEM_REQUIREMENTS.md) — FR×19 领域 / NFR×13 |
+| 需求 | [docs/01-requirements/SYSTEM_REQUIREMENTS.md](docs/01-requirements/SYSTEM_REQUIREMENTS.md) — FR×16 领域 / NFR×13 |
 | 功能目录 | [docs/01-requirements/functional/FEATURES_CATALOG.md](docs/01-requirements/functional/FEATURES_CATALOG.md) — 功能 → 代码 → API → 管理页映射 |
 | API | [docs/03-design/01-architecture/architecture/API.md](docs/03-design/01-architecture/architecture/API.md) — 数据面与管理面 API 规范 |
 | 环境 | [docs/environment.md](docs/environment.md) — 部署环境与变量 |

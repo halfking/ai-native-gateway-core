@@ -114,7 +114,7 @@ HTTP/SSE → middleware chain → protocol/IR normalization → session assignme
 | `installer/` | Module autonome d’installation / mise à niveau multiplateforme |
 | `scripts/`, `deploy/` | Outillage de build, déploiement, miroir et vérification |
 
-Instantané d’échelle (scan du code au 2026-10-06) : **~4,967 fichiers Go · 2,728 fichiers de test · 1,016 SQL de migration · 67 packages de domaine · 44 binaires** sous `cmd/`.
+Instantané d’échelle (scan du code au 2026-10-22 @31466a01d) : **~5,680 fichiers Go · 3,333 fichiers de test · 1,119 SQL de migration · 68 packages de domaine · 44 binaires** sous `cmd/` (comptages hors `vendor/` et `installer/`; SQL de migration = arbre complet `sql/migrations/`; binaires = paquets main selon `go list`).
 
 **Pour aller plus loin**
 
@@ -435,7 +435,7 @@ Voir [ROADMAP.md](ROADMAP.md) pour le détail complet.
 | Cycle de vie de session | [docs/session-lifecycle.md](docs/session-lifecycle.md) — cycle de vie de traitement de session, entièrement diagrammé |
 | Architecture (graduée par preuves) | [docs/03-design/01-architecture/architecture/ARCHITECTURE.md](docs/03-design/01-architecture/architecture/ARCHITECTURE.md) — autorité interne (graduation CURRENT/SHADOW/PARALLEL) |
 | Architecture (vue d’ensemble) | [docs/architecture.md](docs/architecture.md) — conception système et composants |
-| Exigences | [docs/01-requirements/SYSTEM_REQUIREMENTS.md](docs/01-requirements/SYSTEM_REQUIREMENTS.md) — FR×19 domaines / NFR×13 |
+| Exigences | [docs/01-requirements/SYSTEM_REQUIREMENTS.md](docs/01-requirements/SYSTEM_REQUIREMENTS.md) — FR×16 domaines / NFR×13 |
 | Catalogue de fonctionnalités | [docs/01-requirements/functional/FEATURES_CATALOG.md](docs/01-requirements/functional/FEATURES_CATALOG.md) — carte fonctionnalité → code → API → page admin |
 | API | [docs/03-design/01-architecture/architecture/API.md](docs/03-design/01-architecture/architecture/API.md) — specs du plan de données et de l’API d’admin |
 | Environnement | [docs/environment.md](docs/environment.md) — environnements de déploiement et variables |

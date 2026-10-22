@@ -40,14 +40,14 @@ git remote add origin https://codeup.aliyun.com/kaixuan/official-deploy/llm-gate
 git remote add github git@github.com:halfking/ai-native-gateway-core.git
 ```
 
-### 代码统计（基于真实扫描，2026-10-16；2026-10-17 订正迁移数与可执行程序口径）
+### 代码统计（基于真实扫描，2026-10-22 @26ebb346c）
 ```
-Go源文件:       10,723 个    (find . -name "*.go" -type f | wc -l)
-Admin API:       732 个    (find ./admin -name "*.go" -type f | wc -l)
+Go源文件:       10,763 个    (find . -name "*.go" -type f | wc -l；全树含 vendor+installer)
+Admin API:       737 个    (find ./admin -name "*.go" -type f | wc -l)
 后台Worker:      426 个    (find ./bg -name "*.go" -type f | wc -l)
 领域模块:        68 个    (ls ./domains/ | wc -l)
 数据库迁移:     1,119 个    (find ./sql/migrations -name "*.sql" | wc -l；2026-10-19 订正，877/878 迁移入库后)
-单元测试:     3,336 个    (*_test.go 文件)
+单元测试:     3,374 个    (find . -name "*_test.go" | wc -l；全树含 vendor+installer)
 可执行程序:      44 个    (go list ./cmd/... main 包口径；顶层 cmd/ 目录 34 个，go list 全量 46 含 2 个非 main 辅助包——R48-B4 订正)
 ```
 
@@ -61,7 +61,7 @@ Admin API:       732 个    (find ./admin -name "*.go" -type f | wc -l)
 │   ├── gateway/   # 主网关程序 ⭐
 │   └── tools/     # 工具程序
 ├── domains/       # 领域模型（68个）⭐
-├── admin/         # Admin API（732文件）⭐
+├── admin/         # Admin API（737文件）⭐
 ├── bg/            # 后台Worker（426文件）⭐
 ├── web/           # Vue管理面板 ⭐
 ├── installer/     # 安装器（独立模块）⭐

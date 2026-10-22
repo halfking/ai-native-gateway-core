@@ -332,7 +332,7 @@ func scTail(s string) string {
 
 // ── 静态判据 + 门自检（覆盖【另一条 Go 腿】与【删对照 / 删断言】的逃逸口） ────
 
-// scReReraiseThenExit 抓「重发信号之后紧跟着 os.Exit(143)」这个**失实形态**。
+// scReReraiseThenExit 抓「重发信号之后紧跟着 os.Exit(...)」这个**失实形态**。
 //
 // ★ 为什么要有静态判据：上面的行为门只跑 `internal/testdb` 这一条腿；
 //
@@ -342,7 +342,22 @@ func scTail(s string) string {
 // ★★ 必须先剥注释：这段形态在两处文件的**修复说明里被引用**
 //
 //	（「紧跟着的 os.Exit(143) 总是赢得竞争」）⇒ 不剥就会匹配到注释 ⇒ **假阳性**。
-var scReReraiseThenExit = regexp.MustCompile(`(?s)Signal\(s\).{0,900}?os\.Exit\(143\)`)
+//
+// ★ 2026-10-22 12h 审计轮：判据从「字面量 `os.Exit(143)`」放宽为
+//
+//	  「任何 `os.Exit(...)`」。
+//
+//		原因：原判据把**写法**当成了**语义** —— 退出码按实际信号取值后
+//		（SIGINT⇒130 / SIGTERM⇒143，2026-10-22 审计修正 P3），
+//		`os.Exit(143)` 这个字面量消失了 ⇒ 门报「找不到形态」⇒
+//		**门把一次正确的改动判成回归**。
+//		⇒ 判据要守的是「重发信号与退出之间**必须有投递窗口**」这件事，
+//		  而不是「退出码必须写成 143」。
+//
+// ★ 仍然能抓住原缺陷：去掉 time.Sleep 后，`Signal(s) … os.Exit(` 依然命中
+//
+//	⇒ 中间没有 time.Sleep ⇒ 报错（下方那条断言）。
+var scReReraiseThenExit = regexp.MustCompile(`(?s)Signal\(s\).{0,900}?os\.Exit\(`)
 
 // scStripGoComments 剥掉整行都是注释的行（Go 的 `//` 前缀）。
 //
@@ -380,7 +395,7 @@ func TestSignalReraiseHasDeliveryWindow(t *testing.T) {
 		src := scStripGoComments(string(data))
 		ms := scReReraiseThenExit.FindAllString(src, -1)
 		if len(ms) == 0 {
-			t.Errorf("★ %s 里找不到「重发信号 … os.Exit(143)」的形态\n"+
+			t.Errorf("★ %s 里找不到「重发信号 … os.Exit(...)」的形态\n"+
 				"  ⇒ ⇒ 是不是这条腿的信号处理被改掉了？⇒ 请核", rel)
 			continue
 		}
@@ -388,7 +403,7 @@ func TestSignalReraiseHasDeliveryWindow(t *testing.T) {
 			if strings.Contains(m, "time.Sleep(") {
 				continue
 			}
-			t.Errorf("★ %s 里「重发信号」与 os.Exit(143) 之间**没有投递窗口**\n"+
+			t.Errorf("★ %s 里「重发信号」与 os.Exit(...) 之间**没有投递窗口**\n"+
 				"  ⇒ ⇒ `Process.Signal` 是异步投递 ⇒ 紧跟着的 os.Exit(143) 总是赢得竞争\n"+
 				"  ⇒ ⇒ 重发的信号从未生效 ⇒ 进程是「退出码 143」而不是「死于信号」\n"+
 				"  ⇒ ⇒ 修法：重发之后加一个有界的 `time.Sleep(...)`（signalReraiseWindow）\n"+

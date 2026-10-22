@@ -330,7 +330,7 @@ verify_l3_functional() {
   # /v1/models
   MODELS_RESPONSE=$(curl -sf --max-time "$TIMEOUT" "$GATEWAY_URL/v1/models" 2>/dev/null || true)
   if [ -n "$MODELS_RESPONSE" ]; then
-    if echo "$MODELS_RESPONSE" | grep -qE '"data"|"models"'; then
+    if grep -qE '"data"|"models"' <<<"$MODELS_RESPONSE"; then
       pass "/v1/models 端点可达"
     else
       warn "/v1/models 端点响应格式异常"

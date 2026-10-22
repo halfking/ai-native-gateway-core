@@ -114,7 +114,7 @@ HTTP/SSE → middleware chain → protocol/IR normalization → session assignme
 | `installer/` | Standalone cross-platform installer / upgrader module |
 | `scripts/`, `deploy/` | Build, deploy, mirror, and verification tooling |
 
-Scale snapshot (2026-10-06 code scan): **~4,967 Go files · 2,728 test files · 1,016 migration SQLs · 67 domain packages · 44 binaries** under `cmd/` (count = main packages per `go list`; the stale "34" was R48-B4, and `go list ./cmd/...`'s 46 includes 2 non-`main` helper packages — define the criterion before comparing numbers).
+Scale snapshot (2026-10-22 code scan @31466a01d): **~5,680 Go files · 3,333 test files · 1,119 migration SQLs · 68 domain packages · 44 binaries** under `cmd/` (file counts exclude `vendor/` and `installer/`; migration SQLs = full `sql/migrations/` tree; binaries = main packages per `go list`; the stale "34" was R48-B4, and `go list ./cmd/...`'s 46 includes 2 non-`main` helper packages — define the criterion before comparing numbers).
 
 **Deeper reading**
 
@@ -519,7 +519,7 @@ See [ROADMAP.md](ROADMAP.md) for full details.
 | Session lifecycle | [docs/session-lifecycle.md](docs/session-lifecycle.md) — session processing lifecycle, fully diagrammed |
 | Architecture (evidence-graded) | [docs/03-design/01-architecture/architecture/ARCHITECTURE.md](docs/03-design/01-architecture/architecture/ARCHITECTURE.md) — internal authority (CURRENT/SHADOW/PARALLEL grading) |
 | Architecture (overview) | [docs/architecture.md](docs/architecture.md) — system design and components |
-| Requirements | [docs/01-requirements/SYSTEM_REQUIREMENTS.md](docs/01-requirements/SYSTEM_REQUIREMENTS.md) — FR×19 domains / NFR×13 |
+| Requirements | [docs/01-requirements/SYSTEM_REQUIREMENTS.md](docs/01-requirements/SYSTEM_REQUIREMENTS.md) — FR×16 domains / NFR×13 |
 | Feature catalog | [docs/01-requirements/functional/FEATURES_CATALOG.md](docs/01-requirements/functional/FEATURES_CATALOG.md) — feature → code → API → admin-page map |
 | API | [docs/03-design/01-architecture/architecture/API.md](docs/03-design/01-architecture/architecture/API.md) — main-control-plane endpoints (`llm.kxpms.cn:8443`, 8 endpoints) |
 | Environment | [docs/environment.md](docs/environment.md) — deployment environments and variables |

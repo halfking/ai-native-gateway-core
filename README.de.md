@@ -114,7 +114,7 @@ HTTP/SSE → middleware chain → protocol/IR normalization → session assignme
 | `installer/` | Eigenständiges plattformübergreifendes Installer-/Upgrader-Modul |
 | `scripts/`, `deploy/` | Build-, Deploy-, Mirror- und Verifikations-Werkzeuge |
 
-Skalierungs-Snapshot (Code-Scan vom 2026-10-06): **~4,967 Go-Dateien · 2,728 Testdateien · 1,016 Migrations-SQLs · 67 Domain-Packages · 44 Binaries** unter `cmd/`.
+Skalierungs-Snapshot (Code-Scan vom 2026-10-22 @31466a01d): **~5,680 Go-Dateien · 3,333 Testdateien · 1,119 Migrations-SQLs · 68 Domain-Packages · 44 Binaries** unter `cmd/` (Dateizahlen ohne `vendor/` und `installer/`; Migrations-SQLs = vollständiger `sql/migrations/`-Baum; Binaries = main-Pakete laut `go list`).
 
 **Vertiefende Lektüre**
 
@@ -435,7 +435,7 @@ Siehe [ROADMAP.md](ROADMAP.md) für alle Details.
 | Session-Lifecycle | [docs/session-lifecycle.md](docs/session-lifecycle.md) — Session-Processing-Lifecycle, vollständig diagrammiert |
 | Architektur (evidence-graded) | [docs/03-design/01-architecture/architecture/ARCHITECTURE.md](docs/03-design/01-architecture/architecture/ARCHITECTURE.md) — interne maßgebliche Dokumentation (CURRENT/SHADOW/PARALLEL-Graduierung) |
 | Architektur (Überblick) | [docs/architecture.md](docs/architecture.md) — Systemdesign und Komponenten |
-| Anforderungen | [docs/01-requirements/SYSTEM_REQUIREMENTS.md](docs/01-requirements/SYSTEM_REQUIREMENTS.md) — FR×19 Domänen / NFR×13 |
+| Anforderungen | [docs/01-requirements/SYSTEM_REQUIREMENTS.md](docs/01-requirements/SYSTEM_REQUIREMENTS.md) — FR×16 Domänen / NFR×13 |
 | Feature-Katalog | [docs/01-requirements/functional/FEATURES_CATALOG.md](docs/01-requirements/functional/FEATURES_CATALOG.md) — Feature → Code → API → Admin-Seite Mapping |
 | API | [docs/03-design/01-architecture/architecture/API.md](docs/03-design/01-architecture/architecture/API.md) — Data-Plane- und Admin-API-Specs |
 | Umgebung | [docs/environment.md](docs/environment.md) — Deployment-Umgebungen und Variablen |

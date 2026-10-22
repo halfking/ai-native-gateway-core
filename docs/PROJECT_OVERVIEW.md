@@ -40,12 +40,12 @@ LLM Gateway Go 是一个**企业级大语言模型网关系统**，为企业提�
 
 | 指标 | 数值 | 说明 |
 |------|------|------|
-| Go源文件总数 | 5,641 个 | `find . -name "*.go" -not -path "./vendor/*" -not -path "./installer/*" \| wc -l` |
-| Admin API文件 | 732 个 | `find ./admin -name "*.go" -type f \| wc -l` |
+| Go源文件总数 | 5,680 个 | `find . -name "*.go" -not -path "./vendor/*" -not -path "./installer/*" \| wc -l` |
+| Admin API文件 | 737 个 | `find ./admin -name "*.go" -type f \| wc -l` |
 | 后台Worker文件 | 426 个 | `find ./bg -name "*.go" -type f \| wc -l` |
 | 领域模块数量 | 68 个 | `ls ./domains/ \| wc -l` (一级目录) |
 | 数据库迁移 | 1,119 个 SQL | `sql/migrations/` 全量；startup 数字序列活跃至 **894**（work_type 路由来源） |
-| 单元测试文件 | 3,296 个 | `find . -name "*_test.go" -not -path "./vendor/*" -not -path "./installer/*" \| wc -l` |
+| 单元测试文件 | 3,333 个 | `find . -name "*_test.go" -not -path "./vendor/*" -not -path "./installer/*" \| wc -l` |
 | 可执行程序 | 34 个 | `ls ./cmd/ \| wc -l` |
 
 ---
@@ -71,7 +71,7 @@ LLM Gateway Go 是一个**企业级大语言模型网关系统**，为企业提�
 │                                                                   │
 │  ┌─────────────────────────────────────────────────────────┐   │
 │  │            控制面 (Control Plane)                         │   │
-│  │  Admin API (732文件) + Vue SPA + 后台Worker (426文件)    │   │
+│  │  Admin API (737文件) + Vue SPA + 后台Worker (426文件)    │   │
 │  └─────────────────────────────────────────────────────────┘   │
 │                                                                   │
 │  ┌─────────────────────────────────────────────────────────┐   │
@@ -286,7 +286,7 @@ Client Request
 
 ### 3.8 Admin API与管理面板
 
-**位置**: `admin/` (732个Go文件), `web/` (Vue 3 + TS)
+**位置**: `admin/` (737个Go文件), `web/` (Vue 3 + TS)
 
 #### Admin API模块
 
@@ -407,12 +407,12 @@ Client Request
 ## 5. 代码统计
 
 ```
-Go源文件总数:     5,641 个 (不含 vendor/installer)
-Admin API文件:      732 个
+Go源文件总数:     5,680 个 (不含 vendor/installer；快照 @31466a01d)
+Admin API文件:      737 个
 后台Worker文件:     426 个
 领域模块:            68 个 (domains/ 一级目录)
 数据库迁移:         1,119 个 SQL (sql/migrations/; startup 活跃序列最新 894)
-测试文件:         3,296 个 (*_test.go, 不含 vendor/installer)
+测试文件:         3,333 个 (*_test.go, 不含 vendor/installer)
 可执行程序:           34 个 (cmd/)
 ```
 
@@ -480,7 +480,7 @@ Admin API文件:      732 个
 
 ### 8.1 核心文档
 
-- [系统需求规格说明书](./01-requirements/SYSTEM_REQUIREMENTS.md) - 系统需求（FR×19 域/NFR×13，2026-10-01 重生）⭐
+- [系统需求规格说明书](./01-requirements/SYSTEM_REQUIREMENTS.md) - 系统需求（FR×16 域/NFR×13，2026-10-01 重生）⭐
 - [功能特性目录](./01-requirements/functional/FEATURES_CATALOG.md) - 功能→代码→API→前端页映射（含 🔴 并行标注）⭐
 - [架构设计](./03-design/01-architecture/architecture/ARCHITECTURE.md) - 系统架构详细设计（事实快照 2026-10-01）
 - [新旧并行实现对比](./03-design/01-architecture/parallel-implementations-comparison.md) - 新旧版本实现重点标注与收敛方案

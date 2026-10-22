@@ -74,7 +74,7 @@ all="$*"
 case "$all" in
   *datname*)
       printf '%s\n' "${FAKE_DB_ALL_GB:-40.00}" ;;
-  *_request_logs_hot*)
+  *session_turns_hot*)
       printf '%s\n' "${FAKE_REQ_LOGS_HOT_MB:-100}" ;;
   *model_probe_runs_hot*)
       printf '%s\n' "${FAKE_MP_HOT_MB:-100}" ;;

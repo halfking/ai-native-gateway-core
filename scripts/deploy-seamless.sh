@@ -1398,13 +1398,13 @@ do_deploy() {
       remote_ssh "set -e; ln -sfn '$REMOTE_ROOT/releases/$old_version' '$REMOTE_ROOT/current'; ln -sfn '$REMOTE_ROOT/current/$BIN_NAME' '$REMOTE_ROOT/$BIN_NAME'; ln -sfn '$REMOTE_ROOT/current/web' '$REMOTE_ROOT/web'; ln -sfn '$REMOTE_ROOT/current/web-mobile' '$REMOTE_ROOT/web-mobile'; ln -sfn '$REMOTE_ROOT/current/version.json' '$REMOTE_ROOT/version.json'" || true
     fi
     err "候选实例未通过 ${probe_failed}: ${probe_detail}，旧实例保持服务"
-    if printf '%s' "$probe_fail_tail" | grep -q "gateway listen failed"; then
+    if grep -q "gateway listen failed" <<<"$probe_fail_tail"; then
       err "  排查: journal 见 gateway listen failed —— 候选端口 bind 失败（多为 address already in use），按上方 ss -ltnp 输出查端口占用进程"
-    elif printf '%s' "$probe_fail_tail" | grep -q "schema migrations failed transiently"; then
+    elif grep -q "schema migrations failed transiently" <<<"$probe_fail_tail"; then
       err "  排查: journal 见迁移重试/超时（context deadline exceeded）—— boot 迁移链自身在烧点，调大 PROBE_TIMEOUT_SECS 无效；查 252 PG 锁等待与 db.go ensure 链最近改动"
-    elif printf '%s' "$probe_fail_tail" | grep -q "gateway listening"; then
+    elif grep -q "gateway listening" <<<"$probe_fail_tail"; then
       err "  排查: journal 已到 gateway listening 但探针未通过 —— bind 后即退出或就绪过慢，可 PROBE_TIMEOUT_SECS=600 重跑；仍败则查上方 ss -ltnp 与进程退出码"
-    elif printf '%s' "$probe_fail_tail" | grep -qE "(schema ensured|CHECKPOINT)"; then
+    elif grep -qE "(schema ensured|CHECKPOINT)" <<<"$probe_fail_tail"; then
       err "  排查: ensure 链在推进但未到 gateway listening —— boot 仍在继续；journal 末条若持续 >3 分钟不动，按 boot 烧点排查（PG 锁等待），否则 PROBE_TIMEOUT_SECS=600 重跑"
     else
       err "  排查: 上方 journal 若显示仍在 ensure（列交集检查在大表上可 >3 分钟），用 PROBE_TIMEOUT_SECS=600 重跑；若 ensure 已走完仍 refused，查 candidate 端口 bind 报错"

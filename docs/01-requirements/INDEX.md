@@ -13,7 +13,7 @@
 
 ## 结构与职责
 
-- **SYSTEM_REQUIREMENTS.md**（2026-10-01 全码审计重生）：系统定位/角色/边界/FR×19 域/NFR×13/全局不变量。此前的需求散落在 `03-design/FEATURE-REQ-*.md`、`freediscovery-requirements.md`、`GOAL_CLIENT_SIGNALS.md`，本轮起统一收编入口为本文件，散落文档保留为单特性细化。
+- **SYSTEM_REQUIREMENTS.md**（2026-10-01 全码审计重生）：系统定位/角色/边界/FR×16 域/NFR×13/全局不变量。此前的需求散落在 `03-design/FEATURE-REQ-*.md`、`freediscovery-requirements.md`、`GOAL_CLIENT_SIGNALS.md`，本轮起统一收编入口为本文件，散落文档保留为单特性细化。
 - **functional/**：FR 级文档。FEATURES_CATALOG 为全功能实现映射（含 🔴 新旧并行/⚪ 死代码状态标注）；FR-*.md 为单特性深化模板。
 - **non-functional/**：NFR 汇总于 SYSTEM_REQUIREMENTS §5，本目录留作单特性 NFR 拆分。
 - **user-stories/**：预留（用户故事可从 SYSTEM_REQUIREMENTS §2 角色展开）。
