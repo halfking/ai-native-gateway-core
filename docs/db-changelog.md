@@ -9386,3 +9386,12 @@ embeddata 逐字 + down 可逆 + **真库腿纯只读**）。
 本通道 `files=()`、本台账。
 ★ 留证：门文件 `scripts/ursmcheck/section_14360_domain_chain_startup_images_test.go`。
 
+## 2026-10-22T21:41:44Z — deploy 154 build_seq 2817 (a55a4571)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 892 | `892_ursm_snapshot_slot_daily.sql` | `7e9ff9e2dc0cabbd0fd663c2f572573c1781358f66b2a0fbb816499d33d8a6fd` | applied+verified |
+| 893 | `893_fresh_install_partition_prereq.sql` | `94b304545d6c3d6a641df938429e0ae39ba15854527c37fd7a3dedd22efbd2a3` | applied+verified |
+| 894 | `894_rebind_candidate_failure_logs_diagnosis_view.sql` | `efa17d89a5302ea5b3bff51cbe33eda7c41046592ba265839202a80eaa4ac4b8` | applied+verified |
+| 895 | `895_domain_chain_startup_images.sql` | `737cafa849a12c63ab448a4475090083709ca59434faca5efda3fbfc015a5ee0` | applied+verified |
+
