@@ -46801,3 +46801,254 @@ func calendarDate(t time.Time) time.Time {
 - ★★★ **本轮两次「量具故障」都记在这里**（★ 都不是结论错误）：① ★ **首跑实验脚本时，模拟表缺生产的唯一索引 ⇒ 出现了重复行 ⇒ 我差点把它读成「生产上也会重复」** ⇒ ★ 补上生产约束后重跑即消失；② ★★ **判定「是否报错」时用了 stdout，而 psql 的 NOTICE/ERROR 都走 stderr ⇒ 「成功」被误判成「失败」** ⇒ ★★ **⇒ 通用式：★ 判定「一条 SQL 成功了吗」必须看 stderr（或用 `\set VERBOSITY verbose` 拿 SQLSTATE），★ 不能只看 stdout** ⇒ ★★★ **⇒ 而 psql 默认【不打印 SQLSTATE】⇒ 判定错误码要靠特征文本或显式开 VERBOSITY**。
 - ★★ **本节未改任何生产行为**（★ 841 的字节**只读**、模拟只改、已还原并与 HEAD 逐字比对 ✔）。
 
+### §143.70 ★★★★★★ **【把「9 月正文的恢复面」从一句空话变成可复算的数字】—— ★★ 并查出两个此前没人知道的事实：★ ① 会话正文【没有任何文件副本】；★ ② 唯一还活着的正文载体是网关侧的【降级兜底文件】，而它【无保留期、已堆 18.9 GB、且 41% 的文件单遍 gzip 读不出】**（对生产的写入 = 0，全部只读）
+
+#### §143.70.0 ★ 本节结论先行
+
+§143.68 给 2026-09 的 159,831 个「零正文会话」写下的定性是**对的**（正文从未被【长期】持久保存），但它留下的那句 **「恢复只剩『从备份挖』一条路」是一个从未被查过的空话** ⇒ ★ 本节把那一条路**逐面查实**，结论是：
+
+| 恢复面 | 实测结论 |
+| --- | --- |
+| ★ **会话正文的文件副本** | **不存在** —— 154/245 均为 `LLM_GATEWAY_STORAGE_MODE=full`（PG 模式）⇒ 仓内 `storageRuntime.bodiesStore` **全仓只有 `Close()`、没有 `Write()`** ⇒ 生产上 `data/hotzone/session_bodies` 子树在两台机器上**都不存在** |
+| ★ **热区请求镜像** | **不可能**留有 9 月正文 —— 保留期实测 **7 小时**（运行期日志 `retention=7h0m0s`；`settings_kv` 无 `storage.hotzone_*` 键 ⇒ 走默认）；日期目录最早 154=`2026-10-01` / 245=`2026-09-30`，且这两个目录里**文件数为 0**，全机最老文件 mtime = 当天 08:34 |
+| ★ **降级兜底文件（唯一还活着的正文载体）** | 存在，但**很小** —— 按仓内**打捞语义**实测：两台 9 月文件共捞回 **29,673 条记录 / 19,744 条带 `request_body`（5.50 GB 正文）**；与 252 上 9 月的 163,256 个会话交叉 ⇒ **只命中 7,497 个会话（4.59%）、8,725 个 turn 行（1.09%）** |
+| ★ **库内残留** | **零** —— `session_bodies_2026_09` 仅 3,749 行（且全在 09-30，是 v2 正文写入路径的**首批**）；`session_turns` 9 月的 `request_delta`/`response_delta` **全 NULL**；`session_turn_details_2026_09`（603 MB / 781,611 行）**无任何正文列**；`request_wal_2026_09`（193 MB）同样无正文列；`request_wal_bodies` **仅 1 行** |
+| ★ **PG 备份 / PITR** | **不可用** —— 252 上 `archive_mode=off`、`archive_command=(disabled)`、`wal_keep_size=0` ⇒ **无法回放 WAL 到 9 月**；`/backup` 是空目录 |
+
+⇒ ⇒ ★★★★★ **所以 §143.68 那句「恢复只剩从备份挖」要精确化为**：
+
+> **恢复面 = 网关降级兜底文件里的 4.59% 会话（8,725 个 turn 行，5.50 GB 正文），且只覆盖 09-08 起 —— 09-06 / 09-07 / 09-08 三天是零。**
+> **库内与 PG 备份面都是零。**
+> ⇒ ⇒ 若属主要恢复，**上限就是 4.59%**，代价是「先走打捞通道把 120 个损坏文件里的内容捞出来，再人工重放」。
+
+★ 并且本节顺带查出一个**新的容量项（属主决策 ⑫）**：那些兜底文件**没有任何保留期**，已经堆了 **18.9 GB**，而 154 的根分区已 **90% 满**。
+
+---
+
+#### §143.70.1 ★★ 前提纠正：★ `internal/sessionv2mirror` 是【PG outbox】，不是文件镜像
+
+§143.69 留下的待办写的是「★ 查 `internal/sessionv2mirror` 的镜像【**文件目录**】」⇒ ★ **这个前提本身是错的**，必须先纠正，否则会有人照着它去生产找一个不存在的目录。
+
+实测（仓内）：`internal/sessionv2mirror/outbox.go` 的文件头写得很清楚 ——
+
+```
+// 把失败路径持久化到 session_mirror_outbox（迁移 712）：登记行 payload = 完整
+// RequestLogEntry JSON（struct 全量 json tag），重放器（replay.go）unmarshal 后走
+// entryToProcessedRequest 同一桥接 → v2.Write（request_id 幂等）。
+```
+
+⇒ ★ 它写的是 **PG 表 `session_mirror_outbox`**（`InitMirrorOutbox(pool *pgxpool.Pool)`），**不落任何文件** ⇒ ★ 全包 grep `Dir|os.WriteFile|os.Create|MkdirAll` ⇒ **0 命中**。
+
+⇒ ★⇒ **通用式**：「先核实待办里的那个名词指向什么，再去查它」 —— ★ 一个**写错了的待办**会把下一轮带进一次**找不存在的东西**的空转，而且它看起来很像「已经查过了」。
+
+---
+
+#### §143.70.2 ★★★ 文件正文副本面：★ full/PG 模式下【不存在】
+
+**生产形态**（两台写侧网关）：
+
+| 主机 | 部署单元 | `LLM_GATEWAY_STORAGE_MODE` | `data/hotzone/` 子树 | `data/hotzone/session_bodies` |
+| --- | --- | --- | --- | --- |
+| 154 | `llm-gateway-go-canary@8781.service`（WorkingDirectory `/opt/llm-gateway-go`） | **full** | `cache` / `requests` | ★ **不存在** |
+| 245 | `llmgo-245-canary@8781.service` | **full** | `cache` / `requests` | ★ **不存在** |
+
+**仓内机制**：`cmd/gateway/storage_mode_init.go:283` 在 full 热区装配里创建了
+
+```go
+bodiesStore := filestore.NewFileBodiesStore(bodiesDir, 0)
+```
+
+★ **但全仓对这个字段的方法调用只有一处** —— `storage_mode_init.go:635` 的 `r.bodiesStore.Close()`；**没有任何 `Write()`** ⇒ ⇒ **full/PG 模式下会话正文不落文件**。真正的文件正文副本只存在于 **lite 模式**（`storage/factory/factory.go:220` → `f.config.BodiesDir` = `./data/session_bodies`）。
+
+★ ⇒ 两边互相印证：生产 `data/hotzone/session_bodies` **连目录都没有**，而仓内该路径**没有任何写入面**。
+
+★★ **顺带收紧一条上轮的结论**：§143.68 说「`retention_session_bodies_days` 的消费点是 `bg.NewBodiesTrimmer(lite.BodiesDir,…)` ⇒ **只管镜像目录文件**」⇒ ★ 本轮补上更硬的一句：**在 PG 模式下这个配置连消费点都不存在**（`BodiesDir` 属 lite）⇒ ⇒ 「v2 正文表在 DB 层无保留期」（§143.68 的 ≈230 MB/天）**没有任何文件侧的兜底**。
+
+---
+
+#### §143.70.3 ★★★ 热区请求镜像：保留期 7 小时 ⇒ 【不可能】留有 9 月正文
+
+**保留期的事实源**（不是推断，是运行期日志）：
+
+```
+{"time":"2026-10-21T17:32:58.652229509+08:00","level":"INFO","msg":"storage hotzone trimmer 已装配",
+ "mode":"full","dir":"./data/hotzone","retention_hours":7,"max_size_gb":1,
+ "cache_dir_in_hotzone":true,"trim_interval":"30m"}
+{"time":"2026-10-21T17:32:58.653365165+08:00","level":"INFO","msg":"hotzone trimmer 已启动",
+ "dir":"./data/hotzone","retention":"7h0m0s","max_bytes":1073741824,"interval":"30m0s"}
+```
+
+★ 为什么是默认值：`settings_kv` 里**没有任何 `storage.hotzone_*` 键**（只读实测 ⇒ `settings_kv` 里 `storage.*` 只有 4 个键：`request_logs_write_enabled=false` / `session_bodies_native_read=true` / `session_final_full_enabled=true` / `sessions_v2.*`）⇒ ⇒ 走 `settings/spec_storage.go` 的 Default（`hotzone_enabled=true` / `retention_hours=7` / `max_size_gb=1`）。
+
+**镜像目录实测**：
+
+| 主机 | 日期目录数 | 最早目录 | 总文件数 | 最老文件 mtime | 最早目录里的文件数 |
+| --- | --- | --- | --- | --- | --- |
+| 154 | 22 | `2026-10-01` | 2,984 | **2026-10-22 08:34**（≈ 7.2 h 前） | 0 |
+| 245 | 23 | **`2026-09-30`** | 1,276 | **2026-10-22 08:31** | **0** |
+
+⇒ ★⇒ 镜像里**每一个文件**的 mtime 都在最近 7 小时内 ⇒ ⇒ **9 月的正文不可能在镜像里**（连 9 月的**目录**都没有文件）。
+
+★ 机制对齐：`bg/hot_zone_trimmer.go` 的 `TrimOnce` 先按 **mtime** 删过期（`e.mod.Before(cutoff)`），再按 mtime 最旧先删回收配额；`cutoff = now - retention` ⇒ ★ **7 小时**是硬上界。
+
+---
+
+#### §143.70.4 ★★★★ 唯一还活着的正文载体 = 网关降级兜底文件；★ 且【单遍 gzip 读法会少捞 36%】
+
+`domains/dbdegradation` 是**降级兜底**：`RingBuffer` 的文件头写明「to capture telemetry request_log entries **that failed to persist** to the primary DB」；`cmd/gateway/main.go:6101` 把它接到 `dbMonitor` 的降级监听上 ⇒ ★ **它不是会话全量存档，只装「写库失败」的那部分**。
+
+★ **但它确实装正文**：9 月文件里 `type=request_log` 的记录带 `request_body`（实测 154 单文件 `sessions-2026-09-24-01` 一个文件就有 801 条带 body 的记录、269 MB 正文）。
+
+★★ **读法决定读数（量具级差异，36%）**：
+
+| 读法 | 154（9 月 48 个文件） | 245（9 月 23 个文件） |
+| --- | --- | --- |
+| 单遍 `gzip`（`gzip.NewReader`） | 16,598 条记录 | 338 条记录 |
+| ★ **仓内打捞语义**（`file_reader_salvage.go`） | **22,602 条记录** | **7,071 条记录** |
+| 差异 | **+36.2%** | **+1992%** |
+
+★ 为什么单遍会少：仓内 `file_reader.go:287-292` 的头注写明了现场形态 —— **「多进程 O_APPEND 追加 + 容器硬杀跳过 `gzip.Close` 会把日文件打成『孤儿 header + 完整 member + 截断尾』的混合体，原单遍 `gzip.NewReader` 在首个坏 member 即整体失败 ⇒ 整文件 0 条可恢复」**。
+
+⇒ ★★★ **⇒ 这是本轮第二次量具自伤**：我第一次就是用 `zcat` 测的（= 单遍读法）⇒ 得到「大部分文件损坏 ⇒ 不可用」的**错误结论**；★ **仓内早就有打捞通道**，正确读法比单遍多捞回 36%~1992%。
+
+★ 打捞后的完整读数（两台 9 月文件）：
+
+| 指标 | 154 | 245 | 合计 |
+| --- | --- | --- | --- |
+| 文件数 | 48 | 23 | 71 |
+| 捞回记录 | 22,602 | 7,071 | **29,673** |
+| ├ `request_log` | 16,576 | 3,170 | 19,746 |
+| ├ 带非空 `request_body` | **16,576** | **3,168** | **19,744** |
+| └ 正文总量（未压缩） | 4,649,358,298 B | 847,152,691 B | **5.50 GB** |
+| distinct `request_id` | 22,449 | 6,861 | **29,310**（两台**零重叠**） |
+| 完整 member / 截断 member | 82 / 3 | 49 / 1 | 131 / 4 |
+| 坏行（跳过） | 7 | 1 | 8 |
+| ★ **不可恢复的压缩字节** | **729,695,271 B（730 MB）** | **89,093,682 B（89 MB）** | **819 MB** |
+
+---
+
+#### §143.70.5 ★★★★ 交叉核对：★ 「可恢复」的**上限 = 7,497 个会话（4.59%）**
+
+把兜底文件捞出的 29,310 个 `request_id` 灌进 252，与 9 月的 `session_turns` 对撞（`session_turns.request_id` 存在，32 位 hex，与兜底文件主键同形）：
+
+```sql
+WITH ids AS (SELECT unnest(string_to_array('<29,310 个 id>', ' ')) AS rid),
+     sept AS (SELECT session_id, turn_no, request_id FROM public.session_turns
+               WHERE partition_date BETWEEN DATE '2026-09-01' AND DATE '2026-09-30')
+SELECT count(*) FROM sept JOIN ids ON ids.rid = sept.request_id;
+```
+
+| 指标 | 值 |
+| --- | --- |
+| 9 月 `session_turns` 行 | **798,278** |
+| 9 月 `session_turns` 会话 | **163,256** |
+| ★ **被兜底文件命中的 turn 行** | **8,725**（占 turn 行的 **1.09%**） |
+| ★ **被兜底文件命中的会话** | **7,497**（占会话的 **4.59%**） |
+
+★ **逐日分布**（命中集中在 9 月下旬）：
+
+| partition_date | turn 行 | 命中 turn 行 | 会话 | 命中会话 |
+| --- | --- | --- | --- | --- |
+| 2026-09-06 | 10,523 | **0** | 10,523 | **0** |
+| 2026-09-07 | 44,243 | **0** | 44,243 | **0** |
+| 2026-09-08 | 4,246 | **0** | 316 | **0** |
+| 2026-09-09 | 15,969 | 4 | 668 | 2 |
+| 2026-09-10 | 16,167 | 55 | 957 | 49 |
+| … | … | … | … | … |
+| 2026-09-24 | 10,830 | 1,125 | 8,036 | 1,125 |
+| 2026-09-25 | 12,466 | 978 | 9,533 | 963 |
+| 2026-09-26 | 6,046 | 1,440 | 3,512 | 1,415 |
+| 2026-09-30 | 6,953 | 268 | 5,345 | 224 |
+
+★⇒ **09-06 / 09-07 / 09-08 三天是彻底零覆盖**（59,012 个 turn 行）—— ★ 因为这三天的兜底文件**根本不存在**（154 的兜底文件最早是 09-08、245 是 09-10）。
+
+★⇒ 而 **9 月的 turn 行本身是从 09-06 才开始有的**（09-01~09-05 零行）⇒ ⇒ **兜底文件的覆盖窗口（09-08 起）与 turn 的产生窗口（09-06 起）只差两天**。
+
+---
+
+#### §143.70.6 ★★★ 库内与 PG 备份面：★ 全部为零
+
+| 候选面 | 实测 | 结论 |
+| --- | --- | --- |
+| `session_bodies_2026_09` | 3,749 行 / 3,425 会话，`partition_date` **全 = 2026-09-30** | 只是 v2 正文路径的**首批**（§143.68 已证） |
+| `session_turns_2026_09.request_delta` / `response_delta` | 逐日 **全 0**（9 月 25 天） | 宽表正文同步开关当时关闭 ⇒ 无正文 |
+| ★ `session_turns_2026_09.request_preview` | 187,776 行（**23.5%**），平均 182 字符，**最长 368** | ★ 截断片段，且只覆盖不到四分之一 |
+| ★ `session_turns_2026_09.response_preview` | 79,624 行（**10.0%**），平均 341 字符，**最长 2,175** | ★ 同上（对照：10 月 `request_preview` 覆盖 **275,309/275,715 = 99.9%** ⇒ ★ 9 月是**当时就没开**，不是「本来就没有」） |
+| `session_turns.search_text` / `trace_events` | 全 0 | 无 |
+| ★ `session_turn_details_2026_09` | 603 MB / 781,611 行 / 61 列 | ★ **无任何正文列**（内容型列只有 `outbound_msg_hashes`（**哈希**）、`attachments`、`quality_flags`、`dlp_violations`、`sensitive_keywords`、`content_safety_score`）⇒ 是**元数据宽表** |
+| ★ `request_wal_2026_09` | 193 MB / 446,777 行 / 17 列 | ★ 无正文列（`status`/`stage`/`error`/`compression_*` 等） |
+| ★ `request_wal_bodies` | **1 行** | WAL 侧正文几乎为零 |
+| `ursm_node_snapshot_min_legacy`（属主决策 ① 的 852 MB） | 2,614,886 行 / 56 列 | ★ **节点健康快照**（`available`/`health_status`/`lat_p95_ms`/`price_*`/`conc_*`/`fingerprint`/`generation`/`payload jsonb`）⇒ **不承载会话正文** |
+| ★ **WAL 归档 / PITR** | `archive_mode=off`、`archive_command=(disabled)`、`wal_keep_size=0`、`pg_stat_archiver.archived_count=0` | ★ **252 上不可能回放到 9 月** |
+| ★ `/backup`（252） | **空目录**（4.0 K） | ★ 无 PG 级基准备份 |
+
+⇒ ⇒ ★★★★★ **恢复面清单到此闭合：唯一非零的是兜底文件的 4.59%。**
+
+---
+
+#### §143.70.7 ★★★★ 新发现（容量项）：★ 降级兜底文件【无保留期】⇒ 18.9 GB ⇒ 属主决策 ⑫
+
+**写侧机制**（`domains/dbdegradation/file_writer.go`）：`NewFileWriter` 只有两个**写入上限** —— `maxFileSize = 100MB`（压缩后）、`maxDailyFiles = 50`；★ **没有任何按日期删除旧文件的路径**。
+
+**为什么不是别的东西在管**（逐条排除）：
+
+- `TTLManager`（`ttl_manager.go`）管的是 **Redis session key 的 TTL**（normal 7d / degraded 30d），**不是这些文件**；
+- `/etc/cron.d/llm-gateway-prune` 每周日 02:00 跑的是 `prune-releases.sh` —— 删的是**旧 release 二进制**；
+- `/etc/cron.d/cleanup-known-junk.sh` 每 30 min 跑，但**只在可用空间 < 5 GB 时才动手**，且清理对象是 procfs pagemap / dangling 镜像 / `/tmp` 产物，**不含 `data/backups`**。
+
+**生产实测**：
+
+| 主机 | `data/backups` 占用 | 文件数 | 最早文件 | 根分区 | 可用 |
+| --- | --- | --- | --- | --- | --- |
+| 154 | **4.9 GB** | 98 | 2026-08-17 | **90% 满** | 9.8 GB |
+| 245 | **14 GB** | 196 | 2026-07-15 | 85% 满 | 15 GB |
+
+**全量 gzip 完整性普查**（`gzip -t` 逐文件）：
+
+| 主机 | 单遍可读 | 单遍**读不出** | 读不出的字节 |
+| --- | --- | --- | --- |
+| 154 | 47 个（3.32 GiB） | **51 个** | 1.50 GiB |
+| 245 | 127 个（10.48 GiB） | **69 个** | 2.83 GiB |
+| **合计** | 174 个 | ★ **120 个（41%）** | **4.33 GiB** |
+
+⇒ ⇒ ★★★★ **⇒ 属主决策清单新增 ⑫**：
+
+> **⑫（新增，§143.70）**：网关侧**降级兜底文件没有任何保留期** ⇒ 154 **4.9 GB / 98 个文件**（2026-08-17 起）+ 245 **14 GB / 196 个文件**（2026-07-15 起）= **合计 18.9 GB**；★ 其中 **41% 的文件单遍 gzip 读不出**（多进程 O_APPEND + 容器硬杀跳过 `gzip.Close`）⇒ 要读必须走仓内 `file_reader_salvage.go` 的**打捞通道**，而打捞后仍有 **819 MB 压缩字节不可恢复**。
+> ⇒ 待拍板三件事：**保留期天数**（建议 30 天）/ **归档口径**（冷存还是直接删）/ **是否「先打捞再删」**（删之前把可恢复的那 19,744 条正文重放进 PG）。
+> ⇒ ★ **本轮只做登记**（`domains/dbdegradation/file_writer.go` 的 `FIXME-14370`，**零行为变更**），**未做任何删除**。
+
+---
+
+#### §143.70.8 ★ 本轮的三次量具故障（两次是自伤）
+
+1. ★★ **自伤 ①（聚合口径被污染）**：我写的第一版 September 导出聚合脚本，把**损坏文件里已读出的 id 也计进了全局集合**（`all_ids` 在文件中途失败时已被写入，而该文件的行数/条数却没计入合计）⇒ ⇒ 打印出「9 月 24,941 / 3,955 个 request_id」—— ★ **这个数比逐文件可读部分的和（16,529 / 308）大了一个量级，是假的** ⇒ ★ 判别动作：**★ 跨文件聚合时，「部分成功」的文件必须整体排除或整体标注，不能只让它的正计数进总数而让它的负计数被丢掉**。
+2. ★★ **自伤 ②（读法选错）**：用单遍 `gzip` 读兜底文件 ⇒ 得到「大部分文件损坏 ⇒ 不可用」⇒ ★ **仓内早就有打捞通道**，正确读法多捞回 36%~1992% ⇒ ★ 判别动作：**★ 读一个「已被仓内解决过的问题」的数据面之前，先查仓内有没有为它写过读取器**。
+3. ★ **自伤 ③（我自己的门第一版没有牙）**：本轮新写的门，判据 ③-1 用了**裸子串** `strings.Contains(body, "FIXME-14370")` ⇒ 变异 M2 把登记改名为 `FIXME-14370-REMOVED-BY-MUTATION`（**仍含该子串**）⇒ **门没有变红** ⇒ ★ ⇒ 门已加严为**行首锚定 + 「活着」的标记**（`FIXME-14370` 之后不得紧跟字母/数字/`-`/`_`）⇒ ★ 复验：M2（整块删除）与 M2b（改名）**双双变红** ⇒ ★ 判别动作：**★ 「登记存在」这类判据不能用裸子串 —— 它必须能识破『已作废 / 已摘掉』的写法**。
+
+★ 另有一次**生产读数超时的量具边界**：逐日 + 覆盖度两条查询第一次跑被 `statement_timeout` 打断（`canceling statement due to statement timeout`）⇒ ★ 复跑时显式加 `SET statement_timeout = 1500000;` 并把 `sept` CTE 标成 `MATERIALIZED` 才拿到读数 ⇒ ★ 这是**查询形态**问题（同一个 CTE 被复用两次时 PG 不物化 ⇒ 两次全扫），不是结论问题。
+
+---
+
+#### §143.70.9 诚实边界
+
+1. ⚠ **211 本轮未复查**：§143.68 已证 211 的 v2 正文从 10-12 才开始；本轮 211 的 SSH 出现 `Operation timed out`（瞬时），**未重新核实 211 自己的热区目录形态** ⇒ ★ 「无文件副本」的结论严格覆盖 **154 / 245**（它们才是 252 共享库的写侧）。
+2. ⚠ **兜底文件的完整性只做了 `gzip -t` 级普查 + 仓内打捞语义的等价实现**（Python 重写 `salvageGzipMembers`）⇒ ★ **未跑仓内 Go 实现本身**（仓内无 CLI 入口）⇒ ⇒ 若要真恢复，**应改用仓内 `FileReader.ReadRecordsWithStats` 跑一遍**，本轮的 29,673 条是**等价实现的读数**。
+3. ⚠ **未做重放实验**：本轮只统计了「兜底文件能覆盖哪些会话」，**没有验证把这些正文重放进 `session_bodies` 是否可行**（涉及唯一约束、幂等键、UTC 分区键错位 8h 等）⇒ ⇒ 4.59% 这个数字是**覆盖面的上限**，不是「可成功恢复量」。
+4. ⚠ **819 MB 不可恢复的压缩字节**里可能仍含可解析的记录（打捞是逐 member 重同步，member 之间的垃圾字节被计为 lost）⇒ ★ 819 MB 是**上界**，真实可捞量可能略高。
+5. ⚠ **18.9 GB 这个数是 `du` 口径**（含文件系统块开销），逐文件字节和为 17.5 GiB（154 4.82 GiB + 245 13.31 GiB）⇒ ★ 两者一致，差异来自块对齐。
+
+---
+
+#### §143.70.10 仓内产物
+
+- 门 `scripts/ursmcheck/section_14370_session_bodies_file_surface_test.go`（新，5 条）：
+  ① **full/PG 模式下不得出现会话正文的文件写入面**（go/ast：`cmd/gateway` 非测试代码里对 `bodiesStore` 的方法调用集合 ⊆ {`Close`}）；
+  ② **对照（正例）**：lite 工厂仍必须构造文件 bodies store（证明判据 ① 不是「全仓根本没有」的误判）；
+  ③ **反向断言**：降级兜底文件「无保留期」这个缺陷**必须被登记**（`FIXME-14370`，行首锚定 + 「活着」标记）**且当前不得已被修**（包内不得出现 `os.Remove` / `os.RemoveAll` / `os.Truncate`）；
+  ④ **热区镜像保留期必须有上界**（`storage.hotzone_retention_hours` 的 Default ≤ 24h、Max ≤ 168h）；
+  ⑤ **合成源码自证**：4 个反例（注入 `Write` / 删登记 / 登记改名 / 放大 Default）**必须让门变红**，正例必须通过。
+  ★ 变异 **M1 / M2 / M2b / M3 / M4 全红**，还原后 **md5 逐字一致**、门全绿。
+- `domains/dbdegradation/file_writer.go`（改）：新增 **`FIXME-14370`** 登记块（**零行为变更**）。
+- `scripts/audit/verify_session_bodies_recovery_surface.sql`（新）：本节全部**只读**读数集合（会话族列名 / 9 月逐日 turn↔bodies / 内容型候选列非空率 / v1 族形态 / WAL 归档设置 / archive 表盘点）。
+- 本节 runbook §143.70（十小节）+ LESSONS §252 / §253。
+
