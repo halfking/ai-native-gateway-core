@@ -310,7 +310,7 @@ bash scripts/local-host-deploy-bluegreen.sh deploy
 
 ```bash
 # 启用详细日志
-export LOG_LEVEL=debug
+export LLM_GATEWAY_LOG_LEVEL=debug
 bash scripts/local-host-deploy-bluegreen.sh deploy
 ```
 
