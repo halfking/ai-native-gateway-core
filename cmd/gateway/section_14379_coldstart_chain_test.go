@@ -360,9 +360,10 @@ func TestSection14379RecomputeScriptKeepsItsEvidence(t *testing.T) {
 //	  ⇒ ⇒ **门自己恒绿时，只有变异台能发现** ⇒ ⇒ 变异台是【门的元门】。
 //
 // ★★ 修法：★ 本门现在查【两个面】：
-//	  ① 【代码面】（剥注释后）：形态必须在【可执行部分】被点名（真在算它）；
-//	  ② 【登记面】（原文）：形态必须在【映射表】里被登记（复核用的依据）。
-//	  ⇒ ⇒ 两个面都要在 ⇒ ⇒ 任何一面被删都会红。
+//
+//	① 【代码面】（剥注释后）：形态必须在【可执行部分】被点名（真在算它）；
+//	② 【登记面】（原文）：形态必须在【映射表】里被登记（复核用的依据）。
+//	⇒ ⇒ 两个面都要在 ⇒ ⇒ 任何一面被删都会红。
 func TestSection14379ScriptMustCoverEveryLegShape(t *testing.T) {
 	raw, err := os.ReadFile(filepath.Join(repoRoot14379(t), section14379AuditPath))
 	if err != nil {
