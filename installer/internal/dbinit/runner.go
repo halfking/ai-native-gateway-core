@@ -1329,6 +1329,39 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			//   对象源文件 sql/objects/views/v_candidate_failure_logs_diagnosis.sql）
 			//   逐字同形 ⇒ 本迁移只把链终态**对齐真相源**，不改语义。
 			"894_rebind_candidate_failure_logs_diagnosis_view.sql",
+			// 895：给 **11 张 domain 链的表**补 startup 通道镜像
+			//   （domain/035/132/133/134/135/220/331 建的那批）。
+			//
+			//   缺陷本体（实测，非推断）：这 11 张表**只有 domain 通道建**，
+			//   而 **domain 链从来没有在生产上跑过** —— 生产只跑 startup
+			//   通道 + installer 的 StartupFiles，**domain 通道两者都不含**
+			//   ⇒ 生产 252 的 `schema_migrations` 里 domain 链的号**一个都没有**
+			//   ⇒ 那 11 张表在生产上**一个都不存在**
+			//   ⇒ 而它们**都有 Go 生产读写点**
+			//   （domains/credentialstate、domains/session、domains/dbdegradation、
+			//     domains/credential、admin/… 等）⇒ 相关功能在生产上 42P01。
+			//
+			//   逐张核对过**基线**（sql/schema/01-schema.sql）与**全 sql/ 树**：
+			//   ★ 这 11 张表**基线一个都没有建** ⇒ 全部要由 895 新建
+			//     （基线里的 `client_profiles text[]` / `notification_channels jsonb`
+			//      是**别的表上的列名**，不是表本身）。
+			//   ★ 同批域链源文件里的**兄弟表不镜像**：
+			//     tool_usage_stats / approval_routing_rules / credential_state_log
+			//     **已由基线建**（01-schema.sql:17738 / :5550 / :6774）
+			//     ⇒ 镜像它们会与基线抢同名对象；
+			//     notification_send_log 基线未建但**全仓 Go 零读写点**
+			//     ⇒ 不在本条口径内。
+			//
+			//   形态：**逐字照抄域链源文件**（列/类型/默认值/NOT NULL/CHECK/外键/
+			//   唯一约束/主键/索引/注释/序列），并补齐域链没有的依赖：
+			//   6 个触发器函数 + 7 个触发器（基线里**一个都没有**）。
+			//   幂等：CREATE TABLE/INDEX IF NOT EXISTS + CREATE OR REPLACE FUNCTION
+			//   + DROP TRIGGER IF EXISTS + CREATE TRIGGER。
+			//
+			//   顺序前提：**不依赖任何其它 startup 迁移** —— 外键目标
+			//   `public.credentials` 由**基线**建（01-schema.sql:6820）⇒ 生产已存在
+			//   ⇒ 链尾即可（与 893/894 同位置理由）。
+			"895_domain_chain_startup_images.sql",
 		},
 	}
 }

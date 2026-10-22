@@ -9285,3 +9285,104 @@ archive 表本身**一行不删**（保留是 392 的显式设计）。
 ★ 门：`sql/migrations/startup/migration_894_view_rebind_test.go`（三方同源 + 绑活表 + 6 点登记 +
 embeddata 逐字 + down 可逆 + **真库腿纯只读**）。
 ★ 留证：审计档 `docs/audit/2026-10-21-R72b-视图脱靶族与冻结行集扫描.md`。
+
+## 2026-10-22 — R79 轮：**11 张 domain 链的表补 startup 通道镜像**（895；已登记进 installer StartupFiles + 生产升级序列）
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 895 | `895_domain_chain_startup_images.sql` | `737cafa849a12c63ab448a4475090083709ca59434faca5efda3fbfc015a5ee0` | **registered in installer StartupFiles（链尾）+ 生产升级序列 `scripts/apply-db-revision-sequence.sh`** —— 建 **11 张表**（新建、**空表**）+ 6 个触发器函数 + 7 个触发器，**幂等、可重复执行**。★ 本轮**未部署生产**；对生产的写入 = **0**。down：`895_domain_chain_startup_images.down.sql`（sha256 `0970072a10fc8f56dfa7797f91ba3accd4093faf9b03d3b9582037bce5c2963c`） |
+
+★ **缺陷本体（实测，非推断）**：这 11 张表**只有 domain 通道建**
+（`sql/migrations/domain/` 下的 035 / 132 / 133 / 134 / 135 / 220 / 331 七个文件），
+而 **domain 链从来没有在生产上跑过** —— 生产只跑 **startup 通道**
+（`installer/internal/dbinit/runner.go` 的 `StartupFiles` + 本通道的 `files=()`）
+与 installer 的 00-prereqs / 01-schema / 02-seed，**domain 通道两者都不含**
+⇒ 生产 252 的 `schema_migrations` 里 domain 链的号**一个都没有**
+⇒ 那 11 张表在生产上**一个都不存在**
+⇒ 而它们**都有 Go 生产读写点**
+（`domains/credentialstate` / `domains/session` / `domains/dbdegradation` /
+`domains/credential` / `admin/…` 等）⇒ 相关功能在生产上因缺表而 42P01。
+
+★ **逐张结论（本轮要查清的核心事实）：11 张表**全部**要由 895 新建**
+（0 张被 baseline 覆盖）—— 逐张在**基线** `sql/schema/01-schema.sql` 与
+**全 `sql/` 树**（startup/ manual/ objects/ domain/）里找
+`CREATE TABLE [IF NOT EXISTS] [public.]<table>`，**11 张全部只命中 domain 源文件**：
+
+| 表 | 域链源文件 | baseline | 本镜像 |
+|---|---|---|---|
+| `client_profiles` | domain/132_client_profile.sql | 未建 | **新建** |
+| `client_behavior_events` | domain/132_client_profile.sql | 未建 | **新建** |
+| `credential_state_nodes` | domain/035_credential_state_management.sql | 未建 | **新建** |
+| `feishu_bot_routing_rules` | domain/220_feishu_bot_routing.sql | 未建 | **新建** |
+| `feishu_bot_send_log` | domain/220_feishu_bot_routing.sql | 未建 | **新建** |
+| `notification_channels` | domain/135_approval_routing.sql | 未建 | **新建** |
+| `provider_incidents` | domain/133_provider_reputation.sql | 未建 | **新建** |
+| `provider_reputation_timeseries` | domain/133_provider_reputation.sql | 未建 | **新建** |
+| `session_credential_rotations` | domain/331_session_state_and_rotations.sql | 未建 | **新建** |
+| `session_state_snapshots` | domain/331_session_state_and_rotations.sql | 未建 | **新建** |
+| `tool_executions` | domain/134_tool_execution.sql | 未建 | **新建** |
+
+⚠ 基线里的 `client_profiles text[]` / `notification_channels jsonb` /
+`notification_channels text[]` 是**别的表上的列名**，不是表本身（逐条 grep 确认）。
+
+★ **同批域链源文件里的「兄弟表」不镜像**（逐张核对过基线）：
+`tool_usage_stats`（基线 :17738）/ `approval_routing_rules`（基线 :5550）/
+`credential_state_log`（基线 :6774）**已由基线建** ⇒ 镜像它们会与基线抢同名对象；
+`notification_send_log` 基线未建但**全仓 Go 零读写点**（grep 命中 0）⇒ 不在本条口径内。
+⇒ ★ **同一批域链源文件里，只有 11 张表在生产上缺失。**
+
+★ **形态：逐字照抄域链源文件**（列/类型/默认值/NOT NULL/CHECK/外键/唯一约束/
+主键/索引/注释/序列），**并补齐域链没有的依赖**：
+**6 个触发器函数**（`update_client_profile_updated_at` /
+`update_feishu_route_updated_at` / `update_notification_channels_updated_at` /
+`update_provider_reputation_updated_at` / `calculate_incident_duration` /
+`calculate_tool_execution_duration`）与 **7 个触发器** —— 实测这 13 个对象
+**基线一个都没有**（逐个 grep 命中数全 0）⇒ 不补则触发器建不出来。
+★ 外键目标 `public.credentials` 由**基线**建（:6820）⇒ 生产已存在 ⇒ 无需镜像。
+
+⚠ **两处刻意的形态差异（均为「幂等化」，语义等价）**：
+① PostgreSQL **没有** `CREATE TRIGGER IF NOT EXISTS` ⇒ 域链 132/133/134 的裸
+`CREATE TRIGGER` 第二次跑报 42710 ⇒ 本条统一改成
+**`DROP TRIGGER IF EXISTS` + `CREATE TRIGGER`**（这正是域链 220/135 自己已有的形态）；
+② 域链 035 的两条索引（`idx_csn_credential_model` / `idx_csn_active_probe`）
+**原本没有** `IF NOT EXISTS` ⇒ 本条补上（否则第二次跑报 42P07）。
+③ 域链 035 末尾那条从 `credential_model_bindings` / `provider_models` 回填
+`credential_state_nodes` 的 INSERT 是**数据迁移** ⇒ **不镜像**。
+
+★ **真库实测（本地 PG 17.10，一次性库 `itgate_895`）**：
+· **形态等价性**：另建一次性库 `itgate_895d` 直接应用那 7 个域链源文件
+  （仅剥掉 035 的回填 INSERT），再把两库的 **11 张表的完整形态**导出比对
+  —— **COL 173 行 / CON 20 行 / IDX 56 行 / CMT 30 行 / TRG 7 行 / FUN 6 行
+  逐行 diff 完全一致**（列的类型/默认值/NOT NULL/identity/序位、约束定义、
+  索引定义、注释、触发器定义、函数体全部相同）
+  ⇒ ★ **镜像 == 域链建出来的形态**（不是「近似」，是逐行相同）。
+· **幂等**：连跑两次均 EXIT=0，第二次无任何报错。
+· **down 可逆**：down 后 **11 张表 0 残留 / 6 个函数 0 残留**，
+  而 `public.credentials` **幸存**（895 只引用它、没有创建它）。
+· **往返**：up → down → up 后形态仍与域链库逐行一致。
+· **功能**：7 项行为断言全过 —— 4 个 `updated_at` 触发器确实自增、
+  `provider_incidents.duration_seconds` 自动算成 1800、
+  `tool_executions.duration_ms` 自动算成 2000、
+  `CHECK` 触发 `check_violation`、外键触发 `foreign_key_violation`。
+
+⚠ **阻塞写**：本条**不用 `CREATE INDEX CONCURRENTLY`**（startup 迁移默认在事务里跑；
+`CONCURRENTLY` 在事务块内直接报错，除非带 `dbinit:no-transaction` 标记）⇒
+建索引用普通 `CREATE INDEX IF NOT EXISTS`（ShareLock）⇒ **建索引期间阻塞该表写入**。
+★ 但 11 张表在生产上是**新建的空表** ⇒ 索引建成时表是空的 ⇒ 实际阻塞窗口极短。
+配套 `SET LOCAL lock_timeout = '60s'` ⇒ 命中即失败（55P03）而不是堵住全库；
+`SET LOCAL statement_timeout = '300s'`（共享 PG 服务端默认 30s，见 855 文件头）。
+
+⚠ 本文件**不含任何 `request_logs` 词法 token** ⇒ 部署通道 runtime adapter
+（`request-logs-physical-v1` 世代探测）实测命中 **0 次**、零改写 ⇒ 执行体与源逐字相同。
+⚠ 本条**对生产零写入**（本轮只在一次性本地库上验证）；生产上应用本条 = 属主决策。
+
+★ **门**：`scripts/ursmcheck/section_14360_domain_chain_startup_images_test.go`
+（登记面 6 点逐点存在 + embeddata 逐字 + changelog sha 实测 + TSV 序位自洽 +
+`CONCURRENTLY` / `request_logs` 词法禁令 + 事务与超时预算 + **反向自证**）。
+★ **登记面（7 点）**：canonical SQL + `.down.sql`、embeddata 两副本、
+`installer/cmd/llm-gw-installer/main.go`（`go:embed` + `embeddedSQLFiles` 映射）、
+`installer/internal/dbinit/runner.go` 的 `StartupFiles`、
+`sql/schema/installed_startup_migrations.tsv` 第 **298** 位（索引 297，0-based）、
+本通道 `files=()`、本台账。
+★ 留证：门文件 `scripts/ursmcheck/section_14360_domain_chain_startup_images_test.go`。
+

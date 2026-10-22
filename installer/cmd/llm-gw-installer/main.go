@@ -969,6 +969,9 @@ var freshInstallPartitionPrereq893 []byte
 //go:embed embeddata/startup/894_rebind_candidate_failure_logs_diagnosis_view.sql
 var rebindCandidateFailureLogsDiagnosisView894 []byte
 
+//go:embed embeddata/startup/895_domain_chain_startup_images.sql
+var domainChainStartupImages895 []byte
+
 //go:embed embeddata/startup/859_tighten_pii_phone_intl_regex.sql
 var tightenPiiPhoneIntlRegex859 []byte
 
@@ -1311,6 +1314,7 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/427_task_type_centroids_model.sql":                                      taskTypeCentroidsModel427,
 	"startup/893_fresh_install_partition_prereq.sql":                                 freshInstallPartitionPrereq893,
 	"startup/894_rebind_candidate_failure_logs_diagnosis_view.sql":                   rebindCandidateFailureLogsDiagnosisView894,
+	"startup/895_domain_chain_startup_images.sql":                                    domainChainStartupImages895,
 	"startup/859_tighten_pii_phone_intl_regex.sql":                                   tightenPiiPhoneIntlRegex859,
 	"startup/852_models_canonical_column_set_reconcile.sql":                          modelsCanonicalColumnSetReconcile852,
 	"startup/489_credential_probe_queue_startup_backfill.sql":                        credentialProbeQueueStartupBackfill489,

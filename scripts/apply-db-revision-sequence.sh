@@ -1964,6 +1964,43 @@ files=(
   # shared_buffers=400kB ⇒ 每条语句规划 ~1s）属环境，不在迁移范围内 ——
   # 不改它，症状依旧。详见 docs/audit/2026-10-20-request-logs-session-turns-复核轮.md。
   "$ROOT_DIR/sql/migrations/startup/880_session_write_timeout_budget.sql"
+
+  # ── 895（2026-10-22）：11 张 domain 链的表补 startup 通道镜像 ────────────
+  #
+  # 缺陷本体（实测，非推断）：这 11 张表**只有 domain 通道建**
+  #   （domain/035_credential_state_management.sql / 132_client_profile.sql /
+  #    133_provider_reputation.sql / 134_tool_execution.sql /
+  #    135_approval_routing.sql / 220_feishu_bot_routing.sql /
+  #    331_session_state_and_rotations.sql），
+  #   而 **domain 链从来没有在生产上跑过** —— 生产只跑本通道 + installer 的
+  #   StartupFiles，**domain 通道两者都不含**
+  #   ⇒ 生产 252 的 `schema_migrations` 里 domain 链的号**一个都没有**
+  #   ⇒ 那 11 张表在生产上**一个都不存在**
+  #   ⇒ 而它们**都有 Go 生产读写点**
+  #   （domains/credentialstate / domains/session / domains/dbdegradation /
+  #     domains/credential / admin/… 等）
+  #   ⇒ 相关功能在生产上因缺表而 42P01。
+  #
+  # 逐张核对过**基线**（sql/schema/01-schema.sql）与**全 sql/ 树**：
+  #   ★ 这 11 张表**基线一个都没有建** ⇒ 全部要由 895 新建。
+  #   ★ 同批域链源文件里的**兄弟表不镜像**：tool_usage_stats /
+  #     approval_routing_rules / credential_state_log **已由基线建**
+  #     （01-schema.sql:17738 / :5550 / :6774）⇒ 镜像会与基线抢同名对象；
+  #     notification_send_log 基线未建但**全仓 Go 零读写点** ⇒ 不在本条口径内。
+  #
+  # 形态：**逐字照抄域链源文件**（列/类型/默认值/NOT NULL/CHECK/外键/唯一约束/
+  #   主键/索引/注释/序列），并补齐域链没有的依赖：6 个触发器函数 + 7 个触发器
+  #   （基线里**一个都没有** ⇒ 不补则触发器建不出来）。
+  # 幂等：CREATE TABLE/INDEX IF NOT EXISTS + CREATE OR REPLACE FUNCTION
+  #   + DROP TRIGGER IF EXISTS + CREATE TRIGGER ⇒ 可重复执行。
+  #
+  # 顺序前提：**不依赖任何其它 startup 迁移** —— 外键目标 public.credentials
+  #   由**基线**建 ⇒ 生产已存在 ⇒ 排在本数组**末尾**即可。
+  #
+  # ⚠ 本文件**不含任何 `request_logs` 词法 token** ⇒ 本通道的 runtime adapter
+  #   （:38-134，request-logs-physical-v1 世代探测）对它**零改写**
+  #   （实测该正则命中 0 次）⇒ 执行体与源逐字相同。
+  "$ROOT_DIR/sql/migrations/startup/895_domain_chain_startup_images.sql"
 )
 
 
