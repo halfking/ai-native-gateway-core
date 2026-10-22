@@ -133,10 +133,11 @@ func splitAfterUnionAll14380(s string) []string {
 // ★ 那是本轮【唯一】能把「语义落空」直接观测到的信号（★ 库侧看不到它）。
 //
 // ★ ★★ 同时钉住三个「量具前提」（★ 本轮实测踩到的）：
-//   ① 服务名必须是 `llm-gateway-go-canary@8782`（★ `llm-gateway-go` 在 154 上是 masked）
-//   ② 必须按 `body_size` 分类（★ 0 = 落空、> 0 = 真命中）
-//   ③ 必须把【一次性会话】与【固定长会话】分开（★ 混在一起会得出 56.89% 这种
-//      【被固定长会话稀释过的】中间值 ⇒ ⇒ 掩盖了「一次性会话 100% 落空」这个真结论）
+//
+//	① 服务名必须是 `llm-gateway-go-canary@8782`（★ `llm-gateway-go` 在 154 上是 masked）
+//	② 必须按 `body_size` 分类（★ 0 = 落空、> 0 = 真命中）
+//	③ 必须把【一次性会话】与【固定长会话】分开（★ 混在一起会得出 56.89% 这种
+//	   【被固定长会话稀释过的】中间值 ⇒ ⇒ 掩盖了「一次性会话 100% 落空」这个真结论）
 func TestSection14380GatewayLogEvidenceScriptExists(t *testing.T) {
 	raw := readRepoFile14380(t, section14380GatewayLogScript)
 
