@@ -925,16 +925,12 @@ do_deploy() {
     # 「refusing to deploy without the mobile surface」，部署在构建阶段中止。
     # 判据改为「缺失 **或** manifest 比 node_modules 新」：既保住无变更时不
     # 重装的优化，又不会漏装新依赖。
-    _pm_stale() {
-      local dir=$1 f
-      [[ -d "$dir/node_modules" ]] || return 0
-      for f in "$dir/package.json" "$dir/package-lock.json" "$dir/pnpm-lock.yaml"; do
-        [[ -f "$f" ]] || continue
-        [[ "$f" -nt "$dir/node_modules" ]] && return 0
-      done
-      return 1
-    }
-    if _pm_stale web; then
+    #
+    # 2026-10-22：该判据已抽到 scripts/lib/node-pm.sh 的 pm_deps_stale
+    # （单点真源）—— 211 的 docker 路径（deploy-seamless-docker.sh）用**同一个**
+    # 函数判「要不要重装」。两条部署路径各自演化过一次「重装判据」的漂移风险，
+    # 现在只剩一份实现。
+    if pm_deps_stale web; then
       log "web 依赖缺失或过期，按 lockfile 安装"
       pm_install web
     fi
@@ -943,7 +939,7 @@ do_deploy() {
     # 2026-10-04 统一入口轮：web-mobile（Hyper 移动前端）与 web 同链路构建。
     # 构建失败 die 而不是 warn —— 静默发布一个没有 /m 的版本等于把手机用户
     # 扔回 PC 页面（入口 302 与 /m 挂载一起消失）。
-    if _pm_stale web-mobile; then
+    if pm_deps_stale web-mobile; then
       log "web-mobile 依赖缺失或过期，按 lockfile 安装"
       pm_install web-mobile
     fi
