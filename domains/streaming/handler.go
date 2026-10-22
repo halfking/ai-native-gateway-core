@@ -3004,6 +3004,16 @@ func (h *ChatHandler) serveWithExecutor(
 			if assignment.AutoCreated {
 				w.Header().Set("X-Gw-Session-Id-Resume", sessionID)
 				w.Header().Set("X-Gw-Session-Auto", "true")
+				// ★ §143.86（落法 ⓪）：★ 把「本次请求由网关自动新建了会话」这个事实
+				// ★ 带进 ctx ⇒ ⇒ compression 层能判「这个会话在库里【必然】没有历史正文」
+				// ★ ⇒ ⇒ 省掉一次【必然落空】的读链（★ L3 及其上游腿）。
+				//
+				// ★ ★★ 必须同时更新 r：★ 压缩器拿的是 r.Context()（★ 本函数内的 Prepare 调用），
+				// ★ ⇒ ⇒ 只改 ctx 不改 r ⇒ ⇒ 标志到不了压缩器。
+				// ★ ★★ 开关默认【关】（★ ENABLE_SESSION_CACHE_SKIP_AUTO_CREATED）⇒ ⇒
+				// ★ ★★ 未打开时【零行为变更】。
+				ctx = compression.WithAutoCreatedSession(ctx, sessionID)
+				r = r.WithContext(ctx)
 			}
 			if assignment.ShouldPersist && h.lastSystemSession != nil && keyInfo != nil {
 				lsEntry := &session.LastSystemSessionEntry{
