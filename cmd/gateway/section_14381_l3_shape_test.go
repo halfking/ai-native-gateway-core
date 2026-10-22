@@ -208,6 +208,22 @@ func TestSection14381LegValueScriptMustMeasureIncrement(t *testing.T) {
 		t.Errorf("★ 复算脚本里只采样了 %d 次 —— "+
 			"★ ★★ 取增量至少要两份快照 ⇒ ⇒ 少了第二次 ⇒ ⇒ 差分口径不成立", n)
 	}
+	// ②★ ★★★ 必须有【两份不同的采样目标】（★ 只数 jsonb_object_agg 不够）
+	//   ★ 变异 M2 把第二个采样改成 `INTO t1_DISABLED` ⇒ ⇒ 次数仍是 2 ⇒ ⇒ 门曾【没牙】
+	//   ★ ⇒ ⇒ 必须同时认 t0 与 t1 两个落点。
+	//   ★★★ 必须查【完整形态】⇒ ⇒ 用词边界（★ RE2 支持 \b）
+	//     ★ 变异 M2 把落点改成 `INTO t1_DISABLED` ⇒ ⇒ 「INTO t1」子串仍在 ⇒ ⇒ 门曾【没牙】
+	//     ⇒ ⇒ ★★ 裸子串会让「把落点改坏」的变异逃过门（★ §143.73 同族纪律）
+	for _, target := range []struct{ name, pattern string }{
+		{"INTO t0", `\bINTO t0\b`},
+		{"INTO t1", `\bINTO t1\b`},
+	} {
+		if !regexp.MustCompile(target.pattern).MatchString(code) {
+			t.Errorf("★ 复算脚本里没有 %q —— "+
+				"★ ★★ 取增量至少要两份【不同】的快照 ⇒ ⇒ 只有一个落点 ⇒ ⇒ 差分口径不成立"+
+				"★ ★ （★ 变异 M2 曾把第二个落点改坏而门没抓到）", target.name)
+		}
+	}
 	// ③ 必须显式输出增量口径
 	for _, needle := range []string{"delta_calls", "ALIVE="} {
 		if !strings.Contains(code, needle) {
@@ -281,7 +297,10 @@ func TestSection14381NoPsqlVariableInsideDollarQuoted(t *testing.T) {
 	//   ★★★ 注意：★ Go 的 regexp 是 RE2 ⇒ **不支持负向后顾 `(?<!:)`** ⇒ ⇒ 用「匹配 + 手动看前一个字符」
 	//     （★ `:=` 天然不匹配，因为 `=` 不在标识符首字符集里）
 	varRef := regexp.MustCompile(`:[A-Za-z_][A-Za-z0-9_]*`)
-	for _, b := range blocks[1:] {
+	// ★★★ 必须检查【全部】DO 块：★ 第一版写的是 blocks[1:] ⇒ ⇒ 跳过了第一个块
+	//   ⇒ ⇒ 而 psql 变量注入恰恰出现在【第一个】块（Q1 的采样间隔）⇒ ⇒ 门【没牙】
+	//   ⇒ ⇒ ★ 本条由变异 M5 抓出（★ 变异台是门的元门）。
+	for _, b := range blocks {
 		for _, loc := range varRef.FindAllStringIndex(b, -1) {
 			if loc[0] > 0 && b[loc[0]-1] == ':' {
 				continue // ★ `::` 之类的前缀，不是变量引用
