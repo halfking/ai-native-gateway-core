@@ -107,16 +107,36 @@ die()  { printf '[%s] FATAL: %s\n' "$DD_TARGET" "$*" >&2; exit 1; }
 # 失败必须以失败告终（2026-10-22）—— 「完成标记」守卫
 # =============================================================================
 # ★ 为什么不能只看 $?：
-#   bash 的 `set -e` + `set -u` 组合下，**函数内部**的未绑定变量错误会让整个
-#   脚本以**退出码 0** 结束。实测矩阵（bash 5.x）：
-#     set -u  + 函数内未绑定           ⇒ 退出码 1（可察觉）
-#     set -eu + 函数内未绑定           ⇒ 退出码 **0**（★ 察觉不到）
-#     set -eu + `local a=$1 b=$a`      ⇒ 退出码 **0**
+#   EXIT trap 的**最后一条命令的退出码**会成为整个脚本的退出码。原写法
+#   `trap 'lock_release_local' EXIT` 里 lock_release_local 末尾是 `rm -rf`
+#   （成功 ⇒ 0）⇒ 任何**隐式**失败（set -u 的未绑定变量、set -e 的命令失败）
+#   都会把退出码洗成 0 ⇒ 部署其实没发生，调用方却拿到「成功」。
 #   ⇒ 在这个 2000+ 行、满是函数的引擎里，一次「其实啥都没干」的失败会被
 #     报成**成功**。这正是「部署结果是错的」那一类故障的形态：人看到绿字，
 #     线上没变（比如 llm.itestu.cn 仍是一段 JSON）。
 #   ⇒ 判定成败不依赖 $?，改用**完成标记**：只有真正走到收尾才置 1；
 #     没走到 ⇒ 退出码强制非 0（fail-closed）。
+#
+# ★★★★ 2026-10-23（12h 审计轮）**订正本块原先写的「实测矩阵」**：
+#   原矩阵写的是「set -eu + 函数内未绑定 ⇒ 退出码 **0**」⇒ ⇒ **本轮实测证伪**。
+#   实测矩阵（★ 每格都是真跑出来的，不是推出来的）：
+#     死法              没有 EXIT trap    有 EXIT trap(bash 3.2.57)   有 EXIT trap(bash 5.2.0)
+#     未绑定变量          1                 **0**（★ 察觉不到）        1
+#     命令失败(false)     1                 1                          1
+#     函数 return 1      1                 1                          1
+#     exit 7             7                 7                          7
+#   ⇒ ⇒ ★ **真正的因果变量是「有没有装 EXIT trap」与「哪个 bash」，不是 `set -eu`**：
+#     · **没有 trap 时**，`set -eu` + 未绑定变量退出 **1**（可察觉）；
+#     · **装了 trap 之后**，trap 入口处的 `$?` 才可能是 0，**且与 bash 版本相关**
+#       （macOS 自带 bash 3.2.57 ⇒ 0；bash 5.2.0 ⇒ 1）。
+#   ⇒ ⇒ ★ **光「保住 $?」是不够的**（在 bash 3.2 上它保住的恰恰是 0）⇒ ⇒
+#   ⇒ ⇒ ★ **真正让结果在两个解释器上都确定的是【完成标记守卫】（fail-closed）**
+#   ⇒ ⇒ ⇒ 这才是本守卫存在的理由（**不是**「set -eu 有 bug」）。
+#   ⇒ 复现脚本与完整读数：docs/12小时内修订审计-2026-10-23-0331.md §2.4。
+#   ⇒ 通用式（与 LESSONS「写『某形态失败 ⇒ exit N』必须带前提条件」同源）：
+#     ★ **无条件的事实句会被读成普适规律** ⇒ ⇒ 事实句必须带前提条件。
+#   ⇒ 回归门：scripts/ursmcheck/deploy_shared_build_lock_guard_test.go
+#     （★ 行为式：把本守卫的真实实现抽出来在多个 bash 上跑四种死法）。
 DD_DEPLOY_COMPLETED=0
 
 # dd_exit_guard_finalize <退出码> —— EXIT trap 的收尾（把退出码判成「成功/失败」）。
@@ -132,6 +152,30 @@ dd_exit_guard_finalize() {
 # dd_install_exit_guard —— 装上完成标记守卫（只对 deploy 模式装）。
 dd_install_exit_guard() {
   trap 'rc=$?; dd_exit_guard_finalize "$rc"' EXIT
+}
+
+# ── 共享构建锁（2026-10-23 12h 审计轮新增）────────────────────────────
+# ★ 为什么 docker 路径也必须拿这把锁：
+#   deploy-seamless.sh（245/154 systemd 路径）**早就知道**共享 checkout 的写操作
+#   必须单独串行 ⇒ 它在改 version / web/dist / 本地暂存前额外拿
+#   【共享构建锁】（kx-llm-gateway-build.lock；scripts/deploy-lib/lock.sh 的注释
+#   原文就是「A separate shared build lock protects checkout mutations」）。
+#   ★ 而 2026-10-22 引入的 dd_build_web_dist 让**本脚本也开始写同一个共享 checkout**
+#   （web/dist、web-mobile/dist、web/public/menu-config.json）
+#   ⇒ 若本脚本只拿【每目标部署锁】（kx-llm-gateway-deploy-<target>.lock）
+#   ⇒ ⇒ 两把锁**互不排斥** ⇒ ⇒ 一次 211 部署与一次 245 部署并发时，两个进程会在
+#   ⇒ ⇒ **同一个 web/dist 里同时写** ⇒ ⇒ 产出可能是【半截的 dist】
+#   ⇒ ⇒ 半截 dist 随 tar 上树 ⇒ ⇒ 线上是坏掉的 SPA。
+#   ⇒ ⇒ 所以：凡是会写这个 checkout 的路径，都必须拿**同一把**共享构建锁。
+#
+# 释放时机：tar 同步完成之后（远端部署阶段是长耗时，且远端用的是**另一份拷贝**，
+#   不再碰共享 checkout）⇒ ⇒ 与 systemd 路径的语义一致（它也在远端阶段前放锁）。
+# ⚠ 释放失败不能盖掉原始退出码 ⇒ 一律 `|| true`。
+DD_BUILD_LOCK_HELD=0
+dd_release_build_lock() {
+  [[ "${DD_BUILD_LOCK_HELD:-0}" == "1" ]] || return 0
+  DD_BUILD_LOCK_HELD=0
+  lock_release_build >/dev/null 2>&1 || true
 }
 
 # =============================================================================
@@ -411,10 +455,23 @@ if [[ -n "$VIA" ]]; then
     #   ⇒ 先把入口退出码存下来，释放锁之后再用它退出；
     #     并交给 dd_exit_guard_finalize 判「有没有走到完成标记」（fail-closed）。
     #   ⚠ `lock_release_local || true`：锁清理失败不能反过来盖掉原始失败码。
-    trap 'rc=$?; lock_release_local || true; dd_exit_guard_finalize "$rc"' EXIT
+    #   ⚠ dd_release_build_lock || true：同上（共享构建锁的清理也不能盖掉原始码）。
+    trap 'rc=$?; lock_release_local || true; dd_release_build_lock || true; dd_exit_guard_finalize "$rc"' EXIT
     log "已取得 ${DD_TARGET} 部署锁: ${LOCK_LOCAL_DIR}"
+    # ★ 共享构建锁（2026-10-23 12h 审计轮修）：与 deploy-seamless.sh（245/154
+    #   systemd 路径）**同一把**（kx-llm-gateway-build.lock）。
+    #   ⇒ 理由见上面 dd_release_build_lock 的注释：每目标部署锁只挡「同目标的两个
+    #   --via」，**挡不住「211 docker × 245 systemd」** ⇒ ⇒ 两者会同时写同一份 dist。
+    #   ⇒ 拿不到就**拒绝部署**（fail-closed）：宁可不部署，也不要产出一份半截 dist。
+    LOCK_LOCAL_BUILD_DIR="${TMPDIR:-/tmp}/kx-llm-gateway-build.lock"
+    LOCK_BUILD_TARGET="$DD_TARGET"
+    if ! lock_acquire_build; then
+      die "共享构建锁被占用（${LOCK_LOCAL_BUILD_DIR}）—— 另一个部署正在改这个共享 checkout（version / web/dist / 本地暂存）⇒ 请等它结束后再重试（勿在对方运行时硬抢）"
+    fi
+    DD_BUILD_LOCK_HELD=1
+    log "已取得共享构建锁: ${LOCK_LOCAL_BUILD_DIR}"
   else
-    warn "deploy-lib lock.sh 不在场，本次无部署锁（并发部署可能互相踩）"
+    warn "deploy-lib lock.sh 不在场，本次无部署锁（并发部署可能互相踩）—— ★ 这也意味着【共享构建锁】同样不可用 ⇒ ⇒ 跨部署路径（211 docker × 245/154 systemd）并发写同一份 web/dist 时【没有串行保护】"
   fi
   # ★ 构建提交号随行：目标树不带 .git，远端只能从这里拿到真实 HEAD，用来改写
   #   种子 version.json（否则 /version 显示的是工作区里别的部署留下的戳）。
@@ -429,7 +486,15 @@ if [[ -n "$VIA" ]]; then
   #   （构建生成的那份 menu-config.json 仍会随 tar 上树 —— 那本来就是
   #     要进 SPA 的构建产物。）
   DD_BUILD_SHA="$(git -C "$DD_REPO_ROOT" rev-parse --short=8 HEAD 2>/dev/null || true)"
-  if [[ -n "$DD_BUILD_SHA" && -n "$(git -C "$DD_REPO_ROOT" status --porcelain --untracked-files=no 2>/dev/null)" ]]; then
+  # ★ 2026-10-23（12h 审计轮修）：dirty 判定**排除三个版本产物**。
+  #   理由：bump-version.sh（systemd 路径 245/154 的 1/9 步）会改
+  #   VERSION / version.json / web/public/version.json 三个**被 git 跟踪**的文件
+  #   **且从不提交** ⇒ ⇒ 任意一次 245/154 部署之后，这个共享 checkout 就长期脏
+  #   ⇒ ⇒ 若把它们算进 dirty 判定 ⇒ ⇒ 2026-10-22 那次「版本戳不再恒带 -dirty」
+  #   ⇒ ⇒ 的修复会**从另一扇门被原样顶回来**（告警永久失效）。
+  #   ⇒ 版本产物的漂移 ≠ 源码漂移 ⇒ ⇒ 故排除。
+  #   ⇒ 门：scripts/ursmcheck/deploy_shared_build_lock_guard_test.go 判据④。
+  if [[ -n "$DD_BUILD_SHA" && -n "$(git -C "$DD_REPO_ROOT" status --porcelain --untracked-files=no -- . ':(exclude)VERSION' ':(exclude)version.json' ':(exclude)web/public/version.json' 2>/dev/null)" ]]; then
     DD_BUILD_SHA="${DD_BUILD_SHA}-dirty"
   fi
   # ★ 前端自动构建（2026-10-22）：**先构建，再判新鲜度**。
@@ -437,7 +502,14 @@ if [[ -n "$VIA" ]]; then
   # 「运维忘了 build」翻译成一句 FATAL，而正确形态是「脚本自己把产物构建出来」。
   # 构建发生在**部署机**侧（211 上没有 node/pnpm），产物随后随 tar 上树，
   # 远端那道门（权威判据 = 远端树里真正要部署的那份）就自然通过。
-  # 放在**拿锁之后**：两个并发部署不能同时构建同一份 dist。
+  #
+  # ★★★ 2026-10-23（12h 审计轮）**订正本行原注释**：
+  #   原注释写「放在**拿锁之后**：两个并发部署不能同时构建同一份 dist」。
+  #   ⇒ ⇒ **这句只对「同目标的两个 --via」成立**，对「211 docker × 245 systemd」
+  #   ⇒ ⇒ **不成立**（两把锁互不排斥）⇒ ⇒ 它是一条**假不变量**。
+  #   ⇒ ⇒ 现在真正保证这件事的是**上面那道共享构建锁**（与 deploy-seamless.sh 同一把）：
+  #   ⇒ ⇒ 凡是写这个 checkout 的路径都必须拿它 ⇒ ⇒ 跨路径也串行。
+  #   ⇒ 门：scripts/ursmcheck/deploy_shared_build_lock_guard_test.go 判据①（顺序）。
   dd_build_web_dist "$DD_REPO_ROOT"
   # ★ 前端产物新鲜度门（2026-10-20 211 502 事故收口）：**在同步之前**判。
   # 事故形态：这道门原先跑在「旧容器已 rm 之后」，一失败就等于「一次部署失败
@@ -489,6 +561,12 @@ if [[ -n "$VIA" ]]; then
   # 半截同步硬门：缺入口脚本就别往下跑（否则 bash 报 No such file → RC=127）
   ssh "$VIA" "test -f '$DD_REMOTE_ROOT/scripts/deploy-seamless-docker.sh'" \
     || die "同步后远端缺少 scripts/deploy-seamless-docker.sh（半截 tar？）；拒跑部署"
+  # ★ 共享构建锁到此可以放（2026-10-23 12h 审计轮）：
+  #   共享 checkout 的写操作（取 DD_BUILD_SHA → 构建前端 → 打包上树）已全部完成
+  #   ⇒ ⇒ 下一个部署可以安全地改这个 checkout ⇒ ⇒ 不必占着锁跑完整个远端阶段。
+  #   ⇒ 与 deploy-seamless.sh 的语义一致（它也在远端阶段前放锁）。
+  #   ⚠ EXIT trap 里还有一次兜底释放 ⇒ 正常路径与异常路径都只放一次（幂等）。
+  dd_release_build_lock
   # 基础镜像 build-arg 变量一并转发：权威仓 registry-<target>.itestu.cn（方案 42）；
   # 拉不到时引擎回落 /opt/kaixuan/base-images 离线包。空值 = 远端走脚本默认。
   # 入口未设时在 --via 侧按 target 拼 registry 默认，避免远端空值回落 docker.io。
