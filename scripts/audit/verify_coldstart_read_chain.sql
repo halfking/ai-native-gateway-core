@@ -111,14 +111,23 @@ WHERE calls > 50
 ORDER BY total_exec_time DESC;
 
 \echo '=== 3/7: ★★★★★ Q3 六条腿的【单快照】对账（★ 同一条 SELECT ⇒ 数字自洽）==='
+-- ★★★★ 认领清单（★ 【可执行部分】的形态点名 —— ★ 与上面注释里的映射表是两个面）
+--
+-- ★★ 为什么必须在【可执行部分】也点名一次（★ 本轮变异台实测出来的）：
+--   ★ 门若只查【剥注释后的代码】，★ 那它对「只在映射表里登记的形态」恒假
+--   ⇒ ⇒ 变异 M1/M2/M3/M6（删/改/搬走 queryid）全绿 ⇒ ⇒ 门没牙。
+--   ⇒ ⇒ 这里把六条腿的 queryid 放进【真正在算它们的那条 SELECT】的 CTE。
+--
+-- ★★ 另：★ 每条腿都必须【真的存在】⇒ ⇒ 若某条被淘汰或改名，这里会显示 NULL
+--   ⇒ ⇒ 【NULL 就是「这条腿的读数已经不可信」的信号】⇒ ⇒ 不要静默跳过。
 WITH legs AS (
-  SELECT 'L1_final_full_snapshot'  AS label, -7576398701530481720 AS qid UNION ALL
-  SELECT 'L1b_fallback_turnno',           -8278521907442285636 UNION ALL
-  SELECT 'L2_delta_chain',                -202669097973246213 UNION ALL
-  SELECT 'L3_join_turns_oldform',          8794675561828039885 UNION ALL
-  SELECT 'L3_coalesce_ff',                 3955058327330889760 UNION ALL
-  SELECT 'L3_coalesce_ff_v2',             -7776241007544382269 UNION ALL
-  SELECT 'L5_writepath_latest',            5347544359269580322
+  SELECT 'L1_final_full_snapshot'   AS label, -7576398701530481720 AS qid UNION ALL
+  SELECT 'L1b_fallback_turnno',            -8278521907442285636 UNION ALL
+  SELECT 'L2_delta_chain',                 -202669097973246213 UNION ALL
+  SELECT 'L3_join_turns_oldform',           8794675561828039885 UNION ALL
+  SELECT 'L3_coalesce_ff',                  3955058327330889760 UNION ALL
+  SELECT 'L3_coalesce_ff_v2',              -7776241007544382269 UNION ALL
+  SELECT 'L5_writepath_latest',             5347544359269580322
 )
 SELECT l.label, s.queryid, s.calls, s.rows,
        round(s.total_exec_time::numeric, 1) AS total_ms,
