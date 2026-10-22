@@ -50,7 +50,8 @@ import (
 //	MERGE INTO ｜ ON CONFLICT ｜ RETURNING
 //
 // ★ 注意 Go 的 `\b` 是 ASCII 词边界 ⇒ 中文紧邻时两侧都算边界 ⇒
-//   「中文里嵌一句 SELECT 也会被认出来」⇒ ★ 这正是我们要的。
+//
+//	「中文里嵌一句 SELECT 也会被认出来」⇒ ★ 这正是我们要的。
 var sqlContextRE = regexp.MustCompile(
 	`(?i)\b(SELECT\s+[\s\S]{0,400}?\bFROM\b` +
 		`|INSERT\s+INTO\b` +
@@ -68,17 +69,19 @@ var sqlContextRE = regexp.MustCompile(
 // cteNameRE = CTE（WITH x AS (...)）里的名字。
 //
 // ★★★ CTE 名【不是关系】⇒ 它出现在 `WITH base AS (…) SELECT … FROM base` 里
-//   ⇒ 若不排除 ⇒ `base` / `buckets` / `bucket_totals` / `agg` / `active_failures` …
-//   全被当成表名 ⇒ ⇒ ★★ 这正是第一版假阳性的一大类。
+//
+//	⇒ 若不排除 ⇒ `base` / `buckets` / `bucket_totals` / `agg` / `active_failures` …
+//	全被当成表名 ⇒ ⇒ ★★ 这正是第一版假阳性的一大类。
 var cteNameRE = regexp.MustCompile(`(?i)(?:\bWITH\s+(?:RECURSIVE\s+)?|,)\s*("?[A-Za-z_][\w$]*"?)\s*(?:\([^)]*\))?\s+AS\s*(?:NOT\s+MATERIALIZED\s+|MATERIALIZED\s*)?\(`)
 
 // relPositionRE = SQL 里的【关系位置】⇒ 产品按名引用关系的最强证据。
 //
 // ★ 位置词：FROM / JOIN / INTO / UPDATE / TRUNCATE / REFERENCES / COPY。
 // ★ 处理三个易错形态：
-//   ① `FROM (` ⇒ 那是函数调用（EXTRACT(x FROM y)）⇒ 不是关系 ⇒ 排除。
-//   ② `ONLY t` / `t*`（PG 继承）⇒ 允许可选前缀与尾部星号。
-//   ③ `INSERT INTO` / `COPY x FROM` / `COPY x TO` ⇒ COPY 后可跟 FROM/TO ⇒ 只取 COPY 后的第一个名。
+//
+//	① `FROM (` ⇒ 那是函数调用（EXTRACT(x FROM y)）⇒ 不是关系 ⇒ 排除。
+//	② `ONLY t` / `t*`（PG 继承）⇒ 允许可选前缀与尾部星号。
+//	③ `INSERT INTO` / `COPY x FROM` / `COPY x TO` ⇒ COPY 后可跟 FROM/TO ⇒ 只取 COPY 后的第一个名。
 var relPositionRE = regexp.MustCompile(
 	`(?i)\b(?:FROM|JOIN|UPDATE|TRUNCATE|REFERENCES|COPY)\s+(?:TABLE\s+)?(ONLY\s+)?(` + qualifiedIdentPattern + `)\s*(\*)?`)
 
@@ -96,7 +99,8 @@ var insertIntoRE = regexp.MustCompile(
 // sqlKeywordNames = 不能当关系名的 SQL 关键字/伪关键字。
 //
 // ★ 实测假阳性来源：`LATERAL`（`FROM x, LATERAL (…)`）、`VALUES`、`UNNEST`、`ONLY`、
-//   `EXISTS`、`ANY`、`SOME`、`ARRAY` 等。
+//
+//	`EXISTS`、`ANY`、`SOME`、`ARRAY` 等。
 var sqlKeywordNames = map[string]bool{
 	"lateral": true, "values": true, "unnest": true, "only": true,
 	"exists": true, "any": true, "some": true, "array": true,
@@ -202,7 +206,8 @@ func extractRelationPositions(sqlText string, ddl *ddlRelations, globalCTEs glob
 //
 // ★ 判据 = 名字含 `.` 且第一段不是仓内建出的 schema ⇒ ⇒ 它不是 schema 限定。
 // ★ ★ 保守说明：★ 若某张真表以「非 schema 的限定名」出现（例如 `otherdb.tbl`），
-//   它会被这条排除掉 ⇒ ⇒ ★ 这是**已知漏检**⇒ ⇒ 记在诚实边界里（属主可按需放宽）。
+//
+//	它会被这条排除掉 ⇒ ⇒ ★ 这是**已知漏检**⇒ ⇒ 记在诚实边界里（属主可按需放宽）。
 func isAliasQualified(name string, ddl *ddlRelations) bool {
 	i := strings.Index(name, ".")
 	if i < 0 {
@@ -302,7 +307,8 @@ var identScanRE = regexp.MustCompile(`(?i)"?([A-Za-z_][A-Za-z0-9_$]*)"?`)
 //
 // ★ 口径来源 = R104 轮实测决策：这些目录**也大量引用表名** ⇒ 不排除则差集被淹没。
 // ★ 排除 `installer/` 与 `sql/`、`migrations/` ⇒ 因为它们是【DDL 侧】的来源，
-//   若也进产品侧 ⇒ 「产品引用」会被自家 DDL 淹没 ⇒ 悬空引用恒为空。
+//
+//	若也进产品侧 ⇒ 「产品引用」会被自家 DDL 淹没 ⇒ 悬空引用恒为空。
 var excludedPathPrefixes = []string{
 	"vendor/",
 	"installer/",
@@ -449,7 +455,8 @@ func scanProductRepo(root string, goFiles []string, ddl *ddlRelations) (*product
 // collectProductLiterals 收集仓内全部 .go 文件的字符串字面量（★ 排除清单已应用）。
 //
 // ★★ 单独成函数是为了让【幂等自检】能复用同一批字面量 ⇒
-//   ⇒ 幂等检查不必重新解析 2000+ 个文件 ⇒ ⇒ 门的时间从 56s 降到 ~20s。
+//
+//	⇒ 幂等检查不必重新解析 2000+ 个文件 ⇒ ⇒ 门的时间从 56s 降到 ~20s。
 func collectProductLiterals(root string, goFiles []string, ps *productScan) ([]rawLit, error) {
 	var lits []rawLit
 	fset := token.NewFileSet()
@@ -598,8 +605,9 @@ func positionHas(sqlText, name string, ddl *ddlRelations, globalCTEs globalCTENa
 // detectPrefixSuspects 探测【拼接嫌疑】。
 //
 // ★ 判据 = 存在一个字面量，它【以该关系名开头】且【比它更长】⇒
-//   ⇒ 它可能就是 `"session_turns" + "_2026"` 这类拼接 ⇒
-//   ⇒ ★★ 该关系名不得被判为「可判定不依赖」。
+//
+//	⇒ 它可能就是 `"session_turns" + "_2026"` 这类拼接 ⇒
+//	⇒ ★★ 该关系名不得被判为「可判定不依赖」。
 //
 // ★ 只用【裸名】比较 ⇒ 因为拼接时通常不带 schema 前缀。
 func detectPrefixSuspects(ps *productScan, ddl *ddlRelations, literal string) {

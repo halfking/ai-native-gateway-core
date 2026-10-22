@@ -21,7 +21,8 @@
 //	③ 每条豁免都必须有非空理由（★ 「不写理由就豁免」这条路必须堵死）
 //
 // ★★ 附带：工具自身的 7 项自检（搜索面/无截断/清单可用性/解析器有牙/拼接守卫/
-//   剥注释/幂等）也在这道门里跑 ⇒ ⇒ **量具坏了 ⇒ 门直接红**（★ 而不是「门绿、量具瞎了」）。
+//
+//	剥注释/幂等）也在这道门里跑 ⇒ ⇒ **量具坏了 ⇒ 门直接红**（★ 而不是「门绿、量具瞎了」）。
 //
 // ★★ 「为什么工具与门同源」（★ 抽 internal/relrefs 的理由）：
 //
@@ -50,21 +51,22 @@ const repoRoot = "../.."
 // ★★ 【每条都必须有理由】—— ★ 理由不是注释，是判据（判据 ③ 会检查它非空）。
 //
 // ★★ 【不许把表做大】—— ★ 判据 ② 会检查「豁免表里的每一项都仍然真的存在」。
-//   ⇒ ⇒ 所以「提前豁免一个还不存在的问题」会在下一次运行时被抓出来。
+//
+//	⇒ ⇒ 所以「提前豁免一个还不存在的问题」会在下一次运行时被抓出来。
 var exemptedDanglingRefs = map[string]string{
 	// ── PostgreSQL 系统目录（pg_catalog）—— 由 PG 自身提供，仓内当然不建 ──
 	// ★ 这 11 个不是缺口 ⇒ 它们的「不在 DDL 集合里」是**正确**的。
-	"pg_am":              "PG 系统目录（pg_catalog）：由 PostgreSQL 自身提供 ⇒ 仓内不建是正确形态 ⇒ 不是缺口",
-	"pg_attribute":       "PG 系统目录（pg_catalog）⇒ 不是缺口",
-	"pg_class":           "PG 系统目录（pg_catalog）⇒ 不是缺口",
-	"pg_constraint":      "PG 系统目录（pg_catalog）⇒ 不是缺口",
-	"pg_index":           "PG 系统目录（pg_catalog）⇒ 不是缺口",
-	"pg_indexes":         "PG 系统目录（pg_catalog）⇒ 不是缺口",
-	"pg_inherits":        "PG 系统目录（pg_catalog）⇒ 不是缺口",
-	"pg_namespace":       "PG 系统目录（pg_catalog）⇒ 不是缺口",
-	"pg_policies":        "PG 系统目录（pg_catalog）⇒ 不是缺口",
+	"pg_am":               "PG 系统目录（pg_catalog）：由 PostgreSQL 自身提供 ⇒ 仓内不建是正确形态 ⇒ 不是缺口",
+	"pg_attribute":        "PG 系统目录（pg_catalog）⇒ 不是缺口",
+	"pg_class":            "PG 系统目录（pg_catalog）⇒ 不是缺口",
+	"pg_constraint":       "PG 系统目录（pg_catalog）⇒ 不是缺口",
+	"pg_index":            "PG 系统目录（pg_catalog）⇒ 不是缺口",
+	"pg_indexes":          "PG 系统目录（pg_catalog）⇒ 不是缺口",
+	"pg_inherits":         "PG 系统目录（pg_catalog）⇒ 不是缺口",
+	"pg_namespace":        "PG 系统目录（pg_catalog）⇒ 不是缺口",
+	"pg_policies":         "PG 系统目录（pg_catalog）⇒ 不是缺口",
 	"pg_stat_user_tables": "PG 系统目录（pg_catalog）⇒ 不是缺口",
-	"pg_trigger":         "PG 系统目录（pg_catalog）⇒ 不是缺口",
+	"pg_trigger":          "PG 系统目录（pg_catalog）⇒ 不是缺口",
 
 	// ── ★★★ 真悬空引用（★ 全仓唯一一条）──
 	//
@@ -91,7 +93,8 @@ var exemptedDanglingRefs = map[string]string{
 }
 
 // ★★ 三条判据共用【同一份】扫描结果（sync.Once）⇒
-//   ⇒ 全仓扫描只跑一次（★ 否则三条判据各跑一遍 ⇒ 门要多花 30s）
+//
+//	⇒ 全仓扫描只跑一次（★ 否则三条判据各跑一遍 ⇒ 门要多花 30s）
 var (
 	danglingOnce  sync.Once
 	danglingCache map[string]int
@@ -190,7 +193,8 @@ func TestDanglingRelationReferencesAreExempted(t *testing.T) {
 // TestDanglingRelationExemptionTableIsNotInflated：★ 豁免表不许【提前豁免不存在的问题】。
 //
 // ★ 为什么这条必须有：★ 若豁免表可以随便写名字 ⇒ ⇒ 「先豁免掉，省得以后再讨论」
-//   就会把**未来**的真缺口也一起掩盖掉 ⇒ ⇒ 门就白建了。
+//
+//	就会把**未来**的真缺口也一起掩盖掉 ⇒ ⇒ 门就白建了。
 func TestDanglingRelationExemptionTableIsNotInflated(t *testing.T) {
 	current := danglingRefsNow(t)
 	var stale []string
@@ -230,8 +234,8 @@ func TestDanglingRelationExemptionsMustHaveReason(t *testing.T) {
 func TestDanglingRelationGateHasTeeth(t *testing.T) {
 	// ★ 夹具：造一个【新的】悬空引用，看判定函数会不会放过它。
 	cur := map[string]int{
-		"pg_class":              48, // 已豁免
-		"brand_new_dangling_tbl": 3, // ★ 未豁免 ⇒ 必须被抓出来
+		"pg_class":               48, // 已豁免
+		"brand_new_dangling_tbl": 3,  // ★ 未豁免 ⇒ 必须被抓出来
 	}
 	got := notExempted(cur, exemptedDanglingRefs)
 	if len(got) != 1 || got[0] != "brand_new_dangling_tbl" {
