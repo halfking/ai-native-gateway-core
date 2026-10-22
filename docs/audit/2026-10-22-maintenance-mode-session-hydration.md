@@ -64,3 +64,17 @@ GET https://llmgo.kxpms.cn/api/auth/me?...client=shell&v=2.5.8
 
 - flow 自愈：`_fill-credentials.yaml` / `01-login-persistence.yaml` 对维护态卡死页
   做「杀进程重启走冷启水合」恢复（commit 1362db9）。
+
+## 追记（2026-10-22 13:50）：部署进展与双站握手发现
+
+- 生产 llm.kxpms.cn 已升 **2813 且 runtime_role: traffic-only → active**（部署侧已在行动）。
+- **关键新发现：部署版登录是双站同发握手** —— 同一秒的 authentication.login 在
+  llm.kxpms.cn 与 llmgo.kxpms.cn 的审计中同时出现（13:33:59 等）；llm.itestu.cn
+  亦见过同刻登录。⇒ **llmgo（仍 2812/traffic-only）不随 2813 一起修的话，
+  生产单站修好也无法恢复移动端登录**——握手会被仍坏的次站拖死
+  （实测：SPA 卡「正在登录…」/ me 探针吃 maintenance_mode JSON）。
+- 给部署侧的补充要求：**三站（至少 prod+llmgo）同步部署 2813+ 并确认
+  runtime_role=active**，移动端登录链才通。部署完成后收割命令（已备好）：
+  `maestro --device 43984EB8-… test --reinstall-driver <flow>`（iOS 侧
+  02/03/04/99-probe-deeplink，模板与凭据注入均就绪，见 llm-gateway-client
+  仓 adf3e87）。
