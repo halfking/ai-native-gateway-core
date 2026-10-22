@@ -104,6 +104,37 @@ warn() { printf '[%s] WARN: %s\n' "$DD_TARGET" "$*" >&2; }
 die()  { printf '[%s] FATAL: %s\n' "$DD_TARGET" "$*" >&2; exit 1; }
 
 # =============================================================================
+# 失败必须以失败告终（2026-10-22）—— 「完成标记」守卫
+# =============================================================================
+# ★ 为什么不能只看 $?：
+#   bash 的 `set -e` + `set -u` 组合下，**函数内部**的未绑定变量错误会让整个
+#   脚本以**退出码 0** 结束。实测矩阵（bash 5.x）：
+#     set -u  + 函数内未绑定           ⇒ 退出码 1（可察觉）
+#     set -eu + 函数内未绑定           ⇒ 退出码 **0**（★ 察觉不到）
+#     set -eu + `local a=$1 b=$a`      ⇒ 退出码 **0**
+#   ⇒ 在这个 2000+ 行、满是函数的引擎里，一次「其实啥都没干」的失败会被
+#     报成**成功**。这正是「部署结果是错的」那一类故障的形态：人看到绿字，
+#     线上没变（比如 llm.itestu.cn 仍是一段 JSON）。
+#   ⇒ 判定成败不依赖 $?，改用**完成标记**：只有真正走到收尾才置 1；
+#     没走到 ⇒ 退出码强制非 0（fail-closed）。
+DD_DEPLOY_COMPLETED=0
+
+# dd_exit_guard_finalize <退出码> —— EXIT trap 的收尾（把退出码判成「成功/失败」）。
+dd_exit_guard_finalize() {
+  local rc="${1:-0}"
+  if [[ "$DD_DEPLOY_COMPLETED" != "1" && "$rc" == "0" ]]; then
+    rc=1
+    printf '[%s] FATAL: 部署未走到完成标记却将以 0 退出（bash set -eu 的隐式失败会丢退出码）—— 按失败处理\n' "$DD_TARGET" >&2
+  fi
+  exit "$rc"
+}
+
+# dd_install_exit_guard —— 装上完成标记守卫（只对 deploy 模式装）。
+dd_install_exit_guard() {
+  trap 'rc=$?; dd_exit_guard_finalize "$rc"' EXIT
+}
+
+# =============================================================================
 # 前端产物新鲜度门（2026-10-20 211 502 事故收口）
 # =============================================================================
 # 211 的前端是「部署机预构建 → 随 tar 上树 → 种子进容器」，引擎**不构建**前端，
@@ -211,6 +242,67 @@ dd_preflight_web_dist() {
   return $_rc
 }
 
+# dd_build_web_dist <repo 根>
+#   在**部署机**侧把 web/ 与 web-mobile/ 的前端产物构建出来。
+#
+#   为什么必须有这一步（2026-10-22「llm.itestu.cn 打开是一段 JSON」事故）：
+#   211 的前端是「部署机预构建 → 随 tar 上树 → 种子进容器」，引擎本身**不构建**
+#   前端。历史口径把「构建」当成运维手册里的一条前置条件 ⇒ 漏了就出三种故障，
+#   而且是**同一个根因链**：
+#     ① dist 比源码旧 ⇒ 新鲜度门拦死整次部署（2026-10-22 用户实测）；
+#     ② 带 DD_ALLOW_STALE_WEB=1 硬闯 ⇒ 线上是**旧 SPA**，但部署**显示成功**
+#        （这比 ① 更坏：门被绕过了，缺陷被藏起来了）；
+#     ③ dist 压根不存在（纯 API 形态）⇒ 容器里没有 /app/web/dist
+#        ⇒ Go 的 streaming.NewStaticHandler 因目录不存在返回 nil
+#        ⇒ GET / 落到「版本 JSON」分支 ⇒ **站点根路径是一段 JSON**。
+#   ⇒ 把构建收进脚本：新鲜度门就从「运维手册里的前置条件」变成
+#     「脚本自己保证的不变量」，②③ 两种失败形态也一起消失。
+#
+#   口径与 245/154 的 systemd 路径（scripts/deploy-seamless.sh）**完全一致**：
+#     · 包管理器由 scripts/lib/node-pm.sh 单点决策（pnpm 官方 / npm 并行）；
+#     · 依赖「缺失 **或** manifest 比 node_modules 新」才按 lockfile 重装
+#       （pm_deps_stale，SSOT，两条部署路径共用同一个判据）；
+#     · 构建失败 ⇒ die（绝不「构建失败就拿旧产物继续部署」）。
+#
+#   只在**部署机**侧跑（--via 分支）：211 上没有 node/pnpm，且源码在部署机上
+#   才是最新的（远端树只是同步过去的快照）。远端那侧仍然只做新鲜度**判定**
+#   （权威判据 = 远端树里真正要部署的那份）。
+#
+#   逃生舱：DD_SKIP_WEB_BUILD=1 跳过构建（离线/CI 场景）。注意它**不等于**
+#   「部署旧前端」：跳过后新鲜度门照常判定，陈旧仍会 die；纯 API 形态要另外
+#   显式 DD_ALLOW_STALE_WEB=1（引擎里已有这个逃生舱，语义不变）。
+dd_build_web_dist() {
+  # ⚠ bash 的 `local a=$1 b=$a` **不行**：local 会先把所有名字声明成未绑定
+  #   的局部变量，再逐个赋值 ⇒ `b=$a` 展开时 a 还是未绑定 ⇒ set -u 直接
+  #   「_root: unbound variable」把脚本打死（2026-10-22 实测，第一次跑就撞上）。
+  #   ⇒ 分成两条 local。
+  local _root="$1"
+  local _pm_lib="$_root/scripts/lib/node-pm.sh"
+  local _dir
+  if [[ "${DD_SKIP_WEB_BUILD:-0}" == "1" ]]; then
+    warn "DD_SKIP_WEB_BUILD=1：跳过前端自动构建（新鲜度门仍照常判定；纯 API 形态请另设 DD_ALLOW_STALE_WEB=1）"
+    return 0
+  fi
+  [[ -f "$_pm_lib" ]] || die "缺少 ${_pm_lib}（前端包管理器 SSOT 不在场，无法构建前端）"
+  # shellcheck source=/dev/null
+  source "$_pm_lib"
+  # 先把「这台机器能不能构建前端」这件事说清楚，别让 pnpm 缺失伪装成
+  # 「安装失败」（node-pm.sh 的报错是「pnpm 与 npm 都不在 PATH 上」）。
+  pm_resolve >/dev/null 2>&1 || die "未找到 node/pnpm（前端构建需要 Node.js 20+ 与 pnpm 或 npm）"
+  for _dir in web web-mobile; do
+    [[ -f "$_root/$_dir/package.json" ]] || die "缺少 $_root/$_dir/package.json（前端源码不在仓内，无法构建）"
+    if pm_deps_stale "$_root/$_dir"; then
+      log "前端依赖（${_dir}）缺失或过期，按 lockfile 安装"
+      pm_install "$_root/$_dir" || die "前端依赖安装失败（${_dir}）—— 拒绝部署"
+    fi
+    log "构建前端（${_dir}）..."
+    pm_run build "$_root/$_dir" || die "前端构建失败（${_dir}）—— 拒绝部署旧产物"
+    [[ -f "$_root/$_dir/dist/index.html" ]] || die "前端构建结束但 $_root/$_dir/dist/index.html 不存在（构建产物不完整）—— 拒绝部署"
+    log "前端产物就绪：$_root/$_dir/dist"
+  done
+  return 0
+}
+
 # redis-cli 认证参数（由 redis_auth_args 填充；见 Redis 探测段）
 REDIS_AUTH=()
 
@@ -308,11 +400,29 @@ if [[ -n "$VIA" ]]; then
     if ! lock_acquire_local; then
       die "另一个 ${DD_TARGET} 部署正在本机进行（锁：${LOCK_LOCAL_DIR}）。并发会话请等待其完成；确认无存活部署进程后可 rm -rf 该锁目录重试（勿在对方运行时硬抢）"
     fi
-    trap 'lock_release_local' EXIT
+    # ★ 退出码必须被保住（2026-10-22 修）：EXIT trap 的**最后一条命令的退出码**
+    #   会成为整个脚本的退出码。原写法 `trap 'lock_release_local' EXIT` 里
+    #   lock_release_local 末尾是 `rm -rf`（成功 ⇒ 0）⇒ 任何**隐式**失败
+    #   （set -u 的未绑定变量、set -e 的命令失败）都会把退出码洗成 **0**
+    #   ⇒ 部署其实没发生，调用方却拿到「成功」。
+    #   实测（2026-10-22）：第一次跑自动构建就被 `_root: unbound variable`
+    #   打死，而 deploy-211.sh 的退出码是 **0** —— 正是「部署结果是错的」
+    #   那种形态（人看到绿字，线上没变）。
+    #   ⇒ 先把入口退出码存下来，释放锁之后再用它退出；
+    #     并交给 dd_exit_guard_finalize 判「有没有走到完成标记」（fail-closed）。
+    #   ⚠ `lock_release_local || true`：锁清理失败不能反过来盖掉原始失败码。
+    trap 'rc=$?; lock_release_local || true; dd_exit_guard_finalize "$rc"' EXIT
     log "已取得 ${DD_TARGET} 部署锁: ${LOCK_LOCAL_DIR}"
   else
     warn "deploy-lib lock.sh 不在场，本次无部署锁（并发部署可能互相踩）"
   fi
+  # ★ 前端自动构建（2026-10-22）：**先构建，再判新鲜度**。
+  # 顺序不能反：门判的是「产物是否比源码新」，不构建就判 ⇒ 门只会把
+  # 「运维忘了 build」翻译成一句 FATAL，而正确形态是「脚本自己把产物构建出来」。
+  # 构建发生在**部署机**侧（211 上没有 node/pnpm），产物随后随 tar 上树，
+  # 远端那道门（权威判据 = 远端树里真正要部署的那份）就自然通过。
+  # 放在**拿锁之后**：两个并发部署不能同时构建同一份 dist。
+  dd_build_web_dist "$DD_REPO_ROOT"
   # ★ 前端产物新鲜度门（2026-10-20 211 502 事故收口）：**在同步之前**判。
   # 事故形态：这道门原先跑在「旧容器已 rm 之后」，一失败就等于「一次部署失败
   # = 服务下线」（llm.itestu.cn 502，根因见 dd_preflight_web_dist 注释）。
@@ -377,7 +487,24 @@ if [[ -n "$VIA" ]]; then
   DD_RUNTIME_BASE_IMAGE="${DD_RUNTIME_BASE_IMAGE:-${DD_BASE_REGISTRY}/lang-base/alpine:3.22-amd64}"
   log "在 $VIA 上执行 deploy（builder=${DD_GO_BASE_IMAGE} runtime=${DD_RUNTIME_BASE_IMAGE}）..."
   ssh "$VIA" "cd '$DD_REMOTE_ROOT' && DD_BUILD_SHA='${DD_BUILD_SHA}'${_dd_fwd} LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY='${LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY:-}' PROBE_TIMEOUT_SECS='${PROBE_TIMEOUT_SECS:-}' bash scripts/deploy-seamless-docker.sh ${_dd_args}"
-  exit $?
+  _dd_rc=$?
+  # 只有远端真的跑完了，才置完成标记（fail-closed 的另一半）。
+  if [[ $_dd_rc -eq 0 ]]; then
+    DD_DEPLOY_COMPLETED=1
+  else
+    warn "远端部署返回 ${_dd_rc}（未置完成标记 ⇒ 本地按失败退出）"
+  fi
+  exit $_dd_rc
+fi
+
+# ★ 目标机侧（211 本机执行的那一份）的完成标记守卫。
+#   远端这一份**没有** --via 分支里的锁 trap，所以要单独装守卫 ——
+#   否则「函数内未绑定变量 ⇒ bash 退出码 0」这条坑在目标机侧照样会把
+#   「啥都没干」报成成功（2026-10-22 实测矩阵）。
+#   ⚠ 只对 deploy 模式装：--status / --probe-only / --stop 本来就是
+#   「看一眼」的动作，不该被「没走到完成标记」判成失败。
+if [[ "$MODE" == "deploy" ]]; then
+  dd_install_exit_guard
 fi
 
 mkdir -p "$DD_STATE_DIR/env" "$DD_STATE_DIR/logs"
@@ -2211,3 +2338,7 @@ log "  PG      : $PG_CONTAINER  ($( ((PG_REUSED)) && echo 复用 || echo 新建 
 log "  Redis   : $REDIS_CONTAINER ($( ((REDIS_REUSED)) && echo 复用 || echo 新建 ))  库号=db${REDIS_DB} (从 ${DD_REDIS_DB_START} 倒排)"
 log "  密钥    : $ENV_FILE (chmod 600，勿提交)"
 log "=========================================================="
+# ★ 完成标记（fail-closed 守卫的另一半）：只有真正走到这里，退出码 0 才代表
+#   「这次部署成功了」。任何提前退出的路径（die / abort / 隐式失败）都会被
+#   dd_exit_guard_finalize 判成失败。
+DD_DEPLOY_COMPLETED=1

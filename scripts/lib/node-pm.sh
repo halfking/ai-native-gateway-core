@@ -98,6 +98,34 @@ pm_install() {
     esac
 }
 
+# pm_deps_stale <dir> — 依赖树是否需要（重新）安装。
+#
+# 返回 0 = 需要安装（node_modules 缺失，或 manifest 比 node_modules 新）
+# 返回 1 = 依赖树是最新的，不必重装。
+#
+# 为什么不是「node_modules 不存在才装」（2026-10-10 实测，deploy-seamless.sh）：
+# 合并上游后 package.json / lockfile 新增依赖时旧 node_modules 目录仍在，
+# 「装依赖」的分支永远不进，构建直接 TS2307。实录：mobile 分支并入 main 后
+# AppAccountSheet.vue 引入了 qrcode，web-mobile 构建失败、
+# 「refusing to deploy without the mobile surface」，部署在构建阶段中止。
+# ⇒ 判据必须是「缺失 **或** manifest 比 node_modules 新」。
+#
+# 单点真源：deploy-seamless.sh（245/154 systemd 路径）与
+# deploy-seamless-docker.sh（211 docker 路径）都调它 —— 两边的「要不要重装」
+# 判据一旦各自演化就会出现「一边装、一边不装」的漂移（2026-10-22 建）。
+#
+# 兼容性：dir 传绝对路径或相对路径都可以（deploy-seamless.sh 用相对路径，
+# 因为它 cwd 就是仓库根；docker 引擎用绝对路径）。不使用 bash 4 语法。
+pm_deps_stale() {
+    local dir="${1:-${WEB_DIR:-web}}" f
+    [ -d "$dir/node_modules" ] || return 0
+    for f in "$dir/package.json" "$dir/package-lock.json" "$dir/pnpm-lock.yaml"; do
+        [ -f "$f" ] || continue
+        [ "$f" -nt "$dir/node_modules" ] && return 0
+    done
+    return 1
+}
+
 # pm_run <script> [dir] [args...] — 用选定的包管理器跑一个 package.json script。
 pm_run() {
     local script="$1"; shift
