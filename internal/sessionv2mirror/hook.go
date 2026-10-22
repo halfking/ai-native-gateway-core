@@ -441,6 +441,31 @@ func entryToProcessedRequest(entry *telemetry.RequestLogEntry, sessionID string)
 		req.ResponseBody = parseResponseBody(*entry.ResponseBody)
 	}
 
+	// ★★★★★★ FIXME-14374（2026-10-22 §143.74 轮，只登记、★ 零行为变更）：
+	//	★★★★★ 本行的守卫条件 `len(entry.OutboundBody) > 0` 是【v2 正文表二次方放大】
+	//	★ 的**根因锚点** ⇒ ⇒ 它的后果有【三个】，且【互不相同】：
+	//	★ ① 存储：req.OutboundBody 为空 ⇒ 逐轮 outbound_body 落库为 jsonb 'null'
+	//	★    ⇒ ⇒ 下一轮的 delta 差集【基准读空】⇒ ⇒ extractRequestDelta 走
+	//	★    「len(LastOutboundBody) == 0 ⇒ return RequestBody」⇒ ⇒
+	//	★    **每轮把客户端完整历史整份落成 request_delta** ⇒ ⇒ 二次方放大。
+	//	★ ② 读侧：TurnReader.LoadChain 是【纯拼接、无去重】⇒ ⇒ 重建出的会话里
+	//	★    **同一个 system prompt 会出现 N 次**（★ 实测：15 轮的会话里出现 14 次）。
+	//	★ ③ 压缩器输入：session_cache.loadFromDB 先试 LoadLatestOutbound（★ 它把
+	//	★    jsonb 'null' 当空 ⇒ 返回 nil）⇒ ⇒ 必然回落 LoadChain(..., 10)
+	//	★    ⇒ ⇒ **压缩器拿到的上下文被放大约 10 倍**。
+	//	★ 为什么这是【默认行为】而不是边缘情况：★ 未压缩流量（submit_mode == "full"）
+	//	★ 在 10 月占 91.3%，在 E1 门开启后（2026-10-21 21:27:26+08）占 100%
+	//	★ ⇒ ⇒ **压缩器没有产物 ⇒ 本行不填 ⇒ 基线恒空 ⇒ 形态 A 必然**。
+	//	★ 实测（252 共享库，2026-10-22，只读）：
+	//	★   ① E1 门开启后新写入的 4,411 行 turn_delta：
+	//	★      **100% 的 outbound_body 是 jsonb 'null'**；
+	//	★   ② E1 后的新会话 4,757 轮 **100% 是 submit_mode='full'**（未压缩 ⇒ 无压缩产物）；
+	//	★   ③ 读侧放大（★ 用【仓内真实的 LoadChain】+ pgxmock 驱动生产导出行）：
+	//	★      形态 A 会话 15 轮 → 链长 348 / 去重后 44（**7.9×**）、单条 system prompt
+	//	★      **重复 14 次**；形态 B 会话 23 轮 → 链长 2,655 / 去重后 2,382（1.1×）。
+	//	★ 处置：本轮【不改行为】—— 改这里会改变生产正文的【内容口径】（delta 的含义）
+	//	★   ⇒ ⇒ 属主决策（⑮）拍板后再改 ⇒ ⇒ 本处只做登记，
+	//	★   ⇒ ⇒ 并由门 scripts/ursmcheck/section_14374_outbound_baseline_test.go 钉住。
 	// Outbound body (from session compressor)
 	if len(entry.OutboundBody) > 0 {
 		req.OutboundBody = parseMessagesJSON(entry.OutboundBody)
