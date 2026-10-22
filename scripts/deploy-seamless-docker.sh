@@ -2100,8 +2100,15 @@ dd_fix_nginx_llm_real_ip() {
   #     （空 marker 绝不能当成「匹配到位置 0」）。
   #   ⇒ ③ 「已经是 $remote_addr」时**不 reload nginx**：原来 python 退出 0
   #     就被当成「修补成功」⇒ 每次部署都白白 reload 一次 nginx。
+  # ⚠⚠ 2026-10-22 二次修：**这里不能加 `!`**。
+  #   `if ! cmd; then <成功分支> else <失败分支>` 是**反的**：
+  #   cmd 成功(rc=0) ⇒ `! 0` 为假 ⇒ 走 else ⇒ 打印「修补未应用」；
+  #   cmd 失败(rc≠0) ⇒ `! rc` 为真 ⇒ 走 then ⇒ 反而去 reload。
+  #   （本轮实测：python 已返回 "already"/rc=0，却仍打出
+  #    「nginx X-Real-IP 修补未应用 (块形态变了?)」—— 就是这个反转。）
+  #   ⇒ 形态必须是：`if cmd; then <成功分支> else <失败分支>`。
   _dd_realip_result=""
-  if ! _dd_realip_result="$(python3 - "$conf" "${DD_HOST:-}" <<'PY'
+  if _dd_realip_result="$(python3 - "$conf" "${DD_HOST:-}" <<'PY'
 import pathlib, sys
 p = pathlib.Path(sys.argv[1])
 text = p.read_text()
