@@ -233,7 +233,18 @@ func TestSection14384PGBackendInjectedExactlyOnce(t *testing.T) {
 	injected := map[string]int{}
 	for rel, lines := range files {
 		for _, line := range lines {
-			if strings.Contains(line, "dbBackendFromPool(") && !strings.HasPrefix(line, "func ") {
+			// ★★★★★ 2026-10-23（§143.84-B）★ 这里只排除【定义行】，★ 【不排除】其它 func 行。
+			//
+			// ★ ★★★★ 原写法是 `!strings.HasPrefix(line, "func ")` ⇒ ⇒ 它把
+			// ★ 【写在单行 func 体里的调用点】也一起排除了 ⇒ ⇒ ★★ 这是一个【盲区】：
+			// ★ ⇒ ⇒ 变异 M8（★ 新增 `func init() { _ = dbBackendFromPool(x) }`）
+			// ★ ⇒ ⇒ ★★★ 旧写法【完全看不见】⇒ ⇒ ★★ 门【没牙】★ ⇒ ⇒ 本轮已实测复现。
+			// ★ ⇒ ⇒ ★★ 现在只排【定义行】（★ `func dbBackendFromPool(`，
+			// ★ ⇒ ⇒ ★★ 它在 `cmd/gateway/main_v3_wiring.go:90`）。
+			if strings.HasPrefix(line, "func dbBackendFromPool(") {
+				continue
+			}
+			if strings.Contains(line, "dbBackendFromPool(") {
 				injected[rel]++
 			}
 		}
@@ -243,6 +254,31 @@ func TestSection14384PGBackendInjectedExactlyOnce(t *testing.T) {
 			"★ ★★ 本轮实测：★ 只有 %s 一处"+
 			"★ ⇒ ⇒ ★★ 若多了 ⇒ ⇒ 那个组件也会执行 L3 的 SQL ⇒ ⇒ 库侧 calls 的来源变了",
 			len(injected), injected, section14384GatewayMain)
+	}
+
+	// ★★★★ 【扫描器自证有牙】（★ 本轮变异台 M8 抓出来的盲区 ⇒ ⇒ 必须钉住）
+	// ★ ⇒ ⇒ 判据自己必须能看见【藏在单行 func 体里的调用点】
+	// ★ ⇒ ⇒ 否则任何「把注入点写进一行 func」都能逃过门。
+	for _, probe := range []string{
+		"func init() { _ = dbBackendFromPool(x) }",
+		"_ = dbBackendFromPool(x)",
+		"func dbBackendFromPool(x int) any { return nil }", // ★ 定义行 ⇒ ★ 必须【看不见】
+	} {
+		seen := 0
+		if !strings.HasPrefix(probe, "func dbBackendFromPool(") &&
+			strings.Contains(probe, "dbBackendFromPool(") {
+			seen++
+		}
+		want := 1
+		if strings.HasPrefix(probe, "func dbBackendFromPool(") {
+			want = 0
+		}
+		if seen != want {
+			t.Errorf("★ 判据自身的可见性自检失败（probe=%q 命中 %d 次，期望 %d）—— "+
+				"★ ⇒ ⇒ 判据有盲区 ⇒ ⇒ 「把注入点藏进一行 func」能逃过门"+
+				"★ ⇒ ⇒ ★★ 这正是本轮变异 M8 抓出来的那类洞",
+				probe, seen, want)
+		}
 	}
 }
 
