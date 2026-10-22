@@ -81,8 +81,10 @@ func TestSection14377L3FallbackDriverStaysTurns(t *testing.T) {
 // TestSection14377L3FallbackNoPerLegTop1（★ 判据②）
 //
 // ★ 反向判据：ORDER BY 在整条 SQL 里【只能出现两次】——
-//   ① final_full 腿的 `ORDER BY f.ts DESC`；
-//   ② 顶层的 `ORDER BY rl.ts DESC`。
+//
+//	① final_full 腿的 `ORDER BY f.ts DESC`；
+//	② 顶层的 `ORDER BY rl.ts DESC`。
+//
 // ★ 若有人给 UNION 的某条腿加「腿内 top-1」，次数会变成 3 ⇒ 门红。
 func TestSection14377L3FallbackNoPerLegTop1(t *testing.T) {
 	q := lastOutboundSessionSQL
