@@ -61,7 +61,9 @@ const (
 	//     ＋ R75 `dea4eda4d`（1 处 ursm-snapshot-slot-refresh.sh）⇒ **口径的差值不变、树变了**。
 	//   ★★ **基线不得【从清单抄】**（= 自证）⇒ 真正的牙是 §19.20.75 门的判据⑤
 	//     （清单 ↔ 生成器**逐字一致**）⇒ 本门只负责「行数」这一层。
-	sc1972ListRowsBaseline = 120
+	sc1972ListRowsBaseline = 82
+	// ★★ 段十五（§19.20.76）：120 ⇒ 82（53 处写端改 herestring ⇒ 38 行消失 + 15 行内容变）
+	//   ★ 这是【弱判据】的例行更新（只提醒“清单变过”）⇒ 真正的守门是【逐字一致】判据。
 )
 
 // sc1972RepoRoot 从测试工作目录（scripts/ursmcheck）回到仓根。
