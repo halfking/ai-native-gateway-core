@@ -114,7 +114,7 @@ HTTP/SSE → middleware chain → protocol/IR normalization → session assignme
 | `installer/` | 独立跨平台安装器 / 升级器模块 |
 | `scripts/`、`deploy/` | 构建、部署、镜像与校验工具 |
 
-规模快照（2026-10-22 代码扫描 @fa89d61b2）：`cmd/` 下共 **~5,679 Go files · 3,332 test files · 1,119 migration SQLs · 68 domain packages · 44 binaries**（文件数不含 `vendor/` 与 `installer/`；迁移 SQL 为 `sql/migrations/` 全量；二进制按 `go list` 的 main 包计）。
+规模快照（2026-10-22 代码扫描 @31466a01d）：`cmd/` 下共 **~5,680 Go files · 3,333 test files · 1,119 migration SQLs · 68 domain packages · 44 binaries**（文件数不含 `vendor/` 与 `installer/`；迁移 SQL 为 `sql/migrations/` 全量；二进制按 `go list` 的 main 包计）。
 
 **延伸阅读**
 
