@@ -32,11 +32,21 @@
   R65 轮出过两次假读数 —— 还原函数把文件拷到仓库根目录而不是原路径，
   于是源文件从未被还原，而「还原校验」读的是同一个错路径 ⇒ 报出假读数。
   ⇒ 这里备份与校验**都**用原路径，且校验读的是**被改的那个文件**。
+
+★★★ 【R107 轮新增】★ 两道【预检】（★ 都在动任何文件之前）：
+  ① **锚点预检** ⇒ 先用每个变异器**自己的**查找逻辑试跑一遍 ⇒ ⇒ 锚点漂移在【跑之前】报出来
+     ⇒ ⇒ ★ 起因：R107 轮 gofmt 重新对齐了门文件里的 map ⇒ ⇒ 一个把【对齐空白】写进锚点的
+     变异（M3）失效了 ⇒ ⇒ 旧版脚本跑到 M3 才报「变异未生效」⇒ ⇒ 失败点离原因点很远。
+  ② **对齐脆弱性静态自检** ⇒ 扫本脚本自己的源码 ⇒ ⇒ 任何「锚点/替换串」字面量里
+     出现 2 个以上连续空格 ⇒ ⇒ 立刻报红 ⇒ ⇒ **从机制上堵死「再写一个对齐依赖的锚点」**。
+  ⇒ ★ 两条合起来 = ★★ **机制优于约定：★ 不靠「写锚点的人记得别写对齐」⇒ ⇒ 靠【跑之前先验一遍】。**
 """
 
 import argparse
+import ast
 import hashlib
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -110,10 +120,13 @@ def _mutate_exempt_drop_real(rel, text):
       ⇒ ⇒ **编译红 ≠ 断言红**（★ R65 轮教训）⇒ ⇒ 所以改成「改名」：
       ⇒ ⇒ 编译正常 ⇒ ⇒ 红的就一定是【真断言】。
     """
-    old = '"prompt_injection_approvals": "★★★ 真悬空引用'
-    if old not in text:
+    # ★★★ R107 轮修正：★ 锚点【不能写死对齐空白】（★ 见 alignment_selfcheck 的说明）
+    m = re.search(r'"prompt_injection_approvals":[ \t]+"★★★ 真悬空引用', text)
+    if not m:
         return None
-    return text.replace(old, '"prompt_injection_approvals_RENAMED_BY_MUTATION": "★★★ 真悬空引用', 1)
+    return (text[:m.start()]
+            + '"prompt_injection_approvals_RENAMED_BY_MUTATION": "★★★ 真悬空引用'
+            + text[m.end():])
 
 
 def _mutate_exempt_blank_reason(rel, text):
@@ -121,10 +134,14 @@ def _mutate_exempt_blank_reason(rel, text):
 
     ★ 「不写理由就豁免」这条路必须堵死 ⇒ ⇒ 理由是判据的一部分，不是注释。
     """
-    anchor = '"pg_class":           "PG 系统目录（pg_catalog）⇒ 不是缺口",'
-    if anchor not in text:
+    # ★★★ R107 轮修正：★ 锚点【不能写死对齐空白】——
+    #   ★ 原来这里写的是 '"pg_class":           "PG 系统目录…"'（11 个空格）
+    #   ★ ⇒ ⇒ gofmt 重新对齐了那个 map（变成 12 个空格）⇒ ⇒ 锚点失效
+    #   ★ ⇒ ⇒ 变异跑到一半才发现「M3 未生效」⇒ ⇒ 【空白弹性】的正解是用正则。
+    m = re.search(r'("pg_class":[ \t]+)"PG 系统目录（pg_catalog）⇒ 不是缺口",', text)
+    if not m:
         return None
-    return text.replace(anchor, '"pg_class":           "",', 1)
+    return text[:m.start()] + m.group(1) + '"",' + text[m.end():]
 
 
 def _mutate_gate_always_green(rel, text):
@@ -196,11 +213,86 @@ MUTATIONS = [
 ]
 
 
+# ── ★★★ R107 轮新增：锚点【预检】+ 【对齐脆弱性】静态自检 ──────────────────
+# ★ 为什么要有「预检」：
+#   ★★ R107 轮实测：gofmt 重新对齐了门文件里的 map ⇒ ⇒ 一个把【对齐空白】写进锚点的
+#     变异（M3）就失效了 ⇒ ⇒ 脚本跑到 M3 才报「变异未生效」⇒ ⇒ **前面几条已经跑过了**
+#     ⇒ ⇒ 失败点离原因点很远 ⇒ ⇒ 排查成本高。
+#   ★★ ⇒ 【锚点漂移必须在【动任何文件之前】就被看见】⇒ ⇒ 预检就是干这个的。
+#   ★★ ⇒ 机制优于约定：★ 不靠「写锚点的人记得别写对齐」⇒ ⇒ 靠【跑之前先验一遍】。
+def preflight_anchors():
+    """在动任何文件之前，先确认每个变异器的锚点还找得到。
+
+    ★ ★ 复用变异器**自己的**查找逻辑（而不是另写一份锚点表）⇒ ⇒ 不会有第二份口径。
+    """
+    bad = []
+    for mid, name, rel, fn, _expect_test, _expect_red in MUTATIONS:
+        src = os.path.join(ROOT, rel)
+        try:
+            text = open(src, encoding="utf-8").read()
+        except OSError as e:
+            bad.append((mid, name, rel, "读不到目标文件：%s" % e))
+            continue
+        if fn(rel, text) is None:
+            bad.append((mid, name, rel, "锚点未命中（目标文件里找不到它要改的那段）"))
+    return bad
+
+
+def alignment_selfcheck():
+    """静态自检：★ 任何「锚点/替换串」字面量都【不许含 2 个以上连续空格】。
+
+    ★★ 为什么：★ Go 的 map 字面量会被 gofmt **按列对齐**⇒ ⇒ 一旦锚点里写死了对齐空格
+      ⇒ ⇒ 任何一次格式化都会让锚点失效 ⇒ ⇒ 而【格式化的发生时机不可预测】。
+    ★★ ⇒ ⇒ 所以对齐空格【根本不该出现在锚点里】⇒ ⇒ 用【正则 + [ \\t]+】表达弹性空白。
+    ★★ ⇒ ⇒ 这条自检扫**本脚本自己的源码**⇒ ⇒ 谁再写一个对齐依赖的锚点 ⇒ 脚本自己报红。
+    """
+    here = os.path.abspath(__file__)
+    try:
+        tree = ast.parse(open(here, encoding="utf-8").read())
+    except (OSError, SyntaxError) as e:
+        return [("自检", "解析本脚本源码失败：%s" % e, here, "")]
+    hits = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Assign):
+            continue
+        for tgt in node.targets:
+            if not isinstance(tgt, ast.Name):
+                continue
+            if tgt.id not in ("anchor", "old"):
+                continue
+            if not isinstance(node.value, ast.Constant) or not isinstance(node.value.value, str):
+                continue
+            s = node.value.value
+            if re.search(r"[ \t]{2,}", s):
+                hits.append((tgt.id, s, here, "★ 锚点/替换串里含 2 个以上连续空格 ⇒ 对齐依赖"))
+    return hits
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--keep-going", action="store_true",
                     help="某条变异不符合预期时继续跑（默认立即停）")
     args = ap.parse_args()
+
+    # ── ★ 预检：先验锚点与自检，再动任何文件 ──
+    print("[预检] ① 锚点预检（★ 在动任何文件之前）")
+    bad = preflight_anchors()
+    if bad:
+        for mid, name, rel, why in bad:
+            print("  ✘ [%s] %s ⇒ %s（%s）" % (mid, name, why, rel))
+        print("\n★ 预检失败：★ 锚点漂移 ⇒ ⇒ **先修锚点，别先跑变异**"
+              "（★ ★ 常见成因：★ 目标文件被 gofmt 重新对齐 ⇒ ⇒ 锚点里写死的空白失效）")
+        return 1
+    print("  ✓ 全部 %d 个锚点在当前目标文件里都能命中" % len(MUTATIONS))
+
+    print("[预检] ② 对齐脆弱性静态自检（★ 锚点不许写死对齐空白）")
+    aln = alignment_selfcheck()
+    if aln:
+        for tgt, s, path, why in aln:
+            print("  ✘ %s ⇒ %s：%r" % (tgt, why, s[:80]))
+        print("\n★ 自检失败：★ 锚点里不许含 2 个以上连续空格 ⇒ ⇒ 改用【正则 + [ \\t]+】")
+        return 1
+    print("  ✓ 没有锚点依赖对齐空白")
 
     backup_dir = tempfile.mkdtemp(prefix="mutate-dangling-relation-")
     print("★ 备份目录（**不删除**，基线必须来自独立快照）：%s" % backup_dir)

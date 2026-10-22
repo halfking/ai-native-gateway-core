@@ -189,10 +189,40 @@ MUTATIONS = [
 ]
 
 
+# ── ★★★ R107 轮新增：锚点【预检】（★ 与 mutate-dangling-relation-gate.py 同机制）──
+# ★ 为什么要有：★ 「锚点漂移」最典型的成因是【目标文件被格式化 / 被改写】⇒ ⇒ 锚点失效
+#   ⇒ ⇒ 旧版脚本要跑到那一条才报「变异未生效」⇒ ⇒ 失败点离原因点很远 ⇒ ⇒ 排查成本高。
+#   ★ ⇒ 【锚点漂移必须在【动任何文件之前】就被看见】⇒ ⇒ 预检就是干这个的。
+#   ★ ★ 复用变异器**自己的**查找逻辑（不另写一份锚点表）⇒ ⇒ 不会有第二份口径。
+def preflight_anchors():
+    """在动任何文件之前，先确认每个变异器的锚点还找得到。"""
+    bad = []
+    for mid, name, rel, fn, _expect_test, _expect_red in MUTATIONS:
+        src = os.path.join(ROOT, rel)
+        try:
+            text = open(src, encoding="utf-8").read()
+        except OSError as e:
+            bad.append((mid, name, rel, "读不到目标文件：%s" % e))
+            continue
+        if fn(rel, text) is None:
+            bad.append((mid, name, rel, "锚点未命中（目标文件里找不到它要改的那段）"))
+    return bad
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--keep-going", action="store_true", help="某条失败后继续")
     args = ap.parse_args()
+
+    # ── ★ 预检：先验锚点，再动任何文件 ──
+    print("[预检] 锚点预检（★ 在动任何文件之前）")
+    bad = preflight_anchors()
+    if bad:
+        for mid, name, rel, why in bad:
+            print("  ✘ [%s] %s ⇒ %s（%s）" % (mid, name, why, rel))
+        print("\n★ 预检失败：★ 锚点漂移 ⇒ ⇒ **先修锚点，别先跑变异**")
+        return 1
+    print("  ✓ 全部 %d 个锚点在当前目标文件里都能命中" % len(MUTATIONS))
 
     backup_dir = tempfile.mkdtemp(prefix="mutate-section-numbering-")
     print("★ 备份目录（**不删除**，基线必须来自独立快照）：%s" % backup_dir)
