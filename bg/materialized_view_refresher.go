@@ -195,22 +195,66 @@ const (
 	// ★ 2026-10-22：10min → 15min。理由是 sessionViewsStatementTimeout
 	// 抬到 600s 之后，**ctx 才是唯一还兜得住整轮的那道闸**：
 	// 600s 的语句上限必须**小于**轮内 ctx，否则 ctx 会先掐断，抬钉子等于白抬。
-	// 15min 能装下实测最坏一轮（client_stats ≥180s + task_stats 151.5s +
-	// matrix 65.4s ≈ 397s）并留出余量，同时仍小于 SessionViewsInterval(60min)
-	// （既有门要求：超时 < 间隔，否则刷新周期会堆积）。
-	SessionViewsTimeout = 15 * time.Minute
+	//
+	// ★★ R107 轮（12h 审计）订正：上面那条判据**只比了「语句上限 vs ctx」**，
+	//   漏掉了**锁等待预算** —— 而锁等待是**加在语句之前**的，**不是包含在**它里面：
+	//     一轮的最坏耗时 = SessionViewLockRetryBudget（整轮共享，≤4min）
+	//                    + 各视图的语句耗时
+	//   ⇒ 15min(900s) 的 ctx **装不下**「4min 锁等待 + 600s 的 client_stats
+	//     + 两个快视图（实测 182.33s + 65.40s）」= 240+600+247.7 = **1087.7s**。
+	//   ⇒ ⇒ 也就是说：**抬到 600s 之后，ctx 仍可能是先掐断的那道闸** ——
+	//     而 ctx 掐断正是本注释开头说的「比整体失败更难发现」的那种失败形态。
+	//     ⇒ 修法不是「再抬语句钉子」（那只是把同一个洞挪个位置），而是**把 ctx
+	//       抬到能装下「锁预算 + 慢视图的语句上限 + 其余视图的实测最大值」**。
+	//
+	// ★ 20min 的依据（把每一项都写出来，便于下一轮复核）：
+	//     锁等待（整轮共享上限）      240.0s  （SessionViewLockRetryBudget）
+	//     client_stats 语句上限      600.0s  （sessionViewsStatementTimeout）
+	//     task_stats 实测最大值      182.33s （154 04:00 轮）
+	//     matrix 实测最大值          65.40s （154 04:00 轮）
+	//     ─────────────────────────────────────
+	//     合计                       1087.7s = 18.13min
+	//   ⇒ 20min(1200s) 留 112.3s 余量（≈10%）。
+	//
+	//   ⚠ 诚实边界：上表的「task_stats/matrix 实测最大值」来自**有语句上限**的轮次，
+	//     而新上限 600s 是这次才抬的 ⇒ 若这两个视图在新上限下也跑到 600s，
+	//     合计会变成 240+1800=2040s=34min ⇒ 20min 的 ctx 仍会先掐断。
+	//     ⇒ 但**这条路今天不成立**：这两个视图的实测成本是 6.19s/7.45s 与 182.33s，
+	//     与 client_stats 的 ≥180.31s 差一个量级 ⇒ 它们是「快视图」的前提
+	//     **正是本轮把清单改成「快的先刷」所依赖的那个前提**。
+	//     ⇒ 若哪天它们也变慢，那说明「快视图」这个前提本身塌了，
+	//       届时应当重估的是**成本根因**（把 REFRESH 做便宜），而不是继续抬钉子。
+	//
+	//   ★ 为什么 20min 仍然是安全的（不会拖累 routing 族）：
+	//     session 轮错开到 :05（sessionViewsPhaseOffset），routing 轮在 :00/:30。
+	//     20min 的轮 ⇒ 最晚跑到 :25 ⇒ **不撞 :30 那轮 routing**；
+	//     15min 的轮跑到 :20 也安全，但 20min 仍在同一量级内
+	//     ⇒ 也就是说这次把 ctx 抬到 20min **没有引入新的族间饥饿**。
+	//   ⇒ 同时仍**小于** SessionViewsInterval(60min)
+	//     （既有门要求：超时 < 间隔，否则刷新周期会堆积）。
+	SessionViewsTimeout = 20 * time.Minute
+
+	// sessionViewsOtherViewsBudget 是「client_stats 之外的两个视图」的实测
+	// 最坏耗时合计（task_stats 182.33s + matrix 65.40s = 247.73s）。
+	//
+	// ★ 它存在的唯一目的：让上面那条不变量**可被机器复核**，而不是只活在注释里。
+	//   不变量：SessionViewsTimeout ≥ SessionViewLockRetryBudget
+	//                                + sessionViewsStatementTimeout
+	//                                + sessionViewsOtherViewsBudget
+	//   （门见 bg/materialized_view_refresher_session_timeout_test.go）
+	sessionViewsOtherViewsBudget = 4 * time.Minute
 
 	// SessionViewLockRetryBudget 是**整轮共享**的锁等待预算（不是每视图一份）。
 	//
 	// 2026-10-12 实测（§10.106.37 §六）：两个周期共用一把 mvRefreshLockKey，
-	// 而 60min 的 session 周期是 10min routing 周期的整数倍，两个定时器又都
+	// 而 60min 的 session 周期是 30min routing 周期的整数倍，两个定时器又都
 	// 对齐墙钟（nextAlignedWait）⇒ 它们每个整点必然撞在同一把锁上。
 	// 10-12 02:00 那轮三个视图全部 skipped_no_lock，MV 数据陈旧 2 小时。
 	// 锁只在真正执行 REFRESH 期间被持有（单轮 14-200s），不是整轮持有，
 	// 所以「等一会儿再试」就能拿到 —— 不需要给两个周期各开一把锁键。
 	//
 	// 取 4min 的理由：实测最长一轮 195s（245 03:00 轮），
-	// 4min 重试 + 195s 物化 = ~7.3min，仍在 SessionViewsTimeout(10min) 之内；
+	// 4min 重试 + 195s 物化 = ~7.3min，仍在 SessionViewsTimeout(20min) 之内；
 	// 共享而非每视图一份，是因为 SessionViewsTimeout 是**整轮**预算，
 	// 三视图各等 4min 会把 ctx 掐断变成新的失败形态。
 	SessionViewLockRetryBudget = 4 * time.Minute
@@ -402,7 +446,7 @@ func (r *MaterializedViewRefresher) refreshLoop(ctx context.Context) {
 	// 多一个 goroutine 就得多一套等待语义，而这里并不需要并发。
 	//
 	// 刻意用**另一个定时器**而不是把三个视图塞进 refreshAll：两个周期的节奏
-	// 与超时预算完全不同（10min/5min vs 60min/10min），共用一个 ctx 预算会让
+	// 与超时预算完全不同（30min/5min vs 60min/20min），共用一个 ctx 预算会让
 	// routing 那一轮被 session 的耗时吃掉预算。陈旧度契约也是分开的
 	// （15min vs sessionMvFreshnessBudget）。
 	select {
@@ -589,7 +633,7 @@ func (r *MaterializedViewRefresher) refreshAll(parentCtx context.Context) {
 //
 // ⚠️ 2026-10-12 订正（§10.106.37 §六）：本函数原注释称「相撞概率约 1.7%，
 // 这个取舍是安全的」——**这个估计是错的，而且方向相反**。
-// SessionViewsInterval(60min) 是 RefreshInterval(10min) 的**整数倍**，
+// SessionViewsInterval(60min) 是 RefreshInterval(30min) 的**整数倍**，
 // 两个定时器又都走 nextAlignedWait 对齐墙钟 ⇒ 它们每个整点**必然**撞在同一把锁上，
 // 不是 1.7% 的巧合。实测 2026-10-12 02:00 那一轮三个视图全部 skipped_no_lock，
 // MV 数据陈旧 2 小时，00:00~03:00 四小时只落地三轮（0.75 次/小时）。
@@ -628,7 +672,7 @@ func (r *MaterializedViewRefresher) refreshSessionViews(parentCtx context.Contex
 	}
 
 	// 2026-10-12（§10.106.37 §六）：retryDeadline 整轮共享，不是每视图一份。
-	// 两个周期共用一把 advisory lock，而 60min 的 session 周期是 10min routing
+	// 两个周期共用一把 advisory lock，而 60min 的 session 周期是 30min routing
 	// 周期的整数倍、两个定时器又都对齐墙钟 ⇒ 整点必然撞锁。撞上就整轮跳过的话，
 	// session 数据会陈旧整整一小时（实测 2026-10-12 02:00 丢了一整轮）。
 	// 锁只在真正执行 REFRESH 期间持有（实测单轮 14~195s），等一会儿就能拿到。

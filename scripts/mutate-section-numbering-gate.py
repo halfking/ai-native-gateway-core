@@ -210,7 +210,17 @@ def main():
         try:
             mutated = fn(rel, original)
             if mutated is None:
-                print("[跳过] %s %s：目标文本不存在" % (mid, name))
+                # ★ R107 轮（12h 审计 C1）修正：这里**原来只 print + continue**，
+                #   不进 failures ⇒ 锚点漂移时该条变异被**静默跳过**，
+                #   脚本最后仍然打印「=== 变异验证全部通过 ===」并 exit 0
+                #   ⇒ **一条未经证明的判据被报告为已证明**。
+                #   ★ 同族脚本 scripts/mutate-dangling-relation-gate.py:228-231
+                #     与 scripts/mutate-r75-patrol-slot-gate.py:117-120 都是
+                #     「记为失败」⇒ 本处是**漏写**，不是有意设计。
+                #   ⇒ 理由：节号唯一性门的锚点绑死在 LESSONS.md 的具体标题行上，
+                #     而节号在仓里反复重排 ⇒ 锚点漂移是**常见**事件，不是边缘情况。
+                print("[跳过] %s %s：目标文本不存在（★ 锚点漂移 ⇒ 记为失败）" % (mid, name))
+                failures.append("%s %s：变异未生效（锚点没找到）" % (mid, name))
                 continue
             if mutated == original:
                 print("[不变] %s %s：变异未生效（★ 这一条自己就失效了）" % (mid, name))

@@ -4,7 +4,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { store, clearAll, clearJwt, clearMustChangePasswordFlag, isSuperAdmin as checkSuperAdmin, isPlatformOpsView as checkPlatformOps, markAuthHydrated, setJwtToken, setUserInfo, authBearer } from './store'
 import { logout as apiLogout } from './api/auth'
-import { throttledFetch } from './api/_core'
+import { throttledFetch, isMaintenanceEnvelopeCode } from './api/_core'
 import { getAuthMe } from './api/admin'
 import LoginModal from './components/LoginModal.vue'
 import ChangePasswordDialog from './components/ChangePasswordDialog.vue'
@@ -124,8 +124,13 @@ onMounted(async () => {
         const err = e as { status?: unknown; code?: unknown }
         const status = err?.status
         const code = err?.code
-        const maintenance =
-          typeof code === 'string' && (code === 'maintenance_mode' || code.startsWith('maintain.'))
+        // ★ 2026-10-22 R107 轮（12h 审计）：判据从内联表达式提成**导出函数**
+        //   `isMaintenanceEnvelopeCode`（./api/_core）——
+        //   原内联判据在 .vue 的 setup 体里 ⇒ **桌面端这条决策逻辑没有任何测试
+        //   覆盖**（envelope_code.test.ts 只测了 code 的**提取**）
+        //   ⇒ 改坏它测试套件仍然全绿，而症状就是「维护窗口把用户踢回登录页」。
+        //   ⇒ 口径与移动端 web-mobile/src/api/client.ts 的 isMaintenanceMode 一致。
+        const maintenance = isMaintenanceEnvelopeCode(code)
         const transient =
           status === 0 || (typeof status === 'number' && status >= 500 && status !== 501)
         if (!maintenance && !transient) clearJwt()
