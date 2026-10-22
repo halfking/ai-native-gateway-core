@@ -717,6 +717,48 @@ func (w *SessionWriterV2) Write(ctx context.Context, req *ProcessedRequest) erro
 	if settings.GetPlatformBool("storage.session_final_full_enabled", false) {
 		bodiesRec.OutboundBody = nil
 	}
+
+	// ★★★★★★ FIXME-14376（2026-10-22 §143.76 轮，只登记、★ 零行为变更）：
+	//	★★★★★★ 【本行的 `= nil` 是「形态 A」的【成因】，不是它的副作用】
+	//	⇒ ⇒ ★★ 它推翻了 §143.74 的订正横幅五（「E1 对 delta 形态几乎无影响」）。
+	//
+	//	★ 完整因果链（三段，全部可在本文件内自证）：
+	//	  ① 【写侧·本行】：E1 门开着 ⇒ 逐轮 bodies 行的 outbound_body 被**显式置 nil**；
+	//	  ② 【读侧·本文件上方】：下一轮进来时，差集基准取自【库里上一轮】那一行
+	//	     （`GetLatestBodiesInTx` → `previousBody.OutboundBody` → `req.LastOutboundBody`）
+	//	     ⇒ ★★ 而那一行的 outbound_body 已被 ① 置空 ⇒ ⇒ **基准恒空**；
+	//	  ③ 【差分·`extractRequestDelta`】：基准为空 ⇒ 走
+	//	     `len(req.LastOutboundBody) == 0` 那条分支 ⇒ **客户端完整历史整份落盘**
+	//	     ⇒ ⇒ 形态 A（outbound_body 恒为 jsonb 'null' 的那一种）。
+	//
+	//	★★★ 生产实测（252 共享库 2026-10-22，★ 只读；口径见
+	//	★★★ scripts/audit/verify_session_bodies_e1_baseline_causality.sql）：
+	//	  ① 逐轮行 outbound_body 带值率：E1 前 = **30.25%**（82,516 / 272,819）
+	//	     ⇒ E1 后 = **0.00%**（0 / 5,693）★ ⇒ 直接封顶到零；
+	//	  ② ★★ E1 后「本来有出站」的会话（用 final_full 行的存在性量）= **51.97%**；
+	//	     而这批会话的逐轮行 outbound_body 带值率 = **0.00%**（0 / 2,953）
+	//	     ⇒ ⇒ ★★★ 「E1 把【有出站】的会话也打成了形态 A」**坐实**
+	//	     ⇒ ⇒ ★★ **不是「压缩器没产出」，是「E1 主动置 nil」**；
+	//	  ③ ★★★ 同一 session 跨 E1 边界的【自然实验】（3 个会话 ⇒ 排除流量构成差异）：
+	//	     平均 delta 体量 **12,074 → 42,389 B/轮（3.5×）**，形态 B 占比 **88.89% → 0.00%**；
+	//	  ④ ★★★ 控制会话轮数后分层（★ 排除「长会话本来就大」）：
+	//	     >10 轮层内「基准可得」= 41,796 B vs「基准缺失」= 92,462 B（**2.2×**）；
+	//	     2-3 轮层内 14,915 B vs 223,005 B（**15×**）★ ⇒ 基准就是放大器；
+	//	  ⑤ ★ 形态 B 的传播性：17,562 / 18,629 = **94.3%** 的 B 轮，其下一轮也是 B
+	//	     ⇒ ⇒ 形态 B **自我强化** ⇒ ⇒ ★★ E1 一刀切断它 ⇒ ⇒ 二次方从 ~30% 涨到 100%。
+	//
+	//	★★ 为什么这个区分重要（★ 它改变属主决策的方向）：
+	//	  §143.74 横幅五曾据此说「E1 真实作用在读侧 ⇒ 倾向不必关 E1」；
+	//	  ★★ 而本轮证明 E1 **同时**决定了写侧的形态 ⇒ ⇒
+	//	  ⇒ **关 E1 能把形态 B 的那 30% 拿回来**（★ 收益在【正确性】与【增长率】，
+	//	  ★★ 不在【存量空间】—— §143.75 已把存量可回收量校准成 501 MB）；
+	//	  ⇒ ⇒ ★★ 但关 E1 会**停掉 final_full 行**（★ 它是 E1 门一起写的）
+	//	  ⇒ ⇒ ⇒ **「关 E1」不是一个独立选项**，它是「关 E1 + 改差集基准」的组合
+	//	  ⇒ ⇒ ⇒ ⇒ **属主决策（⑮）需重排**（★ 见 runbook §143.76 的决策就绪三问）。
+	//
+	//	★ 本轮【不改行为】：★ 改它会改变生产正文的【内容口径】（历史正文会被重写）
+	//	  ⇒ ⇒ 属主决策（⑮）拍板后再改。⇒ ⇒ 本处只做登记，
+	//	  ⇒ ⇒ 并由门 `scripts/ursmcheck/section_14376_e1_baseline_causality_test.go` 钉住。
 	if err := w.bodiesWriter.WriteBodiesInTx(lockCtx, tx, bodiesRec); err != nil {
 		return fmt.Errorf("write bodies: %w", err)
 	}
