@@ -1017,6 +1017,36 @@ func extractRequestDelta(req *ProcessedRequest, submitMode string) []Message {
 		return nil
 	}
 
+	// ★★★★★★ FIXME-14373（2026-10-22 §143.73 轮，只登记、★ 零行为变更）：
+	//	★★ 本函数有【三条独立的分支】会把【客户端的完整历史】整份落成 request_delta；
+	//	★★ 而生产上最常走的那一条，是【差集基线读空】这一条。
+	//	★ 机制（代码自证，三处）：
+	//	  ① 差集基准来自【库里的上一轮】：`GetLatestBodiesInTx` → previousBody.OutboundBody
+	//	     → `req.LastOutboundBody`（见本文件上方赋值处）；
+	//	  ② 当上一轮的 outbound_body 在库里是 jsonb 字面量 'null' 时，
+	//	     previousBody.OutboundBody 为空 ⇒ ⇒ 走下面 `len(req.LastOutboundBody) == 0`
+	//	     这条分支 ⇒ ★★ delta = 客户端完整历史（不是增量）；
+	//	  ③ 即使基线非空，基准也是【上一轮压缩后的出站】⇒ 形态与被减对象不匹配
+	//	     （⇒ 压缩残留；详见本函数上方 FIXME-14372）。
+	//	★ 设计意图（bodies_writer.go 的注释原文）：
+	//	  「RequestDelta only contains messages that were not present in the previous
+	//	    turn, avoiding exponential growth of storing full history in every row.」
+	//	  ⇒ ⇒ ★★★ 上面 ② 这条分支让该意图【在生产上被击穿】：每轮重存整份历史。
+	//	★ 实测（252 共享库 2026-10-22，只读；口径见 scripts/audit/verify_session_bodies_delta_amplification.sql）：
+	//	  ① 内容级：形态 A（outbound_body 全为 jsonb 'null'）相邻轮 13/14 成立
+	//	     「delta(t) ⊇ delta(t−1) 的全部消息」，且公共前缀长度恰等于上一轮长度
+	//	     ⇒ ⇒ 每轮把整份历史重存一遍；形态 B（outbound_body 是数组）相邻轮 0/22 成立
+	//	     ⇒ ⇒ 形态 B 真的只存本轮新增（★ 意图在那一侧是达成的）。
+	//	  ② 体量：session_bodies_2026_10 的 request_delta 合计 2.63 GB
+	//	     = 整个分区 5.09 GB 的 51.6%；而 response_delta（≈每轮真实新增）
+	//	     只有 57.8 MB ⇒ ⇒ delta 是「真实新增」的 45 倍。
+	//	  ③ ≥10 轮的 220 个会话里 127 个（57.7%）是二次方形态，持有 747 MB（占 55.4%），
+	//	     却只占 27.4% 的轮数；二次方会话每轮 112 KB vs 线性会话 19 KB（6×）。
+	//	★ 处置：本轮【不改行为】—— 改差集基准会改变生产正文的【内容口径】，
+	//	  且需要「上一轮客户端完整历史」这个目前【不存在】的存储位
+	//	  （final_full 行是天然的承载点，但语义要改）⇒ ⇒ 属主决策（⑮）拍板后再改。
+	//	  本处只做登记，并由门 scripts/ursmcheck/section_14373_delta_amplification_test.go 钉住。
+	//
 	// If client explicitly sent delta or snapshot, trust it
 	if submitMode == "delta" || submitMode == "snapshot" || submitMode == "inferred_compressed" {
 		return req.RequestBody
