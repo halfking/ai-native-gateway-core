@@ -30,6 +30,14 @@
 #	  245 ⇒ `llmgo-245-canary@8782.service`
 #	⇒ ⇒ 所以本脚本是【枚举候选服务】而不是【写死一个】。
 #
+# ★★ 顺带登记（★ §143.83-B 实测）：★ 两台的【日志通道不同】⇒ ⇒ 取证脚本不能假定相同
+#   ★ 154 = llm-gateway-go-canary@8782.service ⇒ ★ 日志在 journald（journalctl -u …）
+#   ★ 245 = llmgo-245-canary@8782.service      ⇒ ★ 日志在 jsonl 文件
+#     （/var/log/llm-gateway-go/canary-8782.jsonl）
+#   ★★ 且 245 的 jsonl 里出现过【连续 22 小时完全没有日志】的时段
+#     （2026-10-22T02~T22）⇒ ⇒ ★★ 判「服务在不在跑」时【必须看同一文件的其它消息类型】
+#     ⇒ ⇒ 只见某一类信号消失，会把「服务没跑」误读成「那类事件没发生」
+#
 # 用法（★ 只读；★ 不改任何远端状态）：
 #   bash scripts/audit/verify_release_version_lineage.sh                 # 默认查 §143.56
 #   bash scripts/audit/verify_release_version_lineage.sh 0e31ca0df       # 查任意 commit
