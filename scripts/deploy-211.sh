@@ -38,9 +38,16 @@
 #   bash scripts/deploy-211.sh --dry-run       # 打印目标合同 JSON
 #   bash scripts/deploy-211.sh --force         # 211 部署无部署锁：接受但无操作
 #
-# 前置: web/dist 与 web-mobile/dist 由部署机预构建（pnpm build），
-# 引擎随 tar 上树并种子进**候选槽专属**目录；缺失/陈旧时引擎拒绝部署
-# （逃生舱 DD_ALLOW_STALE_WEB=1 走纯 API 形态）。
+# 前端: **不需要手工预构建**。引擎在**部署机**侧（--via 分支）先跑
+#   scripts/lib/node-pm.sh 的包管理器决策 → 必要时按 lockfile 装依赖 →
+#   pnpm build web / pnpm build web-mobile → 再判产物新鲜度 → 随 tar 上树
+#   → 种子进**候选槽专属**目录 → 绑定挂载到容器 /app/web/dist 与
+#   /app/web-mobile/dist。历史口径是「运维先手工 build，脚本只校验」，
+#   漏了就整次部署被「web/dist 陈旧」拦死（2026-10-22 实测），更坏的是
+#   带逃生舱硬闯 ⇒ 线上是旧 SPA 而部署显示成功。
+#   逃生舱: DD_SKIP_WEB_BUILD=1 跳过构建（新鲜度门仍照常判定）；
+#           DD_ALLOW_STALE_WEB=1 放行陈旧/缺失（纯 API 形态，站点根路径
+#           会退化成一段版本 JSON —— 不建议）。
 #
 # 基础镜像默认（可覆盖）:
 #   DD_BASE_REGISTRY=registry-211.itestu.cn

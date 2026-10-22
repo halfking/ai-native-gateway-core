@@ -591,7 +591,17 @@ nonplain_actual=$(
     printf '%s\n' "$embed_up_bodies" | awk -F/ '$NF !~ /^[0-9][0-9][0-9]_/ {print "embeddata/" $0}'
   } | sort
 )
-nonplain_declared=$(awk -F'\t' '!/^#/ && NF>=2 {print $1}' "$nonplain_registry" | sort)
+# ★ R84 轮：**过滤口径与 registry_rows() / Go 侧对齐**（先剥首尾空白，再判注释/空行）。
+#   R83 轮这里是 `!/^#/ && NF>=2` ⇒ ★ **行首带空白的注释**（且含 TAB ⇒ NF=2）
+#   会被当**数据行**⇒ ⇒ 「册子里有、目录里没有」那条判据会拿注释当键
+#   ⇒ ⇒ 报出「登记册陈旧（键的宇宙前缀也非法）」这种**看不懂的假红**。
+#   ⇒ 顺带把「列数不足 2 列的行」也排除掉：那种行由下面的**列数门**单独报。
+nonplain_declared=$(awk -F'\t' '
+  { line = $0; sub(/^[ \t]+/, "", line); sub(/[ \t]+$/, "", line) }
+  line == "" || line ~ /^#/ { next }
+  NF < 2 { next }
+  { print $1 }
+' "$nonplain_registry" | sort)
 
 # ⚠⚠⚠ **读登记册必须用 \x1f 而不是 TAB**（★ R83 轮实测出的**真缺陷**，
 #   是本门自己写出来的）：
@@ -615,8 +625,6 @@ nonplain_declared=$(awk -F'\t' '!/^#/ && NF>=2 {print $1}' "$nonplain_registry" 
 #   写进去的形状一致**。
 registry_rows() {
   # 输出：每行「键 \x1f 投递腿 \x1f 效果落点 \x1f 理由」
-  # ⚠ 只取 $1..$4（登记册约定恰好 4 列）⇒ 多于 4 列的行会被截断 ⇒
-  #   那种行由 Go 侧的列数门单独拦（见 migration_nonplain_delivery_gate_test.go）。
   #
   # ⚠⚠⚠ **每行末尾必须有 \n**（R83 轮实测出的**真缺陷**）：
   #   ★ 第一版**漏了换行** ⇒ **15 行被拼成 1 行** ⇒ ⇒ ★★ **③/④ 两个循环
@@ -624,8 +632,53 @@ registry_rows() {
   #   ⇒ 而且它在**基线上是绿的** ⇒ ⇒ **只有「针对非第一行的变异」才抓得到它**
   #     （M7 就是这样抓到它的）⇒ ⇒ **「基线绿 + 全部变异红」也可能是假绿**。
   #   ⇒ ⇒ 下面加了**行数自检**，把「读到几行」变成一条判据。
-  awk -F'\t' '!/^#/ && NF>=2 {printf "%s%c%s%c%s%c%s\n", $1, 31, $2, 31, $3, 31, $4}' \
-    "$nonplain_registry"
+  #
+  # ★★★★ R84 轮实测出的**第二处真缺陷（比 R83 那条更深一层）**：
+  #   R83 轮修好了「\n 漏了」这个**症状**，并加了一条**行数自检**当守门人；
+  #   ★★ 但那条自检的【参考计数】与【读册子】用的是**同一个过滤器**
+  #     （两处都是 `!/^#/ && NF>=2`）⇒ ⇒ **同源自证**：
+  #     过滤器一旦被收窄（**两处一起收窄**），读册子与参考计数会**同时**少读
+  #     ⇒ 计数**仍然相等** ⇒ ⇒ 自检**看不见** ⇒ ⇒ ③/④ 两个判据
+  #     **已经不再检查那几行**，而门在基线上是**绿的**。
+  #   ⇒ ★ 实测复现见审计档 `docs/audit/2026-10-22-R84-读册子计数的同源自证.md`
+  #     §2：**假绿**（登记册声明「走通道腿」而文件不在 files=() 里，两道门都绿）。
+  #   ⇒ ⇒ 修法 = 参考计数必须与读册子的口径【独立】⇒ 见下面的
+  #     `registry_reference_rows`（三个**不同**的工具算，与本函数的过滤器
+  #     **不共享任何谓词**）。
+  #
+  # ⚠ R84 轮：过滤口径与 Go 侧**逐字对齐**（R83 轮这里是错的）：
+  #   Go 侧是 `strings.TrimSpace(line)` 之后判「以 # 开头」或「为空」⇒ 跳过。
+  #   ⇒ bash 侧若不先【去首尾空白】，一行**带缩进**的注释会被当**数据行**
+  #     （旧口径 `!/^#/`：行首有空格 ⇒ 不匹配 `^#` ⇒ 进了数据行）
+  #     ⇒ 与 Go 侧**语义分叉** ⇒ 两道门对同一份册子的理解会不一致。
+  #   ⇒ 这里改成：先剥首尾空白 ⇒ 空行或以 # 开头 ⇒ 跳过。
+  #   ⇒ 并且**只输出列数恰好为 4 的行**（列数不对的由下面的**列数门**单独报，
+  #     不进 ③/④ ⇒ 避免「第 3 列被当成效果落点」这种看不懂的假红）。
+  awk -F'\t' '
+    { line = $0; sub(/^[ \t]+/, "", line); sub(/[ \t]+$/, "", line) }
+    line == "" || line ~ /^#/ { next }
+    NF != 4 { next }
+    { printf "%s%c%s%c%s%c%s\n", $1, 31, $2, 31, $3, 31, $4 }
+  ' "$nonplain_registry"
+}
+
+# ★★★★ R84 轮新增：**独立**的「数据行数」参考计数。
+#
+#   ⚠⚠⚠ **关键纪律：参考计数不得与读册子共用过滤器** ⇒ 否则是【同源自证】。
+#     （这正是 LESSONS §235 那条：「双口径互证」若同源 ⇒ 它【恒真】，不是互证。）
+#   ⇒ 这里用【三个不同的工具】算「数据行数」：
+#       总行数（awk END{NR}）− 注释行（grep -c）− 空行（grep -c）
+#   ⇒ 与 registry_rows() 的 awk 过滤器**没有任何共享谓词** ⇒
+#     读册子一旦少读（过滤器被收窄 / 分隔符坏了 / 某行被跳过）⇒ 计数立刻不等 ⇒ 红。
+#
+#   ⇒ ★ 为什么要「三个工具」而不是「另一个 awk」：另一个 awk 也会复制同一个谓词
+#     ⇒ 变异同时改两处时仍然同源 ⇒ 假绿照样成立。⇒ 谓词必须**写在不同的地方**。
+registry_reference_rows() {
+  local total comments blanks
+  total=$(awk 'END{print NR+0}' "$nonplain_registry")
+  comments=$(grep -c '^[[:space:]]*#' "$nonplain_registry" || true)
+  blanks=$(grep -c '^[[:space:]]*$' "$nonplain_registry" || true)
+  echo $(( total - comments - blanks ))
 }
 
 # ⓪ 量具自检：穷举必须真的扫到东西，且**必须扫到两个宇宙**。
@@ -658,12 +711,38 @@ registry_rows_read=$(registry_rows | awk 'END{print NR+0}')
 #   一条**没有尾换行**的记录会被算成 **0 行**（而它明明是 1 条）⇒
 #   报出来的数字会误导人（实测：M20 变异的报错写的是「读取的行数（0）」）。
 #   ⇒ ⇒ `NR` 数的是**记录数**（最后一条无尾换行的也算 1 条）⇒ 语义与「我读到了几条」一致。
-registry_rows_data=$(awk -F'\t' '!/^#/ && NF>=2 {n++} END{print n+0}' "$nonplain_registry")
+#
+# ★★★★ R84 轮：**参考计数换成独立口径**（`registry_reference_rows`）——
+#   R83 轮这里用的是 `awk '!/^#/ && NF>=2 {n++}'` ⇒ 与读册子**同一个谓词**
+#   ⇒ ⇒ **同源自证** ⇒ ⇒ 实测可造出**假绿**（见 registry_rows 的注释）。
+registry_rows_data=$(registry_reference_rows)
 if [[ "$registry_rows_read" != "$registry_rows_data" ]]; then
-  gate_fail "登记册读取的行数（${registry_rows_read}）与数据行数（${registry_rows_data}）不一致 ⇒ 读册子的口径坏了（行分隔符丢了？）⇒ 本块全部登记册判据都不可信"
+  gate_fail "登记册读取的行数（${registry_rows_read}）与数据行数（${registry_rows_data}）不一致 ⇒ 读册子的口径坏了（三个候选原因：行分隔符丢了？过滤器被收窄了？或者册子里有**列数不对**的行——那种行不读进来，列数门会单独报）⇒ 本块全部登记册判据都不可信"
 fi
 if [[ "$registry_rows_data" -lt 1 ]]; then
   gate_fail "登记册一条数据行都没有 ⇒ 观测手段失效（读了个空文件？）⇒ 本块全部判据都不可信"
+fi
+
+# ★★ R84 轮新增：登记册**列数**门（bash 侧自己核「每行恰好 4 列」）。
+#
+#   R83 轮把这一条**只**放在 Go 侧 ⇒ ⇒ bash 侧读到列数不对的行时，会把
+#   「第 3 列」当成效果落点、把「第 4 列」当成理由 ⇒ ⇒ ④ 会报
+#   「效果落点语法非法」这种**看不懂的错** ⇒ ⇒ 两道门对同一份册子的**形状**
+#   判断不一致（Go 说「列数是 3」，bash 说「落点语法非法」）。
+#   ⇒ ⇒ 现在 bash 侧也核列数 ⇒ 两边对**形状**的判断一致 ⇒ 报错可读。
+#
+#   ⚠ 这条判据与 `registry_rows()` 的过滤器**同源**是**允许**的：
+#     它是**报告型**判据（把坏行指出来），不是**计数型**判据
+#     （「读到几条」必须独立，见上面的 registry_reference_rows）。
+registry_bad_rows=$(awk -F'\t' '
+  { line = $0; sub(/^[ \t]+/, "", line); sub(/[ \t]+$/, "", line) }
+  line == "" || line ~ /^#/ { next }
+  NF != 4 { printf "第 %d 行的列数是 %d（必须恰好 4 列：键<TAB>投递腿<TAB>效果落点<TAB>理由）\n", NR, NF }
+' "$nonplain_registry")
+if [[ -n "$registry_bad_rows" ]]; then
+  while IFS= read -r bad; do
+    [[ -n "$bad" ]] && gate_fail "投递登记册 ${nonplain_registry} 的${bad}"
+  done <<<"$registry_bad_rows"
 fi
 
 # ① 目录里有、册子里没有 ⇒ 红（漏登记 ⇒ 会静默不投递）

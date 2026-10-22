@@ -112,8 +112,21 @@ GUARD_PACKAGES := ./internal/rowsguard ./internal/errdiscard ./internal/dbrows .
 GUARD_PACKAGES_SLOW := ./scripts/ursmcheck
 
 .PHONY: guards
-guards: guards-installer guards-ursmcheck ## 运行全部审计守卫（快速、无外部依赖；含 installer 跨模块门 + ursmcheck 全量门）
+guards: guards-installer guards-ursmcheck guards-shell ## 运行全部审计守卫（快速、无外部依赖；含 installer 跨模块门 + ursmcheck 全量门 + shell 全角变量门）
 	$(GO) test $(GUARD_PACKAGES) -count=1 -timeout=120s
+
+# scripts/guards/check-shell-fullwidth-var.sh —— 「裸 $VAR 紧跟非 ASCII 字节」门。
+#
+# ★ 2026-10-22 R107 轮（12h 审计 C5）接线：此前这个 shell 门**没有任何调用方**
+#   （全仓检索排除 docs/ ⇒ 引用数 0：无 CI workflow、无 Makefile 目标、无脚本调用）
+#   ⇒ CI 真正执行的是 Go 门（scripts/ursmcheck/cjk_var_expansion_test.go），
+#     而这个 shell 版覆盖 703 个 .sh + .bash（含未跟踪文件）却**无人运行**
+#     ⇒ 它的枚举面/判据会**静默腐坏**，而既往审计的修复表把它列为「门（已修）」。
+#   ⇒ 两个门判据同源、扫描面已对齐（vendor 等跳过集逐项一致）⇒ 现在可以安全接线。
+#   ⇒ 约 1~2s，无外部依赖。
+.PHONY: guards-shell
+guards-shell: ## 全角变量 shell 门（与 Go 门同判据、同扫描面；此前未接线）
+	@bash scripts/guards/check-shell-fullwidth-var.sh
 
 # scripts/ursmcheck 的 94 个门文件（≈5~6 分钟，比主门慢一个量级 ⇒ 独立 timeout）
 .PHONY: guards-ursmcheck

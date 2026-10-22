@@ -114,13 +114,28 @@ PATTERN='\$[A-Za-z_][A-Za-z0-9_]*[^ -~]'
 #   而这恰恰是风险最高的窗口：新写的脚本最可能还没提交，作者也最可能
 #   手动直接运行它。门要能看见它。
 #   未跟踪项走 --exclude-standard，node_modules / dist 等仍被 gitignore 排除。
+#
+# ★★ 2026-10-22 R107 轮（12h 审计 C11）修正：跳过目录口径**与 Go 门对齐**。
+#   本门原先扫 `git ls-files '*.sh'` 的**全部**结果 ⇒ 把 **16 个 vendored
+#   第三方 .sh**（vendor/github.com/blevesearch/... 等）也扫了进去；
+#   而 Go 门 scripts/ursmcheck/cjk_var_expansion_test.go 的 cjkVarSkipDirs
+#   明确跳过 vendor ⇒ **两个门自称「判据现已一致」（本文件原 :47-52），
+#   实际扫描面不同** ⇒ 两边的结论无法互证。
+#   ⇒ 而且这是一条**会红的路**：任何一次依赖升级把带 `$var<非ASCII>` 的
+#     第三方脚本带进来，**本仓的门就会红** —— 而那与本仓代码质量无关
+#     ⇒ 误报即噪音，噪音即被忽略。
+#   ⇒ 跳过集现在**逐项对齐** cjkVarSkipDirs：.git / node_modules / vendor /
+#     dist / build / .venv / __pycache__。
+#   ★ 事实源单一化：下一层若要改跳过集，**两门必须同时改**。
+SCAN_SKIP_DIRS='^\.git/|^node_modules/|^vendor/|^dist/|^build/|^\.venv/|__pycache__/'
+
 scan_list() {
   {
     git ls-files '*.sh'
     git ls-files '*.bash'
     git ls-files --others --exclude-standard '*.sh'
     git ls-files --others --exclude-standard '*.bash'
-  } | sort -u
+  } | sort -u | grep -vE "$SCAN_SKIP_DIRS"
 }
 
 # ★ 跳过口径与 Go 门一致：整行注释 + 单引号区段（单引号里不发生展开）。

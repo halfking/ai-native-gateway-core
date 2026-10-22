@@ -144,6 +144,63 @@ func TestSessionViewsTimeout_ExceedsTheFamilyStatementTimeout(t *testing.T) {
 	}
 }
 
+// TestSessionViewsTimeout_CoversLockBudgetPlusStatements
+//
+// ★★ R107 轮（12h 审计）补的一道**承重**门。
+//
+// 上一条门（TestSessionViewsTimeout_ExceedsTheFamilyStatementTimeout）只比了
+// 「轮内 ctx vs 分族语句上限」——**漏掉了锁等待预算**。而锁等待是**加在语句之前**
+// 的，不包含在语句上限里：
+//
+//	一轮的最坏耗时 = SessionViewLockRetryBudget（整轮共享，≤4min）
+//	               + 各视图的语句耗时
+//
+// ⇒ 「ctx(15min=900s) > 语句上限(600s)」成立，**并不**代表 ctx 装得下一轮：
+//	240s(锁) + 600s(client_stats) + 182.33s(task_stats) + 65.40s(matrix)
+//	= 1087.7s > 900s
+// ⇒ 也就是说，**抬到 600s 之后，ctx 仍可能是先掐断的那道闸**——
+// 而 ctx 掐断的表现（后几个视图根本没刷新 + 半轮状态）正是本文件头部
+// 注释里说的「比整体失败更难发现」的那种形态。
+//
+// ⇒ 这道门把**完整**的不变量钉成机器可复核的判据：
+//	SessionViewsTimeout ≥ SessionViewLockRetryBudget
+//	                     + sessionViewsStatementTimeout
+//	                     + sessionViewsOtherViewsBudget
+func TestSessionViewsTimeout_CoversLockBudgetPlusStatements(t *testing.T) {
+	pin, err := time.ParseDuration(sessionViewsStatementTimeout)
+	if err != nil {
+		t.Fatalf("解析 sessionViewsStatementTimeout：%v", err)
+	}
+	required := SessionViewLockRetryBudget + pin + sessionViewsOtherViewsBudget
+	if SessionViewsTimeout < required {
+		t.Fatalf("轮内 ctx %s 装不下「锁等待预算 %s + 语句上限 %s + 其余视图预算 %s」= %s —— "+
+			"ctx 会先掐断 ⇒ 抬语句钉子等于白抬（且失败形态是「后几个视图根本没刷新」的半轮状态，"+
+			"比整体失败更难发现）",
+			SessionViewsTimeout, SessionViewLockRetryBudget, pin,
+			sessionViewsOtherViewsBudget, required)
+	}
+	// 留余量：至少 5%，避免「刚好卡死线上」这种临界值。
+	minMargin := required / 20
+	if SessionViewsTimeout-required < minMargin {
+		t.Fatalf("轮内 ctx %s 相对必需的 %s 余量 %s 小于 5%%（%s）—— 临界值没有工程意义",
+			SessionViewsTimeout, required, SessionViewsTimeout-required, minMargin)
+	}
+	// 仍必须小于周期（既有契约，重复钉一次以防有人只改上面两处）。
+	if SessionViewsTimeout >= SessionViewsInterval {
+		t.Fatalf("轮内 ctx %s 必须小于周期 %s，否则刷新周期会堆积",
+			SessionViewsTimeout, SessionViewsInterval)
+	}
+	// ★ 族间饥饿护栏：session 轮错开到 :05，routing 轮在 :00/:30。
+	//   ⇒ ctx 必须让 session 轮在 :30 之前跑完，否则 routing 轮被推迟。
+	//   ⇒ 可用窗口 = 30min - sessionViewsPhaseOffset。
+	available := RefreshInterval - sessionViewsPhaseOffset
+	if SessionViewsTimeout >= available {
+		t.Fatalf("轮内 ctx %s 必须小于「%s 到下一个 routing tick」的窗口 %s —— "+
+			"否则 session 轮会把 routing 轮推迟（相位错开的收益被抵消）",
+			SessionViewsTimeout, RefreshInterval, available)
+	}
+}
+
 // TestSessionAnalyticsViews_FastestFirst：慢视图必须排在最后。
 //
 // 实测成本（252 生产 2026-10-22）：matrix 7.45~65.4s、task_stats 6.19~151.5s、

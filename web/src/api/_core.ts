@@ -158,6 +158,37 @@ export function envelopeCode(text: string): string {
   return ''
 }
 
+/**
+ * 2026-10-22 R107 轮（12h 审计）提取：判断一个业务错误码是否属于
+ * **维护态信封族**。
+ *
+ * ★ 为什么要有这个函数（而不是把判据内联在调用点）：
+ *   判据原本内联在 `web/src/App.vue` 的水合 catch 里 ⇒
+ *   **桌面端整条「维护态 ⇒ 不踢登录」的决策逻辑没有任何测试覆盖**
+ *   （`envelope_code.test.ts` 只测了 `envelopeCode` 的**提取**，
+ *     没有测过「提取出来之后怎么决策」）
+ *   ⇒ 谁把 `code.startsWith('maintain.')` 删掉、或把
+ *     `if (!maintenance && !transient) clearJwt()` 改回无条件 `clearJwt()`，
+ *     **桌面端测试套件仍然全绿** ⇒ 而症状是「维护窗口把用户踢回登录页」
+ *     —— 正是本轮要治的那个缺陷原样复发。
+ *   ⇒ 移动端同名判据 `isMaintenanceMode`（`web-mobile/src/api/client.ts`）
+ *     **已经是导出函数 + 有族级负控的 spec**；桌面端此前是「内联 + 无测试」
+ *     ⇒ 两边的保护强度不对等 ⇒ 正是仓里 B5「补漏」那一轮踩过的形态
+ *     （只补一处 = 修法自身是半截的）。
+ *
+ * ★ 判据本身（与移动端 `isMaintenanceMode` 逐字同口径）：
+ *   - 部署版边缘组件下发 `{"code":"maintenance_mode"}`（2026-10-22 实测）
+ *   - 本仓 `cmd/gateway/maintain_proxy.go` 下发 `maintain.upstream_unavailable` /
+ *     `maintain.proxy_unavailable` / `maintain.not_configured`
+ *   ⇒ 认**整族**（前缀），不认单字面量。
+ *
+ * ★ 取向：宁可放过一次真维护态，也不误杀一个好会话。
+ */
+export function isMaintenanceEnvelopeCode(code: unknown): boolean {
+  if (typeof code !== 'string' || !code) return false
+  return code === 'maintenance_mode' || code.startsWith('maintain.')
+}
+
 function errorMessage(statusText: string, text: string): string {
   if (!text) return statusText
   try {

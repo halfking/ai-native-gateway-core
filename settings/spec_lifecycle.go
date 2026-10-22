@@ -104,7 +104,7 @@ func LifecycleSpecs() []*Spec {
 		// ★ 每个键的 Default 都与读方的 fallback **逐字对齐**
 		//   （见各行注释里的读方位置）⇒ ⇒ ⇒ 「kv 无行时」注册前后行为一致。
 		// ★ ★★ 2026-10-22 12h 审计轮（B1）：**本块原先登记的三个
-		//   `_request_logs_bodies` 键已删除**：
+		//   `_request_logs_bodies` 键已全部删除**：
 		//     · lifecycle.request_logs_bodies_retention_hours
 		//     · lifecycle.request_logs_bodies_promote_batch_size
 		//     · lifecycle.request_logs_bodies_ttl_days（前两者之外，本轮顺带查出）
@@ -121,6 +121,29 @@ func LifecycleSpecs() []*Spec {
 		//     ⇒ 它曾作为「属主知情接受」的材料 ⇒ 一条**假的**行为变化说明被签过字。
 		//   ⇒ ⇒ 真要保留这组旋钮，正确做法是**改指向会话族 bodies 链**
 		//     （promote_session_bodies_hot_to_partition / session_bodies），而不是留着死键。
+		//
+		// ★★ R107 轮（12h 审计）补记：**B1 那次只删了 1 个（ttl_days）**，
+		//   另 2 个（retention_hours / promote_batch_size）**仍留在本块里**，
+		//   且其中一条**仍带着那句已被自己证伪的「保留期从 24h 变 8h」说明**
+		//   ⇒ 「注释说三个都删了、代码只删了一个」⇒ 注释与实现口径不一致。
+		//   ⇒ 本轮把剩下 2 个一并删除 ⇒ 注释与实现这才对齐。
+		//   ★ 删除的**安全性**已逐条核实（不是「看着像死键就删」）：
+		//     · 读侧不可达：`_request_logs_bodies` 在 promoteSpecs()/ensureSpecs()
+		//       里**一个条目都没有**（全文件仅 partition_manager.go:2331 的 case 标签
+		//       出现过该名字）⇒ resolvePromoteConfig 的该分支**永远不会被调用**。
+		//     · 表已不存在：迁移 890 的步骤 5 DROP 清单里确有
+		//       'request_logs_bodies' / '_request_logs_bodies' /
+		//       'request_logs_bodies_hot' / '_request_logs_bodies_hot'。
+		//     · 读侧 nil-安全：Registry.Spec(key) 对未注册键返回 nil
+		//       （不是 error）⇒ GetPlatformInt 直接落 fallback。
+		//     · 写侧会**如实报错**：settings/store_db.go 的 Set/SetTenant 对未注册键
+		//       返回 "unknown setting: <key>" ⇒ 211/252 里那条已存在的 kv 行（值 8）
+		//       在 UI 上再写会**显式失败**，而不是继续被静默吞掉
+		//       ⇒ 这正是「去掉假旋钮」应有的可见后果。
+		//   ⏳ 残留（已登记，未在本轮动）：bg/partition_manager.go:2331 的
+		//     `case "_request_logs_bodies":` 分支本体还在（连同它读的两个键名）。
+		//     它现在**既无注册键也无表**，是一段纯死代码；删它属纯清理，
+		//     但与「旋钮改指向会话族 bodies 链」这个属主决策耦合 ⇒ 留给那一轮一起做。
 		// ====================================================================
 		{Key: "lifecycle.analysis_events_ttl_days", Type: TypeInt, Scope: ScopePlatform, Category: CategoryLifecycle, Min: floatPtr(1), Max: floatPtr(3650), Default: 7, DangerLevel: Warning, HotReload: true, Description: "analysis_events 保留天数", DescriptionLong: "analysis_events 的清理保留天数。读方：bg/partition_manager.go（fallback 7）。", Unit: "天"},
 		{Key: "lifecycle.credential_model_index_ttl_days", Type: TypeInt, Scope: ScopePlatform, Category: CategoryLifecycle, Min: floatPtr(1), Max: floatPtr(3650), Default: 7, DangerLevel: Warning, HotReload: true, Description: "credential_model_index 保留天数", DescriptionLong: "credential_model_index 的冷分区裁剪保留天数。读方：bg/partition_manager.go:1288（fallback 7）。★ 与 §143.21 的「冷族 TTL 空文」问题同源：冷月分区已转 heap ⇒ 7 天 TTL 在冷族上是空文。", Unit: "天"},
@@ -130,7 +153,5 @@ func LifecycleSpecs() []*Spec {
 		{Key: "lifecycle.session_project_backfill_batches", Type: TypeInt, Scope: ScopePlatform, Category: CategoryLifecycle, Min: floatPtr(1), Max: floatPtr(10000), Default: 50, DangerLevel: Warning, HotReload: true, Description: "project_dim 回填单轮最大批数", DescriptionLong: "project_dim 回填 worker 单轮最多跑多少批。读方：bg/project_backfill_worker.go:167（fallback 50）。★ 代码侧另有 ≥1 的安全下限。", Unit: "批"},
 		{Key: "lifecycle.stats_event_inbox_ttl_days", Type: TypeInt, Scope: ScopePlatform, Category: CategoryLifecycle, Min: floatPtr(1), Max: floatPtr(3650), Default: 7, DangerLevel: Warning, HotReload: true, Description: "stats_event_inbox 保留天数", DescriptionLong: "stats_event_inbox 的保留天数。读方：bg/partition_manager.go（fallback 7）。", Unit: "天"},
 		{Key: "lifecycle.supplier_error_stats_ttl_days", Type: TypeInt, Scope: ScopePlatform, Category: CategoryLifecycle, Min: floatPtr(1), Max: floatPtr(3650), Default: 30, DangerLevel: Warning, HotReload: true, Description: "supplier_error_stats 保留天数", DescriptionLong: "supplier_error_stats 的保留天数。读方：bg/partition_manager.go（fallback 30）。", Unit: "天"},
-		{Key: "lifecycle.request_logs_bodies_promote_batch_size", Type: TypeInt, Scope: ScopePlatform, Category: CategoryLifecycle, Min: floatPtr(100), Max: floatPtr(50000), Default: 500, DangerLevel: Warning, HotReload: true, Description: "request_logs_bodies 搬迁批大小", DescriptionLong: "request_logs_bodies 从 hot 搬迁到分区的单批行数。读方：bg/partition_manager.go:2345（fallback 500）。★ 代码侧另有 ≥100 的安全下限。", Unit: "行"},
-		{Key: "lifecycle.request_logs_bodies_retention_hours", Type: TypeInt, Scope: ScopePlatform, Category: CategoryLifecycle, Min: floatPtr(1), Max: floatPtr(720), Default: 24, DangerLevel: Warning, HotReload: true, Description: "request_logs_bodies 保留小时数", DescriptionLong: "request_logs_bodies 的保留小时数。读方：bg/partition_manager.go:2339（fallback 24）。★★ 211/252 的 settings_kv 里已写着 8 ⇒ 本键注册后**保留期从 24h 变 8h** ⇒ 上线前必须知情。", Unit: "小时"},
 	}
 }
