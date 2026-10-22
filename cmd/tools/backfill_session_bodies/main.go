@@ -26,6 +26,27 @@
 // 与数据库无关，且有既有的单测覆盖；将来若再有「从累积正文拆增量」的需求
 // （例如从别的存储面接回累积正文），它们仍然可用。
 //
+// ★★★★★★ FIXME-14375（2026-10-22 §143.75 轮，只登记、★ 零行为变更）：
+//
+//	★★ 上面那句「拿增量再拆增量是【恒等操作】」现在多了一层更重的含义 ——
+//	★★ 它说的不只是「工具没有输入」，而是「★ **形态 A 的历史数据，
+//	★★ 用这个工具修不了**」。
+//	★ 背景（§143.73~§143.75 三轮实测，252 共享库，只读）：
+//	★   ① v2 的 request_delta 在【形态 A】会话里存的是【客户端完整历史】
+//	★      （差集基准恒空 ⇒ 每轮整份落盘 ⇒ 二次方放大）；
+//	★   ② 全库形态普查（10 月分区）：形态 A = 188,696 会话 / 192,087 轮 /
+//	★      972 MB 的 request_delta；形态 B（delta = 真实新增）= 63,947 会话 /
+//	★      86,215 轮 / 1.66 GB；
+//	★   ③ ⇒ 真正【可回收】（形态 A 的多轮会话只保留最后一轮）= ★★ **501 MB**，
+//	★      其中 ★★ **96.7% 来自 15 个 >50 轮的会话**；
+//	★   ④ ⇒ 「每轮增量」这个前提在形态 A 上【不成立】⇒ ⇒ 本工具的差分内核
+//	★      （DeriveTurnDeltas / subtractMessages，★ 仍在前缀差分语义）
+//	★      对形态 A 只会算出「几乎空」或「原样写回」⇒ ⇒ **不能用来修历史**。
+//	★ 处置：本轮【不改行为】—— ★ 工具已退役，改它的差分语义没有调用方；
+//	★   ⇒ 真正的处置在【属主决策 ⑯】（存量清理 / 读侧分流 / 是否先导出归档），
+//	★   ⇒ 本处只做登记 ⇒ ⇒ 并由门
+//	★   scripts/ursmcheck/section_14375_shape_census_test.go 钉住。
+//
 // The _request_logs → session_turns metadata backfill (backfill_session_v2_turns
 // SQL function, see cmd/tools/backfill_sessions_v2_v2) should be run first so the
 // session_turns rows exist; session_bodies is written independently here.
