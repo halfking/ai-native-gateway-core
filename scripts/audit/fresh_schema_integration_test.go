@@ -351,7 +351,13 @@ func openFreshPool(t *testing.T) *pgxpool.Pool {
 // deriveConnForDB swaps the database name in the test DSN so we can
 // connect to a throwaway DB without rebuilding the connection config.
 // The test DSN is expected to be of the form
-// postgres://kxuser:pw@host:port/dbname?...
+// The test DSN is expected to be a standard postgres URL whose **path segment
+// is the database name** (scheme "postgres", userinfo carries the credentials,
+// query carries sslmode=disable).  NOTE: deliberately no URL literal here -- an
+// earlier comment embedded a real password, which the secret scanner flags as
+// DB_CONNSTRING/BLOCK; that value is absent from scripts/scan-secrets.*
+// .replacements, so the public mirror's filter-repo would NOT rewrite it and the
+// credential would be published to the public GitHub mirror.
 func deriveConnForDB(t *testing.T, dbName string) string {
 	t.Helper()
 	dsn := os.Getenv(freshSchemaAuditDBEnv)

@@ -32,7 +32,10 @@ verify_toast_amplification_local.py —— §143.65 会话族 TOAST 放大实验
 """
 
 import argparse
+import atexit
 import json
+import re
+import signal
 import subprocess
 import sys
 
@@ -114,11 +117,73 @@ def ensure_db():
         raise RuntimeError("CREATE DATABASE failed: " + p.stderr[:2000])
 
 
+# ── 回收兜底（R99 形态 · 与 verify_archive_orphan_local.py 同形）────────────
+# ★★ 原形态的缺口（三条）：
+#   ① 原 finally 只覆盖【进了 try 的路径】⇒ try 之前的 sys.exit / 未捕获异常
+#      （以及 ensure_db() 抛错后的栈展开）都【跳过】回收 ⇒ 一次性库留下
+#      ⇒ 修法：atexit 钩子 ⇒ 覆盖 sys.exit / 未捕获异常 / 正常返回 三条路径。
+#   ② 【信号路径】实测 python 的 atexit / finally 在进程被 SIGTERM 终止时【不执行】
+#      ⇒ ⇒ 修法：显式接管 SIGTERM/SIGINT ⇒ 处理器抛异常 ⇒ 异常沿栈展开
+#      ⇒ ⇒ finally 与 atexit 钩子【真的】跑起来。
+#   ③ 【防卡】原 drop_db() 是【裸】DROP ⇒ 遇到「还有连接没断干净」就无限期挂着
+#      ⇒ ⇒ 修法：先 terminate 踢掉占用会话，再【带 statement_timeout】地 DROP，
+#        并【查落点】（psql 的 stdin 形态下失败也 exit 0 ⇒ 退出码不是判据）。
+#      ★★ 超时取 **120s** 而不是 15s：实测「terminate 之后 DROP 仍要等被
+#        SIGTERM 的后端收尾」可达数十秒（PG 17.10 高负载下实测到 89.37s）
+#        ⇒ ⇒ 15s 会把【合法】清理砍成「被超时取消」⇒ 而「清理失败」＝「库泄漏」。
+#      ★★ SET 与 DROP 必须落在【同一条逻辑命令】里、且 terminate 那条紧邻其前
+#        ⇒ 这是本仓 cleanup 质量门的判据形状（照抄模板，别拆行）。
+#   ⚠ 诚实边界：atexit 不覆盖 os._exit 与 SIGKILL。
+_KEEP = False
+
+
+def _cleanup_sql(sql, stop_on_error=True):
+    """清理路径专用的 psql（★ 连 postgres 库，不连可能已不存在的一次性库）。"""
+    cmd = ["docker", "exec", "-i", PG_CONTAINER, "psql", "-U", PGUSER, "-d", "postgres",
+           "-v", "ON_ERROR_STOP=" + ("1" if stop_on_error else "0"), "-f", "-"]
+    p = subprocess.run(cmd, input=sql, capture_output=True, text=True)
+    return p.stdout + p.stderr
+
+
+def _residual():
+    """库里还有几个同名库（★ 清理成功与否只能【查落点】）。"""
+    out = _cleanup_sql(f"SELECT 'LEFT=' || count(*) FROM pg_database WHERE datname = '{DB}';")
+    m = re.search(r"LEFT=(\d+)", out)
+    return m.group(1) if m else "?"
+
+
 def drop_db():
-    subprocess.run(
-        ["docker", "exec", "-i", PG_CONTAINER, "psql", "-U", PGUSER, "-d", "postgres",
-         "-c", f"DROP DATABASE IF EXISTS {DB};"],
-        capture_output=True, text=True, check=False)
+    """回收一次性库：atexit 兜底与 finally 共用【同一个】实现 ⇒ 只留一份 DROP。"""
+    if _KEEP:
+        return ""
+    try:
+        _cleanup_sql(f"SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '{DB}' AND pid <> pg_backend_pid();")
+        out = _cleanup_sql(f"SET statement_timeout = '120s'; DROP DATABASE IF EXISTS {DB} WITH (FORCE);",
+                           stop_on_error=True)
+        left = _residual()
+        if left != "0":
+            out += f"\n⚠ 回收未完成：pg_database 里仍有 {left} 行匹配 {DB}"
+        return out
+    except Exception:  # noqa: BLE001 —— 回收失败不得盖掉真正的错误
+        return ""
+
+
+atexit.register(drop_db)
+
+
+# ★ 信号接管 ⇒ 让上面的兜底在【信号路径】上也真的执行。
+class _Terminated(BaseException):
+    """收到 SIGTERM / SIGINT ⇒ 抛出来让兜底回收真的执行。"""
+
+
+def _on_signal(signum, _frame):
+    raise _Terminated(f"收到信号 {signum}")
+
+
+def _install_signal_handlers():
+    """接管 SIGTERM / SIGINT ⇒ 走异常展开路径 ⇒ finally / atexit 真的跑。"""
+    signal.signal(signal.SIGTERM, _on_signal)
+    signal.signal(signal.SIGINT, _on_signal)
 
 
 def env_facts():
@@ -340,10 +405,13 @@ def exp_d():
 
 
 def main():
+    global _KEEP
     ap = argparse.ArgumentParser()
     ap.add_argument("--keep", action="store_true", help="跑完保留一次性库（调试用）")
     ap.add_argument("--json", action="store_true", help="只输出 JSON")
     args = ap.parse_args()
+    _KEEP = bool(args.keep)
+    _install_signal_handlers()
 
     ensure_db()
     try:
@@ -362,10 +430,17 @@ def main():
             print("D ⇒ 单列 vs 五列的存储相同 ⇒ 产能差异只来自「你数了哪一列」。")
     finally:
         if not args.keep:
-            drop_db()
+            warn = drop_db()
+            if warn:
+                print(warn)
             print("\n(一次性库已 DROP)")
     return 0
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        sys.exit(main())
+    except _Terminated as e:
+        # ★ 信号路径：异常已沿栈展开 ⇒ finally 与 atexit 兜底已真的跑过
+        print(f"⚠ {e} ⇒ 兜底回收已执行（atexit）", file=sys.stderr)
+        sys.exit(143)

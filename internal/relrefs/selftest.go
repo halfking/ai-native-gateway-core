@@ -148,19 +148,26 @@ func checkNoTruncation(root string) error {
 // checkParserHasTeeth = 反向夹具：★ 解析器必须报出【故意造出来的】东西。
 func checkParserHasTeeth() error {
 	// ★ ① 关系位置必须抓到表名
-	sql := "SELECT a.id FROM public.session_turns a JOIN usage_ledger u ON u.id = a.id"
+	//   ★★ 关系名一律用【中性夹具名】（同本文件 testDDL 里的 real_table /
+	//     keepme / some_fixture_table 同一约定）⇒ ★ 理由：自检夹具里如果写
+	//     真实族名（曾写 public.session_turns / usage_ledger），本文件就会
+	//     被 admin 侧三条「读法门」当成**生产读方**⇒ 报假红
+	//     ⇒ ★★ 而「夹具用真名」换不到任何额外覆盖：这些断言测的是
+	//     【解析器机制】（关系位置 / EXTRACT / CTE / 函数名 / 前缀门槛），
+	//     与具体族名无关 ⇒ ⇒ 与 commit e91ff07e5（v1 族名换中性名）同因同解。
+	sql := "SELECT a.id FROM public.fixture_parent a JOIN fixture_child u ON u.id = a.id"
 	got := map[string]bool{}
 	for _, p := range extractRelationPositions(sql, testDDL(), testCTEs()) {
 		got[p.Name] = true
 	}
-	for _, want := range []string{"public.session_turns", "usage_ledger"} {
+	for _, want := range []string{"public.fixture_parent", "fixture_child"} {
 		if !got[want] {
 			return fmt.Errorf("③ 反向夹具失败：关系位置没抓到 %q（抓到 %v）⇒ 解析器没牙", want, got)
 		}
 	}
 
 	// ★ ② 函数用法 `EXTRACT(x FROM y)` 里的 FROM **不是**关系位置
-	fnSQL := "SELECT EXTRACT(day FROM ts) FROM session_turns"
+	fnSQL := "SELECT EXTRACT(day FROM ts) FROM fixture_parent"
 	got2 := map[string]bool{}
 	for _, p := range extractRelationPositions(fnSQL, testDDL(), testCTEs()) {
 		got2[p.Name] = true
@@ -168,8 +175,8 @@ func checkParserHasTeeth() error {
 	if got2["ts"] {
 		return fmt.Errorf("③ 反向夹具失败：把 EXTRACT(day FROM ts) 里的 ts 当成了关系名 ⇒ 会有假阳性")
 	}
-	if !got2["session_turns"] {
-		return fmt.Errorf("③ 反向夹具失败：EXTRACT 之后的真关系 session_turns 没被抓到 ⇒ 括号深度过滤过头了")
+	if !got2["fixture_parent"] {
+		return fmt.Errorf("③ 反向夹具失败：EXTRACT 之后的真关系 fixture_parent 没被抓到 ⇒ 括号深度过滤过头了")
 	}
 
 	// ★ ③ SQL 上下文判据：中文里嵌 SQL 片段也算
@@ -226,7 +233,7 @@ func checkParserHasTeeth() error {
 // checkPrefixGuard = 动态拼名前缀探测（★「按名零命中 ⇒ 不依赖」的前提守卫）。
 func checkPrefixGuard() error {
 	ddl := newDDLRelations()
-	ddl.add("table", "session_turns")
+	ddl.add("table", "prefix_guard_tbl")
 	ddl.add("table", "ab") // ★ 太短的名字（< 4 字符）⇒ 不参与嫌疑探测
 
 	ps := &productScan{
@@ -234,11 +241,11 @@ func checkPrefixGuard() error {
 		weakNames:      map[string]bool{},
 		prefixSuspects: map[string]bool{},
 	}
-	// ★ 夹具：拼接点 `"session_turns" + suffix` ⇒ 字面量是 `session_turns_2026`
-	detectPrefixSuspects(ps, ddl, "session_turns_2026")
+	// ★ 夹具：拼接点 `"prefix_guard_tbl" + suffix` ⇒ 字面量是 `prefix_guard_tbl_2026`
+	detectPrefixSuspects(ps, ddl, "prefix_guard_tbl_2026")
 
-	if !ps.prefixSuspects["session_turns"] {
-		return fmt.Errorf("④ 拼接守卫失败：`session_turns_2026` 没被认成 `session_turns` 的拼接嫌疑 ⇒ " +
+	if !ps.prefixSuspects["prefix_guard_tbl"] {
+		return fmt.Errorf("④ 拼接守卫失败：`prefix_guard_tbl_2026` 没被认成 `prefix_guard_tbl` 的拼接嫌疑 ⇒ " +
 			"★ ⇒ 「按名零命中 ⇒ 不依赖」这条推论会被推翻而没人知道")
 	}
 	// ★ 反向：太短的名字不应产生嫌疑（噪音会淹没信号）
@@ -354,8 +361,8 @@ func sortStrings(s []string) {
 func testDDL() *ddlRelations {
 	d := newDDLRelations()
 	d.schemas["public"] = true
-	d.add("table", "public.session_turns")
-	d.add("table", "public.usage_ledger")
+	d.add("table", "public.fixture_parent")
+	d.add("table", "public.fixture_child")
 	d.add("table", "public.credentials")
 	d.add("table", "public.providers")
 	d.add("table", "public.real_table")
