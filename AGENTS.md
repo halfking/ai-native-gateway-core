@@ -1004,9 +1004,14 @@
 > ⇒ ★★ 真库真验（本地一次性库）：900 两形态（升级库/新装库）+ 幂等重跑 + down 全过；901 分区索引传播
 >    （★ 验证器两次自踩：`pg_index.indisparent` 列不存在（应查 pg_inherits）、子索引 relkind 是小写 `'i'`（父分区索引才是 `'I'`））；
 >    ★ **计划读数必须用有判别力的行数**（1000 行小表优化器选 Seq Scan 是对的，20 万行复测才走索引）。
-> ⇒ ⚠ 诚实边界：三条迁移**未在生产应用**（水位 897）；900/901 由升级通道随下次部署自动应用，未预应用（生产写需属主授权）；
+> ⇒ ⚠ 诚实边界：~~三条迁移未在生产应用~~ **01:20 已随 deploy 245 seq 2820（a88bf82f）应用**（「4 新应用/4 检查」全记账）⇒
+>    同版本重启 2818 后 **free-discovery 已接线（实测 /api/free-discovery/templates = 200）**、
+>    901 索引生产 EXPLAIN 走 **Index Only Scan**（keys 使用统计即时受益）；
 >    make guards 的 3 个 ursmcheck FAIL + guards-shell 7 处均为 HEAD 既有（临时 worktree 在干净 HEAD 上复现，文件皆不在本轮 diff）。
-> ⇒ ⚠ 部署边界：本轮只落仓 + 推送；free-discovery 503 的消失时点 = 下次部署（迁移应用后**网关重启** ⇒ 探测翻真）。
+> ⇒ ★★ **2820 新二进制切换被跨产品端口冲突挡住**：8782 被 `ai-session-manager-245@8782.service`（10-23 ~17:58 起占用）拿走，
+>    而网关蓝绿契约要 8782 作候选 ⇒ 预热守卫 `candidate port remains occupied` fail-close（正确行为）；两次重跑同位复现
+>    ⇒ **结构性冲突需属主把 ASM 迁走**（如 8783）。⚠ 部署脚本该守卫的远端 stderr 未回流日志 ⇒ fail-silent（靠 ss/ps 侧查才定位）——量具缺口已登记。
+>    settings 修复（代码族）**待 2820 切换后生效**；饱和族（routing-log/error-trend/turns）不受部署影响，等 §143 P11/P1/B1 裁决。
 
 ## 经验反馈闭环（vibe-coding Rule 66）
 
