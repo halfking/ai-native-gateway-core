@@ -115,6 +115,14 @@ bash tests/deploy_211_contract_test.sh
 echo "[verify] nginx llm realip patch behavior"
 bash tests/nginx_llm_realip_patch_test.sh
 
+# 2026-10-23（211 502 事故根修）：「upstream 端口」这条**事实**的读写与体检。
+# 引擎此前用**不剥注释**的正则读/改 upstream 端口 ⇒ 会读到 nginx 注释里那个
+# 旧端口（245 实况）⇒ 活跃槽判错 ⇒ 可能切错端口或停掉正在服务的槽 ⇒ 502。
+# 这道门用夹具钉住：读（烤死/include/backup/注释陷阱）、写（只改活的上游行、
+# 备份写改前内容、include 形态 fail-closed）、只读体检（脱节 ⇒ 退出码 2）。
+echo "[verify] nginx upstream port facts"
+bash tests/nginx_upstream_port_test.sh
+
 echo "[verify] pre-commit checks"
 ./scripts/pre-commit-check.sh
 
