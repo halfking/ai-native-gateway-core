@@ -50597,6 +50597,13 @@ bash scripts/audit/run_prod_sql.sh scripts/audit/storage_hotspots.sql 600 /priva
 ★ **④ 文档面**：★ runbook §143.93 段（本段）＋ LESSONS §287 ＋ AGENTS R137。
 ### §143.94 ★★★★★★ **【session_turns 族逐列拆解轮 —— ★★★★★★ 把「4,446 MB」这个块拆开：★ 两个 jsonb 列占 38.5%，★ 而它们的成因【完全不同】：★ `compression_meta` ＝ 【每轮被整体重写的 256 条坐标表】（★ 结构性重复）；★ `digest` ＝ 【管理员安全摘要里的正文】（★ 设计使然、★ 被 admin 真消费 ⇒ 不可裁）—— ★★ 而前者【10 月仍在产生、★ 且单行更大（25,830 B vs 9 月 6,173 B）】⇒ ⇒ 【不是历史存量、★ 是持续产生】】**（对生产的写入 = 0，全部只读；★ 零代码变更于生产路径 ⇒ ⇒ 线上行为零变化）
 
+> ★ ★★★★★★ **【订正横幅三十五（2026-10-23 §143.95 轮）】—— ★ 本节原文【全部保留】不改一字，★ 但 §143.94.4 ③ 与 §143.94.5 ⑦ 的【两处措辞】经 §143.95 实测后【被改写】：★ 根因 ＝ 【把「不在父表下」当成了「没人清理」】⇒ ⇒ ★** ⇒ ⇒ ★★★ ⇒
+> ★ ① ★★★★★★ **【§143.94.4 ③「`session_turns_hot` 孤儿表（★ 167 MB）」⇒ 【措辞作废】】** —— ★ 「孤儿表」暗示【没有归属、没人清理】⇒ ⇒ **而实测是**：★ 它是**设计上的独立 heap 热写表**（★ 冷行由 `promote_session_turns_hot_to_partition` 原子搬进父表月分区）⇒ ⇒ ★★ **它有主、有时机**：★ 每 1 小时一轮、★ 保留窗 8h、★ 批 5000 行、★ 单批 deadline 60s ⇒ ⇒ ⇒ ★★★ ⇒
+> ★ ② ★★★★★★ **【★ 而真正的缺陷是【排水自 2026-10-23 08:47 起每 tick 必败】】** —— ★ 失败日志（★ 154 与 245 两台同证）：★ `duplicate key value violates unique constraint "session_turns_2026_10_tenant_id_session_id_partition_date_idx" (SQLSTATE 23505)` 与 `timeout: context deadline exceeded` ⇒ ⇒ ★★ **根因 ＝ promote 自己的去重键 `(tenant_id, request_id)` ≠ 父表部分唯一索引 `uq_session_turns_final_success` 的键 `(tenant_id, session_id, partition_date) WHERE is_final_success`** ⇒ ⇒ ⇒ ★★★ ⇒
+> ★ ③ ★★★★ **【★ §143.94.5 ⑦「未测 `session_turns` 的行级留存」⇒ 【已测：PG 侧无行级留存】】** —— ★ 库侧针对 `session_turns` 的 DELETE/TRUNCATE **成功语句 0 条**；★ 仓内唯一的 `DELETE FROM session_turns` 在 `bg/lite_retention_worker.go`（★ 它操作 **SQLite**）⇒ ⇒ ★★ 另：★ **分区级留存也没有**（★ `stateTableTTLSpecs()` 不含该族、★ 841 的策略表与审计表**都是 0 行**）⇒ ⇒ ⇒ ★★★ ⇒
+> ★ ④ ★★★★ **【★ §143.94 测出的【逐列体积】与【成因定性】全部不受影响】** —— ★ 本轮零生产写入、★ 未触碰那两个 jsonb 列的成因 ⇒ ⇒ ⇒ ★★★ ⇒
+> ★ ⑤ ★★★★ **【★ §143.94 的「处置方向」要按本轮结论重排】** —— ★ 「给 hot 表补一个清理机制」**不再需要**（★ 机制已存在、只是坏了）；★ 「hot 表 167 MB 要不要回收」**改判为**：★ **先修排水** ⇒ ⇒ ★★ 排水恢复后 hot 回到「8h 窗口量级」（★ 约 6,800 行）⇒ ⇒ ★★ **⇒ ⇒ 需属主拍板的是【修好那条已有的排水通道】、★ 而不是【另建一套机制】** ⇒ ⇒ ⇒ ★★★ ⇒
+
 
 #### §143.94.1 逐列分解：两个 jsonb 列占 38.5%
 
@@ -50707,3 +50714,217 @@ bash scripts/audit/run_prod_sql.sh scripts/audit/storage_hotspots.sql 600 /priva
 - ⑥ ★★★ **【★ 大对象的成因是【读码 + 抽样】双证】** —— ★ 库侧不 detoast 就读不到内容 ⇒ ⇒ **★ ⇒ ⇒ 库侧只给【体积分布】、★ 内容形态由【代码 + 300 行抽样】给出** ⇒ ⇒ ⇒ ★★★
 - ⑦ ★★★ **【★ 未测 `session_turns` 的行级留存】** —— ★ 仓内 `lite_retention_worker` 操作的是 **SQLite**（★ `f.SQLiteDB()`）⇒ ⇒ **不是生产 PG**；★ 而 PG 侧 `session_turns` 的分区级留存路径本轮【未查清】⇒ ⇒ ⇒ ★★★
 - ⑧ ★★ **252 是共享库** ⇒ ⇒ 本轮未按服务拆分（★ 但 `session_turns` 是会话族、归属清晰）⇒ ⇒ ⇒ ★★★
+
+### §143.95 ★★★★★★ **【session_turns 族留存归属 + hot 表排水归属轮 —— ★★★★★★ 把 §143.94 自己标注的两个诚实边界测完：★ ① PG 侧行级留存 ＝ 【无】；★ ② `session_turns_hot` 由谁清 ＝ 【有】(promote，1h 周期 / 8h 保留窗 / 5000 行批 / 60s 单批 deadline) —— ★★★ 而真正的缺陷是【排水自 2026-10-23 08:47 起每 tick 必败】：★ 根因 ＝ 【promote 自己的去重键 (tenant_id, request_id) ≠ 父表部分唯一索引的键 (tenant_id, session_id, partition_date) WHERE is_final_success】⇒ ⇒ INSERT 撞 23505 ⇒ ⇒ 整批回滚、零行搬走 ⇒ ⇒ 而【同一个病】在 v1 request_logs 族上已于 2026-09-12 被迁移 695 修好过 —— ★★ 但那个族随后被 890 退役 ⇒ ⇒ 【自愈没有随族迁走】＝ copy-gap 缺陷】**（对生产的写入 = 0，全部只读；★ 零代码变更于生产路径 ⇒ ⇒ 线上行为零变化）
+
+#### §143.95.1 本轮要回答的问题（★ §143.94.5 登记的两个诚实边界）
+
+| # | §143.94 登记的诚实边界 | 本轮的答案 |
+|---|---|---|
+| ① | 「未测 `session_turns` 的行级留存」 | **无。** 库侧 0 条针对 `session_turns` 的 DELETE/TRUNCATE 成功语句；仓内唯一的 `DELETE FROM session_turns` 在 `bg/lite_retention_worker.go`，而它操作 **SQLite**（`f.SQLiteDB()`）⇒ 不是生产 PG |
+| ② | 「`session_turns_hot` 由谁清理、何时清理？」 | **有主、有时机：`promote_session_turns_hot_to_partition`（526 建立、869 现行体），每 1 小时一轮，保留窗 8h，批 5000 行，单批 deadline 60s。** ⇒ ★ **不是「没人管」** |
+| ③ | 「PG 侧 `session_turns` 的分区级留存路径本轮未查清」 | **无。** `stateTableTTLSpecs()` 只有 8 个族（不含 `session_turns`）；841 的策略表 `llm_gateway_partition_retention` **0 行**、审计表 `llm_gateway_partition_drop_log` **0 行** ⇒ 路径 B 空转、**从未删过任何月度分区** |
+
+> ★★★ ⇒ ⇒ **§143.94 的「`session_turns_hot` 孤儿表（167 MB）」这个措辞需要订正**（见 §143.94 的**订正横幅十**）：★ 「不在父表下」是**设计**（独立 heap 热写表）；★ 而「没人清理」**不成立** —— ⇒ **处置方向整个翻转**：★ 不是「给 hot 表补一个清理机制」，★ 而是「**修好那条已经存在的排水通道**」。
+
+#### §143.95.2 hot 表现状读数（★ 252 共享库，★ 2026-10-23 11:35，★ 脚本 `scripts/audit/verify_session_turns_retention_ownership.sql` 实跑 rc=0 / stderr=0）
+
+| 读数 | 值 | 说明 |
+|---|---|---|
+| hot 行数 | 9,538 | |
+| hot 总体积 | 183,115,776 B（174.6 MB） | |
+| ├ heap | 20,324,352 B | |
+| └ TOAST | 162,791,424 B（155.2 MB） | ★ **88.9% 在 TOAST**（`compression_meta` / `digest`） |
+| 最老一行 ts | 2026-10-22 23:46:25.152015+08 | ★ 已 **11 小时 48 分** |
+| 最新一行 ts | 2026-10-23 11:35:17.336003+08 | ★ 写侧**仍在写** |
+| **超过 8h 保留窗却仍在** | **2,843 行** | ★ ★★ 这就是「排水没做完」的量 |
+| 8h 窗内 | 6,695 行 | |
+| 写入速率 | 301 ~ 1,068 行/小时（最近 6 小时） | ★ ⇒ 积压**只增不减** |
+
+★ 父表月分区（同一快照）：
+
+| 分区 | 总体积 | n_tup_ins | n_tup_upd | n_live_tup |
+|---|---|---|---|---|
+| `session_turns_2026_07` | 229,376 B | 0 | 0 | 0 |
+| `session_turns_2026_08` | 229,376 B | 0 | 0 | 0 |
+| `session_turns_2026_09` | 2,867,789,824 B | 0 | 0 | 799,243 |
+| `session_turns_2026_10` | 1,799,602,176 B | **212,347** | **0** | 283,541 |
+| `session_turns_2026_11` | 237,568 B | 0 | 0 | 0 |
+| `session_turns_hot` | 183,115,776 B | 210,763 | 314,539 | 9,543 |
+
+★★★ **这张表是本轮最硬的一张证据**：
+
+- ★★ **hot 的 `n_tup_ins`（210,763）≈ 父表 2026_10 的 `n_tup_ins`（212,347）** ⇒ ⇒ **父表的唯一写入路径就是 promote** ⇒ ⇒ **promote 一停，父表就彻底停止接收冷行**（⇒ 而父表**又没有**任何留存机制 ⇒ ⇒ 既不涨、也不删 ⇒ ⇒ **月分区从此冻结**）。
+- ★★ **父表 `n_tup_upd = 0`** ⇒ ⇒ **`is_final_success` 标记只活在 hot 面**（父表面的 mark UPDATE 恒 0 行）⇒ ⇒ 标记随行被搬进父表。
+- ★★ `n_tup_ins` / `n_tup_del` 是**累计计数器**（不受 `pg_stat_user_tables` 快照过期影响）⇒ ⇒ 而 `n_live_tup` 是快照 ⇒ 「= 0」≠ 空表（★ §143.92 的教训，本轮沿用）。
+
+★ hot 表的**活读者**（库侧语句计数，★ 剥掉注释后匹配）：`UPDATE … aggregate_applied_at` 141,443 次 / `UPDATE … trace_events` 98,989 次 / `SELECT MAX(turn_no)` 70,755 次 / `INSERT` 41,014 + 29,726 次 / 读 `outbound_body` 17,424 次 ⇒ ⇒ ★★ **hot 表绝不是垃圾表**（⇒ ⇒ §143.94「孤儿表 ⇒ 需要确认由谁清理」的方向须订正）。
+
+#### §143.95.3 排水时间序列（★ 154 journald，`partition_manager: promote batch|failed`，★ label = `session_turns_hot`）
+
+| 时刻（+08） | 事件 |
+|---|---|
+| 10-22 20:13:14 | ✅ `promote batch` rows=**280** |
+| 10-22 22:14:23 | ✅ `promote batch` rows=**331** |
+| 10-22 23:14:4x | ⚠️ **本轮没有 `session_turns_hot` 的 batch**（当轮 request_wal / credential_model_index / candidate_failure_logs / session_turn_details / session_bodies / session_censors 都有）⇒ 该 tick **颗粒无收** |
+| 10-22 23:50:32 | ⚠️ 新进程（pid 20559）启动，打印「dashboard_access_events promote function repaired (607 body + Asia/Shanghai pin)」「session_bodies promote function repaired (conflict-drain semantics)」⇒ ★ **有人在此时手工修过 promote 函数** |
+| 10-22 23:51:25 | ✅ rows=**10** |
+| 10-23 01:25:13 | ✅ rows=**1** |
+| 10-23 02:25:51 | ✅ rows=**340** |
+| 10-23 03:26:38 | ✅ rows=**413** |
+| 10-23 04:27:28 | ✅ rows=**337** |
+| 10-23 05:28:26 | ✅ rows=**388** |
+| 10-23 06:44:14 | ❌ **ERROR `promote failed` … `timeout: context deadline exceeded`** |
+| 10-23 07:46:23 | ✅ rows=**1168** + rows=**10** |
+| 10-23 08:47:49 | ❌ **ERROR `promote failed` … `duplicate key value violates unique constraint "session_turns_2026_10_tenant_id_session_id_partition_date_idx" (SQLSTATE 23505)`** |
+| 10-23 09:49:23 | ❌ **ERROR 23505**（同款） |
+| 10-23 10:51:30 | ❌ **ERROR `timeout: context deadline exceeded`** |
+
+★ 失败日志里的参数：**`"retention":28800000000000`（＝ 8 小时）、`"batch_size":5000`** ⇒ ⇒ 与 Go 侧 `DefaultRetentionWindow = 8 * time.Hour` / `promoteBatchSize = 5000` **逐字吻合**。
+
+★★ **245 侧同证**（★ 共享库 ⇒ 同款函数 ⇒ 同款失败）：★ `promote_session_turns_hot_to_partition` 的 `promote failed` **4 次** + `promote_session_bodies_hot_to_partition` **1 次**（★ 后者是**同款病灶的另一族** ⇒ ⇒ 不是一个表的偶发）。
+
+★★★ ⇒ ⇒ **两种死法交替出现，且都归零**：
+
+| 死法 | 机制 | 后果 |
+|---|---|---|
+| **① 23505** | 批次里的某行撞父表部分唯一索引 ⇒ **整批回滚** | 零行搬走 |
+| **② timeout** | 批次变大（每行还带 `compression_meta` ≈ 6.4 KB + `digest` ≈ 0.8 KB ⇒ 大量 TOAST）⇒ 撞 Go 侧 60s 单批 deadline | 整批回滚 |
+
+⇒ ⇒ **两个都不是「排得慢」，是「每 tick 排 0 行」** ⇒ ⇒ 与 §143.93 的「互斥锁不是去重锁」是**不同**的族：★ 那次是**根本没冲突**，这次是**每次都冲突**。
+
+#### §143.95.4 ★★★ 根因：【两个「冲突」是【不同的键】】—— 本轮的核心形态
+
+| # | 冲突在哪 | 键 | 本轮实测 |
+|---|---|---|---|
+| ① | **promote 自己的去重**（批次选取带 `NOT EXISTS`） | `(tenant_id, request_id)` | 冲突 **0** 行 ⇒ ★ **看不见** |
+| ② | **父表的部分唯一索引** `uq_session_turns_final_success` | `(tenant_id, session_id, partition_date)` `WHERE is_final_success` | 冲突 **1** 个键 ⇒ ★★ **这就是 23505 的真凶** |
+
+★ 父表与 hot 表**各有同构**的部分唯一索引（生产实测）：
+
+| 表 | 索引 | 定义 |
+|---|---|---|
+| `session_turns` | `uq_session_turns_final_success` | `UNIQUE (tenant_id, session_id, partition_date) WHERE is_final_success` |
+| `session_turns_hot` | `uq_session_turns_hot_final_success` | `UNIQUE (tenant_id, session_id, partition_date) WHERE is_final_success` |
+
+★★ **致命的那一对行**（★ 生产定点实测，★ 同一键 `default / gw_omp-global-kxpms / 2026-10-22`）：
+
+| 位置 | id | ts（+08） | turn_no | request_id |
+|---|---|---|---|---|
+| 父表（**先到者**，已被搬进去） | 1,604,654 | **2026-10-22 15:37:53.744145** | 20 | `089e2bf3…` |
+| hot（**后到者**，致命行） | 1,612,123 | **2026-10-22 23:48:08.681584** | **1553** | `0b2f5992…` |
+
+★★★★★ **两个 ts 相差 8 小时 10 分 15 秒 ⇒ 正好跨过 8h 的 promote 边界** —— ★★ **与迁移 695 头注释对 v1 `request_logs` 族的描述逐字同形**（★ 「长活 agent 会话，实测 8.5~13.1h ⇒ 第二次 claim 在 hot 表拿到 `is_final_success=TRUE`，而第一次 TRUE 行已晋升进月分区」）。
+
+★★★ **致命行的越窗时刻 = 2026-10-23 07:48:08.681584+08** ⇒ ⇒
+
+- **07:46:23 那一 tick 成功**（rows=1168）—— ★ 因为 07:46 **还差 2 分钟**，致命行**尚未**越过 8h 窗 ⇒ 不在批次里 ⇒ 排水正常；
+- **08:47:49 那一 tick 报 23505** —— ★ 因为 08:47 **已过 07:48** ⇒ 致命行**第一次**进入批次 ⇒ ⇒ **从这一刻起，每个 tick 都必败**（★ 批次按 `ts` 升序选，致命行 ts=23:48:08 排得极靠前 ⇒ ⇒ 每批必含它 ⇒ ⇒ 整批必回滚）。
+
+★★ ⇒ ⇒ **这不是「偶发」，是「从 08:47 起确定性失败」** —— ★★ 与 695 头注释的原话完全一致：「**且因为批次按 ts 升序，冲突行始终在首批，每个 tick 必败**」。
+
+#### §143.95.5 ★★★ 完整因果链（★ 七步，每步都有生产读数或代码锚点）
+
+| 步 | 机制 | 证据 |
+|---|---|---|
+| 1 | 写侧 `markTurnFinalSuccess`（`internal/sessionv2mirror/final_success_turn.go`）对 **hot 与父表两面**按 `(request_id, tenant_id)` 打标 | 代码 |
+| 2 | 但父表面的 UPDATE **恒 0 行** ⇒ ★ 标记**只活在 hot 面** | 父表 `n_tup_upd = 0` |
+| 3 | hot 的部分唯一索引**只看得见 hot** ⇒ ★ 第一条 fs 标记被搬进父表后，hot 的索引**再也看不见它** ⇒ ⇒ **第二条 claim 被放行** | `uq_session_turns_hot_final_success` 的作用域 |
+| 4 | promote 的去重键 `(tenant_id, request_id)` ⇒ ★ **也看不见**这个冲突（两条是不同请求） | 实测 ① ＝ 0 |
+| 5 | ⇒⇒ promote 的原子 CTE `INSERT INTO public.session_turns` ⇒ **撞 `uq_session_turns_final_success`** ⇒ **23505 ⇒ 整批回滚 ⇒ 零行搬走** | 154/245 日志 + 实测 ② ＝ 1 个键 |
+| 6 | ⇒⇒ 积压增长（每小时 ~850 行）⇒ ⇒ 批次变大 ⇒ ⇒ 又撞 **60s 单批 deadline** ⇒ **第二种死法** | 10:51:30 的 timeout |
+| 7 | ⇒⇒ **父表饿死**（父表的唯一写入路径就是 promote）⇒ ⇒ 月分区**既不涨、也不删**（无留存机制）⇒ ⇒ **存储缺口从「冷行搬不动」变成「热表无限涨 + 父表冻结」** | `n_tup_ins` 对照 |
+
+★ 写侧那道 WARN（★ 154 日志里高频出现）其实是**它自己那道防线在正常工作**，★ **不是**同一个 bug：
+
+> `sessionv2mirror: final_success pad rejected by session-side unique index (another turn of this session already holds the mark; v1 should not have granted two)`
+
+★ 它拦的是**第三张** fs 标记（hot 面自己的索引挡住了）⇒ ⇒ **父表侧被保护、hot 面不被保护** ⇒ ⇒ **死掉的是 promote**（★ 它的 INSERT 要把 hot 的第二条标记搬进父表 ⇒ ⇒ 撞父表那道防线）。
+
+★ ★★ **写侧代码注释里那句「纵深防御」只覆盖了 hot 一面**（原文：「even a hypothetical double grant is rejected by `uq_session_turns_hot_final_success`」）⇒ ⇒ ★★ **这就是缺口的准确位置**。
+
+#### §143.95.6 ★★★ 修法：★ **自愈没有随族退役迁走（copy-gap）** —— 而且**样板就在仓里**
+
+★★ **仓内已经有这个病的确切修法**，只是用在了后来被退役的族上：
+
+| 迁移 | 内容 | 现状 |
+|---|---|---|
+| **695** | `promote_request_logs_hot_to_partition` 的 **final_success 自愈**：在原子 CTE **之前**插入 demote 步，把「同会话同分区已有 TRUE 行」的 hot 行降级为 FALSE（语义：「输家 = superseded，历史不改写」） | ★ **在位**，但护的是 **v1 request_logs 族** |
+| **890** | 退役 v1 `request_logs` 族（真删表） | ★ **在位** ⇒ ⇒ **695 的保护对象没了** |
+| **会话族** | `promote_session_turns_hot_to_partition`（526 建立 ⇒ 636 ⇒ 640 ⇒ 688 ⇒ 707 ⇒ **869 现行体**） | ★★★ **没有 demote 步** ⇒ ⇒ **带着同款病灶在跑** |
+
+★ 695 头注释把病写得很清楚（★ 本轮在会话族上**逐字复现**）：
+
+> 「当一个 `gw_session_id` 的两次成功跨越 8h promote 边界时（长活 agent 会话，实测 8.5~13.1h），第二次 claim 在 hot 表拿到 `is_final_success=TRUE`，而第一次 TRUE 行已晋升进 `request_logs_2026_09`。该行过 8h 保留期后，promote 的单条原子 CTE 撞部分唯一索引 `uq_request_logs_2026_09_final_success_session`（SQLSTATE 23505），**整批回滚零搬运 —— 且因为批次按 ts 升序，冲突行始终在首批，每个 tick 必败**。冷迁移自 2026-09-10 01:54 起停摆 2.5 天，hot 表积压 84,610 行。」
+
+★★★ **⇒ ⇒ ⇒ 本轮的中心结论一句话**：
+
+> **★ 同一族里，v1 `request_logs` 在 2026-09-10 被 23505 打死、并在 2026-09-12 被迁移 695 用「demote 步」治好；⇒ ⇒ 而 2026-09-21 的迁移 890 把那个族退役了 ⇒ ⇒ ⇒ 治好它的 demote 步从此**保护不到任何东西**；⇒ ⇒ ⇒ 而 2026-09-25 之后接手的会话族有**一模一样**的病灶（★ 长活会话跨 8h promote 边界 ⇒ 第二条 fs claim ⇒ 整批回滚 ⇒ 每 tick 必败）⇒ ⇒ ⇒ 却**没有**继承那个 demote 步。★ ⇒ ⇒ **这不是「新 bug」，是「族退役时的迁移动作漏了一步」。**
+
+★ 建议的修法（★ **以 869 的函数体为基线**，★ 不是 526/636/640/688/707 —— 生产现行体是 869）：
+
+```sql
+-- ── 自愈步（★ 对齐迁移 695 的做法）★ 放在【批次选取之前】──────────────
+-- 语义：父表那条（先到者）站住；hot 这条（后到者）降级为 is_final_success = FALSE
+--（★ 与 695 一致：「输家 = superseded，历史不改写」）。
+-- 放在批次选取之前 ⇒ 降级后它才带着 FALSE 进批次 ⇒ INSERT 不再撞 23505。
+UPDATE public.session_turns_hot h
+   SET is_final_success = FALSE
+ WHERE h.is_final_success IS TRUE
+   AND h.ts < statement_timestamp() - p_retention
+   AND EXISTS (
+       SELECT 1
+       FROM public.session_turns p
+       WHERE p.tenant_id = h.tenant_id
+         AND p.session_id = h.session_id
+         AND p.partition_date = h.partition_date
+         AND p.is_final_success IS TRUE
+   );
+GET DIAGNOSTICS v_demoted = ROW_COUNT;
+IF v_demoted > 0 THEN
+    RAISE WARNING 'session_turns promote demoted % hot final-success rows (parent already holds the mark)',
+        v_demoted;
+END IF;
+```
+
+★★ **⚠ 两个必须一起说的边界**：
+
+1. ★★ **demote 只是【数据面自愈】，不是【预防】** —— ★ 写侧那道缺口仍在（★ hot 面的索引看不见父表）⇒ ⇒ **下一条跨 8h 边界的 fs claim 还会再造成一次同类停摆** ⇒ ⇒ ⇒ **真正的预防**是让写侧的 `markTurnFinalSuccess` 在授予第二条 mark **之前**先查父表（同键是否已有 TRUE）⇒ ⇒ ⇒ **那是代码变更**（`internal/sessionv2mirror/final_success_turn.go`）⇒ ⇒ ★ **属主需同时决定「先自愈、后补预防」还是「两者一起」**。
+2. ★★ **`session_bodies_hot` 有同款病灶**（★ 245 日志里它的 promote 也在报 timeout）⇒ ⇒ ⇒ **若要修，【两个族要一起修】**（★ 两件事只有一个落点 ⇒ ⇒ ⇒ 那条通则：**同一件事有两个落点时方案必须两处都覆盖**）。
+
+★ ★★ **零代码的缓解手段（可与修复解耦）**：`resolvePromoteConfig` 的批大小取自 `lifecycle.promote_batch_size`（★ 默认 5000，★ 上下限 100 ~ 50,000）⇒ ⇒ **调小它可让「60s deadline」这条路先松开**（★ 积压 2,843 行 ⇒ 按 1,000/批 ⇒ 3 批排空）⇒ ⇒ ★ **但改 `settings_kv` 属生产写 ⇒ 需授权** ⇒ ⇒ **且它治不了 23505**（★ 23505 与批大小无关）。
+
+#### §143.95.7 产物（★ 本轮零生产写入、★ 零生产路径代码变更）
+
+| # | 产物 | 形态 |
+|---|---|---|
+| ① | `scripts/audit/verify_session_turns_retention_ownership.sql`（★ **10 段**，★ 252 实跑 rc=0 / stderr=0） | 只读复算脚本 |
+| ② | `cmd/gateway/section_14395_session_turns_retention_test.go`（★ **9 条判据**） | 门 |
+| ③ | `scripts/audit/mutate_14395_gate.py`（★ **N/N**） | 变异台 |
+| ④ | runbook §143.95 段（本段）＋ **§143.94 订正横幅十** ＋ LESSONS §289 ＋ AGENTS R139 | 文档 |
+
+★ 门守的四件事：
+
+1. ★★ **两个「冲突」必须分开量** —— ★ promote 自己的去重键 `(tenant_id, request_id)` 与父表唯一索引键 `(tenant_id, session_id, partition_date)` + `is_final_success` **必须同时在脚本里、且键逐字不同** ⇒ ⇒ 混用 ⇒ 阴性结论整个翻转。
+2. ★★ **排水判据不许被改写** —— ★ `h.ts < statement_timestamp() - p_retention`（869 基线）＋ `DefaultRetentionWindow = 8 * time.Hour` ＋ `promoteBatchSize = 5000`。
+3. ★★ **父表饿死的判据不许被删** —— ★ `n_tup_ins` / `n_tup_upd` 的累计计数对照。
+4. ★★★★ **修法样板不许消失、且必须登记「它已失去保护对象」** —— ★ 695（含 `SET is_final_success = FALSE`）＋ 890（v1 族退役）＋ 707（`uq_session_turns_final_success`）。
+
+★ ★★ **门刻意不钉「活数字」**（★ hot 的行数/体积每小时都在涨）⇒ ⇒ 只钉**稳定标识**（索引名 / 会话名 / 失败码 / 函数名 / 机制常量）⇒ ⇒ ★ 与 §143.93 的教训一致：**钉一个明天就不一样的数字等于钉漂移**。
+
+#### §143.95.8 待属主拍板（★ 本轮新增）
+
+- ★★★★★★ **【新】会话族的 final_success 自愈（★ copy-gap 修复）** —— ★ 内容：在 869 的函数体基线上插入 demote 步（★ 补丁见 §143.95.6）⇒ ⇒ **需要一个新迁移号 + 登记进 `installer/internal/dbinit/runner.go` 与 `sql/schema/installed_startup_migrations.tsv`（★ 这两个文件本轮按纪律【不碰】⇒ ⇒ 需属主拍板后由单写者落地）** ⇒ ⇒ **并需授权在生产应用**（★ 生产写）⇒ ⇒ ★★ **收益（可量化）**：★ 恢复 `session_turns_hot` 的 8h 不变式 ⇒ ⇒ 2,843 行滞留可被排空 ⇒ ⇒ 父表月分区**恢复接收冷行** ⇒ ⇒ ★★ **同时解除「父表冻结」** ⇒ ⇒ ★★ **而 hot 表的 8h 不变式一旦恢复，hot 的体量会从 174.6 MB 回到「8h 窗口量级」（★ 约 8h × ~850 行/小时 ⇒ **约 6,800 行**）**。
+- ★★★★ **【新】写侧预防（★ 更深的一层）** —— ★ 让 `markTurnFinalSuccess` 在授予第二条 fs mark 前先查父表 ⇒ ⇒ **否则同类停摆会周期性复发** ⇒ ⇒ ★ 需属主决定是否与自愈一起做。
+- ★★★★ **【新】`session_bodies_hot` 同款病灶** —— ★ 245 日志已实证 ⇒ ⇒ **是否一并修**（★ 「同一件事两个落点 ⇒ 方案必须两处都覆盖」）。
+- ★★★ **【新】`session_turns` 族的无留存现状** —— ★ 本轮把 §143.46 的 UNBOUNDED 判定**独立复核**了一遍（★ 策略表 0 行 / 审计表 0 行 / `stateTableTTLSpecs` 不含该族 / 行级 DELETE 0 条）⇒ ⇒ ★★ **结论不变、且更硬**（★ 现在还有「父表写入 ＝ promote」这条因果）⇒ ⇒ ★★ ⇒ **恢复排水 ≠ 解决留存** ⇒ ⇒ **保留期仍是属主的语义决策**。
+
+#### §143.95.9 诚实边界
+
+- ① ★★★ 本轮零生产写入、零生产路径代码变更 ⇒ ⇒ 线上行为零变化；全部结论是**现状测量** ⇒ ⇒ ⇒ ★★★
+- ② ★★★★ **【★ 修复没有落地 ⇒ ⇒ 排水现在仍然是死的】** —— ★ 本轮交付的是**诊断 + 修法形状 + 可复算脚本 + 门**，★ 不是修复本身 ⇒ ⇒ ⇒ ★★ **2,843 行会继续累积**（★ 约 850 行/小时）⇒ ⇒ ⇒ ★★★
+- ③ ★★★★ **【★ 10:51 那次 timeout 没有单独归因到「哪一行/哪一批」】** —— ★ 失败语句不进 `pg_stat_statements` ⇒ ⇒ 只能从「积压变大 + 批次变大」推断 ⇒ ⇒ ⇒ ★★★
+- ④ ★★★★ **【★ 「父表完全停止接收冷行」是由累计计数推出来的】** —— ★ `n_tup_ins` 是**统计快照累计值**（★ 不受 `pg_stat_user_tables` 的过期影响、★ 但**会**被 `stats_reset` 归零）⇒ ⇒ ★★ 未在生产上触发 stats reset ⇒ ⇒ ⇒ ★★★
+- ⑤ ★★★ **【★ `session_bodies_hot` 的失败只到「有 timeout」这一层】** —— ★ 未查它的冲突集 ⇒ ⇒ ⇒ ★★★
+- ⑥ ★★★ **【★ 211 实例未测】** —— ★ 本轮全部读数在 252 共享库与 154/245 两台网关上取得 ⇒ ⇒ ★★ 211 的 `acc-pg17` 是**另一套库** ⇒ ⇒ ⇒ ★★★
+- ⑦ ★★★ **【★ 「写侧只有 hot 面落地」是由 `n_tup_upd = 0` 推出来的】** —— ★ 严格说它是「父表从未被 UPDATE 过」的读数；★ 而父表的 UPDATE 本应只来自写侧的 mark ⇒ ⇒ ★★ 推断链完整、★ 但未逐条对账 ⇒ ⇒ ⇒ ★★★
