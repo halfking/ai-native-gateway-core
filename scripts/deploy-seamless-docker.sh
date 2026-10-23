@@ -2155,97 +2155,116 @@ if [[ "${GW_WEB_DIST_OK:-0}" == "1" ]]; then
   esac
 fi
 
-# ── nginx llm.itestu.cn TLS 腿：X-Real-IP 必须是 $remote_addr ──────────
+# ── nginx <域名> TLS 腿：X-Real-IP 必须是 $remote_addr ──────────────────
 # 旧配置用 map 变量 ns_real_ip(= 入站 X-Real-IP 原样)，浏览器不带该头时为空，
 # 限流/验证码只能落到 docker 桥接 RemoteAddr，多客户端共桶。幂等修补。
+#
+# ★★ 2026-10-23 重构（211 部署复验轮 F2）：判定逻辑**挪出**引擎，放到
+#   scripts/ops/nginx-llm-realip-patch.py（可离线用夹具验证，见
+#   tests/nginx_llm_realip_patch_test.sh）；引擎只做「调用 + 按分类处置」。
+#   修掉的三个真缺陷（详见该脚本头注）：
+#   ① ★ 只在**自己的 conf** 里找 443 块 ⇒ 211（443 腿在**通用 TLS 终结器**
+#      里，server_name 不含该域）**永远找不到** ⇒ 每次部署打一条**假**告警
+#      「块形态变了?」——既不是形态变了，也不是该修的没修成，而是**本机压根
+#      不承担该域的 443**。⇒ 现在跨文件搜，且把「没找到」分成
+#      「确实没有」（信息）与「形态不认识」（才告警）两种结论。
+#   ② ★ 域名**写死** llm.itestu.cn（权威是 DD_DOMAIN）⇒ 换域名会静默改错对象。
+#   ③ ★ `nginx -t` 失败时**不还原**文件 ⇒ 磁盘上留着没验证过的配置，
+#      之后任何一次 reload 都会加载它（潜伏半切换态；同仓审计
+#      docs/audit/2026-10-20-211-bluegreen-docker-engine.md §4.1 已定过形态）。
+#
+# ★ 处置一律按补丁器给出的**分类**（RESULT=），**不靠退出码做分支**
+#   （原实现正是在这里踩过 `if ! cmd; then 成功 else 失败` 的反转坑）。
 dd_fix_nginx_llm_real_ip() {
-  local conf="${DD_NGINX_LLM_CONF:-$DD_NGINX_CONF}"
-  [[ -f "$conf" ]] || { warn "nginx conf 不在场 ($conf)，跳过 X-Real-IP 修补"; return 0; }
-  if ! grep -q 'server_name llm.itestu.cn' "$conf"; then
-    warn "nginx conf 无 llm.itestu.cn server，跳过 X-Real-IP 修补"
+  local domain="${DD_DOMAIN:-}"
+  local patcher="$DD_REPO_ROOT/scripts/ops/nginx-llm-realip-patch.py"
+  if [[ -z "$domain" ]]; then
+    log "nginx X-Real-IP：未配置 DD_DOMAIN ⇒ 跳过（不猜域名）"
     return 0
   fi
-  # 只改「listen …443 ssl」那一段里的 X-Real-IP（mesh :8000 腿保留原 map，
-  # 因为上跳 252 会带真实客户端 IP）。
-  #
-  # ★★ 2026-10-22 修（这个函数此前**从来没有生效过**）：
-  #   调用点是 `python3 - "$conf" <<'PY'` —— 只传了**一个**参数（conf 路径），
-  #   而脚本里读的是 `sys.argv[2]`（host_ip）⇒ host_ip 恒为 "" ⇒
-  #   marker 变成空串 ⇒ `text.find("")` = 0 ⇒ idx=0（不是 -1，**绕过了正则
-  #   回退分支**）⇒ 窗口 = 「文件开头到第一个顶层 server {」⇒ 里面当然没有
-  #   llm.itestu.cn ⇒ 每次都打印 noop-wrong-server + 一条 WARN。
-  #   ⇒ ① 调用点补上 host_ip；② host_ip 为空时**必须**走正则回退分支
-  #     （空 marker 绝不能当成「匹配到位置 0」）。
-  #   ⇒ ③ 「已经是 $remote_addr」时**不 reload nginx**：原来 python 退出 0
-  #     就被当成「修补成功」⇒ 每次部署都白白 reload 一次 nginx。
-  # ⚠⚠ 2026-10-22 二次修：**这里不能加 `!`**。
-  #   `if ! cmd; then <成功分支> else <失败分支>` 是**反的**：
-  #   cmd 成功(rc=0) ⇒ `! 0` 为假 ⇒ 走 else ⇒ 打印「修补未应用」；
-  #   cmd 失败(rc≠0) ⇒ `! rc` 为真 ⇒ 走 then ⇒ 反而去 reload。
-  #   （本轮实测：python 已返回 "already"/rc=0，却仍打出
-  #    「nginx X-Real-IP 修补未应用 (块形态变了?)」—— 就是这个反转。）
-  #   ⇒ 形态必须是：`if cmd; then <成功分支> else <失败分支>`。
-  _dd_realip_result=""
-  if _dd_realip_result="$(python3 - "$conf" "${DD_HOST:-}" <<'PY'
-import pathlib, sys
-p = pathlib.Path(sys.argv[1])
-text = p.read_text()
-# 快速路径：目标机本机 IP 的 443 腿。取不到就用下面的通用正则
-# （任意 listen ...:443 ssl + server_name llm.itestu.cn 的 server 块）。
-host_ip = sys.argv[2] if len(sys.argv) > 2 else ""
-marker = ("listen %s:443 ssl" % host_ip) if host_ip else ""
-idx = text.find(marker) if marker else -1
-if idx < 0:
-    # 允许 IP 漂移：任意 listen …443 ssl 且随后 server_name llm.itestu.cn
-    import re
-    m = re.search(r'listen\s+[^\n]*443[^\n]*ssl[^\n]*;\s*\n\s*server_name\s+llm\.itestu\.cn;', text)
-    if not m:
-        print('noop-no-block')
-        raise SystemExit(2)
-    idx = m.start()
-# 取从此 listen 起到下一个顶层 "server {" 或文件尾的窗口（含 location 嵌套）
-rest = text[idx:]
-end_rel = rest.find("\nserver {", 1)
-window = rest if end_rel < 0 else rest[:end_rel]
-if "server_name llm.itestu.cn;" not in window and "server_name llm.itestu.cn" not in window:
-    print('noop-wrong-server')
-    raise SystemExit(2)
-if "X-Real-IP $remote_addr;" in window:
-    print('already')
-    raise SystemExit(0)
-if "X-Real-IP $ns_real_ip;" not in window:
-    print('noop-no-ns-real-ip')
-    raise SystemExit(2)
-new_window = window.replace("X-Real-IP $ns_real_ip;", "X-Real-IP $remote_addr;", 1)
-new = text[:idx] + new_window + text[idx + len(window):]
-bak = p.with_suffix(p.suffix + ".bak-dd-realip")
-if not bak.exists():
-    bak.write_text(text)
-p.write_text(new)
-print("patched")
-PY
-  )"; then
-    case "$_dd_realip_result" in
-      patched)
-        if nginx -t >/dev/null 2>&1; then
-          nginx -s reload >/dev/null 2>&1 && log "nginx llm.itestu.cn TLS: X-Real-IP -> \$remote_addr (reloaded)" \
-            || warn "nginx reload 失败 (配置已改，需手工 reload)"
-        else
-          warn "nginx -t 失败，已保留 .bak-dd-realip; 未 reload"
-        fi
-        ;;
-      already)
-        # 已经是目标形态 ⇒ **不 reload**：reload 是有代价的（worker 换代会抖一下），
-        # 没必要为「什么都没改」付这个代价。
-        log "nginx llm.itestu.cn TLS: X-Real-IP 已是 \$remote_addr（无需改动，未 reload）"
-        ;;
-      *)
-        warn "nginx X-Real-IP 修补未应用 (结果=${_dd_realip_result:-empty})"
-        ;;
-    esac
-  else
-    warn "nginx X-Real-IP 修补未应用 (块形态变了?)"
+  if [[ ! -f "$patcher" ]]; then
+    warn "nginx X-Real-IP 修补脚本不在场（${patcher}）⇒ 跳过"
+    return 0
   fi
+  # 候选：自己的 conf（切流用的那个）+ 标准 nginx 配置目录（★ 跨文件找 443 腿）
+  # ★ 搜索根可覆盖（DD_NGINX_SEARCH_ROOTS，冒号分隔）：默认写死主机路径会让
+  #   这段逻辑**无法离线验证**（测试机上 /etc/nginx 不存在 ⇒ 永远只扫一个文件）
+  #   ⇒ 给了旋钮，门才能在临时目录里跑真引擎函数。
+  local roots=()
+  local d rest
+  rest="${DD_NGINX_SEARCH_ROOTS:-/etc/nginx/conf.d:/etc/nginx/sites-enabled}"
+  while [[ -n "$rest" ]]; do
+    d="${rest%%:*}"
+    if [[ "$rest" == *:* ]]; then rest="${rest#*:}"; else rest=""; fi
+    [[ -n "$d" && -d "$d" ]] && roots+=(--search-root "$d")
+  done
+  # 遗留旋钮（历史上有主机用它指定「承载该域的另一个 conf」）：一并纳入候选
+  local confs=(--conf "$DD_NGINX_CONF")
+  [[ -n "${DD_NGINX_LLM_CONF:-}" ]] && confs+=(--conf "$DD_NGINX_LLM_CONF")
+  local out result=""
+  out="$(python3 "$patcher" --domain "$domain" "${confs[@]}" \
+          ${roots[@]+"${roots[@]}"} --apply 2>&1)" || {
+    warn "nginx X-Real-IP 修补脚本执行失败：${out}"
+    return 0
+  }
+  result="$(printf '%s\n' "$out" | sed -n 's/^RESULT=//p' | head -1)"
+  # 改了哪些文件 / 对应备份（还原要用）
+  local files=() backs=()
+  local line
+  while IFS= read -r line; do
+    case "$line" in
+      FILE=*)   files+=("${line#FILE=}") ;;
+      BACKUP=*) backs+=("${line#BACKUP=}") ;;
+    esac
+  done <<<"$out"
+  local detail
+  while IFS= read -r line; do
+    detail="${line#DETAIL=}"
+    [[ "$line" == DETAIL=* ]] || continue
+    case "$result" in
+      patched) ;;                       # patched 的明细由下面那行 log 概括
+      *) log "  ${detail}" ;;
+    esac
+  done <<<"$out"
+  case "$result" in
+    patched)
+      if nginx -t >/dev/null 2>&1; then
+        if nginx -s reload >/dev/null 2>&1; then
+          log "nginx ${domain} TLS: X-Real-IP -> \$remote_addr (reloaded)"
+        else
+          warn "nginx reload 失败（配置已改，需手工 reload）"
+        fi
+      else
+        # ★ nginx -t 失败 ⇒ **还原**：磁盘上留着没验证过的配置 =
+        #   潜伏半切换态（之后任何一次 reload 都会加载它）
+        # ★ 用 ${#files[@]} 判空而不是直接展开空数组：bash 3.2 + set -u
+        #   展开空数组会报未绑定变量（仓库通用纪律）。
+        local i
+        if [[ "${#files[@]}" -gt 0 ]]; then
+          for i in "${!files[@]}"; do
+            [[ -n "${backs[$i]:-}" ]] && cp "${backs[$i]}" "${files[$i]}" 2>/dev/null || true
+          done
+        fi
+        warn "nginx -t 失败 ⇒ 已还原 X-Real-IP 改动（未 reload）"
+      fi
+      ;;
+    already)
+      log "nginx ${domain} TLS: X-Real-IP 已是 \$remote_addr (无需改动，未 reload)"
+      ;;
+    skip-domain-not-on-443-block)
+      # ★ 这是**信息**不是告警：本机不承担该域的 443（211：443 由通用终结器承担）
+      log "nginx ${domain}：本机没有该域的 443 TLS 块 ⇒ 无需 X-Real-IP 修补"
+      ;;
+    skip-shared-leg)
+      log "nginx ${domain}：该 443 块是共享终结器（含其它域）⇒ 不自动改（不波及别的域）"
+      ;;
+    noop-unknown-shape)
+      warn "nginx ${domain}：X-Real-IP 形态不认识 ⇒ 未改（需人工确认）"
+      ;;
+    *)
+      warn "nginx X-Real-IP 修补未应用（结果=${result:-empty}）"
+      ;;
+  esac
 }
 dd_fix_nginx_llm_real_ip
 

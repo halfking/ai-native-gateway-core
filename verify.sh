@@ -106,6 +106,15 @@ bash tests/deploy_local_reap_test.sh
 echo "[verify] deploy-211 docker contracts"
 bash tests/deploy_211_contract_test.sh
 
+# 2026-10-23：211 的 nginx X-Real-IP 修补此前**从来没生效过**（引擎只在自己的
+# conf 里找「按域 443 块」，而 211 的 443 腿在通用 TLS 终结器里 ⇒ 每次部署
+# 打一条**假**告警「块形态变了?」）。判定逻辑已挪到
+# scripts/ops/nginx-llm-realip-patch.py ⇒ 这道门用**夹具**驱动它，
+# 钉住结论分类与副作用（改谁 / 不改谁 / 改前备份 / nginx -t 失败要还原）。
+# ★ 零外部依赖：纯 bash + python3，不碰 nginx、不碰任何目标机。
+echo "[verify] nginx llm realip patch behavior"
+bash tests/nginx_llm_realip_patch_test.sh
+
 echo "[verify] pre-commit checks"
 ./scripts/pre-commit-check.sh
 
