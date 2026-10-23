@@ -488,27 +488,27 @@ expect_red_bash() {
   echo "── MUTATION $label: expect RED (bash gate)"
   local output
   output="$(bash "$BASH_GATE" 2>&1)"
-  if echo "$output" | grep -qE 'syntax error|command not found|unbound variable'; then
+  if grep -qE 'syntax error|command not found|unbound variable' <<<"$output"; then
     echo "   ✘ HARNESS/BASH ERROR — the mutation broke the gate script itself; not a valid mutation"
     echo "$output" | tail -10
     FAILED+=("$label(harness-error)")
     return
   fi
-  if ! echo "$output" | grep -q 'contract FAILED'; then
+  if ! grep -q 'contract FAILED' <<<"$output"; then
     echo "   ✘ STILL GREEN — the bash gate does not have teeth"
     echo "$output" | tail -12
     FAILED+=("$label(still-green)")
     return
   fi
-  if ! echo "$output" | grep -qE "$reason_pattern"; then
+  if ! grep -qE "$reason_pattern" <<<"$output"; then
     echo "   ✘ RED BUT NOT FOR THE RIGHT REASON — 没有出现预期的断言消息：$reason_pattern"
-    echo "$output" | grep -A3 'contract FAILED' | head -12 | sed 's/^/     /'
+    grep -A3 'contract FAILED' <<<"$output" | head -12 | sed 's/^/     /'
     FAILED+=("$label(wrong-reason)")
     return
   fi
   echo "   ✔ RED as expected（断言消息已回显）"
   echo "   ↳ reason:"
-  echo "$output" | grep -E '^\s+\[[0-9]+\]' | head -2 | sed 's/^/     /'
+  grep -E '^\s+\[[0-9]+\]' <<<"$output" | head -2 | sed 's/^/     /'
   MUTATIONS_RED=$((MUTATIONS_RED + 1))
 }
 
@@ -518,27 +518,27 @@ expect_red_go() {
   echo "── MUTATION $label: expect RED (go gate)"
   local output
   output="$(cd installer && go test ./cmd/llm-gw-installer/ -run "$test_pattern" -count=1 2>&1)"
-  if echo "$output" | grep -qE '\[build failed\]|^# |cannot use|undefined:'; then
+  if grep -qE '\[build failed\]|^# |cannot use|undefined:' <<<"$output"; then
     echo "   ✘ BUILD FAILED — the mutation does not compile; not a valid mutation"
     echo "$output" | head -12
     FAILED+=("$label(build)")
     return
   fi
-  if ! echo "$output" | grep -qE '^--- FAIL:'; then
+  if ! grep -qE '^--- FAIL:' <<<"$output"; then
     echo "   ✘ STILL GREEN — the go gate does not have teeth"
     echo "$output" | tail -12
     FAILED+=("$label(still-green)")
     return
   fi
-  if ! echo "$output" | grep -qE "$reason_pattern"; then
+  if ! grep -qE "$reason_pattern" <<<"$output"; then
     echo "   ✘ RED BUT NOT FOR THE RIGHT REASON — 没有出现预期的断言消息：$reason_pattern"
-    echo "$output" | grep -E '^    [a-z_]+_test\.go:[0-9]+:' | head -5 | sed 's/^/     /'
+    grep -E '^    [a-z_]+_test\.go:[0-9]+:' <<<"$output" | head -5 | sed 's/^/     /'
     FAILED+=("$label(wrong-reason)")
     return
   fi
   echo "   ✔ RED as expected（断言消息已回显）"
   echo "   ↳ reason:"
-  echo "$output" | grep -E '^    [a-z_]+_test\.go:[0-9]+:' | head -3 | sed 's/^/     /'
+  grep -E '^    [a-z_]+_test\.go:[0-9]+:' <<<"$output" | head -3 | sed 's/^/     /'
   MUTATIONS_RED=$((MUTATIONS_RED + 1))
 }
 
@@ -548,9 +548,9 @@ expect_green_bash() {
   echo "── BASELINE $label: expect GREEN (bash gate)"
   local output
   output="$(bash "$BASH_GATE" 2>&1)"
-  if echo "$output" | grep -q 'contract FAILED'; then
+  if grep -q 'contract FAILED' <<<"$output"; then
     echo "   ✘ RED at baseline:"
-    echo "$output" | grep -A6 'contract FAILED' | head -10
+    grep -A6 'contract FAILED' <<<"$output" | head -10
     FAILED+=("$label(baseline-red)")
   else
     echo "   ✔ GREEN as expected"
@@ -564,7 +564,7 @@ expect_green_go() {
   echo "── BASELINE $label: expect GREEN (go gate)"
   local output
   output="$(cd installer && go test ./cmd/llm-gw-installer/ -run "$test_pattern" -count=1 2>&1)"
-  if echo "$output" | grep -qE '^--- FAIL:'; then
+  if grep -qE '^--- FAIL:' <<<"$output"; then
     echo "   ✘ RED at baseline:"
     echo "$output" | tail -20
     FAILED+=("$label(baseline-red)")

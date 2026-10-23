@@ -318,7 +318,7 @@ expect_red() {
     return
   fi
   local failed unexpected
-  failed="$(echo "$output" | grep -oE '^--- FAIL: [A-Za-z0-9_]+' | sed 's/^--- FAIL: //' | sort -u)"
+  failed="$(grep -oE '^--- FAIL: [A-Za-z0-9_]+' <<<"$output" | sed 's/^--- FAIL: //' | sort -u)"
   if [ -z "$failed" ]; then
     echo "   ✘ STILL GREEN — the gate does not have teeth"
     echo "$output" | tail -15
@@ -335,7 +335,7 @@ expect_red() {
   # ★ 把**断言消息**打出来：光有「红了」不能证明「红在对的地方」
   #   ⇒ 读者必须能看出这条红确实来自本条变异对应的那条判据。
   echo "   ↳ reason:"
-  echo "$output" | grep -E '^    [a-z_]+_test\.go:[0-9]+:' | head -3 | sed 's/^/     /'
+  grep -E '^    [a-z_]+_test\.go:[0-9]+:' <<<"$output" | head -3 | sed 's/^/     /'
   MUTATIONS_RED=$((MUTATIONS_RED + 1))
 }
 
@@ -344,7 +344,7 @@ expect_green() {
   echo "── BASELINE $label: expect GREEN"
   local output
   output="$(go test ./admin/ -run "$pattern" -count=1 2>&1)"
-  if echo "$output" | grep -qE '^--- FAIL:'; then
+  if grep -qE '^--- FAIL:' <<<"$output"; then
     echo "   ✘ RED at baseline:"
     echo "$output" | tail -20
     FAILED+=("$label(baseline-red)")

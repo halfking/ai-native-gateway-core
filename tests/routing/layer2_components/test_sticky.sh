@@ -152,7 +152,7 @@ test_complete_session_does_not_use_l3() {
     
     # A complete session identity must not inherit the client-level binding
     # from Model A when routing Model B.
-    if echo "$LAST_LOGS" | grep -q "sticky L3 hit"; then
+    if grep -q "sticky L3 hit" <<<"$LAST_LOGS"; then
         echo -e "${RED}✗${NC} Complete session unexpectedly inherited L3 sticky across models"
         TESTS_FAILED=$((TESTS_FAILED + 1))
         return 1

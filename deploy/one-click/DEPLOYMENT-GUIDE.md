@@ -107,8 +107,7 @@ llm-gateway-go-{VERSION}-{os}-{arch}-offline/
 
 | KEY | 默认 | 说明 |
 |-----|------|------|
-| `LOG_LEVEL` | `debug` | 生产建议 `info` |
-| `LOG_FORMAT` | `json` | 建议保持 json 便于采集 |
+| `LLM_GATEWAY_LOG_LEVEL` | `info` | 日志级别（debug/info/warn/error）；日志格式固定为 JSON，无可配置项 |
 | `LLM_GATEWAY_LOG_FILE` | 空(stderr) | 文件日志轮转（100MB×10≈1GB） |
 | `LLM_GATEWAY_ATTACHMENT_DIR` | `./data/attachments` | 附件目录，建议绝对路径 + 持久卷 |
 | `CASDOOR_ENDPOINT` / `CASDOOR_CLIENT_ID` / `CASDOOR_CLIENT_SECRET` | — | Casdoor OIDC 登录（未配置则用网关自带鉴权） |

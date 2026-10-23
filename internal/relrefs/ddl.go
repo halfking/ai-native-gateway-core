@@ -11,6 +11,7 @@
 //   - 裸名集合（去 schema 的最后一段）⇒ 用于匹配「产品侧省略了 schema 前缀」的引用
 //
 // ★ 两套都保留 ⇒ 因为产品侧引用常见两种写法：
+//
 //	`public.session_turns` 与 `session_turns` ⇒ 必须都能命中。
 package relrefs
 
@@ -68,10 +69,13 @@ var (
 // stripSQLComments 去掉 SQL 注释，避免注释里的 DDL 关键字被误当形态。
 //
 // ★ 与 cmd/tools/sql_source_indirection_audit/resolve.go 里的同名函数同源
-//   （那边是 package main ⇒ 不可 import ⇒ 这里独立实现一份）。
+//
+//	（那边是 package main ⇒ 不可 import ⇒ 这里独立实现一份）。
+//
 // ★ 两个易错点：
-//   ① 字符串字面量里的 `--` 不是注释 ⇒ 必须先跳过引号内的内容。
-//   ② `/* ... */` 可以跨行。
+//
+//	① 字符串字面量里的 `--` 不是注释 ⇒ 必须先跳过引号内的内容。
+//	② `/* ... */` 可以跨行。
 func stripSQLComments(s string) string {
 	var b strings.Builder
 	b.Grow(len(s))
@@ -136,6 +140,7 @@ func stripSQLComments(s string) string {
 //	⇒ ⇒ ⇒ **腿 A 尤其不能剥**（`CREATE TEMP TABLE` 在函数体里是货真价实的 DDL）。
 //
 // ★ ⇒ ⇒ 所以两腿的预处理是【刻意不对称】的：
+//
 //	腿 A（DDL）：只剥注释，**不剥字符串**（要看见函数体里的 DDL）
 //	腿 B（引用）：剥注释 **＋** 剥普通字符串（散文会污染引用判定）
 func stripSQLStrings(s string) string {
@@ -217,10 +222,10 @@ type ddlRelations struct {
 
 func newDDLRelations() *ddlRelations {
 	return &ddlRelations{
-		full:     map[string]bool{},
-		bare:     map[string]bool{},
-		schemas:  map[string]bool{},
-		perKind:  map[string]int{},
+		full:    map[string]bool{},
+		bare:    map[string]bool{},
+		schemas: map[string]bool{},
+		perKind: map[string]int{},
 	}
 }
 
@@ -288,7 +293,8 @@ func scanDDLFile(d *ddlRelations, text string) {
 // splitSQLStatements 按分号切分 SQL 语句（粗粒度，够用于「该函数是否 RETURNS TABLE」的判定）。
 //
 // ★ 易错点：字符串字面量里的分号 ⇒ 会把语句切碎。
-//   ⇒ 所以先剥注释、再做「引号感知的」切分。
+//
+//	⇒ 所以先剥注释、再做「引号感知的」切分。
 func splitSQLStatements(text string) []string {
 	var out []string
 	var cur strings.Builder
@@ -327,7 +333,8 @@ func splitSQLStatements(text string) []string {
 // scanDDLRepo 遍历仓内全部 .sql 文件并抽出关系集合。
 //
 // ★ 范围 = `git ls-files '*.sql'`（★ 用 git 的文件清单 ⇒ 不会把构建产物/临时文件算进来）
-//   —— 若用目录遍历 ⇒ 会把 node_modules 之类算进去 ⇒ 集合被污染。
+//
+//	—— 若用目录遍历 ⇒ 会把 node_modules 之类算进去 ⇒ 集合被污染。
 func scanDDLRepo(root string, sqlFiles []string) (*ddlRelations, error) {
 	d := newDDLRelations()
 	for _, rel := range sqlFiles {

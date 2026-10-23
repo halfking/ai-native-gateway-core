@@ -131,7 +131,7 @@ expect_red() {
     return
   fi
   local failed unexpected
-  failed="$(echo "$output" | grep -oE '^--- FAIL: [A-Za-z0-9_]+' | sed 's/^--- FAIL: //' | sort -u)"
+  failed="$(grep -oE '^--- FAIL: [A-Za-z0-9_]+' <<<"$output" | sed 's/^--- FAIL: //' | sort -u)"
   if [ -z "$failed" ]; then
     echo "   ✘ STILL GREEN — the gate does not have teeth"
     echo "$output" | tail -15
@@ -153,7 +153,7 @@ expect_green() {
   echo "── BASELINE $label: expect GREEN"
   local output
   output="$(cd "$cwd" && go test "$pkg" -run "$pattern" -count=1 2>&1)"
-  if echo "$output" | grep -qE '^--- FAIL:'; then
+  if grep -qE '^--- FAIL:' <<<"$output"; then
     echo "   ✘ RED at baseline:"
     echo "$output" | tail -20
     FAILED+=("$label(baseline-red)")

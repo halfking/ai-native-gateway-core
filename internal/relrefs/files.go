@@ -9,7 +9,8 @@ import (
 // RepoFiles 列出仓内匹配 patterns 的已跟踪文件。
 //
 // ★ 用 `git ls-files` 而不是目录遍历 ⇒ ① 不会把构建产物/临时文件算进去
-//   ② 集合与 CI 看到的一致 ⇒ 门与工具读的是同一份事实源。
+//
+//	② 集合与 CI 看到的一致 ⇒ 门与工具读的是同一份事实源。
 //
 // ★★★ ⚠⚠ 必须加 `-z`（NUL 分隔）—— ★★★ 否则**非 ASCII 路径会被静默转义**：
 //
@@ -35,4 +36,3 @@ func RepoFiles(root string, patterns ...string) ([]string, error) {
 	}
 	return res, nil
 }
-

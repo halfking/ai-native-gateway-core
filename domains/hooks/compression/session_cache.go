@@ -588,6 +588,22 @@ func (c *SessionCache) loadFromRedis(ctx context.Context, tenantID, sessionID st
 }
 
 func (c *SessionCache) loadFromDB(ctx context.Context, tenantID, gwSessionID string) (*SessionState, []byte, error) {
+	// ★ §143.86（落法 ⓪）★ G-1 守卫：★ 本次请求由网关【自动新建】了会话
+	// ⇒ ⇒ 该会话 ID 刚被创建 ⇒ ⇒ 库里【必然】没有它的历史 outbound body
+	// ⇒ ⇒ ⇒ 腿①②③ 整条读链【必然落空】⇒ ⇒ 直接短路。
+	//
+	// ★ ★★ 语义等价性（★ 上线前提）：★ 腿①② 本来也会落空 ⇒ ⇒ 短路后上游
+	// ★ 走的是「st == nil ⇒ return nil, nil, nil」这条【本来就存在】的分支
+	// ★ （★ session_cache.go getLocal / session_cache_shared.go loadSharedLocked）
+	// ⇒ ⇒ ★★ 【可观测行为完全不变】★ ⇒ ⇒ 只省掉一次注定落空的读。
+	//
+	// ★ ★★ 开关默认【关】（★ ENABLE_SESSION_CACHE_SKIP_AUTO_CREATED）⇒ ⇒
+	// ★ ★★ 未打开时本守卫恒为 false ⇒ ⇒ 线上行为与改动前逐字一致。
+	if ShouldSkipLegacyLoad(ctx, gwSessionID) {
+		slog.InfoContext(ctx, "session_cache: skip db load, auto-created session",
+			"session", gwSessionID, "tenant", tenantID)
+		return nil, nil, nil
+	}
 	if c.turnReader != nil {
 		// The latest outbound snapshot is the exact body previously forwarded to
 		// the upstream model, including any compression summary marker. Prefer it
@@ -632,9 +648,31 @@ func (c *SessionCache) loadFromDB(ctx context.Context, tenantID, gwSessionID str
 }
 
 func (c *SessionCache) loadFromLegacyDB(ctx context.Context, tenantID, gwSessionID string) (*SessionState, []byte, error) {
+	// ★ §143.86（落法 ⓪）★ G-2 守卫：★ L-2（★ 共享路径的 legacy 校验分支，
+	// ★ session_cache_shared.go）★ 【直连本函数】、★ 绕过腿①② ⇒ ⇒ G-1 覆盖不到它
+	// ⇒ ⇒ ⇒ 本守卫覆盖 L-2。
+	//
+	// ★ ★★ 语义等价性：★ 短路后 body 为空 ⇒ ⇒ 调用方的
+	// ★ `if len(body) == 0 || sha256Hex(body) != old.LastOutboundHash` 判定
+	// ★ 【照旧成立】⇒ ⇒ 返回【同一个 error】（★ legacy session cache has no exact
+	// matching outbound body）⇒ ⇒ ★★ 【连错误消息都不变】★ ⇒ ⇒ 只省掉一次查询。
+	//
+	// ★ ★★ 现实收益：★ §143.84 实测 L-2 本窗口 = 0 次 ⇒ ⇒ 本守卫当前是
+	// ★ 【防御性】的（★ 理由与代价见 runbook §143.85.3）。
+	if ShouldSkipLegacyLoad(ctx, gwSessionID) {
+		slog.InfoContext(ctx, "session_cache: skip legacy load, auto-created session",
+			"session", gwSessionID, "tenant", tenantID)
+		return nil, nil, nil
+	}
 	if c.db == nil {
 		return nil, nil, nil
 	}
+	// ★ §143.89：★ 「读链走到 L3」的服务侧埋点（★ 纯观测，★ 不改控制流）。
+	// ★ ⇒ ⇒ 位置在【L3 查询之前】⇒ ⇒ 每次真正发起 L3 查询【恰好一条】日志；
+	// ★ ⇒ ⇒ 位置在【G-2 守卫之后】⇒ ⇒ 被短路的那些【不算】走到 L3；
+	// ★ ⇒ ⇒ 它同时覆盖【本地链尾】与【共享路径直连】⇒ ⇒ 服务侧计数
+	// ★ ⇒ ⇒ 可与库端 L3 Δcalls 直接对拍（★ 同侧对应物）。
+	LogL3Reached(ctx, gwSessionID, tenantID)
 	row, err := c.db.LastOutboundForSession(ctx, tenantID, gwSessionID)
 	if err != nil || row == nil {
 		return nil, nil, err
