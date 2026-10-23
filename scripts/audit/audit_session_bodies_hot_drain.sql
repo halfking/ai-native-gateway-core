@@ -141,16 +141,21 @@ ORDER BY 1, 2;
 -- ═══════════════════════════════════════════════════════════════════════
 
 \echo ''
-\echo '--- Q3.1 候选规模与载荷体积（★ 8h 保留窗）---'
+\echo '--- Q3.1 候选规模与表体量（★ 8h 保留窗）---'
+\echo '    ★ 注：分区父表自身的 pg_total_relation_size 返 0（★ 数据在分区里）'
+\echo '    ★ ⇒ 父表体积要看 Q3.7 的逐分区清单。'
 SELECT count(*) AS candidate_rows,
        pg_size_pretty(pg_total_relation_size('public.session_bodies_hot')) AS hot_total_size,
-       pg_size_pretty(pg_total_relation_size('public.session_bodies')) AS parent_total_size,
        pg_size_pretty(pg_size_bytes(current_setting('work_mem'))) AS work_mem
 FROM public.session_bodies_hot
 WHERE ts < statement_timestamp() - interval '8 hours';
 
 \echo ''
 \echo '--- Q3.2 ★ 元组内联字节（★ 比较 work_mem 时必须用这个，不是 pg_column_size(jsonb)）---'
+\echo '    ★ 说明：pg_column_size(<整行 composite>) 会 detoast 整行 ⇒ ★ 在生产上对'
+\echo '    ★ 数千行大 payload **会超时**（2026-10-23 实测：statement_timeout）⇒'
+\echo '    ★ ⇒ 所以本项默认【关】，用 -v tuple_bytes=on 打开（★ 只在可接受 IO 时开）。'
+\if :{?tuple_bytes}
 SELECT count(*) AS rows_8h,
        sum(pg_column_size(h)) AS tuple_bytes_total,
        pg_size_bytes(current_setting('work_mem')) AS work_mem_bytes,
@@ -160,9 +165,12 @@ SELECT count(*) AS rows_8h,
        max(pg_column_size(h)) AS max_tuple_bytes
 FROM public.session_bodies_hot h
 WHERE h.ts < statement_timestamp() - interval '8 hours';
+\else
+\echo '    （已跳过 ⇒ 用 Q3.3 的单列口径 + Q3.3b 的 Sort 内存读数替代）'
+\endif
 
 \echo ''
-\echo '--- Q3.3 各 jsonb 列的存储体积与出表情况（★ >2000B 即 TOAST 出表 ⇒ 元组里只占 18 字节指针）---'
+\echo '--- Q3.3 各 jsonb 列的存储体积与出表情况（★ 单列口径：秒回；★ >2000B 即 TOAST 出表 ⇒ 元组里只占 18 字节指针）---'
 SELECT count(*) AS n,
        round(avg(pg_column_size(request_delta))) AS avg_request_delta,
        max(pg_column_size(request_delta)) AS max_request_delta,
@@ -170,9 +178,28 @@ SELECT count(*) AS n,
        round(avg(pg_column_size(response_delta))) AS avg_response_delta,
        count(*) FILTER (WHERE pg_column_size(response_delta) > 2000) AS response_delta_toasted,
        round(avg(pg_column_size(outbound_body))) AS avg_outbound_body,
-       count(*) FILTER (WHERE pg_column_size(outbound_body) > 2000) AS outbound_body_toasted
+       count(*) FILTER (WHERE pg_column_size(outbound_body) > 2000) AS outbound_body_toasted,
+       round(avg(pg_column_size(request_attachments))) AS avg_request_attachments,
+       round(avg(pg_column_size(response_attachments))) AS avg_response_attachments
 FROM public.session_bodies_hot
 WHERE ts < statement_timestamp() - interval '8 hours';
+
+\echo ''
+\echo '--- Q3.3b ★★ 批次选取的真实耗时与 Sort 内存（★ 唯一可信的「是否溢写」判据）---'
+\echo '    ★ planner 自己报的数 ⇒ ★ 不要用列体积去推算（★ §143.97 的教训）。'
+\echo '    ★ 需要 -v enable_analyze=on（★ EXPLAIN ANALYZE 会真的执行 SELECT ⇒ 只读但耗 IO）。'
+\if :{?enable_analyze}
+EXPLAIN (ANALYZE, BUFFERS, COSTS OFF)
+SELECT h.id, h.partition_date, h.session_id, h.turn_no, h.tenant_id, h.request_id,
+       h.request_delta, h.response_delta, h.outbound_body,
+       h.request_attachments, h.response_attachments, h.ts, h.kind
+FROM public.session_bodies_hot h
+WHERE h.ts < statement_timestamp() - interval '8 hours'
+ORDER BY h.ts
+LIMIT 5000;
+\else
+\echo '    （已跳过 ⇒ 需要 -v enable_analyze=on）'
+\endif
 
 \echo ''
 \echo '--- Q3.4 hot 表行数与年龄分布（★ 存量是否单调增长）---'
