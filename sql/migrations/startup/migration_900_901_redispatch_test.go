@@ -236,26 +236,17 @@ func TestMigrations900and901_RegistrationPointsExactlyOnce(t *testing.T) {
 	}
 	for _, p := range pins {
 		body := migRedispatchRead(t, p.file)
-		// 台账是**两阶段**的（registered-pending → deploy 后追加 applied+verified
-		// 行，2026-10-23T17:18:26Z deploy 2820 起实态）：『`<file>`』出现 1 次或
-		// 2 次都合法；出现 2 次时必须恰有一行是 applied+verified 记账
-		// （两行都 pending = 复制粘贴事故；出现 3 次 = 任何形态都是事故）。
+		// ⚠ db-changelog 是【多行合法】的台账（★ 2026-10-24 R146 批判审计二次修正，
+		// ★ 与并行会话 453463cd5 ⑤ 的 ≥1 口径对齐；先前「1 或 2 次 + applied 恰一行」
+		// 的形状断言【方向错了】——它把存在性门错改成形状门）：
+		//   ① 权威口径 = verify-migration-checksums.sh「同文件多行、任一 sha 命中即过」；
+		//   ② 历史实证：862 有 4 行（两次内容修订、两个正典指纹并存）、888 有 3 行
+		//      （pending → applied+verified → 新 sha 的再投递 pending）⇒ 「恰一 applied」
+		//      「≤2 行」都会在未来 deploy 记账/再投递时【误红】（部署后必红）。
+		// ⇒ 本 pin 的牙 = 【存在性】：至少 1 行（900/901 从台账里消失才红）。
 		if p.label == "db-changelog 台账行" {
-			got := strings.Count(body, p.needle)
-			if got != 1 && got != 2 {
-				t.Errorf("%s: needle %q 出现 %d 次, want 1（pending）或 2（pending+applied 记账）", p.label, p.needle, got)
-				continue
-			}
-			if got == 2 {
-				applied := 0
-				for _, line := range strings.Split(body, "\n") {
-					if strings.Contains(line, p.needle) && strings.Contains(line, "applied+verified") {
-						applied++
-					}
-				}
-				if applied != 1 {
-					t.Errorf("%s: needle %q 出现 2 次但 applied+verified 行 = %d, want 1（两行必须一 pending 一 applied）", p.label, p.needle, applied)
-				}
+			if got := strings.Count(body, p.needle); got < 1 {
+				t.Errorf("%s: needle %q 出现 %d 次, want ≥1（迁移必须登记在台账里）", p.label, p.needle, got)
 			}
 			continue
 		}
