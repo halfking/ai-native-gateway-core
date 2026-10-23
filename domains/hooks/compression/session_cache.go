@@ -667,6 +667,12 @@ func (c *SessionCache) loadFromLegacyDB(ctx context.Context, tenantID, gwSession
 	if c.db == nil {
 		return nil, nil, nil
 	}
+	// ★ §143.89：★ 「读链走到 L3」的服务侧埋点（★ 纯观测，★ 不改控制流）。
+	// ★ ⇒ ⇒ 位置在【L3 查询之前】⇒ ⇒ 每次真正发起 L3 查询【恰好一条】日志；
+	// ★ ⇒ ⇒ 位置在【G-2 守卫之后】⇒ ⇒ 被短路的那些【不算】走到 L3；
+	// ★ ⇒ ⇒ 它同时覆盖【本地链尾】与【共享路径直连】⇒ ⇒ 服务侧计数
+	// ★ ⇒ ⇒ 可与库端 L3 Δcalls 直接对拍（★ 同侧对应物）。
+	LogL3Reached(ctx, gwSessionID, tenantID)
 	row, err := c.db.LastOutboundForSession(ctx, tenantID, gwSessionID)
 	if err != nil || row == nil {
 		return nil, nil, err
