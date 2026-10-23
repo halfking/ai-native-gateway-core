@@ -207,6 +207,29 @@ func TestMigrations900and901_RegistrationPointsExactlyOnce(t *testing.T) {
 	}
 	for _, p := range pins {
 		body := migRedispatchRead(t, p.file)
+		// 台账是**两阶段**的（registered-pending → deploy 后追加 applied+verified
+		// 行，2026-10-23T17:18:26Z deploy 2820 起实态）：『`<file>`』出现 1 次或
+		// 2 次都合法；出现 2 次时必须恰有一行是 applied+verified 记账
+		// （两行都 pending = 复制粘贴事故；出现 3 次 = 任何形态都是事故）。
+		if p.label == "db-changelog 台账行" {
+			got := strings.Count(body, p.needle)
+			if got != 1 && got != 2 {
+				t.Errorf("%s: needle %q 出现 %d 次, want 1（pending）或 2（pending+applied 记账）", p.label, p.needle, got)
+				continue
+			}
+			if got == 2 {
+				applied := 0
+				for _, line := range strings.Split(body, "\n") {
+					if strings.Contains(line, p.needle) && strings.Contains(line, "applied+verified") {
+						applied++
+					}
+				}
+				if applied != 1 {
+					t.Errorf("%s: needle %q 出现 2 次但 applied+verified 行 = %d, want 1（两行必须一 pending 一 applied）", p.label, p.needle, applied)
+				}
+			}
+			continue
+		}
 		countNeedel(t, body, p.needle, 1, p.label)
 	}
 }

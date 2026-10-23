@@ -52157,3 +52157,53 @@ docker exec llm-gateway-pg psql -U llm_gateway -d postgres -c "DROP DATABASE itg
 2. 「42,289 vs 40,381」来自 §143.100 的生产只读 EXPLAIN 估算，本轮未在生产复跑（未授权建索引后的对拍）；
 3. 未在生产建索引、未改 SQL、未部署 ⇒ **线上行为逐字未变**；
 4. §143.100.7 的诚实边界 4（新索引与既有 `(session_id, turn_no DESC)` 的取舍）随 ㉔ 作废一并失效，不再需要评估。
+
+### §143.102 R146 存储效率综合轮（上）：数据结构普查 + P5 索引合并落地（迁移 902）
+
+> **对生产写入 = 0**（252 全程只读；迁移 902 只落仓）。★ 完整记录见
+> `docs/audit/2026-10-24-R146-存储效率综合轮-数据结构普查与P5索引合并.md`。
+
+#### §143.102.1 一句话结论
+
+252 只读普查确认 **P5（§143.27.7）仍然成立**：`stats_event_dedup` 的两条索引
+（pkey 114 MB + 845 复合 151 MB）中，后者是前者的**严格冗余**（event_id 全表唯一 ⇒
+复合键第二列从无第二行可排序，唯一增值是 covering）⇒ 本轮把它落成**迁移 902**：
+pkey 换体 `UNIQUE(event_id) INCLUDE(occurred_at)` + 删复合索引，**净省 ~114 MB**，
+三处消费方逐个无损实测（ON CONFLICT / 四处双列 JOIN Index Only / 唯一性不变式）。
+
+#### §143.102.2 普查要点（252，2026-10-24 只读）
+
+- **存储**：`session_bodies_2026_10` 6.45 GB（~6.15 GB TOAST）；`route_incident_events`
+  1.2 GB 里索引占 44%，其中三个低扫描索引合计 244 MB（idx_scan 1/20/8，自 10-18 reset）
+  ⇒ 登记㉘（先代码面核对再裁决）；ursm 快照族 ~8 GB/周（读侧已由 P11 解压）。
+- **日志（10-23 全天）**：>120s 慢查 76 条，主角 = `session_client_task_matrix` REFRESH
+  **26 次/天、73.8s→592.7s、中位 ~400s ⇒ ~2.3h DB 时间/天** —— R75 已止血（跑得完），
+  「变便宜」仍是属主三选一（R75 §6），本轮登记㉙不越权。
+- **P5 复核**：`idx_stats_event_dedup_event_id_occurred_at` 151 MB / 4.1M 扫描（活）、
+  `stats_event_dedup_pkey` 114 MB / 259k 扫描（活）⇒ 两条都在被用 ⇒ 合并必须保两副职能
+  ⇒ INCLUDE 体 pkey 是唯一同时保「唯一性载体」与「covering」的形态。
+
+#### §143.102.3 迁移 902 的形态与验证
+
+- **换体原子性**：DROP CONSTRAINT + ADD CONSTRAINT ... USING INDEX 在同一 DO 块
+  （同事务）⇒ 并发 ON CONFLICT 写者排队、不撞「无约束可匹配」窗口；
+  ADD CONSTRAINT USING INDEX 自动把 tmp 改名回 `stats_event_dedup_pkey`（PG NOTICE 实证）
+  ⇒ 索引名对下游监控不变。
+- **幂等**：DO 块先查目录态（pkey 已带 INCLUDE ⇒ indnkeyatts=1 AND indnatts=2 ⇒ 跳过）；
+  末尾兜底 DROP tmp。★ **幂等设计是被实验逼出来的**：首版无守卫重跑在本地实测留下
+  ~20 MB 孤儿 tmp 索引（阶段 4）⇒ 补兜底后重跑干净。
+- **本地一次性库全生命周期**：up → 重跑 → down → down 重跑 → 再 up，五段全绿、
+  最终形态恒为「恰 1 索引」；计划对照：基线 Index Only(复合) ⇒ 换体后 Index Only(pkey体)。
+- **门**：`migration_902_dedup_pkey_include_test.go`（6 测试，含 **3 份坏样本阳性对照**：
+  键列含 occurred_at / 换体拆出 DO 块 / 兜底 DROP 缺失 —— 每份都必须被判红）。
+- **★ 顺带修一个既有红门**：`migration_900_901_redispatch_test.go` 的台账判据
+  「恰好 1 次」在 deploy 2820（并行会话）给 900/901 补 applied+verified 记账行后恒红
+  （stash 实证与本轮无关）⇒ 改为「1 或 2 次，且 2 次时 applied+verified 恰一行」
+  ⇒ 台账两阶段语义进门。
+
+#### §143.102.4 待属主拍板（新增）
+
+㉕【第一】探测型 session 短路 L3 ／ ㉗ 换「最新」定义（语义）／
+㉘ route_incident_events 低扫描索引 244 MB 去留（先代码核对）／
+㉙ session_client_task_matrix REFRESH 降本（R75 §6 三选一）／ ㉔【作废】／
+902 生产应用授权（ACCESS EXCLUSIVE 窗口 ms 级，走部署列车）。

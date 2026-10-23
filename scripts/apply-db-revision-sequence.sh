@@ -2146,6 +2146,25 @@ files=(
   #   lock_timeout='60s' / statement_timeout='10min'（891 同款：lock_timeout
   #   只管锁等待，statement_timeout 防共享 PG 30s 服务端掐长构建后永不记账）。
   "$ROOT_DIR/sql/migrations/startup/901_usage_ledger_api_key_id_ts_idx.sql"
+
+  # ── 2026-10-24（R146 存储效率轮 §143.102，P5 落地）：stats_event_dedup 索引合并 ──
+  #
+  # 902：pkey 换体 UNIQUE(event_id) INCLUDE(occurred_at)，删除 845 所建的
+  #   (event_id, occurred_at) 复合索引（252 只读实测：pkey 114 MB + 复合 151 MB）。
+  #
+  # ★ 冗余证明：pkey(event_id) 保证全表 event_id 唯一 ⇒ 复合键第二列从无
+  #   「同 event_id 第二行」可排序；151 MB 那条相对 pkey 的唯一增值是 covering
+  #   ⇒ INCLUDE 体 pkey 完整承接 ⇒ 两索引合一，净省 ~114 MB。
+  # ★ 消费方逐个过（本地一次性库实测，脚本
+  #   scripts/local/143102_p5_dedup_pkey_include_local_experiment.sql）：
+  #   event_writer 的 ON CONFLICT (event_id) 仍工作（INCLUDE 不参与唯一性
+  #   推断）、rollup/reconciliation 四处双列等值 JOIN 仍 Index Only、
+  #   唯一性不变式仍强制；换体在 DO 块同事务内完成（写者无感）。
+  # ★ 形态：dbinit:no-transaction + CREATE INDEX CONCURRENTLY + 兜底 DROP tmp
+  #   （无守卫重跑会留孤儿，实验阶段 4 抓出后补）+ lock_timeout=60s（882/888
+  #   同款，startup_ddl_lock_guard_gate 钉住强锁 DDL 必须带 lock_timeout）。
+  # ★ ★ 本条**只落仓**；★ 生产应用需属主另行授权。
+  "$ROOT_DIR/sql/migrations/startup/902_stats_event_dedup_pkey_include.sql"
 )
 
 

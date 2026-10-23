@@ -1486,6 +1486,21 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			//   普通 CREATE INDEX（父表不支持 CONCURRENTLY）+ lock_timeout=60s
 			//   / statement_timeout=10min（891 同款）。
 			"901_usage_ledger_api_key_id_ts_idx.sql",
+			// 902：stats_event_dedup 索引合并 —— pkey 换体
+			//   UNIQUE(event_id) INCLUDE(occurred_at)，删除 845 所建的
+			//   (event_id, occurred_at) 复合索引（252 实测 151 MB）。
+			//
+			//   ★ 冗余证明：pkey(event_id) 保证全表 event_id 唯一 ⇒ 复合键
+			//   第二列从无「同 event_id 第二行」可排序；该复合索引相对 pkey
+			//   的唯一增值是 covering ⇒ INCLUDE 体 pkey 完整承接。
+			//   ★ 消费方逐个过（本地一次性库实测）：ON CONFLICT (event_id)
+			//   仍工作（INCLUDE 不参与推断）、rollup/reconciliation 四处
+			//   双列等值 JOIN 仍 Index Only、唯一性不变式仍强制。
+			//   ★ 252 净省 ~114 MB（409 MB → ~265 MB）。幂等：换体段按
+			//   目录态判定 + 兜底 DROP tmp（无守卫重跑会留 20 MB 孤儿，
+			//   本地实验阶段 4 抓出后补）。dbinit:no-transaction 标记
+			//   （CREATE INDEX CONCURRENTLY）。
+			"902_stats_event_dedup_pkey_include.sql",
 		},
 	}
 }

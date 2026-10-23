@@ -1068,6 +1068,34 @@ var freediscoverySchemaReassert900 []byte
 //go:embed embeddata/startup/901_usage_ledger_api_key_id_ts_idx.sql
 var usageLedgerApiKeyIdTsIdx901 []byte
 
+// 902（2026-10-24，R146 存储效率轮 §143.102 / P5 落地）：stats_event_dedup
+// 索引合并 —— pkey 换体 UNIQUE(event_id) INCLUDE(occurred_at)，
+// 删除严格冗余的 (event_id, occurred_at) 复合索引（845 所建）。
+// ★ 冗余的机制证明：pkey(event_id) 保证全表 event_id 唯一 ⇒ 复合键第二列
+//
+//	从来没有「同 event_id 第二行」可排序；151 MB 那条相对 pkey 的唯一增值是
+//	covering（把 occurred_at 装进索引元组）⇒ INCLUDE 体 pkey 完整承接。
+//
+// ★ 三处消费方逐个过（本地一次性库实测，脚本
+//
+//	scripts/local/143102_p5_dedup_pkey_include_local_experiment.sql）：
+//	ON CONFLICT (event_id) 仍工作、四处双列等值 JOIN 仍 Index Only、
+//	唯一性不变式仍强制。
+//
+// ★ 252 实测（2026-10-24 只读）：pkey 114 MB + 复合 151 MB ⇒ 合并后
+//
+//	~114 MB，净省 ~114 MB（该表 409 MB → ~265 MB）。
+//
+// ★ 幂等：换体段按目录态判定（pkey 已带 INCLUDE ⇒ 跳过）；兜底 DROP
+//
+//	保证重跑不留孤儿 tmp（实验阶段 4 抓出无守卫重跑留 20 MB 孤儿后补）。
+//
+//go:embed embeddata/startup/902_stats_event_dedup_pkey_include.sql
+var statsEventDedupPkeyInclude902 []byte
+
+//go:embed embeddata/startup/902_stats_event_dedup_pkey_include.down.sql
+var statsEventDedupPkeyInclude902Down []byte
+
 //go:embed embeddata/startup/859_tighten_pii_phone_intl_regex.sql
 var tightenPiiPhoneIntlRegex859 []byte
 
@@ -1417,6 +1445,8 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/899_session_bodies_promote_body_sink.sql":                               sessionBodiesPromoteBodySink899,
 	"startup/900_freediscovery_schema_reassert.sql":                                  freediscoverySchemaReassert900,
 	"startup/901_usage_ledger_api_key_id_ts_idx.sql":                                 usageLedgerApiKeyIdTsIdx901,
+	"startup/902_stats_event_dedup_pkey_include.sql":                                 statsEventDedupPkeyInclude902,
+	"startup/902_stats_event_dedup_pkey_include.down.sql":                            statsEventDedupPkeyInclude902Down,
 	"startup/859_tighten_pii_phone_intl_regex.sql":                                   tightenPiiPhoneIntlRegex859,
 	"startup/852_models_canonical_column_set_reconcile.sql":                          modelsCanonicalColumnSetReconcile852,
 	"startup/489_credential_probe_queue_startup_backfill.sql":                        credentialProbeQueueStartupBackfill489,
