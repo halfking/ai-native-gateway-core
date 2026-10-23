@@ -401,7 +401,10 @@ run_blue_green_assets_install() {
 # on the target. The canonical deployer fails closed rather than silently
 # reverting to the old stop/start path; operators may explicitly request the
 # legacy emergency flow with --legacy-restart.
-LEGACY_RESTART=false
+# ★ 2026-10-24：此处曾有一行无条件 `LEGACY_RESTART=false`，把参数解析（第 80-91 行
+#   的 `--legacy-restart) LEGACY_RESTART=true`）的结果**在主流程里覆盖回 false**
+#   ⇒ 该旗标自本行引入起就是死的（2026-10-24 实测：带旗标跑仍走蓝绿预热路径，
+#   日志 0 次 "legacy"）。默认值已在第 80 行声明 ⇒ 删掉这行重置。
 
 # 154 的公网 HTTPS 入口在 252 上终止 TLS 并代理到 154:8781。
 # 仅 154 部署需要同步保护 252 的公网 vhost；245 有自己的公网 vhost。
