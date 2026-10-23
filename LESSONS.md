@@ -14611,5 +14611,5 @@ Type:lesson
 ★ **同族**：★ [[「先判量具、再判数据」]] · ★ [[「0 命中的第一嫌疑是量具坏了」]] · ★ [[「计数类结论：口径必须和数字一起发布」]] ·
 ★ [[「阴性结论要当缺陷一样复核」]] · ★ [[「事实源说话，接收方不猜」]] · ★ [[「同一组互相印证的数字必须来自同一次快照、同一个集合」]]。
 ★ **证据**：2026-10-23 llm-gateway-go §143.91（★ runbook §143.91.0~§143.91.9 + §143.90 订正横幅七 + LESSONS §285 + AGENTS R135）｜
-★ 脚本 `scripts/audit/storage_hotspots.sql`（★ 7 段只读、★ 零建对象）｜★ 门 `cmd/gateway/section_14391_storage_test.go`（★ 8 判据）｜★ 变异台 `scripts/audit/mutate_14391_gate.py`（★ 8/8）｜
+★ 脚本 `scripts/audit/storage_hotspots.sql`（★ 7 段只读、★ 零建对象）｜★ 门 `cmd/gateway/section_14391_storage_test.go`（★ 8 判据）｜★ 变异台 `scripts/audit/mutate_14391_gate.py`（★ 11/11）｜
 ★ 实测读数：★ 252 共享库 top-15（★ 2026-10-23 08:50）`session_bodies_2026_10` 5,228 MB / `ursm_node_snapshot_min_*` 8 张 9,477 MB / `session_turns_2026_09` 2,735 MB；★ 三张「`n_live_tup=0`」表的实际行数 786,036 / 1,416,772 / 2,836,620；★ `final_full` 7,507 行 vs `turn_delta` 294,934 行 ⇒ ⇒ **`final_full` ≤ 1.33%**。

@@ -54,12 +54,12 @@ func readRepoFile14391(t *testing.T, rel string) string {
 	return string(raw)
 }
 
-// sqlExecutable14391 返回 SQL 文件的【可执行面】。
+// sqlNonComment14391 返回去掉【整行 `--` 注释】后的行（★ 保留 `\echo` 元命令）。
 //
-// ★ ★★ 为什么要剥：★ 本轮的判据（★ 尤其是③⑤）查的是【真正会被 PG 执行的那部分】⇒ ⇒
-// ★ ★★ 若不剥注释，★ 「在 `--` 注释里写出 count(*) / DELETE」就会假绿。
-// ★ ★★ 同时剥掉 `\echo` 元命令（★ psql 指令、★ 不是 SQL）。
-func sqlExecutable14391(t *testing.T, rel string) string {
+// ★ ★★ 为什么要它：★ 判据① 数的是【段数】⇒ ⇒ 而「被注释掉的 `\echo`」不该算一段
+// ★ ★★ （★ 变异 M11 的实测：★ 首版判据数【原文里的 `\echo`】⇒ ⇒ 注释掉仍然绿
+// ★ ★★ ⇒ ⇒ ⇒ 这是本门自己的一个洞 ⇒ ⇒ 修法是数【非注释行里的 `\echo`】）。
+func sqlNonComment14391(t *testing.T, rel string) []string {
 	t.Helper()
 	var out []string
 	for _, line := range strings.Split(readRepoFile14391(t, rel), "\n") {
@@ -70,23 +70,42 @@ func sqlExecutable14391(t *testing.T, rel string) string {
 		if strings.HasPrefix(trimmed, "--") {
 			continue
 		}
-		if strings.HasPrefix(trimmed, `\`) {
+		out = append(out, trimmed)
+	}
+	return out
+}
+
+// sqlExecutable14391 返回 SQL 文件的【可执行面】。
+//
+// ★ ★★ 为什么要剥：★ 本轮的判据（★ 尤其是③⑤）查的是【真正会被 PG 执行的那部分】⇒ ⇒
+// ★ ★★ 若不剥注释，★ 「在 `--` 注释里写出 count(*) / DELETE」就会假绿。
+// ★ ★★ 同时剥掉 `\echo` 元命令（★ psql 指令、★ 不是 SQL）。
+func sqlExecutable14391(t *testing.T, rel string) string {
+	t.Helper()
+	var out []string
+	for _, line := range sqlNonComment14391(t, rel) {
+		if strings.HasPrefix(line, `\`) {
 			continue
 		}
-		out = append(out, trimmed)
+		out = append(out, line)
 	}
 	return strings.Join(out, "\n")
 }
 
 // TestSection14391ScriptExistsAndHasSevenStages（★ 判据①）
 func TestSection14391ScriptExistsAndHasSevenStages(t *testing.T) {
-	raw := readRepoFile14391(t, section14391Script)
-	n := strings.Count(raw, `\echo `)
+	n := 0
+	for _, line := range sqlNonComment14391(t, section14391Script) {
+		if strings.HasPrefix(line, `\echo `) {
+			n++
+		}
+	}
 	if n != 7 {
-		t.Errorf("★ %s 里有 %d 个 `\\echo` 段（期望 7）—— "+
+		t.Errorf("★ %s 里有 %d 个（非注释的）`\\echo` 段（期望 7）—— "+
 			"★ ★★ 本轮的可复现审计是【7 段】：① 表级 top 15 ② reltuples 对账 ③ 三张「n_live_tup=0」的独立 count "+
 			"④ 重点表 relkind/reltuples ⑤ 正文族按 kind 拆解 ⑥ final_full 分布 ⑦ 长驻会话画像"+
-			"★ ⇒ ⇒ ★★ 少一段 ⇒ ⇒ 那个坑就没有被钉住",
+			"★ ⇒ ⇒ ★★ 少一段 ⇒ ⇒ 那个坑就没有被钉住"+
+			"★ ⇒ ⇒ ★★ 且【被注释掉的 `\\echo` 不算一段】（★ 变异 M11 的实测）",
 			section14391Script, n)
 	}
 }
