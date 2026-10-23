@@ -478,7 +478,7 @@ def main():
         return "（改了 1 处）"
 
     arm("M21 合法：在 898 注释里加说明（期望仍绿）", True, m21_legal_comment)
-    arm("M22 合法：在通道链登记旁加注释（期望仍绿）", True, m22_legal_comment)
+    arm("M22 合法：在通道链登记旁加注释（期望仍绿）", True, m22_legal_chain_comment)
 
     print("-" * 78)
     ok = 0
