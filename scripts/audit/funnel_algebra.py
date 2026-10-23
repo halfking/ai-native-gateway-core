@@ -54,6 +54,12 @@ EXPECTED_L3_CALLS = 293
 # ★ 服务侧同窗「v2 落空事件数」（★ 154 journald + 245 jsonl）：
 EXPECTED_SVC_WIDE = 480  # ★ 04:18:00–05:08:00（154 = 412 + 245 = 68）
 EXPECTED_SVC_PRECISE = 473  # ★ 04:18:22–05:07:32（154 = 407 + 245 = 66）★ 逐秒对齐
+# ★★★★★★ §143.88 增量（★ 读码 + 库侧 SQL 形态【双证】⇒ ⇒ 前提 A 成立）：
+# ★ 前提 A = 「v2 落空 ⇒ 腿① 必落空」★ 依据 = 腿① 读的是【v2 侧】的
+# ★ public.session_bodies_unified（kind='final_full'）★ 与「v2 落空」同一侧。
+# ★ ⇒ ⇒ v2 来源的读链进入【全部】落在 293 次落空里 ⇒ ⇒
+EXPECTED_L1HIT_LOWER = 180  # ★ = 473 − 293 ⇒ 服务侧 v2 落空里【至少】180 次没进读链（L1 命中）
+EXPECTED_NON_V2_LEG1_LOWER = 376  # ★ = 669 − 293 ⇒ 非 v2 来源的腿① 调用下界
 
 
 def load_snapshot(path: str) -> dict:
@@ -99,8 +105,12 @@ def funnel(d: dict) -> dict:
 
     # ★ s = 「v2 来源且进入读链」的次数 ⇒ 0 <= s <= read_chain_entries
     s_min, s_max = 0, read_chain_entries
-    # ★ 非 v2 来源的腿① 调用下界（★ 前提 A：★ v2 落空 ⇒ V1 侧也无 final_full ⇒ ⇒ v2 来源必落空）
+    # ★ 非 v2 来源的腿① 调用下界（★ 前提 A：★ v2 落空 ⇒ 腿① 必落空 ⇒ ⇒ v2 来源必落空）
+    # ★★★ §143.88：★ 前提 A 已由【读码 + 库侧 SQL 形态】双证 ⇒ ⇒ 这条不再是「未验证前提」
     non_v2_leg1_lower = leg1_calls - read_chain_entries
+    # ★ §143.88：★ v2 来源的读链进入【全部】落在 293 次落空里 ⇒ ⇒
+    # ★ ⇒ 服务侧 v2 落空数里【至少】(v2 落空数 − 293) 次【没有进读链】（★ L1 命中层）
+    l1hit_lower = 0  # ★ 由 v2 落空数在 self_check / report 里给（★ 依赖服务侧计数）
     # ★ 非 v2 来源的 L3 调用 = read_chain_entries − s ⇒ ⇒ 区间 [read_chain_entries − s_max, read_chain_entries − s_min]
     non_v2_l3_lower = read_chain_entries - s_max
     non_v2_l3_upper = read_chain_entries - s_min
@@ -117,6 +127,7 @@ def funnel(d: dict) -> dict:
         "s_min": s_min,
         "s_max": s_max,
         "non_v2_leg1_lower": non_v2_leg1_lower,
+        "l1hit_lower": l1hit_lower,
         "non_v2_l3_lower": non_v2_l3_lower,
         "non_v2_l3_upper": non_v2_l3_upper,
     }
@@ -154,6 +165,12 @@ def report(d: dict, f: dict, svc_wide: int, svc_precise: int) -> None:
             print("   %s：★ 上界 = %d / %d = %.2f%%" % (name, f["read_chain_entries"], svc,
                                                      100.0 * f["read_chain_entries"] / svc))
     print()
+    print("-- §143.88 增量：★ 前提 A 成立（腿① 读 v2 侧）⇒ ⇒ 两个下界")
+    print("   ① 非 v2 来源的腿① 调用 ≥ %d − %d = %d"
+          % (f["leg1_calls"], f["read_chain_entries"], f["non_v2_leg1_lower"]))
+    print("   ② v2 落空里【没进读链】的次数 ≥ %d − %d = %d（★ L1 命中层）"
+          % (svc_precise, f["read_chain_entries"], svc_precise - f["read_chain_entries"]))
+    print()
     print("-- 旧数 189 的不成立理由（三条）")
     print("   ① 减法的两个总体不同量纲：★ %d 是【腿① 调用次数】，★ %d 是【服务侧 v2 落空事件数】"
           % (f["leg1_calls"], svc_wide))
@@ -189,6 +206,13 @@ def self_check() -> int:
          abs(100.0 * 293 / 480 - 61.04) < 0.01),
         ("INV8 逐秒对齐窗上界 = 293/473 ≈ 61.9%",
          abs(100.0 * 293 / 473 - 61.95) < 0.01),
+        # ★★★★★★ §143.88 增量：★ 前提 A 成立（★ 腿① 读 v2 侧 ⇒ v2 落空必落空）
+        ("INV9 非 v2 来源的腿① 调用下界 = 376（★ 前提 A 成立版）",
+         f["non_v2_leg1_lower"] == EXPECTED_NON_V2_LEG1_LOWER),
+        ("INV10 v2 落空里没进读链的次数 ≥ 180（★ L1 命中层）",
+         EXPECTED_SVC_PRECISE - 293 == EXPECTED_L1HIT_LOWER),
+        ("INV11 前提 A 成立 ⇒ v2 来源的读链进入 ≤ 293（★ 落空总数）",
+         EXPECTED_L1HIT_LOWER + 293 == EXPECTED_SVC_PRECISE),
     ]
     bad = 0
     for name, ok in checks:
