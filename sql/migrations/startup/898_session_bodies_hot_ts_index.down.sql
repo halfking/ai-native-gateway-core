@@ -21,4 +21,11 @@
 
 -- dbinit:no-transaction —— 本文件含 DROP INDEX CONCURRENTLY。
 
+-- ★ 等锁保护（★ installer 的 startup_ddl_lock_guard_gate_test.go 的硬要求：
+-- ★ >cutoff 的强锁 DDL 迁移必须带 lock_timeout）。
+-- ★ ★ 会话级而非 SET LOCAL：★ 本文件走**非事务通道**（no-transaction 标记）
+-- ★ ★ ⇒ 没有事务块 ⇒ SET LOCAL 无意义（★ 877 同款）。
+SET lock_timeout = '60s';
+SET statement_timeout = '10min';
+
 DROP INDEX CONCURRENTLY IF EXISTS public.idx_session_bodies_hot_ts;

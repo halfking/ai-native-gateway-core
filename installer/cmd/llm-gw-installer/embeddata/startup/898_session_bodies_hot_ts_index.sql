@@ -131,6 +131,19 @@ END
 $pre_898_heal$;
 
 -- ── 第 1 段：建索引（hot 表非分区 ⇒ 单条 CONCURRENTLY）────────────────
+--
+-- ★ ★ 等锁保护（★ installer 的 startup_ddl_lock_guard_gate_test.go 的硬要求：
+-- ★ ★ >cutoff 的强锁 DDL 迁移必须带 lock_timeout ⇒ ⇒ 否则它可能在等锁期间
+-- ★ ★ 堵住全库）。
+-- ★ ★ 为什么用【会话级】 SET 而不是 SET LOCAL：★ 本文件带
+-- ★ ★ dbinit:no-transaction 标记 ⇒ 走**非事务通道** ⇒ ★ 没有事务块 ⇒
+-- ★ ★ SET LOCAL 无意义（★ 877 同款：sql/migrations/startup/877 的第 78-79 行
+-- ★ ★ 逐字记着这条理由）。
+-- ★ ★ 抢不到锁 ⇒ 整体失败、什么都没发生 ⇒ ★ 稍后重跑即可 ⇒ ★ 不会留下
+-- ★ ★ 半成品（★ 第 0 段的残留自愈负责清理被 ctx 掐断的半成品）。
+SET lock_timeout = '60s';
+SET statement_timeout = '10min';
+
 SELECT format(
   'CREATE INDEX CONCURRENTLY IF NOT EXISTS %I ON public.session_bodies_hot USING btree (ts, id, partition_date)',
   'idx_session_bodies_hot_ts')
