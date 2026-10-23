@@ -226,20 +226,36 @@ func TestMigrations900and901_RegistrationPointsExactlyOnce(t *testing.T) {
 			pin{"installer runner.go (StartupFiles)", "../../../installer/internal/dbinit/runner.go", "\"" + name + "\","},
 			pin{"TSV 镜像", "../../../sql/schema/installed_startup_migrations.tsv", name},
 			pin{"升级通道 apply-db-revision-sequence.sh", "../../../scripts/apply-db-revision-sequence.sh", "startup/" + name},
-			// ⚠ db-changelog 用【≥1】而非恰好 1（2026-10-24 批判审计修正）：
-			// 部署成功后 deploy-lib/db-changelog.sh 会追加 applied 事件行
-			// （文件名第 2 次出现）⇒「恰好 1」与权威口径冲突
-			// （verify-migration-checksums.sh :94-103「同一文件多行、任一
-			// sha 命中即过」）且在首次部署后必红。其余四个登记点是单点
-			// 登记，维持恰好 1。
-			pin{"db-changelog 台账行(≥1)", "../../../docs/db-changelog.md", "`" + name + "`"},
+			// ⚠ db-changelog 是**两阶段**台账（2026-10-24 批判审计 + 并行会话
+			// d4d88a569 联合修正）：registered-pending → deploy 后追加
+			// applied+verified 行 ⇒ 「恰好 1」与权威口径冲突
+			// （verify-migration-checksums.sh :94-103「同文件多行、任一 sha
+			// 命中即过」）且在首次部署后必红；判据见下方两阶段断言。
+			pin{"db-changelog 台账行", "../../../docs/db-changelog.md", "`" + name + "`"},
 		)
 	}
 	for _, p := range pins {
 		body := migRedispatchRead(t, p.file)
-		if strings.HasPrefix(p.label, "db-changelog") {
-			if n := strings.Count(body, p.needle); n < 1 {
-				t.Errorf("%s: needle %q 出现 %d 次, want ≥1", p.label, p.needle, n)
+		// 台账是**两阶段**的（registered-pending → deploy 后追加 applied+verified
+		// 行，2026-10-23T17:18:26Z deploy 2820 起实态）：『`<file>`』出现 1 次或
+		// 2 次都合法；出现 2 次时必须恰有一行是 applied+verified 记账
+		// （两行都 pending = 复制粘贴事故；出现 3 次 = 任何形态都是事故）。
+		if p.label == "db-changelog 台账行" {
+			got := strings.Count(body, p.needle)
+			if got != 1 && got != 2 {
+				t.Errorf("%s: needle %q 出现 %d 次, want 1（pending）或 2（pending+applied 记账）", p.label, p.needle, got)
+				continue
+			}
+			if got == 2 {
+				applied := 0
+				for _, line := range strings.Split(body, "\n") {
+					if strings.Contains(line, p.needle) && strings.Contains(line, "applied+verified") {
+						applied++
+					}
+				}
+				if applied != 1 {
+					t.Errorf("%s: needle %q 出现 2 次但 applied+verified 行 = %d, want 1（两行必须一 pending 一 applied）", p.label, p.needle, applied)
+				}
 			}
 			continue
 		}

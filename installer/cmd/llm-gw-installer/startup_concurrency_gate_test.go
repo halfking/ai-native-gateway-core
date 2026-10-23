@@ -166,6 +166,16 @@ var knownStartupChainConcurrencyViolations = map[string]int{
 	// 计数 3：一条 CREATE INDEX CONCURRENTLY + 形状校验块里的两处提及
 	// （indisvalid / indisready 两条 RAISE EXCEPTION 的文案）。
 	"898_session_bodies_hot_ts_index.sql": 3,
+	// 902（2026-10-24 R146 存储效率轮 §143.102，P5 落地）与 845/888/898 **同类**：
+	// 携带 dbinit:no-transaction 标记 ⇒ applySQL 走非事务通道。
+	// 它把 stats_event_dedup 的 pkey 换体 UNIQUE(event_id) INCLUDE(occurred_at)
+	// 并删除 845 的 (event_id, occurred_at) 复合索引 —— 两索引合一净省 ~114 MB。
+	// 用 CONCURRENTLY 是因为该表是活写表（event_writer 每请求一次 upsert）；
+	// 删除旧复合索引同样走 DROP INDEX CONCURRENTLY（不能拿强锁堵住活写表）。
+	//
+	// 计数 3：一条 CREATE UNIQUE INDEX CONCURRENTLY + 两条 DROP INDEX CONCURRENTLY
+	// （845 复合索引 + 重跑兜底的 tmp 清理）。
+	"902_stats_event_dedup_pkey_include.sql": 3,
 }
 
 func countConcurrently(t *testing.T, path string) int {

@@ -52157,3 +52157,96 @@ docker exec llm-gateway-pg psql -U llm_gateway -d postgres -c "DROP DATABASE itg
 2. 「42,289 vs 40,381」来自 §143.100 的生产只读 EXPLAIN 估算，本轮未在生产复跑（未授权建索引后的对拍）；
 3. 未在生产建索引、未改 SQL、未部署 ⇒ **线上行为逐字未变**；
 4. §143.100.7 的诚实边界 4（新索引与既有 `(session_id, turn_no DESC)` 的取舍）随 ㉔ 作废一并失效，不再需要评估。
+
+### §143.102 R146 存储效率综合轮（上）：数据结构普查 + P5 索引合并落地（迁移 902）
+
+> **对生产写入 = 0**（252 全程只读；迁移 902 只落仓）。★ 完整记录见
+> `docs/audit/2026-10-24-R146-存储效率综合轮-数据结构普查与P5索引合并.md`。
+
+#### §143.102.1 一句话结论
+
+252 只读普查确认 **P5（§143.27.7）仍然成立**：`stats_event_dedup` 的两条索引
+（pkey 114 MB + 845 复合 151 MB）中，后者是前者的**严格冗余**（event_id 全表唯一 ⇒
+复合键第二列从无第二行可排序，唯一增值是 covering）⇒ 本轮把它落成**迁移 902**：
+pkey 换体 `UNIQUE(event_id) INCLUDE(occurred_at)` + 删复合索引，**净省 ~114 MB**，
+三处消费方逐个无损实测（ON CONFLICT / 四处双列 JOIN Index Only / 唯一性不变式）。
+
+#### §143.102.2 普查要点（252，2026-10-24 只读）
+
+- **存储**：`session_bodies_2026_10` 6.45 GB（~6.15 GB TOAST）；`route_incident_events`
+  1.2 GB 里索引占 44%，其中三个低扫描索引合计 244 MB（idx_scan 1/20/8，自 10-18 reset）
+  ⇒ 登记㉘（先代码面核对再裁决）；ursm 快照族 ~8 GB/周（读侧已由 P11 解压）。
+- **日志（10-23 全天）**：>120s 慢查 76 条，主角 = `session_client_task_matrix` REFRESH
+  **26 次/天、73.8s→592.7s、中位 ~400s ⇒ ~2.3h DB 时间/天** —— R75 已止血（跑得完），
+  「变便宜」仍是属主三选一（R75 §6），本轮登记㉙不越权。
+- **P5 复核**：`idx_stats_event_dedup_event_id_occurred_at` 151 MB / 4.1M 扫描（活）、
+  `stats_event_dedup_pkey` 114 MB / 259k 扫描（活）⇒ 两条都在被用 ⇒ 合并必须保两副职能
+  ⇒ INCLUDE 体 pkey 是唯一同时保「唯一性载体」与「covering」的形态。
+
+#### §143.102.3 迁移 902 的形态与验证
+
+- **换体原子性**：DROP CONSTRAINT + ADD CONSTRAINT ... USING INDEX 在同一 DO 块
+  （同事务）⇒ 并发 ON CONFLICT 写者排队、不撞「无约束可匹配」窗口；
+  ADD CONSTRAINT USING INDEX 自动把 tmp 改名回 `stats_event_dedup_pkey`（PG NOTICE 实证）
+  ⇒ 索引名对下游监控不变。
+- **幂等**：DO 块先查目录态（pkey 已带 INCLUDE ⇒ indnkeyatts=1 AND indnatts=2 ⇒ 跳过）；
+  末尾兜底 DROP tmp。★ **幂等设计是被实验逼出来的**：首版无守卫重跑在本地实测留下
+  ~20 MB 孤儿 tmp 索引（阶段 4）⇒ 补兜底后重跑干净。
+- **本地一次性库全生命周期**：up → 重跑 → down → down 重跑 → 再 up，五段全绿、
+  最终形态恒为「恰 1 索引」；计划对照：基线 Index Only(复合) ⇒ 换体后 Index Only(pkey体)。
+- **门**：`migration_902_dedup_pkey_include_test.go`（6 测试，含 **3 份坏样本阳性对照**：
+  键列含 occurred_at / 换体拆出 DO 块 / 兜底 DROP 缺失 —— 每份都必须被判红）。
+- **★ 顺带修一个既有红门**：`migration_900_901_redispatch_test.go` 的台账判据
+  「恰好 1 次」在 deploy 2820（并行会话）给 900/901 补 applied+verified 记账行后恒红
+  （stash 实证与本轮无关）⇒ 改为「1 或 2 次，且 2 次时 applied+verified 恰一行」
+  ⇒ 台账两阶段语义进门。
+
+#### §143.102.4 待属主拍板（新增）
+
+㉕【第一】探测型 session 短路 L3 ／ ㉗ 换「最新」定义（语义）／
+㉘ route_incident_events 低扫描索引 244 MB 去留（先代码核对）／
+㉙ session_client_task_matrix REFRESH 降本（R75 §6 三选一）／ ㉔【作废】／
+902 生产应用授权（ACCESS EXCLUSIVE 窗口 ms 级，走部署列车）。
+
+### §143.103 R146 存储效率综合轮（下）：探测型 session 短路 L3（㉕）落地
+
+> **对生产写入 = 0**（纯代码 + opt-in 默认关）。★ 承接 §143.101 的排序：㉔ 已否证 ⇒
+> **㉕ = 剩下两把钥匙里【不改语义】的那把**，本轮把它落成代码。
+
+#### §143.103.1 一句话结论
+
+探测流量合成出【按日聚合】的系统会话（`sys:probe:{cred|prov|gw}:{yyyymmdd}`，
+`sessionv2mirror.SyntheticSessionID`），一天的全部探测流量挤进同一个 session ⇒
+轮次可达数万（252 实测 **40,381 轮**）⇒ 这类会话命中 L3 兜底腿时单次 **24,763 ms**
+（§143.100 实跑）。而这类会话【不进 mirror】⇒ bodies 族无行 ⇒ L3 两臂都取不到 ⇒
+**结构性恒 0 行**（§143.99.4 / §143.100.4 生产实测 rows=0）⇒
+**短路它 = 零语义**（返回值与「查询返 0 行」的既有映射逐字相同）。
+
+#### §143.103.2 实现（纯代码，两处）
+
+| 产物 | 内容 |
+|---|---|
+| `domains/hooks/compression/probe_session.go` | 判定与开关：`IsProbeSyntheticSessionID`（前缀 `sys:probe:`）+ `ShouldSkipProbeLoad`（双条件：opt-in 开关 + 形态）+ `EnvSkipProbeSessions = "ENABLE_SESSION_CACHE_SKIP_PROBE_SESSIONS"`（**默认关**，§143.86/§143.89 同形） |
+| `domains/hooks/compression/session_cache.go` | `loadFromLegacyDB` 内、**G-2 守卫之后、`LogL3Reached` 之前** 接入 P-1 守卫 ⇒ 被短路的调用【不算】走到 L3 ⇒ 开关打开后服务侧 L3 计数的降幅 = ㉕ 的实际收益（可与库端 Δcalls 直接对拍） |
+| `domains/hooks/compression/probe_session_test.go` | 同包单测（默认关 / 取值语义 / 判据形态 12 例 / 误伤面） |
+| `cmd/gateway/section_143103_l3_probe_shortcircuit_test.go` | 门（4 腿：形态 + **跨包一致性**（真实生成器产出必须被判定识别） + 接线次序 + 文档登记） |
+
+★ **腿①② 不受影响**（这是零语义的另一半）：turn_reader 的 final_full / delta chain
+对探测会话本来就便宜、且是真正在产出的腿（§143.100.4：L1 累计 12,106 行）——
+本短路只覆盖 L3 那条**结构性空腿**。
+
+#### §143.103.3 启用与验收配方（属主动作）
+
+1. 部署后设 `ENABLE_SESSION_CACHE_SKIP_PROBE_SESSIONS=1`（不开 = 行为逐字不变）；
+2. 验收：`grep "skip L3 load, probe synthetic session"` 的触发速率 ≈ 原 LogL3Reached
+   里 `sys:probe:` 会话的占比；库端 L3 Δcalls 同步下降；
+3. 反证钉：门② 用真实生成器跨包对拍 —— 生成器改形态而判定不改 ⇒ 门红。
+
+#### §143.103.4 诚实边界
+
+1. `24,763 ms` 是 §143.100 对那个 4 万轮会话的**单次实跑**，不是每次 L3 的常态
+   （常态 ~150 ms，§143.77）；本守卫治的是【长尾族】，常态收益按
+   `探测会话占比 × ~150 ms` 估。
+2. `sys:probe:` 前缀理论上可被客户端伪造 ⇒ 伪造者只会得到「腿①② 落空后少查一条
+   结构性空腿」⇒ 可观测行为仍与 0 行一致；开关默认关 ⇒ 启用前无任何行为变化。
+3. `sys:internal:` / `sys:anon:` 合成会话**刻意不覆盖**（无独立证据轮）⇒ 登记为后续项。

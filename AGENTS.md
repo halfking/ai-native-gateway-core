@@ -7477,7 +7477,33 @@ index b953a6f03..555ef83c4 100644
 > **㉗【新增】换「最新」定义 `ORDER BY turn_no DESC`（实测 4,762×，但秩一致率 93.9% 不一致 ⇒ 语义变更，必须属主拍板）**
 > ／ ㉔【作废】。★ 落仓：`scripts/local/143101_l3_turns_leg_index_local_experiment.sql`（阶段 0~5 自带自检）+
 > 门 `cmd/gateway/section_143101_l3_turns_leg_index_local_test.go`（4 判据，含「作废必须落在 §143.100 段内」）。
-> ★ **通用式见 LESSONS §300**；★ 本轮主轴承接用户目标（数据结构 × 存储效率综合优化），后续小节 §143.102+。
+> ★ **通用式见 LESSONS §300**；★ 本轮主轴承接用户目标（数据结构 × 存储效率综合优化）。
+>
+> **2026-10-24 R146 轮（续）· §143.102/§143.103 【存储效率综合轮：P5 索引合并 + ㉕ 探测型短路 落地】**：
+> ★ 252 只读普查（存储 top15 + 索引 idx_scan + 10-23 全天日志 529 MB）⇒ 三个新登记：
+> **㉘ route_incident_events 三个低扫描索引 244 MB 去留**（idx_scan 1/20/8，先代码面核对）／
+> **㉙ session_client_task_matrix REFRESH 降本**（26 次/天、73.8s→592.7s、~2.3h DB 时间/天 —— R75 已止血，「变便宜」是 R75 §6 属主三选一）／
+> **㉔【作废】**。
+> ★★★★★ **P5 落地 = 迁移 902**（`902_stats_event_dedup_pkey_include.sql`）：pkey 换体
+> `UNIQUE(event_id) INCLUDE(occurred_at)` + 删 845 复合索引（252 实测 151 MB）⇒ **净省 ~114 MB**，
+> 三处消费方无损本地一次性库实测（ON CONFLICT / 四处双列 JOIN Index Only / 唯一性不变式）；
+> **全生命周期五段**（up→重跑→down→down重跑→再up）全绿；7 点登记 + 门 6 测试含 3 阳性对照。
+> ★★ **幂等设计是被实验逼出来的**：首版无守卫重跑留下 ~20 MB 孤儿 tmp 索引（阶段 4 实测）⇒
+> 补「目录态判定（indnkeyatts/indnatts）+ 兜底 DROP tmp」⇒ ★ **凡「建了就改名/换体」的迁移，
+> 幂等判据必须建在【形态】上不能建在【名字】上**。
+> ★★ **顺带修一个既有红门**：`migration_900_901_redispatch_test.go` 台账判据「恰好 1 次」
+> 在 deploy 2820 补 applied+verified 记账行后恒红（stash 实证与本轮无关）⇒ 改为
+> 「1 或 2 次且 applied+verified 恰一行」⇒ 台账两阶段语义进门。
+> ★★★★★ **㉕ 落地 = 探测型合成 session 短路 L3**（§143.101 排序里不改语义的那把钥匙）：
+> `domains/hooks/compression/probe_session.go`（`IsProbeSyntheticSessionID` 前缀 `sys:probe:` +
+> `ShouldSkipProbeLoad`）+ `loadFromLegacyDB` 接线（**G-2 后、LogL3Reached 前** ⇒ 被短路的不算
+> 「走到 L3」⇒ 服务侧计数降幅=收益可对拍）+ `ENABLE_SESSION_CACHE_SKIP_PROBE_SESSIONS`
+>（**opt-in 默认关** ⇒ 打开前线上行为逐字不变）；零语义 = 探测合成会话不进 mirror ⇒ bodies 无行
+> ⇒ L3 结构性恒 0 行（§143.99.4/§143.100.4 实测）+ 返回值与「0 行映射」逐字相同；
+> 同包单测 + 门 4 腿（含**跨包一致性**：真实生成器产出必须被判定识别）；变异 2 臂全红。
+> ★★ ** OnceValue 坑（第二轮踩）**：门里/同包测试里靠 Setenv 驱动开关取值【不可复现】
+> （进程内缓存）⇒ 门做文本级断言、同包测试**换包级 var + Cleanup 还原**（auto_created_test.go 先例）。
+> ★ **通用式见 LESSONS §300/§301**；★ 属主待拍板：㉕ 开关何时打开／902 生产应用授权／㉗／㉘／㉙。
 > **2026-10-24 P11 落地部署轮（本会话续）**：按「饱和族继续推进 §143 P11 落地」指令，把**仓内早已齐备但从未部署**的巡检降载两件套部署到 252：
 > ① `ursm-snapshot-health.sh`（`b5aaa384`→`10efc586`，两路二选一+覆盖探针新判据，备份留存）；② `ursm-snapshot-slot-refresh.sh` **首次部署**（`6b84c344`——R75 轮预言的缺环：没有它汇总表停更⇒巡检静默失明；实测表真停在 10-22）；③ `/etc/cron.d/pg17` 按正典重装（0删18增，md5 `f764e11f`，加每 6h :07 刷新行）。
 > ⇒ **生产实测**：手动 refresh ⇒ coverage **6/7→7/7**（repair 补 8 天 168 行 2m24s）；巡检 ⇒ **`base_source=daily` 快路生效、64.7s 完成、verdict OK**（旧源表路 235s、饱和时 600s+、每小时 2.9 GB＝252 成本 #1）⇒ 巡检 I/O 从 74 GB/天量级大降，饱和族（routing-log/error-trend/turns 超时）预期随争用缓解改善（观测口径：journal 超时计数按小时对比）。211 不在范围（P11 只对 252，§143.32）。
