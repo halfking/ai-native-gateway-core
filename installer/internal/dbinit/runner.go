@@ -1496,7 +1496,8 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			//   ★ 消费方逐个过（本地一次性库实测）：ON CONFLICT (event_id)
 			//   仍工作（INCLUDE 不参与推断）、rollup/reconciliation 四处
 			//   双列等值 JOIN 仍 Index Only、唯一性不变式仍强制。
-			//   ★ 252 净省 ~114 MB（409 MB → ~265 MB）。幂等：换体段按
+			//   ★ 252 净省 ≈114 MB（旧索引 265 MB → 单条 ~151 MB；表 409 → ~295 MB）。
+			//   幂等：换体段按
 			//   目录态判定 + 兜底 DROP tmp（无守卫重跑会留 20 MB 孤儿，
 			//   本地实验阶段 4 抓出后补）。dbinit:no-transaction 标记
 			//   （CREATE INDEX CONCURRENTLY）。

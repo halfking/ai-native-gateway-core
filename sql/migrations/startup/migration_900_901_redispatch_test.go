@@ -116,12 +116,30 @@ func TestMigration900_DownDropsTables(t *testing.T) {
 	}
 }
 
-// 阳性对照：把 up 体里的 CREATE TABLE 全剥掉后，检测器必须能判红。
+// 阳性对照（真判红版，2026-10-24 批判审计加固）：把 up 体的 CREATE TABLE
+// 全剥掉后，**用与 TestMigration900_BuildsThreeFreediscoveryTables 完全相同
+// 的检测表达式**跑一遍 ⇒ 检测器必须判红。旧版只证明「剥除正则有效」，
+// 没证明「检测器能对坏文件报错」——一个恒绿的检测器也能通过旧判据。
 func TestMigration900_DetectorCanFire(t *testing.T) {
 	up := stripCommentsRedispatch(migRedispatchRead(t, mig900Name))
 	empty := regexp.MustCompile(`(?s)CREATE TABLE IF NOT EXISTS public\.\w+.*?;`).ReplaceAllString(up, "")
 	if strings.Contains(empty, "CREATE TABLE IF NOT EXISTS public.provider_templates") {
-		t.Fatalf("阳性对照失败：剥除后仍含 provider_templates DDL，检测器无效")
+		t.Fatalf("阳性对照前置失败：剥除后仍含 provider_templates DDL，样本没造坏")
+	}
+	// 与主测试同款判据重放于坏样本：主测试的失败条件（Contains 为 false
+	// ⇒ t.Errorf）必须被坏样本触发 ⇒ 证明检测器不是恒绿。
+	wouldFailMain := false
+	for _, ddl := range []string{
+		"CREATE TABLE IF NOT EXISTS public.provider_templates",
+		"CREATE TABLE IF NOT EXISTS public.discovery_tasks",
+		"CREATE TABLE IF NOT EXISTS public.discovery_results",
+	} {
+		if !strings.Contains(empty, ddl) {
+			wouldFailMain = true
+		}
+	}
+	if !wouldFailMain {
+		t.Errorf("阳性对照：坏样本未触发主测试的失败条件 ⇒ 主测试的 Contains 断言对「缺全部三表 DDL」的文件会假绿")
 	}
 }
 
@@ -160,11 +178,17 @@ func TestMigration901_CarriesLockTimeout(t *testing.T) {
 func TestMigration901_LockTimeoutDetectorCanFire(t *testing.T) {
 	up := stripCommentsRedispatch(migRedispatchRead(t, mig901Name))
 	stripped := strings.ReplaceAll(up, "SET LOCAL lock_timeout = '60s';", "")
+	// 阳性对照（2026-10-24 加固，900 同款形态）：主测试的失败条件
+	// （!Contains("SET LOCAL lock_timeout") ⇒ t.Errorf）必须被坏样本触发，
+	// 且判据读数必须因剥除而翻转 ⇒ 证明样本构造有效、检测器不是恒绿。
 	if strings.Contains(stripped, "SET LOCAL lock_timeout") {
-		t.Fatalf("阳性对照失败：剥除后仍含 lock_timeout，检测器无效")
+		t.Fatalf("阳性对照前置失败：剥除后仍含 lock_timeout，样本没造坏")
 	}
 	if !strings.Contains(up, "SET LOCAL lock_timeout") {
 		t.Fatalf("真文件竟不含 lock_timeout：阳性对照的前提不成立")
+	}
+	if strings.Contains(stripped, "SET LOCAL lock_timeout") == strings.Contains(up, "SET LOCAL lock_timeout") {
+		t.Errorf("阳性对照：剥除未改变判据读数 ⇒ 样本构造无效")
 	}
 }
 
@@ -202,31 +226,27 @@ func TestMigrations900and901_RegistrationPointsExactlyOnce(t *testing.T) {
 			pin{"installer runner.go (StartupFiles)", "../../../installer/internal/dbinit/runner.go", "\"" + name + "\","},
 			pin{"TSV 镜像", "../../../sql/schema/installed_startup_migrations.tsv", name},
 			pin{"升级通道 apply-db-revision-sequence.sh", "../../../scripts/apply-db-revision-sequence.sh", "startup/" + name},
+			// ⚠ db-changelog 是**两阶段**台账（2026-10-24 批判审计 + 并行会话
+			// d4d88a569 联合修正）：registered-pending → deploy 后追加
+			// applied+verified 行 ⇒ 「恰好 1」与权威口径冲突
+			// （verify-migration-checksums.sh :94-103「同文件多行、任一 sha
+			// 命中即过」）且在首次部署后必红；判据见下方两阶段断言。
 			pin{"db-changelog 台账行", "../../../docs/db-changelog.md", "`" + name + "`"},
 		)
 	}
 	for _, p := range pins {
 		body := migRedispatchRead(t, p.file)
-		// 台账是**两阶段**的（registered-pending → deploy 后追加 applied+verified
-		// 行，2026-10-23T17:18:26Z deploy 2820 起实态）：『`<file>`』出现 1 次或
-		// 2 次都合法；出现 2 次时必须恰有一行是 applied+verified 记账
-		// （两行都 pending = 复制粘贴事故；出现 3 次 = 任何形态都是事故）。
+		// ⚠ db-changelog 是【多行合法】的台账（★ 2026-10-24 R146 批判审计二次修正，
+		// ★ 与并行会话 453463cd5 ⑤ 的 ≥1 口径对齐；先前「1 或 2 次 + applied 恰一行」
+		// 的形状断言【方向错了】——它把存在性门错改成形状门）：
+		//   ① 权威口径 = verify-migration-checksums.sh「同文件多行、任一 sha 命中即过」；
+		//   ② 历史实证：862 有 4 行（两次内容修订、两个正典指纹并存）、888 有 3 行
+		//      （pending → applied+verified → 新 sha 的再投递 pending）⇒ 「恰一 applied」
+		//      「≤2 行」都会在未来 deploy 记账/再投递时【误红】（部署后必红）。
+		// ⇒ 本 pin 的牙 = 【存在性】：至少 1 行（900/901 从台账里消失才红）。
 		if p.label == "db-changelog 台账行" {
-			got := strings.Count(body, p.needle)
-			if got != 1 && got != 2 {
-				t.Errorf("%s: needle %q 出现 %d 次, want 1（pending）或 2（pending+applied 记账）", p.label, p.needle, got)
-				continue
-			}
-			if got == 2 {
-				applied := 0
-				for _, line := range strings.Split(body, "\n") {
-					if strings.Contains(line, p.needle) && strings.Contains(line, "applied+verified") {
-						applied++
-					}
-				}
-				if applied != 1 {
-					t.Errorf("%s: needle %q 出现 2 次但 applied+verified 行 = %d, want 1（两行必须一 pending 一 applied）", p.label, p.needle, applied)
-				}
+			if got := strings.Count(body, p.needle); got < 1 {
+				t.Errorf("%s: needle %q 出现 %d 次, want ≥1（迁移必须登记在台账里）", p.label, p.needle, got)
 			}
 			continue
 		}

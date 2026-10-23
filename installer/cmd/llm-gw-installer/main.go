@@ -1082,9 +1082,10 @@ var usageLedgerApiKeyIdTsIdx901 []byte
 //	ON CONFLICT (event_id) 仍工作、四处双列等值 JOIN 仍 Index Only、
 //	唯一性不变式仍强制。
 //
-// ★ 252 实测（2026-10-24 只读）：pkey 114 MB + 复合 151 MB ⇒ 合并后
+// ★ 252 实测（2026-10-24 只读）：旧索引合计 pkey 114 MB + 复合 151 MB =
 //
-//	~114 MB，净省 ~114 MB（该表 409 MB → ~265 MB）。
+//	265 MB ⇒ 合并后单条 INCLUDE 体 ≈ 旧复合体量（~151 MB，两值都进索引
+//	元组）⇒ 净省 ≈ 旧 pkey 的 114 MB（表 409 MB → ~295 MB）。
 //
 // ★ 幂等：换体段按目录态判定（pkey 已带 INCLUDE ⇒ 跳过）；兜底 DROP
 //
