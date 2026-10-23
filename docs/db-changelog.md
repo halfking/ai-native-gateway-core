@@ -9448,3 +9448,12 @@ embeddata 逐字 + lock_timeout + 自证断言 + down 只删账本 + **真库腿
 | 899 | `899_session_bodies_promote_body_sink.sql` | `66cddcb1b2531bd3298ab2fae631d9f55fdf21232e33b8e1a066937785accbac` | registered in installer StartupFiles + 生产升级序列（未应用，pending）—— promote 函数体下沉，逐字等于生产现行体 |
 | 900 | `900_freediscovery_schema_reassert.sql` | `b1f1a0c90cb706887e19007cc47867abe3b21e5c371ee832222be3531b09d9de` | registered in installer StartupFiles + 生产升级序列（未应用，pending）—— 084+087 再投递（896 同款交付缺口修复：升级通道只把 ≥412 视为 pending ⇒ 084 从未到达生产 ⇒ free-discovery 503）。幂等；down：`900_freediscovery_schema_reassert.down.sql`（sha256 `2d8ef1a038df25ce17c59bd68b86acd15be74e935f6a3b8c32666ea4fe1d94c3`） |
 | 901 | `901_usage_ledger_api_key_id_ts_idx.sql` | `a94c1dfe31a7cead3957141ba9615db0cedae49feb88786e3c3422b29a8d0195` | registered in installer StartupFiles + 生产升级序列（未应用，pending）—— usage_ledger 分区父表补 (api_key_id, ts DESC) WHERE api_key_id IS NOT NULL（实测 7 天空窗 6,983 ms 的根因）。891 同款 lock_timeout=60s / statement_timeout=10min；down：`901_usage_ledger_api_key_id_ts_idx.down.sql`（sha256 `bea9ec9a2741758ebd7076c9c1387e630e62994c6100b3b99b32c64fb9fcbc6b`） |
+## 2026-10-23T17:18:26Z — deploy 245 build_seq 2820 (a88bf82f)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 898 | `898_session_bodies_hot_ts_index.sql` | `a5d435743597752c8fbeeddc1bdaf1092c0f7f516362f39eea23597502d6a8c1` | applied+verified |
+| 899 | `899_session_bodies_promote_body_sink.sql` | `66cddcb1b2531bd3298ab2fae631d9f55fdf21232e33b8e1a066937785accbac` | applied+verified |
+| 900 | `900_freediscovery_schema_reassert.sql` | `b1f1a0c90cb706887e19007cc47867abe3b21e5c371ee832222be3531b09d9de` | applied+verified |
+| 901 | `901_usage_ledger_api_key_id_ts_idx.sql` | `a94c1dfe31a7cead3957141ba9615db0cedae49feb88786e3c3422b29a8d0195` | applied+verified |
+
