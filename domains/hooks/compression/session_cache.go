@@ -664,6 +664,19 @@ func (c *SessionCache) loadFromLegacyDB(ctx context.Context, tenantID, gwSession
 			"session", gwSessionID, "tenant", tenantID)
 		return nil, nil, nil
 	}
+	// ★ §143.103（R146）P-1 守卫：探测型合成 session 短路（§143.101 ㉕）。
+	// ★ 这类会话（sys:probe:{cred|prov|gw}:{yyyymmdd}，按日聚合）不进 mirror
+	// ⇒ bodies 族无行 ⇒ L3 结构性恒 0 行（§143.99.4 / §143.100.4 生产实测），
+	// 但命中数万轮次会话时单次可达 24,763 ms（§143.100 实跑）。
+	// ★ 短路返回 (nil, nil, nil) = 「查询返回 0 行」的既有映射 ⇒ 可观测行为不变；
+	// ★ 腿①②（turn_reader）不受影响。★ 开关默认关（EnvSkipProbeSessions）。
+	// ★ 位置在【LogL3Reached 之前】⇒ 被短路的调用【不算】走到 L3
+	// ⇒ 开关打开后服务侧 L3 计数的降幅 = 本守卫的实际收益（可直接对拍）。
+	if ShouldSkipProbeLoad(gwSessionID) {
+		slog.InfoContext(ctx, "session_cache: skip L3 load, probe synthetic session",
+			"session", gwSessionID, "tenant", tenantID)
+		return nil, nil, nil
+	}
 	if c.db == nil {
 		return nil, nil, nil
 	}

@@ -52207,3 +52207,46 @@ pkey 换体 `UNIQUE(event_id) INCLUDE(occurred_at)` + 删复合索引，**净省
 ㉘ route_incident_events 低扫描索引 244 MB 去留（先代码核对）／
 ㉙ session_client_task_matrix REFRESH 降本（R75 §6 三选一）／ ㉔【作废】／
 902 生产应用授权（ACCESS EXCLUSIVE 窗口 ms 级，走部署列车）。
+
+### §143.103 R146 存储效率综合轮（下）：探测型 session 短路 L3（㉕）落地
+
+> **对生产写入 = 0**（纯代码 + opt-in 默认关）。★ 承接 §143.101 的排序：㉔ 已否证 ⇒
+> **㉕ = 剩下两把钥匙里【不改语义】的那把**，本轮把它落成代码。
+
+#### §143.103.1 一句话结论
+
+探测流量合成出【按日聚合】的系统会话（`sys:probe:{cred|prov|gw}:{yyyymmdd}`，
+`sessionv2mirror.SyntheticSessionID`），一天的全部探测流量挤进同一个 session ⇒
+轮次可达数万（252 实测 **40,381 轮**）⇒ 这类会话命中 L3 兜底腿时单次 **24,763 ms**
+（§143.100 实跑）。而这类会话【不进 mirror】⇒ bodies 族无行 ⇒ L3 两臂都取不到 ⇒
+**结构性恒 0 行**（§143.99.4 / §143.100.4 生产实测 rows=0）⇒
+**短路它 = 零语义**（返回值与「查询返 0 行」的既有映射逐字相同）。
+
+#### §143.103.2 实现（纯代码，两处）
+
+| 产物 | 内容 |
+|---|---|
+| `domains/hooks/compression/probe_session.go` | 判定与开关：`IsProbeSyntheticSessionID`（前缀 `sys:probe:`）+ `ShouldSkipProbeLoad`（双条件：opt-in 开关 + 形态）+ `EnvSkipProbeSessions = "ENABLE_SESSION_CACHE_SKIP_PROBE_SESSIONS"`（**默认关**，§143.86/§143.89 同形） |
+| `domains/hooks/compression/session_cache.go` | `loadFromLegacyDB` 内、**G-2 守卫之后、`LogL3Reached` 之前** 接入 P-1 守卫 ⇒ 被短路的调用【不算】走到 L3 ⇒ 开关打开后服务侧 L3 计数的降幅 = ㉕ 的实际收益（可与库端 Δcalls 直接对拍） |
+| `domains/hooks/compression/probe_session_test.go` | 同包单测（默认关 / 取值语义 / 判据形态 12 例 / 误伤面） |
+| `cmd/gateway/section_143103_l3_probe_shortcircuit_test.go` | 门（4 腿：形态 + **跨包一致性**（真实生成器产出必须被判定识别） + 接线次序 + 文档登记） |
+
+★ **腿①② 不受影响**（这是零语义的另一半）：turn_reader 的 final_full / delta chain
+对探测会话本来就便宜、且是真正在产出的腿（§143.100.4：L1 累计 12,106 行）——
+本短路只覆盖 L3 那条**结构性空腿**。
+
+#### §143.103.3 启用与验收配方（属主动作）
+
+1. 部署后设 `ENABLE_SESSION_CACHE_SKIP_PROBE_SESSIONS=1`（不开 = 行为逐字不变）；
+2. 验收：`grep "skip L3 load, probe synthetic session"` 的触发速率 ≈ 原 LogL3Reached
+   里 `sys:probe:` 会话的占比；库端 L3 Δcalls 同步下降；
+3. 反证钉：门② 用真实生成器跨包对拍 —— 生成器改形态而判定不改 ⇒ 门红。
+
+#### §143.103.4 诚实边界
+
+1. `24,763 ms` 是 §143.100 对那个 4 万轮会话的**单次实跑**，不是每次 L3 的常态
+   （常态 ~150 ms，§143.77）；本守卫治的是【长尾族】，常态收益按
+   `探测会话占比 × ~150 ms` 估。
+2. `sys:probe:` 前缀理论上可被客户端伪造 ⇒ 伪造者只会得到「腿①② 落空后少查一条
+   结构性空腿」⇒ 可观测行为仍与 0 行一致；开关默认关 ⇒ 启用前无任何行为变化。
+3. `sys:internal:` / `sys:anon:` 合成会话**刻意不覆盖**（无独立证据轮）⇒ 登记为后续项。
