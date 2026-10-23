@@ -101,7 +101,7 @@ PY
   # ★ 工作区必须逐字节未变（本台不改工作区 ⇒ 这条是恒真的自检）
   after="$(md5 -q "$src")"
   if [[ "$before" != "$after" ]]; then
-    echo "  ★ 工作区被改动了（before=$before after=$after）⇒ 异常，计作废"
+    echo "  ★ 工作区被改动了（before=${before} after=${after}）⇒ 异常，计作废"
     INVALID=$((INVALID+1))
     return
   fi
