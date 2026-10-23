@@ -106,13 +106,16 @@ canonical_for() {
   local ver=$1
   local description=$2
   local candidates=${CANDIDATES[$ver]-}
-  local candidate suffix match="" count=0
+  local candidate suffix match="" first="" count=0
   case "$ver:$description" in
     461:request_wal_hot_request_id_unique) description="request_wal_hot_unique_request_id" ;;
   esac
   [[ -n "$candidates" ]] || return 1
   while IFS= read -r candidate; do
     [[ -n "$candidate" ]] || continue
+    # ★ 必须在循环内捕获首个候选：`while read` 结束时的 EOF 会把循环变量
+    #   `candidate` 置空 ⇒ 循环**之后**再读 $candidate 只会拿到空串。
+    [[ -n "$first" ]] || first="$candidate"
     count=$((count + 1))
     suffix=${candidate#"${ver}"_}
     suffix=${suffix%.sql}
@@ -121,8 +124,18 @@ canonical_for() {
     fi
   done <<<"$candidates"
   if (( count == 1 )); then
-    [[ -n "$match" ]] || return 2
-    printf '%s\n' "$match"
+    # ★ 单候选兜底（R75 轮修）：只有一个候选文件时，它**就是**该 version
+    #   唯一可能的 canonical 文件，不该再要求 description 逐字相等。
+    #   ⇒ 与部署侧对账函数同款兜底（db-changelog.sh：
+    #     `if [[ -z "$f" && ${#candidates[@]} -eq 1 ]]; then f=${candidates[0]}; fi`）。
+    #   ⇒ ★ 没有这条兜底时，生产实测 description 为空的 837/838/839
+    #     （2026-10-07 12:48~12:50 应用）会被判成「无法解析为唯一 canonical
+    #     文件」⇒ **官方 repair 脚本修不了它们** ⇒ 台账缺口无法闭合。
+    if [[ -n "$match" ]]; then
+      printf '%s\n' "$match"
+    else
+      printf '%s\n' "$first"
+    fi
     return 0
   fi
   [[ -n "$match" ]] || return 2
