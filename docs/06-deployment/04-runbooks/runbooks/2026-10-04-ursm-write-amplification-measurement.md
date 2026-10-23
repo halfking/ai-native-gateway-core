@@ -51928,6 +51928,19 @@ if cycleCtx.Err() != nil || (batches >= promoteCycleMaxBatches && tableRanBatch)
 > **本轮全程零生产写入**（只读查询 + 只落仓）。★ 生产行为逐字未变。
 > ★ 本轮承接 §143.99 的长尾定位，并**订正 §143.99 的三处结论**（见上方订正横幅一）。
 
+> ⚠⚠⚠ **★★★★★ 订正横幅二（2026-10-24 §143.101 轮）**：★ 本段的**中心结论**——
+> 「正确修法 = 给 turns 分区族加 `(session_id, ts DESC)` 索引」（§143.100.1 / §143.100.3 / 待拍板㉔）
+> ⇒ ⇒ **已被 §143.101 的本地一次性库实验【否证】**（原文全部保留，读下文时必须带着这条订正）：
+> ★ 阶段 1（无该索引）与阶段 2（★ 建了该索引）的 EXPLAIN **逐字节相同**
+> （同走 `heap_tenant_id_ts_idx` + `Filter: session_id`，Index 节点 cost 完全一致 2493.97）
+> ⇒ ⇒ **「加这条索引」改不了计划 ⇒ ⇒ ⇒ ㉔ 【作废】**（不再是修法，也不必再为它申请生产写授权）。
+> ★ 机制：两条候选路径要碰的行数本来就几乎一样（生产估算 **42,289** vs **40,381**，只差 4.5%）
+> ⇒ ⇒ planner 在二选一时没有理由换路 ⇒ ⇒ **缺的不是「一条形状匹配的索引」，缺的是「让 planner 有理由换路」的条件**。
+> ⇒ ⇒ **真正剩下的两把钥匙**（详见 §143.101）：
+> ① **㉕【升为第一】探测型 session 短路 L3 回退**（纯代码、不改语义、零生产写）；
+> ② **㉗【新增】换「最新」的定义**（`ORDER BY turn_no DESC` ⇒ 生产实测快 4,762×，
+> ★ **语义变更** ⇒ 秩一致率 93.9% 不一致 ⇒ 必须属主拍板，§143.100.3 的反证数字原样有效）。
+
 #### §143.100.1 一句话结论
 
 **长尾的真因不是「缺索引」，是「planner 被排序键带偏」** ⇒ ⇒ **缺的正是一条 `(session_id, ts DESC)`** ⇒ ⇒
@@ -52066,3 +52079,81 @@ if cycleCtx.Err() != nil || (batches >= promoteCycleMaxBatches && tableRanBatch)
 
 ★ ⚠ 诚实边界：★ 动态生成形态（如 888 用 `format(...)` 拼 DDL）静态匹配不到
 ★ ⇒ ⇒ 那种情况会**保守地**判成「缺口仍在」⇒ ⇒ 要求登记 ⇒ ⇒ **宁多不少**。
+
+### §143.101 「加 (session_id, ts DESC) 索引」修法的【否证】轮 —— 本地一次性库实测：计划一行都没变
+
+> **本轮全程零生产写入**（本地一次性库 `itgate_143101`，实验完即 DROP）。
+> ★ 本轮承接 §143.100：把它的诚实边界③（「加索引后成本降到 ms 级」是**推算**）变成实测 ⇒ **结果是否证**。
+> ★ 本节同时收编上一会话遗留的未跟踪产物（门 + 实验脚本），补齐文档后一并提交（R146）。
+
+#### §143.101.1 一句话结论
+
+**「给 turns 族加 `(session_id, ts DESC)` 索引」修不了长尾** —— 在复刻生产索引形态的本地一次性库上，
+建了这条索引之后 planner 的计划**一行都没变**（同一条 `heap_tenant_id_ts_idx`、同一个
+`Filter: session_id`、Index 节点 cost 逐字节相同 2493.97）⇒ ⇒ **㉔ 作废**。
+§143.100 的「零语义变更修法」不存在；剩下的是 ①「换『最新』的定义」（快 4,762× 但语义变更）
+与 ②「探测型 session 短路」（不改语义、纯代码）。
+
+#### §143.101.2 实验设计（`scripts/local/143101_l3_turns_leg_index_local_experiment.sql`）
+
+| 阶段 | 做什么 |
+|---|---|
+| 0 | 建分区父表 + 09 月 heap 分区 + **生产同款三条索引**（`heap_tenant_id_ts_idx` / `heap_session_id_turn_no_idx` / `heap_tenant_id_session_id_turn_no_idx`，★ 故意不含 `(session_id, ts DESC)`）+ 1 session × 20,000 轮 |
+| 1 | 基线 EXPLAIN + 实跑 ×3（预热后）：`ORDER BY ts DESC LIMIT 1` |
+| 2 | ★ **建那条「缺失」的索引** `(session_id, ts DESC)` → ANALYZE → 再 EXPLAIN + 实跑 ×3 |
+| 3 | 对照：`ORDER BY turn_no DESC LIMIT 1`（应换路到 `heap_session_id_turn_no_idx`） |
+| 4 | 对照：`ORDER BY ts DESC LIMIT 50`（计划应仍不变） |
+| 5 | 结论自检：三条断言（`stage1_and_stage2_use_same_index` / `plan_unchanged_after_new_index` / `adding_limit_does_not_change_plan`） |
+
+★ 本地边界（必须随结论一起发布）：本地 20,000 行 / 单 session / 单租户 ⇒ **不能代表生产的耗时量级**；
+★★ 但它能证明【计划形态】—— 而**成本由计划决定** ⇒ 这一条可外推（生产侧独立证据见 §143.101.4）。
+
+#### §143.101.3 实测读数（★ 2026-10-24 R146 会话复跑，exit=0）
+
+| 阶段 | 条件 | 09 月分区的索引用法 | Index 节点 cost |
+|---|---|---|---|
+| 1 | 无 `(session_id, ts DESC)` | `heap_tenant_id_ts_idx`（Index Cond: tenant_id）+ **Filter: session_id** | **2493.97** |
+| 2 | ★ 建了该索引 | **与阶段 1 逐字节相同** | **同 2493.97** |
+| 3 | 对照：`ORDER BY turn_no DESC` | `heap_session_id_turn_no_idx` + **Index Cond: (session_id)**（Filter: tenant_id） | 3054.10（且能提前停止） |
+| 4 | 对照：`LIMIT 50` | 与阶段 1 完全相同 | 2493.97（Limit 收口 6.52） |
+
+⇒ ⇒ 三条断言全部成立：`stage1_and_stage2_use_same_index = t` / `plan_unchanged_after_new_index = t` / `adding_limit_does_not_change_plan = t`。
+
+#### §143.101.4 机制解释（★ 为什么加了索引 planner 也不换路）
+
+两条候选路径要碰的行数本来就几乎一样 —— §143.100 的生产 EXPLAIN 估算：
+tenant_id 路径回堆 **42,289** 行 vs session_id 路径 **40,381** 行，**只差 4.5%**
+⇒ ⇒ planner 在二选一时**没有理由换路**；本地夹具把这一点复刻到了极端（单租户 ⇒ tenant_id 匹配度 100%）。
+⇒ ⇒ ★★ **⇒ 通用式：「缺索引」的完整判据是三段，不是两段** ——
+① 谓词列在索引里 ✔；② 排序键与索引序匹配 ✔；③ **新路径的估算成本显著低于现路径**（←—— 最常被漏的一段）。
+**第 ③ 段不过关时，索引建了也是白建**（还平添写放大与存储）。
+
+#### §143.101.5 ★ 待属主拍板（★ 本轮重排）
+
+- **㉕【升为第一】探测型 session 短路 L3 回退** ⇒ 纯代码、不改语义、零生产写；
+  它治「这类 4 万轮次的探测 session 根本不该走到 L3 回退」。
+- **㉔【作废】加 `(session_id, ts DESC)` 索引** ⇒ 本地实测改不了计划 ⇒ **不要做**，也不必再申请授权。
+- **㉗【新增】换「最新」的定义：`ORDER BY turn_no DESC`** ⇒ 生产实测 **5.2 ms vs 24,763 ms = 4,762×**，
+  但秩一致率 **93.9% 不一致（40,381 行里 37,917 行）** ⇒ 会取到【不同的那一轮】⇒ **语义变更，必须属主拍板**。
+
+#### §143.101.6 落仓产物与复跑配方
+
+| 产物 | 作用 |
+|---|---|
+| `scripts/local/143101_l3_turns_leg_index_local_experiment.sql` | 本地一次性库实验脚本（阶段 0~5，自带「只能在本地跑」警告与三条结论自检） |
+| `cmd/gateway/section_143101_l3_turns_leg_index_local_test.go` | 否证门（4 判据：① 脚本在场+警告+自检 ② 否证登记带数字 ③ ★ 「作废」必须落在 §143.100 段内（防旧推荐还挂着） ④ LESSONS/AGENTS 登记） |
+
+复跑配方（★ 三步，一次性库，实验完即 DROP）：
+
+```bash
+docker exec llm-gateway-pg psql -U llm_gateway -d postgres -c "CREATE DATABASE itgate_143101;"
+docker exec -i llm-gateway-pg psql -U llm_gateway -d itgate_143101 -v ON_ERROR_STOP=1 -P pager=off -f - < scripts/local/143101_l3_turns_leg_index_local_experiment.sql
+docker exec llm-gateway-pg psql -U llm_gateway -d postgres -c "DROP DATABASE itgate_143101;"
+```
+
+#### §143.101.7 诚实边界（本轮没有证明的）
+
+1. 本地 20,000 行 / 单 session / 单租户 ⇒ 只证【计划形态】，**不证耗时量级**；
+2. 「42,289 vs 40,381」来自 §143.100 的生产只读 EXPLAIN 估算，本轮未在生产复跑（未授权建索引后的对拍）；
+3. 未在生产建索引、未改 SQL、未部署 ⇒ **线上行为逐字未变**；
+4. §143.100.7 的诚实边界 4（新索引与既有 `(session_id, turn_no DESC)` 的取舍）随 ㉔ 作废一并失效，不再需要评估。
