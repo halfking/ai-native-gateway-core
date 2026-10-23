@@ -133,8 +133,8 @@ export default {
   panel: {
     clients: 'طلبات العملاء',
     providers: 'ردود المزوّدين',
-    zoom: 'تكبير',
-    zoomHint: 'اضغط ⤢ للتكبير',
+    zoom: 'عرض التفاصيل',
+    zoomHint: 'اضغط ⤢ لفتح صفحة التفاصيل في علامة تبويب جديدة',
     empty: 'لا توجد طلبات في النافذة',
     page: 'صفحة {page}/{pages}',
     total: 'الإجمالي {n}',

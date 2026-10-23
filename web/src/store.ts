@@ -84,6 +84,36 @@ function loadStoredUserInfo(): UserInfo | null {
   }
 }
 
+/**
+ * `GET /api/auth/me` 探测响应的身份解析（2026-10-23，登录态丢失根因修复）。
+ *
+ * 后端有**两种**响应体，判身份的口径必须同时认：
+ *  ① 现行形态（admin/users.go:683，签发成功时走这条）：
+ *     `{"access_token":"[REDACTED:secret]","expires_at":"…","user":{"id":41,"username":"…",…}}`
+ *     —— 用户**嵌在 `.user` 下**。
+ *  ② 降级形态（admin/users.go:678，JWT 签发失败时）：
+ *     直接 `writeJSON(w, 200, u)` ⇒ 用户在**顶层**。
+ *
+ * 维护/边缘窗口下发的是顶层信封 `{"code":"maintenance_mode"|"maintain.*","message":…}`
+ * —— 两者都不是（`normalizeUserInfo` 归一后拿不到身份字段）。
+ *
+ * ★ 为什么这条必须与 `setUserInfo` 同源：调用方此前直接读 `raw.id`，
+ *   对**现行形态**恒为 undefined ⇒ 被判成「形状异常」⇒ 落进水合 catch 的
+ *   `clearJwt()` ⇒ **每一次冷启（首屏 / 刷新 / 深链 / 新标签页 /
+ *   `location.reload()`）都把用户踢回登录页**。在 `/live` 这类
+ *   requiresAuth 路由上当场表现为「点进去就被登出」，而 `public` 的总览
+ *   照常可用 —— 与线上报的现象逐条吻合。
+ *   通用式：**校验不得比它守护的 setter 更严**，否则 setter 永远走不到。
+ */
+export function userInfoFromAuthMe(raw: unknown): UserInfo | null {
+  if (!raw || typeof raw !== 'object') return null
+  const candidate = normalizeUserInfo(raw as UserInfo & { user?: UserInfo })
+  if (!candidate) return null
+  // 两个必填身份字段：缺一即不是 UserInfo（挡掉维护信封 / 空对象 / 残缺体）。
+  if (typeof candidate.id !== 'number' || typeof candidate.username !== 'string') return null
+  return candidate
+}
+
 export const store = reactive({
   // 2026-08-26 (P1-7 fix): apiKey / jwtToken are now memory-only. The
   // JWT auth path relies on the HttpOnly `llmgw_session` cookie set by

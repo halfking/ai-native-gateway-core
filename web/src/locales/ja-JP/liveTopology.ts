@@ -131,8 +131,8 @@ export default {
   panel: {
     clients: 'クライアントリクエスト',
     providers: 'プロバイダ応答',
-    zoom: '拡大',
-    zoomHint: '⤢ で拡大',
+    zoom: '詳細を見る',
+    zoomHint: '⤢ で詳細ページを新しいタブで開く',
     empty: 'ウィンドウ内にリクエストはありません',
     page: '{page}/{pages} ページ',
     total: '全 {n} 件',

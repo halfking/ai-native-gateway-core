@@ -2,7 +2,7 @@
 import { onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { login, getAuthMe } from '../api'
-import { setApiKey, setJwtToken, setUserInfo } from '../store'
+import { setApiKey, setJwtToken, setUserInfo, userInfoFromAuthMe } from '../store'
 import { useLoginModal } from '../composables/useLoginModal'
 import { locationFromInternalPath } from '../utils/safeRedirect'
 import { detectTheme, logoSrc } from '../theme'
@@ -63,9 +63,12 @@ async function handleLogin() {
       if (resp.user) {
         setUserInfo(resp.user)
       } else {
+        // 兜底探测：判身份与 App.vue 水合同源（store.userInfoFromAuthMe）。
+        // 此前把 /api/auth/me 的**整个响应**直接喂给 setUserInfo ——
+        // 该端点的用户嵌在 `.user` 下，靠 setUserInfo 内部的 normalize 才碰巧没出错；
+        // 一旦响应是维护信封就会造出「假登录态」（role 为空的 userInfo）。
         try {
-          const me = await getAuthMe()
-          setUserInfo(me)
+          setUserInfo(userInfoFromAuthMe(await getAuthMe()))
         } catch { /* ignore */ }
       }
       close()

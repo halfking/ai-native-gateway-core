@@ -6,7 +6,8 @@
 //
 // 本轮新增的两条版面契约：
 //  · 顶部四个维度是**多选**（同维 OR / 跨维 AND），URL 用逗号分隔串往返；
-//  · 右面板点 ⤢ 出现**内联放大面板**，缺省字段渲染「—」而不是 0。
+//  · 右面板点 ⤢ / 点行 / 点 ↗ 一律**新页打开全屏详情 `/request-detail/:id>`**
+//    （属主 2026-10-23 口径：不再是内联浮层，也不再是同标签页 `/live/request/:id`）。
 //
 // 判据直接驱动被测组件（不是读源码）：mock 掉 SSE 单例，注入固定请求集，
 // 断言各区域互相吻合；同时钉住 URL ⇄ 过滤态往返。
@@ -14,7 +15,7 @@
 // 注：vi.mock 工厂会被提升到文件顶部，所以 refs 必须在工厂内部创建
 // （顶层 ref 在工厂执行时还没初始化 —— hoist 报错的经典形态）。
 
-import { describe, expect, it, vi, beforeAll, beforeEach } from 'vitest'
+import { describe, expect, it, vi, beforeAll, beforeEach, afterEach } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
 import { createI18n } from 'vue-i18n'
 import { createRouter, createMemoryHistory } from 'vue-router'
@@ -24,6 +25,11 @@ import LiveTopologyView from './LiveTopologyView.vue'
 import zhCN from '../locales/zh-CN/liveTopology'
 
 type Frame = Record<string, unknown>
+
+// window.open 的替身：判据「新页打开」必须能观测到真实入参
+// （href + target），而不是只断言「没发生同页跳转」。
+const openSpy = vi.fn((_href: string, _target?: string, _features?: string) =>
+  ({ focus: () => {} }) as unknown as Window,)
 
 vi.mock('../composables/liveStreamStore', async () => {
   const { computed, ref } = await import('vue')
@@ -161,12 +167,18 @@ const REQUESTS: Frame[] = [
   },
 ]
 
+afterEach(() => {
+  vi.unstubAllGlobals()
+})
+
 async function mountView(initialPath = '/live') {
   const router = createRouter({
     history: createMemoryHistory(),
     routes: [
       { path: '/live', component: LiveTopologyView },
       { path: '/live/request/:requestId', component: { template: '<div />' } },
+      // 真实 router 的命名路由；openRequestDetailPage 靠 name 解析出 /request-detail/:id
+      { path: '/request-detail/:requestId', name: 'request-detail', component: { template: '<div />' } },
     ],
   })
   await router.push(initialPath)
@@ -205,6 +217,9 @@ async function mountView(initialPath = '/live') {
 
 describe('LiveTopologyView filter convergence', () => {
   beforeEach(() => {
+    // 新页打开的判据：window.open 必须被观测到（stub 后逐条清空）
+    vi.stubGlobal('open', openSpy)
+    openSpy.mockClear()
     testApi.setRequests(REQUESTS.map((r) => ({ ...r })))
     testApi.setNodes([
       { credential_id: 7, provider_code: 'deepseek', health_status: 'healthy', in_flight: 1 },
@@ -305,32 +320,40 @@ describe('LiveTopologyView filter convergence', () => {
     expect(empty.text()).not.toContain('当前过滤条件下窗口内没有请求')
   })
 
-  it('★ navigates to the full-page request detail when the ↗ link is clicked', async () => {
+  it('★ opens the full-page request detail in a NEW page when the ↗ link is clicked', async () => {
     const { wrapper, router } = await mountView()
     // 左栏最新在上：第一行是 r-gw-reject
     await wrapper.get('.cp__open').trigger('click')
     await flushPromises()
-    expect(router.currentRoute.value.path).toBe('/live/request/r-gw-reject')
-    expect(router.currentRoute.value.params.requestId).toBe('r-gw-reject')
-    // 返回 /live 仍可用
-    await router.push('/live')
-    await flushPromises()
-    expect(wrapper.find('.live-topology').exists()).toBe(true)
+    // 新页打开 ⇒ 当前标签页**必须仍停在 /live**（同页跳转是本轮修掉的旧行为）
+    expect(router.currentRoute.value.path).toBe('/live')
+    expect(openSpy.mock.calls[0]?.[0]).toBe('/request-detail/r-gw-reject')
+    expect(openSpy.mock.calls[0]?.[1]).toBe('_blank')
   })
 
-  it('opens an inline zoom panel from the right panel and renders missing fields as em dash', async () => {
+  it('★ ★ opens the detail page in a NEW page when a row is clicked, and keeps the graph highlight', async () => {
+    const { wrapper, router } = await mountView()
+    const row = wrapper.get('.cp__item')
+    await row.trigger('click')
+    await flushPromises()
+    expect(openSpy.mock.calls[0]?.[0]).toBe('/request-detail/r-gw-reject')
+    expect(openSpy.mock.calls[0]?.[1]).toBe('_blank')
+    // 浮层已下线：页面上不得再出现内联放大面板
+    expect(wrapper.find('.zoom').exists()).toBe(false)
+    // 但选中态（高亮链路）必须保留 —— 这是拓扑页自己的信息，不能一起删掉
+    expect(router.currentRoute.value.path).toBe('/live')
+    expect(wrapper.find('.cp__row.is-active').exists()).toBe(true)
+  })
+
+  it('★ opens the detail page in a NEW page from the right panel (no inline overlay)', async () => {
     const { wrapper } = await mountView()
     const rows = wrapper.findAll('.pp__row')
-    // 最新在上 → r-mm-1；它没带 gw_session_id，放大后必须显示「—」而不是 0
+    // 最新在上 → r-mm-1
     await rows[0].get('.pp__zoom').trigger('click')
     await flushPromises()
-    const zoom = wrapper.get('.zoom')
-    expect(zoom.text()).toContain('请求详情')
-    expect(zoom.text()).toContain('r-mm-1')
-    expect(zoom.findAll('.zoom__value').some((v) => v.text() === '—')).toBe(true)
-
-    await zoom.get('.zoom__close').trigger('click')
-    await flushPromises()
+    // 属主口径：看详情 = 新页 /request-detail/<id>，不是内联浮层
+    expect(openSpy.mock.calls[0]?.[0]).toBe('/request-detail/r-mm-1')
+    expect(openSpy.mock.calls[0]?.[1]).toBe('_blank')
     expect(wrapper.find('.zoom').exists()).toBe(false)
   })
 
