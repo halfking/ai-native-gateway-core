@@ -976,6 +976,16 @@ var domainChainStartupImages895 []byte
 //go:embed embeddata/startup/896_offline_activation_requests_columns_reassert.sql
 var offlineActivationRequestsColumnsReassert896 []byte
 
+// 897（2026-10-23，会话族 final_success 自愈轮）：给 session_turns 族的 hot 排水
+// 补上 final_success 自愈步（与 695 给 v1 request_logs 族加的 demote 步逐字同款）。
+// ★ 那个族后来被 890 退役 ⇒ ⇒ 自愈没随族迁走 ⇒ ⇒ 真正有同款病灶的会话族一直
+// 缺这一步 ⇒ ⇒ 批次撞 uq_session_turns_final_success ⇒ 23505 整批回滚 ⇒
+// hot 表无限涨 + 父表停止接收冷行。
+// ★ 函数体 = 869（生产现行体）整段 + 一处 demote 插入 ⇒ ⇒ 零语义变更。
+//
+//go:embed embeddata/startup/897_session_turns_promote_final_success_self_heal.sql
+var sessionTurnsPromoteFinalSuccessSelfHeal897 []byte
+
 //go:embed embeddata/startup/859_tighten_pii_phone_intl_regex.sql
 var tightenPiiPhoneIntlRegex859 []byte
 
@@ -1320,6 +1330,7 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/894_rebind_candidate_failure_logs_diagnosis_view.sql":                   rebindCandidateFailureLogsDiagnosisView894,
 	"startup/895_domain_chain_startup_images.sql":                                    domainChainStartupImages895,
 	"startup/896_offline_activation_requests_columns_reassert.sql":                   offlineActivationRequestsColumnsReassert896,
+	"startup/897_session_turns_promote_final_success_self_heal.sql":                  sessionTurnsPromoteFinalSuccessSelfHeal897,
 	"startup/859_tighten_pii_phone_intl_regex.sql":                                   tightenPiiPhoneIntlRegex859,
 	"startup/852_models_canonical_column_set_reconcile.sql":                          modelsCanonicalColumnSetReconcile852,
 	"startup/489_credential_probe_queue_startup_backfill.sql":                        credentialProbeQueueStartupBackfill489,

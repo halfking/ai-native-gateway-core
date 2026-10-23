@@ -50929,3 +50929,99 @@ END IF;
 - ⑤ ★★★ **【★ `session_bodies_hot` 的失败只到「有 timeout」这一层】** —— ★ 未查它的冲突集 ⇒ ⇒ ⇒ ★★★
 - ⑥ ★★★ **【★ 211 实例未测】** —— ★ 本轮全部读数在 252 共享库与 154/245 两台网关上取得 ⇒ ⇒ ★★ 211 的 `acc-pg17` 是**另一套库** ⇒ ⇒ ⇒ ★★★
 - ⑦ ★★★ **【★ 「写侧只有 hot 面落地」是由 `n_tup_upd = 0` 推出来的】** —— ★ 严格说它是「父表从未被 UPDATE 过」的读数；★ 而父表的 UPDATE 本应只来自写侧的 mark ⇒ ⇒ ★★ 推断链完整、★ 但未逐条对账 ⇒ ⇒ ⇒ ★★★
+### §143.96 ★★★★★★ **【会话族 final_success 自愈（copy-gap 修复）落仓轮 —— ★★★★★★ 把 §143.95 定位的 copy-gap 缺陷【真正落仓】：★ 新迁移 897（★ 函数体 ＝ 869 ＋ 一处 demote 插入）＋ 可执行回滚体 ＋ 六点位登记 ＋ 逐行差异判据的门】**（**对生产的写入 = 0**；★ 只落仓、★ **不应用生产**；★ 零生产路径代码变更 ⇒ ⇒ ⇒ 线上行为零变化）
+
+#### §143.96.1 本轮要回答的问题
+
+- ★★★ §143.95 轮把「会话族的 `final_success` 自愈」定位为 **copy-gap 缺陷**，并把修法形状写清了 ⇒ ⇒ ★★ 本轮只回答一个问题：**那个修法能不能变成一个【可执行、可回滚、可验证】的仓内产物？** ⇒ ⇒ ★★★
+- ★★ 上一轮的三条诚实边界里，★ **「修复没有落地 ⇒ 排水现在仍然是死的」** 是最刺眼的一条 ⇒ ⇒ ★★ 本轮**只解决「落仓」这一半** ⇒ ⇒ ⇒ ★★ **生产那一半仍需属主授权** ⇒ ⇒ ⇒ ★★★
+
+#### §143.96.2 落法：★ 为什么基线必须是 869 而不是 526
+
+| 候选基线 | 是否生产现行体 | 后果 |
+| --- | --- | --- |
+| 526（hot 表 + 首次 promote 定义） | 否 | ★★ 硬编码 54 列清单 ⇒ ⇒ **静默丢 52 列**（含 `trace_events`）的老坑一起回来 |
+| 636 / 640 / 688 / 707 | 否 | ★★ 同上或相近；★ 640 已被 §143.95 记录为「数据丢失缺陷的根因」 |
+| **869** | **是** | ★★ 目录派生列清单 ＋ 列形状守卫 ＋ 后置条件 ⇒ ⇒ ★★ **只插入一处 demote** ⇒ ⇒ 零语义变更 |
+
+- ★★ 结论：★ **基线 ＝ 869**，★ 函数体整段来自 869、★ **只插入一处 demote 步** ⇒ ⇒ ⇒ 869 的「目录派生列清单 ＋ 形状守卫」两道牙**原样保留** ⇒ ⇒ ⇒ ★★★
+- ★★ ★★ 门里把这件事做成**可执行判据**：★ **897 的函数体减去【demote 段】与【`v_demoted` 声明】⇒ ⇒ 必须与 869 的函数体逐行逐字相同** ⇒ ⇒ ⇒ ★★ ⇒ 「零语义变更」从**口头承诺**变成**机器可验的事实** ⇒ ⇒ ⇒ ★★★
+
+#### §143.96.3 demote 步的形态（★ 与 695 同款设计）
+
+```sql
+-- 位置：**批次选取之前** ⇒ 降级后它才带着 FALSE 进批次
+UPDATE public.session_turns_hot h
+   SET is_final_success = FALSE
+ WHERE h.is_final_success IS TRUE
+   AND h.ts < statement_timestamp() - p_retention
+   AND EXISTS (
+       SELECT 1
+       FROM public.session_turns p
+       WHERE p.tenant_id = h.tenant_id
+         AND p.session_id = h.session_id
+         AND p.partition_date = h.partition_date
+         AND p.is_final_success IS TRUE
+   );
+GET DIAGNOSTICS v_demoted = ROW_COUNT;
+```
+
+- ★★★ **键 ＝ 父表部分唯一索引的键**（`(tenant_id, session_id, partition_date)` WHERE `is_final_success`）⇒ ⇒ ★★ **不是** promote 自己的去重键 `(tenant_id, request_id)` ⇒ ⇒ ⇒ ★★★ ⇒ ★★ §143.95 轮自己第一次查错的就是这个 ⇒ ⇒ ⇒ 用错键 ⇒ ⇒ ⇒ demote 一次都不触发 ⇒ ⇒ ⇒ **白写** ⇒ ⇒ ⇒ ★★★
+- ★★★ **位置 ＝ 批次选取之前** ⇒ ⇒ ★★ 降级的是**即将进批次的那一行** ⇒ ⇒ ⇒ 放在后面 ⇒ ⇒ ⇒ 降级的是**已经被搬走的那一行** ⇒ ⇒ ⇒ ★★ **一点用都没有** ⇒ ⇒ ⇒ ★★★
+- ★★★★ **为什么不落在 Go 侧（promote 调用前先跑一次 demote）** ⇒ ⇒ ★★ 写侧 `markTurnFinalSuccess` 的谓词是「`is_final_success IS NOT TRUE`」⇒ ⇒ ⇒ ★★ demote 刚降级 ⇒ ⇒ ⇒ 写侧就会**把它重新打标** ⇒ ⇒ ⇒ ⇒ **存在 re-mark 窗口** ⇒ ⇒ ⇒ ★★ ⇒ ⇒ 所以必须落在**函数体内部**、★ 那里没有写侧插进来的缝隙 ⇒ ⇒ ⇒ ★★★
+
+#### §143.96.4 ★ 真库 A/B/C 三段实测（★ 一次性库 `itgate_14396`，★ 本地 PG 17.10）
+
+| 段 | 场景 | 读数 |
+| --- | --- | --- |
+| **A** | 869 基线（无 demote） | ★★ `ERROR: duplicate key value violates unique constraint "session_turns_2026_10_tenant_id_session_id_partition_date_idx"` ⇒ ⇒ ★★ **约束名与生产逐字一致** ⇒ ⇒ ⇒ **根因从推断升级为复现** |
+| **B** | 装上 897 | ★★ `WARNING: session_turns promote demoted 1 hot final-success rows (parent already holds the mark)` ＋ **`moved = 1`** ＋ hot **0 行** ＋ 父表 **2 行**且 `fs_true = 1` ⇒ ⇒ ★★ **先到者的 mark 原样保留** ⇒ ⇒ ⇒ ★★ 幂等：★ 第二次 `moved = 0`、★ 无警告 |
+| **C** | 施加 down 脚本 | ★★ `has_demote = f` ⇒ ⇒ ★★ **23505 回来**（★ 同款约束名）⇒ ⇒ ⇒ ★★ ⇒⇒ ⇒ **「回滚 ＝ 回到故障」从断言升级为实测事实** |
+
+- ★★ B 段的两个后置条件也都验过：★ `has_demote = t`、★ `keeps_derived_cols = t`、★ `keeps_catalog_insert = t`（★ 869 的两道牙都在）⇒ ⇒ ⇒ ★★★
+- ★★★ C 段还验了：**down 之后 hot 那行仍在** ⇒ ⇒ ⇒ ★★ ⇒ 回滚**不丢数据**、★ 只把故障装回去 ⇒ ⇒ ⇒ ★★★
+
+#### §143.96.5 ★ 六点位登记（★ 上一轮以为是「五点」，★ 本轮实测是六点）
+
+| # | 点位 | 本轮动作 |
+| --- | --- | --- |
+| ① | canonical `sql/migrations/startup/897_*.sql` ＋ `897_*.down.sql` | ★ 新增 |
+| ② | embeddata 副本 `installer/cmd/llm-gw-installer/embeddata/startup/897_*.sql` ＋ `.down.sql` | ★ 新增（★ 字节门逐字节对拍） |
+| ③ | `installer/cmd/llm-gw-installer/main.go`：`go:embed` ＋ 变量 ＋ `embeddedSQLFiles` 映射 | ★ 新增 |
+| ④ | `installer/internal/dbinit/runner.go` 的 `StartupFiles` | ★ 新增（★ 附 15 行理由注释） |
+| ⑤ | `sql/schema/installed_startup_migrations.tsv` | ★ 自动生成（★ index **299**、★ 316 → 317 行） |
+| ⑥ | 通道腿 `scripts/apply-db-revision-sequence.sh` 的 `files=()` ＋ `intentional_function_chains` | ★ 新增（★ **897 必须是链的最后一项**） |
+
+- ★★★★ **⑥ 的两个坑**：★ **不登记** ⇒ ⇒ 部署在应用任何文件之前就 `abort (exit 5)`（★ clobber guard：★ 897 与 707/640/869 **重定义同一个函数**）⇒ ⇒ ★★ **登记了但不是最后一项** ⇒ ⇒ ★★ 链序 ＝ 投递序 ⇒ ⇒ **最后一项胜出** ⇒ ⇒ ⇒ 897 的函数体被 869 覆盖 ⇒ ⇒ ⇒ ⇒ **自愈静默失效，而迁移自己还会报「安装成功」** ⇒ ⇒ ⇒ ★★ ⇒ 这条**没有任何现成门会红** ⇒ ⇒ ⇒ ★★ ⇒ 本轮专门为它写了一条判据 ⇒ ⇒ ⇒ ★★★
+
+#### §143.96.6 产物
+
+| # | 产物 | 说明 |
+| --- | --- | --- |
+| ① | `sql/migrations/startup/897_session_turns_promote_final_success_self_heal.sql` | ★ 339 行；★ 函数体 ＝ 869 ＋ 一处 demote；★ 含账本自登记 `'897'` |
+| ② | `sql/migrations/startup/897_session_turns_promote_final_success_self_heal.down.sql` | ★ 203 行；★ **重放 869** ⇒ ⇒ **回滚 ＝ 回到故障**（★ 已如实登记） |
+| ③ | `installer/cmd/llm-gw-installer/embeddata/startup/897_*.sql` ＋ `.down.sql` | ★ 字节门逐字节一致 |
+| ④ | `installer/cmd/llm-gw-installer/main.go` | ★ `go:embed` ＋ 变量 ＋ 映射 |
+| ⑤ | `installer/internal/dbinit/runner.go` | ★ `StartupFiles` 登记 ＋ 15 行理由注释 |
+| ⑥ | `sql/schema/installed_startup_migrations.tsv` | ★ 自动生成，★ index 299 |
+| ⑦ | `scripts/apply-db-revision-sequence.sh` | ★ `files=()` ＋ `intentional_function_chains` 链尾 |
+| ⑧ | `cmd/gateway/section_14396_session_turns_self_heal_test.go` | ★ 门，★ 8 条判据；★ 含**逐行差异判据** |
+| ⑨ | `scripts/audit/mutate_14396_gate.py` | ★ 变异台 |
+| ⑩ | 本段 ＋ LESSONS §290 ＋ AGENTS R140 | 文档 |
+
+#### §143.96.7 待属主拍板
+
+- ★★★★★★ **⑫ 授权在生产应用迁移 897**（★ 生产写）⇒ ⇒ ⇒ 收益 ＝ 恢复 `session_turns_hot` 的 8h 不变式（★ hot 从当前 **9,538 行 / 183,115,776 B** 回到 8h 窗口量级 ≈ **6,800 行**）＋ **解除父表冻结**（★ 父表的唯一写入路径就是 promote）⇒ ⇒ ⇒ ★★★
+- ★★★★ **⑬ 写侧预防是否与自愈一起做** ⇒ ⇒ ★★ §143.95 的 ⑨；★ ★★ 本轮**明确判定**：★ 它**不能**做成 promote 的 Go 侧 pre-step（★ re-mark 竞态）⇒ ⇒ ⇒ ⇒ 只能落在**写侧自己的谓词**里（★ `markTurnFinalSuccess` 授予第二条 mark 前先查父表）⇒ ⇒ ⇒ ★★★
+- ★★★★ **⑭ `session_bodies_hot` 是否一并修**（★ §143.95 的 ⑩；★ 245 日志已实证同款病灶 ⇒ ⇒ 「同一件事两个落点 ⇒ 方案必须两处都覆盖」）⇒ ⇒ ⇒ ★★★
+- ★★★ **⑮ `session_turns` 族的保留期语义**（★ §143.95 的 ⑪）⇒ ⇒ ★★ **恢复排水 ≠ 解决留存** ⇒ ⇒ ⇒ 保留期仍是属主的语义决策 ⇒ ⇒ ⇒ ★★★
+
+#### §143.96.8 诚实边界
+
+- ① ★★★★ **【★ 未在生产应用】** ⇒ ⇒ ⇒ **排水现在仍然是死的** ⇒ ⇒ ⇒ ★ hot 会继续以 ~850 行/小时累积 ⇒ ⇒ ⇒ ★ 父表继续不收冷行 ⇒ ⇒ ⇒ ★★★
+- ② ★★★★ **【★ 真库用的是一次性库、★ 不是生产库】** ⇒ ⇒ ⇒ 生产上的**实际收益**（★ hot 回到 8h 窗口量级）**仍是推算** ⇒ ⇒ ⇒ ★★★
+- ③ ★★★ **【★ 本地镜像不含 columnar AM】** ⇒ ⇒ ⇒ 只测了 **heap** 路径 ⇒ ⇒ ⇒ ★★ 生产上 301,255 行搬 columnar 的耗时**仍未量化** ⇒ ⇒ ⇒ ★★★
+- ④ ★★★★ **【★ 写侧预防未做】** ⇒ ⇒ ⇒ 同类停摆**仍可能周期性复发** ⇒ ⇒ ⇒ ★★★
+- ⑤ ★★★★ **【★ `session_bodies_hot` 同款病灶未修】** ⇒ ⇒ ⇒ **仍未闭合** ⇒ ⇒ ⇒ ★★★
+- ⑥ ★★★ **【★ 门是【登记门 + 形态门】、★ 不是端到端门】** ⇒ ⇒ ⇒ 「897 装上去之后真能把那行搬走」这条由**一次性库的 A/B/C 实测**担保 ⇒ ⇒ ⇒ ★★ 而**生产上的收益**要等授权应用后才可观测 ⇒ ⇒ ⇒ ★★★
+- ⑦ ★★★ **【★ 本轮零生产写入、★ 零生产路径代码变更】** ⇒ ⇒ ⇒ 线上行为零变化 ⇒ ⇒ ⇒ ★★★

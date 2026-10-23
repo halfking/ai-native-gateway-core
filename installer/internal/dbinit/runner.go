@@ -1369,6 +1369,30 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			//   licensing 离线激活管理 SQL 42703）。本链上 375/376 已在前面应用
 			//   ⇒ 896 在新装库是 no-op（IF NOT EXISTS）；表不存在时 NOTICE 跳过。
 			"896_offline_activation_requests_columns_reassert.sql",
+			// 897：给会话族的 hot 排水补上 **final_success 自愈**
+			//   （★ 迁移 695 为 v1 request_logs 族做过同款；★ 那个族后来被 890
+			//   ★ 退役 ⇒ ⇒ 自愈没有随族迁走 ⇒ ⇒ 真正有同款病灶的会话族一直没有它）。
+			//
+			//   ★ 病灶（★ 252 共享库 2026-10-23 生产定点实测）：父表与 hot 表各有
+			//   同构的部分唯一索引 (tenant_id, session_id, partition_date)
+			//   WHERE is_final_success；而 promote 的**去重**键是
+			//   (tenant_id, request_id) ⇒ ⇒ 看不见 ⇒ ⇒ 批次里的冲突行撞
+			//   uq_session_turns_final_success ⇒ **23505** ⇒ ⇒ 原子 CTE
+			//   **整批回滚、零行搬走** ⇒ ⇒ 且批次按 ts 升序 ⇒ 那个坏行每批必含
+			//   ⇒ ⇒ **每个 tick 必败** ⇒ ⇒ hot 表无限涨 + 父表停止接收冷行。
+			//
+			//   ★ 修法：与 695 逐字同款 —— 在**批次选取之前**把「父表已持有该键
+			//   mark」的 hot 行降级为 is_final_success=FALSE（语义「输家 = superseded，
+			//   历史不改写」⇒ ⇒ 与 695 一致 ⇒ ⇒ 零语义变更）。
+			//
+			//   ★ 基线是 **869**（★ 现行体）⇒ 函数体整段来自 869、只插入一处 demote
+			//   ⇒ ⇒ 并保留 869 的「目录派生列清单 + 形状守卫」两道牙。
+			//
+			//   ★ 真库实测（一次性库，★ A/B 对照）：★ 无 demote 时同一场景报 23505
+			//   （约束名与生产逐字一致）且整批回滚；★ 装上后 demote 1 行、moved=1、
+			//   ★ 先到者的 mark 原样保留；★ 幂等（第二次 moved=0）。
+			//   ⇒ ★ 本迁移**只落仓**；★ 生产应用需属主另行授权。
+			"897_session_turns_promote_final_success_self_heal.sql",
 		},
 	}
 }

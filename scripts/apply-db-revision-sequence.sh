@@ -2008,6 +2008,36 @@ files=(
   #   （:38-134，request-logs-physical-v1 世代探测）对它**零改写**
   #   （实测该正则命中 0 次）⇒ 执行体与源逐字相同。
   "$ROOT_DIR/sql/migrations/startup/895_domain_chain_startup_images.sql"
+
+  # 2026-10-23（897，会话族 final_success 自愈轮）：给 session_turns 族的
+  # hot 排水（promote_session_turns_hot_to_partition）补上**自愈步**。
+  #
+  # 病灶（★ 252 共享库 2026-10-23 生产定点实测）：
+  #   父表与 hot 表各有同构的部分唯一索引
+  #     (tenant_id, session_id, partition_date) WHERE is_final_success
+  #   而 promote 的**去重**键是 (tenant_id, request_id) ⇒ ⇒ 看不见那条冲突
+  #   ⇒ ⇒ 批次里的冲突行撞 uq_session_turns_final_success ⇒ **23505**
+  #   ⇒ ⇒ 原子 CTE **整批回滚、零行搬走** ⇒ ⇒ 且批次按 ts 升序 ⇒ 那个坏行
+  #   每批必含 ⇒ ⇒ **每个 tick 必败** ⇒ ⇒ hot 表无限涨 + 父表停止接收冷行
+  #   ⇒ ⇒ 父表的唯一写入路径就是 promote ⇒ ⇒ **父表饿死**。
+  #
+  # ★ 血缘：迁移 695 给 v1 request_logs 族的 promote 加过同款 demote 步；
+  #   而 890 把那个族退役了 ⇒ ⇒ 自愈没随族迁走 ⇒ ⇒ 真正有同款病灶的会话族
+  #   一直没有它 ⇒ ⇒ **这不是「新 bug」，是「族退役时迁移动作漏了一步」**
+  #   ⇒ ⇒ 修法样板（695）仍在仓内。
+  #
+  # 修法：与 695 逐字同款 —— 在**批次选取之前**把「父表已持有该键 mark」的
+  #   hot 行降级为 is_final_success=FALSE（语义「输家 = superseded，历史不改写」
+  #   ⇒ ⇒ 零语义变更）。基线是 **869**（★ 生产现行体）⇒ 函数体整段来自 869、
+  #   只插入一处 demote ⇒ ⇒ 并保留 869 的「目录派生列清单 + 形状守卫」两道牙。
+  #
+  # ★ 幂等：demote 只降级「父表已持有同键 mark」的 hot 行 ⇒ 第二次跑 moved=0。
+  # ★ 真库实测（一次性库，A/B/C 三段）：无 demote 时报 23505（约束名与生产
+  #   逐字一致）且整批回滚；装上后 demote 1 行、moved=1、先到者的 mark 原样
+  #   保留；第二次 moved=0。回滚脚本（down）= 重放 869 ⇒ **回滚 = 回到故障**。
+  #
+  # ★ 本条**只落仓**；★ 生产应用需属主另行授权。
+  "$ROOT_DIR/sql/migrations/startup/897_session_turns_promote_final_success_self_heal.sql"
 )
 
 
@@ -2078,7 +2108,18 @@ intentional_function_chains=(
   # 链序现为 707 → 640 → 869，**869 必须是最后一项**：它是活库里应有的终态体
   # （目录派生列清单 + 列形状守卫 + 后置条件）。链里去掉 869，部署会在应用任何
   # 文件之前 abort（exit 5）。
-  'promote_session_turns_hot_to_partition|707_session_turns_s1a.sql|640_session_turns_protocol_fields.sql|869_promote_session_turns_trace_events.sql|'
+  #
+  # 2026-10-23（897，会话族 final_success 自愈轮）链序追加为
+  # 707 → 640 → 869 → 897，**897 必须是最后一项**：它的函数体 = 869 的终态体
+  # （目录派生列清单 + 列形状守卫 + 后置条件）**再插入一处 demote 步**
+  # —— 在批次选取之前把「父表已持有同键 mark」的 hot 行降级为
+  # is_final_success=FALSE（语义「输家 = superseded，历史不改写」⇒ 零语义变更）。
+  # ★ 897 的自愈步与 695 给 v1 request_logs 族加的 demote 步**逐字同款**；
+  #   而 890 退役了那个族 ⇒ ⇒ 真正的会话族一直缺这一步 ⇒ ⇒ 23505 整批回滚。
+  # ★ 链里去掉 897，部署会在应用任何文件之前 abort（exit 5）——**这是有意的**：
+  #   少登记它 = 让 897 的函数体被 869 覆盖 = 自愈静默失效（而且 897 自己那条
+  #   后置条件断言也会红）。★ 897 在 files 数组里排在 895 之后 ⇒ 链序与投递序一致。
+  'promote_session_turns_hot_to_partition|707_session_turns_s1a.sql|640_session_turns_protocol_fields.sql|869_promote_session_turns_trace_events.sql|897_session_turns_promote_final_success_self_heal.sql|'
   # 563 restores the hot trigger with the corrected unbounded-numeric ratio
   # body; 661 re-asserts the same fixed body AFTER 563 and validates the
   # function source. 572 must stay before 563; 661 must stay last.

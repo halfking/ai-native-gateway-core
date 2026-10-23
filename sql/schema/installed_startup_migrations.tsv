@@ -314,3 +314,4 @@
 296	894_rebind_candidate_failure_logs_diagnosis_view.sql
 297	895_domain_chain_startup_images.sql
 298	896_offline_activation_requests_columns_reassert.sql
+299	897_session_turns_promote_final_success_self_heal.sql
