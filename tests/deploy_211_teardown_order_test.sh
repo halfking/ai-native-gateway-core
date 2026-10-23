@@ -66,6 +66,12 @@ FNS="dd_web_dist_newer_source dd_check_web_dist dd_preflight_web_dist
      dd_slot_port dd_container_name dd_active_slot dd_write_active_slot
      dd_upstream_port dd_switch_upstream dd_abort_deploy dd_fail
      dd_public_version dd_switch_and_verify"
+# 引擎按**自身所在目录**解析 upstream 端口判定脚本（scripts/ops/…）；
+# 本门把函数抽到 $TMP/lib.sh 里 source ⇒ 解析到 $TMP/ops/ ⇒ 把**真脚本**放那。
+# ★ 放真脚本（不是复制品/替身）⇒ 门测的仍是仓里那段判定逻辑。
+mkdir -p "$TMP/ops"
+cp "$ROOT/scripts/ops/nginx-upstream-port.py" "$TMP/ops/nginx-upstream-port.py"
+
 : > "$TMP/lib.sh"
 for fn in $FNS; do
   if ! extract_fn "$fn" > "$TMP/fn.sh"; then
@@ -179,6 +185,9 @@ run_stub() {
     DD_WEB_CHECK_ERR=""
     DD_NGINX_CONF="$TMP/nginx/ns-gateway-test.conf"
     DD_NGINX_UPSTREAM="ns_llm_gateway_upstream"
+    # 引擎按自身目录解析 upstream 端口判定脚本；本门把函数抽到 $TMP/lib.sh
+    # ⇒ 解析到 $TMP/ops/（真脚本已拷到那里，见上面的 cp）
+    DD_UPSTREAM_PORT_HELPER="$TMP/ops/nginx-upstream-port.py"
     DD_DOMAIN="llm.itestu.cn"
     DD_HOST="192.168.31.211"
     DD_ACTIVE_SLOT="a"
@@ -532,7 +541,13 @@ else
   bad "nginx -t 失败时不还原配置 —— 磁盘停在已改未生效状态，下次 reload 会误切"
 fi
 # 备份必须**每次**写「改前内容」（只在不存在时写 ⇒ 还原会回退到错误版本）
-if grep -qF 'pathlib.Path(bakpath).write_text(text)' <<<"$switch_body"; then
+# ★ 2026-10-23：切流判定逻辑已挪到 scripts/ops/nginx-upstream-port.py（掩码定位），
+#   「备份每次写改前内容」这条行为随之迁到该脚本 ⇒ 断言必须指向**行为真正所在
+#   的位置**，否则它就成了一条钉在空壳上的恒绿门（函数体里已经没有那行字了）。
+HELPER="$ROOT/scripts/ops/nginx-upstream-port.py"
+if [[ -f "$HELPER" ]] \
+   && grep -qF "open(backup_path, 'w'" <<<"$(cat "$HELPER")" \
+   && grep -qF -- '--backup "$_bak"' <<<"$switch_body"; then
   ok "切流备份每次都写改前内容（还原不会回退到更早的版本）"
 else
   bad "切流备份不是每次都写改前内容 —— nginx -t 失败时的还原会拿到旧版本"

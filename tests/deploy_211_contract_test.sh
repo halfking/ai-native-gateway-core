@@ -619,6 +619,51 @@ if grep -qE 'nginx -t' <<<"$_nocomment_engine" \
 else
   bad "nginx -t 失败不还原：磁盘上留一份没验证过的配置（潜伏半切换态）"
 fi
+# ★ 2026-10-23（211 502 事故根修）：「upstream 端口」这条**事实**的读写必须
+#   ① 走共享脚本（scripts/ops/nginx-upstream-port.py）—— 内嵌在引擎里的正则
+#      **不剥注释** ⇒ 会读到 nginx 注释里那个旧端口（245 实况）⇒ 活跃槽判错；
+#   ② 在**任何写动作之前**有一次「槽位↔端口绑定」体检（dd_check_slot_binding）——
+#      绑定脱节时**拒绝部署**，而不是拿状态文件猜一个槽位去切流/停槽。
+if [[ -f "$ROOT/scripts/ops/nginx-upstream-port.py" ]] \
+   && grep -qF 'nginx-upstream-port.py' <<<"$_nocomment_engine"; then
+  ok "引擎的 upstream 端口读写走共享脚本（掩码后定位 ⇒ 注释里的旧端口不算数）"
+else
+  bad "引擎没有走共享的 upstream 端口判定脚本：注释里的旧端口会被当真（⇒ 活跃槽判错 ⇒ 502）"
+fi
+# ★ 单一真值源：引擎里**不得**再出现内嵌的 upstream 端口正则
+#   （内嵌副本迟早与共享脚本漂移 ⇒ 读侧/写侧口径不一致 ⇒ 又一次半切换态）。
+if grep -qF 'server\s+127\.0\.0\.1' <<<"$_nocomment_engine"; then
+  bad "引擎里仍有内嵌的 upstream 端口正则 ⇒ 判定口径会与共享脚本漂移（删掉重复实现）"
+else
+  ok "引擎里没有内嵌的 upstream 端口正则（判定逻辑单一真值源）"
+fi
+if grep -qE 'DD_UPSTREAM_PORT_HELPER' <<<"$_nocomment_engine"; then
+  ok "引擎按自身目录解析判定脚本（不依赖可被覆盖的 DD_REPO_ROOT）"
+else
+  bad "引擎解析判定脚本的方式脆弱（DD_REPO_ROOT 可被覆盖 ⇒ 脚本可能找不到）"
+fi
+if grep -qF 'dd_check_slot_binding' <<<"$_nocomment_engine"; then
+  ok "引擎有「槽位↔端口绑定」体检（绑定脱节 ⇒ 拒绝部署而不是猜）"
+else
+  bad "引擎没有绑定体检：upstream 指向别的产品的端口时仍会照常切流/停槽"
+fi
+# 体检必须发生在**写动作之前**（迁移重放 / 起容器 / 切流 / 停旧槽都在它后面）
+_guard_line="$(grep -n 'dd_check_slot_binding$' "$SCRIPT" | head -1 | cut -d: -f1)"
+_migrate_line="$(grep -n 'REVISION_SEQ=' "$SCRIPT" | head -1 | cut -d: -f1)"
+_candidate_line="$(grep -n 'DD_CANDIDATE_CONTAINER="$(dd_container_name' "$SCRIPT" | head -1 | cut -d: -f1)"
+if [[ -n "$_guard_line" && -n "$_migrate_line" && -n "$_candidate_line" ]] \
+   && [[ "$_guard_line" -lt "$_migrate_line" && "$_guard_line" -lt "$_candidate_line" ]]; then
+  ok "绑定体检发生在迁移重放与起容器之前（脱节时一个字节都不写）"
+else
+  bad "绑定体检的位置太晚（迁移/起容器已经动过了）"
+fi
+# 只读体检工具必须在场（属主要能自己查现场）
+if [[ -f "$ROOT/scripts/ops/deploy-doctor.sh" ]]; then
+  ok "只读体检工具在场（scripts/ops/deploy-doctor.sh）"
+else
+  bad "缺少只读体检工具：绑定脱节时属主没有手段查现场"
+fi
+
 # 入口 deploy-211.sh 必须 export 同一组 registry-211 默认，经 --via 传到远端。
 if [[ -f "$ROOT/scripts/deploy-211.sh" ]]; then
   _w="$(grep -vE '^[[:space:]]*#' "$ROOT/scripts/deploy-211.sh")"

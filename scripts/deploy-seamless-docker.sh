@@ -93,6 +93,10 @@ DD_NGINX_UPSTREAM="${DD_NGINX_UPSTREAM:-ns_llm_gateway_upstream}"
 DD_DOMAIN="${DD_DOMAIN:-}"
 
 DD_REPO_ROOT="${LLM_GATEWAY_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+# ★ upstream 端口读写判定脚本的路径：**按引擎自身所在目录解析**（scripts/ops/…），
+#   而不是 DD_REPO_ROOT —— 后者可被 LLM_GATEWAY_ROOT 覆盖成别处 ⇒ 脚本就找不到了。
+#   远端形态：引擎跑在 $DD_REMOTE_ROOT/scripts/ ⇒ 脚本在 $DD_REMOTE_ROOT/scripts/ops/。
+DD_UPSTREAM_PORT_HELPER="${DD_UPSTREAM_PORT_HELPER:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/ops/nginx-upstream-port.py}"
 # 前端产物来源（前端由部署机预构建，随 tar 上树，引擎不构建前端）。
 DD_WEB_DIST_SRC="${DD_WEB_DIST_SRC:-$DD_REPO_ROOT/web/dist}"
 DD_MOBILE_DIST_SRC="${DD_MOBILE_DIST_SRC:-$DD_REPO_ROOT/web-mobile/dist}"
@@ -1251,29 +1255,64 @@ dd_write_active_slot() {
   printf '%s\n' "$(dd_slot_port "$1")" > "${DD_GW_DATA_ROOT}/run/active-port"
 }
 
+# ── 槽位↔端口绑定体检（2026-10-23，211 的 502 事故收口）────────────────
+# ★ 为什么这道闸必须存在（形态与 154/245 根本不同）：
+#   · 154/245（systemd 形态）：nginx 里是
+#       `include /opt/llm-gateway-go/run/active-upstream.conf;`
+#     ⇒ 端口在**部署时生成的文件**里 ⇒ 不存在「端口烤死在 nginx 里」的形态。
+#   · 211（docker 形态）：nginx 的 upstream 块里**直接写死**
+#       `server 127.0.0.1:<活跃槽端口>;`
+#     ⇒ 槽位端口在**两个地方**各存一份（脚本的 DD_SLOT_*_PORT 与 nginx）⇒
+#       **可以漂移**。
+#   ★ 漂移的真实形态（2026-10-21 17:0x 211 实测）：同机另一个产品
+#     `ai-session-manager-asm-1` 占了 127.0.0.1:8782（网关旧 b 槽的端口），
+#     而 nginx 的 upstream **仍指向 8782** ⇒ 网关的流量被送到**别的产品**的
+#     端口上 ⇒ llm.itestu.cn 502。
+#   ★ 而 `dd_active_slot` 在「upstream 端口不匹配任何槽位」时是**静默回退**
+#     （状态文件 → 兜底 a）⇒ 引擎会拿着一个**猜出来的**活跃槽去决定
+#     「候选槽」与「停哪个槽」⇒ 可能把流量切到没人监听的端口，或停掉
+#     **正在服务**的槽 ⇒ 502。
+#   ⇒ 这里改成：**先体检；对不上就拒绝部署**，并把现场事实与处置方法一并
+#     打出来（属主需要的是「知道该怎么改」，不是「部署失败」四个字）。
+#   ⇒ 体检只**读**（nginx conf + 状态文件），不写任何东西。
+dd_check_slot_binding() {
+  local _port _sa="${DD_SLOT_A_PORT:-}" _sb="${DD_SLOT_B_PORT:-}" _sf _claim
+  # 没配槽位端口 ⇒ 这台机器不走蓝绿端口映射 ⇒ 本闸不适用
+  [[ -n "$_sa" || -n "$_sb" ]] || return 0
+  _port="$(dd_upstream_port || true)"
+  # 读不到 upstream（全新主机 / 还没配 nginx）⇒ 无从体检 ⇒ 放行
+  [[ -n "$_port" ]] || return 0
+  case "$_port" in
+    "$_sa"|"$_sb") return 0 ;;
+  esac
+  _sf="${DD_GW_DATA_ROOT}/run/active-slot"
+  _claim="(无状态文件)"
+  if [[ -f "$_sf" ]]; then
+    _claim="$(tr -d '[:space:]' < "$_sf" 2>/dev/null || true)"
+    [[ -n "$_claim" ]] || _claim="(空)"
+  fi
+  die "nginx upstream ${DD_NGINX_UPSTREAM} 指向 127.0.0.1:${_port} —— 该端口**不属于任何配置槽位**（a=${_sa} / b=${_sb}）⇒ 槽位与端口的绑定已与现场脱节。
+      拒绝继续部署：活跃槽判定会静默回退到状态文件（记的是 ${_claim}）⇒ 可能把流量切到没人监听的端口、或停掉正在服务的槽 ⇒ 502。
+      现场处置（先看清端口是谁在听）：
+        ssh ${DD_SSH_TARGET:-本机} 'ss -lntp | grep -E \":(${_sa}|${_sb}|${_port}) \"'
+        · 若 ${_port} 上是**别的产品**（211 实测过：ai-session-manager-asm-1 占了 127.0.0.1:8782）⇒ 把 upstream 主 server 行改到网关**实际在服务**的端口（${_sa} 或 ${_sb}），再重跑部署；
+        · 若 ${_port} 上**就是**网关容器 ⇒ 端口配置与现场不一致 ⇒ 改 DD_SLOT_*_PORT 使其与现场一致（槽位端口必须静态：活跃槽判定靠端口↔槽位配对）。
+      只读体检：bash scripts/ops/deploy-doctor.sh --ssh ${DD_SSH_TARGET:-本机} --slot-a ${_sa} --slot-b ${_sb}"
+}
+
 # ---- nginx 切流：改 upstream 块里主 server 行的 127.0.0.1:<port> ----------
 # 为什么切 upstream 而不是改容器端口：蓝绿两个槽各绑一个固定端口，切流的
 # 动作只能是「把流量指向另一个端口」，容器端口本身不变（与 154/245 的
 # active-upstream.conf 片段同一思路，这里是就地改 upstream 块的主 server 行，
 # 少一个 include 迁移面）。
 dd_upstream_port() {
-  local _conf="$DD_NGINX_CONF"
+  local _conf="$DD_NGINX_CONF" _helper="$DD_UPSTREAM_PORT_HELPER"
   [[ -f "$_conf" ]] || return 1
-  python3 - "$_conf" "$DD_NGINX_UPSTREAM" <<'PY' 2>/dev/null
-import re, sys
-conf, upstream = sys.argv[1], sys.argv[2]
-text = open(conf, encoding="utf-8", errors="replace").read()
-m = re.search(r'upstream\s+' + re.escape(upstream) + r'\s*\{(.*?)\n\}', text, re.S)
-if not m:
-    print(""); raise SystemExit(0)
-for line in m.group(1).splitlines():
-    if "backup" in line:
-        continue
-    mm = re.search(r'server\s+127\.0\.0\.1:(\d+)', line)
-    if mm:
-        print(mm.group(1)); raise SystemExit(0)
-print("")
-PY
+  # ★ 判定逻辑在共享脚本里（掩码后定位 ⇒ 注释里的旧端口不算数）。
+  #   不剥注释 ⇒ 读到注释里的旧端口 ⇒ 活跃槽判错 ⇒ 可能切错端口/停掉活着的槽
+  #   ⇒ 502（245 的 upstream 块里就留着 `# Original hardcoded server 127.0.0.1:8781;`）。
+  [[ -f "$_helper" ]] || return 1
+  python3 "$_helper" --conf "$_conf" --upstream "$DD_NGINX_UPSTREAM" 2>/dev/null
 }
 
 # dd_switch_upstream <端口> —— 把 upstream 主 server 行改到 <端口> 并 reload。
@@ -1294,37 +1333,18 @@ dd_switch_upstream() {
     return 1
   fi
   _bak="${_conf}.bak-dd-upstream"
-  if python3 - "$_conf" "$DD_NGINX_UPSTREAM" "$_port" "$_bak" <<'PY'
-import re, sys, pathlib
-conf, upstream, newport, bakpath = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
-p = pathlib.Path(conf)
-text = p.read_text()
-m = re.search(r'(upstream\s+' + re.escape(upstream) + r'\s*\{)(.*?)(\n\})', text, re.S)
-if not m:
-    print("noop-no-block"); raise SystemExit(2)
-lines = m.group(2).split("\n")
-done = False
-for i, line in enumerate(lines):
-    if "backup" in line:
-        continue
-    mm = re.search(r'(server\s+127\.0\.0\.1:)(\d+)', line)
-    if mm:
-        lines[i] = line[:mm.start(2)] + newport + line[mm.end(2):]
-        done = True
-        break
-if not done:
-    print("noop-no-primary-server"); raise SystemExit(2)
-newtext = text[:m.start(2)] + "\n".join(lines) + text[m.end(2):]
-# ★ 备份**总是**写「改前内容」（覆盖）：nginx -t 失败时要用它把文件还原。
-#   旧实现是「备份只在不存在时写」⇒ 备份里可能是上上次的内容 ⇒ 还原会
-#   把配置回退到错误版本。
-pathlib.Path(bakpath).write_text(text)
-if newtext == text:
-    print("already"); raise SystemExit(0)
-p.write_text(newtext)
-print("patched")
-PY
-  then
+  if [[ ! -f "$DD_UPSTREAM_PORT_HELPER" ]]; then
+    warn "upstream 端口判定脚本不在场（${DD_UPSTREAM_PORT_HELPER}）⇒ 拒绝切流（不做半吊子改写）"
+    return 1
+  fi
+  local _sw_out
+  # ★ 同一段判定逻辑（掩码后定位 ⇒ 只改**活的上游行**，不会改到注释里那个旧端口；
+  #   旧实现会改注释并报 patched ⇒ nginx reload 后活的上游根本没变 ⇒
+  #   引擎以为「已切流」⇒ 随后停掉「旧槽」⇒ 流量落空 ⇒ 502）。
+  # ★ 退出码语义：0 = 已改/已是目标；2 = noop（块形态不认识）⇒ 走失败分支。
+  if _sw_out="$(python3 "$DD_UPSTREAM_PORT_HELPER" \
+                  --conf "$_conf" --upstream "$DD_NGINX_UPSTREAM" \
+                  --switch "$_port" --backup "$_bak" 2>&1)"; then
     if nginx -t >/dev/null 2>&1; then
       if nginx -s reload >/dev/null 2>&1; then
         log "nginx upstream ${DD_NGINX_UPSTREAM} → 127.0.0.1:${_port}（已 reload）"
@@ -1341,7 +1361,7 @@ PY
     fi
     return 1
   else
-    warn "切流补丁未应用（upstream 块形态变了？）"
+    warn "切流补丁未应用（upstream 块形态变了？判定=${_sw_out:-empty}）"
     return 1
   fi
 }
@@ -1885,6 +1905,9 @@ fi
 # redis）按本脚本「优先复用」口径本就落在宿主 bind，不在本块范围。
 # 属主对齐容器内运行用户（uid 65532=llmgw）。
 DD_GW_DATA_ROOT="${DD_GW_DATA_ROOT:-/opt/kaixuan/data/llm-gateway}"
+# ★ 槽位↔端口绑定体检：**先于一切写动作**（mkdir/chown/迁移/起容器/切流都在它后面）
+#   ⇒ 绑定已脱节的机器上，本轮部署**一个字节都不写**，只报出处置方法。
+dd_check_slot_binding
 mkdir -p "$DD_GW_DATA_ROOT/data" "$DD_GW_DATA_ROOT/logs"
 chown -R 65532:65532 "$DD_GW_DATA_ROOT" 2>/dev/null || true
 
