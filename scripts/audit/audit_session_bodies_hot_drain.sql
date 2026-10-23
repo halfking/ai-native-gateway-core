@@ -125,7 +125,7 @@ WHERE n.nspname = 'public'
 \echo ''
 \echo '--- Q2.3 父表与 hot 表的唯一键清单（★ 判「仲裁目标覆盖不覆盖」的依据）---'
 SELECT c.relname AS obj,
-       i.relname AS idx_or_constraint,
+       i2.relname AS idx_or_constraint,
        pg_get_indexdef(i.indexrelid) AS def
 FROM pg_index i
 JOIN pg_class c ON c.oid = i.indrelid

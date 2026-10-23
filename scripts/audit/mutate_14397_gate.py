@@ -17,6 +17,12 @@
 ★   ⑥ ★★ 变异必须落在【函数体作用域内】时才用「函数体作用域」计数；
 ★   ⑦ ★★★ **每个变异都必须自带【效果探针】** —— ★ 「目标 needle 在【判据实际读的那一面】
 ★      里的出现次数变成 0」+「文件内容确实变了（changed == True）」；
+★      ★★ ★★ **needle 必须与【实际写入的形态】逐字对齐** —— ★ 本轮首跑 M03 就栽在这里：
+★      ★★ needle 写成 `WHERE ts > now()`（比实际写入的
+★      ★★ `WHERE ts > now() - interval '8 hours'` **短**）⇒ ⇒ **探针恒成立**
+★      ★★ ⇒ ⇒ 变异台自己崩（★ 与 §143.96 记的「探针作用域」同族的**反向**形态：
+★      ★★ ★★ 那次是探针查得太宽撞上字面量，这次是探针查得太窄 ⇒ ⇒
+★      ★★ ★★ **⇒ 探针的 needle 长度与内容都必须与变异写入的形态一致**）。
 ★   ⑧ ★★★ **跑变异台前必须先 commit 或 stash** —— ★ 否则工作树里已有的未提交改动
 ★      会与「还原校验」混在一起 ⇒ ⇒ 读数不可信。
 
@@ -229,6 +235,12 @@ def m03_reintroduce_now_predicate():
     return "（改了 %d 处）" % n
 
 
+# ★ ★ M03 的探针 needle 必须与【实际写入的形态】逐字对齐。
+# ★ ★ 首跑栽在这里：needle 写成 `WHERE ts > now()`（比实际内容短）
+# ★ ★ ⇒ 探针恒成立 ⇒ 变异台自己崩（★ 与 §143.96 记的「探针作用域」同族）。
+M03_NEEDLE = "WHERE ts > now() - interval '8 hours'"
+
+
 def m04_drop_no_transaction_marker():
     """去掉 dbinit:no-transaction 标记 ⇒ 全新安装会失败 ⇒ 判据应红。"""
     n = replace_in_files([MIG898, EMBED898],
@@ -420,7 +432,7 @@ def main():
     arm("M02 去掉 CONCURRENTLY", False, m02_drop_concurrently,
         probe_needle_gone_in_exec(MIG898, "CREATE INDEX CONCURRENTLY"))
     arm("M03 放回 now() 谓词（614 当年的失败形态）", False, m03_reintroduce_now_predicate,
-        probe_needle_gone_in_exec(MIG898, "WHERE ts > now()"))
+        probe_needle_gone_in_exec(MIG898, M03_NEEDLE))
     arm("M04 去掉 no-transaction 标记", False, m04_drop_no_transaction_marker)
     arm("M05 899 换成带仲裁目标", False, m05_targeted_arbiter_in_899,
         probe_needle_gone_in_exec(MIG899, "ON CONFLICT DO NOTHING"))
