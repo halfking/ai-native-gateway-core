@@ -49,7 +49,7 @@ const (
 	mig902PkeyName   = "stats_event_dedup_pkey"
 	mig902OldCompIdx = "idx_stats_event_dedup_event_id_occurred_at"
 	mig902DedupTable = "stats_event_dedup"
-	mig902UpSHA256   = "fb34d0d3f6b91344ca0022aa1a45361f9fd4dd3720c0dd07f4e8236e5cd5dee9"
+	mig902UpSHA256   = "5871f9a63b4565a4419a6119efc96434ce49d32d5d7fb5d9adc5e30f37db7f8b"
 	mig902DownSHA256 = "0798829325a28bab9be005bfc6137437e51229d8128a1fbf8bfc6bcf1e8ef00f"
 )
 

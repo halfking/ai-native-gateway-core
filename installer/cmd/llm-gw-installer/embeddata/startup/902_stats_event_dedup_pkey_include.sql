@@ -56,6 +56,17 @@
 --   （PG NOTICE 确认）⇒ 索引名对下游监控查询保持不变。
 --
 -- ⚠ 生产应用需属主授权（252 水位推进走 apply-db-revision-sequence.sh 通道）。
+--
+-- ⚠ ★ 失败恢复路径（2026-10-24 批判式审计轮补记）：
+--   若第①步 CREATE UNIQUE INDEX CONCURRENTLY 中途失败（超时/取消），
+--   PG 会留下一个【invalid 的 tmp 索引】⇒ 重跑时 IF NOT EXISTS 按名字跳过、
+--   第②步 DO 块的形状校验会 RAISE EXCEPTION（拒换）⇒ 迁移停在红、重试也红。
+--   这是 fail-safe 设计（绝不带着坏索引换 pkey），恢复动作是手工执行一次：
+--     DROP INDEX CONCURRENTLY IF EXISTS stats_event_dedup_pkey_include_tmp;
+--   然后重跑本迁移即可（不存在数据风险，tmp 只是索引）。
+--   ★ ACCESS EXCLUSIVE 窗口：DROP CONSTRAINT + ADD CONSTRAINT USING INDEX
+--   均为目录级操作（本地 200k 行实测 2.7ms + 1.2ms）；lock_timeout=60s 保证
+--   抢不到锁时快速失败而非排队。
 -- ═══════════════════════════════════════════════════════════════════════
 
 SET lock_timeout = '60s';

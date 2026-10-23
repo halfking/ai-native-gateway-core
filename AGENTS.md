@@ -7485,7 +7485,7 @@ index b953a6f03..555ef83c4 100644
 > **㉙ session_client_task_matrix REFRESH 降本**（26 次/天、73.8s→592.7s、~2.3h DB 时间/天 —— R75 已止血，「变便宜」是 R75 §6 属主三选一）／
 > **㉔【作废】**。
 > ★★★★★ **P5 落地 = 迁移 902**（`902_stats_event_dedup_pkey_include.sql`）：pkey 换体
-> `UNIQUE(event_id) INCLUDE(occurred_at)` + 删 845 复合索引（252 实测 151 MB）⇒ **净省 ~114 MB**，
+> `UNIQUE(event_id) INCLUDE(occurred_at)` + 删 845 复合索引（旧索引合计 265 MB ⇒ 单条 ~151 MB）⇒ **净省 ≈114 MB（表 409→~295 MB）**，
 > 三处消费方无损本地一次性库实测（ON CONFLICT / 四处双列 JOIN Index Only / 唯一性不变式）；
 > **全生命周期五段**（up→重跑→down→down重跑→再up）全绿；7 点登记 + 门 6 测试含 3 阳性对照。
 > ★★ **幂等设计是被实验逼出来的**：首版无守卫重跑留下 ~20 MB 孤儿 tmp 索引（阶段 4 实测）⇒
@@ -7494,7 +7494,7 @@ index b953a6f03..555ef83c4 100644
 > ★★ **顺带修一个既有红门**：`migration_900_901_redispatch_test.go` 台账判据「恰好 1 次」
 > 在 deploy 2820 补 applied+verified 记账行后恒红（stash 实证与本轮无关）⇒ 改为
 > 「1 或 2 次且 applied+verified 恰一行」⇒ 台账两阶段语义进门。
-> ★★★★★ **㉕ 落地 = 探测型合成 session 短路 L3**（§143.101 排序里不改语义的那把钥匙）：
+> ★★★★★ **㉕ 落地 = 探测型合成 session 短路 L3**（§143.101 排序里不改语义的那把钥匙；★ 同日批判审计轮把前提链补成 252 实测闭环并【重定性为防御性守卫】——见下方审计轮行）：
 > `domains/hooks/compression/probe_session.go`（`IsProbeSyntheticSessionID` 前缀 `sys:probe:` +
 > `ShouldSkipProbeLoad`）+ `loadFromLegacyDB` 接线（**G-2 后、LogL3Reached 前** ⇒ 被短路的不算
 > 「走到 L3」⇒ 服务侧计数降幅=收益可对拍）+ `ENABLE_SESSION_CACHE_SKIP_PROBE_SESSIONS`
@@ -7504,6 +7504,22 @@ index b953a6f03..555ef83c4 100644
 > ★★ ** OnceValue 坑（第二轮踩）**：门里/同包测试里靠 Setenv 驱动开关取值【不可复现】
 > （进程内缓存）⇒ 门做文本级断言、同包测试**换包级 var + Cleanup 还原**（auto_created_test.go 先例）。
 > ★ **通用式见 LESSONS §300/§301**；★ 属主待拍板：㉕ 开关何时打开／902 生产应用授权／㉗／㉘／㉙。
+>
+> **2026-10-24 R146 批判式审计轮（本会话续）**：对上两节产物逐环批判 ⇒ **6 项发现全部处置**（252 全程只读）：
+> ★★★ **① ㉕ 前提链补成实测闭环且重定性**：`sys:probe:cred35:20260923` turns=40,381 行全 `node_probe` ⇒
+> 证明探测 worker【自带同名会话头】（mirror skip 只挡无头条目）⇒ 压缩链可达（ValidateSessionID 放行）；
+> bodies 三面实测（hot/09/10 的 `sys:%`）= 0/0/3（3 行全是 `sys:anon:*` 且 has_outbound=f）⇒
+> **sys:probe:% 在 bodies 族 0 行 ⇒ 结构性恒 0 行成立**；★★ 但 turns_2026_10 `sys:probe:%`=**0 行**
+> （09 月才有：462,394 行/307 会话）⇒ 探测带头形态 10 月已消失 ⇒ **守卫重定性为防御性（现时收益≈0，
+> 与 G-2 同族）** ⇒ runbook §143.103.0 已落审计横幅、probe_session.go 补现时状态。
+> ★★ **② P5 算术错误修正**：初版注释「合并后 ~114 MB／表 409→265 MB」错 ⇒ 合并后单条 ≈151 MB、
+> 表 →~295 MB、净省 ≈114 MB 不变（main.go/runner.go 已改）。
+> ★ **③ 902 失败恢复路径补记**：CONCURRENTLY 中途失败留 invalid tmp ⇒ 重跑必红（fail-safe）⇒
+> 恢复 = 手工 `DROP INDEX CONCURRENTLY …_tmp;` 后重跑；已入迁移头注 ⇒ sha 变更（`5871f9a6…`）
+> ⇒ embeddata/门常量/db-changelog 三点同步、902 门复绿。
+> ★ **④ 本地残留清理**：itgate_146_p5 已 DROP（首轮实验遗留，_p5b 早已清）。
+> ★ **⑤ cmd/gateway 全包补跑**（此前只跑过滤集）⇒ 绿。★ **⑥ 900/901 台账判据修改变异验证**：
+> 两 pending 行 ⇒ 红／三行 ⇒ 红，还原逐字一致。
 > **2026-10-24 P11 落地部署轮（本会话续）**：按「饱和族继续推进 §143 P11 落地」指令，把**仓内早已齐备但从未部署**的巡检降载两件套部署到 252：
 > ① `ursm-snapshot-health.sh`（`b5aaa384`→`10efc586`，两路二选一+覆盖探针新判据，备份留存）；② `ursm-snapshot-slot-refresh.sh` **首次部署**（`6b84c344`——R75 轮预言的缺环：没有它汇总表停更⇒巡检静默失明；实测表真停在 10-22）；③ `/etc/cron.d/pg17` 按正典重装（0删18增，md5 `f764e11f`，加每 6h :07 刷新行）。
 > ⇒ **生产实测**：手动 refresh ⇒ coverage **6/7→7/7**（repair 补 8 天 168 行 2m24s）；巡检 ⇒ **`base_source=daily` 快路生效、64.7s 完成、verdict OK**（旧源表路 235s、饱和时 600s+、每小时 2.9 GB＝252 成本 #1）⇒ 巡检 I/O 从 74 GB/天量级大降，饱和族（routing-log/error-trend/turns 超时）预期随争用缓解改善（观测口径：journal 超时计数按小时对比）。211 不在范围（P11 只对 252，§143.32）。
