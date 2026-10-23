@@ -292,7 +292,11 @@ func TestBuildSessionMessageMap_Envelope(t *testing.T) {
 // The envelope test is jsonb_typeof(...)= 'object', matching the Go-side
 // detector (a null or scalar _gw_body_summary value is not an envelope).
 func TestCompressionStatsEstimatedOrigSQL(t *testing.T) {
-	sql := compressionStatsEstimatedOrigSQL
+	// ★ R77 轮：这条 SQL 从包级 var 移进了 compressionStatsSQL 构造器
+	// （它是运行时求值——函数调用不能出现在 const 声明里）。
+	// ⇒ 判据改成断言**真实产物**（与 R76 轮 compression_sessions 同款做法）：
+	//   断言源码字面量片段会让「换个地方写同样的 SQL」把门变成恒绿门。
+	sql := compressionStatsSQL("", "").estOrig
 	for _, want := range []string{
 		`jsonb_typeof(rb.request_body->'_gw_body_summary') = 'object'`,
 		`rb.request_body #>> '{_gw_body_summary,bytes}'`,
@@ -307,7 +311,7 @@ func TestCompressionStatsEstimatedOrigSQL(t *testing.T) {
 		`SUM(CASE WHEN jsonb_typeof(rb.request_body->'_gw_body_summary') = 'object' THEN 1 ELSE 0 END)`,
 	} {
 		if !strings.Contains(sql, want) {
-			t.Fatalf("compressionStatsEstimatedOrigSQL missing %q\nSQL:\n%s", want, sql)
+			t.Fatalf("compression_stats 的 estimated-orig 查询缺少 %q\nSQL:\n%s", want, sql)
 		}
 	}
 }

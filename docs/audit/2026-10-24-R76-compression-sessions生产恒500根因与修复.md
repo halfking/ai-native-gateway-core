@@ -290,7 +290,8 @@ http=200 time=10.003s
 **缺失** ⇒ ★ **端点返回 200，但数据是残缺的，且调用方无从分辨「真的是 0」还是「超时了」**
 ⇒ ⇒ **通用式：把「超时」降级成「静默吞错」的 handler，即使状态码是 200，返回体也是错的。**
 
-**缺陷②：`compression_rate` 恒等于 1（口径错，不是性能问题）。**
+**★★ 缺陷②（原写「`compression_rate` 恒等于 1（口径错）」—— ★★ 该定性已被 R77 轮的生产实测【推翻并订正】，见下）。**
+
 `admin/compression_stats.go:173-175`：
 
 ```go
@@ -300,17 +301,42 @@ if withOutbound > 0 {
 }
 ```
 
-⇒ 一个策略组里**只要有 1 行**带 outbound body，**整组**都被算成「已压缩」
-⇒ `CompressedTotal == TotalRequests` ⇒ `compression_rate == 1.0` ⇒ **该指标当前无信息量**
-⇒ ★ 正确口径应是 `CompressedTotal += withOutbound`（而 `withOutbound` 本身还要防
-LEFT JOIN 的**行放大**：bodies 源按 `request_id` 一对多时会重复计数 ⇒ 需要 DISTINCT 或半连接）。
+⇒ ⇒ ★★ **R77 轮实测（生产 252，冻结窗口 2026-10-23 07:00 → 2026-10-24 07:00）**：
+
+| 探针 | 读数 | 结论 |
+|---|---|---|
+| 窗口内 turns 行数 | **16,878** | — |
+| LEFT JOIN 后的行数 | **16,878** | ⇒ **放大 = 0** |
+| 窗口内 distinct request_id | **16,878** | ⇒ **bodies 侧 request_id 唯一（当前）** |
+| 其中 `outbound_body IS NOT NULL` | **16,878（= 全部）** | ⇒ **`withOutbound == cnt`** |
+| 生产实测响应 | `total_requests=17007`、`compressed_total=17007`、`compression_rate=1` | ⇒ ⇒ |
+
+⇒ ⇒ ★★★ **⇒ 订正：「`compression_rate` 恒等于 1」当前【是准确的】，不是缺陷**
+（窗口内 **100%** 的请求都带 outbound body ⇒ 压缩率真的是 1.0）
+⇒ ⇒ ★ **原判是【误报】**：我把「代码把一个计数**布尔化**」当成了「口径已错」，
+而**没有先量该计数当前的实际值** ⇒ ★⇒ **通用式（LESSONS §312）：
+★ 「计数被当布尔用」是【潜在】缺陷，不是【当前】缺陷** ⇒
+**判定「口径错了」之前必须先量「当前数据下这个口径算出来的值是什么」** ——
+本例中 `withOutbound == cnt` ⇒ 两段代码**逐字等价** ⇒ 线上行为**完全正确**。
+
+⇒ ⇒ ★ **但缺陷本身（潜在风险）仍然成立，只是今天不发作**：
+① **布尔化丢信息**：一个策略组里**只要有 1 行**带 outbound body，**整组**都被算成「已压缩」
+⇒ ⇒ **当组内出现混合（部分行有、部分没有）时，`compression_rate` 会被高估**。
+★ 通用式：★ **「`if count > 0 { total += groupSize }`」是【把一个计数的信息降维成布尔】** ——
+它只在「全有或全无」时与正确口径等价 ⇒ **判据必须写成 `total += count`**。
+② **LEFT JOIN 的行放大风险当前为 0，但「bodies 侧 request_id 唯一」不是被强制的约束**
+（bodies 源 = hot ∪ 6 个分区 ⇒ 同一个 request_id 落在 hot 与分区里就会放大）⇒
+⇒ 一旦放大，`COUNT(*) AS cnt` 与 `COUNT(rb.outbound_body)` 会**同时**被放大 ⇒
+`total_requests` 与 `compressed_total` 一起错 ⇒ ⇒ **半连接（EXISTS）天然免疫**。
 
 ⇒ ⇒ ⇒ ★★ **下一轮（R77）第一靶子定为 `compression/stats`**：
-① 把 3 条 bodies LEFT JOIN 改成 EXISTS 半连接（同 R76 的手法）；
-② 载荷聚合（`estimated-orig`）改为**只对最终需要的列**取值，且**单独给 ctx**（不要与其它 3 条共用一个 10s）；
+① 把 3 条 bodies LEFT JOIN 改成 EXISTS 半连接（同 R76 的手法）⇒ **顺带免疫行放大**；
+② 载荷聚合（`estimated-orig`）**单独给 ctx**（不要与其它 3 条共用一个 10s）
+⇒ ★ **R77 实测：它单独就要 34.3 s**（窗口内 `request_body` 共 **1,278 MB**、`_gw_body_summary`
+envelope **0 行** ⇒ 每次都要整包 detoast）⇒ ⇒ **单条查询就超预算 3.4×**；
 ③ **ctx 超时必须显式报错**（不能 200 + 残缺体）；
-④ 修 `compressed_total += cnt` ⇒ `+= withOutbound`（★ **口径变更 ⇒ 需属主确认**，
-因为它会改变面板上「压缩率」这个可观测数字的含义）。
+④ `compressed_total += cnt` ⇒ `+= withOutbound`（★ **当前是等价的（0 差异）⇒ 属主确认的是
+「未来是否会改变面板数字」，而不是「今天数是否错」**）。
 
 ⇒ ⇒ ★★ **一条索引解四个端点**：`session_summaries(first_request_at)`
 （`session_summaries` 829,341 行 / 826 MB / **未分区**；现只有
