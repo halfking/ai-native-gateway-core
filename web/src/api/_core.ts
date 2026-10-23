@@ -145,16 +145,32 @@ export class ApiError extends Error {
 export function envelopeCode(text: string): string {
   if (!text) return ''
   try {
-    const j = JSON.parse(text) as Record<string, unknown>
-    const err = j.error
-    if (err && typeof err === 'object') {
-      const code = (err as Record<string, unknown>).code
-      if (typeof code === 'string') return code
-    }
-    if (typeof j.code === 'string' && j.code) return j.code
+    return envelopeCodeOfObject(JSON.parse(text))
   } catch {
     /* 非 JSON 错误体：没有 code */
+    return ''
   }
+}
+
+/**
+ * envelopeCode 的对象版：输入**已解析**的对象。
+ *
+ * ★ 为什么要有它：App.vue 的水合判据自己 throw 一个 Error 来表达「响应不是
+ * UserInfo」。那个 Error 不带 `code` ⇒ catch 里的 `isMaintenanceEnvelopeCode(code)`
+ * 恒 false ⇒ **维护窗口下的 2xx 信封照样 clearJwt()**。
+ * 调方需要能从**原始响应对象**上把 code 取出来挂到自造 Error 上，
+ * 否则那条「维护态不清状态」的分支对这条路径是死代码。
+ * 口径与 envelopeCode 逐字一致（`error.code` 优先，其次顶层 `code`）。
+ */
+export function envelopeCodeOfObject(parsed: unknown): string {
+  if (!parsed || typeof parsed !== 'object') return ''
+  const j = parsed as Record<string, unknown>
+  const err = j.error
+  if (err && typeof err === 'object') {
+    const code = (err as Record<string, unknown>).code
+    if (typeof code === 'string') return code
+  }
+  if (typeof j.code === 'string' && j.code) return j.code
   return ''
 }
 

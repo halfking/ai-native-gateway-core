@@ -77,7 +77,9 @@ func TestHeatmapProbeExclusionUsesSharedViewPredicate(t *testing.T) {
 // TestViewPredicateHasNoPhysicalArm 守，理由写在那边——815 之后
 // 「origin_stage 不在契约内」这个理由已经不成立，留在本文件会误导后来人。
 func TestViewPredicateFormatArity(t *testing.T) {
-	const p = bg.ProbeTrafficExclusionPredicateView
+	// 2026-10-23：谓词改成 var（actor 列表从 internal/probekind 渲染），
+	// 不再是编译期常量 ⇒ 这里不能用 const 上下文。
+	p := bg.ProbeTrafficExclusionPredicateView
 	if got := strings.Count(p, "%s"); got != 3 {
 		t.Fatalf("view predicate has %d format verbs, want 3 — a caller passing fewer gets "+
 			"%%!s(MISSING) baked into the SQL instead of a compile error", got)

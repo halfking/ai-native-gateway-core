@@ -131,8 +131,8 @@ export default {
   panel: {
     clients: 'Solicitudes de clientes',
     providers: 'Respuestas de proveedores',
-    zoom: 'Ampliar',
-    zoomHint: 'Pulsa ⤢ para ampliar',
+    zoom: 'Ver detalle',
+    zoomHint: 'Pulsa ⤢ para abrir el detalle en una pestaña nueva',
     empty: 'Sin solicitudes en la ventana',
     page: 'Página {page}/{pages}',
     total: '{n} en total',

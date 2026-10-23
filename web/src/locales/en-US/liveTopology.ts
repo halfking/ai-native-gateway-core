@@ -131,8 +131,8 @@ export default {
   panel: {
     clients: 'Client requests',
     providers: 'Provider responses',
-    zoom: 'Zoom in',
-    zoomHint: 'Tap ⤢ to zoom',
+    zoom: 'View detail',
+    zoomHint: 'Tap ⤢ to open the detail page',
     empty: 'No requests in the window',
     page: 'Page {page}/{pages}',
     total: '{n} total',

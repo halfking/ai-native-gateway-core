@@ -9427,3 +9427,10 @@ embeddata 逐字 + lock_timeout + 自证断言 + down 只删账本 + **真库腿
 ★ 那条断言的存在意义：★ Contains 型门只保护「至少有一处」⇒ needle 不唯一时会**假绿**）。
 ⇒ ⇒ ★★ **部署事件只记【带了哪些编号】，不复制【登记行】** ⇒ ⇒ **台账才是单一真相源**。
 
+## 2026-10-23T09:50:14Z — deploy 245 build_seq 2818 (412f7f95)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 896 | `896_offline_activation_requests_columns_reassert.sql` | `05d5b5d694ab3fcb0ce648a9b0c3975a1c311c14a3b80b027544772c6de8e871` | applied+verified |
+| 897 | `897_session_turns_promote_final_success_self_heal.sql` | `1a77a4ea9a9f15d5f252a5fc9908b1db5897f9447eae28e2ce5b5b65a7aa1188` | applied+verified |
+

@@ -131,8 +131,8 @@ export default {
   panel: {
     clients: 'Client-Anfragen',
     providers: 'Anbieter-Antworten',
-    zoom: 'Vergrößern',
-    zoomHint: '⤢ zum Vergrößern',
+    zoom: 'Details ansehen',
+    zoomHint: '⤢ öffnet die Detailseite in neuem Tab',
     empty: 'Keine Anfragen im Zeitfenster',
     page: 'Seite {page}/{pages}',
     total: '{n} gesamt',

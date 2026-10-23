@@ -579,11 +579,45 @@ if grep -qF 'dd_smoke_admin_login' \
 else
   bad "引擎缺少登录冒烟或仍指向错误的 /api/admin/login"
 fi
-if grep -qF 'X-Real-IP' \
-   <<<"$_nocomment_engine" && grep -qF '\$remote_addr' <<<"$_nocomment_engine"; then
-  ok "引擎修补 nginx llm TLS 腿 X-Real-IP=\$remote_addr"
+# ★ 2026-10-23（F2）重写：原来是「引擎源码里有没有 X-Real-IP / $remote_addr
+#   字样」的**字符串存在性**检查 —— 那是**恒绿门**：把整段逻辑删成空壳照样绿，
+#   而 F2 的原症状恰恰是「这段逻辑**从来没生效过**」。
+#   ⇒ 现在钉**接线**（引擎怎么用补丁器）+ **不变量**（不写死域名 / 失败要还原
+#     / 结论分类要区分「没有」与「不认识」）。
+if grep -qF 'nginx-llm-realip-patch.py' <<<"$_nocomment_engine"; then
+  ok "引擎调用独立补丁器 nginx-llm-realip-patch.py（判定逻辑可离线验证）"
 else
-  bad "引擎未修补 nginx X-Real-IP（限流易共桶）"
+  bad "引擎没有调用独立补丁器：X-Real-IP 判定又回到内嵌 heredoc（不可验证）"
+fi
+if grep -qE -- '--domain[[:space:]]' <<<"$_nocomment_engine" \
+   && grep -qF 'DD_DOMAIN' <<<"$_nocomment_engine"; then
+  ok "引擎把 DD_DOMAIN 传给补丁器（域名不写死）"
+else
+  bad "引擎没把 DD_DOMAIN 传给补丁器：换域名会静默改错对象"
+fi
+if grep -qF 'llm.itestu.cn' <<<"$_nocomment_engine"; then
+  bad "引擎正文里仍写死 llm.itestu.cn —— 与「引擎不含主机专属信息」自相矛盾"
+else
+  ok "引擎正文不含写死域名（llm.itestu.cn 只出现在注释里）"
+fi
+if grep -qE 'search-root' <<<"$_nocomment_engine"; then
+  ok "引擎跨文件搜 443 腿（--search-root）—— 不再只在自己的 conf 里找"
+else
+  bad "引擎不跨文件搜 443 腿：443 腿在别的文件时永远找不到（211 的现状）"
+fi
+if grep -qF 'skip-domain-not-on-443-block' <<<"$_nocomment_engine" \
+   && grep -qF 'noop-unknown-shape' <<<"$_nocomment_engine"; then
+  ok "引擎区分「本机没有该域的 443」（信息）与「形态不认识」（才告警）"
+else
+  bad "引擎不区分两种『没改』结论：要么继续打假告警，要么该告警时不告警"
+fi
+# nginx -t 失败 ⇒ 必须还原：否则磁盘上留着没验证过的配置，
+# 之后任何一次 reload 都会加载它（潜伏半切换态，同仓审计 §4.1）。
+if grep -qE 'nginx -t' <<<"$_nocomment_engine" \
+   && grep -qE 'cp "\$\{backs\[\$' <<<"$_nocomment_engine"; then
+  ok "nginx -t 失败时会从备份还原（不留半切换态配置）"
+else
+  bad "nginx -t 失败不还原：磁盘上留一份没验证过的配置（潜伏半切换态）"
 fi
 # 入口 deploy-211.sh 必须 export 同一组 registry-211 默认，经 --via 传到远端。
 if [[ -f "$ROOT/scripts/deploy-211.sh" ]]; then

@@ -2,9 +2,9 @@
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import { store, clearAll, clearJwt, clearMustChangePasswordFlag, isSuperAdmin as checkSuperAdmin, isPlatformOpsView as checkPlatformOps, markAuthHydrated, setJwtToken, setUserInfo, authBearer } from './store'
+import { store, clearAll, clearJwt, clearMustChangePasswordFlag, isSuperAdmin as checkSuperAdmin, isPlatformOpsView as checkPlatformOps, markAuthHydrated, setJwtToken, setUserInfo, authBearer, userInfoFromAuthMe } from './store'
 import { logout as apiLogout } from './api/auth'
-import { throttledFetch, isMaintenanceEnvelopeCode } from './api/_core'
+import { throttledFetch, isMaintenanceEnvelopeCode, envelopeCodeOfObject } from './api/_core'
 import { getAuthMe } from './api/admin'
 import LoginModal from './components/LoginModal.vue'
 import ChangePasswordDialog from './components/ChangePasswordDialog.vue'
@@ -105,16 +105,26 @@ onMounted(async () => {
       try {
         const me = await getAuthMe()
         const meAny = me as any
-        // 2026-10-22 审计修正：2xx 的维护信封 {"code":…,"message":…} 会被
-        //   当成 UserInfo 存进 store ⇒ 造出「假登录态」（已登录但 role 为空）。
-        //   判据用 UserInfo 的两个必填身份字段（id: number、username: string）。
-        if (!meAny || typeof meAny.id !== 'number' || typeof meAny.username !== 'string') {
-          throw new Error('unexpected /api/auth/me payload shape')
+        // 2026-10-23 修正：旧判据直接读 `meAny.id` / `meAny.username`，
+        // 而 `/api/auth/me` 的**现行**响应把用户嵌在 `.user` 下
+        // （实测 245 生产：`{"access_token":…,"user":{"id":41,…}}`）⇒
+        // 恒判「形状异常」⇒ 落进下面的 `clearJwt()` ⇒ **每次冷启都被登出**
+        // （/live 等 requiresAuth 路由当场把用户弹回登录页）。
+        // 身份口径改与 setUserInfo 同源（userInfoFromAuthMe 同时认嵌套与扁平两种形态）。
+        const user = userInfoFromAuthMe(me)
+        if (!user) {
+          // 仍要把**维护信封的 code** 带走：否则本 throw 出来的裸 Error 没有 code，
+          // `isMaintenanceEnvelopeCode(undefined)` 恒 false ⇒ 维护窗口照样清状态。
+          // （这就是 2026-10-22 那次修正没关掉的那半扇门。）
+          throw Object.assign(new Error('unexpected /api/auth/me payload shape'), {
+            status: 200,
+            code: envelopeCodeOfObject(me),
+          })
         }
         if (meAny?.access_token) {
           setJwtToken(meAny.access_token)
         }
-        setUserInfo(me)
+        setUserInfo(user)
       } catch (e) {
         // 2026-10-22 审计修正：旧实现对**任何**失败都 clearJwt() ⇒ 清掉
         //   userInfo + localStorage ⇒ 维护窗口/断网/5xx 都把用户踢回登录页

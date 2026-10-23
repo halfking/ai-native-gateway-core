@@ -6,6 +6,7 @@ import (
 
 	"github.com/kaixuan/llm-gateway-go/domains/authentication"                            //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	telemetryv1 "github.com/kaixuan/llm-gateway-go/domains/hooks/observability/telemetry" //nolint:depguard // aliased to avoid clash with /telemetry extractor package
+	"github.com/kaixuan/llm-gateway-go/internal/probekind"
 )
 
 // BuildContextAttrsEntry 把 RequestLogContext + keyInfo + meta 组装成
@@ -148,13 +149,12 @@ func fillFromRequestLogContext(entry *telemetryv1.ContextAttrsEntry, c *RequestL
 }
 
 // isProbeOriginStage 由 origin_stage 派生 is_probe（双轨之一，与 origin_stage 同义）。
+//
+// 2026-10-23 审计：判定集收敛到 internal/probekind（唯一真值源）——
+// DB CHECK 闸门 / 侧表 is_probe / dashboard pill / stats-board 排除四处
+// 现在共用同一份集合，不再各维护一份清单。
 func isProbeOriginStage(stage string) bool {
-	switch stage {
-	case "self_check", "node_probe", "system_health",
-		"probe_direct", "probe_v2", "model_probe", "passive_probe", "manual":
-		return true
-	}
-	return false
+	return probekind.IsProbeStage(stage)
 }
 
 // fillFromKeyInfo 把 KeyInfo 的账户/应用/客户字段映射到侧表行。
