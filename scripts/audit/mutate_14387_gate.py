@@ -8,11 +8,14 @@
 
 ★ 退出码：0 = 全部符合预期；非 0 = 有用例的预期没达成。
 
-★ ★★ 四条纪律（本脚本已内建）：
+★ ★★ 五条纪律（本脚本已内建）：
 ★   ① 还原必须按【原路径】做 md5 逐字校验；
 ★   ② 变异必须改【全部】出现处（★ ★★ 只改第一处会漏 ⇒ ⇒ 门仍然绿 ⇒ ⇒ 假阴性）；
 ★   ③ 判据有【边界】⇒ ⇒ 另设「期望仍然绿」的用例（★ M11 / M12）；
-★   ④ 变异必须【语义变了但仍能编译/能跑】⇒ ⇒ Python 侧改名而不是删定义。
+★   ④ 变异必须【语义变了但仍能编译/能跑】⇒ ⇒ Python 侧改名而不是删定义；
+★   ⑤ ★★★ 【环境指纹对拍】（★ 本轮实测踩到的坑）：★ 共享工作树里 ⇒ ⇒ 并行会话的
+★      并发改动会被【误读成「门没牙」】⇒ ⇒ 跑完对拍「全仓 git status + 本脚本动的 4 个文件
+★      的 md5」⇒ ⇒ 不一致 ⇒ ⇒ 报【环境被并发改动】（★ exit 1），★ 而不把读数当门的问题。
 """
 import hashlib
 import os
@@ -31,6 +34,31 @@ AGENTS = os.path.join(ROOT, "AGENTS.md")
 SCRIPT = os.path.join(ROOT, "scripts/audit/funnel_algebra.py")
 
 backups = {}
+
+
+# ★★★★★★ 环境指纹（★ 本轮实测踩到的一个坑）：★ 共享工作树里跑变异台 ⇒
+# ★ ⇒ 并行会话的并发改动会被【误读成「门没牙」】。
+# ★ ⇒ ⇒ 治法 = 记录「全仓 git status + 本脚本要动的 4 个文件的 md5」⇒ ⇒
+# ★ ⇒ ⇒ 跑完对拍 ⇒ ⇒ 不一致 ⇒ ⇒ 报「环境被并发改动」，★ 而不是把读数当门的问题。
+def git_status():
+    p = subprocess.run(["git", "status", "--porcelain"], cwd=ROOT,
+                       capture_output=True, text=True)
+    return p.stdout
+
+
+def file_md5(path):
+    with open(path, "rb") as f:
+        return hashlib.md5(f.read()).hexdigest()
+
+
+def env_fingerprint():
+    return {
+        "status": git_status(),
+        "md5": {p: file_md5(p) for p in (RUNBOOK, LESSONS, AGENTS, SCRIPT)},
+    }
+
+
+ENV_BEFORE = env_fingerprint()
 
 
 def snap(path):
@@ -255,4 +283,23 @@ check("M12 在 §143.87 段【之内】引用被推翻的数字（★ 期望【�
 print()
 n_ok = sum(1 for _, ok in results if ok)
 print("★ 变异台结果：%d / %d 全部符合预期" % (n_ok, len(results)))
-sys.exit(0 if n_ok == len(results) else 1)
+
+# ★★★★★★ 环境指纹对拍（★ 纪律⑤）：★ 共享工作树里 ⇒ ⇒ 并行会话的并发改动
+# ★ ⇒ ⇒ 会把读数污染成「门没牙」⇒ ⇒ 这里判「环境变没变」⇒ ⇒ 而不是替门背锅。
+env_after = env_fingerprint()
+env_ok = True
+for p in (RUNBOOK, LESSONS, AGENTS, SCRIPT):
+    if env_after["md5"][p] != ENV_BEFORE["md5"][p]:
+        print("❌ 环境指纹不一致：%s 的 md5 变了（★ 可能是并行会话的并发改动）" % p)
+        env_ok = False
+if env_after["status"] != ENV_BEFORE["status"]:
+    print("⚠ 全仓 git status 在变异期间发生变化（★ 并行会话的并发改动）：")
+    print("  --- 变异前 ---")
+    print(ENV_BEFORE["status"].rstrip() or "  (clean)")
+    print("  --- 变异后 ---")
+    print(env_after["status"].rstrip() or "  (clean)")
+    env_ok = False
+if env_ok:
+    print("✅ 环境指纹一致：★ 4 个文件 md5 逐字未变 + 全仓 git status 未变")
+
+sys.exit(0 if (n_ok == len(results) and env_ok) else 1)
