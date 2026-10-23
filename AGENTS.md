@@ -17,9 +17,8 @@
 > scheduled/probe_gateway/probe_scheduled`）—— 这 5 个是**死防御代码**：
 > `origin_mw.go:354-359` 的 `isValidOriginStage` 闸门会把它们挡在 HTTP 路径之外，
 > DB 不会出现这些值。`admin/probe_request_info.go:69-73` 自陈"两个地方必须
-> 同源"是**不实**的。
-> **★ 本轮已落地修复**（属主拍板"修 B' + 收敛成单一真值源"）：新建
-> **`internal/probekind`**（stdlib-only 单一真值源：ProbeStages / Writers /
+> 同源"是**不实**的。**★ 本轮已落地修复**（属主拍板"修 B' + 收敛成单一真值源"）：
+> 新建 **`internal/probekind`**（stdlib-only 单一真值源：ProbeStages / Writers /
 > ProbeActors / IsProbe / IsProbeMarkers / SQLActorList）；**4 处改为引用它**
 > —— middleware 的 `isValidOriginStage`/`globalAuthStageActorPairs`/
 > `systemOwnerFallbackStage`（后两者现互相派生，**不再各写一份**）、
@@ -38,14 +37,25 @@
 > `TestProbeActorsCoverEveryRealWriter` 只认字面量，漏掉常量引用
 > （`OriginActorMockProbeClient`）与变量引用（`strPtrTelemetry(actor)`）⇒
 > 改为主动解两种形态；③ 断言方向写反（fallback ⊆ 配对表，不是反过来）。
-> 用户报的 32-hex 请求**仍未定位**（缺 154 PG 证据）；五形态分类
-> （A: 5 alias 之一 / A': system_health 配对缺失 / B: DB 系统 key worker
-> 被剥头 / **B': 自检/打分 worker 写出的行被 board 当作业务（已修）** /
-> C: 早期 row 没救 / D: 根本不是探测）见
-> `docs/audit/2026-10-23-live-topology-probe-tagging-audit.md`。
-> 下一轮需要 154 PG 上 `origin_stage / origin_actor / task_type /
-> quality_flags` 4 列的 SQL 结果才能判型（**注意修复后带 actor 的探测行
-> 已不再漏标**）。
+> **★ 154 生产只读取证（17:50–18:10，对生产写入 = 0）**：目标请求
+> `af1eb6d83ef39610cc4f8be4e181b5a8` 在 `session_turns_hot` 里
+> **origin_stage/origin_actor/client_endpoint/client_ip 四列全 NULL**，
+> `request_preview='user: ping'`、凭据 `id=29`（**普通业务 key，owner 空、
+> is_system=false**）、`agent_name=go-client`、`turn_no=1`；而**真探测行**
+> （node_probe/probe-service 3122 + node_probe/node-probe-worker 919 +
+> self_check/credential-selfcheck-worker 7）的 `request_preview` **也是
+> "user: ping"** ⇒ 用户"它像探测"的直觉**有依据**，但真探测行**必然**带
+> `origin_stage` + `client_ip=127.0.0.1` + `origin_actor` ⇒ **该请求是业务
+> 流量（外部 Go client 的连通性测试），"未标探测"是正确的**。
+> ★★ **但取证暴露了更大的问题**：154 上 **3812/8444 = 45.1% 的行四列全空**
+> （成因：claude-code 的 `inferred_compressed` 压缩重建轮次 1542 行 = **设计
+> 使然**、无原始 HTTP 上下文，turn_no 高达 5291；codex 766 行；go-client
+> 301 行 = **间歇性异常**）⇒ 实时拓扑的客户端维度按 client_ip 聚类 ⇒
+> **这些行全落进 unknown 桶** ⇒ **用户观感里的"漏掉"主要来自这里**，而不是
+> 探测打标漏标。⚠ **B' 修复在 154 上当前看不到效果**（`self-check-worker` /
+> `model-quality-worker` 在 154 上各 0 行、进程不在）—— 修复仍正确（口径同源
+> 是结构性的），但**"修完后板上总请求数下降"这一条本轮无法在 154 验证**。
+> 完整取证见 `docs/audit/2026-10-23-live-topology-probe-tagging-audit.md` 附录 A。
 > **2026-10-22 96h 修正任务审计轮**（会话 `mvs_b6a7cd3aeb6149f8be06fb3a7ab347d8`，
 > Windows 宿主）：★ **本轮的第一发现是「一批审计门从未真正跑过」** ——
 > 它们「绿」是因为**压根没跑**（Python 门依赖 locale 编码 ⇒ 在 cp936 上必崩），

@@ -287,3 +287,98 @@ WHERE request_id = 'af1eb6d83ef39610cc4f8be4e181b5a8'
 - AGENTS.md 交接：本会话承接 R60~R66 之后，无新引入的 handoff
 - 仓内既有 `docs/audit/2026-10-18-live-topology-three-lane-and-data-switches.md`
   涉及"实时拓扑三泳道 + 数据开关"，是上层 UI 视角；本报告是底层数据源视角
+
+---
+
+# 附录 A — 154 生产取证（2026-10-23 17:50–18:10，只读）
+
+> 全部为只读 SELECT / pgrep / journalctl；**对生产的写入 = 0**。
+> 连接方式：`ssh 154` → DSN 取自 `/etc/llm-gateway-go/env` 的
+> `LLM_GATEWAY_DATABASE_URL`（PG 在 172.16.2.210:5432）。
+> ⚠ 量具失效 4 次（进程换 PID / 时区 / journal 不记 request_id / 日志文件已被轮转）
+> —— 每次都靠**对照窗口**兜住。
+
+## A.1 目标请求的定性
+
+```sql
+SELECT ... FROM session_turns_hot WHERE request_id='af1eb6d83ef39610cc4f8be4e181b5a8';
+```
+
+| 字段 | 值 |
+|---|---|
+| origin_stage / origin_actor / client_endpoint / client_ip | **四个全 NULL** |
+| task_type / task_type_chosen / quality_flags | NULL |
+| is_auto_request | false |
+| success / status_code / quality | true / 200 / verified |
+| session_id / turn_no | gw_0b3527ac-a69d-4b22-84a8-f256407e4928 / **1** |
+| model / canonical_model | nemotron-3-ultra-550b-a55b |
+| agent_name / agent_type / source_kind | **go-client** / api / live |
+| credential_id | **29** |
+| request_preview / response_preview | **user: ping** / **assistant: pong** |
+
+**凭据归属**：`api_keys.id=29` ⇒ `owner_user` 空、`is_system=false`、`status=active`
+⇒ **普通业务凭据，不是系统 key**。
+
+## A.2 ★ 对照窗口：真探测行长什么样
+
+`session_turns_hot` 里 `request_preview ILIKE '%ping%'` 的行（154 实况）：
+
+| origin_stage | origin_actor | client_ip | 行数 |
+|---|---|---|---|
+| node_probe | probe-service | 127.0.0.1 | 3122 |
+| node_probe | node-probe-worker | 127.0.0.1 | 919 |
+| self_check | credential-selfcheck-worker | 127.0.0.1 | 7 |
+| business | (空) | 146.19.248.250 等外部 IP | 584 |
+| **(null)** | **(null)** | **(NULL)** | **3812（45.1%）** |
+
+★ **真探测行的 `request_preview` 也是 "user: ping"** ⇒ 用户"它像探测"的直觉**有依据**；
+但真探测行**必然**带 `origin_stage`（node_probe/self_check）+ `client_ip=127.0.0.1` +
+`origin_actor`（probe-service / node-probe-worker / credential-selfcheck-worker）。
+
+⇒ **目标请求与真探测行的形态差异 = 四列全空 + 外部业务凭据 + 非 loopback**。
+
+## A.3 判定
+
+| 判定 | 依据 |
+|---|---|
+| **它不是网关的探测请求** | 凭据是普通业务 key（is_system=false, owner 空）；无 origin 声明；无 task_type/quality_flags；非 loopback IP |
+| **它"没被打标"是正确行为** | 系统按"探测需显式声明/系统凭据"判定 ⇒ 不标 |
+| ★ **但它暴露了一个独立的、更大的问题** | **3812/8444 = 45.1% 的行四列全空** |
+
+## A.4 ★ 45.1% 四列全空的成因分解
+
+| agent_name | submit_mode | 四列全空 | 四列齐全 | 判定 |
+|---|---|---|---|---|
+| claude-code | inferred_compressed | **1542** | 33 | **设计使然**：压缩重建轮次（turn_no 高达 5291 的长会话），无原始 HTTP 上下文 |
+| codex | full | **766** | 0 | 同类重建路径（待进一步确认） |
+| (空) | full | 1135 | 0 | 同上 |
+| **go-client** | full | **301** | **4239** | ★ **异常**：同类客户端 6.6% 间歇性丢失 HTTP 元数据 |
+
+★ 判别「投影丢字段」vs「本来就无」：
+- 这 3812 行中，**0 行**能在 `session_turns` 分区表找到同 request_id 带元数据的行
+- **0 行**与带元数据的行 request_id 重号
+⇒ **不是投影丢字段 ⇒ 它们从未有过 HTTP 元数据**。
+
+## A.5 ★★ 真正的"漏掉"观感来源
+
+实时拓扑的**客户端维度**按 `client_ip` / `agent_name` 聚类 ⇒
+**45.1% 的行没有 client_ip** ⇒ 这些请求在图上落进 **unknown 客户端桶**，
+看起来就像"一批请求没信息 / 没打标"。
+
+⇒ 用户观感中的"探测请求打标有漏掉"，**实际是两件事被混在一起**：
+1. 目标请求本身是业务流量，未标探测 = **正确**；
+2. 大量请求（尤其 claude-code 压缩重建轮次）**没有 client_ip / origin_stage**
+   ⇒ 实时拓扑上聚成 unknown 桶 ⇒ **观感上的"漏掉"**。
+
+## A.6 ★ B' 修复在 154 上当前看不到效果（诚实边界）
+
+154 实况：`origin_actor='self-check-worker'` **0 行**、`'model-quality-worker'` **0 行**；
+`pgrep self_check|modelquality` **无进程** ⇒ **这两个 worker 在 154 上没有流量**
+⇒ B' 修复（actor 集 4→7）在 154 的板上数字上**当前不可见**。
+
+⇒ 修复本身仍然正确且必要：
+- 它让 4 处口径真正同源（结构性）；
+- 这两个 worker 在 245 / 252 或未来部署中运行时即生效；
+- 若将来它们在 154 启用，修复即刻生效。
+
+⚠ **本轮没有验证「修完后板上总请求数下降」** —— 因为触发该修复的流量在 154 上不存在。
