@@ -1,0 +1,525 @@
+package ursm_test
+
+// tsv_hollowout_gate_test.go —— 2026-10-23 R85 轮（掏空法门）
+//
+// # 这道门要钉住的事
+//
+// ★ R84 轮（§9）用**掏空法**逐份普查了 10 份 `.tsv` 登记册，问同一个问题：
+//
+//	「**把登记册的数据行全部掏空 ⇒ 读它的门必须红**」
+//
+//	（「读了个空册子还绿」⇒ 那道门在这种情况下是**瞎**的）。
+//
+// ★ 该普查的诚实边界（R84 轮原文）：**剩下 18 份没有**被逐份掏空验证
+// ⇒ ⇒ **不声称「全仓无此洞」**。
+//
+// ⇒ ★ 本门把那次普查**变成一道可复跑的登记**：
+//	① **覆盖判据**：仓内每一份 `.tsv` 都必须在清单里登记（含例外），
+//	   ⇒ ⇒ **新增一份 `.tsv` 而没登记 ⇒ 门红**（这是「防漂移」的引擎）。
+//	② **行为判据**：清单里 `expect=red` 的条目 ⇒ **真掏空 + 真跑读方**，
+//	   读方必须红（★ 这就是 R84 轮那套手工动作，自动化）。
+//	③ **例外表**：`expect=exception` 的条目必须带**实质理由**。
+//
+// # 为什么必须「行为化」而不是「静态找行数断言」
+//
+// ★ R84 轮原文：「静态找『哪里写了行数断言』是**模糊**的（写法太多、
+// 且断言可能长在调用方）」⇒ ⇒ 本门**不读源码找断言**，而是
+// **真的掏空、真的跑读方、看它红不红** ⇒ ⇒ 与写法无关。
+//
+// # 三条纪律（本线）
+//
+//	① **判据读自己的输入时，先核对【读出来的形状】与【写进去的形状】一致**
+//	   ⇒ ⇒ 掏空变换必须**逐字节**保留被保留的行，且**还原后校验 md5**。
+//	② **阴性结论要当缺陷一样复核**：「掏空后仍绿」的第一嫌疑是【探针无效】，
+//	   不是「门有洞」⇒ ⇒ 本门把「变换是否真的掏掉了行」单列成一个判据。
+//	③ **守门人的计数若与被守的门共用谓词 ⇒ 同源自证** ⇒ ⇒ 本门
+//	   **不数登记册的行数**，只问「读方红不红」。
+
+import (
+	"crypto/md5"
+	"encoding/hex"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
+	"sort"
+	"strings"
+	"testing"
+	"time"
+)
+
+// hollowInventoryFile 是本门的清单（★ 它自己也是 `.tsv` ⇒ 覆盖判据要豁免它）。
+const hollowInventoryFile = "tsv_hollowout_inventory.tsv"
+
+// hollowEntry 是清单里的一行。
+type hollowEntry struct {
+	Path       string // 仓内相对路径（被掏空的登记册）
+	ReaderKind string // "gotest" | "shell"
+	ReaderSpec string // gotest:<pkg>:<testName> | shell:<script>
+	Expect     string // "red" | "exception"
+	HeaderRows int    // 保留几行「列名行」（0 = 该文件没有列名行）
+	Reason     string // 理由（expect=exception 时必须非空且非占位）
+}
+
+// hollowOutcome 是某一条目的实测结果分类。
+type hollowOutcome string
+
+const (
+	outcomeRedCaught    hollowOutcome = "red-caught"   // ★ 掏空 ⇒ 读方红 ⇒ 有牙
+	outcomeStillGreen   hollowOutcome = "still-green"  // ★ 掏空 ⇒ 读方仍绿 ⇒ 读方瞎
+	outcomeInconclusive hollowOutcome = "inconclusive" // ★ 变换是空操作 ⇒ 什么都没测到
+	outcomeBaselineRed  hollowOutcome = "baseline-red" // ★ 读方在基线就红 ⇒ 不可判定
+)
+
+// hollowRepoRoot 返回仓根。
+func hollowRepoRoot(t *testing.T) string {
+	t.Helper()
+	out, err := exec.Command("git", "rev-parse", "--show-toplevel").Output()
+	if err != nil {
+		t.Fatalf("解析仓根失败（需要 git 在 PATH）：%v", err)
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// readHollowInventory 读清单。
+func readHollowInventory(t *testing.T, root string) []hollowEntry {
+	t.Helper()
+	path := filepath.Join(root, "scripts", "ursmcheck", hollowInventoryFile)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("读清单失败 %s：%v", path, err)
+	}
+	var entries []hollowEntry
+	lines := strings.Split(string(data), "\n")
+	for i, ln := range lines {
+		trimmed := strings.TrimSpace(ln)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		parts := strings.Split(ln, "\t")
+		if len(parts) < 6 {
+			t.Errorf("清单第 %d 行缺列（需要 6 列，实际 %d）：%q", i+1, len(parts), ln)
+			continue
+		}
+		if strings.TrimSpace(parts[0]) == "tsv_path" {
+			continue // ★ 表头行（★ 不依赖它出现在第几行 ⇒ 清单前可以有注释块）
+		}
+		hr := 0
+		if parts[4] != "" {
+			n := 0
+			for _, c := range parts[4] {
+				if c < '0' || c > '9' {
+					n = -1
+					break
+				}
+				n = n*10 + int(c-'0')
+			}
+			if n < 0 {
+				t.Errorf("清单第 %d 行的 header_rows 不是整数：%q", i+1, parts[4])
+				continue
+			}
+			hr = n
+		}
+		entries = append(entries, hollowEntry{
+			Path:       strings.TrimSpace(parts[0]),
+			ReaderKind: strings.TrimSpace(parts[1]),
+			ReaderSpec: strings.TrimSpace(parts[2]),
+			Expect:     strings.TrimSpace(parts[3]),
+			HeaderRows: hr,
+			Reason:     strings.TrimSpace(parts[5]),
+		})
+	}
+	return entries
+}
+
+// hollowBytes 返回「掏空后」的内容：★ 逐字节保留注释行与前 headerRows 行非注释内容，
+// 丢弃其余非注释行（数据行）。
+//
+// ★ 返回 (新内容, 丢弃的数据行数, 保留的非注释行数)。
+// ⇒ 后两个返回值是【判据②「探针是否有效」】的量具：★ 若丢弃数为 0
+// ⇒ ⇒ 变换没真的掏空 ⇒ ⇒ 本条目**什么都没测到**（不能报「绿 ⇒ 门有洞」）。
+func hollowBytes(data []byte, headerRows int) ([]byte, int, int) {
+	lines := strings.SplitAfter(string(data), "\n")
+	var out []string
+	kept := 0
+	dropped := 0
+	for _, ln := range lines {
+		if ln == "" {
+			continue
+		}
+		body := strings.TrimRight(ln, "\n")
+		if strings.TrimSpace(body) == "" || strings.HasPrefix(strings.TrimSpace(body), "#") {
+			out = append(out, ln) // ★ 注释行与空行：逐字节保留
+			continue
+		}
+		if kept < headerRows {
+			out = append(out, ln)
+			kept++
+			continue
+		}
+		dropped++
+	}
+	return []byte(strings.Join(out, "")), dropped, kept
+}
+
+// countDataRows 数「非注释、非空」的行数。
+func countDataRows(data []byte) int {
+	n := 0
+	for _, ln := range strings.Split(string(data), "\n") {
+		body := strings.TrimSpace(ln)
+		if body == "" || strings.HasPrefix(body, "#") {
+			continue
+		}
+		n++
+	}
+	return n
+}
+
+// goBinDir 返回 go 可执行文件所在目录（用于给子进程补 PATH）。
+func goBinDir() string {
+	if p, err := exec.LookPath("go"); err == nil {
+		return filepath.Dir(p)
+	}
+	if gr := runtime.GOROOT(); gr != "" {
+		return filepath.Join(gr, "bin")
+	}
+	return ""
+}
+
+// runHollowReader 跑读方，返回退出码与合并输出。
+//
+// ★ gotest:<pkg>:<testName> ⇒ `go test <pkg> -run ^<testName>$ -count=1`
+// ★ shell:<script>          ⇒ `bash <script>`
+func runHollowReader(kind, spec string, root string, timeout time.Duration) (int, string, error) {
+	goBin := "go"
+	if p, err := exec.LookPath("go"); err == nil {
+		goBin = p
+	} else if gr := runtime.GOROOT(); gr != "" {
+		goBin = filepath.Join(gr, "bin", "go")
+	}
+	var cmd *exec.Cmd
+	switch kind {
+	case "gotest":
+		// ★ 规格 = `<pkg>|<TestName>`（★ 用 `|` 而不是 `:`：Go 的 pkg 路径本身带 `/`，
+		//   而 `:` 在 pkg 里也可能出现 ⇒ ⇒ 用 `|` 才无歧义）。
+		parts := strings.SplitN(spec, "|", 2)
+		if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+			return -1, "", fmt.Errorf("gotest 规格格式错（要 <pkg>|<TestName>）：%q", spec)
+		}
+		cmd = exec.Command(goBin, "test", parts[0], "-run", "^"+parts[1]+"$", "-count=1")
+	case "shell":
+		// ★ shell:<command> ⇒ `bash -c <command>`（cwd = 仓根）
+		//   ⇒ 允许写任意命令（★ 例如 `cd installer && go test ...`：
+		//   installer 是**独立 Go module**，主 module 的 `./installer/...` 不可用）。
+		cmd = exec.Command("bash", "-c", spec)
+	default:
+		return -1, "", fmt.Errorf("未知 reader_kind：%q", kind)
+	}
+	cmd.Dir = root
+	cmd.Env = append(os.Environ(),
+		"GIT_TERMINAL_PROMPT=0",
+		// ★ 把 go 放进 PATH（★ shell 读方可能自己调 go）
+		"PATH="+goBinDir()+string(os.PathListSeparator)+os.Getenv("PATH"),
+	)
+	out, err := runWithTimeout(cmd, timeout)
+	code := 0
+	if err != nil {
+		if ee, ok := err.(*exec.ExitError); ok {
+			code = ee.ExitCode()
+		} else {
+			return -1, string(out), err
+		}
+	}
+	return code, string(out), nil
+}
+
+// runWithTimeout 跑命令并在超时后杀掉它。
+func runWithTimeout(cmd *exec.Cmd, timeout time.Duration) ([]byte, error) {
+	var buf strings.Builder
+	cmd.Stdout = &buf
+	cmd.Stderr = &buf
+	if err := cmd.Start(); err != nil {
+		return nil, err
+	}
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	select {
+	case err := <-done:
+		return []byte(buf.String()), err
+	case <-time.After(timeout):
+		_ = cmd.Process.Kill()
+		<-done
+		return []byte(buf.String()), fmt.Errorf("读方超时（%v）", timeout)
+	}
+}
+
+// md5Of 算 md5（十六进制）。
+func md5Of(data []byte) string {
+	sum := md5.Sum(data)
+	return hex.EncodeToString(sum[:])
+}
+
+// hollowAllTrackedTsv 返回仓内【git 追踪】的全部 `.tsv`（相对仓根，已排序）。
+func hollowAllTrackedTsv(root string) ([]string, error) {
+	out, err := exec.Command("git", "-C", root, "ls-files", "-z", "*.tsv").Output()
+	if err != nil {
+		return nil, err
+	}
+	var rels []string
+	for _, p := range strings.Split(string(out), "\x00") {
+		if p == "" {
+			continue
+		}
+		rels = append(rels, p)
+	}
+	sort.Strings(rels)
+	return rels, nil
+}
+
+// ---------------------------------------------------------------- 判据
+
+// TestTsvHollowoutInventoryCoversEveryTsv 是【覆盖判据】：
+// ★ 仓内每一份 `.tsv` 都必须在清单里登记 ⇒ ⇒ 新增 `.tsv` 而没登记 ⇒ 门红。
+func TestTsvHollowoutInventoryCoversEveryTsv(t *testing.T) {
+	root := hollowRepoRoot(t)
+	all, err := hollowAllTrackedTsv(root)
+	if err != nil {
+		t.Fatalf("取 git 追踪的 .tsv 失败：%v", err)
+	}
+	entries := readHollowInventory(t, root)
+	registered := map[string]bool{}
+	for _, e := range entries {
+		registered[e.Path] = true
+	}
+	self := "scripts/ursmcheck/" + hollowInventoryFile
+	var missing []string
+	for _, p := range all {
+		if p == self {
+			continue // ★ 本门自己的清单豁免自己（否则无限回归）
+		}
+		if !registered[p] {
+			missing = append(missing, p)
+		}
+	}
+	if len(missing) > 0 {
+		t.Fatalf("有 %d 份 `.tsv` 没在 %s 里登记：\n  %s\n"+
+			"★ 新增登记册必须登记它的读方，并回答「掏空它 ⇒ 读方红不红」；\n"+
+			"★ 若【有意允许空】（如 cjk_var_sites.tsv），登记成 expect=exception 并写理由。",
+			len(missing), hollowInventoryFile, strings.Join(missing, "\n  "))
+	}
+}
+
+// TestTsvHollowoutInventoryRowsAreWellFormed 是【清单自身的形状判据】。
+func TestTsvHollowoutInventoryRowsAreWellFormed(t *testing.T) {
+	root := hollowRepoRoot(t)
+	entries := readHollowInventory(t, root)
+	if len(entries) == 0 {
+		t.Fatalf("清单是空的 ⇒ 门恒绿（形同虚设）")
+	}
+	seen := map[string]bool{}
+	for _, e := range entries {
+		if e.Path == "" {
+			t.Errorf("有条目没有填 tsv_path")
+			continue
+		}
+		if seen[e.Path] {
+			t.Errorf("清单里有重复条目：%s", e.Path)
+		}
+		seen[e.Path] = true
+		if _, err := os.Stat(filepath.Join(root, e.Path)); err != nil {
+			t.Errorf("清单条目指向不存在的文件：%s（%v）", e.Path, err)
+		}
+		switch e.Expect {
+		case "red":
+			if e.ReaderKind == "" || e.ReaderSpec == "" {
+				t.Errorf("%s：expect=red ⇒ 必须给出读方（kind/spec）", e.Path)
+			}
+		case "exception":
+			if len(e.Reason) < 12 {
+				t.Errorf("%s：expect=exception ⇒ 必须写实质理由（现在 %d 字：%q）", e.Path, len(e.Reason), e.Reason)
+			}
+			for _, ph := range []string{"todo", "TBD", "n/a", "NA", "待补", "无", "?"} {
+				if e.Reason == ph {
+					t.Errorf("%s：例外理由是占位符 %q", e.Path, e.Reason)
+				}
+			}
+		default:
+			t.Errorf("%s：expect 只能是 red / exception（实际 %q）", e.Path, e.Expect)
+		}
+		if e.ReaderKind != "" && e.ReaderKind != "gotest" && e.ReaderKind != "shell" && e.ReaderKind != "none" {
+			t.Errorf("%s：reader_kind 只能是 gotest / shell / none（实际 %q）", e.Path, e.ReaderKind)
+		}
+		if e.Expect == "red" && e.ReaderKind == "none" {
+			t.Errorf("%s：expect=red ⇒ 必须给出读方（reader_kind 不能是 none）", e.Path)
+		}
+		if e.HeaderRows < 0 {
+			t.Errorf("%s：header_rows 不能为负", e.Path)
+		}
+	}
+}
+
+// TestTsvHollowoutReadersRejectEmptyRegistry 是【行为判据】：
+// ★ 对每条 expect=red 的条目：★ 基线绿 ⇒ 掏空 ⇒ 必须红 ⇒ 还原 ⇒ md5 对上。
+func TestTsvHollowoutReadersRejectEmptyRegistry(t *testing.T) {
+	root := hollowRepoRoot(t)
+	entries := readHollowInventory(t, root)
+	for _, e := range entries {
+		if e.Expect != "red" {
+			continue
+		}
+		t.Run(e.Path, func(t *testing.T) {
+			abs := filepath.Join(root, e.Path)
+			orig, err := os.ReadFile(abs)
+			if err != nil {
+				t.Fatalf("读 %s 失败：%v", e.Path, err)
+			}
+			origMD5 := md5Of(orig)
+
+			// ★ ① 掏空前的形状
+			dataRowsBefore := countDataRows(orig)
+			hollowed, dropped, kept := hollowBytes(orig, e.HeaderRows)
+			// ★ ② 变换有效性（探针有没有效）—— 「掏空后仍绿」的第一嫌疑是探针无效
+			if dropped == 0 {
+				t.Fatalf("%s：掏空是**空操作**（非注释行数 = %d，header_rows = %d）⇒ ⇒ 什么都没测到 ⇒ "+
+					"⇒ 这条目不可判定 ⇒ ⇒ 请改 header_rows，或把该文件登记成 expect=exception 并写理由",
+					e.Path, dataRowsBefore, e.HeaderRows)
+			}
+			if kept != e.HeaderRows {
+				t.Fatalf("%s：掏空后保留的非注释行数 = %d，与 header_rows = %d 不符 ⇒ 变换形状不对",
+					e.Path, kept, e.HeaderRows)
+			}
+			if got := countDataRows(hollowed); got != kept {
+				t.Fatalf("%s：掏空后非注释行数 = %d，与变换报告的 %d 不符 ⇒ 变换与读数口径不一致",
+					e.Path, got, kept)
+			}
+
+			// ★ ③ 基线：读方必须绿（否则不可判定）
+			code, out, err := runHollowReader(e.ReaderKind, e.ReaderSpec, root, 600*time.Second)
+			if err != nil {
+				t.Fatalf("跑基线读方失败（%s %s）：%v", e.ReaderKind, e.ReaderSpec, err)
+			}
+			if code != 0 {
+				t.Fatalf("%s：读方在【基线】就红（exit=%d）⇒ ⇒ 不可判定 ⇒ "+
+					"★ 先把读方修绿，或把该条目改成 expect=exception 并写理由。\n%s",
+					e.Path, code, tailLines(out, 20))
+			}
+
+			// ★ ④ 掏空 ⇒ 跑读方 ⇒ 必须红
+			if err := os.WriteFile(abs, hollowed, 0o644); err != nil {
+				t.Fatalf("写掏空版失败：%v", err)
+			}
+			defer func() {
+				_ = os.WriteFile(abs, orig, 0o644)
+				back, err := os.ReadFile(abs)
+				if err != nil {
+					t.Errorf("还原后读不回 %s：%v", e.Path, err)
+					return
+				}
+				if got := md5Of(back); got != origMD5 {
+					t.Errorf("还原后 md5 不符（%s）：期望 %s，实际 %s", e.Path, origMD5, got)
+				}
+			}()
+			code, out, err = runHollowReader(e.ReaderKind, e.ReaderSpec, root, 600*time.Second)
+			if err != nil {
+				t.Fatalf("跑掏空版读方失败：%v", err)
+			}
+			if code == 0 {
+				t.Fatalf("%s：★ 掏空后读方**仍然绿** ⇒ ⇒ 读方在「读到 0 行」时是瞎的 ⇒ "+
+					"★ 这就是 R84 轮要找的那个洞。\n★ 读方：%s %s\n%s",
+					e.Path, e.ReaderKind, e.ReaderSpec, tailLines(out, 20))
+			}
+		})
+	}
+}
+
+// tailLines 取输出末尾 n 行。
+func tailLines(s string, n int) string {
+	lines := strings.Split(strings.TrimRight(s, "\n"), "\n")
+	if len(lines) > n {
+		lines = lines[len(lines)-n:]
+	}
+	return strings.Join(lines, "\n")
+}
+
+// ---------------------------------------------------------------- 自检
+
+// TestTsvHollowoutHarnessHasTeeth 证明【本门的量具有牙】：
+// ★ 用合成读方验证「分类器能把红与绿分开」——★ 否则「掏空后仍绿」可能只是
+// ★ 分类器恒判「绿」。
+func TestTsvHollowoutHarnessHasTeeth(t *testing.T) {
+	root := hollowRepoRoot(t)
+	dir := t.TempDir()
+
+	// 合成登记册：2 行注释 + 1 行列名 + 1 行数据
+	reg := filepath.Join(dir, "synthetic.tsv")
+	content := "# 合成登记册\n# 列：a\tb\na\tb\nx\ty\n"
+	if err := os.WriteFile(reg, []byte(content), 0o644); err != nil {
+		t.Fatalf("写合成登记册失败：%v", err)
+	}
+	hollowed, dropped, kept := hollowBytes([]byte(content), 1)
+	if dropped != 1 {
+		t.Fatalf("合成登记册应掏掉 1 行数据，实际 %d", dropped)
+	}
+	if kept != 1 {
+		t.Fatalf("合成登记册掏空后应保留 1 行列名行，实际 %d", kept)
+	}
+	if got := countDataRows(hollowed); got != 1 {
+		t.Fatalf("合成登记册掏空后应剩 1 行非注释内容（列名行），实际 %d", got)
+	}
+	if !strings.Contains(string(hollowed), "# 合成登记册") {
+		t.Fatalf("掏空后必须保留注释行，实际 %q", string(hollowed))
+	}
+	if !strings.Contains(string(hollowed), "a\tb") {
+		t.Fatalf("掏空后必须保留列名行，实际 %q", string(hollowed))
+	}
+
+	// ★ 合成读方：① 读到 0 行就退出 1（模拟「有牙」的读方）
+	redReader := filepath.Join(dir, "red_reader.sh")
+	if err := os.WriteFile(redReader, []byte("#!/usr/bin/env bash\n"+
+		"rows=$(grep -vc '^#' \"$1\" 2>/dev/null || true)\n"+
+		"[ \"$rows\" -le 1 ] && exit 1 || exit 0\n"), 0o755); err != nil {
+		t.Fatalf("写合成读方失败：%v", err)
+	}
+	// ★ ② 永远退出 0（模拟「瞎」的读方）
+	greenReader := filepath.Join(dir, "green_reader.sh")
+	if err := os.WriteFile(greenReader, []byte("#!/usr/bin/env bash\nexit 0\n"), 0o755); err != nil {
+		t.Fatalf("写合成读方失败：%v", err)
+	}
+
+	code, _, err := runHollowReader("shell", "bash "+redReader+" "+reg, root, 60*time.Second)
+	if err != nil {
+		t.Fatalf("跑合成读方失败：%v", err)
+	}
+	if code != 0 {
+		t.Fatalf("★ 合成读方（读到 0 行就红）在完整登记册上必须绿，实际 exit=%d ⇒ ⇒ 分类器有问题", code)
+	}
+	// ★ 掏空版要**落成文件**再喂给读方（★ 不能把内容当命令参数传）
+	hollowedPath := filepath.Join(dir, "synthetic_hollowed.tsv")
+	if err := os.WriteFile(hollowedPath, hollowed, 0o644); err != nil {
+		t.Fatalf("写掏空版失败：%v", err)
+	}
+	code, _, err = runHollowReader("shell", "bash "+redReader+" "+hollowedPath, root, 60*time.Second)
+	if err != nil {
+		t.Fatalf("跑合成读方失败：%v", err)
+	}
+	if code == 0 {
+		t.Fatalf("★ 合成读方（读到 0 行就红）在掏空登记册上必须红，实际 exit=0 ⇒ ⇒ 分类器恒判绿")
+	}
+	code, _, err = runHollowReader("shell", "bash "+greenReader+" "+reg, root, 60*time.Second)
+	if err != nil {
+		t.Fatalf("跑合成读方失败：%v", err)
+	}
+	if code != 0 {
+		t.Fatalf("★ 合成读方（永远绿）必须绿，实际 exit=%d", code)
+	}
+	// ★★ 反向自检：★ 「瞎」的读方在完整登记册上绿、在掏空版上**也绿**
+	//   ⇒ ⇒ 这正是「掏空后仍绿」的那个形状 ⇒ ⇒ 量具必须能把它与「有牙」区分开
+	code, _, err = runHollowReader("shell", "bash "+greenReader+" "+hollowedPath, root, 60*time.Second)
+	if err != nil {
+		t.Fatalf("跑合成读方失败：%v", err)
+	}
+	if code != 0 {
+		t.Fatalf("★ 合成读方（永远绿）在掏空版上必须仍绿，实际 exit=%d", code)
+	}
+}

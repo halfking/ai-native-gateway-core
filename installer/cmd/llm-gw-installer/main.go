@@ -989,20 +989,25 @@ var sessionTurnsPromoteFinalSuccessSelfHeal897 []byte
 // 898（2026-10-23，会话族 hot 排水轮）：补上 public.session_bodies_hot 的
 // **ts 首列索引**。
 // ★ 该 hot 表的 6 个索引中没有一个以 ts 为首列 ⇒ 批次选取走 Seq Scan + Sort
-//   （实测 cost 1602~1623）；★ 对照组 session_turns_hot 有
-//   idx_session_turns_hot_ts (ts, id, partition_date) ⇒ Index Only Scan。
+//
+//	（实测 cost 1602~1623）；★ 对照组 session_turns_hot 有
+//	idx_session_turns_hot_ts (ts, id, partition_date) ⇒ Index Only Scan。
+//
 // ★ ★ 交付缺口（带精确失败点）：614 @ 6973a9fb8（= 生产 schema_migrations
-//   记账时刻那一版）把该索引定义成带 `WHERE ts > now() - interval '8 hours'`
-//   谓词的 partial index ⇒ now() 非 IMMUTABLE ⇒ PG 拒绝 ⇒ **从未建成**，
-//   且其后同文件的 idx_session_bodies_hot_partition_date 也从未执行；而其
-//   前面的 _lookup / _request 建成了 ⇒ 与生产现状逐条吻合。⇒ 修好了的
-//   614（368202126）因**台账已记 applied**而永远到不了生产，⇒ 且 614
-//   不在通道 files=() ⇒ 通道也不补 ⇒ **双通道都到不了**。
+//
+//	记账时刻那一版）把该索引定义成带 `WHERE ts > now() - interval '8 hours'`
+//	谓词的 partial index ⇒ now() 非 IMMUTABLE ⇒ PG 拒绝 ⇒ **从未建成**，
+//	且其后同文件的 idx_session_bodies_hot_partition_date 也从未执行；而其
+//	前面的 _lookup / _request 建成了 ⇒ 与生产现状逐条吻合。⇒ 修好了的
+//	614（368202126）因**台账已记 applied**而永远到不了生产，⇒ 且 614
+//	不在通道 files=() ⇒ 通道也不补 ⇒ **双通道都到不了**。
+//
 // ★ 形态照抄仓内样板 idx_session_turns_hot_ts ⇒ (ts, id, partition_date)。
 // ★ 用 CONCURRENTLY：hot 表是活写表，普通 CREATE INDEX 会阻断写入。
 // ⚠ 诚实边界：实测批次选取只花 30ms（Sort 未溢写）⇒ 本索引**不**是 60s
-//   超时的解（60s 在写侧，实测 ≈79ms/行）⇒ 它消除的是「批次选取随表体量
-//   线性劣化」这个放大器。
+//
+//	超时的解（60s 在写侧，实测 ≈79ms/行）⇒ 它消除的是「批次选取随表体量
+//	线性劣化」这个放大器。
 //
 //go:embed embeddata/startup/898_session_bodies_hot_ts_index.sql
 var sessionBodiesHotTsIndex898 []byte
@@ -1011,16 +1016,57 @@ var sessionBodiesHotTsIndex898 []byte
 // promote_session_bodies_hot_to_partition 的**生产现行体**下沉成迁移
 // （★ session_bodies 族的 copy-gap 修复）。
 // ★ 活库上装的是**裸 ON CONFLICT DO NOTHING** + reconciled CTE 的形态
-//   （实测 src_len=3486）⇒ 逐字等于 db/db.go 的
-//   ensureSessionBodiesPromoteDrain（每次网关启动都重装）⇒ ⇒ **这个形态
-//   只活在 Go 源码里，不在任何迁移里**。
+//
+//	（实测 src_len=3486）⇒ 逐字等于 db/db.go 的
+//	ensureSessionBodiesPromoteDrain（每次网关启动都重装）⇒ ⇒ **这个形态
+//	只活在 Go 源码里，不在任何迁移里**。
+//
 // ★ 而仓内四版迁移（615/626/638/708）全是带仲裁目标的
-//   `ON CONFLICT (id, partition_date)` ⇒ ⇒ 「只跑迁移不启 Go」会把它装回
-//   生产 ⇒ ⇒ 23505 复发 + 毒丸行卡死 hot 窗口 ⇒ ⇒ 修法在通道路径上无效。
+//
+//	`ON CONFLICT (id, partition_date)` ⇒ ⇒ 「只跑迁移不启 Go」会把它装回
+//	生产 ⇒ ⇒ 23505 复发 + 毒丸行卡死 hot 窗口 ⇒ ⇒ 修法在通道路径上无效。
+//
 // ★ 函数体逐字等于生产现行体 ⇒ 语义零变更。
 //
 //go:embed embeddata/startup/899_session_bodies_promote_body_sink.sql
 var sessionBodiesPromoteBodySink899 []byte
+
+// 900（2026-10-23，llmgo 生产页面修复轮）：把 FreeDiscovery 数据模型
+// （084 + 087 的列）**再投递**给升级通道库与新装链。
+// ★ 交付缺口：升级通道（deploy-lib/db-changelog.sh）只把 version ≥ 412 视为
+//
+//	pending ⇒ 084（<412）从未到达任何生产库；db-changelog 084 行自证
+//	「applied+verified (本地 llm-gateway 库, psql 手动应用)」⇒ 只在本地
+//	开发库手动应用过。⇒ 生产共享库实测无 provider_templates /
+//	discovery_tasks / discovery_results ⇒ R39 的
+//	ProviderTemplatesProvisioned()=false ⇒ /api/free-discovery/* 一律 503
+//	"database disabled"（245 journal 逐字佐证）。
+//
+// ★ 形态：逐字复用 084 的幂等 DDL + 并入 087 的三个健康反馈列
+//
+//	（ADD COLUMN IF NOT EXISTS）；新装链此前同样缺这三张表（084 不在任何
+//	通道）⇒ 本迁移同时补齐新装路径；升级库全 no-op。
+//
+//go:embed embeddata/startup/900_freediscovery_schema_reassert.sql
+var freediscoverySchemaReassert900 []byte
+
+// 901（2026-10-23，llmgo 生产页面修复轮）：给分区父表 public.usage_ledger
+// 补 (api_key_id, ts DESC) WHERE api_key_id IS NOT NULL 部分索引。
+// ★ usage_ledger_2026_09（742 MB）/ _2026_10（345 MB）的既有四组索引首列
+//
+//	全是 request_id / tenant_id / ts，没有 api_key_id ⇒ /api/usage/{id}
+//	三端点的 `WHERE api_key_id=$1 AND ts 范围` 只能走 ts 首列索引 +
+//	api_key_id Filter ⇒ EXPLAIN ANALYZE 实测「7 天窗口 0 行的 key 73」
+//	耗 6,983 ms（每 worker 移除 64,822 行）⇒ keys 详情页使用统计在负载
+//	窗口整体超时（"query failed"）。
+//
+// ★ 形态照抄 hot 侧既有样板 usage_ledger_hot_api_key_id_ts_idx（逐列一致）；
+//
+//	普通 CREATE INDEX（父表不支持 CONCURRENTLY）+ lock_timeout=60s /
+//	statement_timeout=10min（891 同款）。
+//
+//go:embed embeddata/startup/901_usage_ledger_api_key_id_ts_idx.sql
+var usageLedgerApiKeyIdTsIdx901 []byte
 
 //go:embed embeddata/startup/859_tighten_pii_phone_intl_regex.sql
 var tightenPiiPhoneIntlRegex859 []byte
@@ -1367,8 +1413,10 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/895_domain_chain_startup_images.sql":                                    domainChainStartupImages895,
 	"startup/896_offline_activation_requests_columns_reassert.sql":                   offlineActivationRequestsColumnsReassert896,
 	"startup/897_session_turns_promote_final_success_self_heal.sql":                  sessionTurnsPromoteFinalSuccessSelfHeal897,
-	"startup/898_session_bodies_hot_ts_index.sql":                                  sessionBodiesHotTsIndex898,
-	"startup/899_session_bodies_promote_body_sink.sql":                              sessionBodiesPromoteBodySink899,
+	"startup/898_session_bodies_hot_ts_index.sql":                                    sessionBodiesHotTsIndex898,
+	"startup/899_session_bodies_promote_body_sink.sql":                               sessionBodiesPromoteBodySink899,
+	"startup/900_freediscovery_schema_reassert.sql":                                  freediscoverySchemaReassert900,
+	"startup/901_usage_ledger_api_key_id_ts_idx.sql":                                 usageLedgerApiKeyIdTsIdx901,
 	"startup/859_tighten_pii_phone_intl_regex.sql":                                   tightenPiiPhoneIntlRegex859,
 	"startup/852_models_canonical_column_set_reconcile.sql":                          modelsCanonicalColumnSetReconcile852,
 	"startup/489_credential_probe_queue_startup_backfill.sql":                        credentialProbeQueueStartupBackfill489,

@@ -25,7 +25,8 @@ package ursm_test
 // # 判据口径（与登记册 `cjk_var_sites.tsv` 必须逐字一致）
 //
 //	① 只认**裸** `$VAR`；`${VAR}` 带花括号是**安全**的（花括号终止变量名）。
-//	② 跳过整行注释（首个非空白字符是 `#`）。
+//	② 跳过**注释**（整行注释 ＋ **尾随注释**；★ 尾随注释的判据是
+//	   「`#` 在引号外 **且** 处于**词首**」⇒ `a#b` 是字面量、不是注释）。
 //	③ 跳过**单引号**区段（单引号里不发生展开）。
 //	④ 其余位置：凡 `$VAR` 后面紧跟一个 **>= 0x80 的字节**，记 1 个站点。
 //
@@ -52,6 +53,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -61,11 +63,8 @@ import (
 
 const cjkVarRegistry = "cjk_var_sites.tsv"
 
-// cjkVarSkipDirs 是扫描时跳过的目录。
-var cjkVarSkipDirs = map[string]bool{
-	".git": true, "node_modules": true, "vendor": true,
-	"dist": true, "build": true, ".venv": true, "__pycache__": true,
-}
+// ★ cjkVarSkipDirs 已删除：★ 2026-10-23（R85 轮收尾）起，扫描范围改为
+// 【git 追踪的文件】（见 scanRepoShellScripts）⇒ ⇒ 不再需要「按目录名跳过」。
 
 // cjkVarSite 是一条「裸 $VAR 紧跟非 ASCII」的站点。
 type cjkVarSite struct {
@@ -85,19 +84,8 @@ func scanCJKVarInText(text string) []cjkVarSite {
 		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
 			continue
 		}
-		// ③ 去掉单引号区段（单引号里不发生展开）
-		var b strings.Builder
-		inSingle := false
-		for _, r := range line {
-			if r == '\'' {
-				inSingle = !inSingle
-				continue
-			}
-			if !inSingle {
-				b.WriteRune(r)
-			}
-		}
-		seg := b.String()
+		// ★★ ②+③ 剥掉尾随注释与单引号区段 ⇒ 只留「会参与展开」的字节
+		seg := cjkCodeSegment(line)
 		// ① 去掉 ${VAR} 形式（安全）后再找裸 $VAR
 		seg = stripBracedVars(seg)
 		for _, m := range bareVarMatches(seg) {
@@ -109,6 +97,70 @@ func scanCJKVarInText(text string) []cjkVarSite {
 		}
 	}
 	return sites
+}
+
+// cjkCodeSegment 返回一行里**会参与变量展开**的字节：★ 去掉尾随注释 ＋ 去掉单引号区段。
+//
+// ★★ 2026-10-23（R85 轮收尾）：★ 旧实现只剥**整行**注释（`HasPrefix(trimmed, "#")`）
+//
+//	  ⇒ ⇒ **尾随注释**里的 `$VAR）` 被报成站点 ⇒ ⇒ **假阳性**。
+//	  ★ 实测触发的站点（`scripts/mut-nginx-realip-patch.sh:47` / `:56`）：
+//
+//		run_gate_patch() {   # run_gate_patch  （用 $MUT_PATCHER / $MUT_ENGINE）
+//
+//	  ⇒ bash **不展开注释** ⇒ ⇒ 不是站点（★ 实测：`set -u` 下尾随注释里的
+//	    `$UNDEFINED_VAR` 不报错、退出码 0）⇒ ⇒ 旧口径会把登记册染成「站点数增加」。
+//
+// ★★ 而判据不能退化成「见 # 就截断」—— bash 的规则是：
+//
+//	`#` 只有在【引号外】**且**处于【词首】时才是注释起始
+//	⇒ `a#b` 是字面量（不是注释）⇒ `echo "x"#y $v中` 里的 `$v中` **仍是站点**。
+//
+// ⇒ ⇒ 本函数按 bash 的真实语义单遍走一遍行，记住单/双引号状态。
+func cjkCodeSegment(line string) string {
+	var b strings.Builder
+	inSingle, inDouble := false, false
+	for i := 0; i < len(line); i++ {
+		c := line[i]
+		switch {
+		case c == '\\' && !inSingle:
+			// ★ 反斜杠：下一个字节按字面处理
+			//   （`\$` 不展开、 `\"` 不切换引号状态、`\\` 是一个字面反斜杠）。
+			b.WriteByte(c)
+			if i+1 < len(line) {
+				i++
+				b.WriteByte(line[i])
+			}
+			continue
+		case c == '\'' && !inDouble:
+			inSingle = !inSingle
+			continue
+		case c == '"' && !inSingle:
+			inDouble = !inDouble
+		case c == '#' && !inSingle && !inDouble:
+			if i == 0 || isCommentWordStart(line[i-1]) {
+				// ★ 尾随注释 ⇒ 后面整段不参与展开
+				return b.String()
+			}
+		}
+		if inSingle {
+			continue
+		}
+		b.WriteByte(c)
+	}
+	return b.String()
+}
+
+// isCommentWordStart 判断某个字节之后出现的 `#` 是否处于**词首**。
+//
+// ★ bash 的规则：`#` 必须在词首才是注释起始 ⇒ `a#b` 是字面量。
+// ⇒ 词边界 = 空白 ＋ 分隔符（`;&|()<>`）。
+func isCommentWordStart(c byte) bool {
+	switch c {
+	case ' ', '\t', '\n', '\r', '\v', '\f', ';', '&', '|', '(', ')', '<', '>':
+		return true
+	}
+	return false
 }
 
 // stripBracedVars 把 `${NAME}` 形态替换成等长占位（保持后续字节偏移不变）。
@@ -198,40 +250,73 @@ func bareVarMatches(s string) [][2]int {
 }
 
 // scanRepoShellScripts 扫全仓 shell 脚本，返回「相对路径 → 站点数」与站点明细。
+//
+// ★★ 2026-10-23（R85 轮收尾）：★ 扫描范围从【文件系统遍历】改成
+//
+//	【git 追踪的文件】（`git ls-files`）⇒ ⇒ **读数只取决于【提交的树】**，
+//	不取决于本机工作树里有什么 ⇒ ⇒ **同一个提交在干净 checkout 与脏工作树上读数相同**。
+//
+// ★★ 为什么要改：★ 旧实现走 `filepath.Walk` ⇒ ⇒ 把 **gitignored 的本机临时目录**
+//
+//	也扫了 ⇒ 实测 `.audit148/run.sh`（`.gitignore:78` 的 `.audit*/` 命中）
+//	有 1 处站点 ⇒ ⇒ **同一个提交在别人机器上绿、在本机红** ⇒ ⇒ 读数不可复现。
+//
+// ⇒ ⇒ 这是本线纪律「判据读自己的输入时，先核对【读出来的形状】与【写进去的形状】一致」
+//
+//	的一次实例：★ 判据的输入集合必须是**确定的**。
 func scanRepoShellScripts(root string) (map[string]int, map[string][]cjkVarSite, error) {
 	counts := map[string]int{}
 	details := map[string][]cjkVarSite{}
-	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+
+	top, err := repoTopLevel(root)
+	if err != nil {
+		return nil, nil, fmt.Errorf("解析仓根失败: %w", err)
+	}
+	rels, err := trackedShellScripts(top)
+	if err != nil {
+		return nil, nil, fmt.Errorf("取 git 追踪的 shell 脚本失败: %w", err)
+	}
+	for _, rel := range rels {
+		data, err := os.ReadFile(filepath.Join(top, rel))
 		if err != nil {
-			return err
+			continue // 读不到就当没有（不因权限问题让门红）
 		}
-		if info.IsDir() {
-			if cjkVarSkipDirs[info.Name()] && path != root {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if !strings.HasSuffix(path, ".sh") && !strings.HasSuffix(path, ".bash") {
-			return nil
-		}
-		data, err := os.ReadFile(path)
-		if err != nil {
-			return nil // 读不到就当没有（不因权限问题让门红）
-		}
-		rel, rerr := filepath.Rel(root, path)
-		if rerr != nil {
-			rel = path
-		}
-		rel = filepath.ToSlash(rel)
 		sites := scanCJKVarInText(string(data))
 		if len(sites) == 0 {
-			return nil
+			continue
 		}
 		counts[rel] = len(sites)
 		details[rel] = sites
-		return nil
-	})
-	return counts, details, err
+	}
+	return counts, details, nil
+}
+
+// repoTopLevel 返回 git 仓根（绝对路径）。
+func repoTopLevel(root string) (string, error) {
+	out, err := exec.Command("git", "-C", root, "rev-parse", "--show-toplevel").Output()
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+// trackedShellScripts 返回 git 追踪的 `.sh` / `.bash` 文件（相对仓根，已排序）。
+func trackedShellScripts(top string) ([]string, error) {
+	out, err := exec.Command("git", "-C", top, "ls-files", "-z").Output()
+	if err != nil {
+		return nil, err
+	}
+	var rels []string
+	for _, p := range strings.Split(string(out), "\x00") {
+		if p == "" {
+			continue
+		}
+		if strings.HasSuffix(p, ".sh") || strings.HasSuffix(p, ".bash") {
+			rels = append(rels, p)
+		}
+	}
+	sort.Strings(rels)
+	return rels, nil
 }
 
 // readCJKVarRegistry 读登记册：path → count。
@@ -412,7 +497,11 @@ func totalSites(counts map[string]int) int {
 //	  用合成输入断言：
 //		① 裸 `$VAR` 紧跟汉字 ⇒ 命中；
 //		② `${VAR}` 紧跟汉字 ⇒ **不**命中（花括号终止变量名）；
-//		③ 行尾注释里的 `$VAR中` ⇒ **不**命中（注释不执行）；
+//		③ 整行注释里的 `$VAR中` ⇒ **不**命中（注释不执行）；
+//		③' **尾随注释**里的 `$VAR中` ⇒ **不**命中（★ R85 轮收尾补的用例：
+//		     实测触发的假阳性 `run_gate_patch() {   # … （用 $MUT_ENGINE）`）；
+//		③'' `#` **不在词首** ⇒ 不是注释 ⇒ 其后的 `$VAR中` **仍**命中
+//		     （bash 规则：`a#b` 是字面量）；
 //		④ 单引号里的 `$VAR中` ⇒ **不**命中（单引号不展开）；
 //		⑤ ASCII 紧跟（`$VAR)`）⇒ **不**命中。
 func TestCJKVarScannerHasTeeth(t *testing.T) {
@@ -434,6 +523,15 @@ func TestCJKVarScannerHasTeeth(t *testing.T) {
 		// ★★ 偶数个反斜杠 ⇒ `\\` 是一个字面反斜杠 ⇒ 它后面的 `$` **仍然会**被展开
 		//   ⇒ ★ 仍是真站点（★ 判据用奇偶，不是「前一个字节是不是反斜杠」）。
 		{"偶数反斜杠仍展开", `echo "值=\\$v中"`, 1},
+		// ★★★★ 2026-10-23（R85 轮收尾）：★★ 尾随注释 ⇒ 旧口径是**假阳性**。
+		//   ★ 实测：`set -uo pipefail; echo "ok"  # （用 $UNDEFINED_VAR）` ⇒ 退出码 0
+		//   ⇒ ⇒ bash 不展开注释 ⇒ ⇒ 不是站点。
+		{"尾随注释", `echo "ok"  # （用 $v中）`, 0},
+		{"尾随注释在函数定义后", `run_gate() {  # 说明（用 $MUT_ENGINE）`, 0},
+		// ★★ 双引号里的 `#` **不是**注释起始 ⇒ 不能在那里截断
+		{"双引号内的井号", `echo "a # b"  # 注释 $v中`, 0},
+		// ★★ `#` 不在词首 ⇒ bash 当字面量 ⇒ 其后的站点**仍然**是站点
+		{"井号非词首不是注释", `echo "x"#y $v中`, 1},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

@@ -90,7 +90,16 @@ func (d *DB) ensureOmniFreeSchema(ctx context.Context) error {
 			ADD COLUMN IF NOT EXISTS discovery_method TEXT DEFAULT 'manual',
 			ADD COLUMN IF NOT EXISTS last_probe_error TEXT,
 			ADD COLUMN IF NOT EXISTS disabled_at TIMESTAMPTZ,
-			ADD COLUMN IF NOT EXISTS disabled_reason TEXT;
+			ADD COLUMN IF NOT EXISTS disabled_reason TEXT,
+			-- FreeDiscovery 来源追踪列（084 §4 / 900 再投递，幂等双侧：
+			-- 迁移 900 在 fresh-install 链上执行时本表尚不存在 ⇒ 900 刻意
+			-- 跳过该段（NOTICE）⇒ 由本 ensure 在网关启动时补齐。与 087 的
+			-- provider_templates 健康反馈列「迁移 + ensure 双侧 IF NOT
+			-- EXISTS」同款先例（db/db.go ensure provider_templates…）。
+			ADD COLUMN IF NOT EXISTS source_type TEXT NOT NULL DEFAULT 'manual',
+			ADD COLUMN IF NOT EXISTS discovery_task_id BIGINT,
+			ADD COLUMN IF NOT EXISTS last_synced_at TIMESTAMPTZ,
+			ADD COLUMN IF NOT EXISTS upstream_metadata JSONB;
 
 		CREATE TABLE IF NOT EXISTS public.free_quota_tracker (
 			id BIGSERIAL PRIMARY KEY,
@@ -374,6 +383,9 @@ func (d *DB) ensureOmniFreeSchema(ctx context.Context) error {
 		CREATE INDEX IF NOT EXISTS idx_free_resource_catalog_tos ON free_resource_catalog(tos_verdict) WHERE enabled = TRUE;
 		CREATE INDEX IF NOT EXISTS idx_free_resource_catalog_pool_key ON free_resource_catalog(pool_key) WHERE pool_key IS NOT NULL;
 		CREATE INDEX IF NOT EXISTS idx_free_resource_catalog_tenant ON free_resource_catalog(tenant_id);
+		-- FreeDiscovery 来源追踪部分索引（084 §4 / 900 再投递，幂等双侧）。
+		CREATE INDEX IF NOT EXISTS idx_free_resource_catalog_source ON free_resource_catalog(source_type)
+			WHERE source_type <> 'manual';
 
 		CREATE INDEX IF NOT EXISTS idx_free_quota_tracker_credential ON free_quota_tracker(credential_id, window_type);
 		CREATE INDEX IF NOT EXISTS idx_free_quota_tracker_provider_model ON free_quota_tracker(provider_code, model_id);

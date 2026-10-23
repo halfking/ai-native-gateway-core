@@ -191,8 +191,8 @@ func TestSection143101_Section143100GapFixRetracted(t *testing.T) {
 
 func TestSection143101_DocsRegistered(t *testing.T) {
 	lessons := readRepoFile143101(t, section143101Lessons)
-	if !strings.Contains(lessons, "§297") {
-		t.Errorf("LESSONS.md 里没有 `§297` —— ★ 通用式没沉淀")
+	if !strings.Contains(lessons, "§300") {
+		t.Errorf("LESSONS.md 里没有 `§300` —— ★ 通用式没沉淀")
 	}
 	agents := readRepoFile143101(t, section143101Agents)
 	if !strings.Contains(agents, "R146") {

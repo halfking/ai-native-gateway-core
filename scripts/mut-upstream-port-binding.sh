@@ -100,7 +100,7 @@ PY
 
   after="$(md5 -q "$src")"
   if [[ "$before" != "$after" ]]; then
-    echo "  ★ 工作区被改动了（before=$before after=$after）⇒ 异常，计作废"
+    echo "  ★ 工作区被改动了（before=${before} after=${after}）⇒ 异常，计作废"
     INVALID=$((INVALID+1))
     return
   fi

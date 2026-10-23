@@ -1460,6 +1460,32 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			//   残留、调用方零改动。
 			//   ⇒ ★ 本迁移**只落仓**；★ 生产应用需属主另行授权。
 			"899_session_bodies_promote_body_sink.sql",
+			// 900：把 FreeDiscovery 数据模型（084 + 087 的列）**再投递**给
+			//   升级通道库与新装链（896 同款交付缺口修复）。
+			//
+			//   ★ 交付缺口：升级通道只把 version ≥ 412 视为 pending ⇒
+			//   084（<412）从未到达任何生产库（db-changelog 084 行自证
+			//   「applied+verified (本地 llm-gateway 库, psql 手动应用)」）。
+			//   ⇒ 生产共享库实测无 provider_templates / discovery_tasks /
+			//   discovery_results ⇒ R39 的 ProviderTemplatesProvisioned()=false
+			//   ⇒ /api/free-discovery/* 一律 503 "database disabled"
+			//   （245 journal 逐字佐证，2026-10-23）。
+			//   ★ 形态：逐字复用 084 的幂等 DDL + 并入 087 三个健康反馈列；
+			//   新装链此前同样缺这三张表 ⇒ 本迁移同时补齐新装路径；
+			//   升级库全 no-op（IF NOT EXISTS）。
+			"900_freediscovery_schema_reassert.sql",
+			// 901：给分区父表 public.usage_ledger 补
+			//   (api_key_id, ts DESC) WHERE api_key_id IS NOT NULL 部分索引。
+			//
+			//   ★ 既有四组分区索引首列全是 request_id / tenant_id / ts，没有
+			//   api_key_id ⇒ /api/usage/{id} 三端点的按 key 聚合只能走 ts
+			//   首列索引 + Filter ⇒ EXPLAIN ANALYZE 实测「7 天窗口 0 行」耗
+			//   6,983 ms（key 73 空窗）⇒ keys 详情页使用统计在负载窗口整体
+			//   超时（2026-10-23 生产只读实测）。
+			//   ★ 形态照抄 hot 侧样板 usage_ledger_hot_api_key_id_ts_idx；
+			//   普通 CREATE INDEX（父表不支持 CONCURRENTLY）+ lock_timeout=60s
+			//   / statement_timeout=10min（891 同款）。
+			"901_usage_ledger_api_key_id_ts_idx.sql",
 		},
 	}
 }
