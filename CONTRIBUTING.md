@@ -260,8 +260,11 @@ make test
 > **Note**: the former `make lint-pg-rls` / `make lint-tenant-scope-llmgw` / `make lint-otel-tenant` targets
 > never existed in this repository — no `scripts/Makefile` and no lint script was ever committed here — so
 > `make lint-*` always failed. `make test-rls` is the only real-PostgreSQL RLS gate and is a local gate
-> (needs `TEST_DATABASE_URL`, not wired into CI); CI runs the unit-test suite via `verify.sh`. The OTel
-> `tenant.id` attribute has no standalone gate — it is set by `internal/observability/tenant.go` (`AttrTenantID`).
+> (needs `TEST_DATABASE_URL`, not wired into CI); CI runs the unit-test suite via `verify.sh`.
+> The OTel `tenant.id` attribute is set by `internal/observability/tenant.go` (`AttrTenantID`) and is now
+> covered by a unit gate in that package (`TestSetTenantAttrsSetsRequiredTenantID`); what it does **not**
+> yet cover is that every span-producing call site actually calls it — that is a whole-path question,
+> not an attribute-contract question.
 
 ### Example
 

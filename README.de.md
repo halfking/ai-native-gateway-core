@@ -19,7 +19,7 @@ AI Native Gateway ist ein **Open-Source-, self-hosted-, AI-nativer LLM-Gateway**
 - **Protokoll-Normalisierung**: OpenAI-, Anthropic-, Gemini- und Responses-API-Kompatibilität — ein Endpunkt für jedes Modell
 - **Intelligentes Zwei-Schichten-Routing**: L1 wählt das Modell (Task-Klassifikation → 6-Dimensionen-Scoring), L2 wählt das Credential (Tier-Fallback → Billing-Runde → P2C-Scoring → Execute / Circuit-Break)
 - **Session-Governance**: Sticky Sessions, vollständiges Session-Replay, automatische Prompt-Kompression und 4-stufiger Datenlebenszyklus — das Gespräch, nicht nur der Request, ist ein First-Class-Objekt
-- **Multi-Tenancy**: Durch PostgreSQL-RLS erzwungene Tenant-Isolation auf 38+ Tabellen, mit Tenant-spezifischen Quotas, Metering und MaaS-Billing
+- **Multi-Tenancy**: Durch PostgreSQL-RLS erzwungene Tenant-Isolation auf 90+ Tabellen, mit Tenant-spezifischen Quotas, Metering und MaaS-Billing
 - **Credential-Management**: Multi-Credential-Pools mit Fingerprint-Tarnung, adaptivem Probing und automatischem Circuit-Breaking
 - **Observability**: Echtzeit-Request-Streams, Routing-Analysen (Heatmap + Sankey), Kosten-Tracking, OTel + Prometheus
 - **Privacy**: 100 % privates Deployment — alle Daten bleiben in Ihrer Infrastruktur
@@ -55,7 +55,7 @@ Gebaut mit **Go + PostgreSQL + Redis**, läuft heute in Produktion auf k3s (zwei
 |-------|--------------|
 | **Protokoll** | OpenAI / Anthropic / Gemini / Responses kompatibel + SSE-Streaming-Relay mit Integritätschecks |
 | **Routing** | Zwei-Schichten-Routing (Modell → Credential) + Sticky Sessions + Auto-Routing mit Kosten-/Qualitäts-Policies |
-| **Multi-Tenancy** | Identity-Tunnel (virtuelle IP/MAC/ClientID) + Credential-Pools + RLS auf 38+ Tabellen |
+| **Multi-Tenancy** | Identity-Tunnel (virtuelle IP/MAC/ClientID) + Credential-Pools + RLS auf 90+ Tabellen |
 | **Traffic-Governance** | Token-Rate-Limiting (TPM/RPM) + semantischer Cache + Prompt-Kompression + Sliding-Window-Algorithmen |
 | **Audit** | Full-Chain-Audit + DLQ + Disk-Fallback + OTel + Prometheus |
 | **Credentials** | Multi-Credential + Fingerprint-Pool + adaptives Probing + manuelle Deaktivierung |
@@ -78,7 +78,7 @@ graph TB
         CP["Control plane<br/>Admin API + embedded Vue SPA"]
         BGW["Background workers (~80 goroutines)<br/>probe / cleanup / stats / partitions"]
     end
-    GW --> PG[("PostgreSQL 14+<br/>durable facts · RLS 38+ tables · partitions")]
+    GW --> PG[("PostgreSQL 14+<br/>durable facts · RLS 90+ tables · partitions")]
     GW --> RD[("Redis 7+<br/>URSM state · limits · sticky · session hot state")]
     DP -->|"IR conversion + vendor field strip"| P["LLM Providers<br/>OpenAI / Anthropic / Gemini / domestic"]
     CP -.->|"signed outbox events"| ASM["ai-session-manager<br/>session projection / analytics"]
@@ -367,7 +367,7 @@ Das vollständige Installer-Design finden Sie in [installer/README.md](installer
 | **Session-Governance** | Request-Level-Logs | Sticky Sessions + Vollinhalt-Replay + Kompression + 4-stufiger Lebenszyklus |
 | **MCP-Tool-Gateway** | Teilweise | Volle Auslieferung angezielt für Q3 2026 |
 | **Chinesisch-freundlich** | Begrenzt | Volle chinesische UI + Domestic-Modelle + Alipay |
-| **Multi-Tenant-Audit** | Standard | RLS auf 38+ Tabellen · Tenant-Audits bei L1 = 0 |
+| **Multi-Tenant-Audit** | Standard | RLS auf 90+ Tabellen · Tenant-Audits bei L1 = 0 |
 
 ### vs. namentlich genannte Alternativen
 

@@ -126,11 +126,11 @@ Requests flow through **two routing layers**, both observable in the Routing Pan
 
 - **Secret masking**: API keys and tokens are masked before persistence — OpenAI (`sk-…`), Anthropic (`sk-ant-…`), AWS (`AKIA…`), generic Bearer tokens, and `x-api-key` header forms; applied to request logs, session summaries, and archived request/response bodies
 - **Encrypted credentials**: upstream provider keys are encrypted at rest (Fernet/AES) and rendered masked (`sk-****`) in the admin UI
-- **Multi-tenancy**: PostgreSQL Row-Level Security on 38+ tables; cross-tenant reads return not-found rather than forbidden (no information leak)
+- **Multi-tenancy**: PostgreSQL Row-Level Security on 90+ tables; cross-tenant reads return not-found rather than forbidden (no information leak)
 
 ### Multi-Tenancy
 
-**Isolation**: PostgreSQL Row-Level Security (RLS) on 38+ tables
+**Isolation**: PostgreSQL Row-Level Security (RLS) on 90+ tables
 
 **Key Concepts**:
 - **Tenant**: Top-level isolation boundary
