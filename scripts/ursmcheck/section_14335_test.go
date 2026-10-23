@@ -383,7 +383,14 @@ func TestSection14335LedgerIsUpdated(t *testing.T) {
 	}
 }
 
-// TestSection14335LedgerRecordsDrift 钉住「线上未部署 ⇒ 台账必须记 drift 且写清原因」。
+// TestSection14335LedgerRecordsDrift 钉住台账对 ursm-snapshot-health.sh 部署状态的记录。
+//
+// ★ 历史判据（2026-10-22 写）：「线上未部署 ⇒ 台账必须记 drift 且写清原因」。
+// ★ 2026-10-24 llmgo 六页面修复轮：P11 两件套（巡检新版本 + slot-refresh）与
+//   /etc/cron.d/pg17 的刷新行已实际部署到 252（手动实测 base_source=daily、
+//   64.7s 完成、coverage 7/7）⇒ 事实翻转 ⇒ 本门同步翻转到新事实：
+//   「已部署 ⇒ 台账必须 in-sync 且写清部署证据」。
+//   （门的意图不变：台账不许对部署状态说谎——状态必须与线上实测一致。）
 func TestSection14335LedgerRecordsDrift(t *testing.T) {
 	ledger := readFile14335(t, ledger252)
 
@@ -395,15 +402,15 @@ func TestSection14335LedgerRecordsDrift(t *testing.T) {
 		if len(parts) < 5 {
 			t.Fatalf("台账行字段不足：%q", ln)
 		}
-		if parts[3] != "drift" {
-			t.Fatalf("★ 台账状态是 %q —— 线上仍是旧版（未部署）⇒ 必须是 drift", parts[3])
+		if parts[3] != "in-sync" {
+			t.Fatalf("★ 台账状态是 %q —— 线上已部署 10efc586（2026-10-24 实测 base_source=daily）⇒ 必须是 in-sync", parts[3])
 		}
 		reason := parts[4]
-		// ★ needle 用【唯一】的表述 —— 「迁移 892」在台账里出现两次 ⇒
-		//   只钉它会被另一处满足 ⇒ 假绿。
-		for _, n := range []string{"§143.35", "P11", "未部署", "迁移 892【同时】做"} {
+		// ★ needle 用【唯一】的表述 —— 部署证据必须落在台账里，
+		//   让「部署过、验证过」可从台账本身复算（不依赖会话记忆）。
+		for _, n := range []string{"§143.35", "P11", "base_source=daily", "迁移 892"} {
 			if !strings.Contains(reason, n) {
-				t.Fatalf("台账原因里缺 %q —— 必须写清「仓内已改、未部署、依赖迁移 892」", n)
+				t.Fatalf("台账原因里缺 %q —— 必须写清部署证据（快路实测、依赖迁移 892）", n)
 			}
 		}
 		return
