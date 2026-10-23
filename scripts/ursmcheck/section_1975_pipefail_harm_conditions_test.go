@@ -17,16 +17,47 @@ package ursm_test
 //   ③ ★★ **订正：消费者是 `head` 时，危害同样要求「写端 > 64 KiB」** ⇒ 段十三表格写的
 //      「任意 ⇒ 141」**过宽** ⇒ 实测 60,000 B ⇒ 0。
 //   ④ ★★ **边界竞态（⇒ 门不能钉竞态读数）**：`head` 在**紧邻 64 KiB** 处**有竞态**
-//      （70,000 B 连跑 8 次 ⇒ 0 出现 3 次、141 出现 5 次）⇒ ★ **只钉远离边界的点**；
-//      而 `grep -q` 的同一边界是【确定的】（65,537 B ⇒ 0、70,000 B ⇒ 141，6/6 稳定）。
+//      （70,000 B 连跑 8 次 ⇒ 0 出现 3 次、141 出现 5 次）⇒ ★ **只钉远离边界的点**。
+//      ★★★★★ **【R85 轮 · §19.25.17 订正】**：★ 本条原文接着写「而 `grep -q` 的同一边界
+//      是【确定的】（65,537 B ⇒ 0、70,000 B ⇒ 141，6/6 稳定）」—— ★★ **这一句被实测证伪**：
+//      ★★ ① `grep -q` 65,537 B **就是**竞态（实测中等负载 300 次里 43 次翻成 141）；
+//      ★★ ② `grep -q` 70,000 B 在**中等负载下 300/300 稳定**，★★ **却在超载宿主上翻了**
+//      （120 次里 2 次）⇒ ⇒ ⇒ ★★ **「6/6 稳定」与「300/300 稳定」都只证明【那 N 次的
+//      宿主状态下稳定】，不证明【机制上确定】** ⇒ ⇒ ⇒ ★★ **⇒ 判据①改成【判定式】**
+//      （见下方判据①）⇒ ★ **文档里写着一个【当时就已被推翻】的判断比没写更糟**。
 //
 // ── 六条判据 ────────────────────────────────────────────────────────────────
 //
-// ① **机制读数被钉住**：跑 `scripts/audit/probe-pipefail-harm-conditions.sh`
-//    （仓内可重跑）⇒ 断言 9 条读数逐条一致 ⇒ ★ 含 2 条**边界读数**（65,537 / 70,000）
-//    与 1 条**修法形态读数**（herestring ⇒ 0）⇒ ★ 若 bash/OS 行为变了 ⇒ **红**。
-// ② **量具自检（防恒绿门）**：把探针拷到临时目录、注入一条**错的读数** ⇒
+// ① ★★★★★ **机制读数按【判定式】钉，不按【单次定值】钉**（★ R85 轮 · §19.25.17 改判据形态）：
+//    跑 `scripts/audit/probe-pipefail-harm-conditions.sh`（仓内可重跑）⇒
+//    ★ 探针现在**每条读数采样 N 次**（默认 5）⇒ 输出【众数】+【取值集合】⇒
+//    ★ 门据此把 9 条读数分成**三类**，逐类用**不同的判据**：
+//      · 【稳定-0】/【稳定-141】（6 条）⇒ ★ **取值集合必须恰好是 {期望值}**
+//        ⇒ ★ 这是**比原判据更强**的断言（原判据只看一次读数）。
+//      · 【竞态】（3 条：grep-q 65,537 / grep-q 70,000 / head-c 60,000）⇒
+//        ★ **取值集合必须 ⊆ {0, 141}** ⇒ ★ **不钉定值** ⇒ ★ 门不再有 flaky 面。
+//    ⇒ ★ **门真正守的是【区分度】**：无害档（恒 0）与有害档（恒 141）必须可区分。
+//
+//    ★★★★ 【为什么必须是判定式 —— 实测依据（R85 轮，handoff §19.25.17）】：
+//    · 载荷落在【管道缓冲附近】时，**写端的尾部写入**与**消费者的退出**赛跑
+//      ⇒ 两种结果**都可能出现** ⇒ ★ 单次读数是【一次观测】，不是【性质】。
+//    · ★★ 实测：**在中等负载下 300/300 稳定**的那一格（grep-q 70,000），
+//      **在超载宿主上翻了**（120 次里 2 次 ⇒ 0）⇒ ⇒ ⇒ ★★ **「连跑 N 次一致」
+//      只证明【那 N 次的宿主状态下稳定】⇒ 不证明【机制上确定】**（LESSONS §265）
+//      ⇒ ⇒ ⇒ ★★ **任何「定值」钉法都不可靠 ⇒ 只有【判定式】可靠。**
+//    · ⇒ ★★ 而「危害成立」的**真正必要条件**不是「写端超 64 KiB」，而是
+//      **「消费者在写端写完之前退出」** ⇒ ★ 「超 64 KiB」只是
+//      **「写端必然写不完」的【充分代理】** ⇒ ★★ **64 KiB 不是一个【阈值】，
+//      而是一个【概率穿越点】**。
+//
+//    ★★ 【表头/数据列形状被钉住】（★ R85 轮一并修掉段十四的错位一列）：
+//    探针的 TSV 表头与数据行必须**同宽且逐列对齐**（7 列）⇒
+//    ★ 否则「按表头取列」会取错列（段十四的 `emit` 只有 6 个 `%s`、表头 7 个词）。
+//
+// ② ★★★ **量具自检（防恒绿门）**：把探针拷到临时目录、注入一条**错的读数** ⇒
 //    门自己的比较逻辑必须能判红 ⇒ ★ 证明判据①不是恒绿。
+//    ★★ R85 轮补了**反向自检**：★ 把**竞态类**读数改成另一个值 ⇒ 门**必须仍然绿**
+//    ⇒ ★ 证明判据①真的**不再依赖**竞态读数的定值 ⇒ ★（否则「判定式」只是嘴上说说）。
 // ③ **修法形态被钉住（防回退）**：段十四修掉的 8 处必须是 herestring 形态，
 //    且**旧管道形态不得再出现** ⇒ ★ 用【内容锚】而不是行号 ⇒ 行号漂移不影响。
 // ④ **清单进度基线**：候选清单行数必须等于基线（120）⇒ ★ 回落即真脱节（要红）。
@@ -48,6 +79,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -81,14 +113,27 @@ func sc1975RepoRoot(t *testing.T) string {
 	return abs
 }
 
-// sc1975RunProbe 跑探针，返回 (表头后的数据行, 原始输出)。
-func sc1975RunProbe(t *testing.T, scriptPath string) [][]string {
+// sc1975ProbeHeader 是探针 TSV 的【表头列名】（★ R85 轮：表头与数据行同宽 ⇒ 逐列对齐）。
+//
+// ★★ 为什么要有它：★ 段十四的探针 `emit` 只有 6 个 `%s`、表头却写了 7 个词
+//   ⇒ 【表头与数据列错位一列】⇒ 对外 TSV 产物「按表头取列」会取错列
+//   ⇒ ★ Go 门原先按【位置】索引才免疫 ⇒ ★⇒ ★ 本表把「形状」显式钉死。
+var sc1975ProbeHeader = []string{
+	"write_end", "consumer", "body_form", "size", "match_at", "exit_code", "observed",
+}
+
+// sc1975RunProbe 跑探针，返回 (表头列名, 数据行)。
+//
+// ★★ 形状纪律：★ 第 1 个非空行 = 表头，其余 = 数据行 ⇒ ★ **判据读自己的输入时，
+//   先核对【读出来的形状】与【写进去的形状】一致**（本线的纪律）⇒ 表头由判据①断言。
+func sc1975RunProbe(t *testing.T, scriptPath string) ([]string, [][]string) {
 	t.Helper()
 	cmd := exec.Command("bash", scriptPath)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("跑探针 %s: %v\n%s", scriptPath, err, string(out))
 	}
+	var header []string
 	var rows [][]string
 	sc := bufio.NewScanner(strings.NewReader(string(out)))
 	sc.Buffer(make([]byte, 1024*1024), 1024*1024)
@@ -98,12 +143,13 @@ func sc1975RunProbe(t *testing.T, scriptPath string) [][]string {
 			continue
 		}
 		f := strings.Split(line, "\t")
-		if len(f) > 0 && f[0] == "header" {
+		if header == nil {
+			header = f
 			continue
 		}
 		rows = append(rows, f)
 	}
-	return rows
+	return header, rows
 }
 
 // sc1975Key 把一行压成可比对的键（5 字段：写端|消费者|body形态|尺寸|命中位置）。
@@ -114,15 +160,193 @@ func sc1975Key(f []string) string {
 	return strings.Join(f[:5], "|")
 }
 
-// sc1975RC 取退出码列（第 6 列）。
-func sc1975RC(f []string) string {
-	if len(f) < 6 {
-		return ""
+// ── 判据①：机制读数按【判定式】钉（★ R85 轮 · §19.25.17 改判据形态）────────────
+
+// ★★★ 读数的三种类别（R85 轮）★★★
+//
+//	★ 【稳定-0】/【稳定-141】：★ **机制上确定** ⇒ 取值集合必须【恰好是单元素 {期望值}】
+//	  ⇒ ★ 这是**比原判据更强**的断言（原判据只看【一次】读数）。
+//	★ 【竞态】：★ **机制上是赛跑** ⇒ **不钉定值** ⇒ ★ 只钉【退出码仍属 pipefail 派生值】。
+const (
+	sc1975ClassStable0   = "stable-0"
+	sc1975ClassStable141 = "stable-141"
+	sc1975ClassRace      = "race"
+)
+
+// sc1975Observed 取【取值集合】列（第 8 列）⇒ 切成集合。
+//
+// ★★ 这是 R85 轮新增的一列：★ 探针对每条读数**采样 N 次**⇒ 输出 N 次取值的
+//   【去重排序集合】（形如 `0` 或 `0,141`）⇒ ★ ⇒ 门据此把读数分成
+//   【稳定】与【竞态】⇒ ★ ⇒ **门不再拿单次读数当性质**。
+func sc1975Observed(f []string) []string {
+	if len(f) < 7 {
+		return nil
 	}
-	return f[5]
+	parts := strings.Split(f[6], ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
-// ── 判据①：机制读数被钉住 ───────────────────────────────────────────────────
+// sc1975Keys 把 byKey 的键列出来（报错信息用）。
+func sc1975Keys(m map[string][]string) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// sc1975Expect 是【期望表】：★ **按【类别】**给，而不是按【定值】给（R85 轮）。
+//
+// ★★ 【三类分别对应三条机制】（★ R85 轮实测；依据见探针文件头）：
+//	· 稳定-0：★ 消费者【不会早退】（单行 ⇒ grep 必须读到 EOF；命中靠后 ⇒ 同理）
+//	  或写端【一次写完】（986 B）⇒ ⇒ 写端必然写完 ⇒ 必然 0。
+//	· 稳定-141：★ 写端载荷【≫ 管道缓冲】⇒ 写端【必然写不完】⇒ 消费者早退 ⇒ 必然 141。
+//	· 竞态：★ 载荷【≈ 管道缓冲】⇒ ★ 写端的尾部写入与消费者的退出【赛跑】
+//	  ⇒ ★ 两种结果都可能 ⇒ ★ **不钉定值**。
+var sc1975Expect = []struct {
+	key   string
+	class string
+	rc    string
+	why   string
+}{
+	{"printf|grep-q|long|200000|yes", sc1975ClassStable0, "0",
+		"写端单行 ⇒ grep 必须读到 EOF 才敢判 ⇒ 写端必然写完 ⇒ 无危害（条件①）"},
+	{"printf|grep-q|lines|1000|yes", sc1975ClassStable0, "0",
+		"载荷 986 B ⇒ 一次写完 ⇒ 无危害（条件②）"},
+	{"printf|grep-q|lines|65537|yes", sc1975ClassRace, "",
+		"★ 竞态区：载荷 ≈ 管道缓冲 ⇒ 写端尾部与消费者退出赛跑"},
+	{"printf|grep-q|lines|70000|yes", sc1975ClassRace, "",
+		"★ 竞态区：★ 超载宿主实测会翻（120 次里 2 次 ⇒ 0）⇒ 不可钉定值"},
+	{"printf|grep-q|lines|200000|yes", sc1975ClassStable141, "141",
+		"多行+超缓冲+命中靠前 ⇒ 写端必然写不完 ⇒ 危害成立"},
+	{"printf|grep-q|lines|200000|no", sc1975ClassStable0, "0",
+		"命中靠后 ⇒ grep 读到末尾 ⇒ 写端写完 ⇒ 无害（条件③）"},
+	{"printf|head-c|lines|60000|yes", sc1975ClassRace, "",
+		"★ 竞态区：head 读到 10 B 即退 ⇒ 与写端尾部赛跑"},
+	{"printf|head-c|lines|200000|yes", sc1975ClassStable141, "141",
+		"head 超缓冲 ⇒ 写端必然写不完 ⇒ 危害"},
+	{"printf|herestring|lines|200000|yes", sc1975ClassStable0, "0",
+		"修法形态 ⇒ 写端不在管道里 ⇒ 恒 0"},
+}
+
+// sc1975Verdict 是一次判定的裁决。
+type sc1975Verdict struct {
+	errs      []string
+	stable0   int
+	stable141 int
+	races     int
+	rows      int
+}
+
+// sc1975Judge 跑探针并按【判定式】判定，返回裁决（错误列表 + 分类统计）。
+//
+// ★★ 为什么把它抽成函数（★ R85 轮）：★ 变异自检必须驱动**门自己的比较逻辑**，
+//   而不是写一份【等价实现】去测（★ 本线的通用式：★ 要实测读侧行为时
+//   ⇒ 必须驱动仓内真实的代码）⇒ ⇒ ★★ 本函数既是真门的判据，也是变异自检的被测对象。
+func sc1975Judge(t *testing.T, probePath string) sc1975Verdict {
+	t.Helper()
+	var v sc1975Verdict
+	add := func(format string, args ...interface{}) {
+		v.errs = append(v.errs, fmt.Sprintf(format, args...))
+	}
+
+	header, rows := sc1975RunProbe(t, probePath)
+	if len(rows) == 0 {
+		add("探针没有任何读数 ⇒ 量具坏了")
+		return v
+	}
+	v.rows = len(rows)
+
+	// ★★ 判据①的【第 0 格】：表头与数据列必须同宽且逐列对齐。
+	//   ⇒ ★ 段十四的探针是 6 个 `%s` + 7 个词的表头 ⇒ 【错位一列】
+	//   ⇒ ★⇒ 对外 TSV「按表头取列」会取错列（Go 门原先按位置索引才免疫）。
+	if len(header) != len(sc1975ProbeHeader) {
+		add("探针表头列数 = %d，期望 %d ⇒ 表头与数据列错位 ⇒ 对外 TSV 按表头取列会取错列\n表头: %v",
+			len(header), len(sc1975ProbeHeader), header)
+		return v
+	}
+	for i, want := range sc1975ProbeHeader {
+		if header[i] != want {
+			add("探针表头第 %d 列 = %q，期望 %q ⇒ 表头与数据列错位", i+1, header[i], want)
+		}
+	}
+	for _, f := range rows {
+		if len(f) != len(header) {
+			add("读数列数 = %d，表头列数 = %d ⇒ 形状不一致: %v", len(f), len(header), f)
+		}
+	}
+
+	byKey := map[string][]string{}
+	for _, f := range rows {
+		if len(f) < 7 {
+			add("探针读数列数不足（应为 7 列）: %v", f)
+			continue
+		}
+		byKey[sc1975Key(f)] = f
+	}
+
+	for _, w := range sc1975Expect {
+		f, ok := byKey[w.key]
+		if !ok {
+			add("探针缺读数 %q ⇒ 当前读数集合：%v", w.key, sc1975Keys(byKey))
+			continue
+		}
+		observed := sc1975Observed(f)
+		switch w.class {
+		case sc1975ClassStable0, sc1975ClassStable141:
+			if w.class == sc1975ClassStable0 {
+				v.stable0++
+			} else {
+				v.stable141++
+			}
+			// ★★★ 【稳定类】= 机制上确定 ⇒ 取值集合必须【恰好是单元素 {期望值}】。
+			//   ⇒ ★ 比原判据强：原判据只看【一次】读数；本判据要求 N 次采样**全部**一致。
+			if len(observed) != 1 || observed[0] != w.rc {
+				add("机制读数变了：%s（%s）⇒ 期望取值集合恰好 {%s}，实得 %v\n"+
+					"★ 这一格是【机制上确定】的 ⇒ 若它漂了 ⇒ 是 bash/OS 行为真的变了\n"+
+					"★ ⇒ 必须重新实测并更新本门与 §19.20.75 / §19.25.17",
+					w.key, w.why, w.rc, observed)
+			}
+		case sc1975ClassRace:
+			v.races++
+			// ★★★ 【竞态类】= 机制上是赛跑 ⇒ **不钉定值** ⇒ 但退出码必须仍是
+			//   【pipefail 派生值】（0 或 141）⇒ 越界 = bash/OS 语义真的变了。
+			for _, o := range observed {
+				if o != "0" && o != "141" {
+					add("竞态区读数越界：%s（%s）⇒ 取值 %q 不在 {0, 141} 内\n"+
+						"★ 竞态类【不钉定值】，但退出码必须仍是【pipefail 派生值】⇒ 越界 = 语义真变了",
+						w.key, w.why, o)
+				}
+			}
+		}
+	}
+
+	// ★★★ 判据①的【区分度】部分：★ 门真正要守的是【无害档与有害档可区分】⇒
+	//   ⇒ 稳定-0 类必须【恒 0】、稳定-141 类必须【恒 141】（上面已逐条钉）、
+	//   ⇒ ★ 并且**两档都必须非空** ⇒ 否则「探针被阉割成恒 0 / 恒 141」时门会失明。
+	if v.stable0 == 0 || v.stable141 == 0 {
+		add("区分度判据不成立：稳定-0 类 %d 条、稳定-141 类 %d 条 ⇒ 必须【两档都在】\n"+
+			"★ 否则探针可能被阉割成恒 0 / 恒 141 ⇒ 门会失去区分能力", v.stable0, v.stable141)
+	}
+	if v.races == 0 {
+		add("判据表里【竞态类】为空 ⇒ 门不再覆盖竞态区 ⇒ 探针形态可能已变")
+	}
+
+	// ★ 反向：探针【多出】读数 ⇒ 判据表可能已过期（有人改了探针却没更新本门）。
+	if len(byKey) != len(sc1975Expect) {
+		add("探针读数条数 = %d，期望 %d ⇒ 探针被改过而本门没跟上（或是探针坏了）",
+			len(byKey), len(sc1975Expect))
+	}
+	return v
+}
 
 func TestSection1975HarmConditionReadingsArePinned(t *testing.T) {
 	root := sc1975RepoRoot(t)
@@ -130,65 +354,40 @@ func TestSection1975HarmConditionReadingsArePinned(t *testing.T) {
 	if _, err := os.Stat(probe); err != nil {
 		t.Fatalf("探针不存在: %v", err)
 	}
-	rows := sc1975RunProbe(t, probe)
-	if len(rows) == 0 {
-		t.Fatal("探针没有任何读数 ⇒ 量具坏了")
+	v := sc1975Judge(t, probe)
+	for _, e := range v.errs {
+		t.Error(e)
 	}
-
-	// ★ 期望读数（每一条都对应五个必要条件里的某一维）：
-	//   · 单行 ⇒ 无危害（条件①）
-	//   · 未超 64 KiB ⇒ 无危害（条件②）
-	//   · 边界：65,537 B ⇒ 0；70,000 B ⇒ 141（grep-q 边界【确定】）
-	//   · 多行 + 超缓冲 + 命中靠前 ⇒ 141（条件①②③全中 ⇒ 危害成立）
-	//   · 命中靠后 ⇒ 无害（条件③）
-	//   · head 消费者：未超缓冲 ⇒ 无害（★ 订正段十三的「任意」）；超缓冲 ⇒ 141
-	//   · herestring（修法形态）⇒ 0（写端无管道 ⇒ 退出码只反映消费者）
-	expect := []struct {
-		key string
-		rc  string
-		why string
-	}{
-		{"printf|grep-q|long|200000|yes", "0", "写端单行 ⇒ 无危害（条件①）"},
-		{"printf|grep-q|lines|1000|yes", "0", "多行但未超 64 KiB ⇒ 无危害（条件②）"},
-		{"printf|grep-q|lines|65537|yes", "0", "★ 边界下方 ⇒ 无危害（grep-q 边界确定）"},
-		{"printf|grep-q|lines|70000|yes", "141", "★ 边界上方 ⇒ 危害（grep-q 边界确定）"},
-		{"printf|grep-q|lines|200000|yes", "141", "★ 多行+超缓冲+命中靠前 ⇒ 危害成立"},
-		{"printf|grep-q|lines|200000|no", "0", "命中靠后 ⇒ 无害（条件③）"},
-		{"printf|head-c|lines|60000|yes", "0", "★ head 未超缓冲 ⇒ 无危害（订正「任意」）"},
-		{"printf|head-c|lines|200000|yes", "141", "★ head 超缓冲 ⇒ 危害"},
-		{"printf|herestring|lines|200000|yes", "0", "★ 修法形态 ⇒ 退出码只反映消费者"},
-	}
-
-	byKey := map[string]string{}
-	for _, f := range rows {
-		if len(f) < 6 {
-			t.Fatalf("探针读数列数不足（应为 6 列）: %v", f)
-		}
-		byKey[sc1975Key(f)] = sc1975RC(f)
-	}
-	for _, w := range expect {
-		got, ok := byKey[w.key]
-		if !ok {
-			t.Errorf("探针缺读数 %q ⇒ 当前读数：%v", w.key, byKey)
-			continue
-		}
-		if got != w.rc {
-			t.Errorf("机制读数变了：%s（%s）⇒ 期望 %s，实得 %s\n"+
-				"★ 这是【判据本身】变了（不是某处缺陷变了）⇒ 必须重新实测并更新本门与 §19.20.75",
-				w.key, w.why, w.rc, got)
-		}
-	}
-	// ★ 反向：探针【多出】读数 ⇒ 判据表可能已过期（有人改了探针却没更新本门）。
-	if len(byKey) != len(expect) {
-		t.Errorf("探针读数条数 = %d，期望 %d ⇒ 探针被改过而本门没跟上（或是探针坏了）",
-			len(byKey), len(expect))
-	}
-	t.Logf("探针读数 %d 条（全部逐条一致）；关键读数：多行+超缓冲+命中靠前 ⇒ 141（危害）；"+
-		"herestring 形态 ⇒ 0（修法形态自身也被钉住）", len(rows))
+	t.Logf("探针读数 %d 条：稳定-0 %d 条 / 稳定-141 %d 条 / 竞态 %d 条（★ 竞态类不钉定值）；"+
+		"★ 区分度：无害档恒 0、有害档恒 141 ⇒ 两档可区分 ✔",
+		v.rows, v.stable0, v.stable141, v.races)
 }
 
 // ── 判据②：量具自检（证明判据①不是恒绿） ───────────────────────────────────
 
+// sc1975MutateProbe 把探针源码按 old→new 替换一次，写进临时目录并返回路径。
+// ★ 【变异没生效】是「门没红」的第一嫌疑 ⇒ ⇒ 这里**断言替换确实发生**。
+func sc1975MutateProbe(t *testing.T, src, old, new string) string {
+	t.Helper()
+	if strings.Count(src, old) != 1 {
+		t.Fatalf("锚点出现 %d 次（应为 1）⇒ 变异不可靠（锚点漂移？）\n锚点: %s",
+			strings.Count(src, old), old)
+	}
+	mutated := strings.Replace(src, old, new, 1)
+	if mutated == src {
+		t.Fatal("变异没有发生 ⇒ 自检无效")
+	}
+	path := filepath.Join(t.TempDir(), "probe-mutated.sh")
+	if err := os.WriteFile(path, []byte(mutated), 0o755); err != nil {
+		t.Fatalf("写变异探针: %v", err)
+	}
+	return path
+}
+
+// ── 判据②：量具自检（证明判据①不是恒绿） ───────────────────────────────────
+
+// ★ 变异 M1：把探针的【取值集合】整列改成 999 ⇒ 门自己的比较必须判红。
+//   ⇒ ★ 变异的是**门真正读的那一列**（`observed`）⇒ 不是改一个「没人读的字段」。
 func TestSection1975HarmConditionGateHasTeeth(t *testing.T) {
 	root := sc1975RepoRoot(t)
 	probe := filepath.Join(root, sc1975ProbeRel)
@@ -196,50 +395,44 @@ func TestSection1975HarmConditionGateHasTeeth(t *testing.T) {
 	if err != nil {
 		t.Fatalf("读探针: %v", err)
 	}
-	// ★ 变异：把探针里「读数」的产出改成常量 999 ⇒ 门自己的比较必须判红。
-	mutatedSrc := strings.Replace(string(src),
-		`emit "$we" "$cons" "$form" "$size" "$at_start" "$rc"`,
-		`emit "$we" "$cons" "$form" "$size" "$at_start" "999"`, 1)
-	if mutatedSrc == string(src) {
-		t.Fatal("变异没有发生（探针形态变了？）⇒ 自检无效")
-	}
-	tmp := t.TempDir()
-	mutated := filepath.Join(tmp, "probe-mutated.sh")
-	if err := os.WriteFile(mutated, []byte(mutatedSrc), 0o755); err != nil {
-		t.Fatalf("写变异探针: %v", err)
-	}
-	rows := sc1975RunProbe(t, mutated)
-	if len(rows) == 0 {
-		t.Fatal("变异探针没有读数 ⇒ 自检无效")
-	}
-	mutatedOK := false
-	for _, f := range rows {
-		if len(f) >= 6 && sc1975RC(f) == "999" {
-			mutatedOK = true
-			break
-		}
-	}
-	if !mutatedOK {
-		t.Fatal("变异后读数里没有 999 ⇒ 变异没生效 ⇒ 自检无效")
-	}
-	// ★ 门自己的判据必须能把它判红：逐条与期望比 ⇒ 必有 mismatch
-	expect := map[string]string{
-		"printf|grep-q|lines|200000|yes": "141",
-	}
-	mismatch := false
-	for _, f := range rows {
-		if len(f) < 6 {
-			continue
-		}
-		key := sc1975Key(f)
-		if wantRC, ok := expect[key]; ok && sc1975RC(f) != wantRC {
-			mismatch = true
-		}
-	}
-	if !mismatch {
+	mutated := sc1975MutateProbe(t, string(src),
+		`  observed=$(printf '%s' "$vals" | sort -u | paste -sd, -)`,
+		`  observed=999`)
+	v := sc1975Judge(t, mutated)
+	if len(v.errs) == 0 {
 		t.Fatal("★ 变异后门自己的比较【没有】判红 ⇒ 判据①是恒绿门")
 	}
-	t.Log("变异（把探针读数改成 999）⇒ 门自己的比较判红 ✔ ⇒ 判据①有牙")
+	t.Logf("变异（把探针的取值集合整列改成 999）⇒ 门自己的比较判红 ✔（%d 条错误）⇒ 判据①有牙", len(v.errs))
+}
+
+// ★★ 判据②的【反向自检】：★ 把【竞态类】读数的取值集合改成另一个**合法**的
+//   pipefail 派生值（0）⇒ ⇒ 门**必须仍然绿**。
+//
+// ★★★★ 为什么必须有它：★★ 「判定式」如果只是【嘴上说说】（判据表里还偷偷留着
+//   「竞态格必须等于某个定值」），那这道门仍然是 flaky 的 ⇒ ⇒ ★ 本自检用
+//   **一个可复算的事实**把这件事钉死：★ 竞态格的取值**改成 0 也不判红**
+//   ⇒ ⇒ ⇒ ★★ **即：门对竞态区【真的不依赖任何定值】**。
+//
+// ★★ 而它同时证明【判据不是恒绿】：★ 同一个变异器把整列改成 999 时门会红（见上一条）
+//   ⇒ ⇒ ★★ 【同一条判据逻辑】：对【越界值】红、对【另一个合法值】绿
+//   ⇒ ⇒ ⇒ ★★ **这正是「判定式」的定义**。
+func TestSection1975RaceClassIsNotPinnedToAValue(t *testing.T) {
+	root := sc1975RepoRoot(t)
+	probe := filepath.Join(root, sc1975ProbeRel)
+	src, err := os.ReadFile(probe)
+	if err != nil {
+		t.Fatalf("读探针: %v", err)
+	}
+	mutated := sc1975MutateProbe(t, string(src),
+		`  observed=$(printf '%s' "$vals" | sort -u | paste -sd, -)`,
+		`  observed=$(printf '%s' "$vals" | sort -u | paste -sd, -)
+  # ★ 变异：只把【竞态区】那三格的取值集合改成 0（★ 仍是合法的 pipefail 派生值）
+  case "$size" in 65537|70000|60000) observed=0 ;; esac`)
+	v := sc1975Judge(t, mutated)
+	if len(v.errs) != 0 {
+		t.Fatalf("★ 把竞态区的取值改成 0 竟被判红 ⇒ 判据仍然依赖竞态格的定值 ⇒ 门仍是 flaky 的\n错误：%v", v.errs)
+	}
+	t.Logf("变异（只把竞态区三格的取值集合改成 0）⇒ 门【仍然绿】✔（%d 条错误）⇒ 判据真的不依赖竞态定值", len(v.errs))
 }
 
 // ── 判据③：修法形态被钉住（防回退） ────────────────────────────────────────
@@ -478,7 +671,7 @@ func TestSection1975ErrexitInteractionReadingsArePinned(t *testing.T) {
 	if _, err := os.Stat(probe); err != nil {
 		t.Fatalf("errexit 探针不存在: %v", err)
 	}
-	rows := sc1975RunProbe(t, probe)
+	_, rows := sc1975RunProbe(t, probe)
 	if len(rows) == 0 {
 		t.Fatal("errexit 探针没有任何读数 ⇒ 量具坏了")
 	}
@@ -559,7 +752,7 @@ func TestSection1975ErrexitInteractionGateHasTeeth(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(tmp, filepath.Base(casesSrc)), casesRaw, 0o644); err != nil {
 		t.Fatalf("写用例数据文件副本: %v", err)
 	}
-	rows := sc1975RunProbe(t, mutated)
+	_, rows := sc1975RunProbe(t, mutated)
 	if len(rows) == 0 {
 		t.Fatal("变异探针没有读数 ⇒ 自检无效")
 	}
