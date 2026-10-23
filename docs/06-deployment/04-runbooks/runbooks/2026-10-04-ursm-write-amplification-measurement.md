@@ -49963,6 +49963,8 @@ settings/feature_switches.go:
 
 ★ ★★★ **⇒ ⇒ 由此还暴露了一件事**：★ **§143.84~§143.89 用的是「grep -c」手工计数** ⇒ ⇒ **而那把尺子【没有 body_size 过滤】** ⇒ ⇒ **⇒ 这就是错误① 能活过四轮的根因** ⇒ ⇒ ⇒ ★★★ ⇒
 
+★ ★★★ **⇒ ⇒ 附带的第三个量具盲区（★ 变异 M3 抓到的）**：★ **Python 的【docstring 不是 `#` 注释】** ⇒ ⇒ **按「剥 `#` 注释」写的判据器【剥不掉 docstring】** ⇒ ⇒ **只查 `--self-check` 这个串 ⇒ ⇒ 「只改了 docstring 里的写法」也会【假绿】** ⇒ ⇒ ★★ **⇒ 修法：★ 判据改为逐字钉住【参数注册那一行】`add_argument("--self-check", action="store_true")`** ⇒ ⇒ ★★★ ⇒
+
 #### §143.90.6 ★★★★ 求交器（★ 本轮的仓内产物）
 
 ★ **`scripts/audit/cross_source_intersect.py`**（★ 新）：★ 输入三类服务侧日志（★ v2 落空 / 走到 L3 / 跳过）⇒ ⇒ 输出 N_v2 / N_l3 / A / **s** 与两个占比；★ 给了 `--db-l3-calls` 就做【同窗对拍】。

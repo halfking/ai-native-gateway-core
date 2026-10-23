@@ -118,10 +118,14 @@ func codeFuncBody14390(t *testing.T, rel, sig string) string {
 // TestSection14390ScriptExistsAndHasSelfCheck（★ 判据①②）
 func TestSection14390ScriptExistsAndHasSelfCheck(t *testing.T) {
 	code := code14390(t, section14390Script)
-	if !strings.Contains(code, "--self-check") {
-		t.Errorf("★ %s 里没有 `--self-check` —— "+
+	// ★★★ 逐字钉住【argparse 的那条】⇒ ⇒ 不能只查 `--self-check` 这个串：
+	// ★ ★★ Python 的【docstring 不是 # 注释】⇒ ⇒ 本文件的剥注释器剥不掉它
+	// ★ ⇒ ⇒ 只查字符串 ⇒ ⇒ 「只改了 docstring 里的写法」也会【假绿】（★ 变异 M3 的实测）。
+	if !strings.Contains(code, `add_argument("--self-check", action="store_true")`) {
+		t.Errorf("★ %s 里没有逐字的 `add_argument(\"--self-check\", action=\"store_true\")` —— "+
 			"★ ★★ 求交器的正确性必须【不依赖生产数据】就能验证（★ 合成夹具）"+
-			"★ ⇒ ⇒ ★★ 否则每次跑都要先有生产日志才能知道尺子对不对",
+			"★ ⇒ ⇒ ★★ 否则每次跑都要先有生产日志才能知道尺子对不对"+
+			"★ ⇒ ⇒ ★★ 判据必须钉【参数注册那一行】、★ 不能只钉字符串（★ docstring 剥不掉）",
 			section14390Script)
 	}
 	if !strings.Contains(code, "def self_check(") {
