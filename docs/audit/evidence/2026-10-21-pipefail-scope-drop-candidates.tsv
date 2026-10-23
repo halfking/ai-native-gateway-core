@@ -91,7 +91,7 @@ scripts/audit-all-tables.sh	87	audit_usage_ledger	var-write	judgment	bulk	real-d
 scripts/audit/q-usage.sh	184	run_self_test	var-write	judgment	unknown	needs-human-read	grep-q	consumed	if ! printf '%s' "$out" | grep -q "轮转"; then
 scripts/audit/verify-g1-route-contract.sh	129	expect_red	var-write	bare	bulk	real-defect-candidate	head	discarded	echo "$output" | head -10
 scripts/audit/verify-l11b-cost-view-rowset.sh	316	expect_red	var-write	bare	bulk	real-defect-candidate	head	discarded	echo "$output" | head -10
-scripts/audit/verify-nonplain-migration-delivery.sh	523	expect_red_go	var-write	bare	unknown	needs-human-read	head	discarded	echo "$output" | head -12
+scripts/audit/verify-nonplain-migration-delivery.sh	533	expect_red_go	var-write	bare	unknown	needs-human-read	head	discarded	echo "$output" | head -12
 scripts/audit/verify-stop-write-interlock-realdb.sh	87	verdict	var-write	judgment	unknown	needs-human-read	grep-q	consumed	if echo "$1" | grep -qE '^--- FAIL:|^FAIL'; then echo FAIL
 scripts/audit/verify-stop-write-interlock-realdb.sh	88	verdict	var-write	judgment	unknown	needs-human-read	grep-q	consumed	elif echo "$1" | grep -qE '^--- PASS:|^ok |^PASS'; then echo PASS
 scripts/audit/verify-v1-retirement-red-gates.sh	109	expect_red	var-write	judgment	unknown	needs-human-read	grep-q	consumed	if printf '%s' "${out}" | grep -qE 'build failed|undefined:|cannot use|syntax error|declared and not used'; then
