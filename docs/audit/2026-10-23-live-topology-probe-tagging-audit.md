@@ -356,6 +356,13 @@ SELECT ... FROM session_turns_hot WHERE request_id='af1eb6d83ef39610cc4f8be4e181
 **凭据归属**：`api_keys.id=29` ⇒ `owner_user` 空、`is_system=false`、`status=active`
 ⇒ **普通业务凭据，不是系统 key**。
 
+> ★ **订正（追加，见附录 B.3.1）**：这句**观测**是对的（29 确实是业务键），
+> 但**推论**错了 —— `session_turns.credential_id` 记的是「这次请求实际用了哪个
+> **候选凭据**」，**不是「谁发起了这次请求」**。该请求真正的发起方是
+> `api_keys.id=175`（`owner_user=self-check-worker`、`is_system=true`、
+> `key_tier=system`、`remark=Auto-generated system key for self-check`）。
+> ⇒ ★ **「凭据是业务 key ⇒ 不是探测」这条推理链从根上不成立**（凭据 ≠ 发起方）。
+
 ## A.2 ★ 对照窗口：真探测行长什么样
 
 `session_turns_hot` 里 `request_preview ILIKE '%ping%'` 的行（154 实况）：
@@ -507,6 +514,45 @@ agent_name     = go-client
 ⇒ **同一个请求：侧表打标了，会话族没打标** ⇒ 两条真值管道分叉，
 **实时拓扑读的是分叉的那条**。
 
+### B.3.1 ★★★ 发起方 ≠ 被试凭据 —— 上一轮误判的**机制根源**
+
+上一轮（附录 A）的推理链是：
+
+> 「`credential_id=29` 是 `is_system=false` 的业务键、`owner_user` 空 ⇒
+> ⇒ 它不是系统凭据 ⇒ ⇒ 探测必须持系统凭据 ⇒ ⇒ 所以它不是探测请求」
+
+⇒ ★ **这条链从根上不成立**：**`session_turns.credential_id` 记的是
+「这次请求实际被路由选中的**候选凭据**」，不是「谁发起了这次请求」。**
+
+目标请求的两个身份（154 实测，`api_keys` 两行并列）：
+
+| 键 | 在这次请求里的身份 | 证据 |
+|---|---|---|
+| `id=175` | **发起方**（探测 worker 自己的调用键） | `owner_user=self-check-worker` / `is_system=true` / `key_tier=system` / `key_prefix=sk-selfche****` / `remark=Auto-generated system key for self-check` |
+| `id=29` | **被试候选凭据**（被路由选中去试的那把） | `owner_user` 空 / `is_system=false` / `remark=admin manual creation` |
+
+⇒ 侧表 `request_context_attrs` 同时记着两个身份：
+`api_key_id=175` + `owner_user=self-check-worker`（**发起方**），
+而会话族只记 `credential_id=29`（**被试凭据**）—— ⇒ ★ **两表看的是两个不同的键**，
+这正是「凭据是业务 key ⇒ 不是探测」能错得这么彻底的结构原因。
+
+★ **量级佐证**（侧表，`owner_user=self-check-worker` 的行）：
+
+| owner_user | origin_stage | is_probe | 行数 |
+|---|---|---|---|
+| self-check-worker | node_probe | t | **17,545** |
+| self-check-worker | self_check | t | **633** |
+
+⇒ 探测流量的真实规模远大于会话族里「看得见」的那点 ——
+因为**成功的那些在会话族里丢了标**，落进 unknown / 业务桶。
+
+⇒ ★★ **通用式**：★ **同一张表里若有多个「身份列」（发起方 vs 被选中方、
+租户 vs 资源属主、发起者 vs 被作用对象），**取错列就会得出**结构性错误**的结论**
+⇒ 判据：**先问「这一列在语义上是谁」**，再拿它做身份推理；★ **同名不同义**
+（都叫 key / id / owner）是这类系统的经典陷阱 ⇒ ★ 交叉核验手段 =
+**另一张表里记着另一个身份**（这里：侧表记发起方、会话族记被试方）⇒ ★ **两表不一致时，
+先怀疑「它们看的是不同的东西」，而不是「其中一张表错了」**。
+
 ★ 另两组同源对照（同一 `credential_id` + 同一 `model` + 同一 `request_preview`）：
 
 | (cred, model, prompt) | 失败侧（有 node_probe 标） | 成功侧（**无任何标**） |
@@ -572,6 +618,10 @@ agent_name     = go-client
 时间跨度 14:10→22:49 贯穿全天、`agent_name` 全是 `go-client`（探测 worker 的 UA）、
 模型即探测目标集（minimax-m3.1-flash / nemotron-3.5-content-safety /
 nemotron-3-ultra-550b-a55b / deepseek-v4-flash / glm-5.x …）。
+
+> ★ **数字会随时间漂移（热表是滚动窗口）**：复核时点实测 business **2060** /
+> node_probe **198** / self_check **11**（⇒ 漏标 **209** 行），相对上表约 1 小时的
+> 新增量。★ **口径与结论不随漂移改变**（漏标 ⇔ 成功 ⇔ loopback 三个条件始终绑定）。
 
 ⇒ 修复后这些行的 `origin_stage` 会变成 `node_probe` / `self_check`：
 **实时拓扑不再把它们算成业务流量；stats 侧的「总请求数」也不再把它们当业务流量**
