@@ -50900,7 +50900,8 @@ END IF;
 |---|---|---|
 | ① | `scripts/audit/verify_session_turns_retention_ownership.sql`（★ **10 段**，★ 252 实跑 rc=0 / stderr=0） | 只读复算脚本 |
 | ② | `cmd/gateway/section_14395_session_turns_retention_test.go`（★ **9 条判据**） | 门 |
-| ③ | `scripts/audit/mutate_14395_gate.py`（★ **N/N**） | 变异台 |
+| ③ | `scripts/audit/mutate_14395_gate.py`（★ **18/18**） | 变异台 |
+| ③b | ★★ **变异台首跑 13/18 ⇒ ★ 五条逃逸（M1/M8/M11/M12/M15）全是【裸子串被改名逃过】** ⇒ ⇒ ★★ 已给门的判据加【边界】（★ `containsToken14395`：★ 前后都不能是标识符字符、★ **`_` 与 `-` 都不算边界**）⇒ ⇒ ★★ 复跑 **18/18** | ★ 本轮第 4 次复发 |
 | ④ | runbook §143.95 段（本段）＋ **§143.94 订正横幅十** ＋ LESSONS §289 ＋ AGENTS R139 | 文档 |
 
 ★ 门守的四件事：

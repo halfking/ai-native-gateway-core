@@ -115,7 +115,51 @@ func sqlExecutableNoLiterals14395(t *testing.T, rel string) string {
 // literal14395 匹配单引号字符串字面量（内部成对出现的两个单引号按转义处理）。
 var literal14395 = regexp.MustCompile(`'(?:[^']|'')*'`)
 
-// TestSection14395ScriptExistsAndHasNineStages —— ★ 判据①的前置
+// TestSection14395ScriptExistsAndHasTenStages —— ★ 判据①的前置
+// isIdentChar14395 判定一个字节是否算「标识符字符」。
+//
+// ★★ `_` 与 `-` **都**算 ⇒ ★ 因为本轮的变异形态正是「改名成后缀版」
+// ★（★ `..._x` / ★ `...-x`）⇒ ⇒ ⇒ 若把它们当边界 ⇒ ⇒ 变异照样逃过。
+func isIdentChar14395(b byte) bool {
+	switch {
+	case b >= 'a' && b <= 'z', b >= 'A' && b <= 'Z', b >= '0' && b <= '9':
+		return true
+	case b == '_' || b == '-':
+		return true
+	}
+	return false
+}
+
+// containsToken14395 是【带边界的 token 搜索】—— ★ 治「改名成后缀版」的逃逸。
+//
+// ★★★★★★ 为什么必须带边界（★ ★★★ 本轮第 4 次复发：★ §143.92 M7/M9、
+// ★ §143.93 M1/M2/M4/M9、★ §143.94 M1/M2/M3/M5/M6/M8、★ 本轮 M1/M8/M11/M12/M15）：
+//
+// ★ 判据用【裸子串】查 ⇒ ★ 变异把名字改成 `..._x` 后 ★ **原 needle 仍是它的前缀**
+// ★ ⇒ ⇒ `strings.Contains` 照样命中 ⇒ ⇒ **门没有牙**。
+//
+// ★ ⇒ 边界形态必须与【判据实际读的那一面】一致 ⇒ ★ 前后都不能是标识符字符。
+func containsToken14395(s, tok string) bool {
+	if tok == "" {
+		return false
+	}
+	for i := 0; i+len(tok) <= len(s); {
+		j := strings.Index(s[i:], tok)
+		if j < 0 {
+			return false
+		}
+		p := i + j
+		end := p + len(tok)
+		beforeOK := p == 0 || !isIdentChar14395(s[p-1])
+		afterOK := end == len(s) || !isIdentChar14395(s[end])
+		if beforeOK && afterOK {
+			return true
+		}
+		i = p + 1
+	}
+	return false
+}
+
 func TestSection14395ScriptExistsAndHasTenStages(t *testing.T) {
 	n := 0
 	for _, line := range sqlNonComment14395(t, section14395Script) {
@@ -153,7 +197,7 @@ func TestSection14395TwoConflictKeysAreSeparated(t *testing.T) {
 	exe := sqlExecutable14395(t, section14395Script)
 
 	// ★ ① promote 自己的去重键（必须逐字，含两列的顺序）
-	if !strings.Contains(exe, "a.request_id = s.request_id AND a.tenant_id = s.tenant_id") {
+	if !containsToken14395(exe, "a.request_id = s.request_id AND a.tenant_id = s.tenant_id") {
 		t.Errorf("★ %s 的【可执行面】里没有 promote 自己的去重键探针 "+
 			"`a.request_id = s.request_id AND a.tenant_id = s.tenant_id` —— "+
 			"★ ★★★★ 本轮实测：★ 按这个键查冲突恒得 **0 行**"+
@@ -161,7 +205,7 @@ func TestSection14395TwoConflictKeysAreSeparated(t *testing.T) {
 			"★ ⇒ ⇒ ★★ 少了它 ⇒ ⇒ 「冲突 = 0」这个假阴性会继续被引用",
 			section14395Script)
 	}
-	if !strings.Contains(exe, "AS dedup_key_conflict_rows;") {
+	if !containsToken14395(exe, "AS dedup_key_conflict_rows;") {
 		t.Errorf("★ %s 的【可执行面】里没有 `AS dedup_key_conflict_rows;` —— "+
 			"★ ★★ 「promote 自己的去重键」这一路的读数必须【单独成列】，"+
 			"★ ⇒ ⇒ 否则读者会把它和另一路混成一个「冲突数」",
@@ -169,14 +213,14 @@ func TestSection14395TwoConflictKeysAreSeparated(t *testing.T) {
 	}
 
 	// ★ ② 父表唯一索引键 —— 必须逐字带 is_final_success + session_id + partition_date
-	if !strings.Contains(exe, "AND p.is_final_success IS TRUE") {
+	if !containsToken14395(exe, "AND p.is_final_success IS TRUE") {
 		t.Errorf("★ %s 的【可执行面】里没有 `AND p.is_final_success IS TRUE` —— "+
 			"★ ★★★★ 【23505 的真凶】是父表的部分唯一索引 "+
 			"`uq_session_turns_final_success`（tenant_id, session_id, partition_date）"+
 			"★ WHERE is_final_success ⇒ ⇒ 少了它 ⇒ ⇒ 冲突集根本查不出来",
 			section14395Script)
 	}
-	if !strings.Contains(exe, "AS parent_fs_rows") {
+	if !containsToken14395(exe, "AS parent_fs_rows") {
 		t.Errorf("★ %s 的【可执行面】里没有 `AS parent_fs_rows` —— "+
 			"★ ★★ 冲突键的两侧计数（hot_fs_rows / parent_fs_rows）必须成对出现，"+
 			"★ ⇒ ⇒ 只数一侧 ⇒ ⇒ 读不出「两侧各有一个 mark」这个事实",
@@ -186,14 +230,14 @@ func TestSection14395TwoConflictKeysAreSeparated(t *testing.T) {
 	// ★★ ② 的【键的列】必须逐字在 —— ★ 这一条正是本轮【第一次查错】的地方：
 	//   ★ 把父表探针的键从 (tenant_id, session_id, partition_date)
 	//     改回 promote 自己的 (tenant_id, request_id) ⇒ ⇒ 冲突恒为 0。
-	if !strings.Contains(exe, "AND p.session_id = h.session_id") {
+	if !containsToken14395(exe, "AND p.session_id = h.session_id") {
 		t.Errorf("★ %s 的【可执行面】里没有 `AND p.session_id = h.session_id` —— "+
 			"★ ★★★★ 父表探针的键必须是 **(tenant_id, session_id, partition_date)**"+
 			"★ ⇒ ⇒ ★★ 换成 `request_id` ⇒ ⇒ 查出来恒为 0（★ 本轮第一次就是这么查错的）"+
 			"★ ⇒ ⇒ ★★ 少了这一列 ⇒ ⇒ 那个假阴性会回来",
 			section14395Script)
 	}
-	if !strings.Contains(exe, "AND p.partition_date = h.partition_date") {
+	if !containsToken14395(exe, "AND p.partition_date = h.partition_date") {
 		t.Errorf("★ %s 的【可执行面】里没有 `AND p.partition_date = h.partition_date` —— "+
 			"★ ★★★★ 父表探针的键必须带 partition_date（★ 唯一索引的第三列）"+
 			"★ ⇒ ⇒ ★★ 少了它 ⇒ ⇒ 跨 UTC 日的同会话会被当成同一个键",
@@ -208,7 +252,7 @@ func TestSection14395TwoConflictKeysAreSeparated(t *testing.T) {
 		"AS hot_success",
 		"AS parent_success",
 	} {
-		if strings.Contains(exe, bad) {
+		if containsToken14395(exe, bad) {
 			t.Errorf("★ %s 的【可执行面】里出现了 `%s` —— "+
 				"★ ★★★★ `success`（请求成功标记）≠ `is_final_success`（该会话唯一最终成功标记）"+
 				"★ ⇒ ⇒ ★★ 本轮第一次用错列，读出「2,404 / 1,526」这种完全不相干的数"+
@@ -231,13 +275,13 @@ func TestSection14395TwoConflictKeysAreSeparated(t *testing.T) {
 func TestSection14395DrainRulerIsPinned(t *testing.T) {
 	// ① SQL 侧：基线迁移 869 的函数体
 	base := sqlExecutable14395(t, section14395PromoteBase)
-	if !strings.Contains(base, "CREATE OR REPLACE FUNCTION public.promote_session_turns_hot_to_partition(") {
+	if !containsToken14395(base, "CREATE OR REPLACE FUNCTION public.promote_session_turns_hot_to_partition(") {
 		t.Errorf("★ %s 里没有 `CREATE OR REPLACE FUNCTION public.promote_session_turns_hot_to_partition(` —— "+
 			"★ ★★★★ 869 是**生产现行**的 promote 函数体"+
 			"★ ⇒ ⇒ ★★ 任何修复都必须以 869 为基线（★ 不是 526/636/640/688/707）",
 			section14395PromoteBase)
 	}
-	if !strings.Contains(base, "WHERE h.ts < statement_timestamp() - p_retention") {
+	if !containsToken14395(base, "WHERE h.ts < statement_timestamp() - p_retention") {
 		t.Errorf("★ %s 的【可执行面】里没有 `WHERE h.ts < statement_timestamp() - p_retention` —— "+
 			"★ ★★★★ promote 的排水判据是「ts 比保留窗老」"+
 			"★ ⇒ ⇒ ★★ 判据一改 ⇒ ⇒ 「8h 不变式」的口径就变了",
@@ -250,7 +294,7 @@ func TestSection14395DrainRulerIsPinned(t *testing.T) {
 		"const DefaultRetentionWindow = 8 * time.Hour",
 		"const promoteBatchSize = 5000",
 	} {
-		if !strings.Contains(pm, needle) {
+		if !containsToken14395(pm, needle) {
 			t.Errorf("★ %s 里没有逐字的 `%s` —— "+
 				"★ ★★★★ `session_turns_hot` 不在 resolvePromoteConfig 的任何 case 里"+
 				"★ ⇒ ⇒ ★★ 它落 default 分支 ⇒ 保留窗 = lifecycle.hot_retention_hours"+
@@ -263,7 +307,7 @@ func TestSection14395DrainRulerIsPinned(t *testing.T) {
 
 	// ★ 审计脚本里必须真的按 8h 量「滞留行」
 	exe := sqlExecutable14395(t, section14395Script)
-	if !strings.Contains(exe, "count(*) FILTER (WHERE ts <  now() - interval '8 hours') AS older_than_8h,") {
+	if !containsToken14395(exe, "count(*) FILTER (WHERE ts <  now() - interval '8 hours') AS older_than_8h,") {
 		t.Errorf("★ %s 的【可执行面】里没有 `count(*) FILTER (WHERE ts <  now() - interval '8 hours') AS older_than_8h,` —— "+
 			"★ ★★★★ 「hot 表里还留着超过 8h 的行」= 排水没做完"+
 			"★ ⇒ ⇒ ★★ 本轮实测 2,843 行滞留（★ 且每小时还在涨）"+
@@ -287,7 +331,7 @@ func TestSection14395ParentStarvationRulerIsPinned(t *testing.T) {
 		"n_tup_ins, n_tup_upd, n_tup_del, n_live_tup, idx_scan, seq_scan",
 		"FROM pg_stat_user_tables",
 	} {
-		if !strings.Contains(exe, needle) {
+		if !containsToken14395(exe, needle) {
 			t.Errorf("★ %s 的【可执行面】里没有逐字的 `%s` —— "+
 				"★ ★★★★ 「父表写入 = promote」是本轮最关键的一条因果"+
 				"★ ⇒ ⇒ ★★ 它的唯一可复算证据就是【累计写入计数对照】"+
@@ -311,14 +355,14 @@ func TestSection14395ParentStarvationRulerIsPinned(t *testing.T) {
 func TestSection14395UniqueIndexAndSelfHealAreRegistered(t *testing.T) {
 	// ① 部分唯一索引
 	idx := sqlExecutable14395(t, section14395UniqueIdx)
-	if !strings.Contains(idx, "uq_session_turns_final_success") {
+	if !containsToken14395(idx, "uq_session_turns_final_success") {
 		t.Errorf("★ %s 的【可执行面】里没有 `uq_session_turns_final_success` —— "+
 			"★ ★★★★ 23505 撞的就是它"+
 			"★ ⇒ ⇒ ★★ 它的键是 (tenant_id, session_id, partition_date) WHERE is_final_success",
 			section14395UniqueIdx)
 	}
 	exe := sqlExecutable14395(t, section14395Script)
-	if !strings.Contains(exe, "pg_get_indexdef(c.oid) LIKE '%is_final_success%'") {
+	if !containsToken14395(exe, "pg_get_indexdef(c.oid) LIKE '%is_final_success%'") {
 		t.Errorf("★ %s 的【可执行面】里没有 `pg_get_indexdef(c.oid) LIKE '%%is_final_success%%'` —— "+
 			"★ ★★ 审计脚本必须能**列出**那条部分唯一索引（★ 它的定义就是根因）",
 			section14395Script)
@@ -326,7 +370,7 @@ func TestSection14395UniqueIndexAndSelfHealAreRegistered(t *testing.T) {
 
 	// ② 修法样板：695 的 demote 步
 	heal := sqlExecutable14395(t, section14395SelfHeal)
-	if !strings.Contains(heal, "SET is_final_success = FALSE") {
+	if !containsToken14395(heal, "SET is_final_success = FALSE") {
 		t.Errorf("★ %s 里没有 `SET is_final_success = FALSE` —— "+
 			"★ ★★★★ 迁移 695 是【final_success 自愈】的现成样板"+
 			"★ ⇒ ⇒ ★★ 本轮实测：v1 request_logs 族 2026-09-10 起的停摆，"+
@@ -338,7 +382,7 @@ func TestSection14395UniqueIndexAndSelfHealAreRegistered(t *testing.T) {
 
 	// ③ 样板失去保护对象（v1 族退役）
 	v1 := sqlExecutable14395(t, section14395V1Retire)
-	if !strings.Contains(v1, "request_logs") {
+	if !containsToken14395(v1, "request_logs") {
 		t.Errorf("★ %s 里没有 `request_logs` —— "+
 			"★ ★★★★ 890 是 v1 request_logs 族的退役迁移"+
 			"★ ⇒ ⇒ ★★ ★ 它退役之后，695 的自愈就【没有保护对象】了"+
@@ -387,7 +431,7 @@ func TestSection14395ScriptIsReadOnly(t *testing.T) {
 // ⇒ ★ 判据必须落在【剥掉 `--` 注释之后】的那一面。
 func TestSection14395ScriptStripsCommentsBeforeMatching(t *testing.T) {
 	exe := sqlExecutable14395(t, section14395Script)
-	if !strings.Contains(exe, "regexp_replace(query, '--[^\\n]*', '', 'g')") {
+	if !containsToken14395(exe, "regexp_replace(query, '--[^\\n]*', '', 'g')") {
 		t.Errorf("★ %s 的【可执行面】里没有 `regexp_replace(query, '--[^\\n]*', '', 'g')` —— "+
 			"★ ★★★★ pg_stat_statements.query 里存的是**原始文本**（含注释）"+
 			"★ ⇒ ⇒ ★★ 本轮实测：凭据自检语句的**注释里**就写着 "+
@@ -420,7 +464,7 @@ func TestSection14395RunbookRegistersFindings(t *testing.T) {
 		"is_final_success",                       // ★ 冲突键的列
 		"promote_session_turns_hot_to_partition", // ★ 排水函数名
 	} {
-		if !strings.Contains(seg, needle) {
+		if !containsToken14395(seg, needle) {
 			t.Errorf("★ §143.95 段里没有 %q —— "+
 				"★ ★★ 本轮的结论是【机制级】的 ⇒ ⇒ 机制名/索引名/失败码必须登记"+
 				"★ ⇒ ⇒ ★★ 少了它 ⇒ ⇒ 「hot 表在涨」这个现象就会脱离它的成因",
@@ -431,12 +475,12 @@ func TestSection14395RunbookRegistersFindings(t *testing.T) {
 
 // TestSection14395LessonsAndAgentsAreRegistered —— ★ 判据⑥的配套
 func TestSection14395LessonsAndAgentsAreRegistered(t *testing.T) {
-	if !strings.Contains(readRepoFile14395(t, section14395Lessons), "## §289") {
+	if !containsToken14395(readRepoFile14395(t, section14395Lessons), "## §289") {
 		t.Error("★ LESSONS.md 里没有 §289 —— " +
 			"★ ⇒ ⇒ 「族退役时自愈迁移必须一起迁走」与「两个冲突是不同键」" +
 			"★ ⇒ ⇒ 这两条通用式必须落进去")
 	}
-	if !strings.Contains(readRepoFile14395(t, section14395Agents), "R139 轮") {
+	if !containsToken14395(readRepoFile14395(t, section14395Agents), "R139 轮") {
 		t.Error("★ AGENTS.md 里没有 R139 轮 —— " +
 			"★ ⇒ ⇒ 本轮「留存归属 + 排水归属 + 根因」必须落在交接段")
 	}
