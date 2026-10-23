@@ -976,6 +976,38 @@
 > ⇒ ★ 量具坑：**裸 grep 在 conmon 日志上会中途转 binary 模式**（输出 `Binary file matches` ⇒ 下游 uniq 假频次 55 vs 真值 1167）⇒ 一律 `grep -a`。
 > ⇒ ⚠ 部署边界：D2 修复**未**重发网关——现役 `b23a24c1` 落后 origin/main **89 提交**，单缺陷修复不该替发布列车做主。
 
+> **2026-10-23 llmgo-245 六页面报错分族修复轮（本会话）**：用户报 llmgo.kxpms.cn（=**245**，共享 252 PG）六个页面报错
+> ⇒ **第一发现是「必须分族」——三族根因、三种修法**：**A 代码缺陷**（settings 详情 500）/**B 交付缺口**（free-discovery 503）/
+> **C 共享库饱和**（routing-log 15s 超时 / error-trend 8s 超时 / keys 使用统计超时 / turns 503）。
+> 完整记录见 `docs/audit/2026-10-23-llmgo-245-六页面报错分族修复.md`。**对生产的写入 = 0**（全部只读取证 + 本地一次性库真验）。
+> ⇒ ★★★ **A（已修）**：平台路由 `GET /api/admin/settings/{key}` 对 tenant-scoped spec 走 `EffectiveValue(ScopeTenant, key, "")`
+>    ⇒ spec.go:304 硬校验 ⇒ 500；`PUT` 同根（StoreDB.Set 拒 ScopeTenant）。**用户猜的「当前值为 null」不成立**——有没有台账行都炸。
+>    修法：GET 返回 spec 默认值（source=default，前端本就为 tenant scope 渲染警告面板）、PUT 返回 400 指向 tenant-settings 端点。
+>    ★ **刻意不**改 Spec 的 PascalCase 序列化（web-mobile `platformSettings.ts:131` 明文登记它是契约、客户端不得混用键名）。
+>    门 `admin/settings_tenant_scoped_test.go` 3 条。
+> ⇒ ★★★★ **B（已修，随下次部署）**：free-discovery 503 = **084/087 从未到达任何生产库**——升级通道只把 version ≥ 412 视为 pending
+>    （896 文件头已登记过同款缺口），db-changelog 084 行自证「applied+verified (本地 llm-gateway 库, psql 手动应用)」⇒
+>    生产共享库实测无 provider_templates/discovery_tasks/discovery_results ⇒ R39 的 ProviderTemplatesProvisioned()=false ⇒ 不接线。
+>    修法 = **迁移 900 再投递**（896 先例同款）：逐字复用 084 幂等 DDL + 并入 087 三列；§5 对 free_resource_catalog 带**存在性守卫**
+>    （fresh-install 链上迁移先跑、boot ensure 后建表 ⇒ 裸 ALTER 必炸整条新装链——853/489/490 族的第三例），
+>    列由 `ensureOmniFreeSchema` 双侧补齐（087 健康反馈列「迁移+ensure 双侧 IF NOT EXISTS」同款先例）。
+> ⇒ ★★★★ **C 的可修部分（已落仓，随下次部署）**：**usage_ledger 分区没有 api_key_id 首列索引**——
+>    EXPLAIN ANALYZE 实测 key 73 的 **7 天空窗（0 行）耗 6,983ms**（ts 首列索引 + api_key_id Filter，每 worker 移除 64,822 行）；
+>    对照组 usage_ledger_hot 反而有 `usage_ledger_hot_api_key_id_ts_idx` ⇒ 修法 = **迁移 901** 给父表建
+>    `(api_key_id, ts DESC) WHERE api_key_id IS NOT NULL`（891 同款 lock_timeout=60s/statement_timeout=10min）。
+>    另：routing_decision_log 月分区是 **columnar**（ts 索引不承重，24h count 2.5s）⇒ routing-log 的慢是存储策略（§143.21 A1 族，属主裁决），
+>    本轮不动；turns 503 的会话 hot+parent 共 **1 行**仍 20s ⇒ 纯等待，2026-10-17 的 query 侧根修已在案，无 query 侧可修。
+> ⇒ ★★ 饱和族量化：245 48h 超时 **2,709** 次、154 同库 24h **5,901** 次；采样时一条 matview REFRESH 已跑 201s 仍在 IO|DataFileRead；
+>    根因与候选解 = §143.26–§143.35 的 P11/P1/B1 等属主待裁决项（892/898/899 已落仓待部署）。
+> ⇒ ★★ **登记 7 点全同步 + 台账补欠账**：900/901 正本/embeddata 副本（sha 一致）/main.go/runner.go/TSV/升级通道/db-changelog；
+>    ★ 898/899（并行会话落仓）**没有台账行** ⇒ 本轮补上（连续性门锚点是**磁盘最大编号** ⇒ 登记 900/901 后窗口必含 898/899）。
+> ⇒ ★★ 真库真验（本地一次性库）：900 两形态（升级库/新装库）+ 幂等重跑 + down 全过；901 分区索引传播
+>    （★ 验证器两次自踩：`pg_index.indisparent` 列不存在（应查 pg_inherits）、子索引 relkind 是小写 `'i'`（父分区索引才是 `'I'`））；
+>    ★ **计划读数必须用有判别力的行数**（1000 行小表优化器选 Seq Scan 是对的，20 万行复测才走索引）。
+> ⇒ ⚠ 诚实边界：三条迁移**未在生产应用**（水位 897）；900/901 由升级通道随下次部署自动应用，未预应用（生产写需属主授权）；
+>    make guards 的 3 个 ursmcheck FAIL + guards-shell 7 处均为 HEAD 既有（临时 worktree 在干净 HEAD 上复现，文件皆不在本轮 diff）。
+> ⇒ ⚠ 部署边界：本轮只落仓 + 推送；free-discovery 503 的消失时点 = 下次部署（迁移应用后**网关重启** ⇒ 探测翻真）。
+
 ## 经验反馈闭环（vibe-coding Rule 66）
 
 - 开始工作前阅读根目录 `LESSONS.md`、`.agents/rules/66-skill-evolution.md` 和本次改动涉及的模块规则；收尾时只记录可复用的返工、遗漏、验证盲区或风险。
