@@ -191,7 +191,14 @@ func scCanCreateDB(t *testing.T, baseDSN string) bool {
 // scDBName 从 Create 返回的 DSN 里取库名。
 func scDBName(t *testing.T, dsn string) string {
 	t.Helper()
-	// Create 造出来的 DSN 形如 postgres://user:pw@host:port/<dbname>?sslmode=disable
+	// Create 造出来的 DSN 是标准 postgres URL：scheme 为 postgres、userinfo 段带凭据、
+	// **路径段是库名**、query 段带 sslmode=disable。
+	// ★ 这里【刻意不写出 URL 字面量】—— 旧注释里内嵌了一份带口令的示例 DSN，
+	//   secret 扫描器因此按 DB_CONNSTRING 判 BLOCK，而该口令又【不在】
+	//   scripts/scan-secrets.replacements 与 scan-secrets.private.replacements 里
+	//   ⇒ ⇒ 公开镜像的 filter-repo 【不会】改写它 ⇒ ⇒ 放行等于把凭据连同历史
+	//   一起发到 GitHub 公开仓 ⇒ ⇒ 而 scan-secrets.baseline 的规矩正是
+	//   「BLOCK 就修文件，不要加 baseline」⇒ ⇒ 改描述、不降级判据。
 	// ⇒ 取最后一个 '/' 与 '?' 之间。
 	i := strings.LastIndex(dsn, "/")
 	if i < 0 {

@@ -70,15 +70,6 @@ const providerErrorCleanupInterval = time.Hour
 //   - lifecycle.promote_batch_size (default 5000)
 const promoteBatchSize = 5000
 
-// requestLogsBodiesPromoteBatchSize is the default per-call LIMIT for the
-// _request_logs_bodies promote. Bodies rows are TOAST-heavy (~350 KB avg; the
-// hot table was 13 GB / 37k rows), so the generic 5000-row batch moves
-// ~1.7 GB per call and consistently exceeds PG statement_timeout=30s on the
-// shared DB — promote then never makes progress and every hourly tick adds
-// lock/I/O contention. 500 rows (~175 MB/batch) stays well under the cap.
-// Override via lifecycle.request_logs_bodies_promote_batch_size.
-const requestLogsBodiesPromoteBatchSize = 500
-
 // PartitionManager automatically creates next month's partition,
 // archives old partitions to columnar storage, continuously migrates
 // cold rows from most *_hot tables into matching monthly partitions,
@@ -2288,7 +2279,6 @@ func isUndefinedFunction(err error) bool {
 //
 // Per-table retention settings (all hot-reloadable):
 //   - lifecycle.hot_retention_hours            — _request_logs_hot, usage_ledger_hot, ... (default 8h)
-//   - lifecycle.request_logs_bodies_retention_hours — _request_logs_bodies (1d default)
 //   - lifecycle.handoff_logs_hot_retention_hours — handoff_logs_hot (8h default)
 //   - lifecycle.session_module_executions_hot_retention_hours — Migration 580 (8h default)
 //   - lifecycle.dashboard_access_events_hot_retention_hours — Migration 579 (8h default)
@@ -2326,27 +2316,6 @@ func resolvePromoteConfig(label string) (time.Duration, int) {
 		}
 		if batchSize > 50_000 {
 			batchSize = 50_000
-		}
-		return retention, batchSize
-	case "_request_logs_bodies":
-		// 2026-07-13: _request_logs_bodies stores full request/response
-		// payloads (TOAST). It grew to 3.4 GB / 24k rows in one month
-		// because the default retention was 7d. Bodies are only needed
-		// for forensic / export use cases — operators rarely look at
-		// them more than a day after the fact. Default drops to 24h;
-		// operators can override via
-		// lifecycle.request_logs_bodies_retention_hours.
-		hours := settingsGetPlatformInt("lifecycle.request_logs_bodies_retention_hours", 24)
-		retention := time.Duration(hours) * time.Hour
-		if retention < time.Hour {
-			retention = time.Hour // safety floor — at least 1h
-		}
-		batchSize := settingsGetPlatformInt(
-			"lifecycle.request_logs_bodies_promote_batch_size",
-			requestLogsBodiesPromoteBatchSize,
-		)
-		if batchSize < 100 {
-			batchSize = 100 // safety floor — avoid pathological micro-batches
 		}
 		return retention, batchSize
 	case "auto_route_selections_hot":
