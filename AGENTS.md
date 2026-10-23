@@ -4,6 +4,48 @@
 > 写入时机：2026-10-09 首次生成；**2026-10-11 由 root 会话
 > `mvs_d10f8ded3e7c4d73b8221fe670ddd9dc` 重写「工具链」与「已落地结论」两节**，
 > 原文件关于「go/brew/docker 全部缺失」的判断已被实测推翻，见下。
+> **2026-10-23 实时拓扑探测打标四处源真值漂移轮 + 口径收敛**（会话
+> `mvs_64ddb526ee11405aae54d67e7c4d6161`）：用户报 154 生产上一条 32-hex
+> 请求 `af1eb6d83ef39610cc4f8be4e181b5a8` "应被识别为探测但实时拓扑 pill = 否"。
+> 审计定位**4 处**独立代码决定"一个请求算不算探测"——历史上**没有同源**：
+> (1) `isValidOriginStage` 在 `middleware/origin_mw.go:371-379`（DB CHECK）、
+> (2) `isProbeOriginStage` 在 `domains/streaming/context_attrs.go:151-158`（侧表
+> `is_probe` 列）、(3) `extractProbeInfo` 在 `admin/probe_request_info.go:74-100`
+> （实时拓扑 dashboard），(4) `IsProbeTraffic` 在 `domains/stats/minute_entry.go:36-51`
+> （stats/board 排除，**故意不读 origin_stage**，改走 quality_flags / task_type /
+> **origin_actor 白名单**）。**dashboard 多 5 个 alias 值**（`direct/gateway/
+> scheduled/probe_gateway/probe_scheduled`）—— 这 5 个是**死防御代码**：
+> `origin_mw.go:354-359` 的 `isValidOriginStage` 闸门会把它们挡在 HTTP 路径之外，
+> DB 不会出现这些值。`admin/probe_request_info.go:69-73` 自陈"两个地方必须
+> 同源"是**不实**的。
+> **★ 本轮已落地修复**（属主拍板"修 B' + 收敛成单一真值源"）：新建
+> **`internal/probekind`**（stdlib-only 单一真值源：ProbeStages / Writers /
+> ProbeActors / IsProbe / IsProbeMarkers / SQLActorList）；**4 处改为引用它**
+> —— middleware 的 `isValidOriginStage`/`globalAuthStageActorPairs`/
+> `systemOwnerFallbackStage`（后两者现互相派生，**不再各写一份**）、
+> streaming 侧表 `isProbeOriginStage`、admin `extractProbeInfo`（**删 5 个死
+> alias** + **补 origin_actor 兜底路径**治漏标）、stats `IsProbeTraffic` +
+> `probeGatewayActors`、bg 的 `ProbeTrafficExclusionPredicateView`（const→var，
+> actor 列表从 probekind 渲染）。**★ B' 修复**：actor 集 4→7，补进
+> `self-check-worker` / `model-quality-worker` / `mock-probe-client`
+> ⇒ 板上"总请求数"不再把自检/打分行当业务流量（**数字会下降，是修正**）。
+> **变异探针 3 臂全红**（A 删 Writers 项 ⇒ 3 个门同红 / B 删 ProbeStages 项 ⇒
+> migration 341 对拍门红 / C 删 dashboard actor 路径 ⇒ 7 个 actor 逐个红）；
+> **六包全量测试 + `go build ./...` 全绿**。⚠ **量具失效 3 次**（本轮踩坑，
+> 通用式见 `LESSONS.md`）：① 既有的 `TestProbeActorSetMatchesSQLPredicate`
+> 靠 grep 源码字面量判定，SQL 改渲染后**永远红**（读数错，不是行为错）⇒
+> 门改成"断言引用了 probekind + 渲染结果逐个对得上"；② 新写的
+> `TestProbeActorsCoverEveryRealWriter` 只认字面量，漏掉常量引用
+> （`OriginActorMockProbeClient`）与变量引用（`strPtrTelemetry(actor)`）⇒
+> 改为主动解两种形态；③ 断言方向写反（fallback ⊆ 配对表，不是反过来）。
+> 用户报的 32-hex 请求**仍未定位**（缺 154 PG 证据）；五形态分类
+> （A: 5 alias 之一 / A': system_health 配对缺失 / B: DB 系统 key worker
+> 被剥头 / **B': 自检/打分 worker 写出的行被 board 当作业务（已修）** /
+> C: 早期 row 没救 / D: 根本不是探测）见
+> `docs/audit/2026-10-23-live-topology-probe-tagging-audit.md`。
+> 下一轮需要 154 PG 上 `origin_stage / origin_actor / task_type /
+> quality_flags` 4 列的 SQL 结果才能判型（**注意修复后带 actor 的探测行
+> 已不再漏标**）。
 > **2026-10-22 96h 修正任务审计轮**（会话 `mvs_b6a7cd3aeb6149f8be06fb3a7ab347d8`，
 > Windows 宿主）：★ **本轮的第一发现是「一批审计门从未真正跑过」** ——
 > 它们「绿」是因为**压根没跑**（Python 门依赖 locale 编码 ⇒ 在 cp936 上必崩），

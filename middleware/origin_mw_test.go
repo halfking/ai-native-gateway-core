@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/kaixuan/llm-gateway-go/internal/probekind"
 )
 
 // TestOriginMiddleware_StripsHeadersForBusiness verifies that a
@@ -370,5 +372,84 @@ func TestResolveOriginForSystemKey(t *testing.T) {
 	stage, _, ok = ResolveOriginForSystemKey(ctx, "legacy-probe-worker")
 	if !ok || stage != "self_check" {
 		t.Fatalf("legacy-probe-worker with claim: got ok=%v stage=%q", ok, stage)
+	}
+}
+
+// TestIsValidOriginStage_MatchesProbekind 验证 DB CHECK 闸门的判定与真值源
+// 一致：probekind.ValidStages() 里的每一个值都必须被接受，其余一律拒绝。
+//
+// 2026-10-23 审计：判定集收敛到 internal/probekind（唯一真值源）。本门
+// **不再硬编码清单** —— 硬编码副本正是"4 处各写一份 ⇒ 必然漂移"的病根。
+//
+// 同族门（各自包下，验证同一件事）：
+//   - internal/probekind/probekind_test.go   真值源自检（含 migration 341 对拍）
+//   - admin/probe_origin_alignment_test.go   实时拓扑 dashboard 口径
+//   - domains/streaming/context_attrs_test.go 侧表口径
+//   - domains/stats/probe_origin_alignment_test.go stats/board 口径
+func TestIsValidOriginStage_MatchesProbekind(t *testing.T) {
+	for _, stage := range probekind.ValidStages() {
+		if !isValidOriginStage(stage) {
+			t.Errorf("isValidOriginStage(%q) = false, want true（probekind.ValidStages 里有 ⇒ DB CHECK 闸门必须放行）", stage)
+		}
+	}
+	// 闸门必须拒绝一切不在合法集合里的值 —— 未知值降级成 business，
+	// 落库后 operator 能看出伪造。
+	for _, stage := range []string{
+		"", "direct", "gateway", "scheduled",
+		"probe_gateway", "probe_scheduled",
+		"PROBE_DIRECT", "self-check", "unknown",
+	} {
+		if isValidOriginStage(stage) {
+			t.Errorf("isValidOriginStage(%q) = true, want false（不在 probekind.ValidStages 里 ⇒ 必须降级）", stage)
+		}
+	}
+}
+
+// TestSystemOwnerFallbackStageMatchesPairingTable 验证
+// systemOwnerFallbackStage（actor→stage）与 globalAuthStageActorPairs
+// （stage→actor）的关系。
+//
+// 2026-10-23 审计：这两张表此前是**同一份数据的两个方向、各写一份**，
+// 必然漂移。现在后者由 probekind 派生，前者由后者反向派生 ⇒ 结构上
+// 不可能再漂移。本门守住这个结构关系。
+//
+// ★ 断言方向是 **fallback ⊆ 配对表**，不是反过来 ——
+// systemOwnerFallbackStage 的语义是「DB 系统 key 的 owner → 它可以声明
+// 的 stage」，而 ResolveOriginForSystemKey 对不在 trustedOriginOwners 里
+// 的 owner 直接返回 false ⇒ 给它们建 fallback 没有意义。
+// 所以配对表里可以有 fallback 表里没有的 actor（probe-service /
+// mock-probe-client 走 HTTP 头声明，不需要 fallback）。
+func TestSystemOwnerFallbackStageMatchesPairingTable(t *testing.T) {
+	// 刻意的例外：system-health-worker 的 stage 是 system_health，
+	// 而 system_health **没有 HTTP 写入者**（bg/system_health.go 是只读
+	// 扫描器，不发网关请求）⇒ 不在配对表里，但它仍需要一条
+	// "DB 系统 key 的 owner → 合法探测 stage"的兜底映射。
+	fallbackOnlyActors := map[string]string{
+		"system-health-worker": "system_health",
+	}
+
+	for actor, stage := range systemOwnerFallbackStage {
+		if wantStage, ok := fallbackOnlyActors[actor]; ok {
+			if stage != wantStage {
+				t.Errorf("systemOwnerFallbackStage[%q] = %q, want %q", actor, stage, wantStage)
+			}
+			continue
+		}
+		actors, ok := globalAuthStageActorPairs[stage]
+		if !ok {
+			t.Errorf("systemOwnerFallbackStage[%q] = %q，但配对表里没有 %q 这个 stage",
+				actor, stage, stage)
+			continue
+		}
+		if _, ok := actors[actor]; !ok {
+			t.Errorf("systemOwnerFallbackStage[%q] = %q，但配对表里 %q 的 actor 集合不含它",
+				actor, stage, stage)
+		}
+		// fallback 的每个 actor 必须是可信 owner（否则 ResolveOriginForSystemKey
+		// 会对它直接返回 false，这条映射就是死的）。
+		if _, ok := trustedOriginOwners[actor]; !ok {
+			t.Errorf("systemOwnerFallbackStage 里的 actor %q 不在 trustedOriginOwners 里 ⇒ "+
+				"ResolveOriginForSystemKey 对它返回 false，这条映射不会被用到", actor)
+		}
 	}
 }

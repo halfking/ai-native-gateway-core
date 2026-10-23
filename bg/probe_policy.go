@@ -13,7 +13,11 @@
 // 谓词集中在此，避免各扫描器/调度器口径漂移。
 package bg
 
-import "fmt"
+import (
+	"fmt"
+
+	"github.com/kaixuan/llm-gateway-go/internal/probekind"
+)
 
 // nodeProbeHealthyParkedSQL renders the healthy-parked predicate (INV-1) for a
 // node_probe_state row aliased by alias. A row is healthy-parked when the last
@@ -185,9 +189,15 @@ const probeTrafficExclusionPredicate = "(NOT COALESCE('probe' = ANY(%s.quality_f
 // THREE format verbs, one per arm — pass the alias THREE times. (The previous
 // comment said "twice"; a two-arg call silently renders %!s(MISSING) into the
 // SQL, which then fails as a syntax error far from the real mistake.)
-const ProbeTrafficExclusionPredicateView = "(NOT COALESCE('probe' = ANY(%s.quality_flags), FALSE)" +
+//
+// 2026-10-23 审计：actor 列表不再手写，改由 internal/probekind 渲染
+// （probekind.SQLActorList()）。此前 Go 侧（domains/stats/minute_entry.go 的
+// probeGatewayActors）与 SQL 侧各写一份，必然漂移 —— 已实证一次：
+// self-check-worker / model-quality-worker 只在 Go 侧缺席，stats 把它们
+// 写出的探测行当成业务流量计入 ⇒ 板上"总请求数"持续虚高。
+var ProbeTrafficExclusionPredicateView = "(NOT COALESCE('probe' = ANY(%s.quality_flags), FALSE)" +
 	" AND COALESCE(%s.task_type, '') <> 'probe_triggered'" +
-	" AND COALESCE(%s.origin_actor, '') NOT IN ('node-probe-worker', 'active-probe-worker', 'probe-service', 'credential-selfcheck-worker'))"
+	" AND COALESCE(%s.origin_actor, '') NOT IN (" + probekind.SQLActorList() + "))"
 
 // probeTrafficExclusionPredicateSession 是 settle 基线 cohort 在**会话族**上的
 // 探针排除谓词（审计 §9.73.4/§9.73.5，2026-10-03 裁决「分族修」）。
