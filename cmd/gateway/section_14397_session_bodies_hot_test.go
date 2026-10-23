@@ -478,8 +478,16 @@ func TestSection14397_DocsRegistered(t *testing.T) {
 	if !strings.Contains(lessons, "§291") {
 		t.Errorf("LESSONS.md 里没有 `§291` —— ★ 通用式没沉淀")
 	}
+	// ★ 本轮收尾又沉淀了 §292（★ 「惰性变异」筛查 / 「变异要改全部等价形态」/
+	// ★ 「探针的取值来源」/ 「门要守真函数」）⇒ ⇒ 一并钉住。
+	if !strings.Contains(lessons, "§292") {
+		t.Errorf("LESSONS.md 里没有 `§292` —— ★ 本轮收尾的通用式（惰性变异筛查 / 取值来源对齐 / 守真函数）没沉淀")
+	}
 	agents := readRepoFile14397(t, section14397Agents)
 	if !strings.Contains(agents, "R141") {
 		t.Errorf("AGENTS.md 里没有 `R141` —— ★ 交接没更新")
+	}
+	if !strings.Contains(agents, "R142") {
+		t.Errorf("AGENTS.md 里没有 `R142` —— ★ 本轮收尾（§143.97.15）的交接没更新")
 	}
 }

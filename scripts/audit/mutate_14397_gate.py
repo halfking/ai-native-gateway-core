@@ -600,6 +600,18 @@ def m24_rename_installer_marker_token():
     return "（改了 %d 处）" % n
 
 
+def m25_remove_lessons_292_marker():
+    """★ 删掉 LESSONS 里的 §292 标记 ⇒ ⇒ 文档判据应红。"""
+    n = replace_in_files([LESSONS], "§292", "§999")
+    return "（改了 %d 处）" % n
+
+
+def m26_remove_agents_r142_marker():
+    """★ 删掉 AGENTS 里的 R142 标记 ⇒ ⇒ 文档判据应红。"""
+    n = replace_in_files([AGENTS], "R142", "R999")
+    return "（改了 %d 处）" % n
+
+
 def main():
     print("=" * 78)
     print("§143.97 变异台：验证「门绿 ≠ 门有牙」")
@@ -688,6 +700,8 @@ def main():
     arm("M24 改 installer's 标记 token（真函数口径漂移）", False,
         m24_rename_installer_marker_token,
         probe_installer_predicate_false(EMBED898))
+    arm("M25 删掉 LESSONS 的 §292 标记", False, m25_remove_lessons_292_marker)
+    arm("M26 删掉 AGENTS 的 R142 标记", False, m26_remove_agents_r142_marker)
 
     print("-" * 78)
     ok = 0
