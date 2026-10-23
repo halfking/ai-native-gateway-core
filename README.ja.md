@@ -479,7 +479,7 @@ git push github       # → github (secret scan, blocked on BLOCK-level hit)
 
 コントリビューションを歓迎します！開発環境の構築、コードスタイル、プルリクエストのプロセスは [CONTRIBUTING.md](CONTRIBUTING.md) を参照してください。
 
-マルチテナント関連の変更は、`lint-tenant-scope-llmgw` / `lint-pg-rls` / `lint-otel-tenant` の 3 つのリンターすべてに合格する必要があります。
+マルチテナント関連の変更は、RLS ゲート（`make test-rls`——実 PostgreSQL が必要、`TEST_DATABASE_URL` が要る）とユニットテストスイート（`make test`——CI の `verify.sh` が実行しているのと同じもの）を通過する必要があります。
 
 ## 🔐 セキュリティ
 

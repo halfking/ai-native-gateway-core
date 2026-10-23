@@ -479,7 +479,7 @@ Schutz sensibler Informationen: `.githooks/pre-push` führt beim Push zu GitHub 
 
 Wir freuen uns über Beiträge! Siehe [CONTRIBUTING.md](CONTRIBUTING.md) für Development-Setup, Code-Stil und den Pull-Request-Prozess.
 
-Multi-Tenancy-Änderungen müssen alle drei Linter bestehen: `lint-tenant-scope-llmgw` / `lint-pg-rls` / `lint-otel-tenant`.
+Multi-Tenancy-Änderungen müssen das RLS-Gate (`make test-rls` — echtes PostgreSQL, benötigt `TEST_DATABASE_URL`) und die Unit-Test-Suite (`make test` — dasselbe `go test ./...`, das CI über `verify.sh` ausführt) bestehen.
 
 ## 🔐 Sicherheit
 

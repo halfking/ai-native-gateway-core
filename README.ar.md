@@ -479,7 +479,7 @@ git push github       # → github (secret scan, blocked on BLOCK-level hit)
 
 نرحّب بمساهماتكم! انظر [CONTRIBUTING.md](CONTRIBUTING.md) لإعداد بيئة التطوير وأسلوب الكود وعملية طلبات السحب.
 
-تغييرات تعدد المستأجرين يجب أن تجتاز أدوات الفحص الثلاث كلها: `lint-tenant-scope-llmgw` / `lint-pg-rls` / `lint-otel-tenant`.
+تغييرات تعدد المستأجرين يجب أن تجتاز بوابة RLS (`make test-rls` — PostgreSQL حقيقي، تتطلب `TEST_DATABASE_URL`) ومجموعة اختبارات الوحدة (`make test` — وهي نفس `go test ./...` التي يشغّلها CI عبر `verify.sh`).
 
 ## 🔐 الأمن
 

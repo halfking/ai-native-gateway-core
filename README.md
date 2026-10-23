@@ -574,7 +574,7 @@ Sensitive-information protection: `.githooks/pre-push` automatically runs `scrip
 
 We welcome contributions! See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, code style, and the pull-request process.
 
-Multi-tenancy changes must pass all three linters: `lint-tenant-scope-llmgw` / `lint-pg-rls` / `lint-otel-tenant`.
+Multi-tenancy changes must pass the RLS gate (`make test-rls` — real PostgreSQL, requires `TEST_DATABASE_URL`) and the unit-test suite (`make test` — the same `go test ./...` CI runs via `verify.sh`).
 
 ## 🔐 Security
 

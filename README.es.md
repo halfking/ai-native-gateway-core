@@ -479,7 +479,7 @@ Protección de información sensible: `.githooks/pre-push` ejecuta automáticame
 
 ¡Aceptamos contribuciones! Véase [CONTRIBUTING.md](CONTRIBUTING.md) para la configuración del desarrollo, el estilo de código y el proceso de pull requests.
 
-Los cambios multi-tenant deben pasar los tres linters: `lint-tenant-scope-llmgw` / `lint-pg-rls` / `lint-otel-tenant`.
+Los cambios multi-tenant deben pasar la puerta RLS (`make test-rls` — PostgreSQL real, requiere `TEST_DATABASE_URL`) y la suite de pruebas unitarias (`make test` — el mismo `go test ./...` que ejecuta CI mediante `verify.sh`).
 
 ## 🔐 Seguridad
 

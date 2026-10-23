@@ -510,7 +510,7 @@ bash scripts/sync-to-github.sh             # 确认后 force-push（main + tags�
 
 欢迎参与贡献！开发环境搭建、代码风格与 PR 流程见 [CONTRIBUTING.md](CONTRIBUTING.md)。
 
-多租户相关改动必须通过全部三条 linter：`lint-tenant-scope-llmgw` / `lint-pg-rls` / `lint-otel-tenant`。
+多租户相关改动必须通过 RLS 门禁（`make test-rls`——真实 PostgreSQL，需 `TEST_DATABASE_URL`）与单元测试套件（`make test`——CI 的 `verify.sh` 跑的就是它）。
 
 ## 🔐 安全
 

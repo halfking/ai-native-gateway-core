@@ -479,7 +479,7 @@ git push github       # → github (secret scan, blocked on BLOCK-level hit)
 
 歡迎參與貢獻！開發環境設定、程式碼風格與 pull request 流程見 [CONTRIBUTING.md](CONTRIBUTING.md)。
 
-多租戶相關改動必須通過全部三個 linter：`lint-tenant-scope-llmgw` / `lint-pg-rls` / `lint-otel-tenant`。
+多租戶相關改動必須通過 RLS 門禁（`make test-rls`——真實 PostgreSQL，需 `TEST_DATABASE_URL`）與單元測試套件（`make test`——CI 的 `verify.sh` 跑的就是它）。
 
 ## 🔐 安全
 
