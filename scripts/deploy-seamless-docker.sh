@@ -93,6 +93,10 @@ DD_NGINX_UPSTREAM="${DD_NGINX_UPSTREAM:-ns_llm_gateway_upstream}"
 DD_DOMAIN="${DD_DOMAIN:-}"
 
 DD_REPO_ROOT="${LLM_GATEWAY_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+# ★ upstream 端口读写判定脚本的路径：**按引擎自身所在目录解析**（scripts/ops/…），
+#   而不是 DD_REPO_ROOT —— 后者可被 LLM_GATEWAY_ROOT 覆盖成别处 ⇒ 脚本就找不到了。
+#   远端形态：引擎跑在 $DD_REMOTE_ROOT/scripts/ ⇒ 脚本在 $DD_REMOTE_ROOT/scripts/ops/。
+DD_UPSTREAM_PORT_HELPER="${DD_UPSTREAM_PORT_HELPER:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/ops/nginx-upstream-port.py}"
 # 前端产物来源（前端由部署机预构建，随 tar 上树，引擎不构建前端）。
 DD_WEB_DIST_SRC="${DD_WEB_DIST_SRC:-$DD_REPO_ROOT/web/dist}"
 DD_MOBILE_DIST_SRC="${DD_MOBILE_DIST_SRC:-$DD_REPO_ROOT/web-mobile/dist}"
@@ -1251,29 +1255,64 @@ dd_write_active_slot() {
   printf '%s\n' "$(dd_slot_port "$1")" > "${DD_GW_DATA_ROOT}/run/active-port"
 }
 
+# ── 槽位↔端口绑定体检（2026-10-23，211 的 502 事故收口）────────────────
+# ★ 为什么这道闸必须存在（形态与 154/245 根本不同）：
+#   · 154/245（systemd 形态）：nginx 里是
+#       `include /opt/llm-gateway-go/run/active-upstream.conf;`
+#     ⇒ 端口在**部署时生成的文件**里 ⇒ 不存在「端口烤死在 nginx 里」的形态。
+#   · 211（docker 形态）：nginx 的 upstream 块里**直接写死**
+#       `server 127.0.0.1:<活跃槽端口>;`
+#     ⇒ 槽位端口在**两个地方**各存一份（脚本的 DD_SLOT_*_PORT 与 nginx）⇒
+#       **可以漂移**。
+#   ★ 漂移的真实形态（2026-10-21 17:0x 211 实测）：同机另一个产品
+#     `ai-session-manager-asm-1` 占了 127.0.0.1:8782（网关旧 b 槽的端口），
+#     而 nginx 的 upstream **仍指向 8782** ⇒ 网关的流量被送到**别的产品**的
+#     端口上 ⇒ llm.itestu.cn 502。
+#   ★ 而 `dd_active_slot` 在「upstream 端口不匹配任何槽位」时是**静默回退**
+#     （状态文件 → 兜底 a）⇒ 引擎会拿着一个**猜出来的**活跃槽去决定
+#     「候选槽」与「停哪个槽」⇒ 可能把流量切到没人监听的端口，或停掉
+#     **正在服务**的槽 ⇒ 502。
+#   ⇒ 这里改成：**先体检；对不上就拒绝部署**，并把现场事实与处置方法一并
+#     打出来（属主需要的是「知道该怎么改」，不是「部署失败」四个字）。
+#   ⇒ 体检只**读**（nginx conf + 状态文件），不写任何东西。
+dd_check_slot_binding() {
+  local _port _sa="${DD_SLOT_A_PORT:-}" _sb="${DD_SLOT_B_PORT:-}" _sf _claim
+  # 没配槽位端口 ⇒ 这台机器不走蓝绿端口映射 ⇒ 本闸不适用
+  [[ -n "$_sa" || -n "$_sb" ]] || return 0
+  _port="$(dd_upstream_port || true)"
+  # 读不到 upstream（全新主机 / 还没配 nginx）⇒ 无从体检 ⇒ 放行
+  [[ -n "$_port" ]] || return 0
+  case "$_port" in
+    "$_sa"|"$_sb") return 0 ;;
+  esac
+  _sf="${DD_GW_DATA_ROOT}/run/active-slot"
+  _claim="(无状态文件)"
+  if [[ -f "$_sf" ]]; then
+    _claim="$(tr -d '[:space:]' < "$_sf" 2>/dev/null || true)"
+    [[ -n "$_claim" ]] || _claim="(空)"
+  fi
+  die "nginx upstream ${DD_NGINX_UPSTREAM} 指向 127.0.0.1:${_port} —— 该端口**不属于任何配置槽位**（a=${_sa} / b=${_sb}）⇒ 槽位与端口的绑定已与现场脱节。
+      拒绝继续部署：活跃槽判定会静默回退到状态文件（记的是 ${_claim}）⇒ 可能把流量切到没人监听的端口、或停掉正在服务的槽 ⇒ 502。
+      现场处置（先看清端口是谁在听）：
+        ssh ${DD_SSH_TARGET:-本机} 'ss -lntp | grep -E \":(${_sa}|${_sb}|${_port}) \"'
+        · 若 ${_port} 上是**别的产品**（211 实测过：ai-session-manager-asm-1 占了 127.0.0.1:8782）⇒ 把 upstream 主 server 行改到网关**实际在服务**的端口（${_sa} 或 ${_sb}），再重跑部署；
+        · 若 ${_port} 上**就是**网关容器 ⇒ 端口配置与现场不一致 ⇒ 改 DD_SLOT_*_PORT 使其与现场一致（槽位端口必须静态：活跃槽判定靠端口↔槽位配对）。
+      只读体检：bash scripts/ops/deploy-doctor.sh --ssh ${DD_SSH_TARGET:-本机} --slot-a ${_sa} --slot-b ${_sb}"
+}
+
 # ---- nginx 切流：改 upstream 块里主 server 行的 127.0.0.1:<port> ----------
 # 为什么切 upstream 而不是改容器端口：蓝绿两个槽各绑一个固定端口，切流的
 # 动作只能是「把流量指向另一个端口」，容器端口本身不变（与 154/245 的
 # active-upstream.conf 片段同一思路，这里是就地改 upstream 块的主 server 行，
 # 少一个 include 迁移面）。
 dd_upstream_port() {
-  local _conf="$DD_NGINX_CONF"
+  local _conf="$DD_NGINX_CONF" _helper="$DD_UPSTREAM_PORT_HELPER"
   [[ -f "$_conf" ]] || return 1
-  python3 - "$_conf" "$DD_NGINX_UPSTREAM" <<'PY' 2>/dev/null
-import re, sys
-conf, upstream = sys.argv[1], sys.argv[2]
-text = open(conf, encoding="utf-8", errors="replace").read()
-m = re.search(r'upstream\s+' + re.escape(upstream) + r'\s*\{(.*?)\n\}', text, re.S)
-if not m:
-    print(""); raise SystemExit(0)
-for line in m.group(1).splitlines():
-    if "backup" in line:
-        continue
-    mm = re.search(r'server\s+127\.0\.0\.1:(\d+)', line)
-    if mm:
-        print(mm.group(1)); raise SystemExit(0)
-print("")
-PY
+  # ★ 判定逻辑在共享脚本里（掩码后定位 ⇒ 注释里的旧端口不算数）。
+  #   不剥注释 ⇒ 读到注释里的旧端口 ⇒ 活跃槽判错 ⇒ 可能切错端口/停掉活着的槽
+  #   ⇒ 502（245 的 upstream 块里就留着 `# Original hardcoded server 127.0.0.1:8781;`）。
+  [[ -f "$_helper" ]] || return 1
+  python3 "$_helper" --conf "$_conf" --upstream "$DD_NGINX_UPSTREAM" 2>/dev/null
 }
 
 # dd_switch_upstream <端口> —— 把 upstream 主 server 行改到 <端口> 并 reload。
@@ -1294,37 +1333,18 @@ dd_switch_upstream() {
     return 1
   fi
   _bak="${_conf}.bak-dd-upstream"
-  if python3 - "$_conf" "$DD_NGINX_UPSTREAM" "$_port" "$_bak" <<'PY'
-import re, sys, pathlib
-conf, upstream, newport, bakpath = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
-p = pathlib.Path(conf)
-text = p.read_text()
-m = re.search(r'(upstream\s+' + re.escape(upstream) + r'\s*\{)(.*?)(\n\})', text, re.S)
-if not m:
-    print("noop-no-block"); raise SystemExit(2)
-lines = m.group(2).split("\n")
-done = False
-for i, line in enumerate(lines):
-    if "backup" in line:
-        continue
-    mm = re.search(r'(server\s+127\.0\.0\.1:)(\d+)', line)
-    if mm:
-        lines[i] = line[:mm.start(2)] + newport + line[mm.end(2):]
-        done = True
-        break
-if not done:
-    print("noop-no-primary-server"); raise SystemExit(2)
-newtext = text[:m.start(2)] + "\n".join(lines) + text[m.end(2):]
-# ★ 备份**总是**写「改前内容」（覆盖）：nginx -t 失败时要用它把文件还原。
-#   旧实现是「备份只在不存在时写」⇒ 备份里可能是上上次的内容 ⇒ 还原会
-#   把配置回退到错误版本。
-pathlib.Path(bakpath).write_text(text)
-if newtext == text:
-    print("already"); raise SystemExit(0)
-p.write_text(newtext)
-print("patched")
-PY
-  then
+  if [[ ! -f "$DD_UPSTREAM_PORT_HELPER" ]]; then
+    warn "upstream 端口判定脚本不在场（${DD_UPSTREAM_PORT_HELPER}）⇒ 拒绝切流（不做半吊子改写）"
+    return 1
+  fi
+  local _sw_out
+  # ★ 同一段判定逻辑（掩码后定位 ⇒ 只改**活的上游行**，不会改到注释里那个旧端口；
+  #   旧实现会改注释并报 patched ⇒ nginx reload 后活的上游根本没变 ⇒
+  #   引擎以为「已切流」⇒ 随后停掉「旧槽」⇒ 流量落空 ⇒ 502）。
+  # ★ 退出码语义：0 = 已改/已是目标；2 = noop（块形态不认识）⇒ 走失败分支。
+  if _sw_out="$(python3 "$DD_UPSTREAM_PORT_HELPER" \
+                  --conf "$_conf" --upstream "$DD_NGINX_UPSTREAM" \
+                  --switch "$_port" --backup "$_bak" 2>&1)"; then
     if nginx -t >/dev/null 2>&1; then
       if nginx -s reload >/dev/null 2>&1; then
         log "nginx upstream ${DD_NGINX_UPSTREAM} → 127.0.0.1:${_port}（已 reload）"
@@ -1341,7 +1361,7 @@ PY
     fi
     return 1
   else
-    warn "切流补丁未应用（upstream 块形态变了？）"
+    warn "切流补丁未应用（upstream 块形态变了？判定=${_sw_out:-empty}）"
     return 1
   fi
 }
@@ -1885,6 +1905,9 @@ fi
 # redis）按本脚本「优先复用」口径本就落在宿主 bind，不在本块范围。
 # 属主对齐容器内运行用户（uid 65532=llmgw）。
 DD_GW_DATA_ROOT="${DD_GW_DATA_ROOT:-/opt/kaixuan/data/llm-gateway}"
+# ★ 槽位↔端口绑定体检：**先于一切写动作**（mkdir/chown/迁移/起容器/切流都在它后面）
+#   ⇒ 绑定已脱节的机器上，本轮部署**一个字节都不写**，只报出处置方法。
+dd_check_slot_binding
 mkdir -p "$DD_GW_DATA_ROOT/data" "$DD_GW_DATA_ROOT/logs"
 chown -R 65532:65532 "$DD_GW_DATA_ROOT" 2>/dev/null || true
 
@@ -2155,97 +2178,116 @@ if [[ "${GW_WEB_DIST_OK:-0}" == "1" ]]; then
   esac
 fi
 
-# ── nginx llm.itestu.cn TLS 腿：X-Real-IP 必须是 $remote_addr ──────────
+# ── nginx <域名> TLS 腿：X-Real-IP 必须是 $remote_addr ──────────────────
 # 旧配置用 map 变量 ns_real_ip(= 入站 X-Real-IP 原样)，浏览器不带该头时为空，
 # 限流/验证码只能落到 docker 桥接 RemoteAddr，多客户端共桶。幂等修补。
+#
+# ★★ 2026-10-23 重构（211 部署复验轮 F2）：判定逻辑**挪出**引擎，放到
+#   scripts/ops/nginx-llm-realip-patch.py（可离线用夹具验证，见
+#   tests/nginx_llm_realip_patch_test.sh）；引擎只做「调用 + 按分类处置」。
+#   修掉的三个真缺陷（详见该脚本头注）：
+#   ① ★ 只在**自己的 conf** 里找 443 块 ⇒ 211（443 腿在**通用 TLS 终结器**
+#      里，server_name 不含该域）**永远找不到** ⇒ 每次部署打一条**假**告警
+#      「块形态变了?」——既不是形态变了，也不是该修的没修成，而是**本机压根
+#      不承担该域的 443**。⇒ 现在跨文件搜，且把「没找到」分成
+#      「确实没有」（信息）与「形态不认识」（才告警）两种结论。
+#   ② ★ 域名**写死** llm.itestu.cn（权威是 DD_DOMAIN）⇒ 换域名会静默改错对象。
+#   ③ ★ `nginx -t` 失败时**不还原**文件 ⇒ 磁盘上留着没验证过的配置，
+#      之后任何一次 reload 都会加载它（潜伏半切换态；同仓审计
+#      docs/audit/2026-10-20-211-bluegreen-docker-engine.md §4.1 已定过形态）。
+#
+# ★ 处置一律按补丁器给出的**分类**（RESULT=），**不靠退出码做分支**
+#   （原实现正是在这里踩过 `if ! cmd; then 成功 else 失败` 的反转坑）。
 dd_fix_nginx_llm_real_ip() {
-  local conf="${DD_NGINX_LLM_CONF:-$DD_NGINX_CONF}"
-  [[ -f "$conf" ]] || { warn "nginx conf 不在场 ($conf)，跳过 X-Real-IP 修补"; return 0; }
-  if ! grep -q 'server_name llm.itestu.cn' "$conf"; then
-    warn "nginx conf 无 llm.itestu.cn server，跳过 X-Real-IP 修补"
+  local domain="${DD_DOMAIN:-}"
+  local patcher="$DD_REPO_ROOT/scripts/ops/nginx-llm-realip-patch.py"
+  if [[ -z "$domain" ]]; then
+    log "nginx X-Real-IP：未配置 DD_DOMAIN ⇒ 跳过（不猜域名）"
     return 0
   fi
-  # 只改「listen …443 ssl」那一段里的 X-Real-IP（mesh :8000 腿保留原 map，
-  # 因为上跳 252 会带真实客户端 IP）。
-  #
-  # ★★ 2026-10-22 修（这个函数此前**从来没有生效过**）：
-  #   调用点是 `python3 - "$conf" <<'PY'` —— 只传了**一个**参数（conf 路径），
-  #   而脚本里读的是 `sys.argv[2]`（host_ip）⇒ host_ip 恒为 "" ⇒
-  #   marker 变成空串 ⇒ `text.find("")` = 0 ⇒ idx=0（不是 -1，**绕过了正则
-  #   回退分支**）⇒ 窗口 = 「文件开头到第一个顶层 server {」⇒ 里面当然没有
-  #   llm.itestu.cn ⇒ 每次都打印 noop-wrong-server + 一条 WARN。
-  #   ⇒ ① 调用点补上 host_ip；② host_ip 为空时**必须**走正则回退分支
-  #     （空 marker 绝不能当成「匹配到位置 0」）。
-  #   ⇒ ③ 「已经是 $remote_addr」时**不 reload nginx**：原来 python 退出 0
-  #     就被当成「修补成功」⇒ 每次部署都白白 reload 一次 nginx。
-  # ⚠⚠ 2026-10-22 二次修：**这里不能加 `!`**。
-  #   `if ! cmd; then <成功分支> else <失败分支>` 是**反的**：
-  #   cmd 成功(rc=0) ⇒ `! 0` 为假 ⇒ 走 else ⇒ 打印「修补未应用」；
-  #   cmd 失败(rc≠0) ⇒ `! rc` 为真 ⇒ 走 then ⇒ 反而去 reload。
-  #   （本轮实测：python 已返回 "already"/rc=0，却仍打出
-  #    「nginx X-Real-IP 修补未应用 (块形态变了?)」—— 就是这个反转。）
-  #   ⇒ 形态必须是：`if cmd; then <成功分支> else <失败分支>`。
-  _dd_realip_result=""
-  if _dd_realip_result="$(python3 - "$conf" "${DD_HOST:-}" <<'PY'
-import pathlib, sys
-p = pathlib.Path(sys.argv[1])
-text = p.read_text()
-# 快速路径：目标机本机 IP 的 443 腿。取不到就用下面的通用正则
-# （任意 listen ...:443 ssl + server_name llm.itestu.cn 的 server 块）。
-host_ip = sys.argv[2] if len(sys.argv) > 2 else ""
-marker = ("listen %s:443 ssl" % host_ip) if host_ip else ""
-idx = text.find(marker) if marker else -1
-if idx < 0:
-    # 允许 IP 漂移：任意 listen …443 ssl 且随后 server_name llm.itestu.cn
-    import re
-    m = re.search(r'listen\s+[^\n]*443[^\n]*ssl[^\n]*;\s*\n\s*server_name\s+llm\.itestu\.cn;', text)
-    if not m:
-        print('noop-no-block')
-        raise SystemExit(2)
-    idx = m.start()
-# 取从此 listen 起到下一个顶层 "server {" 或文件尾的窗口（含 location 嵌套）
-rest = text[idx:]
-end_rel = rest.find("\nserver {", 1)
-window = rest if end_rel < 0 else rest[:end_rel]
-if "server_name llm.itestu.cn;" not in window and "server_name llm.itestu.cn" not in window:
-    print('noop-wrong-server')
-    raise SystemExit(2)
-if "X-Real-IP $remote_addr;" in window:
-    print('already')
-    raise SystemExit(0)
-if "X-Real-IP $ns_real_ip;" not in window:
-    print('noop-no-ns-real-ip')
-    raise SystemExit(2)
-new_window = window.replace("X-Real-IP $ns_real_ip;", "X-Real-IP $remote_addr;", 1)
-new = text[:idx] + new_window + text[idx + len(window):]
-bak = p.with_suffix(p.suffix + ".bak-dd-realip")
-if not bak.exists():
-    bak.write_text(text)
-p.write_text(new)
-print("patched")
-PY
-  )"; then
-    case "$_dd_realip_result" in
-      patched)
-        if nginx -t >/dev/null 2>&1; then
-          nginx -s reload >/dev/null 2>&1 && log "nginx llm.itestu.cn TLS: X-Real-IP -> \$remote_addr (reloaded)" \
-            || warn "nginx reload 失败 (配置已改，需手工 reload)"
-        else
-          warn "nginx -t 失败，已保留 .bak-dd-realip; 未 reload"
-        fi
-        ;;
-      already)
-        # 已经是目标形态 ⇒ **不 reload**：reload 是有代价的（worker 换代会抖一下），
-        # 没必要为「什么都没改」付这个代价。
-        log "nginx llm.itestu.cn TLS: X-Real-IP 已是 \$remote_addr（无需改动，未 reload）"
-        ;;
-      *)
-        warn "nginx X-Real-IP 修补未应用 (结果=${_dd_realip_result:-empty})"
-        ;;
-    esac
-  else
-    warn "nginx X-Real-IP 修补未应用 (块形态变了?)"
+  if [[ ! -f "$patcher" ]]; then
+    warn "nginx X-Real-IP 修补脚本不在场（${patcher}）⇒ 跳过"
+    return 0
   fi
+  # 候选：自己的 conf（切流用的那个）+ 标准 nginx 配置目录（★ 跨文件找 443 腿）
+  # ★ 搜索根可覆盖（DD_NGINX_SEARCH_ROOTS，冒号分隔）：默认写死主机路径会让
+  #   这段逻辑**无法离线验证**（测试机上 /etc/nginx 不存在 ⇒ 永远只扫一个文件）
+  #   ⇒ 给了旋钮，门才能在临时目录里跑真引擎函数。
+  local roots=()
+  local d rest
+  rest="${DD_NGINX_SEARCH_ROOTS:-/etc/nginx/conf.d:/etc/nginx/sites-enabled}"
+  while [[ -n "$rest" ]]; do
+    d="${rest%%:*}"
+    if [[ "$rest" == *:* ]]; then rest="${rest#*:}"; else rest=""; fi
+    [[ -n "$d" && -d "$d" ]] && roots+=(--search-root "$d")
+  done
+  # 遗留旋钮（历史上有主机用它指定「承载该域的另一个 conf」）：一并纳入候选
+  local confs=(--conf "$DD_NGINX_CONF")
+  [[ -n "${DD_NGINX_LLM_CONF:-}" ]] && confs+=(--conf "$DD_NGINX_LLM_CONF")
+  local out result=""
+  out="$(python3 "$patcher" --domain "$domain" "${confs[@]}" \
+          ${roots[@]+"${roots[@]}"} --apply 2>&1)" || {
+    warn "nginx X-Real-IP 修补脚本执行失败：${out}"
+    return 0
+  }
+  result="$(printf '%s\n' "$out" | sed -n 's/^RESULT=//p' | head -1)"
+  # 改了哪些文件 / 对应备份（还原要用）
+  local files=() backs=()
+  local line
+  while IFS= read -r line; do
+    case "$line" in
+      FILE=*)   files+=("${line#FILE=}") ;;
+      BACKUP=*) backs+=("${line#BACKUP=}") ;;
+    esac
+  done <<<"$out"
+  local detail
+  while IFS= read -r line; do
+    detail="${line#DETAIL=}"
+    [[ "$line" == DETAIL=* ]] || continue
+    case "$result" in
+      patched) ;;                       # patched 的明细由下面那行 log 概括
+      *) log "  ${detail}" ;;
+    esac
+  done <<<"$out"
+  case "$result" in
+    patched)
+      if nginx -t >/dev/null 2>&1; then
+        if nginx -s reload >/dev/null 2>&1; then
+          log "nginx ${domain} TLS: X-Real-IP -> \$remote_addr (reloaded)"
+        else
+          warn "nginx reload 失败（配置已改，需手工 reload）"
+        fi
+      else
+        # ★ nginx -t 失败 ⇒ **还原**：磁盘上留着没验证过的配置 =
+        #   潜伏半切换态（之后任何一次 reload 都会加载它）
+        # ★ 用 ${#files[@]} 判空而不是直接展开空数组：bash 3.2 + set -u
+        #   展开空数组会报未绑定变量（仓库通用纪律）。
+        local i
+        if [[ "${#files[@]}" -gt 0 ]]; then
+          for i in "${!files[@]}"; do
+            [[ -n "${backs[$i]:-}" ]] && cp "${backs[$i]}" "${files[$i]}" 2>/dev/null || true
+          done
+        fi
+        warn "nginx -t 失败 ⇒ 已还原 X-Real-IP 改动（未 reload）"
+      fi
+      ;;
+    already)
+      log "nginx ${domain} TLS: X-Real-IP 已是 \$remote_addr (无需改动，未 reload)"
+      ;;
+    skip-domain-not-on-443-block)
+      # ★ 这是**信息**不是告警：本机不承担该域的 443（211：443 由通用终结器承担）
+      log "nginx ${domain}：本机没有该域的 443 TLS 块 ⇒ 无需 X-Real-IP 修补"
+      ;;
+    skip-shared-leg)
+      log "nginx ${domain}：该 443 块是共享终结器（含其它域）⇒ 不自动改（不波及别的域）"
+      ;;
+    noop-unknown-shape)
+      warn "nginx ${domain}：X-Real-IP 形态不认识 ⇒ 未改（需人工确认）"
+      ;;
+    *)
+      warn "nginx X-Real-IP 修补未应用（结果=${result:-empty}）"
+      ;;
+  esac
 }
 dd_fix_nginx_llm_real_ip
 

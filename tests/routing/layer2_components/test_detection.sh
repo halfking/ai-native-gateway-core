@@ -73,7 +73,7 @@ test_prompt_injection_basic() {
             detected_count=$((detected_count + 1))
         else
             capture_logs 50
-            if echo "$LAST_LOGS" | grep -qi "prompt.injection\|security.verdict\|injection.detected"; then
+            if grep -qi "prompt.injection\|security.verdict\|injection.detected" <<<"$LAST_LOGS"; then
                 echo "  → Detected (logged)"
                 detected_count=$((detected_count + 1))
             else
@@ -133,7 +133,7 @@ test_sensitive_info_detection() {
         
         # Check logs for detection
         capture_logs 50
-        if echo "$LAST_LOGS" | grep -qi "sensitive\|pii\|redact"; then
+        if grep -qi "sensitive\|pii\|redact" <<<"$LAST_LOGS"; then
             echo "  → Detected"
             detected_count=$((detected_count + 1))
         else
@@ -185,7 +185,7 @@ test_jailbreak_detection() {
         TESTS_PASSED=$((TESTS_PASSED + 1))
     else
         capture_logs 50
-        if echo "$LAST_LOGS" | grep -qi "jailbreak\|security"; then
+        if grep -qi "jailbreak\|security" <<<"$LAST_LOGS"; then
             echo -e "${GREEN}✓${NC} Jailbreak detected (logged)"
             TESTS_PASSED=$((TESTS_PASSED + 1))
         else
@@ -218,7 +218,7 @@ test_harmful_content_detection() {
     
     # Check logs for compliance check
     capture_logs 50
-    if echo "$LAST_LOGS" | grep -qi "compliance\|output.*check"; then
+    if grep -qi "compliance\|output.*check" <<<"$LAST_LOGS"; then
         echo -e "${GREEN}✓${NC} Output compliance check detected"
         TESTS_PASSED=$((TESTS_PASSED + 1))
     else
@@ -251,7 +251,7 @@ test_output_pii_redaction() {
     
     # Check if response was processed for PII
     capture_logs 50
-    if echo "$LAST_LOGS" | grep -qi "redact\|pii.*output"; then
+    if grep -qi "redact\|pii.*output" <<<"$LAST_LOGS"; then
         echo -e "${GREEN}✓${NC} Output PII redaction active"
         TESTS_PASSED=$((TESTS_PASSED + 1))
     else
@@ -336,7 +336,7 @@ test_detection_audit_trail() {
     capture_logs 100
     
     local audit_present=false
-    if echo "$LAST_LOGS" | grep -qi "security\|audit\|detection"; then
+    if grep -qi "security\|audit\|detection" <<<"$LAST_LOGS"; then
         audit_present=true
     fi
     

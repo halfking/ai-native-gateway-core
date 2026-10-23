@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kaixuan/llm-gateway-go/internal/probekind"
 	"github.com/kaixuan/llm-gateway-go/recentmodels"
 )
 
@@ -61,14 +62,28 @@ func TestProbePolicyPredicatesShape(t *testing.T) {
 	}
 	// 冻结 113 列视图变体（R49 自纠；R52 审计补全 actor）：origin_stage 不在
 	// 视图契约内，视图读面只能用 flags+task_type+origin_actor 三臂（全部
-	// 113 列在册）。gateway actor 全集为四：node-probe-worker（legacy runOne）、
-	// probe-service（队列 gateway 轮）、credential-selfcheck-worker（自检
-	// HTTP）+ active-probe-worker（历史行兼容）——缺一即该轮流量被视图扫描
-	// 当"使用"计入（INV-3 泄漏）。
+	// 113 列在册）。
+	//
+	// 2026-10-23 审计：actor 列表不再硬编码，改由 internal/probekind 渲染
+	// —— 此前 Go 侧（domains/stats/minute_entry.go）与 SQL 侧各写一份，
+	// 漂移过一次（self-check-worker / model-quality-worker 只在 Go 侧缺席 ⇒
+	// stats 把它们写出的探测行当业务流量计入，板上"总请求数"虚高）。
+	// 本断言改为"形状 + 列表来源"两段：形状仍钉死，列表交给
+	// probekind.SQLActorList()（它与 domains/stats 侧同源）。
 	if got, want := ProbeTrafficExclusionPredicateView,
 		"(NOT COALESCE('probe' = ANY(%s.quality_flags), FALSE) AND COALESCE(%s.task_type, '') <> 'probe_triggered'"+
-			" AND COALESCE(%s.origin_actor, '') NOT IN ('node-probe-worker', 'active-probe-worker', 'probe-service', 'credential-selfcheck-worker'))"; got != want {
+			" AND COALESCE(%s.origin_actor, '') NOT IN ("+probekind.SQLActorList()+"))"; got != want {
 		t.Fatalf("probeTrafficExclusionView = %q, want %q", got, want)
+	}
+	// 形状不变式：三条臂、三个 format 动词、actor 臂在、origin_stage 臂不在。
+	if got := strings.Count(ProbeTrafficExclusionPredicateView, "%s"); got != 3 {
+		t.Errorf("view predicate has %d format verbs, want 3", got)
+	}
+	if !strings.Contains(ProbeTrafficExclusionPredicateView, "origin_actor") {
+		t.Error("view predicate lost its origin_actor arm")
+	}
+	if strings.Contains(ProbeTrafficExclusionPredicateView, "origin_stage") {
+		t.Error("view predicate must not have an origin_stage arm (not in the 113-column contract)")
 	}
 	if probeUsageWindowInterval != "interval '3 days'" {
 		t.Fatalf("usage window = %q, want 3 days", probeUsageWindowInterval)

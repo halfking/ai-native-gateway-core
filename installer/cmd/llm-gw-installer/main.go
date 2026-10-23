@@ -926,6 +926,7 @@ var sessionTurnsCostNegativePartialIdx891 []byte
 
 //go:embed embeddata/startup/892_ursm_snapshot_slot_daily.sql
 var ursmSnapshotSlotDaily892 []byte
+
 //go:embed embeddata/startup/885_session_turns_host_tags.sql
 var sessionTurnsHostTags885 []byte
 
@@ -971,6 +972,55 @@ var rebindCandidateFailureLogsDiagnosisView894 []byte
 
 //go:embed embeddata/startup/895_domain_chain_startup_images.sql
 var domainChainStartupImages895 []byte
+
+//go:embed embeddata/startup/896_offline_activation_requests_columns_reassert.sql
+var offlineActivationRequestsColumnsReassert896 []byte
+
+// 897（2026-10-23，会话族 final_success 自愈轮）：给 session_turns 族的 hot 排水
+// 补上 final_success 自愈步（与 695 给 v1 request_logs 族加的 demote 步逐字同款）。
+// ★ 那个族后来被 890 退役 ⇒ ⇒ 自愈没随族迁走 ⇒ ⇒ 真正有同款病灶的会话族一直
+// 缺这一步 ⇒ ⇒ 批次撞 uq_session_turns_final_success ⇒ 23505 整批回滚 ⇒
+// hot 表无限涨 + 父表停止接收冷行。
+// ★ 函数体 = 869（生产现行体）整段 + 一处 demote 插入 ⇒ ⇒ 零语义变更。
+//
+//go:embed embeddata/startup/897_session_turns_promote_final_success_self_heal.sql
+var sessionTurnsPromoteFinalSuccessSelfHeal897 []byte
+
+// 898（2026-10-23，会话族 hot 排水轮）：补上 public.session_bodies_hot 的
+// **ts 首列索引**。
+// ★ 该 hot 表的 6 个索引中没有一个以 ts 为首列 ⇒ 批次选取走 Seq Scan + Sort
+//   （实测 cost 1602~1623）；★ 对照组 session_turns_hot 有
+//   idx_session_turns_hot_ts (ts, id, partition_date) ⇒ Index Only Scan。
+// ★ ★ 交付缺口（带精确失败点）：614 @ 6973a9fb8（= 生产 schema_migrations
+//   记账时刻那一版）把该索引定义成带 `WHERE ts > now() - interval '8 hours'`
+//   谓词的 partial index ⇒ now() 非 IMMUTABLE ⇒ PG 拒绝 ⇒ **从未建成**，
+//   且其后同文件的 idx_session_bodies_hot_partition_date 也从未执行；而其
+//   前面的 _lookup / _request 建成了 ⇒ 与生产现状逐条吻合。⇒ 修好了的
+//   614（368202126）因**台账已记 applied**而永远到不了生产，⇒ 且 614
+//   不在通道 files=() ⇒ 通道也不补 ⇒ **双通道都到不了**。
+// ★ 形态照抄仓内样板 idx_session_turns_hot_ts ⇒ (ts, id, partition_date)。
+// ★ 用 CONCURRENTLY：hot 表是活写表，普通 CREATE INDEX 会阻断写入。
+// ⚠ 诚实边界：实测批次选取只花 30ms（Sort 未溢写）⇒ 本索引**不**是 60s
+//   超时的解（60s 在写侧，实测 ≈79ms/行）⇒ 它消除的是「批次选取随表体量
+//   线性劣化」这个放大器。
+//
+//go:embed embeddata/startup/898_session_bodies_hot_ts_index.sql
+var sessionBodiesHotTsIndex898 []byte
+
+// 899（2026-10-23，会话族 hot 排水轮）：把
+// promote_session_bodies_hot_to_partition 的**生产现行体**下沉成迁移
+// （★ session_bodies 族的 copy-gap 修复）。
+// ★ 活库上装的是**裸 ON CONFLICT DO NOTHING** + reconciled CTE 的形态
+//   （实测 src_len=3486）⇒ 逐字等于 db/db.go 的
+//   ensureSessionBodiesPromoteDrain（每次网关启动都重装）⇒ ⇒ **这个形态
+//   只活在 Go 源码里，不在任何迁移里**。
+// ★ 而仓内四版迁移（615/626/638/708）全是带仲裁目标的
+//   `ON CONFLICT (id, partition_date)` ⇒ ⇒ 「只跑迁移不启 Go」会把它装回
+//   生产 ⇒ ⇒ 23505 复发 + 毒丸行卡死 hot 窗口 ⇒ ⇒ 修法在通道路径上无效。
+// ★ 函数体逐字等于生产现行体 ⇒ 语义零变更。
+//
+//go:embed embeddata/startup/899_session_bodies_promote_body_sink.sql
+var sessionBodiesPromoteBodySink899 []byte
 
 //go:embed embeddata/startup/859_tighten_pii_phone_intl_regex.sql
 var tightenPiiPhoneIntlRegex859 []byte
@@ -1300,8 +1350,8 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/883_session_family_cost_view_metrics.sql":                               sessionFamilyCostViewMetrics883,
 	"startup/884_session_family_v_analytics_views.sql":                               sessionFamilyVAnalyticsViews884,
 	"startup/890_drop_request_logs_v1_family.sql":                                    dropRequestLogsV1Family890,
-	"startup/891_session_turns_cost_negative_partial_idx.sql":                         sessionTurnsCostNegativePartialIdx891,
-	"startup/892_ursm_snapshot_slot_daily.sql":                                         ursmSnapshotSlotDaily892,
+	"startup/891_session_turns_cost_negative_partial_idx.sql":                        sessionTurnsCostNegativePartialIdx891,
+	"startup/892_ursm_snapshot_slot_daily.sql":                                       ursmSnapshotSlotDaily892,
 	"startup/885_session_turns_host_tags.sql":                                        sessionTurnsHostTags885,
 	"startup/886_session_bodies_storage_comment.sql":                                 sessionBodiesStorageComment886,
 	"startup/887_session_turns_search_text_fts.sql":                                  sessionTurnsSearchTextFTS887,
@@ -1315,6 +1365,10 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/893_fresh_install_partition_prereq.sql":                                 freshInstallPartitionPrereq893,
 	"startup/894_rebind_candidate_failure_logs_diagnosis_view.sql":                   rebindCandidateFailureLogsDiagnosisView894,
 	"startup/895_domain_chain_startup_images.sql":                                    domainChainStartupImages895,
+	"startup/896_offline_activation_requests_columns_reassert.sql":                   offlineActivationRequestsColumnsReassert896,
+	"startup/897_session_turns_promote_final_success_self_heal.sql":                  sessionTurnsPromoteFinalSuccessSelfHeal897,
+	"startup/898_session_bodies_hot_ts_index.sql":                                  sessionBodiesHotTsIndex898,
+	"startup/899_session_bodies_promote_body_sink.sql":                              sessionBodiesPromoteBodySink899,
 	"startup/859_tighten_pii_phone_intl_regex.sql":                                   tightenPiiPhoneIntlRegex859,
 	"startup/852_models_canonical_column_set_reconcile.sql":                          modelsCanonicalColumnSetReconcile852,
 	"startup/489_credential_probe_queue_startup_backfill.sql":                        credentialProbeQueueStartupBackfill489,

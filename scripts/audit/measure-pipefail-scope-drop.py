@@ -157,7 +157,39 @@ def exit_consumed(line):
     pre = line[:p]
     if re.search(r"\b(if|elif|while|until)\b", pre) or re.search(r"&&|\|\|", pre):
         return "consumed"
+    # ★★★ 段十五（§19.20.76）补：管道在 `&&` / `||` 【左侧】时，其退出码同样【被消费】
+    #   （形态：`A | B || cmd` / `A | B && cmd`）⇒ ⇒ 此前只扫【管道之前】的 pre
+    #   ⇒ ⇒ **假阴性** ⇒ ⇒ 段十四「89 处 consumed」是【低估】的 ⇒ ⇒ ★ 与段十四⑪同族：
+    #   ★「查某物」型断言的正则必须覆盖【所有实际写法】⇒ 这里漏了「管道在 && / || 左侧」。
+    if tail_after_pipe(line, p) in ("&&", "||"):
+        return "consumed"
     return "discarded"
+
+
+def tail_after_pipe(line, p):
+    """返回管道【之后】遇到的第一个顶层分隔符（&& / || / ;）；忽略引号内的内容。
+
+    ★ 为什么要按【顶层】走：形如 `echo "a && b" | grep x` 的引号内容不能算分隔符。
+    ★ 为什么要找【第一个】：`A | B ; C || D` 里的 `||` 属于另一条命令 ⇒ 不算消费。
+    """
+    i = p
+    n = len(line)
+    quote = None
+    while i < n:
+        c = line[i]
+        if quote:
+            if c == quote:
+                quote = None
+        elif c in "'\"":
+            quote = c
+        elif c == ";":
+            return ";"
+        elif c == "&" and line[i:i + 2] == "&&":
+            return "&&"
+        elif c == "|" and line[i:i + 2] == "||":
+            return "||"
+        i += 1
+    return None
 
 
 def load_peer():

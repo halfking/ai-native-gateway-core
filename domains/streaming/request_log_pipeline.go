@@ -1804,6 +1804,82 @@ func applyOriginMetadata(entry *telemetry.RequestLogEntry, keyInfo *authenticati
 	}
 }
 
+// applyRequestContextFields 把「请求上下文字段」补到终态 entry 上
+// （2026-10-23 审计 · 探测打标）。
+//
+// ── 背景（154 生产实测，2026-10-23）────────────────────────────────────
+//
+// 「从请求上下文派生的字段」此前只在两处被应用：
+//
+//	① recordInitialRequestLog —— 初始 in_progress INSERT
+//	② buildEntry —— 失败 / 限流终态
+//
+// 而 session v2 镜像（internal/sessionv2mirror/hook.go:82）**只镜像终态
+// entry**：初始 INSERT 被刻意跳过（turn 幂等、写入后不可更新），所以它
+// 带的字段永远到不了 session_turns。
+//
+// ⇒ 成功请求落到 session_turns 的**唯一**入口是 emitTelemetry 构造的终态
+// entry，而它是从零构造的、不带任何请求上下文派生字段。
+//
+// 实测后果（154，session_turns_hot）：
+//
+//   - origin_stage 非空的行 **100% 是 success=false**；为空的行 **100% 是
+//     success=true**。
+//   - 同一组 (credential_id, model, request_preview) 三元组，失败行打了
+//     node_probe 标、成功行一个标都没有（如 cred 29 +
+//     nemotron-3-ultra-550b-a55b + "user: ping"：失败侧 186 行有标，
+//     成功侧 50 行无标）。
+//   - 目标请求 af1eb6d83ef39610cc4f8be4e181b5a8 在侧表
+//     request_context_attrs 里是 origin_stage=node_probe /
+//     client_ip=127.0.0.1 / is_probe=t，在 session_turns_hot 里这四列
+//     全空 ⇒ 实时拓扑把它当业务流量 ⇒ 用户看到的「探测请求没打标、有漏掉
+//     的」。
+//
+// 丢的不只是 origin：applyAutoRouteFields 同样只在初始 INSERT 与失败路径
+// 被调用 ⇒ 成功行的 is_auto_request / task_type / task_type_chosen 也是
+// 空的。而 task_type 正是 stats 侧判定探测的三个标记之一
+// （quality_flags / task_type / origin_actor，见 domains/stats/
+// minute_entry.go）⇒ 成功路径同时破坏了 stats 面的探测排除。
+//
+// ── 修法 ──────────────────────────────────────────────────────────────
+//
+// 把成功终态与失败终态对齐，逐项补齐 buildEntry 已有的那套派生字段：
+//
+//	applyAutoRouteFields    → IsAutoRequest / TaskType / AutoDecision /
+//	                          AutoConfidence / TaskTypeChosen / WorkType
+//	applyOriginMetadata     → OriginStage / OriginActor / ClientIP /
+//	                          ClientForwardedFor（ctx 权威 + DB 系统键兜底）
+//	ClientEndpoint /
+//	ClientRequestID         → 客户端请求端点与客户端自报 id
+//
+// 语义是「**只补空位**」（first-write-wins）：entry 上已有值不被覆盖，因此
+// 调用点可以放在终态构造之后、发射之前，与 buildEntry 内部的
+// 「applyAutoRouteFields → applyParentCorrelationFields →
+// applyOriginMetadata」顺序保持一致。
+func applyRequestContextFields(entry *telemetry.RequestLogEntry, keyInfo *authentication.KeyInfo, c *RequestLogContext) {
+	if entry == nil {
+		return
+	}
+	var originCtx context.Context
+	if c != nil && c.Request != nil {
+		originCtx = c.Request.Context()
+	}
+	if keyInfo == nil && c != nil {
+		keyInfo = c.KeyInfo
+	}
+	applyAutoRouteFields(entry, c)
+	applyOriginMetadata(entry, keyInfo, originCtx)
+	if c == nil {
+		return
+	}
+	if entry.ClientEndpoint == nil && c.ClientEndpoint != "" {
+		entry.ClientEndpoint = strPtr(c.ClientEndpoint)
+	}
+	if entry.ClientRequestID == nil && c.ClientRequestID != "" {
+		entry.ClientRequestID = strPtr(c.ClientRequestID)
+	}
+}
+
 // streamCountersFromContext (2026-07-28 §5.5) returns the
 // (chunksSent, chunkErrors) counters, preferring the per-request
 // StreamCapture (single source of truth, pinned at finalisation)

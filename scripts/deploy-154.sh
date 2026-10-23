@@ -57,7 +57,12 @@ if (( ${#ARGS[@]} > 0 )); then
   if [[ " ${ARGS[*]} " == *' --dry-run '* ]]; then
     # Port literals MUST mirror targets.sh:154 (active_port "8781", candidate_port "8782");
     # deploy-seamless.sh reads the same contract via target_field at deploy time.
-    printf '{"target":"154","active_port":"8781","candidate_port":"8782"}\n'
+    # ★ 2026-10-23：补 `active_port_kind` —— 这两个端口是**契约标称值**，
+    #   **不是「此刻跑在哪个端口」**：蓝绿晋级后实况端口会与标称值分叉
+    #   （245 实测：nginx upstream = 127.0.0.1:8782，而契约标称 active=8781）。
+    #   部署时以**目标机实测**为准（deploy-seamless.sh 用 DETECTED_ACTIVE_PORT）。
+    #   ⇒ 只**加**字段、不改既有键 ⇒ 既有消费方（grep/jq 取字段）不受影响。
+    printf '{"target":"154","active_port":"8781","candidate_port":"8782","active_port_kind":"contract_nominal"}\n'
     exit 0
   fi
 fi

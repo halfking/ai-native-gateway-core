@@ -1580,6 +1580,13 @@ files=(
   # 幂等：可重复应用；252 上是同体替换（no-op 语义）。
   "$ROOT_DIR/sql/migrations/startup/894_rebind_candidate_failure_logs_diagnosis_view.sql"
 
+  # 2026-10-21（895，252 PG 日志审计轮）：把 375/376 的三列（status / reject_reason /
+  # activation_code）+ 两索引重新交付到升级通道维护的存量库。生产通道
+  # deploy-lib/db-changelog.sh 只把 version >= 412 当 pending ⇒ 375/376 永远到不了
+  # 252（实测缺列 ⇒ licensing 离线激活管理 SQL 42703）。IF NOT EXISTS 幂等，
+  # 新装库（375/376 已应用）上是 no-op；表不存在时 NOTICE 跳过。
+  "$ROOT_DIR/sql/migrations/startup/896_offline_activation_requests_columns_reassert.sql"
+
   # 2026-10-07（844）：给 v_supplier_price_vs_baseline 补两个缓存基准价的投影。
   #
   # 编号注（**本条让位两次**，最终 844）：
@@ -2001,6 +2008,105 @@ files=(
   #   （:38-134，request-logs-physical-v1 世代探测）对它**零改写**
   #   （实测该正则命中 0 次）⇒ 执行体与源逐字相同。
   "$ROOT_DIR/sql/migrations/startup/895_domain_chain_startup_images.sql"
+
+  # 2026-10-23（897，会话族 final_success 自愈轮）：给 session_turns 族的
+  # hot 排水（promote_session_turns_hot_to_partition）补上**自愈步**。
+  #
+  # 病灶（★ 252 共享库 2026-10-23 生产定点实测）：
+  #   父表与 hot 表各有同构的部分唯一索引
+  #     (tenant_id, session_id, partition_date) WHERE is_final_success
+  #   而 promote 的**去重**键是 (tenant_id, request_id) ⇒ ⇒ 看不见那条冲突
+  #   ⇒ ⇒ 批次里的冲突行撞 uq_session_turns_final_success ⇒ **23505**
+  #   ⇒ ⇒ 原子 CTE **整批回滚、零行搬走** ⇒ ⇒ 且批次按 ts 升序 ⇒ 那个坏行
+  #   每批必含 ⇒ ⇒ **每个 tick 必败** ⇒ ⇒ hot 表无限涨 + 父表停止接收冷行
+  #   ⇒ ⇒ 父表的唯一写入路径就是 promote ⇒ ⇒ **父表饿死**。
+  #
+  # ★ 血缘：迁移 695 给 v1 request_logs 族的 promote 加过同款 demote 步；
+  #   而 890 把那个族退役了 ⇒ ⇒ 自愈没随族迁走 ⇒ ⇒ 真正有同款病灶的会话族
+  #   一直没有它 ⇒ ⇒ **这不是「新 bug」，是「族退役时迁移动作漏了一步」**
+  #   ⇒ ⇒ 修法样板（695）仍在仓内。
+  #
+  # 修法：与 695 逐字同款 —— 在**批次选取之前**把「父表已持有该键 mark」的
+  #   hot 行降级为 is_final_success=FALSE（语义「输家 = superseded，历史不改写」
+  #   ⇒ ⇒ 零语义变更）。基线是 **869**（★ 生产现行体）⇒ 函数体整段来自 869、
+  #   只插入一处 demote ⇒ ⇒ 并保留 869 的「目录派生列清单 + 形状守卫」两道牙。
+  #
+  # ★ 幂等：demote 只降级「父表已持有同键 mark」的 hot 行 ⇒ 第二次跑 moved=0。
+  # ★ 真库实测（一次性库，A/B/C 三段）：无 demote 时报 23505（约束名与生产
+  #   逐字一致）且整批回滚；装上后 demote 1 行、moved=1、先到者的 mark 原样
+  #   保留；第二次 moved=0。回滚脚本（down）= 重放 869 ⇒ **回滚 = 回到故障**。
+  #
+  # ★ 本条**只落仓**；★ 生产应用需属主另行授权。
+  "$ROOT_DIR/sql/migrations/startup/897_session_turns_promote_final_success_self_heal.sql"
+
+  # ── 2026-10-23（§143.97，会话族 hot 排水轮）：session_bodies_hot 的两条缺口 ──
+  #
+  # 898：补上 public.session_bodies_hot 的 **ts 首列索引**。
+  #
+  # ★ 病灶（★ 252 共享库 2026-10-23 生产只读实测）：该 hot 表的 6 个索引中
+  #   **没有一个以 ts 为首列** ⇒ 批次选取走 **Seq Scan + Sort**（实测 cost
+  #   1602~1623）；★ 对照组 session_turns_hot **有** idx_session_turns_hot_ts
+  #   (ts, id, partition_date) ⇒ 走 **Index Only Scan**（cost 219~385）。
+  #
+  # ★ ★ **交付缺口（带精确失败点）**：614 @ 6973a9fb8（= 生产
+  #   schema_migrations 记账时刻 2026-08-29 16:48:05 那一版）把该索引定义成
+  #   partial index 带 `WHERE ts > now() - interval '8 hours'` 谓词 ⇒
+  #   **now() 非 IMMUTABLE** ⇒ PG 拒绝 ⇒ **该索引从未建成**，且它**后面**
+  #   同文件的 idx_session_bodies_hot_partition_date 也从未执行；⇒ 而它
+  #   **前面**的 _lookup / _request 建成了 ⇒ ⇒ 与生产现状**逐条吻合**。
+  #   ⇒ 2026-09-03 的 368202126 修掉了 now() 谓词，但 **614 的台账已记为
+  #   applied ⇒ 修复永远到不了生产**；⇒ 且 614 **不在本通道 files=() 里**
+  #   ⇒ 通道也不补 ⇒ **双通道都到不了** ⇒ 这就是「台账说已应用 ≠ 实际对象
+  #   是那一版」的实例。
+  #
+  # ★ 另一条独立通道也拿不到它：707b（**在**本通道里）用
+  #   `LIKE public.session_bodies INCLUDING ALL` 建 hot 表 ⇒ 索引集**继承自
+  #   父表** ⇒ 而父表上**没有** ts 首列索引（862 只给 session_turns /
+  #   _request_logs 的父表加了 idx_*_ts）⇒ ⇒ LIKE 也拷不出 ts 索引
+  #   ⇒ 必须有一条新迁移直接建它。
+  #
+  # ★ 形态：照抄仓内样板 idx_session_turns_hot_ts ⇒ (ts, id, partition_date)。
+  # ★ 用 CONCURRENTLY（888 第 2 段同款）：hot 表是**活写表**（bodies_writer
+  #   持续写入，pg_stat_statements 实测 72,813 次 INSERT / mean 20.2ms）
+  #   ⇒ 普通 CREATE INDEX 会在构建期持 ShareLock 阻断写入。
+  #
+  # ⚠ **诚实边界**：本索引**不**是 60s 超时的解。★ 实测批次选取只花 30ms
+  #   （Sort quicksort 4198kB，**未溢写** ⇒ ★ 早前「12.29× 溢写」的结论是
+  #   量具口径错，已作废）；★ 60s 的去向在**写侧**（实测 ≈79ms/行：154 日志
+  #   511 行耗 40.45s）⇒ 本条消除的是「批次选取随表体量线性劣化」这个
+  #   **放大器**，是**前置条件**而非 60s 的解。
+  # ⇒ ★ 本条**只落仓**；★ 生产应用需属主另行授权。
+  "$ROOT_DIR/sql/migrations/startup/898_session_bodies_hot_ts_index.sql"
+
+  # 899：把 promote_session_bodies_hot_to_partition 的**生产现行体**下沉成
+  #   迁移（★ session_bodies 族的 copy-gap 修复）。
+  #
+  # ★ 病灶（★ 2026-10-23 生产只读实测 prosrc 指纹）：活库上装的是**裸
+  #   ON CONFLICT DO NOTHING**（无仲裁目标）+ reconciled CTE + 形状守卫 +
+  #   try-lock 的形态（src_len=3486）⇒ 这个形态**逐字等于** db/db.go 的
+  #   ensureSessionBodiesPromoteDrain（db/db.go:3984-4095，启动链
+  #   db/db.go:527 ⇒ **每次网关启动都重装一次**）⇒ ⇒ **它只活在 Go 源码里，
+  #   不在任何迁移里**。
+  #
+  # ★ 而仓内四版迁移（615/626/638/708）**全是**带仲裁目标的
+  #   `ON CONFLICT (id, partition_date) DO NOTHING` ⇒ ⇒ **「只跑迁移不启 Go」
+  #   会把 708 的形态装回生产** ⇒ ⇒ 而 708 的仲裁目标**不覆盖**父表的
+  #   session_bodies_tenant_request_partition_key UNIQUE (tenant_id,
+  #   request_id, partition_date) ⇒ ⇒ **23505 复发 + 毒丸行卡死 hot 窗口**
+  #   （2026-09-17 PG 日志审计 65 轮实测，逐字记录在 db/db.go:3965-3972）
+  #   ⇒ ⇒ **修法只活在 Go 侧 ⇒ 修法在通道路径上无效**。
+  #
+  # ★ 函数体**逐字等于生产现行体**（纪律同 897：基线必须是生产现行体）⇒
+  #   ⇒ **语义零变更**；本条只做一件事：把这个形态从「只活在 Go 源码里」
+  #   变成「也活在迁移里」。
+  # ★ 签名不变 ⇒ CREATE OR REPLACE 是替换、不是新增 ⇒ 无重载残留、调用方
+  #   零改动。
+  #
+  # ★ ★ **链序要求**：708（在本通道里）与 899 都会重定义这个函数 ⇒ 必须
+  #   登记进 intentional_function_chains，链序 = 投递序、**899 必须是最后
+  #   一项**（它是活库里应有的终态体）。615/626/638 **不在**本通道 ⇒ 不进链。
+  # ⇒ ★ 本条**只落仓**；★ 生产应用需属主另行授权。
+  "$ROOT_DIR/sql/migrations/startup/899_session_bodies_promote_body_sink.sql"
 )
 
 
@@ -2071,7 +2177,37 @@ intentional_function_chains=(
   # 链序现为 707 → 640 → 869，**869 必须是最后一项**：它是活库里应有的终态体
   # （目录派生列清单 + 列形状守卫 + 后置条件）。链里去掉 869，部署会在应用任何
   # 文件之前 abort（exit 5）。
-  'promote_session_turns_hot_to_partition|707_session_turns_s1a.sql|640_session_turns_protocol_fields.sql|869_promote_session_turns_trace_events.sql|'
+  #
+  # 2026-10-23（897，会话族 final_success 自愈轮）链序追加为
+  # 707 → 640 → 869 → 897，**897 必须是最后一项**：它的函数体 = 869 的终态体
+  # （目录派生列清单 + 列形状守卫 + 后置条件）**再插入一处 demote 步**
+  # —— 在批次选取之前把「父表已持有同键 mark」的 hot 行降级为
+  # is_final_success=FALSE（语义「输家 = superseded，历史不改写」⇒ 零语义变更）。
+  # ★ 897 的自愈步与 695 给 v1 request_logs 族加的 demote 步**逐字同款**；
+  #   而 890 退役了那个族 ⇒ ⇒ 真正的会话族一直缺这一步 ⇒ ⇒ 23505 整批回滚。
+  # ★ 链里去掉 897，部署会在应用任何文件之前 abort（exit 5）——**这是有意的**：
+  #   少登记它 = 让 897 的函数体被 869 覆盖 = 自愈静默失效（而且 897 自己那条
+  #   后置条件断言也会红）。★ 897 在 files 数组里排在 895 之后 ⇒ 链序与投递序一致。
+  'promote_session_turns_hot_to_partition|707_session_turns_s1a.sql|640_session_turns_protocol_fields.sql|869_promote_session_turns_trace_events.sql|897_session_turns_promote_final_success_self_heal.sql|'
+  # 2026-10-23（§143.97，会话族 hot 排水轮）：promote_session_bodies_hot_to_partition
+  # 的链 = 708 → 899，**899 必须是最后一项**。
+  #
+  # ★ 615/626/638 **不在**本通道 files=() 里 ⇒ 不进链（只有通道内实际投递的
+  #   文件才构成链；615/626/638 只在 installer 的 StartupFiles 链上跑）。
+  # ★ 708 在通道里、899 也在通道里 ⇒ 同一函数被两个通道文件重定义 ⇒ 必须登记
+  #   ⇒ 否则部署在应用任何文件之前就 abort（exit 5）。
+  #
+  # ★ 899 是活库里应有的终态体：它的函数体 = **生产现行体**（= db/db.go 的
+  #   ensureSessionBodiesPromoteDrain，逐字）⇒ 裸 ON CONFLICT DO NOTHING
+  #   （**无仲裁目标**）+ reconciled CTE + 形状守卫 + try-lock。
+  # ★ 而 708 的形态是带仲裁目标的 `ON CONFLICT (id, partition_date)` ⇒ 那个
+  #   仲裁目标**不覆盖**父表的 session_bodies_tenant_request_partition_key
+  #   UNIQUE (tenant_id, request_id, partition_date) ⇒ ⇒ 23505 不被兜住 ⇒
+  #   ⇒ 整批回滚 + 毒丸行卡死 hot 窗口（2026-09-17 PG 日志审计 65 轮实测）。
+  # ★ ⇒ 链里去掉 899，部署会把 708 的形态装回生产 ⇒ **修法在通道路径上失效**
+  #   ——**这是有意的**：少登记它 = 让 Go 侧的修法被迁移侧的旧形态覆盖。
+  # ★ 899 在 files 数组里排在 897 之后 ⇒ 链序与投递序一致。
+  'promote_session_bodies_hot_to_partition|708_session_bodies_s1a.sql|899_session_bodies_promote_body_sink.sql|'
   # 563 restores the hot trigger with the corrected unbounded-numeric ratio
   # body; 661 re-asserts the same fixed body AFTER 563 and validates the
   # function source. 572 must stay before 563; 661 must stay last.

@@ -150,6 +150,22 @@ export DD_BASE_REGISTRY="${DD_BASE_REGISTRY:-registry-211.itestu.cn}"
 export DD_GO_BASE_IMAGE="${DD_GO_BASE_IMAGE:-${DD_BASE_REGISTRY}/lang-base/kx-base-golang:1.27-alpine-amd64}"
 export DD_RUNTIME_BASE_IMAGE="${DD_RUNTIME_BASE_IMAGE:-${DD_BASE_REGISTRY}/lang-base/alpine:3.22-amd64}"
 
+# ★ 2026-10-23：--doctor = **只读体检**（不部署、不改配置、不 reload）。
+#   回答「这台机器上的「流量 → 槽位 → 端口」绑定还是真的吗？」
+#   ⇒ 211 的 nginx 把活跃槽端口**烤死**在 upstream 块里（154/245 是 include
+#     生成文件 ⇒ 无此形态）⇒ 端口与槽位可以漂移 ⇒ 漂了就是 llm.itestu.cn 502。
+#   ⇒ 体检脚本：scripts/ops/deploy-doctor.sh（纯只读：cat + docker ps + 读 conf）。
+#   ⇒ 退出码：0 正常 / 2 脱节（需人工处置）/ 3 体检没做成（**不是**正常）。
+if [[ " ${ARGS[*]} " == *' --doctor '* ]]; then
+  exec bash "$SCRIPT_DIR/ops/deploy-doctor.sh" \
+    --ssh "$DD_SSH_TARGET" \
+    --nginx-conf "$DD_NGINX_CONF" \
+    --upstream "$DD_NGINX_UPSTREAM" \
+    --slot-a "$DD_SLOT_A_PORT" \
+    --slot-b "$DD_SLOT_B_PORT" \
+    --data-root "$DD_GW_DATA_ROOT"
+fi
+
 # bash 3.2 + set -u: the `${ARGS[@]+${ARGS[@]}}` guard keeps the no-arg path
 # (empty ARGS) from dying as an unbound variable, same reason as the guard above.
 exec bash "$SCRIPT_DIR/deploy-seamless-docker.sh" --via "$DD_SSH_TARGET" "${ARGS[@]+"${ARGS[@]}"}"

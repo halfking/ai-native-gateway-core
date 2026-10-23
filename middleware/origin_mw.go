@@ -75,6 +75,8 @@ import (
 	"os"
 	"strings"
 	"sync"
+
+	"github.com/kaixuan/llm-gateway-go/internal/probekind"
 )
 
 // -------------------------------------------------------------------
@@ -135,25 +137,28 @@ var trustedOriginOwners = map[string]struct{}{
 // 组合（含缺失 actor、未知 stage、伪造 actor）一律降级为非信任 → 剥头 +
 // stage=business（走 resolveOrigin 的 strip 路径）。
 //
-// 配对表证据（全仓 X-LLM-Origin-Stage/Actor 写入点 grep，非测试代码）：
+// 2026-10-23 审计：本表**不再手写**。它由 internal/probekind 的 Writers
+// （HTTP 头写入者子集）反向索引派生 —— 此前它与 systemOwnerFallbackStage
+// 是同一份数据的两个方向（stage→actor 与 actor→stage）各写一份，必然漂移：
+// self-check-worker / model-quality-worker 在本表里、在 systemOwnerFallbackStage
+// 里，却不在 stats 端的 actor 白名单里 ⇒ 板上"总请求数"持续虚高（B' 缺陷）。
 //
-//	bg/self_check_worker.go:623-624, :732-733  → (self_check, self-check-worker)
-//	bg/credential_selfcheck.go:694-695         → (self_check, credential-selfcheck-worker)
-//	domains/modelquality/invoker.go:281-282    → (self_check, model-quality-worker)
-//	bg/node_probe.go:2619-2620, :3167-3168     → (node_probe, node-probe-worker)
-//	bg/active_probe_executor.go:446-447        → (node_probe, probe-service)
-//
-// 新增写入方必须同步本表，否则其 stage 会被降级为 business。
-var globalAuthStageActorPairs = map[string]map[string]struct{}{
-	"self_check": {
-		"self-check-worker":           {},
-		"credential-selfcheck-worker": {},
-		"model-quality-worker":        {},
-	},
-	"node_probe": {
-		"node-probe-worker": {},
-		"probe-service":     {},
-	},
+// 新增写入方必须同步 internal/probekind.Writers，否则其 stage 会被降级为
+// business（probekind 的自检门会红）。
+var globalAuthStageActorPairs = deriveGlobalAuthStageActorPairs()
+
+// deriveGlobalAuthStageActorPairs 从 internal/probekind 派生配对表。
+// 只含 HTTP 头写入者 —— telemetry 直写者不发 HTTP 头，不走这个闸门。
+func deriveGlobalAuthStageActorPairs() map[string]map[string]struct{} {
+	out := map[string]map[string]struct{}{}
+	for stage, actors := range probekind.HTTPStageActors() {
+		set := make(map[string]struct{}, len(actors))
+		for _, a := range actors {
+			set[a] = struct{}{}
+		}
+		out[stage] = set
+	}
+	return out
 }
 
 // -------------------------------------------------------------------
@@ -368,14 +373,12 @@ func (m *OriginMiddleware) resolveOrigin(r *http.Request) (stage, actor string, 
 // isValidOriginStage matches the additive CHECK on _request_logs.origin_stage
 // (see migration 341). Unknown values fall back to "business" so the
 // row still passes the CHECK and an operator can spot the spoof.
+//
+// 2026-10-23 审计：判定集收敛到 internal/probekind（唯一真值源）——
+// DB CHECK 闸门 / 侧表 is_probe / dashboard pill / stats-board 排除四处
+// 现在共用同一份集合，不再各维护一份清单。
 func isValidOriginStage(s string) bool {
-	switch s {
-	case "self_check", "node_probe", "system_health", "business",
-		// legacy values kept valid by the additive CHECK.
-		"probe_direct", "probe_v2", "model_probe", "passive_probe", "manual":
-		return true
-	}
-	return false
+	return probekind.IsValidStage(s)
 }
 
 // IsTrustedOriginOwner reports whether ownerUser is on the system-worker
@@ -394,15 +397,42 @@ func IsTrustedOriginOwner(ownerUser string) bool {
 // cannot be forged: the owner is resolved from the is_system api_keys row
 // by the data-plane verifier, not from anything the client sent.
 //
-// "legacy-probe-worker" is intentionally unmapped — its historic cadence
-// writer never declared a single stage, so only an explicit valid header
-// claim (honoured via ResolveOriginForSystemKey) can mark its rows.
-var systemOwnerFallbackStage = map[string]string{
-	"self-check-worker":           "self_check",
-	"credential-selfcheck-worker": "self_check",
-	"model-quality-worker":        "self_check",
-	"node-probe-worker":           "node_probe",
-	"system-health-worker":        "system_health",
+// 2026-10-23 审计：本表改为**从 globalAuthStageActorPairs 反向派生**
+// （actor → stage）—— 此前它是与配对表平行的一份手写清单，两份数据同源却
+// 各写一份，必然漂移。漂移已实证一次：system-health-worker 只在这张表里，
+// 而 stats 端的 actor 白名单没有 self-check-worker / model-quality-worker
+// ⇒ 板上"总请求数"持续虚高。
+//
+// "legacy-probe-worker" 仍然**故意不映射** —— 它的历史节奏写入方从未声明
+// 过任何 stage（代码不在本仓，是 252 上的 5min cadence worker），所以只有
+// 显式的合法 header 声明（经 ResolveOriginForSystemKey 的 header 分支）才
+// 能标记它的行。
+var systemOwnerFallbackStage = deriveSystemOwnerFallbackStage()
+
+// deriveSystemOwnerFallbackStage 从配对表反向派生 actor → stage。
+//
+// ⚠ 只派生 **trustedOriginOwners 里的 actor** —— 这张表的语义是
+// 「DB 系统 key 的 owner → 它可以声明的 stage」，而 ResolveOriginForSystemKey
+// 对不在 trusted 名单里的 owner 直接返回 false ⇒ 给它们建映射没有意义。
+// （probe-service / mock-probe-client 走 HTTP 头声明，不靠这张表。）
+//
+// 例外：system-health-worker 保留手写映射 —— 它的 stage 是 system_health，
+// 而 system_health 在 internal/probekind.ProbeStages 里（历史 CHECK 合法值，
+// 必须保留），但**没有 HTTP 写入者**（bg/system_health.go 是只读扫描器），
+// 因此不在配对表里。
+func deriveSystemOwnerFallbackStage() map[string]string {
+	out := map[string]string{}
+	for stage, actors := range globalAuthStageActorPairs {
+		for actor := range actors {
+			if _, trusted := trustedOriginOwners[actor]; !trusted {
+				continue
+			}
+			out[actor] = stage
+		}
+	}
+	// 保留项：无 HTTP 写入者、但 DB 系统 owner 仍需映射到合法探测 stage。
+	out["system-health-worker"] = "system_health"
+	return out
 }
 
 // ResolveOriginForSystemKey re-runs the origin trust decision for a DB

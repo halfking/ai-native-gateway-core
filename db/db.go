@@ -195,8 +195,9 @@ func (db *DB) ApplyMigrations(ctx context.Context) error {
 // 被 DROP ⇒ _request_logs_hot.audio_seconds 永远不可能在位 ⇒ 若按「表不存在
 // ⇒ false」实现，848 每次 boot 都会去 ALTER 一张不存在的表 ⇒ 42P01。
 // ⇒ 848 已改为**显式存在性闸**（见 ensureBillingUnitAndAudioSeconds），
-//   本函数这条语义**不再**是任何调用方的承重前提 ⇒ 未来若要把它改成
-//   「表不存在 ⇒ false」，只需重跑 848 的显式闸（那才是真正的契约所在）。
+//
+//	本函数这条语义**不再**是任何调用方的承重前提 ⇒ 未来若要把它改成
+//	「表不存在 ⇒ false」，只需重跑 848 的显式闸（那才是真正的契约所在）。
 //
 // ── tableExists（r1039 续轮新增，2026-10-21）─────────────────────
 // 报告某个关系在 public schema 里在不在。
@@ -209,8 +210,9 @@ func (db *DB) ApplyMigrations(ctx context.Context) error {
 // 的表 ⇒ 42P01 ⇒ 整条 boot 迁移中止。
 //
 // ⇒ 用 to_regclass 口径（与目录短路清单、890 的族探测**同一把尺子**）判断
-//    「在不在」。不用 information_schema.tables：视图/外表也会命中，
-//    与 ensure 体的 ALTER 对象集合不是一回事。
+//
+//	「在不在」。不用 information_schema.tables：视图/外表也会命中，
+//	与 ensure 体的 ALTER 对象集合不是一回事。
 func (d *DB) tableExists(ctx context.Context, name string) bool {
 	if d == nil || d.pool == nil {
 		return false
@@ -3234,7 +3236,7 @@ func (d *DB) ensureBillingUnitAndAudioSeconds(ctx context.Context) error {
 		    END IF;
 		END
 		$do$;
-` + v1DDL + `
+`+v1DDL+`
 		INSERT INTO public.schema_migrations (version, description)
 		VALUES ('848', 'cmb.billing_unit + _request_logs.audio_seconds for media duration billing')
 		ON CONFLICT (version) DO UPDATE SET description = EXCLUDED.description;
@@ -5834,28 +5836,46 @@ func (d *DB) ensureIntegrityFingerprintBaselineSchema(ctx context.Context) error
 	return nil
 }
 
+// modelsCanonicalStandardIQColumns 是 ensureModelsCanonicalStandardIQ 维护的三列；
+// 守卫清单与下方 ALTER 体同步义务（少登记一列 ⇒ 该列缺失时整段被跳过）。
+var modelsCanonicalStandardIQColumns = []string{"standard_iq", "standard_iq_source", "standard_iq_updated_at"}
+
 // ensureModelsCanonicalStandardIQ (2026-08-11) mirrors migration 350 part 1:
 // add standard_iq / standard_iq_source / standard_iq_updated_at columns to
 // models_canonical. The value is the 0-100 Artificial Analysis Intelligence
 // Index score (or a manual override), populated by cmd/fetch-standard-iq.
 // Idempotent — safe to run repeatedly.
+//
+// 2026-10-21（252 PG 日志审计）：`ALTER TABLE … ADD COLUMN IF NOT EXISTS` 即使
+// 三列全在位也要对 models_canonical 取 ACCESS EXCLUSIVE —— 这是路由热路径
+// 每个请求都读的表。10-20 13:00:51 实测本语句等锁 4,997 ms，期间
+// `SELECT … FROM models_canonical WHERE canonical_name = …` 与候选查询全部排队；
+// 当天 7 次蓝绿部署 ⇒ 7 次热路径停顿。列已在位 ⇒ 整段跳过（含 COMMENT，
+// 注释随首次建列已落）。
 func (d *DB) ensureModelsCanonicalStandardIQ(ctx context.Context) error {
 	if d == nil || d.pool == nil {
 		return nil
 	}
-	_, err := d.pool.Exec(ctx, `
+	if d.columnsAllPresent(ctx, "models_canonical", modelsCanonicalStandardIQColumns) {
+		return nil
+	}
+	_, err := d.pool.Exec(ctx, modelsCanonicalStandardIQDDL)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+// modelsCanonicalStandardIQDDL 是 ensureModelsCanonicalStandardIQ 的 DDL 本体，
+// 提成常量让真库门能逐字执行它做负控（db/boot_ensure_hot_table_guard_test.go）。
+const modelsCanonicalStandardIQDDL = `
 		ALTER TABLE models_canonical
 		    ADD COLUMN IF NOT EXISTS standard_iq numeric(5,2),
 		    ADD COLUMN IF NOT EXISTS standard_iq_source text DEFAULT 'artificialanalysis',
 		    ADD COLUMN IF NOT EXISTS standard_iq_updated_at timestamptz;
 		COMMENT ON COLUMN models_canonical.standard_iq IS '标准智商值（0-100，来自评测站点，默认 Artificial Analysis Intelligence Index）';
 		COMMENT ON COLUMN models_canonical.standard_iq_source IS '标准智商数据来源标签，如 artificialanalysis / artificialanalysis-v4.1.1 / manual';
-	`)
-	if err != nil {
-		return err
-	}
-	return nil
-}
+	`
 
 // ensureModelIQSchema (2026-08-11) mirrors migration 350 parts 2-3:
 //   - model_iq_runs: append-only per-node IQ test runs (one row per test),
@@ -8072,14 +8092,33 @@ func (d *DB) ensureRouteIncidentSchema(ctx context.Context) error {
 // 事件追踪整体静默失效）；全新安装路径由 ensureRouteIncidentSchema 建出
 // 旧约束，也依赖本函数就地升级。
 //
-// 幂等：DROP CONSTRAINT/INDEX IF EXISTS + 无条件重建（表为聚合小表，
-// AccessExclusive 锁窗口毫秒级，与 389 每次启动重建 trigger 同级），
-// 末尾按 701/704 定式补记 schema_migrations 账本 stamp。
+// 幂等：DROP CONSTRAINT/INDEX IF EXISTS + 重建，末尾按 701/704 定式补记
+// schema_migrations 账本 stamp。
+//
+// 2026-10-21（252 PG 日志审计）订正原注释里「AccessExclusive 锁窗口毫秒级」：
+// DROP CONSTRAINT / DROP INDEX 取的是 ACCESS EXCLUSIVE，而 route_incidents 是
+// 热路径 `SELECT … FOR UPDATE` 的目标。10-20 13:24:17→13:24:50 实测 154 启动链
+// 持该锁期间 21 条 FOR UPDATE 排队各 >1 s（整段 33 s）—— 「毫秒级」只在
+// 空载时成立。715 形态已在位 ⇒ 整段跳过；探测失败 ⇒ 走原 DDL 路径（fail-open）。
 func (d *DB) ensureRouteIncidentPendingState(ctx context.Context) error {
 	if d == nil || d.pool == nil {
 		return nil
 	}
-	_, err := d.pool.Exec(ctx, `
+	if d.routeIncidentPendingStateInPlace(ctx) {
+		return nil
+	}
+	_, err := d.pool.Exec(ctx, routeIncidentPendingStateDDL)
+	if err != nil {
+		return err
+	}
+	slog.Info("route_incident pending state ensured (migration 715)")
+	return nil
+}
+
+// routeIncidentPendingStateDDL 是 715 启动镜像的 DDL 本体（提成常量供真库门
+// 逐字执行做负控；sql/migrations/startup/migration_715_test.go 的子串判据
+// 仍落在本函数与常量之间的同一文本窗口里）。
+const routeIncidentPendingStateDDL = `
 		ALTER TABLE route_incidents
 		    DROP CONSTRAINT IF EXISTS route_incidents_state_check;
 
@@ -8098,12 +8137,39 @@ func (d *DB) ensureRouteIncidentPendingState(ctx context.Context) error {
 		INSERT INTO public.schema_migrations (version, description)
 		VALUES ('715', 'route_incidents pending state (threshold-gated incident visibility)')
 		ON CONFLICT (version) DO NOTHING;
-	`)
-	if err != nil {
-		return err
+	`
+
+// routeIncidentPendingStateInPlace 探测 715 的目标形态是否已经在库里：
+// CHECK 约束 route_incidents_state_check 放行 'pending'，且部分唯一索引
+// uq_route_incidents_active_route 有效、唯一、谓词含 'pending'。
+// 任何探测出错一律返回 false（走原 DDL 路径），与 columnsAllPresent 同义。
+// 表不存在时同样返回 false：ensureRouteIncidentSchema 先于本函数建表，
+// 到这里表不在 = 异常形态，交给原 DDL 报错而不是静默跳过。
+func (d *DB) routeIncidentPendingStateInPlace(ctx context.Context) bool {
+	if d == nil || d.pool == nil {
+		return false
 	}
-	slog.Info("route_incident pending state ensured (migration 715)")
-	return nil
+	var ok bool
+	err := d.pool.QueryRow(ctx, `
+		SELECT COALESCE((
+		    SELECT pg_get_constraintdef(c.oid) LIKE '%''pending''%'
+		    FROM pg_constraint c
+		    WHERE c.conrelid = to_regclass('public.route_incidents')
+		      AND c.conname = 'route_incidents_state_check'
+		      AND c.contype = 'c'
+		), FALSE)
+		AND COALESCE((
+		    SELECT i.indisvalid AND i.indisunique
+		           AND pg_get_expr(i.indpred, i.indrelid) LIKE '%''pending''%'
+		    FROM pg_index i
+		    JOIN pg_class ic ON ic.oid = i.indexrelid
+		    WHERE i.indrelid = to_regclass('public.route_incidents')
+		      AND ic.relname = 'uq_route_incidents_active_route'
+		), FALSE)`).Scan(&ok)
+	if err != nil {
+		return false
+	}
+	return ok
 }
 
 // ensureRouteIncidentPhase2Schema mirrors

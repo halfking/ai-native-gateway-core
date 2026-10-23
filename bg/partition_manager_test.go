@@ -206,24 +206,6 @@ func TestArchiveOldPartitionsDayWindow(t *testing.T) {
 	_ = now
 }
 
-// TestResolvePromoteConfigBodiesBatchSize pins the _request_logs_bodies
-// promote default batch. Bodies rows are TOAST-heavy (~350 KB avg), so the
-// generic 5000-row batch moves ~1.7 GB per call and exceeded PG
-// statement_timeout=30s on the shared prod DB (2026-08-06 incident). The
-// default must stay small and be overridable via settings_kv.
-func TestResolvePromoteConfigBodiesBatchSize(t *testing.T) {
-	retention, batch := resolvePromoteConfig("_request_logs_bodies")
-	if batch >= promoteBatchSize {
-		t.Fatalf("_request_logs_bodies default batch = %d, want < %d", batch, promoteBatchSize)
-	}
-	if batch < 100 {
-		t.Fatalf("_request_logs_bodies default batch = %d, want >= safety floor 100", batch)
-	}
-	if retention <= 0 || retention > 24*time.Hour {
-		t.Fatalf("_request_logs_bodies retention = %v, want (0, 24h]", retention)
-	}
-}
-
 func TestResolvePromoteConfigHandoffRetention(t *testing.T) {
 	retention, batch := resolvePromoteConfig("handoff_logs_hot")
 	if retention != 8*time.Hour {

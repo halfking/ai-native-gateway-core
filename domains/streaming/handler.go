@@ -3004,6 +3004,16 @@ func (h *ChatHandler) serveWithExecutor(
 			if assignment.AutoCreated {
 				w.Header().Set("X-Gw-Session-Id-Resume", sessionID)
 				w.Header().Set("X-Gw-Session-Auto", "true")
+				// ★ §143.86（落法 ⓪）：★ 把「本次请求由网关自动新建了会话」这个事实
+				// ★ 带进 ctx ⇒ ⇒ compression 层能判「这个会话在库里【必然】没有历史正文」
+				// ★ ⇒ ⇒ 省掉一次【必然落空】的读链（★ L3 及其上游腿）。
+				//
+				// ★ ★★ 必须同时更新 r：★ 压缩器拿的是 r.Context()（★ 本函数内的 Prepare 调用），
+				// ★ ⇒ ⇒ 只改 ctx 不改 r ⇒ ⇒ 标志到不了压缩器。
+				// ★ ★★ 开关默认【关】（★ ENABLE_SESSION_CACHE_SKIP_AUTO_CREATED）⇒ ⇒
+				// ★ ★★ 未打开时【零行为变更】。
+				ctx = compression.WithAutoCreatedSession(ctx, sessionID)
+				r = r.WithContext(ctx)
 			}
 			if assignment.ShouldPersist && h.lastSystemSession != nil && keyInfo != nil {
 				lsEntry := &session.LastSystemSessionEntry{
@@ -6926,6 +6936,21 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteRe
 		reqLog.SystemFingerprint = &systemFingerprint
 	}
 
+	// 2026-10-23 审计（探测打标）：成功终态 entry 必须带上请求上下文字段。
+	//
+	// origin 元数据此前只在 recordInitialRequestLog（初始 in_progress
+	// INSERT）与 buildEntry（失败/限流终态）里被应用；而 session v2 镜像
+	// （internal/sessionv2mirror/hook.go:82）**只镜像终态 entry**——初始
+	// INSERT 被刻意跳过（turn 幂等、写入后不可更新）⇒ 它带的元数据永远到不了
+	// session_turns。于是成功请求落库时 origin_stage/origin_actor/client_ip/
+	// client_forwarded_for/client_endpoint 全空：成功的探测请求在会话族里不带
+	// 任何探测标记 ⇒ 实时拓扑把它当业务流量（154 实测：同一组
+	// credential+model+prompt，失败行打 node_probe 标、成功行无标）。
+	//
+	// 这里与失败终态对齐：补 ctx 权威值 + DB 系统键兜底（applyOriginMetadata），
+	// 只补空位、不覆盖 entry 上已有值。
+	applyRequestContextFields(reqLog, keyInfo, logCtx)
+
 	h.telemetryClient.EmitRequestLogUpdate(reqLog)
 	if h.requestLogHook != nil {
 		h.requestLogHook(reqLog)
@@ -7262,6 +7287,12 @@ func (h *ChatHandler) emitClientDisconnectProbe(originalRequestID string, r *htt
 	entry, ok := buildClientDisconnectProbeEntry(originalRequestID, r, logCtx)
 	if !ok {
 		return
+	}
+	// 2026-10-23 审计（探测打标）：本条目是终态行（Success=false /
+	// RequestStatus=failure）⇒ 会被 session v2 镜像写入 session_turns。
+	// 与其它终态路径对齐补上 origin 元数据，否则它同样在会话族里丢打标。
+	if logCtx != nil {
+		applyRequestContextFields(entry, logCtx.KeyInfo, logCtx)
 	}
 	// Test sink (mirrors the initial-log path at ~handler.go:3075).
 	if h.requestLogHook != nil {

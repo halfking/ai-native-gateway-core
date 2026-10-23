@@ -579,12 +579,91 @@ if grep -qF 'dd_smoke_admin_login' \
 else
   bad "引擎缺少登录冒烟或仍指向错误的 /api/admin/login"
 fi
-if grep -qF 'X-Real-IP' \
-   <<<"$_nocomment_engine" && grep -qF '\$remote_addr' <<<"$_nocomment_engine"; then
-  ok "引擎修补 nginx llm TLS 腿 X-Real-IP=\$remote_addr"
+# ★ 2026-10-23（F2）重写：原来是「引擎源码里有没有 X-Real-IP / $remote_addr
+#   字样」的**字符串存在性**检查 —— 那是**恒绿门**：把整段逻辑删成空壳照样绿，
+#   而 F2 的原症状恰恰是「这段逻辑**从来没生效过**」。
+#   ⇒ 现在钉**接线**（引擎怎么用补丁器）+ **不变量**（不写死域名 / 失败要还原
+#     / 结论分类要区分「没有」与「不认识」）。
+if grep -qF 'nginx-llm-realip-patch.py' <<<"$_nocomment_engine"; then
+  ok "引擎调用独立补丁器 nginx-llm-realip-patch.py（判定逻辑可离线验证）"
 else
-  bad "引擎未修补 nginx X-Real-IP（限流易共桶）"
+  bad "引擎没有调用独立补丁器：X-Real-IP 判定又回到内嵌 heredoc（不可验证）"
 fi
+if grep -qE -- '--domain[[:space:]]' <<<"$_nocomment_engine" \
+   && grep -qF 'DD_DOMAIN' <<<"$_nocomment_engine"; then
+  ok "引擎把 DD_DOMAIN 传给补丁器（域名不写死）"
+else
+  bad "引擎没把 DD_DOMAIN 传给补丁器：换域名会静默改错对象"
+fi
+if grep -qF 'llm.itestu.cn' <<<"$_nocomment_engine"; then
+  bad "引擎正文里仍写死 llm.itestu.cn —— 与「引擎不含主机专属信息」自相矛盾"
+else
+  ok "引擎正文不含写死域名（llm.itestu.cn 只出现在注释里）"
+fi
+if grep -qE 'search-root' <<<"$_nocomment_engine"; then
+  ok "引擎跨文件搜 443 腿（--search-root）—— 不再只在自己的 conf 里找"
+else
+  bad "引擎不跨文件搜 443 腿：443 腿在别的文件时永远找不到（211 的现状）"
+fi
+if grep -qF 'skip-domain-not-on-443-block' <<<"$_nocomment_engine" \
+   && grep -qF 'noop-unknown-shape' <<<"$_nocomment_engine"; then
+  ok "引擎区分「本机没有该域的 443」（信息）与「形态不认识」（才告警）"
+else
+  bad "引擎不区分两种『没改』结论：要么继续打假告警，要么该告警时不告警"
+fi
+# nginx -t 失败 ⇒ 必须还原：否则磁盘上留着没验证过的配置，
+# 之后任何一次 reload 都会加载它（潜伏半切换态，同仓审计 §4.1）。
+if grep -qE 'nginx -t' <<<"$_nocomment_engine" \
+   && grep -qE 'cp "\$\{backs\[\$' <<<"$_nocomment_engine"; then
+  ok "nginx -t 失败时会从备份还原（不留半切换态配置）"
+else
+  bad "nginx -t 失败不还原：磁盘上留一份没验证过的配置（潜伏半切换态）"
+fi
+# ★ 2026-10-23（211 502 事故根修）：「upstream 端口」这条**事实**的读写必须
+#   ① 走共享脚本（scripts/ops/nginx-upstream-port.py）—— 内嵌在引擎里的正则
+#      **不剥注释** ⇒ 会读到 nginx 注释里那个旧端口（245 实况）⇒ 活跃槽判错；
+#   ② 在**任何写动作之前**有一次「槽位↔端口绑定」体检（dd_check_slot_binding）——
+#      绑定脱节时**拒绝部署**，而不是拿状态文件猜一个槽位去切流/停槽。
+if [[ -f "$ROOT/scripts/ops/nginx-upstream-port.py" ]] \
+   && grep -qF 'nginx-upstream-port.py' <<<"$_nocomment_engine"; then
+  ok "引擎的 upstream 端口读写走共享脚本（掩码后定位 ⇒ 注释里的旧端口不算数）"
+else
+  bad "引擎没有走共享的 upstream 端口判定脚本：注释里的旧端口会被当真（⇒ 活跃槽判错 ⇒ 502）"
+fi
+# ★ 单一真值源：引擎里**不得**再出现内嵌的 upstream 端口正则
+#   （内嵌副本迟早与共享脚本漂移 ⇒ 读侧/写侧口径不一致 ⇒ 又一次半切换态）。
+if grep -qF 'server\s+127\.0\.0\.1' <<<"$_nocomment_engine"; then
+  bad "引擎里仍有内嵌的 upstream 端口正则 ⇒ 判定口径会与共享脚本漂移（删掉重复实现）"
+else
+  ok "引擎里没有内嵌的 upstream 端口正则（判定逻辑单一真值源）"
+fi
+if grep -qE 'DD_UPSTREAM_PORT_HELPER' <<<"$_nocomment_engine"; then
+  ok "引擎按自身目录解析判定脚本（不依赖可被覆盖的 DD_REPO_ROOT）"
+else
+  bad "引擎解析判定脚本的方式脆弱（DD_REPO_ROOT 可被覆盖 ⇒ 脚本可能找不到）"
+fi
+if grep -qF 'dd_check_slot_binding' <<<"$_nocomment_engine"; then
+  ok "引擎有「槽位↔端口绑定」体检（绑定脱节 ⇒ 拒绝部署而不是猜）"
+else
+  bad "引擎没有绑定体检：upstream 指向别的产品的端口时仍会照常切流/停槽"
+fi
+# 体检必须发生在**写动作之前**（迁移重放 / 起容器 / 切流 / 停旧槽都在它后面）
+_guard_line="$(grep -n 'dd_check_slot_binding$' "$SCRIPT" | head -1 | cut -d: -f1)"
+_migrate_line="$(grep -n 'REVISION_SEQ=' "$SCRIPT" | head -1 | cut -d: -f1)"
+_candidate_line="$(grep -n 'DD_CANDIDATE_CONTAINER="$(dd_container_name' "$SCRIPT" | head -1 | cut -d: -f1)"
+if [[ -n "$_guard_line" && -n "$_migrate_line" && -n "$_candidate_line" ]] \
+   && [[ "$_guard_line" -lt "$_migrate_line" && "$_guard_line" -lt "$_candidate_line" ]]; then
+  ok "绑定体检发生在迁移重放与起容器之前（脱节时一个字节都不写）"
+else
+  bad "绑定体检的位置太晚（迁移/起容器已经动过了）"
+fi
+# 只读体检工具必须在场（属主要能自己查现场）
+if [[ -f "$ROOT/scripts/ops/deploy-doctor.sh" ]]; then
+  ok "只读体检工具在场（scripts/ops/deploy-doctor.sh）"
+else
+  bad "缺少只读体检工具：绑定脱节时属主没有手段查现场"
+fi
+
 # 入口 deploy-211.sh 必须 export 同一组 registry-211 默认，经 --via 传到远端。
 if [[ -f "$ROOT/scripts/deploy-211.sh" ]]; then
   _w="$(grep -vE '^[[:space:]]*#' "$ROOT/scripts/deploy-211.sh")"

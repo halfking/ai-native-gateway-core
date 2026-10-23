@@ -148,6 +148,24 @@ var knownStartupChainConcurrencyViolations = map[string]int{
 	// 计数 5：三条 CREATE INDEX CONCURRENTLY + 一条 DROP INDEX CONCURRENTLY
 	// + 形状校验块里的一处提及。
 	"888_session_family_join_index_gaps.sql": 5,
+	// 898（2026-10-23 会话族 hot 排水轮 §143.97）与 871/877/887/888 **同类**：
+	// 携带 dbinit:no-transaction 标记 ⇒ applySQL 不加 --single-transaction
+	// ⇒ 走非事务通道，能正常应用（不是「跑不起来」的债，是「已复核的豁免」）。
+	//
+	// 它给 public.session_bodies_hot 补 ts 首列索引
+	// (ts, id, partition_date) —— 该 hot 表在生产上**从来没有**这条索引
+	// （614 @ 6973a9fb8 把它定义成带 `WHERE ts > now() - interval '8 hours'`
+	// 谓词的 partial index ⇒ now() 非 IMMUTABLE ⇒ PG 拒绝 ⇒ 从未建成，
+	// 且其后同文件的 idx_session_bodies_hot_partition_date 也从未执行）。
+	//
+	// ★ 它用 CONCURRENTLY 而不是普通 CREATE INDEX，正是因为 session_bodies_hot
+	// 是**活写表**（bodies_writer 持续写入，pg_stat_statements 实测 72,813 次
+	// INSERT / mean 20.2ms）⇒ 普通 CREATE INDEX 会在整个构建期持 ShareLock
+	// 阻断写入。
+	//
+	// 计数 3：一条 CREATE INDEX CONCURRENTLY + 形状校验块里的两处提及
+	// （indisvalid / indisready 两条 RAISE EXCEPTION 的文案）。
+	"898_session_bodies_hot_ts_index.sql": 3,
 }
 
 func countConcurrently(t *testing.T, path string) int {

@@ -37,7 +37,10 @@ verify_841_session_family_retention_local.py —— §143.69 实验：
 """
 
 import argparse
+import atexit
 import os
+import re
+import signal
 import subprocess
 import sys
 
@@ -74,10 +77,92 @@ def check(name, ok, detail=""):
     return ok
 
 
+# ── 回收兜底（R99 形态 · 与 verify_archive_orphan_local.py 同形）────────────
+# ★★ 原形态的缺口（三条，都是实测出来的，不是「看着像」）：
+#   ① DROP 只在【正常跑完】时执行（原第 205 行 `if not args.keep:` 内）⇒
+#      而第 84 / 97 行两个 `sys.exit(2)` **都发生在 CREATE DATABASE 之后**
+#      ⇒ ⇒ 第 97 行那条是【确定的泄漏路径】：itgate_14369 已经建好才退出。
+#      ⇒ 修法：atexit 钩子 ⇒ 覆盖 sys.exit / 未捕获异常 / 正常返回 三条路径。
+#   ② 【信号路径】实测 python 的 atexit 在进程被 SIGTERM 终止时【不执行】
+#      ⇒ ⇒ 被 CI / Ctrl-C / 编排器超时杀掉 ⇒ 库留下
+#      ⇒ ⇒ 修法：显式接管 SIGTERM/SIGINT ⇒ 处理器【抛异常】
+#      ⇒ ⇒ 异常沿栈展开 ⇒ finally 与 atexit 钩子【真的】跑起来。
+#   ③ 【防卡】原 DROP 是【裸】的 ⇒ 遇到「还有连接没断干净」就无限期挂着
+#      ⇒ ⇒ 修法：先 terminate 踢掉占用会话，再【带 statement_timeout】地 DROP。
+#      ★★ 超时取 **120s** 而不是 15s：实测「terminate 之后 DROP 仍要等被
+#        SIGTERM 的后端收尾」可达数十秒（PG 17.10 高负载下实测到 89.37s）
+#        ⇒ ⇒ 15s 会把【合法】清理砍成「被超时取消」⇒ 而「清理失败」＝「库泄漏」
+#        ⇒ ⇒ 与守卫的目的正好相反。
+#      ★★ SET 与 DROP 必须落在【同一条逻辑命令】里、且 terminate 那条紧邻其前
+#        ⇒ 这是本仓 cleanup 质量门的判据形状（照抄模板，别拆行）。
+#   ⚠ 诚实边界：atexit 不覆盖 os._exit 与 SIGKILL。
+_KEEP = False
+
+
+def _cleanup_sql(sql, stop_on_error=True):
+    """清理路径专用的 psql。
+
+    ★ 不抛异常、★ **不碰 LAST_STDERR**（那是本脚本的量具变量，清理路径不许污染）。
+    """
+    cmd = ["docker", "exec", "-i", PG_CONTAINER, "psql", "-U", PGUSER, "-d", "postgres",
+           "-v", "ON_ERROR_STOP=" + ("1" if stop_on_error else "0"), "-f", "-"]
+    p = subprocess.run(cmd, input=sql, capture_output=True, text=True)
+    return p.stdout + p.stderr
+
+
+def _residual():
+    """库里还有几个同名库（★ 清理是否成功只能【查落点】，不能看退出码）。
+
+    实测 psql 在 stdin 形态（`-f -`）下【失败也 exit 0】⇒ ⇒ 退出码不是判据。
+    """
+    out = _cleanup_sql(f"SELECT 'LEFT=' || count(*) FROM pg_database WHERE datname = '{DB}';")
+    m = re.search(r"LEFT=(\d+)", out)
+    return m.group(1) if m else "?"
+
+
+def drop_db():
+    """回收一次性库：atexit 兜底与正常路径共用【同一个】实现 ⇒ 只留一份 DROP。"""
+    if _KEEP:
+        return ""
+    try:
+        _cleanup_sql(f"SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '{DB}' AND pid <> pg_backend_pid();")
+        out = _cleanup_sql(f"SET statement_timeout = '120s'; DROP DATABASE IF EXISTS {DB} WITH (FORCE);",
+                           stop_on_error=True)
+        left = _residual()
+        if left != "0":
+            out += f"\n⚠ 回收未完成：pg_database 里仍有 {left} 行匹配 {DB}"
+        return out
+    except Exception:  # noqa: BLE001 —— 回收失败不得盖掉真正的错误
+        return ""
+
+
+atexit.register(drop_db)
+
+
+# ★ 信号接管 ⇒ 让上面的兜底在【信号路径】上也真的执行。
+#   ★ 抛自定义 BaseException 而不是 KeyboardInterrupt：后者会被 subprocess.run
+#     特殊对待，而这里要的是「异常展开（让 finally / atexit 真的跑）」。
+class _Terminated(BaseException):
+    """收到 SIGTERM / SIGINT ⇒ 抛出来让兜底回收真的执行。"""
+
+
+def _on_signal(signum, _frame):
+    raise _Terminated(f"收到信号 {signum}")
+
+
+def _install_signal_handlers():
+    """接管 SIGTERM / SIGINT ⇒ 走异常展开路径 ⇒ finally / atexit 真的跑。"""
+    signal.signal(signal.SIGTERM, _on_signal)
+    signal.signal(signal.SIGINT, _on_signal)
+
+
 def main():
+    global _KEEP
     ap = argparse.ArgumentParser()
     ap.add_argument("--keep", action="store_true", help="保留一次性库（调试用）")
     args = ap.parse_args()
+    _KEEP = bool(args.keep)
+    _install_signal_handlers()
 
     if not os.path.exists(MIG_841):
         print(f"找不到 841 迁移：{MIG_841}")
@@ -202,7 +287,11 @@ INSERT INTO public.session_bodies (id, session_id, turn_no, tenant_id, request_i
                                                     "session_bodies_default"], f"got={left2}")
 
     if not args.keep:
-        psql(f"DROP DATABASE IF EXISTS {DB};", db="postgres")
+        # ★ 与 atexit 兜底【同一个】实现（drop_db）⇒ 只留一份 DROP 实现，不漂移；
+        #   且它自带 terminate + statement_timeout + 查落点。
+        warn = drop_db()
+        if warn:
+            print(warn)
         print(f"\n== 一次性库 {DB} 已 DROP ==")
 
     failed = [n for n, ok, _ in RESULTS if not ok]
@@ -215,4 +304,9 @@ INSERT INTO public.session_bodies (id, session_id, turn_no, tenant_id, request_i
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except _Terminated as e:
+        # ★ 信号路径：异常已沿栈展开 ⇒ atexit 兜底已真的跑过（库已回收）
+        print(f"⚠ {e} ⇒ 兜底回收已执行（atexit）", file=sys.stderr)
+        sys.exit(143)
