@@ -23,7 +23,13 @@
 ★      ★★ ⇒ ⇒ 变异台自己崩（★ 与 §143.96 记的「探针作用域」同族的**反向**形态：
 ★      ★★ ★★ 那次是探针查得太宽撞上字面量，这次是探针查得太窄 ⇒ ⇒
 ★      ★★ ★★ **⇒ 探针的 needle 长度与内容都必须与变异写入的形态一致**）。
-★   ⑧ ★★★ **跑变异台前必须先 commit 或 stash** —— ★ 否则工作树里已有的未提交改动
+★   ⑧ ★★★ **探针的【方向】必须与变异的方向一致** —— ★ 这是本轮 M03 连栽两次的
+★      根因（★ §143.96 记的「探针作用域」同族的**第三种形态**）：
+★      ★★ 「删掉 X」的变异 ⇒ 探针查 **X 归零**；
+★      ★★ 「引入 X」的变异 ⇒ 探针查 **X 出现**；
+★      ★★ ⇒ ★★ 用反方向 ⇒ ⇒ 探针**恒失败** ⇒ ⇒ 变异台自己崩 ⇒ ⇒
+★      ★★ ⇒ **「效果探针失败」与「门没牙」必须分开读**（★ §143.96 的纪律）。
+★   ⑨ ★★★ **跑变异台前必须先 commit 或 stash** —— ★ 否则工作树里已有的未提交改动
 ★      会与「还原校验」混在一起 ⇒ ⇒ 读数不可信。
 
 ★ ★★ 本轮特有的一条：
@@ -394,9 +400,29 @@ def m20_remove_runbook_section():
 # ═══════════════════════════════════════════════════════════════════════
 
 def probe_needle_gone_in_exec(path, needle):
+    """★ 探针（方向：needle 必须【归零】）—— 用于「删掉某物」的变异。"""
     def _p():
         if needle in executable_surface(path):
             return False, "needle `%s` 在可执行面里仍然存在" % needle
+        return True, ""
+    return _p
+
+
+def probe_needle_present_in_exec(path, needle):
+    """★ 探针（方向：needle 必须【出现】）—— 用于「引入某物」的变异。
+
+    ★ ★ 本轮 M03 连栽两次的根因（★ 与 §143.96 记的「探针作用域」同族的第三种形态）：
+    ★ ★   ① 首跑：needle 比实际写入的形态**短** ⇒ 恒成立 ⇒ 崩
+    ★ ★   ② 次跑：needle 逐字对齐了 ⇒ ★ 但用了「归零」方向的探针
+    ★ ★      ⇒ ★ 而 M03 是**引入**needle 的变异 ⇒ ⇒ needle 当然还在
+    ★ ★      ⇒ ⇒ 探针恒失败 ⇒ 崩
+    ★ ★ ⇒ ⇒ **探针的方向必须与变异的方向一致**：
+    ★ ★      「删掉 X」的变异 ⇒ 探针查 X 归零；
+    ★ ★      「引入 X」的变异 ⇒ 探针查 X 出现。
+    """
+    def _p():
+        if needle not in executable_surface(path):
+            return False, "needle `%s` 在可执行面里没有出现（★ 变异没生效？★ 探针方向反了？）" % needle
         return True, ""
     return _p
 
@@ -432,7 +458,7 @@ def main():
     arm("M02 去掉 CONCURRENTLY", False, m02_drop_concurrently,
         probe_needle_gone_in_exec(MIG898, "CREATE INDEX CONCURRENTLY"))
     arm("M03 放回 now() 谓词（614 当年的失败形态）", False, m03_reintroduce_now_predicate,
-        probe_needle_gone_in_exec(MIG898, M03_NEEDLE))
+        probe_needle_present_in_exec(MIG898, M03_NEEDLE))
     arm("M04 去掉 no-transaction 标记", False, m04_drop_no_transaction_marker)
     arm("M05 899 换成带仲裁目标", False, m05_targeted_arbiter_in_899,
         probe_needle_gone_in_exec(MIG899, "ON CONFLICT DO NOTHING"))
