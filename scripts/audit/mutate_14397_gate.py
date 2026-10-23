@@ -32,11 +32,27 @@
 ★   ⑨ ★★★ **跑变异台前必须先 commit 或 stash** —— ★ 否则工作树里已有的未提交改动
 ★      会与「还原校验」混在一起 ⇒ ⇒ 读数不可信。
 
-★ ★★ 本轮特有的一条：
+★ ★★ 本轮特有的三条：
 ★   ⑨ ★★ 本轮的门有一条【逐字判据】（899 的函数体 == db/db.go 的 ensure 体）
 ★      ⇒ ⇒ 它能抓住「有人顺手改了 Go ensure 或迁移里的任一份」⇒ ⇒ ⇒
 ★      ⇒ 变异台里 M5 / M6 / M7 就是冲它去的。
 ★      ★★ 且注意：★ **只改一份 ⇒ 字节门会正确地红** ⇒ ⇒ 那不是「门过严」，而是【字节门有牙】。
+★   ⑩ ★★★★ **「变异必须改【全部】出现处」的「全部」不是「同一字符串的全部字节位置」**
+★      ★★ 而是★ 【判据实际读到的那一面的全部等价形态】——
+★      ★★ 首版 M04 只替换了 898 标记的**一种拼写**（首行 `-- dbinit:no-transaction`），
+★      ★★ 而 898 第 139 行还有**第二种拼写**（`-- ★ ★ dbinit:no-transaction 标记`）
+★      ★★ ⇒ ⇒ installer's requiresNoTransaction 谓词**仍为 true**
+★      ★★ ⇒ ⇒ 变异是【惰性的】⇒ ⇒ **门绿是对的**⇒ ⇒ 首版 M04 的期望本身是错的
+★      ★★ ⇒ ⇒ 修法：M04 改成「删掉【所有】满足谓词的注释行」。
+★   ⑪ ★★★★ **「门没牙」这个结论必须先问「变异是不是惰性的」** ——
+★      ★★ 读数「期望红但门仍绿」有**两种**成因：★ (a) 门真的没牙；
+★      ★★ (b) 变异没造成功能回归 ⇒ ⇒ ⇒ **先验证变异的【效果】**（用
+★      ★★ installer's 真谓词复算一次），★ 再判是 (a) 还是 (b)。
+★      ★★ ⇒ ⇒ 本轮 M04 落在 (b) ⇒ ⇒ **误报了门的缺陷**（★ 已订正）。
+★   ⑫ ★★★ **门要守【真函数】，不是它的一份拷贝** ⇒ ⇒ 本轮加第二道门
+★      ★★ （installer/internal/dbinit/untransactable_requires_marker_test.go）
+★      ★★ 它**调用** requiresNoTransaction ⇒ ⇒ installer 改口径时门自动跟随
+★      ★★ ⇒ ⇒ M24（改 installer's token）就是冲它去的。
 """
 import hashlib
 import os
@@ -149,12 +165,41 @@ def go_ensure_body():
 
 
 def run_gate():
+    """★ 跑**两道**门（★ 2026-10-23 增补第二道）：
+
+    ① cmd/gateway 的 §143.97 门 —— 结构面（登记点 / 形态 / 逐字函数体）；
+    ② installer/internal/dbinit 的**逆向不变式**门 —— ★ 它**调用真函数**
+       requiresNoTransaction（★ 不是拷贝一份判据）⇒ ⇒ installer 改了
+       标记口径时这道门自动跟随 ⇒ ⇒ 不会出现「门守的是一份拷贝」。
+
+    ★ ★ 为什么要加第二道：★ §143.97 首跑的 M04 臂读数是
+    ★ 「期望红但门仍绿 ⇒ 门没牙」，★ 而逐字复核后的真实结论是
+    ★ **那一臂是惰性变异**（★ 只删了标记的一种拼写 ⇒ installer's
+    ★ 谓词仍为 true ⇒ 非事务通道仍在）⇒ ⇒ **门绿是对的**。
+    ★ ★ 但它暴露了一个真缺口：★ 仓库里没有那道门会抓
+    ★ 「**被 installer 真正应用的文件**在需要非事务通道时丢了标记」
+    ★ ⇒ ⇒ ② 就是补这个缺口的 ⇒ ⇒ 且 ② 用的是真函数 ⇒ ⇒ M04 这类
+    ★ 变异在 ② 上一定会红。
+    """
     env = dict(os.environ)
     env.pop("TEST_DATABASE_URL", None)
-    p = subprocess.run(
-        ["go", "test", "./cmd/gateway/", "-run", "TestSection14397", "-count=1"],
-        cwd=ROOT, capture_output=True, text=True, env=env)
-    return p.returncode == 0, (p.stdout + p.stderr)
+    targets = (
+        ("gateway §143.97",
+         ["go", "test", "./cmd/gateway/", "-run", "TestSection14397", "-count=1"],
+         ROOT),
+        ("installer dbinit 逆向不变式",
+         ["go", "test", "./internal/dbinit/", "-run",
+          "TestStartupFilesWithUntransactableStatementsAreMarked", "-count=1"],
+         os.path.join(ROOT, "installer")),
+    )
+    ok = True
+    chunks = []
+    for label, cmd, cwd in targets:
+        p = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, env=env)
+        if p.returncode != 0:
+            ok = False
+        chunks.append("---- %s ----\n%s" % (label, p.stdout + p.stderr))
+    return ok, "\n".join(chunks)
 
 
 RESULTS = []
@@ -247,11 +292,58 @@ def m03_reintroduce_now_predicate():
 M03_NEEDLE = "WHERE ts > now() - interval '8 hours'"
 
 
+MARKER_TOKEN = "dbinit:no-transaction"
+
+
+def installer_marker_predicate(content):
+    """★ 逐字镜像 installer/internal/dbinit/runner.go 的 requiresNoTransaction。
+
+    ★ 判据（★ 与真函数同语义）：
+    ★   逐行 TrimSpace ⇒ 以 `--` 开头 ⇒ 该行含 `dbinit:no-transaction`。
+    ★ ★ 这不是「拷贝一份判据来用」，★ 而是**变异台自己的效果探针**
+    ★ ★ —— 用来回答「这次变异有没有真的让 installer's 谓词变 false」。
+    """
+    for line in content.split("\n"):
+        t = line.strip()
+        if t.startswith("--") and MARKER_TOKEN in t:
+            return True
+    return False
+
+
+def strip_marker_lines(path):
+    """★ 删掉【所有】满足 installer's 标记谓词的注释行，返回删了几行。
+
+    ★ ★★ 纪律（★ 本轮第 4 处变异台自身问题）：
+    ★ ★★ 「变异必须改【全部】出现处」—— ★★ 而这里的「全部出现处」
+    ★ ★★ **不是**「同一字符串的全部字节位置」，而是★ 【判据实际读到的
+    ★ ★★ 那一面的全部等价形态】。
+    ★ ★★ 898 里有**两种**拼写带 token：
+    ★ ★★   首行  `-- dbinit:no-transaction —— 本文件含 …`
+    ★ ★★   第139行 `-- ★ ★ dbinit:no-transaction 标记 ⇒ …`
+    ★ ★★ ⇒ ★ 首版 M04 只替换首行那种拼写 ⇒ ⇒ installer's 谓词仍为 true
+    ★ ★★ ⇒ ⇒ **变异是惰性的** ⇒ ⇒ 门绿是【对的】⇒ ⇒ 首版 M04 的期望
+    ★ ★★ 「期望红」本身就是错的。
+    """
+    s = read(path)
+    kept, removed = [], 0
+    for line in s.split("\n"):
+        t = line.strip()
+        if t.startswith("--") and MARKER_TOKEN in t:
+            removed += 1
+            continue
+        kept.append(line)
+    if removed:
+        write(path, "\n".join(kept))
+    return removed
+
+
 def m04_drop_no_transaction_marker():
-    """去掉 dbinit:no-transaction 标记 ⇒ 全新安装会失败 ⇒ 判据应红。"""
-    n = replace_in_files([MIG898, EMBED898],
-                         "-- dbinit:no-transaction", "-- no-transaction-marker-removed")
-    return "（改了 %d 处）" % n
+    """★ 删掉【全部】带标记的注释行（canonical + embeddata，898 + down）
+    ⇒ ⇒ installer's 谓词变 false ⇒ ⇒ 判据应红。"""
+    total = 0
+    for p in (MIG898, EMBED898, DOWN898, EMBED898D):
+        total += strip_marker_lines(p)
+    return "（删掉了 %d 行带标记的注释）" % total
 
 
 def m05_targeted_arbiter_in_899():
@@ -438,6 +530,51 @@ def probe_body_changed(path):
     return _p
 
 
+def probe_no_marker_left(paths):
+    """★ 探针（方向：installer's 标记谓词必须【全部变 false】）。
+
+    ★ ★ 这条探针是 M04 / M23 的**效果**判据：★ 只有当这些文件里
+    ★ ★ 【再没有任何一行】满足 installer's 谓词时，变异才真的
+    ★ ★ 「让 installer 走事务通道」⇒ ⇒ 否则就是【惰性变异】。
+    """
+    def _p():
+        for p in paths:
+            if installer_marker_predicate(read(p)):
+                return False, ("%s 仍满足 installer's 标记谓词 ⇒ ★ "
+                               "这次变异是【惰性的】（★ 只删了一种拼写？）" % p)
+        return True, ""
+    return _p
+
+
+def probe_installer_predicate_false(path):
+    """★ 探针：installer's 谓词必须对这一个文件变 false
+    （★ 用于「改 installer's token」那类变异）。"""
+    def _p():
+        if installer_marker_predicate(read(path)):
+            return False, ("%s 仍被 installer's 谓词判为 true ⇒ ★ "
+                           "变异没生效？（★ token 没改到？）" % path)
+        return True, ""
+    return _p
+
+
+def m23_drop_marker_from_embeddata_only():
+    """★ 只删 embeddata 副本的标记（★ canonical 保留）⇒ ⇒
+    ★ embeddata 才是 installer 真正执行的那一份 ⇒ ⇒ 判据应红。"""
+    total = 0
+    for p in (EMBED898, EMBED898D):
+        total += strip_marker_lines(p)
+    return "（删掉了 %d 行带标记的注释）" % total
+
+
+def m24_rename_installer_marker_token():
+    """★ 把 installer's 标记 token 改名 ⇒ ⇒ 898 的标记不再被识别
+    ⇒ ⇒ requiresNoTransaction(898) 变 false ⇒ ⇒ 判据应红。"""
+    n = replace_in_files([RUNNER],
+                         'const noTransactionMarker = "dbinit:no-transaction"',
+                         'const noTransactionMarker = "dbinit:no-tx"')
+    return "（改了 %d 处）" % n
+
+
 def main():
     print("=" * 78)
     print("§143.97 变异台：验证「门绿 ≠ 门有牙」")
@@ -459,7 +596,8 @@ def main():
         probe_needle_gone_in_exec(MIG898, "CREATE INDEX CONCURRENTLY"))
     arm("M03 放回 now() 谓词（614 当年的失败形态）", False, m03_reintroduce_now_predicate,
         probe_needle_present_in_exec(MIG898, M03_NEEDLE))
-    arm("M04 去掉 no-transaction 标记", False, m04_drop_no_transaction_marker)
+    arm("M04 去掉 no-transaction 标记（★ 删【全部】拼写）", False, m04_drop_no_transaction_marker,
+        probe_no_marker_left([MIG898, EMBED898, DOWN898, EMBED898D]))
     arm("M05 899 换成带仲裁目标", False, m05_targeted_arbiter_in_899,
         probe_needle_gone_in_exec(MIG899, "ON CONFLICT DO NOTHING"))
     arm("M06 899 删掉 reconciled CTE", False, m06_drop_reconciled_from_899,
@@ -517,6 +655,14 @@ def main():
 
     arm("M21 合法：在 898 注释里加说明（期望仍绿）", True, m21_legal_comment)
     arm("M22 合法：在通道链登记旁加注释（期望仍绿）", True, m22_legal_chain_comment)
+
+    # ★ ★ 本轮新增的两臂（★ 它们证明「embeddata 侧」与「真函数」都被守着）：
+    arm("M23 只删 embeddata 副本的标记（canonical 保留）", False,
+        m23_drop_marker_from_embeddata_only,
+        probe_no_marker_left([EMBED898, EMBED898D]))
+    arm("M24 改 installer's 标记 token（真函数口径漂移）", False,
+        m24_rename_installer_marker_token,
+        probe_installer_predicate_false(EMBED898))
 
     print("-" * 78)
     ok = 0

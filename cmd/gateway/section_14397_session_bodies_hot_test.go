@@ -206,34 +206,52 @@ func TestSection14397_898_BuildsTsLeadingIndexWithConcurrently(t *testing.T) {
 }
 
 func TestSection14397_898_HasNoTransactionMarker(t *testing.T) {
-	raw := readRepoFile14397(t, section14397Migration898)
-
-	// ★ 标记必须是【整行注释】（installer 的 requiresNoTransaction 只看
-	// ★ 以 `--` 开头的行 ⇒ 写在代码块里不算）。
-	found := false
-	for _, line := range strings.Split(raw, "\n") {
-		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "--") && strings.Contains(trimmed, "dbinit:no-transaction") {
-			found = true
-			break
+	// ★ ★ 标记检查必须【两侧都查】—— ★ 理由是【字节投递链】，不是「M04 报的缺陷」：
+	// ★ ★ ① **embeddata 副本 = installer 通道真正执行的那一份**：
+	// ★ ★    installer/cmd/llm-gw-installer/main.go 的 setupSQLDir() 把
+	// ★ ★    **embedded 字节**写到临时目录 ⇒ dbinit.Runner.applySQL 从
+	// ★ ★    SQLDir 读文件 ⇒ ⇒ 真正喂给 psql 的就是 embeddata 那份字节。
+	// ★ ★ ② **canonical 副本 = 部署通道读的那一份**：
+	// ★ ★    scripts/apply-db-revision-sequence.sh 用
+	// ★ ★    `psql -X -v ON_ERROR_STOP=1 -f -` 流式执行（**不包事务**）
+	// ★ ★    ⇒ ⇒ canonical 侧的标记对它不是生死线，但它必须与 embeddata
+	// ★ ★    **逐字节一致**（六点位登记已守）⇒ ⇒ 两份都要带标记。
+	// ★ ★ ③ 本判据**逐字镜像** installer/internal/dbinit/runner.go 的
+	// ★ ★    requiresNoTransaction 语义（TrimSpace ⇒ 前缀 `--` ⇒ 含
+	// ★ ★    token）—— ★ ★ 【镜像】是刻意的：若 installer 改了口径，
+	// ★ ★    installer 侧那条【调用真函数】的门会先红（见
+	// ★ ★    installer/internal/dbinit/untransactable_requires_marker_test.go）。
+	// ★ ★
+	// ★ ★ ⚠ **订正**：★ 本判据最初只查 canonical，★ 而变异台 M04 首跑
+	// ★ ★ 报的是「期望红但门仍绿 ⇒ 门没牙」—— ★ ★ **那个归因是错的**：
+	// ★ ★ M04 只替换了标记的一种拼写（`-- dbinit:no-transaction`），
+	// ★ ★ 而 898 第 139 行还有另一种拼写（`-- ★ ★ dbinit:no-transaction 标记`）
+	// ★ ★ ⇒ ★ installer 的真谓词仍判 true ⇒ ★ **变异本身是惰性的**
+	// ★ ★ ⇒ ★ **门绿是对的**（详见 runbook §143.97.14 第 4 条）。
+	hasMarker := func(rel string) bool {
+		raw := readRepoFile14397(t, rel)
+		// ★ 标记必须是【整行注释】（installer 的 requiresNoTransaction 只看
+		// ★ 以 `--` 开头的行 ⇒ 写在代码块里不算）。
+		for _, line := range strings.Split(raw, "\n") {
+			trimmed := strings.TrimSpace(line)
+			if strings.HasPrefix(trimmed, "--") && strings.Contains(trimmed, "dbinit:no-transaction") {
+				return true
+			}
 		}
+		return false
 	}
-	if !found {
-		t.Errorf("898 缺少整行注释形式的 `dbinit:no-transaction` 标记 —— ★ CREATE INDEX CONCURRENTLY 不能在事务块内执行 ⇒ 全新安装会失败")
+
+	for _, rel := range []string{section14397Migration898, section14397Embed898} {
+		if !hasMarker(rel) {
+			t.Errorf("%s 缺少整行注释形式的 `dbinit:no-transaction` 标记 —— ★ CREATE INDEX CONCURRENTLY 不能在事务块内执行 ⇒ 全新安装会失败", rel)
+		}
 	}
 
 	// ★ down 也要带标记（它用 DROP INDEX CONCURRENTLY）。
-	rawDown := readRepoFile14397(t, section14397Down898)
-	foundDown := false
-	for _, line := range strings.Split(rawDown, "\n") {
-		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "--") && strings.Contains(trimmed, "dbinit:no-transaction") {
-			foundDown = true
-			break
+	for _, rel := range []string{section14397Down898, section14397Embed898Down} {
+		if !hasMarker(rel) {
+			t.Errorf("%s 缺少 `dbinit:no-transaction` 标记 —— ★ DROP INDEX CONCURRENTLY 同样不能事务化", rel)
 		}
-	}
-	if !foundDown {
-		t.Errorf("898 的 down 缺少 `dbinit:no-transaction` 标记 —— ★ DROP INDEX CONCURRENTLY 同样不能事务化")
 	}
 	if !strings.Contains(sqlExecutable14397(t, section14397Down898), "DROP INDEX CONCURRENTLY IF EXISTS public.idx_session_bodies_hot_ts") {
 		t.Errorf("898 的 down 没有用 DROP INDEX CONCURRENTLY —— ★ hot 表是活写表 ⇒ 普通 DROP INDEX 会持 ACCESS EXCLUSIVE 阻塞写入")
