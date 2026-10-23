@@ -2107,6 +2107,45 @@ files=(
   #   一项**（它是活库里应有的终态体）。615/626/638 **不在**本通道 ⇒ 不进链。
   # ⇒ ★ 本条**只落仓**；★ 生产应用需属主另行授权。
   "$ROOT_DIR/sql/migrations/startup/899_session_bodies_promote_body_sink.sql"
+
+  # ── 2026-10-23（llmgo 生产页面修复轮）：free-discovery 503 与 keys 使用统计超时 ──
+  #
+  # 900：把 FreeDiscovery 数据模型（084 + 087 的列）**再投递**给升级通道库
+  #   （896 同款交付缺口修复）。
+  #
+  # ★ 交付缺口：deploy-lib/db-changelog.sh 只把 version ≥ 412 视为 pending
+  #   ⇒ 084（<412）从未到达任何生产库；db-changelog 084 行自证
+  #   「applied+verified (本地 llm-gateway 库, psql 手动应用)」⇒ 只在本地
+  #   开发库手动应用过。⇒ 生产共享库（172.16.2.210:5432/llm_gateway）实测
+  #   无 provider_templates / discovery_tasks / discovery_results
+  #   ⇒ R39 的 ProviderTemplatesProvisioned()=false ⇒ 网关启动不接线
+  #   ⇒ /api/free-discovery/* 一律 503 "database disabled"
+  #   （245 journal 2026-10-23 逐字佐证："provider_templates absent
+  #   (freediscovery not provisioned); skipping 087 health-feedback ensure"）。
+  # ★ 形态：逐字复用 084 的幂等 DDL（CREATE TABLE IF NOT EXISTS /
+  #   ADD COLUMN IF NOT EXISTS / DO 块自守卫）+ 并入 087 的三个健康反馈列。
+  #   全新安装链此前同样缺这三张表（084 不在任何通道）⇒ 本条同时登记进
+  #   installer StartupFiles 补齐新装路径；升级库全 no-op。
+  # ★ Post-condition：三表在位且 RLS 启用 ⇒ 网关下次启动自动接线，
+  #   free-discovery 503 消失，无需其它改动。
+  "$ROOT_DIR/sql/migrations/startup/900_freediscovery_schema_reassert.sql"
+
+  # 901：给分区父表 public.usage_ledger 补 (api_key_id, ts DESC)
+  #   WHERE api_key_id IS NOT NULL 部分索引。
+  #
+  # ★ 病灶（★ 生产共享库 2026-10-23 只读实测）：usage_ledger_2026_09
+  #   （742 MB）/ _2026_10（345 MB）的既有四组索引首列全是 request_id /
+  #   tenant_id / ts，**没有 api_key_id** ⇒ /api/usage/{id}、/{id}/models、
+  #   /{id}/trend 三端点的 `WHERE api_key_id=$1 AND ts 范围` 只能走 ts 首列
+  #   索引 + api_key_id Filter ⇒ EXPLAIN ANALYZE 实测「7 天窗口内 0 行的
+  #   key 73」耗 **6,983 ms**（每 worker 移除 64,822 行）⇒ keys 详情页
+  #   使用统计在负载窗口整体超时（"query failed"）。
+  # ★ 形态照抄 hot 侧既有样板 usage_ledger_hot_api_key_id_ts_idx
+  #   (api_key_id, ts DESC) WHERE api_key_id IS NOT NULL（逐列一致）。
+  # ★ 普通 CREATE INDEX（分区父表不支持 CONCURRENTLY）+ SET LOCAL
+  #   lock_timeout='60s' / statement_timeout='10min'（891 同款：lock_timeout
+  #   只管锁等待，statement_timeout 防共享 PG 30s 服务端掐长构建后永不记账）。
+  "$ROOT_DIR/sql/migrations/startup/901_usage_ledger_api_key_id_ts_idx.sql"
 )
 
 

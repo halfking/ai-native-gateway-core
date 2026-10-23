@@ -206,6 +206,25 @@ func (h *Handler) settingsGet(w http.ResponseWriter, r *http.Request, key string
 		writeError(w, http.StatusNotFound, "unknown setting "+key)
 		return
 	}
+	// Platform view of a tenant-scoped spec: values live per tenant, there is
+	// no platform-level value to resolve. Return the spec default (source
+	// "default") instead of failing EffectiveValue's tenant_id requirement —
+	// clicking any tenant-scoped key in the admin settings detail pane (e.g.
+	// goal.retry_delay_seconds) 500'd here (2026-10-23, llmgo 245). The UI
+	// already renders the 租户级配置 warning and falls back to spec.default.
+	if !tenant && tid == "" && sp.Scope == settings.ScopeTenant {
+		def, err := json.Marshal(sp.Default)
+		if err != nil {
+			writeInternalErr(w, "internal error (see server logs)", err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"spec":   sp,
+			"value":  json.RawMessage(def),
+			"source": "default",
+		})
+		return
+	}
 	scope := sp.Scope
 	if tenant {
 		scope = settings.ScopeTenant
@@ -224,13 +243,25 @@ func (h *Handler) settingsGet(w http.ResponseWriter, r *http.Request, key string
 
 // settingsPut writes a value with validation and audit.
 func (h *Handler) settingsPut(w http.ResponseWriter, r *http.Request, key string, tenant bool, tid string) {
-	if settings.Global == nil || h.db == nil {
-		writeError(w, http.StatusServiceUnavailable, "settings not available")
+	if settings.Global == nil {
+		writeError(w, http.StatusServiceUnavailable, "settings registry not initialised")
 		return
 	}
 	sp := settings.Global.Spec(key)
 	if sp == nil {
 		writeError(w, http.StatusNotFound, "unknown setting "+key)
+		return
+	}
+	// Platform route has no tenant context: a tenant-scoped spec cannot be
+	// written here (StoreDB.Set rejects ScopeTenant). Point at the tenant
+	// endpoint instead of surfacing a raw internal error.
+	if !tenant && sp.Scope == settings.ScopeTenant {
+		writeError(w, http.StatusBadRequest,
+			"tenant-scoped setting: use /api/admin/tenant-settings/{tid}/"+key)
+		return
+	}
+	if h.db == nil {
+		writeError(w, http.StatusServiceUnavailable, "settings not available")
 		return
 	}
 	// Permission gate.

@@ -9434,3 +9434,17 @@ embeddata 逐字 + lock_timeout + 自证断言 + down 只删账本 + **真库腿
 | 896 | `896_offline_activation_requests_columns_reassert.sql` | `05d5b5d694ab3fcb0ce648a9b0c3975a1c311c14a3b80b027544772c6de8e871` | applied+verified |
 | 897 | `897_session_turns_promote_final_success_self_heal.sql` | `1a77a4ea9a9f15d5f252a5fc9908b1db5897f9447eae28e2ce5b5b65a7aa1188` | applied+verified |
 
+
+## 2026-10-23 — llmgo 生产页面修复轮（free-discovery 503 / keys 使用统计超时 / settings 详情 500）
+
+★ 本节登记四条 startup 迁移（898 / 899 由并行会话的 hot 排水轮落仓、
+900 / 901 由本轮落仓），**均未在生产应用**，随下次 154/245 部署由
+`deploy-lib/db-changelog.sh` 作为 pending ≥ 412 自动应用。
+生产共享库（172.16.2.210:5432/llm_gateway）2026-10-23 只读实测水位 = 897。
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 898 | `898_session_bodies_hot_ts_index.sql` | `a5d435743597752c8fbeeddc1bdaf1092c0f7f516362f39eea23597502d6a8c1` | registered in installer StartupFiles + 生产升级序列 `scripts/apply-db-revision-sequence.sh`（未应用，pending）—— `dbinit:no-transaction` + CONCURRENTLY + lock_timeout=60s / statement_timeout=10min |
+| 899 | `899_session_bodies_promote_body_sink.sql` | `66cddcb1b2531bd3298ab2fae631d9f55fdf21232e33b8e1a066937785accbac` | registered in installer StartupFiles + 生产升级序列（未应用，pending）—— promote 函数体下沉，逐字等于生产现行体 |
+| 900 | `900_freediscovery_schema_reassert.sql` | `b1f1a0c90cb706887e19007cc47867abe3b21e5c371ee832222be3531b09d9de` | registered in installer StartupFiles + 生产升级序列（未应用，pending）—— 084+087 再投递（896 同款交付缺口修复：升级通道只把 ≥412 视为 pending ⇒ 084 从未到达生产 ⇒ free-discovery 503）。幂等；down：`900_freediscovery_schema_reassert.down.sql`（sha256 `2d8ef1a038df25ce17c59bd68b86acd15be74e935f6a3b8c32666ea4fe1d94c3`） |
+| 901 | `901_usage_ledger_api_key_id_ts_idx.sql` | `a94c1dfe31a7cead3957141ba9615db0cedae49feb88786e3c3422b29a8d0195` | registered in installer StartupFiles + 生产升级序列（未应用，pending）—— usage_ledger 分区父表补 (api_key_id, ts DESC) WHERE api_key_id IS NOT NULL（实测 7 天空窗 6,983 ms 的根因）。891 同款 lock_timeout=60s / statement_timeout=10min；down：`901_usage_ledger_api_key_id_ts_idx.down.sql`（sha256 `bea9ec9a2741758ebd7076c9c1387e630e62994c6100b3b99b32c64fb9fcbc6b`） |
