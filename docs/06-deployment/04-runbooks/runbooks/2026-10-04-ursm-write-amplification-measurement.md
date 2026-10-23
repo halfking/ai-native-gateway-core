@@ -51005,9 +51005,19 @@ GET DIAGNOSTICS v_demoted = ROW_COUNT;
 | ⑤ | `installer/internal/dbinit/runner.go` | ★ `StartupFiles` 登记 ＋ 15 行理由注释 |
 | ⑥ | `sql/schema/installed_startup_migrations.tsv` | ★ 自动生成，★ index 299 |
 | ⑦ | `scripts/apply-db-revision-sequence.sh` | ★ `files=()` ＋ `intentional_function_chains` 链尾 |
-| ⑧ | `cmd/gateway/section_14396_session_turns_self_heal_test.go` | ★ 门，★ 8 条判据；★ 含**逐行差异判据** |
-| ⑨ | `scripts/audit/mutate_14396_gate.py` | ★ 变异台 |
+| ⑧ | `cmd/gateway/section_14396_session_turns_self_heal_test.go` | ★ 门，★ **9 条判据**；★ 含**逐行差异判据** |
+| ⑨ | `scripts/audit/mutate_14396_gate.py` | ★ 变异台，★ **18/18**；★ 每臂自带【效果探针】 |
 | ⑩ | 本段 ＋ LESSONS §290 ＋ AGENTS R140 | 文档 |
+
+**★ 变异台首跑的三处自身问题（★ 诚实记录：★ 三处都在【变异台自己】、★ 不在门）**：
+
+| # | 现象 | 根因 | 修法 |
+| --- | --- | --- | --- |
+| ① | ★ M16 臂直接抛 `AssertionError` 中断整台 | ★ needle `### §143.96` **没有边界** ⇒ ⇒ 它是 `#### §143.96.1` 的前缀 ⇒ ⇒ 出现 **9 次** ⇒ ⇒ 断言炸掉的是**变异台自己** | ★ needle 改成带尾随空格的 `\n### §143.96 `（★ 恰好 1 次）⇒ ⇒ ★ 这与 §143.95 轮的「裸子串逃逸」**同族**、★ 但方向相反（★ 这次是**多命中**而非漏命中） |
+| ② | ★ M17 臂被判「变异没生效」 | ★ 探针查的是**整个可执行面** ⇒ ⇒ 后置条件的字符串字面量 `'%SET is_final_success = FALSE%'` 也会命中 ⇒ ⇒ 探针永远不成立；★ 而且这一臂**本身设计错了**（★ 真 demote 步里本来就有那句） | ★ 改成「★ **被禁的错键形态**只出现在注释里」⇒ ⇒ 并把探针限定到**函数体作用域** |
+| ③ | ★ M18 臂变红（★ 而它期望仍然绿） | ★ 只改了 canonical 一份 ⇒ ⇒ **embeddata 字节门正确地红了** ⇒ ⇒ ★ 变红的原因是【**变异本身不合法**】⇒ ⇒ 不是「门没牙」 | ★ 两份**一起改** ⇒ ⇒ ★ ★★ ⇒ 这条其实证明**字节门确实有牙** |
+
+- ★★★ 三处的共同教训：★ **变异台的每一臂都必须自带「效果探针」** ⇒ ⇒ 「文件确实变了（changed == True）」＋「目标 needle 在【判据实际读的那一面】里的出现次数变成 0」⇒ ⇒ ★★ 否则「探针没生效」与「门没牙」这两种失败会长得**一模一样** ⇒ ⇒ ⇒ ★★★
 
 #### §143.96.7 待属主拍板
 

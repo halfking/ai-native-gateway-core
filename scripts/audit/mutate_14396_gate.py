@@ -386,7 +386,9 @@ def m15_probe():
 
 # ---------- M16：★ 文档登记被摘掉（★ 判据⑧） ----------
 def m16_mut():
-    replace_all(RUNBOOK, "### §143.96", "### §143.99", expect_n=1)
+    # ★★ needle 必须带【尾部空格】—— ★ "### §143.96" 是 "#### §143.96.1" 的前缀
+    # ★ ★⇒⇒ 不带边界 ⇒ 出现 9 次 ⇒ ⇒ 断言直接炸 ⇒ ⇒ 而炸掉的是【变异台自己】。
+    replace_all(RUNBOOK, "\n### §143.96 ", "\n### §143.99 ", expect_n=1)
     replace_all(LESSONS, "## §290", "## §291", expect_n=1)
     replace_all(AGENTS, "R140 轮", "R141 轮", expect_n=1)
 def m16_restore():
@@ -394,41 +396,53 @@ def m16_restore():
     restore_path(LESSONS)
     restore_path(AGENTS)
 def m16_probe():
-    return ("### §143.96" not in read(RUNBOOK)
+    return ("\n### §143.96 " not in read(RUNBOOK)
             and "## §290" not in read(LESSONS)
             and "R140 轮" not in read(AGENTS))
 
 
 # ---------- M17（★ 期望【仍然绿】）：★ demote 的关键文字只出现在【注释】里 ----------
 def m17_mut():
-    s = read(MIGRATION)
-    anchor = "    RETURN v_moved;\n"
-    assert s.count(anchor) == 1
-    ins = "    -- ★ 变异体：SET is_final_success = FALSE AND p.session_id = h.session_id\n"
-    write(MIGRATION, s.replace(anchor, ins + anchor))
+    # ★★ 这一臂验的是【反向禁】只查【可执行面】—— ★ 所以把【被禁的错键形态】
+    # ★ ★ 直接塞进 demote 段里、但只放在【注释】中 ⇒ ⇒ 门必须【仍然绿】。
+    # ★ ★⇒⇒ 若门红 ⇒ ⇒ 说明反向禁查的是【原文】而不是【可执行面】⇒ ⇒ 门过严。
+    # ★★ canonical 与 embeddata 副本必须一起改（★ 否则字节门会正确地变红，
+    # ★★ 而这一臂要验的是【门不许过严】⇒ ⇒ ⇒ 变红的原因是【变异本身不合法】）。
+    for path in (MIGRATION, EMBED):
+        s = read(path)
+        anchor = "    UPDATE public.session_turns_hot h\n"
+        assert s.count(anchor) == 1
+        ins = "    -- ★ 变异体：AND p.request_id = h.request_id（★ 错键形态只出现在注释里）\n"
+        write(path, s.replace(anchor, ins + anchor))
 def m17_restore():
     restore_path(MIGRATION)
+    restore_path(EMBED)
 def m17_probe():
     raw = read(MIGRATION)
-    exe = executable_text(MIGRATION)
-    return ("-- ★ 变异体：SET is_final_success = FALSE" in raw
-            and "SET is_final_success = FALSE" not in exe)
+    # ★ 探针必须限定在【函数体作用域】—— ★ 897 的【可执行面】里，
+    # ★ 后置条件的字符串字面量也会命中同类文本 ⇒ ⇒ 不限定 ⇒ ⇒ 探针永远不成立。
+    return ("-- ★ 变异体：AND p.request_id = h.request_id" in raw
+            and "p.request_id = h.request_id" not in func_body_text(MIGRATION))
 
 
 # ---------- M18（★ 期望【仍然绿】）：★ 函数体内加一段与判据无关的注释 ----------
 def m18_mut():
-    s = read(MIGRATION)
-    anchor = "    RETURN v_moved;\n"
-    assert s.count(anchor) == 1
-    ins = "    -- ★ 变异体：一段与判据完全无关的注释\n"
-    write(MIGRATION, s.replace(anchor, ins + anchor))
+    # ★★ canonical 与 embeddata 副本**必须一起改** —— ★ 只改一份 ⇒ ⇒
+    # ★ ⇒ 字节门会（正确地）变红 ⇒ ⇒ 而这一臂要验的是「门不许过严」⇒ ⇒ ⇒
+    # ★ ⇒ 变红的原因是【变异本身不合法】，不是【门没牙】。
+    for path in (MIGRATION, EMBED):
+        s = read(path)
+        anchor = "    RETURN v_moved;\n"
+        assert s.count(anchor) == 1
+        ins = "    -- ★ 变异体：一段与判据完全无关的注释\n"
+        write(path, s.replace(anchor, ins + anchor))
 def m18_restore():
     restore_path(MIGRATION)
+    restore_path(EMBED)
 def m18_probe():
     raw = read(MIGRATION)
-    exe = executable_text(MIGRATION)
     return ("-- ★ 变异体：一段与判据完全无关的注释" in raw
-            and "★ 变异体：一段与判据完全无关的注释" not in exe)
+            and "★ 变异体：一段与判据完全无关的注释" not in func_body_text(MIGRATION))
 
 
 check("M1 ★ demote 步被摘掉（★ 判据①：★「只插入一处」被违反）", True,
