@@ -51035,3 +51035,302 @@ GET DIAGNOSTICS v_demoted = ROW_COUNT;
 - ⑤ ★★★★ **【★ `session_bodies_hot` 同款病灶未修】** ⇒ ⇒ ⇒ **仍未闭合** ⇒ ⇒ ⇒ ★★★
 - ⑥ ★★★ **【★ 门是【登记门 + 形态门】、★ 不是端到端门】** ⇒ ⇒ ⇒ 「897 装上去之后真能把那行搬走」这条由**一次性库的 A/B/C 实测**担保 ⇒ ⇒ ⇒ ★★ 而**生产上的收益**要等授权应用后才可观测 ⇒ ⇒ ⇒ ★★★
 - ⑦ ★★★ **【★ 本轮零生产写入、★ 零生产路径代码变更】** ⇒ ⇒ ⇒ 线上行为零变化 ⇒ ⇒ ⇒ ★★★
+
+### §143.97 会话族 hot 排水：session_bodies_hot 的两条缺口（delivery-gap + copy-gap）
+
+> ★ 本节结论全部来自 **2026-10-23 生产 252 共享库只读实测** + **仓内文件级取证**
+> + **一次性库 `itgate_14397` 的 A/B/C 三段真库实测**。
+> ★ 本节**零生产写入**（迁移只落仓，生产应用需属主另行授权）。
+
+#### §143.97.1 起点：§143.95 留下的开口
+
+§143.95 查清了 `session_turns_hot` 的 23505 病灶（父表部分唯一索引 vs promote 去重键**键集不同**），
+并留了一个开口：**`session_bodies_hot` 是否同款病灶？**
+
+★ 本轮的回答是：**不是同一款病，但有两条更隐蔽的缺口**。
+
+#### §143.97.2 失败形态：不是 23505，是批次超时
+
+★ 154 网关日志（2026-10-23）实测：
+
+- `session_bodies_hot` 的 promote **多数 tick 成功**（rows=511 / 589 / 1673 / 737 / 520 / 446 / 558 / 464 / 511 …）
+- **偶发** `timeout: context deadline exceeded`（06:45:15.771 / 10:52:33.434 / 11:55:48）
+
+⇒ ⇒ **不是 23505 整批回滚**（那会是立即报错，不是跑满 60s）。
+
+★ **时间轴闭环**（两次窗口同一模式）：
+
+```
+06:43:14.002  candidate_failure_logs  完成
+06:44:14.261  session_turns_hot      FAILED（跑满 60s）
+06:44:15.453  session_turn_details_hot 成功（秒级）
+06:45:15.770  session_bodies_hot     FAILED（又跑满 60s）
+06:45:23.757  supplier_errors_hot    仍成功
+```
+
+⇒ ⇒ **周期预算未耗尽** ⇒ ⇒ 那 60s 是 `session_bodies_hot` 自己的批次预算，**不是级联**。
+（10:50 窗口同形：10:51:30.447 session_turns FAILED → 10:52:33.434 session_bodies FAILED。）
+
+#### §143.97.3 根因 A（形态）：批次选取没有 ts 首列索引承重
+
+★ 生产 `session_bodies_hot` 的 **6 个索引**中**没有一个以 `ts` 为首列**：
+
+```
+session_bodies_hot_pkey                             (id, partition_date)
+session_bodies_hot_unique                           (session_id, turn_no, tenant_id, partition_date)
+uq_session_bodies_hot_final_full                    (tenant_id, session_id, partition_date) WHERE kind='final_full'
+session_bodies_with_current_month                   (tenant_id, request_id, partition_date)
+idx_session_bodies_hot_request                      (request_id, tenant_id)
+idx_session_bodies_hot_tenant_session_turn_request  (tenant_id, session_id, turn_no DESC, request_id)
+```
+
+★ 对照组 `session_turns_hot` **有** `idx_session_turns_hot_ts (ts, id, partition_date)`。
+
+★ **规划器实读**（同一次快照，两条语句只换表名）：
+
+| 表 | 计划 | cost |
+|---|---|---|
+| `session_bodies_hot` | **Seq Scan + Sort**（Sort Key: ts） | 1602~1623 |
+| `session_turns_hot` | **Index Only Scan using idx_session_turns_hot_ts** | 219~385 |
+
+#### §143.97.4 ★ 本轮第一处自我修正：「12.29× 溢写」是量具口径错，结论作废
+
+★ 早前一轮据 `pg_column_size(jsonb)` 得出「8h 批次窗口 98 MB / work_mem 8 MB ⇒ **溢写 12.29×**」的结论。
+★ **该结论已作废**。原因：
+
+- `pg_column_size(jsonb)` 返回的是**存储体积**（解压后），而 **Sort 搬运的是元组内联字节**
+  （TOAST 出表的列在元组里只占 18 字节指针）。
+- 实测 `EXPLAIN (ANALYZE, BUFFERS)`：
+
+```
+Limit (actual time=26.955..29.244 rows=4770)
+  ->  Sort (actual time=26.952..28.419 rows=4770)
+        Sort Method: quicksort  Memory: 4198kB      ← ★ 未溢写（work_mem=8MB）
+        ->  Seq Scan on session_bodies_hot (actual time=0.021..13.932 rows=4770)
+Execution Time: 30.214 ms
+```
+
+⇒ ⇒ **批次选取只花 30ms**，且**没有溢写**。
+⇒ ⇒ ⇒ **「批次选取成本」不是 60s 超时的原因** ⇒ ⇒ 根因 A 只能是**放大器**，不是主因。
+
+★ 通用式：**比较「搬运量」与「work_mem」时，必须用「元组内联字节」，不是「列的存储体积」** ——
+★ TOAST 出表的列在元组里只有指针，★ 用列体积算会**严重高估**搬运量。
+
+#### §143.97.5 ★ 60s 的真正去向：写侧每行 ≈79ms
+
+★ 154 日志实测（同一周期内相邻两条）：
+
+```
+05:28:27.873  session_turn_details_hot  rows=391
+05:29:08.326  session_bodies_hot        rows=511     ← ★ 相隔 40.45s
+```
+
+⇒ ⇒ **511 行 / 40.45s ≈ 79ms/行**。
+★ 而选取侧是 **0.006ms/行**（30ms / 4770 行）⇒ ⇒ ⇒ **99.99% 的时间在「INSERT 进父表 + DELETE 出 hot」**。
+
+★ 写侧对象：
+
+| 对象 | 实测 |
+|---|---|
+| 父表当月分区 `session_bodies_2026_10` | **heap**（非 columnar）、**5,381 MB / 290,633 行** |
+| `reconciled` CTE 会命中几行 | **0**（不是它的开销） |
+| `deleted` CTE 的 EXISTS 形状（代理实测） | 207ms（不是它的开销） |
+| 写 hot 表本身（bodies_writer） | 72,813 次 INSERT / mean 20.2ms / max 2886ms |
+
+⇒ ⇒ **瓶颈 = 父表分区体量 + 每行 25KB 级 payload 的搬运**（8h 候选行的 `pg_column_size(整行)` 均值 **25,377 B**，5 个 jsonb 列里 `request_delta` 均值 34 KB）。
+
+★ **诚实的边界**：★ 本轮**没有**在生产上直接测出「每行 79ms 拆到哪一步」⇒ ⇒
+★ 「父表体量 + payload 搬运」是**有实测支撑的推断**，不是逐项实测。
+
+#### §143.97.6 ★★ 缺口一（delivery-gap）：614 的 ts 索引从未在生产落地，而台账说它已应用
+
+★ **文件级取证**（`git show 6973a9fb8:sql/migrations/startup/614_session_bodies_hot.sql`，= **生产 `schema_migrations` 记账时刻 2026-08-29 16:48:05 那一版**）：
+
+```sql
+CREATE INDEX idx_session_bodies_hot_ts
+    ON public.session_bodies_hot(ts)
+    WHERE ts > now() - interval '8 hours';     ← ★★ now() 非 IMMUTABLE
+```
+
+★ PG 拒绝该谓词（partial index predicate must be immutable）⇒ **该索引从未建成**；
+★ 且它**后面**同文件的 `idx_session_bodies_hot_partition_date` 也**从未执行**；
+★ 而它**前面**的 `idx_session_bodies_hot_lookup` / `_request` **建成了**。
+
+⇒ ⇒ **与生产现状逐条吻合**（生产有 `_request`、无 `ts`、无 `partition_date`；`lookup` 后来被 888 显式 DROP）。
+
+★ 2026-09-03 的 `368202126`（`fix(db): drop now() predicate from session_bodies_hot ts index`）修好了 614，
+★ 但 **614 的台账已记为 applied ⇒ 迁移链不再重跑它 ⇒ 修复永远到不了生产**；
+★ 且 **614 不在通道 `files=()` 里** ⇒ 通道也不补 ⇒ ⇒ **双通道都到不了**。
+
+★ **另一条独立通道也拿不到它**：707b（**在**通道里）用
+`CREATE TABLE public.session_bodies_hot (LIKE public.session_bodies INCLUDING ALL)` 建表
+⇒ 索引集**继承自父表** ⇒ 而父表 `public.session_bodies` 上**没有** ts 首列索引
+（862 只给 `session_turns` / `_request_logs` 的**父表**加了 `idx_*_ts`）⇒ ⇒ LIKE 也拷不出 ts 索引。
+
+⇒ ⇒ ⇒ **⇒ 这是「台账说已应用 ≠ 实际对象是那一版」的带精确失败点的实例，且两条投递路径都断了。**
+
+#### §143.97.7 ★★ 缺口二（copy-gap）：promote 函数的「活体形态」只活在 Go 源码里
+
+★ 生产 252 上 `promote_session_bodies_hot_to_partition` 的实装形态（`prosrc` 指纹实测）：
+
+| 指纹 | 值 |
+|---|---|
+| `identity_args` | `retention_window interval, batch_size integer` |
+| `result_type` | `TABLE(moved_count bigint)` |
+| 裸 `ON CONFLICT DO NOTHING`（**无仲裁目标**） | **t** |
+| `ON CONFLICT (id, partition_date)`（**带仲裁目标**） | **f** |
+| `reconciled` CTE | **t** |
+| 列形状守卫（`v_parent_shape` / `v_hot_shape`） | **t** |
+| `pg_try_advisory_xact_lock` | **t** |
+| `src_len` | **3486** |
+
+★ 这个形态**逐字等于** `db/db.go` 的 `ensureSessionBodiesPromoteDrain`（`db/db.go:3984-4095`，
+★ 挂在启动 ensure 链 `db/db.go:527` ⇒ **每次网关启动都重装一次函数体**）。
+
+★ 而仓内四版迁移 **615 / 626 / 638 / 708** **全是**带仲裁目标的 `ON CONFLICT (id, partition_date) DO NOTHING`。
+
+⇒ ⇒ **「只跑迁移、不启动 Go」是一次真实可发生的操作**（`scripts/apply-db-revision-sequence.sh` 就是这条路径）
+⇒ ⇒ 在这条路径上，**708 的带仲裁目标形态会被装回生产**
+⇒ ⇒ 而那个仲裁目标**不覆盖**父表的
+`session_bodies_tenant_request_partition_key UNIQUE (tenant_id, request_id, partition_date)`
+⇒ ⇒ **23505 复发 + 毒丸行卡死 hot 窗口**（2026-09-17 PG 日志审计 65 轮实测，逐字记录在 `db/db.go:3965-3972`）
+⇒ ⇒ ⇒ **⇒ 修法只活在 Go 侧 ⇒ 修法在通道路径上无效。**
+
+★ **通道里只有 708 在**（615 / 626 / 638 **都不在** `files=()`）⇒ ⇒ 通道上的实际投递序是 **708 → 899**。
+
+#### §143.97.8 落仓：迁移 898 / 899
+
+★ **898 `sql/migrations/startup/898_session_bodies_hot_ts_index.sql`**
+
+- 建 `idx_session_bodies_hot_ts (ts, id, partition_date)` —— **照抄仓内样板 `idx_session_turns_hot_ts`**（hot 表有 `id` 列，614 第 8 行）
+- 用 **`CREATE INDEX CONCURRENTLY`**（888 第 2 段同款）：hot 表是**活写表** ⇒ 普通 `CREATE INDEX` 会在构建期持 ShareLock 阻断写入
+- 带 **`dbinit:no-transaction`** 标记（CONCURRENTLY 不能在事务块内执行）
+- 第 0 段**残留自愈**（888 第 0 段同款）：被 applySQL 的 5 分钟 ctx 掐断会留下 `indisvalid=false` 的半成品索引 ⇒ 对象在、名字在、**但 planner 不用它** ⇒ 且 `IF NOT EXISTS` 对这种对象不生效 ⇒ 重跑必须先 DROP
+- 后置条件：索引在位 ∧ `indisvalid` ∧ `indisready` ∧ 首列 = `ts`
+- down：`DROP INDEX CONCURRENTLY IF EXISTS`（★ 如实登记：**回滚 = 回到「批次选取 Seq Scan + Sort」**）
+
+★ **899 `sql/migrations/startup/899_session_bodies_promote_body_sink.sql`**
+
+- 函数体**逐字等于生产现行体**（★ 纪律同 897：**基线必须是生产现行体**）⇒ ⇒ **语义零变更**
+- ★ 逐字相等是**实测**的：一次性库装完后 `prosrc` 与生产 `prosrc` **BYTE-IDENTICAL（3485 = 3485 字节）**
+- 后置条件 6 项（含**反向**断言：仲裁目标不在场 —— 正向断言排除不了「两者都在」）
+- 签名不变 ⇒ `CREATE OR REPLACE` 是**替换**、不是新增 ⇒ 无重载残留、调用方零改动
+- down：**重放 708**（带仲裁目标形态）⇒ ⇒ **如实登记「回滚 = 回到故障」**
+- 六点位登记（canonical / embeddata / `go:embed` + map / `StartupFiles` / tsv / 通道 `files=()` + `intentional_function_chains` 链尾）
+
+#### §143.97.9 真库实测（一次性库 `itgate_14397`，本地 PG 17.10）
+
+★ **A 段（复现生产形态）**：本地库由 `itgate_14355` TEMPLATE 而来，**自带 614 的全套索引**
+（`idx_session_bodies_hot_ts` / `_partition_date`）⇒ ★ **必须先 DROP 才能复现生产形态**
+（★ 这是「本地一次性库的索引形态可能与生产不同」的又一实例）。
+
+```
+A0    DROP INDEX public.idx_session_bodies_hot_ts;
+      DROP INDEX public.idx_session_bodies_hot_partition_date;
+A0.1  索引清单 = 6 个（与生产逐条一致，★ 无 ts 首列）
+A0.2  函数形态 = targeted(ON CONFLICT (id, partition_date))=t / reconciled=f / len=2716
+      ⇒ 与生产的 708 形态一致
+A0.3  批次选取计划 = Seq Scan + Sort（★ 与生产同形态）
+```
+
+★ **B 段（装 898 + 899）**：
+
+```
+898   NOTICE: 898: public.idx_session_bodies_hot_ts (ts, id, partition_date) is in place and valid
+899   NOTICE: 899: promote_session_bodies_hot_to_partition installed with the production-current body
+      （bare ON CONFLICT DO NOTHING + reconciled CTE + shape guard + try-lock）
+B1    索引 = 7 个，indisvalid=t / indisready=t / 首列=ts / 3 键
+B3    函数形态 = targeted=f / bare=t / reconciled=t / shape_guard=t / try_lock=t
+B4    src_len = 3485  ⇒ ★ 与生产现行体 3486 相差 1（★ 见 §143.97.10 的「第二处自我修正」）
+B5    台账自登记：schema_migrations 有 '899' 一行
+```
+
+★ **逐字对拍（★ 本轮最关键的一次校验）**：
+★ 把生产 `prosrc` **逐字**取回（`\pset format unaligned`），与一次性库装完的 `prosrc` 做 **byte 级**比对：
+
+```
+prod len: 3485   local len: 3485   BYTE-IDENTICAL: True
+```
+
+★ **幂等**：重跑 898 ⇒ `NOTICE: relation "idx_session_bodies_hot_ts" already exists, skipping` 且后置条件仍过；
+★ 重跑 899 ⇒ 仍装成功、台账仍只 1 行。
+
+★ **C 段（down 回滚）**：
+
+```
+899 down ⇒ 函数形态 = targeted=true / reconciled=false / len=2665
+        ⇒ ★ 「回滚 = 回到故障」从【断言】升级为【实测事实】
+898 down ⇒ 索引计数 = 0
+```
+
+★ **本地库已清理**：`DROP DATABASE IF EXISTS itgate_14397;` ⇒ 复查 count=0。
+
+#### §143.97.10 ★ 本轮第二处自我修正：899 的第一版函数体**不**等于生产现行体
+
+★ 899 第一版用了**迁移文件的单层缩进**；★ 而生产现行体带 **`\t\t` 双层缩进**
+（那是 Go raw string 内保留的源码缩进）⇒ ⇒ 首版 `src_len=3336` ≠ 生产 `3486`。
+
+★ ⇒ ★ 差异**只在缩进、内容相同** ⇒ ⇒ 但「基线必须是生产现行体」这条纪律要的是**逐字** ⇒ ⇒ 必须改。
+★ 修法：从生产逐字取回 `prosrc` ⇒ 替换 899 的函数体 ⇒ 复验 `BYTE-IDENTICAL: True`。
+
+★ **附带的一条量具故障（当场被逮住）**：★ 我一度用
+`length(line) - length(ltrim(line))` 算缩进 ⇒ ⇒ **`ltrim` 默认也去空格 ⇒ 差值恒为 0**
+⇒ ⇒ 于是「生产 prosrc 全去缩进」这个**错误结论**看起来成立 ⇒ ⇒ 差点按它去改 899。
+★ 真正的判别动作是**把两边的原文都取回来做 byte 级比对** ⇒ ⇒ 立刻暴露差的是缩进而非内容。
+★ ⇒ **通用式：算「缩进」时不能用 ltrim/rtrim（它们默认去空白字符）⇒ 要用显式的空白字符集**。
+
+#### §143.97.11 门与变异台
+
+★ **门** `cmd/gateway/section_14397_session_bodies_hot_test.go`（**8 组判据**）：
+
+1. ★★★★★★ **898 必须真的建出 ts 首列索引** —— 形态 `(ts, id, partition_date)` + `CONCURRENTLY` + **绝不许出现 `now()`**（★ 那是 614 当年失败的那个谓词）
+2. ★★★★★★ **898 必须带 `dbinit:no-transaction` 标记**（★ 含 down）—— 否则全新安装会失败于 `CREATE INDEX CONCURRENTLY cannot run inside a transaction block`
+3. ★★★★★★ **899 的函数体必须逐字等于 `db/db.go` 的 ensure 体** —— ★ 这是「基线必须是生产现行体」纪律的**可执行证据**
+4. ★★★★★★ **899 绝不许带仲裁目标** + `reconciled` / 形状守卫 / try-lock 必须在
+5. ★★★★★★ **899 的签名逐字不变**（⇒ CREATE OR REPLACE 是替换、不是新增）
+6. ★★★★ **899 的后置条件必须有【反向】断言**（★ 正向断言排除不了「两者都在」）
+7. ★★★★ **899 的 down 必须真的回到 708 的带仲裁目标形态**（★ 且必须撤销台账行）
+8. ★★★★ **六点登记链不许断 + 通道链序必须 = 投递序**（★ 615/626/638 不在通道 ⇒ 链只能是 `[708, 899]`）
+
+★ 门跑起来后**当场暴露了两处我自己的判据缺陷**（★ 与 §143.96 的「变异台自身问题」同族）：
+
+- ★ 判据 ① 查的是**展开后**的 `CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_session_bodies_hot_ts`，
+  ★ 而 898 用 `SELECT format(...) \gexec` 投递 ⇒ 索引名在**字符串字面量**里是 `%I` ⇒ 判据口径错 ⇒ 改成查字面量那一面
+- ★ 判据 ③ 找的是 `\n$function$;`，★ 而 Go ensure 用的是 `$function$;`（分号紧跟 tag）⇒ 口径错
+
+★ ⇒ ⇒ **通用式：门写完后第一件事是跑它 ⇒ 它红了先怀疑判据，再怀疑被测物** —— ★ 本轮两处红**都是判据自己的错**，不是产物错。
+
+★ **变异台** `scripts/audit/mutate_14397_gate.py`（★ 每臂自带「效果探针」）—— 见 §143.97.12。
+
+#### §143.97.12 诚实边界
+
+- ① ★★★★ **【★ 未在生产应用】** ⇒ ⇒ ⇒ 898 / 899 **都只落仓** ⇒ ⇒ ⇒ 生产上的实际收益**仍是推算** ⇒ ⇒ ⇒ ★★★
+- ② ★★★★ **【★ 898 不修 60s】** ⇒ ⇒ ⇒ 实测批次选取只花 30ms（未溢写）⇒ ⇒ ⇒ 60s 的去向在写侧每行 ≈79ms
+  ⇒ ⇒ ⇒ **本迁移消除的是「批次选取随表体量线性劣化」这个放大器，是前置条件，不是解** ⇒ ⇒ ⇒ ★★★
+- ③ ★★★★ **【★ 写侧每行 79ms 未逐项拆解】** ⇒ ⇒ ⇒ 「父表分区体量 + 每行 25KB payload 搬运」是**有实测支撑的推断**，
+  ★ 不是逐项实测 ⇒ ⇒ ⇒ 要定案需在生产上做**写侧**分段计时（★ 属主授权项）⇒ ⇒ ⇒ ★★★
+- ④ ★★★★ **【★ 本地一次性库表体量极小】** ⇒ ⇒ ⇒ 本地只有 3 行 ⇒ ⇒ ⇒ planner 在本地**仍选 Seq Scan**
+  ⇒ ⇒ ⇒ ⇒ **「装了 ts 索引 ⇒ 计划变 Index Scan」这条在本地无法证伪** ⇒ ⇒ ⇒ ★★ 生产形态靠**生产 EXPLAIN 读数**佐证
+  ⇒ ⇒ ⇒ ⇒ ★★ ★★ **这是本轮一条重要的诚实边界：★ 本地验证只能证明「索引被建出来且 valid」，
+  ★ 不能证明「planner 会用它」** ⇒ ⇒ ⇒ ★★★
+- ⑤ ★★★★ **【★ 897（§143.96）在本轮只做了生产只读预演，未应用】** ⇒ ⇒ ⇒ 预演结论：
+  ★ 形状守卫 `shapes_identical=t`（3130 = 3130 字节）⇒ 不会 abort；
+  ★ 4 项后置条件全过；★ demote 会命中 **1 行** ⇒ ⇒ ⇒ ★★★
+- ⑥ ★★★ **【★ 本轮零生产写入】** ⇒ ⇒ ⇒ 只读探针 + 一次性库 ⇒ ⇒ ⇒ 线上行为零变化 ⇒ ⇒ ⇒ ★★★
+- ⑦ ★★★ **【★ 门是【登记门 + 形态门】、不是端到端门】** ⇒ ⇒ ⇒ 「898 装上去之后生产上批次选取会变 Index Scan」
+  ★ 这条由**生产 EXPLAIN 读数**担保，★ **不由门担保** ⇒ ⇒ ⇒ ★★★
+- ⑧ ★★★ **【★ `session_bodies_hot` 的 kind 列毒丸结构面未查】** ⇒ ⇒ ⇒ 早前一轮查过四个唯一键的冲突集
+  ★ **全为 0**（★ 此刻结构上仍会撞、但尚未撞上）⇒ ⇒ ⇒ 本轮未复核 ⇒ ⇒ ⇒ ★★★
+
+#### §143.97.13 待属主拍板（新增 3 项）
+
+- ★ **⑰** **授权在生产应用 898**（建 `session_bodies_hot` 的 ts 首列索引）⇒ ⇒ 纯索引、零语义变更、可 `DROP INDEX` 回滚
+  ⇒ ⇒ ⇒ 收益 = 消除「批次选取随表体量线性劣化」这个放大器 ⇒ ⇒ ⇒ **不修 60s**
+- ★ **⑱** **授权在生产应用 899**（把 Go ensure 的 promote 形态下沉成迁移）⇒ ⇒ ⇒ **不做的话，任何「只跑迁移不启 Go」都会把 708 的带仲裁目标形态装回生产**
+  ⇒ ⇒ ⇒ ⇒ 23505 复发 + 毒丸行卡死 hot 窗口 ⇒ ⇒ ⇒ ★★ **这是本轮里唯一「不做就一定会复发」的一项**
+- ★ **⑲** **60s 超时的写侧定案** ⇒ ⇒ 四选一：
+  ① **减小单批体积**（`lifecycle.promote_batch_size`，★ `resolvePromoteConfig` 的 default 分支）⇒ ⇒ **零迁移、只改 `settings_kv`** ⇒ ⇒ ★★ **但它是生产写**；
+  ② **降低每行 payload 体积**（★ 8h 候选行整行均值 25,377 B、`request_delta` 均值 34 KB）⇒ ⇒ ⇒ 真正的杠杆，★ 但属主语义决策；
+  ③ **父表侧**（5,381 MB / 290,633 行的当月分区）⇒ ⇒ ⇒ 分区/列存/覆盖索引策略；
+  ④ **读侧争用**（★ 三个带 `outbound_body` 的 SELECT：mean 150~245ms、max 10.2s、calls 3.3 万）⇒ ⇒ ⇒ 与写侧争 IO。
+  ★ ⇒ ⇒ **建议顺序 ① ⇒ ② ⇒ ④** ⇒ ⇒ ⇒ ★★ ① 是最快见效且零迁移的，② 收益上限最高。

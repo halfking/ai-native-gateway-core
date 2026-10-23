@@ -315,3 +315,5 @@
 297	895_domain_chain_startup_images.sql
 298	896_offline_activation_requests_columns_reassert.sql
 299	897_session_turns_promote_final_success_self_heal.sql
+300	898_session_bodies_hot_ts_index.sql
+301	899_session_bodies_promote_body_sink.sql

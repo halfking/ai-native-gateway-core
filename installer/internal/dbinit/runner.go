@@ -1393,6 +1393,73 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			//   ★ 先到者的 mark 原样保留；★ 幂等（第二次 moved=0）。
 			//   ⇒ ★ 本迁移**只落仓**；★ 生产应用需属主另行授权。
 			"897_session_turns_promote_final_success_self_heal.sql",
+			// 898：补上 public.session_bodies_hot 的 **ts 首列索引**。
+			//
+			//   ★ 病灶（★ 252 共享库 2026-10-23 生产只读实测）：该 hot 表的
+			//   6 个索引中**没有一个以 ts 为首列** ⇒ 批次选取走
+			//   **Seq Scan + Sort**（实测 cost 1602~1623）；★ 对照组
+			//   session_turns_hot **有** idx_session_turns_hot_ts (ts, id,
+			//   partition_date) ⇒ 走 **Index Only Scan**（cost 219~385）。
+			//
+			//   ★ ★ **交付缺口（带精确失败点）**：614 @ 6973a9fb8（= 生产
+			//   schema_migrations 记账时刻 2026-08-29 16:48:05 那一版）把该
+			//   索引定义成 partial index 带 `WHERE ts > now() - interval
+			//   '8 hours'` 谓词 ⇒ **now() 非 IMMUTABLE** ⇒ PG 拒绝 ⇒
+			//   ⇒ **该索引从未建成**，且它**后面**同文件的
+			//   idx_session_bodies_hot_partition_date 也从未执行；⇒ 而它
+			//   **前面**的 _lookup / _request 建成了 ⇒ ⇒ 与生产现状逐条
+			//   吻合。⇒ 2026-09-03 的 368202126 修掉了 now() 谓词，但
+			//   **614 的台账已记为 applied ⇒ 修复永远到不了生产**；⇒ 且
+			//   614 **不在本通道 files=() 里** ⇒ 通道也不补 ⇒ **双通道都到不了**。
+			//   ⇒ ⇒ 这就是「台账说已应用 ≠ 实际对象是那一版」的实例。
+			//
+			//   ★ 另一条独立通道也拿不到它：707b（**在**通道里）用
+			//   `LIKE public.session_bodies INCLUDING ALL` 建 hot 表 ⇒ 索引集
+			//   **继承自父表** ⇒ 而父表上**没有** ts 首列索引（862 只给
+			//   session_turns / _request_logs 的父表加了 idx_*_ts）⇒
+			//   ⇒ LIKE 也拷不出 ts 索引 ⇒ 必须有一条新迁移直接建它。
+			//
+			//   ★ 形态：照抄仓内样板 idx_session_turns_hot_ts ⇒ 建
+			//   (ts, id, partition_date) 三列（hot 表有 id 列，614 第 8 行）。
+			//   ★ 用 CONCURRENTLY（888 第 2 段同款）：hot 表是**活写表**
+			//   （bodies_writer 持续写入，pg_stat_statements 实测 72,813 次
+			//   INSERT / mean 20.2ms）⇒ 普通 CREATE INDEX 会在构建期持
+			//   ShareLock 阻断写入。
+			//
+			//   ⚠ **诚实边界**：本索引**不**是 60s 超时的解。★ 2026-10-23
+			//   实测批次选取只花 **30ms**（Sort quicksort 4198kB，**未溢写**
+			//   ⇒ ★ 早前「12.29× 溢写」的结论是量具口径错，已作废）；
+			//   ★ 60s 的去向在**写侧**（实测 ≈79ms/行：154 日志 511 行耗
+			//   40.45s）。⇒ 本迁移消除的是「批次选取随表体量线性劣化」这个
+			//   **放大器**，是前置条件而非 60s 的解。
+			//   ⇒ ★ 本迁移**只落仓**；★ 生产应用需属主另行授权。
+			"898_session_bodies_hot_ts_index.sql",
+			// 899：把 promote_session_bodies_hot_to_partition 的**生产现行体**
+			//   **下沉成迁移**（★ session_bodies 族的 copy-gap 修复）。
+			//
+			//   ★ 病灶（★ 2026-10-23 生产只读实测 prosrc 指纹）：活库上装的是
+			//   **裸 ON CONFLICT DO NOTHING**（无仲裁目标）+ reconciled CTE +
+			//   形状守卫 + try-lock 的形态（src_len=3486）⇒ 这个形态**逐字
+			//   等于** db/db.go 的 ensureSessionBodiesPromoteDrain
+			//   （db/db.go:3984-4095，启动链 db/db.go:527 ⇒ **每次网关启动
+			//   都重装一次**）⇒ ⇒ **它只活在 Go 源码里，不在任何迁移里**。
+			//   ⇒ 而仓内四版迁移（615/626/638/708）**全是**带仲裁目标的
+			//   `ON CONFLICT (id, partition_date) DO NOTHING` ⇒ ⇒
+			//   **「只跑迁移不启 Go」会把 708 的形态装回生产** ⇒ ⇒ 而
+			//   708 的仲裁目标**不覆盖**父表的
+			//   session_bodies_tenant_request_partition_key UNIQUE
+			//   (tenant_id, request_id, partition_date) ⇒ ⇒ **23505 复发 +
+			//   毒丸行卡死 hot 窗口**（2026-09-17 PG 日志审计 65 轮实测，
+			//   逐字记录在 db/db.go:3965-3972）⇒ ⇒ **修法只活在 Go 侧 ⇒
+			//   修法在通道路径上无效**。
+			//
+			//   ★ 函数体**逐字等于生产现行体**（纪律同 897：基线必须是生产
+			//   现行体）⇒ ⇒ **语义零变更**；本迁移只做一件事：把这个形态从
+			//   「只活在 Go 源码里」变成「也活在迁移里」。
+			//   ★ 签名不变 ⇒ CREATE OR REPLACE 是替换、不是新增 ⇒ 无重载
+			//   残留、调用方零改动。
+			//   ⇒ ★ 本迁移**只落仓**；★ 生产应用需属主另行授权。
+			"899_session_bodies_promote_body_sink.sql",
 		},
 	}
 }
