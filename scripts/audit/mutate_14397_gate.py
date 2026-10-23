@@ -53,6 +53,13 @@
 ★      ★★ （installer/internal/dbinit/untransactable_requires_marker_test.go）
 ★      ★★ 它**调用** requiresNoTransaction ⇒ ⇒ installer 改口径时门自动跟随
 ★      ★★ ⇒ ⇒ M24（改 installer's token）就是冲它去的。
+★   ⑬ ★★★★ **探针的【取值来源】也必须对齐判据** —— ★ 这是 §143.96 记的
+★      ★★ 「探针作用域必须与判据实际读的那一面逐字对齐」的**又一种形态**：
+★      ★★ 首版 M24 的探针**硬编码**了 token `dbinit:no-transaction`，
+★      ★★ 而 M24 恰恰是**改 token** 的变异 ⇒ ⇒ 探针永远拿**旧 token** 去判
+★      ★★ ⇒ ⇒ 判出来的结论与 installer's 真实行为无关 ⇒ ⇒ 探针恒失败 ⇒ 崩。
+★      ★★ ⇒ ⇒ **探针必须从判据的源码里解析出当前取值**（本台用
+★      ★★ `installer_marker_token()` 解析 runner.go 的常量）。
 """
 import hashlib
 import os
@@ -292,20 +299,37 @@ def m03_reintroduce_now_predicate():
 M03_NEEDLE = "WHERE ts > now() - interval '8 hours'"
 
 
-MARKER_TOKEN = "dbinit:no-transaction"
+def installer_marker_token():
+    """★ 从 installer 源码解析【当前】的标记 token。
+
+    ★ ★★ 纪律（★ 本轮第 5 处变异台自身问题）：
+    ★ ★★ **探针不能硬编码 token** —— ★ M24 这条变异恰恰是**改 token**，
+    ★ ★★ 硬编码的探针会永远拿**旧 token** 去判 ⇒ ⇒ 判出来的结论与
+    ★ ★★ installer's 真实行为**无关** ⇒ ⇒ 探针恒成立/恒失败 ⇒ ⇒ 崩。
+    ★ ★★ ⇒ ⇒ 探针必须读【判据实际用的那个 token】⇒ ⇒ 从源码解析。
+    ★ ★★ （★ 这是 §143.96 记的「探针作用域必须与判据实际读的那一面逐字
+    ★ ★★ 对齐」的**又一种形态**：★ 那次是作用域错，这次是**取值来源**错。）
+    """
+    s = read(RUNNER)
+    m = re.search(r'const\s+noTransactionMarker\s*=\s*"([^"]+)"', s)
+    if not m:
+        raise AssertionError("★ 解析 installer's noTransactionMarker 失败 —— "
+                             "★ installer 改了常量声明形态？★ 变异台需同步")
+    return m.group(1)
 
 
 def installer_marker_predicate(content):
     """★ 逐字镜像 installer/internal/dbinit/runner.go 的 requiresNoTransaction。
 
     ★ 判据（★ 与真函数同语义）：
-    ★   逐行 TrimSpace ⇒ 以 `--` 开头 ⇒ 该行含 `dbinit:no-transaction`。
+    ★   逐行 TrimSpace ⇒ 以 `--` 开头 ⇒ 该行含【installer 当前的】token。
     ★ ★ 这不是「拷贝一份判据来用」，★ 而是**变异台自己的效果探针**
     ★ ★ —— 用来回答「这次变异有没有真的让 installer's 谓词变 false」。
     """
+    tok = installer_marker_token()
     for line in content.split("\n"):
         t = line.strip()
-        if t.startswith("--") and MARKER_TOKEN in t:
+        if t.startswith("--") and tok in t:
             return True
     return False
 
@@ -324,11 +348,12 @@ def strip_marker_lines(path):
     ★ ★★ ⇒ ⇒ **变异是惰性的** ⇒ ⇒ 门绿是【对的】⇒ ⇒ 首版 M04 的期望
     ★ ★★ 「期望红」本身就是错的。
     """
+    tok = installer_marker_token()
     s = read(path)
     kept, removed = [], 0
     for line in s.split("\n"):
         t = line.strip()
-        if t.startswith("--") and MARKER_TOKEN in t:
+        if t.startswith("--") and tok in t:
             removed += 1
             continue
         kept.append(line)
