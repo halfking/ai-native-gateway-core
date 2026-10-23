@@ -9457,3 +9457,22 @@ embeddata 逐字 + lock_timeout + 自证断言 + down 只删账本 + **真库腿
 | 900 | `900_freediscovery_schema_reassert.sql` | `b1f1a0c90cb706887e19007cc47867abe3b21e5c371ee832222be3531b09d9de` | applied+verified |
 | 901 | `901_usage_ledger_api_key_id_ts_idx.sql` | `a94c1dfe31a7cead3957141ba9615db0cedae49feb88786e3c3422b29a8d0195` | applied+verified |
 
+
+## 2026-10-24T02:31:00+08:00 — deploy 245 build_seq 2823 (3e0d22fb) 上线记录（手动补记）
+
+★ 2820（a88bf82f）与 2823 两次自动部署均在切换步失败（蓝绿：8782 被
+ai-session-manager 占用 fail-close；legacy：死旗标 + 弃用 unit，见下），
+部署脚本的 db-changelog 事件行只在成功时写 ⇒ 本行由 2026-10-24 批判审计轮
+**手动补记**。迁移账（898/899/900/901）已在 2820 那次应用并记账（见上节），
+2823 未应用新迁移（水位不变 901）。
+
+★ 上线路径（非常规，如实登记）：deploy-seamless 的 `--legacy-restart` 是死旗标
+（主流程 :404 无条件重置，已修）+ legacy `host_restart_service` 按 targets.sh:220
+停的是弃用 unit `llmgo-245.service` ⇒ 两条自动通道均不可用 ⇒ 用**受控手动交换**
+完成：`ln -sfn releases/2823-3e0d22fb slots/8781` + `systemctl restart
+llmgo-245-canary@8781`（canary unit ExecStart 直接跑 slots/%i/gateway）⇒ 15s
+healthz 200。防回归门：`tests/deploy_legacy_restart_flag_test.sh`（负控已验）。
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| — | （2823 无新迁移，水位仍为 901） | — | — |

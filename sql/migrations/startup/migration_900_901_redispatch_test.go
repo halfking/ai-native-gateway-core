@@ -116,12 +116,30 @@ func TestMigration900_DownDropsTables(t *testing.T) {
 	}
 }
 
-// 阳性对照：把 up 体里的 CREATE TABLE 全剥掉后，检测器必须能判红。
+// 阳性对照（真判红版，2026-10-24 批判审计加固）：把 up 体的 CREATE TABLE
+// 全剥掉后，**用与 TestMigration900_BuildsThreeFreediscoveryTables 完全相同
+// 的检测表达式**跑一遍 ⇒ 检测器必须判红。旧版只证明「剥除正则有效」，
+// 没证明「检测器能对坏文件报错」——一个恒绿的检测器也能通过旧判据。
 func TestMigration900_DetectorCanFire(t *testing.T) {
 	up := stripCommentsRedispatch(migRedispatchRead(t, mig900Name))
 	empty := regexp.MustCompile(`(?s)CREATE TABLE IF NOT EXISTS public\.\w+.*?;`).ReplaceAllString(up, "")
 	if strings.Contains(empty, "CREATE TABLE IF NOT EXISTS public.provider_templates") {
-		t.Fatalf("阳性对照失败：剥除后仍含 provider_templates DDL，检测器无效")
+		t.Fatalf("阳性对照前置失败：剥除后仍含 provider_templates DDL，样本没造坏")
+	}
+	// 与主测试同款判据重放于坏样本：主测试的失败条件（Contains 为 false
+	// ⇒ t.Errorf）必须被坏样本触发 ⇒ 证明检测器不是恒绿。
+	wouldFailMain := false
+	for _, ddl := range []string{
+		"CREATE TABLE IF NOT EXISTS public.provider_templates",
+		"CREATE TABLE IF NOT EXISTS public.discovery_tasks",
+		"CREATE TABLE IF NOT EXISTS public.discovery_results",
+	} {
+		if !strings.Contains(empty, ddl) {
+			wouldFailMain = true
+		}
+	}
+	if !wouldFailMain {
+		t.Errorf("阳性对照：坏样本未触发主测试的失败条件 ⇒ 主测试的 Contains 断言对「缺全部三表 DDL」的文件会假绿")
 	}
 }
 
@@ -160,11 +178,17 @@ func TestMigration901_CarriesLockTimeout(t *testing.T) {
 func TestMigration901_LockTimeoutDetectorCanFire(t *testing.T) {
 	up := stripCommentsRedispatch(migRedispatchRead(t, mig901Name))
 	stripped := strings.ReplaceAll(up, "SET LOCAL lock_timeout = '60s';", "")
+	// 阳性对照（2026-10-24 加固，900 同款形态）：主测试的失败条件
+	// （!Contains("SET LOCAL lock_timeout") ⇒ t.Errorf）必须被坏样本触发，
+	// 且判据读数必须因剥除而翻转 ⇒ 证明样本构造有效、检测器不是恒绿。
 	if strings.Contains(stripped, "SET LOCAL lock_timeout") {
-		t.Fatalf("阳性对照失败：剥除后仍含 lock_timeout，检测器无效")
+		t.Fatalf("阳性对照前置失败：剥除后仍含 lock_timeout，样本没造坏")
 	}
 	if !strings.Contains(up, "SET LOCAL lock_timeout") {
 		t.Fatalf("真文件竟不含 lock_timeout：阳性对照的前提不成立")
+	}
+	if strings.Contains(stripped, "SET LOCAL lock_timeout") == strings.Contains(up, "SET LOCAL lock_timeout") {
+		t.Errorf("阳性对照：剥除未改变判据读数 ⇒ 样本构造无效")
 	}
 }
 
@@ -202,11 +226,23 @@ func TestMigrations900and901_RegistrationPointsExactlyOnce(t *testing.T) {
 			pin{"installer runner.go (StartupFiles)", "../../../installer/internal/dbinit/runner.go", "\"" + name + "\","},
 			pin{"TSV 镜像", "../../../sql/schema/installed_startup_migrations.tsv", name},
 			pin{"升级通道 apply-db-revision-sequence.sh", "../../../scripts/apply-db-revision-sequence.sh", "startup/" + name},
-			pin{"db-changelog 台账行", "../../../docs/db-changelog.md", "`" + name + "`"},
+			// ⚠ db-changelog 用【≥1】而非恰好 1（2026-10-24 批判审计修正）：
+			// 部署成功后 deploy-lib/db-changelog.sh 会追加 applied 事件行
+			// （文件名第 2 次出现）⇒「恰好 1」与权威口径冲突
+			// （verify-migration-checksums.sh :94-103「同一文件多行、任一
+			// sha 命中即过」）且在首次部署后必红。其余四个登记点是单点
+			// 登记，维持恰好 1。
+			pin{"db-changelog 台账行(≥1)", "../../../docs/db-changelog.md", "`" + name + "`"},
 		)
 	}
 	for _, p := range pins {
 		body := migRedispatchRead(t, p.file)
+		if strings.HasPrefix(p.label, "db-changelog") {
+			if n := strings.Count(body, p.needle); n < 1 {
+				t.Errorf("%s: needle %q 出现 %d 次, want ≥1", p.label, p.needle, n)
+			}
+			continue
+		}
 		countNeedel(t, body, p.needle, 1, p.label)
 	}
 }
