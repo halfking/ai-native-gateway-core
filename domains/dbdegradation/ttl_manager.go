@@ -24,6 +24,15 @@ type TTLManager struct {
 	closed         bool         // 是否已关闭
 	stopCh         chan struct{}
 	doneCh         chan struct{}
+	// ★ R83 轮（2026-10-24）：TTL 统计的**快照**机制
+	//　（把「每次请求全量 SCAN ~1M 键」移出请求路径 ⇒ 详见 ttl_stats_snapshot.go）。
+	statsMu       sync.Mutex
+	statsSnapshot *ttlStatsSnapshot
+	statsTTL      time.Duration
+	// statsRefreshing 是后台刷新的**单飞闸门**（R83）。
+	statsRefreshing atomic.Bool
+	// statsScans 统计 TTL 统计路径上的 **SCAN 次数**（R83 的可断言成本读数）。
+	statsScans int64
 }
 
 // NewTTLManager 创建 TTL 管理器
@@ -40,6 +49,7 @@ func NewTTLManager(redis *session.RedisClient, normalTTL, degradedTTL time.Durat
 		normalTTL:      normalTTL,
 		degradedTTL:    degradedTTL,
 		extendInterval: 1 * time.Hour, // 每小时延长一次
+		statsTTL:       ttlStatsSnapshotTTL,
 		// 2026-07-27 concurrency fix: stopCh/doneCh 不再在构造时一次性创建
 		// —— 每次 Enter 启动循环时重建一对（见 EnterDegradedMode）。
 	}
@@ -341,49 +351,6 @@ func (tm *TTLManager) extendKeysByPattern(ctx context.Context, client *redis.Cli
 	return count, nil
 }
 
-// GetTTLStats 获取 TTL 统计信息
-func (tm *TTLManager) GetTTLStats(ctx context.Context) (map[string]interface{}, error) {
-	client := tm.redis.Client()
-	if client == nil {
-		return map[string]interface{}{
-			"mode":  tm.GetMode(),
-			"error": "redis client not available",
-		}, nil
-	}
-
-	stats := map[string]interface{}{
-		"mode":            tm.GetMode(),
-		"normal_ttl":      tm.normalTTL.String(),
-		"degraded_ttl":    tm.degradedTTL.String(),
-		"extend_interval": tm.extendInterval.String(),
-	}
-
-	// 统计各类键的数量
-	//
-	// ★ R79 轮（2026-10-24）：`session:key:*` 与 `session:apiKey:*` **都是
-	//   `session:*` 的子集**（前缀蕴含）⇒ ⇒ **一次** `session:*` 的 SCAN
-	//   就能逐字算出三个计数 ⇒ ⇒ **SCAN 次数 4 → 2**（`session:*` + `ursm:*`）。
-	//   ★ **口径不变**：`sessions_count` 仍是「匹配 `session:*` 的**全部**键数」
-	//   （**含**两个子集，与旧实现逐字一致）；两个子集计数也逐字一致。
-	//   ⇒ 旧实现 4 次全量扫描（每次都要走完整个 cursor 环）⇒ 端点秒级开销；
-	//   ⇒ 新实现 2 次 ⇒ 该端点的 Redis 侧成本减半。
-	sessionCount, sessionKeyCount, apiKeyIndexCount, scanErr := tm.countSessionScopedKeys(ctx, client)
-	stats["sessions_count"] = sessionCount
-	stats["session_keys_count"] = sessionKeyCount
-	stats["api_key_index_count"] = apiKeyIndexCount
-	ursmCount, ursmErr := tm.countKeys(ctx, client, "ursm:*")
-	stats["ursm_cache_count"] = ursmCount
-
-	// ★ R79 轮：扫描被中断 ⇒ **显式报错**，不得让「部分计数」看起来像「完整计数」。
-	if scanErr != nil {
-		return stats, scanErr
-	}
-	if ursmErr != nil {
-		return stats, ursmErr
-	}
-	return stats, nil
-}
-
 // countSessionScopedKeys 用**一次** SCAN 同时算出三个计数。
 //
 // ★ 前缀蕴含（因此可以合并）：
@@ -396,7 +363,10 @@ func (tm *TTLManager) GetTTLStats(ctx context.Context) (map[string]interface{}, 
 func (tm *TTLManager) countSessionScopedKeys(ctx context.Context, client *redis.Client) (sessions, sessionKeys, apiKeyIndex int, err error) {
 	var cursor uint64
 	for {
-		keys, newCursor, scanErr := client.Scan(ctx, cursor, "session:*", 1000).Result()
+		// ★ R83 轮：SCAN **探针**（可断言的成本读数）+ 更大的 COUNT
+		//　（COUNT 只是「每批取多少」的提示，**不影响计数结果** ⇒ 口径不变）。
+		atomic.AddInt64(&tm.statsScans, 1)
+		keys, newCursor, scanErr := client.Scan(ctx, cursor, "session:*", ttlStatsScanCount).Result()
 		if scanErr != nil {
 			// ★ 扫描被中断 ⇒ 返回**部分计数 + 错误**（R79 轮：绝不让「部分结果」静默变成「完整结果」）
 			if ctxErr := ctx.Err(); ctxErr != nil {
@@ -427,7 +397,8 @@ func (tm *TTLManager) countKeys(ctx context.Context, client *redis.Client, patte
 	count := 0
 
 	for {
-		keys, newCursor, err := client.Scan(ctx, cursor, pattern, 1000).Result()
+		atomic.AddInt64(&tm.statsScans, 1)
+		keys, newCursor, err := client.Scan(ctx, cursor, pattern, ttlStatsScanCount).Result()
 		if err != nil {
 			// ★ 中断 ⇒ 返回部分计数 + 错误（见 countSessionScopedKeys 的同款理由）
 			if ctxErr := ctx.Err(); ctxErr != nil {
