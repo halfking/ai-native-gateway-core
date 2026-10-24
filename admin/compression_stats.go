@@ -155,8 +155,21 @@ func compressionStatsRunSteps(ctx context.Context, steps []compressionStatsStep)
 		if useTimeout {
 			stepCtx, cancel = context.WithTimeout(ctx, budget)
 		}
+		started := time.Now()
 		res.err = step.run(stepCtx)
+		elapsed := time.Since(started)
 		cancel()
+
+		// ★ R78 轮：**每一步的耗时都要留痕**。
+		//   为什么必须有：端点总耗时 = 各步之和，而共享库上的尾延迟让单步耗时
+		//   在 40ms ~ 106s 之间波动（生产实测 n=119）⇒ 没有逐步日志就只能靠
+		//   「掐断读数」猜 ⇒ R77 轮就因为缺它而误判出「应用侧 5.4s 缺口」。
+		slog.Info("compression_stats step",
+			"step", step.name,
+			"elapsed_ms", elapsed.Milliseconds(),
+			"budget_ms", budget.Milliseconds(),
+			"skipped", res.skipped,
+			"err", res.err)
 
 		if res.err != nil {
 			slog.Warn("compression_stats step failed", "step", step.name, "budget", budget, "error", res.err)
@@ -190,15 +203,15 @@ func compressionStatsDegradedReason(results []compressionStatsStepResult) string
 // compressionStatsScanFailure 统一处理**行级**扫描失败。
 //
 // ★ 为什么抽成共用函数（2026-10-24 12h 审计轮 · 问题⑲）：
-// R77 轮给 agg 步加了 slog.Warn，而 band / bucket 两步仍是「静默 continue」
+// R77/R78 轮给 agg 步加了 slog.Warn，而 band / bucket 两步仍是「静默 continue」
 // ⇒ 同一条命令的三步里，**有两步的行级失败不留任何痕迹**
 // ⇒ 端点照样 200、degraded=false，而 token_band_* / hourly_series 是**少算的**
 // ⇒ ★ 调用方无法区分「真的是 0」与「这行没读出来」——
-// 这与 R77 要在**步级**修掉的是同一个坑，只是下移到了**行级**。
+// 这与 R77 轮在**步级**修掉的是同一个坑，只是下移到了**行级**。
 //
 // ★ 本函数只做「让它出声」：**不改响应契约**
 // （degraded / degraded_reason 的语义一个字不动）；
-// 「行级损失要不要上报到响应里」属**契约变更** ⇒ 登记为待裁决点（见审计档 §4.3）。
+// 「行级损失要不要上报到响应里」属**契约变更** ⇒ 登记为待裁决点。
 //
 // 返回 true = 这一行应被跳过（调用方 continue）。
 func compressionStatsScanFailure(step string, err error) bool {
@@ -404,7 +417,83 @@ func (h *Handler) handleCompressionStats(w http.ResponseWriter, r *http.Request)
 //	⇒ **步骤的顺序与每步的预算是本轮的核心不变量**，必须**可被门断言**：
 //	「昂贵且可选的那条必须排在最后」「它必须有独立且小于总预算的上限」。
 func (h *Handler) compressionStatsSteps(queries compressionStatsSQLs, aggArgs []any, result *compressionStatsResult) []compressionStatsStep {
+	// ★ R78 轮：顺序 = **成本升序**（band 40ms → bucket 220ms → agg 280ms → est-orig >10s）。
+	//
+	//   为什么必须这样排：生产 252 共享库实测，agg 那条查询的**耗时分布**是
+	//   p50 ≈ 2.3s / p90 ≈ 21.9s / max ≈ 106s（n=119，慢查询日志窗口 4.2h）
+	//   ⇒ 它**经常**吃满端点总预算 ⇒ 排在它后面的 band/bucket **一个都跑不到**
+	//   ⇒ hourly_series / token_band 整段缺失（2026-10-24 生产实测）。
+	//   ⇒ 而 band/bucket 本身**极便宜**（隔离态实测 40ms / 220ms）⇒ 前置它们
+	//   只花掉 ~260ms，agg 仍剩 ~9.7s ⇒ **agg 的成功率几乎不变**。
+	//
+	//   ★ 这**不是**「给必需步加独立预算」：那会让必需步**被跳过**（等于核心数字缺失），
+	//   与 R77 形状门第②条的立意相反 ⇒ 正确形态是**调顺序**（顺序是数据），
+	//   而不是给必需步加预算（那会让它们变成可跳过的）。
+	//
+	//   ★ 代价（诚实记录）：若 band/bucket 在争用下变慢，agg 的可用时间会相应减少
+	//   ⇒ agg 的 500 率可能略升 ⇒ 这是「用少量 agg 失败率换必需数据可得」的取舍；
+	//   是否要把 agg 的失败也降级成 200+degraded ⇒ **属主裁决**（本轮不改）。
 	return []compressionStatsStep{
+		{
+			name: "band",
+			run: func(stepCtx context.Context) error {
+				bandRows, err := h.db.Query(stepCtx, queries.band, aggArgs...)
+				if err != nil {
+					return err
+				}
+				defer bandRows.Close()
+				for bandRows.Next() {
+					var band string
+					var cnt int
+					if err := bandRows.Scan(&band, &cnt); err != nil {
+						compressionStatsScanFailure("band", err)
+					}
+					switch band {
+					case "below":
+						v := int64(cnt)
+						result.TokenBandBelow = &v
+					case "preliminary":
+						v := int64(cnt)
+						result.TokenBandPreliminary = &v
+					case "forced":
+						v := int64(cnt)
+						result.TokenBandForced = &v
+					}
+				}
+				return bandRows.Err()
+			},
+		},
+		{
+			name: "bucket",
+			run: func(stepCtx context.Context) error {
+				bucketRows, err := h.db.Query(stepCtx, queries.bucket, aggArgs...)
+				if err != nil {
+					return err
+				}
+				defer bucketRows.Close()
+				for bucketRows.Next() {
+					var b struct {
+						Bucket     time.Time
+						Total      int
+						Compressed int
+					}
+					if err := bucketRows.Scan(&b.Bucket, &b.Total, &b.Compressed); err != nil {
+						compressionStatsScanFailure("bucket", err)
+					}
+					var rate float64
+					if b.Total > 0 {
+						rate = float64(b.Compressed) / float64(b.Total)
+					}
+					result.HourlySeries = append(result.HourlySeries, hourBucket{
+						Hour:       b.Bucket,
+						Total:      b.Total,
+						Compressed: b.Compressed,
+						Rate:       rate,
+					})
+				}
+				return bucketRows.Err()
+			},
+		},
 		{
 			name: "agg",
 			run: func(stepCtx context.Context) error {
@@ -441,68 +530,6 @@ func (h *Handler) compressionStatsSteps(queries compressionStatsSQLs, aggArgs []
 					result.TotalOutboundTokens = &totalToksAfter
 				}
 				return nil
-			},
-		},
-		{
-			name: "band",
-			run: func(stepCtx context.Context) error {
-				bandRows, err := h.db.Query(stepCtx, queries.band, aggArgs...)
-				if err != nil {
-					return err
-				}
-				defer bandRows.Close()
-				for bandRows.Next() {
-					var band string
-					var cnt int
-					if err := bandRows.Scan(&band, &cnt); err != nil {
-						compressionStatsScanFailure("band", err)
-						continue
-					}
-					switch band {
-					case "below":
-						v := int64(cnt)
-						result.TokenBandBelow = &v
-					case "preliminary":
-						v := int64(cnt)
-						result.TokenBandPreliminary = &v
-					case "forced":
-						v := int64(cnt)
-						result.TokenBandForced = &v
-					}
-				}
-				return bandRows.Err()
-			},
-		},
-		{
-			name: "bucket",
-			run: func(stepCtx context.Context) error {
-				bucketRows, err := h.db.Query(stepCtx, queries.bucket, aggArgs...)
-				if err != nil {
-					return err
-				}
-				defer bucketRows.Close()
-				for bucketRows.Next() {
-					var b struct {
-						Bucket     time.Time
-						Total      int
-						Compressed int
-					}
-					if err := bucketRows.Scan(&b.Bucket, &b.Total, &b.Compressed); err != nil {
-						compressionStatsScanFailure("bucket", err)
-						continue
-					}
-					var rate float64
-					if b.Total > 0 {
-						rate = float64(b.Compressed) / float64(b.Total)
-					}
-					result.HourlySeries = append(result.HourlySeries, hourBucket{
-						Hour:       b.Bucket,
-						Total:      b.Total,
-						Compressed: b.Compressed,
-						Rate:       rate,
-					})
-				}
-				return bucketRows.Err()
 			},
 		},
 		{
