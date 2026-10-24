@@ -10093,3 +10093,47 @@ cron 日志里也有 `"retention_hours":8`）⇒ ⇒ ★★★ 实测 `max(hot.t
 
 ★ **★ 本轮【无 SQL 变更】⇒ 无需在 211/252 上同步 SQL；★ 对生产的写入 = 0。**
 ★ 完整记录见审计档 `docs/audit/2026-10-27-R150-成功回合取证与第六种遮蔽形态.md`（含 §10 诚实边界）+ LESSONS **§396** + AGENTS.md R150 条目。
+
+## 2026-10-27 — R151 探针双门槛与 Goal 模型清单逐个定性轮（**无 SQL 变更、无迁移、无发版**）
+
+★★★ **★ 本轮把 R150 遗留的 D9 打到真正的内核，并闭合了原始 Goal 的两项：Goal 点名的模型清单逐个定性 ＋ 211 台账盘点（211 此前记为「主机不可达」，本轮实测可达）。★★★**
+
+★ **★ 中心产出：探针有【两个独立门槛】，只放宽其一无效**（本地 8782 + nvidia 实测，★ **实验用二进制，未入仓**）：
+★ 臂 A = **只**放宽超时预算（`bg/node_probe.go` 的 30 s → 180 s）⇒ ★★ **无效**：
+★　探针连上了、拿到了响应，但判定是 **`probe_response_inconclusive`**
+★　（日志：`credential probe v2: inconclusive probe; preserving authoritative state`，
+★　 detail：`chat probe response invalid: assistant_output_missing`）⇒ ★★ **「故意不写回」** ⇒ `node_probe_state` 一行不改。
+★ 臂 C = 超时 180 s **+** 内容预算 `providercap.ProbePingMaxTokens` 32 → 1024
+★　⇒ ★★★ **判定翻转**：`last_direct_ok=true`、`consecutive_failures` 归 0、`updated_at` 前移、`state=healthy_confirmed`。
+★ **★ 两个门槛的可恢复性差异**：
+★ **超时预算 30 s** ⇒ `timeout` ⇒ ★ **写回 + 退避阶梯** ⇒ **可恢复**；
+★ **内容预算 32 token** ⇒ `assistant_output_missing` ⇒ `probe_response_inconclusive` ⇒ ★★ **不写回** ⇒ ★★ **不可恢复（永久封禁）**。
+★ ★★ **而 2026-07 同族修复（`docs/archive/process/changelogs/2026-07/2026-07-18-probe-direct-timeout-fix.md` 的 Bug B）
+★ 恰恰确立了「只有永久失败才该锁；暂时失败只更新 LastError，让退避决定」** ⇒ ★★★ **inconclusive 落在两个既有分类的缝里**。
+★ **★ 同族复发**：2026-07 超时 10 s→30 s；2026-10-13 内容预算 10→32；★ 本轮 32 对推理模型仍远远不够。
+
+★ **★ Goal 模型清单逐个定性（7 个点名模型）**：
+★ `glm-5.3-flash` ⇒ 探针判死（★ 解锁后 **2 轮 × 5 条 = 10/10 全成功**，写入逐条 `hot=1`）；
+★ `minimax-m2.7` ⇒ ★★ **上游已 EOL**（`http_410`「end of life on 2026-07-27」）⇒ 真不可用、非误判；
+★ `deepseek-v4-flash` ⇒ cred1 sensenova 账号耗尽 ＋ cred2 broken_confirmed；
+★ `mimo-v2.6-flash` ⇒ ★★ 本地库无该模型（0 行）；
+★ `grok-4.6` / `claude-sonnet-5-5` / `gpt-5.6-luna` ⇒ cred3（provider 2454）**凭据 `availability_state=suspended`**。
+
+★ **★ 211 台账盘点（只读，全部带 `statement_timeout`）**：
+★ 形态**已到位**：v1 族全无、会话族在写（`session_turns_hot` 8034 行、`max(ts)=06:44:28`、`session_owners` 在）⇒ **无需再同步形态**。
+★ 台账 = **稀疏子集 66/448**（252 = 448 数字 + 3 非数字）⇒ ★★ **不是「落后 13 个」**（那是按最高版本比）
+★　⇒ **真落后 = 895–907（13 个）**；★ **211 独有 `641`** ⇒ 历史已分叉 ⇒ **「以 252 为准全量对齐」在 211 上不成立**。
+★ **211 的 `llm_gateway_migration_checksums` = 0 行** ⇒ 已应用 66 条**全部无 sha256 记账** ⇒ **没有 fail-closed 闸门**。
+★ ★★ **「没记账」≠「没跑」**（358 在 211 上对象在、却无记账行）⇒ 补录前须逐条核对对象是否已存在。
+★ ★★ **口径教训**：第一次算差集混了「字典序 vs 数值序」⇒ 差集整轮错 ⇒ 靠**量级自洽**发现 ⇒ 重算后才自洽。
+
+★ **★ 本轮仓内改动**：
+★ ① `scripts/repair-252-migration-ledger.sh` 加 **bash ≥ 4 版本守卫**（★ 零行为变化）
+★　（★ 该脚本用 `declare -A`，macOS 自带 bash 3.2 下原本 cryptic 崩溃 ⇒ 现给可执行提示）；
+★ ② 新门 `scripts/ursmcheck/probe_budget_gates_test.go`（5 条）⇒ 钉死「探针两个预算的当前值必须显式」
+★　＋「inconclusive 的不写回语义必须显式」＋ 阳性/阴性对照；
+★ ③ ★★ **实验改动 `bg/node_probe.go` / `internal/providercap/capability.go` 已逐字还原（md5 校验）⇒ 不入仓**。
+★ **★ 变异验证（免费拿到）**：★ 本轮的**真实实验改动**（180 s 补丁）⇒ **两道门当场红** ⇒ 还原 ⇒ 绿。
+
+★ **★ 本轮【无 SQL 变更】⇒ 无需在 211/252 上同步 SQL；★ 对生产的写入 = 0（211/252 全部只读）。**
+★ 完整记录见审计档 `docs/audit/2026-10-27-R151-探针双门槛与模型清单逐个定性.md`（含 §6 诚实边界）+ LESSONS **§397** + AGENTS.md R151 条目。
