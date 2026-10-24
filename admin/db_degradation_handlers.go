@@ -1,6 +1,7 @@
 package admin
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"regexp"
@@ -64,10 +65,21 @@ func (h *Handler) handleDBStatus(w http.ResponseWriter, r *http.Request) {
 		"degraded_duration": degradedDuration.String(),
 	}
 
+	// ★ R79 轮：Redis 全量 SCAN 必须**有界**（旧实现用无 deadline 的 r.Context()
+	//   ⇒ 慢 Redis 时端点可跑到 19~30s）⇒ 超时后**显式标注降级**。
+	degraded := false
 	if h.ttlManager != nil {
 		response["ttl_mode"] = h.ttlManager.GetMode()
-		response["ttl_stats"] = h.ttlManager.GetTTLStats(r.Context())
+		ctx, cancel := context.WithTimeout(r.Context(), degradationStatusBudget)
+		stats, err := h.ttlManager.GetTTLStats(ctx)
+		cancel()
+		response["ttl_stats"] = stats
+		if err != nil {
+			degraded = true
+			response["degraded_reason"] = "ttl stats unavailable"
+		}
 	}
+	response["degraded"] = degraded
 
 	writeJSON(w, http.StatusOK, response)
 }

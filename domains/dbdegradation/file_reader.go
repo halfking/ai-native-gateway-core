@@ -4,6 +4,8 @@ import (
 	"bufio"
 	"compress/gzip"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -14,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -25,12 +28,51 @@ type cachedBackupFile struct {
 	cachedAt time.Time
 }
 
+// cachedBackupSummary 是 GetBackupSummary 的**整体结果**缓存。
+//
+// ★ R79 轮（2026-10-24）：为什么需要它 ——
+// 旧实现里 `GetFileSummary`（**有** per-file 缓存）算完 stats 后，
+// `GetBackupSummary` 又对**同一个文件**再 `ReadRecords` 一遍，只为了数
+// **跨文件全局唯一**的 session ⇒ ⇒ **每个备份文件被完整解压两遍**，
+// 且第二遍**完全不受 per-file 缓存保护** ⇒ ⇒ 端点
+// `/api/admin/data-lifecycle/degradation/status` **每次请求**都要重解压全部备份。
+//
+// ★ 缓存口径：**按「备份文件集指纹」**（文件名 + 大小 + mtime 的哈希）⇒
+// 备份文件增/改/删都会让指纹变 ⇒ 自动失效；**TTL 与 per-file 缓存同长**（5min）。
+type cachedBackupSummary struct {
+	summary     *BackupSummary
+	fingerprint string
+	cachedAt    time.Time
+}
+
+// backupSetFingerprint 计算备份文件集的指纹。
+//
+// ★ 必须包含 **size + mtime**：只按文件名算的话，同名文件被覆盖写（备份轮转）
+// 不会让指纹变 ⇒ 缓存会返回**旧数据**。
+func backupSetFingerprint(files []BackupFile) string {
+	h := sha256.New()
+	for _, f := range files {
+		fmt.Fprintf(h, "%s|%d|%d\n", f.Filename, f.Size, f.ModifiedAt.UnixNano())
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
+
 // FileReader 文件备份读取器（支持 gzip 解压）
 type FileReader struct {
 	baseDir  string
 	cacheMu  sync.RWMutex
 	cache    map[string]*cachedBackupFile // 每文件独立缓存时间
 	cacheTTL time.Duration
+	// summaryMu/summaryCache 是 GetBackupSummary 的**整体结果**缓存
+	// （R79 轮：消除「每个文件解压两遍」里的第二遍 —— 见 cachedBackupSummary）。
+	summaryMu    sync.Mutex
+	summaryCache *cachedBackupSummary
+	// summaryComputations 统计「摘要被重算」的次数（= 缓存未命中次数）。
+	//
+	// ★ R79 轮：给「第二遍解压是否还在发生」一个**可直接断言**的读数 ——
+	//   门禁用它钉住不变量：文件没变时，两次调用**只算一次**。
+	// ★ 它也是生产侧的可观测点（想知道端点是不是在反复重解压，看它涨不涨）。
+	summaryComputations int64
 	// salvageCapBytes 覆盖打捞路径压缩字节上限（0 = 默认
 	// salvageMaxCompressedBytes）。仅供测试注入：真 256MB 压缩文件在测试
 	// 预算内不可构造，缩小阈值即可走同一段超限分支代码。
@@ -232,10 +274,36 @@ func (fr *FileReader) GetFileSummary(ctx context.Context, filename string) (*Bac
 }
 
 // GetBackupSummary 获取所有备份的汇总信息
+//
+// ★ R79 轮（2026-10-24）：加**整体结果缓存**（按「备份文件集指纹」）。
+//
+//	旧实现：GetFileSummary（**有** per-file 缓存）算完 stats 后，
+//	GetBackupSummary 又对**同一个文件**再 ReadRecords 一遍，只为了数
+//	**跨文件全局唯一**的 session ⇒ ⇒ **每个备份文件被完整解压两遍**，
+//	而第二遍**完全不受 per-file 缓存保护** ⇒ ⇒ 端点
+//	`/api/admin/data-lifecycle/degradation/status` **每次请求**都重解压全部备份。
+//
+//	现在：指纹命中 ⇒ 直接返回缓存（零 IO、零解压）；
+//	指纹变（文件增/改/删/被覆盖写）⇒ 重算。
+//
+//	★ **口径不变**：TotalSessions 仍是**跨文件全局唯一**的 session 数
+//	（不是各文件 SessionCount 之和 —— 那会把跨文件重名会话算多次）。
 func (fr *FileReader) GetBackupSummary(ctx context.Context) (*BackupSummary, error) {
 	files, err := fr.ListBackupFiles(ctx)
 	if err != nil {
 		return nil, err
+	}
+
+	fingerprint := backupSetFingerprint(files)
+
+	// ★ 锁覆盖「查缓存 + 计算 + 写缓存」整段 ⇒ 并发请求**不会**重复解压
+	//   （同一时刻只有一个在算，其余等它的结果）。
+	fr.summaryMu.Lock()
+	defer fr.summaryMu.Unlock()
+
+	if c := fr.summaryCache; c != nil &&
+		c.fingerprint == fingerprint && time.Since(c.cachedAt) < fr.cacheTTL {
+		return cloneBackupSummary(c.summary), nil
 	}
 
 	summary := &BackupSummary{
@@ -279,7 +347,28 @@ func (fr *FileReader) GetBackupSummary(ctx context.Context) (*BackupSummary, err
 		}
 	}
 
-	return summary, nil
+	atomic.AddInt64(&fr.summaryComputations, 1)
+	fr.summaryCache = &cachedBackupSummary{
+		summary:     summary,
+		fingerprint: fingerprint,
+		cachedAt:    time.Now(),
+	}
+	return cloneBackupSummary(summary), nil
+}
+
+// cloneBackupSummary 复制一份摘要返回。
+//
+// ★ 必须复制：缓存里存的是共享指针 ⇒ 直接返回会被调用方就地改写
+//
+//	（端点的 JSON 编码不写，但库里其它调用方可能改）⇒ 污染缓存。
+func cloneBackupSummary(in *BackupSummary) *BackupSummary {
+	if in == nil {
+		return nil
+	}
+	out := *in
+	out.Files = make([]BackupFile, len(in.Files))
+	copy(out.Files, in.Files)
+	return &out
 }
 
 // ReadRecords 流式读取记录并回调处理。
@@ -401,8 +490,29 @@ func (fr *FileReader) ArchiveFile(filename string) error {
 }
 
 // InvalidateCache 清除缓存
+//
+// ★ R79 轮：**摘要整体缓存也必须一起清** ——
+//
+//	`InvalidateCache()` 的契约是「丢掉一切已缓存的文件信息」；
+//	若只清 per-file 缓存而留下摘要缓存，则「同名同大小同 mtime 的覆盖写」
+//	（备份回滚/恢复）会让摘要缓存**命中旧数据**。
+//	（正常路径下文件集指纹会变、摘要缓存会自然失效 ⇒ 这一步是**兜底**，
+//	不是唯一防线。）
 func (fr *FileReader) InvalidateCache() {
 	fr.cacheMu.Lock()
-	defer fr.cacheMu.Unlock()
 	fr.cache = make(map[string]*cachedBackupFile)
+	fr.cacheMu.Unlock()
+
+	fr.summaryMu.Lock()
+	fr.summaryCache = nil
+	fr.summaryMu.Unlock()
+}
+
+// SummaryComputations 返回「备份摘要被重算」的次数（缓存未命中的次数）。
+//
+// ★ R79 轮：门禁与生产观测都用它回答同一个问题 ——
+//
+//	「端点是不是还在每次请求都把备份重新解压一遍」。
+func (fr *FileReader) SummaryComputations() int64 {
+	return atomic.LoadInt64(&fr.summaryComputations)
 }

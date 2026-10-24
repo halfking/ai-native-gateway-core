@@ -3,6 +3,7 @@ package admin
 import (
 	"context"
 	"net/http"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -27,25 +28,58 @@ func (h *Handler) WireDegradationControl(monitor *dbdegradation.Monitor, ttl *db
 	h.degradation = &degradationControl{monitor: monitor, ttl: ttl, writer: writer, reader: reader, generic: generic, enter: enter, exit: exit}
 }
 
+// degradationStatusBudget 是 degradation 状态类端点的**有界预算**。
+//
+// ★ R79 轮（2026-10-24）：旧实现把 `r.Context()`（**无 deadline**）直接交给
+//
+//	「Redis 全量 SCAN」+「gzip 逐文件解压」⇒ 慢 Redis 或大备份时端点可以
+//	跑到 **30s+**（生产实测 30s）⇒ ⇒ 现在给它一个上限。
+//	★ 超时后**必须显式标注降级**（沿用 admin/dashboard_board_aux.go 的约定：
+//	`degraded` 恒发 + `degraded_reason`），不得让「没查出来」看起来像「是 0」。
+const degradationStatusBudget = 5 * time.Second
+
 func (h *Handler) handleDegradationStatus(w http.ResponseWriter, r *http.Request) {
 	if h.degradation == nil {
 		writeError(w, http.StatusServiceUnavailable, "degradation control not configured")
 		return
 	}
+	// ★ R79 轮：有界预算（见 degradationStatusBudget 的理由）
+	ctx, cancel := context.WithTimeout(r.Context(), degradationStatusBudget)
+	defer cancel()
+
 	status := "unknown"
 	if h.degradation.monitor != nil {
 		status = h.degradation.monitor.GetStatus().String()
 	}
 	manual := h.degradation.manual.Load()
 	response := map[string]any{"status": status, "manual": manual}
+
+	degraded := false
+	var reasons []string
+
 	if h.degradation.ttl != nil {
 		response["ttl_mode"] = h.degradation.ttl.GetMode()
-		response["ttl_stats"] = h.degradation.ttl.GetTTLStats(r.Context())
+		stats, err := h.degradation.ttl.GetTTLStats(ctx)
+		response["ttl_stats"] = stats
+		if err != nil {
+			// ★ 扫描被中断 ⇒ 计数是**部分**的 ⇒ 必须记账
+			degraded = true
+			reasons = append(reasons, "ttl stats unavailable")
+		}
 	}
 	if h.degradation.reader != nil {
-		if summary, err := h.degradation.reader.GetBackupSummary(r.Context()); err == nil {
+		summary, err := h.degradation.reader.GetBackupSummary(ctx)
+		if err == nil {
 			response["backups"] = summary
+		} else {
+			degraded = true
+			reasons = append(reasons, "backup summary unavailable")
 		}
+	}
+
+	response["degraded"] = degraded
+	if len(reasons) > 0 {
+		response["degraded_reason"] = strings.Join(reasons, "；")
 	}
 	writeJSON(w, http.StatusOK, response)
 }

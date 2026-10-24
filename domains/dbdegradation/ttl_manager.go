@@ -3,6 +3,7 @@ package dbdegradation
 import (
 	"context"
 	"log/slog"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -341,13 +342,13 @@ func (tm *TTLManager) extendKeysByPattern(ctx context.Context, client *redis.Cli
 }
 
 // GetTTLStats 获取 TTL 统计信息
-func (tm *TTLManager) GetTTLStats(ctx context.Context) map[string]interface{} {
+func (tm *TTLManager) GetTTLStats(ctx context.Context) (map[string]interface{}, error) {
 	client := tm.redis.Client()
 	if client == nil {
 		return map[string]interface{}{
 			"mode":  tm.GetMode(),
 			"error": "redis client not available",
-		}
+		}, nil
 	}
 
 	stats := map[string]interface{}{
@@ -358,30 +359,81 @@ func (tm *TTLManager) GetTTLStats(ctx context.Context) map[string]interface{} {
 	}
 
 	// 统计各类键的数量
-	patterns := map[string]string{
-		"sessions":      "session:*",
-		"session_keys":  "session:key:*",
-		"api_key_index": "session:apiKey:*",
-		"ursm_cache":    "ursm:*",
-	}
+	//
+	// ★ R79 轮（2026-10-24）：`session:key:*` 与 `session:apiKey:*` **都是
+	//   `session:*` 的子集**（前缀蕴含）⇒ ⇒ **一次** `session:*` 的 SCAN
+	//   就能逐字算出三个计数 ⇒ ⇒ **SCAN 次数 4 → 2**（`session:*` + `ursm:*`）。
+	//   ★ **口径不变**：`sessions_count` 仍是「匹配 `session:*` 的**全部**键数」
+	//   （**含**两个子集，与旧实现逐字一致）；两个子集计数也逐字一致。
+	//   ⇒ 旧实现 4 次全量扫描（每次都要走完整个 cursor 环）⇒ 端点秒级开销；
+	//   ⇒ 新实现 2 次 ⇒ 该端点的 Redis 侧成本减半。
+	sessionCount, sessionKeyCount, apiKeyIndexCount, scanErr := tm.countSessionScopedKeys(ctx, client)
+	stats["sessions_count"] = sessionCount
+	stats["session_keys_count"] = sessionKeyCount
+	stats["api_key_index_count"] = apiKeyIndexCount
+	ursmCount, ursmErr := tm.countKeys(ctx, client, "ursm:*")
+	stats["ursm_cache_count"] = ursmCount
 
-	for name, pattern := range patterns {
-		count := tm.countKeys(ctx, client, pattern)
-		stats[name+"_count"] = count
+	// ★ R79 轮：扫描被中断 ⇒ **显式报错**，不得让「部分计数」看起来像「完整计数」。
+	if scanErr != nil {
+		return stats, scanErr
 	}
+	if ursmErr != nil {
+		return stats, ursmErr
+	}
+	return stats, nil
+}
 
-	return stats
+// countSessionScopedKeys 用**一次** SCAN 同时算出三个计数。
+//
+// ★ 前缀蕴含（因此可以合并）：
+//
+//	`session:key:*`   ⊂ `session:*`
+//	`session:apiKey:*` ⊂ `session:*`
+//
+//	⇒ 任何匹配前者的键**必然**匹配后者 ⇒ ⇒ 在 `session:*` 的扫描结果里
+//	按前缀分流，得到的三数与「分别扫三次」**逐字相同**。
+func (tm *TTLManager) countSessionScopedKeys(ctx context.Context, client *redis.Client) (sessions, sessionKeys, apiKeyIndex int, err error) {
+	var cursor uint64
+	for {
+		keys, newCursor, scanErr := client.Scan(ctx, cursor, "session:*", 1000).Result()
+		if scanErr != nil {
+			// ★ 扫描被中断 ⇒ 返回**部分计数 + 错误**（R79 轮：绝不让「部分结果」静默变成「完整结果」）
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return sessions, sessionKeys, apiKeyIndex, ctxErr
+			}
+			return sessions, sessionKeys, apiKeyIndex, scanErr
+		}
+		for _, k := range keys {
+			sessions++
+			switch {
+			case strings.HasPrefix(k, "session:key:"):
+				sessionKeys++
+			case strings.HasPrefix(k, "session:apiKey:"):
+				apiKeyIndex++
+			}
+		}
+		cursor = newCursor
+		if cursor == 0 {
+			break
+		}
+	}
+	return sessions, sessionKeys, apiKeyIndex, nil
 }
 
 // countKeys 统计匹配模式的键数量
-func (tm *TTLManager) countKeys(ctx context.Context, client *redis.Client, pattern string) int {
+func (tm *TTLManager) countKeys(ctx context.Context, client *redis.Client, pattern string) (int, error) {
 	var cursor uint64
 	count := 0
 
 	for {
 		keys, newCursor, err := client.Scan(ctx, cursor, pattern, 1000).Result()
 		if err != nil {
-			return count
+			// ★ 中断 ⇒ 返回部分计数 + 错误（见 countSessionScopedKeys 的同款理由）
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return count, ctxErr
+			}
+			return count, err
 		}
 		count += len(keys)
 		cursor = newCursor
@@ -390,5 +442,5 @@ func (tm *TTLManager) countKeys(ctx context.Context, client *redis.Client, patte
 		}
 	}
 
-	return count
+	return count, nil
 }
