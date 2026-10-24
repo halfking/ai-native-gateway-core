@@ -17,13 +17,27 @@ package ursm_test
 //	③ 差异清单非空、字段齐全、ID 唯一；
 //	④ ★ **每条差异的 `TestName` 必须在仓内真实存在**
 //	   （⇒ 「每条差异有测试覆盖」成为机器可校验的事实）；
+//	④' ★ **每条差异的 `ExtraTestNames` 也必须真实存在**
+//	   （⇒ 一条差异的多个语义侧面不会悄悄失去覆盖）；
+//	④'' ★ **每条差异的 `RequiredAssertions` 必须逐字出现在【它所归位的那个测试】的
+//	   【代码面】里**（⇒ 「测试存在」之外还要「**代码里真的断言了这件事**」；
+//	   ★ 代码面 = go/parser 解析出的表达式 + 字符串字面量语料，**注释不计入**；
+//	   ★ 且**逐测试归位** ⇒ A 测试里的一个 `ParseInt` 不能替 B 语义背书）；
 //	⑤ ★ 两条**代码事实**仍然成立：4 个端点都被包装；阶段错误不阻断；默认关。
 //
 // # ★ 被测集合与期望都不来自被测对象
 //
 // 期望值是本文件里的**字面量**（端点路径、字符串片段）⇒ 改实现改不掉断言。
+//
+// ★ 而「期望值」有一部分住在 `internal/pipelinev2` 的清单里（RequiredAssertions）
+// ⇒ 那不是自证 ⇒ ⇒ 门**独立地**把那些字面量拿到**代码面**上去核对
+// ⇒ ⇒ 清单里写一句空话（例如把断言写成一个只出现在注释里的字符串）⇒ 门红。
 
 import (
+	"go/ast"
+	"go/parser"
+	"go/printer"
+	"go/token"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -56,6 +70,49 @@ func magpieP2ReadFile(t *testing.T, root, rel string) string {
 		t.Fatalf("读 %s 失败：%v", rel, err)
 	}
 	return string(b)
+}
+
+// magpieP2CodeCorpus 提取一个 Go 文件的**代码面**语料。
+//
+// ★★ 这是本门最要紧的一处设计：语料只由 **AST 节点**拼成 ——
+// ★★ ① 字符串字面量（BasicLit.Value）
+// ★★ ② 表达式（BinaryExpr / CallExpr，用 go/printer 打印成规范格式）
+// ★★ ③ 标识符名
+// ⇒⇒ **注释不是 AST 节点** ⇒⇒ 注释里的任何字串都**进不了**语料。
+//
+// ★⇒ 于是「在注释里写一句『我断言了 X』」蒙混不过去 ——
+// ★⇒ 而**这正是**「测试存在但名不符实」这个门抓不到的缺陷的解法。
+//
+// ★ 反过来：★ 判据**宁可假红也不假绿** ——
+// ★ 「代码面」比「全文」窄 ⇒ 命中要求更严 ⇒ 假绿被根除。
+func magpieP2CodeCorpus(t *testing.T, root, rel string) string {
+	t.Helper()
+
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, filepath.Join(root, rel), nil, 0)
+	if err != nil {
+		t.Fatalf("解析 %s 失败（⇒ 门无法取它的代码面）：%v", rel, err)
+	}
+
+	var b strings.Builder
+	ast.Inspect(f, func(n ast.Node) bool {
+		switch v := n.(type) {
+		case *ast.BasicLit:
+			b.WriteString(" ")
+			b.WriteString(v.Value)
+		case *ast.BinaryExpr:
+			b.WriteString(" ")
+			_ = printer.Fprint(&b, fset, v)
+		case *ast.CallExpr:
+			b.WriteString(" ")
+			_ = printer.Fprint(&b, fset, v)
+		case *ast.Ident:
+			b.WriteString(" ")
+			b.WriteString(v.Name)
+		}
+		return true
+	})
+	return b.String()
 }
 
 // TestMagpieP2V2CriteriaAreGroundedInProduction G1 + G2：
@@ -142,6 +199,7 @@ func TestMagpieP2V2DifferencesHaveRealTests(t *testing.T) {
 	}
 
 	seen := map[string]bool{}
+	strong, weak := 0, 0
 	for _, d := range list {
 		if d.ID == "" || d.Dimension == "" || d.V1 == "" || d.V2 == "" || d.Impact == "" {
 			t.Errorf("差异 %+v 字段不完整", d)
@@ -194,8 +252,83 @@ func TestMagpieP2V2DifferencesHaveRealTests(t *testing.T) {
 				d.ID, d.Dimension, d.Topic, d.TestName)
 			continue
 		}
-		t.Logf("差异 %s（%s）⇒ 覆盖测试 %s（%s）", d.ID, d.Dimension, d.TestName, where)
+
+		// ★ 补充覆盖测试（一条差异可以有**多个**语义侧面）。
+		// ★ ExtraTestNames 与 TestName **都**必须真实存在 ⇒ 删掉任一个 ⇒ 门红。
+		coverFiles := []string{where}
+		missingCover := false
+		for _, name := range d.ExtraTestNames {
+			if name == d.TestName {
+				t.Errorf("差异 %s 的 ExtraTestNames 重复了 TestName（%s）⇒ 重复登记没有意义", d.ID, name)
+				missingCover = true
+				continue
+			}
+			w, ok := defined[name]
+			if !ok {
+				t.Errorf("差异 %s（%s）的补充覆盖测试 %s 在仓内**不存在** ⇒ "+
+					"这条差异的一个语义侧面**悄悄失去**了覆盖",
+					d.ID, d.Dimension, name)
+				missingCover = true
+				continue
+			}
+			coverFiles = append(coverFiles, w)
+		}
+		if missingCover {
+			continue
+		}
+
+		// ★★★ 语义断言：RequiredAssertions 按【测试归位】核对。
+		// ★★★ 「代码面」= go/parser 的 AST 语料 ⇒ **注释不计入** ⇒
+		// ★★★ 「在注释里写『我断言了 X』」蒙混不过去。
+		// ★★★ 且**逐测试**核对 ⇒ A 测试里的一个 `ParseInt` 不能替 B 语义背书
+		// ★★★ （★ 否则就是「子串偶然命中」那一族）。
+		if len(d.RequiredAssertions) > 0 {
+			// ① map 的 key 必须是本差异登记过的覆盖测试。
+			allowed := map[string]bool{d.TestName: true}
+			for _, n := range d.ExtraTestNames {
+				allowed[n] = true
+			}
+			for testName, asserts := range d.RequiredAssertions {
+				if !allowed[testName] {
+					t.Errorf("差异 %s 的 RequiredAssertions 引用了**未登记**的测试 %s ⇒ "+
+						"它要么拼错了，要么这条差异多了一个**没被登记**的覆盖面",
+						d.ID, testName)
+					continue
+				}
+				w, ok := defined[testName]
+				if !ok {
+					t.Errorf("差异 %s 的 RequiredAssertions 指向的测试 %s 在仓内**不存在**",
+						d.ID, testName)
+					continue
+				}
+				corpus := magpieP2CodeCorpus(t, root, w)
+				for _, req := range asserts {
+					if !strings.Contains(corpus, req) {
+						t.Errorf("差异 %s（%s）要求的语义断言 %q **不在**测试 %s 的代码面里（文件：%s）⇒ "+
+							"★ 「测试存在」但**代码里没有断言这件事** ⇒ 名不符实\n"+
+							"★ ⇒ 修法：要么把该断言真正写进那个测试，要么这条差异其实没被覆盖",
+							d.ID, d.Dimension, req, testName, w)
+					}
+				}
+			}
+			strong++
+		} else {
+			// ★ 显式记录「只享受弱保证」的差异数 ⇒ 局限**可见**，而不是隐在沉默里。
+			weak++
+			t.Logf("★ 差异 %s（%s）只享受**弱保证**（测试存在 + 主题词在名字里）；"+
+				"★ 未登记 RequiredAssertions ⇒ 门无法核对「代码里真的断言了这件事」",
+				d.ID, d.Dimension)
+		}
+		t.Logf("差异 %s（%s）⇒ 覆盖测试 %s（%s）",
+			d.ID, d.Dimension, d.TestName, strings.Join(coverFiles, ", "))
 	}
+
+	// ★ 强弱保证的**分布**必须可见 ⇒ 局限不许隐在沉默里。
+	// ★ 「17 条差异全部有测试覆盖」这句话，在有强保证的那部分是真的，
+	// ★ 在只享受弱保证的那部分只是「存在性」⇒ ⇒ 把数字写出来，而不是让读者猜。
+	t.Logf("★ 覆盖强度分布：**强保证**（代码面核对语义断言）%d 条，"+
+		"**弱保证**（仅存在性 + 主题词）%d 条 ⇒ ⇒ 「每条差异有测试覆盖」的机器化程度不均匀",
+		strong, weak)
 }
 
 // TestMagpieP2V2ProductionFactsStillHold G5：
