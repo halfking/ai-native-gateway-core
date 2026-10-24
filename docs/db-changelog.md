@@ -9616,3 +9616,34 @@ MaxStartups 默认 `10:30:100` 在 pre-auth 阶段随机丢弃 ~30% 连接 + 机
 |-----------|------|---------|--------|
 | — | （R95 无新增迁移；台账水位仍为 906） | — | — |
 
+## 2026-10-24T15:08:26Z — deploy 154 build_seq 2845 (a194db3c)
+
+★ **R96 上线**：把 `public.routing_analytics_source` 从「canonical 宽投影
+（`FROM request_logs_with_current_month`）」换成「**会话族两腿 +
+`LEFT JOIN LATERAL (… LIMIT 1)` 回定位**」
+⇒ ★ **消除 `routing_analytics_7d` / `routing_audit_summary_7d` 刷新链里
+45 万行 `session_turn_details` 顺序扫**（旧：`Parallel Seq Scan` × 4 =
+326,497 + 128,517 + 18 + 18，`Buffers: shared hit=95,086` ≈ 743 MB
+⇒ 新：逐行 `Index Scan`，其余分区 **`never executed`** ⇒ 动态分区裁剪生效）。
+
+★ 生产对照（252 只读 + pgss 差分）：
+  `REFRESH … CONCURRENTLY routing_analytics_7d` 历史 **均值 55,358.8 ms / 最长 179,539 ms**
+  ⇒ 发版后**第一次**刷新（23:08:29，刷新器在迁移后立即用新 source 跑）**4,683 ms** ⇒ **11.8×**；
+  `routing_audit_summary_7d` 6,964.2 ms ⇒ **1,635 ms**（4.3×）。
+  ★ 生产计划形态：`Nested Loop Left Join` + `Index Scan using
+  session_turn_details_2026_10_tenant_id_request_id_partition_key`（父表腿 1,732.305 ms）。
+  ★ **零 DDL**：只 `CREATE OR REPLACE VIEW`（实测 245 ms）⇒ 无索引、无锁窗；
+  ★ **matview 不需要重建**：`CREATE OR REPLACE VIEW` **保留 OID** ⇒ 依赖不动 ⇒
+  下一次 REFRESH 自动采用新定义 ⇒ ★ db.go 的 stale-definition gate 特征串
+  **改为「旧形 `request_logs_with_current_month` 或 新形 `session_turn_details`」**
+  （否则新形被判陈旧 ⇒ 启动期 CASCADE 重建 minutes 级）。
+  ★ **口径零变更**：源层双向 `EXCEPT ALL`（1,110,635 行，同一语句 ⇒ 同一快照）
+  `only_old=0 / only_new=0`；聚合层 `c1_only_old=0 / c1_only_new=0`；逐列类型对拍 15 列全一致。
+  ★ 诚实边界：★ 生产上仓库自带的一致性检查读数 `drift_buckets=6 / total_abs_diff=26`
+  是**两次计算的时间差**（matview 快照早 83 s），**不是口径差**；
+  ★ `REFRESH … CONCURRENTLY` 的计时**含并发刷新开销**，本轮未拆分；
+  ★ 252 的**整体 load 未复测** ⇒ 不声称负载下降。
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 907 | `907_routing_analytics_source_lateral.sql` | `7db8e5d724ebf9e5af5502b05f66606f4556d6d7c7e93353f718a0316a6b17f6` | applied+verified |
