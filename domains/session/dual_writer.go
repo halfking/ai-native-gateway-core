@@ -20,6 +20,31 @@ import (
 //
 //	writer := NewDualWriter(v1Writer, v2Writer, flags, metrics)
 //	err := writer.Write(ctx, req)
+//
+// ★★★ 2026-10-25（12h 审计轮）★★ 退役告示 —— **本类型当前是孤儿，未接进任何活路径**：
+//
+// 实测（2026-10-25 12h 审计轮，全仓生产代码扫描）：
+//
+//	① `NewDualWriter` 在**生产代码里零调用方**（唯一一处 `DualWriter` 字样在
+//	   `domains/hooks/compression/session_compressor.go:943` 的**注释**里）；
+//	② v1 `_request_logs` 族已随**迁移 890 物理 DROP**（不是软退役）⇒ 本文件
+//	   第 159–171 行那句「PRIMARY WRITE: V1 … This MUST succeed or the entire
+//	   request fails」在**真库上必然 42P01**（整条语句失败，不是那条腿失败）。
+//
+// ⇒ ★★ **所以：这不是一个活缺陷，但它是「未来接线即炸」的雷** ——
+//
+//	若有人把本类型重新接回请求写路径，**每个请求都会失败**。
+//
+// ⇒ ★ 处置口径（本轮只加告示，**不改行为、不删类型**）：
+//
+//	① 要么整类退役（连同 `RequestLogWriter` 接口与 `DualWriteMetrics`）；
+//	② 要么重新接线时**必须**把主写腿换成会话族（`session_turns` / `session_bodies`），
+//	   并把「V1 写失败 ⇒ 整个请求失败」的语义一并重新裁决。
+//
+// ⇒ ★★ 通用式：**「退役一族」不只要清掉读面/写面/DDL 面，还要清掉
+//
+//	「仍然持有旧族语义的代码对象」** —— 死代码里的旧语义不会自己过期，
+//	它只是等着被重新接上。
 type DualWriter struct {
 	v1Writer RequestLogWriter         // Legacy writer (_request_logs)
 	v2Writer SessionWriterV2Interface // V2 writer (sessions tables)
