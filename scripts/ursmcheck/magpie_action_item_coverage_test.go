@@ -35,6 +35,13 @@ package ursm_test
 //	   ⇒ ⇒   「自己被删」⇒ ★ 要有牙必须**另一个**门也核同一份登记 ⇒ ★★ **互为对偶**）。
 //	   ⇒ ⇒ ★ 详见审计档 §3.19.11.5 第 8 条（★ 已登记为「跨文件自证 ⇒ 独立一轮」）。
 //
+//	★ ★★ **就地订正（2026-10-25，§3.19.12）**：★ 上面那段「**无人抓**」是**当时**的读数
+//	   ⇒ ⇒ ★★ 上面那几句话**仍然成立**（★ 判据④ **独自**就是抓不到自己的删除）
+//	   ⇒ ⇒ ★★ 但现已由**另一个**文件（★ `scripts/ursmcheck/magpie_guard_presence_test.go`
+//	   ⇒ ⇒ ★★ 「门在位自证」**对偶门**）核本门在不在 ⇒ ⇒ ★★ **F9 已闭**
+//	   ⇒ ⇒ ★★ （★ 变异 M109 = 删掉**本文件** ⇒ 对偶门红；★ M110 = 删掉对偶门 ⇒ **本门**判据④ 红）
+//	   ⇒ ⇒ ★★ ⇒ ★★ **两侧互为对偶** ⇒ ★★ **同时删两个**仍无人抓 ⇒ ★★ 残余已登记。
+//
 // # ★ 为什么是「两份权威 + 对账」而不是单边检查
 //
 // ★ 计划书是**被审对象**（★ 它可以被改），审计档 §四 也是**被审对象**。
@@ -47,6 +54,7 @@ package ursm_test
 // ★★ **不是**技术互锁 ⇒ ⇒ 登记而不修。
 
 import (
+	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -148,7 +156,9 @@ var magpieBacktickTokenRe = regexp.MustCompile("`([^`]+)`")
 // ★★ 只收**像路径**的（★ 含 `/` 且以 `.go` / `.sh` 结尾）⇒ ★★ 于是
 // ★★ `make guards`、`ursmcheck`、`cmd/gateway` 这类**被反引号包着的非路径**
 // ★★ **不会**被误当成门文件 ⇒ ⇒ 判据④ 不会假红。
-var magpieRepoPathRe = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9_./-]*\.(go|sh)$`)
+// ★★ 扩展名集合 = ★ `go` / `sh` / `py`（★ 第六轮 verifier 的 **S8**：★ 旧集合只收
+// ★★ `.go` / `.sh` ⇒ ⇒ §四 里登一个 `.py` 门路径 ⇒ **判据④ 不核它** ⇒ ⇒ 死路径放行）。
+var magpieRepoPathRe = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9_./-]*\.(go|sh|py)$`)
 
 // magpieSectionScopes 取出所有「行首命中 headRe」的同名小节正文。
 //
@@ -210,27 +220,133 @@ func magpiePlanItemIDsInScope(scope string) []string {
 	return ids
 }
 
+// magpieP3GroupRe 识别「**明确暂缓**」的那一组（★ `### P3`）。
+//
+// ★★ 判据① 的**豁免**只认这一组（★ 第六轮 verifier 的 **S4** 的修法）：
+// ★★ 旧口径只认 `### P0 / P1 / P2` 三组 ⇒ ★★ 计划书若把新行动项放进 §六 的
+// ★★ **其它**小节（★ 例 `### 6.1 工作量与顺序`）⇒ ★★ 那一项**逃出**对账 ⇒ ★★ 门有牙缺口。
+// ★★ ⇒ 新口径：**只有 `### P3` 这一组被豁免**，其余小节的表格行一律参与对账。
+var magpieP3GroupRe = regexp.MustCompile(`^P3([^0-9]|$)`)
+
+// magpiePlanFirstCellHasID 判断**首列**里有没有行动项 ID 形态。
+//
+// ★★ 为什么只看**首列**：★ §四/§六 这类表格的「登记单位」是**首列**（★ 行动项 ID 列）
+// ★★ ⇒ ★★ 而「ID 出现在**别的列**」的行（★ 例：汇总表的**依赖列**里写着 `P0-9`）
+// ★★ ⇒ ★★ **不是**一条新行动项 ⇒ ★★ 若把它们也算进去 ⇒ ⇒ 假红（★ 第六轮 verifier 的 A5 / A7
+// ★★ ⇒ ★★ 「换列序也认」的容忍度必须保留）⇒ ⇒ ★★ 所以：**首列有 ID** 才算候选。
+func magpiePlanFirstCellHasID(row string) bool {
+	cells := strings.Split(strings.TrimSpace(row), "|")
+	if len(cells) < 2 {
+		return false
+	}
+	return magpiePlanItemIDRe.MatchString(cells[1])
+}
+
+// magpiePlanBroadCandidates 扫 §六（★ **除 `### P3` 组外**）的**全部**表格行
+// ⇒ 取出「**首列写着 ID**」的那些行里的候选行动项 ID。
+//
+// ★★ 这是判据① 的**覆盖面补丁**：★ 它问的是「有没有一条**首列是 ID** 的行
+// ★★ 落在了判据① **不认**的小节里」⇒ ⇒ 答「有」⇒ ⇒ **门红**。
+func magpiePlanBroadCandidates(scope string) []string {
+	var out []string
+	seen := map[string]bool{}
+	skipP3 := false
+	for _, line := range strings.Split(scope, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "### ") {
+			title := strings.TrimSpace(strings.TrimPrefix(trimmed, "### "))
+			skipP3 = magpieP3GroupRe.MatchString(title)
+			continue
+		}
+		if skipP3 || !strings.HasPrefix(trimmed, "|") {
+			continue
+		}
+		if !magpiePlanFirstCellHasID(trimmed) {
+			continue
+		}
+		for _, id := range magpiePlanItemIDRe.FindAllString(trimmed, -1) {
+			if seen[id] {
+				continue
+			}
+			seen[id] = true
+			out = append(out, id)
+		}
+	}
+	return out
+}
+
+// magpiePlanScope 取出计划书 §六 的正文（★ **逐个尝试所有命中**，取第一个能抽出行动项的）。
+func magpiePlanScope(text string) (string, bool) {
+	for _, scope := range magpieSectionScopes(text, magpiePlanScopeRe) {
+		if ids := magpiePlanItemIDsInScope(scope); len(ids) > 0 {
+			return scope, true
+		}
+	}
+	return "", false
+}
+
 // magpiePlanItemIDs 从计划书里抽出行动项 ID（★ 按出现顺序）。
 //
 // ★★★ **逐个尝试所有 §六 命中**：★ 顶部目录里**单独一行**的 `## 六、` 会先命中
 // ★★★ ⇒ ★★ 那一段里**抽不出**行动项 ⇒ ⇒ **跳过**，继续找下一段 ⇒ ★★ 门不会误报
 // ★★★ 「提取器坏了」（★ 第五轮 verifier 的 F6）。
 func magpiePlanItemIDs(text string) []string {
-	for _, scope := range magpieSectionScopes(text, magpiePlanScopeRe) {
-		if ids := magpiePlanItemIDsInScope(scope); len(ids) > 0 {
-			return ids
-		}
+	scope, ok := magpiePlanScope(text)
+	if !ok {
+		return nil
 	}
-	return nil
+	return magpiePlanItemIDsInScope(scope)
 }
 
-// magpieRowGatePaths 取出**一个表格行**里登记的门文件路径。
+// magpieAuditRegColIndex 定位 §四 门禁表里「**登记**」所在的列（★ 「位置」列）。
 //
-// ★★ 只收**像路径**的（★ `magpieRepoPathRe`）⇒ ★★ `make guards` 这类**被反引号
-// ★★ 包着的非路径**不会被误当成门文件 ⇒ ⇒ 判据④ 不会假红。
-func magpieRowGatePaths(row string) []string {
+// ★★★★ **为什么必须钉死到列**（★ 第六轮 verifier 的 FR1 假红实测出来的）：
+// ★★ 旧实现把**整行**所有反引号路径都当成登记 ⇒ ⇒ 于是「在**变异列**里顺口写一句
+// ★★ 「（另见 `xxx_test.go`）」」就**多出一条登记** ⇒ ⇒ 判据③ 多重集变大 ⇒ ★★ **假红**
+// ★★ ⇒ ⇒ 而**假红比假绿更费**（★ 改方向）⇒ ⇒ ★★ 登记单位必须是**文档自己的登记单位**
+// ★★ ⇒ ★★ 而 §四 的登记单位**就是「位置」列**（★ 表头：★ 门 / **位置** / 条数 / CI / 变异）
+// ⇒ ⇒ ★★ 只认「位置」列 ⇒ ⇒ 别的列里提一句路径**不算登记** ⇒ ⇒ 不假红。
+//
+// ★★ 表头行（★ 首列恰为「门」的那行）里必须**恰好有一列**叫「位置」；
+// ★★ 找不到 ⇒ ★★ 返回 false ⇒ ★★ 门**响亮失败**（★ 不许静默退化成「零条登记」⇒ 那是假绿）。
+func magpieAuditRegColIndex(scope string) (int, bool) {
+	for _, line := range strings.Split(scope, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if !strings.HasPrefix(trimmed, "|") {
+			continue
+		}
+		cells := strings.Split(trimmed, "|")
+		if len(cells) < 2 || strings.TrimSpace(cells[1]) != "门" {
+			continue
+		}
+		idx := -1
+		for i, c := range cells {
+			if strings.TrimSpace(c) == "位置" {
+				if idx >= 0 {
+					return 0, false // ★ 两列都叫「位置」⇒ 口径不明 ⇒ 响亮失败。
+				}
+				idx = i
+			}
+		}
+		if idx < 0 {
+			return 0, false
+		}
+		return idx, true
+	}
+	return 0, false
+}
+
+// magpieRowGatePaths 取出**一个表格行**的「位置」列里登记的门文件路径。
+//
+// ★★ 只认**登记列**（★ 「位置」列）⇒ ⇒ 别的列里的路径**不算登记**（★ 见
+// ★★ `magpieAuditRegColIndex` 的说明）⇒ ⇒ 不假红。
+func magpieRowGatePaths(row string, regCol int) []string {
+	cells := strings.Split(strings.TrimSpace(row), "|")
+	if regCol < 0 || regCol >= len(cells) {
+		return nil
+	}
 	var paths []string
-	for _, tok := range magpieBacktickTokenRe.FindAllStringSubmatch(row, -1) {
+	for _, tok := range magpieBacktickTokenRe.FindAllStringSubmatch(cells[regCol], -1) {
 		if magpieRepoPathRe.MatchString(tok[1]) {
 			paths = append(paths, tok[1])
 		}
@@ -243,7 +359,14 @@ func magpieRowGatePaths(row string) []string {
 // ★★ 行的「行动项 ID」取**行内第一个** `P[0-2]-N`（★ 不限首列 ⇒ ★ 换列序不误伤）。
 // ★★ 行里**没有**行动项 ID 的（★ 例：「★ 门禁接线」「★★★ CI 载体真值门」）
 // ★★ ⇒ ★ **不进**这个映射（★ 它们不属于任何计划行动项）。
-func magpieAuditGateRows(scope string) map[string][]string {
+//
+// ★★ 登记路径只取**登记列**（★ 「位置」列）⇒ ⇒ 别的列里提一句路径**不算登记**。
+// ★★ 解析不出登记列 ⇒ ★★ 返回 error ⇒ ★★ 门**响亮失败**（★ 不许静默变成「零条」）。
+func magpieAuditGateRows(scope string) (map[string][]string, error) {
+	regCol, ok := magpieAuditRegColIndex(scope)
+	if !ok {
+		return nil, fmt.Errorf("★ §四 表头里找不到唯一的「位置」列 ⇒ 登记口径不明")
+	}
 	out := map[string][]string{}
 	for _, line := range strings.Split(scope, "\n") {
 		trimmed := strings.TrimSpace(line)
@@ -254,23 +377,29 @@ func magpieAuditGateRows(scope string) map[string][]string {
 		if id == "" {
 			continue
 		}
-		out[id] = append(out[id], magpieRowGatePaths(trimmed)...)
+		out[id] = append(out[id], magpieRowGatePaths(trimmed, regCol)...)
 	}
-	return out
+	return out, nil
 }
 
 // magpieAuditAllGatePaths 取出 §四 门禁表里登记的**全部**门文件路径
 // （★ 含**没有**行动项 ID 的行 ⇒ ★ 判据④ 用它）。
-func magpieAuditAllGatePaths(scope string) []string {
+//
+// ★★ 同样只认**登记列**（★ 「位置」列）⇒ ⇒ 别的列里的路径**不算登记**。
+func magpieAuditAllGatePaths(scope string) ([]string, error) {
+	regCol, ok := magpieAuditRegColIndex(scope)
+	if !ok {
+		return nil, fmt.Errorf("★ §四 表头里找不到唯一的「位置」列 ⇒ 登记口径不明")
+	}
 	var paths []string
 	for _, line := range strings.Split(scope, "\n") {
 		trimmed := strings.TrimSpace(line)
 		if !strings.HasPrefix(trimmed, "|") {
 			continue
 		}
-		paths = append(paths, magpieRowGatePaths(trimmed)...)
+		paths = append(paths, magpieRowGatePaths(trimmed, regCol)...)
 	}
-	return paths
+	return paths, nil
 }
 
 // magpieMultisetEqual 判断两个字符串**多重集**是否**完全相等**（★ 逐项计数相等）。
@@ -370,10 +499,11 @@ func TestMagpieActionItemsAllHaveGates(t *testing.T) {
 	plan := readRepoFile(t, planDocPath(t))
 
 	// ① ★ 集合精确相等（双向）。
-	ids := magpiePlanItemIDs(plan)
-	if len(ids) == 0 {
+	scope, hasScope := magpiePlanScope(plan)
+	if !hasScope {
 		t.Fatalf("★ 从计划书 §六 **一个**行动项都没抽到 ⇒ 提取器坏了（★ 读数无效）")
 	}
+	ids := magpiePlanItemIDsInScope(scope)
 	seen := map[string]bool{}
 	for _, id := range ids {
 		if seen[id] {
@@ -396,6 +526,24 @@ func TestMagpieActionItemsAllHaveGates(t *testing.T) {
 				"★★   ① 为 %s 建门；② 在门侧 `planItemGates` 里登记；③ 在审计档 §四 门禁表里补一行",
 				id, id)
 		}
+	}
+
+	// ★★ 判据① 的**覆盖面补丁**（★ 第六轮 verifier 的 **S4** 实测撞出来的）：
+	// ★★ 判据① 只认 `### P0 / P1 / P2` 三组 ⇒ ★★ 计划书若把新行动项放进 §六 的
+	// ★★ **其它**小节（★ 例 `### 6.1 工作量与顺序`）⇒ ★★ 那一项**逃出**对账
+	// ★★ ⇒ ⇒ 「每项都有门」这句话就有一个**绕路** ⇒ ⇒ 本段把那个绕路**堵掉**：
+	// ★★ 「**首列写着 ID** 的行」若落在判据① **不认**的小节里 ⇒ ⇒ **门红**。
+	// ★★ （★ 「ID 出现在**别的列**」的行**不算** ⇒ ★★ 汇总表的依赖列里写着 `P0-9`
+	// ★★ ⇒ ★★ **不**是假红 ⇒ ★★ 也保住了 A5 / A7 的「换列序也认」容忍度。）
+	for _, cand := range magpiePlanBroadCandidates(scope) {
+		if seen[cand] {
+			continue
+		}
+		t.Errorf("★★ 计划书 §六 里有一行**首列**写着行动项 %s，但它落在**判据① 不认的小节**里 ⇒\n"+
+			"★★ ⇒ 判据① 只认 `### P0 / P1 / P2` 三组 ⇒ ⇒ 这一项**逃出了**对账\n"+
+			"★★ ⇒ 「每条行动项都有『去掉即红』的验收量具」这句话有**绕路**\n"+
+			"★★ ⇒ 修法：把它挪进那三组之一，或更新本门的分组口径（★ `magpiePlanGroupRe`）",
+			cand)
 	}
 
 	// ② ★ 门真实存在且**真的有断言**（★ AST 事实）。
@@ -423,9 +571,11 @@ func TestMagpieActionItemsAllHaveGates(t *testing.T) {
 			}
 			if !has {
 				t.Errorf("★★ 行动项 %s 的门文件 %s **没有任何 `func TestXxx` 的函数声明** ⇒\n"+
-					"★★ ⇒ 它在位但**没有断言** ⇒ 「去掉即红」是空的\n"+
+					"★★ ⇒ 它在位但**一个测试函数都没有** ⇒ 本门**核不到**它到底断言了什么\n"+
 					"★★ ⇒ ★ 判据是 **AST 事实**：★ 一行 `// func TestXxx` 的**注释**骗不过它\n"+
-					"★★ ⇒ 修法：把断言写回去", id, rel)
+					"★★ ⇒ ★★ **口径提示**（★ 第六轮 verifier 的 S7）：★ 本判据只保证「**有测试函数声明**」\n"+
+					"★★ ⇒ ★★ ⇒ **不**保证「函数体里有断言」（★ 空壳 `func TestStub(t *testing.T){}` 也能过）\n"+
+					"★★ ⇒ 修法：把真正的断言写进那个测试函数", id, rel)
 			}
 		}
 	}
@@ -436,7 +586,10 @@ func TestMagpieActionItemsAllHaveGates(t *testing.T) {
 	if len(auditScopes) == 0 {
 		t.Fatal("★ 审计档里找不到「## 四、门禁清单」小节 ⇒ 锚点漂了 ⇒ 门无法对账")
 	}
-	auditRows := magpieAuditGateRows(auditScopes[0])
+	auditRows, aerr := magpieAuditGateRows(auditScopes[0])
+	if aerr != nil {
+		t.Fatalf("★ 解析 §四 的**登记口径**失败 ⇒ %v ⇒ 门无法对账", aerr)
+	}
 
 	// ★★ 两个方向的项集都要**精确相等**（★ 「覆盖型声明」的项集不允许增减）。
 	for id := range planItemGates {
@@ -467,7 +620,11 @@ func TestMagpieActionItemsAllHaveGates(t *testing.T) {
 	}
 
 	// ④ ★ §四 登记的**每一个**门文件都必须真实存在（★ 含没有行动项 ID 的行）。
-	for _, rel := range magpieAuditAllGatePaths(auditScopes[0]) {
+	allGatePaths, perr := magpieAuditAllGatePaths(auditScopes[0])
+	if perr != nil {
+		t.Fatalf("★ 解析 §四 的**登记口径**失败 ⇒ %v ⇒ 判据④ 无法对账", perr)
+	}
+	for _, rel := range allGatePaths {
 		if _, err := os.Stat(filepath.Join(root, rel)); err != nil {
 			t.Errorf("★★ 审计档 §四 门禁表登记的门文件 %s 在仓内**不存在** ⇒\n"+
 				"★★ ⇒ 审计档登记的验收量具**已经消失** ⇒ 读者照着它去找会扑空\n"+
@@ -542,6 +699,55 @@ func TestMagpiePlanItemExtractorHasTeeth(t *testing.T) {
 	}
 }
 
+// TestMagpiePlanBroadCandidatesHasTeeth 是「**广域候选**」这一步的量具自检
+// （★ 第六轮 verifier 的 **S4** 的牙）。
+//
+// ★★ 为什么需要它：★ 判据① 只认 `### P0 / P1 / P2` 三组 ⇒ ★★ 计划书把新行动项
+// ★★ 放进 §六 的**其它**小节 ⇒ ★★ 那一项**逃出**对账 ⇒ ★★ 门有绕路。
+// ★★ ⇒ 「广域候选」这一步把那个绕路堵掉 ⇒ ★★ ⇒ 必须有**独立**的自检钉住它。
+func TestMagpiePlanBroadCandidatesHasTeeth(t *testing.T) {
+	const scope = `## 六、优化方案与规划
+
+### P0
+
+| **P0-1** | 主题 | 动作 | 量具 |
+
+### P3（明确暂缓）
+
+| **P3-1** | 别的表 | 动作 | 量具 |
+
+### 6.1 工作量与顺序
+
+| **P2-4** | 追加行动项 | 做某事 | 量具 |
+| P0 | 汇总 | 8–12 | P0-9 |
+`
+	got := magpiePlanBroadCandidates(scope)
+
+	// ① ★★ **首列是 ID** 的行（★ 在 `### 6.1` 下面）⇒ 必须进候选（★ S4 的牙）。
+	found := false
+	for _, id := range got {
+		if id == "P2-4" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("★★ `### 6.1` 下**首列**写着 `P2-4` 的行动项必须进候选 ⇒ 它逃出了对账（★ 实际 %v）", got)
+	}
+	// ② ★★ **别的列**里写着 ID（★ 汇总表的依赖列 `P0-9`）⇒ **不得**进候选
+	//    （★ 否则汇总表会假红 ⇒ ★ 也保住了 A5 / A7 的「换列序也认」容忍度）。
+	for _, id := range got {
+		if id == "P0-9" {
+			t.Errorf("★★ `P0-9` 出现在**依赖列**里 ⇒ 它**不是**一条新行动项 ⇒ 不得进候选（★ 实际 %v）", got)
+		}
+	}
+	// ③ ★★ `### P3` 组（★ 明确暂缓）⇒ **不得**进候选。
+	for _, id := range got {
+		if id == "P3-1" {
+			t.Errorf("★★ `### P3` 是**明确暂缓** ⇒ 不得进候选（★ 实际 %v）", got)
+		}
+	}
+}
+
 // TestMagpiePlanScopeIgnoresTopDirectory 是「**顶部目录**里的假 §六」这一形态的自检。
 //
 // ★★ 第五轮 verifier 的 F6：★ 在文档顶部加**单独一行**的 `## 六、` ⇒
@@ -575,9 +781,12 @@ func TestMagpieAuditGateRowExtractorHasTeeth(t *testing.T) {
 | P0-1 裁决表 | ` + "`a/gate_test.go`" + ` | 6 | ✅ ` + "`make guards`" + ` | M1–M4 全红 |
 | ★ **P0-1 订正** 真调用复核 | ` + "`a/gate_test.go`" + `（G6 重写） | 1 | ✅ ` + "`make guards`" + ` | M11 全红 |
 | ★ 门禁接线 | ` + "`b/wiring_test.go`" + ` | 3 | ✅ ` + "`make guards`" + ` | 拿掉登记 ⇒ 红 |
-| P2-2 台账 | ` + "`c/ledger_test.go`" + ` + ` + "`d/table_test.go`" + ` | 8 | 随包 | M1 全红 |
+| P2-2 台账 | ` + "`c/ledger_test.go`" + ` + ` + "`d/table_test.go`" + ` | 8 | 随包 | M1 全红（另见 ` + "`e/prose_test.go`" + `） |
 `
-	rows := magpieAuditGateRows(scope)
+	rows, err := magpieAuditGateRows(scope)
+	if err != nil {
+		t.Fatalf("★ 解析 §四 的登记口径失败 ⇒ %v", err)
+	}
 
 	// ① ★ P0-1 的**两行**登记同一个门 ⇒ 必须是**两条**（★ 不是去重后的 1 条）。
 	if len(rows["P0-1"]) != 2 {
@@ -611,5 +820,19 @@ func TestMagpieAuditGateRowExtractorHasTeeth(t *testing.T) {
 	}
 	if !magpieMultisetEqual([]string{"a", "b", "a"}, []string{"a", "a", "b"}) {
 		t.Errorf("★ 多重集：同样的集合应当判成相等（★ 顺序无关）")
+	}
+	// ⑥ ★★★ **登记单位 = 「位置」列**：★ 其它列（★ 变异列）里顺口提一句路径
+	//    ⇒ **不算登记** ⇒ ⇒ 不假红（★ 第六轮 verifier 的 FR1）。
+	if len(rows["P2-2"]) != 2 {
+		t.Errorf("★ 变异列里的路径被当成了登记 ⇒ 判据③ 会**假红**（★ 实际 %v）", rows["P2-2"])
+	}
+	for _, p := range rows["P2-2"] {
+		if p == "e/prose_test.go" {
+			t.Errorf("★ 变异列里的路径 `e/prose_test.go` 被当成了登记 ⇒ 判据③ 会**假红**")
+		}
+	}
+	// ⑦ ★★ 登记列解析不出来 ⇒ ★★ 必须**响亮失败**（★ 不许静默变成「零条登记」⇒ 那是假绿）。
+	if _, err := magpieAuditGateRows("| 门 | 说明 |\n|---|---|\n| P0-1 | `a/gate_test.go` |\n"); err == nil {
+		t.Errorf("★ 表头里没有「位置」列时**没有**报错 ⇒ 口径漂了会静默退化成假绿")
 	}
 }
