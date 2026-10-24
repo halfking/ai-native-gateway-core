@@ -173,6 +173,73 @@ const sessionIsInternalSessionIDExpr = "(CASE WHEN t.session_id LIKE 'sys:%' THE
 // ⇒ ⇒ 保留 CASE 形式 ⇒ 对**任意**输入都与投影逐字一致。
 const SessionFamilyAPIKeyIDExpr = "(CASE WHEN t.api_key_id ~ '^[0-9]+$' THEN t.api_key_id::bigint END)"
 
+// SessionFamilyLatestTurnPerSessionSQL 返回「每个 (tenant_id, session_id) 最新一轮」的 source，
+// 供会话列表页回填 api_key / handoff 父会话使用。
+//
+// # ★ 为什么要这个形态（2026-10-24 R93，生产只读实测）
+//
+// 【旧形态的代价】会话列表页的 api_key 回填曾是：
+//
+//	FROM public.session_turns_with_current_month t          -- 视图
+//	JOIN <hot ∪ 全部历史, 113 列投影> rl ON rl.request_id = t.request_id
+//
+// ★ 而 `session_turns_with_current_month` 的**名字骗人**：它的父表腿实测是
+// `FROM session_turns`（**全部分区**）⇒ 视图 = `hot ∪ 全部历史`
+// ⇒ ⇒ **同一批行被扫了两遍**（视图侧 `Heap Fetches 86,507` ＋ source 侧同样 86,507 行）
+// ⇒ ⇒ 再按 `request_id` **1:1 join**（**join 本身冗余** —— 同一行、同一列）。
+//
+// 【为什么只有 `?model=` 慢】它命中的 21 个**探针会话**在 2026_09 有 **85,712 轮**
+// ⇒ 实测该 enrich 查询 **13,066 ms**；而无过滤批次只有 21×1 轮 ⇒ **23 ms**
+// ⇒ ⇒ **差 570×** ⇒ 是「这批会话有多少轮」，不是「形状」。
+//
+// 【本形态】每个 source 一份「先聚合出该会话的最大 turn_no，再回定位那一行」：
+//
+//	(SELECT l.session_id, l.turn_no, <api_key 归一> AS api_key_id
+//	   FROM (SELECT session_id, max(turn_no) AS turn_no FROM <src> t
+//	          WHERE t.session_id = ANY($1) AND <api_key 归一> IS NOT NULL <extraPred>
+//	          GROUP BY session_id) l
+//	   JOIN <src> t ON t.session_id = l.session_id AND t.turn_no = l.turn_no <extraPred>)
+//
+// ★ **为什么不用 `DISTINCT ON`**：写在**分区父表**上时，规划器给的是
+// **Merge Append ⇒ 全量 86,507 行**再 Sort+Unique（实测 **9,900 ms**）
+// ⇒ ⇒ PG **不会把 DISTINCT ON 下推到分区** ⇒ 裁剪不生效。
+// ⇒ 而 `GROUP BY session_id + max(turn_no)` 走 **index-only scan**（不回表）⇒ 只读索引页。
+//
+// 【生产实测（252，只读，2026-10-24）】
+//
+//	批次                      旧形态      本形态
+//	新鲜会话（21 行）           23.2 ms     96.0 ms   ← ★ 慢 4×（绝对值 <100 ms）
+//	当前月多轮（6 行）         115.0 ms     54.1 ms
+//	★ 探针 85,712 轮          13,066 ms   1,339 ms   ← 9.8×
+//
+// 【口径等价】旧口径 =「视图里、且 api_key 归一后非空的轮次中 turn_no 最大那一轮」的 api_key；
+// 本形态 =「hot ∪ 全部历史里、同样条件的最新一轮」的 api_key。
+// ★ 两者**相同**：(a) 视图 = hot ∪ 全部历史 ⇒ 候选轮次集合相同；
+// (b) 视图 hot 腿的 anti-join 只删「hot 与父表同时存在」的重复行 ⇒ 同一 request_id 的 api_key 相同；
+// (c) 本形态在**每个 source 内**都带 `IS NOT NULL` 过滤 ⇒ 与旧口径的过滤位置等价
+// （★ 漏掉它会让口径漂移：实测候选形态出现 `only_new=20 / only_old=0`）。
+// ⇒ 生产三批次双向 EXCEPT ALL：新鲜会话 `0/0/21=21`、当前月多轮 `0/0/6=6`、探针批次 `0/0/0=0`。
+//
+// # 参数
+//
+//   - extraPred：额外的行级谓词（如租户收窄 `AND t.tenant_id = $2`），
+//     **必须使用别名 `t`**（两处都会用：聚合子查询与回定位 JOIN）。
+//     ★ 它会同时施加在「聚合」与「回定位」两步上 ⇒ 与旧形态「租户过滤只加在 source 侧」等价。
+//
+// # 占位符
+//
+//   - `$1` 必须是 session_id 数组（text[]）⇒ 与旧形态一致。
+func SessionFamilyLatestTurnPerSessionSQL(extraPred string) string {
+	leg := func(src string) string {
+		return "(SELECT l.session_id, l.turn_no, " + SessionFamilyAPIKeyIDExpr + " AS api_key_id " +
+			"FROM (SELECT session_id, max(turn_no) AS turn_no FROM " + src + " t " +
+			"WHERE t.session_id = ANY($1) AND " + SessionFamilyAPIKeyIDExpr + " IS NOT NULL" + extraPred + " " +
+			"GROUP BY session_id) l " +
+			"JOIN " + src + " t ON t.session_id = l.session_id AND t.turn_no = l.turn_no" + extraPred + ")"
+	}
+	return "(" + leg("public.session_turns_hot") + " UNION ALL " + leg("public.session_turns") + ")"
+}
+
 var projectionExprsV2 = []string{
 	"NULL::bigint",
 	"t.request_id",

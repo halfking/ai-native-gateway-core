@@ -9542,3 +9542,9 @@ MaxStartups 默认 `10:30:100` 在 pre-auth 阶段随机丢弃 ~30% 连接 + 机
 | Migration | File | SHA-256 | Status |
 |-----------|------|---------|--------|
 | — | （2841 无新迁移，水位仍为 904） | — | — |
+## 2026-10-24T11:57:20Z — deploy 154 build_seq 2842 (f204e4c6)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 905 | `905_turns_session_model_index.sql` | `59ae826b819edd652b6825ec61c02282bfabe04d716a71323e1e40b5cb038922` | applied+verified |
+

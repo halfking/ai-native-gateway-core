@@ -707,6 +707,44 @@ func (h *Handler) loadTurnsForSessions(ctx context.Context, sessions []*TurnsSes
 	return nil
 }
 
+// turnsSessionsAPIKeyEnrichSQL 构造「每个会话最新一轮的 api_key」回填查询。
+//
+// ★ 抽成包级函数（2026-10-24 R93）⇒ 门禁能**原样**构造它做「旧形态 vs 新形态」的
+// 真库等价性对拍（而不是在测试里抄一份 ⇒ 抄的那份会与生产漂移）。
+//
+// ★ 形态与代价依据见 db.SessionFamilyLatestTurnPerSessionSQL 的注释。
+// ★ tenantPred：额外的行级谓词（如 ` AND t.tenant_id = $2`），使用别名 `t`。
+func turnsSessionsAPIKeyEnrichSQL(tenantPred string) string {
+	return `
+		SELECT DISTINCT ON (x.session_id)
+			x.session_id,
+			x.api_key_id,
+			COALESCE(NULLIF(ak.key_alias, ''), ak.key_prefix, 'key#' || x.api_key_id::text) AS api_key_label
+		FROM ` + db.SessionFamilyLatestTurnPerSessionSQL(tenantPred) + ` x
+		LEFT JOIN public.api_keys ak ON ak.id = x.api_key_id
+		WHERE x.api_key_id IS NOT NULL
+		ORDER BY x.session_id, x.turn_no DESC`
+}
+
+// turnsSessionsAPIKeyEnrichLegacySQL 是 **R93 之前的旧形态**（保留**仅供门禁对拍**）。
+//
+// ★ 它刻意保留「视图 ⋈ 全量 history source」⇒ 生产实测同一批行被扫两遍
+// ⇒ `?model=` 命中多轮会话时 **13,066 ms** ⇒ 端点 500@30s。
+// ⇒ ⚠ **生产代码路径不得再引用它**（admin/turns_sessions_enrich_latest_test.go 的形态门会拦）。
+func turnsSessionsAPIKeyEnrichLegacySQL(tenantPred string) string {
+	return `
+		SELECT DISTINCT ON (t.session_id)
+			t.session_id,
+			rl.api_key_id,
+			COALESCE(NULLIF(ak.key_alias, ''), ak.key_prefix, 'key#' || rl.api_key_id::text) AS api_key_label
+		FROM public.session_turns_with_current_month t
+		JOIN ` + db.SessionFamilyTurnsForSessionsSQL() + ` rl ON rl.request_id = t.request_id
+		LEFT JOIN public.api_keys ak ON ak.id = rl.api_key_id
+		WHERE t.session_id = ANY($1)
+		  AND rl.api_key_id IS NOT NULL` + tenantPred + `
+		ORDER BY t.session_id, t.turn_no DESC`
+}
+
 // enrichTurnsSessionMeta 批量回填 api_key 与 handoff 父会话（仅针对当前页会话）。
 func (h *Handler) enrichTurnsSessionMeta(ctx context.Context, sessions []*TurnsSessionGroup, tenantID string) error {
 	if len(sessions) == 0 {
@@ -735,17 +773,24 @@ func (h *Handler) enrichTurnsSessionMeta(ctx context.Context, sessions []*TurnsS
 	//   该腿每次调用 20,176 ms（pg_stat_statements 增量差分）⇒ 端点 21s。
 	//   单变量 A/B（同 21 个真实 session_id）：11,478.486 ms → **6.369 ms**。
 	//   JOIN 条件（rl.request_id = t.request_id）不变 ⇒ 入选行集合不变。
-	apiKeyQuery := `
-		SELECT DISTINCT ON (t.session_id)
-			t.session_id,
-			rl.api_key_id,
-			COALESCE(NULLIF(ak.key_alias, ''), ak.key_prefix, 'key#' || rl.api_key_id::text) AS api_key_label
-		FROM public.session_turns_with_current_month t
-		JOIN ` + db.SessionFamilyTurnsForSessionsSQL() + ` rl ON rl.request_id = t.request_id
-		LEFT JOIN public.api_keys ak ON ak.id = rl.api_key_id
-		WHERE t.session_id = ANY($1)
-		  AND rl.api_key_id IS NOT NULL` + turnTenant + `
-		ORDER BY t.session_id, t.turn_no DESC`
+	//
+	// ★★ 2026-10-24（R93）：**本条查询才是 `?model=` 500@30s 的真凶**
+	//   （R90/R92 修的是**列表查询**，而 500 一直由本条 enrich 查询造成
+	//   —— 生产 journal：`admin handleTurnsSessions enrich meta failed`）。
+	//   旧形态把**同一批行扫两遍**再 1:1 join：
+	//     · `public.session_turns_with_current_month` 的父表腿实测是 `FROM session_turns`
+	//       （**全部分区**，名字骗人）⇒ 视图 = hot ∪ 全部历史
+	//       ⇒ 视图侧 `Heap Fetches 86,507`；
+	//     · source 侧同样是那 86,507 行（113 列投影）；
+	//     · 两者按 `request_id` 1:1 join ⇒ **join 冗余**。
+	//   ⇒ 命中 `?model=` 时那 21 个**探针会话**在 2026_09 有 **85,712 轮**
+	//     ⇒ 实测 **13,066 ms**（无过滤批次只有 21×1 轮 ⇒ 23 ms）。
+	//   ⇒ 改成 `db.SessionFamilyLatestTurnPerSessionSQL()`：**每个 source 先
+	//     `GROUP BY session_id + max(turn_no)`（index-only，不回表）再回定位那一行**
+	//     ⇒ 实测同批次 **1,339 ms**（**9.8×**），口径经生产三批次双向 EXCEPT ALL 证明等价。
+	//   ⇒ ★ 旧的 `SessionFamilyTurnsForSessionsSQL()` **仍保留**（别处仍在用，
+	//     且新门禁要用它来构造「旧形态」做等价性对拍）。
+	apiKeyQuery := turnsSessionsAPIKeyEnrichSQL(turnTenant)
 
 	rows, err := h.db.Query(ctx, apiKeyQuery, turnArgs...)
 	if err != nil {
