@@ -129,6 +129,10 @@ func TestR81SummaryMustNotUseSalvageMemberSearch(t *testing.T) {
 	r80WriteBackup(t, dir, "sessions-2026-10-20.jsonl.gz", []string{"s1", "s2"})
 
 	fr := NewFileReader(dir)
+	// ★ R82 轮：冷启动路径现在**也会**触发后台刷新（这是修「真实数字出不来」的
+	//	关键一环）⇒ 而后台刷新**允许**打捞回退 ⇒ 这里要断言的是
+	//	「**请求路径**不得走打捞」⇒ 必须**关掉**后台刷新，否则测量是竞态的。
+	fr.summaryRefreshDisabled = true
 	ctx := context.Background()
 
 	// ★ 摘要链路 ⇒ 探针数**不得增长**
@@ -138,7 +142,7 @@ func TestR81SummaryMustNotUseSalvageMemberSearch(t *testing.T) {
 	}
 	after := SalvageMemberProbes()
 	if after != before {
-		t.Errorf("★ 摘要链路不得走打捞的 member 边界搜索（探针数 %d → %d）—— "+
+		t.Errorf("★ 请求路径不得走打捞的 member 边界搜索（探针数 %d → %d）—— "+
 			"那是 ~15× 的成本放大器（实测同文件 2.92s vs ~45s）", before, after)
 	}
 

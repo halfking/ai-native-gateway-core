@@ -81,7 +81,22 @@ func (c *cachedBackupSummary) partialError() error {
 	if c == nil || !c.partial {
 		return nil
 	}
-	return fmt.Errorf("backup summary incomplete: %s", c.partialReason)
+	return backupSummaryError(c.partialReason)
+}
+
+// backupSummaryError 给备份摘要的降级原因加**统一前缀**（单一真值源）。
+//
+// ★ R82b 轮（2026-10-24）：R80 时代前缀加在**两处**
+//
+//	（域层 `partialError()` + admin handler）⇒ 端点对外出现
+//	「backup summary incomplete: backup summary incomplete: …」；
+//	而**冷启动路径**又完全没前缀 ⇒ 同一端点的前缀时有时无。
+//	⇒ ⇒ 前缀只在**域层**加一次，所有路径统一。
+func backupSummaryError(reason string) error {
+	if reason == "" {
+		return nil
+	}
+	return fmt.Errorf("backup summary incomplete: %s", reason)
 }
 
 // backupSetFingerprint 计算备份文件集的指纹。
@@ -129,6 +144,14 @@ type FileReader struct {
 	//   门禁用它钉住不变量：文件没变时，两次调用**只算一次**。
 	// ★ 它也是生产侧的可观测点（想知道端点是不是在反复重解压，看它涨不涨）。
 	summaryComputations int64
+	// summarySalvageFallbacks 统计「摘要链路回退到打捞路径」的次数（R82 轮）。
+	//
+	// ★ 为什么要有它：R81 把摘要切成纯流式，**在生产坏文件上读不出任何记录**
+	//	（154 实测 53/100 个文件 `gzip -t` 失败 ⇒ 单遍 gzip 0 条可恢复）
+	//	⇒ R82 改成「快路径 + 打捞回退」。
+	//	⇒ 这个计数 = 「快路径失败的文件数」⇒ 生产上应当 ≈ 坏文件数；
+	//	⇒ 若它暴涨 ⇒ **好文件也开始读不出**（更严重的信号）。
+	summarySalvageFallbacks int64
 	// fileReads 统计「备份文件被读（解压）了多少次」（R80 轮）。
 	//
 	// ★ 这是「每个文件只解压一遍」这条不变量的**可断言读数**：
@@ -321,7 +344,11 @@ func (fr *FileReader) readFileSummary(ctx context.Context, filename string) (*Ba
 
 	err = fr.ReadRecords(ctx, filename, func(record BackupRecord) error {
 		recordCount++
-		sessionSet[record.SessionID] = struct{}{}
+		// ★ R82b 轮：**空串不是会话** ⇒ 不计入 session 集合
+		//	（否则生产上「唯一 session 数」恒为 1 —— 读数失真）。
+		if record.SessionID != "" {
+			sessionSet[record.SessionID] = struct{}{}
+		}
 		return nil
 	})
 
@@ -392,7 +419,10 @@ func (fr *FileReader) readFileSummaryStreaming(ctx context.Context, filename str
 
 	if err := readGzipStream(ctx, f, func(record BackupRecord) error {
 		recordCount++
-		sessionSet[record.SessionID] = struct{}{}
+		// ★ R82b 轮：**空串不是会话** ⇒ 不计入 session 集合。
+		if record.SessionID != "" {
+			sessionSet[record.SessionID] = struct{}{}
+		}
 		return nil
 	}); err != nil {
 		slog.Warn("file reader: failed to count records (streaming)", "filename", filename, "error", err)
@@ -506,9 +536,12 @@ func (fr *FileReader) GetBackupSummary(ctx context.Context) (*BackupSummary, err
 
 	// ③ 冷启动 / 备份集变了（指纹变 ⇒ 旧值口径已不可信）⇒ 就地算
 	//	（受**请求 ctx** 限制 ⇒ 可能被截断 ⇒ 不完整 ⇒ 报错）
-	summary, partial, perr := fr.computeSummary(ctx, files)
+	//
+	//	★ R82 轮：请求路径**不做**打捞回退（打捞对坏文件要 ~11min
+	//	⇒ 5s 预算里必然被打断 ⇒ 只会更空）；后台刷新才做回退。
+	summary, partial, perr := fr.computeSummaryWith(ctx, files, false)
 	if perr != nil && !partial {
-		return nil, perr
+		return nil, backupSummaryError(perr.Error())
 	}
 	if !partial {
 		fr.storeSummary(summary, fingerprint, false, "")
@@ -516,17 +549,39 @@ func (fr *FileReader) GetBackupSummary(ctx context.Context) (*BackupSummary, err
 		return cloneBackupSummary(summary), nil
 	}
 	fr.storeSummary(summary, fingerprint, true, perr.Error())
-	return cloneBackupSummary(summary), perr
+	// ★ R82 轮：冷启动路径也**必须**触发后台刷新
+	//	（否则要等到**第二次**请求才会触发 ⇒ 只有一个用户打开页面时，
+	//	 真实数字永远出不来）。
+	fr.triggerSummaryRefresh(files, fingerprint)
+	return cloneBackupSummary(summary), backupSummaryError(perr.Error())
 }
 
 // computeSummary 计算备份摘要（**不持有 summaryMu**）。
 //
 // ★ 返回 (摘要, 是否不完整, 错误)：
 //
-//	不完整 = 有文件读失败（GetFileSummary 出错）**或** 第二遍 ReadRecords 出错
+//	不完整 = 有文件**读不出**（快路径 + 打捞回退都失败）
+//	       **或** 有文件**有损**（读出来了，但有内容不可恢复）
 //	（★ R80 轮补上的洞：旧实现**忽略**了 ReadRecords 的返回值
 //	  ⇒ ctx 截断时「跨文件唯一 session 数」会被静默低估）。
+//
+// ★ R82 轮（2026-10-24）：**读法修正**。
+//
+//	生产实测：154 上 **53/100 个备份文件**单遍 gzip 读不出
+//	（孤儿 gzip header 连排 ⇒ `gzip.NewReader` 首个 member 即失败）
+//	⇒ 纯流式会把它们**全部读成 0 条** ⇒ 端点对外说「记录数 0」。
+//	⇒ ⇒ 改成「快路径（流式）失败 ⇒ 回退打捞」，口径与 R80 逐字相同。
+//
+// ★ allowSalvage：
+//
+//	true  = 后台刷新用（预算 30min ⇒ 允许 ~11min 的打捞）
+//	false = 请求路径用（预算 5s ⇒ 打捞必然被打断 ⇒ 徒增 IO）
 func (fr *FileReader) computeSummary(ctx context.Context, files []BackupFile) (*BackupSummary, bool, error) {
+	return fr.computeSummaryWith(ctx, files, true)
+}
+
+// computeSummaryWith 是 `computeSummary` 的可切换版本（allowSalvage 决定是否回退打捞）。
+func (fr *FileReader) computeSummaryWith(ctx context.Context, files []BackupFile, allowSalvage bool) (*BackupSummary, bool, error) {
 	summary := &BackupSummary{
 		Files: make([]BackupFile, 0, len(files)),
 	}
@@ -534,43 +589,54 @@ func (fr *FileReader) computeSummary(ctx context.Context, files []BackupFile) (*
 	allSessions := make(map[string]struct{})
 	var dates []string
 	failed := 0
+	lossy := 0
 	var firstErr error
 
 	for _, file := range files {
-		// ★ R80 轮：**一趟**读出「文件元信息 + 记录数 + 该文件的 session 集合」
-		//	⇒ 不再为「跨文件唯一 session 数」**再解压一遍**（旧实现每个文件解压两遍）。
-		detailed, sessions, err := fr.readFileSummaryStreaming(ctx, file.Filename)
-		if err != nil {
+		// ★ R82 轮：快路径（流式）失败 ⇒ 回退打捞 ⇒ 能读出坏文件里的记录。
+		outcome := fr.readFileSummaryResilient(ctx, file.Filename, allowSalvage)
+		if outcome.err != nil {
 			// ★ 统计不完整（ctx 截断 / 文件不可读）⇒ **必须记账**
 			failed++
 			if firstErr == nil {
-				firstErr = err
+				firstErr = outcome.err
 			}
-			if detailed != nil {
-				summary.Files = append(summary.Files, *detailed)
-				summary.TotalRecords += detailed.RecordCount
-				summary.TotalSize += detailed.Size
-				dates = append(dates, detailed.Date)
+			if outcome.file != nil {
+				summary.Files = append(summary.Files, *outcome.file)
+				summary.TotalRecords += outcome.file.RecordCount
+				summary.TotalSize += outcome.file.Size
+				dates = append(dates, outcome.file.Date)
 			} else {
 				summary.Files = append(summary.Files, file)
 			}
 			continue
 		}
 
+		detailed := outcome.file
 		summary.Files = append(summary.Files, *detailed)
 		summary.TotalRecords += detailed.RecordCount
 		summary.TotalSize += detailed.Size
 		dates = append(dates, detailed.Date)
 
+		// ★ R82 轮：读出来了但**有损** ⇒ 也要记账（数据不完整 ⇒ 不能当完整结果）
+		if outcome.lossy {
+			lossy++
+		}
+
 		// 跨文件全局唯一 session 数 = 各文件 session 集合的并集
 		// （★ 口径不变：不是各文件 SessionCount 之和 —— 那会把重名会话算多次）
-		for id := range sessions {
+		for id := range outcome.sessions {
 			allSessions[id] = struct{}{}
 		}
 	}
 
 	summary.TotalFiles = len(files)
 	summary.TotalSessions = len(allSessions)
+	// ★ R82b 轮：会话数口径**当前是否可用**？
+	//	有记录、却一个真实 session id 都没有 ⇒ 该读数**无意义**
+	//	（生产实测：备份记录几乎全是 request_wal/request_log ⇒ 没有会话维度）
+	//	⇒ 显式标记 ⇒ 端点据此标 degraded（而不是让「会话数 0/1」沉默）。
+	summary.SessionCountAvailable = !(summary.TotalRecords > 0 && summary.TotalSessions == 0)
 
 	// 计算日期范围
 	if len(dates) > 0 {
@@ -582,8 +648,17 @@ func (fr *FileReader) computeSummary(ctx context.Context, files []BackupFile) (*
 		}
 	}
 
+	// ★ R82 轮：两类问题**分开记账** ⇒ 运维能区分
+	//	「读不出来」（failed）与「读出来了但不完整」（lossy）。
+	var parts []string
 	if failed > 0 {
-		return summary, true, fmt.Errorf("%d/%d 个备份文件读取失败：%w", failed, len(files), firstErr)
+		parts = append(parts, fmt.Sprintf("%d/%d 个备份文件读取失败：%v", failed, len(files), firstErr))
+	}
+	if lossy > 0 {
+		parts = append(parts, fmt.Sprintf("%d/%d 个备份文件有损（已打捞出可恢复部分，仍有内容不可恢复）", lossy, len(files)))
+	}
+	if len(parts) > 0 {
+		return summary, true, fmt.Errorf("%s", strings.Join(parts, "；"))
 	}
 	return summary, false, nil
 }
@@ -607,7 +682,7 @@ func (fr *FileReader) triggerSummaryRefresh(files []BackupFile, fingerprint stri
 		ctx, cancel := context.WithTimeout(context.Background(), summaryComputeBudget)
 		defer cancel()
 
-		summary, partial, err := fr.computeSummary(ctx, files)
+		summary, partial, err := fr.computeSummaryWith(ctx, files, true)
 		if partial {
 			slog.Warn("file reader: background backup summary refresh produced incomplete result",
 				"error", err)
