@@ -7728,3 +7728,46 @@ index b953a6f03..555ef83c4 100644
 > ⇒ ⇒ ★★★ ★★ **例外（不可改，已冻结）**：`904_inspector_stats_partial_indexes.sql` 的文件头仍写「2026-10-27」
 > ⇒ ⇒ ★★★ ⇒ **该文件 sha256 已进生产 checksum 台账** ⇒ **改它会让下次发版的 history gate 以「checksum 不匹配」拒绝部署** ⇒ 保持原样并登记。
 > ⇒ ⇒ ★★ **完整记录见 `docs/audit/2026-10-27-R89-inspector-stats-部分索引迁移904.md`**（§0~§10，含 §8.5 发版对照读数）。
+>
+> ⇒ ⇒ ★★★★★ **【2026-10-24 R90 轮（P11）】`turns/sessions` 四条过滤路径的 500@30s 已修（两腿 EXISTS 改写）** ★★★★★
+> ⇒ ⇒ ★★ **症状**：★ `GET /api/admin/turns/sessions` 带 `?api_key_id=` / `?model=` /
+> ⇒ ⇒ ★★ `?provider=` / `?status_code=` 时**生产恒 500@30s**（角色级 statement_timeout=30s
+> ⇒ ⇒ ★★ ⇒ SQLSTATE 57014）；★ 不带过滤只要 **0.04 s**（154 直连，build 2840 实测：
+> ⇒ ⇒ ★★ `api_key_id=105` → 500/30.009s、`model=…` → 500/30.003s）。
+> ⇒ ⇒ ★★★★ **根因**：★ ① 这四条过滤读的是 `session_turns_with_current_month`，
+> ⇒ ⇒ ★★★★ ★ 它的 hot 腿带 `NOT EXISTS (… FROM session_turns archived …)` 反连接
+> ⇒ ⇒ ★★★★ ⇒ 外层**每一行**跑一次 Nested Loop Anti Join（`?model=` EXPLAIN **36,415 ms**）；
+> ⇒ ⇒ ★★★★ ★ ② `api_key_id` 那条还把 **113 列全量 source**（hot ∪ 父表 ≈1.1 M 行）
+> ⇒ ⇒ ★★★★ 放进**关联子查询内部** ⇒ 外层每行物化一遍 ⇒ EXPLAIN **> 90 s 未跑完**；
+> ⇒ ⇒ ★★★★ ★ 单变量 A/B：把谓词推进 source 内部（R85 手法）= **52,854 ms** ⇒ 同样无效。
+> ⇒ ⇒ ★★★★ **修法**：★ 四条统一改成 **hot ∪ 父表两腿 EXISTS**
+> ⇒ ⇒ ★★★★ （`db.SessionFamilyTurnsSessionExistsSQL`）⇒ 谓词落在索引上。
+> ⇒ ⇒ ★★★★ ★ **不是新发明**：同仓 `admin/turns_filter_options.go` 的 `turnMergedSource`
+> ⇒ ⇒ ★★★★ 早在 2026-10-18 就用了同一手法（视图 44,564 ms ⇒ 两腿 2,048/2,814 ms）；
+> ⇒ ⇒ ★★★★ 本轮只是把它收敛成**单一真值源**（避免第三次各写一份）。
+> ⇒ ⇒ ★★★★ ★★ **口径等价性不靠「形状像」**：★ 依赖两条**结构前提**，各写成一条**真库门**：
+> ⇒ ⇒ ★★★★ (a) `request_id → (session_id, tenant_id)` 函数依赖（跨租户）⇒ 生产实测 **0 例外**；
+> ⇒ ⇒ ★★★★ (b) hot ∩ 父表同 request_id 的比较列一致 ⇒ 配对 **0 行**（⇒ 视图 ≡ hot ∪ 父表，
+> ⇒ ⇒ ★★★★ ★ 且 promote 是 DELETE hot + INSERT parent 的**移动** ⇒ 这是结构性保证）。
+> ⇒ ⇒ ★★★★ ★ **生产规模逐条比对：api_key 105/143/2 → 28,263 / 9,692 / 845 个候选会话，
+> ⇒ ⇒ ★★★★ model 三个模型 → 405 / 287 / 1,630 ⇒ 合计 41,122 条，★ 口径不一致 0 条**；
+> ⇒ ⇒ ★★★★ 仓内真库门用**真 113 列 source** 在本地真库比对 **648 条、不一致 0 条**。
+> ⇒ ⇒ ★★★★ ★★ **顺带修掉一处「被掩盖的 class-A 违规」**：★ `nativeSessionReaders` 的判据是
+> ⇒ ⇒ ★★★★ **整文件 `strings.Contains`** ⇒ 只证明「某处有」不证明「处处有」⇒ 实测抓到
+> ⇒ ⇒ ★★★★ `admin/turns_sessions.go` 的 `loadTurnsForSessions`（session-scoped）
+> ⇒ ⇒ ★★★★ **确实在读带反连接的视图**（被同文件别处的调用掩盖）⇒ ★ 修法 = **逐块豁免 +
+> ⇒ ⇒ ★★★★ 可执行断言**（豁免块必须仍读视图、不得改读单腿源）+ 阳性对照；
+> ⇒ ⇒ ★★★★ ★ **不能简单改掉**：该查询要**去重后**的轮次集合 ⇒ 视图的 anti-join 承重
+> ⇒ ⇒ ★★★★ （裸 hot ∪ 父表会把已 promote 的轮次**数两遍** ⇒ 那是口径变更）⇒ 实测该腿 < 20 ms。
+> ⇒ ⇒ ★★★ **门**：★ 新增 `admin/turns_sessions_filter_pushdown_test.go`（7 条：形态/阳性对照/
+> ⇒ ⇒ ★★★ 单一真值源/非法值跳过/源码级反向断言/**真库前提**/**真库等价+行数守卫**）
+> ⇒ ⇒ ★★★ + `db/request_logs_view_schema_apikey_expr_test.go`（1 条：投影那一项 == 过滤侧常量）；
+> ⇒ ⇒ ★★★ + 更新 3 处既有形状门与 1 处风险门 marker（逐条写清理由）。
+> ⇒ ⇒ ★★★ **LESSONS §354**（5 条：形状≠口径 / 逐条比对+行数守卫 / 整文件 Contains 是假阳性门 /
+> ⇒ ⇒ ★★★ 源码断言必须剥注释 / 按「过滤族」分别归因 + 动手前先搜仓内已验证手法）。
+> ⇒ ⇒ ★★★ **诚实边界**：本地库比生产小 3 个数量级 ⇒ 本地真库门证明**谓词等价**、
+> ⇒ ⇒ ★★★ **不**证明生产计划形态；★ 本轮「更快」由**端点级 A/B**给出而非 EXPLAIN；
+> ⇒ ⇒ ★★★ ★ 另：`admin` 包有 **1 个既有红** `TestG5SearchTextFTSOnRealDB`
+> ⇒ ⇒ ★★★ （本机 `psql` shim 不认 DSN 的 host/port）⇒ ★ 已在 **origin/main 独立 worktree
+> ⇒ ⇒ ★★★ 复跑确认同签名失败 ⇒ **非本轮引入**，未动。
+> ⇒ ⇒ ★★ **完整记录见 `docs/audit/2026-10-27-R90-turns-sessions-过滤路径500与两腿改写.md`**。

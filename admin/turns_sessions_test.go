@@ -196,16 +196,29 @@ func TestBuildTurnsSessionWhere_TurnLevelFiltersSession(t *testing.T) {
 
 	for _, c := range []string{
 		"s.tenant_id = $1",
-		"ft.model = $2",
-		"ft.provider = $3",
-		"ft.status_code = $4",
+		"t.model = $2",
+		"t.provider = $3",
+		"t.status_code = $4",
 	} {
 		if !strings.Contains(where, c) {
 			t.Errorf("where missing %q\nwhere=%s", c, where)
 		}
 	}
-	if !strings.Contains(where, "EXISTS (SELECT 1 FROM public.session_turns_with_current_month ft") {
-		t.Errorf("expected EXISTS subquery on session_turns_with_current_month: %s", where)
+	// ★ 2026-10-24（R90）：轮次级过滤子句**不再**读 `session_turns_with_current_month`。
+	//   理由（252 EXPLAIN ANALYZE 实测，生产只读）：该视图的 hot 腿带
+	//   `NOT EXISTS (… FROM session_turns archived …)` 反连接 ⇒ 外层**每一行**
+	//   都要在 hot 上跑一次 Nested Loop Anti Join ⇒ `?model=` 生产形态
+	//   **36,415 ms** ⇒ 角色级 statement_timeout=30s ⇒ **稳定 500@30s**。
+	//   ⇒ 现在是两腿 EXISTS（hot ∪ 父表），由 db.SessionFamilyTurnsSessionExistsSQL 渲染。
+	if !strings.Contains(where, "EXISTS (SELECT 1 FROM public.session_turns_hot t") {
+		t.Errorf("expected hot-leg EXISTS: %s", where)
+	}
+	if !strings.Contains(where, "OR EXISTS (SELECT 1 FROM public.session_turns t") {
+		t.Errorf("expected parent-leg EXISTS: %s", where)
+	}
+	// ★ 反向断言：视图一旦被引回来，这条端点就会回到 500@30s —— 而**不报任何错**。
+	if strings.Contains(where, "session_turns_with_current_month") {
+		t.Errorf("turn-level filter must not read the anti-join view: %s", where)
 	}
 	if strings.Contains(where, "JOIN public.sessions") {
 		t.Errorf("turn-level EXISTS must not join public.sessions: %s", where)
@@ -256,8 +269,20 @@ func TestBuildTurnsSessionWhere_NoTimeWindowStillCursor(t *testing.T) {
 func TestBuildTurnsSessionWhere_APIKeyAndStatus(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/api/admin/turns/sessions?api_key_id=42&status=active", nil)
 	where, args, nextArg := buildTurnsSessionWhere(req, "t1", time.Time{}, time.Time{}, time.Time{}, "", 1)
-	if !strings.Contains(where, "rl.api_key_id = $2") {
+	// ★ 2026-10-24（R90）：api_key 过滤子句从「视图 ⋈ 113 列全量 source」改成
+	//   hot ∪ 父表两腿 EXISTS。谓词**逐字**取 db.SessionFamilyAPIKeyIDExpr
+	//   （= 投影里那一列的表达式）⇒ 「展示的 api_key」与「过滤用的 api_key」
+	//   永远是同一个口径。
+	//   ★ 这里刻意写**字面量**而不是引用常量 ⇒ 常量若被改动，本断言会红
+	//     （常量与投影的一致性由 admin/turns_sessions_filter_pushdown_test.go 单独钉）。
+	const apiKeyPred = "(CASE WHEN t.api_key_id ~ '^[0-9]+$' THEN t.api_key_id::bigint END) = $2"
+	if !strings.Contains(where, apiKeyPred) {
 		t.Fatalf("missing api_key_id EXISTS clause: %s", where)
+	}
+	// ★ 反向断言：旧形态把 113 列全量 source 放进关联子查询 ⇒ 外层每行物化一遍
+	//   ⇒ 生产 EXPLAIN ANALYZE > 90 s 未跑完 ⇒ 端点 500@30s。
+	if strings.Contains(where, "SessionFamilyTurnsSourceSQL") {
+		t.Fatalf("api_key filter must not pull the full 113-column source into a correlated subquery: %s", where)
 	}
 	if !strings.Contains(where, "s.status = $3") {
 		t.Fatalf("missing status clause: %s", where)
@@ -384,7 +409,10 @@ func TestTurnsSessionSQLHasNoFormatArtifacts(t *testing.T) {
 		}
 	}
 	// 参数绑定必须与 args 对得上：$1=tenant $2=api_key_id $3=status。
-	if !strings.Contains(where, "rl.api_key_id = $2") {
+	//
+	// ★ 2026-10-24（R90）：绑定位置的判据随谓词形态一起改（旧形态是
+	//   `rl.api_key_id = $2`，新形态是 CASE 表达式 = $2）。
+	if !strings.Contains(where, "(CASE WHEN t.api_key_id ~ '^[0-9]+$' THEN t.api_key_id::bigint END) = $2") {
 		t.Fatalf("api_key_id predicate lost its bind position:\n%s", where)
 	}
 	if len(args) != 3 {

@@ -424,22 +424,34 @@ func buildTurnsSessionWhere(r *http.Request, tenantID string, tsFrom, tsTo time.
 	// model / provider / status_code 是轮次级条件：在会话查询里用 EXISTS 直接
 	// 排除不含匹配轮次的会话，避免整页"无匹配轮次"的空会话卡片。
 	// loadTurnsForSessions 会用同样条件过滤会话内展示的轮次。
+	//
+	// ★ 2026-10-24（R90）：这三条**不再**走 `session_turns_with_current_month` 视图，
+	//   改成 db.SessionFamilyTurnsSessionExistsSQL 的 **hot ∪ 父表两腿 EXISTS**。
+	//   理由（252 EXPLAIN ANALYZE 实测，生产只读）：视图的 hot 腿带
+	//   `NOT EXISTS (… FROM session_turns archived …)` 反连接 ⇒ 外层**每一行**
+	//   都要在 hot 上跑一次 Nested Loop Anti Join ⇒ `?model=` 生产形态
+	//   **36,415 ms** ⇒ 角色级 statement_timeout=30s ⇒ **稳定 500@30s**。
+	//   同一手法在 admin/turns_filter_options.go 的 turnMergedSource
+	//   早已在用（2026-10-18：视图 44,564 ms ⇒ 两腿 2,048/2,814 ms）。
+	//   ★ 口径等价：视图 ≡ hot ∪ 父表（promote 是 DELETE hot + INSERT parent 的
+	//   **移动** ⇒ 同一 request_id 不同时存在两边 ⇒ 反连接剔除 0 行；
+	//   252 实测 hot ∩ 父表配对 **0 行**）⇒ 同一列名、同一谓词。
 	if v := strings.TrimSpace(r.URL.Query().Get("model")); v != "" {
-		clauses = append(clauses, fmt.Sprintf(
-			"EXISTS (SELECT 1 FROM public.session_turns_with_current_month ft WHERE ft.session_id = s.session_id AND ft.tenant_id = s.tenant_id AND ft.model = $%d)", argIdx))
+		clauses = append(clauses, db.SessionFamilyTurnsSessionExistsSQL(
+			"t.model = $"+strconv.Itoa(argIdx)))
 		args = append(args, v)
 		argIdx++
 	}
 	if v := strings.TrimSpace(r.URL.Query().Get("provider")); v != "" {
-		clauses = append(clauses, fmt.Sprintf(
-			"EXISTS (SELECT 1 FROM public.session_turns_with_current_month ft WHERE ft.session_id = s.session_id AND ft.tenant_id = s.tenant_id AND ft.provider = $%d)", argIdx))
+		clauses = append(clauses, db.SessionFamilyTurnsSessionExistsSQL(
+			"t.provider = $"+strconv.Itoa(argIdx)))
 		args = append(args, v)
 		argIdx++
 	}
 	if v := strings.TrimSpace(r.URL.Query().Get("status_code")); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
-			clauses = append(clauses, fmt.Sprintf(
-				"EXISTS (SELECT 1 FROM public.session_turns_with_current_month ft WHERE ft.session_id = s.session_id AND ft.tenant_id = s.tenant_id AND ft.status_code = $%d)", argIdx))
+			clauses = append(clauses, db.SessionFamilyTurnsSessionExistsSQL(
+				"t.status_code = $"+strconv.Itoa(argIdx)))
 			args = append(args, n)
 			argIdx++
 		}
@@ -469,17 +481,26 @@ func buildTurnsSessionWhere(r *http.Request, tenantID string, tsFrom, tsTo time.
 	}
 	if v := strings.TrimSpace(r.URL.Query().Get("api_key_id")); v != "" {
 		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n > 0 {
-			// ⚠️ 这里必须用字符串拼接而不是 fmt.Sprintf：原生源 SQL 里含
-			// `LIKE 'sys:%'`、`~ '^[0-9]+$'` 等 % 字符，交给 Sprintf 会被当
-			// 成格式动词，产出 `%!'(MISSING)` 并吃掉 argIdx 的参数绑定 ——
-			// 实测生成的 WHERE 里出现了三处 %! 残渣，查询在运行期直接语法错。
-			// 参数序号单独拼，SQL 本体一个字节都不进格式化。
-			clauses = append(clauses, `EXISTS (
-					SELECT 1 FROM public.session_turns_with_current_month ft
-					JOIN `+db.SessionFamilyTurnsSourceSQL()+` rl ON rl.request_id = ft.request_id
-					WHERE ft.session_id = s.session_id AND ft.tenant_id = s.tenant_id
-					  AND rl.api_key_id = $`+strconv.Itoa(argIdx)+`
-				)`)
+			// ★ 2026-10-24（R90）：这一支原来 JOIN 了 113 列的**全量 source**
+			//   （db.SessionFamilyTurnsSourceSQL()，hot ∪ 父表全部历史 ≈1.1 M 行）
+			//   ⇒ 它在**关联子查询内部** ⇒ 外层每一行都把它物化一遍
+			//   ⇒ 生产形态 EXPLAIN ANALYZE **> 90 s 未跑完**（被 30s 超时杀掉）
+			//   ⇒ 端点稳定 500@30s。
+			//   ⇒ 现在改成与 model/provider/status_code 同一形态的**两腿 EXISTS**。
+			//
+			// ★ 谓词必须与**投影**逐字一致（db.SessionFamilyAPIKeyIDExpr）：
+			//   原始列是 text、参数是 int64 ⇒ 归一规则「纯数字才转 bigint」。
+			//   若这里改成 `t.api_key_id = $n::text`，则 '0105' 这类值会与投影分叉
+			//   ⇒ 「展示的 api_key」与「过滤用的 api_key」不是同一个口径。
+			//
+			// ★ 保留的语义：**参数非法（0 / 负数 / 非数字）⇒ 整个过滤子句被跳过**
+			//   （等价于不过滤）—— 与改动前逐字一致。
+			//
+			// ★ 旧的「不能用 fmt.Sprintf」陷阱已随全量 source 一起消失：
+			//   那个坑来自 source SQL 里的 `LIKE 'sys:%'` / `~ '^[0-9]+$'`
+			//   含 `%` 字符 ⇒ 现在这条子句里已没有任何 `%`。
+			clauses = append(clauses, db.SessionFamilyTurnsSessionExistsSQL(
+				db.SessionFamilyAPIKeyIDExpr+" = $"+strconv.Itoa(argIdx)))
 			args = append(args, n)
 			argIdx++
 		}
