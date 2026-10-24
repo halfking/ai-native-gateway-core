@@ -48,15 +48,24 @@ import (
 	"github.com/kaixuan/llm-gateway-go/internal/pipelinev2"
 )
 
-// ★★★ strongGuaranteeFloor 是「**代码面核对语义断言**」这条能力的**地板**。
+// ★★★ strongGuaranteeRequired 是**必须**享有强保证（**代码面**核对语义断言）的差异 ID 列表。
 //
-// ★★★ 它住在**门文件**里、**不在清单里** ⇒ 这是关键：★
-// ★★★ 清单侧（`internal/pipelinev2`）负责声明「哪条差异有强保证」，
-// ★★★ 门侧负责钉住「**至少**有这么多条真的有强保证」⇒ ⇒ 两边**互为对手**：
-// ★★★ 清单删掉一条 ⇒ 门侧地板失守 ⇒ 红（★ verifier 实测过的恒绿路径，已堵）。
+// ★★★ ★★ 它住在**门文件**里、**不在清单里** ⇒ 这是关键：★
+// ★★★ 清单侧（`internal/pipelinev2`）负责声明「哪些差异有强保证」，
+// ★★★ 门侧负责钉住「**这几条**必须有强保证」⇒ ⇒ 两边**互为对手**。
 //
-// ★★★ 改这个数字 = **改断言** ⇒ 必须动门文件 ⇒ git diff 可见 ⇒ 不会静默通过。
-const strongGuaranteeFloor = 1
+// ★★★ ★★ 为什么按【ID】钉、而不是按【数量】钉（★ 2026-10-24 第三轮 verifier 实测撞出来的）：
+// ★★★ ★★ 数量地板（`strong >= N`）只保**数量**、不保**对象** ⇒ ⇒
+// ★★★ ★★ 把某条差异的断言**迁移**到别的差异（并登记进 `ExtraTestNames`）⇒
+// ★★★ ★★ `strong` 仍是 N ⇒ 地板满足 ⇒ **门绿** ⇒ ★★ 而被迁走的那条已掉回弱保证
+// ★★★ ★★ ⇒ ⇒ 「代码面核对」这个能力**名存实亡** ⇒ ⇒ **迁移攻击**放行。
+// ★★★ ★★ ⇒ ⇒ 按 ID 钉 ⇒ 删掉**或迁走**该差异的断言 ⇒ **该 ID 不再有 `RequiredAssertions`**
+// ★★★ ★★ ⇒ ⇒ **门红** ⇒ ⇒ 两个残余（删除 / 迁移）**一次堵死**。
+//
+// ★★★ ⚠ **诚实的边界**（★ 登记在审计档 §五）：★ 改这个列表 = 改断言 ⇒ 必须动门文件
+// ★★★ ⇒ **git diff 可见**（★ 这是**流程性**论证，**不是**技术互锁）⇒ ⇒ 门**挡不住**有人
+// ★★★ 显式把它改掉 ⇒ ★⇒ 所以「恒绿路径已堵」这句话**只对清单侧成立**，不护门侧。
+var strongGuaranteeRequired = []string{"D09"}
 
 // magpieP2RepoRoot 返回仓根目录。
 func magpieP2RepoRoot(t *testing.T) string {
@@ -340,26 +349,41 @@ func TestMagpieP2V2DifferencesHaveRealTests(t *testing.T) {
 		"**弱保证**（仅存在性 + 主题词）%d 条 ⇒ ⇒ 「每条差异有测试覆盖」的机器化程度不均匀",
 		strong, weak)
 
-	// ★★★ **地板断言**：★ 强保证的条数**不得低于基线**。
+	// ★★★ **按 ID 钉的强保证断言**：★ 门侧那份清单里的每一条差异，
+	// ★★★ 都**必须**带 `RequiredAssertions`（即**必须**享受「代码面核对语义断言」）。
 	//
-	// ★★★ 为什么必须有它（★ 2026-10-24 verifier 实测撞出来的**恒绿路径**）：
-	// ★★★ 上面那段只 `t.Logf`（**只 log、无断言**）⇒ ⇒ 删掉某条差异的整块
-	// ★★★ `RequiredAssertions` ⇒ 分布变成「强 0 / 弱 17」⇒ ★★ **门照样 rc=0**
-	// ★★★ ⇒ ⇒ 也就是说：「本门把『每条差异有测试覆盖』升级成『代码里真的断言了』」
-	// ★★★ 这件事**可以被无声撤销**，而门不会吭声 ⇒ ⇒ ★★ 那是一条**自证型恒绿路径**。
+	// ★★★ 为什么不是「数量地板」（★ 2026-10-24 verifier 实测撞出来的两个残余）：
+	// ★★★ ① **删除攻击**：删掉某条差异的整块 `RequiredAssertions` ⇒ 数量掉下去 ⇒ 数量地板能抓；
+	// ★★★ ② ★★ **迁移攻击**：把它的断言**迁到别的差异**（并登记进 `ExtraTestNames`）⇒
+	// ★★★    ★★ 数量**不变** ⇒ 数量地板**放行** ⇒ 而被迁走的那条已掉回弱保证
+	// ★★★    ⇒ ⇒ 「代码面核对」**名存实亡** ⇒ ⇒ 按 ID 钉 ⇒ 删**或迁**都表现为
+	// ★★★    「该 ID 不再有 `RequiredAssertions`」⇒ **门红**。
 	//
-	// ★★★ 修法：★ 在**门这一侧**留一个**独立于清单**的基线数字 ⇒
-	// ★★★ 清单侧删掉断言 ⇒ strong 掉到基线以下 ⇒ 门红。
-	// ★★★ ⇒ 而要改这个基线，**必须改门文件**（显式动作，git diff 可见）⇒ 不会静默通过。
-	//
-	// ★★ 与 C8 的 `checked == 0 ⇒ t.Fatal` **同款**：★ 门必须钉住「我至少核对了 N 项」。
-	if strong < strongGuaranteeFloor {
-		t.Errorf("★★ 强保证条数 = %d，**低于地板 %d** ⇒ ★★ 「代码面核对语义断言」这个能力**被撤销了**\n"+
-			"★★ ⇒ 典型成因：某条差异的整块 `RequiredAssertions` 被删掉\n"+
-			"★★ ⇒ ★ 这是一条**恒绿路径**：不设地板时，删掉断言门仍绿\n"+
-			"★★ ⇒ 修法：把该差异的 `RequiredAssertions` 补回去（★ 别只删门里的地板）",
-			strong, strongGuaranteeFloor)
+	// ★★ 与 C8 的 `checked == 0 ⇒ t.Fatal` **同款**：★ 门必须钉住「**这几条**我确实核对了」。
+	for _, id := range strongGuaranteeRequired {
+		d := magpieP2FindDifference(list, id)
+		if d == nil {
+			t.Errorf("★★ 强保证清单里的差异 %s 在清单中**不存在** ⇒ 判据的输入已漂\n"+
+				"★★ ⇒ 修法：清单里补回 %s，或更新本门侧的强保证清单", id, id)
+			continue
+		}
+		if len(d.RequiredAssertions) == 0 {
+			t.Errorf("★★ 差异 %s 被列入「**必须**享有强保证」清单，却**没有** `RequiredAssertions` ⇒\n"+
+				"★★ ⇒ 「代码面核对语义断言」这个能力对它**已被撤销**（★ 可能是被删，也可能是被迁走）\n"+
+				"★★ ⇒ 修法：把该差异的 `RequiredAssertions` 补回去（★ 迁到别的差异上**不算**）",
+				id)
+		}
 	}
+}
+
+// magpieP2FindDifference 在差异清单里按 ID 取一条。
+func magpieP2FindDifference(list []pipelinev2.Difference, id string) *pipelinev2.Difference {
+	for i := range list {
+		if list[i].ID == id {
+			return &list[i]
+		}
+	}
+	return nil
 }
 
 // TestMagpieP2V2ProductionFactsStillHold G5：
