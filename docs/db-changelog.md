@@ -9478,3 +9478,19 @@ healthz 200。防回归门：`tests/deploy_legacy_restart_flag_test.sh`（负控
 | Migration | File | SHA-256 | Status |
 |-----------|------|---------|--------|
 | — | （2823 无新迁移，水位仍为 901） | — | — |
+
+## 2026-10-27 — R89 inspector-stats 慢端点归因轮（迁移 904 落仓）
+
+★ 本节登记 1 条 startup 迁移（904），**登记后随下次 154/245 部署由
+`deploy-lib/db-changelog.sh` 作为 pending ≥ 412 自动应用**。
+生产共享库（172.16.2.210:5432/llm_gateway）2026-10-27 只读实测水位 = **903**
+（`schema_migrations` 实查：902 applied 2026-10-24 08:49、903 applied 2026-10-24 12:47）。
+
+★ **台账订正**：上一节（2026-10-23 llmgo 生产页面修复轮）把 902 / 903 标成
+「未应用，pending」，但生产 `schema_migrations` 里**两条早已记账**
+⇒ 那是**标注漂移**（登记面更新滞后于实际应用），不是投递缺口。
+本节按生产实测水位（= 903）如实登记，904 是**唯一**待投递项。
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 904 | `904_inspector_stats_partial_indexes.sql` | `d2cd82dccf0ff6060ba11c3f593484e445e46ac44cba4b057edf12d45b25af20` | registered in installer StartupFiles + 生产升级序列 `scripts/apply-db-revision-sequence.sh`（未应用，pending）—— 给 `GET /api/admin/sessions/inspector-stats` 的 L2/L3 两条**无时间窗全表聚合腿**补两条部分索引：`public.session_dim (closed_at) WHERE status = 'closed'`（idx_session_dim_closed_at_closed，8,192 B）+ `public.session_summaries (health_score) WHERE health_score IS NOT NULL`（idx_session_summaries_health_score_notnull，2,120 kB；与既有 `idx_session_summaries_health_pending ... WHERE health_score IS NULL` 是 **NULL 侧 / NOT NULL 侧互补**，非冗余）。★ 根因（252 生产只读实测，2026-10-27）：session_dim 的 7 条既有索引**没有一条含 closed_at**；session_summaries 的 19 条里只有 health_score IS **NULL** 侧的索引 ⇒ 两条腿都只能 Seq Scan + Filter（Rows Removed by Filter 分别 301,024 / 184,361）。★ 效果（事务内 CREATE INDEX + EXPLAIN ANALYZE + ROLLBACK，生产零持久变更；回滚后残留索引实测 = 0）：L2 **389.373 ms → 119.706 ms**（Parallel Seq Scan → Parallel Index Only Scan）、L3 **195.432 ms → 0.100 ms**（Parallel Seq Scan → Index Only Scan）；L1 JOIN 腿不变（1,615 ms → 1,401 ms，噪声带内）。★ **口径零变化**：本迁移**不改任何查询**，只加索引 ⇒ 结果集取值不变（构造性成立，不依赖快照比对）。★ 两张表都**不是分区表**（`pg_class.relkind='r'`）⇒ 可用普通 CREATE INDEX；仍不用 CONCURRENTLY（startup 迁移默认在事务里跑）+ lock_timeout=60s / statement_timeout=10min（903 同款）；两张都是热写表 ⇒ 构建期持 SHARE 锁阻塞该表写入 ⇒ 落在低峰窗口。★ 诚实边界：C1 索引当前为空（session_dim.status **distinct = 1**、closed_at 100% NULL）⇒ 收益形态是「把恒空谓词从全表扫降级为索引扫」；真因是**会话关闭路径坏了**（`HandleSessionRecycle` 与 `bg/session_lifecycle_worker.go:496-500` UPDATE 了 session_dim 上不存在的 `stop_reason`/`updated_at` 列 ⇒ 真库 42703），**不在索引**；down：`904_inspector_stats_partial_indexes.down.sql`（sha256 `3328f8c7368769c42641f7874dd38ba4e04138891abad3b8781abdc2ed2f5532`） |

@@ -2192,6 +2192,31 @@ files=(
   #   public.sessions 是热写表（session_aggregator.go:216 每请求一次
   #   upsert）⇒ 构建期 SHARE 锁阻塞该分区写 ⇒ 落在低峰窗口。
   "$ROOT_DIR/sql/migrations/startup/903_sessions_updated_at_session_id_index.sql"
+
+  # ── 2026-10-27（R89 inspector-stats 慢端点归因轮）：两条部分索引 ──
+  #
+  # 904：inspector-stats 的 L2/L3 两条聚合腿的部分索引。
+  #
+  # ★ 病灶（252 生产只读实测，2026-10-27）：GET
+  #   /api/admin/sessions/inspector-stats 的两条聚合腿**都没有时间窗**
+  #   ⇒ 都是全表聚合：
+  #     L3 `status='closed' AND closed_at >= CURRENT_DATE`
+  #        → 全扫 90 万行 session_dim 再丢掉 100%（Rows Removed by Filter: 301,024）
+  #     L2 `AVG(health_score) WHERE health_score IS NOT NULL`
+  #        → 全扫 86 万行 session_summaries 再丢掉 55 万行
+  #          （Rows Removed by Filter: 184,361）
+  # ★ 根因：session_dim 的 7 条既有索引没有一条含 closed_at；
+  #   session_summaries 的 19 条里只有 health_score IS **NULL** 侧的
+  #   idx_session_summaries_health_pending ⇒ NOT NULL 侧无索引可承接。
+  # ★ 修复效果（事务内建索引 + EXPLAIN ANALYZE + ROLLBACK，生产零持久变更）：
+  #   L2 389.373 ms → 119.706 ms；L3 195.432 ms → 0.100 ms；
+  #   索引体积 8,192 B + 2,120 kB。
+  # ★ 口径零变化：本迁移**不改任何查询**，只加索引 ⇒ 结果集取值不变。
+  # ★ 两张表都不是分区表 ⇒ 可用普通 CREATE INDEX（仍不用 CONCURRENTLY：
+  #   startup 迁移默认在事务里跑）+ SET LOCAL lock_timeout='60s' /
+  #   statement_timeout='10min'（903 同款）。两张都是热写表 ⇒ 构建期持
+  #   SHARE 锁阻塞该表写入 ⇒ 落在低峰窗口。
+  "$ROOT_DIR/sql/migrations/startup/904_inspector_stats_partial_indexes.sql"
 )
 
 
