@@ -15,6 +15,20 @@
 #
 set -euo pipefail
 
+# ★ R151 轮（2026-10-27）：**版本守卫** —— 本脚本用了 `declare -A`（关联数组），
+# 它需要 **bash ≥ 4**；而 **macOS 自带的 bash 是 3.2** ⇒ 直接跑会得到一句
+# cryptic 的 `declare: -A: invalid option`（★ 本轮实测踩到）。
+# ⇒ 在做任何事之前先给出**可执行的**提示，而不是让使用者去猜。
+if [[ -z "${BASH_VERSINFO[0]:-}" || "${BASH_VERSINFO[0]}" -lt 4 ]]; then
+  printf '%s\n' \
+    "FATAL: 本脚本需要 bash >= 4（用了 declare -A 关联数组）；当前是 ${BASH_VERSION:-unknown}。" >&2
+  printf '%s\n' \
+    "  macOS 自带 bash 是 3.2 ⇒ 请用 'brew install bash' 后的 /opt/homebrew/bin/bash，" >&2
+  printf '%s\n' \
+    "  或直接在目标主机（Linux）上执行；★ 本脚本默认是**只读 preflight**，可安全先跑一次看缺口。" >&2
+  exit 64
+fi
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
