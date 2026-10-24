@@ -7771,3 +7771,42 @@ index b953a6f03..555ef83c4 100644
 > ⇒ ⇒ ★★★ （本机 `psql` shim 不认 DSN 的 host/port）⇒ ★ 已在 **origin/main 独立 worktree
 > ⇒ ⇒ ★★★ 复跑确认同签名失败 ⇒ **非本轮引入**，未动。
 > ⇒ ⇒ ★★ **完整记录见 `docs/audit/2026-10-27-R90-turns-sessions-过滤路径500与两腿改写.md`**。
+
+> **2026-10-24 探测打标修复 —— 154 发布 + 线上验证 + 口径订正轮（本会话）**：★ 上文 §「2026-10-23 实时拓扑探测打标轮」记的是
+> **根因定位与修复**（`e6f87c623`）；本节记**它被发到 154 并在线上生效**，以及**一处口径订正**。
+> ★ **发布（首次尝试被闸门安全拒绝）**：`scripts/deploy-seamless.sh` 是**就地构建** ⇒ **脏工作树会被直接发上生产** ⇒ 一律从
+> **干净兄弟 worktree**（`lgw-deploy-154`，detached @ `origin/main`）部署；`scripts/deploy-lib` 相对符号链接仍解析到仓外 SSOT。
+> ⇒ 首次尝试在 `[6.5/9]` 被**迁移 checksum 对账闸门 fail-closed 拒绝**（`430:430_sessions_v2_schema.sql`）⇒ **符号链接未切换、线上零影响**；
+> 离线逐字复刻得 154 全量漂移：**291 一致 / 75 不匹配 / 12 文件名不匹配 / 21 缺台账** ⇒ **既有阻塞**（R89-CT 定级 P1），与本缺陷无关。
+> ⇒ 处置：备份并删除 2 行 **`999` 测试残留**（`schema_migrations` + `llm_gateway_migration_checksums`；仓内无对应文件，审计早已登记），
+> 带 **官方旋钮 `DB_LEDGER_RECONCILE_FROM=902`** 重跑（★ 该阈值**同时**门控 checksum 校验与 **pending 投递** ⇒ **不能抬到 1000**，
+> 否则 **902 静默不投递**）⇒ **成功**：`2826-e316234d`（`verified=true`，切换 13s，handoff 12871ms ⇒ 保留旧实例回滚后 drain ⇒ **无双实例写库**），
+> 迁移 **902 已落地**，凭据解密冒烟 `providers=14,18,13092 creds=17 failed=0`。
+> ★★ **修复首发时点用「二进制符号」判定，不靠目录名**（`deploy-seamless.sh` 就地构建 ⇒ 目录名 sha ≠ 内容）：
+> `strings <binary> | grep applyRequestContextFields` ⇒ **2817/2819/2818/2825 全 0**、**2826 = 1**、2840（当前 `current`）= 1
+> ⇒ **2826 是首个含修复的 release** ⇒ 首发时刻 **10-24 08:49**。
+> ★ **线上行为验证（双口径、两处独立读数）**：月分区表 `session_turns`（`partition_date='2026-10-24'`，切点 08:49:23）
+> ⇒ **业务成功行 pre-fix 122/122 全丢标 → post-fix 106 条 0 丢**；**探测成功行 post-fix 15 条 0 丢**；
+> hot 表 post-fix 成功行 360 条 `origin_stage` 分布 = business 236 / node_probe 108 / self_check 16 ⇒ **零遗漏**。
+> ⇒ ★ **决定性样本** `8706d6e39432fa4692a7cdf12c446dea`（08:50:18 / success=t / node_probe / node-probe-worker / 127.0.0.1 / go-client / 200）。
+> ★★★ **实时拓扑 pill 端到端观测已补上**（补上上一轮留的缺口）：直连 `GET /api/admin/live-stream`（admin JWT）抓 SSE 260 事件
+> ⇒ 顶层 `request` tile 里 **`is_probe=true` 49 条**（failure 39 / in_progress 6 / **success 4**），泳道聚合里 distinct 探测 id 4004
+> （**success 555**）⇒ **成功探测 tile 实测 `is_probe=true`**（`probe-direct-c50-mkimi-k3-a5-ok-…`、`probe-direct-c19-…-ok-…`）
+> ⇒ **修复前「成功 ⇒ 必无标 ⇒ pill 必否」；现在 pill 实测为「是」**。
+> ★ **量具失误（记）**：第一版脚本在**顶层**找 `is_probe` ⇒ **0 命中** ⇒ 实际在 **① 顶层 `request` 事件的 `request` 对象内**
+> （`LiveRequest` json tag `is_probe,omitempty`）与 **② `delta.changed_lanes.<维度>[].requests[]` 泳道条目内**，**不在外层信封**
+> ⇒ ★ **0 命中的第一嫌疑是量具坏了**（这次坏的是"层级"）。
+> ★★ **口径订正（推翻自己上一轮的一处说法）**：上文「**成功请求落进会话族时 100% 丢 origin 打标**」**不准确** ⇒ 改「**系统性丢失，少数样本被别的路径偶然填上**」。
+> 判别读数（`session_turns` 分区 `2026-10-23`、探测且成功）：**带标 55 条**（`origin_actor` 有值 / `client_ip` 55/55 有 / ts 10-24 02:32–07:56）
+> vs **漏标 408 条**（`origin_actor` **全空** / `client_ip` **0/408 有** / ts 10-23 08:04–**10-24 06:41**）
+> ⇒ ★ **两组 ts 区间重叠** ⇒ **不是时间切换，是两条并存分支**；且两组**终态字段（latency/tokens/cost/error_kind）完全一样**
+> ⇒ **唯一差别就是整个 origin 族** ⇒ 共同成因仍是「成功终态路径不搬 ctx 的 origin 族」⇒ **修法同时覆盖两组**（post-fix 双口径 0 丢）。
+> ★★ **被低估的后果**：丢的**不是字段而是整族** ⇒ `client_ip` 同时丢（0/408）⇒ 这正是实时拓扑**客户端维度把它们推进 unknown 桶**的直接成因。
+> ★ **顺带把根因叙述也用源码证伪过一次**（防自己写错）：`412f7f95`(2819) 的 `emitTelemetry` 起于 **6055** 行、**体内无** `applyOriginMetadata`
+> （仓内唯一带该调用的成功相关入口是 `recordInitialRequestLog` **7683** 行起）⇒ **根因叙述成立**；★ 同时说明那 55 条**不可能是 `emitTelemetry` 写的**
+> ⇒ 存在**第三条**填充 origin 族的路径，**填充点未定位 ⇒ 登记待查**（不影响验收）。
+> ⚠ **诚实边界**：① **历史行不回填**（turn 幂等不可更新）⇒ 用户最初报的 `af1eb6d83ef39610cc4f8be4e181b5a8`（ts 10-23 14:37:14，
+> 在分区 `2026-10-23`）**至今仍无标**，而**侧表同一条一直是对的**（is_probe=t / node_probe / 127.0.0.1 / self-check-worker / api_key=175）⇒ **回填 = 生产写，待拍板**；
+> ② 75 条历史漂移的正式处置（标 `SUPERSEDED`/`DEPRECATED` 或 ledger repair）**待属主裁决**（补录前须逐条确认 DB 形态）；
+> ③ **跨表比较必须用固定分区表口径** —— 本轮踩到 **promote 窗口**（同一批行几分钟内从 hot 移到分区表）⇒ hot 与分区表**同时**读会自相矛盾。
+> ★ 完整记录见 `docs/audit/2026-10-23-live-topology-probe-tagging-audit.md` **附录 C（发布与线上验证）+ 附录 D（pill 端到端 + 口径订正 + 双口径验收）**。
