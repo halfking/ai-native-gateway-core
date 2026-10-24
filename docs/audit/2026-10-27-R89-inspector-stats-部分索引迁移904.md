@@ -6,6 +6,25 @@
 > ★ 本轮口径纪律：**零口径变更**（只加索引，不改任何一行查询）⇒ 不需要属主口径裁决；
 > ★ 生产写操作仅限「随发版投递一条 startup 迁移」这一项，且它**只建索引**（可 `DROP INDEX` 回退）。
 
+
+> ★★ **日期口径校准（一条，不批量改号）**：★ 本系列（R87/R88/R89）的审计档文件名、标题、
+> ★ LESSONS §344~§353、AGENTS.md 与 Go 注释**统一用「2026-10-27」作为轮次标签**
+> ⇒ ★ 这是**全系列一致的标签**（不是单点笔误）。
+> ★ 但 ★ **实测时钟与 git 提交时刻都是 2026-10-24**：
+> ★ · 本机 / 252 PG 宿主 / 154 三方 `date` 一致 = **2026-10-24 15:44 CST**
+> ★ · git 提交时刻：R87 `7c12f372e` = 14:28:35、R88 `8bbcc145f` = 14:56:32、
+> ★   R89 `3e47b1fe2` = 15:41:09（均 2026-10-24）
+> ★ · 生产 `schema_migrations.applied_at`（904）= **2026-10-24 15:42:54+08**
+> ⇒ ⇒ **凡本系列引用「实测时间戳」处一律以 2026-10-24 为准**；标签 2026-10-27 保留不改。
+> ★ 为什么不批量改号：仓库里**已有**「档名日期 = 提交日 +1 天」的先例（跨午夜写档），
+> ★ 而本系列标签被 **LESSONS §344~§351、AGENTS.md、R87 的 Go 注释**引用 ⇒
+> ★ **批量改号会造成大面积不一致与引用断裂** ⇒ 改为「**一条校准说明 + 保留标签**」。
+> ★★ **例外（不可改，已冻结）**：`sql/migrations/startup/904_inspector_stats_partial_indexes.sql`
+> 的文件头仍写「2026-10-27」⇒ ★ **该文件的 sha256 已进生产
+> `llm_gateway_migration_checksums` 台账**（`d2cd82dc…`）⇒ ★ **改它会让下次发版的
+> history gate 以「checksum 不匹配」拒绝部署** ⇒ ⇒ 故**保持原样**并在此登记。
+> （`.down.sql` 未入台账，但为与 up 体口径一致也保持原样。）
+
 ---
 
 ## 0. 一句话结论
@@ -292,6 +311,72 @@ psql **退出码 = 3 且事务回滚** ⇒ **fail-closed** ⇒ 不会出现「�
   （那才是 4 个恒 0 字段的真因）⇒ **另立处置项**（见 §9）。
 - ★ **没有**做备份写端（52% 坏文件）方案 (a) 的实现。
 - ★ **没有**做 `?api_key_id=` / `?model=` 过滤路径的修法（子代理已交方案，见 §9）。
+
+---
+
+## 8.5 发版与生产对照读数（build 2840）
+
+★ 发版：154 build **2840**（`2.5.8-3e47b1fe-20261024-2840`），nginx 切到 **8782**，
+路由身份仲裁通过，`DEPLOY_EXIT=0`，旧实例（2839）graceful drain。
+★ 904 由部署在**切换前自动投递**（deploy-lib `_deploy_pending_startup_migrations`
+只收 `^[0-9]{3}_` 且 ≥ `DB_LEDGER_RECONCILE_FROM=902` 且生产未记账的文件）。
+
+### 8.5.1 生产落库核对（252 实查）
+
+| 项 | 实测 |
+|---|---|
+| `schema_migrations` | `904` / `inspector_stats_partial_indexes` / applied_at **2026-10-24 15:42:54+08** |
+| `llm_gateway_migration_checksums` | `904` / `904_inspector_stats_partial_indexes.sql` / `d2cd82dc…`（**与文件实测一致**） |
+| `idx_session_dim_closed_at_closed` | 存在，**8,192 B**，谓词 `status = 'closed'` |
+| `idx_session_summaries_health_score_notnull` | 存在，**2,120 kB**，谓词 `health_score IS NOT NULL` |
+
+### 8.5.2 生产计划形态（实查，非推断）
+
+- **L3**：`Index Only Scan using idx_session_dim_closed_at_closed`，Heap Fetches **0**，
+  **Execution Time 0.074 ms**（迁移前 160.9~195.4 ms）
+- **L2**：`Parallel Index Only Scan using idx_session_summaries_health_score_notnull`，
+  Heap Fetches 87,138，Execution Time 232 ms（冷）/ 119.7 ms（热）
+
+### 8.5.3 端点级对照（154 直连，**不经隧道**）
+
+| 端点 | 发版前 | 发版后 | 判定 |
+|---|---|---|---|
+| `GET /api/admin/sessions/inspector-stats` | min 2.411 / **med 3.989** / max 6.160 s（REPEAT=5） | min **1.427** / **med 1.801** / max **2.074** s（REPEAT=6） | ★ **med −55%**、max −66% ⇒ **可归因**（见下） |
+| `GET /api/admin/dashboard/session-overview` | ≈2.6 s（R87） | min 1.887 / med 2.037 / max 2.153 s | 未劣化 |
+| `GET /api/admin/data-lifecycle/stats` | 18.567 s（R87/R88） | min 17.239 / med 19.138 / max 23.483 s | 未变（**根因在别处**，§8.5.5） |
+| `GET /api/admin/turns/sessions` | 0.111 s（R87） | min 0.033 / med 0.034 / max 0.477 s | 未劣化 |
+| `GET /api/admin/turns/sessions/filter-options` | 10.208 s（R88） | min 2.014 / med 2.361 / max 5.368 s | ★ **不可归因于 904**，见 §8.5.4 |
+
+★★★ **归因口径（本轮唯一可归因的一处）**：★ **2840 与 2839 的运行时 Go 代码完全相同**
+（本轮只改了 SQL / 门 / 文档 / installer 登记面，**没有一行 `cmd/gateway` 或 `admin` 的 Go 代码**）
+⇒ ★ 任何端点耗时变化只可能来自「**新加的两条索引**」或「**环境（缓存 / 争用 / 后台作业）**」
+⇒ ⇒ `inspector-stats` 的 **−55% 可归因**：它的两条腿正是 904 服务的，
+且 ★ **生产计划形态已实查确认切换**（§8.5.2）⇒ 不是「读数碰巧变好」。
+
+### 8.5.4 `filter-options` 的 10.208 s → 2.361 s：**不可归因**（诚实记录）
+
+- ★ 904 的两条索引**不服务** `filter-options` 的查询：它对 `session_summaries` 用的是
+  `MAX(ss.first_request_at) GROUP BY …` 与 `JOIN session_dim`，
+  ★ **既不按 `closed_at` 过滤、也不按 `health_score` 过滤** ⇒ 与 904 的两个谓词**无交集**。
+- ★ 本轮响应体 **1,332 字节**（R88 记录的**未降级**区间 = 1,362~1,402 字节，
+  **降级**区间 = 682~745 字节）⇒ ★ 本次调用**未降级**
+  ⇒ ⇒ R88 的 10.208 s 是「**turns 臂 8 s 子预算被烧掉**」的降态读数（与 R88 归因一致）。
+- ⇒ ★★ **两次读数不可比** ⇒ **不能宣称「变快了 4 倍」**。
+  ★ 这正是 R88 那条通用式的另一面：★ **同一端点在不同争用状态下可以是 2.4 s 或 10.2 s，
+  而代码一个字没变** ⇒ ★ 任何「端点变快」的结论都必须先过「同代码对照」这一关。
+
+### 8.5.5 顺带的现场取证：12 s 趋势腿仍在烧（根因未变）
+
+154 日志（发版后实时抓取）：
+
+```
+WARN data_lifecycle_stats trend failed; growth_trend 已退化为空
+     budget=12000000000  error=timeout: context deadline exceeded
+```
+
+⇒ 与 R88 记录的「**恒失败且产出恒空**的 12 s 趋势腿」**逐字吻合** ⇒ 根因未变，仍待属主裁决。
+★ 同族：`WARN availability key counter: SCAN failed`（context deadline exceeded）。
+
 
 ---
 

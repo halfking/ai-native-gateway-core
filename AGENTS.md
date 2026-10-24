@@ -7673,3 +7673,58 @@ index b953a6f03..555ef83c4 100644
 > ⇒ ⇒ ★★★ **LESSONS 再补 3 条**：★ **§349** 端点的**子预算降级**是耗时隐形主因，且**被取消的语句不进 `pg_stat_statements`** ⇒ pgss **系统性低估**降级轮次 ⇒ 归因要看**降级 WARN** 与**响应体大小变化**；★ **§350** 「热缓存单腿」的腿级读数**不能**代表端点（端点 = 腿**串行求和** × **降级乘数** × **冷热系数**，缺一不可）；★ **§351** 复刻生产 SQL 前**必须先确认「生产实际下发的文本」**（参数内联 ⇒ queryid 不同 ⇒ pgss 对不上 ⇒ 假阴性）。
 > ⇒ ⇒ ★★★ **待属主裁决（更新后的完整表见审计档 §10.1）**：① `data-lifecycle/stats` —— 是否允许生产 `VACUUM (ANALYZE) session_turns_2026_09`（**写操作**）+ 往月分区进 vacuum cron + 是否摘掉恒失败的 12s 趋势腿（产品语义）+ bodies 侧部分索引或改「无正文」口径；② `filter-options` —— turns 子预算 8s→3s？当月分区覆盖索引 18 MB/分区？JIT 实例级关闭？③ `session-overview` 的 join 腿 —— rollup / 服务端缓存（★ 与待办⑧「刷新期间返回什么」同一议题）/ 改口径；④ 每页 2 条 `maintain-api` 503 是否让前端不再发起；⑤ ★ **180 MB 索引方案已被新证据降级**（18 MB/分区的覆盖索引 −56% 墙钟）⇒ 建议以新方案替代。
 > ⇒ ⇒ ★★ **完整记录见 `docs/audit/2026-10-27-R87-逐页逐API巡检与session-overview腿合并.md`**（362 行，§0~§12）；LESSONS 新增 **§344~§351**。
+>
+> ⇒ ⇒ ★★★★★ **【2026-10-27 R89 轮（P11）· 发版 2840】inspector-stats 的两条部分索引（迁移 904）落地 + 修掉一道长期红的门** ★★★★★
+> ⇒ ⇒ ★★ **一句话**：★ `GET /api/admin/sessions/inspector-stats` 的 L2/L3 两条「**无时间窗全表聚合腿**」
+> ⇒ ⇒ ★★ **没有索引可承接** ⇒ 落 **startup 迁移 904**（两条**部分索引**，8,192 B + 2,120 kB，
+> ⇒ ⇒ ★★ ★**只加索引、不改任何一行 SQL ⇒ 口径零变化**）⇒ 端点 **med 3.989s → 1.801s（−55%）**。
+> ⇒ ⇒ ★★★★ **根因（252 生产只读实测）**：★ `session_dim` 的 **7 条**既有索引**没有一条含 `closed_at`**
+> ⇒ ⇒ ★★★★ ⇒ L3 `status='closed' AND closed_at >= CURRENT_DATE` 只能 `Parallel Seq Scan`
+> ⇒ ⇒ ★★★★ （Rows Removed by Filter **301,024**，195.432 ms）；★ `session_summaries` 的 19 条里
+> ⇒ ⇒ ★★★★ **只有 `health_score IS NULL` 侧**的 `idx_session_summaries_health_pending`
+> ⇒ ⇒ ★★★★ ⇒ **NOT NULL 侧无索引可承接** ⇒ L2 只能 `Parallel Seq Scan`（Rows Removed by Filter **184,361**，389.373 ms）。
+> ⇒ ⇒ ★★★★ **效果（事务内建索引 → EXPLAIN ANALYZE → ROLLBACK，生产零持久变更；回滚后残留索引实测 = 0）**：
+> ⇒ ⇒ ★★★★ L2 **389.373 ms → 119.706 ms**（→ Parallel Index Only Scan）、L3 **195.432 ms → 0.100 ms**（→ Index Only Scan）；
+> ⇒ ⇒ ★★★★ ★ **发版后生产计划形态已实查确认**（L3 `Index Only Scan`、Heap Fetches 0、**0.074 ms**）。
+> ⇒ ⇒ ★★★★ **发版**：★ `3e47b1fe2`（origin/main）→ 生产 **2840**（`2.5.8-3e47b1fe-20261024-2840`），
+> ⇒ ⇒ ★★★★ 蓝绿切 **8782**，nginx 路由身份仲裁通过，`EXIT=0`；★ **904 由部署在切换前自动投递**
+> ⇒ ⇒ ★★★★ （deploy-lib 只收 `^[0-9]{3}_` 且 ≥ `DB_LEDGER_RECONCILE_FROM=902` 且生产未记账的文件）
+> ⇒ ⇒ ★★★★ ⇒ 生产 `schema_migrations` 904 + `llm_gateway_migration_checksums` 904（sha 与文件**逐字一致**）均已记账。
+> ⇒ ⇒ ★★★★ **★ 建索引耗时实测：C1 = 3.18 s、C2 = 6.68 s ⇒ 合计 ≈ 10 s 的 SHARE 锁窗口**（两张都是**热写表**）⇒ 须低峰窗口；
+> ⇒ ⇒ ★★★★ ★ 部署通道的失败语义**实测** fail-closed（`ON_ERROR_STOP=1` + `ON_ERROR_ROLLBACK=1` ⇒ 出错时 psql **退出码 3** 且事务回滚）⇒ 不会「失败却被记账」。
+> ⇒ ⇒ ★★★ **★ 归因纪律（本轮的关键控制）**：★ **2840 与 2839 的运行时 Go 代码完全相同**（本轮只改 SQL / 门 / 文档 / installer 登记面）
+> ⇒ ⇒ ★★★ ⇒ 任何端点耗时变化只可能来自「**新索引**」或「**环境**」⇒ ★ **`inspector-stats` 的 −55% 可归因**（计划形态已实查），
+> ⇒ ⇒ ★★★ 而 **`filter-options` 的 10.208s → 2.361s 不可归因**（★ 904 的两个谓词**不服务**它的查询：它用 `MAX(first_request_at)` / JOIN；
+> ⇒ ⇒ ★★★ ★ 本轮响应体 **1,332 字节 = 未降级**（降级区间 682~745）⇒ R88 那次是「turns 臂 8s 子预算被烧掉」的**降态**读数 ⇒ **两次不可比**）。
+> ⇒ ⇒ ★★★ **顺带的现场取证**：★ 154 日志实抓 `WARN data_lifecycle_stats trend failed; growth_trend 已退化为空 budget=12000000000 error=timeout`
+> ⇒ ⇒ ★★★ ⇒ 与 R88 记录的「恒失败且产出恒空的 12 s 趋势腿」**逐字吻合** ⇒ 根因未变；★ 同族 `availability key counter: SCAN failed`。
+> ⇒ ⇒ ★★★★ **★ 修掉一道长期红的门（比本轮迁移本身更重要的一处发现）**：★
+> ⇒ ⇒ ★★★★ `scripts/ursmcheck/section_numbering_uniqueness_test.go` 在 **origin/main 独立干净 worktree** 复跑即为红（同签名：
+> ⇒ ⇒ ★★★★ §302 出现 2 次、重复对 38≠37）⇒ **非本轮引入**，而是自 `557698c5d`（R146 批判轮）引入**第二个 §302**
+> ⇒ ⇒ ★★★★ 起就红，且**从未同步更新 `exemptedSectionCounts`** ⇒ ★★ **那道门自那时起一直是「红着跑」的 ⇒ 它提供的是零保护**
+> ⇒ ⇒ ★★★★ （与 R86「一批审计门从未真正跑过」同族：★ **门红着，也等于没跑**）。⇒ 两个 §302 **两侧都已推**
+> ⇒ ⇒ ★★★★ ⇒ 按该门自己的规矩（「已推的一侧不动，只改自己那一侧」）**不能改号** ⇒ 处理 = **补登记进现盘快照**
+> ⇒ ⇒ ★★★★ + `expectedDuplicatePairs` **37 → 38**（该数字**只允许因「补登记一条已推存量重复」而 +1**；新增重复仍必须改号）⇒ 4 道节号门现已全绿（含变异自检）。
+> ⇒ ⇒ ★★★ **LESSONS 再补 7 条（§353）**：★ **§353.1** 「**恒空谓词**」也是正当索引收益（判据是「它替查询省掉了什么」，**空索引 ≠ 建错了**）；
+> ⇒ ⇒ ★★★ ★ **§353.2** **部分索引的谓词方向抄反**是最隐蔽的错（在位、规划器会用、但覆盖互补行集 ⇒ 不变慢也不报错）；
+> ⇒ ⇒ ★★★ ★ **§353.3** 语义耦合门**必须用 `go/ast`** 取字符串字面量（正则会命中 Go 注释 ⇒ 恒绿门）；
+> ⇒ ⇒ ★★★ ★ **§353.4** **台账的「pending」标注会漂移**（902/903 早已记账却标 pending）⇒ 生产水位一律以 `schema_migrations` 实查为准；
+> ⇒ ⇒ ★★★ ★ **§353.5** 变异体的第一版常因「替换目标写错」而**根本没生效** ⇒ **阳性对照会当场自曝「尺子坏了」**；
+> ⇒ ⇒ ★★★ ★ **§353.6** 端点墙钟是「各腿之和」还是「最慢腿」**取决于 Go 侧串行/并行** ⇒ 不是全局规律；
+> ⇒ ⇒ ★★★ ★ **§353.7** **哈希连接的 temp 溢写**是独立于索引的第三条腿（`Batches > 1` 就该想 `work_mem`：实测 1,700 → **1,123 ms，−34%**，口径零变更）。
+> ⇒ ⇒ ★★★ **待属主裁决（新增 3 条 + 沿用既有）**：① ★ **`work_mem` 提到 64 MB**（L1 1,700 → 1,123 ms，口径零变更；但 252 是共享库 ⇒ 须先算内存账，每 worker 84 MB）；
+> ⇒ ⇒ ★★★ ② ★ **会话关闭路径 42703 的修复**（`HandleSessionRecycle` 与 `bg/session_lifecycle_worker.go:496-500` UPDATE 了
+> ⇒ ⇒ ★★★ `session_dim` 上**不存在**的 `stop_reason`/`updated_at` 列）⇒ ★ 这是 **4 个恒 0 字段的真因**（`idle_sessions`/`closed_sessions`/`recycled_today`/`findings_last_1h`），修好后 C1 索引才会开始承载真实行集；
+> ⇒ ⇒ ★★★ ③ ★ **`session_summaries` 的 `VACUUM (ANALYZE)`** ⇒ L2 的 `Heap Fetches` 86,938 → 0；
+> ⇒ ⇒ ★★★ ④ ★ **（沿用）`data-lifecycle/stats` 18.6s**（生产 VACUUM / 恒失败 12s 趋势腿 / bodies 部分索引）；
+> ⇒ ⇒ ★★★ ⑤ ★ **（沿用）`filter-options` 10.2s**（覆盖索引 / turns 子预算 8s→3s / JIT 关闭）；
+> ⇒ ⇒ ★★★ ⑥ ★ **（沿用）`session-overview` ≈2.0s**（服务端 60s 缓存 / rollup）；
+> ⇒ ⇒ ★★★ ⑦ ★ **（新，子代理已交方案）`?api_key_id=` 与 `?model/`/`?provider=`/`?status_code=` 过滤路径生产 500@30s**
+> ⇒ ⇒ ★★★ （角色级 `statement_timeout=30s` ⇒ SQLSTATE 57014）⇒ 候选修法 = 拆成 hot/parent 两个单表 EXISTS + 逐字等价的 CASE 表达式
+> ⇒ ⇒ ★★★ （EXPLAIN 实测 52,854 ms → **192~212 ms**，口径等价在同一快照内实测对称差 = 0）⇒ **属主拍板后可落地**。
+> ⇒ ⇒ ★★★ **★ 日期口径校准**：★ 本系列（R87/R88/R89）的文件名 / 标题 / LESSONS §344~§353 / AGENTS.md / Go 注释
+> ⇒ ⇒ ★★★ **统一用「2026-10-27」作轮次标签**；★ 而**实测时钟（本机 / 252 / 154 三方一致）与 git 提交时刻均为 2026-10-24**
+> ⇒ ⇒ ★★★ ⇒ ★ **凡引用实测时间戳处一律以 2026-10-24 为准**，标签保留不改（批量改号会断掉 LESSONS/AGENTS/Go 注释里的引用）。
+> ⇒ ⇒ ★★★ ★★ **例外（不可改，已冻结）**：`904_inspector_stats_partial_indexes.sql` 的文件头仍写「2026-10-27」
+> ⇒ ⇒ ★★★ ⇒ **该文件 sha256 已进生产 checksum 台账** ⇒ **改它会让下次发版的 history gate 以「checksum 不匹配」拒绝部署** ⇒ 保持原样并登记。
+> ⇒ ⇒ ★★ **完整记录见 `docs/audit/2026-10-27-R89-inspector-stats-部分索引迁移904.md`**（§0~§10，含 §8.5 发版对照读数）。
