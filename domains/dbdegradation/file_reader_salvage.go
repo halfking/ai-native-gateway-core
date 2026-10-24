@@ -187,12 +187,30 @@ func isGzipMagicAt(raw []byte, pos int) bool {
 	return pos+3 <= len(raw) && raw[pos] == 0x1f && raw[pos+1] == 0x8b && raw[pos+2] == 0x08
 }
 
+// salvageMemberProbes 统计「打捞路径的 member 边界搜索」做了多少次前缀试解。
+//
+// ★ R81 轮：这是「摘要链路成本放大」的**可断言**度量
+//
+//	（纯流式路径该计数必须**不增长**）。
+var salvageMemberProbes int64
+
+// SalvageMemberProbes 返回打捞路径的 member 边界搜索探针数。
+func SalvageMemberProbes() int64 {
+	return atomic.LoadInt64(&salvageMemberProbes)
+}
+
 // gzipMemberEnd 返回以 raw[pos] 为起点的 gzip member 的真实端点（压缩流
 // 含 trailer 的排他端点）。tryMemberOK 对端点单调（端点过小 unexpected
 // EOF，端点 ≥ 真实值时 Multistream(false) 在 member 末尾返回 EOF 忽略
 // 尾部），因此「指数扩张找上界 + 二分夹逼」能精确定位端点——定位偏大
 // 会跳过后续 member，偏小会重复扫描，都不能容忍。
 func gzipMemberEnd(ctx context.Context, raw []byte, pos int) (int, bool) {
+	// ★ R81 轮：**member 边界搜索的成本探针**。
+	//	每次「试解一个前缀」都会**完整解码**该前缀
+	//	⇒ 一个文件被反复解码 ~20~30 次 ⇒ 这就是「摘要慢 15×」的根因。
+	//	⇒ 计数器让这条成本**可断言**（而不是靠计时 ⇒ 计时断言天然 flaky）。
+	atomic.AddInt64(&salvageMemberProbes, 1)
+
 	lo := pos + gzipMinMemberBytes
 	if lo > len(raw) {
 		return 0, false
