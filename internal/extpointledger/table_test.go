@@ -120,7 +120,8 @@ func TestBuildPayloadCarriesScope(t *testing.T) {
 	if len(payload.ExtensionPoints) != len(extpoints.Mechanisms()) {
 		t.Fatalf("载荷行数 = %d，want %d", len(payload.ExtensionPoints), len(extpoints.Mechanisms()))
 	}
-	for _, k := range []string{"p99_window_samples", "p99_definition", "ledger_lifetime", "source"} {
+	for _, k := range []string{"p99_window_samples", "p99_definition", "ledger_lifetime", "source",
+		"outcome_caliber"} {
 		if _, ok := payload.LedgerScope[k]; !ok {
 			t.Errorf("ledger_scope 缺 %q（口径必须写在载荷里）", k)
 		}
@@ -139,8 +140,8 @@ func TestBuildPayloadCarriesScope(t *testing.T) {
 	}
 	for _, row := range back.ExtensionPoints {
 		for _, k := range []string{"id", "title", "location", "verdict", "production",
-			"calls", "failures", "timeouts", "dropped", "p99_ms", "p99_window", "recorded",
-			"unwired", "phase"} {
+			"calls", "failures", "timeouts", "dropped", "rejected", "p99_ms", "p99_window",
+			"recorded", "unwired", "phase"} {
 			if _, ok := row[k]; !ok {
 				t.Errorf("行 %v 缺字段 %q", row["id"], k)
 			}

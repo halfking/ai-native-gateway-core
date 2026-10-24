@@ -36,6 +36,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/response"
@@ -218,5 +219,101 @@ func TestMagpieP2ExtensionLedgerAdminRouteIsRegistered(t *testing.T) {
 	// ★ 必须是**受保护**的路由（内部运维视图，不能是公开端点）。
 	if m[2] != "superAdmin" && m[2] != "admin" {
 		t.Errorf("路由的鉴权包装是 %s，want superAdmin/admin（★ 不能是公开端点）", m[2])
+	}
+}
+
+// ── 接线覆盖率门（★ 源码级，不与「有没有流量」混淆）─────────────────────
+
+// magpieP2LedgerConstants 是「机制 ID ⇒ `internal/extpoints` 里的常量名」，
+// ★ **硬编码在本门里**（不从裁决表派生）⇒ 裁决表改不动断言。
+//
+// ⇒ 这张表同时断言了「ID 与常量名的对应关系」本身：
+// 若某个常量被改名 ⇒ 这里对不上 ⇒ 生产代码里也匹配不到 ⇒ 门红。
+var magpieP2LedgerConstants = map[string]string{
+	"http_middleware_chain": "IDHTTPMiddlewareChain",
+	"request_pipeline":      "IDRequestPipeline",
+	"hook_registry":         "IDHookRegistry",
+	"hook_phase_vocabulary": "IDHookPhaseVocabulary",
+	"executor_hooks":        "IDExecutorHooks",
+	"response_intercept":    "IDResponseIntercept",
+}
+
+// TestMagpieP2EveryProductionMechanismIsWiredToLedger ⑤ ★：
+// 裁决表说**在生产**的机制，生产代码里必须有**记账调用**。
+//
+// ★ 为什么是**源码级**而不是运行期：
+// 运行期只能看到「本次进程内有没有流量」⇒ 那把「**没接线**」与
+// 「**没流量**」混成了一件事（§3.13.6 的三种成因）⇒ ★ 必须分开放。
+// ⇒ 源码级判据只看「**记账调用点存在与否**」⇒ 与流量无关。
+//
+// ★ 扫描面：全仓**非测试** .go 文件，**排除裁决表自身**
+// （`internal/extpoints` 是**被审对象**，不能同时是**证人**——
+//
+//	同 LESSONS §355 / §3.14）。
+func TestMagpieP2EveryProductionMechanismIsWiredToLedger(t *testing.T) {
+	root := magpieP2LedgerRepoRoot(t)
+	// ★ 复用 P0-1 门里的全仓 .go 扫描器（同一 package `ursm_test`）。
+	files := magpieP0GoFiles(t, root)
+
+	const verdictTable = "internal/extpoints/extpoints.go"
+
+	production := 0
+	for _, m := range extpoints.Mechanisms() {
+		if !m.Production {
+			continue
+		}
+		production++
+		constName, ok := magpieP2LedgerConstants[m.ID]
+		if !ok {
+			t.Fatalf("机制 %q 不在本门硬编码的「ID ⇒ 常量名」表里 ⇒ "+
+				"要么裁决表加了新机制、要么 ID 写错了", m.ID)
+		}
+		found := ""
+		for _, f := range files {
+			rel, _ := filepath.Rel(root, f)
+			rel = filepath.ToSlash(rel)
+			if rel == verdictTable {
+				continue // ★ 裁决表自己不作证
+			}
+			b, err := os.ReadFile(f)
+			if err != nil {
+				continue
+			}
+			if strings.Contains(string(b), constName) {
+				found = rel
+				break
+			}
+		}
+		if found == "" {
+			t.Errorf("机制 %q 标 Production=true，但生产代码里找不到记账调用（%s）⇒ "+
+				"★ 这个在产的扩展点**没接台账** ⇒ 读端那一行的计数恒为 0",
+				m.ID, constName)
+		}
+	}
+	if production == 0 {
+		t.Fatal("裁决表里没有任何在生产的机制 ⇒ 判据失效")
+	}
+}
+
+// TestMagpieP2MainChainProbesAreInstalled ⑥ ★：
+// `cmd/gateway/main.go` 里**两个探针都装了**（外层 + 内层）。
+//
+// ★ 为什么两个都要：外层量「总耗时」、内层量「业务耗时」，
+// 两者相减才是**主链自身的开销** ⇒ 只装一个 ⇒ p99 口径就废了
+// （要么量成 LLM 请求耗时，要么量成 0）。
+func TestMagpieP2MainChainProbesAreInstalled(t *testing.T) {
+	root := magpieP2LedgerRepoRoot(t)
+	b, err := os.ReadFile(filepath.Join(root, "cmd", "gateway", "main.go"))
+	if err != nil {
+		t.Fatalf("读 cmd/gateway/main.go 失败：%v", err)
+	}
+	src := string(b)
+	for _, needle := range []string{
+		"middleware.LedgerMiddleware(",
+		"middleware.LedgerInnerProbe(",
+	} {
+		if !strings.Contains(src, needle) {
+			t.Errorf("cmd/gateway/main.go 里没有 %s ⇒ 主链没接台账（★ 接线没通）", needle)
+		}
 	}
 }

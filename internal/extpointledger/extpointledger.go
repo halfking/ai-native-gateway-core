@@ -50,6 +50,20 @@ const (
 	OutcomeTimeout Outcome = "timeout"
 	// OutcomeDropped：事件/结果被**丢弃**（例如观察者队列满）。
 	OutcomeDropped Outcome = "dropped"
+	// OutcomeRejected：调用方**主动拒绝**了请求（不是出错，是"这道闸门按设计拦下来了"）。
+	//
+	// ★ 为什么需要它（2026-10-24 补）：HTTP 中间件链的「失败」有两种**完全不同**的形态——
+	//
+	//	① **拒绝**（4xx）：Auth / Origin / SecurityHeaders 按设计把请求拦下来了
+	//	   ⇒ 这是扩展点**在正常工作**，不是它坏了；
+	//	② **出错**（5xx）：panic 兜底、下游处理器报错
+	//	   ⇒ 这才是扩展点/下游**真的失败**。
+	//
+	// ⇒ 若把两者都算成 `failed` ⇒ ★ **「失败数」会变成"拒绝率"** ⇒
+	//   运维看到主链失败数飙升，第一反应是"网关坏了"，而真相可能只是
+	//   **有人在狂刷坏 key** ⇒ ⇒ 口径失真。
+	// ⇒ ⇒ 所以单列一个结局，**不与错误混同**。
+	OutcomeRejected Outcome = "rejected"
 )
 
 // DefaultSampleCapacity 是每个机制保留的延迟样本数（环形缓冲容量）。
@@ -69,6 +83,8 @@ type Entry struct {
 	Timeouts uint64 `json:"timeouts"`
 	// Dropped 是丢弃次数。
 	Dropped uint64 `json:"dropped"`
+	// Rejected 是**被拒绝**的次数（扩展点按设计拦下请求；不是出错）。
+	Rejected uint64 `json:"rejected"`
 	// P99Millis 是**最近窗口**的 p99 延迟（毫秒，整数向下取整）。
 	P99Millis uint64 `json:"p99_ms"`
 	// P99Window 是 p99 样本窗口的**容量**（读端必须标出口径）。
@@ -85,6 +101,7 @@ type entryState struct {
 	failures uint64
 	timeouts uint64
 	dropped  uint64
+	rejected uint64
 
 	lastError   string
 	lastErrorAt time.Time
@@ -127,7 +144,7 @@ func Default() *Ledger { return defaultLedger }
 //
 //	① `calls` **总是**加一（所有结局都算「调用过」）；
 //	② `OutcomeFailed` ⇒ `failures++`；`OutcomeTimeout` ⇒ `timeouts++`；
-//	   `OutcomeDropped` ⇒ `dropped++`；
+//	   `OutcomeDropped` ⇒ `dropped++`；`OutcomeRejected` ⇒ `rejected++`；
 //	③ `err != nil` ⇒ 记下**最近错误**（文本 + 时间）；
 //	④ 延迟样本进环形缓冲（满了覆盖最旧的 ⇒ 内存有界）。
 //
@@ -160,6 +177,8 @@ func (l *Ledger) recordAt(mechanismID string, outcome Outcome, latency time.Dura
 		e.timeouts++
 	case OutcomeDropped:
 		e.dropped++
+	case OutcomeRejected:
+		e.rejected++
 	}
 	if err != nil {
 		e.lastError = err.Error()
@@ -215,6 +234,7 @@ func (e *entryState) entry(id string, capacity int) Entry {
 		Failures:    e.failures,
 		Timeouts:    e.timeouts,
 		Dropped:     e.dropped,
+		Rejected:    e.rejected,
 		P99Window:   capacity,
 		LastError:   e.lastError,
 		LastErrorAt: e.lastErrorAt,

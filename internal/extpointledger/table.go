@@ -41,10 +41,12 @@ type Row struct {
 	Phase string `json:"phase"`
 
 	// ── 运行期半（来自计数器）──
-	Calls       uint64    `json:"calls"`
-	Failures    uint64    `json:"failures"`
-	Timeouts    uint64    `json:"timeouts"`
-	Dropped     uint64    `json:"dropped"`
+	Calls    uint64 `json:"calls"`
+	Failures uint64 `json:"failures"`
+	Timeouts uint64 `json:"timeouts"`
+	Dropped  uint64 `json:"dropped"`
+	// Rejected 是**被拒绝**的次数（扩展点按设计拦下请求 ⇒ 不是出错）。
+	Rejected    uint64    `json:"rejected"`
 	P99Millis   uint64    `json:"p99_ms"`
 	P99Window   int       `json:"p99_window"`
 	LastError   string    `json:"last_error,omitempty"`
@@ -91,6 +93,7 @@ func BuildRows(ledger *Ledger) []Row {
 			row.Failures = e.Failures
 			row.Timeouts = e.Timeouts
 			row.Dropped = e.Dropped
+			row.Rejected = e.Rejected
 			row.P99Millis = e.P99Millis
 			row.LastError = e.LastError
 			row.LastErrorAt = e.LastErrorAt
@@ -117,8 +120,10 @@ func BuildPayload(ledger *Ledger) Payload {
 		LedgerScope: map[string]any{
 			"p99_window_samples": DefaultSampleCapacity,
 			"p99_definition":     "nearest-rank over the most recent N samples (process-local, in-memory)",
-			"ledger_lifetime":    "process-local; resets on restart (observation surface, not a ledger)",
-			"source":             "internal/extpoints (static verdict) merged with internal/extpointledger (runtime counters)",
+			"outcome_caliber": "ok/failed/timeout/dropped/rejected; ★ rejected 与 failed 分开：" +
+				"rejected = 扩展点按设计拦下请求（4xx），failed = 真的出错（5xx/错误）",
+			"ledger_lifetime": "process-local; resets on restart (observation surface, not a ledger)",
+			"source":          "internal/extpoints (static verdict) merged with internal/extpointledger (runtime counters)",
 		},
 	}
 }

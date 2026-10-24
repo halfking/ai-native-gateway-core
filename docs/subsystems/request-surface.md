@@ -53,8 +53,18 @@ Recovery → RequestID → Logging → Locale(i18n) → CORS → Prometheus → 
 | Request Pipeline | `domains/pipeline/` | **骨架**（阶段词表的唯一事实源，16 个 phase） | ❌（v2 默认关） | — |
 | `HookRegistry` | `domains/hooks/registry.go:34` | **判死** | ❌（生产零调用方） | — |
 | Hook 阶段词表（5 个旧名） | `domains/hooks/types.go:13-24` | **别名视图** | ❌ | 映射到骨架的同名 phase |
-| 执行器生命周期钩子 | `domains/streaming/executors/executor_chat.go:60-67` | **挂在 phase** | ✅ | `upstream` |
+| ★ 执行器生命周期钩子 | `domains/streaming/executors/executor_chat.go:60-67` | ★ **判死**（2026-10-24 订正：类型在、读取方在，但**零生产安装方** ⇒ 钩子从不触发） | ❌ | — |
 | 响应拦截链 | `domains/hooks/response/types.go:179` | **挂在 phase** | ✅ | `response` |
+
+> ★ **2026-10-24 订正**（审计档 §3.14）：本页原写「执行器生命周期钩子 = 挂在 phase（upstream）、✅ 在生产」。
+> ⇒ **不成立**：`WithExecuteHooks(` 在**生产代码里零调用**（只有测试在调）
+> ⇒ ★★ `git log -S` 追出：SP-03（`902e95237`）**只引入了定义**，
+> 注释指向的 **SP-02 安装方从未存在** ⇒ **不是「被删了」，是「从未接线」**。
+> ⇒ ⇒ 判据口径订正：**「类型在」≠「被安装」** ⇒ 凡判「在不在生产」，
+> 判据必须是**调用点**。
+>
+> ★ 与 `HookRegistry` **同一种形态**（框架在、链路不通），但**更隐蔽**：
+> 它有完整的 API，还有 on/off 对照用例（那两条只证明「API 装上能用」）。
 
 ### 3.1 骨架的 16 个 phase（`domains/pipeline/pipeline.go:25-42`）
 
@@ -141,6 +151,33 @@ pre_response · response · post_response
 
 ---
 
+## 五之三、扩展点台账（2026-10-24 新增）
+
+**契约**：`internal/extpointledger`（stdlib-only）—— 每个扩展机制一行：
+**调用次数 / 失败数 / 超时数 / 丢弃数 / 拒绝数 / 最近窗口 p99 / 最近错误**。
+**进程内、内存有界**（每机制 256 个延迟样本，环形缓冲覆盖最旧）⇒
+★ 口径：**观测面，不是账本**（进程重启即清零）。
+
+**读端**：`GET /api/admin/extension-points`（`superAdmin`）⇒
+一行一机制 = **静态裁决表** × **运行期计数**的合并视图，
+★ 两半是**独立来源** ⇒ 可互相印证（裁决表说不在生产 ⇒ 计数必须为 0）。
+
+**记账点**（在产的 2 个机制都接了）：
+
+| 机制 | 记账点 | 粒度 | p99 量的是什么 |
+|---|---|---|---|
+| `http_middleware_chain` | `middleware/ledger_mw.go`（外层 + 内层两个探针） | 每次穿过主链的请求 | ★ **主链自身的开销**（总耗时 − 业务耗时） |
+| `response_intercept` | `domains/hooks/response/chain.go` | **单个拦截器**的一次调用 | 该拦截器的耗时 |
+
+★ 结局分**五种**：`ok` / `failed`（5xx 真出错）/ `rejected`（4xx 闸门按设计拒绝）/
+`timeout` / `dropped` ⇒ ★ **拒绝与出错分开**，否则「失败数」会变成「拒绝率」。
+
+★ `unwired` 标志（= `Production && !Recorded`）用来区分
+「**这个扩展点还没接台账**」与「**它没有流量**」⇒ ★ 进程重启即清零，
+所以它**不蕴含**「真的没流量」。
+
+---
+
 ## 六、门禁（改本页之前先看它们）
 
 | 门 | 守什么 |
@@ -151,15 +188,25 @@ pre_response · response · post_response
 | `domains/credential/slowrest_test.go` | 首字节超时的四条契约（放过/反复/模型粒度/退避） |
 | `internal/requestobserver/requestobserver_test.go` + `domains/streaming/request_observer_bridge_test.go` | 观察者契约（不阻塞/丢弃计数/panic 兜住/关闭零开销）+ **v1 接线真的通** |
 | `internal/routeorder/routeorder_test.go` + `domains/streaming/executors/routeorder_adapter_test.go` | 策略只排序、失败开放、**迁移前后顺序一致** |
+| `scripts/ursmcheck/magpie_p0_extension_onoff_test.go` | 每个扩展点的 on/off 对照（★ on = 「API 装上能用」，**不是**「生产已装」） |
+| `internal/pipelinev2/pipelinev2.go` + `scripts/ursmcheck/magpie_p2_v2_criteria_test.go` | v2 切换判据（依据须逐字在生产文件里）+ 行为差异（测试须名实相符） |
+| `internal/extpointledger/*_test.go` + `middleware/ledger_mw_test.go` | 台账契约（计数/最近窗口 p99/拒绝与出错分开/内存有界）+ **主链口径**（p99 量的是链开销） |
+| `scripts/ursmcheck/magpie_p2_extension_ledger_test.go` | 台账**两份来源**对拍 + **接线真的通** + ★ **在产机制必须接台账**（源码级） |
 
 ---
 
 ## 七、已知缺口（本页不粉饰）
 
-1. **v2 pipeline 仍默认关**，且**没有切换判据**（§6-P2-1 未做）⇒ 两套路径并存是**未完成**状态。
+1. **v2 pipeline 仍默认关** ⇒ 两套路径并存是**未完成**状态。
+   ★ **切换判据与行为差异清单已做**（`internal/pipelinev2` + 门，2026-10-24）
+   ⇒ 8 条切换判据 + 17 条行为差异（每条挂**真实存在且名实相符**的测试）
+   ⇒ ★ 其中 D09（v2 的 request-id 合成/写回）**全仓无测试** ⇒ **显式登记为缺口**。
 2. **`HookRegistry` 判死，但 `domains/hooks` 下仍有实现在跑的 hook**（例如 `audit` hook 走别的路径）
    ⇒ 「判死」只针对**注册表**这一层，不针对 `domains/hooks` 下的具体 hook。
 3. **`KindAccountRestricted` 没有分类器** ⇒ 该 kind 当前不会被产生（归责判定已就位，识别未就位）。
 4. **magpie 的 `proxy`（代理没连上）语义无法表达**（本仓出站代理不产生可区分信号）⇒ 本仓的网络类失败罚绑定。
-5. **扩展点台账（P2-2）未落地** ⇒ 目前只有 Prometheus 计数，没有按扩展点统一的
-   「调用次数 / p99 / 失败数 / 超时数 / 最近错误」。
+5. ★ **扩展点台账（P2-2）已落地**（`internal/extpointledger` + admin 读端
+   `/api/admin/extension-points`）⇒ 在产的 2 个机制**都接了记账**。
+   ⇒ ★ 剩余边界：① **进程内、重启清零**（观测面不是账本）；
+   ② `unwired` **不蕴含**「真的没流量」；③ 4xx 一律记 `rejected`，
+   **不区分**「闸门拒绝」与「客户端自己错」。

@@ -243,6 +243,12 @@ func TestExtPointOff_hook_phase_vocabulary(t *testing.T) {
 // ── 点 5：executor_hooks ────────────────────────────────────────────────
 
 // TestExtPointOn_executor_hooks —— 执行器钩子**开着** ⇒ 钩子可达、可被取用。
+//
+// ★★★ **口径订正（2026-10-24，审计档 §3.14）**：本用例证明的是
+// ★ **「API 装上能用」**，**不是**「**生产里装了**」——
+// ★★ 生产代码**零安装方**（`WithExecuteHooks(` 只在测试里被调）⇒
+// ★★ `executor_hooks` 已被**改判为 `dead`**（它和 `HookRegistry` 同一种形态）。
+// ⇒ ⇒ 所以这里的 on/off 是「**API 开关**」的对照，不是「**生产接线**」的对照。
 func TestExtPointOn_executor_hooks(t *testing.T) {
 	called := 0
 	hk := &executors.ExecuteHooks{

@@ -10,7 +10,8 @@
 //	① HTTP 中间件链        middleware/            活（启动时静态构建）
 //	② Hook Registry        domains/hooks/registry.go   **死**（生产零调用方）
 //	③ Request Pipeline     domains/pipeline/      **关**（v2 默认关）
-//	④ 执行器生命周期钩子   executors.ExecuteHooks 活（直调，非注册表）
+//	④ 执行器生命周期钩子   executors.ExecuteHooks **死**（★ 2026-10-24 订正：
+//	                       类型在、读取方在，但**零生产安装方** ⇒ 钩子从不触发）
 //	⑤ 响应拦截链          domains/hooks/response/ 活（Go 类型，body 级改/拦）
 //
 // ★ `domains/hooks` 自述"提供统一的插件化架构，所有企业功能都可以通过 Hook
@@ -187,15 +188,23 @@ func Mechanisms() []Mechanism {
 			ID:         IDExecutorHooks,
 			Title:      "执行器生命周期钩子",
 			Location:   "domains/streaming/executors/executor_chat.go:60-67",
-			Verdict:    VerdictPhaseBound,
-			Production: true,
-			Phase:      "upstream",
+			Verdict:    VerdictDead,
+			Production: false,
+			Phase:      "",
 			Evidence: []string{
 				"domains/streaming/executors/executor_chat.go:60-67（ExecuteHooks 类型）",
 				"domains/streaming/executors/executor_chat.go:70-78（WithExecuteHooks）",
+				"★ 全仓 `WithExecuteHooks(` 的调用点**只有测试**（executor_chat_test.go 与 " +
+					"scripts/ursmcheck 的 on/off 用例）⇒ **零生产安装方**",
 			},
-			Note: "★ 显式挂到骨架的 **upstream** phase：它每次上游尝试触发（压缩前/压缩后），" +
-				"语义上就是「上游尝试」这一段 ⇒ 归 upstream，而不是自成一链。",
+			Note: "★ **判死**（2026-10-24 订正，详见审计档 §3.14）：`ExecuteHooks` 类型在、" +
+				"`executeOpenAI` 也**读**它（executor_chat.go:689），但**没有任何生产代码安装它** —— " +
+				"`WithExecuteHooks(` 在生产代码里**零调用** ⇒ 钩子**从不触发** ⇒ " +
+				"⚠ 与 HookRegistry **同一种形态**（框架在、链路不通），但**更隐蔽**：它有完整的 API、" +
+				"有 P0-5 的 on/off 用例（那两条用例只证明『API 装上能用』，**不证明生产装了**）。" +
+				"⇒ 此前本表把它标成 `Production=true`（靠『类型存在 + 有读取方』判定）⇒ **判据口径错了**：" +
+				"★ **『类型在』≠『被安装』**。⇒ 判死 = 保留代码（读它的人还需要它），但**禁止新增生产安装方**；" +
+				"若哪天有人要复活它，必须先改本表的裁决并让门红给你看。",
 		},
 		{
 			ID:         IDResponseIntercept,

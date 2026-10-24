@@ -23,7 +23,8 @@ package ursm_test
 //	G3 骨架的 phase 数与 domains/pipeline 的真实 phase 一致（实测 16）
 //	G4 别名视图的 5 个旧阶段名逐字落在骨架里，且映射目标真实存在
 //	G5 ★ TestNoParallelExtensionMechanism：**请求面只有一条链**
-//	G6 phase_bound 的两个机制在生产代码里**真的**被用着
+//	G6 ★ Production=true 的机制在生产代码里有**真调用点**
+//	   （2026-10-24 修：初版会被裁决表**自己**的 Evidence 字符串满足 ⇒ 自证）
 //
 // # 变异灵敏度
 //
@@ -39,6 +40,8 @@ package ursm_test
 //	    ⇒ G5 红
 //	M6 把 ExecuteHooks 的 Production 改成 false
 //	    ⇒ G6 红
+//	M7 ★ 把 ExecuteHooks 的 Production 改回 true（但仍无生产安装方）
+//	    ⇒ G6 红（★ 这条只有「排除裁决表自身 + 要求真调用」之后才红得了）
 
 import (
 	"os"
@@ -327,41 +330,97 @@ func TestNoParallelExtensionMechanism(t *testing.T) {
 	}
 }
 
-// TestMagpieP0PhaseBoundMechanismsAreReallyUsed G6：
-// 挂在 phase 上的两个机制，在**生产代码**里真的被用着。
+// TestMagpieP0ProductionMechanismsAreReallyCalled G6（★ 2026-10-24 修）：
+// 裁决表标 `Production=true` 的机制，在**生产代码**里必须有**真调用点**。
 //
 // ★ 这一条防止"裁决表说它活着，其实它也是死的" —— 与 G2 互补。
-func TestMagpieP0PhaseBoundMechanismsAreReallyUsed(t *testing.T) {
+//
+// ★★★ **本门修过一个「自证」漏洞**（2026-10-24，审计档 §3.14）：
+// 初版 G6 的判据是「全仓非测试文件里**出现过** `WithExecuteHooks` 这个字符串」
+// ⇒ ★★★ 而裁决表**自己**的 `Evidence` 里就写着
+// `domains/streaming/executors/executor_chat.go:70-78（WithExecuteHooks）`
+// ⇒ ⇒ **裁决表自己满足了对自己的复核** ⇒ 门永远绿
+// ⇒ ⇒ ★★ 这与 LESSONS §355（门从被测对象取被测集合）是**同一种病**。
+//
+// ⇒ ⇒ 本版三处收紧：
+//
+//	① **排除裁决表自身**（`internal/extpoints/extpoints.go`）—— 它是**被审对象**，
+//	   不能同时是**证人**；
+//	② needle 必须带 `(` ⇒ 命中的是**调用**而不是"提到过"；
+//	③ **跳过注释行** ⇒ 注释里的 `WithExecuteHooks(ctx, hooks)` 不算调用。
+//
+// ★ 并且：**只对 `Production=true` 的机制生效** ⇒
+//
+//	某机制被改判为「死」⇒ 不再要求它有调用方；⇒
+//	哪天有人把它改回 `Production=true` 却没接线 ⇒ **本门立刻红**。
+func TestMagpieP0ProductionMechanismsAreReallyCalled(t *testing.T) {
 	root := magpieP0RepoRoot(t)
 	files := magpieP0GoFiles(t, root)
 
+	// ★ needle 硬编码在**门**里（不从裁决表取）⇒ 裁决表改不动断言。
 	cases := []struct {
 		id     string
 		needle string
+		// defFiles 是**定义处**（不算调用方）。
+		defFiles []string
 	}{
-		{extpoints.IDExecutorHooks, "WithExecuteHooks"},
-		{extpoints.IDResponseIntercept, "NewInterceptorChain"},
+		{extpoints.IDHTTPMiddlewareChain, "middleware.NewBuilder()",
+			[]string{"middleware/framework.go"}},
+		{extpoints.IDExecutorHooks, "WithExecuteHooks(",
+			[]string{"domains/streaming/executors/executor_chat.go"}},
+		{extpoints.IDResponseIntercept, "NewInterceptorChain(",
+			[]string{"domains/hooks/response/chain.go"}},
 	}
+	// ★★ 裁决表自身**永远不作为证人**。
+	const verdictTable = "internal/extpoints/extpoints.go"
+
 	for _, c := range cases {
-		found := false
+		m, ok := extpoints.MechanismByID(c.id)
+		if !ok {
+			t.Fatalf("裁决表里没有机制 %q", c.id)
+		}
+		if !m.Production {
+			// ★ 不在生产路径上 ⇒ 不要求有调用方（判死/骨架/别名 都属这一类）。
+			continue
+		}
+		found := ""
 		for _, f := range files {
 			rel, _ := filepath.Rel(root, f)
-			if filepath.ToSlash(rel) == "domains/hooks/response/chain.go" ||
-				filepath.ToSlash(rel) == "domains/streaming/executors/executor_chat.go" {
-				continue // 定义处不算使用
+			rel = filepath.ToSlash(rel)
+			if rel == verdictTable {
+				continue // ★★ 裁决表自己不作证
+			}
+			skip := false
+			for _, d := range c.defFiles {
+				if rel == d {
+					skip = true
+					break
+				}
+			}
+			if skip {
+				continue // 定义处不算调用方
 			}
 			b, err := os.ReadFile(f)
 			if err != nil {
 				continue
 			}
-			if strings.Contains(string(b), c.needle) {
-				found = true
+			for i, line := range strings.Split(string(b), "\n") {
+				trimmed := strings.TrimSpace(line)
+				if strings.HasPrefix(trimmed, "//") {
+					continue // ★ 注释里的提及不算调用
+				}
+				if strings.Contains(line, c.needle) {
+					found = rel + ":" + strconv.Itoa(i+1)
+					break
+				}
+			}
+			if found != "" {
 				break
 			}
 		}
-		if !found {
-			t.Fatalf("机制 %q 标 Production=true，但全仓找不到 %q 的生产调用 ⇒ "+
-				"裁决表说它活着、现实说它死了", c.id, c.needle)
+		if found == "" {
+			t.Fatalf("机制 %q 标 Production=true，但全仓找不到 %q 的**真调用**（注释不算、"+
+				"裁决表自身不作证）⇒ 裁决表说它活着、现实说它死了", c.id, c.needle)
 		}
 	}
 }

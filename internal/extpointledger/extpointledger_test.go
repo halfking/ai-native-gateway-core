@@ -53,6 +53,36 @@ func TestLedgerCountsOutcomes(t *testing.T) {
 	}
 }
 
+// TestLedgerCountsRejectionsSeparately ①′：
+// ★ **拒绝**必须与**失败**分开计数（4xx 拒绝 ≠ 5xx 出错）。
+//
+// ⇒ 理由见 `OutcomeRejected` 的注释：混在一起会让「主链失败数」
+// 变成「拒绝率」⇒ 运维会把「有人在狂刷坏 key」读成「网关坏了」。
+func TestLedgerCountsRejectionsSeparately(t *testing.T) {
+	l := New()
+	l.Record("m", OutcomeOK, time.Millisecond, nil)
+	l.Record("m", OutcomeRejected, 2*time.Millisecond, errors.New("401 unauthorized"))
+	l.Record("m", OutcomeFailed, 3*time.Millisecond, errors.New("500 boom"))
+
+	e, ok := l.Entry("m")
+	if !ok {
+		t.Fatal("m 不在台账里")
+	}
+	if e.Calls != 3 {
+		t.Fatalf("calls = %d, want 3", e.Calls)
+	}
+	if e.Rejected != 1 {
+		t.Fatalf("rejected = %d, want 1（★ 拒绝必须单列）", e.Rejected)
+	}
+	if e.Failures != 1 {
+		t.Fatalf("failures = %d, want 1（★ 拒绝不计入失败）", e.Failures)
+	}
+	// ★ 结局计数之和不超过 calls（三类互斥）。
+	if e.Failures+e.Rejected+e.Timeouts+e.Dropped > e.Calls {
+		t.Fatalf("结局计数之和超过 calls：%+v", e)
+	}
+}
+
 // TestLedgerP99IsNearestRank ②：p99 算得对。
 func TestLedgerP99IsNearestRank(t *testing.T) {
 	l := New()
