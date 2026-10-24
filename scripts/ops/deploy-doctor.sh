@@ -48,6 +48,9 @@ SLOT_A=""
 SLOT_B=""
 DATA_ROOT="/opt/kaixuan/data/llm-gateway"
 FACTS_FILE=""
+# ★ 网关自己容器名的前缀（引擎侧 DD_CONTAINER_PREFIX 默认 llm-gateway-<target>）。
+# ★ 空 = 不知道 ⇒ 「占用者是不是网关自己」这一问**判不了** ⇒ 只能报「疑似」，不报定论。
+CONTAINER_PREFIX="${DD_CONTAINER_PREFIX:-llm-gateway-}"
 
 usage() { sed -n '2,42p' "$0"; exit 0; }
 
@@ -60,6 +63,10 @@ while [[ $# -gt 0 ]]; do
     --slot-b) SLOT_B="${2:-}"; shift 2 ;;
     --data-root) DATA_ROOT="${2:-}"; shift 2 ;;
     --facts-file) FACTS_FILE="${2:-}"; shift 2 ;;
+    # ★ 2026-10-24 12h 审计轮（问题④）：网关**自己**的容器名前缀。
+    #   引擎侧的容器名是 `llm-gateway-$DD_TARGET`（DD_CONTAINER_PREFIX）⇒
+    #   体检必须知道这个前缀，才能判「占用这个端口的是不是**网关自己**」。
+    --container-prefix) CONTAINER_PREFIX="${2:-}"; shift 2 ;;
     -h|--help) usage ;;
     *) echo "未知参数：$1" >&2; exit 3 ;;
   esac
@@ -110,7 +117,11 @@ analyze() {
   if [[ -z "$owner" ]]; then
     owner="（该端口没有容器发布）"
     local c cn crext cp
-    for c in "${containers[@]}"; do
+    # ★ bash 3.2 兼容：空数组在 `set -u` 下用 "${arr[@]}" 展开会报
+    #   `unbound variable`（实测 exit 127）⇒ 而**「没有容器发布这个端口」正是
+    #   本脚本要诊断的场景之一** ⇒ 一报错就等于「体检没做成」。
+    #   ⇒ 用仓库既有写法 "${arr[@]+"${arr[@]}"}"（scripts/deploy-211.sh:171 同款）。
+    for c in ${containers[@]+"${containers[@]}"}; do
       cn="${c%%|*}"
       crext="${c#*|}"
       cp="${crext%%|*}"
@@ -127,15 +138,39 @@ analyze() {
     echo "结论            : ★ 取不到 upstream 主端口（全新主机？或 conf 路径不对）"
     return 3
   fi
-  if [[ -n "$SLOT_A" && "$upstream_port" == "$SLOT_A" ]]; then
-    echo "结论            : OK（upstream 在槽 a 上，绑定正常）"
-    return 0
+  # ★★ 2026-10-24 12h 审计轮（问题④）：**占用者这个事实必须进入判据**。
+  #
+  #   原判据只有一句「upstream 端口 ∈ {配置槽位}」⇒ 那是**配置自洽性**检查，
+  #   不是「网关真的在服务这个端口」检查。
+  #   ⇒ ⇒ 211 事故形态（upstream=8782，而 8782 是**另一个产品**的容器占着，
+  #      且 8782 恰好被配成了 b 槽端口）**照样判 OK**。
+  #   ⇒ 而本脚本**已经算出**了占用者，却从不把它放进判据 ⇒ 事实到手了不用。
+  #
+  #   现在：端口虽然落在某个槽位上，但**占用者不是网关自己的容器** ⇒
+  #   ⇒ 判据不成立 ⇒ 明确报「被别的容器占用」并以 **2**（需人工处置）退出。
+  #   ★ 占用者**未知**（没有容器发布该端口）时不判死：证据不足 ⇒ 只提示。
+  #
+  # ★★ **判据顺序**（本轮实测踩到并修正）：先判「端口不属于任何槽位」
+  #   （更根本的违规），**再**判「端口落在槽位上但被别的容器占用」。
+  #   ⇒ 反过来的话，「端口根本不属于任何槽位」这一形态会被「被别的容器占用」
+  #   抢先命中 ⇒ 结论文案会丢掉「不属于任何配置槽位」这个更准确的说法。
+  _owner_is_foreign=""
+  if [[ -n "$owner" && "$owner" != "（该端口没有容器发布）" ]]; then
+    if [[ -z "$CONTAINER_PREFIX" ]]; then
+      _owner_is_foreign="unknown"
+    elif [[ "$owner" == "$CONTAINER_PREFIX"* ]]; then
+      _owner_is_foreign="no"
+    else
+      _owner_is_foreign="yes"
+    fi
   fi
-  if [[ -n "$SLOT_B" && "$upstream_port" == "$SLOT_B" ]]; then
-    echo "结论            : OK（upstream 在槽 b 上，绑定正常）"
-    return 0
-  fi
-  cat <<EOF
+
+  # ① 端口压根不属于任何配置槽位（最根本的违规）⇒ 先判它。
+  _port_in_slot=""
+  if [[ -n "$SLOT_A" && "$upstream_port" == "$SLOT_A" ]]; then _port_in_slot="a"; fi
+  if [[ -z "$_port_in_slot" && -n "$SLOT_B" && "$upstream_port" == "$SLOT_B" ]]; then _port_in_slot="b"; fi
+  if [[ -z "$_port_in_slot" ]]; then
+    cat <<EOF
 结论            : ★★ 绑定脱节 —— upstream 指向 ${upstream_port}，它不属于任何配置槽位
                   （a=${SLOT_A:-未配} / b=${SLOT_B:-未配}）⇒ 流量现在打在
                   「${owner}」上 ⇒ 这就是 llm.itestu.cn 502 的成因形态。
@@ -148,7 +183,33 @@ analyze() {
 ★ 部署侧已加闸：绑定脱节时 deploy-seamless-docker.sh 会**在写任何东西之前**
   拒绝部署并打出同样这份说明（不会再拿猜出来的槽位去切流/停槽）。
 EOF
-  return 2
+    return 2
+  fi
+
+  # ② 端口落在某个槽位上，但**占用者不是网关自己的容器** ⇒ 事实检查不通过。
+  if [[ "$_owner_is_foreign" == "yes" ]]; then
+    cat <<EOF
+结论            : ★★ 端口被**别的容器**占用 —— upstream 指向 127.0.0.1:${upstream_port}，
+                  该端口**确实落在某个配置槽位**（a=${SLOT_A:-未配} / b=${SLOT_B:-未配}），
+                  但监听它的是「${owner}」，**不是网关自己的容器**（网关容器名前缀：${CONTAINER_PREFIX}*）
+                  ⇒ ⇒ 「端口 ∈ 槽位」这个配置自洽性检查**通不过事实检查**：
+                  网关的流量会被送到**别的产品**的端口 ⇒ 502。
+处置            : ① 把 upstream 主 server 行改到网关**实际在服务**的端口；
+                  ② 或先把占用 ${upstream_port} 的别的产品迁走；
+                  ③ 确认槽位端口配置与现场一致（槽位端口必须静态：活跃槽判定靠端口↔槽位配对）。
+EOF
+    return 2
+  fi
+  if [[ "$_owner_is_foreign" == "unknown" ]]; then
+    echo "结论            : ★ upstream 在槽位端口上，但**不知道**占用者是不是网关自己的容器"
+    echo "                  （未提供 --container-prefix）⇒ 无法判定「被别的产品占用」这一形态。"
+  fi
+  if [[ "$_port_in_slot" == "a" ]]; then
+    echo "结论            : OK（upstream 在槽 a 上，绑定正常）"
+  else
+    echo "结论            : OK（upstream 在槽 b 上，绑定正常）"
+  fi
+  return 0
 }
 
 # ── ssh 出口（可被替身替换，门用来模拟「连不上」）──────────────────────

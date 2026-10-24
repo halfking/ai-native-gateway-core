@@ -1280,8 +1280,18 @@ dd_check_slot_binding() {
   # 没配槽位端口 ⇒ 这台机器不走蓝绿端口映射 ⇒ 本闸不适用
   [[ -n "$_sa" || -n "$_sb" ]] || return 0
   _port="$(dd_upstream_port || true)"
-  # 读不到 upstream（全新主机 / 还没配 nginx）⇒ 无从体检 ⇒ 放行
-  [[ -n "$_port" ]] || return 0
+  # ★ 2026-10-24 12h 审计轮（问题⑨）：读不到 upstream 时**不阻断**（全新主机 /
+  #   还没配 nginx ⇒ 本闸不适用，这个前提是成立的），但**必须出声**。
+  #   ⇒ 原实现静默 `return 0` ⇒ 活跃槽判定**静默回退到状态文件**
+  #   ⇒ 而状态文件记的是上一次部署的槽位 ⇒ 可能在没人看见的情况下
+  #   切到/停掉一个**已经不对了**的槽位。
+  #   ⇒ 保持 fail-open（不改阻断语义，避免打断全新主机首部署），
+  #   但把「我这次没体检成」明确说出来 —— 静默的兜底比报错更危险。
+  if [[ -z "$_port" ]]; then
+    warn "★ 读不到 nginx upstream 主端口 ⇒ 本次**未做槽位绑定体检** ⇒ 活跃槽判定将回退到状态文件（${DD_GW_DATA_ROOT}/run/active-slot）"
+    warn "  ⇒ 若这是全新主机（还没配 nginx）则属正常；若是**存量**机器，请先核对 nginx upstream 指向的端口。"
+    return 0
+  fi
   case "$_port" in
     "$_sa"|"$_sb") return 0 ;;
   esac

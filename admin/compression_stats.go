@@ -187,6 +187,25 @@ func compressionStatsDegradedReason(results []compressionStatsStepResult) string
 	return strings.Join(parts, "；")
 }
 
+// compressionStatsScanFailure 统一处理**行级**扫描失败。
+//
+// ★ 为什么抽成共用函数（2026-10-24 12h 审计轮 · 问题⑲）：
+// R77 轮给 agg 步加了 slog.Warn，而 band / bucket 两步仍是「静默 continue」
+// ⇒ 同一条命令的三步里，**有两步的行级失败不留任何痕迹**
+// ⇒ 端点照样 200、degraded=false，而 token_band_* / hourly_series 是**少算的**
+// ⇒ ★ 调用方无法区分「真的是 0」与「这行没读出来」——
+// 这与 R77 要在**步级**修掉的是同一个坑，只是下移到了**行级**。
+//
+// ★ 本函数只做「让它出声」：**不改响应契约**
+// （degraded / degraded_reason 的语义一个字不动）；
+// 「行级损失要不要上报到响应里」属**契约变更** ⇒ 登记为待裁决点（见审计档 §4.3）。
+//
+// 返回 true = 这一行应被跳过（调用方 continue）。
+func compressionStatsScanFailure(step string, err error) bool {
+	slog.Warn("compression_stats "+step+" scan failed", "error", err)
+	return true
+}
+
 // compressionStatsSQLs 持有端点的 4 段查询 SQL。
 type compressionStatsSQLs struct {
 	agg     string // 策略分布 + token 汇总（必需）
@@ -400,7 +419,7 @@ func (h *Handler) compressionStatsSteps(queries compressionStatsSQLs, aggArgs []
 					var strategy string
 					var cnt, withOutbound, tokAfter, compressedTok int
 					if err := rows.Scan(&strategy, &cnt, &withOutbound, &tokAfter, &compressedTok); err != nil {
-						slog.Warn("compression_stats agg scan failed", "error", err)
+						compressionStatsScanFailure("agg", err)
 						continue
 					}
 					result.TotalRequests += cnt
@@ -436,6 +455,7 @@ func (h *Handler) compressionStatsSteps(queries compressionStatsSQLs, aggArgs []
 					var band string
 					var cnt int
 					if err := bandRows.Scan(&band, &cnt); err != nil {
+						compressionStatsScanFailure("band", err)
 						continue
 					}
 					switch band {
@@ -468,6 +488,7 @@ func (h *Handler) compressionStatsSteps(queries compressionStatsSQLs, aggArgs []
 						Compressed int
 					}
 					if err := bucketRows.Scan(&b.Bucket, &b.Total, &b.Compressed); err != nil {
+						compressionStatsScanFailure("bucket", err)
 						continue
 					}
 					var rate float64

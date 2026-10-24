@@ -363,6 +363,18 @@ func TestTsvHollowoutInventoryRowsAreWellFormed(t *testing.T) {
 // ★ 对每条 expect=red 的条目：★ 基线绿 ⇒ 掏空 ⇒ 必须红 ⇒ 还原 ⇒ md5 对上。
 func TestTsvHollowoutReadersRejectEmptyRegistry(t *testing.T) {
 	root := hollowRepoRoot(t)
+	// ★★ 2026-10-24 12h 审计轮（问题②）：**开跑前先自愈**。
+	// 上一次跑若被 SIGKILL（testing 超时 = alarm goroutine panic ⇒ defer 不跑），
+	// 被跟踪的台账会**留空**在盘上 ⇒ ⇒ 这一步把它们**还原回来**，
+	// 再开始新一轮掏空 ⇒ ⇒ 「崩溃留下的空洞」会被下一次跑自动修好，
+	// 而不是永远留在工作树里等人手工 git checkout。
+	healed, err := healHollowLeftovers(root)
+	if err != nil {
+		t.Fatalf("自愈预检失败（还原上一次遗留的掏空台账）：%v", err)
+	}
+	if healed > 0 {
+		t.Logf("自愈预检：还原了 %d 份上一次遗留的掏空台账", healed)
+	}
 	entries := readHollowInventory(t, root)
 	for _, e := range entries {
 		if e.Expect != "red" {
@@ -406,11 +418,28 @@ func TestTsvHollowoutReadersRejectEmptyRegistry(t *testing.T) {
 			}
 
 			// ★ ④ 掏空 ⇒ 跑读方 ⇒ 必须红
+			//
+			// ★★ 2026-10-24 12h 审计轮（问题②）改法：**先落盘备份，再掏空**。
+			// 原实现把原文只存在内存里、还原靠 defer ⇒ 而 `testing` 的超时是
+			// alarm goroutine 里的 panic ⇒ 其它 goroutine 的 defer **不执行**
+			// ⇒ 进程被 SIGKILL 时**被跟踪的台账静默留空**
+			// ⇒ 实测复现：本机该包 293.047s，而 verify.sh 的预算只有 300s。
+			// ⇒ 现在：原文先写到 `<abs>.hollowout-backup` ⇒ 即使被杀，
+			//   原文仍在盘上 ⇒ 下次跑的自愈预检会把它还原。
+			backup := hollowBackupPath(abs)
+			if err := os.WriteFile(backup, orig, 0o644); err != nil {
+				t.Fatalf("写备份失败（%s）：%v", backup, err)
+			}
 			if err := os.WriteFile(abs, hollowed, 0o644); err != nil {
 				t.Fatalf("写掏空版失败：%v", err)
 			}
+			stopGuard := installHollowSignalGuard(abs)
 			defer func() {
-				_ = os.WriteFile(abs, orig, 0o644)
+				stopGuard()
+				if err := restoreHollowBackup(abs); err != nil {
+					t.Errorf("还原 %s 失败：%v", e.Path, err)
+					return
+				}
 				back, err := os.ReadFile(abs)
 				if err != nil {
 					t.Errorf("还原后读不回 %s：%v", e.Path, err)
