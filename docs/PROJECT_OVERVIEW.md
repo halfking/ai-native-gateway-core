@@ -17,7 +17,7 @@ LLM Gateway Go 是一个**企业级大语言模型网关系统**，为企业提�
 
 - **统一接入**: 兼容 OpenAI/Anthropic/Gemini/国产模型等多种协议
 - **智能路由**: 基于成本/质量/延迟的多维度自动路由决策
-- **多租户隔离**: 38+ 表 RLS 行级安全，完整租户数据隔离
+- **多租户隔离**: 90+ 表 RLS 行级安全，完整租户数据隔离
 - **流量治理**: Token 限流、语义缓存、提示词压缩
 - **企业级部署**: 支持离线激活、自动升级、多环境部署
 - **全链路可观测**: 完整审计、监控、追踪能力
@@ -239,7 +239,7 @@ Client Request
 
 **位置**: `domains/tenant/`, `domains/identity/`, `middleware/`
 
-- **RLS隔离**: 38+ 表行级安全（Row-Level Security）
+- **RLS隔离**: 90+ 表行级安全（Row-Level Security）
 - **身份隧道**: Virtual IP/MAC/ClientID 租户标识传递
 - **凭据池**: 每租户独立凭据池管理
 - **配额管理**: 租户级 Token/RPM/TPM 限流

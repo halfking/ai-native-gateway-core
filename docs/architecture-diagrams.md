@@ -32,7 +32,7 @@ graph TB
     GW <-->|"激活 / 心跳 / 升级包"| MASTER
 
     subgraph storage["持久化与观测"]
-        PG[("PostgreSQL 15+<br/>RLS 38+ 表 / 月分区")]
+        PG[("PostgreSQL 15+<br/>RLS 90+ 表 / 月分区")]
         REDIS[("Redis 7+<br/>URSM 状态 / 限流 / 会话热状态")]
         OSS[("OSS / S3 / 本地文件<br/>请求体归档")]
         PROM["Prometheus /metrics<br/>200+ 指标"]
@@ -253,7 +253,7 @@ graph TB
     subgraph full["Full 模式（默认, LLM_GATEWAY_STORAGE_MODE 未设或 full）"]
         PGX[("PostgreSQL 15+")]
         subgraph pgtables["核心事实与配置"]
-            TENANTS["tenants / users / api_keys<br/>(RLS 行级安全 38+ 表)"]
+            TENANTS["tenants / users / api_keys<br/>(RLS 行级安全 90+ 表)"]
             CREDS["credentials / providers / models"]
             REQLOGS["request_logs (月分区父表)<br/>request_logs_hot / usage ledger<br/>764: tenant+ts 分区索引"]
             SESSPG["sessions 族 (V2, shadow)<br/>sessions / session_turns /<br/>session_bodies / session_turn_logs(24h TTL)"]

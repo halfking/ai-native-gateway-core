@@ -136,8 +136,9 @@ gofmt -w .
 # Go imports
 goimports -w .
 
-# 多租户三件套 linter（CI 门禁名，无本地可执行脚本）：
-# lint-tenant-scope-llmgw / lint-pg-rls / lint-otel-tenant
+# 多租户门禁（Makefile 目标）：
+# make test-rls   —— 真实 PostgreSQL RLS 门禁（需 TEST_DATABASE_URL，本地手动跑，未接 CI）
+# make test       —— 全量单元测试（CI 的 verify.sh 跑的就是它）
 # 口径见 README.md「Contributing」与 CONTRIBUTING.md
 ```
 
