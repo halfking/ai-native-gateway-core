@@ -9449,6 +9449,7 @@ embeddata 逐字 + lock_timeout + 自证断言 + down 只删账本 + **真库腿
 | 900 | `900_freediscovery_schema_reassert.sql` | `b1f1a0c90cb706887e19007cc47867abe3b21e5c371ee832222be3531b09d9de` | registered in installer StartupFiles + 生产升级序列（未应用，pending）—— 084+087 再投递（896 同款交付缺口修复：升级通道只把 ≥412 视为 pending ⇒ 084 从未到达生产 ⇒ free-discovery 503）。幂等；down：`900_freediscovery_schema_reassert.down.sql`（sha256 `2d8ef1a038df25ce17c59bd68b86acd15be74e935f6a3b8c32666ea4fe1d94c3`） |
 | 901 | `901_usage_ledger_api_key_id_ts_idx.sql` | `a94c1dfe31a7cead3957141ba9615db0cedae49feb88786e3c3422b29a8d0195` | registered in installer StartupFiles + 生产升级序列（未应用，pending）—— usage_ledger 分区父表补 (api_key_id, ts DESC) WHERE api_key_id IS NOT NULL（实测 7 天空窗 6,983 ms 的根因）。891 同款 lock_timeout=60s / statement_timeout=10min；down：`901_usage_ledger_api_key_id_ts_idx.down.sql`（sha256 `bea9ec9a2741758ebd7076c9c1387e630e62994c6100b3b99b32c64fb9fcbc6b`） |
 | 902 | `902_stats_event_dedup_pkey_include.sql` | `5871f9a63b4565a4419a6119efc96434ce49d32d5d7fb5d9adc5e30f37db7f8b` | registered in installer StartupFiles + 生产升级序列（未应用，pending）—— stats_event_dedup 索引合并：pkey 换体 UNIQUE(event_id) INCLUDE(occurred_at) + 删 845 复合索引（252 只读实测 pkey 114 MB + 复合 151 MB ⇒ 净省 ~114 MB）。`dbinit:no-transaction` + CONCURRENTLY + lock_timeout=60s / statement_timeout=10min；消费方无损本地一次性库实测（ON CONFLICT / 四处双列 JOIN Index Only / 唯一性不变式）；down：`902_stats_event_dedup_pkey_include.down.sql`（sha256 `0798829325a28bab9be005bfc6137437e51229d8128a1fbf8bfc6bcf1e8ef00f`） |
+| 903 | `903_sessions_updated_at_session_id_index.sql` | `404503d920252f171d313c6235c28bbe93d5d7241104000371d41f9555349d48` | registered in installer StartupFiles + 生产升级序列（未应用，pending）—— public.sessions 分区父表补 (updated_at DESC, session_id DESC) 索引。★ 根因：会话列表排序键 (updated_at DESC, session_id DESC) **没有任何索引能提供该序** ⇒ Seq Scan + top-N Sort 必须物化 439,106 行才能吐第一行 ⇒ Limit 无法提前停 ⇒ 整条 JOIN 链跑满（GET /api/admin/turns/sessions 生产恒 500@30s）。★ 252 EXPLAIN ANALYZE 实测：原查询 32,089.911 ms → 只加索引 3.639 ms，shared hit 9,876,509 → 640，去重 SubPlan 439,570 次循环 → 22 次。★ 口径零变化：不改任何查询；同一 REPEATABLE READ 快照内两个结果集 22 行（含表头）逐字一致。★ 被否证的路线（别再试）：只补 session_titles(scoped_session_id) —— 单变量 A/B 实测该 LATERAL 仅占 8.25s/32,089.911 ms（26%）。★ 普通 CREATE INDEX（分区父表不支持 CONCURRENTLY）+ lock_timeout=60s / statement_timeout=10min（891/901 同款）；public.sessions 是热写表（session_aggregator.go:216 每请求一次 upsert）⇒ 构建期 SHARE 锁阻塞该分区写 ⇒ 落在低峰窗口；down：`903_sessions_updated_at_session_id_index.down.sql`（sha256 `fef2844f9b2ea0b835239cfd6da67198b9855df90eacb4e40f5b7caf108d673d`） |
 ## 2026-10-23T17:18:26Z — deploy 245 build_seq 2820 (a88bf82f)
 
 | Migration | File | SHA-256 | Status |
@@ -9477,3 +9478,28 @@ healthz 200。防回归门：`tests/deploy_legacy_restart_flag_test.sh`（负控
 | Migration | File | SHA-256 | Status |
 |-----------|------|---------|--------|
 | — | （2823 无新迁移，水位仍为 901） | — | — |
+
+## 2026-10-27 — R89 inspector-stats 慢端点归因轮（迁移 904 落仓）
+> ★ **日期口径**：本节标题的「2026-10-27」是本系列的**轮次标签**；★ 实测时钟与 git 提交
+> ★ 时刻均为 **2026-10-24**（904 的 applied_at = 2026-10-24 15:42:54+08）⇒ 以 2026-10-24 为准。
+
+
+★ 本节登记 1 条 startup 迁移（904），**登记后随下次 154/245 部署由
+`deploy-lib/db-changelog.sh` 作为 pending ≥ 412 自动应用**。
+生产共享库（172.16.2.210:5432/llm_gateway）2026-10-27 只读实测水位 = **903**
+（`schema_migrations` 实查：902 applied 2026-10-24 08:49、903 applied 2026-10-24 12:47）。
+
+★ **台账订正**：上一节（2026-10-23 llmgo 生产页面修复轮）把 902 / 903 标成
+「未应用，pending」，但生产 `schema_migrations` 里**两条早已记账**
+⇒ 那是**标注漂移**（登记面更新滞后于实际应用），不是投递缺口。
+本节按生产实测水位（= 903）如实登记，904 是**唯一**待投递项。
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 904 | `904_inspector_stats_partial_indexes.sql` | `d2cd82dccf0ff6060ba11c3f593484e445e46ac44cba4b057edf12d45b25af20` | registered in installer StartupFiles + 生产升级序列 `scripts/apply-db-revision-sequence.sh`（未应用，pending）—— 给 `GET /api/admin/sessions/inspector-stats` 的 L2/L3 两条**无时间窗全表聚合腿**补两条部分索引：`public.session_dim (closed_at) WHERE status = 'closed'`（idx_session_dim_closed_at_closed，8,192 B）+ `public.session_summaries (health_score) WHERE health_score IS NOT NULL`（idx_session_summaries_health_score_notnull，2,120 kB；与既有 `idx_session_summaries_health_pending ... WHERE health_score IS NULL` 是 **NULL 侧 / NOT NULL 侧互补**，非冗余）。★ 根因（252 生产只读实测，2026-10-27）：session_dim 的 7 条既有索引**没有一条含 closed_at**；session_summaries 的 19 条里只有 health_score IS **NULL** 侧的索引 ⇒ 两条腿都只能 Seq Scan + Filter（Rows Removed by Filter 分别 301,024 / 184,361）。★ 效果（事务内 CREATE INDEX + EXPLAIN ANALYZE + ROLLBACK，生产零持久变更；回滚后残留索引实测 = 0）：L2 **389.373 ms → 119.706 ms**（Parallel Seq Scan → Parallel Index Only Scan）、L3 **195.432 ms → 0.100 ms**（Parallel Seq Scan → Index Only Scan）；L1 JOIN 腿不变（1,615 ms → 1,401 ms，噪声带内）。★ **口径零变化**：本迁移**不改任何查询**，只加索引 ⇒ 结果集取值不变（构造性成立，不依赖快照比对）。★ 两张表都**不是分区表**（`pg_class.relkind='r'`）⇒ 可用普通 CREATE INDEX；仍不用 CONCURRENTLY（startup 迁移默认在事务里跑）+ lock_timeout=60s / statement_timeout=10min（903 同款）；两张都是热写表 ⇒ 构建期持 SHARE 锁阻塞该表写入 ⇒ 落在低峰窗口。★ 诚实边界：C1 索引当前为空（session_dim.status **distinct = 1**、closed_at 100% NULL）⇒ 收益形态是「把恒空谓词从全表扫降级为索引扫」；真因是**会话关闭路径坏了**（`HandleSessionRecycle` 与 `bg/session_lifecycle_worker.go:496-500` UPDATE 了 session_dim 上不存在的 `stop_reason`/`updated_at` 列 ⇒ 真库 42703），**不在索引**；down：`904_inspector_stats_partial_indexes.down.sql`（sha256 `3328f8c7368769c42641f7874dd38ba4e04138891abad3b8781abdc2ed2f5532`） |
+## 2026-10-24T07:42:54Z — deploy 154 build_seq 2840 (3e47b1fe)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 904 | `904_inspector_stats_partial_indexes.sql` | `d2cd82dccf0ff6060ba11c3f593484e445e46ac44cba4b057edf12d45b25af20` | applied+verified |
+

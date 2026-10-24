@@ -7039,6 +7039,81 @@ index b953a6f03..555ef83c4 100644
 > ⇒ ⇒ ★★★★ **⑤ 门 + 变异**：新门 `admin/compression_stats_order_test.go`（2 条：band/bucket 必须在 agg 之前且**不得**有独立预算 / 行为腿：agg 吃满预算时便宜步已拿到数据、降级原因**只点名 agg**）⇒ **R77 的门文件一字未改** ⇒ 8 条门全绿（证明未破坏 R77 三条判据）⇒ **M5（agg 换回第一位）红 / M6（给 band/bucket 加预算）红** ⇒ **文件级备份 + md5 还原**（3ff81c34…/1ed6ccf4…）+ **残留自检**通过；`go build ./...` 绿、`go vet ./admin/` 绿、**`go test ./admin/` 全包 79.463s 全绿**。
 > ⇒ ⇒ ★★ **⑥ 诚实边界**：★ **24h 窗口的端点延迟仍会接近 10s**（共享库尾延迟不是应用代码能消除的；隔离态端点 ≈0.75s）⇒ **真解在库侧作业调度/并发度**（属主裁决）；★ **agg 的 500 率可能略升**（取舍：少量 agg 失败率换必需数据可得；「agg 失败也降级成 200+degraded」属主裁决）；★ **<1s 的并发查询不进慢日志 ⇒ 真实并发不可知**（只能断言候选被证伪，不能断言「已被证明被挤慢」）；★ **R77 的绝对数字作废、相对结论仍有效**；★ 其余慢端点族未动。
 > ⇒ ⇒ ★★ **完整记录见 `docs/audit/2026-10-24-R78-compression-stats-5.4s缺口归因与步骤顺序修复.md`**（§0~§8）；LESSONS 新增 **§317~§320**（最好一次 ≠ 基线 / 归因要拿服务端真实 SQL+分布 / 共享库尾延迟不是形态能改的 / 形态级候选必须逐个证伪且「前提成立≠结论成立」）。
+> ⇒ ⇒ ★★★★★ **【2026-10-24 R79 轮（P11）】★★★★★ `data-lifecycle/degradation/status`（**≥120s**）与 `db-status`（**30.6~33.7s**）归因完成 —— 真因是【备份摘要每个文件解压两遍】+【Redis 4 次全量 SCAN 且无 deadline】⇒ 代码修复 + **7 条门** + M1~M5 变异全红（**入库待发**：发版仍被台账对账闸门挡住，**生产未变更**）。
+> ⇒ ⇒ ★★★★ **① 生产实测（154 build 2825，REPEAT=3，端点族全貌）**：`degradation/status` **000×3（120s 打满）**；`turns/sessions`（两种分页形态同）**500×3 @30.0s**；`db-status` 200×3 **30.6/31.6/33.7s**；`data-lifecycle/stats` 17.7/21.0/30.0s；`turns/sessions/filter-options` 10.1/10.4/12.2s；`pending-responses/stats` 4.3/4.6/5.0s；`dashboard/session-overview` 4.7/5.6/6.5s；`sessions/inspector-stats` 500/200/200 @2.1/8.3/10.0s；`data-lifecycle/metrics` 1.5/1.6/1.9s；`data-lifecycle/partitions` 0.7/0.8/3.3s。
+> ⇒ ⇒ ★★★★ **② 根因一（备份摘要解压两遍）**：`domains/dbdegradation/file_reader.go` 的 `GetBackupSummary` 先调**有 per-file 缓存**的 `GetFileSummary`，又对同一批文件 `ReadRecords` 一遍**只为算跨文件全局唯一 session** ⇒ ★ **第二遍不受缓存保护** ⇒ **每次请求重解压全部备份** ⇒ ★★ **「代码里有缓存」不等于「每次请求都命中缓存」**（LESSONS §322：聚合层/二次遍历最易绕开底层缓存 ⇒ 查慢要沿调用链逐层问）。
+> ⇒ ⇒ ★★★★ **③ 根因二（Redis 4 次全量 SCAN + 无 deadline）**：`domains/dbdegradation/ttl_manager.go` 的 `GetTTLStats` 对 4 个 pattern 各走**完整游标环**；而 `session:key:*` ⊂ `session:*`、`session:apiKey:*` ⊂ `session:*` ⇒ ★ **前缀蕴含** ⇒ 可合并成 **1 次扫描分流**（LESSONS §323：合并的正确性证明 = 子集关系，验证的最短路径 = **用旧实现作对照**）；★ 且整个 handler **没有 deadline** ⇒ 端点挂死上限交给运气（LESSONS §324）。
+> ⇒ ⇒ ★★★★ **④ 落地（4 个文件，零 schema / 零迁移 / 零 SQL 改动 ⇒ 不受台账闸门牵连）**：`file_reader.go` 加【摘要整体缓存】（指纹 sha256(name|size|mtime) + 深拷贝返回 + **重算次数计数器** `SummaryComputations()`）；`ttl_manager.go` 加 `countSessionScopedKeys`（**一次 SCAN 分流**）+ `countKeys`/`GetTTLStats` **改为返回 error**（ctx 结束或 Redis 出错 ⇒ 部分计数 + **显式错误**，不让部分计数冒充完整计数）；`admin/degradation_control_handlers.go` 加 `degradationStatusBudget = 5s` + ctx 预算 + **`degraded` 恒发** + `degraded_reason`；`admin/db_degradation_handlers.go` 同款 ctx 预算 + `degraded`。
+> ⇒ ⇒ ★★★★ **⑤ 门 + 变异（7 条全绿）**：`domains/dbdegradation/r79_degradation_status_shape_test.go`（**4 条**：合并扫描与「分别扫三次」**逐字相同**〔miniredis 真 Redis 语义 + 旧实现作对照〕/ ctx 取消**必须报错**且保留已统计到的部分 / 文件没变 ⇒ 重算次数**不增**、指纹变 ⇒ 必须重算 / **`InvalidateCache()` 必须同清摘要整体缓存** ⇒ 否则「同名同大小同 mtime 的覆盖写」会让端点返回**陈旧摘要且无任何显式信号** ⇒ 该条门逼出了**第二处加固**）；`admin/r79_degradation_status_shape_test.go`（3 条：预算 **>0 且 ≤10s** / `degraded` **恒发** / 扫描被打断 ⇒ **200 + `degraded=true` + reason 点名 ttl**）⇒ **M1（去缓存）红 / M2（破坏前缀分流）红 / M3（吞扫描错误）domain+admin 两门红 / M4（不标 degraded）红 / M5（`InvalidateCache` 不清摘要缓存）红** ⇒ **文件级备份 + md5 还原** + **残留自检**通过；★ **门自己抓到一次真问题**：第一版缓存门前提写错（改写内容时 size 也变了 ⇒ 缓存**正确地**失效 ⇒ 门红）⇒ ⇒ 改成「**用重算次数当判据**」⇒ 判据更直接、也更强。
+> ⇒ ⇒ ★★★ **⑥ 回归**：`go build ./...` 绿、`go vet ./admin/ ./domains/dbdegradation/` 绿、**`go test ./admin/ ./domains/dbdegradation/` 全包绿**（admin **79.005s** / dbdegradation **2.592s**）。
+> ⇒ ⇒ ★★ **⑦ 诚实边界**：★ **本轮无法上生产**（台账对账闸门，**生产未变更**，仍 2825@8782）⇒ **端点级收益尚未在生产测得**（上线后须按 R78 纪律：同窗口交错 A/B + 多轮中位）；★ **未做的三个端点（根因不同）**：`turns/sessions` **500@30s**（逐行子查询 + 2 个 LATERAL + 依赖已被 876 删除的 `idx_sessions_session_id`）、`data-lifecycle/stats` **17.7~30.0s**（全量历史口径）、`filter-options` **10.1~12.2s**（`first_request_at` 无索引）；★ `GetTTLStats` **签名变了**（`(map, error)`）⇒ 仓内 2 个调用点已同步；★ 摘要缓存**只缓存一份摘要**（**刻意不**缓存 per-file session 集合 ⇒ 避免把全量 session id 留在内存里）；★ **版本号本轮不推进**（无发版 ⇒ 不消耗 build_seq；floor=2826 已保证下次发版 ≥2827）。
+> ⇒ ⇒ ★★ **完整记录见 `docs/audit/2026-10-24-R79-degradation-status-120s与db-status-31s归因与修复.md`**（§0~§7）；LESSONS 新增 **§322~§325**（有缓存≠每次命中缓存 / 前缀蕴含⇒N 次扫描合并成 1 次 / 无 deadline ctx + 扫描被打断必须显式报错 / **独立 index 提交后必须刷新主 index 的对应路径**）。
+> ⇒ ⇒ ★★★★★ **【2026-10-24 R80 轮（P11）】★★★★★ 「端点变快了，但数据变错了」—— R79 的【自我订正】：5s 预算把备份摘要**截断**，而 R79 把**截断结果当完整结果缓存** ⇒ 生产读数「100 个备份 / 5.18GB / **记录数 0 / 会话数 0**」⇒ ★★ **静默的错误数据**（比慢更危险）⇒ R80 修三件事：**部分结果可识别** + **请求路径不再付解压代价**（后台刷新） + **每个文件只解压一遍**（源头级消掉 R79 的根因）。
+> ⇒ ⇒ ★★★★ **① 触发事件（R79 发版 2827 后的生产读数）**：`degradation/status` **000×3（≥120s）→ 200×3 @5.005/5.012/48.854s**；`db-status` **30.6/31.6/33.7s → 5.004/5.005/5.010s**；`turns/sessions` 仍 500@30s；`inspector-stats` 的 500 消失（**不可归因于 R79**，该端点不在变更面内 ⇒ 只登记观察）。
+> ⇒ ⇒ ★★★★ **② 机制（三步，代码级可复算）**：① R79 的 5s ctx 预算 ⇒ 摘要计算**必然被截断**（生产要解压 **5.18GB / 100 个文件**，冷路径 ~48s）；② `GetFileSummary` 失败只 `slog.Warn` 就 `continue`（记录数按 0 计、**无错误上抛**）+ `ReadRecords` 的**返回值被直接丢弃** ⇒ 计数被静默低估；③ 计算结束**无条件写缓存** ⇒ ⇒ **一次偶发截断被放大成 5 分钟的持续错误数据**；★ 而 `degraded_reason` 只说 **ttl** ⇒ **备份腿的截断在响应里完全不可见**。
+> ⇒ ⇒ ★★★★ **③ R80 的三条修法**：① **部分结果可识别**：`computeSummary` 计失败数（`GetFileSummary` 失败 + `ReadRecords` 错误**必须接住**）⇒ failed>0 ⇒ 返回 error ⇒ 缓存条目带 `partial` 标记 ⇒ 端点 `degraded=true` + reason **点名 backup**（且部分摘要**照样给**，前端可显示「部分值」）；② **后台刷新**（单飞 + TTL 30min）⇒ 请求**不等**重算（实测 <2s）⇒ 稳态 CPU ≈ 48s/30min ≈ 2.7% 单核；③ **一趟解压同时产出「计数 + 该文件 session 集合」** ⇒ 摘要计算**不再需要第二遍解压** ⇒ **R79 的根因被源头消除**（R79 只是把它缓存掉了）⇒ **口径不变**（并集 ≠ 求和，用**旧实现两趟**作对照逐字对拍）。
+> ⇒ ⇒ ★★★★ **④ 门（7 条全绿）+ 变异 M6~M9 全红（文件级备份 + md5 还原 + 残留自检）**：`domains/dbdegradation/r80_backup_summary_partial_test.go`（5 条：截断必报错 / 部分结果可缓存但必带标记 / 后台刷新补全 / 一趟并集==两趟并集 / **每个文件只解压一遍**）；`admin/r80_degradation_backup_partial_test.go`（2 条：备份腿不完整 ⇒ 200+degraded+reason 点名 backup / 部分摘要要返回但必须同时 degraded）。
+> ⇒ ⇒ ★★★ **⑤ 门自己抓到的一次「量具失明」（必记）**：★ **M6 第一轮是 GREEN** ⇒ 不是门坏、是**尺子瞎了**：`fileReads` 挂在 `readFileSummary` 上 ⇒ 「第二遍 `ReadRecords`」**根本不经过它** ⇒ 计数看不见 ⇒ 门恒绿 ⇒ ⇒ **把计数点下沉到真正的解压漏斗** `ReadRecordsWithStats` ⇒ 重跑 M6 ⇒ **红**（6≠3）⇒ ⇒ **通用式：计数点必须挂在【被测行为本身】上，而不是它的某个调用者上**（LESSONS §327）。
+> ⇒ ⇒ ★★ **⑥ 诚实边界**：★ **R80 代码尚未发版 ⇒ 假数字此刻仍在生产**（`backups.total_records=0`）⇒ 必须发版后复测；★ **48.9s 的冷请求只被「转移到后台」**（大文件整段解码仍是**不可中断区**）；★ **Redis 那条腿仍是每次请求全量 SCAN ~1M 键** ⇒ 5s 预算下**必然被打断** ⇒ `ttl_stats` 永远是部分计数 ⇒ 下一步应给它也加缓存/后台刷新；★ `db-status` 的 `degraded_duration` 仍 `0s`。
+> ⇒ ⇒ ★★★★★ **【2026-10-24 R81 轮（P11）】★★★★★ 摘要慢的**真根因**找到了：不是「解压 5.18GB」，而是**打捞路径的 member 边界搜索把每个文件反复完整解码 ~20~30 次** ⇒ 实测同���个 106MB 文件：纯解压 **2.92s** vs 打捞路径 **~45s**（**~15×**）⇒ 摘要链路改走**纯流式**（打捞只留给恢复链路）⇒ **口径不变**（完好文件上逐字相同）。
+> ⇒ ⇒ ★★★★ **① 实测（154 生产，真实读数）**：`gzip -dc sessions-2026-08-25-05.jsonl.gz | wc -l` = **2.92s**（106MB / 1010 行）⇒ 而网关摘要路径单文件 **~45s** ⇒ ⇒ 全量 100 个文件在打捞路径下是 **~75min**（**任何 5s/10min 预算都不可能算完** ⇒ R80 的后台刷新会**永远算不完、每轮白烧 10 分钟 CPU** ⇒ ★ 这是我上一轮埋的坑，本轮修掉）。
+> ⇒ ⇒ ★★★★ **② 机制**：`ReadRecordsWithStats` 对 ≤256MB 的文件走**打捞路径**（`salvageGzipMembers`）⇒ 它用「**指数扩张 + 二分夹逼**」定位每个 gzip member 的端点 ⇒ 而**每次试解前缀都要完整解码该前缀** ⇒ ⇒ **同一文件被反复完整解码 ~20~30 次**。
+> ⇒ ⇒ ★★★★ **③ 落地（`domains/dbdegradation/file_reader.go` + `file_reader_salvage.go`）**：① 新增 `readFileSummaryStreaming` —— 摘要链路走**纯流式**（`readGzipStream`，逐行检查 ctx）⇒ 成本降 ~15×；★ **打捞路径原样保留给恢复链路**（`GetFileSummary` 不变）⇒ **恢复能力不受影响**；② 后台预算 `10min → 30min`、摘要 TTL `30min → 6h` ⇒ 按实测（全量 ~8~13min）⇒ **后台能真跑完**，稳态 CPU ≈ 13min/6h ≈ **3.6% 单核**；③ 新增**确定性成本探针** `SalvageMemberProbes()`（member 边界搜索的前缀试解次数）。
+> ⇒ ⇒ ★★★★ **④ 门（3 条全绿）+ 变异 M10 全红**：`domains/dbdegradation/r81_summary_streaming_test.go`（**流式 vs 打捞的记录数/会话数/元信息逐字相同**（口径不变）/ 损坏文件必须报错并计入失败 / **摘要链路的 member 探针数不得增长**（+ **阳性对照**：打捞路径本身必须产生探针 ⇒ 否则门会空转））⇒ **M10（摘要退回打捞路径）红**（探针 1→2）⇒ 文件级备份 + md5 还原 + 残留自检。
+> ⇒ ⇒ ★★★ **⑤ 通用式（LESSONS §329）**：★ **「慢」的根因可能不在你调用的那个函数里，而在它的【默认分支选择】里**；★ **非恢复链路不要走打捞路径**；★ **成本判据要用确定性探针而不是计时**（计时断言天然 flaky）；★ **必须带阳性对照**（防「计数器坏了 ⇒ 门恒绿」）。
+> ⇒ ⇒ ★★ **⑥ 诚实边界**：★ **端点的 `backups` 计数仍是「一段时间内不完整」**（全量重算需 ~8~13min ⇒ 首次/换文件后的一段窗口内仍标 partial ⇒ **这是诚实的**）；★ **TTL 统计那条腿仍未解决**（每次请求全量 SCAN ~1M 键 ⇒ 5s 预算下必然被打断 ⇒ `ttl_stats` 永远是部分计数 ⇒ 下一步应给它也加缓存/后台刷新）；★ **「摘要口径要不要改（sidecar 元数据：备份时写计数）」仍是属主裁决项**（唯一能把成本降到 O(1) 的方案）。
+> ⇒ ⇒ ★★ **完整记录见 `docs/audit/2026-10-24-R80-端点变快但数据变错-截断摘要被当完整结果缓存.md`**（§0~§9）；LESSONS 新增 **§326~§328**（加预算会把完整结果变成截断结果 / 计数点必须挂在被测行为本身 / 部署日志的「无 pending」在 macOS bash 3.2 上是**空集读数**）。
+> ⇒ ⇒ ★★★★★ **【2026-10-24 R82 轮（P11）】★★★★★ ★★ R81 的「纯流式」摘要在生产数据上是【口径回归】：154 上 **53/100 个备份文件**单遍 `gzip` 读不出任何记录 ⇒ 端点说「记录数 0」是**读法错**不是「备份是空的」⇒ 且本轮又查出**另外两个独立缺陷**（后台刷新几乎从不启动 / `total_sessions` 恒为 1）⇒ R82 修三件：**快路径 + 打捞回退**（口径与 R80 逐字相同）+ **「有损 vs 读不出」分账** + **会话数口径不可用时显式标记**。
+> ⇒ ⇒ ★★★★★ **① 触发**：R81 发版 **2829**（active 8782）后的第 2/3 次生产读数 ⇒ 三次都是 `total_records=0 / total_sessions=0 / degraded=true` ⇒ ★ **量具 = 日志 WARN 的时间戳分布**：`10:05(100) 10:18(82) 10:19(18) 10:30(12) 10:30(14) 10:31(2)` ⇒ ⇒ **两个 100 条的 burst = 两次「就地计算」都被 5s 预算截断**（`context deadline exceeded` 174 条 / `flate: corrupt input` 26 条）。
+> ⇒ ⇒ ★★★★★ **② 根因一（R81 的口径回归）**：★ **仓库自己的注释早就写明了** —— `file_reader_salvage.go` 文件头：「孤儿 gzip header 连排 + 中段一个完整 member + 截断尾巴 ⇒ **gzip.NewReader 首个 member 即解码失败 → 整文件 0 条可恢复**」；`file_writer.go` FIXME-14370：「单遍 `gzip.NewReader` … **打捞通道才是正确读法** ⇒ 154 上 98 个里 **51 个**单遍读不出」⇒ ⇒ 生产实测 `gzip -t` 全量扫描 **100 个文件 ⇒ 53 个失败** ⇒ ⇒ ★ **R81 正好踩在仓库已登记的既有缺陷上**（LESSONS §331：**「慢」的根因在默认分支选择里〔§329〕，而「快」的分支选择也可能正好是【错误读法】**）。
+> ⇒ ⇒ ★★★★ **③ 根因二（后台刷新几乎从不启动）**：`GetBackupSummary` 只在「**缓存命中 且 指纹不变**」时才 `triggerSummaryRefresh`；而指纹 = `name|size|mtime` ⇒ **当天的日文件每次被改写指纹就变** ⇒ 走「冷启动」路径 ⇒ **不触发** ⇒ ⇒ 生产上后台刷新几乎不跑（LESSONS §333：**「有后台兜底」的设计，必须检查兜底自己的触发路径是否也依赖那个易变的东西**）。★ 已修：**冷启动路径也触发**。
+> ⇒ ⇒ ★★★★ **④ 根因三（`total_sessions` 恒为 1）**：★ 端点同时报 `total_records=57644` 与 `total_sessions=1` ⇒ 追查：① 记录抽样（3 个好文件各前 5000 行）**带 `session_id` 的行数 = 0**；② 顶层字段 = `['type','timestamp','record_key','payload']` ⇒ **没有 `session_id`**；③ `payload` 里也**没有会话维度**（只有 `RequestID` 等请求维度）⇒ ⇒ `BackupRecord.SessionID` 恒空 ⇒ 「唯一 session 集合」= **{""}** ⇒ ⇒ **「会话数 1」= 把空串当成了一个会话** ⇒ **读数失真**（LESSONS §332：**空值不是实体**；★ 「恒为 1」是失真的指纹）。★ 已修：**空串不再算会话**（三处读路径统一）+ 新增 `session_count_available` ⇒ 不可用时端点 `degraded=true` + reason 点名。
+> ⇒ ⇒ ★★★ **⑤ 落地（5 个文件，零 schema / 零迁移 / 零 SQL 改动）**：**新增** `domains/dbdegradation/file_reader_resilient.go`（`readFileSummaryResilient`：快路径流式 ⇒ 失败**回退打捞**〔= R80 的 `ReadRecordsWithStats` 同一底座 ⇒ **口径逐字相同**〕+ **有损**分账 + 回退计数器 `SummarySalvageFallbacks()`）；`file_reader.go`（`computeSummaryWith(allowSalvage)` + 空串不算会话 + `SessionCountAvailable` + 冷启动触发后台刷新 + **降级前缀收敛成域层单一真值源**）；`types.go`（`BackupSummary.SessionCountAvailable`）；`admin/degradation_control_handlers.go`（会话数不可用 ⇒ degraded + reason；**前缀不再重复** ⇒ 修掉「backup summary incomplete: backup summary incomplete: …」）。
+> ⇒ ⇒ ★★★★ **⑥ 请求路径【不做】打捞**：打捞会 `os.ReadFile` 整文件（**不理会 ctx**）⇒ 5s 预算里逐个打捞 = **IO 风暴** ⇒ ⇒ 请求路径只走快路径；**后台刷新**才回退（预算 30min）；且回退前先查 `ctx.Err()` ⇒ 预算耗尽后不再逐文件读盘。
+> ⇒ ⇒ ★★★★ **⑦ 门（7 条全绿）+ 变异 M11~M14 全红（文件级备份 + md5 逐字还原 + 残留自检）**：`domains/dbdegradation/r82_summary_salvage_fallback_test.go`（**5 条**：坏文件记录数/会话数**与打捞口径逐字相同** / 「有损」与「读取失败」**分开记账** / 请求路径不打捞 / 后台刷新**只对失败文件**打捞〔回退数 == 坏文件数〕+ 阳性对照 / 坏文件不得报 0）+ `admin/r82_degradation_session_count_test.go`（**2 条**：会话数不可用 ⇒ `degraded` + reason 点名 / 阳性对照〔可用时不得报不可用〕）⇒ **M11（摘掉打捞回退）红 4 条**〔`摘要=0 打捞=4`〕/ **M12（不把「有损」记账）红 3 条** / **M13（不标口径不可用）红 admin+domain** / **M14（空串又算会话）红**〔`会话数必须是 0（实测 1）`〕。
+> ⇒ ⇒ ★★★ **⑧ 门自己抓到的一处【前缀不一致】（R80 遗留）**：改完 admin handler 后 R80 的 admin 门红了 ⇒ 真相：前缀**只在缓存路径**有（`partialError()`）、**冷启动路径没有** ⇒ ⇒ 收敛成域层 `backupSummaryError()` 单一真值源后全绿。
+> ⇒ ⇒ ★★ **⑨ 诚实边界**：★ **R82 不修「备份为什么会被写坏」**（多进程 O_APPEND + 容器硬杀跳过 `gzip.Close` ⇒ 孤儿 header + **字节级交错** ⇒ 新文件还会继续坏 ⇒ **属主裁决**）；★ **请求路径仍拿不到真实数字**（真实数字来自后台刷新，约 13min ⇒ 刷新完成前端点显示 partial —— **这是诚实的**）；★ **per-file 增量缓存未做**（⇒ 每天一次 ~13min 全量重算 ⇒ 下一轮候选）；★ **`ttl_stats` 那条腿仍未解决**（每次请求全量 SCAN ~1M 键 ⇒ 5s 预算必然被打断 ⇒ `degraded` 长期 true ⇒ **属主裁决**）；★ **「会话数」的口径定义本身未改**（仍是「跨文件唯一 `session_id`」）⇒ 到底该是什么（唯一 RequestID？唯一凭据？）**待属主裁决**；★ 53 个坏文件的**可救回总量未量化**（只测了 3 个样本：394 / 0 / 148 行）⇒ 上线后从端点读数反推；★ ★★ **生产取证脚本不要与网关后台任务抢 IO**（本轮一个 `gzip -dc` 全量统计脚本 **549s / 0% CPU** = IO 饥饿 ⇒ 已 kill ⇒ LESSONS §334）。
+> ⇒ ⇒ ★★ **完整记录见 `docs/audit/2026-10-24-R82-备份摘要读法回归-53个文件单遍gzip读不出.md`**（§0~§9）；LESSONS 新增 **§331~§334**（「快」的分支也可能是错误读法 / 恒为 1 是口径失真的指纹 / 后台兜底的触发路径不能依赖易变的东西 / 生产取证别与后台任务抢 IO 且自制脚本要先自证）。
+> ⇒ ⇒ ★★★★★ **【2026-10-24 R82b 轮（P11）】★★★★★ 发版 **2830** 的**生产读数**当场抓到 R82 的**两个后续问题**（★ 代码 review 没抓到、门也没抓到 ⇒ ★ **生产读数是最后一道量具**）：① **「统计失败」≠「元信息没有」** ⇒ 摘要对外说「备份总大小 **0**」而文件清单里有 100 个文件；② ★★★ **「就地计算的结果会覆盖后台刷新的好结果」= 活锁** ⇒ 后台刷新已跑完（真实记录数）却仍显示「记录数 0」⇒ ★ **指纹（name|size|mtime）每天都会变** ⇒ 真实数字每天只存在十几分钟。
+> ⇒ ⇒ ★★★★ **① 修法一（元信息）**：失败路径**保留 stat 级的 `file`** ⇒ 大小/日期照报（**它们来自 stat，与解压无关**）。
+> ⇒ ⇒ ★★★★ **② 修法二（活锁）**：★ **只有【后台刷新】的结果写缓存**；**请求路径的就地结果只给本次请求**（⇒ 零 IO 浪费，也零覆盖）；★ 且**后台刷新正在跑**时**不做**就地计算（否则刷新窗口内每个请求白烧 5s CPU）⇒ ⇒ 端点 degraded + reason「备份摘要正在后台重算，请稍后重试」。
+> ⇒ ⇒ ★★★★ **③ R80 的门判据必须改（★「门红了先读门在守什么」的典范）**：`TestR80PartialResultIsCachedButMarked` 守的是「**部分结果要缓存**（避免重复解压）」⇒ ★ **意图仍成立**，但它当时用的**手段**（请求路径就地结果写缓存）**已被生产读数证明有害** ⇒ ⇒ 判据改为「请求路径**不**写缓存」+ 新增成对门「后台刷新结果**要**写缓存且带 partial 标记」⇒ **改判据，不是删门**。
+> ⇒ ⇒ ★★★★ **④ 门（+1 条）+ 变异 M15/M16**：★ **M15 第一次跑是 GREEN（没牙）** ⇒ 原因**不是**「计数器坏了」，而是 ★ **门构造的场景压根没让被测代码走到那条分支**（ctx 取消 ⇒ 提前 return）⇒ ⇒ 门补强（覆盖**两条路径** + 新增「**双路都失败**」场景）⇒ **M15 第二跑变红** ✓ ⇒ ⇒ LESSONS §335：「门恒绿」有两种成因（计数器坏了 / **门没覆盖到被测分支**），后者更隐蔽 ⇒ **补法：为同一条不变量补多个场景**。
+> ⇒ ⇒ ★★ **⑤ 门与变异现状**：domain 7 条 + admin 2 条；变异 **M11~M16 全红**（md5 逐字还原 + 残留自检）。
+> ⇒ ⇒ ★★ **⑥ 诚实边界**：★ **跨指纹的真实数字仍不稳定** ⇒ 根因是「摘要每次都全量重算」⇒ **per-file 增量缓存是下一轮的必需项**（本轮未做）；★ `ttl_stats` 那条腿仍未解决（每次请求全量 SCAN ~1M 键）；★ 「会话数」口径定义本身未改（待属主裁决）；★ 备份文件被写坏的**根因**未修（属主裁决）。
+> ⇒ ⇒ ★★★★★ **【2026-10-24 R83 轮（P11）】★★★★★ 端点的【第二条腿】也在永久降级：TTL 统计腿**每次请求**都全量 SCAN `session:*`（生产 ~1M 键，COUNT 1000 ⇒ ~1000 次往返）⇒ 端点 5s 预算**必然被打断** ⇒ 计数永远是部分值 ⇒ ⇒ R82 修完备份腿后，`degraded_reason` 里**仍长期挂着 `"ttl stats unavailable"`** ⇒ ⇒ **端点永远不会转绿**。
+> ⇒ ⇒ ★★★★ **① 安全前提（已核实）**：`GetTTLStats` 的调用方**只有 2 个**，都是**只读 admin 端点**（`admin/degradation_control_handlers.go` / `admin/db_degradation_handlers.go`）⇒ **不参与任何破坏性决策** ⇒ 缓存快照安全（★ 这条检查不能省：若它被用来决定删键 ⇒ 缓存陈旧值 = 误删）。
+> ⇒ ⇒ ★★★★ **② 修法（`domains/dbdegradation/ttl_stats_snapshot.go`，零 schema/零迁移/零 SQL）**：**快照 + 后台刷新**（单飞，预算 2min）⇒ ① **有快照** ⇒ 零 SCAN + 带 `snapshot_at`/`snapshot_age_seconds`（★ 过期**不等于错误** ⇒ 返回旧值 + 年龄，让运维自己判断）⇒ ② **无快照** ⇒ **仍内联算一次**（★ 算得完就当场给完整结果 ⇒ 保住 R79 的「全部成功 ⇒ 不降级」；算不完 ⇒ 返回部分统计 + 显式错误〔R79 语义保留〕且 **不把部分结果进快照**〔R82 教训〕+ 触发后台刷新）⇒ ③ **SCAN COUNT 1000 → 10000**（COUNT 只是「每批取多少」的提示 ⇒ **口径不变**；往返次数降 10×）⇒ ④ 新增 **SCAN 探针** `TTLStatsScans()`（★ 计时断言天然 flaky ⇒ 用探针）。
+> ⇒ ⇒ ★★★★ **③ 门（4 条全绿）+ 变异 M18/M19 全红（md5 逐字还原 + 残留自检）**：`domains/dbdegradation/r83_ttl_stats_snapshot_test.go`（快照命中 ⇒ **探针不增长** + **阳性对照**〔第一次必须真的扫〕/ ctx 取消 ⇒ 报错**且**返回部分 + **部分结果不得进快照** / 快照必须带年龄且年龄随时间增长 / 过期快照 ⇒ 返回旧值**不报错**）⇒ **M18（不用快照）红**〔探针 2 → 4〕/ **M19（不记年龄）红**。
+> ⇒ ⇒ ★★★★★ **④ 生产读数（2833-dd212c9b，active 8782，verified）**：读数 1（12:02:03，进程刚起）`sessions_count=743750`（**部分值**）`snapshot_at=None` ⇒ reason 含 `ttl stats unavailable`=**True**；读数 2（12:02:49）**`sessions_count=1261683`（完整值！）`session_keys_count=374339` `snapshot_at=12:02:20` `age=28s`** ⇒ reason 含 `ttl stats unavailable`=**False** ⇒ ⇒ ★★★ **那一项永久消失**；⇒ ⇒ ★★★★ **意外收获：完整计数比部分计数大 40%（74 万 → 126 万）** ⇒ ⇒ ★ **之前那条「读数不可信」的标记旁边，还藏着一个【量级差】** —— 只修标记不修读法 ⇒ 少算照样存在。
+> ⇒ ⇒ ★★★★★ **⑤ 延迟收益（请求路径零 SCAN）**：`degradation/status` **200×5 min 0.002s / med 0.003s / max 0.003s**、`db-status` **200×5 min 0.001s / med 0.003s / max 0.007s** ⇒ ⇒ ★ **该端点完整演进：≥120s（R79 前）→ 5.005s（R79~R82c 预算打满）→ 3ms（现在）** ⇒ ★★ **~1600×**。
+> ⇒ ⇒ ★★ **⑥ 诚实边界**：★ TTL 计数是「**快照**」不是「此刻实时值」⇒ 用年龄字段让运维判断（TTL 60s ⇒ 每分钟最多一次全量 SCAN）；★ **首次请求仍会看到 `ttl stats unavailable`**（没有快照，十几秒后后台刷新完成）⇒ 这是诚实的；★ 端点的 `degraded` 现在**只**由备份腿决定（「52/100 有损 + 会话数不可用」）⇒ 那是**诚实**的（备份确实损坏、记录确实没有会话维度）；★ per-file 增量缓存（备份腿仍每次全量重算）仍未做 ⇒ 属主裁决项。
+> ⇒ ⇒ ★★ **完整记录见 `docs/audit/2026-10-24-R83-ttl统计腿移出请求路径.md`**（§0~§5）；LESSONS 新增 **§337**（一条端点可能有多条腿 ⇒ 修完一条不等于端点转绿 ⇒ 收尾要**逐条腿**核对 `degraded_reason` 的每一项；上缓存前必须核「调用方是否参与破坏性决策」；缓存类读数必须带年龄，**过期 ≠ 错误**）。
+> ⇒ ⇒ ★★★★★ **【2026-10-24 R85 轮（P11）】★★★★★ `turns/sessions` 的**第二条腿**：api_key enrich 腿独占 20,176 ms/次 ⇒ 主查询修好后端点仍要 21s**
+> ⇒ ⇒ ★ **症状**：R84 发版 **2834**（迁移 903 已应用）后，端点 **500@30s → 200，但 17.0~24.7s（中位 18.1s）** ⇒ ★★ 正是 LESSONS §337 说的「一条端点多条腿，修完一条不等于转绿」。
+> ⇒ ⇒ ★★★★★ **★ 归因手法（可复用）**：★ **不要看 `pg_stat_statements` 的累计 total_exec_time**（混着别的工作负载，不可归因）⇒ ★ **快照 → 打端点 3 次 → 再快照 → 按 queryid 求差** ⇒ 直接读出每条腿的「每次调用」耗时：enrich 腿 **20,176.0 ms/次**、主列表查询 **8.3 ms/次**（⇒ 索引生效 ✔）、轮次加载 4.2 ms/次、handoff enrich 0.2 ms/次 ⇒ ⇒ 「主查询已修好，剩下全在 enrich 腿」。
+> ⇒ ⇒ ★★★★ **根因**：enrich 腿的 source 是 `db.SessionFamilyTurnsSourceSQL()` = **hot UNION ALL 父表全部历史分区（~1M 行）**，而 **session 谓词在 source 外部** ⇒ 规划器把整条 UNION ALL 物化后再 Hash Join。
+> ⇒ ⇒ ★★★★ **单变量 A/B（252 EXPLAIN ANALYZE，同 21 个**真实** session_id）**：**A 谓词在外部 11,478.486 ms（Hash Join，估算 1,587,817 行）｜ B 谓词推进两条腿内部 6.369 ms（估算 1,070 行，走 `idx_session_turns_hot_tenant_session_turn`）** ⇒ **~1,800×**。
+> ⇒ ⇒ ★★★★ **落地**：① 新增 `db.SessionFamilyTurnsForSessionsSQL()`（**数组版**：投影与全量 source **逐字同源**，唯一差别是两条腿各带 `WHERE t.session_id = ANY($1)`）—— ★ 既有单 session 版 `SessionFamilyTurnsForSessionSQL()` **不动** ⇒ 其它调用方零影响；② `admin/turns_sessions.go` 的 enrich 查询改用它，**JOIN 条件（`rl ON rl.request_id = t.request_id`）逐字不变** ⇒ 入选行集合不变。
+> ⇒ ⇒ ★★★★ **门 3 条 + 变异 4/4 全红**（M1 调用点退回全量 source｜M2 只推进一条腿｜M3 投影被改｜M4 JOIN 条件被改）⇒ ★ ★★ **M4 揭穿了门自己的洞（本次最值钱的收获）**：门最初用 `strings.Contains(..., "rl ON rl.request_id = t.request_id")` 判 JOIN 条件 ⇒ **对「后面追加 `AND rl.tenant_id = …`」的变体照样匹配 ⇒ 门假绿** ⇒ 改成带终止符的正则（`rl ON rl\.request_id = t\.request_id\s*
+`）后 M4 才真变红 ⇒ ⇒ ★★ **通用式：`Contains` 适合断言「存在」，不适合断言「逐字未被追加」**（LESSONS §342）⇒ ★ **变异要专门设计「追加型」**。
+> ⇒ ⇒ ★★ **已知边界**：① **`?api_key_id=` 过滤路径仍用未推进的全量 source**（`buildTurnsSessionWhere` 的 EXISTS 子句，带过滤路径）⇒ 后续轮处理；② 带过滤条件的请求仍然慢；③ `cmd/tools/sql_source_indirection_audit` 的 `TestDocumentedSnapshotMatchesMeasurement` **在 origin/main 上就是红的**（文档 142 → 实测 145，+3）⇒ 用 origin/main 独立 worktree 复跑 + 把本次文件拷进去数字**逐字不变** ⇒ **不是本次造成** ⇒ 按「同文件不要两个写者」纪律**未动它**。
+> ⇒ ⇒ ★★ **完整记录见 `docs/audit/2026-10-24-R84-turns-sessions-500-排序键无索引可提供.md` 附录 A**；LESSONS 新增 **§342~§343**（`Contains` 断言「逐字未变」是通用陷阱｜端点多腿时用**差分**而不是累计统计做归因）。
+> ⇒ ⇒ ★★★★★ **【2026-10-24 R84 轮（P11）】★★★★★ `GET /api/admin/turns/sessions` 生产恒 500@30s —— 根因不是「缺索引」而是「排序键没有任何索引能提供该序」**
+> ⇒ ⇒ ★ **症状**：2833 发版后生产基线（REPEAT=5）= **500,500,500,500,200**，min 30.003s / med 30.013s / max 54.510s；252 `pg_stat_statements` 抓到**真实生产 SQL**：`calls=1 total=24904.6ms rows=21`。
+> ⇒ ⇒ ★★★★★ **★ 主假设被实测推翻（本条线的第一教训）**：主假设是「`session_titles` 缺 `scoped_session_id` 最左前缀索引 ⇒ 每次 LATERAL 全表扫 ⇒ 31 亿行 ⇒ 主因 ⇒ 加索引即可」。**事实成立**（索引确实缺）**但量级不够**：单变量 A/B（`EXPLAIN (ANALYZE, BUFFERS)`，252）—— **A 原查询 32,089.911 ms ｜ B 只去掉该 LATERAL 23,836.829 ms** ⇒ 该 LATERAL 只占 **8.25s（26%）** ⇒ ⇒ **只补那个索引仍要 ~24s ⇒ 救不了** ⇒ ⇒ ★★ **「缺失事实」成立 ≠ 「它是主因」⇒ 慢 SQL 归因必须做单变量 A/B**（LESSONS §338）。
+> ⇒ ⇒ ★★★★★ **★ 真根因**：`public.sessions` 的既有索引里**没有一条能按 `(updated_at DESC, session_id DESC)` 出序**（`idx_sessions_status` 需 status 等值、`idx_sessions_tenant` 是 created_at）⇒ 规划器只能 `Seq Scan + top-N Sort` ⇒ ★★ **Sort 是阻塞点**（必须把 439,106 行全部物化才能吐第一行）⇒ 上层 `Limit` 拿到第一行时 43.9 万行已全 JOIN 完 ⇒ 整条链跑满。节点级实测：去重 SubPlan（`MAX(partition_date)`）**439,570 次循环** × 6 分区索引扫描 = 6,363,231 hits ≈ **10.5s**、`session_dim` JOIN ≈ 4.2s、`session_summaries` JOIN ≈ 1.6s、**top-N Sort 只 0.47s**、JIT 2.8s。
+> ⇒ ⇒ ★★★ **★ 一条被实测否证的推理（我自己踩的）**：我曾认定「`Limit` 挂在 `Nested Loop` 之上 ⇒ 不会提前停 ⇒ 光加索引没用 ⇒ 必须改成 sessions-only 子查询」⇒ ★★ **实测否证**：`Limit` 是**惰性拉取**的，拿够就停 ⇒ 子链随之停 ⇒ **`Limit` 在哪一层都不影响提前停**，决定成败的是**外层能不能按序惰性产出**（LESSONS §339）。
+> ⇒ ⇒ ★★★★ **修复效果（252 事务内建索引 + EXPLAIN ANALYZE + ROLLBACK ⇒ 生产零持久变更）**：生产查询**原样不改** ⇒ `Limit (actual time=0.881..3.639 rows=21)` = **3.639 ms**（原 32,089.911 ms）、`shared hit` 9,876,509 → **640**（≈15,400×）、去重 SubPlan 439,570 → **22 次**。★ 改写形态（sessions-only 子查询内含 ORDER BY+LIMIT）实测 5.838 ms ⇒ 同量级 ⇒ **改写无额外收益 ⇒ 只加索引**（改动面最小、口径零风险）。★ generic plan 复核（`PREPARE` + 6 次 `EXECUTE` 后第 7 次）仍走 Index Scan（2.141 ms）⇒ 参数化 `LIMIT` 不是阻塞项。
+> ⇒ ⇒ ★★★ **口径等价性（★ 两次踩坑后才对）**：① 默认 `READ COMMITTED` 下两次执行各拿新快照 ⇒ 中间新产生一个会话（12:13:11 vs 12:22:02）⇒ 结果集差 1 行 ⇒ 那是**快照漂移**不是语义差异 ⇒ 改用 `BEGIN ISOLATION LEVEL REPEATABLE READ` 重测 ⇒ **22 行（含表头）逐字一致**；② 第一版脚本打过「✅ 逐字一致（**0 行**）」的**假绿**（两个查询都语法报错、文件都是空的）⇒ ★ 必须加**行数守卫**（两侧 ≥2 行）才允许下结论（LESSONS §340）。
+> ⇒ ⇒ ★★★★ **落地 = 迁移 903**（`903_sessions_updated_at_session_id_index.sql` + `.down.sql`）：`public.sessions (updated_at DESC, session_id DESC)`，形态照抄 901（分区父表**不支持 `CONCURRENTLY`** ⇒ 普通 `CREATE INDEX` + `lock_timeout=60s` / `statement_timeout=10min`）。★ **登记面是 7 点不是 6 点** —— 照抄 902 的门才发现第 6 点 `sql/schema/installed_startup_migrations.tsv`（镜像，由 `cd installer && go test ./internal/dbinit/ -run TestStartupManifest -update` 重生成）。
+> ⇒ ⇒ ★★★★ **门 8 条 + 变异 8/8 全红**（M1 删 CREATE INDEX｜M2' 列序颠倒｜M3 删 lock_timeout｜M4 摘 runner 登记｜M5 破坏 embed 孪生｜M6 改 Go 侧排序键｜M7 摘 tsv 行｜M8 丢 `DESC`）⇒ ★ 其中 **M2 第一版打偏**（`replace(...,1)` 命中的是**文件头注释**里的同名串 ⇒ 可执行体没变 ⇒ 形态门正确地忽略注释 ⇒ 门没红）⇒ ★ 变异必须**精确打可执行体**。★ **门自身两处量具缺陷**（把正确的迁移判红）：down 写的是 `public.idx_…` 而判据只认不带前缀的形态；「不支持 CONCURRENTLY」这句**注释散文**被当成「用了 CONCURRENTLY」⇒ ⇒ **修门不是修迁移**。
+> ⇒ ⇒ ★★★ **★ 语义耦合门**（本轮最有价值的一条）：`TestMigration903_IndexColumnOrderMatchesQuerySortOrder` 把**索引列序**与 **Go 侧 `ORDER BY`** 绑在一起 ⇒ 防的是**无声退化**（有人改了 Go 侧排序键却没同步索引 ⇒ 索引仍在位、迁移仍在台账里、端点悄悄回到 32s ⇒ **没有任何门会红**）。
+> ⇒ ⇒ ★★ **已知边界（如实登记）**：① **带过滤条件的请求仍然慢**（过滤依赖 `sd`/`ss` 的 JOIN ⇒ `Limit` 无法在 sessions 扫描上提前停）⇒ 本轮只修**无过滤的默认列表路径**；② **索引构建期持 SHARE 锁阻塞 `sessions` 写**（`sessions` 是热写表 —— `domains/session/v2/session_aggregator.go:216` 的 `upsertSessionSnapshot` 每请求一次 `ON CONFLICT DO UPDATE`）⇒ 须落**低峰窗口**；实测构建时长热缓存 **600ms**、一次冷缓存观测 **≈27s**；③ down 是不可逆回退。
+> ⇒ ⇒ ★★ **完整记录见 `docs/audit/2026-10-24-R84-turns-sessions-500-排序键无索引可提供.md`**（§0~§8）；LESSONS 新增 **§338~§341**（缺失事实≠主因⇒必须单变量 A/B｜Limit 在哪一层不决定提前停｜等价比对必须同快照+行数守卫｜§330 已登记的 bash 全角变量坑本轮又踩了一次）。
+> ⇒ ⇒ ★★★★ **【2026-10-24 R82c 轮（P11）】★★★★ 发版 **2831** 的冷读又抓到一处判定缺陷：`session_count_available` 的判据**依赖了「记录数」** ⇒ 冷启动窗口里 `total_records = 0`（意思是「**还没统计完**」）⇒ **误报「会话数口径可用」** ⇒ ★ 改为**不依赖记录数**的判据：`!(TotalFiles > 0 && TotalSessions == 0)`（★ **保守**：宁可说「不可用」，也不让人误信一个恒为 0/1 的读数）⇒ 门 +1 条（`TestR82bSessionCountUnavailableMustNotDependOnRecordCount`）⇒ 变异 **M17**（改回依赖记录数）红。
+> ⇒ ⇒ ★★★ **2831 的生产读数确认 R82b 的两条修复生效**：① **冷启动触发了后台刷新**（日志 `background backup summary refresh produced incomplete result` = 2；2830 时第一次读数**不会**触发）；② **打捞回退在生产生效**（`summary fell back to salvage path` 计数持续增长）；③ ★★ 「后台刷新正在跑 ⇒ **不做**就地计算」在响应里**直接可见**（`degraded_reason` = 「备份摘要正在后台重算，请稍后重试」）⇒ **零 CPU 浪费 + 零覆盖**；④ ★ **元信息修复生效**（`total_size = 5178226914`，不再是 0）。
+> ⇒ ⇒ ★★★ **⚠ 仓内状态告警（工具性缺陷，非产品缺陷）**：本仓**主 index 停在 R77 的树**（R78 的提交走的是**独立 index** ⇒ 主 index 未被更新）⇒ ★ **此时若并行会话用主 index 直接 `git commit`，会把 R78 的成果一并回退**（`admin/compression_stats.go` 回 R77 版 ⇒ 步骤顺序修复被抹；`admin/compression_stats_order_test.go` 与 R78 审计档被**暂存删除**；`version.json` 回 2824）⇒ ⇒ **R79 提交后已把主 index 里「属我的路径」刷新到 HEAD**（并行会话在途的 `Makefile` / `902` / `scripts/*` 等暂存项**一字未动**）⇒ ⇒ ★ **纪律：用独立 index 提交后，必须把主 index 的对应路径刷新回来，否则下一个用主 index 提交的人会踩这个坑**（LESSONS §325）。
 > ⇒ ★★ **⑩ 段十三（2026-10-21）**：★★★★ **「变量写端 → 管道 → 早退消费者」这一族 ≠ 全部是缺陷 ⇒ 危害成立的【三个必要条件】被实测钉死**（探针 `scripts/audit/probe-pipefail-sigpipe-shape.sh`，8 条读数 × 连跑 3 次逐字一致）＋ ★★ **我已交付的候选清单有两处真缺陷 ⇒ 已重生成**（幽灵注释行 2 条 + 顶层覆盖判据未收紧）＋ ★★★ **一次「同一数字、不同口径」的自我订正** ＋ ★★★ **回退了一批「修一个不存在的缺陷」的改动**。**对生产的写入 = 0**。
 > ⇒ ⇒ ★★★★ **① 机制（实测，可复算）**：危害成立需**同时**满足：① **写端输出【多行】**（`grep` 按行匹配 ⇒ 必须读到行尾才敢判 ⇒ 单行时它读完整条 ⇒ 写端也写完 ⇒ **不会**被 SIGPIPE 打断 ⇒ 退出码 = grep 自己的）② **写端超管道缓冲 64 KiB** ③ **命中靠前**（命中在末尾 ⇒ grep 也要读到末尾 ⇒ 写端写完）⇒ ⇒ 三个里缺一个 ⇒ **无危害**；⇒ ⇒ ★★ **消费者是 `head -c` 则跨形态都有害**（正是段十 §19.20.66 那条真缺陷）⇒ ⇒ ★ **可操作判据：只有「写端可能多行且无上界」或「消费者是 head」才是真缺陷面；写端是单条记录 ⇒ 无害**。
 > ⇒ ⇒ ★★★ **② 我回退了 15 处**：本轮先把 `scripts/monitoring/pg-error-classifier.sh` 的 15 处改成 herestring（行为对照 4 组用例语义等价 ✔）⇒ ★★ **但机制探针显示那 15 处 `$msg` 恒为单行（`substr(line, idx+8)` 取一条 PG 日志行）⇒ 无危害** ⇒ ⇒ **「修一个不存在的缺陷」⇒ 全部回退**（工作树零 diff）⇒ ★★ **理由：① 零收益改动会制造「假修复」的错觉 ② 还会给并行会话制造冲突面** ⇒ ⇒ ★ **纪律：「语义等价」≠「修好了」⇒ 改之前必须先证明「危害成立」**。
@@ -7576,3 +7651,123 @@ index b953a6f03..555ef83c4 100644
 > ⇒ ★★ **部署工装两真 bug**：① `deploy-seamless.sh:404` 主流程无条件 `LEGACY_RESTART=false` 覆盖参数解析（:88）⇒ **死旗标自引入起从未生效**（已删，默认值在 :80）；② legacy 路径 `host_restart_service` 按 `targets.sh:220` 的 `service_name="llmgo-245.service"` 停**已弃用遗留 unit** ⇒ stop 空成功、30s 探活轮询打在活着的 canary@8781 上必然超时（**未修 targets**——legacy 语义涉及回滚通道，另轮裁决）。★ 通用式：应急通道平时不走 ⇒ 死了没人知道 ⇒ **它的验证只能靠真用它**。
 > ⇒ **六报错终态**：routing-log ✅ / free-discovery ✅ / keys73 ✅ / settings ✅；error-trend 与 turns 503 = 饱和族（P11 快路已生效：02:17 cron 实测 base_source=daily、1m51s、旧形态 235s/600s+；单小时超时对比噪声大不归因，留多日观测窗；B1/P1 属主项）。
 > ⇒ ⚠ 遗留（属主）：8782 ASM 冲突（蓝绿通道恢复）；legacy service_name 裁决；B1/P1。完整记录见 `docs/audit/2026-10-23-llmgo-245-六页面报错分族修复.md` §六§七。
+
+> ⇒ ⇒ ★★★★★ **【2026-10-27 R87 轮（P11）】★★★★★ objective 里唯一从未开工的一步「Maestro 逐页逐 API 浏览器巡检」已做完；并按它后半句「超过 2 秒的页面继续查因并优化」落地了一个**不改口径**的优化（`session-overview` 腿合并）**
+> ⇒ ⇒ ★★ **巡检（本地部署 2837 + 本地 PG 已含 R84 的 903 索引）**：★ **API 层**：**279 条 admin 路由逐条实测**（`/tmp/kx-sweep.sh`）⇒ **5xx = 0**；4 条 503 全是「功能未配置」的预期响应（逐条核对过响应体）；唯一 401 是 `/api/admin/bodies/...` 的**独立 body-service JWT**（刻意不共用 admin 会话，非缺陷）。★ **页面层**：仓内无 Maestro 资产 ⇒ 用 **CDP 自建巡检器**（`/tmp/kx-page-sweep.mjs`，Node 22 全局 `WebSocket` + 本机 Chrome headless + `Network.setCookie` 注入 `llmgw_session`）⇒ **本地 107 页 / 生产 25 页** ⇒ ★ **真实 JS 异常 = 0**、渲染为空 = 0（仅本地 2 个运维中心占位页）⇒ 失败请求全是 `maintain-api/*` 503（运维后端未部署，**生产同样有** ⇒ 每页固定 2 条噪声，已登记为裁决项）。
+> ⇒ ⇒ ★★ **v1 族退役的生产核对（252 只读）**：★ `pg_class` 里 **`_request%` 关系 = 0**（表/视图/物化视图全无）⇒ ★ 仍叫 `request_logs_with_current_month` 的那个**视图**的定义读的是**会话族**（`t.*`/`d.*`）⇒ ★ 7 个物化视图全是会话族命名 ⇒ ★ Go 侧 `db/probe_views_unified.go` 里那 3 处 `request_logs_with_current_month` 是**建视图的 DDL 文本**，运行时用的是库里已被迁移替换过的视图 ⇒ ⇒ **objective 的「v1 族真正删除」在生产侧已闭合**。
+> ⇒ ⇒ ★★★★ **`session-overview`（3.0s）归因 + 落地**：★ 9 段并行 ⇒ **墙钟 = 最慢腿**（L7 `top_clients` 1,228 ms / L8 `top_tasks` 934 ms，两者都要把 **90 万行 `session_dim` 整表建哈希**）；★ 瓶颈 = `session_summaries`（**86 万行普通表，无 `first_request_at` 索引**）被**扫 6 次** ⇒ ★ **加索引被实测否证**（L1 259→333ms、L7 916→1032ms **更慢**，因 395MB 堆全在 3.5GB `shared_buffers` 内，索引反而丢并行度）⇒ ★ 唯一有实测收益的方向 = **合并口径不变的腿** ⇒ ⇒ ★★ **本轮落地**：四条标量腿（总数/健康/合规/成本）合成 `querySessionSummaryAggregates`、两条趋势腿合成 `querySessionTrends`、上一周期成本独立成 `queryPrevPeriodCost` ⇒ **9 段→6 段、扫描语句 10→6、`FROM session_summaries` 11 处→7 处**；★ **口径等价实测（252 生产数据，同一 REPEATABLE READ 快照 + 行数守卫）**：**跨租户**与 **`tenant_id='default'`** 两种口径各跑一遍 ⇒ **26 项标量比对全 true、4 项趋势 `EXCEPT` 双向全 0**（趋势行数 8 vs 8）；★ 唯一行为差异 = **500 的段名文案**（6 个细分段名→2 个），**数据口径没变**。
+> ⇒ ⇒ ★★★ **门禁**：★ 新增 `admin/dashboardapi/r87_session_overview_merged_legs_test.go`（5 条：旧腿不得复活 / **23 个聚合表达式逐条存在且别名集合精确相等** / 趋势 7 个聚合+GROUP BY+ORDER BY / **扫描点数 = 7**（收益护栏）/ 编排段数 = 6）⇒ ★ **变异 4/4 全被目标门抓住**（含 1 条**追加型**：多插一列 `0 as dummy_extra` ⇒ 别名集合 24≠23 ⇒ 红）⇒ ★ ★ **门自身两处缺陷都是「先踩到、再修门、不动制品」**：① 判据用**裸函数名** ⇒ `querySessionTrend` ⊂ `querySessionTrends` ⇒ 新方法被误判成旧腿 ⇒ 改用**带 `(` 的完整签名**；② 别名判据原为「计数 ≥ 24」⇒ **抓不到多一列** ⇒ 改成**正则抽别名做集合精确比对**。
+> ⇒ ⇒ ★★★ **生产读数（154 直连 ×3，2026-10-27）**：`data-lifecycle/stats` **18.567s med**（★ 当前最大慢端点，归因在跑）｜`turns/sessions/filter-options` **10.208s med**（★ 比 R86 的腿级合计 2.75s 高 3.7 倍 ⇒ **R86 结论不足以解释端点**，复核在跑）｜`dashboard/session-overview` **2.994s med**｜`sessions/inspector-stats` **2.765s med**｜`dashboard/board` 0.021s｜`turns/sessions` 0.111s。
+> ⇒ ⇒ ★★★ **本轮两次量具失效（读数手段本身出问题）**：① **SSH 隧道排队** ⇒ 浏览器测出 `/api/auth/me` 1,515ms、`/api/system/version` 715ms ⇒ ★ **生产效率结论一律用「154 直连」**，浏览器/隧道读数只用于功能判定；② **CDP timing 公式错**（`requestTime` 是单调钟秒值，`responseEnd` 本身已是毫秒偏移）⇒ 相减恒负 ⇒ **耗时全读成 0** ⇒ ★ **量具第一件事是用「平凡对象」校准量纲**。
+> ⇒ ⇒ ★★★ **端口纪律**：★ 154 上 `ss` 输出里 `127.0.0.1:8783`（**ASM**）排在 `[::]:8782`（网关）**前面** ⇒ ★★ 取「第一个」⇒ 打错服务 ⇒ 表现为「LOGIN FAILED」（报错点离真因很远）⇒ ★ **端口一律用 `<port>/api/system/version` 含 `llm-gateway-go` 的指纹探针选**。
+> ⇒ ⇒ ★★★ **待属主裁决（本轮新增）**：① `data-lifecycle/stats` 18.6s（最大慢端点）；② `filter-options` 10.2s 与 R86 腿级结论的**缺口**；③ `session-overview` 的 join 腿 —— SQL 层候选（A/B/C/E）**全部被实测否证** ⇒ 只剩**预聚合 rollup / 服务端缓存 / 改口径**（★ 缓存与待办⑧「刷新期间返回什么」是同一议题）；④ 是否让前端在运维中心未配置时**不发起**那两个探针（每页 2 条 503 噪声）；⑤ R86 的 **180MB 索引方案**。
+> ⇒ ⇒ ★★ **完整记录见 `docs/audit/2026-10-27-R87-逐页逐API巡检与session-overview腿合并.md`**；LESSONS 新增 **§344~§348**（子串断言要带终止符｜「只断言存在」抓不到「多一列」⇒ 集合精确比对｜隧道排队与 CDP timing 公式两类量具失效｜端点墙钟=最慢腿 ⇒ 合并非最慢腿的收益在争用里、必须端点级读数验证｜端口要用应用指纹探针选，不信 `ss` 顺序）。
+
+> ⇒ ⇒ ★★★★ **【2026-10-27 R87 轮（P11）· 补记】发版 2839 + 三个归因收口**
+> ⇒ ⇒ ★★ **发版**：★ `8d8415ac0`（origin/main）→ 生产 **2839**（`2.5.8-8d8415ac-20261024-2839`），蓝绿切 **8781**，nginx 路由身份仲裁通过，`EXIT=0`；★ **本轮无新迁移**（pending 集合与 2835 发版时完全相同）。
+> ⇒ ⇒ ★★★ **发版后对照读数（154 直连）**：`dashboard/session-overview` med **2.994s → 2.762s（−7.7%）**、8 次样本合并中位 ≈ **2.6s（−12%）**｜`turns/sessions` 0.111 → **0.052s**｜`dashboard/board` 0.021 → **0.005s**。★ ★★ **墙钟只降 ~10%，远小于 DB 侧省下的算力** ⇒ 因为**墙钟由两条 join 腿决定**（本轮没动），而 4 核共享库的**并行 worker 争用**才是绑定约束 ⇒ ★ **「合并非最慢腿的收益只以间接效应出现」已被发版前后读数证实**（LESSONS §347）。
+> ⇒ ⇒ ★★★ **DB 侧决定性证据（252 `pg_stat_statements` 差分，快照 → 打端点 ×3 → 快照 → 按 queryid 求差）**：★ **每次调用恰好 6 条语句**（合并后的标量腿 + 合并后的趋势腿 + 上一周期成本 + 模型用量 + top_clients + top_tasks，**各 Δcalls=+3**）⇒ ★★ **旧的 5 条分腿语句全部 Δcalls=0**（停在历史值 53/69/53/53/58/53）⇒ ★ **腿合并在生产确实生效**（合并前 10 条语句/次）。
+> ⇒ ⇒ ★★★★ **`data-lifecycle/stats`（18.567s med，当前最大慢端点）归因完成**：★ 端点只有 **2 条串行 SQL 腿**，**腿1 5,429 ms/次 + 腿2 恒烧 12,000 ms 子预算** ⇒ 合计占墙钟 **99.5%**（Go 侧编排仅 94 ms/次，无轮询/退避）。★★ **腿1 的根因不是「缺索引」而是「可见性地图为空」**：`session_turns_2026_09` 的索引**存在且形状正确**（`(tenant_id, ts DESC)`，42 MB）但 `relallvisible=0`（**从未 vacuum**）⇒ IOS 不可用 ⇒ 退化为 **1.1 GB 顺序读 6,444 ms**；★ 而兄弟分区 `session_turns_2026_10`（VM 97.1%）走**同一形状索引只需 95 ms** ⇒ **每行成本差 26×** ⇒ ★ **修 VACUUM 即可，不需要新索引**；⚠ autovacuum **不会自愈**（`n_dead_t=4394` 低于阈值、往月分区无新插入）⇒ 必须进运维 cron。★★ **腿2 的 480× 来自一个比较**：判据 `outbound_body <> 'null'::jsonb` 会**逐个解压 37,534 个正文（≈2.5~3.5 GB TOAST）** ⇒ `IS NOT NULL` **140 ms** vs 现行判据 **8,574~67,317 ms**；且腿2 烧掉的 12s **产出恒为空**（`growth_trend` 长度 0，73% 失败率）。★ **被实测否证**：去掉 CTE 的 `MATERIALIZED`（17,477 → **189,785 ms**）⇒ ★ **VM 修好前不要动它**；腿2 预算提到 26s ⇒ **打穿端点 30s 总预算** ⇒ 不可行。
+> ⇒ ⇒ ★★★★ **`filter-options`（10.208s med）归因完成 ⇒ R86 的结论不足以解释端点**：★ 端点只跑 **3 条 SQL、严格串行**（同一后端连接）；★ **主因 = turns 臂打满 8s 子预算后被丢弃的 8 秒（占 76~78%，纯浪费）**，3 小时内 **turns 降级 30 次 / ss 6 次 / tags 6 次**，**99 次调用只有 45 次完成**；★ 端点级日志（81 次调用）**min 2,258 / med 9,834 / max 18,004 ms**（max = 8+2+8 三预算全打满）；★ **降级轮次响应体 682~745 字节 vs 未降级 1,362~1,402 字节** ⇒ 「响应体变小」是降级的可观测信号。★★ **R86 的 4 项缺口**：① 腿级读数是**热缓存单腿**，端点是**三腿串行求和**；② 未测「超预算」⇒ 漏掉**降级乘数**（30~35% 的调用把 8~17s 烧成空响应）；③ 生产用 `pgx.QueryExecModeSimpleProtocol` ⇒ **参数被客户端内联成字面量 `'default'`** ⇒ 复刻用 `$1` 会得到**不同 queryid**；④ 「9 月分区占 84% buffers」**已过期** ⇒ 30 天窗滚动后主导扫描移到 **10 月**（Seq Scan 305,313 行 / 55,185 buffers = 该臂 64%）。★ **候选**：当月分区覆盖索引 `(tenant_id, ts) INCLUDE (model, provider, status_code)`（10 月节点 buffers **−88.7%**、整臂 **−59%**、热态墙钟 **−56%**、索引 **18 MB**，须随月滚动）；✘ **R77 的 ss 臂冗余谓词是反效果**（buffers **×4.2**）⇒ **R77 建议在生产形态下不应实施**；◇ JIT 关闭 −19%；◇ turns 子预算 8s→3s（墙钟减半但降级更多）。
+> ⇒ ⇒ ★★★ **本轮的工具侧教训**：★ 我的 **pending 复算脚本有两个量具缺陷**（`comm` 用字典序却按数值序排序；把 `up/` 子目录与 `.down.sql` 也当版本号）⇒ ★ **正确口径** = 用安装器清单 `installed_startup_migrations.tsv`（306 条）对比生产 `schema_migrations` ⇒ 实测 pending = **375/376/387/388/392/600**（**全部既有项**，与 2835 相同 ⇒ 本轮 Go-only 改动**零迁移面**）。
+> ⇒ ⇒ ★★★ **LESSONS 再补 3 条**：★ **§349** 端点的**子预算降级**是耗时隐形主因，且**被取消的语句不进 `pg_stat_statements`** ⇒ pgss **系统性低估**降级轮次 ⇒ 归因要看**降级 WARN** 与**响应体大小变化**；★ **§350** 「热缓存单腿」的腿级读数**不能**代表端点（端点 = 腿**串行求和** × **降级乘数** × **冷热系数**，缺一不可）；★ **§351** 复刻生产 SQL 前**必须先确认「生产实际下发的文本」**（参数内联 ⇒ queryid 不同 ⇒ pgss 对不上 ⇒ 假阴性）。
+> ⇒ ⇒ ★★★ **待属主裁决（更新后的完整表见审计档 §10.1）**：① `data-lifecycle/stats` —— 是否允许生产 `VACUUM (ANALYZE) session_turns_2026_09`（**写操作**）+ 往月分区进 vacuum cron + 是否摘掉恒失败的 12s 趋势腿（产品语义）+ bodies 侧部分索引或改「无正文」口径；② `filter-options` —— turns 子预算 8s→3s？当月分区覆盖索引 18 MB/分区？JIT 实例级关闭？③ `session-overview` 的 join 腿 —— rollup / 服务端缓存（★ 与待办⑧「刷新期间返回什么」同一议题）/ 改口径；④ 每页 2 条 `maintain-api` 503 是否让前端不再发起；⑤ ★ **180 MB 索引方案已被新证据降级**（18 MB/分区的覆盖索引 −56% 墙钟）⇒ 建议以新方案替代。
+> ⇒ ⇒ ★★ **完整记录见 `docs/audit/2026-10-27-R87-逐页逐API巡检与session-overview腿合并.md`**（362 行，§0~§12）；LESSONS 新增 **§344~§351**。
+>
+> ⇒ ⇒ ★★★★★ **【2026-10-27 R89 轮（P11）· 发版 2840】inspector-stats 的两条部分索引（迁移 904）落地 + 修掉一道长期红的门** ★★★★★
+> ⇒ ⇒ ★★ **一句话**：★ `GET /api/admin/sessions/inspector-stats` 的 L2/L3 两条「**无时间窗全表聚合腿**」
+> ⇒ ⇒ ★★ **没有索引可承接** ⇒ 落 **startup 迁移 904**（两条**部分索引**，8,192 B + 2,120 kB，
+> ⇒ ⇒ ★★ ★**只加索引、不改任何一行 SQL ⇒ 口径零变化**）⇒ 端点 **med 3.989s → 1.801s（−55%）**。
+> ⇒ ⇒ ★★★★ **根因（252 生产只读实测）**：★ `session_dim` 的 **7 条**既有索引**没有一条含 `closed_at`**
+> ⇒ ⇒ ★★★★ ⇒ L3 `status='closed' AND closed_at >= CURRENT_DATE` 只能 `Parallel Seq Scan`
+> ⇒ ⇒ ★★★★ （Rows Removed by Filter **301,024**，195.432 ms）；★ `session_summaries` 的 19 条里
+> ⇒ ⇒ ★★★★ **只有 `health_score IS NULL` 侧**的 `idx_session_summaries_health_pending`
+> ⇒ ⇒ ★★★★ ⇒ **NOT NULL 侧无索引可承接** ⇒ L2 只能 `Parallel Seq Scan`（Rows Removed by Filter **184,361**，389.373 ms）。
+> ⇒ ⇒ ★★★★ **效果（事务内建索引 → EXPLAIN ANALYZE → ROLLBACK，生产零持久变更；回滚后残留索引实测 = 0）**：
+> ⇒ ⇒ ★★★★ L2 **389.373 ms → 119.706 ms**（→ Parallel Index Only Scan）、L3 **195.432 ms → 0.100 ms**（→ Index Only Scan）；
+> ⇒ ⇒ ★★★★ ★ **发版后生产计划形态已实查确认**（L3 `Index Only Scan`、Heap Fetches 0、**0.074 ms**）。
+> ⇒ ⇒ ★★★★ **发版**：★ `3e47b1fe2`（origin/main）→ 生产 **2840**（`2.5.8-3e47b1fe-20261024-2840`），
+> ⇒ ⇒ ★★★★ 蓝绿切 **8782**，nginx 路由身份仲裁通过，`EXIT=0`；★ **904 由部署在切换前自动投递**
+> ⇒ ⇒ ★★★★ （deploy-lib 只收 `^[0-9]{3}_` 且 ≥ `DB_LEDGER_RECONCILE_FROM=902` 且生产未记账的文件）
+> ⇒ ⇒ ★★★★ ⇒ 生产 `schema_migrations` 904 + `llm_gateway_migration_checksums` 904（sha 与文件**逐字一致**）均已记账。
+> ⇒ ⇒ ★★★★ **★ 建索引耗时实测：C1 = 3.18 s、C2 = 6.68 s ⇒ 合计 ≈ 10 s 的 SHARE 锁窗口**（两张都是**热写表**）⇒ 须低峰窗口；
+> ⇒ ⇒ ★★★★ ★ 部署通道的失败语义**实测** fail-closed（`ON_ERROR_STOP=1` + `ON_ERROR_ROLLBACK=1` ⇒ 出错时 psql **退出码 3** 且事务回滚）⇒ 不会「失败却被记账」。
+> ⇒ ⇒ ★★★ **★ 归因纪律（本轮的关键控制）**：★ **2840 与 2839 的运行时 Go 代码完全相同**（本轮只改 SQL / 门 / 文档 / installer 登记面）
+> ⇒ ⇒ ★★★ ⇒ 任何端点耗时变化只可能来自「**新索引**」或「**环境**」⇒ ★ **`inspector-stats` 的 −55% 可归因**（计划形态已实查），
+> ⇒ ⇒ ★★★ 而 **`filter-options` 的 10.208s → 2.361s 不可归因**（★ 904 的两个谓词**不服务**它的查询：它用 `MAX(first_request_at)` / JOIN；
+> ⇒ ⇒ ★★★ ★ 本轮响应体 **1,332 字节 = 未降级**（降级区间 682~745）⇒ R88 那次是「turns 臂 8s 子预算被烧掉」的**降态**读数 ⇒ **两次不可比**）。
+> ⇒ ⇒ ★★★ **顺带的现场取证**：★ 154 日志实抓 `WARN data_lifecycle_stats trend failed; growth_trend 已退化为空 budget=12000000000 error=timeout`
+> ⇒ ⇒ ★★★ ⇒ 与 R88 记录的「恒失败且产出恒空的 12 s 趋势腿」**逐字吻合** ⇒ 根因未变；★ 同族 `availability key counter: SCAN failed`。
+> ⇒ ⇒ ★★★★ **★ 修掉一道长期红的门（比本轮迁移本身更重要的一处发现）**：★
+> ⇒ ⇒ ★★★★ `scripts/ursmcheck/section_numbering_uniqueness_test.go` 在 **origin/main 独立干净 worktree** 复跑即为红（同签名：
+> ⇒ ⇒ ★★★★ §302 出现 2 次、重复对 38≠37）⇒ **非本轮引入**，而是自 `557698c5d`（R146 批判轮）引入**第二个 §302**
+> ⇒ ⇒ ★★★★ 起就红，且**从未同步更新 `exemptedSectionCounts`** ⇒ ★★ **那道门自那时起一直是「红着跑」的 ⇒ 它提供的是零保护**
+> ⇒ ⇒ ★★★★ （与 R86「一批审计门从未真正跑过」同族：★ **门红着，也等于没跑**）。⇒ 两个 §302 **两侧都已推**
+> ⇒ ⇒ ★★★★ ⇒ 按该门自己的规矩（「已推的一侧不动，只改自己那一侧」）**不能改号** ⇒ 处理 = **补登记进现盘快照**
+> ⇒ ⇒ ★★★★ + `expectedDuplicatePairs` **37 → 38**（该数字**只允许因「补登记一条已推存量重复」而 +1**；新增重复仍必须改号）⇒ 4 道节号门现已全绿（含变异自检）。
+> ⇒ ⇒ ★★★ **LESSONS 再补 7 条（§353）**：★ **§353.1** 「**恒空谓词**」也是正当索引收益（判据是「它替查询省掉了什么」，**空索引 ≠ 建错了**）；
+> ⇒ ⇒ ★★★ ★ **§353.2** **部分索引的谓词方向抄反**是最隐蔽的错（在位、规划器会用、但覆盖互补行集 ⇒ 不变慢也不报错）；
+> ⇒ ⇒ ★★★ ★ **§353.3** 语义耦合门**必须用 `go/ast`** 取字符串字面量（正则会命中 Go 注释 ⇒ 恒绿门）；
+> ⇒ ⇒ ★★★ ★ **§353.4** **台账的「pending」标注会漂移**（902/903 早已记账却标 pending）⇒ 生产水位一律以 `schema_migrations` 实查为准；
+> ⇒ ⇒ ★★★ ★ **§353.5** 变异体的第一版常因「替换目标写错」而**根本没生效** ⇒ **阳性对照会当场自曝「尺子坏了」**；
+> ⇒ ⇒ ★★★ ★ **§353.6** 端点墙钟是「各腿之和」还是「最慢腿」**取决于 Go 侧串行/并行** ⇒ 不是全局规律；
+> ⇒ ⇒ ★★★ ★ **§353.7** **哈希连接的 temp 溢写**是独立于索引的第三条腿（`Batches > 1` 就该想 `work_mem`：实测 1,700 → **1,123 ms，−34%**，口径零变更）。
+> ⇒ ⇒ ★★★ **待属主裁决（新增 3 条 + 沿用既有）**：① ★ **`work_mem` 提到 64 MB**（L1 1,700 → 1,123 ms，口径零变更；但 252 是共享库 ⇒ 须先算内存账，每 worker 84 MB）；
+> ⇒ ⇒ ★★★ ② ★ **会话关闭路径 42703 的修复**（`HandleSessionRecycle` 与 `bg/session_lifecycle_worker.go:496-500` UPDATE 了
+> ⇒ ⇒ ★★★ `session_dim` 上**不存在**的 `stop_reason`/`updated_at` 列）⇒ ★ 这是 **4 个恒 0 字段的真因**（`idle_sessions`/`closed_sessions`/`recycled_today`/`findings_last_1h`），修好后 C1 索引才会开始承载真实行集；
+> ⇒ ⇒ ★★★ ③ ★ **`session_summaries` 的 `VACUUM (ANALYZE)`** ⇒ L2 的 `Heap Fetches` 86,938 → 0；
+> ⇒ ⇒ ★★★ ④ ★ **（沿用）`data-lifecycle/stats` 18.6s**（生产 VACUUM / 恒失败 12s 趋势腿 / bodies 部分索引）；
+> ⇒ ⇒ ★★★ ⑤ ★ **（沿用）`filter-options` 10.2s**（覆盖索引 / turns 子预算 8s→3s / JIT 关闭）；
+> ⇒ ⇒ ★★★ ⑥ ★ **（沿用）`session-overview` ≈2.0s**（服务端 60s 缓存 / rollup）；
+> ⇒ ⇒ ★★★ ⑦ ★ **（新，子代理已交方案）`?api_key_id=` 与 `?model/`/`?provider=`/`?status_code=` 过滤路径生产 500@30s**
+> ⇒ ⇒ ★★★ （角色级 `statement_timeout=30s` ⇒ SQLSTATE 57014）⇒ 候选修法 = 拆成 hot/parent 两个单表 EXISTS + 逐字等价的 CASE 表达式
+> ⇒ ⇒ ★★★ （EXPLAIN 实测 52,854 ms → **192~212 ms**，口径等价在同一快照内实测对称差 = 0）⇒ **属主拍板后可落地**。
+> ⇒ ⇒ ★★★ **★ 日期口径校准**：★ 本系列（R87/R88/R89）的文件名 / 标题 / LESSONS §344~§353 / AGENTS.md / Go 注释
+> ⇒ ⇒ ★★★ **统一用「2026-10-27」作轮次标签**；★ 而**实测时钟（本机 / 252 / 154 三方一致）与 git 提交时刻均为 2026-10-24**
+> ⇒ ⇒ ★★★ ⇒ ★ **凡引用实测时间戳处一律以 2026-10-24 为准**，标签保留不改（批量改号会断掉 LESSONS/AGENTS/Go 注释里的引用）。
+> ⇒ ⇒ ★★★ ★★ **例外（不可改，已冻结）**：`904_inspector_stats_partial_indexes.sql` 的文件头仍写「2026-10-27」
+> ⇒ ⇒ ★★★ ⇒ **该文件 sha256 已进生产 checksum 台账** ⇒ **改它会让下次发版的 history gate 以「checksum 不匹配」拒绝部署** ⇒ 保持原样并登记。
+> ⇒ ⇒ ★★ **完整记录见 `docs/audit/2026-10-27-R89-inspector-stats-部分索引迁移904.md`**（§0~§10，含 §8.5 发版对照读数）。
+>
+> ⇒ ⇒ ★★★★★ **【2026-10-24 R90 轮（P11）】`turns/sessions` 四条过滤路径的 500@30s 已修（两腿 EXISTS 改写）** ★★★★★
+> ⇒ ⇒ ★★ **症状**：★ `GET /api/admin/turns/sessions` 带 `?api_key_id=` / `?model=` /
+> ⇒ ⇒ ★★ `?provider=` / `?status_code=` 时**生产恒 500@30s**（角色级 statement_timeout=30s
+> ⇒ ⇒ ★★ ⇒ SQLSTATE 57014）；★ 不带过滤只要 **0.04 s**（154 直连，build 2840 实测：
+> ⇒ ⇒ ★★ `api_key_id=105` → 500/30.009s、`model=…` → 500/30.003s）。
+> ⇒ ⇒ ★★★★ **根因**：★ ① 这四条过滤读的是 `session_turns_with_current_month`，
+> ⇒ ⇒ ★★★★ ★ 它的 hot 腿带 `NOT EXISTS (… FROM session_turns archived …)` 反连接
+> ⇒ ⇒ ★★★★ ⇒ 外层**每一行**跑一次 Nested Loop Anti Join（`?model=` EXPLAIN **36,415 ms**）；
+> ⇒ ⇒ ★★★★ ★ ② `api_key_id` 那条还把 **113 列全量 source**（hot ∪ 父表 ≈1.1 M 行）
+> ⇒ ⇒ ★★★★ 放进**关联子查询内部** ⇒ 外层每行物化一遍 ⇒ EXPLAIN **> 90 s 未跑完**；
+> ⇒ ⇒ ★★★★ ★ 单变量 A/B：把谓词推进 source 内部（R85 手法）= **52,854 ms** ⇒ 同样无效。
+> ⇒ ⇒ ★★★★ **修法**：★ 四条统一改成 **hot ∪ 父表两腿 EXISTS**
+> ⇒ ⇒ ★★★★ （`db.SessionFamilyTurnsSessionExistsSQL`）⇒ 谓词落在索引上。
+> ⇒ ⇒ ★★★★ ★ **不是新发明**：同仓 `admin/turns_filter_options.go` 的 `turnMergedSource`
+> ⇒ ⇒ ★★★★ 早在 2026-10-18 就用了同一手法（视图 44,564 ms ⇒ 两腿 2,048/2,814 ms）；
+> ⇒ ⇒ ★★★★ 本轮只是把它收敛成**单一真值源**（避免第三次各写一份）。
+> ⇒ ⇒ ★★★★ ★★ **口径等价性不靠「形状像」**：★ 依赖两条**结构前提**，各写成一条**真库门**：
+> ⇒ ⇒ ★★★★ (a) `request_id → (session_id, tenant_id)` 函数依赖（跨租户）⇒ 生产实测 **0 例外**；
+> ⇒ ⇒ ★★★★ (b) hot ∩ 父表同 request_id 的比较列一致 ⇒ 配对 **0 行**（⇒ 视图 ≡ hot ∪ 父表，
+> ⇒ ⇒ ★★★★ ★ 且 promote 是 DELETE hot + INSERT parent 的**移动** ⇒ 这是结构性保证）。
+> ⇒ ⇒ ★★★★ ★ **生产规模逐条比对：api_key 105/143/2 → 28,263 / 9,692 / 845 个候选会话，
+> ⇒ ⇒ ★★★★ model 三个模型 → 405 / 287 / 1,630 ⇒ 合计 41,122 条，★ 口径不一致 0 条**；
+> ⇒ ⇒ ★★★★ 仓内真库门用**真 113 列 source** 在本地真库比对 **648 条、不一致 0 条**。
+> ⇒ ⇒ ★★★★ ★★ **顺带修掉一处「被掩盖的 class-A 违规」**：★ `nativeSessionReaders` 的判据是
+> ⇒ ⇒ ★★★★ **整文件 `strings.Contains`** ⇒ 只证明「某处有」不证明「处处有」⇒ 实测抓到
+> ⇒ ⇒ ★★★★ `admin/turns_sessions.go` 的 `loadTurnsForSessions`（session-scoped）
+> ⇒ ⇒ ★★★★ **确实在读带反连接的视图**（被同文件别处的调用掩盖）⇒ ★ 修法 = **逐块豁免 +
+> ⇒ ⇒ ★★★★ 可执行断言**（豁免块必须仍读视图、不得改读单腿源）+ 阳性对照；
+> ⇒ ⇒ ★★★★ ★ **不能简单改掉**：该查询要**去重后**的轮次集合 ⇒ 视图的 anti-join 承重
+> ⇒ ⇒ ★★★★ （裸 hot ∪ 父表会把已 promote 的轮次**数两遍** ⇒ 那是口径变更）⇒ 实测该腿 < 20 ms。
+> ⇒ ⇒ ★★★ **门**：★ 新增 `admin/turns_sessions_filter_pushdown_test.go`（7 条：形态/阳性对照/
+> ⇒ ⇒ ★★★ 单一真值源/非法值跳过/源码级反向断言/**真库前提**/**真库等价+行数守卫**）
+> ⇒ ⇒ ★★★ + `db/request_logs_view_schema_apikey_expr_test.go`（1 条：投影那一项 == 过滤侧常量）；
+> ⇒ ⇒ ★★★ + 更新 3 处既有形状门与 1 处风险门 marker（逐条写清理由）。
+> ⇒ ⇒ ★★★ **LESSONS §354**（5 条：形状≠口径 / 逐条比对+行数守卫 / 整文件 Contains 是假阳性门 /
+> ⇒ ⇒ ★★★ 源码断言必须剥注释 / 按「过滤族」分别归因 + 动手前先搜仓内已验证手法）。
+> ⇒ ⇒ ★★★ **诚实边界**：本地库比生产小 3 个数量级 ⇒ 本地真库门证明**谓词等价**、
+> ⇒ ⇒ ★★★ **不**证明生产计划形态；★ 本轮「更快」由**端点级 A/B**给出而非 EXPLAIN；
+> ⇒ ⇒ ★★★ ★ 另：`admin` 包有 **1 个既有红** `TestG5SearchTextFTSOnRealDB`
+> ⇒ ⇒ ★★★ （本机 `psql` shim 不认 DSN 的 host/port）⇒ ★ 已在 **origin/main 独立 worktree
+> ⇒ ⇒ ★★★ 复跑确认同签名失败 ⇒ **非本轮引入**，未动。
+> ⇒ ⇒ ★★ **完整记录见 `docs/audit/2026-10-27-R90-turns-sessions-过滤路径500与两腿改写.md`**。

@@ -2165,6 +2165,58 @@ files=(
   #   同款，startup_ddl_lock_guard_gate 钉住强锁 DDL 必须带 lock_timeout）。
   # ★ ★ 本条**只落仓**；★ 生产应用需属主另行授权。
   "$ROOT_DIR/sql/migrations/startup/902_stats_event_dedup_pkey_include.sql"
+
+  # ── 2026-10-24（R84 慢端点归因轮）：public.sessions 补排序索引 ──
+  #
+  # 903：(updated_at DESC, session_id DESC) 索引。
+  #
+  # ★ 病灶（252 生产只读实测，2026-10-24）：GET /api/admin/turns/sessions
+  #   生产恒 500（2833 基线 REPEAT=5：500,500,500,500,200，
+  #   min 30.003s / med 30.013s / max 54.510s；pg_stat_statements 抓到
+  #   真实生产 SQL：calls=1 total=24904.6ms rows=21）。
+  # ★ 根因：排序键 (updated_at DESC, session_id DESC) **没有任何索引能提供
+  #   该序**（既有 idx_sessions_status 需 status 等值、
+  #   idx_sessions_tenant 是 created_at）⇒ 规划器只能 Seq Scan + top-N Sort
+  #   ⇒ Sort 必须把 439,106 行全部物化才能吐出第一行 ⇒ Limit 无法提前停
+  #   ⇒ 整条 JOIN 链跑满（去重 SubPlan 439,570 次循环 ≈10.5s +
+  #   session_dim JOIN ≈4.2s + session_summaries JOIN ≈1.6s + JIT ≈2.8s）。
+  # ★ 一条被否证的路线（别再试）：只补 session_titles(scoped_session_id)
+  #   —— 单变量 A/B 实测该 LATERAL 只占 8.25s / 32,089.911 ms（26%）⇒
+  #   救不了本端点。
+  # ★ 修复效果（事务内建索引 + EXPLAIN ANALYZE + ROLLBACK，生产零持久变更）：
+  #   生产查询原样 32,089.911 ms → **3.639 ms**，shared hit 9,876,509 → 640。
+  # ★ 口径零变化：不改任何查询；同一 REPEATABLE READ 快照内两个结果集
+  #   22 行（含表头）逐字一致。
+  # ★ 普通 CREATE INDEX（分区父表不支持 CONCURRENTLY）+ SET LOCAL
+  #   lock_timeout='60s' / statement_timeout='10min'（891/901 同款）。
+  #   public.sessions 是热写表（session_aggregator.go:216 每请求一次
+  #   upsert）⇒ 构建期 SHARE 锁阻塞该分区写 ⇒ 落在低峰窗口。
+  "$ROOT_DIR/sql/migrations/startup/903_sessions_updated_at_session_id_index.sql"
+
+  # ── 2026-10-27（R89 inspector-stats 慢端点归因轮）：两条部分索引 ──
+  #
+  # 904：inspector-stats 的 L2/L3 两条聚合腿的部分索引。
+  #
+  # ★ 病灶（252 生产只读实测，2026-10-27）：GET
+  #   /api/admin/sessions/inspector-stats 的两条聚合腿**都没有时间窗**
+  #   ⇒ 都是全表聚合：
+  #     L3 `status='closed' AND closed_at >= CURRENT_DATE`
+  #        → 全扫 90 万行 session_dim 再丢掉 100%（Rows Removed by Filter: 301,024）
+  #     L2 `AVG(health_score) WHERE health_score IS NOT NULL`
+  #        → 全扫 86 万行 session_summaries 再丢掉 55 万行
+  #          （Rows Removed by Filter: 184,361）
+  # ★ 根因：session_dim 的 7 条既有索引没有一条含 closed_at；
+  #   session_summaries 的 19 条里只有 health_score IS **NULL** 侧的
+  #   idx_session_summaries_health_pending ⇒ NOT NULL 侧无索引可承接。
+  # ★ 修复效果（事务内建索引 + EXPLAIN ANALYZE + ROLLBACK，生产零持久变更）：
+  #   L2 389.373 ms → 119.706 ms；L3 195.432 ms → 0.100 ms；
+  #   索引体积 8,192 B + 2,120 kB。
+  # ★ 口径零变化：本迁移**不改任何查询**，只加索引 ⇒ 结果集取值不变。
+  # ★ 两张表都不是分区表 ⇒ 可用普通 CREATE INDEX（仍不用 CONCURRENTLY：
+  #   startup 迁移默认在事务里跑）+ SET LOCAL lock_timeout='60s' /
+  #   statement_timeout='10min'（903 同款）。两张都是热写表 ⇒ 构建期持
+  #   SHARE 锁阻塞该表写入 ⇒ 落在低峰窗口。
+  "$ROOT_DIR/sql/migrations/startup/904_inspector_stats_partial_indexes.sql"
 )
 
 

@@ -1097,6 +1097,53 @@ var statsEventDedupPkeyInclude902 []byte
 //go:embed embeddata/startup/902_stats_event_dedup_pkey_include.down.sql
 var statsEventDedupPkeyInclude902Down []byte
 
+// 903（2026-10-24，R84 慢端点归因轮）：public.sessions 补
+// (updated_at DESC, session_id DESC) 索引。
+// ★ 根因：会话列表的排序键 (updated_at DESC, session_id DESC) **没有任何
+//   索引能提供该序** ⇒ 规划器只能 Seq Scan + top-N Sort ⇒ Sort 必须把
+//   439,106 行全部物化才能吐出第一行 ⇒ Limit 无法提前停 ⇒ 整条 JOIN 链跑满。
+// ★ 实测（252 EXPLAIN ANALYZE，生产只读）：生产查询原样 32,089.911 ms；
+//   只加本索引（事务内建索引后 ROLLBACK，生产零持久变更）⇒ 3.639 ms，
+//   shared hit 9,876,509 → 640。
+// ★ 口径零变化：本迁移**不改任何查询**；同一 REPEATABLE READ 快照内
+//   两个结果集 22 行（含表头）逐字一致。
+// ★ 普通 CREATE INDEX（分区父表不支持 CONCURRENTLY）+ lock_timeout=60s
+//   / statement_timeout=10min（891/901 同款）。public.sessions 是热写表
+//   （session_aggregator.go:216 每请求一次 upsert）⇒ 构建期持 SHARE 锁
+//   阻塞该分区写 ⇒ 该迁移应落在低峰窗口。
+//
+//go:embed embeddata/startup/903_sessions_updated_at_session_id_index.sql
+var sessionsUpdatedAtSessionIdIndex903 []byte
+
+//go:embed embeddata/startup/903_sessions_updated_at_session_id_index.down.sql
+var sessionsUpdatedAtSessionIdIndex903Down []byte
+
+// 904（2026-10-27，R89 inspector-stats 慢端点归因轮）：给
+// public.session_dim / public.session_summaries 补两条**部分索引**。
+// ★ 病灶（252 生产只读实测，2026-10-27）：GET
+//   /api/admin/sessions/inspector-stats 的 L2/L3 两条聚合腿**都没有时间窗**
+//   ⇒ 都是全表聚合：L3 `status='closed' AND closed_at >= CURRENT_DATE`
+//   要全扫 90 万行 session_dim 再丢掉 100%（Rows Removed by Filter: 301,024）；
+//   L2 `AVG(health_score) WHERE health_score IS NOT NULL` 要全扫 86 万行
+//   session_summaries 再丢掉 55 万行（Rows Removed by Filter: 184,361）。
+//   ★ 根因：session_dim 的 7 条既有索引没有一条含 closed_at；
+//   session_summaries 的 19 条里只有 health_score IS **NULL** 侧的
+//   idx_session_summaries_health_pending ⇒ NOT NULL 侧无索引可承接。
+// ★ 修复效果（事务内建索引 + EXPLAIN ANALYZE + ROLLBACK，生产零持久变更）：
+//   L2 389.373 ms → 119.706 ms（Parallel Seq Scan → Parallel Index Only Scan）
+//   L3 195.432 ms →   0.100 ms（Parallel Seq Scan → Index Only Scan）
+//   索引体积 8,192 B + 2,120 kB。
+// ★ 口径零变化：本迁移**不改任何查询**，只加索引 ⇒ 结果集取值不变。
+// ★ 两张表都**不是分区表**（relkind='r'）⇒ 可用普通 CREATE INDEX；
+//   仍不用 CONCURRENTLY（startup 迁移默认在事务里跑）。
+//   两张都是热写表 ⇒ 构建期持 SHARE 锁阻塞该表写入 ⇒ 落在低峰窗口。
+//
+//go:embed embeddata/startup/904_inspector_stats_partial_indexes.sql
+var inspectorStatsPartialIndexes904 []byte
+
+//go:embed embeddata/startup/904_inspector_stats_partial_indexes.down.sql
+var inspectorStatsPartialIndexes904Down []byte
+
 //go:embed embeddata/startup/859_tighten_pii_phone_intl_regex.sql
 var tightenPiiPhoneIntlRegex859 []byte
 
@@ -1448,6 +1495,10 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/901_usage_ledger_api_key_id_ts_idx.sql":                                 usageLedgerApiKeyIdTsIdx901,
 	"startup/902_stats_event_dedup_pkey_include.sql":                                 statsEventDedupPkeyInclude902,
 	"startup/902_stats_event_dedup_pkey_include.down.sql":                            statsEventDedupPkeyInclude902Down,
+	"startup/903_sessions_updated_at_session_id_index.sql":                          sessionsUpdatedAtSessionIdIndex903,
+	"startup/903_sessions_updated_at_session_id_index.down.sql":                     sessionsUpdatedAtSessionIdIndex903Down,
+	"startup/904_inspector_stats_partial_indexes.sql":                              inspectorStatsPartialIndexes904,
+	"startup/904_inspector_stats_partial_indexes.down.sql":                         inspectorStatsPartialIndexes904Down,
 	"startup/859_tighten_pii_phone_intl_regex.sql":                                   tightenPiiPhoneIntlRegex859,
 	"startup/852_models_canonical_column_set_reconcile.sql":                          modelsCanonicalColumnSetReconcile852,
 	"startup/489_credential_probe_queue_startup_backfill.sql":                        credentialProbeQueueStartupBackfill489,

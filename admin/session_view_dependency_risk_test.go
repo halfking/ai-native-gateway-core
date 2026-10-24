@@ -232,6 +232,88 @@ func TestSessionKeyedReaderSourceGuardHasTeeth(t *testing.T) {
 	}
 }
 
+// nativeSessionReaderBlockExemptions 登记「**文件内某个函数**合法地继续读视图」
+// 的逐块豁免，每条必须带理由。
+//
+// ★ 为什么需要它（本轮才补上）：★ `nativeSessionReaders` 的判据是
+// **整文件 `strings.Contains`** ⇒ 它只证明「这个文件**某处**有 class-A 原生读」，
+// ★ **不**证明「这个文件里**每一个** session-scoped 查询都用了原生读」。
+// ⇒ ⇒ 2026-10-24（R90）实测发现一个**被掩盖的 class-A 违规**：
+//
+//	admin/turns_sessions.go 的 loadTurnsForSessions
+//	  谓词 = `t.session_id = ANY($1)`（**session-scoped** ⇒ class A）
+//	  源   = public.session_turns_with_current_month（**视图**）
+//	  ⇒ 审计 §5.5.5 class A 的字面要求是「必须原生源」⇒ 这是**违规**。
+//	  ★ 它之所以一直没被门抓到：同一文件里**别处**（当时是 `?api_key_id=`
+//	    的 EXISTS 里的 SessionFamilyTurnsSourceSQL）让整文件 Contains 成立。
+//	  ⇒ ★★ 这正是 LESSONS §353.3 的反模式在**活的门**上的实例：
+//	    「断言对象必须是可执行体，不是文件里出现过的文本」。
+//
+// ★ 为什么它**不能**简单改掉（豁免理由）：
+//	该查询要的是**去重后**的轮次集合 ⇒ 视图的 anti-join（hot 去掉已 promote 的行）
+//	是**承重**的 ⇒ 裸 hot ∪ 父表会把已 promote 的轮次**数两遍**
+//	⇒ 「直接换原生源」会引入重复轮次（那是口径变更，比慢更糟）。
+//	★ 实测该腿 < 20 ms（2026-10-24 生产只读）⇒ 不是瓶颈 ⇒ 登记豁免，
+//	  并把「它必须继续读视图」钉住（防止它被悄悄换成单腿源）。
+var nativeSessionReaderBlockExemptions = []struct {
+	file   string
+	marker string
+	reason string
+}{
+	{
+		file:   "turns_sessions.go",
+		marker: "FROM public.session_turns_with_current_month t",
+		reason: "loadTurnsForSessions 要的是**去重后**的轮次集合 ⇒ 视图的 anti-join 承重；" +
+			"裸 hot ∪ 父表会把已 promote 的轮次数两遍（口径变更）。实测该腿 < 20 ms，不是瓶颈。",
+	},
+}
+
+// TestSessionScopedBlockExemptionsArePinned 把上面的逐块豁免钉成可执行断言：
+// 被豁免的块**必须仍然**读视图（否则豁免理由过期，要重新分类），
+// 且**不得**改读单腿源（hot only）。
+func TestSessionScopedBlockExemptionsArePinned(t *testing.T) {
+	for _, ex := range nativeSessionReaderBlockExemptions {
+		t.Run(ex.file+"/"+ex.marker, func(t *testing.T) {
+			raw, err := os.ReadFile(filepath.Join(".", ex.file))
+			if err != nil {
+				t.Fatalf("read %s: %v", ex.file, err)
+			}
+			code := stripGoComments(string(raw))
+			span, ok := funcSpan(code, ex.marker)
+			if !ok {
+				t.Fatalf("%s: could not locate the exempted block by marker %q; update the exemption", ex.file, ex.marker)
+			}
+			if !strings.Contains(span, "session_turns_with_current_month") {
+				t.Errorf("%s 的豁免块已不再读视图 ⇒ 豁免理由过期，请把它移出豁免表并按 §5.5.5 重新分类。%s",
+					ex.file, ex.reason)
+			}
+			// ★ 单腿源禁令：promote 之后 hot 被排空，只读 hot = 静默漏读。
+			if strings.Contains(span, "SessionFamilyTurnsHotSourceSQL") {
+				t.Errorf("%s 的豁免块改用了只有 hot 一条腿的源 ⇒ 静默漏读已 promote 的轮次。%s",
+					ex.file, ex.reason)
+			}
+		})
+	}
+}
+
+// TestSessionScopedBlockExemptionTableHasTeeth 阳性对照：
+// 合成一个「豁免块其实读的是原生源」的样本 ⇒ 判据必须报红。
+func TestSessionScopedBlockExemptionTableHasTeeth(t *testing.T) {
+	const marker = "FROM public.session_turns_with_current_month t"
+	// 不含 marker ⇒ funcSpan 必须找不到（否则「找不到就红」会把判据变成恒红）。
+	if _, ok := funcSpan(stripGoComments("func f() { SELECT 1 }"), marker); ok {
+		t.Error("funcSpan 在样本里凭空找到了 marker —— 判据没有鉴别力")
+	}
+	// 含 marker 但已不读视图 ⇒ 豁免判据必须报红。
+	span, ok := funcSpan(stripGoComments("func f() {\n"+marker+"\n}"), marker)
+	if !ok {
+		t.Fatal("funcSpan 找不到 marker —— 判据没有鉴别力")
+	}
+	if !strings.Contains(span, "session_turns_with_current_month") {
+		t.Error("豁免判据在「已不读视图」的样本上仍判合格 —— 判据没有鉴别力")
+	}
+}
+
 // TestSessionScopedReadersUseNativeSource is the positive half: the readers
 // that legitimately moved must stay moved, so a future refactor cannot
 // quietly undo the migration (or, more importantly, cannot re-point them at
@@ -245,7 +327,20 @@ var nativeSessionReaders = []struct {
 }{
 	{"session_online.go", "SessionFamilyTurnsForSessionSQL"},
 	{"session_compare.go", "SessionFamilyTurnsForSessionSQL"},
-	{"turns_sessions.go", "SessionFamilyTurnsSourceSQL"},
+	// ★ 2026-10-24（R90）：这条的 marker 从 SessionFamilyTurnsSourceSQL 换成
+	//   SessionFamilyTurnsForSessionsSQL。
+	//
+	//   原因：R90 把 `?api_key_id=` / `?model=` / `?provider=` / `?status_code=`
+	//   四条过滤子句从「视图 ⋈ 113 列全量 source」改成 **hot ∪ 父表两腿 EXISTS**
+	//   （db.SessionFamilyTurnsSessionExistsSQL）⇒ 这个文件**不再**引用
+	//   SessionFamilyTurnsSourceSQL ⇒ 旧 marker 失效。
+	//   ★ 换成的 marker 是本文件**真正**的 class-A 原生读：**enrich 查询**
+	//   （R85 已把 session 谓词推进 source 两条腿内部）。
+	//   ★ ★ 注意：本表的判据是**整文件 Contains**（见下面的诚实边界），
+	//   所以它证明的是「这个文件有 class-A 原生读」，**不是**「这个文件里
+	//   每一个 session-scoped 查询都用了原生读」⇒ 后者由
+	//   nativeSessionReaderBlockExemptions 逐块登记（loadTurnsForSessions）。
+	{"turns_sessions.go", "SessionFamilyTurnsForSessionsSQL"},
 	// 2026-09-30 second wave, all verified against the live DB (same session,
 	// same tenant): session_list summary 1607/1607 with byte-identical
 	// MIN/MAX ts, session_list detail 500/500 with an identical md5
