@@ -7961,3 +7961,50 @@ index b953a6f03..555ef83c4 100644
 > ⇒ ⇒ ★★★★★ **「扫了 N 行全被过滤掉、产出 0 行」是最贵的浪费**（只能靠 `Rows Removed by Filter` 看见）、
 > ⇒ ⇒ ★★★★★ **「输出 0 行」要先问「是不是应该输出 0 行」**。
 > ⇒ ⇒ ★★★★★ ⇒ 完整记录见审计档 `docs/audit/2026-10-27-R94-部分索引与裸正则谓词.md`。
+
+> ⇒ ⇒ ★★★★★ **【2026-10-27 R95 轮（P11）】共享库上最大的持续慢查询源 = `routing_analytics` 刷新链（45 万行顺序扫 + 743 MB 缓冲读）⇒ 两条「看似显然的修法」被实测证伪** ★★★★★
+> ⇒ ⇒ ★★ **一句话**：★ `routing_analytics_7d` / `routing_audit_summary_7d` 的 REFRESH
+> ⇒ ⇒ ★★ 累计烧 **3,181,560 ms ≈ 53 分钟** DB 时间（均值 6,041 / 3,308 ms，**单次最长 74,331 ms**）
+> ⇒ ⇒ ★★ ⇒ 是 **252 load average 11.65 / 4 核的主要贡献者** ⇒ 也是 R93/R94 里「首请求 500@30s」的**背景条件**。
+> ⇒ ⇒ ★★★★ **瓶颈（252 生产 EXPLAIN）**：★ `routing_analytics_source`（view，1,110,473 行）
+> ⇒ ⇒ ★★★★ → `request_logs_with_current_month` → `session_turns_hot ∪ session_turns`
+> ⇒ ⇒ ★★★★ **LEFT JOIN `session_turn_details`** ⇒ `Parallel Hash Right Join` + details 侧
+> ⇒ ⇒ ★★★★ `Parallel Seq Scan` × 4（**326,497 + 128,517 + 18 + 18 = 45 万行**）
+> ⇒ ⇒ ★★★★ ⇒ `Buffers: shared hit=95,086`（**743 MB**）。
+> ⇒ ⇒ ★★★★ **根因（★ 与 R93/R94 同病）**：★ **为了少数几列把整个宽表 JOIN 进来** ——
+> ⇒ ⇒ ★★★★ source 的 15 列里**只有 2 列**（`client_model`、`provider_id`）来自 details，
+> ⇒ ⇒ ★★★★ 其余 13 列全来自 `session_turns`；且★ **时间窗能下推到 turns 侧、下推不到 details 侧**
+> ⇒ ⇒ ★★★★ （details 没有 ts 列）⇒ ★ **JOIN 键的索引救不了 Hash Join**。
+> ⇒ ⇒ ★★★★ ★★ **本轮最有价值的产出 = 两条被实测证伪的修法**：
+> ⇒ ⇒ ★★★★ ① **「EXPLAIN cost 降 ⇒ 实测更快」是错的** —— 候选 B
+> ⇒ ⇒ ★★★★ （`percentile_cont(ARRAY[0.5,0.95,0.99])` + 相关子查询改 `LEFT JOIN credentials`）
+> ⇒ ⇒ ★★★★ cost 从 **325,390.19 → 113,461.19（−65%）**，但实测
+> ⇒ ⇒ ★★★★ **2,857.603 ms → 3,511.406 ms（+23%）** ⇒ ★★ **B 不是修法**；
+> ⇒ ⇒ ★★★★ ② **「去掉 `::text` 就能用上 JOIN 键索引」是错的** —— X（现状）与 Y（去 cast）
+> ⇒ ⇒ ★★★★ 的 EXPLAIN **逐字相同**（PG 把 `varchar = varchar` 规范化成 `::text = ::text`）
+> ⇒ ⇒ ★★★★ ⇒ 仍 `Parallel Seq Scan` × 4 ⇒ ★ **不是修法**。
+> ⇒ ⇒ ★★★★ **真正的修法方向（未实施，需属主放行）**：★ ① startup 迁移加
+> ⇒ ⇒ ★★★★ `session_turn_details (request_id, tenant_id, partition_date)` 索引
+> ⇒ ⇒ ★★★★ （现有唯一索引 leading 列是 `tenant_id` ⇒ 单列 `request_id` 过滤**用不上**）；
+> ⇒ ⇒ ★★★★ ② 把 source 改成「**直接从会话族两腿取 13 列 + 窄 JOIN details 取 2 列**」（口径等价）；
+> ⇒ ⇒ ★★★★ ③ ★ **在 JOIN 之前就把 7 天窗压到两侧**。
+> ⇒ ⇒ ★★★★ **⚠ 结构性风险**：★ `routingAnalyticsMVSQL` 用的是
+> ⇒ ⇒ ★★★★ `CREATE MATERIALIZED VIEW **IF NOT EXISTS**` ⇒ ★★ **改定义不会自动重建**
+> ⇒ ⇒ ★★★★ ⇒ 必须走 `db.go` 的 **stale-definition gate** 强制重建（把新特征串加进那个 gate），
+> ⇒ ⇒ ★★★★ 而★ **重建是 minutes 级** ⇒ ★ **必须先确认「重建失败时应用能否安全启动」**。
+> ⇒ ⇒ ★★★★ **本轮对生产的写入 = 0**（只读 + EXPLAIN 不带 ANALYZE）
+> ⇒ ⇒ ★★★★ ⇒ ⚠ **取证副作用如实记账**：`SELECT count(*)` 烧 **57.7 s**、两次 `EXPLAIN ANALYZE` 约 6.4 s
+> ⇒ ⇒ ★★★★ ⇒ ★ **在这个共享库上，对宽视图的任何全量读都要先 EXPLAIN（不带 ANALYZE）**。
+> ⇒ ⇒ ★★★★ ★★ **本轮不落代码的直接原因**：★ **本地 Docker daemon 无响应**
+> ⇒ ⇒ ★★★★ （`docker ps` 挂死 >60 s）⇒ **本地真库门跑不了** ⇒ ★ 改了 source 视图形态**必须**有真库门
+> ⇒ ⇒ ★★★★ （计划形态 + 口径等价 + 幂等）⇒ ★ **门跑不了就不改** ⇒ 宁可只写归因，不改生产。
+> ⇒ ⇒ ★★★★ **Goal 侧两项正面核实**：★ `_request%` 前缀关系数 = **0**
+> ⇒ ⇒ ★★★★ （★ **「`_request*` 真删除」已完成**）+ 905/906 均走 **7 点登记面**
+> ⇒ ⇒ ★★★★ （★ **SQL 变更入部署序列已完成**）；★ 残留 `public.request_logs_with_current_month`
+> ⇒ ⇒ ★★★★ 只是**改名未改**（定义已是会话族），★ **不是缺陷**。
+> ⇒ ⇒ ★★★★★ **六条通用式**（详见 `LESSONS.md` **§371**）：★ **「EXPLAIN 的 cost」是估计不是时间**、
+> ⇒ ⇒ ★★★★★ ★ **「显式类型转换让索引失效」要用计划逐字验证**、
+> ⇒ ⇒ ★★★★★ ★ **「为了少数几列把整个宽表 JOIN 进来」是会话族的一类通病**、
+> ⇒ ⇒ ★★★★★ ★ **时间窗能下推到 JOIN 的一侧 ≠ 另一侧**、
+> ⇒ ⇒ ★★★★★ ★ **「口径等价」与「能不能重建」是两件事**、★ **取证本身要计价**。
+> ⇒ ⇒ ★★★★★ ⇒ 完整记录见审计档 `docs/audit/2026-10-27-R95-routing-analytics刷新链-45万行顺序扫.md`。

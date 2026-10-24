@@ -9594,3 +9594,24 @@ MaxStartups 默认 `10:30:100` 在 pre-auth 阶段随机丢弃 ~30% 连接 + 机
 |-----------|------|---------|--------|
 | 906 | `906_turns_api_key_numeric_partial_index.sql` | `25de81c12b8805f9474d711f4391dea6847e8df98b49eea37274711c3d46979f` | applied+verified |
 
+## 2026-10-27 — R95 归因轮：routing_analytics 刷新链（只读审计；无 SQL 变更、无发版）
+
+★ 本轮**只做归因**，对生产的写入 = 0 ⇒ ★ **无迁移、无发版**；★ 台账水位仍为 **906**。
+
+★ 归因对象 = **共享库上最大的持续慢查询源**：`routing_analytics_7d` / `routing_audit_summary_7d`
+的 REFRESH（累计 **3,181,560 ms ≈ 53 分钟** DB 时间、单次最长 **74,331 ms**），
+瓶颈 = `session_turn_details` **45 万行顺序扫**（743 MB 缓冲读）⇒ ★ 也是 252 load 11.65 / 4 核的主要贡献者。
+
+★ 修法方向（startup 索引 `session_turn_details (request_id, tenant_id, partition_date)` +
+改 `routing_analytics_source` 为窄投影 + JOIN 前压 7 天窗）**需属主放行后落地**；
+★ 且**本地真库门当前跑不了**（本机 Docker daemon 无响应）⇒ ★ **本轮不改生产**。
+★ 本轮同时**实测证伪**两条看似显然的修法：★ ① EXPLAIN cost 降 65%（325,390 → 113,461）
+但实测**慢 23%**（2,857.603 → 3,511.406 ms）；★ ② 去掉 JOIN 键上的 `::text` 后
+**计划逐字不变**（PG 把 `varchar = varchar` 规范化成 `::text = ::text`）。
+
+★ 详见 `docs/audit/2026-10-27-R95-routing-analytics刷新链-45万行顺序扫.md`。
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| — | （R95 无新增迁移；台账水位仍为 906） | — | — |
+
