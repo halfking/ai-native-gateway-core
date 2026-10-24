@@ -831,8 +831,8 @@ tail -f ~/kaixuan/llm-gateway-go/logs/gateway-8782.log | grep -E "DEBUG|TRACE"
 ### 8.4 性能分析
 
 ```bash
-# 启用 pprof（默认端口 6060）
-export LLM_GATEWAY_PPROF_ENABLED=true
+# 启用 pprof（必须显式给回环地址；无默认端口）
+export LLM_GATEWAY_PPROF_LISTEN=127.0.0.1:6060
 ./scripts/deploy-local.sh deploy
 
 # 访问 pprof 端点
@@ -880,7 +880,7 @@ echo "All tests passed"
 # .env.local.dev
 cat > .env.local.dev <<'EOF'
 LLM_GATEWAY_LOG_LEVEL=debug
-LLM_GATEWAY_ENABLE_PROFILING=true
+LLM_GATEWAY_PPROF_LISTEN=127.0.0.1:6060
 LLM_GATEWAY_SECRET_KEY=dev-secret-key
 EOF
 

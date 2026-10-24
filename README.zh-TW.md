@@ -110,7 +110,7 @@ HTTP/SSE → middleware chain → protocol/IR normalization → session assignme
 | `bg/` | 背景工作者——探測、生命週期清理、統計聚合、分區維護 |
 | `storage/` | 雙模式儲存工廠（`full`：PG+Redis / `lite`：SQLite+檔案+行程內 KV） |
 | `internal/` | 橫切基礎設施——IR、vendor 欄位剝離、工作階段鏡像、outbox、遙測… |
-| `sql/migrations/` + `db/migrations/` | 冪等遷移（啟動系列目前 902） |
+| `sql/migrations/` + `db/migrations/` | 冪等遷移（啟動系列目前 907） |
 | `installer/` | 獨立跨平台安裝器 / 升級器模組 |
 | `scripts/`、`deploy/` | 建置、部署、鏡像與驗證工具 |
 
@@ -132,7 +132,7 @@ HTTP/SSE → middleware chain → protocol/IR normalization → session assignme
 - **黏性工作階段綁定**：工作階段釘在憑證上，模型切換與故障轉移後對話上下文仍在——任務中途不會靜默丟失上下文
 - **工作階段級稽核與回放**：完整 system prompt 與回應按工作階段留存並可回放（生產環境 13,000+ 工作階段），涵蓋任務類型、客戶端模型、出口模型、供應商、Token、延遲與結束原因——可依金鑰 / 租戶 / 時間範圍切分檢視，便於排障與合規
 - **自動提示詞壓縮**：當請求逼近供應商真實上下文視窗（約 80% 觸發）時，會在分發前執行訊息級壓縮——長 Agent 工作階段得以塞進更小的視窗而不是失敗。每次壓縮事件（策略、閾值、壓縮前後大小）都記錄在請求上
-- **工作階段中繼資料智慧**：自動工作類型標記（10 類工作類型）、專案歸屬與標題擷取，把原始流量變成可檢索的知識
+- **工作階段中繼資料智慧**：自動工作類型標記（27 類工作類型）、專案歸屬與標題擷取，把原始流量變成可檢索的知識
 - **身分隧道**：Agent 流量透過 virtual IP/MAC/ClientID 歸屬，即使多個 Agent 共用一個出口，多租戶隔離依然成立
 - **4 檔資料生命週期**：熱（0–7 天）/ 溫（7–30 天）/ 冷（30–90 天）/ 過期（>90 天），並提供封存預覽——執行前先明確告訴你「將會搬動哪些資料」
 
@@ -172,7 +172,7 @@ HTTP/SSE → middleware chain → protocol/IR normalization → session assignme
 ### 工作類型設定 — 任務自動分類
 
 ![工作類型](docs/assets/screenshots/work-types.png)
-*任務自動分類（10 類工作類型）附 24 小時分佈、熱門模型與路由決策統計——可在管理端按工作類型設定*
+*任務自動分類（27 類工作類型）附 24 小時分佈、熱門模型與路由決策統計——可在管理端按工作類型設定*
 
 ### 免費資源池
 
