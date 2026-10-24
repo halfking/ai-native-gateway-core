@@ -21,7 +21,8 @@ package ursm_test
 //	   （⇒ 一条差异的多个语义侧面不会悄悄失去覆盖）；
 //	④'' ★ **每条差异的 `RequiredAssertions` 必须逐字出现在【它所归位的那个测试】的
 //	   【代码面】里**（⇒ 「测试存在」之外还要「**代码里真的断言了这件事**」；
-//	   ★ 代码面 = go/parser 解析出的表达式 + 字符串字面量语料，**注释不计入**；
+//	   ★ 代码面 = go/parser 解析出的语料，★ **分两面**（★ 表达式面 / ★ 字面量面），
+//	   ★ **注释不计入**；★ 匹配语义是**精确相等**（★ **不是**子串包含）；
 //	   ★ 且**逐函数归位** ⇒ A 测试里的一个 `ParseInt` 不能替 B 语义背书）；
 //	④''' ★ 代码面是**逐函数**取的（★ **不是**整文件 —— ★ 2026-10-24 第四轮
 //	   verifier 实测撞出来的假牙）：语料 = 该测试函数**自身**的函数体
@@ -140,12 +141,98 @@ func magpieP2ParseFile(t *testing.T, root, rel string) (*token.FileSet, *ast.Fil
 	return fset, f
 }
 
-// magpieP2FuncCorpus 提取**某一个函数**的**代码面**语料。
+// magpieP2Corpus 是「代码面」语料，★ **分两面**。
+//
+// # ★★★ 为什么必须分两面（★ 2026-10-25 第五轮 verifier 实测撞出来的 F5）
+//
+// ★★★ 之前语料是**一锅**（★ BasicLit + BinaryExpr + CallExpr + Ident 混在一起）
+// ★★★ ⇒ ★★ 于是**字符串字面量**可以冒充**表达式**：
+// ★★★   `_ = "got.envelopeID != serverID"`（★ 一个**无意义的字符串**）
+// ★★★   ⇒ ★★ 语料里有 `got.envelopeID != serverID` 这个**子串** ⇒ 门认账
+// ★★★   ⇒ ★★ 而真正的 `if got.envelopeID != serverID { … }` 断言**已经不在了**。
+// ★★★ ⇒ ★★★ 实测的**决定性证据**（★ 第五轮 verifier 的 X5 / Z1）：
+// ★★★   ① 把 D09 的三条断言**全部**改成字符串字面量；
+// ★★★   ② 同时**破坏生产代码**（★ 删掉 `r.Header.Set` 写回）
+// ★★★   ⇒ ★★ **测试绿**（★ 因为断言已被架空）★ 且 **门也绿**
+// ★★★   ⇒ ⇒ ★★ 「写回 header 必须与 envelope 同值」这条**最要害**的契约
+// ★★★     在**门全绿**的情况下被废掉。
+// ★★★   ★★ **对照组**（★ 只破坏生产、断言完好）⇒ 测试 **红** ⇒ ★★ 说明
+// ★★★   测试**本身**有牙 ⇒ ★★ 坏掉的是**门的判据**（★ 语料**来源**含 BasicLit）。
+//
+// ★⇒ ⇒ 正解：★ 语料**分两面** ——
+// ★ ① **表达式面**（`expr`）：AST **表达式节点**的规范文本 + **非字符串**字面量；
+// ★ ② **字面量面**（`lit`）：**字符串**字面量（★ 存**带引号的原始值**）。
+// ★⇒ ⇒ 而「某条期望断言该落在哪一面」由**它自身的形态**决定（★ 见 `magpieP2FaceFor`）：
+// ★ ★ **带双引号**的期望（如 `"v2pipe-"`）⇒ 落**字面量面**；
+// ★ ★ **其余**（表达式 / 标识符 / 数字）⇒ 落**表达式面**。
+// ★⇒ ⇒ ★★ 于是「用字符串冒充表达式」**不可能**：★ 那个串只在**字面量面**里。
+//
+// # ★★★ 匹配语义：**精确相等**，不是子串包含（★ 分面之后的**第二层**）
+//
+// ★★★ 「分两面」只堵住「用**裸字面量**冒充表达式」这一种打法 ⇒ ★★ 还有一种：
+// ★★★ 把断言换成 `t.Logf("got.envelopeID != serverID")` ⇒ ★★ 它是**调用表达式**
+// ★★★ ⇒ ★★ 若匹配语义是**子串包含**，那个**调用表达式打印文本**里就**含**着 needle
+// ★★★ ⇒ ★★ 门认账 ⇒ ★★ 而测试**照样绿**（Logf 不会让测试失败）⇒ ★★ 契约再次被架空。
+// ★★★ ⇒ ⇒ 正解：★ 语料存的是**节点文本的集合**，匹配取**精确相等**
+// ★★★ ⇒ ★★ ⇒ `t.Logf("…")` 的整体文本 ≠ needle ⇒ **不认账** ⇒ ⇒ 门红。
+type magpieP2Corpus struct {
+	// expr 是**表达式面**语料：表达式节点的**规范文本** + 非字符串字面量。
+	expr map[string]bool
+	// lit 是**字面量面**语料：**字符串**字面量的**原始值**（★ 含引号）。
+	lit map[string]bool
+}
+
+// magpieP2FaceExpr / magpieP2FaceLit 是两个「面」的标识。
+const (
+	magpieP2FaceExpr = "expr"
+	magpieP2FaceLit  = "lit"
+)
+
+// magpieP2Normalize 折叠文本里的**多余空白** ⇒ 打印器的换行 / 缩进差异不参与匹配。
+func magpieP2Normalize(s string) string {
+	return strings.Join(strings.Fields(s), " ")
+}
+
+// magpieP2NodeText 打印一个 AST 节点并**规范化**（★ 折叠空白）。
+func magpieP2NodeText(fset *token.FileSet, n ast.Node) string {
+	var b strings.Builder
+	if err := printer.Fprint(&b, fset, n); err != nil {
+		return ""
+	}
+	return magpieP2Normalize(b.String())
+}
+
+// magpieP2FaceFor 按「期望断言**自身的形态**」决定它该落在哪一面。
+//
+// ★★ 判据只看**形态**（★ 带不带双引号）⇒ ★ 不需要清单侧声明归属
+// ★★ ⇒ ★ 清单侧**一个字都不用改**。
+func magpieP2FaceFor(req string) string {
+	if len(req) >= 2 && strings.HasPrefix(req, `"`) && strings.HasSuffix(req, `"`) {
+		return magpieP2FaceLit
+	}
+	return magpieP2FaceExpr
+}
+
+// magpieP2CorpusHas 判断某条期望断言是否**逐字**落在它**该在**的那一面。
+//
+// ★★ 语义是**精确相等**（★ **不是**子串包含）⇒ ★★ 「调用表达式打印文本里恰好含着 needle」
+// ★★ 这种**夹带**打法**不再**能蒙混过关（★ 见 `magpieP2Corpus` 的说明）。
+func magpieP2CorpusHas(c magpieP2Corpus, req string) bool {
+	switch magpieP2FaceFor(req) {
+	case magpieP2FaceLit:
+		return c.lit[req]
+	default:
+		return c.expr[magpieP2Normalize(req)]
+	}
+}
+
+// magpieP2FuncCorpus 提取**某一个函数**的**代码面**语料（★ 分两面）。
 //
 // ★★ 这是本门最要紧的一处设计：语料只由 **AST 节点**拼成 ——
-// ★★ ① 字符串字面量（BasicLit.Value）
-// ★★ ② 表达式（BinaryExpr / CallExpr，用 go/printer 打印成规范格式）
-// ★★ ③ 标识符名
+// ★★ ① **表达式面**：表达式节点（BinaryExpr / UnaryExpr / CallExpr /
+// ★★    SelectorExpr / IndexExpr，用 go/printer 打印成规范格式）+ 标识符名
+// ★★    + **非字符串**字面量（数字 / 字符）；
+// ★★ ② **字面量面**：**字符串**字面量（BasicLit.Value，★ 原始值，★ 含引号）。
 // ⇒⇒ **注释不是 AST 节点** ⇒⇒ 注释里的任何字串都**进不了**语料。
 //
 // ★⇒ 于是「在注释里写一句『我断言了 X』」蒙混不过去 ——
@@ -179,7 +266,7 @@ func magpieP2ParseFile(t *testing.T, root, rel string) (*token.FileSet, *ast.Fil
 // ★★★（`CallExpr.Fun` 是 `*ast.Ident`）⇒ ⇒
 // ★★★   ① **不**跟随方法（★ `hook.Name()` 的 `Name` 不是普通函数）；
 // ★★★   ② **不**跟随选择器调用（★ `strings.HasPrefix` 之类标准库**不**进语料）。
-func magpieP2FuncCorpus(fset *token.FileSet, f *ast.File, funcName string) (string, bool) {
+func magpieP2FuncCorpus(fset *token.FileSet, f *ast.File, funcName string) (magpieP2Corpus, bool) {
 	// 同文件的普通函数表（★ 方法不进这张表）。
 	funcs := map[string]*ast.FuncDecl{}
 	for _, d := range f.Decls {
@@ -189,10 +276,10 @@ func magpieP2FuncCorpus(fset *token.FileSet, f *ast.File, funcName string) (stri
 	}
 	start, ok := funcs[funcName]
 	if !ok {
-		return "", false
+		return magpieP2Corpus{}, false
 	}
 
-	var b strings.Builder
+	c := magpieP2Corpus{expr: map[string]bool{}, lit: map[string]bool{}}
 	seen := map[*ast.FuncDecl]bool{}
 	queue := []*ast.FuncDecl{start}
 	for len(queue) > 0 {
@@ -210,21 +297,29 @@ func magpieP2FuncCorpus(fset *token.FileSet, f *ast.File, funcName string) (stri
 		// ★★★ ⇒ 「用 `false &&` 把断言废掉」这类打法**不再**能蒙混过关。
 		magpieP2PruneDeadBranches(fd.Body)
 
-		// ② 收集本函数的代码面语料。
+		// ② 收集本函数的代码面语料（★ ★★ 分两面 + ★ **精确相等**匹配）。
+		// ★ ★★ 字符串字面量**只**进字面量面 ⇒ ⇒ 「用字符串冒充表达式」不可能。
+		// ★ ★★ 数字 / 字符字面量是**表达式级**的原子 ⇒ 归表达式面。
 		ast.Inspect(fd.Body, func(n ast.Node) bool {
 			switch v := n.(type) {
 			case *ast.BasicLit:
-				b.WriteString(" ")
-				b.WriteString(v.Value)
-			case *ast.BinaryExpr:
-				b.WriteString(" ")
-				_ = printer.Fprint(&b, fset, v)
-			case *ast.CallExpr:
-				b.WriteString(" ")
-				_ = printer.Fprint(&b, fset, v)
+				if v.Kind == token.STRING {
+					c.lit[v.Value] = true
+				} else {
+					c.expr[v.Value] = true
+				}
 			case *ast.Ident:
-				b.WriteString(" ")
-				b.WriteString(v.Name)
+				c.expr[v.Name] = true
+			case *ast.BinaryExpr:
+				c.expr[magpieP2NodeText(fset, v)] = true
+			case *ast.UnaryExpr:
+				c.expr[magpieP2NodeText(fset, v)] = true
+			case *ast.CallExpr:
+				c.expr[magpieP2NodeText(fset, v)] = true
+			case *ast.SelectorExpr:
+				c.expr[magpieP2NodeText(fset, v)] = true
+			case *ast.IndexExpr:
+				c.expr[magpieP2NodeText(fset, v)] = true
 			}
 			return true
 		})
@@ -246,7 +341,7 @@ func magpieP2FuncCorpus(fset *token.FileSet, f *ast.File, funcName string) (stri
 			return true
 		})
 	}
-	return b.String(), true
+	return c, true
 }
 
 // magpieP2PruneDeadBranches 原地剪掉「恒假分支」里的子树。
@@ -335,12 +430,12 @@ func magpieP2IsStaticallyTrue(e ast.Expr) bool {
 // ★★★ ⇒ ⇒ 可以给它写一道**量具自检**（★ 仓内既有惯例：★ `TestCertRowRangeExtractorHasTeeth`
 // ★★★ / `TestPendingCountExtractorsHaveTeeth` / `TestStaleBannerDetectorHasTeeth`）
 // ★★★ ⇒ ⇒ ★ 「把断言比对这一步废掉」（★ 第四轮 verifier 的 M91：★
-// ★★★ ⇒ ⇒ 　 `if false && !strings.Contains(corpus, req)` ⇒ 旧门**绿**）
+// ★★★ ⇒ ⇒ 　 `if false && !magpieP2CorpusHas(corpus, req)` ⇒ 旧门**绿**）
 // ★★★ ⇒ ⇒ 　 这时**自检会红** ⇒ ⇒ 「比对这一步还在」这件事**有了牙齿**。
-func magpieP2MissingAssertions(corpus string, asserts []string) []string {
+func magpieP2MissingAssertions(c magpieP2Corpus, asserts []string) []string {
 	var missing []string
 	for _, req := range asserts {
-		if !strings.Contains(corpus, req) {
+		if !magpieP2CorpusHas(c, req) {
 			missing = append(missing, req)
 		}
 	}
@@ -349,7 +444,7 @@ func magpieP2MissingAssertions(corpus string, asserts []string) []string {
 
 // magpieP2TestCodeCorpus 取「某个测试函数」的代码面语料；
 // ★ 找不到该函数 ⇒ 第二个返回值为 false（★ 调用方必须报错，**不许**当成空语料放行）。
-func magpieP2TestCodeCorpus(t *testing.T, root, rel, testName string) (string, bool) {
+func magpieP2TestCodeCorpus(t *testing.T, root, rel, testName string) (magpieP2Corpus, bool) {
 	t.Helper()
 
 	fset, f := magpieP2ParseFile(t, root, rel)
@@ -398,29 +493,30 @@ func TestBeta(t *testing.T) {
 		t.Fatal("提取器在合成源码里找不到 TestBeta ⇒ 提取器坏了")
 	}
 
-	// ① ★ 直接调用的 helper 必须在语料里。
-	if !strings.Contains(alpha, "helperMid") {
-		t.Errorf("TestAlpha 直接调用了 helperMid ⇒ 它的语料里必须有 helperMid（实际语料长度 %d）", len(alpha))
+	// ① ★ 直接调用的 helper 必须在语料里（★ 标识符 ⇒ 表达式面）。
+	if !alpha.expr["helperMid"] {
+		t.Errorf("TestAlpha 直接调用了 helperMid ⇒ 它的语料里必须有 helperMid（表达式面 %d 条）", len(alpha.expr))
 	}
 	// ② ★★★ **传递可达**的 helper 也必须在语料里
 	//    （★ 否则「真正的断言写在 helper 里」这种正常写法会被误杀 ⇒ 假红）。
-	if !strings.Contains(alpha, "helperDeep") {
+	if !alpha.expr["helperDeep"] {
 		t.Errorf("TestAlpha → helperMid → helperDeep 是**传递可达**的 ⇒ helperDeep 必须进语料")
 	}
-	if !strings.Contains(alpha, "42") {
-		t.Errorf("helperDeep 里的字面量 42 必须**传递**进 TestAlpha 的语料")
+	// ★ 数字字面量是**表达式级**的原子 ⇒ 归**表达式面**（★ 不是字面量面）。
+	if !alpha.expr["42"] {
+		t.Errorf("helperDeep 里的数字字面量 42 必须**传递**进 TestAlpha 的表达式面")
 	}
 	// ③ ★★★ **别的**函数的独有字串**不得**进语料
 	//    （★ 这一条就是「逐函数」的牙齿：★ 整文件语料会让它进来）。
-	if strings.Contains(alpha, "only-in-beta") {
+	if alpha.lit[`"only-in-beta"`] {
 		t.Errorf("★ 提取器是**整文件**级的 ⇒ TestBeta 的独有字串混进了 TestAlpha 的语料")
 	}
-	if strings.Contains(alpha, "TestBeta") {
+	if alpha.expr["TestBeta"] {
 		t.Errorf("★ 提取器是**整文件**级的 ⇒ 别的测试函数名混进了 TestAlpha 的语料")
 	}
 	// ④ ★ 反向：TestBeta 的语料里**不得**有 TestAlpha 那条链上的东西。
 	for _, forbidden := range []string{"helperMid", "helperDeep", "42"} {
-		if strings.Contains(beta, forbidden) {
+		if beta.expr[forbidden] {
 			t.Errorf("★ 提取器是**整文件**级的 ⇒ TestAlpha 那条链上的 %q 混进了 TestBeta 的语料", forbidden)
 		}
 	}
@@ -465,24 +561,25 @@ func TestGamma(t *testing.T) {
 	if err != nil {
 		t.Fatalf("解析合成源码失败：%v", err)
 	}
-	corpus, ok := magpieP2FuncCorpus(fset, f, "TestGamma")
+	c, ok := magpieP2FuncCorpus(fset, f, "TestGamma")
 	if !ok {
 		t.Fatal("提取器在合成源码里找不到 TestGamma ⇒ 提取器坏了")
 	}
 
-	// ① ★★ 恒假/恒真分支里的标记**不得**进语料。
+	// ① ★★ 恒假/恒真分支里的标记**不得**进语料
+	//    （★ 标识符形态查表达式面、★ 字符串形态查字面量面 ⇒ **两面**都查）。
 	for _, dead := range []string{"deadLandMarker", "deadLorMarker", "deadIfMarker", "deadElseMarker"} {
-		if strings.Contains(corpus, dead) {
+		if c.expr[dead] || c.lit[dead] || c.lit[`"`+dead+`"`] {
 			t.Errorf("★ 「%s」在**永不执行**的分支里 ⇒ 它**不得**进语料（★ 存在性 ≠ 活性）", dead)
 		}
 	}
 	// ② ★★ **动态**条件里的内容**必须**仍在语料里
 	//    （★ 否则「误杀真实断言」⇒ 假红 ⇒ ★ 比假绿更费）。
-	if !strings.Contains(corpus, "liveCondition") {
+	if !c.expr["liveCondition"] {
 		t.Errorf("★ 动态条件 `liveCondition` 必须在语料里（★ 剪枝只认**编译期常量**的假）")
 	}
 	// ③ ★★ `if false { … } else { … }` ⇒ **Else** 仍是活的 ⇒ 其内容必须在语料里。
-	if !strings.Contains(corpus, "live") {
+	if !c.lit[`"live"`] && !c.expr["live"] {
 		t.Errorf("★ `if false { … } else { … }` 的 Else 仍是活代码 ⇒ 其内容必须在语料里")
 	}
 }
@@ -490,22 +587,28 @@ func TestGamma(t *testing.T) {
 // TestMagpieP2MissingAssertionsHasTeeth 是**「断言比对」这一步的量具自检**。
 //
 // ★★★ 为什么需要它：★ 第四轮 verifier 的 M91：★ 把门里的比对改成
-// ★★★ `if false && !strings.Contains(corpus, req)` ⇒ 旧门**绿** ⇒
+// ★★★ `if false && !magpieP2CorpusHas(corpus, req)` ⇒ 旧门**绿** ⇒
 // ★★★ ⇒ 「断言比对这一步还在」这件事**没有任何独立来源**能发现
 // ★★★ ⇒ ⇒ 把它**抽成独立函数**（`magpieP2MissingAssertions`）+ 一道**自检**
 // ★★★ ⇒ ⇒ ★ 比对这一步被废掉 ⇒ **自检会红**。
 func TestMagpieP2MissingAssertionsHasTeeth(t *testing.T) {
-	const corpus = " got.envelopeID != serverID  got.headerID != serverID "
+	c := magpieP2Corpus{
+		expr: map[string]bool{
+			"got.envelopeID != serverID": true,
+			"got.headerID != serverID":   true,
+		},
+		lit: map[string]bool{},
+	}
 
 	// ① 全部命中 ⇒ 不得报缺失。
-	if missing := magpieP2MissingAssertions(corpus, []string{
+	if missing := magpieP2MissingAssertions(c, []string{
 		`got.envelopeID != serverID`,
 		`got.headerID != serverID`,
 	}); len(missing) != 0 {
 		t.Errorf("★ 两条断言都在语料里 ⇒ 不该报缺失，实际报了 %v", missing)
 	}
 	// ② ★★ 缺一条 ⇒ 必须**如实**报出那一条（★ 这一条才是「有牙」的证明）。
-	missing := magpieP2MissingAssertions(corpus, []string{
+	missing := magpieP2MissingAssertions(c, []string{
 		`got.envelopeID != serverID`,
 		`"v2pipe-"`,
 	})
@@ -514,8 +617,95 @@ func TestMagpieP2MissingAssertionsHasTeeth(t *testing.T) {
 	}
 	// ③ 空断言列表 ⇒ 不得报缺失（★ 但**上层**另有「空列表 ⇒ 报错」的判据，
 	//    ★ 这里只保证比对函数本身的行为是确定的）。
-	if missing := magpieP2MissingAssertions(corpus, nil); len(missing) != 0 {
+	if missing := magpieP2MissingAssertions(c, nil); len(missing) != 0 {
 		t.Errorf("★ 空断言列表不该报缺失，实际报 %v", missing)
+	}
+}
+
+// TestMagpieP2CorpusFacesAreSeparated 是**「语料分两面 + 精确相等匹配」这两步的量具自检**。
+//
+// ★★★ 为什么需要它（★ 2026-10-25 第五轮 verifier 的 F5 实测撞出来的）：
+// ★★★ ① **分面**：★ 语料若是**一锅** ⇒ ★ 字符串字面量能冒充**表达式**
+// ★★★    ⇒ `_ = "got.envelopeID != serverID"` 就能骗过门；
+// ★★★ ② **精确相等**：★ 匹配若是**子串包含** ⇒ ★ 调用表达式的打印文本
+// ★★★    （`t.Logf("got.envelopeID != serverID")`）里就**含**着 needle ⇒ 照样被骗。
+// ★★★ ⇒ ⇒ 而这两点**退化**都**不会**让任何现有断言变红
+// ★★★ ⇒ ⇒ ⇒ 必须有一道**自检**把这两点钉死。
+func TestMagpieP2CorpusFacesAreSeparated(t *testing.T) {
+	const src = `package p
+
+func TestRealExpr(t *testing.T) {
+	if alpha != beta {
+		t.Log("live")
+	}
+	_ = "alpha != beta"
+	_ = "litOnlyMarker"
+}
+
+func TestOnlyString(t *testing.T) {
+	_ = "gamma != delta"
+}
+
+func TestCallWrap(t *testing.T) {
+	t.Logf("eta != theta")
+}
+`
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "synthetic.go", src, 0)
+	if err != nil {
+		t.Fatalf("解析合成源码失败：%v", err)
+	}
+	real, ok := magpieP2FuncCorpus(fset, f, "TestRealExpr")
+	if !ok {
+		t.Fatal("提取器在合成源码里找不到 TestRealExpr ⇒ 提取器坏了")
+	}
+	onlyStr, ok := magpieP2FuncCorpus(fset, f, "TestOnlyString")
+	if !ok {
+		t.Fatal("提取器在合成源码里找不到 TestOnlyString ⇒ 提取器坏了")
+	}
+	callWrap, ok := magpieP2FuncCorpus(fset, f, "TestCallWrap")
+	if !ok {
+		t.Fatal("提取器在合成源码里找不到 TestCallWrap ⇒ 提取器坏了")
+	}
+
+	// ① ★★ 真正的二元表达式 ⇒ 落**表达式面**。
+	if !real.expr["alpha != beta"] {
+		t.Errorf("★ 真正的 `if alpha != beta { … }` 必须在表达式面里")
+	}
+	// ② ★★ 字符串字面量 ⇒ 落**字面量面**（★ 原始值，★ 含引号）。
+	if !real.lit[`"alpha != beta"`] {
+		t.Errorf("★ 字符串字面量必须在字面量面里（★ 原始值含引号）")
+	}
+	// ③ ★★★ **决定性的一条**：★ 只有**字符串字面量**形态时 ⇒ 表达式面**不得**命中
+	//    （★ 这正是 F5 那条「把断言改成字符串」的打法 ⇒ 必须**不认账**）。
+	if magpieP2CorpusHas(onlyStr, "gamma != delta") {
+		t.Errorf("★★ 「_ = \"gamma != delta\"」是**字符串字面量** ⇒ 它**不得**满足表达式形态的期望\n" +
+			"★★ ⇒ 「用字符串冒充表达式」的打法还能蒙混过关 ⇒ 语料的分面被破坏了")
+	}
+	// ④ ★★★ **夹带**：★ 调用表达式的打印文本里**恰好含**着 needle ⇒ 也不得命中
+	//    （★ 这正是「匹配语义退化成子串包含」的症状）。
+	if magpieP2CorpusHas(callWrap, "eta != theta") {
+		t.Errorf("★★ `t.Logf(\"eta != theta\")` 的**调用表达式**文本 ≠ needle ⇒ 它**不得**被认账\n" +
+			"★★ ⇒ 匹配语义退化成**子串包含**了 ⇒ 「CallExpr 夹带」的打法还能蒙混过关")
+	}
+	// ⑤ ★★ 纯字面量标记 ⇒ 只在**字面量面**，不得在表达式面。
+	//    ★★ 两种形态都查（★ **带引号**的原文形态也要查 ⇒ ★ 否则「分面被废」
+	//    （★ 字符串字面量也进表达式面）这个变异**抓不到** ⇒ ★ 门自己有假牙）。
+	if real.expr["litOnlyMarker"] || real.expr[`"litOnlyMarker"`] {
+		t.Errorf("★ 字符串字面量「litOnlyMarker」**不得**出现在表达式面里（★ 含引号的原文形态同样不得）")
+	}
+	if real.expr[`"alpha != beta"`] {
+		t.Errorf("★ 字符串字面量「alpha != beta」**不得**出现在表达式面里（★ 含引号的原文形态同样不得）")
+	}
+	if !real.lit[`"litOnlyMarker"`] {
+		t.Errorf("★ 字符串字面量「litOnlyMarker」必须在字面量面里")
+	}
+	// ⑥ ★★ 「面」的归属判定：★ 带双引号 ⇒ 字面量面；★ 其余 ⇒ 表达式面。
+	if got := magpieP2FaceFor(`"v2pipe-"`); got != magpieP2FaceLit {
+		t.Errorf("★ 带双引号的期望必须落字面量面，实际判成 %q", got)
+	}
+	if got := magpieP2FaceFor(`got.envelopeID != serverID`); got != magpieP2FaceExpr {
+		t.Errorf("★ 不带引号的期望必须落表达式面，实际判成 %q", got)
 	}
 }
 
@@ -804,6 +994,27 @@ func TestMagpieP2V2DifferencesHaveRealTests(t *testing.T) {
 						id, testName, req)
 				}
 			}
+		}
+
+		// ★★★ C5（★ 2026-10-25 第五轮 verifier 的 F5 逼出来的**结构性**约束）：
+		// ★★★ 门侧期望表里**每个 ID** 必须**至少有一条表达式形态**的期望
+		// ★★★ ⇒ ★★ 结构上排除「把该 ID 的全部期望**退化成字符串字面量**」的打法
+		// ★★★ ⇒ ★★ （★ 退化后，攻击者只要在测试里加一个同名**字面量**就能骗过字面量面）。
+		// ★★★ ⇒ ★★ 而「全部退化」会让这条差异**彻底失去**「代码面核对」这个能力
+		// ★★★ ⇒ ★★ ⇒ ⇒ 门侧必须自己钉住「**至少一条**真正的表达式」。
+		hasExpr := false
+		for _, asserts := range expect {
+			for _, req := range asserts {
+				if magpieP2FaceFor(req) == magpieP2FaceExpr {
+					hasExpr = true
+				}
+			}
+		}
+		if !hasExpr {
+			t.Errorf("★★ 门侧期望表里差异 %s **没有一条表达式形态**的期望 ⇒\n"+
+				"★★ ⇒ 它可以被「全部退化成字符串字面量」架空 ⇒ 门侧必须钉住**至少一条**真正的表达式\n"+
+				"★★ ⇒ 修法：给它补一条表达式形态的期望（★ 如 `x != y` 这样的二元表达式）",
+				id)
 		}
 	}
 
