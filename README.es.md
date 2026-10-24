@@ -110,7 +110,7 @@ HTTP/SSE → middleware chain → protocol/IR normalization → session assignme
 | `bg/` | Workers en segundo plano — sondeo, limpieza del ciclo de vida, agregación de estadísticas, mantenimiento de particiones |
 | `storage/` | Fábrica de almacenamiento de doble modo (`full`: PG+Redis / `lite`: SQLite+ficheros+KV en proceso) |
 | `internal/` | Infraestructura transversal — IR, strip de campos del proveedor, espejo de sesión, outbox, telemetría… |
-| `sql/migrations/` + `db/migrations/` | Migraciones idempotentes (serie de arranque actualmente en 902) |
+| `sql/migrations/` + `db/migrations/` | Migraciones idempotentes (serie de arranque actualmente en 907) |
 | `installer/` | Módulo instalador/actualizador autónomo multiplataforma |
 | `scripts/`, `deploy/` | Herramientas de build, despliegue, espejo y verificación |
 
@@ -132,7 +132,7 @@ La mayoría de las pasarelas tratan cada petición como un evento aislado. AI Na
 - **Vinculación sticky de sesión**: las sesiones se fijan a credenciales para que el contexto de la conversación sobreviva a cambios de modelo y failovers — sin pérdida silenciosa de contexto a mitad de tarea
 - **Auditoría y replay a nivel de sesión**: los system prompts y las respuestas completos se conservan y son reproducibles por sesión (13,000+ sesiones en producción), cubriendo tipo de tarea, modelo del cliente, modelo de salida, proveedor, tokens, latencia y motivo de fin — segmentable por clave / tenant / rango temporal para diagnóstico y cumplimiento
 - **Compresión automática de prompts**: cuando una petición se acerca a la ventana de contexto real del proveedor (disparador ~80 %), se ejecuta compresión a nivel de mensaje antes del dispatch — las sesiones largas de agentes caben en ventanas más pequeñas en lugar de fallar. Cada evento de compresión (estrategia, umbral, tamaños antes/después) se registra en la petición
-- **Inteligencia de metadatos de sesión**: etiquetado automático de tipo de trabajo (10 tipos de trabajo), atribución de proyecto y extracción de título convierten el tráfico bruto en conocimiento buscable
+- **Inteligencia de metadatos de sesión**: etiquetado automático de tipo de trabajo (27 tipos de trabajo), atribución de proyecto y extracción de título convierten el tráfico bruto en conocimiento buscable
 - **Túnel de identidad**: el tráfico de agentes se atribuye mediante IP/MAC/ClientID virtuales, de modo que el aislamiento multi-tenant se mantiene incluso cuando muchos agentes comparten un mismo egress
 - **Ciclo de vida de datos de 4 niveles**: caliente (0–7 d) / templado (7–30 d) / frío (30–90 d) / caducado (>90 d) con vista previa del archivo — «esto es exactamente lo que se moverá» antes de ejecutar
 
@@ -172,7 +172,7 @@ Todos los módulos siguientes están entregados y funcionando en el despliegue d
 ### Configuración de tipos de trabajo — clasificación automática de tareas
 
 ![Work Types](docs/assets/screenshots/work-types.png)
-*Clasificación automática de tareas (10 tipos de trabajo) con distribución de 24 h, modelos principales y estadísticas de decisiones de enrutado — configurable por tipo de trabajo en la UI de administración*
+*Clasificación automática de tareas (27 tipos de trabajo) con distribución de 24 h, modelos principales y estadísticas de decisiones de enrutado — configurable por tipo de trabajo en la UI de administración*
 
 ### Pool de recursos gratuito
 

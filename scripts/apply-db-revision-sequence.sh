@@ -2217,10 +2217,55 @@ files=(
   #   statement_timeout='10min'（903 同款）。两张都是热写表 ⇒ 构建期持
   #   SHARE 锁阻塞该表写入 ⇒ 落在低峰窗口。
   "$ROOT_DIR/sql/migrations/startup/904_inspector_stats_partial_indexes.sql"
+
+  # ── 2026-10-24（R92 稀有过滤 500@30s 轮）：model 维度复合索引 ──
+  #
+  # 905：`?model=` 这类**稀有**轮次级过滤的索引。
+  #
+  # ★ 病灶（252 生产只读实测，2026-10-24）：GET /api/admin/turns/sessions
+  #   带 `?model=` 时**恒 500@30s**。build 2841（R90 的两腿 EXISTS 已上线）
+  #   直连 REPEAT=3：
+  #     ?limit=20                       200 200 200   0.878 0.155 0.111 s
+  #     ?limit=20&api_key_id=105        200 200 200   9.576 0.216 0.151 s
+  #     ?limit=20&model=deepseek-ai%2F…  500 500 500  30.008 30.007 30.018 s
+  #     ?limit=20&provider=14           200 200 200   0.358 0.100 0.080 s
+  #     ?limit=20&status_code=500       200 200 200   0.554 0.181 0.153 s
+  #   ⇒ ★★ R90「四条全修」的结论被证伪（只有 model 那条仍 500）。
+  # ★ 真因不是「形状」而是**稀有过滤值 ⇒ 外层会话深扫**：该 model 命中
+  #   458 轮 / **30 个会话**，而 public.sessions 有 441,112 个会话；列表是
+  #   `ORDER BY s.updated_at DESC LIMIT 21` ⇒ 必须扫到凑够 21 行
+  #   ⇒ EXPLAIN 实测外层 Rows Removed by Filter: 72,455 + 277,899 = 350,354。
+  # ★ 修复效果（事务内建索引 + EXPLAIN ANALYZE + ROLLBACK，生产零持久变更）：
+  #   model（稀有） 30,008 ms → 8.0 ms；provider='14' 358 ms → 48.6 ms；
+  #   status_code=500 554 ms → 249.6 ms。
+  # ★ 只给 model 建索引：provider n_distinct=20、status_code n_distinct=8
+  #   ⇒ 没有选择性 ⇒ 给它们建索引会让规划器更倾向「轮次驱动 + 大哈希构建」
+  #   ⇒ 实测退化到 10,080 ms。
+  # ★ public.session_turns 是**分区热写表** ⇒ 分区父表不支持 CONCURRENTLY
+  #   ⇒ 普通 CREATE INDEX（仍不用 CONCURRENTLY：startup 迁移默认在事务里跑）
+  #   + SET LOCAL lock_timeout='60s' / statement_timeout='10min'（903/904 同款）。
+  #   实测构建 18,512 ms（父表）+ 28 ms（hot）⇒ ★ 这 ~18.5 秒里
+  #   session_turns 的写入被 SHARE 锁阻塞 ⇒ 落在低峰窗口。
+  "$ROOT_DIR/sql/migrations/startup/905_turns_session_model_index.sql"
+
+  # ★ R94：给「会话列表的 api_key 回填」补**部分索引**
+  #   （WHERE api_key_id ~ '^[0-9]+$'）⇒ 探针流量（api_key_id 全 NULL）
+  #   在索引里一行都没有 ⇒ Index Only Scan ⇒ 实测 1,350~1,569 ms → **4.57 ms**。
+  #   ★ 谓词必须与 db.SessionFamilyAPIKeyIDNumericPredExpr 逐字一致。
+  #   ★ 普通 CREATE INDEX（仍不用 CONCURRENTLY：startup 迁移默认在事务里跑）
+  #   + SET LOCAL lock_timeout='60s' / statement_timeout='10min'（903/904/905 同款）。
+  #   实测构建 6,026 ms（父表）+ 21 ms（hot）。
+  "$ROOT_DIR/sql/migrations/startup/906_turns_api_key_numeric_partial_index.sql"
+
+  # ★ R96：routing_analytics_source 换成「会话族两腿 + LATERAL 回定位」
+  #   ⇒ 消除刷新链里 45 万行 session_turn_details 顺序扫
+  #   （252 实测中位 4,482.8 ms → 2,270.8 ms；口径逐行等价 EXCEPT ALL 0/0）。
+  #   ★ 零 DDL：只做 CREATE OR REPLACE VIEW（实测 245 ms；保留 OID ⇒ matview 依赖不动）。
+  "$ROOT_DIR/sql/migrations/startup/907_routing_analytics_source_lateral.sql"
   # ── 2026-10-24（R147 存储效率续轮，㉘ 代码面核对后裁决）：
   #    route_incident_events 零消费方索引删除 ──
   #
-  # 905：删除 idx_route_incident_events_type_created (event_type, created_at DESC)
+  # 908：删除 idx_route_incident_events_type_created (event_type, created_at DESC)
   #   （252 只读实测 110 MB / idx_scan=1，stats reset 10-18 起 5.2 天窗口）。
   #
   # ★ 判决链（代码面核对，三个低扫描索引里唯一可删的一个）：
@@ -2242,7 +2287,7 @@ files=(
   #   （幂等）+ 会话级 SET lock_timeout=60s / statement_timeout=10min +
   #   RESET（非事务通道不能用 SET LOCAL，871 同款）。
   # ★ ★ 本条**只落仓**；★ 生产应用需属主另行授权（删除瞬间完成，无长锁）。
-  "$ROOT_DIR/sql/migrations/startup/905_route_incident_events_type_created_drop.sql"
+  "$ROOT_DIR/sql/migrations/startup/908_route_incident_events_type_created_drop.sql"
 )
 
 

@@ -12,7 +12,9 @@ package main
 // 本门两层：
 //  1. 行为面——按 main.go 同样方式组合链，断言 /m 响应带安全头且不被
 //     全局 auth 401（bypass 生效）；
-//  2. 接线面——main.go 源码必须以 Then(publicSurface) 收链，且不得再把
+//  2. 接线面——main.go 源码必须以 Then(...publicSurface...) 收链（★ 2026-10-24 起
+//     允许两种显式形态：Then(publicSurface) 与 Then(middleware.LedgerInnerProbe(publicSurface))），
+//     且不得再把
 //     mobile 网关包在 finalHandler 链外（文本锚定，防回归挪位）。
 
 import (
@@ -132,14 +134,29 @@ func TestMobileAssetsCarrySecurityHeaders(t *testing.T) {
 // 接线面：main.go 必须把 publicSurface 收进链内。
 // 文本锚定的理由与 mobile_mount_contract_test 相同：挪回链外不会让任何
 // 行为测试红（组合函数本身仍是正确实现），只有钉住调用点形状才能防回归。
+//
+// ★★ 2026-10-24（P2-2 续）：`Then(...)` 的**参数形态**多了一种——
+// `Then(middleware.LedgerInnerProbe(publicSurface))`（主链的**内层探针**，
+// 用来量「业务耗时」以算出主链自身的开销；见 middleware/ledger_mw.go）。
+// ⇒ ⇒ 允许的形态**显式枚举**为两种（不是放宽成模糊匹配）：
+//
+//	① `Then(publicSurface)`                     —— 原形态；
+//	② `Then(middleware.LedgerInnerProbe(publicSurface))` —— 加了内层探针。
+//
+// ⇒ ★ 两种形态**都满足**本门的意图（挂载在链内）；★ 任何**其它**形态
+//
+//	（尤其「挪回链外」）仍然红 ⇒ ⇒ **判据没被放松**，只是多认了一种合法写法。
 func TestMobileMountSitsInsideMiddlewareChain(t *testing.T) {
 	src, err := os.ReadFile("main.go")
 	if err != nil {
 		t.Fatal(err)
 	}
 	s := string(src)
-	if !strings.Contains(s, "Then(publicSurface)") {
-		t.Fatal("main.go 中间件链没有以 Then(publicSurface) 收链 —— maintain/mobile 挂载可能被挪回链外（R49-A1）")
+	insideChain := strings.Contains(s, "Then(publicSurface)") ||
+		strings.Contains(s, "Then(middleware.LedgerInnerProbe(publicSurface))")
+	if !insideChain {
+		t.Fatal("main.go 中间件链没有把 publicSurface 收进 Then(...) 收链 —— " +
+			"maintain/mobile 挂载可能被挪回链外（R49-A1）")
 	}
 	if strings.Contains(s, "newMobileGatewayHandler(finalHandler") ||
 		strings.Contains(s, "newMaintainGatewayHandler(handler, maintainStatic)") {

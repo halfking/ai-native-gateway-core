@@ -2,19 +2,21 @@
 // data-lifecycle 自动 hot promote 清单的**v1 族清零**门 + cron 的**能力探针**门。
 //
 // ★ 缺陷本体（活库实测，每轮 cron 2×WARN + 1×ERROR）：
-//   890（v1 族真删）把 v1 族（表 + 分区 + 索引）与它的 promote 函数
-//   （promote_request_logs_hot_to_partition /
-//     promote_request_logs_bodies_hot_to_partition）**一起 DROP**。
-//   而 admin 的 hotPromoteTableMap 里这两项**仍在** ⇒ 自动 hot cron 每轮
-//   去调已不存在的函数 ⇒ 42883（function ... does not exist）。
-//   而被调用的表**根本不存在**、没有任何东西可搬 ⇒ 纯噪声，且每轮 ERROR
-//   会把真实故障淹没。
+//
+//	890（v1 族真删）把 v1 族（表 + 分区 + 索引）与它的 promote 函数
+//	（promote_request_logs_hot_to_partition /
+//	  promote_request_logs_bodies_hot_to_partition）**一起 DROP**。
+//	而 admin 的 hotPromoteTableMap 里这两项**仍在** ⇒ 自动 hot cron 每轮
+//	去调已不存在的函数 ⇒ 42883（function ... does not exist）。
+//	而被调用的表**根本不存在**、没有任何东西可搬 ⇒ 纯噪声，且每轮 ERROR
+//	会把真实故障淹没。
 //
 // ⇒ 修法两件：
-//   ① 清单里摘掉两条 v1 死引用（退役语义由 retiredV1HotTables 承载，手动
-//      promote 仍按 promoteHotRetiredReason 拒绝并给理由）；
-//   ② cron 侧加**能力探针**：promote 函数不存在 ⇒ 记一条 INFO 的 SKIP
-//      （不是 ERROR）⇒ 今后任何被 DROP 的函数都不会再刷错误日志。
+//
+//	① 清单里摘掉两条 v1 死引用（退役语义由 retiredV1HotTables 承载，手动
+//	   promote 仍按 promoteHotRetiredReason 拒绝并给理由）；
+//	② cron 侧加**能力探针**：promote 函数不存在 ⇒ 记一条 INFO 的 SKIP
+//	   （不是 ERROR）⇒ 今后任何被 DROP 的函数都不会再刷错误日志。
 //
 // 本门守这两条不变量。
 package admin
@@ -42,7 +44,7 @@ func TestHotPromoteTableMap_V1EntriesAreExactlyTheRetiredSet(t *testing.T) {
 	//    变成「不支持该表」（既有退役契约测试会红，实测）。
 	for table := range retiredV1HotTables {
 		if _, ok := hotPromoteTableMap[table]; !ok {
-			t.Errorf("退役族 %q 从 hotPromoteTableMap 消失了——手动 promote 端点会失去" +
+			t.Errorf("退役族 %q 从 hotPromoteTableMap 消失了——手动 promote 端点会失去"+
 				"「409 + retired request_logs family」的拒绝形状", table)
 		}
 	}

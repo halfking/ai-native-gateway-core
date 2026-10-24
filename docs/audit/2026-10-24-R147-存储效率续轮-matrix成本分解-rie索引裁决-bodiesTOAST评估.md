@@ -1,8 +1,8 @@
-# R147 · 存储效率续轮 —— ㉙ matrix REFRESH 成本分解 / ㉘ rie 三索引裁决（迁移 903）/ ③ bodies TOAST 拆分评估
+# R147 · 存储效率续轮 —— ㉙ matrix REFRESH 成本分解 / ㉘ rie 三索引裁决（迁移 908）/ ③ bodies TOAST 拆分评估
 
 > 承接 R146（§143.102/§143.103 + 审计档 §8）。**对生产的写入 = 0**：
 > 252 全程只读（全部 SELECT/EXPLAIN，含两次 EXPLAIN ANALYZE——只读 SELECT，
-> 会话级抬 statement_timeout，与一次生产 REFRESH 同量级）；唯一落地 = 迁移 903
+> 会话级抬 statement_timeout，与一次生产 REFRESH 同量级）；唯一落地 = 迁移 908
 > **只落仓**，生产应用需属主授权（902 同款）。
 > 时间：2026-10-24 04:48–06:00（252 时区）。
 
@@ -14,7 +14,7 @@
   temp 读写**（work_mem=8MB 的外排 + hash 4 分批）+ session_dim 206MB 全堆扫；
   属主三选一之外新发现一个**零语义杠杆（d）**：刷新器会话抬 work_mem 可消掉
   每次 131.6MB temp（计划 est −34%），热缓存下墙钟平手（如实）。
-- **㉘**：三索引裁决闭环——**type_created（110MB）零消费方可删，已落仓为迁移 903**
+- **㉘**：三索引裁决闭环——**type_created（110MB）零消费方可删，已落仓为迁移 908**
   （8 点注册 + 门 9 测 + 变异 M1~M6 全红 + 本地一次性库五段生命周期）；
   incident_created（93MB）与 created_at（41MB）各有不可替代消费方，**保留**。
 - **③**：bodies_2026_10 的 6.08GB TOAST = request_delta ~63% + outbound_body ~38%；
@@ -28,7 +28,7 @@
 
 | 索引 | 定义 | 体积 | idx_scan | 判定 |
 |---|---|---|---|---|
-| `idx_route_incident_events_type_created` | (event_type, created_at DESC) | **110 MB** | **1** | **删（903）** |
+| `idx_route_incident_events_type_created` | (event_type, created_at DESC) | **110 MB** | **1** | **删（908）** |
 | `idx_route_incident_events_incident_created` | (incident_id, created_at DESC) | 93 MB | 20 | 保留 |
 | `idx_route_incident_events_created_at` | (created_at) | 41 MB | 8 | 保留 |
 | `uq_route_incident_events_idem`（对照） | (incident_id, request_id, terminal_status) partial UNIQUE | 250 MB | **422,297** | 写路径本体 |
@@ -56,24 +56,24 @@
   `CleanupOnce` 每轮 `SkippedNoIndex` 跳过 ⇒ 这个 190 万行、1.2GB 的表
   **唯一的行级留存机制永久失效** ⇒ 保留（41MB 换留存可用性）。
 
-### §2.3 迁移 903 落仓清单
+### §2.3 迁移 908 落仓清单
 
-- 正本 `sql/migrations/startup/903_route_incident_events_type_created_drop.sql`
+- 正本 `sql/migrations/startup/908_route_incident_events_type_created_drop.sql`
   （`dbinit:no-transaction` + `DROP INDEX CONCURRENTLY IF EXISTS` + 会话级
   lock_timeout=60s / statement_timeout=10min + RESET）+ down（逐字同形重建）。
 - **配套**：`db/db.go ensureRouteIncidentSchema` 同批删除同名 `CREATE INDEX`
   ——否则 ensure 链每次启动把刚删的索引复活（718 三项核实的「无 Go ensure
   创建者」在本表不成立，必须先拆）。baseline（两份快照）**刻意保留**：
-  718 先例，fresh-install 链次序 =「baseline 建出 → 903 删掉」。
+  718 先例，fresh-install 链次序 =「baseline 建出 → 908 删掉」。
 - 8 点注册：正本 / embeddata 副本×2（sha 逐字一致）/ main.go embed+map /
   runner.go StartupFiles / TSV 镜像（行 305）/ apply-db-revision-sequence.sh /
   db-changelog.md（存在性口径，LESSONS §302）/ startup_concurrency_gate_test.go
   豁免表（计数 1）。
-- 门 `migration_903_route_incident_type_created_drop_test.go`（9 测）：up 形态
+- 门 `migration_908_route_incident_type_created_drop_test.go`（9 测）：up 形态
   + **3 份坏样本阳性对照**（去 CONCURRENTLY / 去 IF EXISTS / 抽 RESET）+ down
   同形 + 副本逐字节 + sha 钉 + 8 点登记 + **ensure 不复活腿** +
   **baseline 保留腿**。
-- 变异 `scripts/audit/mutate_147_903_gate.py`：M1~M6 全红并按原路径 md5
+- 变异 `scripts/audit/mutate_147_908_gate.py`：M1~M6 全红并按原路径 md5
   逐字还原（M6 首两轮被脚本自检拦下——drop 型替换串含 needle ⇒ 拆
   drop/insert 两型后通过；坏样本③首版「注释化 RESET」被门漏过——检测器收到的
   已是剥注释文本，改为整体删除后判红，两处自踩均已按纪律留痕）。
@@ -142,7 +142,8 @@ pgss 5.2 天窗口（10-18 22:03 reset）：
 ⇒ 6GB 未压缩」——**错在字母映射读反**：PG 里 `'x' = EXTENDED`（压缩+行外，
 默认），`'e'` 才是 EXTERNAL（行外不压缩）。按天分桶实测
 `pg_column_size//octet_length(::text) ≈ 0.31~0.67`（10-01~10-23 每一天都在压）
-+ §143.65 的整表 1.81× ⇒ 压缩一直在正常工作。教训入 LESSONS（§355）。
++ §143.65 的整表 1.81× ⇒ 压缩一直在正常工作。教训入 LESSONS（§397 · 原取号 §355，
+  2026-10-25 与上游 R91 轮 §355 双胞胎撞号 ⇒ 零引用侧让号，见 LESSONS §397 抬头留痕）。
 
 ### §4.2 字段级体积分布（TABLESAMPLE SYSTEM 1%，n=3,719，外推 ÷0.0119）
 
@@ -184,4 +185,4 @@ hot 表另有 TOAST 1,006MB（8h 保留，稳态）。
    「折每天」是混合口径；单日波动 2.6×+（§143.28 已证）。
 5. ③ 的外推基于 1% 系统采样（页级，行内可能聚簇）；列占比与 TOAST 总量的
    闭环吻合（5.9 vs 6.08 GiB，差 ~3%）支撑其可信度。
-6. 903 只落仓未应用；252 上 idx_route_incident_events_type_created 仍在位。
+6. 908 只落仓未应用；252 上 idx_route_incident_events_type_created 仍在位。

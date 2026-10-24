@@ -69,7 +69,7 @@ WHERE h.inhparent IN ('public.session_turns'::regclass,
   -- ★ 核心判据：可见性地图可见率低 ⇒ Index Only Scan 不可用
   AND (c.relallvisible = 0
        OR (c.relpages > 0 AND c.relallvisible::numeric / c.relpages < 0.5))
-  -- ★ 只管「冷分区」：当月分区还在写入，autovacuum 会照管，��免与在线负载抢 IO
+  -- ★ 只管「冷分区」：当月分区还在写入，autovacuum 会照管，避免与在线负载抢 IO
   AND c.relname ~ '_\d{4}_\d{2}$'
   AND to_date(right(c.relname, 7), 'YYYY_MM') < date_trunc('month', CURRENT_DATE)::date
 ORDER BY c.relname;

@@ -289,7 +289,9 @@ func StreamOpenAIToAnthropicSSEWithDiagnostics(
 		}
 		outcome.Interrupted = true
 		outcome.Reason = "first_byte_timeout"
-		outcome.Kind = errorsx.KindStreamTimeout
+		// ★ 2026-10-24 magpie 19 类 rest 词表轮（§6-P0-4）：首字节超时与流中
+		//   超时必须分开 —— 前者「第一次放过、反复才罚、罚在模型粒度」。
+		outcome.Kind = errorsx.KindFirstByteTimeout
 		outcome.Resumable = !terminalVisible
 		return outcome
 

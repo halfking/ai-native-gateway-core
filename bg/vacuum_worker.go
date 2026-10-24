@@ -11,6 +11,17 @@
 // 唯一的目标表不再存在。**不留着让它每周撞一次 42P01**：见 vacuum 里的
 // to_regclass 存在性探测（自描述，不依赖写门）。
 //
+// ★ 2026-10-24（v1 → session_turns 替换轮）：目标改指**会话族**的正文热表
+// `public.session_bodies_hot`。
+//
+//	· 为什么不是「删掉这个 worker」：v1 退役后它每周只打一条「目标表不存在，
+//	  跳过」的日志 —— 而会话族的正文热表有**同款病灶**（TOAST 膨胀，
+//	  §143.96 登记未修）⇒ 这个 worker 正是那件事的现成载体。
+//	· 为什么是 session_bodies_hot 而不是 session_turns_hot：正文（TOAST）
+//	  才是膨胀源；轮次表本身是小行。
+//	· 安全性质不变：普通 `VACUUM (ANALYZE)`（不取 ACCESS EXCLUSIVE）、
+//	  存在性探测、5 分钟超时。
+//
 // 接入点：cmd/gateway/main.go 在 init bg services 时构造 + Start。
 
 package bg
@@ -24,7 +35,12 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// VacuumWorker 定期对 v1 正文族的 hot 表执行普通 VACUUM。
+// VacuumWorker 定期对**会话族**正文热表（public.session_bodies_hot）
+// 执行普通 VACUUM。
+//
+// ★ 2026-10-24：目标由 v1 的 `_request_logs_bodies_hot` 改为
+//
+//	`session_bodies_hot`（v1 族随 890 退役 ⇒ 原目标不存在 ⇒ 每周空转）。
 type VacuumWorker struct {
 	db *pgxpool.Pool
 
@@ -165,20 +181,24 @@ func (w *VacuumWorker) vacuum(ctx context.Context) {
 		return
 	}
 	if !exists {
-		slog.Info("vacuum worker: v1 正文族已退役（目标表不存在），跳过 VACUUM",
+		slog.Info("vacuum worker: 目标表不存在（正文热表未部署？），跳过 VACUUM",
 			"target", vacuumTargetTable)
 		return
 	}
 
 	start := time.Now()
 
-	// 2026-09-17 audit: v1 正文族是 RANGE 分区父表
+	// 2026-09-17 audit: v1 正文族曾是 RANGE 分区父表
 	// (monthly leaves, reclaimed by drop_old_request_logs_bodies_partitions).
 	// VACUUM FULL against a partitioned parent either errors or no-ops —
 	// there is no storage on the parent to rewrite — so the weekly job only
 	// burned the cluster-wide VacuumFullMutex window. Space reclaim is the
 	// partition-drop path's job; here we keep plain VACUUM on the hot table
 	// (and the leaf-partition hygiene runs in bg/partition_manager.go).
+	//
+	// ★ 2026-10-24：会话族的 session_bodies_hot 是**普通表**（非分区父表），
+	//   所以这条「普通 VACUUM 而非 VACUUM FULL」的纪律照样成立：
+	//   FULL 会取 ACCESS EXCLUSIVE 并重写整表（周更窗口里不可接受）。
 	hotCtx, hotCancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer hotCancel()
 
@@ -196,11 +216,16 @@ func (w *VacuumWorker) vacuum(ctx context.Context) {
 
 // vacuumTargetTable 是本 worker 唯一 VACUUM 的目标表。
 //
-// ⚠ 它是 v1 族的一张表，890 之后默认不存在 —— 保留这个名字是为了让
-// 「退役后还在这儿」这件事在代码里一眼可见，而不是被一个拼接出来的字符串
-// 藏起来（§「判据必须与被测函数在同一层」的同款纪律：常量要在被读的地方
-// 看得见）。
-const vacuumTargetTable = "_request_logs_bodies_hot"
+// ★ 2026-10-24（v1 → session_turns 替换轮）：由 v1 的
+//
+//	`_request_logs_bodies_hot` 改为会话族的 `session_bodies_hot`
+//	（v1 族随 890 退役 ⇒ 原目标不存在 ⇒ 本 worker 每周空转一条日志）。
+//
+// ⚠ 仍然保留「常量 + 存在性探测」这层，而不是把表名拼进 SQL 字符串：
+//
+//	§「判据必须与被测函数在同一层」的同款纪律 —— 常量要在被读的地方看得见，
+//	存在性探测也要能独立指认目标。
+const vacuumTargetTable = "session_bodies_hot"
 
 // vacuumTargetExists 探测 vacuumTargetTable 是否仍然存在。
 func (w *VacuumWorker) vacuumTargetExists(ctx context.Context) (bool, error) {

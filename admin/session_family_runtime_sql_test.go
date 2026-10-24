@@ -23,10 +23,11 @@
 //     刷一条 WARN 噪声，且该表状态永远拿不到。
 //
 // ★ 为什么门要「真库执行」而不是纯文本：
-//   这三处都不是「形状」问题，而是「列/语法在真库里成不成立」的问题。
-//   纯文本门只能钉住已知写法（例如「必须出现 gw_session_id」），
-//   钉不住「还有没有第 4 处同样的错」⇒ 必须有一条能把 SQL 丢给真库
-//   的腿。这条腿只跑 SELECT ⇒ 零足迹。
+//
+//	这三处都不是「形状」问题，而是「列/语法在真库里成不成立」的问题。
+//	纯文本门只能钉住已知写法（例如「必须出现 gw_session_id」），
+//	钉不住「还有没有第 4 处同样的错」⇒ 必须有一条能把 SQL 丢给真库
+//	的腿。这条腿只跑 SELECT ⇒ 零足迹。
 //
 // 无 TEST_DATABASE_URL / TEST_DB_URL 时真库腿跳过（静态腿照跑）。
 package admin
@@ -54,7 +55,6 @@ import (
 // 已知边界（既有 helper 的性质）：正则版会把字符串字面量里的 "//" 也当注释
 // 起点 ⇒ 对本门的两条判据（session_dim 别名 / ARRAY_AGG 下标）最多造成
 // 假阴性（漏判），不会造成假阳性。
-
 
 // runtimeSQLPool 返回一个连到真库的池（无 DSN 时跳过该腿）。
 func runtimeSQLPool(t *testing.T) *pgxpool.Pool {
@@ -112,7 +112,7 @@ func TestSessionFamilyRuntimeSQL_ExecutesOnRealDB(t *testing.T) {
 		},
 		{
 			name: "recent_sessions",
-			sql: fmt.Sprintf(sessionAnalyticsTaskRecentSessionsSQL, "WHERE sd.task_id = $1"),
+			sql:  fmt.Sprintf(sessionAnalyticsTaskRecentSessionsSQL, "WHERE sd.task_id = $1"),
 			args: []interface{}{"unknown"},
 		},
 		{
@@ -155,6 +155,7 @@ func TestSessionFamilyRuntimeSQL_ExecutesOnRealDB(t *testing.T) {
 // （_request_logs，迁移 890 已 DROP）必须：
 //   - 不返回错误（修复前是 42P01）；
 //   - Retired=true。
+//
 // 对一张**在位**的表必须 Retired=false（防止「一律标退役」这种偷懒修法）。
 func TestRetiredPartitionTableStatusIsNotAnError(t *testing.T) {
 	pool := runtimeSQLPool(t)

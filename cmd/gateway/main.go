@@ -6526,7 +6526,14 @@ func main() {
 		})
 		pluginBases := ScanAndStartPluginsWithRegistry(sup, pluginRegistry, pluginManifests)
 		for _, manifest := range pluginManifests {
-			pluginCapabilities.RegisterManifest(manifest)
+			// ★ 2026-10-24 P0-2：manifest 声明**未实现**的插件能力 ⇒ 声明即拒
+			//   （该能力永远不被授予 ⇒ 走那条路由必然 403 capability_denied）。
+			//   其余能力照常登记 ⇒ 一个多声明了一条用不了的能力的插件，
+			//   不会因此失去它本来能用的能力。
+			if err := pluginCapabilities.RegisterManifest(manifest); err != nil {
+				slog.Warn("plugin manifest declares unimplemented capabilities",
+					"error", err)
+			}
 		}
 		pluginActivations := make(map[string]pluginruntime.Activation, len(pluginManifests))
 		for _, manifest := range pluginManifests {
@@ -7735,13 +7742,23 @@ func main() {
 			middleware.ParseTrustedProxyCIDRs(cfg.TrustedProxyCIDRs))).
 		Add(middleware.NewSecurityHeadersMiddleware()).
 		Build().
-		Then(publicSurface)
+		// ★ 2026-10-24（P2-2 续）：内层探针 —— 量「业务耗时」，
+		//   外层（LedgerMiddleware，见下）量「总耗时」⇒ 两者相减 = **主链自身的开销**
+		//   ⇒ 扩展点台账里的 p99 才是「中间件链的耗时」，而不是 LLM 请求的耗时。
+		Then(middleware.LedgerInnerProbe(publicSurface))
 
 	slog.Info("CHECKPOINT: after middleware build, before http.Server init")
 
 	// R49-A1: maintain/mobile 组合已上移进链（见上方 publicSurface），
 	// 此处不再在链外二次包裹。
-	finalHandler := handler
+	//
+	// ★ 2026-10-24（P2-2 续）：把**主链**接进扩展点台账。
+	//   ⇒ 读端 `/api/admin/extension-points` 的 `http_middleware_chain` 一行
+	//   才有真实的调用次数 / p99 / 拒绝数。
+	//   ⇒ 口径：p99 量的是**主链自身的开销**（整段 − 内层处理），
+	//   **不是**整个请求的耗时（后者会被 LLM 调用主导 ⇒ 对"扩展点耗时"没有意义）。
+	//   ⇒ 纯观测：不改状态码、不改响应体、不吞错误。
+	finalHandler := middleware.LedgerMiddleware(handler)
 
 	// 2026-08-11 (479): 构建 V2 多层队列调度 Pipeline 并注入 executor。
 	// Pipeline 长生命周期；adapters 在请求时惰性读取 routingExec 字段，

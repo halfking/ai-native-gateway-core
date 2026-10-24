@@ -1,7 +1,9 @@
 -- ★ 取号漂移留痕（R147，2026-10-24）：本文件曾以 903 落地；rebase 时发现并行会话
 --   已把 903 用于 903_sessions_updated_at_session_id_index.sql（且已上生产，水位=903）、
 --   904 用于 904_inspector_stats_partial_indexes.sql ⇒ 按 LESSONS「下一个空号是会漂移的
---   活事实」纪律让号为 905。判决内容零变化。
+--   活事实」纪律让号为 905；★ ★ 2026-10-25 第二次漂移：并行会话在上游于
+--   10-24 19:49 / 21:44 / 23:04 又取走 905/906/907 ⇒ 本条再次让号为 **908**
+--   （上游当前最大号 907 之后的第一个空号）。★ 判决内容零变化（只改文件名与登记号）。
 --
 -- dbinit:no-transaction —— 本文件含 DROP INDEX CONCURRENTLY，
 -- PostgreSQL 不允许在事务块内执行它。installer 的 applySQL 据此对本文件走
@@ -9,7 +11,7 @@
 -- 若漏掉该标记，全新安装会失败于
 --   "DROP INDEX CONCURRENTLY cannot run inside a transaction block"。
 --
--- 905_route_incident_events_type_created_drop.sql
+-- 908_route_incident_events_type_created_drop.sql
 -- 2026-10-24：删除 route_incident_events 的零消费方索引
 --   idx_route_incident_events_type_created (event_type, created_at DESC)。
 --

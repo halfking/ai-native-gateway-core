@@ -176,14 +176,14 @@ var knownStartupChainConcurrencyViolations = map[string]int{
 	// 计数 3：一条 CREATE UNIQUE INDEX CONCURRENTLY + 两条 DROP INDEX CONCURRENTLY
 	// （845 复合索引 + 重跑兜底的 tmp 清理）。
 	"902_stats_event_dedup_pkey_include.sql": 3,
-	// 903（2026-10-24 R147 存储效率续轮，㉘ 裁决落地）与 845/888/898/902 同类：
+	// 908（2026-10-24 R147 存储效率续轮，㉘ 裁决落地）与 845/888/898/902 同类：
 	// 携带 dbinit:no-transaction 标记 ⇒ 非事务通道。删除 route_incident_events
 	// 的零消费方索引 idx_route_incident_events_type_created（110 MB）。
 	// 用 DROP INDEX CONCURRENTLY 是因为该表在网关写路径上（failure_observed
 	// 持续写入，同表 uq_idem 5.2 天 42 万次 ON CONFLICT 冲突检查）。
 	//
 	// 计数 1：一条 DROP INDEX CONCURRENTLY（IF EXISTS 自然幂等，无 tmp）。
-	"903_route_incident_events_type_created_drop.sql": 1,
+	"908_route_incident_events_type_created_drop.sql": 1,
 }
 
 func countConcurrently(t *testing.T, path string) int {

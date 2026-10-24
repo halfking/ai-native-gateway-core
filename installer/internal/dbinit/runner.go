@@ -1554,7 +1554,60 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			//   该表写入 ⇒ 落在低峰窗口。普通 CREATE INDEX +
 			//   lock_timeout=60s / statement_timeout=10min（903 同款）。
 			"904_inspector_stats_partial_indexes.sql",
-			// 905：删除 route_incident_events 的零消费方索引
+			// 905：`?model=` 这类**稀有**轮次级过滤补 model 维度复合索引。
+			//
+			//   ★ 病灶（252 生产只读实测，2026-10-24）：
+			//   GET /api/admin/turns/sessions 带 `?model=` 时**恒 500@30s**。
+			//   build 2841（R90 的两腿 EXISTS 已上线）直连 REPEAT=3：
+			//     ?limit=20                       200 200 200   0.878 0.155 0.111 s
+			//     ?limit=20&api_key_id=105        200 200 200   9.576 0.216 0.151 s
+			//     ?limit=20&model=deepseek-ai%2F…  500 500 500  30.008 30.007 30.018 s
+			//     ?limit=20&provider=14           200 200 200   0.358 0.100 0.080 s
+			//     ?limit=20&status_code=500       200 200 200   0.554 0.181 0.153 s
+			//   ⇒ ★★ R90「四条全修」的结论被证伪（只有 model 那条仍 500）。
+			//
+			//   ★ 真因不是「形状」而是**稀有过滤值 ⇒ 外层会话深扫**：
+			//   该 model 命中 458 轮 / **30 个会话**，而 public.sessions
+			//   有 441,112 个会话；列表是 `ORDER BY s.updated_at DESC
+			//   LIMIT 21` ⇒ 必须扫到凑够 21 行 ⇒ EXPLAIN 实测外层
+			//   Rows Removed by Filter: 72,455 + 277,899 = **350,354**。
+			//
+			//   ★ 修复效果（事务内建索引 + EXPLAIN ANALYZE + ROLLBACK，
+			//   生产零持久变更；回滚后残留索引实测 = 0）：
+			//     model（稀有） 30,008 ms → **8.0 ms**
+			//     provider='14'    358 ms → **48.6 ms**
+			//     status_code=500  554 ms → **249.6 ms**
+			//
+			//   ★ 只给 model 建索引：provider n_distinct=20、
+			//   status_code n_distinct=8 ⇒ **没有选择性** ⇒ 给它们建索引
+			//   会让规划器更倾向「轮次驱动 + 大哈希构建」⇒ 实测退化到
+			//   **10,080 ms**。
+			//
+			//   ★ public.session_turns 是**分区热写表**（父表 4.7 GB /
+			//   1,014,911 行）⇒ 分区父表不支持 CONCURRENTLY ⇒ 普通
+			//   CREATE INDEX + lock_timeout=60s / statement_timeout=10min
+			//   （903/904 同款）。实测构建 **18,512 ms**（父表）+ 28 ms（hot）
+			//   ⇒ ★ 这 ~18.5 秒里 session_turns 的写入被 SHARE 锁阻塞
+			//   ⇒ 落在低峰窗口。
+			"905_turns_session_model_index.sql",
+			// ★ R94：给「会话列表的 api_key 回填」补**部分索引**。
+			//   探针会话（sys:probe:*）的 api_key_id 全是 NULL ⇒ 过滤条件
+			//   无法从索引判定 ⇒ 必须回表 ⇒ 实测扫 82,297 行堆、全部被过滤掉、
+			//   产出 0 行，却花了 1,350~1,569 ms。
+			//   部分索引只含「api_key_id 是数字」的行 ⇒ 探针流量在索引里一行
+			//   都没有 ⇒ Index Only Scan ⇒ 实测 **4.57 ms**（295×）。
+			//   ★ 谓词必须与 db.SessionFamilyAPIKeyIDNumericPredExpr 逐字一致
+			//   （PG 的谓词蕴含判定是语法的 ⇒ 写成 CASE 形式就认不出来）。
+			//   实测构建 6,026 ms（父表）+ 21 ms（hot）。
+			"906_turns_api_key_numeric_partial_index.sql",
+			// ★ R96：routing_analytics_source 换成「会话族两腿 + LATERAL 回定位」
+			//   ⇒ 消除刷新链里 45 万行 session_turn_details 顺序扫
+			//   （252 实测中位 4,482.8 ms → 2,270.8 ms；最坏一轮 20,378.6 → 1,917.1 ms）。
+			//   ★ 口径逐行等价（源层/聚合层双向 EXCEPT ALL 均 0/0）。
+			//   ★ 零 DDL：只做 CREATE OR REPLACE VIEW（保留 OID ⇒ matview 依赖不动，
+			//     下一次 REFRESH 自动采用新定义 ⇒ **不需要重建 matview**）。
+			"907_routing_analytics_source_lateral.sql",
+			// 908：删除 route_incident_events 的零消费方索引
 			//   idx_route_incident_events_type_created (event_type,
 			//   created_at DESC)（252 实测 110 MB / idx_scan=1，5.2 天窗口）。
 			//
@@ -1568,7 +1621,7 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			//   CREATE INDEX（否则 ensure 链会把本迁移刚删的索引复活）。
 			//   baseline 刻意保留（718 先例：fresh-install 链建出→本条删掉）。
 			//   dbinit:no-transaction（DROP INDEX CONCURRENTLY）。
-			"905_route_incident_events_type_created_drop.sql",
+			"908_route_incident_events_type_created_drop.sql",
 		},
 	}
 }

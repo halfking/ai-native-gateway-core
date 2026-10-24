@@ -1,4 +1,4 @@
--- 905 down：重建 idx_route_incident_events_type_created。
+-- 908 down：重建 idx_route_incident_events_type_created。
 --
 -- 与 718 的「文档化 no-op」不同，本条给**真重建**：903 删的是一个
 -- 无行为依赖、但可能被未来查询（按事件类型的时间线过滤）重新需要

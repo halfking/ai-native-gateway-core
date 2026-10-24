@@ -138,27 +138,213 @@ scan_list() {
   } | sort -u | grep -vE "$SCAN_SKIP_DIRS"
 }
 
-# ★ 跳过口径与 Go 门一致：整行注释 + 单引号区段（单引号里不发生展开）。
-#   用 awk 做：把单引号区段整段挖掉，再判剩余部分。
+# ★ 跳过口径与 Go 门一致：整行注释 + 尾随注释 + 单引号区段
+#   （单引号里不发生展开；注释里也不发生展开）。
+#   用 awk 做：按 bash 的真实语义单遍走一行（记住单/双引号状态），
+#   剥掉尾随注释与单引号区段，再判剩余部分。
+#
+# ★★★★ 2026-10-24 magpie 对齐轮 §3.17：**本函数此前与 Go 门【不一致】**，
+#   ⇒ 本门在既有代码上**恒红**（实测 5 处），而 Go 门（CI 必跑）早已修正过。
+#   ⇒ 这是「两门自称判据一致、实际不一致」的形态：★ **坏的不是没同步的那一边**，
+#     而是**没同步的那一边假红** ⇒ ⇒ 假红比假绿更费（它让人去改本来正确的代码）。
+#
+#   本轮对齐的三条（全部来自 Go 门 scripts/ursmcheck/cjk_var_expansion_test.go）：
+#     ① **转义的 `$` 不是展开点**（反斜杠【奇偶】判定）：
+#        bash 里 `\\` 是【一个字面反斜杠】⇒ 它后面的 `$` **仍然会**被展开；
+#        只有【奇数个连续反斜杠】才把 `$` 变成字面量。
+#        ★ 触发站点（实测）：scripts/mut-nginx-realip-patch.sh 与
+#          tests/nginx_llm_realip_patch_test.sh 里的 `\$remote_addr` / `\$ns_real_ip`
+#          —— 那是 nginx 配置的**字面文本**，不是变量展开 ⇒ 本门原先误报。
+#     ② **尾随注释**不参与展开（`#` 在引号外且处于词首才是注释起始）。
+#     ③ **`${VAR}` 形式是安全的**（有界定界，变量名不会被后续字节吞掉）。
 _scan_line() {
   # $1 = 整行内容；命中则 echo 1
-  printf '%s\n' "$1" | awk '
-    BEGIN { inq = 0 }
+  #
+  # ★★★ 2026-10-24 §3.17 二次修正：**必须显式 LC_ALL=C**。
+  #   实测：非 C locale 下 awk 对含非 ASCII 的行报
+  #   「towc: multibyte conversion failure」⇒ **awk 直接死、函数什么都不输出**
+  #   ⇒ 门对所有行都返回「未命中」⇒ ★ **门变成恒绿门**（变异后仍绿）。
+  #   ⇒ 这就是「0 命中的第一嫌疑是量具坏了」的一例。
+  #   ⇒ LC_ALL=C 下 awk 按**字节**工作 ⇒ multibyte 转换不再发生。
+  printf '%s\n' "$1" | LC_ALL=C awk '
+    BEGIN { ins = 0; ind = 0 }
     {
       line = $0
       out = ""
       n = length(line)
       for (i = 1; i <= n; i++) {
         c = substr(line, i, 1)
-        if (c == "\047") { inq = !inq; continue }   # 单引号
-        if (!inq) out = out c
+        # ★ 反斜杠：下一个字节按字面处理（`\$` 不展开、`\\` 是一个字面反斜杠）。
+        #   写出去时连同下一个字节一起写 ⇒ 保留「奇偶」信息供后面判定。
+        if (c == "\\" && !ins) {
+          out = out c
+          if (i < n) { i++; out = out substr(line, i, 1) }
+          continue
+        }
+        if (c == "\047" && !ind) { ins = !ins; continue }   # 单引号
+        if (c == "\042" && !ins) { ind = !ind; out = out c; continue }  # 双引号
+        # ★ 尾随注释：引号外 + 词首 ⇒ 后面整段不参与展开。
+        if (c == "#" && !ins && !ind) {
+          if (i == 1 || substr(line, i-1, 1) == " " || substr(line, i-1, 1) == "\t") {
+            break
+          }
+        }
+        if (!ins) out = out c
       }
-      if (match(out, /\$[A-Za-z_][A-Za-z0-9_]*[^ -~]/)) { print "1"; exit }
+      # ★ 在「会展开」的字节里找裸 $VAR + 非 ASCII 后续字节。
+      #   反斜杠奇偶：数 `$` 前面连续反斜杠的个数，偶数 ⇒ `$` 仍会被展开。
+      m = length(out)
+      for (i = 1; i <= m; i++) {
+        c = substr(out, i, 1)
+        if (c != "$") continue
+        # ★ 反斜杠奇偶判定（★ 不是「前一个字节是不是反斜杠」：
+        #   bash 里 `\\` 是一个字面反斜杠 ⇒ 它后面的 `$` **仍然会**被展开）。
+        if (i > 1 && substr(out, i-1, 1) == "\\") {
+          nbs = 0
+          for (k = i - 1; k >= 1; k--) {
+            if (substr(out, k, 1) != "\\") break
+            nbs++
+          }
+          if (nbs % 2 == 1) continue   # ★ 转义过的 $ ⇒ 字面量 ⇒ 不是展开点
+        }
+        # ★ `${VAR}` 形式安全 ⇒ 跳过（$ 后紧跟 { 不是裸变量名）
+        if (i < m && substr(out, i+1, 1) == "{") continue
+        # 变量名首字符
+        if (i >= m) continue
+        v = substr(out, i+1, 1)
+        if (v != "_" && !(v >= "a" && v <= "z") && !(v >= "A" && v <= "Z")) continue
+        # 变量名后续字符
+        j = i + 2
+        while (j <= m) {
+          d = substr(out, j, 1)
+          if (d == "_" || (d >= "a" && d <= "z") || (d >= "A" && d <= "Z") || (d >= "0" && d <= "9")) {
+            j++; continue
+          }
+          break
+        }
+        # ★ 紧跟的下一个字节必须是非 ASCII（>= 0x80 ⇒ 字节值不在 0x20..0x7E）
+        if (j <= m) {
+          d = substr(out, j, 1)
+          if (d !~ /[ -~]/) { print "1"; exit }
+        }
+      }
     }'
 }
 
+# ═══════════════════════════════════════════════════════════════════════
+# ★★★ 2026-10-24 §3.17.8：`--self-test` 模式 —— **扫描器量具自检**
+# ═══════════════════════════════════════════════════════════════════════
+#
+# ★ 这道门此前**没有任何自检**：它只证明「bash 会咬」，不证明「**扫描器会咬**」。
+# ⇒ ★★★ 本轮实测过这条失效路径：把 `_scan_line` 里的 awk 换成非 C locale
+#   ⇒ `towc: multibyte conversion failure` ⇒ awk 死、函数什么都不输出
+#   ⇒ **门对所有行都返回「未命中」** ⇒ ★★ **恒绿门**（M20b 变异后仍绿）。
+# ⇒ 而那种失效**只有靠外部注入真站点才能发现** ⇒ 靠人记得跑变异，不是门。
+#
+# ⇒ 所以本模式把「扫描器有没有牙」变成**自检**：
+#   ① 用**合成用例**直接喂 `_scan_line` ⇒ 必须判对（真站点=1 / 安全形态=0）；
+#   ② 任何一条判错 ⇒ **exit 2（ABORT）** ⇒ 门不会静默变绿。
+#
+# ★ 输出格式（供 Go 门 scripts/ursmcheck/shell_cjk_var_crosscheck_test.go 对拍）：
+#   每行 `CASE <期望0|1> <实际0|1> <用例名>`
+#   ⇒ Go 门读它、与自己的扫描器逐条比对 ⇒ ★★ **两门结论必须一致**。
+#
+# ★ 用例的**期望值来自 bash 的真实语义**（实测：bash 3.2.57 / 5.3.9，locale=zh_CN.UTF-8）
+#   ⇒ 与 Go 门 cjk_var_expansion_test.go 的合成用例**同源**。
+#   ★★ 但**对拍的那份表不在本门手里**：跨门门 scripts/ursmcheck/
+#     shell_cjk_var_crosscheck_test.go **自带一份独立的 13 条**
+#   ⇒ ⇒ ★ 理由：若复用同一份表 ⇒ 一边改错 ⇒ 两边用同一份错表 ⇒ **两门会一致地错**。
+if [ "${1:-}" = "--self-test" ]; then
+  _self_fail=0
+  _self_case() {
+    # $1=期望(0/1) $2=实际(0/1) $3=用例名
+    local want="$1" got="$2" name="$3"
+    printf 'CASE %s %s %s\n' "$want" "$got" "$name"
+    if [ "$want" != "$got" ]; then
+      _self_fail=$((_self_fail + 1))
+    fi
+  }
+  _st() { # $1=期望 $2=行内容 ⇒ 实际
+    local got
+    got="$(_scan_line "$2")"
+    if [ -n "$got" ]; then got=1; else got=0; fi
+    printf '%s' "$got"
+  }
+  # ★★ 下面这 13 条是**合成用例载荷**，它们**故意**含 `$v中` 这类形态。
+  #
+  # ★★★ 2026-10-24 §3.17.9 改法（**删掉哨兵机制**，理由见下）：
+  #
+  #   本轮先按「把用例包在 `$(_st 1 '…')` 里」写 ⇒ ★ **门把自己判成 8 处站点**：
+  #   ① Go 门（scripts/ursmcheck/cjk_var_expansion_test.go，CI 必跑）按
+  #      **bash 语义**扫描 `.sh`/`.bash` ⇒ 它对 `"$( … '…' … )"` 这种
+  #      **嵌套引号**判定不了（`'` 在 `"` 里不算引号）⇒ 把载荷**整段当成展开点**；
+  #   ② 本门（shell 门）此前靠**哨兵标记**把自己的用例行从扫描面排除
+  #      ⇒ ⇒ ★★ **两门对「仓库面」的结论就此分裂**（Go 门算 8 处、shell 门算 0 处）
+  #      ⇒ ★ 这正是「两门自称判据一致、实际不一致」的形态（只是这次是**本轮自己**）。
+  #
+  #   ⇒★ 正解：**载荷用单引号赋值**（`_p1='echo "值=$v中"'`）。
+  #     bash 语义上**单引号里不发生展开** ⇒ ⇒ 这些行**本来就不是站点**
+  #     ⇒ ⇒ 两门（Go 门 / shell 门）**都**判 0 ⇒ **结论自然一致**
+  #     ⇒ ⇒ **不需要任何排除机制** ⇒ ★ 哨兵机制整个删掉。
+  #
+  #   ★★ 为什么「删掉哨兵」比「保留哨兵」更好：
+  #     哨兵 = 「这段不许扫」 ⇒ 任何人写一段
+  #     `SHELL-GATE-SELFTEST-CASES:BEGIN … END` 就能把**真的站点藏起来**
+  #     ⇒ ★ **那是给自己开的后门** ⇒ 删除它比保留它更安全。
+  #
+  #   ★ 用例的**可读性没有损失**：载荷仍然逐条写在文件里、期望值仍然逐条可见。
+  #   ★ 唯一例外是第 4 条（载荷本身含单引号）⇒ 用双引号赋值 + `\$` 转义
+  #     （★ 转义后 `$` 不展开 ⇒ 运行时载荷与原来**逐字相同**）。
+  _p1='echo "值=$v中"'
+  _p2='echo "值=${v}中"'
+  _p3='# echo "值=$v中"'
+  _p4="echo '值=\$v中'"
+  _p5='echo "值=$v)"'
+  _p6='echo "a=$x中"'
+  _p7='echo "值=\$v中"'
+  _p8='echo "值=\\$v中"'
+  _p9='echo "ok"  # （用 $v中）'
+  _p10='run_gate() {  # 说明（用 $MUT_ENGINE）'
+  _p11='echo "x"#y $v中'
+  _p12='echo "a#b $v中"'
+  _p13=''
+  _self_case 1 "$(_st 1 "$_p1")"                    "裸变量紧跟汉字"
+  _self_case 0 "$(_st 0 "$_p2")"                    "花括号形式安全"
+  _self_case 0 "$(_st 0 "$_p3")"                    "整行注释"
+  _self_case 0 "$(_st 0 "$_p4")"                    "单引号内"
+  _self_case 0 "$(_st 0 "$_p5")"                    "ASCII 紧跟安全"
+  _self_case 1 "$(_st 1 "$_p6")"                    "两处各算一次"
+  _self_case 0 "$(_st 0 "$_p7")"                    "转义美元不展开"
+  _self_case 1 "$(_st 1 "$_p8")"                    "偶数反斜杠仍展开"
+  _self_case 0 "$(_st 0 "$_p9")"                    "尾随注释"
+  _self_case 0 "$(_st 0 "$_p10")"                   "尾随注释在函数定义后"
+  _self_case 1 "$(_st 1 "$_p11")"                   "双引号内的井号"
+  _self_case 1 "$(_st 1 "$_p12")"                   "井号非词首不是注释"
+  _self_case 0 "$(_st 0 "$_p13")"                   "空行"
+
+  if [ "$_self_fail" -ne 0 ]; then
+    echo "SELFTEST FAIL ${_self_fail}" >&2
+    echo "ABORT: 扫描器自检失败（${_self_fail} 条判错）⇒ 本门的结论不可信" >&2
+    exit 2
+  fi
+  echo "SELFTEST OK 13"
+  exit 0
+fi
+
 while IFS= read -r f; do
   [ -f "$f" ] || continue
+  # ★★ 2026-10-24 §3.17.9：本门**不再排除任何行**。
+  #
+  #   此前靠哨兵标记（`SHELL-GATE-SELFTEST-CASES:BEGIN/END`）把自己的合成用例行
+  #   从扫描面里排除 ⇒ ★★ 那是**给自己开的后门**（任何人写一段同款哨兵就能把
+  #   真的站点藏起来）⇒ ⇒ 本轮把哨兵机制**整个删掉**。
+  #
+  #   ⇒ 现在自检用例改用**单引号赋值**（`_p1='echo "值=$v中"'`）
+  #     ⇒ bash 语义上**单引号里不发生展开** ⇒ 这些行**本来就不是站点**
+  #     ⇒ ⇒ 本门与 Go 门（scripts/ursmcheck/cjk_var_expansion_test.go）
+  #     **都**判 0 ⇒ 两门结论一致，且**没有排除机制**。
+  #   ⇒ ⇒ ★ 附带收益：本门**重新具备「抓自己」的牙齿**
+  #     （往本文件注入一处真站点 ⇒ 本门与 Go 门都会红）。
   while IFS= read -r line; do
     ln="${line%%:*}"; body="${line#*:}"
     # 整行注释跳过（Go 门同款口径：首个非空白字符是 #）
@@ -170,7 +356,7 @@ while IFS= read -r f; do
       printf '  %s:%s\n    %s\n' "$f" "$ln" "$body"
       hits=$((hits + 1))
     fi
-  done < <(grep -nE "$PATTERN" "$f" 2>/dev/null)
+  done < <(LC_ALL=C grep -nE "$PATTERN" "$f" 2>/dev/null)
 done < <(scan_list)
 
 if [ "$hits" -gt 0 ]; then

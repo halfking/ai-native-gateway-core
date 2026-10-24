@@ -110,7 +110,7 @@ HTTP/SSE → middleware chain → protocol/IR normalization → session assignme
 | `bg/` | Background-Worker — Probing, Lifecycle-Cleanup, Stats-Aggregation, Partition-Wartung |
 | `storage/` | Dual-Mode-Storage-Factory (`full`: PG+Redis / `lite`: SQLite+Dateien+In-Proc-KV) |
 | `internal/` | Querschnitts-Infrastruktur — IR, Vendor-Strip, Session-Mirror, Outbox, Telemetry … |
-| `sql/migrations/` + `db/migrations/` | Idempotente Migrationen (Startup-Serie aktuell bei 902) |
+| `sql/migrations/` + `db/migrations/` | Idempotente Migrationen (Startup-Serie aktuell bei 907) |
 | `installer/` | Eigenständiges plattformübergreifendes Installer-/Upgrader-Modul |
 | `scripts/`, `deploy/` | Build-, Deploy-, Mirror- und Verifikations-Werkzeuge |
 
@@ -132,7 +132,7 @@ Die meisten Gateways behandeln jeden Request als isoliertes Ereignis. AI Native 
 - **Sticky-Session-Bindung**: Sessions werden an Credentials gepinnt, sodass Gesprächskontext Modell- und Failover-Wechsel überlebt — kein stiller Kontextverlust mitten im Task
 - **Session-Level-Audit & Replay**: volle System-Prompts und Antworten werden pro Session aufbewahrt und sind abspielbar (13.000+ Sessions in Produktion) — erfasst werden Task-Typ, Client-Modell, ausgehendes Modell, Provider, Tokens, Latenz und Endgrund; schneidbar nach Key / Tenant / Zeitraum für Troubleshooting und Compliance
 - **Automatische Prompt-Kompression**: nähert sich ein Request dem echten Kontextfenster des Providers (~80 % Trigger), läuft vor dem Dispatch eine Message-Level-Kompression — lange Agent-Sessions passen in kleinere Fenster, statt zu scheitern. Jedes Kompressionsereignis (Strategie, Schwellwert, Größe vorher/nachher) wird am Request protokolliert
-- **Session-Metadaten-Intelligenz**: automatisches Work-Type-Tagging (10 Work-Types), Projektzuordnung und Titel-Extraktion machen aus rohem Traffic durchsuchbares Wissen
+- **Session-Metadaten-Intelligenz**: automatisches Work-Type-Tagging (27 Work-Types), Projektzuordnung und Titel-Extraktion machen aus rohem Traffic durchsuchbares Wissen
 - **Identity-Tunneling**: Agent-Traffic wird über virtuelle IP/MAC/ClientID zugeordnet, sodass Multi-Tenant-Isolation auch dann hält, wenn viele Agenten einen gemeinsamen Egress teilen
 - **4-stufiger Datenlebenszyklus**: heiß (0–7 T) / warm (7–30 T) / kalt (30–90 T) / abgelaufen (>90 T) mit Archiv-Vorschau — Sie sehen vor der Ausführung genau, was verschoben wird
 
@@ -172,7 +172,7 @@ Alle unten gezeigten Module sind ausgeliefert und laufen im k3s-Produktionsdeplo
 ### Work-Type-Konfiguration — Task-Auto-Klassifikation
 
 ![Work Types](docs/assets/screenshots/work-types.png)
-*Task-Auto-Klassifikation (10 Work-Types) mit 24-h-Verteilung, Top-Modellen und Routing-Entscheidungsstatistiken — je Work-Type im Admin-UI konfigurierbar*
+*Task-Auto-Klassifikation (27 Work-Types) mit 24-h-Verteilung, Top-Modellen und Routing-Entscheidungsstatistiken — je Work-Type im Admin-UI konfigurierbar*
 
 ### Free-Resource-Pool
 

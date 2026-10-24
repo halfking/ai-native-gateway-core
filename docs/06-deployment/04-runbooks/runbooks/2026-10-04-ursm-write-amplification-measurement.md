@@ -52268,7 +52268,7 @@ pkey 换体 `UNIQUE(event_id) INCLUDE(occurred_at)` + 删复合索引，**净省
    结构性空腿」⇒ 可观测行为仍与 0 行一致；开关默认关 ⇒ 启用前无任何行为变化。
 3. `sys:internal:` / `sys:anon:` 合成会话**刻意不覆盖**（无独立证据轮）⇒ 登记为后续项。
 
-### §143.104 R147 存储效率续轮：㉘ 裁决落地（迁移 903）+ ㉙ 成本分解 + ③ TOAST 评估
+### §143.104 R147 存储效率续轮：㉘ 裁决落地（迁移 908）+ ㉙ 成本分解 + ③ TOAST 评估
 
 > **对生产写入 = 0**（252 全程只读；903 只落仓）。★ 完整记录见
 > `docs/audit/2026-10-24-R147-存储效率续轮-matrix成本分解-rie索引裁决-bodiesTOAST评估.md`。
@@ -52276,7 +52276,7 @@ pkey 换体 `UNIQUE(event_id) INCLUDE(occurred_at)` + 删复合索引，**净省
 #### §143.104.1 一句话结论
 
 三件属主侧待推进项全部闭环：**㉘ 裁决并落地**（type_created 110MB 零消费方
-⇒ 迁移 903；incident_created/created_at 各有不可替代消费方 ⇒ 保留）；
+⇒ 迁移 908；incident_created/created_at 各有不可替代消费方 ⇒ 保留）；
 **㉙ 成本分解完成并订正 R146 量级**（matrix 均值 ≈0.50h/天，非 2.2h/天——
 那是 10-23 最差单日；最大 REFRESH 其实是 routing_analytics_7d ≈0.96h/天）；
 **③ 评估完成**（拆分不省空间——压缩已在 lz4 上限；量化去重杠杆仅 2.2%；
@@ -52319,7 +52319,7 @@ baseline 两份快照刻意保留（718 先例：fresh-install「建出→删掉
 25.1% 行的 request_delta≡outbound_body 只占 3.6% 字节 ⇒ 去重仅 ≈135MB（2.2%）；
 拆分真实价值 = **按列差分留存**（如 request_delta 30d / outbound_body 90d），
 纯语义决策，属主。★ 本轮自纠一处：attstorage `'x'` = EXTENDED（压缩+行外），
-不是 EXTERNAL——字母映射读反险些产出「6GB 未压缩」的假发现（LESSONS §355）。
+不是 EXTERNAL——字母映射读反险些产出「6GB 未压缩」的假发现（LESSONS §397）。
 
 #### §143.104.5 诚实边界
 

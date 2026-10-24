@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""mutate_147_903_gate.py —— 903 门变异验证（R147 存储效率续轮）。
+"""mutate_147_908_gate.py —— 908 门变异验证（R147 存储效率续轮）。
 
 纪律（LESSONS §302 / §301 族）：
-  * 每个变异：备份 → 改 → 只跑 903 门 → 断言红 → 按原路径回拷 → md5 逐字校验；
+  * 每个变异：备份 → 改 → 只跑 908 门 → 断言红 → 按原路径回拷 → md5 逐字校验；
   * 替换串不得包含 needle 作为子串（否则变异是假变异）；
   * 备份不删（审计留痕），但还原后源文件必须与备份逐字节一致。
 """
@@ -14,25 +14,25 @@ import shutil
 import os
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-GATE_TEST = "TestMigration903"
+GATE_TEST = "TestMigration908"
 
 MUTATIONS = [
     # (标签, kind, 目标文件(相对), needle, 替换串)
     # kind='drop'：替换后 needle 必须消失（防假变异：repl 含 needle ⇒ BLOCKED）
     # kind='insert'：repl = needle + 追加内容（纯插入，needle 留在原位是预期的）
     ("M1_TSV行移除", "drop", "sql/schema/installed_startup_migrations.tsv",
-     "305\t903_route_incident_events_type_created_drop.sql\n", ""),
+     "310\t908_route_incident_events_type_created_drop.sql\n", ""),
     ("M2_runner登记移除", "drop", "installer/internal/dbinit/runner.go",
-     '"903_route_incident_events_type_created_drop.sql",',
-     '"903_x_never_shipped.sql",'),
-    ("M3_embeddata副本漂移", "drop", "installer/cmd/llm-gw-installer/embeddata/startup/903_route_incident_events_type_created_drop.sql",
+     '"908_route_incident_events_type_created_drop.sql",',
+     '"908_x_never_shipped.sql",'),
+    ("M3_embeddata副本漂移", "drop", "installer/cmd/llm-gw-installer/embeddata/startup/908_route_incident_events_type_created_drop.sql",
      "DROP INDEX CONCURRENTLY IF EXISTS public.idx_route_incident_events_type_created;",
      "DROP INDEX CONCURRENTLY IF EXISTS public.idx_x_never;"),
-    ("M4_迁移体抽lock_timeout", "drop", "sql/migrations/startup/903_route_incident_events_type_created_drop.sql",
+    ("M4_迁移体抽lock_timeout", "drop", "sql/migrations/startup/908_route_incident_events_type_created_drop.sql",
      "SET lock_timeout = '60s';\n", ""),
     ("M5_台账行移除", "drop", "docs/db-changelog.md",
-     "| 903 | `903_route_incident_events_type_created_drop.sql`",
-     "| 90X | `903_x_never.sql`"),
+     "| 908 | `908_route_incident_events_type_created_drop.sql`",
+     "| 90X | `908_x_never.sql`"),
     ("M6_db_go复活CREATE", "insert", "db/db.go",
      "\t\tCREATE INDEX IF NOT EXISTS idx_route_incident_events_incident_created\n\t\t\tON route_incident_events (incident_id, created_at DESC);",
      "\t\tCREATE INDEX IF NOT EXISTS idx_route_incident_events_incident_created\n\t\t\tON route_incident_events (incident_id, created_at DESC);\n\t\tCREATE INDEX IF NOT EXISTS idx_route_incident_events_type_created\n\t\t\tON route_incident_events (event_type, created_at DESC);"),
@@ -82,7 +82,7 @@ def main():
             print(f"[FAIL] {label}: 变异后门仍绿 —— 门没有牙")
             failures.append(label)
         else:
-            red_lines = [ln for ln in out.splitlines() if "--- FAIL" in ln or ".go:" in ln and "903" in ln]
+            red_lines = [ln for ln in out.splitlines() if "--- FAIL" in ln or ".go:" in ln and "908" in ln]
             print(f"[RED] {label}: 门按预期红（exit={rc}，失败测试 {len(red_lines)} 行）")
         shutil.copy2(bak, path)
         if md5(path) != orig_md5:
