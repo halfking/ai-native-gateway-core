@@ -20,7 +20,7 @@
 
 ### 2.1 HTTP 中间件链（外向内）
 
-`cmd/gateway/main.go:7724-7743`：
+`cmd/gateway/main.go:7725-7743`：
 
 ```
 Recovery → RequestID → Logging → Locale(i18n) → CORS → Prometheus → Tracing
@@ -55,7 +55,7 @@ Recovery → RequestID → Logging → Locale(i18n) → CORS → Prometheus → 
 
 | 机制 | 位置 | 裁决 | 生产 | 阶段 |
 |---|---|---|---|---|
-| HTTP 中间件链 | `middleware/` + `cmd/gateway/main.go:7724-7743` | **主链** | ✅ | — |
+| HTTP 中间件链 | `middleware/` + `cmd/gateway/main.go:7725-7743` | **主链** | ✅ | — |
 | Request Pipeline | `domains/pipeline/` | **骨架**（阶段词表的唯一事实源，16 个 phase） | ❌（v2 默认关） | — |
 | `HookRegistry` | `domains/hooks/registry.go:36` | **判死** | ❌（生产零调用方） | — |
 | Hook 阶段词表（5 个旧名） | `domains/hooks/types.go:13-23` | **别名视图** | ❌ | 映射到骨架的同名 phase |
@@ -72,7 +72,7 @@ Recovery → RequestID → Logging → Locale(i18n) → CORS → Prometheus → 
 > ★ 与 `HookRegistry` **同一种形态**（框架在、链路不通），但**更隐蔽**：
 > 它有完整的 API，还有 on/off 对照用例（那两条只证明「API 装上能用」）。
 
-### 3.1 骨架的 16 个 phase（`domains/pipeline/pipeline.go:25-42`）
+### 3.1 骨架的 16 个 phase（`domains/pipeline/pipeline.go:25-40`）
 
 ```
 pre_authentication · authentication · post_authentication

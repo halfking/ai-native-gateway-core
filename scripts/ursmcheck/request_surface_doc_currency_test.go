@@ -84,6 +84,16 @@ type docEvidence struct {
 	mustContain string
 	// kind 声明证据在代码行还是注释行。
 	kind evidenceKind
+	// certRef 指向审计档 §3.18.3 认证表里**对应同一语义对象**的那一行（如 `A1`）。
+	//
+	// ★★ 为什么需要它：★★ 本仓出现过「**同一交付里两份文件写了两组行号**」——
+	// ★★ 认证表 A1 说链在 `main.go:7725-7743`，而设计页写的是另一组
+	// ★★ ⇒ ⇒ 两份都是「权威」，却互相矛盾 ⇒ ⇒ 读者拿到哪份都可能是错的。
+	// ★★ ⇒ 门无法从「页面自己」发现这种矛盾 ⇒ ⇒ 必须引入**第三方**（认证表）来对拍。
+	//
+	// ★ 留空 = 认证表**未以同一语义对象**覆盖本项 ⇒ 不对拍（★ 避免假红）。
+	// ★ 非空 = 该项的 (file, from, to) 必须与认证表那一行读到的区间**精确相等**。
+	certRef string
 	// why 是给红报告看的说明。
 	why string
 }
@@ -93,9 +103,10 @@ type docEvidence struct {
 // ★★ **页面上每一处 `file:line` 引用都必须在表里**（C1 会核对覆盖面）。
 var requestSurfaceDocEvidence = []docEvidence{
 	{
-		file: "cmd/gateway/main.go", from: 7724, to: 7743,
-		mustContain: "middleware.NewBuilder()", kind: evidenceCode,
-		why: "HTTP 中间件链的构建（Builder 起、SecurityHeaders 止）",
+		file: "cmd/gateway/main.go", from: 7725, to: 7743,
+		mustContain: "middleware.NewRecoveryMiddleware()", kind: evidenceCode,
+		certRef: "A1",
+		why:     "HTTP 中间件链本体（Recovery 起、SecurityHeaders 止）★ 与认证表 A1 同一语义对象",
 	},
 	{
 		file: "cmd/gateway/main.go", from: 7727, to: 7734,
@@ -110,7 +121,8 @@ var requestSurfaceDocEvidence = []docEvidence{
 	{
 		file: "domains/hooks/registry.go", from: 36, to: 36,
 		mustContain: "func NewHookRegistry", kind: evidenceCode,
-		why: "HookRegistry 的定义（判死的机制本体）",
+		certRef: "A7",
+		why:     "HookRegistry 的定义（判死的机制本体）★ 与认证表 A7 同一语义对象",
 	},
 	{
 		file: "domains/hooks/types.go", from: 13, to: 23,
@@ -128,9 +140,10 @@ var requestSurfaceDocEvidence = []docEvidence{
 		why: "响应拦截链的接口（挂在 phase 上的那套机制）",
 	},
 	{
-		file: "domains/pipeline/pipeline.go", from: 25, to: 42,
+		file: "domains/pipeline/pipeline.go", from: 25, to: 40,
 		mustContain: "PhasePreAuthentication", kind: evidenceCode,
-		why: "骨架的 16 个 phase 词表（唯一事实源）",
+		certRef: "A8",
+		why:     "骨架的 16 个 phase 词表（唯一事实源）★ 与认证表 A8 同一语义对象",
 	},
 	{
 		file: "cmd/gateway/main_pipeline.go", from: 1, to: 80,
@@ -368,5 +381,172 @@ func TestRequestSurfaceDocDetectorHasTeeth(t *testing.T) {
 	}
 	if coveredBy(ev, "b.go", 10, 20) {
 		t.Errorf("★ coveredBy 判是了「不同文件」的引用")
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ★★★ C8：设计页与【认证表】的同语义区间必须**精确相等**
+//
+// ★★★ 这道判据补的是一种**第三方门**才抓得到的矛盾：
+//
+//	★ 本仓出现过「**同一交付里两份文件写了两组行号**」——
+//	★ 审计档 §3.18.3 的 A1 认证说链在 `cmd/gateway/main.go:7725-7743`，
+//	★ 而设计页当时写的是 `cmd/gateway/main.go:7724-7743`（差 1 行）。
+//	★ ⇒ 两份都是「权威」，却互相矛盾 ⇒ ⇒ 读者拿到哪一份都可能是错的坐标。
+//
+// ★★ 而**只盯着设计页的门抓不到它**：★ 设计页与对拍表**一起**改 ⇒ 门照样绿。
+// ★★ ⇒ 必须引入**第三方**（认证表）来对拍 ⇒ ⇒ 这就是本判据存在的全部理由。
+//
+// ★ 为什么「逐项登记 `certRef`」而不是「自动配对」：
+// ★ ⇒ 认证表的覆盖面比设计页**大**（它认证整个计划书，设计页只讲请求面）
+// ★ ⇒ 自动配对会产生**假红**（认证表提到 `main_pipeline.go:46-47`，设计页没引用它）。
+// ★ ⇒ ⇒ 改为**显式登记**：只有「同一语义对象」的项才对拍。
+const certTableAnchor = "##### 3.18.3"
+
+// certRowRe 匹配认证表的一行（行首形如 `| A1 |`）。
+var certRowRe = regexp.MustCompile(`^\|\s*(A\d+)\s*\|`)
+
+// certRangeRe 在认证表读数列里抽第一个 `file:spec`。
+//
+// ★ 不要求反引号：★ 认证表读数列里的是 `cmd/gateway/main.go:7725-7743` **裸写**的。
+var certRangeRe = regexp.MustCompile(`([A-Za-z0-9_][A-Za-z0-9_./-]*\.(?:go|md|sh|tsv|yml|yaml)):([0-9]+(?:-[0-9]+)?)`)
+
+// certTableSection 取审计档 §3.18.3 认证表小节的正文。
+func certTableSection(t *testing.T, lines []string) []string {
+	t.Helper()
+	start := -1
+	for i, l := range lines {
+		if strings.HasPrefix(strings.TrimSpace(l), certTableAnchor) {
+			start = i
+			break
+		}
+	}
+	if start < 0 {
+		t.Fatalf("★ 审计档里找不到 %q ⇒ 认证表没了 ⇒ C8 没有对账对象", certTableAnchor)
+	}
+	end := len(lines)
+	for i := start + 1; i < len(lines); i++ {
+		if strings.HasPrefix(strings.TrimSpace(lines[i]), "##### ") {
+			end = i
+			break
+		}
+	}
+	return lines[start:end]
+}
+
+// findCertRow 在认证表里取某一行（如 `A1`）。
+func findCertRow(section []string, ref string) (string, bool) {
+	for _, l := range section {
+		if m := certRowRe.FindStringSubmatch(strings.TrimSpace(l)); len(m) == 2 && m[1] == ref {
+			return l, true
+		}
+	}
+	return "", false
+}
+
+// certRowRange 取认证表某行**读数列**里的文件与区间。
+//
+// ★ 读数列 = 第 3 个单元格（切分后下标 3：空 / 行号 / 计划书断言 / **当前读数**）。
+func certRowRange(row string) (string, int, int, bool) {
+	cells := strings.SplitN(row, "|", 5)
+	if len(cells) < 4 {
+		return "", 0, 0, false
+	}
+	m := certRangeRe.FindStringSubmatch(cells[3])
+	if len(m) < 3 {
+		return "", 0, 0, false
+	}
+	from, to := refRange(m[2])
+	if from == 0 {
+		return "", 0, 0, false
+	}
+	return m[1], from, to, true
+}
+
+// TestRequestSurfaceDocAgreesWithCertTable 是 C8。
+func TestRequestSurfaceDocAgreesWithCertTable(t *testing.T) {
+	lines := readRepoText(t, auditDocRelPath)
+	section := certTableSection(t, lines)
+
+	checked := 0
+	for _, ev := range requestSurfaceDocEvidence {
+		if ev.certRef == "" {
+			continue
+		}
+		checked++
+		row, ok := findCertRow(section, ev.certRef)
+		if !ok {
+			t.Errorf("★ 认证表里没有 %s 行（对拍项 %s 指向它）⇒ 对不了账", ev.certRef, ev.why)
+			continue
+		}
+		f, from, to, ok := certRowRange(row)
+		if !ok {
+			t.Errorf("★ 认证表 %s 的读数列里读不出 file:line 区间 ⇒ 对不了账（对拍项：%s）",
+				ev.certRef, ev.why)
+			continue
+		}
+		if f != ev.file {
+			t.Errorf("★ 认证表 %s 指向 %s，而对拍项指向 %s ⇒ **不是同一语义对象**\n"+
+				"★ ⇒ 修法：要么改 certRef，要么改对拍项指向的文件",
+				ev.certRef, f, ev.file)
+			continue
+		}
+		if from != ev.from || to != ev.to {
+			t.Errorf("★★ 认证表 %s 说 %s:%d-%d，而设计页/对拍表说 %s:%d-%d ⇒ ★★ **两份权威互相矛盾**\n"+
+				"★★ ⇒ 读者拿到哪一份都可能是错的坐标 ⇒ 修法：两处对齐（改任一处都会红）",
+				ev.certRef, f, from, to, ev.file, ev.from, ev.to)
+		}
+	}
+	if checked == 0 {
+		t.Fatal("★ 没有任何对拍项登记了 certRef ⇒ C8 恒绿（形同虚设）")
+	}
+	t.Logf("★ C8 对拍了 %d 项（认证表 ↔ 设计页的同语义区间）", checked)
+}
+
+// TestCertRowRangeExtractorHasTeeth 是 C9：★★ C8 的量具自检。
+//
+// ⇒ C8 依赖「从认证表一行里读出 file:line」这个提取器 ⇒ ★★ 若它恒读不出
+// ⇒ ⇒ C8 会因为「对不了账」而…… 其实会红，但**红的原因是量具坏了**而不是数据矛盾
+// ⇒ ⇒ ⇒ 必须自证它有牙。
+func TestCertRowRangeExtractorHasTeeth(t *testing.T) {
+	cases := []struct {
+		name     string
+		row      string
+		wantFile string
+		wantFrom int
+		wantTo   int
+		wantOK   bool
+	}{
+		{
+			name:     "读数列里的裸 file:区间 ⇒ 读出",
+			row:      "| A1 | 断言 | `cmd/gateway/main.go:7725-7743` **逐项一致** | ✅ |",
+			wantFile: "cmd/gateway/main.go", wantFrom: 7725, wantTo: 7743, wantOK: true,
+		},
+		{
+			name:     "单行号 ⇒ 区间退化为 (N,N)",
+			row:      "| A7 | 断言 | 定义在 `domains/hooks/registry.go:36`；零调用 | ✅ |",
+			wantFile: "domains/hooks/registry.go", wantFrom: 36, wantTo: 36, wantOK: true,
+		},
+		{
+			name:   "读数列里没有 file:line ⇒ 读不出",
+			row:    "| A4 | 断言 | 全仓非测试命中**只有一条注释** ⇒ **零生产引用** | ✅ |",
+			wantOK: false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f, from, to, ok := certRowRange(tc.row)
+			if ok != tc.wantOK {
+				t.Fatalf("★ 提取器判错：ok=%v want=%v（样本 %q）\n"+
+					"★ ⇒ C8 的结论不可信", ok, tc.wantOK, tc.row)
+			}
+			if !ok {
+				return
+			}
+			if f != tc.wantFile || from != tc.wantFrom || to != tc.wantTo {
+				t.Errorf("★ 提取器读错：got=(%s,%d-%d) want=(%s,%d-%d)（样本 %q）",
+					f, from, to, tc.wantFile, tc.wantFrom, tc.wantTo, tc.row)
+			}
+		})
 	}
 }
