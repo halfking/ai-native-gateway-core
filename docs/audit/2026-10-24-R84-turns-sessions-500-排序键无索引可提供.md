@@ -377,3 +377,61 @@ session_turns_hot  UNION ALL  session_turns（父表的**全部历史分区**，
 3. `cmd/tools/sql_source_indirection_audit` 的 `TestDocumentedSnapshotMatchesMeasurement` **在 origin/main 上就是红的**
    （文档 142 → 实测 145，+3）⇒ 用 origin/main 独立 worktree 复跑确认**不是本次改动造成**
    （把本次两个文件拷进该 worktree 后数字逐字不变）⇒ 按「同文件不要两个写者」纪律**未动它**。
+
+---
+
+# 附录 B · 生产读数对照（154，端口按探测取值；蓝绿在 8781/8782 间轮换）
+
+| 时点 | release | 端点 | 状态码 | min | med | max |
+|---|---|---|---|---|---|---|
+| 发版前（2833） | 2833-dd212c9b | `turns/sessions` | **500,500,500** | 30.005s | 30.005s | 30.005s |
+| 2834（R84：迁移 903） | 2834-f3b63e6e（8781） | `turns/sessions` | 200×5 | 17.039s | 18.112s | 24.728s |
+| 2835（R85：enrich 腿） | 2835-51c27369（8782） | `turns/sessions` | **200×5** | **0.044s** | **0.049s** | 0.528s |
+
+⇒ ★★ **完整演进：500@30.005s → 18.1s（只修主查询）→ 0.049s（中位）**
+⇒ ★★ **相对「只修主查询」的那一步 ~370×；相对最差读数 ~600×**（30.005s / 0.049s）。
+
+## B.1 其余慢端点回归对照（2835，同一次读数）
+
+| 端点 | 状态码 | min | med | max | 与本轮前的基线 |
+|---|---|---|---|---|---|
+| `turns/sessions` | 200×3 | 0.048s | **0.051s** | 0.099s | ★ 本轮修复 |
+| `turns/sessions/filter-options` | 200×3 | 3.544s | 4.264s | 6.947s | 独立根因，未变 |
+| `dashboard/session-overview` | 200×3 | 2.752s | 3.097s | 3.625s | 无回退 |
+| `sessions/inspector-stats` | 200×3 | 2.023s | 2.331s | 2.360s | 无回退 |
+| `data-lifecycle/degradation/status` | 200×3 | 5.015s | 5.054s | 5.649s | ★ **过渡窗口**（见 B.2；稳态是 **3ms**） |
+
+## B.2 ★ `degradation/status` 的 5s：**不是本轮回退**，是已登记待办项在显形
+
+读数（2835）：`ttl_stats.sessions_count = 1,262,040`（完整值）、`session_keys_count = 374,480`、
+`snapshot_at = 13:20:50`、`snapshot_age_seconds = 61`、`partial = None`、
+**`degraded_reason` 不含 `"ttl stats unavailable"`** ⇒ ★ **R83 的修复仍然生效**。
+
+`degraded = true` 的真正原因是**备份摘要腿**：`"backup summary incomplete: 备份摘要正在后台重算，请稍后重试"`。
+
+读代码定位（`domains/dbdegradation/file_reader.go` `GetBackupSummary`）：
+- ① 快路径：缓存命中且指纹一致且未过期 ⇒ 零 IO（**3ms 的那个读数就是这条**）；
+- ② 过期但指纹一致 ⇒ 返回旧值 + 后台刷新（快）；
+- ③ **指纹变了** ⇒ 旧值口径不可信 ⇒ **就地算**（受请求 ctx 限制 ⇒ 5s 预算被截断 ⇒ partial ⇒ 报错）。
+
+⇒ ★ 备份集**指纹每天/每次写入都会变** ⇒ ⇒ 周期性落进 ③ ⇒ 端点周期性 5s + degraded
+⇒ ⇒ ★★ **这正是已登记的待办项「per-file 增量缓存未做 ⇒ 每次指纹变都触发一轮 ~13min 全量重算」**
+（属主待办清单第 5 条）⇒ ★ **不是 R84/R85 引入的回退**：本轮两个改动
+（`sessions` 新索引 + enrich 腿谓词推进）**都不触及 dbdegradation 包**。
+
+⇒ ★★ **稳态复测（同端点，间隔 25s 连打 4 次）**：
+
+```
+13:22:29  200  0.003
+13:22:54  200  0.003
+13:23:19  200  0.003
+13:23:44  200  0.003
+```
+
+⇒ ★★ **3ms（与 R83 一致）** ⇒ ⇒ 上表那 5.015~5.649s 是**「指纹变化后的过渡窗口」**：
+指纹一变就落进 ③ 号路径（就地算，被 5s 预算截断）⇒ 等后台刷新跑完（~13min）
+⇒ 缓存写回 ⇒ 回到 3ms ⇒ ⇒ **周期性掉到 5s** ⇒ ⇒ **同一个待办项**
+（「per-file 增量缓存未做」）⇒ ★ **不是回退**。
+
+⇒ ★ 另注：`sessions` 新索引的**构建期 SHARE 锁**（热写表）实测未造成可见影响
+（发版窗口 185s、切换 12s、healthz/readyz/凭据冒烟全部通过）。
