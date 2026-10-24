@@ -9950,3 +9950,61 @@ MaxStartups 默认 `10:30:100` 在 pre-auth 阶段随机丢弃 ~30% 连接 + 机
 | Migration | File | SHA-256 | Status |
 |-----------|------|---------|--------|
 | — | （R99 **无新增迁移**；★ 908 写完即撤回、从未入仓；台账水位仍为 907） | — | — |
+
+## 2026-10-27 — R149 零候选遮蔽链与归责错配轮（**无 SQL 变更、无迁移、无发版**）
+
+★★★ **★ 本轮的中心产出不是优化，而是把「No available provider for model 'X'」这条客户端消息背后的【三层遮蔽链】与一处【归责错配】钉死；★ 并【第四次自我推翻】（把「生产缺 `session_owners`」从「新缺陷」订正为「已登记的降级站点」）。★★★**
+
+★ **★ 三层遮蔽链（逐层实测）**：
+★ ① **绑定冷却是【模型粒度】**（`domains/credential/writer.go:373` 一组）⇒ ★★ 只置
+`credential_model_bindings.available=false`，**不动 `credentials.availability_state`**
+⇒ ⇒ ★★ **读「凭据态」看不到冷却，必须读绑定态**（实测：凭据 `ready/ok` 而绑定已被冷却）。
+★ ② **直连探针退避**（`node_probe_state.next_retry_at`）⇒ 可路由视图把该 (凭据,模型) **逐出候选池**
+⇒ ⇒ ★★★ **活锁**：排除到期 ⇒ 路由器放行一瞬 ⇒ **探针立刻再试、同样失败** ⇒ 重新武装 5 min
+⇒ ⇒ ⇒ ⇒ ⇒ **模型在除那一瞬之外 100% 不可路由** ⇒ 客户端持续看到「没有可用 provider」；
+⇒ ⇒ ⇒ ⇒ ⇒ ★★ 而探针一直失败的原因在**上游账号** ⇒ ⇒ **「上游耗尽」被翻译成了「模型不存在」**。
+★ ③ 客户端措辞：`503`+`code=model_not_found`（执行层全候选失败）/ `code=no_candidate`（路由层零候选）。
+
+★ **★ 归责错配（决定性实验：把上游原文直接喂分类器）**：
+上游原文 `{"error":{"message":"inference exceeds tpm/rpm limit","type":"rate_limit_error","code":"insufficient_quota"}}`
+⇒ 网关判词 **`concurrent`**（并发过载），而 `code` 明写 **`insufficient_quota`**（配额/计费耗尽）。
+★ 成因：`errorsx/classify.go` 的 `concurrentOverloadRe` 含 `(rpm|tpm).{0,20}(limit|exceed|reach|over)`
+⇒ ★★ **上游 message 里的字面 "tpm/rpm limit" 正好落进这一支 ⇒ 显式码被措辞抢走**。
+★ ★★ **仓内既有口径本就是「显式配额码 ⇒ rate_limit」**（同一个 `insufficient_quota` 码换个措辞即判 `rate_limit`）；
+★★ 而 `budgetExceededRe` 的配额码清单有 `"code":"INSUFFICIENT_BALANCE"`、**唯独没有 `"code":"insufficient_quota"`** ⇒ 这就是缺口。
+★ **影响链**：判 `concurrent` ⇒ per-model 冷却 **5 min**（`KindRateLimit` 是 3 min）⇒ 探针抑制码记成 `http_5xx`（不是 `http_429`）
+⇒ ⇒ ⇒ ⇒ ⇒ ★★ ⇒ **运维侧看到的是「并发问题」，真因是「配额耗尽」。**
+
+★ **★ 本轮处置 = 【只刻画，不改判】**：★ 改判会让**客户端可见**面变化
+（**503/`code=model_not_found`** ⇒ **429/`code=rate_limit`+`Retry-After`**；`error.kind` 由 `concurrent` ⇒ `rate_limit`）
+⇒ ★★★ ⇒ **属「客户端响应形状」变更 ⇒ 需属主放行** ⇒ 本轮只落**刻画测试**
+⇒ ⇒ ⇒ ★★ **若属主批准改判，这三条测试与 `classify.go` 必须同批翻转。**
+
+★ **★ 阶梯实验 v3（长度假设被证伪）**：★ v1/v2 **两代都作废**（v1 无门控 ⇒ 顺序 ⇒ 长度与冷却态混淆；
+v2 门控只查绑定 ⇒ **漏了探针退避层** ⇒ 12 个样本全 `no_candidate`、根本没到执行层）；
+★ v3 门控与路由器【同源】（`v_routable_credential_models.is_routable` = 路由器 `AND v.is_routable = TRUE` 用的同一视图同一列）
+⇒ ★★★ 实测：**2 字**与 **40 字**提示词**走到同一条上游 429**（执行层 `candidates_count=1`、3 次尝试全败、15.7/16.8 s）
+⇒ ⇒ ⇒ ⇒ ⇒ ★★ ⇒ **「长提示词 ⇒ 触发限流」被证伪**（★ 真判别量是**上游账号的实时配额态**）。
+
+★ **★ 写入面核实（两面 + 含失败请求）**：★ 会话族**写方只写 `session_turns_hot`**（暂存表），冷行由
+`promote_session_turns_hot_to_partition`（526）搬进分区父表 ⇒ ★★ **父表落后 ≈8.7 h** ⇒ 只读父表 ⇒ 对最新轮次盲；
+★★ **失败请求照样落盘** ⇒ ⇒ **「失败请求没有数据」是误读**。
+
+★ **★ 第四次自我推翻（订正）**：★ 「生产 252 缺 `session_owners` / `session_owner_stats`」**不是新缺陷**
+（后端 `IsSchemaBehindError` ⇒ 200 + `degraded:true` + `degraded_reason`；前端显示**降级告警**而非「没有用户」；
+★★ 且 `admin/degrade_marker_test.go` **动态扫描全仓**降级调用点强制带标记）⇒ ★★ ⇒ **「生产缺 X」的第一反应应是「查它是不是已登记的降级站点」**。
+★ ★★★ **残留的真实事实**：★ `session_owner_stats` 在任何库上都是**死对象**（**无读者** + **不在 Go 刷新清单**
+⇒ 即便建出来也只有迁移末尾那一次初始刷新 ⇒ **数据冻结**）；★ **补跑 358 在 252 上是「高成本 + 零收益」**（回填 864k 行 + 给饱和宿主加第 4 个每小时 REFRESH）⇒ **建议不补跑**。
+
+★ **本轮新增门禁**：★ `errorsx/classify_quota_code_characterization_test.go`（3 条刻画测试：真实上游原文 ⇒ concurrent /
+同码另一形态 ⇒ rate_limit / 真并发报文 ⇒ 仍 concurrent）；
+★★ `scripts/ursmcheck/probe_mirror_write_visibility_test.go`（4 条：不得吞 Exec 错误 / 两分支都要留痕 / 阳性对照 / 阴性对照）。
+★ **本轮唯一产品代码改动（★ 无 SQL 变更、★ 不改任何路由行为）**：★ `bg/probe_service.go` 的
+`mirrorNodeProbeState` 两处 `_, _ = w.db.Exec(...)` 改为**记 `slog.WarnContext`**
+⇒ ★★ 起因：实测 `node_probe_state.next_retry_seconds = 300`（列上写 5 分钟）而
+★★ `next_retry_at − updated_at = 00:00:45`（★ 闸门实际只排 45 秒）⇒ ★★ 阶梯退避被架空，
+★★ 而**回写失败被静默吞掉** ⇒ ★★ 本轮只让失败可见（★ 排程行为不动 ⇒ 属主裁决项 D8）。
+★ **本轮【无 SQL 变更、无迁移、无发版】，对生产的写入 = 0**（★ 生产读全部带 `statement_timeout`）。
+★ **属主裁决项新增**：★ **D1** 429 + 显式配额码改判 `KindRateLimit`（★ 客户端 503/model_not_found ⇒ 429/rate_limit + Retry-After ⇒ **契约面**）；
+★★ **D2** no_candidate 服务端日志补「排除理由分布」（★ 零契约风险）；★★ **D3** `session_owner_stats` 死对象处置（★ 建议删）。
+★ 完整记录见审计档 `docs/audit/2026-10-27-R149-零候选遮蔽链与归责错配.md` + LESSONS **§388** + AGENTS.md R149 条目。
