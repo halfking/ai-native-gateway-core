@@ -49,7 +49,7 @@ const (
 	mig902PkeyName   = "stats_event_dedup_pkey"
 	mig902OldCompIdx = "idx_stats_event_dedup_event_id_occurred_at"
 	mig902DedupTable = "stats_event_dedup"
-	mig902UpSHA256   = "5871f9a63b4565a4419a6119efc96434ce49d32d5d7fb5d9adc5e30f37db7f8b"
+	mig902UpSHA256   = "d09a79791edf6c5160e31b59cca6a5c3fff47d8dada5ded2255df63680260829"
 	mig902DownSHA256 = "0798829325a28bab9be005bfc6137437e51229d8128a1fbf8bfc6bcf1e8ef00f"
 )
 
@@ -208,6 +208,79 @@ func TestMigration902_EmbeddataCopiesAreByteIdentical(t *testing.T) {
 		if got := hex.EncodeToString(sum[:]); got != mig902UpSHA256 && got != mig902DownSHA256 {
 			t.Errorf("%s 的 sha256 = %s 与台账不符 —— 文件被改动后必须同步 db-changelog/TSV", name, got)
 		}
+	}
+}
+
+// ── ⑥ 可重入性：invalid 残留清理（2026-10-24 12h 审计轮） ─────────────────
+//
+// ★ 这条腿守的是本轮**实测复现**的真缺陷：
+//
+//	PG 的既定行为 = CREATE INDEX CONCURRENTLY 失败后留下一个 invalid 索引。
+//	而步骤 ① 是 `CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS <tmp>`
+//	⇒ `IF NOT EXISTS` **只按名字判存在、不看 validity**
+//	⇒ ⇒ 遇到残留 ⇒ ① **跳过创建**（只打一条 NOTICE）
+//	⇒ ⇒ ② 的形状守卫（要求 indisvalid AND indisready）**必然抛错**
+//	⇒ ⇒ 而失败后每次重跑都走同一条路径 ⇒ ⇒ **永久卡死**
+//	⇒ 902 是 installer StartupFiles 的链尾 ⇒ ⇒ 它失败 = 新装链与升级链都断。
+//
+// ★ 修法 = 在 ① 之前加步骤 ⓪：**只删无效的**残留 tmp 索引。
+// ★ 两条约束必须同时成立：
+//	(a) 清理**存在**，且它的删除条件是「索引无效」（NOT (indisvalid AND indisready)）；
+//	(b) 清理**不是无条件删** —— 无条件 `DROP INDEX <tmp>` 会把步骤 ①→②
+//	    的合法中间产物也删掉 ⇒ 白跑一遍 CONCURRENTLY 构建。
+
+// mig902CheckInvalidCleanup 校验步骤 ⓪ 的形态，返回问题描述列表（空 = 合格）。
+// ★ 抽成纯函数 ⇒ 阳性对照喂坏样本走同一把尺子。
+func mig902CheckInvalidCleanup(clean string) []string {
+	var problems []string
+
+	// ⓪ 的清理块必须存在，且必须带「无效」判定（NOT (indisvalid AND indisready)）。
+	cleanupRE := regexp.MustCompile(`(?is)DO\s+\$pre\$[\s\S]*?DROP\s+INDEX[\s\S]*?\$pre\$`)
+	if !cleanupRE.MatchString(clean) {
+		problems = append(problems, "缺步骤 ⓪（清理 invalid 残留 tmp 索引）—— 上一次 CONCURRENTLY 构建失败留下的 invalid 索引会让本迁移永久卡死")
+		return problems
+	}
+	invalidGuardRE := regexp.MustCompile(`(?is)NOT\s*\(\s*ix\.indisvalid\s+AND\s+ix\.indisready\s*\)`)
+	if !invalidGuardRE.MatchString(clean) {
+		problems = append(problems, "步骤 ⓪ 缺「索引无效」判定（NOT (indisvalid AND indisready)）—— 无条件删会把合法的中间产物也删掉")
+	}
+	// ⓪ 必须出现在步骤 ① 之前。
+	preAt := strings.Index(clean, "DO $pre$")
+	idxAt := strings.Index(clean, "CREATE UNIQUE INDEX CONCURRENTLY")
+	if preAt < 0 || idxAt < 0 || preAt > idxAt {
+		problems = append(problems, "步骤 ⓪ 不在步骤 ① 之前 —— 清理必须前置于 CONCURRENTLY 构建")
+	}
+	return problems
+}
+
+// TestMigration902_InvalidLeftoverCleanup 钉住「步骤 ⓪ 只清无效残留」。
+func TestMigration902_InvalidLeftoverCleanup(t *testing.T) {
+	up := mig902Read(t, mig902Tree(t), filepath.Join("sql", "migrations", "startup", mig902Name))
+	if problems := mig902CheckInvalidCleanup(mig902StripComments(up)); len(problems) > 0 {
+		for _, p := range problems {
+			t.Errorf("902 up 体：%s", p)
+		}
+	}
+}
+
+// TestMigration902_InvalidCleanupDetectorRejectsBadShapes 阳性对照：两份坏样本都必须被判红。
+func TestMigration902_InvalidCleanupDetectorRejectsBadShapes(t *testing.T) {
+	good := mig902StripComments(mig902Read(t, mig902Tree(t), filepath.Join("sql", "migrations", "startup", mig902Name)))
+	if len(mig902CheckInvalidCleanup(good)) != 0 {
+		t.Fatal("阳性对照失败：真文件被判为不合格 —— 检测器坏了")
+	}
+
+	// 坏样本 ①：⓪ 整段被删（⇒ 永久卡死回归）。
+	bad1 := regexp.MustCompile(`(?is)DO\s+\$pre\$[\s\S]*?\$pre\$`).ReplaceAllString(good, " ")
+	if len(mig902CheckInvalidCleanup(bad1)) == 0 {
+		t.Error("坏样本①（步骤 ⓪ 缺失）被判合格 —— 检测器没有鉴别力")
+	}
+
+	// 坏样本 ②：⓪ 的「无效」判定被去掉（⇒ 变成无条件删，会误删合法中间产物）。
+	bad2 := strings.Replace(good,
+		"NOT (ix.indisvalid AND ix.indisready)", "true", 1)
+	if len(mig902CheckInvalidCleanup(bad2)) == 0 {
+		t.Error("坏样本②（⓪ 缺无效判定）被判合格 —— 检测器没有鉴别力")
 	}
 }
 

@@ -57,13 +57,14 @@ type probeRequestInfo struct {
 // （task_type / quality_flags / origin_actor）。
 //
 // ★ 删掉的 5 个 alias 分支（direct / gateway / scheduled /
-//   probe_gateway / probe_scheduled 作为 origin_stage）：
-//   它们从来写不进 DB —— middleware/origin_mw.go 的 isValidOriginStage
-//   闸门（origin_mw.go:354-359）在中间件层就把它们挡掉，DB CHECK
-//   （migration 341）也不认 ⇒ 是死防御代码。
-//   ⚠ 但 "probe_gateway" / "probe_scheduled" 作为 **task_type_chosen**
-//     是合法的（bg/active_probe_emitter.go:373 写 "probe_" + origin），
-//     那条路径由下面路径 1 单独处理，未受影响。
+//
+//	probe_gateway / probe_scheduled 作为 origin_stage）：
+//	它们从来写不进 DB —— middleware/origin_mw.go 的 isValidOriginStage
+//	闸门（origin_mw.go:354-359）在中间件层就把它们挡掉，DB CHECK
+//	（migration 341）也不认 ⇒ 是死防御代码。
+//	⚠ 但 "probe_gateway" / "probe_scheduled" 作为 **task_type_chosen**
+//	  是合法的（bg/active_probe_emitter.go:373 写 "probe_" + origin），
+//	  那条路径由下面路径 1 单独处理，未受影响。
 func extractProbeInfo(entry *telemetry.RequestLogEntry) probeRequestInfo {
 	if entry == nil {
 		return probeRequestInfo{}

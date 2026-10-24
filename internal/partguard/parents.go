@@ -22,8 +22,15 @@ var partitionParents = []string{
 	"instance_heartbeats",
 	"mock_probe_history",
 	"model_probe_runs",
-	// 两代物理名并存（迁移 860，2026-10-14 改名）：DDL/迁移文本里是旧名，
-	// Go 侧 DML 与线上库是新名 `_request_logs*`。守卫两向都要看得见。
+	// v1 族的两代物理名。
+	//
+	// ★ 2026-10-24（v1 → session_turns 替换轮）：这两族**物理上已不存在**
+	//   （890 删表）。它们仍留在本清单里的**唯一**理由是反向门
+	//   TestPartitionParentsAreExhaustive：它从仓内 DDL 文本里抽出所有
+	//   `PARTITION BY` 声明，而历史迁移文本仍然声明着这些父表 ⇒ 把它们从
+	//   清单里删掉会让那道门报红。
+	//   ⇒ 它们现在是**历史 DDL 形状**的登记项，不是「线上还活着的表」。
+	//   ⇒ Go 侧已无任何 v1 DML（见 admin/v1_family_purge_gate_test.go）。
 	"request_logs",
 	"request_logs_archive",
 	"request_logs_bodies",
