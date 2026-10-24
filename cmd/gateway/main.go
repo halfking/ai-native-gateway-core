@@ -6526,7 +6526,14 @@ func main() {
 		})
 		pluginBases := ScanAndStartPluginsWithRegistry(sup, pluginRegistry, pluginManifests)
 		for _, manifest := range pluginManifests {
-			pluginCapabilities.RegisterManifest(manifest)
+			// ★ 2026-10-24 P0-2：manifest 声明**未实现**的插件能力 ⇒ 声明即拒
+			//   （该能力永远不被授予 ⇒ 走那条路由必然 403 capability_denied）。
+			//   其余能力照常登记 ⇒ 一个多声明了一条用不了的能力的插件，
+			//   不会因此失去它本来能用的能力。
+			if err := pluginCapabilities.RegisterManifest(manifest); err != nil {
+				slog.Warn("plugin manifest declares unimplemented capabilities",
+					"error", err)
+			}
 		}
 		pluginActivations := make(map[string]pluginruntime.Activation, len(pluginManifests))
 		for _, manifest := range pluginManifests {

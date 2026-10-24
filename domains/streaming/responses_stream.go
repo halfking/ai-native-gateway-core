@@ -160,7 +160,11 @@ func StreamResponsesSSE(ctx context.Context, w http.ResponseWriter, resp *http.R
 		}
 		outcome.Interrupted = true
 		outcome.Reason = "first_byte_timeout"
-		outcome.Kind = errorsx.KindStreamTimeout
+		// ★ 2026-10-24 magpie 19 类 rest 词表轮（§6-P0-4）：首字节超时**不是**
+		//   流中超时。magpie 的契约是「第一次放过、反复才罚、罚在模型粒度」
+		//   ⇒ 必须与 KindStreamTimeout（流中超时，固定 5 分钟绑定冷却）分开，
+		//   否则"第一次就罚"这条判据无法表达。
+		outcome.Kind = errorsx.KindFirstByteTimeout
 		outcome.Resumable = !attemptHasClientSemanticOutput(gate, 0)
 		return outcome
 	}

@@ -7072,7 +7072,7 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteRe
 			RepeatedContentHits:        repHits,
 			RepeatedContentBlockSize:   repBlockSize,
 			RepeatedContentBlocksTotal: repBlocks,
-			StreamAborted:              capture.IntegrityBreachReason() == "integrity_repeated_content",
+			StreamAborted:              capture.IntegrityBreachReason() == audit.BreachReasonRepeatedContent,
 		})
 	}
 }

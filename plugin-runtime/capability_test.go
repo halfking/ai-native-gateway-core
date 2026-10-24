@@ -33,8 +33,17 @@ func TestCapabilityRegistry_DefaultsAndRequired(t *testing.T) {
 
 func TestCapabilityRegistry_RegisterManifest_AllowsAndDenies(t *testing.T) {
 	reg := NewCapabilityRegistry()
-	reg.RegisterManifest(&Manifest{PluginID: "p1", Capabilities: []string{"session.read", "events.ingest"}})
-	reg.RegisterManifest(&Manifest{PluginID: "p2", Capabilities: []string{"body.fetch"}})
+	// ★ 2026-10-24 P0-2：manifest 声明**未实现**的能力 ⇒ 声明即拒。
+	//   本用例覆盖三条：一条已实现（session.read）+ 一条未实现（events.ingest），
+	//   以及"只声明了未实现能力"（body.fetch）。
+	err := reg.RegisterManifest(&Manifest{PluginID: "p1", Capabilities: []string{"session.read", "events.ingest"}})
+	if err == nil {
+		t.Error("manifest 声明未实现能力 events.ingest 竟被接受 —— 声明即拒的判据失效")
+	}
+	err = reg.RegisterManifest(&Manifest{PluginID: "p2", Capabilities: []string{"body.fetch"}})
+	if err == nil {
+		t.Error("manifest 声明未实现能力 body.fetch 竟被接受 —— 声明即拒的判据失效")
+	}
 
 	if !reg.Allows("p1", "session.read") {
 		t.Error("p1 should allow session.read")
@@ -45,14 +54,45 @@ func TestCapabilityRegistry_RegisterManifest_AllowsAndDenies(t *testing.T) {
 	if reg.Allows("p2", "session.read") {
 		t.Error("p2 should NOT allow session.read (not declared)")
 	}
-	if !reg.Allows("p2", "body.fetch") {
-		t.Error("p2 should allow body.fetch")
+	// ★ 行为变更（2026-10-24 P0-2）：p2 声明了 body.fetch，但 body.fetch
+	//   **没有实现** ⇒ 能力永远不被授予（失败关闭）。
+	//   此前这里是 "p2 should allow body.fetch" —— 那正是"声明了就能用、
+	//   但运行时根本没有这个路由"的空洞所在。
+	if reg.Allows("p2", "body.fetch") {
+		t.Error("p2 should NOT allow body.fetch —— 未实现的能力永远不被授予（P0-2）")
+	}
+	// 已实现能力不受牵连。
+	if !reg.Allows("p1", "session.read") {
+		t.Error("p1 的已实现能力不应被未实现能力的声明牵连")
 	}
 	if reg.Allows("unknown", "session.read") {
 		t.Error("unknown plugin should not be allowed")
 	}
 	if !reg.Allows("any", "") {
 		t.Error("empty capability should be treated as allow (passthrough)")
+	}
+}
+
+// TestCapabilityRegistry_RejectUnimplementedCapabilities 断言"声明即拒"的挑选逻辑。
+func TestCapabilityRegistry_RejectUnimplementedCapabilities(t *testing.T) {
+	rejected := RejectUnimplementedCapabilities([]string{
+		CapabilitySessionRead,
+		CapabilityBodyFetch,
+		CapabilityEventsIngest,
+		"  " + CapabilityPolicyServe + "  ",
+	})
+	want := []string{CapabilityBodyFetch, CapabilityEventsIngest, CapabilityPolicyServe}
+	if len(rejected) != len(want) {
+		t.Fatalf("被拒能力 = %v，want %v", rejected, want)
+	}
+	for i := range want {
+		if rejected[i] != want[i] {
+			t.Fatalf("被拒能力 = %v，want %v（已排序）", rejected, want)
+		}
+	}
+	// 已实现的能力不该被拒。
+	if got := RejectUnimplementedCapabilities([]string{CapabilitySessionRead, CapabilityAnalyticsRead}); len(got) != 0 {
+		t.Fatalf("已实现能力不该被拒，got %v", got)
 	}
 }
 
@@ -121,10 +161,10 @@ func TestRequireCapability(t *testing.T) {
 
 	h := RequireCapability(reg, "session.read", inner)
 	cases := []struct {
-		name        string
-		pluginID    string
-		wantStatus  int
-		wantBody    string
+		name       string
+		pluginID   string
+		wantStatus int
+		wantBody   string
 	}{
 		{"allowed-header", "p1", 200, "ok"},
 		{"denied-other-plugin", "p2", 403, ""},
