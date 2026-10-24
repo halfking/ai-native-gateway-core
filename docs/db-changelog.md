@@ -9531,6 +9531,7 @@ build 2841（R90 的两腿 EXISTS 已上线）154 直连 REPEAT=3 实测 ——
 | Migration | File | SHA-256 | Status |
 |-----------|------|---------|--------|
 | 905 | `905_turns_session_model_index.sql` | `59ae826b819edd652b6825ec61c02282bfabe04d716a71323e1e40b5cb038922` | registered in installer StartupFiles + 生产升级序列 `scripts/apply-db-revision-sequence.sh`（未应用，pending）—— 给 `GET /api/admin/turns/sessions` 的 `?model=` 稀有过滤补两条 model 维度复合索引：`public.session_turns (model, tenant_id, session_id)`（idx_session_turns_model_session，分区父表 ⇒ 自动传播到子分区）+ `public.session_turns_hot (model, tenant_id, session_id)`（idx_session_turns_hot_model_session，3,073 行）。★ 配套的**代码侧改动**（同批上线）：`db.SessionFamilyTurnsSessionExistsSQL` 的形态从「两条 EXISTS 用 OR 组合」改成「**派生表 UNION ALL + 单一 EXISTS**」⇒ OR 形态只能被规划成**会话驱动**，而派生表可被 planner pull-up ⇒ **两个驱动方向都可选**：过滤值稀有 ⇒ 轮次驱动（外层只剩 30 行），过滤值常见 ⇒ 会话驱动（前 21 个会话立刻凑齐）。★ 效果（252 生产事务内 CREATE INDEX + EXPLAIN ANALYZE + ROLLBACK ⇒ 生产零持久变更；回滚后残留索引实测 = 0）：`?model=` 稀有值 **30,008 ms → 8.0 ms**；`provider='14'` **358 ms → 48.6 ms**；`status_code=500` **554 ms → 249.6 ms**。★ **口径等价**（252 生产同快照双向 EXCEPT ALL，model 与 provider 各 21 行）：`only_r90=0 / only_v2=0` ⇒ 两形态**逐行一致**（只差求值顺序）；结构上同谓词集、同半连接语义（NULL 两侧都用 `=` ⇒ NULL 不匹配）。★ **只给 model 建索引**：provider n_distinct=20、status_code n_distinct=8 ⇒ 没有选择性 ⇒ 给它们建索引会让规划器更倾向「轮次驱动 + 大哈希构建」⇒ 实测退化到 **10,080 ms**。★ `public.session_turns` 是**分区热写表**（父表 4.7 GB / 1,014,911 行）⇒ 分区父表不支持 CONCURRENTLY ⇒ 普通 CREATE INDEX + lock_timeout=60s / statement_timeout=10min（903/904 同款）；实测构建 **18,512 ms**（父表）+ 28 ms（hot）⇒ ★ 这 ~18.5 秒里 session_turns 的写入被 SHARE 锁阻塞 ⇒ 落在低峰窗口。★ 诚实边界：V2 形态的「轮次驱动」分支**硬依赖**本迁移的索引 —— 无索引时实测 V2/model=稀有 = **205,708 ms**（规划器退化成「每行对 110 万轮顺序扫」的嵌套循环半连接）；生产上由启动迁移在**新二进制对外服务之前**建好索引（窗口为 0），若索引被回滚而二进制未回滚 ⇒ HTTP 症状与今天**相同**（角色级 statement_timeout=30s ⇒ 同样 500@30s），不会更差但会白烧 30s DB 时间。★ down：`905_turns_session_model_index.down.sql`（sha256 `52da420021864b4639957b721dc235b3a2b4344ef68f55d5d06c9f41035c32d9`） |
+| 906 | `906_turns_api_key_numeric_partial_index.sql` | `25de81c12b8805f9474d711f4391dea6847e8df98b49eea37274711c3d46979f` | registered in installer StartupFiles + 生产升级序列 `scripts/apply-db-revision-sequence.sh`（未应用，pending）—— 给 `GET /api/admin/turns/sessions` 的 **api_key 回填查询**补两条**部分索引**：`public.session_turns (session_id, turn_no DESC) WHERE api_key_id ~ '^[0-9]+$'`（idx_session_turns_api_key_numeric，分区父表 ⇒ 自动传播到子分区）+ `public.session_turns_hot (session_id, turn_no DESC) WHERE api_key_id ~ '^[0-9]+$'`（idx_session_turns_hot_api_key_numeric，3,073 行）。★ 配套的**代码侧改动**（同批上线）：`db.SessionFamilyLatestTurnPerSessionSQL` 的过滤条件从 `(CASE WHEN api_key_id ~ '^[0-9]+$' THEN api_key_id::bigint END) IS NOT NULL` 改成 **裸正则** `t.api_key_id ~ '^[0-9]+$'`（新增常量 `db.SessionFamilyAPIKeyIDNumericPredExpr`）⇒ ★ **两者逐情形等价**（NULL ⇒ 两边都排除；非数字 ⇒ 两边都排除；数字 ⇒ 两边都保留），但**只有裸正则能被规划器认出来**（PG 的谓词蕴含判定是语法的 ⇒ 认不出 CASE 形式）⇒ 只有这样才能用上本迁移的部分索引。★ **根因**：探针会话（`sys:probe:*`）的 api_key_id **全是 NULL**（252 实测 462,394 行全空）⇒ 过滤条件**无法从索引判定** ⇒ 必须回表 ⇒ 生产 EXPLAIN 实测 `Rows Removed by Filter: **82,297**`、Buffers shared hit=66,606 ⇒ ★★ **扫 82,297 行堆全部被过滤掉、产出 0 行**，却花了 1,350~1,569 ms。★ **效果**（252 生产事务内 CREATE INDEX + EXPLAIN ANALYZE + ROLLBACK ⇒ 生产零持久变更）：CASE 形式过滤 1,350.8 ms ｜ 裸正则过滤（无索引）1,569.3 ms ｜ ★ **裸正则 + 本迁移的部分索引 4.57 ms**（295×）；对照 `INCLUDE(api_key_id)` 普通索引 0.62 ms 但需 ANALYZE（实测 35.9 s）且索引体积大得多 ⇒ 选部分索引。★ **口径等价**（252 生产真实**非空**批次：非 sys: 前缀 + api_key_id 是数字的会话里轮次最多的 20 个，同一事务内同一快照双向 EXCEPT ALL）：`old_rows=20 / new_rows=20 / only_new=0 / only_old=0` ⇒ **逐行一致**。★ `public.session_turns` 是**分区热写表**（父表 4.7 GB / 1,014,911 行）⇒ 分区父表不支持 CONCURRENTLY ⇒ 普通 CREATE INDEX + lock_timeout=60s / statement_timeout='10min'（903/904/905 同款）；实测构建 **6,026 ms**（父表）+ 21 ms（hot）⇒ ★ 这 ~6 秒里 session_turns 的写入被 SHARE 锁阻塞（比 905 的 18.5 s 短得多 ⇒ 窗口压力小）。★ 诚实边界：★ **本索引不改变口径**，只让同一口径**快 295×**；★ 若索引被回滚而二进制未回滚 ⇒ enrich 退回 1,350~1,569 ms（**不会回到 500@30s** —— 那是 R93 修的「视图 ⋈ 全量 source」形态，与本迁移无关 ⇒ 删索引与回滚二进制是两件事）。★ down：`906_turns_api_key_numeric_partial_index.down.sql`（sha256 `3505fcbd1400b91c1968d2b4c37c02de16d8546849562bc686625bed9657cb54`） |
 
 ## 2026-10-24T09:39:00Z — deploy 154 build_seq 2841 (9cf051aa)
 
@@ -9548,3 +9549,21 @@ MaxStartups 默认 `10:30:100` 在 pre-auth 阶段随机丢弃 ~30% 连接 + 机
 |-----------|------|---------|--------|
 | 905 | `905_turns_session_model_index.sql` | `59ae826b819edd652b6825ec61c02282bfabe04d716a71323e1e40b5cb038922` | applied+verified |
 
+## 2026-10-24T13:20:00Z — deploy 154 build_seq 2843 (a073b655)
+
+★ **R93 上线**：会话列表的 **api_key 回填查询**从「视图 ⋈ 全量 history source」
+（**同一批行被扫两遍**再 1:1 join）改成「每 source 先 `GROUP BY session_id + max(turn_no)`
+再回定位那一行」。
+★ 本次发版**无新迁移**：pending 集为空 ⇒ 水位仍为 **905**。
+★ 生产验收（154 直连，build 2843 @ 8781，REPEAT）：
+  `?limit=20` 200×3(3.590/0.106/0.091) ｜ `?api_key_id=105` 200×3(8.471/0.250/0.345) ｜
+  `?model=…` **500/200/200**(31.409/22.916/1.593) ｜ `?provider=14` 200×3(0.874/0.219/0.569) ｜
+  `?status_code=500` 200×3(3.575/0.234/0.332)
+  ⇒ ★★ **首个请求仍 500@30s**（生产 journal：`enrich meta failed … 57014`），
+  但**第 2/3 次即 200** ⇒ 稳态 `?model=` 200×8（1.034~3.097 s，中位 ≈1.84 s）
+  ⇒ ★ 与 2842 的「**恒** 500×3」相比是**质变**（500 消失、只剩首请求冷启动）。
+  ⇒ ★★ 残留的 ~1.5 s 归因见 R94：**探针会话 api_key_id 全 NULL ⇒ 回表扫 82,297 行产出 0 行**。
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| — | （2843 无新迁移，水位仍为 905） | — | — |

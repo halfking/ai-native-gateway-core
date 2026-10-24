@@ -323,3 +323,4 @@
 305	903_sessions_updated_at_session_id_index.sql
 306	904_inspector_stats_partial_indexes.sql
 307	905_turns_session_model_index.sql
+308	906_turns_api_key_numeric_partial_index.sql

@@ -86,8 +86,13 @@ func r93CheckEnrichShape(sqlText string) []string {
 	}{
 		{"max(turn_no)", 2, "缺「按会话聚合出最大 turn_no」—— 没有它就会物化该会话的全部轮次"},
 		{"GROUP BY session_id", 2, "缺「按会话分组」—— 同上"},
-		{"IS NOT NULL", 3, "缺 api_key 归一后的 IS NOT NULL 过滤 —— " +
-			"漏掉它会让口径漂移（实测候选形态 only_new=20 / only_old=0）"},
+		{"AND t.api_key_id ~ '^[0-9]+$'", 2,
+			"缺「裸正则」形式的 api_key 过滤 —— ★ 必须是裸正则：" +
+				"CASE 形式用不上迁移 906 的部分索引（PG 的谓词蕴含判定是语法的）" +
+				"⇒ 探针批次退回 1,350~1,569 ms（实测）"},
+		{"IS NOT NULL", 1,
+			"IS NOT NULL 只应剩外层那处（x.api_key_id IS NOT NULL）—— " +
+				"聚合腿里若还有 IS NOT NULL ⇒ 说明过滤被写回 CASE 形式 ⇒ 用不上部分索引"},
 		{"public.session_turns_hot", 2, "缺 hot 腿（或只写了一处 FROM/JOIN）"},
 		{"public.session_turns t", 2, "缺父表腿（或只写了一处 FROM/JOIN）"},
 	} {
@@ -139,6 +144,23 @@ func TestR93_EnrichShapeDetectorHasTeeth(t *testing.T) {
 	if len(r93CheckEnrichShape(bad5)) == 0 {
 		t.Error("坏样本⑤（只去掉一条腿的 IS NOT NULL）被判合格 —— 检测器没有鉴别力")
 	}
+	// 坏样本⑥：★ **把聚合腿的过滤写回 CASE 形式**（R94 的核心风险）。
+	//   两种写法**口径等价**，但只有裸正则能被规划器认出来 ⇒ 只有 CASE 形式时
+	//   迁移 906 的部分索引**用不上** ⇒ 探针批次退回 1,350~1,569 ms（实测）。
+	bad6 := strings.ReplaceAll(good, "AND t.api_key_id ~ '^[0-9]+$'",
+		"AND (CASE WHEN t.api_key_id ~ '^[0-9]+$' THEN t.api_key_id::bigint END) IS NOT NULL")
+	if bad6 == good {
+		t.Fatal("坏样本⑥构造失败：good 里找不到裸正则过滤子串 —— 形态门与实现已脱钩")
+	}
+	if len(r93CheckEnrichShape(bad6)) == 0 {
+		t.Error("坏样本⑥（过滤写回 CASE 形式 ⇒ 用不上部分索引）被判合格 —— 检测器没有鉴别力")
+	}
+	// 坏样本⑦：**只**把一条腿写回 CASE 形式（⇒ 必须按【次数】判定）。
+	bad7 := strings.Replace(good, "AND t.api_key_id ~ '^[0-9]+$'",
+		"AND (CASE WHEN t.api_key_id ~ '^[0-9]+$' THEN t.api_key_id::bigint END) IS NOT NULL", 1)
+	if len(r93CheckEnrichShape(bad7)) == 0 {
+		t.Error("坏样本⑦（只把一条腿写回 CASE 形式）被判合格 —— 检测器没有鉴别力")
+	}
 }
 
 // ── ② 旧形态不得被生产引用（go/ast） ────────────────────────────────────────
@@ -185,7 +207,8 @@ func r93CountLegacyCalls(t *testing.T, filename, src string) int {
 // 断言没有调用 `turnsSessionsAPIKeyEnrichLegacySQL`。
 //
 // ★ 为什么必须用 go/ast 而不是 grep：源码里到处是**解释**旧形态的注释，
-//   grep 会命中注释 ⇒ 门恒绿（或恒红，取决于写法）。
+//
+//	grep 会命中注释 ⇒ 门恒绿（或恒红，取决于写法）。
 func TestR93_LegacyShapeNotUsedInProduction(t *testing.T) {
 	wd, err := os.Getwd()
 	if err != nil {
@@ -232,7 +255,8 @@ func TestR93_LegacyCallDetectorHasTeeth(t *testing.T) {
 // 分别跑旧形态与新形态，**双向 EXCEPT ALL** 必须都为 0。
 //
 // ★ 纪律：★ **要求两侧行数 > 0** ⇒ 空集**不算通过**（显式 SKIP 并写明理由）。
-//   （生产实测：探针批次两侧都是 0 行；等价性必须由**有返回**的批次承担。）
+//
+//	（生产实测：探针批次两侧都是 0 行；等价性必须由**有返回**的批次承担。）
 func TestR93_RealDB_EnrichNewEqualsLegacy(t *testing.T) {
 	dsn := r90DSN(t)
 	ctx := context.Background()
@@ -343,4 +367,238 @@ func TestR93_RealDB_EnrichNewIsExecutable(t *testing.T) {
 	}
 	t.Logf("新形态在真库上执行成功，返回 %d 行", n)
 	_ = fmt.Sprint(n)
+}
+
+// ── ④ ★★ R94 真库门：部分索引必须**真的**被 enrich 查询用上 ──────────────────
+//
+// 【为什么需要这道门】R94 的修法依赖一个**很细**的前提：
+//
+//	PG 的「谓词蕴含」判定是**语法的** ⇒ 它能认出
+//	  `WHERE api_key_id ~ '^[0-9]+$'` 蕴含部分索引的谓词 `WHERE api_key_id ~ '^[0-9]+$'`
+//	但**认不出** CASE 形式
+//	  `WHERE (CASE WHEN api_key_id ~ '^[0-9]+$' THEN api_key_id::bigint END) IS NOT NULL`
+//
+// ⇒ ★ 两者**口径完全等价**，但**性能差 295×**（1,350~1,569 ms vs 4.57 ms）。
+// ⇒ ⇒ 这道门证明的是「**规划器认得这个谓词**」，而不是「SQL 长得对」——
+//
+//	静态断言（字符串计数）证明不了这一条，**只有真库的 EXPLAIN 能证明**。
+//
+// 【零副作用】建索引与 EXPLAIN 都在**同一个事务**里 ⇒ 结束前 ROLLBACK
+//
+//	⇒ 真库上不留下任何索引（★ 门可安全指向任何库）。
+//
+// 【阳性对照】同时用 CASE 形式跑一遍 ⇒ 必须出现 `Filter: ... api_key_id ...`
+//
+//	⇒ 证明「有 Filter」与「无 Filter」确实可区分 ⇒ 检测器本身有鉴别力。
+func TestR94_RealDB_PartialIndexIsUsedByEnrichQuery(t *testing.T) {
+	dsn := r90DSN(t)
+	ctx := context.Background()
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatalf("open pool: %v", err)
+	}
+	defer pool.Close()
+	if !r90HasSessionFamily(ctx, pool) {
+		t.Skip("真库没有会话族四张表 ⇒ 显式 SKIP，不是「通过」")
+	}
+
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	// 强制走索引（本地库很小 ⇒ 不然规划器可能选顺序扫）。
+	if _, err := tx.Exec(ctx, `SET LOCAL enable_seqscan = off`); err != nil {
+		t.Fatalf("SET enable_seqscan: %v", err)
+	}
+	for _, ddl := range []string{
+		`CREATE INDEX IF NOT EXISTS idx_session_turns_api_key_numeric
+		    ON public.session_turns (session_id, turn_no DESC) WHERE api_key_id ~ '^[0-9]+$'`,
+		`CREATE INDEX IF NOT EXISTS idx_session_turns_hot_api_key_numeric
+		    ON public.session_turns_hot (session_id, turn_no DESC) WHERE api_key_id ~ '^[0-9]+$'`,
+	} {
+		if _, err := tx.Exec(ctx, ddl); err != nil {
+			t.Fatalf("建部分索引失败: %v", err)
+		}
+	}
+
+	explain := func(sqlText string, ids []string) string {
+		rows, err := tx.Query(ctx, "EXPLAIN (COSTS OFF) "+sqlText, ids)
+		if err != nil {
+			t.Fatalf("EXPLAIN 失败: %v", err)
+		}
+		defer rows.Close()
+		var sb strings.Builder
+		for rows.Next() {
+			var line string
+			if err := rows.Scan(&line); err != nil {
+				t.Fatalf("scan EXPLAIN: %v", err)
+			}
+			sb.WriteString(line)
+			sb.WriteString("\n")
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatalf("迭代 EXPLAIN: %v", err)
+		}
+		return sb.String()
+	}
+
+	ids := []string{"__r94_probe_nonexistent__"}
+
+	// ① 正向：裸正则形式 ⇒ 聚合腿的扫描节点
+	//    · 必须是 **Index Only Scan**（不回表）；
+	//    · 且**不能**带 api_key_id 的 Filter（谓词被部分索引吃掉 ⇒ 不用回表判定）。
+	//
+	// ★★ 判据为什么必须定位到「聚合腿」而不是「整份计划」：
+	//   外层的 `WHERE x.api_key_id IS NOT NULL` 会被 PG **下推**到「回定位腿」
+	//   （每个会话只取一行 ⇒ 20 行 ⇒ 无害），那份计划里**确实**有一处
+	//   `Filter: ... api_key_id ...` ⇒ **整份计划里找 Filter 会误判**。
+	//   ★ 真正的分水岭是**聚合腿**（那个要扫**全部候选行**的子扫描）。
+	posPlan := explain(turnsSessionsAPIKeyEnrichSQL(""), ids)
+	t.Logf("裸正则形态计划：\n%s", posPlan)
+	aggScans := r94AggregateChildScans(posPlan)
+	if len(aggScans) == 0 {
+		t.Errorf("裸正则形态的计划里找不到聚合腿的扫描节点 —— 判据失效，请人工复核：\n%s", posPlan)
+	} else {
+		if !r94ScansHasIndexOnly(aggScans) {
+			t.Errorf("裸正则形态的聚合腿里没有 Index Only Scan ⇒ 仍要回表判定 api_key_id ⇒ 收益消失：\n%s", posPlan)
+		}
+		if r94ScansHaveAPIKeyFilter(aggScans) {
+			t.Errorf("裸正则形态的聚合腿仍有 api_key_id 的 Filter ⇒ 谓词**没**被索引吃掉"+
+				"（说明过滤被写回 CASE 形式 ⇒ 扫全部候选行）：\n%s", posPlan)
+		}
+	}
+
+	// ② 阳性对照：CASE 形式（口径等价但规划器认不出）⇒ 聚合腿**必须**出现
+	//    api_key_id 的 Filter ⇒ 证明「检测器有鉴别力」。
+	//    ★ 若 CASE 形态也走 Index Only Scan 且无 Filter，说明本门根本测不出
+	//      谓词耦合 ⇒ 门无牙。
+	caseSQL := strings.ReplaceAll(turnsSessionsAPIKeyEnrichSQL(""),
+		"AND t.api_key_id ~ '^[0-9]+$'",
+		"AND (CASE WHEN t.api_key_id ~ '^[0-9]+$' THEN t.api_key_id::bigint END) IS NOT NULL")
+	if caseSQL == turnsSessionsAPIKeyEnrichSQL("") {
+		t.Fatal("阳性对照构造失败：找不到裸正则过滤子串 —— 实现已漂移")
+	}
+	negPlan := explain(caseSQL, ids)
+	t.Logf("CASE 形式计划：\n%s", negPlan)
+	negScans := r94AggregateChildScans(negPlan)
+	if len(negScans) == 0 {
+		t.Errorf("阳性对照失败：CASE 形态的计划里找不到聚合腿的扫描节点 —— 判据失效：\n%s", negPlan)
+	} else if !r94ScansHaveAPIKeyFilter(negScans) {
+		t.Errorf("阳性对照失败：CASE 形态的**聚合腿**里**没有** api_key_id 的 Filter —— "+
+			"说明本门测不出谓词耦合（检测器无鉴别力）：\n%s", negPlan)
+	}
+}
+
+// r94ScanNode 是 EXPLAIN 计划里的一个扫描节点（及其自带的 Filter）。
+type r94ScanNode struct {
+	kind   string // "Index Only Scan" / "Index Scan" / "Seq Scan" / ...
+	filter string // 该扫描节点自己的 Filter（空 = 无）
+}
+
+// r94AggregateChildScans 收集**聚合腿**（GroupAggregate / HashAggregate 子树里）
+// 的全部扫描节点。
+//
+// ★★ 为什么必须按「聚合节点的子树」定位（而不是整份计划）：
+//
+//	外层的 `WHERE x.api_key_id IS NOT NULL` 会被 PG **下推**到「回定位腿」
+//	（每个会话只取一行 ⇒ 20 行 ⇒ 无害）⇒ **整份计划**里必然有一处
+//	`Filter: ... api_key_id ...` ⇒ 在整份计划里找 Filter **必然误判**。
+//	★ 真正的分水岭：聚合腿（那个要扫**全部候选行**的子扫描）里还有没有那个 Filter
+//	  —— 有 ⇒ 谓词没进索引 ⇒ 仍然要回表扫全部候选行。
+//
+// ★ 实现：EXPLAIN 的缩进即树形 ⇒ 聚合节点**之后、缩进更深**的行才是它的子树；
+//
+//	缩进回退即出子树。★ 回定位腿与聚合腿是**兄弟**（同缩进）⇒ 天然被排除。
+func r94AggregateChildScans(plan string) []r94ScanNode {
+	lines := strings.Split(plan, "\n")
+	var out []r94ScanNode
+	for i, line := range lines {
+		if !strings.Contains(line, "GroupAggregate") && !strings.Contains(line, "HashAggregate") {
+			continue
+		}
+		aggIndent := r94Indent(line)
+		for j := i + 1; j < len(lines); j++ {
+			sub := lines[j]
+			if strings.TrimSpace(sub) == "" {
+				continue
+			}
+			if r94Indent(sub) <= aggIndent {
+				break // 出了聚合节点的子树
+			}
+			st := strings.TrimSpace(sub)
+			kind := r94ScanKind(st)
+			if kind == "" {
+				continue
+			}
+			node := r94ScanNode{kind: kind}
+			// 该扫描节点自己的 Filter：在它之后、下一个节点之前的 Filter: 行。
+			for k := j + 1; k < len(lines); k++ {
+				ft := strings.TrimSpace(lines[k])
+				if ft == "" {
+					continue
+				}
+				if strings.Contains(ft, "Filter:") {
+					node.filter = ft
+					break
+				}
+				if !strings.Contains(ft, ":") {
+					break // 下一个节点
+				}
+			}
+			out = append(out, node)
+		}
+	}
+	return out
+}
+
+// r94ScanKind 判断一行是否是扫描节点；是则返回其种类，否则返回 ""。
+func r94ScanKind(trimmed string) string {
+	for _, k := range []string{"Index Only Scan", "Index Scan", "Seq Scan", "Bitmap Index Scan", "Bitmap Heap Scan", "Tid Scan"} {
+		if strings.Contains(trimmed, k) {
+			return k
+		}
+	}
+	return ""
+}
+
+// r94Indent 数一行的前导空格数（EXPLAIN 的缩进即树形）。
+func r94Indent(line string) int {
+	n := 0
+	for _, r := range line {
+		if r != ' ' {
+			break
+		}
+		n++
+	}
+	return n
+}
+
+// hasIndexOnly 是否存在 Index Only Scan。
+func (n r94ScanNode) hasIndexOnly() bool { return n.kind == "Index Only Scan" }
+
+// hasAPIKeyFilter 该扫描节点的 Filter 是否作用在 api_key_id 上。
+func (n r94ScanNode) hasAPIKeyFilter() bool {
+	return strings.Contains(n.filter, "Filter:") && strings.Contains(n.filter, "api_key_id")
+}
+
+// r94ScansHasIndexOnly 批量判断。
+func r94ScansHasIndexOnly(ns []r94ScanNode) bool {
+	for _, n := range ns {
+		if n.hasIndexOnly() {
+			return true
+		}
+	}
+	return false
+}
+
+// r94ScansHaveAPIKeyFilter 批量判断。
+func r94ScansHaveAPIKeyFilter(ns []r94ScanNode) bool {
+	for _, n := range ns {
+		if n.hasAPIKeyFilter() {
+			return true
+		}
+	}
+	return false
 }

@@ -2247,6 +2247,15 @@ files=(
   #   实测构建 18,512 ms（父表）+ 28 ms（hot）⇒ ★ 这 ~18.5 秒里
   #   session_turns 的写入被 SHARE 锁阻塞 ⇒ 落在低峰窗口。
   "$ROOT_DIR/sql/migrations/startup/905_turns_session_model_index.sql"
+
+  # ★ R94：给「会话列表的 api_key 回填」补**部分索引**
+  #   （WHERE api_key_id ~ '^[0-9]+$'）⇒ 探针流量（api_key_id 全 NULL）
+  #   在索引里一行都没有 ⇒ Index Only Scan ⇒ 实测 1,350~1,569 ms → **4.57 ms**。
+  #   ★ 谓词必须与 db.SessionFamilyAPIKeyIDNumericPredExpr 逐字一致。
+  #   ★ 普通 CREATE INDEX（仍不用 CONCURRENTLY：startup 迁移默认在事务里跑）
+  #   + SET LOCAL lock_timeout='60s' / statement_timeout='10min'（903/904/905 同款）。
+  #   实测构建 6,026 ms（父表）+ 21 ms（hot）。
+  "$ROOT_DIR/sql/migrations/startup/906_turns_api_key_numeric_partial_index.sql"
 )
 
 

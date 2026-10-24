@@ -1175,6 +1175,12 @@ var turnsSessionModelIndex905 []byte
 //go:embed embeddata/startup/905_turns_session_model_index.down.sql
 var turnsSessionModelIndex905Down []byte
 
+//go:embed embeddata/startup/906_turns_api_key_numeric_partial_index.sql
+var turnsApiKeyNumericPartialIndex906 []byte
+
+//go:embed embeddata/startup/906_turns_api_key_numeric_partial_index.down.sql
+var turnsApiKeyNumericPartialIndex906Down []byte
+
 //go:embed embeddata/startup/859_tighten_pii_phone_intl_regex.sql
 var tightenPiiPhoneIntlRegex859 []byte
 
@@ -1532,6 +1538,8 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/904_inspector_stats_partial_indexes.down.sql":                         inspectorStatsPartialIndexes904Down,
 	"startup/905_turns_session_model_index.sql":                                    turnsSessionModelIndex905,
 	"startup/905_turns_session_model_index.down.sql":                               turnsSessionModelIndex905Down,
+	"startup/906_turns_api_key_numeric_partial_index.sql":                     turnsApiKeyNumericPartialIndex906,
+	"startup/906_turns_api_key_numeric_partial_index.down.sql":                turnsApiKeyNumericPartialIndex906Down,
 	"startup/859_tighten_pii_phone_intl_regex.sql":                                   tightenPiiPhoneIntlRegex859,
 	"startup/852_models_canonical_column_set_reconcile.sql":                          modelsCanonicalColumnSetReconcile852,
 	"startup/489_credential_probe_queue_startup_backfill.sql":                        credentialProbeQueueStartupBackfill489,

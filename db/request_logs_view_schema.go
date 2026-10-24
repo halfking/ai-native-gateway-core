@@ -173,6 +173,42 @@ const sessionIsInternalSessionIDExpr = "(CASE WHEN t.session_id LIKE 'sys:%' THE
 // ⇒ ⇒ 保留 CASE 形式 ⇒ 对**任意**输入都与投影逐字一致。
 const SessionFamilyAPIKeyIDExpr = "(CASE WHEN t.api_key_id ~ '^[0-9]+$' THEN t.api_key_id::bigint END)"
 
+// SessionFamilyAPIKeyIDNumericPredExpr 是「api_key_id 归一后非空」的**裸正则**谓词。
+//
+// # ★★ 为什么必须是「裸正则」而不是 CASE 形式（R94，2026-10-24 生产实测）
+//
+// 【两种写法逐情形等价】对 `(CASE WHEN c ~ '^[0-9]+$' THEN c::bigint END) IS NOT NULL`
+//
+//	c = NULL  ⇒ CASE 得 NULL ⇒ 排除；裸正则得 NULL ⇒ 排除  ⇒ 同
+//	c 非数字  ⇒ CASE 得 NULL ⇒ 排除；裸正则得 false ⇒ 排除 ⇒ 同
+//	c = '18'  ⇒ CASE 得 18   ⇒ 保留；裸正则得 true  ⇒ 保留  ⇒ 同
+//	（唯一差别：超 int64 的纯数字串 —— CASE 形式会在**WHERE 求值**时报 22003，
+//	  裸正则形式只在**入选行的 SELECT 列表**求值时才报 ⇒ 后者**更宽松**，不是回归）
+//
+// ⇒ 生产真实非空批次逐行对拍（252，同一事务内同一快照）：
+//     old_rows=20 / new_rows=20 / only_new=0 / only_old=0  ⇒ 逐行一致 ✓
+//
+// 【但只有裸正则能被规划器认出来】★ PG 的「谓词蕴含」判定是**语法的**
+//   ⇒ 它无法证明「CASE 形式蕴含 `api_key_id ~ '^[0-9]+$'`」
+//   ⇒ 写在 CASE 里的过滤条件**用不上**以该正则谓词建的部分索引。
+//
+// ★ 实测（252 生产，事务内建索引 + EXPLAIN ANALYZE + ROLLBACK ⇒ 零残留）：
+//
+//	形态                                          探针批次执行时间
+//	CASE 形式过滤（无部分索引）                        1,350.8 ms   ← Rows Removed by Filter: 82,297
+//	裸正则过滤（无部分索引）                            1,569.3 ms   ← 同上（等价但同样慢）
+//	★ 裸正则过滤 + 部分索引 WHERE c ~ '^[0-9]+$'        **4.57 ms**  ← 295×
+//
+// 【为什么 CASE 形式那么慢】★ 探针会话（`sys:probe:*`）的 api_key_id
+//   **全是 NULL**（252 实测 462,394 行全空）⇒ 过滤条件**无法从索引里判定**
+//   ⇒ 必须回表 ⇒ 探针批次扫了 **82,297 行**堆，**全部被过滤掉**，产出 **0 行**。
+//   ⇒ ★ 部分索引只含「api_key_id 是数字」的行 ⇒ 探针流量在索引里**一行都没有**
+//   ⇒ 规划器走 **Index Only Scan** ⇒ 不用回表 ⇒ 4.57 ms。
+//
+// ★★ **语义耦合**：迁移 906 的部分索引谓词必须与本常量**逐字一致**
+//   （由 migration_906_turns_api_key_numeric_idx_test.go 钉住）。
+const SessionFamilyAPIKeyIDNumericPredExpr = "t.api_key_id ~ '^[0-9]+$'"
+
 // SessionFamilyLatestTurnPerSessionSQL 返回「每个 (tenant_id, session_id) 最新一轮」的 source，
 // 供会话列表页回填 api_key / handoff 父会话使用。
 //
@@ -233,7 +269,7 @@ func SessionFamilyLatestTurnPerSessionSQL(extraPred string) string {
 	leg := func(src string) string {
 		return "(SELECT l.session_id, l.turn_no, " + SessionFamilyAPIKeyIDExpr + " AS api_key_id " +
 			"FROM (SELECT session_id, max(turn_no) AS turn_no FROM " + src + " t " +
-			"WHERE t.session_id = ANY($1) AND " + SessionFamilyAPIKeyIDExpr + " IS NOT NULL" + extraPred + " " +
+			"WHERE t.session_id = ANY($1) AND " + SessionFamilyAPIKeyIDNumericPredExpr + extraPred + " " +
 			"GROUP BY session_id) l " +
 			"JOIN " + src + " t ON t.session_id = l.session_id AND t.turn_no = l.turn_no" + extraPred + ")"
 	}
