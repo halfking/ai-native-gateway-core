@@ -253,9 +253,17 @@ func TestAuditDocCurrencyTableIsAlive(t *testing.T) {
 		t.Fatalf("★ 审计档里没有 §3.18（计划书时效性认证）⇒ 认证表没了\n" +
 			"★ ⇒ 计划书的过期横幅会变成**没有出处**的断言")
 	}
-	section := text[idx:]
-	// ★ 只取到下一个同级 `#### ` 为止。
-	if end := strings.Index(section[1:], "\n#### "); end >= 0 {
+	// ★★ 精确锚到**认证表那一小节**（`##### 3.18.3`）—— ★ 不是「§3.18 之后的所有内容」。
+	//   否则 §四 门禁表 / §五 缺口表里的 file:line 也会被算进来
+	//   ⇒ ⇒ **认证表被清空也可能照样通过** ⇒ ⇒ 那是**假绿**。
+	//   ★ 依据：子标题是 5 个井号（`##### `）⇒ 搜 `"\n##### "` 才是同级的下一节。
+	tblIdx := strings.Index(text, "##### 3.18.3")
+	if tblIdx < 0 {
+		t.Fatalf("★ 审计档 §3.18 里找不到认证表小节（`##### 3.18.3`）⇒ 认证表没了或被改名\n" +
+			"★ ⇒ 计划书的过期横幅会变成**没有出处**的断言")
+	}
+	section := text[tblIdx:]
+	if end := strings.Index(section[1:], "\n##### "); end >= 0 {
 		section = section[:end+1]
 	}
 
