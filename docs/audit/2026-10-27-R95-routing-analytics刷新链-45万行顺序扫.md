@@ -76,6 +76,23 @@
 ★ ⇒ ★★ **这是 R93/R94 那条病的第二处未修点**：
 **「为了少数几列，把整个宽表 JOIN 进来」**。
 
+> ★★★★★ **【R96 轮就地订正（2026-10-24 · 原文保留）】上面两句各有一处事实错误**
+>
+> ⇒ ⇒ ★ **订正一：★ `session_turn_details` 实际有 `ts` 列**
+>   （252 实测 `pg_attribute`：`ts timestamp with time zone` ⇒ 与 `session_turns.ts` 同型）
+>   ⇒ ★★ **「下推不到 details 侧」的真正原因不是「列不存在」**，而是
+>   ★★ **外层谓词里的 `ts` 是 turns 侧那一列**（视图把 `t.ts` 投影成 `ts`），
+>   ★★ 规划器没有理由把它映射到 details 侧的 `d.ts` ⇒ ★ **两个 `ts` 是两个不同的列**。
+>   ⇒ ★★ ⇒ **这改变了修法的可选集**：★ 「给 details 侧加窗口过滤」在**列存在**的前提下是可行的
+>   ⇒ ★★ 但它是否**口径等价**，取决于 `d.ts` 与 `t.ts` 是否恒等 ⇒ **R96 轮实测了这一点**。
+> ⇒ ⇒ ★ **订正二：★ source 的 15 列里来自 details 的是 3 列，不是 2 列** ——
+>   ★★ 第 3 列是 **`auto_profile`**（252 实测 `pg_get_viewdef`：`d.auto_profile`）
+>   ⇒ ★★ 其余 **12 列**来自 `session_turns`；其中 `credential_id` 是 turns 上的
+>   ★★ `CASE WHEN t.credential_id ~ '^[0-9]+$' THEN t.credential_id::bigint ELSE NULL::bigint END`
+>   ⇒ ★★ ⇒ **「为了少数几列把整个宽表 JOIN 进来」这个结论不变**，只是**列数由 2 变 3**。
+> ⇒ ⇒ ★ **本档的其它读数（pg_stat_statements 累计、EXPLAIN 计划、缓冲读）不受影响**
+>   ⇒ ★ 它们都是**实测原文**，不需要订正。
+
 ---
 
 ## 3. 两条被**实测证伪**的假设（本轮最重要的产出）

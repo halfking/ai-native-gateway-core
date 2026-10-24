@@ -95,15 +95,25 @@ func TestRecentSuccessRateBodyServesBothHotFamilies(t *testing.T) {
 // 视图都会变空报表。判据同层：routingAnalyticsMVSQL 就是 boot 时执行的文本。
 func TestRoutingAnalyticsSourceServesSessionFamily(t *testing.T) {
 	body := routingAnalyticsMVSQL
-	if !strings.Contains(body, "FROM request_logs_with_current_month") {
-		t.Error("routing_analytics_source 未改读 canonical 视图——停写后自动路由分析将静默归零")
+	// ★ R96 轮：source 视图从「读 canonical 视图」改成「**会话族两腿 + LATERAL 回定位**」
+	//   （口径逐行等价，生产实测中位 4,482.8 ms → 2,270.8 ms）。
+	//   ★ 本门要钉的**意图**没变：source 必须服务**会话族**，不能直读 v1 底表。
+	//   ⇒ 判据从「必须引用 canonical 视图」改成「必须直读会话族两腿」，
+	//     并**反向**钉住「不得回退读 canonical 视图」（那会让 details 侧回到
+	//     45 万行顺序扫，R95 归因的根因）。
+	if !strings.Contains(body, "FROM public.session_turns_hot t") ||
+		!strings.Contains(body, "FROM public.session_turns t") {
+		t.Error("routing_analytics_source 未直读会话族两腿——停写后自动路由分析将静默归零")
+	}
+	if strings.Contains(body, "FROM request_logs_with_current_month") {
+		t.Error("routing_analytics_source 又读回 canonical 视图了——details 侧会回到 45 万行顺序扫（R95 归因的根因）")
 	}
 	if strings.Contains(body, "FROM _request_logs_hot") || strings.Contains(body, "FROM _request_logs;") {
 		t.Error("routing_analytics_source 仍在直读 v1 底表")
 	}
 	// CREATE OR REPLACE 列契约：15 列逐一在场（matview 消费方会 42703）。
 	for _, col := range []string{
-		"task_type::text", "outbound_model::text", "client_model::text", "work_type::text",
+		"task_type::text", "model::text AS outbound_model", "client_model::text", "work_type::text",
 		"provider_id::bigint", "credential_id::bigint", "is_auto_request::boolean",
 		"tenant_id::text", "request_id::text", "success::boolean",
 		"latency_ms::numeric", "cost_usd::numeric", "origin_stage::text",

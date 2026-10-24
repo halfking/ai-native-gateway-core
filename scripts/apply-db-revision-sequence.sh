@@ -2256,6 +2256,12 @@ files=(
   #   + SET LOCAL lock_timeout='60s' / statement_timeout='10min'（903/904/905 同款）。
   #   实测构建 6,026 ms（父表）+ 21 ms（hot）。
   "$ROOT_DIR/sql/migrations/startup/906_turns_api_key_numeric_partial_index.sql"
+
+  # ★ R96：routing_analytics_source 换成「会话族两腿 + LATERAL 回定位」
+  #   ⇒ 消除刷新链里 45 万行 session_turn_details 顺序扫
+  #   （252 实测中位 4,482.8 ms → 2,270.8 ms；口径逐行等价 EXCEPT ALL 0/0）。
+  #   ★ 零 DDL：只做 CREATE OR REPLACE VIEW（实测 245 ms；保留 OID ⇒ matview 依赖不动）。
+  "$ROOT_DIR/sql/migrations/startup/907_routing_analytics_source_lateral.sql"
 )
 
 
