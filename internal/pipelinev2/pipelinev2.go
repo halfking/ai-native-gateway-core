@@ -169,6 +169,32 @@ type Difference struct {
 	// （测试**存在**，但它根本不测 A）⇒ 单看「存在」会放行。
 	// ⇒ 若这条差异确实没有测试 ⇒ TestName 留空、填 Uncovered。
 	Topic string
+	// ExtraTestNames 是**同一条差异**的**补充**覆盖测试（可选）。
+	//
+	// ★ 为什么需要它：一条差异常由**多个**语义侧面组成
+	// （例：D09 = 「沿用已有 id」+「缺失时合成」+「写回 header」三面）。
+	// ⇒ 单值 TestName 只能挂其中一面 ⇒ 另一面会**悄悄失去**机器校验。
+	//
+	// ★ 与 TestName **都**必须真实存在于仓内 ⇒ 删掉其中任一个 ⇒ 门红。
+	ExtraTestNames []string
+	// RequiredAssertions 把这条差异的**语义断言**逐测试归位（可选）。
+	//
+	// ★ map 的 key = 覆盖该断言的**测试函数名**；value = 该断言。
+	// ★ 每条断言必须**逐字出现在【那个测试所在文件】的【代码面】**里 ——
+	// ★ 「代码面」= 该文件经 go/parser 解析后的**表达式 + 字符串字面量**语料，
+	// ★ **注释不计入** ⇒ ⇒ 「在注释里写一句『我断言了 X』」蒙混不过去。
+	//
+	// ★★ 为什么**按测试归位**而不是「一条差异一个断言列表」：
+	// ★★ 若断言作用于「所有覆盖测试的并集」，那么 A 测试文件里的一个 `ParseInt`
+	// ★★ 就能满足「B 语义需要断言纳秒整数」⇒ **子串偶然命中**被放行
+	// ★★ （★ 本仓吃过这个亏：`"t.model = $2"` 被 `"ft.model = $2"` 偶然包含）。
+	// ⇒ ⇒ 归位之后，**谁断言的，就在谁的文件里**。
+	//
+	// ★ key 必须是 TestName 或 ExtraTestNames 里的名字（门会核对这个集合关系）。
+	//
+	// ★ 留空 = 该差异只享受「存在性 + 主题词」的**弱保证**（★ 已知局限，
+	// ★ 登记在审计档 §3.19；补强方法同本字段）。
+	RequiredAssertions map[string][]string
 	// Uncovered 写明「这条差异**目前没有**测试覆盖」的理由（TestName 为空时必填）。
 	//
 	// ★ **显式登记**比「悄悄不写」好：差异清单因此是**完整**的，
@@ -178,8 +204,9 @@ type Difference struct {
 
 // differences 是差异清单（单一真值源）。
 //
-// ★ 每条的 TestName 都指向 `cmd/gateway/v2_dispatch_test.go` 或
-// `cmd/gateway/main_v2_pipeline_test.go` 里**已存在**的测试。
+// ★ 每条的 TestName 都指向 `cmd/gateway/v2_dispatch_test.go`、
+// `cmd/gateway/main_v2_pipeline_test.go` 或 `cmd/gateway/main_pipeline_requestid_test.go`
+// 里**已存在**的测试（★ D09 在 2026-10-24 §3.19 补齐 ⇒ 指向第三个文件）。
 var differences = []Difference{
 	{
 		ID:        "D01",
@@ -263,13 +290,30 @@ var differences = []Difference{
 		V1:        "由 v1 自行生成 request id。",
 		V2: "★ v2 优先取 `X-Request-Id`；缺失时合成 `v2pipe-<纳秒>` 并**写回** header，" +
 			"以免一个请求分裂成两条审计链。",
-		Impact: "⇒ 审计/追踪的 request id 在两套路径下**保持一致**（这是 2026-07-27 修过的点）。",
-		Uncovered: "★ **这条差异目前没有测试覆盖**。全仓搜过：`v2pipe` 字面量零命中；" +
-			"`cmd/gateway` 里与 request id 有关的只有 `TestLoggingMiddlewareSitsOutsideAuthAndInsideRequestID`" +
-			"（Logging 中间件）与 `TestLiteRequestLogSink_JournalClaimSerializesSameRequestID`" +
-			"（遥测 sink）—— ★ **都不是 v2 包装器的** ⇒ ⇒ 显式登记为缺口，" +
-			"而不是把一条**名不符实**的测试挂上去（★ 本轮真的踩到了：初版把本条挂到了" +
-			"「时序」那条测试上，而门只查「测试存在」⇒ **查不出来**）。",
+		Impact:   "⇒ 审计/追踪的 request id 在两套路径下**保持一致**（这是 2026-07-27 修过的点）。",
+		TestName: "TestV2DispatchRequestIDSynthesizesAndWritesBack",
+		// ★ 本条由**两个**测试覆盖（三面语义各一条）⇒ 另一面登记在 ExtraTestNames。
+		ExtraTestNames: []string{"TestV2DispatchRequestIDPrefersServerID"},
+		Topic:          "RequestID",
+		// ★ RequiredAssertions 把「测试名里有主题词」升级为「**代码里真的断言了**」。
+		// ★ 三面语义各自归位到断言它的那个测试：
+		// ★   ① 「沿用已有 id」  → 断言 envelope 与服务端 id 相等
+		// ★   ② 「缺失时合成」  → 断言 v2pipe- 前缀 + 纳秒部分是整数
+		// ★   ③ 「写回 header」 → 断言写回值与 envelope 值相等（否则一个请求分裂成两条审计链）
+		// ★ 判据面 = 该测试所在文件经 go/parser 解析出的**代码语料**（**注释不计入**）
+		// ★ ⇒ 在注释里写一句「我断言了 X」蒙混不过去
+		// ★（★ 这正是本条此前登记缺口的原因：门只查「测试存在」⇒ 查不出来）。
+		RequiredAssertions: map[string][]string{
+			"TestV2DispatchRequestIDPrefersServerID": {
+				`got.envelopeID != serverID`,
+				`got.headerID != serverID`,
+			},
+			"TestV2DispatchRequestIDSynthesizesAndWritesBack": {
+				`"v2pipe-"`,
+				`ParseInt`,
+				`got.headerID != got.envelopeID`,
+			},
+		},
 	},
 	{
 		ID:        "D10",

@@ -3,8 +3,9 @@
 > 适用：任何要改「请求从进来到出去」的代码的人。
 > 体例照 magpie 的 `docs/subsystems/*`：**路径 / 阶段 / 状态 / 契约 / 源码链接**。
 > 判据纪律：**本页的每条断言都有 file:line，且有门禁对拍现实**
-> （`scripts/ursmcheck/magpie_p0_extension_adjudication_test.go`）。
-> 最后更新：2026-10-24（magpie v0.1.1367 对标轮）
+> （★ `scripts/ursmcheck/request_surface_doc_currency_test.go` ——
+> ★ **专为本页而写**：逐条核对本页引用的 `file:line` 仍指向它声称的那段代码）。
+> 最后更新：2026-10-24（magpie v0.1.1367 对标轮；★ 同日补上本页的漂移门）
 
 ---
 
@@ -19,7 +20,7 @@
 
 ### 2.1 HTTP 中间件链（外向内）
 
-`cmd/gateway/main.go:7717-7738`：
+`cmd/gateway/main.go:7725-7743`：
 
 ```
 Recovery → RequestID → Logging → Locale(i18n) → CORS → Prometheus → Tracing
@@ -29,19 +30,24 @@ Recovery → RequestID → Logging → Locale(i18n) → CORS → Prometheus → 
 两处顺序是踩坑后改的，有注释自陈：
 
 - **Logging 必须在 Auth 之外** —— 否则 401 不落日志，客户端拿 `X-Request-Id` 去查命中 0 次
-  （`main.go:7723-7729`）。
+  （`cmd/gateway/main.go:7727-7734`）。
 - **maintain/mobile 必须组合在链内**（`publicSurface`）—— 否则运维面不带安全响应头
-  （`main.go:7710-7716`）。
+  （`cmd/gateway/main.go:7716-7721`）。
 
 ### 2.2 数据面：v1（生产默认）与 v2（默认关）
 
 | 路径 | 开关 | 说明 |
 |---|---|---|
 | **v1**（生产默认） | 无 | 4 个入口 `/v1/chat/completions`、`/v1/messages`、`/v1/responses` 直派 `relay.{ChatHandler,MessagesHandler,ResponsesHandler}`；前飞（auth/key/model policy）与后飞（telemetry/WAL/audit）**全部 inline**（`cmd/gateway/main_pipeline.go:1-80`） |
-| **v2 Hook Pipeline** | `LLM_GATEWAY_USE_V2_PIPELINE`（或 legacy `LLM_GATEWAY_V2_ENABLED`），**默认关** | 同样 4 个入口被 `v2DispatchHandler` 包一层：preflight Pipeline → v1 handler → postflight。**开关启动时读一次，改要重启**（`main_pipeline.go:160-168`、`:1112`） |
+| **v2 Hook Pipeline** | `LLM_GATEWAY_USE_V2_PIPELINE`（或 legacy `LLM_GATEWAY_V2_ENABLED`），**默认关** | 同样 4 个入口被 `v2DispatchHandler` 包一层：preflight Pipeline → v1 handler → postflight。**开关启动时读一次，改要重启**（`cmd/gateway/main_pipeline.go:160-169`、`:1112`） |
 
-⚠ **本轮未做**（计划书 §6-P2-1）：v2 的切换判据与"两套路径并存"期间的行为差异清单。
-⇒ 当前**两套路径并存**是**未完成**状态，不是"已决定关掉 v2"。
+★ **P2-1 已落地**（计划书 §6-P2-1）：v2 的切换判据（8 条）与「两套路径并存」期间的
+行为差异清单（17 条）都在 `internal/pipelinev2`，由 `scripts/ursmcheck/magpie_p2_v2_criteria_test.go` 守护。
+⇒ 当前**两套路径并存**仍是**未完成**状态，不是"已决定关掉 v2"。
+⇒ ★ 差异 D09（v2 的 request-id 合成/写回）曾被登记为「无测试覆盖」——
+★ **2026-10-24 订正**：该说明**失实**（称"`v2pipe` 字面量零命中"，实则
+`cmd/gateway/main_pipeline.go:749-758` **有**该合成逻辑）⇒ 现已**补上对拍测试**，
+见 `cmd/gateway/main_pipeline_requestid_test.go`。
 
 ---
 
@@ -49,10 +55,10 @@ Recovery → RequestID → Logging → Locale(i18n) → CORS → Prometheus → 
 
 | 机制 | 位置 | 裁决 | 生产 | 阶段 |
 |---|---|---|---|---|
-| HTTP 中间件链 | `middleware/` + `cmd/gateway/main.go:7717-7738` | **主链** | ✅ | — |
+| HTTP 中间件链 | `middleware/` + `cmd/gateway/main.go:7725-7743` | **主链** | ✅ | — |
 | Request Pipeline | `domains/pipeline/` | **骨架**（阶段词表的唯一事实源，16 个 phase） | ❌（v2 默认关） | — |
-| `HookRegistry` | `domains/hooks/registry.go:34` | **判死** | ❌（生产零调用方） | — |
-| Hook 阶段词表（5 个旧名） | `domains/hooks/types.go:13-24` | **别名视图** | ❌ | 映射到骨架的同名 phase |
+| `HookRegistry` | `domains/hooks/registry.go:36` | **判死** | ❌（生产零调用方） | — |
+| Hook 阶段词表（5 个旧名） | `domains/hooks/types.go:13-23` | **别名视图** | ❌ | 映射到骨架的同名 phase |
 | ★ 执行器生命周期钩子 | `domains/streaming/executors/executor_chat.go:60-67` | ★ **判死**（2026-10-24 订正：类型在、读取方在，但**零生产安装方** ⇒ 钩子从不触发） | ❌ | — |
 | 响应拦截链 | `domains/hooks/response/types.go:179` | **挂在 phase** | ✅ | `response` |
 
@@ -66,7 +72,7 @@ Recovery → RequestID → Logging → Locale(i18n) → CORS → Prometheus → 
 > ★ 与 `HookRegistry` **同一种形态**（框架在、链路不通），但**更隐蔽**：
 > 它有完整的 API，还有 on/off 对照用例（那两条只证明「API 装上能用」）。
 
-### 3.1 骨架的 16 个 phase（`domains/pipeline/pipeline.go:25-42`）
+### 3.1 骨架的 16 个 phase（`domains/pipeline/pipeline.go:25-40`）
 
 ```
 pre_authentication · authentication · post_authentication
@@ -92,7 +98,8 @@ pre_response · response · post_response
 
 ## 四、失败归责（本轮新增的契约）
 
-**词表**：magpie 的 20 类 rest 词表（`internal/gateway/routing.go:270-325`）
+**词表**：magpie 的 20 类 rest 词表（★ **magpie 侧**的文件：`internal/gateway/routing.go:270-325`；
+★ **本仓没有这个路径**）
 → 本仓 `ErrorKind` 的对照表，写在 `errorsx/restclasses.go`（**判定在代码里，不在注释里**）。
 
 **判定的三个层次**：
@@ -189,7 +196,8 @@ pre_response · response · post_response
 | `internal/requestobserver/requestobserver_test.go` + `domains/streaming/request_observer_bridge_test.go` | 观察者契约（不阻塞/丢弃计数/panic 兜住/关闭零开销）+ **v1 接线真的通** |
 | `internal/routeorder/routeorder_test.go` + `domains/streaming/executors/routeorder_adapter_test.go` | 策略只排序、失败开放、**迁移前后顺序一致** |
 | `scripts/ursmcheck/magpie_p0_extension_onoff_test.go` | 每个扩展点的 on/off 对照（★ on = 「API 装上能用」，**不是**「生产已装」） |
-| `internal/pipelinev2/pipelinev2.go` + `scripts/ursmcheck/magpie_p2_v2_criteria_test.go` | v2 切换判据（依据须逐字在生产文件里）+ 行为差异（测试须名实相符） |
+| `internal/pipelinev2/pipelinev2.go` + `scripts/ursmcheck/magpie_p2_v2_criteria_test.go` | v2 切换判据（依据须逐字在生产文件里）+ 行为差异（测试须名实相符 + **代码里真的断言了**） |
+| ★★ `scripts/ursmcheck/request_surface_doc_currency_test.go` | ★★ **本页自己的守护者**（★ 2026-10-24 §3.19.1 新增）：逐条核对本页引用的 `file:line` 仍指向它声称的那段代码；★ 并与审计档 §3.18.3 认证表**对账**（同一语义对象的区间必须**精确相等**） |
 | `internal/extpointledger/*_test.go` + `middleware/ledger_mw_test.go` | 台账契约（计数/最近窗口 p99/拒绝与出错分开/内存有界）+ **主链口径**（p99 量的是链开销） |
 | `scripts/ursmcheck/magpie_p2_extension_ledger_test.go` | 台账**两份来源**对拍 + **接线真的通** + ★ **在产机制必须接台账**（源码级） |
 | `admin/extension_points_test.go` | P2-2 **薄壳**：路由真注册 + 被鉴权包着（无凭据 ⇒ 401）+ 响应是合法 JSON |
@@ -204,7 +212,9 @@ pre_response · response · post_response
 1. **v2 pipeline 仍默认关** ⇒ 两套路径并存是**未完成**状态。
    ★ **切换判据与行为差异清单已做**（`internal/pipelinev2` + 门，2026-10-24）
    ⇒ 8 条切换判据 + 17 条行为差异（每条挂**真实存在且名实相符**的测试）
-   ⇒ ★ 其中 D09（v2 的 request-id 合成/写回）**全仓无测试** ⇒ **显式登记为缺口**。
+   ⇒ ★ 其中 D09（v2 的 request-id 合成/写回）曾被登记为「**全仓无测试**」——
+   ⇒ ★ **2026-10-24 已补齐**（见 `cmd/gateway/main_pipeline_requestid_test.go`）；
+   ⇒ ★★ 补的不只是「有测试」，还有「门核对的是**代码里真的断言了**，不只是『测试存在』」。
 2. **`HookRegistry` 判死，但 `domains/hooks` 下仍有实现在跑的 hook**（例如 `audit` hook 走别的路径）
    ⇒ 「判死」只针对**注册表**这一层，不针对 `domains/hooks` 下的具体 hook。
 3. **`KindAccountRestricted` 没有分类器** ⇒ 该 kind 当前不会被产生（归责判定已就位，识别未就位）。

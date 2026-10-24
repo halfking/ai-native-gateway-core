@@ -17,13 +17,27 @@ package ursm_test
 //	③ 差异清单非空、字段齐全、ID 唯一；
 //	④ ★ **每条差异的 `TestName` 必须在仓内真实存在**
 //	   （⇒ 「每条差异有测试覆盖」成为机器可校验的事实）；
+//	④' ★ **每条差异的 `ExtraTestNames` 也必须真实存在**
+//	   （⇒ 一条差异的多个语义侧面不会悄悄失去覆盖）；
+//	④'' ★ **每条差异的 `RequiredAssertions` 必须逐字出现在【它所归位的那个测试】的
+//	   【代码面】里**（⇒ 「测试存在」之外还要「**代码里真的断言了这件事**」；
+//	   ★ 代码面 = go/parser 解析出的表达式 + 字符串字面量语料，**注释不计入**；
+//	   ★ 且**逐测试归位** ⇒ A 测试里的一个 `ParseInt` 不能替 B 语义背书）；
 //	⑤ ★ 两条**代码事实**仍然成立：4 个端点都被包装；阶段错误不阻断；默认关。
 //
 // # ★ 被测集合与期望都不来自被测对象
 //
 // 期望值是本文件里的**字面量**（端点路径、字符串片段）⇒ 改实现改不掉断言。
+//
+// ★ 而「期望值」有一部分住在 `internal/pipelinev2` 的清单里（RequiredAssertions）
+// ⇒ 那不是自证 ⇒ ⇒ 门**独立地**把那些字面量拿到**代码面**上去核对
+// ⇒ ⇒ 清单里写一句空话（例如把断言写成一个只出现在注释里的字符串）⇒ 门红。
 
 import (
+	"go/ast"
+	"go/parser"
+	"go/printer"
+	"go/token"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -33,6 +47,25 @@ import (
 
 	"github.com/kaixuan/llm-gateway-go/internal/pipelinev2"
 )
+
+// ★★★ strongGuaranteeRequired 是**必须**享有强保证（**代码面**核对语义断言）的差异 ID 列表。
+//
+// ★★★ ★★ 它住在**门文件**里、**不在清单里** ⇒ 这是关键：★
+// ★★★ 清单侧（`internal/pipelinev2`）负责声明「哪些差异有强保证」，
+// ★★★ 门侧负责钉住「**这几条**必须有强保证」⇒ ⇒ 两边**互为对手**。
+//
+// ★★★ ★★ 为什么按【ID】钉、而不是按【数量】钉（★ 2026-10-24 第三轮 verifier 实测撞出来的）：
+// ★★★ ★★ 数量地板（`strong >= N`）只保**数量**、不保**对象** ⇒ ⇒
+// ★★★ ★★ 把某条差异的断言**迁移**到别的差异（并登记进 `ExtraTestNames`）⇒
+// ★★★ ★★ `strong` 仍是 N ⇒ 地板满足 ⇒ **门绿** ⇒ ★★ 而被迁走的那条已掉回弱保证
+// ★★★ ★★ ⇒ ⇒ 「代码面核对」这个能力**名存实亡** ⇒ ⇒ **迁移攻击**放行。
+// ★★★ ★★ ⇒ ⇒ 按 ID 钉 ⇒ 删掉**或迁走**该差异的断言 ⇒ **该 ID 不再有 `RequiredAssertions`**
+// ★★★ ★★ ⇒ ⇒ **门红** ⇒ ⇒ 两个残余（删除 / 迁移）**一次堵死**。
+//
+// ★★★ ⚠ **诚实的边界**（★ 登记在审计档 §五）：★ 改这个列表 = 改断言 ⇒ 必须动门文件
+// ★★★ ⇒ **git diff 可见**（★ 这是**流程性**论证，**不是**技术互锁）⇒ ⇒ 门**挡不住**有人
+// ★★★ 显式把它改掉 ⇒ ★⇒ 所以「恒绿路径已堵」这句话**只对清单侧成立**，不护门侧。
+var strongGuaranteeRequired = []string{"D09"}
 
 // magpieP2RepoRoot 返回仓根目录。
 func magpieP2RepoRoot(t *testing.T) string {
@@ -56,6 +89,49 @@ func magpieP2ReadFile(t *testing.T, root, rel string) string {
 		t.Fatalf("读 %s 失败：%v", rel, err)
 	}
 	return string(b)
+}
+
+// magpieP2CodeCorpus 提取一个 Go 文件的**代码面**语料。
+//
+// ★★ 这是本门最要紧的一处设计：语料只由 **AST 节点**拼成 ——
+// ★★ ① 字符串字面量（BasicLit.Value）
+// ★★ ② 表达式（BinaryExpr / CallExpr，用 go/printer 打印成规范格式）
+// ★★ ③ 标识符名
+// ⇒⇒ **注释不是 AST 节点** ⇒⇒ 注释里的任何字串都**进不了**语料。
+//
+// ★⇒ 于是「在注释里写一句『我断言了 X』」蒙混不过去 ——
+// ★⇒ 而**这正是**「测试存在但名不符实」这个门抓不到的缺陷的解法。
+//
+// ★ 反过来：★ 判据**宁可假红也不假绿** ——
+// ★ 「代码面」比「全文」窄 ⇒ 命中要求更严 ⇒ 假绿被根除。
+func magpieP2CodeCorpus(t *testing.T, root, rel string) string {
+	t.Helper()
+
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, filepath.Join(root, rel), nil, 0)
+	if err != nil {
+		t.Fatalf("解析 %s 失败（⇒ 门无法取它的代码面）：%v", rel, err)
+	}
+
+	var b strings.Builder
+	ast.Inspect(f, func(n ast.Node) bool {
+		switch v := n.(type) {
+		case *ast.BasicLit:
+			b.WriteString(" ")
+			b.WriteString(v.Value)
+		case *ast.BinaryExpr:
+			b.WriteString(" ")
+			_ = printer.Fprint(&b, fset, v)
+		case *ast.CallExpr:
+			b.WriteString(" ")
+			_ = printer.Fprint(&b, fset, v)
+		case *ast.Ident:
+			b.WriteString(" ")
+			b.WriteString(v.Name)
+		}
+		return true
+	})
+	return b.String()
 }
 
 // TestMagpieP2V2CriteriaAreGroundedInProduction G1 + G2：
@@ -142,6 +218,7 @@ func TestMagpieP2V2DifferencesHaveRealTests(t *testing.T) {
 	}
 
 	seen := map[string]bool{}
+	strong, weak := 0, 0
 	for _, d := range list {
 		if d.ID == "" || d.Dimension == "" || d.V1 == "" || d.V2 == "" || d.Impact == "" {
 			t.Errorf("差异 %+v 字段不完整", d)
@@ -194,8 +271,119 @@ func TestMagpieP2V2DifferencesHaveRealTests(t *testing.T) {
 				d.ID, d.Dimension, d.Topic, d.TestName)
 			continue
 		}
-		t.Logf("差异 %s（%s）⇒ 覆盖测试 %s（%s）", d.ID, d.Dimension, d.TestName, where)
+
+		// ★ 补充覆盖测试（一条差异可以有**多个**语义侧面）。
+		// ★ ExtraTestNames 与 TestName **都**必须真实存在 ⇒ 删掉任一个 ⇒ 门红。
+		coverFiles := []string{where}
+		missingCover := false
+		for _, name := range d.ExtraTestNames {
+			if name == d.TestName {
+				t.Errorf("差异 %s 的 ExtraTestNames 重复了 TestName（%s）⇒ 重复登记没有意义", d.ID, name)
+				missingCover = true
+				continue
+			}
+			w, ok := defined[name]
+			if !ok {
+				t.Errorf("差异 %s（%s）的补充覆盖测试 %s 在仓内**不存在** ⇒ "+
+					"这条差异的一个语义侧面**悄悄失去**了覆盖",
+					d.ID, d.Dimension, name)
+				missingCover = true
+				continue
+			}
+			coverFiles = append(coverFiles, w)
+		}
+		if missingCover {
+			continue
+		}
+
+		// ★★★ 语义断言：RequiredAssertions 按【测试归位】核对。
+		// ★★★ 「代码面」= go/parser 的 AST 语料 ⇒ **注释不计入** ⇒
+		// ★★★ 「在注释里写『我断言了 X』」蒙混不过去。
+		// ★★★ 且**逐测试**核对 ⇒ A 测试里的一个 `ParseInt` 不能替 B 语义背书
+		// ★★★ （★ 否则就是「子串偶然命中」那一族）。
+		if len(d.RequiredAssertions) > 0 {
+			// ① map 的 key 必须是本差异登记过的覆盖测试。
+			allowed := map[string]bool{d.TestName: true}
+			for _, n := range d.ExtraTestNames {
+				allowed[n] = true
+			}
+			for testName, asserts := range d.RequiredAssertions {
+				if !allowed[testName] {
+					t.Errorf("差异 %s 的 RequiredAssertions 引用了**未登记**的测试 %s ⇒ "+
+						"它要么拼错了，要么这条差异多了一个**没被登记**的覆盖面",
+						d.ID, testName)
+					continue
+				}
+				w, ok := defined[testName]
+				if !ok {
+					t.Errorf("差异 %s 的 RequiredAssertions 指向的测试 %s 在仓内**不存在**",
+						d.ID, testName)
+					continue
+				}
+				corpus := magpieP2CodeCorpus(t, root, w)
+				for _, req := range asserts {
+					if !strings.Contains(corpus, req) {
+						t.Errorf("差异 %s（%s）要求的语义断言 %q **不在**测试 %s 的代码面里（文件：%s）⇒ "+
+							"★ 「测试存在」但**代码里没有断言这件事** ⇒ 名不符实\n"+
+							"★ ⇒ 修法：要么把该断言真正写进那个测试，要么这条差异其实没被覆盖",
+							d.ID, d.Dimension, req, testName, w)
+					}
+				}
+			}
+			strong++
+		} else {
+			// ★ 显式记录「只享受弱保证」的差异数 ⇒ 局限**可见**，而不是隐在沉默里。
+			weak++
+			t.Logf("★ 差异 %s（%s）只享受**弱保证**（测试存在 + 主题词在名字里）；"+
+				"★ 未登记 RequiredAssertions ⇒ 门无法核对「代码里真的断言了这件事」",
+				d.ID, d.Dimension)
+		}
+		t.Logf("差异 %s（%s）⇒ 覆盖测试 %s（%s）",
+			d.ID, d.Dimension, d.TestName, strings.Join(coverFiles, ", "))
 	}
+
+	// ★ 强弱保证的**分布**必须可见 ⇒ 局限不许隐在沉默里。
+	// ★ 「17 条差异全部有测试覆盖」这句话，在有强保证的那部分是真的，
+	// ★ 在只享受弱保证的那部分只是「存在性」⇒ ⇒ 把数字写出来，而不是让读者猜。
+	t.Logf("★ 覆盖强度分布：**强保证**（代码面核对语义断言）%d 条，"+
+		"**弱保证**（仅存在性 + 主题词）%d 条 ⇒ ⇒ 「每条差异有测试覆盖」的机器化程度不均匀",
+		strong, weak)
+
+	// ★★★ **按 ID 钉的强保证断言**：★ 门侧那份清单里的每一条差异，
+	// ★★★ 都**必须**带 `RequiredAssertions`（即**必须**享受「代码面核对语义断言」）。
+	//
+	// ★★★ 为什么不是「数量地板」（★ 2026-10-24 verifier 实测撞出来的两个残余）：
+	// ★★★ ① **删除攻击**：删掉某条差异的整块 `RequiredAssertions` ⇒ 数量掉下去 ⇒ 数量地板能抓；
+	// ★★★ ② ★★ **迁移攻击**：把它的断言**迁到别的差异**（并登记进 `ExtraTestNames`）⇒
+	// ★★★    ★★ 数量**不变** ⇒ 数量地板**放行** ⇒ 而被迁走的那条已掉回弱保证
+	// ★★★    ⇒ ⇒ 「代码面核对」**名存实亡** ⇒ ⇒ 按 ID 钉 ⇒ 删**或迁**都表现为
+	// ★★★    「该 ID 不再有 `RequiredAssertions`」⇒ **门红**。
+	//
+	// ★★ 与 C8 的 `checked == 0 ⇒ t.Fatal` **同款**：★ 门必须钉住「**这几条**我确实核对了」。
+	for _, id := range strongGuaranteeRequired {
+		d := magpieP2FindDifference(list, id)
+		if d == nil {
+			t.Errorf("★★ 强保证清单里的差异 %s 在清单中**不存在** ⇒ 判据的输入已漂\n"+
+				"★★ ⇒ 修法：清单里补回 %s，或更新本门侧的强保证清单", id, id)
+			continue
+		}
+		if len(d.RequiredAssertions) == 0 {
+			t.Errorf("★★ 差异 %s 被列入「**必须**享有强保证」清单，却**没有** `RequiredAssertions` ⇒\n"+
+				"★★ ⇒ 「代码面核对语义断言」这个能力对它**已被撤销**（★ 可能是被删，也可能是被迁走）\n"+
+				"★★ ⇒ 修法：把该差异的 `RequiredAssertions` 补回去（★ 迁到别的差异上**不算**）",
+				id)
+		}
+	}
+}
+
+// magpieP2FindDifference 在差异清单里按 ID 取一条。
+func magpieP2FindDifference(list []pipelinev2.Difference, id string) *pipelinev2.Difference {
+	for i := range list {
+		if list[i].ID == id {
+			return &list[i]
+		}
+	}
+	return nil
 }
 
 // TestMagpieP2V2ProductionFactsStillHold G5：

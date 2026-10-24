@@ -33,6 +33,13 @@ package ursm_test
 //	   ⇒ ★ **横幅就变成假的** ⇒ ⇒ 门必须红 ⇒ ⇒ ★ 逼着人**同时更新横幅**。
 //	C5 ★ **量具自检**：本门自己的「横幅检测」必须**有牙**
 //	   ⇒ 喂合成的「有标记但无证据」样本必须判「不合格」⇒ ⇒ 防止 C1/C2 恒绿。
+//	C6 ★★ **横幅的「落地口径」必须与审计档的活事实对账** —— ★★ 这是 verifier 挑出的
+//	   「口径高估」那一条的正面回应：
+//	   ★ 计划书顶部横幅声明「N 项待属主拍板」⇒ N 必须**等于**审计档 §5.1 清单的**数据行数**
+//	   ⇒ ⇒ 横幅少报/多报 ⇒ **门红**（★ 数字不是叙述，是可对账的事实）。
+//	   ★ 且顶部横幅**不许**再出现「已全部落地」这个高估表述 ⇒ 旧口径留着就红。
+//	C7 ★ **量具自检（针对 C6）**：喂合成样本给「数字提取器」与「行数计数器」
+//	   ⇒ 必须分别给出预期值 ⇒ ⇒ 防止 C6 因「锚点漂移 ⇒ 读到 0」而恒绿。
 //
 // # ★ 为什么「锚点」按**小节**而不是按行号
 //
@@ -43,6 +50,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -51,6 +59,19 @@ import (
 //
 // ★ 用**纯中文短语**而不是 emoji/符号做标记 ⇒ 复制粘贴、跨编辑器都不会丢。
 const staleBannerMarker = "现状陈述已过期"
+
+// pendingOwnerDecisionRe 提取「N 项待属主拍板」里的 N。
+//
+// ★ 只认「项待属主拍板」这个**固定短语** + 前面的数字 ⇒ 判据钉**语义**不钉**形态**。
+var pendingOwnerDecisionRe = regexp.MustCompile(`(\d+)\s*项待属主拍板`)
+
+// overclaimedLandingRe 是「高估口径」的标记串。
+//
+// ★ 顶部横幅若还写着「已全部落地」，就与审计档登记的待拍板项**自相矛盾**。
+const overclaimedLanding = "已全部落地"
+
+// auditPendingListAnchor 是审计档里「待属主拍板清单」小节的标题锚点。
+const auditPendingListAnchor = "### 5.1 ★ 待属主拍板清单"
 
 // evidenceRe 匹配 `file:line` 形态的证据（★ 横幅里必须有它，否则横幅是空壳）。
 var evidenceRe = regexp.MustCompile(`[A-Za-z0-9_][A-Za-z0-9_./-]*\.(go|md|sh|tsv|yml|yaml):[0-9]+`)
@@ -371,6 +392,154 @@ func TestStaleBannerDetectorHasTeeth(t *testing.T) {
 			if got != tc.want {
 				t.Errorf("★ 横幅检测器判错：got=%v want=%v（样本 %q）\n"+
 					"★ ⇒ 本门要么恒绿、要么恒红 ⇒ 它的结论不可信", got, tc.want, tc.name)
+			}
+		})
+	}
+}
+
+// pendingRowRe 匹配清单的**数据行**：第一格是纯数字的表格行。
+//
+// ★ 用「第一格是序号」而不是「所有以 | 开头的行」⇒
+// ★ 表头（`| # |`）与分隔行（`|---|`）自动被排除 ⇒ ⇒ 判据钉**结构语义**。
+var pendingRowRe = regexp.MustCompile(`^\|\s*\d+\s*\|`)
+
+// pendingOwnerDecisionCount 从横幅文本里提取「N 项待属主拍板」的 N。
+//
+// ★ 找不到 ⇒ 返回 0（★ 调用方必须把 0 当成「读数失败」，不能当成「0 项」）。
+func pendingOwnerDecisionCount(text string) int {
+	m := pendingOwnerDecisionRe.FindStringSubmatch(text)
+	if len(m) < 2 {
+		return 0
+	}
+	n, err := strconv.Atoi(m[1])
+	if err != nil {
+		return 0
+	}
+	return n
+}
+
+// pendingOwnerDecisionRows 数清单小节里的**数据行**。
+func pendingOwnerDecisionRows(section string) int {
+	rows := 0
+	for _, line := range strings.Split(section, "\n") {
+		t := strings.TrimSpace(line)
+		if !strings.HasPrefix(t, "|") {
+			continue
+		}
+		if pendingRowRe.MatchString(t) {
+			rows++
+		}
+	}
+	return rows
+}
+
+// auditPendingListSection 取审计档里「待属主拍板清单」小节的正文。
+//
+// ★ 到**下一个标题**为止（`#{1,6} `）⇒ 不会把 §六 的内容算进来。
+func auditPendingListSection(text string) (string, bool) {
+	idx := strings.Index(text, auditPendingListAnchor)
+	if idx < 0 {
+		return "", false
+	}
+	section := text[idx:]
+	rest := section[len(auditPendingListAnchor):]
+	if loc := regexp.MustCompile(`(?m)^#{1,6} `).FindStringIndex(rest); loc != nil {
+		section = section[:len(auditPendingListAnchor)+loc[0]]
+	}
+	return section, true
+}
+
+// TestPlanBannerPendingCountMatchesAuditList 是 C6：
+// ★★ 计划书顶部横幅声明的「N 项待属主拍板」必须**等于**审计档 §5.1 清单的数据行数。
+//
+// ★★ 这是对 verifier 反馈「计划书顶部横幅口径高估」的正面回应：
+// ★★ 横幅里的数字不是叙述，是**可对账的事实** ⇒ 少报或多报 ⇒ 门红。
+func TestPlanBannerPendingCountMatchesAuditList(t *testing.T) {
+	rel := planDocPath(t)
+	header := mdHeaderScope(readRepoFile(t, rel))
+
+	// ① 顶部横幅不许再留着高估口径。
+	if strings.Contains(header, overclaimedLanding) {
+		t.Errorf("★ 计划书顶部横幅仍写着 %q ⇒ 口径高估\n"+
+			"★ ⇒ 审计档 §5.1 登记着待属主拍板项 ⇒ 这句话与事实**自相矛盾**\n"+
+			"★ ⇒ 修法：改成「可执行项已落地；N 项待属主拍板」（★ N 要与清单行数相等）",
+			overclaimedLanding)
+	}
+
+	// ② 横幅里声明的 N。
+	declared := pendingOwnerDecisionCount(header)
+	if declared < 1 {
+		t.Fatalf("★ 计划书顶部横幅里读不到「N 项待属主拍板」（读到 %d）⇒ 横幅被改写或判据失效\n"+
+			"★ ⇒ 顶部横幅必须写明待拍板项数（★ 那是与审计档对账的数字，不是叙述）", declared)
+	}
+
+	// ③ 审计档清单的数据行数。
+	audit := readRepoFile(t, auditDocRelPath)
+	section, ok := auditPendingListSection(audit)
+	if !ok {
+		t.Fatalf("★ 审计档里找不到 %q ⇒ 待拍板清单没了 ⇒ 横幅没有对账对象", auditPendingListAnchor)
+	}
+	actual := pendingOwnerDecisionRows(section)
+	if actual < 1 {
+		t.Fatalf("★ 审计档 %s 的清单里数不到数据行（读到 %d）\n"+
+			"★★ ⇒ 这是**锚点漂了**，不是「真的 0 项」⇒ 拿 0 去对账是**假绿**\n"+
+			"★ ⇒ 修法：把清单小节标题改回 %q（或修门的锚点）",
+			auditPendingListAnchor, actual, auditPendingListAnchor)
+	}
+
+	if declared != actual {
+		t.Errorf("★ 计划书顶部横幅声明「%d 项待属主拍板」，而审计档 %s 的清单有 **%d 行** ⇒ 口径不一致\n"+
+			"★ ⇒ 横幅少报/多报 ⇒ 读者会以为行动项全部落地 ⇒ 修法：两个数字对齐（改任一处都会红）",
+			declared, auditPendingListAnchor, actual)
+	}
+}
+
+// TestPendingCountExtractorsHaveTeeth 是 C7：★★ C6 的量具自检。
+//
+// ⇒ C6 依赖两个提取器 ⇒ ★★ 若它们恒返回 0 ⇒ C6 会拿「0 == 0」当通过 ⇒ **假绿**。
+// ⇒ ⇒ 喂合成样本，必须分别给出预期值。
+func TestPendingCountExtractorsHaveTeeth(t *testing.T) {
+	cases := []struct {
+		name     string
+		text     string
+		wantCnt  int
+		wantRows int
+	}{
+		{
+			name:    "横幅里「5 项待属主拍板」⇒ 读到 5",
+			text:    "> ⇒ ⇒ ⚠ **仍有 5 项待属主拍板**（P1-3 / P1-4）",
+			wantCnt: 5,
+		},
+		{
+			name:    "没有该短语 ⇒ 读到 0（★ 调用方必须把 0 当读数失败）",
+			text:    "> ⇒ 行动项全部落地",
+			wantCnt: 0,
+		},
+		{
+			name: "清单 3 行数据行 ⇒ 读到 3（★ 表头与分隔行不算）",
+			text: "| # | 待拍板项 | 拍板点 | 出处 |\n" +
+				"|---|---|---|---|\n" +
+				"| 1 | 甲 | x | §1 |\n" +
+				"| 2 | 乙 | y | §2 |\n" +
+				"| 3 | 丙 | z | §3 |\n",
+			wantRows: 3,
+		},
+		{
+			name: "只有表头与分隔行 ⇒ 读到 0",
+			text: "| # | 待拍板项 | 拍板点 | 出处 |\n" +
+				"|---|---|---|---|\n",
+			wantRows: 0,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := pendingOwnerDecisionCount(tc.text); got != tc.wantCnt {
+				t.Errorf("★ 数字提取器判错：got=%d want=%d（样本 %q）\n"+
+					"★ ⇒ C6 会拿错误读数去对账 ⇒ 它的结论不可信", got, tc.wantCnt, tc.text)
+			}
+			if got := pendingOwnerDecisionRows(tc.text); got != tc.wantRows {
+				t.Errorf("★ 行数计数器判错：got=%d want=%d（样本 %q）\n"+
+					"★ ⇒ C6 会拿错误读数去对账 ⇒ 它的结论不可信", got, tc.wantRows, tc.text)
 			}
 		})
 	}
