@@ -393,7 +393,7 @@ graph LR
 | §3 请求主链 | [REQUEST_FLOW_WITH_EXCEPTIONS.md](REQUEST_FLOW_WITH_EXCEPTIONS.md)（异常分支细图）、[runtime-request-flow.md](03-design/01-architecture/architecture/runtime-request-flow.md) |
 | §4 路由决策 | [routing-and-state.md](03-design/01-architecture/architecture/routing-and-state.md)、[AUTO_SELECTION_SPEC](03-design/02-feature-design/design/AUTO_SELECTION_SPEC.md) |
 | §5 领域模块 | [MODULES_GUIDE.md](MODULES_GUIDE.md)、[parallel-implementations-comparison.md](03-design/01-architecture/parallel-implementations-comparison.md) |
-| §6 存储 | [storage/README.md](storage/README.md)、[lite-mode-quick-ref](03-design/design/lite-mode-quick-ref.md) |
+| §6 存储 | [storage/README.md](storage/README.md)、[lite-mode-quick-ref](design/lite-mode-quick-ref.md) |
 | §7 部署 | [06-deployment/README.md](06-deployment/README.md) |
 | 会话生命周期 | **[session-lifecycle.md](session-lifecycle.md)**（本图集的姊妹篇） |
 
@@ -403,14 +403,14 @@ graph LR
 
 | 锚点 | 位置 |
 |---|---|
-| HTTP mux / h2c | `cmd/gateway/main.go:7201` |
+| HTTP mux / h2c | `cmd/gateway/main.go:7828` |
 | 中间件链 | `cmd/gateway/main.go:7111-7124` |
-| ChatHandler 入口 | `domains/streaming/handler.go:1917` |
-| serveWithExecutor | `domains/streaming/handler.go:2249` |
-| Executor.Execute | `domains/streaming/executors/executor.go:2114` |
+| ChatHandler 入口 | `domains/streaming/handler.go:1972` |
+| serveWithExecutor | `domains/streaming/handler.go:2300` |
+| Executor.Execute | `domains/streaming/executors/executor.go:2184` |
 | Router.PlanCandidates | `domains/streaming/executors/router.go:220` |
-| URSM 四档装配 | `cmd/gateway/main.go:1067-1205` |
-| Admin Echo 子应用 | `cmd/gateway/main.go:6520-6698` |
+| URSM 四档装配 | `cmd/gateway/main.go:1148-1320` |
+| Admin Echo 子应用 | `cmd/gateway/main.go:7100-7283` |
 | bg worker 装配 | `cmd/gateway/main.go:3626-5780` |
 | 存储模式装配 | `cmd/gateway/storage_mode_init.go` |
 | request_logs 归档函数 | `sql/migrations/startup/754_archive_request_logs_default.sql` |

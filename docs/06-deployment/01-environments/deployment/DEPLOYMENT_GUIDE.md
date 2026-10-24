@@ -147,7 +147,7 @@ bash scripts/deploy-154.sh
 LLM_GATEWAY_STATIC_DIR=/opt/llm-gateway-go/web
 
 # 数据库连接
-LLM_GATEWAY_DB_URL=postgres://username:password@host:port/database
+LLM_GATEWAY_DATABASE_URL=postgres://username:password@host:port/database
 
 # API密钥
 LLM_GATEWAY_API_KEY=your-api-key-here

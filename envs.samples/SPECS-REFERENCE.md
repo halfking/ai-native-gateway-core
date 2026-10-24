@@ -6,7 +6,7 @@
 # settings 配置规格全表（机器生成）
 
 settings 注册表（PlatformSpecs/TenantSpecs/模块级规格）中带 EnvName 的全部条目，
-共 104 个环境变量。这些变量均可被 settings_kv 数据库值按 Key 覆盖（热加载），
+共 115 个环境变量。这些变量均可被 settings_kv 数据库值按 Key 覆盖（热加载），
 优先级: settings_kv > 环境变量 > Default 列。作用域 platform=平台级、tenant=租户级。
 
 | 环境变量 | 设置键 | 作用域 | 类型 | 默认值 | 选项/范围 | 说明 |
@@ -90,13 +90,21 @@ settings 注册表（PlatformSpecs/TenantSpecs/模块级规格）中带 EnvName 
 | `LLM_GATEWAY_MAX_PROMPT_TOKENS` | `gateway.max_prompt_tokens` | platform | int | `2097152` | 0 ~ 2097152 | 入口 prompt 接收上限（估算 tokens） |
 | `LLM_GATEWAY_PROBE_STATE_AGING_HOURS` | `probe.state_aging_hours` | platform | int | `2` | 1 ~ 24 | 健康证据老化窗（小时） |
 | `LLM_GATEWAY_PROVIDER_PROFILE_AGGREGATION_INTERVAL` | `provider_profile.aggregation_interval` | platform | int | `86400` | 3600 ~ 259200 | 每日聚合间隔（秒），默认24小时 |
+| `LLM_GATEWAY_PROVIDER_PROFILE_ALERT_INTERVAL` | `provider_profile.alert_interval` | platform | int | `86400` | 300 ~ 259200 | 画像告警扫描间隔（秒），默认24小时 |
 | `LLM_GATEWAY_PROVIDER_PROFILE_CLEANUP_INTERVAL` | `provider_profile.cleanup_interval` | platform | int | `604800` | 86400 ~ 2592000 | 历史数据清理间隔（秒），默认7天 |
 | `LLM_GATEWAY_PROVIDER_PROFILE_COLLECTION_INTERVAL` | `provider_profile.collection_interval` | platform | int | `7200` | 300 ~ 86400 | 指标采集间隔（秒），默认2小时 |
+| `LLM_GATEWAY_PROVIDER_PROFILE_COST_RECONCILIATION_COST_DIFF_THRESHOLD` | `provider_profile.cost_reconciliation.cost_diff_threshold` | platform | float | `0.05` | 0 ~ 1 | 费用差异告警阈值（相对比例） |
+| `LLM_GATEWAY_PROVIDER_PROFILE_COST_RECONCILIATION_ENABLED` | `provider_profile.cost_reconciliation.enabled` | platform | bool | `false` |  | 启用费用对账（网关用量 vs 上游账单差异） |
+| `LLM_GATEWAY_PROVIDER_PROFILE_COST_RECONCILIATION_INTERVAL` | `provider_profile.cost_reconciliation.interval` | platform | int | `86400` | 300 ~ 259200 | 费用对账周期（秒），默认24小时 |
+| `LLM_GATEWAY_PROVIDER_PROFILE_COST_RECONCILIATION_TOKEN_DIFF_THRESHOLD` | `provider_profile.cost_reconciliation.token_diff_threshold` | platform | float | `0.05` | 0 ~ 1 | token 差异告警阈值（相对比例） |
 | `LLM_GATEWAY_PROVIDER_PROFILE_ENABLED` | `provider_profile.enabled` | platform | bool | `false` |  | 启用供应商画像系统（7维度供应商质量评分） |
 | `LLM_GATEWAY_PROXY_DEFAULT_BANNED_REGIONS` | `proxy.default_banned_regions` | platform | string | `HK` |  | 代理出口平台级默认禁用地区（逗号分隔地区码）（csv） |
 | `LLM_GATEWAY_ROUTING_NODE_DISABLED_COOLDOWN_SECONDS` | `routing.node_disabled_cooldown_seconds` | platform | int | `300` | 30 ~ 7200 | 节点 Disabled 冷却时长（秒） |
 | `LLM_GATEWAY_ROUTING_NODE_FAIL_STREAK_LIMIT` | `routing.node_fail_streak_limit` | platform | int | `3` | 1 ~ 10 | 节点连续失败熔断阈值（次） |
 | `LLM_GATEWAY_ROUTING_STICKY_FAILURE_THRESHOLD` | `routing.sticky_failure_threshold` | platform | int | `2` | 1 ~ 10 | Sticky 连续失败踢出阈值（次） |
+| `LLM_GATEWAY_SANITIZE_RULES_AUDIT_ENABLED` | `sanitize.rules.audit_enabled` | platform | bool | `true` |  | 脱敏规则命中审计 |
+| `LLM_GATEWAY_SANITIZE_RULES_EVENT_LIMIT` | `sanitize.rules.event_limit` | platform | int | `10000` | 100 ~ 100000 | 脱敏规则审计保留量（条） |
+| `LLM_GATEWAY_SANITIZE_RULES_REFRESH_INTERVAL_SECONDS` | `sanitize.rules.refresh_interval_seconds` | platform | int | `5` | 1 ~ 300 | 脱敏规则刷新周期（秒） |
 | `LLM_GATEWAY_SA_CLUSTER_MODE` | `session_analytics.cluster_mode` | tenant | enum | `hybrid` | off / rule / vector / hybrid | 相似会话聚类模式 |
 | `LLM_GATEWAY_SA_CLUSTER_SCHEDULE` | `session_analytics.cluster_schedule` | tenant | string | `1h` |  | 聚类运行周期 |
 | `LLM_GATEWAY_SA_MODEL_CLUSTER_LABEL` | `session_analytics.model.cluster_label` | tenant | string | `auto` |  | 聚类标签模型 |
@@ -112,6 +120,9 @@ settings 注册表（PlatformSpecs/TenantSpecs/模块级规格）中带 EnvName 
 | `LLM_GATEWAY_SECURITY_SENSITIVE_BLOCK_SCORE` | `security.sensitive_block_score` | platform | float | `0.6` | 0.1 ~ 1 | 敏感词高危阻断阈值（分） |
 | `LLM_GATEWAY_SECURITY_SENSITIVE_WARN_SCORE` | `security.sensitive_warn_score` | platform | float | `0.3` | 0.05 ~ 1 | 敏感词中危告警阈值（分） |
 | `LLM_GATEWAY_SESSIONS_SUMMARY_PER_TURN_DIGEST` | `sessions_summary_per_turn_digest` | platform | bool | `false` |  | 会话摘要改用逐轮人读摘要（user 提问 + assistant 回复要点）作为输入，默认关闭（开关） |
-| `LLM_GATEWAY_SESSIONS_V2_COMPRESSION_READ` | `sessions_v2_compression_read` | platform | bool | `true` |  | Read session state (compression + summaries) from V2 (session_bodies) instead of V1 (request_logs). Default on; set false to revert to V1. |
+| `LLM_GATEWAY_SESSIONS_V2_COMPRESSION_READ` | `sessions_v2_compression_read` | platform | bool | `true` |  | Read session state (compression + summaries) from V2 (session_bodies). Default on. ★ 2026-10-24: the V1 fallback (_request_logs) was physically dropped by migration 890, so setting this false no longer has a V1 side to fall back to. |
 | `LLM_GATEWAY_SESSION_ANALYTICS_ENABLED` | `session_analytics.enabled` | platform | bool | `false` |  | 启用会话全景分析 |
 | `LLM_GATEWAY_SESSION_SERVICE_JWT_ENABLED` | `session_service_auth.enabled` | platform | bool | `false` |  | 启用会话服务 JWT |
+| `LLM_GATEWAY_SURVIVAL_INTERACTIVE_DEADLINE_SECONDS` | `survival.interactive_deadline_seconds` | platform | int | `0` | 10 ~ 18000 | 流式请求生存协调器的交互等待预算（秒），0=用部署配置值（默认 240） |
+| `LLM_GATEWAY_SURVIVAL_STREAM_CONTINUATION_ENABLED` | `survival.stream_continuation_enabled` | platform | bool | `false` |  | 断流原地续问（默认关闭）：仅经能力白名单确认的官方上游，且未开始工具调用时，以已发文本续问一次。关闭时按 eof_without_done 终态化。 |
+| `LLM_GATEWAY_URSM_HEALTHY_RECONCILE_INTERVAL_SECONDS` | `ursm.healthy_reconcile_interval_seconds` | platform | int | `60` |  ~ 86400 | URSM 健康键协调器周期（秒），≤0 表示停用 |

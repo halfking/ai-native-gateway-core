@@ -238,7 +238,7 @@ LLM Gateway Go 是**企业级大模型统一接入网关**：为多租户企业�
 | NFR-10 | 可扩展 | 单进程巨石 + runtime_role 角色拆分 + 插件运行时 | CURRENT（水平拆分为 TARGET） |
 | NFR-11 | 国际化 | 前后端各 8 语言（ar/de/en/es/fr/ja/zh-CN/zh-TW） | CURRENT |
 | NFR-12 | 数据治理 | 分区归档/保留期/审计裁剪/一致性对账 worker 体系 | CURRENT |
-| NFR-13 | 兼容性 | Go 1.27.1；h2c 同端口 HTTP/1.1+2；PG 15+；Redis 7+（lite 模式两者皆免） | CURRENT |
+| NFR-13 | 兼容性 | Go 1.27.2；h2c 同端口 HTTP/1.1+2；PG 15+；Redis 7+（lite 模式两者皆免） | CURRENT |
 
 ## 6. 全局约束与不变量（设计必须遵守）
 

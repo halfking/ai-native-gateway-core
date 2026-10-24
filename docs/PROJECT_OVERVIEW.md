@@ -26,7 +26,7 @@ LLM Gateway Go 是一个**企业级大语言模型网关系统**，为企业提�
 
 | 类别 | 技术选型 |
 |------|----------|
-| **核心语言** | Go 1.27.1 |
+| **核心语言** | Go 1.27.2 |
 | **Web框架** | Gin/Echo (数据面), Vue 3 + TypeScript (管理面板) |
 | **数据库** | PostgreSQL 14+ (RLS + 分区表 + 列存) |
 | **缓存/状态** | Redis 7+ (URSM状态、限流、会话、队列) |
@@ -161,9 +161,9 @@ Client Request
 - **实例注册**: 启动时自动向主控端注册，60s心跳上报状态（online/degraded/offline）
 
 **关键文件**:
-- `licensing/client/activation.go` - 激活客户端
-- `licensing/validator/` - License验证器
-- `installer/internal/activator/` - 安装器激活模块
+- `licensing/activator.go` - 激活客户端
+- `licensing/validator.go` - License验证器
+- `installer/internal/activation/` - 安装器激活模块
 
 ### 3.2 智能路由系统
 
@@ -187,9 +187,9 @@ Client Request
 |------|------|------|
 | **Cost-Optimized** | `router_scoring.go` | 成本惩罚 0.15 参与 P2C 综合分（2026-09-19 起默认开，env 可关；非成本主导） |
 | **Quality-Aware** | `autoroute/scorer/quality.go` | 质量优先 |
-| **Context-Aware** | `autoroute/scorer/context.go` | 上下文窗口优先 |
-| **Cache-Optimized** | `cache/scorer.go` | 缓存命中优先 |
-| **Headroom** | `autoroute/scorer/headroom.go` | 剩余配额优先 |
+| **Context-Aware** | `domains/streaming/executors/strategy_context.go` | 上下文窗口优先 |
+| **Cache-Optimized** | `domains/streaming/executors/strategy_cache.go` | 缓存命中优先 |
+| **Headroom** | `domains/streaming/executors/strategy_headroom.go` | 剩余配额优先 |
 
 #### 重试策略
 
@@ -216,7 +216,7 @@ Client Request
 - **并发控制**: FP槽位管理，动态并发限制
 
 **关键组件**:
-- `domains/credential/fp_slot.go` - FP槽位管理
+- `credentialfpslot/slot.go` - FP槽位管理
 - `domains/health/composite.go` - 健康状态聚合
 - `bg/active_probe_executor.go` - 探测执行器
 
@@ -231,9 +231,9 @@ Client Request
 - **Pre-stream心跳**: Anthropic header透传 + stall-only超时（无wall-clock cap）
 
 **关键文件**:
-- `domains/streaming/stream_relay.go` - 流式中继核心
+- `domains/streaming/stream.go` - 流式中继核心
 - `domains/streaming/integrity/detector.go` - 完整性检测
-- `internal/vendorstrip/openai.go` - OpenAI字段过滤
+- `internal/vendorstrip/strip.go` - 统一过滤上游厂商私有字段
 
 ### 3.5 多租户与身份隧道
 
@@ -247,7 +247,7 @@ Client Request
 
 **关键文件**:
 - `domains/tenant/resolver.go` - 租户解析
-- `domains/identity/tunnel.go` - 身份隧道
+- `domains/identity/egress.go` - 身份隧道
 - `middleware/tenant_context.go` - 租户上下文
 
 ### 3.6 会话管理 (Sessions V2)
@@ -261,9 +261,9 @@ Client Request
 - **Session分析**: `domains/sessiondigest/` 会话摘要生成
 
 **关键文件**:
-- `domains/session/v2/persister.go` - V2持久化
-- `domains/sessionstate/manager.go` - 状态管理
-- `domains/requestdetail/archiver.go` - 请求体归档
+- `domains/session/v2/session_writer_v2.go` - V2持久化
+- `domains/sessionstate/state_machine.go` - 状态管理
+- `domains/requestdetail/store.go` - 请求体归档
 
 ### 3.7 后台Worker系统
 
@@ -277,10 +277,10 @@ Client Request
 | **自动路由结算** | `auto_route_settle_worker.go` | 路由反馈收集 |
 | **审计清理** | `audit_trimmer.go` | 审计数据清理 |
 | **分区管理** | `partition_manager.go` | 分区表自动维护 |
-| **质量监控** | `quality_monitor_worker.go` | 模型质量监控 |
+| **质量监控** | `bg/model_quality_worker.go` | 模型质量监控 |
 | **系统监测** | `systemmonitor/monitor.go` | Redis队列 + 30s去重 |
-| **统计聚合** | `stats_aggregator.go` | 统计数据聚合 |
-| **会话摘要** | `session_digest_worker.go` | 会话摘要生成 |
+| **统计聚合** | `bg/stats_minute_rollup.go` | 统计数据聚合 |
+| **会话摘要** | `domains/session/v2/session_digest_backfill.go` | 会话摘要生成 |
 
 **启动控制**: `cmd/gateway/main.go` 统一装配，支持 graceful shutdown
 
@@ -442,7 +442,7 @@ Admin API文件:      737 个
   - `codeup` (origin) - 日常开发
   - `github` - 公开镜像（自动严格扫描）
 - **提交规范**: Conventional Commits (feat/fix/docs/refactor...)
-- **Pre-push扫描**: 49条规则敏感信息扫描
+- **Pre-push扫描**: 50条规则敏感信息扫描
 
 ---
 

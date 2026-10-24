@@ -110,7 +110,7 @@ HTTP/SSE → middleware chain → protocol/IR normalization → session assignme
 | `bg/` | 后台 worker —— 探测、生命周期清理、统计聚合、分区维护 |
 | `storage/` | 双模式存储工厂（`full`：PG+Redis / `lite`：SQLite+文件+进程内 KV） |
 | `internal/` | 横切基础设施 —— IR、vendor 字段剥离、会话镜像、outbox、遥测… |
-| `sql/migrations/` + `db/migrations/` | 幂等迁移（startup 系列当前到 902） |
+| `sql/migrations/` + `db/migrations/` | 幂等迁移（startup 系列当前到 907） |
 | `installer/` | 独立跨平台安装器 / 升级器模块 |
 | `scripts/`、`deploy/` | 构建、部署、镜像与校验工具 |
 
@@ -132,7 +132,7 @@ HTTP/SSE → middleware chain → protocol/IR normalization → session assignme
 - **粘性会话绑定**：会话与凭据绑定，模型切换与故障转移后对话上下文不丢失 —— 任务中途不会发生静默的上下文丢失
 - **会话级审计与回放**：system prompt + 响应内容完整留存、可逐会话回放（生产环境已留存 13,000+ 会话），字段覆盖任务类型、客户端模型、出站模型、供应商、Token、延迟与结束原因 —— 可按 Key / 租户 / 时间段切片，支撑排查与合规审计
 - **自动提示词压缩**：当请求接近供应商真实上下文窗口（约 80% 触发）时，在分发前执行消息级压缩 —— 长 Agent 会话适配更小窗口而不是直接失败。每次压缩事件（策略、阈值、压缩前后大小）都记录在请求上
-- **会话元数据智能**：自动任务类型标注（10 类工作类型）、项目归属、标题提取，把原始流量变成可检索的知识
+- **会话元数据智能**：自动任务类型标注（27 类工作类型）、项目归属、标题提取，把原始流量变成可检索的知识
 - **身份隧道**：Agent 流量通过 virtual IP/MAC/ClientID 归属 —— 即使大量 Agent 共享同一出口，多租户隔离依然成立
 - **4 档数据生命周期**：热（0–7 天）/ 温（7–30 天）/ 冷（30–90 天）/ 过期（>90 天），配归档预览 —— 执行前先告诉你"具体会动哪些数据"
 
@@ -172,7 +172,7 @@ HTTP/SSE → middleware chain → protocol/IR normalization → session assignme
 ### 工作类型配置 — 任务自动分类
 
 ![工作类型](docs/assets/screenshots/work-types.png)
-*任务自动分类（10 类工作类型），附 24h 分布、Top 模型与路由决策统计 —— 可在管理界面按工作类型配置*
+*任务自动分类（27 类工作类型），附 24h 分布、Top 模型与路由决策统计 —— 可在管理界面按工作类型配置*
 
 ### 免费资源池
 

@@ -110,7 +110,7 @@ HTTP/SSE → middleware chain → protocol/IR normalization → session assignme
 | `bg/` | Workers en arrière-plan — probing, nettoyage du cycle de vie, agrégation de stats, maintenance des partitions |
 | `storage/` | Factory de stockage double mode (`full` : PG+Redis / `lite` : SQLite+fichiers+KV en processus) |
 | `internal/` | Infra transverse — IR, strip des champs fournisseurs, miroir de session, outbox, télémétrie… |
-| `sql/migrations/` + `db/migrations/` | Migrations idempotentes (série de démarrage actuellement à 902) |
+| `sql/migrations/` + `db/migrations/` | Migrations idempotentes (série de démarrage actuellement à 907) |
 | `installer/` | Module autonome d’installation / mise à niveau multiplateforme |
 | `scripts/`, `deploy/` | Outillage de build, déploiement, miroir et vérification |
 
@@ -132,7 +132,7 @@ La plupart des passerelles traitent chaque requête comme un événement isolé.
 - **Liaison de session collante** : les sessions sont épinglées à des credentials afin que le contexte de conversation survive aux changements de modèle et aux failovers — aucune perte de contexte silencieuse en pleine tâche
 - **Audit et replay au niveau session** : les system prompts et réponses complets sont conservés et rejouables par session (13 000+ sessions en production), couvrant type de tâche, modèle client, modèle sortant, fournisseur, tokens, latence et motif de fin — découpables par clé / tenant / plage temporelle pour le dépannage et la conformité
 - **Compression automatique de prompt** : quand une requête approche de la fenêtre de contexte réelle du fournisseur (déclencheur à ~80 %), une compression au niveau des messages s’exécute avant l’envoi — les longues sessions d’agents tiennent dans des fenêtres plus petites au lieu d’échouer. Chaque événement de compression (stratégie, seuil, tailles avant/après) est enregistré sur la requête
-- **Intelligence des métadonnées de session** : étiquetage automatique du type de travail (10 types de travail), attribution de projet et extraction de titre transforment le trafic brut en connaissances cherchables
+- **Intelligence des métadonnées de session** : étiquetage automatique du type de travail (27 types de travail), attribution de projet et extraction de titre transforment le trafic brut en connaissances cherchables
 - **Tunnel d’identité** : le trafic des agents est rattaché via IP/MAC/ClientID virtuels afin que l’isolation multi-tenant tienne même quand de nombreux agents partagent une seule sortie (egress)
 - **Cycle de vie des données en 4 niveaux** : chaud (0–7 j) / tiède (7–30 j) / froid (30–90 j) / expiré (>90 j) avec aperçu avant archivage — « voici exactement ce qui va bouger » avant l’exécution
 
@@ -172,7 +172,7 @@ Tous les modules ci-dessous sont livrés et tournent dans le déploiement de pro
 ### Configuration des types de travail — auto-classification des tâches
 
 ![Work Types](docs/assets/screenshots/work-types.png)
-*Auto-classification des tâches (10 types de travail) avec distribution sur 24 h, modèles les plus utilisés et stats des décisions de routage — configurable par type de travail dans l’UI d’admin*
+*Auto-classification des tâches (27 types de travail) avec distribution sur 24 h, modèles les plus utilisés et stats des décisions de routage — configurable par type de travail dans l’UI d’admin*
 
 ### Pool de ressources gratuit
 
