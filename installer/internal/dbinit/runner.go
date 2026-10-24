@@ -1590,6 +1590,16 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			//   ⇒ ★ 这 ~18.5 秒里 session_turns 的写入被 SHARE 锁阻塞
 			//   ⇒ 落在低峰窗口。
 			"905_turns_session_model_index.sql",
+			// ★ R94：给「会话列表的 api_key 回填」补**部分索引**。
+			//   探针会话（sys:probe:*）的 api_key_id 全是 NULL ⇒ 过滤条件
+			//   无法从索引判定 ⇒ 必须回表 ⇒ 实测扫 82,297 行堆、全部被过滤掉、
+			//   产出 0 行，却花了 1,350~1,569 ms。
+			//   部分索引只含「api_key_id 是数字」的行 ⇒ 探针流量在索引里一行
+			//   都没有 ⇒ Index Only Scan ⇒ 实测 **4.57 ms**（295×）。
+			//   ★ 谓词必须与 db.SessionFamilyAPIKeyIDNumericPredExpr 逐字一致
+			//   （PG 的谓词蕴含判定是语法的 ⇒ 写成 CASE 形式就认不出来）。
+			//   实测构建 6,026 ms（父表）+ 21 ms（hot）。
+			"906_turns_api_key_numeric_partial_index.sql",
 		},
 	}
 }
