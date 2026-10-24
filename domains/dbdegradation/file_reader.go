@@ -32,12 +32,15 @@ type cachedBackupFile struct {
 const (
 	// summaryCacheTTLDefault 摘要缓存的默认有效期。
 	//
-	// ★ 生产实测：一次完整重算要解压 **5.18GB / 100 个备份文件**（~48s）
-	//	⇒ 有效期必须**远大于**重算耗时，否则会变成「一直在重算」。
-	//	⇒ 30min ⇒ 稳态 CPU ≈ 48s / 30min ≈ 2.7% 单核。
-	summaryCacheTTLDefault = 30 * time.Minute
+	// ★ R81 轮按实测重算：全量重算 = 100 个文件 × ~5~8s（流式）≈ **8~13min**
+	//	⇒ TTL 必须**远大于**重算耗时，否则会变成「一直在重算」（纯烧 CPU）。
+	//	⇒ 6h ⇒ 稳态 CPU ≈ 13min / 6h ≈ **3.6% 单核**。
+	summaryCacheTTLDefault = 6 * time.Hour
 	// summaryComputeBudget 后台重算的预算（远大于端点的 5s 请求预算）。
-	summaryComputeBudget = 10 * time.Minute
+	//
+	// ★ R81 轮：实测全量重算 ~8~13min ⇒ 30min 预算足够跑完
+	//	（★ 预算太小 ⇒ 后台**永远算不完** ⇒ 每轮都白烧一次 CPU）。
+	summaryComputeBudget = 30 * time.Minute
 )
 
 // cachedBackupSummary 是 GetBackupSummary 的**整体结果**缓存。
@@ -335,6 +338,74 @@ func (fr *FileReader) readFileSummary(ctx context.Context, filename string) (*Ba
 	return file, sessionSet, nil
 }
 
+// readFileSummaryStreaming 与 `readFileSummary` 同义，但走**纯流式**读。
+//
+// ★ R81 轮（2026-10-24）为什么必须有它（实测，154 生产）：
+//
+//	同一个 106MB 备份文件：
+//	  - `gzip -dc | wc -l`（纯解压）        = **2.92s**
+//	  - 网关摘要路径（旧，打捞路径）           = **~45s**
+//	⇒ 差 ~15×，差在**打捞路径的 member 边界搜索**
+//	（`gzipMemberEnd` 用「指数查找 + 二分查找」逐个**试解**前缀
+//	  ⇒ 同一个文件被**反复完整解码 ~20~30 次**）。
+//
+// ⇒ 摘要只是要「计数」，**不需要打捞**（打捞是给「恢复」链路用的）⇒
+//
+//	⇒ 摘要链路改走纯流式 ⇒ 成本降 ~15×。
+//	⚠ 口径不变：完好文件上，流式与打捞读出的记录数/会话数**逐字相同**
+//	（由 `TestR81StreamingSummaryMatchesSalvageCounts` 钉住）。
+//	⚠ 损坏文件：流式会报错 ⇒ 该文件被计入「失败」⇒ 摘要标 **partial**
+//	（诚实：打捞路径只在**恢复**链路才需要）。
+func (fr *FileReader) readFileSummaryStreaming(ctx context.Context, filename string) (*BackupFile, map[string]struct{}, error) {
+	path, err := fr.backupPath(filename)
+	if err != nil {
+		return nil, nil, err
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, nil, fmt.Errorf("stat file: %w", err)
+	}
+
+	date := strings.TrimPrefix(filename, "sessions-")
+	date = strings.TrimSuffix(date, ".jsonl.gz")
+
+	file := &BackupFile{
+		Filename:   filename,
+		Path:       path,
+		Date:       date,
+		Size:       info.Size(),
+		CreatedAt:  info.ModTime(),
+		ModifiedAt: info.ModTime(),
+	}
+
+	sessionSet := make(map[string]struct{})
+	recordCount := 0
+
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, nil, fmt.Errorf("open file: %w", err)
+	}
+	defer f.Close()
+
+	// ★ 计一次解压（与 ReadRecordsWithStats 同口径 ⇒ 「每个文件只解压一遍」可断言）
+	atomic.AddInt64(&fr.fileReads, 1)
+
+	if err := readGzipStream(ctx, f, func(record BackupRecord) error {
+		recordCount++
+		sessionSet[record.SessionID] = struct{}{}
+		return nil
+	}); err != nil {
+		slog.Warn("file reader: failed to count records (streaming)", "filename", filename, "error", err)
+		file.RecordCount = recordCount
+		file.SessionCount = len(sessionSet)
+		return file, sessionSet, fmt.Errorf("统计不完整（%s）：%w", filename, err)
+	}
+
+	file.RecordCount = recordCount
+	file.SessionCount = len(sessionSet)
+	return file, sessionSet, nil
+}
+
 // GetFileSummary 获取单个文件的统计信息
 //
 // ★ R80 轮：**契约不变**（仍然吞掉统计错误 ⇒ 调用方拿到的还是那个 file），
@@ -468,7 +539,7 @@ func (fr *FileReader) computeSummary(ctx context.Context, files []BackupFile) (*
 	for _, file := range files {
 		// ★ R80 轮：**一趟**读出「文件元信息 + 记录数 + 该文件的 session 集合」
 		//	⇒ 不再为「跨文件唯一 session 数」**再解压一遍**（旧实现每个文件解压两遍）。
-		detailed, sessions, err := fr.readFileSummary(ctx, file.Filename)
+		detailed, sessions, err := fr.readFileSummaryStreaming(ctx, file.Filename)
 		if err != nil {
 			// ★ 统计不完整（ctx 截断 / 文件不可读）⇒ **必须记账**
 			failed++
