@@ -68,6 +68,13 @@ test-short: ## 短模式，跳过 -short=false 的测试
 #   ⇒ 前三个包名不以 guard 结尾 ⇒ guards-sync.sh 的命名检查会**告警**（不拦），
 #      那是因为它们是**契约包**（被生产代码引用）而不是守卫包。
 #
+# ★ 2026-10-24 P2-2 再补 2 个包：./internal/extpointledger（扩展点台账）
+#   与 ./domains/hooks/response（响应拦截链 —— 台账的接线证明在那儿）。
+#   ⇒ 实测（干净环境）：0.4s / 0.9s，绿。
+#   ⚠ ★ **admin 包故意不登记**：它的测试套件实测 **65.8s**，逼近本快门的
+#   `-timeout=120s` ⇒ 拖进来会把 CI 拖到超时 ⇒ 它的门**故意不带**
+#   `AUDIT-GUARD` 标记（主要判据放在 internal/extpointledger 与 scripts/ursmcheck）。
+#
 # 为什么要补：这个包里的门（208 号 storage_reclaim_guard_test.go、209/210 号
 # handrun_sql_inventory_test.go、objects_registry_test.go）在**任何 CI job 里都不会跑** ——
 #   ① `make guards` 只跑本行登记的包，而本行原先只有 ./internal/*；
@@ -108,7 +115,7 @@ test-short: ## 短模式，跳过 -short=false 的测试
 #   ⇒ ⇒ 仓库里一直没有任何人真正看到过绿色的审计门。
 #   ⇒ ⇒ 这是本轮挖到的最刺眼的一条**流程闭环**断裂：**门写了、没接线，
 #      而接线的那道门自己也是红的 ⇒ 没人发现。**
-GUARD_PACKAGES := ./internal/rowsguard ./internal/errdiscard ./internal/dbrows ./internal/jsoncol ./internal/paramguard ./internal/sqlguard ./internal/sqlreadguard ./internal/metricguard ./internal/partguard ./internal/routeguard ./internal/ingressguard ./internal/healthstateguard ./internal/billguard ./internal/jsonbguard ./internal/clockguard ./internal/stopguard ./internal/testguard ./sql/schema ./internal/rewrite ./internal/routeorder ./internal/requestobserver ./domains/credential ./domains/authentication
+GUARD_PACKAGES := ./internal/rowsguard ./internal/errdiscard ./internal/dbrows ./internal/jsoncol ./internal/paramguard ./internal/sqlguard ./internal/sqlreadguard ./internal/metricguard ./internal/partguard ./internal/routeguard ./internal/ingressguard ./internal/healthstateguard ./internal/billguard ./internal/jsonbguard ./internal/clockguard ./internal/stopguard ./internal/testguard ./sql/schema ./internal/rewrite ./internal/routeorder ./internal/requestobserver ./domains/credential ./domains/authentication ./internal/extpointledger ./domains/hooks/response
 
 # ★★★ 2026-10-22 12h 审计轮：./scripts/ursmcheck 此前**不在任何强制执行路径**上。
 #
