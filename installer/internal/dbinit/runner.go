@@ -1600,6 +1600,13 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			//   （PG 的谓词蕴含判定是语法的 ⇒ 写成 CASE 形式就认不出来）。
 			//   实测构建 6,026 ms（父表）+ 21 ms（hot）。
 			"906_turns_api_key_numeric_partial_index.sql",
+			// ★ R96：routing_analytics_source 换成「会话族两腿 + LATERAL 回定位」
+			//   ⇒ 消除刷新链里 45 万行 session_turn_details 顺序扫
+			//   （252 实测中位 4,482.8 ms → 2,270.8 ms；最坏一轮 20,378.6 → 1,917.1 ms）。
+			//   ★ 口径逐行等价（源层/聚合层双向 EXCEPT ALL 均 0/0）。
+			//   ★ 零 DDL：只做 CREATE OR REPLACE VIEW（保留 OID ⇒ matview 依赖不动，
+			//     下一次 REFRESH 自动采用新定义 ⇒ **不需要重建 matview**）。
+			"907_routing_analytics_source_lateral.sql",
 		},
 	}
 }

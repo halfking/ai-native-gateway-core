@@ -4161,7 +4161,55 @@ func (d *DB) ensureRoutingAnalyticsColumns(ctx context.Context) error {
 // (admin/auto_route.go) reads COALESCE(auto_profile, 'unknown') directly from
 // this source view. It must stay the LAST column in both UNION branches:
 // CREATE OR REPLACE VIEW can only append columns, never reorder existing ones.
-const routingAnalyticsMVSQL = `
+// RoutingAnalyticsSourceViewDDL 是 `routing_analytics_source` 视图体的**唯一真源**
+// （R96 轮新增；迁移 907 的 SQL 文件是它的 DBA 面向镜像，门禁逐字比对两者）。
+//
+// ★★ 为什么要换形（R96 轮 252 生产实测，详见审计档
+// `docs/audit/2026-10-27-R96-routing-analytics刷新链-LATERAL回定位.md`）：
+//
+//	旧体：SELECT 15 列 FROM request_logs_with_current_month
+//	      ⇒ 该 canonical 视图是 `session_turns_hot ∪ session_turns`
+//	        **LEFT JOIN session_turn_details(_hot)** 的 118 列投影
+//	      ⇒ 规划器只能选 **Hash Join**，details 侧必须**顺序扫全部分区**
+//	        （2026_09 326,497 + 2026_10 128,517 + 18 + 18 = 45 万行，
+//	          Buffers shared hit=95,086 ≈ 743 MB）
+//
+//	新体：**直接从会话族两腿取 12 列**，details 的 3 列
+//	      （client_model / provider_id / auto_profile）用
+//	      **LEFT JOIN LATERAL (... LIMIT 1) 回定位**
+//	      ⇒ 每次探测走 details 的唯一索引 (tenant_id, request_id, partition_date)
+//	        ⇒ **只读窗口内真正需要的行**，不再顺序扫 45 万行。
+//
+// ★ 口径等价（252 生产实测）：
+//
+//	· 源层双向 EXCEPT ALL（1,110,635 行，同一语句⇒同一快照）：only_old=0 / only_new=0
+//	· 聚合层（matview 输出口径）双向 EXCEPT ALL：c1_only_old=0 / c1_only_new=0
+//	· 逐列类型对拍：15 列列名与类型逐列一致（CREATE OR REPLACE 的列契约）
+//
+// ★★ LIMIT 1 的等价性前提：details 的唯一键是 (tenant_id, request_id, partition_date)
+//
+//	且 partition_date 是分区键 ⇒ 同一分区同一键最多 1 行 ⇒ LEFT JOIN 与
+//	LEFT JOIN LATERAL(... LIMIT 1) **产出同样的行集合**。
+//	（门禁 `TestRoutingAnalyticsSourceGates_RealDB` 与
+//	  `TestRoutingAnalyticsSourceViewMatchesCanonicalOnRealDB` 钉住这一点。）
+//
+// ★ 实测收益（252，3 轮交错 A/B，取中位）：
+//
+//	旧体 4,482.8 ms（最坏一轮冷缓存 20,378.6 ms）｜新体 2,270.8 ms
+//	⇒ 中位 **2.0×**，冷缓存轮 **10.6×**；缓存读 177,829 → 250,701（探测量换来的）
+//
+// ★★ **不加任何索引**：实测里另建的覆盖索引
+//
+//	(tenant_id, request_id, partition_date) INCLUDE (client_model, provider_id, auto_profile)
+//	**没有被规划器选中**（它比既有唯一索引更大 ⇒ 估算更贵 ⇒ 选了既有那条 + Heap Fetches）
+//	⇒ ★ **覆盖索引白建** ⇒ 本轮**零 DDL**（只换视图体 ⇒ 迁移只做 CREATE OR REPLACE VIEW）。
+//
+// ★ 列契约（CREATE OR REPLACE 只能加列、不能改名列/次序/类型）：
+//
+//	列名/类型/次序与旧体**逐位一致**（15 列）。
+//	⚠ auto_profile 必须仍居**末位**（admin/auto_route.go 直接读它）。
+//	⚠ 注释里**不许出现反引号**：本段 SQL 在 Go raw string 里，反引号会提前终止字符串。
+const RoutingAnalyticsSourceViewDDL = `
 		-- Keep analytics isolated from the frozen request-log wrapper view. The
 		-- narrow source has stable types across hot and parent partitions and
 		-- explicitly exposes origin_stage for probe filtering.
@@ -4172,6 +4220,8 @@ const routingAnalyticsMVSQL = `
 		-- _request_logs 换成 canonical 视图 request_logs_with_current_month。
 		-- 停写后新流量只落 session_turns(_hot)，裸 v1 双腿会让整套自动路由
 		-- 分析（matrix/flow/funnel 端点与 7d 物化视图）随热窗排空静默归零。
+		-- 2026-10-24 R96 轮：源再从 canonical 视图换成**会话族两腿 + LATERAL 回定位**
+		-- （口径逐行等价见上；收益与不加索引的理由见上）。
 		-- 15 列全部在 118 列契约内、列名/类型/次序与旧体逐位一致（CREATE
 		-- OR REPLACE 的列契约；auto_profile 仍居末位）。会话臂的
 		-- provider_id/auto_profile/client_model 依赖 734 details 特征层，
@@ -4180,22 +4230,59 @@ const routingAnalyticsMVSQL = `
 		-- ⚠️ 注释里**不许出现反引号**：本段 SQL 在 Go raw string 里，反引号会提前终止字符串。
 		CREATE OR REPLACE VIEW routing_analytics_source AS
 		SELECT
-		  ts,
-		  task_type::text AS task_type,
-		  outbound_model::text AS outbound_model,
-		  client_model::text AS client_model,
-		  work_type::text AS work_type,
-		  provider_id::bigint AS provider_id,
-		  credential_id::bigint AS credential_id,
-		  is_auto_request::boolean AS is_auto_request,
-		  tenant_id::text AS tenant_id,
-		  request_id::text AS request_id,
-		  success::boolean AS success,
-		  latency_ms::numeric AS latency_ms,
-		  cost_usd::numeric AS cost_usd,
-		  origin_stage::text AS origin_stage,
-		  auto_profile::text AS auto_profile
-		FROM request_logs_with_current_month;
+		  t.ts,
+		  t.task_type::text AS task_type,
+		  t.model::text AS outbound_model,
+		  d.client_model::text AS client_model,
+		  t.work_type::text AS work_type,
+		  d.provider_id::bigint AS provider_id,
+		  (CASE WHEN t.credential_id ~ '^[0-9]+$' THEN t.credential_id::bigint ELSE NULL::bigint END)::bigint AS credential_id,
+		  t.is_auto_request::boolean AS is_auto_request,
+		  t.tenant_id::text AS tenant_id,
+		  t.request_id::text AS request_id,
+		  t.success::boolean AS success,
+		  t.latency_ms::numeric AS latency_ms,
+		  t.cost_usd::numeric AS cost_usd,
+		  t.origin_stage::text AS origin_stage,
+		  d.auto_profile::text AS auto_profile
+		FROM public.session_turns_hot t
+		LEFT JOIN LATERAL (
+		  SELECT dd.client_model, dd.provider_id, dd.auto_profile
+		  FROM public.session_turn_details_hot dd
+		  WHERE dd.tenant_id = t.tenant_id
+		    AND dd.request_id = t.request_id
+		    AND dd.partition_date = t.partition_date
+		  LIMIT 1
+		) d ON TRUE
+		UNION ALL
+		SELECT
+		  t.ts,
+		  t.task_type::text AS task_type,
+		  t.model::text AS outbound_model,
+		  d.client_model::text AS client_model,
+		  t.work_type::text AS work_type,
+		  d.provider_id::bigint AS provider_id,
+		  (CASE WHEN t.credential_id ~ '^[0-9]+$' THEN t.credential_id::bigint ELSE NULL::bigint END)::bigint AS credential_id,
+		  t.is_auto_request::boolean AS is_auto_request,
+		  t.tenant_id::text AS tenant_id,
+		  t.request_id::text AS request_id,
+		  t.success::boolean AS success,
+		  t.latency_ms::numeric AS latency_ms,
+		  t.cost_usd::numeric AS cost_usd,
+		  t.origin_stage::text AS origin_stage,
+		  d.auto_profile::text AS auto_profile
+		FROM public.session_turns t
+		LEFT JOIN LATERAL (
+		  SELECT dd.client_model, dd.provider_id, dd.auto_profile
+		  FROM public.session_turn_details dd
+		  WHERE dd.tenant_id = t.tenant_id
+		    AND dd.request_id = t.request_id
+		    AND dd.partition_date = t.partition_date
+		  LIMIT 1
+		) d ON TRUE;`
+
+const routingAnalyticsMVSQL = `
+` + RoutingAnalyticsSourceViewDDL + `
 
 		CREATE MATERIALIZED VIEW IF NOT EXISTS routing_analytics_7d AS
 	SELECT
@@ -4368,7 +4455,14 @@ func (d *DB) ensureRoutingAnalyticsMaterializedViews(ctx context.Context) error 
 			   AND POSITION('auto_profile' IN COALESCE(pg_get_viewdef(to_regclass('public.routing_analytics_source'), true), '')) > 0
 			   -- Match the stale-definition gate below: migration 837's source
 			   -- has the current columns but still reads the legacy log tables.
-			   AND POSITION('request_logs_with_current_month' IN COALESCE(pg_get_viewdef(to_regclass('public.routing_analytics_source'), true), '')) > 0
+			   -- ★ R96 轮：source 视图换成「会话族两腿 + LATERAL 回定位」后不再引用
+			   -- request_logs_with_current_month ⇒ 这里必须**同时接受两形**
+			   -- （旧形 canonical / 新形 session_turn_details）⇒ 否则新形被判陈旧
+			   -- ⇒ 走 CASCADE 重建路径（启动期 minutes 级），而重建并非本轮需要。
+			   AND (
+			     POSITION('request_logs_with_current_month' IN COALESCE(pg_get_viewdef(to_regclass('public.routing_analytics_source'), true), '')) > 0
+			     OR POSITION('session_turn_details' IN COALESCE(pg_get_viewdef(to_regclass('public.routing_analytics_source'), true), '')) > 0
+			   )
 			   AND POSITION('origin_stage' IN COALESCE(pg_get_viewdef(to_regclass('public.routing_analytics_7d'), true), '')) > 0
 		   AND POSITION('origin_stage' IN COALESCE(pg_get_viewdef(to_regclass('public.routing_audit_summary_7d'), true), '')) > 0
 		   -- Migration 837: a definition still carrying refreshed_at is the
@@ -4425,7 +4519,12 @@ func (d *DB) ensureRoutingAnalyticsMaterializedViews(ctx context.Context) error 
 					-- 缺该引用 = 本轮视图化未应用 ⇒ 判陈旧走下方 CASCADE 重建
 					-- 路径（一次性代价：两只 MV 随依赖摘除后按新 source 重建，
 					-- refresh 机制回填，与 837 迁移同形）。
-					AND POSITION('request_logs_with_current_month' IN COALESCE(pg_get_viewdef(to_regclass('public.routing_analytics_source'), true), '')) > 0
+					-- ★ R96 轮：与上面 fast-path gate 保持同一口径 —— 两形都算「新」，
+					-- 只有两形都不沾（= pre-S3波2 的 v1 直读体）才判陈旧。
+					AND (
+					  POSITION('request_logs_with_current_month' IN COALESCE(pg_get_viewdef(to_regclass('public.routing_analytics_source'), true), '')) > 0
+					  OR POSITION('session_turn_details' IN COALESCE(pg_get_viewdef(to_regclass('public.routing_analytics_source'), true), '')) > 0
+					)
 				)
 				WHEN to_regclass('public.routing_analytics_7d') IS NOT NULL
 				  OR to_regclass('public.routing_audit_summary_7d') IS NOT NULL

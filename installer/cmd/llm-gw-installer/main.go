@@ -1181,6 +1181,17 @@ var turnsApiKeyNumericPartialIndex906 []byte
 //go:embed embeddata/startup/906_turns_api_key_numeric_partial_index.down.sql
 var turnsApiKeyNumericPartialIndex906Down []byte
 
+// ★ R96：routing_analytics_source 换成「会话族两腿 + LATERAL 回定位」
+//   ⇒ 消除刷新链里 45 万行 session_turn_details 顺序扫
+//   （252 实测中位 4,482.8 ms → 2,270.8 ms；口径逐行等价 EXCEPT ALL 0/0）。
+//   ★ 零 DDL：只做 CREATE OR REPLACE VIEW（实测 245 ms，保留 OID ⇒ matview 依赖不动）。
+
+//go:embed embeddata/startup/907_routing_analytics_source_lateral.sql
+var routingAnalyticsSourceLateral907 []byte
+
+//go:embed embeddata/startup/907_routing_analytics_source_lateral.down.sql
+var routingAnalyticsSourceLateral907Down []byte
+
 //go:embed embeddata/startup/859_tighten_pii_phone_intl_regex.sql
 var tightenPiiPhoneIntlRegex859 []byte
 
@@ -1540,6 +1551,8 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/905_turns_session_model_index.down.sql":                               turnsSessionModelIndex905Down,
 	"startup/906_turns_api_key_numeric_partial_index.sql":                     turnsApiKeyNumericPartialIndex906,
 	"startup/906_turns_api_key_numeric_partial_index.down.sql":                turnsApiKeyNumericPartialIndex906Down,
+	"startup/907_routing_analytics_source_lateral.sql":                    routingAnalyticsSourceLateral907,
+	"startup/907_routing_analytics_source_lateral.down.sql":               routingAnalyticsSourceLateral907Down,
 	"startup/859_tighten_pii_phone_intl_regex.sql":                                   tightenPiiPhoneIntlRegex859,
 	"startup/852_models_canonical_column_set_reconcile.sql":                          modelsCanonicalColumnSetReconcile852,
 	"startup/489_credential_probe_queue_startup_backfill.sql":                        credentialProbeQueueStartupBackfill489,
