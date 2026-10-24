@@ -10007,4 +10007,4 @@ v2 门控只查绑定 ⇒ **漏了探针退避层** ⇒ 12 个样本全 `no_cand
 ★ **本轮【无 SQL 变更、无迁移、无发版】，对生产的写入 = 0**（★ 生产读全部带 `statement_timeout`）。
 ★ **属主裁决项新增**：★ **D1** 429 + 显式配额码改判 `KindRateLimit`（★ 客户端 503/model_not_found ⇒ 429/rate_limit + Retry-After ⇒ **契约面**）；
 ★★ **D2** no_candidate 服务端日志补「排除理由分布」（★ 零契约风险）；★★ **D3** `session_owner_stats` 死对象处置（★ 建议删）。
-★ 完整记录见审计档 `docs/audit/2026-10-27-R149-零候选遮蔽链与归责错配.md` + LESSONS **§388** + AGENTS.md R149 条目。
+★ 完整记录见审计档 `docs/audit/2026-10-27-R149-零候选遮蔽链与归责错配.md` + LESSONS **§394** + AGENTS.md R149 条目。

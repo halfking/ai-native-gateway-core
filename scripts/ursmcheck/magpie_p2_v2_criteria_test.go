@@ -226,6 +226,146 @@ func magpieP2CorpusHas(c magpieP2Corpus, req string) bool {
 	}
 }
 
+// magpieP2IsFailingCall 判断一个调用是不是「**能让测试失败**」的调用。
+//
+// ★★★ 判据 = ★ `t.Error*` / `t.Fatal*`（★ 前缀形态 ⇒ 含 `Errorf` / `Fatalf` / `Error` / `Fatal`）。
+// ★★ 只认**接收者是 `t`**（★ `testing.T` 的惯例名）⇒ ⇒ `log.Errorf` 之类**不算**
+// ★★ （★ 它们不会让测试变红 ⇒ ⇒ 不该把那里的表达式算成「活的」）。
+func magpieP2IsFailingCall(call *ast.CallExpr) bool {
+	sel, ok := call.Fun.(*ast.SelectorExpr)
+	if !ok {
+		return false
+	}
+	recv, ok := sel.X.(*ast.Ident)
+	if !ok || recv.Name != "t" {
+		return false
+	}
+	name := sel.Sel.Name
+	return strings.HasPrefix(name, "Error") || strings.HasPrefix(name, "Fatal")
+}
+
+// magpieP2HasFailingCall 判断一棵子树里有没有「能让测试失败」的调用。
+func magpieP2HasFailingCall(n ast.Node) bool {
+	if n == nil {
+		return false
+	}
+	found := false
+	ast.Inspect(n, func(node ast.Node) bool {
+		if found {
+			return false
+		}
+		if call, ok := node.(*ast.CallExpr); ok && magpieP2IsFailingCall(call) {
+			found = true
+			return false
+		}
+		return true
+	})
+	return found
+}
+
+// magpieP2LiveExprs 收集「**能导致测试失败**」的位置上的表达式（★ **活性面**）。
+//
+// ★★★★ 这是「**存在性 ≠ 活性**」的**第二层**（★ 2026-10-25 第六轮 verifier 的
+// ★★★★ S1 / S2 实测撞出来的）：★ 语料只收「**出现过**」的节点 ⇒ ★★ 于是
+// ★★★★ ① 「**求值即丢弃**」（★ `_ = got.headerID != got.envelopeID`）——
+// ★★★★    表达式**原文还在** ⇒ ★★ 门**认账** ⇒ ★★ 而测试**再也不断言**这件事；
+// ★★★★ ② 「**no-op 字面量**」（★ `_ = "v2pipe-"`）—— 同款 ⇒ ★★ 契约被架空。
+// ★★★★ ⇒ ⇒ 两发都能让「门」与「测试」**同时绿** ⇒ ⇒ ★★ 必须把语料收窄到
+// ★★★★ **「能让测试失败的位置」**。
+//
+// ★★★★ 三条规则：
+// ★ R1 ★ `if` / `switch` / `for` 的**条件**，★ 若它的分支里有失败调用 ⇒ 条件**活**；
+// ★ R2 ★ 失败调用的**实参** ⇒ 活；
+// ★ R3 ★ 赋值的**右侧**，★ 若它的左侧变量出现在**活性面**里 ⇒ 活（★ 定点迭代）。
+//
+// ★★★★ 为什么必须有 R3：★ 形如 `ns, err := strconv.ParseInt(raw, 10, 64)`
+// ★★★★ 的调用**本身**不在任何条件里 ⇒ ★★ 只有 R1 / R2 时它**不算活**
+// ★★★★ ⇒ ★★ 「断言『纳秒部分能被解析成整数』」这条契约就**核不到**（★ 假红）。
+// ★★★★ ⇒ ★★ R3 把「结果变量喂给了断言」这条链接上 ⇒ ★★ 调用**活** ⇒ ★★ 契约可核。
+func magpieP2LiveExprs(body *ast.BlockStmt) []ast.Expr {
+	var live []ast.Expr
+	liveIdents := map[string]bool{}
+	add := func(e ast.Expr) {
+		if e == nil {
+			return
+		}
+		live = append(live, e)
+		ast.Inspect(e, func(n ast.Node) bool {
+			if id, ok := n.(*ast.Ident); ok {
+				liveIdents[id.Name] = true
+			}
+			return true
+		})
+	}
+
+	// R1 ★ 条件（★ 分支里有失败调用 ⇒ 这个条件能决定测试成败）。
+	ast.Inspect(body, func(n ast.Node) bool {
+		switch x := n.(type) {
+		case *ast.IfStmt:
+			if x.Cond != nil && (magpieP2HasFailingCall(x.Body) || magpieP2HasFailingCall(x.Else)) {
+				add(x.Cond)
+			}
+		case *ast.SwitchStmt:
+			if x.Tag != nil && magpieP2HasFailingCall(x.Body) {
+				add(x.Tag)
+			}
+		case *ast.ForStmt:
+			if x.Cond != nil && magpieP2HasFailingCall(x.Body) {
+				add(x.Cond)
+			}
+		}
+		return true
+	})
+
+	// R2 ★ 失败调用的实参（★ 失败消息里的每个值都在断言什么）。
+	ast.Inspect(body, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok || !magpieP2IsFailingCall(call) {
+			return true
+		}
+		for _, a := range call.Args {
+			add(a)
+		}
+		return true
+	})
+
+	// R3 ★ 赋值的右侧（★ 左侧变量出现在活性面里 ⇒ 这个值**喂给了**断言）。
+	for iter := 0; iter < 8; iter++ {
+		changed := false
+		ast.Inspect(body, func(n ast.Node) bool {
+			as, ok := n.(*ast.AssignStmt)
+			if !ok {
+				return true
+			}
+			for _, rhs := range as.Rhs {
+				hit := false
+				for _, lhs := range as.Lhs {
+					// ★★ **必须排除 `_`**（★ 空白标识符）：★ 否则只要活性面里
+					// ★★ 出现过 `_`（★ 例如某个实参里），★ `_ = X` 这种
+					// ★★ 「求值即丢弃」的打法就会**被当成活的** ⇒ ★★ 漏洞。
+					if id, ok := lhs.(*ast.Ident); ok && id.Name != "_" && liveIdents[id.Name] {
+						hit = true
+						break
+					}
+				}
+				if !hit {
+					continue
+				}
+				before := len(liveIdents)
+				add(rhs)
+				if len(liveIdents) != before {
+					changed = true
+				}
+			}
+			return true
+		})
+		if !changed {
+			break
+		}
+	}
+	return live
+}
+
 // magpieP2FuncCorpus 提取**某一个函数**的**代码面**语料（★ 分两面）。
 //
 // ★★ 这是本门最要紧的一处设计：语料只由 **AST 节点**拼成 ——
@@ -297,32 +437,41 @@ func magpieP2FuncCorpus(fset *token.FileSet, f *ast.File, funcName string) (magp
 		// ★★★ ⇒ 「用 `false &&` 把断言废掉」这类打法**不再**能蒙混过关。
 		magpieP2PruneDeadBranches(fd.Body)
 
-		// ② 收集本函数的代码面语料（★ ★★ 分两面 + ★ **精确相等**匹配）。
+		// ② 收集本函数的**活性**代码面语料（★ ★★ 分两面 + ★ **精确相等**匹配
+		//    + ★★★★ **只收「能导致测试失败」的位置上的节点**）。
 		// ★ ★★ 字符串字面量**只**进字面量面 ⇒ ⇒ 「用字符串冒充表达式」不可能。
 		// ★ ★★ 数字 / 字符字面量是**表达式级**的原子 ⇒ 归表达式面。
-		ast.Inspect(fd.Body, func(n ast.Node) bool {
-			switch v := n.(type) {
-			case *ast.BasicLit:
-				if v.Kind == token.STRING {
-					c.lit[v.Value] = true
-				} else {
-					c.expr[v.Value] = true
+		//
+		// ★★★★ ★★ 「**只收活的位置**」是「存在性 ≠ 活性」的**第二层**
+		// ★★★★ （★ 第六轮 verifier 的 S1 / S2 实测撞出来的）：★ 旧口径只问
+		// ★★★★ 「这个表达式**出现过**吗」⇒ ★★ 「求值即丢弃」（`_ = X`）与
+		// ★★★★ 「no-op 字面量」（`_ = "v2pipe-"`）都能让**门与测试同时绿**
+		// ★★★★ ⇒ ★★ 现在只收「**能让测试失败**」的位置上的节点 ⇒ ★★ 两发都被堵。
+		for _, live := range magpieP2LiveExprs(fd.Body) {
+			ast.Inspect(live, func(n ast.Node) bool {
+				switch v := n.(type) {
+				case *ast.BasicLit:
+					if v.Kind == token.STRING {
+						c.lit[v.Value] = true
+					} else {
+						c.expr[v.Value] = true
+					}
+				case *ast.Ident:
+					c.expr[v.Name] = true
+				case *ast.BinaryExpr:
+					c.expr[magpieP2NodeText(fset, v)] = true
+				case *ast.UnaryExpr:
+					c.expr[magpieP2NodeText(fset, v)] = true
+				case *ast.CallExpr:
+					c.expr[magpieP2NodeText(fset, v)] = true
+				case *ast.SelectorExpr:
+					c.expr[magpieP2NodeText(fset, v)] = true
+				case *ast.IndexExpr:
+					c.expr[magpieP2NodeText(fset, v)] = true
 				}
-			case *ast.Ident:
-				c.expr[v.Name] = true
-			case *ast.BinaryExpr:
-				c.expr[magpieP2NodeText(fset, v)] = true
-			case *ast.UnaryExpr:
-				c.expr[magpieP2NodeText(fset, v)] = true
-			case *ast.CallExpr:
-				c.expr[magpieP2NodeText(fset, v)] = true
-			case *ast.SelectorExpr:
-				c.expr[magpieP2NodeText(fset, v)] = true
-			case *ast.IndexExpr:
-				c.expr[magpieP2NodeText(fset, v)] = true
-			}
-			return true
-		})
+				return true
+			})
+		}
 
 		// ③ 跟随本函数**直接调用**的同文件普通函数（★ 传递可达）。
 		ast.Inspect(fd.Body, func(n ast.Node) bool {
@@ -462,16 +611,31 @@ func magpieP2TestCodeCorpus(t *testing.T, root, rel, testName string) (magpieP2C
 func TestMagpieP2FuncCorpusIsPerFunction(t *testing.T) {
 	// ★ 合成源码：★ 两个测试 + 两级 helper，**都在同一个文件里**
 	// ★ ⇒ ★★ 正是「整文件语料」会出错的形态。
+	// ★★ 注意：★ 合成源码里的每个 marker 都必须处在「**能让测试失败**」的位置上
+	// ★★ （★ `t.Errorf` / `t.Fatalf` 的分支里）⇒ ★★ 否则新的「活性」口径会把它剪掉
+	// ★★ ⇒ ★★ 本自检要量的仍是「**逐函数**粒度」（★ 不是「活不活」）。
 	const src = `package p
 
 import "strconv"
 
-func helperDeep() string { return strconv.Itoa(42) }
+func helperDeep() string {
+	if deepMarker != 42 {
+		t.Errorf("deep")
+	}
+	return strconv.Itoa(42)
+}
 
-func helperMid() string { return helperDeep() }
+func helperMid() string {
+	if helperDeep() != "" {
+		t.Errorf("mid")
+	}
+	return helperDeep()
+}
 
 func TestAlpha(t *testing.T) {
-	_ = helperMid()
+	if helperMid() != "" {
+		t.Errorf("alpha")
+	}
 }
 
 func TestBeta(t *testing.T) {
@@ -544,15 +708,15 @@ func TestGamma(t *testing.T) {
 	if false {
 		t.Fatal("deadIfMarker")
 	} else {
-		t.Log("live")
+		t.Errorf("live")
 	}
 	if true {
-		t.Log("live")
+		t.Errorf("live")
 	} else {
 		t.Fatal("deadElseMarker")
 	}
 	if liveCondition != 0 {
-		t.Log("live")
+		t.Errorf("live")
 	}
 }
 `
@@ -632,14 +796,16 @@ func TestMagpieP2MissingAssertionsHasTeeth(t *testing.T) {
 // ★★★ ⇒ ⇒ 而这两点**退化**都**不会**让任何现有断言变红
 // ★★★ ⇒ ⇒ ⇒ 必须有一道**自检**把这两点钉死。
 func TestMagpieP2CorpusFacesAreSeparated(t *testing.T) {
+	// ★★ 「活的位置」= ★ 能让测试失败的地方（★ `t.Error*` / `t.Fatal*`）。
 	const src = `package p
 
 func TestRealExpr(t *testing.T) {
 	if alpha != beta {
-		t.Log("live")
+		t.Errorf("live")
 	}
-	_ = "alpha != beta"
-	_ = "litOnlyMarker"
+	t.Errorf("alpha != beta")
+	t.Errorf("litOnlyMarker")
+	_ = "noOpMarker"
 }
 
 func TestOnlyString(t *testing.T) {
@@ -700,12 +866,83 @@ func TestCallWrap(t *testing.T) {
 	if !real.lit[`"litOnlyMarker"`] {
 		t.Errorf("★ 字符串字面量「litOnlyMarker」必须在字面量面里")
 	}
+	// ⑦ ★★★★ **no-op 字面量**（★ `_ = "noOpMarker"`）⇒ **不得**进语料
+	//    （★ 这就是第六轮 verifier 的 **S2**：★ 「求值即丢弃」的打法）。
+	if real.lit[`"noOpMarker"`] || real.expr["noOpMarker"] {
+		t.Errorf("★★★ `_ = \"noOpMarker\"` 是**求值即丢弃** ⇒ 它**不得**进语料\n" +
+			"★★★ ⇒ 语料没做「活性」收窄 ⇒ 「no-op 字面量」的打法还能蒙混过关")
+	}
 	// ⑥ ★★ 「面」的归属判定：★ 带双引号 ⇒ 字面量面；★ 其余 ⇒ 表达式面。
 	if got := magpieP2FaceFor(`"v2pipe-"`); got != magpieP2FaceLit {
 		t.Errorf("★ 带双引号的期望必须落字面量面，实际判成 %q", got)
 	}
 	if got := magpieP2FaceFor(`got.envelopeID != serverID`); got != magpieP2FaceExpr {
 		t.Errorf("★ 不带引号的期望必须落表达式面，实际判成 %q", got)
+	}
+}
+
+// TestMagpieP2LivenessIsEnforced 是「**活性面**」这一步的量具自检。
+//
+// ★★★★ 为什么需要它（★ 2026-10-25 第六轮 verifier 的 **S1 / S2** 实测撞出来的）：
+// ★★★★ 旧语料只问「这个表达式**出现过**吗」⇒ ★★ 于是
+// ★★★★ ① 「**求值即丢弃**」（★ `_ = got.headerID != got.envelopeID`）——
+// ★★★★    表达式**原文还在** ⇒ ★★ 门**认账** ⇒ ★★ 而测试**再也不断言**这件事；
+// ★★★★ ② 「**no-op 字面量**」（★ `_ = "v2pipe-"`）—— 同款 ⇒ ★★ 契约被架空。
+// ★★★★ ⇒ ⇒ 两发都能让「门」与「测试」**同时绿** ⇒ ⇒ ★★ 语料必须只收
+// ★★★★ **「能让测试失败的位置」**上的节点 ⇒ ⇒ 这道自检钉住那一步**有牙**。
+func TestMagpieP2LivenessIsEnforced(t *testing.T) {
+	const src = `package p
+
+import "strconv"
+
+func TestLive(t *testing.T) {
+	if condA != condB {
+		t.Errorf("live")
+	}
+	_ = condC != condD
+	_ = "literalOnly"
+	t.Logf("notAFailure")
+	ns, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil {
+		t.Fatalf("bad")
+	}
+	_ = ns
+}
+`
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "synthetic.go", src, 0)
+	if err != nil {
+		t.Fatalf("解析合成源码失败：%v", err)
+	}
+	c, ok := magpieP2FuncCorpus(fset, f, "TestLive")
+	if !ok {
+		t.Fatal("提取器在合成源码里找不到 TestLive ⇒ 提取器坏了")
+	}
+
+	// ① ★★★★ **求值即丢弃** ⇒ 表达式**不得**进语料（★ S1 的牙）。
+	if c.expr["condC != condD"] {
+		t.Errorf("★★★ `_ = condC != condD` 是**求值即丢弃** ⇒ 它**不得**进语料\n" +
+			"★★★ ⇒ 语料没做「活性」收窄 ⇒ 「求值即丢弃」的打法还能蒙混过关")
+	}
+	// ② ★★★★ **no-op 字面量** ⇒ **不得**进语料（★ S2 的牙）。
+	if c.lit[`"literalOnly"`] || c.expr["literalOnly"] {
+		t.Errorf("★★★ `_ = \"literalOnly\"` 是**求值即丢弃** ⇒ 它**不得**进语料\n" +
+			"★★★ ⇒ 语料没做「活性」收窄 ⇒ 「no-op 字面量」的打法还能蒙混过关")
+	}
+	// ③ ★★ **活的位置**上的条件 ⇒ **必须**进语料（★ 否则就是「收得太紧 ⇒ 假红」）。
+	if !c.expr["condA != condB"] {
+		t.Errorf("★★ `if condA != condB { t.Errorf(…) }` 是**活的位置** ⇒ 它必须在语料里")
+	}
+	// ④ ★★★ **R3**：★ 结果变量喂给了断言 ⇒ ★ 赋值的**右侧**也**活**
+	//    （★ 否则「断言纳秒能被解析成整数」这条契约就**核不到** ⇒ 假红）。
+	if !c.expr["ParseInt"] {
+		t.Errorf("★★★ `ns, err := strconv.ParseInt(…)` 的结果 `err` 被断言检查 ⇒ ★★ 右侧**活**\n" +
+			"★★★ ⇒ `ParseInt` 必须在语料里（★ 否则这条契约就核不到）")
+	}
+	// ⑤ ★★★ `t.Logf` **不是**失败调用 ⇒ 它里面的字面量**不活**。
+	if c.lit[`"notAFailure"`] {
+		t.Errorf("★★★ `t.Logf` 不会让测试失败 ⇒ 它里面的字面量**不得**进语料\n" +
+			"★★★ ⇒ 「活性」判据把「只是打印」也算成了断言 ⇒ 门会放行没牙的测试")
 	}
 }
 
