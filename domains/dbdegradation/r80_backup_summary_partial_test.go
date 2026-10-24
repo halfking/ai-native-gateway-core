@@ -86,6 +86,10 @@ func TestR80PartialResultIsCachedButMarked(t *testing.T) {
 	r80WriteBackup(t, dir, "sessions-2026-10-20.jsonl.gz", []string{"s1", "s2"})
 
 	fr := NewFileReader(dir)
+	// ★ R82 轮：冷启动路径现在**也会**触发后台刷新（否则真实数字永远出不来）
+	//	⇒ 这里断言的是「缓存里的部分结果」⇒ 必须**关掉**后台刷新，否则它会
+	//	把缓存改写成完整结果 ⇒ 断言变成竞态。
+	fr.summaryRefreshDisabled = true
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 

@@ -87,10 +87,22 @@ func (h *Handler) handleDegradationStatus(w http.ResponseWriter, r *http.Request
 		//	「备份是空的」（R79 的教训：静默的错误数据比慢更危险）。
 		if summary != nil {
 			response["backups"] = summary
+			// ★ R82b 轮：会话数口径**不可用** ⇒ 必须显式说明。
+			//	生产实测（154）：备份记录几乎全是 `request_wal`/`request_log`，
+			//	顶层**没有 session_id** ⇒ 「会话数」这个读数本身无意义。
+			//	⇒ 不标 degraded ⇒ 「会话数 0」会被读成「备份里没有会话」。
+			if !summary.SessionCountAvailable {
+				degraded = true
+				reasons = append(reasons, "backup session count unavailable: "+
+					"备份记录不含 session_id（生产实测多为 request_wal/request_log），会话数不可用")
+			}
 		}
 		if err != nil {
 			degraded = true
-			reasons = append(reasons, "backup summary incomplete: "+truncateReason(err.Error()))
+			// ★ R82b 轮：域层错误已经带了「backup summary incomplete: 」前缀
+			//	⇒ 这里**不再**重复加前缀（R80 时代两处都加 ⇒ 端点对外出现
+			//	「backup summary incomplete: backup summary incomplete: …」）。
+			reasons = append(reasons, truncateReason(err.Error()))
 		}
 	}
 
