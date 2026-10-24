@@ -189,7 +189,7 @@ SELECT
 
   if [[ -z "$ROW" ]]; then
     # ★★ 采样失败**必须显式留痕**（★ R97 的教训：★ 监控静默失明比报错更糟）
-    log "WARN: psql 采样失败 rc=$PSQL_RC（本行留空）"
+    log "WARN: psql 采样失败 rc=${PSQL_RC}（本行留空）"
     # ★ 13 个空字段（12 个 \t）⇒ 与表头 23 列对齐（★ 前 10 列 + 本行 13 列 = 23）
     ROW=$'\t\t\t\t\t\t\t\t\t\t\t\t'
   fi
