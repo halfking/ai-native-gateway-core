@@ -25,6 +25,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"sync/atomic"
 )
 
 // gzipMinMemberBytes 是最小合法 gzip member 长度：10 字节 header（FLG=0 的
@@ -71,6 +72,11 @@ func (s SalvageStats) HasLoss() bool {
 // 缓冲、回调必须同步消费」是错的，旧 scanner 路径同样如此），并有
 // TestSalvage_RetainedRecordPayloadIntact 钉死。
 func (fr *FileReader) ReadRecordsWithStats(ctx context.Context, filename string, callback func(BackupRecord) error) (SalvageStats, error) {
+	// ★ R80 轮：在这里计数（**真正的解压漏斗**）——
+	//	★ 计数点必须在「读文件」本身，而**不是**在它的调用者上：
+	//	否则「第二遍再解压一次」根本不会被计到 ⇒ 量具失明（实测踩过一次）。
+	atomic.AddInt64(&fr.fileReads, 1)
+
 	path, err := fr.backupPath(filename)
 	if err != nil {
 		return SalvageStats{}, err
