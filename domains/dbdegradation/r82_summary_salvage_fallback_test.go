@@ -434,3 +434,34 @@ func TestR82SummaryMustKeepStatMetadataWhenBothPathsFail(t *testing.T) {
 		}
 	}
 }
+
+// TestR82bSessionCountUnavailableMustNotDependOnRecordCount（★ R82b：判定不依赖「记录数」）
+//
+// ★ 生产冷读（2831）抓到：冷启动窗口里 `total_records = 0`
+//
+//	（意思是「**还没统计完**」，不是「真的 0 条记录」）
+//	⇒ 用它判定「会话数口径是否可用」会**误报可用**。
+//
+// ⇒ 判据必须是「**有备份文件、却一个真实 session id 都没有**」。
+func TestR82bSessionCountUnavailableMustNotDependOnRecordCount(t *testing.T) {
+	dir := t.TempDir()
+	r82WriteBackupWithoutSessionID(t, dir, "sessions-2026-10-20.jsonl.gz", 5)
+
+	fr := NewFileReader(dir)
+	fr.summaryRefreshDisabled = true
+	// ★ ctx 已取消 ⇒ 统计被截断 ⇒ 记录数是 0（**未统计完**）
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	summary, _, _ := fr.computeSummaryWith(ctx, mustListBackupFiles(t, fr), false)
+	if summary == nil {
+		t.Fatal("★ 摘要为 nil")
+	}
+	if summary.TotalRecords != 0 {
+		t.Fatalf("★ 前置条件：统计应被截断（TotalRecords=%d）", summary.TotalRecords)
+	}
+	if summary.SessionCountAvailable {
+		t.Error("★ 冷启动窗口（记录数 = 0 = 未统计完）不得报「会话数口径可用」—— " +
+			"判据不能依赖记录数（生产实测的误报）")
+	}
+}
