@@ -288,9 +288,24 @@ de() {
   #     · 基线探针 base_probe 同理 ⇒ 快路判据读到的全是垃圾。
   #   ⇒ 修法：保留退出码，并把「退出码≠0」翻译成与服务端错误**同形**的
   #     ERROR: 前缀 ⇒ 下游既有的 sql_failed() 判据一字不改就能判出来。
+  # ★★★ 2026-10-24（R97 轮）加 `-c jit=off` —— 本脚本的会话**不该付 JIT 编译成本**。
+  #
+  #   缺陷本体（252 生产实测，pg_stat_statements + EXPLAIN ANALYZE）：
+  #     本脚本的每条查询都由**一次性 psql 会话**执行 ⇒ 后端一连就退
+  #     ⇒ ★ PG 的 JIT 编译产物缓存在**后端内存**里 ⇒ 下一轮**全部重新编译**。
+  #     实测主判据语句触发 `JIT: Functions: 181`，
+  #     Options = Inlining/Optimization/Expressions/Deforming 全开。
+  #   ⇒ 而这 181 个函数的编译产物**与判据结果一个字节都不相干**
+  #     ⇒ 每小时烧掉一份「纯编译」时间，却不产生任何判据价值。
+  #   ★ 为什么不能用「调高 jit_above_cost」来治：那要改**服务端**配置，
+  #     波及共享库上的所有业务会话 ⇒ 属主决策项；
+  #     而这里只关**本脚本自己**的会话 ⇒ 影响面 = 本脚本。
+  #   ★ 语义零影响：JIT 只是编译器，PG 保证编译前后结果逐字相同。
+  #     ★ 实证见 docs/audit/2026-10-27-R97-ursm巡检链-JIT与谓词下推.md：
+  #       同一条 SQL，jit 开 / 关两档的 10 个判据字段【逐字相同】。
   local out rc=0
   # shellcheck disable=SC2086 # PSQL_CMD 刻意按多词命令传入
-  out=$( ${PSQL_CMD:-podman exec -e "PGOPTIONS=-c statement_timeout=${STMT_TIMEOUT:-600s}" \
+  out=$( ${PSQL_CMD:-podman exec -e "PGOPTIONS=-c statement_timeout=${STMT_TIMEOUT:-600s} -c jit=off" \
     "$CONTAINER" psql -U "$PG_USER" -d "$PG_DB" -tAX -c} "$1" 2>&1 ) || rc=$?
   if [ "$rc" -ne 0 ]; then
     out="ERROR: psql exited ${rc}: ${out}"
@@ -413,7 +428,35 @@ base_buckets AS (
     FROM ursm_node_snapshot_min
    WHERE snapshot_ts >= date_trunc('$G_UNIT', $NOW_EXPR - make_interval(days => $BASELINE_DAYS))
      AND snapshot_ts <  (SELECT lo FROM win)
-     AND $G_TRUNC snapshot_ts) >= (now() AT TIME ZONE current_setting('TimeZone'))::date::timestamptz
+     -- ★★ 2026-10-24（R97 轮）改写：【把「今天」写成可下推的范围谓词】。
+     --   原来的形态：$G_TRUNC snapshot_ts) >= (今天零点)
+     --     ⇒ 它是**列上的函数表达式** ⇒ PG 的规划器**不能**把它换成
+     --       snapshot_ts 的范围条件 ⇒ 只能当 **Filter** 挂在
+     --       「snapshot_ts >= 7 天前」那个 Index Cond **之上**
+     --       ⇒ ★★ 实测（252，EXPLAIN）：
+     --         Index Cond: snapshot_ts >= now()-7 days   ← 仍然是 7 天！
+     --         Filter:    date_trunc('hour', snapshot_ts) >= 今天零点
+     --       ⇒ 8 个分区全被扫（20261017~20261024），
+     --         其中 7 个分区的行**扫完即丢**（Filter 全部为假）。
+     --   现在的形态：snapshot_ts >= (今天零点)
+     --     ⇒ 直接成为 **Index Cond** ⇒ ★ 只扫今天那一个分区，
+     --       其余分区「Subplans Removed」/「never executed」。
+     --   ★★ 【等价性证明】（必须成立，否则这就是口径改动）：
+     --     对 ts ∈ timestamptz，令 T = 今天零点（本地时区，恰好落在
+     --     hour / minute 的边界上）：
+     --       (a) ts >= T ⇒ date_trunc(unit, ts) >= date_trunc(unit, T) = T
+     --           （date_trunc 单调不减；T 本就在 unit 边界上 ⇒ 截断后不变）
+     --       (b) ts < T ⇒ date_trunc(unit, ts) < T
+     --           （否则 ts 与 date_trunc(unit, ts) 会落在同一个 unit 桶里，
+     --             而该桶的下界 >= T ⇒ ts >= T，矛盾）
+     --     ⇒ 两式合起来 ⇒ date_trunc(unit, ts) >= T ⟺ ts >= T。
+     --   ★ 边界：T 取的是【本地日期的零点】；夏令时「午夜不存在」的时区里
+     --     PG 会把该零点规范化到 01:00，而 01:00 仍在 hour/minute 边界上
+     --     ⇒ 等价性照旧成立（Asia/Shanghai 自 1991 年起无夏令时）。
+     --   ★ 这个改写**只动「今天」这一条腿**的读集范围，
+     --     **不改任何判据口径**（分组、桶对齐、基线天数、中位数算法全部原样）。
+     --     ★ 实证：改写前后 10 个判据字段逐字相同（生产 A/B + 本地真库门）。
+     AND snapshot_ts >= (now() AT TIME ZONE current_setting('TimeZone'))::date::timestamptz
    GROUP BY 1, $G_TRUNC snapshot_ts)),
 -- 活跃子单位的基线**单独用短窗口**算。
 -- ★ 性能实测（252，7 天 ≈ 600 万行）：
