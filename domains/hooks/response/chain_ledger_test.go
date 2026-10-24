@@ -87,3 +87,34 @@ func TestInterceptorChainRecordsIntoExtensionPointLedger(t *testing.T) {
 	}
 	_ = hadBefore
 }
+
+// TestInterceptorChainLedgerStopsGrowingWhenTurnedOff：
+// ★ 计划书 §6-P2-2 验收②：「**关闭某点后其计数不再增长**」。
+//
+// ⇒ 「关闭」的形态 = **空链**（与 P0-5 的 off 用例同形态：
+// `NewInterceptorChain()` 无拦截器 ⇒ 链体不执行 ⇒ body 原样）。
+// ⇒ ⇒ 空链跑一次 ⇒ 台账的调用次数**必须一点不涨**。
+//
+// ★ 为什么这条值得单独一条门：若记账点被写在「链入口」而不是「逐拦截器」，
+// ⇒ ★ 空链也会被记一次 ⇒ 台上就出现了「**关掉的扩展点仍有调用量**」
+// ⇒ ⇒ 运维读台账时会以为它还活着 ⇒ ★ **关掉必须等于 0 增量**。
+func TestInterceptorChainLedgerStopsGrowingWhenTurnedOff(t *testing.T) {
+	ledger := extpointledger.Default()
+	before, _ := ledger.Entry(extpoints.IDResponseIntercept)
+
+	// ★ 关闭：空链。
+	chain := NewInterceptorChain()
+	if _, err := chain.InterceptNonStream(context.Background(), &InterceptRequest{}); err != nil {
+		t.Fatalf("关掉时链不应报错：%v", err)
+	}
+
+	after, _ := ledger.Entry(extpoints.IDResponseIntercept)
+	if after.Calls != before.Calls {
+		t.Fatalf("关闭后调用次数从 %d 涨到 %d ⇒ ★ 关掉的扩展点不该被记账",
+			before.Calls, after.Calls)
+	}
+	if after.Failures != before.Failures {
+		t.Fatalf("关闭后失败数从 %d 涨到 %d ⇒ ★ 关掉的扩展点不该被记账",
+			before.Failures, after.Failures)
+	}
+}

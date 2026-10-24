@@ -32,7 +32,13 @@ type Row struct {
 	Location   string `json:"location"`
 	Verdict    string `json:"verdict"`
 	Production bool   `json:"production"`
-	Phase      string `json:"phase,omitempty"`
+	// Phase 是该机制挂的骨架 phase。
+	//
+	// ★ **不用 `omitempty`** ⇒ 键**恒在** ⇒ 读端字段集稳定、可断言。
+	// ★ 值为空是**合法的**：裁决表里只有「挂在某个 phase 上」的机制
+	//   （`VerdictPhaseBound`）才有 phase；主链 / 骨架 / 别名 / 判死这四类
+	//   **本来就不属于任何单一 phase** ⇒ 不编造。
+	Phase string `json:"phase"`
 
 	// ── 运行期半（来自计数器）──
 	Calls       uint64    `json:"calls"`

@@ -140,7 +140,7 @@ func TestBuildPayloadCarriesScope(t *testing.T) {
 	for _, row := range back.ExtensionPoints {
 		for _, k := range []string{"id", "title", "location", "verdict", "production",
 			"calls", "failures", "timeouts", "dropped", "p99_ms", "p99_window", "recorded",
-			"unwired"} {
+			"unwired", "phase"} {
 			if _, ok := row[k]; !ok {
 				t.Errorf("行 %v 缺字段 %q", row["id"], k)
 			}
