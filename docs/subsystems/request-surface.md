@@ -194,6 +194,8 @@ pre_response · response · post_response
 | `scripts/ursmcheck/magpie_p2_extension_ledger_test.go` | 台账**两份来源**对拍 + **接线真的通** + ★ **在产机制必须接台账**（源码级） |
 | `admin/extension_points_test.go` | P2-2 **薄壳**：路由真注册 + 被鉴权包着（无凭据 ⇒ 401）+ 响应是合法 JSON |
 | ★ `scripts/ursmcheck/ci_carrier_truth_test.go` | ★★ **「门在 CI 上跑」这件事本身**：从远端宿主推导**在跑的载体**，要求它**真的调门禁**（★ 2026-10-24 §3.17 新增） |
+| ★ `scripts/ursmcheck/shell_cjk_var_crosscheck_test.go` | ★ 两道「$变量紧跟非 ASCII」门（Go 门 + shell 门）必须**逐条同判**；shell 门另带**扫描器自检**（★ 2026-10-24 §3.17.8 新增） |
+| ★ `scripts/ursmcheck/cjk_var_expansion_test.go` | ★ 「$变量紧跟非 ASCII」的**真值源门**（登记册 = 棘轮，★ 2026-10-22 起存量清零 ⇒ **零容忍**形态）；★ 2026-10-24 §3.17.9：**自检夹具改用单引号赋值** ⇒ 两门结论一致，★ **哨兵排除机制已删除** |
 
 ---
 

@@ -105,7 +105,7 @@ while IFS= read -r entry; do
   fi
 done <<<"$registered_all"
 
-# 命名一致性（R88 补，**告警不拦**）：登记的包应��以 guard 结尾。
+# 命名一致性（R88 补，**告警不拦**）：登记的包应该以 guard 结尾。
 #
 # 为什么值得写下来：正向检查靠 `find -name '*guard'` 枚举磁盘，而
 # GUARD_PACKAGES 里有 3 个不以 guard 结尾的条目（errdiscard / dbrows /
