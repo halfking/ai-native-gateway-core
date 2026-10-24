@@ -693,13 +693,22 @@ func (h *Handler) enrichTurnsSessionMeta(ctx context.Context, sessions []*TurnsS
 
 	// 同上：原生源 SQL 含 `%` 字符，不能过 fmt.Sprintf，否则 `%!'(MISSING)`
 	// 残渣会污染查询。SQL 用拼接，tenant 片段用 %s 是安全的（它本身无 %）。
+	//
+	// ★ 2026-10-24（R84）：source 从 SessionFamilyTurnsSourceSQL() 换成
+	//   SessionFamilyTurnsForSessionsSQL() —— 唯一差别是**把 session 谓词推进
+	//   source 的两条腿内部**（`t.session_id = ANY($1)`）。
+	//   原因（252 生产只读实测）：全量 source（hot UNION ALL 父表全部历史分区）
+	//   在谓词位于外部时会被整体物化再 Hash Join ⇒ 估算 1,587,817 行 ⇒
+	//   该腿每次调用 20,176 ms（pg_stat_statements 增量差分）⇒ 端点 21s。
+	//   单变量 A/B（同 21 个真实 session_id）：11,478.486 ms → **6.369 ms**。
+	//   JOIN 条件（rl.request_id = t.request_id）不变 ⇒ 入选行集合不变。
 	apiKeyQuery := `
 		SELECT DISTINCT ON (t.session_id)
 			t.session_id,
 			rl.api_key_id,
 			COALESCE(NULLIF(ak.key_alias, ''), ak.key_prefix, 'key#' || rl.api_key_id::text) AS api_key_label
 		FROM public.session_turns_with_current_month t
-		JOIN ` + db.SessionFamilyTurnsSourceSQL() + ` rl ON rl.request_id = t.request_id
+		JOIN ` + db.SessionFamilyTurnsForSessionsSQL() + ` rl ON rl.request_id = t.request_id
 		LEFT JOIN public.api_keys ak ON ak.id = rl.api_key_id
 		WHERE t.session_id = ANY($1)
 		  AND rl.api_key_id IS NOT NULL` + turnTenant + `

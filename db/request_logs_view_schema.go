@@ -669,6 +669,64 @@ func SessionFamilyTurnsForSessionSQL() string {
 		" WHERE t.session_id = $1)"
 }
 
+// SessionFamilyTurnsForSessionsSQL 返回与 SessionFamilyTurnsSourceSQL **同一个冻结列投影**，
+// 但把 **session 谓词推进两条腿内部**（`t.session_id = ANY($1)`），让规划器能用
+// idx_session_turns_session (session_id, turn_no DESC) 逐会话取行，
+// 而不是把全部历史物化后再 Hash Join。
+//
+// # 为什么需要它（★ 2026-10-24 生产实测，可复算）
+//
+// 【症状】GET /api/admin/turns/sessions 的 **api_key enrich 腿**独占端点耗时：
+//
+//	pg_stat_statements 增量差分（打 3 次端点，252 只读）：
+//	  SELECT DISTINCT ON (t.session_id) …   每次 **20,176 ms** ← 端点的全部
+//	  SELECT s.session_id, s.tenant_id, …    每次      **8.3 ms**（主列表查询）
+//	  SELECT t.session_id, t.turn_no, …      每次      **4.2 ms**（轮次加载）
+//
+// 【根因】enrich 腿用的是 SessionFamilyTurnsSourceSQL() ——
+// **session_turns_hot UNION ALL session_turns 父表的全部历史分区**，
+// 而 session 谓词在 source **外部** ⇒ 规划器只能把整条 UNION ALL 物化
+// （估算 1,587,817 行）再 Hash Join。
+//
+// 【修法与实测】单变量 A/B（252 EXPLAIN ANALYZE，同 21 个**真实** session_id）：
+//
+//	A 谓词在 source 外部：Execution Time 11,478.486 ms（Hash Join，估算 1,587,817 行）
+//	B 谓词推进两腿内部：Execution Time      6.369 ms（Hash Join，估算      1,070 行）
+//
+//	⇒ ~1,800×；B 的两条腿走 `Index Scan using idx_session_turns_hot_tenant_session_turn`。
+//
+// # 与 SessionFamilyTurnsForSessionSQL（单 session 版）的区别
+//
+// 单 session 版谓词是 `t.session_id = $1`；本版是 `= ANY($1)`，
+// 因为调用方（会话列表页）一次要 enrich **一批** session（默认 21 个）。
+//
+// # 契约
+//
+//   - $1 必须是 session_id 数组（text[]）；谓词发射为 `t.session_id = ANY($1)`，
+//     两条腿各一份 ⇒ 同一个占位符在同一条 SQL 里出现两次（PG 允许）。
+//   - 投影与 SessionFamilyTurnsSourceSQL 逐字同源（同一 sessionFamilyProjection(true)）
+//     ⇒ 列集合、列名、列序完全一致 ⇒ 调用方的 SELECT 列表无需改动。
+//   - 调用方仍需自己加租户收窄（`WHERE rl.tenant_id = $2`）—— 本 helper 不带租户语义。
+//   - 语义等价性：JOIN 条件（`rl.request_id = t.request_id`）决定哪些 rl 行入选；
+//     本 helper 只是把 rl 的候选集**收窄**到这些 session 自己的轮次。
+//     ⇒ 只有当「同一 request_id 在 rl 里属于**别的** session」时才会少一行 ——
+//     而 request_id 是轮的标识（UNIQUE (tenant_id, request_id, partition_date)），
+//     实测不存在这种跨 session 归属。
+//
+// The returned source carries no alias — callers append one (e.g. `rl`).
+func SessionFamilyTurnsForSessionsSQL() string {
+	return "(SELECT " + sessionFamilyProjection(true) +
+		" FROM public.session_turns_hot t" +
+		" LEFT JOIN public.session_turn_details_hot d" +
+		" ON d.tenant_id = t.tenant_id AND d.request_id = t.request_id AND d.partition_date = t.partition_date" +
+		" WHERE t.session_id = ANY($1)" +
+		" UNION ALL SELECT " + sessionFamilyProjection(true) +
+		" FROM public.session_turns t" +
+		" LEFT JOIN public.session_turn_details d" +
+		" ON d.tenant_id = t.tenant_id AND d.request_id = t.request_id AND d.partition_date = t.partition_date" +
+		" WHERE t.session_id = ANY($1))"
+}
+
 // SessionFamilyBodiesSourceSQL returns a FROM source over the session-family
 // bodies tables that exposes the **v1 column names** (`request_body` /
 // `response_body`), so a caller can swap the relation name without touching

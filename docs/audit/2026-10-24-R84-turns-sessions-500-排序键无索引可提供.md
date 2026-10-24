@@ -297,3 +297,83 @@ scp /tmp/kx-equiv2-252.sh 252:/tmp/ && ssh 252 'bash /tmp/kx-equiv2-252.sh'
 # 索引/表规模事实底座
 scp /tmp/kx-facts-252.sh 252:/tmp/ && ssh 252 'bash /tmp/kx-facts-252.sh'
 ```
+
+---
+
+# 附录 A · R85：主查询修好后，**第二条腿**又吃掉 21s（同一端点的 enrich 腿）
+
+## A.1 症状
+
+R84 发版 **2834**（迁移 903 已应用）后，端点从 `500@30s` 变成 **200 但仍要 17~24.7s**（中位 18.1s）。
+
+★ 这正是 LESSONS **§337** 说的那件事：**一条端点有多条腿，修完一条不等于转绿**。
+
+## A.2 归因：pg_stat_statements 增量差分（比「看累计 total」可靠）
+
+★ 方法：252 上 `pg_stat_statements` 快照 → 打端点 3 次 → 再快照 → **按 queryid 求差**。
+★ 为什么不用累计值：那张表是「上次 reset 以来」的累计量，混着别的工作负载，
+★ 单次读数没有可比性（LESSONS §334/§340 同款纪律）。
+
+| 腿 | 每次耗时 |
+|---|---|
+| **`SELECT DISTINCT ON (t.session_id)`（api_key enrich）** | **20,176.0 ms** ← 端点的全部 |
+| `SELECT s.session_id, s.tenant_id, …`（主列表查询） | **8.3 ms** ✔ 索引生效 |
+| `SELECT t.session_id, t.turn_no, …`（轮次加载） | **4.2 ms** ✔ |
+| `SELECT DISTINCT ON (hl.new_session_id)`（handoff enrich） | 0.2 ms ✔ |
+
+⇒ 主查询 32s → **8.3ms** ✔（迁移 903 生效）；**剩下的 ~20s 全在 enrich 腿**。
+
+## A.3 根因
+
+enrich 腿的 source 是 `db.SessionFamilyTurnsSourceSQL()`：
+
+```
+session_turns_hot  UNION ALL  session_turns（父表的**全部历史分区**，~1M 行）
+```
+
+而 **session 谓词在 source 外部**（`WHERE t.session_id = ANY($1)` 作用在外层 `t` 上）
+⇒ 规划器只能把整条 UNION ALL **物化**后再 Hash Join。
+
+## A.4 单变量 A/B（252 EXPLAIN ANALYZE，同 21 个**真实** session_id）
+
+| 变体 | Execution Time | 计划 |
+|---|---|---|
+| **A** 谓词在 source 外部 | **11,478.486 ms** | Hash Join，估算 **1,587,817** 行 |
+| **B** 谓词推进两条腿内部（`t.session_id = ANY($1)`） | **6.369 ms** | Hash Join，估算 **1,070** 行 ⇒ 走 `Index Scan using idx_session_turns_hot_tenant_session_turn` |
+
+⇒ **~1,800×**。（A 用的是最小投影；真实生产 SQL 因为投影更宽，实测 20,176 ms。）
+
+## A.5 落地
+
+1. 新增 `db.SessionFamilyTurnsForSessionsSQL()`（**数组版**）：
+   投影与 `SessionFamilyTurnsSourceSQL()` **逐字同源**（同一 `sessionFamilyProjection(true)`），
+   唯一差别是两条腿各带一个 `WHERE t.session_id = ANY($1)`。
+   ★ 既有 `SessionFamilyTurnsForSessionSQL()`（单 session 版，`= $1`）**不动** ⇒ 其它调用方零影响。
+2. `admin/turns_sessions.go` 的 enrich 查询改用它。
+   ★ **JOIN 条件（`rl ON rl.request_id = t.request_id`）逐字不变** ⇒ 入选行集合不变。
+
+## A.6 门（3 条）+ 变异（4/4 全红）
+
+| 门 | 守什么 |
+|---|---|
+| `TestR85_EnrichSourcePushesSessionPredicate` | 谓词**两条腿各一次**（少一次 = 只推一半 ⇒ 端点仍慢且不报错）／投影与全量 source 逐字一致／数据面未被换掉 |
+| `TestR85_EnrichSourceDetectorRejectsBadShapes` | 阳性对照：3 份坏样本 |
+| `TestR85_TurnsSessionsEnrichUsesPushedSource` | 调用点用新 helper；JOIN 条件不变；外层谓词仍在 |
+
+变异：M1 调用点退回全量 source｜M2 只推进一条腿｜M3 投影被改｜M4 JOIN 条件被改 ⇒ **4/4 全红在目标门**。
+
+★ ★ **M4 揭穿了门自己的一个洞**（本次最值钱的收获）：
+★ 门最初用 `strings.Contains(enrich, "rl ON rl.request_id = t.request_id")` 判 JOIN 条件
+★ ⇒ **对「后面追加 `AND rl.tenant_id = t.tenant_id`」的变体照样匹配** ⇒ **门假绿**
+★ ⇒ 改成带终止符的正则 `rl ON rl\.request_id = t\.request_id\s*\n` 后 M4 才真正变红。
+★ ⇒ ★ **「用 `Contains` 断言「某个片段没有被追加条件」」是一个通用陷阱**：
+★　子串匹配对**追加**是宽容的 ⇒ ★ 断言「逐字不变」必须带**终止符**。
+
+## A.7 已知边界（如实登记）
+
+1. ★ **`?api_key_id=` 过滤路径仍用未推进的全量 source**（`buildTurnsSessionWhere` 里的 EXISTS 子句）。
+   它是**带过滤**的路径（谓词按外层行相关），本次未改 ⇒ 属主/后续轮处理。
+2. ★ **带过滤条件的请求仍然慢**（同 R84 §7.1）：过滤依赖 `sd`/`ss` 的 JOIN ⇒ `Limit` 无法提前停。
+3. `cmd/tools/sql_source_indirection_audit` 的 `TestDocumentedSnapshotMatchesMeasurement` **在 origin/main 上就是红的**
+   （文档 142 → 实测 145，+3）⇒ 用 origin/main 独立 worktree 复跑确认**不是本次改动造成**
+   （把本次两个文件拷进该 worktree 后数字逐字不变）⇒ 按「同文件不要两个写者」纪律**未动它**。
