@@ -10106,6 +10106,8 @@ cron 日志里也有 `"retention_hours":8`）⇒ ⇒ ★★★ 实测 `max(hot.t
 ★　 detail：`chat probe response invalid: assistant_output_missing`）⇒ ★★ **「故意不写回」** ⇒ `node_probe_state` 一行不改。
 ★ 臂 C = 超时 180 s **+** 内容预算 `providercap.ProbePingMaxTokens` 32 → 1024
 ★　⇒ ★★★ **判定翻转**：`last_direct_ok=true`、`consecutive_failures` 归 0、`updated_at` 前移、`state=healthy_confirmed`。
+★ **★ 机制再精化**：★ 仓内代码（30 s + 32 token）下探针在 07:15:05 **又成功了** ⇒ ★★ 30 s 是**边缘预算**
+★ ⇒ ★★★ **超时判死 = 入口、内容预算不足 = 出不来 ⇒ 两者组合 = 不可逆封禁** ⇒ ★★ **D9a 与 D9b 必须一起修**。
 ★ **★ 两个门槛的可恢复性差异**：
 ★ **超时预算 30 s** ⇒ `timeout` ⇒ ★ **写回 + 退避阶梯** ⇒ **可恢复**；
 ★ **内容预算 32 token** ⇒ `assistant_output_missing` ⇒ `probe_response_inconclusive` ⇒ ★★ **不写回** ⇒ ★★ **不可恢复（永久封禁）**。
