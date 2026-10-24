@@ -52267,3 +52267,61 @@ pkey 换体 `UNIQUE(event_id) INCLUDE(occurred_at)` + 删复合索引，**净省
 2. `sys:probe:` 前缀理论上可被客户端伪造 ⇒ 伪造者只会得到「腿①② 落空后少查一条
    结构性空腿」⇒ 可观测行为仍与 0 行一致；开关默认关 ⇒ 启用前无任何行为变化。
 3. `sys:internal:` / `sys:anon:` 合成会话**刻意不覆盖**（无独立证据轮）⇒ 登记为后续项。
+
+### §143.104 R147 存储效率续轮：㉘ 裁决落地（迁移 903）+ ㉙ 成本分解 + ③ TOAST 评估
+
+> **对生产写入 = 0**（252 全程只读；903 只落仓）。★ 完整记录见
+> `docs/audit/2026-10-24-R147-存储效率续轮-matrix成本分解-rie索引裁决-bodiesTOAST评估.md`。
+
+#### §143.104.1 一句话结论
+
+三件属主侧待推进项全部闭环：**㉘ 裁决并落地**（type_created 110MB 零消费方
+⇒ 迁移 903；incident_created/created_at 各有不可替代消费方 ⇒ 保留）；
+**㉙ 成本分解完成并订正 R146 量级**（matrix 均值 ≈0.50h/天，非 2.2h/天——
+那是 10-23 最差单日；最大 REFRESH 其实是 routing_analytics_7d ≈0.96h/天）；
+**③ 评估完成**（拆分不省空间——压缩已在 lz4 上限；量化去重杠杆仅 2.2%；
+真实价值只剩按列差分留存，语义归属主）。
+
+#### §143.104.2 ㉘ 的裁决链（三索引逐个过）
+
+| 索引 | 消费方 | 判定 |
+|---|---|---|
+| type_created (110MB, idx_scan=1/5.2d) | **零**（全仓无 event_type 谓词查询本表；唯一历史使用者=留存 DELETE，已被 871 判为坏计划并取代；无约束背书） | **删（903 已落仓）** |
+| incident_created (93MB, 20) | store.go ListEvents + admin sampleRequestsFor（incident 维度事件枚举唯一索引） | 保留 |
+| created_at (41MB, 8) | retention.go hasTimeIndex 探针硬前置（无它 ⇒ 行级留存永久 SkippedNoIndex） | 保留 |
+
+★ 写路径佐证：同表 uq_idem 5.2 天 42.2 万次扫描（≈7.8 万写/天）⇒ 每次写白维护
+零读者 110MB btree。★ 903 配套 db/db.go ensure 拆同名 CREATE（防复活）；
+baseline 两份快照刻意保留（718 先例：fresh-install「建出→删掉」）；
+8 点注册 + 门 9 测（3 坏样本阳性对照 + ensure 不复活腿 + baseline 保留腿）
++ 变异 M1~M6 全红逐字还原 + 本地一次性库五段生命周期全绿。
+
+#### §143.104.3 ㉙ 的分解要点（拍板材料，见审计档 §3 全表）
+
+- **结构成本/次**：32.3 万 buffer 触碰（91.9% = ss 侧 35.2 万次逐行 heap fetch，
+  非索引选择问题）+ session_dim 206MB 全堆扫（每次都物理读）+
+  **131.6MB temp 读写**（work_mem=8MB 的外排 + hash 4 分批）。
+- **A/B 计划（§300）**：30d/8MB est 161,563（基准）→ 30d/256MB 106,741（−34%，
+  HashAggregate，temp 归零）→ 7d/8MB 81,275（−50%，join 换 NL pkey，sd 全扫消失）
+  → 7d/256MB 77,637。**(b) 去 array_agg 对 matrix 不适用**（它没有 array_agg；
+  DISTINCT 只锁死两个兄弟的 GroupAggregate 形态）。
+- **新发现零语义杠杆 (d)**：刷新器会话抬 work_mem（R75 分族 statement_timeout
+  同款接线点）⇒ temp 归零、est −34%；**热态墙钟平手**（2.16s vs 2.70s）——
+  只承诺 temp I/O，不承诺秒数。
+- 建议排序：(d) 先行（零语义纯代码）→ (a)/(c) 按属主对 30 天窗的语义取舍 →
+  (b) 不值得单独立项 → **routing_analytics_7d（0.96h/天，比 matrix 大）下轮单独立项**。
+
+#### §143.104.4 ③ 的评估要点
+
+6,081MB TOAST = request_delta 63% + outbound_body 38% + response_delta 1.2%
+（1% 采样外推与实测闭环，差 ~3%）；增长 ≈253MB/天。**拆分不省空间**（lz4
+1.81× 已到顶、zstd 不可用、columnar 被 ON CONFLICT 挡住——§143.65）；
+25.1% 行的 request_delta≡outbound_body 只占 3.6% 字节 ⇒ 去重仅 ≈135MB（2.2%）；
+拆分真实价值 = **按列差分留存**（如 request_delta 30d / outbound_body 90d），
+纯语义决策，属主。★ 本轮自纠一处：attstorage `'x'` = EXTENDED（压缩+行外），
+不是 EXTERNAL——字母映射读反险些产出「6GB 未压缩」的假发现（LESSONS §355）。
+
+#### §143.104.5 诚实边界
+
+两次 EXPLAIN ANALYZE 为真执行（只读 SELECT），冷/热墙钟差 14× ⇒ 墙钟只作
+时点记录（§143.28 口径）；(c) 收益未实测（未建中间表）；903 只落仓未应用。

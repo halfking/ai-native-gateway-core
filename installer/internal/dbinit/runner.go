@@ -1554,6 +1554,21 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			//   该表写入 ⇒ 落在低峰窗口。普通 CREATE INDEX +
 			//   lock_timeout=60s / statement_timeout=10min（903 同款）。
 			"904_inspector_stats_partial_indexes.sql",
+			// 905：删除 route_incident_events 的零消费方索引
+			//   idx_route_incident_events_type_created (event_type,
+			//   created_at DESC)（252 实测 110 MB / idx_scan=1，5.2 天窗口）。
+			//
+			//   ★ 判决链：全仓 Go 代码无任何 event_type 谓词查询本表；
+			//   历史上唯一使用者（30 天留存 DELETE）已被 871 判为
+			//   「非首列条件 ⇒ 全索引扫描」的坏计划并被 created_at
+			//   首列索引取代；不背书任何约束（pg_namespace 实查 0 行）。
+			//   ★ 写路径热度：同表 uq_idem 5.2 天 42 万次扫描 ⇒
+			//   每次写入白维护一个零读者的 110 MB btree。
+			//   ★ 配套：db/db.go ensureRouteIncidentSchema 同批删除同名
+			//   CREATE INDEX（否则 ensure 链会把本迁移刚删的索引复活）。
+			//   baseline 刻意保留（718 先例：fresh-install 链建出→本条删掉）。
+			//   dbinit:no-transaction（DROP INDEX CONCURRENTLY）。
+			"905_route_incident_events_type_created_drop.sql",
 		},
 	}
 }

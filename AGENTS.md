@@ -7771,3 +7771,26 @@ index b953a6f03..555ef83c4 100644
 > ⇒ ⇒ ★★★ （本机 `psql` shim 不认 DSN 的 host/port）⇒ ★ 已在 **origin/main 独立 worktree
 > ⇒ ⇒ ★★★ 复跑确认同签名失败 ⇒ **非本轮引入**，未动。
 > ⇒ ⇒ ★★ **完整记录见 `docs/audit/2026-10-27-R90-turns-sessions-过滤路径500与两腿改写.md`**。
+> **2026-10-24 R147 轮（本会话）· §143.104 【存储效率续轮：㉙ 成本分解 + ㉘ 裁决落地（迁移 903）+ ③ TOAST 评估】**：
+> **对生产写入 = 0**（252 全程只读；903 只落仓）。完整记录见
+> `docs/audit/2026-10-24-R147-存储效率续轮-matrix成本分解-rie索引裁决-bodiesTOAST评估.md` + runbook `§143.104`。
+> ⇒ ★★ **㉙ 订正 R146 量级**：matrix REFRESH「~2.2h/天」是 10-23 最差单日；pgss 5.2 天均值
+>    matrix ≈0.50h/天、三兄弟全家 ≈1.44h/天、**最大 REFRESH 其实是 routing_analytics_7d ≈0.96h/天**
+>    ⇒ ㉙ 紧迫性下降，routing_7d 下轮单独立项。结构分解（EXPLAIN ANALYZE BUFFERS）：每次
+>    32.3 万 buffer 触碰（91.9% = ss 侧 35.2 万次逐行 heap fetch）+ session_dim 206MB 全堆扫 +
+>    **131.6MB temp**（work_mem=8MB 外排+hash 4 分批）。A/B 计划（§300）：30d/256MB est −34%（temp 归零）、
+>    7d −50%（join 换 NL pkey、sd 全扫消失）；**(b) 去 array_agg 对 matrix 不适用（它没有 array_agg）**
+>    ——DISTINCT 只锁死两个兄弟的 GroupAggregate。★ 新零语义杠杆 (d)：刷新器会话抬 work_mem
+>    （R75 分族 statement_timeout 同款接线点）⇒ temp 归零；**热态墙钟平手**（2.16s vs 2.70s）⇒ 只承诺
+>    temp I/O 不承诺秒数。建议排序：(d) 先行 → (a)/(c) 属主语义拍板 → (b) 不值得单独立项。
+> ⇒ ★★ **㉘ 裁决闭环**：type_created（110MB/idx_scan=1）**零消费方**（无 event_type 谓词查询、
+>    871 已取代其留存用途、无约束背书；同表 uq_idem 42 万次/5.2 天的热写路径白维护）⇒ **迁移 903 已落仓**
+>    （8 点注册 + 门 9 测含 3 坏样本阳性对照/ensure 不复活腿/baseline 保留腿 + 变异 M1~M6 全红逐字还原 +
+>    本地一次性库五段生命周期）。★ 配套 db/db.go ensure 拆同名 CREATE（否则启动即复活）；
+>    incident_created（93MB，store.ListEvents + admin sampleRequestsFor 唯一索引）与
+>    created_at（41MB，retention hasTimeIndex 硬前置）**保留**。生产应用需属主授权。
+> ⇒ ★ **③ 评估闭环**：6,081MB TOAST = request_delta 63% + outbound_body 38%（1% 采样外推与实测闭环）；
+>    **拆分本身不省空间**（lz4 1.81× 已到顶、zstd 不可用、columnar 被 ON CONFLICT 挡住，§143.65）；
+>    25.1% 行 request_delta≡outbound_body 只占 3.6% 字节 ⇒ 去重仅 ≈135MB（2.2%）；
+>    拆分真实价值 = 按列差分留存（语义，属主）。★ 本轮自纠：attstorage `'x'`=EXTENDED 不是 EXTERNAL
+>    ——字母读反差点产出「6GB 未压缩」假发现（比率实证 0.31~0.67 全程 ⇒ 压缩健在；LESSONS §355）。

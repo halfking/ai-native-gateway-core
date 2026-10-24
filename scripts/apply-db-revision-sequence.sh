@@ -2217,6 +2217,32 @@ files=(
   #   statement_timeout='10min'（903 同款）。两张都是热写表 ⇒ 构建期持
   #   SHARE 锁阻塞该表写入 ⇒ 落在低峰窗口。
   "$ROOT_DIR/sql/migrations/startup/904_inspector_stats_partial_indexes.sql"
+  # ── 2026-10-24（R147 存储效率续轮，㉘ 代码面核对后裁决）：
+  #    route_incident_events 零消费方索引删除 ──
+  #
+  # 905：删除 idx_route_incident_events_type_created (event_type, created_at DESC)
+  #   （252 只读实测 110 MB / idx_scan=1，stats reset 10-18 起 5.2 天窗口）。
+  #
+  # ★ 判决链（代码面核对，三个低扫描索引里唯一可删的一个）：
+  #   · 全仓 Go 代码无任何 event_type 谓词查询本表（requestjourney 的
+  #     event_type 是 request_state_transitions，另一张表）；
+  #   · 历史上唯一使用者（30 天留存 DELETE）在 871 头注被实测判为
+  #     「条件建在非首列 ⇒ 全索引扫描再过滤」的坏计划，871 已建
+  #     created_at 首列索引取代它；
+  #   · 不背书任何约束（pg_constraint 实查 0 行）；
+  #   · 写路径热度：同表 uq_idem 同窗口 422,297 次扫描（≈7.8 万/天）⇒
+  #     每次 INSERT 白维护一个零读者的 110 MB btree。
+  #   ★ 另两个低扫描索引**保留**：incident_created（93 MB）服务
+  #     store.ListEvents + admin sampleRequestsFor（incident 维度事件枚举的
+  #     唯一索引）；created_at（41 MB）是 retention worker hasTimeIndex
+  #     探针的硬前置（无它则行级留存永久 SkippedNoIndex）。
+  # ★ 配套：db/db.go ensureRouteIncidentSchema 同批删除同名 CREATE INDEX
+  #   （否则 ensure 链会复活本条刚删的索引）；baseline 刻意保留（718 先例）。
+  # ★ 形态：dbinit:no-transaction + DROP INDEX CONCURRENTLY + IF EXISTS
+  #   （幂等）+ 会话级 SET lock_timeout=60s / statement_timeout=10min +
+  #   RESET（非事务通道不能用 SET LOCAL，871 同款）。
+  # ★ ★ 本条**只落仓**；★ 生产应用需属主另行授权（删除瞬间完成，无长锁）。
+  "$ROOT_DIR/sql/migrations/startup/905_route_incident_events_type_created_drop.sql"
 )
 
 

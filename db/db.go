@@ -8074,8 +8074,9 @@ func (d *DB) ensureRouteIncidentSchema(ctx context.Context) error {
 			WHERE request_id IS NOT NULL;
 		CREATE INDEX IF NOT EXISTS idx_route_incident_events_incident_created
 			ON route_incident_events (incident_id, created_at DESC);
-		CREATE INDEX IF NOT EXISTS idx_route_incident_events_type_created
-			ON route_incident_events (event_type, created_at DESC);
+		-- idx_route_incident_events_type_created 已于 2026-10-24 随迁移 903
+		-- 退役（零消费方：无 event_type 谓词查询、871 已取代其留存用途、
+		-- 无约束背书）。此处刻意不再创建，否则 ensure 链会复活刚删的索引。
 	`)
 	if err != nil {
 		return err
