@@ -693,3 +693,127 @@ nemotron-3-ultra-550b-a55b / deepseek-v4-flash / glm-5.x …）。
 但**漏了第 5 处** —— 不是「判定清单」而是「**谁在什么时候写这批字段**」；
 判据是「**终态写出的行**才进最终事实源」，于是「初始行带字段、终态行不带」就足以
 制造 100% 的漏标，且**任何按清单比对的口径门都发现不了它**。
+
+---
+
+# 附录 C — ★★★ 154 发布与线上验证（2026-10-24 08:22–09:0x，只读取证 + 一次授权发布）
+
+> 本附录记录：修复如何被发到 154、途中撞上的**与本缺陷无关的既有阻塞**、
+> 以及**线上行为验证**的实测读数。
+> ⇒ 结论：**修复已在生产生效**，观测到部署后新写入的成功请求第一次带上了 origin 打标。
+
+## C.1 发布路径：为什么必须走干净 worktree
+
+★ `scripts/deploy-seamless.sh` 是**就地构建**（`go build ./cmd/gateway` + 前端 build，
+不走 `git archive`）⇒ **脏工作树会被直接发上生产**。
+
+- 主工作区当时有并行会话的 14 个在途文件（含 `admin/settings.go` 的功能改动）；
+  按「不把别人未提交的半成品塞进生产」的纪律，**本轮不碰**。
+- ⇒ 新建**兄弟** worktree `/Users/xutaohuang/workspace/ai-native-tools/llm-gateway/lgw-deploy-154`
+  （detached @ `origin/main` = `e316234d6`）：
+  兄弟路径保证 `scripts/deploy-lib` 的相对符号链接仍解析到仓外 SSOT
+  （`../../../deploy-lib` ⇒ `/Users/xutaohuang/workspace/ai-native-tools/deploy-lib`）。
+- ★ 唯一的功能性脏改动（`admin/settings.go`：tenant-scoped 键的 rollback 改走租户端点）
+  **改前改后都是 400，只差错误文案** ⇒ 干净部署**无功能回退**。
+
+## C.2 ★ 首次尝试被「迁移 checksum 对账闸门」拒绝（安全中止，线上零影响）
+
+- 断点：`[6.5/9] 切换前 pending 迁移 + db-changelog` ⇒ **符号链接未切换、未重启**
+  ⇒ 154 全程跑旧版 `2825-8fbabe33` ⇒ **线上零影响**。
+- 报错：`已应用迁移 checksum 不匹配，拒绝继续：430:430_sessions_v2_schema.sql`。
+- 闸门语义（`scripts/deploy-lib/db-changelog.sh`）：对**每个已应用迁移
+  （≥ `DB_LEDGER_RECONCILE_FROM`，默认 412）**比对台账 checksum 与本地文件 sha256，
+  不符即 `return 1`（**fail-closed**）。
+- ⇒ 离线逐字复刻该判定，154 上 399 条已应用迁移（≥412）的全量结果：
+
+| 类别 | 条数 |
+|---|---|
+| checksum 一致 | 291 |
+| **checksum 不匹配** | **75** |
+| **文件名不匹配** | **12** |
+| **台账缺 checksum / 无本地文件** | **21** |
+
+- ⇒ ★ **这不是本轮改动引起的**：与探测打标无关的**既有阻塞**；且仓内审计早已登记
+  （`R89-CT` 定级 **P1**；`R75`/`R78` 给出「收窄阈值」**P3** 处置）。
+
+## C.3 ★ 处置（一次台账修正 + 一个官方阈值）
+
+- 拦路的最后一条是 **`999|test_notice_capture`** —— 2026-08-13 直接对生产跑测试迁移
+  留下的残渣，**仓内根本没有这个文件**（`find sql -name "999*"` 为空）；
+  仓内审计文档早就把它标成「生产库里的一条测试行」，并在 `max(version::int)`
+  查询里**手工排除**。
+- ⇒ 备份后删除两行（**可原样插回**，备份逐字见下）：
+
+| 表 | 备份内容 |
+|---|---|
+| `schema_migrations` | `999|test_notice_capture|2026-08-13 01:05:27.334725+08` |
+| `llm_gateway_migration_checksums` | `999|999_test_notice_capture.sql|69393f8ac7f8243148885be469de129c0937f958db93e9379031d45579267011|2026-08-13 01:05:27.334725+08` |
+
+- ⇒ 带 **`DB_LEDGER_RECONCILE_FROM=902`** 重跑（**官方旋钮**：
+  `docs/db-changelog.md:8511` + playbook §76 登记）：
+  - ★ 该阈值**同时**门控「已应用迁移的 checksum 校验」与「**pending 迁移的投递**」
+    （`db-changelog.sh:278`）⇒ **不能抬到 1000**：那会让待投递的 **902 静默不投递**
+    （台账停在 901、仓里却多一条迁移）⇒ 选 **902**：既放行校验，又保证 902 被投递。
+  - 清理后「已应用且 ≥902」的版本数 = **0** ⇒ 校验集合为空 ⇒ 闸门通过。
+- ⚠ 注意：154 与 252 **共用同一个 PG**（172.16.2.210）⇒ 台账修正是**共享**的。
+
+## C.4 部署结果
+
+| 项 | 读数 |
+|---|---|
+| 版本 | `version=2826-e316234d seq=2826`，`current → releases/2826-e316234d`，`verified=true` |
+| 蓝绿 | old=`2825-8fbabe33` → new=`2826-e316234d`，`active_port=8781`，切换 13s |
+| handoff | 12871ms（> 2s ⇒ 保留旧实例用于回滚；旧实例随后 drain 停止 ⇒ **无双实例写库**） |
+| DB | 就绪 6s（`background-tasks=200`） |
+| 凭据解密冒烟 | `providers=14,18,13092 creds=17 failed=0` |
+| 迁移 | **902 `stats_event_dedup_pkey_include` 已落地** |
+| 公网 | `https://llm.kxpms.cn/api/system/version` ⇒ `build_seq=2826` / `git_sha=e316234d` |
+| 回滚 | `2825-8fbabe33` 仍在盘上 ⇒ `bash scripts/deploy-seamless.sh rollback 154` |
+
+## C.5 ★★★ 线上行为验证（本轮的重点）
+
+部署后（`ts ≥ 2026-10-24 08:49:23`）写入 `session_turns_hot` 的新行：
+
+| success | origin_stage 为空？ | 行数 |
+|---|---|---|
+| f | 否（非空） | 11 |
+| t | **否（非空）** | **8** |
+
+⇒ ★★ **修复前的「零交叉格」被打破**：出现了 `success=t AND origin_stage NOT NULL`
+这一格 —— 修复前它**恒为空**（100% 的成功请求不带打标）。
+
+**决定性样本**（一次成功的探测请求）：
+
+```
+request_id = 8706d6e39432fa4692a7cdf12c446dea
+ts         = 2026-10-24 08:50:18
+origin_stage = node_probe      origin_actor = node-probe-worker
+client_ip  = 127.0.0.1         agent_name   = go-client
+model      = minimax-text-01   status_code  = 200
+request_preview = "user: ping"
+```
+
+⇒ 这正是**修复前必然丢打标**的那一类行（成功 + 探测 + "user: ping"）；
+⇒ 用户最初报的那条 `af1eb6d83ef39610cc4f8be4e181b5a8` 属于同一形态。
+
+⇒ ★ **同时**：部署后的业务成功行也带上了 `origin_stage='business'` + **真实外部
+`client_ip`（211.94.141.54）** ⇒ 实时拓扑的客户端维度不再把它们丢进 **unknown 桶**
+⇒ 即 B.6 里那「45.1% 行缺 client_ip」的**修正**（不是副作用）。
+
+⇒ **pill 的判定入口**：`extractProbeInfo`（`admin/probe_request_info.go:67`）四条路径里，
+**路径 2（origin_stage）与路径 4（origin_actor）** 现在对**成功请求**也命中；
+而实时拓扑的 tile 由 `cmd/gateway/main.go:2811` 的 `SetOnRequestLogEmitted` 钩子
+喂入 ⇒ 喂进去的正是**终态 entry** ⇒ 终态 entry 现在带标 ⇒ **pill 由「否」变「是」**。
+
+## C.6 诚实边界
+
+1. ★ **历史行不回填**：修复只作用于**新写入**的行；会话族 turn 幂等、不可更新
+   ⇒ 154 上此前那 200 余行漏标**仍是历史行**（回填是另一次写操作，需属主拍板）。
+2. ★ **阈值收窄的代价**（P3，仓内已登记）：`DB_LEDGER_RECONCILE_FROM=902`
+   ⇒ **75 条历史漂移长期不再被检出**。正解是把「应用后被改写」的迁移在**文件头**
+   标 `SUPERSEDED`/`DEPRECATED`（工具内置的一等公民机制，`db-changelog.sh:275`
+   会跳过它们），或跑 migration ledger repair —— ⚠ **但补录前必须逐条确认 DB 形态**
+   （R89-CT 明确警告：补录 ＝ 把改动固化为「正确」）。⇒ **待属主裁决**。
+3. **台账写入**：删除了 154/252 共用库里的 2 行 `999` 残留（备份逐字留存，可原样插回）。
+4. **Redis live-store 在 154 上为空** ⇒ 未能从 Redis 侧直接读 tile；
+   pill 的判定链（终态 entry → `extractProbeInfo` → 路径 2/4）已由代码与 DB 读数双向坐实。
