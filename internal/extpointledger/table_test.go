@@ -75,16 +75,21 @@ func TestBuildRowsMergesStaticAndRuntime(t *testing.T) {
 		if row.Recorded {
 			t.Errorf("机制 %s 未被记录，recorded 应为 false", m.ID)
 		}
-		// ★ 「裁决表说在生产、但没记账」必须是**显式可见**的状态
+		// ★ 「裁决表说在生产、但**没接台账**」必须是**显式可见**的状态
 		//   （否则读端分不清「没接线」与「没流量」）。
-		if want := m.Production && !row.Recorded; row.Unwired != want {
-			t.Errorf("机制 %s：unwired = %v，want %v（production=%v recorded=%v）",
-				m.ID, row.Unwired, want, m.Production, row.Recorded)
+		//
+		// ★★ 注意判据用的是 `Wired`（**静态**）而不是 `Recorded`（运行期）：
+		//   一个**接好了**、只是本次进程内**还没流量**的机制
+		//   ⇒ `Recorded=false` ⇒ ★ 但 `Unwired` 必须是 **false**
+		//   ⇒ 否则「刚启动还没来请求」会被误标成「未接线」。
+		if want := m.Production && !row.Wired; row.Unwired != want {
+			t.Errorf("机制 %s：unwired = %v，want %v（production=%v wired=%v recorded=%v）",
+				m.ID, row.Unwired, want, m.Production, row.Wired, row.Recorded)
 		}
 	}
-	// ★ 已记录过的机制不该被标成「未接线」。
+	// ★ 已接台账的机制不该被标成「未接线」。
 	if r := byID[extpoints.IDResponseIntercept]; r.Unwired {
-		t.Error("已记录过的机制不该是 unwired")
+		t.Error("已接台账的机制不该是 unwired")
 	}
 }
 
@@ -141,7 +146,7 @@ func TestBuildPayloadCarriesScope(t *testing.T) {
 	for _, row := range back.ExtensionPoints {
 		for _, k := range []string{"id", "title", "location", "verdict", "production",
 			"calls", "failures", "timeouts", "dropped", "rejected", "p99_ms", "p99_window",
-			"recorded", "unwired", "phase"} {
+			"recorded", "wired", "unwired", "phase"} {
 			if _, ok := row[k]; !ok {
 				t.Errorf("行 %v 缺字段 %q", row["id"], k)
 			}
@@ -149,21 +154,50 @@ func TestBuildPayloadCarriesScope(t *testing.T) {
 	}
 	// ★ 载荷必须把「裁决表说在生产、但本次进程内没记账」显式标出来
 	//   ⇒ 否则读端分不清「没接线」与「没流量」。
-	unwired := 0
+	// ★ 载荷必须把「**接没接台账**」显式标出来（静态事实 ⇒ 与流量无关）。
+	wired := 0
 	for _, m := range extpoints.Mechanisms() {
 		if !m.Production {
 			continue
 		}
 		for _, row := range back.ExtensionPoints {
 			if row["id"] == m.ID {
-				if v, _ := row["unwired"].(bool); v {
-					unwired++
+				if v, _ := row["wired"].(bool); v {
+					wired++
 				}
 			}
 		}
 	}
-	if unwired == 0 {
-		t.Error("载荷里没有任何机制被标为 unwired ⇒ ★「未接线」这个状态在读端不可见")
+	if wired == 0 {
+		t.Error("载荷里没有任何机制被标为 wired ⇒ ★「接没接台账」这个状态在读端不可见")
+	}
+}
+
+// TestWiringTableMatchesVerdictTable —— **静态接线表**与裁决表同源。
+//
+// ★ 两个方向都要查：
+//
+//	① 裁决表里 `Production=true` 的机制 ⇒ **必须**在接线表里
+//	   （在产的扩展点不接台账 ⇒ 读端那一行永远是空的 ⇒ 等于没做）；
+//	② 接线表里的机制 ⇒ **必须**在裁决表里（不许有孤儿行）。
+func TestWiringTableMatchesVerdictTable(t *testing.T) {
+	for _, m := range extpoints.Mechanisms() {
+		if !m.Production {
+			continue
+		}
+		if !IsWired(m.ID) {
+			t.Errorf("机制 %q 在生产（Production=true）却**没接台账** ⇒ "+
+				"读端那一行的计数恒为 0 ⇒ ★ 要么给它接上，要么把它改判为不在生产",
+				m.ID)
+		}
+	}
+	for id, loc := range Wiring {
+		if _, ok := extpoints.MechanismByID(id); !ok {
+			t.Errorf("接线表里有裁决表之外的机制 %q（位置 %s）⇒ 孤儿行", id, loc)
+		}
+		if loc == "" {
+			t.Errorf("机制 %q 的接线位置为空 ⇒ 门没法与源码对拍", id)
+		}
 	}
 }
 

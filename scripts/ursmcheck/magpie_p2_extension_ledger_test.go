@@ -135,15 +135,18 @@ func TestMagpieP2ExtensionLedgerCrossChecksProductionFlag(t *testing.T) {
 			t.Errorf("机制 %s：台账里有记录，合并后的行 calls 却为 0 ⇒ 运行期半没进合并", row.ID)
 		}
 	}
-	// ★ 「裁决表说在生产、但本次进程内没记账」必须在读端**显式可见**
+	// ★ 「裁决表说在生产、但**没接台账**」必须在读端**显式可见**
 	//   （否则读端分不清「这个扩展点还没接台账」与「它没有流量」）。
-	// ⇒ 空台账下：所有 Production=true 的机制都必须被标为 unwired。
+	//
+	// ★★ 判据用 `Wired`（**静态**）而不是 `Recorded`（**运行期**）：
+	//   ⇒ 空台账（本次进程内零流量）下，**已接台账**的机制 `Unwired` 必须是 false
+	//   ⇒ ★ 否则「刚启动还没来请求」会被误标成「未接线」（★ 本条就是那道自查修掉的缺陷）。
 	empty := extpointledger.BuildRows(extpointledger.New())
 	for _, row := range empty {
-		want := row.Production
+		want := row.Production && !row.Wired
 		if row.Unwired != want {
-			t.Errorf("机制 %s：空台账下 unwired = %v，want %v（production=%v）",
-				row.ID, row.Unwired, want, row.Production)
+			t.Errorf("机制 %s：空台账下 unwired = %v，want %v（production=%v wired=%v）",
+				row.ID, row.Unwired, want, row.Production, row.Wired)
 		}
 	}
 }
@@ -252,8 +255,6 @@ var magpieP2LedgerConstants = map[string]string{
 //	同 LESSONS §355 / §3.14）。
 func TestMagpieP2EveryProductionMechanismIsWiredToLedger(t *testing.T) {
 	root := magpieP2LedgerRepoRoot(t)
-	// ★ 复用 P0-1 门里的全仓 .go 扫描器（同一 package `ursm_test`）。
-	files := magpieP0GoFiles(t, root)
 
 	const verdictTable = "internal/extpoints/extpoints.go"
 
@@ -268,26 +269,30 @@ func TestMagpieP2EveryProductionMechanismIsWiredToLedger(t *testing.T) {
 			t.Fatalf("机制 %q 不在本门硬编码的「ID ⇒ 常量名」表里 ⇒ "+
 				"要么裁决表加了新机制、要么 ID 写错了", m.ID)
 		}
-		found := ""
-		for _, f := range files {
-			rel, _ := filepath.Rel(root, f)
-			rel = filepath.ToSlash(rel)
-			if rel == verdictTable {
-				continue // ★ 裁决表自己不作证
-			}
-			b, err := os.ReadFile(f)
-			if err != nil {
-				continue
-			}
-			if strings.Contains(string(b), constName) {
-				found = rel
-				break
-			}
+		// ★★ **两份来源对拍**：静态接线表（`internal/extpointledger.Wiring`）
+		//   声明「接在哪个文件」⇒ 本门去**真的读那个文件**、确认它**真的用到了**
+		//   该机制的常量 ⇒ ★ 声明与现实必须一致。
+		loc := extpointledger.WiringLocation(m.ID)
+		if loc == "" {
+			t.Errorf("机制 %q 标 Production=true，但**静态接线表里没有它** ⇒ "+
+				"★ 这个在产的扩展点**没接台账** ⇒ 读端那一行的计数恒为 0", m.ID)
+			continue
 		}
-		if found == "" {
-			t.Errorf("机制 %q 标 Production=true，但生产代码里找不到记账调用（%s）⇒ "+
-				"★ 这个在产的扩展点**没接台账** ⇒ 读端那一行的计数恒为 0",
-				m.ID, constName)
+		if loc == verdictTable {
+			t.Errorf("机制 %q 的接线位置指向裁决表自身 ⇒ ★ 裁决表不能自证", m.ID)
+			continue
+		}
+		b, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(loc)))
+		if err != nil {
+			t.Errorf("机制 %q 的接线位置 %q 读不到：%v", m.ID, loc, err)
+			continue
+		}
+		// ★ 必须是**真的用到**（`extpoints.IDXxx`）⇒ 而不是 mere mention。
+		needle := "extpoints." + constName
+		if !strings.Contains(string(b), needle) {
+			t.Errorf("机制 %q 的接线文件 %q 里没有 %s ⇒ "+
+				"★ 静态接线表与源码**不同源**（要么表写错了，要么接线被摘了）",
+				m.ID, loc, needle)
 		}
 	}
 	if production == 0 {

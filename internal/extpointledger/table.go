@@ -51,23 +51,26 @@ type Row struct {
 	P99Window   int       `json:"p99_window"`
 	LastError   string    `json:"last_error,omitempty"`
 	LastErrorAt time.Time `json:"last_error_at,omitempty"`
-	// Recorded 报告这个机制**在台账里被记录过**。
+	// Recorded 报告这个机制**在本次进程内被记到过**（运行期事实）。
+	//
+	// ⚠ 它**不蕴含**「没接台账」——★ 一个接好了、只是**本次进程内没有流量**的
+	//   机制，`Recorded` 也是 false ⇒ ★ 所以「接没接」要看 `Wired`。
 	Recorded bool `json:"recorded"`
-	// ★ Unwired 报告这个机制「**裁决表说在生产，但本次进程内还没有任何记账**」。
+	// ★ Wired 报告这个机制**是否接了台账**（**静态**事实，来自 `Wiring` 表）。
 	//
-	// ★ 为什么需要这个字段（诚实边界）：
-	// 台账是进程内的 ⇒ 恒为 0 有**两种**完全不同的成因——
+	// ★ 它与 `Recorded` 的分工见 `wiring.go` 的表：
+	// `Wired` = 接没接（静态）；`Recorded` = 本次进程内有没有流量（运行期）。
+	Wired bool `json:"wired"`
+	// WiringLocation 是记账接线的**文件路径**（没接则空串）⇒ 运维可直接点进去看。
+	WiringLocation string `json:"wiring_location,omitempty"`
+	// ★ Unwired 报告这个机制「**裁决表说在生产，但它还没接台账**」。
 	//
-	//	(a) ★ **这个扩展点还没接台账**（本轮的真实形态：6 个机制里只有
-	//	    `response_intercept` 接了记账）；
-	//	(b) 它**没流量**（本次进程启动以来没人调它）。
+	// ★ 它是**静态**结论（`Production && !Wired`）⇒ ★ **与流量无关**：
+	// 一个接好了、只是本次进程内还没流量的机制 ⇒ `Unwired=false`。
+	// ⇒ 这正是这个字段存在的全部理由：把「**没接线**」与「**没流量**」分开。
 	//
-	// ⇒ 而 `Production=false` 的机制（判死 / 别名 / 骨架）calls=0 是**正常的**。
-	// ⇒ ⇒ 不加这个字段，读端看到的「0」**分不清 (a) 与 (b)** ⇒ admin 页面会
-	//     把「还没接线」误读成「这个扩展点没人用」⇒ ★ 因此显式暴露。
-	//
-	// ⚠ 口径提醒：进程重启即清零 ⇒ `Unwired=true` **不蕴含**「它真的没流量」，
-	//   只蕴含「本次进程内没有记账记录」。
+	// ⚠ 口径提醒：`Wired` 来自**静态接线表**（由门与源码对拍），
+	//   而 `Recorded` 来自**运行期**（进程重启即清零）。
 	Unwired bool `json:"unwired"`
 }
 
@@ -99,8 +102,13 @@ func BuildRows(ledger *Ledger) []Row {
 			row.LastErrorAt = e.LastErrorAt
 			row.Recorded = true
 		}
-		// ★ 「裁决表说在生产、但本次进程内没记账」⇒ 显式标记（见 Row.Unwired）。
-		row.Unwired = row.Production && !row.Recorded
+		// ★ **静态半**：接没接台账（与流量无关）。
+		row.Wired = IsWired(m.ID)
+		row.WiringLocation = WiringLocation(m.ID)
+		// ★ 「裁决表说在生产、但**还没接台账**」⇒ 显式标记。
+		//   ⇒ ★ 注意用的是 `Wired`（静态）**不是** `Recorded`（运行期）：
+		//   否则「刚启动还没来请求」会被误标成「未接线」（2026-10-24 自查修掉）。
+		row.Unwired = row.Production && !row.Wired
 		rows = append(rows, row)
 	}
 	return rows
