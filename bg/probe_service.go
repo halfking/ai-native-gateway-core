@@ -941,7 +941,12 @@ func (w *NodeProbeWorker) mirrorNodeProbeState(ctx context.Context, credID int, 
 		// out of the healthy-parked shape and feed the stale-state
 		// reconciler / pump an endless "error" that is not the node's. The
 		// gateway outcome stays visible via last_gateway_ok = gw.ok.
-		_, _ = w.db.Exec(ctx, `
+		// ★ R149 轮：写失败**不再静默吞掉**。实测（本轮）证明这条路径会「看起来跑了、
+		// 却没落地」：探针失败的结果若没写进 node_probe_state，路由闸门那一列
+		// （next_retry_at）就只剩 pump 的 45 秒投递 holdoff 在推进 ⇒ 5 分钟/6 小时
+		// 的退避阶梯被架空 ⇒ 上游长期不可用时该 (凭据×模型) 每 45~60 秒就被重新
+		// 放回候选池。本改动**不改变任何路由行为**，只把写失败变成可见。
+		if _, err := w.db.Exec(ctx, `
 			UPDATE node_probe_state SET
 				consecutive_failures = 0,
 				consecutive_successes = consecutive_successes + 1,
@@ -955,7 +960,10 @@ func (w *NodeProbeWorker) mirrorNodeProbeState(ctx context.Context, credID int, 
 				last_err_detail = NULL,
 				in_flight_until = NULL,
 				updated_at = now()
-			WHERE credential_id = $1 AND raw_model_name = $2`, credID, model, gw.ok)
+			WHERE credential_id = $1 AND raw_model_name = $2`, credID, model, gw.ok); err != nil {
+			slog.WarnContext(ctx, "node_probe_worker: mirror success write failed",
+				"credential_id", credID, "model", model, "error", err)
+		}
 		return
 	}
 	// 2026-09-17 (R39): mirror the legacy runOne ladder's gateway-side guard —
@@ -971,7 +979,8 @@ func (w *NodeProbeWorker) mirrorNodeProbeState(ctx context.Context, credID int, 
 	}
 	nextRetryAt := now.Add(backoff)
 	nextSec := int(backoff.Seconds())
-	_, _ = w.db.Exec(ctx, `
+	// ★ R149 轮：同上，写失败必须留痕（这是「退避阶梯被架空」这条链上唯一的可观测点）。
+	if _, err := w.db.Exec(ctx, `
 		UPDATE node_probe_state SET
 			consecutive_failures = CASE WHEN $10::boolean THEN node_probe_state.consecutive_failures ELSE $3 END,
 			consecutive_successes = 0,
@@ -986,7 +995,12 @@ func (w *NodeProbeWorker) mirrorNodeProbeState(ctx context.Context, credID int, 
 			updated_at = now()
 		WHERE credential_id = $1 AND raw_model_name = $2`,
 		credID, model, attempt, nextRetryAt, nextSec,
-		direct.ok, gw.ok, firstErrCode(direct, gw), firstErrDetail(direct, gw), gatewaySide)
+		direct.ok, gw.ok, firstErrCode(direct, gw), firstErrDetail(direct, gw), gatewaySide); err != nil {
+		slog.WarnContext(ctx, "node_probe_worker: mirror failure write failed",
+			"credential_id", credID, "model", model, "attempt", attempt,
+			"backoff", backoff.String(), "next_retry_at", nextRetryAt.UTC().Format(time.RFC3339Nano),
+			"error", err)
+	}
 }
 
 // insertNodeProbeRun writes the forensic audit row (mirrors runOne's INSERT).
