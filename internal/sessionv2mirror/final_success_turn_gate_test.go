@@ -155,3 +155,84 @@ func TestFinalSuccessPadRunsOnTheReplayPath(t *testing.T) {
 			"cannot pass a non-nil-checkable handle to markTurnFinalSuccess")
 	}
 }
+
+// TestFinalSuccessSecondClaimIsRejectedByThePredicate —— §143.105（2026-10-24）。
+//
+// # 这道门钉的是什么
+//
+// 252 生产日志（10-22/10-23）实测 5,961 次 `uq_session_turns_hot_final_success`
+// 23505 —— 890 之后每个成功请求都带认领资格，忙会话每天几千次「第二条认领
+// 撞部分唯一索引」，每次 = PG 日志 ERROR + slog.Warn + 事务回滚，且 hot 侧
+// 被放行的跨面第二条 final 行是 promote 侧 23505（897 场景⑤）的生成源。
+//
+// 修复形态：UPDATE 谓词带**两臂跨面半连接**（hot 臂 + 母表臂），落选走
+// **确定性 0 行** + 三分分类（no_row / noop / superseded），superseded 降为
+// Debug。任何一处被退化都必须红：
+//
+//  1. UPDATE 里必须有两臂 NOT EXISTS（退回裸 UPDATE ⇒ 23505 风暴回归）；
+//  2. 0 行分支必须是三分（rowsWithID/alreadyMarked ⇒ 把落选混回 no_row 或
+//     noop 都会让真异常告警说假话 —— 本文件头注记录过同款教训）；
+//  3. mark_superseded 的落选路径必须是 Debug（Warn 会让忙会话每天几千条假警）。
+//
+// 有牙：变异腿删掉母表半连接臂 ⇒ 缺口列表必然非空
+// （TestFinalSuccessPredicateGateHasTeeth）。
+func TestFinalSuccessSecondClaimIsRejectedByThePredicate(t *testing.T) {
+	code := stripGoComments(repoFile(t, "internal/sessionv2mirror/final_success_turn.go"))
+	if gaps := finalSuccessPredicateGaps(code); len(gaps) > 0 {
+		t.Fatalf("final_success_turn.go 的落选防御形状缺失：\n  - %s",
+			strings.Join(gaps, "\n  - "))
+	}
+}
+
+// finalSuccessPredicateGaps 返回「§143.104 落选防御」形状缺口列表（空 = 形状完整）。
+// 单独提函数是为了让变异腿能对同一判据跑红（门与判据同一个实现，零漂移）。
+func finalSuccessPredicateGaps(code string) []string {
+	var gaps []string
+	if !strings.Contains(code, "AND NOT EXISTS (") {
+		gaps = append(gaps, "UPDATE 里没有跨面半连接 —— 第二条认领会重新走 23505 异常路径"+
+			"（PG 日志 ERROR + WARN + 回滚风暴，252 实测 2 天 5,961 条）")
+	}
+	// 两臂必须分别指向两张脸（只查本表的半连接挡不住跨面持标 —— 那正是
+	// promote 冲突的生成源）。
+	if !strings.Contains(code, "public.session_turns_hot f") {
+		gaps = append(gaps, "跨面半连接缺 hot 臂")
+	}
+	if !strings.Contains(code, "public.session_turns g") {
+		gaps = append(gaps, "跨面半连接缺母表臂 —— hot/母表互相看不见持标行，"+
+			"promote 侧 23505（897 场景⑤）的生成源回来了")
+	}
+	// 0 行分支必须三分。
+	for _, needle := range []string{"rowsWithID", "alreadyMarked", "case rowsWithID == 0", "case alreadyMarked > 0"} {
+		if !strings.Contains(code, needle) {
+			gaps = append(gaps, "0 行分支缺三分分类（"+needle+"）—— 落选/幂等/行不存在"+
+				"混为一谈会让告警说假话")
+		}
+	}
+	// 落选必须 Debug（Warn = 忙会话每天几千条假警）。
+	if strings.Contains(code, `slog.Warn("sessionv2mirror: final_success pad superseded`) {
+		gaps = append(gaps, "落选路径仍在用 slog.Warn —— 多轮会话每天几千条落选"+
+			"全按异常报警等于没有报警")
+	}
+	return gaps
+}
+
+// TestFinalSuccessPredicateGateHasTeeth —— 变异腿：删掉母表半连接臂必须红。
+// 在**内存副本**上做（R98 模式），仓内真文件零改动。
+func TestFinalSuccessPredicateGateHasTeeth(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "..", "internal/sessionv2mirror/final_success_turn.go"))
+	if err != nil {
+		t.Fatalf("read final_success_turn.go: %v", err)
+	}
+	needle := `AND NOT EXISTS (
+			       SELECT 1 FROM public.session_turns g`
+	if !strings.Contains(string(raw), needle) {
+		t.Fatalf("变异锚点（母表半连接臂）在源码里找不到 —— 先核对锚点再谈变异")
+	}
+	mutated := strings.Replace(string(raw), needle, "AND TRUE /* MUTATED: cross-face arm removed */", 1)
+	if mutated == string(raw) {
+		t.Fatalf("变异没有生效")
+	}
+	if gaps := finalSuccessPredicateGaps(stripGoComments(mutated)); len(gaps) == 0 {
+		t.Fatalf("变异体（母表半连接臂被删）没有产生任何形状缺口 —— 门对这族缺陷没有牙")
+	}
+}

@@ -21,7 +21,7 @@ package ursm_test
 //
 // ★ 门红 = 「现状被改了」⇒ 两种可能：
 //　(a) 有人引入了回归；★ (b) ★★ **D9b/D9c 真的被修了**（属主裁决后落地）。
-//　⇒ **门红时先读判据**：若是 (b)，请连同审计档 §R151 与 LESSONS §397 一起更新。
+//　⇒ **门红时先读判据**：若是 (b)，请连同审计档 §R151 与 LESSONS §399 一起更新。
 //
 // ★ 阳性对照：故意写坏的合成片段 ⇒ 检测器必须报出来；
 // ★ 阴性对照：合规片段 ⇒ 检测器不得误报。
@@ -117,7 +117,7 @@ func TestProbeTimeoutBudgetMustBeExplicit(t *testing.T) {
 		t.Errorf("%s 里找不到 `Timeout: 30 * time.Second` 的硬编码字面量 ⇒ "+
 			"★ 探针的超时预算形态变了 ⇒ 请核对：%s",
 			probeBudgetWorkerFile,
-			"（a）被接到了 error_probe.timeout_ms 上 ⇒ ★★ D9a 已修 ⇒ 请连同审计档 §R151 与 LESSONS §397 一起更新；"+
+			"（a）被接到了 error_probe.timeout_ms 上 ⇒ ★★ D9a 已修 ⇒ 请连同审计档 §R151 与 LESSONS §399 一起更新；"+
 				"（b）被改成了别的值 ⇒ 请在注释里写清新值与依据")
 	}
 }
@@ -149,7 +149,7 @@ func TestProbeInconclusiveMustNotSilentlyFreeze(t *testing.T) {
 	if !found {
 		t.Errorf("找不到「inconclusive 探测不写回」的显式声明（%s）⇒ "+
 			"★★ 该分支的语义变了 ⇒ 请核对：★ 若已按 D9c 让它参与退避阶梯 ⇒ "+
-			"请连同审计档 §R151 与 LESSONS §397 一起更新本门",
+			"请连同审计档 §R151 与 LESSONS §399 一起更新本门",
 			strings.Join(sources, " / "))
 	}
 }
