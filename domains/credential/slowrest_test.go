@@ -164,7 +164,7 @@ func TestSlowRestCountIsFrozenWhileResting(t *testing.T) {
 }
 
 // TestSlowRestForgetWindowResetsCount 断言 magpie 的 `slowForget=30min`：
-// 距上次慢启动超过遗忘窗 ⇒ 计数归零 ⇒ 下一���**又是一次"第一次"**（放过）。
+// 距上次慢启动超过遗忘窗 ⇒ 计数归零 ⇒ 下一次**又是一次"第一次"**（放过）。
 func TestSlowRestForgetWindowResetsCount(t *testing.T) {
 	tracker, clock := newTestSlowRest(t)
 	key := SlowRestKey(42, "minimax-m3")
