@@ -19,7 +19,7 @@ AI Native Gateway は、AI エージェントと「バイブコーディング�
 - **プロトコル正規化**：OpenAI / Anthropic / Gemini / Responses API 互換 —— 1 つのエンドポイントですべてのモデルに接続
 - **2 層インテリジェントルーティング**：L1 がモデルを選択（タスク分類 → 6 項目スコアリング）、L2 がクレデンシャルを選択（ティアフォールバック → 課金ラウンド → P2C スコアリング → 実行 / サーキットブレーク）
 - **セッションガバナンス**：スティッキーセッション、全文セッションリプレイ、自動プロンプト圧縮、4 層データライフサイクル —— 「リクエスト」ではなく「会話」を第一級の管理対象として扱う
-- **マルチテナント**：38 以上のテーブルに PostgreSQL RLS で強制されるテナント分離、テナント別クォータ・計量・MaaS 課金に対応
+- **マルチテナント**：90 以上のテーブルに PostgreSQL RLS で強制されるテナント分離、テナント別クォータ・計量・MaaS 課金に対応
 - **クレデンシャル管理**：フィンガープリント偽装、適応型プロービング、自動サーキットブレーク付きのマルチクレデンシャルプール
 - **オブザーバビリティ**：リアルタイムリクエストストリーム、ルーティング分析（ヒートマップ + Sankey）、コスト追跡、OTel + Prometheus
 - **プライバシー**：100% プライベートデプロイ —— すべてのデータが自社インフラ内に留まる
@@ -55,7 +55,7 @@ AI Native Gateway は、AI エージェントと「バイブコーディング�
 |----------|----------|
 | **プロトコル** | OpenAI / Anthropic / Gemini / Responses 互換 + 整合性チェック付き SSE ストリーミング中継 |
 | **ルーティング** | 2 層ルーティング（モデル → クレデンシャル）+ スティッキーセッション + cost/quality ポリシーによるオートルーティング |
-| **マルチテナント** | アイデンティティトンネル（virtual IP/MAC/ClientID）+ クレデンシャルプール + 38 以上のテーブルに RLS |
+| **マルチテナント** | アイデンティティトンネル（virtual IP/MAC/ClientID）+ クレデンシャルプール + 90 以上のテーブルに RLS |
 | **トラフィックガバナンス** | トークンレート制限（TPM/RPM）+ セマンティックキャッシュ + プロンプト圧縮 + スライディングウィンドウアルゴリズム |
 | **監査** | フルチェーン監査 + DLQ + ディスクフォールバック + OTel + Prometheus |
 | **クレデンシャル** | マルチクレデンシャル + フィンガープリントプール + 適応型プロービング + 手動無効化 |
@@ -78,7 +78,7 @@ graph TB
         CP["Control plane<br/>Admin API + embedded Vue SPA"]
         BGW["Background workers (~80 goroutines)<br/>probe / cleanup / stats / partitions"]
     end
-    GW --> PG[("PostgreSQL 14+<br/>durable facts · RLS 38+ tables · partitions")]
+    GW --> PG[("PostgreSQL 14+<br/>durable facts · RLS 90+ tables · partitions")]
     GW --> RD[("Redis 7+<br/>URSM state · limits · sticky · session hot state")]
     DP -->|"IR conversion + vendor field strip"| P["LLM Providers<br/>OpenAI / Anthropic / Gemini / domestic"]
     CP -.->|"signed outbox events"| ASM["ai-session-manager<br/>session projection / analytics"]
@@ -367,7 +367,7 @@ GOOS=windows GOARCH=arm64  go build -o dist/llm-gw-installer-windows-arm64.exe .
 | **セッションガバナンス** | リクエスト単位のログ | スティッキーセッション + 全文リプレイ + 圧縮 + 4 層データライフサイクル |
 | **MCP ツールゲートウェイ** | 一部 | 2026 Q3 フル提供予定 |
 | **中国語フレンドリー** | 限定的 | 完全中国語 UI + 国産モデル + Alipay |
-| **マルチテナント監査** | 標準 | 38+ テーブル RLS · テナント監査 L1 = 0 |
+| **マルチテナント監査** | 標準 | 90+ テーブル RLS · テナント監査 L1 = 0 |
 
 ### 有名な代替製品との比較
 
@@ -479,7 +479,7 @@ git push github       # → github (secret scan, blocked on BLOCK-level hit)
 
 コントリビューションを歓迎します！開発環境の構築、コードスタイル、プルリクエストのプロセスは [CONTRIBUTING.md](CONTRIBUTING.md) を参照してください。
 
-マルチテナント関連の変更は、`lint-tenant-scope-llmgw` / `lint-pg-rls` / `lint-otel-tenant` の 3 つのリンターすべてに合格する必要があります。
+マルチテナント関連の変更は、RLS ゲート（`make test-rls`——実 PostgreSQL が必要、`TEST_DATABASE_URL` が要る）とユニットテストスイート（`make test`——CI の `verify.sh` が実行しているのと同じもの）を通過する必要があります。
 
 ## 🔐 セキュリティ
 

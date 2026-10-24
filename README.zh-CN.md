@@ -19,7 +19,7 @@ AI Native Gateway 是一个**开源、可私有部署的 AI 原生 LLM 网关**�
 - **协议归一化**：OpenAI、Anthropic、Gemini、Responses API 兼容 —— 一个端点接入所有模型
 - **双层智能路由**：L1 选模型（任务分类 → 6 维评分），L2 选凭据（Tier 回退 → 计费轮次 → P2C 评分 → 执行 / 熔断）
 - **会话治理**：粘性会话、全量内容会话回放、自动提示词压缩、4 档数据生命周期 —— 会话（而非单次请求）是一等治理对象
-- **多租户**：PostgreSQL RLS 强制租户隔离（38+ 表），配套每租户配额、用量计量与 MaaS 计费
+- **多租户**：PostgreSQL RLS 强制租户隔离（90+ 表），配套每租户配额、用量计量与 MaaS 计费
 - **凭据管理**：多凭据池，配指纹伪装、自适应探测与自动熔断
 - **可观测性**：实时请求流、路由分析（热力图 + Sankey）、成本追踪、OTel + Prometheus
 - **隐私**：100% 私有化部署 —— 所有数据留在企业基础设施内
@@ -55,7 +55,7 @@ AI Native Gateway 是一个**开源、可私有部署的 AI 原生 LLM 网关**�
 |-------|--------------|
 | **协议** | OpenAI / Anthropic / Gemini / Responses 兼容 + SSE 流式中继（增量完整性校验） |
 | **路由** | 双层路由（模型 → 凭据）+ 粘性会话 + 自动路由（cost/quality 策略） |
-| **多租户** | 身份隧道（virtual IP/MAC/ClientID）+ 凭据池 + 38+ 表 RLS |
+| **多租户** | 身份隧道（virtual IP/MAC/ClientID）+ 凭据池 + 90+ 表 RLS |
 | **流量治理** | Token 限流（TPM/RPM）+ 语义缓存 + 提示词压缩 + 滑窗算法 |
 | **审计** | 全链路审计 + DLQ + 磁盘回退 + OTel + Prometheus |
 | **凭据** | 多凭据 + 指纹池 + 自适应探测 + 手动禁用 |
@@ -78,7 +78,7 @@ graph TB
         CP["Control plane<br/>Admin API + embedded Vue SPA"]
         BGW["Background workers (~80 goroutines)<br/>probe / cleanup / stats / partitions"]
     end
-    GW --> PG[("PostgreSQL 14+<br/>durable facts · RLS 38+ tables · partitions")]
+    GW --> PG[("PostgreSQL 14+<br/>durable facts · RLS 90+ tables · partitions")]
     GW --> RD[("Redis 7+<br/>URSM state · limits · sticky · session hot state")]
     DP -->|"IR conversion + vendor field strip"| P["LLM Providers<br/>OpenAI / Anthropic / Gemini / domestic"]
     CP -.->|"signed outbox events"| ASM["ai-session-manager<br/>session projection / analytics"]
@@ -388,7 +388,7 @@ Installer 完整设计见 [installer/README.md](installer/README.md)。
 | **会话治理** | 请求级日志 | 粘性会话 + 全量内容回放 + 压缩 + 4 档生命周期 |
 | **MCP 工具网关** | 部分 | 2026 Q3 全量交付 |
 | **中文友好** | 有限 | 全中文 UI + 国产模型 + 支付宝 |
-| **多租户审计** | 标准 | 38+ 表 RLS · 租户审计 L1 = 0 |
+| **多租户审计** | 标准 | 90+ 表 RLS · 租户审计 L1 = 0 |
 
 ### vs. 具名竞品
 
@@ -510,7 +510,7 @@ bash scripts/sync-to-github.sh             # 确认后 force-push（main + tags�
 
 欢迎参与贡献！开发环境搭建、代码风格与 PR 流程见 [CONTRIBUTING.md](CONTRIBUTING.md)。
 
-多租户相关改动必须通过全部三条 linter：`lint-tenant-scope-llmgw` / `lint-pg-rls` / `lint-otel-tenant`。
+多租户相关改动必须通过 RLS 门禁（`make test-rls`——真实 PostgreSQL，需 `TEST_DATABASE_URL`）与单元测试套件（`make test`——CI 的 `verify.sh` 跑的就是它）。
 
 ## 🔐 安全
 
