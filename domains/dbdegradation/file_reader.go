@@ -653,7 +653,10 @@ func (fr *FileReader) computeSummaryWith(ctx context.Context, files []BackupFile
 	//	有记录、却一个真实 session id 都没有 ⇒ 该读数**无意义**
 	//	（生产实测：备份记录几乎全是 request_wal/request_log ⇒ 没有会话维度）
 	//	⇒ 显式标记 ⇒ 端点据此标 degraded（而不是让「会话数 0/1」沉默）。
-	summary.SessionCountAvailable = !(summary.TotalRecords > 0 && summary.TotalSessions == 0)
+	//	★ **判据不能依赖「记录数」** —— 冷启动窗口里 `TotalRecords == 0` 的意思是
+	//	「**还没统计完**」而不是「真的 0 条记录」⇒ 用它判定会误报「可用」。
+	//	★ 改用「**有备份文件、却一个真实 session id 都没有**」⇒ 不可用。
+	summary.SessionCountAvailable = !(summary.TotalFiles > 0 && summary.TotalSessions == 0)
 
 	// 计算日期范围
 	if len(dates) > 0 {
