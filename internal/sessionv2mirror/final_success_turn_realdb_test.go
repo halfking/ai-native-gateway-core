@@ -206,7 +206,19 @@ func TestFinalSuccessMarkLandsOnRealDB(t *testing.T) {
 			hotID, partID)
 	}
 	if partSeeded {
-		markTurnFinalSuccess(ctx, pool, partID, tenant, session)
+		// ★ §143.105（2026-10-24）：父表腿必须用**独立 session**。
+		// 旧版父表腿与 hot 腿同 session_id —— 那在 890 后的生产语义里就是
+		// 「同会话同天的第二条认领」：UPDATE 现在带跨面半连接（hot 已持标 ⇒
+		// 母表这条被确定性拒绝，mark_superseded），这正是 §143.104 要的
+		// 行为（897 场景⑤的生成源被掐断），不是「父表腿没生效」。
+		// 本腿要证的是「母表 UPDATE 能落地」，所以换独立 session 绕开唯一性
+		// 仲裁 —— 与下面 wrongTenant 对照「必须换 session」同款教训。
+		if _, err := pool.Exec(ctx, `
+			UPDATE session_turns SET session_id = $1 WHERE request_id = $2 AND tenant_id = $3
+		`, session+"-parentface", partID, tenant); err != nil {
+			t.Fatalf("re-session parent leg: %v", err)
+		}
+		markTurnFinalSuccess(ctx, pool, partID, tenant, session+"-parentface")
 		if !readMarked(partID) {
 			t.Fatalf("标记跑完了，但月分区行 %s 的 is_final_success 仍非 TRUE —— 父表腿没生效", partID)
 		}
@@ -280,4 +292,165 @@ func TestFinalSuccessMarkLandsOnRealDB(t *testing.T) {
 			"标记会跨租户写", leaked)
 	}
 	t.Log("阴性对照通过：未知 request_id 与错误 tenant 均 0 行")
+}
+
+// TestFinalSuccessSecondClaimIsDeterministicallySuperseded —— §143.105（2026-10-24）。
+//
+// # 这条考核的是什么
+//
+// 890 之后每个成功请求都携带认领资格，(tenant_id, session_id, partition_date)
+// WHERE is_final_success 的部分唯一索引每天每会话只放行一条 ⇒ 多轮会话的其余
+// 成功轮必然落选。修复前落选走 23505 异常路径（PG 日志 ERROR + WARN + 事务
+// 回滚；252 实测 2 天 5,961 条）；修复后 UPDATE 谓词带跨面半连接，落选是
+// **确定性 0 行** ⇒ mark_superseded（Debug）。
+//
+// 两个场景：
+//   A. 同面落选：hot 两行同会话同天，第二条被确定性拒绝（不再 23505）。
+//   B. 跨面拒标：母表行已持标、hot 第二条同会话行被拒 —— 这正是 promote
+//      侧 23505（897 场景⑤）的生成源；修复前 hot 行会被标记、随后 promote
+//      必炸整批，修复后冲突根本不生成。
+//
+// # 有牙的判据
+//
+// 场景 A 若实现仍是「裸 UPDATE」，第二条会真的 23505 ⇒ mark_superseded 也会
+// +1（异常路径同标签）—— 单靠计数分不出两条路径。所以加判据：
+// 回读第二条**必须未标记**（裸 UPDATE 23505 路径同样未标记）+ **第一条仍
+// TRUE**（谁站住不变）+ 全程不得出现 mark_failed（23505 被吞掉、事务回滚后
+// 若把 PG 错误归类错就会打到 mark_failed）。跨面场景 B 的牙更硬：修复前
+// hot 行会被标上（跨面索引互相看不见）⇒ readMarked(B) 为真；修复后必须为假。
+func TestFinalSuccessSecondClaimIsDeterministicallySuperseded(t *testing.T) {
+	dsn := os.Getenv("TEST_DATABASE_URL")
+	if dsn == "" {
+		t.Skip("TEST_DATABASE_URL not set; skipping real-database superseded-claim proof")
+	}
+	ctx := context.Background()
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatalf("pgxpool.New: %v", err)
+	}
+	defer pool.Close()
+	if err := pool.Ping(ctx); err != nil {
+		t.Skipf("TEST_DATABASE_URL unreachable, skipping: %v", err)
+	}
+
+	const tenant = "probe-final-success-tenant"
+	const sessionSameFace = "probe-final-success-session-superseded"
+	const sessionCrossFace = "probe-final-success-session-crossface"
+	idA := finalSuccessProbeID("sup-a")
+	idB := finalSuccessProbeID("sup-b")
+	idParent := finalSuccessProbeID("cross-parent")
+	idHotB := finalSuccessProbeID("cross-hotb")
+
+	cleanup := func() {
+		for _, id := range []string{idA, idB, idParent, idHotB} {
+			for _, tbl := range []string{"session_turns", "session_turns_hot"} {
+				if _, err := pool.Exec(ctx,
+					`DELETE FROM `+tbl+` WHERE request_id = $1 AND tenant_id = $2`,
+					id, tenant); err != nil {
+					t.Logf("cleanup %s %s: %v", tbl, id, err)
+				}
+			}
+		}
+	}
+	defer func() {
+		cleanup()
+		var leftover int
+		if err := pool.QueryRow(ctx, `
+			SELECT (SELECT count(*) FROM session_turns_hot WHERE request_id LIKE 'probe-final-success-sup-%')
+			     + (SELECT count(*) FROM session_turns WHERE request_id LIKE 'probe-final-success-sup-%')
+			     + (SELECT count(*) FROM session_turns_hot WHERE request_id LIKE 'probe-final-success-cross-%')
+			     + (SELECT count(*) FROM session_turns WHERE request_id LIKE 'probe-final-success-cross-%')
+		`).Scan(&leftover); err != nil {
+			t.Logf("post-cleanup probe failed: %v", err)
+			return
+		}
+		if leftover != 0 {
+			t.Errorf("本门在库里留了 %d 行探针数据（sup-/cross- 前缀族）", leftover)
+		}
+	}()
+
+	// ── 场景 A：同面落选 ────────────────────────────────────────────────────
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO session_turns_hot (session_id, turn_no, tenant_id, request_id)
+		VALUES ($1, 1, $2, $3), ($1, 2, $2, $4)
+	`, sessionSameFace, tenant, idA, idB); err != nil {
+		t.Fatalf("seed same-face rows: %v", err)
+	}
+	beforeMark := testutil.ToFloat64(finalSuccessTurnOps.WithLabelValues("mark"))
+	markTurnFinalSuccess(ctx, pool, idA, tenant, sessionSameFace)
+	if got := testutil.ToFloat64(finalSuccessTurnOps.WithLabelValues("mark")) - beforeMark; got != 1 {
+		t.Fatalf("第一条认领应产生 1 次 mark，实得 +%v —— 前提不成立，后续判据全部作废", got)
+	}
+	if !readFinalSuccessMarked(t, pool, idA, tenant) {
+		t.Fatalf("第一条认领没有落地 —— 场景 A 的前提不成立")
+	}
+
+	supBefore := testutil.ToFloat64(finalSuccessTurnOps.WithLabelValues("mark_superseded"))
+	failBefore := testutil.ToFloat64(finalSuccessTurnOps.WithLabelValues("mark_failed"))
+	markTurnFinalSuccess(ctx, pool, idB, tenant, sessionSameFace)
+	if got := testutil.ToFloat64(finalSuccessTurnOps.WithLabelValues("mark_superseded")) - supBefore; got != 1 {
+		t.Fatalf("第二条认领应产生 1 次 mark_superseded（确定性落选），实得 +%v —— "+
+			"落选路径的分类变了，或 UPDATE 谓词的半连接不在", got)
+	}
+	if got := testutil.ToFloat64(finalSuccessTurnOps.WithLabelValues("mark_failed")) - failBefore; got != 0 {
+		t.Fatalf("确定性落选被记成了 mark_failed（+%v）—— 异常路径仍在被触发（23505 未被谓词挡住）", got)
+	}
+	if readFinalSuccessMarked(t, pool, idB, tenant) {
+		t.Fatalf("第二条认领竟被标上 —— 同会话同天出现第二条 final 行，部分唯一索引的语义被绕过")
+	}
+	if !readFinalSuccessMarked(t, pool, idA, tenant) {
+		t.Fatalf("第二条落选后第一条反而丢了标记 —— 「先到者站住」被破坏")
+	}
+	t.Log("场景 A 通过：同面第二条认领确定性落选（mark_superseded，无 mark_failed）")
+
+	// ── 场景 B：跨面拒标（promote 冲突的生成源被掐断）────────────────────────
+	// 母表行持标 → hot 第二条同会话行必须被拒。修复前：hot UPDATE 看不见
+	// 母表的持标行 ⇒ hot 行被标 ⇒ promote 批次带着它 ⇒ 撞母表索引 23505
+	// ⇒ 整批回滚（897 头注场景⑤，10-23 生产实爆 5 次）。
+	parentSeeded := true
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO session_turns (session_id, turn_no, tenant_id, request_id, partition_date)
+		VALUES ($1, 1, $2, $3, CURRENT_DATE)
+	`, sessionCrossFace, tenant, idParent); err != nil {
+		t.Logf("SKIP 场景 B 的母表腿：往 session_turns 插入失败（%v）—— 当月分区可能尚未创建", err)
+		parentSeeded = false
+	}
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO session_turns_hot (session_id, turn_no, tenant_id, request_id)
+		VALUES ($1, 2, $2, $3)
+	`, sessionCrossFace, tenant, idHotB); err != nil {
+		t.Fatalf("seed cross-face hot row: %v", err)
+	}
+	if parentSeeded {
+		markTurnFinalSuccess(ctx, pool, idParent, tenant, sessionCrossFace)
+		if !readFinalSuccessMarked(t, pool, idParent, tenant) {
+			t.Fatalf("母表行没有落地 —— 场景 B 的前提不成立")
+		}
+		supBefore2 := testutil.ToFloat64(finalSuccessTurnOps.WithLabelValues("mark_superseded"))
+		markTurnFinalSuccess(ctx, pool, idHotB, tenant, sessionCrossFace)
+		if got := testutil.ToFloat64(finalSuccessTurnOps.WithLabelValues("mark_superseded")) - supBefore2; got != 1 {
+			t.Fatalf("跨面落选应产生 1 次 mark_superseded，实得 +%v —— hot UPDATE 的跨面半连接臂不在", got)
+		}
+		if readFinalSuccessMarked(t, pool, idHotB, tenant) {
+			t.Fatalf("跨面落选的 hot 行竟被标上 —— 这就是 promote 侧 23505（897 场景⑤）的生成源，"+
+				"修复后必须不生成")
+		}
+		t.Log("场景 B 通过：跨面第二条认领被确定性拒绝（promote 冲突不再生成）")
+	} else {
+		t.Log("场景 B 未考核（母表插入失败）—— 本轮只证明了场景 A")
+	}
+}
+
+func readFinalSuccessMarked(t *testing.T, pool *pgxpool.Pool, id, tenant string) bool {
+	t.Helper()
+	var n int
+	if err := pool.QueryRow(context.Background(), `
+		SELECT (SELECT count(*) FROM session_turns_hot
+		         WHERE request_id = $1 AND tenant_id = $2 AND is_final_success IS TRUE)
+		     + (SELECT count(*) FROM session_turns
+		         WHERE request_id = $1 AND tenant_id = $2 AND is_final_success IS TRUE)
+	`, id, tenant).Scan(&n); err != nil {
+		t.Fatalf("read back %s: %v", id, err)
+	}
+	return n > 0
 }

@@ -15,6 +15,10 @@ This parser reconstructs PostgreSQL log **records** (a record may span several
 physical lines, e.g. a multi-line `STATEMENT:` body) and then attributes each
 kill to the statement that actually produced it.
 
+§143.104 (2026-10-24): oversized single lines are also delivered as
+conmon `stderr P` partial chunks; those are folded into the open record
+(see CONTAINER_PREFIX_PARTIAL) instead of breaking it.
+
 Usage:
     python3 parse_pg_kills.py <ctrlog> [<ctrlog> ...]
 
@@ -37,6 +41,15 @@ PG_REC = re.compile(
 )
 # The container log wraps every line: "<iso ts> stderr F <pg text>"
 CONTAINER_PREFIX = "stderr F "
+# ★ §143.104（2026-10-24）: journald/conmon split oversized single lines into
+# "<iso ts> stderr P <chunk>" pieces (~8 KiB each). A multi-MB statement (e.g. a
+# session_turns mirror INSERT carrying a giant inlined prompt) arrives as a run
+# of P chunks, so treating "no stderr F tag" as "end of record" (a) dropped the
+# chunk bytes and (b) broke the open record, orphaning every following
+# continuation line. Measured on 252's ctrlog-20261023.log: 529.7 MB file,
+# 270.7 MB in P chunks + 142.2 MB in orphaned continuations — i.e. most of the
+# day was invisible to the F-only reader.
+CONTAINER_PREFIX_PARTIAL = "stderr P "
 # LOG:  duration: 1234.567 ms  statement: <sql>
 DURATION = re.compile(
     r"^duration: ([0-9.]+) ms\s+(statement|execute [^:]*):\s*(.*)$", re.S
@@ -71,22 +84,45 @@ def iter_records(path):
     rec = None
     with open(path, "r", errors="replace") as fh:
         for raw in fh:
-            idx = raw.find(CONTAINER_PREFIX)
-            if idx < 0:
+            idx_f = raw.find(CONTAINER_PREFIX)
+            idx_p = raw.find(CONTAINER_PREFIX_PARTIAL)
+            if idx_f < 0 and idx_p < 0:
                 # Not a PG line (or a different stream): end any open record.
                 if rec is not None:
                     yield rec
                     rec = None
                 continue
-            line = raw[idx + len(CONTAINER_PREFIX):].rstrip("\n")
-            m = PG_REC.match(line)
-            if m:
-                if rec is not None:
-                    yield rec
-                rec = list(m.groups())
-            elif rec is not None:
-                # Continuation of the previous record (statement body).
-                rec[3] += "\n" + line
+            if idx_f >= 0:
+                line = raw[idx_f + len(CONTAINER_PREFIX):].rstrip("\n")
+                m = PG_REC.match(line)
+                if m:
+                    if rec is not None:
+                        yield rec
+                    rec = list(m.groups())
+                elif rec is not None:
+                    # Continuation of the previous record (statement body).
+                    rec[3] += "\n" + line
+                # else: orphan full line before any record — nothing to fold into.
+            else:
+                # ★ stderr P chunk: a mid-line piece of one oversized physical
+                # line. Two cases (§143.105):
+                #   (a) the chunk BEGINS a new PG record — this happens when the
+                #      record's own first physical line is itself oversized (its
+                #      first piece arrives as P). PG_REC matched at chunk
+                #      position 0 starts a new record.
+                #   (b) anything else — including a PG-looking line pasted
+                #      MID-statement (§143.26's poisoned-STATEMENT family,
+                #      which lands mid-chunk) — belongs to the open record and
+                #      must never split it. Chunks are byte pieces of the same
+                #      line, so concatenate raw.
+                chunk = raw[idx_p + len(CONTAINER_PREFIX_PARTIAL):].rstrip("\n")
+                m = PG_REC.match(chunk)
+                if m:
+                    if rec is not None:
+                        yield rec
+                    rec = list(m.groups())
+                elif rec is not None:
+                    rec[3] += chunk
     if rec is not None:
         yield rec
 
