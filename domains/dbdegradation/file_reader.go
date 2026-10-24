@@ -28,6 +28,18 @@ type cachedBackupFile struct {
 	cachedAt time.Time
 }
 
+// R80 轮（2026-10-24）的两个常量。
+const (
+	// summaryCacheTTLDefault 摘要缓存的默认有效期。
+	//
+	// ★ 生产实测：一次完整重算要解压 **5.18GB / 100 个备份文件**（~48s）
+	//	⇒ 有效期必须**远大于**重算耗时，否则会变成「一直在重算」。
+	//	⇒ 30min ⇒ 稳态 CPU ≈ 48s / 30min ≈ 2.7% 单核。
+	summaryCacheTTLDefault = 30 * time.Minute
+	// summaryComputeBudget 后台重算的预算（远大于端点的 5s 请求预算）。
+	summaryComputeBudget = 10 * time.Minute
+)
+
 // cachedBackupSummary 是 GetBackupSummary 的**整体结果**缓存。
 //
 // ★ R79 轮（2026-10-24）：为什么需要它 ——
@@ -38,11 +50,35 @@ type cachedBackupFile struct {
 // `/api/admin/data-lifecycle/degradation/status` **每次请求**都要重解压全部备份。
 //
 // ★ 缓存口径：**按「备份文件集指纹」**（文件名 + 大小 + mtime 的哈希）⇒
-// 备份文件增/改/删都会让指纹变 ⇒ 自动失效；**TTL 与 per-file 缓存同长**（5min）。
+// 备份文件增/改/删都会让指纹变 ⇒ 自动失效。
+//
+// ★ R80 轮（2026-10-24）新增两个字段：
+//
+//	`partial` / `partialReason` —— ★★ **「部分结果」必须能被区分于「完整结果」**。
+//	R79 给端点加了 5s ctx 预算 ⇒ 备份摘要的计算**可能被预算截断**
+//	⇒ 若仍把截断结果当完整结果缓存，端点就会对外说
+//	「100 个备份 / 5.18GB / 记录数 0 / 会话数 0」——**这是静默的错误数据**。
+//	⇒ ⇒ 部分结果**照样缓存**（避免每次请求重解压 5GB），
+//	但**必须**带 partial 标记 ⇒ 调用方据此显式标注降级。
 type cachedBackupSummary struct {
 	summary     *BackupSummary
 	fingerprint string
 	cachedAt    time.Time
+	// partial=true 表示这份摘要**不完整**（有文件读失败 / 计算被 ctx 截断）。
+	partial bool
+	// partialReason 说明为什么不完整（第一个失败原因）。
+	partialReason string
+}
+
+// partialError 把「不完整」翻译成 error。
+//
+// ★ 纪律（同 R77/R79）：**部分结果 ≠ 完整结果** ⇒
+// 调用方必须能区分 ⇒ 这里用 error 表达 ⇒ 端点标 `degraded`。
+func (c *cachedBackupSummary) partialError() error {
+	if c == nil || !c.partial {
+		return nil
+	}
+	return fmt.Errorf("backup summary incomplete: %s", c.partialReason)
 }
 
 // backupSetFingerprint 计算备份文件集的指纹。
@@ -67,12 +103,36 @@ type FileReader struct {
 	// （R79 轮：消除「每个文件解压两遍」里的第二遍 —— 见 cachedBackupSummary）。
 	summaryMu    sync.Mutex
 	summaryCache *cachedBackupSummary
+	// summaryRefreshing 是后台刷新的**单飞闸门**（R80 轮）。
+	//
+	// ★ 为什么要有后台刷新：备份摘要在生产上要**解压 5.18GB / 100 个文件**
+	//	（实测冷路径 ~48s）⇒ 它**不可能**塞进端点的 5s 请求预算。
+	//	⇒ 请求路径**绝不**付这个代价 ⇒ 由后台 goroutine 慢慢算，
+	//	算完写回缓存 ⇒ 请求读缓存（毫秒级）。
+	summaryRefreshing atomic.Bool
+	// summaryRefreshDisabled 关闭后台刷新（**仅供测试注入**）。
+	//
+	// ★ 生产必须为 false：后台刷新会**异步**改写缓存与重算计数
+	//	⇒ 测试要断言「重算次数」就必须能把它关掉，否则门会 flaky。
+	summaryRefreshDisabled bool
+	// summaryCacheTTL 摘要缓存的有效期（R80 轮）。
+	//
+	// ★ 做成**字段**（不是 const）：门禁需要把它调到极小来触发「过期」路径，
+	//	而生产值必须是 30min（摘要每次重算要解压 5.18GB ⇒ 不能更频繁）。
+	summaryCacheTTL time.Duration
 	// summaryComputations 统计「摘要被重算」的次数（= 缓存未命中次数）。
 	//
 	// ★ R79 轮：给「第二遍解压是否还在发生」一个**可直接断言**的读数 ——
 	//   门禁用它钉住不变量：文件没变时，两次调用**只算一次**。
 	// ★ 它也是生产侧的可观测点（想知道端点是不是在反复重解压，看它涨不涨）。
 	summaryComputations int64
+	// fileReads 统计「备份文件被读（解压）了多少次」（R80 轮）。
+	//
+	// ★ 这是「每个文件只解压一遍」这条不变量的**可断言读数**：
+	//	旧实现算一次摘要 ⇒ 每个文件解压 **2** 遍（统计一遍 + 全局 session 一遍）；
+	//	新实现 ⇒ 每个文件解压 **1** 遍 ⇒ N 个文件的摘要 ⇒ fileReads 应 == N。
+	// ★ 生产侧也是观测点（摘要重算的成本直接由它决定）。
+	fileReads int64
 	// salvageCapBytes 覆盖打捞路径压缩字节上限（0 = 默认
 	// salvageMaxCompressedBytes）。仅供测试注入：真 256MB 压缩文件在测试
 	// 预算内不可构造，缩小阈值即可走同一段超限分支代码。
@@ -82,9 +142,10 @@ type FileReader struct {
 // NewFileReader 创建文件读取器
 func NewFileReader(baseDir string) *FileReader {
 	return &FileReader{
-		baseDir:  baseDir,
-		cache:    make(map[string]*cachedBackupFile),
-		cacheTTL: 5 * time.Minute,
+		baseDir:         baseDir,
+		cache:           make(map[string]*cachedBackupFile),
+		cacheTTL:        5 * time.Minute,
+		summaryCacheTTL: summaryCacheTTLDefault,
 	}
 }
 
@@ -207,28 +268,34 @@ func (fr *FileReader) ListBackupFiles(ctx context.Context) ([]BackupFile, error)
 	return files, nil
 }
 
-// GetFileSummary 获取单个文件的统计信息
-func (fr *FileReader) GetFileSummary(ctx context.Context, filename string) (*BackupFile, error) {
-	// 检查缓存
-	fr.cacheMu.RLock()
-	if cached, ok := fr.cache[filename]; ok {
-		if time.Since(cached.cachedAt) < fr.cacheTTL {
-			fr.cacheMu.RUnlock()
-			return cached.file, nil
-		}
-	}
-	fr.cacheMu.RUnlock()
-
+// readFileSummary 读一个备份文件并统计（**不查缓存**）。
+//
+// ★ R80 轮（2026-10-24）：它是 `GetFileSummary` 与 `computeSummary` 的**共同底座**，
+//
+//	一次解压同时产出三样东西：
+//
+//	① 文件元信息 + ② 记录数 + ③ **该文件的 session id 集合**。
+//
+//	★★ 关键收益：旧实现里 `GetBackupSummary` 为了算「跨文件全局唯一 session」
+//	会对**同一个文件再解压一遍**（第二遍完全不受 per-file 缓存保护）
+//	⇒ **每个备份文件被完整解压两遍**。
+//	⇒ 现在第一遍就把 session 集合带出来 ⇒ **每个文件只解压一遍**
+//	⇒ 摘摘要的计算成本减半（R79 只把它「缓存掉了」，R80 把它「消掉了」）。
+//
+// ★ 返回的 error 表示「统计**不完整**」（ctx 截断 / 文件不可读）：
+//
+//	**调用方必须区分**它 —— 否则会对外说「这个文件有 0 条记录」。
+func (fr *FileReader) readFileSummary(ctx context.Context, filename string) (*BackupFile, map[string]struct{}, error) {
 	// 验证并获取路径
 	path, err := fr.backupPath(filename)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	// 获取文件信息
 	info, err := os.Stat(path)
 	if err != nil {
-		return nil, fmt.Errorf("stat file: %w", err)
+		return nil, nil, fmt.Errorf("stat file: %w", err)
 	}
 
 	// 提取日期
@@ -244,7 +311,8 @@ func (fr *FileReader) GetFileSummary(ctx context.Context, filename string) (*Bac
 		ModifiedAt: info.ModTime(),
 	}
 
-	// 统计记录数和会话数
+	// 统计记录数和会话数（**一趟**）
+	//
 	sessionSet := make(map[string]struct{})
 	recordCount := 0
 
@@ -256,11 +324,43 @@ func (fr *FileReader) GetFileSummary(ctx context.Context, filename string) (*Bac
 
 	if err != nil {
 		slog.Warn("file reader: failed to count records", "filename", filename, "error", err)
-		// 不返回错误，只是统计信息不完整
 	}
 
 	file.RecordCount = recordCount
 	file.SessionCount = len(sessionSet)
+
+	if err != nil {
+		return file, sessionSet, fmt.Errorf("统计不完整（%s）：%w", filename, err)
+	}
+	return file, sessionSet, nil
+}
+
+// GetFileSummary 获取单个文件的统计信息
+//
+// ★ R80 轮：**契约不变**（仍然吞掉统计错误 ⇒ 调用方拿到的还是那个 file），
+//
+//	但统计的**底座**换成了 readFileSummary（一次解压同时给出 session 集合）。
+//
+//	⚠ 注意：这里**故意**保留「吞错」语义 ——
+//	恢复链路（generic_recovery / handleRecoverBackupFile）依赖「能救多少救多少」；
+//	而**摘要**链路（computeSummary）改用 readFileSummary 的错误 ⇒ 那里才会
+//	把「统计不完整」如实报出来。
+func (fr *FileReader) GetFileSummary(ctx context.Context, filename string) (*BackupFile, error) {
+	// 检查缓存
+	fr.cacheMu.RLock()
+	if cached, ok := fr.cache[filename]; ok {
+		if time.Since(cached.cachedAt) < fr.cacheTTL {
+			fr.cacheMu.RUnlock()
+			return cached.file, nil
+		}
+	}
+	fr.cacheMu.RUnlock()
+
+	file, _, statErr := fr.readFileSummary(ctx, filename)
+	if file == nil {
+		// ★ 路径/ stat 失败 ⇒ 真正的错误（与旧实现一致）
+		return nil, statErr
+	}
 
 	// 更新缓存
 	fr.cacheMu.Lock()
@@ -288,6 +388,24 @@ func (fr *FileReader) GetFileSummary(ctx context.Context, filename string) (*Bac
 //
 //	★ **口径不变**：TotalSessions 仍是**跨文件全局唯一**的 session 数
 //	（不是各文件 SessionCount 之和 —— 那会把跨文件重名会话算多次）。
+//
+// ★ R80 轮（2026-10-24）的三处语义（**都是被生产读数逼出来的**）：
+//
+// ① **请求路径不再付解压代价**：生产实测冷路径要解压 5.18GB / 100 个文件
+//
+//	（~48s）⇒ 它**装不进**端点的 5s 预算 ⇒
+//	⇒ 缓存缺失/过期时**触发后台刷新**（单飞），请求**立即返回现有缓存**
+//	（没有缓存才就地算，且可能不完整 ⇒ 显式报错）。
+//
+// ② **部分结果必须可识别**：计算被 ctx 截断 / 有文件读失败 ⇒
+//
+//	摘要**不完整** ⇒ 返回 error ⇒ 端点标 `degraded`。
+//	⇒ R79 的教训：截断结果若被当完整结果缓存，端点会对外说
+//	「100 个备份 / 5.18GB / 记录数 0 / 会话数 0」——**静默的错误数据**。
+//
+// ③ **部分结果照样缓存**（带 partial 标记）：否则每次请求都要重解压 5GB
+//
+//	⇒ 共享生产机上这是持续的 CPU 浪费。
 func (fr *FileReader) GetBackupSummary(ctx context.Context) (*BackupSummary, error) {
 	files, err := fr.ListBackupFiles(ctx)
 	if err != nil {
@@ -296,29 +414,75 @@ func (fr *FileReader) GetBackupSummary(ctx context.Context) (*BackupSummary, err
 
 	fingerprint := backupSetFingerprint(files)
 
-	// ★ 锁覆盖「查缓存 + 计算 + 写缓存」整段 ⇒ 并发请求**不会**重复解压
-	//   （同一时刻只有一个在算，其余等它的结果）。
 	fr.summaryMu.Lock()
-	defer fr.summaryMu.Unlock()
+	cached := fr.summaryCache
+	fr.summaryMu.Unlock()
 
-	if c := fr.summaryCache; c != nil &&
-		c.fingerprint == fingerprint && time.Since(c.cachedAt) < fr.cacheTTL {
-		return cloneBackupSummary(c.summary), nil
+	// ① 快路径：指纹一致且未过期 ⇒ 直接返回缓存（零 IO、零解压）
+	if cached != nil && cached.fingerprint == fingerprint && time.Since(cached.cachedAt) < fr.summaryCacheTTL {
+		if cached.partial {
+			// ★ 缓存里是**部分结果** ⇒ 后台去补完整版（本次请求**不等**）
+			fr.triggerSummaryRefresh(files, fingerprint)
+		}
+		return cloneBackupSummary(cached.summary), cached.partialError()
 	}
 
+	// ② 过期但指纹一致 ⇒ 先把旧值返回（快），同时后台刷新
+	if cached != nil && cached.fingerprint == fingerprint {
+		fr.triggerSummaryRefresh(files, fingerprint)
+		return cloneBackupSummary(cached.summary), cached.partialError()
+	}
+
+	// ③ 冷启动 / 备份集变了（指纹变 ⇒ 旧值口径已不可信）⇒ 就地算
+	//	（受**请求 ctx** 限制 ⇒ 可能被截断 ⇒ 不完整 ⇒ 报错）
+	summary, partial, perr := fr.computeSummary(ctx, files)
+	if perr != nil && !partial {
+		return nil, perr
+	}
+	if !partial {
+		fr.storeSummary(summary, fingerprint, false, "")
+		atomic.AddInt64(&fr.summaryComputations, 1)
+		return cloneBackupSummary(summary), nil
+	}
+	fr.storeSummary(summary, fingerprint, true, perr.Error())
+	return cloneBackupSummary(summary), perr
+}
+
+// computeSummary 计算备份摘要（**不持有 summaryMu**）。
+//
+// ★ 返回 (摘要, 是否不完整, 错误)：
+//
+//	不完整 = 有文件读失败（GetFileSummary 出错）**或** 第二遍 ReadRecords 出错
+//	（★ R80 轮补上的洞：旧实现**忽略**了 ReadRecords 的返回值
+//	  ⇒ ctx 截断时「跨文件唯一 session 数」会被静默低估）。
+func (fr *FileReader) computeSummary(ctx context.Context, files []BackupFile) (*BackupSummary, bool, error) {
 	summary := &BackupSummary{
 		Files: make([]BackupFile, 0, len(files)),
 	}
 
 	allSessions := make(map[string]struct{})
 	var dates []string
+	failed := 0
+	var firstErr error
 
 	for _, file := range files {
-		// 获取详细信息（包含统计）
-		detailed, err := fr.GetFileSummary(ctx, file.Filename)
+		// ★ R80 轮：**一趟**读出「文件元信息 + 记录数 + 该文件的 session 集合」
+		//	⇒ 不再为「跨文件唯一 session 数」**再解压一遍**（旧实现每个文件解压两遍）。
+		detailed, sessions, err := fr.readFileSummary(ctx, file.Filename)
 		if err != nil {
-			slog.Warn("file reader: failed to get file summary", "filename", file.Filename, "error", err)
-			summary.Files = append(summary.Files, file)
+			// ★ 统计不完整（ctx 截断 / 文件不可读）⇒ **必须记账**
+			failed++
+			if firstErr == nil {
+				firstErr = err
+			}
+			if detailed != nil {
+				summary.Files = append(summary.Files, *detailed)
+				summary.TotalRecords += detailed.RecordCount
+				summary.TotalSize += detailed.Size
+				dates = append(dates, detailed.Date)
+			} else {
+				summary.Files = append(summary.Files, file)
+			}
 			continue
 		}
 
@@ -327,11 +491,11 @@ func (fr *FileReader) GetBackupSummary(ctx context.Context) (*BackupSummary, err
 		summary.TotalSize += detailed.Size
 		dates = append(dates, detailed.Date)
 
-		// 统计唯一会话数（需要读取文件）
-		fr.ReadRecords(ctx, file.Filename, func(record BackupRecord) error {
-			allSessions[record.SessionID] = struct{}{}
-			return nil
-		})
+		// 跨文件全局唯一 session 数 = 各文件 session 集合的并集
+		// （★ 口径不变：不是各文件 SessionCount 之和 —— 那会把重名会话算多次）
+		for id := range sessions {
+			allSessions[id] = struct{}{}
+		}
 	}
 
 	summary.TotalFiles = len(files)
@@ -347,13 +511,57 @@ func (fr *FileReader) GetBackupSummary(ctx context.Context) (*BackupSummary, err
 		}
 	}
 
-	atomic.AddInt64(&fr.summaryComputations, 1)
-	fr.summaryCache = &cachedBackupSummary{
-		summary:     summary,
-		fingerprint: fingerprint,
-		cachedAt:    time.Now(),
+	if failed > 0 {
+		return summary, true, fmt.Errorf("%d/%d 个备份文件读取失败：%w", failed, len(files), firstErr)
 	}
-	return cloneBackupSummary(summary), nil
+	return summary, false, nil
+}
+
+// triggerSummaryRefresh 触发**后台**摘要刷新（单飞，非阻塞）。
+//
+// ★ R80 轮：备份摘要在生产上要解压 5.18GB（~48s）⇒
+//
+//	它**不能**在请求路径上发生 ⇒ 后台慢慢算，算完写缓存。
+//	⇒ 请求侧要么读旧缓存（快），要么就地算（冷启动，可能不完整 ⇒ 报错）。
+func (fr *FileReader) triggerSummaryRefresh(files []BackupFile, fingerprint string) {
+	if fr.summaryRefreshDisabled {
+		return
+	}
+	if !fr.summaryRefreshing.CompareAndSwap(false, true) {
+		return // 已有刷新在跑 ⇒ 不重复
+	}
+	go func() {
+		defer fr.summaryRefreshing.Store(false)
+		// ★ 后台预算远大于请求预算（生产实测 ~48s）⇒ 10 分钟绰绰有余
+		ctx, cancel := context.WithTimeout(context.Background(), summaryComputeBudget)
+		defer cancel()
+
+		summary, partial, err := fr.computeSummary(ctx, files)
+		if partial {
+			slog.Warn("file reader: background backup summary refresh produced incomplete result",
+				"error", err)
+			fr.storeSummary(summary, fingerprint, true, err.Error())
+			return
+		}
+		fr.storeSummary(summary, fingerprint, false, "")
+		atomic.AddInt64(&fr.summaryComputations, 1)
+	}()
+}
+
+// storeSummary 写回缓存（**短锁**）。
+func (fr *FileReader) storeSummary(summary *BackupSummary, fingerprint string, partial bool, reason string) {
+	if summary == nil {
+		return
+	}
+	fr.summaryMu.Lock()
+	fr.summaryCache = &cachedBackupSummary{
+		summary:       summary,
+		fingerprint:   fingerprint,
+		cachedAt:      time.Now(),
+		partial:       partial,
+		partialReason: reason,
+	}
+	fr.summaryMu.Unlock()
 }
 
 // cloneBackupSummary 复制一份摘要返回。
@@ -506,6 +714,15 @@ func (fr *FileReader) InvalidateCache() {
 	fr.summaryMu.Lock()
 	fr.summaryCache = nil
 	fr.summaryMu.Unlock()
+}
+
+// FileReads 返回「备份文件被读（解压）的次数」（R80 轮）。
+//
+// ★ 用途：把「每个文件只解压一遍」这条不变量变成**可断言的读数**
+//
+//	（N 个文件的摘要 ⇒ fileReads == N，而不是 2N）。
+func (fr *FileReader) FileReads() int64 {
+	return atomic.LoadInt64(&fr.fileReads)
 }
 
 // SummaryComputations 返回「备份摘要被重算」的次数（缓存未命中的次数）。

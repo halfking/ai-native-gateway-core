@@ -38,6 +38,19 @@ func (h *Handler) WireDegradationControl(monitor *dbdegradation.Monitor, ttl *db
 //	`degraded` 恒发 + `degraded_reason`），不得让「没查出来」看起来像「是 0」。
 const degradationStatusBudget = 5 * time.Second
 
+// truncateReason 截断降级原因（避免把超长错误塞进响应体）。
+//
+// ★ R80 轮：降级原因会带上底层错误文本（如「100/100 个备份文件读取失败：…」）
+//
+//	⇒ 不截断的话响应体会变得很长。
+func truncateReason(s string) string {
+	const max = 200
+	if len(s) <= max {
+		return s
+	}
+	return s[:max] + "…"
+}
+
 func (h *Handler) handleDegradationStatus(w http.ResponseWriter, r *http.Request) {
 	if h.degradation == nil {
 		writeError(w, http.StatusServiceUnavailable, "degradation control not configured")
@@ -69,11 +82,15 @@ func (h *Handler) handleDegradationStatus(w http.ResponseWriter, r *http.Request
 	}
 	if h.degradation.reader != nil {
 		summary, err := h.degradation.reader.GetBackupSummary(ctx)
-		if err == nil {
+		// ★ R80 轮：**部分结果也要给**（前端可以显示「部分值」而不是空白），
+		//	但**必须**同时标 degraded —— 否则「5.18GB / 记录数 0」会被读成
+		//	「备份是空的」（R79 的教训：静默的错误数据比慢更危险）。
+		if summary != nil {
 			response["backups"] = summary
-		} else {
+		}
+		if err != nil {
 			degraded = true
-			reasons = append(reasons, "backup summary unavailable")
+			reasons = append(reasons, "backup summary incomplete: "+truncateReason(err.Error()))
 		}
 	}
 
