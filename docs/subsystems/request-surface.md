@@ -196,7 +196,8 @@ pre_response · response · post_response
 | `internal/requestobserver/requestobserver_test.go` + `domains/streaming/request_observer_bridge_test.go` | 观察者契约（不阻塞/丢弃计数/panic 兜住/关闭零开销）+ **v1 接线真的通** |
 | `internal/routeorder/routeorder_test.go` + `domains/streaming/executors/routeorder_adapter_test.go` | 策略只排序、失败开放、**迁移前后顺序一致** |
 | `scripts/ursmcheck/magpie_p0_extension_onoff_test.go` | 每个扩展点的 on/off 对照（★ on = 「API 装上能用」，**不是**「生产已装」） |
-| `internal/pipelinev2/pipelinev2.go` + `scripts/ursmcheck/magpie_p2_v2_criteria_test.go` | v2 切换判据（依据须逐字在生产文件里）+ 行为差异（测试须名实相符） |
+| `internal/pipelinev2/pipelinev2.go` + `scripts/ursmcheck/magpie_p2_v2_criteria_test.go` | v2 切换判据（依据须逐字在生产文件里）+ 行为差异（测试须名实相符 + **代码里真的断言了**） |
+| ★★ `scripts/ursmcheck/request_surface_doc_currency_test.go` | ★★ **本页自己的守护者**（★ 2026-10-24 §3.19.1 新增）：逐条核对本页引用的 `file:line` 仍指向它声称的那段代码；★ 并与审计档 §3.18.3 认证表**对账**（同一语义对象的区间必须**精确相等**） |
 | `internal/extpointledger/*_test.go` + `middleware/ledger_mw_test.go` | 台账契约（计数/最近窗口 p99/拒绝与出错分开/内存有界）+ **主链口径**（p99 量的是链开销） |
 | `scripts/ursmcheck/magpie_p2_extension_ledger_test.go` | 台账**两份来源**对拍 + **接线真的通** + ★ **在产机制必须接台账**（源码级） |
 | `admin/extension_points_test.go` | P2-2 **薄壳**：路由真注册 + 被鉴权包着（无凭据 ⇒ 401）+ 响应是合法 JSON |
@@ -211,7 +212,9 @@ pre_response · response · post_response
 1. **v2 pipeline 仍默认关** ⇒ 两套路径并存是**未完成**状态。
    ★ **切换判据与行为差异清单已做**（`internal/pipelinev2` + 门，2026-10-24）
    ⇒ 8 条切换判据 + 17 条行为差异（每条挂**真实存在且名实相符**的测试）
-   ⇒ ★ 其中 D09（v2 的 request-id 合成/写回）**全仓无测试** ⇒ **显式登记为缺口**。
+   ⇒ ★ 其中 D09（v2 的 request-id 合成/写回）曾被登记为「**全仓无测试**」——
+   ⇒ ★ **2026-10-24 已补齐**（见 `cmd/gateway/main_pipeline_requestid_test.go`）；
+   ⇒ ★★ 补的不只是「有测试」，还有「门核对的是**代码里真的断言了**，不只是『测试存在』」。
 2. **`HookRegistry` 判死，但 `domains/hooks` 下仍有实现在跑的 hook**（例如 `audit` hook 走别的路径）
    ⇒ 「判死」只针对**注册表**这一层，不针对 `domains/hooks` 下的具体 hook。
 3. **`KindAccountRestricted` 没有分类器** ⇒ 该 kind 当前不会被产生（归责判定已就位，识别未就位）。

@@ -48,6 +48,16 @@ import (
 	"github.com/kaixuan/llm-gateway-go/internal/pipelinev2"
 )
 
+// ★★★ strongGuaranteeFloor 是「**代码面核对语义断言**」这条能力的**地板**。
+//
+// ★★★ 它住在**门文件**里、**不在清单里** ⇒ 这是关键：★
+// ★★★ 清单侧（`internal/pipelinev2`）负责声明「哪条差异有强保证」，
+// ★★★ 门侧负责钉住「**至少**有这么多条真的有强保证」⇒ ⇒ 两边**互为对手**：
+// ★★★ 清单删掉一条 ⇒ 门侧地板失守 ⇒ 红（★ verifier 实测过的恒绿路径，已堵）。
+//
+// ★★★ 改这个数字 = **改断言** ⇒ 必须动门文件 ⇒ git diff 可见 ⇒ 不会静默通过。
+const strongGuaranteeFloor = 1
+
 // magpieP2RepoRoot 返回仓根目录。
 func magpieP2RepoRoot(t *testing.T) string {
 	t.Helper()
@@ -329,6 +339,27 @@ func TestMagpieP2V2DifferencesHaveRealTests(t *testing.T) {
 	t.Logf("★ 覆盖强度分布：**强保证**（代码面核对语义断言）%d 条，"+
 		"**弱保证**（仅存在性 + 主题词）%d 条 ⇒ ⇒ 「每条差异有测试覆盖」的机器化程度不均匀",
 		strong, weak)
+
+	// ★★★ **地板断言**：★ 强保证的条数**不得低于基线**。
+	//
+	// ★★★ 为什么必须有它（★ 2026-10-24 verifier 实测撞出来的**恒绿路径**）：
+	// ★★★ 上面那段只 `t.Logf`（**只 log、无断言**）⇒ ⇒ 删掉某条差异的整块
+	// ★★★ `RequiredAssertions` ⇒ 分布变成「强 0 / 弱 17」⇒ ★★ **门照样 rc=0**
+	// ★★★ ⇒ ⇒ 也就是说：「本门把『每条差异有测试覆盖』升级成『代码里真的断言了』」
+	// ★★★ 这件事**可以被无声撤销**，而门不会吭声 ⇒ ⇒ ★★ 那是一条**自证型恒绿路径**。
+	//
+	// ★★★ 修法：★ 在**门这一侧**留一个**独立于清单**的基线数字 ⇒
+	// ★★★ 清单侧删掉断言 ⇒ strong 掉到基线以下 ⇒ 门红。
+	// ★★★ ⇒ 而要改这个基线，**必须改门文件**（显式动作，git diff 可见）⇒ 不会静默通过。
+	//
+	// ★★ 与 C8 的 `checked == 0 ⇒ t.Fatal` **同款**：★ 门必须钉住「我至少核对了 N 项」。
+	if strong < strongGuaranteeFloor {
+		t.Errorf("★★ 强保证条数 = %d，**低于地板 %d** ⇒ ★★ 「代码面核对语义断言」这个能力**被撤销了**\n"+
+			"★★ ⇒ 典型成因：某条差异的整块 `RequiredAssertions` 被删掉\n"+
+			"★★ ⇒ ★ 这是一条**恒绿路径**：不设地板时，删掉断言门仍绿\n"+
+			"★★ ⇒ 修法：把该差异的 `RequiredAssertions` 补回去（★ 别只删门里的地板）",
+			strong, strongGuaranteeFloor)
+	}
 }
 
 // TestMagpieP2V2ProductionFactsStillHold G5：
