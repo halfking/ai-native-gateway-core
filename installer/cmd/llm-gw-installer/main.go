@@ -1144,6 +1144,37 @@ var inspectorStatsPartialIndexes904 []byte
 //go:embed embeddata/startup/904_inspector_stats_partial_indexes.down.sql
 var inspectorStatsPartialIndexes904Down []byte
 
+// 905（2026-10-24，R92 稀有过滤 500@30s 轮）：给 public.session_turns
+// （分区父表）与 public.session_turns_hot 补两条 **model 维度复合索引**。
+// ★ 病灶（252 生产只读实测，2026-10-24）：GET /api/admin/turns/sessions
+//   带 `?model=` 时**恒 500@30s**（角色级 statement_timeout=30s）。
+//   ★ build 2841（R90 的两腿 EXISTS 已上线）直连 REPEAT=3 实测：
+//     ?limit=20                       200 200 200   0.878 0.155 0.111 s
+//     ?limit=20&api_key_id=105        200 200 200   9.576 0.216 0.151 s
+//     ?limit=20&model=deepseek-ai%2F…  500 500 500  30.008 30.007 30.018 s
+//     ?limit=20&provider=14           200 200 200   0.358 0.100 0.080 s
+//     ?limit=20&status_code=500       200 200 200   0.554 0.181 0.153 s
+//   ⇒ ★★ R90「四条全修」的结论被证伪：只有 model 那条仍 500。
+// ★ 真因不是「形状」而是**稀有过滤值 ⇒ 外层会话深扫**：该 model 命中
+//   458 轮 / **30 个会话**，而 public.sessions 有 441,112 个会话；
+//   列表是 `ORDER BY s.updated_at DESC LIMIT 21` ⇒ 必须扫到凑够 21 行
+//   ⇒ EXPLAIN 实测外层 Rows Removed by Filter: 72,455 + 277,899 = 350,354。
+// ★ 修复效果（事务内建索引 + EXPLAIN ANALYZE + ROLLBACK，生产零持久变更）：
+//   model（稀有） 30,008 ms → **8.0 ms**；provider='14' 358 ms → **48.6 ms**。
+// ★ 只给 model 建索引：provider n_distinct=20、status_code n_distinct=8
+//   ⇒ **没有选择性** ⇒ 给它们建索引会让规划器更倾向「轮次驱动 + 大哈希构建」
+//   ⇒ 实测退化到 **10,080 ms**。
+// ★ 分区父表不支持 CREATE INDEX CONCURRENTLY ⇒ 用普通 CREATE INDEX；
+//   仍不用 CONCURRENTLY（startup 迁移默认在事务里跑）。
+//   实测构建时长 18,512 ms（父表）+ 28 ms（hot）⇒ ★ 这 ~18.5 秒里
+//   session_turns 的写入被 SHARE 锁阻塞 ⇒ 落在低峰窗口。
+//
+//go:embed embeddata/startup/905_turns_session_model_index.sql
+var turnsSessionModelIndex905 []byte
+
+//go:embed embeddata/startup/905_turns_session_model_index.down.sql
+var turnsSessionModelIndex905Down []byte
+
 //go:embed embeddata/startup/859_tighten_pii_phone_intl_regex.sql
 var tightenPiiPhoneIntlRegex859 []byte
 
@@ -1499,6 +1530,8 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/903_sessions_updated_at_session_id_index.down.sql":                     sessionsUpdatedAtSessionIdIndex903Down,
 	"startup/904_inspector_stats_partial_indexes.sql":                              inspectorStatsPartialIndexes904,
 	"startup/904_inspector_stats_partial_indexes.down.sql":                         inspectorStatsPartialIndexes904Down,
+	"startup/905_turns_session_model_index.sql":                                    turnsSessionModelIndex905,
+	"startup/905_turns_session_model_index.down.sql":                               turnsSessionModelIndex905Down,
 	"startup/859_tighten_pii_phone_intl_regex.sql":                                   tightenPiiPhoneIntlRegex859,
 	"startup/852_models_canonical_column_set_reconcile.sql":                          modelsCanonicalColumnSetReconcile852,
 	"startup/489_credential_probe_queue_startup_backfill.sql":                        credentialProbeQueueStartupBackfill489,

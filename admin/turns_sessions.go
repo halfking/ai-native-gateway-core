@@ -436,22 +436,33 @@ func buildTurnsSessionWhere(r *http.Request, tenantID string, tsFrom, tsTo time.
 	//   ★ 口径等价：视图 ≡ hot ∪ 父表（promote 是 DELETE hot + INSERT parent 的
 	//   **移动** ⇒ 同一 request_id 不同时存在两边 ⇒ 反连接剔除 0 行；
 	//   252 实测 hot ∩ 父表配对 **0 行**）⇒ 同一列名、同一谓词。
+	//
+	// ★ 2026-10-24（R92）：形态再从「两条 EXISTS 用 OR 组合」改成
+	//   **派生表 UNION ALL + 单一 EXISTS**（同一 helper）。
+	//   ⇒ OR 形态只能被规划成「会话驱动」⇒ **稀有过滤值**（生产实测：该 model
+	//     只命中 30 / 441,112 个会话）⇒ 外层要扫 35 万个会话才凑够 LIMIT 21
+	//     ⇒ 500@30s。★ R90 上线后实测：model 仍 500×3，provider/status_code
+	//     已 200 ⇒ 「R90 四条全修」的结论被证伪。
+	//   ⇒ V2 形态可被 pull-up ⇒ 规划器能自己选驱动方向：稀有 ⇒ 轮次驱动
+	//     （外层只剩 30 行），常见 ⇒ 会话驱动（前 21 个会话立刻凑齐）。
+	//   ⇒ 252 生产实测（事务内建索引 + ROLLBACK）：model 稀有值
+	//     30,008 ms ⇒ **8.0 ms**；provider='14' 358 ms ⇒ **48.6 ms**。
 	if v := strings.TrimSpace(r.URL.Query().Get("model")); v != "" {
 		clauses = append(clauses, db.SessionFamilyTurnsSessionExistsSQL(
-			"t.model = $"+strconv.Itoa(argIdx)))
+			"t.model", "model", "ft.model = $"+strconv.Itoa(argIdx)))
 		args = append(args, v)
 		argIdx++
 	}
 	if v := strings.TrimSpace(r.URL.Query().Get("provider")); v != "" {
 		clauses = append(clauses, db.SessionFamilyTurnsSessionExistsSQL(
-			"t.provider = $"+strconv.Itoa(argIdx)))
+			"t.provider", "provider", "ft.provider = $"+strconv.Itoa(argIdx)))
 		args = append(args, v)
 		argIdx++
 	}
 	if v := strings.TrimSpace(r.URL.Query().Get("status_code")); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
 			clauses = append(clauses, db.SessionFamilyTurnsSessionExistsSQL(
-				"t.status_code = $"+strconv.Itoa(argIdx)))
+				"t.status_code", "status_code", "ft.status_code = $"+strconv.Itoa(argIdx)))
 			args = append(args, n)
 			argIdx++
 		}
@@ -481,12 +492,12 @@ func buildTurnsSessionWhere(r *http.Request, tenantID string, tsFrom, tsTo time.
 	}
 	if v := strings.TrimSpace(r.URL.Query().Get("api_key_id")); v != "" {
 		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n > 0 {
-			// ★ 2026-10-24（R90）：这一支原来 JOIN 了 113 列的**全量 source**
-			//   （db.SessionFamilyTurnsSourceSQL()，hot ∪ 父表全部历史 ≈1.1 M 行）
-			//   ⇒ 它在**关联子查询内部** ⇒ 外层每一行都把它物化一遍
-			//   ⇒ 生产形态 EXPLAIN ANALYZE **> 90 s 未跑完**（被 30s 超时杀掉）
-			//   ⇒ 端点稳定 500@30s。
-			//   ⇒ 现在改成与 model/provider/status_code 同一形态的**两腿 EXISTS**。
+			// ★ 2026-10-24（R92）：这一支现在用 db.SessionFamilyTurnsSessionExistsSQL
+			//   渲染的 **派生表 UNION ALL + 单一 EXISTS** 形态（R90 的 OR-两腿形态）。
+			//   · 为什么换：OR 形态锁死了「会话驱动」方向 ⇒ 过滤值稀有时外层要扫
+			//     35 万个会话才凑够 LIMIT 21 ⇒ 生产 500@30s（实测 2026-10-24）。
+			//   · 口径：同谓词集、同半连接语义 ⇒ 与 R90 形态**逐行一致**
+			//     （252 生产同快照双向 EXCEPT ALL：only_r90=0 / only_v2=0）。
 			//
 			// ★ 谓词必须与**投影**逐字一致（db.SessionFamilyAPIKeyIDExpr）：
 			//   原始列是 text、参数是 int64 ⇒ 归一规则「纯数字才转 bigint」。
@@ -500,7 +511,8 @@ func buildTurnsSessionWhere(r *http.Request, tenantID string, tsFrom, tsTo time.
 			//   那个坑来自 source SQL 里的 `LIKE 'sys:%'` / `~ '^[0-9]+$'`
 			//   含 `%` 字符 ⇒ 现在这条子句里已没有任何 `%`。
 			clauses = append(clauses, db.SessionFamilyTurnsSessionExistsSQL(
-				db.SessionFamilyAPIKeyIDExpr+" = $"+strconv.Itoa(argIdx)))
+				db.SessionFamilyAPIKeyIDExpr, "api_key_id",
+				"ft.api_key_id = $"+strconv.Itoa(argIdx)))
 			args = append(args, n)
 			argIdx++
 		}

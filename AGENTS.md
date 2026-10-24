@@ -7810,3 +7810,91 @@ index b953a6f03..555ef83c4 100644
 > ② 75 条历史漂移的正式处置（标 `SUPERSEDED`/`DEPRECATED` 或 ledger repair）**待属主裁决**（补录前须逐条确认 DB 形态）；
 > ③ **跨表比较必须用固定分区表口径** —— 本轮踩到 **promote 窗口**（同一批行几分钟内从 hot 移到分区表）⇒ hot 与分区表**同时**读会自相矛盾。
 > ★ 完整记录见 `docs/audit/2026-10-23-live-topology-probe-tagging-audit.md` **附录 C（发布与线上验证）+ 附录 D（pill 端到端 + 口径订正 + 双口径验收）**。
+>
+> ⇒ ⇒ ★★★★★ **【2026-10-27 R91 轮（P11）】发版 2841 被「远端锁」挡住 —— 真因是 SSH 传输层四层缺陷，锁从未被持有** ★★★★★
+> ⇒ ⇒ ★★ **一句话**：★ 发版 2841 报 `ERROR: remote lock held or initialization failed at
+> ⇒ ⇒ ★★ /var/lib/llm-gateway-go/deploy.lock on 154`，但 **154 上该锁目录根本不存在**（父目录是空的）
+> ⇒ ⇒ ★★ ⇒ ★★ **那条消息是误报** ⇒ 真因是 **SSH 在 pre-auth 阶段被 154 的 sshd 随机丢弃 ~30%**。
+> ⇒ ⇒ ★★★★ **四层叠加（逐层实测，非推断）**：
+> ⇒ ⇒ ★★★★ ① **服务端**：154 的 sshd 常驻机器人扫描（fail2ban sshd jail **Total failed: 401,449**、
+> ⇒ ⇒ ★★★★ 近 10 分钟 **1,224** 次 preauth、并发 preauth **12**），而 `MaxStartups` **未设置**
+> ⇒ ⇒ ★★★★ ⇒ 默认 `10:30:100` ⇒ **随机丢弃 30% 新连接** ⇒ 实测直连 154 失败率 **7/10**（间隔 5s 仍 6/8），
+> ⇒ ⇒ ★★★★ 252 跳板路径 **9/10**；★ 客户端只看到 `Connection closed by ... port 25022`。
+> ⇒ ⇒ ★★★★ ② **`deploy-lib/ssh-retry.sh` 的 `ssh_run_pipe`**：把 stderr 丢掉后传**空串**给分类器
+> ⇒ ⇒ ★★★★ ⇒ `Connection closed` 等关键字永远匹配不上 ⇒ exit 255 也判 fail ⇒ **完全不重试**；
+> ⇒ ⇒ ★★★★ ③ **`ssh_run_pipe` 从不走 252 跳板**（与 `ssh_run` 不对称），且 `SSH_RETRY_FALLBACK_AFTER=0`
+> ⇒ ⇒ ★★★★ 的注释写的是「立即使用跳板机（不先尝试直连）」而**实现是先直连**；
+> ⇒ ⇒ ★★★★ ④ **hop 路径从来没通过**：ProxyCommand 用裸 IP `root@115.29.212.252` ⇒ 走**默认端口 22**，
+> ⇒ ⇒ ★★★★ 而 252 的 sshd 听在 **25022**（端口只挂在 `~/.ssh/config` 的 `Host 252` 别名上，裸 IP 匹配不到）
+> ⇒ ⇒ ★★★★ ⇒ 隧道必失败 ⇒ 修正后 **5/5 成功**。
+> ⇒ ⇒ ★★★★ **★ 修法落在 deploy-lib 仓**（`~/workspace/ai-native-tools/deploy-lib/`，monorepo
+> ⇒ ⇒ ★★★★ `ai-native-workspace`，**不在 llm-gateway-go 仓**）：`ssh_run_pipe` 补 **stdin 只读一次并落盘
+> ⇒ ⇒ ★★★★ ⇒ 重试可重放**（否则重试时 stdin 已被消费完 ⇒ 远端 `bash -s` 读到空 stdin 直接 exit 0 ⇒
+> ⇒ ⇒ ★★★★ **假成功**：锁目录根本没建出来而调用方以为拿到了）、**stderr 喂分类器**、**支持跳板**；
+> ⇒ ⇒ ★★★★ `ssh_run`/`ssh_run_pipe` **兑现** `SSH_RETRY_FALLBACK_AFTER=0` 契约；ProxyCommand **显式带跳板端口**；
+> ⇒ ⇒ ★★★★ `lock.sh` 的失败分支**按退出码分类**（75 = 锁真被持有 / 255 = **传输层失败，不是锁冲突** / 其它 = 初始化失败）。
+> ⇒ ⇒ ★★★★ **门**：新增 `deploy-lib/test/test-ssh-retry-pipe.sh`（10 场景 / **30 条断言**，含 stdin 重放逐字一致、
+> ⇒ ⇒ ★★★★ 远端 `bash -s` 真执行、跳板带端口）+ **变异 5/5 全红且逐字还原**（M1 去 stdin 缓存 / M2 不喂 stderr /
+> ⇒ ⇒ ★★★★ M3 pipe 不走跳板 / M4 `ssh_run` 不兑现契约 / M5 去跳板端口）；★ **M5 第一版是绿的**（断言命中的是
+> ⇒ ⇒ ★★★★ **外层** ssh 的 `-p`）⇒ 改成断言 ProxyCommand **内部**才抓住 ⇒ ★ **断言必须指向「区分度所在的那个片段」**。
+> ⇒ ⇒ ★★★★ ★ **门禁自身也有三处缺陷（都被阳性对照当场抓住）**：`ssh -O exit` 继承 stdin ⇒ **永久阻塞**
+> ⇒ ⇒ ★★★★ （⇒ `exec </dev/null`）；`source ssh-retry.sh` **覆盖**调用方的 EXIT trap ⇒ 临时目录泄漏；
+> ⇒ ⇒ ★★★★ 断言用「整段文本窗口」匹配 ⇒ 会跨条目。
+> ⇒ ⇒ ★★★★ **发版**：★ 修复后 **2841 成功**（`DEPLOY_EXIT=0`，生产 `2.5.8-9cf051aa-20261024-2841`，
+> ⇒ ⇒ ★★★★ 蓝绿切 **8781**，nginx 路由身份仲裁通过、DB 就绪 3s、凭据冒烟 `providers=14,18,13092 creds=17 failed=0`）。
+> ⇒ ⇒ ★★★★ **诚实边界**：★ **154 的 sshd 侧根因未在生产改**（`MaxStartups` 仍默认、扫描仍在）⇒ 那是主机配置变更
+> ⇒ ⇒ ★★★★ ⇒ **属主裁决**；★ 本轮只做到「一次抖动不再打死部署」+「失败时给出的结论是正确的」。
+> ⇒ ⇒ ★★ **完整记录见 `docs/audit/2026-10-27-R91-发版2841被远端锁挡住-SSH传输层四层缺陷.md`** ＋ **LESSONS §360**。
+>
+> ⇒ ⇒ ★★★★★ **【2026-10-27 R92 轮（P11）】`?model=` 仍 500@30s —— R90「四条全修」的结论被生产验收证伪（3/4）** ★★★★★
+> ⇒ ⇒ ★★ **一句话**：★ R90 把四条过滤改成「hot ∪ 父表两腿 EXISTS」并宣称全部修好 ⇒ ★ **上线后的生产验收
+> ⇒ ⇒ ★★ 证明那是错的**：`?api_key_id=` / `?provider=` / `?status_code=` 三条已 200，★ **`?model=` 仍 500@30s**
+> ⇒ ⇒ ★★ ⇒ 真因不是「形状」而是**稀有度**（该 model 只命中 30 / 441,112 个会话 ⇒ 外层要扫 350,354 个会话）。
+> ⇒ ⇒ ★★★★ **根因（252 生产只读实测，2026-10-24）**：★ 该 model 命中 **458 轮 / 30 个会话**，
+> ⇒ ⇒ ★★★★ 而 `public.sessions` = **441,577 行 / 441,112 个会话**；会话列表固定
+> ⇒ ⇒ ★★★★ `ORDER BY s.updated_at DESC, s.session_id DESC LIMIT 21` ⇒ ★ **必须扫到凑够 21 行**
+> ⇒ ⇒ ★★★★ ⇒ EXPLAIN 实测外层 `Rows Removed by Filter: 72,455 + 277,899 = **350,354**`。
+> ⇒ ⇒ ★★★★ ★ **已排除「统计信息陈旧」**：`session_turns` last_analyze=2026-10-19、
+> ⇒ ⇒ ★★★★ `session_turns_2026_10` last_autoanalyze=2026-10-24 ⇒ 统计新鲜；规划器估 128 行 vs 实际 458 行
+> ⇒ ⇒ ★★★★ （只低估 3.6×）⇒ ★ 「VACUUM ANALYZE 就能修」**不成立**（省下一次生产写）。
+> ⇒ ⇒ ★★★★ ★ **机理：OR 形态锁死了驱动方向** ⇒ `EXISTS(a) OR EXISTS(b)` 只能被规划成**会话驱动**；
+> ⇒ ⇒ ★★★★ 改成「**派生表 UNION ALL + 单一 EXISTS**」⇒ 派生表可被 planner **pull-up** ⇒ 两个驱动方向都可选
+> ⇒ ⇒ ★★★★ （稀有 ⇒ 轮次驱动、外层只剩 30 行；常见 ⇒ 会话驱动、前 21 个会话立刻凑齐）。
+> ⇒ ⇒ ★★★★ ★ **只加索引与只改形态是乘法关系，两条腿缺一不可**（252 事务内建索引 + EXPLAIN + ROLLBACK，
+> ⇒ ⇒ ★★★★ 生产零持久变更）：只加索引 **17,501 ms**（仍会话驱动）｜只改形态 **205,708 ms**（轮次侧顺序扫）
+> ⇒ ⇒ ★★★★ ｜**合起来 8.0 ms**；★ 而 **JOIN 形态（把轮次驱动写死）是错的** ⇒ 常见过滤实测退化到 **10,080 ms**。
+> ⇒ ⇒ ★★★★ **修法**：① `db.SessionFamilyTurnsSessionExistsSQL` 改签名为 `(colExpr, colName, pred)`
+> ⇒ ⇒ ★★★★ 并渲染 V2 形态；② **startup 迁移 905**：`public.session_turns (model, tenant_id, session_id)`
+> ⇒ ⇒ ★★★★ （分区父表 ⇒ 自动传播）+ `public.session_turns_hot (model, tenant_id, session_id)`；
+> ⇒ ⇒ ★★★★ ★ **只给 model 建索引**（provider n_distinct=20、status_code n_distinct=8 ⇒ 没有选择性
+> ⇒ ⇒ ★★★★ ⇒ 建索引会让常见过滤退化到 10,080 ms）⇒ 该「故意不建」的决定被门禁**带理由钉住**。
+> ⇒ ⇒ ★★★★ ★ **口径等价（252 生产同快照双向 EXCEPT ALL）**：model 与 provider 各 **only_r90=0 / only_v2=0 / 各 21 行**
+> ⇒ ⇒ ★★★★ ⇒ 两形态**逐行一致**（只差求值顺序）；仓内真库门逐条比（model 36 / provider 135 个候选 ⇒ 不一致 0 条）。
+> ⇒ ⇒ ★★★★ **门**：`admin/turns_sessions_filter_pushdown_test.go` 更新形态门 + 阳性对照（新增「退回 OR 两腿」坏样本）
+> ⇒ ⇒ ★★★★ + 新增 `TestR92_RealDB_V2vsR90_Equivalence`（真库逐行比）+ `TestR92_FilterCallSitesProjectTheirColumn`
+> ⇒ ⇒ ★★★★ + **新增 `TestR92_RenderedFilterSQLExecutesOnRealDB`**（把渲染出的过滤 SQL **真的跑一次**）
+> ⇒ ⇒ ★★★★ + **新增 `TestR92_CallSiteDetectorRejectsBadSample`**（含第一版门禁漏掉的那个形态）；
+> ⇒ ⇒ ★★★★ 新增 `sql/migrations/startup/migration_905_turns_session_model_idx_test.go`（7 条：恰好 2 条 CREATE INDEX /
+> ⇒ ⇒ ★★★★ 表 / **列序** / 幂等 / 不用 CONCURRENTLY / lock+statement timeout / sha 冻结 / down 对称 /
+> ⇒ ⇒ ★★★★ embeddata 逐字节一致 / **7 点登记面** / **语义耦合门**：go/ast 抽 Go 侧过滤列 ↔ 索引首列）。
+> ⇒ ⇒ ★★★★ ★ **门禁自身的三处缺陷（都被阳性对照当场抓住）**：正则窗口**跨到下一条索引** ⇒ 改成按
+> ⇒ ⇒ ★★★★ `CREATE INDEX` **切句逐条比对**；★ Go 的 RE2 **不支持负向先行断言**（`(?!...)` 直接 panic）；
+> ⇒ ⇒ ★★★★ 「每个过滤列都必须有索引」把**故意不建索引**的列也判违规 ⇒ 改成**带理由的例外清单**。
+> ⇒ ⇒ ★★★★ ★★ **★ 变异臂 M6 打穿了第一版门禁（真实漏洞，已修）**：把调用点的 colName 从 `model` 改成
+> ⇒ ⇒ ★★★★ `model_x` ⇒ 门禁**仍为绿** ⇒ 原因：第一版用 `strings.Contains(where, "AS "+col)`，
+> ⇒ ⇒ ★★★★ 而 **`"AS model_x"` 包含 `"AS model"`** ⇒ ★ **子串匹配让「更长的名字」冒充「目标名字」**
+> ⇒ ⇒ ★★★★ ⇒ 修法：**按 token 边界抽出来逐个比对**（正则 + 标识符边界，禁用子串），
+> ⇒ ⇒ ★★★★ **且补一条「把渲染出的 SQL 真跑一次」的真库门**（该错误只有运行期才暴露 ⇒ 形状门证明不了）。
+> ⇒ ⇒ ★★★★ ★★ **★ `admin` 包整包超时（600.8 s）的定性**：★ **不是断言失败，是超时** ⇒ 用
+> ⇒ ⇒ ★★★★ **origin/main 独立 worktree 复跑同一包** ⇒ **同签名**（两边都卡在
+> ⇒ ⇒ ★★★★ `TestDataLifecycleStorageOverviewFieldsAreComplete`，真库端点恒慢）⇒ ⇒ **既有红、非本轮引入**
+> ⇒ ⇒ ★★★★ ⇒ 本轮**不动**它（划为独立议题：data-lifecycle 存储概览慢）。
+> ⇒ ⇒ ★★★★ ★★ **诚实边界**：★ V2 的「轮次驱动」分支**硬依赖 905 的索引**（无索引时实测 205,708 ms）；
+> ⇒ ⇒ ★★★★ 生产上由启动迁移在**切换前**建好 ⇒ 窗口为 0；若索引被回滚而二进制未回滚 ⇒ HTTP 症状与今天**相同**
+> ⇒ ⇒ ★★★★ （30s 语句超时 ⇒ 同样 500@30s）**不更差**；★ 极稀有的 provider/status_code 值仍可能慢（没建索引）；
+> ⇒ ⇒ ★★★★ 跨分区去重子查询（每行 6 次分区探测，实测 350,429 次循环）**本轮未动** ⇒ 划为独立议题。
+> ⇒ ⇒ ★★★ **★ 编号撞车提醒**：本系列（R87~R92）的 R89/R90/R91 与 **2026-10-21 的
+> ⇒ ⇒ ★★★ 「破坏性腿/守卫线」系列 R89/R90/R91**（见本文件前文）是**两套不同的轮次** ⇒ 引用时必须带日期前缀；
+> ⇒ ⇒ ★★★ ★ **另注**：origin/main 上另有 **2026-10-24 的 R91/R92**（LESSONS §355/§356，magpie 系列）
+> ⇒ ⇒ ★★★ ⇒ 与本系列（**2026-10-27** 的 R91/R92）**轮次号也撞** ⇒ 引用必须**同时带日期**。
+> ⇒ ⇒ ★★ **完整记录见 `docs/audit/2026-10-27-R92-model过滤仍500-稀有度与驱动方向.md`** ＋ **LESSONS §360**。
