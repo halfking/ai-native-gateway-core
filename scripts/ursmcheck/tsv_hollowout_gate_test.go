@@ -45,6 +45,7 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -191,6 +192,28 @@ func goBinDir() string {
 //
 // ★ gotest:<pkg>:<testName> ⇒ `go test <pkg> -run ^<testName>$ -count=1`
 // ★ shell:<script>          ⇒ `bash <script>`
+//
+// ★★ 2026-10-24 12h 审计轮：gotest 臂改成「**每个包只编译一次**」。
+//
+//	★ 为什么（原实现跑不完）：
+//	  `go test <pkg> -run ^X$ -count=1` 每次都要**重新构建 + 链接**该包的
+//	  测试二进制（★ 实测 scripts/ursmcheck：106 个门文件，单次 ≈ 19 s）
+//	  ⇒ ⇒ 本门对每条 expect=red 的条目要跑【两次】（基线 + 掏空后）
+//	  ⇒ ⇒ 19 条 × 2 次 × 19 s ≈ 12 分钟 ⇒ ⇒ **撞破父套件的 900 s 预算**
+//	  ⇒ ⇒ ★ 实测：父套件 `go test ./scripts/ursmcheck -timeout=900s`
+//	  在 **origin/main（1c2978c11）上实测 900.591 s 超时**
+//	  ⇒ ⇒ ★ 而本门**单独跑**只要 220.81 s ⇒ ⇒ 差值就是这批重复构建。
+//
+//	★ 修法与它的等价性：
+//	  每个被探的包只 `go test -c` 编译一次，之后直接跑那个二进制。
+//	  ⇒ 编译 19 s → 1.9 s（一次性）；每次探针 19 s → **0.011 s**
+//	  ⇒ ⇒ 36 次探针 ≈ 0.4 s ⇒ ⇒ 本门从 220 s 降到 ~40 s。
+//
+//	★ ★ 必须复刻 `go test` 的两个语义，否则探针会【假红】：
+//	  ① **cwd = 包目录**（★ `go test` 把测试二进制放在【包目录】里跑；
+//	     仓内多个门用相对路径读同目录的台账 ⇒ 从仓根跑会
+//	     「open xxx.tsv: no such file or directory」⇒ 假红）。
+//	  ② **-test.count=1**（★ 禁用测试结果缓存 ⇒ 与原 `-count=1` 同义）。
 func runHollowReader(kind, spec string, root string, timeout time.Duration) (int, string, error) {
 	goBin := "go"
 	if p, err := exec.LookPath("go"); err == nil {
@@ -199,6 +222,7 @@ func runHollowReader(kind, spec string, root string, timeout time.Duration) (int
 		goBin = filepath.Join(gr, "bin", "go")
 	}
 	var cmd *exec.Cmd
+	cmdDir := root
 	switch kind {
 	case "gotest":
 		// ★ 规格 = `<pkg>|<TestName>`（★ 用 `|` 而不是 `:`：Go 的 pkg 路径本身带 `/`，
@@ -207,7 +231,15 @@ func runHollowReader(kind, spec string, root string, timeout time.Duration) (int
 		if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
 			return -1, "", fmt.Errorf("gotest 规格格式错（要 <pkg>|<TestName>）：%q", spec)
 		}
-		cmd = exec.Command(goBin, "test", parts[0], "-run", "^"+parts[1]+"$", "-count=1")
+		// ★ 优先走【预编译二进制】（★ 每个包只编译一次）；编译不了就回落到
+		//   原来的 `go test` 形态（★ 语义完全相同，只是慢）。
+		if bin, binDir, binErr := hollowTestBinary(goBin, parts[0], root, timeout); binErr == nil {
+			cmd = exec.Command(bin, "-test.run", "^"+parts[1]+"$", "-test.count=1")
+			// ★ cwd = 包目录（★ 复刻 `go test` 的语义；★ 不是仓根！）
+			cmdDir = binDir
+		} else {
+			cmd = exec.Command(goBin, "test", parts[0], "-run", "^"+parts[1]+"$", "-count=1")
+		}
 	case "shell":
 		// ★ shell:<command> ⇒ `bash -c <command>`（cwd = 仓根）
 		//   ⇒ 允许写任意命令（★ 例如 `cd installer && go test ...`：
@@ -216,7 +248,7 @@ func runHollowReader(kind, spec string, root string, timeout time.Duration) (int
 	default:
 		return -1, "", fmt.Errorf("未知 reader_kind：%q", kind)
 	}
-	cmd.Dir = root
+	cmd.Dir = cmdDir
 	cmd.Env = append(os.Environ(),
 		"GIT_TERMINAL_PROMPT=0",
 		// ★ 把 go 放进 PATH（★ shell 读方可能自己调 go）
@@ -233,6 +265,80 @@ func runHollowReader(kind, spec string, root string, timeout time.Duration) (int
 	}
 	return code, string(out), nil
 }
+
+// hollowBinCache 缓存「包 → 已编译的测试二进制」路径（★ 每个包只编译一次）。
+var (
+	hollowBinMu    sync.Mutex
+	hollowBinCache = map[string]string{}
+)
+
+// hollowTestBinary 为一个包编译测试二进制并缓存（★ 编译失败返回错误 ⇒ 调用方回落）。
+//
+// ★ 返回的第二个值是【包的绝对目录】——★ `go test` 把测试二进制放在包目录里跑，
+//
+//	所以直接跑二进制时 cwd 必须复刻成同一个目录，否则仓内那些用相对路径读
+//	同目录台账的门会「open xxx.tsv: no such file」⇒ 假红。
+func hollowTestBinary(goBin, pkg, root string, timeout time.Duration) (string, string, error) {
+	hollowBinMu.Lock()
+	defer hollowBinMu.Unlock()
+	if p, ok := hollowBinCache[pkg]; ok {
+		return p, hollowPkgDir(pkg, root), nil
+	}
+	tmpDir, err := os.MkdirTemp("", "hollowout-bin-")
+	if err != nil {
+		return "", "", err
+	}
+	bin := filepath.Join(tmpDir, "testbin")
+	build := exec.Command(goBin, "test", "-c", "-o", bin, pkg)
+	build.Dir = root
+	build.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0",
+		"PATH="+goBinDir()+string(os.PathListSeparator)+os.Getenv("PATH"))
+	if out, err := runWithTimeout(build, timeout); err != nil {
+		_ = os.RemoveAll(tmpDir)
+		return "", "", fmt.Errorf("编译 %s 的测试二进制失败：%v\n%s", pkg, err, tailLines(string(out), 10))
+	}
+	hollowBinCache[pkg] = bin
+	return bin, hollowPkgDir(pkg, root), nil
+}
+
+// hollowPkgDir 复刻 `go test` 的 cwd 语义：测试二进制的 cwd = 包目录。
+// ★ 清单里的 pkg 都是相对仓库根的 "./xxx/" 形态。
+func hollowPkgDir(pkg, root string) string {
+	return filepath.Join(root, strings.TrimPrefix(pkg, "./"))
+}
+
+// ── ★★ 崩溃安全的还原（2026-10-24 12h 审计轮） ───────────────────────────
+//
+// ★ 为什么需要（本门原先只有 `defer` 还原）：
+//
+//	本门把**已跟踪的台账文件**掏空后再跑读方，靠 `defer` 还原。
+//	⇒ 而 `defer` **只在正常返回/panic 展开时**执行
+//	⇒ ⇒ 父套件把本门**超时杀掉**（SIGKILL / testing 的 timeout panic
+//	   在别的 goroutine 触发时）⇒ ⇒ **子测 goroutine 的 defer 不跑**
+//	⇒ ⇒ **已跟踪的台账文件留在掏空态**。
+//
+//	★ 实测（★ 2026-10-24，origin/main 1c2978c11）：
+//	  父套件 900.591 s 超时后，工作树里留下 3 个被掏空的**已跟踪**文件：
+//	    scripts/audit/monthly_partition_retention.tsv
+//	    scripts/ursmcheck/pipefail_race_ledger.tsv
+//	    sql/schema/startup_migration_nonplain.tsv
+//	⇒ ⇒ ★ 而这正是本仓 §143.87 登记过的病：「变异台在共享工作树里跑 ⇒
+//	  并发改动会被误读成门没牙」⇒ ⇒ 本轮把它从「已登记的风险」
+//	  升级成「**已实证会污染工作树**」。
+//
+// ★ 修法 = **备份 + 自愈**：
+//	① 掏空前把原内容写进**确定性路径**的备份文件（放在 git 目录里 ⇒ 不污染工作树）；
+//	② 正常路径还原后删掉备份；
+//	③ ★ **本门每次开跑先把遗留的备份还原回去**（自愈）⇒ ⇒
+//	   上一轮被杀留下的残留，会在下一轮开跑时被自动清掉
+//	   ⇒ ⇒ 工作树【不会】长期停在掏空态。
+
+// ★★ 2026-10-25 R148 合并轮：本地原有的 4 个备份/自愈辅助
+//   （hollowBackupDir / hollowBackupPath / hollowSelfHeal / hollowSaveBackup）
+//   **已删除** —— 上游 magpie §3.17 把同一套机制拆到了独立文件
+//   scripts/ursmcheck/tsv_hollowout_safety_test.go（自带门 `TestHollowBackupSelfHealRestoresLeftover`），
+//   且 `hollowBackupPath` **同名** ⇒ 两套并存 ⇒ 重复声明 ⇒ 编译失败。
+//   ⇒ 保留本文件**独有**的改动：gotest 臂改成「每个包只编译一次」（见上）。
 
 // runWithTimeout 跑命令并在超时后杀掉它。
 func runWithTimeout(cmd *exec.Cmd, timeout time.Duration) ([]byte, error) {
@@ -368,6 +474,13 @@ func TestTsvHollowoutReadersRejectEmptyRegistry(t *testing.T) {
 	// 被跟踪的台账会**留空**在盘上 ⇒ ⇒ 这一步把它们**还原回来**，
 	// 再开始新一轮掏空 ⇒ ⇒ 「崩溃留下的空洞」会被下一次跑自动修好，
 	// 而不是永远留在工作树里等人手工 git checkout。
+	//
+	// ★★ 2026-10-25 R148 合并轮：自愈/备份/信号守卫的**实现**统一取上游
+	//   scripts/ursmcheck/tsv_hollowout_safety_test.go 的版本（上游 magpie §3.17
+	//   已把它拆成独立文件并自带门）；本文件原另有一套同名语义的实现
+	//   （hollowSelfHeal / hollowSaveBackup / hollowBackupDir / hollowBackupPath）
+	//   ⇒ ★ 两套并存会与上游的 `hollowBackupPath` **重复声明**（编译失败）
+	//   ⇒ ⇒ 故删除本地那套，保留本地**独有**的性能改动（预编译测试二进制）。
 	healed, err := healHollowLeftovers(root)
 	if err != nil {
 		t.Fatalf("自愈预检失败（还原上一次遗留的掏空台账）：%v", err)

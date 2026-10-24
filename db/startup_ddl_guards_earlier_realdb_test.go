@@ -23,56 +23,49 @@ func TestStartupDDLGuards_EarlierOnes_RealDB(t *testing.T) {
 	d := env.d
 	exec := func(q string) { env.exec(t, q) }
 
-	t.Run("credits_charged", func(t *testing.T) {
-		// maas_pricing / maas_price_rules / maas_settings 由 EnsureMaasSchema 自己
-		// 用 CREATE TABLE IF NOT EXISTS 建。夹具**不要**预建：预建会让
-		// IF NOT EXISTS 变成空操作，后续引用 base_credits_per_1m 等列时
-		// 报 42703 —— 那是夹具的锅，不是守卫的。
-		env.drop(t, "_request_logs, maas_settings, maas_pricing, maas_price_rules, "+
+	t.Run("credits_charged_v1_leg_is_gone", func(t *testing.T) {
+		// ★ 2026-10-24（v1 → session_turns 替换轮）：maas 的 v1 腿
+		// （给 _request_logs 补 credits_charged 列 + idx_request_logs_credits_charged）
+		// 整条删除 ⇒ **没有锁可挡，也没有闸需要挡** ⇒ 本判据从
+		// 「守卫必须挡住那条 ALTER」翻成「**v1 族不在场时 ensure 必须成功，
+		// 且定价表必须被建出来、不许碰 v1**」。
+		//
+		// 夹具刻意**不建** _request_logs：族不在场才是这条判据的场景。
+		env.drop(t, "_request_logs, _request_logs_hot, maas_settings, maas_pricing, maas_price_rules, "+
 			"model_credit_rates, models_canonical")
 		// model_credit_rates 有 REFERENCES models_canonical(id)，这张表由
 		// 别的子系统建，夹具必须给个最小桩，否则 42P01。
 		exec(`CREATE TABLE public.models_canonical (id INT PRIMARY KEY);`)
-		exec(`CREATE TABLE public._request_logs (
-			id BIGSERIAL PRIMARY KEY, tenant_id TEXT, ts TIMESTAMPTZ NOT NULL DEFAULT now());`)
 
-		t.Run("A_守卫在缺列时必须返回false", func(t *testing.T) {
-			if d.maasRequestLogsCurrent(env.ctx) {
-				t.Error("credits_charged 列与索引都不存在，守卫却返回 true")
-			}
-		})
-
-		t.Run("D_负控_无守卫时必须被并发读阻塞", func(t *testing.T) {
-			env.expectLocked(t, "_request_logs", maasRequestLogsDDL)
-		})
-
-		t.Run("ensure_首次必须建出列与索引", func(t *testing.T) {
+		t.Run("族不在场时ensure必须成功", func(t *testing.T) {
 			if err := d.EnsureMaasSchema(env.ctx); err != nil {
-				t.Fatalf("EnsureMaasSchema: %v", err)
-			}
-			if !d.maasRequestLogsCurrent(env.ctx) {
-				t.Error("首次 ensure 之后守卫仍为 false ⇒ 列或索引没建出来")
+				t.Fatalf("EnsureMaasSchema 在 v1 族不在场时必须成功（42P01 会中止整条 boot 迁移），got: %v", err)
 			}
 		})
 
-		t.Run("B_齐备后守卫必须返回true", func(t *testing.T) {
-			if !d.maasRequestLogsCurrent(env.ctx) {
-				t.Error("列与索引都已存在，守卫却返回 false ⇒ 每次启动仍白锁一次 _request_logs")
+		t.Run("定价表必须被建出来", func(t *testing.T) {
+			for _, tbl := range []string{"maas_settings", "model_credit_rates"} {
+				var n int
+				if err := env.pool.QueryRow(env.ctx,
+					`SELECT count(*) FROM pg_class WHERE relname=$1`, tbl).Scan(&n); err != nil {
+					t.Fatal(err)
+				}
+				if n == 0 {
+					t.Errorf("表 %s 没被建出来 —— 删 v1 腿时把定价表一起删了", tbl)
+				}
 			}
 		})
 
-		t.Run("C_决定性_守卫后并发读下ensure必须立即成功", func(t *testing.T) {
-			wait := env.holdAccessShare(t, "_request_logs", guardHoldFor)
-			defer wait()
-			if err := d.EnsureMaasSchema(env.ctx); err != nil {
-				t.Fatalf("守卫后仍被阻塞或报错: %v", err)
-			}
-		})
-
-		t.Run("缺索引时守卫必须仍为false", func(t *testing.T) {
-			env.exec(t, `DROP INDEX public.idx_request_logs_credits_charged;`)
-			if d.maasRequestLogsCurrent(env.ctx) {
-				t.Error("索引被删后守卫仍返回 true ⇒ 缺索引的库永远补不上")
+		t.Run("v1族必须保持不存在_ensure不许碰它", func(t *testing.T) {
+			for _, tbl := range []string{"_request_logs", "_request_logs_hot"} {
+				var n int
+				if err := env.pool.QueryRow(env.ctx,
+					`SELECT count(*) FROM pg_class WHERE relname=$1`, tbl).Scan(&n); err != nil {
+					t.Fatal(err)
+				}
+				if n != 0 {
+					t.Errorf("表 %s 被 ensure 建出来了 —— v1 族已退役，ensure 不许再碰它", tbl)
+				}
 			}
 		})
 	})
@@ -136,48 +129,43 @@ func TestStartupDDLGuards_EarlierOnes_RealDB(t *testing.T) {
 		})
 	})
 
-	t.Run("work_type_request_logs", func(t *testing.T) {
-		env.drop(t, "_request_logs")
-		exec(`CREATE TABLE public._request_logs (
-			id BIGSERIAL PRIMARY KEY, tenant_id TEXT, ts TIMESTAMPTZ NOT NULL DEFAULT now());`)
+	t.Run("work_type_v1_leg_is_gone", func(t *testing.T) {
+		// ★ 2026-10-24（v1 → session_turns 替换轮）：ensureWorkTypeSchema 的
+		// v1 腿（给 _request_logs 补 work_type 列 + idx_request_logs_work_type）
+		// 整条删除 ⇒ 判据从「守卫必须挡住那条 ALTER 的锁」翻成
+		// 「**v1 族不在场时 ensure 必须成功，且 work_type 配置表必须被建出来、
+		// 不许碰 v1**」。
+		env.drop(t, "_request_logs, _request_logs_hot, work_type_config, work_type_model_route")
 
-		t.Run("A_守卫在缺列时必须返回false", func(t *testing.T) {
-			if d.workTypeRequestLogsCurrent(env.ctx) {
-				t.Error("work_type 列与索引都不存在，守卫却返回 true")
-			}
-		})
-
-		t.Run("D_负控_无守卫时必须被并发读阻塞", func(t *testing.T) {
-			env.expectLocked(t, "_request_logs", workTypeRequestLogsDDL)
-		})
-
-		t.Run("ensure_首次必须建出列与索引", func(t *testing.T) {
+		t.Run("族不在场时ensure必须成功", func(t *testing.T) {
 			if err := d.ensureWorkTypeSchema(env.ctx); err != nil {
-				t.Fatalf("ensureWorkTypeSchema: %v", err)
-			}
-			if !d.workTypeRequestLogsCurrent(env.ctx) {
-				t.Error("首次 ensure 之后守卫仍为 false")
+				t.Fatalf("ensureWorkTypeSchema 在 v1 族不在场时必须成功（42P01 会中止整条 boot 迁移），got: %v", err)
 			}
 		})
 
-		t.Run("B_齐备后守卫必须返回true", func(t *testing.T) {
-			if !d.workTypeRequestLogsCurrent(env.ctx) {
-				t.Error("列与索引都已存在，守卫却返回 false")
+		t.Run("work_type配置表必须被建出来", func(t *testing.T) {
+			for _, tbl := range []string{"work_type_config", "work_type_model_route"} {
+				var n int
+				if err := env.pool.QueryRow(env.ctx,
+					`SELECT count(*) FROM pg_class WHERE relname=$1`, tbl).Scan(&n); err != nil {
+					t.Fatal(err)
+				}
+				if n == 0 {
+					t.Errorf("表 %s 没被建出来 —— 删 v1 腿时把配置表一起删了", tbl)
+				}
 			}
 		})
 
-		t.Run("C_决定性_守卫后并发读下ensure必须立即成功", func(t *testing.T) {
-			wait := env.holdAccessShare(t, "_request_logs", guardHoldFor)
-			defer wait()
-			if err := d.ensureWorkTypeSchema(env.ctx); err != nil {
-				t.Fatalf("守卫后仍被阻塞或报错: %v", err)
-			}
-		})
-
-		t.Run("缺索引时守卫必须仍为false", func(t *testing.T) {
-			env.exec(t, `DROP INDEX public.idx_request_logs_work_type;`)
-			if d.workTypeRequestLogsCurrent(env.ctx) {
-				t.Error("索引被删后守卫仍返回 true ⇒ 缺索引的库永远补不上")
+		t.Run("v1族必须保持不存在_ensure不许碰它", func(t *testing.T) {
+			for _, tbl := range []string{"_request_logs", "_request_logs_hot"} {
+				var n int
+				if err := env.pool.QueryRow(env.ctx,
+					`SELECT count(*) FROM pg_class WHERE relname=$1`, tbl).Scan(&n); err != nil {
+					t.Fatal(err)
+				}
+				if n != 0 {
+					t.Errorf("表 %s 被 ensure 建出来了 —— v1 族已退役，ensure 不许再碰它", tbl)
+				}
 			}
 		})
 	})

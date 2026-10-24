@@ -220,7 +220,7 @@ func (l *Locator) Get(ctx context.Context, requestID string, omitBody bool) (*De
 			Source:      SourceRequestLogs,
 			Persistence: PersistencePersisted,
 			Meta:        requestLogsMeta,
-			Warning:     "request body row not found in _request_logs or session_turns; metadata-only fallback",
+			Warning:     "request body row not found in request_logs or session_turns; metadata-only fallback",
 		}, nil
 	}
 	return nil, err

@@ -8,10 +8,10 @@ import (
 	"time"
 )
 
-// r1039_request_logs_provider_id_column_test.go —— boot ensure 链**自己索引的
-// 那一列**必须由它自己补上（2026-10-21 deploy-local 中止实测）。
+// r1039_request_logs_provider_id_column_test.go —— 2026-10-21 立的门，
+// **2026-10-24「v1 → session_turns 替换轮」把它的承重判据换了主人**。
 //
-// ## 缺陷（真库实测，不是读代码猜的）
+// # 原缺陷（真库实测，不是读代码猜的）
 //
 // db.go 的 ensureRequestLogSchema 在 _request_logs 上建两个带 provider_id 的索引：
 //
@@ -20,207 +20,124 @@ import (
 //	CREATE INDEX idx_request_logs_provider_tool_calls
 //	    ON _request_logs (provider_id, ts DESC)
 //
-// 这两条是 2026-06-19（9cd51d8a7「per-provider tool_call quality fix mode」）
-// 引入的，当时目标表是 v1 的 request_logs；v2 改名（860：request_logs →
-// _request_logs）把它们**一起搬到了新表名**上。
+// 但 `_request_logs` 的 provider_id 列**从未被 ensure 链补过** ⇒ 任何不带该列的
+// 库上，整条 boot 迁移在第一个索引处报 42703 ⇒ 迁移中止 ⇒ 网关起不来。
 //
-// 但 `_request_logs` 的 provider_id 列**从未被 ensure 链补过** ⇒
-// 任何不带该列的库上，整条 boot 迁移在第一个索引处报 42703：
+// # 原判据的形状（这里要记住的是**形状**，不是 v1 本身）
 //
-//	ERROR: column "provider_id" does not exist (SQLSTATE 42703)
-//	[deploy-local] error: database migration failed
+//	「一个 DDL 引用了某列 ⇒ 那个 DDL 所在的那一层必须保证这一列存在」
 //
-// ⇒ 迁移中止 ⇒ **网关起不来**（2026-10-21 本机 deploy-local 实测中止）。
-// 已是 v1→v2 改名产物的库（211/252 等）本来就有这一列 ⇒ 那边看不见这个洞。
+// 这条教训是**普适**的：它说的是「索引 / 视图引用的列，必须由它自己所在的
+// 那一层负责补齐」，而不是「v1 要补 provider_id」。
 //
-// ## 判据纪律
+// # 2026-10-24：v1 族退役 ⇒ 这条链删了 ⇒ 承重判据换了主人
 //
-//   - **真库判据是承重的**：造一张**没有** provider_id 的 _request_logs，
-//     跑 ensure 链必须不报错，且列与两个索引都得建出来。
-//   - **源码顺序判据是辅助的**：ADD COLUMN 必须在两个 CREATE INDEX 之前。
-//     顺序错了真库判据也会红，但它给出的失败信息更直接。
-//   - **反向对照**：已经带 provider_id 的库跑 ensure 必须仍然是 no-op 且不报错。
-//   - 「检查没跑成」与「检查通过」必须长得不一样 ⇒ 真库判据缺环境时**显式
-//     说明本次没跑**（不是安静地跳过）。
+//	旧主人：boot ensure 链（ALTER … ADD COLUMN）给 v1 族补列
+//	新主人：**启动迁移链 + canonical 视图的依赖跟踪**
 //
-// 真库判据**自带一次性库**（R78 轮改造）：
+//	· 视图引用 session_turn_details.provider_id ⇒ PG 拒绝 DROP 该列
+//	  （cannot drop column because other objects depend on it）
+//	  ⇒ 视图存在 ⇒ 它引用的列必然在。
+//	· 列不在 ⇒ CREATE VIEW 阶段就 42703 ⇒ boot **响亮失败**。
 //
-//	TEST_DATABASE_URL='postgres://…/<任意库>?sslmode=disable' go test ./db/ -run TestR1039
+// ⇒ 本文件现在钉的是「**换主人之后那条链是完整的**」：
 //
-// 门会从该 DSN **派生一个一次性空库**（internal/testdb.Create），
-// 所有 DROP/CREATE 都发生在那个一次性库上 ⇒ DSN 指向的那个库**分毫不动**。
-// ⚠ 改造前（本文件直连 DSN 库）这三个门会把产品表
-// `_request_logs` / `_request_logs_hot` / `session_turns_hot` /
-// `model_probe_state` / `provider_models` / `credential_model_bindings`
-// DROP 掉并用玩具形态重建 ⇒ 跑一次 db 包就洗掉一次形态库。
-// 见 db/scratch_db_test.go 文件头。
+//	① 迁移链必须真的建出那些列（session_family_contract_test.go 是总门；
+//	   本文件把 r1039 当年那两列 provider_id / credits_charged 单独点名）。
+//	② 生产代码里不得再有 v1 DDL。
+//
+// # 保留的两条真库判据（不受本轮影响，仍然承重）
+//
+//	· TestR1039RecentSuccessRateEnsureRealDB —— recent_success_rate 的函数体
+//	  早已只读 session_turns_hot；判的是「族退役形态下 CREATE 必须成功」。
+//	· TestR1039BillingUnitEnsureSurvivesRetiredFamily —— 848 的 cmb 侧
+//	  必须真的补上列（不许为了躲 42P01 而整段跳过）。
 
-// r1039EnsureBody 抽出 ensureRequestLogSchema 的函数体（源码级判据用）。
-func r1039EnsureBody(t *testing.T) string {
-	t.Helper()
-	source, err := os.ReadFile("db.go")
+// TestR1039ProviderIDAndCreditsLiveInTheSessionFamily 钉住 r1039 当年那两列
+// 的**新宿主**：它们必须由启动迁移链建出来。
+//
+// ⚠ 为什么点名这两列：它们是 r1039 教训的原始载体。列在 v1 上时，
+//
+//	「谁保证它存在」是 ensure 链；列搬到会话族后，保证者必须是迁移链。
+//
+// ⚠ 两列的**宿主不同**（实测投影文本）：
+//
+//		provider_id     → d.provider_id     = public.session_turn_details
+//		credits_charged → t.credits_charged = public.session_turns
+//
+//	  搞混宿主会让这道门断言一个「其实存在」的列 ⇒ 恒绿 ⇒ 失去意义。
+func TestR1039ProviderIDAndCreditsLiveInTheSessionFamily(t *testing.T) {
+	root := repoRootForTest(t)
+
+	createdDetails := migrationCreatedColumns(t, root, "session_turn_details")
+	if !createdDetails["provider_id"] {
+		t.Errorf("session_turn_details.provider_id 必须由基线/启动迁移建出来 —— " +
+			"它是 r1039 当年教训的载体（索引引用了列，而列由别的层负责），" +
+			"搬到会话族后保证者必须是迁移链")
+	}
+
+	createdTurns := migrationCreatedColumns(t, root, "session_turns")
+	if !createdTurns["credits_charged"] {
+		t.Errorf("session_turns.credits_charged 必须由基线/启动迁移建出来 —— " +
+			"它是计费口径的直接来源（canonical 视图投影 t.credits_charged）")
+	}
+
+	// 反向：这两列必须在 canonical 投影里被真的用上，
+	// 否则「建了但没人读」是另一种漂移。
+	detailCols := projectedDetailsColumns(t)
+	if !detailCols["provider_id"] {
+		t.Errorf("canonical 投影必须引用 session_turn_details.provider_id —— " +
+			"它被读面直接消费（provider 维度）")
+	}
+	turnCols := projectedTurnColumns(t)
+	if !turnCols["credits_charged"] {
+		t.Errorf("canonical 投影必须引用 session_turns.credits_charged —— " +
+			"它被计费口径直接消费（maas.RequestLogCreditsSQL）")
+	}
+}
+
+// TestR1039NoV1DDLInStartupPath 钉住「v1 那条 ensure 链确实没了」。
+//
+// ⚠ 为什么这条要单独写而不是只靠 admin 那道总门：总门扫的是**全仓生产代码**
+//
+//	（字符串字面量口径），而这里钉的是**具体这个文件**——
+//	db.go 是 boot 迁移链的所在地，它曾经是 v1 DDL 的**唯一**集中点。
+//	⇒ 两条门一道扫全仓、一道钉原地，双保险。
+func TestR1039NoV1DDLInStartupPath(t *testing.T) {
+	src, err := os.ReadFile("db.go")
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("read db.go: %v", err)
 	}
-	text := string(source)
-	const fnConst = "func (d *DB) ensureRequestLogSchema("
-	start := strings.Index(text, fnConst)
-	if start < 0 {
-		t.Fatal("db.go missing ensureRequestLogSchema")
-	}
-	rest := text[start+1:]
-	next := strings.Index(rest, "\nfunc (d *DB) ")
-	if next < 0 {
-		t.Fatal("db.go malformed: no function after ensureRequestLogSchema")
-	}
-	return text[start : start+1+next]
-}
+	text := string(src)
 
-// TestR1039RequestLogsProviderIDColumnOrderInEnsureBody 钉住**顺序**：
-// provider_id 的 ADD COLUMN 必须在两个 provider 索引之前。
-//
-// 为什么单独一条：真库判据能抓住「列没补」，但抓不住「补了却在索引之后」——
-// 后者在 PG 里同样报 42703，只是错误信息换了个位置。这条把位置直接写死。
-func TestR1039RequestLogsProviderIDColumnOrderInEnsureBody(t *testing.T) {
-	body := r1039EnsureBody(t)
-
-	// ⚠ needle 不带分号：那列是**多列 ALTER 的中间项**（逗号续行），写成
-	//   `... BIGINT;` 会因为分号位置不同而永远匹配不到 ⇒ 判据恒红。
-	addCol := strings.Index(body, "ADD COLUMN IF NOT EXISTS provider_id BIGINT")
-	if addCol < 0 {
-		t.Fatal("ensureRequestLogSchema 必须补 provider_id 列（它自己在下面给 _request_logs 建带 provider_id 的索引）")
-	}
-	for _, idx := range []string{
-		"idx_request_logs_provider_quality",
-		"idx_request_logs_provider_tool_calls",
+	for _, gone := range []string{
+		"func (d *DB) ensureRequestLogSchema(",
+		"ALTER TABLE _request_logs",
+		"ALTER TABLE _request_logs_hot",
+		"CREATE INDEX IF NOT EXISTS idx_request_logs_",
+		"workTypeRequestLogsDDL",
+		"workTypeRequestLogsCurrent",
+		"maasRequestLogsDDL",
+		"maasRequestLogsCurrent",
 	} {
-		// ⚠ 必须锚在 **CREATE INDEX** 上，不能只找索引名：
-		// 目录短路清单（catalogShortCircuitSQL）在函数体前面就列了这两个名字，
-		// 拿名字定位会把「清单里的名字」当成「建索引的位置」⇒ 判据恒红。
-		at := strings.Index(body, "CREATE INDEX IF NOT EXISTS "+idx)
-		if at < 0 {
-			t.Fatalf("ensureRequestLogSchema 不再创建索引 %s —— 若是有意删除，请同步删除本条判据与本文件", idx)
-		}
-		if addCol > at {
-			t.Errorf("provider_id 列的 ADD COLUMN 必须在索引 %s 之前（否则 PG 先建索引 ⇒ 42703）", idx)
+		if strings.Contains(text, gone) {
+			t.Errorf("db.go 里仍有 %q —— v1 族已随 890 退役；这些是 boot 路径上对 v1 的"+
+				"最后几处操作（每次 boot 对最热表取 ACCESS EXCLUSIVE，且在族不在时 42P01）", gone)
 		}
 	}
 
-	// 目录短路清单必须与 ensure 体同步（db.go 自己的注释要求「两处一起改」）：
-	// 漏了它 ⇒ 一台「列缺、索引也在」的库会被判成「齐备」⇒ 零 DDL ⇒ 列永远补不上。
-	shortCircuit := body[strings.Index(body, "catalogShortCircuitSQL"):]
-	if !strings.Contains(shortCircuit, "'provider_id'") {
-		t.Error("catalog 短路清单必须包含 provider_id（否则缺列的库会被判成齐备 ⇒ ensure 被短路 ⇒ 列永远补不上）")
+	// ⚠ 判据的**方向**说明：这里断的是「**定义**与 **DDL**」，不是「这个词不许出现」。
+	//   db.go 里保留着「这里原来有一条 v1 ensure 链」的注释 —— 那是**承重证据**
+	//   （下一个读代码的人要知道这一跳去哪了）。把注释也清掉，等于把这段历史
+	//   从代码里删掉 ⇒ 半年后有人会把同样的链再加回来。
+	//   ⇒ 「不许出现」只对**可执行的东西**成立。
+
+	// 反向判据：ensureRequestLogsCurrentMonthView（canonical 视图自愈）**必须还在**
+	// —— 它是 v1 自愈链删掉之后，接管「读面保证」的那一层。
+	if !strings.Contains(text, "ensureRequestLogsCurrentMonthView(migCtx)") {
+		t.Error("ensureRequestLogsCurrentMonthView 必须仍然挂在启动序列上 —— " +
+			"它是 v1 族退役后 canonical 读面的唯一自愈机制")
 	}
-}
-
-// TestR1039RequestLogsProviderIDColumnRealDB 是**承重**的真库判据。
-//
-// 三个夹具形态，覆盖「部署形态」的三种组合：
-//
-//	A. _request_logs 有、_request_logs_hot 也有（完整族）⇒ ensure 必须成功，
-//	   provider_id 列与两个索引都得建出来。
-//	B. _request_logs 有、_request_logs_hot **没有**（族退役后的形态，本机 2026-10-21
-//	   的实际形态）⇒ ensure 必须成功（不得 42P01）。
-//	C. _request_logs 都没有（整个族没装）⇒ ensure 必须成功（跳过该族自愈）。
-//
-// 修复前：A 报 42703（provider_id 缺列）、B 报 42P01（_request_logs_hot 不存在）、
-// C 报 42P01 ⇒ 三种形态都起不来。
-func TestR1039RequestLogsProviderIDColumnRealDB(t *testing.T) {
-	pool := scratchPool(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-	t.Cleanup(cancel)
-	d := &DB{pool: pool}
-
-	exec := func(q string) {
-		t.Helper()
-		if _, err := pool.Exec(ctx, q); err != nil {
-			t.Fatalf("exec failed: %v\nSQL: %s", err, q)
-		}
-	}
-	columnExists := func(table, column string) bool {
-		var n int
-		if err := pool.QueryRow(ctx, `
-			SELECT count(*) FROM information_schema.columns
-			WHERE table_schema='public' AND table_name=$1 AND column_name=$2`,
-			table, column).Scan(&n); err != nil {
-			t.Fatalf("probe %s.%s: %v", table, column, err)
-		}
-		return n > 0
-	}
-	indexExists := func(name string) bool {
-		var n int
-		if err := pool.QueryRow(ctx, `
-			SELECT count(*) FROM pg_indexes WHERE schemaname='public' AND indexname=$1`,
-			name).Scan(&n); err != nil {
-			t.Fatalf("probe index %s: %v", name, err)
-		}
-		return n > 0
-	}
-	reset := func(withParent, withHot bool) {
-		exec(`DROP TABLE IF EXISTS public._request_logs_hot, public._request_logs CASCADE;`)
-		if withParent {
-			// 夹具：**刻意不带** provider_id 的 _request_logs（最小/新装基线的形态）。
-			exec(`CREATE TABLE public._request_logs (
-				id BIGSERIAL PRIMARY KEY, tenant_id TEXT, ts TIMESTAMPTZ NOT NULL DEFAULT now());`)
-		}
-		if withHot {
-			// hot 表由 ensure 链 ALTER（不是 CREATE）⇒ 夹具必须先给一张，
-			// 否则报 42P01（那是夹具的锅，不是 ensure 的）。
-			exec(`CREATE TABLE public._request_logs_hot (
-				id BIGSERIAL PRIMARY KEY, gw_session_id TEXT, tenant_id TEXT, ts TIMESTAMPTZ NOT NULL DEFAULT now());`)
-		}
-	}
-
-	t.Cleanup(func() {
-		_, _ = pool.Exec(context.Background(),
-			"DROP TABLE IF EXISTS public._request_logs_hot, public._request_logs CASCADE;")
-	})
-
-	t.Run("A_完整族_补列并建索引", func(t *testing.T) {
-		reset(true, true)
-		if columnExists("_request_logs", "provider_id") {
-			t.Fatal("夹具失效：_request_logs 不该带 provider_id")
-		}
-		if err := d.ensureRequestLogSchema(ctx); err != nil {
-			t.Fatalf("ensureRequestLogSchema 在没有 provider_id 的库上必须成功，got: %v", err)
-		}
-		if !columnExists("_request_logs", "provider_id") {
-			t.Error("ensure 之后仍没有 provider_id 列 ⇒ ensure 体没补这一列")
-		}
-		for _, idx := range []string{"idx_request_logs_provider_quality", "idx_request_logs_provider_tool_calls"} {
-			if !indexExists(idx) {
-				t.Errorf("ensure 之后仍没有索引 %s", idx)
-			}
-		}
-		if !columnExists("_request_logs_hot", "is_final_success") {
-			t.Error("ensure 之后 _request_logs_hot 仍缺 is_final_success 列")
-		}
-		if !indexExists("uq_request_logs_hot_final_success_session") {
-			t.Error("ensure 之后仍没有索引 uq_request_logs_hot_final_success_session")
-		}
-		// 幂等：第二次跑必须是 no-op 且不报错。
-		if err := d.ensureRequestLogSchema(ctx); err != nil {
-			t.Fatalf("ensure 第二次必须幂等成功，got: %v", err)
-		}
-	})
-
-	t.Run("B_族已退役_没有hot表也不许中止", func(t *testing.T) {
-		reset(true, false)
-		if err := d.ensureRequestLogSchema(ctx); err != nil {
-			t.Fatalf("族退役（无 _request_logs_hot）时 ensure 必须成功，got: %v", err)
-		}
-		if !columnExists("_request_logs", "provider_id") {
-			t.Error("ensure 之后仍没有 provider_id 列")
-		}
-	})
-
-	t.Run("C_整个族没装_必须跳过而不是42P01", func(t *testing.T) {
-		reset(false, false)
-		if err := d.ensureRequestLogSchema(ctx); err != nil {
-			t.Fatalf("族表不存在时 ensure 必须跳过（不得 42P01），got: %v", err)
-		}
-	})
 }
 
 // TestR1039RecentSuccessRateEnsureRealDB 是 **recent_success_rate 函数体**的
@@ -337,24 +254,9 @@ func TestR1039RecentSuccessRateEnsureRealDB(t *testing.T) {
 
 // TestR1039BillingUnitEnsureSurvivesRetiredFamily 是 **848 ensure** 的真库判据。
 //
-// ## 缺陷（结构性，不是本机环境问题）
+// ★ 2026-10-24：848 的 v1 腿（audio_seconds）已整条删除 ⇒ 本判据现在钉的是
 //
-// db.ensureBillingUnitAndAudioSeconds 的短路条件是
-// `cmbOK && hotOK`，其中 hotOK = columnsAllPresent("_request_logs_hot",
-// ["audio_seconds"])。而 columnsAllPresent 在**表不在**时返回 **true**
-// （missing=0 ⇒ 没缺列）⇒ 于是：
-//
-//   · 族在、cmb.billing_unit 缺 ⇒ 走 DDL 分支（正常补列）；
-//   · 族**不在**、cmb.billing_unit 缺 ⇒ **也**走 DDL 分支
-//     ⇒ ALTER TABLE _request_logs_hot / _request_logs
-//     ⇒ 42P01 ⇒ 整条 boot 迁移中止。
-//
-// ⚠ 在真实新装路径上，startup 迁移 848 早就把 cmb.billing_unit 补上了
-// （848 跑在族退休之前：848 < 860 < 890）⇒ 短路条件成立 ⇒ 不进 DDL 分支
-// ⇒ **新装路径不触发**。触发条件是「cmb.billing_unit 缺 + 族已退休」，例如
-// 只跑了部分 startup 迁移的库、或 v1 fallback 体灌入的基线副本。
-// ⇒ 本条是**防御性**判据：把那条 landmine 钉死，免得哪天族退休提前或 848 被
-// 跳过时又炸一次 boot。
+//	「cmb 侧该补的列**必须真的补上**」——不许为了躲 42P01 而整段跳过。
 func TestR1039BillingUnitEnsureSurvivesRetiredFamily(t *testing.T) {
 	pool := scratchPool(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
