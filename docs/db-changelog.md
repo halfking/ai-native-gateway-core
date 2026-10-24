@@ -10071,10 +10071,25 @@ cron 日志里也有 `"retention_hours":8`）⇒ ⇒ ★★★ 实测 `max(hot.t
 ⇒ ⇒ ★★★ **根因＝推理吃光预算**；★ 而 `internal/emptyoutcome` 的 r1029（2026-10-17 属主裁决）**早已记载**该形态
 ⇒ ⇒ ★★ **「推理不算 assistant 答案 ⇒ 必须 failover」不是新缺陷**；★ 真问题只在「日志分不出来」与「重试策略」。
 
+★ **★ 会话族搬运路径【已实测发生】**（本地手动 promote，保留期临时改 1 秒 ⇒ 235 行）：
+★ 目标行 `session_turns_hot` 1 行 → 搬后 `session_turns` **1 行**、落点 **`session_turns_2026_10`** 月分区、热面 **0 行**
+⇒ ⇒ ★★★ **逐列保真**（`turn_no=1` / `provider=2452` / `credential_id=2` / `origin_stage=business` /
+★ `origin_actor=NULL` / `client_ip=172.17.0.1` / `status_code=200` / `latency_ms=1125` /
+★ `prompt_tokens=31` / `completion_tokens=47` / `token_band=below` / `usage_source=llm` /
+★ `upstream_status_code=200` / `request_status=success` / 两个 preview 全部一致）
+⇒ ⇒ ★★ **诚实边界**：★ 这是**手动**调用、**保留期被临时改短**；★ **cron 的自然到期路径本轮仍未实测**。
+
 ★ **★ 本轮仓内改动（★ 零契约风险：不改路由行为、不改客户端可见面）**：
 ★ `internal/emptyoutcome` 新增 `EmptyReason` / `EmptyUsage` / `InspectEmptyBody`
 （★ **只做归因，不改空/非空判定**；★ 不可解析 ⇒ `Unknown`，**不臆测归因**）；
 ★ `domains/streaming/executors/executor_chat.go` 的空回复 WARN 增加
 `empty_reason` / `finish_reason` / `completion_tokens` / `reasoning_tokens` / `prompt_tokens`。
+★ **★ 端到端实测（本地重部署 `2.5.8-2d586a2a-20261024-2849` 之后）**：
+★ 故意用 `max_tokens=1024` + 长提示词 ⇒ 客户端 503（80.8 s），而服务端日志**直接说出原因**：
+★ `"status":200,"empty_reason":"budget_exhausted_by_reasoning","finish_reason":"length",
+★ "completion_tokens":1024,"reasoning_tokens":1024,"prompt_tokens":44`
+★ ⇒ ★★★ **同一 `request_id` 连续 3 行、token 数逐行相同** ⇒ ★★ **既验证了新增字段按设计出值，
+★★ 又把「同一 body 注定失败的重试 3 次」读成了可数的日志**（改动前只有一行且看不出原因）。
+
 ★ **★ 本轮【无 SQL 变更】⇒ 无需在 211/252 上同步 SQL；★ 对生产的写入 = 0。**
 ★ 完整记录见审计档 `docs/audit/2026-10-27-R150-成功回合取证与第六种遮蔽形态.md`（含 §10 诚实边界）+ LESSONS **§396** + AGENTS.md R150 条目。

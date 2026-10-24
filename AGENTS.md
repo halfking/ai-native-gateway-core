@@ -8476,6 +8476,18 @@ index b953a6f03..555ef83c4 100644
 > ⇒ ⇒ ⇒ ★★ ⇒ `EmptyReason`（`budget_exhausted_by_reasoning` / `upstream_empty` / 不可解析⇒`Unknown` **不臆测**）
 > ⇒ ⇒ ⇒ ★★ ⇒ ＋ executor 的空回复 WARN 增加 `empty_reason`/`finish_reason`/`completion_tokens`/`reasoning_tokens`/`prompt_tokens`
 > ⇒ ⇒ ⇒ ★★★ ⇒ **不改路由行为、不改客户端可见面**。
+> ⇒ ⇒ ⇒ ★★★★ **★ 端到端实测（本地重部署 `2.5.8-2d586a2a-20261024-2849` 之后）**：
+> ⇒ ⇒ ⇒ ★★★ 故意 `max_tokens=1024` + 长提示词 ⇒ 客户端 503（80.8 s），而服务端日志**直接说出原因**：
+> ⇒ ⇒ ⇒ ★★★★ ⇒ `"status":200,"empty_reason":"budget_exhausted_by_reasoning","finish_reason":"length",
+> ⇒ ⇒ ⇒ ★★★★ ⇒ "completion_tokens":1024,"reasoning_tokens":1024,"prompt_tokens":44`
+> ⇒ ⇒ ⇒ ★★★★ ⇒ ★★ **同一 `request_id` 连续 3 行、token 数逐行相同** ⇒ ★★ 既验证了新增字段按设计出值，
+> ⇒ ⇒ ⇒ ★★★★ ⇒ ★★ 又把「同一 body 注定失败的重试 3 次」读成了**可数的日志**。
+> ⇒ ⇒ ⇒ ★★★★ **★ 会话族搬运路径【已实测发生】**（本地手动 promote，保留期临时改 1 秒 ⇒ 235 行）：
+> ⇒ ⇒ ⇒ ★★★ 目标行 hot 1 行 → 搬后 `session_turns` **1 行**、落点 **`session_turns_2026_10`** 月分区、热面 **0 行**
+> ⇒ ⇒ ⇒ ★★★ ⇒ ★★★ **逐列保真**（`turn_no`/`provider`/`credential_id`/`origin_stage`/`origin_actor`/`client_ip`/
+> ⇒ ⇒ ⇒ ★★★★ ⇒ `status_code`/`latency_ms`/`prompt_tokens`/`completion_tokens`/`token_band`/`usage_source`/
+> ⇒ ⇒ ⇒ ★★★★ ⇒ `upstream_status_code`/`request_status`/两个 preview 全部一致）
+> ⇒ ⇒ ⇒ ★★★ ⇒ ★★ **诚实边界**：★ 这是**手动**调用、**保留期被临时改短**；★ **cron 的自然到期路径本轮仍未实测**。
 > ⇒ ⇒ ★★★★ **★ 本轮新增门禁**：`scripts/ursmcheck/probe_timeout_budget_and_empty_attribution_test.go`（4 条）
 > ⇒ ⇒ ⇒ ★★★ ⇒ 钉死「node 探针超时不由该设置驱动」＋「空回复告警必须带 usage」＋ 阳性/阴性对照；
 > ⇒ ⇒ ⇒ ★★ 另有 `internal/emptyoutcome/empty_reason_attribution_test.go`（5 组，含「归因不得改变空/非空判定」）。
