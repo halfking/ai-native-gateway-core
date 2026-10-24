@@ -8228,3 +8228,110 @@ index b953a6f03..555ef83c4 100644
 > ★ **验证读数**：`go build ./...` ✅ ／ `go vet ./...` ✅（exit 0）／ ★ **`go test ./... -count=1 -timeout=1800s` 全仓 = 336 个包绿 / 4 个包红**；★ **本轮触及的 8 个包全绿**（`admin` 316s / `bg` 47s / `cmd/gateway` 15s / `db` 11s / `domains/requestdetail` 2s / `internal/partguard` 19s / `settings` 3s / `sql/migrations/startup` 25s）；★ ★ **4 处红全部与本轮无关**，逐条判据（**3 处用 `git worktree add --detach <tmp> HEAD` 的干净 HEAD 复现出同一读数**，1 处单独跑 3/3 绿）：① `cmd/tools/sql_source_indirection_audit`/`TestDocumentedSnapshotMatchesMeasurement`（`拼接点 142→145`、`canonical 122→125`，**HEAD 同样红**，且该目录 diff 为空）② `domains/nodestatecache`/`TestSelectP99Under1ms`（`p99=4.74ms` vs 门槛 1ms，**HEAD 同样红** ⇒ 本机绝对性能）③ `scripts/ursmcheck`/`TestSectionNumbersAreUniqueBeyondKnownBaseline` + `TestSectionNumberDuplicatePairCountIsPinned`（`LESSONS.md` 的 **`§302` 在 HEAD 就出现 2 次**；★ 本轮追加的 `§358`/`§359` 各只出现 1 次 ⇒ 非本轮引入）④ `tests/48h-audit/D01-ir-lifecycle/stress`/`TestStress_IRSerialize_Concurrency50_P99`（负载型 flaky，单独跑 3/3 绿）⇒ ★ **4 处一律「归因 + 登记，不代修」**（属别的轮的账）。★ 另：★ **生产 Go 里的活 v1 操作 = 0**（AST 口径）／ 退役之后的启动迁移 v1 DDL = **0**（25 个文件）／ 投影 ⊆ 迁移产物 缺失 = **0**（78+30 列）／ 新门 4 门全绿（含阳性对照）／ 极性翻转的 5 道既有门全绿 ／ ★ **变异探针 3 臂全红且按正确原因红**（第一版假红已作废重做）／ ★ 收尾时撞出 `settings/spec_sessions_v2.go` 在 **HEAD 就**不 gofmt-clean（成因见 §7 第 8 条）⇒ 已抹平（纯空白、零语义）。★ **本机无 Go 运行时 ⇒ 本轮下载 `go1.27.2.darwin-arm64` 到 `/tmp` 局部使用**（`go.mod` 要求 `go 1.27.2`）。
 > ★ **通用式（已落 `LESSONS.md` §353~§358）**：★ **「读点已清零」不等于「写点已清零」** —— 两个总体、两个门；★ **每次退役一个族，要分别问「谁读它」「谁写它」「谁 DDL 它」**；★ **删除一条自愈链，必须先回答「它护的那个不变量现在由谁保证」**，否则就是悄悄拆安全网（且答案要用**门**证明，不是相信）；★ **把自愈链改写成新对象版本通常是最差选择**（把已知锁事故搬到一个更大的对象上）；★ **门必须用 AST 取字符串字面量**（逐行口径要么漏多行 SQL，要么把注释当代码）；★ **「退役之后」按投递序（字典序）判定，不按文件名里的数字**；★ **历史注释不许被「清理」**（门只扫可执行部分）；★ **极性可以翻转，但不变式必须保留**；★ §358 **「没有门的性质会静默漂移」**（交付前跑 `gofmt -l`；用 `git show HEAD:<file> | gofmt -l` 区分「我引入的」与「既有的」；★ **本仓至今没有 gofmt 门** ⇒ 建议单独补一道，本轮未加）。
 > ★ **完整记录见 `docs/audit/2026-10-24-v1-to-session-turns-替换轮.md`**（§0 口径声明 / §1 四类分类 / §2 逐处删除 / §3 承重论证 / §4 刻意保留清单 / §5 门 / §6 标签 / §7 诚实边界 / §8 读数 / §9 通用式）。
+>
+> **2026-10-27 R99 轮（P11 · 同窗量具 + 本地部署巡检轮，本会话 `mvs_bbd1346d211a4eb3ac41b552c82eaecf`）**：
+> ★★★★ **★ 头条：★ 本轮的中心产出不是优化，而是【两条自我推翻】—— ★ R98 §10「生产定义与仓内定义漂移（存在仓外 DDL 来源）」整节被证伪；
+> ★ 且 R98（及更早）的「本地台账严重落后」也被重新量化 ⇒ ★ 两条都出在【同一类错误】：★ 把「看起来像事实的读数」当成事实本身。★★**
+> ⇒ ⇒ ★★★★ **推翻一：`::text` 是 `pg_get_viewdef` 的【渲染产物】，不是源码** —— ★★ PG 会把 `varchar` 比较的**隐式 relabel**
+> （`RelabelType`）渲染成显式 `::text` ⇒ ★★ 实测：两个**语义等价、源码不同**的 VIEW（源码无 cast / 源码显式 cast）
+> ⇒ **`pg_get_viewdef` 渲染逐字相同（`rendered_identical = t`）** ⇒ ★★ **它无法区分「源码写了 cast」与「源码没写 cast」**。
+> ⇒ ⇒ ★★ **再证（同源对拍）**：用仓内 855 源码新建出来的 matview 的 `pg_get_viewdef`，与**生产 252 上同名 matview** 的
+> ⇒ **逐字相同（3/3）** ⇒ ⇒ ★★★ **生产本来就与仓内 855 源码形态完全一致 ⇒ 无漂移、无「仓外 DDL 来源」（就形态而言）。**
+> ⇒ ⇒ ★★ **代价**：据此**写了一整条 startup 迁移 908**（重建三个 matview 去 `::text`＋down＋embeddata 孪生 ×2＋7 点登记面＋11 道门）
+> ⇒ ★ **在本地库真应用一次后才发现它对定义形态毫无改变** ⇒ ⇒ ★ **已完整撤回**（文件/登记面/门禁全回退；本地台账孤儿行已删、残留 0）；
+> ⇒ ⇒ ★★ **⇒ 不向生产投递任何「重建三视图」的迁移；R98 §13 属主清单里「让生产重建三个 matview 回仓内形状」作废；
+> R98 §13「生产那份带 `::text` 的定义来自哪个文件」关闭（没有第二份来源）。**
+> ⇒ ⇒ ★★ **推翻二：★ 台账有【三本】，R98 只看了其中一本** ⇒ 实测（本地 vs 生产 252）：
+> ★★ `schema_migrations`（常规迁移）本地 **73** / 生产 **451**；★★ `gateway_db_revision_sequences`（revision-sequence 投递的 startup 文件）
+> ★★ 本地 **275** / 生产 **49**；★★ `llm_gateway_migration_checksums`（**≥ 投递地板 412** 的 startup 校验台账）本地 **0** ⚠ / 生产 **387**
+> ★★ （含 **900–907 全在**、855 记于 2026-10-13）⇒ ⇒ ★★ **只看第一本会得出「本地严重落后」的【反向】结论**；真实差异是
+> ⇒ ★★ **本地 checksum 台账 = 0 行 ⇒ 本地部署从未跑过生产的「已应用迁移 sha256 fail-closed 校验」**（⇒ 新增为属主待办）。
+> ⇒ ⇒ ★★ **附带查清**：★ `172.16.2.210` **不是另一台主机**，它是 252 宿主机上 PG 容器的 podman 端口映射地址（此前被列为「未映射来源 IP」）。
+> ⇒ ⇒ ★★★ **R99 同窗量具**（新脚本 `scripts/252-monitor/mv-host-load-sampler.sh`，★ 只读、23 列、自证、连接方式可配）：
+> ★★ 每 15 s **同一次采样**里同时记宿主机（`vmstat`/`loadavg`）＋ PG 侧（active/等锁/等 IO/IO 行数）＋ **此刻在跑的 REFRESH 的 pid/已运行毫秒/语句**
+> ⇒ ⇒ **⇒ 「刷新耗时」与「它跑过的那几秒的宿主机负载」落在同一批采样点上 ⇒ 同窗配对成立**（R98 的诚实边界正是「非同窗」）。
+> ★ ★ **三个实现坑（都已修）**：① 死代码让 `vmstat` 跑两遍；② ★★ **跨天判定写错 ⇒ 每 15 s「跨天」一次并截断文件**
+> ⇒ （旧写法拿 `$(date +%Y%m%d)` 去比带 `.tsv` 后缀的变量 ⇒ 永不相等 ⇒ 首轮日志「rolled over」连刷 5 次即现场证据）；
+> ③ PG 连不上（默认 `127.0.0.1:5432`，而 252 的容器端口映射在 `172.16.2.210:5432`）⇒ 改可覆盖的 `PSQL_CMD`（**须按空格切数组再展开**）。
+> ⇒ ⇒ ★★★★ **252 实跑（9 个采样点 / 150 s）把 R98 的头号结论从「一次快照」升级为「持续态」**：
+> ★★ `load1` **8.12 / 7.40**（★ `nproc=4` ⇒ 超载 ≈2×）、★ **`cpu_idle = 0`**、★ `cpu_iowait` **35% / 29%**、
+> ★ 而同刻 PG 侧 `pg_active=0`、等锁 0、等 IO 0、`temp_bytes` 恒定 ⇒ ⇒ ★★★ **252 在网关没刷新时就已经满载 ⇒ 争用载体在 PG 之外。**
+> ⇒ ⇒ ★★★ **Goal 主线（本地部署 + 本地 PG + 逐页逐 API 验证）在独立 worktree `/tmp/kx-wt-r98`（= `origin/main`）里做完**
+> ⇒ （★ **不在主工作区做** —— 那里有并行会话的未提交改动）：★ **两次被白屏事故护栏拦下**（`web/` 与 `web-mobile/` 的
+> `node_modules`/`dist` 缺失 ⇒ 拒绝 stage 空前端）⇒ 装依赖后通过；★ build_seq **2846→2847→2848**
+> ⇒ ★★ **靠机器级 floor（`~/.llm-gateway-go/build_seq.floor`=2845）才没与并行的 2837 撞号/回退**（worktree 自身是 2826）；
+> ★ `VERIFY_PASS=1`、8781/8782 双实例通过、**凭据解密冒烟 `creds=3 failed=0`**；★ 本地 startup 链**已追平**（904–907 本轮补上，900–903 昨日已应用）。
+> ⇒ ⇒ ★★ **本地 PG 状态**：★ `_request_logs_hot` **已不存在** ⇒ **v1 `request_logs` 家族确已退役**；
+> ★ `session_turns` 2,168 / `session_turns_hot` 109 / `session_summaries` 2,133 / `session_dim` 2,143 行。
+> ⇒ ⇒ ★★ **API 层 405 条 GET 全量巡检**（端点取自真实注册面 444 条，跳过 39 条非 GET/带副作用）：
+> ★★ **233×200 / 84×405 / 48×400 / 34×404 / 5×503（全是合法「未配置」）/ 1 条是巡检脚本自身的占位替换瑕疵**；
+> ★★ **>2 s 只有 5 条，其中 4 条是 SSE 长连接**（被 20 s curl 超时截断）⇒ ★★ **唯一真 >2 s 的 `/api/admin/settings` 2,224 ms
+> ⇒ 复测 380/550/728 ms ⇒ 冷缓存首击，不是慢端点** ⇒ ⇒ ★★★ **本地零个真正慢的 admin 端点。**
+> ⇒ ⇒ ★★ **浏览器层逐页 6 页**（内置 Browser，★ **已是登录态**；★ **Maestro 装但跑不起来**（无 Java Runtime）、仓内无 Playwright）
+> ⇒ 全部 269~320 ms、渲染正常、零 API 失败、零控制台错误；★ ★ **一条量具纪律：自动截图在导航后立即抓取 ⇒ 「白屏」常是时序假象 ⇒ 必须复读 DOM。**
+> ⇒ ⇒ ★★ **模型请求与写入测试**：★ 本地只暴露 **7 个模型**，用户列表里**只有 `deepseek-v4-flash` 可用**（其余 6 个不在本地目录；
+> ★ `glm-5.3-flash` 的 3 个候选全败，根因是 **「provider requires egress proxy but none is available」** ⇒ 环境配置缺口，非代码缺陷）；
+> ★ `ping`×3 与 `say OK.`×3 **全 200**（2.8~7.4 s）；★ 两处长提示词 503 的根因**都在上游**（`empty_response` 零内容 /
+> ★ `quota_permanent` HTTP 429 `rpm exhausted`）⇒ ★★ **本地唯一 provider 有严格 RPM 配额 ⇒ 连续 8 次请求会打爆它 ⇒ 多轮测试必须加节流。**
+> ⇒ ⇒ ★★★ **写入路径逐条核实**：8 次请求**逐条落在 `session_turns_hot`**（`user: ping`/`user: say OK.`、`client_ip=172.17.0.1`、
+> ★ `agent_name=curl`），★ `session_summaries` 同步更新，★ ★ 而 `/admin/turns` **页面渲染出了这些会话** ⇒ ⇒ **全链路闭合。**
+> ⇒ ⇒ ★★★★ **十四条通用式**（详见 `LESSONS.md` **§387**）：★ ★★ **「渲染结果」不是「源码」** ⇒ ★★ **台账不止一本** ⇒ ★ 把一本当全部会得出反向结论；
+> ★ ★★ **「迁移应用成功」≠「迁移有意义」**（写迁移前先做一次同源对拍）⇒ ★★ **查台账前先看真实结构**（`sequence_name` 是 `<序列名>:<文件名>`）⇒
+> ★★ **手写复刻的 DDL 不能当「库里那份」的替代品** ⇒ ★★ **自动视觉的「白屏」常是时序假象** ⇒ ★★ **候选清单加「前提来源」字段**。
+> ⇒ ⇒ ★★★★ ⇒ 完整记录见审计档 `docs/audit/2026-10-27-R99-同窗量具与本地部署巡检.md`；★ **R98 审计档内已加 §17 订正节与 §10 横幅**（原文保留）。
+>
+> **【2026-10-27 R99 轮（P11）· 补记一】★★★ 同窗量具【长期运行】并【抓到了活 REFRESH】⇒ R98 的头号机制判断升级为【同窗实测】★★★**
+> ⇒ ★★ **采样器已部署到 252 并常驻运行**：`/opt/scripts/mv-host-load-sampler.sh`（★ md5 `4ea736c5e610c5776801c33021782276`，
+> ⇒ ★ **线上 == 仓内 == 台账两列**；★ **2026-10-25 03:57 起跑的是【修正版】**，★ 旧轮 03:16:02→03:57:02 共 142 个采样点），
+> ⇒ 产出 `/var/log/llm-mv-host-load/mv-host-load-YYYYMMDD.tsv`（23 列）+ 同名 `.log`。
+> ⇒ ⇒ ★★★★ **★ 决定性的一格（seq=49 @ 03:30:09）**：`refresh_pid=2199265 age_ms=8937`
+> ⇒ ★ **query=`REFRESH MATERIALIZED VIEW CONCURRENTLY routing_analytics_7d`**，
+> ⇒ ★ 而**同刻** `load1=9.49`（★ `nproc=4` ⇒ 超载 2.4×）、★ **`cpu_idle=0`**、`cpu_iowait=1`、`cpu_steal=3`、
+> ⇒ ★ `pg_active=2`、★ `wait_io=1`、★ `temp_bytes` **恒定**（零 spill）。
+> ⇒ ⇒ ⇒ ★★★★★ **前后相邻采样（03:29:51 / 03:30:26）同样 `cpu_idle=0`、`load1` 5.76 / 8.03**
+> ⇒ ⇒ ⇒ **宿主机在刷新【之前】【之中】【之后】一样饱和** ⇒ ⇒ ★★★ **刷新是「受害者」不是「元凶」**：
+> ⇒ ⇒ **R98 量到的 191.72 s 是叠加在持续饱和之上的耗时**，★ 不是「刷新把机器压垮了」。★★
+> ⇒ ⇒ ★★★★ **★ 量具自己坏了一次（本轮现学现改现重部署）**：★ 第二次抓到 REFRESH 时 `refresh_age_ms = -54`（**负数**）
+> ⇒ ⇒ ⇒ ★ **根因：年龄公式用了事务钟 `now()`（= 事务开始时间）减 `query_start`（= 语句开始时间）⇒ 刷新恰在两者之间启动时差值为负**
+> ⇒ ⇒ ⇒ ★ **修法：改用墙上钟 `clock_timestamp()`** ⇒ ★ **重新部署 + 重启 + 三方 md5 对账**。
+> ⇒ ⇒ ★★ **附带两个后处理陷阱**：★ **重启后 `seq` 从 1 重新计数（文件是追加的）⇒ 曲线推导必须按 `epoch_ms` 排序，不能按 `seq`**。
+> ⇒ ⇒ ★★ **⇒ 新增通用式十三/十四（LESSONS §387）**：★ **从库里取时间差 ⇒ 先问「事务钟还是墙上钟」**；★ **序号只保证单次运行内有序**。
+> ⇒ ★ ★ **诚实边界**：抓到的是 `routing_analytics_7d` / `tuning_signals_daily`，★ **不是** R98 那个 191.72 s 的 `session_client_task_matrix`；
+> ⇒ ★ **session 族 matview 的 `:05` 刷新窗口仍未覆盖** ⇒ ★ **采样器继续常驻，长期曲线待补**。
+> ⇒ ⇒ ★★★ **台账归属（★ 被门禁逼出来的结论）**：`mv-host-load-sampler.sh` **不能**加进 `deployed-252.tsv`
+> ⇒ （★ 那本台账的范围**就是** cron 调度集合，`TestDeployDriftManifestCoversExactlyTheCronInvokedScripts` 双向钉死 ⇒ 加行必红）
+> ⇒ ⇒ ★★ **而仓内「按需工具」本来就【不在任何台账里】⇒ 盲区真实存在** ⇒ ⇒ ★★ **本轮补了第二本台账**：
+> ⇒ ★ `scripts/252-monitor/deployed-tools-252.tsv` + 门 `scripts/ursmcheck/deployed_tool_drift_test.go`
+> ⇒ （★ **按需工具与 cron 台账分工且不重叠** ⇒ 杜绝双记）。
+>
+> **【2026-10-27 R99 轮（P11）· 补记二】★★★★ 浏览器层从「人工 6 页」升级为【全量 121 页自动化巡检】★★★★**
+> ⇒ ★ **Maestro 不可用（无 JDK）⇒ 改用 headless Chrome 155 + puppeteer-core 25.16.0（CDP）**。
+> ⇒ ★★ **量具坑（第一版整轮作废）**：★ **只注入 cookie ⇒ 36/36 页全部 `redirect->/bootstrap?redirect=…`**
+> ⇒ ⇒ ★★★ **根因：前端有三道会话判据，只造一道不算登录态** —— ① HttpOnly cookie `llmgw_session`（`web/src/store.ts:42-51`）
+> ⇒ ② `localStorage['llmgw_user_info']`（★ `web/src/router.ts:139/159/184` 的**兜底读**）③ `localStorage['llmgw_require_bootstrap']='0'`
+> ⇒ （★ `web/src/router.ts:387-388`）⇒ ★★ **修法：运行时调 `/api/auth/me` 取服务端真实 user 对象，用 `evaluateOnNewDocument` 在页面脚本【之前】注入。**
+> ⇒ ⇒ ★★ **121 页结果**：★★ **77 ok / 21 应用内路由别名（`/catalog→/models?tab=catalog` 等，★ 不是失败）/ 10 合成 id 的 404（★ 数据层）/ 10 `/maintain*` 503（★ 本地 maintain 子系统未配置）**；
+> ⇒ ⇒ ★★★ **零个 `load_ms>2000`、零个白屏、零个 JS 崩溃** ⇒ ⇒ ★★ **Goal 的「>2 s 页面查慢因」在本地是【空集】**；
+> ⇒ ⇒ ★★ **量纲自证（LESSONS §346 纪律）**：平凡页 `dom/load` **p50=124 ms、max=566 ms** ⇒ **尺子没坏**；
+> ⇒ ★ **读数用浏览器侧 `navigation` timing（不是 R87 栽过的 CDP `response.timing` 公式）+ 本地直连（不经 SSH 隧道）⇒ 那两处失真本轮不适用**；
+> ⇒ ★★ **一条量具纪律：每页固定 2 条 `maintain-api/*` 503 噪声必须单独分类** ⇒ ★ **否则真问题会被噪声淹没**。
+>
+> **【2026-10-27 R99 轮（P11）· 补记三】★★★★ 长提示词 503 的形态被【订正】：不是上游，是【路由层零候选】★★★★**
+> ⇒ ★★ **节流 40 s 重跑（3 组 × 2 轮 = 6 次）⇒ 全 503**；★ **同期 `ping`/`say OK.`/`你好`/`请用一句话介绍你自己。` 全 200**。
+> ⇒ ⇒ ★★★ **背靠背对照矩阵**：★★ `你好`(2 字) **200** · `请用一句话介绍你自己。`(11 字) **200** ·
+> ⇒ `请拉取最新代码合并到本地，然后提交代码并推送`(22 字) **503** · `Please pull the latest code…`(68 字) **503** ·
+> ⇒ `请审计这段代码的安全性…` **503** · `请制定一个多步骤的实施计划` **503** · `请总结这段会话的要点` **503**
+> ⇒ ⇒ ★★ **不是长度、不是语种 ⇒ 是「指令型 vs 闲聊型」**。
+> ⇒ ⇒ ★★★★ **网关日志实锤**：★ 同 model/profile/tenant/modality 下 `routing_resolve` 的 **`candidates_count=0`（指令型）vs `1`（闲聊型）**
+> ⇒ ⇒ ★ **不是上游挂了**（同期短提示词 200 即反证）；★ 错误载荷带 `alternatives.task_type`（实测 `planning`）。
+> ⇒ ⇒ ★★★ **结构面（本地与生产 252 只读同查，两边同形）**：`task_type_tier_config` 两边都只有 **10 行**，
+> ⇒ 而 `taskprofile/registry.go` 的注册表有 **20** 个任务类型 ⇒ **11 个代码侧类型（`chat`/`code`/`creative`/`reasoning`/`planning`/
+> ⇒ `agent`/`long_context`/`vision`/`function_call`/`code_audit`/`intent_classification`）在库里没有阶位行**；
+> ⇒ ★★ **阶位词表三套并存**：`tier-a/b/c`（任务类型表 + `autoroute` 代码）vs `tier1/tier2/local/restricted`（`provider_catalog`）
+> ⇒ vs `unknown/low/medium/high/free/premium`（`models_canonical.cost_tier`）⇒ ★ **后两者里没有任何模型侧字段能承载 `tier-a/b/c`**。
+> ⇒ ⇒ ★★★★ **★ 诚实边界（★ 本轮【没有】钉到根因 ⇒ 因此【不改代码、不改配置】）**：
+> ⇒ ★★ **候选 SQL（`provider/client.go` 的 `candidateQuerySQL`）只按【模型名 + modality + routability】过滤，且候选缓存键里【没有任何提示词成分】**
+> ⇒ （★ `model|profile|tenant|modality`）⇒ ⇒ ★★★ **判别发生在候选缓存的【上游】（自动路由计划层：`autoroute` 的 work-type / IQ 门槛）**
+> ⇒ ⇒ ★★ **但具体那一行未定位** ⇒ ⇒ ★★★★ **拿「三套阶位词表 + 种子缺 11 行」去改，正是 R98「拿渲染结果当源码」的同型错误**
+> ⇒ ⇒ ★ **本轮【未改代码、未改配置】，登记为待查**（★ 最小复现已给出：4 行提示词 + 判据 = `routing_resolve` 的 `candidates_count`）。
+> ⇒ ⇒ ★★ **并订正 §4 的旧归因**：★ 「两次 503 根因都在上游」**不完整** ⇒ ★ **「上游问题」与「路由问题」必须分开记**。
