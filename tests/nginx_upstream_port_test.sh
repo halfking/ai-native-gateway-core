@@ -175,6 +175,31 @@ EOF
 out="$(bash "$DOCTOR" --facts-file "$d/fx-healthy.txt" --slot-a 8781 --slot-b 8783 2>&1)"; rc=$?
 check "⑨ 绑定正常 ⇒ 退出码 0" "0" "$rc"
 
+# ★ 2026-10-24 12h 审计轮（问题④）：**211 事故形态**的门。
+#   upstream 指向 8782，而 8782 恰好被配成了 b 槽端口，
+#   但**监听它的是另一个产品**（ai-session-manager-asm-1）⇒
+#   「端口 ∈ 槽位」成立，可「网关在服务这个端口」**不成立**。
+#   ⇒ 原判据会在这里判 OK ⇒ 本门钉住「必须判出来」。
+cat > "$d/fx-squat.txt" <<'EOF'
+UPSTREAM_PORT=8782
+PORT_OWNER=ai-session-manager-asm-1
+CONTAINER=llm-gateway-211-a|127.0.0.1:8781->8781/tcp|Up 2 days
+CONTAINER=ai-session-manager-asm-1|127.0.0.1:8782->8782/tcp|Up 30 minutes
+STATE_SLOT=b
+EOF
+out="$(bash "$DOCTOR" --facts-file "$d/fx-squat.txt" --slot-a 8781 --slot-b 8782 2>&1)"; rc=$?
+check "⑨ 端口落在槽位上但被别的容器占用 ⇒ 退出码 2（不是 OK）" "2" "$rc"
+if grep -q '别的容器' <<<"$out"; then
+  ok "⑨ 结论说清了「被别的容器占用」"
+else
+  bad "⑨ 结论没说出被别的容器占用：$out"
+fi
+if grep -q 'OK（upstream 在槽' <<<"$out"; then
+  bad "⑨ 仍被判成 OK（端口∈槽位 的配置自洽性检查冒充了事实检查）"
+else
+  ok "⑨ 没有把「端口落在槽位上」误判成 OK"
+fi
+
 printf 'UPSTREAM_PORT=\nNO_NGINX_CONF=1\n' > "$d/fx-none.txt"
 out="$(bash "$DOCTOR" --facts-file "$d/fx-none.txt" --slot-a 8781 --slot-b 8783 2>&1)"; rc=$?
 check "⑨ 取不到事实 ⇒ 退出码 3（**不是**「正常」）" "3" "$rc"

@@ -9459,3 +9459,381 @@ embeddata 逐字 + lock_timeout + 自证断言 + down 只删账本 + **真库腿
 | 900 | `900_freediscovery_schema_reassert.sql` | `b1f1a0c90cb706887e19007cc47867abe3b21e5c371ee832222be3531b09d9de` | applied+verified |
 | 901 | `901_usage_ledger_api_key_id_ts_idx.sql` | `a94c1dfe31a7cead3957141ba9615db0cedae49feb88786e3c3422b29a8d0195` | applied+verified |
 
+
+## 2026-10-24T02:31:00+08:00 — deploy 245 build_seq 2823 (3e0d22fb) 上线记录（手动补记）
+
+★ 2820（a88bf82f）与 2823 两次自动部署均在切换步失败（蓝绿：8782 被
+ai-session-manager 占用 fail-close；legacy：死旗标 + 弃用 unit，见下），
+部署脚本的 db-changelog 事件行只在成功时写 ⇒ 本行由 2026-10-24 批判审计轮
+**手动补记**。迁移账（898/899/900/901）已在 2820 那次应用并记账（见上节），
+2823 未应用新迁移（水位不变 901）。
+
+★ 上线路径（非常规，如实登记）：deploy-seamless 的 `--legacy-restart` 是死旗标
+（主流程 :404 无条件重置，已修）+ legacy `host_restart_service` 按 targets.sh:220
+停的是弃用 unit `llmgo-245.service` ⇒ 两条自动通道均不可用 ⇒ 用**受控手动交换**
+完成：`ln -sfn releases/2823-3e0d22fb slots/8781` + `systemctl restart
+llmgo-245-canary@8781`（canary unit ExecStart 直接跑 slots/%i/gateway）⇒ 15s
+healthz 200。防回归门：`tests/deploy_legacy_restart_flag_test.sh`（负控已验）。
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| — | （2823 无新迁移，水位仍为 901） | — | — |
+
+## 2026-10-27 — R89 inspector-stats 慢端点归因轮（迁移 904 落仓）
+> ★ **日期口径**：本节标题的「2026-10-27」是本系列的**轮次标签**；★ 实测时钟与 git 提交
+> ★ 时刻均为 **2026-10-24**（904 的 applied_at = 2026-10-24 15:42:54+08）⇒ 以 2026-10-24 为准。
+
+
+★ 本节登记 1 条 startup 迁移（904），**登记后随下次 154/245 部署由
+`deploy-lib/db-changelog.sh` 作为 pending ≥ 412 自动应用**。
+生产共享库（172.16.2.210:5432/llm_gateway）2026-10-27 只读实测水位 = **903**
+（`schema_migrations` 实查：902 applied 2026-10-24 08:49、903 applied 2026-10-24 12:47）。
+
+★ **台账订正**：上一节（2026-10-23 llmgo 生产页面修复轮）把 902 / 903 标成
+「未应用，pending」，但生产 `schema_migrations` 里**两条早已记账**
+⇒ 那是**标注漂移**（登记面更新滞后于实际应用），不是投递缺口。
+本节按生产实测水位（= 903）如实登记，904 是**唯一**待投递项。
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 904 | `904_inspector_stats_partial_indexes.sql` | `d2cd82dccf0ff6060ba11c3f593484e445e46ac44cba4b057edf12d45b25af20` | registered in installer StartupFiles + 生产升级序列 `scripts/apply-db-revision-sequence.sh`（未应用，pending）—— 给 `GET /api/admin/sessions/inspector-stats` 的 L2/L3 两条**无时间窗全表聚合腿**补两条部分索引：`public.session_dim (closed_at) WHERE status = 'closed'`（idx_session_dim_closed_at_closed，8,192 B）+ `public.session_summaries (health_score) WHERE health_score IS NOT NULL`（idx_session_summaries_health_score_notnull，2,120 kB；与既有 `idx_session_summaries_health_pending ... WHERE health_score IS NULL` 是 **NULL 侧 / NOT NULL 侧互补**，非冗余）。★ 根因（252 生产只读实测，2026-10-27）：session_dim 的 7 条既有索引**没有一条含 closed_at**；session_summaries 的 19 条里只有 health_score IS **NULL** 侧的索引 ⇒ 两条腿都只能 Seq Scan + Filter（Rows Removed by Filter 分别 301,024 / 184,361）。★ 效果（事务内 CREATE INDEX + EXPLAIN ANALYZE + ROLLBACK，生产零持久变更；回滚后残留索引实测 = 0）：L2 **389.373 ms → 119.706 ms**（Parallel Seq Scan → Parallel Index Only Scan）、L3 **195.432 ms → 0.100 ms**（Parallel Seq Scan → Index Only Scan）；L1 JOIN 腿不变（1,615 ms → 1,401 ms，噪声带内）。★ **口径零变化**：本迁移**不改任何查询**，只加索引 ⇒ 结果集取值不变（构造性成立，不依赖快照比对）。★ 两张表都**不是分区表**（`pg_class.relkind='r'`）⇒ 可用普通 CREATE INDEX；仍不用 CONCURRENTLY（startup 迁移默认在事务里跑）+ lock_timeout=60s / statement_timeout=10min（903 同款）；两张都是热写表 ⇒ 构建期持 SHARE 锁阻塞该表写入 ⇒ 落在低峰窗口。★ 诚实边界：C1 索引当前为空（session_dim.status **distinct = 1**、closed_at 100% NULL）⇒ 收益形态是「把恒空谓词从全表扫降级为索引扫」；真因是**会话关闭路径坏了**（`HandleSessionRecycle` 与 `bg/session_lifecycle_worker.go:496-500` UPDATE 了 session_dim 上不存在的 `stop_reason`/`updated_at` 列 ⇒ 真库 42703），**不在索引**；down：`904_inspector_stats_partial_indexes.down.sql`（sha256 `3328f8c7368769c42641f7874dd38ba4e04138891abad3b8781abdc2ed2f5532`） |
+## 2026-10-24T07:42:54Z — deploy 154 build_seq 2840 (3e47b1fe)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 904 | `904_inspector_stats_partial_indexes.sql` | `d2cd82dccf0ff6060ba11c3f593484e445e46ac44cba4b057edf12d45b25af20` | applied+verified |
+
+
+## 2026-10-27 — R92 稀有过滤 500@30s 轮（迁移 905 落仓 + R90 结论被证伪）
+> ★ **日期口径**：本节标题的「2026-10-27」是本系列的**轮次标签**；★ 实测时钟与 git 提交
+> ★ 时刻均为 **2026-10-24** ⇒ 以 2026-10-24 为准。
+
+★ 本节登记 1 条 startup 迁移（905）。
+生产共享库（172.16.2.210:5432/llm_gateway）2026-10-24 只读实测水位 = **904**
+（`schema_migrations` 实查：902 / 903 / 904 均 applied；904 applied_at = 2026-10-24 15:42:54+08）
+⇒ 905 是**唯一**待投递项。
+
+★ **本轮最重要的发现不是新迁移，而是对 R90 结论的证伪**：
+build 2841（R90 的两腿 EXISTS 已上线）154 直连 REPEAT=3 实测 ——
+`?limit=20` 200×3（0.878/0.155/0.111 s）、`?api_key_id=105` 200×3、
+`?provider=14` 200×3、`?status_code=500` 200×3，
+★ **但 `?model=deepseek-ai%2Fdeepseek-coder-6.7b-instruct` 仍 500×3（30.008/30.007/30.018 s）**
+⇒ ★★ **R90「四条过滤路径全部修好」的结论不成立**（3/4）。
+
+★ **真因不是「形状」而是「稀有过滤值 ⇒ 外层会话深扫」**（252 生产只读实测，2026-10-24）：
+该 model 命中 **458 轮 / 30 个会话**，而 `public.sessions` 有 **441,577 行 / 441,112 个会话**；
+会话列表是 `ORDER BY s.updated_at DESC, s.session_id DESC LIMIT 21` ⇒ **必须扫到凑够 21 行**
+⇒ EXPLAIN ANALYZE 实测外层 `Rows Removed by Filter: 72,455 + 277,899 = **350,354**`。
+★ 已排除「统计信息陈旧」：`session_turns` last_analyze=2026-10-19、
+`session_turns_2026_10` last_autoanalyze=2026-10-24 ⇒ 统计新鲜；
+规划器估 128 行 vs 实际 458 行（只低估 3.6×）⇒ 不是统计缺失能解释的量级。
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 905 | `905_turns_session_model_index.sql` | `59ae826b819edd652b6825ec61c02282bfabe04d716a71323e1e40b5cb038922` | registered in installer StartupFiles + 生产升级序列 `scripts/apply-db-revision-sequence.sh`（未应用，pending）—— 给 `GET /api/admin/turns/sessions` 的 `?model=` 稀有过滤补两条 model 维度复合索引：`public.session_turns (model, tenant_id, session_id)`（idx_session_turns_model_session，分区父表 ⇒ 自动传播到子分区）+ `public.session_turns_hot (model, tenant_id, session_id)`（idx_session_turns_hot_model_session，3,073 行）。★ 配套的**代码侧改动**（同批上线）：`db.SessionFamilyTurnsSessionExistsSQL` 的形态从「两条 EXISTS 用 OR 组合」改成「**派生表 UNION ALL + 单一 EXISTS**」⇒ OR 形态只能被规划成**会话驱动**，而派生表可被 planner pull-up ⇒ **两个驱动方向都可选**：过滤值稀有 ⇒ 轮次驱动（外层只剩 30 行），过滤值常见 ⇒ 会话驱动（前 21 个会话立刻凑齐）。★ 效果（252 生产事务内 CREATE INDEX + EXPLAIN ANALYZE + ROLLBACK ⇒ 生产零持久变更；回滚后残留索引实测 = 0）：`?model=` 稀有值 **30,008 ms → 8.0 ms**；`provider='14'` **358 ms → 48.6 ms**；`status_code=500` **554 ms → 249.6 ms**。★ **口径等价**（252 生产同快照双向 EXCEPT ALL，model 与 provider 各 21 行）：`only_r90=0 / only_v2=0` ⇒ 两形态**逐行一致**（只差求值顺序）；结构上同谓词集、同半连接语义（NULL 两侧都用 `=` ⇒ NULL 不匹配）。★ **只给 model 建索引**：provider n_distinct=20、status_code n_distinct=8 ⇒ 没有选择性 ⇒ 给它们建索引会让规划器更倾向「轮次驱动 + 大哈希构建」⇒ 实测退化到 **10,080 ms**。★ `public.session_turns` 是**分区热写表**（父表 4.7 GB / 1,014,911 行）⇒ 分区父表不支持 CONCURRENTLY ⇒ 普通 CREATE INDEX + lock_timeout=60s / statement_timeout=10min（903/904 同款）；实测构建 **18,512 ms**（父表）+ 28 ms（hot）⇒ ★ 这 ~18.5 秒里 session_turns 的写入被 SHARE 锁阻塞 ⇒ 落在低峰窗口。★ 诚实边界：V2 形态的「轮次驱动」分支**硬依赖**本迁移的索引 —— 无索引时实测 V2/model=稀有 = **205,708 ms**（规划器退化成「每行对 110 万轮顺序扫」的嵌套循环半连接）；生产上由启动迁移在**新二进制对外服务之前**建好索引（窗口为 0），若索引被回滚而二进制未回滚 ⇒ HTTP 症状与今天**相同**（角色级 statement_timeout=30s ⇒ 同样 500@30s），不会更差但会白烧 30s DB 时间。★ down：`905_turns_session_model_index.down.sql`（sha256 `52da420021864b4639957b721dc235b3a2b4344ef68f55d5d06c9f41035c32d9`） |
+| 906 | `906_turns_api_key_numeric_partial_index.sql` | `25de81c12b8805f9474d711f4391dea6847e8df98b49eea37274711c3d46979f` | registered in installer StartupFiles + 生产升级序列 `scripts/apply-db-revision-sequence.sh`（未应用，pending）—— 给 `GET /api/admin/turns/sessions` 的 **api_key 回填查询**补两条**部分索引**：`public.session_turns (session_id, turn_no DESC) WHERE api_key_id ~ '^[0-9]+$'`（idx_session_turns_api_key_numeric，分区父表 ⇒ 自动传播到子分区）+ `public.session_turns_hot (session_id, turn_no DESC) WHERE api_key_id ~ '^[0-9]+$'`（idx_session_turns_hot_api_key_numeric，3,073 行）。★ 配套的**代码侧改动**（同批上线）：`db.SessionFamilyLatestTurnPerSessionSQL` 的过滤条件从 `(CASE WHEN api_key_id ~ '^[0-9]+$' THEN api_key_id::bigint END) IS NOT NULL` 改成 **裸正则** `t.api_key_id ~ '^[0-9]+$'`（新增常量 `db.SessionFamilyAPIKeyIDNumericPredExpr`）⇒ ★ **两者逐情形等价**（NULL ⇒ 两边都排除；非数字 ⇒ 两边都排除；数字 ⇒ 两边都保留），但**只有裸正则能被规划器认出来**（PG 的谓词蕴含判定是语法的 ⇒ 认不出 CASE 形式）⇒ 只有这样才能用上本迁移的部分索引。★ **根因**：探针会话（`sys:probe:*`）的 api_key_id **全是 NULL**（252 实测 462,394 行全空）⇒ 过滤条件**无法从索引判定** ⇒ 必须回表 ⇒ 生产 EXPLAIN 实测 `Rows Removed by Filter: **82,297**`、Buffers shared hit=66,606 ⇒ ★★ **扫 82,297 行堆全部被过滤掉、产出 0 行**，却花了 1,350~1,569 ms。★ **效果**（252 生产事务内 CREATE INDEX + EXPLAIN ANALYZE + ROLLBACK ⇒ 生产零持久变更）：CASE 形式过滤 1,350.8 ms ｜ 裸正则过滤（无索引）1,569.3 ms ｜ ★ **裸正则 + 本迁移的部分索引 4.57 ms**（295×）；对照 `INCLUDE(api_key_id)` 普通索引 0.62 ms 但需 ANALYZE（实测 35.9 s）且索引体积大得多 ⇒ 选部分索引。★ **口径等价**（252 生产真实**非空**批次：非 sys: 前缀 + api_key_id 是数字的会话里轮次最多的 20 个，同一事务内同一快照双向 EXCEPT ALL）：`old_rows=20 / new_rows=20 / only_new=0 / only_old=0` ⇒ **逐行一致**。★ `public.session_turns` 是**分区热写表**（父表 4.7 GB / 1,014,911 行）⇒ 分区父表不支持 CONCURRENTLY ⇒ 普通 CREATE INDEX + lock_timeout=60s / statement_timeout='10min'（903/904/905 同款）；实测构建 **6,026 ms**（父表）+ 21 ms（hot）⇒ ★ 这 ~6 秒里 session_turns 的写入被 SHARE 锁阻塞（比 905 的 18.5 s 短得多 ⇒ 窗口压力小）。★ 诚实边界：★ **本索引不改变口径**，只让同一口径**快 295×**；★ 若索引被回滚而二进制未回滚 ⇒ enrich 退回 1,350~1,569 ms（**不会回到 500@30s** —— 那是 R93 修的「视图 ⋈ 全量 source」形态，与本迁移无关 ⇒ 删索引与回滚二进制是两件事）。★ down：`906_turns_api_key_numeric_partial_index.down.sql`（sha256 `3505fcbd1400b91c1968d2b4c37c02de16d8546849562bc686625bed9657cb54`） |
+| 907 | `907_routing_analytics_source_lateral.sql` | `7db8e5d724ebf9e5af5502b05f66606f4556d6d7c7e93353f718a0316a6b17f6` | registered in installer StartupFiles + 生产升级序列 `scripts/apply-db-revision-sequence.sh`（未应用，pending）—— 把 `public.routing_analytics_source` 从「canonical 宽投影（`FROM request_logs_with_current_month`）」换成「**会话族两腿 + `LEFT JOIN LATERAL (... LIMIT 1)` 回定位**」。★ **根因**：`routing_analytics_7d` / `routing_audit_summary_7d` 的 REFRESH 是共享库上最大的持续慢查询源（累计 3,181,560 ms ≈ **53 分钟** DB 时间、单次最长 **74,331 ms**），而 source 的 **15 列里只有 3 列**（`client_model` / `provider_id` / `auto_profile`）来自 `session_turn_details` ⇒ 为了 3 列把整个宽表 JOIN 进来 ⇒ 生产 EXPLAIN：details 侧 `Parallel Seq Scan` × 4（**326,497 + 128,517 + 18 + 18 = 45 万行**）、`Buffers: shared hit=95,086`（**743 MB**）。★ **修法**：details 的 3 列改用 LATERAL 逐行回定位（走 details 既有唯一索引 `(tenant_id, request_id, partition_date)`）⇒ 只读窗口内真正需要的行，不再顺序扫全部分区。★ **口径等价**（252 生产实测，同一语句 ⇒ 同一快照）：源层双向 EXCEPT ALL（1,110,635 行）`only_old=0 / only_new=0`；聚合层（matview 输出口径）`c1_only_old=0 / c1_only_new=0`；逐列类型对拍 15 列全一致（CREATE OR REPLACE 的列契约）。★ LIMIT 1 的前提：details 唯一键是 `(tenant_id, request_id, partition_date)` 且 `partition_date` 是分区键 ⇒ 同一键最多 1 行 ⇒ LEFT JOIN 与 LEFT JOIN LATERAL(... LIMIT 1) 产出同样的行集合。★ **效果**（252 生产，3 轮交错 A/B 取中位）：旧体 **4,482.8 ms**（最坏一轮冷缓存 **20,378.6 ms**）｜新体 **2,270.8 ms** ⇒ 中位 **2.0×**、冷缓存轮 **10.6×**。★ **零 DDL**：只做 `CREATE OR REPLACE VIEW`（实测 **245 ms**）⇒ 保留 OID ⇒ **两个 matview 的依赖不动**、**不需要重建**（下一次 REFRESH 自动采用新定义）⇒ ★ db.go 的 stale-definition gate 特征串**同时接受新旧两形**（否则新形会被判陈旧 ⇒ 启动期 minutes 级 CASCADE 重建）。★ **不加索引**：实测另建的覆盖索引 `(tenant_id, request_id, partition_date) INCLUDE (client_model, provider_id, auto_profile)` **没有被规划器选中**（比既有唯一索引更大 ⇒ 估算更贵）⇒ 覆盖索引白建 ⇒ 本迁移零索引、零锁窗。★ 诚实边界：★ 本迁移**不改变口径**，只让同一口径更快；★ 若视图被回滚而二进制未回滚 ⇒ 刷新链退回旧形态（**不会影响任何 API 的返回口径** —— 旧形态产出的是同一批行）。★ down：`907_routing_analytics_source_lateral.down.sql`（sha256 `6491443c525af8c0194ae5ac2425c64e798c60659163eceaf66f547cac9bbd11`） |
+
+## 2026-10-24T09:39:00Z — deploy 154 build_seq 2841 (9cf051aa)
+
+★ R90 的两腿 EXISTS 改写上线（本节**无新迁移**：pending 集为空 ⇒ 水位仍为 904）。
+★ 本次发版**首次失败**并归因到部署工具链（见 `docs/audit/2026-10-27-R91-发版2841被远端锁挡住-SSH传输层四层缺陷.md`）：
+报错 `remote lock held or initialization failed` 其实是 **SSH 传输层失败**（154 的 sshd 按
+MaxStartups 默认 `10:30:100` 在 pre-auth 阶段随机丢弃 ~30% 连接 + 机器人扫描）⇒ 锁从未被持有。
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| — | （2841 无新迁移，水位仍为 904） | — | — |
+## 2026-10-24T11:57:20Z — deploy 154 build_seq 2842 (f204e4c6)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 905 | `905_turns_session_model_index.sql` | `59ae826b819edd652b6825ec61c02282bfabe04d716a71323e1e40b5cb038922` | applied+verified |
+
+## 2026-10-24T13:20:00Z — deploy 154 build_seq 2843 (a073b655)
+
+★ **R93 上线**：会话列表的 **api_key 回填查询**从「视图 ⋈ 全量 history source」
+（**同一批行被扫两遍**再 1:1 join）改成「每 source 先 `GROUP BY session_id + max(turn_no)`
+再回定位那一行」。
+★ 本次发版**无新迁移**：pending 集为空 ⇒ 水位仍为 **905**。
+★ 生产验收（154 直连，build 2843 @ 8781，REPEAT）：
+  `?limit=20` 200×3(3.590/0.106/0.091) ｜ `?api_key_id=105` 200×3(8.471/0.250/0.345) ｜
+  `?model=…` **500/200/200**(31.409/22.916/1.593) ｜ `?provider=14` 200×3(0.874/0.219/0.569) ｜
+  `?status_code=500` 200×3(3.575/0.234/0.332)
+  ⇒ ★★ **首个请求仍 500@30s**（生产 journal：`enrich meta failed … 57014`），
+  但**第 2/3 次即 200** ⇒ 稳态 `?model=` 200×8（1.034~3.097 s，中位 ≈1.84 s）
+  ⇒ ★ 与 2842 的「**恒** 500×3」相比是**质变**（500 消失、只剩首请求冷启动）。
+  ⇒ ★★ 残留的 ~1.5 s 归因见 R94：**探针会话 api_key_id 全 NULL ⇒ 回表扫 82,297 行产出 0 行**。
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| — | （2843 无新迁移，水位仍为 905） | — | — |
+## 2026-10-24T14:03:36Z — deploy 154 build_seq 2844 (36953147)
+
+★ **R94 上线**：会话列表的 **api_key 回填查询**加两条**部分索引**
+（`WHERE api_key_id ~ '^[0-9]+$'`）+ 代码侧把过滤从 **CASE 形式**改成**裸正则**
+⇒ ★ 根因是**探针会话（`sys:probe:*`）的 `api_key_id` 全是 NULL**（462,394 行全空）
+⇒ 过滤条件**无法从索引判定** ⇒ 回表 ⇒ **扫 82,297 行堆、全部被过滤掉、产出 0 行**，
+却花了 1,350~1,569 ms ⇒ ★★ **这是最贵的浪费形态**（不报错、不超时、结果正确）。
+
+★ 生产验收（154 直连，build 2844 @ 8782，REPEAT=8）：
+  `?limit=20` 200×8(1.654/0.088/0.091/0.092/0.094/0.093/0.104/0.094) ｜
+  `?api_key_id=105` 200×8(20.243/0.216/0.227/0.215/0.212/0.233/0.226/0.209) ｜
+  ★ `?model=…` **200×8**(2.274/0.076/0.099/0.073/0.092/0.097/0.059/0.045) ｜
+  `?provider=14` 200×8(1.517/0.151/0.115/0.199/0.456/0.508/0.202/0.277) ｜
+  `?status_code=500` 200×8(3.590/0.297/0.296/0.270/0.301/0.296/0.274/0.254)
+  ⇒ ★★ `?model=` **中位 0.085 s**（2843 是 1.84 s ⇒ **21.6×**）⇒ ★★ **首请求也不再 500**
+  ⇒ ⇒ ★★ 其余四条路径全部 200 且不退化。
+  ⇒ ★ 生产计划形态（252 只读，同批次同刻对照）：
+  **新形态 `Index Only Scan using session_turns_2026_09_session_id_turn_no_idx`（无 Filter）
+  ⇒ 1.620 ms**；旧形态 `Index Scan …_heap_tenant_id_session_id_turn_no_idx`
+  + `Rows Removed by Filter: 82,297` ⇒ **64,402.795 ms** ⇒ **39,754×**。
+  ⇒ ★ 两条部分索引传播到 6 个子分区 + hot，**全部 `indisvalid=t`**；
+  **总索引体积 ≈24 MB**（2026_09 12,328 KB / 2026_10 11,456 KB / hot 248 KB）。
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 906 | `906_turns_api_key_numeric_partial_index.sql` | `25de81c12b8805f9474d711f4391dea6847e8df98b49eea37274711c3d46979f` | applied+verified |
+
+## 2026-10-27 — R95 归因轮：routing_analytics 刷新链（只读审计；无 SQL 变更、无发版）
+
+★ 本轮**只做归因**，对生产的写入 = 0 ⇒ ★ **无迁移、无发版**；★ 台账水位仍为 **906**。
+
+★ 归因对象 = **共享库上最大的持续慢查询源**：`routing_analytics_7d` / `routing_audit_summary_7d`
+的 REFRESH（累计 **3,181,560 ms ≈ 53 分钟** DB 时间、单次最长 **74,331 ms**），
+瓶颈 = `session_turn_details` **45 万行顺序扫**（743 MB 缓冲读）⇒ ★ 也是 252 load 11.65 / 4 核的主要贡献者。
+
+★ 修法方向（startup 索引 `session_turn_details (request_id, tenant_id, partition_date)` +
+改 `routing_analytics_source` 为窄投影 + JOIN 前压 7 天窗）**需属主放行后落地**；
+★ 且**本地真库门当前跑不了**（本机 Docker daemon 无响应）⇒ ★ **本轮不改生产**。
+★ 本轮同时**实测证伪**两条看似显然的修法：★ ① EXPLAIN cost 降 65%（325,390 → 113,461）
+但实测**慢 23%**（2,857.603 → 3,511.406 ms）；★ ② 去掉 JOIN 键上的 `::text` 后
+**计划逐字不变**（PG 把 `varchar = varchar` 规范化成 `::text = ::text`）。
+
+★ 详见 `docs/audit/2026-10-27-R95-routing-analytics刷新链-45万行顺序扫.md`。
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| — | （R95 无新增迁移；台账水位仍为 906） | — | — |
+
+## 2026-10-24T15:08:26Z — deploy 154 build_seq 2845 (a194db3c)
+
+★ **R96 上线**：把 `public.routing_analytics_source` 从「canonical 宽投影
+（`FROM request_logs_with_current_month`）」换成「**会话族两腿 +
+`LEFT JOIN LATERAL (… LIMIT 1)` 回定位**」
+⇒ ★ **消除 `routing_analytics_7d` / `routing_audit_summary_7d` 刷新链里
+45 万行 `session_turn_details` 顺序扫**（旧：`Parallel Seq Scan` × 4 =
+326,497 + 128,517 + 18 + 18，`Buffers: shared hit=95,086` ≈ 743 MB
+⇒ 新：逐行 `Index Scan`，其余分区 **`never executed`** ⇒ 动态分区裁剪生效）。
+
+★ 生产对照（252 只读 + pgss 差分）：
+  `REFRESH … CONCURRENTLY routing_analytics_7d` 历史 **均值 55,358.8 ms / 最长 179,539 ms**
+  ⇒ 发版后**第一次**刷新（23:08:29，刷新器在迁移后立即用新 source 跑）**4,683 ms** ⇒ **11.8×**；
+  `routing_audit_summary_7d` 6,964.2 ms ⇒ **1,635 ms**（4.3×）。
+  ★ 生产计划形态：`Nested Loop Left Join` + `Index Scan using
+  session_turn_details_2026_10_tenant_id_request_id_partition_key`（父表腿 1,732.305 ms）。
+  ★ **零 DDL**：只 `CREATE OR REPLACE VIEW`（实测 245 ms）⇒ 无索引、无锁窗；
+  ★ **matview 不需要重建**：`CREATE OR REPLACE VIEW` **保留 OID** ⇒ 依赖不动 ⇒
+  下一次 REFRESH 自动采用新定义 ⇒ ★ db.go 的 stale-definition gate 特征串
+  **改为「旧形 `request_logs_with_current_month` 或 新形 `session_turn_details`」**
+  （否则新形被判陈旧 ⇒ 启动期 CASCADE 重建 minutes 级）。
+  ★ **口径零变更**：源层双向 `EXCEPT ALL`（1,110,635 行，同一语句 ⇒ 同一快照）
+  `only_old=0 / only_new=0`；聚合层 `c1_only_old=0 / c1_only_new=0`；逐列类型对拍 15 列全一致。
+  ★ 诚实边界：★ 生产上仓库自带的一致性检查读数 `drift_buckets=6 / total_abs_diff=26`
+  是**两次计算的时间差**（matview 快照早 83 s），**不是口径差**；
+  ★ `REFRESH … CONCURRENTLY` 的计时**含并发刷新开销**，本轮未拆分；
+  ★ 252 的**整体 load 未复测** ⇒ 不声称负载下降。
+  ★★★★★★ **订正（R97 轮 2026-10-25 补记，原文保留）——「11.8×」是【首轮读数】，稳态口径是 1.93×**：
+  pgss 同一条目 349 → **352** 次 ⇒ post-fix 累计 4 次均值 **28.7 s**（首轮 4,683 ms + 后续 3 次共 110.2 s）
+  vs 历史均值 55.4 s ⇒ **1.93×**。★ 且当前**查询侧**实测 **3,165.6 ms**（发版时 1,732.3 ms）
+  ⇒ ⇒ ★★ **稳态 28.7 s 里约 25 s 在 `REFRESH … CONCURRENTLY` 的非查询侧**（diff + 写 + 索引维护 + 等锁）
+  ⇒ ⇒ ★★ **候选 C3（改 matview 查询体）的收益上限只有 ~3 s/次 ⇒ 救不了那 25 s**
+  ⇒ ⇒ ★★ **下一步该查 REFRESH 的【写侧/锁侧】，不是查询侧**
+  ⇒ ⇒ ★★ 通用式：**「把查询从顺序扫改成索引回定位」与「刷新链整体快了多少」是两件事** ——
+  ★★ 后者的上限由刷新链的**非查询部分**决定 ⇒ ★★ **先拆「查询 / 非查询」，再谈优化哪一头**。
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 907 | `907_routing_analytics_source_lateral.sql` | `7db8e5d724ebf9e5af5502b05f66606f4556d6d7c7e93353f718a0316a6b17f6` | applied+verified |
+
+## 2026-10-27 — R97 归因轮：URSM 快照健康巡检链（**脚本变更**；无 SQL 变更、无迁移、无发版）
+
+★ 本轮**无 SQL 变更** ⇒ ★ **无迁移、无发版** ⇒ ★ **台账水位仍为 907**（`schema_migrations` 不动）。
+★ 改动对象 = **252 上的巡检脚本** `scripts/252-monitor/ursm-snapshot-health.sh`
+（**不是**网关二进制 ⇒ 手工 `install` + 备份 + md5 核对；线上 md5 = 仓内 md5 = `3ba9840515887e053b055e44fcd5167c`）。
+
+★ **归因对象**：252 共享库最贵的持续慢查询源 —— 巡检主判据
+（pgss：`calls=79 / total=20,278.7 s / mean=256.7 s / max=591.6 s`；快路那条 `calls=24 / mean=114.6 s / max=284.6 s`）。
+
+★ ★★ **首要订正**：轮次开始时的判断「生产正在跑慢路（7 天源表路）」**是错的** ——
+运行时日志连续 20 轮 `base_source=daily`、`slot_daily_cov_days=7`
+⇒ ★ **P11 的汇总表快路 2026-10-24 01:42 起就已生效**；
+⇒ ★★ **慢的不是「还没切快路」，是「快路自己很贵」**。
+⇒ ★★ **归因方法论**：★ **pgss 回答的是「历史上花过多少」，不是「现在还在花」**
+⇒ ★ **先用运行时证据（日志里实际走了哪条路、覆盖判据的实际取值）确认现状，再看 pgss**。
+
+★ **两个独立的成本源**（`EXPLAIN (ANALYZE, BUFFERS)` + `jit_explain=on` 实测拆解）：
+
+1. ★★ **「今天」这条腿的谓词不可下推**
+   `AND date_trunc('hour', snapshot_ts) >= 今天零点` 是**列上的函数表达式**
+   ⇒ 规划期换不成范围条件 ⇒ 只能当 **Filter** 挂在「`snapshot_ts >= 7 天前`」那个
+   **Index Cond 之上** ⇒ ★★ **8 个分区全扫，其中 7 个分区的行扫完即丢**。
+   ⇒ **改法**：`AND snapshot_ts >= 今天零点`（纯范围）⇒ 直接成为 Index Cond
+   ⇒ 只扫今天那一个分区，其余 `Subplans Removed` / `never executed`。
+   ⇒ **等价性两向证明**：`date_trunc(unit, ts) >= T ⟺ ts >= T`（T 在 unit 边界上）
+   ⇒ 本地真库穷举 **5,761** 个时间点、两种粒度，差异 **0**。
+
+2. ★★ **每小时的 JIT 重编译**
+   巡检的每条查询都跑在**一次性 psql 会话**里 ⇒ 后端一连就退
+   ⇒ ★★ **PG 的 JIT 产物缓存在后端内存** ⇒ 每轮全部重新编译
+   ⇒ 实测 `Functions: 181~259`、`Timing Total 6,550.9~7,160.9 ms`
+   ⇒ ★ **这份时间与判据结果一个字节都不相干**。
+   ⇒ **改法**：`de()` 的 `PGOPTIONS` 加 `-c jit=off`
+   ⇒ ★ **只关本脚本自己的会话**；★ 改服务端 `jit_above_cost` 会波及共享库上所有业务会话
+   ⇒ **属主决策项，本轮未动**。
+
+★ **口径零变更**：252 生产 A/B 共 **18 次**运行（6 变体 × 交错 4 轮，`NOW_EXPR` 冻结）
+⇒ ★ **10 个判据字段逐字相同**（唯一值 `3|0|0|0|0|3|132643|133616|133778|100`）。
+
+★ **operational 对照**（同一 cron、同一快路 `base_source=daily`、相邻两轮）：
+修复前 23:17 那轮主判据 **166 s**（23:17:11→23:19:57）⇒ 修复后 00:17 那轮 **37 s**
+（00:17:14→00:17:51）⇒ ★★ **4.49×**；整轮 171 s → 42 s。
+⇒ ★ 两轮判定结论一致（3 正常 / 0 真空洞 / 0 降级）；★ 桶值差异来自**窗口跨界**
+（23 点桶 vs 0 点桶），★ **基线中位 133616 两轮不变**。
+⇒ ★★★ **三重证据互相印证**：冻结窗口交错 A/B **4.3×**
+｜ 同会话 `EXPLAIN (ANALYZE, BUFFERS)` **4.26×** ｜ cron 相邻轮次 **4.49×**。
+
+★ **阴性结论（已证伪，未采纳）**：修后剩余主项是 `base_active`
+（10.8 s / 14.4 s；其 slot 过滤同样不可下推 ⇒ PG 读进 **8,226,068** 行只留 **773,027** 行）。
+★ 「把它改成可下推的 `EXISTS` 区间」实测 **75.5 s（4.6× 更慢）⇒ 弃用**
+⇒ ★★ **「不可下推的过滤」改成可下推不一定更快 ⇒ 必须实测**。
+
+★ **写入侧归因（登记 R98 候选，本轮未动）**：
+`INSERT INTO ursm_node_snapshot_min` **21,247,030 次 / 8,011.9 s / 均值 0.377 ms**
+⇒ `domains/ursm/v2/persist/writer.go:719 insertSnapshotRows` 是**逐行 INSERT**
+⇒ ★ **调用量问题、不是慢 SQL**；★ **批量 INSERT 有语义风险**
+（pkey 重复时多值 `ON CONFLICT DO UPDATE` 会报 `cannot affect row a second time`
+⇒ 会把「今天能写」变成「今天写不进去」）⇒ **需属主裁决 + 写入压测**。
+
+★ **门禁**：`scripts/ursmcheck/section_14397_ursm_patrol_cost_test.go`（新，**7 道**）——
+结构 ×3（**生效的** `PGOPTIONS` 含 `jit=off` / 抽出的谓词可下推 / SQL 块里无 `#` 注释）
+＋ 真库语义 ×2（谓词穷举等价 / 10 字段逐字相同）＋ 真库计划 ×1（新形态只扫 1 个分区）
+＋ 台账 ×1。★ 变异 **5/5 全红** + md5 逐字还原；
+★★ 其中 **2 道门第一版没有牙**（M1 被脚本自己的注释骗过、M3 查的是门自己写死的 SQL），
+已改成「**从脚本抽取再判定**」；★★★ 另修 **2 处**（门依赖墙钟 ⇒ 每天 00:00~01:00 必红；
+`SET TIME ZONE` 打在 pool 上可能不是同一条连接）⇒ **夹具与窗口全部锚到冻结时刻、单连接**。
+
+★ 连带：`docs/audit/evidence/2026-10-21-pipefail-scope-drop-candidates.tsv`
+是生成器的**逐字产物** ⇒ 脚本行号漂移后按提示重跑生成器（**只差 1 行**：306 → 321）。
+
+★ 详见 `docs/audit/2026-10-27-R97-ursm巡检链-JIT与谓词下推.md`
+（LESSONS.md **§374** / AGENTS.md R97 条目）。
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| — | （R97 **无新增迁移**；台账水位仍为 907） | — | — |
+
+## 2026-10-27 — R98 归因轮：session 族物化视图刷新链（**无 SQL 变更、无迁移、无发版**）
+
+★ 本轮**无 SQL 变更** ⇒ ★ **无迁移、无发版** ⇒ ★ **台账水位仍为 907**（`schema_migrations` 不动）。
+★ 本轮**唯一新增的仓内文件是一个测试文件**（门），**不参与任何部署序列**。
+
+★ **归因对象**：`public.session_client_task_matrix` 的 `REFRESH MATERIALIZED VIEW CONCURRENTLY`
+（154 = session 轮 leader，每小时 `:05`；245 = routing 轮 leader，每 30 min `:00/:30`）。
+
+★ ★★ **首要订正**：轮次起点写下的「查询侧 16.4 s ⇒ 非查询侧 104~284 s ⇒ **头号候选 = 等锁**」**两个口径都错**：
+★ ① 查询侧的 `EXPLAIN (ANALYZE)` **没有对齐工作内存** —— REFRESH 会话执行前会 `SET work_mem='256MB'`
+（`bg/materialized_view_refresher.go:895`），而那次读数跑在普通 psql 会话里（252 默认 8 MB，**带 128 MB 落盘 spill**）
+⇒ ⇒ **查询侧被高估 ⇒ 非查询侧被低估 ⇒ 「108 s」这个差值本身不成立**；
+★ ② 「非查询侧」被**当成了「等锁」**，而这正是本轮要证伪的对象。
+
+★ ★★ **等锁假设：现场采样证伪**（252，1 秒粒度，覆盖 2026-10-25 01:05 整轮刷新）：
+★ `wait_event_type` **全程为空**（不在任何 wait event）｜ `pg_blocking_pids` **为空**（无阻塞者）｜
+★ 252 上**无 >30 s 长事务**（唯一命中的是 245 上一个跑 `daily_kline` 的容器，与刷新无关）｜
+★ 锁形态 = `ExclusiveLock granted=true` on matview ＋ 两个 transient 临时表的 `ShareLock`
+⇒ ★★ **⇒ 「REFRESH 的非查询侧在等锁」被直接证伪。**
+★ ★★ **附带正面结论**：REFRESH CONCURRENTLY 对 matview 取的是 **ExclusiveLock** ⇒
+★ **刷新期间读该 matview 的请求会被阻塞（排队等锁，不是报错）**。
+
+★ ★★ **逐段计时**（只读复现 REFRESH 的内部四段，唯一写入是 temp 表/索引）：
+★ 物化（= 第一次查询）**4,557 ms** ｜ delta 计算（`UNION ALL` + `EXCEPT`）**13.9 ms** ｜
+★ 建 delta 唯一索引 **49 ms** ｜ apply（EXPLAIN）毫秒级
+⇒ ★★ **合计 ≈ 4.7 s**，而生产同一次刷新实测 **52.44 s** ⇒ **差 ≈ 47.8 s 才是要找的东西。**
+
+★ ★★ **三对象同场交错 A/B（生产 vs 3-索引同构副本 vs 1-索引副本，同一 psql 会话）**：
+★ 中位 **3.38 / 3.09 / 3.09 s ⇒ 三者无差异**
+⇒ ★★ **⇒ 证伪「刷新慢是对象自身（碎片 / 索引数 / delta 大小）」**；
+★ ★★ 且「delta 100 % vs ≈0 %」耗时无差异（2.4~3.0 s vs 2.4~2.9 s）
+⇒ ★★ **与仓内 855 迁移注释（§10.106.39）独立吻合**（「REFRESH CONCURRENTLY 本身就是整份快照替换，与列里有没有 NOW() 无关」）。
+
+★ ★★ **结论（2026-10-25 02:18 两轮修正后的版本）**：★ **常态（最好情况）≈ 1.6~4.1 s**
+★ （pgss `min_exec_time=1.61 s`；本轮 6 个读数 3.2~4.1 s，**含生产对象本身**）
+★ ⇒ ⇒ **⇒ 「视图形态」这一整族解释（`::text` / 索引数 / 碎片 / delta 大小 / 对象身份）被逐一证伪 ⇒ ⇒ 优化视图没有收益。★★**
+★ ★★ **但「慢」是分布主体**：pgss 窗口（`stats_reset=2026-10-18 22:03`）**calls=201 / mean=57,861.32 ms（57.9 s）/
+★ min=1,614.85 ms（1.61 s）/ max=592,556.94 ms（592.6 s）** ⇒ ⇒ **重尾分布。★★**
+★ ★★★★ **★ 机制 = 252 宿主机级资源争用（载体在 PG 之外）★★**：★ 2026-10-25 **02:05** 那轮实测 **191.72 s**，
+★ 而现场**全部是「空闲」信号**（`wt=-` 全程 / `pg_blocking_pids` 空 / `active=0~1` / `temp_bytes` 恒定零 spill / 无长事务）
+★ ⇒ ★★ **252 宿主机同时刻 `iostat -x`：★ `%idle` 只有 2.64 %~3.06 %、`vda` `%util` 72.65 %~83.10 %、`aqu-sz` 7.88**
+★ ⇒ ⇒ ★★★ **★ ⇒ 「`wait_event_type` 为空」只说明「没在等 PG 内部的资源」，★ 不说明「拿到了 CPU」；
+★ ⇒ ⇒ ★★ ⇒ **★ 判「是不是负载问题」必须用宿主机级量具（`iostat`/`vmstat`/`/proc/loadavg`）★★**
+★ ⇒ ⇒ ★★ ⇒ **★ 而 `pg_stat_activity` 会把这种状态读成「库很闲」——★ 这正是本轮第一版结论出错的地方。★★★**
+★ ⇒ ⇒ ★★ ⇒ **⇒ R96 候选 C3（改 matview 查询体）第三次被证伪**：查询侧（热缓存）只有 ~2~4 s，救不了那几十秒。★★**
+★ ★★ **⇒ ⇒ 属主裁决清单的头号改为：★ 【252 宿主机资源争用】（CPU idle 2.6~3.1 %、`vda` %util 72~83 %、读队列 7.88）。★★**
+
+★ ★★ **两条「看起来显然」的候选被双重否决**：
+★ ① **把 30 天窗下推到 `session_dim` 侧**：计划上确实把 `Seq Scan`（906,678 行）换成了
+★ `Index Scan idx_session_dim_tenant`（313,203 行），★ **但慢 8 倍**（5,672 ms → 45,577 ms，buffers 318,737 → 553,704+）
+★ **且语义不等价** —— 生产抽样 2,000 行里 **484 行（24.2 %）** 满足
+★ `session_dim.last_active_at < session_summaries.last_request_at` ⇒ 加过滤会漏行；
+★ ② **用 `session_summaries.gw_task_id` 取代 JOIN**：30 天窗 346,994 行里只有 **89,153 行（25.7 %）** 有 `gw_task_id`
+★ （distinct 1,035），而 JOIN 侧 `COALESCE(sd.task_id,'unknown')` 恒有值（distinct 118,133）
+★ ⇒ **口径变更**（约 74 % 的行会退化成 `'unknown'`）⇒ **属主裁决项**。
+★ ★★ **另**：强制 Nested Loop + `session_dim_pkey` **并不省**（1,634,005 buffers vs Hash Join 的 318,737）。
+
+★ ★★★ **独立发现：生产定义与仓内定义漂移** ——
+★ 生产 252 的 matview 定义是 `ss.session_key::text = sd.gw_session_id::text`，
+★ 而**仓内** 855 与 357 都是 `ss.session_key = sd.gw_session_id`（**无 `::text`**）；
+★ `git log -p --all` 扫两者**全部历史** ⇒ `gw_session_id::text` 出现 **0 次**
+⇒ ⇒ **★ 排除法结论：生产上存在仓外 DDL 来源。**
+⇒ ⇒ ★★ **★ 本轮已进一步闭合：★ 全仓扫 `gw_session_id::text` 只命中「文档类」文件，**
+⇒ ⇒ ★★ 其中 `docs/06-deployment/04-runbooks/runbooks/2026-10-04-ursm-write-amplification-measurement.md:13055`
+⇒ ⇒ ★★ **逐字记录了生产当时的形态，并已证伪「`::text` 废索引」**
+⇒ ⇒ ★★ （原文：「查 `information_schema` 后发现四列本来就都是 `character varying` …… **不影响索引使用**……
+⇒ ⇒ ★★ ★（记录在此，避免下轮有人重提这个已被证伪的解释。）」）
+⇒ ⇒ ★★ ⇒ **★ 漂移链完整了：★ 357 在生产建出来就是带 `::text` 的形态（10-07）⇒ 仓内后来去掉了它
+⇒ ⇒ ★★ ⇒ **但生产没有重新应用** ⇒ ⇒ ⇒ ★★ ⇒ 漂移自 357 起，比 855 更早。★★**
+⇒ ⇒ ★★ ⇒ **★ 而这条也直接给出了本轮最该记住的一条：★「`::text` 废索引」2026-10-04 就被证伪并登记为「勿再提」，**
+⇒ ⇒ ★★ ⇒ **★ 而本轮（21 天后）几乎原样重提了一遍 ⇒ ⇒ 提出候选前必须先检索既有证伪记录。★★**
+★ ⇒ ★★ **这正是「`::text` 废索引」这个假设看起来自然的原因**（生产定义里**真的**有那个字样，而仓内没有）
+⇒ ★★ **而实测证明：在生产的真实形态上，`::text` 既不改变计划、也不改变耗时**
+⇒ ★★ **⇒ 避免了一次错误的上线。**
+★ ⇒ ★★ 另：迁移台账显示 **855 已于 2026-10-13 01:33 在生产应用**（有记账行），
+★ **但应用后的形状不是仓内的形状** ⇒ **「记账」与「实际形状」脱节** ⇒ 属主裁决项。
+
+★ ★★ **独立交叉验证（R97 巡检脚本的同源 cron 轮次）**：00:17 那轮 **42 s**、01:17 那轮 **417 s**
+⇒ ★★ **同一份脚本、同一份判据，耗时波动 10 倍，而 10 个判据字段逐字不变、全程 `base_source=daily`**
+⇒ ★★ **⇒ 这是一条独立于刷新链的证据：252 共享库的负载波动是 10 倍量级的。**
+★ ⚠ **同时订正 R97 的表述**：**「4.9×」是轻负载下的读数**（重负载那轮新脚本花了 417 s）⇒ **收益口径必须写明负载条件。**
+
+★ **门禁**：`scripts/ursmcheck/section_14398_session_mv_refresh_shape_test.go`（新，**8 道**）——
+结构 ×6（时间窗 ≥7 天 / 可下推范围谓词 / 无 `date_trunc` 形态 / UNIQUE 索引 / 保留 `refreshed_at` /
+禁 `session_dim` 时间列做 JOIN 谓词 / 两份 startup 副本逐字一致）
+＋ **真库反例 ×2**（自造夹具断言 `last_active_at` 不是 `last_request_at` 的代理、
+断言 `gw_task_id` 覆盖率 ≠ JOIN 侧覆盖率）。
+★ ★★ 判据**绑在生效位置**（门自己扫目录取「谁定义了该视图、迁移号最大者」，不写死文件名）
+＋ **绑在被测对象上**（时间窗天数从实际定义里抽 `INTERVAL 'N days'`）⇒ 属主改窗口时门跟着改。
+★ 变异 **M1~M7 七发全红且命中目标门** + md5 逐字还原。
+★ ⚠ **本轮变异脚本自己踩了两个坑并已修**：★ ① 还原前 md5 断言写反 ⇒ AssertionError 且**文件留在变异态**
+⇒ ★★ **基线变成变异的**，★ ⇒ **改为以 `git checkout --` 为权威路径、还原后校验**；
+★ ② **「两份副本必须一致」这道门会掩盖别的门** ⇒ ★★ 凡验别的门，**变异必须同时改两份**。
+
+★ **对生产的写入**：本轮只新建并删除了 **4 个一次性实验副本**（`kx_probe_p1/p2/p3/min`，已确认 `leftover=0`），
+★ 并**手动执行了 1 次与每小时自动执行完全同构的 REFRESH**（刷新本身就是每小时自动跑一次的内容）
+⇒ ★ **未改任何生产表的定义、数据、索引或配置**。
+
+★ 详见 `docs/audit/2026-10-27-R98-matview刷新链-负载放大与候选证伪.md`
+（LESSONS.md **§378** / AGENTS.md R98 条目）。
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| — | （R98 **无新增迁移**；台账水位仍为 907） | — | — |

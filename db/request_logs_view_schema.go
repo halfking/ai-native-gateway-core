@@ -150,13 +150,139 @@ func (d *DB) ensureRequestLogsCurrentMonthView(ctx context.Context) error {
 // report a different population than the one production serves.
 const sessionIsInternalSessionIDExpr = "(CASE WHEN t.session_id LIKE 'sys:%' THEN NULL ELSE t.session_id END)"
 
+// SessionFamilyAPIKeyIDExpr 是 api_key_id 的**唯一**规范表达式。
+//
+// # 为什么它必须是常量而不是各调用点各写一份
+//
+// 原始列 `session_turns.api_key_id` 是 **text**（2026-10-24 生产实测，
+// hot 与父表都是 text），而**过滤参数**是 int64 ⇒ 两侧必须先归一。
+// 归一规则 = 「纯数字才转 bigint，否则 NULL」（`NULL` 永远不等于任何 int）。
+//
+// ★ 这条规则**必须与投影逐字一致**：投影决定「会话列表里展示的 api_key 是哪个值」，
+// 而过滤决定「哪些会话出现在结果里」⇒ 两边规则不同 ⇒ 展示与过滤会对不上，
+// ★ 而那正是「用户按某个 key 过滤却看不到自己的会话」这类现象的来源。
+// ⇒ 故投影与过滤**共用同一个常量**，任何一侧改动都会被
+// admin/turns_sessions_filter_pushdown_test.go 的单一真值源门抓到。
+//
+// ★ 形态选择的实测依据（252 生产只读，2026-10-24）：
+//
+//	is_null 745,743 / pure_digits 362,434 / non_numeric 0 / 前导零或补白 0
+//
+// ⇒ 今天所有非空值都是**纯数字** ⇒ `api_key_id = $n::text` 在**今天**等价；
+// ★ 但它对未来的 `'0105'` 会与投影分叉（投影给 105，文本比较给 '0105'）
+// ⇒ ⇒ 保留 CASE 形式 ⇒ 对**任意**输入都与投影逐字一致。
+const SessionFamilyAPIKeyIDExpr = "(CASE WHEN t.api_key_id ~ '^[0-9]+$' THEN t.api_key_id::bigint END)"
+
+// SessionFamilyAPIKeyIDNumericPredExpr 是「api_key_id 归一后非空」的**裸正则**谓词。
+//
+// # ★★ 为什么必须是「裸正则」而不是 CASE 形式（R94，2026-10-24 生产实测）
+//
+// 【两种写法逐情形等价】对 `(CASE WHEN c ~ '^[0-9]+$' THEN c::bigint END) IS NOT NULL`
+//
+//	c = NULL  ⇒ CASE 得 NULL ⇒ 排除；裸正则得 NULL ⇒ 排除  ⇒ 同
+//	c 非数字  ⇒ CASE 得 NULL ⇒ 排除；裸正则得 false ⇒ 排除 ⇒ 同
+//	c = '18'  ⇒ CASE 得 18   ⇒ 保留；裸正则得 true  ⇒ 保留  ⇒ 同
+//	（唯一差别：超 int64 的纯数字串 —— CASE 形式会在**WHERE 求值**时报 22003，
+//	  裸正则形式只在**入选行的 SELECT 列表**求值时才报 ⇒ 后者**更宽松**，不是回归）
+//
+// ⇒ 生产真实非空批次逐行对拍（252，同一事务内同一快照）：
+//     old_rows=20 / new_rows=20 / only_new=0 / only_old=0  ⇒ 逐行一致 ✓
+//
+// 【但只有裸正则能被规划器认出来】★ PG 的「谓词蕴含」判定是**语法的**
+//   ⇒ 它无法证明「CASE 形式蕴含 `api_key_id ~ '^[0-9]+$'`」
+//   ⇒ 写在 CASE 里的过滤条件**用不上**以该正则谓词建的部分索引。
+//
+// ★ 实测（252 生产，事务内建索引 + EXPLAIN ANALYZE + ROLLBACK ⇒ 零残留）：
+//
+//	形态                                          探针批次执行时间
+//	CASE 形式过滤（无部分索引）                        1,350.8 ms   ← Rows Removed by Filter: 82,297
+//	裸正则过滤（无部分索引）                            1,569.3 ms   ← 同上（等价但同样慢）
+//	★ 裸正则过滤 + 部分索引 WHERE c ~ '^[0-9]+$'        **4.57 ms**  ← 295×
+//
+// 【为什么 CASE 形式那么慢】★ 探针会话（`sys:probe:*`）的 api_key_id
+//   **全是 NULL**（252 实测 462,394 行全空）⇒ 过滤条件**无法从索引里判定**
+//   ⇒ 必须回表 ⇒ 探针批次扫了 **82,297 行**堆，**全部被过滤掉**，产出 **0 行**。
+//   ⇒ ★ 部分索引只含「api_key_id 是数字」的行 ⇒ 探针流量在索引里**一行都没有**
+//   ⇒ 规划器走 **Index Only Scan** ⇒ 不用回表 ⇒ 4.57 ms。
+//
+// ★★ **语义耦合**：迁移 906 的部分索引谓词必须与本常量**逐字一致**
+//   （由 migration_906_turns_api_key_numeric_idx_test.go 钉住）。
+const SessionFamilyAPIKeyIDNumericPredExpr = "t.api_key_id ~ '^[0-9]+$'"
+
+// SessionFamilyLatestTurnPerSessionSQL 返回「每个 (tenant_id, session_id) 最新一轮」的 source，
+// 供会话列表页回填 api_key / handoff 父会话使用。
+//
+// # ★ 为什么要这个形态（2026-10-24 R93，生产只读实测）
+//
+// 【旧形态的代价】会话列表页的 api_key 回填曾是：
+//
+//	FROM public.session_turns_with_current_month t          -- 视图
+//	JOIN <hot ∪ 全部历史, 113 列投影> rl ON rl.request_id = t.request_id
+//
+// ★ 而 `session_turns_with_current_month` 的**名字骗人**：它的父表腿实测是
+// `FROM session_turns`（**全部分区**）⇒ 视图 = `hot ∪ 全部历史`
+// ⇒ ⇒ **同一批行被扫了两遍**（视图侧 `Heap Fetches 86,507` ＋ source 侧同样 86,507 行）
+// ⇒ ⇒ 再按 `request_id` **1:1 join**（**join 本身冗余** —— 同一行、同一列）。
+//
+// 【为什么只有 `?model=` 慢】它命中的 21 个**探针会话**在 2026_09 有 **85,712 轮**
+// ⇒ 实测该 enrich 查询 **13,066 ms**；而无过滤批次只有 21×1 轮 ⇒ **23 ms**
+// ⇒ ⇒ **差 570×** ⇒ 是「这批会话有多少轮」，不是「形状」。
+//
+// 【本形态】每个 source 一份「先聚合出该会话的最大 turn_no，再回定位那一行」：
+//
+//	(SELECT l.session_id, l.turn_no, <api_key 归一> AS api_key_id
+//	   FROM (SELECT session_id, max(turn_no) AS turn_no FROM <src> t
+//	          WHERE t.session_id = ANY($1) AND <api_key 归一> IS NOT NULL <extraPred>
+//	          GROUP BY session_id) l
+//	   JOIN <src> t ON t.session_id = l.session_id AND t.turn_no = l.turn_no <extraPred>)
+//
+// ★ **为什么不用 `DISTINCT ON`**：写在**分区父表**上时，规划器给的是
+// **Merge Append ⇒ 全量 86,507 行**再 Sort+Unique（实测 **9,900 ms**）
+// ⇒ ⇒ PG **不会把 DISTINCT ON 下推到分区** ⇒ 裁剪不生效。
+// ⇒ 而 `GROUP BY session_id + max(turn_no)` 走 **index-only scan**（不回表）⇒ 只读索引页。
+//
+// 【生产实测（252，只读，2026-10-24）】
+//
+//	批次                      旧形态      本形态
+//	新鲜会话（21 行）           23.2 ms     96.0 ms   ← ★ 慢 4×（绝对值 <100 ms）
+//	当前月多轮（6 行）         115.0 ms     54.1 ms
+//	★ 探针 85,712 轮          13,066 ms   1,339 ms   ← 9.8×
+//
+// 【口径等价】旧口径 =「视图里、且 api_key 归一后非空的轮次中 turn_no 最大那一轮」的 api_key；
+// 本形态 =「hot ∪ 全部历史里、同样条件的最新一轮」的 api_key。
+// ★ 两者**相同**：(a) 视图 = hot ∪ 全部历史 ⇒ 候选轮次集合相同；
+// (b) 视图 hot 腿的 anti-join 只删「hot 与父表同时存在」的重复行 ⇒ 同一 request_id 的 api_key 相同；
+// (c) 本形态在**每个 source 内**都带 `IS NOT NULL` 过滤 ⇒ 与旧口径的过滤位置等价
+// （★ 漏掉它会让口径漂移：实测候选形态出现 `only_new=20 / only_old=0`）。
+// ⇒ 生产三批次双向 EXCEPT ALL：新鲜会话 `0/0/21=21`、当前月多轮 `0/0/6=6`、探针批次 `0/0/0=0`。
+//
+// # 参数
+//
+//   - extraPred：额外的行级谓词（如租户收窄 `AND t.tenant_id = $2`），
+//     **必须使用别名 `t`**（两处都会用：聚合子查询与回定位 JOIN）。
+//     ★ 它会同时施加在「聚合」与「回定位」两步上 ⇒ 与旧形态「租户过滤只加在 source 侧」等价。
+//
+// # 占位符
+//
+//   - `$1` 必须是 session_id 数组（text[]）⇒ 与旧形态一致。
+func SessionFamilyLatestTurnPerSessionSQL(extraPred string) string {
+	leg := func(src string) string {
+		return "(SELECT l.session_id, l.turn_no, " + SessionFamilyAPIKeyIDExpr + " AS api_key_id " +
+			"FROM (SELECT session_id, max(turn_no) AS turn_no FROM " + src + " t " +
+			"WHERE t.session_id = ANY($1) AND " + SessionFamilyAPIKeyIDNumericPredExpr + extraPred + " " +
+			"GROUP BY session_id) l " +
+			"JOIN " + src + " t ON t.session_id = l.session_id AND t.turn_no = l.turn_no" + extraPred + ")"
+	}
+	return "(" + leg("public.session_turns_hot") + " UNION ALL " + leg("public.session_turns") + ")"
+}
+
 var projectionExprsV2 = []string{
 	"NULL::bigint",
 	"t.request_id",
 	"t.ts",
 	"t.tenant_id::text",
 	"(CASE WHEN t.application_id ~ '^[0-9]+$' THEN t.application_id::bigint END)",
-	"(CASE WHEN t.api_key_id ~ '^[0-9]+$' THEN t.api_key_id::bigint END)",
+	SessionFamilyAPIKeyIDExpr,
 	"t.end_user_id",
 	"NULL::text",
 	"t.model",
@@ -616,6 +742,171 @@ func SessionFamilyTurnsSourceSQL() string {
 		" FROM public.session_turns t" +
 		" LEFT JOIN public.session_turn_details d" +
 		" ON d.tenant_id = t.tenant_id AND d.request_id = t.request_id AND d.partition_date = t.partition_date)"
+}
+
+// SessionFamilyTurnsSessionExistsSQL 返回「**外层会话 s** 是否含有满足 colPred 的轮次」
+// 的**两腿 EXISTS**（hot 腿 ∪ 父表腿），供会话级过滤（`?api_key_id=` / `?model=` /
+// `?provider=` / `?status_code=`）使用。
+//
+// # 为什么不用 public.session_turns_with_current_month 视图（★ 实测，非推断）
+//
+// 【症状】GET /api/admin/turns/sessions 带 `?api_key_id=` / `?model=` 时
+//
+//	生产恒 500@30s（角色级 statement_timeout=30s ⇒ SQLSTATE 57014）。
+//	252 EXPLAIN ANALYZE 单变量 A/B（2026-10-24）：
+//	  A 生产形态（api_key_id）    > 90 s，被 statement_timeout 杀掉，未跑完
+//	  M 生产形态（model）              36,415 ms
+//
+// 【根因 ①：视图的 hot 腿带反连接】
+//
+//	CREATE VIEW session_turns_with_current_month AS
+//	  SELECT … FROM session_turns_hot hot
+//	  WHERE NOT EXISTS (SELECT 1 FROM session_turns archived
+//	                    WHERE archived.tenant_id = hot.tenant_id
+//	                      AND archived.request_id = hot.request_id)
+//	  UNION ALL SELECT … FROM session_turns
+//
+//	⇒ 外层每一行都要在 hot 上跑一次 Nested Loop Anti Join。
+//	⇒ ★★ 而「外层每一行」在这里是**几千行**（会话列表要扫到凑够 LIMIT 21）。
+//
+// 【根因 ②：api_key_id 那一支还多 JOIN 了一个 113 列的全量 source】
+//
+//	EXISTS (SELECT 1 FROM session_turns_with_current_month ft
+//	        JOIN <SessionFamilyTurnsSourceSQL()> rl ON rl.request_id = ft.request_id
+//	        WHERE ft.session_id = s.session_id AND ft.tenant_id = s.tenant_id
+//	          AND rl.api_key_id = $n)
+//
+//	⇒ rl 是 **hot ∪ 父表全部历史**（≈1.1 M 行 × 113 列）的派生表，
+//	⇒ 而它在**关联子查询内部** ⇒ 外层每一行都要把它**物化一遍**
+//	⇒ ⇒ 实测 52,854 ms（把谓词推进 source 内部也一样，R85 手法在这里无效）。
+//
+// 【修法】两腿 EXISTS，各自带 session_id/tenant_id 谓词：
+//
+//	EXISTS (SELECT 1 FROM session_turns_hot t WHERE t.session_id = s.session_id …)
+//	OR EXISTS (SELECT 1 FROM session_turns t WHERE t.session_id = s.session_id …)
+//
+//	⇒ 谓词**落在索引上**（idx_session_turns_hot_tenant_session_turn 等）
+//	⇒ 实测 52,854 ms → **192~212 ms**（api_key 族）、36,415 ms → **198 ms**（model 族）。
+//
+// ★ **这不是新发明**：admin/turns_filter_options.go 的 turnMergedSource
+//   早在 2026-10-18 就用了同一手法（实测：视图 44,564 ms ⇒ 两腿 2,048/2,814 ms）。
+//   本 helper 只是把那条**已验证**的形态收敛成**单一真值源**，避免第三次各写一份。
+//
+// # 口径等价性（★ 前提与实测，见下）
+//
+// 【model / provider / status_code 三族】旧形态读视图的对应列，新形态读
+//
+//	hot ∪ 父表的同名列。视图 ≡ hot ∪ 父表：**结构性成立**——
+//	promote_session_turns_hot_to_partition 是
+//	「DELETE FROM session_turns_hot … INSERT INTO session_turns …」的**移动**，
+//	⇒ 同一 request_id 不会同时存在于两边 ⇒ 视图的反连接剔除 0 行
+//	⇒ 252 生产实测（2026-10-24）：hot ∩ 父表 按 (tenant_id, request_id) 配对
+//	   **0 行**；view 行数 1,107,672 = hot ∪ 父表原始行数 1,107,672。
+//
+// 【api_key_id 一族】旧形态读的是 **113 列投影**里的 `api_key_id`
+//	（= SessionFamilyAPIKeyIDExpr 的文本列→bigint 归一），新形态读同一表达式
+//	⇒ **逐字同一个谓词**。
+//	★ 唯一的前提：旧形态用 `rl.request_id = ft.request_id` 关联（**不带 tenant_id**），
+//	  新形态直接按 (session_id, tenant_id) 匹配 ⇒ 等价要求
+//	  「request_id → (session_id, tenant_id) 是函数依赖」。
+//	  252 生产实测（2026-10-24，全库 hot ∪ 父表、**跨租户**）：**0 例外**。
+//	  ★ 而新形态同时**消掉了旧形态的一个潜在跨租户串味**（旧形态的 JOIN 不带 tenant_id）。
+//
+// # 契约
+//
+//   - 外层会话别名**必须**是 `s`（本 helper 固定引用 `s.session_id` / `s.tenant_id`）。
+//   - colExpr 必须引用别名 `t`（两条腿都用 `t`）。
+//   - 两条腿各自是独立子查询作用域 ⇒ 复用同一别名 `t` 合法。
+//
+// # ★★ R92（2026-10-24）：形态从「两条 EXISTS 用 OR 组合」改成
+// **「派生表 UNION ALL + 单一 EXISTS」** —— 因为 OR 形态**锁死了驱动方向**。
+//
+// 【R90 形态为什么不够（生产实测，build 2841）】
+//   R90 上线后，154 直连 REPEAT=3：
+//     ?limit=20                       200×3  0.878/0.155/0.111 s
+//     ?limit=20&api_key_id=105        200×3  9.576/0.216/0.151 s
+//     ?limit=20&model=deepseek-ai%2F…  500×3  30.008/30.007/30.018 s
+//     ?limit=20&provider=14           200×3  0.358/0.100/0.080 s
+//     ?limit=20&status_code=500       200×3  0.554/0.181/0.153 s
+//   ⇒ ★★ **R90「四条全修」的结论被证伪**：只有 model 那条仍 500@30s。
+//
+// 【真因：不是形状问题，是「稀有过滤值 ⇒ 外层深扫」】
+//   252 生产只读实测：
+//     该 model 在父表 **458 轮 / 30 个会话**，hot 腿 **0 轮**；
+//     public.sessions **441,577 行 / 441,112 个会话**。
+//   ⇒ 过滤只命中 30 / 441,112 个会话，而会话列表是
+//     `ORDER BY s.updated_at DESC, s.session_id DESC LIMIT 21`
+//     ⇒ **必须扫到凑够 21 行**。
+//   ⇒ EXPLAIN ANALYZE 实测（事务内建索引后）：
+//       Index Scan using sessions_2026_09_updated_at_session_id_idx
+//         → Rows Removed by Filter: **72,455**
+//       Index Scan using sessions_2026_10_updated_at_session_id_idx
+//         → Rows Removed by Filter: **277,899**
+//     ⇒ ★ 外层一共扫了 **350,354 个会话**才凑出 21 行 ⇒ **17,501 ms**。
+//   ⇒ 对照：provider='14' 命中 181,907 轮、status_code=500 命中 671,117 轮
+//     ⇒ 前 21 个会话立刻凑齐 ⇒ 0.358s / 0.554s
+//     ⇒ ★ **同一个形状，只因「过滤值稀有度」不同，一个 0.3s 一个 30s**。
+//   ⇒ ★ 已排除「统计信息陈旧」：session_turns last_analyze=2026-10-19、
+//     session_turns_2026_10 last_autoanalyze=2026-10-24 ⇒ 统计是新鲜的；
+//     规划器估 128 行 vs 实际 458 行（只低估 3.6×）⇒ 不是统计缺失能解释的量级。
+//
+// 【OR 形态为什么锁死了驱动方向】
+//   OR 形态只能被规划成「两条相关 EXISTS」⇒ 规划器只能
+//   **会话驱动**（外层扫会话、每行去 EXISTS 里查轮次）。
+//   ⇒ 过滤值稀有时，会话驱动要扫 35 万行 ⇒ 30s 超时。
+//   ⇒ 而**轮次驱动**（先枚举匹配的轮次、再去找会话）在稀有过滤下只要 30 行。
+//
+// 【V2 形态：让规划器能自己选】
+//
+//	EXISTS (SELECT 1 FROM (
+//	    SELECT t.tenant_id, t.session_id, <colExpr> FROM public.session_turns t
+//	    UNION ALL
+//	    SELECT t.tenant_id, t.session_id, <colExpr> FROM public.session_turns_hot t
+//	) ft WHERE ft.session_id = s.session_id AND ft.tenant_id = s.tenant_id AND <pred>)
+//
+//   ⇒ 派生表可被 planner **pull-up** ⇒ 半连接的两个驱动方向都可选：
+//   · 过滤值**稀有** ⇒ 轮次侧走 model 索引 ⇒ **轮次驱动**（外层只剩 30 行）
+//   · 过滤值**常见** ⇒ 轮次侧无索引 ⇒ 顺序扫 110 万行太贵 ⇒ 规划器自动选
+//     **会话驱动**（外层前 21 个会话立刻凑齐）
+//   ⇒ ★ **不写死「轮次驱动」** —— 那是 JOIN 形态（V3），实测在常见过滤上
+//     退化到 **10,080 ms**（provider='14'）。
+//
+// 【252 生产实测（事务内真实文件体 + ROLLBACK ⇒ 生产零持久变更）】
+//
+//	形态                                  model=稀有      provider='14'(常见)
+//	────────────────────────────────────────────────────────────────────────
+//	旧形态（R90 两条 EXISTS OR）              17,501 ms ✗    0.358 s ✓
+//	只加索引、不改形态                        17,501 ms ✗    （仍会话驱动）
+//	JOIN 派生表（V3，轮次驱动写死）              8.0 ms  ✓    **10,080 ms** ✗✗
+//	★★ V2 形态 + 迁移 905 的 model 索引         **8.0 ms** ✓  **48.6 ms** ✓
+//
+// 【★ 口径等价（252 生产，同一事务内同一快照，双向 EXCEPT ALL）】
+//
+//	model（稀有）  : only_r90=**0** / only_v2=**0** / r90_rows=21 / v2_rows=21
+//	provider='14'  : only_r90=**0** / only_v2=**0** / r90_rows=21 / v2_rows=21
+//
+//   ⇒ 结果集**逐行一致** ⇒ 两形态只差「求值顺序」，不差「取哪些行」。
+//   ⇒ 结构上也等价：旧形态 =「hot 腿 EXISTS ∨ 父表腿 EXISTS」，
+//     新形态 =「(hot ∪ 父表) 派生表上的 EXISTS」⇒ 同一谓词集、同一半连接语义
+//     （NULL 两侧都用 `=` ⇒ NULL 不匹配 ⇒ 行为一致）。
+//
+// 【★ 硬依赖：迁移 905 的 model 索引】
+//   V2 形态的「轮次驱动」分支**依赖** `idx_session_turns_model_session`：
+//   无索引时实测 V2 / model=稀有 = **205,708 ms**（规划器退化成
+//   「每行对 110 万轮做顺序扫」的嵌套循环半连接）。
+//   ⇒ ★ 生产上由**启动迁移 905** 在新二进制对外服务**之前**建好该索引
+//     （startup 迁移在切换前投递）⇒ 窗口为 0。
+//   ⇒ ★ 若索引被回滚而二进制未回滚：HTTP 症状与今天**相同**（角色级
+//     statement_timeout=30s ⇒ 同样 500@30s），不会更差，但会白烧 30s DB 时间。
+//   ⇒ 语义耦合由 migration_905_turns_session_model_idx_test.go 钉住。
+func SessionFamilyTurnsSessionExistsSQL(colExpr, colName, pred string) string {
+	return "(EXISTS (SELECT 1 FROM (" +
+		"SELECT t.tenant_id AS tenant_id, t.session_id AS session_id, " + colExpr + " AS " + colName +
+		" FROM public.session_turns t" +
+		" UNION ALL " +
+		"SELECT t.tenant_id, t.session_id, " + colExpr +
+		" FROM public.session_turns_hot t" +
+		") ft WHERE ft.session_id = s.session_id AND ft.tenant_id = s.tenant_id AND " + pred + "))"
 }
 
 // SessionFamilyTurnsHotSourceSQL is the hot-only leg of

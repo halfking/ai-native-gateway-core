@@ -15,7 +15,7 @@ import { describe, expect, it, vi, beforeAll, beforeEach } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
 import { createI18n } from 'vue-i18n'
 import { createRouter, createMemoryHistory } from 'vue-router'
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import LiveTopologyView from './LiveTopologyView.vue'
 import zhCN from '../locales/zh-CN/liveTopology'
@@ -212,9 +212,21 @@ describe('LiveTopologyView 展示诚实性（本轮审计修复）', () => {
   })
 
   it('★ 放大面板的定位基准必须是所在列，不能是视口', async () => {
-    // RequestZoomPanel 是 position:absolute。审计前 .live-topology__right
+    // ★ 2026-10-24 审计改写：本条断言的**原始理由已随组件退役而变**。
+    //
+    // 原文理由：RequestZoomPanel 是 position:absolute，审计前 .live-topology__right
     // 没有 position，containing block 退到视口，右下角 460px 面板会盖住
     // 拓扑区与左栏，窄屏下几乎占满整屏。
+    //
+    // 2026-10-23「请求详情改开新页」之后，RequestZoomPanel 已无生产引用并被
+    // 删除 ⇒ 「放大面板的定位基准」这件事**已经不存在** ⇒ 原文的「反向钉」
+    // （读那个文件的源码）变成**对着一个不存在的东西证明自己**。
+    //
+    // 现在这条断言钉的是**仍然成立**的那一半：
+    //   · 三列（left / right / stage）共享 `position: relative` —— 这条**仍在承重**：
+    //     stage 列里的 TopologyCanvas 有 8 处 position:absolute 的覆盖层
+    //     （实测 TopologyCanvas.vue），基准丢了它们就会退到视口。
+    //   · 被退役的覆盖层不得复活（文件不在、视图也不再 import 它）。
     //
     // 为什么读源码而不是 getComputedStyle：vitest 默认 `css:false`，
     // SFC 的 <style scoped> 根本不进 jsdom，computed style 恒为空串 ——
@@ -224,15 +236,23 @@ describe('LiveTopologyView 展示诚实性（本轮审计修复）', () => {
     expect(wrapper.findAll('.live-topology__right').length).toBeGreaterThan(0)
 
     const source = readSrc('src/views/LiveTopologyView.vue')
-    // 放大面板所在的三列必须同一条规则里都带定位基准
+    // 三列共享的样式规则必须带定位基准
     const rule = source.match(
       /\.live-topology__left,\s*\.live-topology__right,\s*\.live-topology__stage\s*\{[^}]*\}/,
     )
     expect(rule, '三列共享的样式规则未找到').toBeTruthy()
     expect(rule![0]).toMatch(/position:\s*relative/)
 
-    // 反向钉：放大面板自身确实是 absolute —— 定位基准缺了它就会退到视口
-    const zoomSource = readSrc('src/components/live-topology/RequestZoomPanel.vue')
-    expect(zoomSource).toMatch(/\.zoom\s*\{[^}]*position:\s*absolute/)
+    // 反向钉（换成**还活着**的绝对定位宿主）：
+    // TopologyCanvas 是 stage 列里真正使用 position:absolute 的组件。
+    const canvasSource = readSrc('src/components/live-topology/TopologyCanvas.vue')
+    expect(canvasSource).toMatch(/position:\s*absolute/)
+
+    // 已退役的覆盖层不得复活（文件 + import 两侧都钉）
+    expect(existsSync(resolve(process.cwd(), 'src/components/live-topology/RequestZoomPanel.vue'))).toBe(false)
+    // ★ 只钉 import 语句：视图里仍留着提及该组件的历史注释（说明它已下线），
+    //   那是给人读的，不是引用。
+    expect(source).not.toMatch(/import\s+RequestZoomPanel/)
+    expect(source).not.toMatch(/from\s+['"][^'"]*RequestZoomPanel/)
   })
 })

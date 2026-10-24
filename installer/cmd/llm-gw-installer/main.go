@@ -1118,6 +1118,80 @@ var sessionsUpdatedAtSessionIdIndex903 []byte
 //go:embed embeddata/startup/903_sessions_updated_at_session_id_index.down.sql
 var sessionsUpdatedAtSessionIdIndex903Down []byte
 
+// 904（2026-10-27，R89 inspector-stats 慢端点归因轮）：给
+// public.session_dim / public.session_summaries 补两条**部分索引**。
+// ★ 病灶（252 生产只读实测，2026-10-27）：GET
+//   /api/admin/sessions/inspector-stats 的 L2/L3 两条聚合腿**都没有时间窗**
+//   ⇒ 都是全表聚合：L3 `status='closed' AND closed_at >= CURRENT_DATE`
+//   要全扫 90 万行 session_dim 再丢掉 100%（Rows Removed by Filter: 301,024）；
+//   L2 `AVG(health_score) WHERE health_score IS NOT NULL` 要全扫 86 万行
+//   session_summaries 再丢掉 55 万行（Rows Removed by Filter: 184,361）。
+//   ★ 根因：session_dim 的 7 条既有索引没有一条含 closed_at；
+//   session_summaries 的 19 条里只有 health_score IS **NULL** 侧的
+//   idx_session_summaries_health_pending ⇒ NOT NULL 侧无索引可承接。
+// ★ 修复效果（事务内建索引 + EXPLAIN ANALYZE + ROLLBACK，生产零持久变更）：
+//   L2 389.373 ms → 119.706 ms（Parallel Seq Scan → Parallel Index Only Scan）
+//   L3 195.432 ms →   0.100 ms（Parallel Seq Scan → Index Only Scan）
+//   索引体积 8,192 B + 2,120 kB。
+// ★ 口径零变化：本迁移**不改任何查询**，只加索引 ⇒ 结果集取值不变。
+// ★ 两张表都**不是分区表**（relkind='r'）⇒ 可用普通 CREATE INDEX；
+//   仍不用 CONCURRENTLY（startup 迁移默认在事务里跑）。
+//   两张都是热写表 ⇒ 构建期持 SHARE 锁阻塞该表写入 ⇒ 落在低峰窗口。
+//
+//go:embed embeddata/startup/904_inspector_stats_partial_indexes.sql
+var inspectorStatsPartialIndexes904 []byte
+
+//go:embed embeddata/startup/904_inspector_stats_partial_indexes.down.sql
+var inspectorStatsPartialIndexes904Down []byte
+
+// 905（2026-10-24，R92 稀有过滤 500@30s 轮）：给 public.session_turns
+// （分区父表）与 public.session_turns_hot 补两条 **model 维度复合索引**。
+// ★ 病灶（252 生产只读实测，2026-10-24）：GET /api/admin/turns/sessions
+//   带 `?model=` 时**恒 500@30s**（角色级 statement_timeout=30s）。
+//   ★ build 2841（R90 的两腿 EXISTS 已上线）直连 REPEAT=3 实测：
+//     ?limit=20                       200 200 200   0.878 0.155 0.111 s
+//     ?limit=20&api_key_id=105        200 200 200   9.576 0.216 0.151 s
+//     ?limit=20&model=deepseek-ai%2F…  500 500 500  30.008 30.007 30.018 s
+//     ?limit=20&provider=14           200 200 200   0.358 0.100 0.080 s
+//     ?limit=20&status_code=500       200 200 200   0.554 0.181 0.153 s
+//   ⇒ ★★ R90「四条全修」的结论被证伪：只有 model 那条仍 500。
+// ★ 真因不是「形状」而是**稀有过滤值 ⇒ 外层会话深扫**：该 model 命中
+//   458 轮 / **30 个会话**，而 public.sessions 有 441,112 个会话；
+//   列表是 `ORDER BY s.updated_at DESC LIMIT 21` ⇒ 必须扫到凑够 21 行
+//   ⇒ EXPLAIN 实测外层 Rows Removed by Filter: 72,455 + 277,899 = 350,354。
+// ★ 修复效果（事务内建索引 + EXPLAIN ANALYZE + ROLLBACK，生产零持久变更）：
+//   model（稀有） 30,008 ms → **8.0 ms**；provider='14' 358 ms → **48.6 ms**。
+// ★ 只给 model 建索引：provider n_distinct=20、status_code n_distinct=8
+//   ⇒ **没有选择性** ⇒ 给它们建索引会让规划器更倾向「轮次驱动 + 大哈希构建」
+//   ⇒ 实测退化到 **10,080 ms**。
+// ★ 分区父表不支持 CREATE INDEX CONCURRENTLY ⇒ 用普通 CREATE INDEX；
+//   仍不用 CONCURRENTLY（startup 迁移默认在事务里跑）。
+//   实测构建时长 18,512 ms（父表）+ 28 ms（hot）⇒ ★ 这 ~18.5 秒里
+//   session_turns 的写入被 SHARE 锁阻塞 ⇒ 落在低峰窗口。
+//
+//go:embed embeddata/startup/905_turns_session_model_index.sql
+var turnsSessionModelIndex905 []byte
+
+//go:embed embeddata/startup/905_turns_session_model_index.down.sql
+var turnsSessionModelIndex905Down []byte
+
+//go:embed embeddata/startup/906_turns_api_key_numeric_partial_index.sql
+var turnsApiKeyNumericPartialIndex906 []byte
+
+//go:embed embeddata/startup/906_turns_api_key_numeric_partial_index.down.sql
+var turnsApiKeyNumericPartialIndex906Down []byte
+
+// ★ R96：routing_analytics_source 换成「会话族两腿 + LATERAL 回定位」
+//   ⇒ 消除刷新链里 45 万行 session_turn_details 顺序扫
+//   （252 实测中位 4,482.8 ms → 2,270.8 ms；口径逐行等价 EXCEPT ALL 0/0）。
+//   ★ 零 DDL：只做 CREATE OR REPLACE VIEW（实测 245 ms，保留 OID ⇒ matview 依赖不动）。
+
+//go:embed embeddata/startup/907_routing_analytics_source_lateral.sql
+var routingAnalyticsSourceLateral907 []byte
+
+//go:embed embeddata/startup/907_routing_analytics_source_lateral.down.sql
+var routingAnalyticsSourceLateral907Down []byte
+
 //go:embed embeddata/startup/859_tighten_pii_phone_intl_regex.sql
 var tightenPiiPhoneIntlRegex859 []byte
 
@@ -1471,6 +1545,14 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/902_stats_event_dedup_pkey_include.down.sql":                            statsEventDedupPkeyInclude902Down,
 	"startup/903_sessions_updated_at_session_id_index.sql":                          sessionsUpdatedAtSessionIdIndex903,
 	"startup/903_sessions_updated_at_session_id_index.down.sql":                     sessionsUpdatedAtSessionIdIndex903Down,
+	"startup/904_inspector_stats_partial_indexes.sql":                              inspectorStatsPartialIndexes904,
+	"startup/904_inspector_stats_partial_indexes.down.sql":                         inspectorStatsPartialIndexes904Down,
+	"startup/905_turns_session_model_index.sql":                                    turnsSessionModelIndex905,
+	"startup/905_turns_session_model_index.down.sql":                               turnsSessionModelIndex905Down,
+	"startup/906_turns_api_key_numeric_partial_index.sql":                     turnsApiKeyNumericPartialIndex906,
+	"startup/906_turns_api_key_numeric_partial_index.down.sql":                turnsApiKeyNumericPartialIndex906Down,
+	"startup/907_routing_analytics_source_lateral.sql":                    routingAnalyticsSourceLateral907,
+	"startup/907_routing_analytics_source_lateral.down.sql":               routingAnalyticsSourceLateral907Down,
 	"startup/859_tighten_pii_phone_intl_regex.sql":                                   tightenPiiPhoneIntlRegex859,
 	"startup/852_models_canonical_column_set_reconcile.sql":                          modelsCanonicalColumnSetReconcile852,
 	"startup/489_credential_probe_queue_startup_backfill.sql":                        credentialProbeQueueStartupBackfill489,

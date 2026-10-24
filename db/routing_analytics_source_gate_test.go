@@ -131,6 +131,8 @@ func TestRoutingAnalyticsSourceGates_RealDB(t *testing.T) {
 	exec(t, `
 		CREATE TABLE public.request_logs_hot (id bigint, origin_stage text, auto_profile text);
 		CREATE TABLE public.request_logs (LIKE public.request_logs_hot);
+		-- ★ R96 形态的 gate marker（'session_turn_details'）需要一张同名表出现在 viewdef 里。
+		CREATE TABLE public.session_turn_details (id bigint, origin_stage text, auto_profile text);
 		INSERT INTO public.request_logs_hot VALUES (1, 'hot', 'auto');
 		INSERT INTO public.request_logs VALUES (2, 'historical', 'auto');
 		-- Canonical's historical arm intentionally still depends on legacy logs.
@@ -147,6 +149,10 @@ func TestRoutingAnalyticsSourceGates_RealDB(t *testing.T) {
 		// columns, no MV refreshed_at, proper ukeys/state, but direct legacy FROMs.
 		{"legacy_837", "SELECT * FROM public.request_logs_hot UNION ALL SELECT * FROM public.request_logs", false},
 		{"canonical", "SELECT * FROM public.request_logs_with_current_month", true},
+		// ★ R96 轮：新形态（会话族两腿 + LATERAL 回定位）不再引用
+		//   request_logs_with_current_month ⇒ gate 必须**同时接受新旧两形**，
+		//   否则新形会被判陈旧 ⇒ 启动期走 CASCADE 重建（minutes 级）。
+		{"r96_lateral", "SELECT * FROM public.session_turn_details", true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			exec(t, "CREATE VIEW public.routing_analytics_source AS "+tc.source)

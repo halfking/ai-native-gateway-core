@@ -321,3 +321,7 @@
 303	901_usage_ledger_api_key_id_ts_idx.sql
 304	902_stats_event_dedup_pkey_include.sql
 305	903_sessions_updated_at_session_id_index.sql
+306	904_inspector_stats_partial_indexes.sql
+307	905_turns_session_model_index.sql
+308	906_turns_api_key_numeric_partial_index.sql
+309	907_routing_analytics_source_lateral.sql

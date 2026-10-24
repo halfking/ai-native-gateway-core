@@ -333,65 +333,12 @@ func hollowPkgDir(pkg, root string) string {
 //	   上一轮被杀留下的残留，会在下一轮开跑时被自动清掉
 //	   ⇒ ⇒ 工作树【不会】长期停在掏空态。
 
-// hollowBackupDir 返回备份目录（★ 放在 git 的 common dir 里 ⇒ 不进工作树、不进版本库）。
-func hollowBackupDir(root string) string {
-	out, err := exec.Command("git", "-C", root, "rev-parse", "--git-common-dir").Output()
-	if err != nil {
-		return filepath.Join(root, ".git", "hollowout-backups")
-	}
-	dir := strings.TrimSpace(string(out))
-	if !filepath.IsAbs(dir) {
-		dir = filepath.Join(root, dir)
-	}
-	return filepath.Join(dir, "hollowout-backups")
-}
-
-// hollowBackupPath 返回某个相对路径的备份文件路径（★ 确定性 ⇒ 跨轮次可自愈）。
-func hollowBackupPath(root, rel string) string {
-	safe := strings.NewReplacer("/", "__", string(os.PathSeparator), "__", "..", "__").Replace(rel)
-	return filepath.Join(hollowBackupDir(root), safe+".orig")
-}
-
-// hollowSelfHeal 把上一轮遗留的备份全部还原（★ 本门开跑时调用一次）。
-//
-// ★ 这就是「杀掉也不会永久污染工作树」的那道保险。
-func hollowSelfHeal(root string) {
-	dir := hollowBackupDir(root)
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return
-	}
-	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".orig") {
-			continue
-		}
-		bak := filepath.Join(dir, e.Name())
-		// ★ 备份文件名 = 相对路径的 __ 连接形态 ⇒ 反解回相对路径。
-		rel := strings.TrimSuffix(e.Name(), ".orig")
-		rel = strings.ReplaceAll(rel, "__", "/")
-		target := filepath.Join(root, rel)
-		data, err := os.ReadFile(bak)
-		if err != nil {
-			continue
-		}
-		if werr := os.WriteFile(target, data, 0o644); werr == nil {
-			fmt.Printf("hollowout: 自愈还原了上一轮遗留的掏空文件 %s\n", rel)
-		}
-		_ = os.Remove(bak)
-	}
-}
-
-// hollowSaveBackup 在掏空前存下原内容（★ 返回备份文件路径）。
-func hollowSaveBackup(root, rel string, data []byte) (string, error) {
-	p := hollowBackupPath(root, rel)
-	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
-		return "", err
-	}
-	if err := os.WriteFile(p, data, 0o644); err != nil {
-		return "", err
-	}
-	return p, nil
-}
+// ★★ 2026-10-25 R148 合并轮：本地原有的 4 个备份/自愈辅助
+//   （hollowBackupDir / hollowBackupPath / hollowSelfHeal / hollowSaveBackup）
+//   **已删除** —— 上游 magpie §3.17 把同一套机制拆到了独立文件
+//   scripts/ursmcheck/tsv_hollowout_safety_test.go（自带门 `TestHollowBackupSelfHealRestoresLeftover`），
+//   且 `hollowBackupPath` **同名** ⇒ 两套并存 ⇒ 重复声明 ⇒ 编译失败。
+//   ⇒ 保留本文件**独有**的改动：gotest 臂改成「每个包只编译一次」（见上）。
 
 // runWithTimeout 跑命令并在超时后杀掉它。
 func runWithTimeout(cmd *exec.Cmd, timeout time.Duration) ([]byte, error) {
@@ -522,9 +469,25 @@ func TestTsvHollowoutInventoryRowsAreWellFormed(t *testing.T) {
 // ★ 对每条 expect=red 的条目：★ 基线绿 ⇒ 掏空 ⇒ 必须红 ⇒ 还原 ⇒ md5 对上。
 func TestTsvHollowoutReadersRejectEmptyRegistry(t *testing.T) {
 	root := hollowRepoRoot(t)
-	// ★ ★ 崩溃安全：开跑先把上一轮遗留的掏空态还原（★ 本门被杀 ⇒ 工作树被污染
-	//   ⇒ ⇒ 下一轮自愈 ⇒ ⇒ 工作树不会长期停在掏空态）。
-	hollowSelfHeal(root)
+	// ★★ 2026-10-24 12h 审计轮（问题②）：**开跑前先自愈**。
+	// 上一次跑若被 SIGKILL（testing 超时 = alarm goroutine panic ⇒ defer 不跑），
+	// 被跟踪的台账会**留空**在盘上 ⇒ ⇒ 这一步把它们**还原回来**，
+	// 再开始新一轮掏空 ⇒ ⇒ 「崩溃留下的空洞」会被下一次跑自动修好，
+	// 而不是永远留在工作树里等人手工 git checkout。
+	//
+	// ★★ 2026-10-25 R148 合并轮：自愈/备份/信号守卫的**实现**统一取上游
+	//   scripts/ursmcheck/tsv_hollowout_safety_test.go 的版本（上游 magpie §3.17
+	//   已把它拆成独立文件并自带门）；本文件原另有一套同名语义的实现
+	//   （hollowSelfHeal / hollowSaveBackup / hollowBackupDir / hollowBackupPath）
+	//   ⇒ ★ 两套并存会与上游的 `hollowBackupPath` **重复声明**（编译失败）
+	//   ⇒ ⇒ 故删除本地那套，保留本地**独有**的性能改动（预编译测试二进制）。
+	healed, err := healHollowLeftovers(root)
+	if err != nil {
+		t.Fatalf("自愈预检失败（还原上一次遗留的掏空台账）：%v", err)
+	}
+	if healed > 0 {
+		t.Logf("自愈预检：还原了 %d 份上一次遗留的掏空台账", healed)
+	}
 	entries := readHollowInventory(t, root)
 	for _, e := range entries {
 		if e.Expect != "red" {
@@ -568,17 +531,28 @@ func TestTsvHollowoutReadersRejectEmptyRegistry(t *testing.T) {
 			}
 
 			// ★ ④ 掏空 ⇒ 跑读方 ⇒ 必须红
-			// ★ ★ 掏空前先存备份（★ 崩溃安全：被杀 ⇒ 下一轮开跑自愈还原）
-			backupPath, berr := hollowSaveBackup(root, e.Path, orig)
-			if berr != nil {
-				t.Fatalf("存备份失败（%s）：%v", e.Path, berr)
+			//
+			// ★★ 2026-10-24 12h 审计轮（问题②）改法：**先落盘备份，再掏空**。
+			// 原实现把原文只存在内存里、还原靠 defer ⇒ 而 `testing` 的超时是
+			// alarm goroutine 里的 panic ⇒ 其它 goroutine 的 defer **不执行**
+			// ⇒ 进程被 SIGKILL 时**被跟踪的台账静默留空**
+			// ⇒ 实测复现：本机该包 293.047s，而 verify.sh 的预算只有 300s。
+			// ⇒ 现在：原文先写到 `<abs>.hollowout-backup` ⇒ 即使被杀，
+			//   原文仍在盘上 ⇒ 下次跑的自愈预检会把它还原。
+			backup := hollowBackupPath(abs)
+			if err := os.WriteFile(backup, orig, 0o644); err != nil {
+				t.Fatalf("写备份失败（%s）：%v", backup, err)
 			}
 			if err := os.WriteFile(abs, hollowed, 0o644); err != nil {
 				t.Fatalf("写掏空版失败：%v", err)
 			}
+			stopGuard := installHollowSignalGuard(abs)
 			defer func() {
-				_ = os.WriteFile(abs, orig, 0o644)
-				_ = os.Remove(backupPath)
+				stopGuard()
+				if err := restoreHollowBackup(abs); err != nil {
+					t.Errorf("还原 %s 失败：%v", e.Path, err)
+					return
+				}
 				back, err := os.ReadFile(abs)
 				if err != nil {
 					t.Errorf("还原后读不回 %s：%v", e.Path, err)

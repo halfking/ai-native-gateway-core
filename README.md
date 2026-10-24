@@ -19,7 +19,7 @@ AI Native Gateway is an **open-source, self-hosted, AI-native LLM gateway** buil
 - **Protocol Normalization**: OpenAI, Anthropic, Gemini, and Responses API compatibility — one endpoint for every model
 - **Intelligent Two-Layer Routing**: L1 picks the model (task classification → 6-dimension scoring), L2 picks the credential (tier fallback → billing round → P2C scoring → execute / circuit-break)
 - **Session Governance**: sticky sessions, full-content session replay, automatic prompt compression, and 4-tier data lifecycle — the conversation, not just the request, is a first-class managed object
-- **Multi-Tenancy**: PostgreSQL RLS-enforced tenant isolation on 38+ tables, with per-tenant quotas, metering, and MaaS billing
+- **Multi-Tenancy**: PostgreSQL RLS-enforced tenant isolation on 90+ tables, with per-tenant quotas, metering, and MaaS billing
 - **Credential Management**: multi-credential pools with fingerprint disguise, adaptive probing, and automatic circuit-breaking
 - **Observability**: real-time request streams, routing analytics (heatmap + Sankey), cost tracking, OTel + Prometheus
 - **Privacy**: 100% private deployment — all data stays inside your infrastructure
@@ -55,7 +55,7 @@ Built with **Go + PostgreSQL + Redis**, running today in production on k3s (dual
 |-------|--------------|
 | **Protocol** | OpenAI / Anthropic / Gemini / Responses compatible + SSE streaming relay with integrity checks |
 | **Routing** | Two-layer routing (model → credential) + sticky sessions + auto-routing with cost/quality policies |
-| **Multi-Tenancy** | Identity tunneling (virtual IP/MAC/ClientID) + credential pools + RLS on 38+ tables |
+| **Multi-Tenancy** | Identity tunneling (virtual IP/MAC/ClientID) + credential pools + RLS on 90+ tables |
 | **Traffic Governance** | Token rate limiting (TPM/RPM) + semantic cache + prompt compression + sliding-window algorithms |
 | **Audit** | Full-chain audit + DLQ + disk fallback + OTel + Prometheus |
 | **Credentials** | Multi-credential + fingerprint pool + adaptive probing + manual disable |
@@ -78,7 +78,7 @@ graph TB
         CP["Control plane<br/>Admin API + embedded Vue SPA"]
         BGW["Background workers (~80 goroutines)<br/>probe / cleanup / stats / partitions"]
     end
-    GW --> PG[("PostgreSQL 14+<br/>durable facts · RLS 38+ tables · partitions")]
+    GW --> PG[("PostgreSQL 14+<br/>durable facts · RLS 90+ tables · partitions")]
     GW --> RD[("Redis 7+<br/>URSM state · limits · sticky · session hot state")]
     DP -->|"IR conversion + vendor field strip"| P["LLM Providers<br/>OpenAI / Anthropic / Gemini / domestic"]
     CP -.->|"signed outbox events"| ASM["ai-session-manager<br/>session projection / analytics"]
@@ -451,7 +451,7 @@ For the installer's full design, see [installer/README.md](installer/README.md).
 | **Session governance** | Request-level logs | Sticky sessions + full-content replay + compression + 4-tier lifecycle |
 | **MCP tool gateway** | Partial | Full delivery targeted Q3 2026 |
 | **Chinese-friendly** | Limited | Full Chinese UI + domestic models + Alipay |
-| **Multi-tenant audit** | Standard | RLS on 38+ tables · tenant audits at L1 = 0 |
+| **Multi-tenant audit** | Standard | RLS on 90+ tables · tenant audits at L1 = 0 |
 
 ### vs. Named Alternatives
 
@@ -574,7 +574,7 @@ Sensitive-information protection: `.githooks/pre-push` automatically runs `scrip
 
 We welcome contributions! See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, code style, and the pull-request process.
 
-Multi-tenancy changes must pass all three linters: `lint-tenant-scope-llmgw` / `lint-pg-rls` / `lint-otel-tenant`.
+Multi-tenancy changes must pass the RLS gate (`make test-rls` — real PostgreSQL, requires `TEST_DATABASE_URL`) and the unit-test suite (`make test` — the same `go test ./...` CI runs via `verify.sh`).
 
 ## 🔐 Security
 

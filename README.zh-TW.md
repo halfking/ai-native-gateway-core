@@ -19,7 +19,7 @@ AI Native Gateway 是一個為 AI Agent 與「vibe coding」時代打造的**開
 - **協定歸一**：相容 OpenAI、Anthropic、Gemini 與 Responses API——一個端點存取所有模型
 - **智慧雙層路由**：L1 選模型（任務分類 → 6 維評分），L2 選憑證（Tier 回退 → 計費輪次 → P2C 評分 → 執行 / 熔斷）
 - **工作階段治理**：黏性工作階段、全文工作階段回放、自動提示詞壓縮與 4 檔資料生命週期——對話本身（而非僅單次請求）就是一等管理物件
-- **多租戶**：以 PostgreSQL RLS 在 38+ 張表上強制租戶隔離，並提供按租戶配額、計量與 MaaS 計費
+- **多租戶**：以 PostgreSQL RLS 在 90+ 張表上強制租戶隔離，並提供按租戶配額、計量與 MaaS 計費
 - **憑證管理**：多憑證池，具備指紋偽裝、自適應探測與自動熔斷
 - **可觀測性**：即時請求流、路由分析（熱力圖 + Sankey）、成本追蹤、OTel + Prometheus
 - **隱私**：100% 私有化部署——所有資料都留在你的基礎設施內
@@ -55,7 +55,7 @@ AI Native Gateway 是一個為 AI Agent 與「vibe coding」時代打造的**開
 |-------|--------------|
 | **協定** | OpenAI / Anthropic / Gemini / Responses 相容 + 帶完整性校驗的 SSE 串流中繼 |
 | **路由** | 雙層路由（模型 → 憑證）+ 黏性工作階段 + 基於成本/品質策略的自動路由 |
-| **多租戶** | 身分隧道（virtual IP/MAC/ClientID）+ 憑證池 + 38+ 表 RLS |
+| **多租戶** | 身分隧道（virtual IP/MAC/ClientID）+ 憑證池 + 90+ 表 RLS |
 | **流量治理** | Token 限流（TPM/RPM）+ 語義快取 + 提示詞壓縮 + 滑動視窗演算法 |
 | **稽核** | 全鏈路稽核 + DLQ + 磁碟回退 + OTel + Prometheus |
 | **憑證** | 多憑證 + 指紋池 + 自適應探測 + 手動停用 |
@@ -78,7 +78,7 @@ graph TB
         CP["Control plane<br/>Admin API + embedded Vue SPA"]
         BGW["Background workers (~80 goroutines)<br/>probe / cleanup / stats / partitions"]
     end
-    GW --> PG[("PostgreSQL 14+<br/>durable facts · RLS 38+ tables · partitions")]
+    GW --> PG[("PostgreSQL 14+<br/>durable facts · RLS 90+ tables · partitions")]
     GW --> RD[("Redis 7+<br/>URSM state · limits · sticky · session hot state")]
     DP -->|"IR conversion + vendor field strip"| P["LLM Providers<br/>OpenAI / Anthropic / Gemini / domestic"]
     CP -.->|"signed outbox events"| ASM["ai-session-manager<br/>session projection / analytics"]
@@ -367,7 +367,7 @@ Installer 完整設計見 [installer/README.md](installer/README.md)。
 | **工作階段治理** | 請求級日誌 | 黏性工作階段 + 全文回放 + 壓縮 + 4 檔生命週期 |
 | **MCP 工具閘道** | 部分 | 2026 年 Q3 全量交付 |
 | **中文友好** | 有限 | 完整中文介面 + 國產模型 + 支付寶 |
-| **多租戶稽核** | 標準 | 38+ 表 RLS · 租戶稽核 L1 = 0 |
+| **多租戶稽核** | 標準 | 90+ 表 RLS · 租戶稽核 L1 = 0 |
 
 ### vs. 具名替代方案
 
@@ -479,7 +479,7 @@ git push github       # → github (secret scan, blocked on BLOCK-level hit)
 
 歡迎參與貢獻！開發環境設定、程式碼風格與 pull request 流程見 [CONTRIBUTING.md](CONTRIBUTING.md)。
 
-多租戶相關改動必須通過全部三個 linter：`lint-tenant-scope-llmgw` / `lint-pg-rls` / `lint-otel-tenant`。
+多租戶相關改動必須通過 RLS 門禁（`make test-rls`——真實 PostgreSQL，需 `TEST_DATABASE_URL`）與單元測試套件（`make test`——CI 的 `verify.sh` 跑的就是它）。
 
 ## 🔐 安全
 

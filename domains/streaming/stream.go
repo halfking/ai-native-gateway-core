@@ -538,12 +538,20 @@ func integrityBreachOutcome(capture *audit.StreamCapture, chunkCount int) Stream
 		}
 		capture.MarkInterruptedWithReason(reason)
 	}
+	// ★ 2026-10-24 magpie 19 类 rest 词表轮（§6-P0-3）：**回复陷入循环**必须与
+	//   「空回复」分开 —— magpie 的 failLoop 理由是「是模型转圈，不是账号的锅」
+	//   （magpie internal/gateway/routing.go:319-321）⇒ 休息粒度取 (凭据,模型)，
+	//   **不罚账号**；而 KindEmptyResponse 走的是另一条归责路径。
+	kind := errorsx.KindEmptyResponse
+	if reason == audit.BreachReasonRepeatedContent {
+		kind = errorsx.KindReplyLoop
+	}
 	return StreamOutcome{
 		Interrupted: true,
 		Reason:      reason,
 		Resumable:   true,
 		ChunkCount:  chunkCount,
-		Kind:        errorsx.KindEmptyResponse,
+		Kind:        kind,
 	}
 }
 
@@ -880,8 +888,10 @@ func StreamChatWithPendingCaptureAndDiagnosticsWithVendor(
 			firstFailure = StreamOutcome{
 				Interrupted: true,
 				Reason:      "first_byte_timeout",
-				Kind:        errorsx.KindStreamTimeout,
-				Resumable:   true,
+				// ★ 2026-10-24 magpie 19 类 rest 词表轮（§6-P0-4）：首字节超时
+				//   与流中超时分开 —— 前者「第一次放过、反复才罚、罚在模型粒度」。
+				Kind:      errorsx.KindFirstByteTimeout,
+				Resumable: true,
 			}
 		default:
 			firstFailure = streamReadFailureOutcome(err, 0)

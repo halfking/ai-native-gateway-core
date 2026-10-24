@@ -1852,8 +1852,21 @@ func applyOriginMetadata(entry *telemetry.RequestLogEntry, keyInfo *authenticati
 //	ClientEndpoint /
 //	ClientRequestID         → 客户端请求端点与客户端自报 id
 //
-// 语义是「**只补空位**」（first-write-wins）：entry 上已有值不被覆盖，因此
-// 调用点可以放在终态构造之后、发射之前，与 buildEntry 内部的
+// 语义**分两族**，不是统一的「只补空位」：
+//
+//	★ origin 族（OriginStage / OriginActor / ClientIP / ClientForwardedFor /
+//	  ClientEndpoint / ClientRequestID）= **只补空位**（first-write-wins）
+//	  ⇒ entry 上已有值不被覆盖。
+//	★ auto-route 族（IsAutoRequest / TaskType / TaskTypeChosen / WorkType /
+//	  AutoProfile / AutoDecision / AutoConfidence / ModelChosen）
+//	  = **无条件覆盖**（见 applyAutoRouteFields / applyWorkTypeField）。
+//
+// ★ 2026-10-24 12h 审计轮订正：原注释把两族都写成「只补空位」⇒ **与实现不符**
+//
+//	（而 auto-route 那几列恰恰是驱动 stats 侧探测排除统计的列）⇒ ★ 注释是契约，
+//	契约与代码不一致时，**改注释**（行为侧今天无影响：两个调用点用的都是新建 entry）。
+//
+// 因此调用点可以放在终态构造之后、发射之前，与 buildEntry 内部的
 // 「applyAutoRouteFields → applyParentCorrelationFields →
 // applyOriginMetadata」顺序保持一致。
 func applyRequestContextFields(entry *telemetry.RequestLogEntry, keyInfo *authentication.KeyInfo, c *RequestLogContext) {

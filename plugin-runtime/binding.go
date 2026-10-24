@@ -8,6 +8,23 @@ import (
 	"time"
 )
 
+// BindingCapabilities 返回**绑定能力**词表（单一事实源，只读副本）。
+//
+// ★ 与路由能力词表（capability.go 的 CapabilityRoutes）是**两个不相交的词表**：
+//
+//	绑定能力管"插件能挂到哪个阶段"，路由能力管"插件能调哪个 HTTP 面"。
+//	⇒ 门禁（scripts/ursmcheck/magpie_p0_plugin_capability_holes_test.go 的 G4）
+//	断言两者不相交 —— 名字很像（session.read vs session.observe），
+//	一旦混用就会静悄悄越权。
+func BindingCapabilities() []string {
+	out := make([]string, 0, len(knownBindingCapabilities))
+	for c := range knownBindingCapabilities {
+		out = append(out, c)
+	}
+	sort.Strings(out)
+	return out
+}
+
 var knownBindingCapabilities = map[string]struct{}{
 	CapabilityRequestObserve: {}, CapabilityRequestMutate: {}, CapabilityRequestBlock: {},
 	CapabilitySessionObserve: {}, CapabilitySessionClose: {},

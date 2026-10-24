@@ -43,22 +43,11 @@ export function headers(method: string, hasBody = false): Record<string, string>
   return h
 }
 
-// 2026-07-10: 401 redirect 现在只针对 admin 端点。
-// /healthz?full=true / /api/system/version 等公共或半公开端点的 401
-// 不应该触发强制重定向，否则会把用户弹到 /login 形成 loop。
-// /api/auth/me 也包括在内：用于 App.vue hydration 探测 cookie 状态，
-// 401 应当抛错让调用方处理（App.vue 会显式调 clearJwt），而不是全屏跳登录。
-function isAdminProtectedPath(path: string): boolean {
-  return (
-    path.startsWith('/api/admin/') ||
-    path.startsWith('/api/users') ||
-    path.startsWith('/api/keys') ||
-    path.startsWith('/api/auth/logout') ||
-    path.startsWith('/api/auth/change-password') ||
-    path.startsWith('/api/routing/') ||
-    path.startsWith('/api/admin')
-  )
-}
+// 2026-07-10 起的「按路径前缀挑 401 要不要踢」口径（isAdminProtectedPath）
+// 已在 2026-10-24 审计中**退役**：它的前提是「这个前缀的 401 就是会话死了」，
+// 而移动端 2026-10-12 已实测证明该前提不成立（端点未注册与未认证回成
+// 逐字节相同的 401）。现在统一走**会话探针**裁决，见本文件下方
+// 「401 会话裁决」。
 
 // isOnInlineLoginScreen reports whether the SPA is already showing the
 // home inline-login (router sends unauthenticated users to /?login=1).
@@ -71,27 +60,131 @@ function isOnInlineLoginScreen(): boolean {
   )
 }
 
-// isSessionExpiredAuthLoss reports whether a 401 from `path` should be
-// treated as "the session died mid-page" for a user the SPA still
-// considers authenticated. Conditions:
-//  - the endpoint is an /api/* call (same family as the admin surface,
-//    authenticated by the llmgw_session cookie), and
-//  - the SPA still believes the user is logged in (stale localStorage
-//    userInfo while the cookie expired), and
-//  - the endpoint is not the auth hydration probe (/api/auth/me), whose
-//    401 is the EXPECTED "logged out" answer and is handled explicitly
-//    by App.vue (see comment above isAdminProtectedPath).
-// When true the caller clears auth state and bounces to the inline
-// login so mounted pollers stop hammering protected endpoints.
-function isSessionExpiredAuthLoss(path: string): boolean {
+// ── 401 会话裁决（2026-10-24 审计修复）──────────────────────────────────
+//
+// ★ **401 不等于会话过期** —— 踢回登录页之前必须先确认会话是否真的死了。
+//
+// 仓内先例（不是本轮发明的语义，是仓内**已经确立并上线**的契约）：
+//   web-mobile/src/api/client.ts 的 sessionReallyDead
+//   · 2026-10-12 实测事故（该文件注释留证）：用户进「费用对账」页，
+//     该页端点因 feature flag 关闭而**未注册**，后端把「端点没注册」与
+//     「你没带 token」回成**逐字节相同**的 401 ⇒ 那个 401 把**完全有效**的
+//     会话整页踢回登录页（同会话 9 秒前 /api/auth/me 与 dashboard/board 都 200）。
+//   · 2026-10-13 加会话探针；2026-10-22 修探针自身的口径。
+//
+// 桌面端此前只同步了「探针」的一半（ApiError.sessionAlive 从未落地），
+// **踢登录的判定一直没改** ⇒ 同一个后端、两个前端对 401 的语义分叉，
+// 且桌面端仍停在「任何 /api/* 的 401 一律 clearAll() + 硬跳登录页」。
+// 这正是 2026-10-23 报障里「从请求列表点击进入详情时登录状态丢失」的机制之一。
+//
+// 本轮把桌面端对齐到移动端口径：
+//   · 探针 GET /api/auth/me 成功 ⇒ 会话是好的 ⇒ 这个 401 是**端点自己拒**
+//     ⇒ **不踢**，按 ApiError(401) 走页面级错误态。
+//   · 探针**明确认证失败**（ApiError 且 status=401）⇒ 会话确实死了
+//     ⇒ 照旧踢（**保留吊销后的强制登出**）。
+//   · 探针**没探成**（网络/维护信封/非 ApiError）⇒ **没有任何证据**说会话死了
+//     ⇒ 不判死（与移动端 2026-10-22 的同一条纪律）。
+//
+// ⚠ 探针不会递归，靠**两道互相独立**的闸门（缺一道就会挂死，变异台 M5 实测）：
+//   ① isAuthEndpointPath()：探针走 /api/auth/me，它自己的 401 被显式排除；
+//   ② probeInFlight：探针在飞 ⇒ 任何 401 都不再触发探针（与路径无关）。
+
+/** 认证端点自身的 401 不构成「会话死了」的证据（探针 / 登录 / 登出）。 */
+function isAuthEndpointPath(path: string): boolean {
   const pathname = path.split('?', 1)[0]
-  if (!pathname.startsWith('/api/')) return false
-  // Authentication endpoints deliberately return 401 for an invalid login or
-  // an already-cleared session; neither means the current page lost its auth.
-  if (pathname === '/api/auth/me' || pathname === '/api/auth/token' || pathname === '/api/auth/logout') {
-    return false
+  return pathname === '/api/auth/me' || pathname === '/api/auth/token' || pathname === '/api/auth/logout'
+}
+
+/**
+ * 会话探针的**三态**结论。
+ *
+ * ★ 为什么要三态而不是布尔：「探针抛了异常」这件事本身**不是**会话死亡的证据
+ *   —— 只有**明确的认证失败信号**（ApiError 且 status=401）才算。
+ *   维护态信封 / 5xx / 断网 / 响应体不是 JSON（SyntaxError）都没有携带
+ *   「会话已失效」的信号 ⇒ 把它们一律判成「会话死了」就是**误杀好会话**。
+ *   移动端 2026-10-22 已经因为这个缺陷吃过亏（维护页 ⇄ 登录页死循环）。
+ *
+ *   · `alive`   —— 探针 2xx ⇒ 会话确实是好的。
+ *   · `dead`    —— 探针明确 401 ⇒ 会话确实死了。
+ *   · `unknown` —— 探针没探成（网络/维护/5xx/解析失败）⇒ **没有证据**。
+ */
+type SessionVerdict = 'alive' | 'dead' | 'unknown'
+
+/** 会话探针单飞：并发 401 只多探一次 /api/auth/me。 */
+let sessionProbe: Promise<SessionVerdict> | null = null
+
+/**
+ * 探针**在飞**标志（与路径无关的重入保护）。
+ *
+ * ★ 为什么不能只靠 isAuthEndpointPath 挡递归：
+ *   探针走 req()，探针自己的 401 会再进 401 分支 ⇒ 再调探针。
+ *   路径排除（/api/auth/me 等）能挡住**当前**这条路径，但它把「不递归」
+ *   这件事绑死在一个字符串上：谁把探针换成别的端点、或漏写一个认证端点，
+ *   就会变成**探针自递归 + 单飞闩锁自锁** ——
+ *   实测（2026-10-24 变异台 M5：拿掉路径排除）：
+ *     内层 req 的 401 分支 await 正在飞的那同一个 sessionProbe promise
+ *     ⇒ 互相等待 ⇒ 永不返回 ⇒ 用例 20s 超时挂死（4 条全挂）。
+ *   而路径排除被拿掉的那一刻，症状是**整页卡死**，不是一条报错。
+ *   ⇒ 这里补一层与路径无关的闸门：探针在飞 ⇒ 任何 401 都不再触发探针。
+ */
+let probeInFlight = false
+
+/**
+ * 探针结论。
+ *
+ * ⚠ 与移动端 `web-mobile/src/api/client.ts` 的 `sessionReallyDead` **有意不同**：
+ *   移动端把**任何** ApiError 都判成「会话死了」（含 5xx），桌面端只认 401。
+ *   差异的方向是「更少误踢」：桌面端宁可多留一次登录态，也不因服务端 500
+ *   把用户踢回登录页。两者对「明确的认证失败」的共同口径完全一致。
+ */
+function probeSession(): Promise<SessionVerdict> {
+  if (!sessionProbe) {
+    probeInFlight = true
+    sessionProbe = (async () => {
+      try {
+        await req<unknown>('GET', '/api/auth/me')
+        return 'alive'
+      } catch (err) {
+        // 只有明确的认证失败（ApiError 且 status=401）才算会话死亡。
+        if (err instanceof ApiError && err.status === 401) return 'dead'
+        return 'unknown'
+      } finally {
+        // 结论只对这一轮有效：下一次 401 必须重新探，不能永久粘住。
+        sessionProbe = null
+        probeInFlight = false
+      }
+    })()
   }
-  return isAuthenticated()
+  return sessionProbe
+}
+
+/**
+ * 这次 401 的**会话裁决结论**（三态，直接映射到 ApiError.sessionAlive）：
+ *   · `undefined` —— 本次**没有拿到「会话有效」的证据**（没探 / 探了但探不成）。
+ *     ★ 不能当成 false：「没探成」≠「探了说是死的」。
+ *   · `true`  —— 探针成功 ⇒ 会话有效，这个 401 是**端点自己拒**。
+ *   · `false` —— 探针明确认证失败 ⇒ 会话确实死了 ⇒ 踢登录。
+ */
+async function probeSessionFor401(path: string): Promise<boolean | undefined> {
+  if (typeof window === 'undefined') return undefined
+  if (authRedirectStarted) return undefined
+  // 探针在飞 ⇒ 本次 401 来自探针自身（或与探针并发）⇒ 不得再探（否则自锁）。
+  if (probeInFlight) return undefined
+  if (window.location.pathname.startsWith('/login')) return undefined
+  if (isOnInlineLoginScreen()) return undefined
+  // 认证端点自身的 401（探针失败 / 口令错 / 登出后重复登出）不是「会话死了」。
+  if (isAuthEndpointPath(path)) return undefined
+  // 本来就没登录 ⇒ 没探的必要（也没有会话可清），游客撞到受保护端点
+  // 应该看到错误态，而不是被弹去登录页。
+  //
+  // ★ 这里与移动端**刻意不同**：移动端游客撞受保护端点会跳登录页；
+  //   桌面端的路由守卫本来就把未登录者送到首页内联登录（`/?login=1`），
+  //   再做一次强制导航只是噪声 ⇒ 桌面端对游客**不踢**。
+  if (!isAuthenticated()) return undefined
+  const verdict = await probeSession()
+  if (verdict === 'alive') return true
+  if (verdict === 'dead') return false
+  return undefined
 }
 
 let authRedirectStarted = false
@@ -108,6 +201,8 @@ function redirectAfterAuthLoss(destination: string): void {
 /** Test helper — 401 bounce is latched for the lifetime of a page. */
 export function resetAuthRedirectForTests(): void {
   authRedirectStarted = false
+  sessionProbe = null
+  probeInFlight = false
 }
 
 export function isAbortError(error: unknown): boolean {
@@ -132,12 +227,29 @@ export class ApiError extends Error {
    * 与移动端 web-mobile/src/api/client.ts 的 errorCode() 同一口径。
    */
   code: string
-  constructor(status: number, detail: string, code = '') {
+  /**
+   * 401 的**会话裁决结果**（会话探针的结论）。
+   *
+   * 三态而不是布尔：
+   *   · `undefined` —— 本次**没有拿到「会话有效」的证据**（没探，或探了但探不成：
+   *     网络/维护信封/5xx/解析失败）。「没探成」既可能是会话真的死了，也可能是
+   *     压根不适用，**不可当成 false**。
+   *   · `true`  —— 探针 /api/auth/me 成功 ⇒ 会话是好的，这个 401 是**端点自己拒**
+   *     （典型：feature flag 关闭 ⇒ 端点未注册，后端仍回 401）。
+   *   · `false` —— 探针也明确认证失败（401）⇒ 会话确实死了。
+   *
+   * 为什么必须随错误传下去：把它一律说成「登录状态已过期」= **文案与事实相反**
+   * —— 用户的下一步动作完全不同（重登 vs 找运维/换参数）。
+   * 与移动端 web-mobile/src/api/client.ts 的同名字段同一口径。
+   */
+  sessionAlive?: boolean
+  constructor(status: number, detail: string, code = '', sessionAlive?: boolean) {
     super(detail)
     this.name = 'ApiError'
     this.status = status
     this.detail = detail
     this.code = code
+    if (sessionAlive !== undefined) this.sessionAlive = sessionAlive
   }
 }
 
@@ -301,21 +413,32 @@ export async function req<T>(method: string, path: string, body?: unknown, optio
     throw new DOMException('The operation was aborted', 'AbortError')
   }
   if (r.status === 401) {
-    const msg = errorMessage(r.statusText, await r.text())
-    // Always bounce to the inline-login home with the original SPA path in
-    // `redirect`. A hard jump to `/login` used to clear the request-detail
-    // URL; the /login route then treats an already-valid cookie as "already
-    // authed" and sends the user to the dashboard overview.
-    if (
-      typeof window !== 'undefined'
-      && (isAdminProtectedPath(path) || isSessionExpiredAuthLoss(path))
-      && !window.location.pathname.startsWith('/login')
-      && !isOnInlineLoginScreen()
-    ) {
+    // ⚠ 响应体可能读不出来（body 已被消费 / 连接被重置）。此时**仍然按 401 处理**
+    //   —— 状态码才是判据，body 只是给人看的文案。早期写法让 `await r.text()`
+    //   的异常直接冲出 req() ⇒ 一个 401 变成了 TypeError ⇒ 上层拿不到 status。
+    let raw = ''
+    try {
+      raw = await r.text()
+    } catch {
+      /* 读不到 body：文案退化成 statusText，判定不受影响 */
+    }
+    const msg = errorMessage(r.statusText, raw)
+    // ★ 先确认会话是否真的死了，再决定要不要把用户踢回登录页。
+    //   端点级 401（端点未注册 / feature flag 关 / 资源无权）与
+    //   「会话过期」在响应上不可区分 ⇒ 必须探一次 /api/auth/me。
+    //   见本文件上方「401 会话裁决」注释与移动端 sessionReallyDead。
+    //
+    //   `alive` 三态：
+    //     undefined ⇒ 没探 / 探不成 ⇒ **没有任何证据**说会话死了 ⇒ 不踢
+    //     true      ⇒ 探针成功 ⇒ 会话有效 ⇒ 这个 401 是端点自己拒 ⇒ 不踢
+    //     false     ⇒ 探针明确 401 ⇒ 会话确实死了 ⇒ 踢（保留吊销后的强制登出）
+    const alive = await probeSessionFor401(path)
+    if (alive === false) {
       redirectAfterAuthLoss(inlineLoginPath(window.location.pathname + window.location.search))
     }
-    // Public endpoints and the hydration probe only surface their status.
-    throw new ApiError(401, msg || 'Unauthorized')
+    // 会话裁决结论随错误传下去：页面级错误态据此区分
+    // 「会话有效但端点拒绝」与「会话真的过期」——两者对用户的下一步动作完全不同。
+    throw new ApiError(401, msg || 'Unauthorized', envelopeCode(raw), alive)
   }
   if (!r.ok) {
     let msg = r.statusText

@@ -54,8 +54,27 @@ test-short: ## 短模式，跳过 -short=false 的测试
 # 维护纪律：新增审计守卫包时必须同时登记到 GUARD_PACKAGES。`guards-sync`
 # 门会检查有没有漏登记——否则「加了个守卫但没人跑」会再次悄悄发生。
 # 单行定义：scripts/checks/guards-sync.sh 用 sed 取这一行，多行续行会让它
-# 只读到前半段（这正是本脚本第一次跑就误报的��因）。
+# 只读到前半段（这正是本脚本第一次跑就误报的原因）。
 # R89-DY（211 号）：补登记 ./sql/schema。
+#
+# ★ 2026-10-24 magpie 对齐轮补登记 5 个包（实测撞到「门写了没人跑」）：
+#   ./internal/rewrite ./internal/routeorder ./internal/requestobserver
+#   ./domains/credential ./domains/authentication
+#   —— 这五个包的契约门（magpie 对齐轮新增）**原先一个都不在表里**
+#   ⇒ CI 的 `make guards` 从不执行它们 ⇒「门是绿的」在 CI 上是空转。
+#   ⇒ 判据见 scripts/ursmcheck/audit_guard_registration_test.go：
+#      **门文件自己声明**（文件头 `AUDIT-GUARD:`）⇒ 其所在包必须被登记。
+#   ⇒ 实测（干净环境，无 DB/Redis）：五包全绿，合计 15.7s（每包远低于 120s 上限）。
+#   ⇒ 前三个包名不以 guard 结尾 ⇒ guards-sync.sh 的命名检查会**告警**（不拦），
+#      那是因为它们是**契约包**（被生产代码引用）而不是守卫包。
+#
+# ★ 2026-10-24 P2-2 再补 3 个包：./internal/extpointledger（扩展点台账）、
+#   ./domains/hooks/response（响应拦截链 —— 台账的接线证明在那儿）、
+#   与 ./middleware（主链记账 —— 口径门在那儿）。
+#   ⇒ 实测（干净环境）：0.4s / 0.9s / 0.9s，绿。
+#   ⚠ ★ **admin 包故意不登记**：它的测试套件实测 **65.8s**，逼近本快门的
+#   `-timeout=120s` ⇒ 拖进来会把 CI 拖到超时 ⇒ 它的门**故意不带**
+#   `AUDIT-GUARD` 标记（主要判据放在 internal/extpointledger 与 scripts/ursmcheck）。
 #
 # 为什么要补：这个包里的门（208 号 storage_reclaim_guard_test.go、209/210 号
 # handrun_sql_inventory_test.go、objects_registry_test.go）在**任何 CI job 里都不会跑** ——
@@ -97,7 +116,7 @@ test-short: ## 短模式，跳过 -short=false 的测试
 #   ⇒ ⇒ 仓库里一直没有任何人真正看到过绿色的审计门。
 #   ⇒ ⇒ 这是本轮挖到的最刺眼的一条**流程闭环**断裂：**门写了、没接线，
 #      而接线的那道门自己也是红的 ⇒ 没人发现。**
-GUARD_PACKAGES := ./internal/rowsguard ./internal/errdiscard ./internal/dbrows ./internal/jsoncol ./internal/paramguard ./internal/sqlguard ./internal/sqlreadguard ./internal/metricguard ./internal/partguard ./internal/routeguard ./internal/ingressguard ./internal/healthstateguard ./internal/billguard ./internal/jsonbguard ./internal/clockguard ./internal/stopguard ./internal/testguard ./sql/schema
+GUARD_PACKAGES := ./internal/rowsguard ./internal/errdiscard ./internal/dbrows ./internal/jsoncol ./internal/paramguard ./internal/sqlguard ./internal/sqlreadguard ./internal/metricguard ./internal/partguard ./internal/routeguard ./internal/ingressguard ./internal/healthstateguard ./internal/billguard ./internal/jsonbguard ./internal/clockguard ./internal/stopguard ./internal/testguard ./sql/schema ./internal/rewrite ./internal/routeorder ./internal/requestobserver ./domains/credential ./domains/authentication ./internal/extpointledger ./domains/hooks/response ./middleware
 
 # ★★★ 2026-10-22 12h 审计轮：./scripts/ursmcheck 此前**不在任何强制执行路径**上。
 #
@@ -109,10 +128,52 @@ GUARD_PACKAGES := ./internal/rowsguard ./internal/errdiscard ./internal/dbrows .
 #     不需要改 workflow。
 #   ⇒ 登记进 GUARD_PACKAGES_SLOW ⇒ scripts/checks/guards-sync.sh 的双向检查
 #     同样覆盖它（漏登记/登记错了会红）。
-GUARD_PACKAGES_SLOW := ./scripts/ursmcheck
+# ★★★ 2026-10-24 magpie 对齐轮 §3.17：**补登记 `./admin`**（P2-2 薄壳门所在包）。
+#
+#   为什么此前不登记：★ 原判断是「admin 套件 65.8s ⇒ 逼近快门 120s 上限 ⇒
+#   拖进来会把 CI 拖到超时」。那个顾虑**仍然成立** ⇒ 所以进**慢门**（900s）。
+#
+#   ★ 订正（原审计档 §3.16.3 的结论，勿回退）：
+#   原写「⇒ ★★ 结构性缺口：`admin` 包的测试**没有任何 CI 路径** ⇒ 它的红没人看见」
+#   ——★ **错**。实测：官方门 `verify.sh` 跑 `go test ./... -count=1 -timeout=900s`
+#   ⇒ **`./admin` 在其中** ⇒ 它的红**会被官方门看见**（实测：红过的那条
+#   `TestTurnsSessionSQLHasNoFormatArtifacts` 在 `-short` 下同样复现）。
+#   ⇒ ★ 真正缺的是「**审计守卫体系整体在 CI 上空转**」⇒ 已由
+#   `.workflow/main-verify.yml` 接 `make guards-fast` 修复。
+#   ⇒ 本次补登记的**真实收益** = 让 admin 在**审计守卫这条专用路径**上也有位置
+#   （登记门的 G2 判据要求：带 AUDIT-GUARD 标记的门文件，其包必须被登记）。
+#
+#   ⚠ 实测：4 核 Linux 容器内 `go test ./admin` ≈ 66s（本地 macOS 64.6s）
+#   ⇒ ⇒ 它**不能**进快门（120s/包上限，余量太悬）⇒ 进慢门是对的。
+GUARD_PACKAGES_SLOW := ./scripts/ursmcheck ./admin
 
 .PHONY: guards
 guards: guards-installer guards-ursmcheck guards-shell ## 运行全部审计守卫（快速、无外部依赖；含 installer 跨模块门 + ursmcheck 全量门 + shell 全角变量门）
+	$(GO) test $(GUARD_PACKAGES) -count=1 -timeout=120s
+
+# ★★★ 2026-10-24 magpie 对齐轮 §3.17：**在跑的 CI 载体专用 target**。
+#
+#   起因（★ 本轮实测推翻了自己审计档 §3.16.3 的结论）：
+#     ① 本仓远端是 codeup.aliyun.com（`git remote -v` 实测）⇒ **`.github/workflows/`
+#        里的 9 个 workflow 在本仓从来不在任何在跑的 CI 里**。
+#     ② ⇒ `make guards` 的**唯一**调用方（`.github/workflows/audit-guards-ci.yml`）
+#        **不在执行路径上** ⇒ ★★ **整个审计守卫体系在 CI 上是空转的**。
+#     ③ 而 `guards-sync.sh` 的「专用门还在」判据只 grep `.github/workflows/`
+#        ⇒ 它证明的是「**文件还在**」，不是「**门在跑**」⇒ ★ 自证型门的第四形态。
+#     ④ ⇒ 本仓**真正在跑的**流水线载体是 codeup Flow（`.workflow/main-verify.yml`）。
+#
+#   本 target 的定位：**只跑 CI 预算内的部分**。
+#     · 快门（GUARD_PACKAGES）—— 4 核 Linux 实测 116s 墙钟，最慢单包 14.3s
+#       ⇒ 远低于 120s/包上限 ⇒ 可以进 CI。
+#     · ★ **慢门（scripts/ursmcheck）不进 CI**：4 核 Linux 实测 **767s（13 分钟）**
+#       ⇒ codeup Flow 的常规 job 预算装不下；且它依赖 `python3` 与 bash 工具链
+#       （alpine 实测因缺 python3 而红——那是**环境缺件**，不是代码缺陷）。
+#       ⇒ 慢门留在本地 `make guards` 与官方门 `verify.sh` 的 `go test ./...` 里。
+#     · installer 跨模块门：实测 ~20~30s，同样零外部依赖 ⇒ 一并接进 CI。
+#
+#   ⇒ 新增这个 target 的意义：让「登记进 GUARD_PACKAGES」这件事**真的有 CI 在跑**。
+.PHONY: guards-fast
+guards-fast: guards-installer guards-shell ## 运行**CI 预算内**的审计守卫（快门 + installer 跨模块门 + shell 门；不含 ursmcheck 慢门）
 	$(GO) test $(GUARD_PACKAGES) -count=1 -timeout=120s
 
 # scripts/guards/check-shell-fullwidth-var.sh —— 「裸 $VAR 紧跟非 ASCII 字节」门。

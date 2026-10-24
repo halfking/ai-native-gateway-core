@@ -7072,7 +7072,7 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteRe
 			RepeatedContentHits:        repHits,
 			RepeatedContentBlockSize:   repBlockSize,
 			RepeatedContentBlocksTotal: repBlocks,
-			StreamAborted:              capture.IntegrityBreachReason() == "integrity_repeated_content",
+			StreamAborted:              capture.IntegrityBreachReason() == audit.BreachReasonRepeatedContent,
 		})
 	}
 }
@@ -7289,8 +7289,19 @@ func (h *ChatHandler) emitClientDisconnectProbe(originalRequestID string, r *htt
 		return
 	}
 	// 2026-10-23 审计（探测打标）：本条目是终态行（Success=false /
-	// RequestStatus=failure）⇒ 会被 session v2 镜像写入 session_turns。
-	// 与其它终态路径对齐补上 origin 元数据，否则它同样在会话族里丢打标。
+	// RequestStatus=failure）⇒ 与其它终态路径对齐补上 origin 元数据。
+	//
+	// ★★ 2026-10-24 12h 审计轮订正：原注释写「会被 session v2 镜像写入
+	// session_turns」——**对探测流量不成立**：
+	//   本条目**没有** GwSessionID（结构体字面量里就没这个字段）⇒ 镜像走
+	//   合成行路径（internal/sessionv2mirror/hook.go:99-101）⇒
+	//   ★ 补上 origin_stage=node_probe 之后，syntheticKindOf 判成 "probe"
+	//   ⇒ IsProbeSyntheticSession 为真 ⇒ **镜像直接 return，这行不再入 session_turns**。
+	//   ⇒ ⇒ 对**探测流量**来说，本条改动的效果是「这行从会话族里消失」，
+	//       而**不是**「这行被打上了标」；**业务流量**不受影响
+	//       （origin.stage=business ⇒ 仍是 "anon" ⇒ 仍入会话族）。
+	//   ⇒ ★ 该「去处变化」在本轮提交里**未披露** ⇒ 登记在
+	//     docs/12小时内修订审计-2026-10-24-0740.md 问题⑭。
 	if logCtx != nil {
 		applyRequestContextFields(entry, logCtx.KeyInfo, logCtx)
 	}

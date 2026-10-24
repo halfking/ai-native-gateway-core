@@ -19,7 +19,7 @@ AI Native Gateway est une **passerelle LLM open source, auto-hébergée et nativ
 - **Normalisation des protocoles** : compatibilité OpenAI, Anthropic, Gemini et Responses API — un seul endpoint pour tous les modèles
 - **Routage intelligent à deux couches** : L1 choisit le modèle (classification de tâche → scoring à 6 dimensions), L2 choisit le credential (repli de palier → tour de facturation → scoring P2C → exécuter / couper)
 - **Gouvernance de session** : sessions collantes, replay de session au contenu complet, compression automatique de prompt et cycle de vie des données en 4 niveaux — la conversation, et pas seulement la requête, est un objet managé de premier rang
-- **Multi-tenant** : isolation des tenants imposée par RLS PostgreSQL sur 38+ tables, avec quotas, metering et facturation MaaS par tenant
+- **Multi-tenant** : isolation des tenants imposée par RLS PostgreSQL sur 90+ tables, avec quotas, metering et facturation MaaS par tenant
 - **Gestion des credentials** : pools multi-credentials avec déguisement d’empreinte, sonde adaptive et coupure automatique (disjoncteur)
 - **Observabilité** : flux de requêtes en temps réel, analytique de routage (heatmap + Sankey), suivi des coûts, OTel + Prometheus
 - **Confidentialité** : déploiement 100 % privé — toutes les données restent dans votre infrastructure
@@ -55,7 +55,7 @@ Construit avec **Go + PostgreSQL + Redis**, aujourd’hui en production sur k3s 
 |-------|--------------|
 | **Protocole** | Compatible OpenAI / Anthropic / Gemini / Responses + relais SSE avec contrôles d’intégrité |
 | **Routage** | Routage à deux couches (modèle → credential) + sessions collantes + auto-routage avec politiques coût/qualité |
-| **Multi-tenant** | Tunnel d’identité (IP/MAC/ClientID virtuels) + pools de credentials + RLS sur 38+ tables |
+| **Multi-tenant** | Tunnel d’identité (IP/MAC/ClientID virtuels) + pools de credentials + RLS sur 90+ tables |
 | **Gouvernance du trafic** | Limitation de tokens (TPM/RPM) + cache sémantique + compression de prompt + algorithmes à fenêtre glissante |
 | **Audit** | Audit bout-en-bout + DLQ + repli disque + OTel + Prometheus |
 | **Credentials** | Multi-credential + pool d’empreintes + sonde adaptive + désactivation manuelle |
@@ -78,7 +78,7 @@ graph TB
         CP["Control plane<br/>Admin API + embedded Vue SPA"]
         BGW["Background workers (~80 goroutines)<br/>probe / cleanup / stats / partitions"]
     end
-    GW --> PG[("PostgreSQL 14+<br/>durable facts · RLS 38+ tables · partitions")]
+    GW --> PG[("PostgreSQL 14+<br/>durable facts · RLS 90+ tables · partitions")]
     GW --> RD[("Redis 7+<br/>URSM state · limits · sticky · session hot state")]
     DP -->|"IR conversion + vendor field strip"| P["LLM Providers<br/>OpenAI / Anthropic / Gemini / domestic"]
     CP -.->|"signed outbox events"| ASM["ai-session-manager<br/>session projection / analytics"]
@@ -367,7 +367,7 @@ Pour le design complet de l’installeur, voir [installer/README.md](installer/R
 | **Gouvernance de session** | Logs au niveau requête | Sessions collantes + replay au contenu complet + compression + cycle de vie en 4 niveaux |
 | **Passerelle d’outils MCP** | Partiel | Livraison complète visée T3 2026 |
 | **Adapté au chinois** | Limité | UI entièrement en chinois + modèles domestiques + Alipay |
-| **Audit multi-tenant** | Standard | RLS sur 38+ tables · audits tenant à L1 = 0 |
+| **Audit multi-tenant** | Standard | RLS sur 90+ tables · audits tenant à L1 = 0 |
 
 ### vs. alternatives nommées
 
@@ -479,7 +479,7 @@ Protection des informations sensibles : `.githooks/pre-push` exécute automatiqu
 
 Les contributions sont les bienvenues ! Voir [CONTRIBUTING.md](CONTRIBUTING.md) pour la mise en place du développement, le style de code et le processus de pull request.
 
-Les changements multi-tenant doivent passer les trois linters : `lint-tenant-scope-llmgw` / `lint-pg-rls` / `lint-otel-tenant`.
+Les changements multi-tenant doivent passer la porte RLS (`make test-rls` — PostgreSQL réel, nécessite `TEST_DATABASE_URL`) et la suite de tests unitaires (`make test` — le même `go test ./...` que la CI exécute via `verify.sh`).
 
 ## 🔐 Sécurité
 

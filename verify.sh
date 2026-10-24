@@ -123,6 +123,18 @@ bash tests/nginx_llm_realip_patch_test.sh
 echo "[verify] nginx upstream port facts"
 bash tests/nginx_upstream_port_test.sh
 
+# ★ 2026-10-24 12h 审计轮（问题⑥）：这两道门此前**从来没有被执行过** ——
+#   `tests/deploy_legacy_restart_flag_test.sh`（69dc5ffee 修「--legacy-restart 死旗标」
+#   的防回归门）与 `tests/deploy_211_teardown_order_test.sh`（211 拆解顺序门）
+#   **除自身以外没有任何引用** ⇒ 不在 verify.sh、不在 CI ⇒ ⇒ 「门是绿的」这句话
+#   当时**没有依据**（门根本没跑）。
+#   ⇒ 接线。★ 两道门都是纯 bash、零外部依赖。
+echo "[verify] deploy-seamless --legacy-restart flag regression"
+bash tests/deploy_legacy_restart_flag_test.sh
+
+echo "[verify] deploy 211 teardown order"
+bash tests/deploy_211_teardown_order_test.sh
+
 echo "[verify] pre-commit checks"
 ./scripts/pre-commit-check.sh
 
@@ -140,7 +152,18 @@ echo "[verify] full Go tests"
 # 它们的真实覆盖在 CI 的 cgo=1 上：
 #   bg / cmd/gateway / storage / storage/factory / storage/sqlite / tests/integration
 # 该名单的漂移报警在 tests/verify_cgo_convention_test.sh。
-go test ./... -count=1 -timeout=300s
+#
+# ★★ 2026-10-24 12h 审计轮（问题②）：超时预算由 300s 提到 **900s**。
+#   起因：`scripts/ursmcheck` 里的**掏空法门**会**真的掏空仓内被跟踪的 .tsv**
+#   再跑读方 ⇒ 它是窗口内最慢的一个包（本机实测 293.047s；另一台机器实测 444s）。
+#   而 `testing` 的超时是 **alarm goroutine 里的 panic** ⇒ 其它 goroutine 的
+#   `defer` **不执行** ⇒ 一旦被超时 SIGKILL ⇒ **被跟踪的台账静默留空**。
+#   ⇒ 300s 预算下实测余量只有 **7 秒** ⇒ 负载一高就中招。
+#   ⇒ 本次同时给该门加了「备份落盘 + 自愈预检」（scripts/ursmcheck/tsv_hollowout_safety_test.go），
+#     即使仍被杀，下一次跑会自动把留空的台账还原回去。
+#   ⇒ 两道防线一起上：**给足预算**（不让它被杀）＋ **被杀也能自愈**。
+#   ⚠ 提高的是**每包**预算，不是总时长：各包并行执行，总墙钟由最慢的包决定。
+go test ./... -count=1 -timeout=900s
 
 # 2026-10-14（r1031 §五-3 / 判据纪律 #11）：TestStorageAudit* 集成审计是三域存储
 # 契约（冷读一致性/跨实例一致性/V2 元数据配对）的唯一观测器，带 -tags=integration

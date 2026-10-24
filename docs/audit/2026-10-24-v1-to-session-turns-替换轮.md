@@ -150,7 +150,7 @@ v1 族已随**迁移 890** 物理删除 ⇒ 任何仍 `ALTER` 它的代码在族
    | `cmd/tools/sql_source_indirection_audit` / `TestDocumentedSnapshotMatchesMeasurement` | `拼接点 142→145`、`canonical 122→125` | ★ **干净 HEAD worktree 以完全相同的读数失败** ⇒ **tip 提交自带**；且 `git diff HEAD -- cmd/tools/` **为空** |
    | `domains/nodestatecache` / `TestSelectP99Under1ms` | `p99=4.74ms`（门槛 1ms） | ★ **干净 HEAD worktree 同样红**（HEAD `p99=4.36ms`）⇒ **这台机器的绝对性能**，非回归；`git diff HEAD -- domains/nodestatecache/` **为空** |
    | `scripts/ursmcheck` / `TestSectionNumbersAreUniqueBeyondKnownBaseline` + `TestSectionNumberDuplicatePairCountIsPinned` | `§302：出现 2 次`；`重复节号对数 = 38，期望 37` | ★ **干净 HEAD worktree 以完全相同的读数失败** ⇒ **`LESSONS.md` 里 `§302` 在 HEAD 就重复了 2 次**；★ 本轮追加的 `§358` / `§359` **各只出现 1 次**（已实测）⇒ **不是本轮引入**。⚠ 该门自带处置指引：「若是【存量被修掉】⇒ 请更新 exemptedSectionCounts 的登记次数」—— ★ **本轮不代改**（那是别的轮的账） |
-   | `tests/48h-audit/D01-ir-lifecycle/stress` / `TestStress_IRSerialize_Concurrency50_P99` | `p99=23.04ms`（门槛 10ms） | ★ 单独跑 **3/3 全绿**（0.54s / 0.35s / 0.33s）⇒ **负载型 flaky**（该轮同时有另一会话的 `docker run` 抢 CPU）⇒ 与 §143.7.9 登记的家族同族 ⇒ **不���门**（加了要么恒绿、要么变成新的 flaky 源） |
+   | `tests/48h-audit/D01-ir-lifecycle/stress` / `TestStress_IRSerialize_Concurrency50_P99` | `p99=23.04ms`（门槛 10ms） | ★ 单独跑 **3/3 全绿**（0.54s / 0.35s / 0.33s）⇒ **负载型 flaky**（该轮同时有另一会话的 `docker run` 抢 CPU）⇒ 与 §143.7.9 登记的家族同族 ⇒ **不加门**（加了要么恒绿、要么变成新的 flaky 源） |
    ⇒ ★ **本轮触及的 8 个包在全仓跑里全绿**：`admin`(316s) / `bg`(47s) / `cmd/gateway`(15s) / `db`(11s) / `domains/requestdetail`(2s) / `internal/partguard`(19s) / `settings`(3s) / `sql/migrations/startup`(25s)。
    ⇒ ★★ **归因纪律**（本轮最值得记的一条）：★ **「读数不对」与「我引入的」是两个命题**；判归属的**唯一强证据**是「**在干净 HEAD 上复现出同一个读数**」，且更便宜的判据是「**该包相对 HEAD 的 diff 为空**」。★ 归因之后还有第二问：**既有失败该不该顺手修？⇒ 不该** —— 它属于别的轮的账，替他改数字/改阈值会把别的轮的口径改掉 ⇒ 本轮 4 处全部「归因 + 登记，不代修」。
 
