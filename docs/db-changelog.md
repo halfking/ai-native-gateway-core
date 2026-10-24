@@ -10018,3 +10018,63 @@ v2 门控只查绑定 ⇒ **漏了探针退避层** ⇒ 12 个样本全 `no_cand
 ★ ⇒ ★★ **对生产的写入 = 1 个只读脚本的部署**（★ **数据库写入 = 0**、★ **网关发版 = 0**、★ **无迁移**）。
 
 ★ 完整记录见审计档 `docs/audit/2026-10-27-R149-零候选遮蔽链与归责错配.md`（含 §11）+ LESSONS **§394** + AGENTS.md R149 条目。
+
+## 2026-10-27 — R150 成功回合取证轮（**无 SQL 变更、无迁移、无发版**）
+
+★★★ **★ 本轮闭合原始 Goal 的最后一项（「长提示词多轮测试 + 写入核实」），并连做五次自我推翻；★ 中心产出是「No available provider」的第六种遮蔽形态。★★★**
+
+★ **★ 闭合证据（本地 8782 网关 + 本地 PG，对生产的写入 = 0）**：
+★ 模型 `deepseek-v4.1-flash`（provider 2452 nvidia / credential 2），`max_tokens=8192`
+⇒ ★★★ **3 轮 × 5 条 Goal 样例提示词（`ping` / `say OK.` / 拉取合并推送 / 批判式审计 / 磁盘清理）共 15 次请求**
+⇒ ⇒ ★★ **9 次成功（200）**、★ 1 次**客户端超时**（上游 240 s 未答完，★ 不是网关缺陷）、
+★ **5 次被探针退避挡在路由层**（503 `no_candidate`，0.1~0.6 s）⇒ ⇒ ★★ **5 条提示词各至少成功 1 次**
+⇒ ⇒ ★★★ **★ 退避恢复的决定性实验（12 s 一采）**：`06:01:46~06:02:23` 连续 4 次 503（`next_retry_at=06:02:30`、`cf=1`）
+⇒ ⇒ ⇒ ★★★ ⇒ **06:02:36 退避一到期 ⇒ 立刻 200**（`cf` 归 0，后续连续 5 次 200）⇒ ★★ **封锁纯粹是探针退避窗，模型从未死**
+⇒ ⇒ ⇒ ★★★ ⇒ ⇒ ★★ **D9 的完整因果链（成功路径）**：★ **探针 30 s 判死「健康但慢」的模型** ⇒ 5 min 退避
+⇒ ⇒ ⇒ ★★★ ⇒ ⇒ ⇒ ★★ ⇒ 客户端看到「无 provider」⇒ ★★ **且它还是可用性活锁的维持者**
+（★ `cf` 涨到 3 ⇒ `broken_confirmed` ⇒ ★ **只有成功的探针能清它**）
+⇒ ⇒ ★★★ 写入逐条核实：`session_turns_hot` **`hot=1`**，且
+`rid`（响应头 `X-Request-Id`）= DB 行 `request_id`、`status_code=200`、`latency_ms` 与客户端耗时同量级、
+`request_preview`=`user: <提示词>`、`response_preview`=`assistant: <回复>`、`turn_no=1`、`provider=2452`、
+`origin_stage=business`、`origin_actor=NULL`、`client_ip=172.17.0.1`
+⇒ ⇒ ⇒ ★★ **失败请求照样落盘**（那 5 条 503 各有一行、`status_code=503`）
+⇒ ⇒ ⇒ ★★ ⇒ ⇒ ★★ **`parent=0` 属正常态**：hot 保留窗是 **8 小时**（见下方「★ 口径订正」）。
+★ **★ 口径订正（差点写错的一处）**：`promote_session_turns_hot_to_partition(p_retention interval DEFAULT '7 days')`
+—— ★★ **签名里的 `DEFAULT` 不是生效口径**；★ cron 的调用点实传 **`8 hours`**
+（`admin/data_lifecycle_cron.go:312` ＋ `admin/data_lifecycle_hot_partition.go:319` 的 `defaultHotRetentionHours = 8`，
+cron 日志里也有 `"retention_hours":8`）⇒ ⇒ ★★★ 实测 `max(hot.ts) − max(parent.ts) = 09:14:54` ≈ 8 h + cron 周期
+⇒ ⇒ ⇒ ⇒ ★★ ⇒ **R149 §6「父表落后 ≈8.7 h」仍成立**（本轮那次「订正」是错的，已作废）。
+
+★ **★ 本轮【无 SQL 变更】**：
+★ ① 没有新迁移文件、没有 `.down.sql`、**没有迁移登记面变更** ⇒ ⇒ **不需要在 211/252 上做 SQL 同步**；
+★ ② 两处**实例级配置**改动**仅限本地**（★ 不是迁移，★ 不进登记台账）：
+　　★ `providers.id=2452.egress_profile`：`proxy` → `direct`
+　　　（★ 本地 `proxy_nodes=0` / `proxy_subscriptions=0` ⇒ `proxy` 形态必然 fail-closed：`upstream_down: provider requires egress proxy but none is available`；
+　　　★★ 容器内直连 `https://integrate.api.nvidia.com/v1/models` = **200** ⇒ 改 `direct` 方向正确。**生产未动。**）
+　　★ `settings_kv.error_probe.timeout_ms = 60000`（`value_type=int`、`scope=platform`；startup-only，**重启生效**）
+　　　（★ ★★ 对 node 探针**无效** —— 见下方「★ 结构事实」；★ **生产未动**。）
+
+★ **★ 结构事实（本轮新门钉住的两条）**：
+★ ① `error_probe.timeout_ms` **只**喂 `bg.NewActiveProbeExecutor`（`cmd/gateway/main.go:4547→4586`）；
+　　而 `bg.NewNodeProbeWorker(...)`（`main.go:4682/4946`）**不接收超时参数**
+　　⇒ node 探针自己的 HTTP 客户端是 **`Timeout: 30 * time.Second` 硬编码字面量**（`bg/node_probe.go:558/569/573`）
+　　⇒ ⇒ ★★★ **「可配置的超时」≠「真正执行探针的那个超时」** ⇒ **D9 细化**。
+★ ② 路由器在 `AND v.is_routable = TRUE`（`provider/client.go:1900`）**之外**还有 `brokenPairExcludeSQL`（`:1926/2686`），
+　　读 `v_node_probe_state_compat.state='broken_confirmed'`（口径 `consecutive_failures >= 3`，**无时间界**）
+　　⇒ ⇒ ★★★ **探针退避过期并不能让该对重新可路由** ⇒ **R149 的遮蔽链要补第 4 层**。
+
+★ **★ 第六种遮蔽形态**：上游 **HTTP 200**、但**整个输出预算被推理吃掉** ⇒ `message.content` 为空
+⇒ 判 `empty_response` ⇒ **同一 body 重试 3 次**（`body_bytes=169` 三次一致 ⇒ **注定失败**，白烧 93 s）
+⇒ ⇒ ★★★ 客户端收到 **503 `model_not_found`**「No available provider … All **3** candidates failed」
+⇒ ⇒ ★★ 而 `routing_resolve candidates_count=1` ⇒ **「3」是 `execErrTyped.Tried`（尝试数）不是候选数**（`domains/streaming/handler.go:5581`）。
+★ **决定性实验**：同模型同提示词只改 `max_tokens` ⇒ **1024 ⇒ 503**（reasoning 吃满 1024、content 空）/ **8192 ⇒ 200**（content 640 字符 / reasoning 6725）
+⇒ ⇒ ★★★ **根因＝推理吃光预算**；★ 而 `internal/emptyoutcome` 的 r1029（2026-10-17 属主裁决）**早已记载**该形态
+⇒ ⇒ ★★ **「推理不算 assistant 答案 ⇒ 必须 failover」不是新缺陷**；★ 真问题只在「日志分不出来」与「重试策略」。
+
+★ **★ 本轮仓内改动（★ 零契约风险：不改路由行为、不改客户端可见面）**：
+★ `internal/emptyoutcome` 新增 `EmptyReason` / `EmptyUsage` / `InspectEmptyBody`
+（★ **只做归因，不改空/非空判定**；★ 不可解析 ⇒ `Unknown`，**不臆测归因**）；
+★ `domains/streaming/executors/executor_chat.go` 的空回复 WARN 增加
+`empty_reason` / `finish_reason` / `completion_tokens` / `reasoning_tokens` / `prompt_tokens`。
+★ **★ 本轮【无 SQL 变更】⇒ 无需在 211/252 上同步 SQL；★ 对生产的写入 = 0。**
+★ 完整记录见审计档 `docs/audit/2026-10-27-R150-成功回合取证与第六种遮蔽形态.md`（含 §10 诚实边界）+ LESSONS **§396** + AGENTS.md R150 条目。

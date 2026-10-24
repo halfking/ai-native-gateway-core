@@ -8434,3 +8434,65 @@ index b953a6f03..555ef83c4 100644
 > ⇒ ⇒ ★★ **写面核实必须读两个存储面且含失败请求**；★★ **「生产缺表」先查是不是已登记的降级站点**；
 > ⇒ ⇒ ★★ **物化视图要能回答「谁刷新它」「谁读它」**（两个都答不上 ⇒ 死对象）。
 > ⇒ ⇒ ★★★ 完整记录见审计档 `docs/audit/2026-10-27-R149-零候选遮蔽链与归责错配.md` + LESSONS **§394**。
+
+> **2026-10-27 R150 轮（本会话）**：**★ 闭合原始 Goal 的最后一项**（「长提示词多轮测试 + 写入核实」）
+> ⇒ ★★★ **3 轮 × 5 条 Goal 样例提示词共 15 次请求**（模型 `deepseek-v4.1-flash` / provider 2452 nvidia / `max_tokens=8192`）
+> ⇒ ⇒ ★★★ ★ **9 次成功（200）**、★ 1 次**客户端超时**（上游 240 s 未答完，★ 不是网关缺陷）、★ **5 次被探针退避挡在路由层**（503 `no_candidate`，0.1~0.6 s）
+> ⇒ ⇒ ⇒ ★★★ ★★ **5 条提示词各至少成功 1 次**（R1 轮 5/5 全成功）；★ ★★ **「3 轮全部成功」这个更强说法不成立，已作废**
+> ⇒ ⇒ ⇒ ★★★★ **★ 退避恢复的决定性实验（12 s 一采）**：★ `06:01:46~06:02:23` 连续 4 次 503（`next_retry_at=06:02:30`、`cf=1`）
+> ⇒ ⇒ ⇒ ★★★ ⇒ **06:02:36 退避一到期 ⇒ 立刻 200**（`cf` 归 0，后续连续 5 次 200）⇒ ★★ **封锁纯粹是探针退避窗，模型从未死**
+> ⇒ ⇒ ⇒ ★★★★ ⇒ ⇒ ★★ **D9 的完整因果链（成功路径，R149 只在失败路径量到过）**：
+> ⇒ ⇒ ⇒ ★★★ ★★ **探针 30 s 判死「健康但慢」的模型** ⇒ 5 min 退避 ⇒ 客户端看到「无 provider」
+> ⇒ ⇒ ⇒ ★★★ ⇒ ⇒ ⇒ ★★ **且它还是可用性活锁的维持者**（`cf` 涨到 3 ⇒ `broken_confirmed` ⇒ ★ **只有成功的探针能清它**）
+> ⇒ ⇒ ★★★ **写入逐条对得上**（`hot=1`，`rid`=DB 行 `request_id`、`status_code=200`、`latency_ms` 同量级、
+> ⇒ ⇒ ⇒ ★★ `request_preview`=`user: <提示词>`、`response_preview`=`assistant: <回复>`、`turn_no=1`、`provider=2452`、
+> ⇒ ⇒ ⇒ ★★ `origin_stage=business`、`origin_actor=NULL`、`client_ip=172.17.0.1`）⇒ ★★ **`parent=0` 是 8 小时保留窗内的正常态**
+> ⇒ ⇒ ⇒ ★★★ ★★ **失败请求照样落盘**（R3 那 5 条 503 各有一行、`status_code=503`）⇒ 承继 R149 §6。
+> ⇒ ⇒ ★★★★ **★ 五次自我推翻（★ 本轮的方法论密度高于 R149）**：
+> ⇒ ⇒ ⇒ ★★ **① 「调宽 `error_probe.timeout_ms` ⇒ node 探针不再判死慢模型」不成立** ——
+> ⇒ ⇒ ⇒ ⇒ ★★ 该键**只**喂 `bg.NewActiveProbeExecutor`（`cmd/gateway/main.go:4547→4586`），
+> ⇒ ⇒ ⇒ ⇒ ★★ 而 `bg.NewNodeProbeWorker(...)`（`main.go:4682/4946`）**不接收超时参数**
+> ⇒ ⇒ ⇒ ⇒ ★★ ⇒ node 探针自己的 HTTP 客户端是 **`Timeout: 30 * time.Second` 硬编码**（`bg/node_probe.go:558/569/573`）
+> ⇒ ⇒ ⇒ ⇒ ★★ ⇒ ★ **「可配置的超时」≠「真正执行探针的那个超时」** ⇒ **D9 细化**为「node 探针超时要不要可配」。
+> ⇒ ⇒ ⇒ ★★ **② 「nvidia 上游慢（37 s）」不成立** —— 同模型同提示词 `latency_ms=37754` **照样返回 200** ⇒ 「慢」不是故障形态。
+> ⇒ ⇒ ⇒ ★★ **③ `v_routable_credential_models` 不是路由器的唯一真值源** ——
+> ⇒ ⇒ ⇒ ⇒ ★★ 路由器在 `AND v.is_routable=TRUE`（`provider/client.go:1900`）**之外**还有 `brokenPairExcludeSQL`（`:1926/2686`）
+> ⇒ ⇒ ⇒ ⇒ ★★ ⇒ 读 `v_node_probe_state_compat.state='broken_confirmed'`（口径 `consecutive_failures>=3`，**无时间界**）
+> ⇒ ⇒ ⇒ ⇒ ★★ ⇒ ⇒ **探针退避过期并不能让该对重新可路由** ⇒ ★ **R149 的遮蔽链要补第 4 层** ⇒ ★ **「同源」= 路由器的全部排除项**。
+> ⇒ ⇒ ⇒ ★★ **④ 函数的默认参数 ≠ 生效口径** —— `promote_session_turns_hot_to_partition` 签名 `DEFAULT '7 days'`，
+> ⇒ ⇒ ⇒ ⇒ ★★ 而 cron 实传 **`8 hours`**（`admin/data_lifecycle_cron.go:312` ＋ `admin/data_lifecycle_hot_partition.go:319`）
+> ⇒ ⇒ ⇒ ⇒ ★★ ⇒ ★★ **差点据此把 R149 §6「父表落后 ≈8.7 h」订正掉——那个订正是错的** ⇒ 实测 `09:14:54` ≈ 8 h + cron 周期 ⇒ **R149 仍成立**。
+> ⇒ ⇒ ⇒ ★★ **⑤ 「空回复分类是新缺陷」不成立** —— `internal/emptyoutcome` 的 r1029（2026-10-17 属主裁决）
+> ⇒ ⇒ ⇒ ⇒ ★★ **早已记载**「整个 completion 进了 reasoning ⇒ 必须 failover」⇒ **真问题只在「日志分不出来」与「重试策略」**。
+> ⇒ ⇒ ★★★★ **★ 第六种遮蔽形态（本轮中心产出）**：
+> ⇒ ⇒ ⇒ ★★★ **上游 HTTP 200 + 整个输出预算被推理吃光** ⇒ `message.content` 为空 ⇒ 判 `empty_response`
+> ⇒ ⇒ ⇒ ⇒ ★★★ ⇒ **同一 body 重试 3 次**（`body_bytes=169` 三次一致 ⇒ **注定失败**，白烧 93 s）
+> ⇒ ⇒ ⇒ ⇒ ★★★ ⇒ ⇒ 客户端收到 **503 `model_not_found`**「No available provider … All **3** candidates failed」
+> ⇒ ⇒ ⇒ ⇒ ★★★ ⇒ ⇒ ★★ 而 `routing_resolve candidates_count=1` ⇒ ★ **「3」是 `execErrTyped.Tried`（尝试数）不是候选数**（`domains/streaming/handler.go:5581`）。
+> ⇒ ⇒ ⇒ ★★★★ **决定性实验**：★ 同模型同提示词只改 `max_tokens` ⇒ **1024 ⇒ 503**（reasoning 吃满 1024、content 空）
+> ⇒ ⇒ ⇒ ⇒ ★★★★ ⇒ **8192 ⇒ 200**（content 640 字符 / reasoning 6725）⇒ ⇒ ★★★ **根因＝推理吃光预算**。
+> ⇒ ⇒ ★★★★ **★ 本轮仓内改动（零契约风险，只补可观测性）**：
+> ⇒ ⇒ ⇒ ★★★ `internal/emptyoutcome.InspectEmptyBody`（**只做归因，不改空/非空判定**）
+> ⇒ ⇒ ⇒ ★★ ⇒ `EmptyReason`（`budget_exhausted_by_reasoning` / `upstream_empty` / 不可解析⇒`Unknown` **不臆测**）
+> ⇒ ⇒ ⇒ ★★ ⇒ ＋ executor 的空回复 WARN 增加 `empty_reason`/`finish_reason`/`completion_tokens`/`reasoning_tokens`/`prompt_tokens`
+> ⇒ ⇒ ⇒ ★★★ ⇒ **不改路由行为、不改客户端可见面**。
+> ⇒ ⇒ ★★★★ **★ 本轮新增门禁**：`scripts/ursmcheck/probe_timeout_budget_and_empty_attribution_test.go`（4 条）
+> ⇒ ⇒ ⇒ ★★★ ⇒ 钉死「node 探针超时不由该设置驱动」＋「空回复告警必须带 usage」＋ 阳性/阴性对照；
+> ⇒ ⇒ ⇒ ★★ 另有 `internal/emptyoutcome/empty_reason_attribution_test.go`（5 组，含「归因不得改变空/非空判定」）。
+> ⇒ ⇒ ⇒ ★★ **变异 M1（改键名，仍能编译）红 / M2（30 s → 45 s）红 / 还原后 md5 逐字一致**；
+> ⇒ ⇒ ⇒ ★★ ⇒ ★★ **M1′（删行）只拿到「编译红」⇒ 无信息量 ⇒ 不算「门抓到」**（§389 纪律）。
+> ⇒ ⇒ ★★★★ **★ 量具失效第 4 次（最隐蔽）**：★ 脚本用**固定**临时文件 `/tmp/kx-h.txt` 存响应头
+> ⇒ ⇒ ⇒ ★★★ ⇒ 被 `pkill` 掉的旧跑批**留下存活 curl**（杀脚本 ≠ 杀子进程）⇒ 两跑批**共写同一文件**
+> ⇒ ⇒ ⇒ ★★★ ⇒ ⇒ 脚本把 A 请求的 `X-Request-Id` 读成了 B 的 ⇒ **读数看起来完全正常、只是对不上号**
+> ⇒ ⇒ ⇒ ★★★ ⇒ ⇒ **修法：每次调用 `mktemp -d` 独占临时文件；清理跑批要连子进程一起清**。
+> ⇒ ⇒ ★★★ **★ 本轮【无 SQL 变更、无迁移、无发版】，对生产的写入 = 0**；
+> ⇒ ⇒ ⇒ ★★★ 本地实例配置改动两处（★ **仅本地**）：★ `providers.id=2452.egress_profile` 由 `proxy` 改 `direct`（本地无代理节点 ⇒ fail-closed）；
+> ⇒ ⇒ ⇒ ★★ ★ `settings_kv.error_probe.timeout_ms=60000`（startup-only，重启生效；★ 对 node 探针**无效**，见上）。
+> ⇒ ⇒ ★★★ **属主裁决项**：★ **D9 细化且升格（★ 头号）** —— node 探针超时预算（30 s 硬编码）
+> ⇒ ⇒ ⇒ ★★★★ ⇒ ★★★ **它同时是「可用性问题」与「可用性活锁的维持者」**（审计档 §8.2/§8.3 的完整因果链）；★★ **D2 扩展**（路由器第 4 道排除 + 「尝试数当候选数」的措辞）；
+> ⇒ ⇒ ⇒ ★★★ ★★ **D10 新增**（空回复重试**不放 `max_tokens`** ⇒ 三次注定失败；★ 且上游 200 被当失败 ⇒ 客户端收到 503 `model_not_found`）。
+> ⇒ ⇒ ★★★ **通用式（⇒ LESSONS §396）**：★ **函数的默认参数不是生效口径**；★ **「可配置的超时」≠「真正执行探针的那个超时」**；
+> ⇒ ⇒ ⇒ ★★★ ★★ **同一张视图 ≠ 路由器的真值源**；★★ **「上游 200 但没答出正文」是一类独立故障**；
+> ⇒ ⇒ ⇒ ★★★ ★★ **重试若不改变导致失败的那个量 ⇒ 注定失败**；★★★ **量具自己的临时文件也必须 per-invocation 独占**；
+> ⇒ ⇒ ⇒ ★★★ ★ **门红先分「读数有没有意义」⇒ 编译红不是有效读数**。
+> ⇒ ⇒ ★★★ 完整记录见审计档 `docs/audit/2026-10-27-R150-成功回合取证与第六种遮蔽形态.md` + LESSONS **§396**。

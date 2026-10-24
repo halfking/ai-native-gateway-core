@@ -217,6 +217,102 @@ func ChatChoicesIsEmpty(raw json.RawMessage) bool {
 	return true
 }
 
+// EmptyReason names WHY an upstream body carried no assistant output.
+//
+// ★ R150 轮（2026-10-27）新增：分类「空」是一件事，**说清「为什么空」是另一件事**。
+// 实测（本地 8782 网关 + nvidia 上游，provider 2452 / credential 2 /
+// deepseek-ai/deepseek-v4.1-flash）：上游对同一条长提示词返回 **HTTP 200**，
+// 但 `message.content` 为空、`usage.completion_tokens` 恰好等于请求的
+// `max_tokens`、`usage.completion_tokens_details.reasoning_tokens` 也等于同一个数
+// ⇒ **整个输出预算被推理吃掉、content 从未产出**。
+//
+// ⇒ 而服务端日志当时只记 `status=200` 与 `credential_id` ⇒ **运维无法区分**
+// 「上游挂了」与「上游答了但预算被推理吃光」这两种完全不同的故障 ⇒
+// ⇒ 本类型 + InspectEmptyBody 把这条证据做出来（**只加可观测性，不改任何路由行为**）。
+type EmptyReason string
+
+const (
+	// EmptyReasonUnknown — body 不可解析或没有 usage 信息（保持原样，不臆测）。
+	EmptyReasonUnknown EmptyReason = ""
+	// EmptyReasonBudgetExhausted — 上游把输出预算（max_tokens）耗尽在推理上，
+	// assistant content 从未产出。**这不是「上游不可用」**，而是「预算不够」。
+	EmptyReasonBudgetExhausted EmptyReason = "budget_exhausted_by_reasoning"
+	// EmptyReasonUpstreamEmpty — 上游没有产出任何东西（content 与 reasoning 皆空）。
+	EmptyReasonUpstreamEmpty EmptyReason = "upstream_empty"
+)
+
+// EmptyUsage is the upstream accounting of an empty-bodied response.
+type EmptyUsage struct {
+	// FinishReason is choices[0].finish_reason ("length" ⇒ 预算耗尽)。
+	FinishReason string
+	// CompletionTokens is usage.completion_tokens.
+	CompletionTokens int
+	// ReasoningTokens is usage.completion_tokens_details.reasoning_tokens.
+	ReasoningTokens int
+	// PromptTokens is usage.prompt_tokens.
+	PromptTokens int
+	// TotalTokens is usage.total_tokens.
+	TotalTokens int
+}
+
+// InspectEmptyBody extracts the upstream accounting of an empty chat body and
+// classifies why it was empty.
+//
+// 判据（两条任一成立 ⇒ EmptyReasonBudgetExhausted）：
+//
+//	① finish_reason == "length" 且 completion_tokens > 0
+//	   —— 上游自己说「我撞到长度上限了」；
+//	② reasoning_tokens > 0 且 reasoning_tokens >= completion_tokens
+//	   —— 全部产出都在推理通道里，正文通道为空。
+//
+// 两条都不成立且 body 可解析 ⇒ EmptyReasonUpstreamEmpty。
+// body 不可解析 / 无 usage ⇒ EmptyReasonUnknown（**不臆测归因**）。
+//
+// ★ 注意口径：**本函数只做「归因说明」，不改变任何空/非空的判定** ——
+// 空/非空仍由 ChatBodyIsEmpty / ChatChunkHasOutput 决定（那是 2026-10-17
+// 属主裁决过的口径：推理不算 assistant 答案 ⇒ 必须 failover）。
+func InspectEmptyBody(body []byte) (EmptyReason, EmptyUsage) {
+	if len(body) == 0 || !json.Valid(body) {
+		return EmptyReasonUnknown, EmptyUsage{}
+	}
+	var envelope struct {
+		Choices []struct {
+			FinishReason string `json:"finish_reason"`
+		} `json:"choices"`
+		Usage struct {
+			PromptTokens            int `json:"prompt_tokens"`
+			CompletionTokens        int `json:"completion_tokens"`
+			TotalTokens             int `json:"total_tokens"`
+			CompletionTokensDetails struct {
+				ReasoningTokens int `json:"reasoning_tokens"`
+			} `json:"completion_tokens_details"`
+		} `json:"usage"`
+	}
+	if err := json.Unmarshal(body, &envelope); err != nil {
+		return EmptyReasonUnknown, EmptyUsage{}
+	}
+	u := EmptyUsage{
+		FinishReason:     "",
+		CompletionTokens: envelope.Usage.CompletionTokens,
+		ReasoningTokens:  envelope.Usage.CompletionTokensDetails.ReasoningTokens,
+		PromptTokens:     envelope.Usage.PromptTokens,
+		TotalTokens:      envelope.Usage.TotalTokens,
+	}
+	if len(envelope.Choices) > 0 {
+		u.FinishReason = envelope.Choices[0].FinishReason
+	}
+	switch {
+	case u.FinishReason == "length" && u.CompletionTokens > 0:
+		return EmptyReasonBudgetExhausted, u
+	case u.ReasoningTokens > 0 && u.ReasoningTokens >= u.CompletionTokens:
+		return EmptyReasonBudgetExhausted, u
+	case u.CompletionTokens > 0 || u.ReasoningTokens > 0 || u.FinishReason != "":
+		return EmptyReasonUpstreamEmpty, u
+	default:
+		return EmptyReasonUnknown, u
+	}
+}
+
 // ChatContentHasOutput judges message.content in both wire shapes: a plain
 // string and a content-part array (multimodal / server-tool parts / refusal).
 // Unknown part types count as output — semantic attribution belongs to the

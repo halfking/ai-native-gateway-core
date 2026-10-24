@@ -23,6 +23,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/compression"
 	"github.com/kaixuan/llm-gateway-go/domains/transformation" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/errorsx"
+	"github.com/kaixuan/llm-gateway-go/internal/emptyoutcome"
 	"github.com/kaixuan/llm-gateway-go/internal/ir"
 	"github.com/kaixuan/llm-gateway-go/internal/paramledger"
 	"github.com/kaixuan/llm-gateway-go/internal/paramrefusal"
@@ -2484,6 +2485,18 @@ func (e *Executor) executeOpenAI(
 			// no client-side error. The handler-side 502 stays as the
 			// final fallback when ALL candidates are empty.
 			if !nativeNonStream && !params.IsStream && isNonStreamEmptyResponse(respBody) {
+				// ★ R150 轮（2026-10-27）：把「为什么空」记进日志。
+				//
+				// 改动前的读数（本地 8782 实测）：日志只有 status=200 与
+				// credential_id ⇒ 运维无法区分「上游挂了」与「上游答了、但
+				// 整个输出预算被推理吃掉、content 从未产出」（实测：
+				// completion_tokens == reasoning_tokens == max_tokens，
+				// finish_reason=length）。
+				//
+				// ★ **零契约风险**：只增加 slog 字段，**不改任何路由行为、
+				// 不改任何客户端可见面**（分类口径仍由 internal/emptyoutcome
+				// 那张唯一真值表决定）。
+				emptyReason, emptyUsage := emptyoutcome.InspectEmptyBody(respBody)
 				slog.Warn("executor: non-stream empty response, failing over to next candidate",
 					"request_id", params.RequestID,
 					"credential_id", cand.CredentialID,
@@ -2491,6 +2504,11 @@ func (e *Executor) executeOpenAI(
 					"raw_model", cand.RawModel,
 					"client_model", params.Model,
 					"status", resp.StatusCode,
+					"empty_reason", string(emptyReason),
+					"finish_reason", emptyUsage.FinishReason,
+					"completion_tokens", emptyUsage.CompletionTokens,
+					"reasoning_tokens", emptyUsage.ReasoningTokens,
+					"prompt_tokens", emptyUsage.PromptTokens,
 				)
 				requestflow.Log(requestflow.Event{
 					Stage: "failover", RequestID: params.RequestID, Model: params.Model,
