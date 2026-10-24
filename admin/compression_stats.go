@@ -155,8 +155,21 @@ func compressionStatsRunSteps(ctx context.Context, steps []compressionStatsStep)
 		if useTimeout {
 			stepCtx, cancel = context.WithTimeout(ctx, budget)
 		}
+		started := time.Now()
 		res.err = step.run(stepCtx)
+		elapsed := time.Since(started)
 		cancel()
+
+		// ★ R78 轮：**每一步的耗时都要留痕**。
+		//   为什么必须有：端点总耗时 = 各步之和，而共享库上的尾延迟让单步耗时
+		//   在 40ms ~ 106s 之间波动（生产实测 n=119）⇒ 没有逐步日志就只能靠
+		//   「掐断读数」猜 ⇒ R77 轮就因为缺它而误判出「应用侧 5.4s 缺口」。
+		slog.Info("compression_stats step",
+			"step", step.name,
+			"elapsed_ms", elapsed.Milliseconds(),
+			"budget_ms", budget.Milliseconds(),
+			"skipped", res.skipped,
+			"err", res.err)
 
 		if res.err != nil {
 			slog.Warn("compression_stats step failed", "step", step.name, "budget", budget, "error", res.err)
@@ -385,45 +398,23 @@ func (h *Handler) handleCompressionStats(w http.ResponseWriter, r *http.Request)
 //	⇒ **步骤的顺序与每步的预算是本轮的核心不变量**，必须**可被门断言**：
 //	「昂贵且可选的那条必须排在最后」「它必须有独立且小于总预算的上限」。
 func (h *Handler) compressionStatsSteps(queries compressionStatsSQLs, aggArgs []any, result *compressionStatsResult) []compressionStatsStep {
+	// ★ R78 轮：顺序 = **成本升序**（band 40ms → bucket 220ms → agg 280ms → est-orig >10s）。
+	//
+	//   为什么必须这样排：生产 252 共享库实测，agg 那条查询的**耗时分布**是
+	//   p50 ≈ 2.3s / p90 ≈ 21.9s / max ≈ 106s（n=119，慢查询日志窗口 4.2h）
+	//   ⇒ 它**经常**吃满端点总预算 ⇒ 排在它后面的 band/bucket **一个都跑不到**
+	//   ⇒ hourly_series / token_band 整段缺失（2026-10-24 生产实测）。
+	//   ⇒ 而 band/bucket 本身**极便宜**（隔离态实测 40ms / 220ms）⇒ 前置它们
+	//   只花掉 ~260ms，agg 仍剩 ~9.7s ⇒ **agg 的成功率几乎不变**。
+	//
+	//   ★ 这**不是**「给必需步加独立预算」：那会让必需步**被跳过**（等于核心数字缺失），
+	//   与 R77 形状门第②条的立意相反 ⇒ 正确形态是**调顺序**（顺序是数据），
+	//   而不是给必需步加预算（那会让它们变成可跳过的）。
+	//
+	//   ★ 代价（诚实记录）：若 band/bucket 在争用下变慢，agg 的可用时间会相应减少
+	//   ⇒ agg 的 500 率可能略升 ⇒ 这是「用少量 agg 失败率换必需数据可得」的取舍；
+	//   是否要把 agg 的失败也降级成 200+degraded ⇒ **属主裁决**（本轮不改）。
 	return []compressionStatsStep{
-		{
-			name: "agg",
-			run: func(stepCtx context.Context) error {
-				rows, err := h.db.Query(stepCtx, queries.agg, aggArgs...)
-				if err != nil {
-					return err
-				}
-				defer rows.Close()
-
-				var totalToksAfter int64
-				for rows.Next() {
-					var strategy string
-					var cnt, withOutbound, tokAfter, compressedTok int
-					if err := rows.Scan(&strategy, &cnt, &withOutbound, &tokAfter, &compressedTok); err != nil {
-						slog.Warn("compression_stats agg scan failed", "error", err)
-						continue
-					}
-					result.TotalRequests += cnt
-					// ★ R77 轮：加的是 **withOutbound**（带 outbound body 的行数），
-					//   不是整组 cnt。
-					//   ★ 当前与旧写法**逐字等价**（实测窗口内 with_outbound == cnt），
-					//   ★ 这是**结构性**修正：组内一旦出现混合，旧写法会把整组高估成已压缩。
-					result.CompressedTotal += withOutbound
-					result.StrategyDistribution[strategy] = cnt
-					totalToksAfter += int64(tokAfter)
-				}
-				if err := rows.Err(); err != nil {
-					return err
-				}
-				if result.TotalRequests > 0 {
-					result.CompressionRate = float64(result.CompressedTotal) / float64(result.TotalRequests)
-				}
-				if totalToksAfter > 0 {
-					result.TotalOutboundTokens = &totalToksAfter
-				}
-				return nil
-			},
-		},
 		{
 			name: "band",
 			run: func(stepCtx context.Context) error {
@@ -482,6 +473,44 @@ func (h *Handler) compressionStatsSteps(queries compressionStatsSQLs, aggArgs []
 					})
 				}
 				return bucketRows.Err()
+			},
+		},
+		{
+			name: "agg",
+			run: func(stepCtx context.Context) error {
+				rows, err := h.db.Query(stepCtx, queries.agg, aggArgs...)
+				if err != nil {
+					return err
+				}
+				defer rows.Close()
+
+				var totalToksAfter int64
+				for rows.Next() {
+					var strategy string
+					var cnt, withOutbound, tokAfter, compressedTok int
+					if err := rows.Scan(&strategy, &cnt, &withOutbound, &tokAfter, &compressedTok); err != nil {
+						slog.Warn("compression_stats agg scan failed", "error", err)
+						continue
+					}
+					result.TotalRequests += cnt
+					// ★ R77 轮：加的是 **withOutbound**（带 outbound body 的行数），
+					//   不是整组 cnt。
+					//   ★ 当前与旧写法**逐字等价**（实测窗口内 with_outbound == cnt），
+					//   ★ 这是**结构性**修正：组内一旦出现混合，旧写法会把整组高估成已压缩。
+					result.CompressedTotal += withOutbound
+					result.StrategyDistribution[strategy] = cnt
+					totalToksAfter += int64(tokAfter)
+				}
+				if err := rows.Err(); err != nil {
+					return err
+				}
+				if result.TotalRequests > 0 {
+					result.CompressionRate = float64(result.CompressedTotal) / float64(result.TotalRequests)
+				}
+				if totalToksAfter > 0 {
+					result.TotalOutboundTokens = &totalToksAfter
+				}
+				return nil
 			},
 		},
 		{
