@@ -1097,6 +1097,27 @@ var statsEventDedupPkeyInclude902 []byte
 //go:embed embeddata/startup/902_stats_event_dedup_pkey_include.down.sql
 var statsEventDedupPkeyInclude902Down []byte
 
+// 903（2026-10-24，R84 慢端点归因轮）：public.sessions 补
+// (updated_at DESC, session_id DESC) 索引。
+// ★ 根因：会话列表的排序键 (updated_at DESC, session_id DESC) **没有任何
+//   索引能提供该序** ⇒ 规划器只能 Seq Scan + top-N Sort ⇒ Sort 必须把
+//   439,106 行全部物化才能吐出第一行 ⇒ Limit 无法提前停 ⇒ 整条 JOIN 链跑满。
+// ★ 实测（252 EXPLAIN ANALYZE，生产只读）：生产查询原样 32,089.911 ms；
+//   只加本索引（事务内建索引后 ROLLBACK，生产零持久变更）⇒ 3.639 ms，
+//   shared hit 9,876,509 → 640。
+// ★ 口径零变化：本迁移**不改任何查询**；同一 REPEATABLE READ 快照内
+//   两个结果集 22 行（含表头）逐字一致。
+// ★ 普通 CREATE INDEX（分区父表不支持 CONCURRENTLY）+ lock_timeout=60s
+//   / statement_timeout=10min（891/901 同款）。public.sessions 是热写表
+//   （session_aggregator.go:216 每请求一次 upsert）⇒ 构建期持 SHARE 锁
+//   阻塞该分区写 ⇒ 该迁移应落在低峰窗口。
+//
+//go:embed embeddata/startup/903_sessions_updated_at_session_id_index.sql
+var sessionsUpdatedAtSessionIdIndex903 []byte
+
+//go:embed embeddata/startup/903_sessions_updated_at_session_id_index.down.sql
+var sessionsUpdatedAtSessionIdIndex903Down []byte
+
 //go:embed embeddata/startup/859_tighten_pii_phone_intl_regex.sql
 var tightenPiiPhoneIntlRegex859 []byte
 
@@ -1448,6 +1469,8 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/901_usage_ledger_api_key_id_ts_idx.sql":                                 usageLedgerApiKeyIdTsIdx901,
 	"startup/902_stats_event_dedup_pkey_include.sql":                                 statsEventDedupPkeyInclude902,
 	"startup/902_stats_event_dedup_pkey_include.down.sql":                            statsEventDedupPkeyInclude902Down,
+	"startup/903_sessions_updated_at_session_id_index.sql":                          sessionsUpdatedAtSessionIdIndex903,
+	"startup/903_sessions_updated_at_session_id_index.down.sql":                     sessionsUpdatedAtSessionIdIndex903Down,
 	"startup/859_tighten_pii_phone_intl_regex.sql":                                   tightenPiiPhoneIntlRegex859,
 	"startup/852_models_canonical_column_set_reconcile.sql":                          modelsCanonicalColumnSetReconcile852,
 	"startup/489_credential_probe_queue_startup_backfill.sql":                        credentialProbeQueueStartupBackfill489,

@@ -1502,6 +1502,26 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			//   本地实验阶段 4 抓出后补）。dbinit:no-transaction 标记
 			//   （CREATE INDEX CONCURRENTLY）。
 			"902_stats_event_dedup_pkey_include.sql",
+			// 903：public.sessions 补 (updated_at DESC, session_id DESC) 索引。
+			//
+			//   ★ 根因：会话列表（admin/turns_sessions.go）的排序键
+			//   (updated_at DESC, session_id DESC) **没有任何索引能提供该序**
+			//   ⇒ 规划器只能 Seq Scan + top-N Sort ⇒ Sort 必须把 439,106 行
+			//   全部物化才能吐出第一行 ⇒ Limit 无法提前停 ⇒ 整条 JOIN 链跑满。
+			//
+			//   ★ 252 EXPLAIN ANALYZE 实测（生产只读）：原查询
+			//   32,089.911 ms；只加本索引（事务内建索引后 ROLLBACK）⇒
+			//   3.639 ms，shared hit 9,876,509 → 640，去重 SubPlan
+			//   439,570 次循环 → 22 次。
+			//
+			//   ★ 口径零变化：同一 REPEATABLE READ 快照内，生产查询与改写
+			//   形态各跑一次，两个结果集 22 行（含表头）**逐字一致**。
+			//
+			//   ★ 普通 CREATE INDEX（分区父表不支持 CONCURRENTLY）+
+			//   lock_timeout=60s / statement_timeout=10min（891/901 同款）。
+			//   public.sessions 是热写表（session_aggregator.go:216 每请求
+			//   一次 upsert）⇒ 构建期 SHARE 锁阻塞该分区写 ⇒ 落在低峰窗口。
+			"903_sessions_updated_at_session_id_index.sql",
 		},
 	}
 }
