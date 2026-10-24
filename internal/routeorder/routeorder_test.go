@@ -1,3 +1,4 @@
+// AUDIT-GUARD: 本文件的门**必须随包在 CI 上执行** ⇒ 该包已登记进 Makefile 的 GUARD_PACKAGES
 package routeorder
 
 // routeorder_test.go — P1-2 的门：**策略只排序、失败开放**。

@@ -1,3 +1,4 @@
+// AUDIT-GUARD: 本文件的门**必须随包在 CI 上执行** ⇒ 该包已登记进 Makefile 的 GUARD_PACKAGES
 package rewrite
 
 // rewrite_test.go —— P1-4 的门：**按候选改写的类型化契约**。

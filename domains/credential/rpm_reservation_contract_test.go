@@ -1,3 +1,4 @@
+// AUDIT-GUARD: 本文件的门**必须随包在 CI 上执行** ⇒ 该包已登记进 Makefile 的 GUARD_PACKAGES
 package credential
 
 // rpm_reservation_contract_test.go —— P1-3「预算预约-释放」的**现状契约门**。

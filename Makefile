@@ -57,6 +57,17 @@ test-short: ## 短模式，跳过 -short=false 的测试
 # 只读到前半段（这正是本脚本第一次跑就误报的��因）。
 # R89-DY（211 号）：补登记 ./sql/schema。
 #
+# ★ 2026-10-24 magpie 对齐轮补登记 5 个包（实测撞到「门写了没人跑」）：
+#   ./internal/rewrite ./internal/routeorder ./internal/requestobserver
+#   ./domains/credential ./domains/authentication
+#   —— 这五个包的契约门（magpie 对齐轮新增）**原先一个都不在表里**
+#   ⇒ CI 的 `make guards` 从不执行它们 ⇒「门是绿的」在 CI 上是空转。
+#   ⇒ 判据见 scripts/ursmcheck/audit_guard_registration_test.go：
+#      **门文件自己声明**（文件头 `AUDIT-GUARD:`）⇒ 其所在包必须被登记。
+#   ⇒ 实测（干净环境，无 DB/Redis）：五包全绿，合计 15.7s（每包远低于 120s 上限）。
+#   ⇒ 前三个包名不以 guard 结尾 ⇒ guards-sync.sh 的命名检查会**告警**（不拦），
+#      那是因为它们是**契约包**（被生产代码引用）而不是守卫包。
+#
 # 为什么要补：这个包里的门（208 号 storage_reclaim_guard_test.go、209/210 号
 # handrun_sql_inventory_test.go、objects_registry_test.go）在**任何 CI job 里都不会跑** ——
 #   ① `make guards` 只跑本行登记的包，而本行原先只有 ./internal/*；
@@ -97,7 +108,7 @@ test-short: ## 短模式，跳过 -short=false 的测试
 #   ⇒ ⇒ 仓库里一直没有任何人真正看到过绿色的审计门。
 #   ⇒ ⇒ 这是本轮挖到的最刺眼的一条**流程闭环**断裂：**门写了、没接线，
 #      而接线的那道门自己也是红的 ⇒ 没人发现。**
-GUARD_PACKAGES := ./internal/rowsguard ./internal/errdiscard ./internal/dbrows ./internal/jsoncol ./internal/paramguard ./internal/sqlguard ./internal/sqlreadguard ./internal/metricguard ./internal/partguard ./internal/routeguard ./internal/ingressguard ./internal/healthstateguard ./internal/billguard ./internal/jsonbguard ./internal/clockguard ./internal/stopguard ./internal/testguard ./sql/schema
+GUARD_PACKAGES := ./internal/rowsguard ./internal/errdiscard ./internal/dbrows ./internal/jsoncol ./internal/paramguard ./internal/sqlguard ./internal/sqlreadguard ./internal/metricguard ./internal/partguard ./internal/routeguard ./internal/ingressguard ./internal/healthstateguard ./internal/billguard ./internal/jsonbguard ./internal/clockguard ./internal/stopguard ./internal/testguard ./sql/schema ./internal/rewrite ./internal/routeorder ./internal/requestobserver ./domains/credential ./domains/authentication
 
 # ★★★ 2026-10-22 12h 审计轮：./scripts/ursmcheck 此前**不在任何强制执行路径**上。
 #
