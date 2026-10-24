@@ -2,15 +2,31 @@ package admin
 
 // extension_points_test.go —— P2-2 的 admin **薄壳**读端门。
 //
+// AUDIT-GUARD: 本文件是 P2-2 薄壳的审计门 ⇒ 其所在包 ./admin 必须被登记进
+// Makefile 的门禁清单（§3.17 起登记进 GUARD_PACKAGES_SLOW）。
+//
 // ★ 合并逻辑与载荷形状的门在 `internal/extpointledger`（包内）与
 // `scripts/ursmcheck/magpie_p2_extension_ledger_test.go`（CI 必跑）；
 // 本文件只钉**薄壳本身**：路由真的注册了、真的被鉴权包着、响应是合法 JSON。
 //
 // ★ 为什么薄壳的门不放在 `scripts/ursmcheck`：
 // `handleExtensionPoints` 是**未导出**方法 ⇒ 外部包调不到 ⇒ 只能在本包里测。
-// ⇒ 而 `admin` 包的测试套件实测 **65.8s**（逼近 CI 快门 `-timeout=120s`）
-// ⇒ ★ **本包不在 `GUARD_PACKAGES` 里** ⇒ 这道门在 CI 上**不跑**
-// ⇒ ⇒ 所以它只做**兜底**，**主要**判据在台账包与 ursmcheck 里。
+//
+// ★★★★ 2026-10-24 §3.17 订正（原注释的三处错误，勿回退）：
+//
+//	① 「⇒ ★ **本包不在 `GUARD_PACKAGES` 里** ⇒ 这道门在 CI 上**不跑**」
+//	   ——★ **错**。本包现在**登记在 `GUARD_PACKAGES_SLOW`**（慢门，900s 预算）。
+//	② 「⇒ ⇒ 所以它只做**兜底**，**主要**判据在台账包与 ursmcheck 里」
+//	   ——★ **仍然成立**（薄壳只覆盖序列化 + 路由 + 鉴权三件事），但
+//	   「不跑」的说法已废：慢门在本地 `make guards` 与官方门 `verify.sh`
+//	   的 `go test ./...` 里都跑它。
+//	③ 「⇒ ⇒ ★★ **整个 `admin` 包的测试没有任何 CI 路径**」
+//	   ——★ **错**，见审计档 §3.17.2：官方门 `verify.sh` 跑的是
+//	   `go test ./... -count=1 -timeout=900s` ⇒ **`./admin` 在其中**
+//	   （实测：红过的那条 `TestTurnsSessionSQLHasNoFormatArtifacts`
+//	   在 `-short` 模式下同样复现 ⇒ 它在官方门上**会被看见**）。
+//	   ⇒ ★ 真正缺的不是「admin 的红没人看」，而是「**审计守卫体系整体在 CI 上空转**」
+//	   ⇒ 已由 `.workflow/main-verify.yml` 接 `make guards-fast` 修复。
 //
 // ★ 2026-10-24 变异 M4 暴露的缺口（本门已补强）：
 // 初版只**直接调** `h.handleExtensionPoints` ⇒ ★ 路由被摘掉时它仍然绿

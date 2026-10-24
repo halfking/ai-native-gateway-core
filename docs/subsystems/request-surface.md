@@ -192,6 +192,8 @@ pre_response · response · post_response
 | `internal/pipelinev2/pipelinev2.go` + `scripts/ursmcheck/magpie_p2_v2_criteria_test.go` | v2 切换判据（依据须逐字在生产文件里）+ 行为差异（测试须名实相符） |
 | `internal/extpointledger/*_test.go` + `middleware/ledger_mw_test.go` | 台账契约（计数/最近窗口 p99/拒绝与出错分开/内存有界）+ **主链口径**（p99 量的是链开销） |
 | `scripts/ursmcheck/magpie_p2_extension_ledger_test.go` | 台账**两份来源**对拍 + **接线真的通** + ★ **在产机制必须接台账**（源码级） |
+| `admin/extension_points_test.go` | P2-2 **薄壳**：路由真注册 + 被鉴权包着（无凭据 ⇒ 401）+ 响应是合法 JSON |
+| ★ `scripts/ursmcheck/ci_carrier_truth_test.go` | ★★ **「门在 CI 上跑」这件事本身**：从远端宿主推导**在跑的载体**，要求它**真的调门禁**（★ 2026-10-24 §3.17 新增） |
 
 ---
 

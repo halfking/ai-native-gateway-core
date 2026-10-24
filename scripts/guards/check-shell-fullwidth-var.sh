@@ -138,22 +138,96 @@ scan_list() {
   } | sort -u | grep -vE "$SCAN_SKIP_DIRS"
 }
 
-# ★ 跳过口径与 Go 门一致：整行注释 + 单引号区段（单引号里不发生展开）。
-#   用 awk 做：把单引号区段整段挖掉，再判剩余部分。
+# ★ 跳过口径与 Go 门一致：整行注释 + 尾随注释 + 单引号区段
+#   （单引号里不发生展开；注释里也不发生展开）。
+#   用 awk 做：按 bash 的真实语义单遍走一行（记住单/双引号状态），
+#   剥掉尾随注释与单引号区段，再判剩余部分。
+#
+# ★★★★ 2026-10-24 magpie 对齐轮 §3.17：**本函数此前与 Go 门【不一致】**，
+#   ⇒ 本门在既有代码上**恒红**（实测 5 处），而 Go 门（CI 必跑）早已修正过。
+#   ⇒ 这是「两门自称判据一致、实际不一致」的形态：★ **坏的不是没同步的那一边**，
+#     而是**没同步的那一边假红** ⇒ ⇒ 假红比假绿更费（它让人去改本来正确的代码）。
+#
+#   本轮对齐的三条（全部来自 Go 门 scripts/ursmcheck/cjk_var_expansion_test.go）：
+#     ① **转义的 `$` 不是展开点**（反斜杠【奇偶】判定）：
+#        bash 里 `\\` 是【一个字面反斜杠】⇒ 它后面的 `$` **仍然会**被展开；
+#        只有【奇数个连续反斜杠】才把 `$` 变成字面量。
+#        ★ 触发站点（实测）：scripts/mut-nginx-realip-patch.sh 与
+#          tests/nginx_llm_realip_patch_test.sh 里的 `\$remote_addr` / `\$ns_real_ip`
+#          —— 那是 nginx 配置的**字面文本**，不是变量展开 ⇒ 本门原先误报。
+#     ② **尾随注释**不参与展开（`#` 在引号外且处于词首才是注释起始）。
+#     ③ **`${VAR}` 形式是安全的**（有界定界，变量名不会被后续字节吞掉）。
 _scan_line() {
   # $1 = 整行内容；命中则 echo 1
-  printf '%s\n' "$1" | awk '
-    BEGIN { inq = 0 }
+  #
+  # ★★★ 2026-10-24 §3.17 二次修正：**必须显式 LC_ALL=C**。
+  #   实测：非 C locale 下 awk 对含非 ASCII 的行报
+  #   「towc: multibyte conversion failure」⇒ **awk 直接死、函数什么都不输出**
+  #   ⇒ 门对所有行都返回「未命中」⇒ ★ **门变成恒绿门**（变异后仍绿）。
+  #   ⇒ 这就是「0 命中的第一嫌疑是量具坏了」的一例。
+  #   ⇒ LC_ALL=C 下 awk 按**字节**工作 ⇒ multibyte 转换不再发生。
+  printf '%s\n' "$1" | LC_ALL=C awk '
+    BEGIN { ins = 0; ind = 0 }
     {
       line = $0
       out = ""
       n = length(line)
       for (i = 1; i <= n; i++) {
         c = substr(line, i, 1)
-        if (c == "\047") { inq = !inq; continue }   # 单引号
-        if (!inq) out = out c
+        # ★ 反斜杠：下一个字节按字面处理（`\$` 不展开、`\\` 是一个字面反斜杠）。
+        #   写出去时连同下一个字节一起写 ⇒ 保留「奇偶」信息供后面判定。
+        if (c == "\\" && !ins) {
+          out = out c
+          if (i < n) { i++; out = out substr(line, i, 1) }
+          continue
+        }
+        if (c == "\047" && !ind) { ins = !ins; continue }   # 单引号
+        if (c == "\042" && !ins) { ind = !ind; out = out c; continue }  # 双引号
+        # ★ 尾随注释：引号外 + 词首 ⇒ 后面整段不参与展开。
+        if (c == "#" && !ins && !ind) {
+          if (i == 1 || substr(line, i-1, 1) == " " || substr(line, i-1, 1) == "\t") {
+            break
+          }
+        }
+        if (!ins) out = out c
       }
-      if (match(out, /\$[A-Za-z_][A-Za-z0-9_]*[^ -~]/)) { print "1"; exit }
+      # ★ 在「会展开」的字节里找裸 $VAR + 非 ASCII 后续字节。
+      #   反斜杠奇偶：数 `$` 前面连续反斜杠的个数，偶数 ⇒ `$` 仍会被展开。
+      m = length(out)
+      for (i = 1; i <= m; i++) {
+        c = substr(out, i, 1)
+        if (c != "$") continue
+        # ★ 反斜杠奇偶判定（★ 不是「前一个字节是不是反斜杠」：
+        #   bash 里 `\\` 是一个字面反斜杠 ⇒ 它后面的 `$` **仍然会**被展开）。
+        if (i > 1 && substr(out, i-1, 1) == "\\") {
+          nbs = 0
+          for (k = i - 1; k >= 1; k--) {
+            if (substr(out, k, 1) != "\\") break
+            nbs++
+          }
+          if (nbs % 2 == 1) continue   # ★ 转义过的 $ ⇒ 字面量 ⇒ 不是展开点
+        }
+        # ★ `${VAR}` 形式安全 ⇒ 跳过（$ 后紧跟 { 不是裸变量名）
+        if (i < m && substr(out, i+1, 1) == "{") continue
+        # 变量名首字符
+        if (i >= m) continue
+        v = substr(out, i+1, 1)
+        if (v != "_" && !(v >= "a" && v <= "z") && !(v >= "A" && v <= "Z")) continue
+        # 变量名后续字符
+        j = i + 2
+        while (j <= m) {
+          d = substr(out, j, 1)
+          if (d == "_" || (d >= "a" && d <= "z") || (d >= "A" && d <= "Z") || (d >= "0" && d <= "9")) {
+            j++; continue
+          }
+          break
+        }
+        # ★ 紧跟的下一个字节必须是非 ASCII（>= 0x80 ⇒ 字节值不在 0x20..0x7E）
+        if (j <= m) {
+          d = substr(out, j, 1)
+          if (d !~ /[ -~]/) { print "1"; exit }
+        }
+      }
     }'
 }
 
