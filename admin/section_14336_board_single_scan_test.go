@@ -55,16 +55,17 @@ const fallbackSrc14336 = "dashboard_board_fallback.go"
 // ★★ **本轮实测抓到自己的两个 needle 可被注释满足**（剥注释后消失）：
 //   - `(SELECT`   —— 改前形态的「顶层标量子查询」标记；
 //   - `AVG(`      —— 「聚合必须保持 DISTINCT 形态」这条禁项。
-//   ⇒ **改前形态恰好写在【注释】里**（本函数上方的长注释描述了旧形态）
-//   ⇒ ⇒ **不改剥注释层 ⇒ 改前的双扫形态会被判绿** ⇒ 门没有牙。
+//     ⇒ **改前形态恰好写在【注释】里**（本函数上方的长注释描述了旧形态）
+//     ⇒ ⇒ **不改剥注释层 ⇒ 改前的双扫形态会被判绿** ⇒ 门没有牙。
 //
 // ⇒ ★★ **纪律要靠「检索既有实现」来继承，不能靠记忆**（远端 LESSONS 2026-10-21 第一条）。
 //
 // ★★ **剥注释器必须是【状态机】而不是正则** —— 本轮第一版用了正则
-//   （`(?m)//[^\n]*` / `(?s)/\*.*?\*/`）⇒ **自证门当场抓到它把字符串字面量里的
-//   `//` 与 `/* */` 也吃掉了**（仓内 `admin/request_logs_retirement_tiering_test.go`
-//   的 `stripGoCommentsKeepingStrings` 就是状态机实现 ⇒ **同包直接复用**）。
-//   ⇒ 正则实现会在遇到 URL 字面量（"http://…"）时把后面整行吃掉。
+//
+//	（`(?m)//[^\n]*` / `(?s)/\*.*?\*/`）⇒ **自证门当场抓到它把字符串字面量里的
+//	`//` 与 `/* */` 也吃掉了**（仓内 `admin/request_logs_retirement_tiering_test.go`
+//	的 `stripGoCommentsKeepingStrings` 就是状态机实现 ⇒ **同包直接复用**）。
+//	⇒ 正则实现会在遇到 URL 字面量（"http://…"）时把后面整行吃掉。
 func stripGoComments14336(src string) string {
 	return stripGoCommentsKeepingStrings(src)
 }
@@ -107,7 +108,8 @@ func boardFallbackBody14336(t *testing.T) string {
 // boardFallbackSQL14336 返回 fillOverviewCountsFromLogs 的 SQL 模板。
 //
 // ★ 必须挑「含 SELECT 的那个模板」：函数体里第一个反引号模板是 modelExpr，
-//   不是 SQL（第一版门在这里读空 ⇒ 门红但产品是对的 ⇒ 量具 bug）。
+//
+//	不是 SQL（第一版门在这里读空 ⇒ 门红但产品是对的 ⇒ 量具 bug）。
 func boardFallbackSQL14336(t *testing.T) string {
 	t.Helper()
 	src, err := os.ReadFile(fallbackSrc14336)
@@ -134,12 +136,13 @@ func boardFallbackSQL14336(t *testing.T) string {
 // 在这条语句里必须**只被引用一次**。
 //
 // ★ 判据口径（★ 别数错东西）：
-//   改前形态里派生表占位符出现 **2 次**（两个标量子查询各一次）⇒ 门红；
-//   改后形态里出现 **1 次** ⇒ 门绿。
-//   ⚠ 不能用「数 FROM」：顶层是 SELECT，FROM 在子查询里 ⇒ 对改前形态
-//     「顶层 FROM」与「子查询 FROM」的区分不成立。
-//   ⚠ 不能用「数 SELECT」：改前 3 个 / 改后 3 个 —— 数字巧合接近，不可靠。
-//   ⇒ 唯一稳的口径是「**派生表占位符在同一个 SQL 模板里被引用了几次**」。
+//
+//	改前形态里派生表占位符出现 **2 次**（两个标量子查询各一次）⇒ 门红；
+//	改后形态里出现 **1 次** ⇒ 门绿。
+//	⚠ 不能用「数 FROM」：顶层是 SELECT，FROM 在子查询里 ⇒ 对改前形态
+//	  「顶层 FROM」与「子查询 FROM」的区分不成立。
+//	⚠ 不能用「数 SELECT」：改前 3 个 / 改后 3 个 —— 数字巧合接近，不可靠。
+//	⇒ 唯一稳的口径是「**派生表占位符在同一个 SQL 模板里被引用了几次**」。
 func TestSection14336OverviewCountsIsSingleScan(t *testing.T) {
 	sql := boardFallbackSQL14336(t)
 
@@ -168,7 +171,9 @@ func TestSection14336NoScalarSubqueryInOverviewCounts(t *testing.T) {
 
 // TestSection14336DistinctAggregatesIgnoreNulls 钉住「聚合是 DISTINCT 形态」：
 // ★ 这是「可以省掉 IS NOT NULL 臂」的**唯一**依据
-//   （COUNT(DISTINCT x) 按定义忽略 NULL；SUM/AVG/COUNT(*) 不行）。
+//
+//	（COUNT(DISTINCT x) 按定义忽略 NULL；SUM/AVG/COUNT(*) 不行）。
+//
 // ⇒ 若将来把聚合换成非 DISTINCT 形态，必须把 IS NOT NULL 臂加回去。
 func TestSection14336DistinctAggregatesIgnoreNulls(t *testing.T) {
 	body := boardFallbackBody14336(t)
@@ -185,8 +190,9 @@ func TestSection14336DistinctAggregatesIgnoreNulls(t *testing.T) {
 
 // TestSection14336NarrowProjectionIsNotTheFix 登记阴性结论：
 // ★ 实测：把 115 列投影裁成 9 列【零收益】（buffers 100.0% / 100.9%）
-//   ⇒ planner 已把未引用的投影列裁掉（plan 里 width 700 → 40）
-//   ⇒ 根因是「扫两遍」，不是「列太宽」。
+//
+//	⇒ planner 已把未引用的投影列裁掉（plan 里 width 700 → 40）
+//	⇒ 根因是「扫两遍」，不是「列太宽」。
 //
 // 这条门的作用是**防复发**：防止有人（哪怕是为了「优化」）把这条读面
 // 改成窄投影，然后误以为问题已解决、却留下 2 倍物理读。
@@ -195,7 +201,7 @@ func TestSection14336NarrowProjectionIsNotTheFix(t *testing.T) {
 	// 裁剪投影会引入「按列名挑选」的代码路径（仓内 helper 的形状）。
 	// 本门只登记结论 + 断言当前实现走的是【完整投影】helper。
 	if !strings.Contains(body, "boardRequestLogsFromClause()") {
-		t.Errorf("必须继续用 boardRequestLogsFromClause()（完整投影 helper）；\n"+
+		t.Errorf("必须继续用 boardRequestLogsFromClause()（完整投影 helper）；\n" +
 			"  裁剪投影的收益已实测为 0（§143.36.6），不要走那条路。")
 	}
 	// 该 helper 必须仍在用完整投影（SessionFamilyTurnsSourceSQL）
@@ -217,9 +223,10 @@ func TestSection14336NarrowProjectionIsNotTheFix(t *testing.T) {
 // 形态在 admin 包里**不应存在**（已修）⇒ 若将来出现，说明又埋了一个双扫读面。
 //
 // ★ 量具纪律：必须【按 SQL 模板】计数，不能按文件计数
-//   （dashboard_board_fallback.go 里还有 fallbackBoardTrends / fallbackDimPie
-//    两个**正常**的单扫读面，各带 1 个 FROM %s ⇒ 按文件计数会恒红）；
-//   且必须排除门自己所在的文件（它含这些字面量）。
+//
+//	（dashboard_board_fallback.go 里还有 fallbackBoardTrends / fallbackDimPie
+//	 两个**正常**的单扫读面，各带 1 个 FROM %s ⇒ 按文件计数会恒红）；
+//	且必须排除门自己所在的文件（它含这些字面量）。
 func TestSection14336OnlyOneDoubleScanSiteInAdmin(t *testing.T) {
 	entries, err := os.ReadDir(".")
 	if err != nil {
@@ -245,12 +252,14 @@ func TestSection14336OnlyOneDoubleScanSiteInAdmin(t *testing.T) {
 }
 
 // TestSection14336StripCommentsHasTeeth 是【剥注释器自身】的两腿自证：
-//   腿① 该剥的剥掉了：注释里的 SQL 片段不能被源码判据命中；
-//   腿② 不该剥的没剥：字符串字面量里的 "//" 与 "/* */" 不能被吃掉
-//        （否则会把真实 SQL 判成「不存在」）。
+//
+//	腿① 该剥的剥掉了：注释里的 SQL 片段不能被源码判据命中；
+//	腿② 不该剥的没剥：字符串字面量里的 "//" 与 "/* */" 不能被吃掉
+//	     （否则会把真实 SQL 判成「不存在」）。
 //
 // ★ 这条门存在的理由：本门的第一版有两个 needle 可被注释满足
-//   （`(SELECT` / `AVG(`）⇒ **改前形态恰好写在注释里** ⇒ 门会判绿。
+//
+//	（`(SELECT` / `AVG(`）⇒ **改前形态恰好写在注释里** ⇒ 门会判绿。
 func TestSection14336StripCommentsHasTeeth(t *testing.T) {
 	// 腿①：该剥的剥掉了
 	withComment := "x := 1 // (SELECT COUNT(DISTINCT y)\n" +

@@ -9,10 +9,15 @@ import "encoding/json"
 type Source string
 
 const (
-	SourceMemory       Source = "memory"
-	SourceFile         Source = "file"
-	SourceLive         Source = "live_stream"
-	SourceRequestLogs  Source = "_request_logs"
+	SourceMemory Source = "memory"
+	SourceFile   Source = "file"
+	SourceLive   Source = "live_stream"
+	// ★ 2026-10-24（v1 → session_turns 替换轮）：值从 "_request_logs" 改成
+	//   "request_logs" —— 前端 web/src/composables/useRequestDetailLoader.ts
+	//   的 sourceRank 与其测试用的都是 'request_logs' ⇒ 旧值与前端对不上。
+	//   注意：这两个 Source 描述的是**读面**（请求账本 / 会话轮次），
+	//   不是物理表名 —— 物理表早已是会话族。
+	SourceRequestLogs  Source = "request_logs"
 	SourceSessionTurns Source = "session_turns"
 )
 

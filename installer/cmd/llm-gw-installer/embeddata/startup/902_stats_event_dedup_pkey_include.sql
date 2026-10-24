@@ -47,6 +47,10 @@
 --   DROP INDEX CONCURRENTLY IF EXISTS ..._tmp 保证任何路径都不留孤儿
 --   （本地实验阶段 4 实测：无守卫的重跑会留下 20 MB 孤儿索引 ⇒ 这条兜底
 --   是被实验抓出来后补的）。
+--   ★ 2026-10-24 12h 审计轮补了一条【前置于 ①】的清理：只删**无效**的残留
+--   tmp 索引（步骤 ⓪）—— 因为 `IF NOT EXISTS` 只看名字、不看 validity ⇒
+--   ⇒ 上一次 CONCURRENTLY 构建失败留下的 invalid 索引会让本迁移**永久卡死**
+--   ⇒ 详见步骤 ⓪ 的注释。
 --
 -- 【换体窗口】DROP CONSTRAINT + ADD CONSTRAINT ... USING INDEX 在同一 DO 块
 --   （同一事务）内完成，期间持 ACCESS EXCLUSIVE ⇒ 并发写者排队等待、
@@ -56,21 +60,55 @@
 --   （PG NOTICE 确认）⇒ 索引名对下游监控查询保持不变。
 --
 -- ⚠ 生产应用需属主授权（252 水位推进走 apply-db-revision-sequence.sh 通道）。
---
--- ⚠ ★ 失败恢复路径（2026-10-24 批判式审计轮补记）：
---   若第①步 CREATE UNIQUE INDEX CONCURRENTLY 中途失败（超时/取消），
---   PG 会留下一个【invalid 的 tmp 索引】⇒ 重跑时 IF NOT EXISTS 按名字跳过、
---   第②步 DO 块的形状校验会 RAISE EXCEPTION（拒换）⇒ 迁移停在红、重试也红。
---   这是 fail-safe 设计（绝不带着坏索引换 pkey），恢复动作是手工执行一次：
---     DROP INDEX CONCURRENTLY IF EXISTS stats_event_dedup_pkey_include_tmp;
---   然后重跑本迁移即可（不存在数据风险，tmp 只是索引）。
---   ★ ACCESS EXCLUSIVE 窗口：DROP CONSTRAINT + ADD CONSTRAINT USING INDEX
---   均为目录级操作（本地 200k 行实测 2.7ms + 1.2ms）；lock_timeout=60s 保证
---   抢不到锁时快速失败而非排队。
 -- ═══════════════════════════════════════════════════════════════════════
 
 SET lock_timeout = '60s';
 SET statement_timeout = '10min';
+
+-- ⓪ 兜底：清掉「上一次 CONCURRENTLY 构建失败」留下的【无效】tmp 索引。
+--
+-- ★ 为什么必须这一步（★ 2026-10-24 12h 审计轮实测复现，不是推理）：
+--   PG 的既定行为 = `CREATE INDEX CONCURRENTLY` 失败后**留下一个 invalid 索引**
+--   （pg_index.indisvalid = false / indisready = false）。
+--   而步骤 ① 是 `CREATE UNIQUE INDEX CONCURRENTLY **IF NOT EXISTS** <tmp>` ⇒
+--   `IF NOT EXISTS` **只按名字判存在、不看 validity** ⇒ ⇒ 遇到这个残留
+--   ⇒ 步骤 ① **跳过创建**（只打一条 NOTICE "already exists, skipping"）
+--   ⇒ ⇒ 步骤 ② 的形状守卫（要求 indisvalid AND indisready AND indisunique）
+--   **必然抛错** ⇒ ⇒ 迁移失败。
+--   ⇒ 而失败后每一次重跑都走**完全相同**的路径（① 跳过 → ② 抛错）
+--   ⇒ ⇒ **永久卡死**，除非人工 `DROP INDEX`。
+--   ⇒ 触发条件不是臆想：statement_timeout=10min 被触发 / 连接中断 / 构建被取消
+--   —— 任一都足以留下 invalid 索引。
+--   ⇒ 902 是 installer StartupFiles 的**链尾** ⇒ ⇒ 它失败 = 新装链与升级链都断
+--   ⇒ ⇒ 不是「一条迁移跳过」而是「安装器起不来」。
+--
+-- ★ 只删【无效】的：合法的 tmp 索引是步骤 ①→② 的中间产物，删了会让步骤 ①
+--   重建（白跑一遍 CONCURRENTLY 构建）。
+--
+-- ★ 用普通 DROP INDEX（不是 CONCURRENTLY）：本文件是 dbinit:no-transaction，
+--   但 DO 块本身**是一个事务块** ⇒ `DROP INDEX CONCURRENTLY` 在事务块内会被
+--   PG 拒绝（"cannot run inside a transaction block"）⇒ ⇒ 这里必须用普通
+--   DROP；且它只作用在一个 invalid 索引上（没有并发写者依赖它）。
+DO $pre$
+DECLARE
+    v_bad boolean;
+BEGIN
+    SELECT EXISTS (
+        SELECT 1
+          FROM pg_index ix
+          JOIN pg_class i     ON i.oid = ix.indexrelid
+          JOIN pg_namespace n ON n.oid = i.relnamespace
+         WHERE n.nspname = 'public'
+           AND i.relname = 'stats_event_dedup_pkey_include_tmp'
+           AND NOT (ix.indisvalid AND ix.indisready)
+    ) INTO v_bad;
+
+    IF v_bad THEN
+        EXECUTE 'DROP INDEX IF EXISTS stats_event_dedup_pkey_include_tmp';
+        RAISE NOTICE '902: dropped INVALID leftover tmp index from a previously failed CONCURRENTLY build';
+    END IF;
+END
+$pre$;
 
 -- ① 建 INCLUDE 体的临时唯一索引（CONCURRENTLY：该表是活写表，event_writer
 --    每请求一次 upsert；普通 CREATE INDEX 会在构建期持 ShareLock 阻断写入）。

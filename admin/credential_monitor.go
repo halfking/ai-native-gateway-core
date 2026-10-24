@@ -735,15 +735,21 @@ func (m *CredentialMonitorHandlers) handleMonitorSummary(w http.ResponseWriter, 
 //
 // 2026-06-22: Redis is not configured on every environment, so when the
 // recorder is unavailable (or returns no data) we fall back to a direct
-// _request_logs query. The response carries `source` ("redis" or
-// "_request_logs") so the UI can show where the data came from.
+// session-turn query. The response carries `source` ("redis" or
+// "session_turns") so the UI can show where the data came from.
+//
+// ★ 2026-10-24（v1 → session_turns 替换轮）：回退腿早已改读会话族
+//
+//	（短窗 session_turns_hot / 长窗 canonical 视图），而 `source` 的值却还
+//	写着 "_request_logs" ⇒ 运营从响应里读到的是一个**不存在的表名**。
+//	⇒ 值改成 "session_turns"（与实际读面一致）。
 //
 // 2026-10-16 audit #153: tenant isolation. Per-call detail is sensitive — any
 // caller with a valid credential_id would otherwise read every other tenant's
 // call timeline. tenant_admin is scoped to its own tenant_id; super_admin /
 // admin_key keep the unfiltered (cross-tenant) view. The Redis recorder has
 // no tenant tag on its entries, so for tenant_admin callers we force the
-// _request_logs fallback which carries the tenant_id filter.
+// session-turn fallback which carries the tenant_id filter.
 func (m *CredentialMonitorHandlers) handleSlidingWindow(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -805,10 +811,13 @@ func (m *CredentialMonitorHandlers) handleSlidingWindow(w http.ResponseWriter, r
 		entries, _ = m.recorder.GetRecent(ctx, credentialID, model, since)
 	}
 
-	// ── Fallback: _request_logs (when Redis is down or empty, or when we
+	// ── Fallback: session_turns (when Redis is down or empty, or when we
 	// skipped the Redis path for tenant isolation) ───────────────────────
+	//
+	// ★ 2026-10-24：读面早已是会话族（短窗 session_turns_hot / 长窗
+	//   canonical 视图），值写 "_request_logs" 会让运营读到一个不存在的表名。
 	if len(entries) == 0 {
-		source = "_request_logs"
+		source = "session_turns"
 		if m.h == nil || m.h.db == nil {
 			writeError(w, http.StatusServiceUnavailable, "database not configured")
 			return
@@ -854,16 +863,16 @@ func (m *CredentialMonitorHandlers) handleSlidingWindow(w http.ResponseWriter, r
 }
 
 // slidingWindowHotMaxMinutes 划分抽屉回退查询的两条路径：
-// ≤ 120 分钟走 hot 窗快路径（session_turns_hot / _request_logs_hot，
-// 252 实测 0.6ms vs canonical 视图 med 1.27s，~2,000×）；更长窗口保留
+// ≤ 120 分钟走 hot 窗快路径（session_turns_hot，252 实测 0.6ms vs
+// canonical 视图 med 1.27s，~2,000×）；更长窗口保留
 // canonical 视图慢路径（视图三臂含全分区反连接，语义全域正确）。
 // 上界依据：hot 保留名义 8h（promote retention），水位滞后实测 ~12h
 // （R16 fact 85），120min 对最坏滞后仍有 4× 边际；batch 端点上限
 // 1440min，超过阈值的窗口必须走视图，否则会静默截断历史。
 const slidingWindowHotMaxMinutes = 120
 
-// slidingWindowQuery 构造凭据监控抽屉的 _request_logs 回退查询（长窗
-// 路径，> slidingWindowHotMaxMinutes 时使用）。2026-09-21 提取为函数：
+// slidingWindowQuery 构造凭据监控抽屉的会话族回退查询（长窗路径，
+// > slidingWindowHotMaxMinutes 时使用）。2026-09-21 提取为函数：
 // 真库回归测试（sliding_window_realdb_test.go）复用同一文本，防测试与
 // 生产 SQL 漂移——bg/feature_stats_worker.go featureDistributionQuery
 // 同款。视图 request_logs_with_current_month 冻结不可改投影（R37 定案），
@@ -884,7 +893,7 @@ func slidingWindowQuery() string {
 		       success, COALESCE(latency_ms, 0), COALESCE(error_kind, '')
 		FROM request_logs_with_current_month
 		WHERE credential_id = $1
-		  -- case-insensitive: _request_logs.outbound_model can differ in case
+		  -- case-insensitive: 会话腿的 outbound_model can differ in case
 		  -- from model_offers.raw_model_name (e.g. "MiniMax-M3" vs "minimax-m3"),
 		  -- so a plain = misses most rows.
 		  AND lower(COALESCE(outbound_model, client_model)) = lower($2)
@@ -945,8 +954,13 @@ func slidingWindowHotQuery() string {
 }
 
 // slidingWindowFromRequestLogs builds CallEntry timeline data directly from
-// the _request_logs tables. Used when the Redis recorder is unavailable or
-// returns no entries. Window-gated: ≤ slidingWindowHotMaxMinutes reads the
+// the session-turn family. Used when the Redis recorder is unavailable or
+// returns no entries.
+//
+// ★ 2026-10-24：函数名保留（改名会动到调用点与既有夹具），但它读的是会话族
+//
+//	——短窗 session_turns_hot、长窗 canonical 视图（两臂体）。 Window-gated: ≤ slidingWindowHotMaxMinutes reads the
+//
 // hot dual-write tables (index descent, ~sub-ms); longer windows read the
 // canonical view (slidingWindowQuery, 729-serviced) which sees full history.
 //

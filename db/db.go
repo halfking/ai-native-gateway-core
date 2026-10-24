@@ -256,13 +256,19 @@ func (db *DB) applyMigrationsOnce(ctx context.Context) error {
 	// admin UI ("database not configured") while /healthz still returns 200.
 	migCtx, migCancel := context.WithTimeout(ctx, 3*time.Minute)
 	defer migCancel()
-	if err := db.ensureRequestLogSchema(migCtx); err != nil {
-		return err
-	}
 	// 2026-09-07 migration 680 self-heal: /api/logs 读路径的 canonical 视图
 	// request_logs_with_current_month 被带外操作删除后没有任何机制重建，
 	// 所有列表/详情/聚合请求持续 42P01。幂等 ensure：视图健康时零 DDL。
-	// 必须在 ensureRequestLogSchema 之后（视图依赖 hot/parent 表存在）。
+	//
+	// ★ 2026-10-24（v1 → session_turns 替换轮）：本步骤**之前**是
+	//   ensureRequestLogSchema —— v1 族的 boot DDL 镜像（31 列 + 13 索引）。
+	//   v1 族已随 890 退役 ⇒ 那条链是死代码；且它是「每次 boot 对最热表取
+	//   ACCESS EXCLUSIVE（连同全部分区）」的最后一处来源 ⇒ 整链删除。
+	//   ⇒ 视图的依赖现在只落在**会话族**（session_turns / session_turns_hot /
+	//   session_turn_details*）上，而那些表由启动迁移链建，不由本函数建。
+	//   ⇒ 「会话族缺列 ⇒ 视图建不出来 ⇒ boot 响亮失败」取代了旧的
+	//   「v1 缺列 ⇒ boot 偷偷补列」——失败模式从「静默自愈」变成「响亮报错」，
+	//   且省掉了热表上的锁等待。
 	if err := db.ensureRequestLogsCurrentMonthView(migCtx); err != nil {
 		return err
 	}
@@ -405,13 +411,13 @@ func (db *DB) applyMigrationsOnce(ctx context.Context) error {
 	if err := db.ensureAutoRouteSelectionsHotSchema(migCtx); err != nil {
 		return err
 	}
-	// Routing analytics reads these columns while creating its source view.
-	// Keep this small table-only ensure ahead of the analytics materialized
-	// views; the broader recent-success-rate ensure runs later because it
-	// also updates credential binding state.
-	if err := db.ensureRoutingAnalyticsColumns(migCtx); err != nil {
-		return err
-	}
+	// ★ 2026-10-24（v1 → session_turns 替换轮）：此处原有一句
+	//   ensureRoutingAnalyticsColumns（给 v1 族补 task_type / origin_stage /
+	//   origin_actor）。routing analytics 的源视图读的是 canonical 视图 ⇒
+	//   这三列由**会话族**提供（session_turns.task_type 在基线里，
+	//   origin_stage / origin_actor 由迁移链补齐）⇒ v1 侧补列已无对象 ⇒
+	//   该 ensure 连同它的调用一并删除。
+	//   ⇒ 保留本注释是为了让「这一跳去哪了」在代码里一眼可见。
 	// 2026-08-31 migration 632: routing analytics materialized views.
 	// Must run before the gateway serves /api/admin/auto-route/analytics/*
 	// traffic; on failure the views are absent and handlers fall back to
@@ -2627,328 +2633,6 @@ func (d *DB) ensureJournalSnapshotReceiptSchema(ctx context.Context) error {
 	return nil
 }
 
-func (d *DB) ensureRequestLogSchema(ctx context.Context) error {
-	if d == nil || d.pool == nil {
-		return nil
-	}
-	// ★ 890（v1 族退役）：本函数存在的**唯一**目的是给 v1 族补列/补索引。
-	// 族被删之后它无事可做 ⇒ 显式早退。
-	//
-	// ⚠ 为什么不能只靠下面的 catalog 短路：短路算的是「**缺多少**列/索引」，
-	// 而退役后索引**跟着表一起消失** ⇒ missing = 13 ≠ 0 ⇒ 短路**不触发**
-	// ⇒ 继续跑 `ALTER TABLE _request_logs …` ⇒ 42P01 ⇒ applyMigrationsOnce
-	// 失败 ⇒ db.Open 返回 (nil, err) ⇒ 42P01 命中 IsSchemaMismatchError
-	// ⇒ 网关**快速失败但仍以「无数据库」形态起来**，而 /readyz 在
-	// SetDepsOptional(true) 下**仍返 200**（见 cmd/gateway/main.go 的
-	// readyz 分支）⇒ 部署安全网放行 ⇒ 网关「就绪但没有数据库」。
-	//
-	// ⇒ 判据必须从「缺什么」改成「**在不在**」：族不存在 ⇒ 无事可做。
-	//
-	// 探测用 to_regclass（不抛 42P01），且**两个**表都查：hot 表与母表是
-	// 独立关系，退役时各自消失；只看其中一个会漏。
-	var v1FamilyPresent bool
-	if err := d.pool.QueryRow(ctx, `
-		SELECT to_regclass('public._request_logs') IS NOT NULL
-		   OR to_regclass('public._request_logs_hot') IS NOT NULL
-	`).Scan(&v1FamilyPresent); err != nil {
-		return fmt.Errorf("probe v1 request_logs family presence: %w", err)
-	}
-	if !v1FamilyPresent {
-		slog.Info("v1 request_logs family is retired (890) — nothing to ensure; skipping the v1 schema DDL")
-		return nil
-	}
-	// 2026-09-23 252 SQL 日志审计轮（D1 残余根修，07:23/07:26 245 蓝绿两连败
-	// 实证）：下方 ADD COLUMN IF NOT EXISTS 即使全部列已存在，也要对
-	// _request_logs 父表 + 全部月分区取 ACCESS EXCLUSIVE 锁才能逐列 no-op。
-	// 晨间负载下锁等待超角色级 statement_timeout=30s 被 57014 击杀，boot 重试
-	// 撞同一堵墙（烧点不可推进）→ retry_budget 烧穿 → postgres disabled →
-	// readyz 永不过 → 部署安全网回滚。information_schema/pg_indexes 短路：
-	// 期望列与索引全部在位 = 零 DDL 零锁。清单必须与下方 ensure 体逐项同步
-	// （新增列/索引时两处一起改）；任一缺失走原路径，新环境语义不变。
-	const catalogShortCircuitSQL = `
-		SELECT
-		  (SELECT count(*) FROM unnest(ARRAY[
-		     'gw_session_id','gw_task_id','request_status','api_key_prefix',
-		     'api_key_owner_user','application_code','parent_request_id',
-		     'compression_reason','compression_strategy','compression_meta',
-		     'outbound_body','outbound_msg_count','outbound_token_est',
-		     'outbound_msg_hashes','quality_flags','quality_fix_actions',
-		     'quality_score','client_request_id','provider_id','upstream_finish_reason',
-		     'tool_calls','t0_arrived_at','t1_total_enqueued_at',
-		     't2_total_dequeued_at','t3_model_enqueued_at','t4_model_dequeued_at',
-		     't5_cred_enqueued_at','t6_cred_dequeued_at','t7_forward_start_at',
-		     't8_response_start_at','t9_response_end_at','is_final_success'
-		   ]) AS want(name)
-		   WHERE to_regclass('public._request_logs') IS NOT NULL
-		     AND NOT EXISTS (
-		       SELECT 1 FROM information_schema.columns
-		       WHERE table_schema='public' AND table_name='_request_logs'
-		         AND column_name = want.name))
-		+
-		  (SELECT count(*) FROM unnest(ARRAY[
-		     't0_arrived_at','t1_total_enqueued_at','t2_total_dequeued_at',
-		     't3_model_enqueued_at','t4_model_dequeued_at','t5_cred_enqueued_at',
-		     't6_cred_dequeued_at','t7_forward_start_at','t8_response_start_at',
-		     't9_response_end_at','is_final_success'
-		   ]) AS want(name)
-		   WHERE to_regclass('public._request_logs_hot') IS NOT NULL
-		     AND NOT EXISTS (
-		       SELECT 1 FROM information_schema.columns
-		       WHERE table_schema='public' AND table_name='_request_logs_hot'
-		         AND column_name = want.name))
-		+
-		  (SELECT count(*) FROM unnest(ARRAY[
-		     'idx_request_logs_gw_session_ts','idx_request_logs_gw_task_ts',
-		     'idx_request_logs_status_ts','idx_request_logs_parent_ts',
-		     'idx_request_logs_client_request_id','idx_request_logs_session_outbound',
-		     'idx_request_logs_outbound_msg_count','idx_request_logs_quality_flags',
-		     'idx_request_logs_provider_quality','idx_request_logs_upstream_finish_reason',
-		     'idx_request_logs_tool_calls','idx_request_logs_provider_tool_calls',
-		     'uq_request_logs_hot_final_success_session'
-		   ]) AS want(name)
-		   WHERE NOT EXISTS (
-		     SELECT 1 FROM pg_indexes
-		     WHERE schemaname='public' AND indexname = want.name))
-		`
-	var missing int
-	if err := d.pool.QueryRow(ctx, catalogShortCircuitSQL).Scan(&missing); err == nil && missing == 0 {
-		slog.Info("_request_logs schema ensured (catalog short-circuit: all columns and indexes present, zero DDL)")
-		return nil
-	} else if err != nil {
-		// 探测失败不阻断：回落原 ensure 路径（其自含幂等）。
-		slog.Warn("_request_logs ensure catalog probe failed; falling back to full ensure", "error", err)
-	}
-	_, err := d.pool.Exec(ctx, `
-		ALTER TABLE _request_logs
-		    ADD COLUMN IF NOT EXISTS gw_session_id TEXT,
-		    ADD COLUMN IF NOT EXISTS gw_task_id TEXT,
-		    ADD COLUMN IF NOT EXISTS request_status TEXT,
-		    ADD COLUMN IF NOT EXISTS api_key_prefix TEXT,
-		    ADD COLUMN IF NOT EXISTS api_key_owner_user TEXT,
-		    ADD COLUMN IF NOT EXISTS application_code TEXT,
-		    -- Round 47 (2026-06-18) compression v7 T1: parent-child chain tracking.
-		    -- See db/migrations/013_compression_columns.sql and
-		    -- docs/llm-gateway-go/2026-06-18-compression-v7-final.md §3.1.
-		    ADD COLUMN IF NOT EXISTS parent_request_id TEXT,
-		    ADD COLUMN IF NOT EXISTS compression_reason TEXT,
-		    ADD COLUMN IF NOT EXISTS compression_strategy TEXT,
-		    ADD COLUMN IF NOT EXISTS compression_meta JSONB,
-		    -- v3 (2026-06-19) session-level outbound body T23.
-		    -- See db/migrations/016_outbound_body.sql.
-		    ADD COLUMN IF NOT EXISTS outbound_body       JSONB,
-		    ADD COLUMN IF NOT EXISTS outbound_msg_count  INT,
-		    ADD COLUMN IF NOT EXISTS outbound_token_est  INT,
-		    ADD COLUMN IF NOT EXISTS outbound_msg_hashes JSONB,
-		    -- 2026-06-26: client-provided X-Request-Id is preserved here
-		    -- for debug / cross-system tracing while the primary
-		    -- request_id (_request_logs.request_id) is forced server-side
-		    -- to prevent client retries from collapsing into a single
-		    -- audit row. See db/migrations/054_request_logs_client_request_id.sql.
-		    -- 2026-10-21（r1039 续轮）：provider_id —— 本 ensure 链**自己**
-		    -- 要在下面给 _request_logs 建 (provider_id, …) 索引（2026-06-19
-		    -- 9cd51d8a7「per-provider tool_call quality fix mode」引入，随 v2
-		    -- 改名 request_logs→_request_logs 一起搬过来），却**从没补过这一列**。
-		    -- ⇒ 任何 _request_logs 不带 provider_id 的库（最小/新装基线、
-		    --   由 v1 fallback 体灌入的基线副本）上，整条 boot 迁移在
-		    --   CREATE INDEX idx_request_logs_provider_quality 处报
-		    --   42703（column "provider_id" does not exist）⇒ 迁移中止 ⇒
-		    --   **网关起不来**（2026-10-21 本机 deploy-local 实测中止）。
-		    -- 已是 v1→v2 改名产物的库（211/252 等）本来就有这一列 ⇒
-		    -- ADD COLUMN IF NOT EXISTS 是 no-op ⇒ 零影响。
-		    --
-		    -- ⚠ 列序无语义要求：provider_id 插在 client_request_id 之前，
-		    --   只为把 client_request_id 的分号结尾改成逗号续行。
-		    ADD COLUMN IF NOT EXISTS provider_id BIGINT,
-		    ADD COLUMN IF NOT EXISTS client_request_id TEXT;
-		CREATE INDEX IF NOT EXISTS idx_request_logs_gw_session_ts
-		    ON _request_logs (gw_session_id, ts DESC)
-		    WHERE gw_session_id IS NOT NULL AND gw_session_id <> '';
-		CREATE INDEX IF NOT EXISTS idx_request_logs_gw_task_ts
-		    ON _request_logs (gw_task_id, ts DESC)
-		    WHERE gw_task_id IS NOT NULL AND gw_task_id <> '';
-		CREATE INDEX IF NOT EXISTS idx_request_logs_status_ts
-		    ON _request_logs (request_status, ts DESC)
-		    WHERE request_status IS NOT NULL AND request_status <> '';
-		CREATE INDEX IF NOT EXISTS idx_request_logs_parent_ts
-		    ON _request_logs (parent_request_id, ts DESC)
-		    WHERE parent_request_id IS NOT NULL;
-		-- 2026-06-26: lookup by client-provided X-Request-Id (debug).
-		CREATE INDEX IF NOT EXISTS idx_request_logs_client_request_id
-		    ON _request_logs (client_request_id, ts DESC)
-		    WHERE client_request_id IS NOT NULL;
-		-- v3 T23: session outbound lookup (used by SessionCache L3 fallback).
-		CREATE INDEX IF NOT EXISTS idx_request_logs_session_outbound
-		    ON public._request_logs (gw_session_id, ts DESC)
-		  WHERE gw_session_id IS NOT NULL
-		      AND outbound_body IS NOT NULL;
-		CREATE INDEX IF NOT EXISTS idx_request_logs_outbound_msg_count
-		    ON public._request_logs (tenant_id, ts DESC)
-		  WHERE outbound_msg_count IS NOT NULL
-		      AND outbound_msg_count > 0;
-		-- 2026-06-19: quality fix mode (db/migrations/017_quality_fix_mode.sql).
-		-- Per-request tool_call quality signal columns. quality_flags is GIN-
-		-- indexed for cheap "which provider emits empty_tool_name most" lookups.
-		ALTER TABLE _request_logs ADD COLUMN IF NOT EXISTS quality_flags        TEXT[]    NOT NULL DEFAULT '{}';
-		ALTER TABLE _request_logs ADD COLUMN IF NOT EXISTS quality_fix_actions JSONB    NOT NULL DEFAULT '{}'::jsonb;
-		ALTER TABLE _request_logs ADD COLUMN IF NOT EXISTS quality_score      NUMERIC(3,2);
-		CREATE INDEX IF NOT EXISTS idx_request_logs_quality_flags
-		    ON _request_logs USING GIN (quality_flags)
-		    WHERE cardinality(quality_flags) > 0;
-		CREATE INDEX IF NOT EXISTS idx_request_logs_provider_quality
-		    ON _request_logs (provider_id, quality_score, ts DESC)
-		    WHERE quality_score IS NOT NULL;
-	-- 2026-06-19 T-NEW-7: split the semantic overload of failure_detail_code.
-	-- See db/migrations/018_upstream_finish_reason.sql. The new column is
-	-- the SOLE home for the upstream finish_reason (stop, tool_calls,
-	-- length, end_turn, …). failure_detail_code now keeps only the
-	-- actual failure code (interruption, 5xx, etc.).
-	ALTER TABLE _request_logs ADD COLUMN IF NOT EXISTS upstream_finish_reason TEXT;
-	CREATE INDEX IF NOT EXISTS idx_request_logs_upstream_finish_reason
-	    ON _request_logs (upstream_finish_reason, ts DESC)
-	    WHERE upstream_finish_reason IS NOT NULL
-	      AND upstream_finish_reason <> '';
-	-- 2026-06-23: structured tool_calls (042_tool_calls_column.sql).
-	-- Populated from both streaming and non-streaming responses.
-	ALTER TABLE _request_logs ADD COLUMN IF NOT EXISTS tool_calls JSONB;
-	CREATE INDEX IF NOT EXISTS idx_request_logs_tool_calls
-	    ON _request_logs USING GIN (tool_calls)
-	    WHERE tool_calls IS NOT NULL AND tool_calls != '[]'::jsonb;
-	CREATE INDEX IF NOT EXISTS idx_request_logs_provider_tool_calls
-	    ON _request_logs (provider_id, ts DESC)
-	    WHERE tool_calls IS NOT NULL
-	      AND jsonb_typeof(tool_calls) = 'array'
-	      AND jsonb_array_length(tool_calls) > 0;
-`)
-	if err != nil {
-		return err
-	}
-
-	// V3.1 (migration 491): 9-stage dispatch queue timestamps on hot + parent.
-	// Startup ensure so environments that have not yet run 491 still accept INSERTs.
-	//
-	// 2026-10-21（r1039 续轮）：hot 侧按**表在不在**条件化。
-	// 族退役（860 改名 → 890 删除）后 _request_logs_hot 与 _request_logs 是
-	// **两个独立关系**，各自消失 —— 上面的族级早退只兜住「两个都不在」，
-	// 兜不住「母表在、hot 表不在」（形态 B：860 改名跑完、890 删除前中断，
-	// 或部分退役的库）⇒ hot 侧 ALTER 仍然 42P01 ⇒ boot 中止。
-	hotTableExists := d.tableExists(ctx, "_request_logs_hot")
-	if hotTableExists {
-		_, err = d.pool.Exec(ctx, `
-		ALTER TABLE _request_logs_hot
-		    ADD COLUMN IF NOT EXISTS t0_arrived_at TIMESTAMPTZ,
-		    ADD COLUMN IF NOT EXISTS t1_total_enqueued_at TIMESTAMPTZ,
-		    ADD COLUMN IF NOT EXISTS t2_total_dequeued_at TIMESTAMPTZ,
-		    ADD COLUMN IF NOT EXISTS t3_model_enqueued_at TIMESTAMPTZ,
-		    ADD COLUMN IF NOT EXISTS t4_model_dequeued_at TIMESTAMPTZ,
-		    ADD COLUMN IF NOT EXISTS t5_cred_enqueued_at TIMESTAMPTZ,
-		    ADD COLUMN IF NOT EXISTS t6_cred_dequeued_at TIMESTAMPTZ,
-		    ADD COLUMN IF NOT EXISTS t7_forward_start_at TIMESTAMPTZ,
-		    ADD COLUMN IF NOT EXISTS t8_response_start_at TIMESTAMPTZ,
-		    ADD COLUMN IF NOT EXISTS t9_response_end_at TIMESTAMPTZ;
-	`)
-		if err != nil {
-			return err
-		}
-	}
-	_, err = d.pool.Exec(ctx, `
-		ALTER TABLE _request_logs
-		    ADD COLUMN IF NOT EXISTS t0_arrived_at TIMESTAMPTZ,
-		    ADD COLUMN IF NOT EXISTS t1_total_enqueued_at TIMESTAMPTZ,
-		    ADD COLUMN IF NOT EXISTS t2_total_dequeued_at TIMESTAMPTZ,
-		    ADD COLUMN IF NOT EXISTS t3_model_enqueued_at TIMESTAMPTZ,
-		    ADD COLUMN IF NOT EXISTS t4_model_dequeued_at TIMESTAMPTZ,
-		    ADD COLUMN IF NOT EXISTS t5_cred_enqueued_at TIMESTAMPTZ,
-		    ADD COLUMN IF NOT EXISTS t6_cred_dequeued_at TIMESTAMPTZ,
-		    ADD COLUMN IF NOT EXISTS t7_forward_start_at TIMESTAMPTZ,
-		    ADD COLUMN IF NOT EXISTS t8_response_start_at TIMESTAMPTZ,
-		    ADD COLUMN IF NOT EXISTS t9_response_end_at TIMESTAMPTZ;
-	`)
-	if err != nil {
-		return err
-	}
-
-	// 会话优化 v4 (migration 532): 会话级最终成功标记。hot 侧部分唯一索引
-	// 保证同 gw_session_id 至多一条 final success（历史存量行全 FALSE，谓词
-	// 空集，054 时代重复数据不会阻塞索引构建）；分区侧由 SQL migration 的
-	// ensure_request_logs_partition 为新分区补建（columnar AM 可能拒建唯一
-	// 索引，故此处只做 hot 侧 Go 镜像）。
-	//
-	// 2026-10-21（r1039 续轮）：hot 侧同样按**表在不在**条件化（母表在、
-	// hot 表不在的形态 B 下，无条件 ALTER hot 表 ⇒ 42P01 ⇒ boot 中止）。
-	if hotTableExists {
-		_, err = d.pool.Exec(ctx, `
-		ALTER TABLE _request_logs_hot
-		    ADD COLUMN IF NOT EXISTS is_final_success BOOLEAN NOT NULL DEFAULT FALSE;
-		CREATE UNIQUE INDEX IF NOT EXISTS uq_request_logs_hot_final_success_session
-		    ON _request_logs_hot (gw_session_id)
-		    WHERE is_final_success AND gw_session_id IS NOT NULL AND gw_session_id <> '';
-	`)
-		if err != nil {
-			return err
-		}
-	}
-	_, err = d.pool.Exec(ctx, `
-		ALTER TABLE _request_logs
-		    ADD COLUMN IF NOT EXISTS is_final_success BOOLEAN NOT NULL DEFAULT FALSE;
-	`)
-	if err != nil {
-		return err
-	}
-
-	slog.Info("_request_logs schema ensured (gw_session_id, gw_task_id, request_status, api_key_prefix, api_key_owner_user, application_code, parent_request_id, compression_reason, compression_strategy, compression_meta, outbound_body, outbound_msg_count, outbound_token_est, outbound_msg_hashes, quality_flags, quality_fix_actions, quality_score, client_request_id, is_final_success)")
-
-	// Validate _request_logs_hot is heap (not columnar) — UPDATE-heavy table
-	// Citus Columnar does not support UPDATE/CTID scans (SQLSTATE 0A000).
-	// See: https://github.com/citusdata/citus/issues/... (ColumnarScan UPDATE limitation)
-	var storage string
-	err = d.pool.QueryRow(ctx, `
-		SELECT am.amname
-		FROM pg_class c
-		JOIN pg_am am ON am.oid = c.relam
-		WHERE c.relname = '_request_logs_hot'
-	`).Scan(&storage)
-	if err != nil {
-		slog.Warn("_request_logs_hot storage validation failed",
-			"error", err,
-			"hint", "ensure _request_logs_hot exists and is accessible")
-	} else if storage != "heap" {
-		slog.Error("_request_logs_hot storage is NOT heap - UPDATEs will fail!",
-			"actual_storage", storage,
-			"expected", "heap",
-			"action_required", "Convert to heap: ALTER TABLE _request_logs_hot SET (storage = heap) or recreate as heap")
-	} else {
-		slog.Debug("_request_logs_hot storage validation passed", "storage", storage)
-	}
-
-	// Validate current month partition of _request_logs is heap (DETACHED, supports UPDATE)
-	// The current month partition must be heap because it receives UPDATEs from claimSessionFinalSuccess
-	// via the NOT EXISTS check against request_logs. If it's columnar, UPDATEs routed to it will fail.
-	currentMonthPartition := "request_logs_" + time.Now().Format("2006_01")
-	err = d.pool.QueryRow(ctx, `
-		SELECT am.amname
-		FROM pg_class c
-		JOIN pg_am am ON am.oid = c.relam
-		WHERE c.relname = $1
-	`, currentMonthPartition).Scan(&storage)
-	if err != nil {
-		// Partition might not exist yet (first day of month) - log as debug
-		slog.Debug("current month partition storage validation skipped",
-			"partition", currentMonthPartition,
-			"reason", err.Error())
-	} else if storage != "heap" {
-		slog.Error("current month partition is NOT heap - UPDATEs may fail!",
-			"partition", currentMonthPartition,
-			"actual_storage", storage,
-			"expected", "heap",
-			"action_required", "DETACH partition and ensure it uses heap storage. See rule 33.")
-	} else {
-		slog.Debug("current month partition storage validation passed",
-			"partition", currentMonthPartition, "storage", storage)
-	}
-
-	return nil
-}
-
 // ensureQualityFixModeSchema mirrors db/migrations/017_quality_fix_mode.sql
 // for the providers table. Idempotent.  quality_fix_mode defaults to 'off'
 // so existing providers keep their current passthrough behavior.
@@ -3173,49 +2857,30 @@ func (d *DB) ensureBillingUnitAndAudioSeconds(ctx context.Context) error {
 		return nil
 	}
 	cmbOK := d.columnsAllPresent(ctx, "credential_model_bindings", []string{"billing_unit"})
-	// ★ 890（v1 族退役）：族不存在 ⇒ 这两条 v1 DDL 不是「no-op」而是 **42P01**
-	// （ALTER 一张不存在的表）。
+	// ★ 2026-10-24（v1 → session_turns 替换轮）：本函数原来还有一条 v1 腿 ——
+	// 给 _request_logs / _request_logs_hot 补 audio_seconds 列。那条腿随
+	// **890（v1 族退役）**失效：族不存在 ⇒ ALTER 一张不存在的表 = 42P01 ⇒
+	// boot 失败 ⇒ 网关起不来；它此前靠一道显式存在性闸挡着。
 	//
-	// ⚠ 为什么不能只靠 columnsAllPresent 的短路：它的真实语义是「表不存在 ⇒
-	// true」（见其注释：to_regclass 判据写在 WHERE 里，表不存在 ⇒ missing=0
-	// ⇒ 读作「没有缺列」）⇒ 退役后 hotOK 恒 true ⇒ 短路恒触发 ⇒ **恰好**不炸。
-	// 但那是**巧合式安全**：一旦有人把 columnsAllPresent 改成它注释里原来
-	// 写的「表不存在 ⇒ false」，本函数就会每次 boot 去 ALTER 已 DROP 的族 ⇒
-	// boot 失败（42P01）⇒ 网关起不来。
-	// ⇒ 这里补一道**显式存在性闸**（与 ensureRequestLogSchema / maas /
-	// work_type 三处同一条纪律），把承重语义从「helper 的空真」挪到
-	// 「本函数自己判断族在不在」。
-	var v1FamilyPresent bool
-	if err := d.pool.QueryRow(ctx, `
-		SELECT to_regclass('public._request_logs') IS NOT NULL
-		   OR to_regclass('public._request_logs_hot') IS NOT NULL
-	`).Scan(&v1FamilyPresent); err != nil {
-		return fmt.Errorf("probe v1 request_logs presence for 848 DDL: %w", err)
-	}
-	hotOK := !v1FamilyPresent || d.columnsAllPresent(ctx, "_request_logs_hot", []string{"audio_seconds"})
-	if cmbOK && hotOK {
+	// ⇒ 现在整条 v1 腿删除，只保留 cmb.billing_unit（非 v1 表，与 848 迁移
+	//   的另一半同形）。
+	//
+	// ⚠ audio_seconds 在会话族**没有归宿**（真库实测：session_turns /
+	//   session_turn_details 都没有该列，usage_ledger 侧只有 audio_tokens）。
+	//   ⇒ 这不是「漏搬」，而是**登记过的结构缺口**：
+	//   domains/streaming/audio_usage_log.go 的 LogAudioUsage 是有文档的
+	//   no-op，由 domains/streaming/audio_usage_gate_test.go 钉住。
+	//   ⇒ 媒体时长计费当前走 request 级计量，不是本列。
+	if cmbOK {
 		if _, err := d.pool.Exec(ctx, `
 			INSERT INTO public.schema_migrations (version, description)
-			VALUES ('848', 'cmb.billing_unit + _request_logs.audio_seconds for media duration billing')
+			VALUES ('848', 'cmb.billing_unit for media duration billing (v1 audio_seconds retired with the v1 family in 890; no session-family counterpart)')
 			ON CONFLICT (version) DO UPDATE SET description = EXCLUDED.description;
 		`); err != nil {
 			return err
 		}
-		slog.Info("billing_unit + audio_seconds schema ensured (migration 848, catalog short-circuit)")
+		slog.Info("billing_unit schema ensured (migration 848, catalog short-circuit)")
 		return nil
-	}
-	// v1 腿的 DDL 只在族真的在位时才拼进去（族不在 ⇒ 拼进去就是 42P01）。
-	v1DDL := ""
-	if v1FamilyPresent {
-		v1DDL = `
-		ALTER TABLE _request_logs_hot
-		    ADD COLUMN IF NOT EXISTS audio_seconds double precision;
-
-		ALTER TABLE _request_logs
-		    ADD COLUMN IF NOT EXISTS audio_seconds double precision;
-`
-	} else {
-		slog.Info("v1 request_logs family is retired (890) — 848 audio_seconds DDL skipped")
 	}
 	_, err := d.pool.Exec(ctx, `
 		ALTER TABLE credential_model_bindings
@@ -3236,15 +2901,14 @@ func (d *DB) ensureBillingUnitAndAudioSeconds(ctx context.Context) error {
 		    END IF;
 		END
 		$do$;
-`+v1DDL+`
 		INSERT INTO public.schema_migrations (version, description)
-		VALUES ('848', 'cmb.billing_unit + _request_logs.audio_seconds for media duration billing')
+		VALUES ('848', 'cmb.billing_unit for media duration billing (v1 audio_seconds retired with the v1 family in 890; no session-family counterpart)')
 		ON CONFLICT (version) DO UPDATE SET description = EXCLUDED.description;
 	`)
 	if err != nil {
 		return err
 	}
-	slog.Info("billing_unit + audio_seconds schema ensured (migration 848)")
+	slog.Info("billing_unit schema ensured (migration 848)")
 	return nil
 }
 
@@ -4094,37 +3758,6 @@ func (d *DB) ensureSessionBodiesPromoteDrain(ctx context.Context) error {
 	return nil
 }
 
-// ensureRoutingAnalyticsColumns provides the small, dependency-free schema
-// prerequisite for migration 632/649. It must run before the analytics source
-// view is created because older databases may predate the probe-origin fields.
-func (d *DB) ensureRoutingAnalyticsColumns(ctx context.Context) error {
-	if d == nil || d.pool == nil {
-		return nil
-	}
-	// D1 残余（2026-09-23 审计轮）：_request_logs / _request_logs_hot 上的
-	// ADD COLUMN IF NOT EXISTS，列全在位时跳过（245 seq 2199 boot 在此 57014
-	// 实锤；同 columnsAllPresent 注）。
-	if d.columnsAllPresent(ctx, "_request_logs_hot", []string{"task_type", "origin_stage", "origin_actor"}) &&
-		d.columnsAllPresent(ctx, "_request_logs", []string{"task_type", "origin_stage", "origin_actor"}) {
-		return nil
-	}
-	_, err := d.pool.Exec(ctx, `
-		ALTER TABLE IF EXISTS _request_logs_hot
-		    ADD COLUMN IF NOT EXISTS task_type TEXT,
-		    ADD COLUMN IF NOT EXISTS origin_stage VARCHAR(32),
-		    ADD COLUMN IF NOT EXISTS origin_actor VARCHAR(255);
-
-		ALTER TABLE IF EXISTS _request_logs
-		    ADD COLUMN IF NOT EXISTS task_type TEXT,
-		    ADD COLUMN IF NOT EXISTS origin_stage VARCHAR(32),
-		    ADD COLUMN IF NOT EXISTS origin_actor VARCHAR(255);
-	`)
-	if err != nil {
-		return fmt.Errorf("ensure routing analytics columns: %w", err)
-	}
-	return nil
-}
-
 // routingAnalyticsMVSQL is the shared definition of the routing analytics
 // materialized views (migration 632/649). It owns a narrow source view so
 // analytics does not depend on the frozen request-log wrapper column contract.
@@ -4558,57 +4191,6 @@ func (d *DB) ensureOrchestrationRuntimeInstancesSchema(ctx context.Context) erro
 	return nil
 }
 
-// workTypeRequestLogsDDL is the slice of the 002_work_types schema that
-// touches request_logs. It is kept out of workTypeSchemaSQL and applied under
-// its own catalog guard because it is the one statement here that costs an
-// exclusive lock on the hottest table in the database.
-//
-// 2026-10-06: `ALTER TABLE … ADD COLUMN IF NOT EXISTS` does NOT spare the
-// lock. PG must acquire ACCESS EXCLUSIVE on the parent and on every partition
-// before it can check whether the column exists, so a column that has been in
-// place for months still costs a full exclusive pass on every boot — measured
-// at up to 109,456 ms on production (runbook §10.79). _request_logs carries 5
-// monthly partitions there, so that is 6 relations locked for a no-op, on
-// every gateway start, blocking concurrent writers of the busiest table.
-//
-// ensureRequestLogSchema already solves this for its own 31 columns with a
-// catalog short-circuit (see its comment); this applies the same shape to the
-// last unguarded _request_logs DDL in the startup path.
-const workTypeRequestLogsDDL = `
-ALTER TABLE _request_logs ADD COLUMN IF NOT EXISTS work_type TEXT;
-CREATE INDEX IF NOT EXISTS idx_request_logs_work_type
-    ON _request_logs (work_type, ts DESC)
-    WHERE work_type IS NOT NULL AND work_type <> '';`
-
-// workTypeRequestLogsCurrent reports whether _request_logs already carries the
-// work_type column and its index, i.e. whether workTypeRequestLogsDDL would be
-// a pure no-op. Both are checked because the DDL is applied as one unit: the
-// index cannot be created before the column exists.
-func (d *DB) workTypeRequestLogsCurrent(ctx context.Context) bool {
-	var missing int
-	err := d.pool.QueryRow(ctx, `
-		SELECT
-		  (SELECT count(*) FROM (VALUES ('work_type')) AS want(name)
-		   WHERE to_regclass('public._request_logs') IS NOT NULL
-		     AND NOT EXISTS (
-		       SELECT 1 FROM information_schema.columns
-		        WHERE table_schema='public' AND table_name='_request_logs'
-		          AND column_name = want.name))
-		  +
-		  (SELECT count(*) FROM (VALUES ('idx_request_logs_work_type')) AS want(name)
-		   WHERE NOT EXISTS (
-		       SELECT 1 FROM pg_indexes
-		        WHERE schemaname='public' AND indexname = want.name))
-	`).Scan(&missing)
-	if err != nil {
-		// A failed probe must not be read as "current": that would skip DDL on
-		// a database that genuinely needs it. Fall through to applying it.
-		slog.Warn("work_type _request_logs probe failed; applying DDL", "error", err)
-		return false
-	}
-	return missing == 0
-}
-
 func (d *DB) ensureWorkTypeSchema(ctx context.Context) error {
 	if d == nil || d.pool == nil {
 		return nil
@@ -4616,33 +4198,16 @@ func (d *DB) ensureWorkTypeSchema(ctx context.Context) error {
 	if _, err := d.pool.Exec(ctx, workTypeSchemaSQL); err != nil {
 		return err
 	}
-	// Guarded separately: this is the only statement above that takes an
-	// exclusive lock on request_logs. Everything in workTypeSchemaSQL touches
-	// small config tables and is cheap to re-check.
+	// ★ 2026-10-24（v1 → session_turns 替换轮）：本函数原来还有一条 v1 腿 ——
+	// 给 _request_logs 补 work_type 列 + idx_request_logs_work_type 索引
+	// （单列 DDL，曾是启动路径上最后一处未守卫的 v1 锁源）。v1 族随 890 退役
+	// ⇒ 族不存在 ⇒ ALTER 一张不存在的表 = 42P01 ⇒ boot 失败 ⇒ 该腿失效。
 	//
-	// ★ 890（v1 族退役）：族不存在 ⇒ 这条 DDL 不是「no-op」而是 **42P01**
-	// （ALTER TABLE 一个不存在的表）。workTypeRequestLogsCurrent 的短路算的是
-	// 「缺多少」：列项因 to_regclass 为 NULL 而计 0，**索引项计 1** ⇒
-	// missing ≠ 0 ⇒ 判定「不 current」⇒ 继续执行 DDL ⇒ 42P01 ⇒ boot 失败。
-	// ⇒ 这里补一道**存在性**闸：族不在 ⇒ 整段 DDL 无事可做。
-	var v1TablePresent bool
-	if err := d.pool.QueryRow(ctx, `
-		SELECT to_regclass('public._request_logs') IS NOT NULL
-	`).Scan(&v1TablePresent); err != nil {
-		return fmt.Errorf("probe v1 request_logs presence for work_type DDL: %w", err)
-	}
-	if !v1TablePresent {
-		slog.Info("v1 request_logs family is retired (890) — work_type column/index DDL skipped")
-		return nil
-	}
-	if d.workTypeRequestLogsCurrent(ctx) {
-		slog.Info("work_type_config schema ensured (22 seed rows idempotent); " +
-			"_request_logs work_type column and index already present, DDL skipped")
-		return nil
-	}
-	if _, err := d.pool.Exec(ctx, workTypeRequestLogsDDL); err != nil {
-		return err
-	}
+	// ⇒ v1 腿删除，只保留 workTypeSchemaSQL（只碰 work_type_config /
+	//   work_type_model_route 两张配置小表，幂等且便宜）。
+	//
+	// ⇒ work_type 本身在会话族由迁移链提供（session_turns.work_type），
+	//   且 canonical 视图把它投影成 v1 同名列 ⇒ 读方零改动。
 	slog.Info("work_type_config schema ensured (22 seed rows idempotent)")
 	return nil
 }
@@ -7127,26 +6692,15 @@ func (d *DB) ensureRoutingRecentSuccessRate(ctx context.Context) error {
 	if d == nil || d.pool == nil {
 		return nil
 	}
-	// D1 残余（2026-09-23 审计轮）：_request_logs_hot 是最热大表，列全在位时
-	// no-op ALTER ... ADD COLUMN IF NOT EXISTS 仍要取 ACCESS EXCLUSIVE 锁才能
-	// 逐列确认；共享 252 PG 持续写流下锁等待烧穿 applyMigrationsOnce 的 3min
-	// 预算（245 seq 2221 boot 实证：attempt1 15:02:36 governor revision 后
-	// 挂 156s → 15:05:12 context deadline exceeded；attempt2 同点位被探针
-	// 击杀）。列在位 → 跳过 ALTER；4 参签名在位 → 跳过 DROP（CREATE OR
-	// REPLACE 始终执行，保持函数体与代码同步，锁窗口毫秒级）；backfill
-	// UPDATE 保留——成熟库空集毫秒级通过，有真实 broken_confirmed 行时是
-	// 必须执行的数据回填，不可短路。
-	if !d.columnsAllPresent(ctx, "_request_logs_hot", []string{"task_type", "origin_stage"}) {
-		if _, err := d.pool.Exec(ctx, `
-			ALTER TABLE IF EXISTS _request_logs_hot
-			    ADD COLUMN IF NOT EXISTS task_type TEXT,
-			    ADD COLUMN IF NOT EXISTS origin_stage VARCHAR(32);
-		`); err != nil {
-			return err
-		}
-	} else {
-		slog.Info("_request_logs_hot task_type/origin_stage columns ensured (catalog short-circuit)")
-	}
+	// ★ 2026-10-24（v1 → session_turns 替换轮）：本函数原来还有一条 v1 腿 ——
+	// 给 _request_logs_hot 补 task_type / origin_stage 两列（它在最热大表上，
+	// 是「每次 boot 取 ACCESS EXCLUSIVE」的最后一条）。v1 族随 890 退役 ⇒
+	// 该腿失效 ⇒ 删除。
+	//
+	// ⇒ 这两列由**会话族**提供：session_turns.task_type 在基线里，
+	//   session_turns.origin_stage 由迁移链补齐；recent_success_rate 的
+	//   函数体早已只读 session_turns_hot（见 recentSuccessRateEnsureSQL）。
+	// ⇒ 保留本注释是为了让「这一跳去哪了」在代码里一眼可见。
 	var fnMissing int
 	if err := d.pool.QueryRow(ctx, recentSuccessRateExistsSQL).Scan(&fnMissing); err != nil {
 		fnMissing = 1 // 探测出错走保守路径（含 DROP），自含幂等

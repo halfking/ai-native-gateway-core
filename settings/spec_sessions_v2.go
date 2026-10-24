@@ -15,7 +15,7 @@ func SessionsV2Specs() []*Spec {
 			Category:        CategorySession,
 			Default:         false,
 			Description:     "Sessions V2 总开关",
-			DescriptionLong: "启用会话存储V2架构。关闭时完全使用_request_logs，开启后根据其他开关决定读写路由。",
+			DescriptionLong: "启用会话存储V2架构。★ 2026-10-24：v1 `_request_logs` 族已随迁移 890 物理删除 ⇒ 「关闭时完全使用 V1」这条路已不存在；会话族是唯一事实源，本键与其余 sessions_v2.* 开关只影响会话族内部的读路由。",
 			Unit:            "",
 			DangerLevel:     Dangerous,
 			HotReload:       true,
@@ -28,7 +28,7 @@ func SessionsV2Specs() []*Spec {
 			Category:        CategorySession,
 			Default:         false,
 			Description:     "启用副写模式",
-			DescriptionLong: "副写模式：同时写入_request_logs和V2表，但仅从_request_logs读取。用于验证V2表写入正确性。需要enabled=true。",
+			DescriptionLong: "副写模式：写入 V2 表并保留 V1 读腿。用于验证 V2 表写入正确性。需要 enabled=true。★ 2026-10-24：V1 族已随迁移 890 退役 ⇒ 「同时写 _request_logs」这一半**没有落库对象**，本键当前只余「读路由」这一半的语义。",
 			Unit:            "",
 			DangerLevel:     Warning,
 			HotReload:       true,
@@ -69,7 +69,7 @@ func SessionsV2Specs() []*Spec {
 			Category:        CategorySession,
 			Default:         false,
 			Description:     "双读对账模式",
-			DescriptionLong: "同时读取_request_logs和V2表，对比结果差异并记录。用于验证V2读取正确性。需要enabled=true且l3_read=true。",
+			DescriptionLong: "同时读取 V1 与 V2 表，对比结果差异并记录。用于验证 V2 读取正确性。需要 enabled=true 且 l3_read=true。★ 2026-10-24：V1 族已随迁移 890 退役 ⇒ 双读里的一腿已消失，差异对比现在只反映会话族内部的两条读路径。",
 			Unit:            "",
 			DangerLevel:     Warning,
 			HotReload:       true,
@@ -82,17 +82,17 @@ func SessionsV2Specs() []*Spec {
 			Category:        CategorySession,
 			Default:         false,
 			Description:     "V2作为主读取源",
-			DescriptionLong: "将V2表作为主读取源，_request_logs作为降级备份。需要enabled=true且l3_read=true。与dual_read互斥。",
+			DescriptionLong: "将 V2 表作为主读取源，V1 作为降级备份。需要 enabled=true 且 l3_read=true。与 dual_read 互斥。★ 2026-10-24：V1 族已随迁移 890 退役 ⇒ 没有可降级的 V1 备份；降级路径若存在，只能是会话族内部的备用读源。",
 			Unit:            "",
 			DangerLevel:     Breaking,
 			HotReload:       true,
 			Observability:   "/api/admin/sessions/v2/primary_read_stats",
 		},
 		{
-			Key:             "sessions_v2.write_timeout_ms",
-			Type:            TypeInt,
-			Scope:           ScopePlatform,
-			Category:        CategorySession,
+			Key:      "sessions_v2.write_timeout_ms",
+			Type:     TypeInt,
+			Scope:    ScopePlatform,
+			Category: CategorySession,
 			// ★ 2026-10-20：500 → 2000。**这不是调参偏好，是修一个被静默撤销的修复。**
 			//
 			// internal/sessionv2mirror/hook.go 的注释写着「raise the default budget
@@ -115,17 +115,17 @@ func SessionsV2Specs() []*Spec {
 			//
 			// 判据：settings/session_write_timeout_default_test.go 钉住
 			// 「spec.Default == internal/sessionv2mirror 的常量」，两边不许再各写各的。
-			Default:         2000,
-			Description:     "V2写入超时时间",
+			Default:     2000,
+			Description: "V2写入超时时间",
 			DescriptionLong: "写入V2表的超时时间(毫秒)。超时后不阻塞主流程，异步重试。" +
 				"⚠️ 该默认值必须与 internal/sessionv2mirror 的 defaultShadowWriteTimeoutMs 一致：" +
 				"settings 的解析顺序是 DB → env → spec.Default → 代码 fallback，" +
 				"spec.Default 命中时代码里的常量不生效，两边不一致就等于悄悄改预算。",
-			Unit:            "毫秒",
-			DangerLevel:     Safe,
-			HotReload:       true,
-			Min:             floatPtr(100),
-			Max:             floatPtr(5000),
+			Unit:        "毫秒",
+			DangerLevel: Safe,
+			HotReload:   true,
+			Min:         floatPtr(100),
+			Max:         floatPtr(5000),
 		},
 		{
 			Key:             "sessions_v2.read_timeout_ms",
@@ -134,7 +134,7 @@ func SessionsV2Specs() []*Spec {
 			Category:        CategorySession,
 			Default:         300,
 			Description:     "V2读取超时时间",
-			DescriptionLong: "从V2表读取的超时时间(毫秒)。超时后降级到_request_logs。",
+			DescriptionLong: "从 V2 表读取的超时时间(毫秒)。★ 2026-10-24：原「超时后降级到 _request_logs」的那一腿已随迁移 890 退役 ⇒ 超时后的行为由会话族内部的读路由决定。",
 			Unit:            "毫秒",
 			DangerLevel:     Safe,
 			HotReload:       true,
@@ -238,7 +238,7 @@ func SessionsV2Specs() []*Spec {
 			Category:        CategorySession,
 			Default:         true,
 			Description:     "sessions_v2 启用时仍全量落库请求/响应体",
-			DescriptionLong: "兼容旧配置项：新请求始终全量保存 _request_logs_bodies。历史 false 值不再启用摘要写入；已有摘要信封仍可读取。",
+			DescriptionLong: "兼容旧配置项：新请求始终全量保存请求/响应体（会话族 session_bodies）。历史 false 值不再启用摘要写入；已有摘要信封仍可读取。★ 2026-10-24：原文写的 _request_logs_bodies 已随迁移 890 退役。",
 			Unit:            "",
 			DangerLevel:     Warning,
 			HotReload:       true,

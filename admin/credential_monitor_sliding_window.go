@@ -18,8 +18,12 @@ const (
 )
 
 // loadSlidingWindowEntries loads call entries for one credential×model pair.
-// Primary: Redis recorder; fallback: request_logs. Always returns a non-nil
+// Primary: Redis recorder; fallback: session_turns. Always returns a non-nil
 // entries slice so JSON never serializes to null.
+//
+// ★ 2026-10-24（v1 → session_turns 替换轮）：回退腿读的是会话族，值却写着
+//
+//	"_request_logs" ⇒ 运营读到一个不存在的表名 ⇒ 改成 "session_turns"。
 //
 // 2026-10-16 audit #153: tenantID + isTenantAdmin thread the caller's tenant
 // scope down to the SQL filter. Redis entries carry no tenant tag, so for
@@ -45,7 +49,7 @@ func (m *CredentialMonitorHandlers) loadSlidingWindowEntries(
 	}
 
 	if len(entries) == 0 {
-		source = "_request_logs"
+		source = "session_turns"
 		if m.h == nil || m.h.db == nil {
 			return entries, source, fmt.Errorf("database not configured")
 		}

@@ -9448,7 +9448,7 @@ embeddata 逐字 + lock_timeout + 自证断言 + down 只删账本 + **真库腿
 | 899 | `899_session_bodies_promote_body_sink.sql` | `66cddcb1b2531bd3298ab2fae631d9f55fdf21232e33b8e1a066937785accbac` | registered in installer StartupFiles + 生产升级序列（未应用，pending）—— promote 函数体下沉，逐字等于生产现行体 |
 | 900 | `900_freediscovery_schema_reassert.sql` | `b1f1a0c90cb706887e19007cc47867abe3b21e5c371ee832222be3531b09d9de` | registered in installer StartupFiles + 生产升级序列（未应用，pending）—— 084+087 再投递（896 同款交付缺口修复：升级通道只把 ≥412 视为 pending ⇒ 084 从未到达生产 ⇒ free-discovery 503）。幂等；down：`900_freediscovery_schema_reassert.down.sql`（sha256 `2d8ef1a038df25ce17c59bd68b86acd15be74e935f6a3b8c32666ea4fe1d94c3`） |
 | 901 | `901_usage_ledger_api_key_id_ts_idx.sql` | `a94c1dfe31a7cead3957141ba9615db0cedae49feb88786e3c3422b29a8d0195` | registered in installer StartupFiles + 生产升级序列（未应用，pending）—— usage_ledger 分区父表补 (api_key_id, ts DESC) WHERE api_key_id IS NOT NULL（实测 7 天空窗 6,983 ms 的根因）。891 同款 lock_timeout=60s / statement_timeout=10min；down：`901_usage_ledger_api_key_id_ts_idx.down.sql`（sha256 `bea9ec9a2741758ebd7076c9c1387e630e62994c6100b3b99b32c64fb9fcbc6b`） |
-| 902 | `902_stats_event_dedup_pkey_include.sql` | `5871f9a63b4565a4419a6119efc96434ce49d32d5d7fb5d9adc5e30f37db7f8b` | registered in installer StartupFiles + 生产升级序列（未应用，pending）—— stats_event_dedup 索引合并：pkey 换体 UNIQUE(event_id) INCLUDE(occurred_at) + 删 845 复合索引（252 只读实测 pkey 114 MB + 复合 151 MB ⇒ 净省 ~114 MB）。`dbinit:no-transaction` + CONCURRENTLY + lock_timeout=60s / statement_timeout=10min；消费方无损本地一次性库实测（ON CONFLICT / 四处双列 JOIN Index Only / 唯一性不变式）；down：`902_stats_event_dedup_pkey_include.down.sql`（sha256 `0798829325a28bab9be005bfc6137437e51229d8128a1fbf8bfc6bcf1e8ef00f`） |
+| 902 | `902_stats_event_dedup_pkey_include.sql` | `d09a79791edf6c5160e31b59cca6a5c3fff47d8dada5ded2255df63680260829` | registered in installer StartupFiles + 生产升级序列（未应用，pending）—— stats_event_dedup 索引合并：pkey 换体 UNIQUE(event_id) INCLUDE(occurred_at) + 删 845 复合索引（252 只读实测 pkey 114 MB + 复合 151 MB ⇒ 净省 ~114 MB）。`dbinit:no-transaction` + CONCURRENTLY + lock_timeout=60s / statement_timeout=10min；消费方无损本地一次性库实测（ON CONFLICT / 四处双列 JOIN Index Only / 唯一性不变式）；down：`902_stats_event_dedup_pkey_include.down.sql`（sha256 `0798829325a28bab9be005bfc6137437e51229d8128a1fbf8bfc6bcf1e8ef00f`） | ★ **2026-10-24 12h 审计轮修正（★ 本轮唯一实测复现的真缺陷）**：补**前置于 ①** 的步骤 ⓪ —— 只清理**无效**（indisvalid=false）的残留 tmp 索引。★ 根因：`CREATE UNIQUE INDEX CONCURRENTLY **IF NOT EXISTS**` **只看名字、不看 validity** ⇒ ⇒ 上一次 CONCURRENTLY 构建失败（statement_timeout=10min 被触发 / 连接中断 / 构建被取消）留下的 invalid 索引会让 ① **跳过创建** ⇒ ⇒ ② 的形状守卫必然抛错 ⇒ ⇒ **每次重跑走同一条路径 ⇒ 永久卡死**（★ 902 是 installer StartupFiles 链尾 ⇒ ⇒ 它失败 = 新装链与升级链都断）。★ 修前/修后均在一次性 PG 容器实测：修前 `ERROR: 902: tmp index ... missing/invalid/wrong-shape — refusing to swap pkey`；修后换体成功落到 `PRIMARY KEY (event_id) INCLUDE (occurred_at)` 且不留孤儿。★ **迁移语义未变**（只在存在 invalid 残留时才动手；合法 tmp 索引不动）；★ **对生产的写入 = 0**（902 仍未应用，待属主授权）。
 | 903 | `903_sessions_updated_at_session_id_index.sql` | `404503d920252f171d313c6235c28bbe93d5d7241104000371d41f9555349d48` | registered in installer StartupFiles + 生产升级序列（未应用，pending）—— public.sessions 分区父表补 (updated_at DESC, session_id DESC) 索引。★ 根因：会话列表排序键 (updated_at DESC, session_id DESC) **没有任何索引能提供该序** ⇒ Seq Scan + top-N Sort 必须物化 439,106 行才能吐第一行 ⇒ Limit 无法提前停 ⇒ 整条 JOIN 链跑满（GET /api/admin/turns/sessions 生产恒 500@30s）。★ 252 EXPLAIN ANALYZE 实测：原查询 32,089.911 ms → 只加索引 3.639 ms，shared hit 9,876,509 → 640，去重 SubPlan 439,570 次循环 → 22 次。★ 口径零变化：不改任何查询；同一 REPEATABLE READ 快照内两个结果集 22 行（含表头）逐字一致。★ 被否证的路线（别再试）：只补 session_titles(scoped_session_id) —— 单变量 A/B 实测该 LATERAL 仅占 8.25s/32,089.911 ms（26%）。★ 普通 CREATE INDEX（分区父表不支持 CONCURRENTLY）+ lock_timeout=60s / statement_timeout=10min（891/901 同款）；public.sessions 是热写表（session_aggregator.go:216 每请求一次 upsert）⇒ 构建期 SHARE 锁阻塞该分区写 ⇒ 落在低峰窗口；down：`903_sessions_updated_at_session_id_index.down.sql`（sha256 `fef2844f9b2ea0b835239cfd6da67198b9855df90eacb4e40f5b7caf108d673d`） |
 ## 2026-10-23T17:18:26Z — deploy 245 build_seq 2820 (a88bf82f)
 
@@ -9459,22 +9459,3 @@ embeddata 逐字 + lock_timeout + 自证断言 + down 只删账本 + **真库腿
 | 900 | `900_freediscovery_schema_reassert.sql` | `b1f1a0c90cb706887e19007cc47867abe3b21e5c371ee832222be3531b09d9de` | applied+verified |
 | 901 | `901_usage_ledger_api_key_id_ts_idx.sql` | `a94c1dfe31a7cead3957141ba9615db0cedae49feb88786e3c3422b29a8d0195` | applied+verified |
 
-
-## 2026-10-24T02:31:00+08:00 — deploy 245 build_seq 2823 (3e0d22fb) 上线记录（手动补记）
-
-★ 2820（a88bf82f）与 2823 两次自动部署均在切换步失败（蓝绿：8782 被
-ai-session-manager 占用 fail-close；legacy：死旗标 + 弃用 unit，见下），
-部署脚本的 db-changelog 事件行只在成功时写 ⇒ 本行由 2026-10-24 批判审计轮
-**手动补记**。迁移账（898/899/900/901）已在 2820 那次应用并记账（见上节），
-2823 未应用新迁移（水位不变 901）。
-
-★ 上线路径（非常规，如实登记）：deploy-seamless 的 `--legacy-restart` 是死旗标
-（主流程 :404 无条件重置，已修）+ legacy `host_restart_service` 按 targets.sh:220
-停的是弃用 unit `llmgo-245.service` ⇒ 两条自动通道均不可用 ⇒ 用**受控手动交换**
-完成：`ln -sfn releases/2823-3e0d22fb slots/8781` + `systemctl restart
-llmgo-245-canary@8781`（canary unit ExecStart 直接跑 slots/%i/gateway）⇒ 15s
-healthz 200。防回归门：`tests/deploy_legacy_restart_flag_test.sh`（负控已验）。
-
-| Migration | File | SHA-256 | Status |
-|-----------|------|---------|--------|
-| — | （2823 无新迁移，水位仍为 901） | — | — |

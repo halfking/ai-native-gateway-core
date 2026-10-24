@@ -124,8 +124,26 @@ guards: guards-installer guards-ursmcheck guards-shell ## 运行全部审计守�
 #     ⇒ 它的枚举面/判据会**静默腐坏**，而既往审计的修复表把它列为「门（已修）」。
 #   ⇒ 两个门判据同源、扫描面已对齐（vendor 等跳过集逐项一致）⇒ 现在可以安全接线。
 #   ⇒ 约 1~2s，无外部依赖。
+#
+# ★★ 2026-10-24 R147 轮（12h 审计）：★ **上面那句「判据同源」曾经变成假话**。
+#   · 接线那天（10-22 12:55）两门确实同口径；
+#   · 但 Go 门在 3c9e42d41（10-23 07:21）**升级了扫描器**
+#     （加了「尾随注释」与「`\$` 转义」两条口径）⇒ **shell 门没跟着升**
+#     ⇒ 两门判据漂移 ⇒ 976a2b8de（10-24 01:32，窗口内）声称
+#       「收口【origin/main 上就红】的 CJK 门」时**只收了 Go 侧**
+#       ⇒ shell 侧一直红 ⇒ **origin/main 上 `make guards` 就是红的**
+#       （pristine 对拍实测 rc=1，报 5 处，**全是假阳性**：
+#         2 处尾随注释 + 3 处转义美元 `\$remote_addr`）。
+#   ⇒ 本轮把 shell 门的判据**对齐到 Go 门**（改门不改那 5 处代码 ——
+#     那 5 处的写法是对的，改代码会破坏断言语义），
+#     并新增 scripts/ursmcheck/shell_fullwidth_var_gate_test.go
+#     **把「两门同源」钉成可执行断言**（同一个合成语料喂两门 ⇒ 比对命中集合；
+#       变异台实测：把旧门换回去 ⇒ 3 条测试全红）。
+#   ⇒ ★ 扫描面**故意**仍比 Go 门宽：Go 门只扫 git 追踪的文件（它要拿读数
+#     对棘轮登记册 ⇒ 读数必须确定）；shell 门扫「已跟踪 ∪ 未跟踪未忽略」
+#     ⇒ 新写好还没 git add 的脚本也在视野里 ⇒ 本门无登记册 ⇒ 宽面不引入不确定性。
 .PHONY: guards-shell
-guards-shell: ## 全角变量 shell 门（与 Go 门同判据、同扫描面；此前未接线）
+guards-shell: ## 全角变量 shell 门（判据与 Go 门逐字一致；扫描面含未跟踪文件，比 Go 门宽）
 	@bash scripts/guards/check-shell-fullwidth-var.sh
 
 # scripts/ursmcheck 的 94 个门文件（≈5~6 分钟，比主门慢一个量级 ⇒ 独立 timeout）
