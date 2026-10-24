@@ -358,3 +358,79 @@ func TestR82SessionCountAvailableWhenRecordsCarrySessionID(t *testing.T) {
 		t.Errorf("★ 会话数必须是去重后的真实值 2，实测 %d", summary.TotalSessions)
 	}
 }
+
+// TestR82SummaryMustKeepStatMetadataWhenCountsFail（★ R82b：元信息 ≠ 统计）
+//
+// ★ 生产读数抓到的回归（R82 第一版）：统计被 ctx 截断时，
+//
+//	摘要对外说「备份总大小 **0**」而文件清单里明明有 100 个文件
+//	（2829 的读数是 5178224736 / "2026-08-17 to 2026-10-24"）。
+//
+// ⇒ ★ **「统计失败」不等于「元信息没有」** ——
+//
+//	大小/日期来自 **stat**，与解压无关 ⇒ **必须**照报。
+func TestR82SummaryMustKeepStatMetadataWhenCountsFail(t *testing.T) {
+	dir := t.TempDir()
+	path := r80WriteBackup(t, dir, "sessions-2026-10-20.jsonl.gz", []string{"s1", "s2"})
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("★ stat 失败：%v", err)
+	}
+
+	fr := NewFileReader(dir)
+	fr.summaryRefreshDisabled = true
+	// ★ ctx 已取消 ⇒ 统计必然失败
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	// ★★ 两条路径**都要**覆盖（★ M15 第一版只变异了其中一条 ⇒ 门恒绿 ⇒ 没牙）：
+	//	① 请求路径（allowSalvage=false）—— ★ 生产回归就发生在这里；
+	//	② 后台刷新路径（allowSalvage=true）。
+	for _, allowSalvage := range []bool{false, true} {
+		summary, _, _ := fr.computeSummaryWith(ctx, mustListBackupFiles(t, fr), allowSalvage)
+		if summary == nil {
+			t.Fatalf("★ 摘要为 nil（allowSalvage=%v）", allowSalvage)
+		}
+		if summary.TotalSize != info.Size() {
+			t.Errorf("★ 统计失败时【大小】仍须照报（它来自 stat，与解压无关）：allowSalvage=%v 期望 %d 实测 %d",
+				allowSalvage, info.Size(), summary.TotalSize)
+		}
+		if summary.DateRange == "" {
+			t.Errorf("★ 统计失败时【日期范围】仍须照报（它来自文件名，与解压无关）：allowSalvage=%v", allowSalvage)
+		}
+	}
+}
+
+// TestR82SummaryMustKeepStatMetadataWhenBothPathsFail（★ R82b：两条路都失败）
+//
+// ★ 上一条门只覆盖了「ctx 提前退出」那一条分支（★ M15 第一版 ⇒ 门恒绿 ⇒ 没牙）。
+//
+// ⇒ 这里覆盖**真正会失败的那条**：【流式失败 + 打捞也失败】
+//
+//	（生产形态：不是 gzip 的文件）⇒ 摘要仍必须报 stat 级的大小/日期。
+func TestR82SummaryMustKeepStatMetadataWhenBothPathsFail(t *testing.T) {
+	dir := t.TempDir()
+	path := r80WriteRawBackup(t, dir, "sessions-2026-10-20.jsonl.gz", []byte("this-is-not-gzip"))
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("★ stat 失败：%v", err)
+	}
+
+	fr := NewFileReader(dir)
+	fr.summaryRefreshDisabled = true
+	ctx := context.Background()
+
+	for _, allowSalvage := range []bool{false, true} {
+		summary, _, _ := fr.computeSummaryWith(ctx, mustListBackupFiles(t, fr), allowSalvage)
+		if summary == nil {
+			t.Fatalf("★ 摘要为 nil（allowSalvage=%v）", allowSalvage)
+		}
+		if summary.TotalSize != info.Size() {
+			t.Errorf("★ 两条路都失败时【大小】仍须照报：allowSalvage=%v 期望 %d 实测 %d",
+				allowSalvage, info.Size(), summary.TotalSize)
+		}
+		if summary.DateRange == "" {
+			t.Errorf("★ 两条路都失败时【日期范围】仍须照报：allowSalvage=%v", allowSalvage)
+		}
+	}
+}

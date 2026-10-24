@@ -81,21 +81,26 @@ func (fr *FileReader) readFileSummaryResilient(ctx context.Context, filename str
 	streamErr := err
 
 	if !allowSalvage {
-		return fileSummaryOutcome{err: streamErr}
+		// ★ R82b 轮（生产读数抓到的回归）：**统计失败 ≠ 元信息没有**
+		//	⇒ 必须保留 stat 级的元信息（大小/日期）
+		//	⇒ 否则摘要会对外说「备份总大小 0」而文件清单明明有 100 个文件
+		//	（2829 的读数是 5178224736 / "2026-08-17 to 2026-10-24"）。
+		return fileSummaryOutcome{file: file, err: streamErr}
 	}
 
 	// ★ 预算已经耗尽 ⇒ **不要**再进打捞：
 	//	打捞会 `os.ReadFile` 把整个文件读进内存（**不理会 ctx**）
 	//	⇒ 预算耗尽后仍逐个文件打捞 = IO 风暴（53 个坏文件 × 105MB）。
 	if ctxErr := ctx.Err(); ctxErr != nil {
-		return fileSummaryOutcome{err: streamErr}
+		return fileSummaryOutcome{file: file, err: streamErr}
 	}
 
 	// ② 回退：打捞（能读出坏文件里的记录）
 	salvaged, salvageSessions, loss, salvErr := fr.readFileSummarySalvage(ctx, filename)
 	if salvErr != nil {
 		return fileSummaryOutcome{
-			err: fmt.Errorf("流式失败（%v）且打捞失败：%w", streamErr, salvErr),
+			file: file,
+			err:  fmt.Errorf("流式失败（%v）且打捞失败：%w", streamErr, salvErr),
 		}
 	}
 	atomic.AddInt64(&fr.summarySalvageFallbacks, 1)

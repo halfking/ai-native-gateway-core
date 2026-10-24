@@ -539,16 +539,33 @@ func (fr *FileReader) GetBackupSummary(ctx context.Context) (*BackupSummary, err
 	//
 	//	★ R82 轮：请求路径**不做**打捞回退（打捞对坏文件要 ~11min
 	//	⇒ 5s 预算里必然被打断 ⇒ 只会更空）；后台刷新才做回退。
+	//
+	//	★★★ R82b 轮（**生产读数抓到的活锁**）：这里就地算出来的
+	//	**partial 结果绝不能写缓存** ——
+	//	★ 生产实测（2830）：后台刷新跑完（写出**真实记录数**的 partial），
+	//		而当天日文件被改写 ⇒ 指纹变 ⇒ 下一次请求走本路径
+	//		⇒ 就地算被 5s 预算截断（记录数 **0**）
+	//		⇒ ★ **覆盖掉了后台刷新的好结果** ⇒ 端点继续显示「记录数 0」
+	//		⇒ ★⇒ 而指纹**每天都会变** ⇒ 真实数字每天只存在十几分钟
+	//	⇒ ⇒ **规则：只有【后台刷新】的结果才写缓存**；
+	//	　　请求路径的就地结果**只给本次请求**（⇒ 零 IO 浪费，也零覆盖）。
+	//
+	//	★ 附带：**后台刷新正在跑**时 ⇒ **不做**就地计算
+	//	（否则刷新窗口内的每个请求都要白烧 5s CPU）。
+	if fr.summaryRefreshing.Load() {
+		fr.triggerSummaryRefresh(files, fingerprint)
+		return nil, backupSummaryError("备份摘要正在后台重算，请稍后重试")
+	}
 	summary, partial, perr := fr.computeSummaryWith(ctx, files, false)
 	if perr != nil && !partial {
 		return nil, backupSummaryError(perr.Error())
 	}
+	// ★ R82b 轮：就地计算的**部分结果不写缓存**（见上面的活锁说明）
 	if !partial {
 		fr.storeSummary(summary, fingerprint, false, "")
 		atomic.AddInt64(&fr.summaryComputations, 1)
 		return cloneBackupSummary(summary), nil
 	}
-	fr.storeSummary(summary, fingerprint, true, perr.Error())
 	// ★ R82 轮：冷启动路径也**必须**触发后台刷新
 	//	（否则要等到**第二次**请求才会触发 ⇒ 只有一个用户打开页面时，
 	//	 真实数字永远出不来）。

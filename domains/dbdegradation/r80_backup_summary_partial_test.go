@@ -76,11 +76,29 @@ func TestR80TruncatedSummaryMustReportPartial(t *testing.T) {
 	}
 }
 
-// TestR80PartialResultIsCachedButMarked（★ 不变量②）
+// TestR80PartialResultIsCachedButMarked（★ 不变量② —— ★ **R82b 轮改判据**）
 //
-// ★ 部分结果**可以被缓存**（否则每次请求都要重解压 5GB ⇒ 共享生产机上不可接受），
+// ★ **R80 当时守的是**：「部分结果**可以被缓存**（否则每次请求都要重解压 5GB
 //
-//	但缓存里**必须带 partial 标记** ⇒ 下一次调用仍然返回 error。
+//	⇒ 共享生产机上不可接受），但缓存里**必须带 partial 标记**」。
+//
+// ★★ **R82b 轮的订正（生产读数抓到的活锁）**：R80 的这条门在 R82 之后，
+//
+//	它守的**意图**（避免重复解压）**仍然成立**，但它当时用的**手段**
+//	——「把【请求路径的就地计算结果】写进缓存」—— **变成了有害的**：
+//
+//	★ 生产实测（2830）：后台刷新跑完（写出**真实记录数**的 partial 结果），
+//		而当天日文件被改写 ⇒ 指纹变 ⇒ 下一次请求走「就地计算」路径
+//		⇒ 就地结果被 5s 预算截断（记录数 **0**）
+//		⇒ ★ **覆盖掉后台刷新的好结果** ⇒ 端点继续显示「记录数 0」
+//		⇒ ★⇒ 指纹**每天都会变** ⇒ 真实数字每天只存在十几分钟。
+//
+// ⇒ ⇒ ★★ **判据改为**：
+//
+//	① **请求路径**的就地结果（尤其 partial）⇒ **不写缓存**（绝不覆盖好结果）
+//	② **后台刷新**的结果（完整或 partial）⇒ **写缓存**，且 partial **必须带标记**
+//
+// ★ 这就是「**门红了先读门在守什么**」：门没坏，**判据的适用边界变了**。
 func TestR80PartialResultIsCachedButMarked(t *testing.T) {
 	dir := t.TempDir()
 	r80WriteBackup(t, dir, "sessions-2026-10-20.jsonl.gz", []string{"s1", "s2"})
@@ -97,12 +115,52 @@ func TestR80PartialResultIsCachedButMarked(t *testing.T) {
 		t.Fatal("★ 截断的计算必须报错")
 	}
 
-	// ★ 缓存里应当有一份「带 partial 标记」的摘要
+	// ★★ R82b 轮：**请求路径**的就地结果**不得**写缓存
+	//	（否则它会覆盖后台刷新的好结果 ⇒ 生产读数实证的活锁）
+	fr.summaryMu.Lock()
+	cached := fr.summaryCache
+	fr.summaryMu.Unlock()
+	if cached != nil {
+		t.Errorf("★ 请求路径的就地计算结果不得写缓存（它会被 5s 预算截断成「记录数 0」"+
+			"⇒ 覆盖后台刷新的真实结果）—— 实测缓存里有一份 %+v", cached)
+	}
+}
+
+// TestR82bBackgroundPartialResultMustBeCachedAndMarked（★ 不变量②·后台侧）
+//
+// ★ 与上一条成对：请求路径**不**写缓存 ⇒ 那么**后台刷新**的结果就是
+//
+//	**唯一**的缓存来源 ⇒ 它（哪怕是 partial）**必须**被缓存，
+//	且 partial **必须带标记**（否则下一次调用会把它当完整结果交出去）。
+func TestR82bBackgroundPartialResultMustBeCachedAndMarked(t *testing.T) {
+	dir := t.TempDir()
+	// 坏文件 ⇒ 统计必然不完整 ⇒ 后台刷新的结果必然是 partial
+	r80WriteRawBackup(t, dir, "sessions-2026-10-20.jsonl.gz", []byte("this-is-not-gzip"))
+
+	fr := NewFileReader(dir)
+	ctx := context.Background()
+
+	// ★ 触发后台刷新（请求路径 ⇒ 冷启动 ⇒ 触发）
+	if _, err := fr.GetBackupSummary(ctx); err == nil {
+		t.Log("★ 提示：请求路径返回了完整结果")
+	}
+	// ★ 等后台刷新跑完
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		fr.summaryMu.Lock()
+		cached := fr.summaryCache
+		fr.summaryMu.Unlock()
+		if cached != nil {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
 	fr.summaryMu.Lock()
 	cached := fr.summaryCache
 	fr.summaryMu.Unlock()
 	if cached == nil {
-		t.Fatal("★ 部分结果应当被缓存（否则每次请求都要重解压）")
+		t.Fatal("★ 后台刷新的结果必须被缓存（它是唯一的缓存来源）")
 	}
 	if !cached.partial {
 		t.Error("★ 缓存里的部分结果必须带 partial 标记（否则下一次调用会把它当完整结果交出去）")
