@@ -2217,6 +2217,36 @@ files=(
   #   statement_timeout='10min'（903 同款）。两张都是热写表 ⇒ 构建期持
   #   SHARE 锁阻塞该表写入 ⇒ 落在低峰窗口。
   "$ROOT_DIR/sql/migrations/startup/904_inspector_stats_partial_indexes.sql"
+
+  # ── 2026-10-24（R92 稀有过滤 500@30s 轮）：model 维度复合索引 ──
+  #
+  # 905：`?model=` 这类**稀有**轮次级过滤的索引。
+  #
+  # ★ 病灶（252 生产只读实测，2026-10-24）：GET /api/admin/turns/sessions
+  #   带 `?model=` 时**恒 500@30s**。build 2841（R90 的两腿 EXISTS 已上线）
+  #   直连 REPEAT=3：
+  #     ?limit=20                       200 200 200   0.878 0.155 0.111 s
+  #     ?limit=20&api_key_id=105        200 200 200   9.576 0.216 0.151 s
+  #     ?limit=20&model=deepseek-ai%2F…  500 500 500  30.008 30.007 30.018 s
+  #     ?limit=20&provider=14           200 200 200   0.358 0.100 0.080 s
+  #     ?limit=20&status_code=500       200 200 200   0.554 0.181 0.153 s
+  #   ⇒ ★★ R90「四条全修」的结论被证伪（只有 model 那条仍 500）。
+  # ★ 真因不是「形状」而是**稀有过滤值 ⇒ 外层会话深扫**：该 model 命中
+  #   458 轮 / **30 个会话**，而 public.sessions 有 441,112 个会话；列表是
+  #   `ORDER BY s.updated_at DESC LIMIT 21` ⇒ 必须扫到凑够 21 行
+  #   ⇒ EXPLAIN 实测外层 Rows Removed by Filter: 72,455 + 277,899 = 350,354。
+  # ★ 修复效果（事务内建索引 + EXPLAIN ANALYZE + ROLLBACK，生产零持久变更）：
+  #   model（稀有） 30,008 ms → 8.0 ms；provider='14' 358 ms → 48.6 ms；
+  #   status_code=500 554 ms → 249.6 ms。
+  # ★ 只给 model 建索引：provider n_distinct=20、status_code n_distinct=8
+  #   ⇒ 没有选择性 ⇒ 给它们建索引会让规划器更倾向「轮次驱动 + 大哈希构建」
+  #   ⇒ 实测退化到 10,080 ms。
+  # ★ public.session_turns 是**分区热写表** ⇒ 分区父表不支持 CONCURRENTLY
+  #   ⇒ 普通 CREATE INDEX（仍不用 CONCURRENTLY：startup 迁移默认在事务里跑）
+  #   + SET LOCAL lock_timeout='60s' / statement_timeout='10min'（903/904 同款）。
+  #   实测构建 18,512 ms（父表）+ 28 ms（hot）⇒ ★ 这 ~18.5 秒里
+  #   session_turns 的写入被 SHARE 锁阻塞 ⇒ 落在低峰窗口。
+  "$ROOT_DIR/sql/migrations/startup/905_turns_session_model_index.sql"
 )
 
 

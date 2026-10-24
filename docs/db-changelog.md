@@ -9503,3 +9503,42 @@ healthz 200。防回归门：`tests/deploy_legacy_restart_flag_test.sh`（负控
 |-----------|------|---------|--------|
 | 904 | `904_inspector_stats_partial_indexes.sql` | `d2cd82dccf0ff6060ba11c3f593484e445e46ac44cba4b057edf12d45b25af20` | applied+verified |
 
+
+## 2026-10-27 — R92 稀有过滤 500@30s 轮（迁移 905 落仓 + R90 结论被证伪）
+> ★ **日期口径**：本节标题的「2026-10-27」是本系列的**轮次标签**；★ 实测时钟与 git 提交
+> ★ 时刻均为 **2026-10-24** ⇒ 以 2026-10-24 为准。
+
+★ 本节登记 1 条 startup 迁移（905）。
+生产共享库（172.16.2.210:5432/llm_gateway）2026-10-24 只读实测水位 = **904**
+（`schema_migrations` 实查：902 / 903 / 904 均 applied；904 applied_at = 2026-10-24 15:42:54+08）
+⇒ 905 是**唯一**待投递项。
+
+★ **本轮最重要的发现不是新迁移，而是对 R90 结论的证伪**：
+build 2841（R90 的两腿 EXISTS 已上线）154 直连 REPEAT=3 实测 ——
+`?limit=20` 200×3（0.878/0.155/0.111 s）、`?api_key_id=105` 200×3、
+`?provider=14` 200×3、`?status_code=500` 200×3，
+★ **但 `?model=deepseek-ai%2Fdeepseek-coder-6.7b-instruct` 仍 500×3（30.008/30.007/30.018 s）**
+⇒ ★★ **R90「四条过滤路径全部修好」的结论不成立**（3/4）。
+
+★ **真因不是「形状」而是「稀有过滤值 ⇒ 外层会话深扫」**（252 生产只读实测，2026-10-24）：
+该 model 命中 **458 轮 / 30 个会话**，而 `public.sessions` 有 **441,577 行 / 441,112 个会话**；
+会话列表是 `ORDER BY s.updated_at DESC, s.session_id DESC LIMIT 21` ⇒ **必须扫到凑够 21 行**
+⇒ EXPLAIN ANALYZE 实测外层 `Rows Removed by Filter: 72,455 + 277,899 = **350,354**`。
+★ 已排除「统计信息陈旧」：`session_turns` last_analyze=2026-10-19、
+`session_turns_2026_10` last_autoanalyze=2026-10-24 ⇒ 统计新鲜；
+规划器估 128 行 vs 实际 458 行（只低估 3.6×）⇒ 不是统计缺失能解释的量级。
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 905 | `905_turns_session_model_index.sql` | `59ae826b819edd652b6825ec61c02282bfabe04d716a71323e1e40b5cb038922` | registered in installer StartupFiles + 生产升级序列 `scripts/apply-db-revision-sequence.sh`（未应用，pending）—— 给 `GET /api/admin/turns/sessions` 的 `?model=` 稀有过滤补两条 model 维度复合索引：`public.session_turns (model, tenant_id, session_id)`（idx_session_turns_model_session，分区父表 ⇒ 自动传播到子分区）+ `public.session_turns_hot (model, tenant_id, session_id)`（idx_session_turns_hot_model_session，3,073 行）。★ 配套的**代码侧改动**（同批上线）：`db.SessionFamilyTurnsSessionExistsSQL` 的形态从「两条 EXISTS 用 OR 组合」改成「**派生表 UNION ALL + 单一 EXISTS**」⇒ OR 形态只能被规划成**会话驱动**，而派生表可被 planner pull-up ⇒ **两个驱动方向都可选**：过滤值稀有 ⇒ 轮次驱动（外层只剩 30 行），过滤值常见 ⇒ 会话驱动（前 21 个会话立刻凑齐）。★ 效果（252 生产事务内 CREATE INDEX + EXPLAIN ANALYZE + ROLLBACK ⇒ 生产零持久变更；回滚后残留索引实测 = 0）：`?model=` 稀有值 **30,008 ms → 8.0 ms**；`provider='14'` **358 ms → 48.6 ms**；`status_code=500` **554 ms → 249.6 ms**。★ **口径等价**（252 生产同快照双向 EXCEPT ALL，model 与 provider 各 21 行）：`only_r90=0 / only_v2=0` ⇒ 两形态**逐行一致**（只差求值顺序）；结构上同谓词集、同半连接语义（NULL 两侧都用 `=` ⇒ NULL 不匹配）。★ **只给 model 建索引**：provider n_distinct=20、status_code n_distinct=8 ⇒ 没有选择性 ⇒ 给它们建索引会让规划器更倾向「轮次驱动 + 大哈希构建」⇒ 实测退化到 **10,080 ms**。★ `public.session_turns` 是**分区热写表**（父表 4.7 GB / 1,014,911 行）⇒ 分区父表不支持 CONCURRENTLY ⇒ 普通 CREATE INDEX + lock_timeout=60s / statement_timeout=10min（903/904 同款）；实测构建 **18,512 ms**（父表）+ 28 ms（hot）⇒ ★ 这 ~18.5 秒里 session_turns 的写入被 SHARE 锁阻塞 ⇒ 落在低峰窗口。★ 诚实边界：V2 形态的「轮次驱动」分支**硬依赖**本迁移的索引 —— 无索引时实测 V2/model=稀有 = **205,708 ms**（规划器退化成「每行对 110 万轮顺序扫」的嵌套循环半连接）；生产上由启动迁移在**新二进制对外服务之前**建好索引（窗口为 0），若索引被回滚而二进制未回滚 ⇒ HTTP 症状与今天**相同**（角色级 statement_timeout=30s ⇒ 同样 500@30s），不会更差但会白烧 30s DB 时间。★ down：`905_turns_session_model_index.down.sql`（sha256 `52da420021864b4639957b721dc235b3a2b4344ef68f55d5d06c9f41035c32d9`） |
+
+## 2026-10-24T09:39:00Z — deploy 154 build_seq 2841 (9cf051aa)
+
+★ R90 的两腿 EXISTS 改写上线（本节**无新迁移**：pending 集为空 ⇒ 水位仍为 904）。
+★ 本次发版**首次失败**并归因到部署工具链（见 `docs/audit/2026-10-27-R91-发版2841被远端锁挡住-SSH传输层四层缺陷.md`）：
+报错 `remote lock held or initialization failed` 其实是 **SSH 传输层失败**（154 的 sshd 按
+MaxStartups 默认 `10:30:100` 在 pre-auth 阶段随机丢弃 ~30% 连接 + 机器人扫描）⇒ 锁从未被持有。
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| — | （2841 无新迁移，水位仍为 904） | — | — |

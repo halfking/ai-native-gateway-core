@@ -61,6 +61,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -73,9 +74,14 @@ import (
 
 // ── ① 形状门 ───────────────────────────────────────────────────────────────
 
-// r90CheckExistsSQL 校验 helper 的渲染形态，返回问题描述列表（空 = 合格）。
+// r92CheckExistsSQL 校验 helper 的渲染形态，返回问题描述列表（空 = 合格）。
 // ★ 抽成纯函数 ⇒ 阳性对照喂坏样本走同一把尺子。
-func r90CheckExistsSQL(s string) []string {
+//
+// ★ R92 起形态是「**派生表 UNION ALL + 单一 EXISTS**」（V2）。
+//   R90 的「两条 EXISTS 用 OR 组合」**锁死了驱动方向**（只能会话驱动）
+//   ⇒ 稀有过滤值时外层要扫 35 万个会话才凑够 LIMIT 21 ⇒ 生产 500@30s
+//   （2026-10-24 build 2841 实测：model 仍 500×3，provider/status_code 已 200）。
+func r92CheckExistsSQL(s string) []string {
 	var problems []string
 
 	if strings.Contains(s, "session_turns_with_current_month") {
@@ -88,22 +94,32 @@ func r90CheckExistsSQL(s string) []string {
 	if strings.Contains(s, "%") {
 		problems = append(problems, "渲染结果含 '%' —— 会被 fmt.Sprintf 当格式动词吃掉（§5.5.4 事故）")
 	}
+	// ★★ R92 新增判据：必须是「派生表 UNION ALL」形态。
+	//   派生表可被 planner pull-up ⇒ 半连接的两个驱动方向都可选
+	//   （稀有过滤 ⇒ 轮次驱动；常见过滤 ⇒ 会话驱动）。
+	if !strings.Contains(s, "UNION ALL") {
+		problems = append(problems, "缺 UNION ALL（派生表形态）—— 退回 OR 两腿 ⇒ 锁死会话驱动 ⇒ 稀有过滤值仍 500@30s")
+	}
+	if strings.Contains(s, "OR EXISTS") {
+		problems = append(problems, "出现 OR EXISTS —— 那是 R90 形态，锁死驱动方向 ⇒ 稀有过滤值仍 500@30s")
+	}
+	// 派生表必须**两条腿都在**（少一条 ⇒ 漏读已 promote 的轮次）。
 	for _, leg := range []string{
-		"EXISTS (SELECT 1 FROM public.session_turns_hot t",
-		"OR EXISTS (SELECT 1 FROM public.session_turns t",
+		"FROM public.session_turns t",
+		"FROM public.session_turns_hot t",
 	} {
 		if !strings.Contains(s, leg) {
 			problems = append(problems, "缺两腿之一："+leg)
 		}
 	}
-	// 每条腿都必须带 session_id + tenant_id 谓词（否则会退化成全表扫）。
+	// 关联谓词（缺一条 ⇒ 跨租户 + 全表扫）。
 	for _, pred := range []string{
-		"t.session_id = s.session_id",
-		"t.tenant_id = s.tenant_id",
+		"ft.session_id = s.session_id",
+		"ft.tenant_id = s.tenant_id",
 	} {
-		if strings.Count(s, pred) != 2 {
+		if strings.Count(s, pred) != 1 {
 			problems = append(problems, fmt.Sprintf(
-				"谓词 %q 出现 %d 次（应为 2 = 两腿各一次）—— 缺一条腿的 session/tenant 约束 ⇒ 全表扫",
+				"谓词 %q 出现 %d 次（应为 1 = 派生表上一次）—— 缺一条腿的 session/tenant 约束 ⇒ 全表扫",
 				pred, strings.Count(s, pred)))
 		}
 	}
@@ -115,8 +131,9 @@ func r90CheckExistsSQL(s string) []string {
 }
 
 func TestR90_SessionExistsSQLShape(t *testing.T) {
-	got := db.SessionFamilyTurnsSessionExistsSQL("t.model = $1")
-	if problems := r90CheckExistsSQL(got); len(problems) > 0 {
+	// ★ R92：helper 签名改为 (colExpr, colName, pred) —— 派生表要投影过滤列。
+	got := db.SessionFamilyTurnsSessionExistsSQL("t.model", "model", "ft.model = $1")
+	if problems := r92CheckExistsSQL(got); len(problems) > 0 {
 		for _, p := range problems {
 			t.Errorf("helper 渲染形态：%s", p)
 		}
@@ -125,30 +142,30 @@ func TestR90_SessionExistsSQLShape(t *testing.T) {
 
 // TestR90_ExistsShapeDetectorHasTeeth 阳性对照：五份坏样本都必须被判红。
 func TestR90_ExistsShapeDetectorHasTeeth(t *testing.T) {
-	good := db.SessionFamilyTurnsSessionExistsSQL("t.model = $1")
-	if len(r90CheckExistsSQL(good)) != 0 {
+	good := db.SessionFamilyTurnsSessionExistsSQL("t.model", "model", "ft.model = $1")
+	if len(r92CheckExistsSQL(good)) != 0 {
 		t.Fatal("阳性对照失败：真实现被判为不合格 —— 检测器坏了")
 	}
 
 	// 坏样本①：退化成单腿（只剩 hot）⇒ 漏读已 promote 的轮次。
-	bad1 := strings.Replace(good, " OR EXISTS (SELECT 1 FROM public.session_turns t"+
-		" WHERE t.session_id = s.session_id AND t.tenant_id = s.tenant_id AND t.model = $1)", "", 1)
-	if len(r90CheckExistsSQL(bad1)) == 0 {
+	bad1 := strings.Replace(good, " UNION ALL SELECT t.tenant_id, t.session_id, t.model FROM public.session_turns_hot t",
+		"", 1)
+	if len(r92CheckExistsSQL(bad1)) == 0 {
 		t.Error("坏样本①（只剩单腿）被判合格 —— 检测器没有鉴别力")
 	}
-	// 坏样本②：某条腿丢了 tenant_id 谓词 ⇒ 跨租户 + 全表扫。
-	bad2 := strings.Replace(good, "t.tenant_id = s.tenant_id", "1=1", 1)
-	if len(r90CheckExistsSQL(bad2)) == 0 {
+	// 坏样本②：丢掉 tenant_id 谓词 ⇒ 跨租户 + 全表扫。
+	bad2 := strings.Replace(good, "ft.tenant_id = s.tenant_id", "1=1", 1)
+	if len(r92CheckExistsSQL(bad2)) == 0 {
 		t.Error("坏样本②（丢掉 tenant_id 谓词）被判合格 —— 检测器没有鉴别力")
 	}
 	// 坏样本③：改回读视图 ⇒ 回到 500@30s。
 	bad3 := strings.Replace(good, "public.session_turns_hot t", "public.session_turns_with_current_month t", 1)
-	if len(r90CheckExistsSQL(bad3)) == 0 {
+	if len(r92CheckExistsSQL(bad3)) == 0 {
 		t.Error("坏样本③（改回读视图）被判合格 —— 检测器没有鉴别力")
 	}
 	// 坏样本④：含 '%' ⇒ 会被 Sprintf 吃掉。
-	bad4 := strings.Replace(good, "t.model = $1", "t.model LIKE 'sys:%' AND t.model = $1", 1)
-	if len(r90CheckExistsSQL(bad4)) == 0 {
+	bad4 := strings.Replace(good, "t.model", "t.model LIKE 'sys:%' AND t.model", 1)
+	if len(r92CheckExistsSQL(bad4)) == 0 {
 		t.Error("坏样本④（含 '%'）被判合格 —— 检测器没有鉴别力")
 	}
 	// 坏样本⑤：整体不带括号 ⇒ AND/OR 优先级被改。
@@ -157,8 +174,16 @@ func TestR90_ExistsShapeDetectorHasTeeth(t *testing.T) {
 	//   **把括号加了回去** ⇒ 变异体 == 好样本 ⇒ 检测器报「没有鉴别力」。
 	//   ★ 这就是阳性对照的用处：它先证明**尺子**坏了，不是被测对象坏了。
 	bad5 := strings.TrimSuffix(strings.TrimPrefix(good, "("), ")")
-	if len(r90CheckExistsSQL(bad5)) == 0 {
+	if len(r92CheckExistsSQL(bad5)) == 0 {
 		t.Error("坏样本⑤（整体不带括号）被判合格 —— 检测器没有鉴别力")
+	}
+	// 坏样本⑥（R92 新增）：退回 R90 的 OR 两腿形态 ⇒ 锁死驱动方向 ⇒ 稀有过滤 500@30s。
+	bad6 := "(EXISTS (SELECT 1 FROM public.session_turns_hot t" +
+		" WHERE t.session_id = s.session_id AND t.tenant_id = s.tenant_id AND t.model = $1)" +
+		" OR EXISTS (SELECT 1 FROM public.session_turns t" +
+		" WHERE t.session_id = s.session_id AND t.tenant_id = s.tenant_id AND t.model = $1))"
+	if len(r92CheckExistsSQL(bad6)) == 0 {
+		t.Error("坏样本⑥（退回 OR 两腿形态）被判合格 —— 检测器没有鉴别力")
 	}
 }
 
@@ -477,5 +502,298 @@ func r90ReadFile(t *testing.T, name string) string {
 		t.Fatalf("读 %s: %v", name, err)
 	}
 	return string(b)
+}
+
+// ── ⑥ ★★ R92：V2 形态（派生表 UNION ALL + 单一 EXISTS）与 R90 形态的口径等价 ──
+
+// TestR92_RealDB_V2vsR90_Equivalence 在**同一个 REPEATABLE READ 快照**内，
+// 逐个候选会话比较「R90 形态（两条 OR 腿 EXISTS）」与「R92 V2 形态」。
+//
+// ★ 为什么必须真库逐行比（而不是「形状像 ⇒ 等价」）：
+//   两者只差「求值顺序」，**取哪些行**必须证明一致 ⇒ 形状门证明不了。
+//   ⇒ 252 生产同快照双向 EXCEPT ALL 实测（2026-10-24）：
+//     model（稀有）: only_r90=0 / only_v2=0 / r90_rows=21 / v2_rows=21
+//     provider='14': only_r90=0 / only_v2=0 / r90_rows=21 / v2_rows=21
+//
+// ★ 「空集」与「通过」必须能被区分 ⇒ 无候选数据时显式 SKIP 并写明理由
+//   （LESSONS §354.2：空集自证不是证据）。
+func TestR92_RealDB_V2vsR90_Equivalence(t *testing.T) {
+	dsn := r90DSN(t)
+	ctx := context.Background()
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatalf("open pool: %v", err)
+	}
+	defer pool.Close()
+	if !r90HasSessionFamily(ctx, pool) {
+		t.Skip("真库没有会话族四张表 ⇒ 无法验证等价（显式 SKIP，不是「通过」）")
+	}
+
+	// 取真实存在的 model 与 provider 样本。
+	var model, provider string
+	if err := pool.QueryRow(ctx, `
+		SELECT model FROM (
+			SELECT model FROM public.session_turns_hot
+			UNION ALL
+			SELECT model FROM public.session_turns
+		) x WHERE model IS NOT NULL AND model <> '' LIMIT 1`).Scan(&model); err != nil {
+		t.Skipf("真库没有可用的 model 样本（%v）⇒ 显式 SKIP，不是「通过」", err)
+	}
+	if err := pool.QueryRow(ctx, `
+		SELECT provider FROM (
+			SELECT provider FROM public.session_turns_hot
+			UNION ALL
+			SELECT provider FROM public.session_turns
+		) x WHERE provider IS NOT NULL AND provider <> '' LIMIT 1`).Scan(&provider); err != nil {
+		t.Skipf("真库没有可用的 provider 样本（%v）⇒ 显式 SKIP，不是「通过」", err)
+	}
+
+	tx, err := pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+	if err != nil {
+		t.Fatalf("begin repeatable-read tx: %v", err)
+	}
+	defer tx.Rollback(ctx)
+
+	type family struct {
+		name  string
+		col   string
+		value string
+	}
+	for _, fam := range []family{
+		{"model", "model", model},
+		{"provider", "provider", provider},
+	} {
+		// ★ 候选集 = 命中该过滤值的全部会话（两侧都必须覆盖这些会话）。
+		//   ★ 候选表别名必须是 `s` ⇒ helper 渲染的 SQL 可以**原样**嵌进来。
+		q := `
+			WITH cand AS (
+				SELECT session_id, tenant_id FROM public.session_turns_hot WHERE ` + fam.col + ` = $1
+				UNION
+				SELECT session_id, tenant_id FROM public.session_turns      WHERE ` + fam.col + ` = $1
+			)
+			SELECT s.session_id, s.tenant_id,
+			  (
+				EXISTS (SELECT 1 FROM public.session_turns_hot t
+				        WHERE t.session_id = s.session_id AND t.tenant_id = s.tenant_id AND t.` + fam.col + ` = $1)
+				OR EXISTS (SELECT 1 FROM public.session_turns t
+				        WHERE t.session_id = s.session_id AND t.tenant_id = s.tenant_id AND t.` + fam.col + ` = $1)
+			  ) AS r90_match,
+			  ` + db.SessionFamilyTurnsSessionExistsSQL("t."+fam.col, fam.col, "ft."+fam.col+" = $1") + ` AS v2_match
+			FROM cand s`
+		rows, err := tx.Query(ctx, q, fam.value)
+		if err != nil {
+			t.Fatalf("%s 等价查询失败: %v", fam.name, err)
+		}
+		total, mismatch := 0, 0
+		for rows.Next() {
+			var sid, tid string
+			var r90m, v2m bool
+			if err := rows.Scan(&sid, &tid, &r90m, &v2m); err != nil {
+				rows.Close()
+				t.Fatalf("scan %s 等价结果: %v", fam.name, err)
+			}
+			total++
+			if r90m != v2m {
+				mismatch++
+				if mismatch <= 5 {
+					t.Errorf("%s 口径不一致：session=%s tenant=%s r90=%v v2=%v",
+						fam.name, sid, tid, r90m, v2m)
+				}
+			}
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			t.Fatalf("%s 等价查询迭代: %v", fam.name, err)
+		}
+		if total == 0 {
+			t.Logf("%s 族在真库上没有候选会话 ⇒ 本族未做逐行比对（不是「通过」）", fam.name)
+			continue
+		}
+		if mismatch != 0 {
+			t.Errorf("%s 族：%d 个候选会话里 %d 个口径不一致", fam.name, total, mismatch)
+		}
+		t.Logf("%s 族：%d 个候选会话逐条比对，口径不一致 0 条", fam.name, total)
+	}
+}
+
+// ── ⑦ ★★ R92：调用点三元组自洽（**精确 token**，不是子串） ──────────────────
+//
+// ★★ 这一段是 **R92 变异臂 M6 当场暴露的真实门禁漏洞**的修复。
+//
+// 【漏洞形态】第一版门禁（现已删）是这样写的：
+//
+//	if !strings.Contains(where, "AS "+c.col)          { … }
+//	if !strings.Contains(where, "ft."+c.col+" = $")    { … }
+//
+// ⇒ ★ **子串匹配让「更长的名字」冒充「目标名字」**：
+//   把 colName 从 "model" 改成 "model_x" ⇒ 渲染出 `t.model AS model_x`，
+//   而 "AS model_x" **包含** "AS model" ⇒ 第一条断言照样通过；
+//   谓词仍是 `ft.model = $1` ⇒ 第二条也通过 ⇒ **门禁绿**。
+//   ⇒ 而这个错误在生产上表现为 **SQL 运行期报 column does not exist ⇒ 端点 500**。
+// ⇒ ⇒ **断言「某个 token 存在」必须按 token 边界抽出来再比，不能用子串。**
+//
+// 【与既有通用式的关系】与 LESSONS §355①（门从被测对象取被测集合 ⇒
+//   改表即改断言 ⇒ 变异静默通过）同族：那一条是「集合取错」，
+//   这一条是「**匹配口径太宽**」⇒ 两者都会让变异静默通过。
+
+// r92AliasRe 抽「AS <标识符>」形态的投影别名。
+var r92AliasRe = regexp.MustCompile(`\bAS\s+([A-Za-z_][A-Za-z0-9_]*)`)
+
+// r92PredColRe 抽「ft.<标识符> = $N」形态的谓词列。
+//
+// ★ 只匹配右侧是占位符的等式 ⇒ `ft.session_id = s.session_id`
+//   与 `ft.tenant_id = s.tenant_id` 这两条**关联谓词**不会被误当成过滤谓词。
+var r92PredColRe = regexp.MustCompile(`\bft\.([A-Za-z_][A-Za-z0-9_]*)\s*=\s*\$\d+`)
+
+func r92ExtractAliases(s string) []string {
+	var out []string
+	for _, m := range r92AliasRe.FindAllStringSubmatch(s, -1) {
+		out = append(out, m[1])
+	}
+	return out
+}
+
+func r92ExtractPredCols(s string) []string {
+	var out []string
+	for _, m := range r92PredColRe.FindAllStringSubmatch(s, -1) {
+		out = append(out, m[1])
+	}
+	return out
+}
+
+// r92CheckCallSiteClause 校验「派生表形态的过滤子句」自洽，返回问题描述列表。
+//
+// 判据（两条都必须是**精确 token 比对**）：
+//  1. 派生表**必须**投影出过滤列 wantCol（别名精确等于 wantCol）。
+//  2. 过滤谓词**恰好一条**，且它引用的 ft.<col> **必须等于** wantCol。
+//
+// ★ 这两条合起来才是「投影别名 ≡ 谓词列名」⇒ SQL 才可能跑通。
+func r92CheckCallSiteClause(clause string, wantCol string) []string {
+	var problems []string
+
+	aliases := r92ExtractAliases(clause)
+	hasAlias := false
+	for _, a := range aliases {
+		if a == wantCol {
+			hasAlias = true
+			break
+		}
+	}
+	if !hasAlias {
+		problems = append(problems, fmt.Sprintf(
+			"派生表没有投影列 %q（实际别名集合 = %v）—— colName 与谓词不一致 ⇒ SQL 报 column does not exist ⇒ 端点 500",
+			wantCol, aliases))
+	}
+
+	predCols := r92ExtractPredCols(clause)
+	if len(predCols) != 1 {
+		problems = append(problems, fmt.Sprintf(
+			"过滤子句里 ft.<col> = $N 的个数 = %d（必须恰好 1），实际 = %v", len(predCols), predCols))
+	}
+	for _, c := range predCols {
+		if c != wantCol {
+			problems = append(problems, fmt.Sprintf(
+				"谓词引用的是 ft.%s，但投影别名是 %q —— 不一致 ⇒ SQL 运行期报错 ⇒ 端点 500", c, wantCol))
+		}
+	}
+	return problems
+}
+
+// TestR92_FilterCallSitesProjectTheirColumn 断言四个调用点的
+// (colExpr, colName, pred) 三元组自洽 —— 投影的列名必须与谓词引用的列名一致。
+//
+// ★ 这是「派生表形态」特有的失效面：colName 与 pred 里的列名不一致时
+//   **SQL 直接报错**（column does not exist）⇒ 端点 500。
+func TestR92_FilterCallSitesProjectTheirColumn(t *testing.T) {
+	cases := []struct {
+		query string
+		col   string
+	}{
+		{"model=glm-5.3-flash", "model"},
+		{"provider=openai", "provider"},
+		{"status_code=200", "status_code"},
+		{"api_key_id=42", "api_key_id"},
+	}
+	for _, c := range cases {
+		req := httptest.NewRequest(http.MethodGet, "/api/admin/turns/sessions?"+c.query, nil)
+		where, _, _ := buildTurnsSessionWhere(req, "", time.Time{}, time.Time{}, time.Time{}, "", 1)
+		for _, p := range r92CheckCallSiteClause(where, c.col) {
+			t.Errorf("%s：%s\n渲染结果：\n%s", c.query, p, where)
+		}
+	}
+}
+
+// TestR92_CallSiteDetectorRejectsBadSample 阳性对照：
+// 坏样本必须被判红（含**第一版门禁漏掉的**那个形态）。
+func TestR92_CallSiteDetectorRejectsBadSample(t *testing.T) {
+	good := db.SessionFamilyTurnsSessionExistsSQL("t.model", "model", "ft.model = $1")
+	if problems := r92CheckCallSiteClause(good, "model"); len(problems) != 0 {
+		t.Fatalf("阳性对照失败：真形态被判为不合格 —— 检测器坏了：%v", problems)
+	}
+	// 坏样本①：**第一版门禁漏掉的形态** —— 投影别名 model_x，谓词仍引用 model。
+	bad1 := db.SessionFamilyTurnsSessionExistsSQL("t.model", "model_x", "ft.model = $1")
+	if len(r92CheckCallSiteClause(bad1, "model")) == 0 {
+		t.Error("坏样本①（投影别名 model_x、谓词引用 model）被判合格 —— 检测器没有鉴别力")
+	}
+	// 坏样本②：谓词引用了另一个列（投影与谓词分叉）。
+	bad2 := db.SessionFamilyTurnsSessionExistsSQL("t.model", "model", "ft.provider = $1")
+	if len(r92CheckCallSiteClause(bad2, "model")) == 0 {
+		t.Error("坏样本②（谓词列与投影列分叉）被判合格 —— 检测器没有鉴别力")
+	}
+	// 坏样本③：别名整体改名（model_x 冒充 model 的极端形态）。
+	bad3 := db.SessionFamilyTurnsSessionExistsSQL("t.model", "model_x", "ft.model_x = $1")
+	if len(r92CheckCallSiteClause(bad3, "model")) == 0 {
+		t.Error("坏样本③（别名整体改名）被判合格 —— 检测器没有鉴别力")
+	}
+	// 坏样本④：谓词缺失（过滤条件没进 SQL ⇒ 端点不过滤）。
+	bad4 := db.SessionFamilyTurnsSessionExistsSQL("t.model", "model", "1 = 1")
+	if len(r92CheckCallSiteClause(bad4, "model")) == 0 {
+		t.Error("坏样本④（没有过滤谓词）被判合格 —— 检测器没有鉴别力")
+	}
+}
+
+// TestR92_RenderedFilterSQLExecutesOnRealDB —— ★★ 把渲染出来的过滤子句
+// **真的跑一次**（真库）。
+//
+// ★ 为什么形状门不够：colName 与谓词列名不一致，**只有运行期**才报错
+//   （column "ft.model" does not exist）⇒ 静态子串断言看不出来
+//   ⇒ 生产上表现为端点 500。
+// ⇒ 真库执行是唯一能「以生产同样的方式」暴露这类错误的判据。
+// ★ 真库不可用时显式 SKIP 并写明理由（空集 / 无库都不是「通过」）。
+func TestR92_RenderedFilterSQLExecutesOnRealDB(t *testing.T) {
+	dsn := r90DSN(t)
+	ctx := context.Background()
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatalf("open pool: %v", err)
+	}
+	defer pool.Close()
+	if !r90HasSessionFamily(ctx, pool) {
+		t.Skip("真库没有会话族四张表 ⇒ 无法执行验证（显式 SKIP，不是「通过」）")
+	}
+
+	for _, c := range []struct{ query, col string }{
+		{"model=glm-5.3-flash", "model"},
+		{"provider=openai", "provider"},
+		{"status_code=200", "status_code"},
+		{"api_key_id=42", "api_key_id"},
+	} {
+		req := httptest.NewRequest(http.MethodGet, "/api/admin/turns/sessions?"+c.query, nil)
+		where, args, _ := buildTurnsSessionWhere(req, "", time.Time{}, time.Time{}, time.Time{}, "", 1)
+
+		// 静态判据先行（精确 token）。
+		for _, p := range r92CheckCallSiteClause(where, c.col) {
+			t.Errorf("%s：%s\n渲染结果：\n%s", c.query, p, where)
+		}
+
+		// ★ 运行期判据：真的执行一次。
+		q := "SELECT 1 FROM public.sessions s WHERE " + where + " LIMIT 1"
+		rows, err := pool.Query(ctx, q, args...)
+		if err != nil {
+			t.Errorf("%s：渲染出的过滤 SQL 在真库上执行失败 ⇒ 端点会 500：\n%s\n%v", c.query, q, err)
+			continue
+		}
+		rows.Close()
+	}
 }
 

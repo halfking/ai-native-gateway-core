@@ -712,13 +712,98 @@ func SessionFamilyTurnsSourceSQL() string {
 // # 契约
 //
 //   - 外层会话别名**必须**是 `s`（本 helper 固定引用 `s.session_id` / `s.tenant_id`）。
-//   - colPred 必须引用别名 `t`（两条腿都用 `t`）。
+//   - colExpr 必须引用别名 `t`（两条腿都用 `t`）。
 //   - 两条腿各自是独立子查询作用域 ⇒ 复用同一别名 `t` 合法。
-func SessionFamilyTurnsSessionExistsSQL(colPred string) string {
-	return "(EXISTS (SELECT 1 FROM public.session_turns_hot t" +
-		" WHERE t.session_id = s.session_id AND t.tenant_id = s.tenant_id AND " + colPred + ")" +
-		" OR EXISTS (SELECT 1 FROM public.session_turns t" +
-		" WHERE t.session_id = s.session_id AND t.tenant_id = s.tenant_id AND " + colPred + "))"
+//
+// # ★★ R92（2026-10-24）：形态从「两条 EXISTS 用 OR 组合」改成
+// **「派生表 UNION ALL + 单一 EXISTS」** —— 因为 OR 形态**锁死了驱动方向**。
+//
+// 【R90 形态为什么不够（生产实测，build 2841）】
+//   R90 上线后，154 直连 REPEAT=3：
+//     ?limit=20                       200×3  0.878/0.155/0.111 s
+//     ?limit=20&api_key_id=105        200×3  9.576/0.216/0.151 s
+//     ?limit=20&model=deepseek-ai%2F…  500×3  30.008/30.007/30.018 s
+//     ?limit=20&provider=14           200×3  0.358/0.100/0.080 s
+//     ?limit=20&status_code=500       200×3  0.554/0.181/0.153 s
+//   ⇒ ★★ **R90「四条全修」的结论被证伪**：只有 model 那条仍 500@30s。
+//
+// 【真因：不是形状问题，是「稀有过滤值 ⇒ 外层深扫」】
+//   252 生产只读实测：
+//     该 model 在父表 **458 轮 / 30 个会话**，hot 腿 **0 轮**；
+//     public.sessions **441,577 行 / 441,112 个会话**。
+//   ⇒ 过滤只命中 30 / 441,112 个会话，而会话列表是
+//     `ORDER BY s.updated_at DESC, s.session_id DESC LIMIT 21`
+//     ⇒ **必须扫到凑够 21 行**。
+//   ⇒ EXPLAIN ANALYZE 实测（事务内建索引后）：
+//       Index Scan using sessions_2026_09_updated_at_session_id_idx
+//         → Rows Removed by Filter: **72,455**
+//       Index Scan using sessions_2026_10_updated_at_session_id_idx
+//         → Rows Removed by Filter: **277,899**
+//     ⇒ ★ 外层一共扫了 **350,354 个会话**才凑出 21 行 ⇒ **17,501 ms**。
+//   ⇒ 对照：provider='14' 命中 181,907 轮、status_code=500 命中 671,117 轮
+//     ⇒ 前 21 个会话立刻凑齐 ⇒ 0.358s / 0.554s
+//     ⇒ ★ **同一个形状，只因「过滤值稀有度」不同，一个 0.3s 一个 30s**。
+//   ⇒ ★ 已排除「统计信息陈旧」：session_turns last_analyze=2026-10-19、
+//     session_turns_2026_10 last_autoanalyze=2026-10-24 ⇒ 统计是新鲜的；
+//     规划器估 128 行 vs 实际 458 行（只低估 3.6×）⇒ 不是统计缺失能解释的量级。
+//
+// 【OR 形态为什么锁死了驱动方向】
+//   OR 形态只能被规划成「两条相关 EXISTS」⇒ 规划器只能
+//   **会话驱动**（外层扫会话、每行去 EXISTS 里查轮次）。
+//   ⇒ 过滤值稀有时，会话驱动要扫 35 万行 ⇒ 30s 超时。
+//   ⇒ 而**轮次驱动**（先枚举匹配的轮次、再去找会话）在稀有过滤下只要 30 行。
+//
+// 【V2 形态：让规划器能自己选】
+//
+//	EXISTS (SELECT 1 FROM (
+//	    SELECT t.tenant_id, t.session_id, <colExpr> FROM public.session_turns t
+//	    UNION ALL
+//	    SELECT t.tenant_id, t.session_id, <colExpr> FROM public.session_turns_hot t
+//	) ft WHERE ft.session_id = s.session_id AND ft.tenant_id = s.tenant_id AND <pred>)
+//
+//   ⇒ 派生表可被 planner **pull-up** ⇒ 半连接的两个驱动方向都可选：
+//   · 过滤值**稀有** ⇒ 轮次侧走 model 索引 ⇒ **轮次驱动**（外层只剩 30 行）
+//   · 过滤值**常见** ⇒ 轮次侧无索引 ⇒ 顺序扫 110 万行太贵 ⇒ 规划器自动选
+//     **会话驱动**（外层前 21 个会话立刻凑齐）
+//   ⇒ ★ **不写死「轮次驱动」** —— 那是 JOIN 形态（V3），实测在常见过滤上
+//     退化到 **10,080 ms**（provider='14'）。
+//
+// 【252 生产实测（事务内真实文件体 + ROLLBACK ⇒ 生产零持久变更）】
+//
+//	形态                                  model=稀有      provider='14'(常见)
+//	────────────────────────────────────────────────────────────────────────
+//	旧形态（R90 两条 EXISTS OR）              17,501 ms ✗    0.358 s ✓
+//	只加索引、不改形态                        17,501 ms ✗    （仍会话驱动）
+//	JOIN 派生表（V3，轮次驱动写死）              8.0 ms  ✓    **10,080 ms** ✗✗
+//	★★ V2 形态 + 迁移 905 的 model 索引         **8.0 ms** ✓  **48.6 ms** ✓
+//
+// 【★ 口径等价（252 生产，同一事务内同一快照，双向 EXCEPT ALL）】
+//
+//	model（稀有）  : only_r90=**0** / only_v2=**0** / r90_rows=21 / v2_rows=21
+//	provider='14'  : only_r90=**0** / only_v2=**0** / r90_rows=21 / v2_rows=21
+//
+//   ⇒ 结果集**逐行一致** ⇒ 两形态只差「求值顺序」，不差「取哪些行」。
+//   ⇒ 结构上也等价：旧形态 =「hot 腿 EXISTS ∨ 父表腿 EXISTS」，
+//     新形态 =「(hot ∪ 父表) 派生表上的 EXISTS」⇒ 同一谓词集、同一半连接语义
+//     （NULL 两侧都用 `=` ⇒ NULL 不匹配 ⇒ 行为一致）。
+//
+// 【★ 硬依赖：迁移 905 的 model 索引】
+//   V2 形态的「轮次驱动」分支**依赖** `idx_session_turns_model_session`：
+//   无索引时实测 V2 / model=稀有 = **205,708 ms**（规划器退化成
+//   「每行对 110 万轮做顺序扫」的嵌套循环半连接）。
+//   ⇒ ★ 生产上由**启动迁移 905** 在新二进制对外服务**之前**建好该索引
+//     （startup 迁移在切换前投递）⇒ 窗口为 0。
+//   ⇒ ★ 若索引被回滚而二进制未回滚：HTTP 症状与今天**相同**（角色级
+//     statement_timeout=30s ⇒ 同样 500@30s），不会更差，但会白烧 30s DB 时间。
+//   ⇒ 语义耦合由 migration_905_turns_session_model_idx_test.go 钉住。
+func SessionFamilyTurnsSessionExistsSQL(colExpr, colName, pred string) string {
+	return "(EXISTS (SELECT 1 FROM (" +
+		"SELECT t.tenant_id AS tenant_id, t.session_id AS session_id, " + colExpr + " AS " + colName +
+		" FROM public.session_turns t" +
+		" UNION ALL " +
+		"SELECT t.tenant_id, t.session_id, " + colExpr +
+		" FROM public.session_turns_hot t" +
+		") ft WHERE ft.session_id = s.session_id AND ft.tenant_id = s.tenant_id AND " + pred + "))"
 }
 
 // SessionFamilyTurnsHotSourceSQL is the hot-only leg of
