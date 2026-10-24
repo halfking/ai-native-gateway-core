@@ -92,3 +92,36 @@ func TestSettingsGetPlatformScopedStillResolves(t *testing.T) {
 		t.Errorf("platform-scoped default not resolved; body: %s", rec.Body.String())
 	}
 }
+
+// 平台路由 POST /rollback 对 tenant-scoped spec：必须 400 并指向 tenant-settings 端点。
+//
+// ★ 2026-10-24 12h 审计轮（问题⑮）：这是**同族键的第三个入口**。
+//
+//	GET /api/admin/settings/{key} 与 PUT /api/admin/settings/{key} 都已对
+//	tenant-scoped spec 做了分支；平台 rollback 此前**没有** ⇒ ⇒ 它会一路走到
+//	store.Rollback(scope=ScopeTenant, tid="") ⇒ `WHERE tenant_id = ''`
+//	⇒ pgx.ErrNoRows ⇒ 400「no previous value to rollback to」。
+//
+//	★ 那不是 500（⇒ 「500 根修」的结论仍成立），但它是**误导性错误**：
+//	用户看到的是「没有可回滚的历史值」，真实原因是「这个键压根不属于平台层」。
+//
+// ★ 变异：把 settings.go 里这段分支删掉 ⇒ 本门红。
+func TestSettingsRollbackTenantScopedOnPlatformRouteRejected(t *testing.T) {
+	withTenantScopedSpecRegistry(t)
+	h := &Handler{}
+	req := httptest.NewRequest(http.MethodPost, "/api/admin/settings/goal.retry_delay_seconds/rollback", nil)
+	rec := httptest.NewRecorder()
+	h.settingsRouter(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body: %s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "tenant-settings") {
+		t.Errorf("body should point at tenant-settings endpoint; body: %s", body)
+	}
+	// ★ 必须**不是**「no previous value to rollback to」——那是误导性的错误文案。
+	if strings.Contains(body, "no previous value to rollback to") {
+		t.Errorf("body still carries the misleading 'no previous value' error; body: %s", body)
+	}
+}

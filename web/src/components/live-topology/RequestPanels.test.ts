@@ -1,18 +1,32 @@
-// RequestPanels.test.ts — 左右请求面板 + 放大面板判据（2026-10-17）
+// RequestPanels.test.ts — 左右请求面板 + 请求详情内容判据（2026-10-17 起，
+// 2026-10-24 改挂 RequestDetailView）
 //
 // 维护者要求：左显示客户端请求摘要、右显示供应商端响应、**可点击放大**。
 // 钉住的行为：
 //  1. 两栏按状态着色，探测请求有独立标记；
 //  2. 缺省字段（无时延/无 token/无 session）渲染「—」，**禁止 0 冒充**
 //     —— 这是本仓反复吃过的亏（假零 = 假数据）；
-//  3. 放大是 emit 事件交给父层渲染内联面板，不在这里弹窗。
+//  3. 放大是 emit 事件交给父层，父层开**新页**（不再有内联覆盖面板）。
+//
+// ★ 2026-10-24 审计改挂的理由（重要，不是搬家）：
+//   这组「详情内容」断言原本挂在 RequestZoomPanel.vue 上，但那个组件在
+//   2026-10-23「详情改开新页」之后已经**没有任何生产引用**（只被本测试引用）
+//   ⇒ 它是死代码。而它断言的类名（zoom__row / zoom__label / zoom__value /
+//   zoom__step）**全部住在 RequestDetailView.vue** 里 —— 也就是说：
+//   这 7 条断言实际测的是 **RequestDetailView**，只是经由一个死壳。
+//   ⇒ 直接删整块 = 悄悄丢掉**活组件**（/live/request/:id 与 /request-detail/:id
+//   两处路由都在用它）的全部覆盖。
+//   ⇒ 正确处置：**断言改挂到 RequestDetailView 本身**，死壳连同它自己那两条
+//     外壳断言（close 按钮 / open-page 按钮）一起删。
 
 import { describe, expect, it } from 'vitest'
 import { mount } from '@vue/test-utils'
 import { createI18n } from 'vue-i18n'
+import { existsSync, readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import ClientRequestPanel from './ClientRequestPanel.vue'
 import ProviderResponsePanel from './ProviderResponsePanel.vue'
-import RequestZoomPanel from './RequestZoomPanel.vue'
+import RequestDetailView from './RequestDetailView.vue'
 import type { ClientSummary, PanelEntry } from '../../composables/useLiveTopology'
 import type { ActionEvent } from '../../composables/liveStreamStore'
 import zhCN from '../../locales/zh-CN/liveTopology'
@@ -289,9 +303,9 @@ describe('ProviderResponsePanel 分页（owner 2026-10-18：单页 ≤50 条）'
   })
 })
 
-describe('RequestZoomPanel', () => {
+describe('RequestDetailView', () => {
   it('renders every field with an explicit em dash when absent', () => {
-    const wrapper = mount(RequestZoomPanel, {
+    const wrapper = mount(RequestDetailView, {
       props: {
         entry: entry({
           latencyMs: null, costUsd: null, sessionId: undefined, requestType: undefined,
@@ -325,7 +339,7 @@ describe('RequestZoomPanel', () => {
       { seq: 2, action: 'upstream', stage_category: 'llm', ttfb_ms: 2100, error_kind: 'upstream_timeout' },
       { seq: 3, action: 'terminal', stage_category: 'terminal', status: 'failure', error_kind: 'upstream_timeout' },
     ]
-    const wrapper = mount(RequestZoomPanel, {
+    const wrapper = mount(RequestDetailView, {
       props: { entry: entry({ errorKind: 'upstream_timeout', failureStage: 'upstream' }), decisions },
       global: { plugins: [i18n] },
     })
@@ -338,7 +352,7 @@ describe('RequestZoomPanel', () => {
     // 2026-10-18 浏览器验收抓到：in_progress 直接拼 `filter.in_progress`
     // 渲染成原始键名（文案键是 camelCase）。逐枚举值点名，谁再拼错立刻红。
     for (const status of ['success', 'in_progress', 'failure', 'rate_limited']) {
-      const wrapper = mount(RequestZoomPanel, {
+      const wrapper = mount(RequestDetailView, {
         props: { entry: entry({ status }), decisions: [] },
         global: { plugins: [i18n] },
       })
@@ -353,26 +367,17 @@ describe('RequestZoomPanel', () => {
   })
 
   it('says there is no decision event rather than an empty list', () => {
-    const wrapper = mount(RequestZoomPanel, {
+    const wrapper = mount(RequestDetailView, {
       props: { entry: entry(), decisions: [] },
       global: { plugins: [i18n] },
     })
     expect(wrapper.text()).toContain('该请求暂无判定事件')
   })
 
-  it('emits close', async () => {
-    const wrapper = mount(RequestZoomPanel, {
-      props: { entry: entry(), decisions: [] },
-      global: { plugins: [i18n] },
-    })
-    await wrapper.get('.zoom__close').trigger('click')
-    expect(wrapper.emitted('close')).toHaveLength(1)
-  })
-
-  it('★ keeps every detail row after the shared-view extraction + offers open-page', async () => {
+  it('★ keeps every detail row after the shared-view extraction', async () => {
     // 内容抽到 RequestDetailView 后字段不能少（两宿主共享一份实现，
     // 但抽取本身可能漏搬 —— 逐字段点名）。
-    const wrapper = mount(RequestZoomPanel, {
+    const wrapper = mount(RequestDetailView, {
       props: { entry: entry(), decisions: [] },
       global: { plugins: [i18n] },
     })
@@ -380,8 +385,6 @@ describe('RequestZoomPanel', () => {
     for (const need of ['请求 ID', '客户端协议', '状态', 'Token（入 / 出 / 合计）', '费用', '会话', '任务类型', '探测任务', '错误']) {
       expect(labels, `缺字段 ${need}`).toContain(need)
     }
-    await wrapper.get('[data-testid="zoom-open-page"]').trigger('click')
-    expect(wrapper.emitted('open-page')?.[0]?.[0]).toMatchObject({ requestId: 'r-1' })
   })
 
   it('★ labels a missing stage as unreported, never as routing', () => {
@@ -391,7 +394,7 @@ describe('RequestZoomPanel', () => {
       { seq: 1, action: 'resolve' },
       { seq: 2, action: 'upstream', stage_category: 'llm' },
     ]
-    const wrapper = mount(RequestZoomPanel, {
+    const wrapper = mount(RequestDetailView, {
       props: { entry: entry(), decisions },
       global: { plugins: [i18n] },
     })
@@ -400,5 +403,26 @@ describe('RequestZoomPanel', () => {
     // 有阶段时照常显示真实值（不能为了防编造把真值也抹掉）
     expect(stages[1]).toBe('调用')
     expect(stages[0]).not.toBe('路由')
+  })
+
+  it('★ the retired inline zoom panel stays retired (dead code must not come back)', () => {
+    // 2026-10-23「详情改开新页」之后，RequestZoomPanel.vue 失去了全部生产引用。
+    // 它一度只被本测试引用 ⇒ **死代码**：留着它 = 留一份没人渲染的 UI，
+    // 而它的样式（position:absolute 的 460px 覆盖层）正是当初盖住拓扑区的元凶。
+    // 这条判据把「已退役」钉成事实，而不是靠人的记忆。
+    //
+    // ⚠ 路径一律按 cwd（= web/）解析，不用 import.meta.url：这套 vitest 配置下
+    //   import.meta.url **不是 file scheme**（new URL() 直接抛
+    //   "The URL must be of scheme file"）——同仓 honesty.test.ts 早就踩过。
+    const zoomPanelPath = resolve(process.cwd(), 'src/components/live-topology/RequestZoomPanel.vue')
+    expect(existsSync(zoomPanelPath), 'RequestZoomPanel.vue 已退役，不应再存在').toBe(false)
+
+    // 拓扑页不得再 import 它（万一有人把文件加回来，import 也会跟着回来）。
+    // ★ 只钉 **import 语句**：视图里仍留着提及该组件的历史注释（说明它已下线），
+    //   那是给人读的，不是引用。
+    const viewPath = resolve(process.cwd(), 'src/views/LiveTopologyView.vue')
+    const viewSource = readFileSync(viewPath, 'utf8')
+    expect(viewSource).not.toMatch(/import\s+RequestZoomPanel/)
+    expect(viewSource).not.toMatch(/from\s+['"][^'"]*RequestZoomPanel/)
   })
 })

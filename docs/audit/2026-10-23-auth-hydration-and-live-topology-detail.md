@@ -187,15 +187,15 @@ LIVE_AUTH_PASSWORD=… LIVE_AUTH_REQUEST_ID=… \
 
 ## 五、遗留（未在本轮修，已登记）
 
-1. **`/api/logs/:id` 等非 `/api/admin/` 前缀的端点**：401 会走
-   `isSessionExpiredAuthLoss` ⇒ `clearAll()` + 硬跳登录页。
-   口径上「任何 `/api/*` 的 401 都等于会话已死」过宽 —— 端点级的 401
-   （资源不存在、无权、参数非法）不应等价于「登录态丢失」。
-   本轮实测这些端点均 200，未构成当前故障；修它会改变全局 401 语义，
-   属需要独立评估的改动。
+1. ~~**`/api/logs/:id` 等非 `/api/admin/` 前缀的端点**：401 会走
+   `isSessionExpiredAuthLoss` ⇒ `clearAll()` + 硬跳登录页。~~
+   ⚠ **本条已于 2026-10-24 审计轮修复并关闭**，判定口径见 §八·A。
+   （原文保留以便对照当时的判断。）
 2. **i18n hardcoded CJK 基线门**：5753 > 5529（2026-10-05）。
    **改动前后完全相同**（已用 `git stash` 对拍），属既有红，非本轮引入。
    未擅自 `--update-baseline`（那会把 224 处新增硬编码中文一并追认）。
+   ★ 2026-10-24 复核：改用**干净 worktree 对拍 HEAD**（`git worktree add /tmp/... HEAD`），
+   HEAD 上同样是 5753 ⇒ 本轮改动 CJK 中性（删除的 `RequestZoomPanel.vue` 不含被计数的中文）。
 3. **navCoverage 孤儿路由门**：5 条 admin 深链
    （`/admin/board-operational`、`/admin/ops-overview`、`/admin/subscription-tiers`、
    `/admin/request-actions/:id`、`/admin/storage-and-log-config`）。
@@ -342,3 +342,172 @@ LIVE_AUTH_PASSWORD=… LIVE_AUTH_REQUEST_ID=… \
    （因为没有任何失败请求）—— 本轮就是这一类，日志全 200 才是关键线索。
 4. **「有时好有时坏」通常不是随机，是触发条件的差别**：本轮的条件是
    「是否发生冷启」⇒ 总览不触发、新标签页必触发、SPA 内跳转不触发。
+
+---
+
+## 八、2026-10-24 审计轮（对本仓上一轮成果的批判式复核）
+
+> 触发：属主要求「对此任务进行批判式审计，结合现有方案修正发现的问题」。
+> 本节记录的**不是**新报障，而是**对上一轮已提交、已部署成果的复核**。
+
+### 8.A 发现 1（严重，已修）：桌面端 401 语义与移动端分叉，踢登录判定一直没改
+
+**这不是新缺陷，是上一轮遗漏的既有契约。**
+
+上一轮把「非 `/api/admin/` 前缀端点的 401 语义」标成「需独立评估的遗留」，
+本轮复核认定：**这个判断偏保守**。理由是仓内**早已确立并上线**了正确契约，
+而桌面端只同步了一半。
+
+**仓内先例（不是本轮发明的语义）**：`web-mobile/src/api/client.ts`
+
+- `sessionReallyDead()`（2026-10-13 引入）：踢登录前先探一次 `/api/auth/me`。
+- 该文件自陈的事故留证（2026-10-12 实测，原文）：
+  「用户进『费用对账』页（flag 默认关闭 ⇒ 端点未注册），那一个 401 就把
+  **完全有效**的会话整页踢回登录页（同会话 9 秒前 `/api/auth/me` 与
+  `/api/admin/dashboard/board` 都是 200）」。
+  根因：后端把「端点没注册」与「你没带 token」回成**逐字节相同**的 401。
+- 2026-10-22 再修探针自身的口径：「探针抛了异常」≠「探到了会话死亡」。
+
+**桌面端当时（HEAD，`e316234d6`）的实际形态**：
+
+```ts
+// web/src/api/_core.ts（修复前）
+if (
+  typeof window !== 'undefined'
+  && (isAdminProtectedPath(path) || isSessionExpiredAuthLoss(path))
+  && !window.location.pathname.startsWith('/login')
+  && !isOnInlineLoginScreen()
+) {
+  redirectAfterAuthLoss(inlineLoginPath(...))   // ⇒ clearAll() + 硬跳登录页
+}
+```
+
+`isSessionExpiredAuthLoss()` 的口径是「`/api/*` 且不是那三个认证端点 且
+用户仍被认为已登录」⇒ **任何 `/api/*` 的 401 一律踢登录**。
+而 `ApiError.sessionAlive` 这个字段**从未在桌面端落地**（移动端 2026-10-13 就有了）。
+⇒ 同一个后端、两个前端对 401 的语义分叉近 17 天。
+
+**这正是报障「从请求列表点击进入详情时登录状态丢失」的机制之一**：
+详情页要打的 `/api/admin/dispatch/waterfall/...` 若因任何端点级原因返回 401，
+整个会话就被清掉。
+
+**修法**（`web/src/api/_core.ts`）：补齐移动端已确立的契约，**不发明新语义**。
+
+| 探针 `/api/auth/me` 的结果 | 裁决 | 行为 |
+|---|---|---|
+| 2xx | 会话有效 | 这个 401 是**端点自己拒** ⇒ **不踢**，`sessionAlive: true` |
+| 明确 401（ApiError 且 status=401） | 会话确实死了 | 照旧踢（**保留吊销后的强制登出**），`sessionAlive: false` |
+| 探不成（网络/维护信封/5xx/解析失败） | **没有证据** | **不判死**，`sessionAlive: undefined` |
+
+**与移动端的刻意差异（两处，都要写明，否则是「偷偷改了语义」）**：
+
+1. **判死的严格度**：移动端把**任何** ApiError 都判成「会话死了」（含 5xx）；
+   桌面端**只认 401**。差异方向是「更少误踢」—— 桌面端宁可多留一次登录态，
+   也不因服务端 500 把用户踢回登录页。两者对「明确的认证失败」的共同口径一致。
+2. **游客是否被踢**：移动端游客撞受保护端点会跳登录页；桌面端**不踢**。
+   理由：桌面端的路由守卫本来就把未登录者送到首页内联登录（`/?login=1`），
+   再做一次强制导航只是噪声。
+
+**顺带修正的两处旧行为（都是变好，不是回归）**：
+
+- `/api/auth/logout` 的 401 **不再**触发「清状态 + 整页跳转」。
+  旧代码靠 `isAdminProtectedPath` 里的 `/api/auth/logout` 命中才踢；
+  而两个登出调用点（`App.vue:248`、`ForbiddenView.vue:18`）本来就
+  `try { await apiLogout() } catch {}` 后自己 `clearAll()` 并导航 ⇒
+  新口径是干净的 SPA 导航（旧口径是整页 reload 且把「刚登出的页面」
+  塞进 redirect 参数）。
+- `/api/auth/change-password` 的 401 **不再**一律踢。
+  旧口径下「旧密码输错」会把用户踢回登录页；新口径下探针成功 ⇒ 不踢。
+
+### 8.B 发现 1 衍生出的一个真脆弱面（变异台逼出来的，已修）
+
+**变异 M5**：把 `isAuthEndpointPath()` 的路径排除整条拿掉（模拟「谁把探针
+换成别的端点、或漏写一个认证端点」）⇒ **4 条用例全部 20s 超时挂死**。
+
+**机制**（不是猜，是实测出来的形态）：探针走 `req()`；探针自己的 401 会再进
+401 分支 ⇒ 再调探针 ⇒ 拿到的是**正在飞的那同一个 `sessionProbe` promise**
+⇒ 内层 `req` 的 401 分支 `await` 外层正在等的 promise ⇒ **互相等待，永不返回**。
+症状是**整页卡死**，不是一条报错。
+
+⇒ 「不递归」这件事此前**只靠一个字符串**（路径排除）撑着，太脆。
+本轮补一层**与路径无关**的重入保护：`probeInFlight` —— 探针在飞 ⇒
+任何 401 都不再触发探针。
+
+复测（M5'，保留重入保护、仍拿掉路径排除）：**2 failed / 0 超时** ⇒
+死锁消失，且路径排除仍被 2 条既有用例独立钉住 ⇒ **两道防线都必要、都可测**。
+
+### 8.C 发现 2（轻，已修）：`RequestZoomPanel.vue` 是死代码，而判据在「证明一个不存在的东西」
+
+**事实**（`grep` 全量引用）：`RequestZoomPanel.vue` 在 2026-10-23「详情改开新页」
+之后**失去了全部生产引用**，只剩它自己的测试文件引用它 ⇒ 死代码。
+
+**更要紧的是它的测试**：那 7 条断言用的类名
+（`zoom__row` / `zoom__label` / `zoom__value` / `zoom__step`）
+**全部住在 `RequestDetailView.vue` 里** ⇒ 它们实际测的是 `RequestDetailView`，
+只是经由一个死壳。而 `RequestDetailView` 是**活组件**
+（`views/RequestDetailPage.vue:18,45` 在用），此前**一个测试都没有**。
+
+⇒ 直接删整块 = **悄悄丢掉活组件的全部覆盖**（正是用户点名的
+「只是声明一下就认为完成」的反面）。
+⇒ 正确处置：**断言改挂到 `RequestDetailView` 本身**，只删死壳自己的两条外壳断言
+（`close` 按钮 / `open-page` 按钮 —— 前者随组件退役，后者已被
+`RequestPanels.test.ts` 里另外两条 `emits open-page` 用例覆盖）。
+
+**同时修正一条「名义上在证明、实际读着不存在的东西」的判据**：
+`LiveTopologyView.honesty.test.ts` 的「★ 放大面板的定位基准必须是所在列」
+—— 它的**原始理由**（放大面板 `position:absolute`）已随组件退役而不存在。
+现在这条断言钉的是**仍然成立**的一半：
+① 三列共享 `position: relative`（**仍在承重**：stage 列里的
+`TopologyCanvas.vue` 有 8 处 `position:absolute` 的覆盖层）；
+② 被退役的覆盖层不得复活（文件不在 + 视图不再 import 它）。
+
+> 通用式：**判据的「不该有」必须带时点限定**；组件退役后，
+> 挂在它身上的判据要么改挂到活组件，要么改钉「它不得复活」——
+> 不能让它继续「证明」一个没人渲染的东西。
+
+### 8.D 门禁与变异台
+
+**新增判据（`web/src/api/_core.test.ts`，3 条）**：
+
+1. 探针 200 ⇒ 端点 401 **不踢登录**、不清登录态、`sessionAlive: true`；
+2. 探针 401 ⇒ **仍踢登录**、`sessionAlive: false`、redirect 参数正确；
+3. 探针探不成（500）⇒ **不踢**、`sessionAlive` 为 `undefined`（不可当成 false）。
+
+**变异台（每条都跑真实 `vitest`，不是声明）**：
+
+| 变异 | 改法 | 结果 |
+|---|---|---|
+| M1 | 探针彻底停用（`probeSession` 恒 `unknown`） | **3 failed** |
+| M2 | 探针把**任何** ApiError 都判死（移动端旧口径） | **1 failed**（正是「探针探不成不判死」那条） |
+| M3 | 401 一律踢登录（回到修复前） | **4 failed** |
+| M4 | 把死组件 `RequestZoomPanel.vue` 放回来 | **2 failed**（两个文件各 1 条） |
+| M5 | 拿掉认证端点路径排除 | **4 条 20s 超时挂死** ⇒ 逼出 8.B 的重入保护 |
+| M5' | 同 M5，但保留重入保护 | **2 failed / 0 超时** ⇒ 死锁消除，路径排除仍被独立钉住 |
+
+全部变异均已还原（md5 逐字校验一致）。
+
+**顺手修掉的一个「量具失效」**：既有那条「admin 端点 401 ⇒ 跳 `/?login=1&redirect=…`」
+用例原本用 `mockResolvedValue` 复用**同一个** `Response` 实例 ——
+`Response` 的 body **只能读一次** ⇒ 第二次调用（探针）拿到的是「body 已消费」的
+Response ⇒ `r.text()` 抛 TypeError ⇒ 一个 401 被降级成非 ApiError。
+真实浏览器每次 fetch 都拿到全新 Response，但**代码也不该因此把 401 变成 TypeError**
+⇒ ① 测试改 `mockImplementation` 逐次新建；② `req()` 的 401 分支对
+「body 读不出来」做容错（状态码才是判据，body 只是文案）。
+
+### 8.E 本轮**没有**做的事（诚实边界）
+
+1. **发现 1 是「结构性脆弱面」，不是当前可复现故障。**
+   245 当前实测：未注册端点返 **404**（`/api/admin/this-endpoint-does-not-exist`），
+   `/api/logs/<不存在 id>` 也返 **404** ⇒ 与移动端注释里「未注册端点回 401」
+   的形态**不一致**（后端形态已变）。⇒ 本轮修的是**判定口径**，
+   不是某个当下正在发生的故障；**不能声称「本轮修好了一个线上正在发生的 bug」**。
+2. **没有改任何后端代码**：探针用的 `/api/auth/me` 早已在线；
+   401 的产生方（端点未注册时回 404 还是 401）属后端路由语义，
+   **不在本轮授权范围内，也未裁决**。
+3. **两条既有红门禁未动**（i18n CJK 5753>5529、navCoverage 孤儿路由 5 条）：
+   已用**干净 worktree 对拍 HEAD**（不是 `git stash`，避免动并行会话的在途改动）
+   ⇒ 两条在 HEAD 上逐字复现，**非本轮引入**；未擅自 `--update-baseline`。
+4. **未改动并行会话的在途文件**：`admin/settings.go`、`domains/streaming/*`、
+   `scripts/deploy-seamless-docker.sh`、`scripts/ops/*`、`scripts/ursmcheck/*`、
+   `tests/nginx_upstream_port_test.sh`、`verify.sh` 等一律不碰、不提交。
+5. **8.B 的重入保护只在前端层**：后端没有对应的「探针」概念，不涉及。

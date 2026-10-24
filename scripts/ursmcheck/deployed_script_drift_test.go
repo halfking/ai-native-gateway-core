@@ -247,3 +247,77 @@ func TestDeployDriftStatusIsConsistentWithBothChecksums(t *testing.T) {
 			"**不要直接删行**（删行会让漂移重新变成不可见）。")
 	}
 }
+
+// TestDeployDriftInSyncReasonMustNotContradictItself —— 状态与**原因文字**必须自洽。
+//
+// ★ 2026-10-24 12h 审计轮（问题⑤）抓到：台账里两行 status=in-sync，
+//
+//	而**它们自己的原因文字**仍写着「线上未部署 / 线上尚不存在此文件 / 线上仍是旧版」。
+//	⇒ ⇒ 一行台账**同时声称「已部署」和「未部署」** ⇒ 半个字段在骗人。
+//
+// ★ 为什么原来那道门没抓到：
+//
+//	`TestDeployDriftStatusIsConsistentWithBothChecksums` 的不变量只管
+//	**两个 md5 列与 status**，**不看原因文字** ⇒ ⇒ 矛盾文字永远在门缝里。
+//	⇒ 而且 14335 那道门在同一笔提交里被改成「只查正向 token 存在」
+//	  ⇒ 门跟着断言走 ⇒ 对着一行自相矛盾的数据保持全绿。
+//
+// ★ 本门把不变量补全成三条：
+//
+//	① in-sync ⇒ 原因文字里**不得**出现「未部署」语义的裸词
+//	② in-sync ⇒ 原因文字里**必须**有部署证据（现状 banner）
+//	③ drift   ⇒ 原因文字里**必须**有现状 banner（同样不许只有历史叙述）
+//
+// ★ 判别词表刻意选「**裸词**」：历史段落里如果想提到部署前的事实，
+//
+//	必须写成过去时（如「部署前：线上跑的是旧版」），而不是「线上仍是旧版」。
+//	⇒ ⇒ 这样「现在到底是什么状态」在台账里是**唯一可判的**。
+func TestDeployDriftInSyncReasonMustNotContradictItself(t *testing.T) {
+	rows := readDriftManifest(t)
+	if len(rows) == 0 {
+		t.Fatal("台账为空")
+	}
+
+	// 裸词表：出现即表示「现在还没部署」，与 in-sync 自相矛盾。
+	contradicting := []string{
+		"线上仍是旧版",
+		"线上仍跑旧判据",
+		"线上未部署",
+		"仓内已改，线上未部署",
+		"线上尚不存在",
+		"尚未部署到 252",
+	}
+
+	for _, r := range rows {
+		if r.Status != "in-sync" && r.Status != "drift" {
+			continue
+		}
+		// ★ 矛盾裸词**只对 in-sync 行**是矛盾。
+		//   对 drift 行，「线上仍是旧版」恰恰是**正确**的描述（线上确实跑的是旧版）
+		//   ⇒ ⇒ 把同一把尺子套到 drift 行上，会把**真话判成假话**。
+		if r.Status == "in-sync" {
+			for _, bad := range contradicting {
+				if strings.Contains(r.Reason, bad) {
+					t.Errorf("%s 的状态是 %q，但原因里仍写着 %q ⇒ ⇒ **同一行台账同时声称"+
+						"「已部署」和「未部署」** ⇒ 半个字段在骗人。\n"+
+						"★ 请把部署前的叙述改成过去时（如「部署前：线上跑的是旧版」），\n"+
+						"  并在原因开头写清**现状**。",
+						r.Name, r.Status, bad)
+				}
+			}
+		}
+		// 现状 banner：**只对 in-sync 行**要求。
+		//
+		// ★ 为什么 drift 行不要求：对 drift 行，「当前状态」就是
+		//   「线上跑的是旧版 + 为什么没部署」⇒ 它的 md5 两列已经表达了
+		//   「线上 ≠ 仓内」，而原因文字表达「为什么」⇒ ⇒ **已经是自洽的**。
+		//   ⇒ 而 in-sync 行必须显式说清「已部署的是哪一版 / 什么时候 / 实测读数」，
+		//   否则读者只能靠会话记忆判断线上在跑什么。
+		if r.Status == "in-sync" && !strings.Contains(r.Reason, "【现状：") {
+			t.Errorf("%s 的状态是 %q，但原因里没有「【现状：…」」开头 ⇒ ⇒ "+
+				"读者无法从台账本身判出**当前**部署的是哪一版，只能靠会话记忆。\n"+
+				"★ 请在原因开头写一行现状（已部署到哪 / 线上 md5 / 实测读数）。",
+				r.Name, r.Status)
+		}
+	}
+}
