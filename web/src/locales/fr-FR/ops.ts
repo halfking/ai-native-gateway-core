@@ -507,6 +507,14 @@ export default {
     regionOnlineCount: '{n} online',
 
     dataPlaneTables: '252 data-plane row counts',
+    pingFailedWithReason: 'Échec du ping de session : {reason}. Veuillez réessayer.',
+    saveSettingFailedWithReason: 'Le paramètre n’a pas pu être enregistré : {reason}. Veuillez réessayer.',
+    maintainFailed: 'La maintenance n’a pas pu aboutir. Veuillez réessayer.',
+    modelMaintainFailed: 'La maintenance des modèles n’a pas pu aboutir. Veuillez réessayer.',
+    fpSlotLoadFailed: 'Le chargement des slots d’empreinte digitale a échoué. Veuillez réessayer.',
+    fpSlotProviderMissing: 'provider_id est manquant, les slots d’empreinte digitale n’ont pas pu être chargés. Sélectionnez d’abord un fournisseur, puis réessayez.',
+    accessErrorsHint: 'Appels en échec + erreurs de routage · Ouvrir le détail de la requête d’origine',
+    recentRequestsHint: 'Dernière heure{source} · Voir le détail des requêtes',
   }
 ,
   downloads: {

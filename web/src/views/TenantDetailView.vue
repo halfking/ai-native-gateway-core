@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onBeforeUnmount, nextTick, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { formatDateTime } from '../utils/datetime'
 import { sortByName } from '../utils/sortByName'
 import { localeRef } from '../i18n'
@@ -23,6 +24,8 @@ import { chartColors, createComboChartConfig, useChart } from '../composables/us
 import { useRaceGuard } from '../composables/useRaceGuard'
 import { isPlatformOpsView } from '../store'
 import { Message, Clock } from '@element-plus/icons-vue'
+
+const { t } = useI18n()
 
 const route = useRoute()
 const router = useRouter()
@@ -111,7 +114,7 @@ async function loadTenant() {
     if (activeTab.value === 'stats') await loadStats()
     applyRouteFocus()
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : '加载失败'
+    error.value = e instanceof Error ? e.message : t('common.feedback.loadFailed')
   } finally {
     loading.value = false
   }
@@ -121,7 +124,7 @@ async function loadUsers() {
   try {
     users.value = await getTenantUsers(tenantCode.value)
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : '加载用户失败'
+    error.value = e instanceof Error ? e.message : t('tenants.detail.loadUsersFailed')
   }
 }
 
@@ -129,7 +132,7 @@ async function loadKeys() {
   try {
     keys.value = await getTenantKeys(tenantCode.value)
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : '加载密钥失败'
+    error.value = e instanceof Error ? e.message : t('tenants.detail.loadKeysFailed')
   }
 }
 
@@ -145,7 +148,7 @@ async function loadStats() {
     stats.value = next
   } catch (e: unknown) {
     if (statsRace.stale(gen)) return
-    error.value = e instanceof Error ? e.message : '加载统计失败'
+    error.value = e instanceof Error ? e.message : t('tenants.detail.loadStatsFailed')
   }
 }
 
@@ -250,7 +253,7 @@ async function loadWallet() {
   try {
     maasWallet.value = await getAdminMaasWallet(tenantCode.value)
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : '加载钱包失败'
+    error.value = e instanceof Error ? e.message : t('tenants.detail.loadWalletFailed')
   }
 }
 
@@ -259,7 +262,7 @@ async function loadLedger() {
     const res = await getAdminMaasLedger(tenantCode.value, 100)
     maasLedger.value = res.items ?? []
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : '加载账本失败'
+    error.value = e instanceof Error ? e.message : t('tenants.detail.loadLedgerFailed')
   }
 }
 
@@ -268,7 +271,7 @@ async function loadOrders() {
     const res = await getAdminMaasTenantOrders(tenantCode.value, 50)
     maasOrders.value = res.items ?? []
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : '加载订单失败'
+    error.value = e instanceof Error ? e.message : t('tenants.detail.loadOrdersFailed')
   }
 }
 
@@ -277,7 +280,7 @@ async function loadBilling() {
   try {
     billing.value = await getAdminMaasConsumptionDetail(tenantCode.value, billingDays.value, billingOwnerUser.value)
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : '加载计费明细失败'
+    error.value = e instanceof Error ? e.message : t('tenants.detail.loadBillingDetailsFailed')
   } finally {
     billingLoading.value = false
   }
@@ -297,7 +300,7 @@ async function submitAdjust() {
     adjustNote.value = ''
     await Promise.all([loadWallet(), loadLedger()])
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : '调整失败'
+    error.value = e instanceof Error ? e.message : t('tenants.detail.adjustFailed')
   } finally {
     adjustSaving.value = false
   }
@@ -317,7 +320,7 @@ async function submitGrant() {
     grantNote.value = ''
     await Promise.all([loadWallet(), loadLedger()])
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : '授予失败'
+    error.value = e instanceof Error ? e.message : t('tenants.detail.grantFailed')
   } finally {
     grantSaving.value = false
   }
@@ -330,7 +333,7 @@ async function confirmOrder(orderId: number) {
     await confirmAdminMaasOrder(orderId, '管理员手动确认到账')
     await Promise.all([loadOrders(), loadWallet(), loadLedger()])
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : '确认失败'
+    error.value = e instanceof Error ? e.message : t('tenants.detail.confirmFailed')
   } finally {
     confirmSaving.value = null
   }
@@ -401,7 +404,7 @@ async function toggleUserEnabled(u: TenantUser) {
     await updateUser(u.id, { enabled: !u.enabled })
     await loadUsers()
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : '操作失败'
+    error.value = e instanceof Error ? e.message : t('common.feedback.operationFailed')
   }
 }
 
@@ -726,7 +729,7 @@ watch(() => route.params.tenantId, loadTenant)
           <div class="stats-tables-header">
             <h3>应用分布 · Top 20</h3>
             <span class="spacer"></span>
-            <span class="text-muted" style="font-size:12px">点击行跳转密钥列表（带应用过滤）</span>
+            <span class="text-muted" style="font-size:12px">{{ $t('tenants.detail.appDistributionHint') }}</span>
           </div>
           <table class="table">
             <thead><tr><th>{{ $t('common.terms.application') }}</th><th class="text-right">{{ $t('common.terms.request') }}</th><th class="text-right">Token</th><th class="text-right">{{ $t('common.unit.credits') }}</th><th class="text-right">{{ $t('common.terms.fee') }}</th></tr></thead>

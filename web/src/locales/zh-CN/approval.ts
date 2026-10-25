@@ -87,6 +87,9 @@ export default {
       actions: '审批操作',
       history: '审批历史',
     },
+    loadFailed: '审批详情没能加载出来，请重试',
+    approveFailed: '批准没能完成，请重试',
+    rejectFailed: '拒绝没能完成，请重试',
   },
   config: {
     title: '审批配置',

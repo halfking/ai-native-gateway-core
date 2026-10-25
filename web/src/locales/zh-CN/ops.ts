@@ -92,6 +92,14 @@ export default {
     regionOffline: '离线',
     regionOnlineCount: '{n} 在线',
     dataPlaneTables: '252 数据面表记录数',
+    pingFailedWithReason: '会话 Ping 失败：{reason}。请重试',
+    saveSettingFailedWithReason: '设置没能保存：{reason}。请重试',
+    maintainFailed: '维护没能完成，请重试',
+    modelMaintainFailed: '模型维护没能完成，请重试',
+    fpSlotLoadFailed: '指纹槽位没能加载出来，请重试',
+    fpSlotProviderMissing: '缺少 provider_id，指纹槽位没能加载。请先选择供应商再试',
+    accessErrorsHint: '失败调用 + 路由错误 · 打开原始请求详情',
+    recentRequestsHint: '最近 1 小时{source} · 查看请求详情',
   },
 
   blocklist: {

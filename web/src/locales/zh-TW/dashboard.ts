@@ -450,4 +450,10 @@ offline: "下線資源",
     totalRequests: "Total Requests",
     totalTokens: "Total Tokens",
   },
+  requestTile: {
+    childRequestsTitle: '子請求 {count} 個（展開查看）',
+    childRequestsEmpty: '子請求（暫無推送，展開查看）',
+    actionTrailTitle: '動作軌跡 {count} 條（展開查看）',
+    actionTrailEmpty: '動作軌跡（暫無推送，展開查看）',
+  },
 }

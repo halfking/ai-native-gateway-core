@@ -441,4 +441,10 @@ export default {
     totalRequests: '总请求数',
     totalTokens: '总 Token',
   },
+  requestTile: {
+    childRequestsTitle: '子请求 {count} 个（展开查看）',
+    childRequestsEmpty: '子请求（暂无推送，展开查看）',
+    actionTrailTitle: '动作轨迹 {count} 条（展开查看）',
+    actionTrailEmpty: '动作轨迹（暂无推送，展开查看）',
+  },
 }

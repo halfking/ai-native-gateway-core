@@ -342,7 +342,7 @@ export default {
     outboundTokenEstLabel: 'Schätzung {n} Tokens',
     containsSummaryMarker: '(enthält LLM-Zusammenfassungsmarkierung)',
     summaryMarkerBadge: '(smm_v1 Zusammenfassungsmarkierung)',
-    clickToPreviewTitle: 'Klicken für Vollbild-Vorschau',
+    clickToPreviewTitle: 'Großes Bild anzeigen',
     download: 'Herunterladen',
     downloadOriginal: 'Original herunterladen',
     closePreview: 'Schließen (ESC)',
@@ -356,8 +356,8 @@ export default {
     endUserPrefix: 'Endbenutzer: ',
     applicationPrefix: 'Anwendung: ',
     noKeyDetail: 'Schlüssel: keiner',
-    sessionIdTitle: 'Sitzungs-ID (zum Filtern desselben Verlaufs klicken)',
-    taskIdTitle: 'Aufgaben-ID (zum Filtern nur dieser Aufgabe klicken)',
+    sessionIdTitle: 'Sitzungs-ID (nach Verlauf filtern)',
+    taskIdTitle: 'Aufgaben-ID (nur diese Aufgabe filtern)',
     estimatedNote: 'Geschätzt (Upstream hat keine Nutzung zurückgegeben. Lokale Heuristik nach Zeichen/Wort)',
     llmReported: 'LLM-berichtet',
     pendingPricing: 'Ausstehende Preisgestaltung ({currency})',
@@ -369,6 +369,8 @@ export default {
     tipSummaryMarker: 'Zusammenfassungsmarkierung: {v}',
     tipOutboundMsgCount: 'Ausgehende Nachrichtenanzahl: {n}',
     tipParentRequest: 'Übergeordnete Anfrage: {id}',
+    sessionIdTitleWithId: 'Sitzungs-ID (nach Verlauf filtern)\n{id}',
+    taskIdTitleWithId: 'Aufgaben-ID (nur diese Aufgabe filtern)\n{id}',
   },
   marker: {
     title: 'Sitzungszusammenfassung',
@@ -438,5 +440,8 @@ export default {
   with_sliding_compress: ', Sliding-Window-Komprimierung wurde ausgelöst.',
   writeMemora: 'In Memora schreiben',
   writingMemora: 'Wird geschrieben…',
+  table: {
+    sessionTitleFallback: 'Noch kein Sitzungstitel – öffnen Sie die Details, um diese Anfrage zu sehen',
+  },
   // 同步的扁平键
 }

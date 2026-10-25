@@ -507,6 +507,14 @@ export default {
     regionOnlineCount: '{n} online',
 
     dataPlaneTables: '252 data-plane row counts',
+    pingFailedWithReason: 'El ping de sesión falló: {reason}. Vuelva a intentarlo.',
+    saveSettingFailedWithReason: 'No se pudo guardar la configuración: {reason}. Vuelva a intentarlo.',
+    maintainFailed: 'No se pudo completar el mantenimiento. Vuelva a intentarlo.',
+    modelMaintainFailed: 'No se pudo completar el mantenimiento de modelos. Vuelva a intentarlo.',
+    fpSlotLoadFailed: 'No se pudieron cargar los slots de huella. Vuelva a intentarlo.',
+    fpSlotProviderMissing: 'Falta provider_id, por lo que no se pudieron cargar los slots de huella. Seleccione primero un proveedor y vuelva a intentarlo.',
+    accessErrorsHint: 'Llamadas fallidas + errores de enrutamiento · Abra el detalle de la solicitud original',
+    recentRequestsHint: 'Última hora{source} · Ver el detalle de las solicitudes',
   }
 ,
   downloads: {

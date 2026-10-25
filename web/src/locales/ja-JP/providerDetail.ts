@@ -424,6 +424,7 @@ export default {
     resetNodeProbeConfirm: "このプロバイダーの失敗した node_probe_state 行をすべてクリアしますか？",
 
     resetNodeProbeDone: "✓ 失敗した node_probe_state {n} 行をクリアし、ルーティング候補が即座に復旧しました",
+    repairFailed: '修復を完了できませんでした。再試行してください。',
   },
   settings: {
     overrideTitle: "🎛️ パススルーモード設定",
@@ -622,5 +623,8 @@ export default {
     deltaDays: "{n} 日後",
     loadFailed: "読み込み失敗",
     triggerFailed: "トリガー失敗"
+  },
+  quality: {
+    loadFailed: '品質プロファイルの読み込みに失敗しました。再試行してください。',
   },
 }

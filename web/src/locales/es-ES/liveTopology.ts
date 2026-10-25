@@ -165,4 +165,9 @@ export default {
     notFoundTitle: 'Esta petición ya no está en la ventana en vivo',
     notFoundHint: 'Los datos en vivo solo conservan una ventana rotativa reciente; la petición puede haber salido, o abriste el enlace directamente. Vuelve a la topología en vivo y ábrela de nuevo.',
   },
+  legend: {
+    itemTitle: '{name} ({count} solicitudes) · {state}',
+    highlightOn: 'Resaltado',
+    highlightOff: 'Sin resaltar',
+  },
 }

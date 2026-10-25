@@ -450,4 +450,10 @@ tabs: {
     totalRequests: "Total Requests",
     totalTokens: "Total Tokens",
   },
+  requestTile: {
+    childRequestsTitle: '子リクエスト {count} 件（展開して表示）',
+    childRequestsEmpty: '子リクエスト（まだプッシュはありません。展開して表示）',
+    actionTrailTitle: 'アクション履歴 {count} 件（展開して表示）',
+    actionTrailEmpty: 'アクション履歴（まだプッシュはありません。展開して表示）',
+  },
 }

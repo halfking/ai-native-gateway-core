@@ -424,6 +424,7 @@ export default {
     resetNodeProbeConfirm: '¿Borrar todas las filas con error de node_probe_state de este proveedor?',
 
     resetNodeProbeDone: '✓ Se borraron {n} filas con error de node_probe_state; candidatos de enrutado reactivados',
+    repairFailed: 'No se pudo completar la reparación. Vuelva a intentarlo.',
   },
   settings: {
     overrideTitle: "🎛️ Configuración del modo passthrough",
@@ -622,5 +623,8 @@ export default {
     deltaDays: "en {n} días",
     loadFailed: "Error al cargar",
     triggerFailed: "Disparo fallido"
+  },
+  quality: {
+    loadFailed: 'No se pudo cargar el perfil de calidad. Vuelva a intentarlo.',
   },
 }

@@ -291,8 +291,8 @@ const childCount = computed(() => childRequests.value.length)
 
 const childBadgeTitle = computed(() =>
   childCount.value > 0
-    ? `子请求 ${childCount.value} 个（点击查看）`
-    : '子请求（暂无推送，点击查看）',
+    ? t('dashboard.requestTile.childRequestsTitle', { count: childCount.value })
+    : t('dashboard.requestTile.childRequestsEmpty'),
 )
 
 const stageCategory = computed(() => props.tile.stage_category || null)
@@ -354,8 +354,8 @@ const timelinePanelStyle = ref<Record<string, string>>({})
 
 const timelineBadgeTitle = computed(() =>
   timelineCount.value > 0
-    ? `动作轨迹 ${timelineCount.value} 条（点击查看）`
-    : '动作轨迹（暂无推送，点击查看）',
+    ? t('dashboard.requestTile.actionTrailTitle', { count: timelineCount.value })
+    : t('dashboard.requestTile.actionTrailEmpty'),
 )
 
 function toggleTimelinePanel(evt: Event) {

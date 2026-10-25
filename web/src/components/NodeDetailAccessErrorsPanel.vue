@@ -1,5 +1,8 @@
 <script setup lang="ts">
+import { useI18n } from 'vue-i18n'
 /** 明细 tab：失败滑动窗口 + 失败路由决策，可点开原始请求详情。 */
+
+const { t } = useI18n()
 defineProps<{
   failedWindowEntries: Array<{ rid: string; ts: number; ok: boolean; lat: number; err?: string }>
   failedDecisions: Array<{
@@ -18,7 +21,7 @@ const emit = defineEmits<{
 
 <template>
   <section class="nd-section">
-    <h3>最近访问与异常 <small>失败调用 + 路由错误 · 点击打开原始请求详情</small></h3>
+    <h3>最近访问与异常 <small>{{ $t('ops.overview.accessErrorsHint') }}</small></h3>
     <p v-if="!failedWindowEntries.length && !failedDecisions.length" class="nd-muted">
       近窗无失败样本；路由异常见「最近路由请求」tab。
     </p>

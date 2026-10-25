@@ -152,6 +152,17 @@ export default {
       routingColError: 'الخطأ',
       msUnit: 'ms',
     },
+    operationFailedWithReason: 'فشلت العملية: {reason}. أعد المحاولة.',
+    offlineFailedWithReason: 'فشل عدم الاتصال: {reason}. أعد المحاولة.',
+    onlineFailedWithReason: 'فشل الاتصال: {reason}. أعد المحاولة.',
+    degradeFailedWithReason: 'فشل التخفيض: {reason}. أعد المحاولة.',
+    upgradeFailedWithReason: 'فشل الترقية: {reason}. أعد المحاولة.',
+    settingFailedWithReason: 'فشل الإعداد: {reason}. أعد المحاولة.',
+    manualDisabledTooltip: 'تم التعطيل يدويًا، لن يلمسه الفحص التلقائي. يمكن تشغيله يدويًا.',
+    availableTooltip: 'متاح حاليًا، يمكن تعطيله يدويًا.',
+    autoControlledTooltip: 'يتحكم فيه الفحص التلقائي (broken_confirmed وغيرها). يمكن تعطيله يدويًا (إجبار عدم الاتصال).',
+    rowSelectsMonitor: 'تحديد الصف يُظهر المراقبة المرتبطة على اليمين.',
+    selectModelRow: 'تحديد صف النموذج على اليسار لعرضه.',
   },
   dialog: {
     cancel: 'إلغاء', // نفس معنى common.button.cancel

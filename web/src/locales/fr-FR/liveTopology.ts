@@ -165,4 +165,9 @@ export default {
     notFoundTitle: "Cette requête n'est plus dans la fenêtre temps réel",
     notFoundHint: "Les données temps réel ne conservent qu'une fenêtre glissante récente ; la requête est peut-être sortie, ou vous avez ouvert le lien directement. Retournez à la topologie temps réel et rouvrez-la.",
   },
+  legend: {
+    itemTitle: '{name} ({count} requêtes) · {state}',
+    highlightOn: 'Mis en évidence',
+    highlightOff: 'Non mis en évidence',
+  },
 }

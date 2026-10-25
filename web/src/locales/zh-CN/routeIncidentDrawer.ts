@@ -4,4 +4,7 @@
 export default {
   exportFailedPrep: '导出失败：详情加载或审计失败',
   exportNoChannel: '导出失败：当前宿主没有可用的导出通道',
+  timelineLoadFailed: '近 24 小时的数据没能加载出来，请重试',
+  detailLoadFailed: '详情没能加载出来，请重试',
+  auditLogLoadFailed: '审计日志没能加载出来，请重试',
 }

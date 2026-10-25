@@ -37,6 +37,7 @@ export default {
     failed: 'Fehlgeschlagen',
     freeModel: 'Kostenloses Modell, höchste Priorität',
     waiting: 'Wird geladen…',
+    logEmpty: 'In diesem Zeitraum gibt es keine Zuordnungen. Bitte Zeitraum oder Filter ändern und erneut versuchen.',
   },
   dashboard: {
     title: 'Routing-Übersicht',
@@ -126,7 +127,7 @@ export default {
       schedulingHint: 'Tier 1→2→3→9, Plan priorisiert PAYG, P2C',
       noCreds: 'Keine Anmeldedaten',
       sixDimScore: '6-Dim-Bewertung',
-      emptyHint: 'Index hat keine Daten: auf ↻ Aktualisieren klicken',
+      emptyHint: 'Der Index enthält noch keine Einträge – mit der Schaltfläche „Aktualisieren“ erneut laden',
 
       smartConfig: 'Smart routing',
 
@@ -157,7 +158,8 @@ export default {
       modelCostTitle: 'Modellkosten',
       colCost: 'Kosten',
       colRequests: 'Anfragen',
-      empty: 'Keine Daten',
+      customerCostEmpty: 'In diesem Zeitraum gibt es keine Kundenkosten-Einträge',
+      modelCostEmpty: 'In diesem Zeitraum gibt es keine Modellkosten-Einträge',
     },
     resolve: {
       title: 'Anmeldedaten-Routing-Auflösung',
@@ -201,6 +203,10 @@ export default {
       replay: 'Erneut abfragen',
       colPriority: 'Priorität',
       priorityTooltip: 'Prioritäts-Credential: Solange das Kontingent reicht, übernimmt es den Traffic zuerst; bei Erschöpfung weicht der Traffic automatisch aus. Unabhängig von der Sortiernummer.',
+      reorderFailed: 'Anzahl der Kandidaten überschreitet das Prioritätslimit, Sortierung ist nicht möglich. Bitte Kandidaten reduzieren und erneut versuchen.',
+      sortSaveFailed: 'Sortierung konnte nicht gespeichert werden. Bitte erneut versuchen.',
+      savePolicyFailedWithReason: 'Richtlinie konnte nicht gespeichert werden: {reason}. Bitte erneut versuchen.',
+      localLogFailed: 'Lokales Ausführungsprotokoll konnte nicht ausgewertet werden, Originalinhalt konnte nicht gesichert werden (Browser-Speicher ist möglicherweise voll). Bitte Browser-Speicher bereinigen und erneut versuchen.',
     },
     live: {
       simulatorTitle: 'Routing-Simulation',
@@ -213,6 +219,7 @@ export default {
       colConfidence: 'Konfidenz',
       noDecisions: 'Keine letzten Entscheidungen',
     },
+    matchStatsHint: '×Modell-Matching-Statistik · Zelle öffnet Entscheidungsdetails und L2-Trichter',
   },
   policy: {
     title: 'Routing-Strategie',
@@ -440,4 +447,5 @@ export default {
   updatedWeights: 'Bewertungskoeffizienten aktualisiert',
   variantsLabel: 'Varianten',
   workTypes: 'Arbeitstypen',
+  variantHint: 'Wählen Sie oben eine Variante, um deren Anmeldedaten-Routing-Details anzuzeigen',
 }

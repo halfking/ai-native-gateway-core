@@ -118,7 +118,7 @@ async function loadAll() {
     }
     // 队列任务由 ProbeTriStateQueue 组件自行拉取（SSE 为主 + tri-state API 兜底）
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : '加载失败'
+    error.value = e instanceof Error ? e.message : '没能加载出来，请重试'
   } finally {
     loading.value = false
   }
@@ -186,7 +186,7 @@ async function loadSystemFeaturedModels() {
     // 不为这一处单独引入 i18n key —— 那会把该文件变成半 i18n 半硬编码。
     systemFeaturedModels.value = []
     const e = err as { detail?: string; message?: string } | null
-    systemFeaturedError.value = e?.detail || e?.message || '加载失败'
+    systemFeaturedError.value = e?.detail || e?.message || '没能加载出来，请重试'
   }
   systemFeaturedLoading.value = false
 }
@@ -203,7 +203,7 @@ async function toggleRunDetail(id: number) {
   try {
     runDetail.value = await fetchSelfCheckRunDetail(id)
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : '加载详情失败'
+    error.value = e instanceof Error ? e.message : '详情没能加载出来，请重试'
   }
 }
 
@@ -229,7 +229,7 @@ async function saveSettings() {
     showSettings.value = false
     await loadAll()
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : '保存失败'
+    error.value = e instanceof Error ? e.message : '没能保存，请重试'
   }
 }
 
@@ -239,7 +239,7 @@ async function onTrigger(model = '') {
   // Front-end gate mirrors the back-end worker state so we don't fire
   // requests the server is guaranteed to 410 on.
   if (!triggerAvailability.value.available) {
-    error.value = triggerAvailability.value.reason ?? '自检触发功能不可用'
+    error.value = triggerAvailability.value.reason ?? '自检触发功能当前不可用，请检查自检配置后重试'
     return
   }
   triggerBusy.value = true
@@ -274,7 +274,7 @@ async function onTrigger(model = '') {
         // best-effort refresh; ignore failure
       }
     } else {
-      error.value = e instanceof Error ? e.message : '触发失败'
+      error.value = e instanceof Error ? e.message : '触发没能成功，请重试'
     }
   } finally {
     triggerBusy.value = false
@@ -424,7 +424,7 @@ const probeSummaryCards = computed(() => {
         <button
           :class="['btn', triggerButtonClass]"
           :disabled="triggerBusy || !triggerAvailability.available"
-          :title="triggerAvailability.available ? '' : (triggerAvailability.reason || '触发功能不可用')"
+          :title="triggerAvailability.available ? '' : (triggerAvailability.reason || '自检触发功能当前不可用，请检查自检配置后重试')"
           @click="onTrigger('')"
         >
           {{ triggerButtonLabel }}
@@ -488,7 +488,7 @@ const probeSummaryCards = computed(() => {
         <button
           class="btn btn-tiny"
           :disabled="triggerBusy || !triggerAvailability.available"
-          :title="triggerAvailability.available ? '' : (triggerAvailability.reason || '触发功能不可用')"
+          :title="triggerAvailability.available ? '' : (triggerAvailability.reason || '自检触发功能当前不可用，请检查自检配置后重试')"
           @click="onTrigger(m.model_name)"
         >
           {{

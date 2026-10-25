@@ -53,4 +53,9 @@ export default {
   systemStopAllConfirm: 'Alle Probe-Aufgaben stoppen? Bereits übernommene (claimed) Aufgaben laufen noch zu Ende.',
   systemTriggeredToast: '{n} Aufgaben ausgelöst, {failed} fehlgeschlagen',
   systemStoppedToast: '{n} Aufgaben aus der Warteschlange entfernt',
+  detail: {
+    triggerFailed: 'Auslösen fehlgeschlagen. Bitte erneut versuchen.',
+    modelNodeNotFound: 'Für dieses Modell wurde kein Knoten gefunden. Bitte Modellnamen prüfen oder zuerst einen Knoten anbinden und erneut versuchen.',
+    pricingUnavailable: 'Preisdaten sind nur mit platform_ops-Berechtigung sichtbar. Bitte Administrator kontaktieren',
+  },
 }

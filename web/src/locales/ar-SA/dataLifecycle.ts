@@ -47,7 +47,8 @@ export default {
     configMaxAttachmentMb: "{n} ميجابايت",
     configAutoCleanup: "التنظيف التلقائي:",
     autoCleanupOn: "مفعّل",
-    autoCleanupOff: "معطّل"
+    autoCleanupOff: "معطّل",
+    migrateFailedWithReason: 'تعذّر إتمام الترحيل: {reason}. أعد المحاولة.',
   },
   attachmentCleanup: {
     title: "🗑️ تنظيف المرفقات",
@@ -342,6 +343,9 @@ export default {
     cronLastError: 'Last error',
 
     cronRunning: 'Running now',
+    statsLoadFailedWithReason: 'تعذّر تحميل إحصائيات جداول hot: {reason}. أعد المحاولة.',
+    startMigrationFailedWithReason: 'تعذّر بدء مهمة الترحيل: {reason}. أعد المحاولة.',
+    submitDeleteFailedWithReason: 'تعذّر إرسال مهمة الحذف: {reason}. أعد المحاولة.',
   },
   preview: "معاينة التنظيف",
   hotData: "بيانات ساخنة (0-7 أيام)",

@@ -343,7 +343,7 @@ export default {
     outboundTokenEstLabel: '估算 {n} tokens',
     containsSummaryMarker: '(含 LLM 摘要邊界)',
     summaryMarkerBadge: '(smm_v1 摘要邊界)',
-    clickToPreviewTitle: '點擊查看大圖',
+    clickToPreviewTitle: '查看大圖',
     download: '下載',
     downloadOriginal: '下載原圖',
     closePreview: '關閉 (ESC)',
@@ -357,8 +357,8 @@ export default {
     userPrefix: '使用者: ',
     endUserPrefix: '終端使用者: ',
     applicationPrefix: '應用: ',
-    sessionIdTitle: '會話 ID（點擊篩選同脈絡）',
-    taskIdTitle: '任務 ID（點擊僅篩此任務）',
+    sessionIdTitle: '會話 ID（按脈絡篩選）',
+    taskIdTitle: '任務 ID（僅篩此任務）',
     estimatedNote: '估算值（上游未返回 usage，本地按字元/單字啟發式估算）',
     llmReported: 'LLM 返回值',
     pendingPricing: '待定價({currency})',
@@ -370,6 +370,8 @@ export default {
     tipSummaryMarker: '摘要標記: {v}',
     tipOutboundMsgCount: '轉發訊息數: {n}',
     tipParentRequest: '父請求: {id}',
+    sessionIdTitleWithId: '會話 ID（按脈絡篩選）\n{id}',
+    taskIdTitleWithId: '任務 ID（僅篩此任務）\n{id}',
   },
   marker: {
     title: '會話總結',
@@ -440,4 +442,7 @@ export default {
   with_sliding_compress: '，已触发滑动窗口压缩。',
   writeMemora: '写入 Memora',
   writingMemora: '写入中…',
+  table: {
+    sessionTitleFallback: '尚無會話標題 —— 開啟詳情可查看本次請求',
+  },
 }

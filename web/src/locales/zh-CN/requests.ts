@@ -355,7 +355,7 @@ export default {
     outboundTokenEstLabel: '估算 {n} tokens',
     containsSummaryMarker: '(含 LLM 摘要边界)',
     summaryMarkerBadge: '(smm_v1 摘要边界)',
-    clickToPreviewTitle: '点击查看大图',
+    clickToPreviewTitle: '查看大图',
     download: '下载',
     downloadOriginal: '下载原图',
     closePreview: '关闭 (ESC)',
@@ -371,8 +371,8 @@ export default {
     userPrefix: '用户: ',
     endUserPrefix: '终端用户: ',
     applicationPrefix: '应用: ',
-    sessionIdTitle: '会话 ID（点击筛选同脉络）',
-    taskIdTitle: '任务 ID（点击仅筛此任务）',
+    sessionIdTitle: '会话 ID（按脉络筛选）',
+    taskIdTitle: '任务 ID（仅筛此任务）',
     // usage
     estimatedNote: '估算值（上游未返回 usage，本地按字符/单词启发式估算）',
     llmReported: 'LLM 返回值',
@@ -386,6 +386,8 @@ export default {
     tipSummaryMarker: '摘要标记: {v}',
     tipOutboundMsgCount: '转发消息数: {n}',
     tipParentRequest: '父请求: {id}',
+    sessionIdTitleWithId: '会话 ID（按脉络筛选）\n{id}',
+    taskIdTitleWithId: '任务 ID（仅筛此任务）\n{id}',
   },
   // 会话总结 marker 提示（详情抽屉上方）
   marker: {
@@ -456,4 +458,7 @@ export default {
   with_sliding_compress: '，已触发滑动窗口压缩。',
   writeMemora: '写入 Memora',
   writingMemora: '写入中…',
+  table: {
+    sessionTitleFallback: '尚无会话标题 —— 打开详情可查看本次请求',
+  },
 }

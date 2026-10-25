@@ -400,7 +400,7 @@ onMounted(load)
     </div>
 
     <div v-else-if="!loading && variantPills.length" class="card compact-card hint-card">
-      <p class="text-muted">点击上方变体按钮查看凭据路由详情</p>
+      <p class="text-muted">{{ $t('routing.variantHint') }}</p>
     </div>
 
   </div>

@@ -258,7 +258,7 @@ export default {
     credentialProbeOk: 'プローブ成功',
     credentialUnreachable: '利用不可',
     credentialFailed: 'チェック失敗',
-    diagnoseFailed: '診断失敗',
+    diagnoseFailed: '診断を完了できませんでした。再試行してください。',
   },
   diagnose: {
     title: 'プロバイダー診断 — 実際のリクエスト/レスポンスキャプチャ',
@@ -326,7 +326,7 @@ export default {
     day: '日前',
   },
   error: {
-    loadFailed: '読み込み失敗',
+    loadFailed: 'プロバイダー一覧の読み込みに失敗しました。再試行してください。',
   },
   common: {
     button: {

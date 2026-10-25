@@ -8,6 +8,9 @@ import {
   setConcurrencyAuto,
   type CredentialMonitorSummary,
 } from '../api/credential-monitor'
+import { useI18n } from 'vue-i18n'
+
+const { t } = useI18n()
 import {
   getCredentialFpSlotStats,
   updateCredential,
@@ -72,7 +75,7 @@ function normalizeInt(v: number | null | undefined | ''): number | null {
 async function loadFpStats() {
   const providerId = effectiveProviderId.value
   if (!providerId) {
-    fpError.value = '缺少 provider_id，无法加载指纹槽位。'
+    fpError.value = t('ops.overview.fpSlotProviderMissing')
     return
   }
   fpLoading.value = true
@@ -82,7 +85,7 @@ async function loadFpStats() {
     fpStats.value = stats
   } catch (error) {
     fpStats.value = null
-    fpError.value = error instanceof Error ? error.message : '指纹槽位加载失败'
+    fpError.value = error instanceof Error ? error.message : t('ops.overview.fpSlotLoadFailed')
   } finally {
     fpLoading.value = false
   }
@@ -163,7 +166,7 @@ async function saveUnified() {
     await loadFpStats()
     emit('saved')
   } catch (error) {
-    emit('error', error instanceof Error ? error.message : '保存失败')
+    emit('error', error instanceof Error ? error.message : t('common.feedback.saveFailed'))
   } finally {
     saving.value = false
   }

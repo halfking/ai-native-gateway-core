@@ -165,4 +165,9 @@ export default {
     notFoundTitle: 'Diese Anfrage ist nicht mehr im Live-Fenster',
     notFoundHint: 'Live-Daten behalten nur ein recentes rollierendes Fenster; die Anfrage ist möglicherweise herausgescrollt, oder du hast den Link direkt geöffnet. Kehre zur Live-Topologie zurück und öffne sie erneut.',
   },
+  legend: {
+    itemTitle: '{name} ({count} Anfragen) · {state}',
+    highlightOn: 'Hervorgehoben',
+    highlightOff: 'Nicht hervorgehoben',
+  },
 }

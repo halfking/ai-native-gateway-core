@@ -1,7 +1,7 @@
 export default {
   placeholderSelect: '选择模型…',
   titleSelect: '选择模型',
-  loadFailed: '加载模型失败',
+  loadFailed: '模型列表没能加载出来，请重试',
   selectedCount: '已选 {count} 个模型',
   editButton: '编辑',
   selectButton: '选择',

@@ -257,7 +257,7 @@ export default {
     credentialProbeOk: 'Sondage réussi',
     credentialUnreachable: 'Inaccessible',
     credentialFailed: 'Échec de la vérification',
-    diagnoseFailed: 'Échec du diagnostic',
+    diagnoseFailed: 'Le diagnostic n’a pas pu aboutir. Veuillez réessayer.',
   },
   diagnose: {
     title: 'Diagnostic fournisseur: capture réelle requête/réponse',
@@ -325,7 +325,7 @@ export default {
     day: 'j',
   },
   error: {
-    loadFailed: 'Échec du chargement',
+    loadFailed: 'Le chargement de la liste des fournisseurs a échoué. Veuillez réessayer.',
   },
   common: {
     button: {

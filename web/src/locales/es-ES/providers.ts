@@ -256,7 +256,7 @@ export default {
     credentialProbeOk: 'Sonda superada',
     credentialUnreachable: 'Inaccesible',
     credentialFailed: 'Comprobación fallida',
-    diagnoseFailed: 'Diagnóstico fallido',
+    diagnoseFailed: 'No se pudo completar el diagnóstico. Vuelva a intentarlo.',
   },
   diagnose: {
     title: 'Diagnóstico del proveedor: captura de solicitud/respuesta',
@@ -324,7 +324,7 @@ export default {
     day: 'hace d',
   },
   error: {
-    loadFailed: 'Error al cargar',
+    loadFailed: 'No se pudo cargar la lista de proveedores. Vuelva a intentarlo.',
   },
   common: {
     button: {

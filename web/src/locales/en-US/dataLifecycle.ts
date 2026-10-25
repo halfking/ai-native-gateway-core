@@ -49,6 +49,7 @@ export default {
     configAutoCleanup: 'Auto cleanup:',
     autoCleanupOn: 'On',
     autoCleanupOff: 'Off',
+    migrateFailedWithReason: 'The migration could not be completed: {reason}. Please retry.',
   },
   attachmentCleanup: {
     title: '🗑️ Attachment cleanup',
@@ -441,6 +442,9 @@ export default {
       success: 'Dropped successfully:\n{message}\nReclaimed: {size}',
       failed: 'Drop failed: {msg}',
     },
+    statsLoadFailedWithReason: 'The hot table stats could not be loaded: {reason}. Please retry.',
+    startMigrationFailedWithReason: 'The migration job could not be started: {reason}. Please retry.',
+    submitDeleteFailedWithReason: 'The delete job could not be submitted: {reason}. Please retry.',
   },
 
   // 扁平键（供 Vue 组件直接使用）

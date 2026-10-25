@@ -459,4 +459,10 @@ v2: {
     totalRequests: "Total Requests",
     totalTokens: "Total Tokens",
   },
+  requestTile: {
+    childRequestsTitle: 'Sous-requêtes {count} (développer pour voir)',
+    childRequestsEmpty: 'Sous-requêtes (aucune donnée reçue, développer pour voir)',
+    actionTrailTitle: 'Journal des actions {count} entrées (développer pour voir)',
+    actionTrailEmpty: 'Journal des actions (aucune donnée reçue, développer pour voir)',
+  },
 }

@@ -343,7 +343,7 @@ export default {
     outboundTokenEstLabel: '推定 {n} トークン',
     containsSummaryMarker: '(LLM 要約境界を含む)',
     summaryMarkerBadge: '(smm_v1 要約境界)',
-    clickToPreviewTitle: 'クリックで拡大表示',
+    clickToPreviewTitle: '拡大画像を表示',
     download: 'ダウンロード',
     downloadOriginal: '原画像をダウンロード',
     closePreview: '閉じる (ESC)',
@@ -357,8 +357,8 @@ export default {
     userPrefix: 'ユーザー: ',
     endUserPrefix: 'エンドユーザー: ',
     applicationPrefix: 'アプリケーション: ',
-    sessionIdTitle: 'セッション ID (クリックで同トレースを絞り込み)',
-    taskIdTitle: 'タスク ID (クリックでこのタスクのみ絞り込み)',
+    sessionIdTitle: 'セッション ID（トレースで絞り込み）',
+    taskIdTitle: 'タスク ID（このタスクのみ絞り込み）',
     estimatedNote: '推定値(アップストリームから usage が返されない、文字/単語ヒューリスティックで推定)',
     llmReported: 'LLM 戻り値',
     pendingPricing: '価格待ち ({currency})',
@@ -370,6 +370,8 @@ export default {
     tipSummaryMarker: '要約マーカー: {v}',
     tipOutboundMsgCount: '転送メッセージ数: {n}',
     tipParentRequest: '親リクエスト: {id}',
+    sessionIdTitleWithId: 'セッション ID（トレースで絞り込み）\n{id}',
+    taskIdTitleWithId: 'タスク ID（このタスクのみ絞り込み）\n{id}',
   },
   marker: {
     title: 'セッション要約',
@@ -440,4 +442,7 @@ export default {
   with_sliding_compress: '，已触发滑动窗口压缩。',
   writeMemora: '写入 Memora',
   writingMemora: '写入中…',
+  table: {
+    sessionTitleFallback: 'セッションタイトルはまだありません — 詳細を開くと今回のリクエストを確認できます',
+  },
 }

@@ -53,4 +53,9 @@ export default {
   systemStopAllConfirm: '确认停止全部探测任务？已 claimed 的任务仍会跑完。',
   systemTriggeredToast: '已触发 {n} 任务, 失败 {failed}',
   systemStoppedToast: '已清空队列 {n} 条任务',
+  detail: {
+    triggerFailed: '触发没能成功，请重试',
+    modelNodeNotFound: '没有找到这个模型的节点。请确认模型名，或先接入节点再试',
+    pricingUnavailable: '价格数据需要 platform_ops 权限才能查看。请联系管理员开通',
+  },
 }

@@ -148,7 +148,7 @@ async function onPreview() {
   try {
     preview.value = await dataLifecycleBlobCleanupPreview(form.value)
   } catch (e: any) {
-    alert('预览失败：' + (e?.response?.data?.error?.detail || e?.message || 'unknown'))
+    alert(t('common.feedback.previewFailedWithReason', { reason: e?.response?.data?.error?.detail || e?.message || t('common.feedback.unknownReason') }))
   } finally {
     loading.value = false
   }
@@ -164,7 +164,7 @@ async function onExecute() {
     preview.value = null
     await load()
   } catch (e: any) {
-    alert('执行失败：' + (e?.response?.data?.error?.detail || e?.message || 'unknown'))
+    alert(t('common.feedback.executeFailedWithReason', { reason: e?.response?.data?.error?.detail || e?.message || t('common.feedback.unknownReason') }))
   } finally {
     loading.value = false
   }

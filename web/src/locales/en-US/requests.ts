@@ -340,7 +340,7 @@ export default {
     outboundTokenEstLabel: 'est. {n} tokens',
     containsSummaryMarker: '(contains LLM summary marker)',
     summaryMarkerBadge: '(smm_v1 summary marker)',
-    clickToPreviewTitle: 'Click to preview full size',
+    clickToPreviewTitle: 'View the full-size image',
     download: 'Download',
     downloadOriginal: 'Download original',
     closePreview: 'Close (ESC)',
@@ -354,8 +354,8 @@ export default {
     endUserPrefix: 'End user: ',
     applicationPrefix: 'Application: ',
     noKeyDetail: 'Key: none',
-    sessionIdTitle: 'Session ID (click to filter same trace)',
-    taskIdTitle: 'Task ID (click to filter only this task)',
+    sessionIdTitle: 'Session ID (filter by trace)',
+    taskIdTitle: 'Task ID (filter this task only)',
     estimatedNote: 'Estimated (upstream did not return usage: local heuristic by char/word)',
     llmReported: 'LLM-reported',
     pendingPricing: 'Pending pricing ({currency})',
@@ -367,6 +367,8 @@ export default {
     tipSummaryMarker: 'Summary marker: {v}',
     tipOutboundMsgCount: 'Outbound msg count: {n}',
     tipParentRequest: 'Parent request: {id}',
+    sessionIdTitleWithId: 'Session ID (filter by trace)\n{id}',
+    taskIdTitleWithId: 'Task ID (filter this task only)\n{id}',
   },
   marker: {
     title: 'Session summary',
@@ -436,5 +438,8 @@ export default {
   with_sliding_compress: ', sliding window compression was triggered.',
   writeMemora: 'Write to Memora',
   writingMemora: 'Writing…',
+  table: {
+    sessionTitleFallback: 'No session title yet. Open the request details to see this request.',
+  },
   // 同步的扁平键
 }

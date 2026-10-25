@@ -898,7 +898,9 @@ async function pasteToSelected() {
     selectedRows.value.clear()
     await fetchTable()
   } catch (e) {
-    globalMsg.value = `批量更新失败: ${e instanceof Error ? e.message : '未知错误'}`
+    globalMsg.value = t('common.feedback.batchUpdateFailedWithReason', {
+      reason: (e instanceof Error ? e.message : '') || t('common.feedback.unknownReason'),
+    })
     globalMsgOk.value = false
   } finally {
     saving.value = false
@@ -969,7 +971,9 @@ async function applyModelBatchPricing() {
     showModelBatchModal.value = false
     await fetchData()
   } catch (e) {
-    globalMsg.value = `批量定价失败: ${e instanceof Error ? e.message : '未知错误'}`
+    globalMsg.value = t('common.feedback.batchPricingFailedWithReason', {
+      reason: (e instanceof Error ? e.message : '') || t('common.feedback.unknownReason'),
+    })
     globalMsgOk.value = false
   } finally {
     savingBatch.value = false

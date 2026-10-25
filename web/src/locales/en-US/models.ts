@@ -197,6 +197,8 @@ export default {
     discoverFailed: 'Model discovery failed',
     loadFeaturedFailed: 'Failed to load featured models',
     saveFeaturedFailed: 'Save failed',
+    syncFailed: 'The model name mapping could not be synced. Please retry.',
+    nameRequired: 'Enter both the original name and the standard name.',
   },
   health: {
     healthy: 'Healthy',

@@ -166,4 +166,9 @@ export default {
     notFoundTitle: '该请求不在当前实时窗口内',
     notFoundHint: '实时数据只保留最近的滚动窗口；请求可能已滚出，或你是通过链接直接打开的。请回到实时拓扑页重新点开。',
   },
+  legend: {
+    itemTitle: '{name}（{count} 个请求）· {state}',
+    highlightOn: '已高亮',
+    highlightOff: '未高亮',
+  },
 }

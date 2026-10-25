@@ -4,8 +4,9 @@ export default {
     disabled: 'Deaktiviert',
     paused: 'Getrennt',
     ok: 'Verbunden',
-    error: 'Verbindung fehlgeschlagen',
+    error: 'Keine Verbindung möglich. Bitte Netzwerk prüfen und erneut versuchen.',
     loading: 'Überprüfung läuft',
+    detectFailed: 'Kein Ergebnis ermittelt. Bitte erneut versuchen.',
   },
 
   panel: {

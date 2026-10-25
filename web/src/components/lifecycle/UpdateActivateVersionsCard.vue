@@ -137,7 +137,7 @@ async function runUpgradeFlow(version: string, item: CatalogItem) {
     setStep('download', 'done')
   } catch (e) {
     setStep('download', 'failed')
-    ElMessage.error(`下载失败：${(e as Error).message}`)
+    ElMessage.error(t('common.feedback.downloadFailedWithReason', { reason: (e as Error).message }))
     upgrading.value = null
     return
   }
@@ -150,7 +150,7 @@ async function runUpgradeFlow(version: string, item: CatalogItem) {
     setStep('install', 'done')
   } catch (e) {
     setStep('install', 'failed')
-    ElMessage.error(`安装失败：${(e as Error).message}`)
+    ElMessage.error(t('common.feedback.installFailedWithReason', { reason: (e as Error).message }))
     upgrading.value = null
     return
   }
@@ -165,7 +165,7 @@ async function runUpgradeFlow(version: string, item: CatalogItem) {
     emit('refresh')
   } catch (e) {
     setStep('switch', 'failed')
-    ElMessage.error(`启动切换失败：${(e as Error).message}`)
+    ElMessage.error(t('customer.versions.switchFailedWithReason', { reason: (e as Error).message }))
   } finally {
     upgrading.value = null
   }

@@ -88,4 +88,5 @@ export default {
     upstream_auth_error: 'Auth amont (401/403)',
     upstream_not_found: 'Amont 404',
   },
+  generateFailed: 'Le résumé n’a pas pu être généré. Veuillez réessayer.',
 }

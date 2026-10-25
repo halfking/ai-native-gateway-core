@@ -90,6 +90,9 @@ export default {
       actions: 'Approval actions',
       history: 'Approval history',
     },
+    loadFailed: 'Genehmigungsdetails konnten nicht geladen werden. Bitte erneut versuchen.',
+    approveFailed: 'Genehmigung konnte nicht abgeschlossen werden. Bitte erneut versuchen.',
+    rejectFailed: 'Ablehnung konnte nicht abgeschlossen werden. Bitte erneut versuchen.',
   },
   config: {
     title: 'Genehmigungseinstellungen',

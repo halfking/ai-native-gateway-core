@@ -355,7 +355,7 @@ export default {
     outboundTokenEstLabel: 'تقدير {n} tokens',
     containsSummaryMarker: '(يحتوي على حدود ملخص LLM)',
     summaryMarkerBadge: '(حدود ملخص smm_v1)',
-    clickToPreviewTitle: 'انقر لمعاينة الصورة الكبيرة',
+    clickToPreviewTitle: 'عرض الصورة الكبيرة',
     download: 'تنزيل',
     downloadOriginal: 'تنزيل الصورة الأصلية',
     closePreview: 'إغلاق (ESC)',
@@ -371,8 +371,8 @@ export default {
     userPrefix: 'المستخدم: ',
     endUserPrefix: 'المستخدم النهائي: ',
     applicationPrefix: 'التطبيق: ',
-    sessionIdTitle: 'معرّف الجلسة (انقر للتصفية بنفس المسار)',
-    taskIdTitle: 'معرّف المهمة (انقر للتصفية بهذه المهمة فقط)',
+    sessionIdTitle: 'معرّف الجلسة (تصفية حسب المسار)',
+    taskIdTitle: 'معرّف المهمة (تصفية بهذه المهمة فقط)',
     // usage
     estimatedNote: 'قيمة مقدرة (المنبع لم يرجع usage، يتم التقدير محليًا حسب الأحرف/الكلمات)',
     llmReported: 'القيمة المرجعة من LLM',
@@ -386,6 +386,8 @@ export default {
     tipSummaryMarker: 'علامة الملخص: {v}',
     tipOutboundMsgCount: 'عدد الرسائل المعاد توجيهها: {n}',
     tipParentRequest: 'الطلب الأب: {id}',
+    sessionIdTitleWithId: 'معرّف الجلسة (تصفية حسب المسار)\n{id}',
+    taskIdTitleWithId: 'معرّف المهمة (تصفية بهذه المهمة فقط)\n{id}',
   },
   // تلميح علامة ملخص الجلسة (أعلى درج التفاصيل)
   marker: {
@@ -457,4 +459,7 @@ export default {
   with_sliding_compress: '، تم تشغيل ضغط النافذة المنزلقة.',
   writeMemora: 'كتابة في Memora',
   writingMemora: 'جاري الكتابة…',
+  table: {
+    sessionTitleFallback: 'لا يوجد عنوان الجلسة بعد. افتح التفاصيل لعرض هذا الطلب.',
+  },
 }

@@ -216,7 +216,7 @@ function onAgreementCancelled() {
   showAgreementDialog.value = false
   if (pendingActivation.value) {
     pendingActivation.value = false
-    error.value = '未同意用户协议，无法继续激活。'
+    error.value = '请先同意用户协议，再继续激活'
   }
 }
 
@@ -312,7 +312,7 @@ async function copyInstanceId() {
           if (result.body && result.body.code === 'issue.cooldown') {
             throw new Error(`中心冷却中（${result.body.message || ''}）。请稍后重试，每次失败都会清除冷却。`)
           }
-          throw new Error(detail || '在线激活失败')
+          throw new Error(detail || '在线激活没能完成，请重试')
         }
         message.value = result.mode === 'online'
           ? '在线激活成功。'
@@ -335,7 +335,7 @@ async function copyInstanceId() {
         if (result.body && result.body.code === 'issue.cooldown') {
           throw new Error(`中心冷却中（${result.body.message || ''}）。请稍后重试。`)
         }
-        throw new Error(detail || '离线激活失败')
+        throw new Error(detail || '离线激活没能完成，请重试')
       }
       message.value = result.message || '离线激活成功。'
       registerResult.value = {
@@ -629,7 +629,7 @@ onMounted(async () => {
         <template #header>未同意用户协议</template>
         <p class="muted">
           激活本机 License 必须先阅读并同意 <a href="/user-agreement.html" target="_blank" rel="noopener">用户协议</a>。
-          点击下方按钮弹出协议确认窗口，勾选并"同意并继续"后才能进入后续步骤。
+          在下方确认协议后会弹出确认窗口，勾选并"同意并继续"后才能进入后续步骤。
         </p>
         <div class="wizard-actions">
           <button type="button" class="btn btn-primary" @click="openAgreementDialog">阅读并同意用户协议</button>

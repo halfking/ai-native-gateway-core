@@ -275,7 +275,7 @@ export default {
     credentialProbeOk: '探活通过',
     credentialUnreachable: '不可用',
     credentialFailed: '检测失败',
-    diagnoseFailed: '诊断失败',
+    diagnoseFailed: '诊断没能完成，请重试',
   },
   diagnose: {
     title: '供应商诊断 — 实际请求/响应抓包',
@@ -343,7 +343,7 @@ export default {
     day: '天前',
   },
   error: {
-    loadFailed: '加载失败',
+    loadFailed: '供应商列表没能加载出来，请重试',
   },
   common: {
     button: {

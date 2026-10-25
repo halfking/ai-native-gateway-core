@@ -259,7 +259,7 @@ export default {
     credentialProbeOk: '探活通過',
     credentialUnreachable: '無法使用',
     credentialFailed: '偵測失敗',
-    diagnoseFailed: '診斷失敗',
+    diagnoseFailed: '診斷沒能完成，請重試',
   },
   diagnose: {
     title: '供應商診斷 — 實際請求/回應抓包',
@@ -327,7 +327,7 @@ export default {
     day: '天前',
   },
   error: {
-    loadFailed: '載入失敗',
+    loadFailed: '供應商列表沒能載入出來，請重試',
   },
   common: {
     button: {

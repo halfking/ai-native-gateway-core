@@ -90,6 +90,9 @@ export default {
       actions: 'Approval actions',
       history: 'Approval history',
     },
+    loadFailed: 'تعذّر تحميل تفاصيل الموافقة. أعد المحاولة.',
+    approveFailed: 'تعذّر إتمام الموافقة. أعد المحاولة.',
+    rejectFailed: 'تعذّر إتمام الرفض. أعد المحاولة.',
   },
   config: {
     title: 'إعدادات الموافقة',

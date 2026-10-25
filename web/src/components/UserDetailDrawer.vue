@@ -63,7 +63,7 @@ async function load() {
     stats.value = next
   } catch (e: unknown) {
     if (race.stale(gen)) return
-    errorText.value = e instanceof Error ? e.message : '加载用户统计失败'
+    errorText.value = e instanceof Error ? e.message : t('users.detail.loadStatsFailed')
   } finally {
     if (race.current(gen)) loading.value = false
   }

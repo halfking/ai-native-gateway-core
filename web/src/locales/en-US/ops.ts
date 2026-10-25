@@ -93,6 +93,14 @@ export default {
     regionOffline: 'Offline',
     regionOnlineCount: '{n} online',
     dataPlaneTables: '252 data-plane row counts',
+    pingFailedWithReason: 'Session Ping failed: {reason}. Please retry.',
+    saveSettingFailedWithReason: 'The setting could not be saved: {reason}. Please retry.',
+    maintainFailed: 'The maintenance could not be completed. Please retry.',
+    modelMaintainFailed: 'The model maintenance could not be completed. Please retry.',
+    fpSlotLoadFailed: 'The fingerprint slots could not be loaded. Please retry.',
+    fpSlotProviderMissing: 'provider_id is missing, so the fingerprint slots could not be loaded. Select a provider first, then try again.',
+    accessErrorsHint: 'Failed calls + routing errors · Open the original request details',
+    recentRequestsHint: 'Last 1 hour{source} · View request details',
   },
 
   blocklist: {

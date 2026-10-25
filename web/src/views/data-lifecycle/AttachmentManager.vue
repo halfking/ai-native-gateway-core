@@ -251,7 +251,7 @@ async function onPreview() {
     lastResult.value = await attachmentCleanupPreview({ older_than_days: cleanup.older_than_days })
     lastResult.value.executed = false
   } catch (e: any) {
-    alert('预览失败：' + (e?.response?.data?.error?.detail || e?.message))
+    alert(t('common.feedback.previewFailedWithReason', { reason: e?.response?.data?.error?.detail || e?.message }))
   } finally {
     loading.value = false
   }
@@ -266,7 +266,7 @@ async function onExecute() {
     lastResult.value = { ...r, executed: true }
     await load()
   } catch (e: any) {
-    alert('执行失败：' + (e?.response?.data?.error?.detail || e?.message))
+    alert(t('common.feedback.executeFailedWithReason', { reason: e?.response?.data?.error?.detail || e?.message }))
   } finally {
     loading.value = false
   }

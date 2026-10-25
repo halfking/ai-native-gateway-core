@@ -47,7 +47,8 @@ export default {
     configMaxAttachmentMb: "{n} Mo",
     configAutoCleanup: "Nettoyage automatique :",
     autoCleanupOn: "Activé",
-    autoCleanupOff: "Désactivé"
+    autoCleanupOff: "Désactivé",
+    migrateFailedWithReason: 'La migration n’a pas pu aboutir : {reason}. Veuillez réessayer.',
   },
   attachmentCleanup: {
     title: "🗑️ Nettoyage des pièces jointes",
@@ -342,6 +343,9 @@ export default {
     cronLastError: 'Last error',
 
     cronRunning: 'Running now',
+    statsLoadFailedWithReason: 'Les statistiques des tables hot n’ont pas pu être chargées : {reason}. Veuillez réessayer.',
+    startMigrationFailedWithReason: 'La tâche de migration n’a pas pu démarrer : {reason}. Veuillez réessayer.',
+    submitDeleteFailedWithReason: 'La tâche de suppression n’a pas pu être soumise : {reason}. Veuillez réessayer.',
   },
   preview: "Aperçu de l'impact",
   hotData: "Données chaudes (0–7 jours)",
