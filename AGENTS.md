@@ -8773,3 +8773,59 @@ index b953a6f03..555ef83c4 100644
 > ⇒ ⇒ 完整记录见 handoff `docs/96小时内修订审计-20261007-1350.md` **§19.26**
 > + 审计档 `docs/audit/2026-10-25-R153-变异脚本隔离副本化与迁移顺序门.md`
 > + `LESSONS.md` 新增 **4 条（`### 2026-10-25 R153（llm-gateway-go）：…` 轮标格式）**。
+
+> **2026-10-27 R153 轮（本会话 `mvs_bbd1346d211a4eb3ac41b552c82eaecf`，独立 worktree `/tmp/kx-wt-r98`）**
+> ⇒ ★★★★★ **本轮的中心结论不是「修好了什么」，而是「此前读到的『慢』是假的」**：
+> ★★★★ **一个跑了 35 小时 51 分的孤儿压测进程**（4 个 `bash stress-gate.sh /tmp/r85-baseline 20 28`，
+> ★★ `ppid=1` ⇒ 孤儿；★ **脚本文件与目标目录都已被删除**、无子进程 ⇒ ★ **bash 在已删除的脚本上空转烧 CPU`）
+> ★★ ⇒ ★★ **把本机 CPU 烧到 load average 421~492** ⇒ ⇒ ★★★ **连续多轮的本地读数集体失真**。
+> ⇒ ★★★ **停掉它之后**：同一批端点耗时**塌缩 4~100 倍**
+> （`/api/admin/probe/system-health` **6.2~9.9 s → 0.06~0.09 s**）；
+> ★★ **457 条 GET 路由里 >1000 ms 的变成 0 条、>2000 ms 的 0 条**；
+> ★★ **87 个页面里服务端口径慢页 0 个**；★ ★★ 新增 **`pathMismatch` 列**标出 **19 个重定向页**
+> ★★ （★ `/routing -> /routing-v2` 的 idle=25059 ms 看着吓人，★ 但**服务端只花 113 ms** ⇒ ★ 是重定向不是慢）
+> ★★ ⇒ ⇒ **有效巡检对象 68 个，其中 idle >2 s 的 0 个、服务端耗时 >2 s 的 0 个** ⇒ ★ **慢页清单为空**。
+> ⇒ ⇒ ★★★★ **通用式：读数异常的第一反应必须是「量具/环境坏了」，不是「产品坏了」**
+> ⇒ ★★ 否则会把**环境噪声**写成**产品缺陷**，去改没坏的代码。
+> ⇒ ★★ **本轮没有改任何产品逻辑、任何 SQL、任何生产配置** ⇒ ★ **对生产的写入 = 0**。
+> ⇒ ★★★ **量具侧三处改造（全部落仓）**：
+> ★ ① `scripts/audit/page-sweep-cdp.mjs`：**登录态三闸门**（cookie + `llmgw_user_info` +
+> ★★ `llmgw_require_bootstrap='0'`；`login()` **回源 `/api/auth/me`** 取真实用户对象）
+> ★★ + **量具自检**（首屏落 `/bootstrap` ⇒ **exit 3** fail-fast）+ ★★ **`serverMs`**（CDP
+> ★★ `response.timing` 的 `receiveHeadersEnd - sendEnd` ⇒ **唯一能分离「服务端慢」与「浏览器排队」的读数**）
+> ★★ + ★★ **`load1`**（`os.loadavg()[0]` ⇒ **每行读数自带混淆项**）+ ★★ **`pathMismatch`**（重定向 / DEV-only 夹具页）；
+> ★ ② ★★ **`scripts/audit/api-sweep.sh`（新增，仓内可复现）**：GET-only 巡检 + ★ **8 类互斥失败分类**
+> ★★ （`ok` / `method_not_allowed` / `bad_request` / `not_found` / `server_error` / `timeout` /
+> ★★ `other_4xx` / `unexpected_status`）+ ★★ **SSE / 副作用 / 非 GET 三路分开跳过计数**
+> ★★ + **宿主机负载同窗采样** + **`#meta` 元数据行** + ★ **行数自检 `exit 70`**；
+> ★ ③ ★★ **`scripts/ursmcheck/api_sweep_script_shape_test.go`（新增门）**：11 条断言（形状 10 + ★ **行为 1**）
+> ★★ ⇒ ★★★ **关键证据**：把 `5xx` 判成 `ok`（逻辑写反）⇒ ★ **10 条形状断言全绿、只有行为层红**
+> ★★ ⇒ ⇒ ★★ **形状层管「在不在」，行为层管「对不对」⇒ 两层都要有**。
+> ⇒ ★★★ **API 巡检的失败逐条定性（457 条）**：261 ok / **90×405**（只支持 POST/PUT/DELETE ⇒ 覆盖缺口）
+> ★★ / **63×400**（缺参 ⇒ 覆盖缺口）/ **36×404**（路径或 ID 不存在 ⇒ 覆盖缺口）/ **6×5xx**
+> ★★ （★ **逐条看响应体后全是「配置态」**：`identity pool not configured`、`memora not configured`、
+> ★★ `lite storage not active`、`state service not available`、`mobile node provisioning is not configured`、
+> ★★ 备份服务未配置）/ 1×401 ⇒ ⇒ ★★ **没有一条是产品缺陷**。
+> ⇒ ★★★★ **★ 仓内既有门当场抓到新脚本的一个真缺陷（本轮最硬的证据）**：
+> ★★ 第一次跑全量 `scripts/ursmcheck` ⇒ ★ **`TestPipefailRaceLedgerCoversCandidateSet` 红**
+> ★★ （「台账缺少 2 个候选点：`scripts/audit/api-sweep.sh`」）⇒ ★★ **不是假红，是真缺陷**：
+> ★★ `if printf '%s' "${path}" | grep -qiE "${RE}"; then` ⇒ ★★ **`grep -q` 命中即提前退出**
+> ★★ ⇒ 写端 `printf` 可能收 **SIGPIPE(141)** ⇒ ★★ **`set -o pipefail` 把管道判成非零**
+> ★★ ⇒ ⇒ **SSE 跳过 / 副作用跳过都可能失效**（被误判成「不匹配」的路径会被真的发出去）。
+> ★★ ⇒ ★★ **修法 = 消除管道，不是登记成 benign**：`[[ "${path}" =~ ${RE} ]]`（bash 原生 POSIX ERE，
+> ★★ 与 `grep -E` 等价）+ `shopt -s nocasematch`（★ 对应 `grep -qi`）⇒ ★★ **没有写端 ⇒ 没有 SIGPIPE**。
+> ★★ ⇒ ★★ 修后：**候选点 2 → 0**、`候选物理行 361 / 台账行 361` ⇒ PASS、★ **台账一行没改**
+> ★★ （★ 判定的是**行为**，不是「新增一行登记」）⇒ ★★ **通用式：新脚本先跑一遍仓内既有门**
+> ★★ ⇒ ★★ **既有门就是新代码的免费体检**。
+> ⇒ ★★★ **另一条通用式**：「源码里有 `mux.HandleFunc`」≠「线上注册了」⇒ ★★ `/api/admin/feishubot/routing-rules`
+> ★★ 实测 404 而源码 `admin/modules.go:1394` **明明注册了** ⇒ ★★ 读注释才知：**`registerFeishuRoutes`
+> ★★ 是【故意不被调用】的**（缺三件之一会让生产从 404 变成 500 ⇒ 把配置态伪装成故障）⇒ ★★ **404 有时是诚实的 404**。
+> ⇒ ★★ **路由清单漂移**：从当前源码重抽 `mux.HandleFunc` ⇒ **503 条**（旧清单 444 ⇒ **新增 59、消失 0**）
+> ★★ ⇒ 新增含整族 `/api/admin/session-analytics/*` ⇒ ★★ **这族端点从未被 API 巡检覆盖过**；
+> ★★ 前端路由 ⇒ **87 页**（R99 记的 121 页是旧清单）⇒ ★ **计数是活事实**。
+> ⇒ ⚠ **本机 PG 的 `log_min_duration_statement` 被本轮设为 1000 ms（只读观测）⇒ 结束后需 `ALTER SYSTEM RESET`**。
+> ⇒ ★ **属主裁决项（本轮全部留空未做）**：**D14** 孤儿压测脚本的成因与预防 ·
+> ★ **D15** 「逐个 API 验证」的 POST 面（90 条 405 端点需非 GET 巡检器 ⇒ 需「可安全 POST」白名单）·
+> ★ **D16** 「宿主机 load1 > N ⇒ 本轮读数标记为不可信」是否要落进工具退出码。
+> ⇒ ★ **完整记录见审计档 `docs/audit/2026-10-27-R153-巡检量具自证与负载污染归因.md`（含 §6 的 9 条诚实边界）**
+> ⇒ ★ **通用式见 `LESSONS.md` §402（通用式一~十）**。

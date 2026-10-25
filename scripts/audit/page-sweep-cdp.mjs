@@ -27,13 +27,28 @@
 //   consoleErr   = Runtime.consoleAPICalled(level=error) + Log.entryAdded(level=error)
 //   failedReq    = Network.loadingFailed + HTTP>=400 的响应
 //
+// ★★★ R153 轮新增的三个口径（**都因为本轮实测发现旧口径会读错**）：
+//   serverMs     = CDP `Network.responseReceived` 的 `response.timing`：
+//                  receiveHeadersEnd - sendEnd（毫秒）⇒ **服务端处理 + 回程**
+//                  ⇒ ★ 这是**唯一能把「服务端慢」和「浏览器排队」分开**的读数：
+//                    resource 的 duration 含**浏览器连接排队**（HTTP/1.1 同源并发
+//                    上限 6 ⇒ SPA 一次打 20~60 个 XHR 时，后面那些的 duration 会
+//                    远大于服务端耗时）。本轮实测：`/api/routing/resolve?model=…`
+//                    浏览器侧读到 4273ms，服务端直连只花 **0.22~0.53s** ⇒ 纯排队假象。
+//                  ★ 取不到 timing（缓存命中 / service worker / HTTP/2）时记 -1。
+//   load1        = 该页巡检时刻的**宿主机 1 分钟负载**（os.loadavg()[0]）
+//                  ⇒ ★ 让**每一行读数自带混淆项**：宿主机饱和时所有读数都不可信，
+//                    没有这列就无法事后区分「端点慢」与「机器忙」。
+//   apiServerMaxMs = 该页所有 XHR/Fetch 里 **serverMs 的最大值**
+//                  ⇒ ★ 「页面慢」的**服务端口径**：只有它 > 2s 才谈得上「端点慢」。
+//
 // 退出码：0 = 全部页面都渲染成功（无 5xx / 无加载失败 / 无 console error）
-//        2 = 有页面失败（详见 TSV 的 fail  列）
-//        3 = 工具自身失败（Chrome 起不来 / 登录失败 / 路由清单为空）
+//        2 = 有页面失败（详见 TSV 的 fail 列）
+//        3 = 工具自身失败（Chrome 起不来 / 登录失败 / 路由清单为空 / 量具自检失败）
 
 import { spawn } from 'node:child_process';
 import { mkdtempSync, rmSync, writeFileSync, existsSync, readFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { tmpdir, loadavg } from 'node:os';
 import { join } from 'node:path';
 
 const argv = process.argv.slice(2);
@@ -89,7 +104,28 @@ async function login() {
   const setCookie = res.headers.getSetCookie?.() || [];
   const hit = setCookie.find((c) => c.startsWith('llmgw_session='));
   if (!hit) die('login succeeded but no llmgw_session cookie in Set-Cookie');
-  return hit.split(';')[0].split('=').slice(1).join('=');
+  const cookie = hit.split(';')[0].split('=').slice(1).join('=');
+
+  // ★★ 2026-10-27（R153 轮）：浏览器登录态是**三道闸门**，不是一道。
+  //
+  //   ① HttpOnly cookie `llmgw_session` ⇒ 后端认它（跨请求认证就靠它；
+  //      `llmgw_jwt` / `llmgw_api_key` 自 2026-08-26 P1-7 起**不再写 localStorage**）；
+  //   ② localStorage['llmgw_user_info'] ⇒ 路由守卫 `isAuthed()` / `isSuperAdmin()`
+  //      的**兜底读**（web/src/router.ts:139/159/184 ⇒ 需要 `{role, id}`）；
+  //   ③ localStorage['llmgw_require_bootstrap']='0' ⇒ 跳过 bootstrap 软闸门
+  //      （web/src/router.ts:387-388）。
+  //
+  // ⇒ ★★ **只注入 cookie ⇒ 每一页都被弹到 `/bootstrap?redirect=…`** ⇒ 整轮读数作废
+  //   （★ R99 §11.2 实测过这一版：36/36 页全部 redirect ⇒ 看起来像「整站坏了」）。
+  //
+  // ⇒ ★ 用户对象**不手编**：运行时调 `/api/auth/me` 取**服务端真实用户对象**
+  //   （★ 手编 ⇒ 一旦字段形状变了，页面会按「伪造的登录态」跑 ⇒ 读数不可信）。
+  const me = await fetch(`${BASE}/api/auth/me`, { headers: { Cookie: `llmgw_session=${cookie}` } });
+  if (!me.ok) die(`auth/me failed: HTTP ${me.status}`);
+  const meBody = await me.json();
+  const meUser = meBody && meBody.user ? meBody.user : null;
+  if (!meUser || !meUser.role || !meUser.id) die('auth/me returned no usable user object');
+  return { cookie, user: meUser };
 }
 
 // ---------------------------------------------------------------- CDP 客户端
@@ -202,7 +238,7 @@ async function main() {
   const routes = (await collectRoutes()).filter((p) => p !== '/bootstrap');
   if (!routes.length) die('empty route list');
 
-  const cookie = await login();
+  const { cookie, user } = await login();
   const { child, profile } = await launchChrome();
   const cleanup = () => {
     try { child.kill('SIGKILL'); } catch { /* ignore */ }
@@ -219,6 +255,15 @@ async function main() {
   await cdp.send('Log.enable');
   await cdp.send('Network.setCookie', {
     name: 'llmgw_session', value: cookie, domain: '127.0.0.1', path: '/',
+  });
+  // ★★ 2026-10-27（R153 轮）：注入**另两道闸门**（在页面脚本之前执行）。
+  //   ⇒ ★ 没有这一步 ⇒ 每一页都被弹到 `/bootstrap?redirect=…` ⇒ 整轮作废。
+  //   ⇒ ★ `llmgw_user_info` 存的是**服务端真实用户对象**（见 login()）。
+  await cdp.send('Page.addScriptToEvaluateOnNewDocument', {
+    source: `try {
+      localStorage.setItem('llmgw_user_info', ${JSON.stringify(JSON.stringify(user))});
+      localStorage.setItem('llmgw_require_bootstrap', '0');
+    } catch (e) { /* localStorage 不可用 ⇒ 交给自检去发现 */ }`,
   });
   if (UA) {
     // 移动端 UA ⇒ 命中网关的 unified entry（GET / → 302 /m/），也让 SPA
@@ -254,7 +299,13 @@ async function main() {
     //   永远等不到 ⇒ 每一页都会被误判成「25s 才打开」。故按 URL 形状排除。
     const isStream = (u) => /\/stream(\b|\?)|text\/event-stream|live-stream|probe\/stream|system-monitor\/stream/i.test(u || '');
     const streamIds = new Set();
+    // ★ R153：把「服务端耗时」与「浏览器排队」分开的两个映射。
+    //   reqInfo      : requestId -> {url, type}（type 用来只取 XHR/Fetch）
+    //   serverMsByUrl: url -> serverMs（取该 URL 多次出现的最大值）
+    const reqInfo = new Map();
+    const serverMsByUrl = new Map();
     const hReq = (p) => {
+      reqInfo.set(p.requestId, { url: p.request?.url || '', type: p.type || '' });
       if (isStream(p.request?.url)) { streamIds.add(p.requestId); return; }
       inFlight++; idleSince = 0;
     };
@@ -276,6 +327,20 @@ async function main() {
     };
     const hResp = (p) => {
       const st = p.response?.status;
+      // ★ R153：服务端耗时 = CDP timing 的 receiveHeadersEnd - sendEnd（毫秒）。
+      //   ⇒ **唯一能把「端点慢」与「浏览器连接排队」分开的读数**：
+      //     resource 的 duration 含排队（HTTP/1.1 同源并发上限 6），
+      //     而 timing 是浏览器测的**服务端往返**，两者可能差一个数量级。
+      const tm = p.response?.timing;
+      if (tm && tm.receiveHeadersEnd >= 0 && tm.sendEnd >= 0) {
+        const typ = reqInfo.get(p.requestId)?.type || '';
+        if (typ === 'XHR' || typ === 'Fetch') {
+          const u0 = (p.response?.url || '').replace(BASE, '');
+          const s = Math.round(tm.receiveHeadersEnd - tm.sendEnd);
+          const prev = serverMsByUrl.get(u0);
+          if (prev === undefined || s > prev) serverMsByUrl.set(u0, s);
+        }
+      }
       if (!st || st < 400) return;
       const u = (p.response.url || '').replace(BASE, '');
       // ★ /maintain-api/* 在 MAINTAIN_SERVICE_URL 未配置时恒 503 —— 那是**配置态**
@@ -328,7 +393,7 @@ async function main() {
     }
     const idleMs = Date.now() - t0;
 
-    let perf = { docMs: -1, dclMs: -1, slowestApi: '', slowestApiMs: -1, title: '' };
+    let perf = { docMs: -1, dclMs: -1, slowestApi: '', slowestApiMs: -1, title: '', path: '' };
     try {
       const ev = await cdp.send('Runtime.evaluate', {
         expression: `(() => {
@@ -358,6 +423,7 @@ async function main() {
               return peak;
             })(),
             title: document.title,
+            path: location.pathname,
           });
         })()`,
         returnByValue: true,
@@ -367,8 +433,34 @@ async function main() {
       perf.title = 'EVAL-ERR:' + e.message;
     }
 
+    // ★ R153：服务端口径 —— 本页 XHR/Fetch 里 serverMs 的最大值与对应 URL。
+    //   ⇒ 只有 apiServerMaxMs > SLOW_MS 才谈得上「这个端点真的慢」；
+    //     否则 slowApiMs 的高分只是**浏览器排队**。
+    let slowApiServer = '', slowApiServerMs = -1, apiServerMaxMs = -1;
+    for (const [u, ms] of serverMsByUrl) {
+      if (ms > apiServerMaxMs) apiServerMaxMs = ms;
+      if (ms > slowApiServerMs) { slowApiServerMs = ms; slowApiServer = u; }
+    }
+
+    // ★ R153：**落地路径 ≠ 请求路径** ⇒ 这不是「这个页面慢」，而是「这个 URL 被重定向了」。
+    //   本轮实测：`/dev/waterfall-preview` 与 `/dev/live-topology-preview` 是 DEV-only
+    //   夹具预览页（router.ts 里 meta.public=true、仅 DEV 注册）⇒ 访问它们落到 `/`
+    //   ⇒ 它们的 25s idleMs 是「首页的某个长请求没结束」，**与该 URL 无关**。
+    //   ⇒ 不加这道标注，巡检会把「重定向」误报成「慢页」。
+    const pathMismatch = (perf.path && urlPath !== perf.path &&
+      !urlPath.endsWith('/') && perf.path !== urlPath + '/') ? 'Y' : '';
+
     const fail = !!(navErr || badStatus.length || failedReqs.length);
     if (fail) failed++;
+
+    // ★★★ 量具自检（R153 轮新增）：★ **首屏被弹到 `/bootstrap` ⇒ 登录态三闸门没造齐**
+    // ⇒ ⇒ 继续跑只会把「量具失效」读成「整站坏了」（★ R99 §11.2 整轮作废的同款）
+    // ⇒ ⇒ ★★ **立即 fail-fast**（exit 3 = 工具自身失败），★ 不要产出整轮假读数。
+    if (rows.length === 0 && perf.path && perf.path.includes('/bootstrap')) {
+      die('量具失效：首屏被弹到 ' + perf.path +
+        ' ⇒ 浏览器登录态的三道闸门没造齐（cookie / llmgw_user_info / llmgw_require_bootstrap）' +
+        ' ⇒ ★ 本轮读数会全部作废（★ R99 §11.2 的同款），请先修量具再跑');
+    }
 
     let shot = '';
     if (SHOTS && (fail || perf.idleMs > SLOW_MS)) {
@@ -381,12 +473,17 @@ async function main() {
 
     rows.push({
       route: urlPath,
+      path: perf.path,
       http: navErr ? 'NAV-ERR' : (badStatus.some((b) => b.startsWith('5')) ? '5xx' : '200'),
       docMs: perf.docMs,
       dclMs: perf.dclMs,
       idleMs,
       slowApi: perf.slowestApi,
       slowApiMs: perf.slowestApiMs,
+      slowApiServer: slowApiServer,
+      slowApiServerMs: slowApiServerMs,
+      apiServerMaxMs: apiServerMaxMs,
+      load1: Math.round((loadavg()[0] || 0) * 100) / 100,
       apiCount: perf.apiCount ?? -1,
       apiSumMs: perf.apiSumMs ?? -1,
       apiPeak: perf.apiMaxConcurrencyHint ?? -1,
@@ -396,6 +493,7 @@ async function main() {
       cancelledReq: cancelledReqs.length,
       badStatus: badStatus.slice(0, 3).join(' | '),
       maintain503: maintain503.length,
+      pathMismatch: pathMismatch,
       shot,
       fail: fail ? 'Y' : '',
     });
@@ -404,6 +502,7 @@ async function main() {
       `${fail ? 'FAIL' : ' ok '} ${urlPath.padEnd(42)} doc=${String(perf.docMs).padStart(6)}ms ` +
       `idle=${String(idleMs).padStart(6)}ms api=${String(perf.slowestApiMs).padStart(6)}ms ` +
       `n=${String(perf.apiCount ?? -1).padStart(3)} sum=${String(perf.apiSumMs ?? -1).padStart(6)}ms peak=${String(perf.apiMaxConcurrencyHint ?? -1).padStart(3)} ` +
+      `srv=${String(apiServerMaxMs).padStart(6)}ms load=${String(Math.round((loadavg()[0] || 0) * 100) / 100).padStart(7)} ` +
       `${perf.slowestApi.slice(0, 46)}${badStatus.length ? '  << ' + badStatus.slice(0, 2).join(' ; ') : ''}` +
       `${consoleErrs.length ? '  consoleErr=' + consoleErrs.length : ''}` +
       `${maintain503.length ? '  [maintain503=' + maintain503.length + ']' : ''}\n`
@@ -420,9 +519,10 @@ async function main() {
     }
   }
 
-  const header = ['route', 'http', 'docMs', 'dclMs', 'idleMs', 'slowApi', 'slowApiMs',
+  const header = ['route', 'path', 'http', 'docMs', 'dclMs', 'idleMs', 'slowApi', 'slowApiMs',
+    'slowApiServer', 'slowApiServerMs', 'apiServerMaxMs', 'load1',
     'apiCount', 'apiSumMs', 'apiPeak', 'consoleErr', 'consoleErrText', 'failedReq',
-    'cancelledReq', 'badStatus', 'maintain503', 'shot', 'fail'];
+    'cancelledReq', 'badStatus', 'maintain503', 'pathMismatch', 'shot', 'fail'];
   // ★ 表头与行字段必须**逐项对齐** —— 曾经出现过「行里加了字段、表头没加」
   //   ⇒ TSV 列错位 ⇒ 读数被按错误的列解释（量具自己的缺陷）。
   //   这里用列数自检把它变成**不可能发货**的状态。
@@ -442,8 +542,30 @@ async function main() {
   writeFileSync(OUT, tsv + '\n');
 
   const slow = rows.filter((r) => r.idleMs > SLOW_MS);
+  // ★ R153：**服务端口径**的慢页（浏览器侧排队被剔除后的真慢候选）。
+  const srvSlow = rows.filter((r) => r.apiServerMaxMs > SLOW_MS);
+  const load1s = rows.map((r) => r.load1).filter((v) => typeof v === 'number' && v >= 0);
+  const loadMax = load1s.length ? Math.max(...load1s) : -1;
   console.log(`\n[page-sweep] pages=${rows.length} failed=${failed} slow(>${SLOW_MS}ms)=${slow.length} out=${OUT}`);
-  for (const s of slow) console.log(`  slow: ${s.route} idle=${s.idleMs}ms doc=${s.docMs}ms slowApi=${s.slowApi}(${s.slowApiMs}ms)`);
+  // ★ 宿主机负载：这轮读数是在多饱和的机器上采的吗？⇒ 读数**自带混淆项**。
+  console.log(`[page-sweep] host load1 max=${loadMax}` +
+    (loadMax > 8 ? '  ★ 机器高度饱和 ⇒ 本轮所有耗时读数都不可单独采信（须与 srv= 对照）' : ''));
+  for (const s of slow) {
+    console.log(`  slow: ${s.route} idle=${s.idleMs}ms doc=${s.docMs}ms ` +
+      `browserApi=${s.slowApi}(${s.slowApiMs}ms) serverApi=${s.slowApiServer}(${s.slowApiServerMs}ms) ` +
+      `apiServerMax=${s.apiServerMaxMs}ms n=${s.apiCount} load1=${s.load1}`);
+  }
+  const mismatched = rows.filter((r) => r.pathMismatch);
+  if (mismatched.length) {
+    console.log(`[page-sweep] ★ 落地路径≠请求路径的页（重定向 / DEV-only 夹具页）=${mismatched.length}` +
+      ` ⇒ 这些不是有效巡检对象，其耗时与该 URL 无关：`);
+    for (const m of mismatched) console.log(`  redirected: ${m.route} -> ${m.path} idle=${m.idleMs}ms`);
+  }
+  console.log(`[page-sweep] 服务端口径慢页(>${SLOW_MS}ms)=${srvSlow.length}` +
+    (srvSlow.length ? '' : '  ★ 没有一个端点的服务端耗时超过门槛 ⇒ 浏览器侧的「慢页」是排队假象'));
+  for (const s of srvSlow) {
+    console.log(`  srv-slow: ${s.route} apiServerMax=${s.apiServerMaxMs}ms url=${s.slowApiServer} load1=${s.load1}`);
+  }
   cdp.close();
   cleanup();
   process.exit(failed ? 2 : 0);
