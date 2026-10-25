@@ -36,7 +36,6 @@ export default {
   },
   table: {
     colModel: 'النموذج القياسي',
-    colVendor: 'المُصنّع',
     colStatus: 'الحالة',
     colActions: '',
     edit: 'تسعير',

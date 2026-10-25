@@ -145,11 +145,6 @@ export default {
     dingtalkBotIntegration: 'Integración del bot DingTalk',
   },
 
-    importCsv: 'Importar CSV',
-    close: 'Cerrar',
-    csvImportResult: 'Resultado de la importación',
-    csvImportSuccess: '{imported} importadas, {skipped} omitidas',
-    csvErrorRow: 'Fila {row}: {error}',
   empty: {
     selectModule: 'Seleccione un módulo para ver detalles y configuración',
   },
@@ -188,21 +183,6 @@ export default {
     testFailed: 'Prueba fallida',
   },
 
-    overview_dependenciesTitle: 'Dependencias',
-  overview_required: 'Obligatorias',
-  overview_optional: 'Opcionales',
-  overview_enableAllDeps: 'Activar {count} dependencias obligatorias que faltan',
-  overview_enableAllDepsHint: 'El backend activará en orden estable todas las dependencias obligatorias que falten y después activará este módulo',
-  overview_cascading: 'Activando dependencias…',
-  overview_cascadeSuccess: 'Activadas automáticamente {count} dependencias: {names}',
-  overview_cascadeEmpty: 'Todas las dependencias ya estaban activadas; el módulo ya funciona',
-  overview_cascadeAlreadyEnabled: 'El módulo ya está activado, no hace falta la cascada',
-  overview_cascadeLogTitle: 'Dependencias activadas por cascada en esta ejecución:',
-  routing_importCsv: 'Importación masiva de CSV',
-  routing_close: 'Cerrar',
-  routing_csvImportResult: 'Resultado de la importación masiva',
-  routing_csvImportSuccess: '{imported} importadas, {skipped} omitidas',
-  routing_csvErrorRow: 'Fila {row}: {error}',
   // 同步的扁平键
 
   modeBannerTitle: 'This page only does three things:',

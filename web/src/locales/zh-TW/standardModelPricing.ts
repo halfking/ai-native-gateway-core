@@ -36,7 +36,6 @@ export default {
   },
   table: {
     colModel: '標準模型',
-    colVendor: '廠家',
     colStatus: '狀態',
     colActions: '',
     edit: '定價',

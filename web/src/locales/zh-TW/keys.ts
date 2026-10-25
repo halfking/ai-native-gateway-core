@@ -312,7 +312,6 @@ export default {
   approveFailed: '審批失敗',
   backendNoValidKey: '後端未返回有效密鑰',
   cannotRestoreFullKey: '此密鑰無法還原完整內容，請重新簽發',
-  close: '關閉',
   closed: '已作廢/過期',
   conflictBlocked: '存在重複，無法簽發',
   copied: '✓ 已複製',

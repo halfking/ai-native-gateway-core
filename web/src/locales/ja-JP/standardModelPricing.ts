@@ -36,7 +36,6 @@ export default {
   },
   table: {
     colModel: '標準モデル',
-    colVendor: 'ベンダー',
     colStatus: 'ステータス',
     colActions: '',
     edit: '価格',

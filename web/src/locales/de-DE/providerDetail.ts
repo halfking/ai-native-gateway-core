@@ -623,8 +623,4 @@ export default {
     loadFailed: "Laden fehlgeschlagen",
     triggerFailed: "Auslösen fehlgeschlagen"
   },
-  tableCol: {},
-  models_creds_labelFallback: "Anmeldedaten #{id}",
-  models_overview_chipAvailable: "Verfügbar",
-  models_overview_chipUnavailable: "Nicht verfügbar"
 }

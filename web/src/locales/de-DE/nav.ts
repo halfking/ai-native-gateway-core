@@ -35,7 +35,6 @@ export default {
     modelPricing: "Preisverwaltung",
     freePool: "Kostenloser Pool",
     freeDiscovery: "Free-Discovery",
-    routingDefaults: "Routing Defaults",
     tenants: "Mandanten",
     users: "Benutzer",
     keys: "API-Schlüssel",
@@ -46,7 +45,6 @@ export default {
     requestRegistry: "Request Registry",
     connectionRegistry: "Connection Registry",
     turns: "Turns-Liste",
-    requestTrace: "Anfrage-Verfolgung",
     sessions: "Sitzungen",
     pluginSessions: "Plugin-Sitzungen",
     sessionManagement: "Sitzungsverwaltung",
@@ -89,9 +87,6 @@ export default {
     opsCenter: "Zentrumsbetrieb",
     opsVibeCoding: "VibeCoding",
     opsProductEntry: "Product Entry",
-    tenantLicense: "Meine Lizenz",
-    tenantAutoUpdate: "Meine Updates"
-,
     updateActivate: 'Update & Activate',
     // 2026-09-04: 未激活时替换「自动更新」等入口的激活 CTA 文案 (parity backfill)
 

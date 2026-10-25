@@ -29,12 +29,6 @@ export default {
     extraction_failed: 'Extraction Failed',
     unexpected_structure: 'Unexpected Structure',
     null_usage_values: 'Null Usage Values',
-    token_mismatch: 'Token Mismatch',
-    missing_provider_tokens: 'Missing Provider Tokens',
-    missing_client_tokens: 'Missing Client Tokens',
-    json_parse_error: 'JSON Parse Error',
-    missing_finish_reason: 'Missing Finish Reason',
-    missing_content: 'Missing Content',
   },
 
   anomalyTypeDescription: {

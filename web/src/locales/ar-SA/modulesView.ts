@@ -144,11 +144,6 @@ export default {
     ],
     dingtalkBotIntegration: 'تكامل روبوت DingTalk',  },
 
-    importCsv: 'استيراد CSV',
-    close: 'إغلاق',
-    csvImportResult: 'نتيجة الاستيراد',
-    csvImportSuccess: 'تم استيراد {imported}، تم تخطي {skipped}',
-    csvErrorRow: 'الصف {row}: {error}',
   empty: {
     selectModule: 'اختر وحدة لعرض التفاصيل والإعدادات',
   },
@@ -187,21 +182,6 @@ export default {
     testFailed: 'فشل الاختبار',
   },
 
-    overview_dependenciesTitle: 'التبعيات',
-  overview_required: 'إلزامي',
-  overview_optional: 'اختياري',
-  overview_enableAllDeps: 'تفعيل {count} من التبعيات الإلزامية الناقصة بنقرة واحدة',
-  overview_enableAllDepsHint: 'تفعّل الواجهة الخلفية كل التبعيات الإلزامية الناقصة بترتيب ثابت ثم تفعّل هذه الوحدة.',
-  overview_cascading: 'جاري تفعيل التبعيات…',
-  overview_cascadeSuccess: 'تم تفعيل {count} من التبعيات تلقائيًا: {names}',
-  overview_cascadeEmpty: 'كل التبعيات كانت مفعّلة بالفعل، والوحدة الآن نشطة.',
-  overview_cascadeAlreadyEnabled: 'الوحدة مفعّلة بالفعل، لا حاجة إلى تفعيل التبعيات تلقائيًا.',
-  overview_cascadeLogTitle: 'التبعيات المفعّلة في هذه العملية:',
-  routing_importCsv: 'استيراد CSV',
-  routing_close: 'إغلاق',
-  routing_csvImportResult: 'نتيجة الاستيراد',
-  routing_csvImportSuccess: 'تم استيراد {imported}، تم تخطي {skipped}',
-  routing_csvErrorRow: 'الصف {row}: {error}',
   // 同步的扁平键
 
   modeBannerTitle: 'This page only does three things:',

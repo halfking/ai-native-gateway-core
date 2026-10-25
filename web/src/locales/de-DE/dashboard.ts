@@ -282,8 +282,6 @@ v2: {
     modeLarge: 'Groß',
     modeSmallTitle: 'Kleiner Modus: vertikale Balken, fasst mehr Anfragen (Standard)',
     modeLargeTitle: 'Großer Modus: Karten mit mehr Anfragedetails',
-    probeAll: 'Alle', probeOnly: 'Nur Probes',
-    probeAllTitle: 'Alle Anfragen anzeigen (Standard)', probeOnlyTitle: 'Nur Probe-Anfragen anzeigen',
     // 2026-08-06: Geschäfts- / Probe-Filter + Titel (Abgleich mit zh-CN)
     business: 'Geschäft',
     probe: 'Probe',

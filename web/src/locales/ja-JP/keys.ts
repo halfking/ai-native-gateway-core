@@ -312,7 +312,6 @@ export default {
   approveFailed: '承認に失敗しました',
   backendNoValidKey: 'バックエンドから有効なキーが返されませんでした',
   cannotRestoreFullKey: 'このキーは復元できません。再発行してください',
-  close: '閉じる',
   closed: '無効／期限切れ',
   conflictBlocked: '重複しているため発行できません',
   copied: '✓ コピーしました',

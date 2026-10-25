@@ -623,8 +623,4 @@ export default {
     loadFailed: "読み込み失敗",
     triggerFailed: "トリガー失敗"
   },
-  tableCol: {},
-  models_creds_labelFallback: "凭据 #{id}",
-  models_overview_chipAvailable: "可用",
-  models_overview_chipUnavailable: "不可用"
 }

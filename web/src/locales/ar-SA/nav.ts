@@ -33,7 +33,6 @@ export default {
     modelPricing: "إدارة التسعير",
     freePool: "الموارد المجانية",
     freeDiscovery: "اكتشاف الموارد المجانية",
-    routingDefaults: "Routing Defaults",
     tenants: "إدارة المستأجرين",
     users: "إدارة المستخدمين",
     keys: "مفاتيح API",
@@ -44,7 +43,6 @@ export default {
     requestRegistry: "Request Registry",
     connectionRegistry: "Connection Registry",
     turns: "قائمة الدورات",
-    requestTrace: "تتبع الطلبات",
     sessions: "قائمة الجلسات",
     pluginSessions: "جلسات البرنامج المساعد",
     sessionManagement: "إدارة الجلسات",
@@ -87,9 +85,6 @@ export default {
     opsCenter: "العمليات المركزية",
     opsVibeCoding: "VibeCoding",
     opsProductEntry: "Product Entry",
-    tenantLicense: "ترخيصي",
-    tenantAutoUpdate: "تحديثاتي"
-,
     updateActivate: 'Update & Activate',
     // 2026-09-04: 未激活时替换「自动更新」等入口的激活 CTA 文案 (parity backfill)
     activateAction: 'تفعيل',

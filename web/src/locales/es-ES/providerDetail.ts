@@ -623,8 +623,4 @@ export default {
     loadFailed: "Error al cargar",
     triggerFailed: "Disparo fallido"
   },
-  tableCol: {},
-  models_creds_labelFallback: "Credencial #{id}",
-  models_overview_chipAvailable: "Disponible",
-  models_overview_chipUnavailable: "No disponible"
 }

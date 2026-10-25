@@ -312,7 +312,6 @@ export default {
   approveFailed: 'فشلت الموافقة',
   backendNoValidKey: 'لم تُرجع الواجهة الخلفية مفتاحًا صالحًا',
   cannotRestoreFullKey: 'لا يمكن استعادة هذا المفتاح، يرجى إصدار مفتاح جديد',
-  close: 'إغلاق',
   closed: 'مغلق/منتهي الصلاحية',
   conflictBlocked: 'يوجد تكرار، لا يمكن الإصدار',
   copied: '✓ تم النسخ',

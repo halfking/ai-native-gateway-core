@@ -144,11 +144,6 @@ export default {
     ],
     dingtalkBotIntegration: 'DingTalkボット統合',  },
 
-    importCsv: 'CSV インポート',
-    close: '閉じる',
-    csvImportResult: 'インポート結果',
-    csvImportSuccess: '{imported} 件をインポート、{skipped} 件をスキップ',
-    csvErrorRow: '行 {row}: {error}',
   empty: {
     selectModule: '詳細と設定を表示するモジュールを選択してください',
   },
@@ -187,21 +182,6 @@ export default {
     testFailed: 'テスト失敗',
   },
 
-    overview_dependenciesTitle: '依赖模块',
-  overview_required: '必需',
-  overview_optional: '可选',
-  overview_enableAllDeps: '一键启用 {count} 个必需依赖',
-  overview_enableAllDepsHint: '后端会按稳定顺序开启所有未启用的必需依赖后再启用本模块',
-  overview_cascading: '正在开启依赖…',
-  overview_cascadeSuccess: '已自动开启 {count} 个依赖：{names}',
-  overview_cascadeEmpty: '所有依赖已启用，模块已正常开启',
-  overview_cascadeAlreadyEnabled: '模块已启用，无需级联',
-  overview_cascadeLogTitle: '本次级联开启的依赖：',
-  routing_importCsv: '批量导入 CSV',
-  routing_close: '关闭',
-  routing_csvImportResult: '批量导入结果',
-  routing_csvImportSuccess: '已导入 {imported} 条，跳过 {skipped} 条',
-  routing_csvErrorRow: '第 {row} 行：{error}',
   // 同步的扁平键
 
   modeBannerTitle: '本页仅做三件事：',

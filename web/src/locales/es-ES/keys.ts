@@ -312,7 +312,6 @@ export default {
   approveFailed: 'La aprobación ha fallado',
   backendNoValidKey: 'El backend no devolvió una clave válida',
   cannotRestoreFullKey: 'Esta clave no se puede restaurar, emita una nueva',
-  close: 'Cerrar',
   closed: 'Cerrada/expirada',
   conflictBlocked: 'Existe un duplicado, no se puede emitir',
   copied: '✓ Copiada',

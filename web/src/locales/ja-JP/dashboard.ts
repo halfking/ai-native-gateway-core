@@ -273,8 +273,6 @@ tabs: {
     modeLarge: '大',
     modeSmallTitle: '小モード：縦棒表示、より多くのリクエストを収容（デフォルト）',
     modeLargeTitle: '大モード：カード表示、より詳細なリクエスト情報',
-    probeAll: 'すべて', probeOnly: 'プローブのみ',
-    probeAllTitle: 'すべてのリクエストを表示（デフォルト）', probeOnlyTitle: 'プローブリクエストのみ表示',
     // 2026-08-06: 業務 / プローブフィルタ + タイトル（zh-CN との整合）
     business: '業務',
     probe: 'プローブ',

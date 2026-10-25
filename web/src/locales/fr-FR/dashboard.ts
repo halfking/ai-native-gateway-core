@@ -282,8 +282,6 @@ v2: {
     modeLarge: 'Grand',
     modeSmallTitle: 'Mode petit : barres verticales, contient plus de requêtes (par défaut)',
     modeLargeTitle: 'Mode grand : cartes avec plus de détails sur les requêtes',
-    probeAll: 'Tous', probeOnly: 'Sondes uniquement',
-    probeAllTitle: 'Afficher toutes les requêtes (par défaut)', probeOnlyTitle: 'Afficher uniquement les requêtes de sonde',
     // 2026-08-06 : filtres métier / sonde + titres (aligné avec zh-CN)
     business: 'Métier',
     probe: 'Sonde',

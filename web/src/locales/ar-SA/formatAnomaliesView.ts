@@ -29,12 +29,6 @@ export default {
     extraction_failed: 'فشل الاستخراج',
     unexpected_structure: 'هيكل غير متوقع',
     null_usage_values: 'قيم usage فارغة',
-    token_mismatch: 'عدم تطابق الرموز',
-    missing_provider_tokens: 'رموز المزود مفقودة',
-    missing_client_tokens: 'رموز العميل مفقودة',
-    json_parse_error: 'خطأ في تحليل JSON',
-    missing_finish_reason: 'Finish Reason مفقود',
-    missing_content: 'Content مفقود',
   },
 
   anomalyTypeDescription: {

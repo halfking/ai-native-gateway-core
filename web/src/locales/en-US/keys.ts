@@ -312,7 +312,6 @@ export default {
   approveFailed: 'Approval failed',
   backendNoValidKey: 'Backend did not return a valid key',
   cannotRestoreFullKey: 'This key cannot be restored, please re-issue',
-  close: 'Close',
   closed: 'Closed/Expired',
   conflictBlocked: 'Conflict detected, cannot issue',
   copied: '✓ Copied',

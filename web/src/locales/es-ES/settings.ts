@@ -156,5 +156,4 @@ export default {
   },
 
   // 同步的扁平键
-  outputCompliance: 'Cumplimiento de salida',
 }
