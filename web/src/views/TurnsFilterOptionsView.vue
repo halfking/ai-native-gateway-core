@@ -116,7 +116,7 @@ onMounted(() => {
 .tfo-section-title { font-size: var(--text-md); font-weight: var(--font-semibold); }
 .tfo-section-count { color: var(--text-muted); font-size: var(--text-sm); }
 .tfo-chips { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: var(--space-1); }
-.tfo-chip code { font-size: 12px; padding: 2px 8px; background: var(--bg-elevated, var(--bg-surface)); border: 1px solid var(--border-muted); border-radius: 4px; }
+.tfo-chip code { font-size: 12px; padding: 2px 8px; background: var(--bg-subtle); border: 1px solid var(--border-muted); border-radius: 4px; }
 .tfo-table { width: 100%; border-collapse: collapse; }
 .tfo-table th, .tfo-table td { text-align: left; padding: var(--space-1) var(--space-2); border-bottom: 1px solid var(--border-muted); font-size: var(--text-sm); }
 .tfo-table th { color: var(--text-muted); font-weight: var(--font-semibold); }

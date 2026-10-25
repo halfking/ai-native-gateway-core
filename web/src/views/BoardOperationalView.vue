@@ -220,7 +220,7 @@ onMounted(() => {
   gap: var(--space-3);
 }
 .bo-card {
-  background: var(--bg-elevated, var(--bg-surface));
+  background: var(--bg-surface);
   border: 1px solid var(--border-muted);
   border-radius: var(--radius);
   padding: var(--space-3);

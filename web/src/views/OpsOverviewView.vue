@@ -295,7 +295,7 @@ onMounted(() => {
 .oo-section { background: var(--bg-surface); border: 1px solid var(--border); border-radius: var(--radius); padding: var(--space-3); margin-bottom: var(--space-3); }
 .oo-section-title { font-size: var(--text-md); font-weight: var(--font-semibold); margin-bottom: var(--space-2); }
 .oo-cards { display: grid; grid-template-columns: repeat(4, 1fr); gap: var(--space-3); }
-.oo-card { background: var(--bg-elevated, var(--bg-surface)); border: 1px solid var(--border-muted); border-radius: var(--radius); padding: var(--space-3); }
+.oo-card { background: var(--bg-surface); border: 1px solid var(--border-muted); border-radius: var(--radius); padding: var(--space-3); }
 .oo-card-title { font-size: var(--text-sm); color: var(--text-muted); margin-bottom: var(--space-1); }
 .oo-card-metric { font-size: var(--text-2xl); font-weight: var(--font-semibold); }
 .oo-card-online { border: 1px solid var(--success); }

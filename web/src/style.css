@@ -156,6 +156,121 @@
      卡片与面板走 --radius-card 14px；模态与抽屉这类大表面走 --radius-lg 16px。 */
   --radius-card: 14px;
   --radius-lg:   16px;
+
+  /* ── 第二代命名桥接（2026-10-25）──────────────────────────────
+     组件层大量使用 --space-* / --text-* / --font-semibold / --bg-surface /
+     --border-muted / --card-bg / --kx-text-secondary 这一代命名，而它们
+     **在全仓从未被定义过**（`git log -S'--space-3:'` 查证：这道定义在
+     整个历史上都不存在；全仓 grep 也无任何 --space-3: 定义）。
+
+     ★ 为什么这不只是「少个变量」：CSS 规范里 var() 引用未定义的自定义
+       属性 ⇒ 整条声明 **invalid at computed-value time** ⇒ 不是退回
+       默认值，而是**这条声明整个消失**。实测（浏览器计算样式）：
+         .st-card   padding = 0px    background = transparent
+         .oo-card   padding = 0px    border-width = 0px
+         .st-card-price  font-size = 14px / font-weight = 400（应为 24px / 600）
+       ⇒ 卡片没有内边距、没有边框、底色透明、文字层级塌成一片。
+
+     ★ 这里全部桥接到 --kx-* 真值源，**不新增任何颜色**。
+       放在基础 :root 而非明暗两块：每个别名都指向主题内的 --kx-*，
+       计算值随主题走，不需要复制两份。 */
+  /* 间距阶 —— 对应 --kx-space-1..6（4/8/12/16/24/32px） */
+  --space-1: var(--kx-space-1);
+  --space-2: var(--kx-space-2);
+  --space-3: var(--kx-space-3);
+  --space-4: var(--kx-space-4);
+  --space-5: var(--kx-space-5);
+  --space-6: var(--kx-space-6);
+  /* 字号阶 —— 对应 --kx-text-2xs..4xl（11/12/13/14/16/20/24/30/38px） */
+  --text-2xs: var(--kx-text-2xs);
+  --text-xs:  var(--kx-text-xs);
+  --text-sm:  var(--kx-text-sm);
+  --text-md:  var(--kx-text-md);
+  --text-lg:  var(--kx-text-lg);
+  --text-xl:  var(--kx-text-xl);
+  --text-2xl: var(--kx-text-2xl);
+  --text-3xl: var(--kx-text-3xl);
+  --text-4xl: var(--kx-text-4xl);
+  /* 字重阶 */
+  --font-medium:   500;
+  --font-semibold: 600;
+  --font-bold:     700;
+  /* 字体族 */
+  --font-mono: var(--kx-font-mono);
+  --font-base: var(--kx-font-sans);
+  --mono-font: var(--kx-font-mono);
+  /* 表面 —— 卡片面 = --kx-surface */
+  --bg-surface: var(--kx-surface);
+  --card-bg:    var(--kx-surface);
+  --surface:    var(--kx-surface);
+  --surface-soft: var(--kx-surface-soft);
+  --surface-1:  color-mix(in srgb, var(--kx-text) 4%, transparent);
+  --surface2:   var(--surface-secondary);
+  --bg-container: var(--bg-card);
+  --bg-input:   var(--bg);
+  --header-bg:  var(--bg-card);
+  /* 描边 —— muted 比 --border 更淡（同族的 color-mix 写法，见 --bg-hover） */
+  --border-muted: color-mix(in srgb, var(--kx-border) 60%, var(--kx-surface));
+  --border-color: var(--border);
+  /* 语义色别名 */
+  --accent-color:  var(--accent);
+  --accent-hover:  var(--accent-h);
+  --accent-soft:   var(--kx-primary-soft);
+  --app-primary:   var(--kx-primary);
+  --primary-color: var(--accent);
+  --primary:      var(--accent);
+  --primary-hover: var(--accent-h);
+  --primary-soft:  var(--kx-primary-soft);
+  --success-color: var(--success);
+  --error:       var(--danger);
+  --error-text:  var(--danger);
+  --error-bg:    var(--danger-bg);
+  --warning-text: var(--warning);
+  --info:        var(--accent);
+  --cyan:        var(--probe-cyan);
+  --text-tertiary: var(--kx-muted);
+  --fg:          var(--text);
+  --status-color: var(--muted);
+  --bar-color:   var(--muted);
+  --model-font-size: 10px;
+  /* 追踪状态色（RequestTracePanel 用它们当行内色值） */
+  --trace-status-ok:   var(--success);
+  --trace-status-fail: var(--danger);
+  --trace-status-warn: var(--warning);
+  --trace-status-skip: var(--muted);
+  /* --kx-* 家族里那些从未定义、却被引用的老名字 */
+  --kx-accent:    var(--accent);
+  --kx-error:     var(--danger);
+  --kx-color-success: var(--success);
+  --kx-color-warning: var(--warning);
+  --kx-color-error:   var(--danger);
+  --kx-mono:      var(--kx-font-mono);
+  --kx-fg:        var(--text);
+  --kx-text-primary:   var(--text-primary);
+  --kx-text-secondary: var(--text-secondary);
+  --kx-text-muted:     var(--text-muted);
+  --kx-text-subtle:    var(--text-muted);
+  --kx-text-inverse:   var(--on-primary);
+  --kx-surface-secondary: var(--surface-secondary);
+  --kx-bg-container: var(--bg-card);
+  --kx-border-light: var(--border);
+  --kx-border-strong: var(--kx-border);
+  --kx-radius-sm: 6px;
+  --kx-radius-md: var(--radius);
+  --kx-muted-soft: transparent;
+  /* 运行时行内注入的令牌：给出与原兜底一致的默认值
+     （行内 :style 仍会覆盖它，这里只是不让声明落空） */
+  --qwt-grid-cols: minmax(140px, 200px) 78px minmax(240px, 1fr) 72px;
+  --rdv-table-min-width: 720px;
+  --dt-min-width: 720px;
+  --sr-cols-mobile: 2;
+  --sr-cols-tablet: 2;
+  --sr-cols-desktop: 4;
+  --mtc-h: 280px;
+  /* 代码块表面：终端式代码块在明暗两套主题下都是固定深色，
+     配浅色文字读作独立区域（原先借用了 --bg-elevated，
+     见 ExamplesView .code-block 的注释）。 */
+  --code-surface: #1e1e2e;
 }
 
 /* 2026-07-21: 与 ai-native-maintain / ai-session-manager 主题统一。
@@ -214,6 +329,7 @@ html[data-theme='light'] {
   --muted:     var(--kx-muted);
   --accent:    var(--kx-primary);
   --accent-h:  var(--kx-primary-hover);
+  --accent-rgb: 30, 79, 214;    /* #1e4fd6 —— accent 的 RGB 三元组（亮色） */
   --success:   var(--kx-success);
   --success-soft: var(--kx-success-soft);
   --warning:   var(--kx-warning);
@@ -270,8 +386,10 @@ html[data-theme='light'] {
   --success-light:     #6ee7b7;
   --purple-light:      #cba6f7;
   --purple-dark:       #3730a3;
-  /* 表面/容器背景(代码块 / 暗模式投影) */
-  --bg-elevated:       #1e1e2e;
+  /* 表面/容器背景(代码块 / 暗模式投影) —— ★ 2026-10-25 删除：
+     这个令牌是「代码块深色」与「卡片表面」混用的产物，亮色主题下
+     卡片拿到近黑底（实测 rgb(30,30,46) 落在 #f4f6f9 页面上）。
+     代码块请用 --code-surface，卡片请用 --bg-surface / --bg-subtle。 */
   /* 厂商品牌色 (走 token, light/dark 通用) */
   --vendor-openai:     #10a37f;
   --vendor-anthropic:  #d97757;
@@ -342,6 +460,7 @@ html[data-theme='dark'] {
   --muted:     var(--kx-muted);
   --accent:    var(--kx-primary);
   --accent-h:  var(--kx-primary-hover);
+  --accent-rgb: 91, 140, 255;   /* #5b8cff —— accent 的 RGB 三元组（暗色） */
   --success:   var(--kx-success);
   --success-soft: var(--kx-success-soft);
   --warning:   var(--kx-warning);
@@ -396,8 +515,7 @@ html[data-theme='dark'] {
   --success-light: #6ee7b7;
   --purple-light:  #cba6f7;
   --purple-dark:   #3730a3;
-  /* 表面/容器背景(代码块 / 暗模式投影) */
-  --bg-elevated:   #1e1e2e;
+  /* 表面/容器背景(代码块 / 暗模式投影) —— ★ 2026-10-25 删除，见亮色块同名注释。 */
   /* 厂商品牌色 (双主题统一) */
   --vendor-openai:     #10a37f;
   --vendor-anthropic:  #d97757;

@@ -162,7 +162,7 @@ onUnmounted(() => {
 .sms-status-badge.is-failed { background: var(--danger-bg); color: var(--danger); }
 .sms-row { display: grid; grid-template-columns: 120px 1fr; gap: var(--space-2); padding: var(--space-1) 0; font-size: var(--text-sm); }
 .sms-label { color: var(--text-muted); }
-.sms-progress { height: 6px; background: var(--bg-elevated, var(--bg-surface)); border-radius: 3px; overflow: hidden; margin: var(--space-1) 0; }
+.sms-progress { height: 6px; background: var(--bg-subtle); border-radius: 3px; overflow: hidden; margin: var(--space-1) 0; }
 .sms-progress-bar { height: 100%; background: var(--kx-primary); transition: width 0.3s ease; }
 .sms-errors { margin-top: var(--space-2); padding: var(--space-2); background: var(--danger-bg); color: var(--danger); border-radius: var(--radius); font-size: var(--text-sm); }
 </style>

@@ -391,7 +391,7 @@ function closeDialog() {
   text-align: left;
   cursor: pointer;
 }
-.queue-row:hover { background: var(--kx-bg-elevated); }
+.queue-row:hover { background: var(--bg-hover); }
 .queue-position,
 .queue-attempt,
 .queue-updated { color: var(--kx-text-secondary); font-size: 11px; }

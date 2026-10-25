@@ -328,7 +328,7 @@ const hasNodes = computed(() => nodes.value.length > 0)
   justify-content: space-between;
   align-items: center;
   padding: 10px 12px;
-  background: var(--kx-bg-elevated);
+  background: var(--bg-subtle);
   cursor: pointer;
   user-select: none;
   text-align: left;

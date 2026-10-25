@@ -185,7 +185,7 @@ function credentialLabel(attempt: RoutingAttempt): string {
 .routing-summary, .routing-empty {
   padding: 10px 12px;
   color: var(--text-muted, var(--kx-text-secondary));
-  background: var(--bg-elevated, var(--kx-bg-elevated));
+  background: var(--bg-surface);
   border: 1px solid var(--border, var(--kx-border-light));
   border-radius: 6px;
 }
@@ -217,7 +217,7 @@ function credentialLabel(attempt: RoutingAttempt): string {
 .attempt-meta { display: flex; flex-wrap: wrap; gap: 6px 14px; margin-top: 6px; color: var(--text-muted, var(--kx-text-secondary)); font-size: 12px; }
 .attempt-badge {
   padding: 1px 6px; border-radius: 4px; font-size: 11px;
-  background: var(--bg-elevated, var(--kx-bg-elevated));
+  background: var(--bg-surface);
   border: 1px solid var(--border, var(--kx-border-light));
 }
 .attempt-badge.badge-success { color: var(--success, var(--kx-color-success)); border-color: var(--success, var(--kx-color-success)); }
