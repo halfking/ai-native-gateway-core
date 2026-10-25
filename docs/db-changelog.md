@@ -10381,3 +10381,26 @@ cron 日志里也有 `"retention_hours":8`）⇒ ⇒ ★★★ 实测 `max(hot.t
 ★ ★★ 「同一台机器、同一条命令、两个 checkout 各跑一遍」⇒ ★★★ 否则会去修一个不属于你的红。
 
 ★ **完整记录见审计档 `docs/audit/2026-10-27-R154-生产慢SQL取证与API覆盖度基线.md` §3 + `LESSONS.md` §403**。
+
+### 2026-10-27 R155-hotfix —— 补登记上游 `b7022a466` 引入的 2 个 env（★ origin/main 当时是红的）
+
+★ **背景**：★ R155 归属判定发现 ★ **纯净 `origin/main` 的 `scripts/ursmcheck` 包是红的**
+★ （837.212 s / 3 条失败）⇒ ★ **根因之一在上游**：★ `b7022a466` 引入
+★ `admin/body_resolver_content_array_realdb_test.go` ⇒ 读了 2 个**未登记**的 env
+★ ⇒ ★★ **登记册的门（`TestPGTestEnvRegistryCoversEveryGapName`）红**
+★ ⇒ ★★ 连带 ★ **「掏空法」门红**（★ 它的读方在基线就红 ⇒ 不可判定）。
+★ ⇒ ⇒ ★★★★ **本条登记册缺口会同时打红两道门** ⇒ ★★ **「一个未登记的 env」的爆炸半径比看起来大**。
+
+★ **修法（★ 走仓内既有 `-r71-update` 通道，★ 不手改登记册）**：
+★ `go test ./scripts/ursmcheck/ -run TestPGTestEnvRegistryCoversEveryGapName -args -r71-update`
+★ ⇒ 补齐 2 个新名字（★ 登记册 75 → 77 条）⇒ ★ **再逐条人工填 class 与 reason**
+★ （★ `-r71-update` 写的是 `TODO: 待人工分类` ⇒ ★ **门会拒绝留 TODO 的条目** ⇒ ★★ **必须人工填**）。
+
+| env | class | 理由 |
+|---|---|---|
+| `TEST_CONTENT_ARRAY_REQUEST_IDS` | `component` | ★ 夹具参数：指定 request_id 清单的文件路径（每行一个 id）⇒ 不决定连哪个库，也不取消任何保护 |
+| `TEST_CONTENT_ARRAY_SAMPLE` | `component` | ★ 夹具参数：真库读数的采样行数（整数，默认 20000）⇒ 不决定连哪个库，也不取消任何保护 |
+
+★ **复验**：★ `TestPGTestEnvRegistryCoversEveryGapName` **PASS**（★ 103 个 env 名 / 登记册 77 条 /
+★ 未登记 **0** / 死条目 **0**）⇒ ★★ **origin/main 由红转绿**。
+★ ★★ **本条无 SQL 变更、无 schema 变更、无生产写入** ⇒ ★ **对生产的写入 = 0**。
