@@ -10308,3 +10308,42 @@ cron 日志里也有 `"retention_hours":8`）⇒ ⇒ ★★★ 实测 `max(hot.t
 ★ 且 ★ **本轮没有在 211/252 生产上跑巡检**。
 
 ★ **完整记录见审计档 `docs/audit/2026-10-27-R153-巡检量具自证与负载污染归因.md` + `LESSONS.md` §402**。
+
+## 2026-10-27 — R154 生产慢 SQL 取证 + API 覆盖度基线轮（**无 SQL 变更、无迁移、无发版**）
+
+★ ★★ **本段【无 SQL schema 变更、无迁移】，对生产的写入 = 0**
+★ ⇒ **无需在 211/252 上同步任何 DDL/DML；★ 无台账缺口产生**。
+★ ⚠ **发版口径**：本段**未改任何产品代码**（只有**仓内门 + 待办台账 + 文档**）
+★ ⇒ ⇒ **生产侧行为零变化** ⇒ ★⇒ **无需任何生产侧同步，也不需要发版**。
+
+★ ★★ **但本段挖出一条【生产真实的慢 SQL】⇒ 登记为 D17（属主裁决项）**：
+★ · SQL：`admin/session_catalog_usage.go` 的 `catalogSearchSQL`
+★ 　（★ `likeContains(q)` ⇒ **`%q%` 中缀匹配**；★ **三列 OR 的 ILIKE**：`session_key` / `title` / `primary_model`）
+★ · 表：`public.session_summaries`（★ **252 生产 868,711 行**）
+★ · 计划：**Parallel Seq Scan**（★ 三列 OR 让规划器放弃全部索引）
+★ · **Planning 16.679 ms / Execution 40,415.968 ms（40.4 秒）**；★ 扫 289,543 × 3 workers
+★ · ★★ **调用点 ctx 超时 = 2 秒 ⇒ 必然每次超时 ⇒ `slog.Warn` ⇒ 静默返回「没搜到」**
+★ · ★★ **本地读数证明不了它**（★ 本地该表几十行 ⇒ 本地必然 Index Scan）
+★ ⇒ ★★ **修法（★ 全部属主裁决，本轮只刻画不改判）**：
+★ 　**A** 3 个 GIN trigram 索引（★ `pg_trgm` 在 252 上**已装**，★ 不需要装扩展）
+★ 　／**B** 超时可见 + 让降级不静默 ／**C** 限制搜索范围（★ 改产品语义）／**D** 先加观测
+★ ⇒ ★★ **建议 B 或 D 先落、A 随后**；★ **本轮未写迁移、未加索引、未改任何生产配置**。
+
+★ ★★ **仓内落地**：
+★ ① `scripts/ursmcheck/session_summaries_like_index_ledger.tsv`（**新增**）
+★ 　 ★ **待办台账**（★ 13 列，★ 照抄 `pipefail_race_ledger.tsv` 的列结构）：登记 **3 列** + 完整生产证据；
+★ 　 ★ **`verdict` 只许缩小**（★ 加了 trigram 索引就从台账删掉 ⇒ 门会红）。
+★ ② `scripts/ursmcheck/session_summaries_like_index_gate_test.go`（**新增门**）
+★ 　 ★ 3 条断言：台账形状自洽（列数 / 主键唯一 / `verdict` 合法 / `reason`·`evidence` 非空）
+★ 　 ／ ★★ **台账列集合 == 源码 LIKE 列集合（不多不少）** ／ ★ 台账只许缩小；
+★ 　 ★★ **门自带阳性对照**（★ 断言源码确实有 `catalogSearchSQL` 与 `ILIKE`
+★ 　 ⇒ ★★ 否则「源里删了那条 LIKE」会让集合比对空转 ⇒ **门假绿**）。
+★ 　 ★★ **变异 3 组全红 + md5 逐字还原**（★ M1 删台账行 / M2 源码改掉 `title ILIKE` / M3 清空 `reason`）。
+
+★ ★★ **另一条读数（Goal「逐个 api 进行单元测试」的基线）**：
+★ · 路由登记 **551** ⇒ ★★ **运行时零覆盖 = 310 条（75.2%）**、有覆盖 102 条、**无法判定 139 条**
+★ · 口径：**运行时 `go test ./admin/ -coverprofile=…`（96.5 s / 语句覆盖 26.1%）按函数行范围判定**
+★ 　（★ **不用**「grep 测试文件里有没有 handler 名」⇒ 那个口径有假阳性与假阴性，★ 不可信）
+★ · ★ **75.2% 是下界**（★ 那 139 条 `undetermined` 可能已被覆盖；★ 且只统计 `admin` 包）。
+
+★ **完整记录见审计档 `docs/audit/2026-10-27-R154-生产慢SQL取证与API覆盖度基线.md` + `LESSONS.md` §403**。

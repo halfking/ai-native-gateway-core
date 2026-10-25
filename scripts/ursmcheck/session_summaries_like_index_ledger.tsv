@@ -1,0 +1,38 @@
+# session_summaries 的 LIKE/ILIKE 查询列 · 索引覆盖待办台账
+#
+# ★ 为什么有这张台账（2026-10-27 R154 轮，生产实证）：
+#   `admin/session_catalog_usage.go` 的 `catalogSearchSQL` 用
+#   `likeContains(q)`（★ 生成 `%q%`，★ **中缀匹配**）对 session_summaries
+#   的 **三列**做 OR 的 ILIKE。★ 生产 252 实测（868,711 行）：
+#     · EXPLAIN（不带 ANALYZE）⇒ **Parallel Seq Scan on session_summaries**
+#     · EXPLAIN ANALYZE ⇒ **Execution Time = 40,415.968 ms（40.4 秒）**
+#     · Planning Time = 16.679 ms（★ 不是规划问题，★ 是执行问题）
+#     · Rows Removed by Filter = 289,543 × 3 workers ⇒ ★ 扫了约 260 万行
+#     · Buffers: shared hit=34,435 read=17,177
+#   ⇒ ★★ 而 `mergeCatalogSearch` 的 ctx 超时是 **2 秒**
+#     （`admin/session_catalog_usage.go`：`context.WithTimeout(ctx, 2*time.Second)`）
+#     ⇒ ⇒ ★★★ **它每次都超时** ⇒ ⇒ **静默降级成「没搜到」**
+#     （★ `slog.Warn("catalog search failed")` ⇒ 用户看不到「超时」，★ 只看到「空结果」）
+#
+# ★ 为什么「加一列 OR 就把索引优化掉」：
+#   · `session_summaries` 上 session_key 只有**等值**索引（pkey / (tenant_id, session_key)）
+#     ⇒ ★ **没有任何 trigram 索引** ⇒ `%q%` 用不上
+#   · `title` / `primary_model` **一个索引都没有**（★ 生产 pg_indexes 实测 = 0）
+#   ⇒ ★★ 三列 OR ⇒ ★★ 规划器必须能把**每一列**变成可索引条件 ⇒ ★★ **放弃全部索引 ⇒ Seq Scan**
+#   ⇒ ★★ 对照实测（同一张表、同一条件）：
+#       只有 session_key 一列 ILIKE ⇒ Parallel Index Only Scan using session_summaries_pkey
+#       三列 OR                ⇒ **Parallel Seq Scan**
+#
+# ★ 本台账的语义：**「这些 LIKE 查询列，现在没有可用的索引」**。
+# ★ verdict 取值：
+#     needs-index   ★ 待属主裁决（★ 默认值；★ 表示「尚未修」）
+#     indexed       ★ 已加 trigram（GIN gin_trgm_ops）索引 ⇒ ★ 可从台账里移除
+#     accepted-risk ★ 属主明确接受该形态的代价（★ 需在 reason 里写清为什么）
+# ★ ★★ **台账只许缩小**：★ 加了索引的列**从台账里删掉**，★ 不新增。
+#
+# ★ 主键 = (file, fingerprint, occ)；fingerprint = sha256(file|列名)[:12] ⇒ 唯一且抗行号漂移。
+# ★ 人工裁决（verdict/reason/evidence）是 SSOT。
+file	line	occ	scope	kind	usage	volume	writer	verdict	reason	evidence	owner	fingerprint
+admin/session_catalog_usage.go	74	1	<top>	ilike-substring	catalog-search	session_summaries	session_key	needs-index	★ session_key 只有等值索引（pkey / unique(tenant_id, session_key)）⇒ ★ `%q%` 中缀匹配用不上；★ 且它是三列 OR 的其中一支 ⇒ ★ 规划器因此放弃全部索引	★ 252 生产：EXPLAIN ⇒ Parallel Seq Scan；EXPLAIN ANALYZE ⇒ Execution Time 40415.968 ms；★ 对照「只查这一列」⇒ Index Only Scan using session_summaries_pkey	owner/	aa9ba1183908
+admin/session_catalog_usage.go	75	1	<top>	ilike-substring	catalog-search	session_summaries	title	needs-index	★ title **零索引**（★ 252 生产 pg_indexes 实测 = 0）⇒ ★ OR 的第二支 ⇒ ★ 规划器无法把它变成索引条件 ⇒ ★ 三列 OR 退化为 Seq Scan	★ 252 生产 pg_indexes：title 索引数 = 0；★ EXPLAIN ⇒ Filter 含 (COALESCE(title,'') ~~* '%probe%')	owner/	d0686f440977
+admin/session_catalog_usage.go	76	1	<top>	ilike-substring	catalog-search	session_summaries	primary_model	needs-index	★ primary_model **零索引**（★ 252 生产 pg_indexes 实测 = 0）⇒ ★ OR 的第三支 ⇒ ★ 同上 ⇒ ★ 三列 OR 退化为 Seq Scan	★ 252 生产 pg_indexes：primary_model 索引数 = 0；★ EXPLAIN ⇒ Filter 含 (COALESCE(primary_model,'') ~~* '%probe%')	owner/	a4f6060b7c90
