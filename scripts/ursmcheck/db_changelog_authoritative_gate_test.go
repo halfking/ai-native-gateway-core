@@ -63,7 +63,6 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
-	"sort"
 	"strings"
 	"testing"
 )
@@ -278,7 +277,21 @@ func dcaParseEffective(t *testing.T, path string) map[int]int {
 	curKey := 0
 	best := map[int]int{}
 	bestKey := map[int]int{}
+	// ★★★ **跳过权威状态段**（★ 派生表绝不能进自己的输入 ⇒ 否则读数自指）
+	//   ★★ 与工具同口径，★ 但【独立实现】⇒ ★★ 两边任一处改规则 ⇒ 门会红。
+	inAuth := false
 	for i, ln := range lines {
+		if strings.Contains(ln, "R160-AUTHORITATIVE:BEGIN") {
+			inAuth = true
+			continue
+		}
+		if strings.Contains(ln, "R160-AUTHORITATIVE:END") {
+			inAuth = false
+			continue
+		}
+		if inAuth {
+			continue
+		}
 		if strings.HasPrefix(ln, "## ") {
 			curKey = dcaDateKey(ln)
 			continue
@@ -304,8 +317,18 @@ func dcaParseEffective(t *testing.T, path string) map[int]int {
 }
 
 // dcaDateKey 从节标题里取一个可比较的日期键（★ 解析不出来 ⇒ 0 ⇒ 最小）。
+//
+// ★★★ **口径必须与工具【逐字对齐】**（★ 本轮实测出来的）：★ 登记册的节标题有两种形态
+//
+//	—— `## 2026-09-05 — …`（★ 只有日期）与 `## 2026-08-18T18:59:33Z — …`（★ 日期+时刻）
+//	⇒ ★★ **同一天的两个节**（★ 一个带时刻、一个不带）⇒ ★★ 只比日期会【分不出先后】
+//	⇒ ★★ ⇒ 键必须含时刻（★ 与工具同式：★ y*1e8 + mo*1e6 + d*1e4 + hh*100 + mm + ss/100）。
+//
+// ★★ 这条对齐**不是靠自觉**：★ 全量双口径互证（★ G6）会把它照出来
+//
+//	⇒ ★★ 本轮实测：★ Go 侧只比日期 ⇒ ★★ 3 个迁移号的有效行分歧 ⇒ ★★ 门红 ⇒ ★★ 修完才绿。
 func dcaDateKey(title string) int {
-	re := regexp.MustCompile(`(\d{4})-(\d{2})-(\d{2})`)
+	re := regexp.MustCompile(`(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):(\d{2}):(\d{2})Z?)?`)
 	m := re.FindStringSubmatch(title)
 	if m == nil {
 		return 0
@@ -316,84 +339,70 @@ func dcaDateKey(title string) int {
 	if y < 0 || mo < 0 || d < 0 {
 		return 0
 	}
-	return y*10000 + mo*100 + d
+	hh, mm, ss := 0, 0, 0
+	if m[4] != "" {
+		hh = dcaAtoiSafe(m[4])
+		mm = dcaAtoiSafe(m[5])
+		ss = dcaAtoiSafe(m[6])
+		if hh < 0 || mm < 0 || ss < 0 {
+			hh, mm, ss = 0, 0, 0
+		}
+	}
+	return y*100000000 + mo*1000000 + d*10000 + hh*100 + mm + ss/100
 }
 
-// TestDbChangelogEffectiveRowRuleAgreesAcrossTwoImplementations —— ★★ 双口径互证。
+// TestDbChangelogEffectiveRowRuleAgreesAcrossTwoImplementations —— ★★★★ 全量双口径互证。
+//
+// ★★★ **为什么必须【全量】**（★ 本轮实测出来的）：★ 第一版只【抽样 6 个号】对拍
+// ⇒ ★★ 而实际的口径分歧面是 **49 个号** ⇒ ★★ 抽样一条都没撞上 ⇒ ★★ **门【看起来绿】**
+// ⇒ ★★ 而分歧真实存在（★ 真实后果：★ 派生表污染了散文解析 ⇒ ★★ 读数自指）。
+// ⇒ ★★★ ⇒ 改成【全量】：★ 工具一次输出全部有效登记行 ⇒ ★★ 门逐条比。
 func TestDbChangelogEffectiveRowRuleAgreesAcrossTwoImplementations(t *testing.T) {
 	root := dcaRepoRoot(t)
 	eff := dcaParseEffective(t, filepath.Join(root, dcaChangelogRel))
 	if len(eff) == 0 {
 		t.Fatal("★ 独立解析没拿到任何有效登记行 ⇒ ★ 解析器坏了")
 	}
-	// ★ 挑【登记过多次】的号（★ 同号规则只有在这种情况下才有判别力）
-	counts := map[int]int{}
-	body, err := os.ReadFile(filepath.Join(root, dcaChangelogRel))
-	if err != nil {
-		t.Fatalf("读登记册失败：%v", err)
+	// ★ 工具侧的【全量】有效行
+	out, _, code := dcaRun(t, "effective")
+	if code != 0 {
+		t.Fatalf("effective 模式失败（退出码 %d）", code)
 	}
-	for _, ln := range strings.Split(string(body), "\n") {
-		if !strings.HasPrefix(ln, "|") {
-			continue
-		}
-		cells := strings.Split(strings.TrimSpace(strings.Trim(ln, "|")), "|")
-		if len(cells) < 4 {
-			continue
-		}
-		if n := dcaAtoiSafe(strings.TrimSpace(cells[0])); n >= 0 {
-			counts[n]++
-		}
+	var side struct {
+		EffectiveRows int `json:"effective_rows"`
+		Rows          map[string]struct {
+			Line     int    `json:"line"`
+			Basename string `json:"basename"`
+		} `json:"rows"`
 	}
-	var dups []int
-	for n, c := range counts {
-		if c > 1 {
-			dups = append(dups, n)
-		}
+	if err := json.Unmarshal([]byte(out), &side); err != nil {
+		t.Fatalf("解析 effective 输出失败：%v\n%s", err, out)
 	}
-	if len(dups) == 0 {
-		t.Fatal("★ 登记册里没有同号多次登记的行 ⇒ ★ 同号规则无从判别 ⇒ 本门恒绿")
+	if len(side.Rows) == 0 {
+		t.Fatal("★ 工具没给出任何有效登记行 ⇒ 门恒绿")
 	}
-	sort.Ints(dups)
-	// ★ 取首尾各若干个（★ 确定性 ⇒ 不依赖 map 迭代序）
-	picks := map[int]bool{}
-	for i := 0; i < 3 && i < len(dups); i++ {
-		picks[dups[i]] = true
+	if len(side.Rows) != len(eff) {
+		t.Errorf("★ 两份口径的有效登记号【个数】不一致（★ 工具 %d，★ Go 独立解析 %d）⇒ ★★ 口径已分歧",
+			len(side.Rows), len(eff))
 	}
-	for i := len(dups) - 3; i < len(dups); i++ {
-		if i >= 0 {
-			picks[dups[i]] = true
-		}
-	}
-	checked := 0
-	for num := range picks {
-		out, _, code := dcaRun(t, "locate", "--migration", dcaItoa(num))
-		if code != 0 {
-			t.Errorf("locate 迁移号 %d 失败（退出码 %d）", num, code)
-			continue
-		}
-		var loc struct {
-			Line int `json:"line"`
-		}
-		if err := json.Unmarshal([]byte(out), &loc); err != nil {
-			t.Errorf("解析 locate 输出失败：%v", err)
-			continue
-		}
+	mismatch := 0
+	for numStr, r := range side.Rows {
+		num := dcaAtoiSafe(numStr)
 		want, ok := eff[num]
 		if !ok {
-			t.Errorf("★ 独立解析里没有迁移号 %d", num)
+			t.Errorf("★ Go 独立解析里没有迁移号 %s（★ 工具说它有效）", numStr)
+			mismatch++
 			continue
 		}
-		checked++
-		if loc.Line != want {
-			t.Errorf("★ 迁移号 %d 的【有效行】两份口径不一致（★ Go 独立解析 = %d，★ 工具 locate = %d）\n"+
-				"★ ⇒ ★★ 「同号取哪一行」有两套逻辑 ⇒ ★★ 必然漂移 ⇒ ★（★ 变异实测：★ 把工具改成"+
-				"「取文件里最后一行」时 ★ 本条会红）", num, want, loc.Line)
+		if want != r.Line {
+			t.Errorf("★ 迁移号 %s 的【有效行】两份口径不一致（★ Go 独立解析 = %d，★ 工具 = %d）\n"+
+				"★ ⇒ ★★ 「同号取哪一行」有两套逻辑 ⇒ ★★ 必然漂移", numStr, want, r.Line)
+			mismatch++
 		}
 	}
-	if checked == 0 {
-		t.Fatal("★ 一条也没对拍成 ⇒ 本门恒绿")
+	if mismatch == 0 {
+		t.Logf("★ 全量双口径互证：%d 个有效登记号逐条一致", len(side.Rows))
 	}
-	t.Logf("★ 双口径互证：%d 个同号多次登记的迁移号对拍一致", checked)
 }
 
 // ─────────────────────────── G5 · 反向夹具：判据有牙 ───────────────────────────

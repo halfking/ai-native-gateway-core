@@ -214,9 +214,24 @@ def parse_changelog(path: str):
     cur_key = 0
     cur_title = ""
     cur_date = ""
+    # ★★★ **权威段必须被跳过**（★ 本轮自己踩的坑）★★：
+    #   权威状态段是【快照派生】的机器可判表 ⇒ ★★ 它长得像表格行（★ `| 号 | 文件 | … |`）
+    #   ⇒ ★★ 若不跳过，★ 解析器会把它当成【散文的登记行】⇒ ★★
+    #      · 「同号取哪一行」会被它污染（★ 实测 311 个有效行里 49 个来自权威段）
+    #      · 它的「状态」格是 `applied@…` / `—` ⇒ ★★ 会被误读成【主张】
+    #   ⇒ ★★ ⇒ **派生表绝不能进自己的输入**（★ 否则读数自指 ⇒ 不可信）。
+    in_auth = False
     with open(path, "r", encoding="utf-8") as fh:
         for lineno, line in enumerate(fh, 1):
             line = line.rstrip("\n")
+            if AUTH_BEGIN in line:
+                in_auth = True
+                continue
+            if AUTH_END in line:
+                in_auth = False
+                continue
+            if in_auth:
+                continue
             if line.startswith("## "):
                 cur_title = SECTION_RE.match(line).group(1)
                 cur_key, cur_date = section_date(cur_title)
@@ -757,6 +772,34 @@ def read_authoritative_section(path):
     return m.group(0) if m else None
 
 
+def cmd_effective(args):
+    """★ 打印【全部】有效登记行（★ JSON）⇒ 供门做【全量】双口径对拍。
+
+    ★★ 为什么要「全量」：★ 抽样对拍有盲区（★ 实测：★ 抽 6 个号 ⇒ ★★ 49 个号的口径分歧
+      ★★ 一条都没撞上 ⇒ ★★ 门【看起来绿】⇒ ★★ 而分歧真实存在）⇒ ★★ ⇒ 全量。
+    """
+    path = args.changelog or DEFAULT_CHANGELOG
+    effective, total, undated = parse_changelog(path)
+    out = {
+        "total_rows": total,
+        "effective_rows": len(effective),
+        "undated_section_rows": undated,
+        "rows": {
+            str(num): {
+                "line": r.line,
+                "filename": r.filename,
+                "basename": os.path.basename(r.filename),
+                "sha": r.sha,
+                "status": r.status,
+                "section_date": r.section_date,
+            }
+            for num, r in sorted(effective.items())
+        },
+    }
+    print(json.dumps(out, ensure_ascii=False))
+    return 0
+
+
 def cmd_locate(args):
     """★ 打印某个迁移号的【有效登记行】（★ 按节日期最新的那行）。
 
@@ -909,6 +952,10 @@ def main(argv=None):
     rd.add_argument("--write", action="store_true", help="★ 回写进登记册（★ 幂等）")
     rd.add_argument("--check", action="store_true", help="★ 只校验登记册里的段落是否与现算一致")
     rd.set_defaults(func=cmd_render)
+
+    ef = sub.add_parser("effective", help="★ 打印【全部】有效登记行（★ JSON）")
+    ef.add_argument("--changelog", default="")
+    ef.set_defaults(func=cmd_effective)
 
     lc = sub.add_parser("locate", help="★ 打印某迁移号的【有效登记行】")
     lc.add_argument("--migration", required=True)
