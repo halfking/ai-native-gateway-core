@@ -1132,7 +1132,11 @@ do_deploy() {
       warn "legacy: 实况与记录均未解析出 unit，回退契约 service_name=${legacy_unit}（旧行为）"
     fi
     local canary_prefix
-    canary_prefix=$(target_field "$TARGET" candidate_unit 2>/dev/null | sed 's/@\.service$//@' || true)
+    canary_prefix=$(target_field "$TARGET" candidate_unit 2>/dev/null || true)
+    # ★ 必须用参数展开剥后缀，不能用 sed：macOS BSD sed 对
+    #   s/@\.service$//@ 报 bad flag（2026-10-26 部署现场实测），
+    #   解析成空会让 canary 判定静默走错分支（回退 host_atomic_switch）。
+    canary_prefix="${canary_prefix%@.service}"
     if [[ -n "$canary_prefix" && "$legacy_unit" == "${canary_prefix}"*".service" ]]; then
       local legacy_prev_release
       legacy_prev_release=$(remote_ssh "readlink '$REMOTE_ROOT/slots/$legacy_port' 2>/dev/null | xargs basename" 2>/dev/null || true)

@@ -68,5 +68,13 @@ n=$(printf '%s\n' "$win" | grep -cF '回退契约 service_name')
 n=$(printf '%s\n' "$win" | grep -cF 'candidate_service="$legacy_unit"')
 [ "${n}" = "1" ]; check "candidate_service 改指实况 unit（实际 ${n}）" $?
 
+# ⑧ canary 前缀剥离必须用参数展开：BSD sed 对 s/@\.service$//@ 报 bad flag
+#   （2026-10-26 部署现场实测）⇒ 解析成空 ⇒ canary 判定静默走错分支。
+#   钉两层：展开式必须在场 + legacy 窗口内不许出现对该后缀的 sed 替换。
+n=$(printf '%s\n' "$win" | grep -cF 'canary_prefix="${canary_prefix%@.service}"')
+[ "${n}" = "1" ]; check "canary 前缀用参数展开剥离（实际 ${n}）" $?
+n=$(printf '%s\n' "$win" | grep -c "sed.*@\\\\.service")
+[ "${n}" = "0" ]; check "legacy 窗口内无 sed 版后缀剥离（实际 ${n}）" $?
+
 echo "deploy legacy-restart flag: ${pass} 通过 / ${fail} 失败"
 [ "${fail}" = "0" ]
