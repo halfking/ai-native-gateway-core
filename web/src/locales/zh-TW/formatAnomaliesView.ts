@@ -142,7 +142,7 @@ export default {
           param: '參數 / 建議',
           status: '狀態碼',
           occurrences: '次數',
-          recoveredCount: '自愈 {n} 次',
+          recoveredCount: '自癒 {n} 次',
       },
       detail: {
           title: '請求錯誤詳情',

@@ -54,22 +54,22 @@ export default {
     testSuccess: '接続テスト成功',
     testFailed: '接続テスト失敗',
     testInProgress: 'テストメッセージを送信中…',
-    dependenciesTitle: '依赖模块',
-    required: '必需',
-    optional: '可选',
-    enableAllDeps: '一键启用 {count} 个必需依赖',
-    enableAllDepsHint: '后端会按稳定顺序开启所有未启用的必需依赖后再启用本模块',
-    cascading: '正在开启依赖…',
-    cascadeSuccess: '已自动开启 {count} 个依赖：{names}',
-    cascadeEmpty: '所有依赖已启用，模块已正常开启',
-    cascadeAlreadyEnabled: '模块已启用，无需级联',
-    cascadeLogTitle: '本次级联开启的依赖：',
+    dependenciesTitle: "依存モジュール",
+    required: "必須",
+    optional: "任意",
+    enableAllDeps: "必須依存 {count} 件を一括で有効化",
+    enableAllDepsHint: "バックエンドが未有効の必須依存を安定した順序で有効化したうえで、このモジュールを有効化します",
+    cascading: "依存モジュールを有効化しています…",
+    cascadeSuccess: "{count} 件の依存モジュールを自動有効化しました：{names}",
+    cascadeEmpty: "すべての依存モジュールが有効化済みで、このモジュールも正常に有効になりました",
+    cascadeAlreadyEnabled: "モジュールは既に有効化済みです。依存の連鎖有効化は不要です",
+    cascadeLogTitle: "今回連鎖で有効化した依存モジュール：",
 
-    sectionDependencies: '依赖模块',
+    sectionDependencies: "依存モジュール",
 
-    dependencyDisabled: '依赖模块未启用',
+    dependencyDisabled: "依存モジュールが未有効です",
 
-    notEnabled: '未启用',
+    notEnabled: "未有効",
   },
 
   config: {
@@ -184,7 +184,7 @@ export default {
 
   // 同步的扁平键
 
-  modeBannerTitle: '本页仅做三件事：',
+  modeBannerTitle: "このページで行えるのは次の 3 つだけです：",
 
-  modeBannerBody: '已装模块开关、已授权未开通模块下载；本页不提供价格、订单或套餐入口（采购通道另行公告）。',
+  modeBannerBody: "導入済みモジュールの有効/無効切り替えと、ライセンス済みだが未導入のモジュールのダウンロードに対応します。本ページに価格・注文・プランの入口はありません（購入手順は別途案内します）。",
 }

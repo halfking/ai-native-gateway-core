@@ -117,7 +117,7 @@ export default {
     daysUnit: '日',
     kpiRequests: 'リクエスト数',
     dailyAvg: '日平均',
-    topModel: '主力',
+    topModel: "主要モデル",
     kpiCredits: 'クレジット消費',
     kpiErrP95: '失敗率 / P95',
     failed: '失敗',

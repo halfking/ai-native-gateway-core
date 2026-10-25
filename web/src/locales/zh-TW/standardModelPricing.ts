@@ -47,23 +47,23 @@ export default {
     manualTagTitle: '手工定價',
     manualTag: '手',
 
-    colModality: '模态',
+    colModality: '模態',
 
-    modalityText: '文本',
+    modalityText: '文字',
 
-    modalityVision: '视觉',
+    modalityVision: '視覺',
 
-    modalityAudio: '音频',
+    modalityAudio: '音訊',
 
-    modalityVideo: '视频',
+    modalityVideo: '影片',
 
-    modalityMultimodal: '多模态',
+    modalityMultimodal: '多模態',
 
     modalityEmbedding: '向量',
 
     modalityOther: '其他',
 
-    hasMultimodal: '含多模态定价',
+    hasMultimodal: '含多模態定價',
   },
   editModal: {
     title: '手工定價：{name}',
@@ -80,9 +80,9 @@ export default {
     resetSuccess: '已恢復',
     resetFailed: '恢復失敗',
 
-    sectionText: '文本 Token 维度',
+    sectionText: '文本 Token 維度',
 
-    sectionMultimodal: '多模态 Token 维度（视觉 / 音频 / 视频）',
+    sectionMultimodal: '多模態 Token 維度（視覺 / 音訊 / 影片）',
 
     fieldImage: '视觉 Token',
 
@@ -96,11 +96,11 @@ export default {
     cacheRead: '快取讀',
     cacheWrite: '快取寫',
 
-    image: '视觉',
+    image: '視覺',
 
-    audio: '音频',
+    audio: '音訊',
 
-    video: '视频',
+    video: '影片',
   },
   error: {
     loadFailed: '載入失敗',
@@ -109,19 +109,19 @@ export default {
   },
 
   // 扁平键（供 Vue 组件直接使用）
-  defaultOnly: '仅全局基准',
-  customOnly: '含手工定价',
+  defaultOnly: '僅全域基準',
+  customOnly: '含手工定價',
   partialOnly: '部分手工',
   otherVendor: '其他',
   loadFailed: '載入失敗',
-  saved: '全局基准已保存（仅影响未手工定价的维度）',
-  saveFailed: '保存失败',
-  needOneManual: '请至少勾选一个「手工定价」维度',
-  resetFailed: '恢复失败',
-  input: '输入',
-  output: '输出',
-  cacheRead: '缓存读',
-  cacheWrite: '缓存写',
+  saved: '全域基準已儲存（僅影響未手工定價的維度）',
+  saveFailed: '儲存失敗',
+  needOneManual: '請至少勾選一個「手工定價」維度',
+  resetFailed: '恢復失敗',
+  input: '輸入',
+  output: '輸出',
+  cacheRead: '快取讀',
+  cacheWrite: '快取寫',
   refreshLoading: '加载中…',
   refresh: '刷新',
   saving: '保存中…',
@@ -139,6 +139,6 @@ export default {
     msgFilled: '已寫入 {n} 個模型',
     msgFailed: '批量操作失敗',
 
-    fillGlobal: '填入当前全局',
+    fillGlobal: '填入目前全域',
   },
 }

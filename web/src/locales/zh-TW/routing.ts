@@ -127,9 +127,9 @@ export default {
       sixDimScore: '6維評分',
       emptyHint: '索引暫無資料 — 點擊 ↻ 重新整理',
 
-      smartConfig: '智能路由配置',
+      smartConfig: '智慧路由設定',
 
-      smartConfigHint: '按任务类型配置主要 / 次级 / 托底模型',
+      smartConfigHint: '按任務類型設定主要 / 次級 / 托底模型',
     },
     policy: {
       fields: {
@@ -392,7 +392,7 @@ export default {
   lifecycle_suspended: '生命週期暫停',
   loadFailed: '載入失敗',
   loading: '載入中…',
-  mappings: '映射',
+  mappings: '對應',
   metricCost: '費用',
   metricCount: '請求',
   metricP95: 'P95',
@@ -434,7 +434,7 @@ export default {
   tier_fallback_max: '跨級回退最大候選數',
   topModel: 'Top模型',
   topTask: 'Top任務',
-  unavailable: '不可用',
+  unavailable: '無法使用',
   updatedPolicy: '策略已更新',
   updatedWeights: '綜合得分係數已更新',
   variantsLabel: '變體',

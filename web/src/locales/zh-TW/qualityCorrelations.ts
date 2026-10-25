@@ -42,8 +42,8 @@ export default {
     buckets: '{n} buckets',
     samples: '{n} samples',
 
-    emptyInsufficient: '至少需要 30 个样本才能计算有意义的相关性。',
+    emptyInsufficient: '至少需要 30 個樣本才能計算有意義的相關性。',
 
-    emptyUnexpected: '无洞察（异常）。请检查服务端日志。',
+    emptyUnexpected: '無洞察（異常）。請檢查服務端日誌。',
   },
 }

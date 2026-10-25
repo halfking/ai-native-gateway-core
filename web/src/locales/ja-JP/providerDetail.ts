@@ -294,7 +294,7 @@ export default {
     probeAllLoading: "検出中…",
     probeAllTitle: "一覧の全モデルに対して検出を実行し、可用性を確認",
     probingModels: "モデルを検出中…",
-    probeResultOk: "✅ 成功 {n}",
+    probeResultOk: "✅ {n} 件成功",
     probeResultUnavailable: "❌ モデル利用不可 {n}",
     probeResultProviderErr: "⚠️ プロバイダー問題 {n}",
     probeResultSkipped: "⏭️ スキップ {n}",
@@ -406,24 +406,24 @@ export default {
     refreshSummaryFailed: "失敗 {n}",
     refreshSummaryEmpty: "変化なし",
     creds: {
-      labelFallback: "凭据 #{id}"
+      labelFallback: "認証情報 #{id}"
     },
     overview: {
-      chipAvailable: "可用",
-      chipUnavailable: "不可用"
+      chipAvailable: "利用可能",
+      chipUnavailable: "利用不可"
     }
 ,
-    probeAllRecoveredHint: '✓ {n} 个模型探测成功；node_probe_state 已自动恢复，路由候选已重新可用',
+    probeAllRecoveredHint: "✓ {n} 件のモデルでプローブ成功。node_probe_state は自動復旧し、ルーティング候補が再び利用可能です",
 
-    resetNodeProbeBtn: '清失败探测状态',
+    resetNodeProbeBtn: "失敗したプローブ状態をクリア",
 
-    resetNodeProbeLoading: '清除中…',
+    resetNodeProbeLoading: "クリア中…",
 
-    resetNodeProbeTitle: '清除 node_probe_state 中 last_direct_ok=FALSE 的行（force-recover routing）。当全面探测显示 ok 但路由候选仍显示 blocked 时使用。',
+    resetNodeProbeTitle: "node_probe_state の last_direct_ok=FALSE の行をクリアします（ルーティングを強制復旧）。「すべてのモデルを検出」で OK と表示されてもルーティング候補が blocked のままの場合に使用します。",
 
-    resetNodeProbeConfirm: '确认清空该供应商所有失败的 node_probe_state 行？',
+    resetNodeProbeConfirm: "このプロバイダーの失敗した node_probe_state 行をすべてクリアしますか？",
 
-    resetNodeProbeDone: '✓ 已清除 {n} 行失败的 node_probe_state，路由候选立即恢复',
+    resetNodeProbeDone: "✓ 失敗した node_probe_state {n} 行をクリアし、ルーティング候補が即座に復旧しました",
   },
   settings: {
     overrideTitle: "🎛️ パススルーモード設定",
@@ -598,7 +598,7 @@ export default {
     emptyHistory: "テスト履歴がありません",
     statusOptions: {
       all: "すべて",
-      ok: "成功",
+      ok: "OK",
       http4xx: "クライアントエラー (4xx)",
       http5xx: "サーバーエラー (5xx)",
       network: "ネットワークエラー",

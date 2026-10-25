@@ -14,7 +14,7 @@ export default {
       hideForm: "收起"
     },
   tabs: {
-      templates: "模板管理",
+      templates: "範本管理",
       tasks: "任務與結果審查",
       history: "匯入歷史"
     },
@@ -46,8 +46,8 @@ export default {
       done: "匯入完成：成功 {created} 個，失敗 {failed} 個"
     },
   tpl: {
-      listTitle: "模板列表（{n}）",
-      name: "模板",
+      listTitle: "範本清單（{n}）",
+      name: "範本",
       baseUrl: "Base URL",
       apiType: "API 協定",
       keyEnv: "Key 環境變數",
@@ -75,7 +75,7 @@ export default {
       trigger: "觸發方式",
       found: "發現數",
       imported: "已匯入",
-      by: "操作人",
+      by: "操作者",
       time: "建立時間",
       error: "錯誤訊息",
       review: "審查結果"

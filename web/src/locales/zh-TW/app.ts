@@ -43,9 +43,9 @@ export default {
   },
 
   theme: {
-    switchToLight: '切到浅色',
-    switchToDark: '切到深色',
-    lightTitle: '浅色模式',
+    switchToLight: '切換為淺色',
+    switchToDark: '切換為深色',
+    lightTitle: '淺色模式',
     darkTitle: '深色模式',
   },
   dataHorizon: {
@@ -64,7 +64,7 @@ export default {
     state: '更新狀態',
     stateLatest: '已是最新',
     stateAvailable: '有新版本',
-    stateIndeterminate: '不可判定',
+    stateIndeterminate: '無法判定',
     stateChecking: '正在檢查…',
     reasonNoLocal: '本頁未攜帶部署序號（構建期未注入）',
     reasonNoRemote: '服務端未返回部署序號（舊構建或非本倉託管）',

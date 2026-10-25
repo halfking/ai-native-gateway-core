@@ -43,7 +43,7 @@ export default {
     reason: '標註原因',
     annotator: '標註人',
     annotatorPlaceholder: '輸入您的使用者名稱',
-    submit: '提交',
+    submit: '送出',
     cancel: '取消',
     errors: {
       providerRequired: '供應商為必填項',

@@ -343,15 +343,15 @@ export default {
 
     cronRunning: '正在运行',
   },
-  preview: "预览清理",
-  hotData: "热数据 (0-7天)",
-  warmData: "温数据 (7-30天)",
-  coldData: "冷数据 (30-90天)",
-  expiredData: "过期数据 (>90天)",
-  missingDate: "请选择起始日期和结束日期",
-  previewFailed: "预览失败",
-  needPreview: "请先预览影响",
-  executeNotImpl: "清理功能将在下一阶段实现。请使用命令行脚本执行清理操作。"
+  preview: "クリーンアップをプレビュー",
+  hotData: "ホットデータ (0-7日)",
+  warmData: "ウォームデータ (7-30日)",
+  coldData: "コールドデータ (30-90日)",
+  expiredData: "期限切れデータ (>90日)",
+  missingDate: "開始日と終了日を選択してください",
+  previewFailed: "プレビューに失敗しました",
+  needPreview: "先に影響を確認してください",
+  executeNotImpl: "クリーンアップ機能は次のフェーズで実装予定です。コマンドラインスクリプトでクリーンアップ操作を実行してください。"
 ,
   pages: {
     filesystemMaintenance: 'ファイルシステムメンテナンス',

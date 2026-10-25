@@ -29,7 +29,7 @@ export default {
       loading: '読み込み中…',
       empty: "選択したテナントに注目モデルが設定されていません",
       manageButton: '「ルーティングポリシー」に移動して設定 →',
-      manage: '管理 →',
+      manage: "設定管理 →",
     },
     allModels: {
       selectAll: 'すべて選択',

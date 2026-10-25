@@ -361,7 +361,7 @@ export default {
     reviewedAt: '審查時間',
     line: '行號',
     severity: '嚴重度',
-    message: '消息',
+    message: '訊息',
     code: '代碼',
     suggestedCode: '建議代碼',
     status: {

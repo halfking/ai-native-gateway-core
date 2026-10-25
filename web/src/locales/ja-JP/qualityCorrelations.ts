@@ -21,7 +21,7 @@ export default {
     totalSamples: 'Total samples',
     needSamples: 'Need ≥ 30 samples for insights',
 
-    windowDays: '{n} 天',
+    windowDays: "{n}日",
   },
   breakdown: {
     title: 'Breakdown by {by}',
@@ -42,8 +42,8 @@ export default {
     buckets: '{n} buckets',
     samples: '{n} samples',
 
-    emptyInsufficient: '至少需要 30 个样本才能计算有意义的相关性。',
+    emptyInsufficient: "意味のある相関を算出するには、少なくとも 30 サンプル必要です。",
 
-    emptyUnexpected: '无洞察（异常）。请检查服务端日志。',
+    emptyUnexpected: "インサイトがありません（異常）。サーバーログを確認してください。",
   },
 }
