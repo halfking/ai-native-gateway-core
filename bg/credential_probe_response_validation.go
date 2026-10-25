@@ -44,8 +44,32 @@ func credentialProbeReadFailure(protocol string, status int, err error) string {
 
 // A low-budget reasoning response can establish neither success nor failure.
 // Record only cadence; keep auth/quota evidence, bindings and health untouched.
+//
+// ★★ 2026-10-27（R152 轮 · D9c）：「只记节奏」以前真的**什么都不记**
+// ⇒ ★★★ 探针每 5 s 重新武装一次、状态一行不改 ⇒ **既不解封、也不退避**
+// ⇒ ⇒ ★★ 模型被钉死在死状态（R151 实测：`node_probe_state` 一行不改，
+// `consecutive_failures` 卡在 3 ⇒ `broken_confirmed` ⇒ 路由器硬排除）。
+//
+// ⇒ ⇒ **D9c：inconclusive 必须【参与退避阶梯】** ⇒ 体现在
+// `probe_consecutive_failures` 上：
+//
+//	① 它**只**驱动【探针节奏】（auth 退避阶梯 `recover_at = base << n`、
+//	   quota 探针的 due 门）—— ★★ **不**驱动健康判定
+//	   （健康结论走 `health_status` / `availability_state` / `state_reason_code`，
+//	   而 ObservationOnly 路径**整条跳过**那个写入）⇒ ⇒ ★★ **inconclusive
+//	   不会把一个健康对判死**（★ 这是 R151 确立的关键区分，不能破坏）；
+//	② 它让「什么都没发生」变成「**发生了一次，并按阶梯退避**」
+//	   ⇒ ⇒ 探针不再每 5 s hammer ⇒ ★★ 而阶梯封顶 6 h，探针**仍在跑**
+//	   ⇒ ⇒ 一旦内容预算被修好（D9b），下一次成功探测就能把它解封；
+//	③ 它被一次成功探测归零（`probe_consecutive_failures = 0`，见
+//	   credential_probe_v2.go 的 healthy 分支）⇒ ⇒ **自愈路径完好**。
+//
+// ⚠ 顺带说明 `last_probe_success = FALSE`：**它不是健康判定**，
+// 只是「上一次探测没有得到成功结论」的记账（`last_probe_at` 喂给
+// balance/periodic quota 探针的 due 过滤）。
 const credentialProbeObservationSQL = `UPDATE credentials
-SET last_probe_at = NOW(), last_probe_success = FALSE
+SET last_probe_at = NOW(), last_probe_success = FALSE,
+    probe_consecutive_failures = COALESCE(probe_consecutive_failures, 0) + 1
 WHERE id = $1 AND COALESCE(manual_disabled, FALSE) = FALSE
   AND (lifecycle_status = 'active' OR
        (lifecycle_status = 'disabled' AND auto_disabled_at IS NOT NULL))`

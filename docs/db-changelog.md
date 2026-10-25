@@ -10211,3 +10211,43 @@ cron 日志里也有 `"retention_hours":8`）⇒ ⇒ ★★★ 实测 `max(hot.t
 ★ · `go test ./sql/schema/` ✔ · `go test ./cmd/tools/sql_source_indirection_audit/` ✔
 ★ · `go test ./admin/ -run 'V1|RequestLogs|SessionFamily|Retirement|IndirectReader'` ✔（71.0s）
 ★ **完整记录见审计档 `docs/audit/2026-10-27-R152-v1退役保证的两处盲区.md` §3.4 + LESSONS §400**。
+
+### 2026-10-27 · R152 · 第三段（D9 三件套落地 + 收尾）—— ★ **无 schema 变更、无迁移**
+
+★ ★★ **本段【无 SQL schema 变更、无迁移】，对生产的写入 = 0**
+★ ⇒ **无需在 211/252 上同步任何 DDL/DML；★ 无台账缺口产生**。
+★ ⚠ **发版口径**：D9 是**应用代码**变更 ⇒ ⇒ **随下一次常规发版自动上线**（本轮**不单独发版**）。
+
+⚠ ★★ **口径澄清**：D9c 改的是**应用内一条 UPDATE 语句的 SET 子句**
+（`bg/credential_probe_response_validation.go` 的 `credentialProbeObservationSQL`）
+⇒ ★★ **不是 schema 变更**（无 DDL、无新列、无索引）⇒ ⇒ **不需要迁移、不需要登记到迁移台账**
+⇒ ⇒ ★★ 但它**是**一处**行为变更**（inconclusive 现在参与退避阶梯）⇒ ⇒ 因此**必须随代码发版**，
+★ ⇒ ⇒ **211/252 的下一次发版会自动带上它**（与应用代码同批）⇒ ⇒ **无需单独的 SQL 同步动作**。
+
+★ **① D9a（超时预算接到设置）** `bg/node_probe.go` + `cmd/gateway/main.go`
+★　★ `NewNodeProbeWorker(..., proxyFunc, probeTimeoutMs int)` —— **第 7 实参**；
+★　★ 三处 `Timeout: 30 * time.Second` 硬编码字面量**删除**；默认值具名化为 `nodeProbeDefaultTimeoutMs`；
+★　★ 生产侧传 `settings.ErrorProbeTimeoutMs()`（1000..60000，默认 30000）。
+★ **② D9b（内容预算）** `internal/providercap/capability.go`：`const ProbePingMaxTokens = 1024`（32 → 1024）。
+★ **③ D9c（inconclusive 参与退避阶梯）** `bg/credential_probe_response_validation.go`：
+★　★ observation 路径的 SET 增列 `probe_consecutive_failures = COALESCE(probe_consecutive_failures, 0) + 1`
+★　★ ⇒ ★★ 该列**本来就存在**（无需迁移）且**只**驱动探针节奏（auth 退避阶梯 + quota 探针 due 门）
+★　★ ⇒ ⇒ **不**驱动健康判定 ⇒ ⇒ ★★ **「不写回」仍然是「不写回」（健康列一个字都不改）**。
+
+★ **★★ 本段的收尾（三处「夹具/量具」级修正，均不改变 D9 设计）**
+★ ① **编译红**：D9a 改签名 ⇒ **10 个测试调用点编译红** ⇒ 补 **`, 0`**（0 ⇒ 回落默认 30 s ⇒ 语义逐字等价）；
+★ ② ★★ **过期夹具**（R65 同族第三例）：observation SQL 的**锚定式**正则不再匹配 ⇒
+★　★ 那条正则的**本意是负面守卫** ⇒ ★★ **放宽 = 把守卫拆掉** ⇒ ⇒ **逐项枚举**（不放松强度）
+★　★ + **新增阴性对照**（6 真权威列 × 2 缝）⇒ ★★ **第一版对照【没有牙】**（注入点选错缝）
+★　★ ⇒ ⇒ **注入点必须落在守卫真正守的那道缝**（紧邻 WHERE 之前）⇒ ⇒ 对照现在有牙
+★　★ ⇒ ⇒ 变异（枚举放松成 `.*`）⇒ **6 个子例红** ⇒ 还原 ⇒ md5 逐字一致；
+★ ③ ★★ **门内的量具失效点**：`probeBudgetLiteralInt` 的 `{常量名 → 值}` 硬编码表是一份**过期镜像**
+★　★ ⇒ 被引用的常量改值 ⇒ **门读到旧值 ⇒ 门绿但事实错** ⇒ ⇒ **回源文件解析**（逐层解引用）
+★　★ ⇒ ⇒ 变异（引用形态 + 底常量 32→16）⇒ **新门红** ⇒ **旧镜像表会照绿**。
+
+★ **★★ 回归**（同一次合并跑，exit 0）：`scripts/ursmcheck` ✔ ok 550.314s · `sql/schema` ✔ ok 43.886s
+★ · `cmd/tools/sql_source_indirection_audit` ✔ ok 14.137s · `bg` ✔ ok 42.929s
+★ · `cmd/gateway` ✔ ok 7.388s · `internal/providercap` ✔ ok 1.524s
+★ · `go test ./admin/ -run 'V1|RequestLogs|SessionFamily|Retirement|IndirectReader'` ✔（94.277s）
+★ · `go build ./...` ✔ exit 0
+★ **完整记录见审计档 `docs/audit/2026-10-27-R152-v1退役保证的两处盲区.md` §3.5/§3.6 + LESSONS §401**。
