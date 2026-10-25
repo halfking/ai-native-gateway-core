@@ -36,11 +36,11 @@ export default {
   currentModel: 'Modelo actual:',
   baseUrlLabel: 'Base URL:',
   example: {
-    curl: 'cURL — Chat Completions',
+    curl: 'cURL: Chat Completions',
     python: 'Python (openai SDK)',
-    stream: 'Python — Salida en streaming',
+    stream: 'Python: Salida en streaming',
     js: 'JavaScript / TypeScript (openai SDK)',
-    models: 'cURL — Listar modelos',
+    models: 'cURL: Listar modelos',
   },
   button: {
     copy: 'Copiar',
@@ -85,12 +85,12 @@ export default {
         'Modelo: introduzca un ID de modelo compatible (p. ej. glm-4-flash), o use "auto" para activar el enrutamiento automático',
         'Tras guardar, elija el modelo de este proveedor desde la ventana de chat',
       ],
-      mcp: 'MCP: Ajustes → Servidores MCP → Importar configuración. Endpoint Memora https://[MCP_DOMAIN]/memora/mcp, con el header Authorization: Bearer <MEMORA_API_KEY> (separado de la clave LLM — solicite el scope memora en ACC).',
+      mcp: 'MCP: Ajustes → Servidores MCP → Importar configuración. Endpoint Memora https://[MCP_DOMAIN]/memora/mcp, con el header Authorization: Bearer <MEMORA_API_KEY> (separado de la clave LLM. Solicite el scope memora en ACC).',
     },
     cursor: {
       name: 'Cursor IDE',
       steps: [
-        'Cursor Settings (Cmd/Ctrl+Shift+J) → Models',
+        'Ajustes de Cursor (Cmd/Ctrl+Shift+J) → Modelos',
         'OpenAI API Key → pegue su clave sk-* del gateway',
         'Active Override OpenAI Base URL → {url}',
         'Haga clic en Verify para probar la conectividad',
@@ -115,10 +115,10 @@ export default {
         'En los ajustes de la extensión elija "OpenAI Compatible" como proveedor',
         'Base URL: {url}',
         'Clave API: su clave sk-* del gateway',
-        'Modelo: igual que Cherry Studio — auto o un ID de modelo específico',
+        'Modelo: igual que Cherry Studio: auto o un ID de modelo específico',
         'Header opcional: X-Client-Profile: roocode',
       ],
-      mcp: 'VS Code / Roo Code MCP: configure un endpoint streamable-http en mcp.json — vea docs/clients/roocode-mcp.json en el repositorio.',
+      mcp: 'VS Code / Roo Code MCP: configure un endpoint streamable-http en mcp.json. Vea docs/clients/roocode-mcp.json en el repositorio.',
     },
   },
   // 2026-07-07: top-level key aliases (ExamplesView.vue direct references)

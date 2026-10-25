@@ -36,11 +36,11 @@ export default {
   currentModel: 'Modèle actuel :',
   baseUrlLabel: 'URL de base :',
   example: {
-    curl: 'cURL — Chat Completions',
+    curl: 'cURL: Chat Completions',
     python: 'Python (openai SDK)',
-    stream: 'Python — sortie en streaming',
+    stream: 'Python: sortie en streaming',
     js: 'JavaScript / TypeScript (openai SDK)',
-    models: 'cURL — Lister les modèles',
+    models: 'cURL: Lister les modèles',
   },
   button: {
     copy: 'Copier',
@@ -85,7 +85,7 @@ export default {
         'Modèle : saisissez un ID de modèle pris en charge (ex. glm-4-flash), ou utilisez « auto » pour le routage automatique',
         'Après l\'enregistrement, choisissez le modèle de ce fournisseur depuis la fenêtre de chat',
       ],
-      mcp: 'MCP : Paramètres → Serveurs MCP → Importer la config. Point de terminaison Memora https://[MCP_DOMAIN]/memora/mcp, avec en-tête Authorization: Bearer <MEMORA_API_KEY> (séparé de la clé LLM — demandez le scope memora dans ACC).',
+      mcp: 'MCP : Paramètres → Serveurs MCP → Importer la config. Point de terminaison Memora https://[MCP_DOMAIN]/memora/mcp, avec en-tête Authorization: Bearer <MEMORA_API_KEY> (séparé de la clé LLM. Demandez le scope memora dans ACC).',
     },
     cursor: {
       name: 'Cursor IDE',
@@ -115,10 +115,10 @@ export default {
         'Dans les paramètres de l\'extension, choisissez « OpenAI Compatible » comme fournisseur',
         'URL de base : {url}',
         'Clé API : votre clé de passerelle sk-*',
-        'Modèle : identique à Cherry Studio — auto ou un ID de modèle spécifique',
+        'Modèle : identique à Cherry Studio: auto ou un ID de modèle spécifique',
         'En-tête optionnel : X-Client-Profile: roocode',
       ],
-      mcp: 'VS Code / Roo Code MCP : configurez un point de terminaison streamable-http dans mcp.json — voir docs/clients/roocode-mcp.json dans le dépôt.',
+      mcp: 'VS Code / Roo Code MCP : configurez un point de terminaison streamable-http dans mcp.json. Voir docs/clients/roocode-mcp.json dans le dépôt.',
     },
   },
   // 2026-07-07: top-level key aliases (ExamplesView.vue direct references)

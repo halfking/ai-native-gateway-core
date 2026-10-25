@@ -57,7 +57,7 @@ tabs: {
     providerScore: 'スコア {n}',
     providerPlan: 'プラン',
     providerStatsTitle: 'プロバイダー使用統計',
-    providerStatsHint: '時間範囲に連動 · 行をクリックで詳細',
+    providerStatsHint: '時間範囲に連動：行をクリックで詳細',
     providerExport: 'Excel エクスポート',
     filterRange: '期間',
     filterGran: '粒度',
@@ -139,10 +139,10 @@ tabs: {
   },
   discovery: {
     latest: "直近のモデル検出:",
-    failuresTitle: "モデル検出 · 直近6時間のテスト失敗",
-    failuresTally: "{n} 回失敗 · {m} モデル",
+    failuresTitle: "モデル検出：直近6時間のテスト失敗",
+    failuresTally: "{n} 回失敗：{m} モデル",
     summary: "失敗リストを表示",
-    meta: "{n} 回 · {m} 件の認証情報 · 直近 {date} · エラー {code}"
+    meta: "{n} 回，{m} 件の認証情報，直近 {date}，エラー {code}"
   },
   stat: {
     totalRequests: "総リクエスト数",
@@ -155,13 +155,13 @@ tabs: {
     successRate: "成功率",
     avgLatency: "平均レイテンシ {n} ms",
     apiKeys: "接続中の API キー",
-    enabledActive: "有効 {enabled} · アクティブ {active}",
+    enabledActive: "有効 {enabled}：アクティブ {active}",
     models: "モデル数",
     activeInDays: "直近 {days} 日間でアクティブ {n}",
     providers: "プロバイダー / 認証情報",
-    enabledCredentials: "有効 {enabled} · 認証情報 {total}",
+    enabledCredentials: "有効 {enabled}：認証情報 {total}",
     offline: "オフラインリソース",
-    modelsCredentials: "モデル {models} · 認証情報 {creds}",
+    modelsCredentials: "モデル {models}：認証情報 {creds}",
     // 2026-08-06: 平均リクエストサイズ / 平均レスポンスサイズ / ピーク（zh-CN との整合）
     avgRequestSize: "平均リクエストサイズ",
     avgResponseSize: "平均レスポンスサイズ",

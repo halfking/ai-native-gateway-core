@@ -43,7 +43,7 @@ export default {
   base: "Version de base du brouillon",
   target: "Version cible",
   digest: "Empreinte de configuration",
-  fallback: "Secours local — non publié",
+  fallback: "Secours local: non publié",
   conflict:
     "Un autre administrateur a publié une version. Votre brouillon est conservé. Rechargez explicitement la version actuelle avant de publier à nouveau.",
   discard: "Recharger la version active et abandonner ce brouillon ?",

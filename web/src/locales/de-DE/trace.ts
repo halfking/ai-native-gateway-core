@@ -41,7 +41,7 @@ export default {
     hint2: 'Abgeschlossen vor < 10 Min.: noch in Redis',
     hint3: 'Bereits nach PostgreSQL geschrieben: wird als Fallback angezeigt',
 
-    hint4: 'If empty here, possible causes: flush not completed, or trace was not emitted',
+    hint4: 'Falls hier leer, kommen zwei Ursachen infrage: Der Flush ist nicht abgeschlossen oder der Trace wurde nicht erzeugt.',
   },
   aiPrompt: {
     button: '🤖 KI-Eingabe generieren',

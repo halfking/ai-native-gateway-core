@@ -64,7 +64,7 @@ export default {
       requests: '請求資料',
     },
     overview: {
-      sectionTitle: '基本資訊 · 憑證統計',
+      sectionTitle: '基本資訊：憑證統計',
       fields: {
         availability: '可用性',
         health: '健康',
@@ -123,7 +123,7 @@ export default {
       emptyHint: '請從左側選擇模型查看詳情',
     },
     requestsTab: {
-      historySectionTitle: '請求資料 · 模型狀態變化歷史',
+      historySectionTitle: '請求資料：模型狀態變化歷史',
       historyEmpty: '點擊「模型」tab 中的模型查看',
       historyRefresh: '↻ 重新整理',
       historyLoading: '載入中...',
@@ -132,9 +132,9 @@ export default {
       historyColSource: '來源',
       historyColEvent: '事件',
       historyColDetail: '詳情',
-      autoPrefix: '自動 · ',
-      manualPrefix: '手動 · ',
-      routingSectionTitle: '請求資料 · 最近路由決策 ({n}條)',
+      autoPrefix: '自動：',
+      manualPrefix: '手動：',
+      routingSectionTitle: '請求資料：最近路由決策 ({n}條)',
       routingRefresh: '↻ 重新整理',
       routingLoading: '載入中...',
       routingNoEvents: '無路由決策紀錄',
@@ -212,7 +212,7 @@ export default {
   },
   chart: {
     allHealthy: '全部健康',
-    errorsWhenHealthy: '錯誤類型分佈 · 全部健康',
+    errorsWhenHealthy: '錯誤類型分佈：全部健康',
     errorsTitle: '錯誤類型分佈',
     slidingStatsTotal: '總計: ',
     slidingStatsSuccess: '成功: ',

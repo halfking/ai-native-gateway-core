@@ -84,7 +84,7 @@ export default {
   // Snapshot caliber disclosure
   legacyCoverage: 'Days covered only by legacy snapshots:',
   legacyCoverageRest:
-    ' — those days contribute to totals and the daily series only; credential/user/API-key dimensions appear after backfill (use "Rerun End Day" day by day)',
+    ': those days contribute to totals and the daily series only; credential/user/API-key dimensions appear after backfill (use "Rerun End Day" day by day)',
 
   // ── 2026-09-30 stats UI round ────────────────────────
   quickYesterday: 'Yesterday',
@@ -101,7 +101,7 @@ export default {
   kpiPersons: 'Active persons',
   kpiPerPersonReq: 'Requests per person',
   kpiCreditsPerReq: 'Credits / request',
-  qualitySub: 'providers · success rate × timeliness',
+  qualitySub: 'providers: success rate × timeliness',
   coveragePrefix: 'covering',
   reqCostTrend: 'Requests & cost trend',
   reqCreditsTrend: 'Requests & credits trend',
@@ -115,7 +115,7 @@ export default {
   legendCacheRead: 'Cache read',
   legendCacheWrite: 'Cache write',
   legendHitRate: 'Hit rate',
-  distHint: 'Click a row to drill down · bars show share of current metric',
+  distHint: 'Click a row to drill down: bars show share of current metric',
   byToken: 'By tokens',
   byMoney: 'By spend',
   sharePct: 'Share',

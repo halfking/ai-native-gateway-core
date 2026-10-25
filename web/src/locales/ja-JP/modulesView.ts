@@ -102,13 +102,13 @@ export default {
 
   handoff: {
     groupMaster: 'Master switch',
-    groupMasterHint: 'Master toggle and trigger mode: determine how session handoff is enabled and when it fires',
+    groupMasterHint: 'メインスイッチと起動モード: セッション引き継ぎを有効にするかどうか、いつ発生するかを決めます',
     groupTrigger: 'Trigger thresholds',
-    groupTriggerHint: '4 trigger conditions run in parallel — any one of them fires handoff; the strictest wins',
+    groupTriggerHint: '4 つの起動条件は並行して判定されます。どれか 1 つでも成立すれば引き継ぎが発生し、条件の厳しい方が優先されます。',
     groupSummary: 'Summary generation',
-    groupSummaryHint: 'Summary engine and prompt template: how to compress the old session into a new-session-readable context',
+    groupSummaryHint: '要約エンジンとプロンプトテンプレート: 古いセッションを新しいセッションが読み取れるコンテキストへどう圧縮するか',
     groupSafety: 'Safety limits and notifications',
-    groupSafetyHint: 'Cooldown, per-session cap, retry on failure, and log/Webhook notifications',
+    groupSafetyHint: 'クールダウン、セッションごとの上限、失敗時の再試行、ログや Webhook での通知',
   },
 
   integration: {

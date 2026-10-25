@@ -3,7 +3,7 @@ export default {
   page: {
     title: '標準モデル',
     desc: 'テナントに開放されている標準モデルの一覧です（ベンダー別）。入力 / 出力 / キャッシュ読み / キャッシュ書き込みのいずれも、100万トークンあたりのクレジットで課金されます。',
-    filterTitle: '標準モデル · 絞り込み',
+    filterTitle: '標準モデル：絞り込み',
     filterPlaceholder: '標準モデルを選択…',
     modelCount: '{n} モデル',
     refresh: '更新',

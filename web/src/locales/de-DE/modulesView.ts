@@ -1,7 +1,7 @@
 // modulesView.ts — Modulverwaltungsseite.
 export default {
   pageTitle: 'Module',
-  pageSubtitle: 'Zentrale Verwaltung der Enterprise-Funktionsmodule — Funktionen nach Bedarf aktivieren/deaktivieren.',
+  pageSubtitle: 'Zentrale Verwaltung der Enterprise-Funktionsmodule. Funktionen nach Bedarf aktivieren/deaktivieren.',
   modulesEnabled: 'Module aktiviert',
   loading: 'Wird geladen…',
 
@@ -48,7 +48,7 @@ export default {
     labelStatus: 'Aktueller Status',
     viewAllSettings: 'Alle Systemeinstellungen anzeigen',
     requirementsMet: 'Alle Abhängigkeiten aktiviert',
-    requirementsMissing: 'Die folgenden Abhängigkeiten sind deaktiviert — zugehörige Funktionen sind möglicherweise eingeschränkt:',
+    requirementsMissing: 'Die folgenden Abhängigkeiten sind deaktiviert. Zugehörige Funktionen sind möglicherweise eingeschränkt:',
     jumpToModule: 'Konfigurieren',
     testConnection: 'Verbindung testen',
     testSuccess: 'Verbindungstest erfolgreich',
@@ -102,20 +102,20 @@ export default {
 
   handoff: {
     groupMaster: 'Master switch',
-    groupMasterHint: 'Master toggle and trigger mode: determine how session handoff is enabled and when it fires',
+    groupMasterHint: 'Hauptschalter und Auslösemodus: sie legen fest, ob und wann eine Sitzung übergeben wird',
     groupTrigger: 'Trigger thresholds',
-    groupTriggerHint: '4 trigger conditions run in parallel — any one of them fires handoff; the strictest wins',
+    groupTriggerHint: '4 Auslösebedingungen laufen parallel. Eine davon genügt für die Übergabe, die strengste gewinnt.',
     groupSummary: 'Summary generation',
-    groupSummaryHint: 'Summary engine and prompt template: how to compress the old session into a new-session-readable context',
+    groupSummaryHint: 'Zusammenfassungs-Engine und Prompt-Vorlage: wie die alte Sitzung in einen für die neue Sitzung lesbaren Kontext verdichtet wird',
     groupSafety: 'Safety limits and notifications',
-    groupSafetyHint: 'Cooldown, per-session cap, retry on failure, and log/Webhook notifications',
+    groupSafetyHint: 'Abklingzeit, Obergrenze je Sitzung, Wiederholung bei Fehlern sowie Log- und Webhook-Benachrichtigungen',
   },
 
   integration: {
     docsLabel: 'Dokumentation: ',
     stepsTitle: 'Konfigurationsschritte',
     enabledStatus: 'Integration aktiviert',
-    disabledHint: 'Integration deaktiviert — bitte zuerst das Modul aktivieren',
+    disabledHint: 'Integration deaktiviert: bitte zuerst das Modul aktivieren',
     feishuSteps: [
       'Erstellen Sie einen benutzerdefinierten Bot auf der Feishu Open Platform',
       'Kopieren Sie die Webhook-URL und fügen Sie sie in die unten stehende Konfiguration ein',
@@ -207,5 +207,5 @@ export default {
 
   modeBannerTitle: 'This page only does three things:',
 
-  modeBannerBody: 'Toggle installed modules, and download modules that are already licensed but not enabled. No pricing, ordering, or plan entry here (purchase flows are announced separately).',
+  modeBannerBody: 'Installierte Module ein- und ausschalten und Module herunterladen, für die bereits eine Lizenz vorliegt. Preise, Bestellung und Tarifauswahl gibt es hier nicht.',
 }

@@ -36,11 +36,11 @@ export default {
   currentModel: 'النموذج الحالي:',
   baseUrlLabel: 'Base URL:',
   example: {
-    curl: 'cURL — Chat Completions',
+    curl: 'cURL: Chat Completions',
     python: 'Python (openai SDK)',
-    stream: 'Python — إخراج متدفق (Streaming)',
+    stream: 'Python: إخراج متدفق (Streaming)',
     js: 'JavaScript / TypeScript (openai SDK)',
-    models: 'cURL — قائمة النماذج المتاحة',
+    models: 'cURL: قائمة النماذج المتاحة',
   },
   button: {
     copy: 'نسخ',

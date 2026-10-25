@@ -49,6 +49,7 @@ import {
   type RouteIncidentTimelinePoint,
 } from '../types/routeIncident'
 import { exportFile } from '../utils/exportFile'
+import { Search, Close } from '@element-plus/icons-vue'
 
 // R48-D4（R48 报告 §五-6）：导出链失败文案接 i18n；组件其余存量硬编码串
 // 仍登记在 CJK 基线棘轮（scripts/i18n-cjk-baseline.json），逐批清偿。
@@ -577,7 +578,7 @@ function hasRunValues(values: Record<string, unknown>): boolean {
       <div class="route-incident-drawer__panel">
         <header class="route-incident-drawer__header">
           <div class="route-incident-drawer__title">
-            <span class="route-incident-drawer__icon" aria-hidden="true">🔍</span>
+            <span class="route-incident-drawer__icon" aria-hidden="true"><Search /></span>
             <div>
               <div class="route-incident-drawer__heading">
                 诊断工作台
@@ -606,7 +607,7 @@ function hasRunValues(values: Record<string, unknown>): boolean {
               aria-label="关闭诊断"
               @click="close"
             >
-              ✕
+              <Close />
             </button>
           </div>
         </header>
@@ -1403,8 +1404,7 @@ function hasRunValues(values: Record<string, unknown>): boolean {
 .status-grid__label {
   font-size: 10px;
   color: var(--text-secondary);
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.01em;
 }
 
 .status-grid__value {
@@ -1579,10 +1579,14 @@ function hasRunValues(values: Record<string, unknown>): boolean {
   font-size: 10px;
   padding: 1px 6px;
   border-radius: 3px;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.01em;
   background: var(--bg);
   border: 1px solid var(--border);
+  /* 这里保留 uppercase：徽标里显示的是 API 返回的**拉丁事件 token**
+     （opened / failure_observed / recovery_progress / recovered），
+     属数据而非界面文案，大写后更易扫读。
+     中文界面禁 uppercase 的规则针对的是 t() 出来的界面标签。 */
+  text-transform: uppercase;
 }
 
 .event-row__type--opened { color: var(--danger); border-color: var(--danger-bd); }
@@ -1659,8 +1663,7 @@ function hasRunValues(values: Record<string, unknown>): boolean {
   padding: 1px 6px;
   border-radius: 999px;
   font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.01em;
 }
 
 .action-result__pill--success {
@@ -1717,8 +1720,7 @@ function hasRunValues(values: Record<string, unknown>): boolean {
   padding: 1px 6px;
   border-radius: 999px;
   font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.01em;
 }
 
 .audit-row__pill--success {

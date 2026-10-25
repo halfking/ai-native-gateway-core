@@ -12,6 +12,7 @@ import { ElDatePicker, ElPopover } from 'element-plus'
 import type { KxDatePrecision, KxDateRange, KxDateRangePreset } from './kx-date-types'
 import { calendarDayKey, isAfterDay, makeDateRangePresets, rangeSpanDays, shortRangeLabel } from './kxDatePresets'
 import { parseLocalMinute } from '../../utils/datetime'
+import { CaretBottom } from '@element-plus/icons-vue'
 
 const props = withDefaults(
   defineProps<{
@@ -172,7 +173,7 @@ function applyDraft() {
           <span class="kx-dr-trigger__preset" :class="{ 'kx-dr-trigger__preset--set': !!modelValue }">{{ triggerPreset }}</span>
           <span v-if="triggerRange" class="kx-dr-trigger__range">{{ triggerRange }}</span>
         </span>
-        <span class="kx-dr-trigger__caret" aria-hidden="true">▾</span>
+        <span class="kx-dr-trigger__caret" aria-hidden="true"><CaretBottom /></span>
       </button>
     </template>
 

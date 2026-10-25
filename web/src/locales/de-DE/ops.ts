@@ -12,7 +12,7 @@ export default {
     loadFailed: 'Failed to load licenses',
     loadDevicesFailed: 'Failed to load devices',
     revoke: 'Revoke',
-    revokeConfirm: 'Are you sure you want to revoke the license for customer {customer}?',
+    revokeConfirm: 'Lizenz für Kunde {customer} wirklich widerrufen?',
     revokeSuccess: 'License revoked successfully',
     revokeFailed: 'Failed to revoke license',
     licenseKey: 'License Key',
@@ -88,11 +88,11 @@ export default {
     editRule: 'Edit Rule',
     updateSuccess: 'Rule updated successfully',
     saveFailed: 'Failed to save',
-    deleteRuleConfirm: 'Are you sure you want to delete rule {name}?',
+    deleteRuleConfirm: 'Regel {name} wirklich löschen?',
     deleteSuccess: 'Rule deleted successfully',
     deleteFailed: 'Failed to delete',
     fix: 'Fix',
-    fixConfirm: 'Are you sure you want to trigger manual fix?',
+    fixConfirm: 'Manuelle Reparatur wirklich auslösen?',
     fixTriggered: 'Fix triggered',
     fixFailed: 'Failed to trigger fix',
     totalEvents: 'Total Events',
@@ -180,10 +180,10 @@ export default {
     unpublishFailed: 'Failed to unpublish release',
     rollback: 'Rollback',
     rollbackTitle: 'Rollback to Version',
-    rollbackConfirm: 'Are you sure you want to rollback to version {version}?',
+    rollbackConfirm: 'Wirklich auf Version {version} zurückrollen?',
     rollbackSuccess: 'Rollback successful',
     rollbackFailed: 'Failed to rollback',
-    rollbackWarning: 'Rollback will revert to the target version. Ensure backups are available before proceeding.',
+    rollbackWarning: 'Der Rollback setzt auf die Zielversion zurück. Stellen Sie sicher, dass Sicherungen vorhanden sind.',
     targetVersion: 'Target Version',
     targetVersionPlaceholder: 'e.g. v1.0.0',
     version: 'Version',
@@ -193,7 +193,7 @@ export default {
     releaseTitlePlaceholder: 'Enter release title',
     channelLabel: 'Channel',
     imageTag: 'Image Tag',
-    imageTagPlaceholder: 'e.g. registry.example.com/gateway:v2.0.0',
+    imageTagPlaceholder: 'z. B. registry.example.com/gateway:v2.0.0',
     imageDigest: 'Image Digest',
     minVersion: 'Min Version',
     mandatory: 'Mandatory',
@@ -243,7 +243,7 @@ export default {
 
     rolloutGate: 'Rollout Gate',
 
-    rolloutTitle: 'Rollout Gate · {version}',
+    rolloutTitle: 'Rollout Gate: {version}',
 
     rolloutRuleStatus: 'Rule Status',
 
@@ -305,7 +305,7 @@ export default {
       degraded: 'Degraded',
     },
 
-    lastCommand: 'Last command {id} · status: {status}',
+    lastCommand: 'Last command {id}: status: {status}',
 
     ipAddress: 'IP Address',
 
@@ -418,7 +418,7 @@ export default {
     pendingOffline: 'Ausstehende Offline-Aktivierungen',
     viewAll: 'Alle anzeigen',
 
-    subtitle: 'Cluster health at a glance — open a node for pressure, requests, and errors',
+    subtitle: 'Cluster-Zustand auf einen Blick. Öffnen Sie einen Knoten für Auslastung, Anfragen und Fehler',
 
     licenseSubsystem: 'License Subsystem',
 
@@ -460,7 +460,7 @@ export default {
 
     topologyTitle: 'Deployment Topology',
 
-    topologyHint: 'Grouped by region. Sparse nodes stay large; dense grids wrap. Click a node for details.',
+    topologyHint: 'Nach Region gruppiert. Sparsame Knoten bleiben groß, dichte Raster laufen um. Klicken Sie einen Knoten für Details an.',
 
     regionEmpty: 'No registered nodes',
 
@@ -513,8 +513,8 @@ export default {
 ,
   downloads: {
     title: 'Download Releases',
-    subtitle: 'Build, verify, package offline installers and publish to download.kxpms.cn',
-    publishBtn: 'Publish current version to download site',
+    subtitle: 'Bauen, prüfen, Offline-Installer packen und auf download.kxpms.cn veröffentlichen',
+    publishBtn: 'Aktuelle Version auf der Download-Seite veröffentlichen',
     publishOk: 'Published successfully',
     publishFailed: 'Publish failed',
     loadFailed: 'Failed to load download release data',
@@ -537,7 +537,7 @@ export default {
     tests: 'Tests',
     createdAt: 'Created',
     summary: 'Summary',
-    storageHint: 'Offline packages are stored at 245:/var/www/download/llm-gateway-go/v{version}/. Publish runs distribution tests and writes audit rows to download_publish_runs.',
+    storageHint: 'Offline-Pakete liegen auf 245 unter /var/www/download/llm-gateway-go/v{version}/. Das Veröffentlichen führt die Distributionstests aus und schreibt Auditzeilen nach download_publish_runs.',
     openPublicDownload: 'Open public download page',
     openActivate: 'Open activation wizard',
   },

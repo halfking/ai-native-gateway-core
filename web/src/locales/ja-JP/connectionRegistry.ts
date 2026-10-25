@@ -1,14 +1,14 @@
 // connectionRegistry.ts — connection registry view
 export default {
   title: 'Connection Registry',
-  subtitle: 'Streaming client SSE connections (process-local live + recent closed audit)',
+  subtitle: 'ストリーミングクライアントの SSE 接続（プロセス内の稼働状況と最近の終了監査）',
   apiDegraded: 'Connection registry API fetch failed',
   liveCount: 'Live {count} / capacity {capacity}',
-  historyNote: 'Closed records are process-local audit only (not persisted)',
+  historyNote: '終了した記録はプロセス内の監査のみで、保存されません',
   search: 'Lookup',
   openJourney: 'Open journey',
   searchPlaceholder: 'Enter request_id to lookup connection…',
-  filterPlaceholder: 'Filter list (request_id / protocol / client)…',
+  filterPlaceholder: 'リストを絞り込む（request_id / プロトコル / クライアント）…',
   sections: {
     live: 'Live connections',
     closed: 'Recently closed',

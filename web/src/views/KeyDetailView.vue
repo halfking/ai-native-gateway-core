@@ -950,7 +950,6 @@ watch(keyId, async () => {
 .key-info-label {
   font-size: 11px;
   color: var(--muted);
-  text-transform: uppercase;
 }
 
 .key-info-value {
@@ -1003,7 +1002,6 @@ watch(keyId, async () => {
   font-size: 11px;
   color: var(--muted);
   margin-bottom: 6px;
-  text-transform: uppercase;
 }
 
 .stat-value {
@@ -1239,7 +1237,6 @@ watch(keyId, async () => {
   color: var(--muted);
   font-weight: 500;
   font-size: 11px;
-  text-transform: uppercase;
 }
 
 .detail-table td {

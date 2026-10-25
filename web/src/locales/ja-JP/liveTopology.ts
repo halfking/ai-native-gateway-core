@@ -107,8 +107,8 @@ export default {
     taskDetect: 'タスク判定',
   },
   lane: {
-    in: '入 · リクエスト経路',
-    out: '出 · レスポンス経路',
+    in: '入：リクエスト経路',
+    out: '出：レスポンス経路',
     store: 'ストア＆フォワード',
     toProvider: 'プロバイダーへ配送',
     fromProvider: 'プロバイダー応答',

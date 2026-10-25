@@ -67,7 +67,7 @@ function topEntry(d: Record<string, number>): string {
   border-radius: 6px;
 }
 .kpi-chip-specified {
-  border-left: 3px solid var(--muted);
+  border: 1px solid var(--muted);
 }
 .kpi-chip-specified .kpi-value {
   color: var(--muted);
@@ -76,8 +76,7 @@ function topEntry(d: Record<string, number>): string {
 .kpi-label {
   font-size: 9px;
   color: var(--muted);
-  text-transform: uppercase;
-  letter-spacing: 0.03em;
+  letter-spacing: 0.01em;
 }
 .kpi-value {
   font-size: 13px;

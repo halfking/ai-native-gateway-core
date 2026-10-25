@@ -5,7 +5,7 @@ export default {
     byModel: 'By model',
     byStrategy: 'By strategy',
     byTaskType: 'By task type',
-    outlier: 'By (model, task type) — outlier detector',
+    outlier: 'Nach (Modell, Aufgabentyp): Ausreißer-Erkennung',
     topModels: 'Top-3 models per task type',
   },
 }

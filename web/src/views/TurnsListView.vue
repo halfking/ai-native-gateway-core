@@ -24,6 +24,7 @@ import {
   type TurnsFilterState,
   type TurnsGroupBy,
 } from '../components/turns/turnsListHelpers'
+import { CaretRight } from '@element-plus/icons-vue'
 
 const router = useRouter()
 const loading = ref(false)
@@ -357,7 +358,7 @@ onBeforeUnmount(() => controller?.abort())
             :aria-expanded="!collapsedGroups.has(group.key)"
             @click="toggleGroup(group.key)"
           >
-            <span class="caret" :class="{ open: !collapsedGroups.has(group.key) }">▸</span>
+            <span class="caret" :class="{ open: !collapsedGroups.has(group.key) }"><CaretRight /></span>
             <span class="group-title">{{ group.label }}</span>
             <span class="badge">{{ group.sessionCount }} 会话</span>
             <span class="badge">{{ group.totalTurns }} 轮</span>
@@ -373,7 +374,7 @@ onBeforeUnmount(() => controller?.abort())
                 :aria-expanded="!collapsedTasks.has(taskKey(group.key, task.key))"
                 @click="toggleTask(taskKey(group.key, task.key))"
               >
-                <span class="caret" :class="{ open: !collapsedTasks.has(taskKey(group.key, task.key)) }">▸</span>
+                <span class="caret" :class="{ open: !collapsedTasks.has(taskKey(group.key, task.key)) }"><CaretRight /></span>
                 <span class="task-title">{{ task.label }}</span>
                 <span class="badge">{{ task.sessions.length }} 会话</span>
               </button>

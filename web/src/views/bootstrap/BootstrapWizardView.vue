@@ -429,7 +429,6 @@ onMounted(async () => {
   <div class="lifecycle-page bootstrap-wizard">
     <header class="lifecycle-page__header">
       <div>
-        <p class="eyebrow">FIRST BOOT</p>
         <h1>本地网关安装激活</h1>
         <p>本机通过 IP:端口访问即可激活；可完全离线完成。联网时将自动向中心注册，不阻塞本地使用。</p>
       </div>
@@ -657,13 +656,6 @@ onMounted(async () => {
   gap: 16px;
   align-items: flex-start;
   margin-bottom: 20px;
-}
-.eyebrow {
-  margin: 0 0 6px;
-  color: var(--accent);
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.12em;
 }
 .lifecycle-page__header h1 { margin: 0 0 8px; font-size: 24px; letter-spacing: -0.03em; }
 .lifecycle-page__header p { margin: 0; color: var(--kx-muted); font-size: 14px; line-height: 1.6; max-width: 60ch; }

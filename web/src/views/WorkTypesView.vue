@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { useI18n } from 'vue-i18n'
+import { Rank } from '@element-plus/icons-vue'
 import { formatDateTime, formatTimeOnly } from '../utils/datetime'
 import { ref, computed, onMounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
@@ -766,7 +767,7 @@ watch(activeTab, (tab) => {
                   @dragend="onRouteDragEnd"
                 >
                   <div class="route-card-head">
-                    <span class="route-drag-handle" :title="t('workTypes.layers.dragToReorder')" aria-hidden="true">☰</span>
+                    <span class="route-drag-handle" :title="t('workTypes.layers.dragToReorder')" aria-hidden="true"><Rank /></span>
                     <span class="route-index">{{ t('workTypes.detail.routeNum', { n: i + 1 }) }}</span>
                     <span class="route-tier-tag">{{ t('workTypes.detail.routeTier') }}: {{ t(`workTypes.layers.${tier}`) }}</span>
                     <label class="route-enabled">
@@ -1085,7 +1086,7 @@ watch(activeTab, (tab) => {
 
 .dist-mini { display: grid; grid-template-columns: 1fr; gap: 8px; }
 .dist-col.full { width: 100%; }
-.dist-col h4 { font-size: 9px; text-transform: uppercase; color: var(--muted); margin: 0 0 4px; }
+.dist-col h4 { font-size: 9px;color: var(--muted); margin: 0 0 4px; }
 .dist-row.clickable { cursor: pointer; }
 .dist-row.clickable:hover { background: var(--bg-subtle); }
 .dist-row {
@@ -1198,8 +1199,8 @@ watch(activeTab, (tab) => {
   padding: 10px 12px 12px;
   background: var(--card);
 }
-.layer-block--primary { border-left: 3px solid var(--success); }
-.layer-block--secondary { border-left: 3px solid color-mix(in srgb, var(--accent) 60%, transparent); }
+.layer-block--primary { border: 1px solid var(--success); }
+.layer-block--secondary { border: 1px solid color-mix(in srgb, var(--accent) 60%, transparent); }
 .layer-head {
   display: flex;
   align-items: center;
@@ -1213,8 +1214,7 @@ watch(activeTab, (tab) => {
   border-radius: 99px;
   font-size: 10px;
   font-weight: 700;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
+  letter-spacing: 0.01em;
 }
 .layer-pill--primary {
   background: var(--success-bd);
@@ -1308,8 +1308,7 @@ watch(activeTab, (tab) => {
   font-size: 10px;
   color: var(--muted);
   margin-bottom: 4px;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.01em;
 }
 .route-fields {
   display: flex;

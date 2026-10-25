@@ -1165,7 +1165,7 @@ onMounted(() => {
   padding: 10px 16px;
   margin-bottom: 16px;
   background: color-mix(in srgb, var(--el-color-primary-light-9) 60%, transparent);
-  border-left: 3px solid var(--el-color-primary);
+  border: 1px solid var(--el-color-primary);
   border-radius: 6px;
   font-size: 13px;
   color: var(--el-text-color-regular);
@@ -1203,9 +1203,8 @@ onMounted(() => {
   padding: 6px 10px 4px;
   font-size: 11px;
   font-weight: 600;
-  letter-spacing: 0.03em;
+  letter-spacing: 0.01em;
   color: var(--text-secondary);
-  text-transform: uppercase;
 }
 .group-count {
   font-size: 10px;
@@ -1233,7 +1232,7 @@ onMounted(() => {
   border-color: var(--accent);
 }
 .module-card.disabled { opacity: 0.65; }
-.module-card.has-missing { border-left: 3px solid var(--warning); }
+.module-card.has-missing { border: 1px solid var(--warning); }
 .card-icon {
   font-size: 22px;
   flex-shrink: 0;
@@ -1670,7 +1669,7 @@ onMounted(() => {
 .config-hint {
   padding: 10px 12px;
   background: color-mix(in srgb, var(--accent) 6%, transparent);
-  border-left: 3px solid var(--accent);
+  border: 1px solid var(--accent);
   border-radius: 4px;
   font-size: 12px;
   color: var(--text-secondary);
@@ -1686,8 +1685,7 @@ onMounted(() => {
   font-size: 12px;
   font-weight: 600;
   color: var(--accent-h);
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
+  letter-spacing: 0.01em;
   margin: 0 0 10px;
   padding-bottom: 6px;
   border-bottom: 1px solid var(--border);

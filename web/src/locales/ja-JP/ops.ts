@@ -12,7 +12,7 @@ export default {
     loadFailed: 'Failed to load licenses',
     loadDevicesFailed: 'Failed to load devices',
     revoke: 'Revoke',
-    revokeConfirm: 'Are you sure you want to revoke the license for customer {customer}?',
+    revokeConfirm: '顧客 {customer} のライセンスを無効化してもよろしいですか？',
     revokeSuccess: 'License revoked successfully',
     revokeFailed: 'Failed to revoke license',
     licenseKey: 'License Key',
@@ -88,11 +88,11 @@ export default {
     editRule: 'Edit Rule',
     updateSuccess: 'Rule updated successfully',
     saveFailed: 'Failed to save',
-    deleteRuleConfirm: 'Are you sure you want to delete rule {name}?',
+    deleteRuleConfirm: 'ルール {name} を削除してもよろしいですか？',
     deleteSuccess: 'Rule deleted successfully',
     deleteFailed: 'Failed to delete',
     fix: 'Fix',
-    fixConfirm: 'Are you sure you want to trigger manual fix?',
+    fixConfirm: '手動修復を実行してもよろしいですか？',
     fixTriggered: 'Fix triggered',
     fixFailed: 'Failed to trigger fix',
     totalEvents: 'Total Events',
@@ -180,10 +180,10 @@ export default {
     unpublishFailed: 'Failed to unpublish release',
     rollback: 'Rollback',
     rollbackTitle: 'Rollback to Version',
-    rollbackConfirm: 'Are you sure you want to rollback to version {version}?',
+    rollbackConfirm: 'バージョン {version} に戻してもよろしいですか？',
     rollbackSuccess: 'Rollback successful',
     rollbackFailed: 'Failed to rollback',
-    rollbackWarning: 'Rollback will revert to the target version. Ensure backups are available before proceeding.',
+    rollbackWarning: 'ロールバックすると対象バージョンに戻ります。続ける前にバックアップがあるか確認してください。',
     targetVersion: 'Target Version',
     targetVersionPlaceholder: 'e.g. v1.0.0',
     version: 'Version',
@@ -193,7 +193,7 @@ export default {
     releaseTitlePlaceholder: 'Enter release title',
     channelLabel: 'Channel',
     imageTag: 'Image Tag',
-    imageTagPlaceholder: 'e.g. registry.example.com/gateway:v2.0.0',
+    imageTagPlaceholder: '例: registry.example.com/gateway:v2.0.0',
     imageDigest: 'Image Digest',
     minVersion: 'Min Version',
     mandatory: 'Mandatory',
@@ -243,7 +243,7 @@ export default {
 
     rolloutGate: '灰度门禁',
 
-    rolloutTitle: '灰度门禁 · {version}',
+    rolloutTitle: '灰度门禁：{version}',
 
     rolloutRuleStatus: '规则状态',
 
@@ -305,7 +305,7 @@ export default {
       degraded: 'Degraded',
     },
 
-    lastCommand: '最近命令 {id} · 状态：{status}',
+    lastCommand: '最近命令 {id}：状态：{status}',
 
     ipAddress: 'IP 地址',
 

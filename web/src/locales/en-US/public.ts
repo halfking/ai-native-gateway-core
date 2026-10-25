@@ -1,7 +1,13 @@
+// public.ts — Public portal copy (download / donation / offline activation).
+//
+// 2026-10-25 rewrite (impeccable craft-floor / STYLE pass): removed the
+// decorative "·" separator, the em dashes standing in for punctuation, and the
+// triple-adjective lists ("auditable, customizable, self-hostable"). Rules
+// live in DESIGN.md §7 "Voice" at the repo root.
 export default {
   download: {
     title: 'Download AI-Native Organization Core Gateway',
-    subtitle: 'Self-hosted · Offline packages · No signup required',
+    subtitle: 'Offline packages for every platform. No signup to download.',
     version: 'Version',
     supporters: 'supporters',
     sha256: 'SHA256',
@@ -19,9 +25,9 @@ export default {
     platformHint: 'Choose the platform matching your server',
     nextSteps: 'After download',
     nextStepInstall: 'Extract and run llm-gw-installer install on your server',
-    nextStepActivate: 'Then open the activation wizard for online or offline activation.req flow',
-    openSourceTitle: 'Core open source · Git repository',
-    openSourceDesc: 'LLM Gateway data and control planes are open source (Apache 2.0) — auditable, customizable, self-hostable.',
+    nextStepActivate: 'Then open the activation wizard, online or with the offline activation.req flow.',
+    openSourceTitle: 'Open source core, Git repository',
+    openSourceDesc: 'The data plane and the control plane are open source under Apache 2.0. Read the code, change it, run it on your own machines.',
     copyRepo: 'Copy repo URL',
     gitBranch: 'Default branch',
     installDoc: 'Installation guide',
@@ -35,12 +41,11 @@ export default {
   },
   support: {
     title: 'Support the AI-Native Organization Core Gateway community',
-    subtitle: 'Your donation helps us maintain and improve the open-source gateway',
+    subtitle: 'Donations pay for the maintenance of this open-source gateway.',
     impactTitle: 'Your support funds',
     impacts: [
-      'Multi-provider LLM adapter maintenance',
-      'Security audits and fixes',
-      'Documentation and community support',
+      'Maintenance of the LLM adapters for every supported provider',
+      'Security audits, bug fixes and documentation for the community',
     ],
     tiers: {
       coffee: { label: 'Coffee', amount: 2900, desc: 'Buy the team a coffee' },
@@ -54,8 +59,8 @@ export default {
     alipay: 'Alipay',
     wechat: 'WeChat Pay',
     donateBtn: 'Donate',
-    skipBtn: 'Skip — free download',
-    noBlock: 'Donation is voluntary and never blocks features',
+    skipBtn: 'Skip and download for free',
+    noBlock: 'The donation is voluntary. It does not lock any feature.',
     supporterCount: '{n} supporters so far',
     creating: 'Creating order…',
     created: 'Thank you for your support!',
@@ -66,19 +71,18 @@ export default {
     payDialogTitle: 'Alipay scan to pay',
     orderNo: 'Order no.',
     payAmountTip: 'Scan the QR code with Alipay and pay exactly ¥{amount}',
-    alipayOnlyHint: 'Only Alipay QR is supported — switched for you',
+    alipayOnlyHint: 'Only Alipay QR codes are supported. It has been switched for you.',
     customTitle: 'Custom gateway & private deployment',
-    customDesc: 'For dedicated routing, compliance, multi-tenant isolation, or IdP integration, email us your requirements and we will follow up.',
+    customDesc: 'Need dedicated routing, a compliance review, tenant isolation or an IdP integration? Send us the requirements by email. Custom builds are quoted separately, and a non-custom open-source build carries no extra SLA.',
     customPoints: [
-      'Describe scale, compliance needs, and integration scenarios',
-      'Include device ID and target version when possible',
-      'Non-custom open-source builds are shared as-is without extra SLA',
+      'Describe the expected scale, the compliance requirements and the integration scenario',
+      'Include the device ID and the target version when you have them',
     ],
     customMailSubject: 'LLM Gateway custom inquiry',
   },
   offline: {
     title: 'Offline Activation',
-    subtitle: 'For air-gapped environments — submit request, download response after approval',
+    subtitle: 'For air-gapped environments. Submit a request, then download the response once it is approved.',
     step1: '1. Generate activation.req on the customer machine',
     step1Hint: 'installer: llm-gw-installer activate --mode offline-request',
     step2: '2. Upload or paste request content',
@@ -92,7 +96,7 @@ export default {
     poll: 'Refresh status',
     downloadResp: 'Download response',
     pending: 'Awaiting operator approval…',
-    approved: 'Approved — download response',
+    approved: 'Approved, download the response',
     rejected: 'Rejected',
     submitOk: 'Request submitted',
     submitFailed: 'Submit failed',
@@ -107,7 +111,7 @@ export default {
     localGenDesc: 'Enter your license key to create activation.req from this device ID; after approval, apply the signed license to activate.',
     localGenBtn: 'Generate offline request',
     needLicenseKey: 'Please enter a license key first',
-    localRequestOk: 'Offline request generated — copy or submit below',
+    localRequestOk: 'Offline request generated. Copy it or submit it below.',
     applyOnActivate: 'Apply in activation wizard',
   },
   layout: {
@@ -134,12 +138,12 @@ export default {
   },
   agreement: {
     title: 'User agreement & notice',
-    intro: 'Welcome to the AI-Native Organization Core Gateway. The core is shared as open source; standard builds are provided AS IS for self-hosting. Please read before continuing:',
+    intro: 'Welcome to the AI-Native Organization Core Gateway. The core is shared as open source, and the standard build is provided AS IS for self-hosting. Read this before you continue:',
     points: [
-      'Rights & duties: You are responsible for install, config, backup, and compliant use in your environment. We provide software and docs but do not warrant business outcomes, model quality, or third-party uptime.',
-      'Data collection: Business content is not collected by default. Optional telemetry covers version, instance ID, license state, and aggregated metrics only — never prompts, session text, API keys, or direct PII.',
-      'Open-source sharing: Non-custom builds are community shares without commercial SLA; contact us via Support for bespoke engagements.',
-      'Disclaimer: Software is provided AS IS. We are not liable for indirect loss, downtime, data loss, or AI decision consequences — assess risk and protect accordingly.',
+      'Rights and duties: you are responsible for installing, configuring, backing up and using the gateway in compliance inside your own environment. We ship the software and the documentation. We do not warrant business outcomes, model quality or the uptime of third parties.',
+      'Data collection: business content is not collected by default. The optional telemetry covers the version, the instance ID, the license state and aggregated metrics. It never covers prompts, session text, API keys or personal data that identifies someone directly.',
+      'Open-source sharing: a non-custom build is a community share without a commercial SLA. Contact us through Support for a bespoke engagement.',
+      'Disclaimer: the software is provided AS IS. We are not liable for indirect loss, downtime, data loss or the consequences of AI decisions. Assess the risk and protect yourself accordingly.',
     ],
     disclaimer: 'See the full agreement for complete terms. Checking the box means you understand the scope above.',
     checkbox: 'I have read and agree to the',

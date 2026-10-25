@@ -12,6 +12,7 @@ import {
 } from '../api'
 import { isReadOnlyMode, isSuperAdmin } from '../store'
 import { useCredentialLabels } from '../composables/useCredentialLabels'
+import { Reading, Setting, Lightning } from '@element-plus/icons-vue'
 
 const { t } = useI18n()
 // credentialDisplayName resolves credential id → human label; the composable
@@ -266,7 +267,7 @@ onMounted(load)
     </div>
 
     <div v-if="readOnly" class="card compact-card alert-info-card">
-      📖 租户管理员视图：凭据详情（供应商、价格、状态）已隐藏。
+      <Reading /> 租户管理员视图：凭据详情（供应商、价格、状态）已隐藏。
     </div>
 
     <div v-if="error" class="alert alert-danger compact-alert">{{ error }}</div>
@@ -333,9 +334,9 @@ onMounted(load)
               class="btn btn-sm btn-primary"
               :disabled="recommendLoading"
               @click="adoptRecommendedFeatured"
-            >⚡ 一键采用最近 7 天 Top {{ recommendLoading ? t('routing.loading') : t('routing.recommendText') }}</button>
+            ><Lightning /> 一键采用最近 7 天 Top {{ recommendLoading ? t('routing.loading') : t('routing.recommendText') }}</button>
             <router-link to="/routing-policy" class="btn btn-sm btn-ghost">
-              ⚙ 前往路由策略手动配置
+              <Setting /> 前往路由策略手动配置
             </router-link>
           </div>
         </div>
@@ -495,8 +496,7 @@ onMounted(load)
   display: block;
   font-size: 9px;
   color: var(--muted);
-  text-transform: uppercase;
-  letter-spacing: .04em;
+  letter-spacing: 0.01em;
   margin-bottom: 4px;
   font-weight: 600;
 }

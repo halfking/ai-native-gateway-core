@@ -6,7 +6,7 @@ export default {
   load: {
     statsFailed: 'Failed to load compression stats',
     sessionsFailed: 'Failed to load compression sessions',
-    configFailed: 'Failed to load compression config — the values below are factory defaults, not the current config',
+    configFailed: 'Failed to load compression config: the values below are factory defaults, not the current config',
   },
   tabs: {
     h24: '24 hours',

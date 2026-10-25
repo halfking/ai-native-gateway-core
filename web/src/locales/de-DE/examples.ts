@@ -36,11 +36,11 @@ export default {
   currentModel: 'Aktuelles Modell:',
   baseUrlLabel: 'Base-URL:',
   example: {
-    curl: 'cURL — Chat Completions',
+    curl: 'cURL: Chat Completions',
     python: 'Python (openai SDK)',
-    stream: 'Python — Streaming-Ausgabe',
+    stream: 'Python: Streaming-Ausgabe',
     js: 'JavaScript / TypeScript (openai SDK)',
-    models: 'cURL — Modelle auflisten',
+    models: 'cURL: Modelle auflisten',
   },
   button: {
     copy: 'Kopieren',
@@ -85,7 +85,7 @@ export default {
         'Modell: Geben Sie eine unterstützte Modell-ID ein (z. B. glm-4-flash) oder verwenden Sie „auto" für automatisches Routing',
         'Nach dem Speichern wählen Sie das Modell dieses Anbieters im Chat-Fenster aus',
       ],
-      mcp: 'MCP: Einstellungen → MCP-Server → Konfiguration importieren. Memora-Endpunkt https://[MCP_DOMAIN]/memora/mcp, Header Authorization: Bearer <MEMORA_API_KEY> (separat vom LLM-Schlüssel — memora-Scope im ACC beantragen).',
+      mcp: 'MCP: Einstellungen → MCP-Server → Konfiguration importieren. Memora-Endpunkt https://[MCP_DOMAIN]/memora/mcp, Header Authorization: Bearer <MEMORA_API_KEY> (separat vom LLM-Schlüssel. Memora-Scope im ACC beantragen).',
     },
     cursor: {
       name: 'Cursor IDE',
@@ -115,10 +115,10 @@ export default {
         'Wählen Sie in den Erweiterungseinstellungen „OpenAI Compatible" als Anbieter',
         'Base-URL: {url}',
         'API-Schlüssel: Ihr sk-*-Gateway-Schlüssel',
-        'Modell: gleich wie Cherry Studio — auto oder eine bestimmte Modell-ID',
+        'Modell: gleich wie Cherry Studio: auto oder eine bestimmte Modell-ID',
         'Optionaler Header: X-Client-Profile: roocode',
       ],
-      mcp: 'VS Code / Roo Code MCP: Konfigurieren Sie einen streamable-http-Endpunkt in mcp.json — siehe docs/clients/roocode-mcp.json im Repo.',
+      mcp: 'VS Code / Roo Code MCP: Konfigurieren Sie einen streamable-http-Endpunkt in mcp.json. Siehe docs/clients/roocode-mcp.json im Repo.',
     },
   },
 

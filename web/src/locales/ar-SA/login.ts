@@ -2,7 +2,7 @@
 // login.ts — نصوص نافذة تسجيل الدخول + مدخل تسجيل الدخول في رأس الزائر.
 export default {
   title: 'تسجيل الدخول إلى لوحة التحكم',
-  subtitle: 'بوابة Kaixuan MaaS · لوحة الإدارة', // "开轩" / "Kaixuan" اسم العلامة التجارية يبقى كما هو
+  subtitle: 'بوابة Kaixuan MaaS: لوحة الإدارة', // "开轩" / "Kaixuan" اسم العلامة التجارية يبقى كما هو
   username: 'اسم المستخدم',
   usernamePlaceholder: 'admin',
   password: 'كلمة المرور',

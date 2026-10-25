@@ -2,7 +2,7 @@
 
 export default {
   title: '输出合规',
-  subtitle: '监控和配置PII脱敏、密钥检测和内容安全策略',
+  subtitle: 'PII-Schwärzung, Secret-Erkennung und Inhaltsrichtlinien überwachen und konfigurieren',
   tabs: {
     overview: '概览',
     records: '命中记录',
@@ -14,14 +14,14 @@ export default {
   no: '否',
   stats: {
     totalChecks: '总检测次数',
-    piiHits: 'PII命中',
+    piiHits: 'PII-Treffer',
     secretHits: '密钥命中',
     toxicityHits: '毒性命中',
     jailbreakHits: '越狱命中',
     avgLatency: '平均延迟',
   },
   filter: {
-    tenantID: '租户ID',
+    tenantID: 'Mandanten-ID',
     allCheckTypes: '全部检测类型',
   },
   checkType: {
@@ -43,7 +43,7 @@ export default {
   },
   empty: '暂无合规记录',
   recordsLoadFailed: 'Treffer-Datensätze konnten nicht geladen werden',
-  recordsNotLoaded: 'Treffer-Datensätze nicht geladen — die Tabelle unten ist kein Abfrageergebnis',
+  recordsNotLoaded: 'Treffer-Datensätze nicht geladen: die Tabelle unten ist kein Abfrageergebnis',
   pagination: {
     previous: '上一页',
     next: '下一页',
@@ -59,12 +59,12 @@ export default {
     redactionMode: '脱敏模式',
     redactionOff: '关闭（仅记录）',
     redactionAlways: '始终脱敏',
-    redactionOwnerMismatch: '仅Owner不匹配时',
+    redactionOwnerMismatch: 'Nur bei Owner-Abweichung',
     detectionItems: '检测项',
-    checkPII: '检测PII',
+    checkPII: 'PII erkennen',
     checkToxicity: '检测毒性内容',
     checkSecrets: '检测密钥',
-    checkInternalIP: '检测内部IP',
+    checkInternalIP: 'Interne IPs erkennen',
     checkJailbreak: '检测越狱响应',
     redactionItems: '脱敏项',
     autoRedact: '自动脱敏匹配内容',
@@ -72,10 +72,10 @@ export default {
     redactPhone: '脱敏电话号码',
     redactIDCard: '脱敏身份证号',
     redactCreditCard: '脱敏信用卡号',
-    redactJWT: '脱敏JWT令牌',
+    redactJWT: 'JWT-Token maskieren',
     redactPassword: '脱敏密码',
     thresholds: '检测阈值',
-    piiThreshold: 'PII阈值',
+    piiThreshold: 'PII-Schwellwert',
     toxicityThreshold: '毒性阈值',
     blocking: '阻断设置',
     blockMessage: '阻断提示信息',

@@ -411,7 +411,7 @@ export default {
       previousLabel: '對比期 ({period})',
       change: '變化',
       significant: '顯著',
-      meta: '{requests} 次請求 · {models} 個模型',
+      meta: '{requests} 次請求：{models} 個模型',
     },
     attribution: {
       title: '成本歸因',

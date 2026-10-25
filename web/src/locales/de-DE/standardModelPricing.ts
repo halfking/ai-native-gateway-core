@@ -25,14 +25,14 @@ export default {
     effective: 'Wirksam ≈ {value} (inkl. Rabatt)',
   },
   filter: {
-    title: 'Preisverwaltung · Modellfilter',
+    title: 'Preisverwaltung: Modellfilter',
     placeholder: 'Standardmodelle suchen…',
     allPricing: 'Alle Preise',
     defaultOnly: 'Nur globale Basis',
     customOnly: 'Mit manueller Preisgestaltung',
     partialOnly: 'Teilweise manuell',
     otherVendor: 'Andere',
-    summary: 'Manuell {custom} · Global {defaults} / {total}',
+    summary: 'Manuell {custom}: Global {defaults} / {total}',
   },
   table: {
     colModel: 'Standardmodell',
@@ -67,9 +67,9 @@ export default {
     hasMultimodal: 'Has manual multimodal pricing',
   },
   editModal: {
-    title: 'Manuelle Preisgestaltung · {name}',
+    title: 'Manuelle Preisgestaltung: {name}',
     hint: 'Aktivieren Sie „Manuell" und tragen Sie Credits ein; nicht aktivierte Dimensionen folgen weiterhin der globalen Basis × Rabatt.',
-    fieldSuffix: ' · Manuelle Preisgestaltung',
+    fieldSuffix: ': Manuelle Preisgestaltung',
     resetBase: 'Auf Basis zurücksetzen',
     globalApprox: 'Global ≈ {value}',
     save: 'Speichern',
@@ -83,7 +83,7 @@ export default {
 
     sectionText: 'Text-token dimensions',
 
-    sectionMultimodal: 'Multimodal-token dimensions (vision / audio / video)',
+    sectionMultimodal: 'Multimodale Token-Dimensionen (Vision / Audio / Video)',
 
     fieldImage: 'Vision tokens',
 

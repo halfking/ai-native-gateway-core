@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { Lock } from '@element-plus/icons-vue'
 // TurnStageCard — one column of the three-stage per-turn view.
 // Kept as a separate SFC (rather than a render function) so the template
 // is declarative and easy to read.
@@ -36,7 +37,7 @@ defineProps<{
     <div class="stage-dir">
       <span class="dir-lbl">
         {{ receiveLabel }}
-        <span v-if="piiStripped" class="pii-icon" title="此轮响应已脱敏">🔒</span>
+        <span v-if="piiStripped" class="pii-icon" title="此轮响应已脱敏"><Lock /></span>
       </span>
       <div class="dir-body receive">{{ receive }}</div>
     </div>
@@ -71,7 +72,7 @@ defineProps<{
 .stage-name { font-size: 12px; font-weight: 600; color: var(--text-primary); }
 .stage-meta { font-size: 11px; color: var(--text-muted); font-variant-numeric: tabular-nums; }
 .stage-dir { display: flex; flex-direction: column; gap: 3px; }
-.dir-lbl { font-size: 10px; color: var(--text-secondary); text-transform: uppercase; }
+.dir-lbl { font-size: 10px; color: var(--text-secondary);}
 .pii-icon {
   margin-left: 4px;
   font-size: 10px;

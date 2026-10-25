@@ -1,7 +1,7 @@
 // Auto-synced from en-US (fr-FR)
 export default {
   title: 'Routing Overrides',
-  subtitle: 'Pin or ban specific models for a (task_type, profile) pair. Changes take effect within 1 minute via the OverrideStore refresh.',
+  subtitle: 'Épinglez ou bannissez des modèles précis pour une paire (task_type, profile). Les changements prennent effet sous une minute, au rafraîchissement d\'OverrideStore.',
   correlationsLink: 'Correlations dashboard',
   summary: {
     total: 'Total active',
@@ -22,8 +22,8 @@ export default {
   },
   create: {
     title: 'New routing override',
-    hintPin: 'Pin: model is forced to top of candidates (wins regardless of score).',
-    hintBan: 'Ban: model is excluded from candidates entirely.',
+    hintPin: 'Pin : le modèle est forcé en tête des candidats, quel que soit son score.',
+    hintBan: 'Ban : le modèle est totalement exclu des candidats.',
     taskType: 'Task type *',
     taskTypePlaceholder: 'e.g. code, reasoning',
     profile: 'Profile',
@@ -32,7 +32,7 @@ export default {
     modelPlaceholder: 'e.g. gpt-4o, claude-3-5-sonnet',
     expiresAt: 'Expires at (optional)',
     reason: 'Reason * (audit trail)',
-    reasonPlaceholder: 'e.g. correlation shows 45% success on reasoning',
+    reasonPlaceholder: 'Exemple : la corrélation indique 45 % de réussite sur le raisonnement',
     creating: 'Creating…',
     submit: 'Create override',
     cancel: 'Cancel',
@@ -44,14 +44,14 @@ export default {
   },
   extend: {
     title: 'Extend override #{id}',
-    hint: 'Pick a new expires_at. Pass empty date to make it permanent.',
+    hint: 'Choisissez une nouvelle expires_at. Une date vide la rend permanente.',
     expiresAt: 'New expires_at',
     save: 'Save',
     cancel: 'Cancel',
   },
   table: {
     title: 'Overrides ({n})',
-    empty: 'No overrides match the filter. Click "+ New override" to create one.',
+    empty: 'Aucune surcharge ne correspond au filtre. Cliquez sur "+ Nouvelle surcharge" pour en créer une.',
     headers: {
       id: 'ID',
       mode: 'Mode',
@@ -67,7 +67,7 @@ export default {
     permanent: 'permanent',
     extend: 'Extend',
     delete: 'Delete',
-    deleteConfirm: 'Delete override #{id} ({mode} {model} for {task})?',
+    deleteConfirm: 'Supprimer la surcharge #{id} ({mode} {model} pour {task}) ?',
     deleteFailed: 'Delete failed: ',
   },
 }

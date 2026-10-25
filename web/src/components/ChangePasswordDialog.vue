@@ -2,6 +2,7 @@
 import { computed, ref, watch } from 'vue'
 import { changeMyPassword } from '../api'
 import { checkPasswordPolicy } from '../utils/passwordPolicy'
+import { Close } from '@element-plus/icons-vue'
 
 const props = defineProps<{
   modelValue: boolean
@@ -95,7 +96,7 @@ async function submit() {
             </p>
           </div>
           <button v-if="!forced" type="button" class="btn btn-ghost btn-sm password-modal__close" aria-label="关闭" @click="close">
-            ✕
+            <Close />
           </button>
         </div>
 

@@ -11,7 +11,7 @@ export default {
   filterModel: 'النموذج',
   filterMetric: 'المقياس',
   filterAll: 'الكل',
-  filterProviderKeyFailed: "فشل تحميل خيارات التصفية للمزوّد/المفتاح — القائمة الفارغة لا تعني عدم وجودها",
+  filterProviderKeyFailed: "فشل تحميل خيارات التصفية للمزوّد/المفتاح: القائمة الفارغة لا تعني عدم وجودها",
   filterTenantFailed: 'فشل تحميل خيارات تصفية المستأجرين',
   shareByMetric: 'الحصة (المقياس)',
   sourceDetail: 'تفاصيل الطلبات',

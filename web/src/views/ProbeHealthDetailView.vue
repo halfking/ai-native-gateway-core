@@ -977,7 +977,6 @@ onMounted(() => {
 .data-table thead th {
   padding: 8px 12px;
   font-size: 11px;
-  text-transform: uppercase;
   font-weight: 600;
   text-align: left;
   border-bottom: 1px solid var(--border);
@@ -1044,7 +1043,6 @@ onMounted(() => {
 .stat-mini-label {
   font-size: 11px;
   color: var(--muted);
-  text-transform: uppercase;
 }
 
 .stat-mini-val {

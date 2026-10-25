@@ -57,7 +57,7 @@ export default {
   kpiPersons: 'Aktive Personen',
   kpiPerPersonReq: 'Anfragen pro Person',
   kpiCreditsPerReq: 'Credits / Anfrage',
-  qualitySub: 'Anbieter · Erfolgsquote × Reaktionszeit',
+  qualitySub: 'Anbieter: Erfolgsquote × Reaktionszeit',
   coveragePrefix: 'abdeckend',
   reqCostTrend: 'Anfragen- & Kostentrend',
   reqCreditsTrend: 'Anfragen- & Credits-Trend',
@@ -71,7 +71,7 @@ export default {
   legendCacheRead: 'Cache-Lesen',
   legendCacheWrite: 'Cache-Schreiben',
   legendHitRate: 'Trefferquote',
-  distHint: 'Zeile klicken zum Drill-down · Balken zeigen Anteil der aktuellen Metrik',
+  distHint: 'Zeile klicken zum Drill-down: Balken zeigen Anteil der aktuellen Metrik',
   byToken: 'Nach Tokens',
   byMoney: 'Nach Ausgaben',
   sharePct: 'Anteil',
@@ -117,5 +117,5 @@ export default {
   noData: 'Keine Daten',
   legacyCoverage: 'Tage nur mit Legacy-Snapshots:',
   legacyCoverageRest:
-    ' — diese Tage zählen nur in Summe und Tagesreihe; Credential-/Benutzer-/API-Schlüssel-Dimensionen erscheinen nach dem Backfill („Rerun End Day" Tag für Tag)',
+    ': diese Tage zählen nur in Summe und Tagesreihe; Credential-/Benutzer-/API-Schlüssel-Dimensionen erscheinen nach dem Backfill („Rerun End Day" Tag für Tag)',
 }

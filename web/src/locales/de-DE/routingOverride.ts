@@ -1,7 +1,7 @@
 // Auto-synced from en-US (de-DE)
 export default {
   title: 'Routing Overrides',
-  subtitle: 'Pin or ban specific models for a (task_type, profile) pair. Changes take effect within 1 minute via the OverrideStore refresh.',
+  subtitle: 'Modelle für ein Paar aus (task_type, profile) anheften oder sperren. Änderungen greifen innerhalb einer Minute nach dem OverrideStore-Refresh.',
   correlationsLink: 'Correlations dashboard',
   summary: {
     total: 'Total active',
@@ -22,8 +22,8 @@ export default {
   },
   create: {
     title: 'New routing override',
-    hintPin: 'Pin: model is forced to top of candidates (wins regardless of score).',
-    hintBan: 'Ban: model is excluded from candidates entirely.',
+    hintPin: 'Pin: Das Modell wird an die Spitze der Kandidaten gezwungen, unabhängig vom Score.',
+    hintBan: 'Ban: Das Modell wird vollständig aus den Kandidaten entfernt.',
     taskType: 'Task type *',
     taskTypePlaceholder: 'e.g. code, reasoning',
     profile: 'Profile',
@@ -32,7 +32,7 @@ export default {
     modelPlaceholder: 'e.g. gpt-4o, claude-3-5-sonnet',
     expiresAt: 'Expires at (optional)',
     reason: 'Reason * (audit trail)',
-    reasonPlaceholder: 'e.g. correlation shows 45% success on reasoning',
+    reasonPlaceholder: 'Beispiel: Die Korrelation zeigt für Reasoning 45 % Erfolg',
     creating: 'Creating…',
     submit: 'Create override',
     cancel: 'Cancel',
@@ -44,14 +44,14 @@ export default {
   },
   extend: {
     title: 'Extend override #{id}',
-    hint: 'Pick a new expires_at. Pass empty date to make it permanent.',
+    hint: 'Wählen Sie ein neues expires_at. Ohne Datum gilt es dauerhaft.',
     expiresAt: 'New expires_at',
     save: 'Save',
     cancel: 'Cancel',
   },
   table: {
     title: 'Overrides ({n})',
-    empty: 'No overrides match the filter. Click "+ New override" to create one.',
+    empty: 'Kein Override passt zum Filter. Klicken Sie auf "+ Neuer Override", um einen anzulegen.',
     headers: {
       id: 'ID',
       mode: 'Mode',
@@ -67,7 +67,7 @@ export default {
     permanent: 'permanent',
     extend: 'Extend',
     delete: 'Delete',
-    deleteConfirm: 'Delete override #{id} ({mode} {model} for {task})?',
+    deleteConfirm: 'Override #{id} ({mode} {model} für {task}) löschen?',
     deleteFailed: 'Delete failed: ',
   },
 }

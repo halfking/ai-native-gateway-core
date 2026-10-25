@@ -35,7 +35,7 @@ export default {
     kindTitle: 'Kind',
     tenantTitle: 'Tenant',
     defaultTenant: 'Default tenant',
-    placeholder: 'Search by name / owner / team / tenant_id…',
+    placeholder: '依名稱 / 負責人 / 團隊 / tenant_id 搜尋…',
     clear: 'Clear',
     query: 'Query',
     totalCount: '{n} total',

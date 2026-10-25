@@ -3,7 +3,7 @@ export default {
   page: {
     title: 'Modelos estándar',
     desc: 'Modelos estándar habilitados para su inquilino. La facturación cubre entrada / salida / lectura de caché / escritura de caché, en créditos por millón de tokens.',
-    filterTitle: 'Modelos estándar · filtro',
+    filterTitle: 'Modelos estándar: filtro',
     filterPlaceholder: 'Elegir un modelo estándar…',
     modelCount: '{n} modelos',
     refresh: 'Actualizar',

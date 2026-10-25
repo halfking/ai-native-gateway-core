@@ -67,7 +67,7 @@
             </span>
           </div>
           <p class="policy-desc">{{ policy.policy.description }}</p>
-          <p class="policy-note">📌 {{ policy.note }}</p>
+          <p class="policy-note"><Position /> {{ policy.note }}</p>
         </div>
       </div>
     </div>
@@ -199,6 +199,7 @@ import { confirmDialog } from '../../composables/useConfirmDialog'
 import { useI18n } from 'vue-i18n'
 import KxDateRangePicker from '../../components/ui/KxDateRangePicker.vue'
 import type { KxDateRange } from '../../components/ui/kx-date-types'
+import { Position } from '@element-plus/icons-vue'
 
 const { t } = useI18n()
 

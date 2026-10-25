@@ -29,6 +29,7 @@ import RequestJourneyQueues from './RequestJourneyQueues.vue'
 import NodeStatusMatrix from './NodeStatusMatrix.vue'
 import type { GroupByDimension } from '../types/swimlane'
 import type { RouteIncident } from '../types/routeIncident'
+import { Close } from '@element-plus/icons-vue'
 
 const { t } = useI18n()
 
@@ -468,7 +469,7 @@ function vendorOptionLabel(v: string) {
         <div v-if="showConnectionDetail" class="connection-detail-popup">
           <div class="popup-header">
             <h4>{{ t('dashboard.liveStream.sseDetailTitle') }}</h4>
-            <button type="button" class="popup-close" @click="showConnectionDetail = false">✕</button>
+            <button type="button" class="popup-close" @click="showConnectionDetail = false"><Close /></button>
           </div>
           <div class="popup-body">
             <div class="detail-row">

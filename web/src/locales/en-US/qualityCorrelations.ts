@@ -24,7 +24,7 @@ export default {
   },
   breakdown: {
     title: 'Breakdown by {by}',
-    empty: 'No data — try lowering the days or expanding the filter.',
+    empty: 'No data: try lowering the days or expanding the filter.',
     headers: {
       bucket: 'Bucket',
       samples: 'Samples',

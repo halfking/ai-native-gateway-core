@@ -3,7 +3,7 @@ export default {
   page: {
     title: 'Modèles standard',
     desc: 'Modèles standard ouverts pour votre locataire. La tarification couvre l\'entrée / la sortie / la lecture du cache / l\'écriture du cache, facturés en crédits par million de tokens.',
-    filterTitle: 'Modèles standard · filtre',
+    filterTitle: 'Modèles standard: filtre',
     filterPlaceholder: 'Choisir un modèle standard…',
     modelCount: '{n} modèles',
     refresh: 'Actualiser',

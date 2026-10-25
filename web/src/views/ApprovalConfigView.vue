@@ -7,6 +7,7 @@ import NotificationChannels from '../components/NotificationChannels.vue'
 import ApprovalRules from '../components/ApprovalRules.vue'
 import { useActionMessage } from '../composables/useActionMessage'
 import AppSpinner from '../components/AppSpinner.vue'
+import { CircleClose, CircleCheck } from '@element-plus/icons-vue'
 
 const { t } = useI18n()
 const loading = ref(false)
@@ -97,12 +98,12 @@ onMounted(() => {
 
     <!-- Messages -->
     <div v-if="error" class="message message-error">
-      <span class="message-icon">❌</span>
+      <span class="message-icon"><CircleClose /></span>
       {{ error }}
     </div>
 
     <div v-if="successMessage" class="message message-success">
-      <span class="message-icon">✅</span>
+      <span class="message-icon"><CircleCheck /></span>
       {{ successMessage }}
     </div>
 

@@ -4,7 +4,7 @@ export default {
   page: {
     title: 'Standard models',
     desc: 'Standard models we have opened for your tenant. Pricing covers input / output / cache read / cache write, all charged in credits per million tokens.',
-    filterTitle: 'Standard models · filter',
+    filterTitle: 'Standard models: filter',
     filterPlaceholder: 'Pick a standard model…',
     modelCount: '{n} models',
     refresh: 'Refresh',

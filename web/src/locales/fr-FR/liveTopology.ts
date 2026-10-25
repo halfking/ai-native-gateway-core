@@ -1,7 +1,7 @@
 // liveTopology.ts — Topologie temps réel (2026-10-16)
 export default {
   title: 'Topologie temps réel',
-  redisDown: 'Redis indisponible — santé des nœuds dégradée en « inconnue »',
+  redisDown: 'Redis indisponible: santé des nœuds dégradée en « inconnue »',
   column: {
     client: 'Client',
     gateway: 'Cœur de passerelle',
@@ -17,7 +17,7 @@ export default {
     unsupported: 'SSE non pris en charge',
   },
   banner: {
-    connecting: 'Le flux temps réel est déconnecté — le graphique affiche le dernier instantané, pas l’état actuel',
+    connecting: 'Le flux temps réel est déconnecté: le graphique affiche le dernier instantané, pas l’état actuel',
     waitingFirstFrame: 'Connecté, en attente du premier cadre de cette session…',
     filteredEmpty: 'Aucune requête dans la fenêtre avec les filtres actuels',
     droppedByWindow: '{n} autres requêtes sont hors de la fenêtre temporelle actuelle et ne sont pas affichées ici (élargissez la fenêtre pour les voir)',
@@ -64,7 +64,7 @@ export default {
     tokens: 'Tokens',
     unknownProvider: 'Fournisseur inconnu',
     empty: 'Aucun trafic aujourd’hui',
-    degraded: 'Agrégation non initialisée — statistiques indisponibles',
+    degraded: 'Agrégation non initialisée: statistiques indisponibles',
     unavailable: 'Service de statistiques indisponible',
   },
   decision: {
@@ -107,8 +107,8 @@ export default {
     taskDetect: 'Détection de tâche',
   },
   lane: {
-    in: 'ENTRÉE · chemin des requêtes',
-    out: 'SORTIE · chemin des réponses',
+    in: 'ENTRÉE: chemin des requêtes',
+    out: 'SORTIE: chemin des réponses',
     store: 'Stockage et transfert',
     toProvider: 'envoi au fournisseur',
     fromProvider: 'retour fournisseur',

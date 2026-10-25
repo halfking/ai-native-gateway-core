@@ -27,7 +27,7 @@ export default {
   },
 
   pagination: {
-    summary: '<strong>{total}</strong> total, showing {start} - {end}',
+    summary: '<strong>{total}</strong> إجمالًا، المعروض {start} - {end}',
     prev: '← Previous',
     next: 'Next →',
   },

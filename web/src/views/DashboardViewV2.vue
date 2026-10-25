@@ -17,6 +17,7 @@ import type { ModelUsage, HotApiKeyEntry } from '../api'
 import type { DashboardTabId } from './DashboardView.vue'
 import { isSuperAdmin, isDefaultTenant, getCurrentTenantId } from '../store'
 import { openRequestDetailPage } from '../utils/openRequestDetailPage'
+import { Refresh, Loading, Warning } from '@element-plus/icons-vue'
 
 const { t } = useI18n()
 const router = useRouter()
@@ -166,14 +167,14 @@ async function onRefresh() {
 
         <!-- 刷新按钮 -->
         <button class="btn btn-refresh" @click="onRefresh" :disabled="loading" :title="t('dashboard.v2.refreshData')">
-          <span v-if="loading">⏳</span>
-          <span v-else>🔄</span>
+          <span v-if="loading"><Loading /></span>
+          <span v-else><Refresh /></span>
         </button>
       </div>
     </div>
 
     <div v-if="error" class="alert alert-danger" role="alert">
-      <span class="alert-icon" aria-hidden="true">⚠️</span>
+      <span class="alert-icon" aria-hidden="true"><Warning /></span>
       <span class="alert-text">{{ error }}</span>
       <button
         type="button"
@@ -182,8 +183,8 @@ async function onRefresh() {
         :aria-label="t('dashboard.v2.reloadAria')"
         @click="onRefresh"
       >
-        <span v-if="loading">⏳</span>
-        <span v-else>🔄 {{ t('dashboard.v2.retry') }}</span>
+        <span v-if="loading"><Loading /></span>
+        <span v-else><Refresh /> {{ t('dashboard.v2.retry') }}</span>
       </button>
     </div>
 

@@ -7,6 +7,7 @@ import {
   type AvailableModelsResponse,
   type PopularModel,
 } from '../api'
+import { CaretBottom } from '@element-plus/icons-vue'
 
 const { t } = useI18n()
 
@@ -297,7 +298,7 @@ watch(() => props.modelValue, () => {
         <span v-else class="mp-placeholder">{{ placeholder }}</span>
         <span class="mp-actions">
           <span v-if="multiValues.length" class="mp-badge">{{ multiValues.length }}</span>
-          <span class="mp-caret">▾</span>
+          <span class="mp-caret"><CaretBottom /></span>
         </span>
       </button>
     </template>
@@ -531,7 +532,7 @@ watch(() => props.modelValue, () => {
 .mp-section + .mp-section { margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--border); }
 .mp-section-title {
   margin: 0 0 10px; font-size: 12px; font-weight: 600;
-  color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em;
+  color: var(--muted);letter-spacing: 0.01em;
 }
 
 .mp-grid {

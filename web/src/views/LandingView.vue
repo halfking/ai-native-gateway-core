@@ -95,7 +95,6 @@ function openLogin() {
       :brand="SITE_TITLE"
       :logo-src="brandLogo"
       :logo-size="SITE_LOGO_SIZE"
-      :kicker="t('landing.kicker')"
       :title="t('landing.title')"
       :subtitle="t('landing.subtitle')"
       :hero-points="heroPoints"
@@ -122,7 +121,6 @@ function openLogin() {
       </template>
       <section class="llmgo-roadmap">
         <header class="llmgo-roadmap__head">
-          <span class="llmgo-roadmap__eyebrow">ROADMAP</span>
           <h2>{{ t('landing.roadmap.title') }}</h2>
           <p>{{ t('landing.roadmap.subtitle') }}</p>
         </header>
@@ -192,18 +190,9 @@ function openLogin() {
   text-align: left;
 }
 
-.llmgo-roadmap__eyebrow {
-  display: block;
-  color: var(--accent);
-  font-size: 11px;
-  font-weight: 750;
-  letter-spacing: 0.13em;
-  text-transform: uppercase;
-}
-
 .llmgo-roadmap__head h2 {
   margin: 8px 0 6px;
-  font-family: "Outfit", "Noto Sans SC", "PingFang SC", sans-serif;
+  font-family: var(--kx-font-sans);
   font-size: clamp(1.4rem, 2.4vw, 1.75rem);
   letter-spacing: -0.03em;
   color: var(--kx-text);

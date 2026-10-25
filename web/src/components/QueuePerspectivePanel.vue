@@ -1735,7 +1735,7 @@ function requestTitleTooltip(request: LiveRequest): string {
 .qp-model-nodes { display:flex; gap:6px; flex-wrap:wrap; flex:1 1 100%; padding-left:18px; }
 .qp-node-card-wrap { border-radius:6px; transition: background 120ms ease, outline-color 120ms ease, width 160ms ease; outline: 2px dashed transparent; outline-offset: 1px; flex: 0 0 auto; }
 .qp-node-card-wrap.is-drag-over { background: color-mix(in srgb, var(--kx-accent) 14%, transparent); outline-color: var(--kx-accent); }
-.qp-node-card { display:grid; gap:4px; text-align:left; width:100%; box-sizing:border-box; padding:7px 9px; border:1px solid var(--kx-border); border-left-width:3px; border-radius:6px; background:var(--kx-surface); cursor:pointer; color:var(--kx-text); position:relative; }
+.qp-node-card { display:grid; gap:4px; text-align:left; width:100%; box-sizing:border-box; padding:7px 9px; border:1px solid var(--kx-border); border-radius:6px; background:var(--kx-surface); cursor:pointer; color:var(--kx-text); position:relative; }
 .qp-node-rank { margin-left:6px; font-size:10px; color:var(--kx-muted); font-variant-numeric: tabular-nums; }
 .qp-node-card-meta { display:flex; flex-wrap:wrap; gap:4px; align-items:baseline; font-size:11px; color:var(--kx-muted); overflow:hidden; }
 .qp-stat-ok { color: var(--kx-success); font-variant-numeric: tabular-nums; }
@@ -1756,10 +1756,10 @@ function requestTitleTooltip(request: LiveRequest): string {
 .qp-dot--ok { background:var(--kx-success); opacity:1; }
 .qp-dot--bad { background:var(--kx-danger); opacity:1; }
 .qp-dot--unknown { background:var(--kx-text-secondary); opacity:.4; }
-.qp-node-card--ok { border-left-color:var(--kx-success); }
-.qp-node-card--warn { border-left-color:var(--kx-warning); }
-.qp-node-card--danger { border-left-color:var(--kx-danger); }
-.qp-node-card--disabled { border-left-color:var(--kx-text-secondary); opacity:.72; }
+.qp-node-card--ok { border-color: var(--kx-success); }
+.qp-node-card--warn { border-color: var(--kx-warning); }
+.qp-node-card--danger { border-color: var(--kx-danger); }
+.qp-node-card--disabled { border-color: var(--kx-text-secondary); opacity:.72; }
 .qp-retry { margin-left:auto; border:0; background:transparent; color:var(--kx-text-secondary); cursor:pointer; font-size:11px; }
 .qp-model-scope-state,.qp-model-detail-hint { color:var(--kx-text-secondary); font-size:11px; padding:8px 10px; margin:0; }
 .qp-model-scope-state--error { color:var(--kx-danger); }

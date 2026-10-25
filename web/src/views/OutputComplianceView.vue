@@ -6,6 +6,7 @@ import { req } from '../api/_core'
 import { fmtDateTime24h } from '../i18n/useFormat'
 import { useActionMessage } from '../composables/useActionMessage'
 import AppSpinner from '../components/AppSpinner.vue'
+import { CircleCheck } from '@element-plus/icons-vue'
 
 const { t } = useI18n({ useScope: 'global' })
 
@@ -479,7 +480,7 @@ onMounted(() => {
       <AppSpinner v-if="configLoading" :label="t('outputCompliance.config.loading')" />
       <div v-else-if="configError" class="error-banner">⚠️ {{ configError }}</div>
       <div v-else class="config-form">
-        <div v-if="configSuccess" class="success-banner">✅ {{ configSuccess }}</div>
+        <div v-if="configSuccess" class="success-banner"><CircleCheck /> {{ configSuccess }}</div>
 
         <!-- 开关配置 -->
         <div class="config-section">

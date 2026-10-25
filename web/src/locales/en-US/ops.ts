@@ -34,7 +34,7 @@ export default {
 
   overview: {
     title: 'Operations Overview',
-    subtitle: 'Cluster health at a glance — open a node for pressure, requests, and errors',
+    subtitle: 'Cluster health at a glance: open a node for pressure, requests, and errors',
     loadFailed: 'Failed to load overview data',
     onlineInstances: 'Online Instances',
     totalLicenses: 'Total Licenses',
@@ -305,7 +305,7 @@ export default {
     grayPhaseBatch3: 'Batch 3',
     grayPhaseFull: 'Full',
     rolloutGate: 'Rollout Gate',
-    rolloutTitle: 'Rollout Gate · {version}',
+    rolloutTitle: 'Rollout Gate: {version}',
     rolloutRuleStatus: 'Rule Status',
     rolloutGateAllowed: 'Advance Allowed',
     rolloutSuccessRate: 'Success Rate',
@@ -347,7 +347,7 @@ export default {
     loadHeartbeatFailed: 'Failed to load heartbeat history',
     commandSent: 'Command sent',
     commandFailed: 'Failed to send command',
-    lastCommand: 'Last command {id} · status: {status}',
+    lastCommand: 'Last command {id}: status: {status}',
     instanceId: 'Instance ID',
     hostname: 'Hostname',
     ipAddress: 'IP Address',

@@ -25,14 +25,14 @@ export default {
     effective: 'Effectif ≈ {value} (remise incluse)',
   },
   filter: {
-    title: 'Tarification · filtre de modèle',
+    title: 'Tarification: filtre de modèle',
     placeholder: 'Rechercher des modèles standard…',
     allPricing: 'Toutes les tarifications',
     defaultOnly: 'Base globale uniquement',
     customOnly: 'Avec tarification manuelle',
     partialOnly: 'Partiellement manuel',
     otherVendor: 'Autre',
-    summary: 'Manuel {custom} · Global {defaults} / {total}',
+    summary: 'Manuel {custom}: Global {defaults} / {total}',
   },
   table: {
     colModel: 'Modèle standard',
@@ -67,9 +67,9 @@ export default {
     hasMultimodal: 'Has manual multimodal pricing',
   },
   editModal: {
-    title: 'Tarification manuelle · {name}',
+    title: 'Tarification manuelle: {name}',
     hint: 'Cochez « Manuel » et renseignez les crédits ; les dimensions non cochées continuent de suivre la base globale × remise.',
-    fieldSuffix: ' · tarification manuelle',
+    fieldSuffix: ': tarification manuelle',
     resetBase: 'Réinitialiser à la base',
     globalApprox: 'Global ≈ {value}',
     save: 'Enregistrer',
@@ -83,7 +83,7 @@ export default {
 
     sectionText: 'Text-token dimensions',
 
-    sectionMultimodal: 'Multimodal-token dimensions (vision / audio / video)',
+    sectionMultimodal: 'Dimensions de jetons multimodaux (vision / audio / vidéo)',
 
     fieldImage: 'Vision tokens',
 

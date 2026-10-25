@@ -29,6 +29,7 @@ import EmptyState from '../components/EmptyState.vue'
 import {
   displaySyntheticCredentialModel,
 } from '../composables/useCredentialLabels'
+import { CaretBottom, CaretRight, Setting, Refresh, CircleCheck, CircleClose } from '@element-plus/icons-vue'
 
 const loading = ref(false)
 const error = ref<string | null>(null)
@@ -419,7 +420,7 @@ const probeSummaryCards = computed(() => {
           <option value="24h">24h</option>
           <option value="7d">7d</option>
         </select>
-        <button class="btn btn-secondary" @click="openSettings">⚙ 设置</button>
+        <button class="btn btn-secondary" @click="openSettings"><Setting /> 设置</button>
         <button
           :class="['btn', triggerButtonClass]"
           :disabled="triggerBusy || !triggerAvailability.available"
@@ -428,7 +429,7 @@ const probeSummaryCards = computed(() => {
         >
           {{ triggerButtonLabel }}
         </button>
-        <button class="btn btn-secondary" @click="loadAll">🔄</button>
+        <button class="btn btn-secondary" @click="loadAll"><Refresh /></button>
       </div>
     </div>
 
@@ -559,7 +560,7 @@ const probeSummaryCards = computed(() => {
           <div class="col-tokens">{{ r.total_tokens }}</div>
           <div class="col-error">{{ r.error_type || '—' }}</div>
           <div class="col-action">
-            <span class="expand-icon">{{ expandedRunId === r.id ? '▼' : '▶' }}</span>
+            <span class="expand-icon"><CaretBottom v-if="expandedRunId === r.id" /><CaretRight v-else /></span>
           </div>
         </div>
         <div v-if="expandedRunId === r.id && runDetail" class="runs-detail">
@@ -585,7 +586,7 @@ const probeSummaryCards = computed(() => {
                 <td>{{ rd.round_index }}</td>
                 <td>{{ rd.is_ping ? 'ping' : rd.is_tool_call ? 'tool' : 'chat' }}</td>
                 <td>{{ fmtMs(rd.latency_ms) }}</td>
-                <td :style="{ color: rd.success ? COLOR.good : COLOR.danger }">{{ rd.success ? '✅' : '❌' }}</td>
+                <td :style="{ color: rd.success ? COLOR.good : COLOR.danger }"><CircleCheck v-if="rd.success" /><CircleClose v-else /></td>
                 <td>{{ rd.http_code || '—' }}</td>
                 <td>{{ rd.total_tokens }}</td>
                 <td class="error-cell">{{ rd.error_message || '—' }}</td>

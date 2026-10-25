@@ -11,7 +11,7 @@ export default {
     importCsv: 'CSV importieren',
     autoInherit: 'Auto-Vererbung',
   },
-  readOnly: '📖 Sie sind ein Mandanten-Administrator — schreibgeschützter Modus. Die Upstream-Kostenpreise sind nur lesbar; Sie können sie nicht bearbeiten oder importieren.',
+  readOnly: '📖 Sie sind ein Mandanten-Administrator: schreibgeschützter Modus. Die Upstream-Kostenpreise sind nur lesbar; Sie können sie nicht bearbeiten oder importieren.',
   summary: {
     totalOffers: 'Gesamtangebote',
     pricedIn: 'Bepreist (Eingabe)',
@@ -26,7 +26,7 @@ export default {
     tokenPlanSuffix: 'token_plan',
   },
   filter: {
-    modelTitle: 'Kostenpreisgestaltung · Modellfilter',
+    modelTitle: 'Kostenpreisgestaltung: Modellfilter',
     modelPlaceholder: 'Nach Modell filtern…',
     allProviders: 'Alle Anbieter',
     allBilling: 'Alle Abrechnungen',
@@ -123,7 +123,7 @@ export default {
     noChange: 'Keine Änderungen',
     saveFailed: 'Speichern fehlgeschlagen',
     copied: 'Preis kopiert',
-    pasted: 'Eingefügt — auf Speichern klicken, um anzuwenden',
+    pasted: 'Eingefügt: auf Speichern klicken, um anzuwenden',
   },
   inherit: {
     title: 'Preisgestaltung automatisch vererben',

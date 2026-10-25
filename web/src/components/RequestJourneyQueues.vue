@@ -421,7 +421,7 @@ function closeDialog() {
   gap: 4px 8px;
   margin-top: 8px;
   padding: 8px 10px;
-  border-left: 3px solid var(--kx-warning);
+  border: 1px solid var(--kx-warning);
   background: color-mix(in srgb, var(--kx-warning) 10%, var(--kx-surface));
   color: var(--kx-text-secondary);
   font-size: 12px;

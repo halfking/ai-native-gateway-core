@@ -10,6 +10,7 @@ import {
   type SettingSpec,
 } from '../api'
 import { confirmDialog } from '../composables/useConfirmDialog'
+import { Warning } from '@element-plus/icons-vue'
 
 const { t } = useI18n()
 
@@ -310,7 +311,7 @@ onMounted(() => {
 
         <!-- Tenant-scoped warning -->
         <div v-if="selected.scope === 'tenant'" class="tenant-warning">
-          <div class="warning-icon">⚠️</div>
+          <div class="warning-icon"><Warning /></div>
           <div class="warning-content">
             <strong>租户级配置</strong>
             <p>此设置作用于单个租户，无法在系统级设置。请前往<strong>租户管理</strong>页面为特定租户配置此项。</p>
@@ -841,7 +842,7 @@ onMounted(() => {
   margin-top: 8px;
   padding: 8px 12px;
   background: color-mix(in srgb, var(--accent) 5%, transparent);
-  border-left: 3px solid var(--accent);
+  border: 1px solid var(--accent);
   border-radius: 4px;
 }
 
@@ -914,7 +915,7 @@ onMounted(() => {
   padding: 16px;
   background: color-mix(in srgb, var(--warning) 10%, transparent);
   border: 1px solid color-mix(in srgb, var(--warning) 30%, transparent);
-  border-left: 4px solid var(--warning);
+  border: 1px solid var(--warning);
   border-radius: 8px;
 }
 
@@ -988,7 +989,7 @@ onMounted(() => {
   margin-top: 12px;
   padding: 8px 12px;
   background: color-mix(in srgb, var(--accent) 8%, transparent);
-  border-left: 3px solid var(--accent);
+  border: 1px solid var(--accent);
   border-radius: 4px;
   font-size: 13px;
 }

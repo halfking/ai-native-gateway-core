@@ -290,8 +290,7 @@ onMounted(load)
 .filter-bar__label {
   font-size: 11px;
   color: var(--muted);
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.01em;
 }
 .filter-bar__input,
 .filter-bar__select {

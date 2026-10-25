@@ -81,7 +81,7 @@ export default {
       review: "審查結果"
     },
   res: {
-      title: "發現結果 · 任務 {id} · {provider}",
+      title: "發現結果，任務 {id}，{provider}",
       pending: "待審查",
       all: "全部",
       model: "模型 ID",
@@ -121,7 +121,7 @@ export default {
       completed: "完成時間",
       detail: "明細",
       none: "暫無匯入記錄。完成一次「任務與結果審查」頁的批次匯入後會在這裡顯示。",
-      detailTitle: "匯入明細 · 任務 {id} · {provider}",
+      detailTitle: "匯入明細，任務 {id}，{provider}",
       importedAt: "匯入時間"
     },
 }

@@ -275,7 +275,7 @@ onBeforeUnmount(() => {
 }
 .tl__hour {
   /* ★ 左边框编码该小时是否全成功（success_rate 的定性档位）。 */
-  border-left: 3px solid var(--app-success);
+  border: 1px solid var(--app-success);
   padding-left: 6px;
 }
 .tl__hour-rate {

@@ -3,7 +3,7 @@
 // // 占位保证键位齐全，翻译可独立跟进）。
 export default {
   title: 'Live Topology',
-  redisDown: 'Redis unavailable — node health degraded to unknown',
+  redisDown: 'Redis غير متاح، وحالة العقدة تدهورت إلى غير معروف',
   column: {
     client: 'Client',
     gateway: 'Gateway Core',
@@ -19,9 +19,9 @@ export default {
     unsupported: 'SSE unsupported',
   },
   banner: {
-    connecting: 'Live stream is not connected — the graph shows the last snapshot, not the current state',
+    connecting: 'البث المباشر غير متصل، والرسم يعرض آخر لقطة لا الحالة الحالية',
     waitingFirstFrame: 'Connected, waiting for the first frame of this session…',
-    filteredEmpty: 'No requests in the window under the current filters',
+    filteredEmpty: 'لا توجد طلبات في النافذة ضمن المرشحات الحالية',
     droppedByWindow: 'هناك {n} طلبات أخرى خارج النافذة الزمنية الحالية ولا تظهر هنا (وسّع النافذة لعرضها)',
     hiddenProbe: 'تم إخفاء {n} طلب فحص',
     hiddenInvalid: 'تم إخفاء {n} طلب عبر عُقد غير صالحة',
@@ -66,12 +66,12 @@ export default {
     tokens: 'Tokens',
     unknownProvider: 'Unknown provider',
     empty: 'No traffic today',
-    degraded: 'Aggregation is not initialized — statistics unavailable',
+    degraded: 'لم تُهيَّأ عملية التجميع، والإحصاءات غير متاحة',
     unavailable: 'Statistics service unavailable',
   },
   decision: {
     title: 'Routing decisions',
-    hint: 'Pick a request on the right to see how it was routed',
+    hint: 'اختر طلبًا على اليمين لترى كيف تم توجيهه',
     empty: 'No decision events for this request',
     stage: {
       routing: 'Routing',
@@ -109,8 +109,8 @@ export default {
     taskDetect: 'تحديد المهمة',
   },
   lane: {
-    in: 'دخول · مسار الطلبات',
-    out: 'خروج · مسار الاستجابات',
+    in: 'دخول: مسار الطلبات',
+    out: 'خروج: مسار الاستجابات',
     store: 'تخزين وإعادة توجيه',
     toProvider: 'إرسال إلى المزوّد',
     fromProvider: 'عودة المزوّد',

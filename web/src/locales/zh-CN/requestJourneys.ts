@@ -12,7 +12,7 @@ export default {
   empty: '当前 FIFO 窗口内无请求',
   totalGroup: '全部请求',
   modelGroup: '模型 {model}',
-  nodeGroup: '{model} · 供应商 {provider} · 节点 {node}',
+  nodeGroup: '{model}，供应商 {provider}，节点 {node}',
   position: '#{position}',
   requestedModel: '请求模型 {model}',
   resolvedModel: '解析模型 {model}',

@@ -177,7 +177,7 @@ export default {
       previousLabel: 'Previous ({period})',
       change: 'Change',
       significant: 'Significant',
-      meta: '{requests} requests · {models} models',
+      meta: '{requests} requests: {models} models',
     },
     attribution: {
       title: 'Cost attribution',
@@ -223,7 +223,7 @@ export default {
     },
     degraded: {
       title: 'Some metrics are unavailable:',
-      hint: 'The database schema is behind this build, so the figures below are placeholders for "could not be computed" — not measurements (which is not the same as no data for this period). Ask an admin to run the data-aggregation migration.',
+      hint: 'The database schema is behind this build, so the figures below are placeholders for "could not be computed". Not measurements (which is not the same as no data for this period). Ask an admin to run the data-aggregation migration.',
     },
   },
 
@@ -281,9 +281,9 @@ export default {
       vacuum: '🧹 VACUUM',
       vacuumFull: '🗜 FULL',
       reindex: '🔧 REINDEX',
-      vacuumTitle: 'VACUUM (ANALYZE) {table} — non-locking, reclaims dead tuples',
-      vacuumFullTitle: 'VACUUM FULL {table} — locking, returns disk space to OS',
-      reindexTitle: 'REINDEX TABLE {table} — locking, rebuilds indexes',
+      vacuumTitle: 'VACUUM (ANALYZE) {table}: non-locking, reclaims dead tuples',
+      vacuumFullTitle: 'VACUUM FULL {table}: locking, returns disk space to OS',
+      reindexTitle: 'REINDEX TABLE {table}: locking, rebuilds indexes',
     },
     modal: {
       vacuumTitle: '🧹 Confirm VACUUM',
@@ -301,7 +301,7 @@ export default {
       time: 'Estimated duration',
       cancel: 'Cancel',
       confirm: 'Run {op}',
-      success: '{op} {table} done — reclaimed {size} ({pct}%)',
+      success: '{op} {table} done: reclaimed {size} ({pct}%)',
       failed: '{op} failed: {msg}',
     },
     rowResult: {
@@ -383,7 +383,7 @@ export default {
 
     partitionTitle: 'Monthly partition management',
     partitionDesc: 'Drop old monthly partitions to reclaim disk space.',
-    partitionWarning: 'This action is irreversible — proceed with caution.',
+    partitionWarning: 'This action is irreversible: proceed with caution.',
     tables: {
       title: 'Partitioned tables',
       selectLabel: 'Table: ',

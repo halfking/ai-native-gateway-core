@@ -57,7 +57,7 @@ export default {
   kpiPersons: 'Personas activas',
   kpiPerPersonReq: 'Solicitudes por persona',
   kpiCreditsPerReq: 'Créditos / solicitud',
-  qualitySub: 'proveedores · éxito × rapidez',
+  qualitySub: 'proveedores: éxito × rapidez',
   coveragePrefix: 'cubre',
   reqCostTrend: 'Tendencia de solicitudes y coste',
   reqCreditsTrend: 'Tendencia de solicitudes y créditos',
@@ -71,7 +71,7 @@ export default {
   legendCacheRead: 'Lectura de caché',
   legendCacheWrite: 'Escritura de caché',
   legendHitRate: 'Tasa de acierto',
-  distHint: 'Clic en fila para profundizar · barras = porcentaje de la métrica actual',
+  distHint: 'Clic en fila para profundizar: barras = porcentaje de la métrica actual',
   byToken: 'Por tokens',
   byMoney: 'Por gasto',
   sharePct: 'Cuota',
@@ -117,5 +117,5 @@ export default {
   noData: 'Sin datos',
   legacyCoverage: 'Días cubiertos solo por instantáneas heredadas:',
   legacyCoverageRest:
-    ' — esos días solo suman en el total y la serie diaria; las dimensiones credencial/usuario/clave API aparecen tras el relleno («Reejecutar último día», día a día)',
+    ': esos días solo suman en el total y la serie diaria; las dimensiones credencial/usuario/clave API aparecen tras el relleno («Reejecutar último día», día a día)',
 }

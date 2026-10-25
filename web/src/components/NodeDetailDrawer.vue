@@ -71,8 +71,12 @@ const manualStateDetail = computed(() => {
     <aside v-if="visible && node" class="nd-drawer" role="dialog" aria-modal="true" :aria-label="`${nodeLabel(node.credential_id)} 详情`">
       <header class="nd-header">
         <div>
-          <div class="nd-eyebrow">{{ (node.credential_label?.trim() || nodeLabel(node.credential_id)) }} · {{ node.provider_code || `Provider ${node.provider_id ?? '—'}` }}</div>
           <h2>{{ selectedModel || '未上报模型绑定' }}</h2>
+          <!-- 2026-10-24：这一行原来在标题**上方**（.nd-eyebrow），是 craft-floor
+               硬禁的「标题上方的 eyebrow」形态。但它承载的是真实身份信息
+               （哪个凭据 / 哪个 provider），删掉会丢信息 ⇒ 改为标题下方的副标题行，
+               形态从「eyebrow」变成「subtitle」。 -->
+          <div class="nd-subtitle">{{ (node.credential_label?.trim() || nodeLabel(node.credential_id)) }} · {{ node.provider_code || `Provider ${node.provider_id ?? '—'}` }}</div>
           <div class="nd-state-row">
             <span class="nd-state" :class="statusClass(headlineState === '可用' ? 'ready' : headlineState)">{{ headlineState }}</span>
             <span v-if="node.in_flight" class="nd-muted">在途 {{ node.in_flight }}</span>
@@ -211,8 +215,8 @@ const manualStateDetail = computed(() => {
 .nd-mask { position: fixed; inset: 0; z-index: 3000; background: color-mix(in srgb, var(--kx-text) 38%, transparent); }
 .nd-drawer { position: fixed; z-index: 3001; top: 0; right: 0; width: min(940px, 94vw); height: 100vh; height: 100dvh; display: flex; flex-direction: column; background: var(--kx-surface); box-shadow: -12px 0 32px var(--overlay-light); color: var(--kx-text); }
 .nd-header { padding: 18px 22px 14px; border-bottom: 1px solid var(--kx-border); display:flex; justify-content:space-between; gap:16px; }
-.nd-eyebrow,.nd-muted,small { color: var(--kx-muted); font-size:12px; }
-.nd-header h2 { margin:4px 0 7px; font-size:18px; overflow-wrap:anywhere; }
+.nd-subtitle,.nd-muted,small { color: var(--kx-muted); font-size:12px; }
+.nd-header h2 { margin:0 0 4px; font-size:18px; overflow-wrap:anywhere; }
 .nd-header-actions,.nd-state-row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
 .nd-tabs { display:flex; gap:4px; padding:10px 22px 0; border-bottom:1px solid var(--kx-border); flex-wrap:wrap; }
 .nd-tabs button { border:0; background:transparent; color:var(--kx-muted); padding:8px 12px; cursor:pointer; border-bottom:2px solid transparent; }

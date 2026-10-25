@@ -107,8 +107,8 @@ export default {
     taskDetect: '任務識別',
   },
   lane: {
-    in: '進 · 請求鏈',
-    out: '出 · 回應鏈',
+    in: '進：請求鏈',
+    out: '出：回應鏈',
     store: '儲存轉發',
     toProvider: '派發供應端',
     fromProvider: '供應端返回',

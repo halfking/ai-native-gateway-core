@@ -43,7 +43,7 @@ export default {
   base: "Draft base version",
   target: "Target version",
   digest: "Configuration digest",
-  fallback: "Local fallback — unpublished",
+  fallback: "Local fallback: unpublished",
   conflict:
     "Another administrator published a version. Your draft is preserved. Reload the current version explicitly before publishing again.",
   discard: "Reload the active version and discard this draft?",

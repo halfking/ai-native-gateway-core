@@ -63,7 +63,7 @@ export default {
       requests: '请求数据',
     },
     overview: {
-      sectionTitle: '基础信息 · 凭据统计',
+      sectionTitle: '基础信息：凭据统计',
       fields: {
         availability: '可用性',
         health: '健康',
@@ -127,7 +127,7 @@ export default {
       emptyHint: '请从左侧选择模型查看详情',
     },
     requestsTab: {
-      historySectionTitle: '请求数据 · 模型状态变化历史',
+      historySectionTitle: '请求数据：模型状态变化历史',
       historyEmpty: '点击「模型」tab 中的模型查看',
       historyRefresh: '↻ 刷新',
       historyLoading: '加载中...',
@@ -136,9 +136,9 @@ export default {
       historyColSource: '来源',
       historyColEvent: '事件',
       historyColDetail: '详情',
-      autoPrefix: '自动 · ', // 后接 scheduler/admin 等技术字段
-      manualPrefix: '手动 · ',
-      routingSectionTitle: '请求数据 · 最近路由决策 ({n}条)',
+      autoPrefix: '自动：', // 后接 scheduler/admin 等技术字段
+      manualPrefix: '手动：',
+      routingSectionTitle: '请求数据：最近路由决策 ({n}条)',
       routingRefresh: '↻ 刷新',
       routingLoading: '加载中...',
       routingNoEvents: '无路由决策记录',
@@ -223,7 +223,7 @@ export default {
   },
   chart: {
     allHealthy: '全部健康',
-    errorsWhenHealthy: '错误类型分布 · 全部健康',
+    errorsWhenHealthy: '错误类型分布：全部健康',
     errorsTitle: '错误类型分布',
     slidingStatsTotal: '总计: ',
     slidingStatsSuccess: '成功: ',

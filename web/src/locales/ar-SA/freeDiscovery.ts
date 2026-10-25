@@ -58,7 +58,7 @@ export default {
       delete: "حذف",
       deleteConfirm: "حذف القالب \"{name}\"؟ المهام ونتائج الاكتشاف الموجودة لن تتأثر.",
       deleted: "تم حذف القالب: {name}",
-      disabledScanHint: "القالب معطل — يرجى تمكينه قبل الفحص"
+      disabledScanHint: "القالب معطل: يرجى تمكينه قبل الفحص"
     },
   scan: {
       title: "بدء الاكتشاف",
@@ -81,7 +81,7 @@ export default {
       review: "مراجعة النتائج"
     },
   res: {
-      title: "النتائج · مهمة {id} · {provider}",
+      title: "النتائج, مهمة {id}, {provider}",
       pending: "بانتظار المراجعة",
       all: "الكل",
       model: "معرف النموذج",
@@ -121,7 +121,7 @@ export default {
       completed: "اكتملت في",
       detail: "التفاصيل",
       none: "لا سجلات استيراد بعد. أكمل استيراداً جماعياً في تبويب المهام والمراجعة وسيظهر هنا.",
-      detailTitle: "تفاصيل الاستيراد · مهمة {id} · {provider}",
+      detailTitle: "تفاصيل الاستيراد, مهمة {id}, {provider}",
       importedAt: "استُورد في"
     },
 }

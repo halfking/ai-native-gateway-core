@@ -1,18 +1,29 @@
 <script setup lang="ts">
-// StatCard.vue — 通用统计卡片（2026-09-12，方案 §4.5.3）
+// StatCard.vue — 通用统计卡片（2026-09-12 方案 §4.5.3；2026-10-24 重构）
 //
-// 统一全站两套平行实现：`.stat-card`（17 个文件）与 `.summary-card`
-// （4 个文件，summary-good/warn/bad 变体）。基础观感复用全局 style.css
-// 的 .stat-card / .stat-card--compact（零视觉回归），tone 用左侧语义色
-// 边框表达（对齐原 summary-* 与 stat-overview-card 的强调方式）。
+// ── 2026-10-24 为什么改（craft-floor 排版轮）──
+// 原形态是「巨数字 + 小标签 + 辅助统计 + 强调色」的 hero-metric 模板，
+// 外加一个 `icon?: string` 参数，注释里明写着「图标（emoji 或字符）」——
+// 即用 Unicode 字形冒充图标系统。这两条都是 craft-floor 点名的 AI 痕迹：
+//   · 「Unicode 字形或 emoji 顶替图标系统」= 硬禁；
+//   · 「大数字 + 小标签 + 辅助统计 + 强调色」= 页面骨架的懒默认。
+//
+// 改法（不是换皮，是换表达）：
+//   1. **删掉 icon 参数**。运维读的是「请求数 12,345」，不是「📥 请求数 12,345」。
+//      emoji 在这里是纯噪声，去掉后卡片安静下来，数字自己说话。
+//      （21 处调用点同步去掉 icon 属性；#spark 槽保留 —— 那是真的 7 天趋势，
+//        有数据职责，不是「用火花线充数」。）
+//   2. **tone 从 3px 彩色左边条改成标签前的一个状态点**。craft-floor 明禁卡片上的
+//      彩色侧边条；而状态点本身就是形状，天然是「颜色之外的第二信号」，
+//      状态不能只靠颜色区分这条也顺带满足了。
+//   3. **给数字补上语境**。`sub` 槽是「口径」位（同比 / 时间窗 / 异常指向），
+//      没有 sub 的调用点会退化成「一个没有出处的数字」，所以 sub 缺省时
+//      仍保留行位（min-height 稳定），避免同一行卡片高度跳动。
 //
 //   <StatCard :label="totalLabel" :value="total" />
 //   <StatCard :label="errorLabel" :value="n" tone="danger" sub="+12%" compact />
-//   <StatCard :label="…" icon="📥"><template #value>富内容</template></StatCard>
-//   <StatCard :label="…" icon="📈"><template #spark>迷你趋势（svg/canvas）</template></StatCard>
-//
-// 2026-09-30 统计 UI 优化轮：新增 icon（语义色图标块，参考看板式 KPI 大卡）
-// 与 #spark 槽（右侧迷你趋势）。两者均缺省不渲染，存量 17 处用法零影响。
+//   <StatCard :label="…"><template #value>富内容</template></StatCard>
+//   <StatCard :label="…"><template #spark>迷你趋势（svg/canvas）</template></StatCard>
 withDefaults(defineProps<{
   /** 卡片标签（已翻译字符串） */
   label: string
@@ -20,18 +31,15 @@ withDefaults(defineProps<{
   value?: string | number
   /** 数值下方的次级说明（同比/口径等） */
   sub?: string
-  /** 语义色：neutral 无边框，success/warning/danger 左侧色条 */
+  /** 语义色：neutral 无标记，success/warning/danger 标签前带状态点 */
   tone?: 'neutral' | 'success' | 'warning' | 'danger'
   /** 紧凑模式（对齐全局 .stat-card--compact：小内边距/灰底/11px） */
   compact?: boolean
-  /** 图标（emoji 或字符），提供后左侧渲染 tone 色图标块 */
-  icon?: string
 }>(), {
   value: '',
   sub: '',
   tone: 'neutral',
   compact: false,
-  icon: '',
 })
 </script>
 
@@ -41,10 +49,8 @@ withDefaults(defineProps<{
     :class="[
       compact && 'stat-card--compact',
       tone !== 'neutral' && `app-stat-card--${tone}`,
-      icon && 'app-stat-card--with-icon',
     ]"
   >
-    <div v-if="icon" class="app-stat-card__icon" :class="`app-stat-card__icon--${tone}`">{{ icon }}</div>
     <div class="app-stat-card__main">
       <div class="label app-stat-card__label">{{ label }}</div>
       <div class="value app-stat-card__value">
@@ -60,32 +66,32 @@ withDefaults(defineProps<{
 
 <style scoped>
 /* 基础 .stat-card/.stat-card--compact/.label/.value/.sub 观感来自全局
- * style.css（与存量 17 处使用完全一致），这里只补 tone 色条与响应式。 */
-.app-stat-card--success { border-inline-start: 3px solid var(--success); }
-.app-stat-card--warning { border-inline-start: 3px solid var(--warning); }
-.app-stat-card--danger  { border-inline-start: 3px solid var(--danger); }
+ * style.css（与存量用法完全一致），这里只补 tone 状态点与响应式。 */
 
-/* 图标形态（2026-09-30）：左侧语义色图标块 + 内容列 + 右侧 spark 槽 */
-.app-stat-card--with-icon {
-  display: flex;
-  gap: 12px;
-  align-items: flex-start;
-}
-.app-stat-card__main { min-width: 0; flex: 1; }
-.app-stat-card__icon {
-  width: 38px;
-  height: 38px;
-  border-radius: 10px;
-  flex: none;
+/* 状态点：标签前一个小圆点。
+   为什么不是左边条：craft-floor 明禁卡片上的 1px 以上彩色侧边条
+   （「同尺寸图标卡片网格」之外最扎眼的一处 AI 痕迹）。
+   为什么不是纯色块：状态不能只靠颜色区分 —— 圆点的形状本身就是第二信号，
+   色盲用户也能看出「这张卡带标记」。 */
+.app-stat-card__label {
   display: flex;
   align-items: center;
-  justify-content: center;
-  font-size: 18px;
+  gap: 6px;
 }
-.app-stat-card__icon--neutral { background: var(--bg-subtle); }
-.app-stat-card__icon--success { background: var(--success-soft); }
-.app-stat-card__icon--warning { background: var(--warning-soft); }
-.app-stat-card__icon--danger  { background: var(--danger-soft); }
+.app-stat-card--success .app-stat-card__label::before,
+.app-stat-card--warning .app-stat-card__label::before,
+.app-stat-card--danger  .app-stat-card__label::before {
+  content: '';
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex: none;
+}
+.app-stat-card--success .app-stat-card__label::before { background: var(--success); }
+.app-stat-card--warning .app-stat-card__label::before { background: var(--warning); }
+.app-stat-card--danger  .app-stat-card__label::before { background: var(--danger); }
+
+.app-stat-card__main { min-width: 0; flex: 1; }
 .app-stat-card__spark {
   align-self: flex-end;
   min-width: 72px;
@@ -101,7 +107,7 @@ withDefaults(defineProps<{
   margin-top: 2px;
 }
 
-/* 小屏：非紧凑卡数值从 22px 收敛到 18px，长数字不撑破单列布局 */
+/* 小屏：非紧凑卡数值从 24px 收敛到 18px，长数字不撑破单列布局 */
 @media (max-width: 480px) {
   .app-stat-card:not(.stat-card--compact) .app-stat-card__value {
     font-size: 18px;

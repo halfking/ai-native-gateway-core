@@ -11,7 +11,7 @@ export default {
     importCsv: 'Importer un CSV',
     autoInherit: 'Héritage automatique',
   },
-  readOnly: '📖 Vous êtes administrateur du locataire — mode lecture seule. La tarification des coûts amont est en lecture seule ; vous ne pouvez pas modifier ni importer.',
+  readOnly: '📖 Vous êtes administrateur du locataire: mode lecture seule. La tarification des coûts amont est en lecture seule ; vous ne pouvez pas modifier ni importer.',
   summary: {
     totalOffers: 'Total des offres',
     pricedIn: 'Tarifée (entrée)',
@@ -26,7 +26,7 @@ export default {
     tokenPlanSuffix: 'token_plan',
   },
   filter: {
-    modelTitle: 'Tarification des coûts · filtre de modèle',
+    modelTitle: 'Tarification des coûts: filtre de modèle',
     modelPlaceholder: 'Filtrer par modèle…',
     allProviders: 'Tous les fournisseurs',
     allBilling: 'Toutes les facturations',
@@ -123,7 +123,7 @@ export default {
     noChange: 'Aucun changement',
     saveFailed: 'Échec de l\'enregistrement',
     copied: 'Prix copié',
-    pasted: 'Collé — cliquez sur Enregistrer pour appliquer',
+    pasted: 'Collé: cliquez sur Enregistrer pour appliquer',
   },
   inherit: {
     title: 'Héritage automatique de la tarification',

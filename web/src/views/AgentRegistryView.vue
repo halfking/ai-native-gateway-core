@@ -608,7 +608,6 @@ onBeforeUnmount(() => {
 .stat-label {
   font-size: 11px;
   opacity: 0.7;
-  text-transform: uppercase;
   letter-spacing: 0.5px;
 }
 .stat-value {

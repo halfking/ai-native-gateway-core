@@ -206,18 +206,18 @@ const canDrillKeys = computed(() => isSuperAdmin())
       <template v-else-if="stats">
         <!-- KPI -->
         <div class="udd-kpis">
-          <StatCard :label="t('users.detail.kpiRequests', '请求数')" icon="📥" compact>
+          <StatCard :label="t('users.detail.kpiRequests', '请求数')" compact>
             <template #value>{{ fmtNum(stats.kpi.requests) }}</template>
             <template #sub>{{ t('users.detail.dailyAvg', '日均') }} {{ stats.days > 0 ? fmtNum(Math.round(stats.kpi.requests / stats.days)) : '-' }}</template>
           </StatCard>
-          <StatCard label="Token" icon="🔢" compact>
+          <StatCard label="Token" compact>
             <template #value>{{ fmtTokensCompact(stats.kpi.tokens) }}</template>
             <template #sub>{{ t('users.detail.topModel', '主力') }} {{ stats.top_models[0]?.name ?? '—' }}</template>
           </StatCard>
-          <StatCard :label="t('users.detail.kpiCredits', '积分消耗')" icon="🪙" compact tone="success">
+          <StatCard :label="t('users.detail.kpiCredits', '积分消耗')" compact tone="success">
             <template #value>{{ fmtNum(stats.kpi.credits) }}</template>
           </StatCard>
-          <StatCard :label="t('users.detail.kpiErrP95', '失败率 / P95')" icon="⏱️" compact tone="danger">
+          <StatCard :label="t('users.detail.kpiErrP95', '失败率 / P95')" compact tone="danger">
             <template #value>{{ (stats.kpi.error_rate * 100).toFixed(1) }}%<span class="udd-unit">/ {{ fmtMs(stats.kpi.latency_p95_ms) }}</span></template>
             <template #sub>{{ t('users.detail.failed', '失败') }} {{ fmtNum(stats.kpi.errors) }}</template>
           </StatCard>
@@ -367,8 +367,7 @@ const canDrillKeys = computed(() => isSuperAdmin())
   text-align: left;
   font-size: 10.5px;
   font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.01em;
   color: var(--muted);
   padding: 5px 6px;
   border-bottom: 1px solid var(--border);

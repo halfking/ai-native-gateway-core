@@ -3,7 +3,7 @@ export default {
   page: {
     title: '標準模型',
     desc: '我們為您的租戶開放的標準模型清單，依模型原廠分組。計費含輸入 / 輸出 / 快取讀 / 快取寫，皆按每百萬 Token 扣積分。',
-    filterTitle: '標準模型 · 篩選',
+    filterTitle: '標準模型：篩選',
     filterPlaceholder: '選擇標準模型…',
     modelCount: '{n} 個模型',
     refresh: '重新整理',

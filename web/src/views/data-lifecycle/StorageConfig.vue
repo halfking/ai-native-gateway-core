@@ -11,6 +11,7 @@ import {
   type MigrationRun,
 } from '../../api'
 import { confirmDialog } from '../../composables/useConfirmDialog'
+import { Refresh, CircleCheck, CircleClose } from '@element-plus/icons-vue'
 
 const { t } = useI18n()
 const config = ref<StorageConfig | null>(null)
@@ -282,9 +283,9 @@ function fmtNum(n?: number) {
       <div v-if="migration" class="migration-box" :class="{ running: isMigrating, failed: migration.status === 'failed', done: migration.status === 'succeeded' }">
         <div class="migration-header">
           <span class="migration-title">
-            <span v-if="isMigrating">🔄 正在迁移附件文件…</span>
-            <span v-else-if="migration.status === 'succeeded'">✅ 迁移完成</span>
-            <span v-else-if="migration.status === 'failed'">❌ 迁移失败</span>
+            <span v-if="isMigrating"><Refresh /> 正在迁移附件文件…</span>
+            <span v-else-if="migration.status === 'succeeded'"><CircleCheck /> 迁移完成</span>
+            <span v-else-if="migration.status === 'failed'"><CircleClose /> 迁移失败</span>
           </span>
           <span v-if="migration.run_id" class="migration-runid mono">{{ migration.run_id.slice(0, 16) }}</span>
         </div>

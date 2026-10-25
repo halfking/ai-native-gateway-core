@@ -41,7 +41,7 @@ export default {
     hint2: 'Completadas hace < 10 min: todavía en Redis',
     hint3: 'Ya volcadas a PostgreSQL: mostradas como respaldo',
 
-    hint4: 'If empty here, possible causes: flush not completed, or trace was not emitted',
+    hint4: 'Si aquí está vacío, las causas posibles son que el vaciado no terminó o que no se emitió el trace.',
   },
   aiPrompt: {
     button: '🤖 Generar prompt de IA',

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { getProviders, type Provider } from '../api'
+import { CaretBottom } from '@element-plus/icons-vue'
 
 const props = withDefaults(defineProps<{
   modelValue: string | number | null
@@ -124,7 +125,7 @@ onMounted(() => {
           title="清空"
           @click.stop="clearValue"
         >×</button>
-        <span class="pp-caret">▾</span>
+        <span class="pp-caret"><CaretBottom /></span>
       </span>
     </button>
 

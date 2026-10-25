@@ -62,12 +62,12 @@ export default {
     fingerprintTitle: "للتحقق مع النظام الأساسي للمنبع، ليس المفتاح الكامل",
     fingerprintUnparsed: "تعذر التحليل",
     viewErrorDetail: "TODO",
-    rowMeta: "#{id} · {trust}",
+    rowMeta: "#{id}: {trust}",
     cellUnset: "غير معين",
     noLimit: "غير محدود",
     slotUsage: "خانة {used}/{limit}",
     requestCountSuffix: "مرة",
-    addCredTitle: "إضافة بيانات اعتماد — {name}",
+    addCredTitle: "إضافة بيانات اعتماد: {name}",
     addCredApiKey: "مفتاح API",
     addCredLabel: "علامة (اختياري)",
     addCredLabelPlaceholder: "مثل: مفتاح الإنتاج",
@@ -277,7 +277,7 @@ export default {
     refreshing: "جاري قراءة البيانات من المزود…",
     refreshBtn: "قراءة من المزود",
     refreshTitle: "استدعاء واجهة المزود /v1/models لإضافة النماذج غير المخزنة",
-    routableLoadFailed: 'فشل تحميل ملخص قابلية التوجيه — المنطقة الفارغة أدناه لا تعني عدم وجود روابط غير قابلة للتوجيه',
+    routableLoadFailed: 'فشل تحميل ملخص قابلية التوجيه: المنطقة الفارغة أدناه لا تعني عدم وجود روابط غير قابلة للتوجيه',
     refreshLoading: "جاري القراءة…",
     clearBtn: "مسح",
     clearLoading: "جاري المسح…",
@@ -332,7 +332,7 @@ export default {
     drawerOutboundHint: "بعض المزودين (مثل Volcano Ark) يحتاجون إلى endpoint ID (مثل ep-20241227XXXX) كحقل نموذج، وليس الاسم الأصلي. في حالة عدم التكوين، سيتم تخطي الفحص (رمز الخطأ endpoint_id_required).",
     drawerOutboundPlaceholder: "ep-XXXXXXXX",
     drawerOutboundSend: "سيتم إرسال:",
-    drawerOutboundUnset: "غير معين — سيتم استخدام",
+    drawerOutboundUnset: "غير معين: سيتم استخدام",
     drawerSectionContextWindow: "نافذة السياق (رموز)",
     drawerContextWindowHint: "تجاوز على مستوى بيانات الاعتماد لهذه البيانات × النموذج. التسلسل: هذا التجاوز > تجاوز الكتالوج > الكتالوج. اتركه فارغًا، أدخل 0، أو انقر على «مسح» لإزالة التجاوز واستخدام قيمة الكتالوج. يُطبَّق التغيير فقط إذا قمت فعلاً بتعديل القيمة؛ حفظ الحقول الأخرى (مثل الاسم القياسي) لا يستبدل تجاوزًا قائمًا.",
     drawerContextWindowPlaceholder: "مثال 200000",
@@ -368,7 +368,7 @@ export default {
     phase2InOfferOnly: "✓ النموذج موجود في القائمة",
     checkFailedPrefix: "فشل طلب الفحص: {msg}",
     offerNotInList: "النموذج غير موجود في قائمة النماذج لبيانات الاعتماد هذه",
-    drawTitle: "offer #{id} · بيانات الاعتماد #{credId} {credLabel}",
+    drawTitle: "offer #{id}: بيانات الاعتماد #{credId} {credLabel}",
     drawToggleDisable: "تعطيل هذا الارتباط",
     drawToggleEnable: "تفعيل هذا الارتباط",
     drawToggleLoading: "جاري المعالجة…",
@@ -413,17 +413,17 @@ export default {
       chipUnavailable: "不可用"
     }
 ,
-    probeAllRecoveredHint: '✓ {n} model(s) probed OK; node_probe_state auto-recovered, routing candidates re-enabled',
+    probeAllRecoveredHint: '✓ تم فحص {n} من النماذج بنجاح، وأُعيد بناء node_probe_state تلقائيًا، وأُعيد تفعيل مرشحي التوجيه',
 
     resetNodeProbeBtn: 'Clear failed probes',
 
     resetNodeProbeLoading: 'Clearing…',
 
-    resetNodeProbeTitle: 'Clear node_probe_state rows where last_direct_ok=FALSE (force-recover routing). Use when Probe all shows OK but routing candidates remain blocked.',
+    resetNodeProbeTitle: 'احذف صفوف node_probe_state التي تكون فيها last_direct_ok=FALSE وأعد تفعيل التوجيه. استخدمه عندما تُظهر «فحص الكل» حالة OK مع بقاء مرشحي التوجيه محظورين.',
 
-    resetNodeProbeConfirm: 'Clear all failed node_probe_state rows for this provider?',
+    resetNodeProbeConfirm: 'هل تحذف كل الصفوف الفاشلة في node_probe_state لهذا المزوّد؟',
 
-    resetNodeProbeDone: '✓ Cleared {n} failed node_probe_state rows; routing candidates re-enabled',
+    resetNodeProbeDone: '✓ حُذف {n} صف فاشل في node_probe_state وأُعيد تفعيل مرشحي التوجيه',
   },
   settings: {
     overrideTitle: "🎛️ تكوين وضع التمرير",
@@ -504,7 +504,7 @@ export default {
     modelPlaceholder: "اختر نموذجًا…",
     modelPickerTitle: "تصفية نماذج سجلات المزود",
     credentialAll: "كل بيانات الاعتماد",
-    credentialsLoadFailed: 'فشل تحميل قائمة بيانات الاعتماد — تعني القائمة الفارغة عدم وجود سجلات بالضرورة',
+    credentialsLoadFailed: 'فشل تحميل قائمة بيانات الاعتماد: تعني القائمة الفارغة عدم وجود سجلات بالضرورة',
     credentialTitle: "بيانات الاعتماد",
     resultAll: "الكل",
     resultOk: "نجاح",
@@ -560,14 +560,14 @@ export default {
     credColModels: "فحص النماذج",
     credColChat: "فحص Chat",
     probeFailed: "فشل",
-    probeMetaModels: "{status} · {count} نماذج · {latency}ms",
+    probeMetaModels: "{status}, {count} نماذج, {latency}ms",
     // 2026-09-04: non-JSON probe hint (parity backfill).
-    probeNonJson: "{status} · استجابة غير JSON",
-    probeMetaChat: "{status} · {latency}ms"
+    probeNonJson: "{status}: استجابة غير JSON",
+    probeMetaChat: "{status}: {latency}ms"
   },
   probe: {
     consensusTitle: "آلية التوافق",
-    consensusDesc: "{n} نجاح متتالي → وضع علامة تم الاستعادة · {n} فشل متتالي → تأكيد الفشل (إيقاف الفحص)",
+    consensusDesc: "{n} نجاح متتالي → وضع علامة تم الاستعادة: {n} فشل متتالي → تأكيد الفشل (إيقاف الفحص)",
     consensusFallback: "فاصل التراجع: 1m → 5m → 15m → 60m (تدريجي)",
     refresh: "تحديث",
     refreshLoading: "…",
@@ -612,7 +612,7 @@ export default {
       healthyConfirmed: "تم الاستعادة",
       brokenConfirmed: "تأكيد الفشل"
     },
-    historyMeta: "آخر 100 · scheduler تلقائي / manual يدوي",
+    historyMeta: "آخر 100: scheduler تلقائي / manual يدوي",
     endpointIdBadge: "يتطلب تكوين endpoint ID",
     endpointIdDetail: "يجب استخدام deployment endpoint ID (مثل <code>ep-XXXXXXXX</code>) لاستدعاء هذا النموذج (مثل Volcano Ark minimax-m3 / glm-5.1)، وليس اسم النموذج الأصلي. يرجى الانتقال إلى",
     endpointIdLink: "قائمة النماذج → تحرير outbound_model_name",

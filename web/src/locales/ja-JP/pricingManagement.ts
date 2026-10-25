@@ -26,7 +26,7 @@ export default {
     tokenPlanSuffix: 'token_plan',
   },
   filter: {
-    modelTitle: 'コスト価格 · モデルフィルター',
+    modelTitle: 'コスト価格：モデルフィルター',
     modelPlaceholder: 'モデルフィルターを選択…',
     allProviders: 'すべてのプロバイダー',
     allBilling: 'すべての課金',

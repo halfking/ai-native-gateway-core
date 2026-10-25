@@ -26,7 +26,7 @@ export default {
     tokenPlanSuffix: 'token_plan',
   },
   filter: {
-    modelTitle: 'تكلفة التسعير · تصفية النماذج',
+    modelTitle: 'تكلفة التسعير: تصفية النماذج',
     modelPlaceholder: 'اختر نموذجًا للتصفية…',
     allProviders: 'كل المزودين',
     allBilling: 'كل الفوترة',

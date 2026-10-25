@@ -3,7 +3,7 @@ export default {
 
   // License Management
   license: {
-    title: 'License管理',
+    title: 'License 管理',
     create: '創建License',
     createTitle: '創建新License',
     createSuccess: 'License創建成功',
@@ -217,7 +217,7 @@ export default {
 
     rolloutGate: '灰度门禁',
 
-    rolloutTitle: '灰度门禁 · {version}',
+    rolloutTitle: '灰度门禁：{version}',
 
     rolloutRuleStatus: '规则状态',
 
@@ -291,7 +291,7 @@ export default {
       collectLogs: '收集日誌',
     },
 
-    lastCommand: '最近命令 {id} · 状态：{status}',
+    lastCommand: '最近命令 {id}：状态：{status}',
 
     alerts: {
       title: '运维告警',

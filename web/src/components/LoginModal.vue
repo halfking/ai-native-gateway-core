@@ -8,6 +8,7 @@ import { locationFromInternalPath } from '../utils/safeRedirect'
 import { detectTheme, logoSrc } from '../theme'
 import { SITE_LOGO_SIZE, SITE_TITLE } from '../config/brand'
 import AppModal from './ui/AppModal.vue'
+import { Close } from '@element-plus/icons-vue'
 
 const brandLogo = ref(logoSrc())
 let logoObserver: MutationObserver | null = null
@@ -123,7 +124,7 @@ function onModelUpdate(v: boolean) {
         </div>
       </div>
       <button type="button" class="btn btn-ghost btn-sm login-modal__close" aria-label="关闭" @click="close">
-        ✕
+        <Close />
       </button>
     </div>
 

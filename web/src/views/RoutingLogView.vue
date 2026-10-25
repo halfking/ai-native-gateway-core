@@ -565,7 +565,6 @@ onUnmounted(() => { if (refreshTimer) clearInterval(refreshTimer) })
   font-size: 10px;
   color: var(--muted);
   font-weight: 600;
-  text-transform: uppercase;
 }
 
 .error-pre {

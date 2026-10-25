@@ -3,6 +3,7 @@ import { ref, computed } from 'vue'
 import type { Approver } from '../api/approval'
 import { confirmDialog } from '../composables/useConfirmDialog'
 import { useI18n } from 'vue-i18n'
+import { Plus, Message, EditPen, Delete, Close } from '@element-plus/icons-vue'
 
 const props = defineProps<{
   modelValue: Approver[]
@@ -126,7 +127,7 @@ function moveDown(index: number) {
     <div class="header">
       <h3>审批人列表</h3>
       <button class="btn btn-primary" @click="openAddDialog">
-        <span>➕</span> 添加审批人
+        <Plus /> 添加审批人
       </button>
     </div>
 
@@ -147,7 +148,7 @@ function moveDown(index: number) {
             <span class="approver-role">{{ approver.role }}</span>
             <span class="priority-badge">优先级: {{ approver.priority + 1 }}</span>
           </div>
-          <div class="approver-email">📧 {{ approver.email }}</div>
+          <div class="approver-email"><Message /> {{ approver.email }}</div>
         </div>
 
         <div class="approver-actions">
@@ -180,14 +181,14 @@ function moveDown(index: number) {
             @click="openEditDialog(index)"
             title="编辑"
           >
-            ✏️
+            <EditPen />
           </button>
           <button
             class="btn-icon btn-danger"
             @click="removeApprover(index)"
             title="删除"
           >
-            🗑️
+            <Delete />
           </button>
         </div>
       </div>
@@ -198,7 +199,7 @@ function moveDown(index: number) {
       <div class="dialog">
         <div class="dialog-header">
           <h3>{{ editingIndex !== null ? '编辑审批人' : '添加审批人' }}</h3>
-          <button class="btn-close" @click="showDialog = false">✕</button>
+          <button class="btn-close" @click="showDialog = false"><Close /></button>
         </div>
 
         <div class="dialog-body">

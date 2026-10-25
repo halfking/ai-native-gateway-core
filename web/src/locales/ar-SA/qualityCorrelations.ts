@@ -1,7 +1,7 @@
 // Auto-synced from en-US (ar-SA)
 export default {
   title: 'Quality Correlations',
-  subtitle: 'Cross-references request features with outcomes (success, latency, quality).',
+  subtitle: 'يقارن خصائص الطلب بالنتائج (النجاح، زمن الاستجابة، الجودة).',
   filter: {
     window: 'Window',
     bucketBy: 'Bucket by',
@@ -25,7 +25,7 @@ export default {
   },
   breakdown: {
     title: 'Breakdown by {by}',
-    empty: 'No data — try lowering the days or expanding the filter.',
+    empty: 'لا توجد بيانات. قلّل عدد الأيام أو وسّع نطاق التصفية.',
     headers: {
       bucket: 'Bucket',
       samples: 'Samples',
@@ -36,14 +36,14 @@ export default {
     },
   },
   insights: {
-    title: 'What predicts quality? (Pearson correlation)',
-    hint: 'Each predictor is correlated with avg_quality across buckets.',
+    title: 'ما الذي يتنبأ بالجودة؟ (ارتباط بيرسون)',
+    hint: 'كل عامل تنبؤ يُقارن مع avg_quality عبر المجموعات.',
     empty: 'Not enough samples for insights.',
     buckets: '{n} buckets',
     samples: '{n} samples',
 
-    emptyInsufficient: 'Need at least 30 samples to compute meaningful correlations.',
+    emptyInsufficient: 'يلزم 30 عينة على الأقل لحساب ارتباطات ذات معنى.',
 
-    emptyUnexpected: 'No insights (unexpected). Check server logs.',
+    emptyUnexpected: 'لا توجد نتائج (غير متوقع). راجع سجلات الخادم.',
   },
 }

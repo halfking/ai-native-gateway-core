@@ -2,6 +2,7 @@
 import { ref, computed, onMounted, onUnmounted, nextTick } from 'vue'
 import { getHealth, getReadyz, getBackgroundTasksStatus, type HealthResponse, type BackgroundTasksStatus } from '../api/system'
 import { isAuthenticated } from '../store'
+import { Warning } from '@element-plus/icons-vue'
 
 const health = ref<HealthResponse | null>(null)
 const bgTasks = ref<BackgroundTasksStatus | null>(null)
@@ -208,7 +209,7 @@ onUnmounted(() => {
             <div v-if="loading && !health" class="status-loading">加载中...</div>
 
             <div v-else-if="error" class="status-error">
-              <div class="error-icon">⚠️</div>
+              <div class="error-icon"><Warning /></div>
               <div>{{ error }}</div>
             </div>
 

@@ -159,13 +159,13 @@ function roleTone(role: unknown): string {
   margin-bottom: 12px;
   padding: 8px 10px;
   border-radius: 6px;
-  border-left: 3px solid var(--border);
+  border: 1px solid var(--border);
   background: var(--bg-subtle, var(--surface-secondary));
 }
-.msg-block--user { border-left-color: var(--kx-primary); background: color-mix(in srgb, var(--kx-primary) 7%, transparent); }
-.msg-block--assistant { border-left-color: var(--kx-success); background: color-mix(in srgb, var(--kx-success) 7%, transparent); }
-.msg-block--system { border-left-color: var(--kx-warning); background: color-mix(in srgb, var(--kx-warning) 8%, transparent); }
-.msg-block--tool { border-left-color: var(--muted); }
+.msg-block--user { border-color: var(--kx-primary); background: color-mix(in srgb, var(--kx-primary) 7%, transparent); }
+.msg-block--assistant { border-color: var(--kx-success); background: color-mix(in srgb, var(--kx-success) 7%, transparent); }
+.msg-block--system { border-color: var(--kx-warning); background: color-mix(in srgb, var(--kx-warning) 8%, transparent); }
+.msg-block--tool { border-color: var(--muted); }
 .msg-role { font-size: 12px; font-weight: 600; margin-bottom: 4px; }
 .inline-media {
   display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 6px;
@@ -192,7 +192,7 @@ function roleTone(role: unknown): string {
 .linkish { margin-top: 4px; }
 .reply-block {
   margin-top: 16px; padding: 8px 10px; border-radius: 6px;
-  border-left: 3px solid var(--kx-success);
+  border: 1px solid var(--kx-success);
   background: color-mix(in srgb, var(--kx-success) 7%, transparent);
 }
 .text-muted { color: var(--muted); font-size: 13px; }

@@ -10,6 +10,7 @@ import {
   type TurnsFilterState,
   type TurnsGroupBy,
 } from './turnsListHelpers'
+import { CaretRight } from '@element-plus/icons-vue'
 
 const props = defineProps<{
   state: TurnsFilterState
@@ -143,7 +144,7 @@ function onPresetChange(value: string) {
       <button class="btn btn-secondary" type="button" @click="emit('update:advancedExpanded', !advancedExpanded)">
         更多筛选
         <span v-if="advancedCount" class="adv-count">{{ advancedCount }}</span>
-        <span class="filter-caret" :class="{ open: advancedExpanded }">▸</span>
+        <span class="filter-caret" :class="{ open: advancedExpanded }"><CaretRight /></span>
       </button>
     </div>
 

@@ -57,7 +57,7 @@ export default {
   kpiPersons: 'Personnes actives',
   kpiPerPersonReq: 'Requêtes par personne',
   kpiCreditsPerReq: 'Crédits / requête',
-  qualitySub: 'fournisseurs · succès × réactivité',
+  qualitySub: 'fournisseurs: succès × réactivité',
   coveragePrefix: 'couvre',
   reqCostTrend: 'Tendance requêtes & coût',
   reqCreditsTrend: 'Tendance requêtes & crédits',
@@ -71,7 +71,7 @@ export default {
   legendCacheRead: 'Lecture cache',
   legendCacheWrite: 'Écriture cache',
   legendHitRate: 'Taux de hit',
-  distHint: 'Cliquer une ligne pour explorer · barres = part de la métrique courante',
+  distHint: 'Cliquer une ligne pour explorer: barres = part de la métrique courante',
   byToken: 'Par tokens',
   byMoney: 'Par dépense',
   sharePct: 'Part',
@@ -117,5 +117,5 @@ export default {
   noData: 'Aucune donnée',
   legacyCoverage: "Jours couverts uniquement par des instantanés hérités :",
   legacyCoverageRest:
-    " — ces jours ne comptent que dans le total et la série journalière ; les dimensions identifiant/utilisateur/clé API apparaissent après remplissage (« Relancer le jour de fin », jour par jour)",
+    ": ces jours ne comptent que dans le total et la série journalière ; les dimensions identifiant/utilisateur/clé API apparaissent après remplissage (« Relancer le jour de fin », jour par jour)",
 }

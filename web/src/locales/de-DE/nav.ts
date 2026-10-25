@@ -82,7 +82,7 @@ export default {
     examples: "Beispiele",
     chat: "Chat",
     opsOverview: "Ops Overview",
-    opsLicenses: "License管理",
+    opsLicenses: "Lizenzverwaltung",
     opsDownloads: "Releases & Downloads",
     opsFaults: "故障管理",
     opsAutoUpdate: "自动更新",

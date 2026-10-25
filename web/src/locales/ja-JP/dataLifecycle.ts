@@ -411,7 +411,7 @@ export default {
       previousLabel: '比較期 ({period})',
       change: '変化',
       significant: '有意',
-      meta: '{requests} リクエスト · {models} モデル',
+      meta: '{requests} リクエスト：{models} モデル',
     },
     attribution: {
       title: 'コスト帰属',

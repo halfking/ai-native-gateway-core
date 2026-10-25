@@ -1956,8 +1956,8 @@ onUnmounted(() => stopPoll())
   border-radius: 4px;
   background: var(--bg);
 }
-.layer-panel.l1-accent { border-left: 3px solid var(--accent); }
-.layer-panel.l2-accent { border-left: 3px solid var(--success); }
+.layer-panel.l1-accent { border: 1px solid var(--accent); }
+.layer-panel.l2-accent { border: 1px solid var(--success); }
 .l2-meta { font-size: 10px; color: var(--muted); margin-bottom: 4px; word-break: break-all; }
 .l2-meta.mono { font-family: ui-monospace, monospace; font-size: 9px; }
 .l2-creds { display: flex; flex-wrap: wrap; gap: 4px; }
@@ -1982,7 +1982,7 @@ onUnmounted(() => stopPoll())
 }
 .policy-block { flex: 1; min-width: 220px; }
 .policy-divider { width: 1px; background: var(--border); align-self: stretch; min-height: 60px; }
-.block-label { font-size: 10px; color: var(--muted); margin-bottom: 4px; font-weight: 600; text-transform: uppercase; letter-spacing: .03em; }
+.block-label { font-size: 10px; color: var(--muted); margin-bottom: 4px; font-weight: 600;letter-spacing: 0.01em; }
 .inline-fields {
   display: flex;
   flex-wrap: wrap;
@@ -2100,7 +2100,7 @@ onUnmounted(() => stopPoll())
 .sim-step.l2.win { background: var(--success-bg); color: var(--success); font-weight: 600; }
 
 .dist-mini { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
-.dist-col h4 { font-size: 9px; text-transform: uppercase; color: var(--muted); margin: 0 0 4px; letter-spacing: .04em; }
+.dist-col h4 { font-size: 9px;color: var(--muted); margin: 0 0 4px; letter-spacing: 0.01em; }
 .dist-row {
   display: grid;
   grid-template-columns: 56px 1fr 24px;

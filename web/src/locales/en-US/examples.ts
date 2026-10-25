@@ -35,11 +35,11 @@ export default {
   currentModel: 'Current model:',
   baseUrlLabel: 'Base URL:',
   example: {
-    curl: 'cURL — Chat Completions',
+    curl: 'cURL: Chat Completions',
     python: 'Python (openai SDK)',
-    stream: 'Python — Streaming output',
+    stream: 'Python: Streaming output',
     js: 'JavaScript / TypeScript (openai SDK)',
-    models: 'cURL — List models',
+    models: 'cURL: List models',
   },
   button: {
     copy: 'Copy',
@@ -84,7 +84,7 @@ export default {
         'Model: enter a supported model ID (e.g. glm-4-flash), or use "auto" to enable auto routing',
         'After saving, pick this provider\'s model from the chat window',
       ],
-      mcp: 'MCP: Settings → MCP Servers → Import config. Memora endpoint https://[MCP_DOMAIN]/memora/mcp, with header Authorization: Bearer <MEMORA_API_KEY> (separate from LLM key — request the memora scope in ACC).',
+      mcp: 'MCP: Settings → MCP Servers → Import config. Memora endpoint https://[MCP_DOMAIN]/memora/mcp, with header Authorization: Bearer <MEMORA_API_KEY> (separate from LLM key. Request the memora scope in ACC).',
     },
     cursor: {
       name: 'Cursor IDE',
@@ -114,10 +114,10 @@ export default {
         'In extension settings pick "OpenAI Compatible" as the provider',
         'Base URL: {url}',
         'API key: your sk-* gateway key',
-        'Model: same as Cherry Studio — auto or a specific model ID',
+        'Model: same as Cherry Studio: auto or a specific model ID',
         'Optional header: X-Client-Profile: roocode',
       ],
-      mcp: 'VS Code / Roo Code MCP: configure a streamable-http endpoint in mcp.json — see docs/clients/roocode-mcp.json in the repo.',
+      mcp: 'VS Code / Roo Code MCP: configure a streamable-http endpoint in mcp.json. See docs/clients/roocode-mcp.json in the repo.',
     },
   },
   // 2026-07-07: top-level key aliases (ExamplesView.vue direct references)

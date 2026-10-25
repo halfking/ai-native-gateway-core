@@ -345,7 +345,7 @@ onBeforeUnmount(() => {
 }
 .fn__conf {
   border: 1px solid var(--app-border);
-  border-left: 3px solid var(--app-success);
+  border: 1px solid var(--app-success);
   border-radius: var(--app-radius);
   background: var(--app-surface);
   padding: var(--app-space-3);
@@ -353,7 +353,7 @@ onBeforeUnmount(() => {
 }
 /* ★ 近似数据不能和精确数据长得一样 —— 左边框换色是最便宜也最难忽略的信号。 */
 .fn__conf--approx {
-  border-left-color: var(--app-warning);
+  border-color: var(--app-warning);
 }
 .fn__conf-head {
   display: flex;
