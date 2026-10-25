@@ -131,8 +131,7 @@ function modelsTitle(c: CredentialRow): string {
 .data-table.dense thead th {
   padding: 5px 8px;
   font-size: 10px;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.01em;
   color: var(--muted);
   border-bottom: 1px solid var(--border);
   background: var(--bg-subtle);

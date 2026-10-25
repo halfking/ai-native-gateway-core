@@ -1596,7 +1596,7 @@ watch(activeTab, async (tab) => {
   margin-bottom: 6px;
 }
 
-.ns-label { font-size: 11px; font-weight: 600; color: var(--text-muted); text-transform: uppercase; }
+.ns-label { font-size: 11px; font-weight: 600; color: var(--text-muted);}
 .tag-list { display: flex; flex-wrap: wrap; gap: 4px; }
 .tag-chip {
   border: 1px solid var(--border); background: var(--bg);
@@ -1777,7 +1777,6 @@ watch(activeTab, async (tab) => {
   font-size: 12px;
   font-weight: 600;
   color: var(--text-muted);
-  text-transform: uppercase;
 }
 
 .provider-cell {

@@ -531,7 +531,7 @@ watch(() => props.modelValue, () => {
 .mp-section + .mp-section { margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--border); }
 .mp-section-title {
   margin: 0 0 10px; font-size: 12px; font-weight: 600;
-  color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em;
+  color: var(--muted);letter-spacing: 0.01em;
 }
 
 .mp-grid {

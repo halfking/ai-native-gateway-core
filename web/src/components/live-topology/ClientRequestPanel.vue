@@ -279,15 +279,15 @@ function latency(value: number | null | undefined): string {
 }
 
 .cp__row.is-success {
-  border-left-color: var(--kx-success);
+  border-color: var(--kx-success);
 }
 
 .cp__row.is-failure {
-  border-left-color: var(--kx-danger);
+  border-color: var(--kx-danger);
 }
 
 .cp__row.is-in-progress {
-  border-left-color: var(--kx-primary);
+  border-color: var(--kx-primary);
 }
 
 /* 探测流量：与普通请求区分开（探针失败不该被当成真实业务故障看） */

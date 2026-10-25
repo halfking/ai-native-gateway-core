@@ -1490,13 +1490,13 @@ summary:focus-visible {
 }
 .error-banner {
   padding: 12px;
-  border-inline-start: 3px solid var(--danger);
+  border: 1px solid var(--danger);
   background: var(--bg-secondary);
   color: var(--danger);
 }
 .notice {
   padding: 12px;
-  border-inline-start: 3px solid var(--accent);
+  border: 1px solid var(--accent);
   background: var(--bg-secondary);
 }
 .warning {

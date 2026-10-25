@@ -71,7 +71,7 @@ defineProps<{
 .stage-name { font-size: 12px; font-weight: 600; color: var(--text-primary); }
 .stage-meta { font-size: 11px; color: var(--text-muted); font-variant-numeric: tabular-nums; }
 .stage-dir { display: flex; flex-direction: column; gap: 3px; }
-.dir-lbl { font-size: 10px; color: var(--text-secondary); text-transform: uppercase; }
+.dir-lbl { font-size: 10px; color: var(--text-secondary);}
 .pii-icon {
   margin-left: 4px;
   font-size: 10px;

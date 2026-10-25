@@ -89,17 +89,17 @@ function credentialLabel(id: number): string {
   grid-template-columns: 40px minmax(0, 1fr) 90px 100px auto;
   gap: 10px;
   padding: 4px 6px;
-  border-left: 3px solid transparent;
+  border: 1px solid transparent;
   border-radius: 4px;
   background: var(--bg-subtle, var(--kx-bg));
   font-size: 12px;
 }
-.attempt--ok { border-left-color: var(--kx-success); }
+.attempt--ok { border-color: var(--kx-success); }
 .attempt--err {
-  border-left-color: var(--kx-danger);
+  border-color: var(--kx-danger);
   background: color-mix(in srgb, var(--kx-danger) 6%, transparent);
 }
-.attempt--warn { border-left-color: var(--kx-warning); }
-.attempt--info { border-left-color: var(--kx-primary); }
+.attempt--warn { border-color: var(--kx-warning); }
+.attempt--info { border-color: var(--kx-primary); }
 .no-attempts { margin: 12px 0 0; }
 </style>

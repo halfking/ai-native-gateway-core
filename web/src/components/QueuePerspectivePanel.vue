@@ -1756,10 +1756,10 @@ function requestTitleTooltip(request: LiveRequest): string {
 .qp-dot--ok { background:var(--kx-success); opacity:1; }
 .qp-dot--bad { background:var(--kx-danger); opacity:1; }
 .qp-dot--unknown { background:var(--kx-text-secondary); opacity:.4; }
-.qp-node-card--ok { border-left-color:var(--kx-success); }
-.qp-node-card--warn { border-left-color:var(--kx-warning); }
-.qp-node-card--danger { border-left-color:var(--kx-danger); }
-.qp-node-card--disabled { border-left-color:var(--kx-text-secondary); opacity:.72; }
+.qp-node-card--ok { border-color: var(--kx-success); }
+.qp-node-card--warn { border-color: var(--kx-warning); }
+.qp-node-card--danger { border-color: var(--kx-danger); }
+.qp-node-card--disabled { border-color: var(--kx-text-secondary); opacity:.72; }
 .qp-retry { margin-left:auto; border:0; background:transparent; color:var(--kx-text-secondary); cursor:pointer; font-size:11px; }
 .qp-model-scope-state,.qp-model-detail-hint { color:var(--kx-text-secondary); font-size:11px; padding:8px 10px; margin:0; }
 .qp-model-scope-state--error { color:var(--kx-danger); }

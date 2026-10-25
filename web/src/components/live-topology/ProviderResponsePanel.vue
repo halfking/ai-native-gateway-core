@@ -198,15 +198,15 @@ function tokens(value: number | null | undefined): string {
 }
 
 .pp__row.is-success {
-  border-left-color: var(--kx-success);
+  border-color: var(--kx-success);
 }
 
 .pp__row.is-failure {
-  border-left-color: var(--kx-danger);
+  border-color: var(--kx-danger);
 }
 
 .pp__row.is-in-progress {
-  border-left-color: var(--kx-primary);
+  border-color: var(--kx-primary);
 }
 
 .pp__row:hover,

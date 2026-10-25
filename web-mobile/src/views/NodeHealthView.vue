@@ -206,7 +206,7 @@ function goBack(): void {
 .nh__event {
   position: relative;
   padding: var(--app-space-2) 0 var(--app-space-2) var(--app-space-4);
-  border-left: 2px solid var(--app-border);
+  border: 1px solid var(--app-border);
   margin-left: 6px;
 }
 .nh__event-head {

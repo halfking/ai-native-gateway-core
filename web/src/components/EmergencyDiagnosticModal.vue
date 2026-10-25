@@ -611,7 +611,7 @@ watch(() => props.visible, (visible) => {
 .diag-analysis {
   padding: 12px;
   background: color-mix(in srgb, var(--danger) 12%, transparent);
-  border-left: 3px solid var(--danger);
+  border: 1px solid var(--danger);
   border-radius: 4px;
   font-size: 13px;
   color: var(--text);
@@ -621,7 +621,7 @@ watch(() => props.visible, (visible) => {
 .diag-recommendation {
   padding: 12px;
   background: color-mix(in srgb, var(--accent) 18%, transparent);
-  border-left: 3px solid var(--accent);
+  border: 1px solid var(--accent);
   border-radius: 4px;
   font-size: 13px;
   color: var(--text);

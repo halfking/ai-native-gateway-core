@@ -346,7 +346,7 @@ onBeforeUnmount(() => {
 }
 .dl__part {
   padding: 6px 8px;
-  border-left: 2px solid var(--app-border);
+  border: 1px solid var(--app-border);
   margin-bottom: 4px;
 }
 .dl__part-head {

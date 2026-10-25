@@ -152,7 +152,7 @@ onUnmounted(() => {
 .sms-loading { color: var(--text-muted); padding: var(--space-3); }
 .sms-empty { color: var(--text-muted); padding: var(--space-3); font-style: italic; }
 .sms-section { background: var(--bg-surface); border: 1px solid var(--border); border-radius: var(--radius); padding: var(--space-3); margin-bottom: var(--space-3); }
-.sms-section-running { border-left: 3px solid var(--kx-primary, var(--app-primary, #5b8def)); }
+.sms-section-running { border: 1px solid var(--kx-primary, var(--app-primary, #5b8def)); }
 .sms-section-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: var(--space-2); }
 .sms-section-title { font-size: var(--text-md); font-weight: var(--font-semibold); }
 .sms-status-badge { padding: 2px 8px; border-radius: 4px; font-size: var(--text-sm); }

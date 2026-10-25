@@ -603,7 +603,7 @@ onUnmounted(() => {
   margin-top: 8px;
   padding: 6px 10px;
   background: var(--warning-soft);
-  border-left: 2px solid var(--warning);
+  border: 1px solid var(--warning);
   color: var(--warning);
   font-size: 12px;
   border-radius: 4px;

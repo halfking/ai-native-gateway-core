@@ -334,7 +334,6 @@ onMounted(async () => {
   <div class="ua-page">
     <header class="ua-page__header">
       <div>
-        <p class="eyebrow">UPDATE &amp; ACTIVATE</p>
         <h1>更新与激活</h1>
         <p>{{ SITE_TITLE }} — 站点信息、一键激活、版本升级与已开通模块。</p>
       </div>
@@ -442,13 +441,6 @@ onMounted(async () => {
   gap: 16px;
   align-items: flex-start;
   margin-bottom: 20px;
-}
-.eyebrow {
-  margin: 0 0 6px;
-  color: var(--accent-h);
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.12em;
 }
 .ua-page__header h1 { margin: 0 0 8px; font-size: 24px; }
 .ua-page__header p { margin: 0; color: var(--muted); font-size: 14px; line-height: 1.6; }

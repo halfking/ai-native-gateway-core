@@ -333,8 +333,7 @@ async function runUpgradeFlow(version: string, item: CatalogItem) {
 .banner-label {
   font-size: 11px;
   color: var(--muted, var(--muted));
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
+  letter-spacing: 0.01em;
 }
 .banner-value {
   font-size: 18px;
@@ -354,7 +353,7 @@ async function runUpgradeFlow(version: string, item: CatalogItem) {
   padding: 8px 12px;
   margin-bottom: 12px;
   background: color-mix(in srgb, var(--warning) 12%, transparent);
-  border-left: 3px solid var(--kx-warning, var(--warning));
+  border: 1px solid var(--kx-warning, var(--warning));
   border-radius: 4px;
   font-size: 13px;
   color: var(--kx-warning, var(--warning-dark));

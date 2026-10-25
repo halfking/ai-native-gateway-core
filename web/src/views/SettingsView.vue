@@ -841,7 +841,7 @@ onMounted(() => {
   margin-top: 8px;
   padding: 8px 12px;
   background: color-mix(in srgb, var(--accent) 5%, transparent);
-  border-left: 3px solid var(--accent);
+  border: 1px solid var(--accent);
   border-radius: 4px;
 }
 
@@ -914,7 +914,7 @@ onMounted(() => {
   padding: 16px;
   background: color-mix(in srgb, var(--warning) 10%, transparent);
   border: 1px solid color-mix(in srgb, var(--warning) 30%, transparent);
-  border-left: 4px solid var(--warning);
+  border: 1px solid var(--warning);
   border-radius: 8px;
 }
 
@@ -988,7 +988,7 @@ onMounted(() => {
   margin-top: 12px;
   padding: 8px 12px;
   background: color-mix(in srgb, var(--accent) 8%, transparent);
-  border-left: 3px solid var(--accent);
+  border: 1px solid var(--accent);
   border-radius: 4px;
   font-size: 13px;
 }

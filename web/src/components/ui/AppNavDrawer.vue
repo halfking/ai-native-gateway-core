@@ -201,7 +201,6 @@ function itemLabel(item: ResolvedItem): string {
   font-size: 12.5px;
   font-weight: 700;
   letter-spacing: 0.02em;
-  text-transform: uppercase;
   cursor: pointer;
   font-family: inherit;
   transition: background 0.15s ease, color 0.15s ease;

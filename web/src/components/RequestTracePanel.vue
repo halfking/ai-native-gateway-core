@@ -615,7 +615,7 @@ onUnmounted(() => {
   margin: 0;
   background: var(--bg);
   border: 1px solid var(--border);
-  border-left: 2px solid var(--warning);
+  border: 1px solid var(--warning);
   border-radius: 4px;
   font-size: 11px;
   max-width: 100%;
@@ -640,7 +640,7 @@ onUnmounted(() => {
   margin: 4px 0;
   background: var(--bg);
   border: 1px solid var(--border);
-  border-left: 2px solid var(--danger);
+  border: 1px solid var(--danger);
   border-radius: 4px;
   font-size: 12px;
   color: var(--text);
@@ -666,8 +666,7 @@ onUnmounted(() => {
 .summary-item .label {
   font-size: 10px;
   color: var(--muted);
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.01em;
 }
 .summary-item strong {
   font-size: 12px;
@@ -794,7 +793,7 @@ onUnmounted(() => {
   gap: 6px;
   background: var(--bg);
   border: 1px solid var(--border);
-  border-left: 2px solid var(--danger);
+  border: 1px solid var(--danger);
   color: var(--text);
   padding: 4px 8px;
   border-radius: 3px;
@@ -833,7 +832,7 @@ onUnmounted(() => {
   padding: 6px 10px;
   background: var(--bg);
   border: 1px solid var(--border);
-  border-left: 2px solid var(--warning);
+  border: 1px solid var(--warning);
   border-radius: 3px;
   font-size: 11px;
 }

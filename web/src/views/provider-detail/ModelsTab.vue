@@ -523,7 +523,7 @@ load()
     </div>
 
     <!-- 路由阻塞诊断 (2026-07-24) -->
-    <div class="card" style="margin-bottom:12px;border-left:3px solid var(--warning)">
+    <div class="card" style="margin-bottom:12px;border: 1px solid var(--warning)">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
         <h5 style="margin:0">路由阻塞诊断</h5>
         <div style="display:flex;gap:8px">

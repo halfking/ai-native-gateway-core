@@ -337,7 +337,7 @@ onBeforeUnmount(() => {
   margin-bottom: var(--app-space-2);
 }
 .cs__item--contra {
-  border-left: 3px solid var(--app-warning);
+  border: 1px solid var(--app-warning);
 }
 .cs__item-head {
   display: flex;

@@ -300,8 +300,7 @@ async function showNodeQr(): Promise<void> {
 
 .account__group-label {
   font-size: 0.72rem;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
+  letter-spacing: 0.01em;
   color: var(--app-text-muted);
   margin-bottom: var(--app-space-1);
 }

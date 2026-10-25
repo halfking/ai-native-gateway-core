@@ -133,12 +133,12 @@ function currentNode(requestId?: string): number | null {
 .trail-latency { color: var(--kx-text-secondary); font-size: 12px; }
 .trail-list { display: grid; gap: 8px; }
 .trail-request {
-  border-left: 3px solid var(--kx-primary);
+  border: 1px solid var(--kx-primary);
   padding: 6px 0 6px 10px;
 }
-.trail-request--success { border-left-color: var(--kx-success); }
-.trail-request--danger { border-left-color: var(--kx-danger); }
-.trail-request--active { border-left-color: var(--kx-warning); }
+.trail-request--success { border-color: var(--kx-success); }
+.trail-request--danger { border-color: var(--kx-danger); }
+.trail-request--active { border-color: var(--kx-warning); }
 .trail-request-header { gap: 8px; font-size: 12px; }
 .trail-model {
   color: var(--kx-text);

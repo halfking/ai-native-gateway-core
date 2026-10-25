@@ -1840,7 +1840,7 @@ onMounted(async () => {
   overflow-wrap: anywhere;
 }
 .trace-summary {
-  border-left: 3px solid var(--accent);
+  border: 1px solid var(--accent);
 }
 .col-trace-action {
   white-space: nowrap;

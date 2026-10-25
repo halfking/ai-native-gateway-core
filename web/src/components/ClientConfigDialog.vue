@@ -851,8 +851,7 @@ function goManageFeatured() {
   font-size: 11px;
   font-weight: 600;
   color: var(--muted);
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
+  letter-spacing: 0.01em;
 }
 
 .model-family-count {

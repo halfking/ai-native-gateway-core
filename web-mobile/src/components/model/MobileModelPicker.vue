@@ -177,7 +177,7 @@ function displayName(version: AvailableVersion): string {
 .model-picker { display: flex; flex-direction: column; gap: var(--app-space-3); }
 .model-picker__search { min-height: 48px; padding: 0 var(--app-space-3); border: 1px solid var(--app-border); border-radius: var(--app-radius); background: var(--app-surface); color: var(--app-text); font: inherit; }
 .model-picker__group { display: flex; flex-direction: column; gap: var(--app-space-1); }
-.model-picker__group h3 { margin: var(--app-space-2) 0; color: var(--app-text-muted); font-size: 0.75rem; font-weight: 700; text-transform: uppercase; }
+.model-picker__group h3 { margin: var(--app-space-2) 0; color: var(--app-text-muted); font-size: 0.75rem; font-weight: 700;}
 .model-picker__item { display: flex; align-items: center; justify-content: space-between; gap: var(--app-space-2); min-height: 48px; padding: var(--app-space-2) var(--app-space-3); border: 1px solid var(--app-border-subtle); border-radius: var(--app-radius); background: var(--app-surface); color: var(--app-text); text-align: start; }
 .model-picker__item > span:first-child { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .model-picker__item small { color: var(--app-text-muted); overflow-wrap: anywhere; }

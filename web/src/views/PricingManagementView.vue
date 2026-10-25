@@ -1185,7 +1185,7 @@ onMounted(fetchData)
 .tree-offers { margin-left: 20px; }
 .tree-offer { padding: 4px 8px; cursor: pointer; border-radius: 4px; display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text); }
 .tree-offer:hover { background: var(--bg-hover); }
-.tree-offer.selected { background: var(--bg-secondary); border-left: 3px solid var(--accent); }
+.tree-offer.selected { background: var(--bg-secondary); border: 1px solid var(--accent); }
 .offer-provider { color: var(--success); min-width: 80px; }
 .offer-cred { color: var(--muted); min-width: 60px; }
 .offer-tier { font-size: 11px; padding: 1px 4px; border-radius: 3px; background: var(--bg-subtle); color: var(--text); }

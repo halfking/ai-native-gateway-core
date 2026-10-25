@@ -1454,8 +1454,7 @@ onUnmounted(() => {
   font-size: 11px;
   color: var(--muted);
   margin-bottom: 2px;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.01em;
 }
 
 /* Model table in drawer */
@@ -1786,8 +1785,7 @@ onUnmounted(() => {
 }
 .pane-collapsed-label {
   font-size: 10px;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
+  letter-spacing: 0.01em;
   color: var(--muted);
 }
 .pane-collapsed-value {

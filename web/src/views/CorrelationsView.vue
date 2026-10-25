@@ -660,7 +660,6 @@ details summary:hover {
   font-size: 13px;
   color: var(--success);
   font-family: 'SF Mono', Menlo, monospace;
-  text-transform: uppercase;
   letter-spacing: 0.5px;
 }
 .verdict-list {

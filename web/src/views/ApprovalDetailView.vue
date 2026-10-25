@@ -614,7 +614,6 @@ onBeforeUnmount(() => {
   border-radius: 12px;
   font-size: 12px;
   font-weight: 500;
-  text-transform: uppercase;
 }
 
 .badge-large {
@@ -706,7 +705,6 @@ onBeforeUnmount(() => {
 .message-role {
   font-size: 12px;
   font-weight: 600;
-  text-transform: uppercase;
   padding: 3px 8px;
   border-radius: 4px;
   background: var(--border);

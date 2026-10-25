@@ -607,7 +607,7 @@ const thresholdInvalid = computed(() => {
 .section-head { margin-bottom: 8px; }
 .section-head h2 { font-size: 13px; margin: 0; color: var(--text); }
 .section-head p { margin: 3px 0 0; color: var(--muted); font-size: 11px; }
-.subsection-title { font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); margin: 14px 0 6px; }
+.subsection-title { font-size: 11px;letter-spacing: 0.01em; color: var(--muted); margin: 14px 0 6px; }
 .hint-row { color: var(--muted); font-size: 11px; margin: 0 0 6px; }
 
 .field-row { display: grid; grid-template-columns: minmax(220px, 1fr) minmax(180px, 360px); align-items: center; gap: 18px; padding: 9px 0; border-bottom: 1px solid var(--border); }

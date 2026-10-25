@@ -564,7 +564,6 @@ h1 {
 .stat-label {
   font-size: 11px;
   color: var(--muted);
-  text-transform: uppercase;
   margin-bottom: 4px;
 }
 
@@ -600,7 +599,6 @@ h1 {
 .queue-label {
   font-size: 11px;
   font-weight: 600;
-  text-transform: uppercase;
   margin-bottom: 4px;
 }
 
@@ -673,7 +671,6 @@ h1 {
 .data-table thead th {
   padding: 8px 12px;
   font-size: 11px;
-  text-transform: uppercase;
   font-weight: 600;
 }
 

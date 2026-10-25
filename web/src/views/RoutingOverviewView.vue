@@ -495,8 +495,7 @@ onMounted(load)
   display: block;
   font-size: 9px;
   color: var(--muted);
-  text-transform: uppercase;
-  letter-spacing: .04em;
+  letter-spacing: 0.01em;
   margin-bottom: 4px;
   font-weight: 600;
 }

@@ -367,8 +367,7 @@ const canDrillKeys = computed(() => isSuperAdmin())
   text-align: left;
   font-size: 10.5px;
   font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.01em;
   color: var(--muted);
   padding: 5px 6px;
   border-bottom: 1px solid var(--border);

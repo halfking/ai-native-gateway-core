@@ -781,7 +781,6 @@ watch([statusFilter, riskLevelFilter, dateRangeStart, dateRangeEnd], () => {
   font-size: 13px;
   font-weight: 600;
   color: var(--text-secondary);
-  text-transform: uppercase;
   letter-spacing: 0.5px;
 }
 
@@ -836,7 +835,6 @@ watch([statusFilter, riskLevelFilter, dateRangeStart, dateRangeEnd], () => {
   border-radius: 12px;
   font-size: 12px;
   font-weight: 500;
-  text-transform: uppercase;
 }
 
 .badge-green {

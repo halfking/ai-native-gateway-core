@@ -1236,7 +1236,7 @@ function formatNumber(num: number): string {
   font-size: 14px;
   font-weight: 600;
   color: var(--text);
-  border-left: 3px solid var(--accent);
+  border: 1px solid var(--accent);
   padding-left: 10px;
 }
 
