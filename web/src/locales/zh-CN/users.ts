@@ -15,13 +15,11 @@ export default {
   },
   table: {
     createdAt: '创建时间',
-    id: 'ID',
     username: '用户名',
     displayName: '显示名',
     email: '邮箱',
     tenant: '租户',
     role: '角色',
-    mustChangePassword: '首次改密',
     status: '状态',
     lastLogin: '最后登录',
     actions: '操作',
@@ -39,7 +37,6 @@ export default {
   },
   mustChangePassword: {
     pending: '待改密',
-    completed: '已完成',
   },
   status: {
     enabled: '启用',

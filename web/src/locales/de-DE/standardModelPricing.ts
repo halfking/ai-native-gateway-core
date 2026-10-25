@@ -21,23 +21,14 @@ export default {
     currencyDisplay: 'Anzeigewährung',
     save: 'Globale Einstellungen speichern',
     saving: 'Wird gespeichert…',
-    saved: 'Globale Basis gespeichert (betrifft nur nicht manuelle Dimensionen)',
     effective: 'Wirksam ≈ {value} (inkl. Rabatt)',
   },
   filter: {
-    title: 'Preisverwaltung: Modellfilter',
-    placeholder: 'Standardmodelle suchen…',
-    allPricing: 'Alle Preise',
-    defaultOnly: 'Nur globale Basis',
-    customOnly: 'Mit manueller Preisgestaltung',
-    partialOnly: 'Teilweise manuell',
-    otherVendor: 'Andere',
     summary: 'Manuell {custom}: Global {defaults} / {total}',
   },
   table: {
     colModel: 'Standardmodell',
     colStatus: 'Status',
-    colActions: '',
     edit: 'Preis',
     reset: 'Zurücksetzen',
     empty: 'Keine Modelle',
@@ -75,37 +66,22 @@ export default {
     saving: 'Wird gespeichert…',
     fillGlobal: 'Aktuellen Globalwert übernehmen',
     cancel: 'Abbrechen',
-    needOneManual: 'Bitte aktivieren Sie mindestens eine Dimension „Manuelle Preisgestaltung"',
     resetConfirm: 'Alle Dimensionen von {name} auf die globale Basis zurücksetzen?',
-    resetSuccess: 'Zurückgesetzt',
-    resetFailed: 'Zurücksetzen fehlgeschlagen',
 
     sectionText: 'Text-token dimensions',
 
     sectionMultimodal: 'Multimodale Token-Dimensionen (Vision / Audio / Video)',
 
-    fieldImage: 'Vision tokens',
 
-    fieldAudio: 'Audio tokens',
 
-    fieldVideo: 'Video tokens',
   },
   field: {
-    input: 'Eingabe',
-    output: 'Ausgabe',
-    cacheRead: 'Cache lesen',
-    cacheWrite: 'Cache schreiben',
 
     image: 'Vision',
 
     audio: 'Audio',
 
     video: 'Video',
-  },
-  error: {
-    loadFailed: 'Laden fehlgeschlagen',
-    saveFailed: 'Speichern fehlgeschlagen',
-    resetFailed: 'Zurücksetzen fehlgeschlagen',
   },
 
   // 扁平键（供 Vue 组件直接使用）
@@ -122,10 +98,6 @@ export default {
   output: 'Ausgabe',
   cacheRead: 'Cache lesen',
   cacheWrite: 'Cache schreiben',
-  refreshLoading: 'Wird geladen…',
-  refresh: 'Aktualisieren',
-  saving: 'Wird gespeichert…',
-  save: 'Speichern',
 
   batch: {
     selected: '{n} ausgewählt',

@@ -26,7 +26,6 @@ export default {
     featured: "النماذج المميزة (توجيه مستأجر المفتاح المحدد)",
     all: 'جميع النماذج المتاحة (من البوابة)',
     featuredPreview: {
-      loading: 'جارٍ التحميل…',
       empty: "لم يتم تكوين نماذج مميزة للمستأجر المحدد",
       manageButton: 'انتقل إلى "سياسة التوجيه" للتكوين →',
       manage: 'إدارة →',
@@ -37,7 +36,6 @@ export default {
       selected: 'محدد',
       filterHint: '({count} تطابق البحث)',
       searchPlaceholder: '🔍 بحث عن اسم النموذج / المورد / العائلة…',
-      loading: 'جارٍ التحميل…',
       noMatch: 'لا توجد نماذج مطابقة',
     },
   },
@@ -77,13 +75,11 @@ export default {
       copyContent: 'نسخ المحتوى',
       downloadFile: 'تحميل الملف',
       downloadScript: 'تحميل السكريبت',
-      scriptHint: 'يقوم السكريبت تلقائيًا بنسخ احتياطية لملفات التكوين القديمة',
     },
   },
 
   applyDialog: {
     title: 'طلب مفتاح API جديد',
-    close: 'إغلاق',
     applicationCode: 'رمز التطبيق (application_code)',
     applicationCodePlaceholder: 'مثال: default-app',
     description: 'الوصف',

@@ -9,16 +9,7 @@ export default {
     configFailed: 'فشل تحميل إعداد الضغط: القيم أدناه هي قيم المصنع وليست الإعداد الحالي',
   },
   tabs: {
-    h24: '24 ساعة',
-    d7: '7 أيام',
-    d30: '30 يومًا',
     custom: 'مخصص',
-  },
-  custom: {
-    from: 'وقت البدء',
-    to: 'وقت الانتهاء',
-    apply: 'استعلام',
-    sep: 'إلى',
   },
   stats: {
     totalRequests: 'إجمالي الطلبات',
@@ -33,9 +24,6 @@ export default {
   charts: {
     strategyDistribution: 'توزيع الاستراتيجيات',
     compressionRateTrend: 'اتجاه معدل الضغط',
-    timeBucketHour: 'كل ساعة',
-    timeBucket6Hour: 'كل 6 ساعات',
-    timeBucketDay: 'كل يوم',
     noData: 'لا توجد بيانات سلسلة زمنية متاحة',
     titleSuffix: '{strategy}: {count} سجل ({pct})',
     barTitle: '{hour}: {n} طلبًا، ضغط {pct}',
@@ -56,17 +44,6 @@ export default {
     previous: 'السابق',
     next: 'التالي',
     pageInfo: '{current} / {total}',
-  },
-  strategies: {
-    delta_append: 'إلحاق تدريجي',
-    sliding_window_token: 'نافذة منزلقة (رموز)',
-    sliding_window_count: 'نافذة منزلقة (عدد)',
-    sliding_window_idle: 'نافذة منزلقة (خامل)',
-    mechanical_trim: 'تشذيب آلي',
-    memora_l1_inject: 'حقن Memora',
-    llm_summary: 'ملخص LLM',
-    noop: 'بلا عملية',
-    none: 'غير مضغوط',
   },
   // 扁平化 key（CompressionView.vue 直接引用）
   d30: '30 يومًا',

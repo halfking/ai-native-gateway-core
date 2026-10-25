@@ -59,7 +59,10 @@ describe('i18n 跨语种键存在性平价（localeKeyParity）', () => {
   it('★ 非空下限：量到的键数必须够多（否则「什么都没量」也是绿的）', () => {
     const report = measureRepoKeyParity()
     expect(report.locales.length, '语种数应为 8').toBe(8)
-    expect(report.unionSize, 'union 键数').toBeGreaterThan(9000)
+    // ★ 2026-10-27（第 13 增量 · 语言包死键清理轮）：union 键数实测由 9468 降到 **6153**
+    //   （删掉了 3315 个「8 语种共有 + 全仓 0 引用」的叶子键）⇒ 原下限 9000 已高于实测 ⇒ 门红。
+    //   ⇒ 下限按新事实下调到 **5000**：仍远高于「加载器坏了、只比了几个键」那条假绿线。
+    expect(report.unionSize, 'union 键数').toBeGreaterThan(5000)
     expect(report.sources.total, '可达键数').toBeGreaterThan(5000)
     expect(report.sources.literal, '字面量引用键数').toBeGreaterThan(4000)
     // ★ 模板候选必须**真的**有量 —— 若为 0，说明模板键的收集机制坏了

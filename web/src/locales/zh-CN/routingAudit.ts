@@ -24,8 +24,6 @@ export default {
   },
   actions: {
     insert: '新增',
-    update: '更新',
-    delete: '删除',
   },
   table: {
     title: '审计记录 ({n})',
@@ -40,8 +38,6 @@ export default {
       actor: '操作者',
     },
     details: '详情',
-    before: '变更前',
-    after: '变更后',
   },
   expand: {
     oldExpires: '变更前 expires_at',

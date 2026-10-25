@@ -9,16 +9,7 @@ export default {
     configFailed: '圧縮設定の取得に失敗しました。下の値は出荷時デフォルトであり現在の設定ではありません',
   },
   tabs: {
-    h24: '24時間',
-    d7: '7日',
-    d30: '30日',
     custom: "カスタム",
-  },
-  custom: {
-    from: '开始时间',
-    to: '结束时间',
-    apply: '查询',
-    sep: '至',
   },
   stats: {
     totalRequests: "総リクエスト数",
@@ -33,9 +24,6 @@ export default {
   charts: {
     strategyDistribution: "圧縮戦略の分布",
     compressionRateTrend: "圧縮率の推移",
-    timeBucketHour: '按小时',
-    timeBucket6Hour: '每6小时',
-    timeBucketDay: '按天',
     noData: "利用可能な時系列データがありません",
     titleSuffix: "{strategy}: {count} 件 ({pct})",
     barTitle: "{hour}: {n} 件, {pct} 圧縮率",
@@ -56,17 +44,6 @@ export default {
     previous: "前へ",
     next: "次へ",
     pageInfo: '{current} / {total}',
-  },
-  strategies: {
-    delta_append: '增量拼接',
-    sliding_window_token: '滑动窗口(Token)',
-    sliding_window_count: '滑动窗口(条数)',
-    sliding_window_idle: '滑动窗口(空闲)',
-    mechanical_trim: '机械裁剪',
-    memora_l1_inject: 'Memora 注入',
-    llm_summary: 'LLM 要約',
-    noop: '空操作',
-    none: '未压缩',
   },
   // 扁平化 key（CompressionView.vue 直接引用）
   d30: '30日',

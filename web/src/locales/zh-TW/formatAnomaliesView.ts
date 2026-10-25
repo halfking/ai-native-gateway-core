@@ -59,7 +59,6 @@ export default {
     requestId: 'Request ID',
     tokenInfo: 'Token 資訊',
     status: '狀態',
-    actions: '操作',
     loading: '載入中...',
     noData: '沒有找到異常記錄',
     viewDetail: '詳情',
@@ -67,10 +66,6 @@ export default {
     actualTokens: '實際: {count}',
   },
 
-  token: {
-    expected: '預期',
-    actual: '實際',
-  },
 
   pager: {
     prev: '上一頁',

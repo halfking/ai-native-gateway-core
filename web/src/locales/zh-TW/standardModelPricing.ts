@@ -21,23 +21,14 @@ export default {
     currencyDisplay: '展示幣種',
     save: '儲存全域設定',
     saving: '儲存中…',
-    saved: '全域基準已儲存（僅影響未手工定價的維度）',
     effective: '生效 ≈ {value}（含折扣）',
   },
   filter: {
-    title: '定價管理：模型篩選',
-    placeholder: '搜尋標準模型…',
-    allPricing: '全部定價',
-    defaultOnly: '僅全域基準',
-    customOnly: '含手工定價',
-    partialOnly: '部分手工',
-    otherVendor: '其他',
     summary: '手工 {custom}：全域 {defaults} / {total}',
   },
   table: {
     colModel: '標準模型',
     colStatus: '狀態',
-    colActions: '',
     edit: '定價',
     reset: '恢復',
     empty: '暫無模型',
@@ -75,37 +66,22 @@ export default {
     saving: '儲存中…',
     fillGlobal: '填入目前全域',
     cancel: '取消',
-    needOneManual: '請至少勾選一個「手工定價」維度',
     resetConfirm: '恢復 {name} 全部維度為全域基準？',
-    resetSuccess: '已恢復',
-    resetFailed: '恢復失敗',
 
     sectionText: '文本 Token 維度',
 
     sectionMultimodal: '多模態 Token 維度（視覺 / 音訊 / 影片）',
 
-    fieldImage: '视觉 Token',
 
-    fieldAudio: '音频 Token',
 
-    fieldVideo: '视频 Token',
   },
   field: {
-    input: '輸入',
-    output: '輸出',
-    cacheRead: '快取讀',
-    cacheWrite: '快取寫',
 
     image: '視覺',
 
     audio: '音訊',
 
     video: '影片',
-  },
-  error: {
-    loadFailed: '載入失敗',
-    saveFailed: '儲存失敗',
-    resetFailed: '恢復失敗',
   },
 
   // 扁平键（供 Vue 组件直接使用）
@@ -122,10 +98,6 @@ export default {
   output: '輸出',
   cacheRead: '快取讀',
   cacheWrite: '快取寫',
-  refreshLoading: '加载中…',
-  refresh: '刷新',
-  saving: '保存中…',
-  save: '保存',
 
   batch: {
     selected: '已選 {n} 項',

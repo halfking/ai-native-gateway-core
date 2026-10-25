@@ -59,7 +59,6 @@ export default {
     requestId: 'Request ID',
     tokenInfo: 'Token-Info',
     status: 'Status',
-    actions: 'Aktionen',
     loading: 'Wird geladen...',
     noData: 'Keine Anomalie-Datensätze gefunden',
     viewDetail: 'Details',
@@ -67,10 +66,6 @@ export default {
     actualTokens: 'Tatsächlich: {count}',
   },
 
-  token: {
-    expected: 'Erwartet',
-    actual: 'Tatsächlich',
-  },
 
   pager: {
     prev: 'Vorherige',

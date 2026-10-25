@@ -35,21 +35,16 @@ export default {
     config: '設定',
     integration: '整合',
     status: '執行狀態',
-    routing: '路由規則',
   },
 
   overview: {
     sectionDescription: '模組描述',
     sectionCapabilities: '能力清單',
-    sectionRequirements: '依賴模組',
     labelKey: '模組識別',
     labelDanger: '危險等級',
     labelConfigCount: '設定項數',
     labelStatus: '目前狀態',
     viewAllSettings: '檢視所有系統設定',
-    requirementsMet: '所有依賴模組已啟用',
-    requirementsMissing: '以下依賴模組未啟用，相關功能可能受限：',
-    jumpToModule: '前往設定',
     testConnection: '測試連線',
     testSuccess: '連線測試成功',
     testFailed: '連線測試失敗',
@@ -92,12 +87,6 @@ export default {
 
   feishu: {
     connectionHint: '在飛書開放平台建立自訂機器人後，將 Webhook 網址貼到下方。詳細步驟請參考飛書官方文件。',
-    callbackUrlLabel: '回呼網址（需在飛書機器人後台設定）',
-    callbackUrlHelp: '將此網址填入飛書自訂機器人 → 回呼設定，用於接收飛書端的審核操作。',
-    whitelistHelp: '允許透過飛書執行指令的使用者 OpenID，多個以英文逗號分隔。留空時依 commands.admin_only 決定是否全部允許。',
-    quietHoursHelp: '免打擾時段內僅 critical 等級告警會推送，避免夜間打擾。支援跨夜時段（22:00 → 08:00）。',
-    commandsHelp: '啟用後管理員可在飛書對話中透過指令與系統互動（/status /help /stats /audit /test）。',
-    signatureHelp: '生產環境務必啟用。啟用後飛書回呼必須攜帶有效簽章（HMAC-SHA256）且時間戳記在視窗內。',
   },
 
   handoff: {
@@ -149,31 +138,6 @@ export default {
     selectModule: '選擇一個模組以檢視詳細資料與設定',
   },
 
-  routing: {
-    title: '飛書路由規則',
-    addNew: '新增規則',
-    cancel: '取消',
-    save: '儲存',
-    formTitle: '新增飛書 OpenID 規則',
-    openId: '飛書 OpenID',
-    openIdPlaceholder: 'ou_xxxxxxxx',
-    displayName: '顯示名',
-    userRole: '使用者角色',
-    priority: '優先順序',
-    note: '備註',
-    enabled: '啟用',
-    riskLevels: '風險等級',
-    actions: '操作',
-    enable: '啟用',
-    disable: '停用',
-    delete: '刪除',
-    loading: '載入中…',
-    importCsv: '批量导入 CSV',
-    close: '关闭',
-    csvImportResult: '批量导入结果',
-    csvImportSuccess: '已导入 {imported} 条，跳过 {skipped} 条',
-    csvErrorRow: '第 {row} 行：{error}',
-  },
 
   error: {
     loadFailed: '載入模組清單失敗',

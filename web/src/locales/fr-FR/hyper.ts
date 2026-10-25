@@ -3,15 +3,10 @@
 export default {
   bottomNav: {
     ariaLabel: 'Navigation principale',
-    home: 'Accueil',
-    dashboard: 'Tableau de bord',
-    requests: 'Requêtes',
-    models: 'Modèles',
     more: 'Plus',
   },
   account: {
     title: 'Compte',
-    profile: 'Profil',
     language: 'Langue',
     theme: 'Thème',
     help: 'Aide',
@@ -24,7 +19,6 @@ export default {
     close: 'Fermer',
   },
   dataView: {
-    switchTo: 'Passer en {mode}',
     table: 'Tableau',
     cards: 'Cartes',
   },
@@ -36,12 +30,5 @@ export default {
     allLoaded: '{count} éléments chargés',
     loadFailed: 'Échec du chargement. Veuillez réessayer.',
     empty: 'La liste ne contient aucun enregistrement pour l’instant',
-  },
-  focus: {
-    enter: 'Vue concentrée',
-    exit: 'Quitter le focus',
-  },
-  desktopOnly: {
-    banner: 'Cette page est conçue pour l’ordinateur. Vous pouvez la lire ici ; les modifications importantes se font sur ordinateur.',
   },
 }

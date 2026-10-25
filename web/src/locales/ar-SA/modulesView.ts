@@ -35,21 +35,16 @@ export default {
     config: 'الإعدادات',
     integration: 'التكامل',
     status: 'وقت التشغيل',
-    routing: 'التوجيه',
   },
 
   overview: {
     sectionDescription: 'الوصف',
     sectionCapabilities: 'الإمكانيات',
-    sectionRequirements: 'التبعيات',
     labelKey: 'مفتاح الوحدة',
     labelDanger: 'مستوى الخطر',
     labelConfigCount: 'عناصر الإعداد',
     labelStatus: 'الحالة الحالية',
     viewAllSettings: 'عرض جميع إعدادات النظام',
-    requirementsMet: 'جميع التبعيات مفعّلة',
-    requirementsMissing: 'التبعيات التالية معطّلة: قد تكون الميزات المرتبطة محدودة:',
-    jumpToModule: 'إعداد',
     testConnection: 'اختبار الاتصال',
     testSuccess: 'نجح اختبار الاتصال',
     testFailed: 'فشل اختبار الاتصال',
@@ -92,12 +87,6 @@ export default {
 
   feishu: {
     connectionHint: 'أنشئ بوتًا مخصصًا في منصة Feishu المفتوحة، ثم الصق عنوان URL للـ Webhook أدناه.',
-    callbackUrlLabel: 'عنوان URL للاستدعاء (يُكوَّن في واجهة بوت Feishu الخلفية)',
-    callbackUrlHelp: 'الصق عنوان URL هذا في إعداد استدعاء بوت Feishu المخصص لتلقي إجراءات الموافقة.',
-    whitelistHelp: 'معرّفات OpenID المسموح لها بتنفيذ أوامر البوت، مفصولة بفواصل. فارغ = commands.admin_only يقرر.',
-    quietHoursHelp: 'خلال ساعات الهدوء، تُرسَل التنبيهات الحرجة فقط (لتجنب الإزعاج الليلي). تدعم الفترات العابرة لمنتصف الليل (22:00 → 08:00).',
-    commandsHelp: 'عند التفعيل، يمكن للمسؤولين التفاعل مع النظام عبر أوامر Feishu (/status /help /stats /audit /test).',
-    signatureHelp: 'فعّله دائمًا في الإنتاج. عند التفعيل، يجب أن تحمل استدعاءات Feishu توقيع HMAC-SHA256 صالحًا و طابعًا زمنيًا ضمن النافذة.',
   },
 
   handoff: {
@@ -148,31 +137,6 @@ export default {
     selectModule: 'اختر وحدة لعرض التفاصيل والإعدادات',
   },
 
-  routing: {
-    title: 'قواعد توجيه Feishu',
-    addNew: 'إضافة جديدة',
-    cancel: 'إلغاء',
-    save: 'حفظ',
-    formTitle: 'قاعدة Feishu OpenID جديدة',
-    openId: 'Feishu OpenID',
-    openIdPlaceholder: 'ou_xxxxxxxx',
-    displayName: 'اسم العرض',
-    userRole: 'دور المستخدم',
-    priority: 'الأولوية',
-    note: 'ملاحظة',
-    enabled: 'مفعّل',
-    riskLevels: 'مستويات الخطر',
-    actions: 'إجراءات',
-    enable: 'تفعيل',
-    disable: 'تعطيل',
-    delete: 'حذف',
-    loading: 'جارٍ التحميل…',
-    importCsv: 'استيراد CSV',
-    close: 'إغلاق',
-    csvImportResult: 'نتيجة الاستيراد',
-    csvImportSuccess: 'تم استيراد {imported}، تم تخطي {skipped}',
-    csvErrorRow: 'الصف {row}: {error}',
-  },
 
   error: {
     loadFailed: 'فشل تحميل قائمة الوحدات',

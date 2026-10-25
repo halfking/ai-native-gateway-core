@@ -21,9 +21,6 @@ export default {
   },
   events: {
     header: '關鍵事件',
-    error: '錯誤',
-    warning: '警告',
-    info: '資訊',
   },
   toolUsage: '工具使用',
   toolCount: '{n} 次',

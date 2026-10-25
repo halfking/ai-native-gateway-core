@@ -7,7 +7,6 @@ tabs: {
     liveStream: 'Flux de requêtes en direct',
     sessionStats: 'Sessions et statistiques',
     selfcheck: 'Auto-vérification',
-    systemmonitor: 'Surveillance système',
   },
 v2: {
     quickApiKey: 'API Key',
@@ -17,18 +16,12 @@ v2: {
     refreshData: 'Refresh data',
     retry: 'Retry',
     reloadAria: 'Reload data',
-    degradedViewLabel: 'View',
-    degradedHint: 'La vue de données {view} n\'est pas encore initialisée. Lancez d\'abord la migration d\'agrégation.',
-    emptyTitle: 'No request data yet',
-    emptyHint: 'Après avoir configuré les fournisseurs, envoyez un appel via /v1/chat/completions pour voir le flux en direct ici.',
-    modelsPage: 'Models',
     totalTokensShort: 'Total Tokens',
     totalCredits: 'Credits charged',
     creditsSub: 'Pricing × tokens',
     creditsDegraded: 'Vue crédits {view} non initialisée: ce chiffre n’est pas fiable',
     summaryDegraded: "Vue agrégée {view} non initialisée: les chiffres de requêtes/tokens/coûts ci-dessous sont indisponibles, pas à zéro. À ne pas utiliser comme conclusion.",
     modelCount: 'Models',
-    sessionCompression: 'Session compression',
   },
   range: {
     today: "Aujourd'hui",
@@ -89,20 +82,15 @@ v2: {
     empty: 'No data',
     bgTasks: 'Background tasks',
     discoveryStatus: 'Model discovery',
-    probeChecks: 'Probes (10m)',
     selfcheckTitle: 'Self-check',
-    selfcheckLast: 'Last status',
-    selfcheckRate: '24h success rate',
     pieClients: 'Types de client',
     pieDegraded: "Indisponible: {reason}. Un classement vide ici signifie « non calculé », pas « aucune donnée ».",
     pieDegradedGeneric: "la requête du classement a échoué",
     drillFailed: "Impossible de charger ce détail: {reason}. Une liste vide ici ne signifie pas qu’il n’y a aucune erreur.",
     pieClientIp: 'IP client',
     pieIdentity: 'Empreinte d’identité',
-    pieModels: 'Model usage',
     pieErrors: 'Types d’erreur',
     pieTenants: 'Utilisation des tenants',
-    pieProviders: 'Provider usage',
     metricRequests: 'Requests',
     metricTokens: 'Tokens',
     metricToggle: 'Métrique',
@@ -118,165 +106,60 @@ v2: {
     trendMore: 'Plus',
     trendMoreTitle: "Ouvrir l'analyse des tendances d'utilisation en pleine page",
     trendOthers: 'Autres',
-    filterProvider: 'Provider ID',
-    allProviders: 'All',
 
-    rangeCustomTab: 'Custom',
 
-    rangeFrom: 'From',
 
-    rangeTo: 'To',
 
-    rangePicker: 'Statistics period',
 
     rangeCustom: '{start} to {end}',
   },
-  proxyWarning: {
-    title: "⚠ Proxy sortant injoignable",
-    detail: "Le proxy configuré {proxy} n'a pas pu être contacté. La passerelle est automatiquement passée en mode direct. Les modèles étrangers (Anthropic / OpenAI / OpenRouter / GitHub Copilot, etc.) peuvent échouer.",
-    detailHealthy: "Le proxy {proxy} est de nouveau en ligne.",
-    hint: "Le système se réactivera automatiquement une fois le proxy rétabli."
-  },
-  backgroundTasks: {
-    title: "Tâches en arrière-plan en cours",
-    running: "Découverte de modèles ({trigger})",
-    startedAt: "Démarré {time}",
-    heartbeat: "Battement {time}",
-    slow: "Les pages d'admin peuvent ralentir",
-    detailsLink: "Voir les détails"
-  },
-  discovery: {
-    latest: "Dernière découverte de modèles : ",
-    failuresTitle: "Découverte de modèles: échecs au cours des 6 dernières heures",
-    failuresTally: "{n} échecs: {m} modèles",
-    summary: "Voir la liste des échecs",
-    meta: "{n} fois, {m} identifiants concernés, dernier {date}, erreur {code}"
-  },
   stat: {
     totalRequests: "Total des requêtes",
-    inLastDays: "Au cours des {days} derniers jours",
-    totalTokens: "Utilisation totale de tokens",
-    prompt: "Prompt {n}",
-    completion: "Complétion {n}",
     totalCost: "Coût total",
-    costUnit: "USD",
     successRate: "Taux de réussite",
     avgLatency: "Latence moyenne {n} ms",
-    apiKeys: "Clés API intégrées",
-    enabledActive: "Activées {enabled}: actives {active}",
     models: "Modèles",
     activeInDays: "Au cours des {days} derniers jours, {n} actifs",
-    providers: "Fournisseurs / identifiants",
-    enabledCredentials: "Activés {enabled}: identifiants {total}",
-    offline: "Ressources hors ligne",
-    modelsCredentials: "Modèles {models}: identifiants {creds}",
-    // 2026-08-06 : Taille moyenne de requête / Taille moyenne de réponse / Pic (aligné avec zh-CN)
     avgRequestSize: "Taille moyenne de requête",
     avgResponseSize: "Taille moyenne de réponse",
     maxLabel: "Pic",
   },
   table: {
-    hotKeysTitle: "Classement des clés API à forte utilisation",
-    byModelTitle: "Par modèle",
-    colKey: "Clé",
-    colApplication: "Application",
-    colOwner: "Propriétaire",
-    colRequests: "Requêtes",
-    colTokens: "Utilisation de tokens",
-    colCost: "Coût (USD)",
-    colLastUsed: "Dernière utilisation",
     colModel: "Modèle",
-    colProvider: "Fournisseur"
-  },
-  compression: {
-    title: "🤖 Compression de session",
-    delta: "Delta",
-    sliding: "Glissante",
-    outboundTokens: "≈ {n} tokens sortants"
-  },
-  empty: {
-    firstUse: "🚀 Aucune donnée de requête pour l'instant. Après avoir configuré les fournisseurs, envoyez un appel via /v1/chat/completions pour voir les données ici."
   },
   loading: "Chargement…",
   noData: "Aucune donnée pour cette période",
-  costSuffix: "USD",
-  viewFailedRequests: "Voir les requêtes échouées",
   liveStream: {
     title: "Flux des requêtes en temps réel",
     groupByQueue: "Par file de traitement",
     controlsAria: "Commandes du flux des requêtes en temps réel",
-    connected: "Connecté",
-    disconnected: "Reconnexion...",
     pause: "Pause",
     resume: "Reprendre",
-    filterAll: "Tous les statuts",
-    filterSuccess: "Succès seulement",
-    filterFailure: "Échecs seulement",
-    filterInProgress: "En cours",
-    filterGroupFailures: "Détail des échecs",
-    filterFailure5xx: "Serveur / amont (5xx)",
-    filterFailure4xx: "Client / auth (4xx)",
-    filterFailureTimeout: "Délai / réseau",
-    filterFailureNotFound: "Routage / modèle introuvable",
-    filterFailureOther: "Autres échecs",
-    idleLabel: "Inactif {duration}",
-    countTooltip: "{buffer} en mémoire / {visible} visibles",
-    countAria: "{buffer} requêtes en mémoire, {visible} visibles",
     legendButton: 'Légende',
     legend: {
-      title: "Légende",
-      model: "Famille de modèle",
-      status: "Statut",
-      openai: "OpenAI",
-      anthropic: "Anthropic",
-      domestic: "Local",
-      oss: "Open source",
-      other: "Autre",
       success: "Succès",
       inProgress: "En cours",
-      failure: "Échec"
-,
       cancelled: 'Cancelled',
     },
     tooltip: {
-      model: "Modèle",
-      provider: "Fournisseur",
-      status: "Statut",
-      latency: "Latence",
-      tokens: "Tokens",
-      cost: "Coût",
-      error: "Erreur",
-      time: "Heure"
-,
-      vendor: 'Vendor',
 
-      requestId: 'ID',
 
-      errorKind: 'Error type',
 
-      errorRawCode: 'Raw code',
 
       statusValue: {
         success: 'Success',
         inProgress: 'In progress',
         cancelled: 'Cancelled by user',
-        idle: 'Idle (heartbeat placeholder)',
         failure: 'Request failed',
       },
 
       tokenFormat: '{p} + {c}',
-      cache: 'Cache',
       cacheFormat: 'lecture {r} / écriture {w} (taux {pct})',
-      sessionId: 'Session',
     },
-    connecting: "Connexion…",
-    reconnecting: "Reconnexion…",
-    unsupported: "Le flux en direct n'est pas pris en charge dans ce navigateur",
-    empty: "Aucune requête en temps réel",
 
     emptyWaiting: 'En attente des données du flux de requêtes en direct…',
     emptyConnecting: 'Connexion au flux en direct en cours, chargement automatique une fois connecté…',
-    groupByCredential: 'Par identifiant', groupByVendor: 'Par fournisseur', groupByProvider: 'Par fournisseur', groupByModel: 'Par modèle',
+    groupByCredential: 'Par identifiant', groupByProvider: 'Par fournisseur', groupByModel: 'Par modèle',
     modeSmall: 'Petit',
     modeLarge: 'Grand',
     modeSmallTitle: 'Mode petit : barres verticales, contient plus de requêtes (par défaut)',
@@ -332,11 +215,7 @@ v2: {
 
     idleHoursMinutes: 'Inactif {h} h {m} min',
 
-    idleReasonNoTraffic: 'Aucun trafic (5 min d\'inactivité)',
-    // 2026-07-24: Multi-dimension filters
     filterStatus: 'Statut',
-    filterAllOptions: 'Tous',
-    filterEmpty: 'Aucune option disponible',
     filterModel: 'Modèle',
     filterGroup: 'Filtrer',
     filterProvider: 'Fournisseur',
@@ -348,13 +227,6 @@ v2: {
       success: 'Succès',
       failure: 'Échec',
       rate_limited: 'Limité',
-    },
-    vendor: {
-      openai: 'OpenAI',
-      anthropic: 'Anthropic',
-      domestic: 'Local',
-      oss: 'Open source',
-      other: 'Autre',
     },
   },
   charts: {
@@ -374,57 +246,18 @@ v2: {
     sessionTrend: "Tendance des sessions"
   },
 
-  moduleStats: {
-    executions: 'Exécutions',
-    cacheHitRate: 'Taux de succès du cache',
-    rate: 'Taux',
-    totalModules: 'Total des modules',
-    totalExecutions: 'Total des exécutions',
-    avgCacheHitRate: 'Taux de succès moyen du cache',
-    avgDuration: 'Durée moyenne',
 
-    title: 'Statistiques d\'exécution des modules',
-
-    successRate: 'Taux de réussite',
-  },
-
-  errors: {
-    trendTitle: 'Tendance des erreurs',
-    errorCount: 'Nombre d\'erreurs',
-    totalCount: 'Total des requêtes',
-    errorRate: 'Taux d\'erreur',
-    count: 'Nombre',
-    rate: 'Taux',
-    totalErrors: 'Total des erreurs',
-    topErrors: 'Principales erreurs',
-
-    title: 'Statistiques d\'erreurs',
-
-    totalRequests: 'Total des requêtes',
-
-    avgLatency: 'Latence moyenne des erreurs',
-  },
 
   performance: {
-    throughput: 'Débit',
-    requests: 'Requêtes',
-    p50: 'Latence P50',
-    p95: 'Latence P95',
-    p99: 'Latence P99',
-    latencyDist: 'Distribution de latence',
-    slowQueries: 'Requêtes lentes',
 
-    title: 'Métriques de performance',
 
     avgLatency: 'Latence moyenne',
 
-    latency: 'Latence',
   },
 
   providerUsage: {
     title: 'Utilisation des fournisseurs',
     subtitle: '{period}: consommation de tous les fournisseurs (prêt pour rapprochement)',
-    periodHint: 'Période actuelle : {period}',
     more: 'Plus',
     search: 'Rechercher nom, code ou ID…',
     back: 'Retour à la liste',

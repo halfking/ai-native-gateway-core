@@ -1,123 +1,8 @@
 export default {
-  title: "Gestion du cycle de vie des données",
   refresh: "Actualiser",
   loading: "Chargement…",
-  storageLoading: "Chargement des statistiques de stockage…",
-  stats: {
-    totalData: "Données totales",
-    hotData: "Données chaudes (0–7 jours)",
-    warmData: "Données tièdes (7–30 jours)",
-    coldData: "Données froides (30–90 jours)",
-    expiredData: "Données expirées (>90 jours)"
-  },
-  charts: {
-    distribution: "Répartition des données",
-    growthTrend: "Tendance de croissance (7 derniers jours)",
-    trendDate: "Date",
-    trendRequests: "Requêtes",
-    trendCompressed: "Compressées",
-    trendCompressionRate: "Taux de compression",
-    trendEmpty: "Aucune donnée de tendance pour le moment"
-  },
   storage: {
-    title: "💾 Gestion du stockage",
-    disk: "Espace disque",
-    database: "Taille de la base de données",
-    databaseTotalSize: "Taille totale {size}",
-    tableRows: "{n} lignes",
-    attachments: "Stockage des pièces jointes",
-    orphanTitle: "{n} fichiers dans le répertoire de stockage sans enregistrement en base",
-    orphanBadge: "{n} orphelins",
-    totalFiles: "{n} fichiers",
-    activeLabel: "[actif]",
-    logFiles: "Fichiers journaux",
-    rotation: "Configuration de rotation : ",
-    rotationSingle: "fichier unique {n} Mo",
-    rotationKeep: "conserver {n}",
-    rotationAge: "conserver {n} jours",
-    rotationCompress: "compresser {state}",
-    rotationYes: "oui",
-    rotationNo: "non",
-    moreRotated: "… et {n} fichiers rotés supplémentaires",
-    lifecycleConfig: "Configuration du cycle de vie",
-    configAttachmentPath: "Chemin de stockage des pièces jointes :",
-    configRetention: "Durée de rétention des données :",
-    configRetentionDays: "{n} jours",
-    configMaxAttachment: "Taille max des pièces jointes :",
-    configMaxAttachmentMb: "{n} Mo",
-    configAutoCleanup: "Nettoyage automatique :",
-    autoCleanupOn: "Activé",
-    autoCleanupOff: "Désactivé",
     migrateFailedWithReason: 'La migration n’a pas pu aboutir : {reason}. Veuillez réessayer.',
-  },
-  attachmentCleanup: {
-    title: "🗑️ Nettoyage des pièces jointes",
-    mode: "Mode de nettoyage :",
-    modeOld: "Nettoyer les pièces jointes expirées (conserver N derniers jours)",
-    modeOrphan: "Nettoyer les fichiers orphelins (sans enregistrement en base)",
-    daysLabel: "Jours de rétention :",
-    minDays: "Les jours de rétention doivent être au moins 7",
-    preview: "Aperçu",
-    execute: "Exécuter",
-    affected: "Fichiers concernés :",
-    orphanedSuffix: "({n} orphelins)",
-    estimatedFreed: "Libération estimée :",
-    warningPrefix: "⚠️",
-    previewFailed: "Échec de l'aperçu du nettoyage des pièces jointes",
-    executeFailed: "Échec du nettoyage des pièces jointes",
-    confirmTitle: "Confirmer le nettoyage des pièces jointes ?\nFichiers : {n}\nLibération estimée : {size}\n\nCeci est irréversible !",
-    completed: "Nettoyage terminé : {n} fichiers / {db} lignes en base supprimés, {size} libérés"
-  },
-  logCleanup: {
-    title: "📋 Nettoyage des journaux",
-    daysLabel: "Jours de rétention :",
-    minDays: "Les jours de rétention doivent être au moins 7",
-    compressedOnly: "Ne nettoyer que les fichiers déjà compressés",
-    preview: "Aperçu",
-    execute: "Exécuter",
-    affected: "Fichiers concernés :",
-    estimatedFreed: "Libération estimée :",
-    warningPrefix: "⚠️",
-    previewFailed: "Échec de l'aperçu du nettoyage des journaux",
-    executeFailed: "Échec du nettoyage des journaux",
-    confirmTitle: "Confirmer le nettoyage des journaux ?\nFichiers : {n}\nLibération estimée : {size}\n\nCeci est irréversible !",
-    completed: "Nettoyage des journaux terminé : {n} fichiers supprimés, {size} libérés"
-  },
-  dataCleanup: {
-    title: "Opérations de nettoyage",
-    action: "Type d'action :",
-    actionArchive: "Archiver (recommandé)",
-    actionDelete: "Supprimer (dangereux)",
-    actionTrim: "Tronquer (à venir)",
-    from: "Date de début :",
-    to: "Date de fin :",
-    preview: "Aperçu de l'impact",
-    execute: "Exécuter",
-    affected: "Lignes concernées :",
-    affectedRowsSuffix: " lignes",
-    estimatedFreed: "Libération estimée :",
-    warningPrefix: "⚠️",
-    missingDate: "Veuillez choisir une date de début et une date de fin",
-    needPreview: "Veuillez d'abord exécuter un aperçu",
-    previewFailed: "Échec de l'aperçu",
-    executeNotImpl: "Le nettoyage sera implémenté dans la prochaine phase. Veuillez utiliser les scripts CLI pour l'instant.",
-    confirmDelete: "Confirmer la suppression de {n} lignes ?\nLibération estimée : {size}\n\nCeci est irréversible !",
-    confirmArchive: "Confirmer l'archivage de {n} lignes ?\nLibération estimée : {size}\n\nCeci est irréversible !",
-    confirmAction: "{action} {n} lignes ?"
-  },
-  tenant: {
-    title: "Statistiques des données par locataire (Top 10)",
-    tenantId: "ID de locataire",
-    rows: "Lignes",
-    size: "Taille",
-    percent: "Part"
-  },
-  chartLabels: {
-    hot: "Données chaudes (0–7 j.)",
-    warm: "Données tièdes (7–30 j.)",
-    cold: "Données froides (30–90 j.)",
-    expired: "Données expirées (>90 j.)",
-    tooltipSuffix: "{label} : {n} lignes ({pct}%)"
   },
   storageOverview: {
     summary: {
@@ -224,7 +109,6 @@ export default {
   hotPartition: {
     hotTableTitle: "Migration des données des hot tables",
     hotTableDesc: "Promeut les lignes des hot tables vers les partitions mensuelles. Un VACUUM FULL est ensuite nécessaire pour vraiment rendre l'espace au système d'exploitation.",
-    retentionLabel: "Rétention",
     retention: {
       all: "Tout migrer maintenant",
       "1day": "Conserver 1 jour",
@@ -237,15 +121,12 @@ export default {
     migrationProgress: "{migrated} lignes migrées ({batches} lots, {duration}s)",
     promoteConfirm: "Migrer de {label} les données de plus de {hours} ?",
     promoteAll: "tout",
-    hours: "{n} heures",
     days: "{n} jours",
     partitionTitle: "Gestion des partitions mensuelles",
     partitionDesc: "Supprimez les anciennes partitions mensuelles pour libérer de l'espace disque.",
     partitionWarning: "Cette action est irréversible: à utiliser avec précaution.",
     tables: {
       title: "Tables partitionnées",
-      selectLabel: "Table : ",
-      selectPlaceholder: "Sélectionnez une table partitionnée",
       refresh: "Actualiser",
       columns: {
         name: "Table",
@@ -274,11 +155,6 @@ export default {
         heap: "heap",
         archive: "archivée"
       },
-      month: {
-        recent: "récent",
-        medium: "moyen",
-        old: "ancien"
-      },
       delete: "Supprimer",
       deleting: "Suppression…",
       empty: "Aucune partition pour cette table"
@@ -296,8 +172,6 @@ export default {
       cancel: "Annuler",
       confirm: "Supprimer la partition",
       deleting: "Suppression…",
-      success: "Supprimée avec succès :\n{message}\nLibéré : {size}",
-      failed: "Échec de la suppression : {msg}"
     },
     hotTableNames: {
       requestLogs: "Journaux de requêtes",
@@ -309,39 +183,21 @@ export default {
       rows: "Lignes",
       toast: "TOAST"
     },
-    migrationFailed: "Échec de la migration"
-,
-    jobIdMissing: 'Impossible de démarrer la tâche asynchrone : job_id manquant',
 
-    asyncCompleted: 'Migration asynchrone terminée : {n} lignes migrées',
 
-    asyncFailed: 'Async migration failed: {error}',
 
-    cancel: 'Cancel',
 
-    cancelTitle: 'Cancel migration job',
 
-    cancelConfirm: 'Annuler la tâche de migration en cours ? Les données déjà migrées seront conservées.',
 
-    cancelRequested: 'Annulation demandée. La tâche s\'arrêtera au prochain lot.',
 
-    asyncEnabledHint: 'Depuis le 13/07/2026, les migrations s\'exécutent en mode asynchrone. La progression et l\'annulation sont visibles sur cette page.',
 
-    cronStatsTitle: 'Nightly auto-migration',
 
-    cronStatsDesc: 'Chaque jour à 02 h 00, les tables chaudes de plus de 24 heures sont migrées automatiquement. Réglable par variables d\'environnement.',
 
-    cronEnabled: 'Enabled',
 
-    cronDisabled: 'Disabled',
 
-    cronLastRun: 'Last run',
 
-    cronRunCount: 'Total runs',
 
-    cronLastError: 'Last error',
 
-    cronRunning: 'Running now',
     statsLoadFailedWithReason: 'Les statistiques des tables hot n’ont pas pu être chargées : {reason}. Veuillez réessayer.',
     startMigrationFailedWithReason: 'La tâche de migration n’a pas pu démarrer : {reason}. Veuillez réessayer.',
     submitDeleteFailedWithReason: 'La tâche de suppression n’a pas pu être soumise : {reason}. Veuillez réessayer.',

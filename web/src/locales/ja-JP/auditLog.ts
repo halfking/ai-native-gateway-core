@@ -15,16 +15,9 @@ export default {
   filter: {
     actorLabel: '操作者',
     actorPlaceholder: 'ユーザー名をあいまい検索',
-    actorAria: '操作者フィルター',
     actionLabel: 'アクション',
     actionPlaceholder: '例: user.* または auth.*',
-    actionAria: 'アクションフィルター',
     fromLabel: '開始時刻',
-    fromAria: '開始時刻',
-    toLabel: '終了時刻',
-    toAria: '終了時刻',
-    query: '検索',
-    reset: 'リセット',
   },
   table: {
     headers: {
@@ -34,14 +27,6 @@ export default {
       target: '対象',
       details: '詳細',
     },
-  },
-  pagination: {
-    total: '全 {n} 件',
-    pageOf: '· {page} / {total} ページ',
-    perPage: 'ページあたり',
-    previous: '前へ',
-    next: '次へ',
-    dash: '—',
   },
   detail: {
     titleWithId: '監査詳細 #{id}',
@@ -68,13 +53,8 @@ export default {
     'authentication.login_failed': 'ログイン失敗',
     'authentication.logout': 'ログアウト',
   },
-  errors: {
-    loadFailed: '読み込み失敗',
-  },
 
   // 扁平键（供 Vue 组件直接使用）
   loadFailed: '読み込み失敗',
   dash: '—',
-  refreshing: 'Refreshing…',
-  refresh: 'Refresh',
 }

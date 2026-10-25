@@ -14,16 +14,9 @@ export default {
   filter: {
     actorLabel: 'Actor',
     actorPlaceholder: 'Fuzzy match by username',
-    actorAria: 'Actor filter',
     actionLabel: 'Action',
     actionPlaceholder: 'e.g. user.* or auth.*',
-    actionAria: 'Action filter',
     fromLabel: 'From',
-    fromAria: 'Start time',
-    toLabel: 'To',
-    toAria: 'End time',
-    query: 'Search',
-    reset: 'Reset',
   },
   table: {
     headers: {
@@ -33,14 +26,6 @@ export default {
       target: 'Target',
       details: 'Details',
     },
-  },
-  pagination: {
-    total: '{n} entries',
-    pageOf: '· Page {page} / {total}',
-    perPage: 'Per page',
-    previous: 'Previous',
-    next: 'Next',
-    dash: '—',
   },
   detail: {
     titleWithId: 'Audit detail #{id}',
@@ -67,13 +52,8 @@ export default {
     'authentication.login_failed': 'Login failed',
     'authentication.logout': 'Logout',
   },
-  errors: {
-    loadFailed: 'Failed to load',
-  },
 
   // 扁平键（供 Vue 组件直接使用）
   loadFailed: 'Load failed',
   dash: '—',
-  refreshing: 'Refreshing…',
-  refresh: 'Refresh',
 }

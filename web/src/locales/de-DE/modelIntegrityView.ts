@@ -70,7 +70,6 @@ export default {
     requestId: 'Request ID',
     actual: 'Tatsächlich',
     status: 'Status',
-    actions: 'Aktionen',
     loading: 'Wird geladen...',
     noData: 'Keine Integritätsereignisse gefunden',
     viewDetail: 'Details',

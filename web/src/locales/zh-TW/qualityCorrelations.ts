@@ -38,7 +38,6 @@ export default {
   insights: {
     title: '什麼在預測品質？（皮爾森相關）',
     hint: '每個預測因子都與各分桶的平均品質做相關性分析。',
-    empty: 'Not enough samples for insights.',
     buckets: '{n} buckets',
     samples: '{n} samples',
 

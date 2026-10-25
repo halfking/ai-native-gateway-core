@@ -10,22 +10,7 @@ export default {
     super_admin: 'المسؤول الأعلى',
     tenant_admin: 'مسؤول المستأجر',
   },
-  sidebar: {
-    expand: 'توسيع الشريط الجانبي',
-    collapse: 'طي الشريط الجانبي',
-    collapseMenu: 'طي القائمة',
-  },
-  logout: 'تسجيل الخروج',
-  lang: {
-    switch: 'تبديل اللغة',
-    label: 'اللغة',
-  },
   // 2026-07-22: تذييل الـ shell العام (مقترن بـ LifecycleShell).
-  footer: {
-    left: '© 2026 AI-Native Gateway',
-    right: 'هل تحتاج إلى مساعدة؟',
-    feedbackLink: 'إرسال ملاحظات',
-  },
   // 2026-07-22: قائمة المستخدم (UserMenuDropdown) + حوار المعلومات (UserInfoDialog).
   userMenu: {
     profile: 'الملف الشخصي',
@@ -41,10 +26,6 @@ export default {
     close: 'إغلاق',
   },
   // 2026-07-22: skip-link لإمكانية الوصول.
-  nav: {
-    mainAria: 'التنقل الرئيسي',
-    skip: 'الانتقال إلى المحتوى الرئيسي',
-  },
 
   theme: {
     switchToLight: 'Switch to light',

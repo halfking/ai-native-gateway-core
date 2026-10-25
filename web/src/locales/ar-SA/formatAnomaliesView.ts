@@ -59,7 +59,6 @@ export default {
     requestId: 'Request ID',
     tokenInfo: 'معلومات الرمز',
     status: 'الحالة',
-    actions: 'الإجراءات',
     loading: 'جارٍ التحميل...',
     noData: 'لم يتم العثور على سجلات شذوذات',
     viewDetail: 'التفاصيل',
@@ -67,10 +66,6 @@ export default {
     actualTokens: 'الفعلي: {count}',
   },
 
-  token: {
-    expected: 'المتوقع',
-    actual: 'الفعلي',
-  },
 
   pager: {
     prev: 'السابق',

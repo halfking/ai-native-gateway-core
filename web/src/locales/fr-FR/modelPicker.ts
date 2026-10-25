@@ -1,18 +1,3 @@
 export default {
-  placeholderSelect: 'Sélectionner un modèle…',
-  titleSelect: 'Sélectionner un modèle',
   loadFailed: 'Le chargement de la liste des modèles a échoué. Veuillez réessayer.',
-  selectedCount: '{count} modèles sélectionnés',
-  editButton: 'Modifier',
-  selectButton: 'Sélectionner',
-  clearTitle: 'Effacer',
-  closeLabel: 'Fermer',
-  loading: 'Chargement…',
-  sectionPopular: 'Modèles populaires',
-  moreButton: 'Plus… ({count})',
-  footerHint: '{count} sélectionnés',
-  cancelButton: 'Annuler',
-  confirmButton: 'Confirmer',
-  backButton: 'Retour',
-  other: 'Autre',
 }

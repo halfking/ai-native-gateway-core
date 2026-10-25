@@ -35,21 +35,16 @@ export default {
     config: '設定',
     integration: '連携',
     status: 'ランタイム',
-    routing: 'ルーティング',
   },
 
   overview: {
     sectionDescription: '説明',
     sectionCapabilities: '機能一覧',
-    sectionRequirements: '依存モジュール',
     labelKey: 'モジュールキー',
     labelDanger: '危険度',
     labelConfigCount: '設定項目数',
     labelStatus: '現在の状態',
     viewAllSettings: 'すべてのシステム設定を表示',
-    requirementsMet: 'すべての依存モジュールが有効です',
-    requirementsMissing: '以下の依存モジュールが無効です — 関連機能が制限される可能性があります:',
-    jumpToModule: '設定へ',
     testConnection: '接続テスト',
     testSuccess: '接続テスト成功',
     testFailed: '接続テスト失敗',
@@ -92,12 +87,6 @@ export default {
 
   feishu: {
     connectionHint: 'Feishuオープンプラットフォームでカスタムボットを作成し、Webhook URLを下記に貼り付けてください。詳細はFeishu公式ドキュメントを参照してください。',
-    callbackUrlLabel: 'コールバックURL（Feishuボット管理画面で設定）',
-    callbackUrlHelp: 'このURLをFeishuカスタムボットのコールバック設定に入力し、Feishuからの承認操作を受信します。',
-    whitelistHelp: 'ボットコマンドの実行を許可するOpenID（カンマ区切り）。空の場合、commands.admin_onlyに従って全て許可または拒否されます。',
-    quietHoursHelp: '夜間時間帯はcriticalアラートのみをプッシュし、夜間の通知を控えます。深夜をまたぐ設定（22:00 → 08:00）もサポートします。',
-    commandsHelp: '有効にすると、管理者はFeishuの会話を介してコマンド（/status /help /stats /audit /test）でシステムとやり取りできます。',
-    signatureHelp: '本番環境では必ず有効にしてください。有効時、Feishuコールバックは有効なHMAC-SHA256署名とウィンドウ内のタイムスタンプが必要です。',
   },
 
   handoff: {
@@ -148,31 +137,6 @@ export default {
     selectModule: '詳細と設定を表示するモジュールを選択してください',
   },
 
-  routing: {
-    title: 'Feishuルーティングルール',
-    addNew: '新規追加',
-    cancel: 'キャンセル',
-    save: '保存',
-    formTitle: 'Feishu OpenID ルールを追加',
-    openId: 'Feishu OpenID',
-    openIdPlaceholder: 'ou_xxxxxxxx',
-    displayName: '表示名',
-    userRole: 'ユーザーロール',
-    priority: '優先度',
-    note: 'メモ',
-    enabled: '有効',
-    riskLevels: 'リスクレベル',
-    actions: '操作',
-    enable: '有効化',
-    disable: '無効化',
-    delete: '削除',
-    loading: '読み込み中…',
-    importCsv: '批量导入 CSV',
-    close: '关闭',
-    csvImportResult: '批量导入结果',
-    csvImportSuccess: '已导入 {imported} 条，跳过 {skipped} 条',
-    csvErrorRow: '第 {row} 行：{error}',
-  },
 
   error: {
     loadFailed: 'モジュール一覧の読み込みに失敗しました',

@@ -26,7 +26,6 @@ export default {
     featured: "注目モデル（選択したキーのテナントのルーティング設定）",
     all: 'すべての利用可能なモデル（ゲートウェイから取得）',
     featuredPreview: {
-      loading: '読み込み中…',
       empty: "選択したテナントに注目モデルが設定されていません",
       manageButton: '「ルーティングポリシー」に移動して設定 →',
       manage: "設定管理 →",
@@ -37,7 +36,6 @@ export default {
       selected: '選択済み',
       filterHint: '（{count} 件が検索に一致）',
       searchPlaceholder: '🔍 モデル名 / ベンダー / family を検索…',
-      loading: '読み込み中…',
       noMatch: '一致するモデルがありません',
     },
   },
@@ -77,13 +75,11 @@ export default {
       copyContent: 'コンテンツをコピー',
       downloadFile: 'ファイルをダウンロード',
       downloadScript: 'スクリプトをダウンロード',
-      scriptHint: 'スクリプトは古い設定ファイルを自動的にバックアップします',
     },
   },
 
   applyDialog: {
     title: '新しい API Key を申請',
-    close: '閉じる',
     applicationCode: 'アプリケーションコード (application_code)',
     applicationCodePlaceholder: '例: default-app',
     description: '説明 (description)',

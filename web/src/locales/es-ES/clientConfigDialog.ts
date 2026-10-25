@@ -26,7 +26,6 @@ export default {
     featured: "Modelos destacados (enrutamiento del inquilino de la clave seleccionada)",
     all: 'Todos los modelos disponibles (desde la puerta de enlace)',
     featuredPreview: {
-      loading: 'Cargando…',
       empty: "No hay modelos destacados configurados para el inquilino seleccionado",
       manageButton: 'Ir a "Política de enrutamiento" para configurar →',
       manage: 'Administrar →',
@@ -37,7 +36,6 @@ export default {
       selected: 'seleccionado',
       filterHint: '({count} coincidencias de búsqueda)',
       searchPlaceholder: '🔍 Buscar nombre de modelo / proveedor / familia…',
-      loading: 'Cargando…',
       noMatch: 'No hay modelos coincidentes',
     },
   },
@@ -77,13 +75,11 @@ export default {
       copyContent: 'Copiar contenido',
       downloadFile: 'Descargar archivo',
       downloadScript: 'Descargar script',
-      scriptHint: 'El script hace copia de seguridad automática de archivos de configuración antiguos',
     },
   },
 
   applyDialog: {
     title: 'Solicitar nueva clave API',
-    close: 'Cerrar',
     applicationCode: 'Código de aplicación (application_code)',
     applicationCodePlaceholder: 'ej. default-app',
     description: 'Descripción',

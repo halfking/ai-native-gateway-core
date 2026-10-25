@@ -3,15 +3,10 @@
 export default {
   bottomNav: {
     ariaLabel: 'Primary navigation',
-    home: 'Home',
-    dashboard: 'Dashboard',
-    requests: 'Requests',
-    models: 'Models',
     more: 'More',
   },
   account: {
     title: 'Account',
-    profile: 'Profile',
     language: 'Language',
     theme: 'Theme',
     help: 'Help',
@@ -24,7 +19,6 @@ export default {
     close: 'Close',
   },
   dataView: {
-    switchTo: 'Switch to {mode}',
     table: 'Table',
     cards: 'Cards',
   },
@@ -36,12 +30,5 @@ export default {
     allLoaded: 'All {count} loaded',
     loadFailed: 'Failed to load. Select Retry to try again.',
     empty: 'The list has no records for now',
-  },
-  focus: {
-    enter: 'Focus view',
-    exit: 'Exit focus',
-  },
-  desktopOnly: {
-    banner: 'This page is designed for desktop. You can read it here; heavy editing belongs on desktop.',
   },
 }

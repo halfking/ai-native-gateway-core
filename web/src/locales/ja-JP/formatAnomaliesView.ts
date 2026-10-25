@@ -59,7 +59,6 @@ export default {
     requestId: 'Request ID',
     tokenInfo: 'トークン情報',
     status: 'ステータス',
-    actions: '操作',
     loading: '読み込み中...',
     noData: '異常レコードが見つかりません',
     viewDetail: '詳細',
@@ -67,10 +66,6 @@ export default {
     actualTokens: '実際: {count}',
   },
 
-  token: {
-    expected: '期待値',
-    actual: '実際',
-  },
 
   pager: {
     prev: '前へ',

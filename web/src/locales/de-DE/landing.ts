@@ -16,8 +16,6 @@ export default {
   // longer used as a small label above the heading (craft-floor bans kickers).
   kicker: 'Apache-2.0-Kern',
   brandTitle: 'AI-Natives Kern-Gateway für Organisationen',
-  brandSubtitle: 'Qigui: Selbst betrieben',
-  // The heading no longer repeats the product name; the brand block above
   // already says that. It says what the thing does instead.
   title:
     'Ein Gateway für alle Modellaufrufe Ihrer Organisation: sichtbar, abgerechnet und abschaltbar',
@@ -103,7 +101,6 @@ export default {
     },
   },
   footer: 'Offener Kern unter Apache 2.0, läuft auf Ihren eigenen Maschinen.',
-  ariaPoints: 'Fähigkeiten',
   roadmap: {
     title: 'Wohin das führt',
     subtitle: 'Von der LLM-Datenebene zum Gateway für Unternehmens-Agenten',
@@ -130,57 +127,6 @@ export default {
       title: 'Branchenlösungen, allgemein verfügbar',
       description: 'Vorlagen für Support, Personal, Vertrieb und Logistik. Installieren und es läuft.',
     },
-  },
-  activateBanner: {
-    title: 'Dieses Gateway ist nicht aktiviert',
-    desc:
-      'Mit dieser Instanz ist keine gültige Lizenz verknüpft. Öffnen Sie den Aktivierungsassistenten für die Online-Aktivierung oder nutzen Sie den Offline-Weg.',
-    action: 'Aktivieren',
-  },
-  downloadCta: {
-    title: 'In fünf Minuten vom Download bis zum Laufenden',
-    subtitle:
-      'Offline-Pakete für jede Plattform. Kein Registrieren für den Download, 15 Tage kostenlos testen.',
-    download: 'Herunterladen',
-    support: 'Unterstützen',
-    activate: 'Schon installiert? Aktivieren',
-    note: 'Spenden sind freiwillig und ändern weder Download noch Funktionen.',
-  },
-  deployFlow: {
-    title: 'Herunterladen, installieren, aktivieren, anmelden',
-    subtitle: 'Der komplette Weg zum eigenen Betrieb, die Aktivierung ist darin eingebaut',
-    steps: {
-      download: {
-        title: 'Offline-Paket herunterladen',
-        description:
-          'Wählen Sie tar.gz oder den Installer passend zu Plattform und Architektur. Ohne Registrierung, der Download-Link läuft ab.',
-        action: 'Zur Download-Seite',
-      },
-      install: {
-        title: 'Auf dem Zielsystem installieren',
-        description:
-          'Entpacken, den Installer auf dem Server ausführen, und er spielt k3s oder Docker auf und schreibt die Grundkonfiguration.',
-        hint: 'llm-gw-installer install --target /opt/kx-gateway',
-      },
-      activate: {
-        title: 'Lizenz aktivieren',
-        description:
-          'Online den Lizenzschlüssel eintragen, offline den Weg über activation.req zu activation.resp. Es beginnt mit 15 Tagen Testbetrieb.',
-        action: 'Aktivierungsassistent öffnen',
-        offlineAction: 'Offline-Aktivierungsportal',
-      },
-      login: {
-        title: 'In der Kontrollebene anmelden',
-        description:
-          'Nach der Aktivierung mit einem Administratorkonto anmelden. Mandanten, Routing und Beobachtbarkeit liegen dort.',
-        action: 'Anmelden',
-      },
-    },
-    notes: [
-      'Download und Spende sind getrennt. Ohne Spende fehlt keine Funktion.',
-      'In einer isolierten Umgebung reichen Sie activation.req über das Offline-Aktivierungsportal ein',
-      'Der Aktivierungsassistent liegt unter /activate und nutzt dieselben Befehle wie die Installer-CLI',
-    ],
   },
   // 2026-07-21: guest-nav aria + top download/activation links (App.vue L197-203).
   guestNavAria: 'Produktnavigation',

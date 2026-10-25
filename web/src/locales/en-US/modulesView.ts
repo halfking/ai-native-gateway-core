@@ -38,13 +38,11 @@ export default {
     config: 'Configuration',
     integration: 'Integration',
     status: 'Runtime',
-    routing: 'Routing',
   },
 
   overview: {
     sectionDescription: 'Description',
     sectionCapabilities: 'Capabilities',
-    sectionRequirements: 'Dependencies',
     sectionDependencies: 'Dependencies',
     dependenciesTitle: 'Dependencies',
     labelKey: 'Module key',
@@ -54,9 +52,6 @@ export default {
     dependencyDisabled: 'Dependency module is disabled',
     notEnabled: 'Not enabled',
     viewAllSettings: 'View all system settings',
-    requirementsMet: 'All dependencies enabled',
-    requirementsMissing: 'The following dependencies are disabled: related features may be limited:',
-    jumpToModule: 'Configure',
     required: 'Required',
     optional: 'Optional',
     enableAllDeps: 'Enable {count} missing required deps',
@@ -92,12 +87,6 @@ export default {
 
   feishu: {
     connectionHint: 'Create a custom bot in the Feishu open platform, then paste the Webhook URL below. See the official Feishu docs for details.',
-    callbackUrlLabel: 'Callback URL (configure in Feishu bot backend)',
-    callbackUrlHelp: 'Paste this URL into the Feishu custom bot → callback configuration to receive approval actions from the bot.',
-    whitelistHelp: 'OpenIDs allowed to execute bot commands, comma-separated. When empty, commands.admin_only decides whether all are allowed.',
-    quietHoursHelp: 'During quiet hours only critical alerts are pushed (avoids night-time noise). Cross-midnight windows are supported (22:00 → 08:00).',
-    commandsHelp: 'When enabled, admins can interact with the system via Feishu commands (/status /help /stats /audit /test).',
-    signatureHelp: 'Always enable in production. When on, Feishu callbacks must carry a valid HMAC-SHA256 signature and timestamp within window.',
   },
 
   handoff: {
@@ -145,30 +134,6 @@ export default {
     ],
   },
 
-  routing: {
-    title: 'Feishu Routing Rules',
-    addNew: 'Add new',
-    cancel: 'Cancel',
-    save: 'Save',
-    formTitle: 'Add new Feishu OpenID rule',
-    openId: 'Feishu OpenID',
-    openIdPlaceholder: 'ou_xxxxxxxx',
-    displayName: 'Display name',
-    userRole: 'User role',
-    priority: 'Priority',
-    note: 'Note',
-    enabled: 'Enabled',
-    riskLevels: 'Risk levels',
-    actions: 'Actions',
-    enable: 'Enable',
-    disable: 'Disable',
-    delete: 'Delete',
-    loading: 'Loading…',
-    importCsv: 'Bulk import CSV',
-    close: 'Close',
-    csvImportResult: 'Bulk import result',
-    csvImportSuccess: '{imported} imported, {skipped} skipped',
-    csvErrorRow: 'Row {row}: {error}',  },
 
   empty: {
     selectModule: 'Select a module to view details and configuration',

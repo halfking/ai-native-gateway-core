@@ -15,16 +15,9 @@ export default {
   filter: {
     actorLabel: 'Akteur',
     actorPlaceholder: 'Unscharfe Suche nach Benutzername',
-    actorAria: 'Akteur-Filter',
     actionLabel: 'Aktion',
     actionPlaceholder: 'z. B. user.* oder auth.*',
-    actionAria: 'Aktion-Filter',
     fromLabel: 'Von',
-    fromAria: 'Startzeit',
-    toLabel: 'Bis',
-    toAria: 'Endzeit',
-    query: 'Suchen',
-    reset: 'Zurücksetzen',
   },
   table: {
     headers: {
@@ -34,14 +27,6 @@ export default {
       target: 'Ziel',
       details: 'Details',
     },
-  },
-  pagination: {
-    total: '{n} Einträge',
-    pageOf: '· Seite {page} / {total}',
-    perPage: 'Pro Seite',
-    previous: 'Zurück',
-    next: 'Weiter',
-    dash: '—',
   },
   detail: {
     titleWithId: 'Audit-Details #{id}',
@@ -68,13 +53,8 @@ export default {
     'authentication.login_failed': 'Anmeldung fehlgeschlagen',
     'authentication.logout': 'Abmeldung',
   },
-  errors: {
-    loadFailed: 'Laden fehlgeschlagen',
-  },
 
   // 扁平键（供 Vue 组件直接使用）
   loadFailed: 'Laden fehlgeschlagen',
   dash: '—',
-  refreshing: 'Refreshing…',
-  refresh: 'Refresh',
 }

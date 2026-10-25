@@ -9,16 +9,6 @@ export default {
     super_admin: '超级管理员',
     tenant_admin: '租户管理员',
   },
-  sidebar: {
-    expand: '展开侧栏',
-    collapse: '收起侧栏',
-    collapseMenu: '收起菜单',
-  },
-  logout: '退出',
-  lang: {
-    switch: '切换语言',
-    label: '语言',
-  },
   // 2026-07-21: 与 ai-native-maintain / ai-session-manager 主题文案对齐。
   theme: {
     switchToLight: '切到浅色',
@@ -27,16 +17,7 @@ export default {
     darkTitle: '深色模式',
   },
   // 2026-07-22: 顶部水平菜单的无障碍文案 + skip-link。
-  nav: {
-    mainAria: '主导航',
-    skip: '跳到主内容',
-  },
   // 2026-07-22: 公开壳页面底部文案（LifecycleShell.footer 三段）。
-  footer: {
-    left: '© 2026 AI-Native 组织网关',
-    right: '需要帮助？',
-    feedbackLink: '提交反馈',
-  },
   // 2026-07-22: 用户菜单下拉（UserMenuDropdown）+ 用户信息弹窗（UserInfoDialog）。
   userMenu: {
     profile: '个人信息',

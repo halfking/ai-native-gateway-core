@@ -26,7 +26,6 @@ export default {
     featured: "特色模型（所選金鑰租戶的路由配置）",
     all: '全部可用模型（從閘道器拉取）',
     featuredPreview: {
-      loading: '載入中…',
       empty: "所選租戶尚未配置特色模型",
       manageButton: '前往「路由策略」設定 →',
       manage: '管理 →',
@@ -37,7 +36,6 @@ export default {
       selected: '已選',
       filterHint: '（{count} 符合搜尋）',
       searchPlaceholder: '🔍 搜尋模型名稱 / 廠商 / family…',
-      loading: '載入中…',
       noMatch: '沒有符合的模型',
     },
   },
@@ -77,13 +75,11 @@ export default {
       copyContent: '複製內容',
       downloadFile: '下載檔案',
       downloadScript: '下載指令碼',
-      scriptHint: '指令碼自動備份舊配置檔案',
     },
   },
 
   applyDialog: {
     title: '申請新 API Key',
-    close: '關閉',
     applicationCode: '應用標識 (application_code)',
     applicationCodePlaceholder: '例如: default-app',
     description: '備註 (description)',

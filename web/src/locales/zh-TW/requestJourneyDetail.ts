@@ -8,8 +8,6 @@ export default {
   routingTitle: 'Routing attempts timeline',
   actionTitle: 'Action timeline (SSE)',
   traceTitle: 'Failure trace & AI prompt',
-  openTrace: 'Open failure trace',
-  closeTrace: 'Close failure trace',
   scopeAll: 'Super-admin global ingress',
   observationDegraded: 'Observation degraded',
 }
