@@ -66,7 +66,6 @@ export default {
     publicPortal: '公开门户',
     deploymentNodes: '部署节点',
     topologyTitle: '部署拓扑',
-    topologyHint: '按区域分区；节点少时卡片放大，多时自动换行。点击节点查看详情。',
     regionEmpty: '未注册节点',
     nodesOnlineOf: '{online} / {total} 在线',
     noHeartbeat: '无心跳',

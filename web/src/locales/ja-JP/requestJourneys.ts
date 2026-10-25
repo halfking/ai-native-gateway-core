@@ -58,7 +58,7 @@ export default {
     abnormalCount: '異常 {count}',
     empty: 'ノードデータがまだありません',
     emptyHint: 'node_update のプッシュを待機中',
-    modalSubtitle: '全ノードをヘルス別にグループ化した全景。カードをクリックしてモデル × ノード詳細とメンテナンスを表示',
+    modalSubtitle: '全ノードをヘルス別にグループ化した全景。カードを選んでモデル × ノード詳細とメンテナンスを表示',
     groupDanger: '⚠️ 異常ノード ({count})',
     groupWarn: '⚡ 警告ノード ({count})',
     groupOk: '✅ 正常ノード ({count})',

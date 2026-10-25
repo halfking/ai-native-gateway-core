@@ -239,7 +239,6 @@ export default {
 promoteAll: "alles",
    hours: "{n} Stunden",
    days: "{n} Tage",
-   emptyResult: "Keine Daten",
     partitionTitle: "Monatliche Partitionsverwaltung",
     partitionDesc: "Alte monatliche Partitionen löschen, um Speicherplatz freizugeben.",
     partitionWarning: "Dieser Vorgang ist nicht umkehrbar: bitte mit Vorsicht.",
@@ -368,7 +367,7 @@ promoteAll: "alles",
   usageEnhanced: {
     refresh: 'Aktualisieren',
     loading: 'Wird geladen…',
-    empty: 'Keine Daten',
+    empty: 'Für diesen Zeitraum liegen keine Nutzungsdaten vor.',
     cards: {
       totalCost: 'Gesamtkosten',
       totalRequests: 'Gesamtzahl der Anfragen',

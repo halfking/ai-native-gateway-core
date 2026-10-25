@@ -121,7 +121,7 @@ export default {
     refresh: 'Refresh',
     refreshing: 'Refreshing...',
     loadFailed: 'Failed to load statistics',
-    noData: 'No data available',
+    noData: 'No annotation stats yet. Finish a batch of annotations first, then check back.',
     totalAnnotations: 'Total Annotations',
     providerAccuracy: 'Provider Accuracy',
     annotatorStats: 'Annotator Statistics',

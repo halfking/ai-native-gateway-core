@@ -239,7 +239,6 @@ export default {
     promoteAll: "الكل",
     hours: "{n} ساعات",
     days: "{n} أيام",
-    emptyResult: "لا توجد بيانات",
     partitionTitle: "إدارة التقسيمات الشهرية",
     partitionDesc: "احذف التقسيمات الشهرية القديمة لتحرير مساحة القرص.",
     partitionWarning: "هذا الإجراء لا يمكن التراجع عنه: يرجى توخي الحذر.",
@@ -368,7 +367,7 @@ export default {
   usageEnhanced: {
     refresh: 'تحديث',
     loading: 'جارٍ التحميل…',
-    empty: 'لا توجد بيانات',
+    empty: 'لا توجد سجلات استهلاك في هذه الفترة',
     cards: {
       totalCost: 'التكلفة الإجمالية',
       totalRequests: 'إجمالي الطلبات',

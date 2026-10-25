@@ -168,7 +168,6 @@ export default {
     disable: 'Deaktivieren',
     delete: 'Löschen',
     loading: 'Wird geladen…',
-    empty: 'Noch keine Regeln. Klicken Sie auf „Neu hinzufügen", um die erste zu erstellen.',
     importCsv: 'CSV-Sammelimport',
     close: 'Schließen',
     csvImportResult: 'Ergebnis des Sammelimports',

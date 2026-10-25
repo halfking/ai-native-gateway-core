@@ -334,7 +334,6 @@ export default {
     drawerOutboundSend: "سيتم إرسال:",
     drawerOutboundUnset: "غير معين: سيتم استخدام",
     drawerSectionContextWindow: "نافذة السياق (رموز)",
-    drawerContextWindowHint: "تجاوز على مستوى بيانات الاعتماد لهذه البيانات × النموذج. التسلسل: هذا التجاوز > تجاوز الكتالوج > الكتالوج. اتركه فارغًا، أدخل 0، أو انقر على «مسح» لإزالة التجاوز واستخدام قيمة الكتالوج. يُطبَّق التغيير فقط إذا قمت فعلاً بتعديل القيمة؛ حفظ الحقول الأخرى (مثل الاسم القياسي) لا يستبدل تجاوزًا قائمًا.",
     drawerContextWindowPlaceholder: "مثال 200000",
     drawerContextWindowClearBtn: "مسح",
     drawerContextWindowClearTitle: "إزالة التجاوز على مستوى بيانات الاعتماد والعودة إلى قيمة كتالوج النموذج",

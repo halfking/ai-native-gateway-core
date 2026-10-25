@@ -121,7 +121,7 @@ export default {
     refresh: '刷新',
     refreshing: '刷新中...',
     loadFailed: '加载统计数据失败',
-    noData: '暂无数据',
+    noData: '还没有标注统计 —— 先完成一批标注后再看',
     totalAnnotations: '总标注数',
     providerAccuracy: '供应商准确率',
     annotatorStats: '标注人统计',

@@ -10,7 +10,6 @@ export default {
     queryFailed: 'Abfrage fehlgeschlagen',
     loadFailed: 'Laden fehlgeschlagen',
     saveFailed: 'Speichern fehlgeschlagen',
-    noData: 'Keine Daten',
     close: 'Schließen',
     clientProfilePlaceholder: 'Client-Profil',
     clientProfileTitle: 'cursor / roocode / cline',
@@ -97,7 +96,6 @@ export default {
       task: 'Aufgabe',
       workType: 'Arbeitstyp',
       modelMatchStats: 'Modellzuordnungsstatistik',
-      clickHint: 'Auf Zelle klicken, um Entscheidungsdetails und L2-Trichter anzuzeigen',
       heatmapTitle: 'Modell-Heatmap',
       l1Task: 'L1-Aufgabe',
       metricCount: 'Anfragen',
@@ -343,7 +341,6 @@ export default {
     readonlyCredentialsHint: '{n} Anmeldedaten (Details ausgeblendet)',
     tableHeaders: ['Anbieter', 'Anmeldedaten', 'Tier', 'Status', 'Erfolgsrate', 'P95', 'Eing./Ausg. $/1M', 'Upstream-Modell'],
     noCred: 'Keine Anmeldedaten für diese Variante konfiguriert',
-    clickHint: 'Auf Varianten-Button oben klicken, um Anmeldedaten-Routing-Details anzuzeigen',
     reasons: {
       circuit_open: 'Schutzschalter aktiv',
       balance_exhausted: 'Guthaben aufgebraucht',

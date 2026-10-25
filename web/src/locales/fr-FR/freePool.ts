@@ -104,7 +104,7 @@ export default {
     noSubject: "(sans objet)",
     otherTools: "Autres outils d'e-mail :",
     hubTitle: "Plateformes de tokens gratuites",
-    hubDesc: "Niveau gratuit officiel + plateformes relais + points d'accès communautaires. Cliquez pour ouvrir l'inscription ou remplir le formulaire de saisie rapide",
+    hubDesc: 'Niveau gratuit officiel + plateformes relais + points d’accès communautaires. Ouvrez l’inscription ou remplissez le formulaire de saisie rapide',
     searchPlaceholder: "Rechercher des plateformes…",
     filterAll: "Tous",
     registered: "Lié",
@@ -117,10 +117,10 @@ export default {
     showAdvanced: "Afficher les options avancées",
     hideAdvanced: "Masquer les options avancées",
     verificationCode: "Code de vérification",
-    clickToCopy: "Cliquer pour copier",
+    clickToCopy: 'Copier',
     guidePanelTitle: "Guide d'utilisation",
     guidePanelDesc: "Description complète du processus d'inscription et d'enregistrement",
-    filledFromPlatform: "Config de {name} remplie. Collez la clé API et cliquez sur « Vérifier & enregistrer »."
+    filledFromPlatform: 'Config de {name} remplie. Collez la clé API puis utilisez « Vérifier & enregistrer ».'
   },
   models: {
     title: "Modèles gratuits dans le pool",
@@ -177,7 +177,7 @@ export default {
     colDetail: "Détail",
     colStatus: "Statut",
     noKey: "Aucune clé",
-    empty: "Aucun identifiant pour l'instant: cliquez sur « Écrire l'identifiant en base » pour en ajouter"
+    empty: 'Aucun identifiant pour l’instant : utilisez « Écrire l’identifiant en base » pour en ajouter'
   },
   guide: {
     title: "Acquisition & utilisation",
@@ -192,20 +192,20 @@ export default {
     lastRunTitle: "Dernière découverte planifiée",
     quickStartTitle: "Démarrage rapide",
     step1: "Choisir une plateforme",
-    step1Detail: "Choisissez une plateforme officielle ou relais dans le navigateur ci-dessous, puis cliquez sur « Remplir le formulaire » pour préremplir l'URL de base.",
+    step1Detail: 'Choisissez une plateforme officielle ou relais dans le navigateur ci-dessous, puis utilisez « Remplir le formulaire » pour préremplir l’URL de base.',
     step2: "Générer un e-mail temporaire",
-    step2Detail: "Si la plateforme exige une inscription par e-mail, cliquez sur « Générer un e-mail temporaire » pour créer une boîte mail.tm.",
+    step2Detail: 'Si la plateforme exige une inscription par e-mail, utilisez « Générer un e-mail temporaire » pour créer une boîte mail.tm.',
     step3: "Terminer l'inscription",
-    step3Detail: "Cliquez sur « Ouvrir l'inscription » pour vous inscrire dans une nouvelle fenêtre. Les codes de vérification apparaissent sous l'e-mail temporaire et se copient en un clic.",
+    step3Detail: 'Utilisez « Ouvrir l’inscription » pour vous inscrire dans une nouvelle fenêtre. Les codes de vérification apparaissent sous l’e-mail temporaire et se copient directement.',
     step4: "Coller la clé API",
     step4Detail: "Après l'inscription, copiez la clé API de la plateforme et collez-la dans le champ « Clé API ».",
     step5: "Vérifier & enregistrer",
-    step5Detail: "Cliquez sur « Vérifier & enregistrer » pour valider la clé, la chiffrer automatiquement dans la base de données et l'ajouter au pool de routage.",
+    step5Detail: 'Utilisez « Vérifier & enregistrer » pour valider la clé, la chiffrer automatiquement dans la base de données et l’ajouter au pool de routage.',
     troubleshooting: "Questions fréquentes",
     issue1: "Échec de la vérification",
     issue1Solution: "Vérifiez que l'URL de base est correcte et que la clé API est active avec du quota.",
     issue2: "Aucun code de vérification reçu",
-    issue2Solution: "Cliquez sur « Actualiser la boîte de réception » pour récupérer à nouveau les messages, ou ouvrez l'interface web mail.tm.",
+    issue2Solution: 'Utilisez « Actualiser la boîte de réception » pour récupérer à nouveau les messages, ou ouvrez l’interface web mail.tm.',
     issue3: "Échec de l'enregistrement",
     issue3Solution: "Conflit possible sur catalog_code ou problème de connexion à la base de données : consultez le message d'erreur."
   },

@@ -180,7 +180,6 @@ export default {
     drawerTitle: '管理凭据 — {name}',
     refresh: '刷新',
     addBtn: '+ 凭据',
-    empty: '暂无凭据，点击「+ 凭据」添加',
     table: {
       id: '凭据',
       status: '状态',
@@ -254,6 +253,7 @@ export default {
       saveFailed: '保存凭据失败',
       toggleFailed: '操作失败',
     },
+    empty: '暂无凭据，点击「+ 凭据」添加',
   },
   // 2026-08-31: 供应商软删除（DELETE /api/providers/{id}）—— 行保留
   // 在表里但 deleted_at 非空，所有列表/路由表均不再返回。
@@ -281,7 +281,6 @@ export default {
     title: '供应商诊断 — 实际请求/响应抓包',
     subtitle: '(凭据已脱敏)',
     loading: '诊断中…',
-    summary: '共 {n} 个凭据，点击行展开详细请求/响应抓包',
     table: {
       credential: '凭据',
       modelSource: '模型源',
@@ -311,6 +310,7 @@ export default {
     errHeader: '⚠️ 错误',
     modelsHeader: '✅ 解析到的模型 ({n})',
     modelsTruncated: '… 共 {n} 个',
+    summary: '共 {n} 个凭据，选中任意一行可展开详细请求/响应抓包。',
   },
   bgStatus: {
     panelTitle: '后台任务状态',
@@ -376,7 +376,7 @@ export default {
   emergencyFailed: '紧急维护失败',
   // ── 2026-09-05: 设置与维护 · 生命周期状态 chips + 人工禁用状态 ──
   lifecycleTitle: '生命周期',
-  lifecycleHint: '点击状态立即保存生效；从「在用」切出需二次确认',
+  lifecycleHint: '选择状态后立即保存生效；从「在用」切出需二次确认',
   lifecycleLabelActive: '在用',
   lifecycleLabelDisabled: '停用',
   lifecycleLabelSuspended: '暂停',

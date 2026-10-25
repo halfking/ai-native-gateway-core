@@ -176,7 +176,6 @@ export default {
     drawerTitle: 'إدارة بيانات الاعتماد: {name}',
     refresh: 'تحديث',
     addBtn: '+ بيانات اعتماد',
-    empty: 'لا توجد بيانات اعتماد، انقر فوق «+ بيانات اعتماد» لإضافة',
     table: {
       id: 'بيانات الاعتماد',
       status: 'الحالة',
@@ -248,6 +247,7 @@ export default {
       saveFailed: 'فشل حفظ بيانات الاعتماد',
       toggleFailed: 'فشلت العملية',
     },
+    empty: 'لا توجد بيانات اعتماد. اختر «+ بيانات اعتماد» لإضافة.',
   },
   check: {
     providerStarted: 'تم بدء الفحص',
@@ -264,7 +264,6 @@ export default {
     title: 'تشخيص المزود: التقاط الطلب/الاستجابة الفعلي',
     subtitle: '(بيانات الاعتماد معمواة)',
     loading: 'جاري التشخيص…',
-    summary: 'إجمالي {n} من بيانات الاعتماد، انقر فوق صف لتوسيع تفاصيل الطلب/الاستجابة',
     table: {
       credential: 'بيانات الاعتماد',
       modelSource: 'مصدر النموذج',
@@ -294,6 +293,7 @@ export default {
     errHeader: '⚠️ خطأ',
     modelsHeader: '✅ النماذج التي تم تحليلها ({n})',
     modelsTruncated: '… إجمالي {n}',
+    summary: 'إجمالي {n} من بيانات الاعتماد. اختر أي صف لعرض تفاصيل الطلب/الاستجابة.',
   },
   bgStatus: {
     panelTitle: 'حالة المهام الخلفية',
@@ -368,7 +368,7 @@ export default {
   emergencyFailed: 'فشلت الصيانة الطارئة',
   // ── 2026-09-05: علامة تبويب الإعدادات · شرائح حالة دورة الحياة + حالة التعطيل اليدوي ──
   lifecycleTitle: 'دورة الحياة',
-  lifecycleHint: 'انقر على حالة للحفظ فورًا؛ الخروج من «نشط» يتطلب تأكيدًا',
+  lifecycleHint: 'اختر حالة ثم احفظ فورًا؛ الخروج من «نشط» يتطلب تأكيدًا',
   lifecycleLabelActive: 'نشط',
   lifecycleLabelDisabled: 'معطّل',
   lifecycleLabelSuspended: 'معلّق',

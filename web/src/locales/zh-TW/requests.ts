@@ -6,7 +6,6 @@
 export default {
   common: {
     loading: '載入中…',
-    noRecord: '無記錄',
     saveFailed: '儲存失敗',
     loadFailed: '載入失敗',
     copySuccess: '已複製',

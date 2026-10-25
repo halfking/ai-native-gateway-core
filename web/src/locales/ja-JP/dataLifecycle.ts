@@ -239,7 +239,6 @@ export default {
     promoteAll: "すべて",
     hours: "{n} 時間",
     days: "{n} 日",
-    emptyResult: "データがありません",
     partitionTitle: "月次パーティション管理",
     partitionDesc: "古い月次パーティションを削除してディスクを解放します。",
     partitionWarning: "元に戻せない操作です。慎重に実行してください。",
@@ -368,7 +367,7 @@ export default {
   usageEnhanced: {
     refresh: '更新',
     loading: '読み込み中…',
-    empty: 'データがありません',
+    empty: 'この期間の使用量記録はまだありません。',
     cards: {
       totalCost: '総コスト',
       totalRequests: '総リクエスト数',

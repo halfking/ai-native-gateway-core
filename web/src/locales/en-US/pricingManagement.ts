@@ -122,7 +122,6 @@ export default {
     noChange: 'No changes',
     saveFailed: 'Save failed',
     copied: 'Price copied',
-    pasted: 'Pasted: click Save to apply',
   },
   inherit: {
     title: 'Auto-inherit pricing',
@@ -153,6 +152,6 @@ export default {
   noChange: 'No changes',
   saveFailed: 'Save failed',
   copied: 'Pricing copied',
-  pasted: 'Pasted; click Save to apply',
+  pasted: 'Pasted; use Save to apply',
   failed: 'Import failed',
 }

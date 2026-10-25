@@ -8,7 +8,6 @@ export default {
     queryFailed: 'Consulta fallida',
     loadFailed: 'Error al cargar',
     saveFailed: 'Error al guardar',
-    noData: 'Ninguno',
     close: 'Cerrar',
     clientProfilePlaceholder: 'client profile',
     clientProfileTitle: 'cursor / roocode / cline',
@@ -95,7 +94,6 @@ export default {
       task: 'Tarea',
       workType: 'Tipo de trabajo',
       modelMatchStats: 'estadísticas de coincidencia de modelos',
-      clickHint: 'Clic en una celda para ver detalles de la decisión y el embudo L2',
       heatmapTitle: 'mapa de calor de modelos',
       l1Task: 'Tarea L1',
       metricCount: 'Solicitudes',
@@ -341,7 +339,6 @@ export default {
     readonlyCredentialsHint: '{n} credenciales (detalles ocultos)',
     tableHeaders: ['Proveedor', 'Credencial', 'Nivel', 'Estado', 'Éxito', 'P95', 'in/out $/1M', 'Upstream'],
     noCred: 'No hay credenciales configuradas para esta variante',
-    clickHint: 'Haga clic en un botón de variante arriba para ver los detalles de enrutamiento de credenciales',
     reasons: {
       circuit_open: 'Circuito abierto',
       balance_exhausted: 'Saldo agotado',

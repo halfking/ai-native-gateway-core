@@ -11,5 +11,4 @@ export default {
   domestic: 'محلي',
   modelCount: '{count} نموذج',
   documentation: 'التوثيق ←',
-  noResults: 'لا توجد نتائج',
 }

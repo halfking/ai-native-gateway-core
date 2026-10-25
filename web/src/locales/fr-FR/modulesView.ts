@@ -168,7 +168,6 @@ export default {
     disable: 'Désactiver',
     delete: 'Supprimer',
     loading: 'Chargement…',
-    empty: 'Aucune règle. Cliquez sur « Ajouter » pour en créer une.',
     importCsv: 'Importation par lot de CSV',
     close: 'Fermer',
     csvImportResult: 'Résultat de l\'importation par lot',

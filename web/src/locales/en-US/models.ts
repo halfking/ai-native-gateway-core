@@ -96,7 +96,6 @@ export default {
     savingFeatured: 'Saving…',
     noRecommend: 'No recommendations: no successful requests in the past 7 days, or both featured_models and popular are empty',
     recommendLoaded: 'Loaded {n} recommendation(s): {preview}',
-    recommendAdopted: 'Merged {n} recommendation(s) below (total {m}). Click "Save featured models" to apply',
     recommendLoadFailed: 'Failed to load recommendations',
     featuredUpdated: 'Featured models updated ({n})',
   },

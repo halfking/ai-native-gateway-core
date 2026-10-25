@@ -97,7 +97,6 @@ export default {
     savingFeatured: '保存中…',
     noRecommend: '推薦可能なモデルがありません: 直近7日間に成功したリクエストがない、または featured_models と popular が両方とも空です',
     recommendLoaded: '{n} 件の推薦を読み込みました: {preview}',
-    recommendAdopted: '{n} 件の推薦を以下にマージしました（合計 {m}）。「注目モデルを保存」をクリックして有効化',
     recommendLoadFailed: '推薦の読み込みに失敗しました',
     featuredUpdated: '注目モデルを更新しました ({n})',
   },

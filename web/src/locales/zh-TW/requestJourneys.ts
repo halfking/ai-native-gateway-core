@@ -58,7 +58,7 @@ export default {
     abnormalCount: '異常 {count}',
     empty: '暫無節點資料',
     emptyHint: '等待 node_update 推送',
-    modalSubtitle: '全量節點依健康度分組的全景；點擊卡片查看模型 × 節點詳情與維護',
+    modalSubtitle: '全量節點依健康度分組的全景；選擇卡片查看模型 × 節點詳情與維護',
     groupDanger: '⚠️ 異常節點 ({count})',
     groupWarn: '⚡ 警告節點 ({count})',
     groupOk: '✅ 正常節點 ({count})',

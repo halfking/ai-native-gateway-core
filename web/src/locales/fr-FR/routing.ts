@@ -10,7 +10,6 @@ export default {
     queryFailed: 'Échec de l\'interrogation',
     loadFailed: 'Échec du chargement',
     saveFailed: 'Échec de l\'enregistrement',
-    noData: 'Aucune donnée',
     close: 'Fermer',
     clientProfilePlaceholder: 'Profil client',
     clientProfileTitle: 'cursor / roocode / cline',
@@ -97,7 +96,6 @@ export default {
       task: 'Tâche',
       workType: 'Type de travail',
       modelMatchStats: 'Statistiques de correspondance de modèle',
-      clickHint: 'Cliquez sur une cellule pour voir les détails de décision et l\'entonnoir L2',
       heatmapTitle: 'Heatmap des modèles',
       l1Task: 'Tâche L1',
       metricCount: 'Requêtes',
@@ -343,7 +341,6 @@ export default {
     readonlyCredentialsHint: '{n} identifiants (détails masqués)',
     tableHeaders: ['Fournisseur', 'Identifiant', 'Tier', 'Statut', 'Taux de réussite', 'P95', 'Entr./Sort. $/1M', 'Modèle upstream'],
     noCred: 'Aucun identifiant configuré pour cette variante',
-    clickHint: 'Cliquez sur un bouton de variante ci-dessus pour voir les détails de routage des identifiants',
     reasons: {
       circuit_open: 'Disjoncteur ouvert',
       balance_exhausted: 'Solde épuisé',

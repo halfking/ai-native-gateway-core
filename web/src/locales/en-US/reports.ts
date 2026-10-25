@@ -70,7 +70,6 @@ export default {
   qualityHint: 'Success rate × latency factor (lower P95 scores higher)',
   // Collapsible model list
   modelStats: 'Model statistics',
-  modelStatsHint: 'Click to expand; pick a model name to filter by it',
   actions: 'Actions',
   filterBy: 'Filter',
   // Charts
@@ -80,7 +79,7 @@ export default {
   chartOther: 'Other',
   chartFolded: 'Showing the top',
   chartFoldedRest: 'models by request count; the rest are folded into "Other"',
-  noData: 'No data',
+  noData: 'No reconciliation records in this time range',
   // Snapshot caliber disclosure
   legacyCoverage: 'Days covered only by legacy snapshots:',
   legacyCoverageRest:
@@ -115,7 +114,7 @@ export default {
   legendCacheRead: 'Cache read',
   legendCacheWrite: 'Cache write',
   legendHitRate: 'Hit rate',
-  distHint: 'Click a row to drill down: bars show share of current metric',
+  distHint: 'Select a row to drill down: bars show share of current metric',
   byToken: 'By tokens',
   byMoney: 'By spend',
   sharePct: 'Share',

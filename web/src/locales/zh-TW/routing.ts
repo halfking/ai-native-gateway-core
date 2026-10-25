@@ -9,7 +9,6 @@ export default {
     queryFailed: '查詢失敗',
     loadFailed: '載入失敗',
     saveFailed: '儲存失敗',
-    noData: '暫無',
     close: '關閉',
     clientProfilePlaceholder: 'client profile',
     clientProfileTitle: 'cursor / roocode / cline',
@@ -96,7 +95,6 @@ export default {
       task: '任務',
       workType: '工作類型',
       modelMatchStats: '模型配對統計',
-      clickHint: '點擊儲存格查看決策明細與 L2 漏斗',
       heatmapTitle: '模型熱力圖',
       l1Task: 'L1任務',
       metricCount: '請求',
@@ -342,7 +340,6 @@ export default {
     readonlyCredentialsHint: '憑證 {n} 條（詳情已隱藏）',
     tableHeaders: ['供應商', '憑證', 'Tier', '狀態', '成功率', 'P95', '入/出 $/1M', '上游模型'],
     noCred: '該變體暫無憑證設定',
-    clickHint: '點擊上方變體按鈕查看憑證路由詳情',
     reasons: {
       circuit_open: '熔斷中',
       balance_exhausted: '餘額耗盡',

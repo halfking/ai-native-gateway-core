@@ -7,7 +7,7 @@ export default {
   common: {
       refresh: "重新整理",
       loading: "處理中…",
-      empty: "暫無資料",
+      empty: '免費資源發現還沒有記錄',
       actions: "操作",
       enabled: "已啟用",
       disabled: "已停用",

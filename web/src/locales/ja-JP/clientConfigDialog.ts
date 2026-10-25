@@ -10,7 +10,7 @@ export default {
     loading: '読み込み中…',
     empty: {
       title: 'API Key がありません',
-      description: '現在のテナント配下に利用可能な API Key がありません。管理者は下のボタンをクリックして新しいキーを申請できます。',
+      description: '現在のテナント配下に利用可能な API Key がありません。管理者は下のボタンで新しいキーを申請できます。',
       applyButton: '新しいキーを申請',
     },
     selected: '選択済み：',

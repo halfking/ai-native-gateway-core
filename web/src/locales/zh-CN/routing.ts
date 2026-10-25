@@ -8,7 +8,6 @@ export default {
     queryFailed: '查询失败',
     loadFailed: '加载失败',
     saveFailed: '保存失败',
-    noData: '暂无',
     close: '关闭',
     clientProfilePlaceholder: 'client profile',
     clientProfileTitle: 'cursor / roocode / cline',
@@ -95,7 +94,6 @@ export default {
       task: '任务',
       workType: '工作类型',
       modelMatchStats: '模型匹配统计',
-      clickHint: '点击单元格查看决策明细与 L2 漏斗',
       heatmapTitle: '模型热力图',
       l1Task: 'L1任务',
       metricCount: '请求',
@@ -338,7 +336,6 @@ export default {
     readonlyCredentialsHint: '凭据 {n} 条（详情已隐藏）',
     tableHeaders: ['供应商', '凭据', 'Tier', '状态', '成功率', 'P95', '入/出 $/1M', '上游模型'],
     noCred: '该变体暂无凭据配置',
-    clickHint: '点击上方变体按钮查看凭据路由详情',
     reasons: {
       circuit_open: '熔断中',
       balance_exhausted: '余额耗尽',

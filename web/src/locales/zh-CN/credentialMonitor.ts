@@ -91,16 +91,13 @@ export default {
     },
     modelsTab: {
       listTitle: '模型列表 ({n})',
-      clickHint: '点击查看详情',
       empty: '无模型',
       sampleUnit: '样本',
       neverCalled: '未调用',
       unavail: 'unavail',
       // 手工状态图标 label + tooltip
-      manualDisabledTitle: '当前为手工禁用状态，点击解除',
       manualDisabledNot: '手工禁用此模型',
       manualDisabled: '手工禁用',
-      manualOnlineTitle: '当前为手工启动（offline）状态，点击切换为自动',
       manualOnlineNot: '将此模型手工设为 offline（自动探测将跳过）',
       manualOnline: '手工启动',
       autoTitle: '由自动探测控制（不可手动切换到该状态）',
@@ -118,7 +115,6 @@ export default {
       redisSource: 'Redis',
       requestLogsSource: 'request_logs',
       loading: '加载中...',
-      noData: '无数据',
       refresh: '↻ 刷新',
       // 错误分布图
       errorsTitle: '错误分布',
@@ -128,7 +124,6 @@ export default {
     },
     requestsTab: {
       historySectionTitle: '请求数据：模型状态变化历史',
-      historyEmpty: '点击「模型」tab 中的模型查看',
       historyRefresh: '↻ 刷新',
       historyLoading: '加载中...',
       historyNoEvents: '无状态变化记录',

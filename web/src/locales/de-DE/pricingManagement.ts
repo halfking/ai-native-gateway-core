@@ -123,7 +123,6 @@ export default {
     noChange: 'Keine Änderungen',
     saveFailed: 'Speichern fehlgeschlagen',
     copied: 'Preis kopiert',
-    pasted: 'Eingefügt: auf Speichern klicken, um anzuwenden',
   },
   inherit: {
     title: 'Preisgestaltung automatisch vererben',
@@ -154,6 +153,6 @@ export default {
   noChange: 'Keine Änderungen',
   saveFailed: 'Speichern fehlgeschlagen',
   copied: 'Preis kopiert',
-  pasted: 'Eingefügt: auf Speichern klicken, um anzuwenden',
+  pasted: 'Eingefügt. Zum Anwenden „Speichern“ wählen.',
   failed: 'Import fehlgeschlagen',
 }

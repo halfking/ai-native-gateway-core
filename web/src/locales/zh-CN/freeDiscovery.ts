@@ -9,7 +9,7 @@ export default {
   common: {
       refresh: '刷新',
       loading: '处理中…',
-      empty: '暂无数据',
+      empty: '自由发现还没有记录',
       actions: '操作',
       enabled: '已启用',
       disabled: '已停用',

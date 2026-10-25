@@ -10,7 +10,7 @@ export default {
     loading: '載入中…',
     empty: {
       title: '暫無 API Key',
-      description: '目前租戶下還沒有可用的 API Key。管理員可點擊下方按鈕申請一個新 Key。',
+      description: '目前租戶下還沒有可用的 API Key。管理員可在下方按鈕申請一個新 Key。',
       applyButton: '申請新金鑰',
     },
     selected: '已選：',

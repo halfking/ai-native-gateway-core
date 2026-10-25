@@ -34,8 +34,8 @@ export default {
     loadingMore: '読み込み中…',
     retry: '再試行',
     allLoaded: '{count} 件すべて読み込み済み',
-    loadFailed: '読み込みに失敗しました。タップで再試行。',
-    empty: 'レコードがありません',
+    loadFailed: '読み込みに失敗しました。再試行してください。',
+    empty: 'このリストにはまだ内容がありません。',
   },
   focus: {
     enter: 'フォーカス表示',

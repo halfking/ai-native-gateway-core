@@ -3,7 +3,6 @@
 export default {
   common: {
     loading: 'Cargando…',
-    noRecord: 'Sin registros',
     saveFailed: 'Error al guardar',
     loadFailed: 'Error al cargar',
     copySuccess: 'Copiado',

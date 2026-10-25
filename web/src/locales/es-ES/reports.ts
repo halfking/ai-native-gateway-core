@@ -105,7 +105,6 @@ export default {
   unassigned: 'Sin asignar',
   qualityHint: 'Tasa de éxito × factor de latencia (menor P95 = mejor)',
   modelStats: 'Estadísticas por modelo',
-  modelStatsHint: 'Haz clic para desplegar; elige un nombre de modelo para filtrar',
   actions: 'Acciones',
   filterBy: 'Filtrar',
   chartTrend: 'Volumen de solicitudes y tasa de error',
@@ -114,7 +113,7 @@ export default {
   chartOther: 'Otros',
   chartFolded: 'Solo los',
   chartFoldedRest: 'modelos con más solicitudes; el resto se agrupa en «Otros»',
-  noData: 'Sin datos',
+  noData: 'No hay registros de conciliación en este periodo.',
   legacyCoverage: 'Días cubiertos solo por instantáneas heredadas:',
   legacyCoverageRest:
     ': esos días solo suman en el total y la serie diaria; las dimensiones credencial/usuario/clave API aparecen tras el relleno («Reejecutar último día», día a día)',

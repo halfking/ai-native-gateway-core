@@ -131,7 +131,7 @@ export default {
   usageEnhanced: {
     refresh: '刷新',
     loading: '加载中…',
-    empty: '无数据',
+    empty: '这段时间没有用量记录',
     cards: {
       totalCost: '总成本',
       totalRequests: '总请求数',
@@ -362,7 +362,6 @@ export default {
     promoteAll: '全部',
     hours: '{n} 小时',
     days: '{n} 天',
-    emptyResult: '暂无数据',
     // 2026-07-13: 异步任务支持
     jobIdMissing: '异步任务启动失败：未返回 job_id',
     asyncCompleted: '异步迁移完成，共迁移 {n} 行',

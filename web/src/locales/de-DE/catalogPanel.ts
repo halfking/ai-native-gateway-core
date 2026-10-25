@@ -11,5 +11,4 @@ export default {
   domestic: 'Inland',
   modelCount: '{count} Modelle',
   documentation: 'Dokumentation →',
-  noResults: 'Keine Ergebnisse',
 }

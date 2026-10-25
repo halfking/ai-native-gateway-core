@@ -91,7 +91,6 @@ export default {
       keyMissing: '(No se devolvió la clave)',
       copied: '✓ Copiada',
       copy: '📋 Copiar clave',
-      copyHintOk: 'Puede hacer clic varias veces para copiar',
       copyHintErr: 'El backend no devolvió una clave válida, compruebe la respuesta de la API',
       useAndReturn: 'Usar esta clave y volver',
       savedClose: 'Ya la he guardado, cerrar',
@@ -282,7 +281,7 @@ export default {
       actions: 'Acciones',
     },
     loading: 'Cargando…',
-    noRecord: 'Sin registros',
+    noRecord: 'Esta aplicación aún no tiene registros de claves.',
     expiredCell: 'Caducada {ts}',
     action: {
       approve: 'Aprobar',

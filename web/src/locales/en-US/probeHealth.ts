@@ -40,7 +40,7 @@ export default {
     health: 'Health',
   },
   loading: 'Loading…',
-  empty: 'No data',
+  empty: 'No models match the current filters',
   health: {
     healthy: 'healthy',
     degraded: 'degraded',

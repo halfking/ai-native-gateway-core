@@ -131,7 +131,7 @@ export default {
   usageEnhanced: {
     refresh: 'Refresh',
     loading: 'Loading…',
-    empty: 'No data',
+    empty: 'No usage records in this time range',
     cards: {
       totalCost: 'Total cost',
       totalRequests: 'Total requests',
@@ -362,7 +362,6 @@ export default {
     promoteAll: 'all',
     hours: '{n} hours',
     days: '{n} days',
-    emptyResult: 'No data',
     // 2026-07-13: async job support
     jobIdMissing: 'Failed to start async job: missing job_id',
     asyncCompleted: 'Async migration complete: {n} rows migrated',

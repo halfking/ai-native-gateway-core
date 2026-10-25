@@ -123,7 +123,6 @@ export default {
     noChange: 'Aucun changement',
     saveFailed: 'Échec de l\'enregistrement',
     copied: 'Prix copié',
-    pasted: 'Collé: cliquez sur Enregistrer pour appliquer',
   },
   inherit: {
     title: 'Héritage automatique de la tarification',
@@ -154,6 +153,6 @@ export default {
   noChange: 'Aucun changement',
   saveFailed: 'Échec de l\'enregistrement',
   copied: 'Prix copié',
-  pasted: 'Collé: cliquez sur Enregistrer pour appliquer',
+  pasted: 'Collé : utilisez « Enregistrer » pour appliquer',
   failed: 'Échec de l\'import',
 }

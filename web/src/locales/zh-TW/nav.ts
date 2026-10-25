@@ -14,7 +14,7 @@ export default {
   },
   item: {
     activateAction: '啟用',
-    activateActionTip: '點擊前往啟用本機',
+    activateActionTip: '前往啟用本機',
     liveTopology: "即時拓撲",
     overview: "總覽",
     tenantModels: "標準模型",

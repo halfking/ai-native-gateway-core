@@ -121,7 +121,6 @@ export default {
     noChange: 'Sin cambios',
     saveFailed: 'Error al guardar',
     copied: 'Precio copiado',
-    pasted: 'Pegado: haga clic en Guardar para aplicar',
   },
   inherit: {
     title: 'Heredar precios automáticamente',
@@ -152,6 +151,6 @@ export default {
   noChange: 'Sin cambios',
   saveFailed: 'Error al guardar',
   copied: 'Precio copiado',
-  pasted: 'Pegado: pulse Guardar para aplicar',
+  pasted: 'Pegado: selecciona «Guardar» para aplicar',
   failed: 'Importación fallida',
 }

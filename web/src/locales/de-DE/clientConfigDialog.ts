@@ -10,7 +10,7 @@ export default {
     loading: 'Lädt…',
     empty: {
       title: 'Keine API-Schlüssel',
-      description: 'Es sind keine API-Schlüssel unter dem aktuellen Mandanten verfügbar. Administratoren können auf die Schaltfläche unten klicken, um einen neuen Schlüssel zu beantragen.',
+      description: 'Unter dem aktuellen Mandanten sind noch keine API-Schlüssel verfügbar. Administratoren können unten einen neuen Schlüssel beantragen.',
       applyButton: 'Neuen Schlüssel beantragen',
     },
     selected: 'Ausgewählt:',

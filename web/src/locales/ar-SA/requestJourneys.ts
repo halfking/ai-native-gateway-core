@@ -58,7 +58,7 @@ export default {
     abnormalCount: '{count} غير سليم',
     empty: 'لا توجد بيانات للعقد بعد',
     emptyHint: 'بانتظار دفع node_update',
-    modalSubtitle: 'بانوراما جميع العقد مجمّعة حسب الصحة؛ انقر بطاقة لعرض تفاصيل النموذج × العقدة والصيانة',
+    modalSubtitle: 'بانوراما جميع العقد مجمّعة حسب الصحة؛ اختر بطاقة لعرض تفاصيل النموذج × العقدة والصيانة',
     groupDanger: '⚠️ عقد غير سليمة ({count})',
     groupWarn: '⚡ عقد في وضع تحذير ({count})',
     groupOk: '✅ عقد سليمة ({count})',

@@ -132,7 +132,7 @@ export default {
     clients: '用戶端請求',
     providers: '供應商回應',
     zoom: '查看詳情',
-    zoomHint: '點 ⤢ 新頁查看詳情',
+    zoomHint: '選擇 ⤢ 在新頁查看詳情',
     empty: '視窗內暫無請求',
     page: '第 {page}/{pages} 頁',
     total: '共 {n} 筆',

@@ -97,7 +97,6 @@ export default {
     savingFeatured: 'جاري الحفظ…',
     noRecommend: 'لا توجد نماذج موصى بها: لا توجد طلبات ناجحة في آخر 7 أيام، أو أن featured_models و popular كلاهما فارغ',
     recommendLoaded: 'تم تحميل {n} توصيات: {preview}',
-    recommendAdopted: 'تم دمج {n} توصيات أدناه (إجمالي {m})، انقر فوق «حفظ النماذج المميزة» لتفعيلها',
     recommendLoadFailed: 'فشل تحميل التوصيات',
     featuredUpdated: 'تم تحديث النماذج المميزة ({n})',
   },

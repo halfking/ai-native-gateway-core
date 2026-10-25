@@ -104,7 +104,7 @@ export default {
     noSubject: "(لا يوجد موضوع)",
     otherTools: "أدوات بريد أخرى:",
     hubTitle: "تنقل منصات Token المجانية",
-    hubDesc: "الطبقة المجانية الرسمية + منصات الترحيل + نقاط المجتمع, انقر لفتح التسجيل أو ملء الإدخال السريع",
+    hubDesc: 'الطبقة المجانية الرسمية + منصات الترحيل + نقاط المجتمع، افتح التسجيل أو املأ الإدخال السريع',
     searchPlaceholder: "البحث عن منصة…",
     filterAll: "الكل",
     registered: "مدمج",
@@ -117,7 +117,7 @@ export default {
     showAdvanced: "إظهار الخيارات المتقدمة",
     hideAdvanced: "إخفاء الخيارات المتقدمة",
     verificationCode: "رمز التحقق",
-    clickToCopy: "انقر للنسخ",
+    clickToCopy: 'نسخ',
     guidePanelTitle: "دليل الاستخدام",
     guidePanelDesc: "شرح كامل لخطوات التسجيل والحفظ",
     filledFromPlatform: "تم ملء إعدادات {name}. الصق مفتاح API وانقر «فحص وحفظ»."
@@ -177,7 +177,7 @@ export default {
     colDetail: "الوصف",
     colStatus: "الحالة",
     noKey: "لا يوجد مفتاح",
-    empty: "لا توجد بيانات اعتماد، انقر فوق «كتابة بيانات اعتماد DB» للإضافة"
+    empty: 'لا توجد بيانات اعتماد، أضِف واحدة عبر «كتابة بيانات اعتماد DB».'
   },
   guide: {
     title: "طرق الحصول والاستخدام",

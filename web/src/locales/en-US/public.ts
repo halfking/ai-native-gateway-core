@@ -64,7 +64,6 @@ export default {
     supporterCount: '{n} supporters so far',
     creating: 'Creating order…',
     created: 'Thank you for your support!',
-    stubHint: 'After paying, contact huangxutao@kxpms.cn if needed (dev: confirm below)',
     confirmStub: 'Mark as paid (dev)',
     goDownload: 'Go to download',
     showQr: 'Show QR code',

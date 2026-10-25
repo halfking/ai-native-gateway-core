@@ -121,7 +121,7 @@ export default {
     refresh: '重新整理',
     refreshing: '重新整理中...',
     loadFailed: '統計載入失敗',
-    noData: '暫無資料',
+    noData: '還沒有標註統計 —— 先完成一批標註後再查看',
     totalAnnotations: '總標註數',
     providerAccuracy: '供應商準確率',
     annotatorStats: '標註人統計',

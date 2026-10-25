@@ -123,7 +123,6 @@ export default {
     noChange: '無變更',
     saveFailed: '儲存失敗',
     copied: '價格已複製',
-    pasted: '已貼上，請點擊儲存生效',
   },
   inherit: {
     title: '自動繼承定價',
@@ -154,6 +153,6 @@ export default {
   noChange: '無變更',
   saveFailed: '儲存失敗',
   copied: '價格已複製',
-  pasted: '已貼上，請點擊儲存生效',
+  pasted: '已貼上，請儲存後生效',
   failed: '匯入失敗',
 }

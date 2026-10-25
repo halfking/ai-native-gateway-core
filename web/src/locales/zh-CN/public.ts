@@ -59,7 +59,6 @@ export default {
     supporterCount: '已有 {n} 位支持者',
     creating: '创建订单中…',
     created: '感谢您的支持！',
-    stubHint: '扫码支付后如有疑问，请邮件联系 huangxutao@kxpms.cn（开发环境可点击下方确认）',
     confirmStub: '我已支付（开发确认）',
     goDownload: '前往下载',
     showQr: '显示收款码',

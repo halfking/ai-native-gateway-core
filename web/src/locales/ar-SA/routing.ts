@@ -9,7 +9,6 @@ export default {
     queryFailed: 'فشل الاستعلام',
     loadFailed: 'فشل التحميل',
     saveFailed: 'فشل الحفظ',
-    noData: 'لا يوجد',
     close: 'إغلاق',
     clientProfilePlaceholder: 'client profile',
     clientProfileTitle: 'cursor / roocode / cline',
@@ -96,7 +95,6 @@ export default {
       task: 'المهمة',
       workType: 'نوع العمل',
       modelMatchStats: 'إحصائيات مطابقة النموذج',
-      clickHint: 'انقر فوق الخلية لعرض تفاصيل القرار وقمع L2',
       heatmapTitle: 'خريطة حرارية للنماذج',
       l1Task: 'مهمة L1',
       metricCount: 'الطلبات',
@@ -342,7 +340,6 @@ export default {
     readonlyCredentialsHint: '{n} من بيانات الاعتماد (التفاصيل مخفية)',
     tableHeaders: ['المزود', 'بيانات الاعتماد', 'Tier', 'الحالة', 'معدل النجاح', 'P95', 'إدخال/إخراج $/1M', 'النموذج المنبع'],
     noCred: 'لا توجد بيانات اعتماد لهذا المتغير',
-    clickHint: 'انقر فوق زر المتغير أعلاه لعرض تفاصيل توجيه بيانات الاعتماد',
     reasons: {
       circuit_open: 'قاطع الدائرة مفتوح',
       balance_exhausted: 'الرصيد مستنفد',

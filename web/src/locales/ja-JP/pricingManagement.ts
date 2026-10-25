@@ -123,7 +123,6 @@ export default {
     noChange: '変更なし',
     saveFailed: '保存失敗',
     copied: '価格をコピーしました',
-    pasted: '貼り付けました。保存をクリックして有効化',
   },
   inherit: {
     title: '自動継承価格',
@@ -154,6 +153,6 @@ export default {
   noChange: "変更なし",
   saveFailed: "保存失敗",
   copied: "価格をコピーしました",
-  pasted: "貼り付けました。保存をクリックして適用してください",
+  pasted: '貼り付けました。保存すると反映されます',
   failed: "インポートに失敗しました",
 }

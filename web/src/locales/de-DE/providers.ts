@@ -175,7 +175,6 @@ export default {
     drawerTitle: 'Anmeldedaten verwalten: {name}',
     refresh: 'Aktualisieren',
     addBtn: '+ Anmeldedaten',
-    empty: 'Noch keine Anmeldedaten: auf „+ Anmeldedaten" klicken, um hinzuzufügen',
     table: {
       id: 'Anmeldedaten',
       status: 'Status',
@@ -247,6 +246,7 @@ export default {
       saveFailed: 'Anmeldedaten konnten nicht gespeichert werden',
       toggleFailed: 'Vorgang fehlgeschlagen',
     },
+    empty: 'Noch keine Anmeldedaten: Zum Hinzufügen „+ Anmeldedaten" wählen.',
   },
   check: {
     providerStarted: 'Prüfung gestartet',
@@ -263,7 +263,6 @@ export default {
     title: 'Anbieterdiagnose: tatsächliche Anfrage-/Antwort-Aufzeichnung',
     subtitle: '(Anmeldedaten bereinigt)',
     loading: 'Diagnose läuft…',
-    summary: '{n} Anmeldedaten: auf eine Zeile klicken, um Anfrage-/Antwort-Details zu erweitern',
     table: {
       credential: 'Anmeldedaten',
       modelSource: 'Modellquelle',
@@ -293,6 +292,7 @@ export default {
     errHeader: '⚠️ Fehler',
     modelsHeader: '✅ Geparste Modelle ({n})',
     modelsTruncated: '… {n} gesamt',
+    summary: '{n} Anmeldedaten: eine beliebige Zeile wählen, um Anfrage-/Antwort-Details zu erweitern',
   },
   bgStatus: {
     panelTitle: 'Status der Hintergrundaufgaben',
@@ -367,7 +367,7 @@ export default {
   emergencyFailed: 'Notfallwartung fehlgeschlagen',
   // ── 2026-09-05: Einstellungen & Wartung · Lifecycle-Status-Chips + manueller Sperrstatus ──
   lifecycleTitle: 'Lifecycle',
-  lifecycleHint: 'Klicken Sie auf einen Status, um sofort zu speichern; beim Verlassen von „Aktiv“ wird bestätigt',
+  lifecycleHint: 'Wählen Sie einen Status, um sofort zu speichern; beim Verlassen von „Aktiv“ wird bestätigt',
   lifecycleLabelActive: 'Aktiv',
   lifecycleLabelDisabled: 'Deaktiviert',
   lifecycleLabelSuspended: 'Ausgesetzt',

@@ -11,5 +11,4 @@ export default {
   domestic: '国内',
   modelCount: '{count} 件のモデル',
   documentation: 'ドキュメント →',
-  noResults: '一致する結果がありません',
 }

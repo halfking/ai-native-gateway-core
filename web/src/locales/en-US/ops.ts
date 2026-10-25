@@ -67,7 +67,6 @@ export default {
     publicPortal: 'Public Portal',
     deploymentNodes: 'Deployment Nodes',
     topologyTitle: 'Deployment Topology',
-    topologyHint: 'Grouped by region. Sparse nodes stay large; dense grids wrap. Click a node for details.',
     regionEmpty: 'No registered nodes',
     nodesOnlineOf: '{online} / {total} online',
     noHeartbeat: 'no heartbeat',

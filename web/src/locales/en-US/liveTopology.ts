@@ -132,7 +132,7 @@ export default {
     clients: 'Client requests',
     providers: 'Provider responses',
     zoom: 'View detail',
-    zoomHint: 'Tap ⤢ to open the detail page',
+    zoomHint: 'Select ⤢ to open the detail page',
     empty: 'No requests in the window',
     page: 'Page {page}/{pages}',
     total: '{n} total',

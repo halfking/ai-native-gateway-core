@@ -104,7 +104,7 @@ export default {
     noSubject: "(件名なし)",
     otherTools: "その他のメールツール:",
     hubTitle: "無料トークンプラットフォーム ナビ",
-    hubDesc: "公式無料枠 + 中継プラットフォーム + コミュニティエンドポイント：クリックで登録ページを開くか、クイック入力に反映",
+    hubDesc: '公式無料枠 + 中継プラットフォーム + コミュニティエンドポイント：登録ページを開くか、クイック入力に反映',
     searchPlaceholder: "プラットフォームを検索…",
     filterAll: "すべて",
     registered: "接続済み",
@@ -117,10 +117,10 @@ export default {
     showAdvanced: "詳細設定を表示",
     hideAdvanced: "詳細設定を閉じる",
     verificationCode: "認証コード",
-    clickToCopy: "クリックしてコピー",
+    clickToCopy: 'コピー',
     guidePanelTitle: "操作ガイド",
     guidePanelDesc: "登録から保存までの一連の手順を説明します",
-    filledFromPlatform: "{name} の設定を入力しました。API Key を貼り付けて「動作確認して DB に保存」をクリックしてください"
+    filledFromPlatform: '{name} の設定を入力しました。API Key を貼り付けて「動作確認して DB に保存」を実行してください'
   },
   models: {
     title: "現在のプール内無料モデル",
@@ -177,7 +177,7 @@ export default {
     colDetail: "メモ",
     colStatus: "ステータス",
     noKey: "キーなし",
-    empty: "認証情報がありません。「DB 認証情報を書き込む」をクリックして追加してください"
+    empty: '認証情報がありません。「DB 認証情報を書き込む」で追加してください'
   },
   guide: {
     title: "取得方法と使用方法",
@@ -192,20 +192,20 @@ export default {
     lastRunTitle: "直近のスケジュール discovery",
     quickStartTitle: "クイックスタート",
     step1: "プラットフォームを選択",
-    step1Detail: "下のプラットフォームナビゲーターから登録したい公式/中継プラットフォームを選び、「フォームに自動入力」をクリックすると Base URL が自動入力されます。",
+    step1Detail: '下のプラットフォームナビゲーターから登録したい公式/中継プラットフォームを選び、「フォームに自動入力」を選ぶと Base URL が自動入力されます。',
     step2: "一時メールアドレスを生成",
-    step2Detail: "プラットフォームがメールアドレスでの登録を要求する場合は「一時メールアドレスを生成」をクリックすると、mail.tm のメールアドレスとパスワードが自動生成されます。",
+    step2Detail: 'プラットフォームがメールアドレスでの登録を要求する場合は「一時メールアドレスを生成」を選ぶと、mail.tm のメールアドレスとパスワードが自動生成されます。',
     step3: "登録を完了",
-    step3Detail: "「登録を開く」をクリックして新しいウィンドウで登録を完了してください。認証コードは一時メールアドレスの下に表示され、ワンクリックでコピーできます。",
+    step3Detail: '「登録を開く」を選ぶと新しいウィンドウで登録を完了できます。認証コードは一時メールアドレスの下に表示され、ワンクリックでコピーできます。',
     step4: "API Key を貼り付け",
     step4Detail: "登録後、プラットフォームの API Key をコピーして「API Key」フィールドに貼り付けます。",
     step5: "動作確認して DB に保存",
-    step5Detail: "「動作確認して DB に保存」をクリックすると Key の有効性を検証し、自動的に暗号化して DB に書き込んでルーティングプールへ追加します。",
+    step5Detail: '「動作確認して DB に保存」を選ぶと Key の有効性を検証し、自動的に暗号化して DB に書き込んでルーティングプールへ追加します。',
     troubleshooting: "よくある質問",
     issue1: "プローブ失敗",
     issue1Solution: "Base URL が正しいか確認し、API Key が有効化されているか、クォータが残っているかを確認してください。",
     issue2: "認証コードが届かない",
-    issue2Solution: "「受信トレイを更新」をクリックして再取得するか、mail.tm の Web 画面で確認してください。",
+    issue2Solution: '「受信トレイを更新」で再取得するか、mail.tm の Web 画面で確認してください。',
     issue3: "保存に失敗しました",
     issue3Solution: "catalog_code の重複や DB 接続の問題が考えられます。エラーメッセージを確認してください。"
   },

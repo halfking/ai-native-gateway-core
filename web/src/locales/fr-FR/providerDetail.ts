@@ -334,7 +334,6 @@ export default {
     drawerOutboundSend: "Sera envoyé :",
     drawerOutboundUnset: "Non défini: utilisera",
     drawerSectionContextWindow: "Fenêtre de contexte (tokens)",
-    drawerContextWindowHint: "Remplacement au niveau de l'identifiant pour cet identifiant × modèle. Chaîne : ce remplacement > remplacement catalogue > catalogue. Laisser vide, saisir 0, ou cliquer sur « Effacer » pour retirer le remplacement et utiliser la valeur catalogue. La modification n'est appliquée que si vous changez réellement la valeur ; enregistrer d'autres champs (ex. nom standardisé) n'écrase pas un remplacement existant.",
     drawerContextWindowPlaceholder: "ex. 200000",
     drawerContextWindowClearBtn: "Effacer",
     drawerContextWindowClearTitle: "Retirer le remplacement au niveau de l'identifiant et revenir à la valeur catalogue",

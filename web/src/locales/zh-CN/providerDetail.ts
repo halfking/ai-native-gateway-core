@@ -373,7 +373,6 @@ export default {
     drawerOutboundSend: '将发送：',
     drawerOutboundUnset: '未设置 — 将使用',
     drawerSectionContextWindow: '上下文窗口（token）',
-    drawerContextWindowHint: '本凭据 × 模型的覆盖。解析优先级：本覆盖 > 模型目录级覆盖 > 模型目录。留空、填 0 或点击「清除」即可移除覆盖，使用目录值。仅当你真正改动此字段时保存才生效；只保存其他字段（如标准化名）不会误删现有覆盖。',
     drawerContextWindowPlaceholder: '例如 200000',
     drawerContextWindowClearBtn: '清除',
     drawerContextWindowClearTitle: '移除凭据级覆盖，回退到模型目录值',

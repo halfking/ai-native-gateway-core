@@ -51,7 +51,7 @@ export default {
   },
   table: {
     title: 'Overrides ({n})',
-    empty: 'Aucune surcharge ne correspond au filtre. Cliquez sur "+ Nouvelle surcharge" pour en créer une.',
+    empty: 'Aucune surcharge ne correspond au filtre. Utilisez « + Nouvelle surcharge » pour en créer une.',
     headers: {
       id: 'ID',
       mode: 'Mode',

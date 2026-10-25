@@ -104,7 +104,7 @@ export default {
     noSubject: "(kein Betreff)",
     otherTools: "Weitere E-Mail-Tools:",
     hubTitle: "Kostenlose Token-Plattformen",
-    hubDesc: "Offizielle kostenlose Stufe + Relay-Plattformen + Community-Endpunkte. Klicken Sie, um die Registrierung zu öffnen oder das Schnelleingabeformular auszufüllen",
+    hubDesc: 'Offizielle kostenlose Stufe + Relay-Plattformen + Community-Endpunkte: Registrierung öffnen oder das Schnelleingabeformular ausfüllen',
     searchPlaceholder: "Plattformen suchen…",
     filterAll: "Alle",
     registered: "Verknüpft",
@@ -117,10 +117,10 @@ export default {
     showAdvanced: "Erweiterte Optionen anzeigen",
     hideAdvanced: "Erweiterte Optionen ausblenden",
     verificationCode: "Bestätigungscode",
-    clickToCopy: "Zum Kopieren klicken",
+    clickToCopy: 'Kopieren',
     guidePanelTitle: "Bedienungsanleitung",
     guidePanelDesc: "Vollständiger Ablauf für Registrierung und Speicherung",
-    filledFromPlatform: "Konfiguration für {name} eingefüllt. API-Schlüssel einfügen und auf „Prüfen & speichern\" klicken."
+    filledFromPlatform: 'Konfiguration für {name} eingefüllt. API-Schlüssel einfügen und „Prüfen & speichern“ wählen.'
   },
   models: {
     title: "Kostenlose Modelle im Pool",
@@ -177,7 +177,7 @@ export default {
     colDetail: "Detail",
     colStatus: "Status",
     noKey: "Kein Schlüssel",
-    empty: "Noch keine Anmeldedaten: klicken Sie auf „DB-Anmeldedaten schreiben\", um eine hinzuzufügen"
+    empty: 'Noch keine Anmeldedaten: „DB-Anmeldedaten schreiben“ wählen, um eine hinzuzufügen'
   },
   guide: {
     title: "Beschaffung & Nutzung",
@@ -192,11 +192,11 @@ export default {
     lastRunTitle: "Letzte geplante Discovery",
     quickStartTitle: "Schnellstart",
     step1: "Plattform auswählen",
-    step1Detail: "Wählen Sie unten in der Plattformnavigation den offiziellen Anbieter oder den Relay-Anbieter aus und klicken Sie auf „Formular ausfüllen\", damit die Basis-URL automatisch übernommen wird.",
+    step1Detail: 'Wählen Sie unten in der Plattformnavigation den offiziellen Anbieter oder den Relay-Anbieter aus. „Formular ausfüllen“ übernimmt die Basis-URL automatisch.',
     step2: "Temporäre E-Mail generieren",
-    step2Detail: "Wenn die Plattform eine Registrierung per E-Mail verlangt, klicken Sie auf „Temporäre E-Mail generieren\". Das System legt dann eine mail.tm-Adresse mit Passwort an.",
+    step2Detail: 'Wenn die Plattform eine Registrierung per E-Mail verlangt, wählen Sie „Temporäre E-Mail generieren“. Das System legt dann eine mail.tm-Adresse mit Passwort an.',
     step3: "Registrierung abschließen",
-    step3Detail: "Klicken Sie auf „Registrierung öffnen\" und schließen Sie die Registrierung in einem neuen Fenster ab. Die Bestätigungscodes erscheinen unten und lassen sich mit einem Klick kopieren.",
+    step3Detail: 'Wählen Sie „Registrierung öffnen“ und schließen Sie die Registrierung in einem neuen Fenster ab. Die Bestätigungscodes erscheinen unten und lassen sich direkt kopieren.',
     step4: "API-Schlüssel einfügen",
     step4Detail: "Kopieren Sie nach der Registrierung den API-Schlüssel der Plattform und fügen Sie ihn im Feld „API-Schlüssel\" ein.",
     step5: "Prüfen & speichern",
@@ -205,7 +205,7 @@ export default {
     issue1: "Prüfung fehlgeschlagen",
     issue1Solution: "Prüfen Sie die Basis-URL und vergewissern Sie sich, dass der API-Schlüssel aktiviert ist und über Guthaben verfügt.",
     issue2: "Kein Bestätigungscode",
-    issue2Solution: "Klicken Sie auf „Posteingang aktualisieren\" oder öffnen Sie die Weboberfläche von mail.tm.",
+    issue2Solution: '„Posteingang aktualisieren“ wählen oder die Weboberfläche von mail.tm öffnen.',
     issue3: "Speichern fehlgeschlagen",
     issue3Solution: "Ursache kann ein Konflikt bei catalog_code oder ein Problem der Datenbankverbindung sein. Sehen Sie in der Fehlermeldung nach."
   },

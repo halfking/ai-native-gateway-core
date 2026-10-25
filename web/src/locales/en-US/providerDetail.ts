@@ -360,7 +360,6 @@ export default {
     drawerOutboundSend: "Will send:",
     drawerOutboundUnset: "Not set: will use",
     drawerSectionContextWindow: "Context window (tokens)",
-    drawerContextWindowHint: "Binding-level override for this credential × model. Resolution chain: this override → canonical model override → canonical model catalog. Leave empty (or 0, or click Clear) to remove the override and fall back to the catalog value. Editing this field only takes effect when you actually change it; saving other fields (e.g. standardized name) does not clobber an existing override.",
     drawerContextWindowPlaceholder: "e.g. 200000",
     drawerContextWindowClearBtn: "Clear",
     drawerContextWindowClearTitle: "Remove the binding-level override and fall back to the canonical model catalog value",

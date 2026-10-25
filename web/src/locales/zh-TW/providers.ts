@@ -177,7 +177,6 @@ export default {
     drawerTitle: '管理憑證 — {name}',
     refresh: '重新整理',
     addBtn: '+ 憑證',
-    empty: '暫無憑證，點擊「+ 憑證」新增',
     table: {
       id: '憑證',
       status: '狀態',
@@ -249,6 +248,7 @@ export default {
       saveFailed: '儲存憑證失敗',
       toggleFailed: '操作失敗',
     },
+    empty: '暫無憑證，點擊「+ 憑證」新增',
   },
   check: {
     providerStarted: '偵測已啟動',
@@ -265,7 +265,6 @@ export default {
     title: '供應商診斷 — 實際請求/回應抓包',
     subtitle: '(憑證已脫敏)',
     loading: '診斷中…',
-    summary: '共 {n} 個憑證，點擊行展開詳細請求/回應抓包',
     table: {
       credential: '憑證',
       modelSource: '模型源',
@@ -295,6 +294,7 @@ export default {
     errHeader: '⚠️ 錯誤',
     modelsHeader: '✅ 解析到的模型 ({n})',
     modelsTruncated: '… 共 {n} 個',
+    summary: '共 {n} 個憑證，選取任一列可展開詳細請求/回應抓包。',
   },
   bgStatus: {
     panelTitle: '背景任務狀態',
@@ -369,7 +369,7 @@ export default {
   emergencyFailed: '緊急維護失敗',
   // ── 2026-09-05: 設定與維護 · 生命週期狀態 chips + 人工停用狀態 ──
   lifecycleTitle: '生命週期',
-  lifecycleHint: '點擊狀態立即儲存生效；從「使用中」切出需二次確認',
+  lifecycleHint: '選擇狀態立即儲存生效；從「使用中」切出需二次確認',
   lifecycleLabelActive: '使用中',
   lifecycleLabelDisabled: '停用',
   lifecycleLabelSuspended: '暫停',

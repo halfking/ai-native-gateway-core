@@ -40,7 +40,7 @@ export default {
     health: '健康度',
   },
   loading: '加载中...',
-  empty: '暂无数据',
+  empty: '没有匹配到的模型',
   health: {
     healthy: 'healthy',
     degraded: 'degraded',

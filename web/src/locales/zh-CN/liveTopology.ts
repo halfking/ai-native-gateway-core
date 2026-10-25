@@ -133,7 +133,7 @@ export default {
     clients: '客户端请求',
     providers: '供应商响应',
     zoom: '查看详情',
-    zoomHint: '点 ⤢ 新页查看详情',
+    zoomHint: '选择 ⤢ 在新页查看详情',
     empty: '窗口内暂无请求',
     page: '第 {page}/{pages} 页',
     total: '共 {n} 条',

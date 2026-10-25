@@ -26,7 +26,6 @@ export default {
       description: 'VS Code + Roo Code 扩展，配置 roo-cline',
     },
   },
-  keyHint: '示例代码中的 API Key 已脱敏显示；点击「测试」将使用当前登录密钥。复制示例后请自行替换为真实 Key。',
   copyKey: '复制完整 Key',
   copied: '已复制!',
   selectModel: '选择示例模型：',

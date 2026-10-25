@@ -122,7 +122,6 @@ export default {
     noChange: '无变更',
     saveFailed: '保存失败',
     copied: '价格已复制',
-    pasted: '已粘贴，请点击保存生效',
   },
   inherit: {
     title: '自动继承定价',
@@ -153,6 +152,6 @@ export default {
   noChange: '无变更',
   saveFailed: '保存失败',
   copied: '价格已复制',
-  pasted: '已粘贴，请点击保存生效',
+  pasted: '已粘贴，请保存后生效',
   failed: '导入失败',
 }

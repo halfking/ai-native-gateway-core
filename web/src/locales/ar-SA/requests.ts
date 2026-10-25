@@ -5,7 +5,6 @@
 export default {
   common: {
     loading: 'جاري التحميل…',
-    noRecord: 'لا توجد سجلات',
     saveFailed: 'فشل الحفظ',
     loadFailed: 'فشل التحميل',
     copySuccess: 'تم النسخ',
