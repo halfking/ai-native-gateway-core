@@ -280,6 +280,42 @@ const CASES = [
   { name: 'login-1440-zhCN', url: '/login', locale: 'zh-CN', w: 1440, h: 900 },
 ]
 
+/**
+ * 环回地址有两种写法（127.0.0.1 / localhost），而 vite 的 preview / dev
+ * 只会绑到其中一种（本机实测：vite 绑 `localhost` ⇒ 解析到 ::1 ⇒
+ * 127.0.0.1 直接 ERR_CONNECTION_REFUSED）。
+ *
+ * ★ 不处理的后果：门会给出「0/7 通过 + 连接被拒」，★ 看起来像**应用坏了**，
+ *   而实际是**地址写法不对** ⇒ 一个把量具指错地方的假红。
+ * ⇒ 连接被拒时自动换另一种写法重试，并**打印实际用的那个**。
+ *   其它错误（页面本身的问题）不触发切换 —— 那种情况地址是通的。
+ */
+const LOOPBACK_ALT = { '127.0.0.1': 'localhost', 'localhost': '127.0.0.1' }
+
+async function resolveBase(page, base) {
+  const probe = async (b) => {
+    try {
+      await page.goto(b + '/', { waitUntil: 'domcontentloaded', timeout: 15000 })
+      return { reachable: true }
+    } catch (e) {
+      const m = String(e.message || '')
+      if (/ERR_CONNECTION_REFUSED|ERR_ADDRESS_UNREACHABLE|ERR_INVALID_URL/.test(m)) {
+        return { reachable: false, refused: true }
+      }
+      return { reachable: true } // 其它错误 ⇒ 地址是通的，问题在页面本身
+    }
+  }
+  const first = await probe(base)
+  if (first.reachable) return { base, switched: false }
+  let u
+  try { u = new URL(base) } catch { return { base, switched: false } }
+  const alt = LOOPBACK_ALT[u.hostname]
+  if (!alt) return { base, switched: false }
+  const altBase = base.replace(u.hostname, alt)
+  const second = await probe(altBase)
+  return second.reachable ? { base: altBase, switched: true } : { base, switched: false }
+}
+
 async function main() {
   const argv = process.argv.slice(2)
   if (argv.includes('--selftest')) {
@@ -294,7 +330,15 @@ async function main() {
   }
 
   const { browser, from } = await launchBrowser()
-  console.log(`浏览器：${from}\n目标：${BASE}\n等待：${WAIT_MS} ms（须 > 路由守卫的 10s auth 水位）\n`)
+  // ★ 先定地址：环回写法不对时自动换一种，别让门把「地址写错」报成「应用坏了」。
+  const probeCtx = await browser.newContext()
+  const probePage = await probeCtx.newPage()
+  const { base: RESOLVED_BASE, switched } = await resolveBase(probePage, BASE)
+  await probeCtx.close()
+  if (switched) {
+    console.log(`⚠ ${BASE} 连不上（vite 只绑了另一种环回写法）⇒ 改用 ${RESOLVED_BASE}`)
+  }
+  console.log(`浏览器：${from}\n目标：${RESOLVED_BASE}\n等待：${WAIT_MS} ms（须 > 路由守卫的 10s auth 水位）\n`)
 
   const results = []
   let failed = 0
@@ -314,11 +358,11 @@ async function main() {
       const u = r.url()
       if (/\.woff2?(\?|$)/.test(u)) { if (r.status() < 400) fontsLoaded++ }
       else if (r.status() >= 400 && !/\/api\/|\/maintain-api\//.test(u)) {
-        resources.push(`${r.status()} ${u.replace(BASE, '').slice(0, 100)}`)
+        resources.push(`${r.status()} ${u.replace(RESOLVED_BASE, '').slice(0, 100)}`)
       }
     })
 
-    await page.goto(BASE + c.url, { waitUntil: 'domcontentloaded', timeout: 30000 })
+    await page.goto(RESOLVED_BASE + c.url, { waitUntil: 'domcontentloaded', timeout: 30000 })
       .catch((e) => errors.push('goto: ' + e.message))
     await page.waitForTimeout(WAIT_MS)
 
@@ -345,7 +389,7 @@ async function main() {
     const target = outArg && !outArg.startsWith('--')
       ? outArg : resolve(WEB, 'reports/public-render-check.json')
     mkdirSync(dirname(target), { recursive: true })
-    writeFileSync(target, JSON.stringify({ base: BASE, at: new Date().toISOString(), results }, null, 2))
+    writeFileSync(target, JSON.stringify({ base: RESOLVED_BASE, at: new Date().toISOString(), results }, null, 2))
     console.log(`\nJSON → ${target}`)
   }
 
