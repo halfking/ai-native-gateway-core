@@ -907,7 +907,7 @@ const SWEEP_LOCALE = process.env.UI_SWEEP_LOCALE || ''
 
 async function runOverlaySweep() {
   const { browser, from } = await launchBrowser()
-  console.log(`浏览器：${from}\n目标：${BASE}\n`)
+  console.log(`浏览器：${from}\n目标：${BASE}\n语种：${SWEEP_LOCALE || '(默认：跟浏览器 navigator.language)'}\n`)
   const ctx = await browser.newContext({
     viewport: { width: 1440, height: 900 },
     extraHTTPHeaders: TOKEN ? { Authorization: `Bearer ${TOKEN}` } : {},
@@ -1039,7 +1039,7 @@ async function runOverlaySweep() {
     const outPath = args[args.indexOf('--json') + 1] || 'reports/ui-overlay.json'
     const abs = resolve(WEB, outPath)
     mkdirSync(dirname(abs), { recursive: true })
-    writeFileSync(abs, JSON.stringify({ base: BASE, at: new Date().toISOString(), results }, null, 2))
+    writeFileSync(abs, JSON.stringify({ base: BASE, at: new Date().toISOString(), locale: SWEEP_LOCALE || '(default)', results }, null, 2))
     console.log(`\nJSON：${outPath}`)
   }
   if (STRICT && bad.length) {
@@ -1239,7 +1239,7 @@ if (unresolvedDynamic.length) {
 }
 
 const { browser, from: browserFrom } = await launchBrowser()
-console.log(`浏览器：${browserFrom}\n目标：${BASE}\n`)
+console.log(`浏览器：${browserFrom}\n目标：${BASE}\n语种：${SWEEP_LOCALE || '(默认：跟浏览器 navigator.language)'}\n`)
 const ctx = await browser.newContext({
   viewport: { width: 1440, height: 900 },
   extraHTTPHeaders: TOKEN ? { Authorization: `Bearer ${TOKEN}` } : {},
@@ -1488,7 +1488,7 @@ if (args.includes('--json')) {
   const outPath = args[args.indexOf('--json') + 1] || 'reports/ui-sweep.json'
   const abs = resolve(WEB, outPath)
   mkdirSync(dirname(abs), { recursive: true })
-  writeFileSync(abs, JSON.stringify({ base: BASE, at: new Date().toISOString(), results }, null, 2))
+  writeFileSync(abs, JSON.stringify({ base: BASE, at: new Date().toISOString(), locale: SWEEP_LOCALE || '(default)', results }, null, 2))
   console.log(`\nJSON：${outPath}`)
 }
 
