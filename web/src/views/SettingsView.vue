@@ -297,7 +297,7 @@ onMounted(() => {
               <td>
                 <span class="src-badge" :class="'src-' + it.source">{{ it.source || '—' }}</span>
               </td>
-              <td>{{ dangerLabel(it.danger_level) }}</td>
+              <td class="cell-danger">{{ dangerLabel(it.danger_level) }}</td>
             </tr>
           </tbody>
         </table>
@@ -572,6 +572,12 @@ onMounted(() => {
   border-radius: 3px;
   font-size: 11px;
   font-family: ui-monospace, SFMono-Regular, monospace;
+}
+/* 危险等级是短标签。表格是 auto 布局、value 列的 JSON 很长 ⇒ 危险列会被
+   挤到 ~41px，于是「🟡 注意」按字竖排（实测 41×124，一列一个字）。
+   标签逐字断行没有含义，宁可让这列多占几十像素。 */
+.cell-danger {
+  white-space: nowrap;
 }
 
 /* === Source badges === */

@@ -300,16 +300,16 @@ export default {
       failed: "Échec de la suppression : {msg}"
     },
     hotTableNames: {
-      requestLogs: "请求日志",
-      credentialModelIndex: "凭据模型索引",
-      usageLedger: "用量账本",
-      routingDecisionLog: "路由决策日志"
+      requestLogs: "Journaux de requêtes",
+      credentialModelIndex: "Index des modèles d'identifiants",
+      usageLedger: "Grand livre de consommation",
+      routingDecisionLog: "Journal des décisions de routage"
     },
     labels: {
-      rows: "行数",
+      rows: "Lignes",
       toast: "TOAST"
     },
-    migrationFailed: "迁移失败"
+    migrationFailed: "Échec de la migration"
 ,
     jobIdMissing: 'Impossible de démarrer la tâche asynchrone : job_id manquant',
 
@@ -343,15 +343,15 @@ export default {
 
     cronRunning: 'Running now',
   },
-  preview: "预览清理",
-  hotData: "热数据 (0-7天)",
-  warmData: "温数据 (7-30天)",
-  coldData: "冷数据 (30-90天)",
-  expiredData: "过期数据 (>90天)",
-  missingDate: "请选择起始日期和结束日期",
-  previewFailed: "预览失败",
-  needPreview: "请先预览影响",
-  executeNotImpl: "清理功能将在下一阶段实现。请使用命令行脚本执行清理操作。"
+  preview: "Aperçu de l'impact",
+  hotData: "Données chaudes (0–7 jours)",
+  warmData: "Données tièdes (7–30 jours)",
+  coldData: "Données froides (30–90 jours)",
+  expiredData: "Données expirées (>90 jours)",
+  missingDate: "Veuillez choisir une date de début et une date de fin",
+  previewFailed: "Échec de l'aperçu",
+  needPreview: "Veuillez d'abord exécuter un aperçu",
+  executeNotImpl: "Le nettoyage sera implémenté dans la prochaine phase. Veuillez utiliser les scripts CLI pour l'instant."
 ,
   pages: {
     filesystemMaintenance: 'Maintenance du système de fichiers',

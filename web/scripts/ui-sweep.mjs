@@ -269,7 +269,7 @@ function parseRoutes() {
 //   ⇒ ① 作用域写死为 .main-body；② 探针回报 scanned 元素数，
 //     判级时若为 0 直接判 P0（判据失效），绝不当作干净页。
 const PAGE_PROBE = () => {
-  const out = { fullWidth: null, verticalText: [], clipped: [], rootClass: '', rootWidth: 0, bodyWidth: 0, scanned: 0 }
+  const out = { fullWidth: null, verticalText: [], sigHits: [], clipped: [], rootClass: '', rootWidth: 0, bodyWidth: 0, scanned: 0 }
   const body = document.querySelector('.main-body') || document.querySelector('main')
   if (!body) return out
   const bRect = body.getBoundingClientRect()
@@ -299,6 +299,10 @@ const PAGE_PROBE = () => {
 
   // 2) 逐字折行签名：极窄 + 很高 + 含多行文本。
   //    供应商表那个 bug 的可测形态：列宽被压到 ~30px，文字按字符竖排。
+  //    sigHits 记的是【命中几何签名的元素】——不管最后报不报；
+  //    verticalText 是【判据筛完剩下要报的那批】。
+  //    两者的差集就是被「竖排 / 自带滚动」排除掉的量，必须能被看见：
+  //    否则「夹具没命中签名 ⇒ 探针压根没看它 ⇒ 门全绿」这件事会藏起来。
   for (const el of all) {
     if (el.children.length > 2) continue
     const text = (el.textContent || '').trim()
@@ -307,11 +311,24 @@ const PAGE_PROBE = () => {
     const h = el.clientHeight
     if (w > 0 && w < 44 && h > w * 2.2 && h > 90) {
       const cs = getComputedStyle(el)
-      if (cs.overflowY === 'auto' || cs.overflowY === 'scroll') continue
-      out.verticalText.push({
+      if (out.sigHits.length >= 8) break
+      const rec = {
         tag: el.tagName.toLowerCase(),
         cls: (typeof el.className === 'string' ? el.className : '').slice(0, 60),
-        w, h, text: text.slice(0, 30),
+        w, h, writingMode: cs.writingMode, text: text.slice(0, 30),
+        excluded: '',
+      }
+      if (cs.overflowY === 'auto' || cs.overflowY === 'scroll') rec.excluded = 'scrollable'
+      // 竖排是【排版意图】，不是「列被压扁」：拓扑图车道标签这类元素用
+      // writing-mode: vertical-rl，「一列一个字」正是它要的样子（实测 18×96）。
+      // 不排除它 ⇒ CJK 语种每趟都挂一条假 P1 ⇒ 真回归被噪声淹没。
+      else if (/^(vertical|sideways)/.test(cs.writingMode)) rec.excluded = 'vertical-writing'
+      out.sigHits.push(rec)
+      if (rec.excluded) continue
+      out.verticalText.push({
+        tag: rec.tag,
+        cls: rec.cls,
+        w, h, text: rec.text,
       })
       if (out.verticalText.length >= 8) break
     }
@@ -890,7 +907,7 @@ const SWEEP_LOCALE = process.env.UI_SWEEP_LOCALE || ''
 
 async function runOverlaySweep() {
   const { browser, from } = await launchBrowser()
-  console.log(`浏览器：${from}\n目标：${BASE}\n`)
+  console.log(`浏览器：${from}\n目标：${BASE}\n语种：${SWEEP_LOCALE || '(默认：跟浏览器 navigator.language)'}\n`)
   const ctx = await browser.newContext({
     viewport: { width: 1440, height: 900 },
     extraHTTPHeaders: TOKEN ? { Authorization: `Bearer ${TOKEN}` } : {},
@@ -1022,7 +1039,7 @@ async function runOverlaySweep() {
     const outPath = args[args.indexOf('--json') + 1] || 'reports/ui-overlay.json'
     const abs = resolve(WEB, outPath)
     mkdirSync(dirname(abs), { recursive: true })
-    writeFileSync(abs, JSON.stringify({ base: BASE, at: new Date().toISOString(), results }, null, 2))
+    writeFileSync(abs, JSON.stringify({ base: BASE, at: new Date().toISOString(), locale: SWEEP_LOCALE || '(default)', results }, null, 2))
     console.log(`\nJSON：${outPath}`)
   }
   if (STRICT && bad.length) {
@@ -1046,21 +1063,21 @@ const SELFTEST_FIXTURES = [
     html: `<div class="main-body"><section class="page">正常内容，正常宽度。</section></div>
       <style>.main-body{padding:16px;background:#eee}
       .page{background:#fff;padding:20px;width:100%;box-sizing:border-box}</style>`,
-    expect: { centered: false, verticalText: 0, clipped: 0, scannedNonZero: true },
+    expect: { centered: false, verticalText: 0, clipped: 0, scannedNonZero: true, sigHit: 0 },
   },
   {
     name: '居中窄列：max-width + margin auto 必须被抓住',
     html: `<div class="main-body"><section class="page">内容</section></div>
       <style>.main-body{padding:16px;background:#eee}
       .page{max-width:600px;margin:0 auto;background:#fff;padding:20px;box-sizing:border-box}</style>`,
-    expect: { centered: true, verticalText: 0, clipped: 0, scannedNonZero: true },
+    expect: { centered: true, verticalText: 0, clipped: 0, scannedNonZero: true, sigHit: 0 },
   },
   {
     name: '全宽但左右小留白（padding 感）：不得被误判成居中',
     html: `<div class="main-body"><section class="page">内容</section></div>
       <style>.main-body{padding:16px;background:#eee}
       .page{margin:0 12px;background:#fff;padding:20px;box-sizing:border-box}</style>`,
-    expect: { centered: false, verticalText: 0, clipped: 0, scannedNonZero: true },
+    expect: { centered: false, verticalText: 0, clipped: 0, scannedNonZero: true, sigHit: 0 },
   },
   {
     // 真实 bug 形态（commit 5e5022e21 引入、b4998e07 修复）：
@@ -1076,7 +1093,7 @@ const SELFTEST_FIXTURES = [
       .card{overflow-x:auto}
       table{table-layout:fixed}
       td{max-width:0;word-break:break-word;white-space:normal;overflow-wrap:break-word}</style>`,
-    expect: { centered: false, verticalText: 1, clipped: 0, scannedNonZero: true },
+    expect: { centered: false, verticalText: 1, clipped: 0, scannedNonZero: true, sigHit: 1 },
   },
   {
     // 反向对照：同一张表按 b4998e07 的修法（min-width + 去 max-width:0 + nowrap）
@@ -1090,7 +1107,7 @@ const SELFTEST_FIXTURES = [
       .card{overflow-x:auto}
       table{table-layout:fixed;min-width:1800px}
       td{white-space:nowrap}</style>`,
-    expect: { centered: false, verticalText: 0, clipped: 0, scannedNonZero: true },
+    expect: { centered: false, verticalText: 0, clipped: 0, scannedNonZero: true, sigHit: 0 },
   },
   {
     name: '窄但自带滚动的长文本：不得误报逐字折行（w30×h200，确实命中阈值）',
@@ -1099,7 +1116,23 @@ const SELFTEST_FIXTURES = [
       <style>.main-body{padding:16px;background:#eee}
       .page{background:#fff;padding:0;width:100%;box-sizing:border-box}
       .log{width:30px;height:200px;overflow-y:auto;word-break:break-all}</style>`,
-    expect: { centered: false, verticalText: 0, clipped: 0, scannedNonZero: true },
+    expect: { centered: false, verticalText: 0, clipped: 0, scannedNonZero: true, sigHit: 1 },
+  },
+  {
+    // 竖排是【设计意图】：拓扑图车道标签用 writing-mode: vertical-rl，
+    // 「一列一个字」正是它要的样子（实测 18×96，命中几何签名）。
+    // 这条夹具必须【真的命中签名】——宽度 < 44、高度 > 90、高 > 宽×2.2 ——
+    // 否则它证明不了「探针是靠 writing-mode 排除的」，只是恰好没被扫到。
+    name: '竖排标签（writing-mode:vertical-rl）：一列一个字是排版意图，不得误报逐字折行',
+    html: `<div class="main-body"><section class="page"><div class="card">
+        <span class="lane">进：请求链</span></div></section></div>
+      <style>.main-body{padding:16px;background:#eee}
+      .page{width:100%;box-sizing:border-box}
+      .card{background:#fff;padding:10px}
+      .lane{display:inline-block;width:18px;font-size:20px;line-height:1.4;
+        letter-spacing:.1em;writing-mode:vertical-rl;text-orientation:mixed;
+        border-radius:6px;background:#eef}</style>`,
+    expect: { centered: false, verticalText: 0, clipped: 0, scannedNonZero: true, sigHit: 1 },
   },
   {
     name: '内容裁切：overflow:hidden + 内容换行后更高 + 不可滚必须被抓住',
@@ -1108,7 +1141,7 @@ const SELFTEST_FIXTURES = [
       <style>.main-body{padding:16px;background:#eee}
       .page{background:#fff;padding:0;width:100%;box-sizing:border-box}
       .cell{width:100%;height:30px;overflow:hidden;line-height:20px}</style>`,
-    expect: { centered: false, verticalText: 0, clipped: 1, scannedNonZero: true },
+    expect: { centered: false, verticalText: 0, clipped: 1, scannedNonZero: true, sigHit: 0 },
   },
 ]
 
@@ -1127,30 +1160,38 @@ async function runSelftest() {
     const actual = {
       centered: !!got.fullWidth?.centered,
       verticalText: got.verticalText.length,
+      // sigHit = 命中几何签名的元素数（不管报不报）；verticalText = 报出来的数。
+      // 前者声明「这条夹具到底有没有踩到签名」，后者才是判据的结果。
+      // 只断言后者 ⇒ 夹具哪天不再命中签名也会照样绿 ⇒ 夹具沦为装饰。
+      sigHit: got.sigHits.length,
       clipped: got.clipped.length,
       // 第 4 条：作用域必须真的扫到元素。上面三条全 0 有两种成因——
       // 「页面干净」和「选择器没匹配到任何东西」，输出上一模一样。
       scannedNonZero: got.scanned > 0,
     }
-    for (const k of ['centered', 'verticalText', 'clipped', 'scannedNonZero']) {
+    for (const k of ['centered', 'verticalText', 'sigHit', 'clipped', 'scannedNonZero']) {
       const want = fx.expect[k]
-      // 布尔判据用相等；计数判据用「至少」——一处真实 bug 常在同页复现多行/多列，
-      // 探针也只在 8 处封顶，拿相等去卡会把「报得更多」误判成探针失灵。
+      // 布尔判据用相等；计数判据分两种：
+      //  · 期望 > 0 ⇒ 用「至少」——一处真实 bug 常在同页复现多行/多列，
+      //    探针也只在 8 处封顶，拿相等去卡会把「报得更多」误判成探针失灵。
+      //  · 期望 = 0 ⇒ 必须取【相等】——「≥ 0」恒真 ⇒ 所有「不得误报」的反向
+      //    对照夹具永远是绿的，等于没有对照（2026-10-25 实测并修）。
       const isCount = typeof want === 'number'
-      const ok = isCount ? actual[k] >= want : actual[k] === want
+      const ok = isCount ? (want === 0 ? actual[k] === 0 : actual[k] >= want) : actual[k] === want
+      const wantDesc = isCount ? (want === 0 ? '= 0' : `≥ ${want}`) : `= ${want}`
       if (ok) pass++
-      else fails.push(`${fx.name}\n    判据 ${k}：期望 ${isCount ? '≥' : '='} ${want}，实测 ${actual[k]}`)
+      else fails.push(`${fx.name}\n    判据 ${k}：期望 ${wantDesc}，实测 ${actual[k]}`)
     }
   }
   await browser.close()
-  const total = SELFTEST_FIXTURES.length * 4
+  const total = SELFTEST_FIXTURES.length * Object.keys(SELFTEST_FIXTURES[0].expect).length
   console.log(`\n══ 探针自检 ${pass}/${total} ══`)
   for (const f of fails) console.log(`  ✗ ${f}`)
   if (fails.length) {
-    console.error(`\n✗ 探针自检未通过：${fails.length}/${total} 判据没有鉴别力，先修判据再扫页面。`)
+    console.error(`\n✗ 探针自检未通过：${fails.length} 条判据没有鉴别力（共 ${total} 条），先修判据再扫页面。`)
     process.exit(1)
   }
-  console.log(`✓ ${SELFTEST_FIXTURES.length} 个夹具 × 4 条判据，正负双向都能区分`)
+  console.log(`✓ ${SELFTEST_FIXTURES.length} 个夹具 × ${Object.keys(SELFTEST_FIXTURES[0].expect).length} 条判据，正负双向都能区分`)
 }
 
 // ── 主流程 ────────────────────────────────────────────────────────
@@ -1198,7 +1239,7 @@ if (unresolvedDynamic.length) {
 }
 
 const { browser, from: browserFrom } = await launchBrowser()
-console.log(`浏览器：${browserFrom}\n目标：${BASE}\n`)
+console.log(`浏览器：${browserFrom}\n目标：${BASE}\n语种：${SWEEP_LOCALE || '(默认：跟浏览器 navigator.language)'}\n`)
 const ctx = await browser.newContext({
   viewport: { width: 1440, height: 900 },
   extraHTTPHeaders: TOKEN ? { Authorization: `Bearer ${TOKEN}` } : {},
@@ -1323,13 +1364,22 @@ for (const r of routesList) {
     path: r.path, comp: r.comp, p0: P0, p1: P1,
     scanned: probe?.scanned ?? 0, textLen: probe?.textLen ?? 0, visibleBlocks: probe?.visibleBlocks ?? 0,
     bodyWidth: probe?.bodyWidth ?? 0, rootWidth: probe?.rootWidth ?? 0,
+    // 签名命中数与豁免明细：命中几何签名 ≠ 要报缺陷。
+    // 把「因何被排除」写进报告，豁免才是留痕，而不是让下一个人重新猜。
+    sigHit: probe?.sigHits?.length ?? 0,
+    sigExcluded: (probe?.sigHits ?? [])
+      .filter((s) => s.excluded)
+      .map((s) => `${s.excluded}：<${s.tag} class="${s.cls}"> ${s.w}×${s.h} "${s.text}"`),
     badReqs: [...new Set(badReqs)].slice(0, 5), errors: [...new Set(errors)].slice(0, 5),
     // 豁免必须留痕。豁免本身是判据，藏起来就等于「没发生过」。
     teardownAborted: teardownAborted.length,
   })
   const mark = P0.length ? '✗' : P1.length ? '!' : '✓'
   const td = teardownAborted.length ? `  [拆除中止 ${teardownAborted.length}]` : ''
-  process.stdout.write(`${mark} [${String(i).padStart(3)}/${routesList.length}] ${r.path}  (元素 ${probe?.scanned ?? 0} / 文本 ${probe?.textLen ?? 0} 字)${td}\n`)
+  const sigNote = probe?.sigHits?.length
+    ? `  · 签名命中 ${probe.sigHits.length}（豁免 ${probe.sigHits.filter((s) => s.excluded).length}）`
+    : ''
+  process.stdout.write(`${mark} [${String(i).padStart(3)}/${routesList.length}] ${r.path}  (元素 ${probe?.scanned ?? 0} / 文本 ${probe?.textLen ?? 0} 字)${td}${sigNote}\n`)
 }
 
 await browser.close()
@@ -1438,7 +1488,7 @@ if (args.includes('--json')) {
   const outPath = args[args.indexOf('--json') + 1] || 'reports/ui-sweep.json'
   const abs = resolve(WEB, outPath)
   mkdirSync(dirname(abs), { recursive: true })
-  writeFileSync(abs, JSON.stringify({ base: BASE, at: new Date().toISOString(), results }, null, 2))
+  writeFileSync(abs, JSON.stringify({ base: BASE, at: new Date().toISOString(), locale: SWEEP_LOCALE || '(default)', results }, null, 2))
   console.log(`\nJSON：${outPath}`)
 }
 

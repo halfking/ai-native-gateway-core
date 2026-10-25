@@ -2,7 +2,7 @@
   "metric": "findings per (tree, locale); web=src/locales/<locale>/**, web-mobile=src/i18n/<locale>.ts; source面单独成桶 <tree>/source；棘轮只许降不许升",
   "updated": "2026-10-25",
   "perGroup": {
-    "web-mobile/en-US": 126,
+    "web-mobile/en-US": 0,
     "web-mobile/source": 0,
     "web-mobile/zh-CN": 0,
     "web/ar-SA": 0,

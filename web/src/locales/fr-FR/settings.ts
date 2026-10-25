@@ -157,5 +157,5 @@ export default {
   },
 
   // 同步的扁平键
-  outputCompliance: '输出合规',
+  outputCompliance: 'Conformité de sortie',
 }

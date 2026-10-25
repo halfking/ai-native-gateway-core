@@ -300,16 +300,16 @@ export default {
       failed: "فشل الحذف: {msg}"
     },
     hotTableNames: {
-      requestLogs: "请求日志",
-      credentialModelIndex: "凭据模型索引",
-      usageLedger: "用量账本",
-      routingDecisionLog: "路由决策日志"
+      requestLogs: "سجلات الطلبات",
+      credentialModelIndex: "فهرس بيانات اعتماد النماذج",
+      usageLedger: "دفتر الاستخدام",
+      routingDecisionLog: "سجل قرارات التوجيه"
     },
     labels: {
-      rows: "行数",
+      rows: "الصفوف",
       toast: "TOAST"
     },
-    migrationFailed: "迁移失败"
+    migrationFailed: "فشل الترحيل"
 ,
     jobIdMissing: 'تعذّر بدء المهمة غير المتزامنة: المعرّف job_id مفقود',
 
@@ -343,15 +343,15 @@ export default {
 
     cronRunning: 'Running now',
   },
-  preview: "预览清理",
-  hotData: "热数据 (0-7天)",
-  warmData: "温数据 (7-30天)",
-  coldData: "冷数据 (30-90天)",
-  expiredData: "过期数据 (>90天)",
-  missingDate: "请选择起始日期和结束日期",
-  previewFailed: "预览失败",
-  needPreview: "请先预览影响",
-  executeNotImpl: "清理功能将在下一阶段实现。请使用命令行脚本执行清理操作。"
+  preview: "معاينة التنظيف",
+  hotData: "بيانات ساخنة (0-7 أيام)",
+  warmData: "بيانات دافئة (7-30 يومًا)",
+  coldData: "بيانات باردة (30-90 يومًا)",
+  expiredData: "بيانات منتهية الصلاحية (>90 يومًا)",
+  missingDate: "يرجى اختيار تاريخ البدء والانتهاء",
+  previewFailed: "فشل المعاينة",
+  needPreview: "يرجى معاينة التأثير أولاً",
+  executeNotImpl: "سيتم تنفيذ وظيفة التنظيف في المرحلة التالية. يرجى استخدام برنامج نصي سطر الأوامر لتنفيذ عمليات التنظيف."
 ,
   pages: {
     filesystemMaintenance: 'صيانة نظام الملفات',
@@ -457,7 +457,7 @@ export default {
     },
     degraded: {
       title: 'بعض المقاييس غير متاحة:',
-      hint: 'مخطط قاعدة البيانات متأخر عن هذه النسخة، لذا الأرقام أدناه هي قيم نائبة تعني «تعذّر الحساب» وليست قياسات حقيقية (وهذا ليس等同于 عدم وجود بيانات لهذه الفترة). اطلب من المسؤول تنفيذ ترحيل تجميع البيانات.',
+      hint: 'مخطط قاعدة البيانات أقدم من هذه النسخة، لذا الأرقام أدناه قيم نائبة تعني «تعذّر الحساب» وليست قياسات حقيقية (وهذا لا يعني عدم وجود بيانات لهذه الفترة). اطلب من المسؤول تنفيذ ترحيل تجميع البيانات.',
     },
   },
   confirmDeleteCleanup: 'حذف {rows} صفًا؟\nالمساحة المتوقَّع تحريرها: {size}\n\nهذا الإجراء لا رجعة فيه!',

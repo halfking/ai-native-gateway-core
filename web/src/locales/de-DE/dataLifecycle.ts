@@ -300,16 +300,16 @@ promoteAll: "alles",
       failed: "Löschen fehlgeschlagen: {msg}"
     },
     hotTableNames: {
-      requestLogs: "请求日志",
-      credentialModelIndex: "凭据模型索引",
-      usageLedger: "用量账本",
-      routingDecisionLog: "路由决策日志"
+      requestLogs: "Anfrage-Logs",
+      credentialModelIndex: "Anmeldedaten-Modellindex",
+      usageLedger: "Nutzungsjournal",
+      routingDecisionLog: "Routing-Entscheidungsprotokoll"
     },
     labels: {
-      rows: "行数",
+      rows: "Zeilen",
       toast: "TOAST"
     },
-    migrationFailed: "迁移失败"
+    migrationFailed: "Migration fehlgeschlagen"
 ,
     jobIdMissing: 'Asynchronen Auftrag konnte nicht gestartet werden: job_id fehlt',
 
@@ -343,15 +343,15 @@ promoteAll: "alles",
 
     cronRunning: 'Running now',
   },
-  preview: "预览清理",
-  hotData: "热数据 (0-7天)",
-  warmData: "温数据 (7-30天)",
-  coldData: "冷数据 (30-90天)",
-  expiredData: "过期数据 (>90天)",
-  missingDate: "请选择起始日期和结束日期",
-  previewFailed: "预览失败",
-  needPreview: "请先预览影响",
-  executeNotImpl: "清理功能将在下一阶段实现。请使用命令行脚本执行清理操作。"
+  preview: "Bereinigung vorschauen",
+  hotData: "Hot-Daten (0-7 Tage)",
+  warmData: "Warm-Daten (7-30 Tage)",
+  coldData: "Cold-Daten (30-90 Tage)",
+  expiredData: "Abgelaufene Daten (>90 Tage)",
+  missingDate: "Wählen Sie ein Start- und ein Enddatum",
+  previewFailed: "Vorschau fehlgeschlagen",
+  needPreview: "Prüfen Sie zuerst die Auswirkungen in der Vorschau",
+  executeNotImpl: "Die Bereinigungsfunktion wird in einer späteren Phase implementiert. Führen Sie die Bereinigung über das Kommandozeilenskript aus."
 ,
   pages: {
     filesystemMaintenance: 'Dateisystem-Wartung',

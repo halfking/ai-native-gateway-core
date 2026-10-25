@@ -41,14 +41,15 @@ async function main() {
       }
       process.exit(2)
     }
-    const { byLocale, referencedCount } = measureAll()
+    const { byLocale, byLocaleAllKeys, referencedCount } = measureAll()
     const baseline = readBaseline()
-    const draft = buildBaseline(byLocale)
+    const draft = buildBaseline(byLocale, byLocaleAllKeys)
     const out = {
       referencedCount,
       baseline,
       current: draft,
       byLocale: Object.fromEntries([...byLocale].map(([k, v]) => [k, v])),
+      byLocaleAllKeys: Object.fromEntries([...byLocaleAllKeys].map(([k, v]) => [k, v])),
     }
     if (process.argv.includes('--update-baseline')) {
       try {
@@ -84,6 +85,24 @@ async function main() {
         const mark = typeof limit === 'number' && cur > limit ? '  OVER LIMIT' : ''
         if (mark) bad++
         lines.push('cjk-in-value ' + loc.padEnd(6) + ': ' + cur + ' (limit ' + limit + ')' + mark)
+      }
+      // ★ sameAsSource：值仍等于源语言 zh-CN（源值含汉字）的条数 ——【全量键】口径。
+      //   口径保守（含繁简同形 / 通用汉字）⇒ 是指示器；棘轮方向仍成立。
+      for (const loc of Object.keys(draft.sameAsSource ?? {})) {
+        const limit = baseline.sameAsSource?.[loc]
+        const cur = draft.sameAsSource[loc]
+        const mark = typeof limit === 'number' && cur > limit ? '  OVER LIMIT' : ''
+        if (mark) bad++
+        lines.push('same-as-source ' + loc.padEnd(6) + ': ' + cur + ' (limit ' + limit + ')' + mark)
+      }
+      // ★ cjkInNonCjkLocaleAllKeys：非中日语种里含汉字的值数 ——【全量键】口径。
+      //   这条治「引用集口径对动态键失效」那个盲区（nav.item.* 等运行时拼键）。
+      for (const loc of Object.keys(draft.cjkInNonCjkLocaleAllKeys ?? {})) {
+        const limit = baseline.cjkInNonCjkLocaleAllKeys?.[loc]
+        const cur = draft.cjkInNonCjkLocaleAllKeys[loc]
+        const mark = typeof limit === 'number' && cur > limit ? '  OVER LIMIT' : ''
+        if (mark) bad++
+        lines.push('cjk-all-keys ' + loc.padEnd(6) + ': ' + cur + ' (limit ' + limit + ')' + mark)
       }
       process.stdout.write(lines.join('\\n') + '\\n')
       if (bad > 0) {

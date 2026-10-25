@@ -113,8 +113,8 @@ export default {
   stickyHitNo: '✗',
   msUnit: 'ms',
   costUnit: '\$',
-  successOk: '✓ 成功',
-  successFail: '✗ 失败',
+  successOk: '✓ Réussi',
+  successFail: '✗ Échoué',
   latencyUnit: ' ms',
   bytesUnit: ' B',
 }

@@ -263,14 +263,14 @@ export default {
     supplier: 'المورد', errorCode: 'رمز الخطأ', requestId: 'معرف الطلب',
     stage: 'المرحلة', retry: 'إعادة المحاولة', latency: 'المدة',
     openRequestTitle: 'فتح تفاصيل الطلب',
-    title: "供应商错误明细", selectCredential: "请先从凭据列表选择凭据", windowTitle: "统计时间窗口",
-    lastHour: "最近 1 小时", lastDay: "最近 24 小时", lastWeek: "最近 7 天", loading: "加载错误明细中…",
-    loadFailed: "加载供应商错误明细失败", credential: "凭据", health: "健康状态", availability: "可用状态", circuit: "熔断状态",
-    consecutiveFailures: "连续失败", balance: "余额", summary: "错误分布", errorKind: "错误类型", count: "次数",
+    title: "تفاصيل أخطاء المزود", selectCredential: "اختر بيانات اعتماد أولًا", windowTitle: "نافذة الوقت",
+    lastHour: "آخر ساعة", lastDay: "آخر 24 ساعة", lastWeek: "آخر 7 أيام", loading: "جاري تحميل أخطاء المزود…",
+    loadFailed: "فشل تحميل أخطاء المزود", credential: "بيانات الاعتماد", health: "الحالة الصحية", availability: "التوفر", circuit: "قاطع الدائرة",
+    consecutiveFailures: "الإخفاقات المتتالية", balance: "الرصيد", summary: "توزيع الأخطاء", errorKind: "نوع الخطأ", count: "العدد",
     statusCodes: "أنواع رموز الحالة", retryableCount: "قابلة لإعادة المحاولة", stageDist: "توزيع المراحل", lastSeen: "آخر ظهور", noErrors: "لا أخطاء في هذه النافذة", recentFailures: "الإخفاقات الأخيرة",
-    time: "时间", model: "模型", kind: "错误类型", httpStatus: "HTTP 状态", message: "错误消息", upstreamPreview: "上游响应预览",
-    noRecentFailures: "没有最近失败记录", qualityScores: "最近 7 天供应商质量评分", date: "日期", totalScore: "综合评分",
-    availabilityScore: "可用性评分", stabilityScore: "稳定性评分", noQualityScores: "暂无质量评分",
+    time: "الوقت", model: "النموذج", kind: "النوع", httpStatus: "حالة HTTP", message: "رسالة الخطأ", upstreamPreview: "معاينة استجابة المنبع",
+    noRecentFailures: "لا توجد إخفاقات حديثة", qualityScores: "جودة المزود خلال آخر 7 أيام", date: "التاريخ", totalScore: "النتيجة الإجمالية",
+    availabilityScore: "درجة التوفر", stabilityScore: "درجة الاستقرار", noQualityScores: "لا توجد درجات جودة",
   },
   models: {
     title: "قائمة النماذج ({n})",
@@ -406,11 +406,11 @@ export default {
     refreshSummaryFailed: "فشل {n}",
     refreshSummaryEmpty: "لا تغيير",
     creds: {
-      labelFallback: "凭据 #{id}"
+      labelFallback: "بيانات الاعتماد #{id}"
     },
     overview: {
-      chipAvailable: "可用",
-      chipUnavailable: "不可用"
+      chipAvailable: "متاح",
+      chipUnavailable: "غير متاح"
     }
 ,
     probeAllRecoveredHint: '✓ تم فحص {n} من النماذج بنجاح، وأُعيد بناء node_probe_state تلقائيًا، وأُعيد تفعيل مرشحي التوجيه',
@@ -624,7 +624,7 @@ export default {
     triggerFailed: "فشل التشغيل"
   },
   tableCol: {},
-  models_creds_labelFallback: "凭据 #{id}",
-  models_overview_chipAvailable: "可用",
-  models_overview_chipUnavailable: "不可用"
+  models_creds_labelFallback: "بيانات الاعتماد #{id}",
+  models_overview_chipAvailable: "متاح",
+  models_overview_chipUnavailable: "غير متاح"
 }
