@@ -935,7 +935,7 @@ export const zhCN = {
   waterfall: {
     title: '调度瀑布',
     // ★ 本面没有 degraded 字段，不可观测由 wired/source 表达，文案必须区别于「没有请求」
-    unwired: '队列投影未接上 —— 这不是「当前没有请求」，而是这个观测面根本没在工作，时序数据不可用。',
+    unwired: '队列投影未接上。观测面没在工作，时序数据不可用，不能按「当前没有请求」读。',
     sourceNone: '没有可用数据源 —— 同上，时序数据不可用。',
     sourceLabel: '数据源：{s}',
     empty: '当前没有可展示的调度记录',
@@ -2293,7 +2293,7 @@ export const zhCN = {
     searchPlaceholder: '按订单号 / 租户 / 状态 / 类型 / 套餐名过滤',
     empty: '没有匹配的订单。',
     // ↓ 列表项
-    noPaymentHintNote: '这一行没有支付提示——**不是「这单没有支付信息」**，而是列表接口压根不返回这个字段（见详情页）。',
+    noPaymentHintNote: '这一行没有支付提示：列表接口压根不返回这个字段（见详情页），这一列恒为空，不能读成「这单没有支付信息」。',
     listLacksEnrichNote: '本页所有订单都缺 `payment_hint` / `stub_mode`：后端只在**详情**接口里 enrich 支付信息，列表那一圈没调。这是**端点差异**，不是数据缺失。',
     orphanTag: '关联已删',
     orphanName: '（关联已被删除）',
@@ -3533,7 +3533,7 @@ sctx: {
     limitLabel: '条数上限',
     limitPlaceholder: '留空 = 后端默认 50',
     limitEffectiveNote: '实际生效的条数上限：{n}',
-    limitRewrittenNote: '★★ 你填的值被后端改成了 {n}：它的实现不是「截断到上限」，而是「小于等于 0 或大于 200 一律回落成默认值 {default}」。所以 200 是合法的、201 会变回 50，填非数字也一样。',
+    limitRewrittenNote: '★★ 你填的值被后端改成了 {n}：后端的规则是「小于等于 0 或大于 200 一律回落成默认值 {default}」，不按上限截断。所以 200 是合法的、201 会变回 50，填非数字也一样。',
     triggerType: '触发方式',
     modelsFound: '扫到模型',
     modelsImported: '已导入',
@@ -3795,7 +3795,7 @@ sctx: {
     },
     series: {
       title: '趋势序列',
-      meta: '桶粒度 {bucket} 分钟 · top={top} · 读面 {source}',
+      meta: '桶粒度 {bucket} 分钟，top={top}，读面 {source}',
       // ★★ 空序列 + degraded=false ⇒ 真的是零用量
       trulyEmpty: '这段时间确实没有用量。',
       // ★★★★ 空序列 + degraded=true ⇒ **不是**「没有用量」，是「没算出来」

@@ -344,7 +344,7 @@ async function runQuickSave(probeFirst = true) {
     })
     probeResult.value = res.probe ?? null
     if (res.status === 'ok') {
-      notifySuccess(`凭据已入库 · catalog=${res.catalog_code} · credential ${res.credential_id ? credentialDisplayName(res.credential_id) : t('freePool.credentialSavedPlaceholder')}`)
+      notifySuccess(`凭据已入库，catalog=${res.catalog_code}，credential ${res.credential_id ? credentialDisplayName(res.credential_id) : t('freePool.credentialSavedPlaceholder')}`)
       quickEntry.value.api_key = ''
       await load()
     } else {

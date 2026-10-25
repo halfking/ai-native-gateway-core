@@ -172,7 +172,7 @@ export default {
     email: 'Correo electrónico',
     role: 'Rol',
     username: 'Nombre de usuario',
-    operator: 'Actor',
+    operator: 'Operador',
     note: 'Explicación',
     quota: 'Cuota',
     standardModel: 'Modelo estándar',
@@ -230,6 +230,14 @@ export default {
       unreachable: 'Inaccesible',
       recovering: 'Recuperando',
       available: 'Disponible',
+    },
+    // 质量等级量表（S/A/B/C/D 五级）—— 单一真值源，供应商列表与品质页共用
+    qualityGrade: {
+      s: 'Óptimo',
+      a: 'Excelente',
+      b: 'Bueno',
+      c: 'Regular',
+      d: 'Deficiente',
     },
   },
   // 扁平 key 别名

@@ -2257,7 +2257,7 @@ export const enUS = {
     searchPlaceholder: 'By order no. / tenant / status / type / package name',
     empty: 'No matching orders.',
     // ↓ list item
-    noPaymentHintNote: 'This row has no payment hint — **not "this order has no payment info"**, but the list endpoint does not return that field at all (see the detail page).',
+    noPaymentHintNote: 'This row has no payment hint: the list endpoint does not return that field at all (see the detail page), so the column is always empty. Do not read it as "this order has no payment info".',
     listLacksEnrichNote: 'Every order on this page lacks `payment_hint` / `stub_mode`: the backend enriches payment info **only in the detail** path and never in the list. That is an **endpoint difference**, not missing data.',
     orphanTag: 'Link deleted',
     orphanName: '(link was deleted)',
@@ -3767,7 +3767,7 @@ sctx: {
     },
     series: {
       title: 'Trend series',
-      meta: 'Bucket {bucket} min · top={top} · source {source}',
+      meta: 'Bucket {bucket} min, top={top}, source {source}',
       // ★★ Empty series with degraded=false really is zero usage
       trulyEmpty: 'There genuinely was no usage in this window.',
       // ★★★★ Empty series with degraded=true is NOT "no usage", it is "not computed"

@@ -49,7 +49,7 @@ const props = withDefaults(
     ctaLabel: '登录控制台',
     secondaryCtaLabel: '',
     secondaryCtaHref: '',
-    footerText: 'LLM Gateway · 核心开源 · 中国本地化 · 私有部署',
+    footerText: 'LLM Gateway：核心开源，中国本地化，私有部署',
     hideCta: false,
   },
 )

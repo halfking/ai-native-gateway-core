@@ -316,7 +316,7 @@ onBeforeUnmount(() => controller?.abort())
   <div class="turns-list-view">
     <div class="header">
       <h1>会话与轮次</h1>
-      <p class="subtitle">多维层级浏览 · 展开查看全部轮次摘要 · 可重新归纳并沉淀为资产</p>
+      <p class="subtitle">多维层级浏览，展开查看全部轮次摘要，可重新归纳并沉淀为资产</p>
     </div>
 
     <TurnsFilterBar

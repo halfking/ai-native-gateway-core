@@ -877,12 +877,24 @@ const OVERLAY_CASES = [
   },
 ]
 
+// ── 跨语种对照（2026-10-25 新增）────────────────────────────────────
+// 浏览器上下文的 locale 决定 navigator.language，而应用首屏语种就来自它
+// （web/src/i18n.ts 的 defaultLocale()：navigator.language → zh/en/ja/de/fr/es/ar）。
+// ⇒ 设 UI_SWEEP_LOCALE=en-US 就能量**英文界面**。
+//
+// ★ 为什么必须能切语种：中文界面量不出的风险，只能在英文界面量到 ——
+//   英文词普遍更长（状态→Status、延迟/错误→Latency / error），
+//   表头/按钮变长 ⇒ 列宽被撑破 ⇒ 横向溢出或逐字折行。
+//   只量中文，等于只量了「改文案不影响布局」的那一半。
+const SWEEP_LOCALE = process.env.UI_SWEEP_LOCALE || ''
+
 async function runOverlaySweep() {
   const { browser, from } = await launchBrowser()
   console.log(`浏览器：${from}\n目标：${BASE}\n`)
   const ctx = await browser.newContext({
     viewport: { width: 1440, height: 900 },
     extraHTTPHeaders: TOKEN ? { Authorization: `Bearer ${TOKEN}` } : {},
+    ...(SWEEP_LOCALE ? { locale: SWEEP_LOCALE } : {}),
   })
 
   const results = []
@@ -1190,6 +1202,7 @@ console.log(`浏览器：${browserFrom}\n目标：${BASE}\n`)
 const ctx = await browser.newContext({
   viewport: { width: 1440, height: 900 },
   extraHTTPHeaders: TOKEN ? { Authorization: `Bearer ${TOKEN}` } : {},
+  ...(SWEEP_LOCALE ? { locale: SWEEP_LOCALE } : {}),
 })
 
 const results = []

@@ -232,6 +232,14 @@ export default {
       recovering: '復旧中',
       available: '利用可能',
     },
+    // 质量等级量表（S/A/B/C/D 五级）—— 单一真值源，供应商列表与品质页共用
+    qualityGrade: {
+      s: '最優',
+      a: '優秀',
+      b: '良好',
+      c: '普通',
+      d: '不良',
+    },
   },
   // 扁平 key 别名
   actions: 'アクション',

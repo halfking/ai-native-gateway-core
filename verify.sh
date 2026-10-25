@@ -213,6 +213,10 @@ if [[ "$RUN_WEB" == true ]]; then
   pm_run element:check web
   echo "[verify] frontend color token gate (rule 12 P0 + baseline)"
   pm_run color:check web
+  echo "[verify] frontend copy-quality gate (AI 腔判据 + per-bucket ratchet)"
+  # ★ 2026-10-25 接入：这道门此前只扫语言包，本轮扩到 src/** 源码文本面与
+  #   移动端（web-mobile/）。不接进 CI ⇒ 扩出来的覆盖面就只是装饰。
+  pm_run copy-quality:check web
   echo "[verify] frontend build"
   pm_run build web
   echo "[verify] web-mobile install"
