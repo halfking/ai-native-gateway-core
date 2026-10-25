@@ -13,7 +13,7 @@ export default {
     opsplatform: "مركز العمليات"
   },
   item: {
-    liveTopology: 'Live Topology',
+    liveTopology: 'الطبولوجية المباشرة',
     overview: "نظرة عامة",
     tenantModels: "النماذج القياسية",
     tenantAccount: "حسابي",
@@ -40,8 +40,8 @@ export default {
     auditLogs: "سجلات التدقيق",
     requestLogs: "سجلات الطلبات",
     dispatchWaterfall: "شلال قائمة الانتظار",
-    requestRegistry: "Request Registry",
-    connectionRegistry: "Connection Registry",
+    requestRegistry: "سجل الطلبات",
+    connectionRegistry: "سجل الاتصالات",
     turns: "قائمة الدورات",
     sessions: "قائمة الجلسات",
     pluginSessions: "جلسات البرنامج المساعد",
@@ -74,18 +74,18 @@ export default {
     sessionAudit: "تدقيق الجلسات",
     sessionConfig: "إعدادات الجلسة",
     agents: "سجل الوكلاء",
-    promptInjection: "Prompt Injection Detection",
+    promptInjection: "كشف حقن المطالبات",
     examples: "أمثلة التكامل",
     chat: "محادثة",
-    opsOverview: "Ops Overview",
+    opsOverview: "نظرة عامة على العمليات",
     opsLicenses: "إدارة التراخيص",
-    opsDownloads: "Releases & Downloads",
+    opsDownloads: "الإصدارات والتنزيلات",
     opsFaults: "إدارة الأعطال",
     opsAutoUpdate: "التحديث التلقائي",
     opsCenter: "العمليات المركزية",
     opsVibeCoding: "VibeCoding",
     opsProductEntry: "Product Entry",
-    updateActivate: 'Update & Activate',
+    updateActivate: 'التحديث والتفعيل',
     // 2026-09-04: 未激活时替换「自动更新」等入口的激活 CTA 文案 (parity backfill)
     activateAction: 'تفعيل',
     activateActionTip: 'انقر لتفعيل هذا الجهاز',
@@ -98,9 +98,9 @@ export default {
 
     licenseAgreement: 'User License Agreement',
 
-    licenseOffline: 'Offline Activation',
+    licenseOffline: 'التفعيل دون اتصال',
 
-    telemetryScope: 'Data Collection Scope',
+    telemetryScope: 'نطاق جمع البيانات',
     supportDonate: 'الرعاية والتبرع',
   },
 

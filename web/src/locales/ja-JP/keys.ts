@@ -88,7 +88,7 @@ export default {
     create: {
       title: '签发新密钥',
       successAlert: '密钥已创建，请立即保存！关闭后无法再次查看完整密钥。',
-      keyMissing: '（密钥返回异常）',
+      keyMissing: '（キーが返りませんでした）',
       copied: '✓ 已复制',
       copy: '📋 复制密钥',
       copyHintOk: '可多次点击复制',

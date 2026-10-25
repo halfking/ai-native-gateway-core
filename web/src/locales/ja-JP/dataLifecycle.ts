@@ -300,10 +300,10 @@ export default {
       failed: "削除失敗：{msg}"
     },
     hotTableNames: {
-      requestLogs: "请求日志",
-      credentialModelIndex: "凭据模型索引",
-      usageLedger: "用量账本",
-      routingDecisionLog: "路由决策日志"
+      requestLogs: "リクエストログ",
+      credentialModelIndex: "認証情報モデルインデックス",
+      usageLedger: "使用量台帳",
+      routingDecisionLog: "ルーティング判断ログ"
     },
     labels: {
       rows: "行数",

@@ -3,14 +3,15 @@
   "updated": "2026-10-27",
   "enUSCjk": 0,
   "untranslated": {
-    "ar-SA": 983,
-    "de-DE": 1122,
-    "es-ES": 1034,
+    "ar-SA": 980,
+    "de-DE": 1123,
+    "es-ES": 1033,
     "fr-FR": 1120,
-    "ja-JP": 712,
-    "zh-CN": 166,
-    "zh-TW": 678
+    "ja-JP": 709,
+    "zh-CN": 168,
+    "zh-TW": 676
   },
+  "baselineRaiseReason": "2026-10-27（第 9 增量）人工显式调高 untranslated 棘轮，理由逐条核定：① 引用集由 5252 扩到 5371（+119）—— 新纳入的是**属性承载键**（labelKey / titleKey / hintKey），此前它们不在任何工单里；② 这 119 个新键中，各语种「与 en-US 逐字相同」的共 28 条，已逐条定性：其中 82 个值是**真未翻译**（拉丁语种/阿语的 pie 图标题、Registry 类菜单名、Offline Activation、Prompt Injection Detection、Data Collection Scope、Update & Activate，以及 6 语种的「1 day / 7 days / 30 days / 90 days」单位词）⇒ **已全部补译**；③ 剩余增量（ar-SA +1 / de-DE +5 / es-ES +3 / fr-FR +4 / ja-JP +1 / zh-CN +2 / zh-TW +2）是**合法英文同形**：产品专名（VibeCoding、Agent Registry、WeChat Bot、Request/Connection Registry 的产品化命名）与德/西/法语的外来常用词（Chat、Plugins、Download、Support）⇒ 保留不改。★ 随后又补译了 `routingAudit.filter.days.*` 一族（6 语种 × 4 = 24 个值，此前 7 语种全是英文且被 RoutingAuditView.vue:242-245 直接 t() 引用 ⇒ 用户可见）⇒ untranslated 全面下降（ar-SA 984→980 / de-DE 1127→1123 / es-ES 1037→1033 / fr-FR 1124→1120 / ja-JP 713→709 / zh-TW 680→676）。★ sameAsSource 同步下调 ja-JP 607→606；**zh-TW 上调 1474→1478**：因把 zh-TW 的 `routingAudit.filter.days.*` 从英文改成与 zh-CN **同形**的繁中（「7 天」等 4 条）⇒ 命中「与源语言逐字相同」+4 ⇒ ★ 该指标按其自身定义是**指示器**（简繁同形的合法繁中写法也会被计入），不是缺陷数 ⇒ 这是正确写法，不是缺陷。★ 规则：调高必须人工显式改 JSON 并写明理由（--update-baseline 只许降）。",
   "cjkInNonCjkLocale": {
     "ar-SA": 0,
     "de-DE": 0,
@@ -23,8 +24,8 @@
     "en-US": 0,
     "es-ES": 0,
     "fr-FR": 0,
-    "ja-JP": 1345,
-    "zh-TW": 2133
+    "ja-JP": 606,
+    "zh-TW": 1478
   },
   "cjkInNonCjkLocaleAllKeys": {
     "ar-SA": 0,

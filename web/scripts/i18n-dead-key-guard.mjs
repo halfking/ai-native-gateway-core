@@ -85,6 +85,10 @@ export function collectStaticRefKeys(src) {
   for (const m of src.matchAll(/\b(?:\$?t|tc|i18n\.t)\s*\(\s*(['"])([A-Za-z][A-Za-z0-9_.\-]*)\1/g)) add(m[2])
   // te()/tm()/localeArray() 的字面量（vue-i18n 的存在性检查 / 消息树直取）
   for (const m of src.matchAll(/\b(?:te|tm|localeArray)\s*\(\s*(['"])([A-Za-z][A-Za-z0-9_.\-]*)\1/g)) add(m[2])
+  // ★ 属性承载的 i18n 键（labelKey / titleKey / hintKey）—— 与 scanner.ts 的 KEY_PROP_RE 保持一致。
+  //   这些键在运行时被 `navLabel(item.labelKey, …)` 取用，值是配置里的**字面量** ⇒ 静态可解析。
+  //   ★ 收录它们只会**减少**「判死」的数量（更保守），不会造成误删。
+  for (const m of src.matchAll(/\b(?:labelKey|titleKey|hintKey)\s*:\s*(['"])([A-Za-z][A-Za-z0-9_.\-]*)\1/g)) add(m[2])
   // helper 展开：const XX = (k) => t('prefix.' + k)
   const helpers = new Map()
   for (const m of src.matchAll(/\bconst\s+(\w+)\s*=\s*\(\s*k\s*(?::\s*string)?\s*(?:,\s*[^)]*)?\)\s*:\s*string\s*=>\s*\w+\(\s*(['"`])((?:[^'"`\\]|\\.)*?)\1\s*\+\s*k\b/g)) {

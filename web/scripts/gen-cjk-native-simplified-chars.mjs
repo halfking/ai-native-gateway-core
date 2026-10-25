@@ -31,7 +31,27 @@ const OUT_FILE = join(ROOT, 'scripts', 'cjk-native-simplified-chars.json')
 
 // ★ 与仓内 localeValueQuality.ts:89 逐字一致（**必须转义写法**：
 //   手打字面量区间极易写歪一个码位 ⇒ 区间跨过代理对区 ⇒ emoji/韩文被误判成汉字）。
-const CJK_RE = /[一-鿿㐀-䶿]/
+const CJK_RE = /[\u4e00-\u9fff\u3400-\u4dbf]/
+
+// ★★★ 「Big5 收录了简体字形」的**人工审定正名单**（2026-10-27 实测新增）
+//
+//   ★ 为什么需要它：
+//     「Big5 转不出来 = 简体专用字」这个判据**不完备** ——
+//     **Big5 自己收录了一小批简体字形**（实测：异 / 据 / 与 / 余 / 卖 都能被 iconv 转成 Big5 码位），
+//     ⇒ 它们永远进不了 iconv 推导出的 notBig5 ⇒ 门**抓不到**它们 ⇒ 漏检。
+//     实测证据：`iconv -f UTF-8 -t BIG-5` 对「异」返回 c9dd（Big5 码位存的是繁体「異」），
+//     ⇒ 「能转」只说明「该码位有对应字」，**不代表**这个字形在繁体里合法。
+//   ★ 与 japaneseOk 的关系：
+//     「与」「余」在**日文**里是正字（付与 / 余分に使う）⇒ 它们会因
+//     「出现在 ja-JP 已本地化值里」而**自动**进 japaneseOk ⇒ ja-JP 不误报；
+//     而 zh-TW（无豁免）会照抓 ⇒ 正好符合事实。
+//   ★ 纪律：这份清单是**人工审定**的，不是数据推导的
+//     （★ 通用式：「数据驱动的豁免表会把该数据里的缺陷一并豁免」；此处是它的镜像 ——
+//      ★ iconv 推导出的「负名单」会把**它自己的盲区**一并放过 ⇒ 必须人工补正名单）。
+//   ★ 已知**未穷尽**：用「zh-CN 字频 ≫ zh-TW 字频」反查，实测还有约 185 个候选字
+//     未能自动区分「简繁同形的合法用字」与「Big5 收录的简体字形」
+//     ⇒ 已登记为下一轮工程（需人工逐字审定的完整正名单）。
+const BIG5_TRAPS = ['异', '据', '与', '余', '卖']
 
 function big5Ok(ch) {
   try {
@@ -65,8 +85,8 @@ async function main() {
     }
   }
 
-  // ② notBig5 = Big5 转不出来的汉字
-  const notBig5 = [...corpus].filter((c) => !big5Ok(c)).sort()
+  // ② notBig5 = Big5 转不出来的汉字  ∪  **人工审定的「Big5 收录了简体字形」正名单**
+  const notBig5 = [...new Set([...corpus].filter((c) => !big5Ok(c)).concat(BIG5_TRAPS))].sort()
   const notBig5Set = new Set(notBig5)
 
   // ③ japaneseOk = 其中在 ja-JP「已本地化值」里出现过的（合法日文新字体）
@@ -89,7 +109,8 @@ async function main() {
 
   const data = {
     provenance:
-      'notBig5 = 全语料(8 语种语言包)出现、但 iconv(UTF-8→BIG-5) 转不出的汉字（繁体有、简体/日文新字体形没有）；' +
+      'notBig5 = 全语料(8 语种语言包)出现、但 iconv(UTF-8→BIG-5) 转不出的汉字（繁体有、简体/日文新字体形没有）' +
+      ' ∪ 人工审定的「Big5 收录了简体字形」正名单（' + BIG5_TRAPS.join('') + '：iconv 推导的盲区）；' +
       'japaneseOk = notBig5 中在 ja-JP「已本地化值」里出现过的子集（合法日文新字体，如 実/処/録/続/検/総）。',
     generator: 'node scripts/gen-cjk-native-simplified-chars.mjs（需 iconv；Windows 上用仓内已生成的数据文件）',
     knownLimits:
