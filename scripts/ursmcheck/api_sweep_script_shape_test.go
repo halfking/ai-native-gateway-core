@@ -723,3 +723,84 @@ func TestApiSweepClassifiesResponsesBehaviourally(t *testing.T) {
 		t.Error("汇总里没有 >2000ms 的清单")
 	}
 }
+
+// TestApiSweepConsumesCanonicalRouteManifest —— ★★ 【行为门】巡检工具能吃下仓内正本清单。
+//
+// ★★ 这条门守的是 R156 轮实测到的一个**真缺陷**（★ 不是洁癖）：
+//
+//	★ R154 轮新增了仓内路由清单正本 `scripts/audit/asset/admin-routes.txt`
+//	  （★ 由 `scripts/audit/extract-admin-routes.sh` 生成，★ 576 行），
+//	  ★ 而它的格式是**制表符分隔的三列**（path⇥method⇥file:line）。
+//	★ R153 轮的巡检脚本 `scripts/audit/api-sweep.sh` 只认「单列路径」或「方法␣路径」
+//	  ⇒ ★★ **两者直接组合 ⇒ 544 条全部 URL 畸形**（★ curl exit 3 = URL malformed）
+//	  ⇒ ★★ **仓内正本与仓内工具互相不认**。
+//	★⇒ ★★ 修法：★ 让工具支持三列形态（★ method=ANY 视为 GET）。
+//
+// ★★ 为什么这条门必须是【行为层】而不是【形状层】：
+//   ★ 形状层只能断言「脚本里写了 TAB 解析分支」⇒ ★ **脚本里写了一段死代码也能过**；
+//   ★★ 行为层真的跑一次工具、真的喂三列清单、★ 然后断言**没有 URL 畸形**。
+//
+// ★ 用不可达 BASE 制造「快速失败」：★ curl 连不上立即退出（exit 7）
+//   ⇒ ★★ **秒级返回** ⇒ ★ 不给门加时间负担。
+func TestApiSweepConsumesCanonicalRouteManifest(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("windows 下跳过（★ 脚本是 bash，★ 且本门依赖 shell 行为）")
+	}
+	root := apiSweepRepoRoot(t)
+	script := filepath.Join(root, apiSweepRelPath)
+
+	// ① 构造一份【仓内正本同形态】的三列清单（★ 故意不注释掉源列）。
+	dir := t.TempDir()
+	routes := filepath.Join(dir, "routes.tsv")
+	content := "/api/admin/health\tGET\tadmin/handler.go:138\n" +
+		"/api/admin/sessions\tANY\tadmin/handler.go:200\n" +
+		"/api/admin/plain\n"
+	if err := os.WriteFile(routes, []byte(content), 0o600); err != nil {
+		t.Fatalf("写临时清单失败：%v", err)
+	}
+	out := filepath.Join(dir, "out.tsv")
+
+	// ② 跑一次工具（★ BASE 指向不可达端口 ⇒ curl 立刻失败 ⇒ 不产生外部副作用）。
+	// ★ 工具要求 cookie 文件存在（★ 不存在 ⇒ 直接 FATAL 退出）。
+	//   ★ 这里写一份**空**的 Netscape jar：★ BASE 不可达 ⇒ ★ 请求根本发不出去
+	//   ⇒ ★ **不会有任何 cookie 被回显**（★ 门里另有「不回显 cookie」的断言）。
+	cookieJar := filepath.Join(dir, "cookies.txt")
+	if err := os.WriteFile(cookieJar, []byte("# Netscape HTTP Cookie File\n"), 0o600); err != nil {
+		t.Fatalf("写临时 cookie jar 失败：%v", err)
+	}
+	cmd := exec.Command("bash", script)
+	cmd.Dir = root
+	cmd.Env = append(os.Environ(),
+		"BASE=http://127.0.0.1:1", // ★ 不可达
+		"ROUTES="+routes,
+		"OUT="+out,
+		"TIMEOUT=5",
+		"COOKIE="+cookieJar,
+	)
+	combined, _ := cmd.CombinedOutput()
+
+	// ③ 读结果：★ 三条都必须是「连不上」，★ **而不是「URL 畸形」**。
+	raw, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatalf("★ 巡检工具没产出结果 TSV（%s）:\n%s", out, combined)
+	}
+	lines := strings.Split(strings.TrimRight(string(raw), "\n"), "\n")
+	var dataLines []string
+	for _, l := range lines {
+		if strings.TrimSpace(l) == "" || strings.HasPrefix(l, "#") {
+			continue
+		}
+		if strings.HasPrefix(l, "route\t") { // ★ 表头
+			continue
+		}
+		dataLines = append(dataLines, l)
+	}
+	if len(dataLines) != 3 {
+		t.Fatalf("★ 三列清单应当被解析成 3 条路由（★ 实际 %d 条）⇒ ★ 解析口径坏了：\n%s", len(dataLines), string(raw))
+	}
+	for _, l := range dataLines {
+		if strings.Contains(l, "URL malformed") || strings.Contains(l, "conn_failed") && strings.Contains(l, "exit=3") {
+			t.Errorf("★ 仓内正本同形态的清单被判成 URL 畸形（★ curl exit 3）⇒ ★ 巡检工具与仓内清单互相不认：\n  %s", l)
+		}
+	}
+}
