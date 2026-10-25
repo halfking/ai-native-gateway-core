@@ -924,7 +924,40 @@ def cmd_selftest(args):
     check((14, "claimed-applied-but-absent") in soft_kinds,
           f"④ 14 号应进软桶（★ 旁路应用可能），实际 {soft_kinds}")
 
-    # ⑤ 反向：★ 账本里 applied 但登记册没有登记 ⇒ 进「已 applied 但未登记」清单
+    # ⑤ ★★★ **权威段必须被跳过**（★ 防御性规则 ⇒ ★★ 必须【可被测到】⇒ 否则它是死代码）
+    #
+    # ★★ 真实机理（★ 本轮实测）：★ 权威段在登记册【顶部】⇒ ★★ 它的行【不属于任何节】
+    #   ⇒ ★★ 节日期键 = 0（★ 最旧）⇒ ★★ 于是它**赢不了**有散文行的号
+    #   ⇒ ★★ **但对于「散文里压根没有这一行」的号**，★ 它就成了【唯一的有效行】
+    #   ⇒ ★★★ **⇒ 它冒充了那些号的登记行**（★ 实测 49 个号）⇒ ★★ ⇒ 读数失真。
+    #   ⇒ ⇒ 夹具必须复现这一条：**一个散文里没有的号，不许因为权威段里有它而「存在」**。
+    auth_fixture = """# 夹具
+
+<!-- R160-AUTHORITATIVE:BEGIN -->
+
+| Migration | File | SHA-256 | Status |
+|---|---|---|---|
+| 20 | `20_only_in_auth.sql` | `zz` | applied+verified |
+
+<!-- R160-AUTHORITATIVE:END -->
+
+## 2026-06-01 — 散文节
+
+| Migration | File | SHA-256 | Status |
+|---|---|---|---|
+| 10 | `10_a.sql` | `bb` | pending deploy |
+"""
+    tmp_auth = os.path.join("/tmp", f"kx-selftest-auth-{os.getpid()}.md")
+    with open(tmp_auth, "w", encoding="utf-8") as fh:
+        fh.write(auth_fixture)
+    eff_auth, _, _ = parse_changelog(tmp_auth)
+    check(20 not in eff_auth,
+          f"⑤ 权威段里的行不得成为任何号的【有效登记行】⇒ 20 号应当【不存在】（★ 实际存在：{eff_auth.get(20)}）")
+    check(eff_auth.get(10) is not None and eff_auth[10].status.startswith("pending"),
+          f"⑤ 散文行的有效状态应当是 pending（★ 实际 {eff_auth.get(10).status[:40]!r}）")
+    os.remove(tmp_auth)
+
+    # ⑥ 反向：★ 账本里 applied 但登记册没有登记 ⇒ 进「已 applied 但未登记」清单
     check(len(rep["applied_but_not_registered"]) == 1
           and rep["applied_but_not_registered"][0]["filename"] == "15_f.sql",
           f"⑤ 15 号应进「已 applied 但未登记」清单，实际 {rep['applied_but_not_registered']}")
