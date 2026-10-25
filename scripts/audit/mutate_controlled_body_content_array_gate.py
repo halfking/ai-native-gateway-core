@@ -63,13 +63,20 @@ ARMS = (
     ),
     (
         "M03",
-        "a part without a `text` field is accepted as the empty string: a "
-        "non-text part (an image) now counts as content",
+        "a part without a `text` field is appended as an empty block: a "
+        "non-text part (an image) now leaves a hole in the answer",
         "a part without text contributes nothing",
+        # ★ 第一版这条臂只把 `|| piece.Text == nil` 去掉 ⇒ ★ 那会**解引用 nil**
+        #   ⇒ 报出来的是 panic 而不是断言红 ⇒ ★ 那是「臂自己写坏了」，
+        #   不是「判据没咬住」⇒ ★ 改成【语义上真的改坏、且仍能编译】的形态。
         [("\t\tif err := json.Unmarshal(part, &piece); err != nil || piece.Text == nil {\n"
           "\t\t\tcontinue\n"
           "\t\t}\n",
           "\t\tif err := json.Unmarshal(part, &piece); err != nil {\n"
+          "\t\t\tcontinue\n"
+          "\t\t}\n"
+          "\t\tif piece.Text == nil {\n"
+          "\t\t\ttexts = append(texts, \"\")\n"
           "\t\t\tcontinue\n"
           "\t\t}\n")],
     ),
