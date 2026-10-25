@@ -10,8 +10,8 @@ import {
   formatQualityScore,
   formatCalculatedAt,
   QUALITY_GRADE_COLORS,
-  QUALITY_GRADE_LABELS,
 } from '../../types/quality-api'
+import { qualityGradeLabel } from '../../utils/qualityGradeLabel'
 
 const props = defineProps<{
   providerId: number
@@ -74,8 +74,8 @@ function gradeStyle(grade: string | undefined): Record<string, string> {
 }
 
 function gradeLabel(grade: string | undefined): string {
-  if (!grade) return '—'
-  return QUALITY_GRADE_LABELS[grade as QualityGrade] || grade
+  // 等级文案在语言包（common.terms.qualityGrade.*）；等级缺失时沿用本页的「—」占位约定。
+  return qualityGradeLabel(grade, '—')
 }
 
 function scoreColor(n: number): string {

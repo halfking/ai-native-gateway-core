@@ -174,7 +174,7 @@ export default {
     email: 'Email',
     role: 'Role',
     username: 'Username',
-    operator: 'Actor',
+    operator: 'Operator',
     note: 'Note',
     quota: 'Quota',
     standardModel: 'Standard model',
@@ -232,6 +232,14 @@ export default {
       unreachable: 'Unreachable',
       recovering: 'Recovering',
       available: 'Available',
+    },
+    // 质量等级量表（S/A/B/C/D 五级）—— 单一真值源，供应商列表与品质页共用
+    qualityGrade: {
+      s: 'Best',
+      a: 'Excellent',
+      b: 'Good',
+      c: 'Fair',
+      d: 'Poor',
     },
   },
   // 扁平 key 别名（兼容代码中 t('common.xxx') 的引用方式）

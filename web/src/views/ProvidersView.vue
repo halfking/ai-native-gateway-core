@@ -21,9 +21,9 @@ import {
 import {
   formatQualityScore,
   QUALITY_GRADE_COLORS,
-  QUALITY_GRADE_LABELS,
   type QualityGrade,
 } from '../types/quality-api'
+import { qualityGradeLabel } from '../utils/qualityGradeLabel'
 import { useCredentialLabels } from '../composables/useCredentialLabels'
 import { isSuperAdmin } from '../store'
 import { confirmDialog } from '../composables/useConfirmDialog'
@@ -156,11 +156,6 @@ function qualityGradeStyle(grade: string | undefined): Record<string, string> {
   if (!grade) return {}
   const color = QUALITY_GRADE_COLORS[grade as QualityGrade]
   return color ? { backgroundColor: color, color: '#fff' } : {}
-}
-
-function qualityGradeLabel(grade: string | undefined): string {
-  if (!grade) return ''
-  return QUALITY_GRADE_LABELS[grade as QualityGrade] || grade
 }
 
 function fmtQuality(n: number | null | undefined): string {

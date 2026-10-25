@@ -42,15 +42,96 @@
  */
 
 import { readFileSync, readdirSync, statSync, writeFileSync, mkdirSync } from 'node:fs'
-import { resolve, relative, dirname, join } from 'node:path'
+import { resolve, relative, dirname, basename, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
-const WEB = resolve(HERE, '..')
+// ★ CQA_WEB 允许把这次扫描**指到别的树**（A/B 对拍、worktree 副本）。
+//   它只影响「读哪棵树」，不影响判据 ⇒ 但审计线索必须自陈扫的是哪棵，
+//   否则「在哪棵树上绿过」这件事没法复核。
+const WEB = process.env.CQA_WEB || resolve(HERE, '..')
 const LOCALES = resolve(WEB, 'src/locales')
+// ★ 仓根：移动端（web-mobile/）是**另一个包**，它的语言包布局也不同
+//   （web-mobile/src/i18n/<locale>.ts 扁平文件，不是 src/locales/<locale>/*.ts）。
+const REPO = resolve(WEB, '..')
+const MOBILE_SRC = resolve(REPO, 'web-mobile/src')
+const MOBILE_I18N = resolve(MOBILE_SRC, 'i18n')
+/** 移动端语言包文件名 ⇒ 语种。 */
+const LOCALE_FILE_RE = /^(zh-CN|zh-TW|en-US|ja-JP|de-DE|es-ES|fr-FR|ar-SA)\.ts$/
 
 /** 相对路径键统一成 POSIX 分隔符（Windows 教训，见 ui-audit.mjs 的注释）。 */
-const relPosix = (p) => relative(WEB, p).replace(/\\/g, '/')
+const relPosix = (p) => relative(REPO, p).replace(/\\/g, '/')
+
+// ─────────────────────────────────────────────────────────────
+// 棘轮基线（2026-10-25 新增）
+// ─────────────────────────────────────────────────────────────
+// 为什么要有基线：这门刚扩到**移动端**（web-mobile/），实测那里有 126 处
+// 存量破折号（DESIGN.md §7 第 8 条）。一次性手改 126 条产品文案风险高
+// （语义漂移），而仓内对这类存量债务的既有做法就是**登记基线 + 只许降**
+// （对照：ar-SA 有 1102 条「值=英文原文」登记在 localeValueBaseline.json）。
+//
+// 分桶：`<树>/<语种>`（语言包面）与 `<树>/source`（源码文本面）。
+// ★ 必须按树分桶：web 的 en-US 与 web-mobile 的 en-US 是**两个地方**，
+//   混在一个桶里 ⇒ web 侧新出现的违规会被移动端的存量淹没。
+const BASELINE_FILE = resolve(WEB, 'scripts/copy-quality-baseline.json')
+
+/** 文件属于哪棵树（web / web-mobile）。 */
+function treeOf(absFile) {
+  const rel = relPosix(absFile)
+  if (rel.startsWith('web-mobile/')) return 'web-mobile'
+  if (rel.startsWith('web/')) return 'web'
+  return 'other'
+}
+
+/** 读基线（不存在或非法 ⇒ null）。 */
+export function readQualityBaseline() {
+  try {
+    const b = JSON.parse(readFileSync(BASELINE_FILE, 'utf8'))
+    if (!b || typeof b !== 'object' || typeof b.perGroup !== 'object') return null
+    return b
+  } catch {
+    return null
+  }
+}
+
+/**
+ * 本次扫描涉及的**全部桶**（含 0 值桶）。
+ *   语言包面：`<树>/<语种>`；源码面：`<树>/source`。
+ */
+function allGroups(localeEntries, srcFiles) {
+  const set = new Set()
+  for (const e of localeEntries) set.add(`${treeOf(e.file)}/${e.locale}`)
+  for (const f of srcFiles) set.add(`${treeOf(f)}/source`)
+  return [...set].sort()
+}
+
+/**
+ * 写基线：**只许降不许升**。
+ * 任何一个桶要涨 ⇒ 拒绝写入并报错（把「抬基线掩盖问题」这条堵死）。
+ */
+export function writeQualityBaseline(perGroup) {
+  const old = readQualityBaseline()
+  if (old) {
+    const raised = []
+    for (const [g, n] of Object.entries(perGroup)) {
+      const prev = old.perGroup?.[g]
+      if (typeof prev === 'number' && n > prev) raised.push(`${g}: ${prev} → ${n}`)
+    }
+    if (raised.length) {
+      throw new Error(`棘轮只能降不许升，拒绝写入基线：\n  ${raised.join('\n  ')}`)
+    }
+  }
+  const body = {
+    metric:
+      'findings per (tree, locale); web=src/locales/<locale>/**, web-mobile=src/i18n/<locale>.ts; ' +
+      'source面单独成桶 <tree>/source；棘轮只许降不许升',
+    updated: new Date().toISOString().slice(0, 10),
+    perGroup,
+  }
+  mkdirSync(dirname(BASELINE_FILE), { recursive: true })
+  writeFileSync(BASELINE_FILE, JSON.stringify(body, null, 2) + '\n')
+  return body
+}
 
 // ─────────────────────────────────────────────────────────────
 // 词表
@@ -316,18 +397,17 @@ const CHECKS = [
 // 主流程
 // ─────────────────────────────────────────────────────────────
 
-export function audit(files) {
+export function audit(entries) {
   const findings = []
-  for (const f of files) {
+  for (const { file: f, locale } of entries) {
     const rel = relPosix(f)
-    const locale = rel.split('/')[2] || ''
-    if (!rel.includes('/locales/')) continue
+    const group = `${treeOf(f)}/${locale}`
     const src = readFileSync(f, 'utf8')
     for (const s of extractStrings(src)) {
       for (const [, fn] of CHECKS) {
         for (const p of fn(locale, s.value)) {
           findings.push({
-            file: f, line: lineOf(src, s.index), locale,
+            file: rel, line: lineOf(src, s.index), locale, group,
             value: s.value.length > 90 ? s.value.slice(0, 90) + '…' : s.value,
             msg: p.msg,
           })
@@ -338,8 +418,147 @@ export function audit(files) {
   return findings
 }
 
-function collectFiles() {
-  return walk(LOCALES)
+/** 源码文本面（src/** 里的模板文本与字符串字面量）。 */
+export function auditSource(files) {
+  const findings = []
+  for (const f of files) {
+    const rel = relPosix(f)
+    const group = `${treeOf(f)}/source`
+    for (const hit of auditSourceText(rel, readFileSync(f, 'utf8'))) {
+      findings.push({ ...hit, group })
+    }
+  }
+  return findings
+}
+
+/**
+ * 语言包文件清单：**两棵树**，语种归属方式不同 ⇒ 必须显式带上 locale，
+ * 不能从路径里猜（web 是 src/locales/<locale>/*.ts；移动端是 src/i18n/<locale>.ts）。
+ */
+function collectLocaleEntries() {
+  const entries = []
+  // ① web 控制台：src/locales/<locale>/**.ts
+  for (const f of walk(LOCALES)) {
+    const locale = basename(dirname(f))
+    entries.push({ file: f, locale })
+  }
+  // ② 移动端：src/i18n/<locale>.ts（扁平文件；index.ts / keyScan.ts / *.spec.ts 不算）
+  if (existsDir(MOBILE_I18N)) {
+    for (const name of readdirSync(MOBILE_I18N)) {
+      const m = LOCALE_FILE_RE.exec(name)
+      if (!m) continue
+      entries.push({ file: join(MOBILE_I18N, name), locale: m[1] })
+    }
+  }
+  return entries
+}
+
+// ─────────────────────────────────────────────────────────────
+// ★ 源码文本面（2026-10-25 新增）
+// ─────────────────────────────────────────────────────────────
+// 此前这道门**只扫语言包**（src/locales/**），而界面上的字还有一大片
+// 留在源码里（src/** 的模板文本与字符串字面量）——
+// ⇒ 那些字**从未进入过** AI 腔的判据视野。
+//
+// 为什么不早扫：源码里的字面量形态更杂（标识符、CSS 值、类名、测试夹具…），
+// 容易把判据打偏 ⇒ 宁可先量一遍。
+// 实测（2026-10-25）：src 下 3084 条含中文的整串字面量里，只命中 **4 处** AI 腔
+// ⇒ 这条门**可以**扩到全 UI 文本面而不爆红。
+//
+// ★ 口径与中文棘轮门对齐：扫 src/**/*.{vue,ts,tsx,js,mjs}，
+//   排除 src/locales（语言包有自己的扫描面）、src/i18n（基建与自身测试）、
+//   **/*.test.* / **/*.spec.*（测试夹具常含故意违规的样本）。
+const SRC_DIR = resolve(WEB, 'src')
+
+function collectSourceFiles() {
+  const out = []
+  const EXCLUDE_DIRS = new Set(['node_modules', 'dist', '.git', 'locales', 'i18n'])
+  function rec(dir) {
+    let entries
+    try { entries = readdirSync(dir) } catch { return }
+    for (const e of entries) {
+      const p = join(dir, e)
+      let st
+      try { st = statSync(p) } catch { continue }
+      if (st.isDirectory()) {
+        if (EXCLUDE_DIRS.has(e) || e.startsWith('.')) continue
+        rec(p)
+      } else if (
+        /\.(vue|ts|tsx|js|mjs)$/.test(e) &&
+        !/\.test\.[cm]?[jt]s?$/.test(e) &&
+        !/\.spec\.[cm]?[jt]s?$/.test(e)
+      ) {
+        out.push(p)
+      }
+    }
+  }
+  rec(SRC_DIR)
+  // ★ 移动端也是网关 UI 的一部分（同一个产品的另一个客户端）⇒ 同样纳入源码面。
+  //   它的语言包在 src/i18n/<locale>.ts，已被 EXCLUDE_DIRS 里的 'i18n' 排除
+  //   ⇒ 不会与语言包面重复计。
+  if (existsDir(MOBILE_SRC)) rec(MOBILE_SRC)
+  return out
+}
+
+/**
+ * 抽 .vue 模板里的**纯文本节点**（>…<）。
+ * ★ 剥 HTML 注释：`.vue` 里 `<!-- … -->` 是注释，不是文案。
+ * ★ 排除含插值的片段（`{{ … }}`）：那部分由字符串字面量那条面负责。
+ */
+export function extractTemplateText(src) {
+  const out = []
+  if (!src.includes('<')) return out
+  let clean = stripComments(src)
+  // HTML 注释（.vue 专有）—— 逐字符对齐，保持偏移不变。
+  clean = clean.replace(/<!--[\s\S]*?-->/g, (m) => m.replace(/[^\n]/g, ' '))
+  const re = />([^<>{}]+)</g
+  for (const m of clean.matchAll(re)) {
+    const v = m[1].trim()
+    if (!v) continue
+    out.push({ value: v, index: m.index })
+  }
+  return out
+}
+
+/**
+ * ★ 源码面**只管中文**：含中文 ⇒ zh-CN；不含中文 ⇒ **跳过**。
+ *
+ * 为什么跳过非中文（实测 2026-10-25）：把拉丁规则套到源码字面量上，
+ * 15 条命中里绝大多数是**假阳性** ——
+ *   · `row in summary.by_model` 是**代码表达式**不是文案；
+ *   · `dashboardBoard inject missing — mount …` 是给开发看的 console 警告；
+ *   · `${label} · ${health} · …` 是紧凑标签的**合法分隔符**。
+ * ⇒ 判据在源码面必须**收窄到它真正能判的那一类**：
+ *   源码面要管的是「**还没搬进语言包的中文文案**」，
+ *   英文文案在仓里的既定做法就是进语言包（`src/locales/**`），那边已经有门了。
+ */
+export function localeOfContent(str) {
+  return /[一-鿿]/.test(str) ? 'zh-CN' : null
+}
+
+/** 对一段源码文本跑全套判据，返回发现列表。 */
+export function auditSourceText(rel, src) {
+  const findings = []
+  const surfaces = [
+    ...extractStrings(src),
+    ...extractTemplateText(src),
+  ]
+  for (const s of surfaces) {
+    const locale = localeOfContent(s.value)
+    if (!locale) continue
+    for (const [, fn] of CHECKS) {
+      for (const p of fn(locale, s.value)) {
+        findings.push({
+          file: rel,
+          line: lineOf(src, s.index),
+          locale,
+          value: s.value.length > 90 ? s.value.slice(0, 90) + '…' : s.value,
+          msg: p.msg,
+        })
+      }
+    }
+  }
+  return findings
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -475,11 +694,53 @@ const FIXTURES = [
     good: { locale: 'en-US', str: 'The gateway keeps what your team already owns.' },
     fn: checkWords,
   },
+  // ── 以下是**源码文本面**的鉴别力（2026-10-25 新增）────────────────
+  // 这一面此前**根本没有门** ⇒ 判据本身有牙还不够，还要证明「这条面被采到了」。
+  {
+    name: '★ 源码面：模板文本里的三段中点串 → 必须判红',
+    expect: 'red',
+    kind: 'source',
+    src: '<template>\n  <p>内核开源 · 企业级 · 私有部署</p>\n</template>\n',
+  },
+  {
+    name: '★ 源码面：模板文本里的干净句子 → 必须判绿',
+    expect: 'green',
+    kind: 'source',
+    src: '<template>\n  <p>内核开源，私有化部署。</p>\n</template>\n',
+  },
+  {
+    name: '★ 源码面：字符串字面量里的空洞词 → 必须判红',
+    expect: 'red',
+    kind: 'source',
+    src: "export const tag = '卓越的模型体验'\n",
+  },
+  {
+    name: '★ 源码面：HTML 注释里的违规串 → 必须判绿（注释不是文案）',
+    expect: 'green',
+    kind: 'source',
+    src: '<template>\n  <!-- 原稿是 内核开源 · 企业级 · 私有部署 这种三段式 -->\n  <p>内核开源，私有化部署。</p>\n</template>\n',
+  },
+  {
+    name: '★ 源码面：注释里的违规串 → 必须判绿（注释不是文案）',
+    expect: 'green',
+    kind: 'source',
+    src: "// 原稿是 `内核开源 · 企业级 · 私有部署` 这种三段式。\nexport const kicker = 'Apache 2.0 开源内核'\n",
+  },
 ]
 
 function selftest() {
   const results = []
   for (const fx of FIXTURES) {
+    if (fx.kind === 'source') {
+      // 源码面夹具：判据 + 采集面都要有鉴别力。
+      const hits = auditSourceText('views/Fixture.vue', fx.src)
+      const ok = fx.expect === 'red' ? hits.length > 0 : hits.length === 0
+      results.push({
+        name: fx.name, ok,
+        detail: `源码面命中 ${hits.length} 条（期望 ${fx.expect === 'red' ? '>0' : '0'}）${hits.length ? '：' + hits.map(h => h.value).join(' / ') : ''}`,
+      })
+      continue
+    }
     if (fx.kind === 'extract') {
       // 提取器夹具：注释里的内容不得进入「文案集合」。
       const got = extractStrings(fx.src).map((s) => s.value)
@@ -517,18 +778,54 @@ function main() {
     process.exit(failed === 0 ? 0 : 1)
   }
 
-  const files = collectFiles()
-  const findings = audit(files)
+  const localeEntries = collectLocaleEntries()
+  const srcFiles = collectSourceFiles()
+  const findings = [...audit(localeEntries), ...auditSource(srcFiles)]
+
+  // ── 棘轮：按桶计数 vs 基线 ──────────────────────────────────
+  const perGroup = {}
+  for (const f of findings) perGroup[f.group] = (perGroup[f.group] || 0) + 1
+  const groups = [...new Set([...Object.keys(perGroup), ...Object.keys(readQualityBaseline()?.perGroup || {})])].sort()
+
+  if (argv.includes('--update-baseline')) {
+    // 写出**显式的全量桶**（含 0 值桶）——
+    // 否则「某个桶现在是干净的」这件事在基线里看不见，
+    // 下次那里冒出违规时报的是「基线里没有这一项」，看不出是「本来干净」。
+    const next = {}
+    for (const g of allGroups(localeEntries, srcFiles)) next[g] = perGroup[g] || 0
+    const body = writeQualityBaseline(next)
+    console.log(`基线已更新（${body.updated}）：`)
+    for (const [g, n] of Object.entries(body.perGroup)) console.log(`  ${g}: ${n}`)
+    return
+  }
+
+  const baseline = readQualityBaseline()
+  const over = []
+  const under = []
+  for (const g of groups) {
+    const cur = perGroup[g] || 0
+    const limit = baseline?.perGroup?.[g]
+    if (typeof limit !== 'number') {
+      over.push(`${g}: 基线里没有这一项（新增的桶必须先登记基线）`)
+      continue
+    }
+    if (cur > limit) over.push(`${g}: ${cur} > baseline ${limit}（新增 ${cur - limit} 处）`)
+    else if (cur < limit) under.push(`${g}: ${cur} < baseline ${limit}（可降棘轮 ${limit - cur}）`)
+  }
 
   if (argv.includes('--json')) {
     const outArg = argv[argv.indexOf('--json') + 1]
     const target = outArg && !outArg.startsWith('--') ? outArg : resolve(WEB, 'reports/copy-quality-audit.json')
     mkdirSync(dirname(target), { recursive: true })
-    writeFileSync(target, JSON.stringify({ count: findings.length, findings }, null, 2))
+    writeFileSync(target, JSON.stringify({ count: findings.length, perGroup, findings }, null, 2))
     console.log(`JSON → ${target}（${findings.length} 条）`)
   } else {
     console.log('copy-quality 审计 —— 文案 AI 腔（STYLE.md / DESIGN.md §7）')
-    console.log(`扫描 ${files.length} 个语言包文件\n`)
+    console.log(`扫描根：${WEB}（仓根 ${REPO}）`)
+    console.log(
+      `扫描 ${localeEntries.length} 个语言包文件（web + 移动端） + ` +
+        `${srcFiles.length} 个源码文件（src/** 的模板文本与字面量）\n`,
+    )
     if (findings.length === 0) {
       console.log('✅ 未发现违规')
     } else {
@@ -540,19 +837,43 @@ function main() {
       for (const [loc, list] of byLocale) {
         console.log(`■ ${loc}（${list.length} 处）`)
         for (const f of list.slice(0, 30)) {
-          console.log(`  ${relPosix(f.file)}:${f.line}  ${f.msg}`)
+          console.log(`  ${f.file}:${f.line}  ${f.msg}`)
           console.log(`      「${f.value}」`)
         }
         if (list.length > 30) console.log(`  …… 另有 ${list.length - 30} 处`)
         console.log()
       }
     }
+    // 棘轮读数（口径：分桶计数，基线只许降）
+    console.log('棘轮（按桶计数，只许降不许升）：')
+    for (const g of groups) {
+      const cur = perGroup[g] || 0
+      const limit = baseline?.perGroup?.[g]
+      const mark = typeof limit !== 'number' ? '❌ 无基线' : cur > limit ? '❌ 超基线' : cur < limit ? '✅ 可降' : '✅'
+      console.log(`  ${g}: ${cur} / baseline ${typeof limit === 'number' ? limit : '—'}  ${mark}`)
+    }
+    if (under.length) {
+      console.log(`✅ 有 ${under.length} 个桶低于基线，可降棘轮：node scripts/copy-quality-audit.mjs --update-baseline`)
+    }
   }
 
+  if (over.length) {
+    console.error(`\n❌ copy-quality 棘轮被突破：\n  ${over.join('\n  ')}`)
+    console.error('   修掉新冒出来的文案，或（只有真的清干净了才）降棘轮：node scripts/copy-quality-audit.mjs --update-baseline')
+    process.exit(1)
+  }
   if (argv.includes('--strict') && findings.length > 0) {
-    console.error(`❌ copy-quality 审计发现 ${findings.length} 处违规（--strict）`)
+    console.error(`❌ copy-quality 审计发现 ${findings.length} 处违规（--strict：零容忍，不看基线）`)
     process.exit(1)
   }
 }
 
-if (process.argv[1] && process.argv[1].endsWith('copy-quality-audit.mjs')) main()
+if (process.argv[1] && process.argv[1].endsWith('copy-quality-audit.mjs')) {
+  try {
+    main()
+  } catch (e) {
+    // 棘轮拒绝（抬基线）这类错误要给出**可读**的结论，而不是裸栈。
+    console.error(`❌ ${e instanceof Error ? e.message : String(e)}`)
+    process.exit(1)
+  }
+}
