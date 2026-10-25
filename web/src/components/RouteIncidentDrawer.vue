@@ -49,6 +49,7 @@ import {
   type RouteIncidentTimelinePoint,
 } from '../types/routeIncident'
 import { exportFile } from '../utils/exportFile'
+import { Search } from '@element-plus/icons-vue'
 
 // R48-D4（R48 报告 §五-6）：导出链失败文案接 i18n；组件其余存量硬编码串
 // 仍登记在 CJK 基线棘轮（scripts/i18n-cjk-baseline.json），逐批清偿。
@@ -577,7 +578,7 @@ function hasRunValues(values: Record<string, unknown>): boolean {
       <div class="route-incident-drawer__panel">
         <header class="route-incident-drawer__header">
           <div class="route-incident-drawer__title">
-            <span class="route-incident-drawer__icon" aria-hidden="true">🔍</span>
+            <span class="route-incident-drawer__icon" aria-hidden="true"><Search /></span>
             <div>
               <div class="route-incident-drawer__heading">
                 诊断工作台

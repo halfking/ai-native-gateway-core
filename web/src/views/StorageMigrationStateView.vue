@@ -11,6 +11,7 @@
 //   缺独立深链详细页让用户能直接打开 /admin/data-lifecycle/migration-state
 import { onMounted, onUnmounted, ref } from 'vue'
 import { getStorageMigrationState, type MigrationStateResponse, type MigrationRun, type MigrationStatus } from '../api/tuning'
+import { VideoPause } from '@element-plus/icons-vue'
 
 const loading = ref(false)
 const error = ref('')
@@ -80,7 +81,7 @@ onUnmounted(() => {
     <header class="sms-header">
       <h1 class="sms-title">存储迁移状态</h1>
       <span class="sms-polling" v-if="state?.running">⏱ 自动轮询中（5s）</span>
-      <span class="sms-polling" v-else>⏸ 空闲</span>
+      <span class="sms-polling" v-else><VideoPause /> 空闲</span>
       <button class="btn btn-ghost btn-sm" :disabled="loading || refreshing" @click="load()">
         {{ loading ? '加载中…' : refreshing ? '刷新…' : '刷新' }}
       </button>

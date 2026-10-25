@@ -54,6 +54,7 @@ import {
   rateText,
   statusBadge,
 } from './helpers'
+import { CaretLeft, CaretRight, Unlock } from '@element-plus/icons-vue'
 
 Chart.register(...registerables)
 
@@ -702,7 +703,7 @@ onUnmounted(() => {
             :disabled="!canManageMonitor"
             title="解除整凭据禁用"
             @click="openClearDisabledDialog"
-          >🔓 解除禁用</button>
+          ><Unlock /> 解除禁用</button>
           <button
             v-else
             class="btn btn-xs btn-danger"
@@ -866,13 +867,13 @@ onUnmounted(() => {
                 class="btn btn-xs btn-ghost fold-btn"
                 :title="modelsLayout === 'monitor-full' ? '展开左列 (回到分屏)' : '折叠左列 (监控全宽)'"
                 @click="toggleLeftPane"
-              >{{ modelsLayout === 'monitor-full' ? '▶' : '◀' }}</button>
+              ><CaretRight v-if="modelsLayout === 'monitor-full'" /><CaretLeft v-else /></button>
               <button
                 v-else
                 class="btn btn-xs btn-ghost fold-btn"
                 title="展开右列 (回到分屏)"
                 @click="setLayout('split')"
-              >▶</button>
+              ><CaretRight /></button>
             </div>
           </div>
 
@@ -884,7 +885,7 @@ onUnmounted(() => {
                 <code class="mono-sm">{{ selectedModel || '—' }}</code>
               </div>
               <button class="btn btn-xs btn-ghost" @click="setLayout('split')" title="回到分屏">
-                ▶ 展开
+                <CaretRight /> 展开
               </button>
             </div>
             <div v-else>
@@ -947,14 +948,14 @@ onUnmounted(() => {
                           :disabled="!canManageMonitor || toggleBusy[selectedCred.id + '|' + m.raw_model_name]"
                           :title="`下线后自动探测将不再触碰该模型 (原因 = manual_offline)，直到你重新上线`"
                           @click="openToggleDialog(m, 'offline')"
-                        >🔴 下线</button>
+                        ><span class="status-dot status-dot--danger" aria-hidden="true"></span> 下线</button>
                         <button
                           v-else-if="m.binding_unavailable_reason === 'manual_offline'"
                           class="btn btn-xs btn-ghost"
                           :disabled="!canManageMonitor || toggleBusy[selectedCred.id + '|' + m.raw_model_name]"
                           title="恢复后下一轮自动探测（~10 min）会重新评估"
                           @click="openToggleDialog(m, 'online')"
-                        >🟢 上线</button>
+                        ><span class="status-dot status-dot--success" aria-hidden="true"></span> 上线</button>
                         <span
                           v-else
                           class="cell-muted"
@@ -1788,6 +1789,23 @@ onUnmounted(() => {
   letter-spacing: 0.01em;
   color: var(--muted);
 }
+
+/* 状态点：替代原来的 🔴 / 🟢 emoji。
+   为什么不用 emoji：它是彩色字形，描边与全站 Element Plus 线性图标完全
+   不是一套语言（craft-floor：图标要「一套笔画与粗细」）。
+   为什么是圆点而不是图标：这里表达的是**状态**，不是动作；
+   圆点的形状本身就是颜色之外的第二信号。 */
+.status-dot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  margin-right: 5px;
+  vertical-align: middle;
+  flex: none;
+}
+.status-dot--danger { background: var(--kx-danger); }
+.status-dot--success { background: var(--kx-success); }
 .pane-collapsed-value {
   word-break: break-all;
   font-size: 11px;

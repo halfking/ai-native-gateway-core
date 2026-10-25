@@ -16,6 +16,7 @@ import {
   type RequestTrace,
   type TraceEvent,
 } from '../api/trace'
+import { Link, MessageBox, Box, InfoFilled } from '@element-plus/icons-vue'
 
 const { t } = useI18n()
 
@@ -278,7 +279,7 @@ onUnmounted(() => {
     <!-- 内嵌面板 header — 与抽屉内其他 section 视觉一致, 不抢戏 -->
     <header class="trace-panel-header">
       <div class="trace-panel-title">
-        <span class="icon" aria-hidden="true">🔗</span>
+        <span class="icon" aria-hidden="true"><Link /></span>
         <span class="title">{{ t('trace.modal.title') }}</span>
         <code v-if="trace" class="rid">{{ trace.request_id }}</code>
       </div>
@@ -324,7 +325,7 @@ onUnmounted(() => {
         <p>请求记录存在，但当前没有可读取的完整链路数据。</p>
       </div>
       <div v-else-if="error === 'not_found'" class="trace-empty">
-        <div class="empty-icon" aria-hidden="true">📭</div>
+        <div class="empty-icon" aria-hidden="true"><MessageBox /></div>
         <h4>{{ t('trace.empty.title') }}</h4>
         <p>{{ t('trace.empty.desc') }}</p>
         <ul class="empty-hints">
@@ -408,7 +409,7 @@ onUnmounted(() => {
               </table>
 
               <div v-if="ev.snapshot" class="snapshot">
-                <div class="snapshot-title">📦 {{ t('trace.modal.snapshotTitle') }}</div>
+                <div class="snapshot-title"><Box /> {{ t('trace.modal.snapshotTitle') }}</div>
                 <div v-if="ev.snapshot.candidates && (ev.snapshot.candidates as unknown[]).length" class="snapshot-row">
                   <span class="label">{{ t('trace.modal.candidates') }}</span>
                   <span>{{ (ev.snapshot.candidates as unknown[]).length }} {{ t('trace.modal.entries') }}</span>
@@ -442,7 +443,7 @@ onUnmounted(() => {
                   </tbody>
                 </table>
                 <div v-if="ev.snapshot.failure_hint" class="failure-hint">
-                  💡 {{ ev.snapshot.failure_hint }}
+                  <InfoFilled /> {{ ev.snapshot.failure_hint }}
                 </div>
               </div>
             </div>

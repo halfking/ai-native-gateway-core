@@ -24,6 +24,7 @@ import {
 import { credentialDisplayName } from '../composables/useCredentialLabels'
 import { formatDateTime } from '../utils/datetime'
 import ActionTimeline from './ActionTimeline.vue'
+import { Refresh, RefreshRight } from '@element-plus/icons-vue'
 
 const { t, locale } = useI18n()
 
@@ -514,8 +515,8 @@ function closeTimelinePanel() {
         <span v-if="latencyLabel && !isIdle" class="request-tile__latency">{{ latencyLabel }}</span>
       </div>
       <span v-if="isRouting" class="request-tile__stage-indicator request-tile__stage-indicator--routing" title="路由排队中" aria-label="路由排队中">⏳</span>
-      <span v-if="isWaitingLLM" class="request-tile__stage-indicator request-tile__stage-indicator--llm" title="等待大模型响应" aria-label="等待大模型响应">🔄</span>
-      <span v-if="isRetrying" class="request-tile__stage-indicator request-tile__stage-indicator--retrying" title="重试调度中" aria-label="重试调度中">🔁</span>
+      <span v-if="isWaitingLLM" class="request-tile__stage-indicator request-tile__stage-indicator--llm" title="等待大模型响应" aria-label="等待大模型响应"><Refresh /></span>
+      <span v-if="isRetrying" class="request-tile__stage-indicator request-tile__stage-indicator--retrying" title="重试调度中" aria-label="重试调度中"><RefreshRight /></span>
     </div>
 
     <!-- OBS-FE3 (26号 §3): 子请求列表面板 — Teleport 到 body，

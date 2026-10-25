@@ -3,6 +3,7 @@ import { ref, computed } from 'vue'
 import type { ApprovalRule } from '../api/approval'
 import { confirmDialog } from '../composables/useConfirmDialog'
 import { useI18n } from 'vue-i18n'
+import { Plus, Rank, EditPen, Delete } from '@element-plus/icons-vue'
 
 const props = defineProps<{
   modelValue: ApprovalRule[]
@@ -163,7 +164,7 @@ function getRiskLevelLabel(level: string): string {
     <div class="header">
       <h3>审批规则</h3>
       <button class="btn btn-primary" @click="openAddDialog">
-        <span>➕</span> 添加规则
+        <Plus /> 添加规则
       </button>
     </div>
 
@@ -183,7 +184,7 @@ function getRiskLevelLabel(level: string): string {
         @dragend="onDragEnd"
       >
         <div class="rule-header">
-          <div class="rule-drag-handle">☰</div>
+          <div class="rule-drag-handle"><Rank /></div>
           <div class="rule-info">
             <div class="rule-name">{{ rule.name }}</div>
             <div class="rule-meta">
@@ -206,10 +207,10 @@ function getRiskLevelLabel(level: string): string {
               {{ rule.enabled ? '✓' : '✗' }}
             </button>
             <button class="btn-icon" @click="openEditDialog(index)" title="编辑">
-              ✏️
+              <EditPen />
             </button>
             <button class="btn-icon btn-danger" @click="removeRule(index)" title="删除">
-              🗑️
+              <Delete />
             </button>
           </div>
         </div>
@@ -318,7 +319,7 @@ function getRiskLevelLabel(level: string): string {
               </div>
 
               <button class="btn btn-ghost btn-sm" @click="addCondition">
-                ➕ 添加条件
+                <Plus /> 添加条件
               </button>
             </div>
           </div>

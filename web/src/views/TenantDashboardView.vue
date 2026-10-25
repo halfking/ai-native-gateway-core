@@ -37,6 +37,7 @@ import { createHyperPages } from '../lib/shell/hyper/hyperPages'
 import ResponsiveDataView from '../components/ui/ResponsiveDataView.vue'
 import HyperLoadMore from '../components/ui/HyperLoadMore.vue'
 import type { CardField } from '../components/ui/CardList.vue'
+import { Refresh } from '@element-plus/icons-vue'
 
 const { t } = useI18n()
 const router = useRouter()
@@ -467,7 +468,7 @@ onUnmounted(() => {
           />
         <button class="btn btn-refresh" @click="load" :disabled="loading" :title="t('tenants.dashboard.refresh')">
           <span v-if="loading">⏳</span>
-          <span v-else>🔄</span>
+          <span v-else><Refresh /></span>
         </button>
       </div>
     </div>
@@ -496,7 +497,7 @@ onUnmounted(() => {
         @click="load"
       >
         <span v-if="loading">⏳</span>
-        <span v-else>🔄 {{ t('common.button.retry') }}</span>
+        <span v-else><Refresh /> {{ t('common.button.retry') }}</span>
       </button>
     </div>
 

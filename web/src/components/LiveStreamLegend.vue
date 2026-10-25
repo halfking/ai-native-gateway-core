@@ -6,6 +6,7 @@
 import { computed, ref } from 'vue'
 import type { LiveStreamLegendItem } from '../composables/liveStreamStore'
 import { VENDOR_COLORS, STATUS_BORDER_COLORS } from '../types/swimlane'
+import { Refresh } from '@element-plus/icons-vue'
 
 function dimensionColor(key: string): string {
   return VENDOR_COLORS[key] || '#6b7280'
@@ -101,7 +102,7 @@ function handleClick(key: string) {
           <span class="legend-label">路由中</span>
         </span>
         <span class="legend-item legend-item--status" title="等大模型：已发上游，等待响应">
-          <span class="legend-stage legend-stage--llm" aria-hidden="true">🔄</span>
+          <span class="legend-stage legend-stage--llm" aria-hidden="true"><Refresh /></span>
           <span class="legend-label">等大模型</span>
         </span>
       </div>

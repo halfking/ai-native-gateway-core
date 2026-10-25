@@ -8,6 +8,8 @@ import PublicPortalLayout from '../components/PublicPortalLayout.vue'
 
 // 2026-09-13 P5：补齐模板使用的 el-* 组件注册（修复运行时 resolve 失败）
 import { ElButton, ElCard } from 'element-plus'
+import { Lock } from '@element-plus/icons-vue'
+
 const { t } = useI18n()
 const router = useRouter()
 
@@ -28,7 +30,7 @@ async function logout() {
     :subtitle="t('forbidden.subtitle')"
   >
     <el-card shadow="never" class="pub-card forbidden-card">
-      <div class="forbidden-icon" aria-hidden="true">🔒</div>
+      <div class="forbidden-icon" aria-hidden="true"><Lock /></div>
       <div class="actions">
         <el-button type="primary" @click="goHome">{{ t('forbidden.goDashboard') }}</el-button>
         <el-button @click="logout">{{ t('forbidden.switchAccount') }}</el-button>

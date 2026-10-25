@@ -2,6 +2,7 @@
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
+import { Menu } from '@element-plus/icons-vue'
 import { store, clearAll, clearJwt, clearMustChangePasswordFlag, isSuperAdmin as checkSuperAdmin, isPlatformOpsView as checkPlatformOps, markAuthHydrated, setJwtToken, setUserInfo, authBearer, userInfoFromAuthMe } from './store'
 import { logout as apiLogout } from './api/auth'
 import { throttledFetch, isMaintenanceEnvelopeCode, envelopeCodeOfObject } from './api/_core'
@@ -370,7 +371,7 @@ async function handleChangePasswordSuccess() {
         :aria-label="t('landing.guestNavAria', '产品导航')"
         aria-haspopup="dialog"
         @click="navDrawerOpen = true"
-      >☰</button>
+      ><Menu /></button>
       <nav v-else class="guest-nav" :aria-label="t('landing.guestNavAria') || '产品导航'">
         <a href="/customer/update-activate">{{ t('landing.navDownload') }}</a>
         <a href="/bootstrap">{{ t('landing.navSetup') || '安装激活' }}</a>

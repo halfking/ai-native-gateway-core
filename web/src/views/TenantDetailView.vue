@@ -22,6 +22,7 @@ import SparkBars from '../components/ui/SparkBars.vue'
 import { chartColors, createComboChartConfig, useChart } from '../composables/useChart'
 import { useRaceGuard } from '../composables/useRaceGuard'
 import { isPlatformOpsView } from '../store'
+import { Message, Clock } from '@element-plus/icons-vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -461,8 +462,8 @@ watch(() => route.params.tenantId, loadTenant)
           </h1>
           <div class="header-meta">
             <code class="code-badge">{{ tenant.code }}</code>
-            <span v-if="tenant.contact_email">📧 {{ tenant.contact_email }}</span>
-            <span>🕐 {{ fmtTime(tenant.created_at) }}</span>
+            <span v-if="tenant.contact_email"><Message /> {{ tenant.contact_email }}</span>
+            <span><Clock /> {{ fmtTime(tenant.created_at) }}</span>
           </div>
           <p v-if="tenant.description" class="description">{{ tenant.description }}</p>
         </div>

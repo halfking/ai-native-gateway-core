@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { useI18n } from 'vue-i18n'
+import { Rank } from '@element-plus/icons-vue'
 import { formatDateTime, formatTimeOnly } from '../utils/datetime'
 import { ref, computed, onMounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
@@ -766,7 +767,7 @@ watch(activeTab, (tab) => {
                   @dragend="onRouteDragEnd"
                 >
                   <div class="route-card-head">
-                    <span class="route-drag-handle" :title="t('workTypes.layers.dragToReorder')" aria-hidden="true">☰</span>
+                    <span class="route-drag-handle" :title="t('workTypes.layers.dragToReorder')" aria-hidden="true"><Rank /></span>
                     <span class="route-index">{{ t('workTypes.detail.routeNum', { n: i + 1 }) }}</span>
                     <span class="route-tier-tag">{{ t('workTypes.detail.routeTier') }}: {{ t(`workTypes.layers.${tier}`) }}</span>
                     <label class="route-enabled">

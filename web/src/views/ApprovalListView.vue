@@ -16,6 +16,7 @@ import { createHyperPages } from '../lib/shell/hyper/hyperPages'
 import ResponsiveDataView from '../components/ui/ResponsiveDataView.vue'
 import HyperLoadMore from '../components/ui/HyperLoadMore.vue'
 import type { CardField } from '../components/ui/CardList.vue'
+import { View } from '@element-plus/icons-vue'
 
 const { t } = useI18n()
 const router = useRouter()
@@ -530,7 +531,7 @@ watch([statusFilter, riskLevelFilter, dateRangeStart, dateRangeEnd], () => {
                   @click="viewDetail(item)"
                   :title="t('approval.list.actions.viewDetail')"
                 >
-                  👁
+                  <View />
                 </button>
               </div>
             </td>

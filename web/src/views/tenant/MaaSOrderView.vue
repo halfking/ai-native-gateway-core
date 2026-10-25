@@ -13,6 +13,7 @@ import {
 import type { MaasBillingOrder } from '../../api'
 import { useMaasTenantContext } from '../../composables/useMaasTenantContext'
 import PageBackLink from '../../components/PageBackLink.vue'
+import { Iphone } from '@element-plus/icons-vue'
 
 const { t } = useI18n()
 const route = useRoute()
@@ -125,7 +126,7 @@ onUnmounted(() => {
       <div v-if="order.status === 'pending'" class="pay-section">
         <div class="qr-box">
           <div class="qr-placeholder">
-            <div class="qr-icon">📱</div>
+            <div class="qr-icon"><Iphone /></div>
             <div class="qr-title">{{ t('tenants.order.qrPlaceholder') }}</div>
             <div class="qr-order mono">{{ order.order_no }}</div>
           </div>

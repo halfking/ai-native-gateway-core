@@ -12,6 +12,7 @@ import {
   generateShellScript, getManualSteps, TOOL_TEMPLATES, detectOS, validateProviderName, normalizeGatewayURL,
   downloadFile, auditAction,
 } from '../composables/useClientConfig'
+import { Key } from '@element-plus/icons-vue'
 
 const props = defineProps<{ tool: ToolId; open: boolean }>()
 const emit = defineEmits<{ (e: 'close'): void }>()
@@ -375,7 +376,7 @@ function goManageFeatured() {
           </select>
           <div v-else-if="keysLoading" class="state-row">{{ t('clientConfigDialog.step1.loading') }}</div>
           <div v-else class="empty-state">
-            <div class="empty-state-icon">🔑</div>
+            <div class="empty-state-icon"><Key /></div>
             <div class="empty-state-title">{{ t('clientConfigDialog.step1.empty.title') }}</div>
             <div class="empty-state-desc">
               {{ t('clientConfigDialog.step1.empty.description') }}

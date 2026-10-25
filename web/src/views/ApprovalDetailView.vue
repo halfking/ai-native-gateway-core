@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { CaretBottom, CaretRight } from '@element-plus/icons-vue'
 import { fmtDateMedium } from '../i18n/useFormat'
 import { useRouter, useRoute } from 'vue-router'
 import { getApprovalDetail, approveApproval, rejectApproval, type ApprovalDetail } from '../api/approval'
@@ -295,7 +296,7 @@ onBeforeUnmount(() => {
       <section v-if="approval.snapshot?.session_summary" class="section collapsible-section">
         <div class="section-header clickable" @click="showSessionSummary = !showSessionSummary">
           <h2>
-            <span class="collapse-icon">{{ showSessionSummary ? '▼' : '▶' }}</span>
+            <span class="collapse-icon"><CaretBottom v-if="showSessionSummary" /><CaretRight v-else /></span>
             会话摘要
           </h2>
         </div>
@@ -309,7 +310,7 @@ onBeforeUnmount(() => {
       <section v-if="approval.snapshot?.messages?.length" class="section collapsible-section">
         <div class="section-header clickable" @click="showFullMessages = !showFullMessages">
           <h2>
-            <span class="collapse-icon">{{ showFullMessages ? '▼' : '▶' }}</span>
+            <span class="collapse-icon"><CaretBottom v-if="showFullMessages" /><CaretRight v-else /></span>
             用户消息
           </h2>
           <span class="badge badge-gray">{{ approval.snapshot.messages.length }} 条</span>
@@ -332,7 +333,7 @@ onBeforeUnmount(() => {
       <section v-if="approval.snapshot?.context" class="section collapsible-section">
         <div class="section-header clickable" @click="showContext = !showContext">
           <h2>
-            <span class="collapse-icon">{{ showContext ? '▼' : '▶' }}</span>
+            <span class="collapse-icon"><CaretBottom v-if="showContext" /><CaretRight v-else /></span>
             完整上下文
           </h2>
           <span class="badge badge-orange">管理员权限</span>

@@ -13,7 +13,7 @@
     </div>
 
     <div v-if="readOnly" class="alert alert-info" style="margin-bottom:12px">
-      📖 您是租户管理员，当前为只读模式。上游成本价格仅供查看，不能修改或导入。
+      <Reading /> 您是租户管理员，当前为只读模式。上游成本价格仅供查看，不能修改或导入。
     </div>
     <div v-if="globalMsg" class="alert" :class="globalMsgOk ? 'alert-success' : 'alert-danger'" style="margin-bottom:12px">{{ globalMsg }}</div>
 
@@ -490,6 +490,7 @@ import { exportFile } from '../utils/exportFile'
 import { readExportBlob, ExportTooLargeError } from '../utils/exportResponse'
 import { formatBytes } from '../utils/format'
 import { acceptImportFile, importRejectionMessage, PRICING_CSV_MAX_BYTES } from '../utils/fileImport'
+import { Reading } from '@element-plus/icons-vue'
 
 /** 定价 CSV 导入规则：上限对齐服务端，后缀只收 csv。 */
 const PRICING_CSV_RULE = { maxBytes: PRICING_CSV_MAX_BYTES, extensions: ['.csv'] } as const
