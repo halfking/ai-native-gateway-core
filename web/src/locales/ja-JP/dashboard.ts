@@ -22,7 +22,7 @@ tabs: {
     summaryDegraded: "集計ビュー {view} が未初期化です — 下のリクエスト数/トークン/費用は「計算できなかった」のであって 0 ではありません。結論として使わないでください。",
   },
   range: {
-    today: "今日",
+    today: "本日",
     last7d: "直近7日間",
     last30d: "直近30日間",
     last90d: "直近90日間"
@@ -46,7 +46,7 @@ tabs: {
     providerCount: '{n} 社',
     opsRunning: '実行中',
     opsChecks: '直近10分のプローブ {n}',
-    opsRate24h: '24h 成功率 {n}',
+    opsRate24h: "24h 成功率：{n}",
     opsChecksUnknown: '直近10分のチェック数：不明',
     opsRateUnknown: '直近24時間の成功率：不明',
     providerCostTitle: 'プロバイダーコスト調達',
@@ -73,7 +73,7 @@ tabs: {
     modelDistTitle: 'モデル分布',
     modelTop: '期間内 Top {n}',
     colShare: '割合',
-    distTitle: '分布分析',
+    distTitle: "分布の分析",
     distTop: 'TOP {n}',
     distOthers: '他 {n} 件',
     distDrillHint: 'エラータイプをクリック → モデル/プロバイダー/クライアント別にドリル',
@@ -121,7 +121,7 @@ tabs: {
 
     rangePicker: '统计时间范围',
 
-    rangeCustom: '{start} 至 {end}',
+    rangeCustom: "{start} 〜 {end}",
   },
   proxyWarning: {
     title: "⚠ 出口プロキシに到達できません",
@@ -228,7 +228,7 @@ tabs: {
       inProgress: "処理中",
       failure: "失敗"
 ,
-      cancelled: '已取消',
+      cancelled: "キャンセル済み",
     },
     tooltip: {
       model: "モデル",
@@ -269,15 +269,15 @@ tabs: {
     emptyWaiting: 'リアルタイムリクエストストリームデータを待機中…',
     emptyConnecting: 'ライブストリームに接続中です。接続後に自動的に読み込まれます…',
     groupByCredential: '認証情報別', groupByVendor: 'ベンダー別', groupByProvider: 'プロバイダー別', groupByModel: 'モデル別',
-    modeSmall: '小',
-    modeLarge: '大',
+    modeSmall: "小モード",
+    modeLarge: "大モード",
     modeSmallTitle: '小モード：縦棒表示、より多くのリクエストを収容（デフォルト）',
     modeLargeTitle: '大モード：カード表示、より詳細なリクエスト情報',
     // 2026-08-06: 業務 / プローブフィルタ + タイトル（zh-CN との整合）
     business: '業務',
     probe: 'プローブ',
-    businessTitle: '実業務の请求のみ表示',
-    probeTitle: 'プローブ请求のみ表示',
+    businessTitle: '実業務のリクエストのみ表示',
+    probeTitle: 'プローブリクエストのみ表示',
     cacheWindow: 'キャッシュ / ウィンドウ', connectionDetailTitle: 'クリックで接続詳細を表示',
     dimensionCredential: '認証情報', dimensionVendor: 'ベンダー', dimensionProvider: 'プロバイダー', dimensionModel: 'モデル',
     statusOpen: '接続済み', statusConnecting: '接続中', statusReconnecting: '再接続中',
@@ -356,7 +356,7 @@ tabs: {
     gradeD: "Grade D",
     gradeF: "Grade F",
     avgScore: "平均スコア",
-    healthDistribution: "健康度分布",
+    healthDistribution: "ヘルス分布",
     totalSessions: "合計 {n} セッション",
     newSessions: "新規セッション",
     activeSessions: "アクティブセッション",

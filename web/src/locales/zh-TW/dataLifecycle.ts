@@ -138,9 +138,9 @@ export default {
       columnarTableCountMeta: "使用 columnar 存取方法的表",
       columnarTotalColumns: "欄位總數",
       columnarTotalColumnsMeta: "所有列存表的欄位總和",
-      columnarSize: "列存占用",
+      columnarSize: "列存佔用",
       columnarSizeMeta: "壓縮後（含 chunk 中繼資料）",
-      columnarDbShare: "DB 占比",
+      columnarDbShare: "DB 佔比",
       columnarDbShareMeta: "列存 / Database 總和",
       columnarNotInstalledFallback: "citus_columnar 擴充未安裝",
       localLogsTitle: "本機日誌目錄",
@@ -306,7 +306,7 @@ export default {
       routingDecisionLog: "路由决策日志"
     },
     labels: {
-      rows: "行数",
+      rows: "行數",
       toast: "TOAST"
     },
     migrationFailed: "迁移失败"
@@ -343,15 +343,15 @@ export default {
 
     cronRunning: '正在运行',
   },
-  preview: "预览清理",
-  hotData: "热数据 (0-7天)",
-  warmData: "温数据 (7-30天)",
-  coldData: "冷数据 (30-90天)",
-  expiredData: "过期数据 (>90天)",
-  missingDate: "请选择起始日期和结束日期",
-  previewFailed: "预览失败",
-  needPreview: "请先预览影响",
-  executeNotImpl: "清理功能将在下一阶段实现。请使用命令行脚本执行清理操作。"
+  preview: "預覽清理",
+  hotData: "熱資料 (0-7天)",
+  warmData: "溫資料 (7-30天)",
+  coldData: "冷資料 (30-90天)",
+  expiredData: "過期資料 (>90天)",
+  missingDate: "請選擇起始日期和結束日期",
+  previewFailed: "預覽失敗",
+  needPreview: "請先預覽影響",
+  executeNotImpl: "清理功能將在下一階段實作。請使用命令列指令碼執行清理操作。"
 ,
   pages: {
     filesystemMaintenance: '檔案系統維護',
@@ -416,15 +416,15 @@ export default {
     attribution: {
       title: '成本歸因',
       groupBy: '分組維度：',
-      model: '按模型',
-      provider: '按提供商',
+      model: '依模型',
+      provider: '依提供商',
       intent: '按意圖',
       shareChart: '成本佔比',
       detailChart: '成本明細（輸入 vs 輸出）',
       otherNote: '其他 {count} 項合計: {cost}',
       otherLabel: '其他',
       colModel: '模型',
-      colProvider: '提供商',
+      colProvider: '供應商',
       colIntent: '意圖',
       colRequests: '請求數',
       colTotalCost: '總成本',

@@ -127,9 +127,9 @@ export default {
       sixDimScore: '6次元評価',
       emptyHint: 'インデックスのデータがありません — ↻ 更新をクリック',
 
-      smartConfig: '智能路由配置',
+      smartConfig: "スマートルーティング設定",
 
-      smartConfigHint: '按任务类型配置主要 / 次级 / 托底模型',
+      smartConfigHint: "タスクタイプごとに主モデル / 副モデル / フォールバックモデルを設定します",
     },
     policy: {
       fields: {
@@ -265,7 +265,7 @@ export default {
     },
     weightsDirty: '係数に変更あり、未保存',
 
-    backLink: '← 路由全景',
+    backLink: "← ルーティング全体像",
   },
   test: {
     title: 'ルーティングテスト',
@@ -323,7 +323,7 @@ export default {
     featuredEmptyTitle: '注目モデルがまだ設定されていません',
     featuredEmptyWithN: '{n} 件の注目モデルが設定されていますが、ルーティング可能なバリエーションがありません (サーキット/制限/リタイア状態の可能性あり)。',
     featuredEmptyWithout: '「注目のみ」フィルターは routing_policy.featured_models に依存していますが、現在は空です。',
-    recommendButton: '⚡ 直近7日間のトップ {state} を一键採用',
+    recommendButton: '⚡ 直近7日間のトップ {state} を一括採用',
     recommendLoading: '読み込み中…',
     recommendText: '推奨',
     manualConfig: '⚙ ルーティングポリシーへ手動設定',

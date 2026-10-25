@@ -27,7 +27,7 @@ export default {
   byProvider: '按供應商',
   byTenant: '按租戶',
   byPerson: '按人員',
-  byModel: '按模型',
+  byModel: '依模型',
   byDay: '按日',
   // 欄位名稱
   provider: '供應商',
@@ -72,7 +72,7 @@ export default {
   legendCacheWrite: '緩存寫',
   legendHitRate: '命中率',
   distHint: '點擊行下鑽：佔比條為當前指標佔比',
-  byToken: '按 Token',
+  byToken: '依 Token',
   byMoney: '按金額',
   sharePct: '佔比',
   reasonTitle: '失敗原因分布（區間 Top）',

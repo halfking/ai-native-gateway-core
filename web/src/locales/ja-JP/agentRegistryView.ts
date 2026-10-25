@@ -142,7 +142,7 @@ export default {
   calls: 'calls（呼び出し）',
   similar_to: 'similar_to（代替）',
   loadFailed: '読み込み失敗',
-  healthy: '健康',
+  healthy: "正常",
   degraded: '低下',
   down: 'ダウン',
   unknown: '不明',

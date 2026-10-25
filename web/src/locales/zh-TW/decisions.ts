@@ -114,7 +114,7 @@ export default {
   msUnit: 'ms',
   costUnit: '\$',
   successOk: '✓ 成功',
-  successFail: '✗ 失败',
+  successFail: '✗ 失敗',
   latencyUnit: ' ms',
   bytesUnit: ' B',
 }

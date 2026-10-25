@@ -62,7 +62,7 @@ export default {
       approveFailed: 'Approve failed',
       rejectFailed: 'Reject failed',
 
-      loadListFailed: '加载审批列表失败',
+      loadListFailed: '載入審核清單失敗',
     },
     success: {
       approved: 'Approved',
@@ -70,15 +70,15 @@ export default {
     },
 
     relativeTime: {
-      justNow: '刚刚',
-      minutesAgo: '{n} 分钟前',
-      hoursAgo: '{n} 小时前',
+      justNow: '剛剛',
+      minutesAgo: '{n} 分鐘前',
+      hoursAgo: '{n} 小時前',
       daysAgo: '{n} 天前',
     },
 
     confirm: {
-      approve: '确认批准此请求？\n请求 ID: {id}',
-      rejectPrompt: '请输入拒绝原因：',
+      approve: '確認Approve此請求？\n請求 ID: {id}',
+      rejectPrompt: '請輸入Reject原因：',
     },
   },
   detail: {

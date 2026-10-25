@@ -54,22 +54,22 @@ export default {
     testSuccess: '連線測試成功',
     testFailed: '連線測試失敗',
     testInProgress: '正在傳送測試訊息…',
-    dependenciesTitle: '依赖模块',
-    required: '必需',
-    optional: '可选',
-    enableAllDeps: '一键启用 {count} 个必需依赖',
-    enableAllDepsHint: '后端会按稳定顺序开启所有未启用的必需依赖后再启用本模块',
-    cascading: '正在开启依赖…',
-    cascadeSuccess: '已自动开启 {count} 个依赖：{names}',
-    cascadeEmpty: '所有依赖已启用，模块已正常开启',
-    cascadeAlreadyEnabled: '模块已启用，无需级联',
-    cascadeLogTitle: '本次级联开启的依赖：',
+    dependenciesTitle: '依賴模組',
+    required: '必要',
+    optional: '選填',
+    enableAllDeps: '一鍵啟用 {count} 個必需依賴',
+    enableAllDepsHint: '後端會按穩定順序開啟所有未啟用的必需依賴後再啟用本模組',
+    cascading: '正在開啟依賴…',
+    cascadeSuccess: '已自動開啟 {count} 個依賴：{names}',
+    cascadeEmpty: '所有依賴已啟用，模組已正常開啟',
+    cascadeAlreadyEnabled: '模組已啟用，無需級聯',
+    cascadeLogTitle: '本次級聯開啟的依賴：',
 
-    sectionDependencies: '依赖模块',
+    sectionDependencies: '依賴模組',
 
-    dependencyDisabled: '依赖模块未启用',
+    dependencyDisabled: '依賴模組未啟用',
 
-    notEnabled: '未启用',
+    notEnabled: '未啟用',
   },
 
   config: {
@@ -185,7 +185,7 @@ export default {
 
   // 同步的扁平键
 
-  modeBannerTitle: '本页仅做三件事：',
+  modeBannerTitle: '本頁僅做三件事：',
 
-  modeBannerBody: '已装模块开关、已授权未开通模块下载；本页不提供价格、订单或套餐入口（采购通道另行公告）。',
+  modeBannerBody: '已裝模組開關、已授權未開通模組下載；本頁不提供價格、訂單或套餐入口（採購通道另列公告）。',
 }

@@ -54,7 +54,7 @@ export default {
     agent: {
       title: 'Agent と MCP の接続',
       description:
-        'Agent レジストリ、A2A プロトコル、MCP ツールのホスティングとプロトコル変換。LLM の中継から Agent の编排へ移れます。',
+        'Agent レジストリ、A2A プロトコル、MCP ツールのホスティングとプロトコル変換。LLM の中継から Agent のオーケストレーションへ移れます。',
       badge: '近日公開',
     },
     observability: {

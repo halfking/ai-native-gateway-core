@@ -18,7 +18,7 @@ export default {
 
   step2: {
     title: '② 作業系統',
-    pathHint: "配置入口：",
+    pathHint: "設定入口：",
   },
 
   step3: {
@@ -28,7 +28,7 @@ export default {
     featuredPreview: {
       loading: '載入中…',
       empty: "所選租戶尚未配置特色模型",
-      manageButton: '前往「路由策略」配置 →',
+      manageButton: '前往「路由策略」設定 →',
       manage: '管理 →',
     },
     allModels: {
@@ -43,7 +43,7 @@ export default {
   },
 
   retry: "重試",
-  otherFamily: "其它",
+  otherFamily: "其他",
   gateway: {
     title: "③ 閘道器 API 位址",
     hint: "預設使用目前閘道器網站位址。配置中會包含所選 API Key，請妥善保管產生的檔案與指令碼。",
@@ -90,7 +90,7 @@ export default {
     descriptionPlaceholder: '可選：申請原因 / 用途',
     cancel: '取消',
     submit: '提交申請',
-    submitting: '提交中…',
+    submitting: '送出中…',
   },
 
   error: {

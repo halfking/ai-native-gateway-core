@@ -48,7 +48,7 @@ export default {
     modalTitle: 'AI 分析プロンプト生成器',
     userQuestionLabel: '質問',
     userQuestionPlaceholder: '例: このリクエストが失敗した理由は？',
-    generate: '生成',
+    generate: "作成",
     generating: '生成中...',
     resultLabel: '生成されたプロンプト',
     copy: 'コピー',

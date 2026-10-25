@@ -167,6 +167,6 @@ export default {
   loadingDetail: 'Loading detail…',
 
   // 同步的扁平键
-  savedOk: '已保存',
-  testFailedShort: '测试失败',
+  savedOk: "保存しました",
+  testFailedShort: "テスト失敗",
 }

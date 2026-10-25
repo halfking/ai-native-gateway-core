@@ -10,7 +10,7 @@ export default {
     guide: "接続ガイド",
     chat: "チャット",
     plugins: "プラグイン",
-    opsplatform: "运维平台"
+    opsplatform: "運用保守センター"
   },
   item: {
     liveTopology: "リアルタイムトポロジ",

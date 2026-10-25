@@ -43,10 +43,10 @@ export default {
   },
 
   theme: {
-    switchToLight: '切到浅色',
-    switchToDark: '切到深色',
-    lightTitle: '浅色模式',
-    darkTitle: '深色模式',
+    switchToLight: "ライトモードへ切替",
+    switchToDark: "ダークモードへ切替",
+    lightTitle: "ライトモード",
+    darkTitle: "ダークモード",
   },
   dataHorizon: {
     title: 'トラフィックデータの記録が遅れています：ゲートウェイはリクエストを処理していますが、session_turns が追いついていません',

@@ -1,0 +1,16 @@
+{
+  "updated": "2026-10-25",
+  "note": "referenced = 硬闸（须为 0）；unreferenced = 棘轮（只许降）。由 scripts/i18n-cjk-native-simplified-guard.mjs --update-baseline 写入",
+  "baselineRaiseReason": {
+    "ja-JP.unreferenced": "328 → 337：**检测器变准**，不是残留变多。★ 本轮发现豁免表（japaneseOk =「出现在已本地化值里的字」）会把自己的缺陷洗白 —— 漏进 ja-JP 的简体片段（授权/联系/请求/一键/运维平台/编排）正好被豁免 ⇒ 门看不见它们。⇒ 生成器改为「已本地化值里出现过的字 **减去** 人工审定的『不是日文正字』清单（权维编联请键运）」⇒ 豁免表 110 → 103 ⇒ 未引用命中 328 → 340 ⇒ 再修掉 3 处『本地化值里的简体片段』（nav.group.opsplatform / routing.overview.recommendButton / public.upgrade.contactAdminButton）⇒ 337。★ 其中 4 处**用户可见**的（landing.features.agent.description / dashboard.liveStream.businessTitle / dashboard.liveStream.probeTitle / public.agreement.fullLink）属**硬闸**，必须为 0，已全部修掉。",
+    "zh-TW.unreferenced": "320 未动（豁免表只作用于 ja-JP）"
+  },
+  "referenced": {
+    "ja-JP": 0,
+    "zh-TW": 0
+  },
+  "unreferenced": {
+    "ja-JP": 337,
+    "zh-TW": 320
+  }
+}
