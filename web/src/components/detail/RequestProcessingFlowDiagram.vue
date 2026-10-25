@@ -35,7 +35,7 @@ const hasSynthesizedBars = computed(() => waterfallLayout.value.row?.bars.some((
 const degraded = computed(() => props.journey?.observation_status === 'observation_degraded' || journeyEvents.value.some((event) => event.observation_status === 'observation_degraded'))
 
 function journeyDetail(event: RequestJourneyEvent): string { return [event.attempt && `attempt #${event.attempt.attempt_no}`, event.provider || event.attempt?.provider, event.model || event.resolved_model, event.retry_reason || event.switch_reason].filter(Boolean).join(' · ') }
-function stageLabel(event: TraceEvent): string { const raw = (event.stage_name || event.stage || '').trim(); const mapped = traceStageToJourney(raw)?.labelKey; const key = `requestDetail.flow.diagram.stages.${mapped || raw}`; const translated = t(key); return translated === key ? raw || t('requestDetail.flow.diagram.event') : translated }
+function stageLabel(event: TraceEvent): string { const raw = (event.stage_name || event.stage || '').trim(); const mapped = traceStageToJourney(raw)?.stageKey; const key = `requestDetail.flow.diagram.stages.${mapped || raw}`; const translated = t(key); return translated === key ? raw || t('requestDetail.flow.diagram.event') : translated }
 function journeyStageLabel(event: RequestJourneyEvent): string { const key = `requestDetail.flow.diagram.stages.${event.stage}`; const translated = t(key); return translated === key ? event.stage : translated }
 function statusLabel(status: TraceEvent['status']): string { const key = `requestDetail.flow.diagram.status.${status}`; const translated = t(key); return translated === key ? status : translated }
 function statusClass(status: TraceEvent['status']): string { return `flow-node--${status || 'unknown'}` }

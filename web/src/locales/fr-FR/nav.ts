@@ -42,8 +42,8 @@ export default {
     auditLogs: "Journaux d'audit",
     requestLogs: "Journaux de requêtes",
     dispatchWaterfall: "Cascade de files",
-    requestRegistry: "Request Registry",
-    connectionRegistry: "Connection Registry",
+    requestRegistry: "Registre des requêtes",
+    connectionRegistry: "Registre des connexions",
     turns: "Liste des tours",
     sessions: "Sessions",
     pluginSessions: "Sessions du plugin",
@@ -76,18 +76,18 @@ export default {
     sessionAudit: "Audit des sessions",
     sessionConfig: "Configuration des sessions",
     agents: "Registre des agents",
-    promptInjection: "Prompt Injection Detection",
+    promptInjection: "Détection d’injection de prompts",
     examples: "Exemples",
     chat: "Chat",
-    opsOverview: "Ops Overview",
+    opsOverview: "Vue d’ensemble des opérations",
     opsLicenses: "Gestion des licences",
-    opsDownloads: "Releases & Downloads",
+    opsDownloads: "Versions et téléchargements",
     opsFaults: "Gestion des pannes",
     opsAutoUpdate: "Mise à jour automatique",
     opsCenter: "Opérations du centre",
     opsVibeCoding: "VibeCoding",
     opsProductEntry: "Product Entry",
-    updateActivate: 'Update & Activate',
+    updateActivate: 'Mettre à jour et activer',
     // 2026-09-04: 未激活时替换「自动更新」等入口的激活 CTA 文案 (parity backfill)
 
     licenseActivate: 'License Activation',
@@ -98,9 +98,9 @@ export default {
 
     licenseAgreement: 'User License Agreement',
 
-    licenseOffline: 'Offline Activation',
+    licenseOffline: 'Activation hors ligne',
 
-    telemetryScope: 'Data Collection Scope',
+    telemetryScope: 'Périmètre de collecte des données',
     supportDonate: 'Parrainage & Don',
   },
 

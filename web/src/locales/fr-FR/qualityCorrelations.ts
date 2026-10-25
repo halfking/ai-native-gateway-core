@@ -7,7 +7,7 @@ export default {
     bucketBy: 'Bucket by',
     refresh: 'Refresh',
     loading: 'Loading…',
-    days: { d1: '1 day', d7: '7 days', d30: '30 days', d90: '90 days' },
+    days: { d1: '1 jour', d7: '7 jours', d30: '30 jours', d90: '90 jours' },
     by: {
       prompt_length: 'Prompt length',
       tools: 'Tool count',

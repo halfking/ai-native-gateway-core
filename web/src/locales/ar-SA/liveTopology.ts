@@ -2,7 +2,7 @@
 // // TODO(i18n): 阿拉伯语译文待补，当前为英文占位（缺文件会让 i18n parity 门直接红，
 // // 占位保证键位齐全，翻译可独立跟进）。
 export default {
-  title: 'Live Topology',
+  title: 'الطبولوجية المباشرة',
   redisDown: 'Redis غير متاح، وحالة العقدة تدهورت إلى غير معروف',
   column: {
     client: 'Client',
@@ -33,9 +33,9 @@ export default {
     queue: '{n} queued',
   },
   window: {
-    '5m': 'Last 5 min',
-    '30m': 'Last 30 min',
-    '2h': 'Last 2 h',
+    '5m': 'آخر 5 دقائق',
+    '30m': 'آخر 30 دقيقة',
+    '2h': 'آخر ساعتين',
   },
   filter: {
     provider: 'Filter by provider',

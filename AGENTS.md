@@ -4,6 +4,48 @@
 > 写入时机：2026-10-09 首次生成；**2026-10-11 由 root 会话
 > `mvs_d10f8ded3e7c4d73b8221fe670ddd9dc` 重写「工具链」与「已落地结论」两节**，
 > 原文件关于「go/brew/docker 全部缺失」的判断已被实测推翻，见下。
+> **2026-10-27 第 9 增量：属性承载键 / 运行时拼键 两类引用集盲区修复轮**（会话
+> `mvs_dc5e181989fc4539805f343f39be2b5d`）：★ 承接第 8 增量（§414）——**新门
+> `i18n-cjk-native-simplified-guard.mjs` 的「用户可见」口径只认字面量调用**
+> ⇒ **运行时拼键**（`t(\`prefix.${x}\`)`）与**属性承载键**（`labelKey: 'nav.item.xxx'`）
+> 这两类**用户可见**的键**从未进过引用集** ⇒ 既没进过工单、也没被门看过。
+> ⇒ ★ **扫描器扩展**（`web/src/i18n/scanner.ts` 加 `KEY_PROP_RE` / `PROP_PREFIX_RE`，
+> `scanFile` 内先还原运行时前缀再入集）⇒ 引用集 **5252 → 5371**；
+> ★ **前缀解析缺失会造 29 处假引用**（`promptInjectionFieldBasic` 的真键是
+> `sessions.config.promptInjectionFieldBasic`）⇒ 加前缀解析后归零。
+> ⇒ ★ **9 处残留假引用治的是根因不是症状**：`utils/journeyStageMap.ts` 的 `labelKey`
+> 存的是 **journey stage 名**（真键 `requestDetail.flow.diagram.stages.<stage>`）⇒
+> **改名 `stageKey` + 注释写明「它不是 i18n 键」** ⇒ parity 门 hard gate 29 → 9 → **0**。
+> ⇒ ★★ **门口径修正（本轮最值钱的一处）**：CJK 门的 `refKeys` 只含字面量 ⇒
+> **运行时拼键下的键全落进「未引用」桶，而它们是用户可见的** ⇒ 「用户可见残留 = 0」是**假绿**；
+> ⇒ 把 `callSiteParams.ts` 的 template 静态前缀（实测 34 个）接进 referenced 判定 ⇒
+> **同一门立刻报出 zh-TW 27 / ja-JP 39 条整条中文原文**（`providerDetail.errorDetail.*`
+> 整块 25 条、`providerDetailPage.quality.*` 12 条、`dataLifecycle.hotTableNames.*` 4 条）
+> ⇒ **补译 197 个值后归零**（zh-TW 49 / ja-JP 63 / de 20 / es 20 / fr 20 / ar 25）⇒
+> 未引用残留同步降 ja-JP 337→294、zh-TW 320→288 ⇒ 门自证 20/20 → **22/22**（新增
+> S15b「动态前缀下的键算 referenced」/ S15c「前缀不匹配的仍算 unreferenced，不许把潜伏存量洗白」）。
+> ⇒ ★ **字表判据不完备**：「Big5 转不出来 = 简体专用字」——**Big5 自己收录了简体字形**
+> （`iconv` 对「异」返回 `c9dd`，该码位存的是繁体「異」）⇒ 异/据/与/余/卖永远进不了
+> iconv 推导的 notBig5 ⇒ 门抓不到 ⇒ 生成器新增**人工审定的正名单** `BIG5_TRAPS`
+> （★ 与 §414「豁免表要人工负名单」互为镜像）；「与」「余」因出现在 ja-JP 已本地化值里
+> 而**自动**进 `japaneseOk` ⇒ ja-JP 不误报、zh-TW 照抓。★ 已知**未穷尽**（185 候选待人工审定）。
+> ⇒ ★ **两个基线都动了**：`localeValueBaseline.json` 的 `untranslated` **人工显式**重铸
+> （+1 ~ +5，理由写在同文件 `baselineRaiseReason`：引用集扩大 ⇒ 82 个真未翻译值**已补译**，
+> 剩余增量是**合法英文同形**）⇒ ★★ **调高基线的理由必须是「检测器变准」而不是「新增了未翻译内容」**；
+> `sameAsSource` 同步下调（ja-JP 1345→607、zh-TW 2133→1474）。
+> ⇒ ★ **独立复核**：8 语种各 **9410 键零增删 + 占位符零失配 + 8 语种键集合一致**（用
+> `git archive HEAD web/src/locales` 导出 HEAD 侧、**同一个 loader** 加载两边逐键比对）；
+> 7 个 i18n 门全 PASS；`vue-tsc` 0 错；`vitest` 2815 通过 / 2 跳过；`build` ✓ 11.64s。
+> ⇒ ★★ **本轮明确没做（留给下一轮，别重复排查）**：**应用外壳 i18n 化**
+> （`brand.ts` 的 `SITE_TITLE`/`SITE_TITLE_LINE_TWO`、`LoginModal.vue` 的 8 条硬编码、
+> `edition.ts` 的 `LOCAL_OPS_MENU` 7 条接 `labelKey`、`appNav.ts` 的 `label` 兜底收口）
+> ⇒ 涉 80 个新语言包值 + 4 处组件/配置改动 + 一轮独立 A/B ⇒ **整体留给第 10 增量的首个子项**；
+> **字表完整正名单**（185 候选 ⇒ 暴露「繁体化了一半」的半成品族）；**语言包死键**
+> （ja-JP 294 / zh-TW 288 条 ⇒ 实测**源码 0 引用** ⇒ 是**嵌套命名空间重构后遗留的历史键**，
+> 用户看不到 ⇒ 独立的删除型工程）；**后端下发的中文**；**剩余 4758 段硬编码中文**；
+> **扫描器剥注释**（幽灵引用 11 处 / 8 文件）；**移动端 8 语言**。
+> ⇒ 审计档 `docs/audit/2026-10-27-第9增量-属性承载键与运行时拼键引用集盲区.md`；
+> 通用式见 `LESSONS.md` **§415**（通用式一~七）。
 > **2026-10-23 实时拓扑探测打标四处源真值漂移轮 + 口径收敛**（会话
 > `mvs_64ddb526ee11405aae54d67e7c4d6161`）：用户报 154 生产上一条 32-hex
 > 请求 `af1eb6d83ef39610cc4f8be4e181b5a8` "应被识别为探测但实时拓扑 pill = 否"。

@@ -19,7 +19,7 @@
 //
 // ★ 判据（对象化、可移植）：
 //   简体专用字 ≈ 「**Big5 转不出来的汉字**」（繁体有、简体/日文新字体形没有）。
-//   ★ 字表是**入仓的数据资产**（scripts/data/cjk-native-simplified-chars.json），
+//   ★ 字表是**入仓的数据资产**（scripts/cjk-native-simplified-chars.json），
 //     由 scripts/gen-cjk-native-simplified-chars.mjs 一次性推导 ——
 //     门本身不依赖 iconv ⇒ Windows / CI 都能跑。
 //   ★ ja-JP 额外豁免「合法日文新字体」子集（実/処/録/続/検/総…）：
@@ -30,7 +30,9 @@
 //   · unreferenced（未被引用 ⇒ 潜伏）—— **棘轮**：只许降不许升（存量是「共有死键」等历史包袱）
 //
 // ★ 口径自陈：
-//   引用集 = scanner.ts 的字面量 t/tc/$t/i18n.t/te/tm/localeArray + helper 展开；
+//   引用集 = ① scanner.ts 的字面量 t/tc/$t/i18n.t/te/tm/localeArray + helper 展开
+//           ② **属性承载键**（labelKey / titleKey / hintKey，含运行时前缀解析）
+//           ③ **运行时拼键前缀下的键**（`t(\`prefix.${x}\`)` ⇒ 落在 prefix. 下的都算用户可见）
 //   「全量键」= 该语种全部叶子键（**不只被引用的**）—— 这正是原盲区所在。
 // ★★ 误报方向：**宁可漏报不误报**，但 ja-JP 侧是「宁可误报不漏报」——
 //   因为豁免表 japaneseOk 现在是**人工审定的固定数据**（不再随「已翻译值」自动增长），
@@ -50,7 +52,7 @@ const BASELINE_FILE = join(ROOT, 'scripts', 'i18n-cjk-native-simplified-baseline
 
 // ★ 与仓内 localeValueQuality.ts:89 的 CJK_RE 逐字一致（**必须转义写法**：
 //   手打字面量区间极易写歪一个码位 ⇒ 区间跨过代理对区 ⇒ emoji/韩文被误判成汉字）。
-const CJK_RE = /[一-鿿㐀-䶿]/
+const CJK_RE = /[\u4e00-\u9fff\u3400-\u4dbf]/
 
 export function loadCharTables() {
   if (!existsSync(DATA_FILE)) {
@@ -86,9 +88,18 @@ export function simplifiedCharsOf(value, opts) {
 /**
  * 量一个语种的全部叶子键。
  * @param {Map<string,string|null>} values  扁平化的叶子键 → 值
- * @param {Set<string>} refKeys             引用集
+ * @param {Set<string>} refKeys             引用集（字面量 + 属性承载键 + helper 展开）
+ * @param {{locale: string, notBig5: Set<string>, japaneseOk: Set<string>}} opts
+ * @param {string[]} dynPrefixes            **运行时拼键的静态前缀**（如 `dataLifecycle.hotPartition.hotTableNames.`）
+ *
+ * ★★ 为什么要 dynPrefixes（2026-10-27 实测的根因）：
+ *   引用集只含**字面量**调用 ⇒ `t(\`dataLifecycle.hotPartition.hotTableNames.${x}\`)`
+ *   这类**运行时拼键**下的键**全部落进「未引用」桶** ⇒ 而它们**是用户可见的**
+ *   （HotPartitionManager.vue 直接渲染）⇒ 门把用户可见的简体原文判成「潜伏存量」⇒ **硬闸形同虚设**。
+ *   ⇒ 实测：这一族在 zh-TW 有 27 条 / ja-JP 有 39 条用户可见简体残留，门却报「用户可见残留 = 0」。
+ *   ⇒ 故：落在任一动态前缀下的键**一律算 referenced**（宁可严，不可漏）。
  */
-export function scanValues(values, refKeys, opts) {
+export function scanValues(values, refKeys, opts, dynPrefixes = []) {
   const referenced = []
   const unreferenced = []
   for (const [key, value] of values) {
@@ -96,7 +107,8 @@ export function scanValues(values, refKeys, opts) {
     const chars = simplifiedCharsOf(value, opts)
     if (!chars.length) continue
     const rec = { key, value: value.length > 160 ? value.slice(0, 160) + '…' : value, chars: chars.join('') }
-    if (refKeys.has(key)) referenced.push(rec)
+    const isDyn = dynPrefixes.some((p) => key.startsWith(p))
+    if (refKeys.has(key) || isDyn) referenced.push(rec)
     else unreferenced.push(rec)
   }
   return { referenced, unreferenced }
@@ -148,6 +160,48 @@ function selftest() {
     scan.referenced.length === 1 && scan.referenced[0].key === 'a.visible' &&
     scan.unreferenced.length === 1 && scan.unreferenced[0].key === 'b.hidden'
   cases.push({ id: 'S15', desc: 'referenced / unreferenced 分流正确', expected: 'ref=1 unref=1', actual: `ref=${scan.referenced.length} unref=${scan.unreferenced.length}`, ok: scanOk })
+
+  // ★★ 运行时拼键前缀下的键 ⇒ **必须算 referenced**
+  //   背景（2026-10-27 实测）：`t(\`dataLifecycle.hotPartition.hotTableNames.${x}\`)`
+  //   这类调用点里的键**不在字面量引用集** ⇒ 若不算 referenced，用户可见的简体原文
+  //   会被判成「潜伏存量」⇒ **硬闸形同虚设**（实测漏检 39 条）。
+  const dynScan = scanValues(
+    new Map([
+      ['dataLifecycle.hotPartition.hotTableNames.requestLogs', '加载失败'],
+      ['other.hidden', '加载失败'],
+    ]),
+    new Set(),
+    { locale: 'zh-TW', notBig5, japaneseOk },
+    ['dataLifecycle.hotPartition.hotTableNames.'],
+  )
+  const dynOk =
+    dynScan.referenced.length === 1 &&
+    dynScan.referenced[0].key === 'dataLifecycle.hotPartition.hotTableNames.requestLogs' &&
+    dynScan.unreferenced.length === 1 &&
+    dynScan.unreferenced[0].key === 'other.hidden'
+  cases.push({
+    id: 'S15b',
+    desc: '运行时拼键前缀下的键算 referenced（用户可见，不许漏检）',
+    expected: 'ref=1 unref=1',
+    actual: `ref=${dynScan.referenced.length} unref=${dynScan.unreferenced.length}`,
+    ok: dynOk,
+  })
+
+  // ★★ 反向：前缀不匹配时**不得**误判为 referenced（否则潜伏存量会被悄悄洗白）
+  const dynNeg = scanValues(
+    new Map([['other.hidden', '加载失败']]),
+    new Set(),
+    { locale: 'zh-TW', notBig5, japaneseOk },
+    ['dataLifecycle.hotPartition.hotTableNames.'],
+  )
+  const dynNegOk = dynNeg.referenced.length === 0 && dynNeg.unreferenced.length === 1
+  cases.push({
+    id: 'S15c',
+    desc: '前缀不匹配的键仍算 unreferenced（不许把潜伏存量洗白）',
+    expected: 'ref=0 unref=1',
+    actual: `ref=${dynNeg.referenced.length} unref=${dynNeg.unreferenced.length}`,
+    ok: dynNegOk,
+  })
 
   // ⑦ 字表自检：notBig5 不得含 ASCII；japaneseOk 必须是 notBig5 的子集
   const tablesOk = [...notBig5].every((c) => c.codePointAt(0) > 0x2fff) &&
@@ -206,6 +260,22 @@ async function loadScanner() {
   return await import(p)
 }
 
+/**
+ * 取「运行时拼键」的静态前缀集合（如 `dataLifecycle.hotPartition.hotTableNames.`）。
+ * ★ 来自 callSiteParams.ts 的 template 形态调用点 —— 它与 scanner.ts 的字面量引用是**两套**，
+ *   前者只认 `t('字面量')`，后者认 `` t(`前缀.${x}`) `` 的静态前缀部分。
+ */
+async function loadDynamicPrefixes(srcDir) {
+  const p = pathToFileURL(join(ROOT, 'src', 'i18n', 'callSiteParams.ts')).href
+  const mod = await import(p)
+  const { callSites } = mod.scanAllCallSiteKeys(srcDir)
+  const out = new Set()
+  for (const r of callSites) {
+    if (r.keyKind === 'template' && r.keyPrefix) out.add(r.keyPrefix)
+  }
+  return [...out]
+}
+
 function flattenLeaves(obj, prefix, out) {
   for (const [k, v] of Object.entries(obj || {})) {
     const key = prefix ? `${prefix}.${k}` : k
@@ -243,12 +313,14 @@ async function main() {
   const { loadLocale, scanAll } = scanner
   const localesDir = join(ROOT, 'src', 'locales')
   const refKeys = new Set(scanAll(join(ROOT, 'src')).references.map((r) => r.key))
+  // ★ 运行时拼键的静态前缀：落在这些前缀下的键**是用户可见的**，不能算「潜伏」
+  const dynPrefixes = await loadDynamicPrefixes(join(ROOT, 'src'))
 
   const report = { at: new Date().toISOString().slice(0, 10), tablesUpdated: tables.updated, locales: {} }
   for (const loc of TARGET_LOCALES) {
     const values = flattenLeaves(loadLocale(loc, localesDir), '', new Map())
     const opts = { locale: loc, notBig5: tables.notBig5, japaneseOk: tables.japaneseOk }
-    const s = scanValues(values, refKeys, opts)
+    const s = scanValues(values, refKeys, opts, dynPrefixes)
     report.locales[loc] = {
       totalKeys: values.size,
       referenced: s.referenced.length,
@@ -278,7 +350,7 @@ async function main() {
   const baseline = readBaseline()
   const lines = [
     'CJK 原生语种（ja-JP / zh-TW）简体残留',
-    `口径：全量键；简体专用字 = Big5 转不出的汉字（字表 ${tables.updated}）；ja-JP 豁免合法日文新字体`,
+    `口径：全量键；引用集 = 字面量 + 属性承载键 + 运行时拼键前缀；简体专用字 = Big5 转不出的汉字（字表 ${tables.updated}）；ja-JP 豁免合法日文新字体`,
   ]
   let failed = false
   for (const loc of TARGET_LOCALES) {

@@ -39,7 +39,7 @@ export {
 // 类型定义
 // ---------------------------------------------------------------------------
 
-export type CallKind = 't' | 'tc' | '$t' | 'i18n.t' | 'helper'
+export type CallKind = 't' | 'tc' | '$t' | 'i18n.t' | 'helper' | 'key-prop'
 
 export interface KeyReference {
   /** 源文件绝对路径 */
@@ -245,6 +245,32 @@ export function detectHelpers(srcDir: string, srcRoot?: string): HelperMap {
 
 /** 匹配 t('literal') / tc('literal') / $t('literal') / i18n.t('literal') */
 const T_CALL_RE = /\b(\$?t|tc|i18n\.t)\s*\(\s*(['"])([a-zA-Z][a-zA-Z0-9_.\-]*)\2/g
+/**
+ * ★ 匹配「**属性承载**的 i18n 键」：`labelKey: 'nav.item.xxx'` / `titleKey: '…'` / `hintKey: '…'`
+ *
+ * ★★ 为什么必须收进来（2026-10-25 实测，★ 这一族此前**完全隐形**）：
+ *   `navLabel(item.labelKey, …)`（AppTopbar / AppNavDrawer / AppBottomNav）会在运行时取键，
+ *   而 `labelKey` 的值是**配置里的字符串字面量** ⇒ **静态可解析** ⇒ 以前只是没人告诉扫描器。
+ *   ⇒ 后果：这些键**从不进「按源语言生成工单」的那道工序** ⇒ 实测 zh-TW 30 条 / ja-JP 9 条
+ *     在**用户可见的顶栏/侧栏/日期区间**上一直显示中文，而 6 个拉丁语种早已本地化。
+ *   ⇒ ★ 仓内 `localeValueQuality.ts` 把这一族记成「运行时拼键（不可静态解析）」⇒ ★ **但那是过期的定性**：
+ *     真正动态的是 `t('prefix.' + key)`；属性承载的这一族**是静态的**。
+ *
+ * ★ 属性名清单是**证据推导**的，不是泛化 `*Key` 规则 —— 泛化会误吃 `apiKey` / `noKey` /
+ *   `dedup_key` / `copiedFullKey` 这类**业务字段**（它们不是 i18n 键）。
+ *   实测（2026-10-25，全 src 扫描）：承载 i18n 键的属性名**只有 3 个**
+ *   —— `labelKey`(97 去重) / `titleKey`(9) / `hintKey`(4)。
+ */
+const KEY_PROP_RE = /\b(labelKey|titleKey|hintKey)\s*:\s*(['"])([a-zA-Z][a-zA-Z0-9_.\-]*)\2/g
+/**
+ * ★ 「属性承载键 + 运行时前缀」形态：`t(\`sessions.config.${layer.labelKey}\`)`
+ *   ⇒ 此时 `labelKey: 'x'` 里的 `'x'` 是**后缀**，真键是 `<前缀>.x`。
+ *   ⚠️ **不解析前缀就会产生假引用**：把 `promptInjectionFieldBasic` 当成键，
+ *     而真键是 `sessions.config.promptInjectionFieldBasic` ⇒ parity 门会误报 29 处「键缺失」。
+ *   ⇒ 故：命中前缀形态的文件里，属性键一律**加上前缀**再入引用集。
+ *   实测（2026-10-25）：全仓**只有** `components/PromptInjectionConfigPanel.vue` 用这个形态。
+ */
+const PROP_PREFIX_RE = /\b(?:\$?t|tc|i18n\.t)\s*\(\s*`([^`]*?)\$\{[^}]*\b(?:labelKey|hintKey|titleKey)\b[^}]*\}`/g
 /** 匹配 HELPER('literal')（HELPER 在 helperMap 中） */
 function helperCallRe(name: string): RegExp {
   return new RegExp(`\\b${name}\\s*\\(\\s*(['"])([a-zA-Z][a-zA-Z0-9_\\.\\-]*)\\1`, 'g')
@@ -276,7 +302,34 @@ export function scanFile(absFile: string, helpers?: HelperMap): KeyReference[] {
     })
   }
 
-  // 2) 该文件内定义的 helpers
+  // 2) ★ 属性承载的 i18n 键（labelKey / titleKey / hintKey）—— 静态可解析的「运行时拼键」
+  //    ★ 先还原「运行时前缀」形态（t(`prefix.${layer.labelKey}`)）—— 不还原会把后缀当整键。
+  const propPrefixes = new Set<string>()
+  PROP_PREFIX_RE.lastIndex = 0
+  while ((m = PROP_PREFIX_RE.exec(src)) !== null) propPrefixes.add(m[1])
+
+  KEY_PROP_RE.lastIndex = 0
+  while ((m = KEY_PROP_RE.exec(src)) !== null) {
+    const suffix = m[3]
+    const { line, column } = offsetToLineCol(src, m.index)
+    const resolved = propPrefixes.size
+      ? [...propPrefixes].map((p) => `${p}${suffix}`)
+      : [suffix]
+    for (const key of resolved) {
+      out.push({
+        file: absFile,
+        line,
+        column,
+        key,
+        raw: suffix,
+        kind: 'key-prop',
+        helper: m[1],
+        snippet: m[0],
+      })
+    }
+  }
+
+  // 3) 该文件内定义的 helpers
   for (const [name, prefix] of localHelpers) {
     const re = helperCallRe(name)
     re.lastIndex = 0

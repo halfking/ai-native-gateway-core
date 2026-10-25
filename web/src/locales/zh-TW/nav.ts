@@ -10,7 +10,7 @@ export default {
     guide: "接入指南",
     chat: "對話",
     plugins: "外掛",
-    opsplatform: "运维平台"
+    opsplatform: "維運平台"
   },
   item: {
     activateAction: '啟用',
@@ -42,8 +42,8 @@ export default {
     auditLogs: "稽核記錄",
     requestLogs: "請求記錄",
     dispatchWaterfall: "佇列瀑布圖",
-    requestRegistry: "Request Registry",
-    connectionRegistry: "Connection Registry",
+    requestRegistry: "請求註冊表",
+    connectionRegistry: "連線註冊台",
     turns: "輪次列表",
     sessions: "會話清單",
     pluginSessions: "插件會話列表",
@@ -83,11 +83,11 @@ export default {
     opsLicenses: "License 管理",
     opsDownloads: "發布與下載",
     opsFaults: "故障管理",
-    opsAutoUpdate: "自动更新",
-    opsCenter: "中心运维",
+    opsAutoUpdate: "自動更新",
+    opsCenter: "中心維運",
     opsVibeCoding: "VibeCoding",
     opsProductEntry: "產品入口",
-    updateActivate: '更新与激活',
+    updateActivate: '更新與激活',
     // 2026-09-04: 未激活时替换「自动更新」等入口的激活 CTA 文案 (parity backfill)
 
     licenseActivate: '许可激活',
@@ -98,9 +98,9 @@ export default {
 
     licenseAgreement: '用户许可协议',
 
-    licenseOffline: '离线激活',
+    licenseOffline: '離線激活',
 
-    telemetryScope: '数据采集范围',
+    telemetryScope: '資料採集範圍',
     supportDonate: '贊助與捐贈',
   },
 
