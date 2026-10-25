@@ -265,15 +265,16 @@ function latency(value: number | null | undefined): string {
   overflow-y: auto;
 }
 
-/* 行容器（主按钮 + 全页打开 ↗）—— 状态色挂在容器左沿，
-   主按钮本身保持透明（button 嵌 button 不合法，拆成兄弟）。 */
+/* 行容器（主按钮 + 全页打开 ↗）—— 状态色挂在整块 1px 描边上，
+   主按钮本身保持透明（button 嵌 button 不合法，拆成兄弟）。
+   ★ 原来左沿是 3px 粗边（`border-left-width: 3px`），那是 craft-floor
+     硬禁的「卡片单边色条」—— 状态改由整块描边表达。 */
 .cp__row {
   display: flex;
   align-items: stretch;
   gap: 2px;
   margin: 3px 0;
   border: 1px solid transparent;
-  border-left-width: 3px;
   border-radius: 7px;
   background: var(--kx-bg-accent);
 }
@@ -290,10 +291,11 @@ function latency(value: number | null | undefined): string {
   border-color: var(--kx-primary);
 }
 
-/* 探测流量：与普通请求区分开（探针失败不该被当成真实业务故障看） */
+/* 探测流量：与普通请求区分开（探针失败不该被当成真实业务故障看）。
+   原来靠左沿 3px 虚线区分；左沿粗边已移除，改为整块虚线描边。 */
 .cp__row.is-probe {
   opacity: 0.82;
-  border-left-style: dashed;
+  border-style: dashed;
 }
 
 .cp__row:hover,

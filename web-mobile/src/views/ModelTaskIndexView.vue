@@ -251,7 +251,6 @@ onBeforeUnmount(() => {
 }
 .ti__scope {
   border: 1px solid var(--app-warning);
-  border-left-width: 3px;
   border-radius: var(--app-radius);
   background: var(--app-surface);
   padding: var(--app-space-2) var(--app-space-3);
@@ -344,7 +343,6 @@ onBeforeUnmount(() => {
 }
 .ti__await {
   border: 1px solid var(--app-warning);
-  border-left-width: 3px;
   border-radius: var(--app-radius);
   background: var(--app-surface);
   padding: var(--app-space-3);

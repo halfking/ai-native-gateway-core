@@ -192,7 +192,6 @@ function tokens(value: number | null | undefined): string {
   gap: 2px;
   margin: 3px 0;
   border: 1px solid transparent;
-  border-left-width: 3px;
   border-radius: 7px;
   background: var(--kx-bg-accent);
 }
@@ -214,10 +213,11 @@ function tokens(value: number | null | undefined): string {
   border-color: var(--kx-primary);
 }
 
-/* 探测流量：与普通请求区分开（探针失败不该被当成真实业务故障看） */
+/* 探测流量：与普通请求区分开（探针失败不该被当成真实业务故障看）。
+   原来靠左沿 3px 虚线区分；左沿粗边已移除，改为整块虚线描边。 */
 .pp__row.is-probe {
   opacity: 0.82;
-  border-left-style: dashed;
+  border-style: dashed;
 }
 
 .pp__main {
