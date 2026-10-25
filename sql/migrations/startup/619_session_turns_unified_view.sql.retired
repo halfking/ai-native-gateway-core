@@ -1,0 +1,51 @@
+-- 619_session_turns_unified_view —— **已退役**（retired）声明。
+--
+-- ★ 这**不是**一条迁移，也不是 SQL。★ 它是「迁移台账对账门」用的退役留痕。
+--
+-- ── 形态 ─────────────────────────────────────────────────────────────
+-- 619 的 canonical 文件（619_session_turns_unified_view.sql）**已被刻意删掉**，
+-- 但 619 **已经在环境里应用过**（154 / 245 / 252 的 schema_migrations 与
+-- llm_gateway_migration_checksums 里都有它）⇒ **已应用的字节不在工作树里**。
+--
+-- 部署前的台账对账门（共享 deploy-lib 的
+-- `_deploy_migration_checksum_reconcile`）要求：每条「已应用」的迁移，
+-- 仓里都要有**唯一可解析**的 canonical 文件，且它的字节与账本记录的 sha256
+-- 一致。619 的已应用字节不在仓内 ⇒ 对账门过去只能判成
+--   「已应用迁移 version 619 … 无法解析为唯一 canonical 文件，拒绝部署」
+-- ⇒ ⇒ **挡死所有环境的所有部署**，而这与 08-31 那次裁决本身毫无关系。
+--
+-- ── 为什么退役（2026-08-31 ee53680c4，审计 24h-correction-followup §P1-2）──
+-- 619 建的是 `session_turns_unified`：`session_turns_hot` 与 `session_turns`
+-- （列存分区）的 UNION ALL 视图。意图是让应用侧一次读到热区 + 历史，但：
+--   · **0 个生产读者用它** —— 所有 Go 读者（turn_writer / cache_v2 /
+--     admin/session_turns_v2 / admin/turns_sessions / message_source_v2 …）
+--     用的都是 526 建的 `session_turns_with_current_month`，后者带
+--     NOT EXISTS 去重谓词；
+--   · 两个视图对同一种查询模式**语义不同**（619 会把「同时在热区与刚提升的
+--     分区里」的行数两遍）⇒ 是给未来读者埋的双计陷阱。
+-- ⇒ 处置：**删掉 619 的 canonical 文件**（不再在新环境创建这个视图），
+--   并新增 **635** 在已部署环境里 DROP 掉它
+--   （635_drop_session_turns_unified.sql：`DROP VIEW IF EXISTS
+--   public.session_turns_unified`，幂等）。
+--
+-- ★ 为什么 canonical 文件**不许恢复**：
+--   恢复它 = 让这个孤儿视图在新装环境里又被创建出来（635 随后会 DROP，
+--   等于「先造后拆」）⇒ 等于推翻 08-31 那次审计修正的裁决。
+--   ⇒ 本仓的门（见下）把这条钉住：619 的 canonical `.sql` **不许存在**。
+--
+-- ── 这份声明怎么被用 ───────────────────────────────────────────────
+-- 对账门现在认「已退役」这份声明，两条硬边界：
+--   ① **记名必须对得上**：本文件的规范名 = 去掉 `.retired` 后缀 =
+--      `619_session_turns_unified_view.sql` = 154 账本
+--      `llm_gateway_migration_checksums` 里记的 migration_name；
+--   ② **退役说明必须非空**（且含退役关键词）⇒ 不许空壳占位。
+-- ⇒ 两条都满足 ⇒ 对账门**大声记录**「已退役」并跳过 619 的 checksum 校验
+--   （已应用的字节不在仓内，无法比对），**不再拒绝部署**。
+--
+-- 另一种退役形态：`830_ursm_node_snapshot_min_partitioned.sql.skip`
+--   （文件改标 `.sql.skip` 留档；同样是「已应用但已退役」）⇒ 同一个门也认。
+--
+-- ── 相关 ───────────────────────────────────────────────────────────
+--   · 635_drop_session_turns_unified.sql —— 在已部署环境里 DROP 该视图
+--   · ee53680c4 —— 08-31 那次裁决（删 619 的 canonical + 加 635）
+--   · bg/partition_830_contract_test.go —— 830 的退役形态（`.sql.skip`）的门
