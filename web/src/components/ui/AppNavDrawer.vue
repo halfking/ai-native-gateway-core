@@ -16,6 +16,7 @@ import AppDrawer from './AppDrawer.vue'
 import { navDrawerOpen, useAppNav } from '../../composables/useAppNav'
 import { useRequestAnomalyBadge } from '../../composables/useRequestAnomalyBadge'
 import { isNavItemActive } from '../../config/appNav'
+import { CaretBottom } from '@element-plus/icons-vue'
 
 const props = withDefaults(
   defineProps<{
@@ -132,7 +133,7 @@ function itemLabel(item: ResolvedItem): string {
             class="app-nav-drawer__chevron"
             :class="{ 'app-nav-drawer__chevron--open': expanded.has(section.id) }"
             aria-hidden="true"
-          >▾</span>
+          ><CaretBottom /></span>
         </button>
 
         <ul v-show="section.flat || expanded.has(section.id)" class="app-nav-drawer__list" :class="{ 'app-nav-drawer__list--sub': !section.flat }">

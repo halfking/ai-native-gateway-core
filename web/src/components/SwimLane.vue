@@ -16,6 +16,7 @@ import { useRouteIncidents } from '../composables/useRouteIncidents'
 import type { RouteIncident } from '../types/routeIncident'
 import RequestTile from './RequestTile.vue'
 import SwimLaneTrack from './SwimLaneTrack.vue'
+import { Timer } from '@element-plus/icons-vue'
 
 const props = defineProps<{
   lane: SwimLaneType
@@ -232,7 +233,7 @@ watch(laneMode, async () => {
           v-if="showLatency"
           class="swim-lane__stat swim-lane__latency"
           :title="`供应商 HTTP 延时: ${latencyText}`"
-        >⏱{{ latencyText }}</span>
+        ><Timer />{{ latencyText }}</span>
         <button
           v-if="!lane.isOthers || primaryIncident || showEmergencyButton"
           type="button"

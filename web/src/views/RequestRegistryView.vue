@@ -17,6 +17,7 @@
 // 跳；scope=all（super_admin 全局入站）的卡片按 RequestJourneyQueues 同款
 // 规则禁用跳转，避免暴露跨租户详情）。
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
+import { CaretBottom, CaretRight } from '@element-plus/icons-vue'
 import { formatTimeOnly } from '../utils/datetime'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
@@ -512,7 +513,7 @@ function openSearchJourney() {
                     <span v-else>{{ c.request_id }}</span>
                   </span>
                   <span v-if="c.resolved_model" class="reg-card__model">{{ c.resolved_model }}</span>
-                  <span class="reg-card__expand">{{ expandedKeys.has(c.key) ? '▾' : '▸' }}</span>
+                  <span class="reg-card__expand"><CaretBottom v-if="expandedKeys.has(c.key)" /><CaretRight v-else /></span>
                 </div>
                 <div v-if="expandedKeys.has(c.key)" class="reg-card__detail">
                   <div class="reg-detail-row"><span class="reg-detail-label">{{ t('requestRegistry.detail.requestId') }}</span><span>{{ c.request_id }}</span></div>

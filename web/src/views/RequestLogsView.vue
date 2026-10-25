@@ -34,6 +34,7 @@ import { openRequestDetailPage } from '../utils/openRequestDetailPage'
 // 2026-09-13 P5：补齐模板使用的 el-* 组件注册（修复运行时 resolve 失败）
 import KxDateRangePicker from '../components/ui/KxDateRangePicker.vue'
 import type { KxDateRange } from '../components/ui/kx-date-types'
+import { Lightning } from '@element-plus/icons-vue'
 const { isSpanning } = useViewportSegments()
 
 const rows = ref<RequestLogRow[]>([])
@@ -1173,7 +1174,7 @@ onMounted(async () => {
          说明容量吃紧，需要评估调大 LRU 上限。容量分母取后端 cap 字段（audit:
          不硬编码 1024）；无流量时命中率显示 "—" 而非误导性的 0.0%。 -->
     <div v-if="isSuperAdmin() && bodyCache" class="body-cache-strip" :title="bodyCacheTitle">
-      <span class="body-cache-strip__label">⚡ 详情缓存</span>
+      <span class="body-cache-strip__label"><Lightning /> 详情缓存</span>
       <span>命中率 <strong>{{ bodyCacheHitRate }}</strong></span>
       <span>命中 {{ bodyCache.hits }}</span>
       <span>未命中 {{ bodyCache.misses }}</span>

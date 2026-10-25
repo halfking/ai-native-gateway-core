@@ -10,6 +10,7 @@ import {
   type SettingSpec,
 } from '../api'
 import { confirmDialog } from '../composables/useConfirmDialog'
+import { Warning } from '@element-plus/icons-vue'
 
 const { t } = useI18n()
 
@@ -310,7 +311,7 @@ onMounted(() => {
 
         <!-- Tenant-scoped warning -->
         <div v-if="selected.scope === 'tenant'" class="tenant-warning">
-          <div class="warning-icon">⚠️</div>
+          <div class="warning-icon"><Warning /></div>
           <div class="warning-content">
             <strong>租户级配置</strong>
             <p>此设置作用于单个租户，无法在系统级设置。请前往<strong>租户管理</strong>页面为特定租户配置此项。</p>

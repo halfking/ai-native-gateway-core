@@ -15,6 +15,7 @@ import {
   summaryMeta,
   taskLabel,
 } from './turnsListHelpers'
+import { Timer, CaretRight } from '@element-plus/icons-vue'
 
 const props = defineProps<{
   session: TurnsSessionGroup
@@ -69,7 +70,7 @@ function opsForTurn(turnNo: number): SessionChildRequest[] {
     >
       <div class="session-head-line">
         <input type="checkbox" class="sel" :checked="selected" @click.stop @change="emit('select', ($event.target as HTMLInputElement).checked)" />
-        <span class="caret" :class="{ open: expanded }" aria-hidden="true">▸</span>
+        <span class="caret" :class="{ open: expanded }" aria-hidden="true"><CaretRight /></span>
         <span class="status-badge" :data-state="session.status">{{ statusLabel(session.status) }}</span>
         <span class="session-title" :title="sessionTitle(session)">{{ sessionTitle(session) }}</span>
         <span v-if="sessionTopic(session)" class="session-topic" :title="sessionTopic(session)">主题：{{ sessionTopic(session) }}</span>
@@ -143,7 +144,7 @@ function opsForTurn(turnNo: number): SessionChildRequest[] {
             <span class="ts">{{ formatDateTime(turn.ts) }}</span>
             <span v-if="turn.attempt_no" class="mini-badge warn">failover#{{ turn.attempt_no }}</span>
             <span :class="['verdict', `tag-${turn.injection_verdict || 'skip'}`]">inj: {{ turn.injection_verdict || 'skip' }}</span>
-            <span v-if="turn.latency_ms !== undefined" class="ts">⏱ {{ formatMs(turn.latency_ms) }}</span>
+            <span v-if="turn.latency_ms !== undefined" class="ts"><Timer /> {{ formatMs(turn.latency_ms) }}</span>
           </div>
           <div class="preview" :title="turn.title || '(无请求摘要)'">{{ turn.title || '(无请求摘要)' }}</div>
           <div class="badges">

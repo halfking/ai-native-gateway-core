@@ -274,19 +274,19 @@
           </div>
 
           <div class="modal-section">
-            <div class="modal-section-title">① {{ t('dataLifecycle.storageOverview.modal.flow') }}</div>
+            <div class="modal-section-title">{{ t('dataLifecycle.storageOverview.modal.flow') }}</div>
             <div class="modal-section-body">{{ flowText }}</div>
           </div>
           <div class="modal-section" :class="{ 'modal-section-impact': confirmOp.op !== 'VACUUM' }">
-            <div class="modal-section-title">② {{ t('dataLifecycle.storageOverview.modal.impact') }}</div>
+            <div class="modal-section-title">{{ t('dataLifecycle.storageOverview.modal.impact') }}</div>
             <div class="modal-section-body">{{ impactText }}</div>
           </div>
           <div class="modal-section">
-            <div class="modal-section-title">③ {{ t('dataLifecycle.storageOverview.modal.disk') }}</div>
+            <div class="modal-section-title">{{ t('dataLifecycle.storageOverview.modal.disk') }}</div>
             <div class="modal-section-body">{{ diskText }}</div>
           </div>
           <div class="modal-section">
-            <div class="modal-section-title">④ {{ t('dataLifecycle.storageOverview.modal.time') }}</div>
+            <div class="modal-section-title">{{ t('dataLifecycle.storageOverview.modal.time') }}</div>
             <div class="modal-section-body">{{ timeText }}</div>
           </div>
         </div>

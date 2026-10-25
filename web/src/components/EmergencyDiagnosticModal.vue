@@ -8,6 +8,7 @@ import { credentialDisplayName, useCredentialLabels } from '../composables/useCr
 import { confirmDialog } from '../composables/useConfirmDialog'
 import { useI18n } from 'vue-i18n'
 import { formatDateTime } from '../utils/datetime'
+import { Close } from '@element-plus/icons-vue'
 
 const props = defineProps<{
   visible: boolean
@@ -173,7 +174,7 @@ watch(() => props.visible, (visible) => {
     <div class="modal-content">
       <div class="modal-header">
         <h2 class="modal-title">⚠️ 应急诊断</h2>
-        <button class="modal-close" @click="handleClose" title="关闭">✕</button>
+        <button class="modal-close" @click="handleClose" title="关闭"><Close /></button>
       </div>
 
       <div class="modal-body">

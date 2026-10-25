@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { CaretBottom, CaretRight } from '@element-plus/icons-vue'
+import { CaretBottom, CaretRight, CircleClose, CircleCheck, Warning } from '@element-plus/icons-vue'
 import { fmtDateMedium } from '../i18n/useFormat'
 import { useRouter, useRoute } from 'vue-router'
 import { getApprovalDetail, approveApproval, rejectApproval, type ApprovalDetail } from '../api/approval'
@@ -185,13 +185,13 @@ onBeforeUnmount(() => {
 
     <!-- Messages -->
     <div v-if="error" class="message message-error">
-      <span class="message-icon">❌</span>
+      <span class="message-icon"><CircleClose /></span>
       {{ error }}
       <button class="message-close" @click="error = null">×</button>
     </div>
 
     <div v-if="successMessage" class="message message-success">
-      <span class="message-icon">✅</span>
+      <span class="message-icon"><CircleCheck /></span>
       {{ successMessage }}
       <button class="message-close" @click="successMessage = null">×</button>
     </div>
@@ -286,7 +286,7 @@ onBeforeUnmount(() => {
 
         <div class="sensitive-list">
           <div v-for="(item, idx) in approval.detect_result.sensitive_info" :key="idx" class="sensitive-item">
-            <span class="sensitive-icon">⚠️</span>
+            <span class="sensitive-icon"><Warning /></span>
             <span class="sensitive-text">{{ item }}</span>
           </div>
         </div>

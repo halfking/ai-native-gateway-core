@@ -3,7 +3,7 @@ import { ref, computed } from 'vue'
 import type { Approver } from '../api/approval'
 import { confirmDialog } from '../composables/useConfirmDialog'
 import { useI18n } from 'vue-i18n'
-import { Plus, Message, EditPen, Delete } from '@element-plus/icons-vue'
+import { Plus, Message, EditPen, Delete, Close } from '@element-plus/icons-vue'
 
 const props = defineProps<{
   modelValue: Approver[]
@@ -199,7 +199,7 @@ function moveDown(index: number) {
       <div class="dialog">
         <div class="dialog-header">
           <h3>{{ editingIndex !== null ? '编辑审批人' : '添加审批人' }}</h3>
-          <button class="btn-close" @click="showDialog = false">✕</button>
+          <button class="btn-close" @click="showDialog = false"><Close /></button>
         </div>
 
         <div class="dialog-body">

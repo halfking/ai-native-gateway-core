@@ -29,7 +29,7 @@ import EmptyState from '../components/EmptyState.vue'
 import {
   displaySyntheticCredentialModel,
 } from '../composables/useCredentialLabels'
-import { CaretBottom, CaretRight, Setting, Refresh } from '@element-plus/icons-vue'
+import { CaretBottom, CaretRight, Setting, Refresh, CircleCheck, CircleClose } from '@element-plus/icons-vue'
 
 const loading = ref(false)
 const error = ref<string | null>(null)
@@ -586,7 +586,7 @@ const probeSummaryCards = computed(() => {
                 <td>{{ rd.round_index }}</td>
                 <td>{{ rd.is_ping ? 'ping' : rd.is_tool_call ? 'tool' : 'chat' }}</td>
                 <td>{{ fmtMs(rd.latency_ms) }}</td>
-                <td :style="{ color: rd.success ? COLOR.good : COLOR.danger }">{{ rd.success ? '✅' : '❌' }}</td>
+                <td :style="{ color: rd.success ? COLOR.good : COLOR.danger }"><CircleCheck v-if="rd.success" /><CircleClose v-else /></td>
                 <td>{{ rd.http_code || '—' }}</td>
                 <td>{{ rd.total_tokens }}</td>
                 <td class="error-cell">{{ rd.error_message || '—' }}</td>

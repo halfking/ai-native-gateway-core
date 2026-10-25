@@ -16,7 +16,7 @@ import {
   type RequestTrace,
   type TraceEvent,
 } from '../api/trace'
-import { Link, MessageBox, Box, InfoFilled } from '@element-plus/icons-vue'
+import { Link, MessageBox, Box, InfoFilled, Loading, Warning, CaretBottom } from '@element-plus/icons-vue'
 
 const { t } = useI18n()
 
@@ -315,12 +315,12 @@ onUnmounted(() => {
       </div>
 
       <div v-else-if="error === 'not_ready'" class="trace-empty">
-        <div class="empty-icon" aria-hidden="true">⏳</div>
+        <div class="empty-icon" aria-hidden="true"><Loading /></div>
         <h4>链路正在持久化</h4>
         <p>请求日志已生成，但链路事件仍在从 Redis 写入 PostgreSQL，请稍后重试。</p>
       </div>
       <div v-else-if="error === 'unavailable'" class="trace-empty">
-        <div class="empty-icon" aria-hidden="true">⚠</div>
+        <div class="empty-icon" aria-hidden="true"><Warning /></div>
         <h4>链路暂不可用</h4>
         <p>请求记录存在，但当前没有可读取的完整链路数据。</p>
       </div>
@@ -335,7 +335,7 @@ onUnmounted(() => {
         </ul>
       </div>
       <div v-else-if="error" class="trace-error">
-        <span aria-hidden="true">⚠</span>
+        <span aria-hidden="true"><Warning /></span>
         <span>{{ error }}</span>
       </div>
 
@@ -389,13 +389,13 @@ onUnmounted(() => {
               <span class="stage">{{ stageName(ev.stage) }}</span>
               <span class="module">{{ moduleName(ev.module) }}</span>
               <span v-if="ev.duration_ms > 0" class="duration">{{ ev.duration_ms }} ms</span>
-              <span class="caret" :class="{ open: isExpanded(ev.seq) }" aria-hidden="true">▾</span>
+              <span class="caret" :class="{ open: isExpanded(ev.seq) }" aria-hidden="true"><CaretBottom /></span>
             </button>
 
             <div v-if="isExpanded(ev.seq)" class="timeline-body">
               <div class="muted small">{{ fmtTime(ev.timestamp) }}</div>
               <div v-if="ev.error" class="error-line">
-                <span aria-hidden="true">⚠</span>
+                <span aria-hidden="true"><Warning /></span>
                 <span>{{ ev.error }}</span>
               </div>
 

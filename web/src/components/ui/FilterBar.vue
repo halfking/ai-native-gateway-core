@@ -20,6 +20,7 @@ import { useBreakpoint } from '../../composables/useBreakpoint'
 import KxDateRangePicker from './KxDateRangePicker.vue'
 import type { FilterDefinition } from './filter-types'
 import type { KxDateRange } from './kx-date-types'
+import { CaretBottom } from '@element-plus/icons-vue'
 
 const props = defineProps<{
   definitions: FilterDefinition[]
@@ -116,7 +117,7 @@ function onSearch() {
       @click="expanded = !expanded"
     >
       {{ t('common.button.filter') }}（{{ activeCount }}）
-      <span class="filter-bar__chevron" :class="{ 'filter-bar__chevron--open': expanded }" aria-hidden="true">▾</span>
+      <span class="filter-bar__chevron" :class="{ 'filter-bar__chevron--open': expanded }" aria-hidden="true"><CaretBottom /></span>
     </button>
 
     <!-- <768 折叠面板：v-if 销毁/重建（控件值由 v-model 承载，无状态丢失） -->

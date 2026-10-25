@@ -21,6 +21,7 @@ import {
 import ModelOfferDetailDrawer from '../../components/model/ModelOfferDetailDrawer.vue'
 import { confirmDialog } from '../../composables/useConfirmDialog'
 import { sortByName } from '../../utils/sortByName'
+import { CircleCheck } from '@element-plus/icons-vue'
 
 const { t: td } = useI18n()
 const pm = (k: string, params?: Record<string, unknown>): string =>
@@ -541,7 +542,7 @@ load()
         </div>
       </div>
       <div v-if="routingDiagErr" class="alert alert-danger" style="margin-bottom:8px">{{ routingDiagErr }}</div>
-      <div v-if="routingDiagFixed" class="alert alert-success" style="margin-bottom:8px">✅ 修复完成，请观察路由是否恢复</div>
+      <div v-if="routingDiagFixed" class="alert alert-success" style="margin-bottom:8px"><CircleCheck /> 修复完成，请观察路由是否恢复</div>
       <div v-if="routingDiagLoading" class="text-muted">加载中…</div>
       <div v-else-if="!routingDiag" class="text-muted">点击"诊断"查看每个凭据-模型的路由状态</div>
       <div v-else>

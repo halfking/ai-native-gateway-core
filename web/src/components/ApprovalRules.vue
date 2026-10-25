@@ -3,7 +3,7 @@ import { ref, computed } from 'vue'
 import type { ApprovalRule } from '../api/approval'
 import { confirmDialog } from '../composables/useConfirmDialog'
 import { useI18n } from 'vue-i18n'
-import { Plus, Rank, EditPen, Delete } from '@element-plus/icons-vue'
+import { Plus, Rank, EditPen, Delete, Close } from '@element-plus/icons-vue'
 
 const props = defineProps<{
   modelValue: ApprovalRule[]
@@ -237,7 +237,7 @@ function getRiskLevelLabel(level: string): string {
       <div class="dialog dialog-large">
         <div class="dialog-header">
           <h3>{{ editingIndex !== null ? '编辑规则' : '添加规则' }}</h3>
-          <button class="btn-close" @click="showDialog = false">✕</button>
+          <button class="btn-close" @click="showDialog = false"><Close /></button>
         </div>
 
         <div class="dialog-body">
@@ -314,7 +314,7 @@ function getRiskLevelLabel(level: string): string {
                   :disabled="formData.conditions.length === 1"
                   title="删除条件"
                 >
-                  ✕
+                  <Close />
                 </button>
               </div>
 

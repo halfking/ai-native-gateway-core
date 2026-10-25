@@ -5,6 +5,7 @@
 import { ref, computed } from 'vue'
 import { fmtDateTimeShort } from '../i18n/useFormat'
 import type { HotApiKeyEntry, ModelUsage } from '../api'
+import { Close } from '@element-plus/icons-vue'
 
 const props = defineProps<{
   hotKeys: HotApiKeyEntry[]
@@ -75,7 +76,7 @@ defineExpose({ open, close })
                 </button>
               </div>
               <button type="button" class="drawer-close" @click="close" aria-label="关闭">
-                ✕
+                <Close />
               </button>
             </div>
 

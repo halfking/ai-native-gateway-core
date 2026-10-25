@@ -16,7 +16,7 @@ import { createHyperPages } from '../lib/shell/hyper/hyperPages'
 import ResponsiveDataView from '../components/ui/ResponsiveDataView.vue'
 import HyperLoadMore from '../components/ui/HyperLoadMore.vue'
 import type { CardField } from '../components/ui/CardList.vue'
-import { View } from '@element-plus/icons-vue'
+import { View, CircleClose, CircleCheck, Close } from '@element-plus/icons-vue'
 
 const { t } = useI18n()
 const router = useRouter()
@@ -367,13 +367,13 @@ watch([statusFilter, riskLevelFilter, dateRangeStart, dateRangeEnd], () => {
 
     <!-- Messages -->
     <div v-if="error" class="message message-error">
-      <span class="message-icon">❌</span>
+      <span class="message-icon"><CircleClose /></span>
       {{ error }}
       <button class="message-close" @click="clearError">×</button>
     </div>
 
     <div v-if="successMessage" class="message message-success">
-      <span class="message-icon">✅</span>
+      <span class="message-icon"><CircleCheck /></span>
       {{ successMessage }}
       <button class="message-close" @click="clearMessage">×</button>
     </div>
@@ -524,7 +524,7 @@ watch([statusFilter, riskLevelFilter, dateRangeStart, dateRangeEnd], () => {
                   @click="quickReject(item)"
                   :title="t('approval.list.actions.reject')"
                 >
-                  ✕
+                  <Close />
                 </button>
                 <button
                   class="btn btn-secondary btn-xs"

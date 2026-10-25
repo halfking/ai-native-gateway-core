@@ -1,7 +1,7 @@
 <template>
   <div class="hot-partition-manager">
     <div v-if="globalError" class="alert alert-error">
-      <span class="alert-icon">⚠️</span>
+      <span class="alert-icon"><Warning /></span>
       {{ globalError }}
     </div>
 
@@ -340,7 +340,7 @@
         </div>
         <div class="modal-body">
           <div class="warning-box">
-            <div class="warning-icon">⚠️</div>
+            <div class="warning-icon"><Warning /></div>
             <div class="warning-content">
               <p><strong>{{ t('dataLifecycle.hotPartition.deleteModal.warning') }}</strong></p>
               <p>{{ t('dataLifecycle.hotPartition.deleteModal.fields.name') }}：</p>
@@ -394,6 +394,7 @@ import {
   promoteHotTable, dropPartition, listLifecycleJobs, getLifecycleJob,
   type JobRun, type JobStatus,
 } from '@/api/tuning'
+import { Warning } from '@element-plus/icons-vue'
 
 interface HotTable {
   name: string

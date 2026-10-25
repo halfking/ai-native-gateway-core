@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
+import { CaretBottom } from '@element-plus/icons-vue'
 
 export interface AnomalyTypeOption {
   value: string
@@ -73,7 +74,7 @@ function clearValue() {
           title="清空"
           @click.stop="clearValue"
         >×</button>
-        <span class="tp-caret">▾</span>
+        <span class="tp-caret"><CaretBottom /></span>
       </span>
     </button>
 

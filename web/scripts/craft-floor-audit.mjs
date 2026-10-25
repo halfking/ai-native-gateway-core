@@ -138,9 +138,25 @@ const EMOJI_ALLOWED = [
  *     （哪个状态），不是一个通用图标；换成 SVG 反而会把语义变窄。
  *     本仓 29 处这类用法一律不判红 —— 判据只管「图标」，不管「文字标记」。
  */
-const EMOJI_RE = /[\u{1F300}-\u{1FAFF}\u{1F900}-\u{1F9FF}]/gu
+const EMOJI_RE = /[\u{1F300}-\u{1FAFF}\u{1F900}-\u{1F9FF}\u{2705}\u{274C}\u{2B50}\u{26A1}\u{23F3}\u{23F1}\u{1F195}\u{1F18E}]/gu
 const GLYPH_ICON_RE = /[☰➕➖⚙⌄▶⏸⏵⏭⏮✎✏]/gu
 const GLYPH_ICON_SET = '☰➕➖⚙⌄▶⏸⏵⏭⏮✎✏'
+
+/**
+ * dingbat 字形（✕ ▾ ⚠）—— **只在图标位上**判红。
+ *
+ * ★ 为什么不能一刀切：`⚠️ 数据聚合视图未就绪（…）` 里的 ⚠ 是**这句话的一部分**，
+ *   与仓库既有的「✓/✗ 状态文字标记不判红」是同一条线。
+ *   一刀切会把 30 处正常告警文字判红 ⇒ 假红比没门更糟。
+ * ★ 图标位的判据（与 web/scripts/sweep_emoji_icons.py 同一套）：
+ *   ① 所在元素的 class 含 icon / caret / close
+ *   ② 或它是 <button> 且字形是唯一内容（关闭按钮）
+ *   ③ 或它有 aria-hidden 且字形是唯一内容（纯装饰图标位）
+ */
+const DINGBAT_ICON_RE = /[✕▾▴▸⚠]/gu
+const DINGBAT_ICON_SET = '✕ ▾ ▴ ▸ ⚠'
+/** 元素 class 命中即视为图标槽。 */
+const ICON_SLOT_CLASS_RE = /(^|[\s_-])(icon|caret|close)([\s_-]|$)/
 
 /**
  * A. 侧边条 / 圆角上的粗边。
@@ -400,19 +416,81 @@ export function checkEmojiIcons(file, src) {
   const tEnd = src.indexOf('</template>', tStart)
   const region = tStart >= 0 && tEnd > tStart ? src.slice(tStart, tEnd) : src
   const offset = tStart >= 0 ? tStart : 0
+
+  // ★ 插值与属性值里的字形**不是模板的文本节点**：
+  //   · `{{ rd.success ? '✅' : '❌' }}` —— 那是 JS 表达式；
+  //   · `:class="{ error: msg.startsWith('❌') }"` —— 那是属性值，
+  //     而且往往与脚本区的字符串构成**数据协议**
+  //     （`isError ? '❌ ' : '✓ '` 与 `startsWith('❌')` 是一对，
+  //       改一边就断另一边）。
+  //   ⇒ 这两处都不判红。
+  const interpRanges = rangesOf(region, /\{\{[\s\S]*?\}\}/g)
+  const tagRanges = rangesOf(region, /<[A-Za-z][^<>]*>/g)
+  const inRanges = (pos) =>
+    inRange(pos, interpRanges) || inRange(pos, tagRanges)
+
   for (const m of region.matchAll(EMOJI_RE)) {
+    if (inRanges(m.index)) continue
     problems.push({
       file, line: lineOf(src, offset + m.index),
       msg: `emoji 字形「${m[0]}」出现在模板里 —— craft-floor 硬禁「Unicode 字形/emoji 顶替图标系统」；用图标库或手写 SVG`,
     })
   }
   for (const m of region.matchAll(GLYPH_ICON_RE)) {
+    if (inRanges(m.index)) continue
     problems.push({
       file, line: lineOf(src, offset + m.index),
       msg: `功能图标字形「${m[0]}」出现在模板里 —— 扮演图标角色的字形该用图标库或手写 SVG（可用：${GLYPH_ICON_SET}）`,
     })
   }
+  for (const m of region.matchAll(DINGBAT_ICON_RE)) {
+    if (inRanges(m.index)) continue
+    if (!isIconSlot(region, m.index, m[0], tagRanges)) continue
+    problems.push({
+      file, line: lineOf(src, offset + m.index),
+      msg: `dingbat 字形「${m[0]}」占据了图标位 —— craft-floor 硬禁「Unicode 字形顶替图标系统」；用图标库（可用：${DINGBAT_ICON_SET}）`,
+    })
+  }
   return problems
+}
+
+/** 匹配区间 → [start, end, 文本] 列表。 */
+function rangesOf(text, re) {
+  const out = []
+  for (const m of text.matchAll(re)) out.push([m.index, m.index + m[0].length, m[0]])
+  return out
+}
+
+function inRange(pos, ranges) {
+  for (const [a, b] of ranges) if (a <= pos && pos < b) return true
+  return false
+}
+
+/**
+ * 字形是不是处在一个「图标位」上（dingbat 专用）。
+ *   ① 所在元素的 class 含 icon / caret / close
+ *   ② 或它是 <button> 且字形是唯一内容
+ *   ③ 或它有 aria-hidden 且字形是唯一内容
+ */
+function isIconSlot(region, pos, glyph, tagRanges) {
+  let best = null
+  for (const [a, b, text] of tagRanges) {
+    if (b <= pos) best = { end: b, text }
+    else break
+  }
+  if (!best) return false
+  const m = /^<([A-Za-z][\w-]*)([\s\S]*)$/.exec(best.text)
+  if (!m) return false
+  const name = m[1]
+  const attrs = m[2]
+  const cm = /class\s*=\s*(["'])(.*?)\1/s.exec(attrs)
+  if (cm && ICON_SLOT_CLASS_RE.test(cm[2])) return true
+  const nxt = region.indexOf('<', best.end)
+  const content = (nxt > best.end ? region.slice(best.end, nxt) : '').trim()
+  const sole = content === glyph
+  if (name === 'button' && sole) return true
+  if (/aria-hidden/.test(attrs) && sole) return true
+  return false
 }
 
 /**
@@ -630,6 +708,48 @@ const FIXTURES = [
     expect: 'green',
     bad: '<button>{{ ok ? \'✓\' : \'✗\' }}</button>',
     good: '<button>{{ ok ? \'启用\' : \'禁用\' }}</button>',
+    fn: checkEmojiIcons,
+  },
+  {
+    name: 'F emoji 在 {{ }} 表达式里 → 必须判绿（那是 JS，不是模板文本节点）',
+    expect: 'green',
+    bad: '<span>{{ ok ? \'✅\' : \'❌\' }}</span>',
+    good: '<span>{{ ok ? \'A\' : \'B\' }}</span>',
+    fn: checkEmojiIcons,
+  },
+  {
+    name: 'F emoji 在属性值里 → 必须判绿（与脚本区字符串构成数据协议）',
+    expect: 'green',
+    bad: '<div :class="{ error: msg.startsWith(\'❌\') }">x</div>',
+    good: '<div :class="{ error: msg.startsWith(\'X\') }">x</div>',
+    fn: checkEmojiIcons,
+  },
+  {
+    name: 'F dingbat 占据图标位（class 含 icon）→ 必须判红',
+    expect: 'red',
+    bad: '<span class="alert-icon">⚠</span>',
+    good: '<span class="alert-icon"><Warning /></span>',
+    fn: checkEmojiIcons,
+  },
+  {
+    name: 'F dingbat 占据图标位（关闭按钮）→ 必须判红',
+    expect: 'red',
+    bad: '<button class="btn btn-ghost" @click="close">✕</button>',
+    good: '<button class="btn btn-ghost" @click="close"><Close /></button>',
+    fn: checkEmojiIcons,
+  },
+  {
+    name: 'F dingbat 是句子的一部分 → 必须判绿（与 ✓/✗ 同一口径）',
+    expect: 'green',
+    bad: '<p class="error">⚠️ 数据聚合视图未就绪（…），本列表不可作为结论。</p>',
+    good: '<p class="error">数据聚合视图未就绪（…），本列表不可作为结论。</p>',
+    fn: checkEmojiIcons,
+  },
+  {
+    name: 'F dingbat 在带文字的按钮上做前后缀 → 必须判绿',
+    expect: 'green',
+    bad: '<button class="btn btn-ghost">✕ 关闭</button>',
+    good: '<button class="btn btn-ghost">关闭</button>',
     fn: checkEmojiIcons,
   },
   {
