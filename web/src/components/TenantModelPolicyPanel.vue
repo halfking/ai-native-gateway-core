@@ -61,7 +61,7 @@ async function load() {
     policies.value = p.policies
     audit.value = a.audit
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : '加载失败'
+    error.value = e instanceof Error ? e.message : t('tenantModelPolicyPanel.error.loadFailed')
   } finally {
     loading.value = false
   }
@@ -75,7 +75,7 @@ async function runCheck() {
   try {
     addCheckResult.value = await checkTenantModelPolicy(props.tenantCode, { canonical_name: name })
   } catch (e: unknown) {
-    addCheckError.value = e instanceof Error ? e.message : 'check failed'
+    addCheckError.value = e instanceof Error ? e.message : t('tenantModelPolicyPanel.error.checkFailed')
   }
 }
 
@@ -83,7 +83,7 @@ async function submitAdd() {
   const name = addCanonical.value.trim()
   const reason = addReason.value.trim()
   if (!name) {
-    addCheckError.value = 'canonical_name 必填'
+    addCheckError.value = t('tenantModelPolicyPanel.error.canonicalNameRequired')
     return
   }
   submitting.value = true
@@ -96,19 +96,19 @@ async function submitAdd() {
     addCheckResult.value = null
     await load()
   } catch (e: unknown) {
-    addCheckError.value = e instanceof Error ? e.message : '创建失败'
+    addCheckError.value = e instanceof Error ? e.message : t('tenantModelPolicyPanel.error.createFailed')
   } finally {
     submitting.value = false
   }
 }
 
 async function softDelete(p: TenantModelPolicy) {
-  if (!(await confirmDialog(t('tenantModelPolicyPanel.softDeleteConfirm', { name: p.canonical_name })))) return
+  if (!(await confirmDialog(t('tenantModelPolicyPanel.confirm.softDelete', { name: p.canonical_name })))) return
   try {
     await deleteTenantModelPolicy(props.tenantCode, p.id)
     await load()
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : '删除失败'
+    error.value = e instanceof Error ? e.message : t('tenantModelPolicyPanel.error.deleteFailed')
   }
 }
 
@@ -117,7 +117,7 @@ async function restore(p: TenantModelPolicy) {
     await undeleteTenantModelPolicy(props.tenantCode, p.id)
     await load()
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : '恢复失败'
+    error.value = e instanceof Error ? e.message : t('tenantModelPolicyPanel.error.restoreFailed')
   }
 }
 
@@ -127,10 +127,10 @@ function fmtTime(s: string | null) {
 
 function actionLabel(a: string) {
   switch (a) {
-    case 'insert': return '创建'
-    case 'update': return '修改'
-    case 'delete': return '软删除'
-    case 'undelete': return '恢复'
+    case 'insert': return t('tenantModelPolicyPanel.audit.actionLabels.insert')
+    case 'update': return t('tenantModelPolicyPanel.audit.actionLabels.update')
+    case 'delete': return t('tenantModelPolicyPanel.audit.actionLabels.delete')
+    case 'undelete': return t('tenantModelPolicyPanel.audit.actionLabels.undelete')
     default: return a
   }
 }
@@ -142,36 +142,35 @@ onMounted(load)
   <div class="model-policy-panel">
     <div class="panel-header">
       <div>
-        <h3>模型管控 (Tenant: {{ tenantCode }})</h3>
+        <h3>{{ t('tenantModelPolicyPanel.title') }} (Tenant: {{ tenantCode }})</h3>
         <p class="hint">
-          在此配置的模型将被该租户下的所有 API key 拒绝（403 model_forbidden）。
-          空表 = 该租户无限制（默认）。model="auto" 路径不纳入管控。
+          {{ t('tenantModelPolicyPanel.hint') }}
         </p>
       </div>
       <div class="actions">
         <label class="cb">
           <input type="checkbox" v-model="includeDeleted" @change="load" />
-          显示已删除
+          {{ t('tenantModelPolicyPanel.showDeleted') }}
         </label>
-        <button class="btn btn-primary" @click="showAddDialog = true">+ 添加禁用模型</button>
+        <button class="btn btn-primary" @click="showAddDialog = true">{{ t('tenantModelPolicyPanel.addButton') }}</button>
       </div>
     </div>
 
     <div v-if="error" class="alert alert-danger">{{ error }}</div>
 
-    <div v-if="loading" class="loading">加载中…</div>
+    <div v-if="loading" class="loading">{{ t('tenantModelPolicyPanel.loading') }}</div>
 
     <div v-else style="overflow-x:auto">
       <table class="table" style="width:100%">
 
         <thead>
           <tr>
-            <th>canonical_name</th>
-            <th>reason</th>
-            <th>created_by</th>
-            <th>created_at</th>
-            <th>deleted_at</th>
-            <th>操作</th>
+            <th>{{ t('tenantModelPolicyPanel.table.canonicalName') }}</th>
+            <th>{{ t('tenantModelPolicyPanel.table.reason') }}</th>
+            <th>{{ t('tenantModelPolicyPanel.table.createdBy') }}</th>
+            <th>{{ t('tenantModelPolicyPanel.table.createdAt') }}</th>
+            <th>{{ t('tenantModelPolicyPanel.table.deletedAt') }}</th>
+            <th>{{ t('tenantModelPolicyPanel.table.actions') }}</th>
           </tr>
         </thead>
         <tbody>
@@ -182,13 +181,13 @@ onMounted(load)
             <td class="mono">{{ fmtTime(p.created_at) }}</td>
             <td class="mono">{{ fmtTime(p.deleted_at) }}</td>
             <td>
-              <button v-if="!p.deleted_at" class="btn btn-sm btn-danger" @click="softDelete(p)">软删除</button>
-              <button v-else class="btn btn-sm" @click="restore(p)">恢复</button>
+              <button v-if="!p.deleted_at" class="btn btn-sm btn-danger" @click="softDelete(p)">{{ t('tenantModelPolicyPanel.actions.softDelete') }}</button>
+              <button v-else class="btn btn-sm" @click="restore(p)">{{ t('tenantModelPolicyPanel.actions.restore') }}</button>
             </td>
           </tr>
           <tr v-if="policies.length === 0">
             <td colspan="6" style="text-align:center; color: var(--muted); padding: 24px">
-              无策略（默认所有模型允许）
+              {{ t('tenantModelPolicyPanel.empty') }}
             </td>
           </tr>
         </tbody>
@@ -197,17 +196,17 @@ onMounted(load)
     </div>
 
     <details class="audit-section" v-if="audit.length > 0">
-      <summary>审计日志 (最近 {{ audit.length }} 条)</summary>
+      <summary>{{ t('tenantModelPolicyPanel.audit.title') }} ({{ t('tenantModelPolicyPanel.audit.recent', { count: audit.length }) }})</summary>
       <div style="overflow-x:auto">
         <table class="table" style="width:100%; margin-top: 8px">
 
           <thead>
             <tr>
-              <th>ts</th>
-              <th>action</th>
-              <th>canonical_name</th>
-              <th>actor</th>
-              <th>reason</th>
+              <th>{{ t('tenantModelPolicyPanel.audit.headers.ts') }}</th>
+              <th>{{ t('tenantModelPolicyPanel.audit.headers.action') }}</th>
+              <th>{{ t('tenantModelPolicyPanel.audit.headers.canonicalName') }}</th>
+              <th>{{ t('tenantModelPolicyPanel.audit.headers.actor') }}</th>
+              <th>{{ t('tenantModelPolicyPanel.audit.headers.reason') }}</th>
             </tr>
           </thead>
           <tbody>
@@ -227,27 +226,30 @@ onMounted(load)
     <!-- Add dialog -->
     <div v-if="showAddDialog" class="modal-overlay" @click.self="showAddDialog = false">
       <div class="modal">
-        <h3>添加禁用模型</h3>
-        <p class="hint">在下方输入 canonical_name（必须匹配 models_canonical 表）。</p>
+        <h3>{{ t('tenantModelPolicyPanel.dialog.title') }}</h3>
+        <p class="hint">{{ t('tenantModelPolicyPanel.dialog.hint') }}</p>
         <div class="form-row">
-          <label>canonical_name</label>
-          <input v-model="addCanonical" placeholder="例如 minimax-m3" @blur="runCheck" />
-          <button class="btn btn-sm" @click="runCheck" :disabled="!addCanonical">校验</button>
+          <label>{{ t('tenantModelPolicyPanel.dialog.canonicalName') }}</label>
+          <input v-model="addCanonical" :placeholder="t('tenantModelPolicyPanel.dialog.canonicalNamePlaceholder')" @blur="runCheck" />
+          <button class="btn btn-sm" @click="runCheck" :disabled="!addCanonical">{{ t('tenantModelPolicyPanel.dialog.checkButton') }}</button>
         </div>
         <div v-if="addCheckResult" class="check-result">
           {{ addCheckResult.exists
-            ? `✓ 找到于 models_canonical（family=${addCheckResult.family || '?'}, modality=${addCheckResult.modality || '?'}）`
-            : '⚠ 该 canonical_name 不在 models_canonical（仍允许写入，防御性管控）' }}
+            ? t('tenantModelPolicyPanel.dialog.checkSuccess', {
+                family: addCheckResult.family || '?',
+                modality: addCheckResult.modality || '?',
+              })
+            : t('tenantModelPolicyPanel.dialog.checkWarning') }}
         </div>
         <div v-if="addCheckError" class="alert alert-danger">{{ addCheckError }}</div>
         <div class="form-row">
-          <label>reason</label>
-          <input v-model="addReason" placeholder="可选，例如 成本控制" />
+          <label>{{ t('tenantModelPolicyPanel.dialog.reason') }}</label>
+          <input v-model="addReason" :placeholder="t('tenantModelPolicyPanel.dialog.reasonPlaceholder')" />
         </div>
         <div class="modal-actions">
-          <button class="btn" @click="showAddDialog = false">取消</button>
+          <button class="btn" @click="showAddDialog = false">{{ t('tenantModelPolicyPanel.dialog.cancel') }}</button>
           <button class="btn btn-primary" :disabled="submitting" @click="submitAdd">
-            {{ submitting ? '提交中…' : '提交' }}
+            {{ submitting ? t('tenantModelPolicyPanel.dialog.submitting') : t('tenantModelPolicyPanel.dialog.submit') }}
           </button>
         </div>
       </div>

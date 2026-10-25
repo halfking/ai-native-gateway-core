@@ -61,10 +61,10 @@ export default {
 
   error: {
     loadFailed: '載入失敗',
+    checkFailed: '校驗失敗',
     canonicalNameRequired: 'canonical_name 必填',
     createFailed: '建立失敗',
     deleteFailed: '刪除失敗',
     restoreFailed: '復原失敗',
   },
-  softDeleteConfirm: '確認軟刪除策略 {name}？(可復原)',
 }

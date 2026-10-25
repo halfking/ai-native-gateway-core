@@ -10,7 +10,7 @@
 // We map reference codes → current codes in LAZY_LOADERS to match existing localStorage keys.
 
 import { createI18n } from 'vue-i18n'
-import type { Ref } from 'vue'
+import { computed, type ComputedRef, type Ref } from 'vue'
 import zhCN from './locales/zh-CN'
 import enUS from './locales/en-US'
 import { usePersistedValue } from './composables/usePersistedValue'
@@ -148,6 +148,42 @@ export const languages = [
 
 // Reactive locale ref for callers (ProvidersView, useFormat.ts, etc.)
 export const localeRef = i18n.global.locale as unknown as Ref<string>
+
+/**
+ * 取**数组型**语言包键的原始值。
+ *
+ * ⚠ **为什么需要它**：vue-i18n 9 的 `t()` **不支持数组型消息**。
+ *   实测（vue-i18n 9.14.5，仓内自建最小复现）：
+ *     t(<policy.tableHeaders>) → 返回的是**键路径字符串** "policy.tableHeaders"，不是那个数组；
+ *     t(<policy.title>)        → 正常返回译文。
+ *   ★ 注释里写键名时**不要写成字面量调用形式**：引用扫描器不剥注释 ⇒
+ *     `t(<x.y>)` 会被当成**真实引用**（实测：一次注释里的 4 个例子让 i18n-audit 报「缺 4 个键」）。
+ *   ⇒ 模板里若 `v-for="x in t(<some.arrayKey>)"` ⇒ 会把**键名逐字符**渲染出来
+ *     （浏览器实测：表头单元格内容是 r/o/u/t/i/n/g/…）。
+ *   ⇒ 数组型键**不能经 t() 消费**，只能从消息树里直接取。
+ *
+ * ⚠ 这条结论推翻了 src/i18n/scanner.ts 里「vue-i18n 允许 t(<path>) 返回整个数组供 v-for 渲染」的注释
+ *   —— 那条注释是**错的**，且它曾直接导致一次「接线把键名渲染上屏」的回归。
+ *   ⇒ 数组型键的用法由 scripts/i18n-array-key-guard.mjs 把关（见该脚本的 --selftest）。
+ *
+ * 用法：`const steps = localeArray('modulesView.integration.feishuSteps')`（返回 ComputedRef<string[]>）
+ *      模板里直接 `v-for="s in steps"`。
+ *
+ * 兜底：当前语种取不到时按 i18n 的 fallbackLocale（'en'）再取一次 ⇒ 与 t() 的兜底语义一致。
+ */
+export function localeArray<T extends string[] = string[]>(key: string): ComputedRef<T> {
+  return computed(() => {
+    for (const code of [localeRef.value, 'en']) {
+      const root = i18n.global.getLocaleMessage(code) as Record<string, unknown> | undefined
+      let cur: unknown = root
+      for (const seg of key.split('.')) {
+        cur = (cur as Record<string, unknown> | undefined)?.[seg]
+      }
+      if (Array.isArray(cur)) return cur as T
+    }
+    return [] as unknown as T
+  })
+}
 
 // Apply <html lang/dir> immediately so first paint (incl. login) is correct
 applyDocumentLocale(detectInitialLocale())

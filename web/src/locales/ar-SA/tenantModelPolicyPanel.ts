@@ -61,10 +61,10 @@ export default {
 
   error: {
     loadFailed: 'فشل التحميل',
+    checkFailed: 'فشل التحقق',
     canonicalNameRequired: 'canonical_name مطلوب',
     createFailed: 'فشل الإنشاء',
     deleteFailed: 'فشل الحذف',
     restoreFailed: 'فشلت الاستعادة',
   },
-  softDeleteConfirm: 'حذف مبدئي للسياسة {name}؟ (قابل للاستعادة)',
 }

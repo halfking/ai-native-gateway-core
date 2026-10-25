@@ -169,8 +169,11 @@ let cachedModules: Map<string, Record<string, unknown>> | null = null
  *
  * ⚠️ **R56 轮增补的第三道门需要的是「键集合」而不是「值表」**：
  *   键集合的口径**必须与 scanner.ts 的 `collectLeafKeys` 一致**
- *   （数组也算一个键 —— vue-i18n 允许 `t('path')` 返回整个数组供 `v-for` 渲染；
- *   实测 `modulesView.integration.feishuSteps` 就是这种形态）。
+ *   （数组也算一个键 —— 它在**键存在性**上确实是一个键；
+ *   ⚠️ 但 vue-i18n 9 的 `t()` **不支持数组型消息**：实测 `t(<policy.tableHeaders>)`
+ *   返回的是**键路径字符串** ⇒ 数组键不能经 t() 消费（须走 `localeArray()`），
+ *   另由 `scripts/i18n-array-key-guard.mjs` 把关；
+ *   ⚠️ 且数组**没有值级指标覆盖**（collectLeafValues 只收字符串）⇒ 短列表宜用标量键）。
  *   ⇒ 若用 `collectLeafValues`（只收字符串）算键集合 ⇒ **口径比 scanner.ts 窄**
  *   ⇒ 会把「数组型键」误判成「该语种缺这个键」（R56 实测：3 个键被误报成「8 语种全缺」）。
  *   ⇒ ★ 这就是「两套量具互相抵消比一个明显错的量具更危险」的实例：
