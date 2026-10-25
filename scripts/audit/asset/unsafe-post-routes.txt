@@ -1,0 +1,26 @@
+# unsafe-post-routes.txt —— ★★ 「空 body 的 POST 会【真的写库】」的路由（★ 排除清单）
+#
+# ★ 本文件是 scripts/audit/post-surface-probe.sh 的**排除清单**（★ 与 safe-post-routes.txt 方向相反）。
+# ★ 列入本文件的路由 = ★★ **已被【源码级确证】**：★ 空 body 的 POST ⇒ ★★ **它真的改了库**。
+# ⇒ ⇒ ★★ 因此它们 **绝不参与批量探测**（★ 批量探测会把它们当作「安全」⇒ ★★ 于是污染数据）。
+#
+# ★★★★ ★★ **收录标准（★ 必须满足【源码级确证】，★ 不能只靠「护栏报了 delta」）** ——
+# ★★ R159 轮实测：★ 逐条护栏（★ 请求返回后立刻核对行数）**能把 delta 归因到具体路由**，
+# ★★ **但那个归因是错的**：★ 写入是【队列异步】的 ⇒ ★★ **观测时刻与写入时刻有偏移**
+# ★★ ⇒ ★★ **⇒ 归因只能靠【差分实验】（★ 排除一个，再测一次）**，★ 不能靠「护栏当时报了谁」。
+# ★★ ⇒ ★★★ **实测反证**：★ 曾被护栏归因的两条路由，★ 它们的空 body 实测返回 **404 / 405**
+# ★★ （★ **压根没执行**）⇒ ★★★ **⇒ 那次归因彻底作废。**
+#
+# ★★★ ★★ **本文件里的每一条，都附了【源码级机理】** ⇒ ★★ 可人工复核，★ 不依赖任何一次读数。
+#
+# 路由 <TAB> 静态分级 <TAB> 体校验 <TAB> 证据来源（★ 源码级机理）
+#
+# ★★★ A 类：**同步落库**（★ handler 自己写库 ⇒ 逐条护栏应当能抓到 ⇒ ★★ 归因可信）
+/api/telemetry/decision-log	read	r.Body	★ 源码级：admin/telemetry.go:591-599 ⇒ `ingester == nil` 时走 `else if h.db != nil` ⇒ ★★ **直接写库**（★ 空 body ⇒ 一个全零 decision_log 入库）
+#
+# ★★★ B 类：**异步入队**（★ handler 只入队 ⇒ ★★ 落库发生在【消费端】⇒ ★★ 归因必然有时间偏移）
+/api/telemetry/request-log	read	r.Body	★ 源码级：admin/telemetry.go:662-667 ⇒ `ingester.queue <- &entry`（★ 空 body ⇒ 一个全零 request_log 入队）⇒ ★★ 消费端落库 ⇒ ★★ **钩子 `sessionv2mirror.PersistHook`（★ cmd/gateway/main.go:2889）再写 session_turns + session_dim + session_summaries**
+#
+# ★★★ C 类：**空 body 不写**（★ 留档以防后人误判）
+# ★ `/api/telemetry/batch` —— ★★ 空 body ⇒ `entries` 为空 ⇒ ★★ **零条目 ⇒ 不写**
+# ★ ⇒ ★★ **它不在本清单里**（★ R159 第一版误列 ⇒ ★★ 已按实测移除）
