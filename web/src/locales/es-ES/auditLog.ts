@@ -14,16 +14,9 @@ export default {
   filter: {
     actorLabel: 'Actor',
     actorPlaceholder: 'Coincidencia parcial por usuario',
-    actorAria: 'Filtro de actor',
     actionLabel: 'Acción',
     actionPlaceholder: 'p. ej. user.* o auth.*',
-    actionAria: 'Filtro de acción',
     fromLabel: 'Desde',
-    fromAria: 'Hora de inicio',
-    toLabel: 'Hasta',
-    toAria: 'Hora de fin',
-    query: 'Buscar',
-    reset: 'Restablecer',
   },
   table: {
     headers: {
@@ -33,14 +26,6 @@ export default {
       target: 'Objetivo',
       details: 'Detalles',
     },
-  },
-  pagination: {
-    total: '{n} entradas',
-    pageOf: '· Página {page} / {total}',
-    perPage: 'Por página',
-    previous: 'Anterior',
-    next: 'Siguiente',
-    dash: '—',
   },
   detail: {
     titleWithId: 'Detalle de auditoría #{id}',
@@ -67,13 +52,8 @@ export default {
     'authentication.login_failed': 'Error de inicio de sesión',
     'authentication.logout': 'Cierre de sesión',
   },
-  errors: {
-    loadFailed: 'Error al cargar',
-  },
 
   // 扁平键（供 Vue 组件直接使用）
   loadFailed: 'Error al cargar',
   dash: '—',
-  refreshing: 'Refreshing…',
-  refresh: 'Refresh',
 }

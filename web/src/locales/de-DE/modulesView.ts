@@ -35,21 +35,16 @@ export default {
     config: 'Konfiguration',
     integration: 'Integration',
     status: 'Laufzeit',
-    routing: 'Routing',
   },
 
   overview: {
     sectionDescription: 'Beschreibung',
     sectionCapabilities: 'Funktionen',
-    sectionRequirements: 'Abhängigkeiten',
     labelKey: 'Modulschlüssel',
     labelDanger: 'Gefahrenstufe',
     labelConfigCount: 'Konfigurationselemente',
     labelStatus: 'Aktueller Status',
     viewAllSettings: 'Alle Systemeinstellungen anzeigen',
-    requirementsMet: 'Alle Abhängigkeiten aktiviert',
-    requirementsMissing: 'Die folgenden Abhängigkeiten sind deaktiviert. Zugehörige Funktionen sind möglicherweise eingeschränkt:',
-    jumpToModule: 'Konfigurieren',
     testConnection: 'Verbindung testen',
     testSuccess: 'Verbindungstest erfolgreich',
     testFailed: 'Verbindungstest fehlgeschlagen',
@@ -92,12 +87,6 @@ export default {
 
   feishu: {
     connectionHint: 'Erstellen Sie einen benutzerdefinierten Bot auf der Feishu Open Platform und fügen Sie die Webhook-URL unten ein.',
-    callbackUrlLabel: 'Callback-URL (im Feishu-Bot-Backend konfigurieren)',
-    callbackUrlHelp: 'Fügen Sie diese URL in die Feishu-Bot-Callback-Konfiguration ein, um Genehmigungsaktionen zu empfangen.',
-    whitelistHelp: 'OpenIDs, die Befehle ausführen dürfen (durch Kommas getrennt). Leer = commands.admin_only entscheidet.',
-    quietHoursHelp: 'Während der Ruhezeiten werden nur kritische Alarme gepusht (vermeidet nächtliche Störungen). Übernacht-Zeiträume (22:00 → 08:00) werden unterstützt.',
-    commandsHelp: 'Wenn aktiviert, können Administratoren über Feishu-Befehle (/status /help /stats /audit /test) mit dem System interagieren.',
-    signatureHelp: 'In Produktion immer aktivieren. Aktiviert erfordert Feishu-Callbacks eine gültige HMAC-SHA256-Signatur und einen Zeitstempel im Fenster.',
   },
 
   handoff: {
@@ -149,31 +138,6 @@ export default {
     selectModule: 'Wählen Sie ein Modul aus, um Details und Konfiguration anzuzeigen',
   },
 
-  routing: {
-    title: 'Feishu-Routing-Regeln',
-    addNew: 'Neu hinzufügen',
-    cancel: 'Abbrechen',
-    save: 'Speichern',
-    formTitle: 'Neue Feishu OpenID-Regel',
-    openId: 'Feishu OpenID',
-    openIdPlaceholder: 'ou_xxxxxxxx',
-    displayName: 'Anzeigename',
-    userRole: 'Benutzerrolle',
-    priority: 'Priorität',
-    note: 'Notiz',
-    enabled: 'Aktiviert',
-    riskLevels: 'Risikostufen',
-    actions: 'Aktionen',
-    enable: 'Aktivieren',
-    disable: 'Deaktivieren',
-    delete: 'Löschen',
-    loading: 'Wird geladen…',
-    importCsv: 'CSV-Sammelimport',
-    close: 'Schließen',
-    csvImportResult: 'Ergebnis des Sammelimports',
-    csvImportSuccess: '{imported} importiert, {skipped} übersprungen',
-    csvErrorRow: 'Zeile {row}: {error}',
-  },
 
   error: {
     loadFailed: 'Fehler beim Laden der Modulliste',

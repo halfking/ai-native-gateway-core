@@ -12,8 +12,6 @@ export default {
   // 只在 PublicPageShell 頁腳用到（品牌名 + 本項），已不再作為標題上方的小標籤渲染。
   kicker: 'Apache 2.0 開源核心',
   brandTitle: 'AI-Native 組織核心閘道',
-  brandSubtitle: '開軒啟圭：私有化部署',
-  // 標題不重複產品名（上面品牌區塊已經寫了），改成一句說清這產品幹什麼的話。
   title: '把公司裡所有的大模型呼叫，收進一個能管、能查、能關的入口',
   subtitle:
     'OpenAI、Anthropic、Responses 三套協定接進同一個閘道，依租戶與模型選路，計費、稽核、限流都在這一處。部署在你自己的機器上，資料不出門。',
@@ -85,7 +83,6 @@ export default {
     },
   },
   footer: '核心採 Apache 2.0 授權開源，部署在你自己的機器上。',
-  ariaPoints: '核心功能',
   roadmap: {
     title: '產品演進路線',
     subtitle: '從 LLM 資料面走到企業 Agent 閘道',
@@ -109,51 +106,6 @@ export default {
       title: '產業方案正式版',
       description: '客服、人資、銷售、物流四套範本，裝上就能用。',
     },
-  },
-  activateBanner: {
-    title: '閘道尚未啟用',
-    desc: '這個執行個體上沒有有效的 License。開啟啟用精靈，可以線上啟用，也可以走離線流程。',
-    action: '立即啟用',
-  },
-  downloadCta: {
-    title: '私有部署，五分鐘裝完',
-    subtitle: '各平台都有離線安裝包，不用註冊就能下載。裝好之後免費試用 15 天。',
-    download: '立即下載',
-    support: '支持我們',
-    activate: '已經裝好了？去啟用',
-    note: '捐贈自願，給不給都不影響下載與功能。',
-  },
-  deployFlow: {
-    title: '下載，安裝，啟用，登入',
-    subtitle: '私有部署的完整流程，啟用精靈就在同一條路上',
-    steps: {
-      download: {
-        title: '下載離線安裝包',
-        description: '依平台與架構選 tar.gz 或安裝程式，不用註冊，下載連結限時有效。',
-        action: '前往下載頁',
-      },
-      install: {
-        title: '裝到目標機器上',
-        description: '解壓縮後在伺服器上執行安裝程式，k3s 或 Docker 都能裝，順便把基礎設定寫好。',
-        hint: 'llm-gw-installer install --target /opt/kx-gateway',
-      },
-      activate: {
-        title: '啟用 License',
-        description: '有網路就輸入 License Key；離線就走 activation.req → activation.resp。先有 15 天試用。',
-        action: '開啟啟用精靈',
-        offlineAction: '離線啟用入口',
-      },
-      login: {
-        title: '登入控制台',
-        description: '啟用完用管理員帳號登入，租戶、路由、可觀測都在裡面。',
-        action: '登入控制面',
-      },
-    },
-    notes: [
-      '下載與捐贈是分開的，跳過捐贈一樣能用全部功能',
-      '離線環境用「離線啟用入口」提交 activation.req',
-      '啟用精靈在 /activate，與安裝程式 CLI 指令互通',
-    ],
   },
   // 2026-07-21: guest-nav aria + 頂部 7 個下載/啟用連結（App.vue L197-203）。
   guestNavAria: '產品導覽',

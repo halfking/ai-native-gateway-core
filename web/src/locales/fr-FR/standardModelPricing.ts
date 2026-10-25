@@ -21,23 +21,14 @@ export default {
     currencyDisplay: 'Devise d\'affichage',
     save: 'Enregistrer les paramètres globaux',
     saving: 'Enregistrement…',
-    saved: 'Base globale enregistrée (n\'affecte que les dimensions non manuelles)',
     effective: 'Effectif ≈ {value} (remise incluse)',
   },
   filter: {
-    title: 'Tarification: filtre de modèle',
-    placeholder: 'Rechercher des modèles standard…',
-    allPricing: 'Toutes les tarifications',
-    defaultOnly: 'Base globale uniquement',
-    customOnly: 'Avec tarification manuelle',
-    partialOnly: 'Partiellement manuel',
-    otherVendor: 'Autre',
     summary: 'Manuel {custom}: Global {defaults} / {total}',
   },
   table: {
     colModel: 'Modèle standard',
     colStatus: 'Statut',
-    colActions: '',
     edit: 'Tarification',
     reset: 'Réinitialiser',
     empty: 'Aucun modèle',
@@ -75,37 +66,22 @@ export default {
     saving: 'Enregistrement…',
     fillGlobal: 'Remplir avec la valeur globale actuelle',
     cancel: 'Annuler',
-    needOneManual: 'Veuillez cocher au moins une dimension « tarification manuelle »',
     resetConfirm: 'Réinitialiser toutes les dimensions de {name} à la base globale ?',
-    resetSuccess: 'Réinitialisé',
-    resetFailed: 'Échec de la réinitialisation',
 
     sectionText: 'Text-token dimensions',
 
     sectionMultimodal: 'Dimensions de jetons multimodaux (vision / audio / vidéo)',
 
-    fieldImage: 'Vision tokens',
 
-    fieldAudio: 'Audio tokens',
 
-    fieldVideo: 'Video tokens',
   },
   field: {
-    input: 'Entrée',
-    output: 'Sortie',
-    cacheRead: 'Lecture cache',
-    cacheWrite: 'Écriture cache',
 
     image: 'Vision',
 
     audio: 'Audio',
 
     video: 'Video',
-  },
-  error: {
-    loadFailed: 'Échec du chargement',
-    saveFailed: 'Échec de l\'enregistrement',
-    resetFailed: 'Échec de la réinitialisation',
   },
 
   // 扁平键（供 Vue 组件直接使用）
@@ -122,10 +98,6 @@ export default {
   output: 'Sortie',
   cacheRead: 'Lecture cache',
   cacheWrite: 'Écriture cache',
-  refreshLoading: 'Chargement…',
-  refresh: 'Actualiser',
-  saving: 'Enregistrement…',
-  save: 'Enregistrer',
 
   batch: {
     selected: '{n} sélectionnés',

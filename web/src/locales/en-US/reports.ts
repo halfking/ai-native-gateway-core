@@ -38,47 +38,18 @@ export default {
   date: 'Date',
   success: 'Success',
   errors: 'Failures',
-  cost: 'Cost',
-  errorBreakdown: 'Error breakdown',
   qualityScore: 'Quality score',
   // ── 2026-09-29 multi-dimensional filter round ──────────────────────────
   // Filter bar
   filters: 'Filters',
   all: 'All',
-  activeFilters: 'active',
   clearFilters: 'Clear filters',
   // New dimensions
   credential: 'Credential',
   apiKey: 'API key',
-  byCredential: 'By credential',
-  byApiKey: 'By API key',
-  // Granularity
-  summaryOnly: 'Summary',
-  dailyDetail: 'Daily detail',
-  // Tables
-  columns: 'Columns',
-  rows: 'rows',
-  inputTokens: 'Input tokens',
-  cacheTokens: 'Cache tokens',
-  outputTokens: 'Output tokens',
-  cacheRate: 'Cache rate',
   errorRate: 'Error rate',
-  topError: 'Top error',
   noErrors: 'No failures',
-  tokens: 'Token split',
   unassigned: 'Unassigned',
-  qualityHint: 'Success rate × latency factor (lower P95 scores higher)',
-  // Collapsible model list
-  modelStats: 'Model statistics',
-  actions: 'Actions',
-  filterBy: 'Filter',
-  // Charts
-  chartTrend: 'Request volume and error rate trend',
-  chartByModel: 'Daily volume per model',
-  chartErrors: 'Top 10 error types',
-  chartOther: 'Other',
-  chartFolded: 'Showing the top',
-  chartFoldedRest: 'models by request count; the rest are folded into "Other"',
   noData: 'No reconciliation records in this time range',
   // Snapshot caliber disclosure
   legacyCoverage: 'Days covered only by legacy snapshots:',
@@ -86,12 +57,7 @@ export default {
     ': those days contribute to totals and the daily series only; credential/user/API-key dimensions appear after backfill (use "Rerun End Day" day by day)',
 
   // ── 2026-09-30 stats UI round ────────────────────────
-  quickYesterday: 'Yesterday',
-  quick7d: 'Last 7 days',
-  quick30d: 'Last 30 days',
-  quickMonth: 'This month',
   allProviders: 'All providers',
-  allTenants: 'All tenants',
   allModels: 'All models',
   clearFilter: 'Clear filters',
   kpiTenants: 'Settled tenants',
@@ -122,6 +88,4 @@ export default {
   reasonTotalPrefix: 'Total',
   reasonTotalSuffix: 'failures',
   reasonFilterHint: 'model table filtered by this reason',
-  collapse: 'Collapse',
-  expand: 'Expand',
 }

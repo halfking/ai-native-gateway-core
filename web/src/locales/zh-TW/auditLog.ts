@@ -15,16 +15,9 @@ export default {
   filter: {
     actorLabel: '操作員',
     actorPlaceholder: '模糊匹配使用者名稱',
-    actorAria: '操作員篩選',
     actionLabel: '動作',
     actionPlaceholder: '如 user.* 或 auth.*',
-    actionAria: '動作篩選',
     fromLabel: '起始時間',
-    fromAria: '起始時間',
-    toLabel: '截止時間',
-    toAria: '截止時間',
-    query: '查詢',
-    reset: '重設',
   },
   table: {
     headers: {
@@ -34,14 +27,6 @@ export default {
       target: '目標',
       details: '詳情',
     },
-  },
-  pagination: {
-    total: '共 {n} 條',
-    pageOf: '· 第 {page} / {total} 頁',
-    perPage: '每頁',
-    previous: '上一頁',
-    next: '下一頁',
-    dash: '—',
   },
   detail: {
     titleWithId: '稽核詳情 #{id}',
@@ -68,13 +53,8 @@ export default {
     'authentication.login_failed': '登入失敗',
     'authentication.logout': '登出',
   },
-  errors: {
-    loadFailed: '載入失敗',
-  },
 
   // 扁平键（供 Vue 组件直接使用）
   loadFailed: '載入失敗',
   dash: '—',
-  refreshing: 'Refreshing…',
-  refresh: 'Refresh',
 }

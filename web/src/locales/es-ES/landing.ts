@@ -16,8 +16,6 @@ export default {
   // longer used as a small label above the heading (craft-floor bans kickers).
   kicker: 'Núcleo bajo licencia Apache 2.0',
   brandTitle: 'Gateway central para organizaciones con IA nativa',
-  brandSubtitle: 'Qigui: Instalación en tus instalaciones',
-  // The heading no longer repeats the product name; the brand block above
   // already says that. It says what the thing does instead.
   title:
     'Un gateway para todas las llamadas a modelos de tu empresa, donde verlas, medirlas y apagarlas',
@@ -103,7 +101,6 @@ export default {
     },
   },
   footer: 'Núcleo abierto bajo Apache 2.0, ejecutándose en tus máquinas.',
-  ariaPoints: 'Capacidades',
   roadmap: {
     title: 'Hacia dónde va',
     subtitle: 'De un plano de datos LLM a un gateway para agentes empresariales',
@@ -131,58 +128,6 @@ export default {
       description:
         'Plantillas de atención al cliente, recursos humanos, ventas y logística. Instalas una y funciona.',
     },
-  },
-  activateBanner: {
-    title: 'Este gateway no está activado',
-    desc:
-      'Esta instancia no tiene ninguna licencia válida asociada. Abre el asistente de activación para activarlo en línea o seguir el proceso sin conexión.',
-    action: 'Activar',
-  },
-  downloadCta: {
-    title: 'De la descarga a funcionando, cinco minutos',
-    subtitle:
-      'Paquetes sin conexión para cada plataforma. Sin registro para descargar y 15 días de prueba tras la instalación.',
-    download: 'Descargar',
-    support: 'Apoyarnos',
-    activate: '¿Ya lo instalaste? Actívalo',
-    note: 'Las donaciones son voluntarias y no afectan a la descarga ni a las funciones.',
-  },
-  deployFlow: {
-    title: 'Descargar, instalar, activar, iniciar sesión',
-    subtitle:
-      'El camino completo de una instalación privada, con la activación incluida',
-    steps: {
-      download: {
-        title: 'Descargar el paquete sin conexión',
-        description:
-          'Elige el tar.gz o el instalador según la plataforma y la arquitectura. Sin registro, y el enlace de descarga caduca.',
-        action: 'Ir a la página de descarga',
-      },
-      install: {
-        title: 'Instalarlo en la máquina destino',
-        description:
-          'Descomprime, ejecuta el instalador en el servidor y despliega en k3s o Docker con la configuración base escrita.',
-        hint: 'llm-gw-installer install --target /opt/kx-gateway',
-      },
-      activate: {
-        title: 'Activar la licencia',
-        description:
-          'Conectado, introduce la clave de licencia; sin conexión, sigue la vía activation.req hacia activation.resp. Primero hay 15 días de prueba.',
-        action: 'Abrir el asistente de activación',
-        offlineAction: 'Portal de activación sin conexión',
-      },
-      login: {
-        title: 'Iniciar sesión en el plano de control',
-        description:
-          'Tras activar, entra con una cuenta de administrador. Ahí están los inquilinos, el enrutado y la observabilidad.',
-        action: 'Iniciar sesión',
-      },
-    },
-    notes: [
-      'La descarga y la donación están separadas. Omitir la donación no quita ninguna función.',
-      'En una red sin salida, envía activation.req por el portal de activación sin conexión',
-      'El asistente de activación está en /activate y usa los mismos comandos que la CLI del instalador',
-    ],
   },
   // 2026-07-21: guest-nav aria + top download/activation links (App.vue L197-203).
   guestNavAria: 'Navegación del producto',

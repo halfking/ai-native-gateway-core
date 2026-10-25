@@ -38,13 +38,11 @@ export default {
     config: '配置',
     integration: '集成',
     status: '运行状态',
-    routing: '路由规则',
   },
 
   overview: {
     sectionDescription: '模块描述',
     sectionCapabilities: '能力清单',
-    sectionRequirements: '依赖模块',
     sectionDependencies: '依赖模块',
     dependenciesTitle: '依赖模块',
     labelKey: '模块标识',
@@ -54,9 +52,6 @@ export default {
     dependencyDisabled: '依赖模块未启用',
     notEnabled: '未启用',
     viewAllSettings: '查看所有系统设置',
-    requirementsMet: '所有依赖模块已启用',
-    requirementsMissing: '以下依赖模块未启用，相关功能可能受限：',
-    jumpToModule: '前往配置',
     required: '必需',
     optional: '可选',
     enableAllDeps: '一键启用 {count} 个必需依赖',
@@ -92,12 +87,6 @@ export default {
 
   feishu: {
     connectionHint: '在飞书开放平台创建自定义机器人后，将 Webhook 地址粘贴到下方。详细步骤参考飞书官方文档。',
-    callbackUrlLabel: '回调地址（需在飞书机器人后台配置）',
-    callbackUrlHelp: '将此 URL 填入飞书自定义机器人 → 回调配置，用于接收飞书端的审批操作。',
-    whitelistHelp: '允许通过飞书执行命令的用户 OpenID，多个用英文逗号分隔。留空时按 commands.admin_only 决定是否全部允许。',
-    quietHoursHelp: '免打扰时段内仅 critical 级别告警会推送，避免夜间打扰。跨夜时段支持（22:00 → 08:00）。',
-    commandsHelp: '开启后管理员可在飞书对话中通过命令与系统交互（/status /help /stats /audit /test）。',
-    signatureHelp: '生产环境务必开启。开启后飞书回调必须携带有效签名（HMAC-SHA256）且时间戳在窗口内。',
   },
 
   handoff: {
@@ -145,30 +134,6 @@ export default {
     ],
   },
 
-  routing: {
-    title: '飞书路由规则',
-    addNew: '新增规则',
-    cancel: '取消',
-    save: '保存',
-    formTitle: '新增飞书 OpenID 规则',
-    openId: '飞书 OpenID',
-    openIdPlaceholder: 'ou_xxxxxxxx',
-    displayName: '显示名',
-    userRole: '用户角色',
-    priority: '优先级',
-    note: '备注',
-    enabled: '启用',
-    riskLevels: '风险级别',
-    actions: '操作',
-    enable: '启用',
-    disable: '停用',
-    delete: '删除',
-    loading: '加载中…',
-    importCsv: '批量导入 CSV',
-    close: '关闭',
-    csvImportResult: '批量导入结果',
-    csvImportSuccess: '已导入 {imported} 条，跳过 {skipped} 条',
-    csvErrorRow: '第 {row} 行：{error}',  },
 
   empty: {
     selectModule: '选择一个模块查看详情与配置',

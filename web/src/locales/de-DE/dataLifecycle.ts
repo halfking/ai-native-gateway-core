@@ -1,123 +1,8 @@
 export default {
-  title: "Datenlebenszyklus-Verwaltung",
   refresh: "Aktualisieren",
   loading: "Wird geladen…",
-  storageLoading: "Speicherstatistiken werden geladen…",
-  stats: {
-    totalData: "Gesamtdaten",
-    hotData: "Heiße Daten (0–7 Tage)",
-    warmData: "Warme Daten (7–30 Tage)",
-    coldData: "Kalte Daten (30–90 Tage)",
-    expiredData: "Abgelaufene Daten (>90 Tage)"
-  },
-  charts: {
-    distribution: "Datenverteilung",
-    growthTrend: "Wachstumstrend (letzte 7 Tage)",
-    trendDate: "Datum",
-    trendRequests: "Anfragen",
-    trendCompressed: "Komprimiert",
-    trendCompressionRate: "Komprimierungsrate",
-    trendEmpty: "Noch keine Trendaten"
-  },
   storage: {
-    title: "💾 Speicherverwaltung",
-    disk: "Festplattenspeicher",
-    database: "Datenbankgröße",
-    databaseTotalSize: "Gesamtgröße {size}",
-    tableRows: "{n} Zeilen",
-    attachments: "Anhangsspeicher",
-    orphanTitle: "{n} Dateien im Speicherverzeichnis ohne DB-Eintrag",
-    orphanBadge: "{n} verwaiste",
-    totalFiles: "{n} Dateien",
-    activeLabel: "[aktiv]",
-    logFiles: "Protokolldateien",
-    rotation: "Rotationskonfiguration: ",
-    rotationSingle: "Einzeldatei {n} MB",
-    rotationKeep: "{n} behalten",
-    rotationAge: "{n} Tage behalten",
-    rotationCompress: "komprimieren {state}",
-    rotationYes: "ja",
-    rotationNo: "nein",
-    moreRotated: "… und {n} weitere rotierte Dateien",
-    lifecycleConfig: "Lebenszykluskonfiguration",
-    configAttachmentPath: "Anhangsspeicherpfad:",
-    configRetention: "Datenaufbewahrungszeitraum:",
-    configRetentionDays: "{n} Tage",
-    configMaxAttachment: "Maximale Anhangsgröße:",
-    configMaxAttachmentMb: "{n} MB",
-    configAutoCleanup: "Automatische Bereinigung:",
-    autoCleanupOn: "Ein",
-    autoCleanupOff: "Aus",
     migrateFailedWithReason: 'Migration konnte nicht abgeschlossen werden: {reason}. Bitte erneut versuchen.',
-  },
-  attachmentCleanup: {
-    title: "🗑️ Anhangsbereinigung",
-    mode: "Bereinigungsmodus:",
-    modeOld: "Abgelaufene Anhänge bereinigen (letzte N Tage behalten)",
-    modeOrphan: "Verwaiste Dateien bereinigen (kein DB-Eintrag)",
-    daysLabel: "Aufbewahrungstage:",
-    minDays: "Aufbewahrungstage müssen mindestens 7 sein",
-    preview: "Vorschau",
-    execute: "Ausführen",
-    affected: "Betroffene Dateien:",
-    orphanedSuffix: "({n} verwaiste)",
-    estimatedFreed: "Geschätzt freigegeben:",
-    warningPrefix: "⚠️",
-    previewFailed: "Vorschau der Anhangsbereinigung fehlgeschlagen",
-    executeFailed: "Anhangsbereinigung fehlgeschlagen",
-    confirmTitle: "Anhangsbereinigung bestätigen?\nDateien: {n}\nGeschätzt freigegeben: {size}\n\nDies ist nicht umkehrbar!",
-    completed: "Bereinigung abgeschlossen: {n} Dateien / {db} DB-Zeilen entfernt, {size} freigegeben"
-  },
-  logCleanup: {
-    title: "📋 Protokollbereinigung",
-    daysLabel: "Aufbewahrungstage:",
-    minDays: "Aufbewahrungstage müssen mindestens 7 sein",
-    compressedOnly: "Nur bereits komprimierte Dateien bereinigen",
-    preview: "Vorschau",
-    execute: "Ausführen",
-    affected: "Betroffene Dateien:",
-    estimatedFreed: "Geschätzt freigegeben:",
-    warningPrefix: "⚠️",
-    previewFailed: "Vorschau der Protokollbereinigung fehlgeschlagen",
-    executeFailed: "Protokollbereinigung fehlgeschlagen",
-    confirmTitle: "Protokollbereinigung bestätigen?\nDateien: {n}\nGeschätzt freigegeben: {size}\n\nDies ist nicht umkehrbar!",
-    completed: "Protokollbereinigung abgeschlossen: {n} Dateien entfernt, {size} freigegeben"
-  },
-  dataCleanup: {
-    title: "Bereinigungsvorgänge",
-    action: "Vorgangstyp:",
-    actionArchive: "Archivieren (empfohlen)",
-    actionDelete: "Löschen (gefährlich)",
-    actionTrim: "Trimmen (in Vorbereitung)",
-    from: "Startdatum:",
-    to: "Enddatum:",
-    preview: "Auswirkung prüfen",
-    execute: "Ausführen",
-    affected: "Betroffene Zeilen:",
-    affectedRowsSuffix: " Zeilen",
-    estimatedFreed: "Geschätzt freigegeben:",
-    warningPrefix: "⚠️",
-    missingDate: "Bitte wählen Sie sowohl Start- als auch Enddatum",
-    needPreview: "Bitte zuerst eine Vorschau durchführen",
-    previewFailed: "Vorschau fehlgeschlagen",
-    executeNotImpl: "Die Bereinigung wird in der nächsten Phase implementiert. Bitte verwenden Sie vorerst die CLI-Skripte.",
-    confirmDelete: "Löschen von {n} Zeilen bestätigen?\nGeschätzt freigegeben: {size}\n\nDies ist nicht umkehrbar!",
-    confirmArchive: "Archivieren von {n} Zeilen bestätigen?\nGeschätzt freigegeben: {size}\n\nDies ist nicht umkehrbar!",
-    confirmAction: "{action} {n} Zeilen?"
-  },
-  tenant: {
-    title: "Mandanten-Datenstatistik (Top 10)",
-    tenantId: "Mandanten-ID",
-    rows: "Zeilen",
-    size: "Größe",
-    percent: "Anteil"
-  },
-  chartLabels: {
-    hot: "Heiße Daten (0–7 T.)",
-    warm: "Warme Daten (7–30 T.)",
-    cold: "Kalte Daten (30–90 T.)",
-    expired: "Abgelaufene Daten (>90 T.)",
-    tooltipSuffix: "{label}: {n} Zeilen ({pct}%)"
   },
   storageOverview: {
     summary: {
@@ -224,7 +109,6 @@ export default {
   hotPartition: {
     hotTableTitle: "Hot-Tabellen-Datenmigration",
     hotTableDesc: "Verschiebt Daten aus Hot-Tabellen in monatliche Partitionen. Erst ein anschließendes VACUUM FULL gibt den Speicher tatsächlich an das Betriebssystem zurück.",
-    retentionLabel: "Aufbewahrung",
     retention: {
       all: "Sofort alles migrieren",
       "1day": "Letzte 1 Tag behalten",
@@ -237,15 +121,12 @@ export default {
     migrationProgress: "{migrated} Zeilen migriert ({batches} Stapel, {duration}s)",
     promoteConfirm: "Daten aus {label} migrieren, die älter als {hours} sind?",
 promoteAll: "alles",
-   hours: "{n} Stunden",
    days: "{n} Tage",
     partitionTitle: "Monatliche Partitionsverwaltung",
     partitionDesc: "Alte monatliche Partitionen löschen, um Speicherplatz freizugeben.",
     partitionWarning: "Dieser Vorgang ist nicht umkehrbar: bitte mit Vorsicht.",
     tables: {
       title: "Partitionierte Tabellen",
-      selectLabel: "Tabelle: ",
-      selectPlaceholder: "Partitionierte Tabelle auswählen",
       refresh: "Aktualisieren",
       columns: {
         name: "Tabelle",
@@ -274,11 +155,6 @@ promoteAll: "alles",
         heap: "Heap",
         archive: "archiviert"
       },
-      month: {
-        recent: "aktuell",
-        medium: "mittel",
-        old: "alt"
-      },
       delete: "Löschen",
       deleting: "Lösche…",
       empty: "Keine Partitionen für diese Tabelle"
@@ -296,8 +172,6 @@ promoteAll: "alles",
       cancel: "Abbrechen",
       confirm: "Partition löschen",
       deleting: "Lösche…",
-      success: "Erfolgreich gelöscht:\n{message}\nFreigegeben: {size}",
-      failed: "Löschen fehlgeschlagen: {msg}"
     },
     hotTableNames: {
       requestLogs: "Anfrage-Logs",
@@ -309,39 +183,21 @@ promoteAll: "alles",
       rows: "Zeilen",
       toast: "TOAST"
     },
-    migrationFailed: "Migration fehlgeschlagen"
-,
-    jobIdMissing: 'Asynchronen Auftrag konnte nicht gestartet werden: job_id fehlt',
 
-    asyncCompleted: 'Asynchrone Migration abgeschlossen: {n} Zeilen migriert',
 
-    asyncFailed: 'Async migration failed: {error}',
 
-    cancel: 'Cancel',
 
-    cancelTitle: 'Cancel migration job',
 
-    cancelConfirm: 'Den laufenden Migrationsauftrag abbrechen? Bereits migrierte Daten bleiben erhalten.',
 
-    cancelRequested: 'Abbruch angefordert. Der Auftrag stoppt beim nächsten Stapel.',
 
-    asyncEnabledHint: 'Seit dem 13.07.2026 laufen Migrationen asynchron. Fortschritt und Abbruch sind auf dieser Seite sichtbar.',
 
-    cronStatsTitle: 'Nightly auto-migration',
 
-    cronStatsDesc: 'Täglich um 02:00 Uhr werden heiße Tabellen, die älter als 24 Stunden sind, automatisch migriert. Über Umgebungsvariablen einstellbar.',
 
-    cronEnabled: 'Enabled',
 
-    cronDisabled: 'Disabled',
 
-    cronLastRun: 'Last run',
 
-    cronRunCount: 'Total runs',
 
-    cronLastError: 'Last error',
 
-    cronRunning: 'Running now',
     statsLoadFailedWithReason: 'Statistik der hot-Tabelle konnte nicht geladen werden: {reason}. Bitte erneut versuchen.',
     startMigrationFailedWithReason: 'Migrationsauftrag konnte nicht gestartet werden: {reason}. Bitte erneut versuchen.',
     submitDeleteFailedWithReason: 'Löschauftrag konnte nicht übermittelt werden: {reason}. Bitte erneut versuchen.',

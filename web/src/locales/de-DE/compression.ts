@@ -9,16 +9,7 @@ export default {
     configFailed: 'Kompressionskonfiguration nicht geladen: die Werte unten sind Werksstandards, nicht die aktuelle Konfiguration',
   },
   tabs: {
-    h24: '24 Stunden',
-    d7: '7 Tage',
-    d30: '30 Tage',
     custom: 'Benutzerdefiniert',
-  },
-  custom: {
-    from: 'Startzeit',
-    to: 'Endzeit',
-    apply: 'Anwenden',
-    sep: 'bis',
   },
   stats: {
     totalRequests: 'Anfragen insgesamt',
@@ -33,9 +24,6 @@ export default {
   charts: {
     strategyDistribution: 'Verteilung der Komprimierungsstrategien',
     compressionRateTrend: 'Trend der Komprimierungsrate',
-    timeBucketHour: 'Stündlich',
-    timeBucket6Hour: 'Alle 6 Stunden',
-    timeBucketDay: 'Täglich',
     noData: 'Keine Zeitreihendaten verfügbar',
     titleSuffix: '{strategy}: {count} ({pct})',
     barTitle: '{hour}: {n} Anfragen, {pct} komprimiert',
@@ -56,17 +44,6 @@ export default {
     previous: 'Zurück',
     next: 'Weiter',
     pageInfo: '{current} / {total}',
-  },
-  strategies: {
-    delta_append: 'Delta anhängen',
-    sliding_window_token: 'Sliding Window (Tokens)',
-    sliding_window_count: 'Sliding Window (Anzahl)',
-    sliding_window_idle: 'Sliding Window (Leerlauf)',
-    mechanical_trim: 'Mechanisches Trimmen',
-    memora_l1_inject: 'Memora-Injektion',
-    llm_summary: 'LLM-Zusammenfassung',
-    noop: 'Keine Aktion',
-    none: 'Nicht komprimiert',
   },
   // 扁平化 key（CompressionView.vue 直接引用）
   d30: '30 Tage',

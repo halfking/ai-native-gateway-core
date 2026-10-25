@@ -70,7 +70,6 @@ export default {
     requestId: 'Request ID',
     actual: '實際',
     status: '狀態',
-    actions: '操作',
     loading: '載入中...',
     noData: '沒有找到完整性事件',
     viewDetail: '詳情',

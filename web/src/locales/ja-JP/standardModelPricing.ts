@@ -21,23 +21,14 @@ export default {
     currencyDisplay: '表示通貨',
     save: 'グローバル設定を保存',
     saving: '保存中…',
-    saved: 'グローバル基準を保存しました (手動設定されていないディメンションにのみ影響)',
     effective: '効果 ≈ {value} (割引含む)',
   },
   filter: {
-    title: '価格管理：モデルフィルター',
-    placeholder: '標準モデルを検索…',
-    allPricing: 'すべての価格',
-    defaultOnly: 'グローバル基準のみ',
-    customOnly: '手動設定を含む',
-    partialOnly: '一部手動',
-    otherVendor: 'その他',
     summary: '手動 {custom}：グローバル {defaults} / {total}',
   },
   table: {
     colModel: '標準モデル',
     colStatus: 'ステータス',
-    colActions: '',
     edit: '価格',
     reset: '復元',
     empty: 'モデルがありません',
@@ -75,37 +66,22 @@ export default {
     saving: '保存中…',
     fillGlobal: '現在のグローバルを入力',
     cancel: 'キャンセル',
-    needOneManual: '少なくとも 1 つの「手動価格」ディメンションをチェックしてください',
     resetConfirm: '{name} のすべてのディメンションをグローバル基準に戻しますか？',
-    resetSuccess: '復元しました',
-    resetFailed: '復元失敗',
 
     sectionText: "テキストの Token ディメンション",
 
     sectionMultimodal: "マルチモーダルな Token ディメンション（画像 / 音声 / 動画）",
 
-    fieldImage: '视觉 Token',
 
-    fieldAudio: '音频 Token',
 
-    fieldVideo: '视频 Token',
   },
   field: {
-    input: '入力',
-    output: '出力',
-    cacheRead: 'キャッシュ読み取り',
-    cacheWrite: 'キャッシュ書き込み',
 
     image: "画像",
 
     audio: "音声",
 
     video: "動画",
-  },
-  error: {
-    loadFailed: '読み込み失敗',
-    saveFailed: '保存失敗',
-    resetFailed: '復元失敗',
   },
 
   // 扁平键（供 Vue 组件直接使用）
@@ -122,10 +98,6 @@ export default {
   output: "出力",
   cacheRead: "キャッシュ読み",
   cacheWrite: "キャッシュ書き込み",
-  refreshLoading: '加载中…',
-  refresh: '刷新',
-  saving: '保存中…',
-  save: '保存',
 
   batch: {
     selected: "{n} 件を選択中",

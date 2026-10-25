@@ -9,16 +9,7 @@ export default {
     configFailed: '壓縮設定載入失敗，下方顯示的是出廠預設值而非目前設定',
   },
   tabs: {
-    h24: '24小時',
-    d7: '7天',
-    d30: '30天',
     custom: '自定義',
-  },
-  custom: {
-    from: '开始时间',
-    to: '结束时间',
-    apply: '查询',
-    sep: '至',
   },
   stats: {
     totalRequests: '總請求數',
@@ -33,9 +24,6 @@ export default {
   charts: {
     strategyDistribution: '壓縮策略分佈',
     compressionRateTrend: '壓縮率趨勢',
-    timeBucketHour: '按小时',
-    timeBucket6Hour: '每6小时',
-    timeBucketDay: '按天',
     noData: '暫無可用的時間序列資料',
     titleSuffix: '{strategy}: {count} 條 ({pct})',
     barTitle: '{hour}: {n} 請求, {pct} 壓縮率',
@@ -56,17 +44,6 @@ export default {
     previous: '上一頁',
     next: '下一頁',
     pageInfo: '{current} / {total}',
-  },
-  strategies: {
-    delta_append: '增量拼接',
-    sliding_window_token: '滑动窗口(Token)',
-    sliding_window_count: '滑动窗口(条数)',
-    sliding_window_idle: '滑动窗口(空闲)',
-    mechanical_trim: '机械裁剪',
-    memora_l1_inject: 'Memora 注入',
-    llm_summary: 'LLM 總結',
-    noop: '空操作',
-    none: '未压缩',
   },
   // 扁平化 key（CompressionView.vue 直接引用）
   d30: '30天',

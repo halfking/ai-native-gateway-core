@@ -37,7 +37,6 @@ export default {
   insights: {
     title: 'What predicts quality? (Pearson correlation)',
     hint: 'Each predictor is correlated with avg_quality across buckets.',
-    empty: 'Not enough samples for insights.',
     emptyInsufficient: 'Need at least 30 samples to compute meaningful correlations.',
     emptyUnexpected: 'No insights (unexpected). Check server logs.',
     buckets: '{n} buckets',

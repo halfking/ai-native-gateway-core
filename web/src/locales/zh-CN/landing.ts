@@ -14,8 +14,6 @@ export default {
   // 小标签渲染（craft-floor 硬禁 kicker/eyebrow）。
   kicker: 'Apache 2.0 开源内核',
   brandTitle: 'AI-Native 组织核心网关',
-  brandSubtitle: '开轩启圭：私有化部署',
-  // 标题不再重复产品名（上面品牌块已经写了），改成一句说清这产品干什么的话。
   title: '把公司里所有大模型调用，收进一个能管、能查、能关的入口',
   subtitle:
     'OpenAI、Anthropic、Responses 三套协议接进同一个网关，按租户和模型选路，记账、审计、限流都在这一处。部署在你自己的机器上，数据不出门。',
@@ -87,7 +85,6 @@ export default {
     },
   },
   footer: '内核 Apache 2.0 开源，部署在你自己的机器上。',
-  ariaPoints: '核心能力',
   roadmap: {
     title: '产品演进路线',
     subtitle: '从 LLM 数据面走到企业 Agent 网关',
@@ -111,51 +108,6 @@ export default {
       title: '行业方案正式版',
       description: '客服、HR、销售、物流四套模板，装上就能用。',
     },
-  },
-  activateBanner: {
-    title: '网关还没激活',
-    desc: '这个实例上没有有效的 License。打开激活向导，可以在线激活，也可以走离线流程。',
-    action: '立即激活',
-  },
-  downloadCta: {
-    title: '私有部署，五分钟装完',
-    subtitle: '各平台都有离线安装包，不用注册就能下。装好之后免费试用 15 天。',
-    download: '立即下载',
-    support: '支持我们',
-    activate: '已经装好了？去激活',
-    note: '捐赠自愿，给不给都不影响下载和功能。',
-  },
-  deployFlow: {
-    title: '下载，安装，激活，登录',
-    subtitle: '私有部署的完整流程，激活向导就在同一条路上',
-    steps: {
-      download: {
-        title: '下载离线安装包',
-        description: '按平台和架构选 tar.gz 或安装器，不用注册，下载链接限时有效。',
-        action: '前往下载页',
-      },
-      install: {
-        title: '装到目标机器上',
-        description: '解压后在服务器上跑安装器，k3s 或 Docker 都能装，顺手把基础配置写好。',
-        hint: 'llm-gw-installer install --target /opt/kx-gateway',
-      },
-      activate: {
-        title: '激活 License',
-        description: '联网就输 License Key；离线就走 activation.req → activation.resp。先有 15 天试用。',
-        action: '打开激活向导',
-        offlineAction: '离线激活门户',
-      },
-      login: {
-        title: '登录控制台',
-        description: '激活完用管理员账号登录，租户、路由、可观测都在里面。',
-        action: '登录控制面',
-      },
-    },
-    notes: [
-      '下载和捐赠是分开的，跳过捐赠一样能用全部功能',
-      '离线环境用「离线激活门户」提交 activation.req',
-      '激活向导在 /activate，和安装器 CLI 命令是通的',
-    ],
   },
   // 2026-07-21: guest-nav aria + 顶部 7 个下载/激活链接（App.vue L197-203）。
   guestNavAria: '产品导航',

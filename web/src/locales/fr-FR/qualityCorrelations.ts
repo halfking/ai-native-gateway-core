@@ -38,7 +38,6 @@ export default {
   insights: {
     title: 'Quoi prédit la qualité ? (corrélation de Pearson)',
     hint: 'Chaque prédicteur est corrélé avec avg_quality sur les seaux.',
-    empty: 'Not enough samples for insights.',
     buckets: '{n} buckets',
     samples: '{n} samples',
 

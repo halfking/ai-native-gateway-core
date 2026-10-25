@@ -10,22 +10,7 @@ export default {
     super_admin: 'Super-administrateur',
     tenant_admin: 'Administrateur du locataire',
   },
-  sidebar: {
-    expand: 'Déplier la barre latérale',
-    collapse: 'Replier la barre latérale',
-    collapseMenu: 'Replier le menu',
-  },
-  logout: 'Se déconnecter',
-  lang: {
-    switch: 'Changer de langue',
-    label: 'Langue',
-  },
   // 2026-07-22: public shell footer strings (paired with LifecycleShell).
-  footer: {
-    left: '© 2026 AI-Native Gateway',
-    right: "Besoin d'aide ?",
-    feedbackLink: 'Envoyer un commentaire',
-  },
   // 2026-07-22: user menu dropdown (UserMenuDropdown) + profile dialog (UserInfoDialog).
   userMenu: {
     profile: 'Profil',
@@ -41,10 +26,6 @@ export default {
     close: 'Fermer',
   },
   // 2026-07-22: skip-link (a11y) strings.
-  nav: {
-    mainAria: 'Navigation principale',
-    skip: 'Aller au contenu principal',
-  },
 
   theme: {
     switchToLight: 'Switch to light',

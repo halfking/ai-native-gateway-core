@@ -51,14 +51,12 @@ export default {
       viewDetail: '查看详情',
     },
     empty: '暂无审批请求',
-    loading: '加载中...',
     pagination: {
       previous: '上一页',
       next: '下一页',
       info: '第 {page} / {totalPages} 页 (共 {total} 条)',
     },
     errors: {
-      loadFailed: '加载失败',
       loadListFailed: '加载审批列表失败',
       approveFailed: '批准失败',
       rejectFailed: '拒绝失败',

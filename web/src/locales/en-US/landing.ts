@@ -15,8 +15,6 @@ export default {
   // longer used as a small label above the heading (craft-floor bans kickers).
   kicker: 'Apache 2.0 core',
   brandTitle: 'AI-Native Organization Core Gateway',
-  brandSubtitle: 'Qigui: Self-hosted',
-  // The heading no longer repeats the product name; the brand block above
   // already says that. It says what the thing does instead.
   title: 'One gateway for every model your company calls, where you can see it, meter it, and turn it off',
   subtitle:
@@ -101,7 +99,6 @@ export default {
     },
   },
   footer: 'Open core under Apache 2.0, running on your own machines.',
-  ariaPoints: 'Capabilities',
   roadmap: {
     title: 'Where this is going',
     subtitle: 'From an LLM data plane to a gateway for enterprise agents',
@@ -129,55 +126,6 @@ export default {
       description:
         'Templates for support, HR, sales and logistics. Install one and it works.',
     },
-  },
-  activateBanner: {
-    title: 'This gateway is not activated',
-    desc: 'No valid license is bound to this instance. Open the activation wizard to activate online or go through the offline flow.',
-    action: 'Activate',
-  },
-  downloadCta: {
-    title: 'Five minutes from download to running',
-    subtitle: 'Offline packages for every platform. No signup to download, and 15 days free to try once it is installed.',
-    download: 'Download',
-    support: 'Support us',
-    activate: 'Already installed? Activate',
-    note: 'Donations are voluntary and never affect the download or the features.',
-  },
-  deployFlow: {
-    title: 'Download, install, activate, sign in',
-    subtitle: 'The whole private deployment path, with activation built into it',
-    steps: {
-      download: {
-        title: 'Download the offline package',
-        description:
-          'Pick the tar.gz or the installer for your platform and architecture. No signup, and the download link expires.',
-        action: 'Go to download',
-      },
-      install: {
-        title: 'Install on the target machine',
-        description:
-          'Unpack it, run the installer on your server, and it deploys to k3s or Docker with the base configuration written for you.',
-        hint: 'llm-gw-installer install --target /opt/kx-gateway',
-      },
-      activate: {
-        title: 'Activate the license',
-        description:
-          'Enter a license key online, or take the offline activation.req to activation.resp route. A 15 day trial comes first.',
-        action: 'Open activation wizard',
-        offlineAction: 'Offline activation portal',
-      },
-      login: {
-        title: 'Sign in to the control plane',
-        description:
-          'Once activated, sign in with an admin account. Tenants, routing and observability are all in there.',
-        action: 'Sign in',
-      },
-    },
-    notes: [
-      'Download and donation are separate. Skipping the donation costs you nothing.',
-      'On an air-gapped network, submit activation.req through the offline activation portal',
-      'The activation wizard lives at /activate and speaks the same commands as the installer CLI',
-    ],
   },
   // 2026-07-21: guest-nav aria + top download/activation links (App.vue L197-203).
   guestNavAria: 'Product navigation',

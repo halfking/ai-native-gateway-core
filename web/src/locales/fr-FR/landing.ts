@@ -16,8 +16,6 @@ export default {
   // longer used as a small label above the heading (craft-floor bans kickers).
   kicker: 'Cœur sous licence Apache 2.0',
   brandTitle: 'Passerelle centrale pour organisations IA natives',
-  brandSubtitle: 'Qigui: Déploiement sur site',
-  // The heading no longer repeats the product name; the brand block above
   // already says that. It says what the thing does instead.
   title:
     'Une passerelle pour tous les appels aux modèles de votre entreprise, où les voir, les mesurer et les couper',
@@ -104,7 +102,6 @@ export default {
     },
   },
   footer: 'Cœur ouvert sous licence Apache 2.0, exécuté sur vos machines.',
-  ariaPoints: 'Fonctions',
   roadmap: {
     title: 'Où cela mène',
     subtitle: 'D\'un plan de données LLM à une passerelle pour les agents d\'entreprise',
@@ -132,58 +129,6 @@ export default {
       description:
         'Des modèles pour le support, les ressources humaines, la vente et la logistique. On en installe un, et ça marche.',
     },
-  },
-  activateBanner: {
-    title: 'Cette passerelle n\'est pas activée',
-    desc:
-      'Aucune licence valide n\'est liée à cette instance. Ouvrez l\'assistant d\'activation pour l\'activer en ligne ou suivre la procédure hors ligne.',
-    action: 'Activer',
-  },
-  downloadCta: {
-    title: 'Cinq minutes entre le téléchargement et le fonctionnement',
-    subtitle:
-      'Des paquets hors ligne pour chaque plateforme. Pas d\'inscription pour télécharger, et 15 jours d\'essai après l\'installation.',
-    download: 'Télécharger',
-    support: 'Nous soutenir',
-    activate: 'Déjà installé ? Activez',
-    note: 'Les dons sont volontaires et n\'affectent ni le téléchargement ni les fonctions.',
-  },
-  deployFlow: {
-    title: 'Télécharger, installer, activer, se connecter',
-    subtitle:
-      'Le chemin complet d\'un déploiement sur site, l\'activation y est intégrée',
-    steps: {
-      download: {
-        title: 'Télécharger le paquet hors ligne',
-        description:
-          'Choisissez le tar.gz ou l\'installateur selon la plateforme et l\'architecture. Sans inscription, et le lien de téléchargement expire.',
-        action: 'Aller à la page de téléchargement',
-      },
-      install: {
-        title: 'Installer sur la machine cible',
-        description:
-          'Décompressez, lancez l\'installateur sur le serveur : il déploie sur k3s ou Docker et écrit la configuration de base.',
-        hint: 'llm-gw-installer install --target /opt/kx-gateway',
-      },
-      activate: {
-        title: 'Activer la licence',
-        description:
-          'En ligne, saisissez la clé de licence ; hors ligne, suivez le chemin activation.req vers activation.resp. Une période d\'essai de 15 jours vient d\'abord.',
-        action: 'Ouvrir l\'assistant d\'activation',
-        offlineAction: 'Portail d\'activation hors ligne',
-      },
-      login: {
-        title: 'Se connecter au plan de contrôle',
-        description:
-          'Une fois activé, connectez-vous avec un compte administrateur. Les locataires, le routage et l\'observabilité s\'y trouvent.',
-        action: 'Se connecter',
-      },
-    },
-    notes: [
-      'Le téléchargement et le don sont séparés. Sauter le don ne retire aucune fonction.',
-      'Sur un réseau isolé, transmettez activation.req via le portail d\'activation hors ligne',
-      'L\'assistant d\'activation se trouve dans /activate et parle les mêmes commandes que la CLI de l\'installateur',
-    ],
   },
   // 2026-07-21: guest-nav aria + top download/activation links (App.vue L197-203).
   guestNavAria: 'Navigation du produit',

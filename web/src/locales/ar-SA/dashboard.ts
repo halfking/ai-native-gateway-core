@@ -7,7 +7,6 @@ tabs: {
     liveStream: 'تدفق الطلبات المباشر',
     sessionStats: 'الجلسات والإحصائيات',
     selfcheck: 'الفحص الذاتي',
-    systemmonitor: 'مراقبة النظام',
   },
 v2: {
     quickApiKey: 'API Key',
@@ -17,18 +16,12 @@ v2: {
     refreshData: 'Refresh data',
     retry: 'Retry',
     reloadAria: 'Reload data',
-    degradedViewLabel: 'View',
-    degradedHint: 'لم تُهيَّأ عرض البيانات {view} بعد. شغّل أولًا عملية نقل التجميع.',
-    emptyTitle: 'No request data yet',
-    emptyHint: 'بعد ضبط المزوّدين، أرسل طلبًا عبر /v1/chat/completions لترى البث المباشر هنا.',
-    modelsPage: 'Models',
     totalTokensShort: 'Total Tokens',
     totalCredits: 'Credits charged',
     creditsSub: 'Pricing × tokens',
     creditsDegraded: 'عرض نقاط الائتمان {view} غير مهيّأ: هذا الرقم غير موثوق',
     summaryDegraded: "عرض التجميع {view} غير مهيّأ: أرقام الطلبات/التوكنات/التكلفة أدناه غير متاحة وليست صفرًا. لا تستخدمها كاستنتاج.",
     modelCount: 'Models',
-    sessionCompression: 'Session compression',
   },
   range: {
     today: "اليوم",
@@ -89,20 +82,15 @@ v2: {
     empty: 'No data',
     bgTasks: 'Background tasks',
     discoveryStatus: 'Model discovery',
-    probeChecks: 'Probes (10m)',
     selfcheckTitle: 'Self-check',
-    selfcheckLast: 'Last status',
-    selfcheckRate: '24h success rate',
     pieClients: 'أنواع العملاء',
     pieDegraded: "غير متاح: {reason}. الترتيب الفارغ هنا يعني «لم يتم الحساب»، وليس «لا توجد بيانات».",
     pieDegradedGeneric: "فشل استعلام الترتيب",
     drillFailed: "تعذّر تحميل هذا التفصيل: {reason}. القائمة الفارغة هنا لا تعني عدم وجود أخطاء.",
     pieClientIp: 'عنوان IP للعميل',
     pieIdentity: 'بصمة الهوية',
-    pieModels: 'Model usage',
     pieErrors: 'أنواع الأخطاء',
     pieTenants: 'استخدام المستأجرين',
-    pieProviders: 'Provider usage',
     metricRequests: 'Requests',
     metricTokens: 'Tokens',
     metricToggle: 'المقياس',
@@ -118,165 +106,60 @@ v2: {
     trendMore: 'المزيد',
     trendMoreTitle: 'فتح تحليل اتجاهات الاستخدام في صفحة كاملة',
     trendOthers: 'أخرى',
-    filterProvider: 'Provider ID',
-    allProviders: 'All',
 
-    rangeCustomTab: 'Custom',
 
-    rangeFrom: 'From',
 
-    rangeTo: 'To',
 
-    rangePicker: 'Statistics period',
 
     rangeCustom: '{start} to {end}',
   },
-  proxyWarning: {
-    title: "⚠ وكيل الخروج غير قابل للوصول",
-    detail: "فشل اختبار الوكيل المُكوّن {proxy}، تم الرجوع تلقائيًا إلى وضع الاتصال المباشر. قد تفشل النماذج الأجنبية (Anthropic / OpenAI / OpenRouter / GitHub Copilot، إلخ).",
-    detailHealthy: "تعافى الوكيل {proxy}.",
-    hint: "بعد تعافي الوكيل، سيقوم النظام بإعادة تمكينه تلقائيًا"
-  },
-  backgroundTasks: {
-    title: "المهام الخلفية قيد التنفيذ",
-    running: "اكتشاف النماذج ({trigger})",
-    startedAt: "بدأ {time}",
-    heartbeat: "نبضة {time}",
-    slow: "قد تتباطأ صفحة الإدارة",
-    detailsLink: "عرض التفاصيل"
-  },
-  discovery: {
-    latest: "آخر اكتشاف للنماذج:",
-    failuresTitle: "اكتشاف النماذج: اختبارات فاشلة في آخر 6 ساعات",
-    failuresTally: "{n} فشل: {m} نماذج",
-    summary: "عرض قائمة الفشل",
-    meta: "{n} مرة, يشمل {m} بيانات اعتماد, آخر {date}, خطأ {code}"
-  },
   stat: {
     totalRequests: "إجمالي الطلبات",
-    inLastDays: "آخر {days} يوم",
-    totalTokens: "إجمالي استخدام الرموز",
-    prompt: "إدخال {n}",
-    completion: "إكمال {n}",
     totalCost: "التكلفة الإجمالية",
-    costUnit: "USD",
     successRate: "معدل النجاح",
     avgLatency: "متوسط الكمون {n} ms",
-    apiKeys: "مفاتيح API المدمجة",
-    enabledActive: "مفعّل {enabled}: نشط {active}",
     models: "عدد النماذج",
     activeInDays: "آخر {days} يوم نشط {n}",
-    providers: "المزودون / بيانات الاعتماد",
-    enabledCredentials: "مفعّل {enabled}: بيانات اعتماد {total}",
-    offline: "الموارد غير المتصلة",
-    modelsCredentials: "نماذج {models}: بيانات اعتماد {creds}",
-    // 2026-08-06: متوسط حجم الطلب / متوسط حجم الاستجابة / الذروة (محاذاة مع zh-CN)
     avgRequestSize: "متوسط حجم الطلب",
     avgResponseSize: "متوسط حجم الاستجابة",
     maxLabel: "ذروة",
   },
   table: {
-    hotKeysTitle: "ترتيب مفاتيح API الأكثر استخدامًا",
-    byModelTitle: "الإحصاءات حسب النموذج",
-    colKey: "المفتاح",
-    colApplication: "التطبيق",
-    colOwner: "المستخدم المسؤول",
-    colRequests: "عدد الطلبات",
-    colTokens: "استخدام الرموز",
-    colCost: "التكلفة (USD)",
-    colLastUsed: "آخر استخدام",
     colModel: "النموذج",
-    colProvider: "المزود"
-  },
-  compression: {
-    title: "🤖 ضغط الجلسات",
-    delta: "تدريجي",
-    sliding: "منزلق",
-    outboundTokens: "≈ {n} رمز صادر"
-  },
-  empty: {
-    firstUse: "🚀 لا توجد بيانات طلبات حتى الآن. بعد تكوين المزود، ابدأ الاتصال عبر /v1/chat/completions."
   },
   loading: "جاري التحميل…",
   noData: "لا توجد بيانات في هذه الفترة",
-  costSuffix: "USD",
-  viewFailedRequests: "عرض الطلبات الفاشلة",
   liveStream: {
     title: "تدفق الطلبات المباشر",
     groupByQueue: "حسب قائمة المعالجة",
     controlsAria: "عناصر التحكم في تدفق الطلبات المباشر",
-    connected: "متصل",
-    disconnected: "إعادة الاتصال...",
     pause: "إيقاف مؤقت",
     resume: "استئناف",
-    filterAll: "جميع الحالات",
-    filterSuccess: "الناجحة فقط",
-    filterFailure: "الفاشلة فقط",
-    filterInProgress: "قيد التنفيذ",
-    filterGroupFailures: "تصنيف الفشل",
-    filterFailure5xx: "الخادم / المنبع (5xx)",
-    filterFailure4xx: "العميل / المصادقة (4xx)",
-    filterFailureTimeout: "انتهت المهلة / الشبكة",
-    filterFailureNotFound: "التوجيه / نموذج غير موجود",
-    filterFailureOther: "أعطال أخرى",
-    idleLabel: "خامل {duration}",
-    countTooltip: "{buffer} في المخزن / {visible} مرئية على الشاشة",
-    countAria: "{buffer} طلب في المخزن، {visible} مرئية",
     legendButton: 'مفتاح الرموز',
     legend: {
-      title: "مفتاح الرموز",
-      model: "عائلة النموذج",
-      status: "الحالة",
-      openai: "OpenAI",
-      anthropic: "Anthropic",
-      domestic: "محلي",
-      oss: "مفتوح المصدر",
-      other: "أخرى",
       success: "نجح",
       inProgress: "قيد التنفيذ",
-      failure: "فشل"
-,
       cancelled: 'Cancelled',
     },
     tooltip: {
-      model: "النموذج",
-      provider: "المزود",
-      status: "الحالة",
-      latency: "الكمون",
-      tokens: "الرموز",
-      cost: "التكلفة",
-      error: "خطأ",
-      time: "الوقت"
-,
-      vendor: 'Vendor',
 
-      requestId: 'ID',
 
-      errorKind: 'Error type',
 
-      errorRawCode: 'Raw code',
 
       statusValue: {
         success: 'Success',
         inProgress: 'In progress',
         cancelled: 'Cancelled by user',
-        idle: 'Idle (heartbeat placeholder)',
         failure: 'Request failed',
       },
 
       tokenFormat: '{p} + {c}',
-      cache: 'التخزين المؤقت',
       cacheFormat: 'قراءة {r} / كتابة {w} ({pct})',
-      sessionId: 'الجلسة',
     },
-    connecting: "...جارٍ الاتصال",
-    reconnecting: "...جارٍ إعادة الاتصال",
-    unsupported: "البث المباشر غير مدعوم في هذا المتصفح",
-    empty: "لا توجد طلبات مباشرة",
 
     emptyWaiting: 'في انتظار بيانات البث المباشر للطلبات…',
     emptyConnecting: 'جارٍ الاتصال بالبث المباشر، سيتم التحميل تلقائيًا بعد الاتصال…',
-    groupByCredential: 'حسب بيانات الاعتماد', groupByVendor: 'حسب المورّد', groupByProvider: 'حسب المزوّد', groupByModel: 'حسب النموذج',
+    groupByCredential: 'حسب بيانات الاعتماد', groupByProvider: 'حسب المزوّد', groupByModel: 'حسب النموذج',
     modeSmall: 'صغير',
     modeLarge: 'كبير',
     modeSmallTitle: 'وضع صغير: أعمدة عمودية، تستوعب المزيد من الطلبات (افتراضي)',
@@ -332,11 +215,7 @@ v2: {
 
     idleHoursMinutes: 'خامل {h} ساعة {m} دقيقة',
 
-    idleReasonNoTraffic: 'لا توجد حركة مرور (5 دقائق خاملة)',
-    // 2026-07-24: Multi-dimension filters
     filterStatus: 'الحالة',
-    filterAllOptions: 'الكل',
-    filterEmpty: 'لا توجد خيارات متاحة',
     filterModel: 'النموذج',
     filterGroup: 'تصفية',
     filterProvider: 'المزود',
@@ -348,13 +227,6 @@ v2: {
       success: 'نجح',
       failure: 'فشل',
       rate_limited: 'محدود',
-    },
-    vendor: {
-      openai: 'OpenAI',
-      anthropic: 'Anthropic',
-      domestic: 'محلي',
-      oss: 'مفتوح المصدر',
-      other: 'أخرى',
     },
   },
   charts: {
@@ -374,57 +246,18 @@ v2: {
     sessionTrend: "اتجاه الجلسات"
   },
 
-  moduleStats: {
-    executions: 'عمليات التنفيذ',
-    cacheHitRate: 'معدل إصابة ذاكرة التخزين المؤقت',
-    rate: 'المعدل',
-    totalModules: 'إجمالي الوحدات',
-    totalExecutions: 'إجمالي عمليات التنفيذ',
-    avgCacheHitRate: 'متوسط معدل إصابة ذاكرة التخزين المؤقت',
-    avgDuration: 'متوسط المدة',
 
-    title: 'إحصائيات تنفيذ الوحدات',
-
-    successRate: 'معدل النجاح',
-  },
-
-  errors: {
-    trendTitle: 'اتجاه الأخطاء',
-    errorCount: 'عدد الأخطاء',
-    totalCount: 'إجمالي الطلبات',
-    errorRate: 'معدل الخطأ',
-    count: 'العدد',
-    rate: 'المعدل',
-    totalErrors: 'إجمالي الأخطاء',
-    topErrors: 'أهم الأخطاء',
-
-    title: 'إحصائيات الأخطاء',
-
-    totalRequests: 'إجمالي الطلبات',
-
-    avgLatency: 'متوسط تأخير الخطأ',
-  },
 
   performance: {
-    throughput: 'معدل النقل',
-    requests: 'الطلبات',
-    p50: 'تأخير P50',
-    p95: 'تأخير P95',
-    p99: 'تأخير P99',
-    latencyDist: 'توزيع التأخير',
-    slowQueries: 'الاستعلامات البطيئة',
 
-    title: 'مقاييس الأداء',
 
     avgLatency: 'متوسط التأخير',
 
-    latency: 'التأخير',
   },
 
   providerUsage: {
     title: 'استخدام المورد',
     subtitle: '{period}: استهلاك جميع الموردين (جاهز للتسوية)',
-    periodHint: 'الفترة الحالية: {period}',
     more: 'المزيد',
     search: 'البحث عن الاسم أو الرمز أو المعرّف…',
     back: 'العودة إلى القائمة',

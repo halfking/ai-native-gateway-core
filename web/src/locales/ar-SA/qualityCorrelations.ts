@@ -38,7 +38,6 @@ export default {
   insights: {
     title: 'ما الذي يتنبأ بالجودة؟ (ارتباط بيرسون)',
     hint: 'كل عامل تنبؤ يُقارن مع avg_quality عبر المجموعات.',
-    empty: 'Not enough samples for insights.',
     buckets: '{n} buckets',
     samples: '{n} samples',
 

@@ -26,7 +26,6 @@ export default {
     featured: "特色模型（所选密钥租户的路由配置）",
     all: '全部可用模型（从网关拉取）',
     featuredPreview: {
-      loading: '加载中…',
       empty: "所选租户尚未配置特色模型",
       manageButton: '前往「路由策略」配置 →',
       manage: '管理 →',
@@ -37,7 +36,6 @@ export default {
       selected: '已选',
       filterHint: '（{count} 匹配搜索）',
       searchPlaceholder: '🔍 搜索模型名称 / 厂商 / family…',
-      loading: '加载中…',
       noMatch: '没有匹配的模型',
     },
   },
@@ -77,13 +75,11 @@ export default {
       copyContent: '复制内容',
       downloadFile: '下载文件',
       downloadScript: '下载脚本',
-      scriptHint: '脚本自动备份旧配置文件',
     },
   },
 
   applyDialog: {
     title: '申请新 API Key',
-    close: '关闭',
     applicationCode: '应用标识 (application_code)',
     applicationCodePlaceholder: '例如: default-app',
     description: '备注 (description)',

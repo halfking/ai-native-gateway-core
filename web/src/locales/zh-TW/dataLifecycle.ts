@@ -1,123 +1,8 @@
 export default {
-  title: "資料生命週期管理",
   refresh: "重新整理",
   loading: "載入中…",
-  storageLoading: "載入儲存統計中…",
-  stats: {
-    totalData: "總資料量",
-    hotData: "熱資料 (0-7天)",
-    warmData: "溫資料 (7-30天)",
-    coldData: "冷資料 (30-90天)",
-    expiredData: "過期資料 (>90天)"
-  },
-  charts: {
-    distribution: "資料分佈",
-    growthTrend: "增長趨勢（最近7天）",
-    trendDate: "日期",
-    trendRequests: "請求數",
-    trendCompressed: "壓縮數",
-    trendCompressionRate: "壓縮率",
-    trendEmpty: "暫無趨勢資料"
-  },
   storage: {
-    title: "💾 儲存管理",
-    disk: "磁碟空間",
-    database: "資料庫佔用",
-    databaseTotalSize: "總大小 {size}",
-    tableRows: "{n} 行",
-    attachments: "附件儲存",
-    orphanTitle: "儲存目錄中有 {n} 個檔案無資料庫紀錄",
-    orphanBadge: "孤立檔案 {n}",
-    totalFiles: "{n} 個檔案",
-    activeLabel: "[活動]",
-    logFiles: "日誌檔案",
-    rotation: "輪轉設定：",
-    rotationSingle: "單檔案 {n} MB",
-    rotationKeep: "保留 {n} 個",
-    rotationAge: "保留 {n} 天",
-    rotationCompress: "壓縮 {state}",
-    rotationYes: "是",
-    rotationNo: "否",
-    moreRotated: "… 還有 {n} 個輪轉檔案",
-    lifecycleConfig: "生命週期設定",
-    configAttachmentPath: "附件儲存路徑：",
-    configRetention: "資料保留期限：",
-    configRetentionDays: "{n} 天",
-    configMaxAttachment: "最大附件大小：",
-    configMaxAttachmentMb: "{n} MB",
-    configAutoCleanup: "自動清理：",
-    autoCleanupOn: "開啟",
-    autoCleanupOff: "關閉",
     migrateFailedWithReason: '遷移沒能完成：{reason}。請重試',
-  },
-  attachmentCleanup: {
-    title: "🗑️ 附件清理",
-    mode: "清理模式：",
-    modeOld: "清理過期附件（保留最近 N 天）",
-    modeOrphan: "清理孤立檔案（目錄中無資料庫紀錄）",
-    daysLabel: "保留天數：",
-    minDays: "保留天數最少 7 天",
-    preview: "預覽清理",
-    execute: "執行清理",
-    affected: "影響檔案：",
-    orphanedSuffix: "（孤立 {n}）",
-    estimatedFreed: "預計釋放：",
-    warningPrefix: "⚠️",
-    previewFailed: "附件清理預覽失敗",
-    executeFailed: "附件清理失敗",
-    confirmTitle: "確認清理附件？\n影響檔案 {n} 個\n預計釋放 {size}\n\n此操作不可逆！",
-    completed: "清理完成：刪除 {n} 個檔案 / {db} 行 DB 紀錄，釋放 {size}"
-  },
-  logCleanup: {
-    title: "📋 日誌清理",
-    daysLabel: "保留天數：",
-    minDays: "保留天數最少 7 天",
-    compressedOnly: "僅清理已壓縮檔案",
-    preview: "預覽清理",
-    execute: "執行清理",
-    affected: "影響檔案：",
-    estimatedFreed: "預計釋放：",
-    warningPrefix: "⚠️",
-    previewFailed: "日誌清理預覽失敗",
-    executeFailed: "日誌清理失敗",
-    confirmTitle: "確認清理日誌檔案？\n影響檔案 {n} 個\n預計釋放 {size}\n\n此操作不可逆！",
-    completed: "日誌清理完成：刪除 {n} 個檔案，釋放 {size}"
-  },
-  dataCleanup: {
-    title: "清理操作",
-    action: "操作類型：",
-    actionArchive: "封存（推薦）",
-    actionDelete: "刪除（危險）",
-    actionTrim: "裁剪（待實施）",
-    from: "起始日期：",
-    to: "結束日期：",
-    preview: "預覽影響",
-    execute: "執行清理",
-    affected: "影響行數：",
-    affectedRowsSuffix: " 行",
-    estimatedFreed: "預計釋放：",
-    warningPrefix: "⚠️",
-    missingDate: "請選擇起始日期和結束日期",
-    needPreview: "請先預覽影響",
-    previewFailed: "預覽失敗",
-    executeNotImpl: "清理功能將在下一階段實作。請使用命令列指令碼執行清理操作。",
-    confirmDelete: "確認刪除 {n} 行資料？\n預計釋放空間: {size}\n\n此操作不可逆！",
-    confirmArchive: "確認封存 {n} 行資料？\n預計釋放空間: {size}\n\n此操作不可逆！",
-    confirmAction: "{action} {n} 行資料？"
-  },
-  tenant: {
-    title: "租戶資料統計（Top 10）",
-    tenantId: "租戶 ID",
-    rows: "行數",
-    size: "佔用空間",
-    percent: "佔比"
-  },
-  chartLabels: {
-    hot: "熱資料 (0-7天)",
-    warm: "溫資料 (7-30天)",
-    cold: "冷資料 (30-90天)",
-    expired: "過期資料 (>90天)",
-    tooltipSuffix: "{label}: {n} 行 ({pct}%)"
   },
   storageOverview: {
     summary: {
@@ -224,7 +109,6 @@ export default {
   hotPartition: {
     hotTableTitle: "Hot 表資料遷移",
     hotTableDesc: "將 hot 表中的資料遷移到月度分區表。遷移後需要執行 VACUUM FULL 才能真正釋放磁碟空間。",
-    retentionLabel: "保留策略",
     retention: {
       all: "立即遷移全部",
       "1day": "保留 1 天",
@@ -237,15 +121,12 @@ export default {
     migrationProgress: "已遷移 {migrated} 列（{batches} 批次，{duration}s）",
     promoteConfirm: "確認遷移 {label} 中超過 {hours} 的資料？",
     promoteAll: "全部",
-    hours: "{n} 小時",
     days: "{n} 天",
     partitionTitle: "月度分區管理",
     partitionDesc: "刪除舊的月度分區以釋放磁碟空間。",
     partitionWarning: "操作不可恢復，請謹慎。",
     tables: {
       title: "分區表列表",
-      selectLabel: "選擇表：",
-      selectPlaceholder: "請選擇一張分區表",
       refresh: "重新整理",
       columns: {
         name: "表名",
@@ -274,11 +155,6 @@ export default {
         heap: "堆表",
         archive: "已歸檔"
       },
-      month: {
-        recent: "近期",
-        medium: "中期",
-        old: "舊"
-      },
       delete: "刪除",
       deleting: "刪除中...",
       empty: "該表暫無分區資料"
@@ -296,8 +172,6 @@ export default {
       cancel: "取消",
       confirm: "確認刪除",
       deleting: "刪除中...",
-      success: "刪除成功：{message}\n釋放空間：{size}",
-      failed: "刪除失敗：{msg}"
     },
     hotTableNames: {
       requestLogs: "請求記錄",
@@ -309,39 +183,21 @@ export default {
       rows: "行數",
       toast: "TOAST"
     },
-    migrationFailed: "迁移失败"
-,
-    jobIdMissing: '异步任务启动失败：未返回 job_id',
 
-    asyncCompleted: '异步迁移完成，共迁移 {n} 行',
 
-    asyncFailed: '异步迁移失败：{error}',
 
-    cancel: '取消',
 
-    cancelTitle: '取消迁移任务',
 
-    cancelConfirm: '确认取消当前正在运行的迁移任务？已迁移的数据会保留。',
 
-    cancelRequested: '已请求取消，任务将停止在下一个批次。',
 
-    asyncEnabledHint: '2026-07-13 起迁移已改为异步模式，迁移过程中可在此页面查看实时进度、取消任务。',
 
-    cronStatsTitle: '夜间自动迁移',
 
-    cronStatsDesc: '每天凌晨 02:00 自动迁移 hot 表中超过 24 小时的数据，可通过环境变量调整。',
 
-    cronEnabled: '已启用',
 
-    cronDisabled: '未启用',
 
-    cronLastRun: '上次运行',
 
-    cronRunCount: '累计运行',
 
-    cronLastError: '上次错误',
 
-    cronRunning: '正在运行',
     statsLoadFailedWithReason: 'hot 表統計沒能載入出來：{reason}。請重試',
     startMigrationFailedWithReason: '遷移任務沒能啟動：{reason}。請重試',
     submitDeleteFailedWithReason: '刪除任務沒能提交：{reason}。請重試',

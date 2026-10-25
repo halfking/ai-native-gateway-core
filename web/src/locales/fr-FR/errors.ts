@@ -4,13 +4,6 @@
 // when no code is present. Grow the code list as endpoints evolve.
 export default {
   // Resolve by ApiError.code (machine-readable stable strings). Append as new codes appear.
-  code: {
-    unauthorized: 'Non autorisé, veuillez vous reconnecter',
-    forbidden: 'Accès refusé',
-    not_found: 'Ressource introuvable',
-    rate_limited: 'Trop de requêtes, veuillez réessayer bientôt',
-    internal: 'Erreur interne du serveur',
-  },
   // Fallback by HTTP status.
   byStatus: {
     400: 'Requête invalide',

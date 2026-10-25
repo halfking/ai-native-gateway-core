@@ -19,23 +19,14 @@ export default {
     currencyDisplay: 'Moneda mostrada',
     save: 'Guardar ajustes globales',
     saving: 'Guardando…',
-    saved: 'Base global guardada (solo afecta a dimensiones no manuales)',
     effective: 'Efectivo ≈ {value} (incl. descuento)',
   },
   filter: {
-    title: 'Precios: filtro de modelo',
-    placeholder: 'Buscar modelos estándar…',
-    allPricing: 'Todos los precios',
-    defaultOnly: 'Solo base global',
-    customOnly: 'Con precio manual',
-    partialOnly: 'Parcialmente manual',
-    otherVendor: 'Otros',
     summary: 'Manuales {custom}: Globales {defaults} / {total}',
   },
   table: {
     colModel: 'Modelo estándar',
     colStatus: 'Estado',
-    colActions: '',
     edit: 'Precio',
     reset: 'Restablecer',
     empty: 'Sin modelos',
@@ -73,37 +64,22 @@ export default {
     saving: 'Guardando…',
     fillGlobal: 'Rellenar con el global actual',
     cancel: 'Cancelar',
-    needOneManual: 'Marque al menos una dimensión de "precio manual"',
     resetConfirm: '¿Restablecer todas las dimensiones de {name} a la base global?',
-    resetSuccess: 'Restablecido',
-    resetFailed: 'Error al restablecer',
 
     sectionText: 'Text-token dimensions',
 
     sectionMultimodal: 'Dimensiones de tokens multimodales (visión / audio / vídeo)',
 
-    fieldImage: 'Vision tokens',
 
-    fieldAudio: 'Audio tokens',
 
-    fieldVideo: 'Video tokens',
   },
   field: {
-    input: 'Entrada',
-    output: 'Salida',
-    cacheRead: 'Lectura de caché',
-    cacheWrite: 'Escritura de caché',
 
     image: 'Vision',
 
     audio: 'Audio',
 
     video: 'Video',
-  },
-  error: {
-    loadFailed: 'Error al cargar',
-    saveFailed: 'Error al guardar',
-    resetFailed: 'Error al restablecer',
   },
 
   // 扁平键（供 Vue 组件直接使用）
@@ -120,10 +96,6 @@ export default {
   output: 'Salida',
   cacheRead: 'Lectura de caché',
   cacheWrite: 'Escritura de caché',
-  refreshLoading: 'Cargando…',
-  refresh: 'Actualizar',
-  saving: 'Guardando…',
-  save: 'Guardar',
 
   batch: {
     selected: '{n} seleccionados',

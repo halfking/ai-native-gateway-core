@@ -26,7 +26,6 @@ export default {
     featured: "Modèles en vedette (routage du locataire de la clé sélectionnée)",
     all: 'Tous les modèles disponibles (depuis la passerelle)',
     featuredPreview: {
-      loading: 'Chargement…',
       empty: "Aucun modèle en vedette configuré pour le locataire sélectionné",
       manageButton: 'Aller à "Politique de routage" pour configurer →',
       manage: 'Gérer →',
@@ -37,7 +36,6 @@ export default {
       selected: 'sélectionné',
       filterHint: '({count} correspondance de recherche)',
       searchPlaceholder: '🔍 Rechercher nom de modèle / fournisseur / famille…',
-      loading: 'Chargement…',
       noMatch: 'Aucun modèle correspondant',
     },
   },
@@ -77,13 +75,11 @@ export default {
       copyContent: 'Copier le contenu',
       downloadFile: 'Télécharger le fichier',
       downloadScript: 'Télécharger le script',
-      scriptHint: 'Le script sauvegarde automatiquement les anciens fichiers de configuration',
     },
   },
 
   applyDialog: {
     title: 'Demander une nouvelle clé API',
-    close: 'Fermer',
     applicationCode: 'Code d\'application (application_code)',
     applicationCodePlaceholder: 'par ex. default-app',
     description: 'Description',

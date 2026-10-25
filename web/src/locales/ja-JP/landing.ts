@@ -17,8 +17,6 @@ export default {
   // longer used as a small label above the heading (craft-floor bans kickers).
   kicker: 'Apache 2.0 のオープンソースコア',
   brandTitle: 'AI-Native 組織向けコアゲートウェイ',
-  brandSubtitle: 'Qigui：自社運用',
-  // The heading no longer repeats the product name; the brand block above
   // already says that. It says what the thing does instead.
   title: '会社が使うすべての LLM 呼び出しを、把握でき、数えられ、止められる入口にまとめる',
   subtitle:
@@ -102,7 +100,6 @@ export default {
     },
   },
   footer: 'コアは Apache 2.0 で公開し、自社のマシンで動かします。',
-  ariaPoints: 'できること',
   roadmap: {
     title: 'これからの流れ',
     subtitle: 'LLM データプレーンから、企業向け Agent ゲートウェイへ',
@@ -128,57 +125,6 @@ export default {
       title: '業界向けソリューションの正式版',
       description: '客服、人事、営業、物流の 4 つのテンプレート。入れるだけで動きます。',
     },
-  },
-  activateBanner: {
-    title: 'ゲートウェイが未激活です',
-    desc:
-      'このインスタンスに有効なライセンスが紐づいていません。激活ウィザードを開いて、オンラインで激活するか、オフライン手順で進めます。',
-    action: 'いますぐ激活',
-  },
-  downloadCta: {
-    title: '自社運用なら、5 分で起動できます',
-    subtitle:
-      '各プラットフォームのオフラインパッケージを用意しています。登録なしでダウンロードでき、導入後は 15 日間無料で試せます。',
-    download: 'ダウンロード',
-    support: '支援する',
-    activate: 'すでに導入済みなら激活',
-    note: '寄付は任意で、ダウンロードも機能にも影響しません。',
-  },
-  deployFlow: {
-    title: 'ダウンロード，インストール，激活，ログイン',
-    subtitle: '自社運用の全手順。激活ウィザードも同じ流れの中にあります',
-    steps: {
-      download: {
-        title: 'オフラインパッケージをダウンロード',
-        description:
-          'プラットフォームとアーキテクチャに合わせて tar.gz かインストーラを選びます。登録は不要で、ダウンロードリンクには期限があります。',
-        action: 'ダウンロードページへ',
-      },
-      install: {
-        title: '対象マシンにインストール',
-        description:
-          '展開後、サーバー上でインストーラを実行します。k3s か Docker のどちらにも入れられ、基本設定まで書き込みます。',
-        hint: 'llm-gw-installer install --target /opt/kx-gateway',
-      },
-      activate: {
-        title: 'ライセンスを激活',
-        description:
-          'オンラインなら License Key を入力します。オフラインなら activation.req から activation.resp へ渡す手順です。最初に 15 日間の試用が使えます。',
-        action: '激活ウィザードを開く',
-        offlineAction: 'オフライン激活ポータル',
-      },
-      login: {
-        title: 'コントロールプレーンにログイン',
-        description:
-          '激活後、管理者アカウントでログインします。テナント設定、経路、可観測性がすべてここにあります。',
-        action: 'ログイン',
-      },
-    },
-    notes: [
-      'ダウンロードと寄付は別です。寄付を飛ばしても機能は同じです',
-      'ネットワークを分断した環境では、オフライン激活ポータルで activation.req を提出してください',
-      '激活ウィザードは /activate にあり、インストーラの CLI と同じ経路を使います',
-    ],
   },
   // 2026-07-21: guest-nav aria + top download/activation links (App.vue L197-203).
   guestNavAria: 'ナビゲーション',

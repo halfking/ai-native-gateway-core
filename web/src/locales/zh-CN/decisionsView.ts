@@ -37,7 +37,6 @@ export default {
     status: '状态',
     model: '模型',
     interpretation: '解析',
-    usage: 'Usage',
     latency: '延迟',
     provider: '供应商',
     outboundModel: '出站模型',
@@ -45,14 +44,9 @@ export default {
     candidateChain: '候选链',
     blockReason: '拦截原因',
     error: '错误',
-    loading: '加载中…',
     noData: '暂无决策记录',
   },
 
-  status: {
-    success: '成功',
-    failed: '失败',
-  },
 
   detail: {
     title: '决策详情',
@@ -72,14 +66,8 @@ export default {
     usage: 'Usage',
     costCalc: '费用计算',
     trace: '决策跟踪',
-    plannedCandidates: '计划候选',
-    blockedCandidates: '拦截候选',
-    failedAttempts: '失败尝试',
     errorInfo: '错误信息',
   },
 
   loading: '加载中…',
-  error: {
-    loadFailed: '加载失败',
-  },
 }

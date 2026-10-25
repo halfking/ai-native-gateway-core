@@ -51,14 +51,12 @@ export default {
       viewDetail: 'View details',
     },
     empty: 'No approval requests',
-    loading: 'Loading…',
     pagination: {
       previous: 'Previous',
       next: 'Next',
       info: 'Page {page} / {totalPages} ({total} total)',
     },
     errors: {
-      loadFailed: 'Failed to load',
       loadListFailed: 'Failed to load approval list',
       approveFailed: 'Approve failed',
       rejectFailed: 'Reject failed',

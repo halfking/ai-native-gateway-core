@@ -26,7 +26,6 @@ export default {
     featured: "Featured Models (routing for the selected key’s tenant)",
     all: 'All Available Models (from gateway)',
     featuredPreview: {
-      loading: 'Loading…',
       empty: "No featured models configured for the selected tenant",
       manageButton: 'Go to "Routing Policy" to configure →',
       manage: 'Manage →',
@@ -37,7 +36,6 @@ export default {
       selected: 'selected',
       filterHint: '({count} match search)',
       searchPlaceholder: '🔍 Search model name / vendor / family…',
-      loading: 'Loading…',
       noMatch: 'No matching models',
     },
   },
@@ -77,13 +75,11 @@ export default {
       copyContent: 'Copy Content',
       downloadFile: 'Download File',
       downloadScript: 'Download Script',
-      scriptHint: 'Script automatically backs up old config files',
     },
   },
 
   applyDialog: {
     title: 'Apply for New API Key',
-    close: 'Close',
     applicationCode: 'Application Code (application_code)',
     applicationCodePlaceholder: 'e.g. default-app',
     description: 'Description',

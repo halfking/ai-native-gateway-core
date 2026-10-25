@@ -26,7 +26,6 @@ export default {
     featured: "Empfohlene Modelle (Routing des Mandanten des gewählten Schlüssels)",
     all: 'Alle verfügbaren Modelle (vom Gateway)',
     featuredPreview: {
-      loading: 'Lädt…',
       empty: "Für den gewählten Mandanten sind keine empfohlenen Modelle konfiguriert",
       manageButton: 'Zu "Routing-Richtlinie" gehen, um zu konfigurieren →',
       manage: 'Verwalten →',
@@ -37,7 +36,6 @@ export default {
       selected: 'ausgewählt',
       filterHint: '({count} Treffer)',
       searchPlaceholder: '🔍 Modellname / Anbieter / Familie suchen…',
-      loading: 'Lädt…',
       noMatch: 'Keine passenden Modelle',
     },
   },
@@ -77,13 +75,11 @@ export default {
       copyContent: 'Inhalt kopieren',
       downloadFile: 'Datei herunterladen',
       downloadScript: 'Skript herunterladen',
-      scriptHint: 'Skript sichert alte Konfigurationsdateien automatisch',
     },
   },
 
   applyDialog: {
     title: 'Neuen API-Schlüssel beantragen',
-    close: 'Schließen',
     applicationCode: 'Anwendungscode (application_code)',
     applicationCodePlaceholder: 'z.B. default-app',
     description: 'Beschreibung',

@@ -21,23 +21,14 @@ export default {
     currencyDisplay: 'عملة العرض',
     save: 'حفظ الإعدادات العامة',
     saving: 'جاري الحفظ…',
-    saved: 'تم حفظ المعيار العام (يؤثر فقط على الأبعاد غير المُسعّرة يدويًا)',
     effective: 'فعّال ≈ {value} (يشمل الخصم)',
   },
   filter: {
-    title: 'إدارة التسعير: تصفية النماذج',
-    placeholder: 'البحث عن نموذج قياسي…',
-    allPricing: 'كل التسعير',
-    defaultOnly: 'المعيار العام فقط',
-    customOnly: 'يشمل التسعير اليدوي',
-    partialOnly: 'يدوي جزئي',
-    otherVendor: 'أخرى',
     summary: 'يدوي {custom}: عام {defaults} / {total}',
   },
   table: {
     colModel: 'النموذج القياسي',
     colStatus: 'الحالة',
-    colActions: '',
     edit: 'تسعير',
     reset: 'استعادة',
     empty: 'لا توجد نماذج',
@@ -75,37 +66,22 @@ export default {
     saving: 'جاري الحفظ…',
     fillGlobal: 'ملء بالقيمة العامة الحالية',
     cancel: 'إلغاء',
-    needOneManual: 'يرجى تحديد بُعد واحد على الأقل لـ «تسعير يدوي»',
     resetConfirm: 'استعادة جميع أبعاد {name} إلى المعيار العام؟',
-    resetSuccess: 'تمت الاستعادة',
-    resetFailed: 'فشل الاستعادة',
 
     sectionText: 'Text-token dimensions',
 
     sectionMultimodal: 'أبعاد الرموز متعددة الوسائط (رؤية / صوت / فيديو)',
 
-    fieldImage: 'Vision tokens',
 
-    fieldAudio: 'Audio tokens',
 
-    fieldVideo: 'Video tokens',
   },
   field: {
-    input: 'إدخال',
-    output: 'إخراج',
-    cacheRead: 'قراءة ذاكرة التخزين المؤقت',
-    cacheWrite: 'كتابة ذاكرة التخزين المؤقت',
 
     image: 'Vision',
 
     audio: 'Audio',
 
     video: 'Video',
-  },
-  error: {
-    loadFailed: 'فشل التحميل',
-    saveFailed: 'فشل الحفظ',
-    resetFailed: 'فشل الاستعادة',
   },
 
   // 扁平键（供 Vue 组件直接使用）
@@ -122,10 +98,6 @@ export default {
   output: 'إخراج',
   cacheRead: 'قراءة ذاكرة التخزين المؤقت',
   cacheWrite: 'كتابة ذاكرة التخزين المؤقت',
-  refreshLoading: 'جاري التحميل…',
-  refresh: 'تحديث',
-  saving: 'جاري الحفظ…',
-  save: 'حفظ',
 
   batch: {
     selected: 'تم تحديد {n} عنصر',

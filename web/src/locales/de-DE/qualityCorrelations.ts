@@ -38,7 +38,6 @@ export default {
   insights: {
     title: 'Was sagt die Qualität voraus? (Pearson-Korrelation)',
     hint: 'Jeder Prädiktor wird mit der avg_quality über die Buckets korreliert.',
-    empty: 'Not enough samples for insights.',
     buckets: '{n} buckets',
     samples: '{n} samples',
 

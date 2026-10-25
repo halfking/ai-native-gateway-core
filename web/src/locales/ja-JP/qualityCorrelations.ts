@@ -38,7 +38,6 @@ export default {
   insights: {
     title: '何要因が品質を予測するか（ピアソン相関）',
     hint: '各予測要因と、各バケットの平均品質の相関を取ります。',
-    empty: 'Not enough samples for insights.',
     buckets: '{n} buckets',
     samples: '{n} samples',
 

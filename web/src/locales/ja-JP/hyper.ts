@@ -3,15 +3,10 @@
 export default {
   bottomNav: {
     ariaLabel: 'メインナビゲーション',
-    home: 'ホーム',
-    dashboard: 'ダッシュボード',
-    requests: 'リクエスト',
-    models: 'モデル',
     more: 'その他',
   },
   account: {
     title: 'アカウント',
-    profile: 'プロフィール',
     language: '言語',
     theme: 'テーマ',
     help: 'ヘルプ',
@@ -24,7 +19,6 @@ export default {
     close: '閉じる',
   },
   dataView: {
-    switchTo: '{mode} に切り替える',
     table: 'テーブル',
     cards: 'カード',
   },
@@ -36,12 +30,5 @@ export default {
     allLoaded: '{count} 件すべて読み込み済み',
     loadFailed: '読み込みに失敗しました。再試行してください。',
     empty: 'このリストにはまだ内容がありません。',
-  },
-  focus: {
-    enter: 'フォーカス表示',
-    exit: 'フォーカスを終了',
-  },
-  desktopOnly: {
-    banner: 'このページはデスクトップ向けに設計されています。閲覧はできますが、大量の編集はデスクトップで行ってください。',
   },
 }

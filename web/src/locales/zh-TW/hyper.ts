@@ -3,15 +3,10 @@
 export default {
   bottomNav: {
     ariaLabel: '主導覽',
-    home: '首頁',
-    dashboard: '儀表板',
-    requests: '請求',
-    models: '模型',
     more: '更多',
   },
   account: {
     title: '帳戶',
-    profile: '個人中心',
     language: '語言',
     theme: '主題',
     help: '說明',
@@ -24,7 +19,6 @@ export default {
     close: '關閉',
   },
   dataView: {
-    switchTo: '切換到{mode}',
     table: '表格',
     cards: '卡片',
   },
@@ -36,12 +30,5 @@ export default {
     allLoaded: '已全部載入 {count} 筆',
     loadFailed: '載入失敗，請重試',
     empty: '清單暫時沒有內容',
-  },
-  focus: {
-    enter: '專注檢視',
-    exit: '結束專注',
-  },
-  desktopOnly: {
-    banner: '此頁面依桌面版設計。這裡可以閱讀，大量編輯請在桌面版完成。',
   },
 }

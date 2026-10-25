@@ -9,16 +9,7 @@ export default {
     configFailed: '压缩配置加载失败，下面显示的是出厂默认值而非当前配置',
   },
   tabs: {
-    h24: '24小时',
-    d7: '7天',
-    d30: '30天',
     custom: '自定义',
-  },
-  custom: {
-    from: '开始时间',
-    to: '结束时间',
-    apply: '查询',
-    sep: '至',
   },
   stats: {
     totalRequests: '总请求数',
@@ -33,9 +24,6 @@ export default {
   charts: {
     strategyDistribution: '压缩策略分布',
     compressionRateTrend: '压缩率趋势',
-    timeBucketHour: '按小时',
-    timeBucket6Hour: '每6小时',
-    timeBucketDay: '按天',
     noData: '暂无可用的时间序列数据',
     titleSuffix: '{strategy}: {count} 条 ({pct})',
     barTitle: '{hour}: {n} 请求, {pct} 压缩率',
@@ -56,17 +44,6 @@ export default {
     previous: '上一页',
     next: '下一页',
     pageInfo: '{current} / {total}',
-  },
-  strategies: {
-    delta_append: '增量拼接',
-    sliding_window_token: '滑动窗口(Token)',
-    sliding_window_count: '滑动窗口(条数)',
-    sliding_window_idle: '滑动窗口(空闲)',
-    mechanical_trim: '机械裁剪',
-    memora_l1_inject: 'Memora 注入',
-    llm_summary: 'LLM 总结',
-    noop: '空操作',
-    none: '未压缩',
   },
   // 扁平化 key（CompressionView.vue 直接引用）
   d30: '30天',

@@ -2,13 +2,6 @@
 // errors.ts — API エラー文案。優先的にバックエンドが安定して返す ApiError.code で翻訳し（errors.code.<code>）、
 // code が無い場合は ApiError.message にフォールバックします（バックエンドの中国語フォールバック）。code リストは API の進化に合わせて徐々に追加します。
 export default {
-  code: {
-    unauthorized: '認証されていません。再度ログインしてください',
-    forbidden: 'アクセス権限がありません',
-    not_found: 'リソースが存在しません',
-    rate_limited: 'リクエストが多すぎます。しばらくしてから再試行してください',
-    internal: 'サーバー内部エラー',
-  },
   byStatus: {
     400: 'リクエストパラメータが無効です',
     401: '認証されていません。再度ログインしてください',
