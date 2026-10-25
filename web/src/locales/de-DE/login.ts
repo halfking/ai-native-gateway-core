@@ -3,6 +3,7 @@
 export default {
   title: 'Bei der Steuerebene anmelden',
   subtitle: 'Kaixuan MaaS Console', // Marke „Kaixuan" bleibt über alle Sprachen hinweg gleich
+  hint: 'Beim ersten Anmelden oder nachdem ein Administrator das Passwort zurückgesetzt hat, muss das Passwort zuerst geändert werden.',
   username: 'Benutzername',
   usernamePlaceholder: 'admin',
   password: 'Passwort',
@@ -15,6 +16,8 @@ export default {
   error: {
     required: 'Bitte Benutzername und Passwort eingeben',
     failed: 'Anmeldung fehlgeschlagen',
+    apiKeyUnsupported: 'Dieses Konto meldet sich nicht mehr mit einem API-Schlüssel an. Bitte Benutzername und Passwort verwenden. Für Hilfe wenden Sie sich an einen Administrator.',
+    badResponse: 'Die Anmeldeantwort war fehlerhaft. Bitte erneut versuchen oder einen Administrator kontaktieren.',
   },
   changePassword: 'Passwort ändern',
   passwordChangeSuccess: 'Passwort erfolgreich geändert',

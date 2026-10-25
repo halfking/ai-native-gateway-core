@@ -93,6 +93,7 @@ export function mergeRemoteOps(localGroups: NavGroup[], remote: OpsMenuGroup[] |
     merged.push({
       id: g.id,
       label: g.label,
+      labelKey: g.labelKey,
       items: g.items.map((it) => ({
         path: it.path,
         label: it.label,
@@ -159,8 +160,16 @@ export function useAppNav() {
     }))
   })
 
-  function navLabel(labelKey: string | undefined, fallback: string): string {
-    return labelKey ? t(labelKey) : fallback
+  /**
+   * 菜单项标签的**唯一**解析口：优先用 i18n 键（语言包是唯一真值），
+   * 没有键时才退回调用方给的兜底字符串。
+   *
+   * ★ 2026-10-27（第 10 增量）：`NavItem.label` 已从必填改为可选 ——
+   *   静态菜单全部只带 `labelKey`，代码里不再留一份中文副本；
+   *   `fallback` 因此允许为空（空串兜底，而不是渲染出 "undefined"）。
+   */
+  function navLabel(labelKey: string | undefined, fallback?: string): string {
+    return labelKey ? t(labelKey) : (fallback ?? '')
   }
 
   return {

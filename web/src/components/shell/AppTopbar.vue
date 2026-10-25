@@ -15,7 +15,7 @@ import ThemeToggle from '../ThemeToggle.vue'
 import SystemStatusIndicator from '../SystemStatusIndicator.vue'
 import UserMenuDropdown from './UserMenuDropdown.vue'
 import { detectTheme, logoSrc } from '../../theme'
-import { SITE_LOGO_SIZE, SITE_TITLE, SITE_TITLE_LINE_ONE, SITE_TITLE_LINE_TWO } from '../../config/brand'
+import { SITE_LOGO_SIZE, SITE_TITLE_LINE_ONE } from '../../config/brand'
 import { isNavItemActive } from '../../config/appNav'
 // 2026-09-13: 菜单构建（静态分组 + 插件/运维中心合并 + 角色过滤）抽到
 // useAppNav，与 AppNavDrawer（移动抽屉）共用；行为不变。
@@ -161,17 +161,17 @@ function groupActive(id: string): boolean {
 <template>
   <header class="app-topbar">
     <!-- 品牌区跳产品首页（ai-native-maintain /maintain/home），不是总览 /dashboard -->
-    <a href="/maintain/home" class="app-topbar__brand" :title="SITE_TITLE">
+    <a href="/maintain/home" class="app-topbar__brand" :title="t('app.brand.siteTitle')">
       <img
         :src="brandLogo"
         :width="SITE_LOGO_SIZE"
         :height="SITE_LOGO_SIZE"
-        alt="开轩启圭"
+        :alt="t('app.brand.alt')"
         class="app-topbar__brand-img"
       />
       <span class="app-topbar__brand-text">
         <span>{{ SITE_TITLE_LINE_ONE }}</span>
-        <span>{{ SITE_TITLE_LINE_TWO }}</span>
+        <span>{{ t('app.brand.siteTitleLineTwo') }}</span>
       </span>
     </a>
 
@@ -182,7 +182,7 @@ function groupActive(id: string): boolean {
       v-if="isMobile"
       type="button"
       class="app-topbar__hamburger"
-      :aria-label="t('nav.mainAria', '主导航')"
+      :aria-label="t('nav.mainAria')"
       aria-haspopup="dialog"
       :aria-expanded="navDrawerOpen"
       @click="navDrawerOpen = true"
@@ -192,8 +192,8 @@ function groupActive(id: string): boolean {
       <span class="app-topbar__hamburger-bar" aria-hidden="true"></span>
     </button>
 
-    <nav v-else class="app-topbar__nav" :aria-label="t('nav.mainAria', '主导航')">
-      <template v-for="{ item, resolved } in navPrimaryResolved" :key="item.path + item.label">
+    <nav v-else class="app-topbar__nav" :aria-label="t('nav.mainAria')">
+      <template v-for="{ item, resolved } in navPrimaryResolved" :key="item.path">
         <a
           v-if="resolved.external"
           :href="resolved.path"
@@ -202,7 +202,7 @@ function groupActive(id: string): boolean {
             active: isNavItemActive(resolved.path, route.path, item.exact),
             'app-topbar__link--activate': resolved.activateAction,
           }"
-        >{{ navLabel(item.labelKey, resolved.activateAction ? t('nav.item.activateAction', '激活') : item.label) }}</a>
+        >{{ navLabel(item.labelKey, resolved.activateAction ? t('nav.item.activateAction') : item.label) }}</a>
         <router-link
           v-else
           :to="resolved.path"
@@ -211,7 +211,7 @@ function groupActive(id: string): boolean {
             active: isNavItemActive(resolved.path, route.path, item.exact),
             'app-topbar__link--activate': resolved.activateAction,
           }"
-        >{{ navLabel(item.labelKey, resolved.activateAction ? t('nav.item.activateAction', '激活') : item.label) }}</router-link>
+        >{{ navLabel(item.labelKey, resolved.activateAction ? t('nav.item.activateAction') : item.label) }}</router-link>
       </template>
 
       <div
@@ -244,24 +244,24 @@ function groupActive(id: string): boolean {
         @mouseenter="cancelLeave"
         @mouseleave="closeAll()"
       >
-        <template v-for="{ item, resolved } in activeGroup.items" :key="item.path + item.label">
+        <template v-for="{ item, resolved } in activeGroup.items" :key="item.path">
           <a
             v-if="resolved.external"
             :href="resolved.path"
             class="app-topbar__dropdown-item"
             :class="{ 'app-topbar__dropdown-item--activate': resolved.activateAction }"
-            :title="resolved.activateAction ? t('nav.item.activateActionTip', '点击前往激活本机') : undefined"
+            :title="resolved.activateAction ? t('nav.item.activateActionTip') : undefined"
             role="menuitem"
             :target="resolved.path.startsWith('http') ? '_blank' : undefined"
             :rel="resolved.path.startsWith('http') ? 'noopener' : undefined"
             @click="closeAll()"
           >
             <span class="app-topbar__dropdown-icon" aria-hidden="true">{{ item.icon }}</span>
-            <span>{{ navLabel(item.labelKey, resolved.activateAction ? t('nav.item.activateAction', '激活') : item.label) }}</span>
+            <span>{{ navLabel(item.labelKey, resolved.activateAction ? t('nav.item.activateAction') : item.label) }}</span>
             <span
               v-if="item.path === '/format-anomalies' && requestAnomalyCount > 0"
               class="app-topbar__item-badge"
-              :title="t('nav.badge.formatAnomalies', '未解决的请求侧异常')"
+              :title="t('nav.badge.formatAnomalies')"
             >{{ requestAnomalyCount > 99 ? '99+' : requestAnomalyCount }}</span>
           </a>
           <router-link
@@ -272,16 +272,16 @@ function groupActive(id: string): boolean {
               active: isNavItemActive(resolved.path, route.path, item.exact),
               'app-topbar__dropdown-item--activate': resolved.activateAction,
             }"
-            :title="resolved.activateAction ? t('nav.item.activateActionTip', '点击前往激活本机') : undefined"
+            :title="resolved.activateAction ? t('nav.item.activateActionTip') : undefined"
             role="menuitem"
             @click="closeAll()"
           >
             <span class="app-topbar__dropdown-icon" aria-hidden="true">{{ item.icon }}</span>
-            <span>{{ navLabel(item.labelKey, resolved.activateAction ? t('nav.item.activateAction', '激活') : item.label) }}</span>
+            <span>{{ navLabel(item.labelKey, resolved.activateAction ? t('nav.item.activateAction') : item.label) }}</span>
             <span
               v-if="item.path === '/format-anomalies' && requestAnomalyCount > 0"
               class="app-topbar__item-badge"
-              :title="t('nav.badge.formatAnomalies', '未解决的请求侧异常')"
+              :title="t('nav.badge.formatAnomalies')"
             >{{ requestAnomalyCount > 99 ? '99+' : requestAnomalyCount }}</span>
           </router-link>
         </template>

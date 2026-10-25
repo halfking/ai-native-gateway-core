@@ -79,6 +79,7 @@ export default {
     agents: 'Agent Registry',
     promptInjection: 'Prompt Injection Detection',
     examples: 'Examples',
+    autoConfig: 'Auto setup',
     chat: 'Chat',
     updateActivate: 'Update & Activate',
     licenseActivate: 'License Activation',

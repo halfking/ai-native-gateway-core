@@ -35,7 +35,7 @@ const { route, navGroups, navPrimaryResolved, navLabel } = useAppNav()
 const { counts: requestAnomalyCounts } = useRequestAnomalyBadge()
 const requestAnomalyCount = computed(() => requestAnomalyCounts.value.unresolved)
 
-type ResolvedItem = { item: { path: string; label: string; icon?: string; exact?: boolean; labelKey?: string }, resolved: { path: string; external?: boolean; activateAction?: boolean } }
+type ResolvedItem = { item: { path: string; label?: string; icon?: string; exact?: boolean; labelKey?: string }, resolved: { path: string; external?: boolean; activateAction?: boolean } }
 type Section = { id: string; flat: boolean; label?: string; labelKey?: string; items: ResolvedItem[] }
 
 const sections = computed<Section[]>(() => {
@@ -63,7 +63,7 @@ const sections = computed<Section[]>(() => {
 })
 
 const drawerTitle = computed(() =>
-  props.guestLinks ? t('landing.guestNavAria', '产品导航') : t('nav.mainAria', '主导航'),
+  props.guestLinks ? t('landing.guestNavAria') : t('nav.mainAria'),
 )
 
 const expanded = ref<Set<string>>(new Set())
@@ -106,7 +106,7 @@ function toggleGroup(id: string) {
 function itemLabel(item: ResolvedItem): string {
   return navLabel(
     item.resolved.activateAction ? undefined : item.item.labelKey,
-    item.resolved.activateAction ? t('nav.item.activateAction', '激活') : item.item.label,
+    item.resolved.activateAction ? t('nav.item.activateAction') : item.item.label,
   )
 }
 </script>
@@ -118,7 +118,7 @@ function itemLabel(item: ResolvedItem): string {
     width="min(80vw, 320px)"
     :title="drawerTitle"
   >
-    <nav class="app-nav-drawer" :aria-label="t('nav.mainAria', '主导航')">
+    <nav class="app-nav-drawer" :aria-label="t('nav.mainAria')">
       <template v-for="section in sections" :key="section.id">
         <button
           v-if="!section.flat"

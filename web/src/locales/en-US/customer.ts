@@ -17,6 +17,9 @@ export default {
     reactivate: 'Re-activate',
     loadFailed: 'Failed to load license info: {msg}',
   },
+  updateActivate: {
+    summary: 'Site details, one-click activation, version upgrades, and the modules you have enabled.',
+  },
   versionsUpgradeConfirmBody: 'The service will be upgraded to {version} ({label}). It will be briefly unavailable. Make sure no important tasks are running.',
   versionsUpgradeConfirmTitle: 'Confirm upgrade',
   versionsUpgradeConfirmStart: 'Start upgrade',

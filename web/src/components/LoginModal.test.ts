@@ -33,10 +33,17 @@ vi.mock('../composables/useLoginModal', () => ({
 
 // 2026-09-13: LoginModal 壳层迁移到 ui/AppModal 后，AppModal 依赖 useI18n
 // （common.button.close 等词条），测试需安装 i18n 插件。
+//
+// ★ 2026-10-27（第 10 增量）：弹窗文案全部走语言包了 ⇒ 这里改成挂**真实的
+//   zh-CN 语言包**，而不是只塞一条 common.button.close ——
+//   断言的仍是「用户真正看到的字」，而且**顺带把「键缺了」变成测试失败**
+//   （用桩 i18n 时 t('login.hint') 会返回键路径，缺键会静默通过）。
+import zhCN from '../locales/zh-CN'
+
 const i18n = createI18n({
   legacy: false,
   locale: 'zh-CN',
-  messages: { 'zh-CN': { common: { button: { close: '关闭' } } } },
+  messages: { 'zh-CN': zhCN as any },
 })
 
 describe('LoginModal first-login hint', () => {

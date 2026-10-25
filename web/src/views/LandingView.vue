@@ -4,7 +4,7 @@ import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import ServiceLandingPage from '../components/ServiceLandingPage.vue'
 import { localeArray } from '../i18n'
-import { SITE_LOGO_SIZE, SITE_TITLE } from '../config/brand'
+import { SITE_LOGO_SIZE } from '../config/brand'
 import { detectTheme, logoSrc } from '../theme'
 
 const { t, tm } = useI18n()
@@ -94,7 +94,7 @@ function openLogin() {
 <template>
   <div class="llmgo-landing">
     <ServiceLandingPage
-      :brand="SITE_TITLE"
+      :brand="t('app.brand.siteTitle')"
       :logo-src="brandLogo"
       :logo-size="SITE_LOGO_SIZE"
       :title="t('landing.title')"

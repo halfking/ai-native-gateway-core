@@ -3,6 +3,7 @@
 export default {
   title: 'コントロールプレーンにログイン',
   subtitle: 'Kaixuan MaaS 管理コンソール', // 「開軒」 ブランド名は全言語で未翻訳
+  hint: '初回ログイン、または管理者がパスワードをリセットした後は、先にパスワードを変更してから利用してください。',
   username: 'ユーザー名',
   usernamePlaceholder: 'admin',
   password: 'パスワード',
@@ -15,6 +16,8 @@ export default {
   error: {
     required: 'ユーザー名とパスワードを入力してください',
     failed: 'ログイン失敗',
+    apiKeyUnsupported: 'このアカウントは API key ログインに対応していません。ユーザー名/パスワードでログインしてください。ご不明な場合は管理者までお問い合わせください。',
+    badResponse: 'ログイン応答の形式が不正です。再試行するか、管理者までお問い合わせください。',
   },
   changePassword: 'パスワード変更',
   passwordChangeSuccess: 'パスワードが正常に変更されました',

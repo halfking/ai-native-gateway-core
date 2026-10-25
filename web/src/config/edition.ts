@@ -53,7 +53,15 @@ const REMOTE_OPS_MENU_TTL_MS = 5 * 60_000
 
 export type OpsMenuItem = {
   path: string
-  label: string
+  /**
+   * 2026-10-27（第 10 增量 · 应用外壳 i18n 化）：`label` 由**必填**改为**可选**。
+   * 本地兜底菜单（LOCAL_OPS_MENU）现在只带 `labelKey` ⇒ 值在语言包里，
+   * 代码里不再留一份中文副本（避免两份真值漂移 —— 实测 appNav.ts 的
+   * 'License管理' 与语言包的 'License 管理' 早已不一致）。
+   * ⚠ 远端 maintain 菜单仍只有 `label`（后端下发中文）⇒ 那条路走的是
+   *   `label` 兜底，属于「后端下发的中文」工作线，尚未处理。
+   */
+  label?: string
   labelKey?: string
   icon?: string
   super?: boolean
@@ -64,7 +72,9 @@ export type OpsMenuItem = {
 
 export type OpsMenuGroup = {
   id: string
-  label: string
+  /** 同上：可选；本地兜底组只带 `labelKey`。 */
+  label?: string
+  labelKey?: string
   items: OpsMenuItem[]
 }
 
@@ -103,18 +113,24 @@ async function loadRemoteOpsMenu(force = false): Promise<OpsMenuGroup[] | null> 
   return remoteOpsMenuPromise
 }
 
-/** Local fallback menu (when maintain is unreachable or remote menu not yet fetched). */
+/**
+ * Local fallback menu (when maintain is unreachable or remote menu not yet fetched).
+ *
+ * ★ 2026-10-27（第 10 增量）：本地兜底菜单原先 7 条全是硬编码中文 `label`，
+ *   而这些条目在语言包里**本来就有对应的键**（nav.item.ops* / nav.group.opsplatform）
+ *   ⇒ 现在只留 `labelKey`，值由语言包提供（唯一真值）。
+ */
 export const LOCAL_OPS_MENU: OpsMenuGroup[] = [
   {
     id: 'opsplatform',
-    label: '运维中心',
+    labelKey: 'nav.group.opsplatform',
     items: [
-      { path: '/maintain/ops/overview', label: '运维总览', icon: '🧭', super: true, hide_for_tenant: true, external: true },
-      { path: '/maintain/ops/center', label: '中心运维', icon: '🖥️', super: true, hide_for_tenant: true, external: true },
-      { path: '/maintain/ops/downloads', label: '发布与下载', icon: '📦', super: true, hide_for_tenant: true, external: true },
-      { path: '/maintain/ops/licenses', label: 'License 管理', icon: '🔑', super: true, hide_for_tenant: true, external: true },
-      { path: '/maintain/ops/faults', label: '故障管理', icon: '⚠️', super: true, hide_for_tenant: true, external: true },
-      { path: '/maintain/ops/autoupdate', label: '自动更新', icon: '🛰️', super: true, hide_for_tenant: true, external: true },
+      { path: '/maintain/ops/overview', labelKey: 'nav.item.opsOverview', icon: '🧭', super: true, hide_for_tenant: true, external: true },
+      { path: '/maintain/ops/center', labelKey: 'nav.item.opsCenter', icon: '🖥️', super: true, hide_for_tenant: true, external: true },
+      { path: '/maintain/ops/downloads', labelKey: 'nav.item.opsDownloads', icon: '📦', super: true, hide_for_tenant: true, external: true },
+      { path: '/maintain/ops/licenses', labelKey: 'nav.item.opsLicenses', icon: '🔑', super: true, hide_for_tenant: true, external: true },
+      { path: '/maintain/ops/faults', labelKey: 'nav.item.opsFaults', icon: '⚠️', super: true, hide_for_tenant: true, external: true },
+      { path: '/maintain/ops/autoupdate', labelKey: 'nav.item.opsAutoUpdate', icon: '🛰️', super: true, hide_for_tenant: true, external: true },
     ],
   },
 ]

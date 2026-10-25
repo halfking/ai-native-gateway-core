@@ -1,7 +1,11 @@
 // Auto-translated draft (fr-FR) · 2026-07-02 · please review
 // app.ts — App.vue shell strings (header roles, sidebar collapse, logout, language switcher).
 export default {
-  brand: 'AI-Native Org Gateway',
+  brand: {
+    siteTitle: 'AI Native Passerelle Centrale',
+    siteTitleLineTwo: 'Passerelle Centrale',
+    alt: 'Logo Kaixuan',
+  },
   role: {
     super_admin: 'Super-administrateur',
     tenant_admin: 'Administrateur du locataire',

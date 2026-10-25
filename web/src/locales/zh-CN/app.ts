@@ -1,6 +1,10 @@
 // app.ts — App.vue 外壳框架文案（顶栏角色、侧栏折叠、退出、语言切换、主题）。
 export default {
-  brand: 'AI-Native 组织网关',
+  brand: {
+    siteTitle: 'AI Native 组织核心网关',
+    siteTitleLineTwo: '组织核心网关',
+    alt: '开轩启圭标志',
+  },
   role: {
     super_admin: '超级管理员',
     tenant_admin: '租户管理员',

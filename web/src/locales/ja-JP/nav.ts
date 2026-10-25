@@ -76,6 +76,7 @@ export default {
     agents: "エージェントレジストリ",
     promptInjection: "プロンプトインジェクション検出",
     examples: "接続例",
+    autoConfig: '自動設定',
     chat: "チャット",
     opsOverview: "運用概要",
     opsLicenses: "ライセンス管理",
