@@ -7055,7 +7055,7 @@ index b953a6f03..555ef83c4 100644
 > ⇒ ⇒ ★★★★ **④ 门（7 条全绿）+ 变异 M6~M9 全红（文件级备份 + md5 还原 + 残留自检）**：`domains/dbdegradation/r80_backup_summary_partial_test.go`（5 条：截断必报错 / 部分结果可缓存但必带标记 / 后台刷新补全 / 一趟并集==两趟并集 / **每个文件只解压一遍**）；`admin/r80_degradation_backup_partial_test.go`（2 条：备份腿不完整 ⇒ 200+degraded+reason 点名 backup / 部分摘要要返回但必须同时 degraded）。
 > ⇒ ⇒ ★★★ **⑤ 门自己抓到的一次「量具失明」（必记）**：★ **M6 第一轮是 GREEN** ⇒ 不是门坏、是**尺子瞎了**：`fileReads` 挂在 `readFileSummary` 上 ⇒ 「第二遍 `ReadRecords`」**根本不经过它** ⇒ 计数看不见 ⇒ 门恒绿 ⇒ ⇒ **把计数点下沉到真正的解压漏斗** `ReadRecordsWithStats` ⇒ 重跑 M6 ⇒ **红**（6≠3）⇒ ⇒ **通用式：计数点必须挂在【被测行为本身】上，而不是它的某个调用者上**（LESSONS §327）。
 > ⇒ ⇒ ★★ **⑥ 诚实边界**：★ **R80 代码尚未发版 ⇒ 假数字此刻仍在生产**（`backups.total_records=0`）⇒ 必须发版后复测；★ **48.9s 的冷请求只被「转移到后台」**（大文件整段解码仍是**不可中断区**）；★ **Redis 那条腿仍是每次请求全量 SCAN ~1M 键** ⇒ 5s 预算下**必然被打断** ⇒ `ttl_stats` 永远是部分计数 ⇒ 下一步应给它也加缓存/后台刷新；★ `db-status` 的 `degraded_duration` 仍 `0s`。
-> ⇒ ⇒ ★★★★★ **【2026-10-24 R81 轮（P11）】★★★★★ 摘要慢的**真根因**找到了：不是「解压 5.18GB」，而是**打捞路径的 member 边界搜索把每个文件反复完整解码 ~20~30 次** ⇒ 实测同���个 106MB 文件：纯解压 **2.92s** vs 打捞路径 **~45s**（**~15×**）⇒ 摘要链路改走**纯流式**（打捞只留给恢复链路）⇒ **口径不变**（完好文件上逐字相同）。
+> ⇒ ⇒ ★★★★★ **【2026-10-24 R81 轮（P11）】★★★★★ 摘要慢的**真根因**找到了：不是「解压 5.18GB」，而是**打捞路径的 member 边界搜索把每个文件反复完整解码 ~20~30 次** ⇒ 实测同一个 106MB 文件：纯解压 **2.92s** vs 打捞路径 **~45s**（**~15×**）⇒ 摘要链路改走**纯流式**（打捞只留给恢复链路）⇒ **口径不变**（完好文件上逐字相同）。
 > ⇒ ⇒ ★★★★ **① 实测（154 生产，真实读数）**：`gzip -dc sessions-2026-08-25-05.jsonl.gz | wc -l` = **2.92s**（106MB / 1010 行）⇒ 而网关摘要路径单文件 **~45s** ⇒ ⇒ 全量 100 个文件在打捞路径下是 **~75min**（**任何 5s/10min 预算都不可能算完** ⇒ R80 的后台刷新会**永远算不完、每轮白烧 10 分钟 CPU** ⇒ ★ 这是我上一轮埋的坑，本轮修掉）。
 > ⇒ ⇒ ★★★★ **② 机制**：`ReadRecordsWithStats` 对 ≤256MB 的文件走**打捞路径**（`salvageGzipMembers`）⇒ 它用「**指数扩张 + 二分夹逼**」定位每个 gzip member 的端点 ⇒ 而**每次试解前缀都要完整解码该前缀** ⇒ ⇒ **同一文件被反复完整解码 ~20~30 次**。
 > ⇒ ⇒ ★★★★ **③ 落地（`domains/dbdegradation/file_reader.go` + `file_reader_salvage.go`）**：① 新增 `readFileSummaryStreaming` —— 摘要链路走**纯流式**（`readGzipStream`，逐行检查 ctx）⇒ 成本降 ~15×；★ **打捞路径原样保留给恢复链路**（`GetFileSummary` 不变）⇒ **恢复能力不受影响**；② 后台预算 `10min → 30min`、摘要 TTL `30min → 6h` ⇒ 按实测（全量 ~8~13min）⇒ **后台能真跑完**，稳态 CPU ≈ 13min/6h ≈ **3.6% 单核**；③ 新增**确定性成本探针** `SalvageMemberProbes()`（member 边界搜索的前缀试解次数）。
@@ -9409,3 +9409,56 @@ index b953a6f03..555ef83c4 100644
 > ⇒ ⇒ ★★★ ⇒ ★★ ⇒ ★★ ⇒ ★★ ⇒ ★★ ⇒ ★★ ⇒ **★ 差集应当只剩我自己的文件，★ 多一个就是丢东西了**
 > ⇒ ⇒ ★★★ ⇒ ★★ ⇒ ★★ ⇒ ★★ ⇒ ★★ ⇒ ★★ ⇒ **★ ⇒ 「提交成功」与「提交完整」是两件事**
 > ⇒ ⇒ ★★★ ⇒ ★★ ⇒ ★★ ⇒ ★★ ⇒ ★★ ⇒ ★★ ⇒ **★ ⇒ 判据要选【能覆盖整棵树的】，★ 不是【能覆盖你关心的那几行的】】**
+
+> **2026-10-27 R158 轮（本会话）**：**模型请求 503 的因果链闭合在【上游】** + **挖出一个真缺陷**
+> ⇒ ★★★★★ **「恢复成功」是假的**（★ `handleForceRecoverSingle` **不重置 `quota_state`**）。
+> ⇒ ⇒ ★★★★ **① 503 因果链四层（★ 每层各自实测）**：
+> ★ 第 1 层 **上游** ⇒ ★★★ **三路本地模型路径逐条被封死**（★ `token.sensenova.cn`：`rpm exhausted` /
+> ★ `quota_exceeded_error`；★ `integrate.api.nvidia.com`：`inference exceeds tpm/rpm limit` /
+> ★ `rate_limit_error` / `code 429003`；★ **provider 2454：`429 budget_exceeded` /
+> ★ `"Organization balance insufficient"`** ⇒ ★★ **限流 ×2 + 账户余额 ×1** ⇒ ★★ **本地代码改不动它**）
+> ★ 第 2 层 **网关归类** ⇒ ★ **正确**（★ `state_reason_code=quota_permanent` / `quota_state=permanently_exhausted`）
+> ★ 第 3 层 **候选查询** ⇒ ★ **正确排除**（★ `grok-4.6` ⇒ `no_candidate` / **0.065 s** ⇒ ★★ 本地即返回、没打上游）
+> ★ 第 4 层 **实际请求** ⇒ ★★★ **打到上游后失败**（★ `glm-5.3-flash` **18.55 s** / `minimax-m2.7` **10.80 s**
+> ★★ ⇒ ★★ **秒级 vs 十秒级就是「有没有打上游」的分水岭**；★ 另有 R158-A 的 10.66 s 交叉印证）
+> ⇒ ⇒ ★★★★ **四层里只有第 1 层是根因 ⇒ ★★★ 把 503 当本仓缺陷去修 = 把【上游配额】伪装成【本地 bug】**
+> ⇒ ⇒ ★★★★ **② 真缺陷（★ 确定性复现，★ 本地单事务 + ROLLBACK，★ 零残留）**：
+> ★★ `admin/diagnostics_credential.go:247-312` 的 `handleForceRecoverSingle` 写 **4 张表**
+> ★★ （★ `credentials` / `credential_model_bindings` / `model_probe_state` / `node_probe_state`）
+> ★★ ⇒ ★★★ **`quota_state` 一个都不碰** ⇒ ★★★ 而 `v_routable_credential_models` 的 CASE 里
+> ★★★ **`quota_*` 档排在 availability 各档【之后】⇒ quota 判定盖过 availability**
+> ⇒ ⇒ ★★★★★ **后果**：★ 接口回 **200**、★ 文案说「凭据已强制恢复，credential / binding / probe_state 已重置」
+> ⇒ ★★★★★ **但它【仍然不可路由】⇒ 「恢复成功」是假的**（★ 复现：`availability='ready'` +
+> ★ `quota_state='permanently_exhausted'` ⇒ `is_routable=f` / `quota_permanently_exhausted`）
+> ⇒ ⇒ ★★★ **③ 生产双侧量化（★ 只读）**：★ **252** ⇒ 1461 绑定 / 42 凭据 ⇒ **A 类 462 / 5 凭据**（★ 446
+> ★ `permanently_exhausted` + 16 `periodic_exhausted`）；★ **211** ⇒ 1462 绑定 / 39 凭据 ⇒ **A 类 483 / 5 凭据**
+> ⇒ ★★★ **放大效应**：★ **5 个凭据 ⇒ 近 500 条绑定被卡**；★ **B 类两实例都是 0**
+> ⇒ ⇒ ★★★★ **④ 判据口径两次修正**：★ **第一版太宽**（★ 把「人工禁用 / 生命周期停用 / provider 禁用」
+> ★★ 也算矛盾 ⇒ ★★ 那是**粒度不同**、★ 本就该被路由排除）⇒ ★★★ **重写为三个各自语义明确的断言**
+> ★★ （★ A 凭据级自相矛盾 / B 同一信号两个答案 / C 探针回标（★ **恢复不持久**：★ 探针 worker 会再标回）/ D 不是矛盾）
+> ⇒ ⇒ ★★★★ **⑤ 新交付**：★ `scripts/audit/check-credential-routability-consistency.sh`（★ **只读**探测器，
+> ★★ `probe`/`classify` 双模式、★ **判定逻辑与查库分开** ⇒ ★ **门不需要真库**、★ **单一真值源在 SQL 的
+> ★ `finding_class`**、★ **退出码反映判定**（★ inconsistent/probe-reverted-only ⇒ 2、consistent ⇒ 0）、
+> ★ **DSN/口令绝不回显**）+ ★ `scripts/ursmcheck/credential_routability_consistency_gate_test.go`（★ **9 条**）
+> ⇒ ⇒ ★★★ **⑥ 本轮自身踩到 5 个缺陷（★ 全部是【读数错误】不是【行为错误】）**：
+> ★★ ① `classify_file "-"` 把 `-` 当**文件名**（★ awk 里 `-` 不是 stdin）② ★★ **`/dev/stdin` 只能读一次**
+> ★★ ⇒ ★★ 第一个 awk 吃光 stdin ⇒ ★★ **「绑定总数 2（真）」与「涉及凭据数 0（假）」自相矛盾**
+> ★★ ⇒ ★★ **改为先落盘快照再多次读** ③ ★★ **`awk -F'\t'` 在 BWK awk 不生效** ⇒ ★★ 改 `BEGIN{FS="\t"}`
+> ★★ ④ ★★ **顶层 `case` 分支里用 `local`** ⇒ ★★ bash 报 `local: can only be used in a function`
+> ★★ ⇒ ★★ **退出码 141**（★ SIGPIPE 惯用码 ⇒ ★★ **掩盖真因**）⑤ ★ SQL 注释区一处**反引号** + 一处 **U+FFFD 乱码**
+> ⇒ ⇒ ★★★★ **⑦ 变异验证 6 臂全红**（★ M1 A 类计数 / M2 退出码契约 / M3 SQL 区反引号 / M4 写库语句 /
+> ★ M5 判定恒定 / M6 不读 stdin ⇒ ★ 每臂还原后 **md5 逐字一致** `7edd737bec4cc80def88d11d6f4af159`）
+> ⇒ ⇒ ★★★★ **⑧ 回归**：`go build ./...` ✔ · `make guards-shell` ✔ · ★ **`make guards-ursmcheck` ✔
+> ★★ （ursmcheck 498.053 s / admin 81.634 s / exit 0）**；★ **写入路径正向证明**：★ **503 失败请求照样落库**
+> ★★ （★ `request_status=failure` / `origin_stage=business` / `request_preview='user: ping'`）
+> ⇒ ⇒ ★★★★ **⑨ 通用式 7 条沉淀在 `LESSONS.md` §413**（★ 核心：★★ **「恢复成功」要对着【真正决定路由的
+> ★★ 那个字段】验 ⇒ 「接口 200 + 文案说已恢复」是零信息**；★★ **bash 双引号串里的反引号 = 命令替换 ⇒
+> ★★ SQL 被静默改写而 psql 照样成功**；★★ **`/dev/stdin` 只能读一次 ⇒ 自相矛盾的读数是量具坏了的信号**；
+> ★★ **awk 的 `\t` 三层语义**（★ 正则字面量 / `-F` 参数 / 字符串字面量 ⇒ **只有第三层可靠**））
+> ⇒ ⇒ ★★★ **⚠ 属主裁决（★ 本轮全部留空未做）**：★★★ **`handleForceRecoverSingle` 不重置 `quota_state`**
+> ★★★ （★ 252 462 条 / 211 483 条绑定受影响 ⇒ ★★ **改它 = 改生产凭据恢复行为** ⇒ ★★ **必须属主授权**；
+> ★★★ **推荐修法 ②**：★★ **不清 quota，★ 但让文案与响应体如实反映「已重置 availability，配额未变，仍不可路由」**
+> ★★ ⇒ ★★ **零语义风险**；★ ★★ **修法 ①（连带清 quota）与 ③（CASE 顺序前置）都危险** ⇒ ★★ 会假恢复）
+> ⇒ ⇒ ★★★ **★ 诚实边界**：★ 本轮**只加只读工具与门** ⇒ ★★ **生产行为未变、★ 缺陷仍然存在**；
+> ★★ 「probe 模式在真库上正确」由**双实例实测**承担（★ **不由门承担**，★ 门只用合成清单）
+> ⇒ 完整记录见 `docs/audit/2026-10-27-R158-上游封死因果链与force-recover假恢复.md`（§0~§10）。
