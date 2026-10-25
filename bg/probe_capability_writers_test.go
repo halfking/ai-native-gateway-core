@@ -48,7 +48,7 @@ func TestNodeProbeDirectPersistsNativeResponsesVerdict(t *testing.T) {
 			t.Cleanup(srv.Close)
 
 			sink := &recordingResponsesCapabilitySink{}
-			worker := NewNodeProbeWorker(nil, nil, nil, "", srv.URL, nil)
+			worker := NewNodeProbeWorker(nil, nil, nil, "", srv.URL, nil, 0)
 			worker.probeClient = srv.Client()
 			worker.SetResponsesCapabilitySink(sink)
 			worker.resolveDirectTargetFn = func(context.Context, int, string) (string, string, string, string, int, error) {

@@ -10155,3 +10155,128 @@ cron 日志里也有 `"retention_hours":8`）⇒ ⇒ ★★★ 实测 `max(hot.t
 |-----------|------|---------|--------|
 | 908 | `908_route_incident_events_type_created_drop.sql` | `bcd401ec78150ecb544e85966b95c75edbe81943669beb45c2f2fe8440490b15` | applied+verified |
 
+
+### 2026-10-27 · R152 · v1 退役保证的两处盲区（★ **无 SQL 变更**）
+
+★ **本轮【没有 SQL 变更、没有迁移、没有发版】⇒ 无需在 211/252 上同步任何 SQL；★ 对生产的写入 = 0。**
+
+★ **本轮的全部改动都是【仓内判据】**（零生产行为变化、零客户端契约变化、零写面变化）：
+
+★ ① **新门** `cmd/tools/sql_source_indirection_audit/v1_literal_in_unresolved_test.go`
+★　（★ 判据：「**unresolved 桶的文件里不许出现任何已退役 v1 关系名的字面量**」——
+★　★ 补的是「关系名由**形参**决定 ⇒ 工具解析不出 ⇒ 没有任何门看得见」这条路径；
+★　★★ 实测**误报面为空**：23 处候选字面量逐个定性 ⇒ 只有 1 处是真读点；
+★　★★ 例外台账 `v1LiteralGuardExemptions` **空**（基线 0，只许缩小，每项须写理由）；
+★　★★ 6 组阳性/阴性对照，其中 3 条**阴性**用**仓内真实文本** ⇒ 不许一刀切）；
+★ ② **模式补齐** `admin/session_family_sql_shape_test.go` 的 `retiredV1ReadPattern`
+★　（★ 补 `public.` / `ONLY` 两种限定 + 4 条阳性 + 2 条阴性对照；
+★　★★ 实测**干净树上旧=0/新=0 ⇒ 零误报**，而**被变异的树上旧=0/新=1 ⇒ 旧模式全盲**）；
+★ ③ **刷新 `origin/main` 上一直红的既有门** `sql_source_indirection_audit` 的快照
+★　（★ 142 → 147 / canonical 122→125 / unresolved 12→13、20→22；
+★　★★ **逐站点对拍**后改的数字，★ **无桶变小** ⇒ 不是「扫描范围被改小 / 解析失败被吞」；
+★　★★ 并**补登记**漏掉的读点 `db/request_logs_view_schema.go`（2 处，R92/R93/R94 改写后第一次进桶））。
+
+★ ★★ **本轮的中心发现（不是 SQL 问题，是「保证」的问题）**：
+★★ **「全仓没有 v1 读点」这句话在本轮开始时并不成立** ——
+★★ **证伪方式是变异**：把一个**形参**决定的表名换成 v1 基表 ⇒ ★★★ **本工具整包绿 + admin 的 v1 族全套门绿
+★★ + 例外台账是空的** ⇒ 而那份台账的注释写着「谁再写回 `_request_logs`，本门立即红」⇒ ⇒ ★★★★ **那句承诺是假的**。
+★★ ⇒ ⇒ ★★★ 修复已落地（上面 ①②）⇒ ★★★ **「v1 读点为零」这句话现在才成立**。
+
+★ **变异验证（三处，全部「红 → 还原 → 绿」，源文件 md5 逐字一致）**：
+★ M1 `leg("public._request_logs_hot")` ⇒ 新门红；M2 `FROM public._request_logs_hot` ⇒ admin 两道门双红；
+★ M3/M4 同一棵被变异的树上的前后对照 ⇒ 旧模式看不见、新模式看见 ⇒ 补齐零误报。
+
+★ 完整记录见审计档 `docs/audit/2026-10-27-R152-v1退役保证的两处盲区.md`（含 §4 诚实边界）+ LESSONS **§400** + AGENTS.md R152 条目。
+
+★ **★ R152 轮 · 第二段（D12）**：★★ **D12 的真实内容不是「改成 bash 3.2 兼容」，
+★ 而是「把隐含前提变成可检查的事实」** ⇒ ★★ **本段【仍然无 SQL 变更、无迁移、无发版】**
+★ ⇒ **无需在 211/252 上同步任何 SQL；★ 对生产的写入 = 0**（改动全是仓内脚本的注释/守卫 + 判据）。
+
+★ ① **新门** `sql/schema/shell_bash_prereq_declaration_gate_test.go`
+★　（★ 判据：「**用了 bash 4+ 特性的脚本必须声明运行前提**」——扫描面 = **全仓 520 个 .sh**；
+★　★★ 形态二选一：`# requires-bash: 4` 声明，**或**可执行守卫（`BASH_VERSINFO` + 明确提示 + exit 64）；
+★　★★ 仓内已有纪律写着「B 档**必须显式声明**最低版本」，但那**一半从没有机器检查** ⇒ ★★ 本门补上；
+★　★★ **15 个脚本当场补声明** ⇒ ★★ 把「记录在案（写在注释里、机器读不到）」变成**可检查的事实**）；
+★ ② **修一个潜伏的真缺陷** `sql/schema/shell_bash_compat_gate_test.go` 的 `stripShellComments`：
+★　★ 处理**双引号内、行尾的 `$(`**（多行命令替换的常规写法）时切片**越界** ⇒ **panic**；
+★　★ 它长期没被发现是因为**A 档那道门只扫 4 棵目录** ⇒ ★★ **「没炸」是「没被扫到」**；
+★　★ 修法 = 夹住切片两端 + 补**回归门**（8 个样例）；
+★ ③ 3 个脚本加**可执行版本守卫**（`run-migrations-strict.sh` / `check-and-fix-missing-tables.sh` /
+★　`loadtest-monitor.sh`）⇒ ★★ 原本在 macOS 上 cryptic 崩 ⇒ 现在 **exit 64 + 可执行指引**；
+★　★★ 前两个**会写生产** ⇒ ★★ **只加守卫、不改写**（改写风险 > 收益）；
+★ ④ ★★ **生成清单按流程重跑**：`docs/audit/evidence/2026-10-21-pipefail-scope-drop-candidates.tsv`
+★　★（★ 触发原因：加声明 ⇒ **行号平移 +3** ⇒ 清单过期 ⇒ `section_1975` 门红、提示「请重跑生成器」
+★　★ ⇒ ★★ **处置 = 重跑生成器，不是手改清单**；★ 实测 diff **只有行号平移、行数不变（82 行）** ⇒ **基线不动**）。
+
+★ **★ 本轮在验证 ② 时连吃两次「变异不红」**（⇒ LESSONS §400 通用式五）：
+★ ① 回归样例**没走到 panic 路径**（它在双引号状态里）⇒ **恒绿门**；
+★ ② 变异**只改切片、留着夹持** ⇒ **测的是「夹持还在」不是「缺陷还在」**；
+★ ③ **把夹持整段删掉、回到缺陷原样** ⇒ **立刻红**且报错原文与现场逐字一致 ⇒ ★★ 这才是真变异。
+
+★ **★ 回归**：`go build ./...` ✔ · `go test ./scripts/ursmcheck/` 整包 ✔（**ok 466.959s**）
+★ · `go test ./sql/schema/` ✔ · `go test ./cmd/tools/sql_source_indirection_audit/` ✔
+★ · `go test ./admin/ -run 'V1|RequestLogs|SessionFamily|Retirement|IndirectReader'` ✔（71.0s）
+★ **完整记录见审计档 `docs/audit/2026-10-27-R152-v1退役保证的两处盲区.md` §3.4 + LESSONS §400**。
+
+### 2026-10-27 · R152 · 第三段（D9 三件套落地 + 收尾）—— ★ **无 schema 变更、无迁移**
+
+★ ★★ **本段【无 SQL schema 变更、无迁移】，对生产的写入 = 0**
+★ ⇒ **无需在 211/252 上同步任何 DDL/DML；★ 无台账缺口产生**。
+★ ⚠ **发版口径**：D9 是**应用代码**变更 ⇒ ⇒ **随下一次常规发版自动上线**（本轮**不单独发版**）。
+
+⚠ ★★ **口径澄清**：D9c 改的是**应用内一条 UPDATE 语句的 SET 子句**
+（`bg/credential_probe_response_validation.go` 的 `credentialProbeObservationSQL`）
+⇒ ★★ **不是 schema 变更**（无 DDL、无新列、无索引）⇒ ⇒ **不需要迁移、不需要登记到迁移台账**
+⇒ ⇒ ★★ 但它**是**一处**行为变更**（inconclusive 现在参与退避阶梯）⇒ ⇒ 因此**必须随代码发版**，
+★ ⇒ ⇒ **211/252 的下一次发版会自动带上它**（与应用代码同批）⇒ ⇒ **无需单独的 SQL 同步动作**。
+
+★ **① D9a（超时预算接到设置）** `bg/node_probe.go` + `cmd/gateway/main.go`
+★　★ `NewNodeProbeWorker(..., proxyFunc, probeTimeoutMs int)` —— **第 7 实参**；
+★　★ 三处 `Timeout: 30 * time.Second` 硬编码字面量**删除**；默认值具名化为 `nodeProbeDefaultTimeoutMs`；
+★　★ 生产侧传 `settings.ErrorProbeTimeoutMs()`（1000..60000，默认 30000）。
+★ **② D9b（内容预算）** `internal/providercap/capability.go`：`const ProbePingMaxTokens = 1024`（32 → 1024）。
+★ **③ D9c（inconclusive 参与退避阶梯）** `bg/credential_probe_response_validation.go`：
+★　★ observation 路径的 SET 增列 `probe_consecutive_failures = COALESCE(probe_consecutive_failures, 0) + 1`
+★　★ ⇒ ★★ 该列**本来就存在**（无需迁移）且**只**驱动探针节奏（auth 退避阶梯 + quota 探针 due 门）
+★　★ ⇒ ⇒ **不**驱动健康判定 ⇒ ⇒ ★★ **「不写回」仍然是「不写回」（健康列一个字都不改）**。
+
+★ **★★ 本段的收尾（三处「夹具/量具」级修正，均不改变 D9 设计）**
+★ ① **编译红**：D9a 改签名 ⇒ **10 个测试调用点编译红** ⇒ 补 **`, 0`**（0 ⇒ 回落默认 30 s ⇒ 语义逐字等价）；
+★ ② ★★ **过期夹具**（R65 同族第三例）：observation SQL 的**锚定式**正则不再匹配 ⇒
+★　★ 那条正则的**本意是负面守卫** ⇒ ★★ **放宽 = 把守卫拆掉** ⇒ ⇒ **逐项枚举**（不放松强度）
+★　★ + **新增阴性对照**（6 真权威列 × 2 缝）⇒ ★★ **第一版对照【没有牙】**（注入点选错缝）
+★　★ ⇒ ⇒ **注入点必须落在守卫真正守的那道缝**（紧邻 WHERE 之前）⇒ ⇒ 对照现在有牙
+★　★ ⇒ ⇒ 变异（枚举放松成 `.*`）⇒ **6 个子例红** ⇒ 还原 ⇒ md5 逐字一致；
+★ ③ ★★ **门内的量具失效点**：`probeBudgetLiteralInt` 的 `{常量名 → 值}` 硬编码表是一份**过期镜像**
+★　★ ⇒ 被引用的常量改值 ⇒ **门读到旧值 ⇒ 门绿但事实错** ⇒ ⇒ **回源文件解析**（逐层解引用）
+★　★ ⇒ ⇒ 变异（引用形态 + 底常量 32→16）⇒ **新门红** ⇒ **旧镜像表会照绿**。
+
+★ **★★ 回归**（同一次合并跑，exit 0）：`scripts/ursmcheck` ✔ ok 550.314s · `sql/schema` ✔ ok 43.886s
+★ · `cmd/tools/sql_source_indirection_audit` ✔ ok 14.137s · `bg` ✔ ok 42.929s
+★ · `cmd/gateway` ✔ ok 7.388s · `internal/providercap` ✔ ok 1.524s
+★ · `go test ./admin/ -run 'V1|RequestLogs|SessionFamily|Retirement|IndirectReader'` ✔（94.277s）
+★ · `go build ./...` ✔ exit 0
+★ **完整记录见审计档 `docs/audit/2026-10-27-R152-v1退役保证的两处盲区.md` §3.5/§3.6 + LESSONS §401**。
+
+### 2026-10-27 · R152 · 第四段（D9 端到端复验 + D13 缺口刻画）—— ★ **无 schema 变更、无迁移**
+
+★ ★★ **本段【无 SQL schema 变更、无迁移】，对生产的写入 = 0**
+★ ⇒ **无需在 211/252 上同步任何 DDL/DML；★ 无台账缺口产生**。
+★ ⚠ **发版口径**：D9 已随 `2.5.8.2855`（git_sha `7b3fea48`）在**本地**复验通过 ⇒
+★ ⇒ **生产侧尚未复验**（★ D9a/D9b/D9c 随下一次常规发版上线）。
+
+★ ★★ **本段是【复验 + 刻画】，不是新的行为变更** ⇒ ⇒ 唯一新增的仓内产物是**一道新门**：
+★ `scripts/ursmcheck/probe_content_budget_coverage_gate_test.go`
+★ ⇒ ★ 「探针内容预算的**覆盖面**」（★ 与既有门「**值**」互补）：
+★ ★· 每个探针预算位点必须**显式引用具名常量**；裸字面量必须**具名例外**（四段键）；
+★ ★· **responses 腿**必须**具名待裁决**；★ 例外表只许缩小。
+★ ★★ ⇒ **门不改任何预算值** ⇒ ★ **零行为变化** ⇒ ★⇒ **无需任何生产侧同步**。
+
+★ ★★ **本段挖出两处缺口 ⇒ 登记为 D13（属主裁决项）**：
+★ ① **responses 腿**的内容预算仍是 32（与 D9b 同族）；
+★ ② ★★ **admin 运维探针的 `max_tokens: 1` / `5`** ⇒ ★★ 2026-09-25 vapeur 事故的**同族漏迁**
+★ 　 （★ 现场证据在同文件注释里；★ 2026-10-13 修了 `bg/` 侧，`admin/` 侧没迁）⇒ 四处已具名登记。
+
+★ **★ 回归**：`scripts/ursmcheck` ✔ · `sql/schema` ✔ · `cmd/tools/sql_source_indirection_audit` ✔
+★ · `bg` ✔ · `cmd/gateway` ✔ · `internal/providercap` ✔ · `admin` ✔ · `go build ./...` ✔
+★ **完整记录见审计档 `docs/audit/2026-10-27-R152-v1退役保证的两处盲区.md` §3.7/§3.8 + LESSONS §401**。

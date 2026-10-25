@@ -30,7 +30,15 @@ import (
 // `documentedSnapshot`（由 `TestDocumentedSnapshotMatchesMeasurement` 钉住，
 // 2026-10-21 / R65 轮更新）：
 //
-//	全仓拼接点 141 处（v1 0 文件/0 处、canonical 59/122、unresolved 12/19、v1arm 0/0）
+//	全仓拼接点 147 处（v1 0 文件/0 处、canonical 59/125、unresolved 13/22、v1arm 0/0）
+//
+//	（2026-10-25 R152 轮刷新：142 → 147。★ 不是只改数字 —— 逐站点对拍过：
+//	  净增 5 处 = admin/compression_sessions.go +1、admin/compression_stats.go +2
+//	  （R76/R77 把 SQL 构造搬进函数后，同一批会话族源在更多调用点上被拼接）、
+//	  db/request_logs_view_schema.go +2（R92/R93/R94 改写后第一次进入扫描范围，
+//	  已补登记判定：唯二入参是 session_turns_hot / session_turns）。
+//	  ⇒ 无桶变小 ⇒ 不是「扫描范围被改小 / 解析失败被吞」；
+//	  ⇒ 5 处 resolved 全是会话族 ⇒ 无 v1 读方。）
 //
 //	（2026-10-20 迁移 890 收口轮：v1 桶 -2 文件/-5 处、v1 臂桶 -16 文件/-27 处、
 //	canonical 桶 +29 文件/+72 处、unresolved 一栏未动（12 文件/19 处）。
@@ -904,6 +912,39 @@ var indirectSiteAssessments = map[string]siteAssessment{
 			"凭据画像的请求总数/错误类型分布/限流命中率/时间分桶。",
 		Consequence: "与 v1 无关。⚠ 口径：只读会话族热表 ⇒ 无会话头的流量（探针/自检回环）不计入画像。",
 	},
+
+	// ── 2026-10-25（R152 轮）：新进 unresolved 桶的 1 个文件 ──────────────────
+	// 触发：R92/R93/R94 三轮（369531475 / a073b6558 / f204e4c6a）把
+	// 「会话列表 enrich」从 v1 视图改写成会话族原生源，并把它抽进
+	// db/request_logs_view_schema.go ⇒ 该文件第一次进入本工具的扫描范围。
+	//
+	// ⚠ **文件名有误导性**：文件名叫 `request_logs_view_schema.go`，但它**不是**
+	//   v1 族的读方 —— 它是 canonical 视图 `request_logs_with_current_month`
+	//   的**会话两臂形态**定义与自愈逻辑（890 之后该视图只剩 session_turns_hot
+	//   ∪ session_turns 两臂）。★ 文件头第 33 行自陈「下面**没有**任何
+	//   `_request_logs` 字面量」，本轮**逐条核对属实**（见下）。
+	"db/request_logs_view_schema.go": {
+		Verdict: verdictNonV1ByInspection,
+		Via: "2 处（271、274），都在 `SessionFamilyLatestTurnPerSessionSQL(extraPred string)` 的" +
+			"**内层闭包** `leg := func(src string) string { … }` 里：" +
+			"① 271 行 `\"FROM (SELECT session_id, max(turn_no) AS turn_no FROM \" + src + \" t \"`、" +
+			"② 274 行 `\"JOIN \" + src + \" t ON t.session_id = l.session_id AND t.turn_no = l.turn_no\"`。" +
+			"★ `src` 是**形参** ⇒ 工具解析不到 ⇒ 判 unresolved。" +
+			"★★ **唯一的两个调用点在 276 行**：`leg(\"public.session_turns_hot\")` 与 " +
+			"`leg(\"public.session_turns\")` ⇒ **两个入参都是会话族字面量**，没有任何第三个入参。" +
+			"⚠ 工具判 unresolved 的原因与 bg/candidate_failure_monitor.go 同族：**跨作用域形参**，" +
+			"不是「解析失败被吞」。",
+		Consequence: "与 v1 无关（读会话族 hot ∪ 父表）。" +
+			"★ **该文件全篇无 v1 关系读点**，逐条核对过：" +
+			"(a) 两处拼接点的形参入参只有 session_turns_hot / session_turns 两个（271/274/276 行）；" +
+			"(b) 全文出现 `_request_logs` 的地方**只有三类**，没有一处是关系名——" +
+			"注释/文档（24/33/35/84/119/415/451/548/662/671/732/1030/1034/1085/1158/1198 行）、" +
+			"**对视图定义文本的探针谓词**（74 行 `strpos(pg_get_viewdef(...), '_request_logs') > 0`，" +
+			"那是「视图体里还有没有 v1 臂」的**检测器**，不是读 v1 表）、" +
+			"以及日志文案里的字面量（610 行 COMMENT ON VIEW 的文本）。" +
+			"⇒ 890 删掉 v1 族之后，本文件**不受任何影响**；" +
+			"反而是它**主动**保证 canonical 视图不再长回 v1 臂（bodyHasV1Arm 探针 + 不做 DDL 的退化分支）。",
+	},
 }
 
 // repoRoot 已移到同目录 tmproot_test.go（无 build tag）。
@@ -1405,7 +1446,23 @@ var documentedSnapshot = bucketSnapshot{
 	//   （`checkStalenessLastRequestSurface`）⇒ 新增 1 处拼接点。
 	//   ⇒ 方向 = **变大**（同一操作数、同一张表、同一个文件）
 	//   ⇒ 不是「新增读方」，也不是「扫描范围变了」⇒ 改数字即可（无桶变小）。
-	TotalSites: 142,
+	// ★ 2026-10-25（R152 轮）：142 → 147（canonical 122 → 125 处、
+	//   unresolved 12 文件/20 处 → 13 文件/22 处；**文件数 canonical 仍 59**，
+	//   v1 与 v1 臂两桶**逐字未动**）。
+	//   ★ **本轮没有只改数字**：逐站点对拍过（把快照所在的 a2ac50e37 与今天
+	//   各自的桶落盘后做逐文件逐类 diff），5 处净增的来源是三个文件：
+	//   ① admin/compression_sessions.go 3 → 4 处、② admin/compression_stats.go 3 → 5 处
+	//      —— R76/R77 两轮把 SQL 构造搬进 `compressionSessionsSQL()` 等函数后，
+	//      **同一批会话族源**（public.session_turns / public.session_turn_details /
+	//      public.session_bodies*）在**更多调用点**上被拼接 ⇒ 方向 = 变大
+	//      =「把看不见变成看得见」，**不是新增读方**（与 B4 轮同族）；
+	//   ③ db/request_logs_view_schema.go **新进 unresolved 桶（2 处）** ——
+	//      R92/R93/R94 三轮把「会话列表 enrich」改写成会话族原生源后，
+	//      该文件第一次进入扫描范围 ⇒ 本轮**补登记**了它的判定
+	//      （唯一两个调用点的入参都是 session_turns_hot / session_turns）。
+	//   ⚠ **方向判据逐条核过**：没有任何一个桶变小 ⇒ 不是「扫描范围被改小/
+	//     解析失败被吞」；全部 5 处的 resolved 关系名都是会话族 ⇒ 无 v1 读方。
+	TotalSites: 147,
 	V1Files:    0,
 	V1Sites:    0,
 	// ★ v1 臂桶**归零**：不是「推导器坏了」，是**没有任何视图还有 v1 臂**。
@@ -1424,9 +1481,9 @@ var documentedSnapshot = bucketSnapshot{
 	V1ArmFiles: 0,
 	V1ArmSites: 0,
 	CanonFiles: 59,
-	CanonSites: 122,
-	UnresFiles: 12,
-	UnresSites: 20,
+	CanonSites: 125,
+	UnresFiles: 13,
+	UnresSites: 22,
 }
 
 func TestDocumentedSnapshotMatchesMeasurement(t *testing.T) {

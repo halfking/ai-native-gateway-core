@@ -322,8 +322,28 @@ var retiredV1RelationPattern = regexp.MustCompile(
 //
 // 它是**读点**口径（不是「提到过」口径）⇒ 注释里的 `FROM _request_logs`
 // 不会被它算成读点。
+//
+// ★ 2026-10-25（R152 轮）：**补上 `public.` 与 `only` 两种限定**。
+//
+//	原形态是 `\b(?:from|join)\s+(关系名)\b` ⇒ 它要求关系名**紧跟**动词。
+//	⇒ 而**带 schema 限定的写法一律看不见**：
+//	    FROM public._request_logs_hot rl      ← 不命中（原形态）
+//	    FROM ONLY _request_logs_hot rl        ← 不命中（原形态）
+//	⇒ ★★ 而 `public.` 恰恰是**本仓自己的主流写法**（会话族源一律写成
+//	   `public.session_turns_hot`）⇒ ⇒ 这不是假想缺口，是「按本仓惯例写出来的
+//	   v1 读点」**必然**逃过这道门。
+//
+//	实测（2026-10-25）：把 db/request_logs_view_schema.go 的
+//	`leg("public.session_turns_hot")` 改成 `leg("public._request_logs_hot")`
+//	⇒ 这道门**绿**、例外台账**空**（它的注释写着「将来谁再写回 `_request_logs`，
+//	本门立即红」）⇒ ⇒ 那句承诺在这个形态下是**假的**。
+//	⇒ 本轮补上限定 + 补上阳性对照；另在
+//	cmd/tools/sql_source_indirection_audit/v1_literal_in_unresolved_test.go
+//	补上「形参决定的表名」那一条路（那道门管不了跨文件的形参取值）。
+//
+// ⚠ `public.` 是**可选**的 ⇒ 不带限定的写法仍然命中。
 var retiredV1ReadPattern = regexp.MustCompile(
-	`(?i)\b(?:from|join)\s+(?:` + retiredV1RelationAlternation() + `)\b`)
+	`(?i)\b(?:from|join)\s+(?:only\s+)?(?:public\.)?(?:` + retiredV1RelationAlternation() + `)\b`)
 
 // retiredV1ReferenceExceptions 是**已知仍引用已退役 v1 族关系**的生产位置。
 //
@@ -443,5 +463,29 @@ func TestRetiredV1ReferencesAreAllAccountedFor(t *testing.T) {
 	if retiredV1ReadPattern.MatchString("FROM public.request_logs_with_current_month rl") {
 		t.Error("retiredV1ReadPattern 命中了 canonical 视图 —— 890 之后它仍然存在（会话族两臂体），" +
 			"把它算成 v1 引用会让本门恒红")
+	}
+	// ★ 2026-10-25（R152 轮）补的阳性对照：**带 schema 限定**与 **ONLY** 的形态。
+	//
+	// 这两条是本轮实测发现的缺口：`public.` 是本仓自己的主流写法
+	// （会话族源一律 `public.session_turns_hot`）⇒ 原形态对这种写法**全盲**。
+	// ⇒ 没有这两条对照，将来有人把限定去掉，门照样绿 ⇒ 缺口会重新长回来。
+	if !retiredV1ReadPattern.MatchString("FROM public._request_logs_hot rl") {
+		t.Error("retiredV1ReadPattern 匹配不上 \"FROM public._request_logs_hot rl\" —— " +
+			"带 schema 限定的 v1 读点逃过了本门（本仓主流写法就是带 public. 的）")
+	}
+	if !retiredV1ReadPattern.MatchString("FROM ONLY public._request_logs_hot rl") {
+		t.Error("retiredV1ReadPattern 匹配不上 \"FROM ONLY public._request_logs_hot rl\" —— " +
+			"ONLY 限定的 v1 读点逃过了本门")
+	}
+	if !retiredV1ReadPattern.MatchString("JOIN public.request_logs_bodies_with_current_month rb") {
+		t.Error("retiredV1ReadPattern 匹配不上带 public. 的 v1 正文视图 —— 扫描器没有区分力")
+	}
+	// ★ 阴性对照：补上限定**不能**把 canonical 视图带进来。
+	if retiredV1ReadPattern.MatchString("FROM public.request_logs_with_current_month rl") {
+		t.Error("retiredV1ReadPattern 命中了 canonical 视图（带 public. 形态）—— " +
+			"限定放宽必须只放宽「已退役」那批")
+	}
+	if retiredV1ReadPattern.MatchString("JOIN public.session_turns_hot t") {
+		t.Error("retiredV1ReadPattern 命中了会话族热表 —— 限定放宽必须只放宽「已退役」那批")
 	}
 }

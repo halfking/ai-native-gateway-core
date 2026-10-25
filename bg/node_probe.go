@@ -529,6 +529,19 @@ func (w *NodeProbeWorker) SetProbeQueue(q *ProbeQueue) {
 // UseProbeQueue reports whether Submit routes through the unified queue.
 func (w *NodeProbeWorker) UseProbeQueue() bool { return w != nil && w.probeQueue != nil }
 
+// nodeProbeDefaultTimeoutMs 是 node 探针 HTTP 客户端的**默认**超时预算（毫秒）。
+//
+// ★ 2026-10-27（R152 轮 · D9a）：这个 30_000 以前是**硬编码字面量**
+// （`Timeout: 30 * time.Second`，三处）⇒ ⇒ `settings.ErrorProbeTimeoutMs()`
+// 对 node 探针**完全无效**（它只喂 `bg.NewActiveProbeExecutor`）
+// ⇒ ⇒ ★★ 「可配置的超时」≠「真正执行探针的那个超时」（R150 实测：
+// 本地把该键调到 60000 并重启，node 探针**照旧** 30 s 超时 ⇒
+// 「健康但慢」的上游被**判死** ⇒ 客户端看到「无 provider」）。
+//
+// ⇒ 现在它由 `NewNodeProbeWorker` 的第 7 个实参传入（毫秒），
+// 生产侧传 `settings.ErrorProbeTimeoutMs()`（1000..60000，默认 30000）。
+const nodeProbeDefaultTimeoutMs = 30_000
+
 // NewNodeProbeWorker constructs a worker.  baseURL="" picks
 // LLM_GATEWAY_NODE_PROBE_BASE_URL or the local gateway loopback URL.
 // apiKey is the system-level API key the worker uses for the gateway
@@ -540,13 +553,30 @@ func (w *NodeProbeWorker) UseProbeQueue() bool { return w != nil && w.probeQueue
 // result accurately reflects what real user requests experience
 // (instead of reporting a false-positive recovery by bypassing the
 // proxy).  Pass upClient.Proxy().ProxyFunc() from main.go.
-func NewNodeProbeWorker(db *pgxpool.Pool, encKey []byte, keyring *secret.Keyring, apiKey, baseURL string, proxyFunc func(*http.Request) (*url.URL, error)) *NodeProbeWorker {
+//
+// probeTimeoutMs is the HTTP timeout budget for **both** probe rounds
+// (direct upstream + credential-pinned gateway) and for the response
+// header wait (R152 轮 · D9a).
+//
+// ★ 之前这个预算写死为 30 s（`Timeout: 30 * time.Second` 三处）
+// ⇒ ⇒ `settings.ErrorProbeTimeoutMs()` 对 node 探针**无效**
+// ⇒ ⇒ ★★ 「可配置的超时」≠「真正执行探针的那个超时」
+// ⇒ ⇒ ★★ 而 30 s 是一个**边缘预算**（R151 实测：同一对，上游冷/慢时超时被判死，
+// 上游热/快时探针成功）⇒ ⇒ ★★ 「健康但慢」的上游会被**反复判死**。
+//
+// ⚠ 调用方**必须**把 `settings.ErrorProbeTimeoutMs()` 传进来（毫秒）。
+// <= 0 ⇒ 回落到 nodeProbeDefaultTimeoutMs（⇒ 永不出现「无超时」的裸奔客户端）。
+func NewNodeProbeWorker(db *pgxpool.Pool, encKey []byte, keyring *secret.Keyring, apiKey, baseURL string, proxyFunc func(*http.Request) (*url.URL, error), probeTimeoutMs int) *NodeProbeWorker {
 	if baseURL == "" {
 		if envURL := strings.TrimSpace(os.Getenv("LLM_GATEWAY_NODE_PROBE_BASE_URL")); envURL != "" {
 			baseURL = envURL
 		} else {
 			baseURL = loopback.GatewayBase() + "/v1"
 		}
+	}
+	probeTimeout := time.Duration(probeTimeoutMs) * time.Millisecond
+	if probeTimeout <= 0 {
+		probeTimeout = time.Duration(nodeProbeDefaultTimeoutMs) * time.Millisecond
 	}
 	w := &NodeProbeWorker{
 		db:          db,
@@ -555,7 +585,7 @@ func NewNodeProbeWorker(db *pgxpool.Pool, encKey []byte, keyring *secret.Keyring
 		keyring:     keyring,
 		apiKey:      apiKey,
 		baseURL:     baseURL,
-		client:      &http.Client{Timeout: 30 * time.Second},
+		client:      &http.Client{Timeout: probeTimeout},
 		stopCh:      make(chan struct{}),
 		wakeCh:      make(chan struct{}, 1),
 		inFlight:    make(map[string]struct{}),
@@ -566,11 +596,11 @@ func NewNodeProbeWorker(db *pgxpool.Pool, encKey []byte, keyring *secret.Keyring
 
 	if proxyFunc != nil {
 		w.probeClient = &http.Client{
-			Timeout: 30 * time.Second,
+			Timeout: probeTimeout,
 			Transport: &http.Transport{
 				Proxy:                 proxyFunc,
 				IdleConnTimeout:       90 * time.Second,
-				ResponseHeaderTimeout: 30 * time.Second,
+				ResponseHeaderTimeout: probeTimeout,
 				DialContext: (&net.Dialer{
 					Timeout:   10 * time.Second,
 					KeepAlive: 30 * time.Second,
