@@ -1622,6 +1622,15 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			//   baseline 刻意保留（718 先例：fresh-install 链建出→本条删掉）。
 			//   dbinit:no-transaction（DROP INDEX CONCURRENTLY）。
 			"908_route_incident_events_type_created_drop.sql",
+		//   909：给 session_summaries 的三列（session_key / title / primary_model）
+		//   补 GIN trigram 索引。★ 修的是 admin 会话搜索（catalogSearchSQL）
+		//   对 868,711 行做三列 OR 的 `%q%` ILIKE ⇒ Parallel Seq Scan
+		//   ⇒ 252 生产实测 Execution Time = 40,415.968 ms（40.4 秒）
+		//   ⇒ 而调用点 ctx 超时只有 2 秒 ⇒ ★★ 每次都超时 ⇒ 静默返回「没搜到」。
+		//   ★ Go 侧同步把谓词改成裸列（title ILIKE），★ 因为 PG 的表达式索引
+		//   匹配是逐字的 ⇒ COALESCE(title,'') ILIKE 用不上裸列索引。
+		//   dbinit:no-transaction（CREATE INDEX CONCURRENTLY）。
+		"909_session_summaries_search_trgm_indexes.sql",
 		},
 	}
 }

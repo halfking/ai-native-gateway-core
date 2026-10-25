@@ -17,9 +17,12 @@
 #   ROUTES=/path/to/routes.txt COOKIE=/path/to/cookies.txt \
 #     bash scripts/audit/api-sweep.sh
 #
-# 路由清单文件（ROUTES）每行一条，支持两种形态：
+# 路由清单文件（ROUTES）每行一条，支持三种形态：
 #   /api/admin/health              ← 只有路径（视为 GET）
 #   GET /api/admin/health          ← 带方法前缀（非 GET 的行会被跳过）
+#   /api/admin/health⇥GET⇥admin/handler.go:138   ← ★ 三列形态（★ 仓内正本
+#                                                  ★ `scripts/audit/asset/admin-routes.txt`
+#                                                  ★ 就是这个形态；★ METHOD=ANY 视为 GET）
 #   {id} / {name} 之类的占位符会被替换成 1。
 #
 # 环境变量：
@@ -220,9 +223,27 @@ while IFS= read -r raw || [[ -n "${raw}" ]]; do
   [[ "${raw}" == \#* ]] && continue
   n_read=$((n_read + 1))
 
+  # ★★ R156 轮改：★ 支持仓内路由清单的三列形态（★ path⇥method⇥file:line）。
+  #   ★ 起因：★ `scripts/audit/asset/admin-routes.txt`（★ R154 轮新增的**仓内正本**）
+  #     是**制表符分隔的三列**，★ 而本脚本只认「单列路径」或「方法␣路径」
+  #     ⇒ ★★ 两者直接组合 ⇒ ★★ **544 条全部 URL 畸形**（★ curl exit 3 = URL malformed）
+  #     ⇒ ★★ **仓内正本与仓内工具互相不认** ⇒ ★ **必须让工具吃下正本**。
+  #   ★ 兼容三种形态（★ 依次判断）：
+  #     ① `path`                       ⇒ 视为 GET
+  #     ② `METHOD path`                ⇒ METHOD 非 GET 则跳过
+  #     ③ `path⇥METHOD⇥file:line`     ⇒ ★ 仓内正本形态
   method="GET"
   path="${raw}"
-  if [[ "${raw}" == *" "* ]]; then
+  if [[ "${raw}" == *$'\t'* ]]; then
+    # ③ 三列形态：★ 第一列是路径，★ 第二列是方法（★ ANY = 源码无方法前缀 ⇒ 视为 GET）。
+    path="${raw%%$'\t'*}"
+    _rest="${raw#*$'\t'}"
+    _m="${_rest%%$'\t'*}"
+    method="$(printf '%s' "${_m}" | tr 'a-z' 'A-Z')"
+    if [[ "${method}" == "ANY" ]]; then
+      method="GET"
+    fi
+  elif [[ "${raw}" == *" "* ]]; then
     method="${raw%% *}"
     path="${raw#* }"
   fi

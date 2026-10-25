@@ -27,10 +27,14 @@ package ursm_test
 
 import (
 	"bufio"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -38,6 +42,8 @@ import (
 const (
 	ssLikeLedgerRel = "scripts/ursmcheck/session_summaries_like_index_ledger.tsv"
 	ssLikeSourceRel = "admin/session_catalog_usage.go"
+	// ★ R156 轮新增：★ 台账 verdict 的判定基准（★ 迁移 909 的索引清单）。
+	ssLikeMigrationRel = "sql/migrations/startup/909_session_summaries_search_trgm_indexes.sql"
 )
 
 // ssLikeAllowedVerdicts 是台账 verdict 列的允许取值。
@@ -124,8 +130,17 @@ func atoiStrict(t *testing.T, s string) int {
 }
 
 // ssLikeSourceColumns 返回【源码里】对 session_summaries 做 LIKE/ILIKE 的列名集合。
-// ★ 口径：取 catalogSearchSQL 这条常量里出现的 ILIKE 的目标表达式，
-//   再把它归一成列名（COALESCE(title,'') ⇒ title）。
+//
+// ★★ R156 轮改版：**用 go/ast 取常量 catalogSearchSQL 的真实字面量**，
+//   再在**那段 SQL 文本**上扫 LIKE 列。
+//
+// ★★ 为什么必须改（★ 这是一条真缺陷，★ 不是洁癖）：
+//   R154 轮的正则**扫的是整个 Go 文件**（★ 含注释）⇒ ★ 只要有人在 Go 注释里
+//   写一句 `COALESCE(x, '') ILIKE`（★ **解释性注释**，★ 例如论证口径等价时），
+//   就会被当成一个**真实的查询列** ⇒ ★ 集合比对凭空多出一个列 ⇒ ★ 门红，
+//   而**代码其实没问题** ⇒ ★ **假红**。
+//   ⇒ ★★ 通用式：**文本判据必须剥注释**；★ 且剥的层次要对：★ 这里要剥的是
+//   **Go 注释** ⇒ ★ 最稳的做法是**先取常量字面量**（★ AST 只取真实字面量）。
 func ssLikeSourceColumns(t *testing.T) map[string]bool {
 	t.Helper()
 	p := filepath.Join("..", "..", ssLikeSourceRel)
@@ -142,21 +157,102 @@ func ssLikeSourceColumns(t *testing.T) map[string]bool {
 	if !strings.Contains(src, "ILIKE") {
 		t.Fatalf("★ %s 里找不到 ILIKE ⇒ ★ 本门守的 LIKE 查询已消失 ⇒ ★ 台账与门都应重新评估（★ 不是「门绿了」）", ssLikeSourceRel)
 	}
+	// ★ R156 轮：★ 从**常量字面量**里取（★ 不扫注释）。
+	sqlText := ssLikeGoConstString(t, p, "catalogSearchSQL")
+	if sqlText == "" {
+		t.Fatalf("★ 解析 %s 的常量 catalogSearchSQL 失败 ⇒ ★ 本门的比对基准没了 ⇒ 门已失效", ssLikeSourceRel)
+	}
 	out := map[string]bool{}
-	// 形如：`session_key ILIKE $1` / `OR COALESCE(title, '') ILIKE $1`
-	re := regexp.MustCompile(`(?i)([a-z_][a-z0-9_]*)\s+ILIKE|COALESCE\(\s*([a-z_][a-z0-9_]*)\s*,\s*''\s*\)\s+ILIKE`)
-	for _, m := range re.FindAllStringSubmatch(src, -1) {
-		col := m[1]
-		if col == "" {
-			col = m[2]
-		}
-		if col == "" {
-			continue
-		}
-		out[col] = true
+	// 形如：`session_key ILIKE $1` / `OR title ILIKE $1`（★ R156 起是裸列）
+	re := regexp.MustCompile(`(?i)([a-z_][a-z0-9_]*)\s+ILIKE`)
+	for _, m := range re.FindAllStringSubmatch(sqlText, -1) {
+		out[m[1]] = true
 	}
 	if len(out) == 0 {
-		t.Fatalf("★ 没能从 %s 解析出任何 LIKE 查询列 ⇒ 解析口径坏了 ⇒ 门已失效", ssLikeSourceRel)
+		t.Fatalf("★ 没能从 %s 的 catalogSearchSQL 解析出任何 LIKE 查询列 ⇒ 解析口径坏了 ⇒ 门已失效", ssLikeSourceRel)
+	}
+	return out
+}
+
+// ssLikeGoConstString 取某个 Go 文件里某个字符串常量的值；取不到返回 ""。
+// ★ 用 go/ast 而不是正则扫全文（★ 理由见 ssLikeSourceColumns 的注释）。
+func ssLikeGoConstString(t *testing.T, path, constName string) string {
+	t.Helper()
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, path, nil, 0)
+	if err != nil {
+		t.Fatalf("解析 %s: %v", path, err)
+	}
+	out := ""
+	ast.Inspect(f, func(n ast.Node) bool {
+		vs, ok := n.(*ast.ValueSpec)
+		if !ok {
+			return true
+		}
+		for _, id := range vs.Names {
+			if id.Name != constName {
+				continue
+			}
+			for _, val := range vs.Values {
+				lit, ok := val.(*ast.BasicLit)
+				if !ok || lit.Kind != token.STRING {
+					continue
+				}
+				s, err := strconv.Unquote(lit.Value)
+				if err != nil {
+					continue
+				}
+				out = s
+			}
+		}
+		return true
+	})
+	return out
+}
+
+// ssLikeStripSQLComments 剥掉 SQL 行注释（-- 到行尾）与 /* */ 块注释。
+// ★ 必须剥：★ 迁移头部注释里就写着 `title ILIKE` 等字面量 ⇒ 不剥会命中注释。
+func ssLikeStripSQLComments(s string) string {
+	var out []string
+	for _, line := range strings.Split(s, "\n") {
+		if i := strings.Index(line, "--"); i >= 0 {
+			line = line[:i]
+		}
+		out = append(out, line)
+	}
+	joined := strings.Join(out, "\n")
+	for {
+		i := strings.Index(joined, "/*")
+		if i < 0 {
+			break
+		}
+		j := strings.Index(joined[i:], "*/")
+		if j < 0 {
+			joined = joined[:i]
+			break
+		}
+		joined = joined[:i] + joined[i+j+2:]
+	}
+	return joined
+}
+
+// ssLikeMigrationIndexColumns 读迁移 909 的 trigram 索引清单（列名集合）。
+// ★ 这是台账 verdict 的**判定基准**：★ verdict 必须与它一致 ⇒ ★ 台账不许撒谎。
+func ssLikeMigrationIndexColumns(t *testing.T) map[string]bool {
+	t.Helper()
+	p := filepath.Join("..", "..", filepath.FromSlash(ssLikeMigrationRel))
+	raw, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatalf("★ 读不到迁移 %s：%v ⇒ ★ verdict 的判定基准没了 ⇒ 门已失效", ssLikeMigrationRel, err)
+	}
+	clean := ssLikeStripSQLComments(string(raw))
+	re := regexp.MustCompile(`(?is)CREATE\s+INDEX\s+(CONCURRENTLY\s+)?IF\s+NOT\s+EXISTS\s+(\w+)\s+ON\s+public\.session_summaries\s+USING\s+gin\s*\(\s*([a-z_][a-z0-9_]*)\s+gin_trgm_ops\s*\)`)
+	out := map[string]bool{}
+	for _, m := range re.FindAllStringSubmatch(clean, -1) {
+		out[m[3]] = true
+	}
+	if len(out) == 0 {
+		t.Fatalf("★ 从迁移 %s 抽不到任何 trigram 索引列 ⇒ 解析口径坏了 ⇒ 门已失效", ssLikeMigrationRel)
 	}
 	return out
 }
@@ -246,15 +342,43 @@ func TestSessionSummariesLikeIndexLedgerMatchesSource(t *testing.T) {
 	}
 }
 
-// TestSessionSummariesLikeIndexLedgerOnlyShrinks：★ 台账只许缩小。
-// ★ 「indexed」状态的行意味着「已加索引」⇒ ★ 它应当已被移除 ⇒ 门红。
-func TestSessionSummariesLikeIndexLedgerOnlyShrinks(t *testing.T) {
+// TestSessionSummariesLikeIndexLedgerVerdictMatchesMigration：
+// ★★ 台账的 verdict 必须【可机器验证】⇒ ★★ **台账不许撒谎**。
+//
+// ★ 判据（双向）：
+//   · verdict == "indexed"     ⟺ ★ 该列在迁移 909 的 trigram 索引清单里
+//   · verdict == "needs-index" ⟺ ★ 该列**不**在迁移 909 的 trigram 索引清单里
+// ⇒ 说 indexed 而迁移没建 ⇒ **红**；★ 迁移建了而台账说 needs-index ⇒ **红**。
+//
+// ★★★ 为什么这样改（R156 轮订正 R154 轮的措辞，★ 这是一次**自相矛盾**的修复）：
+//   R154 轮写了两条互相打架的规则：
+//     ① 「加了索引的列**从台账里删掉**」（台账只许缩小）
+//     ② 门有「集合相等」判据（★ 源码的每一个 LIKE 列都必须在台账里，★ 不多不少）
+//   ⇒ ★★ **索引一落地就必然撞上**：★ 删行 ⇒ 集合不等 ⇒ 门红；
+//     ★ 而唯一能让门绿的办法是**留着行、把 verdict 改成 indexed** ⇒ ★★ **门在逼人撒谎**。
+//   ⇒ ★★ **一个撒谎的台账比没有台账更坏**（★ 它会让下一个读的人以为「还没修」）。
+//   ⇒ ★★ 于是 R156 轮把「只许缩小」重新定义为：
+//     ★★ **待办集（needs-index 行数）只许减少**，
+//     ★★ 并把 verdict 与迁移的索引清单**双向绑定** ⇒ ★★ 台账从此**不可撒谎**。
+func TestSessionSummariesLikeIndexLedgerVerdictMatchesMigration(t *testing.T) {
 	rows := ssLikeReadLedger(t)
+	idxCols := ssLikeMigrationIndexColumns(t)
+
 	for _, r := range rows {
-		if r.Verdict == "indexed" {
-			t.Errorf("★ 台账里还有 verdict=indexed 的行（%s:%d，列 %s）⇒\n"+
-				"    ★ 「已加索引」的行应当【从台账里删掉】⇒ ★ 台账只许缩小、不许长胖",
-				r.File, r.Line, r.Writer)
+		inMigration := idxCols[r.Writer]
+		switch r.Verdict {
+		case "indexed":
+			if !inMigration {
+				t.Errorf("★ 台账把列 %s 标成 indexed（%s:%d），★ 但迁移 909 的索引清单里**没有**它 ⇒ ★ 台账在撒谎 ⇒\n"+
+					"    ★ 修法二选一：★ 要么把迁移的索引列补上，★ 要么把 verdict 改回 needs-index",
+					r.Writer, r.File, r.Line)
+			}
+		case "needs-index":
+			if inMigration {
+				t.Errorf("★ 台账把列 %s 标成 needs-index（%s:%d），★ 但迁移 909 **已经**给它建了 trigram 索引 ⇒ ★\n"+
+					"    ★ 这一行应当翻成 indexed（★ 待办集只许缩小）",
+					r.Writer, r.File, r.Line)
+			}
 		}
 	}
 }
