@@ -79,6 +79,27 @@ from datetime import datetime, timezone
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 DEFAULT_CHANGELOG = os.path.join(REPO_ROOT, "docs", "db-changelog.md")
 
+# ★★★ 权威状态镜像【住在正本之外】★★★
+#   理由（★ 实测）：★ 登记册正本里有「同一迁移号【必须恰好出现一次】」的连续性门
+#   （★ `TestSection14335RegistrationPoints` / `TestMigration895RegisteredInEveryDeliverySurface`）
+#   ⇒ ★★ **把第二张表插进正本 ⇒ 直接破坏那些门**（★ 实测：★ 892 那行立刻变成「出现 2 次」）
+#   ⇒ ★★ ⇒ 权威表必须住在正本之外（★ 本轮先试过插进正本 ⇒ ★★ 被慢门打回 ⇒ ★★ 这才独立）。
+DEFAULT_AUTH_FILE = os.path.join(REPO_ROOT, "docs", "db-changelog-authoritative.md")
+
+# ★ 权威文件的头部说明（★ 首次生成时写入）
+AUTH_HEADER = """# ★ SQL 变更登记册 · 权威状态（机器可判）
+
+> ★★ 本文件是 `docs/db-changelog.md`（★ **唯一登记册**）的**机器可判镜像**：
+> ★★ 一行一个迁移号 × 三格（★ `local` / `252` / `211`）⇒ 每格 `applied@<账本 applied_at>` 或 `—`。
+> ★★ **为什么独立成文件**：★ ★★ 登记册正本里有「同一迁移号**必须恰好出现一次**」的连续性门
+> ⇒ ★★ ⇒ **把第二张表插进正本 ⇒ 直接破坏那些门**（★ ★★ 实测过 ⇒ ★★ 被慢门打回 ⇒ ★★ 这才独立）。
+> ★★ **真值**：★ 各环境自己的 `gateway_db_revision_sequences`（★ 本文件是**采集快照的投影** ⇒ ★ 会过期）。
+> ★★ 生成器：`scripts/audit/db-changelog-ledger-reconcile.py render --write`（★ 只读）。
+> ★★ 判读：`applied@…` = 该环境账本里已记账；★ `—` = 该环境账本里**没有**（★ **账本里没有 ≠ 没应用过**）。
+
+"""
+
+
 # ★ 账本表（★ startup 迁移账本 ⇒ 权威）
 LEDGER_TABLE = "gateway_db_revision_sequences"
 
@@ -729,36 +750,34 @@ def cmd_render(args):
     _rep = reconcile(args.changelog or DEFAULT_CHANGELOG, rows, meta)
     backlog = len(_rep["hard_contradictions"])
     section = build_authoritative(rows, meta, backlog=backlog)
+    out = args.out or DEFAULT_AUTH_FILE
     if args.check:
         # ★ 只校验：文件里的段落是否与现算的一致（★ 手改 ⇒ 退出码 2）
-        cur = read_authoritative_section(args.changelog or DEFAULT_CHANGELOG)
+        cur = read_authoritative_section(out)
         if cur is None:
-            print("✘ 登记册里没有权威状态段落（★ 缺 R160-AUTHORITATIVE 标记）")
+            print(f"✘ {out} 里没有权威状态段落（★ 缺 R160-AUTHORITATIVE 标记）")
             return 2
         if cur.strip() != section.strip():
-            print("✘ 登记册里的权威状态段与快照现算结果不一致 ⇒ ★ 要么手改过，★ 要么快照已过期")
+            print(f"✘ {out} 里的权威状态段与快照现算结果不一致 ⇒ ★ 要么手改过，★ 要么快照已过期")
             return 2
         print("✓ 权威状态段与快照一致")
         return 0
     if args.write:
-        path = args.changelog or DEFAULT_CHANGELOG
-        body = open(path, "r", encoding="utf-8").read()
-        if AUTH_BEGIN in body and AUTH_END in body:
-            new_body = re.sub(
-                re.escape(AUTH_BEGIN) + r".*?" + re.escape(AUTH_END),
-                section,
-                body,
-                flags=re.S,
-            )
-        else:
-            # ★ 首次插入：放在文件标题之后、第一个 `## ` 节之前
-            idx = body.find("\n## ")
-            if idx < 0:
-                new_body = body.rstrip("\n") + "\n\n" + section + "\n"
+        if os.path.exists(out):
+            body = open(out, "r", encoding="utf-8").read()
+            if AUTH_BEGIN in body and AUTH_END in body:
+                new_body = re.sub(
+                    re.escape(AUTH_BEGIN) + r".*?" + re.escape(AUTH_END),
+                    section,
+                    body,
+                    flags=re.S,
+                )
             else:
-                new_body = body[: idx + 1] + section + "\n" + body[idx + 1 :]
-        open(path, "w", encoding="utf-8").write(new_body)
-        print(f"★ 权威状态段已写入 {path}")
+                new_body = body.rstrip("\n") + "\n\n" + section + "\n"
+        else:
+            new_body = AUTH_HEADER + section + "\n"
+        open(out, "w", encoding="utf-8").write(new_body)
+        print(f"★ 权威状态段已写入 {out}")
         return 0
     print(section)
     return 0
@@ -949,8 +968,9 @@ def main(argv=None):
     rd = sub.add_parser("render", help="★ 生成【机器可判的权威状态段】")
     rd.add_argument("--snapshot", required=True)
     rd.add_argument("--changelog", default="")
-    rd.add_argument("--write", action="store_true", help="★ 回写进登记册（★ 幂等）")
-    rd.add_argument("--check", action="store_true", help="★ 只校验登记册里的段落是否与现算一致")
+    rd.add_argument("--out", default="", help="★ 权威镜像文件（★ 默认 docs/db-changelog-authoritative.md）")
+    rd.add_argument("--write", action="store_true", help="★ 回写权威镜像（★ 幂等）")
+    rd.add_argument("--check", action="store_true", help="★ 只校验镜像里的段落是否与现算一致")
     rd.set_defaults(func=cmd_render)
 
     ef = sub.add_parser("effective", help="★ 打印【全部】有效登记行（★ JSON）")

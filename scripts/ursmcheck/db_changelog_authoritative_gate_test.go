@@ -71,6 +71,12 @@ const (
 	dcaToolRel      = "scripts/audit/db-changelog-ledger-reconcile.py"
 	dcaSnapshotRel  = "scripts/audit/asset/db-changelog-ledger-snapshot.tsv"
 	dcaChangelogRel = "docs/db-changelog.md"
+	// ★★ 权威状态镜像【住在正本之外】★★：
+	// ★ 登记册正本里有「同一迁移号【必须恰好出现一次】」的连续性门
+	// ★ （★ TestSection14335RegistrationPoints / TestMigration895RegisteredInEveryDeliverySurface）
+	// ★ ⇒ ★★ 把第二张表插进正本 ⇒ 直接破坏那些门（★ ★★ 实测：★ 892 那行变成「出现 2 次」）
+	// ★ ⇒ ★★ ⇒ 权威表必须独立成文件（本轮先试过插进正本 ⇒ ★★ 被慢门打回 ⇒ ★★ 这才独立）。
+	dcaAuthRel = "docs/db-changelog-authoritative.md"
 )
 
 // dcaRepoRoot 返回仓根（★ 用 runtime.Caller：★ 写死 "../.." 会在 cwd 变化时扫不到文件）。
@@ -207,8 +213,8 @@ func TestDbChangelogSnapshotCoversThreeEnvironments(t *testing.T) {
 			t.Errorf("环境 %s 的账本行数为 0 ⇒ ★ 快照没采到东西", e)
 		}
 	}
-	// ★ 权威段里也必须三列齐全（★ 防止「段落里少写一个环境」）
-	body, err := os.ReadFile(filepath.Join(dcaRepoRoot(t), dcaChangelogRel))
+	// ★ 权威镜像里也必须三列齐全（★ 防止「段落里少写一个环境」）
+	body, err := os.ReadFile(filepath.Join(dcaRepoRoot(t), dcaAuthRel))
 	if err != nil {
 		t.Fatalf("读登记册失败：%v", err)
 	}
@@ -227,14 +233,14 @@ func TestDbChangelogSnapshotCoversThreeEnvironments(t *testing.T) {
 
 func TestDbChangelogProseBacklogIsRatchet(t *testing.T) {
 	root := dcaRepoRoot(t)
-	body, err := os.ReadFile(filepath.Join(root, dcaChangelogRel))
+	body, err := os.ReadFile(filepath.Join(root, dcaAuthRel))
 	if err != nil {
-		t.Fatalf("读登记册失败：%v", err)
+		t.Fatalf("读权威镜像失败：%v", err)
 	}
 	sec := string(body)
 	idx := strings.Index(sec, "散文状态与账本的矛盾数")
 	if idx < 0 {
-		t.Fatal("★ 登记册的权威段里没有「散文状态与账本的矛盾数」⇒ ★ 棘轮基线丢失 ⇒ ★ 门失效")
+		t.Fatal("★ 权威镜像里没有「散文状态与账本的矛盾数」⇒ ★ 棘轮基线丢失 ⇒ ★ 门失效")
 	}
 	seg := sec[idx:min(idx+300, len(sec))]
 	// ★★ 基线写在反引号里（★ Markdown 装饰 ⇒ ★★ 不能靠 Fields 切 ⇒ ★ 用正则）
