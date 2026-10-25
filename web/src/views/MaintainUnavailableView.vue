@@ -37,9 +37,8 @@ onMounted(() => {
 
 <template>
   <PublicPortalLayout
-    title="运维平台不可用"
+    title="503 · 运维平台不可用"
     subtitle="/maintain 页面由独立的维护后台（ai-native-maintain）提供，当前该服务未启动或未部署。"
-    kicker="503"
   >
     <el-card shadow="never" class="pub-card maintain-card">
       <div class="maintain-icon" aria-hidden="true">🛠️</div>

@@ -57,7 +57,7 @@ tabs: {
     providerScore: '評分 {n}',
     providerPlan: '套餐',
     providerStatsTitle: '供應商用量統計',
-    providerStatsHint: '隨時間範圍聯動 · 點擊行查看詳情',
+    providerStatsHint: '隨時間範圍聯動：點擊行查看詳情',
     providerExport: '匯出 Excel',
     filterRange: '時間範圍',
     filterGran: '粒度',
@@ -139,10 +139,10 @@ tabs: {
   },
   discovery: {
     latest: "最近模型發現：",
-    failuresTitle: "模型發現 · 最近 6h 測試失敗",
-    failuresTally: "{n} 次失敗 · {m} 個模型",
+    failuresTitle: "模型發現：最近 6h 測試失敗",
+    failuresTally: "{n} 次失敗：{m} 個模型",
     summary: "查看失敗清單",
-    meta: "{n} 次 · 涉及 {m} 個憑證 · 最近 {date} · 錯誤 {code}"
+    meta: "{n} 次，涉及 {m} 個憑證，最近 {date}，錯誤 {code}"
   },
   stat: {
     totalRequests: "總請求數",
@@ -155,13 +155,13 @@ tabs: {
     successRate: "成功率",
     avgLatency: "平均延遲 {n} ms",
     apiKeys: "接入 API Key",
-    enabledActive: "啟用 {enabled} · 活躍 {active}",
+    enabledActive: "啟用 {enabled}：活躍 {active}",
     models: "模型數量",
     activeInDays: "近 {days} 天活躍 {n}",
     providers: "供應商 / 憑證",
-    enabledCredentials: "啟用 {enabled} · 憑證 {total}",
+    enabledCredentials: "啟用 {enabled}：憑證 {total}",
 offline: "下線資源",
-     modelsCredentials: "模型 {models} · 憑證 {creds}",
+     modelsCredentials: "模型 {models}：憑證 {creds}",
      // 2026-08-06: 平均請求體 / 平均回應體 / 峰值（與 zh-CN 對齊）
      avgRequestSize: "平均請求體",
      avgResponseSize: "平均回應體",

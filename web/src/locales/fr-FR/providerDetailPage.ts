@@ -23,7 +23,7 @@ export default {
   manualDisableTitle: 'Désactiver manuellement tout le fournisseur',
   manualEnableTitle: 'Lever la désactivation manuelle (revenir en contrôle auto)',
   manualDisableBadge: '🔒 Désactivé manuellement',
-  manualDisableBadgeTitle: 'Désactivation manuelle au niveau fournisseur — tout le fournisseur est non routable',
+  manualDisableBadgeTitle: 'Désactivation manuelle au niveau fournisseur. Tout le fournisseur est non routable',
   disabledBadge: 'Désactivé',
   manualToggle: {
     set: 'Désactiver manuellement',
@@ -33,7 +33,7 @@ export default {
     disablePrompt: 'Raison de la désactivation manuelle du fournisseur {name} :',
     enablePrompt: 'Raison de l\'activation manuelle du fournisseur {name} :',
   },
-  manualDisabledTitle: 'Désactivation manuelle au niveau fournisseur — tout le fournisseur est non routable',
+  manualDisabledTitle: 'Désactivation manuelle au niveau fournisseur. Tout le fournisseur est non routable',
   manualDisabledBadge: 'Désactivé manuellement',
   loadFailed: 'Échec du chargement',
   operationFailed: 'Échec de l\'opération',
@@ -41,7 +41,7 @@ export default {
 
   quality: {
     loading: 'Loading quality data…',
-    noData: 'No quality data yet. Quality profiles are calculated periodically; refresh later or run a probe first.',
+    noData: 'Pas encore de données de qualité. Les profils sont calculés périodiquement ; actualisez plus tard ou lancez d\'abord une sonde.',
     overallScore: 'Overall score',
     providerAggregate: 'Provider aggregate',
     modelDetails: 'Model quality details',

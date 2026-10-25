@@ -5,7 +5,7 @@ export default {
     byModel: 'By model',
     byStrategy: 'By strategy',
     byTaskType: 'By task type',
-    outlier: 'By (model, task type) — outlier detector',
+    outlier: 'Por (modelo, tipo de tarea): detector de valores atípicos',
     topModels: 'Top-3 models per task type',
   },
 }

@@ -18,9 +18,9 @@ v2: {
     retry: 'Retry',
     reloadAria: 'Reload data',
     degradedViewLabel: 'View',
-    degradedHint: 'Data view {view} is not initialized yet. Run the aggregation migration first.',
+    degradedHint: 'La vista de datos {view} todavía no está inicializada. Ejecuta primero la migración de agregación.',
     emptyTitle: 'No request data yet',
-    emptyHint: 'After configuring providers, send a call via /v1/chat/completions to see the live stream here.',
+    emptyHint: 'Tras configurar los proveedores, envía una llamada por /v1/chat/completions para ver aquí la transmisión en vivo.',
     modelsPage: 'Models',
     totalTokensShort: 'Total Tokens',
     totalCredits: 'Credits charged',
@@ -66,7 +66,7 @@ v2: {
     providerScore: 'Puntuación {n}',
     providerPlan: 'Plan',
     providerStatsTitle: 'Estadísticas de uso de proveedores',
-    providerStatsHint: 'Sigue el rango de tiempo · pulsa una fila para ver detalles',
+    providerStatsHint: 'Sigue el rango de tiempo: pulsa una fila para ver detalles',
     providerExport: 'Exportar Excel',
     filterRange: 'Rango de tiempo',
     filterGran: 'Granularidad',
@@ -95,9 +95,9 @@ v2: {
     selfcheckRate: '24h success rate',
     selfcheckHint: 'Click for details →',
     pieClients: 'Client types',
-    pieDegraded: "No disponible — {reason}. Una clasificación vacía aquí significa «no se calculó», no «no hay datos».",
+    pieDegraded: "No disponible: {reason}. Una clasificación vacía aquí significa «no se calculó», no «no hay datos».",
     pieDegradedGeneric: "la consulta de clasificación falló",
-    drillFailed: "No se pudo cargar este desglose — {reason}. Una lista vacía aquí no significa que no hubiera errores.",
+    drillFailed: "No se pudo cargar este desglose: {reason}. Una lista vacía aquí no significa que no hubiera errores.",
     pieClientIp: 'IP del cliente',
     pieIdentity: 'Identity hash',
     pieModels: 'Model usage',
@@ -134,7 +134,7 @@ v2: {
   },
   proxyWarning: {
     title: "⚠ Proxy de salida inaccesible",
-    detail: "La sonda del proxy configurado {proxy} falló — el gateway ha vuelto automáticamente al modo directo. Los modelos extranjeros (Anthropic / OpenAI / OpenRouter / GitHub Copilot, etc.) pueden fallar.",
+    detail: "La sonda del proxy configurado {proxy} falló. El gateway ha vuelto automáticamente al modo directo. Los modelos extranjeros (Anthropic / OpenAI / OpenRouter / GitHub Copilot, etc.) pueden fallar.",
     detailHealthy: "El proxy {proxy} está de vuelta en línea.",
     hint: "El sistema se reactivará automáticamente cuando el proxy se recupere."
   },
@@ -148,10 +148,10 @@ v2: {
   },
   discovery: {
     latest: "Último descubrimiento de modelos: ",
-    failuresTitle: "Descubrimiento de modelos · fallos en las últimas 6h",
-    failuresTally: "{n} fallos · {m} modelos",
+    failuresTitle: "Descubrimiento de modelos: fallos en las últimas 6h",
+    failuresTally: "{n} fallos: {m} modelos",
     summary: "Ver lista de fallos",
-    meta: "{n} veces · {m} credenciales afectadas · última {date} · error {code}"
+    meta: "{n} veces, {m} credenciales afectadas, última {date}, error {code}"
   },
   stat: {
     totalRequests: "Solicitudes totales",
@@ -164,13 +164,13 @@ v2: {
     successRate: "Tasa de éxito",
     avgLatency: "Latencia media {n} ms",
     apiKeys: "Claves API integradas",
-    enabledActive: "Activadas {enabled} · activas {active}",
+    enabledActive: "Activadas {enabled}: activas {active}",
     models: "Modelos",
     activeInDays: "En los últimos {days} días, {n} activos",
     providers: "Proveedores / credenciales",
-    enabledCredentials: "Activados {enabled} · credenciales {total}",
+    enabledCredentials: "Activados {enabled}: credenciales {total}",
     offline: "Recursos offline",
-    modelsCredentials: "Modelos {models} · credenciales {creds}",
+    modelsCredentials: "Modelos {models}: credenciales {creds}",
     // 2026-08-06: Tamaño medio de petición / Tamaño medio de respuesta / Pico (alineado con zh-CN)
     avgRequestSize: "Tamaño medio de petición",
     avgResponseSize: "Tamaño medio de respuesta",
@@ -426,7 +426,7 @@ v2: {
 
   providerUsage: {
     title: 'Uso del proveedor',
-    subtitle: '{period} — consumo de todos los proveedores (listo para conciliación)',
+    subtitle: '{period}: consumo de todos los proveedores (listo para conciliación)',
     periodHint: 'Período actual: {period}',
     more: 'Más',
     search: 'Buscar nombre, código o ID…',

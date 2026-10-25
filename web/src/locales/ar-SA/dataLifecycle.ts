@@ -171,9 +171,9 @@ export default {
       vacuum: "🧹 VACUUM",
       vacuumFull: "🗜 FULL",
       reindex: "🔧 REINDEX",
-      vacuumTitle: "VACUUM (ANALYZE) {table} — بدون قفل، يستعيد الصفوف الميتة",
-      vacuumFullTitle: "VACUUM FULL {table} — بقفل، يعيد المساحة إلى نظام التشغيل",
-      reindexTitle: "REINDEX TABLE {table} — بقفل، يعيد بناء الفهارس"
+      vacuumTitle: "VACUUM (ANALYZE) {table}: بدون قفل، يستعيد الصفوف الميتة",
+      vacuumFullTitle: "VACUUM FULL {table}: بقفل، يعيد المساحة إلى نظام التشغيل",
+      reindexTitle: "REINDEX TABLE {table}: بقفل، يعيد بناء الفهارس"
     },
     modal: {
       vacuumTitle: "🧹 تأكيد تنفيذ VACUUM",
@@ -191,7 +191,7 @@ export default {
       time: "الوقت المقدر",
       cancel: "إلغاء",
       confirm: "تنفيذ {op}",
-      success: "اكتمل {op} {table} — تم تحرير {size} ({pct}%)",
+      success: "اكتمل {op} {table}: تم تحرير {size} ({pct}%)",
       failed: "فشل {op}: {msg}"
     },
     rowResult: {
@@ -241,7 +241,7 @@ export default {
     emptyResult: "لا توجد بيانات",
     partitionTitle: "إدارة التقسيمات الشهرية",
     partitionDesc: "احذف التقسيمات الشهرية القديمة لتحرير مساحة القرص.",
-    partitionWarning: "هذا الإجراء لا يمكن التراجع عنه — يرجى توخي الحذر.",
+    partitionWarning: "هذا الإجراء لا يمكن التراجع عنه: يرجى توخي الحذر.",
     tables: {
       title: "الجداول المقسّمة",
       selectLabel: "الجدول: ",
@@ -311,9 +311,9 @@ export default {
     },
     migrationFailed: "迁移失败"
 ,
-    jobIdMissing: 'Failed to start async job: missing job_id',
+    jobIdMissing: 'تعذّر بدء المهمة غير المتزامنة: المعرّف job_id مفقود',
 
-    asyncCompleted: 'Async migration complete: {n} rows migrated',
+    asyncCompleted: 'اكتمل النقل غير المتزامن: تم نقل {n} صف',
 
     asyncFailed: 'Async migration failed: {error}',
 
@@ -321,15 +321,15 @@ export default {
 
     cancelTitle: 'Cancel migration job',
 
-    cancelConfirm: 'Cancel the currently running migration job? Already-migrated data will be preserved.',
+    cancelConfirm: 'هل تلغي مهمة النقل الجاري؟ ستبقى البيانات المنقولة كما هي.',
 
-    cancelRequested: 'Cancellation requested. The job will stop at the next batch.',
+    cancelRequested: 'طُلب الإلغاء. ستتوقف المهمة عند الدفعة التالية.',
 
-    asyncEnabledHint: 'Since 2026-07-13 migrations run in async mode. Real-time progress and cancel are visible on this page.',
+    asyncEnabledHint: 'منذ 13-07-2026 تعمل عمليات النقل في وضع غير متزامن. التقدّم وإلغاء المهمة يظهران في هذه الصفحة.',
 
     cronStatsTitle: 'Nightly auto-migration',
 
-    cronStatsDesc: 'Every day at 02:00 AM, hot tables older than 24 hours are auto-migrated. Tunable via env vars.',
+    cronStatsDesc: 'كل يوم الساعة 02:00 تُنقل الجداول الساخنة الأقدم من 24 ساعة تلقائيًا. يمكن ضبطه عبر متغيرات البيئة.',
 
     cronEnabled: 'Enabled',
 
@@ -411,7 +411,7 @@ export default {
       previousLabel: 'فترة المقارنة ({period})',
       change: 'التغيير',
       significant: 'ملحوظ',
-      meta: '{requests} طلب · {models} نماذج',
+      meta: '{requests} طلب: {models} نماذج',
     },
     attribution: {
       title: 'إسناد التكلفة',

@@ -105,5 +105,5 @@ export default {
     applyFailed: 'Antrag fehlgeschlagen',
   },
   // Added 2026-07-02 — Cursor fallback note (used by ClientConfigDialog when tool === 'cursor').
-  cursorNotSupported: 'Cursor unterstützt keine Datei-Schreibvorgänge — bitte manuell in der Settings-UI konfigurieren',
+  cursorNotSupported: 'Cursor unterstützt keine Datei-Schreibvorgänge. Bitte manuell in der Settings-UI konfigurieren',
 }

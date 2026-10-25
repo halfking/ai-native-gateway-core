@@ -24,9 +24,8 @@ async function logout() {
 
 <template>
   <PublicPortalLayout
-    :title="t('forbidden.title')"
+    :title="`403 · ${t('forbidden.title')}`"
     :subtitle="t('forbidden.subtitle')"
-    kicker="403"
   >
     <el-card shadow="never" class="pub-card forbidden-card">
       <div class="forbidden-icon" aria-hidden="true">🔒</div>

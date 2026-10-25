@@ -12,7 +12,7 @@ export default {
   empty: 'No requests in this FIFO window',
   totalGroup: 'All requests',
   modelGroup: 'Model {model}',
-  nodeGroup: '{model} · Provider {provider} · Node {node}',
+  nodeGroup: '{model}, Provider {provider}, Node {node}',
   position: '#{position}',
   requestedModel: 'Requested {model}',
   resolvedModel: 'Resolved {model}',

@@ -62,7 +62,7 @@ export default {
     fingerprintTitle: "與上游平台核對用，非完整金鑰",
     fingerprintUnparsed: "無法解析",
     viewErrorDetail: "TODO",
-    rowMeta: "#{id} · {trust}",
+    rowMeta: "#{id}：{trust}",
     cellUnset: "未設定",
     noLimit: "不限",
     slotUsage: "槽 {used}/{limit}",
@@ -367,7 +367,7 @@ export default {
     phase2InOfferOnly: "✓ 模型在清單中",
     checkFailedPrefix: "檢查請求失敗: {msg}",
     offerNotInList: "該憑證的模型清單中未找到此模型",
-    drawTitle: "offer #{id} · 憑據 #{credId} {credLabel}",
+    drawTitle: "offer #{id}：憑據 #{credId} {credLabel}",
     drawToggleDisable: "停用此綁定",
     drawToggleEnable: "啟用此綁定",
     drawToggleLoading: "處理中…",
@@ -559,14 +559,14 @@ export default {
     credColModels: "Models 探測",
     credColChat: "Chat 探測",
     probeFailed: "失敗",
-    probeMetaModels: "{status} · {count} 模型 · {latency}ms",
+    probeMetaModels: "{status}，{count} 模型，{latency}ms",
     // 2026-09-04: non-JSON probe hint (parity backfill).
-    probeNonJson: "{status} · 非JSON回應",
-    probeMetaChat: "{status} · {latency}ms"
+    probeNonJson: "{status}：非JSON回應",
+    probeMetaChat: "{status}：{latency}ms"
   },
   probe: {
     consensusTitle: "共識機制",
-    consensusDesc: "連續 {n} 次成功 → 標記為已恢復 · 連續 {n} 次失敗 → 確認失敗（停止探測）",
+    consensusDesc: "連續 {n} 次成功 → 標記為已恢復：連續 {n} 次失敗 → 確認失敗（停止探測）",
     consensusFallback: "回退間隔：1m → 5m → 15m → 60m（逐級）",
     refresh: "重新整理",
     refreshLoading: "…",
@@ -611,7 +611,7 @@ export default {
       healthyConfirmed: "已恢復",
       brokenConfirmed: "確認失敗"
     },
-    historyMeta: "最近 100 條 · scheduler 自動 / manual 手動",
+    historyMeta: "最近 100 條：scheduler 自動 / manual 手動",
     endpointIdBadge: "需設定 endpoint ID",
     endpointIdDetail: "此模型（如火山方舟 minimax-m3 / glm-5.1）必須用 deployment endpoint ID（如 <code>ep-XXXXXXXX</code>）呼叫，而非原始模型名。請前往",
     endpointIdLink: "模型清單 → 編輯 outbound_model_name",

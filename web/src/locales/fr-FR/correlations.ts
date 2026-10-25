@@ -5,7 +5,7 @@ export default {
     byModel: 'By model',
     byStrategy: 'By strategy',
     byTaskType: 'By task type',
-    outlier: 'By (model, task type) — outlier detector',
+    outlier: 'Par (modèle, type de tâche): détection des valeurs aberrantes',
     topModels: 'Top-3 models per task type',
   },
 }

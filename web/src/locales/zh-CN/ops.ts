@@ -117,7 +117,7 @@ export default {
 
   // License Management
   license: {
-    title: 'License管理',
+    title: 'License 管理',
     create: '创建License',
     createTitle: '创建新License',
     createSuccess: 'License创建成功',
@@ -304,7 +304,7 @@ export default {
     grayPhaseBatch3: '第三批',
     grayPhaseFull: '全量',
     rolloutGate: '灰度门禁',
-    rolloutTitle: '灰度门禁 · {version}',
+    rolloutTitle: '灰度门禁：{version}',
     rolloutRuleStatus: '规则状态',
     rolloutGateAllowed: '允许推进',
     rolloutSuccessRate: '升级成功率',
@@ -346,7 +346,7 @@ export default {
     loadHeartbeatFailed: '加载心跳历史失败',
     commandSent: '命令已发送',
     commandFailed: '命令发送失败',
-    lastCommand: '最近命令 {id} · 状态：{status}',
+    lastCommand: '最近命令 {id}：状态：{status}',
     instanceId: '实例 ID',
     hostname: '主机名',
     ipAddress: 'IP 地址',

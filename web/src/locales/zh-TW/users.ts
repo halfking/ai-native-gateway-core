@@ -2,7 +2,7 @@
 export default {
   title: 'User Management',
   create: 'Create User',
-  readOnlyNotice: '📖 You are a tenant admin with read-only access. You can view and reset passwords for users in your tenant, but cannot create, edit, or delete users.',
+  readOnlyNotice: '📖 您是租戶管理員，只有讀取權限。可以檢視與重設本租戶使用者的密碼，但不能新增、修改或刪除使用者。',
   filter: {
     byTenant: 'Filter by tenant:',
     allRoles: '全部角色',
@@ -80,9 +80,9 @@ export default {
     deleteFailed: 'Delete failed',
     resetFailed: 'Reset failed',
     passwordMismatch: 'Passwords do not match',
-    passwordComplexity: 'Password does not meet complexity requirements',
+    passwordComplexity: '密碼未達到複雜度要求',
     resetPasswordMismatch: 'Passwords do not match',
-    resetPasswordComplexity: 'Password does not meet complexity requirements',
+    resetPasswordComplexity: '密碼未達到複雜度要求',
     toggleFailed: 'Operation failed',
   },
   passwordMatch: {

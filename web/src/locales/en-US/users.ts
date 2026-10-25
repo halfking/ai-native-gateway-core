@@ -62,7 +62,7 @@ export default {
       submit: 'Create',
     },
     reset: {
-      title: 'Reset Password — {name}',
+      title: 'Reset Password: {name}',
       newPassword: 'New Password',
       passwordPlaceholder: 'At least 8 characters',
       confirmPassword: 'Confirm New Password',

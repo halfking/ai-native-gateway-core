@@ -4,7 +4,6 @@ import { useI18n } from 'vue-i18n'
 defineProps<{
   title: string
   subtitle?: string
-  kicker?: string
   maxWidth?: string
 }>()
 
@@ -14,7 +13,10 @@ const { t } = useI18n()
 <template>
   <div class="pub-page" :style="maxWidth ? { '--pub-max': maxWidth } : undefined">
     <header v-if="title" class="pub-page__hero">
-      <p v-if="kicker" class="pub-page__kicker">{{ kicker }}</p>
+      <!-- 2026-10-24：这里原来有一个 `kicker` 小标签挂在标题上方
+           （ForbiddenView 传 "403"、MaintainUnavailableView 传 "503"）。
+           craft-floor 硬禁「标题上方的 kicker/eyebrow」——没有 brief 能赎回来。
+           状态码本身是真信息，所以把它折进标题里，由标题自己扛。 -->
       <h1 class="pub-page__title">{{ title }}</h1>
       <p v-if="subtitle" class="pub-page__sub">{{ subtitle }}</p>
       <slot name="hero-extra" />
@@ -56,15 +58,6 @@ const { t } = useI18n()
   max-width: var(--pub-max);
   margin: 0 auto 1.5rem;
   text-align: center;
-}
-
-.pub-page__kicker {
-  margin: 0 0 8px;
-  font-size: 12px;
-  font-weight: 600;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: var(--pub-accent);
 }
 
 .pub-page__title {

@@ -2,7 +2,7 @@
 export default {
   title: 'User Management',
   create: 'Create User',
-  readOnlyNotice: '📖 You are a tenant admin with read-only access. You can view and reset passwords for users in your tenant, but cannot create, edit, or delete users.',
+  readOnlyNotice: '📖 Vous êtes administrateur de locataire en lecture seule. Vous pouvez consulter et réinitialiser les mots de passe des utilisateurs de votre locataire, mais pas créer, modifier ni supprimer d\'utilisateurs.',
   filter: {
     byTenant: 'Filter by tenant:',
     allRoles: 'Tous les rôles',
@@ -62,7 +62,7 @@ export default {
       submit: 'Create',
     },
     reset: {
-      title: 'Reset Password — {name}',
+      title: 'Reset Password: {name}',
       newPassword: 'New Password',
       passwordPlaceholder: 'At least 8 characters',
       confirmPassword: 'Confirm New Password',
@@ -80,9 +80,9 @@ export default {
     deleteFailed: 'Delete failed',
     resetFailed: 'Reset failed',
     passwordMismatch: 'Passwords do not match',
-    passwordComplexity: 'Password does not meet complexity requirements',
+    passwordComplexity: 'Le mot de passe ne respecte pas les exigences de complexité',
     resetPasswordMismatch: 'Passwords do not match',
-    resetPasswordComplexity: 'Password does not meet complexity requirements',
+    resetPasswordComplexity: 'Le mot de passe ne respecte pas les exigences de complexité',
     toggleFailed: 'Operation failed',
   },
   passwordMatch: {

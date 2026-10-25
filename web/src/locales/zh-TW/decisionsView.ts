@@ -27,7 +27,7 @@ export default {
   },
 
   pagination: {
-    summary: '<strong>{total}</strong> total, showing {start} - {end}',
+    summary: '<strong>{total}</strong> 筆，顯示 {start} - {end}',
     prev: '← Previous',
     next: 'Next →',
   },

@@ -91,7 +91,7 @@ export default {
     licenseAgreement: '用户许可协议',
     licenseOffline: '离线激活',
     telemetryScope: '数据采集范围',
-    opsLicenses: 'License管理',
+    opsLicenses: 'License 管理',
     opsFaults: '故障管理',
     opsAutoUpdate: '自动更新',
     opsCenter: '中心运维',

@@ -43,7 +43,7 @@ export default {
       idPrefix: 'ID: ',
       manualPrefix: 'يدوي: ',
       effectivePrefix: 'فعّال: ',
-      modelsNotMeasured: 'لم تُرجع هذه بيانات الاعتماد أي أعداد للنماذج في هذه المرة (لم تُقاس) — وليست «0 متاحة»',
+      modelsNotMeasured: 'لم تُرجع هذه بيانات الاعتماد أي أعداد للنماذج في هذه المرة (لم تُقاس). وليست «0 متاحة»',
     },
     loading: 'جاري التحميل...', // نفس معنى common.feedback.loading
     empty: 'لا توجد بيانات اعتماد',
@@ -64,7 +64,7 @@ export default {
       requests: 'بيانات الطلبات',
     },
     overview: {
-      sectionTitle: 'المعلومات الأساسية · إحصائيات بيانات الاعتماد',
+      sectionTitle: 'المعلومات الأساسية: إحصائيات بيانات الاعتماد',
       fields: {
         availability: 'التوفر',
         health: 'الصحة',
@@ -128,7 +128,7 @@ export default {
       emptyHint: 'يرجى اختيار نموذج من اليسار لعرض التفاصيل',
     },
     requestsTab: {
-      historySectionTitle: 'بيانات الطلبات · تاريخ تغيرات حالة النموذج',
+      historySectionTitle: 'بيانات الطلبات: تاريخ تغيرات حالة النموذج',
       historyEmpty: 'انقر فوق النموذج في تبويب «النماذج» للعرض',
       historyRefresh: '↻ تحديث',
       historyLoading: 'جاري التحميل...',
@@ -137,9 +137,9 @@ export default {
       historyColSource: 'المصدر',
       historyColEvent: 'الحدث',
       historyColDetail: 'التفاصيل',
-      autoPrefix: 'تلقائي · ', // يليه scheduler/admin، إلخ
-      manualPrefix: 'يدوي · ',
-      routingSectionTitle: 'بيانات الطلبات · قرارات التوجيه الأخيرة ({n})',
+      autoPrefix: 'تلقائي: ', // يليه scheduler/admin، إلخ
+      manualPrefix: 'يدوي: ',
+      routingSectionTitle: 'بيانات الطلبات: قرارات التوجيه الأخيرة ({n})',
       routingRefresh: '↻ تحديث',
       routingLoading: 'جاري التحميل...',
       routingNoEvents: 'لا توجد سجلات قرارات توجيه',
@@ -224,7 +224,7 @@ export default {
   },
   chart: {
     allHealthy: 'الكل صحي',
-    errorsWhenHealthy: 'توزيع أنواع الأخطاء · الكل صحي',
+    errorsWhenHealthy: 'توزيع أنواع الأخطاء: الكل صحي',
     errorsTitle: 'توزيع أنواع الأخطاء',
     slidingStatsTotal: 'الإجمالي: ',
     slidingStatsSuccess: 'نجاح: ',

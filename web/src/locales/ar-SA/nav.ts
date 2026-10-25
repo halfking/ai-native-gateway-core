@@ -80,7 +80,7 @@ export default {
     examples: "أمثلة التكامل",
     chat: "محادثة",
     opsOverview: "Ops Overview",
-    opsLicenses: "License管理",
+    opsLicenses: "إدارة التراخيص",
     opsDownloads: "Releases & Downloads",
     opsFaults: "故障管理",
     opsAutoUpdate: "自动更新",

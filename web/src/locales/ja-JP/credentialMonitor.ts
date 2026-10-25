@@ -64,7 +64,7 @@ export default {
       requests: 'リクエスト',
     },
     overview: {
-      sectionTitle: '概要 · 認証情報の統計',
+      sectionTitle: '概要：認証情報の統計',
       fields: {
         availability: '可用性',
         health: '健全性',
@@ -123,7 +123,7 @@ export default {
       emptyHint: '左側からモデルを選択して詳細を表示',
     },
     requestsTab: {
-      historySectionTitle: 'リクエスト · モデル状態変更履歴',
+      historySectionTitle: 'リクエスト：モデル状態変更履歴',
       historyEmpty: '「モデル」タブのモデルをクリックして表示',
       historyRefresh: '↻ 更新',
       historyLoading: '読み込み中...',
@@ -132,9 +132,9 @@ export default {
       historyColSource: 'ソース',
       historyColEvent: 'イベント',
       historyColDetail: '詳細',
-      autoPrefix: '自動 · ',
-      manualPrefix: '手動 · ',
-      routingSectionTitle: 'リクエスト · 直近のルーティング判断 ({n}件)',
+      autoPrefix: '自動：',
+      manualPrefix: '手動：',
+      routingSectionTitle: 'リクエスト：直近のルーティング判断 ({n}件)',
       routingRefresh: '↻ 更新',
       routingLoading: '読み込み中...',
       routingNoEvents: 'ルーティング判断の記録がありません',
@@ -212,7 +212,7 @@ export default {
   },
   chart: {
     allHealthy: 'すべて健全',
-    errorsWhenHealthy: 'エラー分布 · すべて健全',
+    errorsWhenHealthy: 'エラー分布：すべて健全',
     errorsTitle: 'エラー分布',
     slidingStatsTotal: '合計: ',
     slidingStatsSuccess: '成功: ',

@@ -52,7 +52,7 @@ export default {
     titleUnavailable: 'Unable to confirm traffic data state: figures on this page may be stale',
     hintLabel: 'Investigate',
     retry: 'Re-check',
-    failedHint: 'Could not read the data state. An unconfirmed state is not a healthy state — treat figures on this page as possibly stale.',
+    failedHint: 'Could not read the data state. An unconfirmed state is not a healthy state. Treat figures on this page as possibly stale.',
   },
   deploySeq: {
     bannerTitle: 'New version available',

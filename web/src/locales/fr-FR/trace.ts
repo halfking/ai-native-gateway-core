@@ -41,7 +41,7 @@ export default {
     hint2: 'Terminées il y a < 10 min : encore dans Redis',
     hint3: 'Déjà vidées dans PostgreSQL : affichées en repli',
 
-    hint4: 'If empty here, possible causes: flush not completed, or trace was not emitted',
+    hint4: 'Si c\'est vide ici, deux causes possibles : le flush n\'est pas terminé, ou la trace n\'a pas été émise.',
   },
   aiPrompt: {
     button: '🤖 Générer un prompt IA',

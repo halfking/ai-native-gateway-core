@@ -24,7 +24,7 @@ export default {
     tokenPlanSuffix: 'token_plan',
   },
   filter: {
-    modelTitle: 'Precios de coste · filtro de modelo',
+    modelTitle: 'Precios de coste: filtro de modelo',
     modelPlaceholder: 'Filtrar por modelo…',
     allProviders: 'Todos los proveedores',
     allBilling: 'Toda la facturación',
@@ -121,7 +121,7 @@ export default {
     noChange: 'Sin cambios',
     saveFailed: 'Error al guardar',
     copied: 'Precio copiado',
-    pasted: 'Pegado — haga clic en Guardar para aplicar',
+    pasted: 'Pegado: haga clic en Guardar para aplicar',
   },
   inherit: {
     title: 'Heredar precios automáticamente',

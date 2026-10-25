@@ -1,7 +1,7 @@
 // Auto-synced from en-US (ja-JP)
 export default {
   title: 'Quality Correlations',
-  subtitle: 'Cross-references request features with outcomes (success, latency, quality).',
+  subtitle: 'リクエストの特徴と結果（成功・レイテンシ・品質）を突き合わせます。',
   filter: {
     window: 'Window',
     bucketBy: 'Bucket by',
@@ -25,7 +25,7 @@ export default {
   },
   breakdown: {
     title: 'Breakdown by {by}',
-    empty: 'No data — try lowering the days or expanding the filter.',
+    empty: 'データがありません。日数を減らすか、フィルタ条件を緩めてください。',
     headers: {
       bucket: 'Bucket',
       samples: 'Samples',
@@ -36,8 +36,8 @@ export default {
     },
   },
   insights: {
-    title: 'What predicts quality? (Pearson correlation)',
-    hint: 'Each predictor is correlated with avg_quality across buckets.',
+    title: '何要因が品質を予測するか（ピアソン相関）',
+    hint: '各予測要因と、各バケットの平均品質の相関を取ります。',
     empty: 'Not enough samples for insights.',
     buckets: '{n} buckets',
     samples: '{n} samples',

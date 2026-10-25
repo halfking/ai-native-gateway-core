@@ -21,7 +21,7 @@ export default {
     summarizeFailed: 'فشل التلخيص',
     sessionForbidden: 'مفتاح API الحالي لا يمكنه الوصول إلى هذه الجلسة، يرجى اختيار المفتاح الصحيح',
     autoRoute: 'توجيه تلقائي (auto)',
-    modelListFailed: 'فشل تحميل قائمة النماذج — ظهور «التوجيه التلقائي» كخيار وحيد لا يعني أن البوابة تدعم التوجيه التلقائي فقط',
+    modelListFailed: 'فشل تحميل قائمة النماذج: ظهور «التوجيه التلقائي» كخيار وحيد لا يعني أن البوابة تدعم التوجيه التلقائي فقط',
     auto: 'تلقائي',
     needsKeyTitle: 'يرجى التقدم بطلب للحصول على مفتاح API أولاً',
     needsKeyDesc: 'تتطلب المحادثة مفتاح API ينتمي إليك ومفعّلاً. ليس لديك حاليًا مفتاح متاح، يرجى التقدم بطلب أو إنشاء واحد.',
@@ -74,7 +74,7 @@ export default {
   params: {
     title: 'Model parameters',
     open: 'Params',
-    nextTurnHint: 'Parameter changes apply to the next turn.',
+    nextTurnHint: 'تُطبَّق تغييرات المعاملات في الدور التالي.',
     systemPrompt: 'System prompt',
     systemPromptPlaceholder: 'Set role, tone, and constraints…',
     temperature: 'Temperature',
@@ -118,6 +118,6 @@ export default {
   sending: 'جاري الإنشاء…',
   send: 'إرسال',
   copySummary: 'نسخ الملخص',
-  suggestStream: 'Timed out or waited too long — switch back to streaming mode.',
+  suggestStream: 'انتهت المهلة أو انتظرت طويلًا. عد إلى وضع البث.',
   aborted: 'Generation stopped',
 }

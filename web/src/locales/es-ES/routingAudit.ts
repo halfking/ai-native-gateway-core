@@ -1,7 +1,7 @@
 // Auto-synced from en-US (es-ES)
 export default {
   title: 'Routing Overrides Audit',
-  subtitle: 'Every change to the routing_overrides table is recorded with actor, action, and row state.',
+  subtitle: 'Cada cambio en la tabla routing_overrides se registra con el actor, la acción y el estado de la fila.',
   summary: {
     total: 'Total',
     inserts: 'Inserts',

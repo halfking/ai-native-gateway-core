@@ -1,7 +1,7 @@
 // liveTopology.ts — Live topology home (2026-10-16)
 export default {
   title: 'Live Topology',
-  redisDown: 'Redis unavailable — node health degraded to unknown',
+  redisDown: 'Redis unavailable: node health degraded to unknown',
   column: {
     client: 'Client',
     gateway: 'Gateway Core',
@@ -17,7 +17,7 @@ export default {
     unsupported: 'SSE unsupported',
   },
   banner: {
-    connecting: 'Live stream is not connected — the graph shows the last snapshot, not the current state',
+    connecting: 'Live stream is not connected: the graph shows the last snapshot, not the current state',
     waitingFirstFrame: 'Connected, waiting for the first authoritative frame of this session…',
     filteredEmpty: 'No requests in the window under the current filters',
     droppedByWindow: '{n} more requests fall outside the current time window and are not shown here (widen the window to see them)',
@@ -64,7 +64,7 @@ export default {
     tokens: 'Tokens',
     unknownProvider: 'Unknown provider',
     empty: 'No traffic today',
-    degraded: 'Aggregation is not initialized — statistics unavailable',
+    degraded: 'Aggregation is not initialized: statistics unavailable',
     unavailable: 'Statistics service unavailable',
   },
   decision: {
@@ -107,8 +107,8 @@ export default {
     taskDetect: 'Task detect',
   },
   lane: {
-    in: 'IN · request path',
-    out: 'OUT · response path',
+    in: 'IN: request path',
+    out: 'OUT: response path',
     store: 'Store & forward',
     toProvider: 'dispatch to provider',
     fromProvider: 'provider return',

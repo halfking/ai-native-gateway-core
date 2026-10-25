@@ -25,14 +25,14 @@ export default {
     effective: 'فعّال ≈ {value} (يشمل الخصم)',
   },
   filter: {
-    title: 'إدارة التسعير · تصفية النماذج',
+    title: 'إدارة التسعير: تصفية النماذج',
     placeholder: 'البحث عن نموذج قياسي…',
     allPricing: 'كل التسعير',
     defaultOnly: 'المعيار العام فقط',
     customOnly: 'يشمل التسعير اليدوي',
     partialOnly: 'يدوي جزئي',
     otherVendor: 'أخرى',
-    summary: 'يدوي {custom} · عام {defaults} / {total}',
+    summary: 'يدوي {custom}: عام {defaults} / {total}',
   },
   table: {
     colModel: 'النموذج القياسي',
@@ -67,9 +67,9 @@ export default {
     hasMultimodal: 'Has manual multimodal pricing',
   },
   editModal: {
-    title: 'تسعير يدوي · {name}',
+    title: 'تسعير يدوي: {name}',
     hint: 'حدد «يدوي» واملأ الرصيد؛ تستمر الأبعاد غير المحددة في اتباع المعيار العام × الخصم.',
-    fieldSuffix: ' · تسعير يدوي',
+    fieldSuffix: ': تسعير يدوي',
     resetBase: 'استعادة المعيار',
     globalApprox: 'العام ≈ {value}',
     save: 'حفظ',
@@ -83,7 +83,7 @@ export default {
 
     sectionText: 'Text-token dimensions',
 
-    sectionMultimodal: 'Multimodal-token dimensions (vision / audio / video)',
+    sectionMultimodal: 'أبعاد الرموز متعددة الوسائط (رؤية / صوت / فيديو)',
 
     fieldImage: 'Vision tokens',
 

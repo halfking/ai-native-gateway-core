@@ -107,8 +107,8 @@ export default {
     taskDetect: 'Aufgabenerkennung',
   },
   lane: {
-    in: 'EIN · Anfragepfad',
-    out: 'AUS · Antwortpfad',
+    in: 'EIN: Anfragepfad',
+    out: 'AUS: Antwortpfad',
     store: 'Speichern & Weiterleiten',
     toProvider: 'Weiterleitung an Provider',
     fromProvider: 'Provider-Rückgabe',

@@ -108,8 +108,8 @@ export default {
   },
   /** 三条流程带（2026-10-18 owner 拍板：进/出双链路 + 存储转发）。 */
   lane: {
-    in: '进 · 请求链',
-    out: '出 · 响应链',
+    in: '进：请求链',
+    out: '出：响应链',
     store: '存储转发',
     toProvider: '派发供应端',
     fromProvider: '供应端返回',

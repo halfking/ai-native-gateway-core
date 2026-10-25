@@ -1,7 +1,7 @@
 // Auto-synced from en-US (ar-SA)
 export default {
   title: 'Routing Overrides',
-  subtitle: 'Pin or ban specific models for a (task_type, profile) pair. Changes take effect within 1 minute via the OverrideStore refresh.',
+  subtitle: 'ثبّت أو احظر نماذج محددة لكل زوج (task_type, profile). تسري التغييرات خلال دقيقة واحدة عند تحديث OverrideStore.',
   correlationsLink: 'Correlations dashboard',
   summary: {
     total: 'Total active',
@@ -22,8 +22,8 @@ export default {
   },
   create: {
     title: 'New routing override',
-    hintPin: 'Pin: model is forced to top of candidates (wins regardless of score).',
-    hintBan: 'Ban: model is excluded from candidates entirely.',
+    hintPin: 'تثبيت: يُفرض النموذج في مقدمة المرشحين بغض النظر عن الدرجة.',
+    hintBan: 'حظر: يُستبعد النموذج من قائمة المرشحين بالكامل.',
     taskType: 'Task type *',
     taskTypePlaceholder: 'e.g. code, reasoning',
     profile: 'Profile',
@@ -32,7 +32,7 @@ export default {
     modelPlaceholder: 'e.g. gpt-4o, claude-3-5-sonnet',
     expiresAt: 'Expires at (optional)',
     reason: 'Reason * (audit trail)',
-    reasonPlaceholder: 'e.g. correlation shows 45% success on reasoning',
+    reasonPlaceholder: 'مثال: يبيّن الارتباط نجاحًا بنسبة 45% في الاستدلال',
     creating: 'Creating…',
     submit: 'Create override',
     cancel: 'Cancel',
@@ -44,14 +44,14 @@ export default {
   },
   extend: {
     title: 'Extend override #{id}',
-    hint: 'Pick a new expires_at. Pass empty date to make it permanent.',
+    hint: 'اختر expires_at جديدًا. اترك التاريخ فارغًا لتكون دائمة.',
     expiresAt: 'New expires_at',
     save: 'Save',
     cancel: 'Cancel',
   },
   table: {
     title: 'Overrides ({n})',
-    empty: 'No overrides match the filter. Click "+ New override" to create one.',
+    empty: 'لا يوجد تجاوز يطابق التصفية. اضغط "+ تجاوز جديد" لإنشاء واحد.',
     headers: {
       id: 'ID',
       mode: 'Mode',
@@ -67,7 +67,7 @@ export default {
     permanent: 'permanent',
     extend: 'Extend',
     delete: 'Delete',
-    deleteConfirm: 'Delete override #{id} ({mode} {model} for {task})?',
+    deleteConfirm: 'هل تحذف التجاوز #{id} ({mode} {model} لـ {task})؟',
     deleteFailed: 'Delete failed: ',
   },
 }

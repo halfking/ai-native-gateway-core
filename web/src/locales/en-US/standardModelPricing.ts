@@ -24,14 +24,14 @@ export default {
     effective: 'Effective ≈ {value} (incl. discount)',
   },
   filter: {
-    title: 'Pricing · model filter',
+    title: 'Pricing: model filter',
     placeholder: 'Search standard models…',
     allPricing: 'All pricing',
     defaultOnly: 'Global base only',
     customOnly: 'Has manual pricing',
     partialOnly: 'Partially manual',
     otherVendor: 'Other',
-    summary: 'Manual {custom} · Global {defaults} / {total}',
+    summary: 'Manual {custom}: Global {defaults} / {total}',
   },
   table: {
     colModel: 'Standard model',
@@ -56,9 +56,9 @@ export default {
     hasMultimodal: 'Has manual multimodal pricing',
   },
   editModal: {
-    title: 'Manual pricing · {name}',
+    title: 'Manual pricing: {name}',
     hint: 'Tick "Manual" and fill in credits; unticked dimensions continue to follow global base × discount.',
-    fieldSuffix: ' · manual pricing',
+    fieldSuffix: ': manual pricing',
     resetBase: 'Reset to base',
     globalApprox: 'Global ≈ {value}',
     save: 'Save',

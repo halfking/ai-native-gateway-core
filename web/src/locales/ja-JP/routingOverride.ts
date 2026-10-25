@@ -1,7 +1,7 @@
 // Auto-synced from en-US (ja-JP)
 export default {
   title: 'Routing Overrides',
-  subtitle: 'Pin or ban specific models for a (task_type, profile) pair. Changes take effect within 1 minute via the OverrideStore refresh.',
+  subtitle: '(task_type, profile) の組合せごとに特定のモデルを固定または禁止できます。変更は OverrideStore の再読込から 1 分以内に反映されます。',
   correlationsLink: 'Correlations dashboard',
   summary: {
     total: 'Total active',
@@ -22,8 +22,8 @@ export default {
   },
   create: {
     title: 'New routing override',
-    hintPin: 'Pin: model is forced to top of candidates (wins regardless of score).',
-    hintBan: 'Ban: model is excluded from candidates entirely.',
+    hintPin: 'Pin: スコアに関わらず候補の先頭に固定します。',
+    hintBan: 'Ban: 候補から完全に除外します。',
     taskType: 'Task type *',
     taskTypePlaceholder: 'e.g. code, reasoning',
     profile: 'Profile',
@@ -32,7 +32,7 @@ export default {
     modelPlaceholder: 'e.g. gpt-4o, claude-3-5-sonnet',
     expiresAt: 'Expires at (optional)',
     reason: 'Reason * (audit trail)',
-    reasonPlaceholder: 'e.g. correlation shows 45% success on reasoning',
+    reasonPlaceholder: '例：相関では推論タスクの成功率が 45% です',
     creating: 'Creating…',
     submit: 'Create override',
     cancel: 'Cancel',
@@ -44,14 +44,14 @@ export default {
   },
   extend: {
     title: 'Extend override #{id}',
-    hint: 'Pick a new expires_at. Pass empty date to make it permanent.',
+    hint: '新しい expires_at を選んでください。日付を空にすると無期限になります。',
     expiresAt: 'New expires_at',
     save: 'Save',
     cancel: 'Cancel',
   },
   table: {
     title: 'Overrides ({n})',
-    empty: 'No overrides match the filter. Click "+ New override" to create one.',
+    empty: 'フィルタに一致するオーバーライドはありません。「+ 新規オーバーライド」をクリックして作成してください。',
     headers: {
       id: 'ID',
       mode: 'Mode',
@@ -67,7 +67,7 @@ export default {
     permanent: 'permanent',
     extend: 'Extend',
     delete: 'Delete',
-    deleteConfirm: 'Delete override #{id} ({mode} {model} for {task})?',
+    deleteConfirm: 'オーバーライド #{id}（{task} の {mode} {model}）を削除しますか？',
     deleteFailed: 'Delete failed: ',
   },
 }

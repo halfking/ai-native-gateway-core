@@ -81,7 +81,7 @@ export default {
       review: "結果をレビュー"
     },
   res: {
-      title: "結果 · タスク {id} · {provider}",
+      title: "結果，タスク {id}，{provider}",
       pending: "レビュー待ち",
       all: "すべて",
       model: "モデル ID",
@@ -121,7 +121,7 @@ export default {
       completed: "完了日時",
       detail: "詳細",
       none: "インポート記録はまだありません。タスクとレビュー画面で一括インポートするとここに表示されます。",
-      detailTitle: "インポート詳細 · タスク {id} · {provider}",
+      detailTitle: "インポート詳細，タスク {id}，{provider}",
       importedAt: "インポート日時"
     },
 }

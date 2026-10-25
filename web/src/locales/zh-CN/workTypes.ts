@@ -52,10 +52,10 @@ export default {
     intentRecogHint: '这些关键词用于识别请求是否属于本工作类型（Prompt → L1 → WorkType 链路中的 WorkType 阶段）。输入后按回车或逗号添加。',
     promptKeywordsPlaceholder: '输入关键词后按回车或逗号添加…',
     accTaskTypeLabel: 'ACC 任务类型映射',
-    accTaskTypePlaceholder: '可选 · ACC 端的 task_type 标识',
+    accTaskTypePlaceholder: '可选：ACC 端的 task_type 标识',
     accTaskTypeHint: '可选映射到 ACC 系统的 task_type 标识。留空表示不参与 ACC 集成。',
     modelTypeRoutes: '模型类型路由',
-    maxRoutesHint: '最多 {n} 个模型 · 点击选择',
+    maxRoutesHint: '最多 {n} 个模型：点击选择',
     addRoute: '+ 添加',
     emptyRoutes: '尚未配置模型路由 — 点击「添加」选择最多 3 个标准模型',
     routeEnabled: '启用',
@@ -83,10 +83,10 @@ export default {
   // MAX_ROUTES_PER_LAYER. Tier is stored on the row (work_type_model_route.tier).
   layers: {
     primary: '首选',
-    primaryHint: '优先使用 · 全部失败才回退',
+    primaryHint: '优先使用：全部失败才回退',
     secondary: '备选',
     secondaryHint: '首选全部失败后逐个尝试',
-    maxRoutesPerLayer: '每层最多 {n} 个 · 拖拽调整顺序',
+    maxRoutesPerLayer: '每层最多 {n} 个：拖拽调整顺序',
     dragToReorder: '拖动调整优先级',
     emptyPrimary: '尚未配置首选模型 — 点击「添加首选」',
     emptySecondary: '尚未配置备选模型 — 点击「添加备选」',
@@ -97,13 +97,13 @@ export default {
   },
   routes: {
     title: '模型类型路由',
-    maxHint: '最多 {n} 个模型 · 点击选择',
+    maxHint: '最多 {n} 个模型：点击选择',
     addRow: '+ 添加',
     saving: '保存中…',
     saveBtn: '保存路由',
     savedOk: '模型路由已保存',
     empty: '尚未配置模型路由 — 点击「添加」选择最多 3 个标准模型',
-    routeTitlePrefix: '工作类型 {label} · 路由 #{n}',
+    routeTitlePrefix: '工作类型 {label}：路由 #{n}',
     enabled: '启用',
     remove: '移除',
     canonicalLabel: '标准模型',
@@ -139,7 +139,7 @@ export default {
     rowDisabled: '禁用',
     // Concise summary chip in the list view, e.g. "3 首选 · 2 备选".
     // Falls back to a single-line summary when only one tier is set.
-    routesSummary: '{primary} 首选 · {secondary} 备选',
+    routesSummary: '{primary} 首选：{secondary} 备选',
   },
   modal: {
     title: '新建工作类型',

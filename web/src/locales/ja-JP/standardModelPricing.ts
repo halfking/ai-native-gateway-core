@@ -25,14 +25,14 @@ export default {
     effective: '効果 ≈ {value} (割引含む)',
   },
   filter: {
-    title: '価格管理 · モデルフィルター',
+    title: '価格管理：モデルフィルター',
     placeholder: '標準モデルを検索…',
     allPricing: 'すべての価格',
     defaultOnly: 'グローバル基準のみ',
     customOnly: '手動設定を含む',
     partialOnly: '一部手動',
     otherVendor: 'その他',
-    summary: '手動 {custom} · グローバル {defaults} / {total}',
+    summary: '手動 {custom}：グローバル {defaults} / {total}',
   },
   table: {
     colModel: '標準モデル',
@@ -67,9 +67,9 @@ export default {
     hasMultimodal: '含多模态定价',
   },
   editModal: {
-    title: '手動価格 · {name}',
+    title: '手動価格：{name}',
     hint: '「手動」にチェックを入れクレジットを入力。未チェックのディメンションはグローバル基準 × 割引に従います。',
-    fieldSuffix: ' · 手動価格',
+    fieldSuffix: '：手動価格',
     resetBase: '基準に戻す',
     globalApprox: 'グローバル ≈ {value}',
     save: '保存',

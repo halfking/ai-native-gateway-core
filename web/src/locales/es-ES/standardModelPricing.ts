@@ -23,14 +23,14 @@ export default {
     effective: 'Efectivo ≈ {value} (incl. descuento)',
   },
   filter: {
-    title: 'Precios · filtro de modelo',
+    title: 'Precios: filtro de modelo',
     placeholder: 'Buscar modelos estándar…',
     allPricing: 'Todos los precios',
     defaultOnly: 'Solo base global',
     customOnly: 'Con precio manual',
     partialOnly: 'Parcialmente manual',
     otherVendor: 'Otros',
-    summary: 'Manual {custom} · Global {defaults} / {total}',
+    summary: 'Manuales {custom}: Globales {defaults} / {total}',
   },
   table: {
     colModel: 'Modelo estándar',
@@ -65,9 +65,9 @@ export default {
     hasMultimodal: 'Has manual multimodal pricing',
   },
   editModal: {
-    title: 'Precio manual · {name}',
+    title: 'Precio manual: {name}',
     hint: 'Marque "Manual" e introduzca los créditos; las dimensiones no marcadas siguen la base global × descuento.',
-    fieldSuffix: ' · precio manual',
+    fieldSuffix: ': precio manual',
     resetBase: 'Restablecer a la base',
     globalApprox: 'Global ≈ {value}',
     save: 'Guardar',
@@ -81,7 +81,7 @@ export default {
 
     sectionText: 'Text-token dimensions',
 
-    sectionMultimodal: 'Multimodal-token dimensions (vision / audio / video)',
+    sectionMultimodal: 'Dimensiones de tokens multimodales (visión / audio / vídeo)',
 
     fieldImage: 'Vision tokens',
 

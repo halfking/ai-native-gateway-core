@@ -95,7 +95,6 @@ function openLogin() {
       :brand="SITE_TITLE"
       :logo-src="brandLogo"
       :logo-size="SITE_LOGO_SIZE"
-      :kicker="t('landing.kicker')"
       :title="t('landing.title')"
       :subtitle="t('landing.subtitle')"
       :hero-points="heroPoints"

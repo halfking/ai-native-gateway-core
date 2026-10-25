@@ -26,7 +26,7 @@ export default {
     tokenPlanSuffix: 'token_plan',
   },
   filter: {
-    modelTitle: '成本價格 · 模型篩選',
+    modelTitle: '成本價格：模型篩選',
     modelPlaceholder: '選擇模型篩選…',
     allProviders: '全部供應商',
     allBilling: '全部計費',

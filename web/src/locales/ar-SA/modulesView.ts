@@ -1,7 +1,7 @@
 // modulesView.ts — صفحة إدارة الوحدات.
 export default {
   pageTitle: 'الوحدات',
-  pageSubtitle: 'إدارة مركزية لوحدات ميزات المؤسسة — قم بتمكين أو تعطيل الإمكانيات حسب الحاجة.',
+  pageSubtitle: 'إدارة مركزية لوحدات ميزات المؤسسة: قم بتمكين أو تعطيل الإمكانيات حسب الحاجة.',
   modulesEnabled: 'الوحدات المفعّلة',
   loading: 'جارٍ التحميل…',
 
@@ -48,7 +48,7 @@ export default {
     labelStatus: 'الحالة الحالية',
     viewAllSettings: 'عرض جميع إعدادات النظام',
     requirementsMet: 'جميع التبعيات مفعّلة',
-    requirementsMissing: 'التبعيات التالية معطّلة — قد تكون الميزات المرتبطة محدودة:',
+    requirementsMissing: 'التبعيات التالية معطّلة: قد تكون الميزات المرتبطة محدودة:',
     jumpToModule: 'إعداد',
     testConnection: 'اختبار الاتصال',
     testSuccess: 'نجح اختبار الاتصال',
@@ -102,20 +102,20 @@ export default {
 
   handoff: {
     groupMaster: 'Master switch',
-    groupMasterHint: 'Master toggle and trigger mode: determine how session handoff is enabled and when it fires',
+    groupMasterHint: 'المفتاح العام ووضع الإطلاق: يحددان ما إذا كان تسليم الجلسة مُفعّلًا ومتى يحدث',
     groupTrigger: 'Trigger thresholds',
-    groupTriggerHint: '4 trigger conditions run in parallel — any one of them fires handoff; the strictest wins',
+    groupTriggerHint: 'تُقيَّم 4 شروط للإطلاق على التوازي: يكفي واحد منها لبدء التسليم، والأشدّ هو الفائز.',
     groupSummary: 'Summary generation',
-    groupSummaryHint: 'Summary engine and prompt template: how to compress the old session into a new-session-readable context',
+    groupSummaryHint: 'محرك التلخيص وقالب الموجّه: كيف تُختصر الجلسة القديمة في سياق تستطيع الجلسة الجديدة قراءته',
     groupSafety: 'Safety limits and notifications',
-    groupSafetyHint: 'Cooldown, per-session cap, retry on failure, and log/Webhook notifications',
+    groupSafetyHint: 'مهلة تهدئة، وحد لكل جلسة، وإعادة محاولة عند الفشل، وإشعارات عبر السجل أو Webhook',
   },
 
   integration: {
     docsLabel: 'الوثائق: ',
     stepsTitle: 'خطوات الإعداد',
     enabledStatus: 'التكامل مفعّل',
-    disabledHint: 'التكامل معطّل — يرجى تفعيل الوحدة أولاً',
+    disabledHint: 'التكامل معطّل: يرجى تفعيل الوحدة أولاً',
     feishuSteps: [
       'أنشئ بوتًا مخصصًا في منصة Feishu المفتوحة',
       'انسخ عنوان URL للـ webhook والصقه في الإعداد أدناه',
@@ -206,5 +206,5 @@ export default {
 
   modeBannerTitle: 'This page only does three things:',
 
-  modeBannerBody: 'Toggle installed modules, and download modules that are already licensed but not enabled. No pricing, ordering, or plan entry here (purchase flows are announced separately).',
+  modeBannerBody: 'فعّل أو عطّل الوحدات المثبتة، ونزّل الوحدات المرخّصة لكنها غير مفعّلة. لا أسعار ولا طلبات ولا خطط هنا.',
 }

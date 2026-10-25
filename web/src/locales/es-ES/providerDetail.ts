@@ -59,15 +59,15 @@ export default {
     },
     empty: "Sin credenciales",
     labelFallback: "Credencial #{id}",
-    fingerprintTitle: "Para reconciliación con el upstream — no es la clave completa",
+    fingerprintTitle: "Para reconciliación con el upstream: no es la clave completa",
     fingerprintUnparsed: "No se puede analizar",
     viewErrorDetail: "TODO",
-    rowMeta: "#{id} · {trust}",
+    rowMeta: "#{id}: {trust}",
     cellUnset: "No establecido",
     noLimit: "Sin límite",
     slotUsage: "Slot {used}/{limit}",
     requestCountSuffix: "solicitudes",
-    addCredTitle: "Añadir credencial — {name}",
+    addCredTitle: "Añadir credencial: {name}",
     addCredApiKey: "Clave API",
     addCredLabel: "Etiqueta (opcional)",
     addCredLabelPlaceholder: "p. ej. Clave de producción",
@@ -115,7 +115,7 @@ export default {
     drawerFpSlotSuggestPrefix: "Sugerido: ",
     drawerFpSlotSuggestTitle: "Sugerido {n} (concurrencia ÷ 4, mín. 1)",
     drawerFpSlotHintAuto: "Sugerido {n} (concurrencia ÷ 4, suelo, mín. 1)",
-    drawerFpSlotHintTouched: "Sobrescrito manualmente — los cambios de concurrencia no ajustarán este valor automáticamente",
+    drawerFpSlotHintTouched: "Sobrescrito manualmente: los cambios de concurrencia no ajustarán este valor automáticamente",
     drawerFpSlotReset: "Restablecer al sugerido",
     drawerFpSlotResetTitle: "Restaurar el valor auto-derivado de la concurrencia",
     drawerFpSlotFull: "Lleno",
@@ -286,7 +286,7 @@ export default {
     clearFailed: "Error al borrar",
     clearMessage: "Borradas {n} vinculaciones de modelo",
     refreshLocalBtn: "Actualizar",
-    refreshLocalTitle: "Recargar solo desde caché local — no llama al proveedor",
+    refreshLocalTitle: "Recargar solo desde caché local: no llama al proveedor",
     refreshLocalLoading: "Cargando…",
     refreshFailed: "Error al leer del proveedor",
     refreshStatusFailed: "Error al consultar el estado de actualización",
@@ -332,7 +332,7 @@ export default {
     drawerOutboundHint: "Algunos proveedores (p. ej. Volcano Ark) requieren un endpoint ID (p. ej. ep-20241227XXXX) como campo de modelo en lugar del nombre sin procesar. Sin él, la sonda se omite (código: endpoint_id_required).",
     drawerOutboundPlaceholder: "ep-XXXXXXXX",
     drawerOutboundSend: "Se enviará:",
-    drawerOutboundUnset: "No establecido — se usará",
+    drawerOutboundUnset: "No establecido: se usará",
     drawerSectionContextWindow: "Ventana de contexto (tokens)",
     drawerContextWindowHint: "Anulación a nivel de credencial para esta credencial × modelo. Cadena: esta anulación > anulación de catálogo > catálogo. Déjelo vacío, escriba 0, o haga clic en «Borrar» para eliminar la anulación y usar el valor del catálogo. El cambio solo se aplica si realmente modifica el valor; guardar otros campos (p. ej. nombre estandarizado) no sobrescribe una anulación existente.",
     drawerContextWindowPlaceholder: "p. ej. 200000",
@@ -350,8 +350,8 @@ export default {
     checkStatusWarning: "⚠ Advertencia",
     checkStatusError: "✗ Error",
     phaseLabel: {
-      phase1: "Fase 1 — lista de modelos:",
-      phase2: "Fase 2 — prueba de chat:"
+      phase1: "Fase 1: lista de modelos:",
+      phase2: "Fase 2: prueba de chat:"
     },
     phase1ModelsOk: "✓ Lista de modelos obtenida OK",
     phase1ManifestFallback: "⚠ Usando fallback de manifest (API inaccesible)",
@@ -368,7 +368,7 @@ export default {
     phase2InOfferOnly: "✓ Modelo está en la lista",
     checkFailedPrefix: "Error en la solicitud de comprobación: {msg}",
     offerNotInList: "La lista de modelos de esta credencial no contiene este modelo",
-    drawTitle: "oferta #{id} · credencial #{credId} {credLabel}",
+    drawTitle: "oferta #{id}: credencial #{credId} {credLabel}",
     drawToggleDisable: "Desactivar esta vinculación",
     drawToggleEnable: "Activar esta vinculación",
     drawToggleLoading: "Procesando…",
@@ -413,17 +413,17 @@ export default {
       chipUnavailable: "不可用"
     }
 ,
-    probeAllRecoveredHint: '✓ {n} model(s) probed OK; node_probe_state auto-recovered, routing candidates re-enabled',
+    probeAllRecoveredHint: '✓ {n} modelos sondeados correctamente; node_probe_state recuperado y candidatos de enrutado reactivados',
 
     resetNodeProbeBtn: 'Clear failed probes',
 
     resetNodeProbeLoading: 'Clearing…',
 
-    resetNodeProbeTitle: 'Clear node_probe_state rows where last_direct_ok=FALSE (force-recover routing). Use when Probe all shows OK but routing candidates remain blocked.',
+    resetNodeProbeTitle: 'Borra las filas de node_probe_state con last_direct_ok=FALSE y recupera el enrutado. Úsalo cuando «Sondear todo» indica OK pero los candidatos de enrutado siguen bloqueados.',
 
-    resetNodeProbeConfirm: 'Clear all failed node_probe_state rows for this provider?',
+    resetNodeProbeConfirm: '¿Borrar todas las filas con error de node_probe_state de este proveedor?',
 
-    resetNodeProbeDone: '✓ Cleared {n} failed node_probe_state rows; routing candidates re-enabled',
+    resetNodeProbeDone: '✓ Se borraron {n} filas con error de node_probe_state; candidatos de enrutado reactivados',
   },
   settings: {
     overrideTitle: "🎛️ Configuración del modo passthrough",
@@ -446,7 +446,7 @@ export default {
     optionOnRecommended: "Activado (recomendado)",
     optionOff2: "Desactivado",
     compressionHint: "Cuando está desactivado, las solicitudes se pasan al upstream sin compresión de contexto. Adecuado para proveedores con ventanas de contexto grandes (p. ej. NVIDIA).",
-    cacheHint: "Cuando está desactivado, las sesiones y respuestas no se cachean — cada llamada llega al upstream. Adecuado para escenarios de passthrough total.",
+    cacheHint: "Cuando está desactivado, las sesiones y respuestas no se cachean. Cada llamada llega al upstream. Adecuado para escenarios de passthrough total.",
     formatHint: "Mantener activado para soportar la conversión de protocolo Anthropic ↔ OpenAI. Cuando se desactiva, solo se soporta el protocolo nativo.",
     editTitle: "Editar proveedor",
     fieldDisplayName: "Nombre mostrado",
@@ -536,7 +536,7 @@ export default {
     runningDiag: "Diagnosticando…",
     starting: "Iniciando…",
     pollingHint: "Sondeando credenciales, por favor espere…",
-    taskRunning: "Tarea de diagnóstico #{id} en ejecución — normalmente entre 30 y 60 segundos…",
+    taskRunning: "Tarea de diagnóstico #{id} en ejecución: normalmente entre 30 y 60 segundos…",
     errorTimeout: "Tiempo de diagnóstico agotado",
     errorDiag: "Diagnóstico fallido",
     summaryTotalCreds: "Credenciales totales",
@@ -560,14 +560,14 @@ export default {
     credColModels: "Sonda de modelos",
     credColChat: "Sonda de chat",
     probeFailed: "Fallido",
-    probeMetaModels: "{status} · {count} modelos · {latency}ms",
+    probeMetaModels: "{status}, {count} modelos, {latency}ms",
     // 2026-09-04: non-JSON probe hint (parity backfill).
-    probeNonJson: "{status} · respuesta no JSON",
-    probeMetaChat: "{status} · {latency}ms"
+    probeNonJson: "{status}: respuesta no JSON",
+    probeMetaChat: "{status}: {latency}ms"
   },
   probe: {
     consensusTitle: "Mecanismo de consenso",
-    consensusDesc: "{n} éxitos consecutivos → marcada como recuperada · {n} fallos consecutivos → confirmada como rota (deja de sondear)",
+    consensusDesc: "{n} éxitos consecutivos → marcada como recuperada, {n} fallos consecutivos → confirmada como rota (deja de sondear)",
     consensusFallback: "Intervalos de retroceso: 1m → 5m → 15m → 60m (incremental)",
     refresh: "Actualizar",
     refreshLoading: "…",
@@ -612,7 +612,7 @@ export default {
       healthyConfirmed: "Recuperado",
       brokenConfirmed: "Confirmado roto"
     },
-    historyMeta: "Últimos 100 registros · auto / manual",
+    historyMeta: "Últimos 100 registros: auto / manual",
     endpointIdBadge: "Se requiere endpoint ID",
     endpointIdDetail: "Este modelo (p. ej. Volcano Ark minimax-m3 / glm-5.1) debe invocarse mediante un endpoint ID (p. ej. <code>ep-XXXXXXXX</code>) en lugar de su nombre sin procesar. Vaya a",
     endpointIdLink: "Lista de modelos → editar outbound_model_name",

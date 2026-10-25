@@ -59,15 +59,15 @@ export default {
     },
     empty: "Keine Anmeldedaten",
     labelFallback: "Anmeldedaten #{id}",
-    fingerprintTitle: "Nur zum Upstream-Abgleich — nicht der vollständige Schlüssel",
+    fingerprintTitle: "Nur zum Upstream-Abgleich: nicht der vollständige Schlüssel",
     fingerprintUnparsed: "Kann nicht geparst werden",
     viewErrorDetail: "Anbieterfehler anzeigen",
-    rowMeta: "#{id} · {trust}",
+    rowMeta: "#{id}: {trust}",
     cellUnset: "Nicht gesetzt",
     noLimit: "Keine Begrenzung",
     slotUsage: "Slot {used}/{limit}",
     requestCountSuffix: "Anfragen",
-    addCredTitle: "Anmeldedaten hinzufügen — {name}",
+    addCredTitle: "Anmeldedaten hinzufügen: {name}",
     addCredApiKey: "API-Schlüssel",
     addCredLabel: "Etikett (optional)",
     addCredLabelPlaceholder: "z. B. Produktionsschlüssel",
@@ -115,7 +115,7 @@ export default {
     drawerFpSlotSuggestPrefix: "Empfohlen: ",
     drawerFpSlotSuggestTitle: "Empfohlen {n} (Parallelität ÷ 4, min 1)",
     drawerFpSlotHintAuto: "Empfohlen {n} (Parallelität ÷ 4, abrunden, min 1)",
-    drawerFpSlotHintTouched: "Manuell überschrieben — Parallelitätsänderungen passen diesen Wert nicht automatisch an",
+    drawerFpSlotHintTouched: "Manuell überschrieben: Parallelitätsänderungen passen diesen Wert nicht automatisch an",
     drawerFpSlotReset: "Auf Empfehlung zurücksetzen",
     drawerFpSlotResetTitle: "Den aus der Parallelität abgeleiteten Wert wiederherstellen",
     drawerFpSlotFull: "Voll",
@@ -147,7 +147,7 @@ export default {
     apiKeyRevealing: "Wird angezeigt…",
     apiKeyHide: "Ausblenden",
     apiKeyCopy: "Kopieren",
-    apiKeyWarningReveal: "Der Klartext-API-Key ist im Browser sichtbar. Sorgfältig behandeln — beim Schließen des Drawers wird er automatisch ausgeblendet.",
+    apiKeyWarningReveal: "Der Klartext-API-Key ist im Browser sichtbar. Sorgfältig behandeln. Beim Schließen des Drawers wird er automatisch ausgeblendet.",
     apiKeyRotateBtn: "Ändern",
     apiKeyRotateTitle: "API Key ändern",
     apiKeyRotateModelLabel: "Gebundenes Modell (für den automatischen Probe-Check des neuen Keys)",
@@ -155,7 +155,7 @@ export default {
     apiKeyRotateConfirmLabel: "Neuen API Key bestätigen",
     apiKeyRotateSubmit: "Ändern",
     apiKeyRotating: "Wird gesendet…",
-    apiKeyRotateMismatch: "Die beiden Eingaben stimmen nicht überein — bitte neu eingeben.",
+    apiKeyRotateMismatch: "Die beiden Eingaben stimmen nicht überein. Bitte neu eingeben.",
     apiKeyRotateMissing: "Bitte einen neuen API Key eingeben.",
     apiKeyRotateSuccess: "API Key geändert",
     apiKeyRotateFailed: "Änderung fehlgeschlagen",
@@ -332,7 +332,7 @@ export default {
     drawerOutboundHint: "Einige Anbieter (z. B. Volcano Ark) erfordern eine Endpunkt-ID (z. B. ep-20241227XXXX) als Modell-Feld statt des Roznamens. Ohne sie wird die Prüfung übersprungen (Fehlercode: endpoint_id_required).",
     drawerOutboundPlaceholder: "ep-XXXXXXXX",
     drawerOutboundSend: "Wird gesendet:",
-    drawerOutboundUnset: "Nicht gesetzt — wird verwendet",
+    drawerOutboundUnset: "Nicht gesetzt: wird verwendet",
     drawerSectionContextWindow: "Kontextfenster (Tokens)",
     drawerContextWindowHint: "Anmeldedaten-Override für diese Anmeldedaten × Modell. Auflösung: dieser Override > Katalog-Override > Modellkatalog. Leer lassen, 0 eingeben oder auf die Schaltfläche „Zurücksetzen“ klicken, um den Override zu entfernen und den Katalogwert zu verwenden. Die Änderung wird nur wirksam, wenn Sie den Wert tatsächlich ändern; das Speichern anderer Felder (z. B. standardisierter Name) überschreibt keinen bestehenden Override.",
     drawerContextWindowPlaceholder: "z. B. 200000",
@@ -350,8 +350,8 @@ export default {
     checkStatusWarning: "⚠ Warnung",
     checkStatusError: "✗ Fehler",
     phaseLabel: {
-      phase1: "Phase 1 — Modellliste:",
-      phase2: "Phase 2 — Chat-Test:"
+      phase1: "Phase 1: Modellliste:",
+      phase2: "Phase 2: Chat-Test:"
     },
     phase1ModelsOk: "✓ Modellliste erfolgreich abgerufen",
     phase1ManifestFallback: "⚠ Manifest-Fallback wird verwendet (API unerreichbar)",
@@ -368,7 +368,7 @@ export default {
     phase2InOfferOnly: "✓ Modell ist in der Liste",
     checkFailedPrefix: "Prüfungsanfrage fehlgeschlagen: {msg}",
     offerNotInList: "Diese Anmeldedaten-Modellliste enthält dieses Modell nicht",
-    drawTitle: "Offer #{id} · Anmeldedaten #{credId} {credLabel}",
+    drawTitle: "Offer #{id}: Anmeldedaten #{credId} {credLabel}",
     drawToggleDisable: "Diese Bindung deaktivieren",
     drawToggleEnable: "Diese Bindung aktivieren",
     drawToggleLoading: "Wird verarbeitet…",
@@ -413,17 +413,17 @@ export default {
       chipUnavailable: "不可用"
     }
 ,
-    probeAllRecoveredHint: '✓ {n} model(s) probed OK; node_probe_state auto-recovered, routing candidates re-enabled',
+    probeAllRecoveredHint: '✓ {n} Modelle geprüft und in Ordnung, node_probe_state automatisch wiederhergestellt, Routing-Kandidaten wieder aktiviert',
 
     resetNodeProbeBtn: 'Clear failed probes',
 
     resetNodeProbeLoading: 'Clearing…',
 
-    resetNodeProbeTitle: 'Clear node_probe_state rows where last_direct_ok=FALSE (force-recover routing). Use when Probe all shows OK but routing candidates remain blocked.',
+    resetNodeProbeTitle: 'Zeilen in node_probe_state löschen, für die last_direct_ok=FALSE gilt, und das Routing wiederherstellen. Für den Fall, dass Probe all OK meldet, die Routing-Kandidaten aber gesperrt bleiben.',
 
-    resetNodeProbeConfirm: 'Clear all failed node_probe_state rows for this provider?',
+    resetNodeProbeConfirm: 'Alle fehlgeschlagenen Zeilen in node_probe_state für diesen Anbieter löschen?',
 
-    resetNodeProbeDone: '✓ Cleared {n} failed node_probe_state rows; routing candidates re-enabled',
+    resetNodeProbeDone: '✓ {n} fehlgeschlagene Zeilen in node_probe_state gelöscht, Routing-Kandidaten wieder aktiviert',
   },
   settings: {
     overrideTitle: "🎛️ Pass-Through-Modus-Konfiguration",
@@ -446,7 +446,7 @@ export default {
     optionOnRecommended: "Ein (empfohlen)",
     optionOff2: "Aus",
     compressionHint: "Wenn aus, werden Anfragen ohne Kontextkomprimierung an den Upstream weitergeleitet. Geeignet für Anbieter mit großen Kontextfenstern (z. B. NVIDIA).",
-    cacheHint: "Wenn aus, werden Sitzungen und Antworten nicht zwischengespeichert — jeder Aufruf geht an die Upstream-API. Geeignet für vollständige Pass-Through-Szenarien.",
+    cacheHint: "Wenn aus, werden Sitzungen und Antworten nicht zwischengespeichert. Jeder Aufruf geht an die Upstream-API. Geeignet für vollständige Pass-Through-Szenarien.",
     formatHint: "Eingeschaltet lassen, um die Anthropic ↔ OpenAI-Protokollkonvertierung zu unterstützen. Wenn aus, wird nur das native Protokoll unterstützt.",
     editTitle: "Anbieter bearbeiten",
     fieldDisplayName: "Anzeigename",
@@ -536,7 +536,7 @@ export default {
     runningDiag: "Diagnose läuft…",
     starting: "Wird gestartet…",
     pollingHint: "Anmeldedaten werden geprüft, bitte warten…",
-    taskRunning: "Diagnoseaufgabe #{id} läuft — normalerweise 30–60 Sekunden…",
+    taskRunning: "Diagnoseaufgabe #{id} läuft: normalerweise 30–60 Sekunden…",
     errorTimeout: "Diagnose-Zeitüberschreitung",
     errorDiag: "Diagnose fehlgeschlagen",
     summaryTotalCreds: "Gesamte Anmeldedaten",
@@ -560,14 +560,14 @@ export default {
     credColModels: "Models-Prüfung",
     credColChat: "Chat-Prüfung",
     probeFailed: "Fehlgeschlagen",
-    probeMetaModels: "{status} · {count} Modelle · {latency} ms",
+    probeMetaModels: "{status}, {count} Modelle, {latency} ms",
     // 2026-09-04: non-JSON probe hint (parity backfill).
-    probeNonJson: "{status} · Nicht-JSON-Antwort",
-    probeMetaChat: "{status} · {latency} ms"
+    probeNonJson: "{status}: Nicht-JSON-Antwort",
+    probeMetaChat: "{status}: {latency} ms"
   },
   probe: {
     consensusTitle: "Konsens-Mechanismus",
-    consensusDesc: "{n} aufeinanderfolgende Erfolge → als wiederhergestellt markiert · {n} aufeinanderfolgende Fehler → als bestätigt fehlgeschlagen markiert (Prüfung stoppen)",
+    consensusDesc: "{n} aufeinanderfolgende Erfolge → als wiederhergestellt markiert, {n} aufeinanderfolgende Fehler → als bestätigt fehlgeschlagen markiert (Prüfung stoppen)",
     consensusFallback: "Backoff-Intervalle: 1m → 5m → 15m → 60m (steigend)",
     refresh: "Aktualisieren",
     refreshLoading: "…",
@@ -612,7 +612,7 @@ export default {
       healthyConfirmed: "Wiederhergestellt",
       brokenConfirmed: "Bestätigt fehlgeschlagen"
     },
-    historyMeta: "Letzte 100 Datensätze · Scheduler automatisch / Manuell",
+    historyMeta: "Letzte 100 Datensätze: Scheduler automatisch / Manuell",
     endpointIdBadge: "Endpunkt-ID erforderlich",
     endpointIdDetail: "Dieses Modell (z. B. Volcano Ark minimax-m3 / glm-5.1) muss über eine Deployment-Endpunkt-ID (z. B. <code>ep-XXXXXXXX</code>) aufgerufen werden, nicht über den Roznamen. Gehen Sie zu",
     endpointIdLink: "Modellliste → outbound_model_name bearbeiten",

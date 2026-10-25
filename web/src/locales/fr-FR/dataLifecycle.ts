@@ -171,9 +171,9 @@ export default {
       vacuum: "🧹 VACUUM",
       vacuumFull: "🗜 FULL",
       reindex: "🔧 REINDEX",
-      vacuumTitle: "VACUUM (ANALYZE) {table} — sans verrou, récupère les tuples morts",
-      vacuumFullTitle: "VACUUM FULL {table} — avec verrou, rend l'espace au SE",
-      reindexTitle: "REINDEX TABLE {table} — avec verrou, reconstruit les index"
+      vacuumTitle: "VACUUM (ANALYZE) {table}: sans verrou, récupère les tuples morts",
+      vacuumFullTitle: "VACUUM FULL {table}: avec verrou, rend l'espace au SE",
+      reindexTitle: "REINDEX TABLE {table}: avec verrou, reconstruit les index"
     },
     modal: {
       vacuumTitle: "🧹 Confirmer VACUUM",
@@ -191,7 +191,7 @@ export default {
       time: "Durée estimée",
       cancel: "Annuler",
       confirm: "Exécuter {op}",
-      success: "{op} {table} terminé — {size} libérés ({pct}%)",
+      success: "{op} {table} terminé: {size} libérés ({pct}%)",
       failed: "{op} échoué : {msg}"
     },
     rowResult: {
@@ -241,7 +241,7 @@ export default {
     emptyResult: "Aucune donnée",
     partitionTitle: "Gestion des partitions mensuelles",
     partitionDesc: "Supprimez les anciennes partitions mensuelles pour libérer de l'espace disque.",
-    partitionWarning: "Cette action est irréversible — à utiliser avec précaution.",
+    partitionWarning: "Cette action est irréversible: à utiliser avec précaution.",
     tables: {
       title: "Tables partitionnées",
       selectLabel: "Table : ",
@@ -311,9 +311,9 @@ export default {
     },
     migrationFailed: "迁移失败"
 ,
-    jobIdMissing: 'Failed to start async job: missing job_id',
+    jobIdMissing: 'Impossible de démarrer la tâche asynchrone : job_id manquant',
 
-    asyncCompleted: 'Async migration complete: {n} rows migrated',
+    asyncCompleted: 'Migration asynchrone terminée : {n} lignes migrées',
 
     asyncFailed: 'Async migration failed: {error}',
 
@@ -321,15 +321,15 @@ export default {
 
     cancelTitle: 'Cancel migration job',
 
-    cancelConfirm: 'Cancel the currently running migration job? Already-migrated data will be preserved.',
+    cancelConfirm: 'Annuler la tâche de migration en cours ? Les données déjà migrées seront conservées.',
 
-    cancelRequested: 'Cancellation requested. The job will stop at the next batch.',
+    cancelRequested: 'Annulation demandée. La tâche s\'arrêtera au prochain lot.',
 
-    asyncEnabledHint: 'Since 2026-07-13 migrations run in async mode. Real-time progress and cancel are visible on this page.',
+    asyncEnabledHint: 'Depuis le 13/07/2026, les migrations s\'exécutent en mode asynchrone. La progression et l\'annulation sont visibles sur cette page.',
 
     cronStatsTitle: 'Nightly auto-migration',
 
-    cronStatsDesc: 'Every day at 02:00 AM, hot tables older than 24 hours are auto-migrated. Tunable via env vars.',
+    cronStatsDesc: 'Chaque jour à 02 h 00, les tables chaudes de plus de 24 heures sont migrées automatiquement. Réglable par variables d\'environnement.',
 
     cronEnabled: 'Enabled',
 
@@ -411,7 +411,7 @@ export default {
       previousLabel: 'Période de référence ({period})',
       change: 'Variation',
       significant: 'Significatif',
-      meta: '{requests} requêtes · {models} modèles',
+      meta: '{requests} requêtes: {models} modèles',
     },
     attribution: {
       title: 'Attribution des coûts',

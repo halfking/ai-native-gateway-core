@@ -1,7 +1,7 @@
 // modulesView.ts — Page de gestion des modules.
 export default {
   pageTitle: 'Modules',
-  pageSubtitle: 'Gestion centralisée des modules de fonctionnalités entreprise — activez ou désactivez les capacités selon vos besoins.',
+  pageSubtitle: 'Gestion centralisée des modules de fonctionnalités entreprise. Activez ou désactivez les capacités selon vos besoins.',
   modulesEnabled: 'modules activés',
   loading: 'Chargement…',
 
@@ -48,7 +48,7 @@ export default {
     labelStatus: 'État actuel',
     viewAllSettings: 'Voir tous les paramètres système',
     requirementsMet: 'Toutes les dépendances sont activées',
-    requirementsMissing: 'Les dépendances suivantes sont désactivées — les fonctionnalités associées peuvent être limitées :',
+    requirementsMissing: 'Les dépendances suivantes sont désactivées. Les fonctionnalités associées peuvent être limitées :',
     jumpToModule: 'Configurer',
     testConnection: 'Tester la connexion',
     testSuccess: 'Test de connexion réussi',
@@ -102,20 +102,20 @@ export default {
 
   handoff: {
     groupMaster: 'Master switch',
-    groupMasterHint: 'Master toggle and trigger mode: determine how session handoff is enabled and when it fires',
+    groupMasterHint: 'Interrupteur principal et mode de déclenchement : ils décident si la reprise de session est active et quand elle part',
     groupTrigger: 'Trigger thresholds',
-    groupTriggerHint: '4 trigger conditions run in parallel — any one of them fires handoff; the strictest wins',
+    groupTriggerHint: '4 conditions de déclenchement sont évaluées en parallèle : une seule suffit à déclencher la reprise, et la plus stricte l\'emporte.',
     groupSummary: 'Summary generation',
-    groupSummaryHint: 'Summary engine and prompt template: how to compress the old session into a new-session-readable context',
+    groupSummaryHint: 'Moteur de résumé et modèle de prompt : comment compresser l\'ancienne session en un contexte lisible par la nouvelle',
     groupSafety: 'Safety limits and notifications',
-    groupSafetyHint: 'Cooldown, per-session cap, retry on failure, and log/Webhook notifications',
+    groupSafetyHint: 'Délai de repos, plafond par session, nouvelle tentative en cas d\'échec et notifications par log ou webhook',
   },
 
   integration: {
     docsLabel: 'Documentation : ',
     stepsTitle: 'Étapes de configuration',
     enabledStatus: 'Intégration activée',
-    disabledHint: 'Intégration désactivée — veuillez d\'abord activer le module',
+    disabledHint: 'Intégration désactivée: veuillez d\'abord activer le module',
     feishuSteps: [
       'Créer un bot personnalisé sur la plateforme ouverte Feishu',
       'Copier l\'URL du webhook et la coller dans la configuration ci-dessous',
@@ -207,5 +207,5 @@ export default {
 
   modeBannerTitle: 'This page only does three things:',
 
-  modeBannerBody: 'Toggle installed modules, and download modules that are already licensed but not enabled. No pricing, ordering, or plan entry here (purchase flows are announced separately).',
+  modeBannerBody: 'Activez ou désactivez les modules installés et téléchargez ceux qui sont déjà licenciés mais pas activés. Ni prix, ni commande, ni abonnement ici.',
 }

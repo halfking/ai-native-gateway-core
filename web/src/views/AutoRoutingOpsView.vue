@@ -155,19 +155,19 @@ watch(activeTab, (v) => {
         :label="t('autoOps.kpi.pendingToday')"
         :value="fmtVal(pendingToday)"
         :tone="(pendingToday ?? 0) > 0 ? 'warning' : 'success'"
-        icon="✍️"
+
       />
-      <StatCard :label="t('autoOps.kpi.totalAnnotations')" :value="fmtVal(totalAnnotations)" icon="🧾" />
-      <StatCard :label="t('autoOps.kpi.accuracy')" :value="fmtPct(accuracyPct)" :tone="accuracyTone" icon="🎯" />
+      <StatCard :label="t('autoOps.kpi.totalAnnotations')" :value="fmtVal(totalAnnotations)" />
+      <StatCard :label="t('autoOps.kpi.accuracy')" :value="fmtPct(accuracyPct)" :tone="accuracyTone" />
       <StatCard
         v-if="isSuper"
         :label="t('autoOps.kpi.pendingProposals')"
         :value="fmtVal(pendingProposals)"
         :tone="(pendingProposals ?? 0) > 0 ? 'warning' : 'success'"
-        icon="🎛️"
+
       />
-      <StatCard v-if="isSuper" :label="t('autoOps.kpi.suggestions')" :value="fmtVal(suggestedTiers)" icon="🗂️" />
-      <StatCard v-if="!isSuper" :label="t('autoOps.kpi.annotators')" :value="fmtVal(numAnnotators)" icon="👥" />
+      <StatCard v-if="isSuper" :label="t('autoOps.kpi.suggestions')" :value="fmtVal(suggestedTiers)" />
+      <StatCard v-if="!isSuper" :label="t('autoOps.kpi.annotators')" :value="fmtVal(numAnnotators)" />
     </StatsRow>
 
     <div class="view-tabs-container">

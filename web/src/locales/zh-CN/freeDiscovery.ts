@@ -83,7 +83,7 @@ export default {
       review: '审查结果'
     },
   res: {
-      title: '发现结果 · 任务 {id} · {provider}',
+      title: '发现结果，任务 {id}，{provider}',
       pending: '待审查',
       all: '全部',
       model: '模型 ID',
@@ -123,7 +123,7 @@ export default {
       completed: '完成时间',
       detail: '明细',
       none: '暂无导入记录。完成一次「任务与结果审查」页的批量导入后会在这里显示。',
-      detailTitle: '导入明细 · 任务 {id} · {provider}',
+      detailTitle: '导入明细，任务 {id}，{provider}',
       importedAt: '导入时间'
     },
 }

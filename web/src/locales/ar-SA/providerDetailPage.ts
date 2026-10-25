@@ -23,7 +23,7 @@ export default {
   manualDisableTitle: 'تعطيل المزود بالكامل يدويًا',
   manualEnableTitle: 'إلغاء التعطيل اليدوي (استئناف تلقائي)',
   manualDisableBadge: '🔒 معطّل يدويًا',
-  manualDisableBadgeTitle: 'تعطيل يدوي على مستوى المزود — المزود بالكامل غير قابل للتوجيه',
+  manualDisableBadgeTitle: 'تعطيل يدوي على مستوى المزود: المزود بالكامل غير قابل للتوجيه',
   disabledBadge: 'معطّل',
   manualToggle: {
     set: 'تعطيل يدوي',
@@ -33,7 +33,7 @@ export default {
     disablePrompt: 'سبب تعطيل المزود {name} يدويًا:',
     enablePrompt: 'سبب تفعيل المزود {name} يدويًا:',
   },
-  manualDisabledTitle: 'تعطيل يدوي على مستوى المزود — المزود بالكامل غير قابل للتوجيه',
+  manualDisabledTitle: 'تعطيل يدوي على مستوى المزود: المزود بالكامل غير قابل للتوجيه',
   manualDisabledBadge: 'معطّل يدويًا',
   loadFailed: 'فشل التحميل',
   operationFailed: 'فشلت العملية',
@@ -41,7 +41,7 @@ export default {
 
   quality: {
     loading: 'Loading quality data…',
-    noData: 'No quality data yet. Quality profiles are calculated periodically; refresh later or run a probe first.',
+    noData: 'لا توجد بيانات جودة بعد. تُحسب ملفات الجودة دوريًا، فحدّث لاحقًا أو شغّل فحصًا أولًا.',
     overallScore: 'Overall score',
     providerAggregate: 'Provider aggregate',
     modelDetails: 'Model quality details',

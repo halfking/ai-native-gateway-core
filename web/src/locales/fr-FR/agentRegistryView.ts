@@ -35,7 +35,7 @@ export default {
     kindTitle: 'Kind',
     tenantTitle: 'Tenant',
     defaultTenant: 'Default tenant',
-    placeholder: 'Search by name / owner / team / tenant_id…',
+    placeholder: 'Rechercher par nom / responsable / équipe / tenant_id…',
     clear: 'Clear',
     query: 'Query',
     totalCount: '{n} total',

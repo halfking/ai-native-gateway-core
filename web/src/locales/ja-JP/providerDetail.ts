@@ -62,7 +62,7 @@ export default {
     fingerprintTitle: "アップストリームプラットフォーム照合用、完全なキーではありません",
     fingerprintUnparsed: "解析できません",
     viewErrorDetail: "TODO",
-    rowMeta: "#{id} · {trust}",
+    rowMeta: "#{id}：{trust}",
     cellUnset: "未設定",
     noLimit: "無制限",
     slotUsage: "スロット {used}/{limit}",
@@ -368,7 +368,7 @@ export default {
     phase2InOfferOnly: "✓ モデルが一覧に存在",
     checkFailedPrefix: "チェックリクエスト失敗: {msg}",
     offerNotInList: "この認証情報のモデル一覧にこのモデルがありません",
-    drawTitle: "offer #{id} · 認証情報 #{credId} {credLabel}",
+    drawTitle: "offer #{id}：認証情報 #{credId} {credLabel}",
     drawToggleDisable: "この紐付けを無効化",
     drawToggleEnable: "この紐付けを有効化",
     drawToggleLoading: "処理中…",
@@ -560,14 +560,14 @@ export default {
     credColModels: "Models 検出",
     credColChat: "Chat 検出",
     probeFailed: "失敗",
-    probeMetaModels: "{status} · {count} モデル · {latency}ms",
+    probeMetaModels: "{status}，{count} モデル，{latency}ms",
     // 2026-09-04: non-JSON probe hint (parity backfill).
-    probeNonJson: "{status} · JSON 以外のレスポンス",
-    probeMetaChat: "{status} · {latency}ms"
+    probeNonJson: "{status}：JSON 以外のレスポンス",
+    probeMetaChat: "{status}：{latency}ms"
   },
   probe: {
     consensusTitle: "コンセンサス機構",
-    consensusDesc: "{n} 回連続成功 → 復元済みとマーク · {n} 回連続失敗 → 失敗確定（検出停止）",
+    consensusDesc: "{n} 回連続成功 → 復元済みとマーク：{n} 回連続失敗 → 失敗確定（検出停止）",
     consensusFallback: "フォールバック間隔：1m → 5m → 15m → 60m（段階的）",
     refresh: "更新",
     refreshLoading: "…",
@@ -612,7 +612,7 @@ export default {
       healthyConfirmed: "復元済み",
       brokenConfirmed: "失敗確定"
     },
-    historyMeta: "直近100件 · scheduler 自動 / manual 手動",
+    historyMeta: "直近100件：scheduler 自動 / manual 手動",
     endpointIdBadge: "エンドポイント ID 設定が必要",
     endpointIdDetail: "このモデル（火山方舟 minimax-m3 / glm-5.1 など）は元のモデル名ではなく deployment エンドポイント ID（例: <code>ep-XXXXXXXX</code>）で呼び出す必要があります。次に進んでください:",
     endpointIdLink: "モデル一覧 → outbound_model_name を編集",

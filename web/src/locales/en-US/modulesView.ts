@@ -1,7 +1,7 @@
 // modulesView.ts — Modules management page.
 export default {
   pageTitle: 'Modules',
-  pageSubtitle: 'Centralized management of enterprise-grade feature modules — enable or disable capabilities on demand.',
+  pageSubtitle: 'Centralized management of enterprise-grade feature modules. Enable or disable capabilities on demand.',
   // 31 §2.3 / §6: three-section hard constraint banner
   modeBannerTitle: 'This page only does three things:',
   modeBannerBody: 'Toggle installed modules, and download modules that are already licensed but not enabled. No pricing, ordering, or plan entry here (purchase flows are announced separately).',
@@ -55,7 +55,7 @@ export default {
     notEnabled: 'Not enabled',
     viewAllSettings: 'View all system settings',
     requirementsMet: 'All dependencies enabled',
-    requirementsMissing: 'The following dependencies are disabled — related features may be limited:',
+    requirementsMissing: 'The following dependencies are disabled: related features may be limited:',
     jumpToModule: 'Configure',
     required: 'Required',
     optional: 'Optional',
@@ -104,7 +104,7 @@ export default {
     groupMaster: 'Master switch',
     groupMasterHint: 'Master toggle and trigger mode: determine how session handoff is enabled and when it fires',
     groupTrigger: 'Trigger thresholds',
-    groupTriggerHint: '4 trigger conditions run in parallel — any one of them fires handoff; the strictest wins',
+    groupTriggerHint: '4 trigger conditions run in parallel: any one of them fires handoff; the strictest wins',
     groupSummary: 'Summary generation',
     groupSummaryHint: 'Summary engine and prompt template: how to compress the old session into a new-session-readable context',
     groupSafety: 'Safety limits and notifications',
@@ -115,7 +115,7 @@ export default {
     docsLabel: 'Docs: ',
     stepsTitle: 'Setup steps',
     enabledStatus: 'Integration enabled',
-    disabledHint: 'Integration disabled — please enable the module first',
+    disabledHint: 'Integration disabled: please enable the module first',
     feishuSteps: [
       'Create a custom bot in the Feishu open platform',
       'Copy the webhook URL and paste it into the config below',

@@ -1,12 +1,12 @@
 // requestRegistry.ts — request registry view
 export default {
   title: 'Request Registry',
-  subtitle: 'Three-state registry (pending / in_flight / completed): live lifecycle + hot window',
+  subtitle: '三態登錄表（待處理 / 執行中 / 已完成）：即時生命週期 + 熱窗',
   sseConnected: 'Live stream connected',
   sseReconnecting: 'SSE reconnecting…',
-  apiDegraded: 'Queue API fetch failed; showing SSE fallback',
+  apiDegraded: '佇列 API 取用失敗，改顯示 SSE 備援資料',
   scopeAll: 'Super admin global ingress view',
-  historyNote: 'List is hot window (~100); lookup by ID falls back to PostgreSQL detail',
+  historyNote: '清單是熱窗（約 100 筆）；以 ID 查詢會回退到 PostgreSQL 明細',
   search: 'Lookup journey',
   searchPlaceholder: 'Enter request_id for full journey…',
   filterPlaceholder: 'Filter current list…',

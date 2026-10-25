@@ -1,7 +1,7 @@
 // Auto-synced from en-US (zh-TW)
 export default {
   title: 'Routing Overrides Audit',
-  subtitle: 'Every change to the routing_overrides table is recorded with actor, action, and row state.',
+  subtitle: 'routing_overrides 資料表的每次變更都會記錄操作者、動作與該列狀態。',
   summary: {
     total: 'Total',
     inserts: 'Inserts',

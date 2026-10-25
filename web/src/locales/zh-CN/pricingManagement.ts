@@ -25,7 +25,7 @@ export default {
     tokenPlanSuffix: 'token_plan',
   },
   filter: {
-    modelTitle: '成本价格 · 模型筛选',
+    modelTitle: '成本价格：模型筛选',
     modelPlaceholder: '选择模型筛选…',
     allProviders: '全部供应商',
     allBilling: '全部计费',

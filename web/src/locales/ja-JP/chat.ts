@@ -74,7 +74,7 @@ export default {
   params: {
     title: 'Model parameters',
     open: 'Params',
-    nextTurnHint: 'Parameter changes apply to the next turn.',
+    nextTurnHint: 'パラメータの変更は次のターンから反映されます。',
     systemPrompt: 'System prompt',
     systemPromptPlaceholder: 'Set role, tone, and constraints…',
     temperature: 'Temperature',
@@ -118,6 +118,6 @@ export default {
   sending: '生成中…',
   send: '送信',
   copySummary: '要約をコピー',
-  suggestStream: 'Timed out or waited too long — switch back to streaming mode.',
+  suggestStream: 'タイムアウト、または待ち時間が長すぎます。ストリーミングモードに戻してください。',
   aborted: 'Generation stopped',
 }

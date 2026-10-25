@@ -12,7 +12,7 @@ export default {
     loadFailed: 'Failed to load licenses',
     loadDevicesFailed: 'Failed to load devices',
     revoke: 'Revoke',
-    revokeConfirm: 'Are you sure you want to revoke the license for customer {customer}?',
+    revokeConfirm: 'هل أنت متأكد من إلغاء ترخيص العميل {customer}؟',
     revokeSuccess: 'License revoked successfully',
     revokeFailed: 'Failed to revoke license',
     licenseKey: 'License Key',
@@ -88,11 +88,11 @@ export default {
     editRule: 'Edit Rule',
     updateSuccess: 'Rule updated successfully',
     saveFailed: 'Failed to save',
-    deleteRuleConfirm: 'Are you sure you want to delete rule {name}?',
+    deleteRuleConfirm: 'هل أنت متأكد من حذف القاعدة {name}؟',
     deleteSuccess: 'Rule deleted successfully',
     deleteFailed: 'Failed to delete',
     fix: 'Fix',
-    fixConfirm: 'Are you sure you want to trigger manual fix?',
+    fixConfirm: 'هل أنت متأكد من تشغيل الإصلاح اليدوي؟',
     fixTriggered: 'Fix triggered',
     fixFailed: 'Failed to trigger fix',
     totalEvents: 'Total Events',
@@ -180,10 +180,10 @@ export default {
     unpublishFailed: 'Failed to unpublish release',
     rollback: 'Rollback',
     rollbackTitle: 'Rollback to Version',
-    rollbackConfirm: 'Are you sure you want to rollback to version {version}?',
+    rollbackConfirm: 'هل أنت متأكد من الرجوع إلى الإصدار {version}؟',
     rollbackSuccess: 'Rollback successful',
     rollbackFailed: 'Failed to rollback',
-    rollbackWarning: 'Rollback will revert to the target version. Ensure backups are available before proceeding.',
+    rollbackWarning: 'يعيد التراجع إلى الإصدار المستهدف. تأكد من توفر النسخ الاحتياطية قبل المتابعة.',
     targetVersion: 'Target Version',
     targetVersionPlaceholder: 'e.g. v1.0.0',
     version: 'Version',
@@ -193,7 +193,7 @@ export default {
     releaseTitlePlaceholder: 'Enter release title',
     channelLabel: 'Channel',
     imageTag: 'Image Tag',
-    imageTagPlaceholder: 'e.g. registry.example.com/gateway:v2.0.0',
+    imageTagPlaceholder: 'مثال: registry.example.com/gateway:v2.0.0',
     imageDigest: 'Image Digest',
     minVersion: 'Min Version',
     mandatory: 'Mandatory',
@@ -243,7 +243,7 @@ export default {
 
     rolloutGate: 'Rollout Gate',
 
-    rolloutTitle: 'Rollout Gate · {version}',
+    rolloutTitle: 'Rollout Gate: {version}',
 
     rolloutRuleStatus: 'Rule Status',
 
@@ -305,7 +305,7 @@ export default {
       degraded: 'Degraded',
     },
 
-    lastCommand: 'Last command {id} · status: {status}',
+    lastCommand: 'Last command {id}: status: {status}',
 
     ipAddress: 'IP Address',
 
@@ -418,7 +418,7 @@ export default {
     pendingOffline: 'تفعيلات offline قيد الموافقة',
     viewAll: 'عرض الكل',
 
-    subtitle: 'Cluster health at a glance — open a node for pressure, requests, and errors',
+    subtitle: 'حالة العنقود في لمحة. افتح عقدة لعرض الضغط والطلبات والأخطاء',
 
     licenseSubsystem: 'License Subsystem',
 
@@ -460,7 +460,7 @@ export default {
 
     topologyTitle: 'Deployment Topology',
 
-    topologyHint: 'Grouped by region. Sparse nodes stay large; dense grids wrap. Click a node for details.',
+    topologyHint: 'مجموعة حسب المنطقة. تبقى العقد المتفرقة كبيرة، وتلتفّ الشبكات الكثيفة. اضغط عقدة لعرض التفاصيل.',
 
     regionEmpty: 'No registered nodes',
 
@@ -513,8 +513,8 @@ export default {
 ,
   downloads: {
     title: 'Download Releases',
-    subtitle: 'Build, verify, package offline installers and publish to download.kxpms.cn',
-    publishBtn: 'Publish current version to download site',
+    subtitle: 'البناء والتحقق وتغليف المثبّتات دون اتصال والنشر على download.kxpms.cn',
+    publishBtn: 'انشر الإصدار الحالي على موقع التنزيل',
     publishOk: 'Published successfully',
     publishFailed: 'Publish failed',
     loadFailed: 'Failed to load download release data',
@@ -537,7 +537,7 @@ export default {
     tests: 'Tests',
     createdAt: 'Created',
     summary: 'Summary',
-    storageHint: 'Offline packages are stored at 245:/var/www/download/llm-gateway-go/v{version}/. Publish runs distribution tests and writes audit rows to download_publish_runs.',
+    storageHint: 'الحزم دون اتصال مخزَّنة على 245 في /var/www/download/llm-gateway-go/v{version}/. يشغّل النشر اختبارات التوزيع ويكتب صفوف تدقيق في download_publish_runs.',
     openPublicDownload: 'Open public download page',
     openActivate: 'Open activation wizard',
   },

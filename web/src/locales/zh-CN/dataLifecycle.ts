@@ -177,7 +177,7 @@ export default {
       previousLabel: '对比期 ({period})',
       change: '变化',
       significant: '显著',
-      meta: '{requests} 次请求 · {models} 个模型',
+      meta: '{requests} 次请求：{models} 个模型',
     },
     attribution: {
       title: '成本归因',

@@ -55,7 +55,7 @@ export default {
     pagination: {
       previous: 'Previous',
       next: 'Next',
-      info: 'Page {page} / {totalPages} ({total} total)',
+      info: 'الصفحة {page} / {totalPages} ({total} إجمالًا)',
     },
     errors: {
       loadFailed: 'Failed to load',

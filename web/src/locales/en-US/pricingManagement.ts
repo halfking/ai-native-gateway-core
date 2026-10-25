@@ -10,7 +10,7 @@ export default {
     importCsv: 'Import CSV',
     autoInherit: 'Auto inherit',
   },
-  readOnly: '📖 You are a tenant admin — read-only mode. Upstream cost pricing is view-only; you cannot edit or import.',
+  readOnly: '📖 You are a tenant admin: read-only mode. Upstream cost pricing is view-only; you cannot edit or import.',
   summary: {
     totalOffers: 'Total offers',
     pricedIn: 'Priced (input)',
@@ -25,7 +25,7 @@ export default {
     tokenPlanSuffix: 'token_plan',
   },
   filter: {
-    modelTitle: 'Cost pricing · model filter',
+    modelTitle: 'Cost pricing: model filter',
     modelPlaceholder: 'Filter by model…',
     allProviders: 'All providers',
     allBilling: 'All billing',
@@ -122,7 +122,7 @@ export default {
     noChange: 'No changes',
     saveFailed: 'Save failed',
     copied: 'Price copied',
-    pasted: 'Pasted — click Save to apply',
+    pasted: 'Pasted: click Save to apply',
   },
   inherit: {
     title: 'Auto-inherit pricing',

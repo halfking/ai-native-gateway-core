@@ -25,14 +25,14 @@ export default {
     effective: '生效 ≈ {value}（含折扣）',
   },
   filter: {
-    title: '定價管理 · 模型篩選',
+    title: '定價管理：模型篩選',
     placeholder: '搜尋標準模型…',
     allPricing: '全部定價',
     defaultOnly: '僅全域基準',
     customOnly: '含手工定價',
     partialOnly: '部分手工',
     otherVendor: '其他',
-    summary: '手工 {custom} · 全域 {defaults} / {total}',
+    summary: '手工 {custom}：全域 {defaults} / {total}',
   },
   table: {
     colModel: '標準模型',
@@ -67,9 +67,9 @@ export default {
     hasMultimodal: '含多模态定价',
   },
   editModal: {
-    title: '手工定價 · {name}',
+    title: '手工定價：{name}',
     hint: '勾選「手工」並填寫積分；未勾選維度繼續跟隨全域基準 × 折扣。',
-    fieldSuffix: ' · 手工定價',
+    fieldSuffix: '：手工定價',
     resetBase: '恢復基準',
     globalApprox: '全域 ≈ {value}',
     save: '儲存',

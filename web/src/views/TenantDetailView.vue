@@ -485,25 +485,25 @@ watch(() => route.params.tenantId, loadTenant)
       <!-- Overview Tab（2026-09-30 统计 UI 优化轮：KPI 升级为 主值+副指标+sparkline） -->
       <div v-if="activeTab === 'overview'" class="tab-content">
         <div class="stat-cards stat-cards--kpi">
-          <StatCard label="用户数" icon="👥">
+          <StatCard label="用户数">
             <template #value>{{ tenant.user_count }}</template>
             <template #sub>密钥 {{ tenant.api_key_count }} 把</template>
           </StatCard>
-          <StatCard label="密钥数" icon="🔑">
+          <StatCard label="密钥数">
             <template #value>{{ tenant.api_key_count }}</template>
             <template #sub>独立模型 {{ stats?.unique_models ?? '—' }}</template>
           </StatCard>
-          <StatCard label="7天请求" icon="📥">
+          <StatCard label="7天请求">
             <template #value>{{ fmtNum(tenant.requests_7d) }}</template>
             <template #sub>失败 {{ fmtNum(overviewFail7d) }}（{{ (tenant.requests_7d ?? 0) > 0 ? ((overviewFail7d / (tenant.requests_7d ?? 0)) * 100).toFixed(1) : '0.0' }}%）</template>
             <template #spark><SparkBars :data="spark7d('requests')" color-token="--accent" /></template>
           </StatCard>
-          <StatCard label="7天 Token" icon="🔢">
+          <StatCard label="7天 Token">
             <template #value>{{ fmtTokensCompact(tenant.tokens_7d) }}</template>
             <template #sub>日均请求 {{ fmtNum(overviewDailyAvg) }}</template>
             <template #spark><SparkBars :data="spark7d('tokens')" color-token="--probe-cyan" /></template>
           </StatCard>
-          <StatCard label="7天费用" icon="🪙" tone="success">
+          <StatCard label="7天费用" tone="success">
             <template #value>
               <span class="stat-value stat-value--fee">
                 <FeeCostCell
@@ -517,7 +517,7 @@ watch(() => route.params.tenantId, loadTenant)
             <template #sub>积分 {{ fmtNum(tenant.credits_7d) }}</template>
             <template #spark><SparkBars :data="spark7d('credits')" color-token="--success" /></template>
           </StatCard>
-          <StatCard label="总请求数（历史）" icon="📚">
+          <StatCard label="总请求数（历史）">
             <template #value>{{ fmtNum(tenant.total_requests) }}</template>
             <template #sub>自 {{ fmtTime(tenant.created_at) }} 起</template>
           </StatCard>
@@ -638,15 +638,15 @@ watch(() => route.params.tenantId, loadTenant)
         </div>
 
         <div v-if="stats" class="stat-cards stat-cards--kpi">
-          <StatCard label="总请求" icon="📥">
+          <StatCard label="总请求">
             <template #value>{{ fmtNum(stats.total_requests) }}</template>
             <template #sub>失败 <span style="color:var(--danger)">{{ fmtNum(statsFailTotal) }}</span>（{{ stats.total_requests > 0 ? ((statsFailTotal / stats.total_requests) * 100).toFixed(1) : '0.0' }}%）</template>
           </StatCard>
-          <StatCard label="总 Token" icon="🔢">
+          <StatCard label="总 Token">
             <template #value>{{ fmtTokensCompact(stats.total_tokens) }}</template>
             <template #sub>入 {{ fmtTokensCompact(stats.input_tokens) }} · 出 {{ fmtTokensCompact(stats.output_tokens) }} · 缓存读 {{ fmtTokensCompact(stats.cache_read_tokens) }} · 缓存写 {{ fmtTokensCompact(stats.cache_write_tokens) }}</template>
           </StatCard>
-          <StatCard label="总费用" icon="🪙" tone="success">
+          <StatCard label="总费用" tone="success">
             <template #value>
               <span class="stat-value stat-value--fee">
                 <FeeCostCell inline :credits="stats.total_credits" :cost-usd="stats.total_cost_usd" :show-cost="showCost" />
@@ -654,26 +654,26 @@ watch(() => route.params.tenantId, loadTenant)
             </template>
             <template #sub>积分 {{ fmtNum(stats.total_credits) }}<template v-if="showCost"> · 成本 {{ fmtCost(stats.total_cost_usd) }}</template></template>
           </StatCard>
-          <StatCard label="日均请求" icon="📈">
+          <StatCard label="日均请求">
             <template #value>{{ fmtNum(statsDailyAvg) }}</template>
             <template #sub>
               <template v-if="statsDayDelta != null">较前一日 {{ formatDayDelta(statsDayDelta) }}</template>
               <template v-else>窗口 {{ stats.days }} 天</template>
             </template>
           </StatCard>
-          <StatCard label="独立密钥" icon="🔑">
+          <StatCard label="独立密钥">
             <template #value>{{ stats.unique_keys }}</template>
             <template #sub>按密钥用量见密钥 tab</template>
           </StatCard>
-          <StatCard label="独立模型" icon="🤖">
+          <StatCard label="独立模型">
             <template #value>{{ stats.unique_models }}</template>
             <template #sub>Top 见下方模型分布</template>
           </StatCard>
-          <StatCard label="独立应用" icon="🧩">
+          <StatCard label="独立应用">
             <template #value>{{ stats.unique_apps }}</template>
             <template #sub>Top 见下方应用分布</template>
           </StatCard>
-          <StatCard label="平均耗时" icon="⏱️">
+          <StatCard label="平均耗时">
             <template #value>{{ fmtLatency(stats.avg_latency_ms) }}</template>
             <template #sub>窗口内请求均值</template>
           </StatCard>

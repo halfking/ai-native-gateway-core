@@ -107,8 +107,8 @@ export default {
     taskDetect: 'Detección de tarea',
   },
   lane: {
-    in: 'ENTRADA · ruta de peticiones',
-    out: 'SALIDA · ruta de respuestas',
+    in: 'ENTRADA: ruta de peticiones',
+    out: 'SALIDA: ruta de respuestas',
     store: 'Almacenar y reenviar',
     toProvider: 'envío al proveedor',
     fromProvider: 'retorno del proveedor',

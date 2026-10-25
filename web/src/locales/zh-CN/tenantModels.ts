@@ -4,7 +4,7 @@ export default {
   page: {
     title: '标准模型',
     desc: '我们为您的租户开放的标准模型清单，按模型原厂分组。计费含输入 / 输出 / 缓存读 / 缓存写，均按每百万 Token 扣积分。',
-    filterTitle: '标准模型 · 筛选',
+    filterTitle: '标准模型：筛选',
     filterPlaceholder: '选择标准模型…',
     modelCount: '{n} 个模型',
     refresh: '刷新',

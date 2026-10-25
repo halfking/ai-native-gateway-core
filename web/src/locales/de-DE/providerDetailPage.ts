@@ -23,7 +23,7 @@ export default {
   manualDisableTitle: 'Gesamten Anbieter manuell deaktivieren',
   manualEnableTitle: 'Manuelle Deaktivierung aufheben (auf automatische Steuerung zurück)',
   manualDisableBadge: '🔒 Manuell deaktiviert',
-  manualDisableBadgeTitle: 'Anbieter-Ebene manuelle Deaktivierung — der gesamte Anbieter ist nicht routing-fähig',
+  manualDisableBadgeTitle: 'Anbieter-Ebene manuelle Deaktivierung: der gesamte Anbieter ist nicht routing-fähig',
   disabledBadge: 'Deaktiviert',
   manualToggle: {
     set: 'Manuell deaktivieren',
@@ -33,7 +33,7 @@ export default {
     disablePrompt: 'Grund für die manuelle Deaktivierung des Anbieters {name}:',
     enablePrompt: 'Grund für die manuelle Aktivierung des Anbieters {name}:',
   },
-  manualDisabledTitle: 'Anbieter-Ebene manuelle Deaktivierung — der gesamte Anbieter ist nicht routing-fähig',
+  manualDisabledTitle: 'Anbieter-Ebene manuelle Deaktivierung: der gesamte Anbieter ist nicht routing-fähig',
   manualDisabledBadge: 'Manuell deaktiviert',
   loadFailed: 'Laden fehlgeschlagen',
   operationFailed: 'Vorgang fehlgeschlagen',
@@ -41,7 +41,7 @@ export default {
 
   quality: {
     loading: 'Loading quality data…',
-    noData: 'No quality data yet. Quality profiles are calculated periodically; refresh later or run a probe first.',
+    noData: 'Noch keine Qualitätsdaten. Qualitätsprofile werden regelmäßig berechnet. Aktualisieren Sie später oder führen Sie zuerst eine Prüfung aus.',
     overallScore: 'Overall score',
     providerAggregate: 'Provider aggregate',
     modelDetails: 'Model quality details',

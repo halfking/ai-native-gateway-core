@@ -3,7 +3,7 @@ export default {
   page: {
     title: 'Standardmodelle',
     desc: 'Standardmodelle, die wir für Ihren Mandanten freigeschaltet haben. Die Abrechnung umfasst Eingabe / Ausgabe / Cache-Lesen / Cache-Schreiben, jeweils in Credits pro Million Token.',
-    filterTitle: 'Standardmodelle · Filter',
+    filterTitle: 'Standardmodelle: Filter',
     filterPlaceholder: 'Standardmodell auswählen…',
     modelCount: '{n} Modelle',
     refresh: 'Aktualisieren',

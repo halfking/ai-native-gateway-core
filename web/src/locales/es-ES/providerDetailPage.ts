@@ -39,7 +39,7 @@ export default {
 
   quality: {
     loading: 'Loading quality data…',
-    noData: 'No quality data yet. Quality profiles are calculated periodically; refresh later or run a probe first.',
+    noData: 'Aún no hay datos de calidad. Los perfiles de calidad se calculan periódicamente; actualiza más tarde o ejecuta primero una sonda.',
     overallScore: 'Overall score',
     providerAggregate: 'Provider aggregate',
     modelDetails: 'Model quality details',

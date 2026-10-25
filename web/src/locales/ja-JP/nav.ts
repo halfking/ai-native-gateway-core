@@ -80,7 +80,7 @@ export default {
     examples: "接続例",
     chat: "チャット",
     opsOverview: "Ops Overview",
-    opsLicenses: "License管理",
+    opsLicenses: "ライセンス管理",
     opsDownloads: "Releases & Downloads",
     opsFaults: "故障管理",
     opsAutoUpdate: "自动更新",

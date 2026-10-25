@@ -41,7 +41,7 @@ export default {
     hint2: 'الطلبات المكتملة خلال 10 دقائق: لا تزال في Redis',
     hint3: 'بعد التفريغ في PostgreSQL: يمكن عرضها كنسخة احتياطية',
 
-    hint4: 'If empty here, possible causes: flush not completed, or trace was not emitted',
+    hint4: 'إذا كان الحقل فارغًا هنا، فالأسباب المحتملة: لم يكتمل التفريغ، أو لم يُصدر التتبع.',
   },
   aiPrompt: {
     button: '🤖 إنشاء مطالبة AI',

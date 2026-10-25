@@ -27,7 +27,7 @@ export default {
   },
 
   pagination: {
-    summary: '<strong>{total}</strong> total, showing {start} - {end}',
+    summary: '<strong>{total}</strong> 件、{start} - {end} を表示',
     prev: '← Previous',
     next: 'Next →',
   },

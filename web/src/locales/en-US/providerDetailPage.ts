@@ -45,7 +45,7 @@ export default {
   manualDisableTitle: 'Manually disable the entire provider',
   manualEnableTitle: 'Lift manual disable (resume auto control)',
   manualDisableBadge: '🔒 Manually disabled',
-  manualDisableBadgeTitle: 'Provider-level manual disable — the entire provider is unroutable',
+  manualDisableBadgeTitle: 'Provider-level manual disable: the entire provider is unroutable',
   disabledBadge: 'Disabled',
   manualToggle: {
     set: 'Manually disable',
@@ -55,7 +55,7 @@ export default {
     disablePrompt: 'Reason for manually disabling provider {name}:',
     enablePrompt: 'Reason for manually enabling provider {name}:',
   },
-  manualDisabledTitle: 'Provider-level manual disable — the entire provider is unroutable',
+  manualDisabledTitle: 'Provider-level manual disable: the entire provider is unroutable',
   manualDisabledBadge: 'Manually disabled',
   loadFailed: 'Load failed',
   operationFailed: 'Operation failed',
