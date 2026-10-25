@@ -100,6 +100,9 @@ AHK_PKGS="admin,cmd/gateway,api,taskprofile,internal/quality"
 # ★ --two-pass：★ 第一遍粗读 → 推导「定义包」→ 第二遍用 -coverpkg 联合覆盖重跑。
 #   ★ 默认开（★ ★ 因为「各包各跑」会漏掉跨包执行 ⇒ ★ 实测 8642 个块受影响）。
 AHK_TWO_PASS="1"
+# ★ --no-probe：★ 内部标志（★ **递归调用自己**时用）⇒ ★ 本层**不再**去推「定义包」。
+# ★ ★ 缺了它 ⇒ ★ `--cover` 分支会**无限递归**（★ R157 轮实测：进程树 4 层同款 bash）。
+AHK_NO_PROBE="0"
 AHK_ROUTES=""
 AHK_OUT=""
 AHK_LEDGER=""
@@ -140,6 +143,7 @@ while [ $# -gt 0 ]; do
     --cover)  AHK_COVER="${2:?--cover 需要参数}"; shift 2 ;;
   --pkgs)   AHK_PKGS="${2:?--pkgs 需要参数}"; shift 2 ;;
     --two-pass) AHK_TWO_PASS="${2:-1}"; shift 2 ;;
+    --no-probe) AHK_NO_PROBE="1"; shift ;;
     --routes) AHK_ROUTES="${2:?--routes 需要参数}"; shift 2 ;;
     --out)    AHK_OUT="${2:?--out 需要参数}"; shift 2 ;;
     --ledger) AHK_LEDGER="${2:?--ledger 需要参数}"; shift 2 ;;
@@ -150,6 +154,11 @@ while [ $# -gt 0 ]; do
 done
 
 AHK_ROOT="$(cd "$AHK_ROOT" && pwd)"
+# ★ ★★ R157 轮修正：★ 把 `$0`（脚本自身路径）**解析成绝对路径**。
+#   ★ 缘由：★ 台账头要写「工具自己的内容 sha」⇒ ★ 需要在**任何 cwd 下**都能打开这个文件
+#   ★ ★★ 而脚本中段会 `cd "$AHK_ROOT"` ⇒ ★★ 相对路径的 `$0` 在那之后会失效
+#   ★ ★★ ⇒ ★★ 必须在**任何 cd 之前**解析。
+AHK_SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
 
 # ★★ 包名口径固定为 ./admin/（与本工具的读数口径绑定）—— 路径不存在 ⇒ **报错退出**，
 #    绝不静默跳过（静默跳过 = 分母变成 0 = 「零覆盖」变成恒真命题）。
@@ -184,6 +193,25 @@ ahk_sha256() {
     printf '%s' "$1" | shasum -a 256 | cut -d' ' -f1
   else
     printf '%s' "$1" | openssl dgst -sha256 | awk '{print $NF}'
+  fi
+}
+
+# ★★★ R157 轮修正：**文件内容**的 sha256（★ 与 ahk_sha256 不同！）。
+#
+# ★★ 为什么必须另写一个（★ 本轮实测踩到）：
+#   ★ `ahk_sha256` 是**对字符串**求哈希（★ 它的用途是 fingerprint = sha256(handler@def_file)）
+#   ★ ⇒ ★★ 我最初拿它算「工具自己的 sha」⇒ ★★ 算出来的是**【路径字符串】的哈希**
+#   ★★ ⇒ ★★ 与「文件内容的哈希」**永不相等** ⇒ ★★ 门（★ 算的是内容哈希）**永远红**
+#   ★★ ⇒ ★★★ **症状**：★ 门报「台账是用旧工具生成的」⇒ ★★ 而工具**刚刚**生成它
+#   ★★★ ⇒ ★★★ **「门红」的第一反应不该是「台账过期」，★ 也可能是「两边算的不是同一个东西」**。
+ahk_file_sha256() {
+  local f="$1"
+  if [ "$AHK_SHA_CMD" = "sha256sum" ]; then
+    sha256sum "$f" | cut -d' ' -f1
+  elif [ "$AHK_SHA_CMD" = "shasum -a 256" ]; then
+    shasum -a 256 "$f" | cut -d' ' -f1
+  else
+    openssl dgst -sha256 "$f" | awk '{print $NF}'
   fi
 }
 
@@ -266,6 +294,14 @@ if [ -z "$AHK_COVER" ]; then
     done
     if [ -n "$AHK_PKG_FAILED" ]; then
       echo "★ 失败的包：$AHK_PKG_FAILED ⇒ ★ 本轮读数的覆盖面**小于**预期 ⇒ ★ 零覆盖下界更不精确" >&2
+      # ★★★ R157 轮补：★ 失败**不许**只打一行警告然后照常 exit 0。
+      #   ★ 缘由（★ 实测）：★ `cmd/gateway` 偶发失败（★ 3 次复跑全过 ⇒ 属 flaky）
+      #     ⇒ ★★ 那一轮的读数从 150/349/107 退化成 129/347/130
+      #     ⇒ ★★ 而工具**退出码仍是 0** ⇒ ★★ 调用方（CI / 脚本 / 人）**无从察觉**
+      #     ⇒ ★★ 一份**覆盖面缺一包**的读数会被**当成权威读数**用（★ 台账也会照它生成）。
+      #   ⇒ ★★ 现在：**读数照出**（供诊断），★ 但**退出码非 0**（★ 3 = 环境/覆盖不全）。
+      #   ⇒ ★★ 「不许静默降级」的落点就是**退出码**，★ 不是 stderr 上的一句话。
+      AHK_PKG_FAILED_GLOBAL="${AHK_PKG_FAILED_GLOBAL:-}${AHK_PKG_FAILED}"
     fi
     # ---- 去重合并：★ 按 (file,start,end) 取 max count ----
     #   ★ ★ 用 awk 而不是「sort -u」：★ sort -u 只能去重**整行**，
@@ -303,11 +339,11 @@ if [ -z "$AHK_COVER" ]; then
     #   ★ 注意：子调用没给 --out 时，summary 会打到 **stderr**（★ 工具的既有行为）
     #   ⇒ ★ 这里 2>/dev/null 丢掉 summary，★ 只取 stdout 的 TSV。
     AHK_DEFPKGS="$(bash "$AHK_ROOT/$AHK_TOOL_REL" --root "$AHK_ROOT" \
-        --cover "$AHK_MERGED" --two-pass 0 2>/dev/null \
+        --cover "$AHK_MERGED" --two-pass 0 --no-probe 2>/dev/null \
         | awk -F'\t' 'NR>1 && $6!=""{ n=split($6,a,"/"); p=a[1]; for(i=2;i<n;i++) p=p"/"a[i]; print p }' \
         | LC_ALL=C sort -u | tr '\n' ' ')"
     if [ -n "$AHK_DEFPKGS" ]; then
-      echo "… 第二遍：★ 推导出的「定义包」= $AHK_DEFPKGS⇒ ★ 按它重跑（★ coverpkg 联合覆盖）" >&2
+      echo "… 第二遍：★ 推导出的「定义包」= ${AHK_DEFPKGS}⇒ ★ 按它重跑（★ coverpkg 联合覆盖）" >&2
       AHK_COVERPKG=""
       for p in $AHK_DEFPKGS; do
         AHK_COVERPKG="${AHK_COVERPKG}./$p/,"
@@ -324,6 +360,20 @@ else
   if [ ! -f "$AHK_COVER" ]; then
     echo "★ --cover 指定的文件不存在：$AHK_COVER" >&2
     exit 2
+  fi
+  # ★ 标记：★ 这份 profile 是**外部提供**的 ⇒ ★ 台账头必须如实写「external」
+  #   ⇒ ★★ 不许写成「联合覆盖」⇒ ★★ 「只记事实」原则。
+  AHK_COVER_EXTERNAL="1"
+  # ★ ★ 死循环防线（★ R157 轮实测踩到）：★ 下面这个「推定义包」的递归调用
+  #   **自己**也会走 `--cover` 分支 ⇒ ★⇒ 无条件递归 ⇒ ★⇒ 无限 fork
+  #   （★ 实测：进程树里 4 层同款 bash + 一堆 mavis-trash 在删临时目录）。
+  #   ⇒ ★⇒ 递归调用必须带 `--no-probe`（★ 本层自己**不再**推定义包）。
+  if [ "$AHK_NO_PROBE" != "1" ]; then
+    # ★ 定义包仍可从这份 profile 的读数里推出来 ⇒ ★ 记下来（★ 有助复核）。
+    AHK_DEFPKGS="$(bash "$AHK_ROOT/$AHK_TOOL_REL" --root "$AHK_ROOT" \
+        --cover "$AHK_COVER" --two-pass 0 --no-probe 2>/dev/null \
+        | awk -F'\t' 'NR>1 && $6!=""{ n=split($6,a,"/"); p=a[1]; for(i=2;i<n;i++) p=p"/"a[i]; print p }' \
+        | LC_ALL=C sort -u | tr '\n' ' ')"
   fi
 fi
 if [ ! -s "$AHK_COVER" ]; then
@@ -976,14 +1026,29 @@ EOF
     #     ⇒ ★★ 一次工具改动就会连带改门 ⇒ ★★ **耦合面反而更大**；★ 写在头里 ⇒ ★ 门只需读一行。
     #   ★★ 诚实边界：★ 本行只能保证「**工具没变**」；★ 「**代码变了**」也会让覆盖度变，
     #     ★★ 而那需要重跑 go test 才能知道 ⇒ ★★ **代码改过必须手动重生成台账**（★ 命令见下）。
-    printf '# gen_tool_sha=%s\n' "$(ahk_sha256 "$0")"
+    printf '# gen_tool_sha=%s\n' "$(ahk_file_sha256 "$AHK_SELF")"
     printf '# gen_pkgs=%s\n' "${AHK_PKGS}"
-    printf '# gen_cover_sha=%s\n' "$(ahk_sha256 "$AHK_COVER")"
+    printf '# gen_cover_sha=%s\n' "$(ahk_file_sha256 "$AHK_COVER")"
     # ★★★ R157 第二轮：★ 再记**推导出来的定义包**与**跨包覆盖口径**。
     #   ★ 为什么：★ 「覆盖度读数」的口径不止一个参数（★ 包集、★ coverpkg、★ 合并去重）
     #     ⇒ ★★ 少了任何一个，★ 数字就不可复现 ⇒ ★★ 台账必须自带口径。
-    printf '# gen_defpkgs=%s\n' "${AHK_DEFPKGS:-（未跑两遍模式）}"
-    printf '# gen_coverpkg=%s\n' "${AHK_COVERPKG:-（无：各包自跑 ⇒ 跨包执行不可见）}"
+    #   ★ ★★ 「只记事实」原则（★ R157 轮的教训）：★ 头部**不许**写「看起来对但其实
+    #     不是这样」的值 ⇒ ★ `--cover`（外部提供 profile）时**不许**写成
+    #     「联合覆盖」⇒ ★★ 那正是「撒谎的台账比没有台账更坏」。
+    if [ -n "${AHK_COVERPKG:-}" ]; then
+      printf '# gen_cover_mode=joint\n'
+      # ★ ★ 必须**同时**写 coverpkg 本身（★ R157 轮自测时漏了 ⇒ ★ 门立刻报
+      #   「台账头缺 `# gen_coverpkg=`」⇒ ★★★ **这正是新门该有的作用**：
+      #   ★★ 它在第一次跑的时候就把我的实现遗漏抓了出来）。
+      printf '# gen_coverpkg=%s\n' "${AHK_COVERPKG}"
+    elif [ -n "${AHK_COVER_EXTERNAL:-}" ]; then
+      printf '# gen_cover_mode=external\n'
+      printf '# gen_coverpkg=（外部提供 profile ⇒ 联合覆盖口径由提供方保证）\n'
+    else
+      printf '# gen_cover_mode=none\n'
+      printf '# gen_coverpkg=（无：各包自跑 ⇒ 跨包执行不可见）\n'
+    fi
+    printf '# gen_defpkgs=%s\n' "${AHK_DEFPKGS:-（未推导）}"
     printf '# gen_two_pass=%s\n' "${AHK_TWO_PASS}"
     printf 'path\tline\tocc\tmethod\thandler\treg_file\tdef_file\tstmts\tverdict\tadjudication\treason\tevidence\towner\tfingerprint\n'
     awk -F'\t' '
@@ -999,6 +1064,18 @@ EOF
   mkdir -p "$(dirname "$AHK_LEDGER")"
   cp "$AHK_TMP/ledger_new.tsv" "$AHK_LEDGER"
   echo "… 台账已写出：${AHK_LEDGER}（零覆盖 $(wc -l <"$AHK_TMP/new_rows.tsv" | tr -d ' ') 条）" >&2
+fi
+
+# ★★★ R157 轮补：★ 覆盖不全 ⇒ **退出码非 0**（★ 读数照出，★ 但不许被当成权威读数）。
+#   ★ 缘由见「ahk_run_pkgs」里的注释：★ `cmd/gateway` 偶发失败会让读数从
+#   ★ 150/349/107 退化成 129/347/130，★ 而工具此前**退出码仍是 0**。
+#   ⇒ ★★ 退出码 3 = 「环境/覆盖不全」⇒ ★★ 调用方必须**显式**决定要不要用这份读数。
+#   ⇒ ★★ 门（scripts/ursmcheck/api_handler_coverage_gate_test.go）**跑快速模式**
+#   ⇒ ★★ 那条路径**不**经过 go test ⇒ ★★ 门不受影响。
+if [ -n "${AHK_PKG_FAILED_GLOBAL:-}" ]; then
+  echo "★★★ 覆盖不全（失败的包：${AHK_PKG_FAILED_GLOBAL}）⇒ ★ 退出码 3" >&2
+  echo "★ ★★ 上面的读数**不可**当成权威读数使用（★ 覆盖面缺 ⇒ ★ 零覆盖下界更不准）。" >&2
+  exit 3
 fi
 
 exit 0
