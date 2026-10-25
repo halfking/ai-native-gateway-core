@@ -10181,3 +10181,33 @@ cron 日志里也有 `"retention_hours":8`）⇒ ⇒ ★★★ 实测 `max(hot.t
 ★ M3/M4 同一棵被变异的树上的前后对照 ⇒ 旧模式看不见、新模式看见 ⇒ 补齐零误报。
 
 ★ 完整记录见审计档 `docs/audit/2026-10-27-R152-v1退役保证的两处盲区.md`（含 §4 诚实边界）+ LESSONS **§400** + AGENTS.md R152 条目。
+
+★ **★ R152 轮 · 第二段（D12）**：★★ **D12 的真实内容不是「改成 bash 3.2 兼容」，
+★ 而是「把隐含前提变成可检查的事实」** ⇒ ★★ **本段【仍然无 SQL 变更、无迁移、无发版】**
+★ ⇒ **无需在 211/252 上同步任何 SQL；★ 对生产的写入 = 0**（改动全是仓内脚本的注释/守卫 + 判据）。
+
+★ ① **新门** `sql/schema/shell_bash_prereq_declaration_gate_test.go`
+★　（★ 判据：「**用了 bash 4+ 特性的脚本必须声明运行前提**」——扫描面 = **全仓 520 个 .sh**；
+★　★★ 形态二选一：`# requires-bash: 4` 声明，**或**可执行守卫（`BASH_VERSINFO` + 明确提示 + exit 64）；
+★　★★ 仓内已有纪律写着「B 档**必须显式声明**最低版本」，但那**一半从没有机器检查** ⇒ ★★ 本门补上；
+★　★★ **15 个脚本当场补声明** ⇒ ★★ 把「记录在案（写在注释里、机器读不到）」变成**可检查的事实**）；
+★ ② **修一个潜伏的真缺陷** `sql/schema/shell_bash_compat_gate_test.go` 的 `stripShellComments`：
+★　★ 处理**双引号内、行尾的 `$(`**（多行命令替换的常规写法）时切片**越界** ⇒ **panic**；
+★　★ 它长期没被发现是因为**A 档那道门只扫 4 棵目录** ⇒ ★★ **「没炸」是「没被扫到」**；
+★　★ 修法 = 夹住切片两端 + 补**回归门**（8 个样例）；
+★ ③ 3 个脚本加**可执行版本守卫**（`run-migrations-strict.sh` / `check-and-fix-missing-tables.sh` /
+★　`loadtest-monitor.sh`）⇒ ★★ 原本在 macOS 上 cryptic 崩 ⇒ 现在 **exit 64 + 可执行指引**；
+★　★★ 前两个**会写生产** ⇒ ★★ **只加守卫、不改写**（改写风险 > 收益）；
+★ ④ ★★ **生成清单按流程重跑**：`docs/audit/evidence/2026-10-21-pipefail-scope-drop-candidates.tsv`
+★　★（★ 触发原因：加声明 ⇒ **行号平移 +3** ⇒ 清单过期 ⇒ `section_1975` 门红、提示「请重跑生成器」
+★　★ ⇒ ★★ **处置 = 重跑生成器，不是手改清单**；★ 实测 diff **只有行号平移、行数不变（82 行）** ⇒ **基线不动**）。
+
+★ **★ 本轮在验证 ② 时连吃两次「变异不红」**（⇒ LESSONS §400 通用式五）：
+★ ① 回归样例**没走到 panic 路径**（它在双引号状态里）⇒ **恒绿门**；
+★ ② 变异**只改切片、留着夹持** ⇒ **测的是「夹持还在」不是「缺陷还在」**；
+★ ③ **把夹持整段删掉、回到缺陷原样** ⇒ **立刻红**且报错原文与现场逐字一致 ⇒ ★★ 这才是真变异。
+
+★ **★ 回归**：`go build ./...` ✔ · `go test ./scripts/ursmcheck/` 整包 ✔（**ok 466.959s**）
+★ · `go test ./sql/schema/` ✔ · `go test ./cmd/tools/sql_source_indirection_audit/` ✔
+★ · `go test ./admin/ -run 'V1|RequestLogs|SessionFamily|Retirement|IndirectReader'` ✔（71.0s）
+★ **完整记录见审计档 `docs/audit/2026-10-27-R152-v1退役保证的两处盲区.md` §3.4 + LESSONS §400**。
