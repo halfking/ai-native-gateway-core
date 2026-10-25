@@ -578,17 +578,61 @@ func TestV1FamilyRetirementProbeFailureNamesTarget(t *testing.T) {
 	dsn := "postgres://audit:sentinel_probe_target@127.0.0.1:1/llm_gateway?sslmode=disable&connect_timeout=2"
 	cmd := exec.Command("bash", v1RetireScriptPath(t), "probe", dsn)
 	cmd.Stdin = strings.NewReader("")
-	out, err := cmd.CombinedOutput()
-	if err == nil {
-		t.Skipf("probe 竟然成功了（★ 端口 1 连上了？）⇒ 本门不适用\n%s", out)
+	var outBuf, errBuf strings.Builder
+	cmd.Stdout = &outBuf
+	cmd.Stderr = &errBuf
+	runErr := cmd.Run()
+	if runErr == nil {
+		t.Skipf("probe 竟然成功了（★ 端口 1 连上了？）⇒ 本门不适用\n%s", outBuf.String())
 	}
-	s := string(out)
-	// ★ 目标必须被说出来：host:port/db。
-	if !strings.Contains(s, "127.0.0.1:1/llm_gateway") {
-		t.Errorf("probe 失败时没有说出目标 host:port/db ⇒ 读者无法判断是不是连错库了\n输出：\n%s", s)
+	combined := outBuf.String() + errBuf.String()
+
+	// ★★★★ **必须分开 stdout 与 stderr**（★ 本轮变异验证实测出来的坑）。
+	//
+	// ★ 背景：★ 失败时 **stdout 也有身份行**（★ 含 `requested=<host:port/db>`）
+	//   ⇒ ★★ 若断言写在**合并输出**上 ⇒ ★★ **删掉 FATAL 消息里的目标也照样过**
+	//   ⇒ ★★ 实测 M2 变异：★ 门**依然绿** ⇒ ★★ **断言被我自己新加的来源削弱了**。
+	// ⇒ ★★★ **同一个事实有多个来源时，★ 断言必须点名来源** ⇒ ★★ 否则「加一个来源」会静默削弱旧断言。
+	//
+	// ★ 所以拆成两条：★ ① **stderr**（FATAL 消息）必须说出目标；
+	//   ② **stdout**（身份行）必须形状正确。
+	stderr := errBuf.String()
+	if !strings.Contains(stderr, "127.0.0.1:1/llm_gateway") {
+		t.Errorf("probe 失败的 FATAL 消息（stderr）里没有说出目标 host:port/db ⇒ 读者无法判断是不是连错库了\nstderr:\n%s", stderr)
 	}
-	// ★ 口令仍然不能回显（★ 与既有门一致）。
-	if strings.Contains(s, "sentinel_probe_target") {
-		t.Errorf("probe 的输出里出现了哨兵口令 ⇒ 回显了口令\n输出：\n%s", s)
+
+	// ★ 口令仍然不能回显（★ 与既有门一致，★ 两路都查）。
+	if strings.Contains(combined, "sentinel_probe_target") {
+		t.Errorf("probe 的输出里出现了哨兵口令 ⇒ 回显了口令\nstdout:\n%s\nstderr:\n%s", outBuf.String(), stderr)
+	}
+	if strings.Contains(combined, dsn) {
+		t.Errorf("probe 的输出里出现了完整 DSN ⇒ 回显了 DSN\nstdout:\n%s\nstderr:\n%s", outBuf.String(), stderr)
+	}
+
+	// ★★★★ **生产者的格式**也必须被钉住（★ 本轮变异验证实测出来的缺口）。
+	//
+	// ★ 背景：★ 门喂的是**手写**身份行 ⇒ ★⇒ **从不验证 probe 模式那个 printf 的格式**
+	//   ⇒ ★★ 把 probe 的分隔符从 `|` 改回 TAB ⇒ ★★ **门依然绿**（★ 实测 M3 变异：门仍绿）。
+	// ⇒ ★★ 修法两条：★ ① probe 的成功/失败**共用一个 printf**（★ 格式单一真值源）
+	//   ★ ② 门断言**失败路径 stdout 里那行身份行**的形状（★ 不需要真库 ⇒ 不引入环境依赖）。
+	//
+	// ★ 判据：★ `#identity` 行必须**恰好一个 TAB**（★ 行首分隔符）
+	//   ⇒ ★★ **其余分隔符必须是 `|`**（★ 若用 TAB ⇒ `#meta` 行会多字段 ⇒ 读数被静默截断）。
+	var idLine string
+	for _, ln := range strings.Split(outBuf.String(), "\n") {
+		if strings.HasPrefix(ln, "#identity\t") {
+			idLine = ln
+			break
+		}
+	}
+	if idLine == "" {
+		t.Errorf("probe 失败时 stdout 里没有 #identity 行 ⇒ 读者看不到「我要连的是谁」\nstdout:\n%s", outBuf.String())
+		return
+	}
+	if n := strings.Count(idLine, "\t"); n != 1 {
+		t.Errorf("#identity 行里有 %d 个 TAB ⇒ 必须恰好 1 个（★ 其余字段用 `|`，★ 否则 #meta 会多字段而静默截断）\n该行：%s", n, idLine)
+	}
+	if !strings.Contains(idLine, "|") {
+		t.Errorf("#identity 行的字段之间没用 `|` 分隔 ⇒ 会被 TSV 解析截断\n该行：%s", idLine)
 	}
 }

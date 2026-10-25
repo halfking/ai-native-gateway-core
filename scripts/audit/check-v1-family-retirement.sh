@@ -563,7 +563,38 @@ probe_db() {
   #   需要 service file 时下面会显式重新设置。
   env -u PGSERVICEFILE -u PGSERVICE "${pg_env[@]}" psql "${psql_args[@]}" > "${inv}" 2> "${err}" || rc=$?
   if [[ -n "${svc}" ]]; then rm -f "${svc}"; fi
+  # ★★ 身份行：★ **成功与失败共用同一个 printf**（★ 单一真值源 ⇒ ★ 格式只有一处）。
+  #   ★★ 为什么必须共用（★ 本轮变异验证实测）：★ 若两条分支各写一个 printf，
+  #     ★★ 门喂的**手写身份行**就只覆盖其中一条 ⇒ ★★ **改另一条的门看不见**
+  #     ★★ ⇒ ★★ **门永远绿，而产物已经错了** ⇒ ★★ **⇒ 格式必须是单一真值源**。
+  #   ★★ 内部分隔符用 **`|`** 而不是 TAB：★ `#meta` 行是**三字段 TSV**
+  #     （★ `#meta` / 键 / 值）⇒ ★★ 值里若带 TAB ⇒ ★★ 这一行就变成多字段 ⇒
+  #     ★★ 取值方（`f[2]`）只拿到**第一个片段** ⇒ ★★ 读数被静默截断。
+  #     ⇒ ★★ **TSV 的值里不能有 TSV 分隔符** ⇒ ★★ 这是格式契约，不是风格问题。
+  emit_identity_line() {
+    local t="$1" id="$2"
+    local f_db f_user f_server f_pms f_rec
+    if [[ -n "${id}" ]]; then
+      f_db="$(printf '%s' "${id}" | cut -f1)"
+      f_user="$(printf '%s' "${id}" | cut -f2)"
+      f_server="$(printf '%s' "${id}" | cut -f3):$(printf '%s' "${id}" | cut -f4)"
+      f_pms="$(printf '%s' "${id}" | cut -f5)"
+      f_rec="$(printf '%s' "${id}" | cut -f6)"
+    else
+      f_db="(unknown)"; f_user="(unknown)"; f_server="(unknown)"
+      f_pms="(unknown)"; f_rec="(unknown)"
+    fi
+    # ★★★★ **这行 printf 是身份行的【唯一真值源】**（★ 成功与失败都走它）。
+    #   ★★ 为什么必须唯一（★ 本轮变异验证实测）：★ 若按「成功/失败」分两个 printf，
+    #     ★★ 门覆盖的那条分支改了，另一条**门看不见** ⇒ ★★ **实测 M3 变异：门依然绿**。
+    #   ⇒ ★★ **⇒ 格式只能有一处** ⇒ ★★ 字段值不同没关系，★ 格式一样就行。
+    printf '#identity\trequested=%s|db=%s|user=%s|server=%s|postmaster_start=%s|in_recovery=%s\n' \
+      "${t}" "${f_db}" "${f_user}" "${f_server}" "${f_pms}" "${f_rec}"
+  }
+
   if [[ "${rc}" -ne 0 ]]; then
+    # ★★★ 失败时**也要**把身份行印到 stdout（★ 读者才知道「我要连的是谁、它是谁」）。
+    emit_identity_line "${target}" "${ident}"
     printf 'FATAL: 探库失败（psql 退出码 %s）★ 我要连的目标 = %s\n' "${rc}" "${target}" >&2
     printf '★ 提示：本机 PATH 里的 psql 可能是【别的项目的转发脚本】⇒ ★ 它会连到别的容器。\n' >&2
     printf '★ 若是如此 ⇒ 用 classify 模式喂清单（★ 清单从目标库自己取），★ 别信 probe 模式。\n' >&2
@@ -584,26 +615,9 @@ probe_db() {
   fi
 
   # ★★ 把身份行**前置**到清单里 ⇒ ★ classify 会把它印成 `#meta db_identity`。
-  #   ★ 字段：requested=（我要连的）｜db/user/server/postmaster_start/in_recovery=（库自报的）
-  #   ★★★★ 内部分隔符用 **`|`** 而不是 TAB：★ `#meta` 行是**三字段 TSV**
-  #     （★ `#meta` / 键 / 值）⇒ ★★ 值里若带 TAB ⇒ ★★ 这一行就变成多字段 ⇒
-  #     ★★ 取值方（TSEV 式的 `f[2]`）只拿到**第一个片段** ⇒ ★★ 读数被静默截断。
-  #     ⇒ ★★ **TSV 的值里不能有 TSV 分隔符** ⇒ ★★ 这是格式契约，不是风格问题。
-  if [[ -n "${ident}" ]]; then
-    {
-      printf '#identity\trequested=%s|db=%s|user=%s|server=%s|postmaster_start=%s|in_recovery=%s\n' \
-        "${target}" \
-        "$(printf '%s' "${ident}" | cut -f1)" \
-        "$(printf '%s' "${ident}" | cut -f2)" \
-        "$(printf '%s' "${ident}" | cut -f3):$(printf '%s' "${ident}" | cut -f4)" \
-        "$(printf '%s' "${ident}" | cut -f5)" \
-        "$(printf '%s' "${ident}" | cut -f6)"
-      cat "${inv}"
-    } > "${inv}.withid" && mv "${inv}.withid" "${inv}"
-  else
-    printf '#identity\trequested=%s|(identity query failed)\n' "${target}" > "${inv}.withid"
-    cat "${inv}" >> "${inv}.withid" && mv "${inv}.withid" "${inv}"
-  fi
+  emit_identity_line "${target}" "${ident}" > "${inv}.withid"
+  cat "${inv}" >> "${inv}.withid"
+  mv "${inv}.withid" "${inv}"
   rm -f "${err}" "${needles}"
   classify_file "${inv}"
   rc=$?
