@@ -8930,3 +8930,38 @@ index b953a6f03..555ef83c4 100644
 > ★★ ui:check:strict / responsive:check PASS；build ✓；impeccable detect `[]`；移动端 i18n 键平价 OK（3909 键 × 2 语种）。
 > ⇒ ★ **完整记录见审计档 `docs/audit/2026-10-25-文案门扩源码面与普通属性插值门.md`（含 §三 新门、§六 移动端与棘轮、§八 诚实边界）**
 > ⇒ ★ **通用式见 `LESSONS.md` §404（通用式一~五）**。
+
+> **2026-10-25 版面量具轮（本会话 `mvs_dc5e181989fc4539805f343f39be2b5d`，续上一轮）**：
+> **★ 背景**：上一轮提交推送后，A/B 版面对拍只剩「改后 / zh-CN」那一趟未出。
+> ⇒ ★★★ **该趟读数到手后，第一件事是「先判量具、再判数据」**：
+> ★★ 三份报告（历史基线 12:48 / 改后 en-US 14:48 / 改后 zh-CN 14:56）里，
+> ★★ **历史基线其实是 en-US 不是 zh-CN**（三条证据：`/live` 的 `.decisions` 裁切签名与 en-US 逐字一致、
+> ★★ 「逐字折行」是 CJK 现象而基线 0 条、**报告顶层 `{base,at,results}` 不记语种**）
+> ⇒ ★★ **textLen 103,206 → 85,569（−17.6%）是跨语种伪影，不是回归** ⇒ 差点去追一个不存在的回归。
+> ⇒ ★★★ **「改前」侧在本机仍不渲染**（71 页全 P0「未渲染出页面根容器」，根因未定位）
+> ⇒ ★★ **「这 2 处折行是本轮引入的吗」改用改动清单当证据**：`liveTopology.ts:111`/`settings.ts:18` 文案逐字相同、
+> ★★ `LiveTopologyView.vue`/`SettingsView.vue`/`components/live-topology/`/`style.css` 两棵树间**一个字节都没改**
+> ⇒ **不是本轮引入，是存量债**（★ 但强度低于双跑对照，已在审计档如实标注）。
+> ⇒ ★★★★ **★ zh-CN 查出 6 处逐字折行 ⇒ 分家成「量具假报 3 + 真缺陷 3」**：
+> ★★ `/live` 的 `<span class="gw__lane-tag"> 18×96 "进：请求链"` 是 **`writing-mode: vertical-rl` 的排版意图**
+> ⇒ **量具缺陷**（CJK 语种每趟都挂假 P1 ⇒ 真回归被噪声淹没）；★★ `/admin/settings` 的 `<td class=""> 41×124 "🟡 注意"`
+> ⇒ **真缺陷**（表格 auto 布局 + value 列长 JSON ⇒ 危险列被挤到 41px ⇒ 标签逐字竖排）。
+> ⇒ ★★★★ **★ 量具自己三处缺陷（本轮修）**：
+> ★★ (a) 折行判据不认竖排 ⇒ 排除 `writing-mode: vertical-*/sideways-*`；
+> ★★ (b) ★★ **selftest 计数断言 `actual >= want` ⇒ `expect: 0` 恒真 ⇒ 所有「不得误报」的反向对照全是装饰**
+> ⇒ 改为「`expect: 0` 取相等、`> 0` 才取 ≥」；★★ (c) ★★ **夹具会悄悄不再命中签名**（实测新夹具 `clientH=80` 未过 `h>90` 阈值
+> ⇒ **去掉排除条件的变异体仍全绿**）⇒ 探针新增 `sigHits`（带排除原因）+ selftest 新增 `sigHit` 判据
+> ⇒ **每条夹具自己声明命中了几个签名元素**。
+> ⇒ ★★★ **读数**：探针自检 28/28 → **40/40**（8 夹具 × 5 判据）；**两条变异体均 exit 1**
+> ★★ （去 writing-mode ⇒ 竖排夹具红；去 overflow ⇒ 自带滚动夹具红）⇒ 两把锁各有各的臂。
+> ⇒ ★★★ **真缺陷修法**：`SettingsView.vue` 的 `.cell-danger { white-space: nowrap }`
+> ⇒ 读数：危险格 **41×124 → 69×62**；`/admin/settings` 签名命中 **3 → 0**。
+> ⇒ ★★ **报告新增 `sigHit` / `sigExcluded`**（「命中签名 ≠ 要报缺陷」，**豁免必须留痕**）。
+> ⇒ ★★★ **★ 顺带抓到一道「半绿不绿」—— 在我自己的新测试里**：`qualityGradeLabel.test.ts` 把语种写成
+> ★★ `'en-US'`（**locale 目录名**）而**运行时码是 `'en'`** ⇒ 该语种不存在 ⇒ 断言靠 `fallbackLocale:'en'` **蒙对**
+> ⇒ **测试绿但绿的理由是错的** ⇒ 是 **vue-tsc 的 TS2322** 把它逼出来的
+> ⇒ 改用真实码 + 加 `i18n.global.te(...)` 守卫；变异验证：改回错码 ⇒ **测试红**。
+> ⇒ ★★ 其余门全绿：vitest **274 文件 / 2806 测试**；vue-tsc 0；copy-quality 22/22 + 棘轮 12 桶全绿；
+> ★★ i18n-cjk 5128/5128；craft-floor 431 文件 0 违规；color:check / ui:check:strict / responsive:check PASS；build ✓。
+> ⇒ ★ **完整记录见审计档 `docs/audit/2026-10-25-文案门扩源码面与普通属性插值门.md` 的「补充」一节**
+> ⇒ ★ **通用式见 `LESSONS.md` §406（通用式一~六）**。
