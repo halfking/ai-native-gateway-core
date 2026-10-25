@@ -1137,25 +1137,126 @@ do_deploy() {
     #   s/@\.service$//@ 报 bad flag（2026-10-26 部署现场实测），
     #   解析成空会让 canary 判定静默走错分支（回退 host_atomic_switch）。
     canary_prefix="${canary_prefix%@.service}"
+    # ★★ 输入校验（2026-10-26 审计新增）：legacy_unit / legacy_port 来自
+    #   远端文件（run/active-service / run/active-port）或 ps 输出，
+    #   ★ 它们会被**原样拼进** `systemctl restart '<unit>'` 与 `ln -sfn ... '<path>'`
+    #   ⇒ 一旦远端文件被写坏（多一个空格、引号、换行），拼出来的命令就**变形**
+    #   ⇒ ⇒ 变形后的 systemctl 可能作用在**别的 unit** 上。
+    #   ⇒ 端口：只允许 1~5 位数字；unit：只允许 systemd unit 名允许的字符集
+    #     （字母数字与 . _ @ -），且必须以 .service 结尾。
+    #   ⇒ ★ 不合规 ⇒ **拒绝盲切**（与本轮「检测失败拒绝盲切」的承诺一致）。
+    if ! [[ "$legacy_port" =~ ^[0-9]{1,5}$ ]]; then
+      err "legacy: 实况端口「${legacy_port}」不合法（只允许 1~5 位数字）⇒ 拒绝盲切，中止（旧实例未受影响）"
+      exit 1
+    fi
+    if ! [[ "$legacy_unit" =~ ^[A-Za-z0-9_.@-]{1,64}\.service$ ]]; then
+      err "legacy: 实况 unit「${legacy_unit}」不合法（只允许字母数字与 . _ @ -，且须以 .service 结尾）⇒ 拒绝盲切，中止（旧实例未受影响）"
+      exit 1
+    fi
     if [[ -n "$canary_prefix" && "$legacy_unit" == "${canary_prefix}"*".service" ]]; then
+      # ★★ canary 形态的 slot 目录**必须由 unit 的实例名（%i）推导**，不能由端口推。
+      #   事实：canary unit 的 ExecStart 是
+      #     /opt/llm-gateway-go/slots/%i/gateway
+      #   ⇒ slot 的键是 **systemd 实例名**（%i），而 %i 与**监听端口**是**两个不同的来源**
+      #   （llmgo-245-canary@2823.service ⇒ %i=2823，而端口是 8781/8782）。
+      #   ★ 原实现用 `slots/$legacy_port` ⇒ ★★ **重指的是一个 nobody 读的目录**
+      #   ⇒⇒ restart 起来的仍是旧 binary ⇒ **静默 no-op 部署**
+      #   ⇒⇒ 而提交说明写的是「canary 形态走 slots/<port> 重指」⇒ 承诺与实现不符。
+      # ⇒ 修法：从 unit 名剥出 %i（`prefix@<instance>.service` ⇒ `<instance>`），
+      #   并**校验它与实况监听端口一致**（不一致 ⇒ 拒绝盲切）。
+      local legacy_instance="${legacy_unit#*@}"
+      legacy_instance="${legacy_instance%.service}"
+      if ! [[ "$legacy_instance" =~ ^[0-9]{1,5}$ ]]; then
+        err "legacy: canary unit「${legacy_unit}」的实例名「${legacy_instance}」不是端口形态 ⇒ 拒绝盲切，中止（旧实例未受影响）"
+        exit 1
+      fi
+      if [[ "$legacy_instance" != "$legacy_port" ]]; then
+        err "legacy: canary 实例名（${legacy_instance}）与实况监听端口（${legacy_port}）不一致 ⇒ slot 键无法确定 ⇒ 拒绝盲切，中止（旧实例未受影响）"
+        exit 1
+      fi
+      local legacy_slot="$REMOTE_ROOT/slots/$legacy_instance"
       local legacy_prev_release
-      legacy_prev_release=$(remote_ssh "readlink '$REMOTE_ROOT/slots/$legacy_port' 2>/dev/null | xargs basename" 2>/dev/null || true)
-      log "    legacy: canary 形态 —— slots/${legacy_port} 重指 releases/${version} 后 restart ${legacy_unit}（原 release: ${legacy_prev_release:-<无>}）"
-      if ! remote_ssh "set -e; ln -sfn '$REMOTE_ROOT/releases/$version' '$REMOTE_ROOT/slots/$legacy_port'; if [ -d '$REMOTE_ROOT/releases/$version/web-mobile' ]; then ln -sfn '$REMOTE_ROOT/releases/$version/web-mobile' '$REMOTE_ROOT/web-mobile'; fi"; then
-        err "legacy: slots/${legacy_port} 重指失败；旧 release（${legacy_prev_release:-<无>}）保持服务"
+      legacy_prev_release=$(remote_ssh "readlink '$legacy_slot' 2>/dev/null | xargs basename" 2>/dev/null || true)
+      log "    legacy: canary 形态 —— ${legacy_slot} 重指 releases/${version} 后 restart ${legacy_unit}（原 release: ${legacy_prev_release:-<无>}）"
+      # ★ 两个 ln 分开做、分开报错（2026-10-26 审计新增）：
+      #   原实现把 slot 重指与 web-mobile 重指放在**同一条** `set -e` 命令里
+      #   ⇒ web-mobile 那步失败时，外层收到的也是「槽重指失败」
+      #   ⇒★ **报错与事实相反**（槽**已经**被重指了），且旧 release 并未「保持服务」。
+      if ! remote_ssh "ln -sfn '$REMOTE_ROOT/releases/$version' '$legacy_slot'"; then
+        err "legacy: ${legacy_slot} 重指失败；旧 release（${legacy_prev_release:-<无>}）保持服务"
+        exit 1
+      fi
+      if ! remote_ssh "if [ -d '$REMOTE_ROOT/releases/$version/web-mobile' ]; then ln -sfn '$REMOTE_ROOT/releases/$version/web-mobile' '$REMOTE_ROOT/web-mobile'; fi"; then
+        err "legacy: web-mobile 软链重指失败 —— ★ **槽已重指到 ${version}**（不是「保持服务」）⇒ 需回滚"
+        err "legacy: 回滚命令: ln -sfn '$REMOTE_ROOT/releases/${legacy_prev_release}' '$legacy_slot' && systemctl restart '$legacy_unit'"
         exit 1
       fi
       if ! remote_ssh "systemctl restart '$legacy_unit'"; then
-        err "legacy: restart ${legacy_unit} 失败 —— slot 已重指但进程未起；回滚: ln -sfn releases/${legacy_prev_release:-<旧>} 到 slots/${legacy_port} 后重启该 unit"
+        err "legacy: restart ${legacy_unit} 失败 —— slot 已重指但进程未起"
+        if [[ -n "$legacy_prev_release" ]]; then
+          err "legacy: 回滚命令（可直接粘贴）: ln -sfn '$REMOTE_ROOT/releases/$legacy_prev_release' '$legacy_slot' && systemctl restart '$legacy_unit'"
+        else
+          err "legacy: ★ 原 release 未解析出来（readlink 无输出）⇒ 无法给出可执行的回滚命令 ⇒ 请人工确认 $legacy_slot 当前指向"
+        fi
         exit 1
       fi
+      # ★★★ 2026-10-26 审计新增（P1）：legacy 路径此前**完全没有**验证 ——
+      #   [9/9] 探针与 host_mark_verified 都在蓝绿 else 分支里
+      #   ⇒ ⇒ legacy 重启了一个起不来的 binary，脚本照样打印「✅ 部署完成」
+      #   ⇒ ⇒ 且 release 从未被标记 verified ⇒ 回滚选目标时它是「不可信版本」。
+      # ⇒⇒ 补上**最小必要**的验证：/healthz 探活 + 运行中版本身份核对。
+      #   ⇒ ★ 用实况 unit/端口（legacy_port / legacy_unit），不是契约值。
+      local legacy_health_url="http://127.0.0.1:${legacy_port}/healthz"
+      log "    legacy: 探活 ${legacy_health_url}（timeout=120s）"
+      if ! remote_probe "$legacy_health_url" 120 >/dev/null 2>&1; then
+        err "legacy: ${legacy_unit} 重启后 ${legacy_health_url} 未就绪 ⇒ **不标记 verified** ⇒ 部署判定为失败"
+        if [[ -n "$legacy_prev_release" ]]; then
+          err "legacy: 回滚命令（可直接粘贴）: ln -sfn '$REMOTE_ROOT/releases/$legacy_prev_release' '$legacy_slot' && systemctl restart '$legacy_unit'"
+        else
+          err "legacy: ★ 原 release 未解析出来 ⇒ 无法给出可执行的回滚命令 ⇒ 请人工确认 $legacy_slot 当前指向"
+        fi
+        exit 1
+      fi
+      ok "    legacy: /healthz OK"
+      # 运行中版本身份核对（与蓝绿路径同形）：确认起的确实是本次部署的版本。
+      if ! _verify_running_release "$version"; then
+        err "legacy: 运行中的 release 与目标版本 ${version} 不一致 ⇒ **不标记 verified**"
+        if [[ -n "$legacy_prev_release" ]]; then
+          err "legacy: 回滚命令（可直接粘贴）: ln -sfn '$REMOTE_ROOT/releases/$legacy_prev_release' '$legacy_slot' && systemctl restart '$legacy_unit'"
+        fi
+        exit 1
+      fi
+      ok "    legacy: 运行中 release 身份核对通过（${version}）"
+      # ★★★ 补上 host_mark_verified：蓝绿路径在 [9/9] 里会调它，legacy 路径此前**从不调**
+      #   ⇒ ⇒ 部署成功的 release 仍标着 verified:false ⇒ 回滚选目标时它是「不可信版本」
+      #   ⇒ ⇒ 即「部署成功了，但下一个部署不敢回滚到它」⇒ **闭环缺最后一环**。
+      if ! host_mark_verified "$SSH_CMD" "$TARGET" "$version" 2>&1 | sed 's/^/    /'; then
+        err "legacy: host_mark_verified 失败（release ${version} 未被标记 verified）⇒ 部署判定为失败"
+        exit 1
+      fi
+      ok "    legacy: release ${version} 已标记 verified"
     else
       host_atomic_switch "$SSH_CMD" "$TARGET" "$version" 2>&1 | sed 's/^/    /'
+      # ★ 同一条「验证 + 标记 verified」的要求也适用于 legacy host 形态
+      #   （上面的 canary 分支已有；这里补齐 else 分支 ⇒ 两条路径口径一致）。
+      local legacy_host_health_url="http://127.0.0.1:${legacy_port:-$(target_field "$TARGET" active_port)}/healthz"
+      log "    legacy: 探活 ${legacy_host_health_url}（timeout=120s）"
+      if ! remote_probe "$legacy_host_health_url" 120 >/dev/null 2>&1; then
+        err "legacy: ${legacy_unit} 重启后 ${legacy_host_health_url} 未就绪 ⇒ **不标记 verified** ⇒ 部署判定为失败"
+        exit 1
+      fi
+      ok "    legacy: /healthz OK"
+      if ! _verify_running_release "$version"; then
+        err "legacy: 运行中的 release 与目标版本 ${version} 不一致 ⇒ **不标记 verified**"
+        exit 1
+      fi
+      ok "    legacy: 运行中 release 身份核对通过（${version}）"
+      if ! host_mark_verified "$SSH_CMD" "$TARGET" "$version" 2>&1 | sed 's/^/    /'; then
+        err "legacy: host_mark_verified 失败（release ${version} 未被标记 verified）⇒ 部署判定为失败"
+        exit 1
+      fi
+      ok "    legacy: release ${version} 已标记 verified"
     fi
-    # 共享的 [9/9] 探针与 journal 诊断必须打在实况 unit/端口上（蓝绿分支本就如此）
-    candidate_port="$legacy_port"
-    candidate_service="$legacy_unit"
-    active_service="$legacy_unit"
     local switch_elapsed=0
     warn "legacy-restart used; 2-second blue-green SLO is not applicable"
   else
