@@ -300,7 +300,7 @@ onMounted(() => {
 .oo-card-metric { font-size: var(--text-2xl); font-weight: var(--font-semibold); }
 .oo-card-online { border: 1px solid var(--success); }
 .oo-card-offline { border: 1px solid var(--danger); }
-.oo-card-degraded { border: 1px solid var(--warning, #faad14); }
+.oo-card-degraded { border: 1px solid var(--warning); }
 .oo-table { width: 100%; border-collapse: collapse; margin-top: var(--space-2); }
 .oo-table th, .oo-table td { text-align: left; padding: var(--space-1) var(--space-2); border-bottom: 1px solid var(--border-muted); font-size: var(--text-sm); }
 .oo-table th { color: var(--text-muted); font-weight: var(--font-semibold); }

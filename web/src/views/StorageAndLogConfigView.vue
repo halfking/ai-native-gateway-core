@@ -232,9 +232,9 @@ onMounted(() => {
 .slc-label { color: var(--text-muted); font-size: var(--text-sm); }
 .slc-field code { font-size: var(--text-sm); }
 .slc-field span:not(.slc-label) { font-size: var(--text-sm); }
-.slc-field .is-warning { color: var(--warning, #faad14); font-weight: var(--font-semibold); }
+.slc-field .is-warning { color: var(--warning); font-weight: var(--font-semibold); }
 .slc-field .disk-level-safe { color: var(--success); }
-.slc-field .disk-level-warning { color: var(--warning, #faad14); }
+.slc-field .disk-level-warning { color: var(--warning); }
 .slc-field .disk-level-danger { color: var(--danger); }
 .slc-field .log-enabled-db { color: var(--success); }
 .slc-field .log-enabled-env { color: var(--text-muted); }

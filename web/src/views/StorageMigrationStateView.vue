@@ -153,16 +153,16 @@ onUnmounted(() => {
 .sms-loading { color: var(--text-muted); padding: var(--space-3); }
 .sms-empty { color: var(--text-muted); padding: var(--space-3); font-style: italic; }
 .sms-section { background: var(--bg-surface); border: 1px solid var(--border); border-radius: var(--radius); padding: var(--space-3); margin-bottom: var(--space-3); }
-.sms-section-running { border: 1px solid var(--kx-primary, var(--app-primary, #5b8def)); }
+.sms-section-running { border: 1px solid var(--kx-primary); }
 .sms-section-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: var(--space-2); }
 .sms-section-title { font-size: var(--text-md); font-weight: var(--font-semibold); }
 .sms-status-badge { padding: 2px 8px; border-radius: 4px; font-size: var(--text-sm); }
-.sms-status-badge.is-running { background: var(--kx-primary-soft, var(--bg-subtle)); color: var(--kx-primary, var(--app-primary, #5b8def)); }
-.sms-status-badge.is-succeeded { background: var(--success-bg, #e6f4ea); color: var(--success, #34a853); }
-.sms-status-badge.is-failed { background: var(--danger-bg, #fce8e6); color: var(--danger, #d93025); }
+.sms-status-badge.is-running { background: var(--kx-primary-soft, var(--bg-subtle)); color: var(--kx-primary); }
+.sms-status-badge.is-succeeded { background: var(--success-bg); color: var(--success); }
+.sms-status-badge.is-failed { background: var(--danger-bg); color: var(--danger); }
 .sms-row { display: grid; grid-template-columns: 120px 1fr; gap: var(--space-2); padding: var(--space-1) 0; font-size: var(--text-sm); }
 .sms-label { color: var(--text-muted); }
 .sms-progress { height: 6px; background: var(--bg-elevated, var(--bg-surface)); border-radius: 3px; overflow: hidden; margin: var(--space-1) 0; }
-.sms-progress-bar { height: 100%; background: var(--kx-primary, var(--app-primary, #5b8def)); transition: width 0.3s ease; }
-.sms-errors { margin-top: var(--space-2); padding: var(--space-2); background: var(--danger-bg, #fce8e6); color: var(--danger, #d93025); border-radius: var(--radius); font-size: var(--text-sm); }
+.sms-progress-bar { height: 100%; background: var(--kx-primary); transition: width 0.3s ease; }
+.sms-errors { margin-top: var(--space-2); padding: var(--space-2); background: var(--danger-bg); color: var(--danger); border-radius: var(--radius); font-size: var(--text-sm); }
 </style>
