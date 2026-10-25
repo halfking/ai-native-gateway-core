@@ -61,10 +61,10 @@ export default {
 
   error: {
     loadFailed: 'Échec du chargement',
+    checkFailed: 'Échec de la validation',
     canonicalNameRequired: 'canonical_name est requis',
     createFailed: 'Échec de la création',
     deleteFailed: 'Échec de la suppression',
     restoreFailed: 'Échec de la restauration',
   },
-  softDeleteConfirm: 'Supprimer (logiquement) la stratégie {name} ? (récupérable)',
 }

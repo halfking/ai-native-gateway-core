@@ -30,7 +30,7 @@ const weights   = ref<ScoringWeights>({
 })
 const weightsDraft = ref<ScoringWeights>({ ...weights.value })
 
-const FIELDS: { key: keyof RoutingPolicy; label: string; min?: number; max?: number; step?: number }[] = [
+const FIELDS = computed<{ key: keyof RoutingPolicy; label: string; min?: number; max?: number; step?: number }[]>(() => [
   { key: 'algorithm_version',         label: t('routing.algorithm_version'), min: 1, max: 2, step: 1 },
   { key: 'retry_per_credential',      label: t('routing.retry_per_credential'),              min: 0, max: 5, step: 1 },
   { key: 'tier_fallback_max',         label: t('routing.tier_fallback_max'),          min: 1, max: 20, step: 1 },
@@ -40,12 +40,24 @@ const FIELDS: { key: keyof RoutingPolicy; label: string; min?: number; max?: num
   { key: 'circuit_open_seconds',      label: t('routing.circuit_open_seconds'),              min: 1, max: 3600, step: 1 },
   { key: 'circuit_failure_threshold', label: t('routing.circuit_failure_threshold'),        min: 1, max: 50, step: 1 },
   { key: 'circuit_max_open_seconds',  label: t('routing.circuit_max_open_seconds'),              min: 1, max: 86400, step: 1 },
-]
+])
 
 const formulaPreview = computed(() => {
   const w = weightsDraft.value
-  return `composite_score = 手工序号 + (归一化价格 × ${w.price}) + (会话负载 × ${w.session_load}) + (错误次数 × ${w.failure_penalty})`
+  return t('routing.policy.formulaPrefix', {
+    price: w.price,
+    session_load: w.session_load,
+    failure_penalty: w.failure_penalty,
+  })
 })
+
+// 表头：3 个标量键（**不能用数组型语言包键** —— vue-i18n 9 的 t() 不支持数组消息，
+// 会把键路径字符串原样返回 ⇒ v-for 会逐字符渲染键名）。
+const policyTableHeaders = computed(() => [
+  t('routing.policy.table.param'),
+  t('routing.policy.table.current'),
+  t('routing.policy.table.next'),
+])
 
 async function load() {
   loading.value = true
@@ -67,7 +79,7 @@ async function load() {
 const dirtyKeys = computed<string[]>(() => {
   if (!policy.value) return []
   const out: string[] = []
-  for (const f of FIELDS) {
+  for (const f of FIELDS.value) {
     const a = (policy.value as any)[f.key]
     const b = (draft.value  as any)[f.key]
     if (String(a) !== String(b)) out.push(String(f.key))
@@ -120,7 +132,7 @@ async function saveFeatured() {
   try {
     const list = featuredArray.value.map(s => s.trim()).filter(Boolean)
     await patchFeatured(list)
-    notifySuccess(`特色模型已更新（${list.length}）`)
+    notifySuccess(t('routing.policy.updatedFeatured', { n: list.length }))
     await load()
   } catch (e: unknown) {
     notifyError(e instanceof Error ? e.message : t('routing.saveFailed'))
@@ -139,7 +151,7 @@ onMounted(load)
         <router-link to="/routing-v2" class="back-link">{{ t('routing.policy.backLink') }}</router-link>
         <h2>{{ t('routing.policy.title') }}</h2>
       </div>
-      <button class="btn btn-ghost" @click="load" :disabled="loading">刷新</button>
+      <button class="btn btn-ghost" @click="load" :disabled="loading">{{ t('routing.shared.refresh') }}</button>
     </div>
     <p style="color:var(--muted);margin-bottom:16px">
       {{ t('routing.policy.description') }}
@@ -147,13 +159,15 @@ onMounted(load)
 
     <div v-if="error" class="alert alert-danger">{{ error }}</div>
     <div v-if="message" class="alert alert-success">{{ message }}</div>
-    <div v-if="loading" class="empty">加载中…</div>
+    <div v-if="loading" class="empty">{{ t('routing.policy.loading') }}</div>
 
     <div v-if="!loading && policy" class="card" style="margin-bottom:16px">
-      <h3 style="margin-top:0">全局策略</h3>
+      <h3 style="margin-top:0">{{ t('routing.policy.globalTitle') }}</h3>
       <table>
         <thead>
-          <tr><th style="width:40%">参数</th><th>当前值</th><th>新值</th></tr>
+          <tr>
+            <th v-for="(h, i) in policyTableHeaders" :key="i" :style="i === 0 ? 'width:40%' : null">{{ h }}</th>
+          </tr>
         </thead>
         <tbody>
           <tr v-for="f in FIELDS" :key="String(f.key)">
@@ -174,18 +188,18 @@ onMounted(load)
       </table>
       <div style="margin-top:12px;display:flex;gap:8px;align-items:center">
         <button class="btn btn-primary" @click="savePolicy" :disabled="saving || !dirtyKeys.length">
-          {{ saving ? t('routing.saving') : t('routing.savePolicy') }}
+          {{ saving ? t('routing.policy.saving') : t('routing.policy.savePolicy') }}
         </button>
         <span v-if="dirtyKeys.length" style="color:var(--muted);font-size:12px">
-          {{ dirtyKeys.length }} 项变更：{{ dirtyKeys.join(', ') }}
+          {{ t('routing.policy.dirtyHint', { n: dirtyKeys.length, keys: dirtyKeys.join(', ') }) }}
         </span>
       </div>
     </div>
 
     <div v-if="!loading" class="card" style="margin-bottom:16px">
-      <h3 style="margin-top:0">综合得分系数</h3>
+      <h3 style="margin-top:0">{{ t('routing.policy.weightsTitle') }}</h3>
       <p style="color:var(--muted);font-size:12px;margin-bottom:12px">
-        综合得分公式：值越小，候选越优先。<strong>免费模型（价格=0）得分固定为 0，最高优先。</strong>
+        {{ t('routing.policy.formulaLabel') }}<strong>{{ t('routing.policy.freeHighlight') }}</strong>
       </p>
       <el-alert type="info" show-icon :closable="false" :title="t('routing.policy.weightsDisplayOnlyHint')" style="margin-bottom:12px" />
       <div style="background:var(--bg-subtle);border:1px solid var(--border);padding:12px;border-radius:6px;margin-bottom:16px;font-family:monospace;font-size:13px;color:var(--text)">
@@ -193,55 +207,55 @@ onMounted(load)
       </div>
       <div class="weights-grid">
         <div class="weight-item">
-          <label>价格权重 (W2)</label>
+          <label>{{ t('routing.policy.weights.price') }}</label>
           <input type="number" v-model.number="weightsDraft.price" min="0" max="100" step="1" />
-          <span class="cell-muted">归一化价格 = 实际价格 / 默认价格</span>
+          <span class="cell-muted">{{ t('routing.policy.weights.priceHint') }}</span>
         </div>
         <div class="weight-item">
-          <label>会话负载权重 (W3)</label>
+          <label>{{ t('routing.policy.weights.sessionLoad') }}</label>
           <input type="number" v-model.number="weightsDraft.session_load" min="0" max="100" step="1" />
-          <span class="cell-muted">会话数 / 并发上限，0-1</span>
+          <span class="cell-muted">{{ t('routing.policy.weights.sessionLoadHint') }}</span>
         </div>
         <div class="weight-item">
-          <label>错误惩罚权重 (W4)</label>
+          <label>{{ t('routing.policy.weights.errorPenalty') }}</label>
           <input type="number" v-model.number="weightsDraft.failure_penalty" min="0" max="100" step="1" />
-          <span class="cell-muted">直接使用连续错误次数</span>
+          <span class="cell-muted">{{ t('routing.policy.weights.errorPenaltyHint') }}</span>
         </div>
         <div class="weight-item">
-          <label>国内模型默认价格 (CNY)</label>
+          <label>{{ t('routing.policy.weights.defaultPriceCny') }}</label>
           <input type="number" v-model.number="weightsDraft.default_price_cny" min="0.01" max="100" step="0.1" />
-          <span class="cell-muted">无价格时的归一化基准</span>
+          <span class="cell-muted">{{ t('routing.policy.weights.defaultPriceHint') }}</span>
         </div>
         <div class="weight-item">
-          <label>国外模型默认价格 (USD)</label>
+          <label>{{ t('routing.policy.weights.defaultPriceUsd') }}</label>
           <input type="number" v-model.number="weightsDraft.default_price_usd" min="0.01" max="100" step="0.1" />
-          <span class="cell-muted">无价格时的归一化基准</span>
+          <span class="cell-muted">{{ t('routing.policy.weights.defaultPriceHint') }}</span>
         </div>
       </div>
       <div style="margin-top:12px;display:flex;gap:8px;align-items:center">
         <button class="btn btn-primary" @click="saveWeights" :disabled="saving || !weightsDirty">
-          {{ saving ? t('routing.saving') : t('routing.savingWeights') }}
+          {{ saving ? t('routing.policy.saving') : t('routing.policy.savingWeights') }}
         </button>
         <span v-if="weightsDirty" style="color:var(--muted);font-size:12px">
-          系数有变更，未保存
+          {{ t('routing.policy.weightsDirty') }}
         </span>
       </div>
     </div>
 
     <div v-if="!loading" class="card">
-      <h3 style="margin-top:0">特色模型 (Featured)</h3>
+      <h3 style="margin-top:0">{{ t('routing.policy.featuredTitle') }}</h3>
       <p style="color:var(--muted);font-size:12px;margin-bottom:8px">
-        选择标准模型名称，将在路由总览中以 ★ 标记，并可启用「仅特色」筛选。
+        {{ t('routing.policy.featuredDescription') }}
       </p>
       <ModelPicker
         v-model="featuredArray"
         mode="multi"
-        placeholder="选择特色模型…"
-        title="特色模型（多选）"
+        :placeholder="t('routing.policy.featuredPlaceholder')"
+        :title="t('routing.policy.featuredMultiTitle')"
       />
       <div style="margin-top:8px">
         <button class="btn btn-primary" @click="saveFeatured" :disabled="saving">
-          {{ saving ? t('routing.saving') : t('routing.saveFeatured') }}
+          {{ saving ? t('routing.policy.saving') : t('routing.policy.saveFeatured') }}
         </button>
       </div>
     </div>

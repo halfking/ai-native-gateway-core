@@ -9135,3 +9135,50 @@ index b953a6f03..555ef83c4 100644
 > ⇒ ★★ ja-JP / zh-TW 的**内容翻译仍未做**（zh-TW 2162 / ja-JP 1378，保守口径含合法同形词）。
 > ⇒ ★ **完整记录见审计档 `docs/audit/2026-10-26-文案撑破版面与硬编码中文接线轮.md`**；
 > ⇒ ★ **通用式见 `LESSONS.md` §409（通用式一~九）**。
+
+> **2026-10-27 三视图 i18n 接线 + 语言包结构层错位轮（本会话，文案层第 6 个增量）**：
+> ⇒ ★★★★ **接线的真正障碍不在视图**：视图里 125 段硬编码中文只是表层，底下压着三件事 ——
+> ⇒ ★★★★ ① **语言包里的「同一批文案两处真值」已经漂移**：
+> ⇒ ★★★★ `routing.ts` 的 `policy:` 块里有一段 **23 行的 `policy` 级键的逐字副本**落在 `weights` 内部
+> ⇒ ★★★★ （zh-CN 干净、其余 7 语种坏 ⇒ 运行时 `policy.weights` 9 键 vs 32 键）。
+> ⇒ ★★★★ 逐键比对取值 ⇒ **ja-JP 21/23、zh-TW 19/23、en-US 11/23** 的两份副本**取值已不同**
+> ⇒ ★★★★ ⇒ 删复制块（7 语种 × 23 行）+ **运行时行为等值断言 8/8 逐字一致**（界面零变化）。
+> ⇒ ★★★★ 顺带收敛三组「死副本」：扁平 `routing.{savePolicy,saving,savingWeights,saveFeatured}`、
+> ⇒ ★★★★ `routing.policy.savingPolicy`、`tenantModelPolicyPanel.softDeleteConfirm`（6/8 语种两份措辞已不同）
+> ⇒ ★★★★ ⇒ 判据是「**全仓 0 引用**」，不是「取值一样吗」（fr-FR 的 `savingPolicy` 取值本就不同，仍是死键）。
+> ⇒ ★★★★★ **★ vue-i18n 9 的 `t()` 不支持数组型消息** —— 实测 `t("policy.tableHeaders")` 返回**键路径字符串**
+> ⇒ ★★★★★ ⇒ `v-for` 会把**键名逐字符**渲染上屏（实测表头 = `r`/`o`/`u`/`t`/…）。
+> ⇒ ★★★★★ 而 `src/i18n/scanner.ts` 的注释曾声称「vue-i18n 允许 t() 返回整个数组」—— **这句是错的**，
+> ⇒ ★★★★★ 且它**直接导出一次上屏回归** ⇒ 修法：短列表改**标量键**、长列表走新增的
+> ⇒ ★★★★★ `i18n.ts` 的 **`localeArray(key)`**（消息树直取 + `en` 兜底 + 随语种反应）；
+> ⇒ ★★★★★ 顺带修掉 **4 处既存违规**（ModulesView ×3、OperationAgreementDialog ×1、LandingView ×1），
+> ⇒ ★★★★★ 并**新增门** `web/scripts/i18n-array-key-guard.mjs`（自证 5/5；修完后「数组型键 17 个、被 t() 消费 0 个」）。
+> ⇒ ★★★★ **数组长度平价**：`wechatSteps`/`dingtalkSteps` 在 **zh-CN / en-US 是 4 项、其余 6 语种是 7/6 项**
+> ⇒ ★★★★ ⇒ 源语言停在旧版 ⇒ 向上对齐（以 zh-TW 繁中版与 ja-JP/de-DE 结构为参照对译）⇒ 8 语种长度一致。
+> ⇒ ★★★★ **扫描器不剥注释** ⇒ 注释里的字面量 `t('…')` 变成**幽灵引用**（实测 i18n-audit 报「缺 4 个键」）
+> ⇒ ★★★★ ⇒ 规避用 `t(<x.y>)` 形式；**正解（剥注释能力）未做**，登记为下一轮项。
+> ⇒ ★★★★ **本批**：3 个视图（`RoutingPolicyView` / `TenantModelPolicyPanel` / `KeyApplicationsView`）
+> ⇒ ★★★★ 接线 **80 处**（30+29+21，逐条带原文断言 + 命中次数断言）；**ja-JP / zh-TW 的 `keys.applications.*`
+> ⇒ ★★★★ 34 键整段补译**（否则接线对这两个语种不成立 —— zh-TW 那份甚至还是简体）。
+> ⇒ ★★★★ 顺带修：`FIELDS` 从 setup 期求值改 `computed` ⇒ **运行时切语言会刷新参数列标签**
+> ⇒ ★★★★ （A/B 实测：改前不刷新、改后刷新；表头与参数列首格都变）。
+> ⇒ ★★ **门禁读数**：vitest **276 文件 / 2817 测试（2815 通过 / 2 跳过）**（上轮 274/2810）；
+> ⇒ ★★ vue-tsc **0 错**；build **✓**；i18n-audit / key-parity / locale-value-count / cjk-count /
+> ⇒ ★★ copy-quality --strict 全 **PASS**；ui-sweep 自证 50/50 + 21/21 + 6/6；**新门 array-key-guard PASS（自证 5/5）**。
+> ⇒ ★★ **棘轮**：硬编码中文 **4883 → 4758（−125 = 45+44+36，与删掉的段数逐字吻合）**；
+> ⇒ ★★ `missing-vs-union zh-CN` **767 → 744**（删复制块 ⇒ union 回收 23 键）；引用集 **5152 → 5253**。
+> ⇒ ★★ **基线人工重铸两处**（理由写进 commit）：`untranslated` 各语种 **+12** ⇒ 逐条核对为 **12 个后端列名**
+> ⇒ ★★ （`canonical_name`/`reason`/`created_by`/… ⇒ 8 语种本就该逐字相同 ⇒ 保留 + 单列清单）；
+> ⇒ ★★ 另两处 +1 亦为合法同形词（de-DE `'Parameter'`、zh-TW `'新值'`）。
+> ⇒ ★★ **浏览器验收（worktree 同条件 A/B，4 语种 × 3 页）**：中文残留
+> ⇒ ★★ RoutingPolicyView **23→3** / KeyApplicationsView **21→3** / TenantModelPolicyPanel **22→16**
+> ⇒ ★★ ⇒ **本批 3 个视图自有中文 = 0**（残留 3/3/16 逐条归因到应用外壳与 `TenantDetailView`，均不在本批）；
+> ⇒ ★★ 版面 **窄折行 0 / 裁切 0 / 横向溢出 0**。
+> ⇒ ★★ **诚实边界**：本机 `default` 租户**无模型策略行** ⇒ 面板的审计区与「添加」弹窗**未渲染**
+> ⇒ ★★ ⇒ 面板 DOM 级降幅（6）小于源码级降幅（44），**弹窗与审计区未经浏览器验证**；
+> ⇒ ★★ 本机**无飞书/企微/钉钉模块配置** ⇒ `ModulesView` 步骤段**未能正向触发**
+> ⇒ ★★ （已验「DOM 无键路径、无单字符 `<li>`」+ `arrayMessage.test.ts` 5 条钉住行为）；
+> ⇒ ★★ maintain 无源码、8082 无监听 ⇒ 每页 2 条 console 噪声（**不能用 `ui-sweep --strict` 退出码下结论**）；
+> ⇒ ★★ **生产/真机视觉验收未做**。
+> ⇒ ★ **完整记录见审计档 `docs/audit/2026-10-27-三视图i18n接线与语言包结构层错位轮.md`**；
+> ⇒ ★ **通用式见 `LESSONS.md` §410（通用式一~十）**。

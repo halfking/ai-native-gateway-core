@@ -92,7 +92,8 @@ export interface KeyParityReport {
  * 取某语种的**键集合**（运行时真值）。
  *
  * ⚠️ **口径必须与 scanner.ts 的 `collectLeafKeys` 一致**（数组也算一个键 ——
- *   vue-i18n 允许 `t('path')` 返回整个数组供 `v-for` 渲染）。
+ *   ⚠️ 但 vue-i18n 9 的 `t()` **不支持数组型消息**（实测返回键路径字符串）⇒ 数组键只能经
+ *      `i18n.ts` 的 `localeArray()` 从消息树直取；另见 scripts/i18n-array-key-guard.mjs）。
  *   ⇒ 复用 `allLocaleKeySets()`，**不要**用 `allLocaleValues()`（只收字符串）
  *   ⇒ 否则会把「数组型键」误判成「该语种缺这个键」
  *   （R56 实测：3 个数组型键被误报成「8 语种全缺」—— **量具自己的口径问题，不是缺陷**）。

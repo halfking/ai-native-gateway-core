@@ -3,6 +3,7 @@ import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import ServiceLandingPage from '../components/ServiceLandingPage.vue'
+import { localeArray } from '../i18n'
 import { SITE_LOGO_SIZE, SITE_TITLE } from '../config/brand'
 import { detectTheme, logoSrc } from '../theme'
 
@@ -18,7 +19,8 @@ onMounted(() => {
 })
 onUnmounted(() => logoObserver?.disconnect())
 
-const heroPoints = computed(() => tm('landing.heroPoints') as string[])
+// ⚠ 数组型语言包键不能经 t() 取（见 i18n.ts 的 localeArray() 注释）
+const heroPoints = localeArray<string[]>('landing.heroPoints')
 
 const features = computed(() => [
   {

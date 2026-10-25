@@ -143,16 +143,20 @@ export function loadLocale(locale: string, localesDir: string): Record<string, u
 }
 
 /** 把嵌套对象扁平化为点路径集合。
- *  数组也被视为叶子节点 — Vue i18n 允许 `t('foo.bar')` 返回整个数组
- *  供 `v-for` 渲染（如 sessions.list.tableHeaders、modulesView.integration.feishuSteps）。
- *  若跳过数组，这些引用会被误报为 missing key。 */
+ *  数组也被视为叶子节点 — **键存在性**口径上，数组算一个键（跳过它会让引用扫描
+ *  把这些键误报成 missing key）。
+ *  ⚠️ **但「键存在」≠「能经 t() 取到」**：vue-i18n 9 的 `t()` **不支持数组型消息** ——
+ *     实测（vue-i18n 9.14.5）`t(<policy.tableHeaders>)` 返回的是**键路径字符串**，
+ *     于是 `v-for` 会把键名逐字符渲染出来。
+ *     ⇒ 数组型键必须走 `i18n.ts` 的 `localeArray()`（从消息树直取），
+ *       并由 `scripts/i18n-array-key-guard.mjs` 把关（禁止再出现「数组键经 t() 消费」）。 */
 export function collectLeafKeys(obj: unknown, prefix = ''): Set<string> {
   const keys = new Set<string>()
   if (typeof obj !== 'object' || obj === null || Array.isArray(obj)) return keys
   for (const [k, v] of Object.entries(obj)) {
     const path = prefix ? `${prefix}.${k}` : k
     if (Array.isArray(v)) {
-      // 数组作为整体值被引用（t('path') 返回数组），记录其路径为有效 key
+      // 数组作为整体值被引用（t(<path>) 能取到数组），记录其路径为有效 key
       keys.add(path)
     } else if (typeof v === 'object' && v !== null) {
       const nested = collectLeafKeys(v, path)

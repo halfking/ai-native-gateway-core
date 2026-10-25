@@ -117,13 +117,13 @@ export const UNRESOLVED_REGISTRY: Array<{
   },
   {
     file: 'src/components/OperationAgreementDialog.vue',
-    line: 64,
+    line: 66,
     reason: 'dynamic-key',
     keys: ['public.opAgreement.downloadTitle', 'public.opAgreement.activateTitle'],
     params: ['title'],
     why:
       '键是局部变量 `key`，由 `props.scope` 的三元表达式赋值（' +
-      'OperationAgreementDialog.vue:60-63）⇒ 静态不可知，候选键取自该三元。',
+      'OperationAgreementDialog.vue:62-65）⇒ 静态不可知，候选键取自该三元。',
   },
   {
     file: 'src/views/FreeDiscoveryView.vue',

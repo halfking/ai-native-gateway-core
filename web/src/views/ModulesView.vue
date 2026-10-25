@@ -12,6 +12,7 @@ import {
   type ModuleWithStatus,
 } from '../api/modules'
 import { listSettings, type SettingItem } from '../api'
+import { localeArray } from '../i18n'
 import { useRouter } from 'vue-router'
 import PromptInjectionConfigPanel from '../components/PromptInjectionConfigPanel.vue'
 import ModuleEntitlementsPanel from '../components/ModuleEntitlementsPanel.vue'
@@ -369,10 +370,16 @@ function integrationTitle(moduleKey: string): string {
   return selectedModule.value?.integration?.label || moduleKey
 }
 
+// ⚠ 数组型语言包键**不能经 t() 取**（vue-i18n 9 的 t() 对数组消息返回键路径字符串，
+//   v-for 会把键名逐字符渲染出来）⇒ 改从消息树直取，见 i18n.ts 的 localeArray()。
+const feishuSteps = localeArray<string[]>('modulesView.integration.feishuSteps')
+const wechatSteps = localeArray<string[]>('modulesView.integration.wechatSteps')
+const dingtalkSteps = localeArray<string[]>('modulesView.integration.dingtalkSteps')
+
 function integrationSteps(moduleKey: string): string[] {
-  if (moduleKey === 'feishu_bot') return t('modulesView.integration.feishuSteps') as unknown as string[]
-  if (moduleKey === 'wechat_bot') return t('modulesView.integration.wechatSteps') as unknown as string[]
-  if (moduleKey === 'dingtalk_bot') return t('modulesView.integration.dingtalkSteps') as unknown as string[]
+  if (moduleKey === 'feishu_bot') return feishuSteps.value
+  if (moduleKey === 'wechat_bot') return wechatSteps.value
+  if (moduleKey === 'dingtalk_bot') return dingtalkSteps.value
   return []
 }
 
@@ -1071,7 +1078,7 @@ onMounted(() => {
               <div class="integ-steps">
                 <h4 class="steps-title">{{ t('modulesView.integration.stepsTitle') }}</h4>
                 <ol class="steps-list">
-                  <li v-for="(step, i) in selectedModule.key === 'feishu_bot' ? t('modulesView.integration.feishuSteps') : []" :key="i">{{ step }}</li>
+                  <li v-for="(step, i) in selectedModule.key === 'feishu_bot' ? feishuSteps : []" :key="i">{{ step }}</li>
                 </ol>
               </div>
               <div class="integ-status">
