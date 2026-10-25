@@ -87,10 +87,25 @@ set -euo pipefail
 AHK_ROOT_DEFAULT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 AHK_ROOT="$AHK_ROOT_DEFAULT"
 AHK_COVER=""
+# ★ R157 轮新增：★ 要跑 coverprofile 的包（★ 默认 admin）。
+#   ★ 理由：★ 「undetermined」里有 167 条是「**消歧失败**」——★ 它们的 handler 定义
+#   ★ **在别的包里**（★ 例：`ListApprovals` 在 `api/approval_handler.go`）
+#   ★ ⇒ ★★ 只跑 admin 的 profile ⇒ ★★ 看不见它们的函数体 ⇒ ★★ 判不了。
+# ★★★ R157 第二轮修正（★ 实测打出来的）：★ 默认包集**不能拍脑袋**，
+#   ★ ★ 要么是「handler 定义的包」（★ 由读数反推，★ 见 --two-pass），
+#   ★ ★ 要么是「注册路由的包」（★ admin / cmd/gateway）。
+#   ★ ⇒ ★ 默认改成 **admin,cmd/gateway,api,taskprofile,internal/quality**
+#   ★   （★ 实测：★ 606 条路由的 def_file **只**落在这 5 个包里）。
+AHK_PKGS="admin,cmd/gateway,api,taskprofile,internal/quality"
+# ★ --two-pass：★ 第一遍粗读 → 推导「定义包」→ 第二遍用 -coverpkg 联合覆盖重跑。
+#   ★ 默认开（★ ★ 因为「各包各跑」会漏掉跨包执行 ⇒ ★ 实测 8642 个块受影响）。
+AHK_TWO_PASS="1"
 AHK_ROUTES=""
 AHK_OUT=""
 AHK_LEDGER=""
 AHK_SCAN_DIRS=""     # 空 = 全仓（排除 vendor/tests/web/node_modules/_test.go）
+# ★ 工具自己的仓内相对路径（★ 第二遍要**递归调用自己**来推「定义包」）。
+AHK_TOOL_REL="scripts/audit/api-handler-coverage.sh"
 
 AHK_USAGE() {
   cat <<'EOF'
@@ -100,6 +115,13 @@ AHK_USAGE() {
 选项：
   --root DIR      仓库根（默认：脚本所在位置的上上级）
   --cover FILE    直接使用已有的 coverprofile（跳过 go test）
+  --pkgs LIST     要跑 coverprofile 的 Go 包（逗号分隔，
+                  ★ 默认 "admin,cmd/gateway,api,taskprofile,internal/quality"
+                  ★ —— ★ 实测：★ 606 条路由的 def_file **只**落在这 5 个包里）
+  --two-pass N    两遍跑（1=开，0=关，★ 默认 1）：
+                  ★ 第一遍粗读 → ★ 推导「handler 定义包」→ ★ 第二遍用
+                  ★ **-coverpkg 联合覆盖**重跑 ⇒ ★★ 跨包执行才看得见
+                  ★ ★（★ 实测：★ 「各包各跑」会漏判，★ 8642 个语句块受影响）。
   --routes FILE   路由清单（TSV：path \t method \t handler \t reg_file
                   [\t recvVar \t recvType]）—— 只审计清单里的路由（快速模式用）
   --out FILE      TSV 输出到 FILE（不给则输出到 stdout）
@@ -116,6 +138,8 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --root)   AHK_ROOT="${2:?--root 需要参数}"; shift 2 ;;
     --cover)  AHK_COVER="${2:?--cover 需要参数}"; shift 2 ;;
+  --pkgs)   AHK_PKGS="${2:?--pkgs 需要参数}"; shift 2 ;;
+    --two-pass) AHK_TWO_PASS="${2:-1}"; shift 2 ;;
     --routes) AHK_ROUTES="${2:?--routes 需要参数}"; shift 2 ;;
     --out)    AHK_OUT="${2:?--out 需要参数}"; shift 2 ;;
     --ledger) AHK_LEDGER="${2:?--ledger 需要参数}"; shift 2 ;;
@@ -172,14 +196,130 @@ if [ -z "$AHK_COVER" ]; then
     echo "  ⇒ 装 Go，或用 --cover FILE 直接喂一份现成的 coverprofile（退出码 3）" >&2
     exit 3
   fi
-  echo "… 跑 go test ./admin/ -coverprofile（实测 ≈ 95 s）" >&2
-  if ! ( cd "$AHK_ROOT" && go test ./admin/ -coverprofile="$AHK_TMP/cover.out" -count=1 ) \
-        >"$AHK_TMP/go-test.log" 2>&1; then
-    echo "★ go test ./admin/ 失败（末尾 30 行）：" >&2
-    tail -30 "$AHK_TMP/go-test.log" >&2 || true
-    exit 3
+  # ★★★ R157 轮改：★ 跑**多个**包并合并 profile。
+  #
+  # ★★★ 三条硬约束（★ 每条都是被实测打出来的，★ 不是设计洁癖）：
+  #
+  # ★ ① **必须用 -coverpkg 联合覆盖**（★ 不是各包各跑各的）。
+  #    ★ 动机（★ 实测）：★ 一个 handler 的定义体在包 A，★ 而**调用它的测试**在包 B
+  #      ⇒ ★★ 若只跑 `go test ./A/`，★ A 的 profile 里那个块 count=0
+  #      ⇒ ★★ 被误判成「零覆盖」（★ **假阳性** ⇒ ★ 台账会凭空多出一条假缺口）。
+  #    ★★ 实测证据：★ 5 个包联合覆盖后，★ **8642 个语句块**出现
+  #      「一份 profile 里 count=0、另一份里 count>0」⇒ ★★ 跨包执行**确实存在**
+  #      ⇒ ★★ 「各包自跑」口径**必然漏判**（★ 实测多判出 3 条真零覆盖：
+  #      `internal/quality` 的 CalculateNow / ListProfiles / GetProfile）。
+  #    ★★ -coverpkg 的语义：★ 「本包测试运行时，★ **被覆盖插桩**的这些包里
+  #      哪些代码的**执行计数**要被记录」⇒ ★★ 跨包调用**才看得见**。
+  #
+  # ★ ② **合并必须按语句块去重、count 取 max**。
+  #    ★ 动机（★ 实测）：★ Go 的多包 profile 合并（cmd/go/internal/test/cover.go
+  #      的 mergeCoverProfile）就是 **`io.Copy` 追加**，★ **不去重**。
+  #      ⇒ ★ 5 份 profile 朴素追加 = 99003 行 ⇒ ★ 唯一块只有 36441 个
+  #      ⇒ ★ **放大 2.72×** ⇒ ★★ 语句总数被放大、★ `pct` 失真。
+  #    ★★ 去重键 = (file, startLine, endLine)；★ count 取 **max**
+  #      （★ 「任一次执行即算覆盖」⇒ ★ 与 covered/zero_coverage 的判定语义一致）。
+  #
+  # ★ ③ **包清单必须来自「哪个包真的定义了 handler」**，★ 不是拍脑袋写一串。
+  #    ★ 实测：★ 全部 606 条路由的 def_file 只落在 **5 个包**
+  #      （admin / api / cmd/gateway / internal/quality / taskprofile）
+  #      ⇒ ★★ 跑 `domains/...` 只会**引入失败**（★ `domains/nodestatecache` 的
+  #      `TestSelectP99Under1ms` 是**计时敏感 flaky**）⇒ ★★ 整组被丢弃
+  #      ⇒ ★★ 反而**拉低**了覆盖面。
+  #    ★★ 但「定义包」在跑测试**之前**不知道（★ 要先扫源码）⇒ ★⇒
+  #      ★ 工具**两遍跑**：★ 第一遍用**默认包集**产出 profile，★ 第二遍
+  #      ★ **按第一遍读出的 def_file 分布**重算包集再跑一次（★ ★ 第二次的
+  #      ★ coverpkg 才是准的）⇒ ★★ 读数自带「包集是推导出来的」这一口径。
+  #
+  # ★★★ 某个包失败**不许静默跳过**：★ 打印警告 + 在输出里报「N 个包失败」
+  #     ⇒ ★★ 读数必须带口径（★ 覆盖面不全时，下界就更不准）。
+  AHK_PKG_FAILED=""
+  AHK_MERGED="$AHK_TMP/cover.out"
+  AHK_PKG_IDX=0
+
+  # ---- 跑一轮（★ $1 = 包列表，★ $2 = 本轮 coverpkg 列表）----
+  ahk_run_pkgs() {
+    local pkgs="$1" coverpkgs="$2"
+    local out="$AHK_TMP/raw-cover.out"
+    : >"$out"
+    AHK_PKG_FAILED=""
+    AHK_PKG_IDX=0
+    local one cp_args=""
+    for pkg in $pkgs; do
+      AHK_PKG_IDX=$((AHK_PKG_IDX + 1))
+      one="$AHK_TMP/cover-$AHK_PKG_IDX.out"
+      if [ -n "$coverpkgs" ]; then
+        cp_args="-coverpkg=$coverpkgs"
+      else
+        cp_args=""
+      fi
+      echo "… 跑 go test ./$pkg $cp_args -coverprofile（★ 第 $AHK_PKG_IDX 个包）" >&2
+      # ★ 包规格：★ 直接用 "./$pkg"（★ **不带尾斜杠**）⇒ ★ `./admin` / `./domains/session/...`
+      #   都合法（★ 带尾斜杠会让 `...` 通配变成 `.../` ⇒ go test 报错）。
+      if ( cd "$AHK_ROOT" && go test "./$pkg" $cp_args -coverprofile="$one" -count=1 ) \
+            >"$AHK_TMP/go-test-$AHK_PKG_IDX.log" 2>&1; then
+        grep -v '^mode:' "$one" >>"$out" 2>/dev/null || true
+      else
+        echo "★ go test ./$pkg 失败（末尾 20 行）⇒ ★ 该包**不进** profile ⇒ ★ 覆盖面有缺" >&2
+        tail -20 "$AHK_TMP/go-test-$AHK_PKG_IDX.log" >&2 || true
+        AHK_PKG_FAILED="${AHK_PKG_FAILED} $pkg"
+      fi
+    done
+    if [ -n "$AHK_PKG_FAILED" ]; then
+      echo "★ 失败的包：$AHK_PKG_FAILED ⇒ ★ 本轮读数的覆盖面**小于**预期 ⇒ ★ 零覆盖下界更不精确" >&2
+    fi
+    # ---- 去重合并：★ 按 (file,start,end) 取 max count ----
+    #   ★ ★ 用 awk 而不是「sort -u」：★ sort -u 只能去重**整行**，
+    #     而**同一个块在不同 profile 里 count 不同**（★ 实测 8642 个）
+    #     ⇒ ★★ 必须按 key 归并后取 max ⇒ ★★ 这正是「任一次执行即算覆盖」。
+    awk -v OFS='\t' '
+      {
+        # 行格式：<file>:<s>.<c>,<e>.<c> <numStmt> <count>
+        loc = $1; n = $2; c = $3
+        key = loc
+        if (key in seen) {
+          if (c + 0 > cnt[key] + 0) cnt[key] = c + 0
+          if (n + 0 > nstmt[key] + 0) nstmt[key] = n + 0
+        } else {
+          seen[key] = 1; cnt[key] = c + 0; nstmt[key] = n + 0; order[++k] = key
+        }
+      }
+      END {
+        printf "mode: set\n"
+        for (i = 1; i <= k; i++) printf "%s %d %d\n", order[i], nstmt[order[i]], cnt[order[i]]
+      }
+    ' "$out" >"$AHK_MERGED"
+  }
+
+  # ---- 第一遍：★ 默认包集 + 无 coverpkg（★ 先要一份粗读数来推包集）----
+  ahk_run_pkgs "${AHK_PKGS//,/ }" ""
+
+  # ---- 第二遍：★ 按第一遍读出的 def_file 分布推导「定义包」⇒ 重跑 ----
+  #   ★ 为什么要第二遍：★ -coverpkg 的清单必须是「**所有定义包**」才能看见跨包执行；
+  #   ★ 而定义包要靠读数才知道 ⇒ ★⇒ 先粗后精。
+  if [ "$AHK_TWO_PASS" = "1" ]; then
+    # ★ ★ 递归调用自己时必须关掉两遍跑（★ 否则无限递归）。
+    # ★ ★ 子调用把 TSV **打到 stdout**（★ 不给 --out ⇒ 不依赖任何跨进程的临时文件
+    #   ⇒ ★★ 不会踩「子进程退出时 trap 删目录」这类坑）。
+    #   ★ 注意：子调用没给 --out 时，summary 会打到 **stderr**（★ 工具的既有行为）
+    #   ⇒ ★ 这里 2>/dev/null 丢掉 summary，★ 只取 stdout 的 TSV。
+    AHK_DEFPKGS="$(bash "$AHK_ROOT/$AHK_TOOL_REL" --root "$AHK_ROOT" \
+        --cover "$AHK_MERGED" --two-pass 0 2>/dev/null \
+        | awk -F'\t' 'NR>1 && $6!=""{ n=split($6,a,"/"); p=a[1]; for(i=2;i<n;i++) p=p"/"a[i]; print p }' \
+        | LC_ALL=C sort -u | tr '\n' ' ')"
+    if [ -n "$AHK_DEFPKGS" ]; then
+      echo "… 第二遍：★ 推导出的「定义包」= $AHK_DEFPKGS⇒ ★ 按它重跑（★ coverpkg 联合覆盖）" >&2
+      AHK_COVERPKG=""
+      for p in $AHK_DEFPKGS; do
+        AHK_COVERPKG="${AHK_COVERPKG}./$p/,"
+      done
+      AHK_COVERPKG="${AHK_COVERPKG%,}"
+      # ★ 跑测试的包集 = 定义包 ∪ 原始包集（★ 定义包自己也要跑，★ 否则它们自己的
+      #   测试打出的覆盖会丢）⇒ ★ 取并集。
+      AHK_ALLPKGS="$(printf '%s\n%s\n' $AHK_DEFPKGS ${AHK_PKGS//,/ } | LC_ALL=C sort -u | tr '\n' ' ')"
+      ahk_run_pkgs "$AHK_ALLPKGS" "$AHK_COVERPKG"
+    fi
   fi
-  AHK_COVER="$AHK_TMP/cover.out"
+  AHK_COVER="$AHK_MERGED"
 else
   if [ ! -f "$AHK_COVER" ]; then
     echo "★ --cover 指定的文件不存在：$AHK_COVER" >&2
@@ -569,6 +709,14 @@ BEGIN {
     m = ++DEFCNT[key]
     DEFFILE[key, m] = a[3]; DEFSTART[key, m] = a[4] + 0; DEFEND[key, m] = a[5] + 0
     DEFMETH[key, m] = a[6] + 0; DEFRVAR[key, m] = a[7]; DEFRTYPE[key, m] = a[8]
+    # ★★ R157 轮新增：**按名字**的全仓索引（★ 跨包回退用）。
+    #   ★ 动机：★ 路由注册在 `admin` 包，★ 而 handler 的**定义体**在别的包
+    #     （★ 例：`ListApprovals` 定义在 `api/approval_handler.go`）⇒ ★★ 旧口径
+    #     只在**注册文件所在目录**找定义 ⇒ ★★ 找不到 ⇒ 判 undetermined
+    #     ⇒ ★★ **而它既可能被覆盖、也可能没覆盖** ⇒ ★★ 下界被白白放大。
+    nkey = a[2]
+    nm = ++ALLCNT[nkey]
+    ALLFILE[nkey, nm] = a[3]; ALLSTART[nkey, nm] = a[4] + 0; ALLEND[nkey, nm] = a[5] + 0
   }
   close(DEFSFILE)
   # ---- 语句块索引 ----
@@ -602,7 +750,24 @@ BEGIN {
     key = dir "\t" cl[i]
     # ★ 这个候选**根本没有定义** ⇒ 可以试下一个候选
     #   （例如 NewCapabilitiesHandler(...)：主候选 "cfg.Listen" 无定义 ⇒ 退到顶层调用名）
-    if (!(key in DEFCNT)) continue
+    if (!(key in DEFCNT)) {
+      # ★★ R157 轮新增：**跨包回退**。
+      #   ★ 口径：★ 注册目录里没有这个定义 ⇒ ★ 但**全仓按名字唯一** ⇒ ★ 判它。
+      #   ★★★ 两条硬约束（★ 缺一条就会误判）：
+      #     ① **全仓唯一**（★ ALLCNT == 1）⇒ ★ 多义 ⇒ ★ 继续判不了（★ 不猜）。
+      #     ② **该定义文件必须在 coverprofile 里**（★ deffile in NB）⇒ ★
+      #        ★ 否则它的语句块**没有执行计数** ⇒ ★ 判出来的 covered/zero_coverage
+      #        ★ **没有意义**（★ 会把「看不见」伪装成「零覆盖」⇒ ★ 违背本工具的核心纪律）。
+      if ((cl[i] in ALLCNT) && ALLCNT[cl[i]] == 1) {
+        cf = ALLFILE[cl[i], 1]
+        if (cf in NB) {
+          resolved = cl[i]; deffile = cf
+          defstart = ALLSTART[cl[i], 1]; defend = ALLEND[cl[i], 1]
+          break
+        }
+      }
+      continue
+    }
     ndef = DEFCNT[key]
     pick = 0
     if (ndef == 1) {
@@ -805,6 +970,21 @@ if [ -n "$AHK_LEDGER" ]; then
 #   是否只做参数解析/是否整体委托/是否运维型）逐条归类；个别行的类型归属可能不准
 #   （同名方法在包内多见时只能按字段名近似匹配）⇒ 复核时以 def_file 里的源码为准。
 EOF
+    # ★★★ R157 轮新增：★ 台账头里记下**生成时工具自己的 sha256**与**包集合**。
+    #   ★ 目的：★ 让「工具改了但台账没重生成」变成**机器可判**（★ 否则台账会悄悄过期）。
+    #   ★★ 为什么写在**注释头**而不是数据列：★ 写数据列 ⇒ ★ 门的解析器要跟着改列数
+    #     ⇒ ★★ 一次工具改动就会连带改门 ⇒ ★★ **耦合面反而更大**；★ 写在头里 ⇒ ★ 门只需读一行。
+    #   ★★ 诚实边界：★ 本行只能保证「**工具没变**」；★ 「**代码变了**」也会让覆盖度变，
+    #     ★★ 而那需要重跑 go test 才能知道 ⇒ ★★ **代码改过必须手动重生成台账**（★ 命令见下）。
+    printf '# gen_tool_sha=%s\n' "$(ahk_sha256 "$0")"
+    printf '# gen_pkgs=%s\n' "${AHK_PKGS}"
+    printf '# gen_cover_sha=%s\n' "$(ahk_sha256 "$AHK_COVER")"
+    # ★★★ R157 第二轮：★ 再记**推导出来的定义包**与**跨包覆盖口径**。
+    #   ★ 为什么：★ 「覆盖度读数」的口径不止一个参数（★ 包集、★ coverpkg、★ 合并去重）
+    #     ⇒ ★★ 少了任何一个，★ 数字就不可复现 ⇒ ★★ 台账必须自带口径。
+    printf '# gen_defpkgs=%s\n' "${AHK_DEFPKGS:-（未跑两遍模式）}"
+    printf '# gen_coverpkg=%s\n' "${AHK_COVERPKG:-（无：各包自跑 ⇒ 跨包执行不可见）}"
+    printf '# gen_two_pass=%s\n' "${AHK_TWO_PASS}"
     printf 'path\tline\tocc\tmethod\thandler\treg_file\tdef_file\tstmts\tverdict\tadjudication\treason\tevidence\towner\tfingerprint\n'
     awk -F'\t' '
       {
