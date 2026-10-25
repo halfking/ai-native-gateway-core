@@ -9451,6 +9451,7 @@ embeddata 逐字 + lock_timeout + 自证断言 + down 只删账本 + **真库腿
 | 902 | `902_stats_event_dedup_pkey_include.sql` | `d09a79791edf6c5160e31b59cca6a5c3fff47d8dada5ded2255df63680260829` | registered in installer StartupFiles + 生产升级序列（未应用，pending）—— stats_event_dedup 索引合并：pkey 换体 UNIQUE(event_id) INCLUDE(occurred_at) + 删 845 复合索引（252 只读实测 pkey 114 MB + 复合 151 MB ⇒ 净省 ~114 MB）。`dbinit:no-transaction` + CONCURRENTLY + lock_timeout=60s / statement_timeout=10min；消费方无损本地一次性库实测（ON CONFLICT / 四处双列 JOIN Index Only / 唯一性不变式）；down：`902_stats_event_dedup_pkey_include.down.sql`（sha256 `0798829325a28bab9be005bfc6137437e51229d8128a1fbf8bfc6bcf1e8ef00f`） | ★ **2026-10-24 12h 审计轮修正（★ 本轮唯一实测复现的真缺陷）**：补**前置于 ①** 的步骤 ⓪ —— 只清理**无效**（indisvalid=false）的残留 tmp 索引。★ 根因：`CREATE UNIQUE INDEX CONCURRENTLY **IF NOT EXISTS**` **只看名字、不看 validity** ⇒ ⇒ 上一次 CONCURRENTLY 构建失败（statement_timeout=10min 被触发 / 连接中断 / 构建被取消）留下的 invalid 索引会让 ① **跳过创建** ⇒ ⇒ ② 的形状守卫必然抛错 ⇒ ⇒ **每次重跑走同一条路径 ⇒ 永久卡死**（★ 902 是 installer StartupFiles 链尾 ⇒ ⇒ 它失败 = 新装链与升级链都断）。★ 修前/修后均在一次性 PG 容器实测：修前 `ERROR: 902: tmp index ... missing/invalid/wrong-shape — refusing to swap pkey`；修后换体成功落到 `PRIMARY KEY (event_id) INCLUDE (occurred_at)` 且不留孤儿。★ **迁移语义未变**（只在存在 invalid 残留时才动手；合法 tmp 索引不动）；★ **对生产的写入 = 0**（902 仍未应用，待属主授权）。
 | 903 | `903_sessions_updated_at_session_id_index.sql` | `404503d920252f171d313c6235c28bbe93d5d7241104000371d41f9555349d48` | registered in installer StartupFiles + 生产升级序列（未应用，pending）—— public.sessions 分区父表补 (updated_at DESC, session_id DESC) 索引。★ 根因：会话列表排序键 (updated_at DESC, session_id DESC) **没有任何索引能提供该序** ⇒ Seq Scan + top-N Sort 必须物化 439,106 行才能吐第一行 ⇒ Limit 无法提前停 ⇒ 整条 JOIN 链跑满（GET /api/admin/turns/sessions 生产恒 500@30s）。★ 252 EXPLAIN ANALYZE 实测：原查询 32,089.911 ms → 只加索引 3.639 ms，shared hit 9,876,509 → 640，去重 SubPlan 439,570 次循环 → 22 次。★ 口径零变化：不改任何查询；同一 REPEATABLE READ 快照内两个结果集 22 行（含表头）逐字一致。★ 被否证的路线（别再试）：只补 session_titles(scoped_session_id) —— 单变量 A/B 实测该 LATERAL 仅占 8.25s/32,089.911 ms（26%）。★ 普通 CREATE INDEX（分区父表不支持 CONCURRENTLY）+ lock_timeout=60s / statement_timeout=10min（891/901 同款）；public.sessions 是热写表（session_aggregator.go:216 每请求一次 upsert）⇒ 构建期 SHARE 锁阻塞该分区写 ⇒ 落在低峰窗口；down：`903_sessions_updated_at_session_id_index.down.sql`（sha256 `fef2844f9b2ea0b835239cfd6da67198b9855df90eacb4e40f5b7caf108d673d`） |
 | 908 | `908_route_incident_events_type_created_drop.sql` | `bcd401ec78150ecb544e85966b95c75edbe81943669beb45c2f2fe8440490b15` | registered in installer StartupFiles + 生产升级序列（未应用，pending）—— 删除 route_incident_events 零消费方索引 idx_route_incident_events_type_created（252 只读实测 110 MB / idx_scan=1，5.2 天窗口；代码面核对：无 event_type 谓词查询、871 已取代其历史唯一用途、无约束背书；同表 uq_idem 42 万次/5.2 天扫描的热写路径白维护）。★ 原号 903 与并行会话 903_sessions_updated_at_session_id_index 撞号让号为 905；★ ★ 2026-10-25 第二次撞号：上游又取走 905/906/907 ⇒ 再让号为 908（判决零变化）。配套 db/db.go ensure 同批删除同名 CREATE（防复活）；baseline 刻意保留（718 先例）。`dbinit:no-transaction` + DROP INDEX CONCURRENTLY IF EXISTS（幂等）+ 会话级 lock_timeout=60s / statement_timeout=10min + RESET；本地一次性库五段生命周期实测（删/幂等重跑/down 重建/再删）；down：`908_route_incident_events_type_created_drop.down.sql`（sha256 `4533a81fbeab4b58a56b53aa1dbddbe441d75eae7c38a6c6059c73d256fe8fdf`） |
+| 909 | `909_session_summaries_search_trgm_indexes.sql` | `77d829d0289cb3e0b16dfa93b16c70addcbf84d265f58b3e4996680ac4cb8e6b` | registered in installer StartupFiles + 生产升级序列（**未应用，pending**）—— 给 `public.session_summaries` 的三列（`session_key` / `title` / `primary_model`）补 **GIN trigram 索引**，修 admin 会话搜索（`admin/session_catalog_usage.go` 的 `catalogSearchSQL`）的**三列 OR `%q%` ILIKE** ⇒ ★ 252 生产实测 `Parallel Seq Scan` / **Execution Time = 40,415.968 ms（40.4 秒）** ⇒ ★ 而调用点 ctx 超时只有 **2 秒** ⇒ ★★ **每次都超时 ⇒ 静默返回「没搜到」**。★ Go 侧同步把谓词从 `COALESCE(title,'')` 改成**裸列**（★ PG 的表达式索引匹配是**逐字**的 ⇒ 包裹后索引不参与）⇒ ★ **口径等价可证**（模式串永不为空 ⇒ `'' ILIKE 模式串` 恒假 ⇒ NULL 行两边同样不通过 ⇒ ★ 行集不变、响应形状不变）。★ 形态：`dbinit:no-transaction` + `CREATE INDEX CONCURRENTLY IF NOT EXISTS` ×3（★ 热写表 ⇒ 不得用普通 CREATE INDEX）+ 会话级 `lock_timeout=60s` / `statement_timeout=10min` + RESET + 第 0 段自愈 `indisvalid=false` 残留 + 第 2 段形状校验。★ **写放大≈0**：★ `session_key` 从不随请求变化、★ `title`/`primary_model` 由摘要器单独写 ⇒ ★ 请求路径的 UPDATE **不触碰**被索引列 ⇒ PG 不重写索引项。down：`909_session_summaries_search_trgm_indexes.down.sql`（sha256 `608e7bfe8ea5a638d043b7b0be2f2e9697f1eb50605b3c9da01190ce9697a5cb`）|
 ## 2026-10-23T17:18:26Z — deploy 245 build_seq 2820 (a88bf82f)
 
 | Migration | File | SHA-256 | Status |
@@ -10381,6 +10382,53 @@ cron 日志里也有 `"retention_hours":8`）⇒ ⇒ ★★★ 实测 `max(hot.t
 ★ ★★ 「同一台机器、同一条命令、两个 checkout 各跑一遍」⇒ ★★★ 否则会去修一个不属于你的红。
 
 ★ **完整记录见审计档 `docs/audit/2026-10-27-R154-生产慢SQL取证与API覆盖度基线.md` §3 + `LESSONS.md` §403**。
+
+### 2026-10-27 R156 —— 迁移 909：会话搜索三列 GIN trigram 索引（★ 仓内已交付，★ **生产未应用**）
+
+★ ★★ **本条是 R154 轮取证结论的落地**：★ R154 在 **252 生产**只读实测到
+★ `admin/session_catalog_usage.go` 的 `catalogSearchSQL` 对 `session_summaries`（**868,711 行**）
+★ 做**三列 OR 的 `%q%` ILIKE** ⇒ **Parallel Seq Scan** ⇒ **Execution Time = 40,415.968 ms（40.4 秒）**
+★ ⇒ 而 `mergeCatalogSearch` 的 ctx 超时只有 **2 秒** ⇒ ★★ **每次都超时 ⇒ 静默返回「没搜到」**。
+
+★ ★★ **决定性实测**（一次性 PG 17.11 容器，★ **900,000 行**生产级夹具，★ needle 命中 0.3%）：
+
+| 阶段 | 计划 | Execution Time |
+|---|---|---|
+| 迁移前（旧查询） | Parallel Seq Scan | **531.633 ms** |
+| 迁移后（**旧查询**，COALESCE 包裹） | ★ **Parallel Seq Scan**（★ 没变） | **520.685 ms** |
+| 迁移后（**新查询**，裸列） | ★★ **BitmapOr + 三条 Bitmap Index Scan** | **12.627 ms**（★ **42.1×**） |
+
+★ ⇒ ★★★★ **「只加索引」不够**：★ PG 的**表达式索引匹配是逐字**的 ⇒ ★★ `COALESCE(title,'')` 包裹
+★ ⇒ ★★ 索引不参与 ⇒ ★★ **库里已有索引却仍在全表扫描** ⇒ ★★★ **「库里有索引」≠「索引被用上了」**。
+★ ⇒ ★★★★ **行集等价**：★ 双向 `EXCEPT ALL` ⇒ old = new = **2,687**、★ **only_old = 0 / only_new = 0**。
+★ ⇒ ★★★★ **幂等**（重跑 exit=0）+ ★★ **回滚双向自证**（down exit=0、★ 残留 0、★ ★★ 计划回到 Seq Scan）。
+
+★ ★★ **交付面（7 点登记面）**：
+`sql/migrations/startup/909_session_summaries_search_trgm_indexes.sql`（+ `.down.sql`）·
+`installer/cmd/llm-gw-installer/embeddata/startup/909_*.sql`（★ 逐字节一致）·
+`installer/cmd/llm-gw-installer/main.go`（go:embed ×2 + embed map ×2）·
+`installer/internal/dbinit/runner.go`（StartupFiles）· `scripts/apply-db-revision-sequence.sh` ·
+`sql/schema/installed_startup_migrations.tsv`（★ 重生成）· ★ 本表。
+★ **门**：`sql/migrations/startup/migration_909_session_summaries_search_trgm_test.go`（**5 条**，
+★ 含 ★★ **语义耦合门**：★ 迁移索引列 ⟷ Go 侧 LIKE 列 **集合相等** + ★ Go 侧 LIKE 谓词**不得**被 COALESCE 包裹）。
+
+★ ★★ **Go 侧改动**：`admin/session_catalog_usage.go` 的 `catalogSearchSQL` —— WHERE 里去掉 COALESCE
+★（★ SELECT 列表不动 ⇒ ★ **响应体逐字不变**）⇒ ★★ **口径等价可证**（★ 模式串永不为空 ⇒ `'' ILIKE` 恒假
+★ ⇒ ★ NULL 行两边同样不通过 ⇒ ★ 行集不变）。
+
+★ ★★ **台账语义订正（R154 遗留缺陷）**：★ `scripts/ursmcheck/session_summaries_like_index_ledger.tsv`
+★ 三行 verdict `needs-index` → **`indexed`**；★ `scripts/ursmcheck/session_summaries_like_index_gate_test.go`
+★ 的「只许缩小」判据改成 ★★ **verdict ⟷ 迁移索引清单双向可验**（★ 说 indexed 而迁移没建 ⇒ 红；
+★ 迁移建了而台账说 needs-index ⇒ 红）⇒ ★★ **台账不许撒谎**。
+
+★ ★★ **诚实边界**：★ **生产 252 / 211 全程只读 ⇒ 本迁移未在生产应用 ⇒ 对生产的写入 = 0**；
+★ ★ **本地绝对耗时不可推广到生产**（★ 531 ms vs 40.4 秒 ⇒ ★★ **形态可移植、绝对值不可移植**）；
+★ ★ **needle 命中率高的场景未测**（★ trigram 选择性会下降）；★ ★ **超时静默降级仍在**（⇒ 属主裁决项 D17-B）。
+
+★ ★★ **属主裁决项（本轮全部留空未做）**：★ **D17-A** 生产 252/211 应用（★ 仓内已交付，★ 随下次部署生效）
+· ★ **D17-B** 超时可见（★ 改客户端响应形状）· ★ **D17-C** 搜索范围收窄（★ 改语义）· ★ **D17-D** 先加观测。
+
+★ **完整记录见审计档 `docs/audit/2026-10-27-R156-会话搜索40秒慢SQL的修法落地.md` + `LESSONS.md` §404**。
 
 ### 2026-10-27 R155-hotfix —— 补登记上游 `b7022a466` 引入的 2 个 env（★ origin/main 当时是红的）
 

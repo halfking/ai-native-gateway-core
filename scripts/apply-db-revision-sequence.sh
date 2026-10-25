@@ -2288,6 +2288,16 @@ files=(
   #   RESET（非事务通道不能用 SET LOCAL，871 同款）。
   # ★ ★ 本条**只落仓**；★ 生产应用需属主另行授权（删除瞬间完成，无长锁）。
   "$ROOT_DIR/sql/migrations/startup/908_route_incident_events_type_created_drop.sql"
+  # ★ 909：给 session_summaries 的三列（session_key / title / primary_model）补
+  #   GIN trigram 索引 ⇒ 修 admin 会话搜索（catalogSearchSQL）的三列 OR `%q%`
+  #   ILIKE 退化成全表 Parallel Seq Scan（252 生产实测 40.4 秒 ⇒ 必然撞 2 秒
+  #   ctx 超时 ⇒ 静默返回「没搜到」）。
+  # ★ 形态：dbinit:no-transaction + CREATE INDEX CONCURRENTLY + IF NOT EXISTS
+  #   （幂等）+ 会话级 SET lock_timeout=60s / statement_timeout=10min +
+  #   RESET（非事务通道不能用 SET LOCAL，871 同款）。
+  # ★ ★ 本条**只落仓**；★ 生产应用需属主另行授权（★ 三条索引在热写表上
+  #   走 CONCURRENTLY ⇒ 不阻断在途读写，★ 但构建期吃 IO 与 CPU）。
+  "$ROOT_DIR/sql/migrations/startup/909_session_summaries_search_trgm_indexes.sql"
 )
 
 

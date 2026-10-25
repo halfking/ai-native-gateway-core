@@ -64,6 +64,29 @@ FROM (
 WHERE ($2 = '' OR tenant_id = $2)
 GROUP BY session_id`
 
+// ★★ 为什么 WHERE 里是**裸列**（`title ILIKE $1`）而不是 `COALESCE(title, '') ILIKE $1`：
+//
+//	★ PG 的表达式索引匹配是**逐字**的。迁移 909 建的是
+//	  `USING gin (title gin_trgm_ops)`（**裸列**）
+//	  ⇒ 它**不能**服务 `COALESCE(title, '') ILIKE $1`（表达式不等 ⇒ 索引不参与）
+//	  ⇒ ⇒ 三列 OR 仍然退化成 **Parallel Seq Scan**（252 生产实测 40.4 秒）。
+//	★ 反过来，把索引建成 `USING gin ((COALESCE(title,'')) gin_trgm_ops)` 也能服务它，
+//	  ★★ **但那是一个「包着 COALESCE 的索引」** ⇒ ★ **任何人把查询顺手简化成
+//	  `title ILIKE` 就会静默失去索引** ⇒ 症状是「SQL 照跑、结果照对、只是慢 40 倍」
+//	  ⇒ ★★ 只有把「索引表达式」与「查询表达式」**同时**钉在裸列上，这条路才封死。
+//
+//	★★ 口径等价（★ **可证**，不靠实测）：COALESCE(x,'') 与 x 在 WHERE 谓词里
+//	   **逐行等价**，前提是**模式串永不为空**：
+//	     · likeContains(q) 返回 "%" + escape(q) + "%"，而 q 非空 ⇒ 模式串**至少含 1 个字符**
+//	       ⇒ `'' ILIKE 模式串` **恒为假**（`%X%` 至少要 1 个字符）；
+//	     · `x IS NULL` ⇒ `x ILIKE 模式串` = NULL ⇒ WHERE 判为不通过；
+//	       `COALESCE(x,'') ILIKE 模式串` = `'' ILIKE 模式串` = 假 ⇒ **同样不通过**；
+//	     · `x IS NOT NULL` ⇒ 两边**逐字相同**。
+//	   ⇒ ⇒ 两边的「通过/不通过」集合**完全一致** ⇒ ★ 行集不变 ⇒ ★ 响应形状不变。
+//	   ⇒ ★ q 非空由**调用方**保证：mergeCatalogSearch 开头 `strings.TrimSpace(q) == ""` 即返回。
+//
+//	★ SELECT 列表里的 COALESCE **保留**：它决定**返回给调用方的值**（NULL ⇒ ""），
+//	  与索引可用性无关 ⇒ ★ 不动它 ⇒ ★ **响应体逐字不变**。
 const catalogSearchSQL = `
 SELECT session_key,
        COALESCE(title, ''),
@@ -72,8 +95,8 @@ FROM session_summaries
 WHERE session_key IS NOT NULL
   AND btrim(session_key) <> ''
   AND (session_key ILIKE $1 ESCAPE '\'
-    OR COALESCE(title, '') ILIKE $1 ESCAPE '\'
-    OR COALESCE(primary_model, '') ILIKE $1 ESCAPE '\')
+    OR title ILIKE $1 ESCAPE '\'
+    OR primary_model ILIKE $1 ESCAPE '\')
   AND ($2 = '' OR tenant_id = $2)
 ORDER BY last_request_at DESC NULLS LAST
 LIMIT $3`
