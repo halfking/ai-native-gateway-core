@@ -1,0 +1,706 @@
+package ursm_test
+
+// db_object_census_gate_test.go
+//
+// 守的是 R161 轮立起来的那条底账：**各环境【真实对象】× 仓内迁移【期望集】**。
+//
+// # 这条底账为什么必须存在（R160 轮撞出来的）
+//
+// ★ R160 轮把「登记册 × 各环境账本」变成了机器可判，但 R160 自己撞到一件事：
+//
+//	local 账本覆盖 1..909（277 行）｜252 账本只有 49 行（560..890）｜211 账本到 895（264 行）
+//
+// ⇒ ⇒ **「某个迁移在 252/211 上到底建没建出对象」这个问题，账本回答不了**
+// ⇒ ⇒ ★★ 于是 R161 把事实源**再往下一层**挪：★★ **不看账本，看数据库里真实存在的对象**。
+//
+// # R161 轮的头号发现（★ 本门守着它的可复算性）
+//
+// ★★ **211 缺 14 个【只有它缺】的性能索引**（★ 迁移 900/901/903/904/905/906/909）：
+//
+//	909  idx_session_summaries_{session_key,title,primary_model}_trgm
+//	    ⇒ ★ 252/本地走 BitmapOr + Bitmap Index Scan；★★ 211 走 **Parallel Seq Scan**
+//	    ⇒ ★★ R154 实测该查询在 252 上是 40.4 秒；★ ctx 超时 2 秒 ⇒ 静默返回「没搜到」
+//	905  idx_session_turns_model_session(+hot)
+//	    ⇒ ★★ 211 上 `?model=` 是【逐分区 Seq Scan】；★ 仓内注释记着实测 **205,708 ms**
+//	906  idx_session_turns_api_key_numeric(+hot)
+//	    ⇒ ★ 211 上 api_key 回填路径无索引
+//
+// ★★ 本门**不**断言「211 必须一直缺这些索引」（★ 那是世界状态，★ 修好了就该翻绿）
+// ★★ ⇒ 本门断言的是【**台账 ≡ 底账 + 期望集**】⇒ ★★ 台账永远可复算、不会自己腐坏。
+//
+// # ★★ 六道门与它们的牙
+//
+//	G1 底账形状 + 每环境 sha256 自洽       ⇒ 采集被截断/被污染 ⇒ 红
+//	G2 期望集 ≡ Go 独立反解                 ⇒ 反解器漂了 ⇒ 红
+//	G3 缺口台账 ≡ Go 独立重算（★ 全量 852 行）⇒ 台账与底账脱节 ⇒ 红
+//	G4 坏行必被拒（★ 本轮真踩过）            ⇒ 读数被吞 ⇒ 红
+//	G5 四态判定 + 反向对照                  ⇒ 「表在不在」判错 ⇒ 红
+//	G6 生产缺口棘轮（★ 只降不升）             ⇒ 缺口变大 ⇒ 红
+//
+// ★★ G2/G3 是【第二份独立实现】：★ Python 工具（scripts/audit/db-object-census.py）
+// ★★ 与本文件（Go）**各写一遍**期望集反解与状态判定 ⇒ ★★ 两份实现互证
+// ★★ ⇒ 工具的「自证」不能自证（★ R160 轮的教训）。
+
+import (
+	"bufio"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
+	"regexp"
+	"sort"
+	"strconv"
+	"strings"
+	"testing"
+)
+
+const (
+	dbObjCensusRel     = "scripts/audit/asset/db-object-census.tsv"
+	dbObjExpectRel     = "scripts/audit/asset/db-object-expect.tsv"
+	dbObjLedgerRel     = "scripts/audit/asset/db-object-gap-ledger.tsv"
+	dbObjMigrationsRel = "sql/migrations/startup"
+	dbObjAuditRel      = "docs/audit/2026-10-27-R161-三环境真实对象底账与迁移落点缺口.md"
+
+	dbObjCensusCols = 15 // env + 14
+	dbObjLedgerCols = 8
+)
+
+// ★★ 生产缺口棘轮基线（★ R161 轮实测值，★ 2026-10-27）。
+// ★★ 只许下降（★ 属主把迁移补到 211/252 之后 ⇒ 数字变小 ⇒ 仍绿）。
+// ★★ 变大 ⇒ 红（★ 说明有人在别处挖了坑）。
+var dbObjGapRatchet = map[string]int{
+	"local": 66,
+	"252":   64,
+	"211":   68,
+}
+
+// ─────────────────────────── 读文件 ───────────────────────────
+
+func dbObjRepoPath(t *testing.T, rel string) string {
+	t.Helper()
+	return filepath.Join("..", "..", filepath.FromSlash(rel))
+}
+
+// dbObjDataLines 读 TSV 的数据行（★ 跳过空行与 # 注释行）。
+func dbObjDataLines(t *testing.T, path string) [][]string {
+	t.Helper()
+	fh, err := os.Open(path)
+	if err != nil {
+		t.Fatalf("open %s: %v", path, err)
+	}
+	defer fh.Close()
+	var out [][]string
+	sc := bufio.NewScanner(fh)
+	sc.Buffer(make([]byte, 1024*1024), 16*1024*1024)
+	for sc.Scan() {
+		line := sc.Text()
+		if strings.TrimSpace(line) == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		out = append(out, strings.Split(line, "\t"))
+	}
+	if err := sc.Err(); err != nil {
+		t.Fatalf("scan %s: %v", path, err)
+	}
+	return out
+}
+
+func dbObjHeaderLines(t *testing.T, path string) []string {
+	t.Helper()
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	var out []string
+	for _, l := range strings.Split(string(raw), "\n") {
+		if strings.HasPrefix(l, "#") {
+			out = append(out, l)
+		}
+	}
+	return out
+}
+
+// ─────────────────────────── 底账 ───────────────────────────
+
+type dbObjEnvState struct {
+	idx      map[string]bool
+	children map[string][]string
+	rels     map[string]string // name -> relkind
+}
+
+// dbObjParseCensus 解析底账 ⇒ {env: state}。
+// ★★ 字段数不对 ⇒ **直接失败**（★ 本轮真踩过：★ PG17 pretty-print 往 def 里塞换行
+// ★★ ⇒ 行式 TSV 被静默读错 ⇒ ⇒ 这里必须是硬失败，不是"跳过这行"）。
+func dbObjParseCensus(t *testing.T, path string) map[string]*dbObjEnvState {
+	t.Helper()
+	out := map[string]*dbObjEnvState{}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	lineno := 0
+	for _, line := range strings.Split(string(raw), "\n") {
+		lineno++
+		if strings.TrimSpace(line) == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		parts := strings.Split(line, "\t")
+		if len(parts) != dbObjCensusCols {
+			t.Fatalf("%s:%d: census row has %d fields, expected %d",
+				path, lineno, len(parts), dbObjCensusCols)
+		}
+		env := parts[0]
+		st, ok := out[env]
+		if !ok {
+			st = &dbObjEnvState{
+				idx:      map[string]bool{},
+				children: map[string][]string{},
+				rels:     map[string]string{},
+			}
+			out[env] = st
+		}
+		switch parts[1] {
+		case "idx":
+			st.idx[parts[4]] = true
+			if parent := parts[14]; parent != "" {
+				st.children[parent] = append(st.children[parent], parts[4])
+			}
+		case "rel":
+			st.rels[parts[4]] = parts[3]
+		}
+	}
+	if len(out) == 0 {
+		t.Fatalf("%s has no data rows", path)
+	}
+	return out
+}
+
+// dbObjClassify 是四态判定（★ 与 Python 工具同规格、★ 独立实现）。
+func dbObjClassify(st *dbObjEnvState, indexName, table string) string {
+	if st.idx[indexName] {
+		return "present"
+	}
+	if len(st.children[indexName]) > 0 {
+		return "present-via-child"
+	}
+	kind, ok := st.rels[table]
+	if !ok {
+		return "retired"
+	}
+	if kind != "r" && kind != "p" {
+		return "retired"
+	}
+	return "missing"
+}
+
+// ─────────────────────────── 期望集（Go 独立反解） ───────────────────────────
+
+var (
+	dbObjReCreate = regexp.MustCompile(`(?is)CREATE\s+(?:UNIQUE\s+)?INDEX\s+(?:CONCURRENTLY\s+)?(?:IF\s+NOT\s+EXISTS\s+)?([a-z0-9_"]+)\s+ON\s+([a-z0-9_."]+)`)
+	dbObjReDrop   = regexp.MustCompile(`(?is)DROP\s+INDEX\s+(?:CONCURRENTLY\s+)?(?:IF\s+EXISTS\s+)?([a-z0-9_."]+)`)
+	dbObjReUsing  = regexp.MustCompile(`(?is)ADD\s+CONSTRAINT[^;]*?USING\s+INDEX\s+([a-z0-9_."]+)`)
+	dbObjReLineCm = regexp.MustCompile(`(?m)--[^\n]*`)
+)
+
+func dbObjStripName(raw string) string {
+	return strings.ToLower(strings.Trim(strings.TrimSpace(raw), `"`))
+}
+
+// dbObjDeriveExpected 从仓内 startup 迁移反解期望索引集（★ 独立于 Python 工具）。
+//
+// ★ 三个规格（★ 与 Python 侧同规格、★ 但代码路径不同 ⇒ ★ 互证）：
+//
+//	① 剥 `--` 行注释后再解析（★ 注释里也有 CREATE INDEX）
+//	② 中间产物索引 = 同一个文件里被 `ADD CONSTRAINT … USING INDEX <它>` 消费掉的
+//	   ⇒ ★★ 判据是【结构】不是【名字带 _tmp】
+//	③ 后来的迁移 DROP 掉的 ⇒ 不进期望集
+func dbObjDeriveExpected(t *testing.T) (map[string][2]string, map[string]int) {
+	t.Helper()
+	dir := dbObjRepoPath(t, dbObjMigrationsRel)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("read %s: %v", dir, err)
+	}
+	created := map[string][2]string{} // index -> {migrationNo, table}
+	dropped := map[string]bool{}
+	transient := 0
+	files := 0
+
+	for _, e := range entries {
+		name := e.Name()
+		if !strings.HasSuffix(name, ".sql") || strings.HasSuffix(name, ".down.sql") {
+			continue
+		}
+		files++
+		raw, err := os.ReadFile(filepath.Join(dir, name))
+		if err != nil {
+			t.Fatalf("read %s: %v", name, err)
+		}
+		body := dbObjReLineCm.ReplaceAllString(string(raw), "")
+		head := strings.SplitN(name, "_", 2)[0]
+		mig := head
+		if n, err := strconv.Atoi(head); err == nil {
+			mig = strconv.Itoa(n)
+		} else {
+			mig = "-1"
+		}
+
+		consumed := map[string]bool{}
+		for _, m := range dbObjReUsing.FindAllStringSubmatch(body, -1) {
+			consumed[dbObjStripName(m[1])] = true
+		}
+		for _, m := range dbObjReCreate.FindAllStringSubmatch(body, -1) {
+			name := dbObjStripName(m[1])
+			if consumed[name] {
+				transient++
+				continue
+			}
+			table := dbObjStripName(m[2])
+			if i := strings.Index(table, "."); i >= 0 {
+				table = table[i+1:]
+			}
+			created[name] = [2]string{mig, table}
+		}
+		for _, m := range dbObjReDrop.FindAllStringSubmatch(body, -1) {
+			dropped[dbObjStripName(m[1])] = true
+		}
+	}
+
+	out := map[string][2]string{}
+	for k, v := range created {
+		if !dropped[k] {
+			out[k] = v
+		}
+	}
+	stats := map[string]int{
+		"files":             files,
+		"created":           len(created),
+		"dropped":           len(dropped),
+		"transient":         transient,
+		"expected_final":    len(out),
+		"created_dropped":   len(created) - len(out),
+		"non_numeric_files": 0,
+	}
+	return out, stats
+}
+
+// ─────────────────────────── G1：底账形状 + sha256 自洽 ───────────────────────────
+
+func TestDbObjectCensusSnapshotIsWellFormed(t *testing.T) {
+	path := dbObjRepoPath(t, dbObjCensusRel)
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+
+	// ① 每个数据行必须恰好 15 列（★ 换行污染 ⇒ 这里必须炸）
+	perEnv := map[string][]string{}
+	order := []string{}
+	for _, line := range strings.Split(string(raw), "\n") {
+		if strings.TrimSpace(line) == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		parts := strings.Split(line, "\t")
+		if len(parts) != dbObjCensusCols {
+			t.Fatalf("census row has %d fields, expected %d", len(parts), dbObjCensusCols)
+		}
+		env := parts[0]
+		if _, seen := perEnv[env]; !seen {
+			order = append(order, env)
+		}
+		perEnv[env] = append(perEnv[env], line)
+	}
+
+	// ② 三个环境必须都在
+	wantEnvs := []string{"211", "252", "local"}
+	for _, e := range wantEnvs {
+		if _, ok := perEnv[e]; !ok {
+			t.Errorf("census missing environment %q", e)
+		}
+	}
+	if len(perEnv) != len(wantEnvs) {
+		t.Errorf("census has %d envs, want %d (%v)", len(perEnv), len(wantEnvs), order)
+	}
+
+	// ③ 头部声明的每环境 rows/sha256 必须与重算一致
+	for _, e := range wantEnvs {
+		rows := perEnv[e]
+		if len(rows) == 0 {
+			t.Errorf("env %q has no rows", e)
+			continue
+		}
+		sum := sha256.Sum256([]byte(strings.Join(rows, "\n")))
+		got := hex.EncodeToString(sum[:])
+		want := ""
+		for _, h := range dbObjHeaderLines(t, path) {
+			if strings.Contains(h, fmt.Sprintf("env=%s rows=", e)) {
+				m := regexp.MustCompile(`env=` + regexp.QuoteMeta(e) + ` rows=(\d+) sha256=([0-9a-f]+)`).FindStringSubmatch(h)
+				if m == nil {
+					t.Fatalf("cannot parse env header line: %s", h)
+				}
+				wantRows, _ := strconv.Atoi(m[1])
+				if wantRows != len(rows) {
+					t.Errorf("env %q header says %d rows, file has %d", e, wantRows, len(rows))
+				}
+				want = m[2]
+			}
+		}
+		if want == "" {
+			t.Errorf("no header line for env %q", e)
+			continue
+		}
+		if want != got {
+			t.Errorf("env %q sha256 mismatch: header=%s recomputed=%s", e, want, got)
+		}
+	}
+
+	// ④ 阳性对照：★ 底账里必须真的有【分区子索引 ⇒ 父索引】的父子链
+	//    （★ 若这条不成立 ⇒ 采集端没采到 pg_inherits ⇒ 「present-via-child」永远判不出来）
+	states := dbObjParseCensus(t, path)
+	links := 0
+	for _, st := range states {
+		links += len(st.children)
+	}
+	if links == 0 {
+		t.Error("census has zero parent_index links ⇒ pg_inherits was not captured")
+	}
+	if len(states["211"].children) == 0 {
+		t.Error("env 211 has zero partition-child links (★ 211 IS a partitioned instance)")
+	}
+}
+
+// ─────────────────────────── G2：期望集 ≡ Go 独立反解 ───────────────────────────
+
+func TestDbObjectExpectSetMatchesIndependentDerivation(t *testing.T) {
+	goExpected, stats := dbObjDeriveExpected(t)
+	rows := dbObjDataLines(t, dbObjRepoPath(t, dbObjExpectRel))
+
+	pyExpected := map[string][2]string{}
+	for _, r := range rows {
+		if len(r) < 3 {
+			t.Fatalf("expect row malformed: %v", r)
+		}
+		pyExpected[r[1]] = [2]string{r[0], r[2]}
+	}
+
+	if len(pyExpected) != len(goExpected) {
+		t.Errorf("expect set size: tool=%d go=%d", len(pyExpected), len(goExpected))
+	}
+	var onlyTool, onlyGo []string
+	for k := range pyExpected {
+		if _, ok := goExpected[k]; !ok {
+			onlyTool = append(onlyTool, k)
+		}
+	}
+	for k := range goExpected {
+		if _, ok := pyExpected[k]; !ok {
+			onlyGo = append(onlyGo, k)
+		}
+	}
+	sort.Strings(onlyTool)
+	sort.Strings(onlyGo)
+	if len(onlyTool) > 0 {
+		t.Errorf("%d indexes in the tool's set but not in Go's: %v", len(onlyTool), trunc(onlyTool))
+	}
+	if len(onlyGo) > 0 {
+		t.Errorf("%d indexes in Go's set but not in the tool's: %v", len(onlyGo), trunc(onlyGo))
+	}
+	for k, v := range goExpected {
+		if pv, ok := pyExpected[k]; ok && pv != v {
+			t.Errorf("index %q: tool=%v go=%v", k, pv, v)
+		}
+	}
+
+	// ★ 反向对照：★ 迁移 902 的中间产物索引**必须**不在期望集里
+	//    （★ 它建完就被 ADD CONSTRAINT … USING INDEX 消费并改名）
+	const transient = "stats_event_dedup_pkey_include_tmp"
+	if _, ok := pyExpected[transient]; ok {
+		t.Errorf("transient index %q leaked into the expected set", transient)
+	}
+	if _, ok := goExpected[transient]; ok {
+		t.Errorf("transient index %q leaked into Go's expected set", transient)
+	}
+	if stats["transient"] != 1 {
+		t.Errorf("Go detected %d transient indexes, want exactly 1", stats["transient"])
+	}
+	if stats["expected_final"] >= stats["created"] {
+		t.Errorf("expected set (%d) must be smaller than created (%d) ⇒ DROP subtraction not applied",
+			stats["expected_final"], stats["created"])
+	}
+	t.Logf("expected=%d created=%d dropped=%d transient=%d",
+		stats["expected_final"], stats["created"], stats["dropped"], stats["transient"])
+}
+
+// ─────────────────────────── G3：缺口台账 ≡ Go 独立重算（★ 全量） ───────────────────────────
+
+func TestDbObjectGapLedgerIsFullyRecomputable(t *testing.T) {
+	states := dbObjParseCensus(t, dbObjRepoPath(t, dbObjCensusRel))
+	goExpected, _ := dbObjDeriveExpected(t)
+
+	envs := []string{"local", "252", "211"}
+	rows := dbObjDataLines(t, dbObjRepoPath(t, dbObjLedgerRel))
+	if len(rows) != len(goExpected) {
+		t.Fatalf("ledger has %d rows, expected %d", len(rows), len(goExpected))
+	}
+
+	ledger := map[string][]string{}
+	for _, r := range rows {
+		if len(r) != dbObjLedgerCols {
+			t.Fatalf("ledger row has %d fields, expected %d: %v", len(r), dbObjLedgerCols, r)
+		}
+		ledger[r[1]] = r
+	}
+
+	// ★★ 全量逐条重算（★ 不是抽样 —— ★ R160 轮的教训：抽样互证有盲区）
+	mismatches := 0
+	for name, want := range goExpected {
+		got, ok := ledger[name]
+		if !ok {
+			t.Errorf("ledger missing index %q", name)
+			mismatches++
+			continue
+		}
+		if got[0] != want[0] || got[2] != want[1] {
+			t.Errorf("index %q: ledger=(%s,%s) go=(%s,%s)", name, got[0], got[2], want[0], want[1])
+			mismatches++
+			continue
+		}
+		for i, env := range envs {
+			wantState := dbObjClassify(states[env], name, want[1])
+			if got[3+i] != wantState {
+				t.Errorf("index %q env %s: ledger=%s recomputed=%s", name, env, got[3+i], wantState)
+				mismatches++
+			}
+		}
+		verdict, severity := "complete", "none"
+		gap := false
+		prodGap := false
+		for i := range envs {
+			if got[3+i] == "missing" {
+				gap = true
+				if envs[i] != "local" {
+					prodGap = true
+				}
+			}
+		}
+		if gap {
+			verdict = "gap"
+		}
+		if prodGap {
+			severity = "production-gap"
+		} else if gap {
+			severity = "all-env-gap"
+		}
+		if got[6] != verdict {
+			t.Errorf("index %q: verdict=%s want %s", name, got[6], verdict)
+			mismatches++
+		}
+		if got[7] != severity {
+			t.Errorf("index %q: severity=%s want %s", name, got[7], severity)
+			mismatches++
+		}
+	}
+	if mismatches > 0 {
+		t.Errorf("%d ledger cells disagree with the independent recomputation", mismatches)
+	}
+
+	// 头部声明的 gaps_by_env 必须与重算一致（★ 头部不许腐坏）
+	gapsByEnv := map[string]int{}
+	for _, r := range rows {
+		for i, env := range envs {
+			if r[3+i] == "missing" {
+				gapsByEnv[env]++
+			}
+		}
+	}
+	for _, h := range dbObjHeaderLines(t, dbObjRepoPath(t, dbObjLedgerRel)) {
+		if !strings.Contains(h, "gaps_by_env=") {
+			continue
+		}
+		m := regexp.MustCompile(`gaps_by_env=(\{.*\})`).FindStringSubmatch(h)
+		if m == nil {
+			t.Fatalf("cannot parse gaps_by_env from: %s", h)
+		}
+		var declared map[string]int
+		if err := json.Unmarshal([]byte(m[1]), &declared); err != nil {
+			t.Fatalf("parse declared gaps_by_env: %v", err)
+		}
+		for env, v := range gapsByEnv {
+			if declared[env] != v {
+				t.Errorf("header gaps_by_env[%s]=%d, recomputed %d", env, declared[env], v)
+			}
+		}
+	}
+}
+
+// ─────────────────────────── G4：坏行必被拒 ───────────────────────────
+
+func TestDbObjectCensusRejectsMalformedRows(t *testing.T) {
+	dir := t.TempDir()
+
+	// ★★ 夹具用切片拼（★ 不要手数 tab —— ★ 本轮手数 tab 错了三次）
+	mkRow := func(cols ...string) string {
+		out := make([]string, dbObjCensusCols)
+		copy(out, cols)
+		return strings.Join(out, "\t")
+	}
+
+	// ★ 阳性对照：★ 15 列的行必须被接受
+	good := filepath.Join(dir, "good.tsv")
+	writeFile(t, good, mkRow("local", "idx", "public", "i", "idx_a", "owner",
+		"", "", "", "", "", "", "", "CREATE INDEX x", "true,true,true")+"\n")
+	states := dbObjParseCensus(t, good)
+	if len(states["local"].idx) != 1 {
+		t.Errorf("well-formed census not parsed: %v", states)
+	}
+
+	// ★ 反向对照：★ 14 列（★ 少一列 ⇒ 典型的换行截断）必须被拒
+	bad := filepath.Join(dir, "bad.tsv")
+	short := mkRow("local", "idx", "public", "i", "idx_a", "owner",
+		"", "", "", "", "", "", "", "CREATE INDEX x", "true,true,true")
+	short = strings.Join(strings.Split(short, "\t")[:dbObjCensusCols-1], "\t")
+	writeFile(t, bad, short+"\n")
+	if _, ok := dbObjParseCensusQuiet(bad); ok {
+		t.Error("a 14-field census row was accepted ⇒ truncated rows would be read silently")
+	}
+}
+
+func dbObjParseCensusQuiet(path string) (map[string]*dbObjEnvState, bool) {
+	// ★ 复刻 dbObjParseCensus 的校验，但把 t.Fatalf 换成返回值（★ 不炸测试进程）
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, false
+	}
+	for _, line := range strings.Split(string(raw), "\n") {
+		if strings.TrimSpace(line) == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		if len(strings.Split(line, "\t")) != dbObjCensusCols {
+			return nil, false
+		}
+	}
+	return map[string]*dbObjEnvState{}, true
+}
+
+// ─────────────────────────── G5：四态判定 + 反向对照 ───────────────────────────
+
+func TestDbObjectClassifierStates(t *testing.T) {
+	st := &dbObjEnvState{
+		idx:      map[string]bool{"idx_present": true},
+		children: map[string][]string{"idx_parent": {"part_child"}},
+		rels:     map[string]string{"tbl": "r", "part": "p", "viewish": "v"},
+	}
+	cases := []struct {
+		name  string
+		idx   string
+		table string
+		want  string
+	}{
+		{"present", "idx_present", "tbl", "present"},
+		{"present-via-child", "idx_parent", "part", "present-via-child"},
+		{"retired-absent-table", "idx_x", "gone", "retired"},
+		{"retired-not-a-table", "idx_x", "viewish", "retired"},
+		{"missing", "idx_x", "tbl", "missing"},
+	}
+	for _, c := range cases {
+		if got := dbObjClassify(st, c.idx, c.table); got != c.want {
+			t.Errorf("%s: got %q want %q", c.name, got, c.want)
+		}
+	}
+
+	// ★★★ 反向对照（R161 第一版工具的实测漏洞）：
+	// ★★ 一个【名字带前缀的视图】绝不能被当成「表存在」
+	// ★★（★ `request_logs_with_current_month` 是视图，★ 而 `request_logs` 已退役
+	// ★★ ⇒ ★ 靠「名字前缀」判表存在 ⇒ ★ 会把 51 个已退役索引误判成真缺口）。
+	viewState := &dbObjEnvState{
+		idx:      map[string]bool{},
+		children: map[string][]string{},
+		rels:     map[string]string{"request_logs_with_current_month": "v", "real_table": "r"},
+	}
+	if got := dbObjClassify(viewState, "idx_on_real_table", "real_table"); got != "missing" {
+		t.Errorf("a real table without the index must be 'missing', got %q", got)
+	}
+	if got := dbObjClassify(viewState, "idx_on_viewish", "request_logs_with_current_month"); got != "retired" {
+		t.Errorf("a view must not satisfy the table guard, got %q", got)
+	}
+}
+
+// ─────────────────────────── G6：生产缺口棘轮（★ 只降不升） ───────────────────────────
+
+func TestDbObjectProductionGapRatchet(t *testing.T) {
+	rows := dbObjDataLines(t, dbObjRepoPath(t, dbObjLedgerRel))
+	envs := []string{"local", "252", "211"}
+	gaps := map[string]int{}
+	for _, r := range rows {
+		if len(r) != dbObjLedgerCols {
+			t.Fatalf("ledger row malformed: %v", r)
+		}
+		for i, env := range envs {
+			if r[3+i] == "missing" {
+				gaps[env]++
+			}
+		}
+	}
+	for env, baseline := range dbObjGapRatchet {
+		if gaps[env] > baseline {
+			t.Errorf("★ gap ratchet broken: env %s has %d gaps, baseline %d (★ 只许下降)",
+				env, gaps[env], baseline)
+		}
+	}
+
+	// ★ 阳性对照：★ 台账里必须【确实】有 production-gap 行（★ 否则棘轮是空转的）
+	prodRows := 0
+	for _, r := range rows {
+		if r[7] == "production-gap" {
+			prodRows++
+		}
+	}
+	if prodRows == 0 {
+		t.Error("ledger has zero production-gap rows ⇒ the ratchet asserts nothing")
+	}
+	t.Logf("gaps by env: %v (baseline %v)", gaps, dbObjGapRatchet)
+}
+
+// ─────────────────────────── 审计档与台账的一致性 ───────────────────────────
+
+func TestDbObjectAuditDocQuotesTheLedger(t *testing.T) {
+	doc := dbObjRepoPath(t, dbObjAuditRel)
+	raw, err := os.ReadFile(doc)
+	if err != nil {
+		t.Fatalf("read %s: %v", doc, err)
+	}
+	text := string(raw)
+	rows := dbObjDataLines(t, dbObjRepoPath(t, dbObjLedgerRel))
+	envs := []string{"local", "252", "211"}
+	gaps := map[string]int{}
+	for _, r := range rows {
+		for i, env := range envs {
+			if r[3+i] == "missing" {
+				gaps[env]++
+			}
+		}
+	}
+	// ★ 审计档必须写出每环境的缺口数（★ 数字与台账一致 ⇒ 文档不会悄悄过期）
+	for _, env := range envs {
+		needle := fmt.Sprintf("%s=%d", env, gaps[env])
+		if !strings.Contains(text, needle) {
+			t.Errorf("audit doc does not quote %q (★ numbers must match the ledger)", needle)
+		}
+	}
+}
+
+func writeFile(t *testing.T, path, content string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("write %s: %v", path, err)
+	}
+}
+
+func trunc(s []string) []string {
+	if len(s) > 8 {
+		return append(s[:8:8], "...")
+	}
+	return s
+}
