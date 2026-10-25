@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -111,6 +112,28 @@ func TestCredentialProbeRejectsIncompleteOrOversizedBody(t *testing.T) {
 	}
 }
 
+// credentialProbeObservationSQLPattern pins the **exact** SET list of the
+// observation write.
+//
+// ★★ 2026-10-27（R152 轮 · D9c）：这条正则的**本意是负面守卫** ——
+// 「SET 与 WHERE 之间塞不进任何权威列」⇒ ⇒ 所以它必须**逐项枚举** SET，
+// 而不是用一段宽松的 `.*` 容忍任意列。
+//
+// ⇒ ⇒ D9c 往 SET 里加了 `probe_consecutive_failures`（**节奏**列，
+// **非**权威列：它只驱动 auth 退避阶梯与 quota 探针 due 门；健康结论走
+// `health_status` / `availability_state` / `state_reason_code`，而
+// ObservationOnly 路径整条跳过那个写入）⇒ ⇒ 夹具必须**跟着枚举**，
+// **不是放宽** —— 放宽就等于把守卫拆了。
+//
+// ⇒ ⇒ ★★ 下面配一条**阴性对照**（把权威列塞回 SET ⇒ 必须仍然拒绝）
+// ⇒ ⇒ 否则这条夹具会退化成「恒绿门」（R152 教训：门绿 ≠ 事实成立）。
+var credentialProbeObservationSQLPattern = regexp.MustCompile(
+	`(?s)^UPDATE credentials\s+SET last_probe_at = NOW\(\), last_probe_success = FALSE,\s+` +
+		`probe_consecutive_failures = COALESCE\(probe_consecutive_failures, 0\) \+ 1\s+` +
+		`WHERE id = \$1 AND COALESCE\(manual_disabled, FALSE\) = FALSE\s+` +
+		`AND \(lifecycle_status = 'active' OR\s+` +
+		`\(lifecycle_status = 'disabled' AND auto_disabled_at IS NOT NULL\)\)$`)
+
 func TestCredentialProbeObservationOnlyWritesCadence(t *testing.T) {
 	mock, err := pgxmock.NewPool()
 	if err != nil {
@@ -118,13 +141,68 @@ func TestCredentialProbeObservationOnlyWritesCadence(t *testing.T) {
 	}
 	defer mock.Close()
 	// An authority-column write cannot fit between this SET and WHERE.
-	mock.ExpectExec(`(?s)^UPDATE credentials\s+SET last_probe_at = NOW\(\), last_probe_success = FALSE\s+WHERE id = \$1 AND COALESCE\(manual_disabled, FALSE\) = FALSE\s+AND \(lifecycle_status = 'active' OR\s+\(lifecycle_status = 'disabled' AND auto_disabled_at IS NOT NULL\)\)$`).
+	mock.ExpectExec(credentialProbeObservationSQLPattern.String()).
 		WithArgs(61).WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 	if _, err := writeCredentialProbeObservation(t.Context(), mock, 61); err != nil {
 		t.Fatal(err)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// ★★ 阴性对照：把权威列塞回 observation 的 SET ⇒ 守卫必须**仍然拒绝**。
+//
+// 这条对照的存在理由：夹具是正则，而正则会随实现改动而**过期**
+// （R152 实测：D9c 加一列 ⇒ 夹具红 ⇒ 若当时图省事把正则放宽成 `.*`，
+// 这条守卫就永久失效了，且**没有任何门会再报**）。
+// ⇒ ⇒ 每次改动 observation 的 SET，都必须同时更新枚举**并**跑过这条对照。
+//
+// ⚠ 注入点必须落在守卫**真正守的那道缝**上：
+// 原注释说的是「SET 与 WHERE **之间**塞不进权威列」⇒ ⇒ 权威列要插在
+// **紧邻 WHERE 之前**（否则「`last_probe_success = FALSE` 紧邻」这一段
+// 会单独兜底，对照就变成测别的东西 —— R152 教训：半截变异测的是别的）。
+// ⇒ ⇒ 两个注入点都保留：① WHERE 之前（主缝）② SET 开头（次缝）。
+func TestCredentialProbeObservationGuardRejectsAuthorityColumns(t *testing.T) {
+	// 权威列清单取自 credential_probe_v2.go 的权威写入 SET
+	// （health / availability / quota / lifecycle / state_reason 族）。
+	authorityColumns := []string{
+		"health_status = 'healthy'",
+		"health_source = 'probe'",
+		"availability_state = 'ready'",
+		"quota_state = 'ok'",
+		"state_reason_code = 'probe_ok'",
+		"lifecycle_status = 'active'",
+	}
+	// ① 主缝：紧邻 WHERE 之前 —— 「SET 与 WHERE 之间」。
+	seams := []struct {
+		name  string
+		apply func(string) string
+	}{
+		{"before-where", func(sql string) string {
+			return strings.Replace(sql, "\nWHERE id = $1", ",\n    INJECT\nWHERE id = $1", 1)
+		}},
+		{"after-set-head", func(sql string) string {
+			return strings.Replace(sql, "SET last_probe_at = NOW(), ", "SET last_probe_at = NOW(), "+"INJECT"+", ", 1)
+		}},
+	}
+	for _, seam := range seams {
+		for _, injected := range authorityColumns {
+			t.Run(seam.name+"/"+injected, func(t *testing.T) {
+				mutated := seam.apply(credentialProbeObservationSQL)
+				mutated = strings.Replace(mutated, "INJECT", injected, 1)
+				if mutated == credentialProbeObservationSQL {
+					t.Fatal("mutation did not apply")
+				}
+				if credentialProbeObservationSQLPattern.MatchString(mutated) {
+					t.Fatalf("guard accepted an authority-column write: %q", mutated)
+				}
+			})
+		}
+	}
+	// 阳性对照：未改动的真实 SQL 必须匹配（否则阴性对照是恒真的废话）。
+	if !credentialProbeObservationSQLPattern.MatchString(credentialProbeObservationSQL) {
+		t.Fatal("guard does not accept the real observation SQL")
 	}
 }
 

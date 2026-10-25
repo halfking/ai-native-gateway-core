@@ -15,7 +15,7 @@ import (
 
 func responseValidationWorker(t *testing.T, server *httptest.Server, protocol string) *NodeProbeWorker {
 	t.Helper()
-	w := NewNodeProbeWorker(nil, nil, nil, "test-key", server.URL+"/v1", nil)
+	w := NewNodeProbeWorker(nil, nil, nil, "test-key", server.URL+"/v1", nil, 0)
 	w.auditDB = nil // avoid a typed nil pool inside the optional audit interface
 	w.client, w.probeClient = server.Client(), server.Client()
 	w.resolveDirectTargetFn = func(context.Context, int, string) (string, string, string, string, int, error) {
@@ -27,7 +27,7 @@ func responseValidationWorker(t *testing.T, server *httptest.Server, protocol st
 func TestNodeProbeSyncReuseObservationDoesNotUseOldHealthyCache(t *testing.T) {
 	for _, observation := range []bool{true, false} {
 		t.Run(fmt.Sprintf("observation-%v", observation), func(t *testing.T) {
-			w := NewNodeProbeWorker(nil, nil, nil, "", "", nil)
+			w := NewNodeProbeWorker(nil, nil, nil, "", "", nil, 0)
 			state := newFakeStateProvider()
 			state.setAvailable(1, "test", true)
 			w.stateProvider = state
@@ -83,7 +83,7 @@ func TestNodeProbeSyncInconclusiveDoesNotWriteHealth(t *testing.T) {
 
 func TestNodeProbeConfirmInconclusiveIsNotConfirmedFailure(t *testing.T) {
 	for _, firstInconclusive := range []bool{true, false} {
-		w := NewNodeProbeWorker(nil, nil, nil, "", "", nil)
+		w := NewNodeProbeWorker(nil, nil, nil, "", "", nil, 0)
 		calls := 0
 		w.probeConfirmRound = func(context.Context, int, string) nodeProbeRoundResult {
 			calls++
@@ -192,7 +192,7 @@ func TestNodeProbeUnreadableBodyPreservesHTTPFailure(t *testing.T) {
 						}
 						return &http.Response{StatusCode: status, Body: io.NopCloser(body), Header: make(http.Header)}, nil
 					})}
-					w := NewNodeProbeWorker(nil, nil, nil, "test-key", "https://provider.invalid", nil)
+					w := NewNodeProbeWorker(nil, nil, nil, "test-key", "https://provider.invalid", nil, 0)
 					w.client, w.probeClient = client, client
 					w.resolveDirectTargetFn = func(context.Context, int, string) (string, string, string, string, int, error) {
 						return "test-key", "test-model", "https://provider.invalid", protocol, 7, nil

@@ -461,7 +461,29 @@ func stripShellComments(src string) string {
 						j = len(line) - 1 // 未配平（截断的输入）⇒ 夹住
 					}
 					b.WriteString("$(")
-					b.WriteString(stripShellComments(line[i+2 : j]))
+					// ★★ 2026-10-25（R152 轮）补的**下界夹持**：
+					//
+					//	`$(` 出现在**行尾**时（多行命令替换的常规写法：
+					//	`GIT_TAG=$(` / 换行 / `git describe …` / `)`）
+					//	⇒ i+2 已经越过行尾 ⇒ `line[i+2 : j]` **越界** ⇒ **panic**。
+					//
+					//	★ 这个 panic 是**真实存在的**：R152 轮把扫描面从 4 棵目录扩到
+					//	全仓 `scripts/`+`deploy/` 时立刻踩到（仓内 9+ 个脚本用多行
+					//	命令替换）。★ 它之前没炸，是因为**没有任何一道门扫到那些脚本**
+					//	⇒ ⇒ ★★ **「没炸」是「没被扫到」，不是「没问题」**。
+					//
+					//	⇒ 下面把切片两端都夹住：start ≤ j ≤ len(line)。
+					start := i + 2
+					if start > len(line) {
+						start = len(line)
+					}
+					if j < start {
+						j = start
+					}
+					if j > len(line) {
+						j = len(line)
+					}
+					b.WriteString(stripShellComments(line[start:j]))
 					b.WriteString(")")
 					i = j
 				}

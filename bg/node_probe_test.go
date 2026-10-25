@@ -118,7 +118,7 @@ func TestNodeProbeMaxAttemptsRearmsFreshFailure(t *testing.T) {
 
 func TestNodeProbeDefaultsToLoopbackGateway(t *testing.T) {
 	t.Setenv("LLM_GATEWAY_NODE_PROBE_BASE_URL", "")
-	w := NewNodeProbeWorker(nil, nil, nil, "", "", nil)
+	w := NewNodeProbeWorker(nil, nil, nil, "", "", nil, 0)
 	if w.baseURL != "http://127.0.0.1:8781/v1" {
 		t.Fatalf("base URL = %q, want loopback gateway", w.baseURL)
 	}

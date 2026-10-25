@@ -107,14 +107,14 @@ scripts/health-check-154.sh	138	check_api_health	var-write	judgment	scalar	safe-
 scripts/init-deploy-record.sh	86	detect_frontend_changes	var-write	bare	bulk	real-defect-candidate	head	discarded	echo "$fe_changes" | head -30 > "$RECORD_DIR/verify/frontend-changes.txt"
 scripts/local-deploy-test.sh	640	verify_l1_health	var-write	bare	scalar	safe-single-line	head	discarded	echo "    body: $(echo "$body" | head -c 200)"
 scripts/local-deploy-test.sh	820	run_smoke_script	var-write	bare	scalar	safe-single-line	head	discarded	fail "smoke: v1 models 响应异常: $(echo "$mbody" | head -c 120)"
-scripts/local-models/modelctl.sh	51	is_running	var-write	bare	bulk	real-defect-candidate	grep-q	discarded	echo "$body" | grep -qE '"(data|object|id)"'
+scripts/local-models/modelctl.sh	54	is_running	var-write	bare	bulk	real-defect-candidate	grep-q	discarded	echo "$body" | grep -qE '"(data|object|id)"'
 scripts/local-r112-smoke.sh	49	check	var-write	judgment	unknown	needs-human-read	grep-q	consumed	if echo "$out" | grep -q "$expected"; then
 scripts/local-r112-smoke.sh	54	check	var-write	bare	unknown	needs-human-read	head	discarded	echo "    actual: $(echo "$out" | head -3 | tr '\n' ' ' | cut -c1-200)"
 scripts/local-r112-smoke.sh	59	check	var-write	bare	unknown	needs-human-read	head	discarded	echo "    output: $(echo "$out" | head -3 | tr '\n' ' ' | cut -c1-200)"
 scripts/pre-commit-check.sh	81	run_check	var-write	bare	unknown	needs-human-read	head	discarded	echo "$out" | head -10 | sed 's/^/         /'
-scripts/rollback-154.sh	239	verify_rollback	var-write	judgment	scalar	safe-single-line	grep-q	consumed	if [[ -n "$health" ]] && echo "$health" | grep -q "healthy"; then
-scripts/rollback-154.sh	319	select_backup	var-write	bare	scalar	safe-single-line	head	discarded	echo "$backups" | head -1
-scripts/rollback-154.sh	97	check_backup_exists	var-write	value	scalar	safe-single-line	head	consumed	local latest_backup=$(echo "$backups" | head -1)
+scripts/rollback-154.sh	100	check_backup_exists	var-write	value	scalar	safe-single-line	head	consumed	local latest_backup=$(echo "$backups" | head -1)
+scripts/rollback-154.sh	242	verify_rollback	var-write	judgment	scalar	safe-single-line	grep-q	consumed	if [[ -n "$health" ]] && echo "$health" | grep -q "healthy"; then
+scripts/rollback-154.sh	322	select_backup	var-write	bare	scalar	safe-single-line	head	discarded	echo "$backups" | head -1
 scripts/sanitize-e2e-154.sh	110	run_scenario	var-write	judgment	unknown	needs-human-read	grep-q	consumed	if printf '%s' "$cb" | grep -q 'SENSITIVE:'; then
 scripts/sanitize-e2e-154.sh	112	run_scenario	var-write	bare	unknown	needs-human-read	head	discarded	note "$(printf '%s' "$cb" | head -c 200)"
 scripts/sanitize-e2e-154.sh	123	run_scenario	var-write	judgment	unknown	needs-human-read	grep-q	consumed	if printf '%s' "$cb" | grep -qF "$v"; then leaked="$leaked $v"; fi
@@ -129,14 +129,14 @@ scripts/sanitize-e2e-154.sh	78	run_scenario	var-write	bare	unknown	needs-human-r
 scripts/sanitize-e2e-154.sh	87	run_scenario	var-write	judgment	unknown	needs-human-read	grep-q	consumed	if printf '%s' "$c2" | grep -q 'SENSITIVE:'; then
 scripts/sanitize-e2e-154.sh	89	run_scenario	var-write	bare	unknown	needs-human-read	head	discarded	note "$(printf '%s' "$c2" | head -c 200)"
 scripts/sanitize-e2e-154.sh	93	run_scenario	var-write	judgment	unknown	needs-human-read	grep-q	consumed	if printf '%s' "$c2" | grep -q "$a_phone"; then
-scripts/scan-secrets.sh	196	record_finding	var-write	judgment	scalar	safe-single-line	head	discarded	[[ "$ln" != "0" ]] && echo "    $(echo "$content" | head -c 200)"
-scripts/scan-secrets.sh	220	scan_file	var-write	judgment	scalar	safe-single-line	grep-q	consumed	if echo "$base" | grep -qiE -e "${RULES_PATTERN[$i]}" 2>/dev/null; then
-scripts/scan-secrets.sh	254	scan_file	var-write	judgment	scalar	safe-single-line	grep-q	consumed	if echo "$content" | grep -qiE -e "$wl" 2>/dev/null; then whitelisted=1; break; fi
-scripts/scan-secrets.sh	262	scan_file	var-write	judgment	scalar	safe-single-line	grep-q	consumed	if echo "$content" | grep -qiE -e "${RULES_PATTERN[$i]}" 2>/dev/null; then
-scripts/scan-secrets.sh	299	is_sops_envelope	var-write	bare	bulk	real-defect-candidate	grep-q	consumed	echo "$head" | grep -Eq '^[[:space:]]*"(data|sops)":' || return 1
-scripts/scan-secrets.sh	300	is_sops_envelope	var-write	bare	bulk	real-defect-candidate	grep-q	consumed	echo "$head" | grep -Eq '\bENC\[' || return 1
-scripts/scan-secrets.sh	301	is_sops_envelope	var-write	bare	bulk	real-defect-candidate	grep-q	consumed	echo "$head" | grep -Eq '^[[:space:]]*"(mac|lastmodified|version)":' || return 1
-scripts/scan-secrets.sh	302	is_sops_envelope	var-write	bare	bulk	real-defect-candidate	grep-q	consumed	echo "$head" | grep -Eq '^[[:space:]]*"(age|pgp|kms)":' || return 1
+scripts/scan-secrets.sh	199	record_finding	var-write	judgment	scalar	safe-single-line	head	discarded	[[ "$ln" != "0" ]] && echo "    $(echo "$content" | head -c 200)"
+scripts/scan-secrets.sh	223	scan_file	var-write	judgment	scalar	safe-single-line	grep-q	consumed	if echo "$base" | grep -qiE -e "${RULES_PATTERN[$i]}" 2>/dev/null; then
+scripts/scan-secrets.sh	257	scan_file	var-write	judgment	scalar	safe-single-line	grep-q	consumed	if echo "$content" | grep -qiE -e "$wl" 2>/dev/null; then whitelisted=1; break; fi
+scripts/scan-secrets.sh	265	scan_file	var-write	judgment	scalar	safe-single-line	grep-q	consumed	if echo "$content" | grep -qiE -e "${RULES_PATTERN[$i]}" 2>/dev/null; then
+scripts/scan-secrets.sh	302	is_sops_envelope	var-write	bare	bulk	real-defect-candidate	grep-q	consumed	echo "$head" | grep -Eq '^[[:space:]]*"(data|sops)":' || return 1
+scripts/scan-secrets.sh	303	is_sops_envelope	var-write	bare	bulk	real-defect-candidate	grep-q	consumed	echo "$head" | grep -Eq '\bENC\[' || return 1
+scripts/scan-secrets.sh	304	is_sops_envelope	var-write	bare	bulk	real-defect-candidate	grep-q	consumed	echo "$head" | grep -Eq '^[[:space:]]*"(mac|lastmodified|version)":' || return 1
+scripts/scan-secrets.sh	305	is_sops_envelope	var-write	bare	bulk	real-defect-candidate	grep-q	consumed	echo "$head" | grep -Eq '^[[:space:]]*"(age|pgp|kms)":' || return 1
 scripts/test-e2e-bodies.sh	104	test_e2e_001	var-write	judgment	scalar	safe-single-line	grep-q	consumed	if echo "$API_RESPONSE" | grep -q "request_id"; then
 scripts/test-e2e-bodies.sh	192	test_perf_001	var-write	judgment	bulk	real-defect-candidate	grep-q	consumed	if echo "$EXPLAIN_OUTPUT" | grep -qi "Index Scan"; then
 scripts/test-runtime-tc.sh	90	tc6	var-write	judgment	unknown	needs-human-read	grep-q	consumed	if echo "$used_cred" | grep -q "^$test_cred_id|"; then

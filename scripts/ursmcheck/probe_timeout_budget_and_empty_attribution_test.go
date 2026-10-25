@@ -94,6 +94,26 @@ func probeTimeoutLooksLikeTimeoutToken(arg string) bool {
 	return false
 }
 
+// probeTimeoutStripCommentLines 去掉**整行注释**后再做子串判定。
+//
+// ★ 为什么需要它（R152 轮实测踩到）：这道门是**文本**判据
+// （`strings.Contains(worker, "Timeout: 30 * time.Second")`）⇒ ⇒ **注释里
+// 引用那个字面量也会被命中** ⇒ ★★ 门把「**历史说明**」判成「**现状**」
+// ⇒ ⇒ 这正是本仓 `sql/schema/shell_bash_compat_gate_test.go` 早就踩过的坑
+// （那里用 `stripShellComments` 解决）⇒ ⇒ ★★ 这里用同样的口径解决：
+// **代码里的字面量才算数，注释里写的历史不算。**
+func probeTimeoutStripCommentLines(src string) string {
+	kept := make([]string, 0, 64)
+	for _, ln := range strings.Split(src, "\n") {
+		t := strings.TrimSpace(ln)
+		if strings.HasPrefix(t, "//") {
+			continue
+		}
+		kept = append(kept, ln)
+	}
+	return strings.Join(kept, "\n")
+}
+
 func TestProbeTimeoutBudgetIsNotSharedWithTheConfigurableSetting(t *testing.T) {
 	root := probeTimeoutRepoRoot(t)
 
@@ -112,28 +132,44 @@ func TestProbeTimeoutBudgetIsNotSharedWithTheConfigurableSetting(t *testing.T) {
 		t.Errorf("bg.NewActiveProbeExecutor 的实参里看不到超时量（%s）⇒ error_probe.timeout_ms 的消费者被改动了，请更新本门与审计档", strings.TrimSpace(execArgs))
 	}
 
-	// ② ★ node 探针的构造函数**不得**接收超时参数（当前现状）。
+	// ② ★★ node 探针的构造函数**必须**收到超时参数（D9a 已落地 ⇒ 本条已翻转）。
+	//
+	// ★ 翻转原因：R152 轮实测「只放宽超时**单独**无效」（探针连上了、拿到响应，
+	// 但判定 `probe_response_inconclusive` ⇒ 故意不写回 ⇒ 状态永不改变）
+	// ⇒ ⇒ ★★ **D9a 必须与 D9b（内容预算）一起落地** ⇒ ⇒ ★★ 既然要落地，
+	// 那个 30 s 硬编码**必须**换成设置驱动的值，否则「可配置的超时」仍是空话。
+	seen := false
 	for _, callee := range []string{"bg.NewNodeProbeWorker"} {
 		args, ok := probeTimeoutCallArgs(main, callee)
 		if !ok {
 			continue // 该调用点不存在（例如测试专用构造），跳过
 		}
 		if probeTimeoutLooksLikeTimeoutToken(args) {
-			t.Errorf("%s 的实参里出现了超时量（%s）⇒ ★★ node 探针的超时已被接到 error_probe.timeout_ms 上 ⇒ "+
-				"**D9 已修**：请连同审计档 §R150 与本门一起更新（不要按「回归」处理）", callee, strings.TrimSpace(args))
+			seen = true
 		}
 	}
+	if !seen {
+		t.Errorf("%s 里没有把超时量传给 node 探针的构造函数 ⇒ ★★ node 探针的超时预算"+
+			"又退回「写死」了 ⇒ ① `error_probe.timeout_ms` 对它无效（R150 实测）"+
+			"② ★★ 「健康但慢」的上游会被**反复判死**（R151 实测：30 s 是边缘预算）"+
+			"⇒ 请接回 `settings.ErrorProbeTimeoutMs()`", probeTimeoutMainFile)
+	}
 
-	// ③ node_probe.go 自己的探针客户端仍是**硬编码字面量**（不是读设置）。
+	// ③ ★★ node_probe.go 里**不得**再有 `Timeout: 30 * time.Second` 的硬编码字面量。
 	workerRaw, err := os.ReadFile(filepath.Join(root, probeTimeoutWorkerFile))
 	if err != nil {
 		t.Fatalf("读取 %s 失败: %v", probeTimeoutWorkerFile, err)
 	}
-	worker := string(workerRaw)
-	if !strings.Contains(worker, "Timeout: 30 * time.Second") {
-		t.Errorf("%s 里找不到 `Timeout: 30 * time.Second` 的硬编码字面量 ⇒ "+
-			"node 探针的 30 s 预算的形态变了（可能是被接到设置上 ⇒ D9 已修；也可能是被改成了别的值）⇒ "+
-			"请核对并更新本门与审计档 §R150", probeTimeoutWorkerFile)
+	worker := probeTimeoutStripCommentLines(string(workerRaw))
+	if strings.Contains(worker, "Timeout: 30 * time.Second") {
+		t.Errorf("%s 里仍有 `Timeout: 30 * time.Second` 的硬编码字面量 ⇒ "+
+			"node 探针的超时预算仍**写死** ⇒ `error_probe.timeout_ms` 对它无效 ⇒ "+
+			"请改成由构造实参算出（D9a）", probeTimeoutWorkerFile)
+	}
+	// ③' ★ 默认值必须**显式**留在仓里（而不是藏在某个字面量后面）。
+	if !strings.Contains(worker, "nodeProbeDefaultTimeoutMs") {
+		t.Errorf("%s 里找不到 `nodeProbeDefaultTimeoutMs` ⇒ "+
+			"探针的默认超时预算不再是一个**可审计的具名事实** ⇒ 请显式声明它", probeTimeoutWorkerFile)
 	}
 }
 

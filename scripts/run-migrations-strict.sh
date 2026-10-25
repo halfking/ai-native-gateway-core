@@ -1,6 +1,25 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# ★ R152 轮（2026-10-27）：**版本守卫** —— 本脚本用了 `declare -A`（关联数组，
+# `LEDGER_CHECKSUMS`），它需要 **bash ≥ 4**；而 **macOS 自带的 bash 是 3.2**
+# ⇒ 直接跑会得到一句 cryptic 的 `declare: -A: invalid option`（★ R151 轮在
+# `scripts/repair-252-migration-ledger.sh` 上实测踩到过同一个坑）。
+# ⇒ 在做任何事之前先给出**可执行的**提示，而不是让使用者去猜。
+# ⇒ ★ 与 `repair-252-migration-ledger.sh` 的守卫同款（零行为变化）。
+# ⇒ ⚠ 为什么**不**把它改写成 bash 3.2 兼容：本脚本会**写生产库的迁移台账**
+#   （`repository_schema_migrations`）⇒ ★ 改写它需要真库回归，而它现在的失败形态
+#   **已经是安全的**（响亮拒绝 + 明确指引）⇒ ⇒ 改写的风险大于收益。
+if [[ -z "${BASH_VERSINFO[0]:-}" || "${BASH_VERSINFO[0]}" -lt 4 ]]; then
+  printf '%s\n' \
+    "FATAL: 本脚本需要 bash >= 4（用了 declare -A 关联数组）；当前是 ${BASH_VERSION:-unknown}。" >&2
+  printf '%s\n' \
+    "  macOS 自带 bash 是 3.2 ⇒ 请用 'brew install bash' 后的 /opt/homebrew/bin/bash，" >&2
+  printf '%s\n' \
+    "  或直接在目标主机（Linux）上执行。" >&2
+  exit 64
+fi
+
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 mode="run"
