@@ -35,7 +35,6 @@ export default {
     deleteFailed: 'No se pudo eliminar. Vuelva a intentarlo.',
     operationFailed: 'No se pudo completar la operación. Vuelva a intentarlo.',
     loading: 'Cargando…',
-    noData: 'Todavía no hay contenido que mostrar.',
     unknownReason: 'No se obtuvo el detalle del error',
     saveFailedWithReason: 'No se pudo guardar: {reason}. Vuelva a intentarlo.',
     operationFailedWithReason: 'No se pudo completar la operación: {reason}. Vuelva a intentarlo.',
@@ -48,6 +47,16 @@ export default {
     installFailedWithReason: 'No se pudo instalar: {reason}. Vuelva a intentarlo.',
     batchPricingFailedWithReason: 'No se pudo fijar el precio por lotes: {reason}. Vuelva a intentarlo.',
     batchUpdateFailedWithReason: 'No se pudo actualizar por lotes: {reason}. Vuelva a intentarlo.',
+  },
+  /**
+   * Estados vacíos (2026-10-27 · incremento 14 · «empty state de 5 puntos»).
+   * ★ Aquí solo va el texto de reserva **compartido entre páginas**. Casi todos
+   *   los estados vacíos necesitan una **clave propia** (qué falta exactamente
+   *   + rango de tiempo + siguiente acción útil) ⇒ claves `empty<Kind>` en
+   *   `dashboard.*` / `sessions.*` / `ops.*` / `dataLifecycle.*`.
+   */
+  empty: {
+    noResult: 'No hay registros que mostrar.',
   },
   table: {
     actions: 'Acciones',

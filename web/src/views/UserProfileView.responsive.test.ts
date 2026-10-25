@@ -507,11 +507,15 @@ describe('UserProfileView：跨层契约', () => {
     expect(CODE_ONLY).toContain('title-key="session_id"')
   })
 
-  it('0 新增 i18n 键：只引用 sessions.userProfile.* / common.* / hyper.* 的既有键', () => {
+  it('空态按统计对象分键：三张表各自 firstUse', () => {
     const used = new Set([...CODE_ONLY.matchAll(/t\('([^']+)'/g)].map((m) => m[1]))
     for (const k of used) {
       expect(/^(sessions\.userProfile\.|common\.|hyper\.)/.test(k), `预期词条前缀之外的键：${k}`).toBe(true)
     }
-    expect(used.has('hyper.list.empty'), 'compact 空态复用 hyper.list.empty ⇒ 0 新增键').toBe(true)
+    // ★ 第 14 增量：三张表的空态分别点名各自的统计对象（任务 / 终端用户 / 会话）。
+    expect(used.has('sessions.userProfile.emptyFirstUseTopTasks'), 'top_tasks 空态点名「任务」').toBe(true)
+    expect(used.has('sessions.userProfile.emptyFirstUseTopEndUsers'), 'top_end_users 空态点名「终端用户」').toBe(true)
+    expect(used.has('sessions.userProfile.emptyFirstUseRecentSessions'), 'recent_sessions 空态点名「会话」').toBe(true)
+    expect(used.has('hyper.list.empty'), '通用空态键不许回来').toBe(false)
   })
 })

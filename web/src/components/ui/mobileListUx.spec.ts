@@ -129,8 +129,12 @@ const NON_NAVIGABLE: Array<[string, number, string]> = [
   //   本仓同类改键先例：internal/billguard/month_key_test.go（2026-10-13 :126→:145、
   //   2026-10-17 :91→:243）—— 每次都要在登记处写明原因与行数。
   ['src/views/QualityCorrelationsView.vue', 223, '质量相关性聚合，无单条详情'],
-  ['src/views/UserProfileView.vue', 285, '画像内嵌的 top_tasks（title-key=task_id）：任务名是分组标签，本视图无任务详情页'],
-  ['src/views/UserProfileView.vue', 308, '画像内嵌的 top_end_users（title-key=end_user_id）：画像页本身就是终点，无二级详情'],
+  // ⚠ 行号锚点：2026-10-27 由 285/308 改为 286/309。
+  //   原因：第 14 增量（空状态 5 分）给 UserProfileView.vue 的 `<script>` 文档块
+  //   加了 1 行说明（讲三张表的空态按统计对象分开）⇒ 其后所有行号整体 +1。
+  //   与 QualityCorrelationsView（186→223）、ApprovalListView（451→452）同类。
+  ['src/views/UserProfileView.vue', 286, '画像内嵌的 top_tasks（title-key=task_id）：任务名是分组标签，本视图无任务详情页'],
+  ['src/views/UserProfileView.vue', 309, '画像内嵌的 top_end_users（title-key=end_user_id）：画像页本身就是终点，无二级详情'],
   ['src/views/tenant/MaaSAccountView.vue', 282, '账号内嵌表，无账号详情页'],
   ['src/views/tenant/MaaSUsageView.vue', 354, '用量内嵌表，无用量详情页'],
   ['src/views/tenant/TenantModelsView.vue', 207, '租户模型内嵌表，无详情页'],

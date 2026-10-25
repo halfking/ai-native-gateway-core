@@ -81,7 +81,23 @@ export default {
     distTop: 'TOP {n}',
     distOthers: '其他 {n} 项',
     distDrillHint: '选择错误类型 → 按模型/供应商/客户端下钻',
-    empty: '看板暂时没有数据',
+    /**
+     * 空状态（2026-10-27 第 14 增量 · 空状态 5 分）。
+     * ★ 原来这里只有一个 `empty: '看板暂时没有数据'`，被 6 个**不同**的卡片共用
+     *   （供应商 / 分布排行 / 模型分布 / 趋势图 / 用量表 / 运维看板的两张任务卡）——
+     *   一句话覆盖 6 种语义 ⇒ 用户看到「没有数据」时无法判断是「真没有」「被筛掉了」
+     *   还是「算错了」。⇒ 现在按**页面事实**拆开，kind 写进键名。
+     *   · emptyNoResult* = 无结果（查过了，确实没有）
+     *   · emptyFailed*    = 失败/未知（服务端没给 ⇒ 不能说成「没有」）
+     */
+    emptyNoResultProviders: '所选时段内没有供应商数据。',
+    emptyNoResultDist: '所选时段内没有可排名的数据。',
+    emptyNoResultDrill: '该错误类型下没有失败的请求。',
+    emptyNoResultModelDist: '所选时段内没有模型数据。',
+    emptyNoResultModelTrend: '所选时段内没有模型趋势数据。',
+    emptyNoResultTrend: '所选时段内没有用量趋势数据。',
+    emptyNoResultDiscovery: '模型发现任务还没有运行记录。',
+    emptyNoResultProbe: '探针巡检还没有运行记录。',
     bgTasks: '后台任务',
     discoveryStatus: '模型发现',
     selfcheckTitle: '系统自检',
@@ -133,6 +149,8 @@ export default {
     periodRange: '{start} 至 {end}',
     modelBreakdown: '模型聚合',
     dailyBreakdown: '每日模型明细',
+    /** 空状态：无用量记录（降级态另有 `dataLifecycle.usageCost.degraded.title` 的措辞）。 */
+    emptyNoResult: '所选时段内没有用量记录。',
   },
   stat: {
     totalRequests: '总请求数',
@@ -149,7 +167,6 @@ export default {
     colModel: '模型',
   },
   loading: '加载中…',
-  noData: '该时段暂无数据',
   liveStream: {
     title: '实时请求流',
     controlsAria: '实时请求流控制栏',
@@ -268,6 +285,9 @@ export default {
     costUSD: '费用 (USD)',
     sessionCount: '会话数',
     sessionTrend: '会话趋势',
+    /** 空状态（2026-10-27 第 14 增量）：原来两处都用 `dashboard.noData`（「该时段暂无数据」）。 */
+    emptyNoResultHealthGrade: '所选时段内没有健康度分布数据。',
+    emptyNoResultSessionTrend: '所选时段内没有会话趋势数据。',
   },
   statsRow: {
     totalSessions: '会话总数',

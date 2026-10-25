@@ -62,7 +62,7 @@ function fmtCompact(n: number | undefined) {
     <div v-else-if="modelsDegraded" class="mdist__degraded">
       {{ t('dashboard.board.pieDegraded', { reason: props.board?.degraded_pies?.reason || t('dashboard.board.pieDegradedGeneric') }) }}
     </div>
-    <div v-else-if="!rows.length" class="mdist__empty">{{ t('dashboard.board.empty') }}</div>
+    <div v-else-if="!rows.length" class="mdist__empty">{{ t('dashboard.board.emptyNoResultModelDist') }}</div>
     <div v-else class="mdist__rows">
       <div class="mdist__row mdist__row--th" aria-hidden="true">
         <span class="mdist__name">{{ t('dashboard.table.colModel') }}</span>

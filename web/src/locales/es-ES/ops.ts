@@ -28,6 +28,20 @@ export default {
     viewReviews: 'Ver revisiones',
     showAll: 'Mostrar todo',
     reviewDetail: 'Detalle de la revisión',
+    /**
+     * Estados vacíos (2026-10-27 · incremento 14 · «empty state de 5 puntos»).
+     * ★ Antes las tres tablas compartían una sola frase `hyper.list.empty`
+     *   («La lista todavía no tiene contenido.»), pero son **dos** estados:
+     *   · projects —— usa el array original ⇒ vacío = aún no se creó ningún
+     *     proyecto (FirstUse)
+     *   · sessions / reviews —— usan el array **ya filtrado** ⇒ vacío = quedó
+     *     filtrado (Filtered)
+     *   ⇒ una sola frase para ambos estados equivale a decir «todavía no has
+     *     empezado» y «tus filtros son demasiado estrechos» como si fueran lo mismo.
+     */
+    emptyFirstUseProjects: 'Aún no se ha creado ningún proyecto.',
+    emptyFilteredSessions: 'No hay registros de sesiones con los filtros actuales.',
+    emptyFilteredReviews: 'No hay registros de revisiones de código con los filtros actuales.',
     projectName: 'Nombre del proyecto',
     projectNamePlaceholder: 'Introduzca el nombre del proyecto',
     language: 'Lenguaje',

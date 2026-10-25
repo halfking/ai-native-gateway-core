@@ -26,7 +26,21 @@ export default {
     recentSessions: "Sessions récentes",
     actionDetail: "Détail",
     createdAt: "Créé le",
-    empty: "Aucun profil utilisateur"
+    empty: "Aucun profil utilisateur",
+    /**
+     * États vides des trois tableaux de statistiques (2026-10-27 · incrément 14
+     * — « état vide en 5 points »).
+     * ★ Les trois partageaient une seule phrase `hyper.list.empty`
+     *   (« La liste ne contient aucun enregistrement pour l’instant ») ⇒
+     *   « tâches principales », « principaux utilisateurs finaux » et
+     *   « sessions récentes » étaient réduits à une seule chose — et cette
+     *   phrase ne disait même pas ce qui manquait.
+     *   ⇒ kind = FirstUse : ce compte n’a encore produit aucun enregistrement
+     *   de ce type-là.
+     */
+    emptyFirstUseTopTasks: 'Ce compte n’a encore aucun enregistrement de tâche.',
+    emptyFirstUseTopEndUsers: 'Ce compte n’a encore aucun enregistrement d’utilisateur final.',
+    emptyFirstUseRecentSessions: 'Ce compte n’a encore aucun enregistrement de session.',
   },
   userProfileSearchPlaceholder: "Rechercher un identifiant…",
   catalog: {
@@ -70,6 +84,21 @@ export default {
     errorsEmpty: 'Aucune erreur enregistrée sur cette période',
     errorRate: 'Taux d’erreur',
     totalErrors: 'Erreurs totales',
+    /**
+     * États vides (2026-10-27 · incrément 14 — « état vide en 5 points »).
+     * ★ `errorsEmpty` = « aucune erreur enregistrée sur cette période » =
+     *   **bon état** (rien n’a échoué) ;
+     *   alors que le serveur **n’a rien renvoyé** (errors à null) = **inconnu** —
+     *   l’ancien texte `dashboard.noData` (« Aucune donnée pour cette période »)
+     *   expliquait « je ne sais pas » comme « je sais ».
+     *   ⇒ Les deux choses doivent être dites séparément : c’est la case
+     *   kind = Failed.
+     */
+    emptyFailedErrorSummary: 'Aucun résumé des erreurs n’a été renvoyé pour cette période ; relancez la requête pour l’obtenir.',
+    /** État vide : le classement des clients est vide (avant : clé générique `dashboard.noData`). */
+    emptyNoResultTopClients: 'Sur cette période, aucune statistique par client n’est disponible.',
+    /** État vide : le classement des tâches est vide (avant : clé générique `dashboard.noData`). */
+    emptyNoResultTopTasks: 'Sur cette période, aucune statistique par tâche n’est disponible.',
     lastUpdated: "Last updated",
     newSessions24h: "New sessions (24h)",
     closedSessions24h: "Closed sessions (24h)",

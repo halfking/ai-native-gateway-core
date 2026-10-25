@@ -6,8 +6,9 @@
 // 7 个饼图维度，前 6 个都接了 `isBoardPieDegraded`，唯独 `providers`
 // 这一格渲染在 `BoardProviderSection.vue`（不在 BoardDistGrid），漏了。
 //
-// 降级时 `pv-empty` 显示 `dashboard.board.empty`（「暂无数据」）——
-// 与「这段时间真的没有供应商用量」同形。
+// 降级时 `pv-empty` 显示 `dashboard.board.pieDegraded`（降级措辞）——
+// 与「这段时间真的没有供应商用量」（`dashboard.board.emptyNoResultProviders`）同形的是
+// **旧版**：那时两者都用 `dashboard.board.empty`（「暂无数据」），降级与真的没用量长得一模一样。
 //
 // 为什么**所有既有判据都是绿的**：服务端诚实降级了，前 6 格正常，
 // 这一格少一个分支。它只能靠**跨语言维度对账**发现
@@ -58,7 +59,7 @@ const i18n = createI18n({
         loading: '加载中',
         loadError: '加载失败',
         board: {
-          empty: '暂无数据',
+          emptyNoResultProviders: '所选时段内没有供应商数据。',
           pieDegraded: '不可用 —— {reason}。此处的空排名表示「没算出来」，而不是「没有数据」。',
           pieDegradedGeneric: '该排行查询失败',
           providerCostTitle: '供应商成本',
@@ -120,7 +121,7 @@ beforeEach(() => {
 })
 
 describe('providers 维度降级', () => {
-  it('① 降级 → 显示原因，不显示「暂无数据」', async () => {
+  it('① 降级 → 显示原因，不显示空态文案', async () => {
     const w = await mountSection(
       board({ dimensions: ['providers'], reason: 'board pie dimension unavailable: missing view v_dim' }),
     )
@@ -132,17 +133,17 @@ describe('providers 维度降级', () => {
     // 用量表自己的空态也用 .pv-empty，写整页断言会误报。
     // 这已是本会话第三次踩「整页级断言把同页其它元素的正常文案
     // 当成本元素的缺陷」（§21、§24.4 各一次）。
-    const empties = w.findAll('.pv-empty').filter((e) => e.text().includes('暂无数据'))
-    // 降级格不再是「暂无数据」那一支；表格空态仍是（它确实是空的）。
-    expect(alert.text()).not.toContain('暂无数据')
+    const empties = w.findAll('.pv-empty').filter((e) => e.text().includes('所选时段内没有供应商数据。'))
+    // 降级格不再是「没有供应商数据」那一支；表格空态仍是（它确实是空的）。
+    expect(alert.text()).not.toContain('所选时段内没有供应商数据。')
     expect(empties.every((e) => e.attributes('role') !== 'alert')).toBe(true)
   })
 
-  it('② 真的没有供应商用量 → 仍显示「暂无数据」（防恒绿）', async () => {
+  it('② 真的没有供应商用量 → 仍显示「所选时段内没有供应商数据。」（防恒绿）', async () => {
     const w = await mountSection(board({}))
-    expect(w.text()).toContain('暂无数据')
+    expect(w.text()).toContain('所选时段内没有供应商数据。')
     // ⚠ 反向对照（降级判定恒真）之所以**一度逃过**，原因就是只断言
-    // `w.text()).toContain('暂无数据')`：用量表的空态本来就提供这句话，
+    // `w.text()).toContain('所选时段内没有供应商数据。')`：用量表的空态本来就提供这句话，
     // 与供应商区那三格无关。
     // 必须断言「**降级告警格**不存在」才算真的防住了恒绿。
     expect(w.find('.pv-empty[role="alert"]').exists()).toBe(false)
@@ -153,7 +154,7 @@ describe('providers 维度降级', () => {
     const w = await mountSection(
       board({ dimensions: ['clients'], reason: 'query failed' }),
     )
-    expect(w.text()).toContain('暂无数据')
+    expect(w.text()).toContain('所选时段内没有供应商数据。')
     expect(w.find('.pv-empty[role="alert"]').exists()).toBe(false)
   })
 })

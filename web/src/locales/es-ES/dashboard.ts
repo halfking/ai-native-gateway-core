@@ -79,7 +79,26 @@ v2: {
     distTop: 'TOP {n}',
     distOthers: '{n} más',
     distDrillHint: 'Selecciona un tipo de error → desglosa por modelo/proveedor/cliente',
-    empty: 'No data',
+    /**
+     * Estados vacíos (2026-10-27 · incremento 14 · «empty state de 5 puntos»).
+     * ★ Antes había un único `empty: 'No data'` compartido por **seis** tarjetas
+     *   distintas (proveedores / ranking de distribución / distribución de modelos
+     *   / tendencias de uso / tabla de uso / las dos tarjetas de tareas operativas)
+     *   ⇒ una sola frase cubría seis significados ⇒ el usuario no podía saber si
+     *   «no hay datos» era «no hay», «está filtrado» o «se calculó mal».
+     *   ⇒ Ahora se separan por el **hecho real de cada página**, con el kind en la clave.
+     *   · emptyNoResult* = sin resultado (se buscó y realmente no hay)
+     *   · emptyFailed*    = fallo/desconocido (el servidor no devolvió nada ⇒ no
+     *     se puede decir «no hay»)
+     */
+    emptyNoResultProviders: 'En el periodo seleccionado no hay datos de proveedores.',
+    emptyNoResultDist: 'En el periodo seleccionado no hay datos que se puedan ordenar en un ranking.',
+    emptyNoResultDrill: 'No hay solicitudes fallidas para este tipo de error.',
+    emptyNoResultModelDist: 'En el periodo seleccionado no hay datos de modelos.',
+    emptyNoResultModelTrend: 'En el periodo seleccionado no hay datos de tendencias de modelos.',
+    emptyNoResultTrend: 'En el periodo seleccionado no hay datos de tendencias de uso.',
+    emptyNoResultDiscovery: 'Las tareas de descubrimiento de modelos aún no tienen registros de ejecución.',
+    emptyNoResultProbe: 'Las comprobaciones de sondeo aún no tienen registros de ejecución.',
     bgTasks: 'Background tasks',
     discoveryStatus: 'Model discovery',
     selfcheckTitle: 'Self-check',
@@ -128,7 +147,6 @@ v2: {
     colModel: "Modelo",
   },
   loading: "Cargando…",
-  noData: "Sin datos para este periodo",
   liveStream: {
     title: "Flujo de solicitudes en tiempo real",
     groupByQueue: "Por cola de procesamiento",
@@ -243,7 +261,10 @@ v2: {
     closedSessions: "Sesiones cerradas",
     costUSD: "Costo (USD)",
     sessionCount: "Número de sesiones",
-    sessionTrend: "Tendencia de sesiones"
+    sessionTrend: "Tendencia de sesiones",
+    /** Estados vacíos (2026-10-27 · incremento 14): antes ambos usaban `dashboard.noData` («Sin datos para este periodo»). */
+    emptyNoResultHealthGrade: 'En el periodo seleccionado no hay datos de distribución de salud.',
+    emptyNoResultSessionTrend: 'En el periodo seleccionado no hay datos de tendencias de sesiones.',
   },
 
 
@@ -278,6 +299,8 @@ v2: {
     periodRange: '{start} a {end}',
     modelBreakdown: 'Por modelo',
     dailyBreakdown: 'Desglose diario por modelo',
+    /** Estado vacío: sin registros de uso (el estado degradado tiene su propio texto en `dataLifecycle.usageCost.degraded.title`). */
+    emptyNoResult: 'En el periodo seleccionado no hay registros de uso.',
   },
   statsRow: {
     totalSessions: "Total Sessions",

@@ -73,7 +73,24 @@ tabs: {
     distTop: 'TOP {n}',
     distOthers: '他 {n} 件',
     distDrillHint: 'エラータイプをクリック → モデル/プロバイダー/クライアント別にドリル',
-    empty: 'このボードにはまだデータがありません。',
+    /**
+     * 空状態（2026-10-27 第 14 インクリメント · 空状態 5 分）。
+     * ★ 以前は `empty`（このボードにはまだデータがありません）が 6 つの**別の**カードで
+     *   共有されていた（プロバイダー / 分布ランキング / モデル分布 / トレンド図 /
+     *   使用量表 / 運用ボードの 2 つのタスクカード）⇒
+     *   1 文で 6 種類の意味を覆っていた。
+     *   ⇒ いまは**ページの実態**で分割し、kind をキー名に書く。
+     *   · emptyNoResult* = 該当なし（実際に調べて、確かに無し）
+     *   · emptyFailed*    = 失敗/不明（サーバーが返していない ⇒「無し」とは言えない）
+     */
+    emptyNoResultProviders: 'この期間のプロバイダーデータはありません。',
+    emptyNoResultDist: 'この期間にランキングを作成できるデータはありません。',
+    emptyNoResultDrill: 'このエラー種別では失敗したリクエストはありません。',
+    emptyNoResultModelDist: 'この期間のモデルデータはありません。',
+    emptyNoResultModelTrend: 'この期間のモデルトレンドデータはありません。',
+    emptyNoResultTrend: 'この期間の使用量トレンドデータはありません。',
+    emptyNoResultDiscovery: 'モデル検出タスクの実行記録はまだありません。',
+    emptyNoResultProbe: 'プローブ点検の実行記録はまだありません。',
     bgTasks: 'バックグラウンドタスク',
     discoveryStatus: 'モデル検出',
     selfcheckTitle: 'システム自己診断',
@@ -122,7 +139,6 @@ tabs: {
     colModel: "モデル",
   },
   loading: "読み込み中…",
-  noData: "この期間のデータはありません",
   liveStream: {
     title: "リアルタイムリクエスト",
     groupByQueue: "処理キュー別",
@@ -237,7 +253,10 @@ tabs: {
     closedSessions: "終了セッション",
     costUSD: "コスト (USD)",
     sessionCount: "セッション数",
-    sessionTrend: "セッション傾向"
+    sessionTrend: "セッション傾向",
+    /** 空状態（2026-10-27 第 14 インクリメント）：以前は 2 箇所とも `dashboard.noData` を使っていた。 */
+    emptyNoResultHealthGrade: 'この期間のヘルス分布データはありません。',
+    emptyNoResultSessionTrend: 'この期間のセッション傾向データはありません。',
   },
 
 
@@ -272,6 +291,8 @@ tabs: {
     periodRange: '{start} から {end}',
     modelBreakdown: 'モデル別',
     dailyBreakdown: '日次モデル内訳',
+    /** 空状態：使用量記録が無い（降格状態の文言は `dataLifecycle.usageCost.degraded.title` 側で別）。 */
+    emptyNoResult: 'この期間の使用量記録はありません。',
   },
   statsRow: {
     totalSessions: "Total Sessions",

@@ -4,6 +4,16 @@ export default {
   storage: {
     migrateFailedWithReason: 'Migration konnte nicht abgeschlossen werden: {reason}. Bitte erneut versuchen.',
   },
+  /**
+   * Großfeldverwaltung (BlobManager).
+   * ★ Leerzustand (2026-10-27, Inkrement 14 · „Leerzustand 5 Punkte“): vorher stand hier
+   *   der Generalschlüssel `common.feedback.noData` („zurzeit sind noch keine Inhalte
+   *   vorhanden“). Diese Seite hat **keinen Zeitfilter** ⇒ kein Zeitraum im Text
+   *   (nichts behaupten, was die Seite nicht weiß).
+   */
+  blob: {
+    emptyNoResult: 'Es gibt noch keine Datensätze mit Großfeldern.',
+  },
   storageOverview: {
     summary: {
       databaseTitle: "PostgreSQL-Datenbank",

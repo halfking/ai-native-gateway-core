@@ -79,7 +79,27 @@ v2: {
     distTop: 'TOP {n}',
     distOthers: '{n} autres',
     distDrillHint: 'Sélectionnez un type d’erreur → forage par modèle/fournisseur/client',
-    empty: 'No data',
+    /**
+     * États vides (2026-10-27 · incrément 14 — « état vide en 5 points »).
+     * ★ Avant, il n’y avait qu’un seul `empty: 'No data'` (une expression
+     *   **anglaise** dans un pack français), partagé par
+     *   **six** cartes différentes (fournisseurs / répartition / modèles /
+     *   tendances / usages / les deux cartes de tâches de l’exploitation) —
+     *   une phrase pour 6 sens ⇒ l’utilisateur ne pouvait plus dire si c’est
+     *   « vraiment vide », « filtré » ou « mal calculé ».
+     *   ⇒ désormais on sépare par **le fait de la page**, le kind dans le nom.
+     *   · emptyNoResult* = aucun résultat (on a cherché, il n’y en a vraiment pas)
+     *   · emptyFailed*    = échec / inconnu (le serveur n’a rien renvoyé ⇒
+     *                       on ne peut pas dire « il n’y en a pas »)
+     */
+    emptyNoResultProviders: 'Sur la période sélectionnée, aucune donnée de fournisseur n’est disponible.',
+    emptyNoResultDist: 'Sur la période sélectionnée, aucune donnée ne peut être classée.',
+    emptyNoResultDrill: 'Aucune requête n’a échoué avec ce type d’erreur.',
+    emptyNoResultModelDist: 'Sur la période sélectionnée, aucune donnée de modèle n’est disponible.',
+    emptyNoResultModelTrend: 'Sur la période sélectionnée, aucune tendance de l’usage des modèles n’est disponible.',
+    emptyNoResultTrend: 'Sur la période sélectionnée, aucune tendance de l’utilisation n’est disponible.',
+    emptyNoResultDiscovery: 'Aucune exécution de découverte de modèles n’a encore été enregistrée.',
+    emptyNoResultProbe: 'Aucune exécution d’inspection par sonde n’a encore été enregistrée.',
     bgTasks: 'Background tasks',
     discoveryStatus: 'Model discovery',
     selfcheckTitle: 'Self-check',
@@ -128,7 +148,6 @@ v2: {
     colModel: "Modèle",
   },
   loading: "Chargement…",
-  noData: "Aucune donnée pour cette période",
   liveStream: {
     title: "Flux des requêtes en temps réel",
     groupByQueue: "Par file de traitement",
@@ -243,7 +262,10 @@ v2: {
     closedSessions: "Sessions fermées",
     costUSD: "Coût (USD)",
     sessionCount: "Nombre de sessions",
-    sessionTrend: "Tendance des sessions"
+    sessionTrend: "Tendance des sessions",
+    /** États vides (2026-10-27 · incrément 14) : les deux graphes utilisaient le `dashboard.noData` générique (« Aucune donnée pour cette période »). */
+    emptyNoResultHealthGrade: 'Sur la période sélectionnée, aucune distribution de santé n’est disponible.',
+    emptyNoResultSessionTrend: 'Sur la période sélectionnée, aucune tendance des sessions n’est disponible.',
   },
 
 
@@ -278,6 +300,8 @@ v2: {
     periodRange: '{start} à {end}',
     modelBreakdown: 'Par modèle',
     dailyBreakdown: 'Répartition quotidienne par modèle',
+    /** État vide : aucun enregistrement d’usage (l’état dégradé a son propre texte : `dataLifecycle.usageCost.degraded.title`). */
+    emptyNoResult: 'Sur la période sélectionnée, aucun enregistrement d’utilisation n’est disponible.',
   },
   statsRow: {
     totalSessions: "Total Sessions",

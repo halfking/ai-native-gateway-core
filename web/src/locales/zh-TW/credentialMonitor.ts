@@ -34,6 +34,14 @@ export default {
     allHealthy: '全部健康',
     errorsWhenHealthy: '錯誤類型分佈：全部健康',
     errorsTitle: '錯誤類型分佈',
+    /**
+     * 空狀態（2026-10-27 第 14 增量 · 空狀態 5 分）。
+     * ★ 原先這裡用的是通用鍵 `common.feedback.noData`（「暫時沒有內容可顯示」），
+     *   頁面另有一條硬編碼中文提示「請調整時間範圍或篩選條件」。
+     *   ⇒ 本輪併成整句（時間範圍 + 篩選條件 + 下一步：放寬條件）。
+     *   kind = Filtered：查得到，但被目前的時間範圍與篩選條件篩掉了。
+     */
+    emptyFiltered: '目前時間範圍與篩選條件下沒有憑證記錄，可放寬條件後再檢視。',
   },
   error: {
     selectFirst: '請先選擇憑證',

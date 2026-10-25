@@ -36,7 +36,6 @@ export default {
     deleteFailed: '削除に失敗しました。再試行してください。',
     operationFailed: '操作を完了できませんでした。再試行してください。',
     loading: '読み込み中…',
-    noData: '表示できる内容はまだありません。',
     unknownReason: 'エラーの詳細を取得できませんでした',
     saveFailedWithReason: '保存に失敗しました：{reason}。再試行してください。',
     operationFailedWithReason: '操作に失敗しました：{reason}。再試行してください。',
@@ -49,6 +48,17 @@ export default {
     installFailedWithReason: 'インストールに失敗しました：{reason}。再試行してください。',
     batchPricingFailedWithReason: '一括価格設定に失敗しました：{reason}。再試行してください。',
     batchUpdateFailedWithReason: '一括更新に失敗しました：{reason}。再試行してください。',
+  },
+  /**
+   * 空状態（2026-10-27 第 14 インクリメント · 空状態 5 分）。
+   * ★ ここは**ページ横断で共有する**フォールバック文言だけ。
+   *   ほとんどの空状態は**専用キー**を持つこと（欠けているものを明示 + 期間 + 次のアクション）。
+   *   ★ `noResult` は**フォールバック**：呼び出し側が自分の欠けているものを言えるなら、
+   *     必ず自分のキーを使うこと。
+   *   kind の語をキー名に書く（`empty<Kind>`）⇒ 違いは構造で表現し、言い回し任せにしない。
+   */
+  empty: {
+    noResult: '表示できる記録はありません。',
   },
   table: {
     actions: '操作',

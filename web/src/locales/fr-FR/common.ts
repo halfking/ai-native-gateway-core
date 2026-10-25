@@ -36,7 +36,6 @@ export default {
     deleteFailed: 'Échec de la suppression. Veuillez réessayer.',
     operationFailed: 'L’opération n’a pas pu aboutir. Veuillez réessayer.',
     loading: 'Chargement…',
-    noData: 'Aucun contenu à afficher pour l’instant',
     unknownReason: 'Impossible d’obtenir le détail de l’erreur.',
     saveFailedWithReason: 'Échec de l’enregistrement : {reason}. Veuillez réessayer.',
     operationFailedWithReason: 'Échec de l’opération : {reason}. Veuillez réessayer.',
@@ -49,6 +48,24 @@ export default {
     installFailedWithReason: 'Échec de l’installation : {reason}. Veuillez réessayer.',
     batchPricingFailedWithReason: 'Échec de la tarification par lot : {reason}. Veuillez réessayer.',
     batchUpdateFailedWithReason: 'Échec de la mise à jour par lot : {reason}. Veuillez réessayer.',
+  },
+  /**
+   * États vides (2026-10-27 · incrément 14 — « état vide en 5 points »).
+   *
+   * ★ Ici ne vit que le **texte de repli** partagé entre pages. Presque chaque
+   *   état vide a besoin de son **propre** clé (nommer ce qui manque + la plage
+   *   de temps + la prochaine action utile) —
+   *   impeccable : « An empty state distinguishes first use, no results,
+   *   filters, permissions, and failure » ⇒ **distinguer** est une règle dure ;
+   *   un seul « rien à afficher pour l’instant » aplatit 5 états en 1.
+   *
+   * ★ `noResult` est le **repli** : quand l’appelant sait dire ce qui manque,
+   *   il doit utiliser sa propre clé. Le mot de kind est dans le nom de la clé
+   *   (`empty<Kind>`) ⇒ la différence est dans la structure, pas dans la
+   *   formulation.
+   */
+  empty: {
+    noResult: 'Aucun enregistrement à afficher.',
   },
   table: {
     actions: 'Actions',

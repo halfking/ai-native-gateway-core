@@ -162,7 +162,7 @@ async function onDrillDimChange(dim: 'model' | 'provider' | 'client') {
         <div v-else-if="card.degraded" class="dist-card__degraded">
           {{ t('dashboard.board.pieDegraded', { reason: props.board?.degraded_pies?.reason || t('dashboard.board.pieDegradedGeneric') }) }}
         </div>
-        <div v-else-if="!card.items.length" class="dist-card__empty">{{ t('dashboard.board.empty') }}</div>
+        <div v-else-if="!card.items.length" class="dist-card__empty">{{ t('dashboard.board.emptyNoResultDist') }}</div>
         <div v-else class="dist-card__rank">
           <div
             v-for="item in topItems(card.items)"
@@ -202,7 +202,7 @@ async function onDrillDimChange(dim: 'model' | 'provider' | 'client') {
       <div v-else-if="errorDrillError" class="drill-panel__error" role="alert">
         {{ t('dashboard.board.drillFailed', { reason: errorDrillError }) }}
       </div>
-      <div v-else-if="!errorDrillItems.length" class="drill-panel__loading">{{ t('dashboard.board.empty') }}</div>
+      <div v-else-if="!errorDrillItems.length" class="drill-panel__loading">{{ t('dashboard.board.emptyNoResultDrill') }}</div>
       <div v-else class="drill-panel__list">
         <div v-for="item in errorDrillItems.slice(0, 8)" :key="item.key" class="drill-row">
           <span class="drill-row__name" :title="item.key">{{ item.key }}</span>

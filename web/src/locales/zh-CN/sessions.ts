@@ -30,6 +30,16 @@ export default {
     actionDetail: '详情',
     createdAt: '创建时间',
     empty: '暂无用户画像数据',
+    /**
+     * 三张统计表的空态（2026-10-27 第 14 增量 · 空状态 5 分）。
+     * ★ 三张表原先共用一句 `hyper.list.empty`（「列表暂时没有内容」）⇒
+     *   「热门任务」「热门终端用户」「最近会话」三件事被压成一句话，
+     *   而且那句话连「缺的是什么」都没说。
+     *   ⇒ kind = FirstUse：这个账号确实还没产生过对应记录。
+     */
+    emptyFirstUseTopTasks: '这个账号还没有任务记录。',
+    emptyFirstUseTopEndUsers: '这个账号还没有终端用户记录。',
+    emptyFirstUseRecentSessions: '这个账号还没有会话记录。',
   },
   userProfileSearchPlaceholder: '搜索用户标识...',
   catalog: {
@@ -94,6 +104,18 @@ export default {
     errorsEmpty: '当前周期无错误记录',
     errorRate: '错误率',
     totalErrors: '错误总数',
+    /**
+     * 空状态（2026-10-27 第 14 增量 · 空状态 5 分）。
+     * ★ `errorsEmpty` = 「当前周期无错误记录」= **好状态**（确实没出错）；
+     *   而服务端**没返回**错误汇总（errors 为 null）是**未知** ——
+     *   原文案用 `dashboard.noData`（「该时段暂无数据」）把「不知道」讲成「知道」。
+     *   ⇒ 两件事必须分开说，这就是 kind=Failed 的那一格。
+     */
+    emptyFailedErrorSummary: '当前周期没有返回错误汇总数据，可重试获取。',
+    /** 空状态：Top 客户端统计为空（原先用通用键 `dashboard.noData`）。 */
+    emptyNoResultTopClients: '当前周期没有客户端统计。',
+    /** 空状态：Top 任务统计为空（原先用通用键 `dashboard.noData`）。 */
+    emptyNoResultTopTasks: '当前周期没有任务统计。',
   },
   clientAnalytics: {
     title: '客户端分析',

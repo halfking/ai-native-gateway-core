@@ -34,6 +34,13 @@ export default {
     allHealthy: 'Alle gesund',
     errorsWhenHealthy: 'Fehlerverteilung: alle gesund',
     errorsTitle: 'Fehlerverteilung',
+    /**
+     * Leerzustand der Anmeldedaten-Heatmap (2026-10-27, Inkrement 14).
+     * ★ kind = **Filtered**: diese Seite hat Zeitraum + Filter (Modell, nur
+     *   auffällige, Selbstprüfung ausgeschlossen) ⇒ leer heißt „herausgefiltert“,
+     *   nicht „auf dieser Seite gibt es nichts“.
+     */
+    emptyFiltered: 'Im aktuellen Zeitraum und mit den aktuellen Filterkriterien wurden keine Anmeldedaten erfasst. Erweitern Sie Zeitraum oder Filter, um mehr zu sehen.',
   },
   error: {
     selectFirst: 'Bitte zuerst Anmeldedaten auswählen',

@@ -29,6 +29,5 @@ export default {
     retry: 'Retry',
     allLoaded: 'All {count} loaded',
     loadFailed: 'Failed to load. Select Retry to try again.',
-    empty: 'The list has no records for now',
   },
 }

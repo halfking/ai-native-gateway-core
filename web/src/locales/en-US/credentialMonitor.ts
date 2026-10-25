@@ -33,6 +33,18 @@ export default {
     allHealthy: 'All healthy',
     errorsWhenHealthy: 'Error distribution: all healthy',
     errorsTitle: 'Error distribution',
+    /**
+     * Empty state for the credential heatmap (2026-10-27 round 14 — the
+     * "5-point empty state" split).
+     * ★ kind = **Filtered**: this page has a model filter + "exclude self-check"
+     *   + "errors only" + a time range ⇒ empty means "filtered out",
+     *   not "this page has no data".
+     *   It used to be the generic key `common.feedback.noData`
+     *   ("No content to display right now") plus a hardcoded Chinese hint
+     *   ("please adjust the time range or filters") ⇒ now one complete,
+     *   translatable sentence that also gives the next useful action.
+     */
+    emptyFiltered: 'No credential records match the current time range and filters. Widen the time range or relax the filters, then check again',
   },
   error: {
     selectFirst: 'Please select credentials first',

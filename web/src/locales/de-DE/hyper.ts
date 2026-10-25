@@ -29,6 +29,5 @@ export default {
     retry: 'Erneut versuchen',
     allLoaded: 'Alle {count} geladen',
     loadFailed: 'Laden fehlgeschlagen. Bitte erneut versuchen.',
-    empty: 'In dieser Liste gibt es vorübergehend noch keine Einträge.',
   },
 }

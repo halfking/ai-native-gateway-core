@@ -26,7 +26,17 @@ export default {
     recentSessions: "最近會話",
     actionDetail: "詳情",
     createdAt: "建立時間",
-    empty: "暫無使用者畫像資料"
+    empty: "暫無使用者畫像資料",
+    /**
+     * 三張統計表的空態（2026-10-27 第 14 增量 · 空狀態 5 分）。
+     * ★ 三張表原先共用一句 `hyper.list.empty`（「清單暫時沒有內容」）⇒
+     *   「熱門任務」「熱門終端使用者」「最近會話」三件事被壓成一句話，
+     *   而且那句話連「缺的是什麼」都沒說。
+     *   ⇒ kind = FirstUse：這個帳號確實還沒產生過對應記錄。
+     */
+    emptyFirstUseTopTasks: '這個帳號還沒有任務記錄。',
+    emptyFirstUseTopEndUsers: '這個帳號還沒有終端使用者記錄。',
+    emptyFirstUseRecentSessions: '這個帳號還沒有會話記錄。',
   },
   userProfileSearchPlaceholder: "搜尋使用者識別...",
   catalog: {
@@ -92,6 +102,19 @@ export default {
     errorsEmpty: '當前週期無錯誤記錄',
     errorRate: '錯誤率',
     totalErrors: '錯誤總數',
+    /**
+     * 空狀態（2026-10-27 第 14 增量 · 空狀態 5 分）。
+     * ★ 原先用通用鍵 `dashboard.noData`（「該時段暫無資料」）⇒ 把「不知道」講成「知道」。
+     *   `errors === null` 表示**服務端沒回傳**錯誤彙總（未知），
+     *   與 `errorsEmpty`（「當前週期無錯誤記錄」，好狀態）是兩件事。
+     *   ⇒ 兩件事必須分開說，這就是 kind = Failed 的那一格。
+     * ★ 「當前週期」沿用本段既有譯法（`stats.errorsEmpty`）。
+     */
+    emptyFailedErrorSummary: '當前週期沒有回傳錯誤彙總資料，可重試取得。',
+    /** 空狀態：Top 客戶端統計為空（原先用通用鍵 `dashboard.noData`）。 */
+    emptyNoResultTopClients: '當前週期沒有客戶端統計。',
+    /** 空狀態：Top 任務統計為空（原先用通用鍵 `dashboard.noData`）。 */
+    emptyNoResultTopTasks: '當前週期沒有任務統計。',
   },
   clientAnalytics: {
     title: "客戶端分析",

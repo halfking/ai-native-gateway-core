@@ -5,6 +5,15 @@ export default {
   storage: {
     migrateFailedWithReason: '迁移没能完成：{reason}。请重试',
   },
+  /**
+   * 大字段管理（BlobManager）文案。
+   * ★ 空态（2026-10-27 第 14 增量 · 空状态 5 分）：原先用通用键
+   *   `common.feedback.noData`（「暂时没有内容可显示」）。
+   *   这一页**没有时间筛选器** ⇒ 不写时间范围（不编造页面不知道的事实）。
+   */
+  blob: {
+    emptyNoResult: '还没有大字段记录。',
+  },
   pages: {
     filesystemMaintenance: '文件系统维护',
     storageConfig: '存储配置',

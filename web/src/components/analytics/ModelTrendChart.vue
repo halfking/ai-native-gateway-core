@@ -150,7 +150,7 @@ onBeforeUnmount(() => {
   >
     <canvas v-show="hasData" ref="canvasRef" />
     <div v-if="!loading && !hasData" class="mtc__empty" :style="fill ? undefined : { paddingTop: `${props.height / 2.6}px` }">
-      {{ t('dashboard.board.empty') }}
+      {{ t('dashboard.board.emptyNoResultModelTrend') }}
     </div>
   </div>
 </template>

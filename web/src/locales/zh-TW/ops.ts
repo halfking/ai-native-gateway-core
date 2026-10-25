@@ -28,6 +28,16 @@ export default {
     viewReviews: '查看審查',
     showAll: '顯示全部',
     reviewDetail: '審查詳情',
+    /**
+     * 空狀態（2026-10-27 第 14 增量 · 空狀態 5 分）。
+     * ★ 三張表原先共用一句 `hyper.list.empty`（「清單暫時沒有內容」），但它們是**兩種**狀態：
+     *   · projects —— 用的是原始陣列 ⇒ 空 = 還沒創建過任何項目（FirstUse）
+     *   · sessions / reviews —— 用的是**篩選後**的陣列 ⇒ 空 = 被篩掉了（Filtered）
+     *   ⇒ 同一句話覆蓋兩種狀態，等於把「你還沒開始」和「你的篩選條件太窄」講成同一件事。
+     */
+    emptyFirstUseProjects: '還沒有創建任何項目。',
+    emptyFilteredSessions: '目前篩選條件下沒有會話記錄。',
+    emptyFilteredReviews: '目前篩選條件下沒有代碼審查記錄。',
     projectName: '項目名稱',
     projectNamePlaceholder: '請輸入項目名稱',
     language: '程式語言',

@@ -43,6 +43,16 @@ export default {
     viewReviews: '查看审查',
     showAll: '显示全部',
     reviewDetail: '审查详情',
+    /**
+     * 空状态（2026-10-27 第 14 增量 · 空状态 5 分）。
+     * ★ 三张表原先共用一句 `hyper.list.empty`（「列表暂时没有内容」），但它们是**两种**状态：
+     *   · projects —— 用的是原始数组 ⇒ 空 = 还没创建过任何项目（FirstUse）
+     *   · sessions / reviews —— 用的是**筛选后**的数组 ⇒ 空 = 被筛掉了（Filtered）
+     *   ⇒ 同一句话覆盖两种状态，等于把「你还没开始」和「你的筛选条件太窄」讲成同一件事。
+     */
+    emptyFirstUseProjects: '还没有创建任何项目。',
+    emptyFilteredSessions: '当前筛选条件下没有会话记录。',
+    emptyFilteredReviews: '当前筛选条件下没有代码审查记录。',
     projectName: '项目名称',
     projectNamePlaceholder: '请输入项目名称',
     language: '编程语言',

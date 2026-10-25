@@ -5,6 +5,17 @@ export default {
   storage: {
     migrateFailedWithReason: 'The migration could not be completed: {reason}. Please retry.',
   },
+  /**
+   * Large-field (blob) manager copy.
+   * ★ Empty state (2026-10-27 round 14 — the "5-point empty state" split): it
+   *   used to be the generic key `common.feedback.noData`
+   *   ("No content to display right now").
+   *   This page has **no time filter** ⇒ no time range in the copy
+   *   (never state a fact the page does not know).
+   */
+  blob: {
+    emptyNoResult: 'No large-field records yet',
+  },
   pages: {
     filesystemMaintenance: 'Filesystem maintenance',
     storageConfig: 'Storage config',

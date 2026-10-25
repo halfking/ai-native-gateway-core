@@ -225,7 +225,7 @@ watch(() => props.data, () => {
     <div v-loading="loading" class="chart-container">
       <div v-if="hasData" ref="chartRef" class="chart-inner"></div>
       <div v-else class="chart-empty">
-        <el-empty :description="t('dashboard.noData')" :image-size="60" />
+        <el-empty :description="t('dashboard.charts.emptyNoResultSessionTrend')" :image-size="60" />
       </div>
     </div>
   </el-card>

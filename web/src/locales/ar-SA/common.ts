@@ -35,7 +35,6 @@ export default {
     deleteFailed: 'تعذّر الحذف. أعد المحاولة.',
     operationFailed: 'تعذّر إتمام العملية. أعد المحاولة.',
     loading: 'جاري التحميل…',
-    noData: 'لا يوجد محتوى لعرضه حاليًا',
     unknownReason: 'لم يتم الحصول على تفاصيل الخطأ',
     saveFailedWithReason: 'فشل الحفظ: {reason}. أعد المحاولة.',
     operationFailedWithReason: 'فشلت العملية: {reason}. أعد المحاولة.',
@@ -48,6 +47,21 @@ export default {
     installFailedWithReason: 'فشل التثبيت: {reason}. أعد المحاولة.',
     batchPricingFailedWithReason: 'فشل التسعير المجمع: {reason}. أعد المحاولة.',
     batchUpdateFailedWithReason: 'فشل التحديث المجمع: {reason}. أعد المحاولة.',
+  },
+  /**
+   * الحالات الفارغة (الدفعة 14 · «حالات فارغة»).
+   *
+   * ★ هنا فقط نضع نصًا احتياطيًا **مشتركًا بين الصفحات**. أغلب الحالات الفارغة
+   *   يجب أن تملك مفتاحها الخاص (ما الناقص + نطاق الزمن + الإجراء التالي) ——
+   *   قاعدة impeccable: «An empty state distinguishes first use, no results,
+   *   filters, permissions, and failure» ⇒ **التمييز** شرط أساسي،
+   *   وجملة «لا يوجد محتوى لعرضه حاليًا» تسحق خمس حالات في واحدة، أي لا تقول شيئًا.
+   *
+   * ★ `noResult` هو **احتياطي**: إن كان caller يعرف ما الناقص، فعليه أن يستخدم مفتاحه.
+   *   نوع الحالة (kind) مكتوب في اسم المفتاح (`empty<Kind>`) ⇒ الفرق داخل البنية، لا في الحسن.
+   */
+  empty: {
+    noResult: 'لا توجد سجلات يمكن عرضها.',
   },
   table: {
     actions: 'الإجراءات',

@@ -29,6 +29,5 @@ export default {
     retry: '重試',
     allLoaded: '已全部載入 {count} 筆',
     loadFailed: '載入失敗，請重試',
-    empty: '清單暫時沒有內容',
   },
 }

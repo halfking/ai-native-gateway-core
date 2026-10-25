@@ -33,6 +33,14 @@ export default {
     allHealthy: '全部健康',
     errorsWhenHealthy: '错误类型分布：全部健康',
     errorsTitle: '错误类型分布',
+    /**
+     * 凭据热力图的空态（2026-10-27 第 14 增量 · 空状态 5 分）。
+     * ★ kind = **Filtered**：这一页有模型筛选 + 排除自检 + 仅异常 + 时间范围
+     *   ⇒ 空 = 被筛掉了，不是「这页没数据」。
+     *   原先是通用键 `common.feedback.noData`（「暂时没有内容可显示」）+
+     *   一条硬编码中文提示「请调整时间范围或筛选条件」⇒ 现在并成一句完整可翻译的话。
+     */
+    emptyFiltered: '当前时间范围和筛选条件下没有凭据记录，可放宽条件后再看。',
   },
   error: {
     selectFirst: '请先选择凭据',

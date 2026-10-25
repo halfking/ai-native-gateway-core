@@ -26,7 +26,18 @@ export default {
     recentSessions: "Aktuelle Sitzungen",
     actionDetail: "Detail",
     createdAt: "Erstellt am",
-    empty: "Keine Benutzerprofildaten"
+    empty: "Keine Benutzerprofildaten",
+    /**
+     * Leerzustände der drei Statistiktabellen (2026-10-27, Inkrement 14).
+     * ★ Alle drei teilten sich früher einen Satz `hyper.list.empty` („in dieser Liste
+     *   gibt es vorübergehend noch keine Einträge“) ⇒ „Top-Aufgaben“, „Top-Endbenutzer“
+     *   und „letzte Sitzungen“ wurden zu einem einzigen Satz zusammengefasst, und der
+     *   sagte nicht einmal, **was** fehlt.
+     *   ⇒ kind = FirstUse: für dieses Konto existiert noch kein entsprechender Datensatz.
+     */
+    emptyFirstUseTopTasks: 'Für dieses Konto wurden noch keine Aufgaben erfasst.',
+    emptyFirstUseTopEndUsers: 'Für dieses Konto wurden noch keine Endbenutzer erfasst.',
+    emptyFirstUseRecentSessions: 'Für dieses Konto wurden noch keine Sitzungen erfasst.',
   },
   userProfileSearchPlaceholder: "Benutzer-ID suchen…",
   catalog: {
@@ -87,6 +98,19 @@ export default {
     piiDetected: "PII detected",
     topModels: "Top 10 models",
     topModelsEmpty: 'Keine Modellnutzungsdaten in diesem Zeitraum',
+    /**
+     * Leerzustände (2026-10-27, Inkrement 14 · „Leerzustand 5 Punkte“).
+     * ★ `errorsEmpty` („keine Fehler in diesem Zeitraum verzeichnet“) = **guter Zustand**
+     *   (es ist wirklich nichts passiert); hat der Server die Fehlerübersicht **nicht
+     *   geliefert** (errors = null), ist das **unbekannt** — der alte Wortlaut
+     *   `dashboard.noData` („keine Daten für diesen Zeitraum“) machte aus „unbekannt“
+     *   „bekannt“. ⇒ Beides muss getrennt gesagt werden, das ist die Spalte kind=Failed.
+     */
+    emptyFailedErrorSummary: 'In diesem Zeitraum wurde keine Fehlerübersicht zurückgegeben. Bitte die Abfrage erneut versuchen.',
+    /** Leerzustand: Top-Client-Statistik ist leer (vorher der Generalschlüssel `dashboard.noData`). */
+    emptyNoResultTopClients: 'In diesem Zeitraum liegen keine Client-Statistiken vor.',
+    /** Leerzustand: Top-Aufgaben-Statistik ist leer (vorher der Generalschlüssel `dashboard.noData`). */
+    emptyNoResultTopTasks: 'In diesem Zeitraum liegen keine Aufgaben-Statistiken vor.',
     model: "Model",
     requestCount: "Requests",
     successRate: "Success rate",

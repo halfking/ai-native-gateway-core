@@ -29,6 +29,5 @@ export default {
     retry: '再試行',
     allLoaded: '{count} 件すべて読み込み済み',
     loadFailed: '読み込みに失敗しました。再試行してください。',
-    empty: 'このリストにはまだ内容がありません。',
   },
 }

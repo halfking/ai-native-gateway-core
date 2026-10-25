@@ -4,6 +4,16 @@ export default {
   storage: {
     migrateFailedWithReason: 'No se pudo completar la migración: {reason}. Vuelva a intentarlo.',
   },
+  /**
+   * Gestión de campos grandes (BlobManager).
+   * ★ Estado vacío (2026-10-27 · incremento 14): antes se usaba la clave genérica
+   *   `common.feedback.noData` («Todavía no hay contenido que mostrar.»).
+   *   Esta página **no tiene filtro de tiempo** ⇒ el texto no menciona ningún
+   *   rango temporal (no afirmar lo que la página no sabe).
+   */
+  blob: {
+    emptyNoResult: 'Aún no hay registros de campos grandes.',
+  },
   storageOverview: {
     summary: {
       databaseTitle: "Base de datos PostgreSQL",

@@ -4,6 +4,15 @@ export default {
   storage: {
     migrateFailedWithReason: 'تعذّر إتمام الترحيل: {reason}. أعد المحاولة.',
   },
+  /**
+   * نصوص إدارة الحقول الكبيرة (BlobManager).
+   * ★ الحالة الفارغة (الدفعة 14 · «حالات فارغة»): كان用的是 مفتاحًا عامًا
+   *   (`common.feedback.noData` — «لا يوجد محتوى لعرضه حاليًا»).
+   *   هذه الصفحة **بلا مُرشِّح زمني** ⇒ لا نكتب نطاقًا زمنيًا (لا نخترع معلومة لا تعرفها الصفحة).
+   */
+  blob: {
+    emptyNoResult: 'لا توجد سجلات للحقول الكبيرة بعد.',
+  },
   storageOverview: {
     summary: {
       databaseTitle: "قاعدة بيانات PostgreSQL",

@@ -302,7 +302,7 @@ watch(() => props.timeQuery, () => {
                     <div v-else-if="degraded" class="pue-empty" role="status">
                       ⚠️ {{ t('dataLifecycle.usageCost.degraded.title') }}（{{ degraded }}）
                     </div>
-                    <div v-else-if="!loading" class="pue-empty">{{ t('dashboard.board.empty') }}</div>
+                    <div v-else-if="!loading" class="pue-empty">{{ t('dashboard.providerUsage.emptyNoResult') }}</div>
                   </div>
                 </div>
 

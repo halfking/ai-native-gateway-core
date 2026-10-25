@@ -26,7 +26,18 @@ export default {
     recentSessions: "Sesiones recientes",
     actionDetail: "Detalle",
     createdAt: "Creado el",
-    empty: "Sin datos de perfil de usuario"
+    empty: "Sin datos de perfil de usuario",
+    /**
+     * Estados vacíos de las tres tablas de estadísticas (2026-10-27 · incremento 14).
+     * ★ Antes las tres compartían una sola frase `hyper.list.empty`
+     *   («La lista todavía no tiene contenido.») ⇒ «tareas principales»,
+     *   «usuarios finales principales» y «sesiones recientes» quedaban reducidas
+     *   a una frase que además no decía qué faltaba.
+     *   ⇒ kind = FirstUse: esta cuenta todavía no ha generado esos registros.
+     */
+    emptyFirstUseTopTasks: 'Esta cuenta aún no tiene registros de tareas.',
+    emptyFirstUseTopEndUsers: 'Esta cuenta aún no tiene registros de usuarios finales.',
+    emptyFirstUseRecentSessions: 'Esta cuenta aún no tiene registros de sesiones.',
   },
   userProfileSearchPlaceholder: "Buscar identificador…",
   catalog: {
@@ -70,6 +81,19 @@ export default {
     errorsEmpty: 'Sin errores registrados en este período',
     errorRate: 'Tasa de error',
     totalErrors: 'Errores totales',
+    /**
+     * Estados vacíos (2026-10-27 · incremento 14 · «empty state de 5 puntos»).
+     * ★ `errorsEmpty` = «Sin errores registrados en este período» = **buen estado**
+     *   (de verdad no hubo errores); en cambio, que el servidor **no devuelva** el
+     *   resumen de errores (errors = null) es **desconocido**.
+     *   El texto anterior (`dashboard.noData`, «Sin datos para este periodo»)
+     *   convertía «no lo sé» en «lo sé» ⇒ son dos cosas distintas ⇒ kind = Failed.
+     */
+    emptyFailedErrorSummary: 'En este período no se ha devuelto el resumen de errores; vuelva a intentarlo para obtenerlo.',
+    /** Estado vacío: sin estadísticas de los clientes principales (antes usaba `dashboard.noData`). */
+    emptyNoResultTopClients: 'En este período no hay estadísticas de clientes.',
+    /** Estado vacío: sin estadísticas de las tareas principales (antes usaba `dashboard.noData`). */
+    emptyNoResultTopTasks: 'En este período no hay estadísticas de tareas.',
     lastUpdated: "Last updated",
     newSessions24h: "New sessions (24h)",
     closedSessions24h: "Closed sessions (24h)",
