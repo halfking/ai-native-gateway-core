@@ -309,7 +309,14 @@ const PAGE_PROBE = () => {
     if (!text || text.length < 4) continue
     const w = el.clientWidth
     const h = el.clientHeight
-    if (w > 0 && w < 44 && h > w * 2.2 && h > 90) {
+    // ★ 2026-10-26：判据从 `w > 0` 放宽到 `w >= 0`。
+    //   原来 `w > 0` 把【宽度恰为 0】的元素挡在门外 —— 而 0 宽恰恰是
+    //   「被兄弟节点挤没了」的**最坏形态**：实测德语页标题宽 = 0px
+    //   （标题完全消失，页面其余部分照常渲染，肉眼只看到「标题不见了」）。
+    //   ⇒ 「最坏情况看不见」＝ 量具在关键处瞎了：门报绿，页面是坏的。
+    //   放宽前先量过差值（4 语种 × 19 路由 = 76 页：新旧判据命中数
+    //   完全一致、0 页有差值）⇒ 没有引入假阳性。
+    if (w >= 0 && w < 44 && h > w * 2.2 && h > 90) {
       const cs = getComputedStyle(el)
       if (out.sigHits.length >= 8) break
       const rec = {
@@ -323,6 +330,8 @@ const PAGE_PROBE = () => {
       // writing-mode: vertical-rl，「一列一个字」正是它要的样子（实测 18×96）。
       // 不排除它 ⇒ CJK 语种每趟都挂一条假 P1 ⇒ 真回归被噪声淹没。
       else if (/^(vertical|sideways)/.test(cs.writingMode)) rec.excluded = 'vertical-writing'
+      // 不可见（visibility:hidden）仍有布局盒：零宽时会命中签名，但人看不到 ⇒ 排除。
+      else if (cs.visibility === 'hidden') rec.excluded = 'invisible'
       out.sigHits.push(rec)
       if (rec.excluded) continue
       out.verticalText.push({
@@ -1142,6 +1151,39 @@ const SELFTEST_FIXTURES = [
       .page{background:#fff;padding:0;width:100%;box-sizing:border-box}
       .cell{width:100%;height:30px;overflow:hidden;line-height:20px}</style>`,
     expect: { centered: false, verticalText: 0, clipped: 1, scannedNonZero: true, sigHit: 0 },
+  },
+  {
+    // ★ 2026-10-26：宽度恰为 0 的文本元素必须被抓住。
+    //   这是「被兄弟节点挤没了」的最坏形态（实测：德语页页头标题宽 = 0px，
+    //   标题完全消失）。原判据写的是 `w > 0` ⇒ 恰好把这个形态挡在门外。
+    //   ⇒ 门报绿、页面是坏的：最坏情况不可见 ⇒ 量具在关键处瞎了。
+    //   形态取自真实缺陷：flex 容器里 actions 段 flex-shrink:0（不让步）+
+    //   main 段 min-width:0（可缩到 0）⇒ 标题被压成 0 宽。
+    name: '零宽文本（被兄弟节点挤没了）：宽度 = 0px 仍必须被报出逐字折行',
+    html: `<div class="main-body"><section class="page">
+        <div class="hdr"><div class="hdr__main"><h2 class="hdr__title">Kostenloser Ressourcenpool</h2></div>
+          <div class="hdr__actions"><button>Ein-Klick-Einrichtung</button><button>Anmeldedaten in die DB schreiben</button></div></div></section></div>
+      <style>.main-body{padding:16px;background:#eee}
+      .page{background:#fff;padding:0;width:100%;box-sizing:border-box}
+      .hdr{display:flex;align-items:center;justify-content:space-between;gap:12px;width:360px}
+      .hdr__main{min-width:0}
+      .hdr__title{font-size:18px;margin:0;overflow-wrap:break-word}
+      .hdr__actions{display:flex;gap:8px;flex-shrink:0;white-space:nowrap}
+      .hdr__actions button{padding:6px 10px}</style>`,
+    expect: { centered: false, verticalText: 1, clipped: 0, scannedNonZero: true, sigHit: 1 },
+  },
+  {
+    // 反向对照：零宽但**不可见**（visibility:hidden）的元素不得误报。
+    //   少这一条 ⇒ 放宽判据就等于放进来一类假阳性（不可见但有布局盒）。
+    //   ⚠ 形态里刻意不写 overflow:hidden —— 否则会同时命中【内容裁切】判据，
+    //   让本夹具变成在测另一条判据（第一版就是这么翻车的：clipped 期望 0 实测 1）。
+    name: '零宽但 visibility:hidden：命中签名但不得报出逐字折行',
+    html: `<div class="main-body"><section class="page">
+        <div class="ghost">这段文字不可见，不该被报成折行</div></section></div>
+      <style>.main-body{padding:16px;background:#eee}
+      .page{background:#fff;padding:0;width:100%;box-sizing:border-box}
+      .ghost{visibility:hidden;width:0;height:200px;word-break:break-all}</style>`,
+    expect: { centered: false, verticalText: 0, clipped: 0, scannedNonZero: true, sigHit: 1 },
   },
 ]
 
