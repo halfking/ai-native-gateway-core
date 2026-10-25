@@ -94,7 +94,7 @@ onMounted(() => {
 .st-card-header { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: var(--space-2); }
 .st-card-name { font-size: var(--text-md); font-weight: var(--font-semibold); }
 .st-card-code { color: var(--text-muted); font-size: var(--text-sm); }
-.st-card-price { font-size: var(--text-2xl); font-weight: var(--font-semibold); color: var(--kx-primary, var(--app-primary, #5b8def)); margin-bottom: var(--space-2); }
+.st-card-price { font-size: var(--text-2xl); font-weight: var(--font-semibold); color: var(--kx-primary); margin-bottom: var(--space-2); }
 .st-card-description { color: var(--text); margin-bottom: var(--space-2); font-size: var(--text-sm); }
 .st-card-modules { margin-top: auto; padding-top: var(--space-2); border-top: 1px solid var(--border-muted); }
 .st-modules-title { font-size: var(--text-sm); color: var(--text-muted); margin-bottom: var(--space-1); }
