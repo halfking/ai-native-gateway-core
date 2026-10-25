@@ -1,6 +1,10 @@
 // app.ts — App.vue shell strings (header roles, sidebar collapse, logout, language switcher).
 export default {
-  brand: 'AI-Native Org Gateway',
+  brand: {
+    siteTitle: 'AI Native Core Gateway',
+    siteTitleLineTwo: 'Core Gateway',
+    alt: 'Kaixuan logo',
+  },
   role: {
     super_admin: 'Super Admin',
     tenant_admin: 'Tenant Admin',

@@ -1,7 +1,11 @@
 // Auto-translated draft (ar-SA) · 2026-07-02 · please review
 // app.ts — نصوص غلاف App.vue (دور الشريط العلوي، طي الشريط الجانبي، تسجيل الخروج، تبديل اللغة).
 export default {
-  brand: 'AI-Native Org Gateway',
+  brand: {
+    siteTitle: 'AI Native البوابة الأساسية',
+    siteTitleLineTwo: 'البوابة الأساسية',
+    alt: 'شعار Kaixuan',
+  },
   role: {
     super_admin: 'المسؤول الأعلى',
     tenant_admin: 'مسؤول المستأجر',

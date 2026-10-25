@@ -76,6 +76,7 @@ export default {
     agents: "سجل الوكلاء",
     promptInjection: "كشف حقن المطالبات",
     examples: "أمثلة التكامل",
+    autoConfig: 'الإعداد التلقائي',
     chat: "محادثة",
     opsOverview: "نظرة عامة على العمليات",
     opsLicenses: "إدارة التراخيص",

@@ -3,6 +3,7 @@
 export default {
   title: 'Acceder al panel de control',
   subtitle: 'Consola Kaixuan MaaS', // marca "开轩" conservada
+  hint: 'En el primer inicio de sesión, o cuando un administrador restablezca la contraseña, cámbiala antes de continuar.',
   username: 'Usuario',
   usernamePlaceholder: 'admin',
   password: 'Contraseña',
@@ -15,6 +16,8 @@ export default {
   error: {
     required: 'Introduzca usuario y contraseña',
     failed: 'Error de inicio de sesión',
+    apiKeyUnsupported: 'Esta cuenta ya no inicia sesión con una API key. Usa el nombre de usuario y la contraseña. Si necesitas ayuda, contacta con el administrador.',
+    badResponse: 'La respuesta de inicio de sesión tiene un formato incorrecto. Vuelve a intentarlo o contacta con el administrador.',
   },
   changePassword: 'Cambiar contraseña',
   passwordChangeSuccess: 'Contraseña cambiada exitosamente',

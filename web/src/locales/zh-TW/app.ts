@@ -1,7 +1,11 @@
 // Auto-translated draft (zh-TW/ja-JP) · 2026-07-02 · please review
 // app.ts — App.vue 外殼框架文案（頂欄角色、側欄折疊、退出、語言切換）。
 export default {
-  brand: 'AI-Native 組織網關',
+  brand: {
+    siteTitle: 'AI Native 組織核心網關',
+    siteTitleLineTwo: '組織核心網關',
+    alt: 'Kaixuan 標誌',
+  },
   role: {
     super_admin: '超級管理員',
     tenant_admin: '租戶管理員',

@@ -1,7 +1,11 @@
 // Auto-translated draft (zh-TW/ja-JP) · 2026-07-02 · please review
 // app.ts — App.vue 外壳框架文案（トップバーの役割、サイドバーの折りたたみ、ログアウト、言語切替）。
 export default {
-  brand: 'AI-Native Org Gateway',
+  brand: {
+    siteTitle: 'AI Native 組織コアゲートウェイ',
+    siteTitleLineTwo: '組織コアゲートウェイ',
+    alt: 'Kaixuan ロゴ',
+  },
   role: {
     super_admin: 'スーパー管理者',
     tenant_admin: 'テナント管理者',

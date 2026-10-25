@@ -80,6 +80,7 @@ export default {
     agents: 'Agent Registry',
     promptInjection: '提示词注入检测',
     examples: '接入示例',
+    autoConfig: '自动配置',
     chat: '对话',
     updateActivate: '更新与激活',
     licenseActivate: '许可激活',

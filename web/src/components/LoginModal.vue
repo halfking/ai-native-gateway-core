@@ -1,14 +1,17 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
+import { useI18n } from 'vue-i18n'
 import { login, getAuthMe } from '../api'
 import { setApiKey, setJwtToken, setUserInfo, userInfoFromAuthMe } from '../store'
 import { useLoginModal } from '../composables/useLoginModal'
 import { locationFromInternalPath } from '../utils/safeRedirect'
 import { detectTheme, logoSrc } from '../theme'
-import { SITE_LOGO_SIZE, SITE_TITLE } from '../config/brand'
+import { SITE_LOGO_SIZE } from '../config/brand'
 import AppModal from './ui/AppModal.vue'
 import { Close } from '@element-plus/icons-vue'
+
+const { t } = useI18n()
 
 const brandLogo = ref(logoSrc())
 let logoObserver: MutationObserver | null = null
@@ -53,7 +56,7 @@ function close() {
 async function handleLogin() {
   error.value = ''
   if (!username.value || !password.value) {
-    error.value = '请输入用户名和密码'
+    error.value = t('login.error.required')
     return
   }
   loading.value = true
@@ -82,12 +85,12 @@ async function handleLogin() {
       // 2026-07-10: Legacy sk-* admin key path. Admin routes no longer accept
       // sk-* keys (unified JWT auth). Show an explicit error so the user
       // knows they need a regular user account.
-      error.value = '此账号不再支持 API key 登录，请使用用户名/密码登录。如需帮助请联系管理员。'
+      error.value = t('login.error.apiKeyUnsupported')
     } else {
-      error.value = '登录响应格式异常，请重试或联系管理员。'
+      error.value = t('login.error.badResponse')
     }
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : '登录失败'
+    error.value = e instanceof Error ? e.message : t('login.error.failed')
   } finally {
     loading.value = false
   }
@@ -114,13 +117,13 @@ function onModelUpdate(v: boolean) {
           :src="brandLogo"
           :width="SITE_LOGO_SIZE"
           :height="SITE_LOGO_SIZE"
-          alt="开轩启圭"
+          :alt="t('app.brand.alt')"
           class="login-modal__brand-img"
         />
         <div>
-          <h2 id="login-modal-title">登录控制面</h2>
-          <p class="login-modal__subtitle">{{ SITE_TITLE }}</p>
-          <p class="login-modal__hint">首次登录或管理员重置密码后，需要先修改密码才能继续使用。</p>
+          <h2 id="login-modal-title">{{ t('login.title') }}</h2>
+          <p class="login-modal__subtitle">{{ t('app.brand.siteTitle') }}</p>
+          <p class="login-modal__hint">{{ t('login.hint') }}</p>
         </div>
       </div>
       <button type="button" class="btn btn-ghost btn-sm login-modal__close" :aria-label="$t('common.close')" @click="close">
@@ -142,7 +145,7 @@ function onModelUpdate(v: boolean) {
         />
       </div>
       <div class="form-group">
-        <label for="login-password">密码</label>
+        <label for="login-password">{{ t('login.password') }}</label>
         <input
           id="login-password"
           v-model="password"
@@ -154,7 +157,7 @@ function onModelUpdate(v: boolean) {
       <div class="login-modal__actions">
         <button type="button" class="btn btn-ghost" @click="close">{{ $t('common.button.cancel') }}</button>
         <button class="btn btn-primary" type="submit" :disabled="loading">
-          {{ loading ? '登录中…' : '登录' }}
+          {{ loading ? t('login.submitting') : t('login.submit') }}
         </button>
       </div>
     </form>

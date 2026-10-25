@@ -32,7 +32,7 @@ import { useWindowClass, getWindowClass } from './composables/useWindowClass'
 import { installHyper, navigation, type NavigationScope } from './lib/shell/hyper'
 import { navDrawerOpen } from './composables/useAppNav'
 import { detectTheme, logoSrc } from './theme'
-import { SITE_LOGO_SIZE, SITE_TITLE, SITE_TITLE_LINE_ONE, SITE_TITLE_LINE_TWO } from './config/brand'
+import { SITE_LOGO_SIZE, SITE_TITLE_LINE_ONE } from './config/brand'
 import { useLoginModal } from './composables/useLoginModal'
 import { onMaintainAvailabilityChange, probeMaintainAvailable } from './config/edition'
 import { loadCredentialLabels, clearCredentialLabels } from './composables/useCredentialLabels'
@@ -351,24 +351,24 @@ async function handleChangePasswordSuccess() {
   </div>
   <div v-else class="guest-layout">
     <header class="guest-header">
-      <a href="/" class="guest-brand" :aria-label="SITE_TITLE">
+      <a href="/" class="guest-brand" :aria-label="t('app.brand.siteTitle')">
         <img
           :src="brandLogo"
           :width="SITE_LOGO_SIZE"
           :height="SITE_LOGO_SIZE"
-          alt="开轩启圭"
+          :alt="t('app.brand.alt')"
           class="guest-brand-img"
         />
         <span class="guest-brand-text">
           <span>{{ SITE_TITLE_LINE_ONE }}</span>
-          <span>{{ SITE_TITLE_LINE_TWO }}</span>
+          <span>{{ t('app.brand.siteTitleLineTwo') }}</span>
         </span>
       </a>
       <button
         v-if="!isTablet"
         type="button"
         class="btn btn-ghost btn-sm guest-hamburger"
-        :aria-label="t('landing.guestNavAria', '产品导航')"
+        :aria-label="t('landing.guestNavAria')"
         aria-haspopup="dialog"
         @click="navDrawerOpen = true"
       ><Menu /></button>

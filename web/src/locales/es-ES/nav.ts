@@ -77,6 +77,7 @@ export default {
     agents: "Registro de agentes",
     promptInjection: "Detección de inyección de prompts",
     examples: "Ejemplos",
+    autoConfig: 'Configuración automática',
     chat: "Chat",
     opsOverview: "Resumen de operaciones",
     opsLicenses: "Gestión de licencias",

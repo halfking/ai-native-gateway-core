@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, ref } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { ElMessage } from 'element-plus'
 import OperationAgreementDialog from '../../components/lifecycle/OperationAgreementDialog.vue'
 import UpdateActivateSiteCard from '../../components/lifecycle/UpdateActivateSiteCard.vue'
@@ -24,7 +25,8 @@ import {
   resolveHardwareHash,
   setInstanceId,
 } from '../../utils/deviceFingerprint'
-import { SITE_TITLE } from '../../config/brand'
+
+const { t } = useI18n()
 
 
 // 2026-09-13 P5：补齐模板使用的 el-* 组件注册（修复运行时 resolve 失败）
@@ -334,8 +336,8 @@ onMounted(async () => {
   <div class="ua-page">
     <header class="ua-page__header">
       <div>
-        <h1>更新与激活</h1>
-        <p>{{ SITE_TITLE }} — 站点信息、一键激活、版本升级与已开通模块。</p>
+        <h1>{{ t('nav.item.updateActivate') }}</h1>
+        <p>{{ t('app.brand.siteTitle') }} · {{ t('customer.updateActivate.summary') }}</p>
       </div>
       <div class="ua-page__actions">
         <RouterLink

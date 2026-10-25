@@ -18,6 +18,9 @@ export default {
     reactivate: 'Re-activate',
     loadFailed: 'Failed to load license info: {msg}',
   },
+  updateActivate: {
+    summary: 'Standortdetails, Ein-Klick-Aktivierung, Versions-Upgrades und die aktivierten Module.',
+  },
   versionsUpgradeConfirmBody: 'Der Dienst wird auf {version} ({label}) aktualisiert. Dabei ist er kurzzeitig nicht verfügbar. Stellen Sie sicher, dass keine wichtigen Aufgaben laufen.',
   versionsUpgradeConfirmTitle: 'Upgrade bestätigen',
   versionsUpgradeConfirmStart: 'Upgrade starten',

@@ -1,7 +1,11 @@
 // Auto-translated draft (es-ES) · 2026-07-02 · please review
 // app.ts — Textos del shell de App.vue (roles, colapsar lateral, salir, cambio de idioma).
 export default {
-  brand: 'AI-Native Org Gateway',
+  brand: {
+    siteTitle: 'AI Native Gateway Central',
+    siteTitleLineTwo: 'Gateway Central',
+    alt: 'Logotipo de Kaixuan',
+  },
   role: {
     super_admin: 'Superadministrador',
     tenant_admin: 'Administrador de inquilino',
