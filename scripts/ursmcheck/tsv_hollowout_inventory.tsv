@@ -70,6 +70,7 @@ scripts/audit/permanent-skip-ledger.tsv	none	-	exception	0	唯一读方 measure-
 scripts/audit/reclaim_candidates.tsv	gotest	./admin/|TestSection14342ReclaimRegistryVerdictsAreDerived	red	0	回收候选登记册（verdict 可由测量导出）⇒ 掏空 ⇒ verdict 无从导出 ⇒ 红
 scripts/audit/retention_shape_findings.tsv	gotest	./admin/|TestSection14343RegistryIsRecomputable	red	1	形态台账（可重算）⇒ 掏空 ⇒ 重算结果与登记册不符 ⇒ 红
 scripts/audit/selfcreated-cleanup-ledger.tsv	none	-	exception	0	唯一读方 measure-selfcreated-cleanup.sh 需要**真实库**⇒ 本门不跑它（避免对库产生副作用）⇒ 掏空无法自动化验证
+scripts/ursmcheck/api_handler_coverage_ledger.tsv	gotest	./scripts/ursmcheck/|TestApiHandlerCoverageLedgerIsNotEmpty	red	1	★ API handler 运行时零覆盖缺口台账 ⇒ 读方自带「台账非空」判据（★ 台账为空 ⇒ 拒绝出结论）⇒ 掏空 ⇒ 红
 scripts/ursmcheck/cjk_var_sites.tsv	gotest	./scripts/ursmcheck/|TestCJKVarExpansionNoNewSites	exception	0	★ 有意允许空：两向判据（登记册空 且 全仓零站点 ⇒ 绿「零容忍生效」；登记册空 但全仓仍有站点 ⇒ 红「登记册被误删」）⇒ 掏空 = 当前现盘 ⇒ 绿是正确的 ⇒ 不适用「掏空 ⇒ 红」
 scripts/ursmcheck/destructive_target_ledger.tsv	gotest	./scripts/ursmcheck/|TestDestructiveTargetGuardNoUnguardedLeg	red	0	破坏性目标白名单 ⇒ 掏空 ⇒ 任何探测到的破坏性目标都变成「未登记」⇒ 红
 scripts/ursmcheck/dsn_target_mismatch_ledger.tsv	gotest	./scripts/ursmcheck/|TestDatasourceEnvTargetGuardNoUnregisteredMismatch	red	0	DSN 错配登记册 ⇒ 掏空 ⇒ 探测到的错配全部变成「未登记」⇒ 红
@@ -79,6 +80,7 @@ scripts/ursmcheck/pipefail_race_ledger.tsv	gotest	./scripts/ursmcheck/|TestPipef
 scripts/ursmcheck/product_db_name_ledger.tsv	gotest	./scripts/ursmcheck/|TestProductDBNameLedgerInvariants	red	0	产品库名登记册 ⇒ 掏空 ⇒ 台账为空 ⇒ 解析器可能失效 ⇒ 拒绝出结论 ⇒ 红
 scripts/ursmcheck/selfcreated_cleanup_language_map.tsv	gotest	./scripts/ursmcheck/|TestSelfCreatedCleanupLanguageMapCoversLedger	red	0	语言映射表（判据的唯一语义事实源）⇒ 掏空 ⇒ 映射表覆盖不了台账任何一行 ⇒ 红
 scripts/ursmcheck/selfcreated_cleanup_quality_ledger.tsv	gotest	./scripts/ursmcheck/|TestSelfCreatedCleanupQualityLedger	red	0	逐条人工裁决台账 ⇒ 掏空 ⇒ 质量判据无输入 ⇒ 红
+scripts/ursmcheck/session_summaries_like_index_ledger.tsv	gotest	./scripts/ursmcheck/|TestSessionSummariesLikeIndexLedgerShape	red	1	★ session_summaries 的 LIKE 查询列「尚无 trigram 索引」待办台账 ⇒ 读方自带「台账为空 ⇒ 拒绝出结论」判据 ⇒ 掏空 ⇒ 红
 sql/schema/baseline_rerun_budget.tsv	gotest	./sql/schema/|TestBaselineRerunBudgetIsAnnotated	red	0	基线重跑错误预算 ⇒ 掏空 ⇒ 预算读不到 ⇒ 红
 sql/schema/fresh_install_column_gaps.tsv	gotest	./sql/schema/|TestFreshInstallColumnGapRegistryShape	red	0	新装缺列登记册 ⇒ 掏空 ⇒ 「缺口集与安装链一致」无从成立 ⇒ 红
 sql/schema/installed_startup_migrations.tsv	shell	cd installer && go test ./internal/dbinit/ -run '^TestStartupManifestMatchesStartupFiles$' -count=1	red	0	启动迁移有序清单（生成器产物）⇒ 掏空 ⇒ 与 StartupFiles 不一致 ⇒ 红（★ installer 是独立 Go module ⇒ 只能用 shell 读方）

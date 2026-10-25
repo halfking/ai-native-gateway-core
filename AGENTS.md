@@ -8848,9 +8848,12 @@ index b953a6f03..555ef83c4 100644
 > ⇒ ★★ （★ R153 的「没有发现慢 SQL」那个结论**范围是本地**，★ 本轮在生产上推翻了它）。
 > ⇒ ★★★★ **覆盖度基线（★ Goal「逐个 api 单元测试」）**：★ 先试了「grep 测试文件有没有 handler 名」
 > ⇒ **30.3%** ⇒ ★★ **不可信**（假阳性：只是提到；假阴性：走 `httptest` + 路由注册的测试不出现 handler 名）
-> ⇒ ★★★ **改用运行时 `go test ./admin/ -coverprofile=…`（96.5 s / 语句覆盖 26.1%）按【函数行范围】判定**：
-> ★★★ 路由登记 **551** ⇒ ★★ **运行时零覆盖 = 310 条（75.2%）**、有覆盖 102 条、**无法判定 139 条**
-> ⇒ ★★★ **这就是「逐个 api 单元测试」的真实缺口清单**（★ 75.2% 是**下界**，★ 那 139 条可能已被覆盖）。
+> ⇒ ★★★ **改用运行时 `go test ./admin/ -coverprofile=…`（≈95 s / 语句覆盖 26.1%）按【函数行范围】判定**：
+> ★★★ **仓内审计器全量读数（父会话独立复跑）：路由登记 606 ⇒ ★★ 运行时零覆盖 331 条（54.6%）**、
+> ★★ 有覆盖 108 条、**无法判定 167 条**
+> ⇒ ★★★ **这就是「逐个 api 单元测试」的真实缺口清单**（★ 331 是**下界**，★ 那 167 条可能已被覆盖）。
+> ⇒ ★★ **两个口径的差已写清**：★ 我的原型只扫 5 个目录 ⇒ 551/310；★ 审计器扫全仓 ⇒ **606/331（以此为准）**
+> ⇒ ★★ **口径一变数字就变 ⇒ 报数必须带口径**。
 > ⇒ ★★ **仓内落地**：★ `scripts/ursmcheck/session_summaries_like_index_ledger.tsv`
 > ★★ （★ **待办台账**，13 列，★ 照抄 `pipefail_race_ledger.tsv` 的列结构；★ 3 行待办 + 完整生产证据；
 > ★★ ★ `verdict` **只许缩小** ⇒ 加了索引就从台账删掉）
@@ -8871,3 +8874,28 @@ index b953a6f03..555ef83c4 100644
 > ★ **D18** 那 139 条 `undetermined` 路由的覆盖度判定口径；★ ＋此前登记的 D13/D11/D14/D15/D16/D1/D2/D3/D10。
 > ⇒ ★ **完整记录见审计档 `docs/audit/2026-10-27-R154-生产慢SQL取证与API覆盖度基线.md`（§5 含 8 条诚实边界）**
 > ⇒ ★ **通用式见 `LESSONS.md` §403（通用式一~七）**。
+
+> **2026-10-27 R155 轮（本会话 `mvs_bbd1346d211a4eb3ac41b552c82eaecf`，独立 worktree `/tmp/kx-wt-r98`）**
+> ⇒ ★★ **主题**：★ 把 R154 的「覆盖度基线」从**一次性读数**变成**仓内可复现、可跟踪的资产**。
+> ⇒ ★★ **三件套**：★ `scripts/audit/api-handler-coverage.sh`（★ 运行时 coverprofile 审计器，★ 606 行）
+> ★★ ／★ `scripts/ursmcheck/api_handler_coverage_ledger.tsv`（★ **缺口台账**，★ **14 列**，
+> ★★ ★ 机器判定列 `verdict` 与人工裁决列 `adjudication` **分离** ⇒ 工具可重跑而不覆盖人工裁决）
+> ★★ ／★ `scripts/ursmcheck/api_handler_coverage_gate_test.go`（★ **7 条断言**）。
+> ⇒ ★★ **门 7/7 PASS**（★ `ok 5.100s`）+ ★★ **门自带「有牙」自测**（`TestApiHandlerCoverageGateHasTeeth`
+> ★★ ⇒ ★ **删掉一行后面板报出缺行** ⇒ ★★★ **这比外部变异更硬**：门在跑的时候自己证明自己会红）。
+> ⇒ ★★ **缺口原因分类（6 类）**：★ `needs-integration-test` **167** ／★ `needs-unit-test` **131**
+> ★★ ／★ `delegating-wrapper` **14** ／★ `logic-migrated` **9** ／★ `param-validation-only` **5**
+> ★★ ／★ `admin-manual-op` **5** ⇒ ★★ **「逐个 api 单元测试」的收口清单从此可跟踪**。
+> ⇒ ★★★ **★ 归属判定（本轮最有价值的一条）**：★ `scripts/ursmcheck` 包在 `-timeout 30m` 下
+> ★★ 跑完 690.736 s **FAIL** ⇒ ★★ **用「我的 worktree vs 纯净 origin/main」两次全量跑做归属**：
+> ★★ ⇒ **我的 worktree 全绿（831.336 s）**；★ **纯净 origin/main 红（837.212 s，3 条失败）**。
+> ⇒ ⇒ ★★★ **FAIL 的根因有两个，各归各**：★ ① **上游 `b7022a466`** 引入
+> ★★ `admin/body_resolver_content_array_realdb_test.go` ⇒ 读了 2 个**未登记**的 env
+> ★★ （`TEST_CONTENT_ARRAY_SAMPLE` / `TEST_CONTENT_ARRAY_REQUEST_IDS`）⇒ ★ **上游把包弄红了**；
+> ★★ ② **我自己**：★ R154 引入的 `session_summaries_like_index_ledger.tsv` **没登记进**
+> ★★ `tsv_hollowout_inventory.tsv` ⇒ ★ **「掏空法」覆盖门红** ⇒ ★★ **已在 R155 补登记**。
+> ⇒ ⇒ ★★★★ **通用式**：★ **「我这边红」不等于「我这边错」** ⇒ ★★ **归属判定的唯一可靠办法是
+> ★★ 「同一台机器、同一条命令、两个 checkout 各跑一遍」** ⇒ ★★★ 否则会去修一个不属于你的红。
+> ⇒ ⇒ ★★★★ **副产物**：★ **R154 的提交在 upstream 上本来就是红的** ⇒ ★★ **本轮这次推送同时把
+> ★★ `origin/main` 从红变绿** ⇒ ★★ **「仓内既有门抓到新脚本真缺陷」的第四次命中**。
+> ⇒ ★★ **通用式见 `LESSONS.md` §403（通用式八~九）**。
