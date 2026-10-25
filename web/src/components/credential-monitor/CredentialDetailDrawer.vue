@@ -686,7 +686,7 @@ onUnmounted(() => {
     :model-value="!!selectedCred"
     direction="auto"
     width="min(1000px, 95vw)"
-    :title="selectedCred ? credentialDisplayName(selectedCred.id, selectedCred.label || '凭据') : ''"
+    :title="selectedCred ? credentialDisplayName(selectedCred.id, selectedCred.label || $t('common.credentialFallback')) : ''"
     @update:model-value="(v: boolean) => { if (!v) emit('update:modelValue', null) }"
   >
     <template v-if="selectedCred">
@@ -713,12 +713,12 @@ onUnmounted(() => {
           >⛔ 手动禁用</button>
           <label style="display:flex;align-items:center;gap:4px;font-size:13px;cursor:pointer">
             <input type="checkbox" :checked="detailAutoRefresh" @change="toggleDetailAutoRefresh" />
-            自动刷新
+            {{ $t('common.terms.autoRefresh') }}
           </label>
           <select v-model.number="detailRefreshInterval" class="field-input" style="width:auto;font-size:13px;padding:2px 6px">
-            <option :value="5">5秒</option>
-            <option :value="10">10秒</option>
-            <option :value="30">30秒</option>
+            <option :value="5">5{{ $t('common.seconds') }}</option>
+            <option :value="10">10{{ $t('common.seconds') }}</option>
+            <option :value="30">30{{ $t('common.seconds') }}</option>
           </select>
           <button class="btn btn-sm btn-ghost" :disabled="detailLoading" @click="refreshDetailDrawer" title="刷新详情">
             <span style="font-size:16px">↻</span>
@@ -736,7 +736,7 @@ onUnmounted(() => {
           {{ formatCacheMeta(detailMeta) }}
         </span>
         <span class="cell-sub">
-          凭据 ID: <code class="mono-sm">{{ selectedCred.id }}</code>
+          {{ $t('common.credentialFallback') }} ID: <code class="mono-sm">{{ selectedCred.id }}</code>
         </span>
       </div>
 
@@ -764,19 +764,19 @@ onUnmounted(() => {
                 <CredentialStatusBar :credential="selectedCred" :reason="effectiveCredentialReason(selectedCred)" />
               </div>
               <div>
-                <label class="field-label">可用性</label>
+                <label class="field-label">{{ $t('common.terms.availability') }}</label>
                 <span class="badge" :class="statusBadge(selectedCred.availability_state)">{{ selectedCred.availability_state }}</span>
               </div>
               <div>
-                <label class="field-label">健康</label>
+                <label class="field-label">{{ $t('common.terms.health') }}</label>
                 <span class="badge" :class="healthBadge(selectedCred.health_status)">{{ selectedCred.health_status }}</span>
               </div>
               <div>
-                <label class="field-label">配额</label>
+                <label class="field-label">{{ $t('common.terms.quota') }}</label>
                 <span>{{ selectedCred.quota_state }}</span>
               </div>
               <div>
-                <label class="field-label">连续失败</label>
+                <label class="field-label">{{ $t('common.terms.consecutiveFailures') }}</label>
                 <span>{{ selectedCred.consecutive_failures }}</span>
               </div>
               <div>
@@ -786,7 +786,7 @@ onUnmounted(() => {
                 </span>
               </div>
               <div>
-                <label class="field-label">总请求数</label>
+                <label class="field-label">{{ $t('common.terms.totalRequests') }}</label>
                 <span class="mono-sm">{{ selectedCred.total_requests }}</span>
               </div>
             </div>
@@ -813,8 +813,8 @@ onUnmounted(() => {
             </div>
             <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap">
               <button class="btn btn-sm" @click="openConcurrencyDialog">调整自动值</button>
-              <button class="btn btn-sm btn-danger" @click="openDemoteDialog">临时降级</button>
-              <button class="btn btn-sm btn-success" @click="openPromoteDialog">恢复上线</button>
+              <button class="btn btn-sm btn-danger" @click="openDemoteDialog">{{ $t('common.terms.temporaryDegrade') }}</button>
+              <button class="btn btn-sm btn-success" @click="openPromoteDialog">{{ $t('common.terms.restoreOnline') }}</button>
             </div>
           </div>
         </div>
@@ -880,11 +880,11 @@ onUnmounted(() => {
           <!-- ═══ 左列: 模型表 (split 全表 / list-full 全宽 / monitor-full 折叠窄条) ═══ -->
           <div class="pane pane-left">
             <div v-if="modelsLayout === 'monitor-full'" class="pane-collapsed">
-              <div class="pane-collapsed-label">当前选中</div>
+              <div class="pane-collapsed-label">{{ $t('common.terms.currentSelection') }}</div>
               <div class="pane-collapsed-value">
                 <code class="mono-sm">{{ selectedModel || '—' }}</code>
               </div>
-              <button class="btn btn-xs btn-ghost" @click="setLayout('split')" title="回到分屏">
+              <button class="btn btn-xs btn-ghost" @click="setLayout('split')" :title="$t('common.terms.backToSplit')">
                 <CaretRight /> 展开
               </button>
             </div>
@@ -894,14 +894,14 @@ onUnmounted(() => {
                 <table class="model-table">
                   <thead>
                     <tr>
-                      <th>模型</th>
+                      <th>{{ $t('common.terms.model') }}</th>
                       <th>总状态</th>
-                      <th>可用</th>
-                      <th>来源</th>
-                      <th>延迟 P95</th>
-                      <th>成功率</th>
+                      <th>{{ $t('common.terms.available') }}</th>
+                      <th>{{ $t('common.terms.source') }}</th>
+                      <th>{{ $t('common.terms.latency') }} P95</th>
+                      <th>{{ $t('common.terms.successRate') }}</th>
                       <th>样本</th>
-                      <th>操作</th>
+                      <th>{{ $t('common.actions') }}</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -972,11 +972,11 @@ onUnmounted(() => {
           <!-- ═══ 右列: 监控 (split 与 monitor-full 显示 / list-full 折叠窄条) ═══ -->
           <div class="pane pane-right">
             <div v-if="modelsLayout === 'list-full'" class="pane-collapsed">
-              <div class="pane-collapsed-label">当前选中</div>
+              <div class="pane-collapsed-label">{{ $t('common.terms.currentSelection') }}</div>
               <div class="pane-collapsed-value">
                 <code class="mono-sm">{{ selectedModel || '—' }}</code>
               </div>
-              <button class="btn btn-xs btn-ghost" @click="setLayout('split')" title="回到分屏">
+              <button class="btn btn-xs btn-ghost" @click="setLayout('split')" :title="$t('common.terms.backToSplit')">
                 ◀ 展开
               </button>
             </div>
@@ -992,7 +992,7 @@ onUnmounted(() => {
                 <div v-if="!selectedModel" class="cell-muted">点击左侧模型行查看</div>
                 <div v-else>
                   <div style="margin-bottom:8px;display:flex;align-items:center;gap:8px;flex-wrap:wrap">
-                    <label class="field-label">模型:</label>
+                    <label class="field-label">{{ $t('common.terms.model') }}:</label>
                     <code class="mono-sm">{{ selectedModel }}</code>
                     <!-- 🆕 2026-06-25: 模型名称右侧状态图标组
                          - 手工控制 (3 态可点击循环): 手工禁用 / 手工启动 / 自动
@@ -1035,8 +1035,8 @@ onUnmounted(() => {
                       </span>
                     </div>
                   </div>
-                  <div v-if="windowLoading">加载中...</div>
-                  <div v-else-if="!windowEntries.length" class="cell-muted">无数据</div>
+                  <div v-if="windowLoading">{{ $t('common.feedback.loading') }}</div>
+                  <div v-else-if="!windowEntries.length" class="cell-muted">{{ $t('common.terms.noData') }}</div>
                   <div v-else>
                     <div class="window-strip">
                       <div
@@ -1052,8 +1052,8 @@ onUnmounted(() => {
                     </div>
                     <div class="window-stats">
                       <span>总计: <b>{{ windowEntries.length }}</b></span>
-                      <span style="color:var(--success)">成功: <b>{{ windowEntries.filter(e => e.ok).length }}</b></span>
-                      <span style="color:var(--danger)">失败: <b>{{ windowEntries.filter(e => !e.ok).length }}</b></span>
+                      <span style="color:var(--success)">{{ $t('common.status.success') }}: <b>{{ windowEntries.filter(e => e.ok).length }}</b></span>
+                      <span style="color:var(--danger)">{{ $t('common.status.failed') }}: <b>{{ windowEntries.filter(e => !e.ok).length }}</b></span>
                       <span>失败率: <b>{{ ((windowEntries.filter(e => !e.ok).length / windowEntries.length) * 100).toFixed(1) }}%</b></span>
                     </div>
                   </div>
@@ -1062,7 +1062,7 @@ onUnmounted(() => {
 
               <!-- 错误分布 -->
               <div class="drawer-section">
-                <div class="drawer-section-title">错误分布</div>
+                <div class="drawer-section-title">{{ $t('common.terms.errorDistribution') }}</div>
                 <div class="pie-wrap">
                   <canvas id="errorPieChart"></canvas>
                 </div>
@@ -1073,7 +1073,7 @@ onUnmounted(() => {
                 <div class="drawer-section-title" style="display:flex;justify-content:space-between;align-items:center">
                   <span>并发槽位与指纹分配</span>
                   <button class="btn btn-sm" @click="loadFpSlotStats" :disabled="fpSlotStatsLoading">
-                    {{ fpSlotStatsLoading ? '加载中…' : '↻ 刷新' }}
+                    {{ fpSlotStatsLoading ? $t('common.feedback.loading') : '↻ ' + $t('common.button.refresh') }}
                   </button>
                 </div>
                 <div v-if="!fpSlotStats" class="cell-muted" style="margin-top:8px">
@@ -1101,18 +1101,18 @@ onUnmounted(() => {
                 :disabled="historyLoading || !selectedModel"
                 style="margin-left:auto"
                 @click="refreshSelectedModelHistory"
-              >↻ 刷新</button>
+              >↻ {{ $t('common.button.refresh') }}</button>
             </div>
             <div v-if="!selectedModel" class="cell-muted">点击「模型可用性」tab 中的模型查看</div>
-            <div v-else-if="historyLoading">加载中...</div>
+            <div v-else-if="historyLoading">{{ $t('common.feedback.loading') }}</div>
             <div v-else-if="!historyEvents.length" class="cell-muted">无状态变化记录</div>
             <table v-else class="history-table">
               <thead>
                 <tr>
-                  <th>时间</th>
-                  <th>来源</th>
+                  <th>{{ $t('common.time') }}</th>
+                  <th>{{ $t('common.terms.source') }}</th>
                   <th>事件</th>
-                  <th>详情</th>
+                  <th>{{ $t('common.button.detail') }}</th>
                 </tr>
               </thead>
               <tbody>
@@ -1150,21 +1150,21 @@ onUnmounted(() => {
                 class="btn btn-xs btn-ghost"
                 :disabled="credentialDecisionsLoading"
                 @click="loadCredentialDecisions"
-              >↻ 刷新</button>
+              >↻ {{ $t('common.button.refresh') }}</button>
             </div>
-            <div v-if="credentialDecisionsLoading">加载中...</div>
+            <div v-if="credentialDecisionsLoading">{{ $t('common.feedback.loading') }}</div>
             <div v-else-if="!credentialDecisions.length" class="cell-muted">无路由决策记录</div>
             <div v-else style="overflow-x:auto">
               <table class="decision-table">
                 <thead>
                   <tr>
-                    <th>时间</th>
-                    <th>请求ID</th>
-                    <th>模型</th>
+                    <th>{{ $t('common.time') }}</th>
+                    <th>{{ $t('common.terms.requestId') }}</th>
+                    <th>{{ $t('common.terms.model') }}</th>
                     <th>Tier</th>
-                    <th>结果</th>
-                    <th>延迟</th>
-                    <th>错误</th>
+                    <th>{{ $t('common.terms.result') }}</th>
+                    <th>{{ $t('common.terms.latency') }}</th>
+                    <th>{{ $t('common.terms.error') }}</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -1197,29 +1197,29 @@ onUnmounted(() => {
     <!-- ═══ 确认弹窗 ×6（2026-09-13 手写遮罩+卡片迁 ui/AppModal sm） ═══ -->
 
     <!-- Demote Dialog -->
-    <AppModal v-model="demoteDialogOpen" title="临时降级" size="sm">
+    <AppModal v-model="demoteDialogOpen" :title="$t('common.terms.temporaryDegrade')" size="sm">
       <div style="margin-bottom:16px">
         <label class="field-label">降级原因</label>
-        <input v-model="demoteReason" class="field-input" placeholder="请输入原因" />
+        <input v-model="demoteReason" class="field-input" :placeholder="$t('common.terms.reasonPlaceholder')" />
       </div>
       <div style="margin-bottom:16px">
         <label class="field-label">自动恢复时间 (小时)</label>
         <input v-model.number="demoteHours" type="number" min="0.5" step="0.5" class="field-input" />
       </div>
       <template #footer>
-        <button class="btn btn-ghost" @click="demoteDialogOpen = false">取消</button>
+        <button class="btn btn-ghost" @click="demoteDialogOpen = false">{{ $t('common.button.cancel') }}</button>
         <button class="btn btn-danger" @click="submitDemote">确认降级</button>
       </template>
     </AppModal>
 
     <!-- Promote Dialog -->
-    <AppModal v-model="promoteDialogOpen" title="恢复上线" size="sm">
+    <AppModal v-model="promoteDialogOpen" :title="$t('common.terms.restoreOnline')" size="sm">
       <div style="margin-bottom:16px">
         <label class="field-label">恢复原因</label>
-        <input v-model="promoteReason" class="field-input" placeholder="请输入原因" />
+        <input v-model="promoteReason" class="field-input" :placeholder="$t('common.terms.reasonPlaceholder')" />
       </div>
       <template #footer>
-        <button class="btn btn-ghost" @click="promoteDialogOpen = false">取消</button>
+        <button class="btn btn-ghost" @click="promoteDialogOpen = false">{{ $t('common.button.cancel') }}</button>
         <button class="btn btn-success" @click="submitPromote">确认恢复</button>
       </template>
     </AppModal>
@@ -1232,11 +1232,11 @@ onUnmounted(() => {
       </div>
       <div style="margin-bottom:16px">
         <label class="field-label">调整原因</label>
-        <input v-model="concurrencyReason" class="field-input" placeholder="请输入原因" />
+        <input v-model="concurrencyReason" class="field-input" :placeholder="$t('common.terms.reasonPlaceholder')" />
       </div>
       <template #footer>
-        <button class="btn btn-ghost" @click="concurrencyDialogOpen = false">取消</button>
-        <button class="btn btn-primary" @click="submitConcurrency">确认</button>
+        <button class="btn btn-ghost" @click="concurrencyDialogOpen = false">{{ $t('common.button.cancel') }}</button>
+        <button class="btn btn-primary" @click="submitConcurrency">{{ $t('common.button.confirm') }}</button>
       </template>
     </AppModal>
 
@@ -1259,7 +1259,7 @@ onUnmounted(() => {
         @keyup.enter="submitToggle"
       />
       <template #footer>
-        <button class="btn btn-ghost" @click="toggleDialogOpen = false">取消</button>
+        <button class="btn btn-ghost" @click="toggleDialogOpen = false">{{ $t('common.button.cancel') }}</button>
         <button
           :class="toggleTarget?.action === 'offline' ? 'btn btn-danger' : 'btn btn-success'"
           :disabled="!toggleReason.trim()"
@@ -1276,7 +1276,7 @@ onUnmounted(() => {
       <div style="margin-bottom:12px;padding:12px;background:rgba(251,191,36,0.1);border:1px solid rgba(251,191,36,0.3);border-radius:6px;font-size:13px">
         ⚠️ 此操作将立即恢复凭据到正常路由池，manual_disabled 标志将被清除。请确认此凭据已经可以正常使用。
       </div>
-      <label class="field-label">操作原因（必填）</label>
+      <label class="field-label">{{ $t('common.terms.actionReason') }}</label>
       <input
         v-model="clearDisabledReason"
         class="field-input"
@@ -1284,7 +1284,7 @@ onUnmounted(() => {
         @keyup.enter="submitClearDisabled"
       />
       <template #footer>
-        <button class="btn btn-ghost" @click="clearDisabledDialogOpen = false">取消</button>
+        <button class="btn btn-ghost" @click="clearDisabledDialogOpen = false">{{ $t('common.button.cancel') }}</button>
         <button
           class="btn btn-warning"
           :disabled="!clearDisabledReason.trim()"
@@ -1304,7 +1304,7 @@ onUnmounted(() => {
       <div v-else style="margin-bottom:12px;padding:12px;background:rgba(16,185,129,0.1);border:1px solid rgba(16,185,129,0.3);border-radius:6px;font-size:13px">
         ✓ 此操作将设置 manual_disabled = false，凭据将恢复到正常路由池。
       </div>
-      <label class="field-label">操作原因（必填）</label>
+      <label class="field-label">{{ $t('common.terms.actionReason') }}</label>
       <input
         v-model="setManualDisabledReason"
         class="field-input"
@@ -1312,12 +1312,12 @@ onUnmounted(() => {
         @keyup.enter="submitSetManualDisabled"
       />
       <template #footer>
-        <button class="btn btn-ghost" @click="setManualDisabledDialogOpen = false">取消</button>
+        <button class="btn btn-ghost" @click="setManualDisabledDialogOpen = false">{{ $t('common.button.cancel') }}</button>
         <button
           :class="setManualDisabledTargetValue ? 'btn btn-danger' : 'btn btn-success'"
           :disabled="!setManualDisabledReason.trim()"
           @click="submitSetManualDisabled"
-        >确认{{ setManualDisabledTargetValue ? '禁用' : '启用' }}</button>
+        >确认{{ setManualDisabledTargetValue ? $t('common.status.disabled') : $t('common.status.enabled') }}</button>
       </template>
     </AppModal>
   </AppDrawer>

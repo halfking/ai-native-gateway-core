@@ -218,7 +218,7 @@ function closeDialog() {
       <section class="journey-modal" role="dialog" aria-modal="true" :aria-label="t('requestJourneys.title')">
         <div class="journey-header">
           <div><h3>{{ t('requestJourneys.title') }}</h3><p class="journey-modal-sub">{{ t('requestJourneys.modalSubtitle') }}</p></div>
-          <div class="journey-header-actions"><button type="button" class="icon-button" :title="t('requestJourneys.retry')" :aria-label="t('requestJourneys.retry')" @click="loadView(activeView, true)"><RefreshRight aria-hidden="true" /></button><button type="button" class="icon-button" aria-label="关闭" title="关闭" @click="closeDialog"><Close aria-hidden="true" /></button></div>
+          <div class="journey-header-actions"><button type="button" class="icon-button" :title="t('requestJourneys.retry')" :aria-label="t('requestJourneys.retry')" @click="loadView(activeView, true)"><RefreshRight aria-hidden="true" /></button><button type="button" class="icon-button" :aria-label="$t('common.close')" :title="$t('common.close')" @click="closeDialog"><Close aria-hidden="true" /></button></div>
         </div>
 
     <div class="journey-tabs" role="tablist" :aria-label="t('requestJourneys.title')">

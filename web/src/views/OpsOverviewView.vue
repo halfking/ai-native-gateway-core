@@ -74,13 +74,13 @@ onMounted(() => {
     <header class="oo-header">
       <h1 class="oo-title">运维总览</h1>
       <button class="btn btn-ghost btn-sm" :disabled="loading" @click="load">
-        {{ loading ? '加载中…' : '刷新' }}
+        {{ loading ? $t('common.feedback.loading') : $t('common.button.refresh') }}
       </button>
     </header>
 
     <p v-if="error" class="oo-error">{{ error }}</p>
 
-    <div v-if="loading && !data" class="oo-loading">加载中…</div>
+    <div v-if="loading && !data" class="oo-loading">{{ $t('common.feedback.loading') }}</div>
 
     <template v-else-if="data">
       <!-- 1. 中心实例统计 -->
@@ -117,7 +117,7 @@ onMounted(() => {
               <th>在线</th>
               <th>离线</th>
               <th>降级</th>
-              <th>最近心跳</th>
+              <th>{{ $t('common.terms.recentHeartbeat') }}</th>
             </tr>
           </thead>
           <tbody>
@@ -141,8 +141,8 @@ onMounted(() => {
             <tr>
               <th>节点 ID</th>
               <th>区域</th>
-              <th>版本</th>
-              <th>状态</th>
+              <th>{{ $t('common.terms.version') }}</th>
+              <th>{{ $t('common.terms.status') }}</th>
               <th>启动时间</th>
             </tr>
           </thead>
@@ -197,7 +197,7 @@ onMounted(() => {
             <p class="oo-card-metric">{{ formatNumber(data.fault_stats?.resolved) }}</p>
           </div>
           <div class="oo-card">
-            <h3 class="oo-card-title">待处理</h3>
+            <h3 class="oo-card-title">{{ $t('common.status.pending') }}</h3>
             <p class="oo-card-metric">{{ formatNumber(data.fault_stats?.pending) }}</p>
           </div>
           <div class="oo-card">
@@ -207,7 +207,7 @@ onMounted(() => {
         </div>
         <table v-if="data.recent_faults?.length" class="oo-table">
           <thead>
-            <tr><th>严重程度</th><th>消息</th><th>状态</th><th>触发时间</th></tr>
+            <tr><th>{{ $t('common.terms.severity') }}</th><th>{{ $t('common.terms.message') }}</th><th>{{ $t('common.terms.status') }}</th><th>{{ $t('common.terms.triggeredAt') }}</th></tr>
           </thead>
           <tbody>
             <tr v-for="f in data.recent_faults" :key="f.id">
@@ -225,7 +225,7 @@ onMounted(() => {
         <h2 class="oo-section-title">最近升级</h2>
         <table class="oo-table">
           <thead>
-            <tr><th>起版本</th><th>目标版本</th><th>状态</th><th>开始</th><th>完成</th></tr>
+            <tr><th>{{ $t('common.terms.fromVersion') }}</th><th>{{ $t('common.terms.targetVersion') }}</th><th>{{ $t('common.terms.status') }}</th><th>{{ $t('common.terms.start') }}</th><th>{{ $t('common.terms.finish') }}</th></tr>
           </thead>
           <tbody>
             <tr v-for="u in data.recent_upgrades" :key="u.id">

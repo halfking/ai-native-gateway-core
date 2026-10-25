@@ -75,7 +75,7 @@ function handleClick(key: string) {
 
       <!-- 右侧：状态图例 -->
       <div class="legend-section legend-section--right">
-        <span class="legend-heading">状态</span>
+        <span class="legend-heading">{{ $t('common.terms.status') }}</span>
         <span
           v-for="item in statusItems"
           :key="item.key"

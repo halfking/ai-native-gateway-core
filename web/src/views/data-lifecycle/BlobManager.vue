@@ -4,7 +4,7 @@
       <div class="card-header">
         <h3 class="card-title">大字段 Top {{ rows.length }}（按 request_body + outbound_body 真实字节数）</h3>
         <button class="btn btn-ghost btn-sm" @click="load" :disabled="loading">
-          {{ loading ? '加载中…' : '刷新' }}
+          {{ loading ? $t('common.feedback.loading') : $t('common.button.refresh') }}
         </button>
       </div>
       <div class="blob-table-wrap">
@@ -14,7 +14,7 @@
               <th>request_id</th>
               <th>session</th>
               <th>tenant</th>
-              <th>时间</th>
+              <th>{{ $t('common.time') }}</th>
               <th>请求体</th>
               <th>出参体</th>
               <th>合计</th>
@@ -31,7 +31,7 @@
               <td class="num strong">{{ r.total_human }}</td>
             </tr>
             <tr v-if="!rows.length && !loading">
-              <td colspan="7" class="empty">暂无数据</td>
+              <td colspan="7" class="empty">{{ $t('common.feedback.noData') }}</td>
             </tr>
           </tbody>
         </table>

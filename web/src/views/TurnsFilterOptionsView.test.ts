@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
 import TurnsFilterOptionsView from './TurnsFilterOptionsView.vue'
 import { listTurnsFilterOptions } from '../api/turns'
+import { testI18n } from '../test-utils/i18n'
 
 vi.mock('../api/turns', () => ({
   listTurnsFilterOptions: vi.fn(),
@@ -35,7 +36,7 @@ const SAMPLE = {
 describe('TurnsFilterOptionsView', () => {
   it('renders 8 string sections + 1 api_keys table from sample data', async () => {
     mockedGet.mockResolvedValueOnce(SAMPLE)
-    const w = mount(TurnsFilterOptionsView)
+    const w = mount(TurnsFilterOptionsView, { global: { plugins: [testI18n] } })
     await flushPromises()
     // 8 string sections（projects/tasks/owners/clients/tags/models/providers/status_codes）
     const sections = w.findAll('.tfo-section')
@@ -63,7 +64,7 @@ describe('TurnsFilterOptionsView', () => {
       status_codes: [],
       api_keys: [],
     })
-    const w = mount(TurnsFilterOptionsView)
+    const w = mount(TurnsFilterOptionsView, { global: { plugins: [testI18n] } })
     await flushPromises()
     expect(w.findAll('.tfo-section')).toHaveLength(0)
     expect(w.find('.tfo-empty').exists()).toBe(true)
@@ -72,7 +73,7 @@ describe('TurnsFilterOptionsView', () => {
 
   it('shows error message on fetch failure and refresh works after recovery', async () => {
     mockedGet.mockRejectedValueOnce(new Error('forbidden 403'))
-    const w = mount(TurnsFilterOptionsView)
+    const w = mount(TurnsFilterOptionsView, { global: { plugins: [testI18n] } })
     await flushPromises()
     expect(w.find('.tfo-error').exists()).toBe(true)
     expect(w.text()).toContain('forbidden 403')

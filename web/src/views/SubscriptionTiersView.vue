@@ -47,13 +47,13 @@ onMounted(() => {
     <header class="st-header">
       <h1 class="st-title">订阅层级</h1>
       <button class="btn btn-ghost btn-sm" :disabled="loading" @click="load">
-        {{ loading ? '加载中…' : '刷新' }}
+        {{ loading ? $t('common.feedback.loading') : $t('common.button.refresh') }}
       </button>
     </header>
 
     <p v-if="error" class="st-error">{{ error }}</p>
 
-    <div v-if="loading && tiers.length === 0" class="st-loading">加载中…</div>
+    <div v-if="loading && tiers.length === 0" class="st-loading">{{ $t('common.feedback.loading') }}</div>
 
     <div v-else-if="tiers.length === 0 && !loading" class="st-empty">
       暂无订阅层级

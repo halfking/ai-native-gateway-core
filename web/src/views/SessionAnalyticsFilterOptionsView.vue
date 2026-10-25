@@ -61,45 +61,45 @@ onMounted(() => {
     <header class="filter-options-header">
       <h1 class="filter-options-title">会话分析筛选</h1>
       <button class="btn btn-ghost btn-sm" :disabled="loading" @click="load">
-        {{ loading ? '加载中…' : '刷新' }}
+        {{ loading ? $t('common.feedback.loading') : $t('common.button.refresh') }}
       </button>
     </header>
 
     <p v-if="error" class="filter-options-error">{{ error }}</p>
 
     <div v-if="loading && options.clients.length === 0" class="filter-options-loading">
-      加载中…
+      {{ $t('common.feedback.loading') }}
     </div>
 
     <div v-else class="filter-options-grid">
       <section class="filter-options-section">
-        <h2 class="filter-options-section-title">客户端</h2>
+        <h2 class="filter-options-section-title">{{ $t('common.terms.client') }}</h2>
         <ul v-if="options.clients.length" class="filter-options-list">
           <li v-for="c in options.clients" :key="c" class="filter-options-item">
             <button class="filter-options-link" @click="goToClient(c)">{{ c }}</button>
           </li>
         </ul>
-        <p v-else class="filter-options-empty">无数据</p>
+        <p v-else class="filter-options-empty">{{ $t('common.terms.noData') }}</p>
       </section>
 
       <section class="filter-options-section">
-        <h2 class="filter-options-section-title">任务</h2>
+        <h2 class="filter-options-section-title">{{ $t('common.terms.task') }}</h2>
         <ul v-if="options.tasks.length" class="filter-options-list">
           <li v-for="t_id in options.tasks" :key="t_id" class="filter-options-item">
             <button class="filter-options-link" @click="goToTask(t_id)">{{ t_id }}</button>
           </li>
         </ul>
-        <p v-else class="filter-options-empty">无数据</p>
+        <p v-else class="filter-options-empty">{{ $t('common.terms.noData') }}</p>
       </section>
 
       <section class="filter-options-section">
-        <h2 class="filter-options-section-title">用户</h2>
+        <h2 class="filter-options-section-title">{{ $t('common.terms.user') }}</h2>
         <ul v-if="options.users.length" class="filter-options-list">
           <li v-for="u in options.users" :key="u" class="filter-options-item">
             <button class="filter-options-link" @click="goToUser(u)">{{ u }}</button>
           </li>
         </ul>
-        <p v-else class="filter-options-empty">无数据</p>
+        <p v-else class="filter-options-empty">{{ $t('common.terms.noData') }}</p>
       </section>
     </div>
 

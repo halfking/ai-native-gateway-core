@@ -111,7 +111,7 @@ function errorText(e: SessionObsApiError | null): string {
         :disabled="loading"
         @click="load(true)"
       >
-        {{ loading ? '刷新中…' : '刷新' }}
+        {{ loading ? $t('common.terms.refreshing') : $t('common.button.refresh') }}
       </button>
     </div>
 
@@ -129,7 +129,7 @@ function errorText(e: SessionObsApiError | null): string {
     >
       <span class="osp-error-text">{{ errorText(error) }}</span>
       <button type="button" class="osp-retry" :disabled="loading" @click="load(true)">
-        重试
+        {{ $t('common.button.retry') }}
       </button>
     </div>
 
@@ -145,7 +145,7 @@ function errorText(e: SessionObsApiError | null): string {
         <span class="osp-cell osp-cell--title">标题</span>
         <span class="osp-cell osp-cell--status">最近状态</span>
         <span class="osp-cell osp-cell--model">最近模型</span>
-        <span class="osp-cell osp-cell--latency">最近延迟</span>
+        <span class="osp-cell osp-cell--latency">{{ $t('common.terms.recentLatency') }}</span>
         <span class="osp-cell osp-cell--time">最近活动</span>
       </div>
       <button
@@ -165,7 +165,7 @@ function errorText(e: SessionObsApiError | null): string {
           <span v-if="s.last_request_status" class="osp-status" :class="statusClass(s.last_request_status)">
             {{ s.last_request_status }}
           </span>
-          <span v-else class="osp-status osp-status--unknown">未知</span>
+          <span v-else class="osp-status osp-status--unknown">{{ $t('common.terms.unknown') }}</span>
           <span
             v-if="s.freshness?.stale"
             class="osp-stale-badge"
@@ -189,7 +189,7 @@ function errorText(e: SessionObsApiError | null): string {
           data-testid="osp-load-more"
           @click="load(false)"
         >
-          {{ loadingMore ? '加载中…' : '加载更多' }}
+          {{ loadingMore ? $t('common.feedback.loading') : $t('common.terms.loadMore') }}
         </button>
       </div>
     </div>

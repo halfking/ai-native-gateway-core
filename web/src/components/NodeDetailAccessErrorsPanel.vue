@@ -25,25 +25,25 @@ const emit = defineEmits<{
     <div v-else class="nd-table-wrap">
       <table class="nd-table">
         <thead>
-          <tr><th>来源</th><th>时间</th><th>请求</th><th>延迟/错误</th></tr>
+          <tr><th>{{ $t('common.terms.source') }}</th><th>{{ $t('common.time') }}</th><th>{{ $t('common.terms.request') }}</th><th>{{ $t('common.terms.latencyOrError') }}</th></tr>
         </thead>
         <tbody>
           <tr v-for="entry in failedWindowEntries" :key="`w-${entry.rid}-${entry.ts}`">
-            <td>滑动窗口</td>
+            <td>{{ $t('common.terms.slidingWindow') }}</td>
             <td>{{ fmtTime(entry.ts) }}</td>
             <td>
               <button v-if="entry.rid" type="button" class="nd-link" @click="emit('open', entry.rid)">{{ entry.rid.slice(0, 8) }}</button>
               <span v-else>—</span>
             </td>
-            <td class="is-bad">{{ entry.lat }}ms · {{ entry.err || '失败' }}</td>
+            <td class="is-bad">{{ entry.lat }}ms · {{ entry.err || $t('common.status.failed') }}</td>
           </tr>
           <tr v-for="decision in failedDecisions" :key="`d-${decision.request_id}`">
-            <td>路由决策</td>
+            <td>{{ $t('common.terms.routingDecision') }}</td>
             <td>{{ fmtTime(decision.ts) }}</td>
             <td>
               <button type="button" class="nd-link" @click="emit('open', decision.request_id)">{{ decision.request_id.slice(0, 8) }}</button>
             </td>
-            <td class="is-bad">{{ decision.latency_ms == null ? '—' : `${decision.latency_ms}ms` }} · {{ decision.error_class || '失败' }}</td>
+            <td class="is-bad">{{ decision.latency_ms == null ? '—' : `${decision.latency_ms}ms` }} · {{ decision.error_class || $t('common.status.failed') }}</td>
           </tr>
         </tbody>
       </table>

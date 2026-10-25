@@ -77,13 +77,13 @@ onMounted(() => {
     <header class="bo-header">
       <h1 class="bo-title">运营面板</h1>
       <button class="btn btn-ghost btn-sm" :disabled="loading" @click="load">
-        {{ loading ? '加载中…' : '刷新' }}
+        {{ loading ? $t('common.feedback.loading') : $t('common.button.refresh') }}
       </button>
     </header>
 
     <p v-if="error" class="bo-error">{{ error }}</p>
 
-    <div v-if="loading && !data" class="bo-loading">加载中…</div>
+    <div v-if="loading && !data" class="bo-loading">{{ $t('common.feedback.loading') }}</div>
 
     <template v-else-if="data">
       <!-- 1. background_tasks 块 -->
@@ -96,9 +96,9 @@ onMounted(() => {
             <h3 class="bo-card-title">模型发现</h3>
             <div v-if="data.background_tasks?.discovery" class="bo-card-body">
               <div class="bo-row">
-                <span class="bo-row-label">状态</span>
+                <span class="bo-row-label">{{ $t('common.terms.status') }}</span>
                 <span class="bo-row-value" :class="{ 'is-running': data.background_tasks.discovery.running }">
-                  {{ data.background_tasks.discovery.running ? '运行中' : statusLabel(data.background_tasks.discovery.status) }}
+                  {{ data.background_tasks.discovery.running ? $t('common.status.running') : statusLabel(data.background_tasks.discovery.status) }}
                 </span>
               </div>
               <div class="bo-row">
@@ -106,15 +106,15 @@ onMounted(() => {
                 <span class="bo-row-value">{{ data.background_tasks.discovery.trigger ?? '—' }}</span>
               </div>
               <div class="bo-row">
-                <span class="bo-row-label">开始时间</span>
+                <span class="bo-row-label">{{ $t('common.terms.startTime') }}</span>
                 <span class="bo-row-value">{{ formatTimestamp(data.background_tasks.discovery.started_at) }}</span>
               </div>
               <div class="bo-row">
-                <span class="bo-row-label">最近心跳</span>
+                <span class="bo-row-label">{{ $t('common.terms.recentHeartbeat') }}</span>
                 <span class="bo-row-value">{{ formatTimestamp(data.background_tasks.discovery.heartbeat_at) }}</span>
               </div>
             </div>
-            <p v-else class="bo-card-empty">暂无数据</p>
+            <p v-else class="bo-card-empty">{{ $t('common.feedback.noData') }}</p>
             <p v-if="data.background_tasks?.degraded" class="bo-card-degraded">
               降级：{{ data.background_tasks.degraded_reason ?? '原因未知' }}
             </p>
@@ -129,7 +129,7 @@ onMounted(() => {
                 <span class="bo-row-value">{{ formatNumber(data.background_tasks.probe_loop.checks_last_10m) }}</span>
               </div>
             </div>
-            <p v-else class="bo-card-empty">暂无数据</p>
+            <p v-else class="bo-card-empty">{{ $t('common.feedback.noData') }}</p>
             <p v-if="data.background_tasks?.probe_degraded" class="bo-card-degraded">
               探针降级
             </p>
@@ -147,7 +147,7 @@ onMounted(() => {
             <p class="bo-card-metric">{{ formatNumber(data.selfcheck?.total_runs_24h) }}</p>
           </div>
           <div class="bo-card">
-            <h3 class="bo-card-title">成功率</h3>
+            <h3 class="bo-card-title">{{ $t('common.terms.successRate') }}</h3>
             <p class="bo-card-metric">{{ formatPct(data.selfcheck?.success_rate) }}</p>
           </div>
           <div class="bo-card">

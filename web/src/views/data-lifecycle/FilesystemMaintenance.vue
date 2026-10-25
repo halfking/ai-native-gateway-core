@@ -139,7 +139,7 @@ defineExpose({ load })
     <div class="header">
       <h2>{{ t('dataLifecycle.pages.filesystemMaintenance') }}</h2>
       <button @click="load" :disabled="loading" class="btn-refresh">
-        {{ loading ? '加载中...' : '刷新' }}
+        {{ loading ? $t('common.feedback.loading') : $t('common.button.refresh') }}
       </button>
     </div>
 
@@ -158,7 +158,7 @@ defineExpose({ load })
       </div>
 
       <div class="stat-card">
-        <div class="stat-label">总大小</div>
+        <div class="stat-label">{{ $t('common.terms.totalSize') }}</div>
         <div class="stat-value">{{ stats.total_size_human }}</div>
         <div class="stat-hint">{{ formatBytes(stats.total_size_bytes) }}</div>
       </div>
@@ -268,7 +268,7 @@ defineExpose({ load })
           </div>
         </div>
         <div class="modal-actions">
-          <button @click="showPreviewModal = false" class="btn-cancel">关闭</button>
+          <button @click="showPreviewModal = false" class="btn-cancel">{{ $t('common.close') }}</button>
         </div>
       </div>
     </div>
@@ -280,7 +280,7 @@ defineExpose({ load })
         <p><strong>操作不可逆！</strong>即将删除 <strong>{{ cleanupForm.olderThanDays }}</strong> 天前的所有附件文件。</p>
         <p><strong>原因：</strong>{{ cleanupForm.reason }}</p>
         <div class="modal-actions">
-          <button @click="showExecuteConfirm = false" class="btn-cancel">取消</button>
+          <button @click="showExecuteConfirm = false" class="btn-cancel">{{ $t('common.button.cancel') }}</button>
           <button @click="executeCleanup" :disabled="cleanupLoading" class="btn-danger">
             {{ cleanupLoading ? '清理中...' : '确认删除' }}
           </button>

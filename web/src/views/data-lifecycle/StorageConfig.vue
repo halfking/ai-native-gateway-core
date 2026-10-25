@@ -243,7 +243,7 @@ function fmtNum(n?: number) {
     <div class="header">
       <h2>{{ t('dataLifecycle.pages.storageConfig') }}</h2>
       <button @click="load" :disabled="loading" class="btn-refresh">
-        {{ loading ? '加载中...' : '刷新' }}
+        {{ loading ? $t('common.feedback.loading') : $t('common.button.refresh') }}
       </button>
     </div>
 
@@ -371,7 +371,7 @@ function fmtNum(n?: number) {
       </div>
       <div class="form-actions">
         <button @click="save" :disabled="saving" class="btn-primary">
-          {{ saving ? '保存中...' : '保存配置' }}
+          {{ saving ? $t('common.saving') : '保存配置' }}
         </button>
       </div>
       <div v-if="saveMsg" class="save-msg">{{ saveMsg }}</div>

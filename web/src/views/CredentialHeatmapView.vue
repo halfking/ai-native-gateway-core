@@ -563,7 +563,7 @@ async function runAction(kind: 'model-online' | 'model-offline' | 'promote' | 'd
     }
     await loadHeatmap()
   } catch (e) {
-    actionMessage.value = `操作失败: ${e instanceof Error ? e.message : String(e)}`
+    actionMessage.value = `${t('common.feedback.operationFailed')}: ${e instanceof Error ? e.message : String(e)}`
   } finally {
     actionBusy.value = false
   }
@@ -612,15 +612,15 @@ onUnmounted(() => {
         <span class="spacer"></span>
         <label class="checkbox-label" @click.stop>
           <input type="checkbox" :checked="autoRefresh" @change="toggleAutoRefresh" />
-          自动刷新
+          {{ $t('common.terms.autoRefresh') }}
         </label>
         <select v-model.number="refreshInterval" class="field-input interval-select" :disabled="!autoRefresh" @click.stop>
-          <option :value="10">10秒</option>
-          <option :value="30">30秒</option>
-          <option :value="60">60秒</option>
+          <option :value="10">10{{ $t('common.seconds') }}</option>
+          <option :value="30">30{{ $t('common.seconds') }}</option>
+          <option :value="60">60{{ $t('common.seconds') }}</option>
         </select>
         <button class="btn btn-sm btn-primary" @click.stop="loadHeatmap" :disabled="loading">
-          {{ loading ? '加载中...' : '刷新' }}
+          {{ loading ? $t('common.feedback.loading') : $t('common.button.refresh') }}
         </button>
         <span class="toggle-hint">{{ filtersOpen ? '收起' : '展开' }}</span>
       </div>
@@ -631,7 +631,7 @@ onUnmounted(() => {
       <!-- Expanded conditions panel -->
       <div v-show="filtersOpen" class="toolbar-panel">
         <div class="panel-row">
-          <span class="label">时间</span>
+          <span class="label">{{ $t('common.time') }}</span>
           <select v-model="timeRangePreset" class="field-input w-time">
             <option v-for="(label, value) in TIME_PRESET_LABELS" :key="value" :value="value">{{ label }}</option>
           </select>
@@ -645,18 +645,18 @@ onUnmounted(() => {
           <span class="v-sep" aria-hidden="true"></span>
           <span class="label">粒度</span>
           <select v-model="granularity" class="field-input w-granularity">
-            <option value="1m">1分钟</option>
-            <option value="5m">5分钟</option>
-            <option value="15m">15分钟</option>
-            <option value="1h">1小时</option>
-            <option value="1d">1天</option>
+            <option value="1m">1{{ $t('common.minutes') }}</option>
+            <option value="5m">5{{ $t('common.minutes') }}</option>
+            <option value="15m">15{{ $t('common.minutes') }}</option>
+            <option value="1h">1{{ $t('common.hours') }}</option>
+            <option value="1d">1{{ $t('common.days') }}</option>
           </select>
           <span class="hint-text" v-if="granularity !== suggestedGranularity">
             建议 {{ suggestedGranularity }}
           </span>
         </div>
         <div class="panel-row">
-          <span class="label">模型</span>
+          <span class="label">{{ $t('common.terms.model') }}</span>
           <select v-model="modelFilter" class="field-input w-model" @change="loadHeatmap">
             <option value="">全部模型</option>
             <option v-for="m in modelOptions" :key="m" :value="m">{{ m }}</option>
@@ -698,7 +698,7 @@ onUnmounted(() => {
 
     <!-- Empty state -->
     <div v-else-if="!loading && !filteredCredentials.length" class="empty-state">
-      <p>暂无数据</p>
+      <p>{{ $t('common.feedback.noData') }}</p>
       <p class="hint-text">请调整时间范围或筛选条件</p>
     </div>
 
@@ -711,7 +711,7 @@ onUnmounted(() => {
         </colgroup>
         <thead>
           <tr>
-            <th class="corner-cell">时间 →</th>
+            <th class="corner-cell">{{ $t('common.time') }} →</th>
             <th v-for="t in timeAxis" :key="t" class="axis-cell" :title="formatFullTime(t)">{{ formatTime(t) }}</th>
           </tr>
         </thead>
@@ -792,7 +792,7 @@ onUnmounted(() => {
       <div class="drawer-panel card" @click.stop>
         <div class="drawer-header">
           <h3>色块详情</h3>
-          <button class="btn btn-ghost btn-sm" @click="closeDetailPopover">关闭</button>
+          <button class="btn btn-ghost btn-sm" @click="closeDetailPopover">{{ $t('common.close') }}</button>
         </div>
         <div class="drawer-body">
           <div class="detail-section">
@@ -801,15 +801,15 @@ onUnmounted(() => {
               <span>{{ formatFullTime(selectedBucket.bucket.time_bucket) }} 起 1 个 {{ granularity }} 桶</span>
             </div>
             <div class="detail-row">
-              <span class="detail-label">凭据</span>
+              <span class="detail-label">{{ $t('common.credentialFallback') }}</span>
               <span>{{ selectedBucket.credential.label || `#${selectedBucket.credential.credential_id}` }}</span>
             </div>
             <div class="detail-row">
-              <span class="detail-label">模型</span>
+              <span class="detail-label">{{ $t('common.terms.model') }}</span>
               <code>{{ selectedBucket.model === '__aggregate__' ? '全部模型(汇总)' : selectedBucket.model }}</code>
             </div>
             <div class="detail-row">
-              <span class="detail-label">状态</span>
+              <span class="detail-label">{{ $t('common.terms.status') }}</span>
               <span class="status-badge" :style="{ backgroundColor: getStatusColor(selectedBucket.bucket.status) }">
                 {{ selectedBucket.bucket.status }}
               </span>
@@ -819,7 +819,7 @@ onUnmounted(() => {
           <div class="detail-section">
             <h4>统计指标</h4>
             <div class="detail-row">
-              <span class="detail-label">总请求数</span>
+              <span class="detail-label">{{ $t('common.terms.totalRequests') }}</span>
               <span>{{ selectedBucket.bucket.total_requests }}</span>
             </div>
             <div class="detail-row">
@@ -831,7 +831,7 @@ onUnmounted(() => {
               <span>{{ selectedBucket.bucket.failed_count }}</span>
             </div>
             <div class="detail-row">
-              <span class="detail-label">成功率</span>
+              <span class="detail-label">{{ $t('common.terms.successRate') }}</span>
               <span>{{ (selectedBucket.bucket.success_rate * 100).toFixed(1) }}%</span>
             </div>
             <div class="detail-row" v-if="selectedBucket.bucket.avg_latency_ms">
@@ -839,13 +839,13 @@ onUnmounted(() => {
               <span>{{ selectedBucket.bucket.avg_latency_ms }}ms</span>
             </div>
             <div class="detail-row" v-if="selectedBucket.bucket.p95_latency_ms">
-              <span class="detail-label">P95 延迟</span>
+              <span class="detail-label">P95 {{ $t('common.terms.latency') }}</span>
               <span>{{ selectedBucket.bucket.p95_latency_ms }}ms</span>
             </div>
           </div>
 
           <div class="detail-section" v-if="Object.keys(selectedBucket.bucket.error_distribution || {}).length">
-            <h4>错误分布</h4>
+            <h4>{{ $t('common.terms.errorDistribution') }}</h4>
             <div v-for="(count, errorType) in selectedBucket.bucket.error_distribution" :key="errorType" class="detail-row">
               <span class="detail-label">{{ errorType }}</span>
               <span>{{ count }} 次</span>
@@ -882,7 +882,7 @@ onUnmounted(() => {
               <button class="btn btn-sm btn-success" :disabled="!canManageMonitor || actionBusy" @click="runAction('enable')">启用凭据</button>
               <button class="btn btn-sm btn-danger" :disabled="!canManageMonitor || actionBusy" @click="runAction('disable')">停用凭据</button>
             </div>
-            <p v-if="actionMessage" class="action-message" :class="{ fail: actionMessage.startsWith('操作失败') }">
+            <p v-if="actionMessage" class="action-message" :class="{ fail: actionMessage.startsWith($t('common.feedback.operationFailed')) }">
               {{ actionMessage }}
             </p>
           </div>

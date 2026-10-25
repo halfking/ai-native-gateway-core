@@ -107,14 +107,35 @@ export function useNodeDetailDrawerLoad(
   })
   const selectedModelStatus = computed(() => allModels.value.find(m => m.raw_model_name === selectedModel.value) ?? null)
   const resolvedProviderId = computed(() => currentNode.value?.provider_id ?? candidate.value?.provider_id ?? monitor.value?.provider_id ?? null)
+  // ⚠️ 这里返回的是**稳定 code**，不是展示文案。
+  //   早先返回中文（'可用' / '熔断' …），于是模板里出现了
+  //   `headlineState === '可用' ? 'ready' : headlineState` 这种**拿译文做比较**的写法 ——
+  //   一旦改成 i18n 键，比较就永久失效（状态样式静默变灰）。
+  //   现在：code 负责逻辑，展示文案由 headlineStateLabel 单独给出。
   const headlineState = computed(() => {
     const n = currentNode.value
-    if (!n) return '未知'
-    if (n.manual_disabled || n.disable_kind === 'manual') return '手工禁用'
-    if (n.circuit_state === 'open') return '熔断'
-    if (n.health_status === 'unreachable' || n.availability_state === 'unreachable') return '不可达'
-    if (n.availability_state === 'cooling' || n.circuit_state === 'half_open') return '恢复中'
-    return '可用'
+    if (!n) return 'unknown'
+    if (n.manual_disabled || n.disable_kind === 'manual') return 'manual_disabled'
+    if (n.circuit_state === 'open') return 'circuit_open'
+    if (n.health_status === 'unreachable' || n.availability_state === 'unreachable') return 'unreachable'
+    if (n.availability_state === 'cooling' || n.circuit_state === 'half_open') return 'recovering'
+    return 'available'
+  })
+  const headlineStateLabel = computed(() => {
+    switch (headlineState.value) {
+      case 'manual_disabled':
+        return i18n.global.t('common.terms.nodeState.manualDisabled')
+      case 'circuit_open':
+        return i18n.global.t('common.terms.nodeState.circuitOpen')
+      case 'unreachable':
+        return i18n.global.t('common.terms.nodeState.unreachable')
+      case 'recovering':
+        return i18n.global.t('common.terms.nodeState.recovering')
+      case 'available':
+        return i18n.global.t('common.terms.nodeState.available')
+      default:
+        return i18n.global.t('common.terms.nodeState.unknown')
+    }
   })
   const errorKinds = computed(() => Object.entries(windowStats.value?.error_kinds ?? {}))
   const failedWindowEntries = computed(() => windowEntries.value.filter(e => !e.ok).slice(0, 40))
@@ -278,7 +299,7 @@ export function useNodeDetailDrawerLoad(
     windowEntries, windowStats, windowSource, history, decisions, saving, actionMessage, actionError,
     pingResult, lifecycle, manualPriority, priorityFlag, routingTier, weight, streamMode, modelActionReason, coreLoaded, coreLoading,
     detailRequestId, visible, canEdit, editGateHint, currentNode, allModels, models, selectedModelStatus,
-    resolvedProviderId, headlineState, errorKinds, failedWindowEntries, failedDecisions, otherModelsNeedRefresh,
+    resolvedProviderId, headlineState, headlineStateLabel, errorKinds, failedWindowEntries, failedDecisions, otherModelsNeedRefresh,
     mergeMonitorModels, chooseModel, refreshCurrentTab, ensureTabLoaded,
   }
 }

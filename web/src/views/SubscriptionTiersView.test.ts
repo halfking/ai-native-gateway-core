@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
 import SubscriptionTiersView from './SubscriptionTiersView.vue'
 import { getSubscriptionTiers } from '../api/ops'
+import { testI18n } from '../test-utils/i18n'
 
 vi.mock('../api/ops', () => ({
   getSubscriptionTiers: vi.fn(),
@@ -48,7 +49,7 @@ describe('SubscriptionTiersView', () => {
   it('renders 3 tier cards sorted by sort_order with formatted price', async () => {
     // out-of-order sample, view should sort
     mockedGet.mockResolvedValueOnce([SAMPLE[2], SAMPLE[0], SAMPLE[1]])
-    const w = mount(SubscriptionTiersView)
+    const w = mount(SubscriptionTiersView, { global: { plugins: [testI18n] } })
     await flushPromises()
     const cards = w.findAll('.st-card')
     expect(cards).toHaveLength(3)
@@ -69,7 +70,7 @@ describe('SubscriptionTiersView', () => {
 
   it('shows empty state when backend returns no tiers', async () => {
     mockedGet.mockResolvedValueOnce([])
-    const w = mount(SubscriptionTiersView)
+    const w = mount(SubscriptionTiersView, { global: { plugins: [testI18n] } })
     await flushPromises()
     expect(w.find('.st-empty').exists()).toBe(true)
     expect(w.findAll('.st-card')).toHaveLength(0)
@@ -77,7 +78,7 @@ describe('SubscriptionTiersView', () => {
 
   it('shows error message on fetch failure and refresh works after recovery', async () => {
     mockedGet.mockRejectedValueOnce(new Error('nginx 502'))
-    const w = mount(SubscriptionTiersView)
+    const w = mount(SubscriptionTiersView, { global: { plugins: [testI18n] } })
     await flushPromises()
     expect(w.find('.st-error').exists()).toBe(true)
     expect(w.text()).toContain('nginx 502')

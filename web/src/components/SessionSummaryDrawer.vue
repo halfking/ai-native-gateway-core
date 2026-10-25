@@ -199,7 +199,7 @@ async function writeMemora() {
               <span v-if="taskId">Task {{ shortId(taskId) }}</span>
             </p>
           </div>
-          <button class="btn btn-sm" type="button" @click="closeDrawer">关闭</button>
+          <button class="btn btn-sm" type="button" @click="closeDrawer">{{ $t('common.close') }}</button>
         </header>
 
         <section class="ssd-process" aria-label="总结过程">
@@ -271,7 +271,7 @@ async function writeMemora() {
               <button type="button" class="ssd-log-btn" @click="emit('openRequest', row.request_id)">
                 <span class="ssd-log-time">{{ fmtTs(row.ts) }}</span>
                 <span class="ssd-log-model">{{ row.canonical_name || row.client_model || '—' }}</span>
-                <span :class="row.success ? 'ssd-ok-text' : 'ssd-error-text'">{{ row.success ? '成功' : '失败' }}</span>
+                <span :class="row.success ? 'ssd-ok-text' : 'ssd-error-text'">{{ row.success ? $t('common.status.success') : $t('common.status.failed') }}</span>
                 <span class="ssd-log-preview">{{ row.request_preview || row.response_preview || '—' }}</span>
               </button>
             </li>

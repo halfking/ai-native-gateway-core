@@ -125,34 +125,34 @@ onBeforeUnmount(() => {
           <strong>发版模块开通</strong>
           <span class="muted">（核心节点）清单来自中心发版目录</span>
         </div>
-        <el-button size="small" :loading="loading" @click="refresh">刷新</el-button>
+        <el-button size="small" :loading="loading" @click="refresh">{{ $t('common.button.refresh') }}</el-button>
       </div>
     </template>
     <el-tabs v-model="tab" class="ent-tabs">
       <el-tab-pane label="模块清单" name="catalog">
         <el-alert v-if="error" type="warning" :title="error" show-icon :closable="false" class="mb" />
         <el-table v-loading="loading" :data="catalog" size="small" stripe empty-text="暂无发版模块">
-          <el-table-column label="模块" min-width="160">
+          <el-table-column :label="$t('common.module')" min-width="160">
             <template #default="{ row }">{{ row.display_name || row.module_id }}</template>
           </el-table-column>
-          <el-table-column prop="version" label="版本" width="100" />
+          <el-table-column prop="version" :label="$t('common.terms.version')" width="100" />
           <el-table-column label="开通状态" width="120">
             <template #default="{ row }">
               <el-tag v-if="statusOf(row.module_id) === 'opened' || row.opened_at" type="success" size="small">
-                已开通
+                {{ $t('common.terms.activated') }}
               </el-tag>
               <el-tag v-else-if="statusOf(row.module_id) === 'pending'" type="warning" size="small">
-                待审核
+                {{ $t('common.terms.pendingReview') }}
               </el-tag>
-              <el-tag v-else size="small">未开通</el-tag>
+              <el-tag v-else size="small">{{ $t('common.terms.notActivated') }}</el-tag>
             </template>
           </el-table-column>
-          <el-table-column label="开通时间" min-width="160">
+          <el-table-column :label="$t('common.terms.activationTime')" min-width="160">
             <template #default="{ row }">
               {{ row.opened_at || openedAtOf(row.module_id) || '—' }}
             </template>
           </el-table-column>
-          <el-table-column label="操作" width="180" fixed="right">
+          <el-table-column :label="$t('common.actions')" width="180" fixed="right">
             <template #default="{ row }">
               <el-button
                 v-if="statusOf(row.module_id) !== 'opened' && !row.opened_at"
@@ -178,35 +178,35 @@ onBeforeUnmount(() => {
           </el-table-column>
         </el-table>
       </el-tab-pane>
-      <el-tab-pane label="已开通" name="opened">
+      <el-tab-pane :label="$t('common.terms.activated')" name="opened">
         <el-table v-loading="loading" :data="entitlements.filter((e) => e.status === 'opened')" size="small" stripe empty-text="暂无已开通记录">
-          <el-table-column label="模块" min-width="160">
+          <el-table-column :label="$t('common.module')" min-width="160">
             <template #default="{ row }">{{ row.display_name || row.module_id }}</template>
           </el-table-column>
-          <el-table-column label="开通时间" min-width="180">
+          <el-table-column :label="$t('common.terms.activationTime')" min-width="180">
             <template #default="{ row }">{{ row.opened_at || '—' }}</template>
           </el-table-column>
-          <el-table-column label="操作人" min-width="120">
+          <el-table-column :label="$t('common.terms.operator')" min-width="120">
             <template #default="{ row }">{{ row.opened_by || 'system' }}</template>
           </el-table-column>
         </el-table>
       </el-tab-pane>
       <el-tab-pane label="我的申请" name="mine">
         <el-table v-loading="loading" :data="myEntitlements" size="small" stripe empty-text="暂无我的申请">
-          <el-table-column label="模块" min-width="160">
+          <el-table-column :label="$t('common.module')" min-width="160">
             <template #default="{ row }">{{ row.display_name || row.module_id }}</template>
           </el-table-column>
-          <el-table-column label="状态" width="120">
+          <el-table-column :label="$t('common.terms.status')" width="120">
             <template #default="{ row }">
-              <el-tag v-if="row.status === 'opened'" type="success" size="small">已开通</el-tag>
-              <el-tag v-else-if="row.status === 'pending'" type="warning" size="small">待审核</el-tag>
+              <el-tag v-if="row.status === 'opened'" type="success" size="small">{{ $t('common.terms.activated') }}</el-tag>
+              <el-tag v-else-if="row.status === 'pending'" type="warning" size="small">{{ $t('common.terms.pendingReview') }}</el-tag>
               <el-tag v-else size="small" type="info">已拒绝</el-tag>
             </template>
           </el-table-column>
           <el-table-column label="申请时间" min-width="180">
             <template #default="{ row }">{{ row.requested_at }}</template>
           </el-table-column>
-          <el-table-column label="说明" min-width="180">
+          <el-table-column :label="$t('common.terms.note')" min-width="180">
             <template #default="{ row }">{{ row.note || '—' }}</template>
           </el-table-column>
         </el-table>

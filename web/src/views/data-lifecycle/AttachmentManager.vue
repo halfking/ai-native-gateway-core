@@ -11,7 +11,7 @@
             <div class="stat-meta">所有记录中的 attachment 元素总数</div>
           </div>
           <div class="stat-box">
-            <div class="stat-label">总大小</div>
+            <div class="stat-label">{{ $t('common.terms.totalSize') }}</div>
             <div class="stat-value">{{ humanBytes(stats.total_bytes) }}</div>
             <div class="stat-meta">request_logs.attachments JSONB 累计</div>
           </div>
@@ -23,8 +23,8 @@
               <tr>
                 <th>type</th>
                 <th>content_type</th>
-                <th>数量</th>
-                <th>总大小</th>
+                <th>{{ $t('common.count') }}</th>
+                <th>{{ $t('common.terms.totalSize') }}</th>
               </tr>
             </thead>
             <tbody>
@@ -62,7 +62,7 @@
             <span>清理文件实体</span>
             <span class="metric-val">
               <span :class="['pill', policy.policy.delete_filesystem ? 'ok' : 'dim']">
-                {{ policy.policy.delete_filesystem ? '是' : '否（仅置 NULL）' }}
+                {{ policy.policy.delete_filesystem ? $t('common.button.yes') : '否（仅置 NULL）' }}
               </span>
             </span>
           </div>
@@ -87,7 +87,7 @@
           </div>
           <div class="field">
             <label>备注 (审计用)</label>
-            <input v-model="cleanup.reason" placeholder="可选" />
+            <input v-model="cleanup.reason" :placeholder="$t('common.terms.optional')" />
           </div>
         </div>
 
@@ -127,7 +127,7 @@
             @apply="onFilterRangeApply"
           />
           <button class="btn btn-ghost btn-sm" @click="load" :disabled="loading">
-            {{ loading ? '加载中…' : '查询' }}
+            {{ loading ? $t('common.feedback.loading') : $t('common.terms.query') }}
           </button>
         </div>
       </div>
@@ -135,13 +135,13 @@
         <table class="data-table">
           <thead>
             <tr>
-              <th>时间</th>
+              <th>{{ $t('common.time') }}</th>
               <th>tenant</th>
               <th>model</th>
-              <th>状态</th>
+              <th>{{ $t('common.terms.status') }}</th>
               <th>附件数</th>
               <th>大小合计</th>
-              <th>详情</th>
+              <th>{{ $t('common.button.detail') }}</th>
             </tr>
           </thead>
           <tbody>
@@ -151,13 +151,13 @@
               <td><code class="code">{{ it.client_model || '—' }}</code></td>
               <td>
                 <span :class="['pill', it.success ? 'ok' : 'danger']">
-                  {{ it.success ? '成功' : '失败' }}
+                  {{ it.success ? $t('common.status.success') : $t('common.status.failed') }}
                 </span>
               </td>
               <td class="num">{{ it.attachments?.length || 0 }}</td>
               <td class="num">{{ humanBytes(attachmentsBytes(it.attachments)) }}</td>
               <td>
-                <button class="link" @click="openDetail(it)">查看 JSONB</button>
+                <button class="link" @click="openDetail(it)">{{ $t('common.view') }} JSONB</button>
               </td>
             </tr>
             <tr v-if="!items.length && !loading">
@@ -173,7 +173,7 @@
       <div class="modal">
         <div class="modal-header">
           <h3>request_id: {{ detail.request_id }}</h3>
-          <button class="btn btn-ghost btn-sm" @click="detail = null">关闭</button>
+          <button class="btn btn-ghost btn-sm" @click="detail = null">{{ $t('common.close') }}</button>
         </div>
         <pre class="json-block">{{ JSON.stringify(detail.attachments, null, 2) }}</pre>
       </div>

@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
 import { createRouter, createMemoryHistory } from 'vue-router'
 import SessionAnalyticsFilterOptionsView from './SessionAnalyticsFilterOptionsView.vue'
+import { testI18n } from '../test-utils/i18n'
 
 // SessionAnalyticsFilterOptionsView.test.ts — 批 158a（2026-10-17）
 // 关键安全判据：3 列表渲染 + 选中跳路由 + 错误显示。
@@ -33,7 +34,7 @@ describe('SessionAnalyticsFilterOptionsView', () => {
     router.push('/admin/session-analytics/filter-options')
     await router.isReady()
     const wrapper = mount(SessionAnalyticsFilterOptionsView, {
-      global: { plugins: [router] },
+      global: { plugins: [testI18n, router] },
     })
     await flushPromises()
     expect(wrapper.html()).toContain('cli-A')
@@ -46,7 +47,7 @@ describe('SessionAnalyticsFilterOptionsView', () => {
     router.push('/admin/session-analytics/filter-options')
     await router.isReady()
     const wrapper = mount(SessionAnalyticsFilterOptionsView, {
-      global: { plugins: [router] },
+      global: { plugins: [testI18n, router] },
     })
     await flushPromises()
     const btns = wrapper.findAll('button.filter-options-link')
@@ -63,7 +64,7 @@ describe('SessionAnalyticsFilterOptionsView', () => {
     router.push('/admin/session-analytics/filter-options')
     await router.isReady()
     const wrapper = mount(SessionAnalyticsFilterOptionsView, {
-      global: { plugins: [router] },
+      global: { plugins: [testI18n, router] },
     })
     await flushPromises()
     expect(wrapper.html()).toContain('boom')

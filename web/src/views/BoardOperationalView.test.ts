@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
 import BoardOperationalView from './BoardOperationalView.vue'
 import { fetchBoardOperational } from '../api/board'
+import { testI18n } from '../test-utils/i18n'
 
 vi.mock('../api/board', () => ({
   fetchBoardOperational: vi.fn(),
@@ -39,7 +40,7 @@ const SAMPLE = {
 describe('BoardOperationalView', () => {
   it('renders background_tasks + selfcheck sections with full field coverage', async () => {
     mockedFetch.mockResolvedValueOnce(SAMPLE)
-    const w = mount(BoardOperationalView)
+    const w = mount(BoardOperationalView, { global: { plugins: [testI18n] } })
     await flushPromises()
     // 2 sections
     expect(w.findAll('.bo-section')).toHaveLength(2)
@@ -65,7 +66,7 @@ describe('BoardOperationalView', () => {
       },
       selfcheck: { total_runs_24h: 0 },
     })
-    const w = mount(BoardOperationalView)
+    const w = mount(BoardOperationalView, { global: { plugins: [testI18n] } })
     await flushPromises()
     // running 状态
     expect(w.text()).toContain('运行中')
@@ -77,7 +78,7 @@ describe('BoardOperationalView', () => {
 
   it('shows error message on fetch failure and keeps refresh button re-clickable', async () => {
     mockedFetch.mockRejectedValueOnce(new Error('upstream 503'))
-    const w = mount(BoardOperationalView)
+    const w = mount(BoardOperationalView, { global: { plugins: [testI18n] } })
     await flushPromises()
     expect(w.find('.bo-error').exists()).toBe(true)
     expect(w.text()).toContain('upstream 503')

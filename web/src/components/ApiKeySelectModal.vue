@@ -63,7 +63,7 @@ function goKeys(action?: string) {
             v-if="reason !== 'session-forbidden'"
             type="button"
             class="modal-panel__close"
-            aria-label="关闭"
+            :aria-label="$t('common.close')"
             @click="emit('close')"
           >
             ×
@@ -89,12 +89,12 @@ function goKeys(action?: string) {
             >
               {{
                 loading
-                  ? '加载中…'
+                  ? $t('common.feedback.loading')
                   : isUnrevealable(k.id)
                     ? '不可选'
                     : selectedId === k.id
                       ? '当前密钥'
-                      : '使用此密钥'
+                      : $t('common.terms.useThisKey')
               }}
             </button>
           </li>
@@ -103,8 +103,8 @@ function goKeys(action?: string) {
           没有可用的密钥。请先申请或创建 API 密钥。
         </div>
         <div class="modal-panel__actions">
-          <button type="button" class="btn btn-ghost btn-sm" @click="goKeys('create')">签发新密钥</button>
-          <button type="button" class="btn btn-ghost btn-sm" @click="goKeys()">前往 API 密钥管理</button>
+          <button type="button" class="btn btn-ghost btn-sm" @click="goKeys('create')">{{ $t('common.terms.issueNewKey') }}</button>
+          <button type="button" class="btn btn-ghost btn-sm" @click="goKeys()">{{ $t('common.terms.goToKeyManagement') }}</button>
         </div>
       </div>
     </div>

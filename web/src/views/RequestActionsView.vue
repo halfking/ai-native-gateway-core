@@ -89,13 +89,13 @@ function submitNewId() {
         />
       </label>
       <button type="submit" class="btn btn-primary btn-sm" :disabled="loading || !requestId.trim()">
-        查询
+        {{ $t('common.terms.query') }}
       </button>
     </form>
 
     <p v-if="error" class="ra-error">{{ error }}</p>
 
-    <div v-if="loading" class="ra-loading">加载中…</div>
+    <div v-if="loading" class="ra-loading">{{ $t('common.feedback.loading') }}</div>
 
     <template v-else-if="actions.length > 0">
       <header class="ra-result-header">
@@ -114,7 +114,7 @@ function submitNewId() {
             <div v-if="a.model" class="ra-row"><span class="ra-row-label">model</span><code>{{ a.model }}</code></div>
             <div v-if="a.credential_id" class="ra-row"><span class="ra-row-label">credential_id</span><code>{{ a.credential_id }}</code></div>
             <div v-if="a.error_kind" class="ra-row"><span class="ra-row-label">error_kind</span><code>{{ a.error_kind }}</code></div>
-            <div v-if="a.retry" class="ra-row"><span class="ra-row-label">retry</span>{{ a.retry_seq ? `第 ${a.retry_seq} 次重试` : '是' }}</div>
+            <div v-if="a.retry" class="ra-row"><span class="ra-row-label">retry</span>{{ a.retry_seq ? `第 ${a.retry_seq} 次重试` : $t('common.button.yes') }}</div>
             <div v-for="k in extraKeys(a)" :key="`${a.seq}-${k}`" class="ra-row">
               <span class="ra-row-label">{{ k }}</span>
               <span>{{ String(a[k] ?? '—') }}</span>

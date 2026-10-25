@@ -60,13 +60,13 @@ onMounted(() => {
     <header class="tfo-header">
       <h1 class="tfo-title">轮次筛选选项</h1>
       <button class="btn btn-ghost btn-sm" :disabled="loading" @click="load">
-        {{ loading ? '加载中…' : '刷新' }}
+        {{ loading ? $t('common.feedback.loading') : $t('common.button.refresh') }}
       </button>
     </header>
 
     <p v-if="error" class="tfo-error">{{ error }}</p>
 
-    <div v-if="loading && !options" class="tfo-loading">加载中…</div>
+    <div v-if="loading && !options" class="tfo-loading">{{ $t('common.feedback.loading') }}</div>
 
     <template v-else-if="options">
       <section v-for="s in stringSections()" :key="s.key" class="tfo-section">
@@ -81,7 +81,7 @@ onMounted(() => {
 
       <section v-if="apiKeyList().length" class="tfo-section">
         <header class="tfo-section-header">
-          <h2 class="tfo-section-title">API 密钥</h2>
+          <h2 class="tfo-section-title">API {{ $t('common.terms.apiKey') }}</h2>
           <span class="tfo-section-count">{{ apiKeyList().length }} 项</span>
         </header>
         <table class="tfo-table">

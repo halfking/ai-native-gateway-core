@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
 import RequestActionsView from './RequestActionsView.vue'
 import { getRequestActions } from '../api/requestActions'
+import { testI18n } from '../test-utils/i18n'
 
 vi.mock('../api/requestActions', () => ({
   getRequestActions: vi.fn(),
@@ -56,7 +57,7 @@ describe('RequestActionsView', () => {
   it('renders 3 actions with key field coverage (model / credential_id / retry)', async () => {
     mockedGet.mockResolvedValueOnce(SAMPLE)
     const w = mount(RequestActionsView, {
-      global: { mocks: { $route: { params: { id: 'req-001' } } } },
+      global: { plugins: [testI18n],  mocks: { $route: { params: { id: 'req-001' } } } },
     })
     await flushPromises()
     // 头部
@@ -81,7 +82,7 @@ describe('RequestActionsView', () => {
   it('shows empty state when backend returns 0 actions', async () => {
     mockedGet.mockResolvedValueOnce({ request_id: 'req-empty', count: 0, actions: [] })
     const w = mount(RequestActionsView, {
-      global: { mocks: { $route: { params: { id: 'req-empty' } } } },
+      global: { plugins: [testI18n],  mocks: { $route: { params: { id: 'req-empty' } } } },
     })
     await flushPromises()
     expect(w.text()).toContain('暂无动作记录')
@@ -91,7 +92,7 @@ describe('RequestActionsView', () => {
   it('shows error message on fetch failure', async () => {
     mockedGet.mockRejectedValueOnce(new Error('upstream 502'))
     const w = mount(RequestActionsView, {
-      global: { mocks: { $route: { params: { id: 'req-err' } } } },
+      global: { plugins: [testI18n],  mocks: { $route: { params: { id: 'req-err' } } } },
     })
     await flushPromises()
     expect(w.find('.ra-error').exists()).toBe(true)
