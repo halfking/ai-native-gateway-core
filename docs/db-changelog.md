@@ -10341,9 +10341,66 @@ cron 日志里也有 `"retention_hours":8`）⇒ ⇒ ★★★ 实测 `max(hot.t
 ★ 　 ★★ **变异 3 组全红 + md5 逐字还原**（★ M1 删台账行 / M2 源码改掉 `title ILIKE` / M3 清空 `reason`）。
 
 ★ ★★ **另一条读数（Goal「逐个 api 进行单元测试」的基线）**：
-★ · 路由登记 **551** ⇒ ★★ **运行时零覆盖 = 310 条（75.2%）**、有覆盖 102 条、**无法判定 139 条**
+★ · **仓内审计器全量读数（父会话独立复跑）：路由登记 606 ⇒ ★★ 运行时零覆盖 331 条（54.6%）**、
+★   有覆盖 108 条、**无法判定 167 条**
 ★ · 口径：**运行时 `go test ./admin/ -coverprofile=…`（96.5 s / 语句覆盖 26.1%）按函数行范围判定**
 ★ 　（★ **不用**「grep 测试文件里有没有 handler 名」⇒ 那个口径有假阳性与假阴性，★ 不可信）
-★ · ★ **75.2% 是下界**（★ 那 139 条 `undetermined` 可能已被覆盖；★ 且只统计 `admin` 包）。
+★ · ★ **331 是下界**（★ 那 167 条 `undetermined` 可能已被覆盖；★ 且只统计 `admin` 包）。
+★ · ★ **口径差异**：★ 窄口径原型（只扫 5 个目录）⇒ 551/310；★ 审计器（扫全仓）⇒ **606/331（以此为准）**。
 
 ★ **完整记录见审计档 `docs/audit/2026-10-27-R154-生产慢SQL取证与API覆盖度基线.md` + `LESSONS.md` §403**。
+
+### 2026-10-27 R155 —— API handler 覆盖度缺口台账 + 门（★ 无 SQL 变更）
+
+★ **本轮没有新增迁移、没有改任何 schema、没有改任何生产配置 ⇒ 对生产的写入 = 0。**
+★ 本轮只把 R154 的「覆盖度基线」从**一次性读数**变成**仓内可复现、可跟踪的资产**：
+
+| 资产 | 职责 |
+|---|---|
+| `scripts/audit/api-handler-coverage.sh` | ★ 运行时 `go test ./admin/ -coverprofile` 审计器 ⇒ 按**函数行范围**判定 ⇒ 产出 `covered` / `zero_coverage` / `undetermined` 三类；★ 支持 `--routes` / `--scan-dirs` **快速模式**（★ 门里用，★ 2 s 级） |
+| `scripts/ursmcheck/api_handler_coverage_ledger.tsv` | ★ **缺口台账**（★ **14 列**、★ **331 行**；★ 机器判定列 `verdict` 与人工裁决列 `adjudication` **分离** ⇒ 工具可重跑而不覆盖人工裁决） |
+| `scripts/ursmcheck/api_handler_coverage_gate_test.go` | ★ **7 条断言**：文件存在 / 台账非空 / ★ 裁决完整（★ **禁 `pending`**）/ 主键唯一且 occ 连续 / fingerprint 与公式一致 / ★ **快速模式与台账一致** / ★★ **门自带「有牙」自测** |
+| `scripts/ursmcheck/tsv_hollowout_inventory.tsv` | ★ **补 2 行登记**（★ `api_handler_coverage_ledger.tsv` + ★ `session_summaries_like_index_ledger.tsv`）⇒ ★ 把两个新台账纳入「**掏空法**」门禁 |
+
+★ ★★ **读数**：★ 全量模式 **606 路由登记 ⇒ 331 zero / 167 undetermined / 108 covered**；
+★ **零覆盖集合 == 台账 331 行** ⇒ 可复现；★ 门 **7/7 PASS**（★ `ok 5.100s`）。
+★ ★★ **缺口原因分类（6 类）**：★ `needs-integration-test` **167** ／★ `needs-unit-test` **131**
+★ ／★ `delegating-wrapper` **14** ／★ `logic-migrated` **9** ／★ `param-validation-only` **5**
+★ ／★ `admin-manual-op` **5**。
+
+★ ★★★ **★ 归属判定（本轮最有价值的一条）**：★ `scripts/ursmcheck` 包在 `-timeout 30m` 下跑完
+★ 690.736 s **FAIL** ⇒ ★★ 用**「我的 worktree vs 纯净 origin/main」两次全量跑**做归属：
+★ ★★ ⇒ **我的 worktree 全绿（831.336 s）**；★ ★★ **纯净 origin/main 红（837.212 s，3 条失败）**。
+★ ⇒ ⇒ **根因两个，各归各**：
+★ 　① **上游 `b7022a466`** 引入 `admin/body_resolver_content_array_realdb_test.go`
+★ 　　⇒ 读了 2 个**未登记**的 env（★ `TEST_CONTENT_ARRAY_SAMPLE` / ★ `TEST_CONTENT_ARRAY_REQUEST_IDS`）
+★ 　　⇒ ★ **上游把 `scripts/ursmcheck` 包弄红了**（★ `origin/main` 实测 FAIL）。
+★ 　② **我自己**：★ R154 引入的 `session_summaries_like_index_ledger.tsv` **没登记进**
+★ 　　`tsv_hollowout_inventory.tsv` ⇒ ★ **「掏空法」覆盖门红** ⇒ ★★ **已在 R155 补登记**。
+★ ⇒ ⇒ ★★★★ **「我这边红」不等于「我这边错」** ⇒ ★★ 归属判定的唯一可靠办法是
+★ ★★ 「同一台机器、同一条命令、两个 checkout 各跑一遍」⇒ ★★★ 否则会去修一个不属于你的红。
+
+★ **完整记录见审计档 `docs/audit/2026-10-27-R154-生产慢SQL取证与API覆盖度基线.md` §3 + `LESSONS.md` §403**。
+
+### 2026-10-27 R155-hotfix —— 补登记上游 `b7022a466` 引入的 2 个 env（★ origin/main 当时是红的）
+
+★ **背景**：★ R155 归属判定发现 ★ **纯净 `origin/main` 的 `scripts/ursmcheck` 包是红的**
+★ （837.212 s / 3 条失败）⇒ ★ **根因之一在上游**：★ `b7022a466` 引入
+★ `admin/body_resolver_content_array_realdb_test.go` ⇒ 读了 2 个**未登记**的 env
+★ ⇒ ★★ **登记册的门（`TestPGTestEnvRegistryCoversEveryGapName`）红**
+★ ⇒ ★★ 连带 ★ **「掏空法」门红**（★ 它的读方在基线就红 ⇒ 不可判定）。
+★ ⇒ ⇒ ★★★★ **本条登记册缺口会同时打红两道门** ⇒ ★★ **「一个未登记的 env」的爆炸半径比看起来大**。
+
+★ **修法（★ 走仓内既有 `-r71-update` 通道，★ 不手改登记册）**：
+★ `go test ./scripts/ursmcheck/ -run TestPGTestEnvRegistryCoversEveryGapName -args -r71-update`
+★ ⇒ 补齐 2 个新名字（★ 登记册 75 → 77 条）⇒ ★ **再逐条人工填 class 与 reason**
+★ （★ `-r71-update` 写的是 `TODO: 待人工分类` ⇒ ★ **门会拒绝留 TODO 的条目** ⇒ ★★ **必须人工填**）。
+
+| env | class | 理由 |
+|---|---|---|
+| `TEST_CONTENT_ARRAY_REQUEST_IDS` | `component` | ★ 夹具参数：指定 request_id 清单的文件路径（每行一个 id）⇒ 不决定连哪个库，也不取消任何保护 |
+| `TEST_CONTENT_ARRAY_SAMPLE` | `component` | ★ 夹具参数：真库读数的采样行数（整数，默认 20000）⇒ 不决定连哪个库，也不取消任何保护 |
+
+★ **复验**：★ `TestPGTestEnvRegistryCoversEveryGapName` **PASS**（★ 103 个 env 名 / 登记册 77 条 /
+★ 未登记 **0** / 死条目 **0**）⇒ ★★ **origin/main 由红转绿**。
+★ ★★ **本条无 SQL 变更、无 schema 变更、无生产写入** ⇒ ★ **对生产的写入 = 0**。

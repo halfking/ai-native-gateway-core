@@ -56,6 +56,8 @@ SANITIZE_RULES_TEST_DSN	dsn_exclusive	PG DSN，但属清洗规则专用实例，
 SESSION_AUDIT_REDIS_ADDR	component	Redis 地址（host:port），绝不能填 PG DSN
 SESSION_AUDIT_SESSION	component	子进程参数：会话标识
 SESSION_AUDIT_WORKER	component	子进程参数：worker 标识
+TEST_CONTENT_ARRAY_REQUEST_IDS	component	夹具参数：指定 request_id 清单的文件路径（每行一个 id）⇒ 不决定连哪个库，也不取消任何保护
+TEST_CONTENT_ARRAY_SAMPLE	component	夹具参数：真库读数的采样行数（整数，默认 20000）⇒ 不决定连哪个库，也不取消任何保护
 TEST_DUAL_FULL_PGURL	dsn_exclusive	双模全量腿的 PG 连接串，必须与通用 DSN 区分（否则会打到共享库）
 TEST_DUAL_FULL_REDISURL	component	双模全量腿的 Redis 连接串，绝不能填 PG DSN
 TEST_PG_CONTRACTS_ISOLATED	isolation	隔离声明：该腿跑在隔离库上；必须与 DSN 成对设置，不能默认开
