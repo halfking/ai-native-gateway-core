@@ -114,10 +114,10 @@ for _stream in (sys.stdout, sys.stderr):
     except (AttributeError, ValueError):
         pass
 
-def run_gate():
+def run_gate(cwd):
     r = subprocess.run(
         ["go", "test", TEST, "-run", RUN_FILTER, "-count=1"],
-        cwd=REPO, capture_output=True, encoding='utf-8', errors='replace',
+        cwd=cwd, capture_output=True, encoding='utf-8', errors='replace',
     )
     out = r.stdout + r.stderr
     _run_seq[0] += 1
@@ -166,13 +166,56 @@ def no_tests_ran(out):
     return ("no tests to run" in out) or ("no test files" in out)
 
 
+def make_isolated_copy(dst):
+    """把 HEAD 导出成一个**可独立编译**的副本（`vendor/` 被 git 跟踪 ⇒ 一并导出）。"""
+    r = subprocess.run(
+        "git archive HEAD | tar -x -C " + str(dst),
+        shell=True, cwd=REPO, capture_output=True, encoding='utf-8', errors='replace',
+    )
+    if r.returncode != 0:
+        raise RuntimeError("git archive 失败: " + (r.stderr or r.stdout))
+
+
+def tracked_dirty_lines():
+    """**已跟踪**文件的未提交改动（未跟踪的 `??` 不算）。"""
+    st = subprocess.run(["git", "status", "--porcelain"], cwd=REPO,
+                        capture_output=True, encoding='utf-8', errors='replace')
+    return [l for l in st.stdout.splitlines()
+            if l.strip() and not l.startswith("??")]
+
+
 def main():
-    tmp = pathlib.Path(tempfile.mkdtemp())
+    # ★★ 前置条件：**已跟踪**文件必须与 HEAD 一致 —— 本脚本导出的是 **HEAD**，
+    #   未提交的改动**不会**进副本 ⇒ 若已跟踪文件是脏的，副本就不是你以为的那棵树。
+    #   ⚠ **未跟踪文件（`??`）不算**：新建的脚本/文档不进副本，也不影响被测代码。
+    dirty = tracked_dirty_lines()
+    if dirty:
+        print("!! 已跟踪文件有未提交改动 ⇒ 本脚本导出的是 HEAD，副本与你的工作树不同源 ⇒ 先提交再跑：")
+        print("\n".join(dirty))
+        return 2
+
+    # ★★ **隔离副本形态**（2026-10-25 R77 轮落地）：变异**只发生在副本里** ⇒
+    #   共享工作树的源码**一个字节都不会被改** ⇒ 两个真实风险同时消失：
+    #   ① 并行会话在变异窗口里 `git commit -a` ⇒ 改坏的源码被推上 main；
+    #   ② 本脚本被 cancel / 崩掉 ⇒ **finally 不执行** ⇒ 变异残留留在共享工作树里
+    #      （2026-10-21 实测过这个坑：cancel 掉带 finally 还原的后台复跑任务 ⇒
+    #        `bg/routing_health_checks.go` 的 `skip && false` 残留躺在共享树里
+    #        一直到下一次提交 ⇒ 差点被推上 main）。
+    iso = pathlib.Path(tempfile.mkdtemp(prefix="mutate-s4-iso-"))
+    make_isolated_copy(iso)
+
     originals = {}
+    repo_orig = {}
     for rel, _, _, _, _, _ in MUTATIONS:
-        p = REPO / rel
+        p = iso / rel
         if rel not in originals:
+            if not p.exists():
+                print(f"!! 隔离副本里没有 {rel}")
+                shutil.rmtree(iso, ignore_errors=True)
+                return 2
             originals[rel] = (p, p.read_text(encoding='utf-8'))
+            # ★ 运行前把**共享工作树**里的目标文件读下来 ⇒ 收尾时逐字比对（见末尾）。
+            repo_orig[rel] = (REPO / rel).read_text(encoding='utf-8')
 
     failures = []
     try:
@@ -191,7 +234,7 @@ def main():
                 p.write_text(o, encoding='utf-8')
 
             path.write_text(orig.replace(old, new, 1), encoding='utf-8')
-            green, out = run_gate()
+            green, out = run_gate(iso)
 
             # ★ 先判「测试到底跑了没」——这是**作废条件**，不是绿/红。
             if no_tests_ran(out):
@@ -247,7 +290,7 @@ def main():
                 kind = "断言红" if a else ("编译级失败" if c else "未解析")
                 print(f"??  {name}: 第一轮变红（{kind}），失败腿 = {fails or '(未解析出腿名)'}；重跑一次判定是真假阳性还是不稳定")
                 print(f"    ⇒ 原始输出已落盘：{_RUN_DIR}/run-{_run_seq[0]:02d}.log")
-                green2, out2 = run_gate()
+                green2, out2 = run_gate(iso)
                 if no_tests_ran(out2):
                     print(f"!!   {name}: 重跑输出含「no tests to run」⇒ 作废")
                     failures.append(name)
@@ -259,12 +302,21 @@ def main():
     finally:
         for path, orig in originals.values():
             path.write_text(orig, encoding='utf-8')
-        shutil.rmtree(tmp, ignore_errors=True)
+        shutil.rmtree(iso, ignore_errors=True)
 
-    for path, orig in originals.values():
-        if path.read_text(encoding='utf-8') != orig:
-            print(f"!! {path} 未还原干净")
-            failures.append("restore")
+    # ★ 共享工作树**未被改动**校验（真实工作树侧）—— 隔离副本形态的核心承诺。
+    #   ⚠ 不用「副本侧还原干净」当证据：副本已被 rmtree 删掉 ⇒ 那种检查**恒真**（空检查）。
+    for rel, want in repo_orig.items():
+        if (REPO / rel).read_text(encoding='utf-8') != want:
+            print(f"!! 共享工作树里的 {rel} 与运行前不一致 ⇒ 本脚本不该改动它")
+            failures.append("shared-tree-mutated")
+    dirty2 = tracked_dirty_lines()
+    if dirty2:
+        print("!! 共享工作树的已跟踪文件被改动了（本脚本的设计前提就是「一个字节都不动」）:")
+        print("\n".join(dirty2))
+        failures.append("shared-tree-dirty")
+    else:
+        print("OK   共享工作树的已跟踪文件未被改动")
 
     if failures:
         print(f"\n=== 变异验证失败: {failures}")
