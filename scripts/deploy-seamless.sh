@@ -1107,7 +1107,55 @@ do_deploy() {
   old_version=$(remote_ssh "readlink '$REMOTE_ROOT/current' 2>/dev/null | xargs basename" 2>/dev/null || true)
   if [[ "$LEGACY_RESTART" == true ]]; then
     log "[8/9] legacy stop/start emergency path"
-    host_atomic_switch "$SSH_CMD" "$TARGET" "$version" 2>&1 | sed 's/^/    /'
+    # 2026-10-26（245 seq 2823 现场实证的断链修复）：蓝绿迁移过的目标上，
+    # 契约 service_name 是蓝绿前的弃用遗留 unit（245 = llmgo-245.service，
+    # 且已被 mask）—— stop 它是 no-op 或直接报错；且 canary 的 ExecStart 跑
+    # slots/%i/gateway，host_atomic_switch 翻的 current/顶层软链 canary
+    # 根本不读 ⇒ 旧形态即便 restart 成功，起的也是旧 binary。
+    # ⇒ 实况 unit 必须解析：ps 归属（detect_active_side）>
+    #   run/active-service 记录 > 契约 service_name（逐级 warn）；
+    #   canary 形态走 slots/<port> 重指 + restart 实况 unit
+    #   （= 2026-10-24 2823 受控手动交换的等价自动化）。
+    if ! detect_active_side; then
+      err "legacy: 无法解析 ${TARGET} 实况服务端口/unit；拒绝盲切，中止（旧实例未受影响）"
+      exit 1
+    fi
+    local legacy_unit="${DETECTED_ACTIVE_UNIT:-}" legacy_port="${DETECTED_ACTIVE_PORT:-}"
+    if [[ -z "$legacy_unit" || "$legacy_unit" == "unknown" ]]; then
+      legacy_unit=$(remote_ssh "cat '$REMOTE_ROOT/run/active-service' 2>/dev/null" 2>/dev/null | tr -d '[:space:]' || true)
+      legacy_port=$(remote_ssh "cat '$REMOTE_ROOT/run/active-port' 2>/dev/null" 2>/dev/null | tr -d '[:space:]' || true)
+      [[ -n "$legacy_unit" ]] && warn "legacy: ps 归属未解析出 unit，回落 run/active-service 记录: ${legacy_unit}:${legacy_port:-?}"
+    fi
+    if [[ -z "$legacy_unit" || "$legacy_unit" == "unknown" ]]; then
+      legacy_unit=$(target_field "$TARGET" service_name)
+      legacy_port=$(target_field "$TARGET" active_port)
+      warn "legacy: 实况与记录均未解析出 unit，回退契约 service_name=${legacy_unit}（旧行为）"
+    fi
+    local canary_prefix
+    canary_prefix=$(target_field "$TARGET" candidate_unit 2>/dev/null || true)
+    # ★ 必须用参数展开剥后缀，不能用 sed：macOS BSD sed 对
+    #   s/@\.service$//@ 报 bad flag（2026-10-26 部署现场实测），
+    #   解析成空会让 canary 判定静默走错分支（回退 host_atomic_switch）。
+    canary_prefix="${canary_prefix%@.service}"
+    if [[ -n "$canary_prefix" && "$legacy_unit" == "${canary_prefix}"*".service" ]]; then
+      local legacy_prev_release
+      legacy_prev_release=$(remote_ssh "readlink '$REMOTE_ROOT/slots/$legacy_port' 2>/dev/null | xargs basename" 2>/dev/null || true)
+      log "    legacy: canary 形态 —— slots/${legacy_port} 重指 releases/${version} 后 restart ${legacy_unit}（原 release: ${legacy_prev_release:-<无>}）"
+      if ! remote_ssh "set -e; ln -sfn '$REMOTE_ROOT/releases/$version' '$REMOTE_ROOT/slots/$legacy_port'; if [ -d '$REMOTE_ROOT/releases/$version/web-mobile' ]; then ln -sfn '$REMOTE_ROOT/releases/$version/web-mobile' '$REMOTE_ROOT/web-mobile'; fi"; then
+        err "legacy: slots/${legacy_port} 重指失败；旧 release（${legacy_prev_release:-<无>}）保持服务"
+        exit 1
+      fi
+      if ! remote_ssh "systemctl restart '$legacy_unit'"; then
+        err "legacy: restart ${legacy_unit} 失败 —— slot 已重指但进程未起；回滚: ln -sfn releases/${legacy_prev_release:-<旧>} 到 slots/${legacy_port} 后重启该 unit"
+        exit 1
+      fi
+    else
+      host_atomic_switch "$SSH_CMD" "$TARGET" "$version" 2>&1 | sed 's/^/    /'
+    fi
+    # 共享的 [9/9] 探针与 journal 诊断必须打在实况 unit/端口上（蓝绿分支本就如此）
+    candidate_port="$legacy_port"
+    candidate_service="$legacy_unit"
+    active_service="$legacy_unit"
     local switch_elapsed=0
     warn "legacy-restart used; 2-second blue-green SLO is not applicable"
   else

@@ -3,6 +3,10 @@
 部署时在 **切换前** 于 252 PG 应用的 `sql/migrations/startup/` 变更。
 其它环境请按时间倒序手工同步，或使用 `deploy-seamless.sh` 自动 apply。
 
+> ★★ **机器可判的状态镜像**：★ 迁移 × 环境（★ `local` / `252` / `211`）的已应用状态见
+> ★★ `docs/db-changelog-authoritative.md`（★ 由 `scripts/audit/db-changelog-ledger-reconcile.py render --write` 从各环境账本生成）。
+> ★★ 本文件下方各节的「Status」列是**历史散文**（★ 保留「为什么」）；★ 「现在是什么」以权威镜像为准。
+
 ## 2026-09-05 — database revision sequence 655
 
 本次数据库修订整合为 `scripts/apply-db-revision-sequence.sh`，由 `scripts/deploy-local.sh deploy` 在 Gateway 应用迁移前调用。固定顺序为 `655 → 560 → 572 → 606 → 563 → 564 → 644 → 645 → 656`；序列使用 `gateway_db_revision_sequences` 做幂等完成标记。655 只增量补齐被 Memora 最小 schema 覆盖的 `session_summaries` canonical 列，保留 `session_id/summary_json`，不删除或重建表。656 补齐 auto_route_selections 热表（`db.go` ensure 链无该补偿，存量部署由此步骤落地）。644 的 self-check CHECK 重建使用定义感知守卫，已是 canonical 定义时跳过，避免部署期重复全表验证锁。
@@ -10452,3 +10456,9 @@ cron 日志里也有 `"retention_hours":8`）⇒ ⇒ ★★★ 实测 `max(hot.t
 ★ **复验**：★ `TestPGTestEnvRegistryCoversEveryGapName` **PASS**（★ 103 个 env 名 / 登记册 77 条 /
 ★ 未登记 **0** / 死条目 **0**）⇒ ★★ **origin/main 由红转绿**。
 ★ ★★ **本条无 SQL 变更、无 schema 变更、无生产写入** ⇒ ★ **对生产的写入 = 0**。
+## 2026-10-25T18:10:46Z — deploy 245 build_seq 2859 (53a8de44)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 909 | `909_session_summaries_search_trgm_indexes.sql` | `77d829d0289cb3e0b16dfa93b16c70addcbf84d265f58b3e4996680ac4cb8e6b` | applied+verified |
+
