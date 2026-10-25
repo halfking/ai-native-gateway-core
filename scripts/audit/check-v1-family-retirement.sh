@@ -165,6 +165,19 @@ JOIN pg_namespace n ON n.oid = c.relnamespace
 WHERE n.nspname = 'public' AND c.relkind IN ('r','p','v','m')
 ORDER BY 2"
 
+# ★★★★ R157 轮新增：**库身份自报**（★ 两侧对照 ⇒ 「我以为连的是谁」vs 「库说它是谁」）。
+#
+# ★★ 为什么必须加（★ 本轮实测踩到的）：
+#   ★ 本机 PATH 里的 `psql` 是**另一个项目的 docker shim**（★ 硬编码转发到 `acc-pg17`）
+#   ⇒ ★★ 于是「psql 退出码 1 + 一个别的容器的名字」⇒ ★★ 报错**只说「psql 失败」**，
+#      ★★ **不说「你连的不是你以为的那个库」** ⇒ ★★ 人只能去猜。
+#   ⇒ ★★★ 修法 = ★ **让读数自带身份** ⇒ ★ 失败时也要说「我要连的是 host:port/db」。
+#
+# ★★ 身份取 6 项（★ 全部来自**库自己**，★ 不含口令）：
+#   current_database / current_user / inet_server_addr:port /
+#   pg_postmaster_start_time（★ 证明是哪一个 PG 实例）/ pg_is_in_recovery（★ 副本要能看出来）
+IDENTITY_SQL="SELECT current_database(), current_user, COALESCE(inet_server_addr()::text,'(local)'), COALESCE(inet_server_port()::text,'(unix)'), pg_postmaster_start_time()::text, pg_is_in_recovery()::text"
+
 # ─────────────────────────── classify 的判定程序（awk） ───────────────────────────
 #
 # ★★ 判定逻辑**全部**在这里 ⇒ probe 与 classify 共用同一份实现，
@@ -246,6 +259,22 @@ BEGIN {
   n_takeover = 0; to_session = 0
 }
 {
+  # ★★ R157 轮新增：**身份行必须在通用 `#` 跳过之前捕获**（★ 否则它会被当注释丢掉）。
+  #
+  # ★★★★ 判据的可移植性（本轮实测踩到）：
+  #   ★ **awk 的【正则字面量】里的 `\t` 不是所有实现都当制表符**
+  #     （★ BWK awk / macOS 自带 awk 把它当字面的 't' ⇒ `/^#identity\t/` 匹配不上）
+  #   ★★ 而 **awk 的【字符串字面量】里的 `\t` 是 POSIX 标准**（★ 所有实现都支持）
+  #   ⇒ ★★ 正解：★ 判据用**不带 `\t` 的正则**（`/^#identity/`）+ ★ 取分隔用 `index($0, "\t")`
+  #   ⇒ ★★★ **同族教训**：★ 「文本判据必须剥到对的那一层」⇒ ★★ 这里还要再加一条
+  #     **「正则写在哪一层也有讲究」** ⇒ ★★ **同一段文本，★ 在正则字面量里和字符串字面量里语义不同**。
+  if ($0 ~ /^#identity/) {
+    line = $0
+    p = index(line, "\t")
+    if (p > 0) line = substr(line, p + 1)
+    db_identity = line
+    next
+  }
   if ($0 ~ /^[ \t]*#/) next
   kind = $1; name = $2; body = $3
   gsub(/^[ \t]+/, "", kind); gsub(/[ \t]+$/, "", kind)
@@ -297,6 +326,7 @@ END {
   print "#meta\ttakeover_reads_session\t" to_sess
   print "#meta\ttakeover_view\t" takeover_name
   print "#meta\tobjects_total\t" n
+  print "#meta\tdb_identity\t" (db_identity == "" ? "(not provided)" : db_identity)
   for (i = 1; i <= n; i++) print "object\t" obj_kind[i] "\t" obj_name[i] "\t" obj_role[i]
   if (summary_file != "") {
     s = "════════ v1 族退役检查 ════════\n"
@@ -508,14 +538,66 @@ probe_db() {
     :
   fi
 
+  # ★★★★ R157 轮新增：**先算「我要连的目标」标签**（★ 只含 host:port/db，★ 不含口令）。
+  #   ★ 用途：★ 失败时也要说清「我本来要连的是谁」⇒ ★ 否则读者只能猜。
+  local target=""
+  if [[ -n "${dsn}" ]]; then
+    target="${DSN_HOST:-?}:${DSN_PORT:-?}/${DSN_DBNAME:-?}"
+  else
+    target="(env) ${PGHOST:-local}:${PGPORT:-?}/${PGDATABASE:-?}"
+  fi
+
+  # ★★ 身份自报（★ 单独一次查询 ⇒ ★ 与清单查询解耦 ⇒ ★ 身份查询失败不致命）。
+  #   ★ psql_args 此时还没有 -c ⇒ ★ 这里先追加身份语句、跑完、**再把基座还原**。
+  #   ★★★★ 还原是必须的：★ psql 支持**多个 -c**（★ 按顺序执行）⇒ ★ 若不还原，
+  #     ★★ 清单查询会**顺带再跑一遍身份查询** ⇒ ★★ 身份那一行会混进清单里 ⇒ ★★ 判定读数被污染。
+  local ident=""
+  local -a base_args=("${psql_args[@]}")
+  psql_args+=(-c "${IDENTITY_SQL}")
+  ident="$(env -u PGSERVICEFILE -u PGSERVICE "${pg_env[@]}" psql "${psql_args[@]}" 2>/dev/null | head -1)" || ident=""
+  psql_args=("${base_args[@]}")
+
   psql_args+=(-c "${PROBE_SQL}")
   # ★ 先把继承来的 PGSERVICEFILE / PGSERVICE **清掉**：环境里若残留一个空串，
   #   libpq 会直接报 "service file \"\" not found"（实测）⇒ 不能让它漏进来。
   #   需要 service file 时下面会显式重新设置。
   env -u PGSERVICEFILE -u PGSERVICE "${pg_env[@]}" psql "${psql_args[@]}" > "${inv}" 2> "${err}" || rc=$?
   if [[ -n "${svc}" ]]; then rm -f "${svc}"; fi
+  # ★★ 身份行：★ **成功与失败共用同一个 printf**（★ 单一真值源 ⇒ ★ 格式只有一处）。
+  #   ★★ 为什么必须共用（★ 本轮变异验证实测）：★ 若两条分支各写一个 printf，
+  #     ★★ 门喂的**手写身份行**就只覆盖其中一条 ⇒ ★★ **改另一条的门看不见**
+  #     ★★ ⇒ ★★ **门永远绿，而产物已经错了** ⇒ ★★ **⇒ 格式必须是单一真值源**。
+  #   ★★ 内部分隔符用 **`|`** 而不是 TAB：★ `#meta` 行是**三字段 TSV**
+  #     （★ `#meta` / 键 / 值）⇒ ★★ 值里若带 TAB ⇒ ★★ 这一行就变成多字段 ⇒
+  #     ★★ 取值方（`f[2]`）只拿到**第一个片段** ⇒ ★★ 读数被静默截断。
+  #     ⇒ ★★ **TSV 的值里不能有 TSV 分隔符** ⇒ ★★ 这是格式契约，不是风格问题。
+  emit_identity_line() {
+    local t="$1" id="$2"
+    local f_db f_user f_server f_pms f_rec
+    if [[ -n "${id}" ]]; then
+      f_db="$(printf '%s' "${id}" | cut -f1)"
+      f_user="$(printf '%s' "${id}" | cut -f2)"
+      f_server="$(printf '%s' "${id}" | cut -f3):$(printf '%s' "${id}" | cut -f4)"
+      f_pms="$(printf '%s' "${id}" | cut -f5)"
+      f_rec="$(printf '%s' "${id}" | cut -f6)"
+    else
+      f_db="(unknown)"; f_user="(unknown)"; f_server="(unknown)"
+      f_pms="(unknown)"; f_rec="(unknown)"
+    fi
+    # ★★★★ **这行 printf 是身份行的【唯一真值源】**（★ 成功与失败都走它）。
+    #   ★★ 为什么必须唯一（★ 本轮变异验证实测）：★ 若按「成功/失败」分两个 printf，
+    #     ★★ 门覆盖的那条分支改了，另一条**门看不见** ⇒ ★★ **实测 M3 变异：门依然绿**。
+    #   ⇒ ★★ **⇒ 格式只能有一处** ⇒ ★★ 字段值不同没关系，★ 格式一样就行。
+    printf '#identity\trequested=%s|db=%s|user=%s|server=%s|postmaster_start=%s|in_recovery=%s\n' \
+      "${t}" "${f_db}" "${f_user}" "${f_server}" "${f_pms}" "${f_rec}"
+  }
+
   if [[ "${rc}" -ne 0 ]]; then
-    printf 'FATAL: 探库失败（psql 退出码 %s）。下面的报错已抹掉 DSN 与口令：\n' "${rc}" >&2
+    # ★★★ 失败时**也要**把身份行印到 stdout（★ 读者才知道「我要连的是谁、它是谁」）。
+    emit_identity_line "${target}" "${ident}"
+    printf 'FATAL: 探库失败（psql 退出码 %s）★ 我要连的目标 = %s\n' "${rc}" "${target}" >&2
+    printf '★ 提示：本机 PATH 里的 psql 可能是【别的项目的转发脚本】⇒ ★ 它会连到别的容器。\n' >&2
+    printf '★ 若是如此 ⇒ 用 classify 模式喂清单（★ 清单从目标库自己取），★ 别信 probe 模式。\n' >&2
     awk -v nf="${needles}" '
       BEGIN { while ((getline line < nf) > 0) { if (line != "") { k++; nd[k] = line } } close(nf) }
       { out = ""; rest = $0
@@ -531,6 +613,11 @@ probe_db() {
     rm -f "${inv}" "${err}" "${needles}"
     return 64
   fi
+
+  # ★★ 把身份行**前置**到清单里 ⇒ ★ classify 会把它印成 `#meta db_identity`。
+  emit_identity_line "${target}" "${ident}" > "${inv}.withid"
+  cat "${inv}" >> "${inv}.withid"
+  mv "${inv}.withid" "${inv}"
   rm -f "${err}" "${needles}"
   classify_file "${inv}"
   rc=$?
