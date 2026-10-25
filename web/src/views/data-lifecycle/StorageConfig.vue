@@ -100,7 +100,7 @@ async function load() {
       await checkMigrationState()
     }
   } catch (e: any) {
-    error.value = e.message || '加载失败'
+    error.value = e.message || t('common.feedback.loadFailed')
   } finally {
     loading.value = false
   }
@@ -136,7 +136,7 @@ async function save() {
       saveMsg.value = '✅ 配置已保存'
     }
   } catch (e: any) {
-    saveMsg.value = '❌ 保存失败：' + (e.message || '未知错误')
+    saveMsg.value = '❌ ' + t('common.feedback.saveFailedWithReason', { reason: e.message || t('common.feedback.unknownReason') })
   } finally {
     saving.value = false
   }
@@ -177,7 +177,7 @@ async function pollMigration() {
       if (st.latest?.status === 'succeeded') {
         saveMsg.value = '✅ 文件迁移完成，已切换到新目录'
       } else if (st.latest?.status === 'failed') {
-        saveMsg.value = '❌ 迁移失败：' + (st.latest.message || '未知错误')
+        saveMsg.value = '❌ ' + t('dataLifecycle.storage.migrateFailedWithReason', { reason: st.latest.message || t('common.feedback.unknownReason') })
       }
     }
   } catch {
@@ -208,7 +208,7 @@ async function testPathAvailable() {
   try {
     testResult.value = await storageConfigTestPath(testPath.value.trim())
   } catch (e: any) {
-    alert('测试失败：' + (e.message || '未知错误'))
+    alert(t('common.feedback.testFailedWithReason', { reason: e.message || t('common.feedback.unknownReason') }))
   } finally {
     testing.value = false
   }

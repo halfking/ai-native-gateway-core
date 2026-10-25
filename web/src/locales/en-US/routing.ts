@@ -36,6 +36,7 @@ export default {
     failed: 'Failed',
     freeModel: 'Free model: top priority',
     waiting: 'Loading…',
+    logEmpty: 'No match records for this period. Try a different time range or condition.',
   },
   dashboard: {
     title: 'Routing overview',
@@ -127,7 +128,7 @@ export default {
       schedulingHint: 'Tier 1→2→3→9, plan-preferred PAYG, P2C',
       noCreds: 'No credentials',
       sixDimScore: '6-dim score',
-      emptyHint: 'No index data: click ↻ to refresh',
+      emptyHint: 'The index has no records yet. Reload it with the refresh button.',
     },
     policy: {
       fields: {
@@ -154,7 +155,8 @@ export default {
       modelCostTitle: 'Model cost',
       colCost: 'Cost',
       colRequests: 'Requests',
-      empty: 'None',
+      customerCostEmpty: 'No customer cost records in this period.',
+      modelCostEmpty: 'No model cost records in this period.',
     },
     resolve: {
       title: 'Credential routing resolver',
@@ -198,6 +200,10 @@ export default {
       colRoutable: 'Routable',
       colTopCred: 'Top cred',
       replay: 'Replay',
+      reorderFailed: 'The number of candidates exceeds the priority limit, so they cannot be ordered. Reduce the candidates and retry.',
+      sortSaveFailed: 'The sort order could not be saved. Please retry.',
+      savePolicyFailedWithReason: 'The routing policy could not be saved: {reason}. Please retry.',
+      localLogFailed: 'The local run log could not be parsed, and the original content could not be backed up (browser storage may be full). Clear the browser storage and retry.',
     },
     live: {
       simulatorTitle: 'Routing simulator',
@@ -210,6 +216,7 @@ export default {
       colConfidence: 'Conf.',
       noDecisions: 'No recent decisions',
     },
+    matchStatsHint: '× Model matching stats · Click a cell for decision details and the L2 funnel',
   },
   policy: {
     title: 'Routing policy',
@@ -436,4 +443,5 @@ export default {
   updatedWeights: 'Scoring coefficients updated',
   variantsLabel: 'Variants',
   workTypes: 'Work types',
+  variantHint: 'Choose the variant above to see its credential routing details.',
 }

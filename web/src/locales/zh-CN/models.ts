@@ -197,6 +197,8 @@ export default {
     discoverFailed: '发现模型失败',
     loadFeaturedFailed: '加载特色模型失败',
     saveFeaturedFailed: '保存失败',
+    syncFailed: '模型名称映射没能同步，请重试',
+    nameRequired: '请填写原始名称和标准名称',
   },
   health: {
     healthy: '正常',

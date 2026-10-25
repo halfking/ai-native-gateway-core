@@ -4,8 +4,9 @@ export default {
     disabled: '無効',
     paused: '切断',
     ok: '接続済み',
-    error: '接続失敗',
+    error: '接続できません。ネットワークを確認して再試行してください。',
     loading: '確認中',
+    detectFailed: '結果を検出できませんでした。再試行してください。',
   },
 
   panel: {

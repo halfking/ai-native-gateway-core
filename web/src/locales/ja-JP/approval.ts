@@ -90,6 +90,9 @@ export default {
       actions: 'Approval actions',
       history: 'Approval history',
     },
+    loadFailed: '承認詳細の読み込みに失敗しました。再試行してください。',
+    approveFailed: '承認を完了できませんでした。再試行してください。',
+    rejectFailed: '拒否を完了できませんでした。再試行してください。',
   },
   config: {
     title: '承認設定',

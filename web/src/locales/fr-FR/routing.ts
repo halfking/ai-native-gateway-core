@@ -37,6 +37,7 @@ export default {
     failed: 'Échec',
     freeModel: 'Modèle gratuit, priorité maximale',
     waiting: 'Chargement…',
+    logEmpty: 'Aucune correspondance enregistrée sur cette période. Changez la plage de temps ou les conditions, puis réessayez.',
   },
   dashboard: {
     title: 'Vue d\'ensemble du routage',
@@ -126,7 +127,7 @@ export default {
       schedulingHint: 'Tier 1→2→3→9, Plan priorise PAYG, P2C',
       noCreds: 'Aucun identifiant',
       sixDimScore: 'Score 6 dimensions',
-      emptyHint: 'Aucune donnée dans l\'index: cliquez sur ↻ Actualiser',
+      emptyHint: 'L’index ne contient encore aucun enregistrement. Relancez l’actualisation pour le recharger.',
 
       smartConfig: 'Smart routing',
 
@@ -157,7 +158,8 @@ export default {
       modelCostTitle: 'Coût modèle',
       colCost: 'Coût',
       colRequests: 'Requêtes',
-      empty: 'Aucune donnée',
+      customerCostEmpty: 'Aucun coût client n’est enregistré sur cette période.',
+      modelCostEmpty: 'Aucun coût modèle n’est enregistré sur cette période.',
     },
     resolve: {
       title: 'Résolution du routage d\'identifiants',
@@ -201,6 +203,10 @@ export default {
       replay: 'Réinterroger',
       colPriority: 'Priorité',
       priorityTooltip: 'Identifiant prioritaire : tant que le quota le permet, il prend le trafic en priorité ; une fois épuisé, le trafic bascule automatiquement. Indépendant du numéro d\'ordre.',
+      reorderFailed: 'Le nombre de candidats dépasse la limite de priorité, le tri est impossible. Réduisez le nombre de candidats, puis réessayez.',
+      sortSaveFailed: 'L’ordre n’a pas pu être enregistré. Veuillez réessayer.',
+      savePolicyFailedWithReason: 'La politique n’a pas pu être enregistrée : {reason}. Veuillez réessayer.',
+      localLogFailed: 'Le journal d’exécution local n’a pas pu être analysé et le contenu d’origine n’a pas pu être sauvegardé (le stockage du navigateur est peut-être saturé). Videz le stockage du navigateur, puis réessayez.',
     },
     live: {
       simulatorTitle: 'Simulateur de routage',
@@ -213,6 +219,7 @@ export default {
       colConfidence: 'Confiance',
       noDecisions: 'Aucune décision récente',
     },
+    matchStatsHint: '×Statistiques de correspondance des modèles · Développez une cellule pour voir le détail de la décision et l’entonnoir L2',
   },
   policy: {
     title: 'Stratégie de routage',
@@ -440,4 +447,5 @@ export default {
   updatedWeights: 'Coefficients de score mis à jour',
   variantsLabel: 'Variantes',
   workTypes: 'Types de travail',
+  variantHint: 'Choisissez une variante ci-dessus pour voir les détails de routage des identifiants de cette variante.',
 }

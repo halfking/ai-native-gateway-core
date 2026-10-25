@@ -84,6 +84,7 @@ export default {
     resetPasswordMismatch: 'Passwords do not match',
     resetPasswordComplexity: 'Password does not meet complexity requirements',
     toggleFailed: 'Operation failed',
+    changePasswordFailed: 'The password could not be changed. Please retry.',
   },
   passwordMatch: {
     matched: '✓ Passwords match',
@@ -138,5 +139,6 @@ export default {
     keyCount: 'API keys',
     viewAllLogs: 'View all in logs',
     requests: 'Requests',
+    loadStatsFailed: 'The user stats could not be loaded. Please retry.',
   },
 }

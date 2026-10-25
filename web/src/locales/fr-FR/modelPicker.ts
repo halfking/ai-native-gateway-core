@@ -1,7 +1,7 @@
 export default {
   placeholderSelect: 'Sélectionner un modèle…',
   titleSelect: 'Sélectionner un modèle',
-  loadFailed: 'Échec du chargement des modèles',
+  loadFailed: 'Le chargement de la liste des modèles a échoué. Veuillez réessayer.',
   selectedCount: '{count} modèles sélectionnés',
   editButton: 'Modifier',
   selectButton: 'Sélectionner',

@@ -518,7 +518,7 @@ async function loadHotTableStats() {
     }
   } catch (err: any) {
     console.error('加载 hot 表统计失败:', err)
-    globalError.value = '加载 hot 表统计失败：' + (err.response?.data?.error || err.message)
+    globalError.value = t('dataLifecycle.hotPartition.statsLoadFailedWithReason', { reason: err.response?.data?.error || err.message })
   } finally {
     loading.value = false
   }
@@ -621,7 +621,7 @@ async function promoteTable(table: HotTable) {
     await loadJobHistory()
     if (pollTimer === null) startPolling()
   } catch (err: any) {
-    ElMessage.error('启动迁移任务失败：' + (err.response?.data?.error || err.message))
+    ElMessage.error(t('dataLifecycle.hotPartition.startMigrationFailedWithReason', { reason: err.response?.data?.error || err.message }))
   }
 }
 
@@ -647,7 +647,7 @@ async function executeDelete() {
     deleteConfirm.value = null
   } catch (err: any) {
     const msg = err.response?.data?.error || err.message || ''
-    ElMessage.error({ message: '提交删除任务失败：' + msg, duration: 8000 })
+    ElMessage.error({ message: t('dataLifecycle.hotPartition.submitDeleteFailedWithReason', { reason: msg }), duration: 8000 })
   }
 }
 

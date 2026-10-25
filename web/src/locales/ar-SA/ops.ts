@@ -507,6 +507,14 @@ export default {
     regionOnlineCount: '{n} online',
 
     dataPlaneTables: '252 data-plane row counts',
+    pingFailedWithReason: 'فشل Ping الجلسة: {reason}. أعد المحاولة.',
+    saveSettingFailedWithReason: 'تعذّر حفظ الإعدادات: {reason}. أعد المحاولة.',
+    maintainFailed: 'تعذّر إتمام الصيانة. أعد المحاولة.',
+    modelMaintainFailed: 'تعذّر إتمام صيانة النماذج. أعد المحاولة.',
+    fpSlotLoadFailed: 'تعذّر تحميل خانات البصمة. أعد المحاولة.',
+    fpSlotProviderMissing: 'provider_id مفقود، تعذّر تحميل خانات البصمة. اختر المزوّد أولًا ثم أعد المحاولة.',
+    accessErrorsHint: 'الاستدعاءات الفاشلة + أخطاء التوجيه، افتح تفاصيل الطلب الأصلي',
+    recentRequestsHint: 'آخر ساعة{source}، لعرض تفاصيل الطلبات',
   }
 ,
   downloads: {

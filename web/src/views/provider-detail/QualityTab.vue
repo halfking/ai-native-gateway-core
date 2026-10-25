@@ -34,7 +34,7 @@ async function loadData() {
     data.value = await getProviderQualityDetail(props.providerId)
   } catch (e: unknown) {
     data.value = null
-    error.value = e instanceof Error ? e.message : '加载质量画像失败'
+    error.value = e instanceof Error ? e.message : t('providerDetail.quality.loadFailed')
   } finally {
     loading.value = false
   }

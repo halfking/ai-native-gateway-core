@@ -262,8 +262,7 @@ onUnmounted(() => { if (refreshTimer) clearInterval(refreshTimer) })
 
     <!-- Empty -->
     <div v-else-if="!loading && !entries.length" class="empty-state">
-      <p>暂无记录</p>
-      <p class="hint-text">请调整时间范围或过滤条件</p>
+      <p>{{ $t('routing.shared.logEmpty') }}</p>
     </div>
 
     <!-- Table -->

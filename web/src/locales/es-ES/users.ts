@@ -84,6 +84,7 @@ export default {
     resetPasswordMismatch: 'Passwords do not match',
     resetPasswordComplexity: 'La contraseña no cumple los requisitos de complejidad',
     toggleFailed: 'Operation failed',
+    changePasswordFailed: 'No se pudo cambiar la contraseña. Vuelva a intentarlo.',
   },
   passwordMatch: {
     matched: '✓ Passwords match',
@@ -138,5 +139,6 @@ export default {
     keyCount: 'Claves API',
     viewAllLogs: 'Ver todo en los logs',
     requests: 'Solicitudes',
+    loadStatsFailed: 'No se pudo cargar las estadísticas de usuarios. Vuelva a intentarlo.',
   },
 }

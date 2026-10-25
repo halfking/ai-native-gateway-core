@@ -1,7 +1,7 @@
 // messageHelpers.ts — shared message extraction for detail panels.
 
 export function formatJson(obj: unknown): string {
-  if (obj == null) return '(无数据)'
+  if (obj == null) return '（尚无数据）'
   try {
     return JSON.stringify(obj, null, 2)
   } catch {

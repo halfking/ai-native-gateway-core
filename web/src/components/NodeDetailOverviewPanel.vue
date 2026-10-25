@@ -10,7 +10,10 @@ import type {
 import type { LiveNodeStatus } from '../composables/liveStreamStore'
 import { fmtTime, pct, statusClass } from '../utils/nodeDetailFormat'
 import { useCredentialLabels } from '../composables/useCredentialLabels'
+import { useI18n } from 'vue-i18n'
 import NodeDetailAccessErrorsPanel from './NodeDetailAccessErrorsPanel.vue'
+
+const { t } = useI18n()
 
 const props = defineProps<{
   node: LiveNodeStatus
@@ -98,7 +101,7 @@ watch(() => props.candidate?.credential_id, (id) => {
     </section>
 
     <section v-if="selectedModel" class="nd-section">
-      <h3>{{ $t('common.terms.slidingWindow') }} <small>最近 1 小时{{ windowSource ? ` · ${windowSource}` : '' }} · 点击查看请求详情</small></h3>
+      <h3>{{ $t('common.terms.slidingWindow') }} <small>{{ $t('ops.overview.recentRequestsHint', { source: windowSource ? ` · ${windowSource}` : '' }) }}</small></h3>
       <div v-if="windowEntries.length" class="nd-window" :aria-label="`${selectedModel} 最近调用结果`">
         <button
           v-for="entry in windowEntries.slice(0, 100)"

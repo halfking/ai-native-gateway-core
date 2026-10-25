@@ -86,7 +86,7 @@ async function poll(sessionId: string, generation: number, previousGeneratedAt?:
   }
   if (generation === pollGeneration && sessionId === props.sessionId) {
     status.value = 'failed'
-    errMsg.value = '超时未生成'
+    errMsg.value = '摘要没能生成：已超时，请重试'
   }
 }
 

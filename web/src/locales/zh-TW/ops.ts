@@ -477,6 +477,14 @@ export default {
     regionOnlineCount: '{n} 在线',
 
     dataPlaneTables: '252 数据面表记录数',
+    pingFailedWithReason: '會話 Ping 失敗：{reason}。請重試',
+    saveSettingFailedWithReason: '設定沒能儲存：{reason}。請重試',
+    maintainFailed: '維護沒能完成，請重試',
+    modelMaintainFailed: '模型維護沒能完成，請重試',
+    fpSlotLoadFailed: '指紋槽位沒能載入出來，請重試',
+    fpSlotProviderMissing: '缺少 provider_id，指紋槽位沒能載入。請先選擇供應商再試',
+    accessErrorsHint: '失敗呼叫 + 路由錯誤 · 開啟原始請求詳情',
+    recentRequestsHint: '最近 1 小時{source} · 查看請求詳情',
   }
 ,
   downloads: {

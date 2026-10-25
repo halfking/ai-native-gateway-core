@@ -68,9 +68,11 @@ export function useNodeDetailDrawerActions(opts: {
       const result = await sessionPingCredential(node.credential_id, selectedModel.value)
       pingResult.value = result
       if (result.status === 'healthy') actionMessage.value = `会话 Ping 成功：${result.latency_ms}ms`
-      else actionError.value = result.error || `会话 Ping 失败：${result.status}`
+      else actionError.value = result.error || i18n.global.t('ops.overview.pingFailedWithReason', { reason: result.status })
     } catch (error) {
-      actionError.value = error instanceof Error ? error.message : '会话 Ping 失败'
+      actionError.value = i18n.global.t('ops.overview.pingFailedWithReason', {
+        reason: (error instanceof Error ? error.message : '') || i18n.global.t('common.feedback.unknownReason'),
+      })
     } finally { saving.value = false }
   }
 
@@ -93,7 +95,9 @@ export function useNodeDetailDrawerActions(opts: {
       emit('applied')
       await refreshCurrentTab()
     } catch (error) {
-      actionError.value = error instanceof Error ? error.message : '保存设置失败'
+      actionError.value = i18n.global.t('ops.overview.saveSettingFailedWithReason', {
+        reason: (error instanceof Error ? error.message : '') || i18n.global.t('common.feedback.unknownReason'),
+      })
     } finally { saving.value = false }
   }
 
@@ -140,7 +144,7 @@ export function useNodeDetailDrawerActions(opts: {
       emit('applied')
       await refreshCurrentTab()
     } catch (error) {
-      actionError.value = error instanceof Error ? error.message : '维护失败'
+      actionError.value = error instanceof Error ? error.message : i18n.global.t('ops.overview.maintainFailed')
     } finally { saving.value = false }
   }
 
@@ -159,7 +163,7 @@ export function useNodeDetailDrawerActions(opts: {
       emit('applied')
       await refreshCurrentTab()
     } catch (error) {
-      actionError.value = error instanceof Error ? error.message : '模型维护失败'
+      actionError.value = error instanceof Error ? error.message : i18n.global.t('ops.overview.modelMaintainFailed')
     } finally { saving.value = false }
   }
 

@@ -165,4 +165,9 @@ export default {
     notFoundTitle: 'このリクエストはライブウィンドウ内にありません',
     notFoundHint: 'ライブデータは直近のローリングウィンドウのみ保持します。すでに流出したか、リンクから直接開いた可能性があります。ライブトポロジーに戻って開き直してください。',
   },
+  legend: {
+    itemTitle: '{name}（{count} 件のリクエスト）· {state}',
+    highlightOn: 'ハイライト中',
+    highlightOff: 'ハイライトなし',
+  },
 }

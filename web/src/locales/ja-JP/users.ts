@@ -84,6 +84,7 @@ export default {
     resetPasswordMismatch: 'Passwords do not match',
     resetPasswordComplexity: 'パスワードが複雑さの要件を満たしていません',
     toggleFailed: 'Operation failed',
+    changePasswordFailed: 'パスワードを変更できませんでした。再試行してください。',
   },
   passwordMatch: {
     matched: '✓ Passwords match',
@@ -138,5 +139,6 @@ export default {
     keyCount: 'API キー',
     viewAllLogs: 'ログで全部見る',
     requests: 'リクエスト',
+    loadStatsFailed: 'ユーザー統計の読み込みに失敗しました。再試行してください。',
   },
 }

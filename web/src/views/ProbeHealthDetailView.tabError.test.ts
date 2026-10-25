@@ -27,6 +27,14 @@
 import { flushPromises, mount } from '@vue/test-utils'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { createI18n } from 'vue-i18n'
+// ★ 2026-10-27（第 11 增量）：**必须挂真实 zh-CN 语言包**，不能用空桩 `{}`。
+//   本轮把 `setTabError('pricing', '价格数据不可用（需要 platform_ops 权限）')`
+//   改成了 `setTabError('pricing', t('probeHealth.detail.pricingUnavailable'))`
+//   ⇒ 空桩下 `t()` 返回**键路径本身** ⇒ 页面上出现
+//   `probeHealth.detail.pricingUnavailable` ⇒ 断言读到的是「键路径」而不是「文案」。
+//   ⇒ 挂真实语言包后，**缺键会直接让本文件失败**（而不是让页面显示键路径）。
+//   ★ 先例：第 10 增量的 `src/components/LoginModal.test.ts` 已用同一手法。
+import zhCN from '../locales/zh-CN'
 
 const reqMock = vi.fn()
 
@@ -60,10 +68,14 @@ const i18n = createI18n({
   locale: 'zh-CN',
   missingWarn: false,
   fallbackWarn: false,
-  messages: { 'zh-CN': {} },
+  // ★ 真实语言包（不是空桩）—— 见文件头注。
+  messages: { 'zh-CN': zhCN as never },
 })
 
-const PRICE_ERR = '价格数据不可用（需要 platform_ops 权限）'
+// ★ 文案来自语言包，不再是源码里的硬编码中文（2026-10-27 第 11 增量）。
+//   断言值直接取语言包 ⇒ **文案改了这里不会红**（判据是「显示了原因」而不是「显示了哪句话」）。
+const PRICE_ERR = (zhCN as never as { probeHealth: { detail: { pricingUnavailable: string } } })
+  .probeHealth.detail.pricingUnavailable
 
 async function openPricingTab() {
   const View = (await import('./ProbeHealthDetailView.vue')).default

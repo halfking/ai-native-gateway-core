@@ -459,4 +459,10 @@ v2: {
     totalRequests: "Total Requests",
     totalTokens: "Total Tokens",
   },
+  requestTile: {
+    childRequestsTitle: 'الطلبات الفرعية: {count} (توسيع للعرض)',
+    childRequestsEmpty: 'الطلبات الفرعية (لا توجد بيانات مرسلة، توسيع للعرض)',
+    actionTrailTitle: 'سجل الإجراءات: {count} (توسيع للعرض)',
+    actionTrailEmpty: 'سجل الإجراءات (لا توجد بيانات مرسلة، توسيع للعرض)',
+  },
 }

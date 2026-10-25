@@ -313,7 +313,7 @@ async function loadNameMappings() {
     nameMappings.value = r.items
     nameMappingsTotal.value = r.total
   } catch (e: unknown) {
-    notifyNameMappingsErr(e instanceof Error ? e.message : '加载失败')
+    notifyNameMappingsErr(e instanceof Error ? e.message : t('common.feedback.loadFailed'))
   } finally {
     nameMappingsLoading.value = false
   }
@@ -325,7 +325,7 @@ async function syncNameMappings() {
     notifyNameMappingsOk(`同步完成：从 provider_models 导入了 ${r.provider_models} 条映射`)
     await loadNameMappings()
   } catch (e: unknown) {
-    notifyNameMappingsErr(e instanceof Error ? e.message : '同步失败')
+    notifyNameMappingsErr(e instanceof Error ? e.message : t('models.error.syncFailed'))
   }
 }
 
@@ -352,7 +352,7 @@ function closeNameMappingModal() {
 
 async function saveNameMapping() {
   if (!nameMappingForm.value.raw_model_name.trim() || !nameMappingForm.value.standardized_name.trim()) {
-    notifyNameMappingsErr('原始名称和标准名称都不能为空')
+    notifyNameMappingsErr(t('models.error.nameRequired'))
     return
   }
   nameMappingSaving.value = true
@@ -373,7 +373,7 @@ async function saveNameMapping() {
     closeNameMappingModal()
     await loadNameMappings()
   } catch (e: unknown) {
-    notifyNameMappingsErr(e instanceof Error ? e.message : '保存失败')
+    notifyNameMappingsErr(e instanceof Error ? e.message : t('common.feedback.saveFailed'))
   } finally {
     nameMappingSaving.value = false
   }
@@ -385,7 +385,7 @@ async function removeNameMapping(id: number) {
     await deleteModelNameMapping(id)
     await loadNameMappings()
   } catch (e: unknown) {
-    notifyNameMappingsErr(e instanceof Error ? e.message : '删除失败')
+    notifyNameMappingsErr(e instanceof Error ? e.message : t('common.feedback.deleteFailed'))
   }
 }
 

@@ -198,6 +198,8 @@ export default {
     discoverFailed: 'Échec de la découverte de modèles',
     loadFeaturedFailed: 'Échec du chargement des modèles en vedette',
     saveFeaturedFailed: 'Échec de l\'enregistrement',
+    syncFailed: 'La synchronisation des correspondances de noms de modèle a échoué. Veuillez réessayer.',
+    nameRequired: 'Veuillez saisir le nom d’origine et le nom standard.',
   },
   health: {
     healthy: 'Sain',

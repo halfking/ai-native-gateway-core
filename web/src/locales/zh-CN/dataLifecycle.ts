@@ -49,6 +49,7 @@ export default {
     configAutoCleanup: '自动清理：',
     autoCleanupOn: '开启',
     autoCleanupOff: '关闭',
+    migrateFailedWithReason: '迁移没能完成：{reason}。请重试',
   },
   attachmentCleanup: {
     title: '🗑️ 附件清理',
@@ -441,6 +442,9 @@ export default {
       success: '删除成功：{message}\n释放空间：{size}',
       failed: '删除失败：{msg}',
     },
+    statsLoadFailedWithReason: 'hot 表统计没能加载出来：{reason}。请重试',
+    startMigrationFailedWithReason: '迁移任务没能启动：{reason}。请重试',
+    submitDeleteFailedWithReason: '删除任务没能提交：{reason}。请重试',
   },
 
   // 扁平键（供 Vue 组件直接使用）

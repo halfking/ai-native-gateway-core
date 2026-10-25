@@ -1,7 +1,7 @@
 export default {
   placeholderSelect: 'モデルを選択…',
   titleSelect: 'モデルを選択',
-  loadFailed: 'モデルの読み込みに失敗しました',
+  loadFailed: 'モデル一覧の読み込みに失敗しました。再試行してください。',
   selectedCount: '{count} 件のモデルを選択',
   editButton: '編集',
   selectButton: '選択',

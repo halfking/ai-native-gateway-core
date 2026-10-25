@@ -88,7 +88,7 @@ async function loadTrace(id: string) {
       expanded.value = ex
     }
   } catch (e: unknown) {
-    const msg = e instanceof Error ? e.message : '加载失败'
+    const msg = e instanceof Error ? e.message : t('common.feedback.loadFailed')
     // 2026-07-17: 后端修复后, "no rows in result set" 不会再 500 上抛;
     // 此处仍兼容旧的 404 / not_found 错误信息 → 走空状态 UI。
     if (msg.includes('202') || msg.includes('not_ready') || msg.includes('still being persisted')) {
@@ -235,7 +235,7 @@ async function generatePrompt() {
     aiTokens.value = resp.tokens_estimate
     aiEventCount.value = resp.event_count
   } catch (e: unknown) {
-    aiError.value = e instanceof Error ? e.message : '生成失败'
+    aiError.value = e instanceof Error ? e.message : t('trace.generateFailed')
   } finally {
     aiGenerating.value = false
   }

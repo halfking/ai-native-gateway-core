@@ -198,6 +198,8 @@ export default {
     discoverFailed: 'فشل اكتشاف النموذج',
     loadFeaturedFailed: 'فشل تحميل النماذج المميزة',
     saveFeaturedFailed: 'فشل الحفظ',
+    syncFailed: 'تعذّرت مزامنة ربط أسماء النماذج. أعد المحاولة.',
+    nameRequired: 'يرجى إدخال الاسم الأصلي والاسم القياسي.',
   },
   health: {
     healthy: 'طبيعي',

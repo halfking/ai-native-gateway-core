@@ -47,7 +47,8 @@ export default {
     configMaxAttachmentMb: "{n} MB",
     configAutoCleanup: "Limpieza automática:",
     autoCleanupOn: "Activada",
-    autoCleanupOff: "Desactivada"
+    autoCleanupOff: "Desactivada",
+    migrateFailedWithReason: 'No se pudo completar la migración: {reason}. Vuelva a intentarlo.',
   },
   attachmentCleanup: {
     title: "🗑️ Limpieza de adjuntos",
@@ -342,6 +343,9 @@ export default {
     cronLastError: 'Last error',
 
     cronRunning: 'Running now',
+    statsLoadFailedWithReason: 'No se pudieron cargar las estadísticas de las tablas hot: {reason}. Vuelva a intentarlo.',
+    startMigrationFailedWithReason: 'No se pudo iniciar la tarea de migración: {reason}. Vuelva a intentarlo.',
+    submitDeleteFailedWithReason: 'No se pudo enviar la tarea de eliminación: {reason}. Vuelva a intentarlo.',
   },
   preview: "Vista previa de la limpieza",
   hotData: "Datos calientes (0-7 días)",

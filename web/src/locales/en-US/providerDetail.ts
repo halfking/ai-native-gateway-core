@@ -437,7 +437,8 @@ export default {
     overview: {
       chipAvailable: "Available",
       chipUnavailable: "Unavailable"
-    }
+    },
+    repairFailed: 'The repair could not be completed. Please retry.',
   },
   settings: {
     overrideTitle: "🎛️ Pass-through mode config",
@@ -635,5 +636,8 @@ export default {
     deltaDays: "in {n} days",
     loadFailed: "Load failed",
     triggerFailed: "Trigger failed"
+  },
+  quality: {
+    loadFailed: 'The quality profile could not be loaded. Please retry.',
   },
 }

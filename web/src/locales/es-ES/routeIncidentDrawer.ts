@@ -4,4 +4,7 @@
 export default {
   exportFailedPrep: 'Error de exportación: fallo al cargar detalles o auditoría',
   exportNoChannel: 'Error de exportación: sin canal utilizable en este host',
+  timelineLoadFailed: 'No se pudieron cargar los datos de las últimas 24 horas. Vuelva a intentarlo.',
+  detailLoadFailed: 'No se pudo cargar el detalle. Vuelva a intentarlo.',
+  auditLogLoadFailed: 'No se pudo cargar el registro de auditoría. Vuelva a intentarlo.',
 }

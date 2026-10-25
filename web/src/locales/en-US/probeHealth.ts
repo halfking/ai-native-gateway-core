@@ -53,4 +53,9 @@ export default {
   systemStopAllConfirm: 'Stop all probe tasks? Already-claimed tasks will still finish.',
   systemTriggeredToast: '{n} tasks triggered, {failed} failed',
   systemStoppedToast: 'Cleared {n} queued tasks',
+  detail: {
+    triggerFailed: 'The probe could not be triggered. Please retry.',
+    modelNodeNotFound: 'No node was found for this model. Check the model name, or connect a node first, then try again.',
+    pricingUnavailable: 'Pricing data requires the platform_ops permission. Contact an administrator to enable it.',
+  },
 }

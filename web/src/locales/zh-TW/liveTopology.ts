@@ -165,4 +165,9 @@ export default {
     notFoundTitle: '該請求不在目前即時視窗內',
     notFoundHint: '即時資料只保留最近的滾動視窗；請求可能已滾出，或你是透過連結直接開啟的。請回到即時拓撲頁重新點開。',
   },
+  legend: {
+    itemTitle: '{name}（{count} 個請求）· {state}',
+    highlightOn: '已高亮',
+    highlightOff: '未高亮',
+  },
 }

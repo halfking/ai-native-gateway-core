@@ -4,8 +4,9 @@ export default {
     disabled: 'Deshabilitado',
     paused: 'Desconectado',
     ok: 'Conectado',
-    error: 'Conexión fallida',
+    error: 'No se pudo conectar. Compruebe la red y vuelva a intentarlo.',
     loading: 'Verificando',
+    detectFailed: 'No se pudo obtener el resultado de la detección. Vuelva a intentarlo.',
   },
 
   panel: {

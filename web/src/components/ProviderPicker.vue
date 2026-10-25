@@ -1,7 +1,10 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { getProviders, type Provider } from '../api'
+import { useI18n } from 'vue-i18n'
 import { CaretBottom } from '@element-plus/icons-vue'
+
+const { t } = useI18n()
 
 const props = withDefaults(defineProps<{
   modelValue: string | number | null
@@ -74,7 +77,7 @@ async function loadProviders() {
   try {
     providers.value = await getProviders()
   } catch (e: unknown) {
-    loadErr.value = e instanceof Error ? e.message : '加载供应商失败'
+    loadErr.value = e instanceof Error ? e.message : t('providers.error.loadFailed')
   } finally {
     loading.value = false
   }

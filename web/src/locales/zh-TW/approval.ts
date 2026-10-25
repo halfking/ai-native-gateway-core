@@ -90,6 +90,9 @@ export default {
       actions: 'Approval actions',
       history: 'Approval history',
     },
+    loadFailed: '審批詳情沒能載入出來，請重試',
+    approveFailed: '批准沒能完成，請重試',
+    rejectFailed: '拒絕沒能完成，請重試',
   },
   config: {
     title: '審批設定',

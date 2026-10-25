@@ -156,7 +156,7 @@ async function loadCatalog() {
     catalogError.value = ''
   } catch (e: unknown) {
     catalog.value = null
-    catalogError.value = e instanceof Error && e.message ? e.message : '版本目录加载失败'
+    catalogError.value = e instanceof Error && e.message ? e.message : t('customer.updateActivate.catalogLoadFailed')
   } finally {
     catalogLoading.value = false
   }
@@ -170,7 +170,7 @@ async function loadModules() {
     modules.value = Array.isArray(res.items) ? res.items : []
   } catch (e) {
     modules.value = []
-    modulesError.value = (e as Error).message || '无法加载模块清单'
+    modulesError.value = (e as Error).message || t('customer.updateActivate.modulesLoadFailed')
   } finally {
     modulesLoading.value = false
   }
@@ -217,7 +217,7 @@ function onAgreementCancelled() {
     localStorage.removeItem(AGREEMENT_KEY)
   } catch { /* ignore */ }
   agreementAccepted.value = false
-  error.value = '未同意用户协议，无法继续激活。'
+  error.value = t('customer.updateActivate.agreementRequired')
 }
 
 async function performQuickActivate() {
@@ -232,7 +232,7 @@ async function performQuickActivate() {
       device_name: deviceName.value.trim(),
     })
     if (!result.activated) {
-      throw new Error(result.error || result.message || '激活失败')
+      throw new Error(result.error || result.message || t('customer.updateActivate.activateFailed'))
     }
     markBootstrapActivated()
     message.value = result.message || '已同意并完成激活'

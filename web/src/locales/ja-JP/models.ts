@@ -198,6 +198,8 @@ export default {
     discoverFailed: 'モデル検出失敗',
     loadFeaturedFailed: '注目モデルの読み込み失敗',
     saveFeaturedFailed: '保存失敗',
+    syncFailed: 'モデル名マッピングの同期に失敗しました。再試行してください。',
+    nameRequired: '元の名前と標準名を入力してください',
   },
   health: {
     healthy: '正常',

@@ -183,7 +183,7 @@ async function refreshModels(force = false) {
     vendorGroups.value = buildVendorGroups(data.families)
   } catch (e: unknown) {
     if (generation === modelsGeneration) {
-      loadErr.value = e instanceof Error ? e.message : '加载模型失败'
+      loadErr.value = e instanceof Error ? e.message : t('modelPicker.loadFailed')
     }
   } finally {
     if (generation === modelsGeneration) loading.value = false
