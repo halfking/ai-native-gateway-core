@@ -8829,3 +8829,45 @@ index b953a6f03..555ef83c4 100644
 > ★ **D16** 「宿主机 load1 > N ⇒ 本轮读数标记为不可信」是否要落进工具退出码。
 > ⇒ ★ **完整记录见审计档 `docs/audit/2026-10-27-R153-巡检量具自证与负载污染归因.md`（含 §6 的 9 条诚实边界）**
 > ⇒ ★ **通用式见 `LESSONS.md` §402（通用式一~十）**。
+
+> **2026-10-27 R154 轮（本会话 `mvs_bbd1346d211a4eb3ac41b552c82eaecf`，独立 worktree `/tmp/kx-wt-r98`）**
+> ⇒ ★★★★★ **在生产 252 上定位到一条真实慢 SQL，并量化到「每一次都超时」的程度**：
+> ★★★ `admin/session_catalog_usage.go` 的 `catalogSearchSQL`（`likeContains(q)` ⇒ **`%q%` 中缀匹配**，
+> ★★ **三列 OR 的 ILIKE**）打 `public.session_summaries`（★ **868,711 行**）
+> ⇒ ★★ **Parallel Seq Scan** ⇒ ★★ **Planning 16.679 ms / Execution 40,415.968 ms（40.4 秒）**
+> ⇒ ★★ 扫描 289,543 × 3 workers、Buffers hit=34,435 read=17,177
+> ⇒ ★★★ **而 `mergeCatalogSearch` 的 ctx 超时是 2 秒 ⇒ 必然每次超时 ⇒ `slog.Warn`
+> ⇒ ⇒ 静默返回「没搜到」** ⇒ ★★ **用户看到的是「搜索无结果」，★ 界面和「确实没有匹配」完全一样**
+> ⇒ ⇒ ★★★★ **这是 Goal「请求列表/记录查询的效率，不要有表扫描或慢SQL的问题」的直接命中**。
+> ⇒ ★★★★ **决定性对照（同一张表、同一条件、只改列数）**：
+> ★★ 三列 OR ⇒ **Parallel Seq Scan** ／ 只查 `session_key` 一列 ⇒ **Index Only Scan using pkey**
+> ⇒ ★★★ **多一个 OR 分支就把索引优化掉了** ⇒ ★★ 「给主列加了索引」≠「查询变快了」。
+> ⇒ ★★ 根因面：★ 252 上 `pg_trgm` **已装**、全库有 8 个 trigram 索引（别的表），
+> ★★ 但 ★ `session_summaries` 的 **`title` / `primary_model` 零索引**、`session_key` 只有等值索引。
+> ⇒ ★★★★ **通用式：★「本地没发现慢 SQL」不能推广到生产 —— 本地的行数决定规划器怎么选**
+> ⇒ ★★ （★ R153 的「没有发现慢 SQL」那个结论**范围是本地**，★ 本轮在生产上推翻了它）。
+> ⇒ ★★★★ **覆盖度基线（★ Goal「逐个 api 单元测试」）**：★ 先试了「grep 测试文件有没有 handler 名」
+> ⇒ **30.3%** ⇒ ★★ **不可信**（假阳性：只是提到；假阴性：走 `httptest` + 路由注册的测试不出现 handler 名）
+> ⇒ ★★★ **改用运行时 `go test ./admin/ -coverprofile=…`（96.5 s / 语句覆盖 26.1%）按【函数行范围】判定**：
+> ★★★ 路由登记 **551** ⇒ ★★ **运行时零覆盖 = 310 条（75.2%）**、有覆盖 102 条、**无法判定 139 条**
+> ⇒ ★★★ **这就是「逐个 api 单元测试」的真实缺口清单**（★ 75.2% 是**下界**，★ 那 139 条可能已被覆盖）。
+> ⇒ ★★ **仓内落地**：★ `scripts/ursmcheck/session_summaries_like_index_ledger.tsv`
+> ★★ （★ **待办台账**，13 列，★ 照抄 `pipefail_race_ledger.tsv` 的列结构；★ 3 行待办 + 完整生产证据；
+> ★★ ★ `verdict` **只许缩小** ⇒ 加了索引就从台账删掉）
+> ★★ + `scripts/ursmcheck/session_summaries_like_index_gate_test.go`（★ 3 条断言：
+> ★★ 台账形状自洽 / ★★ **台账列集合 == 源码 LIKE 列集合（不多不少）** / ★ 台账只许缩小）
+> ⇒ ★★ ★★ **门自带阳性对照**（★ 断言源码里确实有 `catalogSearchSQL` 与 `ILIKE`
+> ⇒ ★★ 否则「源里删了那条 LIKE」会让集合比对空转 ⇒ **门假绿**）
+> ⇒ ★★ **变异 3 组全红 + md5 逐字还原**：★ M1 删台账一行 ⇒ 红；★ M2 源码改掉 `title ILIKE` ⇒ 红（台账腐化）；
+> ★★ M3 清空 `reason` ⇒ 红；★ 还原后 md5 `f01022f7…` / `74648af6…` 逐字一致。
+> ⇒ ★★ **本轮对生产只做只读操作**（SELECT / EXPLAIN / EXPLAIN ANALYZE 只读 SELECT / 元数据查询）；
+> ★★ **没有** `CREATE INDEX`、★ 没有改任何配置 ⇒ ★ **对生产的写入 = 0**。
+> ⇒ ★★ **EXPLAIN ANALYZE 只跑了一次**，★ 且跑前先确认 252 当时不饱和
+> ★★ （★ `active_now=0`、`long_1s=0`、宿主机 **load 7.43**）★ 并带 `statement_timeout='90s'`。
+> ⇒ ★★ **修法全部属主裁决，本轮只刻画不改判**：★ **A** 3 个 GIN trigram 索引（★ `pg_trgm` 已装）
+> ★★ ／★ **B** 超时可见 + 让降级不静默 ／★ **C** 限制搜索范围（★ 改语义）／★ **D** 先加观测
+> ⇒ ★★ **建议 B 或 D 先落（消除静默、拿到分布）⇒ A 随后（治本）**。
+> ⇒ ★ **属主裁决项**：★ **D17** 会话搜索三列 OR 的 ILIKE（★ 建议 B+D 先、A 随后）·
+> ★ **D18** 那 139 条 `undetermined` 路由的覆盖度判定口径；★ ＋此前登记的 D13/D11/D14/D15/D16/D1/D2/D3/D10。
+> ⇒ ★ **完整记录见审计档 `docs/audit/2026-10-27-R154-生产慢SQL取证与API覆盖度基线.md`（§5 含 8 条诚实边界）**
+> ⇒ ★ **通用式见 `LESSONS.md` §403（通用式一~七）**。
