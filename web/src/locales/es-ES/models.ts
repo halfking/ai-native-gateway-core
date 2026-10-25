@@ -95,7 +95,6 @@ export default {
     savingFeatured: 'Guardando…',
     noRecommend: 'Sin recomendaciones: sin solicitudes exitosas en los últimos 7 días, o tanto featured_models como popular están vacíos',
     recommendLoaded: 'Cargada(s) {n} recomendación(es): {preview}',
-    recommendAdopted: 'Fusionada(s) {n} recomendación(es) abajo (total {m}). Haga clic en "Guardar modelos destacados" para aplicar',
     recommendLoadFailed: 'Error al cargar recomendaciones',
     featuredUpdated: 'Modelos destacados actualizados ({n})',
   },

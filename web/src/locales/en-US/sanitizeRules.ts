@@ -9,7 +9,7 @@ export default {
   parameters: "Module parameters",
   refresh: "Reload",
   loading: "Loading…",
-  empty: "No records",
+  empty: 'No sensitive information rules yet',
   retry: "Retry",
   add: "Add rule",
   edit: "Edit",

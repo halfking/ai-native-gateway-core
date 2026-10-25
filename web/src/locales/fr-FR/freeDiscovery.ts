@@ -7,7 +7,7 @@ export default {
   common: {
       refresh: "Actualiser",
       loading: "Traitement…",
-      empty: "Aucune donnée",
+      empty: 'La découverte de ressources gratuites n’a encore aucun enregistrement',
       actions: "Actions",
       enabled: "Activé",
       disabled: "Désactivé",
@@ -117,7 +117,7 @@ export default {
     },
   hist: {
       title: "Historique d'import ({n})",
-      desc: "Tâches ayant réellement importé des modèles (nombre importé > 0). Cliquez sur Détail pour voir le devenir de chaque résultat.",
+      desc: 'Tâches ayant réellement importé des modèles (nombre importé > 0). Ouvrez « Détail » pour voir le devenir de chaque résultat.',
       completed: "Terminé le",
       detail: "Détail",
       none: "Aucun import pour l'instant. Terminez un import en lot dans l'onglet Tâches & revue et il apparaîtra ici.",

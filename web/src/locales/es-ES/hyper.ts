@@ -35,7 +35,7 @@ export default {
     retry: 'Reintentar',
     allLoaded: '{count} cargados en total',
     loadFailed: 'Error al cargar. Toque para reintentar.',
-    empty: 'Sin registros',
+    empty: 'La lista todavía no tiene contenido.',
   },
   focus: {
     enter: 'Vista enfocada',

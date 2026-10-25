@@ -14,7 +14,7 @@ export default {
   },
   item: {
     activateAction: 'Aktivieren',
-    activateActionTip: 'Klicken, um diese Instanz zu aktivieren',
+    activateActionTip: 'Diese Instanz aktivieren',
     liveTopology: 'Live-Topologie',
     overview: "Übersicht",
     tenantModels: "Standardmodelle",

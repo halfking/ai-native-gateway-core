@@ -27,7 +27,6 @@ export default {
       description: 'VS Code + Roo Code 拡張機能、roo-cline を設定',
     },
   },
-  keyHint: 'サンプルコードの API キーはマスク表示されています。「テスト」をクリックすると現在のログインキーが使用されます。サンプルをコピーした後、ご自身で実際のキーに置き換えてください。',
   copyKey: '完全なキーをコピー',
   copied: 'コピーしました!',
   selectModel: 'サンプルモデルを選択:',

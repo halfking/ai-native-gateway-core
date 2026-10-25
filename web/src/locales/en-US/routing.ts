@@ -9,7 +9,6 @@ export default {
     queryFailed: 'Query failed',
     loadFailed: 'Failed to load',
     saveFailed: 'Failed to save',
-    noData: 'None',
     close: 'Close',
     clientProfilePlaceholder: 'client profile',
     clientProfileTitle: 'cursor / roocode / cline',
@@ -96,7 +95,6 @@ export default {
       task: 'Task',
       workType: 'Work type',
       modelMatchStats: 'model matching stats',
-      clickHint: 'Click a cell for decision details and the L2 funnel',
       heatmapTitle: 'model heatmap',
       l1Task: 'L1 task',
       metricCount: 'Requests',
@@ -216,7 +214,7 @@ export default {
       colConfidence: 'Conf.',
       noDecisions: 'No recent decisions',
     },
-    matchStatsHint: '× Model matching stats · Click a cell for decision details and the L2 funnel',
+    matchStatsHint: '× Model matching stats · Select a cell for decision details and the L2 funnel',
   },
   policy: {
     title: 'Routing policy',
@@ -339,7 +337,6 @@ export default {
     readonlyCredentialsHint: '{n} credentials (details hidden)',
     tableHeaders: ['Provider', 'Credential', 'Tier', 'Status', 'Success', 'P95', 'in/out $/1M', 'Upstream'],
     noCred: 'No credentials configured for this variant',
-    clickHint: 'Click a variant button above to see credential routing details',
     reasons: {
       circuit_open: 'Circuit open',
       balance_exhausted: 'Balance exhausted',

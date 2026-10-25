@@ -11,5 +11,4 @@ export default {
   domestic: '国内',
   modelCount: '{count} 个模型',
   documentation: '文档 →',
-  noResults: '无匹配结果',
 }

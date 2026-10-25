@@ -4,7 +4,6 @@
 export default {
   common: {
     loading: 'Loading…',
-    noRecord: 'No records',
     saveFailed: 'Save failed',
     loadFailed: 'Failed to load',
     copySuccess: 'Copied',

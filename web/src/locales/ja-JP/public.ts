@@ -64,7 +64,6 @@ export default {
     supporterCount: '現在 {n} 人から支援されています',
     creating: '注文を作成中…',
     created: 'ご支援ありがとうございます。',
-    stubHint: 'お支払いの後は、questionがあれば huangxutao@kxpms.cn へメールしてください（開発環境では下の確認を使えます）',
     confirmStub: '支払い済みにする（開発用）',
     goDownload: 'ダウンロードへ',
     showQr: 'QRコードを表示',

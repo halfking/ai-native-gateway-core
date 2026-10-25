@@ -132,7 +132,7 @@ export default {
     clients: 'Requêtes clients',
     providers: 'Réponses fournisseurs',
     zoom: 'Voir le détail',
-    zoomHint: 'Cliquez sur ⤢ pour ouvrir le détail dans un nouvel onglet',
+    zoomHint: 'Sélectionnez ⤢ pour ouvrir le détail dans un nouvel onglet',
     empty: 'Aucune requête dans la fenêtre',
     page: 'Page {page}/{pages}',
     total: '{n} au total',

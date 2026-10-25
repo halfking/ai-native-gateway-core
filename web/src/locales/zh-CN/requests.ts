@@ -5,7 +5,6 @@
 export default {
   common: {
     loading: '加载中…',
-    noRecord: '无记录',
     saveFailed: '保存失败',
     loadFailed: '加载失败',
     copySuccess: '已复制',

@@ -9,7 +9,7 @@ export default {
   parameters: "模块参数",
   refresh: "重新加载",
   loading: "加载中…",
-  empty: "暂无记录",
+  empty: '还没有脱敏规则',
   retry: "重试",
   add: "新增规则",
   edit: "编辑",

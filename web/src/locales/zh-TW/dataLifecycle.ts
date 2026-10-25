@@ -239,7 +239,6 @@ export default {
     promoteAll: "全部",
     hours: "{n} 小時",
     days: "{n} 天",
-    emptyResult: "暫無資料",
     partitionTitle: "月度分區管理",
     partitionDesc: "刪除舊的月度分區以釋放磁碟空間。",
     partitionWarning: "操作不可恢復，請謹慎。",
@@ -368,7 +367,7 @@ export default {
   usageEnhanced: {
     refresh: '重新整理',
     loading: '載入中…',
-    empty: '無資料',
+    empty: '這段時間沒有用量記錄',
     cards: {
       totalCost: '總成本',
       totalRequests: '總請求數',

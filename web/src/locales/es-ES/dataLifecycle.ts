@@ -239,7 +239,6 @@ export default {
     promoteAll: "todo",
     hours: "{n} horas",
     days: "{n} días",
-    emptyResult: "Sin datos",
     partitionTitle: "Gestión de particiones mensuales",
     partitionDesc: "Elimine particiones mensuales antiguas para liberar espacio en disco.",
     partitionWarning: "Esta acción es irreversible: proceda con precaución.",
@@ -368,7 +367,7 @@ export default {
   usageEnhanced: {
     refresh: 'Actualizar',
     loading: 'Cargando…',
-    empty: 'Sin datos',
+    empty: 'No hay registros de uso en este periodo.',
     cards: {
       totalCost: 'Coste total',
       totalRequests: 'Solicitudes totales',

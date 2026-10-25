@@ -92,16 +92,13 @@ export default {
     },
     modelsTab: {
       listTitle: 'قائمة النماذج ({n})',
-      clickHint: 'انقر لعرض التفاصيل',
       empty: 'لا توجد نماذج',
       sampleUnit: 'عينة',
       neverCalled: 'لم يتم استدعاؤها',
       unavail: 'unavail',
       // أيقونات الحالة اليدوية + تلميح الأدوات
-      manualDisabledTitle: 'حالة التعطيل اليدوي الحالية، انقر للإلغاء',
       manualDisabledNot: 'تعطيل هذا النموذج يدويًا',
       manualDisabled: 'تعطيل يدوي',
-      manualOnlineTitle: 'حالة التشغيل اليدوي (offline) الحالية، انقر للتبديل إلى التلقائي',
       manualOnlineNot: 'تعيين هذا النموذج يدويًا كـ offline (سيتم تخطي الفحص التلقائي)',
       manualOnline: 'تشغيل يدوي',
       autoTitle: 'يتحكم فيه الفحص التلقائي (لا يمكن التبديل يدويًا إلى هذه الحالة)',
@@ -119,7 +116,6 @@ export default {
       redisSource: 'Redis',
       requestLogsSource: 'request_logs',
       loading: 'جاري التحميل...',
-      noData: 'لا توجد بيانات',
       refresh: '↻ تحديث',
       // مخطط توزيع الأخطاء
       errorsTitle: 'توزيع الأخطاء',
@@ -129,7 +125,6 @@ export default {
     },
     requestsTab: {
       historySectionTitle: 'بيانات الطلبات: تاريخ تغيرات حالة النموذج',
-      historyEmpty: 'انقر فوق النموذج في تبويب «النماذج» للعرض',
       historyRefresh: '↻ تحديث',
       historyLoading: 'جاري التحميل...',
       historyNoEvents: 'لا توجد سجلات تغير الحالة',

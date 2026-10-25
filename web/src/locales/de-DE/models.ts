@@ -97,7 +97,6 @@ export default {
     savingFeatured: 'Wird gespeichert…',
     noRecommend: 'Keine Empfehlungen: keine erfolgreichen Anfragen in den letzten 7 Tagen, oder featured_models und beliebt sind beide leer',
     recommendLoaded: '{n} Empfehlung(en) geladen: {preview}',
-    recommendAdopted: '{n} Empfehlung(en) unten zusammengeführt (insgesamt {m}). Auf „Empfohlene Modelle speichern" klicken, um anzuwenden',
     recommendLoadFailed: 'Empfehlungen konnten nicht geladen werden',
     featuredUpdated: 'Empfohlene Modelle aktualisiert ({n})',
   },

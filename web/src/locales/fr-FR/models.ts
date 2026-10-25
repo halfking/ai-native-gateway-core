@@ -97,7 +97,6 @@ export default {
     savingFeatured: 'Enregistrement…',
     noRecommend: 'Aucune recommandation : aucune requête réussie au cours des 7 derniers jours, ou featured_models et populaires sont tous deux vides',
     recommendLoaded: '{n} recommandation(s) chargée(s) : {preview}',
-    recommendAdopted: '{n} recommandation(s) fusionnée(s) ci-dessous (total {m}). Cliquez sur « Enregistrer les modèles en vedette » pour appliquer',
     recommendLoadFailed: 'Échec du chargement des recommandations',
     featuredUpdated: 'Modèles en vedette mis à jour ({n})',
   },

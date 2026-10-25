@@ -65,7 +65,6 @@ export default {
   qualityHint: '成功率 × 时效因子（P95 越低越高）',
   // 模型统计折叠面板
   modelStats: '模型统计清单',
-  modelStatsHint: '点击展开，可直接挑模型名做筛选',
   actions: '操作',
   filterBy: '筛选',
   // 图表
@@ -75,7 +74,7 @@ export default {
   chartOther: '其它',
   chartFolded: '仅显示请求量前',
   chartFoldedRest: '个模型，其余归入「其它」',
-  noData: '暂无数据',
+  noData: '这段时间没有对账记录',
   // 快照口径披露
   legacyCoverage: '有旧口径快照的天数：',
   legacyCoverageRest: ' 天只计入总计与按天，凭据/用户/apikey 维度需回填后可见（点「重跑结束日」逐日补算）',
@@ -109,7 +108,7 @@ export default {
   legendCacheRead: '缓存读',
   legendCacheWrite: '缓存写',
   legendHitRate: '命中率',
-  distHint: '点击行下钻：占比条为当前指标占比',
+  distHint: '选择行下钻：占比条为当前指标占比',
   byToken: '按 Token',
   byMoney: '按金额',
   sharePct: '占比',

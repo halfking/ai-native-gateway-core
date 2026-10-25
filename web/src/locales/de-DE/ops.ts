@@ -458,7 +458,6 @@ export default {
 
     topologyTitle: 'Deployment Topology',
 
-    topologyHint: 'Nach Region gruppiert. Sparsame Knoten bleiben groß, dichte Raster laufen um. Klicken Sie einen Knoten für Details an.',
 
     regionEmpty: 'No registered nodes',
 

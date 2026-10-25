@@ -167,7 +167,6 @@ export default {
     disable: '無効化',
     delete: '削除',
     loading: '読み込み中…',
-    empty: 'ルールがありません。「新規追加」をクリックして作成してください。',
     importCsv: '批量导入 CSV',
     close: '关闭',
     csvImportResult: '批量导入结果',

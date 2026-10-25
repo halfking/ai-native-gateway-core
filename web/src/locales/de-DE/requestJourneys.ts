@@ -58,7 +58,7 @@ export default {
     abnormalCount: '{count} fehlerhaft',
     empty: 'Noch keine Knotendaten',
     emptyHint: 'Warten auf node_update-Push',
-    modalSubtitle: 'Panorama aller Knoten nach Zustand gruppiert; Karte anklicken für Modell × Knoten-Details und Wartung',
+    modalSubtitle: 'Panorama aller Knoten nach Zustand gruppiert; eine Karte wählen, um Modell × Knoten-Details und Wartung zu sehen.',
     groupDanger: '⚠️ Fehlerhafte Knoten ({count})',
     groupWarn: '⚡ Warnungs-Knoten ({count})',
     groupOk: '✅ Normale Knoten ({count})',

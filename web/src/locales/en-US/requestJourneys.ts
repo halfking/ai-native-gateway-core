@@ -58,7 +58,7 @@ export default {
     abnormalCount: '{count} unhealthy',
     empty: 'No node data yet',
     emptyHint: 'Waiting for node_update push',
-    modalSubtitle: 'Panorama of all nodes grouped by health; click a card for model × node details and maintenance',
+    modalSubtitle: 'Panorama of all nodes grouped by health; choose a card for model × node details and maintenance',
     groupDanger: '⚠️ Unhealthy nodes ({count})',
     groupWarn: '⚡ Warning nodes ({count})',
     groupOk: '✅ Normal nodes ({count})',

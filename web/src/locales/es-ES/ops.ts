@@ -458,7 +458,6 @@ export default {
 
     topologyTitle: 'Deployment Topology',
 
-    topologyHint: 'Agrupado por región. Los nodos dispersos se mantienen grandes y las mallas densas dan la vuelta. Haz clic en un nodo para ver los detalles.',
 
     regionEmpty: 'No registered nodes',
 

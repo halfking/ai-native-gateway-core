@@ -334,7 +334,6 @@ export default {
     drawerOutboundSend: "Se enviará:",
     drawerOutboundUnset: "No establecido: se usará",
     drawerSectionContextWindow: "Ventana de contexto (tokens)",
-    drawerContextWindowHint: "Anulación a nivel de credencial para esta credencial × modelo. Cadena: esta anulación > anulación de catálogo > catálogo. Déjelo vacío, escriba 0, o haga clic en «Borrar» para eliminar la anulación y usar el valor del catálogo. El cambio solo se aplica si realmente modifica el valor; guardar otros campos (p. ej. nombre estandarizado) no sobrescribe una anulación existente.",
     drawerContextWindowPlaceholder: "p. ej. 200000",
     drawerContextWindowClearBtn: "Borrar",
     drawerContextWindowClearTitle: "Eliminar la anulación a nivel de credencial y volver al valor del catálogo",

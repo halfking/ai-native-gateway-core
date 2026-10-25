@@ -167,7 +167,6 @@ export default {
     disable: 'تعطيل',
     delete: 'حذف',
     loading: 'جارٍ التحميل…',
-    empty: 'لا توجد قواعد. انقر فوق "إضافة جديدة" لإنشاء أول قاعدة.',
     importCsv: 'استيراد CSV',
     close: 'إغلاق',
     csvImportResult: 'نتيجة الاستيراد',

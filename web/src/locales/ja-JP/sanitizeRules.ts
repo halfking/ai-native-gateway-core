@@ -9,7 +9,7 @@ export default {
   parameters: "モジュール設定",
   refresh: "再読み込み",
   loading: "読み込み中…",
-  empty: "記録がありません",
+  empty: '機密情報ルールはまだありません。',
   retry: "再試行",
   add: "ルールを追加",
   edit: "編集",

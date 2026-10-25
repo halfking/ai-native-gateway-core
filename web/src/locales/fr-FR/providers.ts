@@ -175,7 +175,6 @@ export default {
     drawerTitle: 'Gérer les identifiants: {name}',
     refresh: 'Actualiser',
     addBtn: '+ Identifiant',
-    empty: 'Aucun identifiant pour le moment: cliquez sur « + Identifiant » pour en ajouter',
     table: {
       id: 'Identifiant',
       status: 'Statut',
@@ -247,6 +246,7 @@ export default {
       saveFailed: 'Échec de l\'enregistrement de l\'identifiant',
       toggleFailed: 'Échec de l\'opération',
     },
+    empty: 'Aucun identifiant pour le moment : sélectionnez « + Identifiant » pour en ajouter.',
   },
   check: {
     providerStarted: 'Vérification démarrée',
@@ -263,7 +263,6 @@ export default {
     title: 'Diagnostic fournisseur: capture réelle requête/réponse',
     subtitle: '(identifiants assainis)',
     loading: 'Diagnostic…',
-    summary: '{n} identifiants: cliquez sur une ligne pour développer les détails de la requête/réponse',
     table: {
       credential: 'Identifiant',
       modelSource: 'Source du modèle',
@@ -293,6 +292,7 @@ export default {
     errHeader: '⚠️ Erreur',
     modelsHeader: '✅ Modèles analysés ({n})',
     modelsTruncated: '… {n} au total',
+    summary: '{n} identifiants : sélectionnez une ligne pour afficher les détails de la requête/réponse',
   },
   bgStatus: {
     panelTitle: 'Statut des tâches en arrière-plan',
@@ -367,7 +367,7 @@ export default {
   emergencyFailed: 'Échec de la maintenance d’urgence',
   // ── 2026-09-05: onglet réglages · puces d'état de cycle de vie + état de désactivation manuelle ──
   lifecycleTitle: 'Cycle de vie',
-  lifecycleHint: 'Cliquez sur un état pour enregistrer immédiatement ; quitter « Actif » demande une confirmation',
+  lifecycleHint: 'Choisissez un état pour enregistrer immédiatement ; quitter « Actif » demande une confirmation',
   lifecycleLabelActive: 'Actif',
   lifecycleLabelDisabled: 'Désactivé',
   lifecycleLabelSuspended: 'Suspendu',

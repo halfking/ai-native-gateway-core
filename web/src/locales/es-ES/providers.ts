@@ -174,7 +174,6 @@ export default {
     drawerTitle: 'Gestionar credenciales: {name}',
     refresh: 'Actualizar',
     addBtn: '+ Credencial',
-    empty: 'Aún no hay credenciales: haga clic en "+ Credencial" para añadir',
     table: {
       id: 'Credencial',
       status: 'Estado',
@@ -246,6 +245,7 @@ export default {
       saveFailed: 'Error al guardar la credencial',
       toggleFailed: 'Operación fallida',
     },
+    empty: 'Aún no hay credenciales: seleccione «+ Credencial» para añadir.',
   },
   check: {
     providerStarted: 'Comprobación iniciada',
@@ -262,7 +262,6 @@ export default {
     title: 'Diagnóstico del proveedor: captura de solicitud/respuesta',
     subtitle: '(credenciales sanitizadas)',
     loading: 'Diagnosticando…',
-    summary: '{n} credenciales: haga clic en una fila para expandir los detalles de solicitud/respuesta',
     table: {
       credential: 'Credencial',
       modelSource: 'Origen del modelo',
@@ -292,6 +291,7 @@ export default {
     errHeader: '⚠️ Error',
     modelsHeader: '✅ Modelos analizados ({n})',
     modelsTruncated: '… {n} en total',
+    summary: '{n} credenciales: seleccione cualquier fila para ampliar los detalles de solicitud/respuesta',
   },
   bgStatus: {
     panelTitle: 'Estado de tareas en segundo plano',
@@ -366,7 +366,7 @@ export default {
   emergencyFailed: 'Falló el mantenimiento de emergencia',
   // ── 2026-09-05: pestaña de configuración · chips de estado del ciclo de vida + estado de deshabilitado manual ──
   lifecycleTitle: 'Ciclo de vida',
-  lifecycleHint: 'Haga clic en un estado para guardarlo al instante; salir de «Activo» pide confirmación',
+  lifecycleHint: 'Selecciona un estado para guardarlo al instante; salir de «Activo» pide confirmación',
   lifecycleLabelActive: 'Activo',
   lifecycleLabelDisabled: 'Deshabilitado',
   lifecycleLabelSuspended: 'Suspendido',

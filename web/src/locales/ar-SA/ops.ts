@@ -458,7 +458,6 @@ export default {
 
     topologyTitle: 'Deployment Topology',
 
-    topologyHint: 'مجموعة حسب المنطقة. تبقى العقد المتفرقة كبيرة، وتلتفّ الشبكات الكثيفة. اضغط عقدة لعرض التفاصيل.',
 
     regionEmpty: 'No registered nodes',
 

@@ -5,7 +5,6 @@
 export default {
   common: {
     loading: 'Wird geladen…',
-    noRecord: 'Keine Datensätze',
     saveFailed: 'Speichern fehlgeschlagen',
     loadFailed: 'Laden fehlgeschlagen',
     copySuccess: 'Kopiert',

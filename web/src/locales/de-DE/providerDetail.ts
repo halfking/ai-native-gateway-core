@@ -334,7 +334,6 @@ export default {
     drawerOutboundSend: "Wird gesendet:",
     drawerOutboundUnset: "Nicht gesetzt: wird verwendet",
     drawerSectionContextWindow: "Kontextfenster (Tokens)",
-    drawerContextWindowHint: "Anmeldedaten-Override für diese Anmeldedaten × Modell. Auflösung: dieser Override > Katalog-Override > Modellkatalog. Leer lassen, 0 eingeben oder auf die Schaltfläche „Zurücksetzen“ klicken, um den Override zu entfernen und den Katalogwert zu verwenden. Die Änderung wird nur wirksam, wenn Sie den Wert tatsächlich ändern; das Speichern anderer Felder (z. B. standardisierter Name) überschreibt keinen bestehenden Override.",
     drawerContextWindowPlaceholder: "z. B. 200000",
     drawerContextWindowClearBtn: "Zurücksetzen",
     drawerContextWindowClearTitle: "Anmeldedaten-Override entfernen und auf den Modellkatalogwert zurückfallen",

@@ -9,7 +9,7 @@ export default {
   parameters: "Modulparameter",
   refresh: "Neu laden",
   loading: "Wird geladen…",
-  empty: "Keine Einträge",
+  empty: 'Noch keine Regeln für sensible Daten.',
   retry: "Erneut versuchen",
   add: "Regel hinzufügen",
   edit: "Bearbeiten",

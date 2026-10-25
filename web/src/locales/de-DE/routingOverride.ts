@@ -51,7 +51,7 @@ export default {
   },
   table: {
     title: 'Overrides ({n})',
-    empty: 'Kein Override passt zum Filter. Klicken Sie auf "+ Neuer Override", um einen anzulegen.',
+    empty: 'Kein Override passt zum Filter. „+ Neuer Override“ wählen, um einen anzulegen.',
     headers: {
       id: 'ID',
       mode: 'Mode',

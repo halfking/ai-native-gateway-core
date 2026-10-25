@@ -164,7 +164,6 @@ export default {
     disable: '停用',
     delete: '删除',
     loading: '加载中…',
-    empty: '暂无规则。点击「新增规则」创建第一条。',
     importCsv: '批量导入 CSV',
     close: '关闭',
     csvImportResult: '批量导入结果',

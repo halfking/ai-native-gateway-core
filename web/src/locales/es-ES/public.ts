@@ -64,7 +64,6 @@ export default {
     supporterCount: '{n} colaboradores hasta ahora',
     creating: 'Creando el pedido…',
     created: '¡Gracias por tu apoyo!',
-    stubHint: 'Tras el pago, si te queda alguna duda escribe a huangxutao@kxpms.cn (en desarrollo puedes confirmar abajo)',
     confirmStub: 'Marcar como pagado (desarrollo)',
     goDownload: 'Ir a la descarga',
     showQr: 'Mostrar el código QR',

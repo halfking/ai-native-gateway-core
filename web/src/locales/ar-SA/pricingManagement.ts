@@ -123,7 +123,6 @@ export default {
     noChange: 'لا تغييرات',
     saveFailed: 'فشل الحفظ',
     copied: 'تم نسخ السعر',
-    pasted: 'تم اللصق، انقر فوق حفظ لتفعيله',
   },
   inherit: {
     title: 'وراثة التسعير التلقائية',
@@ -154,6 +153,6 @@ export default {
   noChange: 'لا تغييرات',
   saveFailed: 'فشل الحفظ',
   copied: 'تم نسخ السعر',
-  pasted: 'تم اللصق، انقر فوق حفظ لتفعيله',
+  pasted: 'تم اللصق، احفظ لتفعيله',
   failed: 'فشل الاستيراد',
 }

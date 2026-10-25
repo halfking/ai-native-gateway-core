@@ -58,7 +58,7 @@ export default {
     abnormalCount: '{count} con problemas',
     empty: 'Aún no hay datos de nodos',
     emptyHint: 'Esperando el envío de node_update',
-    modalSubtitle: 'Panorama de todos los nodos agrupados por estado; haga clic en una tarjeta para ver detalles y mantenimiento de modelo × nodo',
+    modalSubtitle: 'Panorama de todos los nodos agrupados por estado; selecciona una tarjeta para ver detalles y mantenimiento de modelo × nodo',
     groupDanger: '⚠️ Nodos con problemas ({count})',
     groupWarn: '⚡ Nodos en advertencia ({count})',
     groupOk: '✅ Nodos normales ({count})',

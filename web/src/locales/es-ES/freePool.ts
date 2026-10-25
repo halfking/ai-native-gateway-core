@@ -104,7 +104,7 @@ export default {
     noSubject: "(sin asunto)",
     otherTools: "Otras herramientas de correo:",
     hubTitle: "Plataformas de tokens gratuitos",
-    hubDesc: "Nivel gratuito oficial + plataformas de relé + endpoints de la comunidad: haga clic para abrir el registro o rellenar el formulario de entrada rápida",
+    hubDesc: 'Nivel gratuito oficial + plataformas de relé + endpoints de la comunidad: abre el registro o rellena el formulario de entrada rápida',
     searchPlaceholder: "Buscar plataformas…",
     filterAll: "Todos",
     registered: "Vinculado",
@@ -117,7 +117,7 @@ export default {
     showAdvanced: "Mostrar opciones avanzadas",
     hideAdvanced: "Ocultar opciones avanzadas",
     verificationCode: "Código de verificación",
-    clickToCopy: "Haga clic para copiar",
+    clickToCopy: 'Copiar',
     guidePanelTitle: "Guía de uso",
     guidePanelDesc: "Flujo completo de registro y guardado",
     filledFromPlatform: "Se ha rellenado la configuración de {name}. Pegue la Clave API y pulse «Sondear y guardar»."
@@ -177,7 +177,7 @@ export default {
     colDetail: "Detalle",
     colStatus: "Estado",
     noKey: "Sin clave",
-    empty: "Aún no hay credenciales: haga clic en \"Escribir credencial en BD\" para añadir"
+    empty: 'Aún no hay credenciales: añade una con «Escribir credencial en BD»'
   },
   guide: {
     title: "Adquisición y uso",

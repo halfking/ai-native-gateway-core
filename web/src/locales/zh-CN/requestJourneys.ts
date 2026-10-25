@@ -49,7 +49,7 @@ export default {
   currentRequestsTitle: '{count} 当前请求',
   reorderEnabled: '拖动调整优先级',
   reorderDisabled: '优先级排序不可用',
-  nodeDetailHint: '点击节点可查看完整明细、近期窗口、请求记录和维护设置。',
+  nodeDetailHint: '选择节点可查看完整明细、近期窗口、请求记录和维护设置。',
   noNodeRequests: '当前没有关联到该模型节点的实时请求。',
   matrix: {
     triggerTitle: '节点状态矩阵',
@@ -58,7 +58,7 @@ export default {
     abnormalCount: '异常 {count}',
     empty: '暂无节点数据',
     emptyHint: '等待 node_update 推送',
-    modalSubtitle: '全量节点按健康分组的全景；点击卡片查看模型×节点详情与维护',
+    modalSubtitle: '全量节点按健康分组的全景；选择卡片查看模型×节点详情与维护',
     groupDanger: '⚠️ 异常节点 ({count})',
     groupWarn: '⚡ 警告节点 ({count})',
     groupOk: '✅ 正常节点 ({count})',

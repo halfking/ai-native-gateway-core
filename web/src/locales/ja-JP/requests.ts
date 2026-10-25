@@ -6,7 +6,6 @@
 export default {
   common: {
     loading: '読み込み中…',
-    noRecord: '記録なし',
     saveFailed: '保存失敗',
     loadFailed: '読み込み失敗',
     copySuccess: 'コピー済み',

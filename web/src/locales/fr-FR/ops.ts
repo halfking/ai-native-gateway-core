@@ -458,7 +458,6 @@ export default {
 
     topologyTitle: 'Deployment Topology',
 
-    topologyHint: 'Groupé par région. Les nœuds dispersés restent grands, les grilles denses passent à la ligne. Cliquez sur un nœud pour les détails.',
 
     regionEmpty: 'No registered nodes',
 

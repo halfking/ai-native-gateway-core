@@ -168,7 +168,6 @@ export default {
     disable: 'Deshabilitar',
     delete: 'Eliminar',
     loading: 'Cargando…',
-    empty: 'No hay reglas. Haz clic en « Añadir » para crear la primera.',
     importCsv: 'Importación masiva de CSV',
     close: 'Cerrar',
     csvImportResult: 'Resultado de la importación masiva',

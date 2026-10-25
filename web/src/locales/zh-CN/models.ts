@@ -96,7 +96,6 @@ export default {
     savingFeatured: '保存中…',
     noRecommend: '无可推荐模型：最近 7 天无成功请求，或 featured_models 与 popular 均空',
     recommendLoaded: '已加载 {n} 个推荐：{preview}',
-    recommendAdopted: '已将 {n} 个推荐合并到下方（总 {m}），点击「保存特色模型」生效',
     recommendLoadFailed: '加载推荐失败',
     featuredUpdated: '特色模型已更新（{n}）',
   },

@@ -8,7 +8,7 @@ export default {
   common: {
       refresh: 'Refresh',
       loading: 'Working…',
-      empty: 'No data yet',
+      empty: 'Free discovery has no records yet',
       actions: 'Actions',
       enabled: 'Enabled',
       disabled: 'Disabled',
@@ -118,7 +118,7 @@ export default {
     },
   hist: {
       title: 'Import history ({n})',
-      desc: 'Tasks that actually imported models (imported count > 0). Click Detail to see where each result of that task ended up.',
+      desc: 'Tasks that actually imported models (imported count > 0). Open Detail to see where each result of that task ended up.',
       completed: 'Completed at',
       detail: 'Detail',
       none: 'No import records yet. Finish a bulk import on the Tasks & Review tab and it will show up here.',

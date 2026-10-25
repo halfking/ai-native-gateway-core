@@ -10,7 +10,7 @@ export default {
     loading: 'Loading…',
     empty: {
       title: 'No API Keys',
-      description: 'There are no API Keys available under the current tenant. Admins can click the button below to apply for a new key.',
+      description: 'There are no API Keys available under the current tenant. Admins can use the button below to apply for a new key.',
       applyButton: 'Apply for New Key',
     },
     selected: 'Selected:',

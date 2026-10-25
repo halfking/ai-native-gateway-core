@@ -176,7 +176,6 @@ export default {
     drawerTitle: '認証情報を管理 — {name}',
     refresh: '更新',
     addBtn: '+ 認証情報',
-    empty: '認証情報がありません、「+ 認証情報」をクリックして追加',
     table: {
       id: '認証情報',
       status: 'ステータス',
@@ -248,6 +247,7 @@ export default {
       saveFailed: '認証情報の保存失敗',
       toggleFailed: '操作失敗',
     },
+    empty: '認証情報がありません。追加するには「+ 認証情報」を選択してください。',
   },
   check: {
     providerStarted: 'チェック開始',
@@ -264,7 +264,6 @@ export default {
     title: 'プロバイダー診断 — 実際のリクエスト/レスポンスキャプチャ',
     subtitle: '（認証情報はマスク済み）',
     loading: '診断中…',
-    summary: '合計 {n} 件の認証情報、行をクリックして詳細なリクエスト/レスポンスキャプチャを展開',
     table: {
       credential: '認証情報',
       modelSource: 'モデルソース',
@@ -294,6 +293,7 @@ export default {
     errHeader: '⚠️ エラー',
     modelsHeader: '✅ 解析されたモデル ({n})',
     modelsTruncated: '… 合計 {n} 件',
+    summary: '合計 {n} 件の認証情報。任意行を選ぶとリクエスト/レスポンスのキャプチャ詳細を表示します。',
   },
   bgStatus: {
     panelTitle: 'バックグラウンドタスクのステータス',
@@ -368,7 +368,7 @@ export default {
   emergencyFailed: '緊急メンテナンスに失敗しました',
   // ── 2026-09-05: 設定とメンテナンス · ライフサイクル状態チップ + 手動無効化状態 ──
   lifecycleTitle: 'ライフサイクル',
-  lifecycleHint: '状態をクリックすると即時保存されます。「使用中」から変更する場合は確認が必要',
+  lifecycleHint: '状態を選ぶと即時保存されます。「使用中」から変更する場合は確認が必要',
   lifecycleLabelActive: '使用中',
   lifecycleLabelDisabled: '無効',
   lifecycleLabelSuspended: '一時停止',

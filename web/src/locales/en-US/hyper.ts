@@ -34,8 +34,8 @@ export default {
     loadingMore: 'Loading…',
     retry: 'Retry',
     allLoaded: 'All {count} loaded',
-    loadFailed: 'Failed to load. Tap to retry.',
-    empty: 'No records',
+    loadFailed: 'Failed to load. Select Retry to try again.',
+    empty: 'The list has no records for now',
   },
   focus: {
     enter: 'Focus view',

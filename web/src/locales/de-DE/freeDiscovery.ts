@@ -7,7 +7,7 @@ export default {
   common: {
       refresh: "Aktualisieren",
       loading: "Wird verarbeitet…",
-      empty: "Keine Daten",
+      empty: 'Die Discovery kostenloser Ressourcen hat noch keine Einträge.',
       actions: "Aktionen",
       enabled: "Aktiviert",
       disabled: "Deaktiviert",

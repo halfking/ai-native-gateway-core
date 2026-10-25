@@ -34,8 +34,8 @@ export default {
     loadingMore: 'Wird geladen…',
     retry: 'Erneut versuchen',
     allLoaded: 'Alle {count} geladen',
-    loadFailed: 'Laden fehlgeschlagen. Zum Wiederholen tippen.',
-    empty: 'Keine Einträge',
+    loadFailed: 'Laden fehlgeschlagen. Bitte erneut versuchen.',
+    empty: 'In dieser Liste gibt es vorübergehend noch keine Einträge.',
   },
   focus: {
     enter: 'Fokusansicht',

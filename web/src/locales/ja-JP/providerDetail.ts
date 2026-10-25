@@ -334,7 +334,6 @@ export default {
     drawerOutboundSend: "送信内容:",
     drawerOutboundUnset: "未設定 — これを使用します",
     drawerSectionContextWindow: "コンテキストウィンドウ (トークン)",
-    drawerContextWindowHint: "この認証情報 × モデルに対する認証情報レベル上書き。優先順位: この上書き > カタログ上書き > モデルカタログ。空にする、0 を入力する、または「クリア」をクリックすると上書きが解除され、カタログ値が使用されます。実際に値を変更した場合のみ保存時に適用されます（標準化名など他のフィールドだけの保存では既存の上書きは保持されます）。",
     drawerContextWindowPlaceholder: "例: 200000",
     drawerContextWindowClearBtn: "クリア",
     drawerContextWindowClearTitle: "認証情報レベルの上書きを解除し、モデルカタログ値に戻す",

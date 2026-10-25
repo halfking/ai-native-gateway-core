@@ -85,7 +85,7 @@ export default {
     licenseActivate: 'License Activation',
     // 2026-09-04: activate CTA shown in place of gated ops entries (e.g. Auto Update) when not activated
     activateAction: 'Activate',
-    activateActionTip: 'Click to activate this instance',
+    activateActionTip: 'Go to activate this instance',
     siteInfo: 'Site Info',
     licenseStatus: 'License Status',
     licenseAgreement: 'User License Agreement',

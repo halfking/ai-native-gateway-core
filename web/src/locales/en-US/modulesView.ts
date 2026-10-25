@@ -164,7 +164,6 @@ export default {
     disable: 'Disable',
     delete: 'Delete',
     loading: 'Loading…',
-    empty: 'No rules yet. Click "Add new" to create the first one.',
     importCsv: 'Bulk import CSV',
     close: 'Close',
     csvImportResult: 'Bulk import result',

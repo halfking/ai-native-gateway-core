@@ -34,8 +34,8 @@ export default {
     loadingMore: '加载中…',
     retry: '重试',
     allLoaded: '已全部加载 {count} 条',
-    loadFailed: '加载失败，点击重试',
-    empty: '暂无记录',
+    loadFailed: '加载失败，请重试',
+    empty: '列表暂时没有内容',
   },
   focus: {
     enter: '专注查看',

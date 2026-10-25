@@ -121,7 +121,7 @@ export default {
     refresh: 'تحديث',
     refreshing: 'جارٍ التحديث...',
     loadFailed: 'فشل تحميل الإحصاءات',
-    noData: 'لا توجد بيانات',
+    noData: 'لا توجد إحصاءات الوسم بعد. أكمل دفعة تعليقات أولًا ثم راجعها.',
     totalAnnotations: 'إجمالي التعليقات',
     providerAccuracy: 'دقة المزوّدين',
     annotatorStats: 'إحصاءات المعلِّقين',

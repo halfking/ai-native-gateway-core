@@ -27,7 +27,6 @@ export default {
       description: 'VS Code + extension Roo Code, configurer roo-cline',
     },
   },
-  keyHint: 'La clé API dans le code d\'exemple est masquée. Cliquez sur « Tester » pour l\'exécuter avec votre clé de session actuelle. Remplacez-la par une vraie clé avant utilisation.',
   copyKey: 'Copier la clé complète',
   copied: 'Copié !',
   selectModel: 'Sélectionnez le modèle d\'exemple :',

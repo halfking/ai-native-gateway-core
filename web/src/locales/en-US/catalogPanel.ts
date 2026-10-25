@@ -11,5 +11,4 @@ export default {
   domestic: 'Domestic',
   modelCount: '{count} models',
   documentation: 'Documentation →',
-  noResults: 'No results',
 }

@@ -27,7 +27,6 @@ export default {
       description: 'VS Code + Roo Code Erweiterung, roo-cline konfigurieren',
     },
   },
-  keyHint: 'Der API-Schlüssel im Beispielcode ist maskiert. Klicken Sie auf „Testen", um ihn mit Ihrem aktuellen Sitzungsschlüssel auszuführen. Ersetzen Sie ihn vor der Nutzung durch einen echten Schlüssel.',
   copyKey: 'Vollen Schlüssel kopieren',
   copied: 'Kopiert!',
   selectModel: 'Beispielmodell auswählen:',

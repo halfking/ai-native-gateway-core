@@ -121,7 +121,7 @@ export default {
     refresh: '更新',
     refreshing: '更新中...',
     loadFailed: '統計の読み込みに失敗しました',
-    noData: 'データがありません',
+    noData: 'アノテーション統計はまだありません。先にアノテーションをまとめて登録してから確認してください。',
     totalAnnotations: '総アノテーション数',
     providerAccuracy: 'プロバイダー別精度',
     annotatorStats: 'アノテーター別統計',

@@ -10,7 +10,7 @@ export default {
     loading: 'Chargement…',
     empty: {
       title: 'Aucune clé API',
-      description: 'Il n\'y a aucune clé API disponible sous le locataire actuel. Les administrateurs peuvent cliquer sur le bouton ci-dessous pour demander une nouvelle clé.',
+      description: 'Il n’y a aucune clé API disponible sous le locataire actuel. Les administrateurs peuvent utiliser le bouton « Demander une nouvelle clé » ci-dessous pour en obtenir une.',
       applyButton: 'Demander une nouvelle clé',
     },
     selected: 'Sélectionné :',

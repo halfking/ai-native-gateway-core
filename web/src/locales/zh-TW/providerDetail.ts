@@ -333,7 +333,6 @@ export default {
     drawerOutboundSend: "將傳送：",
     drawerOutboundUnset: "未設定 — 將使用",
     drawerSectionContextWindow: "上下文視窗（token）",
-    drawerContextWindowHint: "本憑證 × 模型的覆寫。解析優先順序：本覆寫 > 模型目錄級覆寫 > 模型目錄。留空、填 0 或點擊「清除」即可移除覆寫，使用目錄值。僅當你真正變更此欄位時儲存才會生效；只儲存其他欄位（如標準化名）不會誤刪現有覆寫。",
     drawerContextWindowPlaceholder: "例如 200000",
     drawerContextWindowClearBtn: "清除",
     drawerContextWindowClearTitle: "移除憑證級覆寫，回退到模型目錄值",

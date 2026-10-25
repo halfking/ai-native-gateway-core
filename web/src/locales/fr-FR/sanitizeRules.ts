@@ -9,7 +9,7 @@ export default {
   parameters: "Paramètres du module",
   refresh: "Recharger",
   loading: "Chargement…",
-  empty: "Aucun enregistrement",
+  empty: 'Aucune règle de données sensibles pour l’instant',
   retry: "Réessayer",
   add: "Ajouter une règle",
   edit: "Modifier",

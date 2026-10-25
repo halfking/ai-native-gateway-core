@@ -58,7 +58,7 @@ export default {
     abnormalCount: '{count} défaillants',
     empty: 'Aucune donnée de nœud pour le moment',
     emptyHint: 'En attente du push node_update',
-    modalSubtitle: 'Panorama de tous les nœuds groupés par état ; cliquez sur une carte pour les détails modèle × nœud et la maintenance',
+    modalSubtitle: 'Panorama de tous les nœuds groupés par état ; choisissez une carte pour les détails modèle × nœud et la maintenance',
     groupDanger: '⚠️ Nœuds défaillants ({count})',
     groupWarn: '⚡ Nœuds en alerte ({count})',
     groupOk: '✅ Nœuds normaux ({count})',

@@ -9,7 +9,6 @@ export default {
     queryFailed: '検索失敗',
     loadFailed: '読み込み失敗',
     saveFailed: '保存失敗',
-    noData: 'なし',
     close: '閉じる',
     clientProfilePlaceholder: 'client profile',
     clientProfileTitle: 'cursor / roocode / cline',
@@ -96,7 +95,6 @@ export default {
       task: 'タスク',
       workType: 'ワークタイプ',
       modelMatchStats: 'モデル一致統計',
-      clickHint: 'セルをクリックして判断詳細と L2 ファネルを表示',
       heatmapTitle: 'モデルヒートマップ',
       l1Task: 'L1タスク',
       metricCount: 'リクエスト',
@@ -342,7 +340,6 @@ export default {
     readonlyCredentialsHint: '{n} 件の認証情報 (詳細非表示)',
     tableHeaders: ['プロバイダー', '認証情報', 'Tier', 'ステータス', '成功率', 'P95', '入/出 $/1M', 'アップストリームモデル'],
     noCred: 'このバリアントに認証情報が設定されていません',
-    clickHint: '上のバリアントボタンをクリックして認証情報ルーティングの詳細を表示',
     reasons: {
       circuit_open: 'サーキット開放中',
       balance_exhausted: '残高枯渇',

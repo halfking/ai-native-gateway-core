@@ -89,7 +89,7 @@ export default {
     opsProductEntry: "Product Entry",
     updateActivate: 'Actualizar y activar',
     // 2026-09-04: 未激活时替换「自动更新」等入口的激活 CTA 文案 (parity backfill)
-    activateActionTip: 'Haz clic para activar esta instancia',
+    activateActionTip: 'Activar esta instancia',
 
     licenseActivate: 'License Activation',
 

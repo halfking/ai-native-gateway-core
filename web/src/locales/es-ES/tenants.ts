@@ -14,7 +14,7 @@ export default {
     colRequests: "Solicitudes totales",
     colContact: "Correo de contacto",
     colCreated: "Creado",
-    empty: "Sin datos",
+    empty: 'Aún no hay inquilinos.',
     loadFailed: "Error al cargar"
   },
   create: {
@@ -233,7 +233,7 @@ export default {
     tableColModel: "Modelo",
     tableColRequests: "Solicitudes",
     tableColCredits: "Créditos consumidos",
-    emptyTable: "Sin datos",
+    emptyTable: 'Aún no hay registros de uso por modelo',
     detailTitleModel: "Solicitudes del modelo \"{model}\"",
     detailTitleDay: "Solicitudes del {day}",
     detailLoading: "Cargando detalle…",

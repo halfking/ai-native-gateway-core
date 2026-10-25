@@ -91,7 +91,6 @@ export default {
       keyMissing: '(لم يتم إرجاع المفتاح)',
       copied: '✓ تم النسخ',
       copy: '📋 نسخ المفتاح',
-      copyHintOk: 'يمكنك النقر عدة مرات للنسخ',
       copyHintErr: 'لم تُرجع الواجهة الخلفية مفتاحًا صالحًا، تحقق من استجابة الواجهة',
       useAndReturn: 'استخدام هذا المفتاح والعودة',
       savedClose: 'حفظته، إغلاق',
@@ -282,7 +281,7 @@ export default {
       actions: 'إجراءات',
     },
     loading: 'جاري التحميل…',
-    noRecord: 'لا توجد سجلات',
+    noRecord: 'لا توجد سجلات مفاتيح لهذا التطبيق بعد',
     expiredCell: 'منتهي في {ts}',
     action: {
       approve: 'قبول',

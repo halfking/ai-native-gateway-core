@@ -7,7 +7,7 @@ export default {
   common: {
       refresh: "Actualizar",
       loading: "Procesando…",
-      empty: "Sin datos",
+      empty: 'Aún no hay registros de descubrimiento.',
       actions: "Acciones",
       enabled: "Habilitada",
       disabled: "Deshabilitada",
@@ -117,7 +117,7 @@ export default {
     },
   hist: {
       title: "Historial de importación ({n})",
-      desc: "Tareas que realmente importaron modelos (importe > 0). Pulsa Detalle para ver el destino final de cada resultado.",
+      desc: 'Tareas que realmente importaron modelos (importe > 0). Selecciona «Detalle» para ver el destino final de cada resultado.',
       completed: "Completada",
       detail: "Detalle",
       none: "Aún no hay importaciones. Completa una importación por lotes en la pestaña Tareas y revisión y aparecerá aquí.",

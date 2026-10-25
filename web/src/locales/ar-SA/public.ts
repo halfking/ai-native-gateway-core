@@ -67,7 +67,6 @@ export default {
     supporterCount: '{n} داعمًا حتى الآن',
     creating: 'جارٍ إنشاء الطلب…',
     created: 'شكرًا على دعمك.',
-    stubHint: 'بعد الدفع، إن بقي عندك سؤال راسل huangxutao@kxpms.cn (في بيئة التطوير يمكنك التأكيد أدناه)',
     confirmStub: 'وسمه كمدفوع (للتطوير)',
     goDownload: 'إلى التنزيل',
     showQr: 'اعرض رمز QR',
