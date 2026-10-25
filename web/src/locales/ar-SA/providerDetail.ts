@@ -424,6 +424,7 @@ export default {
     resetNodeProbeConfirm: 'هل تحذف كل الصفوف الفاشلة في node_probe_state لهذا المزوّد؟',
 
     resetNodeProbeDone: '✓ حُذف {n} صف فاشل في node_probe_state وأُعيد تفعيل مرشحي التوجيه',
+    repairFailed: 'تعذّر إتمام الإصلاح. أعد المحاولة.',
   },
   settings: {
     overrideTitle: "🎛️ تكوين وضع التمرير",
@@ -622,5 +623,8 @@ export default {
     deltaDays: "خلال {n} يوم",
     loadFailed: "فشل التحميل",
     triggerFailed: "فشل التشغيل"
+  },
+  quality: {
+    loadFailed: 'تعذّر تحميل ملفات الجودة. أعد المحاولة.',
   },
 }

@@ -341,7 +341,7 @@ async function savePolicy() {
       policyDraft.value = { ...policy.value }
     }
     policyMsg.value = t('routing.savedPolicy')
-  } catch (e) { policyMsg.value = '保存失败: ' + String(e) }
+  } catch (e) { policyMsg.value = t('routing.dashboard.resolve.savePolicyFailedWithReason', { reason: String(e) }) }
   finally { savingPolicy.value = false }
 }
 
@@ -352,7 +352,7 @@ async function saveWeights() {
     await updateScoringWeights(weightsDraft.value)
     weights.value = { ...weightsDraft.value }
     policyMsg.value = t('routing.savedWeights')
-  } catch (e) { policyMsg.value = '保存失败: ' + String(e) }
+  } catch (e) { policyMsg.value = t('routing.dashboard.resolve.savePolicyFailedWithReason', { reason: String(e) }) }
   finally { savingPolicy.value = false }
 }
 
@@ -600,7 +600,7 @@ async function onCandidateDrop(target: RoutingCandidate, event: DragEvent) {
   try {
     priorities = assignSpacedPriorities(next.length)
   } catch (error) {
-    reorderErr.value = error instanceof Error ? error.message : '候选数量超过优先级上限，无法排序'
+    reorderErr.value = error instanceof Error ? error.message : t('routing.dashboard.resolve.reorderFailed')
     return
   }
   resolveCandidates.value = next.map((candidate, index) => ({
@@ -628,7 +628,7 @@ async function onCandidateDrop(target: RoutingCandidate, event: DragEvent) {
     await doResolve()
   } catch (e: unknown) {
     resolveCandidates.value = previous
-    const fallback = e instanceof Error ? e.message : '排序保存失败'
+    const fallback = e instanceof Error ? e.message : t('routing.dashboard.resolve.sortSaveFailed')
     if (e instanceof ApiError && e.status === 409) {
       reorderErr.value = '排序已过期，已重新查询，请重试。'
       void doResolve()
@@ -667,7 +667,7 @@ async function saveCandidatePriority(c: RoutingCandidate, value: boolean) {
   } catch (e: unknown) {
     // Roll back to server truth on error.
     resolveCandidates.value = previous
-    const fallback = e instanceof Error ? e.message : '保存失败'
+    const fallback = e instanceof Error ? e.message : t('common.feedback.saveFailed')
     if (e instanceof ApiError && e.status === 403) {
       priorityErr.value = '仅超级管理员可以切换优先凭据。'
     } else {
@@ -709,7 +709,7 @@ function loadResolveLog() {
       } catch (err) {
         // 配额满/隐私模式：备份失败也要讲出来，不能装作已备份
         console.error('Failed to back up corrupt resolve log:', err)
-        resolveLogError.value = '解析本地运行记录失败，且原始内容备份失败（浏览器存储可能已满）'
+        resolveLogError.value = t('routing.dashboard.resolve.localLogFailed')
         resolveLog.value = []
         return
       }
@@ -1039,7 +1039,7 @@ onUnmounted(() => stopPoll())
         <p>暂无 Auto 路由数据 — 请前往 <button class="link-btn" @click="activeTab = 'live'">实时决策</button> Tab 使用模拟器产生请求，或等待生产流量写入。</p>
       </div>
       <template v-else>
-        <p class="analytics-hint text-muted">{{ analyticsRowDim === 'work_type' ? t('routing.workTypes') : t('routing.task') }}×模型匹配统计 · 点击单元格查看决策明细与 L2 漏斗</p>
+        <p class="analytics-hint text-muted">{{ analyticsRowDim === 'work_type' ? t('routing.workTypes') : t('routing.task') }}{{ t('routing.dashboard.matchStatsHint') }}</p>
         <div class="card compact-card flat-card">
           <AnalyticsKpiBar :audit="audit" />
         </div>
@@ -1273,7 +1273,7 @@ onUnmounted(() => stopPoll())
         </div>
       </div>
       <div v-else-if="!indexLoading" class="card compact-card empty-hint">
-        索引暂无数据 — 点击 ↻ 刷新
+        {{ $t('routing.dashboard.overview.emptyHint') }}
       </div>
     </div>
 
@@ -1349,7 +1349,7 @@ onUnmounted(() => stopPoll())
               </tr>
             </tbody>
           </table>
-          <div v-else class="text-muted">暂无</div>
+          <div v-else class="text-muted">{{ $t('routing.dashboard.policy.customerCostEmpty') }}</div>
         </div>
         <div class="card compact-card">
           <div class="section-head"><h3>模型成本</h3></div>
@@ -1364,7 +1364,7 @@ onUnmounted(() => stopPoll())
               </tr>
             </tbody>
           </table>
-          <div v-else class="text-muted">暂无</div>
+          <div v-else class="text-muted">{{ $t('routing.dashboard.policy.modelCostEmpty') }}</div>
         </div>
       </div>
     </div>

@@ -507,6 +507,14 @@ export default {
     regionOnlineCount: '{n} 在线',
 
     dataPlaneTables: '252 数据面表记录数',
+    pingFailedWithReason: 'セッション Ping に失敗しました：{reason}。再試行してください。',
+    saveSettingFailedWithReason: '設定を保存できませんでした：{reason}。再試行してください。',
+    maintainFailed: 'メンテナンスを完了できませんでした。再試行してください。',
+    modelMaintainFailed: 'モデルメンテナンスを完了できませんでした。再試行してください。',
+    fpSlotLoadFailed: 'フィンガープリントスロットを読み込めませんでした。再試行してください。',
+    fpSlotProviderMissing: 'provider_id が不足しているため、フィンガープリントスロットを読み込めませんでした。先にプロバイダーを選択してから再試行してください',
+    accessErrorsHint: '失敗した呼び出し + ルーティングエラー · 元のリクエスト詳細を開く',
+    recentRequestsHint: '直近 1 時間の{source} · リクエスト詳細を表示',
   }
 ,
   downloads: {

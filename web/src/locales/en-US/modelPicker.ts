@@ -1,7 +1,7 @@
 export default {
   placeholderSelect: 'Select model…',
   titleSelect: 'Select Model',
-  loadFailed: 'Failed to load models',
+  loadFailed: 'The model list could not be loaded. Please retry.',
   selectedCount: '{count} models selected',
   editButton: 'Edit',
   selectButton: 'Select',

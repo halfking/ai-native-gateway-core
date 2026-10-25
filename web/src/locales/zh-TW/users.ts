@@ -84,6 +84,7 @@ export default {
     resetPasswordMismatch: 'Passwords do not match',
     resetPasswordComplexity: '密碼未達到複雜度要求',
     toggleFailed: 'Operation failed',
+    changePasswordFailed: '密碼沒能修改，請重試',
   },
   passwordMatch: {
     matched: '✓ Passwords match',
@@ -138,5 +139,6 @@ export default {
     keyCount: 'API 密鑰',
     viewAllLogs: '在日誌中查看全部',
     requests: '請求',
+    loadStatsFailed: '使用者統計沒能載入出來，請重試',
   },
 }

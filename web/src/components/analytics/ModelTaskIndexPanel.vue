@@ -60,7 +60,7 @@ onMounted(() => {
 
 <template>
   <div class="mti-panel">
-    <div v-if="!taskType" class="empty-hint">点击热力图行以查看该任务类型的模型指数</div>
+    <div v-if="!taskType" class="empty-hint">选中热力图行可查看该任务类型的模型指数</div>
     <div v-else-if="loading" class="empty-hint">加载模型任务指数…</div>
     <div v-else-if="warning && !items.length" class="empty-hint">{{ warning }}</div>
     <div v-else-if="!items.length" class="empty-hint">该任务类型暂无指数数据</div>

@@ -206,24 +206,25 @@ async function fetchDetail(id: string) {
   error.value = null
   timelineError.value = null
   try {
-    const [d, e, t] = await Promise.all([
+    // ★ 第三个解构项曾叫 `t` ⇒ **遮蔽了 i18n 的 `t`** ⇒ 下面的 t('…') 变成了「把数据当函数调用」。
+    const [d, e, tl] = await Promise.all([
       getRouteIncident(id, props.tenantId),
       getRouteIncidentEvents(id, 200, props.tenantId),
       getRouteIncidentTimeline(id, props.tenantId),
     ])
     detail.value = d
     events.value = e?.items || []
-    timeline.value = t?.items || []
+    timeline.value = tl?.items || []
     if (!d) {
       error.value = '找不到该路由事件'
-    } else if (!t) {
-      timelineError.value = '近 24 小时数据加载失败'
+    } else if (!tl) {
+      timelineError.value = t('routeIncidentDrawer.timelineLoadFailed')
     }
     // Audit + runs are best-effort; we always load them after the
     // detail so we can show the operator a current-state section.
     void fetchAuditAndRuns(id)
   } catch (e: any) {
-    error.value = e?.message || '详情加载失败'
+    error.value = e?.message || t('routeIncidentDrawer.detailLoadFailed')
   } finally {
     loading.value = false
     lastFetchAt.value = Date.now()
@@ -241,7 +242,7 @@ async function fetchAuditAndRuns(id: string) {
     auditEntries.value = a?.items || []
     runs.value = r?.items || []
   } catch (e: any) {
-    auditError.value = e?.message || '审计日志加载失败'
+    auditError.value = e?.message || t('routeIncidentDrawer.auditLogLoadFailed')
   } finally {
     auditLoading.value = false
   }

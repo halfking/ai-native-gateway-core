@@ -424,6 +424,7 @@ export default {
     resetNodeProbeConfirm: 'Alle fehlgeschlagenen Zeilen in node_probe_state für diesen Anbieter löschen?',
 
     resetNodeProbeDone: '✓ {n} fehlgeschlagene Zeilen in node_probe_state gelöscht, Routing-Kandidaten wieder aktiviert',
+    repairFailed: 'Reparatur konnte nicht abgeschlossen werden. Bitte erneut versuchen.',
   },
   settings: {
     overrideTitle: "🎛️ Pass-Through-Modus-Konfiguration",
@@ -622,5 +623,8 @@ export default {
     deltaDays: "in {n} Tagen",
     loadFailed: "Laden fehlgeschlagen",
     triggerFailed: "Auslösen fehlgeschlagen"
+  },
+  quality: {
+    loadFailed: 'Qualitätsprofil konnte nicht geladen werden. Bitte erneut versuchen.',
   },
 }

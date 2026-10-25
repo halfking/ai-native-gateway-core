@@ -100,7 +100,7 @@ async function fetchDiagnostic() {
 
     diagnosticData.value = await response.json()
   } catch (err: any) {
-    error.value = err.message || '诊断失败'
+    error.value = err.message || t('providers.check.diagnoseFailed')
     diagnosticData.value = null
   } finally {
     loading.value = false
@@ -139,7 +139,7 @@ async function handleForceRecover() {
     await fetchDiagnostic()
     emit('recovered')
   } catch (err: any) {
-    error.value = `恢复失败: ${err.message}`
+    error.value = t('common.feedback.operationFailedWithReason', { reason: err.message })
   } finally {
     recovering.value = false
   }

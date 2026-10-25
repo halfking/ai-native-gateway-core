@@ -227,7 +227,7 @@ async function resummarize(session: TurnsSessionGroup) {
       [session.session_id]: refreshed ? '已触发重新归纳' : '已触发重新归纳，但新归纳没取回来（当前显示的是旧内容）',
     }
   } catch (cause) {
-    assetMsg.value = { ...assetMsg.value, [session.session_id]: cause instanceof Error ? cause.message : '归纳失败' }
+    assetMsg.value = { ...assetMsg.value, [session.session_id]: cause instanceof Error ? cause.message : '归纳没能完成，请重试' }
   } finally {
     summaryBusy.value = { ...summaryBusy.value, [session.session_id]: false }
   }
@@ -248,7 +248,7 @@ async function extractAsset(session: TurnsSessionGroup) {
         : `已沉淀 ${result.written} 条资产${result.skipped_duplicate ? `（跳过重复 ${result.skipped_duplicate}）` : ''}`,
     }
   } catch (cause) {
-    assetMsg.value = { ...assetMsg.value, [session.session_id]: cause instanceof Error ? cause.message : '沉淀失败' }
+    assetMsg.value = { ...assetMsg.value, [session.session_id]: cause instanceof Error ? cause.message : '沉淀没能完成，请重试' }
   } finally {
     assetBusy.value = { ...assetBusy.value, [session.session_id]: false }
   }

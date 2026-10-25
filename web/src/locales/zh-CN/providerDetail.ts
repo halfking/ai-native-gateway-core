@@ -454,6 +454,7 @@ export default {
       chipAvailable: '可用',
       chipUnavailable: '不可用',
     },
+    repairFailed: '修复没能完成，请重试',
   },
   settings: {
     overrideTitle: '🎛️ 透传模式配置',
@@ -651,5 +652,8 @@ export default {
     deltaDays: '{n} 天后',
     loadFailed: '加载失败',
     triggerFailed: '触发失败',
+  },
+  quality: {
+    loadFailed: '质量画像没能加载出来，请重试',
   },
 }

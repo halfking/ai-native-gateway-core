@@ -340,7 +340,7 @@ export default {
     outboundTokenEstLabel: 'est. {n} tokens',
     containsSummaryMarker: '(contiene marcador de resumen LLM)',
     summaryMarkerBadge: '(marcador de resumen smm_v1)',
-    clickToPreviewTitle: 'Clic para vista previa a tamaño completo',
+    clickToPreviewTitle: 'Ver la imagen ampliada',
     download: 'Descargar',
     downloadOriginal: 'Descargar original',
     closePreview: 'Cerrar (ESC)',
@@ -354,8 +354,8 @@ export default {
     endUserPrefix: 'Usuario final: ',
     applicationPrefix: 'Aplicación: ',
     noKeyDetail: 'Clave: ninguna',
-    sessionIdTitle: 'ID de sesión (clic para filtrar la misma traza)',
-    taskIdTitle: 'ID de tarea (clic para filtrar solo esta tarea)',
+    sessionIdTitle: 'ID de sesión (filtrar por la misma traza)',
+    taskIdTitle: 'ID de tarea (filtrar solo por esta tarea)',
     estimatedNote: 'Estimado (el upstream no devolvió usage: heurística local por carácter/palabra)',
     llmReported: 'Reportado por LLM',
     pendingPricing: 'Precio pendiente ({currency})',
@@ -367,6 +367,8 @@ export default {
     tipSummaryMarker: 'Marcador de resumen: {v}',
     tipOutboundMsgCount: 'Nº de mensajes de salida: {n}',
     tipParentRequest: 'Solicitud padre: {id}',
+    sessionIdTitleWithId: 'ID de sesión (filtrar por la misma traza)\n{id}',
+    taskIdTitleWithId: 'ID de tarea (filtrar solo por esta tarea)\n{id}',
   },
   marker: {
     title: 'Resumen de la sesión',
@@ -436,5 +438,8 @@ export default {
   with_sliding_compress: ', se activó la compresión por ventana deslizante.',
   writeMemora: 'Escribir en Memora',
   writingMemora: 'Escribiendo…',
+  table: {
+    sessionTitleFallback: 'Aún no hay título de sesión: abra los detalles para ver esta solicitud',
+  },
   // 同步的扁平键
 }

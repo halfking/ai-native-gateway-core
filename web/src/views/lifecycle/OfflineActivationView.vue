@@ -103,7 +103,7 @@ async function importLicense() {
       activation_code: offlinePayload.value.trim(),
     })
     if (!result.activated) {
-      throw new Error(result.error || '离线激活失败')
+      throw new Error(result.error || '离线激活没能完成，请重试')
     }
     message.value = result.message || '离线激活成功；联网后将自动向中心补注册。'
     ElMessage.success(message.value)

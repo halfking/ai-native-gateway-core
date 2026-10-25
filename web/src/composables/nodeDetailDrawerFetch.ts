@@ -133,7 +133,7 @@ export function createNodeDetailFetchers(ctx: FetchCtx) {
       ctx.monitor.value = { ...incoming, models: keepModels ?? incoming.models }
       return true
     }).catch(error => {
-      if (!isAbort(error) && isCurrent()) ctx.loadError.value = '节点核心状态加载失败，仍展示实时状态。'
+      if (!isAbort(error) && isCurrent()) ctx.loadError.value = '节点核心状态没能加载出来，仍展示实时状态。请稍后重试'
       return false
     })
     const candidateTask = initialModel ? loadCandidate(initialModel, reqSeq, controller.signal) : Promise.resolve(true)
@@ -198,7 +198,7 @@ export function createNodeDetailFetchers(ctx: FetchCtx) {
       ])
       return isCurrent() && detailsLoaded && candidateLoaded
     } catch (error) {
-      if (!isAbort(error) && isCurrent()) ctx.loadError.value = '未能加载节点明细；核心实时状态仍可用。'
+      if (!isAbort(error) && isCurrent()) ctx.loadError.value = '节点明细没能加载出来，核心实时状态仍可用。请稍后重试'
       return false
     } finally {
       if (ctx.loadController.c === controller) ctx.loadController.c = null

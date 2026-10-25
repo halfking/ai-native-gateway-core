@@ -2,7 +2,10 @@
 import { computed, ref, watch } from 'vue'
 import { changeMyPassword } from '../api'
 import { checkPasswordPolicy } from '../utils/passwordPolicy'
+import { useI18n } from 'vue-i18n'
 import { Close } from '@element-plus/icons-vue'
+
+const { t } = useI18n()
 
 const props = defineProps<{
   modelValue: boolean
@@ -66,7 +69,7 @@ async function submit() {
     })
     close()
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : '修改密码失败'
+    error.value = e instanceof Error ? e.message : t('users.error.changePasswordFailed')
   } finally {
     loading.value = false
   }

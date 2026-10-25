@@ -342,7 +342,7 @@ export default {
     outboundTokenEstLabel: 'est. {n} tokens',
     containsSummaryMarker: '(contient marqueur de résumé LLM)',
     summaryMarkerBadge: '(marqueur résumé smm_v1)',
-    clickToPreviewTitle: 'Cliquez pour prévisualiser en plein écran',
+    clickToPreviewTitle: 'Voir l’image agrandie',
     download: 'Télécharger',
     downloadOriginal: 'Télécharger l\'original',
     closePreview: 'Fermer (ESC)',
@@ -356,8 +356,8 @@ export default {
     endUserPrefix: 'Utilisateur final : ',
     applicationPrefix: 'Application : ',
     noKeyDetail: 'Clé : aucune',
-    sessionIdTitle: 'ID de session (cliquez pour filtrer la même trace)',
-    taskIdTitle: 'ID de tâche (cliquez pour filtrer uniquement cette tâche)',
+    sessionIdTitle: 'ID de session (filtrer par la même trace)',
+    taskIdTitle: 'ID de tâche (filtrer uniquement cette tâche)',
     estimatedNote: 'Estimé (l\'amont n\'a pas renvoyé d\'usage: heuristique locale par car./mot)',
     llmReported: 'Rapporté par LLM',
     pendingPricing: 'Tarification en attente ({currency})',
@@ -369,6 +369,8 @@ export default {
     tipSummaryMarker: 'Marqueur de résumé : {v}',
     tipOutboundMsgCount: 'Nb de messages sortants : {n}',
     tipParentRequest: 'Requête parente : {id}',
+    sessionIdTitleWithId: 'ID de session (filtrer par la même trace)\n{id}',
+    taskIdTitleWithId: 'ID de tâche (filtrer uniquement cette tâche)\n{id}',
   },
   marker: {
     title: 'Résumé de session',
@@ -438,5 +440,8 @@ export default {
   with_sliding_compress: ', la compression par fenêtre glissante a été déclenchée.',
   writeMemora: 'Écrire dans Memora',
   writingMemora: 'Écriture…',
+  table: {
+    sessionTitleFallback: 'Pas encore de titre de session. Ouvrez les détails pour voir cette requête.',
+  },
   // 同步的扁平键
 }

@@ -90,6 +90,9 @@ export default {
       actions: 'Approval actions',
       history: 'Approval history',
     },
+    loadFailed: 'Le chargement du détail de l’approbation a échoué. Veuillez réessayer.',
+    approveFailed: 'L’approbation n’a pas pu aboutir. Veuillez réessayer.',
+    rejectFailed: 'Le refus n’a pas pu aboutir. Veuillez réessayer.',
   },
   config: {
     title: 'Paramètres d’approbation',

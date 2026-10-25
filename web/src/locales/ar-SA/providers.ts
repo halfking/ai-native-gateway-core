@@ -258,7 +258,7 @@ export default {
     credentialProbeOk: 'اجتياز الفحص',
     credentialUnreachable: 'غير متاح',
     credentialFailed: 'فشل الفحص',
-    diagnoseFailed: 'فشل التشخيص',
+    diagnoseFailed: 'تعذّر إتمام التشخيص. أعد المحاولة.',
   },
   diagnose: {
     title: 'تشخيص المزود: التقاط الطلب/الاستجابة الفعلي',
@@ -326,7 +326,7 @@ export default {
     day: 'أيام مضت',
   },
   error: {
-    loadFailed: 'فشل التحميل',
+    loadFailed: 'تعذّر تحميل قائمة المزوّدين. أعد المحاولة.',
   },
   common: {
     button: {

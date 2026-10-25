@@ -424,6 +424,7 @@ export default {
     resetNodeProbeConfirm: 'Effacer toutes les lignes en échec de node_probe_state pour ce fournisseur ?',
 
     resetNodeProbeDone: '✓ {n} lignes en échec de node_probe_state effacées, candidats de routage réactivés',
+    repairFailed: 'La réparation n’a pas pu aboutir. Veuillez réessayer.',
   },
   settings: {
     overrideTitle: "🎛️ Configuration du mode pass-through",
@@ -622,5 +623,8 @@ export default {
     deltaDays: "dans {n} jours",
     loadFailed: "Échec du chargement",
     triggerFailed: "Échec du déclenchement"
+  },
+  quality: {
+    loadFailed: 'Le chargement du profil de qualité a échoué. Veuillez réessayer.',
   },
 }

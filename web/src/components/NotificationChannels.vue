@@ -92,7 +92,7 @@ async function testChannel(type: 'feishu' | 'wecom' | 'dingtalk') {
   } catch (e: any) {
     testResults.value[type] = {
       success: false,
-      message: e.message || '测试失败'
+      message: e.message || '测试没能通过，请重试'
     }
   } finally {
     testing.value = null

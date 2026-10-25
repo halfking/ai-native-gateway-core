@@ -423,6 +423,7 @@ export default {
     resetNodeProbeConfirm: '確認清空該供應商所有失敗的 node_probe_state 列？',
 
     resetNodeProbeDone: '✓ 已清除 {n} 列失敗的 node_probe_state，路由候選立即復原',
+    repairFailed: '修復沒能完成，請重試',
   },
   settings: {
     overrideTitle: "🎛️ 透通模式設定",
@@ -621,5 +622,8 @@ export default {
     deltaDays: "{n} 天後",
     loadFailed: "載入失敗",
     triggerFailed: "觸發失敗"
+  },
+  quality: {
+    loadFailed: '品質畫像沒能載入出來，請重試',
   },
 }

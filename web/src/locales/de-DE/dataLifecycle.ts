@@ -47,7 +47,8 @@ export default {
     configMaxAttachmentMb: "{n} MB",
     configAutoCleanup: "Automatische Bereinigung:",
     autoCleanupOn: "Ein",
-    autoCleanupOff: "Aus"
+    autoCleanupOff: "Aus",
+    migrateFailedWithReason: 'Migration konnte nicht abgeschlossen werden: {reason}. Bitte erneut versuchen.',
   },
   attachmentCleanup: {
     title: "🗑️ Anhangsbereinigung",
@@ -342,6 +343,9 @@ promoteAll: "alles",
     cronLastError: 'Last error',
 
     cronRunning: 'Running now',
+    statsLoadFailedWithReason: 'Statistik der hot-Tabelle konnte nicht geladen werden: {reason}. Bitte erneut versuchen.',
+    startMigrationFailedWithReason: 'Migrationsauftrag konnte nicht gestartet werden: {reason}. Bitte erneut versuchen.',
+    submitDeleteFailedWithReason: 'Löschauftrag konnte nicht übermittelt werden: {reason}. Bitte erneut versuchen.',
   },
   preview: "Bereinigung vorschauen",
   hotData: "Hot-Daten (0-7 Tage)",

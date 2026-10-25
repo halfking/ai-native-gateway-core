@@ -88,4 +88,5 @@ export default {
     upstream_auth_error: 'مصادقة المنبع (401/403)',
     upstream_not_found: '404 من المنبع',
   },
+  generateFailed: 'تعذّر إنشاء الملخص. أعد المحاولة.',
 }

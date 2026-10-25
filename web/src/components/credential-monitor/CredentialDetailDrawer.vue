@@ -259,7 +259,7 @@ async function submitSetManualDisabled() {
     setManualDisabledDialogOpen.value = false
     await refreshDetailDrawer()
   } catch (e) {
-    alert('操作失败: ' + (e instanceof Error ? e.message : String(e)))
+    alert(t('credentialMonitor.drawer.operationFailedWithReason', { reason: e instanceof Error ? e.message : String(e) }))
   }
 }
 
@@ -450,7 +450,7 @@ function manualControlMeta(state: ManualControlState): ManualControlMeta {
       bg: 'rgba(239, 68, 68, 0.12)',
       border: 'rgba(239, 68, 68, 0.4)',
       color: '#ef4444',
-      tooltip: '已通过手工方式禁用,自动探测不会触碰. 点击 → 手工启动',
+      tooltip: t('credentialMonitor.drawer.manualDisabledTooltip'),
     }
   }
   if (state === 'manual_enabled') {
@@ -460,7 +460,7 @@ function manualControlMeta(state: ManualControlState): ManualControlMeta {
       bg: 'rgba(16, 185, 129, 0.12)',
       border: 'rgba(16, 185, 129, 0.4)',
       color: '#10b981',
-      tooltip: '当前可用,可点击 → 手工禁用',
+      tooltip: t('credentialMonitor.drawer.availableTooltip'),
     }
   }
   return {
@@ -469,7 +469,7 @@ function manualControlMeta(state: ManualControlState): ManualControlMeta {
     bg: 'rgba(139, 148, 158, 0.12)',
     border: 'rgba(139, 148, 158, 0.4)',
     color: '#8b949e',
-    tooltip: '由自动探测控制 (broken_confirmed 等). 点击 → 手工禁用 (强制下线)',
+    tooltip: t('credentialMonitor.drawer.autoControlledTooltip'),
   }
 }
 
@@ -510,7 +510,11 @@ async function submitToggle() {
     emit('refresh-list') // refresh summary so the row badge updates
     await loadHistory() // refresh history with the new manual event on top
   } catch (e) {
-    alert(`${target.action === 'offline' ? '下线' : '上线'}失败: ` + (e instanceof Error ? e.message : String(e)))
+    alert(
+      target.action === 'offline'
+        ? t('credentialMonitor.drawer.offlineFailedWithReason', { reason: e instanceof Error ? e.message : String(e) })
+        : t('credentialMonitor.drawer.onlineFailedWithReason', { reason: e instanceof Error ? e.message : String(e) }),
+    )
   } finally {
     toggleBusy.value[key] = false
   }
@@ -631,7 +635,7 @@ async function submitDemote() {
     emit('refresh-list')
     closeDrawer()
   } catch (e) {
-    alert('降级失败: ' + (e instanceof Error ? e.message : String(e)))
+    alert(t('credentialMonitor.drawer.degradeFailedWithReason', { reason: e instanceof Error ? e.message : String(e) }))
   }
 }
 
@@ -649,7 +653,7 @@ async function submitPromote() {
     emit('refresh-list')
     closeDrawer()
   } catch (e) {
-    alert('升级失败: ' + (e instanceof Error ? e.message : String(e)))
+    alert(t('credentialMonitor.drawer.upgradeFailedWithReason', { reason: e instanceof Error ? e.message : String(e) }))
   }
 }
 
@@ -667,7 +671,7 @@ async function submitConcurrency() {
     concurrencyDialogOpen.value = false
     emit('refresh-list')
   } catch (e) {
-    alert('设置失败: ' + (e instanceof Error ? e.message : String(e)))
+    alert(t('credentialMonitor.drawer.settingFailedWithReason', { reason: e instanceof Error ? e.message : String(e) }))
   }
 }
 
@@ -837,7 +841,7 @@ onUnmounted(() => {
               <span class="drawer-section-title models-title">
                 模型可用性 <span class="cell-muted">({{ (selectedCred.models || []).length }})</span>
               </span>
-              <span class="cell-sub" v-if="modelsLayout !== 'monitor-full'">点击行联动查看右侧监控</span>
+              <span class="cell-sub" v-if="modelsLayout !== 'monitor-full'">{{ $t('credentialMonitor.drawer.rowSelectsMonitor') }}</span>
             </div>
             <div class="models-toolbar-right">
               <!-- 三态分段控件 -->
@@ -989,7 +993,7 @@ onUnmounted(() => {
                     {{ windowSource === 'redis' ? 'Redis' : 'request_logs' }}
                   </span>
                 </div>
-                <div v-if="!selectedModel" class="cell-muted">点击左侧模型行查看</div>
+                <div v-if="!selectedModel" class="cell-muted">{{ $t('credentialMonitor.drawer.selectModelRow') }}</div>
                 <div v-else>
                   <div style="margin-bottom:8px;display:flex;align-items:center;gap:8px;flex-wrap:wrap">
                     <label class="field-label">{{ $t('common.terms.model') }}:</label>

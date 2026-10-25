@@ -47,7 +47,8 @@ export default {
     configMaxAttachmentMb: "{n} MB",
     configAutoCleanup: "自動清理：",
     autoCleanupOn: "開啟",
-    autoCleanupOff: "關閉"
+    autoCleanupOff: "關閉",
+    migrateFailedWithReason: '遷移沒能完成：{reason}。請重試',
   },
   attachmentCleanup: {
     title: "🗑️ 附件清理",
@@ -342,6 +343,9 @@ export default {
     cronLastError: '上次错误',
 
     cronRunning: '正在运行',
+    statsLoadFailedWithReason: 'hot 表統計沒能載入出來：{reason}。請重試',
+    startMigrationFailedWithReason: '遷移任務沒能啟動：{reason}。請重試',
+    submitDeleteFailedWithReason: '刪除任務沒能提交：{reason}。請重試',
   },
   preview: "預覽清理",
   hotData: "熱資料 (0-7天)",

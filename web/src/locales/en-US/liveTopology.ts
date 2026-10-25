@@ -165,4 +165,9 @@ export default {
     notFoundTitle: 'This request is no longer in the live window',
     notFoundHint: 'Live data only keeps a recent rolling window; the request may have scrolled out, or you opened this link directly. Go back to the live topology and open it again.',
   },
+  legend: {
+    itemTitle: '{name} ({count} requests) · {state}',
+    highlightOn: 'Highlighted',
+    highlightOff: 'Not highlighted',
+  },
 }

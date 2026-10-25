@@ -7,6 +7,9 @@ import {
   controlMemoraSink,
   type MemoraStatus,
 } from '../api'
+import { useI18n } from 'vue-i18n'
+
+const { t } = useI18n()
 
 const status = ref<MemoraStatus | null>(null)
 const panelOpen = ref(false)
@@ -63,10 +66,10 @@ async function handlePing() {
   try {
     const r = await pingMemora()
     lastPingMs.value = r.latency_ms
-    if (!r.connected) lastPingError.value = r.error || '连接失败'
+    if (!r.connected) lastPingError.value = r.error || t('memoraStatusButton.state.error')
     await loadStatus()
   } catch (e: unknown) {
-    lastPingError.value = e instanceof Error ? e.message : '检测失败'
+    lastPingError.value = e instanceof Error ? e.message : t('memoraStatusButton.state.detectFailed')
   } finally {
     actionLoading.value = false
   }

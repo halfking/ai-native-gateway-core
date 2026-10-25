@@ -4,4 +4,7 @@
 export default {
   exportFailedPrep: 'エクスポート失敗：詳細の読み込みまたは監査に失敗しました',
   exportNoChannel: 'エクスポート失敗：このホストで利用可能なチャネルがありません',
+  timelineLoadFailed: '過去 24 時間のデータの読み込みに失敗しました。再試行してください。',
+  detailLoadFailed: '詳細の読み込みに失敗しました。再試行してください。',
+  auditLogLoadFailed: '監査ログの読み込みに失敗しました。再試行してください。',
 }

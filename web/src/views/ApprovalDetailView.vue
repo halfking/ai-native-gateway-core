@@ -89,7 +89,7 @@ async function loadApproval() {
   try {
     approval.value = await getApprovalDetail(requestId.value)
   } catch (e: any) {
-    error.value = e.message || '加载审批详情失败'
+    error.value = e.message || t('approval.detail.loadFailed')
   } finally {
     loading.value = false
   }
@@ -109,7 +109,7 @@ async function handleApprove() {
     actionReason.value = ''
     await loadApproval()
   } catch (e: any) {
-    error.value = e.message || '批准失败'
+    error.value = e.message || t('approval.detail.approveFailed')
   } finally {
     actionLoading.value = false
   }
@@ -134,7 +134,7 @@ async function handleReject() {
     actionReason.value = ''
     await loadApproval()
   } catch (e: any) {
-    error.value = e.message || '拒绝失败'
+    error.value = e.message || t('approval.detail.rejectFailed')
   } finally {
     actionLoading.value = false
   }

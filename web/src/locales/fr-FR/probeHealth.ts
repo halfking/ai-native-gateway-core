@@ -53,4 +53,9 @@ export default {
   systemStopAllConfirm: 'Arrêter toutes les tâches de sonde ? Les tâches déjà réclamées (claimed) se termineront.',
   systemTriggeredToast: '{n} tâches déclenchées, {failed} en échec',
   systemStoppedToast: '{n} tâches retirées de la file',
+  detail: {
+    triggerFailed: 'Le déclenchement n’a pas pu aboutir. Veuillez réessayer.',
+    modelNodeNotFound: 'Aucun nœud n’a été trouvé pour ce modèle. Vérifiez le nom du modèle, ou connectez d’abord un nœud, puis réessayez.',
+    pricingUnavailable: 'Les données de prix nécessitent l’autorisation platform_ops pour être consultées. Contactez l’administrateur pour l’activer.',
+  },
 }

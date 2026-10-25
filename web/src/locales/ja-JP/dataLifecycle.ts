@@ -47,7 +47,8 @@ export default {
     configMaxAttachmentMb: "{n} MB",
     configAutoCleanup: "自動クリーンアップ:",
     autoCleanupOn: "有効",
-    autoCleanupOff: "無効"
+    autoCleanupOff: "無効",
+    migrateFailedWithReason: '移行を完了できませんでした：{reason}。再試行してください。',
   },
   attachmentCleanup: {
     title: "🗑️ 添付ファイルクリーンアップ",
@@ -342,6 +343,9 @@ export default {
     cronLastError: '上次错误',
 
     cronRunning: '正在运行',
+    statsLoadFailedWithReason: 'hot 表の統計を読み込めませんでした：{reason}。再試行してください。',
+    startMigrationFailedWithReason: '移行タスクを開始できませんでした：{reason}。再試行してください。',
+    submitDeleteFailedWithReason: '削除タスクを送信できませんでした：{reason}。再試行してください。',
   },
   preview: "クリーンアップをプレビュー",
   hotData: "ホットデータ (0-7日)",

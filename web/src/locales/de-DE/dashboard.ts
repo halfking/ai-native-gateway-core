@@ -459,4 +459,10 @@ v2: {
     totalRequests: "Total Requests",
     totalTokens: "Total Tokens",
   },
+  requestTile: {
+    childRequestsTitle: 'Unteranfragen {count} (zum Aufklappen)',
+    childRequestsEmpty: 'Unteranfragen (noch keine Übertragung, zum Aufklappen)',
+    actionTrailTitle: 'Aktionsverlauf {count} Einträge (zum Aufklappen)',
+    actionTrailEmpty: 'Aktionsverlauf (noch keine Übertragung, zum Aufklappen)',
+  },
 }

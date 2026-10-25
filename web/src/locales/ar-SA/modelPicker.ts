@@ -1,7 +1,7 @@
 export default {
   placeholderSelect: 'اختر النموذج…',
   titleSelect: 'اختر النموذج',
-  loadFailed: 'فشل تحميل النماذج',
+  loadFailed: 'تعذّر تحميل قائمة النماذج. أعد المحاولة.',
   selectedCount: 'تم تحديد {count} نماذج',
   editButton: 'تحرير',
   selectButton: 'اختيار',

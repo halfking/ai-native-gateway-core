@@ -142,7 +142,7 @@ async function loadRoutingDiagnostics() {
   try {
     routingDiag.value = await getRoutingBlockedDiagnostic(props.providerId)
   } catch (e: unknown) {
-    routingDiagErr.value = e instanceof Error ? e.message : '诊断失败'
+    routingDiagErr.value = e instanceof Error ? e.message : td('providers.check.diagnoseFailed')
   } finally {
     routingDiagLoading.value = false
   }
@@ -159,7 +159,7 @@ async function handleFixBlocked() {
     await Promise.all([load(), loadRoutingDiagnostics()])
     setTimeout(() => { routingDiagFixed.value = false }, 5000)
   } catch (e: unknown) {
-    routingDiagErr.value = e instanceof Error ? e.message : '修复失败'
+    routingDiagErr.value = e instanceof Error ? e.message : td('providerDetail.models.repairFailed')
   } finally {
     routingDiagFixing.value = false
   }

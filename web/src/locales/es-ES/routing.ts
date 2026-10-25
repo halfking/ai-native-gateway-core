@@ -35,6 +35,7 @@ export default {
     failed: 'Fallido',
     freeModel: 'Modelo gratuito: máxima prioridad',
     waiting: 'Cargando…',
+    logEmpty: 'Todavía no hay registros de coincidencias en este periodo. Pruebe con otro rango de tiempo u otras condiciones.',
   },
   dashboard: {
     title: 'Panorama de enrutamiento',
@@ -124,7 +125,7 @@ export default {
       schedulingHint: 'Nivel 1→2→3→9, plan preferido PAYG, P2C',
       noCreds: 'Sin credenciales',
       sixDimScore: 'Puntuación 6-dim',
-      emptyHint: 'Sin datos de índice: clic en ↻ para actualizar',
+      emptyHint: 'El índice todavía no tiene registros: vuelva a cargarlo con el botón "Actualizar"',
 
       smartConfig: 'Smart routing',
 
@@ -155,7 +156,8 @@ export default {
       modelCostTitle: 'Coste del modelo',
       colCost: 'Coste',
       colRequests: 'Solicitudes',
-      empty: 'Ninguno',
+      customerCostEmpty: 'En este periodo no hay registros de coste del cliente',
+      modelCostEmpty: 'En este periodo no hay registros de coste del modelo',
     },
     resolve: {
       title: 'Resolución de enrutamiento de credenciales',
@@ -199,6 +201,10 @@ export default {
       replay: 'Repetir',
       colPriority: 'Prioridad',
       priorityTooltip: 'Credencial prioritario: mientras haya cuota suficiente asume el tráfico primero; al agotarse, el tráfico pasa automáticamente a otros. Independiente del número de orden.',
+      reorderFailed: 'El número de candidatos supera el límite de prioridad, por lo que no se puede ordenar. Reduzca los candidatos y vuelva a intentarlo.',
+      sortSaveFailed: 'No se pudo guardar el orden. Vuelva a intentarlo.',
+      savePolicyFailedWithReason: 'No se pudo guardar la política: {reason}. Vuelva a intentarlo.',
+      localLogFailed: 'No se pudo analizar el registro de ejecución local ni guardar una copia del contenido original (el almacenamiento del navegador puede estar lleno). Vacíe el almacenamiento del navegador y vuelva a intentarlo.',
     },
     live: {
       simulatorTitle: 'Simulador de enrutamiento',
@@ -211,6 +217,7 @@ export default {
       colConfidence: 'Conf.',
       noDecisions: 'Sin decisiones recientes',
     },
+    matchStatsHint: '× Estadísticas de coincidencia de modelos · Al abrir una celda se muestran el detalle de la decisión y el embudo L2',
   },
   policy: {
     title: 'Política de enrutamiento',
@@ -438,4 +445,5 @@ export default {
   updatedWeights: 'Coeficientes de puntuación actualizados',
   variantsLabel: 'Variantes',
   workTypes: 'Tipos de trabajo',
+  variantHint: 'Seleccione una variante arriba para ver sus detalles de enrutamiento de credenciales',
 }

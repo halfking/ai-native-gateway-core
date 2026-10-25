@@ -87,6 +87,9 @@ export default {
       actions: 'Approval actions',
       history: 'Approval history',
     },
+    loadFailed: 'The approval details could not be loaded. Please retry.',
+    approveFailed: 'The approval could not be completed. Please retry.',
+    rejectFailed: 'The rejection could not be completed. Please retry.',
   },
   config: {
     title: 'Approval settings',

@@ -196,6 +196,8 @@ export default {
     discoverFailed: 'Error en el descubrimiento de modelos',
     loadFeaturedFailed: 'Error al cargar modelos destacados',
     saveFeaturedFailed: 'Error al guardar',
+    syncFailed: 'No se pudo sincronizar el mapeo de nombres de modelo. Vuelva a intentarlo.',
+    nameRequired: 'Introduzca el nombre original y el nombre estándar.',
   },
   health: {
     healthy: 'Saludable',

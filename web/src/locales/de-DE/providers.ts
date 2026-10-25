@@ -257,7 +257,7 @@ export default {
     credentialProbeOk: 'Prüfung bestanden',
     credentialUnreachable: 'Nicht erreichbar',
     credentialFailed: 'Prüfung fehlgeschlagen',
-    diagnoseFailed: 'Diagnose fehlgeschlagen',
+    diagnoseFailed: 'Diagnose konnte nicht abgeschlossen werden. Bitte erneut versuchen.',
   },
   diagnose: {
     title: 'Anbieterdiagnose: tatsächliche Anfrage-/Antwort-Aufzeichnung',
@@ -325,7 +325,7 @@ export default {
     day: 'Tage her',
   },
   error: {
-    loadFailed: 'Laden fehlgeschlagen',
+    loadFailed: 'Anbieterliste konnte nicht geladen werden. Bitte erneut versuchen.',
   },
   common: {
     button: {

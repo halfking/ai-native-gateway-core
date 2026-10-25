@@ -88,4 +88,5 @@ export default {
     upstream_auth_error: '上流認証 (401/403)',
     upstream_not_found: '上流 404',
   },
+  generateFailed: '要約を生成できませんでした。再試行してください。',
 }

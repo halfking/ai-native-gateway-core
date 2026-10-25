@@ -804,7 +804,7 @@ async function onDrop(event: DragEvent, group: ModelGroup, targetCredentialId: n
       return assignSpacedPriorities(mergedIds.length)
     } catch (error) {
       clearDragState()
-      dragError.value = error instanceof Error ? error.message : '候选数量超过优先级上限，无法排序'
+      dragError.value = error instanceof Error ? error.message : t('routing.dashboard.resolve.reorderFailed')
       return null
     }
   })()

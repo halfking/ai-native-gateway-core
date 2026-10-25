@@ -300,7 +300,7 @@ async function triggerProbe(node: ModelNode) {
     })
     flash(`已触发 ${credentialDisplayName(node.credential_id)} 的探活`)
   } catch (err) {
-    flash(`触发失败: ${err instanceof Error ? err.message : String(err)}`)
+    flash(t('common.feedback.triggerFailedWithReason', { reason: err instanceof Error ? err.message : String(err) }))
   } finally {
     setTimeout(() => {
       const after = new Set(probeTriggering.value)
@@ -356,7 +356,7 @@ async function loadPricing() {
       pricingData.value = data.rows || []
     }
   } catch {
-    setTabError('pricing', '价格数据不可用（需要 platform_ops 权限）')
+    setTabError('pricing', t('probeHealth.detail.pricingUnavailable'))
     pricingData.value = []
   }
 }

@@ -86,4 +86,5 @@ export default {
     upstream_auth_error: 'Upstream auth (401/403)',
     upstream_not_found: 'Upstream 404',
   },
+  generateFailed: 'The summary could not be generated. Please retry.',
 }

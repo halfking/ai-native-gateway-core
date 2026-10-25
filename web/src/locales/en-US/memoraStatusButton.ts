@@ -4,8 +4,9 @@ export default {
     disabled: 'Disabled',
     paused: 'Disconnected',
     ok: 'Connected',
-    error: 'Connection Failed',
+    error: 'Cannot connect. Check the network and retry.',
     loading: 'Checking',
+    detectFailed: 'No result was detected. Please retry.',
   },
 
   panel: {

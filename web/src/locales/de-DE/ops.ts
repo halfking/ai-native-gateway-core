@@ -507,6 +507,14 @@ export default {
     regionOnlineCount: '{n} online',
 
     dataPlaneTables: '252 data-plane row counts',
+    pingFailedWithReason: 'Sitzungs-Ping fehlgeschlagen: {reason}. Bitte erneut versuchen.',
+    saveSettingFailedWithReason: 'Einstellung konnte nicht gespeichert werden: {reason}. Bitte erneut versuchen.',
+    maintainFailed: 'Wartung konnte nicht abgeschlossen werden. Bitte erneut versuchen.',
+    modelMaintainFailed: 'Modellwartung konnte nicht abgeschlossen werden. Bitte erneut versuchen.',
+    fpSlotLoadFailed: 'Fingerabdruck-Slots konnten nicht geladen werden. Bitte erneut versuchen.',
+    fpSlotProviderMissing: 'provider_id fehlt, Fingerabdruck-Slots konnten nicht geladen werden. Bitte zuerst einen Anbieter auswählen und erneut versuchen',
+    accessErrorsHint: 'Fehlgeschlagene Aufrufe + Routing-Fehler · Originalanfrage öffnen',
+    recentRequestsHint: 'Letzte 1 Stunde{source} · Anfragedetails ansehen',
   }
 ,
   downloads: {

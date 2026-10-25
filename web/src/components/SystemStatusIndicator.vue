@@ -159,7 +159,7 @@ async function loadStatus() {
     lastChecked.value = new Date()
     updateTimeSinceCheck()
   } catch (e: any) {
-    error.value = e.message || '加载状态失败'
+    error.value = e.message || '系统状态没能加载出来，请重试'
     console.error('Failed to load system status:', e)
   } finally {
     loading.value = false

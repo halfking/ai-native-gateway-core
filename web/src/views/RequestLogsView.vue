@@ -841,11 +841,11 @@ function callerKeyTitle(r: RequestLogRow): string {
 }
 
 function traceSessionTitle(id: string) {
-  return `会话 ID（点击筛选同脉络）\n${id}`
+  return t('requests.detail_extra.sessionIdTitleWithId', { id })
 }
 
 function traceTaskTitle(id: string) {
-  return `任务 ID（点击仅筛此任务）\n${id}`
+  return t('requests.detail_extra.taskIdTitleWithId', { id })
 }
 
 // 详情 body 缓存统计随列表刷新一起拉取。纯诊断信息：失败静默置 null
@@ -1595,7 +1595,7 @@ onMounted(async () => {
               >任务 {{ ellipsize(r.gw_task_id, 36) }}</div>
               <span v-if="!r.gw_task_id && !r.gw_session_id" class="cell-line2" style="color:var(--muted)">—</span>
             </td>
-            <td class="col-title" :title="r.session_title || '尚无会话标题 — 点击详情查看'">
+            <td class="col-title" :title="r.session_title || $t('requests.table.sessionTitleFallback')">
               <div v-if="r.session_title" class="cell-line1 cell-clip title-text">{{ r.session_title }}</div>
               <div v-else class="cell-line1 muted">—</div>
             </td>

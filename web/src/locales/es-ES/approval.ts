@@ -90,6 +90,9 @@ export default {
       actions: 'Approval actions',
       history: 'Approval history',
     },
+    loadFailed: 'No se pudo cargar el detalle de la aprobación. Vuelva a intentarlo.',
+    approveFailed: 'No se pudo completar la aprobación. Vuelva a intentarlo.',
+    rejectFailed: 'No se pudo completar el rechazo. Vuelva a intentarlo.',
   },
   config: {
     title: 'Configuración de aprobación',

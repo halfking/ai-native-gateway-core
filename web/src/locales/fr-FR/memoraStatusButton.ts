@@ -4,8 +4,9 @@ export default {
     disabled: 'Désactivé',
     paused: 'Déconnecté',
     ok: 'Connecté',
-    error: 'Échec de connexion',
+    error: 'Connexion impossible. Vérifiez le réseau, puis réessayez.',
     loading: 'Vérification',
+    detectFailed: 'Aucun résultat n’a pu être détecté. Veuillez réessayer.',
   },
 
   panel: {

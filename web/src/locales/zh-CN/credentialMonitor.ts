@@ -151,6 +151,17 @@ export default {
       routingColError: '错误',
       msUnit: 'ms',
     },
+    operationFailedWithReason: '操作失败：{reason}。请重试',
+    offlineFailedWithReason: '下线失败：{reason}。请重试',
+    onlineFailedWithReason: '上线失败：{reason}。请重试',
+    degradeFailedWithReason: '降级失败：{reason}。请重试',
+    upgradeFailedWithReason: '升级失败：{reason}。请重试',
+    settingFailedWithReason: '设置失败：{reason}。请重试',
+    manualDisabledTooltip: '已通过手工方式禁用，自动探测不会触碰。可手工启动',
+    availableTooltip: '当前可用，可手工禁用',
+    autoControlledTooltip: '由自动探测控制（broken_confirmed 等）。可手工禁用（强制下线）',
+    rowSelectsMonitor: '选中行可联动查看右侧监控',
+    selectModelRow: '选中左侧模型行可查看',
   },
   dialog: {
     cancel: '取消', // 与 common.button.cancel 同义

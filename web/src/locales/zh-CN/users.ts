@@ -84,6 +84,7 @@ export default {
     resetPasswordMismatch: '两次输入的新密码不一致',
     resetPasswordComplexity: '密码不符合复杂度要求',
     toggleFailed: '操作失败',
+    changePasswordFailed: '密码没能修改，请重试',
   },
   passwordMatch: {
     matched: '✓ 两次输入一致',
@@ -138,5 +139,6 @@ export default {
     keyCount: 'API 密钥',
     viewAllLogs: '在日志中查看全部',
     requests: '请求',
+    loadStatsFailed: '用户统计没能加载出来，请重试',
   },
 }

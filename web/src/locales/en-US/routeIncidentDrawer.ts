@@ -4,4 +4,7 @@
 export default {
   exportFailedPrep: 'Export failed: detail load or audit failed',
   exportNoChannel: 'Export failed: no usable channel in this host',
+  timelineLoadFailed: 'The data for the last 24 hours could not be loaded. Please retry.',
+  detailLoadFailed: 'The details could not be loaded. Please retry.',
+  auditLogLoadFailed: 'The audit log could not be loaded. Please retry.',
 }

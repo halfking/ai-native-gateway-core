@@ -88,4 +88,5 @@ export default {
     upstream_auth_error: '上游鑑權拒絕 (401/403)',
     upstream_not_found: '上游 404 (模型名可能錯誤)',
   },
+  generateFailed: '摘要沒能產生，請重試',
 }

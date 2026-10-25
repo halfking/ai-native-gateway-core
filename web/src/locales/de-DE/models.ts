@@ -198,6 +198,8 @@ export default {
     discoverFailed: 'Modellerkennung fehlgeschlagen',
     loadFeaturedFailed: 'Empfohlene Modelle laden fehlgeschlagen',
     saveFeaturedFailed: 'Speichern fehlgeschlagen',
+    syncFailed: 'Modellnamenszuordnung konnte nicht synchronisiert werden. Bitte erneut versuchen.',
+    nameRequired: 'Bitte Originalnamen und Standardnamen angeben',
   },
   health: {
     healthy: 'Fehlerfrei',

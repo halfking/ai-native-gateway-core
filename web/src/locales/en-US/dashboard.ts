@@ -439,4 +439,10 @@ export default {
     totalRequests: 'Total Requests',
     totalTokens: 'Total Tokens',
   },
+  requestTile: {
+    childRequestsTitle: 'Child requests ({count}) (expand to view)',
+    childRequestsEmpty: 'Child requests (nothing pushed yet, expand to view)',
+    actionTrailTitle: 'Action trail ({count}) (expand to view)',
+    actionTrailEmpty: 'Action trail (nothing pushed yet, expand to view)',
+  },
 }

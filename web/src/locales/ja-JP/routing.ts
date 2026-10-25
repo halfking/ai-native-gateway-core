@@ -36,6 +36,7 @@ export default {
     failed: '失敗',
     freeModel: '無料モデル、最優先',
     waiting: '読み込み…',
+    logEmpty: 'この期間には照合記録がありません。期間や条件を変更して再試行してください',
   },
   dashboard: {
     title: 'ルーティング概要',
@@ -125,7 +126,7 @@ export default {
       schedulingHint: 'Tier 1→2→3→9，plan 優先 PAYG，P2C',
       noCreds: '認証情報なし',
       sixDimScore: '6次元評価',
-      emptyHint: 'インデックスのデータがありません — ↻ 更新をクリック',
+      emptyHint: 'インデックスにまだレコードがありません — 更新キーを押すと再取得します',
 
       smartConfig: "スマートルーティング設定",
 
@@ -156,7 +157,8 @@ export default {
       modelCostTitle: 'モデルコスト',
       colCost: '費用',
       colRequests: 'リクエスト',
-      empty: 'なし',
+      customerCostEmpty: 'この期間に顧客コストの記録はありません',
+      modelCostEmpty: 'この期間にモデルコストの記録はありません',
     },
     resolve: {
       title: '認証情報ルーティング解決',
@@ -200,6 +202,10 @@ export default {
       replay: '再検索',
       colPriority: '優先',
       priorityTooltip: '優先クレデンシャル：クォータに余裕がある間はトラフィックを優先的に受け持ち、使い切ると自動的に他へ譲ります。並び順序号とは無関係です。',
+      reorderFailed: '候補数が優先度の上限を超えたため、並べ替えできません。候補数を減らして再試行してください',
+      sortSaveFailed: '並べ替えを保存できませんでした。再試行してください。',
+      savePolicyFailedWithReason: 'ポリシーを保存できませんでした：{reason}。再試行してください。',
+      localLogFailed: 'ローカル実行ログを解析できず、元の内容もバックアップできませんでした（ブラウザストレージが満杯の可能性があります）。ブラウザストレージを整理してから再試行してください',
     },
     live: {
       simulatorTitle: 'ルーティングシミュレータ',
@@ -212,6 +218,7 @@ export default {
       colConfidence: '信頼度',
       noDecisions: '最近の判断がありません',
     },
+    matchStatsHint: '×モデル一致統計 · セルを展開すると判断詳細と L2 ファネルを表示',
   },
   policy: {
     title: 'ルーティングポリシー',
@@ -439,4 +446,5 @@ export default {
   updatedWeights: 'スコアリング係数更新済み',
   variantsLabel: 'バリアント',
   workTypes: 'ワークタイプ',
+  variantHint: '上のバリアントを選ぶと、そのバリアントの認証情報ルーティングの詳細を表示します',
 }

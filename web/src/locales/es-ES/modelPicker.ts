@@ -1,7 +1,7 @@
 export default {
   placeholderSelect: 'Seleccionar modelo…',
   titleSelect: 'Seleccionar modelo',
-  loadFailed: 'Error al cargar modelos',
+  loadFailed: 'No se pudo cargar la lista de modelos. Vuelva a intentarlo.',
   selectedCount: '{count} modelos seleccionados',
   editButton: 'Editar',
   selectButton: 'Seleccionar',

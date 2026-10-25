@@ -198,6 +198,8 @@ export default {
     discoverFailed: '發現模型失敗',
     loadFeaturedFailed: '載入特色模型失敗',
     saveFeaturedFailed: '儲存失敗',
+    syncFailed: '模型名稱對應沒能同步，請重試',
+    nameRequired: '請填寫原始名稱和標準名稱',
   },
   health: {
     healthy: '正常',

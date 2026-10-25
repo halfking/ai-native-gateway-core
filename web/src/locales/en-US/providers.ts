@@ -279,7 +279,7 @@ export default {
     credentialProbeOk: 'Probe passed',
     credentialUnreachable: 'Unreachable',
     credentialFailed: 'Check failed',
-    diagnoseFailed: 'Diagnose failed',
+    diagnoseFailed: 'The diagnosis could not be completed. Please retry.',
   },
   diagnose: {
     title: 'Provider diagnose: actual request/response capture',
@@ -347,7 +347,7 @@ export default {
     day: 'd ago',
   },
   error: {
-    loadFailed: 'Failed to load',
+    loadFailed: 'The provider list could not be loaded. Please retry.',
   },
   common: {
     button: {

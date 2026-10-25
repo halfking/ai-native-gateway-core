@@ -6,7 +6,10 @@
 import { computed, ref } from 'vue'
 import type { LiveStreamLegendItem } from '../composables/liveStreamStore'
 import { VENDOR_COLORS, STATUS_BORDER_COLORS } from '../types/swimlane'
+import { useI18n } from 'vue-i18n'
 import { Refresh, Loading, CaretTop, CaretBottom } from '@element-plus/icons-vue'
+
+const { t } = useI18n()
 
 function dimensionColor(key: string): string {
   return VENDOR_COLORS[key] || '#6b7280'
@@ -65,7 +68,7 @@ function handleClick(key: string) {
             'legend-item--dimmed': hasSelection && !isSelected(item.key)
           }"
           @click="handleClick(item.key)"
-          :title="`${item.name} (${item.count || 0}个请求) - 点击${isSelected(item.key) ? '取消' : ''}高亮`"
+          :title="t('liveTopology.legend.itemTitle', { name: item.name, count: item.count || 0, state: isSelected(item.key) ? t('liveTopology.legend.highlightOn') : t('liveTopology.legend.highlightOff') })"
         >
           <span class="legend-swatch" :style="{ backgroundColor: dimensionColor(item.key) }" />
           <span class="legend-label">{{ item.name }}</span>

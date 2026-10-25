@@ -35,6 +35,7 @@ export default {
     failed: '失败',
     freeModel: '免费模型，最优先',
     waiting: '加载…',
+    logEmpty: '这段时间还没有匹配记录，换个时间范围或条件再试',
   },
   dashboard: {
     title: '路由全景',
@@ -126,7 +127,7 @@ export default {
       schedulingHint: 'Tier 1→2→3→9，plan 优先 PAYG，P2C',
       noCreds: '无凭据',
       sixDimScore: '6维评分',
-      emptyHint: '索引暂无数据 — 点击 ↻ 刷新',
+      emptyHint: '索引里还没有记录 —— 按刷新键重新拉取一次',
     },
     policy: {
       fields: {
@@ -153,7 +154,8 @@ export default {
       modelCostTitle: '模型成本',
       colCost: '费用',
       colRequests: '请求',
-      empty: '暂无',
+      customerCostEmpty: '这段时间没有客户成本记录',
+      modelCostEmpty: '这段时间没有模型成本记录',
     },
     resolve: {
       title: '凭据路由解析',
@@ -197,6 +199,10 @@ export default {
       colRoutable: '可路由',
       colTopCred: 'Top 凭据',
       replay: '重查',
+      reorderFailed: '候选数量超过优先级上限，没法排序。请减少候选后重试',
+      sortSaveFailed: '排序没能保存，请重试',
+      savePolicyFailedWithReason: '策略没能保存：{reason}。请重试',
+      localLogFailed: '本地运行记录没能解析，原始内容也没能备份（浏览器存储可能已满）。请清理浏览器存储后重试',
     },
     live: {
       simulatorTitle: '路由模拟',
@@ -209,6 +215,7 @@ export default {
       colConfidence: '置信',
       noDecisions: '暂无最近决策',
     },
+    matchStatsHint: '×模型匹配统计 · 单元格展开决策明细与 L2 漏斗',
   },
   policy: {
     title: '路由策略',
@@ -435,4 +442,5 @@ export default {
   updatedWeights: '综合得分系数已更新',
   variantsLabel: '变体',
   workTypes: '工作类型',
+  variantHint: '选择上方的变体，可查看该变体的凭据路由详情',
 }

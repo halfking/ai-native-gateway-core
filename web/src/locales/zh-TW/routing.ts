@@ -36,6 +36,7 @@ export default {
     failed: '失敗',
     freeModel: '免費模型，最優先',
     waiting: '載入…',
+    logEmpty: '這段時間尚無匹配記錄，換個時間範圍或條件再試',
   },
   dashboard: {
     title: '路由全景',
@@ -125,7 +126,7 @@ export default {
       schedulingHint: 'Tier 1→2→3→9，plan 優先 PAYG，P2C',
       noCreds: '無憑證',
       sixDimScore: '6維評分',
-      emptyHint: '索引暫無資料 — 點擊 ↻ 重新整理',
+      emptyHint: '索引中尚無記錄 —— 按「重新整理」鍵重新載入一次',
 
       smartConfig: '智慧路由設定',
 
@@ -156,7 +157,8 @@ export default {
       modelCostTitle: '模型成本',
       colCost: '費用',
       colRequests: '請求',
-      empty: '暫無',
+      customerCostEmpty: '這段時間尚無客戶成本記錄',
+      modelCostEmpty: '這段時間尚無模型成本記錄',
     },
     resolve: {
       title: '憑證路由解析',
@@ -200,6 +202,10 @@ export default {
       colRoutable: '可路由',
       colTopCred: 'Top憑證',
       replay: '重查',
+      reorderFailed: '候選數量超過優先上限，無法排序。請減少候選後重試',
+      sortSaveFailed: '排序沒能儲存，請重試',
+      savePolicyFailedWithReason: '策略沒能儲存：{reason}。請重試',
+      localLogFailed: '本地執行記錄沒能解析，原始內容也沒能備份（瀏覽器儲存空間可能已滿）。請清理瀏覽器儲存空間後重試',
     },
     live: {
       simulatorTitle: '路由模擬',
@@ -212,6 +218,7 @@ export default {
       colConfidence: '置信',
       noDecisions: '暫無最近決策',
     },
+    matchStatsHint: '×模型匹配統計 · 儲存格展開決策明細與 L2 漏斗',
   },
   policy: {
     title: '路由策略',
@@ -439,4 +446,5 @@ export default {
   updatedWeights: '綜合得分係數已更新',
   variantsLabel: '變體',
   workTypes: '工作類型',
+  variantHint: '選擇上方的變體，可查看該變體的憑證路由詳情',
 }

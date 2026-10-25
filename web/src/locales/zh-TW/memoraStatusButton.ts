@@ -4,8 +4,9 @@ export default {
     disabled: '未啟用',
     paused: '已中斷',
     ok: '已連線',
-    error: '連線失敗',
+    error: '連不上，請檢查網路後重試',
     loading: '檢測中',
+    detectFailed: '沒能偵測出結果，請重試',
   },
 
   panel: {

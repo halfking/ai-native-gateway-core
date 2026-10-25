@@ -65,7 +65,7 @@ async function load() {
   try {
     stats.value = await attachmentFilesystemStats()
   } catch (e: any) {
-    error.value = e.message || '加载失败'
+    error.value = e.message || t('common.feedback.loadFailed')
     console.error('load filesystem stats failed', e)
   } finally {
     loading.value = false
@@ -88,7 +88,7 @@ async function previewCleanup() {
     cleanupPreview.value = result
     showPreviewModal.value = true
   } catch (e: any) {
-    alert('预览失败: ' + (e.message || '未知错误'))
+    alert(t('common.feedback.previewFailedWithReason', { reason: e.message || t('common.feedback.unknownReason') }))
   } finally {
     cleanupLoading.value = false
   }
@@ -113,7 +113,7 @@ async function executeCleanup() {
     cleanupPreview.value = null
     await load() // 重新加载统计
   } catch (e: any) {
-    alert('清理失败: ' + (e.message || '未知错误'))
+    alert(t('common.feedback.cleanupFailedWithReason', { reason: e.message || t('common.feedback.unknownReason') }))
   } finally {
     cleanupLoading.value = false
   }
