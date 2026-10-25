@@ -63,6 +63,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -254,6 +255,145 @@ func TestDbChangelogProseBacklogIsRatchet(t *testing.T) {
 			cur, baseline)
 	}
 	t.Logf("★ 散文矛盾数 %d / 基线 %d（★ 棘轮）", cur, baseline)
+}
+
+// ─────────────────────────── G6 · 双口径互证（★ 堵「自证可被拆」的洞） ───────────────────────────
+
+// dcaParseEffective 独立解析登记册 ⇒ {迁移号: 行号}。
+//
+// ★★ 为什么要有这份【独立实现】：
+// ★ 工具（Python）自己有自证，★ 但自证【可以被拆掉】（★ 变异 M5 实测：
+// ★ 把自证里那条断言改成恒真 ⇒ ★★ 门仍绿）⇒ ★★ 门不能只信工具的自证。
+// ⇒ ★★ 于是门自己再解析一遍（★ Go 实现，★ 与 Python 实现【互不知情】），
+// ★★ 再用工具的 `locate` 去对拍 ⇒ ★★ 两份口径一致才绿。
+//
+// ★★ 口径（★ 与工具同源但独立实现）：★ 同号取【节日期最新】的行（★ 同节取行号最后）。
+func dcaParseEffective(t *testing.T, path string) map[int]int {
+	t.Helper()
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("读登记册失败：%v", err)
+	}
+	lines := strings.Split(string(body), "\n")
+	curKey := 0
+	best := map[int]int{}
+	bestKey := map[int]int{}
+	for i, ln := range lines {
+		if strings.HasPrefix(ln, "## ") {
+			curKey = dcaDateKey(ln)
+			continue
+		}
+		if !strings.HasPrefix(ln, "|") {
+			continue
+		}
+		cells := strings.Split(strings.TrimSpace(strings.Trim(ln, "|")), "|")
+		if len(cells) < 4 {
+			continue
+		}
+		num := dcaAtoiSafe(strings.TrimSpace(cells[0]))
+		if num < 0 {
+			continue
+		}
+		if _, ok := best[num]; !ok || curKey > bestKey[num] ||
+			(curKey == bestKey[num] && i+1 > best[num]) {
+			best[num] = i + 1
+			bestKey[num] = curKey
+		}
+	}
+	return best
+}
+
+// dcaDateKey 从节标题里取一个可比较的日期键（★ 解析不出来 ⇒ 0 ⇒ 最小）。
+func dcaDateKey(title string) int {
+	re := regexp.MustCompile(`(\d{4})-(\d{2})-(\d{2})`)
+	m := re.FindStringSubmatch(title)
+	if m == nil {
+		return 0
+	}
+	y := dcaAtoiSafe(m[1])
+	mo := dcaAtoiSafe(m[2])
+	d := dcaAtoiSafe(m[3])
+	if y < 0 || mo < 0 || d < 0 {
+		return 0
+	}
+	return y*10000 + mo*100 + d
+}
+
+// TestDbChangelogEffectiveRowRuleAgreesAcrossTwoImplementations —— ★★ 双口径互证。
+func TestDbChangelogEffectiveRowRuleAgreesAcrossTwoImplementations(t *testing.T) {
+	root := dcaRepoRoot(t)
+	eff := dcaParseEffective(t, filepath.Join(root, dcaChangelogRel))
+	if len(eff) == 0 {
+		t.Fatal("★ 独立解析没拿到任何有效登记行 ⇒ ★ 解析器坏了")
+	}
+	// ★ 挑【登记过多次】的号（★ 同号规则只有在这种情况下才有判别力）
+	counts := map[int]int{}
+	body, err := os.ReadFile(filepath.Join(root, dcaChangelogRel))
+	if err != nil {
+		t.Fatalf("读登记册失败：%v", err)
+	}
+	for _, ln := range strings.Split(string(body), "\n") {
+		if !strings.HasPrefix(ln, "|") {
+			continue
+		}
+		cells := strings.Split(strings.TrimSpace(strings.Trim(ln, "|")), "|")
+		if len(cells) < 4 {
+			continue
+		}
+		if n := dcaAtoiSafe(strings.TrimSpace(cells[0])); n >= 0 {
+			counts[n]++
+		}
+	}
+	var dups []int
+	for n, c := range counts {
+		if c > 1 {
+			dups = append(dups, n)
+		}
+	}
+	if len(dups) == 0 {
+		t.Fatal("★ 登记册里没有同号多次登记的行 ⇒ ★ 同号规则无从判别 ⇒ 本门恒绿")
+	}
+	sort.Ints(dups)
+	// ★ 取首尾各若干个（★ 确定性 ⇒ 不依赖 map 迭代序）
+	picks := map[int]bool{}
+	for i := 0; i < 3 && i < len(dups); i++ {
+		picks[dups[i]] = true
+	}
+	for i := len(dups) - 3; i < len(dups); i++ {
+		if i >= 0 {
+			picks[dups[i]] = true
+		}
+	}
+	checked := 0
+	for num := range picks {
+		out, _, code := dcaRun(t, "locate", "--migration", dcaItoa(num))
+		if code != 0 {
+			t.Errorf("locate 迁移号 %d 失败（退出码 %d）", num, code)
+			continue
+		}
+		var loc struct {
+			Line int `json:"line"`
+		}
+		if err := json.Unmarshal([]byte(out), &loc); err != nil {
+			t.Errorf("解析 locate 输出失败：%v", err)
+			continue
+		}
+		want, ok := eff[num]
+		if !ok {
+			t.Errorf("★ 独立解析里没有迁移号 %d", num)
+			continue
+		}
+		checked++
+		if loc.Line != want {
+			t.Errorf("★ 迁移号 %d 的【有效行】两份口径不一致（★ Go 独立解析 = %d，★ 工具 locate = %d）\n"+
+				"★ ⇒ ★★ 「同号取哪一行」有两套逻辑 ⇒ ★★ 必然漂移 ⇒ ★（★ 变异实测：★ 把工具改成"+
+				"「取文件里最后一行」时 ★ 本条会红）", num, want, loc.Line)
+		}
+	}
+	if checked == 0 {
+		t.Fatal("★ 一条也没对拍成 ⇒ 本门恒绿")
+	}
+	t.Logf("★ 双口径互证：%d 个同号多次登记的迁移号对拍一致", checked)
 }
 
 // ─────────────────────────── G5 · 反向夹具：判据有牙 ───────────────────────────
