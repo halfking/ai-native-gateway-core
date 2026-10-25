@@ -57,47 +57,64 @@ ARMS = (
         "M02",
         "the text parts are joined with an empty string instead of a newline: "
         "two blocks get glued into one word",
-        "第一块\\n第二块",
-        [('return strings.Join(texts, "\\n"), true', 'return strings.Join(texts, ""), true')],
+        "\u7b2c\u4e00\u5757\\n\u7b2c\u4e8c\u5757",
+        [('return strings.Join(texts, "\\n"), true',
+          'return strings.Join(texts, ""), true')],
     ),
     (
         "M03",
         "a part without a `text` field is accepted as the empty string: a "
         "non-text part (an image) now counts as content",
-        "a content array with a text part must be served",
-        [("        if err := json.Unmarshal(part, &piece); err != nil || piece.Text == nil {\n            continue\n        }\n",
-          "        if err := json.Unmarshal(part, &piece); err != nil {\n            continue\n        }\n")],
+        "a part without text contributes nothing",
+        [("\t\tif err := json.Unmarshal(part, &piece); err != nil || piece.Text == nil {\n"
+          "\t\t\tcontinue\n"
+          "\t\t}\n",
+          "\t\tif err := json.Unmarshal(part, &piece); err != nil {\n"
+          "\t\t\tcontinue\n"
+          "\t\t}\n")],
     ),
     (
         "M04",
         "a blank text part is kept: whitespace-only content is served as if it "
         "were an answer",
         "a blank text part is not text",
-        [("        if strings.TrimSpace(*piece.Text) == \"\" {\n            continue\n        }\n",
+        [("\t\tif strings.TrimSpace(*piece.Text) == \"\" {\n"
+          "\t\t\tcontinue\n"
+          "\t\t}\n",
           "")],
     ),
     (
         "M05",
         "the array branch is dropped: only a plain string is readable again",
         "a content array with a text part must be served",
-        [("    var parts []json.RawMessage\n    if err := json.Unmarshal(raw, &parts); err != nil {\n        return \"\", false\n    }\n",
-          "    var parts []json.RawMessage\n    if err := json.Unmarshal(raw, &parts); err != nil {\n        return \"\", false\n    }\n    return \"\", false\n")],
+        [("\tvar parts []json.RawMessage\n"
+          "\tif err := json.Unmarshal(raw, &parts); err != nil {\n"
+          "\t\treturn \"\", false\n"
+          "\t}\n",
+          "\tvar parts []json.RawMessage\n"
+          "\tif err := json.Unmarshal(raw, &parts); err != nil {\n"
+          "\t\treturn \"\", false\n"
+          "\t}\n"
+          "\treturn \"\", false\n")],
     ),
     (
         "M06",
         "the choices[].message.content path still uses the plain-string "
         "reader: the OpenAI non-streaming shape stays invisible",
-        "choices 里的文字",
-        [("            if content, ok := controlledText(choice.Message.Content); ok {",
-          "            if content, ok := controlledString(choice.Message.Content); ok {")],
+        "the choices[].message.content array must be served",
+        [("\t\t\tif content, ok := controlledText(choice.Message.Content); ok {",
+          "\t\t\tif content, ok := controlledString(choice.Message.Content); ok {")],
     ),
     (
         "M07",
         "the role filter is dropped: a user message's content array is served "
         "as if it were the assistant's answer",
-        "the prompt side is a different question; it did not change",
-        [("        for _, message := range array {\n            if message.Role != \"\" && message.Role != \"assistant\" {\n                continue\n            }\n",
-          "        for _, message := range array {\n")],
+        "a user message is still not the assistant's answer",
+        [("\t\tfor _, message := range array {\n"
+          "\t\t\tif message.Role != \"\" && message.Role != \"assistant\" {\n"
+          "\t\t\t\tcontinue\n"
+          "\t\t\t}\n",
+          "\t\tfor _, message := range array {\n")],
     ),
 )
 
@@ -240,20 +257,25 @@ def main():
                 missed.append(name)
             else:
                 # ⑥ 红必须落在【它该红的那条断言】上。
-                failed_lines = [l.strip() for l in output.splitlines()
+                #    ★ Go 的 `--- FAIL:` 行只给**测试函数名** ⇒ 断言的**那句话**
+                #    在测试日志里 ⇒ 所以判据 = 「那句话出现在输出里」
+                #    ∧ 「某个测试函数红了」⇒ 两者都要。
+                failed_tests = [l.strip() for l in output.splitlines()
                                 if l.strip().startswith("--- FAIL")]
-                if not any(expect.replace("\\n", "\n") in l or expect in l
-                           for l in failed_lines):
+                # 期望断点在断言消息里；有些断言是 testify 的 Equal，
+                # 消息里出现的是**期望值本身** ⇒ 两种写法都找。
+                expect_forms = [expect, expect.replace("\\\\n", "\\n"),
+                                expect.replace("\\\\n", "\n")]
+                hit = [f for f in expect_forms if f and f in output]
+                if not hit or not failed_tests:
                     print("  FAIL %s: the judgement went RED, but on the WRONG "
                           "assertion (expected: %s)" % (name, expect))
-                    for l in failed_lines[:4]:
+                    for l in failed_tests[:4]:
                         print("        %s" % l)
                     wrong_red.append(name)
                 else:
-                    hit = [l for l in failed_lines
-                           if expect.replace("\\n", "\n") in l or expect in l]
                     print("  ok   %s: the judgement went RED on the right "
-                          "assertion (%s)" % (name, hit[0] if hit else ""))
+                          "assertion (%s)" % (name, failed_tests[0]))
             restore_all()
     finally:
         restore_all()
