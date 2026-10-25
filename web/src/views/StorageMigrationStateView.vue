@@ -83,13 +83,13 @@ onUnmounted(() => {
       <span class="sms-polling" v-if="state?.running"><Timer /> 自动轮询中（5s）</span>
       <span class="sms-polling" v-else><VideoPause /> 空闲</span>
       <button class="btn btn-ghost btn-sm" :disabled="loading || refreshing" @click="load()">
-        {{ loading ? '加载中…' : refreshing ? '刷新…' : '刷新' }}
+        {{ loading ? $t('common.feedback.loading') : refreshing ? $t('common.terms.refreshing') : $t('common.button.refresh') }}
       </button>
     </header>
 
     <p v-if="error" class="sms-error">{{ error }}</p>
 
-    <div v-if="loading && !state" class="sms-loading">加载中…</div>
+    <div v-if="loading && !state" class="sms-loading">{{ $t('common.feedback.loading') }}</div>
 
     <template v-else-if="state">
       <!-- 1. 当前运行中迁移 -->
@@ -101,8 +101,8 @@ onUnmounted(() => {
         <div class="sms-row"><span class="sms-label">run_id</span><code>{{ state.running.run_id }}</code></div>
         <div class="sms-row"><span class="sms-label">从</span><code>{{ state.running.from_dir }}</code></div>
         <div class="sms-row"><span class="sms-label">到</span><code>{{ state.running.to_dir }}</code></div>
-        <div class="sms-row"><span class="sms-label">开始时间</span>{{ formatTimestamp(state.running.started_at) }}</div>
-        <div class="sms-row"><span class="sms-label">最近心跳</span>{{ formatTimestamp(state.running.heartbeat_at) }}</div>
+        <div class="sms-row"><span class="sms-label">{{ $t('common.terms.startTime') }}</span>{{ formatTimestamp(state.running.started_at) }}</div>
+        <div class="sms-row"><span class="sms-label">{{ $t('common.terms.recentHeartbeat') }}</span>{{ formatTimestamp(state.running.heartbeat_at) }}</div>
         <div class="sms-row">
           <span class="sms-label">文件进度</span>
           <span>{{ state.running.files_copied }} / {{ state.running.files_total }}（{{ progressPct(state.running) }}%）</span>
@@ -126,12 +126,12 @@ onUnmounted(() => {
         <div class="sms-row"><span class="sms-label">run_id</span><code>{{ state.latest.run_id }}</code></div>
         <div class="sms-row"><span class="sms-label">从</span><code>{{ state.latest.from_dir }}</code></div>
         <div class="sms-row"><span class="sms-label">到</span><code>{{ state.latest.to_dir }}</code></div>
-        <div class="sms-row"><span class="sms-label">开始</span>{{ formatTimestamp(state.latest.started_at) }}</div>
-        <div class="sms-row"><span class="sms-label">完成</span>{{ formatTimestamp(state.latest.finished_at) }}</div>
+        <div class="sms-row"><span class="sms-label">{{ $t('common.terms.start') }}</span>{{ formatTimestamp(state.latest.started_at) }}</div>
+        <div class="sms-row"><span class="sms-label">{{ $t('common.terms.finish') }}</span>{{ formatTimestamp(state.latest.finished_at) }}</div>
         <div class="sms-row"><span class="sms-label">文件</span>{{ state.latest.files_copied }} / {{ state.latest.files_total }}</div>
         <div class="sms-row"><span class="sms-label">字节</span>{{ formatBytes(state.latest.bytes_copied) }} / {{ formatBytes(state.latest.bytes_total) }}</div>
         <div class="sms-row"><span class="sms-label">已删除文件</span>{{ state.latest.files_deleted }}</div>
-        <div class="sms-row"><span class="sms-label">旧目录已清</span>{{ state.latest.old_dir_purged ? '是' : '否' }}</div>
+        <div class="sms-row"><span class="sms-label">旧目录已清</span>{{ state.latest.old_dir_purged ? $t('common.button.yes') : $t('common.button.no') }}</div>
         <p v-if="state.latest.errors?.length" class="sms-errors">
           错误：{{ state.latest.errors.join('; ') }}
         </p>
@@ -162,7 +162,7 @@ onUnmounted(() => {
 .sms-status-badge.is-failed { background: var(--danger-bg); color: var(--danger); }
 .sms-row { display: grid; grid-template-columns: 120px 1fr; gap: var(--space-2); padding: var(--space-1) 0; font-size: var(--text-sm); }
 .sms-label { color: var(--text-muted); }
-.sms-progress { height: 6px; background: var(--bg-elevated, var(--bg-surface)); border-radius: 3px; overflow: hidden; margin: var(--space-1) 0; }
+.sms-progress { height: 6px; background: var(--bg-subtle); border-radius: 3px; overflow: hidden; margin: var(--space-1) 0; }
 .sms-progress-bar { height: 100%; background: var(--kx-primary); transition: width 0.3s ease; }
 .sms-errors { margin-top: var(--space-2); padding: var(--space-2); background: var(--danger-bg); color: var(--danger); border-radius: var(--radius); font-size: var(--text-sm); }
 </style>

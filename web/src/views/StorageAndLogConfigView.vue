@@ -61,13 +61,13 @@ onMounted(() => {
     <header class="slc-header">
       <h1 class="slc-title">存储与日志配置</h1>
       <button class="btn btn-ghost btn-sm" :disabled="loading" @click="load">
-        {{ loading ? '加载中…' : '刷新' }}
+        {{ loading ? $t('common.feedback.loading') : $t('common.button.refresh') }}
       </button>
     </header>
 
     <p v-if="error" class="slc-error">{{ error }}</p>
 
-    <div v-if="loading && !data" class="slc-loading">加载中…</div>
+    <div v-if="loading && !data" class="slc-loading">{{ $t('common.feedback.loading') }}</div>
 
     <template v-else-if="data">
       <!-- 1. 存储配置 -->
@@ -100,11 +100,11 @@ onMounted(() => {
           </div>
           <div class="slc-field">
             <span class="slc-label">自动清理</span>
-            <span>{{ data.storage.auto_cleanup_enabled ? `开启（${data.storage.auto_cleanup_threshold}%）` : '关闭' }}</span>
+            <span>{{ data.storage.auto_cleanup_enabled ? `${$t('common.terms.on')}（${data.storage.auto_cleanup_threshold}%）` : $t('common.terms.off') }}</span>
           </div>
           <div class="slc-field">
             <span class="slc-label">需重启</span>
-            <span :class="{ 'is-warning': data.storage.needs_restart }">{{ data.storage.needs_restart ? '是' : '否' }}</span>
+            <span :class="{ 'is-warning': data.storage.needs_restart }">{{ data.storage.needs_restart ? $t('common.button.yes') : $t('common.button.no') }}</span>
           </div>
           <div class="slc-field">
             <span class="slc-label">当前磁盘占用</span>
@@ -130,7 +130,7 @@ onMounted(() => {
             <span>{{ data.filesystem.total_files }}</span>
           </div>
           <div class="slc-field">
-            <span class="slc-label">总大小</span>
+            <span class="slc-label">{{ $t('common.terms.totalSize') }}</span>
             <span>{{ data.filesystem.total_size_human || formatBytes(data.filesystem.total_size_bytes) }}</span>
           </div>
           <div class="slc-field">
@@ -146,7 +146,7 @@ onMounted(() => {
             <span>{{ formatBytes(data.filesystem.disk_used_bytes) }}</span>
           </div>
           <div class="slc-field">
-            <span class="slc-label">可用</span>
+            <span class="slc-label">{{ $t('common.terms.available') }}</span>
             <span>{{ formatBytes(data.filesystem.disk_avail_bytes) }}</span>
           </div>
           <div class="slc-field">
@@ -165,7 +165,7 @@ onMounted(() => {
           <div class="slc-field">
             <span class="slc-label">文件日志</span>
             <span :class="`log-enabled-${data.log.enabled_source}`">
-              {{ data.log.enabled ? '启用' : '禁用' }}（来源：{{ data.log.enabled_source }}）
+              {{ data.log.enabled ? $t('common.status.enabled') : $t('common.status.disabled') }}（来源：{{ data.log.enabled_source }}）
             </span>
           </div>
           <div class="slc-field">
@@ -190,7 +190,7 @@ onMounted(() => {
           </div>
           <div class="slc-field">
             <span class="slc-label">压缩</span>
-            <span>{{ data.log.compress ? '是' : '否' }}</span>
+            <span>{{ data.log.compress ? $t('common.button.yes') : $t('common.button.no') }}</span>
           </div>
           <div class="slc-field">
             <span class="slc-label">归档（天）</span>
@@ -202,7 +202,7 @@ onMounted(() => {
           </div>
           <div class="slc-field">
             <span class="slc-label">热加载</span>
-            <span>{{ data.log.hot_reloadable ? '是' : '否' }}</span>
+            <span>{{ data.log.hot_reloadable ? $t('common.button.yes') : $t('common.button.no') }}</span>
           </div>
           <div class="slc-field">
             <span class="slc-label">配置来源</span>

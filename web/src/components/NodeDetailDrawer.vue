@@ -41,7 +41,7 @@ const {
   windowEntries, windowStats, windowSource, history, decisions, saving, actionMessage, actionError,
   pingResult, lifecycle, manualPriority, priorityFlag, routingTier, weight, streamMode, modelActionReason, coreLoaded, coreLoading,
   detailRequestId, visible, canEdit, editGateHint, currentNode, allModels, models, selectedModelStatus,
-  resolvedProviderId, headlineState, errorKinds, failedWindowEntries, failedDecisions, otherModelsNeedRefresh,
+  resolvedProviderId, headlineState, headlineStateLabel, errorKinds, failedWindowEntries, failedDecisions, otherModelsNeedRefresh,
   mergeMonitorModels, chooseModel, refreshCurrentTab,
 } = load
 
@@ -78,23 +78,23 @@ const manualStateDetail = computed(() => {
                形态从「eyebrow」变成「subtitle」。 -->
           <div class="nd-subtitle">{{ (node.credential_label?.trim() || nodeLabel(node.credential_id)) }} · {{ node.provider_code || `Provider ${node.provider_id ?? '—'}` }}</div>
           <div class="nd-state-row">
-            <span class="nd-state" :class="statusClass(headlineState === '可用' ? 'ready' : headlineState)">{{ headlineState }}</span>
+            <span class="nd-state" :class="statusClass(headlineState)">{{ headlineStateLabel }}</span>
             <span v-if="node.in_flight" class="nd-muted">在途 {{ node.in_flight }}</span>
             <span v-if="node.last_latency_ms != null" class="nd-muted">最近 {{ node.last_latency_ms }}ms</span>
           </div>
         </div>
         <div class="nd-header-actions">
-          <button class="btn btn-sm btn-ghost" :disabled="loading || saving" @click="refreshCurrentTab">↻ 刷新</button>
-          <button class="btn btn-sm btn-ghost" @click="visible = false">关闭</button>
+          <button class="btn btn-sm btn-ghost" :disabled="loading || saving" @click="refreshCurrentTab">↻ {{ $t('common.button.refresh') }}</button>
+          <button class="btn btn-sm btn-ghost" @click="visible = false">{{ $t('common.close') }}</button>
         </div>
       </header>
 
       <div class="nd-tabs" role="tablist">
-        <button :class="{ active: activeTab === 'detail' }" role="tab" @click="activeTab = 'detail'">明细与近期情况<small v-if="detailLoading"> · 加载中</small><small v-else-if="!detailLoaded"> · 未加载</small></button>
-        <button :class="{ active: activeTab === 'availability' }" role="tab" @click="activeTab = 'availability'">可用性<small v-if="candidateLoading"> · 加载中</small></button>
-        <button :class="{ active: activeTab === 'requests' }" role="tab" @click="activeTab = 'requests'">最近路由请求<small v-if="requestsLoading"> · 加载中</small><small v-else-if="!requestsLoaded"> · 未加载</small></button>
-        <button :class="{ active: activeTab === 'other-models' }" role="tab" @click="activeTab = 'other-models'">其它模型<small v-if="otherModelsLoading || (otherModelsNeedRefresh && detailLoading)"> · 加载中</small><small v-else-if="!otherModelsLoaded"> · 未加载</small></button>
-        <button :class="{ active: activeTab === 'settings' }" role="tab" @click="activeTab = 'settings'">设置与维护<small v-if="settingsLoading || coreLoading || candidateLoading"> · 加载中</small><small v-else-if="!settingsLoaded"> · 未加载</small></button>
+        <button :class="{ active: activeTab === 'detail' }" role="tab" @click="activeTab = 'detail'">明细与近期情况<small v-if="detailLoading"> · {{ $t('common.feedback.loading') }}</small><small v-else-if="!detailLoaded"> · {{ $t('common.terms.notLoaded') }}</small></button>
+        <button :class="{ active: activeTab === 'availability' }" role="tab" @click="activeTab = 'availability'">{{ $t('common.terms.availability') }}<small v-if="candidateLoading"> · {{ $t('common.feedback.loading') }}</small></button>
+        <button :class="{ active: activeTab === 'requests' }" role="tab" @click="activeTab = 'requests'">最近路由请求<small v-if="requestsLoading"> · {{ $t('common.feedback.loading') }}</small><small v-else-if="!requestsLoaded"> · {{ $t('common.terms.notLoaded') }}</small></button>
+        <button :class="{ active: activeTab === 'other-models' }" role="tab" @click="activeTab = 'other-models'">其它模型<small v-if="otherModelsLoading || (otherModelsNeedRefresh && detailLoading)"> · {{ $t('common.feedback.loading') }}</small><small v-else-if="!otherModelsLoaded"> · {{ $t('common.terms.notLoaded') }}</small></button>
+        <button :class="{ active: activeTab === 'settings' }" role="tab" @click="activeTab = 'settings'">设置与维护<small v-if="settingsLoading || coreLoading || candidateLoading"> · {{ $t('common.feedback.loading') }}</small><small v-else-if="!settingsLoaded"> · {{ $t('common.terms.notLoaded') }}</small></button>
       </div>
 
       <div class="nd-body">

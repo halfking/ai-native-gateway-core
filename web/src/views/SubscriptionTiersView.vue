@@ -47,13 +47,13 @@ onMounted(() => {
     <header class="st-header">
       <h1 class="st-title">订阅层级</h1>
       <button class="btn btn-ghost btn-sm" :disabled="loading" @click="load">
-        {{ loading ? '加载中…' : '刷新' }}
+        {{ loading ? $t('common.feedback.loading') : $t('common.button.refresh') }}
       </button>
     </header>
 
     <p v-if="error" class="st-error">{{ error }}</p>
 
-    <div v-if="loading && tiers.length === 0" class="st-loading">加载中…</div>
+    <div v-if="loading && tiers.length === 0" class="st-loading">{{ $t('common.feedback.loading') }}</div>
 
     <div v-else-if="tiers.length === 0 && !loading" class="st-empty">
       暂无订阅层级
@@ -99,7 +99,7 @@ onMounted(() => {
 .st-card-modules { margin-top: auto; padding-top: var(--space-2); border-top: 1px solid var(--border-muted); }
 .st-modules-title { font-size: var(--text-sm); color: var(--text-muted); margin-bottom: var(--space-1); }
 .st-modules-list { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: var(--space-1); }
-.st-modules-list li code { font-size: 12px; padding: 2px 6px; background: var(--bg-elevated, var(--bg-surface)); border: 1px solid var(--border-muted); border-radius: 4px; }
+.st-modules-list li code { font-size: 12px; padding: 2px 6px; background: var(--bg-subtle); border: 1px solid var(--border-muted); border-radius: 4px; }
 .st-modules-empty { color: var(--text-muted); font-style: italic; font-size: var(--text-sm); }
 @media (max-width: 768px) { .st-grid { grid-template-columns: 1fr; } }
 </style>

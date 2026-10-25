@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
 import OpsOverviewView from './OpsOverviewView.vue'
 import { getOpsOverview } from '../api/opsOverview'
+import { testI18n } from '../test-utils/i18n'
 
 vi.mock('../api/opsOverview', () => ({
   getOpsOverview: vi.fn(),
@@ -50,7 +51,7 @@ const SAMPLE = {
 describe('OpsOverviewView', () => {
   it('renders 9 sections + 4 center stat cards from sample data', async () => {
     mockedGet.mockResolvedValueOnce(SAMPLE as never)
-    const w = mount(OpsOverviewView)
+    const w = mount(OpsOverviewView, { global: { plugins: [testI18n] } })
     await flushPromises()
     // 9 sections: 中心实例 / 区域分布 / 部署节点 / 数据面表规模 / 许可证 / 故障 / 升级 / 下载统计 / 运行时指标
     expect(w.findAll('.oo-section')).toHaveLength(9)
@@ -77,7 +78,7 @@ describe('OpsOverviewView', () => {
       generated_at: '2026-10-17T08:00:00.000Z',
       center_stats: { total_instances: 0, online_instances: 0, offline_instances: 0, degraded_instances: 0 },
     } as never)
-    const w = mount(OpsOverviewView)
+    const w = mount(OpsOverviewView, { global: { plugins: [testI18n] } })
     await flushPromises()
     // 缺 region / deployment / data_plane / fault / upgrade / download / runtime 隐藏 → 仅 中心实例 + 许可证 可见 = 2 节
     const sections = w.findAll('.oo-section')
@@ -88,7 +89,7 @@ describe('OpsOverviewView', () => {
 
   it('shows error message on fetch failure and refresh works after recovery', async () => {
     mockedGet.mockRejectedValueOnce(new Error('forbidden'))
-    const w = mount(OpsOverviewView)
+    const w = mount(OpsOverviewView, { global: { plugins: [testI18n] } })
     await flushPromises()
     expect(w.find('.oo-error').exists()).toBe(true)
     expect(w.text()).toContain('forbidden')

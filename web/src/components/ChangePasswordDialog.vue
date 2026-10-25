@@ -95,7 +95,7 @@ async function submit() {
               {{ forced ? '首次登录需要先修改密码后才能继续使用' : '修改当前登录账号的密码' }}
             </p>
           </div>
-          <button v-if="!forced" type="button" class="btn btn-ghost btn-sm password-modal__close" aria-label="关闭" @click="close">
+          <button v-if="!forced" type="button" class="btn btn-ghost btn-sm password-modal__close" :aria-label="$t('common.close')" @click="close">
             <Close />
           </button>
         </div>
@@ -152,7 +152,7 @@ async function submit() {
           </div>
 
           <div class="password-modal__actions">
-            <button v-if="!forced" type="button" class="btn btn-ghost" @click="close">取消</button>
+            <button v-if="!forced" type="button" class="btn btn-ghost" @click="close">{{ $t('common.button.cancel') }}</button>
             <button class="btn btn-primary" type="submit" :disabled="!canSubmit">
               {{ loading ? '提交中…' : '确认修改' }}
             </button>

@@ -174,7 +174,7 @@ watch(() => props.visible, (visible) => {
     <div class="modal-content">
       <div class="modal-header">
         <h2 class="modal-title">⚠️ 应急诊断</h2>
-        <button class="modal-close" @click="handleClose" title="关闭"><Close /></button>
+        <button class="modal-close" @click="handleClose" :title="$t('common.close')"><Close /></button>
       </div>
 
       <div class="modal-body">
@@ -185,11 +185,11 @@ watch(() => props.visible, (visible) => {
             <span class="diag-context-value">{{ laneName }}</span>
           </div>
           <div class="diag-context-item">
-            <span class="diag-context-label">模型:</span>
+            <span class="diag-context-label">{{ $t('common.terms.model') }}:</span>
             <span class="diag-context-value">{{ model }}</span>
           </div>
           <div class="diag-context-item">
-            <span class="diag-context-label">凭据:</span>
+            <span class="diag-context-label">{{ $t('common.credentialFallback') }}:</span>
             <span class="diag-context-value" :title="`#${credentialId}`">{{ credentialName }}</span>
           </div>
         </div>
@@ -216,7 +216,7 @@ watch(() => props.visible, (visible) => {
                 <span class="diag-info-value">{{ diagnosticData!.label }}</span>
               </div>
               <div class="diag-info-item">
-                <span class="diag-info-label">供应商:</span>
+                <span class="diag-info-label">{{ $t('common.terms.provider') }}:</span>
                 <span class="diag-info-value">{{ diagnosticData!.provider_code }} ({{ diagnosticData!.provider_id }})</span>
               </div>
               <div class="diag-info-item">
@@ -247,7 +247,7 @@ watch(() => props.visible, (visible) => {
                 </span>
               </div>
               <div class="diag-info-item">
-                <span class="diag-info-label">连续失败:</span>
+                <span class="diag-info-label">{{ $t('common.terms.consecutiveFailures') }}:</span>
                 <span
                   class="diag-info-value"
                   :class="diagnosticData!.consecutive_failures > 0 ? 'status-error' : 'status-ok'"
@@ -269,9 +269,9 @@ watch(() => props.visible, (visible) => {
               <table>
                 <thead>
                   <tr>
-                    <th>模型</th>
-                    <th>供应商</th>
-                    <th>可用</th>
+                    <th>{{ $t('common.terms.model') }}</th>
+                    <th>{{ $t('common.terms.provider') }}</th>
+                    <th>{{ $t('common.terms.available') }}</th>
                     <th>不可用原因</th>
                     <th>恢复时间</th>
                   </tr>
@@ -342,7 +342,7 @@ watch(() => props.visible, (visible) => {
         >
           {{ recovering ? '恢复中...' : '强制恢复' }}
         </button>
-        <button class="btn btn-secondary" @click="handleClose">关闭</button>
+        <button class="btn btn-secondary" @click="handleClose">{{ $t('common.close') }}</button>
       </div>
     </div>
   </div>

@@ -202,14 +202,14 @@ function getRiskLevelLabel(level: string): string {
               class="btn-icon"
               :class="{ active: rule.enabled }"
               @click="toggleEnabled(index)"
-              :title="rule.enabled ? '禁用' : '启用'"
+              :title="rule.enabled ? $t('common.status.disabled') : $t('common.status.enabled')"
             >
               {{ rule.enabled ? '✓' : '✗' }}
             </button>
-            <button class="btn-icon" @click="openEditDialog(index)" title="编辑">
+            <button class="btn-icon" @click="openEditDialog(index)" :title="$t('common.button.edit')">
               <EditPen />
             </button>
-            <button class="btn-icon btn-danger" @click="removeRule(index)" title="删除">
+            <button class="btn-icon btn-danger" @click="removeRule(index)" :title="$t('common.button.delete')">
               <Delete />
             </button>
           </div>
@@ -252,7 +252,7 @@ function getRiskLevelLabel(level: string): string {
           </div>
 
           <div class="form-group">
-            <label>描述</label>
+            <label>{{ $t('common.description') }}</label>
             <textarea
               v-model="formData.description"
               class="form-textarea"
@@ -333,8 +333,8 @@ function getRiskLevelLabel(level: string): string {
         </div>
 
         <div class="dialog-footer">
-          <button class="btn btn-ghost" @click="showDialog = false">取消</button>
-          <button class="btn btn-primary" @click="saveRule">保存</button>
+          <button class="btn btn-ghost" @click="showDialog = false">{{ $t('common.button.cancel') }}</button>
+          <button class="btn btn-primary" @click="saveRule">{{ $t('common.button.save') }}</button>
         </div>
       </div>
     </div>

@@ -123,7 +123,7 @@ function onModelUpdate(v: boolean) {
           <p class="login-modal__hint">首次登录或管理员重置密码后，需要先修改密码才能继续使用。</p>
         </div>
       </div>
-      <button type="button" class="btn btn-ghost btn-sm login-modal__close" aria-label="关闭" @click="close">
+      <button type="button" class="btn btn-ghost btn-sm login-modal__close" :aria-label="$t('common.close')" @click="close">
         <Close />
       </button>
     </div>
@@ -132,7 +132,7 @@ function onModelUpdate(v: boolean) {
 
     <form @submit.prevent="handleLogin">
       <div class="form-group">
-        <label for="login-username">用户名</label>
+        <label for="login-username">{{ $t('common.terms.username') }}</label>
         <input
           id="login-username"
           v-model="username"
@@ -152,7 +152,7 @@ function onModelUpdate(v: boolean) {
         />
       </div>
       <div class="login-modal__actions">
-        <button type="button" class="btn btn-ghost" @click="close">取消</button>
+        <button type="button" class="btn btn-ghost" @click="close">{{ $t('common.button.cancel') }}</button>
         <button class="btn btn-primary" type="submit" :disabled="loading">
           {{ loading ? '登录中…' : '登录' }}
         </button>

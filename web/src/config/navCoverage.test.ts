@@ -72,6 +72,16 @@ const KNOWN_ORPHANS: Record<string, string> = {
   '/admin/output-compliance': 'R85 判 P3：输出合规页可交付未挂菜单，待产品确认归属后挂载',
   '/admin/usage': 'R85 判 P3：用量成本页可交付未挂菜单，R84 已证与 report-rollup 数字不同源',
   '/admin/usage-enhanced': '2026-10-21 审计轮按同族先例登记：用量增强分析页与 /admin/usage 同属 super_admin 档、同源 5 个 usage 端点，菜单归属与 /admin/usage 一并待产品确认后挂载；本轮只修契约不擅自改菜单',
+  // ── 2026-10-25 登记：5 条 admin 档独立深链页（批 158b–204 交付）──
+  //   共同事实（逐条核过）：router.ts 有定义、全仓 grep router.push / router-link
+  //   **无任何站内入口**、且都不在 appNav.ts ⇒ 判为「菜单外深链页」。
+  //   与 /admin/usage-enhanced 同族：菜单归属待产品确认后挂载，
+  //   本轮只登记契约，**不擅自改菜单**（改菜单 = 改产品信息架构）。
+  '/admin/board-operational': '运营面板（批 158c，独立详细页）：router 自证「后端 tenant 隔离未落实、admin 档 endpoint」；全仓无站内入口 ⇒ admin 档独立深链页，菜单归属待产品确认后挂载',
+  '/admin/ops-overview': '运维总览（批 158e，12 路 payload 卡片布局）：router 自证「与 appNav 的 maintain SPA 平级、web/ 内部独立深链」；super_admin 档，菜单归属待产品确认后挂载',
+  '/admin/subscription-tiers': '订阅层级（批 200）：P5 跨仓 license-authority 独立服务、nginx 反代 /api/admin/tiers；与控制台菜单是两套导航，不由 appNav 承载',
+  '/admin/request-actions/:id': '请求动作时间线（批 203，Redis LIST by request_id）：super_admin 档带参深链页（:id），全仓无站内入口 ⇒ 独立深链，菜单归属待产品确认后挂载',
+  '/admin/storage-and-log-config': '存储与日志配置（批 204，3 段只读摘要）：其子视图 StorageConfig / FilesystemMaintenance / LogManagement 全在 DataLifecycleView 父视图下，本路由是独立深链入口',
 }
 
 /** 扫描器不得腐化：路由数掉到这个量级说明解析正则坏了（沿用 metricguard「声明数<100 即红」）。 */

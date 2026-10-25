@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
 import StorageAndLogConfigView from './StorageAndLogConfigView.vue'
 import { getStorageAndLogSnapshot } from '../api/storageAndLogConfig'
+import { testI18n } from '../test-utils/i18n'
 
 vi.mock('../api/storageAndLogConfig', () => ({
   getStorageAndLogSnapshot: vi.fn(),
@@ -67,7 +68,7 @@ const SAMPLE = {
 describe('StorageAndLogConfigView', () => {
   it('renders 3 sections (storage + filesystem + log) with key field coverage', async () => {
     mockedGet.mockResolvedValueOnce(SAMPLE)
-    const w = mount(StorageAndLogConfigView)
+    const w = mount(StorageAndLogConfigView, { global: { plugins: [testI18n] } })
     await flushPromises()
     // 3 sections
     expect(w.findAll('.slc-section')).toHaveLength(3)
@@ -96,7 +97,7 @@ describe('StorageAndLogConfigView', () => {
 
   it('shows error message on fetch failure', async () => {
     mockedGet.mockRejectedValueOnce(new Error('super 403'))
-    const w = mount(StorageAndLogConfigView)
+    const w = mount(StorageAndLogConfigView, { global: { plugins: [testI18n] } })
     await flushPromises()
     expect(w.find('.slc-error').exists()).toBe(true)
     expect(w.text()).toContain('super 403')
@@ -108,7 +109,7 @@ describe('StorageAndLogConfigView', () => {
       ...SAMPLE,
       filesystem: { ...SAMPLE.filesystem, disk_usage_percent: 85, disk_warning_level: 'warning' as const },
     })
-    const w = mount(StorageAndLogConfigView)
+    const w = mount(StorageAndLogConfigView, { global: { plugins: [testI18n] } })
     await flushPromises()
     expect(w.text()).toContain('85.0%')
     expect(w.text()).toContain('警告')

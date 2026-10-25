@@ -140,7 +140,14 @@ const NON_NAVIGABLE: Array<[string, number, string]> = [
 const KNOWN_GAP: Array<[string, number, string]> = [
   [
     'src/views/ApprovalListView.vue',
-    451,
+    // ⚠ 行号锚点：2026-10-25 由 451 改为 452。
+    //   原因**不是**「后来插了一行」—— `git blame` 显示本视图的
+    //   `<ResponsiveDataView>` 自 8f819d104（2026-10-04 落库）起就在 452 行，
+    //   结构至今未变；⇒ 是当初**登记时手误**（把 `<ResponsiveDataView` 当成
+    //   0-based 或按上一行注释数），把 452 写成了 451。
+    //   ⇒ 后果：本门同时报「未登记 452」与「451 在源码里找不到了」两条红。
+    //   （本仓同类改键先例：QualityCorrelationsView.vue 186→223，见 NON_NAVIGABLE 注释。）
+    452,
     '详情目的地 /admin/approvals/:request_id 存在，但 viewDetail 两个调用点都写在 #table 插槽里；'
       + '该视图只传 #table ⇒ compact 卡片无任何入口。修法涉及桌面行是否整行可点（行内有 ✕ 拒绝等写操作），属产品裁决。',
   ],
@@ -276,7 +283,11 @@ const blocks = scanBlocks()
 const ASYMMETRY: Array<[string, number, string]> = [
   [
     'src/views/TenantDashboardView.vue',
-    716,
+    // ⚠ 行号锚点：2026-10-25 由 716 改为 717。
+    //   与 KNOWN_GAP 同源：登记时手误少算一行，不是后来插了行 ——
+    //   `git blame` 显示本视图的 `<ResponsiveDataView>` 自 8f819d104
+    //   （2026-10-04 落库）起就在 717 行，结构至今未变。
+    717,
     '详情块：卡片 clickable 跳 /request-logs，桌面 detail-table 的 <tr> 无 @click。'
       + '桌面页脚 detailFooterLogs 本就是同一目标的 RouterLink ⇒ 同目的地、不同入口位置。'
       + '是否让桌面行也整行可点属产品裁决，未擅自改。',

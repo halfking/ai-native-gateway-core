@@ -120,7 +120,7 @@ onUnmounted(() => {
       <div class="panel-head">
         <span class="panel-title">Memora 连接</span>
         <span class="panel-badge" :class="`panel-badge--${state}`">{{ stateLabel }}</span>
-        <button type="button" class="panel-close" aria-label="关闭" @click="closePanel">×</button>
+        <button type="button" class="panel-close" :aria-label="$t('common.close')" @click="closePanel">×</button>
       </div>
 
       <dl class="panel-meta">
@@ -129,11 +129,11 @@ onUnmounted(() => {
           <dd><code>{{ status.base_url }}</code></dd>
         </div>
         <div v-if="lastPingMs != null" class="meta-row">
-          <dt>最近延迟</dt>
+          <dt>{{ $t('common.terms.recentLatency') }}</dt>
           <dd>{{ lastPingMs }} ms</dd>
         </div>
         <div v-if="status?.last_error" class="meta-row meta-row--error">
-          <dt>错误</dt>
+          <dt>{{ $t('common.terms.error') }}</dt>
           <dd><code>{{ status.last_error }}</code></dd>
         </div>
         <div v-if="lastPingError" class="meta-row meta-row--error">
@@ -150,7 +150,7 @@ onUnmounted(() => {
             <dd>{{ status.sink.processed }} / {{ status.sink.errored }}</dd>
           </div>
           <div v-if="status.sink.consecutive_errors > 0" class="meta-row meta-row--warn">
-            <dt>连续失败</dt>
+            <dt>{{ $t('common.terms.consecutiveFailures') }}</dt>
             <dd>{{ status.sink.consecutive_errors }}</dd>
           </div>
           <div v-if="status.sink.last_error" class="meta-row meta-row--error">
@@ -182,7 +182,7 @@ onUnmounted(() => {
           class="btn btn-sm btn-ghost"
           :disabled="loading"
           @click="loadStatus"
-        >刷新</button>
+        >{{ $t('common.button.refresh') }}</button>
         <a
           href="/plugins/ai-session-manager/sessions"
           class="btn btn-sm btn-ghost"

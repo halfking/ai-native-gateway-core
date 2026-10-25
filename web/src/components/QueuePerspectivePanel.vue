@@ -1563,7 +1563,7 @@ function requestTitleTooltip(request: LiveRequest): string {
   flex-wrap: wrap;
   gap: 4px 16px;
   padding: 7px 12px;
-  background: var(--kx-bg-elevated);
+  background: var(--bg-subtle);
   border-radius: var(--kx-radius-sm, 6px);
 }
 .qp-stat {
@@ -1658,7 +1658,7 @@ function requestTitleTooltip(request: LiveRequest): string {
 }
 .qp-bar {
   height: 6px;
-  background: var(--kx-bg-elevated);
+  background: var(--bg-subtle);
   border-radius: 3px;
   overflow: hidden;
 }

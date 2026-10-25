@@ -333,7 +333,7 @@ onMounted(() => { load(); loadTenants() })
     </div>
 
     <div class="filters">
-      <label>{{ t('users.filter.byTenant', '租户') }}</label>
+      <label>{{ t('users.filter.byTenant', $t('common.terms.tenant')) }}</label>
       <select v-model="filterTenant">
         <option value="">{{ t('users.filter.allTenants') }}</option>
         <option v-for="t in allTenants" :key="t.code" :value="t.code">
@@ -373,17 +373,17 @@ onMounted(() => { load(); loadTenants() })
     <table class="table" style="width:100%">
       <thead>
         <tr>
-          <th>{{ t('users.table.username', '用户') }}</th>
-          <th>{{ t('users.table.email', '邮箱') }}</th>
-          <th>{{ t('users.table.tenant', '租户') }}</th>
-          <th>{{ t('users.table.role', '角色') }}</th>
-          <th>{{ t('users.table.status', '状态') }}</th>
+          <th>{{ t('users.table.username', $t('common.terms.user')) }}</th>
+          <th>{{ t('users.table.email', $t('common.terms.email')) }}</th>
+          <th>{{ t('users.table.tenant', $t('common.terms.tenant')) }}</th>
+          <th>{{ t('users.table.role', $t('common.terms.role')) }}</th>
+          <th>{{ t('users.table.status', $t('common.terms.status')) }}</th>
           <th class="col-num">{{ t('users.usage.requests30d', '近 30 天请求') }}</th>
           <th class="col-num">Token</th>
           <th class="col-num">{{ t('users.usage.credits30d', '近 30 天积分') }}</th>
           <th>{{ t('users.table.lastLogin', '最后登录') }}</th>
           <th>{{ t('users.usage.lastActive', '最后活跃') }}</th>
-          <th>{{ t('users.table.actions', '操作') }}</th>
+          <th>{{ t('users.table.actions', $t('common.actions')) }}</th>
         </tr>
       </thead>
       <tbody>
@@ -416,7 +416,7 @@ onMounted(() => { load(); loadTenants() })
             {{ fmtLastActive(usageOf(u)?.last_active_at) }}
           </td>
           <td @click.stop>
-            <button class="btn btn-ghost btn-sm" @click="openDetail(u)">{{ t('users.action.detail', '详情') }}</button>
+            <button class="btn btn-ghost btn-sm" @click="openDetail(u)">{{ t('users.action.detail', $t('common.button.detail')) }}</button>
             <button v-if="canResetPasswords" class="btn btn-ghost btn-sm" @click="resetPwdUser = u; newPwd = ''; resetConfirmPwd = ''">{{ t('users.action.resetPassword') }}</button>
             <button v-if="canDeleteUsers && u.id !== store.userInfo?.id" class="btn btn-ghost btn-sm" style="color:var(--danger)" @click="handleDelete(u)">{{ t('users.action.delete') }}</button>
           </td>

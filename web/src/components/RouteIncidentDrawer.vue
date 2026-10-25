@@ -598,7 +598,7 @@ function hasRunValues(values: Record<string, unknown>): boolean {
               :disabled="loading"
               @click="refresh"
             >
-              {{ loading ? '刷新中…' : '刷新' }}
+              {{ loading ? $t('common.terms.refreshing') : $t('common.button.refresh') }}
             </button>
             <button
               ref="closeBtn"
@@ -615,10 +615,10 @@ function hasRunValues(values: Record<string, unknown>): boolean {
         <div class="route-incident-drawer__body">
           <!-- 1. Status header -->
           <section class="route-incident-drawer__section">
-            <h3 class="route-incident-drawer__section-title">1. 状态</h3>
+            <h3 class="route-incident-drawer__section-title">1. {{ $t('common.terms.status') }}</h3>
             <div class="status-grid">
               <div class="status-grid__cell">
-                <div class="status-grid__label">状态</div>
+                <div class="status-grid__label">{{ $t('common.terms.status') }}</div>
                 <div :class="['status-grid__value', `status-grid__value--${stateTone}`]">
                   {{ visibleStateLabel }}
                 </div>
@@ -668,23 +668,23 @@ function hasRunValues(values: Record<string, unknown>): boolean {
                 <span class="kv__val">{{ currentRoute.protocol || '—' }}</span>
               </div>
               <div class="kv__row">
-                <span class="kv__key">标准模型</span>
+                <span class="kv__key">{{ $t('common.terms.standardModel') }}</span>
                 <span class="kv__val">{{ currentRoute.canonical_model || '—' }}</span>
               </div>
               <div class="kv__row">
-                <span class="kv__key">出站模型</span>
+                <span class="kv__key">{{ $t('common.terms.outboundModel') }}</span>
                 <span class="kv__val">{{ currentRoute.outbound_model || '—' }}</span>
               </div>
               <div class="kv__row">
-                <span class="kv__key">供应商 ID</span>
+                <span class="kv__key">{{ $t('common.terms.provider') }} ID</span>
                 <span class="kv__val">{{ currentRoute.provider_id ?? '—' }}</span>
               </div>
               <div class="kv__row">
-                <span class="kv__key">凭据 ID</span>
+                <span class="kv__key">{{ $t('common.credentialFallback') }} ID</span>
                 <span class="kv__val">{{ currentRoute.credential_id ?? '—' }}</span>
               </div>
               <div class="kv__row">
-                <span class="kv__key">路由决策</span>
+                <span class="kv__key">{{ $t('common.terms.routingDecision') }}</span>
                 <span class="kv__val">{{ currentRoute.routing_decision || '—' }}</span>
               </div>
             </div>
@@ -814,7 +814,7 @@ function hasRunValues(values: Record<string, unknown>): boolean {
                 </span>
               </div>
               <div class="kv__row">
-                <span class="kv__key">可用性</span>
+                <span class="kv__key">{{ $t('common.terms.availability') }}</span>
                 <span class="kv__val">
                   {{ resourceSnapshot.availability_state || '—' }}
                 </span>
@@ -1062,7 +1062,7 @@ function hasRunValues(values: Record<string, unknown>): boolean {
                 </span>
               </label>
               <details v-if="confirmKind === 'release_slot'" class="action-modal__params">
-                <summary>附加参数（可选）</summary>
+                <summary>{{ $t('common.terms.extraParams') }}</summary>
                 <label class="action-modal__label">
                   slot_id
                   <input
@@ -1074,7 +1074,7 @@ function hasRunValues(values: Record<string, unknown>): boolean {
                 </label>
               </details>
               <details v-else-if="confirmKind === 'recover'" class="action-modal__params">
-                <summary>附加参数（可选）</summary>
+                <summary>{{ $t('common.terms.extraParams') }}</summary>
                 <label class="action-modal__label">
                   target_state
                   <select v-model="(confirmParams as any).target_state" class="action-modal__input">
@@ -1090,7 +1090,7 @@ function hasRunValues(values: Record<string, unknown>): boolean {
                 type="button"
                 class="route-incident-drawer__btn route-incident-drawer__btn--ghost"
                 @click="confirmKind = null"
-              >取消</button>
+              >{{ $t('common.button.cancel') }}</button>
               <button
                 type="button"
                 :class="['route-incident-drawer__btn', actionDestructive(confirmKind) ? 'route-incident-drawer__btn--destructive' : 'route-incident-drawer__btn--primary']"
@@ -1130,7 +1130,7 @@ function hasRunValues(values: Record<string, unknown>): boolean {
                 class="route-incident-drawer__btn route-incident-drawer__btn--ghost"
                 @click="exportState = 'idle'; lastExport = null"
               >
-                关闭
+                {{ $t('common.close') }}
               </button>
             </div>
           </div>

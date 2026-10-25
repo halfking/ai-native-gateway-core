@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
 import StorageMigrationStateView from './StorageMigrationStateView.vue'
 import { getStorageMigrationState } from '../api/tuning'
+import { testI18n } from '../test-utils/i18n'
 
 vi.mock('../api/tuning', () => ({
   getStorageMigrationState: vi.fn(),
@@ -50,7 +51,7 @@ const LATEST = {
 describe('StorageMigrationStateView', () => {
   it('renders running migration with progress + latest history when both present', async () => {
     mockedGet.mockResolvedValueOnce({ running: RUNNING, latest: LATEST })
-    const w = mount(StorageMigrationStateView)
+    const w = mount(StorageMigrationStateView, { global: { plugins: [testI18n] } })
     await flushPromises()
     // 2 段：当前运行 + 历史最新
     expect(w.findAll('.sms-section')).toHaveLength(2)
@@ -71,7 +72,7 @@ describe('StorageMigrationStateView', () => {
 
   it('shows only latest section when no running migration', async () => {
     mockedGet.mockResolvedValueOnce({ running: null, latest: LATEST })
-    const w = mount(StorageMigrationStateView)
+    const w = mount(StorageMigrationStateView, { global: { plugins: [testI18n] } })
     await flushPromises()
     expect(w.find('.sms-section-running').exists()).toBe(false)
     expect(w.findAll('.sms-section')).toHaveLength(1)
@@ -80,7 +81,7 @@ describe('StorageMigrationStateView', () => {
 
   it('shows empty state when both running and latest are null', async () => {
     mockedGet.mockResolvedValueOnce({ running: null, latest: null })
-    const w = mount(StorageMigrationStateView)
+    const w = mount(StorageMigrationStateView, { global: { plugins: [testI18n] } })
     await flushPromises()
     expect(w.findAll('.sms-section')).toHaveLength(0)
     expect(w.find('.sms-empty').exists()).toBe(true)
@@ -89,7 +90,7 @@ describe('StorageMigrationStateView', () => {
 
   it('shows error message on fetch failure and refresh works after recovery', async () => {
     mockedGet.mockRejectedValueOnce(new Error('admin 502'))
-    const w = mount(StorageMigrationStateView)
+    const w = mount(StorageMigrationStateView, { global: { plugins: [testI18n] } })
     await flushPromises()
     expect(w.find('.sms-error').exists()).toBe(true)
     expect(w.text()).toContain('admin 502')

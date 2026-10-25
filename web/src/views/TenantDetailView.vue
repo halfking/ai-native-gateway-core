@@ -449,7 +449,7 @@ watch(() => route.params.tenantId, loadTenant)
   <div class="tenant-detail">
     <div v-if="error" class="alert alert-danger" style="margin-bottom:12px">{{ error }}</div>
 
-    <div v-if="loading && !tenant" class="loading">加载中…</div>
+    <div v-if="loading && !tenant" class="loading">{{ $t('common.feedback.loading') }}</div>
 
     <div v-else-if="tenant">
       <!-- Header -->
@@ -467,7 +467,7 @@ watch(() => route.params.tenantId, loadTenant)
           </div>
           <p v-if="tenant.description" class="description">{{ tenant.description }}</p>
         </div>
-        <button class="btn btn-primary" @click="openEdit">编辑</button>
+        <button class="btn btn-primary" @click="openEdit">{{ $t('common.button.edit') }}</button>
       </div>
 
       <!-- Tabs -->
@@ -530,7 +530,7 @@ watch(() => route.params.tenantId, loadTenant)
           <div class="maas-shortcut-grid">
             <RouterLink :to="maasLink('/tenant/models')" class="maas-shortcut-card">
               <span class="maas-shortcut-icon">🤖</span>
-              <span class="maas-shortcut-label">标准模型</span>
+              <span class="maas-shortcut-label">{{ $t('common.terms.standardModel') }}</span>
             </RouterLink>
             <RouterLink :to="maasLink('/tenant/pricing')" class="maas-shortcut-card">
               <span class="maas-shortcut-icon">💳</span>
@@ -560,7 +560,7 @@ watch(() => route.params.tenantId, loadTenant)
       <div v-if="activeTab === 'users'" class="tab-content">
         <table class="table" style="width:100%">
           <thead>
-            <tr><th>ID</th><th>用户名</th><th>显示名</th><th>邮箱</th><th>角色</th><th>状态</th><th>最后登录</th><th>操作</th></tr>
+            <tr><th>ID</th><th>{{ $t('common.terms.username') }}</th><th>{{ $t('common.terms.displayName') }}</th><th>{{ $t('common.terms.email') }}</th><th>{{ $t('common.terms.role') }}</th><th>{{ $t('common.terms.status') }}</th><th>最后登录</th><th>{{ $t('common.actions') }}</th></tr>
           </thead>
           <tbody>
             <tr v-for="u in sortedUsers" :key="u.id">
@@ -569,11 +569,11 @@ watch(() => route.params.tenantId, loadTenant)
               <td>{{ u.display_name || '-' }}</td>
               <td>{{ u.email || '-' }}</td>
               <td><span class="badge" :class="u.role === 'super_admin' ? 'badge-purple' : 'badge-blue'">{{ u.role }}</span></td>
-              <td><span class="badge" :class="u.enabled ? 'badge-green' : 'badge-red'">{{ u.enabled ? '启用' : '禁用' }}</span></td>
+              <td><span class="badge" :class="u.enabled ? 'badge-green' : 'badge-red'">{{ u.enabled ? $t('common.status.enabled') : $t('common.status.disabled') }}</span></td>
               <td class="mono">{{ fmtTime(u.last_login_at || '') }}</td>
               <td>
                 <button class="btn btn-ghost btn-sm" @click="toggleUserEnabled(u)">
-                  {{ u.enabled ? '禁用' : '启用' }}
+                  {{ u.enabled ? $t('common.status.disabled') : $t('common.status.enabled') }}
                 </button>
               </td>
             </tr>
@@ -593,7 +593,7 @@ watch(() => route.params.tenantId, loadTenant)
         </div>
         <table class="table" style="width:100%">
           <thead>
-            <tr><th>ID</th><th>密钥前缀</th><th>别名</th><th>应用</th><th>状态</th><th>请求数</th><th>费用</th><th>创建</th></tr>
+            <tr><th>ID</th><th>密钥前缀</th><th>别名</th><th>{{ $t('common.terms.application') }}</th><th>{{ $t('common.terms.status') }}</th><th>{{ $t('common.terms.requestCount') }}</th><th>{{ $t('common.terms.fee') }}</th><th>创建</th></tr>
           </thead>
           <tbody>
             <tr v-for="k in sortedVisibleKeys" :key="k.id">
@@ -601,7 +601,7 @@ watch(() => route.params.tenantId, loadTenant)
               <td><code>{{ k.key_prefix }}</code></td>
               <td>{{ k.key_alias || '-' }}</td>
               <td><span class="badge badge-blue">{{ k.application_code || '-' }}</span></td>
-              <td><span class="badge" :class="k.enabled ? 'badge-green' : 'badge-red'">{{ k.enabled ? '启用' : '禁用' }}</span></td>
+              <td><span class="badge" :class="k.enabled ? 'badge-green' : 'badge-red'">{{ k.enabled ? $t('common.status.enabled') : $t('common.status.disabled') }}</span></td>
               <td>{{ fmtNum(k.total_requests) }}</td>
               <td>
                 <span v-if="showCost">{{ fmtCost(k.total_cost_usd) }}</span>
@@ -624,7 +624,7 @@ watch(() => route.params.tenantId, loadTenant)
       <!-- Stats Tab（2026-09-30 统计 UI 优化轮重做：KPI 8 卡 + 双趋势图 + 占比条分布） -->
       <div v-if="activeTab === 'stats'" class="tab-content">
         <div class="stats-toolbar">
-          <label>时间窗口:</label>
+          <label>{{ $t('common.terms.timeWindow') }}:</label>
           <div class="window-chips">
             <button
               v-for="d in [7, 30, 90, 365]"
@@ -641,7 +641,7 @@ watch(() => route.params.tenantId, loadTenant)
         <div v-if="stats" class="stat-cards stat-cards--kpi">
           <StatCard label="总请求">
             <template #value>{{ fmtNum(stats.total_requests) }}</template>
-            <template #sub>失败 <span style="color:var(--danger)">{{ fmtNum(statsFailTotal) }}</span>（{{ stats.total_requests > 0 ? ((statsFailTotal / stats.total_requests) * 100).toFixed(1) : '0.0' }}%）</template>
+            <template #sub>{{ $t('common.status.failed') }} <span style="color:var(--danger)">{{ fmtNum(statsFailTotal) }}</span>（{{ stats.total_requests > 0 ? ((statsFailTotal / stats.total_requests) * 100).toFixed(1) : '0.0' }}%）</template>
           </StatCard>
           <StatCard label="总 Token">
             <template #value>{{ fmtTokensCompact(stats.total_tokens) }}</template>
@@ -701,7 +701,7 @@ watch(() => route.params.tenantId, loadTenant)
             </div>
           </div>
           <table class="table">
-            <thead><tr><th>模型</th><th class="text-right">请求</th><th class="text-right">Token</th><th class="text-right">积分</th><th class="text-right">费用</th></tr></thead>
+            <thead><tr><th>{{ $t('common.terms.model') }}</th><th class="text-right">{{ $t('common.terms.request') }}</th><th class="text-right">Token</th><th class="text-right">{{ $t('common.unit.credits') }}</th><th class="text-right">{{ $t('common.terms.fee') }}</th></tr></thead>
             <tbody>
               <tr v-for="m in statsModelSorted" :key="m.model">
                 <td>
@@ -729,7 +729,7 @@ watch(() => route.params.tenantId, loadTenant)
             <span class="text-muted" style="font-size:12px">点击行跳转密钥列表（带应用过滤）</span>
           </div>
           <table class="table">
-            <thead><tr><th>应用</th><th class="text-right">请求</th><th class="text-right">Token</th><th class="text-right">积分</th><th class="text-right">费用</th></tr></thead>
+            <thead><tr><th>{{ $t('common.terms.application') }}</th><th class="text-right">{{ $t('common.terms.request') }}</th><th class="text-right">Token</th><th class="text-right">{{ $t('common.unit.credits') }}</th><th class="text-right">{{ $t('common.terms.fee') }}</th></tr></thead>
             <tbody>
               <tr v-for="a in statsAppSorted" :key="a.application_code" class="stats-app-row" @click="openAppKeys(a.application_code)">
                 <td>
@@ -753,16 +753,16 @@ watch(() => route.params.tenantId, loadTenant)
       <!-- Billing Audit Tab -->
       <div v-if="activeTab === 'billing'" class="tab-content">
         <div class="stats-toolbar billing-toolbar">
-          <label>时间窗口:</label>
+          <label>{{ $t('common.terms.timeWindow') }}:</label>
           <select v-model.number="billingDays" @change="onBillingFilterChange">
             <option :value="1">近 1 天</option>
             <option :value="7">近 7 天</option>
             <option :value="30">近 30 天</option>
             <option :value="90">近 90 天</option>
           </select>
-          <label for="billing-owner-user">用户:</label>
+          <label for="billing-owner-user">{{ $t('common.terms.user') }}:</label>
           <input id="billing-owner-user" v-model="billingOwnerUser" class="billing-user-input" placeholder="按 API Key 所属用户过滤" @keyup.enter="loadBilling" />
-          <button class="btn btn-primary btn-sm" :disabled="billingLoading" @click="loadBilling">{{ billingLoading ? '加载中…' : '查询' }}</button>
+          <button class="btn btn-primary btn-sm" :disabled="billingLoading" @click="loadBilling">{{ billingLoading ? $t('common.feedback.loading') : $t('common.terms.query') }}</button>
         </div>
 
         <div v-if="billing" class="stat-cards">
@@ -776,7 +776,7 @@ watch(() => route.params.tenantId, loadTenant)
 
         <div class="billing-table-wrap">
           <table class="table billing-table">
-            <thead><tr><th>用户</th><th>供应商</th><th>凭据</th><th>模型</th><th>请求</th><th>输入 / 输出</th><th>缓存读 / 写</th><th>积分</th><th>成本</th><th>收入</th><th>毛利率</th><th>取消计费</th></tr></thead>
+            <thead><tr><th>{{ $t('common.terms.user') }}</th><th>{{ $t('common.terms.provider') }}</th><th>{{ $t('common.credentialFallback') }}</th><th>{{ $t('common.terms.model') }}</th><th>{{ $t('common.terms.request') }}</th><th>输入 / 输出</th><th>缓存读 / 写</th><th>{{ $t('common.unit.credits') }}</th><th>{{ $t('common.terms.cost') }}</th><th>收入</th><th>毛利率</th><th>取消计费</th></tr></thead>
             <tbody>
               <tr v-for="row in billing?.rows || []" :key="`${row.provider_id}-${row.credential_id}-${row.canonical_id}-${row.owner_user}`">
                 <td>{{ row.owner_user || '未标记' }}</td><td>{{ row.provider_name || '未标记' }}</td><td><code>{{ row.credential_label || row.credential_id || '未标记' }}</code></td><td><code>{{ row.model }}</code></td>
@@ -818,7 +818,7 @@ watch(() => route.params.tenantId, loadTenant)
             <input v-model="grantAmount" type="number" min="1" placeholder="正整数" />
           </div>
           <div class="adjust-row">
-            <label>备注</label>
+            <label>{{ $t('common.terms.remark') }}</label>
             <input v-model="grantNote" type="text" placeholder="授予原因（可选）" />
           </div>
           <button class="btn btn-primary btn-sm" :disabled="grantSaving" @click="submitGrant">
@@ -833,7 +833,7 @@ watch(() => route.params.tenantId, loadTenant)
             <input v-model="adjustAmount" type="number" placeholder="正数充值，负数扣减" />
           </div>
           <div class="adjust-row">
-            <label>备注</label>
+            <label>{{ $t('common.terms.remark') }}</label>
             <input v-model="adjustNote" type="text" placeholder="调整原因（可选）" />
           </div>
           <button class="btn btn-primary btn-sm" :disabled="adjustSaving" @click="submitAdjust">
@@ -848,12 +848,12 @@ watch(() => route.params.tenantId, loadTenant)
           <thead>
             <tr>
               <th>订单号</th>
-              <th>类型</th>
+              <th>{{ $t('common.terms.type') }}</th>
               <th>金额</th>
-              <th>积分</th>
-              <th>状态</th>
-              <th>时间</th>
-              <th>操作</th>
+              <th>{{ $t('common.unit.credits') }}</th>
+              <th>{{ $t('common.terms.status') }}</th>
+              <th>{{ $t('common.time') }}</th>
+              <th>{{ $t('common.actions') }}</th>
             </tr>
           </thead>
           <tbody>
@@ -888,13 +888,13 @@ watch(() => route.params.tenantId, loadTenant)
         <table class="table" style="width:100%">
           <thead>
             <tr>
-              <th>时间</th>
-              <th>类型</th>
+              <th>{{ $t('common.time') }}</th>
+              <th>{{ $t('common.terms.type') }}</th>
               <th>池</th>
               <th style="text-align:right">变动</th>
               <th style="text-align:right">余额</th>
               <th>关联</th>
-              <th>备注</th>
+              <th>{{ $t('common.terms.remark') }}</th>
             </tr>
           </thead>
           <tbody>

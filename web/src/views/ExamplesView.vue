@@ -495,10 +495,12 @@ function toggleGuide(id: ClientGuideId) {
   /* Use the dedicated code-block surface token so light + dark themes both
    * get a clearly distinguishable background instead of inheriting the page
    * (which is also dark in dark mode). The token is defined in style.css as
-   * a fixed dark surface (#1e1e2e) for terminal-style code in both modes;
-   * we pair it with a light-on-dark text color and a subtle border so the
-   * block reads as its own region even when the page itself is dark. */
-  background: var(--bg-elevated);
+   * --code-surface: a fixed dark surface (#1e1e2e) for terminal-style code
+   * in both modes; we pair it with a light-on-dark text color and a subtle
+   * border so the block reads as its own region even when the page itself is
+   * dark. ★ 2026-10-25：原先这里写的是 var(--bg-elevated) —— 那是「代码块
+   * 与卡片混用同一个令牌」的坏惯例，导致卡片在亮色主题下也拿到近黑底。 */
+  background: var(--code-surface);
   color: #e8eef7;
   border: 1px solid var(--border);
   border-radius: 8px;

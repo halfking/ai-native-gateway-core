@@ -60,13 +60,13 @@ onMounted(() => {
     <header class="tfo-header">
       <h1 class="tfo-title">轮次筛选选项</h1>
       <button class="btn btn-ghost btn-sm" :disabled="loading" @click="load">
-        {{ loading ? '加载中…' : '刷新' }}
+        {{ loading ? $t('common.feedback.loading') : $t('common.button.refresh') }}
       </button>
     </header>
 
     <p v-if="error" class="tfo-error">{{ error }}</p>
 
-    <div v-if="loading && !options" class="tfo-loading">加载中…</div>
+    <div v-if="loading && !options" class="tfo-loading">{{ $t('common.feedback.loading') }}</div>
 
     <template v-else-if="options">
       <section v-for="s in stringSections()" :key="s.key" class="tfo-section">
@@ -81,7 +81,7 @@ onMounted(() => {
 
       <section v-if="apiKeyList().length" class="tfo-section">
         <header class="tfo-section-header">
-          <h2 class="tfo-section-title">API 密钥</h2>
+          <h2 class="tfo-section-title">API {{ $t('common.terms.apiKey') }}</h2>
           <span class="tfo-section-count">{{ apiKeyList().length }} 项</span>
         </header>
         <table class="tfo-table">
@@ -116,7 +116,7 @@ onMounted(() => {
 .tfo-section-title { font-size: var(--text-md); font-weight: var(--font-semibold); }
 .tfo-section-count { color: var(--text-muted); font-size: var(--text-sm); }
 .tfo-chips { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: var(--space-1); }
-.tfo-chip code { font-size: 12px; padding: 2px 8px; background: var(--bg-elevated, var(--bg-surface)); border: 1px solid var(--border-muted); border-radius: 4px; }
+.tfo-chip code { font-size: 12px; padding: 2px 8px; background: var(--bg-subtle); border: 1px solid var(--border-muted); border-radius: 4px; }
 .tfo-table { width: 100%; border-collapse: collapse; }
 .tfo-table th, .tfo-table td { text-align: left; padding: var(--space-1) var(--space-2); border-bottom: 1px solid var(--border-muted); font-size: var(--text-sm); }
 .tfo-table th { color: var(--text-muted); font-weight: var(--font-semibold); }
