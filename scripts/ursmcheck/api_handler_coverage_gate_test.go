@@ -148,6 +148,60 @@ func ahcFingerprint(handler, defFile string) string {
 	return hex.EncodeToString(sum[:])[:12]
 }
 
+// ahcReadLedgerHeader 读台账**注释头**里的 `# gen_*` 键值对。
+//
+// ★ 为什么要有它（★ R157 轮）：★ 台账的**数字**会随「工具变了」「代码变了」而过期，
+//
+//	而「过期」本身**不报错** ⇒ ★ 台账会**悄悄**变成一份关于旧代码的断言。
+//	⇒ ★ 工具在生成台账时把**生成口径**（工具自己的 sha、包集、coverpkg、两遍标记）
+//	写进注释头 ⇒ ★★ 门就能**机器判定**「台账是不是用当前这版工具生成的」。
+//
+// ★ 诚实边界（★ 必须写在门里，否则就是半个承诺）：
+//   ★ 本判据只能发现「**工具**变了」；
+//   ★ 「**代码**变了」也会让覆盖度变，★ 而那需要重跑 go test 才能知道
+//   ⇒ ★★ 代码改过**必须手动重生成台账**（★ 命令写在台账头注释里）。
+func ahcReadLedgerHeader(t *testing.T) map[string]string {
+	t.Helper()
+	root := ahcRepoRoot(t)
+	path := filepath.Join(root, ahcLedgerRel)
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatalf("打不开台账 %s：%v", path, err)
+	}
+	defer f.Close()
+	out := map[string]string{}
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 0, 1<<20), 1<<20)
+	for sc.Scan() {
+		line := sc.Text()
+		if !strings.HasPrefix(line, "# gen_") {
+			continue
+		}
+		kv := strings.TrimPrefix(line, "# gen_")
+		i := strings.Index(kv, "=")
+		if i < 0 {
+			t.Errorf("★ 台账头行 %q 缺少 '=' ⇒ 解析器与工具的写出口径漂移", line)
+			continue
+		}
+		out[kv[:i]] = kv[i+1:]
+	}
+	if err := sc.Err(); err != nil {
+		t.Fatalf("读台账头出错：%v", err)
+	}
+	return out
+}
+
+// ahcFileSHA256 算文件的 sha256（★ 与量具的 ahk_sha256 同口径）。
+func ahcFileSHA256(t *testing.T, path string) string {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("读 %s 失败：%v", path, err)
+	}
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:])
+}
+
 // ahcReadLedger 读台账 ⇒ key → 行。
 func ahcReadLedger(t *testing.T) map[string]ahcRow {
 	t.Helper()
@@ -484,6 +538,120 @@ func TestApiHandlerCoverageLedgerIsNotEmpty(t *testing.T) {
 		}
 	}
 	t.Logf("台账行 = %d（全部为 zero_coverage）✔", len(ledger))
+}
+
+// TestApiHandlerCoverageLedgerWasGeneratedByCurrentTool：★ 台账必须是**当前这版工具**生成的。
+//
+// ★★ 这条判据补的是哪块缺口（★ R157 轮实测出来的）：
+//
+//	★ 此前台账与工具之间**没有任何「版本」关联** ⇒ ★★ 「改了工具却忘了重生成台账」
+//	⇒ ★★ 门**不会红** ⇒ ★★ 台账会**悄悄**变成一份关于**旧口径**的断言。
+//	★ 而台账是「缺口清单」的载体 ⇒ ★★ 它一旦过期，★ 收口跟踪就在追一个幻影。
+//
+// ★ 机制：★ 工具在生成台账时把**自己的 sha256**写进注释头（`# gen_tool_sha=`）
+//	⇒ ★ 本门重算当前工具的 sha256 并与台账头比对 ⇒ ★ 不一致 ⇒ 红。
+//
+// ★ ★ 诚实边界（★ 不写清楚就是半个承诺）：
+//	★ 本判据只能发现「**工具**变了」；
+//	★ 「**代码**变了」同样会让覆盖度变，★ 而那要重跑 go test 才知道
+//	⇒ ★★ 代码改过**必须手动重生成台账**（★ 命令见台账头注释）。
+func TestApiHandlerCoverageLedgerWasGeneratedByCurrentTool(t *testing.T) {
+	root := ahcRepoRoot(t)
+	hdr := ahcReadLedgerHeader(t)
+
+	got, ok := hdr["tool_sha"]
+	if !ok || got == "" {
+		t.Fatalf("★ 台账头缺 `# gen_tool_sha=` ⇒ 台账的生成工具版本不可知 ⇒ " +
+			"「工具改了台账没重生成」这件事无法被机器判定 ⇒ 拒绝接受这份台账\n" +
+			"  ⇒ 修法：用当前工具重生成：bash scripts/audit/api-handler-coverage.sh --ledger %s", ahcLedgerRel)
+	}
+	want := ahcFileSHA256(t, filepath.Join(root, ahcToolRel))
+	if got != want {
+		t.Errorf("★ 台账是用**旧工具**生成的（台账头 gen_tool_sha=%s，★ 当前工具=%s）\n"+
+			"  ⇒ 台账的覆盖度读数已不对应当前工具的口径 ⇒ 必须重生成\n"+
+			"  ⇒ 修法：bash scripts/audit/api-handler-coverage.sh --ledger %s",
+			got, want, ahcLedgerRel)
+	}
+	t.Logf("台账由当前工具生成 ✔（sha=%s）", got[:12])
+}
+
+// TestApiHandlerCoverageLedgerCoverageScopeIsJoint：★ 台账必须是**联合覆盖口径**生成的。
+//
+// ★ ★ 为什么这条不能省（★ R157 轮实测）：
+//
+//	★ 「各包各跑 coverprofile 再合并」会**漏掉跨包执行**——
+//	  ★ 一个 handler 的定义体在包 A，★ 而**调用它的测试**在包 B
+//	  ⇒ ★ 只跑 `go test ./A/` ⇒ ★ A 的 profile 里那个块 count=0
+//	  ⇒ ★★ 被误判成「零覆盖」（★ **假阳性** ⇒ ★ 台账会凭空多出假缺口）。
+//	★ 实测：5 包联合覆盖后，★ **8642 个语句块**出现「一份 profile 里 count=0、
+//	  另一份里 count>0」⇒ ★★ 跨包执行规模不小 ⇒ ★★ 「各包自跑」口径**必然漏判**
+//	  （★ 实测多判出 3 条真零覆盖：internal/quality 的
+//	    CalculateNow / ListProfiles / GetProfile）。
+//
+// ★ 于是「台账是用哪种口径生成的」就是**台账正确性的一部分**
+//	⇒ ★ 必须写进台账头（★ `# gen_coverpkg=`）⇒ ★ 门来钉住它。
+//
+// ★ 本门**不**重跑全量（★ 要跑 5 遍 go test，★ ≈ 5 分钟，★ 门里不允许）⇒ ★★ 只断言
+//	★ 「台账头记录的 coverpkg **确实覆盖了全部定义包**」⇒ ★ 而定义包可以**从台账自己**
+//	★ 推出来（★ def_file 列的前缀）⇒ ★★ 这是**自洽性**判据，★ 不需要真跑。
+func TestApiHandlerCoverageLedgerCoverageScopeIsJoint(t *testing.T) {
+	hdr := ahcReadLedgerHeader(t)
+
+	coverpkg, ok := hdr["coverpkg"]
+	if !ok || coverpkg == "" {
+		t.Fatalf("★ 台账头缺 `# gen_coverpkg=` ⇒ 台账的覆盖口径不可知 ⇒ 拒绝接受\n"+
+			"  ⇒ 修法：用两遍模式（★ 默认开）重生成：bash scripts/audit/api-handler-coverage.sh --ledger %s", ahcLedgerRel)
+	}
+	// ★ ★ 三档口径（★ 只认事实，★ 不猜）：
+	//   none     = 各包自跑 ⇒ ★ **已知有缺陷**（★ 漏判跨包执行）⇒ 拒绝
+	//   joint    = 工具自己跑的 -coverpkg 联合覆盖 ⇒ ★ 完整口径 ✔
+	//   external = 外部提供的 profile ⇒ ★ 口径由提供方保证 ⇒ 记录但**不断言包覆盖**
+	switch hdr["cover_mode"] {
+	case "none":
+		t.Fatalf("★ 台账是用「各包自跑」口径生成的（gen_cover_mode=none）\n"+
+			"  ⇒ ★★ 该口径**漏判跨包执行**（★ 实测 8642 个语句块受影响）\n"+
+			"  ⇒ 零覆盖清单会含**假缺口** ⇒ 必须用两遍模式（★ 默认开）重生成")
+	case "joint":
+		// ★ 联合覆盖：★ 继续断言「coverpkg 覆盖了台账里出现的每一个定义包」
+	case "external":
+		// ★ 外部提供：★ **不断言**包覆盖（★ 提供方用什么口径不可知）
+		// ★★ 但**必须**记录这个事实（★ 台账头已有）⇒ ★ 不断言即通过
+		t.Logf("台账用外部 profile 生成（★ 联合覆盖口径由提供方保证）")
+	default:
+		t.Fatalf("★ 台账头的 gen_cover_mode=%q 不是 joint/external/none 之一 ⇒ 口径不可知 ⇒ 拒绝接受",
+			hdr["cover_mode"])
+	}
+
+	if hdr["cover_mode"] == "joint" {
+		ledger := ahcReadLedger(t)
+		pkgs := map[string]bool{}
+		for _, r := range ledger {
+			if r.DefFile == "" {
+				continue
+			}
+			pkgs[ahcPkgOf(r.DefFile)] = true
+		}
+		for p := range pkgs {
+			if !strings.Contains(coverpkg, "./"+p+"/") && !strings.Contains(coverpkg, "./"+p) {
+				t.Errorf("★ 台账里有定义在包 %s 的 handler，★ 但 gen_coverpkg=%q **不含**它\n"+
+					"  ⇒ 该包的跨包执行不可见 ⇒ 零覆盖判定可能失真", p, coverpkg)
+			}
+		}
+		t.Logf("联合覆盖口径 ✔（coverpkg=%s，★ 台账涉及 %d 个定义包）", coverpkg, len(pkgs))
+	}
+}
+
+// ahcPkgOf 从「仓内相对文件路径」取「包目录」（★ 取到倒数第二段）。
+func ahcPkgOf(defFile string) string {
+	i := strings.LastIndex(defFile, "/")
+	if i < 0 {
+		return "."
+	}
+	j := strings.LastIndex(defFile[:i], "/")
+	if j < 0 {
+		return defFile[:i]
+	}
+	return defFile[:j]
 }
 
 // TestApiHandlerCoverageLedgerAdjudicationIsComplete：每行都有**合法**的人工裁决，

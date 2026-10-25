@@ -48,6 +48,7 @@ package ursm_test
 // ⇒ 本门用**行为判据**（拿真正则去 match 真实路径）而不是字面量判据来钉这条。
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -598,6 +599,10 @@ func TestApiSweepClassifiesResponsesBehaviourally(t *testing.T) {
 		"TIMEOUT=5",
 		"CONC=2",
 		"LOAD_EVERY=3",
+		// ★★★ R157 轮（D16）：★ **固定阈值** ⇒ ★ 这条门断的是「响应分类」，
+		// ★ ★ **不该**受「跑门那一刻机器负载多高」的影响
+		// ★ ★ （★ 否则门自己就变成不可靠的量具 ⇒ ★ R153 轮的教训）。
+		"LOAD_UNTRUSTED_MAX=999999",
 		"API_SWEEP_STUB_LOG="+stubLog,
 	)
 	stderr := &strings.Builder{}
@@ -802,5 +807,239 @@ func TestApiSweepConsumesCanonicalRouteManifest(t *testing.T) {
 		if strings.Contains(l, "URL malformed") || strings.Contains(l, "conn_failed") && strings.Contains(l, "exit=3") {
 			t.Errorf("★ 仓内正本同形态的清单被判成 URL 畸形（★ curl exit 3）⇒ ★ 巡检工具与仓内清单互相不认：\n  %s", l)
 		}
+	}
+}
+
+// TestApiSweepSelfMarksUntrustedReadingOnHighLoad：★ R157 轮（D16）——
+// ★ **load 超阈值 ⇒ 读数自标不可信 ⇒ 且退出码不为 0**。
+//
+// ★★ 这条门补的是哪块缺口（★ R153 轮的实测教训）：
+//
+//	★ 一次 **35 小时的孤儿压测进程**（★ ppid=1）⇒ ★★ 让**连续多轮**的本地读数
+//	★ **集体失真**（★ 端点耗时塌缩 4~100 倍）。
+//	★ ⇒ ★★ 而当时的巡检输出里**没有任何字段**能让人看出「这批读数不可信」
+//	★ ⇒ ★★ load **被采样了**（★ `load_start`/`load_end`/`load_peak`）★ **却只当元数据**。
+//
+// ★★★ 双向对照（★ 正反两侧都断，★ 证明判据不是恒真）：
+//
+//	① 阈值 = 0    ⇒ 任何 load 都超阈值 ⇒ 必须 `latency_untrusted` + **退出码 75**
+//	② 阈值 = 极大 ⇒ 任何 load 都不超   ⇒ 必须 `trustworthy`      + **退出码 0**
+//
+// ★ ★ 为什么退出码也要断：★ 「不可信」如果**只**写在 stderr 上，
+// ★ ★ 在管道里 / CI 里 / 别人的脚本里**都会被丢掉**。
+func TestApiSweepSelfMarksUntrustedReadingOnHighLoad(t *testing.T) {
+	dir := t.TempDir()
+	binDir := filepath.Join(dir, "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatalf("建 bin 目录失败：%v", err)
+	}
+	stub := filepath.Join(binDir, "curl")
+	if err := os.WriteFile(stub, []byte(apiSweepStubCurl), 0o755); err != nil {
+		t.Fatalf("写 curl 替身失败：%v", err)
+	}
+	routesPath := filepath.Join(dir, "routes.txt")
+	if err := os.WriteFile(routesPath, []byte(apiSweepStubRoutes), 0o644); err != nil {
+		t.Fatalf("写路由清单失败：%v", err)
+	}
+	cookiePath := filepath.Join(dir, "cookies.txt")
+	if err := os.WriteFile(cookiePath, []byte("# Netscape HTTP Cookie File\n"), 0o644); err != nil {
+		t.Fatalf("写 cookie 文件失败：%v", err)
+	}
+
+	run := func(t *testing.T, threshold string) (string, int) {
+		t.Helper()
+		outPath := filepath.Join(dir, "sweep-"+threshold+".tsv")
+		cmd := exec.Command("bash", apiSweepScriptPath(t))
+		cmd.Env = append(os.Environ(),
+			"LC_ALL=C",
+			"LANG=C",
+			"PATH="+binDir+string(os.PathListSeparator)+os.Getenv("PATH"),
+			"ROUTES="+routesPath,
+			"COOKIE="+cookiePath,
+			"OUT="+outPath,
+			"TIMEOUT=5",
+			"CONC=2",
+			"LOAD_EVERY=3",
+			// ★★★ R157 轮（D16）：★ 阈值**由本用例显式给定**（★ 0 / 999999 两侧）
+			// ★ ★ ⇒ ★ 这条门**不受**「跑门那一刻机器负载多高」的影响
+			// ★ ★ （★ 否则门自己就变成不可靠的量具 ⇒ ★ R153 轮的教训）。
+			"LOAD_UNTRUSTED_MAX="+threshold,
+			"API_SWEEP_STUB_LOG="+filepath.Join(dir, "stub-"+threshold+".log"),
+		)
+		stderr := &strings.Builder{}
+		cmd.Stderr = stderr
+		runErr := cmd.Run()
+		code := 0
+		if runErr != nil {
+			var ee *exec.ExitError
+			if errors.As(runErr, &ee) {
+				code = ee.ExitCode()
+			} else {
+				t.Fatalf("巡检脚本跑失败（threshold=%s）：%v\nstderr:\n%s", threshold, runErr, stderr.String())
+			}
+		}
+		raw, err := os.ReadFile(outPath)
+		if err != nil {
+			t.Fatalf("读产出 TSV 失败（threshold=%s）：%v", threshold, err)
+		}
+		return string(raw), code
+	}
+
+	// ① 阈值 = 0 ⇒ 必然超阈值。
+	rawLow, codeLow := run(t, "0")
+	if !strings.Contains(rawLow, "reading_trustworthy=latency_untrusted") {
+		t.Errorf("★ 阈值=0 时输出**没有**自标 latency_untrusted ⇒ ★ D16 的自标没生效\n%s", rawLow)
+	}
+	if !strings.Contains(rawLow, "load_threshold=0") {
+		t.Errorf("★ 阈值=0 时输出**没有**记录 load_threshold ⇒ ★ 口径不可复核\n%s", rawLow)
+	}
+	if codeLow != 75 {
+		t.Errorf("★ 阈值=0 时退出码 = %d（期望 75：★ 「延迟不可信」必须能被管道/CI 看见）", codeLow)
+	}
+
+	// ② 阈值 = 极大 ⇒ 必然不超。
+	rawHigh, codeHigh := run(t, "999999")
+	if !strings.Contains(rawHigh, "reading_trustworthy=trustworthy") {
+		t.Errorf("★ 阈值=999999 时输出**没有**自标 trustworthy ⇒ ★ 判据恒判不可信（★ 反向对照失败）\n%s", rawHigh)
+	}
+	if codeHigh != 0 {
+		t.Errorf("★ 阈值=999999 时退出码 = %d（期望 0）⇒ ★ 正常负载被判成不可信", codeHigh)
+	}
+}
+
+// TestApiSweepPostProbeWhitelistIsSafe：★ R157 轮（D15）——
+// ★ 「可安全 POST」白名单的**安全性质**必须可判。
+//
+// ★★★ 核心判据（★ 从一次**实测反例**里长出来的）：
+//
+//	★ 我最初把 `/api/admin/auto-route/tuning/analyze` 与 `…/proposals/generate`
+//	★ 列进白名单（★ 理由：★ 它们「先校验 days 参数」）。
+//	★ ⇒ ★★ **实测打过去 ⇒ 两个都返回 500** ⇒ ★★ 追源码才发现：
+//	★★ 这两个端点**根本不读 body**（★ 只读 query 参数）⇒ ★★ 空 body 走正常路径
+//	★★ ⇒ ★★ **真的去跑分析 / 真的去生成提案** ⇒ ★★ **副作用真的发生了**。
+//	★ ⇒ ★★★ **「先校验了参数」≠「参数校验会拦住空 body」**。
+//
+// ⇒ ★★ 所以白名单的真正判据是：★ **空 body ⇒ 必然在【任何副作用之前】被 4xx 拦下**。
+// ⇒ ★★ 而这**只能靠实测判**⇒ ★★ 所以本门**真的去跑一遍**（★ 行为层）。
+//
+// ★ ★ 本门用**假 curl 替身**（★ 复用 apiSweepStubCurl）⇒ ★ 不打真实服务、★ 不产生副作用
+// ★ ★ ⇒ ★★ 但它能断「请求体是不是空的 `{}`」与「用的是 POST」——★ ★ 这两条正是安全性的前提。
+func TestApiSweepPostProbeWhitelistIsSafe(t *testing.T) {
+	root := apiSweepRepoRoot(t)
+	wlPath := filepath.Join(root, "scripts/audit/asset/safe-post-routes.txt")
+	raw, err := os.ReadFile(wlPath)
+	if err != nil {
+		t.Fatalf("★ 读白名单失败：%v", err)
+	}
+	lines := strings.Split(strings.TrimRight(string(raw), "\n"), "\n")
+	n := 0
+	for _, ln := range lines {
+		if strings.TrimSpace(ln) == "" || strings.HasPrefix(ln, "#") {
+			continue
+		}
+		cols := strings.Split(ln, "\t")
+		if len(cols) < 2 {
+			t.Errorf("★ 白名单行字段数 = %d（应 ≥ 2：path + 来源）：%q", len(cols), ln)
+			continue
+		}
+		if !strings.HasPrefix(cols[0], "/") {
+			t.Errorf("★ 白名单第 1 列 %q 不是路径（★ 应以 / 开头）", cols[0])
+		}
+		if strings.TrimSpace(cols[1]) == "" {
+			t.Errorf("★ 白名单 %s 缺「来源/理由」⇒ ★ 无从复核它是否安全", cols[0])
+		}
+		// ★ ★ 关键：**来源必须带源码位置**（★ 「逐条读过源码」是可复核的最低要求）。
+		if !strings.Contains(cols[1], ".go:") {
+			t.Errorf("★ 白名单 %s 的来源 %q 里**没有源码位置**（★ 应形如 xxx.go:123）⇒ ★ 无从复核",
+				cols[0], cols[1])
+		}
+		n++
+	}
+	if n == 0 {
+		t.Fatalf("★ 白名单是空的 ⇒ ★ D15 的 POST 探测面为空 ⇒ ★ 那 110 条端点仍无人验证")
+	}
+	t.Logf("白名单 %d 条，★ 每条都带源码位置 ✔", n)
+
+	// ★ ★ 行为层：★ 白名单里的端点**必须**被发成 POST + 空 JSON body。
+	dir := t.TempDir()
+	binDir := filepath.Join(dir, "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatalf("建 bin 目录失败：%v", err)
+	}
+	// ★ ★ 替身：★ 记录收到的**方法**与**请求体** ⇒ ★ 断「真的是 POST + `{}`」。
+	stub := filepath.Join(binDir, "curl")
+	stubBody := "#!/usr/bin/env bash\n" +
+		"log=\"${API_SWEEP_STUB_LOG}\"\n" +
+		"method=GET; data=''; want=0\n" +
+		"while [ $# -gt 0 ]; do\n" +
+		"  case \"$1\" in\n" +
+		"    -X) want=1; method=\"$2\"; shift 2; continue ;;\n" +
+		"    --data) want=1; data=\"$2\"; shift 2; continue ;;\n" +
+		"  esac\n" +
+		"  shift\n" +
+		"done\n" +
+		"printf '%s\\t%s\\t%s\\n' \"${method}\" \"${data}\" \"$*\" >> \"$log\"\n" +
+		"printf '{\"probe\":true}'\n" +
+		"printf '400\\t15\\t0.001'\n"
+	if err := os.WriteFile(stub, []byte(stubBody), 0o755); err != nil {
+		t.Fatalf("写 curl 替身失败：%v", err)
+	}
+	routesPath := filepath.Join(dir, "routes.txt")
+	// ★ 只放白名单里的**一条**（★ 其它端点不参与本门）。
+	wlPaths := []string{}
+	for _, ln := range lines {
+		if strings.TrimSpace(ln) == "" || strings.HasPrefix(ln, "#") {
+			continue
+		}
+		wlPaths = append(wlPaths, strings.Split(ln, "\t")[0])
+		break
+	}
+	if err := os.WriteFile(routesPath, []byte("ANY "+wlPaths[0]+"\n"), 0o644); err != nil {
+		t.Fatalf("写路由清单失败：%v", err)
+	}
+	cookiePath := filepath.Join(dir, "cookies.txt")
+	if err := os.WriteFile(cookiePath, []byte("# Netscape HTTP Cookie File\n"), 0o644); err != nil {
+		t.Fatalf("写 cookie 文件失败：%v", err)
+	}
+	outPath := filepath.Join(dir, "sweep.tsv")
+	logPath := filepath.Join(dir, "stub.log")
+
+	cmd := exec.Command("bash", apiSweepScriptPath(t))
+	cmd.Env = append(os.Environ(),
+		"LC_ALL=C", "LANG=C",
+		"PATH="+binDir+string(os.PathListSeparator)+os.Getenv("PATH"),
+		"ROUTES="+routesPath,
+		"COOKIE="+cookiePath,
+		"OUT="+outPath,
+		"TIMEOUT=5",
+		"CONC=1",
+		"LOAD_EVERY=3",
+		"LOAD_UNTRUSTED_MAX=999999",
+		"PROBE_POST=1",
+		"SAFE_POST_ROUTES="+wlPath,
+		"API_SWEEP_STUB_LOG="+logPath,
+	)
+	stderr := &strings.Builder{}
+	cmd.Stderr = stderr
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("巡检脚本跑失败：%v\nstderr:\n%s", err, stderr.String())
+	}
+	logRaw, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("读 curl 替身日志失败（★ 替身一次都没被调用 ⇒ ★ 这条门是恒绿门）：%v", err)
+	}
+	got := strings.TrimRight(string(logRaw), "\n")
+	if got == "" {
+		t.Fatal("★ curl 替身没被调用 ⇒ ★ 本门是恒绿门")
+	}
+	fields := strings.Split(got, "\t")
+	if len(fields) < 2 {
+		t.Fatalf("★ 替身日志格式不对：%q", got)
+	}
+	if fields[0] != "POST" {
+		t.Errorf("★ 替身收到的方法是 %q（期望 POST）⇒ ★ 白名单端点没用 POST 探测", fields[0])
+	}
+	if fields[1] != "{}" {
+		t.Errorf("★ 替身收到的请求体是 %q（期望 {}）⇒ ★ **空 body** 这个安全前提被破坏了", fields[1])
 	}
 }

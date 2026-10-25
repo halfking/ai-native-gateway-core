@@ -118,6 +118,29 @@ OUT="${OUT:-${TMPDIR:-/tmp}/llmgw-api-sweep.tsv}"
 TIMEOUT="${TIMEOUT:-20}"
 CONC="${CONC:-2}"
 LOAD_EVERY="${LOAD_EVERY:-25}"
+# ★★★ R157 轮（D16）：★ load 阈值 ⇒ ★ 读数**自标可信度**。
+#   ★ 缘由（★ R153 轮的实测教训）：★ 一次 35 小时的孤儿压测进程
+#   ★ ⇒ ★★ 让**连续多轮**的本地读数**集体失真**（★ 端点耗时塌缩 4~100 倍）
+#   ★ ⇒ ★★ 而当时的巡检输出里**没有任何字段**能让人看出「这批读数不可信」。
+#   ★ ⇒ ★★ 本轮把 load **从「只记录」升级到「参与判定」**。
+#   ★ 阈值口径：★ 默认 = **核数 × 2**（★ 可用 LOAD_UNTRUSTED_MAX 覆盖）
+#   ★ ⇒ ★ load 超过它 ⇒ ★ 这批**延迟读数**不可信（★ **状态码与分类仍可信**）。
+#   ★ ★ 为什么不按「load > 1」：★ 单核机器上 load=1 就是满载 ⇒ ⇒ 阈值必须跟核数走。
+LOAD_UNTRUSTED_MAX="${LOAD_UNTRUSTED_MAX:-}"
+# ★★★ R157 轮（D15）：★ 「可安全 POST」的白名单文件。
+#   ★ ★★ **默认关**：★ 保持既有行为（★ GET-only）⇒ ★★ 谁想开谁显式开
+#   ★★ （★ 开关名：PROBE_POST=1）。
+#   ★ ★★ 为什么默认关：★ 白名单是**人工逐条读过源码**得出的
+#   ★★ ⇒ ★★ 白名单一旦过期（★ 端点改了语义）⇒ ★★ 探测就可能产生副作用
+#   ★★ ⇒ ★★ **默认关 = 最坏情况也只是「少验证几条」**，★ 而不是「意外改了生产」。
+PROBE_POST="${PROBE_POST:-0}"
+SAFE_POST_ROUTES="${SAFE_POST_ROUTES:-${SCRIPT_DIR}/asset/safe-post-routes.txt}"
+if [[ "${PROBE_POST}" != "1" ]]; then
+  SAFE_POST_ROUTES=""
+elif [[ ! -f "${SAFE_POST_ROUTES}" ]]; then
+  die "PROBE_POST=1 但白名单文件不存在：${SAFE_POST_ROUTES}"
+  exit 64
+fi
 
 # ★ 副作用路径黑名单（GET 也可能触发写 / 外呼 / 状态变更）。
 SKIP_RE='execute|cleanup|delete|resume|trigger|reset|purge|revoke|recover|enable|test-now|session-ping|/actions$|rotate|invalidate'
@@ -163,6 +186,37 @@ load1() {
     }')"
   if [[ -z "${t}" ]]; then t="unknown"; fi
   printf '%s' "${t}"
+}
+
+# cpu_count 读宿主机逻辑核数（★ macOS 与 Linux 两条路径）。
+cpu_count() {
+  local n=""
+  if command -v sysctl >/dev/null 2>&1; then
+    n="$(sysctl -n hw.ncpu 2>/dev/null || true)"
+  fi
+  if [[ -z "${n}" ]] && command -v nproc >/dev/null 2>&1; then
+    n="$(nproc 2>/dev/null || true)"
+  fi
+  if [[ -z "${n}" ]] && command -v getconf >/dev/null 2>&1; then
+    n="$(getconf _NPROCESSORS_ONLN 2>/dev/null || true)"
+  fi
+  case "${n}" in
+    ''|*[!0-9]*) n="" ;;
+  esac
+  printf '%s' "${n}"
+}
+
+# load_threshold 算「load 超过多少 ⇒ 延迟读数不可信」。
+# ★ 默认 = 核数 × 2；★ 核数取不到 ⇒ 退回 4（★ 一个保守的绝对值）。
+load_threshold() {
+  if [[ -n "${LOAD_UNTRUSTED_MAX}" ]]; then
+    printf '%s' "${LOAD_UNTRUSTED_MAX}"
+    return 0
+  fi
+  local c
+  c="$(cpu_count)"
+  if [[ -z "${c}" ]]; then c=2; fi
+  printf '%s' "$((c * 2))"
 }
 
 # ─────────────────────────── 输入自检（fail-fast） ───────────────────────────
@@ -249,6 +303,22 @@ while IFS= read -r raw || [[ -n "${raw}" ]]; do
   fi
   method="$(printf '%s' "${method}" | tr 'a-z' 'A-Z')"
 
+  # ★ ★ R157 轮（D15）：★ **白名单优先**。
+  #   ★ 命中白名单 ⇒ ★ 用 POST + **空 JSON body** 探测（★ 空 body ⇒ 必然在
+  #   ★   参数校验处被拦住 ⇒ ★ **零副作用**）⇒ ★★ 这 6 条端点从此**被真正验证过**。
+  #   ★ ★ 白名单里每条都**逐条读过源码**（★ 见 scripts/audit/asset/safe-post-routes.txt）。
+  #   ★ ★ 匹配必须**精确**（★ 比较第一列）：★ `grep -F "$path"` 会**前缀误匹配**
+  #   ★ ★ ⇒ ★★ `/api/x` 会命中 `/api/x/y` ⇒ ★★ 于是会 POST 一个**没审过**的端点。
+  if [[ -n "${SAFE_POST_ROUTES}" ]] && awk -F'\t' -v p="${path}" \
+       '$1 == p && $1 !~ /^#/ { found=1 } END { exit !found }' "${SAFE_POST_ROUTES}" 2>/dev/null; then
+    method="POST"
+    printf '%s\n' "${raw}" >> "${WORKDIR}/probe_post.txt"
+    n_expected=$((n_expected + 1))
+    printf '%s\t%s\t%s\n' "${n_expected}" "$(subst "${path}")" "POST" >> "${WORKDIR}/paths.tsv"
+    printf '%s\n' "${n_expected}" >> "${WORKDIR}/indices.txt"
+    continue
+  fi
+
   # ① 非 GET ⇒ 跳过（该端点需要别的方法才能验证）。
   if [[ "${method}" != "GET" ]]; then
     n_skip_method=$((n_skip_method + 1))
@@ -269,7 +339,9 @@ while IFS= read -r raw || [[ -n "${raw}" ]]; do
   fi
 
   n_expected=$((n_expected + 1))
-  printf '%s\t%s\n' "${n_expected}" "$(subst "${path}")" >> "${WORKDIR}/paths.tsv"
+  # ★ ★ R157 轮（D15）：★ paths.tsv 多带一列 **method**（★ 默认 GET）。
+  # ★ ★ 为什么：★ 白名单里的端点要发 POST ⇒ ★ 巡检器必须知道**这一条**用哪个方法。
+  printf '%s\t%s\t%s\n' "${n_expected}" "$(subst "${path}")" "${method}" >> "${WORKDIR}/paths.tsv"
   printf '%s\n' "${n_expected}" >> "${WORKDIR}/indices.txt"
 done < "${ROUTES}"
 
@@ -298,14 +370,24 @@ sweep_one() {
   local idx="$1"
   local line path body errfile out rc code bytes time_total ms class note
   line="$(sed -n "${idx}p" "${WORKDIR}/paths.tsv")"
-  path="${line#*$'\t'}"
+  path="$(printf '%s' "${line}" | cut -f2)"
+  http_method="$(printf '%s' "${line}" | cut -f3)"
+  [[ -z "${http_method}" ]] && http_method="GET"
   body="${WORKDIR}/body.${idx}"
   errfile="${WORKDIR}/err.${idx}"
 
   # ★ 不做 `|| echo "000"` 那种兜底：curl 的退出码单独取，
   #   否则退出标记会被**拼接到状态码后面**（LESSONS.md §187）。
-  out="$(curl -sS -m "${TIMEOUT}" -b "${COOKIE}" -o "${body}" \
-        -w '%{http_code}\t%{size_download}\t%{time_total}' "${BASE}${path}" 2>"${errfile}")"
+  # ★ ★ R157 轮（D15）：★ POST 时发**空 JSON body**（★ `{}`）
+  # ★ ★ ⇒ ★ 端点必然在**参数校验**处被拦住 ⇒ ★★ 零副作用。
+  if [[ "${http_method}" == "POST" ]]; then
+    out="$(curl -sS -m "${TIMEOUT}" -b "${COOKIE}" -o "${body}" \
+          -X POST -H 'Content-Type: application/json' --data '{}' \
+          -w '%{http_code}\t%{size_download}\t%{time_total}' "${BASE}${path}" 2>"${errfile}")"
+  else
+    out="$(curl -sS -m "${TIMEOUT}" -b "${COOKIE}" -o "${body}" \
+          -w '%{http_code}\t%{size_download}\t%{time_total}' "${BASE}${path}" 2>"${errfile}")"
+  fi
   rc=$?
 
   code="000"
@@ -414,9 +496,32 @@ meta_row() {
   printf '#meta\t%s\t%s\t0\tmeta\t%s=%s\n' "$1" "$2" "$1" "$2"
 }
 
+# ★★★ R157 轮（D16）：★ 读数**自标可信度**。
+#   ★ 判据：★ 采样期内的 **load 峰值** > 阈值 ⇒ ★ 这批**延迟读数**不可信。
+#   ★ ★ 为什么用「峰值」而不是「起止值」：★ 孤儿压测进程那种形态是
+#   ★ ★ **中途**起来的 ⇒ ★ 起止两个采样点可能都正常 ⇒ ★ ★ 峰值才抓得住。
+#   ★ ★ 为什么只标「延迟不可信」而不废掉整份读数：★ 状态码与分类
+#   ★ ★ **不依赖**调度延迟 ⇒ ★★ 那些列仍然有效 ⇒ ★★ 全废是浪费信息。
+LOAD_THRESHOLD="$(load_threshold)"
+LOAD_TRUST="trustworthy"
+if awk -v a="${LOAD_PEAK}" -v b="${LOAD_THRESHOLD}" \
+     'BEGIN { exit !(a != "" && a != "unknown" && (a + 0) > (b + 0)) }'; then
+  LOAD_TRUST="latency_untrusted"
+fi
+if [[ "${LOAD_TRUST}" != "trustworthy" ]]; then
+  printf '★ ★★ load 峰值 %s > 阈值 %s ⇒ ★ 本批**延迟**读数**不可信**（★ 状态码/分类仍可信）\n' \
+    "${LOAD_PEAK}" "${LOAD_THRESHOLD}" >&2
+  printf '★ ★★ 输出里已自标 reading_trustworthy=%s ⇒ ★ 别把它当性能读数用\n' "${LOAD_TRUST}" >&2
+fi
+
 if ! {
   printf 'route\tstatus\tlatency_ms\tbytes\tclass\tnote\n'
   cat "${WORKDIR}/data.tsv"
+  # ★ ★ R157 轮（D16）：★ 自标**读数可信度**（★ 必须写在**输出 TSV 里**，
+  #   ★ ⇒ 消费方（人 / 脚本 / 下游门）**读 TSV 时就能看到** ⇒ ★ 不必去翻 stderr）。
+  meta_row "reading_trustworthy" "${LOAD_TRUST}"
+  meta_row "load_threshold" "${LOAD_THRESHOLD}"
+  meta_row "cpu_count" "$(cpu_count)"
   meta_row "load_start" "${LOAD_START}"
   meta_row "load_end" "${LOAD_END}"
   meta_row "load_peak" "${LOAD_PEAK}"
@@ -491,9 +596,22 @@ fi
   printf '  load_end    : %s\n' "${LOAD_END}"
   printf '  load_peak   : %s\n' "${LOAD_PEAK}"
   printf '  采样点数    : %s\n' "${n_samples}"
+  printf '  阈值        : %s（★ 核数 %s × 2）\n' "${LOAD_THRESHOLD}" "$(cpu_count)"
   printf '  ★ 慢读数请对照本节：机器饱和时的耗时不能当端点缺陷。\n'
   printf '===============================================\n'
   printf '结果 TSV: %s\n' "${OUT}"
 } >&2
+
+# ★★★ R157 轮（D16）：★ load 超阈值 ⇒ ★ **退出码 75**（★ 临时性失败，★ 与 0 区分开）。
+#   ★ ★ 为什么要有退出码：★ 「读数不可信」这件事如果**只**写在 stderr 上，
+#   ★ ★ 在管道里 / CI 里 / 别人的脚本里**都会被丢掉**（★ 与 §409 通用式四同源）。
+#   ★ ★ 为什么是 75（★ 不是 1）：★ 1 通常被当成「工具坏了」⇒ ★ 75 = 临时性失败
+#   ★ ★ ⇒ ★ 调用方可以**明确地**决定「这批延迟数据要不要用」。
+#   ★ ★ 注意：★ **状态码与分类仍然有效** ⇒ ★★ 不要整份丢弃 ⇒ ★★ 用 meta 自标来过滤。
+if [[ "${LOAD_TRUST}" != "trustworthy" ]]; then
+  printf '★ 退出码 75：★ load 峰值 %s > 阈值 %s ⇒ ★ **延迟**读数不可信（★ 状态码/分类仍可信）\n' \
+    "${LOAD_PEAK}" "${LOAD_THRESHOLD}" >&2
+  exit 75
+fi
 
 exit 0
