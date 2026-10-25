@@ -29,12 +29,6 @@ export default {
     extraction_failed: '擷取失敗',
     unexpected_structure: '非預期結構',
     null_usage_values: 'Usage 值為 Null',
-    token_mismatch: 'Token 不匹配',
-    missing_provider_tokens: '遺失 Provider Tokens',
-    missing_client_tokens: '遺失 Client Tokens',
-    json_parse_error: 'JSON 解析錯誤',
-    missing_finish_reason: '遺失 Finish Reason',
-    missing_content: '遺失 Content',
   },
 
   anomalyTypeDescription: {

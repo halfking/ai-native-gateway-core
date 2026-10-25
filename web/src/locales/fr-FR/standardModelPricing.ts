@@ -36,7 +36,6 @@ export default {
   },
   table: {
     colModel: 'Modèle standard',
-    colVendor: 'Fournisseur',
     colStatus: 'Statut',
     colActions: '',
     edit: 'Tarification',

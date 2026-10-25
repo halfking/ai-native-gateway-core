@@ -35,7 +35,6 @@ export default {
     modelPricing: "定價管理",
     freePool: "免費資源",
     freeDiscovery: "免費發現",
-    routingDefaults: "Routing Defaults",
     tenants: "租戶管理",
     users: "使用者管理",
     keys: "API 金鑰",
@@ -46,7 +45,6 @@ export default {
     requestRegistry: "Request Registry",
     connectionRegistry: "Connection Registry",
     turns: "輪次列表",
-    requestTrace: "請求鏈路追蹤",
     sessions: "會話清單",
     pluginSessions: "插件會話列表",
     sessionManagement: "會話管理",
@@ -89,9 +87,6 @@ export default {
     opsCenter: "中心运维",
     opsVibeCoding: "VibeCoding",
     opsProductEntry: "產品入口",
-    tenantLicense: "我的授權",
-    tenantAutoUpdate: "我的更新"
-,
     updateActivate: '更新与激活',
     // 2026-09-04: 未激活时替换「自动更新」等入口的激活 CTA 文案 (parity backfill)
 

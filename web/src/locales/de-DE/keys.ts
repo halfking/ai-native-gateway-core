@@ -312,7 +312,6 @@ export default {
   approveFailed: 'Genehmigung fehlgeschlagen',
   backendNoValidKey: 'Das Backend hat keinen gültigen Schlüssel zurückgegeben',
   cannotRestoreFullKey: 'Dieser Schlüssel kann nicht wiederhergestellt werden. Bitte neu ausstellen',
-  close: 'Schließen',
   closed: 'Geschlossen/abgelaufen',
   conflictBlocked: 'Duplikat vorhanden, Ausstellung nicht möglich',
   copied: '✓ Kopiert',

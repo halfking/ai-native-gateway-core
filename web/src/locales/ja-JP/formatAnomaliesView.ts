@@ -29,12 +29,6 @@ export default {
     extraction_failed: '抽出失敗',
     unexpected_structure: '予期しない構造',
     null_usage_values: 'Usage値がNull',
-    token_mismatch: 'トークン不一致',
-    missing_provider_tokens: 'プロバイダートークン欠落',
-    missing_client_tokens: 'クライアントトークン欠落',
-    json_parse_error: 'JSON解析エラー',
-    missing_finish_reason: 'Finish Reason欠落',
-    missing_content: 'Content欠落',
   },
 
   anomalyTypeDescription: {

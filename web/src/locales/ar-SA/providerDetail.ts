@@ -623,8 +623,4 @@ export default {
     loadFailed: "فشل التحميل",
     triggerFailed: "فشل التشغيل"
   },
-  tableCol: {},
-  models_creds_labelFallback: "بيانات الاعتماد #{id}",
-  models_overview_chipAvailable: "متاح",
-  models_overview_chipUnavailable: "غير متاح"
 }

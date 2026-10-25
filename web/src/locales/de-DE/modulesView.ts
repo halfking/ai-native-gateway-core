@@ -145,11 +145,6 @@ export default {
     dingtalkBotIntegration: 'DingTalk-Bot-Integration',
   },
 
-    importCsv: 'CSV importieren',
-    close: 'Schließen',
-    csvImportResult: 'Import-Ergebnis',
-    csvImportSuccess: '{imported} importiert, {skipped} übersprungen',
-    csvErrorRow: 'Zeile {row}: {error}',
   empty: {
     selectModule: 'Wählen Sie ein Modul aus, um Details und Konfiguration anzuzeigen',
   },
@@ -188,21 +183,6 @@ export default {
     testFailed: 'Test fehlgeschlagen',
   },
 
-    overview_dependenciesTitle: 'Abhängigkeiten',
-  overview_required: 'Erforderlich',
-  overview_optional: 'Optional',
-  overview_enableAllDeps: '{count} fehlende Pflichtabhängigkeiten aktivieren',
-  overview_enableAllDepsHint: 'Das Backend aktiviert zuerst alle fehlenden Pflichtabhängigkeiten in stabiler Reihenfolge und danach dieses Modul.',
-  overview_cascading: 'Abhängigkeiten werden aktiviert…',
-  overview_cascadeSuccess: '{count} Abhängigkeiten automatisch aktiviert: {names}',
-  overview_cascadeEmpty: 'Alle Abhängigkeiten sind aktiviert, das Modul ist jetzt aktiv.',
-  overview_cascadeAlreadyEnabled: 'Das Modul ist bereits aktiviert, es sind keine weiteren Abhängigkeiten nötig.',
-  overview_cascadeLogTitle: 'In diesem Durchlauf aktivierte Abhängigkeiten: ',
-  routing_importCsv: 'CSV-Sammelimport',
-  routing_close: 'Schließen',
-  routing_csvImportResult: 'Ergebnis des Sammelimports',
-  routing_csvImportSuccess: '{imported} importiert, {skipped} übersprungen',
-  routing_csvErrorRow: 'Zeile {row}: {error}',
   // 同步的扁平键
 
   modeBannerTitle: 'This page only does three things:',

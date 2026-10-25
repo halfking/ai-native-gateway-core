@@ -97,7 +97,6 @@ export default {
     fixFailed: 'Failed to trigger fix',
     totalEvents: 'Total Events',
     openEvents: 'Open',
-    resolvedEvents: 'Resolved',
     avgResolutionTime: 'Avg Resolution Time',
     ruleName: 'Rule Name',
     ruleNamePlaceholder: 'Enter rule name',
@@ -110,7 +109,6 @@ export default {
     detectedAt: 'Detected At',
     resolvedAt: 'Resolved At',
     status: {
-      open: 'Open',
       resolving: 'Resolving',
       resolved: 'Resolved',
 

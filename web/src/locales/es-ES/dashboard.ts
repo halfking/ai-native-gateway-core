@@ -282,8 +282,6 @@ v2: {
     modeLarge: 'Grande',
     modeSmallTitle: 'Modo pequeño: barras verticales, caben más solicitudes (predeterminado)',
     modeLargeTitle: 'Modo grande: tarjetas con más detalle de solicitud',
-    probeAll: 'Todos', probeOnly: 'Solo sondas',
-    probeAllTitle: 'Mostrar todas las solicitudes (predeterminado)', probeOnlyTitle: 'Mostrar solo solicitudes de sonda',
     // 2026-08-06: filtros de negocio / sonda + títulos (alineado con zh-CN)
     business: 'Negocio',
     probe: 'Sonda',

@@ -312,7 +312,6 @@ export default {
   approveFailed: "L'approbation a échoué",
   backendNoValidKey: "Le serveur n'a pas renvoyé de clé valide",
   cannotRestoreFullKey: 'Cette clé ne peut pas être restaurée, veuillez en émettre une nouvelle',
-  close: 'Fermer',
   closed: 'Fermée/expirée',
   conflictBlocked: "Un doublon existe, émission impossible",
   copied: '✓ Copiée',

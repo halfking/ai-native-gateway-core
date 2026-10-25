@@ -623,8 +623,4 @@ export default {
     loadFailed: "Échec du chargement",
     triggerFailed: "Échec du déclenchement"
   },
-  tableCol: {},
-  models_creds_labelFallback: "Identifiant #{id}",
-  models_overview_chipAvailable: "Disponible",
-  models_overview_chipUnavailable: "Indisponible"
 }

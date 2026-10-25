@@ -273,8 +273,6 @@ offline: "下線資源",
     modeLarge: '大',
     modeSmallTitle: '小模式：直條顯示，可容納更多請求（預設）',
     modeLargeTitle: '大模式：卡片顯示，包含更多請求詳情',
-    probeAll: '全部', probeOnly: '僅探測',
-    probeAllTitle: '顯示所有請求（預設）', probeOnlyTitle: '僅顯示探測請求',
     // 2026-08-06: 業務 / 探測過濾 + 標題（與 zh-CN 對齊）
     business: '業務',
     probe: '探測',

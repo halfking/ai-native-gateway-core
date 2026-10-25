@@ -34,7 +34,6 @@ export default {
   },
   table: {
     colModel: 'Modelo estándar',
-    colVendor: 'Proveedor',
     colStatus: 'Estado',
     colActions: '',
     edit: 'Precio',

@@ -33,7 +33,6 @@ export default {
     modelPricing: "価格管理",
     freePool: "無料リソース",
     freeDiscovery: "無料リソース発見",
-    routingDefaults: "Routing Defaults",
     tenants: "テナント管理",
     users: "ユーザー管理",
     keys: "API キー",
@@ -44,7 +43,6 @@ export default {
     requestRegistry: "Request Registry",
     connectionRegistry: "Connection Registry",
     turns: "ターンリスト",
-    requestTrace: "リクエストトレース",
     sessions: "セッション一覧",
     pluginSessions: "プラグインセッション一覧",
     sessionManagement: "セッション管理",
@@ -87,9 +85,6 @@ export default {
     opsCenter: "中心运维",
     opsVibeCoding: "VibeCoding",
     opsProductEntry: "Product Entry",
-    tenantLicense: "マイライセンス",
-    tenantAutoUpdate: "マイアップデート"
-,
     updateActivate: '更新与激活',
     // 2026-09-04: 未激活时替换「自动更新」等入口的激活 CTA 文案 (parity backfill)
     activateAction: 'アクティベート',

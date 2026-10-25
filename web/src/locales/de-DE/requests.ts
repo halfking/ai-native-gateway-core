@@ -439,9 +439,4 @@ export default {
   writeMemora: 'In Memora schreiben',
   writingMemora: 'Wird geschrieben…',
   // 同步的扁平键
-  list_filter_timeOptions_h1: '1 Stunde',
-  list_filter_timeOptions_h6: '6 Stunden',
-  list_filter_timeOptions_h24: '24 Stunden',
-  list_filter_timeOptions_d3: '3 Tage',
-  list_filter_timeOptions_d7: '7 Tage',
 }
