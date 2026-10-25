@@ -10452,3 +10452,9 @@ cron 日志里也有 `"retention_hours":8`）⇒ ⇒ ★★★ 实测 `max(hot.t
 ★ **复验**：★ `TestPGTestEnvRegistryCoversEveryGapName` **PASS**（★ 103 个 env 名 / 登记册 77 条 /
 ★ 未登记 **0** / 死条目 **0**）⇒ ★★ **origin/main 由红转绿**。
 ★ ★★ **本条无 SQL 变更、无 schema 变更、无生产写入** ⇒ ★ **对生产的写入 = 0**。
+## 2026-10-25T18:10:46Z — deploy 245 build_seq 2859 (53a8de44)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 909 | `909_session_summaries_search_trgm_indexes.sql` | `77d829d0289cb3e0b16dfa93b16c70addcbf84d265f58b3e4996680ac4cb8e6b` | applied+verified |
+
