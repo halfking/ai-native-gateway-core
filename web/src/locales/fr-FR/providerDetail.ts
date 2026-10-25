@@ -263,14 +263,14 @@ export default {
     supplier: 'Fournisseur', errorCode: 'Code d’erreur', requestId: 'ID de requête',
     stage: 'Étape', retry: 'Réessai', latency: 'Durée',
     openRequestTitle: 'Ouvrir le détail de la requête',
-    title: "供应商错误明细", selectCredential: "请先从凭据列表选择凭据", windowTitle: "统计时间窗口",
-    lastHour: "最近 1 小时", lastDay: "最近 24 小时", lastWeek: "最近 7 天", loading: "加载错误明细中…",
-    loadFailed: "加载供应商错误明细失败", credential: "凭据", health: "健康状态", availability: "可用状态", circuit: "熔断状态",
-    consecutiveFailures: "连续失败", balance: "余额", summary: "错误分布", errorKind: "错误类型", count: "次数",
+    title: "Détail des erreurs fournisseur", selectCredential: "Sélectionnez d'abord un identifiant dans la liste", windowTitle: "Fenêtre temporelle",
+    lastHour: "Dernière heure", lastDay: "Dernières 24 heures", lastWeek: "7 derniers jours", loading: "Chargement des erreurs fournisseur…",
+    loadFailed: "Échec du chargement des erreurs fournisseur", credential: "Identifiant", health: "État de santé", availability: "Disponibilité", circuit: "Coupe-circuit",
+    consecutiveFailures: "Échecs consécutifs", balance: "Solde", summary: "Répartition des erreurs", errorKind: "Type d'erreur", count: "Nombre",
     statusCodes: "Types de codes statut", retryableCount: "Réessayables", stageDist: "Répartition par étape", lastSeen: "Dernière occurrence", noErrors: "Aucune erreur dans cette fenêtre", recentFailures: "Échecs récents",
-    time: "时间", model: "模型", kind: "错误类型", httpStatus: "HTTP 状态", message: "错误消息", upstreamPreview: "上游响应预览",
-    noRecentFailures: "没有最近失败记录", qualityScores: "最近 7 天供应商质量评分", date: "日期", totalScore: "综合评分",
-    availabilityScore: "可用性评分", stabilityScore: "稳定性评分", noQualityScores: "暂无质量评分",
+    time: "Heure", model: "Modèle", kind: "Type d'erreur", httpStatus: "Statut HTTP", message: "Message", upstreamPreview: "Aperçu de la réponse amont",
+    noRecentFailures: "Aucun échec récent", qualityScores: "Qualité du fournisseur sur les 7 derniers jours", date: "Date", totalScore: "Score global",
+    availabilityScore: "Score de disponibilité", stabilityScore: "Score de stabilité", noQualityScores: "Aucun score de qualité",
   },
   models: {
     title: "Modèles ({n})",
@@ -406,11 +406,11 @@ export default {
     refreshSummaryFailed: "Échec {n}",
     refreshSummaryEmpty: "Aucun changement",
     creds: {
-      labelFallback: "凭据 #{id}"
+      labelFallback: "Identifiant #{id}"
     },
     overview: {
-      chipAvailable: "可用",
-      chipUnavailable: "不可用"
+      chipAvailable: "Disponible",
+      chipUnavailable: "Indisponible"
     }
 ,
     probeAllRecoveredHint: '✓ {n} modèles sondés sans problème ; node_probe_state rétabli automatiquement, candidats de routage réactivés',
@@ -624,7 +624,7 @@ export default {
     triggerFailed: "Échec du déclenchement"
   },
   tableCol: {},
-  models_creds_labelFallback: "凭据 #{id}",
-  models_overview_chipAvailable: "可用",
-  models_overview_chipUnavailable: "不可用"
+  models_creds_labelFallback: "Identifiant #{id}",
+  models_overview_chipAvailable: "Disponible",
+  models_overview_chipUnavailable: "Indisponible"
 }

@@ -263,14 +263,14 @@ export default {
     supplier: 'Proveedor', errorCode: 'Código de error', requestId: 'ID de solicitud',
     stage: 'Etapa', retry: 'Reintento', latency: 'Duración',
     openRequestTitle: 'Abrir detalle de la solicitud',
-    title: "供应商错误明细", selectCredential: "请先从凭据列表选择凭据", windowTitle: "统计时间窗口",
-    lastHour: "最近 1 小时", lastDay: "最近 24 小时", lastWeek: "最近 7 天", loading: "加载错误明细中…",
-    loadFailed: "加载供应商错误明细失败", credential: "凭据", health: "健康状态", availability: "可用状态", circuit: "熔断状态",
-    consecutiveFailures: "连续失败", balance: "余额", summary: "错误分布", errorKind: "错误类型", count: "次数",
+    title: "Detalle de errores del proveedor", selectCredential: "Seleccione primero una credencial de la lista", windowTitle: "Ventana de tiempo",
+    lastHour: "Última hora", lastDay: "Últimas 24 horas", lastWeek: "Últimos 7 días", loading: "Cargando errores del proveedor…",
+    loadFailed: "No se pudieron cargar los errores del proveedor", credential: "Credencial", health: "Estado de salud", availability: "Disponibilidad", circuit: "Estado del circuito",
+    consecutiveFailures: "Fallos consecutivos", balance: "Saldo", summary: "Distribución de errores", errorKind: "Tipo de error", count: "Recuento",
     statusCodes: "Tipos de código de estado", retryableCount: "Reintentables", stageDist: "Distribución por etapa", lastSeen: "Última vez", noErrors: "Sin errores en esta ventana", recentFailures: "Fallos recientes",
-    time: "时间", model: "模型", kind: "错误类型", httpStatus: "HTTP 状态", message: "错误消息", upstreamPreview: "上游响应预览",
-    noRecentFailures: "没有最近失败记录", qualityScores: "最近 7 天供应商质量评分", date: "日期", totalScore: "综合评分",
-    availabilityScore: "可用性评分", stabilityScore: "稳定性评分", noQualityScores: "暂无质量评分",
+    time: "Hora", model: "Modelo", kind: "Tipo de error", httpStatus: "Estado HTTP", message: "Mensaje de error", upstreamPreview: "Vista previa del upstream",
+    noRecentFailures: "No hay fallos recientes", qualityScores: "Calidad del proveedor en los últimos 7 días", date: "Fecha", totalScore: "Puntuación total",
+    availabilityScore: "Puntuación de disponibilidad", stabilityScore: "Puntuación de estabilidad", noQualityScores: "Sin puntuaciones de calidad",
   },
   models: {
     title: "Modelos ({n})",
@@ -406,11 +406,11 @@ export default {
     refreshSummaryFailed: "Fallidos {n}",
     refreshSummaryEmpty: "Sin cambios",
     creds: {
-      labelFallback: "凭据 #{id}"
+      labelFallback: "Credencial n.º {id}"
     },
     overview: {
-      chipAvailable: "可用",
-      chipUnavailable: "不可用"
+      chipAvailable: "Disponible",
+      chipUnavailable: "No disponible"
     }
 ,
     probeAllRecoveredHint: '✓ {n} modelos sondeados correctamente; node_probe_state recuperado y candidatos de enrutado reactivados',
@@ -624,7 +624,7 @@ export default {
     triggerFailed: "Disparo fallido"
   },
   tableCol: {},
-  models_creds_labelFallback: "凭据 #{id}",
-  models_overview_chipAvailable: "可用",
-  models_overview_chipUnavailable: "不可用"
+  models_creds_labelFallback: "Credencial #{id}",
+  models_overview_chipAvailable: "Disponible",
+  models_overview_chipUnavailable: "No disponible"
 }

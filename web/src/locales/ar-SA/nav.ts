@@ -10,7 +10,7 @@ export default {
     guide: "دليل التكامل",
     chat: "محادثة",
     plugins: "الإضافات",
-    opsplatform: "运维平台"
+    opsplatform: "مركز العمليات"
   },
   item: {
     liveTopology: 'Live Topology',
@@ -82,9 +82,9 @@ export default {
     opsOverview: "Ops Overview",
     opsLicenses: "إدارة التراخيص",
     opsDownloads: "Releases & Downloads",
-    opsFaults: "故障管理",
-    opsAutoUpdate: "自动更新",
-    opsCenter: "中心运维",
+    opsFaults: "إدارة الأعطال",
+    opsAutoUpdate: "التحديث التلقائي",
+    opsCenter: "العمليات المركزية",
     opsVibeCoding: "VibeCoding",
     opsProductEntry: "Product Entry",
     tenantLicense: "ترخيصي",

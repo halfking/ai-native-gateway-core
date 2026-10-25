@@ -300,16 +300,16 @@ export default {
       failed: "Error al eliminar: {msg}"
     },
     hotTableNames: {
-      requestLogs: "请求日志",
-      credentialModelIndex: "凭据模型索引",
-      usageLedger: "用量账本",
-      routingDecisionLog: "路由决策日志"
+      requestLogs: "Registros de solicitudes",
+      credentialModelIndex: "Índice de credenciales y modelos",
+      usageLedger: "Libro de uso",
+      routingDecisionLog: "Registro de decisiones de enrutamiento"
     },
     labels: {
-      rows: "行数",
+      rows: "Filas",
       toast: "TOAST"
     },
-    migrationFailed: "迁移失败"
+    migrationFailed: "Error al migrar"
 ,
     jobIdMissing: 'No se pudo iniciar el trabajo asíncrono: falta job_id',
 
@@ -343,15 +343,15 @@ export default {
 
     cronRunning: 'Running now',
   },
-  preview: "预览清理",
-  hotData: "热数据 (0-7天)",
-  warmData: "温数据 (7-30天)",
-  coldData: "冷数据 (30-90天)",
-  expiredData: "过期数据 (>90天)",
-  missingDate: "请选择起始日期和结束日期",
-  previewFailed: "预览失败",
-  needPreview: "请先预览影响",
-  executeNotImpl: "清理功能将在下一阶段实现。请使用命令行脚本执行清理操作。"
+  preview: "Vista previa de la limpieza",
+  hotData: "Datos calientes (0-7 días)",
+  warmData: "Datos templados (7-30 días)",
+  coldData: "Datos fríos (30-90 días)",
+  expiredData: "Datos caducados (más de 90 días)",
+  missingDate: "Seleccione una fecha de inicio y una de fin",
+  previewFailed: "Error en la vista previa",
+  needPreview: "Previsualice primero el impacto",
+  executeNotImpl: "La función de limpieza se implementará en una fase posterior. Use el script de línea de comandos para ejecutarla."
 ,
   pages: {
     filesystemMaintenance: 'Mantenimiento del sistema de archivos',

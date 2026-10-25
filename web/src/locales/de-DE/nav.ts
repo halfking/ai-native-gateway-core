@@ -10,7 +10,7 @@ export default {
     guide: "Onboarding",
     chat: "Chat",
     plugins: "Plugins",
-    opsplatform: "运维平台"
+    opsplatform: "Ops-Zentrum"
   },
   item: {
     activateAction: 'Aktivieren',
@@ -84,9 +84,9 @@ export default {
     opsOverview: "Ops Overview",
     opsLicenses: "Lizenzverwaltung",
     opsDownloads: "Releases & Downloads",
-    opsFaults: "故障管理",
-    opsAutoUpdate: "自动更新",
-    opsCenter: "中心运维",
+    opsFaults: "Fehlermanagement",
+    opsAutoUpdate: "Automatische Updates",
+    opsCenter: "Zentrumsbetrieb",
     opsVibeCoding: "VibeCoding",
     opsProductEntry: "Product Entry",
     tenantLicense: "Meine Lizenz",

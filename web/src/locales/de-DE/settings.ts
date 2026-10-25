@@ -12,7 +12,7 @@ export default {
     routing: 'Routing',
     session: 'Sitzung',
     security: 'Sicherheit',
-    outputCompliance: 'Ausgabekompatibilität',
+    outputCompliance: 'Ausgabe-Compliance',
     circuitBreaker: 'Schutzschalter',
     general: 'Andere',
   },
@@ -157,5 +157,5 @@ export default {
   },
 
   // 同步的扁平键
-  outputCompliance: '输出合规',
+  outputCompliance: 'Ausgabe-Compliance',
 }
