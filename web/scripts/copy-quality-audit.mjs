@@ -189,8 +189,28 @@ const EN_THROAT = [
  *   本仓把 `—` 当「空值占位」用得极多（表格里的「无」），那是数据约定，
  *   不是标点 —— 早期版本用 `EM_DASH = /—|\s--\s/` 把这几百处全判红了。
  *   ⇒ 判据必须要求破折号**两侧都有文字**。
+ *
+ * ★★ 2026-10-25 补：左侧**紧邻字母**是判据的盲区。
+ *   实测：左侧是 `)` / `"` / `}` / `**` 的形态（同一副「破折号当标点」骨架）
+ *   全部漏判 ⇒ 移动端语言包里量到 **48 处**同样的 AI 腔，而桶读数却是 0
+ *   ⇒ **「读数 0」不等于「干净」**。
+ *
+ * ★ 判据最终形态（三个条件同时成立才算违规）：
+ *   ① 破折号**左侧紧邻**一个「字母 / 数字 / 右括号 / 右花括号 / 引号 / 星号」
+ *      —— 不要求它与前面的词相邻（`it at 0) — do not read` 也要抓住）；
+ *   ② 破折号**右侧是空格 + 一个以字母开头的词**；
+ *   ③ ★ 但右侧首 token 形如 `P99` / `L50`（字母+数字）⇒ 判作**区间标签**，放过
+ *      —— `P50 — P99` 是范围连接号，不是「两个分句」，不是 AI 腔。
+ *
+ * ★ 形态学：②③ 合起来把「右侧只有一个短 token」排除在外，
+ *   于是「标签 + 指令」型（`Loading — retry.`）仍被抓，
+ *   而「区间 + 续句」型（`P50 — P99 are shown`）被放过。
+ *
+ * ★ 判据细节会改变命中集合（LESSONS §404 通用式三的又一次印证）：
+ *   这条判据前后量过 4 个版本（紧邻字母 / 放宽收尾符 / 数字收窄 / 本版），
+ *   每改一次命中集合都变 ⇒ **改判据必须重新量全仓，并逐条复核新命中**。
  */
-const EM_DASH = /\p{L}\s*—\s*\p{L}/u
+const EM_DASH = /[\p{L}\p{N}\]\)}`"'*]\s+—\s+(?!\p{L}\d+\b)["'*]?\p{L}\w*(?=[\s\-.,;:!?)"'`]|$)/u
 const DOUBLE_HYPHEN = /\s--\s/
 
 /** E. 装饰性中点串：三段及以上。 */
@@ -592,6 +612,72 @@ const FIXTURES = [
     expect: 'red',
     bad: { locale: 'en-US', str: 'Data stays on your side — and the bill stays readable.' },
     good: { locale: 'en-US', str: 'Data stays on your side, and the bill stays readable.' },
+    fn: checkEmDash,
+  },
+  {
+    // ★★ 左侧是**右括号**的形态：同一副「破折号当标点」骨架，但旧判据漏判
+    //   （实测这类在移动端语言包里有 48 处，而桶读数是 0 ⇒ 假干净）。
+    name: 'D 破折号左侧是右括号 → 必须判红（旧判据的盲区）',
+    expect: 'red',
+    bad: { locale: 'en-US', str: 'Result truncated (at most 500 bindings) — the totals below are incomplete.' },
+    good: { locale: 'en-US', str: 'Result truncated (at most 500 bindings). The totals below are incomplete.' },
+    fn: checkEmDash,
+  },
+  {
+    name: 'D 破折号左侧是加粗收尾 → 必须判红（同一盲区的另一形态）',
+    expect: 'red',
+    bad: { locale: 'en-US', str: 'The image keys are **absent from the response entirely** — that is not "free".' },
+    good: { locale: 'en-US', str: 'The image keys are **absent from the response entirely**. That is not "free".' },
+    fn: checkEmDash,
+  },
+  {
+    // 反向对照：破折号作**区间连接号**是合法用法（不是「两个分句」）。
+    //   少了这一条，判据会把 `P50 — P99` 判红，逼人把合法写法改坏。
+    name: 'D 破折号作区间连接号 → 必须判绿（P50 — P99 不是两个分句）',
+    expect: 'green',
+    bad: { locale: 'en-US', str: 'Quantiles P50 — P99' },
+    good: { locale: 'en-US', str: 'Quantiles P50 to P99' },
+    fn: checkEmDash,
+  },
+  {
+    // 区间 + 续句：右侧首 token 仍是「字母+数字」的区间标签 ⇒ 同样放过。
+    name: 'D 区间标签 + 续句 → 必须判绿（右侧首 token 是 P99 这类标签）',
+    expect: 'green',
+    bad: { locale: 'en-US', str: 'Quantiles P50 — P99 are shown' },
+    good: { locale: 'en-US', str: 'Quantiles P50 to P99 are shown' },
+    fn: checkEmDash,
+  },
+  {
+    // 左侧是**数字**的形态：旧判据与「数字收窄」版都会漏判。
+    name: 'D 破折号左侧是数字 → 必须判红（500 — over-limit …）',
+    expect: 'red',
+    bad: { locale: 'en-US', str: 'This endpoint caps buckets at 5000 — over-limit combinations are hidden.' },
+    good: { locale: 'en-US', str: 'This endpoint caps buckets at 5000. Over-limit combinations are hidden.' },
+    fn: checkEmDash,
+  },
+  {
+    // 右侧**以引号开头**的形态（引号里是原样的字段值，不能改大小写）。
+    name: 'D 破折号右侧以引号开头 → 必须判红',
+    expect: 'red',
+    bad: { locale: 'en-US', str: 'It could not be read as configured — "enabled" here does not mean it is actually enabled.' },
+    good: { locale: 'en-US', str: 'It could not be read as configured: "enabled" here does not mean it is actually enabled.' },
+    fn: checkEmDash,
+  },
+  {
+    // 右侧是**单个词**的形态：「标签 + 指令」型短提示。
+    name: 'D 右侧是单个词 → 必须判红（Loading — retry.）',
+    expect: 'red',
+    bad: { locale: 'en-US', str: 'Loading — retry.' },
+    good: { locale: 'en-US', str: 'Loading. Retry.' },
+    fn: checkEmDash,
+  },
+  {
+    // 左句的收尾符与前面的词**不相邻**（`it at 0) — do not read`）：
+    //   字符组里若含空格就会把 run 截断 ⇒ 这条形态会漏判。
+    name: 'D 右括号与前面的词不相邻 → 必须判红（it at 0) — do not read）',
+    expect: 'red',
+    bad: { locale: 'en-US', str: 'Their margin rate is undefined (the backend leaves it at 0) — do not read that as a zero margin.' },
+    good: { locale: 'en-US', str: 'Their margin rate is undefined (the backend leaves it at 0). Do not read that as a zero margin.' },
     fn: checkEmDash,
   },
   {
