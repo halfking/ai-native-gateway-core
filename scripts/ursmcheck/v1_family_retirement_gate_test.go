@@ -498,3 +498,97 @@ func TestV1FamilyRetirementProbeDoesNotEchoPassword(t *testing.T) {
 		t.Errorf("probe 的输出里出现了完整 DSN ⇒ 探库路径回显了 DSN：\n%s", out)
 	}
 }
+
+// ─────────────────────── ★★★ 库身份自报（R157 轮新增） ───────────────────────
+//
+// # 这道门补的是哪块缺口
+//
+// R157 轮**本地实测**踩到的一件事：本机 PATH 里的 `psql` 是**另一个项目的转发脚本**
+// （硬编码转发到 `acc-pg17`）。⇒ 检查器的 probe 模式报出来的是
+//
+//	「探库失败（psql 退出码 1）」+ 一个**别的容器**的名字
+//
+// ⇒ ★★ **报错只说「psql 失败」，不说「你连的不是你以为的那个库」** ⇒ ★★ 人只能去猜。
+//
+// # ⇒ 修法（已落地）
+//
+// ① **身份行**：探库时额外查一次「库自己怎么说」（current_database / current_user /
+//
+//	inet_server_addr:port / pg_postmaster_start_time / pg_is_in_recovery），
+//	以 `#identity` 行**前置**进清单 ⇒ classify 把它印成 `#meta db_identity`。
+//
+// ② **失败也要自报目标**：probe 失败时把「我要连的 host:port/db」写进 FATAL 行。
+//
+// ★★ **两侧对照**才是关键：★ `requested=`（我以为连的是谁）vs `db=/server=/postmaster_start=`
+// （库说它是谁）⇒ ★★ 一旦 PATH 里的 psql 指向别的库，**两侧立刻对不上**。
+//
+// # ★ 门必须自带阳性对照
+//
+// ① 给了 `#identity` 行 ⇒ `#meta db_identity` 必须**逐字**含身份字段；
+// ② **没给** ⇒ 必须是 `(not provided)`（★ 不能静默变成空串 ⇒ 空串读起来像「没有身份」）。
+// ③ probe 失败 ⇒ stderr 必须**说出目标 host:port/db**。
+func TestV1FamilyRetirementReportsDatabaseIdentity(t *testing.T) {
+	// ① 给了身份行 ⇒ 逐字保留。
+	const ident = "#identity\trequested=127.0.0.1:54318/llm_gateway|db=llm_gateway|user=llm_gateway|server=(local):(unix)|postmaster_start=2026-10-25 18:08:45+08|in_recovery=false"
+	stdout, stderr, code := v1RetireRun(t, ident+"\n"+v1RetireInvRetired)
+	if code != 0 {
+		t.Fatalf("带身份行的清单应判 retired（退出码 0），实际 %d\nstderr:\n%s", code, stderr)
+	}
+	got := v1RetireMeta(t, stdout, "db_identity")
+	for _, want := range []string{
+		"requested=127.0.0.1:54318/llm_gateway",
+		"db=llm_gateway",
+		"user=llm_gateway",
+		"server=(local):(unix)",
+		"postmaster_start=2026-10-25 18:08:45+08",
+		"in_recovery=false",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("#meta db_identity 里缺 %q\n实际：%s", want, got)
+		}
+	}
+
+	// ② 没给身份行 ⇒ 必须是 (not provided)（★ 不能是空串）。
+	stdout2, stderr2, code2 := v1RetireRun(t, v1RetireInvRetired)
+	if code2 != 0 {
+		t.Fatalf("基线应判 retired（退出码 0），实际 %d\nstderr:\n%s", code2, stderr2)
+	}
+	got2 := v1RetireMeta(t, stdout2, "db_identity")
+	if got2 != "(not provided)" {
+		t.Errorf("没有身份行时 #meta db_identity 应为 \"(not provided)\"，实际 %q", got2)
+	}
+}
+
+// TestV1FamilyRetirementProbeFailureNamesTarget —— probe 失败时**必须说出目标**。
+//
+// ★ 为什么这条是硬要求：★ 「psql 退出码 1」这句话**不携带任何定位信息**。
+//
+//	★ 本轮实测：一个指向别的容器的 psql shim ⇒ 报错与「目标库」毫无关系。
+//	⇒ 读者必须能只凭这一行就判断「我是不是连错库了」。
+//
+// ★ 没有 psql 的机器上跳过（★ 环境依赖，不是产品缺陷）。
+func TestV1FamilyRetirementProbeFailureNamesTarget(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows 上跳过（★ 本门依赖 bash + psql）")
+	}
+	if _, err := exec.LookPath("psql"); err != nil {
+		t.Skip("PATH 里没有 psql ⇒ 跳过（★ 探库路径无法在本机验证）")
+	}
+	// ★ 端口 1 ⇒ 几乎必然连不上 ⇒ 秒级失败。
+	dsn := "postgres://audit:sentinel_probe_target@127.0.0.1:1/llm_gateway?sslmode=disable&connect_timeout=2"
+	cmd := exec.Command("bash", v1RetireScriptPath(t), "probe", dsn)
+	cmd.Stdin = strings.NewReader("")
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Skipf("probe 竟然成功了（★ 端口 1 连上了？）⇒ 本门不适用\n%s", out)
+	}
+	s := string(out)
+	// ★ 目标必须被说出来：host:port/db。
+	if !strings.Contains(s, "127.0.0.1:1/llm_gateway") {
+		t.Errorf("probe 失败时没有说出目标 host:port/db ⇒ 读者无法判断是不是连错库了\n输出：\n%s", s)
+	}
+	// ★ 口令仍然不能回显（★ 与既有门一致）。
+	if strings.Contains(s, "sentinel_probe_target") {
+		t.Errorf("probe 的输出里出现了哨兵口令 ⇒ 回显了口令\n输出：\n%s", s)
+	}
+}
