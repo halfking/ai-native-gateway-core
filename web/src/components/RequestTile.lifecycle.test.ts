@@ -108,8 +108,13 @@ describe('RequestTile retrySeq corner badge (OBS-FE3)', () => {
     const wrapper = mountTile(baseTile({ retrySeq: 2 }))
     const badge = wrapper.find('.request-tile__retry-badge')
     expect(badge.exists()).toBe(true)
-    expect(badge.text()).toContain('⭐')
+    // ★ 2026-10-25：原来断言 badge.text() 含 '⭐'。emoji 顶替图标系统是
+    //   craft-floor 的硬禁项，那轮换成了 Element Plus 真图标 <StarFilled />
+    //   （渲染为内联 <svg>，不是文本节点）⇒ 旧断言永远红。
+    //   新断言：序号还在 + 星标是真图标 + 输出里没有 emoji。
     expect(badge.text()).toContain('r2')
+    expect(badge.find('svg').exists()).toBe(true)
+    expect(badge.text()).not.toContain('⭐')
     wrapper.unmount()
   })
 
