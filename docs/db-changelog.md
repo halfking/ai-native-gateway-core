@@ -10251,3 +10251,26 @@ cron 日志里也有 `"retention_hours":8`）⇒ ⇒ ★★★ 实测 `max(hot.t
 ★ · `go test ./admin/ -run 'V1|RequestLogs|SessionFamily|Retirement|IndirectReader'` ✔（94.277s）
 ★ · `go build ./...` ✔ exit 0
 ★ **完整记录见审计档 `docs/audit/2026-10-27-R152-v1退役保证的两处盲区.md` §3.5/§3.6 + LESSONS §401**。
+
+### 2026-10-27 · R152 · 第四段（D9 端到端复验 + D13 缺口刻画）—— ★ **无 schema 变更、无迁移**
+
+★ ★★ **本段【无 SQL schema 变更、无迁移】，对生产的写入 = 0**
+★ ⇒ **无需在 211/252 上同步任何 DDL/DML；★ 无台账缺口产生**。
+★ ⚠ **发版口径**：D9 已随 `2.5.8.2855`（git_sha `7b3fea48`）在**本地**复验通过 ⇒
+★ ⇒ **生产侧尚未复验**（★ D9a/D9b/D9c 随下一次常规发版上线）。
+
+★ ★★ **本段是【复验 + 刻画】，不是新的行为变更** ⇒ ⇒ 唯一新增的仓内产物是**一道新门**：
+★ `scripts/ursmcheck/probe_content_budget_coverage_gate_test.go`
+★ ⇒ ★ 「探针内容预算的**覆盖面**」（★ 与既有门「**值**」互补）：
+★ ★· 每个探针预算位点必须**显式引用具名常量**；裸字面量必须**具名例外**（四段键）；
+★ ★· **responses 腿**必须**具名待裁决**；★ 例外表只许缩小。
+★ ★★ ⇒ **门不改任何预算值** ⇒ ★ **零行为变化** ⇒ ★⇒ **无需任何生产侧同步**。
+
+★ ★★ **本段挖出两处缺口 ⇒ 登记为 D13（属主裁决项）**：
+★ ① **responses 腿**的内容预算仍是 32（与 D9b 同族）；
+★ ② ★★ **admin 运维探针的 `max_tokens: 1` / `5`** ⇒ ★★ 2026-09-25 vapeur 事故的**同族漏迁**
+★ 　 （★ 现场证据在同文件注释里；★ 2026-10-13 修了 `bg/` 侧，`admin/` 侧没迁）⇒ 四处已具名登记。
+
+★ **★ 回归**：`scripts/ursmcheck` ✔ · `sql/schema` ✔ · `cmd/tools/sql_source_indirection_audit` ✔
+★ · `bg` ✔ · `cmd/gateway` ✔ · `internal/providercap` ✔ · `admin` ✔ · `go build ./...` ✔
+★ **完整记录见审计档 `docs/audit/2026-10-27-R152-v1退役保证的两处盲区.md` §3.7/§3.8 + LESSONS §401**。
