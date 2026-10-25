@@ -7827,7 +7827,11 @@ index b953a6f03..555ef83c4 100644
 > ★★ **被低估的后果**：丢的**不是字段而是整族** ⇒ `client_ip` 同时丢（0/408）⇒ 这正是实时拓扑**客户端维度把它们推进 unknown 桶**的直接成因。
 > ★ **顺带把根因叙述也用源码证伪过一次**（防自己写错）：`412f7f95`(2819) 的 `emitTelemetry` 起于 **6055** 行、**体内无** `applyOriginMetadata`
 > （仓内唯一带该调用的成功相关入口是 `recordInitialRequestLog` **7683** 行起）⇒ **根因叙述成立**；★ 同时说明那 55 条**不可能是 `emitTelemetry` 写的**
-> ⇒ 存在**第三条**填充 origin 族的路径，**填充点未定位 ⇒ 登记待查**（不影响验收）。
+> ⇒ ★★ **追加追查（附录 D.6）**：「第三条路径」**已被证伪** —— 写 entry 的 origin 的入口**全仓只有一个**（`applyOriginMetadata`）；
+> `context_attrs.go:138` 写的是**侧表** entry（`ContextAttrsEntry`）⇒ ★★ **两表分叉的结构性解释** = **侧表走 ctx（永远对）／会话族走 entry（修复前成功终态断链）**。
+> ★ 另 4 个候选逐条证伪：**②非时间切换**（两组 ts 区间重叠 02:32–06:41）／**③非初始 entry 复用**（`recordInitialRequestLog` 是独立对象且被镜像跳过 in_progress）／
+> **④非重试**（两组 `is_retry` 全 false、`attempt_no` 全空）／**⑤非某版本代码差异**（`2817`/`2819` 的 `emitTelemetry` 体内均无 origin 调用，55 条横跨 4 个在线版本）。
+> ⇒ **待查点收窄为一句**：**哪些请求会先出现一次「失败/限流终态」、随后又出现一次「成功终态 UPDATE」**（`session_turn_details` 无判别力：两组都有留痕）⇒ **不影响验收**（post-fix 漏标率 0）。
 > ⚠ **诚实边界**：① **历史行不回填**（turn 幂等不可更新）⇒ 用户最初报的 `af1eb6d83ef39610cc4f8be4e181b5a8`（ts 10-23 14:37:14，
 > 在分区 `2026-10-23`）**至今仍无标**，而**侧表同一条一直是对的**（is_probe=t / node_probe / 127.0.0.1 / self-check-worker / api_key=175）⇒ **回填 = 生产写，待拍板**；
 > ② 75 条历史漂移的正式处置（标 `SUPERSEDED`/`DEPRECATED` 或 ledger repair）**待属主裁决**（补录前须逐条确认 DB 形态）；

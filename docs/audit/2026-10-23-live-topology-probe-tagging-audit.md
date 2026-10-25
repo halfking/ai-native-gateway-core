@@ -965,3 +965,57 @@ post-fix 成功行的 `origin_stage` 分布 = `business` **236** / `node_probe` 
 5. **会话族分区表普遍落后**（§143.96 台账内）只记录未修；本轮观测到 hot 表在观测期间
    发生了 promote（同一批行从 hot 移到分区表）⇒ **跨表比较必须用固定分区表口径**，
    否则会在 promote 窗口里读到自相矛盾的数（本次已踩，见 D.2 的窗口选取）。
+
+## D.6 ★ 追查「第三条 origin 填充路径」的结果：5 个候选被证伪，待查点收窄（2026-10-24 17:50–18:40）
+
+D.5 第 1 条登记的未决点，本轮继续追查。**结论：不是「第三条路径」，而是两张表的写入器本就分家**；
+那 55 条带标行的产生机制**仍未定位**，但**候选已从 5 个收敛到 1 个**，且**不影响验收**。
+
+### D.6.1 ★★ 结构性发现：侧表与会话族是**两个不同的写入器**（这才是「两表分叉」的根）
+
+| 目标表 | 写入器 | 读来源 | 搬运方向 |
+|---|---|---|---|
+| **侧表** `request_context_attrs` | `domains/streaming/context_attrs.go:138`（`fillFromRequestLogContext`，写 **`telemetryv1.ContextAttrsEntry`**） | `RequestLogContext.OriginStage`（HTTP 入口由 `origin_mw` 写进 ctx，再由 `request_log_pipeline.go:1765` 回写进 ctx） | **ctx → ctx** ⇒ **永远对** |
+| **会话族** `session_turns` | `internal/sessionv2mirror`（`s1a_fields.go:153-154` 忠实拷贝 `entry.OriginStage`/`entry.OriginActor`） | `telemetry.RequestLogEntry` | **ctx → entry ⇒ entry → 镜像** ⇒ 断在第一段 |
+
+⇒ ★★ **`context_attrs.go:138` 不是「第三条路径」**：它写的是**侧表**的 entry 类型
+（`ContextAttrsEntry`），与会话族镜像消费的 `telemetry.RequestLogEntry` **不是同一个对象**。
+⇒ ★★ 由此得到「两表分叉」的**结构性解释**：
+**侧表走 ctx、永远正确；会话族走 entry、修复前在成功终态上断链** ⇒ 同一请求两表打标可以不一致。
+
+### D.6.2 ★ 5 个候选的证伪过程（逐条附判据与读数）
+
+| # | 候选假设 | 判据 | 读数 | 结论 |
+|---|---|---|---|---|
+| 1 | 「存在第三条写 entry 的 origin 的函数」 | 全仓枚举 `entry.OriginStage =` / `entry.OriginActor =` | 写入点只有 3 处：`request_log_pipeline.go:1800/1802`（**`applyOriginMetadata` 内部**）、`request_log_pipeline.go:553`（`applyAutoRouteFields` 填 `OriginActor`）、`telemetry/client.go:2640/2646`（`ApplyOriginFromContext`，**在 `applyOriginMetadata` 内**）⇒ **全部收敛到 `applyOriginMetadata` 一个函数** | **证伪**（不是三个写入器，是一个） |
+| 2 | 「带标从某个时刻起（网关换版）」 | 两组 ts 区间 | 带标 02:32–07:56，漏标 10-23 08:04–**10-24 06:41** ⇒ **区间重叠**（02:32–06:41 两组并存） | **证伪**（不是时间切换） |
+| 3 | 「初始 INSERT 填的 origin 被终态 first-write-wins 保留」 | 读 `recordInitialRequestLog` 代码 | 它构造的是**独立的 entry 对象**，经 `h.requestLogHook(reqLog)`（`handler.go:7835`）发出；而镜像 hook **跳过 in_progress 初始 entry**（`hook.go:82`）⇒ 初始 entry **不进会话族**，也不可能被终态复用 | **证伪** |
+| 4 | 「同一请求先失败后重试成功」 | 侧表 `is_retry` / `attempt_no` | 两组 **全部** `is_retry=false`、`attempt_no` 为空 ⇒ 无重试痕迹 | **证伪** |
+| 5 | 「某个版本的成功终态路径本来就带 origin」 | 逐版本读 `emitTelemetry` 函数体 | `2817(a55a4571)`：`emitTelemetry` 6045..7061，**体内无** origin/auto-route 调用；`2819(412f7f95)`：6055 行起，**体内无**；`2826(e316234d)`：体内有 `applyRequestContextFields`（**本轮修复**）⇒ 55 条横跨 4 个在线版本，其中 2 个可读版本**都不带** origin | **证伪**（不靠某个版本的代码差异） |
+
+⇒ ★★ **由 #1 推出的硬约束**：`applyOriginMetadata` 是**唯一**写 `entry.OriginStage`/`entry.OriginActor` 的函数
+⇒ ⇒ **那 55 条的 entry 必然经过 `applyOriginMetadata`**；
+而 `2817`/`2819` 的**终态成功路径**不调它、`初始 INSERT**又被镜像跳过**
+⇒ ⇒ **它必然走过一次「失败/限流终态」（`buildEntry`，`request_log_pipeline.go:1182` 有该调用）**，
+随后同一行被成功终态 UPDATE 覆盖成 `success=true`，而 origin 族被 COALESCE 保留。
+
+### D.6.3 ★ 收窄后的待查点（一句话）
+
+> **哪些请求会在生命周期内先出现一次「失败/限流终态」、随后又出现一次「成功终态 UPDATE」**
+> （候选：上游重试跨过失败判定 / 限流后放行 / 流式中断后的补写）？
+> ★ `session_turn_details` **无判别力**（两组都有留痕：带标组 10/10、漏标组 368/368；
+> `node_switch_count` 与 `rate_limit_status` 两组皆 0）⇒ 需要更细的写入时序证据。
+
+⇒ ⚠ **该待查点不影响验收**：修复后（post-fix）两类都带标，**漏标率 0**（D.3 双口径读数）。
+⇒ ⚠ 且**这 55 条本身不是缺陷**（它们带标 = 行为正确）⇒ 真正的缺陷面是那 **408 条丢标行**。
+
+### D.6.4 ★ 顺带记录的三个「量具/口径」教训
+
+1. ★★ **`git rev-parse --verify "<短 sha>^{commit}"` 对**不在本仓**的 sha 会**静默失败**（返回空）
+   ⇒ `2818-64592772` / `2825-8fbabe33` **不在本仓**（疑似被 force-push / rebase 掉的历史状态）
+   ⇒ ★ 脚本里必须**显式判空并报错**，不能把「解析失败」当成「没有差异」。
+2. ★★ **`session_turns` 的 `partition_date` ≠ 事件日**：分区 `2026-10-23` 里装着 **10-23 08:00 → 10-24 09:36** 的行
+   ⇒ 用 `partition_date` 当时间维度会得出「10-23 有 55 条 10-24 的行」这种自相矛盾读数
+   ⇒ ★ 时间维度一律用 `ts`，`partition_date` 只用来圈定**稳定窗口**。
+3. ★★ **`session_turn_details` 有 61 列**，其中**没有** `request_status` / `stream_interrupted`
+   ⇒ 查它之前先读 `information_schema.columns`（本轮连踩两次列名不存在）。

@@ -10149,6 +10149,12 @@ cron 日志里也有 `"retention_hours":8`）⇒ ⇒ ★★★ 实测 `max(hot.t
 
 ★ **★ 本轮【无 SQL 变更】⇒ 无需在 211/252 上同步 SQL；★ 对生产的写入 = 0（211/252 全部只读）。**
 ★ 完整记录见审计档 `docs/audit/2026-10-27-R151-探针双门槛与模型清单逐个定性.md`（含 §6 诚实边界）+ LESSONS **§399** + AGENTS.md R151 条目。
+## 2026-10-25T02:27:36Z — deploy 154 build_seq 2828 (9074b88a)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 908 | `908_route_incident_events_type_created_drop.sql` | `bcd401ec78150ecb544e85966b95c75edbe81943669beb45c2f2fe8440490b15` | applied+verified |
+
 
 ### 2026-10-27 · R152 · v1 退役保证的两处盲区（★ **无 SQL 变更**）
 
