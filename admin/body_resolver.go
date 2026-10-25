@@ -316,7 +316,10 @@ func normalizeControlledResponse(raw *string) (string, bool) {
 			if message.Role != "" && message.Role != "assistant" {
 				continue
 			}
-			if content, ok := controlledString(message.Content); ok {
+			// ★ controlledText, not controlledString: the answer to a
+			// tool-calling turn is a content ARRAY, and refusing it made
+			// 46.1% of the governance domain's traffic invisible.
+			if content, ok := controlledText(message.Content); ok {
 				return content, true
 			}
 		}
@@ -335,11 +338,11 @@ func normalizeControlledResponse(raw *string) (string, bool) {
 	}
 	for _, choice := range document.Choices {
 		if choice.Message != nil {
-			if content, ok := controlledString(choice.Message.Content); ok {
+			if content, ok := controlledText(choice.Message.Content); ok {
 				return content, true
 			}
 		}
-		if content, ok := controlledString(choice.Text); ok {
+		if content, ok := controlledText(choice.Text); ok {
 			return content, true
 		}
 	}
@@ -355,6 +358,67 @@ func controlledString(raw json.RawMessage) (string, bool) {
 		return "", false
 	}
 	return content, true
+}
+
+// controlledText returns the text of a message body written in either of the
+// two shapes the session family stores.
+//
+// ★ WHY THE SECOND SHAPE EXISTS (measured, not guessed):
+//
+//	The answer to a turn that calls a tool is written as an OpenAI-style
+//	content ARRAY — `[{"role":"assistant","content":[{"type":"text",
+//	"text":"…"}],"tool_calls":[…]}]` — not as a plain string.
+//	Before this function existed, only a plain string was readable ⇒ every
+//	such answer was REFUSED by this endpoint ⇒ the answer was there and
+//	still invisible to every consumer of it.
+//
+//	Measured on 2026-10-25 (154, the AI-session-manager governance domain):
+//	the domain's 399 usages split into 184 "the answer is a content array"
+//	and 37 "the answer is a plain string" ⇒ 46.1% of the traffic the
+//	governance domain sees was invisible for this one reason.
+//
+// ★ THE RULE: a content array is readable when at least one of its parts
+//
+//	carries a `text` string. The parts' texts are joined with a newline,
+//	because two text parts are two blocks, not two halves of one word.
+//
+// ★ WHAT IS DELIBERATELY NOT SERVED: the `tool_calls` that usually sit
+//
+//	next to the content array. This endpoint has one `content` field;
+//	serving the tool calls would be a NEW field ⇒ a contract change ⇒
+//	that is a different change, not this one.
+func controlledText(raw json.RawMessage) (string, bool) {
+	if len(raw) == 0 {
+		return "", false
+	}
+	var content string
+	if err := json.Unmarshal(raw, &content); err == nil {
+		if content == "" {
+			return "", false
+		}
+		return content, true
+	}
+	var parts []json.RawMessage
+	if err := json.Unmarshal(raw, &parts); err != nil {
+		return "", false
+	}
+	texts := make([]string, 0, len(parts))
+	for _, part := range parts {
+		var piece struct {
+			Text *string `json:"text"`
+		}
+		if err := json.Unmarshal(part, &piece); err != nil || piece.Text == nil {
+			continue
+		}
+		if strings.TrimSpace(*piece.Text) == "" {
+			continue
+		}
+		texts = append(texts, *piece.Text)
+	}
+	if len(texts) == 0 {
+		return "", false
+	}
+	return strings.Join(texts, "\n"), true
 }
 
 func writeControlledBodyAuthError(w http.ResponseWriter) {
