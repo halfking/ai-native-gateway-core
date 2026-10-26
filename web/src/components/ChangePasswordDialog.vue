@@ -173,7 +173,7 @@ async function submit() {
   border-radius: 12px;
   padding: 24px;
   width: min(420px, calc(100vw - 32px));
-  box-shadow: 0 16px 48px var(--overlay-strong);
+  box-shadow: var(--kx-shadow-md);
 }
 
 .password-modal__header {

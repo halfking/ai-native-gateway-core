@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/credentialfpslot"
+	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit" //nolint:depguard // matches executor.go
 	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"github.com/kaixuan/llm-gateway-go/internal/ir"
 	"github.com/kaixuan/llm-gateway-go/internal/paramreg"
@@ -33,6 +34,42 @@ import (
 // audio frame would abort the stream. 4 MiB matches the cap the Ollama
 // executor applies to its NDJSON frames.
 const maxGeminiStreamLineSize = 4 * 1024 * 1024
+
+// geminiRecoveryContextKey marks a request that is already a
+// context-length recovery retry, so the recovery path can never recurse
+// into itself (a provider that keeps rejecting the compressed body would
+// otherwise loop forever).
+type geminiRecoveryContextKey struct{}
+
+// geminiOriginalBodyContextKey carries the ORIGINAL client body across a
+// context-length recovery retry, so the telemetry still reports what the
+// client actually sent (not the compressed rewrite).
+type geminiOriginalBodyContextKey struct{}
+
+func withGeminiRecoveryAttempt(ctx context.Context) context.Context {
+	return context.WithValue(ctx, geminiRecoveryContextKey{}, true)
+}
+
+func geminiRecoveryAttempted(ctx context.Context) bool {
+	if ctx == nil {
+		return false
+	}
+	v, _ := ctx.Value(geminiRecoveryContextKey{}).(bool)
+	return v
+}
+
+func withGeminiOriginalBody(ctx context.Context, body []byte) context.Context {
+	return context.WithValue(ctx, geminiOriginalBodyContextKey{}, append([]byte(nil), body...))
+}
+
+func geminiOriginalBody(ctx context.Context, fallback []byte) []byte {
+	if ctx != nil {
+		if body, ok := ctx.Value(geminiOriginalBodyContextKey{}).([]byte); ok && len(body) > 0 {
+			return append([]byte(nil), body...)
+		}
+	}
+	return append([]byte(nil), fallback...)
+}
 
 // GeminiExecutor implements ProtocolHandler for Google's native
 // generateContent wire format.
@@ -113,6 +150,47 @@ type GeminiExecutor struct {
 	// stamped onto the client-facing wire (the upstream's echoed
 	// modelVersion must not leak to the client).
 	clientModelOverride string
+
+	// OutboundModel is the model actually sent upstream (may differ from
+	// the client model under model mapping). Reported to the client-side
+	// bridges for diagnostics.
+	OutboundModel string
+
+	// RequestID is the gateway request id, forwarded to the client-side
+	// bridges so their diagnostics correlate with the request log.
+	RequestID string
+
+	// Capture is the audit stream capture, forwarded to the client-side
+	// bridges so the audit sees the same events the client receives.
+	Capture *audit.StreamCapture
+
+	// ToolsRequested tells the Responses bridge whether the client asked
+	// for tools (it changes the terminal event shape).
+	ToolsRequested bool
+
+	// InputTokensEstimate is the request-derived prompt token estimate the
+	// Anthropic bridge writes into message_start.usage.input_tokens.
+	// Anthropic clients need it at the stream head (SSE cannot amend
+	// message_start retroactively) and the Gemini upstream reports usage
+	// only at the tail — same reasoning as the OpenAI upstream path
+	// (audit R3 #2, 2026-09-09).
+	InputTokensEstimate int
+
+	// OpenAIToAnthropicStream converts the OpenAI-shaped SSE this
+	// executor produces into Anthropic-shaped SSE for an Anthropic client.
+	// Wired from main.go (streaming.StreamOpenAIToAnthropicSSE).
+	//
+	// ★ Reusing the shipped bridge is the reason this executor does NOT
+	// hand-roll Anthropic SSE framing: the Anthropic stream protocol is
+	// strict (message_start → content_block_start → content_block_delta →
+	// content_block_stop → message_delta → message_stop) and the repo
+	// already has a battle-tested implementation of it.
+	OpenAIToAnthropicStream OpenAIToAnthropicSSEFunc
+
+	// OpenAIToResponsesStream converts the OpenAI-shaped SSE this executor
+	// produces into Responses-shaped SSE for a Responses client. Wired
+	// from main.go (streaming.StreamOpenAIToResponsesSSE).
+	OpenAIToResponsesStream OpenAIToResponsesSSEFunc
 }
 
 // clientWire returns the normalized client wire this executor answers in.
@@ -283,39 +361,64 @@ func (g *GeminiExecutor) WriteNonStreamResponse(w http.ResponseWriter, resp *htt
 
 // serializeResponse translates the parsed Gemini IR into the client wire.
 //
-// Only the OpenAI Chat Completions wire is wired today (see the file
-// header). The other wires fail closed with KindUnsupportedFeature —
-// they are rejected earlier, at the request gate, so this is the
-// belt-and-braces path for a caller that reaches the writer directly.
+// The three client wires are supported:
+//
+//   - openai-completions → ir.SerializeOpenAIResponse
+//   - anthropic-messages → ir.SerializeAnthropicResponse
+//   - openai-responses   → ir.SerializeResponsesResponse
+//
+// Every one of them is an IR-level serializer, so no extra wiring is
+// needed: the IR converter interface already carries all three.
 func (g *GeminiExecutor) serializeResponse(parsed *ir.InternalResponse, clientModel string) ([]byte, error) {
+	var (
+		out []byte
+		err error
+	)
 	switch g.clientWire() {
 	case providercatalog.ProtocolOpenAICompletions:
 		if scoped := g.scopedIR(); scoped != nil {
-			out, err := scoped.SerializeOpenAIResponse(parsed, clientModel)
-			if err != nil {
-				return nil, &upstreampkg.Error{
-					Kind:    errorsx.KindConversion,
-					Message: "gemini: serialize response to client wire",
-					Err:     err,
-				}
-			}
-			return out, nil
+			out, err = scoped.SerializeOpenAIResponse(parsed, clientModel)
+		} else {
+			out, err = ir.SerializeOpenAIResponse(parsed, clientModel)
 		}
-		out, err := ir.SerializeOpenAIResponse(parsed, clientModel)
-		if err != nil {
-			return nil, &upstreampkg.Error{
-				Kind:    errorsx.KindConversion,
-				Message: "gemini: serialize response to client wire",
-				Err:     err,
-			}
+	case providercatalog.ProtocolAnthropicMessages:
+		if scoped := g.scopedIR(); scoped != nil {
+			out, err = scoped.SerializeAnthropicResponse(parsed, clientModel)
+		} else {
+			out, err = ir.SerializeAnthropicResponse(parsed, clientModel)
 		}
-		return out, nil
+	case providercatalog.ProtocolOpenAIResponses:
+		if scoped := g.scopedIR(); scoped != nil {
+			out, err = scoped.SerializeResponsesResponse(parsed, clientModel)
+		} else {
+			out, err = ir.SerializeResponsesResponse(parsed, clientModel)
+		}
 	default:
 		return nil, &upstreampkg.Error{
 			Kind:       errorsx.KindUnsupportedFeature,
 			Message:    fmt.Sprintf("gemini executor: client protocol %q not yet wired", g.ClientProtocol),
 			StatusCode: http.StatusNotImplemented,
 		}
+	}
+	if err != nil {
+		return nil, &upstreampkg.Error{
+			Kind:    errorsx.KindConversion,
+			Message: "gemini: serialize response to client wire",
+			Err:     err,
+		}
+	}
+	return out, nil
+}
+
+// geminiInboundWireName names the inbound client wire for diagnostics.
+func geminiInboundWireName(clientProtocol string) string {
+	switch clientProtocol {
+	case providercatalog.ProtocolAnthropicMessages:
+		return "Anthropic Messages"
+	case providercatalog.ProtocolOpenAIResponses:
+		return "OpenAI Responses"
+	default:
+		return "OpenAI Chat"
 	}
 }
 
@@ -345,6 +448,139 @@ func (g *GeminiExecutor) serializeResponse(parsed *ir.InternalResponse, clientMo
 // error frame so the client sees a typed error inline rather than a
 // silent connection drop.
 func (g *GeminiExecutor) StreamResponse(ctx context.Context, w http.ResponseWriter, resp *http.Response) StreamOutcome {
+	switch g.clientWire() {
+	case providercatalog.ProtocolAnthropicMessages:
+		return g.streamViaAnthropicBridge(ctx, w, resp)
+	case providercatalog.ProtocolOpenAIResponses:
+		return g.streamViaResponsesBridge(ctx, w, resp)
+	default:
+		// OpenAI Chat Completions wire: the frames go straight to the client.
+		flusher, _ := w.(http.Flusher)
+		flush := func() {
+			if flusher != nil {
+				flusher.Flush()
+			}
+		}
+		return g.writeOpenAISSE(ctx, w, w, flush, resp)
+	}
+}
+
+// streamViaAnthropicBridge serves an Anthropic client by feeding the
+// OpenAI-shaped frames this executor produces into the repo's shipped
+// OpenAI→Anthropic SSE bridge.
+//
+// ★ Why a pipe instead of hand-rolled framing: the Anthropic stream
+// protocol is strict (message_start → content_block_start →
+// content_block_delta → content_block_stop → message_delta →
+// message_stop), and the repo already has a battle-tested implementation
+// of exactly that conversion (domains/streaming/anthropic_stream.go),
+// wired into the Executor as OpenAIToAnthropicStream. Reusing it means
+// the Gemini upstream inherits the SAME Anthropic wire behavior the
+// OpenAI upstream path has — including the message_start input-token
+// estimate (audit R3 #2) and the interruption/terminal semantics.
+//
+// The pipe is unbuffered, so the conversion stays streaming: the bridge
+// reads a frame as soon as we write it, and nothing is accumulated in
+// memory.
+func (g *GeminiExecutor) streamViaAnthropicBridge(ctx context.Context, w http.ResponseWriter, resp *http.Response) StreamOutcome {
+	if g.OpenAIToAnthropicStream == nil {
+		return StreamOutcome{
+			Interrupted: true,
+			Reason:      "anthropic_bridge_not_wired",
+			Kind:        errorsx.KindUnsupportedFeature,
+		}
+	}
+	pr, pw := io.Pipe()
+	proxyResp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{},
+		Body:       pr,
+		Request:    resp.Request,
+	}
+	done := make(chan StreamOutcome, 1)
+	go func() {
+		done <- g.OpenAIToAnthropicStream(
+			ctx, w, proxyResp,
+			g.clientModelOverride, g.OutboundModel, g.RequestID,
+			g.Capture, nil, g.InputTokensEstimate, g.ToolsRequested,
+		)
+	}()
+
+	outcome := g.writeOpenAISSE(ctx, pw, w, nil, resp)
+	if outcome.Interrupted {
+		// Unblock the bridge reader with the failure reason instead of a
+		// clean EOF (a clean EOF would look like a normal end of stream).
+		_ = pw.CloseWithError(errors.New(outcome.Reason))
+	} else {
+		_ = pw.Close()
+	}
+	bridgeOutcome := <-done
+
+	// The Gemini-side interruption is the more precise diagnosis (the
+	// bridge only sees a broken pipe), so it wins.
+	if outcome.Interrupted {
+		outcome.ChunkCount = bridgeOutcome.ChunkCount
+		return outcome
+	}
+	return bridgeOutcome
+}
+
+// streamViaResponsesBridge serves a Responses client by feeding the
+// OpenAI-shaped frames into the repo's shipped OpenAI→Responses SSE
+// bridge (domains/streaming/responses_bridge.go), wired into the
+// Executor as OpenAIToResponsesStream.
+//
+// Same reasoning as streamViaAnthropicBridge: reuse the shipped
+// conversion (including its response.completed orchestration) instead of
+// re-implementing the Responses terminal events.
+func (g *GeminiExecutor) streamViaResponsesBridge(ctx context.Context, w http.ResponseWriter, resp *http.Response) StreamOutcome {
+	if g.OpenAIToResponsesStream == nil {
+		return StreamOutcome{
+			Interrupted: true,
+			Reason:      "responses_bridge_not_wired",
+			Kind:        errorsx.KindUnsupportedFeature,
+		}
+	}
+	pr, pw := io.Pipe()
+	proxyResp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{},
+		Body:       pr,
+		Request:    resp.Request,
+	}
+	done := make(chan StreamOutcome, 1)
+	go func() {
+		done <- g.OpenAIToResponsesStream(
+			ctx, w, proxyResp,
+			g.clientModelOverride, g.OutboundModel, g.RequestID,
+			g.Capture, nil, g.ToolsRequested,
+		)
+	}()
+
+	outcome := g.writeOpenAISSE(ctx, pw, w, nil, resp)
+	if outcome.Interrupted {
+		_ = pw.CloseWithError(errors.New(outcome.Reason))
+	} else {
+		_ = pw.Close()
+	}
+	bridgeOutcome := <-done
+	if outcome.Interrupted {
+		outcome.ChunkCount = bridgeOutcome.ChunkCount
+		return outcome
+	}
+	return bridgeOutcome
+}
+
+// writeOpenAISSE reads the Gemini native stream and writes it as
+// OpenAI-shaped SSE frames into out.
+//
+// It is the single implementation behind all three client wires: the
+// OpenAI chat wire writes straight to the client, while the Anthropic
+// and Responses wires write into a pipe that their bridge drains.
+//
+// `client` is the client's ResponseWriter — used ONLY to look up the
+// first-semantic-byte callback (the frames themselves go to out).
+func (g *GeminiExecutor) writeOpenAISSE(ctx context.Context, out io.Writer, client http.ResponseWriter, flush func(), resp *http.Response) StreamOutcome {
 	if resp == nil || resp.Body == nil {
 		return StreamOutcome{
 			Interrupted: true,
@@ -361,21 +597,14 @@ func (g *GeminiExecutor) StreamResponse(ctx context.Context, w http.ResponseWrit
 	// scanner buffer is far too small.
 	scanner.Buffer(make([]byte, 0, 64*1024), maxGeminiStreamLineSize)
 
-	flusher, _ := w.(http.Flusher)
-	flush := func() {
-		if flusher != nil {
-			flusher.Flush()
-		}
-	}
-
 	firstByteFired := false
 	fireFirstByte := func() {
 		if firstByteFired {
 			return
 		}
 		firstByteFired = true
-		if w != nil {
-			if setter, ok := w.(interface{ FirstSemanticByteCallback() func() }); ok {
+		if client != nil {
+			if setter, ok := client.(interface{ FirstSemanticByteCallback() func() }); ok {
 				if cb := setter.FirstSemanticByteCallback(); cb != nil {
 					cb()
 				}
@@ -440,14 +669,16 @@ func (g *GeminiExecutor) StreamResponse(ctx context.Context, w http.ResponseWrit
 			if chunk.Error != nil {
 				sse := geminiOpenAISSEError(chunk.Error)
 				if sse != "" {
-					if _, werr := io.WriteString(w, sse); werr != nil {
+					if _, werr := io.WriteString(out, sse); werr != nil {
 						outcome.Interrupted = true
 						outcome.Reason = "client_write_failed"
 						outcome.Kind = errorsx.KindNetwork
 						outcome.ChunkCount = chunkCount
 						return outcome
 					}
-					flush()
+					if flush != nil {
+						flush()
+					}
 				}
 			}
 			outcome.Interrupted = true
@@ -483,14 +714,16 @@ func (g *GeminiExecutor) StreamResponse(ctx context.Context, w http.ResponseWrit
 			(chunk.Delta.Content != "" || chunk.Delta.ReasoningContent != "" || len(chunk.Delta.ToolCalls) > 0) {
 			fireFirstByte()
 		}
-		if _, werr := io.WriteString(w, sse); werr != nil {
+		if _, werr := io.WriteString(out, sse); werr != nil {
 			outcome.Interrupted = true
 			outcome.Reason = "client_write_failed"
 			outcome.Kind = errorsx.KindNetwork
 			outcome.ChunkCount = chunkCount
 			return outcome
 		}
-		flush()
+		if flush != nil {
+			flush()
+		}
 		chunkCount++
 	}
 
@@ -506,7 +739,7 @@ func (g *GeminiExecutor) StreamResponse(ctx context.Context, w http.ResponseWrit
 	// one. Synthesize it when the upstream ended without a terminal
 	// chunk of its own.
 	if !sawTerminal {
-		if _, werr := io.WriteString(w, "data: [DONE]\n\n"); werr == nil {
+		if _, werr := io.WriteString(out, "data: [DONE]\n\n"); werr == nil && flush != nil {
 			flush()
 		}
 	}
@@ -667,18 +900,35 @@ func (e *Executor) executeGemini(
 	fpLease *credentialfpslot.Lease,
 ) (*ExecuteResult, error) {
 	sourceBody := append([]byte(nil), params.BodyBytes...)
+	// The ORIGINAL client body, preserved across a context-length
+	// recovery retry (the retry sends a compressed rewrite, but the
+	// telemetry must still report what the client sent).
+	originalBody := geminiOriginalBody(params.R.Context(), sourceBody)
 
 	bodyBytes, err := e.finalizeGeminiUpstreamBody(params, cand, sourceBody)
 	if err != nil {
 		return nil, err
 	}
 
+	outboundModel := resolveOutboundModel(params, cand)
 	ge := &GeminiExecutor{
 		ClientProtocol:      params.ClientProtocol,
-		Model:               resolveOutboundModel(params, cand),
+		Model:               outboundModel,
 		ProviderID:          cand.ProviderID,
 		IR:                  e.IR,
 		clientModelOverride: params.ClientModel,
+		OutboundModel:       outboundModel,
+		RequestID:           params.RequestID,
+		Capture:             params.Capture,
+		ToolsRequested:      params.ToolsRequested,
+		// ★ The Anthropic bridge needs a request-derived prompt token
+		// estimate at the stream head (Anthropic clients manage their
+		// context from message_start.usage.input_tokens, and SSE cannot
+		// amend message_start retroactively). Same estimate the OpenAI
+		// upstream path uses (audit R3 #2).
+		InputTokensEstimate:     EstimateAnthropicInputTokens(sourceBody),
+		OpenAIToAnthropicStream: e.OpenAIToAnthropicStream,
+		OpenAIToResponsesStream: e.OpenAIToResponsesStream,
 	}
 
 	req, err := ge.BuildRequest(cand, bodyBytes, params.IsStream)
@@ -711,6 +961,27 @@ func (e *Executor) executeGemini(
 			req.Header.Set(k, v)
 		}
 		e.DisguisePool.MaybeRotate()
+	}
+	// ★ Header profile (docs/供应商协议优化.md §8.3: the credential form
+	// is tied to the endpoint's header_profile_code).
+	//
+	// The profile is a per-(catalog_code, protocol) table of extra outbound
+	// headers. Applying it here means a Gemini-compatible relay whose
+	// profile declares (say) "Authorization: Bearer" gets it — without
+	// this, the Gemini executor would send ONLY x-goog-api-key and the
+	// relay would reject the request.
+	//
+	// ★ The profile is applied AFTER the credential header, so a profile
+	// that declares its own credential header wins — that is the point of
+	// the mechanism (it exists to express "this endpoint wants its
+	// credential in another shape").
+	if e.HeaderProfiles != nil {
+		prof := e.HeaderProfiles.load(params.R.Context(), cand.CatalogCode, cand.Protocol)
+		if prof != nil {
+			for k, v := range prof.Headers {
+				req.Header.Set(k, v)
+			}
+		}
 	}
 	// Stamp after configured egress headers so they cannot erase the
 	// validated marker-ownership signal on a recursive gateway call.
@@ -812,6 +1083,39 @@ func (e *Executor) executeGemini(
 		}
 		e.logUpstreamResponse(params, diagnosticProtocol(cand.Protocol, "gemini-native"), captured)
 		errKind := errorsx.ClassifyErrorWithBody(resp.StatusCode, captured)
+		// ★ Context-length recovery: the upstream rejected the request as
+		// too long. Reuse the shared recovery coordinator (the same one
+		// the OpenAI and Ollama paths use) to compress the conversation and
+		// retry ONCE with the smaller body.
+		//
+		// The retry is deliberately free of the outer credential retry
+		// budget: it is an internal rewrite of THIS request, not failover.
+		// The recovery-attempt marker keeps it from recursing.
+		if errorsx.IsContextLength(errKind) && !geminiRecoveryAttempted(params.R.Context()) {
+			recoveredBody := append([]byte(nil), sourceBody...)
+			recovery := contextLengthRecoveryState{}
+			if e.handleContextLengthRecovery(params.R.Context(), params, cand, &recoveredBody, &recovery, resp.StatusCode, captured) == ctxLenRetry && len(recoveredBody) < len(sourceBody) {
+				retryParams := *params
+				retryParams.BodyBytes = recoveredBody
+				retryCtx := withGeminiRecoveryAttempt(params.R.Context())
+				retryParams.R = params.R.WithContext(withGeminiOriginalBody(retryCtx, originalBody))
+				meterExtraUpstreamCall(params)
+				result, retryErr := e.executeGemini(&retryParams, cand, 0, tTotal, fpLease)
+				if retryErr == nil && result != nil {
+					reason := recovery.lastReason
+					if reason == "" {
+						reason = "context_length"
+					}
+					strategy := recovery.lastStrategy
+					if strategy == "" {
+						strategy = "mechanical_trim"
+					}
+					result.CompressionReason = &reason
+					result.CompressionStrategy = &strategy
+				}
+				return result, retryErr
+			}
+		}
 		if errKind == errorsx.KindModelNotFound || errKind == errorsx.KindModelDeprecated {
 			slog.Info("model_not_found skip offer",
 				"credential_id", cand.CredentialID,
@@ -878,7 +1182,7 @@ func (e *Executor) executeGemini(
 				Candidate:      cand,
 				LatencyMs:      latencyMs,
 				RequestBody:    append([]byte(nil), bodyBytes...),
-				InboundBody:    sourceBody,
+				InboundBody:    originalBody,
 				RoutingTracker: params.RoutingTracker,
 			}, &streamInterruptedError{
 				reason:       outcome.Reason,
@@ -916,7 +1220,7 @@ func (e *Executor) executeGemini(
 				Candidate:      cand,
 				LatencyMs:      latencyMs,
 				RequestBody:    append([]byte(nil), bodyBytes...),
-				InboundBody:    sourceBody,
+				InboundBody:    originalBody,
 				RoutingTracker: params.RoutingTracker,
 			}, &streamInterruptedError{
 				reason:           outcome.Reason,
@@ -932,7 +1236,7 @@ func (e *Executor) executeGemini(
 			Candidate:      cand,
 			LatencyMs:      latencyMs,
 			RequestBody:    append([]byte(nil), bodyBytes...),
-			InboundBody:    sourceBody,
+			InboundBody:    originalBody,
 			RoutingTracker: params.RoutingTracker,
 		}, nil
 	}
@@ -958,7 +1262,7 @@ func (e *Executor) executeGemini(
 			Candidate:      cand,
 			LatencyMs:      latencyMs,
 			RequestBody:    append([]byte(nil), bodyBytes...),
-			InboundBody:    sourceBody,
+			InboundBody:    originalBody,
 			ResponseBody:   body,
 			RoutingTracker: params.RoutingTracker,
 		}, nil
@@ -969,7 +1273,7 @@ func (e *Executor) executeGemini(
 		Candidate:      cand,
 		LatencyMs:      latencyMs,
 		RequestBody:    append([]byte(nil), bodyBytes...),
-		InboundBody:    sourceBody,
+		InboundBody:    originalBody,
 		ResponseBody:   body,
 		RoutingTracker: params.RoutingTracker,
 	}, nil
@@ -1019,6 +1323,11 @@ func (e *Executor) finalizeGeminiUpstreamBody(params *ExecParams, cand provider.
 	switch params.ClientProtocol {
 	case "", providercatalog.ProtocolOpenAICompletions:
 		// supported
+	case providercatalog.ProtocolAnthropicMessages:
+		// supported — the Anthropic request wire is parsed into IR and
+		// re-serialized into the Gemini native wire below.
+	case providercatalog.ProtocolOpenAIResponses:
+		// supported — same, from the Responses request wire.
 	default:
 		return nil, &upstreampkg.Error{
 			Kind:       errorsx.KindUnsupportedFeature,
@@ -1027,11 +1336,23 @@ func (e *Executor) finalizeGeminiUpstreamBody(params *ExecParams, cand provider.
 		}
 	}
 
-	irReq, err := ir.ParseOpenAI(body)
+	// Parse the inbound client wire into IR. Which parser applies is
+	// decided by the INBOUND protocol, not by the upstream: the upstream
+	// is always Gemini-native.
+	var irReq *ir.InternalRequest
+	var err error
+	switch params.ClientProtocol {
+	case providercatalog.ProtocolAnthropicMessages:
+		irReq, err = ir.ParseAnthropic(body)
+	case providercatalog.ProtocolOpenAIResponses:
+		irReq, err = ir.ParseResponses(body)
+	default:
+		irReq, err = ir.ParseOpenAI(body)
+	}
 	if err != nil {
 		return nil, &upstreampkg.Error{
 			Kind:       errorsx.KindClientBug,
-			Message:    "gemini executor: inbound body is not valid OpenAI Chat wire JSON",
+			Message:    fmt.Sprintf("gemini executor: inbound body is not valid %s wire JSON", geminiInboundWireName(params.ClientProtocol)),
 			Err:        err,
 			StatusCode: 0,
 		}
@@ -1047,6 +1368,11 @@ func (e *Executor) finalizeGeminiUpstreamBody(params *ExecParams, cand provider.
 	}
 
 	irReq.SourceProtocol = ir.ProtocolOpenAIChat
+	if params.ClientProtocol == providercatalog.ProtocolAnthropicMessages {
+		irReq.SourceProtocol = ir.ProtocolAnthropicMessages
+	} else if params.ClientProtocol == providercatalog.ProtocolOpenAIResponses {
+		irReq.SourceProtocol = ir.ProtocolOpenAIResponses
+	}
 
 	if irReq.Model == "" {
 		return nil, &upstreampkg.Error{

@@ -1190,7 +1190,7 @@ watch(keyId, async () => {
   font-size: 11px;
   line-height: 1.35;
   white-space: nowrap;
-  box-shadow: 0 4px 12px var(--overlay-light);
+  box-shadow: var(--kx-shadow-sm);
   z-index: 2;
 }
 

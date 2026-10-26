@@ -207,7 +207,6 @@ onBeforeUnmount(() => {
   min-width: 180px;
   padding: 6px;
   background: var(--kx-surface, var(--card));
-  border: 1px solid var(--kx-border, var(--border));
   border-radius: 12px;
   box-shadow: var(--kx-shadow-md);
   display: flex;

@@ -135,7 +135,7 @@ function goKeys(action?: string) {
   overflow-y: auto;
   padding: 18px 20px;
   background: var(--card);
-  box-shadow: 0 16px 48px var(--overlay-strong);
+  box-shadow: var(--kx-shadow-md);
 }
 
 .modal-panel__head {

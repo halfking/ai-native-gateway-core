@@ -555,7 +555,7 @@ defineExpose({ load })
   width: 90%;
   max-height: 80vh;
   overflow-y: auto;
-  box-shadow: 0 8px 24px var(--overlay-light);
+  box-shadow: var(--kx-shadow-md);
 }
 
 .modal-content h3 {

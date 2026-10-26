@@ -800,7 +800,9 @@ func reportSerializeResponsesLosses(req *InternalRequest) {
 	}
 
 	// Anthropic-only top-level fields.
-	if len(req.CacheControl) > 0 {
+	// 2026-10-27 缓存标准对齐轮：块级 marker（system 块/消息块/tool_result）
+	// 同样在 Responses 形状上无处安放，一并上报，不再静默蒸发。
+	if len(req.CacheControl) > 0 || hasBlockLevelCacheControl(req) {
 		ReportProtocolLoss(
 			"unknown",
 			"cache_control",
