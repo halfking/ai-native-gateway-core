@@ -6444,6 +6444,14 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteRe
 		if v, ok := m["cache_write_tokens"].(int); ok && v > 0 {
 			reqLog.CacheWriteTokens = &v
 		}
+		// 2026-10-27 缓存监测轮：TTL 写入分档只进监测面（台账列是读写总量），
+		// 有分档时打一条结构化 INFO 供运维检索。
+		if sv, ok := m["cache_write_ttl_short_tokens"].(int); ok && sv > 0 {
+			slog.Info("cache write ttl split observed", "request_id", evt.RequestID, "model", evt.CanonicalName, "ttl", "short", "tokens", sv)
+		}
+		if lv, ok := m["cache_write_ttl_long_tokens"].(int); ok && lv > 0 {
+			slog.Info("cache write ttl split observed", "request_id", evt.RequestID, "model", evt.CanonicalName, "ttl", "long", "tokens", lv)
+		}
 		if v, ok := m["stream_first_chunk_ms"].(int); ok {
 			reqLog.StreamFirstChunkMs = &v
 		}
@@ -6677,6 +6685,15 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteRe
 	// when the upstream response contained a complete usage block.
 	if len(result.ResponseBody) > 0 {
 		pt, ct, crt, cwt := extractTokensFromResponseBody(result.ResponseBody)
+		// 2026-10-27 缓存监测轮：非流式同样取 TTL 写入分档（只进监测面）。
+		if sv, lv, ok := extractCacheWriteTTLSplit(result.ResponseBody); ok && (sv > 0 || lv > 0) {
+			if sv > 0 {
+				slog.Info("cache write ttl split observed", "request_id", evt.RequestID, "model", evt.CanonicalName, "ttl", "short", "tokens", sv)
+			}
+			if lv > 0 {
+				slog.Info("cache write ttl split observed", "request_id", evt.RequestID, "model", evt.CanonicalName, "ttl", "long", "tokens", lv)
+			}
+		}
 		if pt > 0 || ct > 0 {
 			// A receipt-time estimate is provisional. Replace it whenever the
 			// upstream response provides the real prompt token count.
@@ -8652,6 +8669,48 @@ func isTopLevelJSONContext(b []byte, pos int) bool {
 // The non-stream-specific fallbacks are preserved verbatim: MiniMax-style
 // top-level usage when no "usage" object exists, and the two-directional
 // total_tokens inference.
+// extractCacheWriteTTLSplit pulls the vendor TTL-tier breakdown of the cache
+// WRITE tokens out of a non-streaming response body — Anthropic nested
+// cache_creation object (ephemeral_5m/1h) and OpenAI cache_write_tokens_details
+// (ttl_30m/12h). Monitoring only: the ledger keeps the read/write totals.
+func extractCacheWriteTTLSplit(body []byte) (short, long int, ok bool) {
+	if len(body) == 0 {
+		return 0, 0, false
+	}
+	var data map[string]json.RawMessage
+	if err := json.Unmarshal(body, &data); err != nil {
+		return 0, 0, false
+	}
+	usageRaw, present := data["usage"]
+	if !present {
+		// Fallback mirrors extractTokensFromResponseBody: some providers put
+		// usage fields at the top level.
+		usageRaw = json.RawMessage(body)
+	}
+	var usage map[string]json.RawMessage
+	if err := json.Unmarshal(usageRaw, &usage); err != nil {
+		return 0, 0, false
+	}
+	found := false
+	if v, err := nestedUsageInt(usage, "cache_creation", "ephemeral_5m_input_tokens"); err == nil && v > 0 {
+		short = v
+		found = true
+	}
+	if v, err := nestedUsageInt(usage, "cache_creation", "ephemeral_1h_input_tokens"); err == nil && v > 0 {
+		long = v
+		found = true
+	}
+	if v, err := nestedUsageInt(usage, "cache_write_tokens_details", "ttl_30m_tokens"); err == nil && v > 0 {
+		short = v
+		found = true
+	}
+	if v, err := nestedUsageInt(usage, "cache_write_tokens_details", "ttl_12h_tokens"); err == nil && v > 0 {
+		long = v
+		found = true
+	}
+	return short, long, found
+}
+
 func extractTokensFromResponseBody(body []byte) (promptTokens, completionTokens, cacheRead, cacheWrite int) {
 	if len(body) == 0 {
 		return 0, 0, 0, 0
