@@ -196,6 +196,27 @@ func scanDiscriminativeFile(root, path string) ([]DiscriminativeLowerBound, erro
 	if relErr != nil {
 		rel = path
 	}
+	// ★ 2026-10-27（R148 审计轮）：仓库相对路径**一律用正斜杠**。
+	//
+	// 这个 File 字段有两个消费者，两个都要求跨平台稳定的拼写：
+	//
+	//	① measured_margins.tsv 的对账键（margin_gate_test.go:
+	//	   b.File+"|"+b.Func vs 台账行首列）。台账是**提交进仓的数据文件**，
+	//	   行首列写的是正斜杠（admin/distlock/lock_test.go）⇒ 用
+	//	   filepath.Rel 的**本机分隔符**做键，在 Windows 上永远是
+	//	   admin\distlock\lock_test.go ⇒ **一条都对不上** ⇒ 门报出
+	//	   「台账漂移 ×8」+「不在实测台账里 ×N」——**整道门在 Windows 上
+	//	   恒红，且恒红得毫无意义**（同一个文件被用两种拼写各报一次）。
+	//
+	//	② guard_test.go 的自排除检查
+	//	   strings.Contains(b.File, "internal/clockguard")：Windows 上
+	//	   b.File 是 internal\clockguard\… ⇒ 这个 Contains **永远为假**
+	//	   ⇒ 扫描器把自己包的判据算进去时**不会被发现**（静默漏网）。
+	//
+	// ⇒ 同族先例：web 侧 ui-audit 的豁免查表键已经因为同一件事修过一次
+	//（commit 9327bc33e004「豁免查表键与路径分隔符无关 —— 修掉 Windows
+	// 上恒红的假阳性」）。这里是同一族缺陷的第二处。
+	rel = filepath.ToSlash(rel)
 	var out []DiscriminativeLowerBound
 	for _, decl := range f.Decls {
 		fn, ok := decl.(*ast.FuncDecl)
@@ -226,6 +247,8 @@ func scanFile(root, path string) ([]ZeroMarginLowerBound, error) {
 	if relErr != nil {
 		rel = path
 	}
+	// 同 scanDiscriminativeFile：仓库相对路径一律用正斜杠（跨平台稳定拼写）。
+	rel = filepath.ToSlash(rel)
 	var out []ZeroMarginLowerBound
 	for _, decl := range f.Decls {
 		fn, ok := decl.(*ast.FuncDecl)

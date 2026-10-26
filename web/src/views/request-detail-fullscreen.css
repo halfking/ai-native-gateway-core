@@ -83,3 +83,8 @@
   border-radius: 6px;
   color: var(--text);
 }
+
+/* ── 2026-10-27 第 17 增量（AI 痕迹门 V3）：图标尺寸 ──
+   element-plus 图标是裸 <svg viewBox="0 0 1024 1024">，**不带 width/height**
+   ⇒ 浏览器按包含块宽度渲染（会撑爆布局）⇒ 必须显式定尺寸。 */
+.top .btn > svg { width: 13px; height: 13px; vertical-align: -2px; }

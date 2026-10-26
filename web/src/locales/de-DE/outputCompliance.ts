@@ -42,7 +42,7 @@ export default {
     createdAt: 'Zeit',
   },
   empty: 'Keine Compliance-Datensätze',
-  recordsLoadFailed: 'Treffer-Datensätze konnten nicht geladen werden',
+  recordsLoadFailed: 'Trefferdatensätze konnten nicht geladen werden. Bitte erneut versuchen.',
   recordsNotLoaded: 'Treffer-Datensätze nicht geladen: die Tabelle unten ist kein Abfrageergebnis',
   pagination: {
     previous: 'Zurück',

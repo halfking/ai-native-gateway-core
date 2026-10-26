@@ -1,0 +1,154 @@
+# 公开页 / 访客面（无需登录）
+# router.ts 里 meta.public === true 的页面 + 4 条 /customer/* 重定向 + /maintain 兜底页。
+# 路由清单来自 web/src/router.ts（见 maestro/README.md 的逐条核对表）。
+# 计时：每个页面 openLink 前打点 output.t0，页面关键文案可见后算 output.ms__<slug>（毫秒）。
+#       阈值 2000ms 用 optional 断言 —— 慢页只标记不失败，事后用 maestro/tools/slow-pages.mjs 筛。
+appId: ${BASE_URL}
+---
+- launchApp
+- launchApp:
+    clearState: true
+
+# ── /forbidden ─────────────────────────────────────────────
+- evalScript: "${output.t0 = Date.now()}"
+- openLink: "${BASE_URL}/forbidden"
+- extendedWaitUntil:
+    visible: '403 - 访问被拒绝'
+    timeout: 20000
+- evalScript: "${output.ms__forbidden = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}"
+- assertTrue:
+    condition: "${output.ms__forbidden < 2000}"
+    optional: true
+    label: 'slow-check:/forbidden'
+
+# ── / ─────────────────────────────────────────────
+- evalScript: "${output.t0 = Date.now()}"
+- openLink: "${BASE_URL}/"
+- extendedWaitUntil:
+    visible: '把公司里所有大模型调用，收进一个能管、能查、能关的入口'
+    timeout: 20000
+- evalScript: "${output.ms__root = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}"
+- assertTrue:
+    condition: "${output.ms__root < 2000}"
+    optional: true
+    label: 'slow-check:/'
+
+# ── /bootstrap ─────────────────────────────────────────────
+- evalScript: "${output.t0 = Date.now()}"
+- openLink: "${BASE_URL}/bootstrap"
+- extendedWaitUntil:
+    visible: '本地网关安装激活'
+    timeout: 20000
+- evalScript: "${output.ms__bootstrap = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}"
+- assertTrue:
+    condition: "${output.ms__bootstrap < 2000}"
+    optional: true
+    label: 'slow-check:/bootstrap'
+
+# ── /customer/update-activate ─────────────────────────────────────────────
+- evalScript: "${output.t0 = Date.now()}"
+- openLink: "${BASE_URL}/customer/update-activate"
+- extendedWaitUntil:
+    visible: '更新与激活'
+    timeout: 20000
+- evalScript: "${output.ms__customer_update_activate = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}"
+- assertTrue:
+    condition: "${output.ms__customer_update_activate < 2000}"
+    optional: true
+    label: 'slow-check:/customer/update-activate'
+
+# ── /customer/site ─────────────────────────────────────────────
+- evalScript: "${output.t0 = Date.now()}"
+- openLink: "${BASE_URL}/customer/site"
+- extendedWaitUntil:
+    visible: '更新与激活'
+    timeout: 20000
+- evalScript: "${output.ms__customer_site = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}"
+- assertTrue:
+    condition: "${output.ms__customer_site < 2000}"
+    optional: true
+    label: 'slow-check:/customer/site'
+
+# ── /customer/activate ─────────────────────────────────────────────
+- evalScript: "${output.t0 = Date.now()}"
+- openLink: "${BASE_URL}/customer/activate"
+- extendedWaitUntil:
+    visible: '更新与激活'
+    timeout: 20000
+- evalScript: "${output.ms__customer_activate = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}"
+- assertTrue:
+    condition: "${output.ms__customer_activate < 2000}"
+    optional: true
+    label: 'slow-check:/customer/activate'
+
+# ── /customer/license ─────────────────────────────────────────────
+- evalScript: "${output.t0 = Date.now()}"
+- openLink: "${BASE_URL}/customer/license"
+- extendedWaitUntil:
+    visible: '更新与激活'
+    timeout: 20000
+- evalScript: "${output.ms__customer_license = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}"
+- assertTrue:
+    condition: "${output.ms__customer_license < 2000}"
+    optional: true
+    label: 'slow-check:/customer/license'
+
+# ── /customer/agreement ─────────────────────────────────────────────
+- evalScript: "${output.t0 = Date.now()}"
+- openLink: "${BASE_URL}/customer/agreement"
+- extendedWaitUntil:
+    visible: '更新与激活'
+    timeout: 20000
+- evalScript: "${output.ms__customer_agreement = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}"
+- assertTrue:
+    condition: "${output.ms__customer_agreement < 2000}"
+    optional: true
+    label: 'slow-check:/customer/agreement'
+
+# ── /customer/offline-activation ─────────────────────────────────────────────
+- evalScript: "${output.t0 = Date.now()}"
+- openLink: "${BASE_URL}/customer/offline-activation"
+- extendedWaitUntil:
+    visible: '离线激活'
+    timeout: 20000
+- evalScript: "${output.ms__customer_offline_activation = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}"
+- assertTrue:
+    condition: "${output.ms__customer_offline_activation < 2000}"
+    optional: true
+    label: 'slow-check:/customer/offline-activation'
+
+# ── /maintain ─────────────────────────────────────────────
+- evalScript: "${output.t0 = Date.now()}"
+- openLink: "${BASE_URL}/maintain"
+- extendedWaitUntil:
+    visible: '503 · 运维平台不可用'
+    timeout: 20000
+- evalScript: "${output.ms__maintain = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}"
+- assertTrue:
+    condition: "${output.ms__maintain < 2000}"
+    optional: true
+    label: 'slow-check:/maintain'
+
+# ── /maintain/:pathMatch(.*)* ─────────────────────────────────────────────
+- evalScript: "${output.t0 = Date.now()}"
+- openLink: "${BASE_URL}/maintain/ops/anything"
+- extendedWaitUntil:
+    visible: '503 · 运维平台不可用'
+    timeout: 20000
+- evalScript: "${output.ms__maintain_pathMatch__any_any = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}"
+- assertTrue:
+    condition: "${output.ms__maintain_pathMatch__any_any < 2000}"
+    optional: true
+    label: 'slow-check:/maintain/:pathMatch(.*)*'
+
+# ── /:pathMatch(.*)* ─────────────────────────────────────────────
+- evalScript: "${output.t0 = Date.now()}"
+- openLink: "${BASE_URL}/no-such-route-404-probe"
+- extendedWaitUntil:
+    visible: '把公司里所有大模型调用，收进一个能管、能查、能关的入口'
+    timeout: 20000
+- evalScript: "${output.ms__pathMatch__any_any = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}"
+- assertTrue:
+    condition: "${output.ms__pathMatch__any_any < 2000}"
+    optional: true
+    label: 'slow-check:/:pathMatch(.*)*'

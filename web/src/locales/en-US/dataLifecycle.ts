@@ -51,7 +51,7 @@ export default {
       hint: 'The database schema is behind this build; the figures below are placeholders for "cannot be computed", not real measurements.',
     },
     errors: {
-      load: 'Failed to load enhanced usage data',
+      load: 'The enhanced usage data could not be loaded. Please retry.',
     },
     sources: {
       summary: 'Usage summary',
@@ -114,9 +114,9 @@ export default {
       totalRequests: 'Total requests',
     },
     errors: {
-      costTrend: 'Failed to fetch cost trend',
-      periodCompare: 'Failed to fetch period comparison',
-      cacheEconomics: 'Failed to fetch cache economics',
+      costTrend: 'The cost trend could not be loaded. Please retry.',
+      periodCompare: 'The period comparison could not be loaded. Please retry.',
+      cacheEconomics: 'The cache economics could not be loaded. Please retry.',
     },
     degraded: {
       title: 'Some metrics are unavailable:',
@@ -321,7 +321,7 @@ export default {
   coldData: 'Cold data (30-90 days)',
   expiredData: 'Expired data (>90 days)',
   missingDate: 'Select both a start date and an end date',
-  previewFailed: 'Preview failed',
+  previewFailed: 'The preview could not be completed. Please retry.',
   needPreview: 'Preview the impact first',
   executeNotImpl: 'The cleanup feature will be implemented in a later phase. Use the command-line script to perform the cleanup.',
   confirmDeleteCleanup: 'Delete {rows} rows?\nEstimated space freed: {size}\n\nThis action is irreversible!',

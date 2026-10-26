@@ -1,4 +1,5 @@
 import { ref, computed, watch, onUnmounted } from 'vue'
+import { surfaceError } from '../i18n/errorSurface'
 import { fetchDashboardBoard, fetchBoardOperational, type BoardPayload, type BoardOperationalPayload } from '../api/board'
 import { resolveDashboardRefreshMs } from './dashboardRefreshSettings'
 import { subscribeTerminalRequests, connectionRef } from './liveStreamStore'
@@ -146,7 +147,7 @@ export function useDashboardBoard() {
       }
     } catch (e: unknown) {
       if (controller.signal.aborted || generation !== loadGeneration) return
-      error.value = e instanceof Error ? e.message : '没能加载出来，请重试'
+      error.value = surfaceError(e, { key: 'common.feedback.loadFailed' })
     } finally {
       if (generation === loadGeneration) {
         loadInFlight = false

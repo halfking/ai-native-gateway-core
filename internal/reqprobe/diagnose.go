@@ -133,6 +133,15 @@ var chatDirectiveHints = []string{
 }
 
 // paramRejectionHints：参数被拒的泛化信号（未点名参数时兜底）。
+// thinkingUnsupportedHints 是「模型不支持 thinking」的错误文案族
+// （2026-10-27 本地 ollama 实测：reasoning_effort 发给 qwen2.5:7b 等
+// 非 thinking 模型 ⇒ 400 `"qwen2.5:7b" does not support thinking`）。
+var thinkingUnsupportedHints = []string{
+	"does not support thinking",
+	"thinking is not supported",
+	"does not support reasoning",
+}
+
 var paramRejectionHints = []string{
 	"extra inputs are not permitted",
 	"additional properties are not allowed",
@@ -379,6 +388,22 @@ func Diagnose(in Input) (Diagnosis, bool) {
 			SuggestMode: "responses",
 			Reason:      "upstream demands responses api",
 		}, true
+	}
+
+	// 1.5) thinking 能力族（2026-10-27 多模态标准接口轮，本地 ollama 实测）：
+	// `"qwen2.5:7b" does not support thinking`（HTTP 400）——reasoning_effort /
+	// think 发给了**非 thinking 模型**。参数名不在文案里（只点名模型），
+	// 按族识别：出站体带 thinking 族参数即判 param_rejected，点名剔除。
+	// 调用方（网关端点/技能编排器）无法预知模型能力，这层自适应让
+	// 「thinking 模型保 effort、非 thinking 模型裸发」两边都通。
+	if containsAny(blob, thinkingUnsupportedHints) {
+		if strippable := StrippableParamsForWire(in.OutboundBody, "reasoning_effort,think", ""); len(strippable) > 0 {
+			return Diagnosis{
+				Trigger: TriggerParamRejected,
+				Param:   strings.Join(strippable, ","),
+				Reason:  "model does not support thinking (reasoning params rejected)",
+			}, true
+		}
 	}
 
 	// 2) 参数被拒：点名参数优先。

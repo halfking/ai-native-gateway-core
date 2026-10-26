@@ -1,4 +1,5 @@
 import { createGatewaySession, getPendingResponse } from '../api'
+import { surfaceError } from '../i18n/errorSurface'
 import { loadPersistedGwSessionId, persistLastGwSessionId } from './useChatSessions'
 import { usePersistedValue } from './usePersistedValue'
 
@@ -111,7 +112,7 @@ export class SessionForbiddenError extends Error {
 
 export function isSessionForbiddenError(e: unknown): boolean {
   if (e instanceof SessionForbiddenError) return true
-  const msg = e instanceof Error ? e.message : String(e)
+  const msg = surfaceError(e)
   return msg.includes('session not owned') || msg.includes('SESSION_FORBIDDEN')
 }
 

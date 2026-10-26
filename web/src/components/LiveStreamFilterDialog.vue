@@ -1,6 +1,7 @@
 <script setup lang="ts">
 // LiveStreamFilterDialog — 实时请求流多维筛选弹窗（全部 + 搜索 + 完整选项）
 import { computed, ref, watch } from 'vue'
+import { Close } from '@element-plus/icons-vue'
 
 const props = withDefaults(defineProps<{
   open: boolean
@@ -76,7 +77,7 @@ function apply() {
       <div class="lsfd-dialog" role="dialog" :aria-label="title">
         <header class="lsfd-head">
           <h3 class="lsfd-title">{{ title }}</h3>
-          <button type="button" class="lsfd-close" :aria-label="$t('common.close')" @click="close">×</button>
+          <button type="button" class="lsfd-close" :aria-label="$t('common.close')" @click="close"><Close /></button>
         </header>
 
         <div class="lsfd-toolbar">
@@ -141,9 +142,8 @@ function apply() {
   flex-direction: column;
   background: var(--card);
   color: var(--text, var(--surface-secondary));
-  border: 1px solid var(--border, var(--kx-text));
   border-radius: 10px;
-  box-shadow: 0 12px 40px var(--overlay-medium);
+  box-shadow: var(--kx-shadow-md);
 }
 .lsfd-head {
   display: flex;
@@ -253,4 +253,10 @@ function apply() {
   border-color: var(--accent, var(--accent));
   color: var(--on-primary);
 }
+
+/* ── 2026-10-27 第 17 增量（AI 痕迹门 V3）：图标尺寸 ──
+   element-plus 图标是裸 <svg viewBox="0 0 1024 1024">，**不带 width/height**
+   ⇒ 浏览器按包含块宽度渲染（会撑爆布局）⇒ 必须显式定尺寸。
+   尺寸沿用原字形的 font-size 观感（字形墨迹 ≈ 0.7em）。 */
+.lsfd-close > svg { width: 14px; height: 14px; }
 </style>

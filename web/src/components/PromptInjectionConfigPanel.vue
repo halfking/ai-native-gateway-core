@@ -26,6 +26,7 @@ import {
 
 // 2026-09-13 P5：补齐模板使用的 el-* 组件注册（修复运行时 resolve 失败）
 import { ElTag } from 'element-plus'
+import { Minus, Plus } from '@element-plus/icons-vue'
 // Props:
 //   - moduleEnabled: when false, the panel shows a banner warning that all
 //     settings will be inert. Defaults to true so the panel works standalone
@@ -536,7 +537,7 @@ const thresholdInvalid = computed(() => {
               @click="toggleExpanded(rule.id)"
               :aria-expanded="expandedRules.has(rule.id)"
             >
-              {{ expandedRules.has(rule.id) ? '−' : '+' }}
+              <Minus v-if="expandedRules.has(rule.id)" /><Plus v-else />
               {{ t('sessions.config.promptInjectionRulePattern') }}
             </button>
           </div>
@@ -692,4 +693,9 @@ const thresholdInvalid = computed(() => {
   .radio-group { justify-self: start; }
   .detail-row { grid-template-columns: 1fr; }
 }
+
+/* ── 2026-10-27 第 17 增量（AI 痕迹门 V3 · 插值形态）：图标尺寸 ──
+   element-plus 图标是裸 <svg viewBox="0 0 1024 1024">，**不带 width/height**
+   ⇒ 浏览器按包含块宽度渲染（会撑爆布局）⇒ 必须显式定尺寸。 */
+.expand-btn > svg { width: 10px; height: 10px; }
 </style>

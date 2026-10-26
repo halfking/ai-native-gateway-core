@@ -3,7 +3,7 @@ import { ref, computed } from 'vue'
 import type { Approver } from '../api/approval'
 import { confirmDialog } from '../composables/useConfirmDialog'
 import { useI18n } from 'vue-i18n'
-import { Plus, Message, EditPen, Delete, Close } from '@element-plus/icons-vue'
+import { Bottom, Check, Close, Delete, EditPen, Message, Plus, Top } from '@element-plus/icons-vue'
 
 const props = defineProps<{
   modelValue: Approver[]
@@ -158,7 +158,7 @@ function moveDown(index: number) {
             @click="toggleEnabled(index)"
             :title="approver.enabled ? $t('common.status.disabled') : $t('common.status.enabled')"
           >
-            {{ approver.enabled ? '✓' : '✗' }}
+            <Check v-if="approver.enabled" /><Close v-else />
           </button>
           <button
             class="btn-icon"
@@ -166,7 +166,7 @@ function moveDown(index: number) {
             :disabled="index === 0"
             title="上移"
           >
-            ↑
+            <Top />
           </button>
           <button
             class="btn-icon"
@@ -174,7 +174,7 @@ function moveDown(index: number) {
             :disabled="index === approvers.length - 1"
             title="下移"
           >
-            ↓
+            <Bottom />
           </button>
           <button
             class="btn-icon"
@@ -403,9 +403,8 @@ function moveDown(index: number) {
   width: 90%;
   max-width: 500px;
   background: var(--bg-card);
-  border: 1px solid var(--border);
   border-radius: 8px;
-  box-shadow: 0 8px 24px var(--overlay-medium);
+  box-shadow: var(--kx-shadow-md);
 }
 
 .dialog-header {
@@ -528,4 +527,15 @@ function moveDown(index: number) {
 .btn-ghost:hover {
   background: var(--bg-hover);
 }
+
+/* ── 2026-10-27 第 17 增量（AI 痕迹门 V3）：图标尺寸 ──
+   element-plus 图标是裸 <svg viewBox="0 0 1024 1024">，**不带 width/height**
+   ⇒ 浏览器按包含块宽度渲染（会撑爆布局）⇒ 必须显式定尺寸。
+   尺寸沿用原字形的 font-size 观感（字形墨迹 ≈ 0.7em）。 */
+.btn-icon > svg { width: 13px; height: 13px; }
+
+/* ── 2026-10-27 第 17 增量（AI 痕迹门 V3 · 插值形态）：图标尺寸 ──
+   element-plus 图标是裸 <svg viewBox="0 0 1024 1024">，**不带 width/height**
+   ⇒ 浏览器按包含块宽度渲染（会撑爆布局）⇒ 必须显式定尺寸。 */
+.btn-icon > svg { width: 11px; height: 11px; }
 </style>

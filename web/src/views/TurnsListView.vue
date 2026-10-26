@@ -1,6 +1,7 @@
 <script setup lang="ts">
 // TurnsListView — 多维层级会话工作台（项目/用户/客户端/API Key + 总结资产化）
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
+import { surfaceError } from '../i18n/errorSurface'
 import { useRouter } from 'vue-router'
 import {
   extractNoTopicSessionToMemora,
@@ -110,10 +111,10 @@ async function load(reset = true) {
   } catch (cause: unknown) {
     if (version !== requestVersion.value || (cause instanceof DOMException && cause.name === 'AbortError')) return
     if (reset) {
-      error.value = cause instanceof Error ? cause.message : String(cause)
+      error.value = surfaceError(cause)
       items.value = []
     } else {
-      loadMoreError.value = cause instanceof Error ? cause.message : String(cause)
+      loadMoreError.value = surfaceError(cause)
     }
   } finally {
     if (version === requestVersion.value) {
@@ -227,7 +228,7 @@ async function resummarize(session: TurnsSessionGroup) {
       [session.session_id]: refreshed ? '已触发重新归纳' : '已触发重新归纳，但新归纳没取回来（当前显示的是旧内容）',
     }
   } catch (cause) {
-    assetMsg.value = { ...assetMsg.value, [session.session_id]: cause instanceof Error ? cause.message : '归纳没能完成，请重试' }
+    assetMsg.value = { ...assetMsg.value, [session.session_id]: surfaceError(cause, { key: 'common.feedback.sessionSummarizeFailed' }) }
   } finally {
     summaryBusy.value = { ...summaryBusy.value, [session.session_id]: false }
   }
@@ -248,7 +249,7 @@ async function extractAsset(session: TurnsSessionGroup) {
         : `已沉淀 ${result.written} 条资产${result.skipped_duplicate ? `（跳过重复 ${result.skipped_duplicate}）` : ''}`,
     }
   } catch (cause) {
-    assetMsg.value = { ...assetMsg.value, [session.session_id]: cause instanceof Error ? cause.message : '沉淀没能完成，请重试' }
+    assetMsg.value = { ...assetMsg.value, [session.session_id]: surfaceError(cause, { key: 'common.feedback.sessionAssetExtractFailed' }) }
   } finally {
     assetBusy.value = { ...assetBusy.value, [session.session_id]: false }
   }

@@ -3,6 +3,7 @@
  * 其它模型：当前凭据下非当前模型的可用性与探活/上下线（顶级 tab）。
  */
 import { computed, ref, watch } from 'vue'
+import { surfaceError } from '../i18n/errorSurface'
 import {
   getCredentialMonitorSummary,
   sessionPingCredential,
@@ -58,7 +59,7 @@ async function refreshModels() {
     const models = result.credentials?.[0]?.models ?? []
     emit('refreshed', models)
   } catch (error) {
-    emit('error', error instanceof Error ? error.message : '其它模型的状态没能加载出来，请重试')
+    emit('error', surfaceError(error, { key: 'common.feedback.otherModelsLoadFailed' }))
   } finally {
     loading.value = false
   }
@@ -102,7 +103,7 @@ async function pingModel(model: string) {
       }
       emit('message', `${model}: ${probeResults.value[model]}`)
     } catch (error) {
-      const msg = error instanceof Error ? error.message : 'Ping 没能成功，请重试'
+      const msg = surfaceError(error, { key: 'common.feedback.modelPingFailed' })
       probeResults.value = { ...probeResults.value, [model]: msg }
       emit('error', `${model}: ${msg}`)
     }
@@ -117,7 +118,7 @@ async function queueProbe(model: string) {
       probeResults.value = { ...probeResults.value, [model]: '探活已入队' }
       emit('message', `${model}: 探活已入队`)
     } catch (error) {
-      const msg = error instanceof Error ? error.message : '探活请求没能提交，请重试'
+      const msg = surfaceError(error, { key: 'common.feedback.probeRequestFailed' })
       probeResults.value = { ...probeResults.value, [model]: msg }
       emit('error', `${model}: ${msg}`)
     }
@@ -139,7 +140,7 @@ async function toggleModel(model: CredentialModelStatus) {
       reason.value = ''
       await refreshModels()
     } catch (error) {
-      emit('error', error instanceof Error ? error.message : '模型上下线没能完成，请重试')
+      emit('error', surfaceError(error, { key: 'common.feedback.modelAvailabilityFailed' }))
     }
   })
 }
@@ -156,7 +157,7 @@ async function probeAll() {
     } catch (error) {
       probeResults.value = {
         ...probeResults.value,
-        [model]: error instanceof Error ? error.message : '探活失败，请重试',
+        [model]: surfaceError(error, { key: 'common.feedback.probeFailed' }),
       }
     }
   }

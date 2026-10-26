@@ -1,4 +1,5 @@
 import { ref } from 'vue'
+import { surfaceError } from '../i18n/errorSurface'
 import { getQualitySummary, type QualitySummaryItem } from '../api/quality'
 
 /** Sort keys for /providers list quality columns. */
@@ -95,7 +96,7 @@ export function useProviderQualitySummary() {
       }
       qualityByProviderId.value = map
     } catch (e: unknown) {
-      qualityError.value = e instanceof Error ? e.message : 'quality summary failed'
+      qualityError.value = surfaceError(e, { key: 'common.feedback.qualitySummaryLoadFailed' })
       qualityByProviderId.value = new Map()
     } finally {
       qualityLoading.value = false

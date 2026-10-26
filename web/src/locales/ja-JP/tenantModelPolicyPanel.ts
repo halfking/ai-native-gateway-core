@@ -60,11 +60,11 @@ export default {
   },
 
   error: {
-    loadFailed: '読み込みに失敗しました',
-    checkFailed: '検証失敗',
+    loadFailed: 'テナントモデルポリシーの読み込みに失敗しました。再試行してください。',
+    checkFailed: '検証を完了できませんでした。再試行してください。',
     canonicalNameRequired: 'canonical_name は必須です',
-    createFailed: '作成に失敗しました',
-    deleteFailed: '削除に失敗しました',
-    restoreFailed: '復元に失敗しました',
+    createFailed: 'テナントモデルポリシーの作成に失敗しました。再試行してください。',
+    deleteFailed: 'テナントモデルポリシーの削除に失敗しました。再試行してください。',
+    restoreFailed: 'テナントモデルポリシーの復元に失敗しました。再試行してください。',
   },
 }

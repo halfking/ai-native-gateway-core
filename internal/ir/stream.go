@@ -162,6 +162,12 @@ type StreamUsage struct {
 	// Cache tokens (Anthropic prompt caching, OpenAI prompt caching)
 	CacheReadTokens  *int `json:"cache_read_tokens,omitempty"`
 	CacheWriteTokens *int `json:"cache_write_tokens,omitempty"`
+	// 缓存写入的 TTL 分档（2026-10-27 缓存监测轮）。厂商映射：
+	// Anthropic usage.cache_creation.{ephemeral_5m→Short, ephemeral_1h→Long}；
+	// OpenAI usage.cache_write_tokens_details.{ttl_30m→Short, ttl_12h→Long}。
+	// 只服务监测面（桥 → capture），序列化器不产出这两个键。
+	CacheWriteTTLShort *int `json:"cache_write_ttl_short,omitempty"`
+	CacheWriteTTLLong  *int `json:"cache_write_ttl_long,omitempty"`
 
 	// Reasoning tokens (DeepSeek R1, OpenAI o1/o3)
 	ReasoningTokens *int `json:"reasoning_tokens,omitempty"`
@@ -505,6 +511,10 @@ func ParseAnthropicStreamEvent(eventType string, data []byte) (*StreamChunk, err
 					InputTokens              int `json:"input_tokens"`
 					CacheCreationInputTokens int `json:"cache_creation_input_tokens"` // audit-stream-multimodal
 					CacheReadInputTokens     int `json:"cache_read_input_tokens"`     // audit-stream-multimodal
+					CacheCreation            struct {
+						Ephemeral5mInputTokens int `json:"ephemeral_5m_input_tokens"`
+						Ephemeral1hInputTokens int `json:"ephemeral_1h_input_tokens"`
+					} `json:"cache_creation"`
 				} `json:"usage"`
 			} `json:"message"`
 		}
@@ -526,6 +536,16 @@ func ParseAnthropicStreamEvent(eventType string, data []byte) (*StreamChunk, err
 		if evt.Message.Usage.CacheReadInputTokens > 0 {
 			v := evt.Message.Usage.CacheReadInputTokens
 			chunk.Usage.CacheReadTokens = &v
+		}
+		// 2026-10-27 缓存监测轮：嵌套 cache_creation 对象（5m/1h 写入分档，
+		// 平面字段是两者之和）。只进监测面，不改变任何串行输出。
+		if evt.Message.Usage.CacheCreation.Ephemeral5mInputTokens > 0 {
+			v := evt.Message.Usage.CacheCreation.Ephemeral5mInputTokens
+			chunk.Usage.CacheWriteTTLShort = &v
+		}
+		if evt.Message.Usage.CacheCreation.Ephemeral1hInputTokens > 0 {
+			v := evt.Message.Usage.CacheCreation.Ephemeral1hInputTokens
+			chunk.Usage.CacheWriteTTLLong = &v
 		}
 		return chunk, nil
 

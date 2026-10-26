@@ -143,7 +143,14 @@ vi.mock('../../composables/useMaasTenantContext', async () => {
 })
 
 /** locale 固定，否则 `toLocaleString` 的千分位/符号取决于宿主 ICU。 */
-vi.mock('../../i18n', () => ({ localeRef: { value: 'zh-CN' } }))
+vi.mock('../../i18n', async (importOriginal) => {
+  // ★ 保留**真实**的 i18n 实例（真实的 zh-CN 文案），只覆盖 localeRef。
+  //   第 16 增量：错误文案统一走 src/i18n/errorSurface.ts 的 surfaceError()，
+  //   它从本模块取 i18n 实例 ⇒ 若这里把整个模块换成只剩 localeRef 的桩，
+  //   组件一加载就抛「No "i18n" export is defined on the mock」。
+  const actual = await importOriginal<typeof import('../../i18n')>()
+  return { ...actual, localeRef: { value: 'zh-CN' } }
+})
 
 /** 时间格式化固定成可断言的串：这样「表格与卡片同源」验的是**同一份函数**，
  *  而不是碰巧在两个地方写出同样的格式。 */

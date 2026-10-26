@@ -110,6 +110,13 @@ vi.mock('vue-router', () => ({
   params: {},
 }))
 
+// ★ 第 16 增量：错误文案统一走 src/i18n/errorSurface.ts 的 surfaceError()，
+//   它取的是**全局** i18n 实例（生产里全局与组件局部是同一个实例）。
+//   本测试挂的是自己的 stub 实例 ⇒ 显式把全局语种对齐 zh-CN，
+//   否则错误文案会走全局的默认语种（与页面其余文字不一致）。
+import { i18n as globalI18n } from '../i18n'
+;(globalI18n.global.locale as unknown as { value: string }).value = 'zh-CN'
+
 const i18n = createI18n({
   legacy: false,
   globalInjection: true,
@@ -204,7 +211,9 @@ describe('ProxyView：加载失败不得永远停在「加载中…」', { timeo
     const w = await renderProxy()
     expect(getProxyPolicyMock).toHaveBeenCalled()
     expect(w.find('.error-banner').exists()).toBe(true)
-    expect(w.find('.error-banner').text()).toContain('加载选择策略失败')
+    // ★ 第 16 增量：这条错误文案现在由 surfaceError() 统一产出 ⇒
+    //   断言改成**真实语言包值**（原先断言的是源码里的硬编码中文，已被出口取代）。
+    expect(w.find('.error-banner').text()).toContain('选择策略没能加载出来，请重试')
     expect(w.text()).not.toContain('proxy.policy.loading')
   })
 
@@ -212,7 +221,7 @@ describe('ProxyView：加载失败不得永远停在「加载中…」', { timeo
     getProxyPolicyMock.mockResolvedValue({ policy: {}, swap_state: null })
     getProxyRegionsMock.mockRejectedValue('boom')
     const w = await renderProxy()
-    expect(w.find('.error-banner').text()).toContain('加载区域统计失败')
+    expect(w.find('.error-banner').text()).toContain('区域统计没能加载出来，请重试')
   })
 
   it('⑥ 两个都成功 → 无横幅（正向对照，防止「永远有横幅」）', async () => {

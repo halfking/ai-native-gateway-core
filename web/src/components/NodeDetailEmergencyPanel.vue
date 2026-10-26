@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
+import { surfaceError } from '../i18n/errorSurface'
 import { emergencyRepair, type EmergencyRepairAction, type RoutingCandidate } from '../api/routing'
 import { useCredentialLabels } from '../composables/useCredentialLabels'
 import { confirmDialog } from '../composables/useConfirmDialog'
@@ -100,7 +101,7 @@ async function request(action: EmergencyRepairAction, label: string) {
       : t('providers.actionDone', { action: label }))
     emit('applied')
   } catch (e: unknown) {
-    emit('error', e instanceof Error ? e.message : t('providers.emergencyFailed'))
+    emit('error', surfaceError(e, { key: 'providers.emergencyFailed' }))
   } finally {
     repairing.value = null
   }

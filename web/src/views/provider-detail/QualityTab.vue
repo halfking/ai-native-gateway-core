@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, watch } from 'vue'
+import { surfaceError } from '../../i18n/errorSurface'
 import { sortByName } from '../../utils/sortByName'
 import { useI18n } from 'vue-i18n'
 import {
@@ -34,7 +35,7 @@ async function loadData() {
     data.value = await getProviderQualityDetail(props.providerId)
   } catch (e: unknown) {
     data.value = null
-    error.value = e instanceof Error ? e.message : t('providerDetail.quality.loadFailed')
+    error.value = surfaceError(e, { key: 'providerDetail.quality.loadFailed' })
   } finally {
     loading.value = false
   }

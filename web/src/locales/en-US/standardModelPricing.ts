@@ -76,7 +76,7 @@ export default {
     msgPasted: 'Updated {n} models',
     msgReset: 'Reset {n} models',
     msgFilled: 'Filled {n} models',
-    msgFailed: 'Bulk operation failed',
+    msgFailed: 'The bulk operation could not be completed. Please retry.',
   },
 
   // 扁平键（供 Vue 组件直接使用）
@@ -84,11 +84,11 @@ export default {
   customOnly: 'Has manual pricing',
   partialOnly: 'Partially manual',
   otherVendor: 'Other',
-  loadFailed: 'Failed to load',
+  loadFailed: 'The standard model pricing could not be loaded. Please retry.',
   saved: 'Global base saved (only affects non-manual dimensions)',
-  saveFailed: 'Save failed',
+  saveFailed: 'The standard model pricing could not be saved. Please retry.',
   needOneManual: 'Please tick at least one "manual pricing" dimension',
-  resetFailed: 'Reset failed',
+  resetFailed: 'The standard model pricing could not be restored. Please retry.',
   input: 'Input',
   output: 'Output',
   cacheRead: 'Cache read',

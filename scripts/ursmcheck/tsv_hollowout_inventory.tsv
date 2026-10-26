@@ -55,38 +55,71 @@
 #	   ⇒ ⇒ ★★ **若不做这步复核，就会误报 3 个「洞」** ⇒ ⇒ 这就是纪律②的实测价值。
 #	   ⇒ ⇒ ★ 选定的读方**必须真的读这份册子**（★ 不是「只在注释里提到它」）。
 #
+# ★★★ R86 轮（2026-10-28）改动摘要：
+#
+# ★ ① **例外 7 条 → 4 条**（★ 目标是 5 条，★ 实测多降了 1 条 —— ★ 因为 R85 轮有两条理由本身是**错的**）：
+#   · scripts/audit/selfcreated-cleanup-ledger.tsv
+#     ⇒ ★ R85 轮的理由「唯一读方需要**真实库**」是**错的** ⇒ ★ 实测 measure-selfcreated-cleanup.sh
+#       的 --verify 模式**全程静态扫源码 + 读台账**，★ 一次库都不连 ⇒ ⇒ 降级为 expect=red。
+#   · scripts/audit/dbaudit-scripts-ledger.tsv
+#     ⇒ ★ R85 轮的理由「唯一提及它的读方只在【注释】里提到它」是**错的** ⇒ ★ 真读方是
+#       healthcheck-dbaudit-scripts.sh 的 --verify 模式（★ 自述「只查台账自洽，不连库」）⇒ ⇒ 降级为 expect=red。
+#   · scripts/audit/permanent-skip-ledger.tsv
+#     ⇒ ★ 它的读方**确实**需要真实库 ⇒ ⇒ R86 轮给 measure-permanent-skip-axis.sh **新增了
+#       --dry-run-readonly 模式**（★ 不建库 / 不连 psql / 不 docker）⇒ ⇒ 降级为 expect=red。
+#
+# ★ ② **新增第 7 列 `mech_check`**（★ 例外的【机械可核段】）：
+#   ★ 例外的理由拆成两段 —— ★ **机械可核段**（本列，★ 门会真的去核对）＋ ★ **人工审计段**（reason 列）。
+#   ★ 可用取值（★ 封闭词表，★ 只实现真在用的）：
+#     · rows=0          —— 该登记册当前 0 数据行（★ 「掏空 = 空操作」类理由的骨架）
+#     · reader-green    —— 该条目指定的读方在【基线】是绿的（★ 两向判据类理由的骨架）
+#     · no-code-reader  —— 仓内（除文档与本清单外）没有任何被追踪文件提及该路径
+#   ★ expect=red 的行填 `-`（★ 它们不需要例外理由）。
+#
+# ★★★ ③ **「掏空后仍绿」的第一嫌疑仍然是【探针无效】** —— ★ 而 R86 轮把它又往前推了一步：
+#   ★★ 「探针无效」有两种：★ (a) **选错了读方**（R85 轮实测 3/3 都是这个）＋
+#     ★★ (b) **读方被改瞎了**（★ 人把读方的红条件删掉 ⇒ 门必须能发现 ⇒ R86 轮补了负控臂：
+#       scripts/ursmcheck/tsv_hollowout_negative_control_test.go）。
+#
 # ---------------------------------------------------------------- 清单
 #
-tsv_path	reader_kind	reader_spec	expect	header_rows	reason
-docs/audit/2026-10-12-schema-parity-252-vs-local/appendix-a-tables.tsv	none	-	exception	0	纯文档证据（审计附录），不是「读方会解析的登记册」⇒ 全仓无代码读方 ⇒ 掏空无对象
-docs/audit/evidence/2026-10-21-pipefail-scope-drop-candidates.tsv	gotest	./scripts/ursmcheck/|TestSection1975CandidateListMatchesGeneratorByteForByte	red	0	清单 ≡ 生成器产物（逐字对拍）⇒ 掏空即不一致 ⇒ 红
-internal/clockguard/measured_margins.tsv	gotest	./internal/clockguard/|TestDiscriminativeLowerBoundsAreAllMeasured	red	0	判别型下界的自然值台账 ⇒ 读不到任何实测值 ⇒ 必须拒绝出结论 ⇒ 红
-scripts/252-monitor/deployed-252.tsv	gotest	./scripts/ursmcheck/|TestDeployDriftManifestCoversExactlyTheCronInvokedScripts	red	0	部署台账（逐文件 md5）⇒ 掏空 ⇒ 无任何文件可比 ⇒ 读方必须红
-scripts/252-monitor/deployed-tools-252.tsv	gotest	./scripts/ursmcheck/|TestDeployToolDriftManifestCoversExactlyTheCandidateSet	red	0	★ 按需工具部署台账（第二本；★ 与 deployed-252.tsv 分工不重叠）⇒ 掏空 ⇒ 台账行集合为空而候选集（仓内非 cron 调度的 .sh/.py）不变 ⇒ 「集合相等」判据不成立 ⇒ 读方必须红
-scripts/252-monitor/deployed-cron-252.tsv	gotest	./scripts/ursmcheck/|TestCronDriftManifestIsNotEmpty	red	0	cron 部署台账 ⇒ 读方自带「非空」判据 ⇒ 掏空 ⇒ 红
-scripts/audit/asset/db-changelog-ledger-snapshot.tsv	gotest	./scripts/ursmcheck/|TestDbChangelogAuthoritativeSectionMatchesSnapshot	red	1	★ 三环境账本快照（★ local / 252 / 211 的 `gateway_db_revision_sequences`）⇒ 读方是「权威状态段与快照逐字一致」判据 ⇒ 掏空 ⇒ 权威段与快照不再一致 ⇒ 红
-scripts/audit/asset/post-surface-ledger.tsv	gotest	./scripts/ursmcheck/|TestPostSurfaceLedgerCoversEveryRoute	red	0	★ 「POST 面」覆盖台账（一行一条路由、无列名行）⇒ 读方自带「台账行数 ≡ 路由清单行数」判据 ⇒ 掏空 ⇒ 0 ≠ 576 ⇒ 红
-scripts/audit/dbaudit-scripts-ledger.tsv	none	-	exception	0	唯一提及它的读方 char_concat_guard_test.go 只在【注释】里提到它（不读）⇒ 掏空无影响 ⇒ 探针无效、不是门有洞
-scripts/audit/monthly_partition_retention.tsv	gotest	./admin/|TestSection14346RegistryIsRecomputable	red	1	保留期登记册（可重算）⇒ 掏空 ⇒ 重算结果与登记册不符 ⇒ 红
-scripts/audit/permanent-skip-ledger.tsv	none	-	exception	0	唯一读方 measure-permanent-skip-axis.sh 需要**真实库**（docker + psql + 形态库）⇒ 本门不跑它（避免对库产生副作用）⇒ 掏空无法自动化验证
-scripts/audit/reclaim_candidates.tsv	gotest	./admin/|TestSection14342ReclaimRegistryVerdictsAreDerived	red	0	回收候选登记册（verdict 可由测量导出）⇒ 掏空 ⇒ verdict 无从导出 ⇒ 红
-scripts/audit/retention_shape_findings.tsv	gotest	./admin/|TestSection14343RegistryIsRecomputable	red	1	形态台账（可重算）⇒ 掏空 ⇒ 重算结果与登记册不符 ⇒ 红
-scripts/audit/selfcreated-cleanup-ledger.tsv	none	-	exception	0	唯一读方 measure-selfcreated-cleanup.sh 需要**真实库**⇒ 本门不跑它（避免对库产生副作用）⇒ 掏空无法自动化验证
-scripts/ursmcheck/api_handler_coverage_ledger.tsv	gotest	./scripts/ursmcheck/|TestApiHandlerCoverageLedgerIsNotEmpty	red	1	★ API handler 运行时零覆盖缺口台账 ⇒ 读方自带「台账非空」判据（★ 台账为空 ⇒ 拒绝出结论）⇒ 掏空 ⇒ 红
-scripts/ursmcheck/cjk_var_sites.tsv	gotest	./scripts/ursmcheck/|TestCJKVarExpansionNoNewSites	exception	0	★ 有意允许空：两向判据（登记册空 且 全仓零站点 ⇒ 绿「零容忍生效」；登记册空 但全仓仍有站点 ⇒ 红「登记册被误删」）⇒ 掏空 = 当前现盘 ⇒ 绿是正确的 ⇒ 不适用「掏空 ⇒ 红」
-scripts/ursmcheck/destructive_target_ledger.tsv	gotest	./scripts/ursmcheck/|TestDestructiveTargetGuardNoUnguardedLeg	red	0	破坏性目标白名单 ⇒ 掏空 ⇒ 任何探测到的破坏性目标都变成「未登记」⇒ 红
-scripts/ursmcheck/dsn_target_mismatch_ledger.tsv	gotest	./scripts/ursmcheck/|TestDatasourceEnvTargetGuardNoUnregisteredMismatch	red	0	DSN 错配登记册 ⇒ 掏空 ⇒ 探测到的错配全部变成「未登记」⇒ 红
-scripts/ursmcheck/hardcoded_dsn_targets.tsv	gotest	./scripts/ursmcheck/|TestHardcodedDSNTargets	red	0	硬编码 DSN 清单 ⇒ 掏空 ⇒ 读不到任何已知目标 ⇒ 必须红
-scripts/ursmcheck/pg_test_env_registry.tsv	gotest	./scripts/ursmcheck/|TestPGTestEnvRegistryCoversEveryGapName	red	0	测试环境变量登记册 ⇒ 掏空 ⇒ 「覆盖每个缺口名」无从成立 ⇒ 红
-scripts/ursmcheck/pipefail_race_ledger.tsv	gotest	./scripts/ursmcheck/|TestPipefailRaceLedgerCoversCandidateSet	red	1	pipefail 人工裁决台账 ⇒ 掏空 ⇒ 候选集无台账可对 ⇒ 红
-scripts/ursmcheck/product_db_name_ledger.tsv	gotest	./scripts/ursmcheck/|TestProductDBNameLedgerInvariants	red	0	产品库名登记册 ⇒ 掏空 ⇒ 台账为空 ⇒ 解析器可能失效 ⇒ 拒绝出结论 ⇒ 红
-scripts/ursmcheck/selfcreated_cleanup_language_map.tsv	gotest	./scripts/ursmcheck/|TestSelfCreatedCleanupLanguageMapCoversLedger	red	0	语言映射表（判据的唯一语义事实源）⇒ 掏空 ⇒ 映射表覆盖不了台账任何一行 ⇒ 红
-scripts/ursmcheck/selfcreated_cleanup_quality_ledger.tsv	gotest	./scripts/ursmcheck/|TestSelfCreatedCleanupQualityLedger	red	0	逐条人工裁决台账 ⇒ 掏空 ⇒ 质量判据无输入 ⇒ 红
-scripts/ursmcheck/session_summaries_like_index_ledger.tsv	gotest	./scripts/ursmcheck/|TestSessionSummariesLikeIndexLedgerShape	red	1	★ session_summaries 的 LIKE 查询列「尚无 trigram 索引」待办台账 ⇒ 读方自带「台账为空 ⇒ 拒绝出结论」判据 ⇒ 掏空 ⇒ 红
-sql/schema/baseline_rerun_budget.tsv	gotest	./sql/schema/|TestBaselineRerunBudgetIsAnnotated	red	0	基线重跑错误预算 ⇒ 掏空 ⇒ 预算读不到 ⇒ 红
-sql/schema/fresh_install_column_gaps.tsv	gotest	./sql/schema/|TestFreshInstallColumnGapRegistryShape	red	0	新装缺列登记册 ⇒ 掏空 ⇒ 「缺口集与安装链一致」无从成立 ⇒ 红
-sql/schema/installed_startup_migrations.tsv	shell	cd installer && go test ./internal/dbinit/ -run '^TestStartupManifestMatchesStartupFiles$' -count=1	red	0	启动迁移有序清单（生成器产物）⇒ 掏空 ⇒ 与 StartupFiles 不一致 ⇒ 红（★ installer 是独立 Go module ⇒ 只能用 shell 读方）
-sql/schema/integration_fixture_shapes.tsv	none	-	exception	0	当前 0 数据行（形状清单按包差异化，当前无差异化需求）⇒ 掏空 = 当前现盘 ⇒ 变换是空操作 ⇒ 不可判定（★ 不是「门有洞」）
-sql/schema/startup_known_gaps.tsv	none	-	exception	0	当前 0 数据行（已知缺口清单为空 ⇒ 没有已知缺口）⇒ 掏空 = 当前现盘 ⇒ 变换是空操作 ⇒ 不可判定（★ 不是「门有洞」）
-sql/schema/startup_migration_nonplain.tsv	shell	bash scripts/apply-db-revision-sequence_test.sh	red	0	非三位数字前缀迁移的投递登记册 ⇒ R84 轮已逐份实测「清空数据行 ⇒ 两道门都红」⇒ 本门自动化同一动作
-sql/schema/startup_rerun_known_gaps.tsv	gotest	./sql/schema/|TestStartupRerunGapsMechanismGroupsMatchEntries	red	0	重跑已知缺口清单 ⇒ 掏空 ⇒ 「未登记的缺口」判据失去基准 ⇒ 红
+tsv_path	reader_kind	reader_spec	expect	header_rows	reason	mech_check
+docs/audit/2026-10-12-schema-parity-252-vs-local/appendix-a-tables.tsv	none	-	exception	0	纯文档证据（审计附录），不是「读方会解析的登记册」⇒ 全仓无代码读方 ⇒ 掏空无对象	no-code-reader
+docs/audit/evidence/2026-10-21-pipefail-scope-drop-candidates.tsv	gotest	./scripts/ursmcheck/|TestSection1975CandidateListMatchesGeneratorByteForByte	red	0	清单 ≡ 生成器产物（逐字对拍）⇒ 掏空即不一致 ⇒ 红	-
+internal/clockguard/measured_margins.tsv	gotest	./internal/clockguard/|TestDiscriminativeLowerBoundsAreAllMeasured	red	0	判别型下界的自然值台账 ⇒ 读不到任何实测值 ⇒ 必须拒绝出结论 ⇒ 红	-
+scripts/252-monitor/deployed-252.tsv	gotest	./scripts/ursmcheck/|TestDeployDriftManifestCoversExactlyTheCronInvokedScripts	red	0	部署台账（逐文件 md5）⇒ 掏空 ⇒ 无任何文件可比 ⇒ 读方必须红	-
+scripts/252-monitor/deployed-tools-252.tsv	gotest	./scripts/ursmcheck/|TestDeployToolDriftManifestCoversExactlyTheCandidateSet	red	0	★ 按需工具部署台账（第二本；★ 与 deployed-252.tsv 分工不重叠）⇒ 掏空 ⇒ 台账行集合为空而候选集（仓内非 cron 调度的 .sh/.py）不变 ⇒ 「集合相等」判据不成立 ⇒ 读方必须红	-
+scripts/252-monitor/deployed-cron-252.tsv	gotest	./scripts/ursmcheck/|TestCronDriftManifestIsNotEmpty	red	0	cron 部署台账 ⇒ 读方自带「非空」判据 ⇒ 掏空 ⇒ 红	-
+scripts/audit/asset/db-changelog-ledger-snapshot.tsv	gotest	./scripts/ursmcheck/|TestDbChangelogAuthoritativeSectionMatchesSnapshot	red	1	★ 三环境账本快照（★ local / 252 / 211 的 `gateway_db_revision_sequences`）⇒ 读方是「权威状态段与快照逐字一致」判据 ⇒ 掏空 ⇒ 权威段与快照不再一致 ⇒ 红	-
+scripts/audit/asset/db-object-census.tsv	gotest	./scripts/ursmcheck/|TestDbObjectCensusSnapshotIsWellFormed	red	0	★ 四环境【真实对象底账】（★ 11480 行 × 17 列；★ local + fresh + 252 + 211）⇒ 读方自带「底账非空 + 四环境齐备 + 每环境 sha256 与头部一致 + 父子链在场」判据 ⇒ 掏空 ⇒ 底账无数据行 ⇒ 红	-
+scripts/audit/asset/db-object-expect.tsv	gotest	./scripts/ursmcheck/|TestDbObjectExpectSetMatchesIndependentDerivation	red	0	★ 期望索引集（★ 834 行 × 6 列；★ 第 5 列是 declared_columns）⇒ 读方是「集合 ≡ Go 独立反解」判据（★ 连声明列一起逐条比）⇒ 掏空 ⇒ 集合为空 ⇒ 与独立反解的 834 条不等 ⇒ 红	-
+scripts/audit/asset/db-object-gap-ledger.tsv	gotest	./scripts/ursmcheck/|TestDbObjectGapLedgerIsFullyRecomputable	red	0	★ 缺口台账（★ 834 行 × 9 列；★ 五态含 retired-by-column-drop）⇒ 读方是「全量逐条重算 ≡ 台账」判据 ⇒ 掏空 ⇒ 行数 0 ≠ 834 ⇒ 红	-
+scripts/audit/asset/db-object-retired.tsv	gotest	./scripts/ursmcheck/|TestDbObjectRetiredEvidenceLedger	red	0	★ 退役证据台账（★ 59 个退役事件 × 10 列；★ 两类证据 drop-index / drop-column）⇒ 读方是「期望集里一个【显式 DROP】退役的索引都不许有」+「drop-column 类必须留在期望集里」判据 ⇒ 掏空 ⇒ 台账无行 ⇒ 门直接 Fatal ⇒ 红	-
+scripts/audit/asset/db-object-columns.tsv	gotest	./scripts/ursmcheck/|TestDbObjectGapLedgerIsFullyRecomputable	red	0	★★【每环境每表每列】的事实底账（★ 3576 行 × 4 列）⇒ ★★ 这层事实此前完全没有 ⇒ ★★ 「列没了 ⇒ 索引被 PG 级联删掉」在仓内不可见 ⇒ 假缺口的第三种来源一直躺着 ⇒ 读方是「五态分类（含 retired-by-column-drop）≡ 台账」判据 ⇒ 掏空 ⇒ 解析器 Fatal ⇒ 红	-
+scripts/audit/asset/installer-reachability.tsv	gotest	./scripts/ursmcheck/|TestInstallerReachabilityLedgerIsRecomputable	red	0	★★【新装环境可达性】台账（★ 834 行 × 10 列；★ verdict 四值 + severity 五值）⇒ 读方是「verdict/severity/present_envs ≡ Go 独立重算（★ 清单 ∩ 分发包 + 五态分类）」判据 ⇒ 掏空 ⇒ 行数 0 ≠ 834 ⇒ 红	-
+scripts/audit/asset/query-index-requirements.tsv	gotest	./scripts/ursmcheck/|TestQueryIndexCoverageRequirements	red	0	★ 活查询 ⇒ 过滤/排序列 ⇒ 索引可用性需求清单（★ 手工登记，★ 每行带源码定位；★ 4 行：2 covered + 2 known-gap）⇒ 读方是「未覆盖的活查询必须显式登记为 known-gap」判据 ⇒ 掏空 ⇒ 清单无行 ⇒ 门读到 0 条需求 ⇒ 无未覆盖项 ⇒ 红	-
+scripts/audit/asset/post-surface-ledger.tsv	gotest	./scripts/ursmcheck/|TestPostSurfaceLedgerCoversEveryRoute	red	0	★ 「POST 面」覆盖台账（一行一条路由、无列名行）⇒ 读方自带「台账行数 ≡ 路由清单行数」判据 ⇒ 掏空 ⇒ 0 ≠ 576 ⇒ 红	-
+scripts/audit/dbaudit-scripts-ledger.tsv	shell	bash scripts/audit/healthcheck-dbaudit-scripts.sh --verify	red	0	★★ R86 轮**推翻了 R85 轮的理由**：「唯一提及它的读方 char_concat_guard_test.go 只在【注释】里提到它」是**错的** ⇒ ★ 真读方是 healthcheck-dbaudit-scripts.sh 的 --verify 模式（★ 该模式自述「只查台账自洽，★ 不连库」）⇒ 掏空 ⇒ 台账有效行数 0 < 10 ⇒ exit 2 ⇒ 红　★★ 附注：char_concat_guard_test.go 里那处提及**确实**只在注释里 —— ★ 但它**不是唯一提及者**	-
+scripts/audit/monthly_partition_retention.tsv	gotest	./admin/|TestSection14346RegistryIsRecomputable	red	1	保留期登记册（可重算）⇒ 掏空 ⇒ 重算结果与登记册不符 ⇒ 红	-
+scripts/audit/permanent-skip-ledger.tsv	shell	bash scripts/audit/measure-permanent-skip-axis.sh --dry-run-readonly	red	0	★★ 读方 = ★ R86 轮**新增**的 --dry-run-readonly 模式（★ **完全不碰库**：不建库 / 不连 psql / 不 docker ⇒ ★ R86 轮用 docker+psql 失败桩实测 **0 次调用**）⇒ 它断言台账契约（数据行 ≥1 / 每行 5 列 / verdict ∈ PASS|FAIL|SKIP / gate 非空且唯一 / file 列指向仓内真实文件）⇒ 掏空 ⇒ 0 数据行 ⇒ exit 1 ⇒ 红　★★ 诚实边界：它**不重跑测量** ⇒ 它证明的是「台账被掏空 ⇒ 契约不成立 ⇒ 读方红」，而「掏空 ⇒ 测量结果与台账不符」仍由 --verify（★ 需真实库）负责 ⇒ 两者互补	-
+scripts/audit/reclaim_candidates.tsv	gotest	./admin/|TestSection14342ReclaimRegistryVerdictsAreDerived	red	0	回收候选登记册（verdict 可由测量导出）⇒ 掏空 ⇒ verdict 无从导出 ⇒ 红	-
+scripts/audit/retention_shape_findings.tsv	gotest	./admin/|TestSection14343RegistryIsRecomputable	red	1	形态台账（可重算）⇒ 掏空 ⇒ 重算结果与登记册不符 ⇒ 红	-
+scripts/audit/selfcreated-cleanup-ledger.tsv	shell	bash scripts/audit/measure-selfcreated-cleanup.sh --ledger-only	red	0	★★ R86 轮**实测推翻了 R85 轮的理由**：「唯一读方 measure-selfcreated-cleanup.sh 需要**真实库**」是**错的** —— ★ 它的 --verify 模式只做【静态扫源码 + 台账结构自检】，★ 全程不连库（★ R86 轮实测：把 docker / psql 换成失败桩跑，★ **0 次调用**）⇒ 掏空 ⇒ 台账数据行 0 < 20 ⇒ exit 2 ⇒ 红　★★ 读方用 --ledger-only 而非 --verify：★ ★ 两者**共用同一个**台账自检函数（★ 语义逐字一致），★ 而 --verify 每次要全仓扫源码（★ 实测 42 s ⇒ 门跑两次 = 84 s）⇒ ⇒ --ledger-only 只花 ~0.03 s ⇒ ⇒ ★ 这是为了守住 verify.sh 的 `go test ./... -timeout=900s` 每包预算	-
+scripts/ursmcheck/api_handler_coverage_ledger.tsv	gotest	./scripts/ursmcheck/|TestApiHandlerCoverageLedgerIsNotEmpty	red	1	★ API handler 运行时零覆盖缺口台账 ⇒ 读方自带「台账非空」判据（★ 台账为空 ⇒ 拒绝出结论）⇒ 掏空 ⇒ 红	-
+scripts/ursmcheck/cjk_var_sites.tsv	gotest	./scripts/ursmcheck/|TestCJKVarExpansionNoNewSites	exception	0	★ 有意允许空：两向判据（登记册空 且 全仓零站点 ⇒ 绿「零容忍生效」；登记册空 但全仓仍有站点 ⇒ 红「登记册被误删」）⇒ 掏空 = 当前现盘 ⇒ 绿是正确的 ⇒ 不适用「掏空 ⇒ 红」	rows=0,reader-green
+scripts/ursmcheck/destructive_target_ledger.tsv	gotest	./scripts/ursmcheck/|TestDestructiveTargetGuardNoUnguardedLeg	red	0	破坏性目标白名单 ⇒ 掏空 ⇒ 任何探测到的破坏性目标都变成「未登记」⇒ 红	-
+scripts/ursmcheck/dsn_target_mismatch_ledger.tsv	gotest	./scripts/ursmcheck/|TestDatasourceEnvTargetGuardNoUnregisteredMismatch	red	0	DSN 错配登记册 ⇒ 掏空 ⇒ 探测到的错配全部变成「未登记」⇒ 红	-
+scripts/ursmcheck/hardcoded_dsn_targets.tsv	gotest	./scripts/ursmcheck/|TestHardcodedDSNTargets	red	0	硬编码 DSN 清单 ⇒ 掏空 ⇒ 读不到任何已知目标 ⇒ 必须红	-
+scripts/ursmcheck/pg_test_env_registry.tsv	gotest	./scripts/ursmcheck/|TestPGTestEnvRegistryCoversEveryGapName	red	0	测试环境变量登记册 ⇒ 掏空 ⇒ 「覆盖每个缺口名」无从成立 ⇒ 红	-
+scripts/ursmcheck/pipefail_race_ledger.tsv	gotest	./scripts/ursmcheck/|TestPipefailRaceLedgerCoversCandidateSet	red	1	pipefail 人工裁决台账 ⇒ 掏空 ⇒ 候选集无台账可对 ⇒ 红	-
+scripts/ursmcheck/product_db_name_ledger.tsv	gotest	./scripts/ursmcheck/|TestProductDBNameLedgerInvariants	red	0	产品库名登记册 ⇒ 掏空 ⇒ 台账为空 ⇒ 解析器可能失效 ⇒ 拒绝出结论 ⇒ 红	-
+scripts/ursmcheck/selfcreated_cleanup_language_map.tsv	gotest	./scripts/ursmcheck/|TestSelfCreatedCleanupLanguageMapCoversLedger	red	0	语言映射表（判据的唯一语义事实源）⇒ 掏空 ⇒ 映射表覆盖不了台账任何一行 ⇒ 红	-
+scripts/ursmcheck/selfcreated_cleanup_quality_ledger.tsv	gotest	./scripts/ursmcheck/|TestSelfCreatedCleanupQualityLedger	red	0	逐条人工裁决台账 ⇒ 掏空 ⇒ 质量判据无输入 ⇒ 红	-
+scripts/ursmcheck/session_summaries_like_index_ledger.tsv	gotest	./scripts/ursmcheck/|TestSessionSummariesLikeIndexLedgerShape	red	1	★ session_summaries 的 LIKE 查询列「尚无 trigram 索引」待办台账 ⇒ 读方自带「台账为空 ⇒ 拒绝出结论」判据 ⇒ 掏空 ⇒ 红	-
+sql/schema/baseline_rerun_budget.tsv	gotest	./sql/schema/|TestBaselineRerunBudgetIsAnnotated	red	0	基线重跑错误预算 ⇒ 掏空 ⇒ 预算读不到 ⇒ 红	-
+sql/schema/fresh_install_column_gaps.tsv	gotest	./sql/schema/|TestFreshInstallColumnGapRegistryShape	red	0	新装缺列登记册 ⇒ 掏空 ⇒ 「缺口集与安装链一致」无从成立 ⇒ 红	-
+sql/schema/installed_startup_migrations.tsv	shell	cd installer && go test ./internal/dbinit/ -run '^TestStartupManifestMatchesStartupFiles$' -count=1	red	0	启动迁移有序清单（生成器产物）⇒ 掏空 ⇒ 与 StartupFiles 不一致 ⇒ 红（★ installer 是独立 Go module ⇒ 只能用 shell 读方）	-
+sql/schema/integration_fixture_shapes.tsv	none	-	exception	0	当前 0 数据行（形状清单按包差异化，当前无差异化需求）⇒ 掏空 = 当前现盘 ⇒ 变换是空操作 ⇒ 不可判定（★ 不是「门有洞」）	rows=0
+sql/schema/startup_known_gaps.tsv	none	-	exception	0	当前 0 数据行（已知缺口清单为空 ⇒ 没有已知缺口）⇒ 掏空 = 当前现盘 ⇒ 变换是空操作 ⇒ 不可判定（★ 不是「门有洞」）	rows=0
+sql/schema/startup_migration_nonplain.tsv	shell	bash scripts/apply-db-revision-sequence_test.sh	red	0	非三位数字前缀迁移的投递登记册 ⇒ R84 轮已逐份实测「清空数据行 ⇒ 两道门都红」⇒ 本门自动化同一动作	-
+sql/schema/startup_rerun_known_gaps.tsv	gotest	./sql/schema/|TestStartupRerunGapsMechanismGroupsMatchEntries	red	0	重跑已知缺口清单 ⇒ 掏空 ⇒ 「未登记的缺口」判据失去基准 ⇒ 红	-

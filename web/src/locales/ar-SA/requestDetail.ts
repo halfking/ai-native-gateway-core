@@ -145,6 +145,12 @@ export default {
     empty: 'لم يتم العثور على صور / صوت / فيديو في نص الطلب أو المرفقات المحفوظة.',
     openOrDownload: 'فتح / تنزيل',
     noPreviewUrl: 'لا يوجد URL للمعاينة',
+    kindLabel: {
+      image: 'صورة',
+      audio: 'صوت',
+      video: 'فيديو',
+      file: 'ملف',
+    },
   },
   // — RequestWaterfallPanel —
   waterfall: {

@@ -303,11 +303,20 @@ func buildResponsesContent(msg Message) []map[string]any {
 			}
 		case "audio":
 			if block.Audio != nil {
-				result = append(result, buildResponsesInputAudio(block.Audio))
+				// 2026-10-26: a URI-only audio (Gemini fileData → IR Type="file_uri")
+				// has no Responses wire form — buildResponsesInputAudio returns nil
+				// rather than emitting a data-less input_audio that upstreams 400 on.
+				if b := buildResponsesInputAudio(block.Audio); b != nil {
+					result = append(result, b)
+				}
 			}
 		case "document":
 			if block.Document != nil {
-				result = append(result, buildResponsesInputFile(block.Document))
+				// Same nil guard: a source-less document builds no block, and a
+				// nil entry would marshal as a literal null inside content[].
+				if b := buildResponsesInputFile(block.Document); b != nil {
+					result = append(result, b)
+				}
 			}
 		case "tool_use":
 			// Assistant tool_use blocks are represented as function_call items
@@ -371,12 +380,19 @@ func buildResponsesInputImage(img *ImageSource) map[string]any {
 
 // buildResponsesInputAudio maps a generic audio MediaSource to a Responses
 // input_audio block (base64 data + format).
+//
+// 2026-10-26: returns nil when there is no base64 payload. Responses'
+// input_audio takes data+format only — a URI reference (Gemini fileData,
+// IR Type="file_uri"/"url") has no honest Responses representation, and a
+// data-less input_audio block is rejected by the upstream. The caller skips
+// nil instead of appending a broken block.
 func buildResponsesInputAudio(audio *MediaSource) map[string]any {
+	if audio.Data == "" {
+		return nil
+	}
 	block := map[string]any{"type": "input_audio"}
 	inner := map[string]any{}
-	if audio.Data != "" {
-		inner["data"] = audio.Data
-	}
+	inner["data"] = audio.Data
 	if audio.Format != "" {
 		inner["format"] = audio.Format
 	}
@@ -413,6 +429,10 @@ func buildResponsesInputFile(doc *DocumentBlock) map[string]any {
 		if url == "" { // compatibility with pre-canonical IR rows
 			url = doc.Source.Data
 		}
+		// 2026-10-27 复审轮：url/data 双空不写 file_data:""（空载荷块）。
+		if url == "" {
+			return nil
+		}
 		inner["file_data"] = url
 	case "file", "file_id":
 		// 2026-09-05 round2 复审: Anthropic-native Files API documents parse
@@ -435,6 +455,10 @@ func buildResponsesInputFile(doc *DocumentBlock) map[string]any {
 		// text/unknown: carry the raw data as file_data.
 		if mt != "" {
 			inner["mime_type"] = mt
+		}
+		// 同款空值护栏：空文本不写 file_data:""。
+		if doc.Source.Data == "" {
+			return nil
 		}
 		inner["file_data"] = doc.Source.Data
 	}
@@ -776,7 +800,9 @@ func reportSerializeResponsesLosses(req *InternalRequest) {
 	}
 
 	// Anthropic-only top-level fields.
-	if len(req.CacheControl) > 0 {
+	// 2026-10-27 缓存标准对齐轮：块级 marker（system 块/消息块/tool_result）
+	// 同样在 Responses 形状上无处安放，一并上报，不再静默蒸发。
+	if len(req.CacheControl) > 0 || hasBlockLevelCacheControl(req) {
 		ReportProtocolLoss(
 			"unknown",
 			"cache_control",

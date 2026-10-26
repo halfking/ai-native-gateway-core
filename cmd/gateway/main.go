@@ -910,6 +910,9 @@ func main() {
 	// 2026-10-06 ASR 多模型轮：refine/analyze 转写后处理二件套，与
 	// /v1/audio/* 共享 AudioService 鉴权；LLM 步骤走环回 chat 面。
 	var audioTransformHandler *streaming.AudioTransformHandler
+	// 2026-10-26 多模态标准接口轮：文本加工三件套（标题总结 / 内容总结 /
+	// 任务分类），LLM 编排经环回 chat 面，与 refine/analyze 同款鉴权。
+	var summarizeHandler *streaming.SummarizeHandler
 	// 2026-10-08 Phase C：OpenAI 兼容 /v1/images|/v1/videos generations 骨架。
 	var imagesGenerationsHandler *streaming.ImagesGenerationsHandler
 	var videosGenerationsHandler *streaming.VideosGenerationsHandler
@@ -2568,6 +2571,12 @@ func main() {
 		transformSvc := streaming.NewAudioTransformService(audioService)
 		audioTransformHandler = streaming.NewAudioTransformHandler(transformSvc)
 		audioMCPHandler.SetTransformService(transformSvc)
+		// 2026-10-26 多模态标准接口轮：文本三件套（标题/总结/分类）。
+		// 只接鉴权不接 RPM limiter——环回 chat 步携带调用方 key 已计
+		// 一次限流（authenticateNoRPM 的口径，见 summarize.go）。
+		summarizeSvc := streaming.NewSummarizeService()
+		summarizeSvc.SetAuth(keyVerifier)
+		summarizeHandler = streaming.NewSummarizeHandler(summarizeSvc)
 		// 2026-10-08 Phase C：图/视频统一出口骨架（media 路由域）。
 		imagesGenerationsHandler = streaming.NewImagesGenerationsHandler(providerClient, upClient)
 		imagesGenerationsHandler.SetAuth(keyVerifier, slidingRL)
@@ -3871,7 +3880,9 @@ func main() {
 		go func() {
 			seedCtx, seedCancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer seedCancel()
-			if created, err := admin.SeedProvidersFromCatalog(seedCtx, dbConn.Pool()); err != nil {
+			// 2026-10-26 多模态标准接口轮：播种的占位凭据必须走 admin 的
+			// 加密链路（此前明文落库，refresh-models/健康检查解密即失败）。
+			if created, err := admin.SeedProvidersFromCatalog(seedCtx, dbConn.Pool(), adminHandler.EncryptCredentialBytes); err != nil {
 				slog.Warn("provider catalog seed failed", "error", err)
 			} else if created > 0 {
 				slog.Info("seeded providers from catalog", "created", created)
@@ -6774,6 +6785,12 @@ func main() {
 		mux.Handle("/v1/audio/refine", audioTransformHandler)
 		mux.Handle("/v1/audio/analyze", audioTransformHandler)
 	}
+	// 2026-10-26 多模态标准接口轮：文本加工三件套（LLM 编排经环回 chat 面）。
+	if summarizeHandler != nil {
+		mux.Handle("/v1/summarize", summarizeHandler)
+		mux.Handle("/v1/summarize/title", summarizeHandler)
+		mux.Handle("/v1/classify", summarizeHandler)
+	}
 	// 2026-10-08 Phase C：OpenAI 兼容图/视频生成出口。
 	if imagesGenerationsHandler != nil {
 		mux.Handle("/v1/images/generations", imagesGenerationsHandler)
@@ -6794,6 +6811,22 @@ func main() {
 	geminiHandler := streaming.NewGeminiHandler(chatHandler)
 	mux.Handle("/v1beta/models/", geminiHandler)
 	mux.Handle("/v1/models/", geminiHandler) // also catch Gemini :generateContent on newer paths
+	// 2026-10-27（Gemini 剩余登记项处置轮）: the Gemini NATIVE model list.
+	//
+	// A native Gemini client (google-genai SDK) lists models via
+	// GET /v1beta/models and parses Google's shape
+	// ({"models":[{"name":"models/…"}]}). The OpenAI-shaped /v1/models
+	// answer would fail at the client's unmarshal step, far from the
+	// cause ⇒ so the native path gets the native shape.
+	//
+	// ★ SAME data source as /v1/models (the routable-model query) — only
+	// the wire shape differs; two sources would be two truths about
+	// "what can this gateway serve".
+	//
+	// ★ "/v1/models" (no trailing slash) stays the OpenAI-shaped list: it
+	// is the OpenAI SDK's contract and is already registered above. The
+	// Gemini GA path therefore keeps pointing at the OpenAI-shaped list.
+	mux.HandleFunc("/v1beta/models", modelsHandler.ServeGeminiModels)
 
 	// Overlay the v2 Pipeline wrapper on top of the 4 v1 endpoints
 	// when the flag is on. The wrapper is a Pipeline preflight

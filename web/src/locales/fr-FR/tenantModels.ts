@@ -8,7 +8,7 @@ export default {
     refresh: 'Actualiser',
     loading: 'Chargement…',
     empty: 'Aucun modèle disponible',
-    loadFailed: 'Échec du chargement',
+    loadFailed: 'Le chargement des modèles du locataire a échoué. Veuillez réessayer.',
     vendorSectionTitle: 'Modèles disponibles',
   },
   columns: {

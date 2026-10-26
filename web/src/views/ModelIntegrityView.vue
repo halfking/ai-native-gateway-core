@@ -7,6 +7,7 @@
 // endpoints). It adds a fingerprint-drift tab, which the format
 // anomalies view has no equivalent for.
 import { useI18n } from 'vue-i18n'
+import { surfaceError } from '../i18n/errorSurface'
 import { formatDateTime } from '../utils/datetime'
 import { localeRef } from '../i18n'
 import { computed, onMounted, ref } from 'vue'
@@ -313,7 +314,7 @@ const continuous = createHyperPages<ModelIntegrityRecord>({
       total.value = resp.count
       return { rows: resp.events || [], total: resp.count }
     } catch (err: unknown) {
-      error.value = err instanceof Error ? err.message : t('modelIntegrityView.error.loadFailed')
+      error.value = surfaceError(err, { key: 'modelIntegrityView.error.loadFailed' })
       // 必须继续抛出：`createHyperPages` 靠它把 state 置成 failed，
       // 而 `:empty` 的判据要靠 failed 挡（13 §7「失败态不显示空态」）。吞掉的话 state 停在 idle，UI 会撒谎。
       throw err
@@ -991,11 +992,10 @@ code {
   max-height: 90vh;
   overflow: auto;
   background: var(--card);
-  border: 1px solid var(--border);
   border-radius: 12px;
   padding: 18px;
   color: var(--text);
-  box-shadow: 0 24px 60px var(--overlay-strong);
+  box-shadow: var(--kx-shadow-md);
 }
 .modal-header {
   display: flex;

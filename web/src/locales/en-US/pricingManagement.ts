@@ -58,8 +58,8 @@ export default {
   tokenPlanSuffix: 'token_plan',
   saved: 'Saved',
   noChange: 'No changes',
-  saveFailed: 'Save failed',
+  saveFailed: 'The pricing could not be saved. Please retry.',
   copied: 'Pricing copied',
   pasted: 'Pasted; use Save to apply',
-  failed: 'Import failed',
+  failed: 'The pricing template could not be imported. Please retry.',
 }

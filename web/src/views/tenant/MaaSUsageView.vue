@@ -2,6 +2,7 @@
 // MaaSUsageView.vue — /tenant/usage 页面（我的消耗 / 管理员只读消耗视图）。
 // 2026-07-12: 文案全面接入 i18n。
 import { ref, computed, onMounted } from 'vue'
+import { surfaceError } from '../../i18n/errorSurface'
 import { formatDateTime } from '../../utils/datetime'
 import { useI18n } from 'vue-i18n'
 import { localeRef } from '../../i18n'
@@ -126,7 +127,7 @@ async function load() {
   } catch (e: unknown) {
     summary.value = null
     ledger.value = []
-    error.value = e instanceof Error ? e.message : t('tenants.usage.loadFailed')
+    error.value = surfaceError(e, { key: 'tenants.usage.loadFailed' })
   } finally {
     loading.value = false
   }

@@ -3,13 +3,27 @@ package streaming
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/kaixuan/llm-gateway-go/autoroute"
 )
+
+// recordingQueryer 是 TestFind_DeadContextSkipsQuery 的反证量具：它不模拟
+// pgx 的任何行为，只记录「Find 是否对我发起了查询」。
+type recordingQueryer struct {
+	called bool
+}
+
+func (r *recordingQueryer) Query(context.Context, string, ...any) (pgx.Rows, error) {
+	r.called = true
+	// 返回错误而非真行：即使守卫被摘掉，也不该有真查询发得出去。
+	return nil, errors.New("query must not be issued for a dead request context")
+}
 
 // headerStub implements httpHeaderGetter for the task-type resolution tests.
 type headerStub map[string]string
@@ -363,5 +377,29 @@ func TestAlternativesSQL_NoGoComments(t *testing.T) {
 			t.Errorf("line %d is a Go // comment; PostgreSQL cannot parse it "+
 				"(use -- or /* */): %s", i+1, strings.TrimSpace(line))
 		}
+	}
+}
+
+// TestFind_DeadContextSkipsQuery（2026-10-26，252 PG 日志审计轮）：零候选 503
+// 路径用请求自身的 ctx 跑本查询。客户端对 503 不等待建议列表，进入本函数时
+// ctx 已死的情况在生产上三天实测 1,399 次「canceling statement due to user
+// request」（约占同期 PG ERROR 噪音 46%）。守卫必须在不触碰连接池的前提下
+// 返回空表。★★ 用「记录自己是否被调用」的假 queryer 做反证：pgxmock 对已
+// 取消的 ctx 会自行返回错误，守卫缺失时同样走错误路径返回空表 ⇒ 断言恒绿
+// （本轮变异实测摘守卫仍 ok，已弃用该形态）；called 标志才是可判别的观测量。
+func TestFind_DeadContextSkipsQuery(t *testing.T) {
+	rec := &recordingQueryer{}
+	finder := &ModelAlternativesFinder{db: rec}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // 客户端在查找开始前就已断开
+
+	got := finder.Find(ctx, "requested-model", "default", "")
+	if len(got.Alternatives) != 0 {
+		t.Fatalf("alternatives = %d entries, want 0: dead request context must skip the lookup entirely",
+			len(got.Alternatives))
+	}
+	if rec.called {
+		t.Fatal("dead request context must not reach the pool (Query was called)")
 	}
 }

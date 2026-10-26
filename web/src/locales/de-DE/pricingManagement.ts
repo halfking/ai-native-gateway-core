@@ -59,8 +59,8 @@ export default {
   tokenPlanSuffix: 'token_plan',
   saved: 'Gespeichert',
   noChange: 'Keine Änderungen',
-  saveFailed: 'Speichern fehlgeschlagen',
+  saveFailed: 'Preisgestaltung konnte nicht gespeichert werden. Bitte erneut versuchen.',
   copied: 'Preis kopiert',
   pasted: 'Eingefügt. Zum Anwenden „Speichern“ wählen.',
-  failed: 'Import fehlgeschlagen',
+  failed: 'Preisvorlage konnte nicht importiert werden. Bitte erneut versuchen.',
 }

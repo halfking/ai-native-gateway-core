@@ -185,7 +185,10 @@ describe('TurnsListView 重新归纳：触发成功 ≠ 新归纳取回来了', 
     await resummarize(w)
     await flushPromises()
 
-    expect(card.props('assetMsg')).toBe('归纳服务不可用')
+    // ★ 第 16 增量：错误文案统一走 surfaceError() ⇒ 形态从「只有原因」变成
+    //   「本地化主文案（归纳没能完成，请重试）+ 原因（归纳服务不可用）」。
+    //   原意（说的是失败原因、不是「已触发」）必须继续成立 ⇒ 断言「含原因」而不是「等于原因」。
+    expect(card.props('assetMsg')).toContain('归纳服务不可用')
     expect(card.props('assetMsg')).not.toBe(OK_MSG)
   })
 })

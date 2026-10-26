@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { useI18n } from 'vue-i18n'
+import { surfaceError } from '../i18n/errorSurface'
 import { formatDateTime, formatTimeOnly, parseLocalMinute } from '../utils/datetime'
 import { localeRef } from '../i18n'
 import { fmtDateCompact } from '../i18n/useFormat'
@@ -71,7 +72,7 @@ async function load() {
     entries.value = r.entries || []
     total.value = r.total || 0
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : t('auditLog.loadFailed')
+    error.value = surfaceError(e, { key: 'auditLog.loadFailed' })
     entries.value = []
     total.value = 0
   } finally {
@@ -208,7 +209,7 @@ const continuous = createHyperPages<AuditLogEntry>({
     } catch (e: unknown) {
       // 必须**再抛**：不抛的话 `createHyperPages` 收不到异常，
       // 状态会停在 refreshing，尾部控件永远显示「加载中」而不会转成可重试。
-      error.value = e instanceof Error ? e.message : t('auditLog.loadFailed')
+      error.value = surfaceError(e, { key: 'auditLog.loadFailed' })
       throw e
     }
   },

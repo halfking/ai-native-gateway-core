@@ -1631,6 +1631,21 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 		//   匹配是逐字的 ⇒ COALESCE(title,'') ILIKE 用不上裸列索引。
 		//   dbinit:no-transaction（CREATE INDEX CONCURRENTLY）。
 		"909_session_summaries_search_trgm_indexes.sql",
+		// ★ R166（迁移 910）：routing_analytics_source 父表腿从 LATERAL
+		//   逐行回定位换成「普通 LEFT JOIN + partition_date 日界下推」
+		//   ⇒ details 侧执行期分区裁剪 + Hash Join 可选，消掉 ~2.75 万次/刷新
+		//   的逐行探针（252 实测整计划 buffers 147K → 52K，-64%）。
+		//   ★ 口径逐行等价（窗口内父表腿双向 EXCEPT ALL 0/0 @66,838 行；
+		//     ukey 唯一键 + 错位行 0 实测）。
+		//   ★ 零 DDL：只做 CREATE OR REPLACE VIEW（保留 OID ⇒ matview 依赖不动，
+		//     下一次 REFRESH 自动采用新定义 ⇒ **不需要重建 matview**）。
+		"910_routing_analytics_source_hashjoin.sql",
+		// 911：本地音频（ASR/TTS）供应商 catalog 三条目（whisper-cpp /
+		//   whisper-cpp-large / macos-say），2026-10-26 多模态标准接口轮。
+		//   ★ 合并时与上游 R166 的迁移 910 撞号 ⇒ 本条让位改为 911。
+		//   纯 INSERT ON CONFLICT，幂等；不 seed providers 行（运营经
+		//   admin API 创建，catalog kind='local' 自动建占位凭据）。
+		"911_local_audio_catalog.sql",
 		},
 	}
 }

@@ -307,6 +307,22 @@ detect_existing_containers() {
       fi
     fi
   fi
+  # ★★ 2026-10-27（R165 轮）★★ 这里【曾经】加过一段「DSN 权威的容器兜底探测」
+  #   （思路：共享库的 pg_container_usable 用容器 env 的旧口令做存在性探测，
+  #     口令漂移时会误判「容器不可用」⇒ DL_PG_CONTAINER 丢失）。
+  #   ★★★ 本轮把它【删掉】了，理由是独立复核实测给出的三条硬证据：
+  #   ① 该兜底块在本机【根本不执行】（DL_PG_CONTAINER 非空）⇒ ⇒ 对本次部署零贡献；
+  #   ② 它【不判 DL_DB_MODE】⇒ ⇒ 会把 external/host 降级成 docker
+  #      ⇒ ⇒ 【schema 可能被装到另一个集群】⇒ ⇒ 比它要修的问题更严重；
+  #   ③ 它【不判「库在不在」】（SELECT 查不到库也是 rc=0）+ 硬编码 HAS_DB=1
+  #      ⇒ ⇒ 任何同名容器都可能被误认。
+  #   ★ ⇒⇒⇒ 通用式：★ **绕过代码的风险必须单独计价** ⇒ ⇒ 绕过解决不了问题时，
+  #   ★   它就是净负收益 ⇒ ⇒ 【删掉】比【留着】好。
+  #   ★ ⇒⇒⇒ 真正的根因（★ 已实测坐实）：★ PATH 首位的 `~/.local/bin/psql` 是
+  #   ★   一个【丢掉 host/port】的容器转发 shim ⇒ ⇒ 它落到「把宿主 5432 发布出来的
+  #   ★   那个容器」（★ 本机是 ac-audit-pg17，★ 它的 llm_gateway 库数 = 0）
+  #   ★   ⇒ ⇒⇒ 报 `FATAL: database "llm_gateway" does not exist`（★ 极具误导性）。
+  #   ★ ⇒⇒⇒ 修法在【客户端选择】与【连接参数】两处，★ 不在这里。
 }
 
 migrate_existing_pg_to_shared() {
@@ -905,8 +921,25 @@ ensure_resources() {
     if (( need_pg )); then wait_container llm-gateway-pg || die 'local PostgreSQL did not become healthy'; fi
     if (( need_redis )); then wait_container "$DL_REDIS_CONTAINER" || die 'local Redis did not become healthy'; fi
     if (( need_pg )); then
-      export LLM_GATEWAY_DATABASE_URL="postgresql://${LLM_GATEWAY_PG_USER:-llm_gateway}:${LLM_GATEWAY_PG_PASSWORD}@127.0.0.1:${LLM_GATEWAY_PG_PORT:-5432}/${LLM_GATEWAY_PG_DATABASE:-llm_gateway}?sslmode=disable"
-      export DATABASE_URL="$LLM_GATEWAY_DATABASE_URL"
+      # ★★ 2026-10-27（R165 轮）★★ 不要用【容器 env 的过期口令】+【硬编码端口 5432】
+      #   覆盖调用方给的 DSN：
+      #   ★ 实测：容器在宿主上的映射端口是 54318（★ 不是 5432），且容器 env 的口令已漂移
+      #   ★ ⇒ ⇒ ⇒ 覆盖之后网关启动必然连不上库 ⇒ ⇒ ⇒ 而失败会表现在「网关起来了但连不上」
+      #   ★ ⇒ ⇒ 离根因很远 ⇒ ⇒ ★ 口径对齐仓内既有的 Redis 契约（★ line 300-306：
+      #   ★ 「caller-provided 保持权威，扫描层不得静默改指」）。
+      if [[ -z "${LLM_GATEWAY_DATABASE_URL:-}" && -z "${DATABASE_URL:-}" ]]; then
+        local _nport _npw _nu _ndb
+        _nport=$(docker port "$DL_PG_CONTAINER" 5432/tcp 2>/dev/null | sed -n 's/.*://p' | head -n1 || true)
+        _npw="${LLM_GATEWAY_PG_PASSWORD:-}"
+        _nu="${LLM_GATEWAY_PG_USER:-llm_gateway}"
+        _ndb="${LLM_GATEWAY_PG_DATABASE:-llm_gateway}"
+        if [[ -n "$_nport" && -n "$_npw" ]]; then
+          export LLM_GATEWAY_DATABASE_URL="postgresql://${_nu}:${_npw}@127.0.0.1:${_nport}/${_ndb}?sslmode=disable"
+          export DATABASE_URL="$LLM_GATEWAY_DATABASE_URL"
+        else
+          warn 'no PostgreSQL DSN available; leaving DATABASE_URL untouched'
+        fi
+      fi
       DL_DB_MODE=new-docker
     fi
     if (( need_redis )); then
@@ -935,13 +968,78 @@ ensure_resources() {
   fi
 }
 
+# dl_dsn_pg_creds — 从【调用方给的 DSN】解析 (user, password, dbname)。
+#
+# ★★ 为什么要有这个函数（2026-10-27 R165 轮）：
+#   ★ 部署脚本里有三个「口令真值」候选：① 容器 env 的 POSTGRES_PASSWORD
+#     ② 宿主机的 .env / 环境变量 ③ 调用方给的 LLM_GATEWAY_DATABASE_URL。
+#   ★ 实测（2026-10-27）：① 与 ② **已经漂移**（sha256 93ae1c75… vs ad865f11…）
+#     ⇒ ⇒ 而 ③ 是**真的那个**（能连上库）⇒ ⇒ ⇒ 口令的 SSOT 必须是 ③。
+#   ★ ⇒ 所以凡是「需要口令」的探测/执行，一律从 DSN 解析，不再读容器 env。
+#   ★ ⇒ ⇒ 而且这条 SSOT 与仓内 Redis 那段已有契约一致（★ line 300-306：
+#   ★ 「caller-provided 保持权威，扫描层不得静默改指」）。
+dl_dsn_pg_creds() {
+  local url="${LLM_GATEWAY_DATABASE_URL:-${DATABASE_URL:-}}"
+  DL_DSN_PG_USER=""; DL_DSN_PG_PASS=""; DL_DSN_PG_DB=""
+  [[ -n "$url" ]] || return 1
+  local rest="${url#*://}"
+  # ★★ 凭据段 = 【最后一个 '@' 之前】，★ host 段 = 【最后一个 '@' 之后】
+  #   （★ 口令里可能有裸 '@'；★ 用 `%%/*` 取 creds 会把 host:port 一起吞进来
+  #    ⇒ ⇒ 口令变成 `pass@host:port` ⇒ ⇒ 在 scram 集群上必然认证失败）
+  [[ "$rest" == *@* ]] || return 1
+  local creds="${rest%@*}" hostpart="${rest##*@}"
+  DL_DSN_PG_USER="${creds%%:*}"
+  if [[ "$creds" == *:* ]]; then DL_DSN_PG_PASS="${creds#*:}"; else DL_DSN_PG_PASS=""; fi
+  # ★ percent-decode：★ 口令里的 %40/%3A/%2F 必须还原，否则 PGPASSWORD 是错的
+  DL_DSN_PG_PASS="${DL_DSN_PG_PASS//%40/@}"
+  DL_DSN_PG_PASS="${DL_DSN_PG_PASS//%3A/:}"
+  DL_DSN_PG_PASS="${DL_DSN_PG_PASS//%2F//}"
+  DL_DSN_PG_PASS="${DL_DSN_PG_PASS//%25/%}"
+  local dbpart="${hostpart#*/}"; dbpart="${dbpart%%\?*}"
+  [[ "$dbpart" == "$hostpart" ]] && dbpart=""
+  DL_DSN_PG_DB="${dbpart%%/*}"
+  [[ -n "$DL_DSN_PG_USER" ]] || return 1
+  return 0
+}
+
 psql_query() {
   local sql="$1"
-  if _dl_have psql; then psql -X -v ON_ERROR_STOP=1 -Atqc "$sql" "$LLM_GATEWAY_DATABASE_URL"
-  elif [[ -n "${DL_PG_CONTAINER:-}" ]]; then
+  # ★★ 2026-10-27（R165 轮）★★ 三条【部署验证腿】都走这里：
+  #   ① apply_schema_if_empty 的「核心表在不在」
+  #   ② post-deploy 的「凭据能不能解密」
+  #   ③ post-deploy 的「admin 口令 hash 读写」
+  # ⇒ ⇒ ⇒ 它们是「部署成没成」的唯一判定 ⇒ ⇒ ⇒ ⇒ 而它们的**连接目标**此前有两条错路：
+  #
+  #   ★★ 错路一：★ 宿主机分支用 PATH 上的 `psql` ⇒ ★ 本机 PATH 首位是 `~/.local/bin/psql`，
+  #      ★ 那是一个**容器转发 shim**：★ 它把 DSN 的 host/port 丢掉、docker exec 进容器、
+  #      ★ 走**容器内默认 socket** ⇒ ⇒ 而容器内那个 socket **不是**挂载的共享集群
+  #      ⇒ ⇒ ⇒ 报错是 `FATAL: database "llm_gateway" does not exist` ⇒ ⇒ **极具误导性**
+  #      ⇒ ⇒ ⇒ 真因是「连到了另一个集群」，★ 不是「库不存在」。
+  #      ★ ⇒ ⇒ 修法：走仓内既有的 `dl_host_run`（★ 它优先 ~/kaixuan/pg18/bin/psql）
+  #      ★ ⇒ ⇒ ⇒ 那个 shim 只为 openpocket 夹具而装，★ 不该被部署脚本命中。
+  #   ★★ 错路二：★ 容器分支用 `-U/-d` + **容器 env 的 POSTGRES_PASSWORD** ⇒ ★ 那个口令可能
+  #      ★ 早已与库内真实口令不一致 ⇒ ⇒ ⇒ 而口令**在 `LLM_GATEWAY_DATABASE_URL` 里是对的**。
+  #
+  # ⇒ ⇒ 修法（★ 保持部署语义不变，★ 只让验证连到【正确的集群】+【正确的口令】）：
+  #   ★ 容器模式下**优先**用 `docker exec` + **显式 TCP**（★ 容器内 5432 就是挂载的共享集群，
+  #   ★ 已实测：data_directory=/var/lib/postgresql/data）★ 口令从 `LLM_GATEWAY_DATABASE_URL` 解析。
+  if [[ -n "${DL_PG_CONTAINER:-}" ]]; then
     local u="${LLM_GATEWAY_PG_USER:-llm_gateway}" d="${LLM_GATEWAY_PG_DATABASE:-llm_gateway}"
-    docker exec -e PGPASSWORD="${LLM_GATEWAY_PG_PASSWORD:-}" "$DL_PG_CONTAINER" psql -X -v ON_ERROR_STOP=1 -U "$u" -d "$d" -Atqc "$sql"
-  else die 'psql is required for database verification'; fi
+    local pw="${LLM_GATEWAY_PG_PASSWORD:-}"
+    # ★★ 口令优先从 DSN 取（★ ★ 容器 env 的 POSTGRES_PASSWORD 可能已过期 ⇒ 实测踩过）
+    if dl_dsn_pg_creds; then
+      [[ -n "$DL_DSN_PG_USER" ]] && u="$DL_DSN_PG_USER"
+      [[ -n "$DL_DSN_PG_PASS" ]] && pw="$DL_DSN_PG_PASS"
+      [[ -n "$DL_DSN_PG_DB" ]] && d="$DL_DSN_PG_DB"
+    fi
+    docker exec -e PGPASSWORD="$pw" "$DL_PG_CONTAINER" psql -X -v ON_ERROR_STOP=1 \
+      -h 127.0.0.1 -p 5432 -U "$u" -d "$d" -Atqc "$sql" && return 0
+    # ★ 容器分支失败 ⇒ ★ 再试宿主机分支（★ ★ 宿主机分支也可能被 shim 劫持 ⇒ ★ 故排在其后）
+  fi
+  # ★★ 宿主机分支：★ 用 dl_host_run（★ 优先 ~/kaixuan/pg18/bin/psql）★ 而不是裸 `psql`
+  #   ⇒ ★ 否则 PATH 首位的容器转发 shim 会命中 ⇒ ⇒ 连到【另一个集群】⇒ ⇒ 误导性报错。
+  if dl_host_have psql; then dl_host_run psql -X -v ON_ERROR_STOP=1 -Atqc "$sql" "$LLM_GATEWAY_DATABASE_URL"; return $?; fi
+  die 'psql is required for database verification'
 }
 
 apply_schema_if_empty() {
@@ -961,12 +1059,20 @@ apply_schema_if_empty() {
   local f log_file
   for f in 00-prereqs.sql 01-schema.sql 02-seed.sql; do
     log_file="$RUN_DIR/schema-${f}.log"
-    if _dl_have psql; then
-      if ! psql -X -v ON_ERROR_STOP=1 -q "$LLM_GATEWAY_DATABASE_URL" -f "$PROJECT_ROOT/sql/schema/$f" >"$log_file" 2>&1; then
+    if dl_host_have psql; then
+      # ★★ 宿主机分支：★ dl_host_run 优先 ~/kaixuan/pg18/bin/psql ⇒ ★ 绕开容器转发 shim
+      if ! dl_host_run psql -X -v ON_ERROR_STOP=1 -q "$LLM_GATEWAY_DATABASE_URL" -f "$PROJECT_ROOT/sql/schema/$f" >"$log_file" 2>&1; then
         die "schema snapshot $f failed; see $log_file"
       fi
     else
-      if ! docker exec -i -e PGPASSWORD="${LLM_GATEWAY_PG_PASSWORD:-}" "$DL_PG_CONTAINER" psql -X -v ON_ERROR_STOP=1 -U "${LLM_GATEWAY_PG_USER:-llm_gateway}" -d "${LLM_GATEWAY_PG_DATABASE:-llm_gateway}" < "$PROJECT_ROOT/sql/schema/$f" >"$log_file" 2>&1; then
+      # ★★ 容器分支：★ 口令一律从 DSN 解析（★ 容器 env 的 POSTGRES_PASSWORD 已漂移 ⇒ 实测踩过）
+      local _su="${LLM_GATEWAY_PG_USER:-llm_gateway}" _sd="${LLM_GATEWAY_PG_DATABASE:-llm_gateway}" _sp="${LLM_GATEWAY_PG_PASSWORD:-}"
+      if dl_dsn_pg_creds; then
+        [[ -n "$DL_DSN_PG_USER" ]] && _su="$DL_DSN_PG_USER"
+        [[ -n "$DL_DSN_PG_PASS" ]] && _sp="$DL_DSN_PG_PASS"
+        [[ -n "$DL_DSN_PG_DB" ]] && _sd="$DL_DSN_PG_DB"
+      fi
+      if ! docker exec -i -e PGPASSWORD="$_sp" "$DL_PG_CONTAINER" psql -X -v ON_ERROR_STOP=1 -h 127.0.0.1 -p 5432 -U "$_su" -d "$_sd" < "$PROJECT_ROOT/sql/schema/$f" >"$log_file" 2>&1; then
         die "schema snapshot $f failed; see $log_file"
       fi
     fi
@@ -1604,7 +1710,18 @@ migrate_database() {
   # Apply the explicitly scoped repair set before the application migration
   # path. This covers SQL files that db.Open() does not scan, while preserving
   # the existing Go ensure chain for startup compatibility.
-  if ! LLM_GATEWAY_PG_CONTAINER="${DL_PG_CONTAINER:-}" \
+  # ★★ 2026-10-27（R165 轮）★★ 显式指定 psql 客户端：
+  #   ★ 本机 PATH 首位的 `psql` 是**一个容器转发 shim**，★ 它**故意丢掉 host/port**
+  #   ★ ⇒ ⇒ 走容器内默认 socket ⇒ ⇒ 连到**另一个集群** ⇒ ⇒ 报「库不存在」（★ 误导）
+  #   ★ ⇒ ⇒⇒ 而 PATH 里另一个（~/kaixuan/pg18/bin/psql）会把 DSN 的 host:port
+  #   ★ **改写**成 127.0.0.1:5432 ⇒ ⇒ 连的是**真集群** ✔ ⇒ ⇒ 这里显式指定它。
+  #   ★ ⇒⇒ 职责分离：★ 调用方负责「用哪个客户端」，★ 脚本负责「怎么连」。
+  local _rev_psql="${LLM_GATEWAY_PSQL:-}"
+  if [[ -z "$_rev_psql" || ! -x "$_rev_psql" ]]; then
+    if [[ -x "$HOME/kaixuan/pg18/bin/psql" ]]; then _rev_psql="$HOME/kaixuan/pg18/bin/psql"; else _rev_psql=""; fi
+  fi
+  if ! LLM_GATEWAY_PSQL="$_rev_psql" \
+       LLM_GATEWAY_PG_CONTAINER="${DL_PG_CONTAINER:-}" \
        LLM_GATEWAY_PG_USER="${LLM_GATEWAY_PG_USER:-llm_gateway}" \
        LLM_GATEWAY_PG_PASSWORD="${LLM_GATEWAY_PG_PASSWORD:-}" \
        LLM_GATEWAY_PG_DATABASE="${LLM_GATEWAY_PG_DATABASE:-llm_gateway}" \

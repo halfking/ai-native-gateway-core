@@ -14,6 +14,7 @@ import { useI18n } from 'vue-i18n'
 import type { ClientSummary, PanelEntry } from '../../composables/useLiveTopology'
 import { clientDisplayName } from '../../lib/liveTopologyGraph'
 import { PANEL_PAGE_SIZE } from '../../types/liveTopology'
+import { CaretLeft, CaretRight, TopRight } from '@element-plus/icons-vue'
 
 const props = defineProps<{
   summaries: ClientSummary[]
@@ -150,7 +151,7 @@ function latency(value: number | null | undefined): string {
             :aria-label="t('liveTopology.zoom.openPage')"
             :title="t('liveTopology.zoom.openPage')"
             @click.stop="emit('open-page', entry)"
-          >↗</button>
+          ><TopRight /></button>
         </div>
       </li>
     </ul>
@@ -163,7 +164,7 @@ function latency(value: number | null | undefined): string {
         :disabled="page <= 1"
         data-testid="client-page-prev"
         @click="prevPage"
-      >‹</button>
+      ><CaretLeft /></button>
       <span class="cp__page-info">{{ t('liveTopology.panel.page', { page, pages: pageCount }) }} · {{ t('liveTopology.panel.total', { n: requests.length }) }}</span>
       <button
         type="button"
@@ -171,7 +172,7 @@ function latency(value: number | null | undefined): string {
         :disabled="page >= pageCount"
         data-testid="client-page-next"
         @click="nextPage"
-      >›</button>
+      ><CaretRight /></button>
     </footer>
   </aside>
 </template>
@@ -411,4 +412,11 @@ function latency(value: number | null | undefined): string {
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
+
+/* ── 2026-10-27 第 17 增量（AI 痕迹门 V3）：图标尺寸 ──
+   element-plus 图标是裸 <svg viewBox="0 0 1024 1024">，**不带 width/height**
+   ⇒ 浏览器按包含块宽度渲染（会撑爆布局）⇒ 必须显式定尺寸。
+   尺寸沿用原字形的 font-size 观感（字形墨迹 ≈ 0.7em）。 */
+.cp__open > svg { width: 11px; height: 11px; }
+.cp__page-btn > svg { width: 10px; height: 10px; }
 </style>

@@ -55,6 +55,6 @@ export default {
   },
 
   // 扁平键（供 Vue 组件直接使用）
-  loadFailed: 'Échec du chargement',
+  loadFailed: 'Le chargement de la liste des journaux d\'audit a échoué. Veuillez réessayer.',
   dash: '—',
 }

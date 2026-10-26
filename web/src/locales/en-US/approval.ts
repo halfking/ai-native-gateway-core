@@ -57,9 +57,9 @@ export default {
       info: 'Page {page} / {totalPages} ({total} total)',
     },
     errors: {
-      loadListFailed: 'Failed to load approval list',
-      approveFailed: 'Approve failed',
-      rejectFailed: 'Reject failed',
+      loadListFailed: 'The approval list could not be loaded. Please retry.',
+      approveFailed: 'The approval could not be approved. Please retry.',
+      rejectFailed: 'The approval rejection could not be completed. Please retry.',
     },
     success: {
       approved: 'Request approved',
@@ -136,8 +136,8 @@ export default {
       rules: 'Define which requests need approval',
     },
     errors: {
-      loadFailed: 'Failed to load settings',
-      saveFailed: 'Failed to save',
+      loadFailed: 'The approval settings could not be loaded. Please retry.',
+      saveFailed: 'The approval settings could not be saved. Please retry.',
     },
     success: {
       saved: 'Saved successfully',

@@ -1,4 +1,5 @@
 import { computed, onMounted, ref } from 'vue'
+import { surfaceError } from '../i18n/errorSurface'
 import type { ApiKey } from '../api'
 import { getKeys, revealKey } from '../api'
 import {
@@ -80,7 +81,7 @@ export function useGatewayApiKey() {
       showPicker.value = false
       return key
     } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : String(e)
+      const msg = surfaceError(e)
       if (isRevealFailureError(msg)) {
         markUnrevealable(id)
         return null
@@ -174,7 +175,7 @@ export function useGatewayApiKey() {
 
       return revealFirstAvailable(active)
     } catch (e: unknown) {
-      error.value = e instanceof Error ? e.message : 'API 密钥没能取到，请重试'
+      error.value = surfaceError(e, { key: 'common.feedback.apiKeyFetchFailed' })
       apiKey.value = ''
       selectedKeyId.value = null
       syncSelectedMeta(null)
@@ -200,7 +201,7 @@ export function useGatewayApiKey() {
       }
       return true
     } catch (e: unknown) {
-      error.value = e instanceof Error ? e.message : '密钥没能取到，请重试'
+      error.value = surfaceError(e, { key: 'common.feedback.keyRevealFailed' })
       return false
     } finally {
       picking.value = false

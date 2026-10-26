@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, watch } from 'vue'
+import { surfaceError } from '../../i18n/errorSurface'
 import { useI18n } from 'vue-i18n'
 import { useFormat } from '../../i18n/useFormat'
 import { parseLocalMinute } from '../../utils/datetime'
@@ -26,6 +27,7 @@ import CredentialKeyField from '../../components/CredentialKeyField.vue'
 import CredentialModelsPanel from './CredentialModelsPanel.vue'
 import KxDatePicker from '../../components/ui/KxDatePicker.vue'
 import { confirmDialog } from '../../composables/useConfirmDialog'
+import { Clock, Refresh } from '@element-plus/icons-vue'
 
 const { t: td } = useI18n()
 const pd = (k: string, params?: Record<string, unknown>): string =>
@@ -415,7 +417,7 @@ async function submitRotate() {
     emit('refresh')
     closeDrawer()
   } catch (e: unknown) {
-    rotateErr.value = e instanceof Error ? e.message : pd('creds.apiKeyRotateFailed')
+    rotateErr.value = surfaceError(e, { key: 'providerDetail.creds.apiKeyRotateFailed' })
   } finally {
     rotateSubmitting.value = false
   }
@@ -577,7 +579,7 @@ function formatCredentialError(e: unknown, fallback: string): {
     return { message: fallbackMsg ?? '', kind: 'fp_slot_exceeds_concurrency', context: ctxObj }
   }
   return {
-    message: e instanceof Error ? e.message : fallback,
+    message: surfaceError(e),
     kind: '',
     context: null,
   }
@@ -670,7 +672,7 @@ async function checkSelected() {
     checkMsg.value = probeResultMsg(r)
     emit('silentRefresh')
   } catch (e: unknown) {
-    checkMsg.value = e instanceof Error ? e.message : pd('creds.checkFailed')
+    checkMsg.value = surfaceError(e, { key: 'providerDetail.creds.checkFailed' })
   } finally {
     checking.value = false
   }
@@ -684,7 +686,7 @@ async function delSelected() {
     closeDrawer()
     emit('refresh')
   } catch (e: unknown) {
-    alert(e instanceof Error ? e.message : pd('creds.deleteFailed'))
+    alert(surfaceError(e, { key: 'providerDetail.creds.deleteFailed' }))
   }
 }
 
@@ -708,7 +710,7 @@ async function toggleManualDisabled() {
         c.manual_disabled = next
         emit('silentRefresh')
       } catch (e: unknown) {
-        alert(e instanceof Error ? e.message : pd('creds.setFailed'))
+        alert(surfaceError(e, { key: 'providerDetail.creds.setFailed' }))
       }
       return
     }
@@ -724,7 +726,7 @@ async function setLifecycle(value: CredentialLifecycleStatus) {
     c.lifecycle_status = value
     emit('silentRefresh')
   } catch (e: unknown) {
-    alert(e instanceof Error ? e.message : pd('creds.lifecycleFailed'))
+    alert(surfaceError(e, { key: 'providerDetail.creds.lifecycleFailed' }))
   }
 }
 
@@ -752,7 +754,7 @@ async function setPlanType(value: string) {
     c.plan_type = newVal
     emit('silentRefresh')
   } catch (e: unknown) {
-    alert(e instanceof Error ? e.message : pd('creds.planTypeFailed'))
+    alert(surfaceError(e, { key: 'providerDetail.creds.planTypeFailed' }))
   }
 }
 
@@ -766,7 +768,7 @@ async function setRoutingScope(value: string) {
     c.routing_scope = newVal
     emit('silentRefresh')
   } catch (e: unknown) {
-    alert(e instanceof Error ? e.message : pd('creds.routingScopeFailed'))
+    alert(surfaceError(e, { key: 'providerDetail.creds.routingScopeFailed' }))
   }
 }
 
@@ -777,7 +779,7 @@ async function resetAvailability() {
     await resetCredentialAvailability(props.provider.id, c.id)
     emit('silentRefresh')
   } catch (e: unknown) {
-    alert(e instanceof Error ? e.message : pd('creds.resetFailed'))
+    alert(surfaceError(e, { key: 'providerDetail.creds.resetFailed' }))
   }
 }
 
@@ -788,7 +790,7 @@ async function resetQuota() {
     await resetCredentialQuota(props.provider.id, c.id)
     emit('silentRefresh')
   } catch (e: unknown) {
-    alert(e instanceof Error ? e.message : pd('creds.resetFailed'))
+    alert(surfaceError(e, { key: 'providerDetail.creds.resetFailed' }))
   }
 }
 
@@ -799,7 +801,7 @@ async function forceRecover() {
     await forceRecoverCredential(c.id)
     emit('silentRefresh')
   } catch (e: unknown) {
-    alert(e instanceof Error ? e.message : pd('creds.triggerFailed'))
+    alert(surfaceError(e, { key: 'providerDetail.creds.triggerFailed' }))
   }
 }
 
@@ -828,7 +830,7 @@ async function setDefaultModel() {
     c.default_probe_model_picked_at = new Date().toISOString()
     emit('silentRefresh')
   } catch (e: unknown) {
-    alert(e instanceof Error ? e.message : pd('creds.setFailed'))
+    alert(surfaceError(e, { key: 'providerDetail.creds.setFailed' }))
   }
 }
 
@@ -843,7 +845,7 @@ async function clearDefaultModel() {
     selectedDefaultModel.value = ''
     emit('silentRefresh')
   } catch (e: unknown) {
-    alert(e instanceof Error ? e.message : pd('creds.setFailed'))
+    alert(surfaceError(e, { key: 'providerDetail.creds.setFailed' }))
   }
 }
 
@@ -865,7 +867,7 @@ async function repickDefault() {
     }
     emit('silentRefresh')
   } catch (e: unknown) {
-    alert(e instanceof Error ? e.message : pd('creds.repickFailed'))
+    alert(surfaceError(e, { key: 'providerDetail.creds.repickFailed' }))
   }
 }
 
@@ -878,7 +880,7 @@ async function resetFpSlots() {
     fpSlotStats.value = null
     emit('silentRefresh')
   } catch (e: unknown) {
-    alert(e instanceof Error ? e.message : pd('creds.resetFpSlotsFailed'))
+    alert(surfaceError(e, { key: 'providerDetail.creds.resetFpSlotsFailed' }))
   }
 }
 
@@ -892,7 +894,7 @@ async function releaseFpSlot(slotIndex: number) {
       fpSlotStats.value = await getCredentialFpSlotStats(props.provider.id, c.id)
     }
   } catch (e: unknown) {
-    alert(e instanceof Error ? e.message : pd('creds.releaseFailed'))
+    alert(surfaceError(e, { key: 'providerDetail.creds.releaseFailed' }))
   }
 }
 
@@ -904,7 +906,7 @@ async function loadFpSlotStats() {
     fpSlotStats.value = await getCredentialFpSlotStats(props.provider.id, c.id)
   } catch (e: unknown) {
     fpSlotStats.value = null
-    alert(e instanceof Error ? e.message : pd('creds.fpSlotStatsFailed'))
+    alert(surfaceError(e, { key: 'providerDetail.creds.fpSlotStatsFailed' }))
   } finally {
     fpSlotStatsLoading.value = false
   }
@@ -945,7 +947,7 @@ async function refreshBalance() {
       balanceRefreshError.value = { ...balanceRefreshError.value, [c.id]: c.balance_error ?? '' }
     }
   } catch (e: unknown) {
-    const msg = e instanceof Error ? e.message : pr('credential.row.balanceRefreshFailed')
+    const msg = surfaceError(e, { key: 'providers.credential.row.balanceRefreshFailed' })
     balanceRefreshError.value = { ...balanceRefreshError.value, [c.id]: msg }
   } finally {
     refreshingBalance.value = { ...refreshingBalance.value, [c.id]: false }
@@ -1361,7 +1363,7 @@ function onTagsInput(ev: Event) {
                 :disabled="refreshingBalance[selected.id]"
                 :title="pr('credential.row.balanceRefreshTooltip')"
                 @click="refreshBalance"
-              >{{ refreshingBalance[selected.id] ? '⏳' : '⟳' }}</button>
+              ><Clock v-if="refreshingBalance[selected.id]" /><Refresh v-else /></button>
             </div>
             <div v-if="selected.balance_source" class="cell-sub" :title="pr(selected.balance_source === 'manual' ? 'credential.row.balanceSourceManual' : 'credential.row.balanceSourceApi')">
               <template v-if="selected.balance_source === 'manual'">✏️ {{ pr('credential.row.balanceSourceManual') }}</template>
@@ -1745,4 +1747,9 @@ function onTagsInput(ev: Event) {
     transform: rotate(360deg);
   }
 }
+
+/* ── 2026-10-27 第 17 增量（AI 痕迹门 V3 · 插值形态）：图标尺寸 ──
+   element-plus 图标是裸 <svg viewBox="0 0 1024 1024">，**不带 width/height**
+   ⇒ 浏览器按包含块宽度渲染（会撑爆布局）⇒ 必须显式定尺寸。 */
+.btn.btn-ghost.btn-sm > svg { width: 12px; height: 12px; }
 </style>

@@ -1,0 +1,40 @@
+# query-index-requirements.tsv —— ★★「活查询 ⇒ 过滤/排序列 ⇒ 索引可用性」需求台账
+# ★ 生成器：手工登记（★ 事实源 = 活代码的 SQL 构造器，★ 每行都带源码定位）
+# ★ 消费方：scripts/ursmcheck/query_index_coverage_gate_test.go（★ Go 门）
+# ★ 列：query_id	source	table	filter_cols	order_cols	status	note
+# ★ filter_cols：逗号分隔的【过滤列集合】（★ 无序，★ 只要都被索引最左前缀覆盖即可）
+# ★ order_cols ：逗号分隔的【排序列序列】（★ 有序，★ 带 DESC/ASC）
+# ★ status     ：covered（★ 已证有索引同时覆盖过滤与排序）| known-gap（★ 已登记的缺口）
+# ★              ★ ★★ 「已知缺口」必须显式登记 ⇒ ★★ 新增的未覆盖查询会让门变红
+# ★              ★ ★★ 登记 = 承认「这条会付 Sort 成本」，★ 不是豁免 ⇒ ★★ 门会盯着它
+# ★ generated_by=hand（★ R162 轮）
+#
+# ── 1. 会话列表（★ ORDER BY updated_at DESC, session_id DESC）────────────────
+#   源码：admin/turns_sessions.go:286（query := fmt.Sprintf(`%s\n WHERE %s\n ORDER BY s.updated_at DESC, s.session_id DESC …）
+#   过滤：admin/turns_sessions.go:402 buildTurnsSessionWhere ⇒ s.tenant_id / s.updated_at 区间
+#   跨月去重：admin/turns_sessions.go:197 turnsSessionsLatestPartitionSQL ⇒ s.partition_date = (SELECT MAX …)
+#   ★★ R162 本地 EXPLAIN 实测：基线 = Index Scan + 【Sort】（★ 排序未被索引覆盖）
+#   ★★ 候选索引 (tenant_id, updated_at DESC, session_id DESC) ⇒ Merge Append + Index Only Scan（★ Sort 消失）
+sessions.list	admin/turns_sessions.go:286	sessions	tenant_id	updated_at DESC,session_id DESC	known-gap	known-gap	★★ R162 本地 EXPLAIN 实测：★ 现有索引族【没有一条】能同时满足「tenant_id 过滤」与「这个排序」⇒ ★★ 缺一条复合索引是【结构事实】；★ 反事实对照（enable_seqscan=off）实测 Sort 仍在 ⇒ ★★ 候选复合索引【值得提】，★ 但「它一定消除 Sort」在生产数据量下仍需另测 ⇒ ★★ 属主未放行前不改生产
+# ── 2. 会话详情点查（★ session_id + tenant_id）──────────────────────────────
+#   源码：admin/session_detail_v2.go:539（SELECT session_id FROM public.sessions WHERE session_id = $1 AND tenant_id = $2 LIMIT 1）
+#   ★ 覆盖索引：idx_sessions_tenant_session_partition_date (tenant_id, session_id, partition_date DESC)
+#   ★ ★ 前缀覆盖 session_id ⇒ ★ 不全表扫描（★ R162 本地 EXPLAIN 实测 Index Only Scan）
+sessions.detail.point	admin/session_detail_v2.go:539	sessions	tenant_id,session_id		covered	covered	★ idx_sessions_tenant_session_partition_date 前缀覆盖
+# ── 3. 会话详情主查询（★ 同上 + 跨月去重 + ORDER BY partition_date DESC）──────
+#   源码：admin/session_detail_v2.go:358
+sessions.detail.main	admin/session_detail_v2.go:358	sessions	tenant_id,session_id	partition_date DESC	covered	covered	★ 排序列是分区键 ⇒ 分区裁剪承担排序
+# ── 4. 轮次列表（★ 视图 session_turns_with_current_month）────────────────────
+#   源码：admin/turns_list.go:201 buildTurnsListWhere + :124 投影
+#   过滤：t.ts 区间 + t.tenant_id + 可选 t.model/t.provider/t.status_code/t.project_id/t.namespace/t.parent_request_id/t.task_type
+#   排序：ORDER BY t.ts DESC, t.session_id DESC, t.turn_no DESC
+#   ★ 现状 idx_session_turns_tenant (tenant_id, ts DESC) 只覆盖【过滤 + 排序首列】⇒ 后续列仍要 Sort
+turns.list	admin/turns_list.go:201	session_turns	tenant_id,ts	ts DESC,session_id DESC,turn_no DESC	known-gap	known-gap	★ 排序三元组未被单条索引覆盖
+# ── 5. data-lifecycle 附件列表（★ 活过滤谓词 + 本地真缺口）──────────────────
+#   源码：admin/data_lifecycle_attachments.go:93
+#   谓词：const attachmentsPresencePredicate = "rl.attachment_count > 0"
+#   ★★ 同文件 :82-83 的注释逐字记着生产实测：★ 17,582 ms → 1,317 ms（13.4×）
+#   ★★ 靠的就是谓词逐字相同的分区部分索引 session_turns_YYYY_MM_attachment_count_idx
+#   ★★★ R162 实测：★ 252 有父索引 + 6 个分区子索引；★ 211 有父索引 + 5 个；★★ local 有 0 个
+#   ⇒ ⇒ ★★ 本地跑这个列表时谓词【无索引可用】⇒ 全表扫描 ⇒ ★★ 本地与生产不可比
+attachments.presence	admin/data_lifecycle_attachments.go:93	session_turns	attachment_count		known-gap	known-gap	★★ 靠 mig 474 的 idx_session_turns_attachment_count_gw（★ 谓词 attachment_count > 0）；★★ ★ local 缺该索引（★ 252/211 有）⇒ 本地无索引可用 ⇒ ★★ 这是「多环境同一标准」的真实缺口面

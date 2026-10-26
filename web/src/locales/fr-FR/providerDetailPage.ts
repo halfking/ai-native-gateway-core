@@ -26,9 +26,9 @@ export default {
   },
   manualDisabledTitle: 'Désactivation manuelle au niveau fournisseur. Tout le fournisseur est non routable',
   manualDisabledBadge: 'Désactivé manuellement',
-  loadFailed: 'Échec du chargement',
-  operationFailed: 'Échec de l\'opération',
-  diagFailed: 'Échec du diagnostic',
+  loadFailed: 'Les détails du fournisseur n\'ont pas pu être chargés. Veuillez réessayer.',
+  operationFailed: 'Le fournisseur n\'a pas pu être activé ou désactivé. Veuillez réessayer.',
+  diagFailed: 'Le diagnostic du fournisseur n\'a pas pu être effectué. Veuillez réessayer.',
 
   quality: {
     loading: 'Loading quality data…',
@@ -57,5 +57,5 @@ export default {
   deleteBtn: "Supprimer le fournisseur",
   deleteTitle: "Supprimer (soft-delete) ce fournisseur. Le fournisseur et tous ses identifiants seront retirés de toutes les listes et du routage. Action irréversible.",
   deleteConfirm: "Supprimer le fournisseur « {name} » ? Tous ses identifiants seront également marqués supprimés et toutes les routes de modèles associées s'arrêteront immédiatement. Action irréversible.",
-  deleteFailed: "Échec de la suppression du fournisseur",
+  deleteFailed: 'Ce fournisseur n\'a pas pu être supprimé. Veuillez réessayer.',
 }

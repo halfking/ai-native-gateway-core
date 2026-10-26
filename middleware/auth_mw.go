@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/kaixuan/llm-gateway-go/i18n"
+	"github.com/kaixuan/llm-gateway-go/internal/auth"
 )
 
 type AuthMiddleware struct {
@@ -142,14 +143,23 @@ func (m *AuthMiddleware) Wrap(next http.Handler) http.Handler {
 		// before the /v1/messages handler — whose extractBearerToken has
 		// honored x-api-key since 2026-06-26 — ever sees the request
 		// (observed 2026-09-21: claude-cli 401s on 154, zero rows in
-		// _request_logs_hot). Precedence matches extractBearerToken:
-		// Authorization Bearer first, x-api-key only as fallback.
-		provided := ""
-		if auth := r.Header.Get("Authorization"); len(auth) >= 7 && auth[:7] == "Bearer " {
-			provided = auth[7:]
-		} else if key := r.Header.Get("x-api-key"); key != "" {
-			provided = key
-		}
+		// _request_logs_hot).
+		//
+		// ★ 2026-10-26（Gemini 原生认证修复轮）：本门此前**只认两种形态**
+		// （Authorization Bearer + x-api-key），而厂方标准文档写明的 Gemini
+		// 认证形态（x-goog-api-key 头 / ?key= query）**一张都没实现**
+		// ⇒ 原生 Gemini 客户端一律 401 missing_key，且**死在 mux 之前**
+		// （连 Gemini handler 都进不去）。本仓自己留的厂方文档就是判据：
+		//   docs/vendor-formats/gemini.md §HTTP 形态（?key=）
+		//   docs/archive/process/format-conversion/厂家数据格式/gemini/
+		//     generate-content.md §认证（?key= 或 Bearer）
+		//   docs/供应商协议优化.md §8.3（x-goog-api-key 或 ?key=）
+		//   docs/QUICK_REFERENCE.md §Gemini协议（x-goog-api-key）
+		//
+		// ⇒ 提取逻辑收口到 internal/auth.ExtractClientKey（唯一事实源），
+		//   与 domains/streaming 的 extractBearerToken 同源 ⇒ 两份实现
+		//   不再各自漂移（此前它们对 "bearer" 小写写法就分叉过）。
+		provided, _ := auth.ExtractClientKey(r)
 		if provided == "" {
 			// 2026-10-16（zcode/ZCode minimax-m3 401 missing_key 事故）：
 			// 本分支此前**一条日志都不打**。修复前 AuthMiddleware 排在

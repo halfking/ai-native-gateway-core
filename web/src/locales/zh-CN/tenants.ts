@@ -18,7 +18,7 @@ export default {
     colContact: '联系邮箱',
     colCreated: '创建时间',
     empty: '还没有租户',
-    loadFailed: '加载失败',
+    loadFailed: '租户列表没能加载出来，请重试',
   },
   create: {
     title: '新建租户',
@@ -36,7 +36,7 @@ export default {
     creating: '创建中…',
     cancel: '取消',
     codeAndNameRequired: 'code 和 name 不能为空',
-    createFailed: '创建失败',
+    createFailed: '租户没能创建出来，请重试',
     successTitle: '✅ 租户创建成功',
     successHint: '默认管理员已创建，初始密码仅显示一次，请妥善保存。',
     credTenant: '租户',
@@ -120,8 +120,8 @@ export default {
     onboardingModelsHint: '查看可用模型，或到',
     onboardingKeys: 'API 密钥',
     onboardingKeysHint: '签发密钥后发起调用。',
-    loadFailed: '加载失败',
-    detailLoadFailed: '明细加载失败',
+    loadFailed: '租户看板没能加载出来，请重试',
+    detailLoadFailed: '租户明细没能加载出来，请重试',
   },
 
   // /tenant/account 页面
@@ -131,7 +131,7 @@ export default {
     buyCredits: '购买积分',
     refresh: '刷新',
     loading: '加载中…',
-    loadFailed: '加载失败',
+    loadFailed: '租户账户没能加载出来，请重试',
     walletQuotaRemaining: '订阅额度',
     walletQuotaHint: '月包周期内，到期清零',
     walletGrantedBalance: '信用积分',
@@ -170,7 +170,7 @@ export default {
     title: '套餐与充值',
     refresh: '刷新',
     loading: '加载中…',
-    loadFailed: '加载失败',
+    loadFailed: '定价信息没能加载出来，请重试',
     payChannelAlipay: '支付宝',
     payChannelWechat: '微信支付',
     walletQuota: '订阅额度',
@@ -187,7 +187,7 @@ export default {
     creditsAmount: '{n} 积分',
     buyNow: '立即购买',
     creatingOrder: '创建订单…',
-    createOrderFailed: '创建订单失败',
+    createOrderFailed: '订单没能创建出来，请重试',
   },
 
   // /tenant/usage 页面
@@ -196,7 +196,7 @@ export default {
     adminTitle: '消耗统计',
     refresh: '刷新',
     loading: '加载中…',
-    loadFailed: '加载失败',
+    loadFailed: '用量明细没能加载出来，请重试',
     days7: '近 7 天',
     days30: '近 30 天',
     ledgerLimit50: '流水 50 条',
@@ -228,7 +228,7 @@ export default {
   order: {
     title: '订单支付',
     loading: '加载中…',
-    loadFailed: '加载失败',
+    loadFailed: '订单列表没能加载出来，请重试',
     qrPlaceholder: '扫码支付（占位）',
     stubNote: '支付账号尚未接入，请备注订单号联系客服完成支付。',
     paidNote: '✅ 支付已确认，积分已到账。',

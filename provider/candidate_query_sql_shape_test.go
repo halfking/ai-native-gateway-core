@@ -97,6 +97,32 @@ func TestCandidateQuerySQL_Shape(t *testing.T) {
 	}
 }
 
+// TestCandidateQuerySQL_VideoAcceptsMultimodal pins the 2026-10-26 Gemini
+// multimodal round fix: the graded-modality gate must accept multimodal-
+// declared models for video requests, same as it already did for vision and
+// audio. Before the fix only the exact arm (mc.modality = $3) matched video,
+// so every video-bearing Gemini/Qwen-VL request 503'd against all
+// multimodal-declared models — while modality_detect.go can return "video"
+// (the very reason migration 451 added the value) and the verdict gate
+// (modalityVerdictGateSQL) already listed video alongside vision/audio.
+func TestCandidateQuerySQL_VideoAcceptsMultimodal(t *testing.T) {
+	executable := stripSQLComments(candidateQuerySQL())
+	const wantArm = "$3 IN ('vision', 'audio', 'video') AND COALESCE(mc.modality, 'text') IN ($3, 'multimodal')"
+	if !strings.Contains(executable, wantArm) {
+		t.Fatalf("video requests must reach multimodal-declared models via the same arm as vision/audio; missing %q", wantArm)
+	}
+	// The verdict gate's own modality list must stay in lockstep: if a future
+	// edit adds a media modality to one list but not the other, the acceptance
+	// arm and the negative-verdict gate disagree again.
+	for _, verdict := range []string{
+		"$3 IN ('vision', 'audio', 'video')\n\t\t      AND EXISTS (",
+	} {
+		if !strings.Contains(candidateQuerySQL(), verdict) {
+			t.Errorf("modalityVerdictGateSQL modality list drifted from the acceptance arm; expected fragment %q", verdict)
+		}
+	}
+}
+
 // stripSQLComments removes full-line and trailing "--" comments so shape
 // assertions test executable SQL only.
 func stripSQLComments(sqlText string) string {

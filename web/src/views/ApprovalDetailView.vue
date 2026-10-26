@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { CaretBottom, CaretRight, CircleClose, CircleCheck, Warning } from '@element-plus/icons-vue'
+import { CaretBottom, CaretRight, CircleCheck, CircleClose, Close, Warning } from '@element-plus/icons-vue'
 import { fmtDateMedium } from '../i18n/useFormat'
 import { useRouter, useRoute } from 'vue-router'
 import { getApprovalDetail, approveApproval, rejectApproval, type ApprovalDetail } from '../api/approval'
@@ -187,13 +187,13 @@ onBeforeUnmount(() => {
     <div v-if="error" class="message message-error">
       <span class="message-icon"><CircleClose /></span>
       {{ error }}
-      <button class="message-close" @click="error = null">×</button>
+      <button class="message-close" @click="error = null"><Close /></button>
     </div>
 
     <div v-if="successMessage" class="message message-success">
       <span class="message-icon"><CircleCheck /></span>
       {{ successMessage }}
-      <button class="message-close" @click="successMessage = null">×</button>
+      <button class="message-close" @click="successMessage = null"><Close /></button>
     </div>
 
     <!-- Loading -->
@@ -955,4 +955,10 @@ onBeforeUnmount(() => {
     flex-direction: column;
   }
 }
+
+/* ── 2026-10-27 第 17 增量（AI 痕迹门 V3）：图标尺寸 ──
+   element-plus 图标是裸 <svg viewBox="0 0 1024 1024">，**不带 width/height**
+   ⇒ 浏览器按包含块宽度渲染（会撑爆布局）⇒ 必须显式定尺寸。
+   尺寸沿用原字形的 font-size 观感（字形墨迹 ≈ 0.7em）。 */
+.message-close > svg { width: 12px; height: 12px; }
 </style>

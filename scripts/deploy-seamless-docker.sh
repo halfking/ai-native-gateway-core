@@ -379,6 +379,46 @@ done
 CLAIM_FILE="$DD_STATE_DIR/redis-db.claim"
 ENV_FILE="$DD_STATE_DIR/env/gateway.env"
 
+# ── AUTO-GENERATOR-ENV:BEGIN ──
+# Keep explicit false across blue/green releases. Never source the saved file:
+# values must match Gateway's boolean grammar before persistence or SSH forwarding.
+dd_auto_generator_env() {
+  local env_file="$1" key value line
+  AUTO_GENERATOR_ENV=()
+  for key in LLM_GATEWAY_AUTO_TITLE_ENABLED LLM_GATEWAY_AUTO_SUMMARY_ENABLED; do
+    if [[ -n "${!key+x}" ]]; then
+      value="${!key}"
+    elif [[ -n "$env_file" && -f "$env_file" ]]; then
+      line="$(sed -nE "/^(export )?${key}=/p" "$env_file" | tail -1)"
+      [[ -n "$line" ]] || continue
+      value="${line#*=}"
+      # The engine writes unquoted bools; accept matching operator-added quotes.
+      case "$value" in
+        \"*\") value="${value#\"}"; value="${value%\"}";;
+        \'*\') value="${value#\'}"; value="${value%\'}";;
+      esac
+    else
+      continue
+    fi
+    value="${value#"${value%%[![:space:]]*}"}"
+    value="${value%"${value##*[![:space:]]}"}"
+    case "$value" in
+      1|t|T|true|TRUE|True) value=true;;
+      0|f|F|false|FALSE|False) value=false;;
+      *) die "invalid auto generator boolean: ${key}";;
+    esac
+    printf -v "$key" '%s' "$value"
+    AUTO_GENERATOR_ENV+=("${key}=${value}")
+  done
+}
+# ── AUTO-GENERATOR-ENV:END ──
+# Validate before writes/SSH; a --via caller must not forward its local saved file.
+if [[ -n "$VIA" ]]; then
+  dd_auto_generator_env ''
+else
+  dd_auto_generator_env "$ENV_FILE"
+fi
+
 # ── 执行位置守卫（2026-10-15）────────────────────────────────────────
 # 无参模式 = 「在 211 本机以 root 执行」：状态目录 /opt/llm-gateway-go-211、
 # 本机 docker 容器探测、docker build、127.0.0.1:8781 就绪探测全是目标机
@@ -413,7 +453,8 @@ if [[ -n "$VIA" ]]; then
             DD_REDIS_CONTAINER DD_REDIS_IMAGE DD_REDIS_DB_START DD_REDIS_DB_END \
             DD_BASE_REGISTRY DD_GO_BASE_IMAGE DD_RUNTIME_BASE_IMAGE \
             DD_ALLOW_STALE_WEB DD_PUBLIC_PROBE_IP DD_ADMIN_USER DD_ADMIN_PASSWORD \
-            DD_SKIP_LOGIN_SMOKE LLM_GATEWAY_HARD_BLOCK_RULES; do
+            DD_SKIP_LOGIN_SMOKE LLM_GATEWAY_HARD_BLOCK_RULES \
+            LLM_GATEWAY_AUTO_TITLE_ENABLED LLM_GATEWAY_AUTO_SUMMARY_ENABLED; do
     if [[ -n "${!_v+x}" ]]; then _dd_fwd+=" ${_v}='${!_v}'"; fi
   done
   _dd_args="${DD_ARGS[@]+"${DD_ARGS[@]}"}"
@@ -1821,7 +1862,9 @@ dd_asm_event_env() {
 }
 # ── ASM-ENV-BLOCK:END ──
 dd_asm_event_env "$ENV_FILE"
+dd_auto_generator_env "$ENV_FILE"
 
+# ── GATEWAY-ENV-WRITE:BEGIN ──
 {
   printf '# llm-gateway-go @ %s（由 deploy-seamless-docker.sh 生成，勿提交）\n' "${DD_HOST:-目标机}"
   printf '# shell 可 source；容器用 -e 注入，不走 docker 的 env 文件参数\n'
@@ -1863,8 +1906,12 @@ dd_asm_event_env "$ENV_FILE"
   if [[ -n "$ASM_EVENT_SECRET" ]]; then
     printf 'export AI_SESSION_MANAGER_GATEWAY_EVENT_SECRET=%q\n' "$ASM_EVENT_SECRET"
   fi
+  for setting in "${AUTO_GENERATOR_ENV[@]+"${AUTO_GENERATOR_ENV[@]}"}"; do
+    printf 'export %s\n' "$setting"
+  done
 } > "$ENV_FILE"
 chmod 600 "$ENV_FILE"
+# ── GATEWAY-ENV-WRITE:END ──
 
 GW_ENV=(
   -e "LLM_GATEWAY_STORAGE_MODE=full"
@@ -1904,6 +1951,12 @@ else
   log "ASM 事件投递未启用（endpoint_configured=$([[ -n "$ASM_INTERNAL_ENDPOINT" ]] && echo true || echo false) secret_configured=$([[ -n "$ASM_EVENT_SECRET" ]] && echo true || echo false)）—— 网关不会投任何事件"
 fi
 # ── ASM-ENV-INJECT:END ──
+
+# ── AUTO-GENERATOR-INJECT:BEGIN ──
+for setting in "${AUTO_GENERATOR_ENV[@]+"${AUTO_GENERATOR_ENV[@]}"}"; do
+  GW_ENV+=(-e "$setting")
+done
+# ── AUTO-GENERATOR-INJECT:END ──
 
 # ── 状态目录出容器（2026-10-13，对齐 211 机 DEPLOY-STANDARDS 总纲）──────
 # /app/data（keystore/hotzone/attachments/backups/model-quality）与 /app/logs

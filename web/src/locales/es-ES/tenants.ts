@@ -15,7 +15,7 @@ export default {
     colContact: "Correo de contacto",
     colCreated: "Creado",
     empty: 'Aún no hay inquilinos.',
-    loadFailed: "Error al cargar"
+    loadFailed: 'No se pudo cargar la lista de inquilinos. Vuelva a intentarlo.'
   },
   create: {
     title: "Nuevo inquilino",
@@ -33,7 +33,7 @@ export default {
     creating: "Creando…",
     cancel: "Cancelar",
     codeAndNameRequired: "código y nombre son obligatorios",
-    createFailed: "Error al crear",
+    createFailed: 'No se pudo crear el inquilino. Vuelva a intentarlo.',
     successTitle: "✅ Inquilino creado",
     successHint: "Administrador por defecto creado. La contraseña inicial se muestra solo una vez. Guárdela.",
     credTenant: "Inquilino",
@@ -115,8 +115,8 @@ export default {
     onboardingModelsHint: "para ver lo disponible, o vaya a",
     onboardingKeys: "Claves API",
     onboardingKeysHint: "para emitir una clave y empezar a llamar.",
-    loadFailed: "Error al cargar",
-    detailLoadFailed: "Error al cargar el detalle"
+    loadFailed: 'No se pudo cargar el panel del inquilino. Vuelva a intentarlo.',
+    detailLoadFailed: 'No se pudo cargar el detalle del inquilino. Vuelva a intentarlo.'
 ,
     statCreditsConsumed: 'Total credits consumed',
 
@@ -132,7 +132,7 @@ export default {
     buyCredits: "Comprar créditos",
     refresh: "Actualizar",
     loading: "Cargando…",
-    loadFailed: "Error al cargar",
+    loadFailed: 'No se pudo cargar la cuenta del inquilino. Vuelva a intentarlo.',
     walletQuotaRemaining: "Cuota de suscripción",
     walletQuotaHint: "Se reinicia en cada ciclo de facturación",
     walletGrantedBalance: "Créditos concedidos",
@@ -169,7 +169,7 @@ export default {
     title: "Planes y recarga",
     refresh: "Actualizar",
     loading: "Cargando…",
-    loadFailed: "Error al cargar",
+    loadFailed: 'No se pudo cargar la información de precios. Vuelva a intentarlo.',
     payChannelAlipay: "Alipay",
     payChannelWechat: "WeChat Pay",
     walletQuota: "Cuota de suscripción",
@@ -186,14 +186,14 @@ export default {
     creditsAmount: "{n} créditos",
     buyNow: "Comprar ahora",
     creatingOrder: "Creando pedido…",
-    createOrderFailed: "Error al crear el pedido"
+    createOrderFailed: 'No se pudo crear el pedido. Vuelva a intentarlo.'
   },
   usage: {
     title: "Mi uso",
     adminTitle: "Estadísticas de consumo",
     refresh: "Actualizar",
     loading: "Cargando…",
-    loadFailed: "Error al cargar",
+    loadFailed: 'No se pudo cargar el detalle de uso. Vuelva a intentarlo.',
     days7: "Últimos 7 días",
     days30: "Últimos 30 días",
     ledgerLimit50: "Últimas 50 entradas",
@@ -223,7 +223,7 @@ export default {
   order: {
     title: "Pago del pedido",
     loading: "Cargando…",
-    loadFailed: "Error al cargar",
+    loadFailed: 'No se pudo cargar la lista de pedidos. Vuelva a intentarlo.',
     qrPlaceholder: "Escanea para pagar (marcador de posición)",
     stubNote: "El proveedor de pagos no está configurado. Contacta con soporte indicando el número de pedido para completar el pago.",
     paidNote: "✅ Pago confirmado. Los créditos se han añadido a tu cuenta.",

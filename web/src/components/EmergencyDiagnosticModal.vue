@@ -8,7 +8,7 @@ import { credentialDisplayName, useCredentialLabels } from '../composables/useCr
 import { confirmDialog } from '../composables/useConfirmDialog'
 import { useI18n } from 'vue-i18n'
 import { formatDateTime } from '../utils/datetime'
-import { Close } from '@element-plus/icons-vue'
+import { Check, Close } from '@element-plus/icons-vue'
 
 const props = defineProps<{
   visible: boolean
@@ -282,7 +282,7 @@ watch(() => props.visible, (visible) => {
                     <td>{{ b.provider_code }}</td>
                     <td>
                       <span :class="b.available ? 'status-ok' : 'status-error'">
-                        {{ b.available ? '✓' : '✗' }}
+                        <Check v-if="b.available" /><Close v-else />
                       </span>
                     </td>
                     <td>{{ b.unavailable_reason || '-' }}</td>
@@ -365,14 +365,13 @@ watch(() => props.visible, (visible) => {
 
 .modal-content {
   background: var(--bg);
-  border: 1px solid var(--border);
   border-radius: 8px;
   max-width: 900px;
   width: 100%;
   max-height: 90vh;
   display: flex;
   flex-direction: column;
-  box-shadow: 0 8px 32px var(--overlay-strong);
+  box-shadow: var(--kx-shadow-md);
 }
 
 .modal-header {
@@ -664,4 +663,9 @@ watch(() => props.visible, (visible) => {
   background: var(--bg);
   border-color: var(--muted);
 }
+
+/* ── 2026-10-27 第 17 增量（AI 痕迹门 V3 · 插值形态）：图标尺寸 ──
+   element-plus 图标是裸 <svg viewBox="0 0 1024 1024">，**不带 width/height**
+   ⇒ 浏览器按包含块宽度渲染（会撑爆布局）⇒ 必须显式定尺寸。 */
+.status-ok > svg, .status-error > svg { width: 12px; height: 12px; }
 </style>

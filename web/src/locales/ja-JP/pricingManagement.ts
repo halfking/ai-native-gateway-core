@@ -59,8 +59,8 @@ export default {
   tokenPlanSuffix: 'token_plan',
   saved: "保存しました",
   noChange: "変更なし",
-  saveFailed: "保存失敗",
+  saveFailed: '価格の保存に失敗しました。再試行してください。',
   copied: "価格をコピーしました",
   pasted: '貼り付けました。保存すると反映されます',
-  failed: "インポートに失敗しました",
+  failed: '価格テンプレートのインポートに失敗しました。再試行してください。',
 }

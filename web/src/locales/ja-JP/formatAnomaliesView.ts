@@ -93,9 +93,9 @@ export default {
   },
 
   error: {
-    loadFailed: '読み込み失敗',
-    summaryLoadFailed: '統計の読み込み失敗',
-    markFailed: 'マーク失敗',
+    loadFailed: 'フォーマット異常の読み込みに失敗しました。再試行してください。',
+    summaryLoadFailed: 'フォーマット異常の統計の読み込みに失敗しました。再試行してください。',
+    markFailed: 'フォーマット異常のマーク付けに失敗しました。再試行してください。',
     needSuperAdmin: 'スーパー管理者権限が必要です',
   },
 

@@ -42,7 +42,7 @@ export default {
     createdAt: "時刻",
   },
   empty: "コンプライアンス記録はまだありません",
-  recordsLoadFailed: 'ヒット記録の読み込みに失敗しました',
+  recordsLoadFailed: 'ヒット記録の読み込みに失敗しました。再試行してください。',
   recordsNotLoaded: 'ヒット記録は未読み込みです。下の表はクエリの結果ではありません',
   pagination: {
     previous: "前へ",

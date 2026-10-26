@@ -66,7 +66,7 @@ export default {
       start: "Lancer le scan",
       running: "Scan en cours…",
       done: "Scan terminé : {n} modèles trouvés, veuillez examiner les résultats",
-      failed: "Échec du scan"
+      failed: 'Le scan n\'a pas pu aboutir. Veuillez réessayer.'
     },
   task: {
       listTitle: "Tâches de découverte ({n})",

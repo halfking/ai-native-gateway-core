@@ -8,7 +8,7 @@ export default {
     refresh: '更新',
     loading: '読み込み中…',
     empty: '利用可能なモデルがありません',
-    loadFailed: '読み込みに失敗しました',
+    loadFailed: 'テナントモデルの読み込みに失敗しました。再試行してください。',
     vendorSectionTitle: 'モデル一覧',
   },
   columns: {

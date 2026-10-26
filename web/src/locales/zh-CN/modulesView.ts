@@ -140,9 +140,9 @@ export default {
   },
 
   error: {
-    loadFailed: '加载模块列表失败',
-    operationFailed: '操作失败',
-    saveFailed: '保存配置失败',
-    testFailed: '测试失败',
+    loadFailed: '模块列表没能加载出来，请重试',
+    operationFailed: '模块操作没能完成，请重试',
+    saveFailed: '模块配置没能保存，请重试',
+    testFailed: '模块测试没能通过，请重试',
   },
 }

@@ -2,7 +2,7 @@
 export default {
     refresh: '重新整理',
     refreshing: '重新整理中…',
-    loadFailed: '載入失敗',
+    loadFailed: '任務畫像沒能載入出來，請重試',
     noData: '暫無檔案資料',
   registry: {
     version: '檔案版本',

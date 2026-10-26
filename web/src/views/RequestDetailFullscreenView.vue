@@ -1,6 +1,7 @@
 <script setup lang="ts">
 // RequestDetailFullscreenView — fullscreen shell for request/session detail.
 import { computed, onUnmounted, ref, watch } from 'vue'
+import { surfaceError } from '../i18n/errorSurface'
 import { useRoute, useRouter } from 'vue-router'
 import {
   useRequestDetailLoader,
@@ -11,6 +12,7 @@ import RequestDetailSectionHost from '../components/detail/RequestDetailSectionH
 import SessionSummaryBar from '../components/SessionSummaryBar.vue'
 import { statusToneClass } from '../components/detail/statusTone'
 import { downloadSessionDetailMarkdown } from '../utils/sessionDetailExport'
+import { ArrowLeft } from '@element-plus/icons-vue'
 import './request-detail-fullscreen.css'
 
 type ViewMode = 'request' | 'session-turns'
@@ -142,7 +144,7 @@ async function exportSessionMd() {
       totalCostUsd: snapCost.value,
     })
   } catch (e: unknown) {
-    exportError.value = e instanceof Error ? e.message : String(e)
+    exportError.value = surfaceError(e)
   } finally {
     exporting.value = false
   }
@@ -182,7 +184,7 @@ const snapDurationMs = computed(() => {
 <template>
   <div class="rdf" data-testid="request-detail-fullscreen">
     <header class="top">
-      <button type="button" class="btn btn-sm" @click="goBack">←</button>
+      <button type="button" class="btn btn-sm" @click="goBack"><ArrowLeft /></button>
       <div class="id-block">
         <code>{{ requestId || '—' }}</code>
         <span class="status-pill" :class="statusToneClass(statusLabel, 'pill')">{{ statusLabel }}</span>

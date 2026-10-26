@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
+import { surfaceError } from '../i18n/errorSurface'
 import { useI18n } from 'vue-i18n'
 import KxDateRangePicker from '../components/ui/KxDateRangePicker.vue'
 import { useSpanDaysRange } from '../composables/useSpanDaysRange'
@@ -78,7 +79,7 @@ async function load() {
       }),
     )
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : String(e)
+    error.value = surfaceError(e)
   } finally {
     loading.value = false
   }

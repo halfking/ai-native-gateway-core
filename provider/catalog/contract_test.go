@@ -15,18 +15,23 @@ import (
 // 以及 ClientProtocol 分支: anthropic-messages, openai-responses
 //	openai-completions / openai-responses / anthropic-messages 都有 executor 分支。
 //
-// R59 审计（S3-F6）口径修正：gemini-generate 在 executor_dispatch.go:842 是
-// 显式 unsupported（KindUnsupportedFeature → 正常 failover，非静默），不是
-// "能路由"；ollama-native 落 default 分支按 openai-completions chat 线格式
-// 降级（静默降级，最弱格）。两者标记为 false 以反映真实路由能力，防契约
-// 测试虚报覆盖。种子目前无此二协议条目，暂无实害。
+// R59 审计（S3-F6）口径修正：gemini-generate 曾是显式 unsupported
+// （KindUnsupportedFeature → 正常 failover，非静默）；ollama-native 落
+// default 分支按 openai-completions chat 线格式降级（静默降级，最弱格）。
+// ollama-native 标记为 false 以反映真实路由能力，防契约测试虚报覆盖。
+//
+// 2026-10-27（Gemini 转换面补全轮）：gemini-generate 的 executor 已落地
+// （domains/streaming/executors/executor_gemini.go），dispatcher 的
+// classifyDispatchRoute 现在把它路由到 routeGeminiNative ⇒ 标记翻为 true。
+// ⇒ 这条契约测试本身就是「provider 配了 Gemini 原生协议却根本用不了」
+// 这类死配置的一道门：flag 与事实不同步时它会红。
 //
 // 如果执行器新增/删除 protocol 支持，同步更新本集合。
 var ExecutorRoutableProtocols = map[string]bool{
 	ProtocolOpenAICompletions: true,
 	ProtocolOpenAIResponses:   true,
 	ProtocolAnthropicMessages: true,
-	ProtocolGeminiGenerate:    false,
+	ProtocolGeminiGenerate:    true,
 	ProtocolOllamaNative:      false,
 }
 

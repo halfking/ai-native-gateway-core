@@ -16,6 +16,7 @@ import {
 } from '../api/usage'
 import type { BoardTimeQuery, BoardTimeRange } from '../utils/boardTimeRange'
 import { formatBoardRangeLabel } from '../utils/boardTimeRange'
+import { Close } from '@element-plus/icons-vue'
 
 // v-loading is not globally registered in this project — bind the directive locally.
 const vLoading = ElLoadingDirective
@@ -254,7 +255,7 @@ watch(() => props.timeQuery, () => {
                 >
                   {{ t('dashboard.providerUsage.exportAll') }}
                 </button>
-                <button type="button" class="pue-close" :aria-label="$t('common.close')" @click="emit('close')">×</button>
+                <button type="button" class="pue-close" :aria-label="$t('common.close')" @click="emit('close')"><Close /></button>
               </div>
               <!-- 19 §3.1 规则 4：导出失败必须如实可见，禁止静默 -->
               <p v-if="exportError" class="pue-export-error" role="alert">{{ exportError }}</p>
@@ -416,7 +417,7 @@ watch(() => props.timeQuery, () => {
   flex-direction: column;
   background: var(--card);
   border-left: 1px solid var(--border);
-  box-shadow: -8px 0 32px var(--overlay-medium);
+  box-shadow: var(--kx-shadow-md-left);
 }
 
 .pue-header {
@@ -737,4 +738,10 @@ watch(() => props.timeQuery, () => {
   color: var(--danger);
   font-size: 12px;
 }
+
+/* ── 2026-10-27 第 17 增量（AI 痕迹门 V3）：图标尺寸 ──
+   element-plus 图标是裸 <svg viewBox="0 0 1024 1024">，**不带 width/height**
+   ⇒ 浏览器按包含块宽度渲染（会撑爆布局）⇒ 必须显式定尺寸。
+   尺寸沿用原字形的 font-size 观感（字形墨迹 ≈ 0.7em）。 */
+.pue-close > svg { width: 13px; height: 13px; }
 </style>

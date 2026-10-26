@@ -183,7 +183,9 @@ func reportSerializeGeminiLosses(req *InternalRequest) {
 			nil,
 		)
 	}
-	if len(req.CacheControl) > 0 {
+	// 2026-10-27 缓存标准对齐轮：块级 marker（system 块/消息块/tool_result）
+	// 同样没有 Gemini 等价物，一并上报，不再静默蒸发。
+	if len(req.CacheControl) > 0 || hasBlockLevelCacheControl(req) {
 		ReportProtocolLoss(
 			"unknown",
 			"cache_control",
@@ -343,7 +345,18 @@ func buildGeminiContents(messages []Message) []map[string]any {
 						parts = append(parts, part)
 					}
 				}
-			case "video":
+			case "video", "video_url":
+				// 2026-10-27（R148 审计轮）："video_url" 是 OpenAI 线格式的视频块
+				// （{"type":"video_url","video_url":{"url":"…"}}）。它此前**没有
+				// 分支** ⇒ 本 switch 没有 default ⇒ **块被静默丢弃**。
+				//
+				// 而 parse_openai.go 此前也没有 "video_url" 的解析分支 ⇒
+				// block.Video 恒为 nil ⇒ 就算这里补了 case 也没有载荷可用。
+				// 两处一起补（R148）⇒ OpenAI 客户端发来的视频块在 Gemini 上游
+				// 不再凭空消失。
+				//
+				// ⚠ "video" 这条分支是 Gemini 原生往返（IR Type="video"），
+				// 行为不变；新增的只是 OpenAI 线格式那一支。
 				if block.Video != nil {
 					if part := irVideoToGeminiPart(block.Video); part != nil {
 						parts = append(parts, part)
@@ -437,6 +450,14 @@ func irAudioToGeminiPart(audio *MediaSource) map[string]any {
 	if mt == "" {
 		mt = "audio/" + audio.Format
 	}
+	// ★★ 2026-10-27（12h 审计轮）：★ **不许发出畸形 MIME**。
+	// ★★ 「audio/」+空 Format ⇒ "audio/" ⇒ 那是**非法 MIME**（没有子类型）⇒
+	// ★★ ⇒ Gemini 侧的 fileData.mimeType 校验会拒（或按错误类型解码）。
+	// ★★ ⇒ 兜底用**诚实的通用类型**（我们确实不知道子类型），
+	// ★★ 而不是拼一个半截的 "audio/"。
+	if !strings.Contains(mt, "/") || strings.HasSuffix(mt, "/") {
+		mt = "application/octet-stream"
+	}
 	if audio.Type == "base64" || audio.Data != "" {
 		return map[string]any{
 			"inlineData": map[string]any{
@@ -482,10 +503,7 @@ func irInputAudioToGeminiPart(ia *InputAudioBlock) map[string]any {
 }
 
 func irVideoToGeminiPart(video *MediaSource) map[string]any {
-	mt := video.MediaType
-	if mt == "" {
-		mt = "video/" + video.Format
-	}
+	mt := videoMIME(video)
 	if video.Type == "base64" || video.Data != "" {
 		return map[string]any{
 			"inlineData": map[string]any{
@@ -590,6 +608,31 @@ func imageMIME(img *ImageSource) string {
 		return img.MediaType
 	}
 	return "image/png"
+}
+
+// videoMIME resolves the MIME type for a Gemini video part.
+//
+// ★ 2026-10-27（R148 审计轮）：此前 irVideoToGeminiPart 内联的是
+//
+//	mt := video.MediaType
+//	if mt == "" { mt = "video/" + video.Format }
+//
+// ⇒ MediaType 与 Format 都空时会拼出 **"video/"** —— 那是**非法 mimeType**
+// （Gemini 侧会 400）。这条路此前走不到（Gemini 原生解析总会填 MediaType），
+// 但 R148 给 OpenAI 的 `video_url` 补上类型化载荷后，**OpenAI 线格式的视频块
+// 没有 mimeType** ⇒ 必须有一个像 imageMIME 那样的兜底。
+//
+// 优先序与 imageMIME 同款：显式 MediaType → "video/<Format>" → 缺省 "video/mp4"
+// （mp4 是最通用的容器；宁可给一个大概率正确的类型，也不要给 "video/" 这种
+// 语法非法的值）。
+func videoMIME(video *MediaSource) string {
+	if video.MediaType != "" {
+		return video.MediaType
+	}
+	if video.Format != "" {
+		return "video/" + video.Format
+	}
+	return "video/mp4"
 }
 
 // extractTextFromContent concatenates text blocks into a single string.

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { surfaceError } from '../i18n/errorSurface'
 import { useI18n } from 'vue-i18n'
 import { getCredentialMonitorSummary, promoteCredential, demoteCredential, type CredentialMonitorSummary, type CredentialMonitorMeta } from '../api'
 // 2026-09-13 P2：统计行收敛到 ui/StatCard+StatsRow（方案 §4.5.3）
@@ -183,7 +184,7 @@ async function submitBatch() {
     selectedIds.value.clear()
     load()
   } catch (e) {
-    alert(t('credentialMonitor.error.batchFailed') + (e instanceof Error ? e.message : String(e)))
+    alert(t('credentialMonitor.error.batchFailed') + (surfaceError(e)))
   }
 }
 

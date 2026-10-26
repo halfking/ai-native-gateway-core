@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, watch } from 'vue'
+import { surfaceError } from '../i18n/errorSurface'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { getProviderDetail, getProviderCredentials, diagnoseProvider, toggleProvider, setProviderManualDisabled, deleteProvider, type ProviderCredential, type DiagnoseProviderResponse, getProviderRecentProbeFailures } from '../api'
@@ -95,7 +96,7 @@ async function load() {
     creds.value = credsData
     probeFailureCount.value = failuresData.models.reduce((sum, m) => sum + m.failed_count, 0)
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : pp('loadFailed')
+    error.value = surfaceError(e, { key: 'providerDetailPage.loadFailed' })
   } finally {
     loading.value = false
   }
@@ -114,7 +115,7 @@ async function refreshCredsSilent() {
     const credsData = await getProviderCredentials(providerId.value)
     creds.value = credsData
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : pp('loadFailed')
+    error.value = surfaceError(e, { key: 'providerDetailPage.loadFailed' })
   }
 }
 
@@ -124,7 +125,7 @@ async function toggle() {
     await toggleProvider(provider.value.id)
     provider.value.enabled = !provider.value.enabled
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : pp('operationFailed')
+    error.value = surfaceError(e, { key: 'providerDetailPage.operationFailed' })
   }
 }
 
@@ -139,7 +140,7 @@ async function toggleProviderManual() {
     await setProviderManualDisabled(provider.value.id, next, reason)
     provider.value.manual_disabled = next
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : pp('operationFailed')
+    error.value = surfaceError(e, { key: 'providerDetailPage.operationFailed' })
   }
 }
 
@@ -153,7 +154,7 @@ async function delProvider() {
     await deleteProvider(provider.value.id)
     router.push('/providers')
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : pp('deleteFailed')
+    error.value = surfaceError(e, { key: 'providerDetailPage.deleteFailed' })
   }
 }
 
@@ -164,7 +165,7 @@ async function runDiagnose() {
   try {
     diagResult.value = await diagnoseProvider(providerId.value, { force: true }) as never
   } catch (e: unknown) {
-    diagError.value = e instanceof Error ? e.message : pp('diagFailed')
+    diagError.value = surfaceError(e, { key: 'providerDetailPage.diagFailed' })
   } finally {
     diagLoading.value = false
   }

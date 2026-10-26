@@ -322,6 +322,33 @@ func containsMarkerWordAnyWidth(text string) bool {
 	return false
 }
 
+// innerBareMarkerCandidates returns the brace-less marker spans hidden **inside**
+// a brace-delimited run that is not itself a marker.
+//
+// 2026-10-27（自审轮）：brace 分支会把一整段 JSON 吞成一个候选；那个候选若不是
+// 标记就会被探针判掉，于是**它内部的裸形标记没人看见**。典型的就是工具调用
+// 参数：`function.arguments` 是一段 JSON 字符串，`{"pwd":"SENSITIVE:phone"}`
+// 整个被吞 ⇒ 裸形标记不可见。
+//
+// 这里**复用重写路径的同一个原语**（looseBareMarkerSpans）⇒ 两边不会漂。
+//
+// 成本：先用 containsMarkerWordAnyWidth（两条 memchr）筛掉绝大多数候选 ⇒
+// 只有**真的含标记词**的候选才付一次正则扫描。
+func innerBareMarkerCandidates(candidate string) []string {
+	if !containsMarkerWordAnyWidth(candidate) {
+		return nil
+	}
+	spans := looseBareMarkerSpans(candidate)
+	if len(spans) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(spans))
+	for _, sp := range spans {
+		out = append(out, candidate[sp[0]:sp[1]])
+	}
+	return out
+}
+
 // foldMarkerWidth returns a copy of text in which every full-width form the
 // marker grammar can match is rewritten to its ASCII spelling, and reports
 // whether anything was rewritten.

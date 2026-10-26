@@ -140,10 +140,10 @@ export default {
 
 
   error: {
-    loadFailed: '載入模組清單失敗',
-    operationFailed: '操作失敗',
-    saveFailed: '儲存設定失敗',
-    testFailed: '測試失敗',
+    loadFailed: '模組列表沒能載入出來，請重試',
+    operationFailed: '模組操作沒能完成，請重試',
+    saveFailed: '模組設定沒能儲存，請重試',
+    testFailed: '模組測試沒能通過，請重試',
   },
 
   // 同步的扁平键

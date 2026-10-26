@@ -57,8 +57,8 @@ export default {
   tokenPlanSuffix: 'token_plan',
   saved: 'Guardado',
   noChange: 'Sin cambios',
-  saveFailed: 'Error al guardar',
+  saveFailed: 'No se pudieron guardar los precios. Vuelva a intentarlo.',
   copied: 'Precio copiado',
   pasted: 'Pegado: selecciona «Guardar» para aplicar',
-  failed: 'Importación fallida',
+  failed: 'No se pudo importar la plantilla de precios. Vuelva a intentarlo.',
 }

@@ -39,5 +39,5 @@ export default {
   openAttachment: 'Télécharger',
   retry: 'Réessayer',
   openingAttachment: 'Ouverture…',
-  openAttachmentFailed: 'Échec de l’ouverture de la pièce jointe',
+  openAttachmentFailed: 'L\'ouverture de la pièce jointe a échoué. Vérifiez le fichier, puis réessayez.',
 }

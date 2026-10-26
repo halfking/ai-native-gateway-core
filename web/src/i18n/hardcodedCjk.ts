@@ -47,7 +47,15 @@ export const SRC_DIR = join(WEB_ROOT, 'src')
 export const BASELINE_FILE = join(WEB_ROOT, 'scripts', 'i18n-cjk-baseline.json')
 
 const CJK_RE = /[一-鿿]+/g
-const EXCLUDED_DIRS = new Set(['node_modules', 'dist', '.git', 'locales', 'i18n'])
+// ★ 排除目录：`locales`（翻译源文件本身）/ `i18n`（i18n 基建与自身测试）/
+//   `design`（2026-10-27 第 17 增量新增）——
+//   ★ 排除 `design` 的理由与 `i18n` 同性质：**判据/基建目录**，里面的中文是
+//     「判据说明」（判据名、理由、自证用例的描述），**永远不会上屏**；
+//     而本门量的是「用户可见文案里的中文」。⇒ 不剥注释/不剥字符串就计进来，
+//     属于**量具量错了对象**（不是「新增了未翻译内容」）。
+//   ⚠️ 口径变更必须写进审计档并核对影响面：本轮影响 1 个文件 / 133 段中文，
+//     读数 4617 → 4484（= 原基线，棘轮不升）。
+const EXCLUDED_DIRS = new Set(['node_modules', 'dist', '.git', 'locales', 'i18n', 'design'])
 
 export interface CjkFileCount {
   file: string

@@ -5,6 +5,7 @@
 // 聚合器刚部署/窗口太新时后端自动回退 supplier_errors_unified 实时聚合。
 // 时间分布用纯 CSS 柱状条渲染，不引入图表库依赖。
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { surfaceError } from '../../i18n/errorSurface'
 import { useI18n } from 'vue-i18n'
 import {
   getErrorsTrend,
@@ -52,7 +53,7 @@ async function loadData() {
   } catch (err: unknown) {
     if (sequence !== requestSequence || controller.signal.aborted) return
     data.value = null
-    error.value = err instanceof Error ? err.message : et('loadFailed')
+    error.value = surfaceError(err)
   } finally {
     if (sequence === requestSequence) {
       loading.value = false

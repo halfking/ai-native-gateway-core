@@ -10,6 +10,7 @@
 // 扫描失败时后端仍返回 200 + status=failed 任务体, UI 需展示 error_message。
 
 import { useI18n } from 'vue-i18n'
+import { surfaceError } from '../i18n/errorSurface'
 import { formatDateTime } from '../utils/datetime'
 import { ref, computed, onMounted } from 'vue'
 import { useWindowClass } from '../composables/useWindowClass'
@@ -51,9 +52,9 @@ function flash(msg: string): void {
   }, 6000)
 }
 function fail(err: unknown): void {
-  error.value = err instanceof Error ? err.message : String(err)
+  error.value = surfaceError(err)
   setTimeout(() => {
-    if (error.value && error.value === (err instanceof Error ? err.message : String(err))) error.value = ''
+    if (error.value && error.value === (surfaceError(err))) error.value = ''
   }, 8000)
 }
 

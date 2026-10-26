@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { useI18n } from 'vue-i18n'
+import { surfaceError } from '../i18n/errorSurface'
 import { formatDateTime, formatTimeOnly } from '../utils/datetime'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { deleteGatewaySession, getAvailableModels, type PopularModel } from '../api'
@@ -34,6 +35,7 @@ import ChatMessageList from '../components/chat/ChatMessageList.vue'
 import ChatParamsDrawer from '../components/chat/ChatParamsDrawer.vue'
 import GatewayApiKeyPicker from '../components/GatewayApiKeyPicker.vue'
 import { confirmDialog } from '../composables/useConfirmDialog'
+import { Close } from '@element-plus/icons-vue'
 
 const { t } = useI18n()
 
@@ -346,7 +348,7 @@ async function send(opts?: SendOptions) {
       openKeyModal('session-forbidden')
       return
     }
-    const msg = e instanceof Error ? e.message : t('chat.sendFailed')
+    const msg = surfaceError(e, { key: 'chat.sendFailed' })
     const lower = msg.toLowerCase()
     sendError.value =
       !stream && (lower.includes('timeout') || lower.includes('timed out') || lower.includes('abort'))
@@ -443,7 +445,7 @@ async function runSummarize() {
       result.usage,
     )
   } catch (e: unknown) {
-    sendError.value = e instanceof Error ? e.message : t('chat.summarizeFailed')
+    sendError.value = surfaceError(e, { key: 'chat.summarizeFailed' })
   } finally {
     summarizing.value = false
   }
@@ -550,7 +552,7 @@ async function runSummarize() {
                   :disabled="sending || summarizing"
                   @click="removeSession(s.id, $event)"
                 >
-                  ×
+                  <Close />
                 </button>
               </span>
               <span class="session-item__meta">
@@ -675,4 +677,10 @@ async function runSummarize() {
   </div>
 </template>
 
-<style scoped src="./chat-view.css"></style>
+<style scoped src="./chat-view.css">
+/* ── 2026-10-27 第 17 增量（AI 痕迹门 V3）：图标尺寸 ──
+   element-plus 图标是裸 <svg viewBox="0 0 1024 1024">，**不带 width/height**
+   ⇒ 浏览器按包含块宽度渲染（会撑爆布局）⇒ 必须显式定尺寸。
+   尺寸沿用原字形的 font-size 观感（字形墨迹 ≈ 0.7em）。 */
+.session-item__del > svg { width: 10px; height: 10px; }
+</style>

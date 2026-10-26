@@ -2,9 +2,11 @@ package session
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 
 	"github.com/kaixuan/llm-gateway-go/provider"
+	providercatalog "github.com/kaixuan/llm-gateway-go/provider/catalog"
 )
 
 func TestNewCacheInjector(t *testing.T) {
@@ -147,5 +149,68 @@ func TestCacheInjector_InjectCacheParams_HeaderMode(t *testing.T) {
 	// header mode is a no-op
 	if string(got) != string(body) {
 		t.Fatal("body should be unchanged for header mode")
+	}
+}
+
+// 2026-10-27 缓存标准对齐轮：anthropic-messages 候选的 "tokens" 模式改写
+// 厂商真实形态——请求体顶层 cache_control（自动缓存）；此前写 metadata
+// 的形态不是厂方字段（Anthropic metadata 只认 user_id ⇒ 真上游会 400）。
+func TestCacheInjector_InjectCacheParams_TokensModeAnthropicUsesVendorForm(t *testing.T) {
+	mgr, _ := newTestManager(t)
+	ci := NewCacheInjector(mgr)
+	ctx := context.Background()
+	sess, _ := mgr.Create(ctx, 1, "t", "d")
+	body := []byte(`{"model":"claude-sonnet-5","messages":[]}`)
+	cand := &provider.Candidate{
+		SupportsPromptCache: true,
+		CacheMode:           "tokens",
+		Protocol:            providercatalog.ProtocolAnthropicMessages,
+	}
+	got, err := ci.InjectCacheParams(ctx, sess.SessionID, body, cand)
+	if err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	var obj map[string]any
+	if err := json.Unmarshal(got, &obj); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	cc, ok := obj["cache_control"].(map[string]any)
+	if !ok || cc["type"] != "ephemeral" {
+		t.Fatalf("top-level cache_control = %v, want {type:ephemeral}", obj["cache_control"])
+	}
+	if _, exists := obj["metadata"]; exists {
+		t.Fatalf("metadata must not be created for anthropic candidates, got %v", obj["metadata"])
+	}
+}
+
+// 非 Anthropic 候选维持历史约定（metadata.cache_control），行为不变。
+func TestCacheInjector_InjectCacheParams_TokensModeNonAnthropicKeepsLegacyMeta(t *testing.T) {
+	mgr, _ := newTestManager(t)
+	ci := NewCacheInjector(mgr)
+	ctx := context.Background()
+	sess, _ := mgr.Create(ctx, 1, "t", "d")
+	body := []byte(`{"model":"gpt-5","messages":[]}`)
+	cand := &provider.Candidate{
+		SupportsPromptCache: true,
+		CacheMode:           "tokens",
+		Protocol:            providercatalog.ProtocolOpenAICompletions,
+	}
+	got, err := ci.InjectCacheParams(ctx, sess.SessionID, body, cand)
+	if err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	var obj map[string]any
+	if err := json.Unmarshal(got, &obj); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	meta, ok := obj["metadata"].(map[string]any)
+	if !ok {
+		t.Fatalf("legacy metadata path must be kept, got %v", obj["metadata"])
+	}
+	if cc, ok := meta["cache_control"].(map[string]any); !ok || cc["type"] != "ephemeral" {
+		t.Fatalf("metadata.cache_control = %v", meta["cache_control"])
+	}
+	if _, exists := obj["cache_control"]; exists {
+		t.Fatalf("top-level cache_control must not be written for non-anthropic candidates")
 	}
 }

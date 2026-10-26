@@ -136,11 +136,11 @@ export default {
     submitting: 'Saving…',
     errors: {
       baseUrlRequired: 'Please fill in Base URL first',
-      probeFailed: 'Probe failed',
+      probeFailed: 'The probe for the new provider could not be completed. Please retry.',
       customCodeRequired: 'Please enter custom provider code',
       customNameRequired: 'Please enter custom provider name',
       customBaseUrlRequired: 'Please enter Base URL',
-      createFailed: 'Create failed',
+      createFailed: 'The provider could not be created. Please retry.',
       catalogRequired: 'Please select a catalog',
     },
   },
@@ -172,8 +172,8 @@ export default {
     remarkPlaceholder: 'Internal note',
     errors: {
       baseUrlRequired: 'Please fill in Base URL first',
-      probeFailed: 'Probe failed',
-      saveFailed: 'Save failed',
+      probeFailed: 'The provider probe could not be completed. Please retry.',
+      saveFailed: 'The provider configuration could not be saved. Please retry.',
     },
   },
   credential: {
@@ -218,7 +218,7 @@ export default {
       balanceSourceApi: 'API probe',
       balanceSourceManual: 'Manual entry: auto probes skipped for 24h',
       balanceRefreshTooltip: 'Query the vendor balance API now (GET, zero tokens)',
-      balanceRefreshFailed: 'Balance probe failed',
+      balanceRefreshFailed: 'The balance probe could not be completed. Please retry.',
       balanceUnsupported: 'Vendor exposes no balance API (plan vendors report via plan quota fields)',
       quotaExhausted: 'Quota exhausted',
       tagsPlaceholder: 'tag1, tag2',
@@ -246,15 +246,15 @@ export default {
     },
     errors: {
       apiKeyRequired: 'Please enter API Key',
-      addFailed: 'Add failed',
+      addFailed: 'The credential could not be added. Please retry.',
       // 2026-08-31: credential delete is terminal (status='deleted'),
       // not a soft disable. The credential and every binding to it
       // disappear from all lists and cannot be restored via UI.
       deleteConfirm: 'Delete this credential? It will be removed from all lists and routing. This cannot be undone.',
-      deleteFailed: 'Delete failed',
-      loadFailed: 'Credential load failed',
-      saveFailed: 'Save credential failed',
-      toggleFailed: 'Operation failed',
+      deleteFailed: 'The credential record could not be deleted. Please retry.',
+      loadFailed: 'The credential list could not be loaded. Please retry.',
+      saveFailed: 'The credential configuration could not be saved. Please retry.',
+      toggleFailed: 'The credential could not be enabled or disabled. Please retry.',
     },
     empty: 'No credentials yet: click "+ Credential" to add',
   },
@@ -263,7 +263,7 @@ export default {
   // provider disappears from every list and the route table.
   providerDelete: {
     confirm: 'Delete this provider? All of its credentials will also be marked deleted and all related model routes will stop immediately. This cannot be undone.',
-    failed: 'Provider delete failed',
+    failed: 'The provider could not be deleted. Please retry.',
     success: 'Provider deleted',
   },
   // 2026-08-31: provider-deleted toast.
@@ -273,12 +273,12 @@ export default {
   check: {
     providerStarted: 'Check started',
     providerRunning: 'Already running',
-    providerFailed: 'Check failed',
+    providerFailed: 'The provider check could not be completed. Please retry.',
     credentialStatusPrefix: 'Status: {status}: ',
     credentialModels: 'Models interface OK',
     credentialProbeOk: 'Probe passed',
     credentialUnreachable: 'Unreachable',
-    credentialFailed: 'Check failed',
+    credentialFailed: 'The provider credential check could not be completed. Please retry.',
     diagnoseFailed: 'The diagnosis could not be completed. Please retry.',
   },
   diagnose: {
@@ -360,7 +360,7 @@ export default {
   },
   emergencyConfirmAction: 'Run "{action}"?\nIt will apply to {credential} / {model}.',
   emergencyTitle: 'Emergency maintenance',
-  emergencyUnavailable: 'Candidate not loaded; emergency maintenance unavailable.',
+  emergencyUnavailable: 'The candidate has not been loaded yet, so emergency maintenance cannot be used for now. Please refresh and retry.',
   emergencyIntro: 'These actions rewrite runtime state immediately; confirm the blast radius before running.',
   forceDisable: 'Force disable',
   forceDisableDesc: 'Sets manual_disabled=true; routing stops immediately.',
@@ -377,7 +377,7 @@ export default {
   warningUrsmNotCleared: 'URSM state was not cleared; runtime may still need a retry',
   actionDoneWithWarnings: '"{action}" executed; {warnings}',
   actionDone: '"{action}" completed successfully',
-  emergencyFailed: 'Emergency maintenance failed',
+  emergencyFailed: 'The emergency maintenance could not be completed. Please retry.',
   // ── 2026-09-05: settings tab · lifecycle state chips + manual-disable state ──
   lifecycleTitle: 'Lifecycle',
   lifecycleHint: 'Choose a state to save immediately; leaving Active asks for confirmation',
@@ -392,7 +392,7 @@ export default {
   lifecycleCurrent: 'Current',
   lifecycleChangeConfirm: 'Switch lifecycle from Active to "{label}" ({value})?\nThe credential will stop receiving traffic; you can switch back to Active at any time.',
   lifecycleChangeDone: 'Lifecycle switched to "{label}".',
-  lifecycleChangeFailed: 'Failed to switch lifecycle',
+  lifecycleChangeFailed: 'The lifecycle could not be switched. Please retry.',
   settingsNoChange: 'No settings changed.',
   manualDisableTitle: 'Manual disable state',
   manualDisabledBadge: 'Manually disabled',

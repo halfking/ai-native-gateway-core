@@ -60,11 +60,11 @@ export default {
   },
 
   error: {
-    loadFailed: 'Échec du chargement',
-    checkFailed: 'Échec de la validation',
+    loadFailed: 'Le chargement de la stratégie de modèles du locataire a échoué. Veuillez réessayer.',
+    checkFailed: 'Le contrôle d\'accès aux modèles n\'a pas pu aboutir. Veuillez réessayer.',
     canonicalNameRequired: 'canonical_name est requis',
-    createFailed: 'Échec de la création',
-    deleteFailed: 'Échec de la suppression',
-    restoreFailed: 'Échec de la restauration',
+    createFailed: 'La création de la stratégie de modèles du locataire a échoué. Veuillez réessayer.',
+    deleteFailed: 'La suppression de la stratégie de modèles du locataire a échoué. Veuillez réessayer.',
+    restoreFailed: 'La restauration de la stratégie de modèles du locataire n\'a pas pu aboutir. Veuillez réessayer.',
   },
 }

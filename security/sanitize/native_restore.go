@@ -22,6 +22,19 @@ const maxNativeToolInputDepth = 256
 // carry the marker word at all, walk the decoded string leaves instead; the
 // fold-case prefilter keeps ordinary responses (and prose containing the word
 // "sensitive") on the cheap path.
+//
+// ⚠ 2026-10-27（自审轮）的一处**撤回**：这个预筛一度被改成宽度感知
+// （containsMarkerWordAnyWidthBytes），理由是「它只认 ASCII ⇒ 混拼形态不被
+// 识别」。但**同轮的内层重扫**（markerSpans 内部）已经把这件事**完全覆盖**了：
+// 混拼形态现在**在第一道检查**（containsNonForeignMarker）就被看见 ⇒
+// 预筛根本轮不到 ⇒ 那次放宽是**冗余修复**。
+// ⇒ 撤回它（变更面最小化 + 不给热路径多加一条 memchr）。
+// ⇒ 教训见 LESSONS.md：「变异臂仍绿」有时不是「判据没牙」，而是
+// 「**这个修复已被更强的修复覆盖**」⇒ 该做的是**撤回**，不是把判据改松。
+//
+// ⇒ 预筛保持 ASCII-only 是**安全的**：containsNonForeignMarker 与
+// looksLikeUnparsedMarker 走的都是宽度感知的 markerSpans ⇒
+// 「混拼形态不被预筛认出」的那一刻，**它已经被前面那道门认出来了**。
 func hasReservedPlaceholder(ctx context.Context, body []byte) bool {
 	if containsNonForeignMarker(ctx, body) {
 		return true

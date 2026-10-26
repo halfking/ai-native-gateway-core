@@ -2,7 +2,7 @@
 export default {
     refresh: 'تحديث',
     refreshing: 'جارٍ التحديث…',
-    loadFailed: 'فشل التحميل',
+    loadFailed: 'تعذّر تحميل ملف المهمة. أعد المحاولة.',
     noData: 'لا توجد بيانات ملفات',
   registry: {
     version: 'إصدار السجل',

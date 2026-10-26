@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -243,6 +244,109 @@ func (h *ModelsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h.serveFromDB(w, r)
 }
 
+// geminiModelEntry is one entry of the Gemini native model list
+// (docs/vendor-formats/gemini.md §模型列表; the same shape the repo's
+// own Google scanner reads: domains/freediscovery/google_scanner.go
+// googleModelEntry).
+type geminiModelEntry struct {
+	// Name carries the "models/" prefix (e.g. "models/gemini-2.5-flash").
+	Name string `json:"name"`
+	// DisplayName is the human-facing name.
+	DisplayName string `json:"displayName"`
+	// SupportedGenerationMethods lists the actions this gateway can
+	// actually serve for the model.
+	SupportedGenerationMethods []string `json:"supportedGenerationMethods"`
+	// InputTokenLimit is the model's context window, when known.
+	InputTokenLimit *int `json:"inputTokenLimit,omitempty"`
+}
+
+// ServeGeminiModels serves the model list in Google's NATIVE Gemini
+// shape, for native Gemini clients.
+//
+// ★ Why a second shape rather than "the OpenAI one": a native Gemini
+// client (google-genai SDK) parses `{"models":[{"name":"models/…"}]}`
+// (docs/vendor-formats/gemini.md §模型列表). Handing it the OpenAI
+// `{"object":"list","data":[…]}` shape would fail at the client's
+// unmarshal step, far away from the cause.
+//
+// ★ Same DATA SOURCE as the OpenAI list (the routable-model query) —
+// the gateway advertises exactly the models it can route; only the wire
+// shape differs. Two data sources would be two truths about "what can
+// this gateway serve".
+//
+// ★ The supported generation methods are the ones this gateway ACTUALLY
+// serves for a Gemini upstream: generateContent and streamGenerateContent.
+// "countTokens" is deliberately NOT listed — the gateway does not
+// implement it (see the audit doc), and listing a method the gateway
+// cannot serve would be a promise it does not keep.
+func (h *ModelsHandler) ServeGeminiModels(w http.ResponseWriter, r *http.Request) {
+	if !h.authenticate(w, r) {
+		return
+	}
+	if h.db == nil {
+		if entries, ok := h.lastGoodEntries(); ok {
+			slog.Warn("models: no database connection, serving last-good list (gemini shape)")
+			h.writeGeminiEntries(w, entries)
+			return
+		}
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{
+			"error": map[string]string{
+				"message": "Models service unavailable: no database connection",
+				"type":    "server_error",
+				"code":    "database_unavailable",
+			},
+		})
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+
+	entries, err := h.loadEntries(ctx)
+	if err != nil {
+		slog.Error("models: db query failed (gemini shape)", "error", err)
+		if lastGood, ok := h.lastGoodEntries(); ok {
+			slog.Warn("models: serving last-good list during db outage (gemini shape)",
+				"models", len(lastGood), "stale_for", time.Since(h.staleSnapshotAt()).Round(time.Second).String())
+			h.writeGeminiEntries(w, lastGood)
+			return
+		}
+		writeJSON(w, http.StatusInternalServerError, map[string]any{
+			"error": map[string]string{
+				"message": "Failed to query models from database",
+				"type":    "server_error",
+				"code":    "database_query_error",
+			},
+		})
+		return
+	}
+	h.rememberGoodEntries(entries)
+	h.writeGeminiEntries(w, entries)
+}
+
+// writeGeminiEntries renders the model list in the Gemini native shape.
+func (h *ModelsHandler) writeGeminiEntries(w http.ResponseWriter, entries []modelEntry) {
+	// Serve a defensive copy so a concurrent refresh cannot race the
+	// serializer.
+	out := make([]geminiModelEntry, 0, len(entries))
+	for _, e := range entries {
+		name := e.ID
+		if name == "" {
+			continue
+		}
+		// The native shape carries a "models/" prefixed resource name.
+		if !strings.HasPrefix(name, "models/") {
+			name = "models/" + name
+		}
+		out = append(out, geminiModelEntry{
+			Name:                       name,
+			DisplayName:                e.ID,
+			SupportedGenerationMethods: []string{"generateContent", "streamGenerateContent"},
+			InputTokenLimit:            e.ContextWindow,
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"models": out})
+}
+
 // lastGoodEntries returns the cached successful result while it is inside
 // the stale grace window.
 func (h *ModelsHandler) lastGoodEntries() ([]modelEntry, bool) {
@@ -279,10 +383,7 @@ func (h *ModelsHandler) serveFromDB(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
-	// r1027: liveness source follows the router (bindings + probe state),
-	// not model_offers. models.list_only_routable=false restores the legacy
-	// query without a deploy.
-	rows, err := h.db.Query(ctx, modelsQueryFor(settings.GetPlatformBool(modelsListOnlyRoutableKey, true)))
+	models, err := h.loadEntries(ctx)
 	if err != nil {
 		slog.Error("models: db query failed", "error", err)
 		if entries, ok := h.lastGoodEntries(); ok {
@@ -300,6 +401,23 @@ func (h *ModelsHandler) serveFromDB(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
+	h.rememberGoodEntries(models)
+	h.writeEntries(w, models)
+}
+
+// loadEntries runs the routable-model query and materializes the rows.
+//
+// ★ Extracted so the OpenAI-shaped list and the Gemini-native list share
+// ONE data source: "which models can this gateway serve" must have a
+// single answer, and only the wire shape may differ.
+func (h *ModelsHandler) loadEntries(ctx context.Context) ([]modelEntry, error) {
+	// r1027: liveness source follows the router (bindings + probe state),
+	// not model_offers. models.list_only_routable=false restores the legacy
+	// query without a deploy.
+	rows, err := h.db.Query(ctx, modelsQueryFor(settings.GetPlatformBool(modelsListOnlyRoutableKey, true)))
+	if err != nil {
+		return nil, err
+	}
 	defer rows.Close()
 
 	models := make([]modelEntry, 0)
@@ -307,8 +425,7 @@ func (h *ModelsHandler) serveFromDB(w http.ResponseWriter, r *http.Request) {
 		var name, family, modality string
 		var contextWindow *int
 		if err := rows.Scan(&name, &family, &modality, &contextWindow); err != nil {
-			h.writeDBFailure(w, fmt.Errorf("scan models: %w", err))
-			return
+			return nil, fmt.Errorf("scan models: %w", err)
 		}
 		models = append(models, modelEntry{
 			ID:            name,
@@ -319,11 +436,9 @@ func (h *ModelsHandler) serveFromDB(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 	if err := rows.Err(); err != nil {
-		h.writeDBFailure(w, fmt.Errorf("iterate models: %w", err))
-		return
+		return nil, fmt.Errorf("iterate models: %w", err)
 	}
-	h.rememberGoodEntries(models)
-	h.writeEntries(w, models)
+	return models, nil
 }
 
 func (h *ModelsHandler) writeDBFailure(w http.ResponseWriter, err error) {

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 // CompressionRedactionPanel — original / compressed / secured + placeholder matches.
 import { computed, onUnmounted, ref, watch } from 'vue'
+import { surfaceError } from '../../i18n/errorSurface'
 import { useI18n } from 'vue-i18n'
 import { getSessionCompare, type TurnView } from '../../api/session'
 import {
@@ -63,7 +64,7 @@ watch(
         })
         .catch((e: unknown) => {
           if (seq !== loadSeq) return
-          error.value = e instanceof Error ? e.message : String(e)
+          error.value = surfaceError(e)
         })
         .finally(() => {
           if (seq === loadSeq) loading.value = false
@@ -78,7 +79,7 @@ watch(
         .catch((e: unknown) => {
           if (seq !== loadSeq) return
           if (e instanceof DOMException && e.name === 'AbortError') return
-          matchError.value = e instanceof Error ? e.message : String(e)
+          matchError.value = surfaceError(e)
         })
         .finally(() => {
           if (seq === loadSeq) matchLoading.value = false

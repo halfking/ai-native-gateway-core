@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, onMounted } from 'vue'
+import { surfaceError } from '../i18n/errorSurface'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { getUserProfileList, type UserProfileSummary } from '../api/admin'
@@ -68,7 +69,7 @@ async function load() {
     console.error('user profile list load failed:', e)
     users.value = []
     total.value = 0
-    loadError.value = e instanceof Error ? e.message : String(e)
+    loadError.value = surfaceError(e)
   } finally {
     loading.value = false
   }

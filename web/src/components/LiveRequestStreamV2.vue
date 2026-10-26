@@ -29,7 +29,7 @@ import RequestJourneyQueues from './RequestJourneyQueues.vue'
 import NodeStatusMatrix from './NodeStatusMatrix.vue'
 import type { GroupByDimension } from '../types/swimlane'
 import type { RouteIncident } from '../types/routeIncident'
-import { Close } from '@element-plus/icons-vue'
+import { Clock, Close, Warning } from '@element-plus/icons-vue'
 
 const { t } = useI18n()
 
@@ -533,7 +533,7 @@ function vendorOptionLabel(v: string) {
 
     <!-- Redis 健康警告 -->
     <div v-if="!redisHealthyRef" class="redis-health-warning">
-      <span class="redis-warning-icon">⚠</span>
+      <span class="redis-warning-icon"><Warning /></span>
       <span>{{ t('dashboard.liveStream.redisWarning', { error: redisErrorRef || t('dashboard.liveStream.redisFallbackError') }) }}</span>
     </div>
 
@@ -580,7 +580,7 @@ function vendorOptionLabel(v: string) {
       <!-- 2026-07-13: 冷启动提示，仅整局无任何泳道数据时显示
            "仅探测"过滤为空时不显示（已有泳道只是被过滤，按钮文字已说明） -->
       <div v-if="isColdStart" class="swim-lanes__empty">
-        <span class="swim-lanes__empty-icon">⏳</span>
+        <span class="swim-lanes__empty-icon"><Clock /></span>
         <span class="swim-lanes__empty-text">{{ coldStartText }}</span>
       </div>
     </div>
@@ -838,7 +838,6 @@ function vendorOptionLabel(v: string) {
   max-height: 300px;
   overflow-y: auto;
   background: var(--card);
-  border: 1px solid var(--border);
   border-radius: 6px;
   box-shadow: var(--kx-shadow-sm);
   z-index: 100;
@@ -953,7 +952,6 @@ function vendorOptionLabel(v: string) {
   left: 0;
   min-width: 400px;
   background: var(--bg);
-  border: 1px solid var(--border);
   border-radius: 8px;
   box-shadow: var(--kx-shadow-md);
   z-index: 1000;
@@ -1337,4 +1335,11 @@ function vendorOptionLabel(v: string) {
     flex: 0 0 auto;
   }
 }
+
+/* ── 2026-10-27 第 17 增量（AI 痕迹门 V3）：图标尺寸 ──
+   element-plus 图标是裸 <svg viewBox="0 0 1024 1024">，**不带 width/height**
+   ⇒ 浏览器按包含块宽度渲染（会撑爆布局）⇒ 必须显式定尺寸。
+   尺寸沿用原字形的 font-size 观感（字形墨迹 ≈ 0.7em）。 */
+.redis-warning-icon > svg { width: 14px; height: 14px; }
+.swim-lanes__empty-icon > svg { width: 18px; height: 18px; }
 </style>

@@ -6,6 +6,7 @@
 //   - 模型用量 Top-N + 趋势图表，沿用 TenantDashboardView v2 的可视化
 //   - 所有文案走 i18n
 import { ref, computed, onMounted, onUnmounted, inject, type Ref } from 'vue'
+import { surfaceError } from '../i18n/errorSurface'
 import { sortByName } from '../utils/sortByName'
 import { formatDateTime } from '../utils/datetime'
 import { useI18n } from 'vue-i18n'
@@ -37,7 +38,7 @@ import { createHyperPages } from '../lib/shell/hyper/hyperPages'
 import ResponsiveDataView from '../components/ui/ResponsiveDataView.vue'
 import HyperLoadMore from '../components/ui/HyperLoadMore.vue'
 import type { CardField } from '../components/ui/CardList.vue'
-import { Refresh, Loading, Warning } from '@element-plus/icons-vue'
+import { InfoFilled, Loading, Refresh, Warning } from '@element-plus/icons-vue'
 
 const { t } = useI18n()
 const router = useRouter()
@@ -175,7 +176,7 @@ async function load() {
     summary.value = s
     wallet.value = w
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : t('tenants.dashboard.loadFailed')
+    error.value = surfaceError(e, { key: 'tenants.dashboard.loadFailed' })
   } finally {
     loading.value = false
   }
@@ -232,7 +233,7 @@ async function loadDetail() {
     detailRows.value = res.items ?? []
   } catch (e: unknown) {
     detailRows.value = []
-    error.value = e instanceof Error ? e.message : t('tenants.dashboard.detailLoadFailed')
+    error.value = surfaceError(e, { key: 'tenants.dashboard.detailLoadFailed' })
   } finally {
     detailLoading.value = false
   }
@@ -480,7 +481,7 @@ onUnmounted(() => {
       role="status"
       data-testid="tenant-dashboard-degraded-hint"
     >
-      <span class="alert-icon" aria-hidden="true">ℹ️</span>
+      <span class="alert-icon" aria-hidden="true"><InfoFilled /></span>
       <span class="alert-text">{{ degradedHint }}</span>
       <span v-if="degradedView" class="alert-meta">{{ t('tenants.dashboard.degradedViewLabel', { view: degradedView }) }}</span>
     </div>
@@ -841,7 +842,7 @@ onUnmounted(() => {
 .tab-btn--active {
   background: var(--accent);
   color: white;
-  box-shadow: 0 1px 2px var(--overlay-light);
+  box-shadow: var(--kx-shadow-xs);
 }
 .page-header-right {
   display: flex;
@@ -977,7 +978,7 @@ onUnmounted(() => {
 }
 .stat-mini:hover {
   border-color: var(--accent);
-  box-shadow: 0 2px 8px var(--overlay-light);
+  box-shadow: var(--kx-shadow-sm);
 }
 .stat-mini--highlight {
   border-color: color-mix(in srgb, var(--accent) 40%, transparent);
@@ -1232,4 +1233,10 @@ onUnmounted(() => {
     min-width: 0;
   }
 }
+
+/* ── 2026-10-27 第 17 增量（AI 痕迹门 V3）：图标尺寸 ──
+   element-plus 图标是裸 <svg viewBox="0 0 1024 1024">，**不带 width/height**
+   ⇒ 浏览器按包含块宽度渲染（会撑爆布局）⇒ 必须显式定尺寸。
+   尺寸沿用原字形的 font-size 观感（字形墨迹 ≈ 0.7em）。 */
+.alert-icon > svg { width: 15px; height: 15px; }
 </style>

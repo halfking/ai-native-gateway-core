@@ -385,12 +385,83 @@ func parseOpenAIContentBlocks(blocks []any) ([]ContentBlock, error) {
 			// {type:"input_audio", input_audio:{data, format}}
 			ia := parseOpenAIInputAudioBlock(blockMap)
 			irBlock.InputAudio = ia
+			// 2026-10-26（Gemini fileData 转发修复轮）：URI 引用形态
+			// （input_audio.url，由 serializeOpenAIAudioBlock 的 file_uri
+			// 分支产出）没有 data/format ⇒ parseOpenAIInputAudioBlock 返回
+			// nil ⇒ 本分支此前什么都不留 ⇒ 执行器强制的 Parse→Validate→
+			// Serialize 往返（finalizeOpenAIUpstreamBody）把 URI 整个丢掉，
+			// 上游收到的是没有音频的请求。
+			//
+			// ★★ 2026-10-27（12h 审计轮）**实测复现并修掉**：★ 原处置是
+			// ★★ 「按『形状已知但无载荷』块的既有惯例原样保留」⇒ 落进
+			// ★★ `Type="raw"` + `RawContent=原文` ⇒ ★★ **但只有 Anthropic
+			// ★★ 序列化器有 default 分支会把它重新吐出去**
+			// ★★（serialize_anthropic.go 的 default ⇒ 还原 RawContent）；
+			// ★★ ★★ **serialize_openai / serialize_gemini / serialize_responses /
+			// ★★ serialize_ollama 四家都没有 default** ⇒ ★★ ⇒ **块被静默丢弃**。
+			// ★★ 实测链（Gemini 客户端 → Gemini 上游）：
+			// ★★   IR{type:"audio", FileURI:"gs://bucket/a.mp3"}
+			// ★★   → OpenAI 线 {"type":"input_audio","input_audio":{"url":"gs://…"}}
+			// ★★   → 往返再解析 ⇒ **type="raw"** ⇒
+			// ★★   → Gemini 线 ⇒ **parts 里只剩文本，音频整个消失**
+			// ★★ ⇒ 上游拿到的请求**没有音频**，而客户端**收不到任何报错**。
+			//
+			// ★★ 本轮处置：★ **不再靠 raw 兜底** ⇒ ★ 识别 URI 引用形态，
+			// ★★ 用**已有的 MediaSource 载体**（Type="audio"）承载 ⇒ ⇒
+			// ★★ 各线格式都能**按各自正确的形状**还原：
+			// ★★   · OpenAI 线 ⇒ `input_audio{url}`（往返稳定）
+			// ★★   · Gemini 线 ⇒ `fileData{fileUri}`（★ 厂商原生形状，不是 OpenAI 形状）
+			// ★★ ★★ **不能**用「raw 原样回吐」来兜 Gemini：★ 那样会把
+			// ★★ **OpenAI 形状**的块塞进 Gemini 线上 ⇒ 形状非法 ⇒ 反而更糟。
+			//
+			// ★★★ 判据是「**有没有载荷**」而不是「parse 返回 nil 与否」：
+			// ★★★ `parseOpenAIInputAudioBlock` 只在 data 与 format **都**空时
+			// ★★★ 返回 nil；★ **只带 format 不带 data** 时它返回**非 nil**
+			// ★★★ （Data=""、Format="mp3"）⇒ ★★★ 若拿「nil 与否」当判据，
+			// ★★★ **带 format 的 URI 形态会走错分支** ⇒ ★★★ 音频又丢
+			// ★★★ ⇒ ★★★ ⇒ 判据必须是「**Data 为空**」（= 没有 base64 载荷）
+			// ★★★ ⇒ 此时载荷在 URI 上 ⇒ 走 MediaSource 承载。
+			if ia == nil || ia.Data == "" {
+				if src := parseOpenAIAudioURISource(blockMap); src != nil {
+					irBlock.Type = "audio"
+					irBlock.Audio = src
+					irBlock.InputAudio = nil
+				} else {
+					irBlock.Type = "raw"
+					irBlock.RawContent = mustMarshalString(blockMap)
+				}
+			}
 		case "image":
 			if img := parseOpenAIImageBlock(blockMap); img != nil && imageSourceHasPayload(img) {
 				irBlock.Image = img
 			} else {
 				irBlock.Type = "raw"
 				irBlock.RawContent = mustMarshalString(blockMap)
+			}
+		case "video_url":
+			// 2026-10-27（R148 审计轮）：OpenAI 的 video_url 此前**没有任何
+			// 分支** ⇒ 落进 default（Type 保持 "video_url"，RawContent 原样
+			// 保留）。后果是「看起来对、其实是空的」：
+			//
+			//	OpenAI / Anthropic / Responses 三个序列化器各自的 default 分支
+			//	都按 RawContent 兜底 ⇒ 块被原样发出去，形状正确；
+			//	但 **block.Video 始终为 nil** ⇒ 走类型化分支的 Gemini
+			//	序列化器（case "video" → irVideoToGeminiPart）拿不到任何载荷
+			//	⇒ **视频块被静默丢弃**（用户看到的是「模型答了，但没看视频」）。
+			//
+			// ★ 这条路径是 2026-10-26 那轮**打开**的：那一轮把 video 补进
+			// 分级模态门的接受臂（provider/client.go 的 candidateQuerySQLBase）
+			// ⇒「OpenAI 客户端发 video_url → 路由到 Gemini 模型」从
+			// 「503 无候选」变成「有候选、但视频消失」⇒ 那一轮是半修。
+			//
+			// 修法（**只往保守方向**）：解析成类型化 Video（MediaSource），
+			// **同时保留 Type="video_url" 与 RawContent** ——
+			//   · OpenAI/Anthropic/Responses 仍旧走各自的 default 分支，
+			//     输出逐字节不变（不碰它们 ⇒ 不给这三个协议引入风险）；
+			//   · 只有 Gemini 序列化器新增 "video_url" 分支后不再丢块。
+			irBlock.RawContent = mustMarshalString(blockMap)
+			if media := parseOpenAIMediaBlock(blockMap, "video"); media != nil {
+				irBlock.Video = media
 			}
 		case "audio", "video":
 			if media := parseOpenAIMediaBlock(blockMap, blockType); media != nil {
@@ -771,6 +842,63 @@ func derefInt(p *int) int {
 		return 0
 	}
 	return *p
+}
+
+// parseOpenAIAudioURISource extracts the **URI-reference** form of an OpenAI
+// audio block and returns it as a MediaSource (Type="audio").
+//
+// ★★ Why this exists (2026-10-27 · 12h 审计轮 · 实测复现):
+// ★★ `parseOpenAIInputAudioBlock` only understands the **base64** form
+// ★★ (`input_audio.data` + `input_audio.format`). The URI-reference form
+// ★★ (`input_audio.url`, produced by serializeOpenAIAudioBlock's file_uri
+// ★★ branch — i.e. by the gateway's own Gemini→OpenAI conversion) therefore
+// ★★ parsed to nil and degraded to Type="raw" ⇒ and only the Anthropic
+// ★★ serializer re-emits RawContent ⇒ the block was **silently dropped** on
+// ★★ the Gemini / Responses / Ollama wires (upstream saw no audio at all).
+//
+// ★★ Shape handled here:
+// ★★   {"type":"input_audio","input_audio":{"url":"https://…"|"gs://…",
+// ★★                                   "file_id":"…", "format":"mp3"}}
+// ★★ plus the flat variant ({"type":"input_audio","url":…}).
+//
+// ★★ Returns nil when there is no URI carrier (⇒ caller keeps the raw path).
+func parseOpenAIAudioURISource(block map[string]any) *MediaSource {
+	inner, _ := block["input_audio"].(map[string]any)
+	get := func(key string) string {
+		if inner != nil {
+			if v, ok := inner[key].(string); ok && v != "" {
+				return v
+			}
+		}
+		if v, ok := block[key].(string); ok && v != "" {
+			return v
+		}
+		return ""
+	}
+	url := get("url")
+	fileID := get("file_id")
+	format := get("format")
+	if url == "" && fileID == "" {
+		return nil
+	}
+	src := &MediaSource{
+		Kind:   "audio",
+		Format: format,
+	}
+	if fileID != "" {
+		// ★ file_id 形态：★ Gemini 侧无法凭 file_id 还原（没有 Files-API
+		// ★ 注册表）⇒ 仍按 file_id 承载，交给**能懂它的**那条线（如 OpenAI）
+		// ★ 还原 ⇒ 而不是在这里编造一个 URI。
+		src.Type = "file_id"
+		src.FileID = fileID
+	} else {
+		src.Type = "url"
+		src.URL = url
+	}
+	if src.MediaType == "" && format != "" {
+		src.MediaType = "audio/" + format
+	}
+	return src
 }
 
 // parseOpenAIInputAudioBlock parses an OpenAI input_audio content block.

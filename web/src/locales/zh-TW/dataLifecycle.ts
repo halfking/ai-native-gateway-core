@@ -217,7 +217,7 @@ export default {
   coldData: "冷資料 (30-90天)",
   expiredData: "過期資料 (>90天)",
   missingDate: "請選擇起始日期和結束日期",
-  previewFailed: "預覽失敗",
+  previewFailed: '預覽沒能完成，請重試',
   needPreview: "請先預覽影響",
   executeNotImpl: "清理功能將在下一階段實作。請使用命令列指令碼執行清理操作。"
 ,
@@ -256,7 +256,7 @@ export default {
       hint: '資料庫結構落後於目前版本，以下數字是「無法計算」的佔位值，不是真實量測值。',
     },
     errors: {
-      load: '載入用量增強資料失敗',
+      load: '用量增強資料沒能載入出來，請重試',
     },
     sources: {
       summary: '用量總覽',
@@ -319,9 +319,9 @@ export default {
       totalRequests: '總請求數',
     },
     errors: {
-      costTrend: '載入成本趨勢失敗',
-      periodCompare: '載入期間對比失敗',
-      cacheEconomics: '載入快取經濟學失敗',
+      costTrend: '成本趨勢沒能載入出來，請重試',
+      periodCompare: '週期對比沒能載入出來，請重試',
+      cacheEconomics: '快取成本沒能載入出來，請重試',
     },
     degraded: {
       title: '部分指標不可用：',

@@ -3,7 +3,7 @@ export default {
     emptyHint: "gw_session_id を含むリクエストログが生成されると、セッションが自動的に集計表示されます",
   },
   userProfile: {
-    loadFailed: 'ユーザープロファイルの読み込みに失敗しました',
+    loadFailed: 'ユーザープロフィールの読み込みに失敗しました。再試行してください。',
     title: "ユーザープロファイル",
     detailTitle: "ユーザープロファイル詳細",
     ownerUser: "ユーザー ID",
@@ -128,7 +128,7 @@ export default {
     sessionId: "セッションID",
     requests: "リクエスト数",
     health: "ヘルス",
-    loadError: "クライアント分析の読み込みに失敗しました"
+    loadError: 'クライアント分析の読み込みに失敗しました。再試行してください。'
   },
   taskAnalytics: {
     title: "タスク分析",
@@ -144,7 +144,7 @@ export default {
     sessionId: "セッションID",
     requests: "リクエスト数",
     health: "ヘルス",
-    loadError: "タスク分析の読み込みに失敗しました"
+    loadError: 'タスク分析の読み込みに失敗しました。再試行してください。'
   },
   config: {
     title: 'セッション設定',
@@ -312,8 +312,8 @@ export default {
     promptInjectionRuleSearchPlaceholder: "ルール名または説明を検索…",
     promptInjectionRuleSaveSuccess: "ルールを更新しました",
     promptInjectionPolicySaveSuccess: "ポリシーを保存しました",
-    promptInjectionLoadError: "読み込みに失敗しました",
-    promptInjectionSaveError: "保存に失敗しました",
+    promptInjectionLoadError: 'プロンプトインジェクション設定の読み込みに失敗しました。再試行してください。',
+    promptInjectionSaveError: 'プロンプトインジェクション設定の保存に失敗しました。再試行してください。',
     promptInjectionSectionAdvanced: "高度なエントリ",
     promptInjectionLinkEngines: "LLM エンジン",
     promptInjectionLinkEnginesHint: "LLM 検出のモデル、温度、プロンプトを設定",

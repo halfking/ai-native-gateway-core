@@ -93,9 +93,9 @@ export default {
   },
 
   error: {
-    loadFailed: '加载失败',
-    summaryLoadFailed: '统计加载失败',
-    markFailed: '标记失败',
+    loadFailed: '格式异常没能加载出来，请重试',
+    summaryLoadFailed: '格式异常统计没能加载出来，请重试',
+    markFailed: '格式异常标记没能完成，请重试',
     needSuperAdmin: '需要超级管理员权限',
   },
 

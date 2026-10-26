@@ -10,6 +10,7 @@ import { useI18n } from 'vue-i18n'
 import type { PanelEntry } from '../../composables/useLiveTopology'
 import { clientDisplayName } from '../../lib/liveTopologyGraph'
 import { PANEL_PAGE_SIZE } from '../../types/liveTopology'
+import { CaretLeft, CaretRight, FullScreen, TopRight } from '@element-plus/icons-vue'
 
 const props = defineProps<{
   responses: PanelEntry[]
@@ -110,7 +111,7 @@ function tokens(value: number | null | undefined): string {
             :aria-label="t('liveTopology.zoom.openPage')"
             :title="t('liveTopology.zoom.openPage')"
             @click.stop="emit('open-page', entry)"
-          >↗</button>
+          ><TopRight /></button>
           <button
             type="button"
             class="pp__zoom"
@@ -118,7 +119,7 @@ function tokens(value: number | null | undefined): string {
             :title="t('liveTopology.panel.zoom')"
             @click="emit('zoom', entry)"
           >
-            ⤢
+            <FullScreen />
           </button>
         </div>
       </li>
@@ -132,7 +133,7 @@ function tokens(value: number | null | undefined): string {
         :disabled="page <= 1"
         data-testid="provider-page-prev"
         @click="prevPage"
-      >‹</button>
+      ><CaretLeft /></button>
       <span class="pp__page-info">{{ t('liveTopology.panel.page', { page, pages: pageCount }) }} · {{ t('liveTopology.panel.total', { n: responses.length }) }}</span>
       <button
         type="button"
@@ -140,7 +141,7 @@ function tokens(value: number | null | undefined): string {
         :disabled="page >= pageCount"
         data-testid="provider-page-next"
         @click="nextPage"
-      >›</button>
+      ><CaretRight /></button>
     </footer>
   </aside>
 </template>
@@ -335,4 +336,12 @@ function tokens(value: number | null | undefined): string {
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
+
+/* ── 2026-10-27 第 17 增量（AI 痕迹门 V3）：图标尺寸 ──
+   element-plus 图标是裸 <svg viewBox="0 0 1024 1024">，**不带 width/height**
+   ⇒ 浏览器按包含块宽度渲染（会撑爆布局）⇒ 必须显式定尺寸。
+   尺寸沿用原字形的 font-size 观感（字形墨迹 ≈ 0.7em）。 */
+.pp__open > svg { width: 11px; height: 11px; }
+.pp__zoom > svg { width: 12px; height: 12px; }
+.pp__page-btn > svg { width: 10px; height: 10px; }
 </style>

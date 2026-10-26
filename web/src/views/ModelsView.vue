@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, watch } from 'vue'
+import { surfaceError } from '../i18n/errorSurface'
 import { formatDateTime } from '../utils/datetime'
 import { useActionMessage } from '../composables/useActionMessage'
 import { useRoute, useRouter } from 'vue-router'
@@ -293,7 +294,7 @@ async function loadModels() {
     const r = await listModels({ status: statusFilter.value || undefined })
     models.value = r.items
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : t('models.error.loadFailed')
+    error.value = surfaceError(e, { key: 'models.error.loadFailed' })
   } finally {
     loading.value = false
   }
@@ -313,7 +314,7 @@ async function loadNameMappings() {
     nameMappings.value = r.items
     nameMappingsTotal.value = r.total
   } catch (e: unknown) {
-    notifyNameMappingsErr(e instanceof Error ? e.message : t('common.feedback.loadFailed'))
+    notifyNameMappingsErr(surfaceError(e, { key: 'common.feedback.loadFailed' }))
   } finally {
     nameMappingsLoading.value = false
   }
@@ -325,7 +326,7 @@ async function syncNameMappings() {
     notifyNameMappingsOk(`同步完成：从 provider_models 导入了 ${r.provider_models} 条映射`)
     await loadNameMappings()
   } catch (e: unknown) {
-    notifyNameMappingsErr(e instanceof Error ? e.message : t('models.error.syncFailed'))
+    notifyNameMappingsErr(surfaceError(e, { key: 'models.error.syncFailed' }))
   }
 }
 
@@ -373,7 +374,7 @@ async function saveNameMapping() {
     closeNameMappingModal()
     await loadNameMappings()
   } catch (e: unknown) {
-    notifyNameMappingsErr(e instanceof Error ? e.message : t('common.feedback.saveFailed'))
+    notifyNameMappingsErr(surfaceError(e, { key: 'common.feedback.saveFailed' }))
   } finally {
     nameMappingSaving.value = false
   }
@@ -385,7 +386,7 @@ async function removeNameMapping(id: number) {
     await deleteModelNameMapping(id)
     await loadNameMappings()
   } catch (e: unknown) {
-    notifyNameMappingsErr(e instanceof Error ? e.message : t('common.feedback.deleteFailed'))
+    notifyNameMappingsErr(surfaceError(e, { key: 'common.feedback.deleteFailed' }))
   }
 }
 
@@ -478,7 +479,7 @@ async function saveTags(m: ModelCanonical) {
     editingId.value = null
     await loadTags()
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : t('models.error.saveFailed')
+    error.value = surfaceError(e, { key: 'models.error.saveFailed' })
   }
 }
 
@@ -490,7 +491,7 @@ async function doReset(m: ModelCanonical) {
     if (editingId.value === m.id) editTags.value = [...updated.tags]
     await loadTags()
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : t('models.error.resetFailed')
+    error.value = surfaceError(e, { key: 'models.error.resetFailed' })
   }
 }
 
@@ -513,7 +514,7 @@ async function openDetail(m: ModelCanonical) {
     }
     newAlias.value = { raw_name: '', surface: '', quantization: '', notes: '' }
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : t('models.error.loadDetailFailed')
+    error.value = surfaceError(e, { key: 'models.error.loadDetailFailed' })
   } finally {
     detailLoading.value = false
   }
@@ -607,7 +608,7 @@ async function submitCreate() {
     const row = models.value.find((m) => m.id === created.id)
     if (row) await openDetail(row)
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : t('models.createFailed')
+    error.value = surfaceError(e, { key: 'models.createFailed' })
   } finally {
     creating.value = false
   }
@@ -625,7 +626,7 @@ async function runDiscovery() {
     discoverMessage.value = started.reason === 'already_running' ? t('models.alreadyRunning') : t('models.started')
     await pollDiscovery(started.run.id)
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : t('models.discoverFailed')
+    error.value = surfaceError(e, { key: 'models.discoverFailed' })
   } finally {
     discovering.value = false
   }
@@ -726,7 +727,7 @@ async function openFeaturedDrawer() {
     const r = await getFeatured()
     featuredArray.value = (r.featured_models || []).slice()
   } catch (e: unknown) {
-    notifyFeaturedErr(e instanceof Error ? e.message : t('models.loadFeaturedFailed'))
+    notifyFeaturedErr(surfaceError(e, { key: 'models.loadFeaturedFailed' }))
     featuredArray.value = []
   } finally {
     featuredLoading.value = false
@@ -749,7 +750,7 @@ async function saveFeatured() {
     featuredArray.value = (r.featured_models || []).slice()
     notifyFeaturedOk(`特色模型已更新（${list.length}）`)
   } catch (e: unknown) {
-    notifyFeaturedErr(e instanceof Error ? e.message : t('models.saveFailed'))
+    notifyFeaturedErr(surfaceError(e, { key: 'models.saveFailed' }))
   } finally {
     featuredSaving.value = false
   }
@@ -769,7 +770,7 @@ async function previewRecommendedFeatured() {
       featuredRecommendMessage.value = `已加载 ${list.length} 个推荐：${tagged.slice(0, 5).join('、')}${list.length > 5 ? '…' : ''}`
     }
   } catch (e: unknown) {
-    featuredRecommendMessage.value = e instanceof Error ? e.message : t('models.recommendLoadFailed')
+    featuredRecommendMessage.value = surfaceError(e, { key: 'models.recommendLoadFailed' })
     featuredRecommendPreview.value = []
   } finally {
     featuredRecommendLoading.value = false
@@ -1643,7 +1644,7 @@ watch(activeTab, async (tab) => {
   border-radius: 12px;
   width: 100%;
   max-width: 900px;
-  box-shadow: 0 20px 60px var(--overlay-light);
+  box-shadow: var(--kx-shadow-md);
 }
 
 .modal-header {

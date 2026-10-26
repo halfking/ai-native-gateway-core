@@ -3,6 +3,7 @@ import { computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import type { ApiKey } from '../api'
 import { formatApiKeyLabel } from '../utils/apiKey'
+import { Close } from '@element-plus/icons-vue'
 
 const props = defineProps<{
   visible: boolean
@@ -66,7 +67,7 @@ function goKeys(action?: string) {
             :aria-label="$t('common.close')"
             @click="emit('close')"
           >
-            ×
+            <Close />
           </button>
         </div>
         <p class="modal-panel__hint">{{ hint }}</p>
@@ -133,9 +134,8 @@ function goKeys(action?: string) {
   max-height: min(85vh, 640px);
   overflow-y: auto;
   padding: 18px 20px;
-  border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
   background: var(--card);
-  box-shadow: 0 16px 48px var(--overlay-strong);
+  box-shadow: var(--kx-shadow-md);
 }
 
 .modal-panel__head {
@@ -228,4 +228,10 @@ function goKeys(action?: string) {
   gap: 8px;
   margin-top: 14px;
 }
+
+/* ── 2026-10-27 第 17 增量（AI 痕迹门 V3）：图标尺寸 ──
+   element-plus 图标是裸 <svg viewBox="0 0 1024 1024">，**不带 width/height**
+   ⇒ 浏览器按包含块宽度渲染（会撑爆布局）⇒ 必须显式定尺寸。
+   尺寸沿用原字形的 font-size 观感（字形墨迹 ≈ 0.7em）。 */
+.modal-panel__close > svg { width: 14px; height: 14px; }
 </style>

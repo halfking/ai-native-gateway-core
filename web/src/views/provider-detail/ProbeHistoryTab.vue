@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, watch } from 'vue'
+import { surfaceError } from '../../i18n/errorSurface'
 import { useI18n } from 'vue-i18n'
 import {
   getProviderProbeHistory,
@@ -71,7 +72,7 @@ async function load() {
     runs.value = r.runs ?? []
     states.value = s.states ?? []
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : pp('loadFailed')
+    error.value = surfaceError(e, { key: 'providerDetail.probe.loadFailed' })
   } finally {
     loading.value = false
   }
@@ -84,7 +85,7 @@ async function trigger(credentialId: number, rawModel: string) {
     await triggerProviderProbe(props.providerId, credentialId, rawModel)
     await load()
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : pp('triggerFailed')
+    error.value = surfaceError(e, { key: 'providerDetail.probe.triggerFailed' })
   } finally {
     triggering.value.delete(key)
   }

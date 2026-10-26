@@ -1,0 +1,241 @@
+# 后台数据 / 用量 / 审计域
+# 用量三件套、运营与运维总览、订阅层级、轮次、会话、请求注册表、连接注册台、对账、审计。
+# 路由清单来自 web/src/router.ts（见 maestro/README.md 的逐条核对表）。
+# 计时：每个页面 openLink 前打点 output.t0，页面关键文案可见后算 output.ms__<slug>（毫秒）。
+#       阈值 2000ms 用 optional 断言 —— 慢页只标记不失败，事后用 maestro/tools/slow-pages.mjs 筛。
+appId: ${BASE_URL}
+---
+- launchApp
+- runFlow:
+    file: _shared/login.yaml
+    env:
+      ADMIN_USER: ${ADMIN_USER}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD}
+
+# ── /admin/usage ─────────────────────────────────────────────
+- evalScript: "${output.t0 = Date.now()}"
+- openLink: "${BASE_URL}/admin/usage"
+- extendedWaitUntil:
+    visible: '成本归因'
+    timeout: 20000
+- evalScript: "${output.ms__admin_usage = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}"
+- assertTrue:
+    condition: "${output.ms__admin_usage < 2000}"
+    optional: true
+    label: 'slow-check:/admin/usage'
+
+# ── /admin/usage-trends ─────────────────────────────────────────────
+- evalScript: "${output.t0 = Date.now()}"
+- openLink: "${BASE_URL}/admin/usage-trends"
+- extendedWaitUntil:
+    visible: '用量趋势分析'
+    timeout: 20000
+- evalScript: "${output.ms__admin_usage_trends = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}"
+- assertTrue:
+    condition: "${output.ms__admin_usage_trends < 2000}"
+    optional: true
+    label: 'slow-check:/admin/usage-trends'
+
+# ── /admin/usage-enhanced ─────────────────────────────────────────────
+- evalScript: "${output.t0 = Date.now()}"
+- openLink: "${BASE_URL}/admin/usage-enhanced"
+- extendedWaitUntil:
+    visible: '用量增强分析'
+    timeout: 20000
+- evalScript: "${output.ms__admin_usage_enhanced = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}"
+- assertTrue:
+    condition: "${output.ms__admin_usage_enhanced < 2000}"
+    optional: true
+    label: 'slow-check:/admin/usage-enhanced'
+
+# ── /admin/board-operational ─────────────────────────────────────────────
+- evalScript: "${output.t0 = Date.now()}"
+- openLink: "${BASE_URL}/admin/board-operational"
+- extendedWaitUntil:
+    visible: '运营面板'
+    timeout: 20000
+- evalScript: "${output.ms__admin_board_operational = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}"
+- assertTrue:
+    condition: "${output.ms__admin_board_operational < 2000}"
+    optional: true
+    label: 'slow-check:/admin/board-operational'
+
+# ── /admin/ops-overview ─────────────────────────────────────────────
+- evalScript: "${output.t0 = Date.now()}"
+- openLink: "${BASE_URL}/admin/ops-overview"
+- extendedWaitUntil:
+    visible: '运维总览'
+    timeout: 20000
+- evalScript: "${output.ms__admin_ops_overview = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}"
+- assertTrue:
+    condition: "${output.ms__admin_ops_overview < 2000}"
+    optional: true
+    label: 'slow-check:/admin/ops-overview'
+
+# ── /admin/subscription-tiers ─────────────────────────────────────────────
+- evalScript: "${output.t0 = Date.now()}"
+- openLink: "${BASE_URL}/admin/subscription-tiers"
+- extendedWaitUntil:
+    visible: '订阅层级'
+    timeout: 20000
+- evalScript: "${output.ms__admin_subscription_tiers = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}"
+- assertTrue:
+    condition: "${output.ms__admin_subscription_tiers < 2000}"
+    optional: true
+    label: 'slow-check:/admin/subscription-tiers'
+
+# ── /admin/turns/filter-options ─────────────────────────────────────────────
+- evalScript: "${output.t0 = Date.now()}"
+- openLink: "${BASE_URL}/admin/turns/filter-options"
+- extendedWaitUntil:
+    visible: '轮次筛选选项'
+    timeout: 20000
+- evalScript: "${output.ms__admin_turns_filter_options = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}"
+- assertTrue:
+    condition: "${output.ms__admin_turns_filter_options < 2000}"
+    optional: true
+    label: 'slow-check:/admin/turns/filter-options'
+
+# ── /admin/turns ─────────────────────────────────────────────
+- evalScript: "${output.t0 = Date.now()}"
+- openLink: "${BASE_URL}/admin/turns"
+- extendedWaitUntil:
+    visible: '会话与轮次'
+    timeout: 20000
+- evalScript: "${output.ms__admin_turns = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}"
+- assertTrue:
+    condition: "${output.ms__admin_turns < 2000}"
+    optional: true
+    label: 'slow-check:/admin/turns'
+
+# ── /admin/sessions/:id ─────────────────────────────────────────────
+- evalScript: "${output.t0 = Date.now()}"
+- openLink: "${BASE_URL}/admin/sessions/${SESSION_ID}"
+- extendedWaitUntil:
+    visible: '轮次时间线'
+    timeout: 20000
+- evalScript: "${output.ms__admin_sessions_id = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}"
+- assertTrue:
+    condition: "${output.ms__admin_sessions_id < 2000}"
+    optional: true
+    label: 'slow-check:/admin/sessions/:id'
+
+# ── /admin/request-actions/:id ─────────────────────────────────────────────
+- evalScript: "${output.t0 = Date.now()}"
+- openLink: "${BASE_URL}/admin/request-actions/${REQUEST_ID}"
+- extendedWaitUntil:
+    visible: '请求动作时间线'
+    timeout: 20000
+- evalScript: "${output.ms__admin_request_actions_id = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}"
+- assertTrue:
+    condition: "${output.ms__admin_request_actions_id < 2000}"
+    optional: true
+    label: 'slow-check:/admin/request-actions/:id'
+
+# ── /admin/request-registry ─────────────────────────────────────────────
+- evalScript: "${output.t0 = Date.now()}"
+- openLink: "${BASE_URL}/admin/request-registry"
+- extendedWaitUntil:
+    visible: '请求注册表'
+    timeout: 20000
+- evalScript: "${output.ms__admin_request_registry = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}"
+- assertTrue:
+    condition: "${output.ms__admin_request_registry < 2000}"
+    optional: true
+    label: 'slow-check:/admin/request-registry'
+
+# ── /admin/request-registry/journey/:requestId ─────────────────────────────────────────────
+- evalScript: "${output.t0 = Date.now()}"
+- openLink: "${BASE_URL}/admin/request-registry/journey/${REQUEST_ID}"
+- extendedWaitUntil:
+    visible: '请求 Journey 详情'
+    timeout: 20000
+- evalScript: "${output.ms__admin_request_registry_journey_requestId = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}"
+- assertTrue:
+    condition: "${output.ms__admin_request_registry_journey_requestId < 2000}"
+    optional: true
+    label: 'slow-check:/admin/request-registry/journey/:requestId'
+
+# ── /admin/connection-registry ─────────────────────────────────────────────
+- evalScript: "${output.t0 = Date.now()}"
+- openLink: "${BASE_URL}/admin/connection-registry"
+- extendedWaitUntil:
+    visible: '连接注册台'
+    timeout: 20000
+- evalScript: "${output.ms__admin_connection_registry = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}"
+- assertTrue:
+    condition: "${output.ms__admin_connection_registry < 2000}"
+    optional: true
+    label: 'slow-check:/admin/connection-registry'
+
+# ── /admin/connection-registry/:credentialId/recovery ─────────────────────────────────────────────
+- evalScript: "${output.t0 = Date.now()}"
+- openLink: "${BASE_URL}/admin/connection-registry/${CREDENTIAL_ID}/recovery"
+- extendedWaitUntil:
+    visible: '节点恢复时间线'
+    timeout: 20000
+- evalScript: "${output.ms__admin_connection_registry_credentialId_recovery = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}"
+- assertTrue:
+    condition: "${output.ms__admin_connection_registry_credentialId_recovery < 2000}"
+    optional: true
+    label: 'slow-check:/admin/connection-registry/:credentialId/recovery'
+
+# ── /admin/reconciliation ─────────────────────────────────────────────
+- evalScript: "${output.t0 = Date.now()}"
+- openLink: "${BASE_URL}/admin/reconciliation"
+- extendedWaitUntil:
+    visible: '按供应商'
+    timeout: 20000
+- evalScript: "${output.ms__admin_reconciliation = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}"
+- assertTrue:
+    condition: "${output.ms__admin_reconciliation < 2000}"
+    optional: true
+    label: 'slow-check:/admin/reconciliation'
+
+# ── /admin/proxy ─────────────────────────────────────────────
+- evalScript: "${output.t0 = Date.now()}"
+- openLink: "${BASE_URL}/admin/proxy"
+- extendedWaitUntil:
+    visible: '代理管理'
+    timeout: 20000
+- evalScript: "${output.ms__admin_proxy = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}"
+- assertTrue:
+    condition: "${output.ms__admin_proxy < 2000}"
+    optional: true
+    label: 'slow-check:/admin/proxy'
+
+# ── /audit-logs ─────────────────────────────────────────────
+- evalScript: "${output.t0 = Date.now()}"
+- openLink: "${BASE_URL}/audit-logs"
+- extendedWaitUntil:
+    visible: '审计日志'
+    timeout: 20000
+- evalScript: "${output.ms__audit_logs = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}"
+- assertTrue:
+    condition: "${output.ms__audit_logs < 2000}"
+    optional: true
+    label: 'slow-check:/audit-logs'
+
+# ── /format-anomalies ─────────────────────────────────────────────
+- evalScript: "${output.t0 = Date.now()}"
+- openLink: "${BASE_URL}/format-anomalies"
+- extendedWaitUntil:
+    visible: '格式异常监控'
+    timeout: 20000
+- evalScript: "${output.ms__format_anomalies = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}"
+- assertTrue:
+    condition: "${output.ms__format_anomalies < 2000}"
+    optional: true
+    label: 'slow-check:/format-anomalies'
+
+# ── /model-integrity ─────────────────────────────────────────────
+- evalScript: "${output.t0 = Date.now()}"
+- openLink: "${BASE_URL}/model-integrity"
+- extendedWaitUntil:
+    visible: '模型完整性监控'
+    timeout: 20000
+- evalScript: "${output.ms__model_integrity = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}"
+- assertTrue:
+    condition: "${output.ms__model_integrity < 2000}"
+    optional: true
+    label: 'slow-check:/model-integrity'

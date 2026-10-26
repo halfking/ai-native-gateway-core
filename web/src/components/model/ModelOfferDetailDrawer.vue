@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { reactive, watch, ref, computed } from 'vue'
+import { surfaceError } from '../../i18n/errorSurface'
 import { useRouter } from 'vue-router'
 import type { ModelOffer } from '../../api/providers'
 import {
@@ -238,7 +239,7 @@ async function saveNode() {
       billing_mode: updated.billing_mode,
     })
   } catch (e: unknown) {
-    saveErr.value = e instanceof Error ? e.message : String(e)
+    saveErr.value = surfaceError(e)
   } finally {
     saving.value = false
   }
@@ -266,7 +267,7 @@ async function saveCanonical() {
       reasoning_caps,
     })
   } catch (e: unknown) {
-    saveErr.value = e instanceof Error ? e.message : String(e)
+    saveErr.value = surfaceError(e)
   } finally {
     saving.value = false
   }
@@ -281,7 +282,7 @@ async function toggleAvail() {
     })
     emit('updated', { ...props.offer, available: res.available })
   } catch (e: unknown) {
-    saveErr.value = e instanceof Error ? e.message : String(e)
+    saveErr.value = surfaceError(e)
   } finally {
     toggling.value = false
   }

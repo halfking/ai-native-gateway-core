@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { useI18n } from 'vue-i18n'
-import { Rank } from '@element-plus/icons-vue'
+import { surfaceError } from '../i18n/errorSurface'
+import { Check, Close, Rank, Refresh } from '@element-plus/icons-vue'
 import { formatDateTime, formatTimeOnly } from '../utils/datetime'
 import { ref, computed, onMounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
@@ -449,7 +450,7 @@ async function testRoute(rt: ModelRoute) {
   try {
     testResults.value[name] = await probeModel(name, [{ role: 'user', content: 'ping' }], 8)
   } catch (e) {
-    testErrors.value[name] = e instanceof Error ? e.message : t('workTypes.testFailedShort')
+    testErrors.value[name] = surfaceError(e, { key: 'workTypes.testFailedShort' })
     delete testResults.value[name]
   } finally {
     if (testingModel.value === name) testingModel.value = null
@@ -521,7 +522,7 @@ watch(activeTab, (tab) => {
           <button class="seg-tab" :class="{ active: activeTab === 'overview' }" @click="goTab('overview')">{{ t('workTypes.topBar.tabOverview') }}</button>
           <button class="seg-tab" :class="{ active: activeTab === 'settings' }" @click="goTab('settings')">{{ t('workTypes.topBar.tabSettings') }}</button>
         </div>
-        <button class="btn btn-sm btn-ghost refresh-btn" @click="activeTab === 'overview' ? loadOverview() : loadSettings()" :title="t('workTypes.topBar.refresh')">↻</button>
+        <button class="btn btn-sm btn-ghost refresh-btn" @click="activeTab === 'overview' ? loadOverview() : loadSettings()" :title="t('workTypes.topBar.refresh')"><Refresh /></button>
       </div>
       <div class="hero-stats">
         <span class="chip">{{ t('workTypes.topBar.chipAuto24h') }} <strong>{{ stats?.total_auto ?? audit.total_auto_requests }}</strong></span>
@@ -602,7 +603,7 @@ watch(activeTab, (tab) => {
                   <td><span class="badge badge-blue">{{ d.task_type || '-' }}</span></td>
                   <td>{{ d.auto_profile || '-' }}</td>
                   <td class="model-name">{{ d.outbound_model || d.auto_decision?.chosen_model || '-' }}</td>
-                  <td><span :class="d.success ? 'badge badge-green' : 'badge badge-red'">{{ d.success ? '✓' : '✗' }}</span></td>
+                  <td><span :class="d.success ? 'badge badge-green' : 'badge badge-red'"><Check v-if="d.success" /><Close v-else /></span></td>
                 </tr>
               </tbody>
             </table>
@@ -684,7 +685,7 @@ watch(activeTab, (tab) => {
                 :title="t('workTypes.detail.removeKeyword')"
                 :aria-label="`${t('workTypes.detail.removeKeyword')}: ${kw}`"
                 @click="removeKeyword(kw)"
-              >×</button>
+              ><Close /></button>
             </span>
             <input
               v-model="keywordInput"
@@ -977,7 +978,7 @@ watch(activeTab, (tab) => {
   background: var(--card);
   color: var(--text);
   font-weight: 600;
-  box-shadow: 0 1px 2px var(--overlay-faint);
+  box-shadow: var(--kx-shadow-xs);
 }
 
 .hero-stats { display: flex; flex-wrap: wrap; gap: 4px; }
@@ -1408,4 +1409,16 @@ watch(activeTab, (tab) => {
   .overview-grid .span-2 { grid-column: span 1; }
   .detail-grid { grid-template-columns: 1fr; }
 }
+
+/* ── 2026-10-27 第 17 增量（AI 痕迹门 V3）：图标尺寸 ──
+   element-plus 图标是裸 <svg viewBox="0 0 1024 1024">，**不带 width/height**
+   ⇒ 浏览器按包含块宽度渲染（会撑爆布局）⇒ 必须显式定尺寸。
+   尺寸沿用原字形的 font-size 观感（字形墨迹 ≈ 0.7em）。 */
+.refresh-btn > svg { width: 13px; height: 13px; }
+.kw-chip-x > svg { width: 10px; height: 10px; }
+
+/* ── 2026-10-27 第 17 增量（AI 痕迹门 V3 · 插值形态）：图标尺寸 ──
+   element-plus 图标是裸 <svg viewBox="0 0 1024 1024">，**不带 width/height**
+   ⇒ 浏览器按包含块宽度渲染（会撑爆布局）⇒ 必须显式定尺寸。 */
+.badge > svg { width: 11px; height: 11px; }
 </style>

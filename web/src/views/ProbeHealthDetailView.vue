@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted, computed, watch } from 'vue'
+import { surfaceError } from '../i18n/errorSurface'
 import { localeRef } from '../i18n'
 import { useRoute, useRouter } from 'vue-router'
 import { req } from '../api/_core'
@@ -70,7 +71,7 @@ async function loadTabData(tab: TabId) {
     }
   } catch (err) {
     console.error(`Failed to load tab ${tab}:`, err)
-    setTabError(tab, err instanceof Error ? err.message : String(err))
+    setTabError(tab, surfaceError(err))
   } finally {
     loading.value = false
   }
@@ -300,7 +301,7 @@ async function triggerProbe(node: ModelNode) {
     })
     flash(`已触发 ${credentialDisplayName(node.credential_id)} 的探活`)
   } catch (err) {
-    flash(t('common.feedback.triggerFailedWithReason', { reason: err instanceof Error ? err.message : String(err) }))
+    flash(t('common.feedback.triggerFailedWithReason', { reason: surfaceError(err)}))
   } finally {
     setTimeout(() => {
       const after = new Set(probeTriggering.value)

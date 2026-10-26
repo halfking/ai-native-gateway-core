@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/errorsx"
@@ -73,6 +74,35 @@ type InternalResponse struct {
 	// misclassified as empty_response, demoting the provider and refusing
 	// billing for real upstream work. Deduped, capped at 8.
 	UnknownBlockTypes []string `json:"unknown_block_types,omitempty"`
+
+	// Citations carries the source citations the upstream attached to the
+	// answer.
+	//
+	// ★ 2026-10-27（Gemini 转换面补全轮）：厂方文档
+	//   （docs/vendor-formats/gemini.md §特殊字段）写明
+	//   「`citationMetadata`：Gemini 在响应中提供引用元数据，IR 需要捕获并可在
+	//   序列化为 OpenAI 时映射为 annotations」⇒ 而本仓此前**IR 里根本没有承载
+	//   它的字段** ⇒ Gemini 上游的引用在解析那一步就被丢掉了。
+	//
+	// Gemini 的原生形状是 candidates[].citationMetadata.citations[]，
+	// 字段名是 `uri`（不是 `url`）⇒ IR 归一为 URL，使 OpenAI 的
+	// `url_citation` annotation 形状可以直接产出。
+	Citations []ResponseCitation `json:"citations,omitempty"`
+}
+
+// ResponseCitation is one source citation attached to a response.
+//
+// Gemini: candidates[].citationMetadata.citations[] with
+// `uri` / `title` / `startIndex` / `endIndex`.
+//
+// OpenAI: message.annotations[] entries of type "url_citation" carrying
+// url_citation{url, title, start_index, end_index} — the serializer maps
+// this struct onto that shape.
+type ResponseCitation struct {
+	URL        string `json:"url,omitempty"`
+	Title      string `json:"title,omitempty"`
+	StartIndex int    `json:"start_index,omitempty"`
+	EndIndex   int    `json:"end_index,omitempty"`
 }
 
 // ResponseContentBlock represents a single content element in a response.
@@ -137,6 +167,12 @@ type ResponseUsage struct {
 	// nil = not applicable for this provider/request
 	CacheReadTokens  *int `json:"cache_read_tokens,omitempty"`  // Cache hit tokens (billed at reduced rate)
 	CacheWriteTokens *int `json:"cache_write_tokens,omitempty"` // Cache creation tokens (billed at premium rate)
+	// 缓存写入的 TTL 分档（2026-10-27 缓存监测轮）。厂商映射：Anthropic
+	// usage.cache_creation.{ephemeral_5m→Short, ephemeral_1h→Long}；OpenAI
+	// usage.cache_write_tokens_details.{ttl_30m→Short, ttl_12h→Long}。只服务
+	// 监测面；序列化器不产出这两个键（Anthropic→Anthropic 走原文透传）。
+	CacheWriteTTLShort *int `json:"cache_write_ttl_short,omitempty"`
+	CacheWriteTTLLong  *int `json:"cache_write_ttl_long,omitempty"`
 
 	// Reasoning tokens (DeepSeek R1, OpenAI reasoning models)
 	ReasoningTokens *int `json:"reasoning_tokens,omitempty"`
@@ -214,6 +250,10 @@ func ParseAnthropicResponse(body []byte) (*InternalResponse, error) {
 			OutputTokens             int `json:"output_tokens"`
 			CacheCreationInputTokens int `json:"cache_creation_input_tokens"` // audit-ir-multimodal (2026-07-13)
 			CacheReadInputTokens     int `json:"cache_read_input_tokens"`     // audit-ir-multimodal (2026-07-13)
+			CacheCreation            struct {
+				Ephemeral5mInputTokens int `json:"ephemeral_5m_input_tokens"`
+				Ephemeral1hInputTokens int `json:"ephemeral_1h_input_tokens"`
+			} `json:"cache_creation"`
 		} `json:"usage"`
 	}
 	if err := json.Unmarshal(body, &src); err != nil {
@@ -246,6 +286,16 @@ func ParseAnthropicResponse(body []byte) (*InternalResponse, error) {
 	if src.Usage.CacheReadInputTokens > 0 {
 		v := src.Usage.CacheReadInputTokens
 		ir.Usage.CacheReadTokens = &v
+	}
+	// 2026-10-27 缓存监测轮：嵌套 cache_creation 对象（5m/1h 写入分档，平面
+	// 字段是两者之和）。只进监测面，不改变任何串行输出。
+	if src.Usage.CacheCreation.Ephemeral5mInputTokens > 0 {
+		v := src.Usage.CacheCreation.Ephemeral5mInputTokens
+		ir.Usage.CacheWriteTTLShort = &v
+	}
+	if src.Usage.CacheCreation.Ephemeral1hInputTokens > 0 {
+		v := src.Usage.CacheCreation.Ephemeral1hInputTokens
+		ir.Usage.CacheWriteTTLLong = &v
 	}
 
 	// container 原文进 Extensions，走标准扩展往返（见上方字段注释）。
@@ -632,6 +682,15 @@ func SerializeOpenAIResponse(ir *InternalResponse, clientModel string) ([]byte, 
 	if ir.ReasoningContent != "" {
 		msg["reasoning_content"] = ir.ReasoningContent
 	}
+	// ★ 2026-10-27（Gemini 转换面补全轮）：把 IR 捕获的引用元数据映射成
+	// OpenAI 的 `annotations`（厂方文档要求的映射方向：
+	// docs/vendor-formats/gemini.md §特殊字段「可在序列化为 OpenAI 时映射为
+	// annotations」）。
+	// ★ 只在【有引用】时发这个键 ⇒ 没有引用的普通响应逐字不变（不新增
+	// 一个空数组字段，避免无谓地改变既有客户端看到的报文）。
+	if annotations := buildOpenAIAnnotations(ir.Citations); len(annotations) > 0 {
+		msg["annotations"] = annotations
+	}
 
 	// Tool calls
 	var toolCalls []map[string]any
@@ -702,6 +761,84 @@ func SerializeOpenAIResponse(ir *InternalResponse, clientModel string) ([]byte, 
 }
 
 // buildOpenAIResponseContent builds the OpenAI response content from IR.
+// buildOpenAIAnnotations maps IR citations onto OpenAI's `annotations`
+// shape (type "url_citation").
+//
+// ★ OpenAI's shape:
+//
+//	{"type": "url_citation",
+//	 "url_citation": {"url": "...", "title": "...", "start_index": 0, "end_index": 100}}
+//
+// ★ The index fields are omitted when zero — OpenAI's `start_index` is
+//
+//	optional, and emitting a hard 0 would claim "the citation starts at
+//	offset 0" when the upstream never said so (Gemini omits them when it
+//	has no span information).
+func buildOpenAIAnnotations(citations []ResponseCitation) []map[string]any {
+	if len(citations) == 0 {
+		return nil
+	}
+	out := make([]map[string]any, 0, len(citations))
+	for _, c := range citations {
+		if strings.TrimSpace(c.URL) == "" {
+			continue
+		}
+		urlCitation := map[string]any{"url": c.URL}
+		if c.Title != "" {
+			urlCitation["title"] = c.Title
+		}
+		if c.StartIndex != 0 {
+			urlCitation["start_index"] = c.StartIndex
+		}
+		if c.EndIndex != 0 {
+			urlCitation["end_index"] = c.EndIndex
+		}
+		out = append(out, map[string]any{
+			"type":         "url_citation",
+			"url_citation": urlCitation,
+		})
+	}
+	return out
+}
+
+// buildGeminiCitationMetadata maps IR citations onto Gemini's native
+// `citationMetadata` shape.
+//
+// ★ Gemini's shape:
+//
+//	{"citations": [{"startIndex": 0, "endIndex": 100, "uri": "...", "title": "..."}]}
+//
+// ★ The index fields are omitted when zero — Gemini omits them when it has
+//
+//	no span information, and inventing a 0 would claim "the citation starts
+//	at offset 0".
+func buildGeminiCitationMetadata(citations []ResponseCitation) map[string]any {
+	if len(citations) == 0 {
+		return nil
+	}
+	items := make([]map[string]any, 0, len(citations))
+	for _, c := range citations {
+		if strings.TrimSpace(c.URL) == "" {
+			continue
+		}
+		item := map[string]any{"uri": c.URL}
+		if c.Title != "" {
+			item["title"] = c.Title
+		}
+		if c.StartIndex != 0 {
+			item["startIndex"] = c.StartIndex
+		}
+		if c.EndIndex != 0 {
+			item["endIndex"] = c.EndIndex
+		}
+		items = append(items, item)
+	}
+	if len(items) == 0 {
+		return nil
+	}
+	return map[string]any{"citations": items}
+}
+
 func buildOpenAIResponseContent(ir *InternalResponse) any {
 	if len(ir.Content) == 0 && len(ir.ToolCalls) == 0 {
 		return nil
@@ -1037,12 +1174,28 @@ func SerializeResponsesResponse(ir *InternalResponse, clientModel string) ([]byt
 		"model":      model,
 		"status":     status,
 		"output":     output,
-		"usage": map[string]any{
-			"input_tokens":  ir.Usage.PromptTokens,
-			"output_tokens": ir.Usage.CompletionTokens,
-			"total_tokens":  ir.Usage.TotalTokens,
-		},
 	}
+	// 2026-10-27 缓存标准对齐轮：Responses usage 的缓存命中走
+	// input_tokens_details（chat 侧走 prompt_tokens_details，见
+	// buildOpenAIUsageObject）。此前 IR 重建的 Responses 响应体整段丢掉
+	// cached_tokens，Codex 类客户端读不到命中数。无值不发键，与 chat 侧
+	// 同一纪律。
+	inputDetails := map[string]any{}
+	if ir.Usage.CacheReadTokens != nil && *ir.Usage.CacheReadTokens > 0 {
+		inputDetails["cached_tokens"] = *ir.Usage.CacheReadTokens
+	}
+	if ir.Usage.CacheWriteTokens != nil && *ir.Usage.CacheWriteTokens > 0 {
+		inputDetails["cache_write_tokens"] = *ir.Usage.CacheWriteTokens
+	}
+	usageObj := map[string]any{
+		"input_tokens":  ir.Usage.PromptTokens,
+		"output_tokens": ir.Usage.CompletionTokens,
+		"total_tokens":  ir.Usage.TotalTokens,
+	}
+	if len(inputDetails) > 0 {
+		usageObj["input_tokens_details"] = inputDetails
+	}
+	resp["usage"] = usageObj
 	// audit #11: a status=incomplete envelope without incomplete_details is a
 	// protocol gap — Responses SDK clients contract on the reason. Map the
 	// finish reason to the Responses API reason vocabulary; omit the field
@@ -1394,6 +1547,13 @@ func SerializeGeminiResponse(irResp *InternalResponse, clientModel string) ([]by
 			"role":  "model",
 			"parts": parts,
 		}
+	}
+
+	// ★ 2026-10-27（Gemini 转换面补全轮）：把 IR 捕获的引用元数据还原成
+	// Gemini 原生的 `citationMetadata`（字段名是 `uri`，不是 `url`）。
+	// ★ 只在【有引用】时发 ⇒ 没有引用的响应逐字不变。
+	if citations := buildGeminiCitationMetadata(irResp.Citations); citations != nil {
+		candidate["citationMetadata"] = citations
 	}
 
 	if irResp.SourceProtocol == ProtocolGeminiGenerate && irResp.StopReason != "" {

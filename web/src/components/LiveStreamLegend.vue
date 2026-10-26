@@ -248,7 +248,6 @@ function handleClick(key: string) {
   color: var(--probe-dark-bg);
   background: linear-gradient(180deg, var(--probe-cyan-light) 0%, var(--probe-cyan) 100%);
   border: 1.5px solid var(--probe-cyan-darker);
-  box-shadow: 0 0 4px color-mix(in srgb, var(--probe-cyan) 30%, transparent);
   flex-shrink: 0;
 }
 

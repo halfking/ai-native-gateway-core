@@ -39,5 +39,5 @@ export default {
   openAttachment: '下載附件',
   retry: '重試',
   openingAttachment: '正在開啟…',
-  openAttachmentFailed: '附件開啟失敗',
+  openAttachmentFailed: '附件沒能開啟，請檢查檔案後重試',
 }

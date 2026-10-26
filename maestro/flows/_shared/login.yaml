@@ -1,0 +1,49 @@
+# 共享登录流 —— 所有需要登录的 flow 都用 runFlow 调它。
+#
+# 登录控件（web/src/components/LoginModal.vue）：
+#   #login-username            用户名输入框（LoginModal.vue:140-146）
+#   #login-password            密码输入框（LoginModal.vue:150-156）
+#   .login-modal__actions 里的 <button type="submit">   提交按钮（LoginModal.vue:160-162）
+#   提交按钮的可见文案是「登录」（locale login.submit = '登录'）
+#
+# ★ 为什么提交用 pressKey: Enter 而不是 tapOn: '登录'：
+#   页面上「登录」二字至少出现两处 —— 访客头部按钮
+#   （web/src/App.vue:386 <button class="guest-login-btn">{{ t('login.submit') }}</button>）
+#   和登录弹窗的提交按钮。Maestro 的 tapOn 文本匹配按 DOM 顺序取第一个命中，
+#   会打到访客头部的按钮上（只是再次打开弹窗，不会提交表单）。
+#   焦点停在密码框时按 Enter 会触发 form 的 @submit.prevent="handleLogin"，
+#   是唯一确定能提交的路径。
+#
+# ★ 账号口令不写进仓内任何文件：ADMIN_USER / ADMIN_PASSWORD 由
+#   maestro/env.local.yaml（本地生成，已 gitignore）注入。
+#
+# ★ 后端有自适应验证码闸门（admin/auth_captcha.go:474）：连续登录失败达阈值后
+#   强制要求 captcha，而登录弹窗当前没有渲染验证码输入框 ⇒ 那种状态下
+#   本 flow 必然失败。先把失败计数清掉（或改用 README 里的 cookie 注入方案）。
+appId: ${BASE_URL}
+---
+- openLink: ${BASE_URL}/login
+- extendedWaitUntil:
+    visible:
+      id: "login-modal-title"
+    timeout: 20000
+- tapOn:
+    id: "login-username"
+- inputText:
+    id: "login-username"
+    text: "${ADMIN_USER}"
+- tapOn:
+    id: "login-password"
+- inputText:
+    id: "login-password"
+    text: "${ADMIN_PASSWORD}"
+- pressKey: Enter
+- extendedWaitUntil:
+    notVisible:
+      id: "login-modal-title"
+    timeout: 20000
+# 登录成功的硬判据：弹窗关掉后首页应渲染已登录态的仪表盘
+# （web/src/views/DashboardViewV2.vue:97 <h2>{{ t('dashboard.title') }}</h2>）
+- extendedWaitUntil:
+    visible: '仪表盘'
+    timeout: 20000

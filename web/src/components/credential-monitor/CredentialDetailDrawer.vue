@@ -12,6 +12,7 @@
  * 加载/自动刷新全部内聚在本组件，列表刷新通过 refresh-list 事件委托宿主。
  */
 import { computed, onUnmounted, ref, watch } from 'vue'
+import { surfaceError } from '../../i18n/errorSurface'
 import { useI18n } from 'vue-i18n'
 import { Chart, registerables } from 'chart.js'
 import {
@@ -54,7 +55,7 @@ import {
   rateText,
   statusBadge,
 } from './helpers'
-import { CaretLeft, CaretRight, Unlock } from '@element-plus/icons-vue'
+import { CaretLeft, CaretRight, CircleCheck, CircleClose, Refresh, Unlock } from '@element-plus/icons-vue'
 
 Chart.register(...registerables)
 
@@ -240,7 +241,7 @@ async function submitClearDisabled() {
     clearDisabledDialogOpen.value = false
     await refreshDetailDrawer()
   } catch (e) {
-    alert(t('credentialMonitor.error.clearFailed') + (e instanceof Error ? e.message : String(e)))
+    alert(t('credentialMonitor.error.clearFailed') + (surfaceError(e)))
   }
 }
 
@@ -259,7 +260,7 @@ async function submitSetManualDisabled() {
     setManualDisabledDialogOpen.value = false
     await refreshDetailDrawer()
   } catch (e) {
-    alert(t('credentialMonitor.drawer.operationFailedWithReason', { reason: e instanceof Error ? e.message : String(e) }))
+    alert(t('credentialMonitor.drawer.operationFailedWithReason', { reason: surfaceError(e)}))
   }
 }
 
@@ -512,8 +513,8 @@ async function submitToggle() {
   } catch (e) {
     alert(
       target.action === 'offline'
-        ? t('credentialMonitor.drawer.offlineFailedWithReason', { reason: e instanceof Error ? e.message : String(e) })
-        : t('credentialMonitor.drawer.onlineFailedWithReason', { reason: e instanceof Error ? e.message : String(e) }),
+        ? t('credentialMonitor.drawer.offlineFailedWithReason', { reason: surfaceError(e)})
+        : t('credentialMonitor.drawer.onlineFailedWithReason', { reason: surfaceError(e)}),
     )
   } finally {
     toggleBusy.value[key] = false
@@ -635,7 +636,7 @@ async function submitDemote() {
     emit('refresh-list')
     closeDrawer()
   } catch (e) {
-    alert(t('credentialMonitor.drawer.degradeFailedWithReason', { reason: e instanceof Error ? e.message : String(e) }))
+    alert(t('credentialMonitor.drawer.degradeFailedWithReason', { reason: surfaceError(e)}))
   }
 }
 
@@ -653,7 +654,7 @@ async function submitPromote() {
     emit('refresh-list')
     closeDrawer()
   } catch (e) {
-    alert(t('credentialMonitor.drawer.upgradeFailedWithReason', { reason: e instanceof Error ? e.message : String(e) }))
+    alert(t('credentialMonitor.drawer.upgradeFailedWithReason', { reason: surfaceError(e)}))
   }
 }
 
@@ -671,7 +672,7 @@ async function submitConcurrency() {
     concurrencyDialogOpen.value = false
     emit('refresh-list')
   } catch (e) {
-    alert(t('credentialMonitor.drawer.settingFailedWithReason', { reason: e instanceof Error ? e.message : String(e) }))
+    alert(t('credentialMonitor.drawer.settingFailedWithReason', { reason: surfaceError(e)}))
   }
 }
 
@@ -1077,7 +1078,7 @@ onUnmounted(() => {
                 <div class="drawer-section-title" style="display:flex;justify-content:space-between;align-items:center">
                   <span>并发槽位与指纹分配</span>
                   <button class="btn btn-sm" @click="loadFpSlotStats" :disabled="fpSlotStatsLoading">
-                    {{ fpSlotStatsLoading ? $t('common.feedback.loading') : '↻ ' + $t('common.button.refresh') }}
+                    <Refresh v-if="!fpSlotStatsLoading" />{{ fpSlotStatsLoading ? $t('common.feedback.loading') : $t('common.button.refresh') }}
                   </button>
                 </div>
                 <div v-if="!fpSlotStats" class="cell-muted" style="margin-top:8px">
@@ -1183,8 +1184,8 @@ onUnmounted(() => {
                     </td>
                     <td class="mono-sm">{{ d.tier ?? '—' }}</td>
                     <td>
-                      <span v-if="d.success" class="badge badge-green">✓</span>
-                      <span v-else class="badge badge-red">✗</span>
+                      <span v-if="d.success" class="badge badge-green"><CircleCheck /></span>
+                      <span v-else class="badge badge-red"><CircleClose /></span>
                       <span v-if="d.sticky_hit" class="badge badge-blue" style="margin-left:4px;font-size:9px">sticky</span>
                     </td>
                     <td class="mono-sm">{{ d.latency_ms != null ? d.latency_ms + 'ms' : '—' }}</td>
@@ -1427,7 +1428,6 @@ onUnmounted(() => {
   background: color-mix(in srgb, var(--card) 92%, var(--accent) 8%);
   color: var(--muted);
   font-size: 11px;
-  box-shadow: 0 6px 18px var(--overlay-faint);
 }
 
 @keyframes detail-skeleton-shimmer {
@@ -1892,4 +1892,15 @@ onUnmounted(() => {
 .models-tab .drawer-section {
   margin-bottom: 0;
 }
+
+/* ── 2026-10-27 第 17 增量（AI 痕迹门 V3）：图标尺寸 ──
+   element-plus 图标是裸 <svg viewBox="0 0 1024 1024">，**不带 width/height**
+   ⇒ 浏览器按包含块宽度渲染（会撑爆布局）⇒ 必须显式定尺寸。
+   尺寸沿用原字形的 font-size 观感（字形墨迹 ≈ 0.7em）。 */
+.badge-green > svg, .badge-red > svg { width: 11px; height: 11px; }
+
+/* ── 2026-10-27 第 17 增量（AI 痕迹门 V3 · 插值形态）：图标尺寸 ──
+   element-plus 图标是裸 <svg viewBox="0 0 1024 1024">，**不带 width/height**
+   ⇒ 浏览器按包含块宽度渲染（会撑爆布局）⇒ 必须显式定尺寸。 */
+.drawer-section-title .btn > svg { width: 12px; height: 12px; }
 </style>

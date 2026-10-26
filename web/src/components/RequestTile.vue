@@ -618,7 +618,7 @@ function closeTimelinePanel() {
 .request-bar:hover {
   transform: scaleY(1.08);
   box-shadow: 0 0 0 1px color-mix(in srgb, var(--text) 35%, transparent),
-              0 4px 10px color-mix(in srgb, var(--text) 18%, transparent);
+              var(--kx-shadow-sm);
   z-index: 10;
 }
 
@@ -706,7 +706,6 @@ function closeTimelinePanel() {
   width: 2px;
   background: var(--probe-cyan);
   border-radius: 3px 0 0 3px;
-  box-shadow: 0 0 4px color-mix(in srgb, var(--probe-cyan) 70%, transparent);
 }
 
 .request-bar--failure {
@@ -731,7 +730,6 @@ function closeTimelinePanel() {
       color-mix(in srgb, var(--accent-color) 16%, var(--kx-surface)) 0%,
       color-mix(in srgb, var(--accent-color) 6%, var(--kx-bg)) 100%
     );
-  box-shadow: var(--kx-shadow-sm);
   padding: 0;
   cursor: pointer;
   transition:
@@ -750,7 +748,7 @@ function closeTimelinePanel() {
   transform: translateY(-2px) scale(1.04);
   border-color: color-mix(in srgb, var(--accent-color) 65%, transparent);
   box-shadow:
-    0 6px 16px color-mix(in srgb, var(--text) 15%, transparent),
+    var(--kx-shadow-sm),
     0 0 0 1px color-mix(in srgb, var(--accent-color) 25%, transparent);
   z-index: 10;
 }
@@ -758,7 +756,7 @@ function closeTimelinePanel() {
 .request-tile--highlighted {
   box-shadow:
     0 0 0 2px color-mix(in srgb, var(--accent) 55%, transparent),
-    0 4px 14px color-mix(in srgb, var(--accent) 20%, transparent);
+    var(--kx-shadow-sm);
   z-index: 5;
 }
 
@@ -800,14 +798,14 @@ function closeTimelinePanel() {
 .request-tile--llm {
   border-style: solid;
   border-color: color-mix(in srgb, var(--accent) 55%, var(--accent-color));
-  box-shadow:
-    0 0 0 1px color-mix(in srgb, var(--accent) 22%, transparent),
-    0 0 10px color-mix(in srgb, var(--accent) 12%, transparent);
+  /* ★ 抬升只声明一次；这里留描边，不叠彩色光晕
+     （craft-floor：零偏移彩色光晕是装饰，不是深度）。 */
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 22%, transparent);
   animation: request-tile-llm-glow 1.8s ease-in-out infinite;
 }
 @keyframes request-tile-llm-glow {
   0%, 100% { box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 18%, transparent); }
-  50% { box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 35%, transparent), 0 0 12px color-mix(in srgb, var(--accent) 18%, transparent); }
+  50% { box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 35%, transparent); }
 }
 
 .request-tile--probe {
@@ -822,7 +820,7 @@ function closeTimelinePanel() {
   box-shadow:
     inset 0 1px 0 color-mix(in srgb, var(--probe-cyan) 12%, transparent),
     0 0 0 1px color-mix(in srgb, var(--probe-cyan) 20%, transparent),
-    0 1px 3px color-mix(in srgb, var(--text) 12%, transparent);
+    var(--kx-shadow-xs);
 }
 
 .request-tile--probe.request-tile--failure {
@@ -887,7 +885,6 @@ function closeTimelinePanel() {
   color: var(--probe-dark-bg);
   background: linear-gradient(180deg, var(--probe-cyan-light) 0%, var(--probe-cyan) 100%);
   border: 1.5px solid var(--probe-cyan-darker);
-  box-shadow: 0 0 5px color-mix(in srgb, var(--probe-cyan) 30%, transparent);
   z-index: 3;
 }
 
@@ -1126,7 +1123,6 @@ function closeTimelinePanel() {
   display: flex;
   flex-direction: column;
   background: var(--kx-surface);
-  border: 1px solid var(--kx-border);
   border-radius: 6px;
   box-shadow: var(--kx-shadow-md);
   z-index: 2000;
@@ -1283,7 +1279,6 @@ function closeTimelinePanel() {
   display: flex;
   flex-direction: column;
   background: var(--kx-surface);
-  border: 1px solid var(--kx-border);
   border-radius: 6px;
   box-shadow: var(--kx-shadow-md);
   z-index: 2000;

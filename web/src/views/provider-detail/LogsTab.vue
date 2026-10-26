@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import ModelIdentityChip from '../../components/model/ModelIdentityChip.vue'
+import { surfaceError } from '../../i18n/errorSurface'
 import { computed, ref, onMounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
@@ -104,7 +105,7 @@ async function load() {
     logs.value = resp.items
     total.value = resp.total
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : pl('loadFailed')
+    error.value = surfaceError(e, { key: 'providerDetail.logs.loadFailed' })
   } finally {
     loading.value = false
   }

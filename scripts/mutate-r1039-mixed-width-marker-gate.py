@@ -37,8 +37,11 @@ REPO = os.path.abspath(sys.argv[1] if len(sys.argv) > 1 else ".")
 
 SANITIZE_REL = "security/sanitize/placeholder_loose.go"
 MARKERBOUND_REL = "internal/markerbound/markerbound.go"
+HOP_REL = "security/sanitize/hop.go"
 
-TEST_RE = "TestR1039MixedWidth"
+# 两条判据族都要跑：混拼族（TestR1039MixedWidth*）与本轮自审的内层重扫族
+# （TestR1039InnerRescan*）⇒ `-run` 的参数是**正则**，用 | 并列。
+TEST_RE = "TestR1039MixedWidth|TestR1039InnerRescan"
 
 # 每条变异：(编号, 说明, 目标文件, needle, repl, 期望红的判据正则)
 MUTATIONS = [
@@ -76,6 +79,46 @@ MUTATIONS = [
      "\t\t\tif asciiLower(text[i]) != word[k] {\n\t\t\t\treturn false\n\t\t\t}\n",
      "\t\t\tif false {\n\t\t\t\treturn false\n\t\t\t}\n",
      "TestR1039MixedWidth"),
+
+    # ── 2026-10-27 自审轮新增（M6~M9）──────────────────────────────
+    # ⚠ M6 的**第一版是成本臂**（「内层重扫的便宜门短路失效 ⇒ 常态成本放大」）
+    # ⇒ 实测那条变异的成本影响**不可测**（fixed 与 mut 的 ns/op 与 allocs/op
+    #   **完全相同**：短路省下的是一次「找不到匹配的正则扫描」，在真实语料上
+    #   是微秒级，而整条扫描是毫秒级）⇒ **这条臂没有牙齿** ⇒ 写成臂只会
+    #   得到一条恒绿的断言 ⇒ **作废并改写**。
+    # ⇒ 改写后的 M6 钉的是**边界**：内层重扫必须只返回**内部那一截裸形**，
+    #   返回整段候选 ⇒ 整段 JSON 会被当成标记 ⇒ span 集合错 ⇒ 契约门红。
+    # ⚠ M6 的**第一版替换体编译不干净**（`sp` 变成「declared and not used」）
+    #   ⇒ 读数作废（编译红 ≠ 断言红）⇒ 补 `_ = sp` 让它编译通过。
+    #   这也是纪律「变异必须【编译干净再验】」的又一次生效：不补这一行，
+    #   这条臂会一直挂在 COMPILE-RED 上，而臂的**意图**其实是成立的。
+    ("M6",
+     "内层重扫的**边界**写错（返回整段候选而不是内部那截裸形）⇒ 整段 JSON 被当成标记 ⇒ span 集合错",
+     SANITIZE_REL,
+     "\tfor _, sp := range spans {\n\t\tout = append(out, candidate[sp[0]:sp[1]])\n\t}\n",
+     "\tfor _, sp := range spans {\n\t\t_ = sp\n\t\tout = append(out, candidate)\n\t}\n",
+     "TestR1039InnerRescanSpanContractMatchesMarkerbound"),
+
+    ("M7",
+     "探针路径的内层重扫被删掉（= 修复前的真实形态）⇒ JSON 里的裸形标记不可见 ⇒ 参数车道被整个跳过 ⇒ 泄漏",
+     HOP_REL,
+     "\t\tspans = append(spans, innerBareMarkerCandidates(candidate)...)\n",
+     "\t\t// 变异：内层重扫被删掉\n",
+     "TestR1039InnerRescan"),
+
+    ("M8",
+     "刻意副本 internal/markerbound 的内层重扫没同步（只改 sanitize）⇒ 两个副本的 span 集合分叉",
+     MARKERBOUND_REL,
+     "\t\tfor _, inner := range bareMarkerSpans(candidateText) {\n\t\t\tspans = append(spans, [2]int{span[0] + inner[0], span[0] + inner[1]})\n\t\t}\n",
+     "\t\t// 变异：刻意副本没同步内层重扫\n",
+     "TestR1039InnerRescanSpanContractMatchesMarkerbound"),
+
+    ("M9",
+     "内层重扫写成「有花括号就算标记」（= 「修漏检」的最省事写法）⇒ JSON 里的散文全被误判",
+     SANITIZE_REL,
+     "\tif !containsMarkerWordAnyWidth(candidate) {\n\t\treturn nil\n\t}\n",
+     "\tif !containsMarkerWordAnyWidth(candidate) {\n\t\treturn []string{candidate}\n\t}\n",
+     "TestR1039InnerRescan"),
 ]
 
 
@@ -134,7 +177,7 @@ def main():
         return 2
 
     targets = {}
-    for rel in (SANITIZE_REL, MARKERBOUND_REL):
+    for rel in (SANITIZE_REL, MARKERBOUND_REL, HOP_REL):
         path = os.path.join(tree, rel)
         if not os.path.exists(path):
             print(f"REFUSED: 副本里没有 {rel}")

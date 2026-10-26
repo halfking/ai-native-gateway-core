@@ -8,7 +8,7 @@ export default {
   submitting: 'Anmeldung läuft…',
   error: {
     required: 'Bitte Benutzername und Passwort eingeben',
-    failed: 'Anmeldung fehlgeschlagen',
+    failed: 'Anmeldung konnte nicht durchgeführt werden. Bitte Benutzername und Passwort prüfen und erneut versuchen.',
     apiKeyUnsupported: 'Dieses Konto meldet sich nicht mehr mit einem API-Schlüssel an. Bitte Benutzername und Passwort verwenden. Für Hilfe wenden Sie sich an einen Administrator.',
     badResponse: 'Die Anmeldeantwort war fehlerhaft. Bitte erneut versuchen oder einen Administrator kontaktieren.',
   },

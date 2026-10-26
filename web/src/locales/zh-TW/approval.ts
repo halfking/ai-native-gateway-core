@@ -57,10 +57,10 @@ export default {
       info: '第 {page} / {totalPages} 頁（共 {total} 筆）',
     },
     errors: {
-      approveFailed: 'Approve failed',
-      rejectFailed: 'Reject failed',
+      approveFailed: '審批沒能通過，請重試',
+      rejectFailed: '駁回沒能完成，請重試',
 
-      loadListFailed: '載入審核清單失敗',
+      loadListFailed: '審批列表沒能載入出來，請重試',
     },
     success: {
       approved: 'Approved',
@@ -139,8 +139,8 @@ export default {
       rules: '定義哪些請求需要審批',
     },
     errors: {
-      loadFailed: '載入設定失敗',
-      saveFailed: '儲存失敗',
+      loadFailed: '審批設定沒能載入出來，請重試',
+      saveFailed: '審批設定沒能儲存，請重試',
     },
     success: {
       saved: '儲存成功',

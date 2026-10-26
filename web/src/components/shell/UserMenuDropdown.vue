@@ -2,6 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { store } from '../../store'
+import { CaretBottom, CaretTop } from '@element-plus/icons-vue'
 
 const emit = defineEmits<{
   'user-info': []
@@ -94,7 +95,7 @@ onBeforeUnmount(() => {
       @click.stop="toggle"
     >
       <span class="user-menu__name">{{ displayName }}</span>
-      <span class="user-menu__chevron" aria-hidden="true">{{ open ? '▲' : '▼' }}</span>
+      <span class="user-menu__chevron" aria-hidden="true"><CaretTop v-if="open" /><CaretBottom v-else /></span>
     </button>
 
     <Teleport to="body">
@@ -206,7 +207,6 @@ onBeforeUnmount(() => {
   min-width: 180px;
   padding: 6px;
   background: var(--kx-surface, var(--card));
-  border: 1px solid var(--kx-border, var(--border));
   border-radius: 12px;
   box-shadow: var(--kx-shadow-md);
   display: flex;
@@ -250,4 +250,9 @@ onBeforeUnmount(() => {
   from { opacity: 0; transform: translateY(-4px); }
   to { opacity: 1; transform: translateY(0); }
 }
+
+/* ── 2026-10-27 第 17 增量（AI 痕迹门 V3 · 插值形态）：图标尺寸 ──
+   element-plus 图标是裸 <svg viewBox="0 0 1024 1024">，**不带 width/height**
+   ⇒ 浏览器按包含块宽度渲染（会撑爆布局）⇒ 必须显式定尺寸。 */
+.user-menu__chevron > svg { width: 10px; height: 10px; }
 </style>

@@ -1,0 +1,85 @@
+# 总览 / 实时拓扑 / 接入引导
+# 首页、仪表盘、实时拓扑、请求详情全页、示例、对话。
+# 路由清单来自 web/src/router.ts（见 maestro/README.md 的逐条核对表）。
+# 计时：每个页面 openLink 前打点 output.t0，页面关键文案可见后算 output.ms__<slug>（毫秒）。
+#       阈值 2000ms 用 optional 断言 —— 慢页只标记不失败，事后用 maestro/tools/slow-pages.mjs 筛。
+appId: ${BASE_URL}
+---
+- launchApp
+- runFlow:
+    file: _shared/login.yaml
+    env:
+      ADMIN_USER: ${ADMIN_USER}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD}
+
+# ── / ─────────────────────────────────────────────
+- evalScript: "${output.t0 = Date.now()}"
+- openLink: "${BASE_URL}/"
+- extendedWaitUntil:
+    visible: '仪表盘'
+    timeout: 20000
+- evalScript: "${output.ms__root = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}"
+- assertTrue:
+    condition: "${output.ms__root < 2000}"
+    optional: true
+    label: 'slow-check:/'
+
+# ── /dashboard ─────────────────────────────────────────────
+- evalScript: "${output.t0 = Date.now()}"
+- openLink: "${BASE_URL}/dashboard"
+- extendedWaitUntil:
+    visible: '仪表盘'
+    timeout: 20000
+- evalScript: "${output.ms__dashboard = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}"
+- assertTrue:
+    condition: "${output.ms__dashboard < 2000}"
+    optional: true
+    label: 'slow-check:/dashboard'
+
+# ── /live ─────────────────────────────────────────────
+- evalScript: "${output.t0 = Date.now()}"
+- openLink: "${BASE_URL}/live"
+- extendedWaitUntil:
+    visible: '实时拓扑'
+    timeout: 20000
+- evalScript: "${output.ms__live = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}"
+- assertTrue:
+    condition: "${output.ms__live < 2000}"
+    optional: true
+    label: 'slow-check:/live'
+
+# ── /live/request/:requestId ─────────────────────────────────────────────
+- evalScript: "${output.t0 = Date.now()}"
+- openLink: "${BASE_URL}/live/request/${REQUEST_ID}"
+- extendedWaitUntil:
+    visible: '请求详情'
+    timeout: 20000
+- evalScript: "${output.ms__live_request_requestId = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}"
+- assertTrue:
+    condition: "${output.ms__live_request_requestId < 2000}"
+    optional: true
+    label: 'slow-check:/live/request/:requestId'
+
+# ── /examples ─────────────────────────────────────────────
+- evalScript: "${output.t0 = Date.now()}"
+- openLink: "${BASE_URL}/examples"
+- extendedWaitUntil:
+    visible: '接入指南'
+    timeout: 20000
+- evalScript: "${output.ms__examples = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}"
+- assertTrue:
+    condition: "${output.ms__examples < 2000}"
+    optional: true
+    label: 'slow-check:/examples'
+
+# ── /chat ─────────────────────────────────────────────
+- evalScript: "${output.t0 = Date.now()}"
+- openLink: "${BASE_URL}/chat"
+- extendedWaitUntil:
+    visible: '对话'
+    timeout: 20000
+- evalScript: "${output.ms__chat = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}"
+- assertTrue:
+    condition: "${output.ms__chat < 2000}"
+    optional: true
+    label: 'slow-check:/chat'

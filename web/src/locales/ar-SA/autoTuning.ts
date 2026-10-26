@@ -2,7 +2,7 @@
 export default {
     refresh: 'تحديث',
     refreshing: 'جارٍ التحديث…',
-    loadFailed: 'فشل التحميل',
+    loadFailed: 'تعذّر تحميل الضبط التلقائي. أعد المحاولة.',
     panelTitle: 'مقترحات الضبط (الموافقة = تطبيق ساخن خلال 5 دقائق)',
     noProposals: 'لا توجد مقترحات بعد (ينشئها feedback_analyzer حسب النافذة)',
   filter: {

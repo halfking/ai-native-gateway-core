@@ -2,7 +2,7 @@
 export default {
     refresh: 'Actualizar',
     refreshing: 'Actualizando…',
-    loadFailed: 'Error al cargar',
+    loadFailed: 'No se pudo cargar el perfil de tarea. Vuelva a intentarlo.',
     noData: 'Sin datos de perfil',
   registry: {
     version: 'Versión del registro',

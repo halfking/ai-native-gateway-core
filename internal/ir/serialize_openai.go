@@ -616,12 +616,26 @@ func serializeOpenAIMessageContent(blocks []ContentBlock) []map[string]any {
 			}
 		case "audio":
 			// audit-provider-multimodal (2026-07-13): OpenAI audio output config in messages
+			// 2026-10-27 复审轮：三个 builder 都可能返回 nil（无载荷块不发），
+			// nil 守卫缺失会把 nil append 进数组 ⇒ 线格式出现 content:[null]。
 			if block.Audio != nil {
-				result = append(result, serializeOpenAIAudioBlock(block.Audio))
+				if b := serializeOpenAIAudioBlock(block.Audio); b != nil {
+					result = append(result, b)
+				}
 			}
 		case "input_audio":
 			// audit-provider-multimodal (2026-07-13): OpenAI chat audio input
-			if block.InputAudio != nil {
+			//
+			// ★★ 2026-10-27（12h 审计轮）：★ 与紧邻的 `case "audio"` 同族
+			// ★★ —— 后者有「载荷为空就不发」的守卫（serializeOpenAIAudioBlock
+			// ★★ 返回 nil ⇒ 调用方跳过），★ ★★ 而本分支此前**没有守卫**
+			// ★★ ⇒ 只要 `block.InputAudio != nil` 就无条件发出 ⇒
+			// ★★ ⇒ 发出 `{"input_audio":{"data":"","format":"mp3"}}` ⇒
+			// ★★ ⇒ **上游必 400**（OpenAI 的 input_audio 要 base64 数据 +
+			// ★★ wav|mp3 格式；空 data 不是合法输入）⇒ ⇒ 而且是**静默**的
+			// ★★ （客户端拿到的是上游 400，而不是本地可解释的错误）。
+			// ★★ ⇒ 本轮按同族口径补守卫：**没有载荷就不发**。
+			if block.InputAudio != nil && block.InputAudio.Data != "" {
 				result = append(result, map[string]any{
 					"type": "input_audio",
 					"input_audio": map[string]any{
@@ -633,9 +647,13 @@ func serializeOpenAIMessageContent(blocks []ContentBlock) []map[string]any {
 		case "video", "document":
 			// audit-provider-multimodal (2026-07-13): pass-through for Qwen-VL video, OpenAI file input
 			if block.Document != nil {
-				result = append(result, serializeOpenAIDocumentBlock(block.Document))
+				if b := serializeOpenAIDocumentBlock(block.Document); b != nil {
+					result = append(result, b)
+				}
 			} else if block.Video != nil {
-				result = append(result, serializeOpenAIVideoBlock(block.Video))
+				if b := serializeOpenAIVideoBlock(block.Video); b != nil {
+					result = append(result, b)
+				}
 			}
 		case "tool_use":
 			// tool_use blocks are converted to OpenAI tool_calls format and
@@ -822,47 +840,93 @@ func validateToolCallIntegrity(messages []map[string]any) error {
 // OpenAI Chat Completions audio input uses block type "input_audio", not
 // "audio"; emitting "audio" produces a block OpenAI rejects.
 // audit-provider-multimodal (2026-07-13): OpenAI audio output config + Gemini speech_config.
+//
+// 2026-10-26（Gemini fileData 转发修复）：Type="file_uri"（Gemini fileData
+// 解析产物，URI 载在 FileURI）此前没有任何分支 → 落进 default，而 default
+// 只读 Data / URL ⇒ 发出**空载荷**的 {"type":"input_audio"}（上游必 400）。
+// 现在 file_uri 与既有 url 形态同样以 url 槽位承载引用（与
+// irAudioToGeminiPart 的 FileURI 优先序一致），且 default 兜底也认 FileURI。
+// 另：Gemini 的 audio/mpeg ⇒ Format "mpeg"，而 OpenAI Chat input_audio.format
+// 的厂方枚举是 wav|mp3 ⇒ 在 OpenAI 边界归一 mpeg→mp3。
 func serializeOpenAIAudioBlock(audio *MediaSource) map[string]any {
 	// OpenAI Chat input audio block type is "input_audio".
 	block := map[string]any{"type": "input_audio"}
 	// input_audio carries data/url/file_id in the nested object.
 	inner := map[string]any{}
+	// openAIAudioFormat renders f in the OpenAI Chat format enum (wav|mp3);
+	// unknown values pass through so vendor dialects keep their own words.
+	openAIAudioFormat := func(f string) string {
+		if f == "mpeg" {
+			return "mp3"
+		}
+		return f
+	}
 	switch audio.Type {
 	case "base64":
-		inner["data"] = audio.Data
-		if audio.Format != "" {
-			inner["format"] = audio.Format
+		if audio.Data != "" {
+			inner["data"] = audio.Data
+			if audio.Format != "" {
+				inner["format"] = openAIAudioFormat(audio.Format)
+			}
 		}
 	case "url":
-		inner["url"] = audio.URL
-		if audio.Format != "" {
-			inner["format"] = audio.Format
+		if audio.URL != "" {
+			inner["url"] = audio.URL
+			if audio.Format != "" {
+				inner["format"] = openAIAudioFormat(audio.Format)
+			}
+		}
+	case "file_uri":
+		if audio.FileURI != "" {
+			inner["url"] = audio.FileURI
+			if audio.Format != "" {
+				inner["format"] = openAIAudioFormat(audio.Format)
+			}
 		}
 	case "file_id":
-		inner["file_id"] = audio.FileID
+		if audio.FileID != "" {
+			inner["file_id"] = audio.FileID
+		}
 	default:
 		// Fall back: if we have raw base64 data, emit it.
 		if audio.Data != "" {
 			inner["data"] = audio.Data
 			if audio.Format != "" {
-				inner["format"] = audio.Format
+				inner["format"] = openAIAudioFormat(audio.Format)
 			}
+		} else if audio.FileURI != "" {
+			inner["url"] = audio.FileURI
 		} else if audio.URL != "" {
 			inner["url"] = audio.URL
+		} else if audio.FileID != "" {
+			inner["file_id"] = audio.FileID
 		}
 	}
 	if len(inner) > 0 {
 		block["input_audio"] = inner
+		return block
 	}
-	return block
+	// 2026-10-27 复审轮：全空载荷（无 data/url/file_id/file_uri）不允许发出
+	// 裸 {"type":"input_audio"} —— 上游必 400。返回 nil 由调用方跳过并上报。
+	return nil
 }
 
 // serializeOpenAIVideoBlock converts a video content block to OpenAI-compatible output.
 // audit-provider-multimodal (2026-07-13): For Qwen-VL video and Gemini video input
 // (OpenAI does not have native video, so we pass through as input_file with video MIME).
+//
+// 2026-10-26（Gemini fileData 转发修复）：Type="file_uri"（Gemini fileData
+// 解析产物，URI 载在 FileURI）此前只读 video.URL ⇒ 发出 url:"" 的空 video_url
+// 块（上游必 400）。URL → FileURI 兜底与 irVideoToGeminiPart 的优先序一致。
+//
+// 2026-10-27 复审轮：file_id-only video（video_url.file_id 引用，Chat
+// Completions 无此表达）与全空 video 同样返回 nil —— 与 image file_id 的
+// 处理同款（跳过 + reportSerializeOpenAILosses 上报），不再发空块。
 func serializeOpenAIVideoBlock(video *MediaSource) map[string]any {
-	block := map[string]any{"type": "video_url"}
 	urlStr := video.URL
+	if urlStr == "" {
+		urlStr = video.FileURI
+	}
 	if video.Type == "base64" && video.Data != "" {
 		mt := video.MediaType
 		if mt == "" {
@@ -870,6 +934,10 @@ func serializeOpenAIVideoBlock(video *MediaSource) map[string]any {
 		}
 		urlStr = "data:" + mt + ";base64," + video.Data
 	}
+	if urlStr == "" {
+		return nil
+	}
+	block := map[string]any{"type": "video_url"}
 	inner := map[string]any{"url": urlStr}
 	if video.MediaType != "" {
 		inner["mime_type"] = video.MediaType
@@ -905,6 +973,11 @@ func serializeOpenAIDocumentBlock(doc *DocumentBlock) map[string]any {
 		if url == "" { // compatibility with pre-canonical IR rows
 			url = doc.Source.Data
 		}
+		// 2026-10-27 复审轮：url/text 双空 ⇒ file_data 会是 ""（空载荷块），
+		// 与 file_id 的空值护栏同款 —— 无身份的块不发，返回 nil。
+		if url == "" {
+			return nil
+		}
 		fileInner["file_data"] = url
 	case "file", "file_id":
 		// 2026-09-05 round2 复审: Anthropic-native Files API documents parse
@@ -925,7 +998,16 @@ func serializeOpenAIDocumentBlock(doc *DocumentBlock) map[string]any {
 			fileInner["file_id"] = fid
 		}
 	case "text":
+		// 空值护栏同上：空文本没有可表达的内容。
+		if doc.Source.Data == "" {
+			return nil
+		}
 		fileInner["file_data"] = doc.Source.Data
+	}
+	if len(fileInner) == 0 {
+		// 无 filename 且载荷分支未写入任何字段（如 base64 分支的 Data 为
+		// 空）—— 发 {"type":"file","file":{}} 与发空串同罪。
+		return nil
 	}
 	block["file"] = fileInner
 	return block
@@ -1050,6 +1132,49 @@ func reportSerializeOpenAILosses(req *InternalRequest, thinkingRendered bool) {
 					)
 				}
 			}
+			// 2026-10-27 复审轮：serializeOpenAIVideoBlock 自本轮起对无载荷
+			// video（file_id-only / 全空）返回 nil（块被跳过）—— 跳过必须
+			// 留痕，与 image.file_id 同款。block.Type 守卫防 raw 块误报。
+			if block.Type == "video" && block.Video != nil &&
+				block.Video.URL == "" && block.Video.FileURI == "" && block.Video.Data == "" {
+				ReportProtocolLoss(
+					"unknown",
+					fieldPathMessageContent(i, j, "video.file_id"),
+					ifaceNonEmpty(src, ProtocolGeminiGenerate),
+					ProtocolOpenAIChat,
+					"loss",
+					"video reference without URL/base64 cannot be expressed as an OpenAI Chat video_url; block dropped",
+					map[string]any{"message_index": i, "content_index": j, "carrier": block.Video.Type},
+				)
+			}
+			// 同轮：Source 为 nil 的 document 此前直接在 content[] 序列化成
+			// null（上游必拒），现在跳过 —— 跳过同样留痕。
+			if block.Type == "document" && block.Document != nil && block.Document.Source == nil {
+				ReportProtocolLoss(
+					"unknown",
+					fieldPathMessageContent(i, j, "document.source"),
+					ifaceNonEmpty(src, ProtocolGeminiGenerate),
+					ProtocolOpenAIChat,
+					"loss",
+					"document block carries no source; nothing to express on the wire, block dropped (previously serialized as a literal null in content[])",
+					map[string]any{"message_index": i, "content_index": j},
+				)
+			}
+			// 同轮：全空 audio 被 serializeOpenAIAudioBlock 跳过（防裸
+			// {"type":"input_audio"}）。四载体全空才算，file_id 有自己的槽位。
+			if block.Type == "audio" && block.Audio != nil &&
+				block.Audio.Data == "" && block.Audio.URL == "" &&
+				block.Audio.FileURI == "" && block.Audio.FileID == "" {
+				ReportProtocolLoss(
+					"unknown",
+					fieldPathMessageContent(i, j, "audio"),
+					ifaceNonEmpty(src, ProtocolGeminiGenerate),
+					ProtocolOpenAIChat,
+					"loss",
+					"audio block carries no payload carrier; block dropped",
+					map[string]any{"message_index": i, "content_index": j},
+				)
+			}
 			if src == ProtocolOpenAIChat {
 				continue
 			}
@@ -1081,7 +1206,9 @@ func reportSerializeOpenAILosses(req *InternalRequest, thinkingRendered bool) {
 	// / container are Anthropic-specific. Skip when source == OpenAI Chat
 	// (same-protocol with target = OpenAI Chat).
 	if src != ProtocolOpenAIChat {
-		if len(req.CacheControl) > 0 {
+		// 2026-10-27 缓存标准对齐轮：块级 marker（system 块/消息块/tool_result）
+		// 同样在 OpenAI 形状上无处安放，一并上报，不再静默蒸发。
+		if len(req.CacheControl) > 0 || hasBlockLevelCacheControl(req) {
 			ReportProtocolLoss(
 				"unknown",
 				"cache_control",

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { useI18n } from 'vue-i18n'
+import { surfaceError } from '../i18n/errorSurface'
 import { ref, onMounted, computed } from 'vue'
 import { listSettings, updateSetting, SettingItem } from '../api/settings'
 import { req } from '../api/_core'
@@ -146,7 +147,7 @@ async function loadStats() {
       last_updated: data.last_updated ?? new Date().toISOString(),
     }
   } catch (e: unknown) {
-    statsError.value = e instanceof Error ? e.message : String(e)
+    statsError.value = surfaceError(e)
     // 如果API不存在，使用模拟数据
     stats.value = {
       total_checks: 0,
@@ -236,7 +237,7 @@ async function loadConfig() {
       }
     }
   } catch (e: unknown) {
-    notifyError(e instanceof Error ? e.message : String(e))
+    notifyError(surfaceError(e))
   } finally {
     configLoading.value = false
   }
@@ -279,7 +280,7 @@ async function saveConfig() {
     }
     notifySuccess(t('outputCompliance.config.saveSuccess'))
   } catch (e: unknown) {
-    notifyError(e instanceof Error ? e.message : String(e))
+    notifyError(surfaceError(e))
   } finally {
     configSaving.value = false
   }

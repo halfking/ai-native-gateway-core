@@ -5,6 +5,7 @@ import {
   DefaultDataPoint,
   registerables
 } from 'chart.js'
+import { surfaceError } from '../i18n/errorSurface'
 import { onMounted, onUnmounted, ref, shallowRef, Ref } from 'vue'
 
 // 注册 Chart.js 所有组件
@@ -167,7 +168,7 @@ export function useChart<
       loading.value = false
       error.value = null
     } catch (e) {
-      error.value = e instanceof Error ? e.message : 'Failed to create chart'
+      error.value = surfaceError(e, { key: 'common.feedback.chartCreateFailed' })
       loading.value = false
     }
   }

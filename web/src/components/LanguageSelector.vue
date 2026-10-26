@@ -3,6 +3,7 @@ import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { setLocale } from '../i18n/index'
 import { languages } from '../i18n'
+import { Check } from '@element-plus/icons-vue'
 
 const { locale } = useI18n()
 const isOpen = ref(false)
@@ -67,7 +68,7 @@ onBeforeUnmount(() => {
       >
         <span class="language-flag">{{ lang.flag }}</span>
         <span class="language-name">{{ lang.name }}</span>
-        <span v-if="locale === lang.code" class="check-mark">✓</span>
+        <span v-if="locale === lang.code" class="check-mark"><Check /></span>
       </button>
     </div>
   </div>
@@ -104,9 +105,8 @@ onBeforeUnmount(() => {
   right: 0;
   min-width: 180px;
   background: var(--card);
-  border: 1px solid var(--border);
   border-radius: var(--radius);
-  box-shadow: 0 4px 12px var(--overlay-light);
+  box-shadow: var(--kx-shadow-sm);
   z-index: 1000;
   overflow: hidden;
 }
@@ -151,4 +151,10 @@ onBeforeUnmount(() => {
     display: none;
   }
 }
+
+/* ── 2026-10-27 第 17 增量（AI 痕迹门 V3）：图标尺寸 ──
+   element-plus 图标是裸 <svg viewBox="0 0 1024 1024">，**不带 width/height**
+   ⇒ 浏览器按包含块宽度渲染（会撑爆布局）⇒ 必须显式定尺寸。
+   尺寸沿用原字形的 font-size 观感（字形墨迹 ≈ 0.7em）。 */
+.check-mark > svg { width: 12px; height: 12px; }
 </style>

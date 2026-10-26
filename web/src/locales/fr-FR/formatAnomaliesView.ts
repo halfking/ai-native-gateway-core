@@ -93,9 +93,9 @@ export default {
   },
 
   error: {
-    loadFailed: 'Échec du chargement',
-    summaryLoadFailed: 'Échec du chargement des statistiques',
-    markFailed: 'Échec du marquage',
+    loadFailed: 'Le chargement des anomalies de format a échoué. Veuillez réessayer.',
+    summaryLoadFailed: 'Le chargement du résumé des anomalies de format a échoué. Veuillez réessayer.',
+    markFailed: 'Le marquage des anomalies de format n\'a pas pu aboutir. Veuillez réessayer.',
     needSuperAdmin: 'Permission super-admin requise',
   },
 

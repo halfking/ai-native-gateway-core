@@ -1712,7 +1712,14 @@ func candidateQuerySQLBase() string {
 		  			  AND (
 			      $3 = ''
 			      OR $3 = 'text'
-			      OR ($3 IN ('vision', 'audio') AND COALESCE(mc.modality, 'text') IN ($3, 'multimodal'))
+			      -- 2026-10-26：vision/audio/video 三种媒体请求都放行
+			      -- multimodal 登记的模型。video 此前缺席（只有精确
+			      -- mc.modality = 'video' 一条臂）⇒ 任何带视频块的
+			      -- Gemini/Qwen-VL 请求对全部 multimodal 模型 503，
+			      -- 而判定门（modalityVerdictGateSQL）早已把 video 与
+			      -- vision/audio 同列 —— 迁移 451 把 video 加进枚举的
+			      -- 理由正是「modality_detect 能返回 video」。
+			      OR ($3 IN ('vision', 'audio', 'video') AND COALESCE(mc.modality, 'text') IN ($3, 'multimodal'))
 			      -- 2026-10-08 Phase C: dedicated /v1/images/* uses modality=image
 			      -- and accepts vision|image|multimodal catalog rows.
 			      OR ($3 = 'image' AND COALESCE(mc.modality, 'text') IN ('image', 'vision', 'multimodal'))
@@ -2485,6 +2492,16 @@ func (c *Client) fetchRevealDB(ctx context.Context, providerID, credentialID int
 	}
 	if len(ciphertext) == 0 {
 		return "", nil
+	}
+	// 2026-10-26 多模态标准接口轮：启动期 catalog 播种曾把本地供应商占位
+	// key **明文**写进 secret_ciphertext（历史 ensureLocalCredentialsFor-
+	// SeededProviders 无加密设施）——不解密直通，否则这些凭据的路由候选
+	// 全被丢掉（enrichWithAPIKeys 拿不到 key ⇒ audioCandidateSelection 过
+	// 滤 ⇒ no_provider）。精确等于占位常量才直通：密文列出现该值 ⇔ 播种
+	// 路径写过它。播种路径现已改走真加密（见 provider/catalog/
+	// local_placeholder.go），本分支兜存量。
+	if string(ciphertext) == catalog.LocalNoKeyPlaceholder {
+		return catalog.LocalNoKeyPlaceholder, nil
 	}
 	pt, _, err := secret.DecryptAny(string(ciphertext), c.keyring, c.fernetKey)
 	if err != nil {

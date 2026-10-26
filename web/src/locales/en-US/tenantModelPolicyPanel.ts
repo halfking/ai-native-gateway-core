@@ -60,11 +60,11 @@ export default {
   },
 
   error: {
-    loadFailed: 'Failed to load',
-    checkFailed: 'Validation failed',
+    loadFailed: 'The tenant model policy could not be loaded. Please retry.',
+    checkFailed: 'The validation could not be completed. Please retry.',
     canonicalNameRequired: 'canonical_name is required',
-    createFailed: 'Failed to create',
-    deleteFailed: 'Failed to delete',
-    restoreFailed: 'Failed to restore',
+    createFailed: 'The tenant model policy could not be created. Please retry.',
+    deleteFailed: 'The tenant model policy could not be deleted. Please retry.',
+    restoreFailed: 'The tenant model policy could not be restored. Please retry.',
   },
 }

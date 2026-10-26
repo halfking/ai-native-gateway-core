@@ -11,7 +11,7 @@ export default {
   // VibeCoding
   vibecoding: {
     title: 'VibeCoding',
-    loadFailed: 'Échec du chargement des données',
+    loadFailed: 'Le chargement des données de VibeCoding a échoué. Veuillez réessayer.',
     fillRequired: 'Veuillez remplir les champs obligatoires',
     projects: 'Projets',
     sessions: 'Sessions',
@@ -19,11 +19,11 @@ export default {
     createProject: 'Créer un projet',
     createProjectTitle: 'Créer un nouveau projet',
     createProjectSuccess: 'Projet créé avec succès',
-    createProjectFailed: 'Échec de la création du projet',
+    createProjectFailed: 'La création du projet a échoué. Veuillez réessayer.',
     newSession: 'Nouvelle session',
     createSessionTitle: 'Créer une nouvelle session',
     createSessionSuccess: 'Session créée avec succès',
-    createSessionFailed: 'Échec de la création de la session',
+    createSessionFailed: 'La création de la session a échoué. Veuillez réessayer.',
     viewSessions: 'Voir les sessions',
     viewReviews: 'Voir les revues',
     showAll: 'Tout afficher',

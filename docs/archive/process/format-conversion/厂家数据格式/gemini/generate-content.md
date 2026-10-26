@@ -132,13 +132,16 @@ Authorization: Bearer {ACCESS_TOKEN}
 ```json
 {
   "systemInstruction": {
-    "role": "system",
     "parts": [
       {"text": "You are a helpful assistant."}
     ]
   }
 }
 ```
+
+> 勘误（2026-10-26）：本节示例此前带 `"role": "system"` —— 厂方 `GenerateContentRequest`
+> 参考明确写「**The role field of systemInstruction is ignored**」，而 `Content.role` 的取值域
+> 只有 `user` / `model`。⇒ 示例已订正；权威版本见 `docs/vendor-formats/gemini.md` §System Instruction。
 
 ### Generation Config
 

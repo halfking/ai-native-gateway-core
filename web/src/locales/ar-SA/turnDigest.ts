@@ -40,5 +40,5 @@ export default {
   openAttachment: 'تنزيل',
   retry: 'إعادة المحاولة',
   openingAttachment: 'جارٍ الفتح…',
-  openAttachmentFailed: 'فشل فتح المرفق',
+  openAttachmentFailed: 'تعذّر فتح المرفق. تحقق من الملف ثم أعد المحاولة.',
 }

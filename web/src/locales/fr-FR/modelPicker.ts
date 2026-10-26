@@ -1,3 +1,3 @@
 export default {
-  loadFailed: 'Le chargement de la liste des modèles a échoué. Veuillez réessayer.',
+  loadFailed: 'Le chargement des modèles disponibles a échoué. Veuillez réessayer.',
 }

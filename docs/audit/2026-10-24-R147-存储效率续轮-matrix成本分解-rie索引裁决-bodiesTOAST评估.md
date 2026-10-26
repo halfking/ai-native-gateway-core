@@ -1,6 +1,9 @@
 # R147 · 存储效率续轮 —— ㉙ matrix REFRESH 成本分解 / ㉘ rie 三索引裁决（迁移 908）/ ③ bodies TOAST 拆分评估
 
 > 承接 R146（§143.102/§143.103 + 审计档 §8）。**对生产的写入 = 0**：
+> ★★ **2026-10-26 批判式审计横幅：本档写档时「908 只落仓未应用」成立；10-25 起它已
+> 被 deploy 154 build_seq 2828 应用到共享生产库并 verified —— 全部订正与地面真值见 §9**。
+> （原文保留，读时带本横幅。）
 > 252 全程只读（全部 SELECT/EXPLAIN，含两次 EXPLAIN ANALYZE——只读 SELECT，
 > 会话级抬 statement_timeout，与一次生产 REFRESH 同量级）；唯一落地 = 迁移 908
 > **只落仓**，生产应用需属主授权（902 同款）。
@@ -106,7 +109,7 @@ pgss 5.2 天窗口（10-18 22:03 reset）：
 | 组件 | 读数 | 说明 |
 |---|---|---|
 | ss 侧 Parallel Index Scan（tenant_time 全索引扫+过滤） | **hit 274K + read 22.7K ≈ 296,890 touches（91.9%）** | 本质是 **35.2 万次逐行 heap fetch**（窗口行散布全堆）；不是索引选择问题 |
-| sd 侧 Parallel Seq Scan（session_dim 全堆） | **26,422 touches（206MB），其中 read=24,581** | **每次都从盘读**（898,919 行的堆冷得很彻底） |
+| sd 侧 Parallel Seq Scan（session_dim 全堆） | **26,422 touches（206MB），冷态 read=24,581** | ★★〔§9.3 订正〕「每次都从盘读」只对**冷态**成立 —— 热态复跑实测全 hit（read=0）；生产介于两者之间 |
 | Sort（GROUP BY） | external merge，3 worker 各 9.4~12.2MB disk | work_mem=8MB ⇒ 必外排 |
 | Parallel Hash | **Batches: 4**（hash 侧也溢出） | 同上 |
 | temp 合计 | **16,850 blocks ≈ 131.6MB 写 + 131.3MB 读 / 次** | 外排 + hash 分批 |
@@ -158,7 +161,8 @@ hot 表另有 TOAST 1,006MB（8h 保留，稳态）。
 | 两 attachments | ~100%（多为 `[]`） | 11/5 B | <1 MB | ~0 |
 
 外推合计 ≈5.9GiB，与 TOAST 实测 6,081MB 吻合（闭环）。增长节奏 ≈253MB/天
-（10 月均值口径）⇒ ~7.8GB/月。
+〔§9.4 补推导：= 6,081MB ÷ 24 天（分区自 10-01 起累加；promote 只 INSERT..ON
+CONFLICT DO NOTHING、月分区行不更新 ⇒ 总量/天数成立）〕⇒ ~7.6GB/月。
 
 ### §4.3 拆分评估结论（属主拍板材料）
 
@@ -186,3 +190,82 @@ hot 表另有 TOAST 1,006MB（8h 保留，稳态）。
 5. ③ 的外推基于 1% 系统采样（页级，行内可能聚簇）；列占比与 TOAST 总量的
    闭环吻合（5.9 vs 6.08 GiB，差 ~3%）支撑其可信度。
 6. 908 只落仓未应用；252 上 idx_route_incident_events_type_created 仍在位。
+
+---
+
+## §9 批判式审计轮（2026-10-26，252 只读复核 + 终态回归）
+
+> 用户要求对本轮产物批判式审计。以下每条 = 审计发现 + 处置；252 查询全部只读。
+
+### §9.0 ★★★ 事实改写：908 已被部署列车应用到生产（本档「只落仓」表述全部过时）
+
+- **证据**：`docs/db-changelog.md` 台账行 **908 = applied+verified**（deploy **154
+  build_seq 2828**，基提交 `9074b88a` = 本轮合并提交；2026-10-25T02:27:36Z / 台账
+  `2026-10-25 10:27:36+08`）。
+- **252 地面真值（10-26 只读复核）**：`pg_indexes` 里 `idx_route_incident_events_type_created`
+  = **0 行（已删）**；幸存四索引恰为判决形态（created_at / incident_created / pkey /
+  uq_idem）；`uq_idem` idx_scan 422,297 → **482,015**（写路径健康）；表行数
+  1,897,740 → 1,924,746（+27K，自然增长）。
+- **定性**：生产应用发生在本会话**之外**（部署列车按 pending 集投递，非本轮动作）；
+  本轮对其只有「落仓」写入。判决经受住了生产验证：无回滚、无伴生故障读数。
+  §1/§5.6 与 runbook §143.104.5 的「只落仓未应用」按**写档时点**为真，现已过时 ⇒ 以本节为准。
+
+### §9.1 F1 objects 出处文件复活通道核查 → 无缺陷（但值得留痕）
+
+`sql/objects/indexes/idx_route_incident_events_type_created.sql` 存在且无退役标记。
+核查结论：**该树是 provenance registry 不是交付通道** —— `sql/schema/generator_contract_test.go`
+只读它做溯源断言（TestEveryBaselineObjectHasRepoProvenance），scripts/installer/deploy
+无任何应用方；718 先例核实：被删索引的三个 objects 文件（idx_routing_decision_log_hot_ts 等）
+**原样保留、不加标记**，五周无复活事故。fresh-install 链 = baseline 建出 → 908 删掉。
+⇒ **处置：不改动（不偏离 718 先例）**；本条留痕防后人把「objects 里有文件」误读成「索引该在」。
+
+### §9.2 F2 陈旧引用清点与一处「有意不修」
+
+- 迁移正本头注的取号留痕已含两次让号全 trace（903→905→908）✓；审计档/runbook/AGENTS
+  的迁移号引用面已订正（纯文档，无 sha 影响）。
+- ★ **down 文件头注残留「903 删的是」一处 —— 有意不修**：908 已 applied+verified
+  （sha `bcd401ec…` 记账），改文件内容会让 `verify-migration-checksums` 台账比对红；
+  注释级瑕疵不值一次内容指纹再投递 ⇒ 登记为已知妆疵。
+
+### §9.3 F3 冷热过度声明订正
+
+§3.2「session_dim **每次**都从盘读」只对冷态成立（第一次 EXPLAIN ANALYZE read=24,581）；
+热态复跑实测全 hit（hit=26,422 / read=0）。生产 REFRESH 每 ~55min 一轮、共享缓存被
+持续冲刷 ⇒ 现实介于两者之间，「每次必冷」不成立。已就地加订正标记。
+
+### §9.4 F4 增长率推导补写
+
+§4.2 的 ≈253MB/天 原文缺推导链。补：= 6,081MB ÷ 24 天（分区自 10-01 起累加；
+promote 只 `INSERT..ON CONFLICT DO NOTHING`、月分区行不更新 ⇒ 「总量/天数」成立）；
+据此 ~7.6GB/月（原文写 ~7.8GB，同源修正）。
+
+### §9.5 F5 五段生命周期终态复验
+
+首轮验的是 903 号文件；两轮让号后未重跑。本轮用**最终 908 文件**在一次性库
+`itgate_147b`（即建即弃）重跑：建 → up（删）→ 幂等重跑 → down（同形重建）→ 再 up（再删）
+**全绿**，退出即 DROP。
+
+### §9.6 F6 终态全量回归
+
+`go build ./...` ✓；`go test ./sql/migrations/startup/ ./db/` ✓；
+installer 模块 `go test ./cmd/llm-gw-installer/ ./internal/dbinit/` → 见 §9.7（修后 ✓）；
+`gofmt -l` 触及面 ✓（3 个提示文件均非本轮触碰，他人会话遗留，不动）。
+
+### §9.7 ★ F7 顺带修 main 上的新红门（并行会话 909 漏登记）
+
+`fc6c17111`（R156 · D17-A）把 **909_session_summaries_search_trgm_indexes** 登记进
+StartupFiles，但**漏了 `knownStartupChainConcurrencyViolations`** ⇒
+`TestRegisteredStartupMigrationsCanRunInSingleTransaction` 红在 main（挡所有人）。
+机械修复：登记计数 4 + 理由（session_summaries 83 万行热表，CONCURRENTLY 是对的）；
+**只登记、不改其文件**（非本轮产物）。修后 installer 模块全绿。
+
+### §9.8 F8 ursmcheck 全量
+
+`go test ./scripts/ursmcheck/ -count=1` → **ok（315.3s，终态全绿）**；含并行会话的
+stderr 部分块测试（其提交已自修）与本轮让号后的节号唯一性门（37 对）。
+
+### §9.9 F9 一致性抽查
+
+TSV 行 `310  908_…` ✓；门常量 sha = embeddata = 台账（sha `bcd401ec…` / down
+`4533a81f…`，gate 通过即证）✓；台账 pending 行与 applied 行并存 = 台账多行的正式语义
+（LESSONS §302）✓。

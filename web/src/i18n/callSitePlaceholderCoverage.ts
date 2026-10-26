@@ -102,7 +102,9 @@ export const UNRESOLVED_REGISTRY: Array<{
 }> = [
   {
     file: 'src/components/NodeStatusMatrix.vue',
-    line: 193,
+    // ⚠️ 行号会随文件编辑漂移（2026-10-27 第 17 增量：新增一行 icons-vue import ⇒ 193 → 194）
+    //    ⇒ 改这个文件后**必须**同步这一行，否则门会同时报「新增未决」与「登记过期」两个红。
+    line: 194,
     reason: 'dynamic-key',
     keys: [
       'requestJourneys.matrix.groupDanger',
@@ -126,8 +128,11 @@ export const UNRESOLVED_REGISTRY: Array<{
       'OperationAgreementDialog.vue:62-65）⇒ 静态不可知，候选键取自该三元。',
   },
   {
+    // ⚠ 行号锚点：2026-10-27 第 16 增量（错误出口轮）由 296 改为 297。
+    //   迁移在文件顶部插入 1 行 `import { surfaceError } …` ⇒ 296 之后的行整体后移 1 行。
+    //   锚点内容（`flash(t('freeDiscovery.res.importedToast', { ...summary }))`）逐字未变。
     file: 'src/views/FreeDiscoveryView.vue',
-    line: 296,
+    line: 297,
     reason: 'spread-params',
     keys: ['freeDiscovery.res.importedToast'],
     params: ['imported', 'skipped', 'conflicted', 'failed'],

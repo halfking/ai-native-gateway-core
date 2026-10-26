@@ -127,5 +127,5 @@ export default {
 
   // 同步的扁平键
   savedOk: 'Saved',
-  testFailedShort: 'Test failed',
+  testFailedShort: 'The work type test could not be completed. Please retry.',
 }

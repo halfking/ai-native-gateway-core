@@ -31,6 +31,7 @@ import {
   type TopoPluginChip,
 } from '../../types/liveTopology'
 import type { GatewayCoreBox } from '../../types/liveTopology'
+import { Coin } from '@element-plus/icons-vue'
 
 const props = defineProps<{
   box: GatewayCoreBox
@@ -153,7 +154,7 @@ const title = computed(() => t('liveTopology.gateway.title'))
             :aria-label="`${cell.label} ${cell.count}`"
             @click="emit('select-module', cell.key)"
           >
-            <span class="gw__store-icon" aria-hidden="true">▤</span>
+            <span class="gw__store-icon" aria-hidden="true"><Coin /></span>
             <span class="gw__cell-label">{{ cell.label }}</span>
             <span class="gw__cell-count">{{ cell.count }}</span>
           </button>
@@ -205,7 +206,6 @@ const title = computed(() => t('liveTopology.gateway.title'))
   background:
     linear-gradient(180deg, color-mix(in srgb, var(--kx-primary) 10%, transparent), transparent 40%),
     color-mix(in srgb, var(--kx-surface) 92%, transparent);
-  box-shadow: var(--kx-shadow-md);
   pointer-events: none;
   overflow: hidden;
 }
@@ -481,4 +481,10 @@ const title = computed(() => t('liveTopology.gateway.title'))
     animation: none;
   }
 }
+
+/* ── 2026-10-27 第 17 增量（AI 痕迹门 V3）：图标尺寸 ──
+   element-plus 图标是裸 <svg viewBox="0 0 1024 1024">，**不带 width/height**
+   ⇒ 浏览器按包含块宽度渲染（会撑爆布局）⇒ 必须显式定尺寸。
+   尺寸沿用原字形的 font-size 观感（字形墨迹 ≈ 0.7em）。 */
+.gw__store-icon > svg { width: 12px; height: 12px; }
 </style>

@@ -109,10 +109,10 @@ export default {
   },
 
   error: {
-    loadFailed: 'Error al cargar',
-    summaryLoadFailed: 'Error al cargar estadísticas',
-    driftLoadFailed: 'Error al cargar la deriva de huella',
-    markFailed: 'Error al marcar',
+    loadFailed: 'No se pudo cargar los datos de integridad del modelo. Vuelva a intentarlo.',
+    summaryLoadFailed: 'No se pudo cargar las estadísticas de integridad del modelo. Vuelva a intentarlo.',
+    driftLoadFailed: 'No se pudo cargar los datos de deriva de huella. Vuelva a intentarlo.',
+    markFailed: 'No se pudo completar el marcado de integridad del modelo. Vuelva a intentarlo.',
     needSuperAdmin: 'Se requiere permiso de super-admin',
   },
 }

@@ -7,7 +7,7 @@ export default {
   exportExcel: 'Exporter en Excel',
   rerun: 'Recalculer le dernier jour',
   rerunDone: 'Recalcul terminé',
-  rerunFailed: 'Échec du recalcul',
+  rerunFailed: 'Le recalcul n’a pas pu aboutir. Veuillez réessayer.',
   // Couverture / état vide
   daysCovered: 'jours d’instantanés',
   unaggregatedDay: 'Non agrégé',

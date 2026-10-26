@@ -275,7 +275,13 @@ describe('RoutingAuditView：桌面审计表零回归', () => {
   it('展开行：colspan=8，两行 diff（变更前 / 变更后）', async () => {
     const w = await factory()
     const btn = w.findAll('.audit-table tbody tr.audit-row')[0]!.find('.btn-expand')
-    expect(btn.text()).toBe('+')
+    // 2026-10-27 第 17 增量（AI 痕迹门 V3）：展开按钮的 `+` / `−` 字形换成了
+    // element-plus 的 Plus / Minus 图标（craft-floor：Unicode 字形不得顶替图标系统）
+    // ⇒ 断言从「文本是 +」改成「折叠态与展开态渲染**不同**的图标」
+    //    （比原断言更强：原断言只验了折叠态，从没验过展开态）。
+    const collapsedIcon = btn.find('svg')
+    expect(collapsedIcon.exists()).toBe(true)
+    const collapsedHtml = collapsedIcon.html()
     await btn.trigger('click')
     await flushPromises()
     const exp = w.find('.audit-table tbody tr.expand-row')
@@ -284,6 +290,13 @@ describe('RoutingAuditView：桌面审计表零回归', () => {
     expect(exp.findAll('.diff-field')).toHaveLength(2)
     expect(exp.text()).toContain('2026-09-01T00:00:00Z')
     expect(exp.text()).toContain('2026-11-01T00:00:00Z')
+    // 展开后按钮上的图标必须与折叠态不同（Plus → Minus）
+    const expandedHtml = w
+      .findAll('.audit-table tbody tr.audit-row')[0]!
+      .find('.btn-expand')
+      .find('svg')
+      .html()
+    expect(expandedHtml).not.toBe(collapsedHtml)
     // 再点一次收起
     await w.findAll('.audit-table tbody tr.audit-row')[0]!.find('.btn-expand').trigger('click')
     await flushPromises()

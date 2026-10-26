@@ -11,7 +11,7 @@ export default {
   // VibeCoding
   vibecoding: {
     title: 'VibeCoding',
-    loadFailed: 'Daten konnten nicht geladen werden',
+    loadFailed: 'Daten konnten nicht geladen werden. Bitte erneut versuchen.',
     fillRequired: 'Bitte füllen Sie die erforderlichen Felder aus',
     projects: 'Projekte',
     sessions: 'Sitzungen',
@@ -19,11 +19,11 @@ export default {
     createProject: 'Projekt erstellen',
     createProjectTitle: 'Neues Projekt erstellen',
     createProjectSuccess: 'Projekt erfolgreich erstellt',
-    createProjectFailed: 'Projekt konnte nicht erstellt werden',
+    createProjectFailed: 'Projekt konnte nicht erstellt werden. Bitte erneut versuchen.',
     newSession: 'Neue Sitzung',
     createSessionTitle: 'Neue Sitzung erstellen',
     createSessionSuccess: 'Sitzung erfolgreich erstellt',
-    createSessionFailed: 'Sitzung konnte nicht erstellt werden',
+    createSessionFailed: 'Sitzung konnte nicht erstellt werden. Bitte erneut versuchen.',
     viewSessions: 'Sitzungen anzeigen',
     viewReviews: 'Reviews anzeigen',
     showAll: 'Alle anzeigen',

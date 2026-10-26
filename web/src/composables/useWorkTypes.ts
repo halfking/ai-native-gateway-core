@@ -5,6 +5,7 @@
 // Module-level state + inflight de-dupe so multiple mounts share one fetch.
 
 import { ref, type Ref } from 'vue'
+import { surfaceError } from '../i18n/errorSurface'
 import { listWorkTypes, type WorkTypeConfig } from '../api-work-types'
 
 const workTypes: Ref<WorkTypeConfig[]> = ref([])
@@ -21,7 +22,7 @@ async function refreshWorkTypes(includeDisabled = false): Promise<void> {
       const rows = await listWorkTypes(includeDisabled)
       workTypes.value = includeDisabled ? rows : rows.filter((w) => w.enabled)
     } catch (e: unknown) {
-      error.value = e instanceof Error ? e.message : String(e)
+      error.value = surfaceError(e)
     } finally {
       loading.value = false
       inflight = null

@@ -55,6 +55,6 @@ export default {
   },
 
   // 扁平键（供 Vue 组件直接使用）
-  loadFailed: '載入失敗',
+  loadFailed: '稽核記錄列表沒能載入出來，請重試',
   dash: '—',
 }

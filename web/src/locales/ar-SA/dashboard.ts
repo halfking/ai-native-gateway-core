@@ -34,7 +34,7 @@ v2: {
     super: "المستأجر الافتراضي",
     tenant: "المستأجر: {tenantId}"
   },
-  loadError: "فشل التحميل",
+  loadError: 'تعذّر تحميل بيانات لوحة المعلومات. أعد المحاولة.',
   board: {
     heroErrors: 'الأخطاء',
     heroInput: 'الإدخال',
@@ -101,7 +101,7 @@ v2: {
     selfcheckTitle: 'Self-check',
     pieClients: 'أنواع العملاء',
     pieDegraded: "غير متاح: {reason}. الترتيب الفارغ هنا يعني «لم يتم الحساب»، وليس «لا توجد بيانات».",
-    pieDegradedGeneric: "فشل استعلام الترتيب",
+    pieDegradedGeneric: 'تعذّر إتمام استعلام الترتيب. أعد المحاولة.',
     drillFailed: "تعذّر تحميل هذا التفصيل: {reason}. القائمة الفارغة هنا لا تعني عدم وجود أخطاء.",
     pieClientIp: 'عنوان IP للعميل',
     pieIdentity: 'بصمة الهوية',

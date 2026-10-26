@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { surfaceError } from '../i18n/errorSurface'
 import { useI18n } from 'vue-i18n'
 import {
   getAvailableModels,
@@ -7,7 +8,7 @@ import {
   type AvailableModelsResponse,
   type PopularModel,
 } from '../api'
-import { CaretBottom } from '@element-plus/icons-vue'
+import { CaretBottom, Close, StarFilled } from '@element-plus/icons-vue'
 
 const { t } = useI18n()
 
@@ -183,7 +184,7 @@ async function refreshModels(force = false) {
     vendorGroups.value = buildVendorGroups(data.families)
   } catch (e: unknown) {
     if (generation === modelsGeneration) {
-      loadErr.value = e instanceof Error ? e.message : t('modelPicker.loadFailed')
+      loadErr.value = surfaceError(e, { key: 'modelPicker.loadFailed' })
     }
   } finally {
     if (generation === modelsGeneration) loading.value = false
@@ -308,7 +309,7 @@ watch(() => props.modelValue, () => {
         <div v-if="multiValues.length" class="mp-chips" @click.stop>
           <span v-for="v in multiValues" :key="v" class="mp-chip">
             {{ v }}
-            <button type="button" class="mp-chip-x" :disabled="disabled" @click.stop="removeMultiChip(v)">×</button>
+            <button type="button" class="mp-chip-x" :disabled="disabled" @click.stop="removeMultiChip(v)"><Close /></button>
           </span>
         </div>
         <span v-else class="mp-placeholder">{{ placeholder }}</span>
@@ -330,8 +331,8 @@ watch(() => props.modelValue, () => {
             :disabled="disabled"
             :title="$t('common.terms.clear')"
             @click.stop="clearSingle"
-          >×</button>
-          <span class="mp-caret">▾</span>
+          ><Close /></button>
+          <span class="mp-caret"><CaretBottom /></span>
         </span>
       </button>
     </template>
@@ -342,7 +343,7 @@ watch(() => props.modelValue, () => {
         <div class="mp-dialog" role="dialog" :aria-label="title" @click.stop>
           <header class="mp-header">
             <h3 class="mp-title">{{ title }}</h3>
-            <button type="button" class="mp-close" :aria-label="$t('common.close')" @click="isMulti ? cancelMulti() : closeMain()">×</button>
+            <button type="button" class="mp-close" :aria-label="$t('common.close')" @click="isMulti ? cancelMulti() : closeMain()"><Close /></button>
           </header>
 
           <div class="mp-body">
@@ -360,7 +361,7 @@ watch(() => props.modelValue, () => {
                     :class="{ chosen: isSelected(m.canonical_name) }"
                     @click="onPick(m.canonical_name)"
                   >
-                    <span class="mp-star">★</span>
+                    <span class="mp-star"><StarFilled /></span>
                     <span class="mp-model-name">{{ displayName(m) }}</span>
                     <span v-if="m.count != null" class="mp-badge">{{ m.count }}</span>
                   </button>
@@ -382,7 +383,7 @@ watch(() => props.modelValue, () => {
                     :class="{ chosen: isSelected(v.canonical_name) }"
                     @click="onPick(v.canonical_name)"
                   >
-                    <span v-if="v.featured" class="mp-star">★</span>
+                    <span v-if="v.featured" class="mp-star"><StarFilled /></span>
                     <span class="mp-model-name">{{ displayName(v) }}</span>
                   </button>
                   <button
@@ -413,7 +414,7 @@ watch(() => props.modelValue, () => {
         <div class="mp-dialog mp-dialog--vendor" role="dialog" :aria-label="vendorOpen.vendor" @click.stop>
           <header class="mp-header">
             <h3 class="mp-title">{{ vendorOpen.vendor }}</h3>
-            <button type="button" class="mp-close" @click="closeVendor">×</button>
+            <button type="button" class="mp-close" @click="closeVendor"><Close /></button>
           </header>
           <div class="mp-body">
             <div class="mp-grid">
@@ -425,7 +426,7 @@ watch(() => props.modelValue, () => {
                 :class="{ chosen: isSelected(v.canonical_name) }"
                 @click="onPick(v.canonical_name)"
               >
-                <span v-if="v.featured" class="mp-star">★</span>
+                <span v-if="v.featured" class="mp-star"><StarFilled /></span>
                 <span class="mp-model-name">{{ displayName(v) }}</span>
               </button>
             </div>
@@ -505,9 +506,8 @@ watch(() => props.modelValue, () => {
   max-height: min(85vh, 720px);
   display: flex; flex-direction: column;
   background: var(--card);
-  border: 1px solid var(--border);
   border-radius: 12px;
-  box-shadow: 0 20px 50px var(--overlay-medium);
+  box-shadow: var(--kx-shadow-md);
   overflow: hidden;
 }
 .mp-dialog--vendor { width: min(640px, 100%); }
@@ -569,4 +569,14 @@ watch(() => props.modelValue, () => {
 .mp-footer--compact { justify-content: flex-end; }
 .mp-footer-hint { font-size: 12px; color: var(--muted); }
 .mp-footer-actions { display: flex; gap: 8px; }
+
+/* ── 2026-10-27 第 17 增量（AI 痕迹门 V3）：图标尺寸 ──
+   element-plus 图标是裸 <svg viewBox="0 0 1024 1024">，**不带 width/height**
+   ⇒ 浏览器按包含块宽度渲染（会撑爆布局）⇒ 必须显式定尺寸。
+   尺寸沿用原字形的 font-size 观感（字形墨迹 ≈ 0.7em）。 */
+.mp-chip-x > svg { width: 10px; height: 10px; }
+.mp-clear > svg { width: 0.7em; height: 0.7em; }
+.mp-caret > svg { width: 0.8em; height: 0.8em; }
+.mp-close > svg { width: 14px; height: 14px; }
+.mp-star > svg { width: 11px; height: 11px; }
 </style>

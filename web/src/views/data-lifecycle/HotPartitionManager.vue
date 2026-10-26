@@ -19,7 +19,7 @@
             ，后台每小时自动迁移
           </span>
           <button class="btn btn-sm btn-ghost" :disabled="loading" @click="loadAll">
-            <span :class="['reload-icon', { spinning: loading }]">↻</span>
+            <span :class="['reload-icon', { spinning: loading }]"><Refresh /></span>
             刷新
           </button>
         </div>
@@ -128,13 +128,7 @@
             :class="table.lastResult.status"
           >
             <div class="result-icon">
-              {{
-                table.lastResult.status === 'succeeded'
-                  ? '✓'
-                  : table.lastResult.status === 'failed'
-                  ? '✗'
-                  : '⚠'
-              }}
+              <CircleCheck v-if="table.lastResult.status === 'succeeded'" /><CircleClose v-else-if="table.lastResult.status === 'failed'" /><Warning v-else />
             </div>
             <div class="result-content">
               <div class="result-message">{{ table.lastResult.message }}</div>
@@ -394,7 +388,7 @@ import {
   promoteHotTable, dropPartition, listLifecycleJobs, getLifecycleJob,
   type JobRun, type JobStatus,
 } from '@/api/tuning'
-import { Warning } from '@element-plus/icons-vue'
+import { CircleCheck, CircleClose, Refresh, Warning } from '@element-plus/icons-vue'
 
 interface HotTable {
   name: string
@@ -1065,7 +1059,6 @@ function formatNumber(num: number): string {
   background: color-mix(in srgb, var(--accent) 20%, transparent);
   border-color: var(--accent);
   color: var(--accent-h);
-  box-shadow: -1px 0 0 0 var(--accent);
 }
 
 :global(.retention-radio .el-radio-button.is-active .el-radio-button__inner) {
@@ -1506,11 +1499,10 @@ function formatNumber(num: number): string {
 
 .modal-dialog {
   background: var(--card);
-  border: 1px solid var(--border);
   border-radius: 12px;
   width: 90%;
   max-width: 500px;
-  box-shadow: 0 20px 25px -5px var(--overlay-light);
+  box-shadow: var(--kx-shadow-md);
 }
 
 .modal-header {
@@ -1612,4 +1604,15 @@ function formatNumber(num: number): string {
   color: var(--muted);
   font-size: 13px;
 }
+
+/* ── 2026-10-27 第 17 增量（AI 痕迹门 V3）：图标尺寸 ──
+   element-plus 图标是裸 <svg viewBox="0 0 1024 1024">，**不带 width/height**
+   ⇒ 浏览器按包含块宽度渲染（会撑爆布局）⇒ 必须显式定尺寸。
+   尺寸沿用原字形的 font-size 观感（字形墨迹 ≈ 0.7em）。 */
+.reload-icon > svg { width: 13px; height: 13px; }
+
+/* ── 2026-10-27 第 17 增量（AI 痕迹门 V3 · 插值形态）：图标尺寸 ──
+   element-plus 图标是裸 <svg viewBox="0 0 1024 1024">，**不带 width/height**
+   ⇒ 浏览器按包含块宽度渲染（会撑爆布局）⇒ 必须显式定尺寸。 */
+.result-icon > svg { width: 14px; height: 14px; }
 </style>

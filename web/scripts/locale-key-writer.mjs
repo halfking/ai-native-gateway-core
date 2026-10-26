@@ -46,12 +46,24 @@ function lit(value) {
     .replace(/\t/g, '\\t')}'`
 }
 
-/** 取对象字面量里名为 name 的属性（只认 PropertyAssignment）。 */
+/**
+ * 取对象字面量里名为 name 的属性（只认 PropertyAssignment）。
+ *
+ * ★ 第 16 增量修正：**数字键**也必须认。
+ *   `errors.byStatus.400` 在语言包里是 `400: '…'`（NumericLiteral）。
+ *   第一版只认 Identifier / StringLiteral ⇒ 数字键被当成「缺失」
+ *   ⇒ 写入器会**追加一个同名重复键**（`400: '新值'` 出现在旧值下面）
+ *   ⇒ 对象字面量出现重复键 ⇒ 运行时取到的是**最后一个**（看起来「写了但没生效」）。
+ *   ⇒ 这正是「静默的错误落地」：工具报告「已写入」，值却可能没换掉。
+ */
 function findProp(objNode, name) {
   for (const p of objNode.properties) {
     if (!ts.isPropertyAssignment(p)) continue
     const n = p.name
-    const key = ts.isIdentifier(n) ? n.text : ts.isStringLiteral(n) ? n.text : null
+    const key = ts.isIdentifier(n) ? n.text
+      : ts.isStringLiteral(n) ? n.text
+      : ts.isNumericLiteral(n) ? String(n.text)
+      : null
     if (key === name) return p
   }
   return null

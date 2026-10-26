@@ -650,8 +650,14 @@ func observeAnthropicPayload(c *audit.StreamCapture, payload, clientModel, outbo
 		Message *struct {
 			Model string `json:"model"`
 			Usage struct {
-				InputTokens  *int `json:"input_tokens"`
-				OutputTokens *int `json:"output_tokens"`
+				InputTokens              *int `json:"input_tokens"`
+				OutputTokens             *int `json:"output_tokens"`
+				CacheReadInputTokens     *int `json:"cache_read_input_tokens"`
+				CacheCreationInputTokens *int `json:"cache_creation_input_tokens"`
+				CacheCreation            struct {
+					Ephemeral5mInputTokens *int `json:"ephemeral_5m_input_tokens"`
+					Ephemeral1hInputTokens *int `json:"ephemeral_1h_input_tokens"`
+				} `json:"cache_creation"`
 			} `json:"usage"`
 		} `json:"message"`
 		Usage *struct {
@@ -675,11 +681,27 @@ func observeAnthropicPayload(c *audit.StreamCapture, payload, clientModel, outbo
 			if v.Message.Model != "" {
 				checkAnthropicModelMismatch(c, clientModel, outboundModel, v.Message.Model)
 			}
+			// 2026-10-27 缓存监测轮：透传路径此前只喂 InputTokens/OutputTokens
+			//（预览注入用），标准捕获槽 prompt/cache 全空 ⇒ 透传流的
+			// prompt_tokens 落估算值、缓存命中整段不进台账。与桥路径同一把尺子：
+			// message_start 的输入侧 usage（含缓存命中/写入与其 TTL 分档）全部
+			// 进 ObserveUsage / ObserveCacheWriteSplit；nil 值被 setter 忽略，
+			// 不覆盖既有读数。
+			u := v.Message.Usage
+			if u.InputTokens != nil || u.OutputTokens != nil ||
+				u.CacheReadInputTokens != nil || u.CacheCreationInputTokens != nil {
+				c.ObserveUsage(u.InputTokens, u.OutputTokens, u.CacheReadInputTokens, u.CacheCreationInputTokens)
+			}
+			if u.CacheCreation.Ephemeral5mInputTokens != nil || u.CacheCreation.Ephemeral1hInputTokens != nil {
+				c.ObserveCacheWriteSplit(u.CacheCreation.Ephemeral5mInputTokens, u.CacheCreation.Ephemeral1hInputTokens)
+			}
 		}
 	case "message_delta":
 		if v.Usage != nil && v.Usage.OutputTokens != nil {
 			ot := *v.Usage.OutputTokens
 			c.OutputTokens = &ot
+			// 同上：message_delta 的累计 output_tokens 也进标准槽。
+			c.ObserveUsage(nil, &ot, nil, nil)
 		}
 	case "message_stop":
 		c.MarkDone()
@@ -821,8 +843,12 @@ func StreamAnthropicSSEToOpenAIWithDiagnostics(
 		// bridge so the terminal synthesized usage chunk (and the capture it
 		// feeds) no longer loses them — _request_logs cache columns were NULL
 		// for every Anthropic-upstream stream.
-		cacheReadTokens     int
-		cacheWriteTokens    int
+		cacheReadTokens  int
+		cacheWriteTokens int
+		// 2026-10-27 缓存监测轮：TTL 写入分档（message_start 嵌套
+		// cache_creation 对象），随合成 usage chunk 进 capture。
+		cacheWriteTTLShort  *int
+		cacheWriteTTLLong   *int
 		finishReason        *string
 		toolCallIndex       int
 		emittedRole         bool
@@ -1117,11 +1143,13 @@ func StreamAnthropicSSEToOpenAIWithDiagnostics(
 							writeChunk(&ir.StreamChunk{
 								Type: ir.ChunkTypeUsage,
 								Usage: &ir.StreamUsage{
-									PromptTokens:     inputTokens,
-									CompletionTokens: outputTokens,
-									TotalTokens:      inputTokens + outputTokens,
-									CacheReadTokens:  intPtrIfPositive(cacheReadTokens),
-									CacheWriteTokens: intPtrIfPositive(cacheWriteTokens),
+									PromptTokens:       inputTokens,
+									CompletionTokens:   outputTokens,
+									TotalTokens:        inputTokens + outputTokens,
+									CacheReadTokens:    intPtrIfPositive(cacheReadTokens),
+									CacheWriteTokens:   intPtrIfPositive(cacheWriteTokens),
+									CacheWriteTTLShort: cacheWriteTTLShort,
+									CacheWriteTTLLong:  cacheWriteTTLLong,
 								},
 								FinishReason:   "stop",
 								SourceProtocol: ir.ProtocolAnthropicMessages,
@@ -1198,6 +1226,14 @@ func StreamAnthropicSSEToOpenAIWithDiagnostics(
 				}
 				if chunk.Usage.CacheWriteTokens != nil {
 					cacheWriteTokens = *chunk.Usage.CacheWriteTokens
+				}
+				// 2026-10-27 缓存监测轮：TTL 写入分档随 message_start 进来，
+				// 汇进合成 usage chunk 喂给 capture（监测面）。
+				if chunk.Usage.CacheWriteTTLShort != nil {
+					cacheWriteTTLShort = chunk.Usage.CacheWriteTTLShort
+				}
+				if chunk.Usage.CacheWriteTTLLong != nil {
+					cacheWriteTTLLong = chunk.Usage.CacheWriteTTLLong
 				}
 			}
 
@@ -1529,11 +1565,13 @@ func StreamAnthropicSSEToOpenAIWithDiagnostics(
 				writeChunk(&ir.StreamChunk{
 					Type: ir.ChunkTypeUsage,
 					Usage: &ir.StreamUsage{
-						PromptTokens:     inputTokens,
-						CompletionTokens: outputTokens,
-						TotalTokens:      inputTokens + outputTokens,
-						CacheReadTokens:  intPtrIfPositive(cacheReadTokens),
-						CacheWriteTokens: intPtrIfPositive(cacheWriteTokens),
+						PromptTokens:       inputTokens,
+						CompletionTokens:   outputTokens,
+						TotalTokens:        inputTokens + outputTokens,
+						CacheReadTokens:    intPtrIfPositive(cacheReadTokens),
+						CacheWriteTokens:   intPtrIfPositive(cacheWriteTokens),
+						CacheWriteTTLShort: cacheWriteTTLShort,
+						CacheWriteTTLLong:  cacheWriteTTLLong,
 					},
 					FinishReason:   fr,
 					SourceProtocol: ir.ProtocolAnthropicMessages,

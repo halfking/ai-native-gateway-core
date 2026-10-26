@@ -668,7 +668,19 @@ func (h *Handler) encryptCred(plaintext []byte) (string, error) {
 // decryptCred decrypts a credential stored as either a v1 AES-GCM envelope or
 // a legacy Fernet token.  Returns (plaintext, isLegacy, error).
 // When isLegacy=true the caller MAY re-encrypt and update the DB row.
+//
+// 2026-10-26 多模态标准接口轮：占位常量 localNoKeyPlaceholder 的**明文**
+// 直通。历史成因：ensureLocalCredentialsForSeededProviders（启动期从 catalog
+// 播种本地供应商）没有 Handler 的加密设施，把占位 key 明文写进了
+// secret_ciphertext——该值不是秘密（是全仓公开常量），解密失败只会把
+// 「刷新模型/健康检查」卡死在 "credential decrypt failed"（211 实测：
+// refresh run 1ms 内失败）。明文直通等价于「按本来的值返回」，不引入任何
+// 可伪造面：密文列里出现该常量 ⇔ 播种路径写过它。播种路径现已改为真
+// 加密（SeedProvidersFromCatalog 接收加密器），本分支兜住全部存量行。
 func (h *Handler) decryptCred(ciphertext string) (string, bool, error) {
+	if ciphertext == localNoKeyPlaceholder {
+		return localNoKeyPlaceholder, false, nil
+	}
 	pt, isLegacy, err := secret.DecryptAny(ciphertext, h.keyring, h.encKey)
 	if err != nil {
 		return "", false, err

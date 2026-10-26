@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { Close } from '@element-plus/icons-vue'
 import {
   defaultChatSessionSettings,
   type ChatSessionSettings,
@@ -45,7 +46,7 @@ function resetDefaults() {
     <aside class="drawer" role="dialog" :aria-label="t('chat.params.title')">
       <div class="drawer__head">
         <h3>{{ t('chat.params.title') }}</h3>
-        <button type="button" class="drawer__close" @click="emit('close')">×</button>
+        <button type="button" class="drawer__close" @click="emit('close')"><Close /></button>
       </div>
       <p class="drawer__hint">{{ t('chat.params.nextTurnHint') }}</p>
       <div class="drawer__body">
@@ -251,4 +252,10 @@ function resetDefaults() {
   padding: 12px 16px;
   border-top: 1px solid var(--kx-border, var(--border));
 }
+
+/* ── 2026-10-27 第 17 增量（AI 痕迹门 V3）：图标尺寸 ──
+   element-plus 图标是裸 <svg viewBox="0 0 1024 1024">，**不带 width/height**
+   ⇒ 浏览器按包含块宽度渲染（会撑爆布局）⇒ 必须显式定尺寸。
+   尺寸沿用原字形的 font-size 观感（字形墨迹 ≈ 0.7em）。 */
+.drawer__close > svg { width: 13px; height: 13px; }
 </style>

@@ -180,24 +180,175 @@ func scanV1WriteOperationsInGo(t *testing.T, root string) []v1WriteHit {
 //	读成「2026 > 890 ⇒ 它跑在退役之后」⇒ **误判**（实测：那份文件在
 //	字典序里排第 60 位，远在 890（第 959 位）之前 ⇒ 它跑在 v1 还在的时候）。
 //
-// ⇒ 判据改用**字典序**，因为那正是各投递通道的真实顺序：
+// ★★★ 2026-10-27（v1 族退役完备性审计轮）**推翻**了本注释原先的后半句。
+// 原文写的是「判据改用**字典序**，因为那正是各投递通道的真实顺序」，并断言
+// 「installer 的显式列表与字典序一致」。
 //
-//	· scripts/init-local-db.sh：`for f in …/migrations/startup/[0-9]*.sql`
-//	· scripts/migrate-db-kaixuan1.sh：同样按 glob 顺序
-//	· installer/internal/dbinit/runner.go：显式列表，但数值前缀的排序与字典序一致
-//	  （实测：全部 v1 相关迁移都排在 890 之前 —— 最大的一个是 487c，第 940 位）。
+// ⇒ ★ **那条前提是假的**。本仓两条**显式列表**通道都是**手写的依赖序**：
+//
+//	· installer（312 条）：388, 392, **471, 426**, 470, 472, **456, 467**, …
+//	  ⇒ 890（索引 282）之后还排着 **361b / 375 / 376 / 387 / 427** —— 编号**更小**。
+//	· 部署通道（277 条）：860, **456, 351**, 629, 632, …
+//	  ⇒ 890 之后排着 **044_health_source_probe_now.sql**（**两位数**前缀）
+//	    ⇒ 按字典序它排第 ~40 位 ⇒ **旧判据把它判成「退役之前」，从未检视**。
+//
+// ⇒ ★★ 后果：**旧判据的绿是假绿**。结论碰巧成立（那 6 个文件确实不碰 v1，
+//
+//	本轮逐个核对过），但成立的原因**不是**门声称的那个原因 ⇒ ⇒ **门的检视范围
+//	本来就漏了它们** ⇒ 一旦有人往那 6 个文件里写 v1，门**不会红**。
+//
+// ⇒ ★ 修法（见 v1PostRetirementMigrationNames）：判据改成
+//
+//	「**在任一通道的真实顺序里排在 890 之后**」的**并集**。
 const v1RetirementAnchorFile = "890_drop_request_logs_v1_family.sql"
+
+// v1PostRetirementMigrationNames 返回「跑在退役之后」的启动迁移**文件名集合**。
+//
+// ★ 口径 = **三条投递通道各自的真实顺序**的并集：
+//
+//	① glob 通道（scripts/init-local-db.sh、scripts/migrate-db-kaixuan1.sh）：
+//	   `for f in …/migrations/startup/[0-9]*.sql` ⇒ **字典序**。
+//	② installer 通道：显式列表 `Runner.StartupFiles` ⇒ 顺序由
+//	   `sql/schema/installed_startup_migrations.tsv` 给出（该 tsv 由
+//	   installer/internal/dbinit/startup_manifest_test.go **逐条对拍** StartupFiles）。
+//	③ 部署通道：显式列表（scripts/apply-db-revision-sequence.sh）⇒ 从脚本里解析。
+//
+// ⇒ 三者取**并集**：任何一条通道会在退役之后投递的文件，都必须被扫到。
+//
+// ★ 为什么并集而不是「取最严格的一条」：三条通道服务于**不同的库**
+//
+//	（glob = 本地开发库、installer = 新装库、部署通道 = 存量生产库）
+//	⇒ 在 A 通道上跑在退役之后的文件，在 B 通道上可能跑在退役之前
+//	⇒ ⇒ 「退役之后」是**通道 + 文件**的二元属性 ⇒ 必须逐通道算 ⇒ 再并集。
+func v1PostRetirementMigrationNames(t *testing.T, root string) map[string]bool {
+	t.Helper()
+	out := map[string]bool{}
+
+	// ① glob 通道（字典序）
+	globDir := filepath.Join(root, "sql", "migrations", "startup")
+	entries, err := os.ReadDir(globDir)
+	if err != nil {
+		t.Fatalf("read %s: %v", globDir, err)
+	}
+	names := make([]string, 0, len(entries))
+	for _, e := range entries {
+		if !e.IsDir() && strings.HasSuffix(e.Name(), ".sql") {
+			names = append(names, e.Name())
+		}
+	}
+	sort.Strings(names)
+	anchorAt := -1
+	for i, n := range names {
+		if n == v1RetirementAnchorFile {
+			anchorAt = i
+			break
+		}
+	}
+	if anchorAt < 0 {
+		t.Fatalf("glob 通道里找不到退役锚点 %s", v1RetirementAnchorFile)
+	}
+	for _, n := range names[anchorAt+1:] {
+		out[n] = true
+	}
+
+	// ② installer 通道（tsv 给的显式顺序）
+	tsvPath := filepath.Join(root, "sql", "schema", "installed_startup_migrations.tsv")
+	tsvRaw, err := os.ReadFile(tsvPath)
+	if err != nil {
+		t.Fatalf("read %s: %v", tsvPath, err)
+	}
+	installerAnchor := -1
+	installerNames := []string{}
+	for _, line := range strings.Split(string(tsvRaw), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		parts := strings.Split(line, "\t")
+		if len(parts) < 2 {
+			continue
+		}
+		installerNames = append(installerNames, parts[1])
+	}
+	for i, n := range installerNames {
+		if n == v1RetirementAnchorFile {
+			installerAnchor = i
+			break
+		}
+	}
+	if installerAnchor < 0 {
+		t.Fatalf("installer 通道的 tsv 里找不到退役锚点 %s", v1RetirementAnchorFile)
+	}
+	for _, n := range installerNames[installerAnchor+1:] {
+		out[n] = true
+	}
+
+	// ③ 部署通道（脚本里的显式列表）
+	deployRaw, err := os.ReadFile(filepath.Join(root, "scripts", "apply-db-revision-sequence.sh"))
+	if err != nil {
+		t.Fatalf("read deploy script: %v", err)
+	}
+	deployNames := []string{}
+	for _, m := range regexp.MustCompile(`\$ROOT_DIR/sql/migrations/startup/([^\s"]+\.sql)`).
+		FindAllStringSubmatch(string(deployRaw), -1) {
+		deployNames = append(deployNames, m[1])
+	}
+	deployAnchor := -1
+	for i, n := range deployNames {
+		if n == v1RetirementAnchorFile {
+			deployAnchor = i
+			break
+		}
+	}
+	if deployAnchor < 0 {
+		t.Fatalf("部署通道的显式列表里找不到退役锚点 %s", v1RetirementAnchorFile)
+	}
+	for _, n := range deployNames[deployAnchor+1:] {
+		out[n] = true
+	}
+
+	// ★★ 覆盖率自证：下面这些文件在**字典序**里排在 890 **之前**
+	//   ⇒ 旧判据（纯字典序）会把它们判成「退役之前」⇒ **从未检视**。
+	//   ⇒ 它们必须出现在新集合里 ⇒ ⇒ 「改造」这件事本身是**可证伪**的。
+	//   ⇒ 一旦有人把判据改回纯字典序，这行会红。
+	//
+	//   · installer 通道（tsv 显式顺序）：361b / 375 / 376 / 387 / 427
+	//   · 部署通道（脚本显式列表）：044（**两位数**前缀 ⇒ 字典序第 ~40 位）
+	mustCover := []string{
+		"361b_provider_models_source_prelude.sql",
+		"375_offline_requests_status.sql",
+		"376_offline_activation_code.sql",
+		"387_session_analysis_inference.sql",
+		"427_task_type_centroids_model.sql",
+		"044_health_source_probe_now.sql",
+	}
+	for _, n := range mustCover {
+		if !out[n] {
+			t.Errorf("★ 投递序判据漏了 %q ⇒ 它在某条通道上跑在退役之后，"+
+				"却没被「退役之后不许写 v1」这道门扫到。", n)
+		}
+	}
+
+	return out
+}
 
 // scanV1WriteOperationsInMigrations 扫**跑在退役之后**的启动迁移。
 //
-// ⚠ 放行依据是**投递序**（字典序），不是「内容看起来像不像历史」：
+// ⚠ 放行依据是**投递序**（各通道的真实顺序的并集，见 v1PostRetirementMigrationNames），
 //
-//	跑在 890 **之前**的迁移写 v1 是正确的（那时 v1 族还在）。
+//	  不是「内容看起来像不像历史」：
 //
-// ⚠ 两条投递通道都要扫：canonical 目录（sql/migrations/startup/）与
+//		跑在 890 **之前**的迁移写 v1 是正确的（那时 v1 族还在）。
+//
+// ⚠ 两条投递通道的目录都要扫：canonical 目录（sql/migrations/startup/）与
 //
 //	installer 的 embeddata 孪生副本（installer/cmd/llm-gw-installer/
 //	embeddata/startup/）—— 新装库跑的是**孪生副本**那份。
+//
+// ★★ 2026-10-27 修正：扫的**文件集合**从「字典序里 890 之后」改成
+//
+//	「任一通道的真实顺序里 890 之后」的并集 ⇒ 补上了 6 个从未被检视的文件
+//	（installer 侧 5 个 + 部署通道 1 个 `044_health_source_probe_now.sql`）。
 //
 // ⚠ `.down.sql` **不豁免**：它是回滚脚本，跑在退役之前（字典序上 `.down.sql`
 //
@@ -206,42 +357,25 @@ const v1RetirementAnchorFile = "890_drop_request_logs_v1_family.sql"
 func scanV1WriteOperationsInMigrations(t *testing.T, root string) []v1WriteHit {
 	t.Helper()
 	var hits []v1WriteHit
+
+	post := v1PostRetirementMigrationNames(t, root)
+
 	dirs := []string{
 		filepath.Join(root, "sql", "migrations", "startup"),
 		filepath.Join(root, "installer", "cmd", "llm-gw-installer", "embeddata", "startup"),
 	}
 	for _, dir := range dirs {
-		entries, err := os.ReadDir(dir)
-		if err != nil {
-			t.Fatalf("read %s: %v", dir, err)
-		}
-		names := make([]string, 0, len(entries))
-		for _, e := range entries {
-			if !e.IsDir() && strings.HasSuffix(e.Name(), ".sql") {
-				names = append(names, e.Name())
-			}
-		}
-		sort.Strings(names)
-		// 找到退役锚点的位置；锚点之后 = 跑在 v1 族退役之后。
-		anchorAt := -1
-		for i, n := range names {
-			if n == v1RetirementAnchorFile {
-				anchorAt = i
-				break
-			}
-		}
-		if anchorAt < 0 {
-			t.Fatalf("%s 里找不到退役锚点 %s", dir, v1RetirementAnchorFile)
-		}
-		for _, name := range names[anchorAt+1:] {
-			b, err := os.ReadFile(filepath.Join(dir, name))
+		for name := range post {
+			path := filepath.Join(dir, name)
+			b, err := os.ReadFile(path)
 			if err != nil {
-				t.Fatalf("read %s: %v", name, err)
+				// ★ 该目录里没有这个文件（两条通道的文件集不完全相同）⇒ 跳过。
+				continue
 			}
 			body := stripSQLComments(string(b))
-			rel, err := filepath.Rel(root, filepath.Join(dir, name))
+			rel, err := filepath.Rel(root, path)
 			if err != nil {
-				rel = filepath.Join(dir, name)
+				rel = path
 			}
 			rel = filepath.ToSlash(rel)
 			for i, l := range strings.Split(body, "\n") {
@@ -254,6 +388,12 @@ func scanV1WriteOperationsInMigrations(t *testing.T, root string) []v1WriteHit {
 			}
 		}
 	}
+	sort.Slice(hits, func(i, j int) bool {
+		if hits[i].file != hits[j].file {
+			return hits[i].file < hits[j].file
+		}
+		return hits[i].line < hits[j].line
+	})
 	return hits
 }
 

@@ -136,11 +136,11 @@ export default {
     submitting: '保存中…',
     errors: {
       baseUrlRequired: '请先填写 Base URL',
-      probeFailed: '探测失败',
+      probeFailed: '新建供应商的探活没能完成，请重试',
       customCodeRequired: '请输入自定义供应商代码',
       customNameRequired: '请输入自定义供应商名称',
       customBaseUrlRequired: '请输入 Base URL',
-      createFailed: '创建失败',
+      createFailed: '供应商没能创建出来，请重试',
       catalogRequired: '请选择目录',
     },
   },
@@ -172,8 +172,8 @@ export default {
     remarkPlaceholder: '内部说明',
     errors: {
       baseUrlRequired: '请先填写 Base URL',
-      probeFailed: '探测失败',
-      saveFailed: '保存失败',
+      probeFailed: '供应商探活没能完成，请重试',
+      saveFailed: '供应商配置没能保存，请重试',
     },
   },
   credential: {
@@ -218,7 +218,7 @@ export default {
       balanceSourceApi: 'API 探测',
       balanceSourceManual: '手工输入：24h 内自动探测不覆盖',
       balanceRefreshTooltip: '立即调用厂商余额 API（GET，不消耗 token）',
-      balanceRefreshFailed: '余额探测失败',
+      balanceRefreshFailed: '余额探测没能完成，请重试',
       balanceUnsupported: '该厂商无公开余额 API（套餐类凭据请看套餐配额字段）',
       quotaExhausted: '配额耗尽',
       tagsPlaceholder: 'tag1, tag2',
@@ -245,13 +245,13 @@ export default {
     },
     errors: {
       apiKeyRequired: '请输入 API Key',
-      addFailed: '添加失败',
+      addFailed: '凭据没能添加，请重试',
       // 2026-08-31: 凭据删除为终态（status='deleted'），不可恢复。
       deleteConfirm: '确认删除该凭据？删除后该凭据及其绑定的所有路由将不再出现在任何列表中，且无法撤销。',
-      deleteFailed: '删除失败',
-      loadFailed: '凭据加载失败',
-      saveFailed: '保存凭据失败',
-      toggleFailed: '操作失败',
+      deleteFailed: '凭据记录没能删除，请重试',
+      loadFailed: '凭据列表没能加载出来，请重试',
+      saveFailed: '凭据配置没能保存，请重试',
+      toggleFailed: '凭据启停没能完成，请重试',
     },
     empty: '暂无凭据，点击「+ 凭据」添加',
   },
@@ -259,7 +259,7 @@ export default {
   // 在表里但 deleted_at 非空，所有列表/路由表均不再返回。
   providerDelete: {
     confirm: '确认删除该供应商？该供应商下的所有凭据将一并标记为已删除，所有相关模型路由将立即停止。该操作不可撤销。',
-    failed: '供应商删除失败',
+    failed: '供应商没能删除，请重试',
     success: '供应商已删除',
   },
   // 2026-08-31: 供应商已删除 toast。
@@ -269,12 +269,12 @@ export default {
   check: {
     providerStarted: '检测已启动',
     providerRunning: '已在检测中',
-    providerFailed: '检测失败',
+    providerFailed: '供应商检测没能完成，请重试',
     credentialStatusPrefix: '状态: {status}：',
     credentialModels: '模型接口正常',
     credentialProbeOk: '探活通过',
     credentialUnreachable: '不可用',
-    credentialFailed: '检测失败',
+    credentialFailed: '供应商凭据检测没能完成，请重试',
     diagnoseFailed: '诊断没能完成，请重试',
   },
   diagnose: {
@@ -356,7 +356,7 @@ export default {
   },
   emergencyConfirmAction: '确认执行「{action}」？\n将对 {credential} / {model} 生效。',
   emergencyTitle: '紧急维护',
-  emergencyUnavailable: '候选未加载，紧急维护暂不可用。',
+  emergencyUnavailable: '候选还没加载出来，紧急维护暂时用不了。请刷新后重试',
   emergencyIntro: '以下操作会立即改写运行态；执行前请确认影响范围。',
   forceDisable: '强制禁用',
   forceDisableDesc: '写入 manual_disabled=true，立即不可路由。',
@@ -373,7 +373,7 @@ export default {
   warningUrsmNotCleared: 'URSM 状态未清理，运行态可能仍需重试',
   actionDoneWithWarnings: '「{action}」已执行；{warnings}',
   actionDone: '「{action}」执行成功',
-  emergencyFailed: '紧急维护失败',
+  emergencyFailed: '紧急维护没能完成，请重试',
   // ── 2026-09-05: 设置与维护 · 生命周期状态 chips + 人工禁用状态 ──
   lifecycleTitle: '生命周期',
   lifecycleHint: '选择状态后立即保存生效；从「在用」切出需二次确认',
@@ -388,7 +388,7 @@ export default {
   lifecycleCurrent: '当前',
   lifecycleChangeConfirm: '确认将生命周期从「在用」切换为「{label}」（{value}）？\n该凭据将不再参与路由，可随时切回「在用」恢复。',
   lifecycleChangeDone: '生命周期已切换为「{label}」。',
-  lifecycleChangeFailed: '生命周期切换失败',
+  lifecycleChangeFailed: '生命周期没能切换，请重试',
   settingsNoChange: '设置无变更。',
   manualDisableTitle: '凭据禁用状态',
   manualDisabledBadge: '已人工禁用',

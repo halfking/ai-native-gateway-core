@@ -16,7 +16,7 @@ import { createHyperPages } from '../lib/shell/hyper/hyperPages'
 import ResponsiveDataView from '../components/ui/ResponsiveDataView.vue'
 import HyperLoadMore from '../components/ui/HyperLoadMore.vue'
 import type { CardField } from '../components/ui/CardList.vue'
-import { View, CircleClose, CircleCheck, Close } from '@element-plus/icons-vue'
+import { Check, CircleCheck, CircleClose, Close, View } from '@element-plus/icons-vue'
 
 const { t } = useI18n()
 const router = useRouter()
@@ -369,13 +369,13 @@ watch([statusFilter, riskLevelFilter, dateRangeStart, dateRangeEnd], () => {
     <div v-if="error" class="message message-error">
       <span class="message-icon"><CircleClose /></span>
       {{ error }}
-      <button class="message-close" @click="clearError">×</button>
+      <button class="message-close" @click="clearError"><Close /></button>
     </div>
 
     <div v-if="successMessage" class="message message-success">
       <span class="message-icon"><CircleCheck /></span>
       {{ successMessage }}
-      <button class="message-close" @click="clearMessage">×</button>
+      <button class="message-close" @click="clearMessage"><Close /></button>
     </div>
 
     <!-- Stats Cards -->
@@ -516,7 +516,7 @@ watch([statusFilter, riskLevelFilter, dateRangeStart, dateRangeEnd], () => {
                   @click="quickApprove(item)"
                   :title="t('approval.list.actions.approve')"
                 >
-                  ✓
+                  <Check />
                 </button>
                 <button
                   v-if="item.status === 'pending'"
@@ -993,4 +993,11 @@ watch([statusFilter, riskLevelFilter, dateRangeStart, dateRangeEnd], () => {
     padding: 8px;
   }
 }
+
+/* ── 2026-10-27 第 17 增量（AI 痕迹门 V3）：图标尺寸 ──
+   element-plus 图标是裸 <svg viewBox="0 0 1024 1024">，**不带 width/height**
+   ⇒ 浏览器按包含块宽度渲染（会撑爆布局）⇒ 必须显式定尺寸。
+   尺寸沿用原字形的 font-size 观感（字形墨迹 ≈ 0.7em）。 */
+.message-close > svg { width: 12px; height: 12px; }
+.btn-success.btn-xs > svg { width: 12px; height: 12px; }
 </style>

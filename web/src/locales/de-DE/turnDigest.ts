@@ -39,5 +39,5 @@ export default {
   openAttachment: 'Herunterladen',
   retry: 'Erneut versuchen',
   openingAttachment: 'Wird geöffnet…',
-  openAttachmentFailed: 'Anhang konnte nicht geöffnet werden',
+  openAttachmentFailed: 'Anhang konnte nicht geöffnet werden. Bitte die Datei prüfen und erneut versuchen.',
 }

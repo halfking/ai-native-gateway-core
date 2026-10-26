@@ -7,7 +7,7 @@ export default {
   exportExcel: 'Excel exportieren',
   rerun: 'Endtag neu ausführen',
   rerunDone: 'Neuausführung abgeschlossen',
-  rerunFailed: 'Neuausführung fehlgeschlagen',
+  rerunFailed: 'Die Neuausführung konnte nicht abgeschlossen werden. Bitte erneut versuchen.',
   // Abdeckung / Leerzustand
   daysCovered: 'Tage mit Snapshots',
   unaggregatedDay: 'Nicht aggregiert',

@@ -167,7 +167,7 @@ defineExpose({ open, close })
   background: var(--card);
   display: flex;
   flex-direction: column;
-  box-shadow: -4px 0 24px var(--overlay-light);
+  box-shadow: var(--kx-shadow-md-left);
 }
 
 .drawer-header {

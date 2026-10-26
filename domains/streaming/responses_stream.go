@@ -138,11 +138,8 @@ func StreamResponsesSSE(ctx context.Context, w http.ResponseWriter, resp *http.R
 
 	fullText := ""
 	finalFinishReason := ""
-	promptTokens := 0
-	completionTokens := 0
 	// 2026-09-09 audit round 3: surface usage.prompt_tokens_details.cached_tokens
 	// so the capture's cache columns stop being NULL on streaming responses.
-	cachedTokens := 0
 	upstreamDoneReceived := false
 
 	firstLine, err := readLineWithTimeoutAndCloser(ctx, reader, bodyCloser, runtimeCfg.firstByteTimeout)
@@ -185,29 +182,17 @@ func StreamResponsesSSE(ctx context.Context, w http.ResponseWriter, resp *http.R
 			return
 		}
 
-		if raw, ok := chunk["usage"]; ok {
-			var usage map[string]any
-			if json.Unmarshal(raw, &usage) == nil {
-				if v, ok := usage["prompt_tokens"].(float64); ok {
-					promptTokens = int(v)
-				}
-				if v, ok := usage["completion_tokens"].(float64); ok {
-					completionTokens = int(v)
-				}
-				if details, ok := usage["prompt_tokens_details"].(map[string]any); ok {
-					if v, ok := details["cached_tokens"].(float64); ok {
-						cachedTokens = int(v)
-					}
-				}
-			}
+		if _, ok := chunk["usage"]; ok {
+			// 2026-10-27 缓存监测轮：捕获走共享 usage 变量表（usage.go），与
+			// 其余流式/非流式路径同一把尺子。此前这里的窄解析只认 chat 的
+			// prompt_tokens_details.cached_tokens ⇒ cache_write 恒为 nil，
+			// Responses 原生 input_tokens_details 形状也读不到。
+			ud := ExtractUsageFromChunk(data)
 			if capture != nil {
-				pt := promptTokens
-				ct := completionTokens
-				var cr *int
-				if cachedTokens > 0 {
-					cr = &cachedTokens
+				capture.ObserveUsage(ud.PromptTokens, ud.CompletionTokens, ud.CacheReadTokens, ud.CacheWriteTokens)
+				if ud.CacheWriteTTLShort != nil || ud.CacheWriteTTLLong != nil {
+					capture.ObserveCacheWriteSplit(ud.CacheWriteTTLShort, ud.CacheWriteTTLLong)
 				}
-				capture.ObserveUsage(&pt, &ct, cr, nil)
 			}
 		}
 

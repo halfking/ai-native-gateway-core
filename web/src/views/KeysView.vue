@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { useI18n } from 'vue-i18n'
+import { surfaceError } from '../i18n/errorSurface'
 import { fmtDateTimeShort } from '../i18n/useFormat'
 import { sortByNameStable } from '../utils/sortByName'
 import { computed, ref, onBeforeUnmount, onMounted, watch } from 'vue'
@@ -10,7 +11,7 @@ import FilterInput from '../components/FilterInput.vue'
 import PageHeader from '../components/ui/PageHeader.vue'
 import { confirmDialog } from '../composables/useConfirmDialog'
 import { useActionMessage } from '../composables/useActionMessage'
-import { Setting } from '@element-plus/icons-vue'
+import { Check, DocumentCopy, Setting } from '@element-plus/icons-vue'
 
 const { t } = useI18n()
 
@@ -253,7 +254,7 @@ async function saveKeyProfile() {
     closeKeyDrawer()
     await load()
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : t('keys.saveFailed')
+    error.value = surfaceError(e, { key: 'keys.saveFailed' })
   } finally {
     profileSaving.value = false
   }
@@ -266,7 +267,7 @@ async function load() {
     // 2026-10-03：按名称排序（老板要求的查找性排序）
     keys.value = sortByNameStable(await getKeys())
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : t('keys.loadFailed')
+    error.value = surfaceError(e, { key: 'keys.loadFailed' })
   } finally {
     loading.value = false
   }
@@ -318,7 +319,7 @@ async function submitNew() {
     createdKey.value = resp
     await load()
   } catch (e: unknown) {
-    newErr.value = e instanceof Error ? e.message : t('keys.createFailed')
+    newErr.value = surfaceError(e, { key: 'keys.createFailed' })
   } finally {
     newSaving.value = false
   }
@@ -330,7 +331,7 @@ async function revoke(k: ApiKey) {
     await revokeKey(k.id)
     keys.value = keys.value.filter(x => x.id !== k.id)
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : t('keys.revokeFailed')
+    error.value = surfaceError(e, { key: 'keys.revokeFailed' })
   }
 }
 
@@ -390,7 +391,7 @@ async function copyKey(k: ApiKey, id: string) {
     copyNotice.value = t('keys.copiedFullKey')
   } catch (e) {
     // 409 means key was created before encrypted storage feature - can't reveal retroactively
-    const msg = e instanceof Error ? e.message : String(e)
+    const msg = surfaceError(e)
     if (msg.includes('No encrypted key stored') || msg.includes('409')) {
       copyNotice.value = t('keys.copyNotSupported')
     } else {
@@ -412,7 +413,7 @@ async function copyCreatedKey(id: string) {
     copiedId.value = id
     copyNotice.value = t('keys.copiedFullKey')
   } catch (e) {
-    copyNotice.value = e instanceof Error ? e.message : t('keys.copyFailedManual')
+    copyNotice.value = surfaceError(e, { key: 'keys.copyFailedManual' })
   }
   if (copyNoticeTimer) window.clearTimeout(copyNoticeTimer)
   copyNoticeTimer = window.setTimeout(() => {
@@ -429,7 +430,7 @@ async function approveSelected() {
     closeKeyDrawer()
     await load()
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : t('keys.approveFailed')
+    error.value = surfaceError(e, { key: 'keys.approveFailed' })
   }
 }
 
@@ -452,7 +453,7 @@ async function disableSelected() {
     closeKeyDrawer()
     await load()
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : t('keys.disableFailed')
+    error.value = surfaceError(e, { key: 'keys.disableFailed' })
   }
 }
 
@@ -464,7 +465,7 @@ async function enableSelected() {
     closeKeyDrawer()
     await load()
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : t('keys.enableFailed')
+    error.value = surfaceError(e, { key: 'keys.enableFailed' })
   }
 }
 
@@ -540,7 +541,7 @@ async function saveDefaultLimits() {
     notifyLimitsOk(t('keys.savedToast'))
     showDefaultLimits.value = false
   } catch (e: unknown) {
-    notifyLimitsErr(e instanceof Error ? e.message : t('keys.saveFailed'))
+    notifyLimitsErr(surfaceError(e, { key: 'keys.saveFailed' }))
   } finally {
     limitsSaving.value = false
   }
@@ -573,7 +574,7 @@ async function useExistingKeyAndReturn(k: ApiKey) {
     const dest = redirectAfter.value
     if (dest) await router.push(dest)
   } catch (e: unknown) {
-    const msg = e instanceof Error ? e.message : t('keys.getKeyFailed')
+    const msg = surfaceError(e, { key: 'keys.getKeyFailed' })
     error.value = msg.includes('no ciphertext')
       ? t('keys.cannotRestoreFullKey')
       : msg
@@ -695,7 +696,7 @@ onBeforeUnmount(() => {
                   @click.stop="copyKey(k, `view-${k.id}`)"
                   title="复制完整密钥"
                 >
-                  {{ copiedId === `view-${k.id}` ? '✓' : '📋' }}
+                  <Check v-if="copiedId === `view-${k.id}`" /><DocumentCopy v-else />
                 </button>
               </div>
             </td>
@@ -1162,7 +1163,7 @@ onBeforeUnmount(() => {
   border-radius: var(--radius);
   background: var(--success);
   color: white;
-  box-shadow: 0 8px 24px var(--overlay-light);
+  box-shadow: var(--kx-shadow-sm);
   font-size: 13px;
 }
 
@@ -1185,4 +1186,9 @@ onBeforeUnmount(() => {
   color: var(--muted);
   font-style: italic;
 }
+
+/* ── 2026-10-27 第 17 增量（AI 痕迹门 V3 · 插值形态）：图标尺寸 ──
+   element-plus 图标是裸 <svg viewBox="0 0 1024 1024">，**不带 width/height**
+   ⇒ 浏览器按包含块宽度渲染（会撑爆布局）⇒ 必须显式定尺寸。 */
+.btn.btn-ghost.btn-xs > svg { width: 10px; height: 10px; }
 </style>

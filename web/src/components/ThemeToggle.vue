@@ -7,6 +7,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { detectTheme, setTheme } from '../theme'
+import { Moon, Sunny } from '@element-plus/icons-vue'
 
 const { t } = useI18n()
 const theme = ref<'light' | 'dark'>('light')
@@ -33,7 +34,7 @@ function toggle() {
     :aria-pressed="isDark"
     @click="toggle"
   >
-    <span class="theme-toggle-glyph" aria-hidden="true">{{ isDark ? '☾' : '☼' }}</span>
+    <span class="theme-toggle-glyph" aria-hidden="true"><Moon v-if="isDark" /><Sunny v-else /></span>
   </button>
 </template>
 
@@ -61,4 +62,9 @@ function toggle() {
   line-height: 1;
   font-weight: 600;
 }
+
+/* ── 2026-10-27 第 17 增量（AI 痕迹门 V3 · 插值形态）：图标尺寸 ──
+   element-plus 图标是裸 <svg viewBox="0 0 1024 1024">，**不带 width/height**
+   ⇒ 浏览器按包含块宽度渲染（会撑爆布局）⇒ 必须显式定尺寸。 */
+.theme-toggle-glyph > svg { width: 16px; height: 16px; }
 </style>

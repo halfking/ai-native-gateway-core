@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { useI18n } from 'vue-i18n'
+import { surfaceError } from '../i18n/errorSurface'
 import { formatDateTime } from '../utils/datetime'
 import { localeRef } from '../i18n'
 import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
@@ -119,7 +120,7 @@ function load() {
       total.value = search.value.trim() ? filtered.length : resp.total
     })
     .catch((e: unknown) => {
-      error.value = e instanceof Error ? e.message : t('agentRegistryView.loadFailed')
+      error.value = surfaceError(e, { key: 'agentRegistryView.loadFailed' })
       agents.value = []
       total.value = 0
     })
@@ -205,7 +206,7 @@ function showDetail(row: AgentAsset) {
       detail.value = r.agent
     })
     .catch((e: unknown) => {
-      detailError.value = e instanceof Error ? e.message : t('agentRegistryView.detailFailed')
+      detailError.value = surfaceError(e, { key: 'agentRegistryView.detailFailed' })
     })
     .finally(() => {
       detailLoading.value = false
@@ -246,7 +247,7 @@ async function submitLink() {
     await linkAgent(linkSource.value.ref_id, tid, linkType.value)
     closeLinkDialog()
   } catch (e: unknown) {
-    linkError.value = e instanceof Error ? e.message : t('agentRegistryView.linkFailed')
+    linkError.value = surfaceError(e, { key: 'agentRegistryView.linkFailed' })
   } finally {
     linkSubmitting.value = false
   }
@@ -266,7 +267,7 @@ async function loadStats() {
     const resp = await getAgentStats()
     stats.value = resp
   } catch (e: unknown) {
-    statsError.value = e instanceof Error ? e.message : t('agentRegistryView.statsFailed')
+    statsError.value = surfaceError(e, { key: 'agentRegistryView.statsFailed' })
   } finally {
     statsLoading.value = false
   }
@@ -287,7 +288,7 @@ async function openNeighborsDialog(row: AgentAsset) {
       count: resp.count,
     }
   } catch (e: unknown) {
-    neighborsError.value = e instanceof Error ? e.message : t('agentRegistryView.topologyFailed')
+    neighborsError.value = surfaceError(e, { key: 'agentRegistryView.topologyFailed' })
   } finally {
     neighborsLoading.value = false
   }

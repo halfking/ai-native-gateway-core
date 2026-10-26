@@ -447,3 +447,11 @@ docs/audit/**/ctr_snapshot_*.log
 # 登记原因同 §9.258：`git add -A` 会把它捡进去（该目录 2026-10-20 时 1 个 PNG / 196K，
 # 随轮次增长会变成几十 MB 的图片集）。⇒ 显式忽略。
 /.mavis/
+
+# ── 2026-10-28: R86 轮「掏空法门负控臂」的临时改瞎副本 ────────────────
+# scripts/ursmcheck/tsv_hollowout_negative_control_test.go 把真实读方脚本
+# 复制成一份「去掉红条件」的副本再跑 ⇒ 副本落在 scripts/audit/
+# （★ 与原件同深度 —— 那些脚本用 `dirname "$0"/../..` 推算仓根）
+# ⇒ ⇒ 用完即删；但进程被 SIGKILL 时会留下 ⇒ ⇒ 显式忽略，
+# ★ 不污染并行会话看到的 git status。
+/scripts/audit/.hollowout-blind-*.sh

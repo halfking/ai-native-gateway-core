@@ -2,7 +2,7 @@
 export default {
     refresh: 'Aktualisieren',
     refreshing: 'Aktualisieren…',
-    loadFailed: 'Laden fehlgeschlagen',
+    loadFailed: 'Aufgabenprofil konnte nicht geladen werden. Bitte erneut versuchen.',
     noData: 'Keine Profildaten',
   registry: {
     version: 'Registry-Version',

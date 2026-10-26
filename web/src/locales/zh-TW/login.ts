@@ -8,7 +8,7 @@ export default {
   submitting: '登入中…',
   error: {
     required: '請輸入使用者名稱和密碼',
-    failed: '登入失敗',
+    failed: '沒能登入，請檢查使用者名稱和密碼後重試',
     apiKeyUnsupported: '此帳號不再支援 API key 登入，請使用使用者名稱/密碼登入。如需協助請聯絡管理員。',
     badResponse: '登入回應格式異常，請重試或聯絡管理員。',
   },

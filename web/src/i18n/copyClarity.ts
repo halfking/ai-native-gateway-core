@@ -22,6 +22,7 @@ import { mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os'
 import { dirname, join, relative } from 'node:path'
 import { maskSource, SRC_DIR } from './hardcodedCjk.ts'
+import { beforeOf, isErrorPosition, statementOf } from './errorPositions.ts'
 
 export type RuleId = 'R1-error-recovery' | 'R2-gesture' | 'R3-generic-empty'
 
@@ -103,43 +104,6 @@ const LABEL_CONTEXT = /(label|cls|tooltip|defaultTooltip|badgeClass|badge)\s*[:=
 /** R1：日志语境 —— 日志不是界面文案。 */
 const LOG_CONTEXT =
   /(console\.(log|error|warn|info|debug)|logger\.[A-Za-z]+|log\.(Printf|Println|Print|Fatalf))\s*\(/
-
-/**
- * R1：错误**兜底形状** —— 字面量是「错误对象没有 message 时用这句」的替补。
- * ★ 这是最该抓的一种：它只在**什么都不知道**的时候出现 ⇒ 天然是最空洞的文案。
- *   `e instanceof Error ? e.message : '加载失败'` / `e.message || '加载失败'`
- */
-const FALLBACK_SHAPE = /\.(?:message|detail|reason|msg)\s*\|\||instanceof\s+Error\s*\?/
-
-/**
- * R1：错误**槽位** —— 赋值目标本身就是一个「错误文案变量」。
- *
- * ★ 为什么**不锚定行首**、且取**最后一个**赋值：
- *   真实代码里赋值前常带守卫：
- *     `if (!isAbort(error) && isCurrent()) ctx.loadError.value = '…'`
- *   锚定行首 ⇒ `if (...)` 让整行失配 ⇒ **漏报**（实测命中过）。
- *   取最后一个赋值 ⇒ 同��行里前面的比较（`x === 1`）不会被误取。
- */
-const ERROR_TARGET_ASSIGN =
-  /([A-Za-z_$][\w$]*(?:\s*\.\s*[A-Za-z_$][\w$]*)*)\s*=(?!=)/g
-/** 目标名里出现这些词 ⇒ 它是筛选项/状态码/字段名，不是错误文案变量。 */
-const NON_ERROR_TARGET = /(filter|label|option|type|status|mode|code|reason|tag|word|field|key)/i
-/**
- * 目标名**某一段**含这些词 ⇒ 是错误文案变量。
- * ★ 为什么要**逐段**判而不是整串判：
- *   `ctx.loadError.value` —— 整串判会把 `.value` 也算进去（那不是变量名），
- *   而「只认最后一段」又会把 `error.value`（最常见的一种）漏掉
- *   ⇒ 正确口径：**逐段**看有没有一段本身是错误文案变量名。
- */
-const ERROR_TARGET_WORD = /^(?:err|error|msg|message|fail)|(?:err|error|msg|message|fail)$/i
-
-/** R1：**报错调用** —— 实参直接进了一个报错通道。 */
-const ERROR_CALL =
-  /(?:^|[^A-Za-z0-9])(?:alert|notify[A-Za-z0-9_]*|show[A-Za-z0-9_]*|ElMessage\.error|ElMessage\s*\.\s*error|[A-Za-z0-9_]*Err[A-Za-z0-9_]*)\s*\(/
-/** R1：emit 的第一个实参是 'error'。 */
-const ERROR_EMIT = /emit\(\s*['"]error['"]/
-/** R1：throw / new Error。 */
-const THROW_RE = /\bthrow\b|\bnew\s+[A-Za-z0-9_.]*Error\s*\(/
 
 /** R2：手势词。 */
 const GESTURE = /(点击|点这里|点一下|双击)/
@@ -402,12 +366,6 @@ export function templateTextNodes(masked: string, start: number, end: number): A
 }
 
 /** 某偏移所在「语句」文本（行级）。 */
-function statementOf(masked: string, index: number): string {
-  const start = masked.lastIndexOf('\n', index) + 1
-  let end = masked.indexOf('\n', index)
-  if (end < 0) end = masked.length
-  return masked.slice(start, end)
-}
 
 /**
  * 字面量**之前**的上下文（跨行，回看 260 字符）。
@@ -420,9 +378,6 @@ function statementOf(masked: string, index: number): string {
  *   ```
  *   只看本行 ⇒ 字面量所在行是 `: '加载失败'`，看不到 `.message` ⇒ 兜底形状漏判。
  */
-function beforeOf(masked: string, index: number): string {
-  return masked.slice(Math.max(0, index - 260), index)
-}
 
 // ───────────────────────── 规则 ─────────────────────────
 
@@ -449,26 +404,8 @@ export function ruleError(text: string, stmt: string, before: string): ClarityFi
   if (LOG_CONTEXT.test(stmt)) return null
   if (LABEL_CONTEXT.test(stmt)) return null
 
-  const inErrorPosition =
-    FALLBACK_SHAPE.test(before) ||
-    FALLBACK_SHAPE.test(stmt) ||
-    THROW_RE.test(stmt) ||
-    ERROR_EMIT.test(stmt) ||
-    ERROR_CALL.test(stmt) ||
-    (() => {
-      // 取该行**最后一个**赋值（守卫 `if (…)` 不在行首时也能命中）。
-      ERROR_TARGET_ASSIGN.lastIndex = 0
-      let lhs: string | null = null
-      let m: RegExpExecArray | null
-      while ((m = ERROR_TARGET_ASSIGN.exec(stmt)) !== null) lhs = m[1]
-      if (!lhs) return false
-      lhs = lhs.replace(/\s+/g, '')
-      if (NON_ERROR_TARGET.test(lhs)) return false
-      // 逐段看：error.value / ctx.loadError.value / systemFeaturedError.value 都命中，
-      // 而 errorKindFilter 被上面的 filter 排除。
-      return lhs.split('.').some((seg) => ERROR_TARGET_WORD.test(seg))
-    })()
-  if (!inErrorPosition) return null
+  // ★ 位置判定走**共享实现**（errorPositions.ts）⇒ R1 与 L1 的位置口径永远一致。
+  if (!isErrorPosition(stmt, before)) return null
   return { rule: 'R1-error-recovery', reason: '失败类文案没说「怎么办」（缺恢复动作）', text, line: 0, col: 0, file: '' }
 }
 

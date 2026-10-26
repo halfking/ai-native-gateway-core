@@ -8,6 +8,7 @@
 // 图表按模型分线（top 10 + 长尾折叠，模型多选已定时服务端不折叠），下表为
 // 模型汇总。路由 meta.fillViewport 让本页铺满主区。
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { surfaceError } from '../../i18n/errorSurface'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import {
@@ -169,7 +170,7 @@ async function loadSeries() {
   } catch (err) {
     if (token !== seriesToken) return
     series.value = []
-    error.value = err instanceof Error ? err.message : String(err)
+    error.value = surfaceError(err)
   } finally {
     if (token === seriesToken) loading.value = false
   }

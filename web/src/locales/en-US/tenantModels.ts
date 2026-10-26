@@ -9,7 +9,7 @@ export default {
     refresh: 'Refresh',
     loading: 'Loading…',
     empty: 'No models available',
-    loadFailed: 'Failed to load',
+    loadFailed: 'The tenant models could not be loaded. Please retry.',
     vendorSectionTitle: 'Available models',
   },
   columns: {

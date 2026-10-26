@@ -60,11 +60,11 @@ export default {
   },
 
   error: {
-    loadFailed: '載入失敗',
-    checkFailed: '校驗失敗',
+    loadFailed: '租戶模型策略沒能載入出來，請重試',
+    checkFailed: '校驗沒能完成，請重試',
     canonicalNameRequired: 'canonical_name 必填',
-    createFailed: '建立失敗',
-    deleteFailed: '刪除失敗',
-    restoreFailed: '復原失敗',
+    createFailed: '租戶模型策略沒能建立起來，請重試',
+    deleteFailed: '租戶模型策略沒能刪除，請重試',
+    restoreFailed: '租戶模型策略沒能復原，請重試',
   },
 }

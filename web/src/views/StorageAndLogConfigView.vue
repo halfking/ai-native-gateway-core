@@ -12,6 +12,7 @@
 //
 // 本批按用户拍板"全部 8"——建 1 个只读深链详细页（不复用 DataLifecycleView 的编辑功能）
 import { onMounted, ref } from 'vue'
+import { surfaceError } from '../i18n/errorSurface'
 import { getStorageAndLogSnapshot, type StorageAndLogSnapshot, type AttachmentFilesystemStats } from '../api/storageAndLogConfig'
 
 const loading = ref(false)
@@ -24,7 +25,7 @@ async function load() {
   try {
     data.value = await getStorageAndLogSnapshot()
   } catch (e) {
-    error.value = e instanceof Error ? e.message : String(e)
+    error.value = surfaceError(e)
   } finally {
     loading.value = false
   }

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { useI18n } from 'vue-i18n'
+import { surfaceError } from '../i18n/errorSurface'
 import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import {
@@ -12,7 +13,7 @@ import {
 } from '../api'
 import { isReadOnlyMode, isSuperAdmin } from '../store'
 import { useCredentialLabels } from '../composables/useCredentialLabels'
-import { Reading, Setting, Lightning } from '@element-plus/icons-vue'
+import { Lightning, Reading, Refresh, Setting, StarFilled } from '@element-plus/icons-vue'
 
 const { t } = useI18n()
 // credentialDisplayName resolves credential id → human label; the composable
@@ -204,7 +205,7 @@ async function load() {
       selectedVariantId.value = ''
     }
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : t('routing.loadFailed')
+    error.value = surfaceError(e, { key: 'routing.loadFailed' })
   } finally {
     loading.value = false
   }
@@ -237,7 +238,7 @@ async function adoptRecommendedFeatured() {
     recommendMessage.value = `已采用 ${models.length} 个推荐模型作为特色`
     await load()
   } catch (e: unknown) {
-    recommendMessage.value = e instanceof Error ? e.message : t('routing.adoptFailed')
+    recommendMessage.value = surfaceError(e, { key: 'routing.adoptFailed' })
   } finally {
     recommendLoading.value = false
   }
@@ -259,7 +260,7 @@ onMounted(load)
             @click="toggleFeatured"
           >{{ featuredOnly ? t('routing.featuredOnly') : t('routing.featuredOnlyOff') }}</button>
         </div>
-        <button class="btn btn-sm btn-ghost refresh-btn" :disabled="loading" @click="load" :title="$t('common.button.refresh')">↻</button>
+        <button class="btn btn-sm btn-ghost refresh-btn" :disabled="loading" @click="load" :title="$t('common.button.refresh')"><Refresh /></button>
       </div>
       <div class="hero-stats">
         <span v-for="c in heroChips" :key="c.label" class="chip">{{ c.label }} <strong>{{ c.value }}</strong></span>
@@ -308,7 +309,7 @@ onMounted(load)
               :title="v.canonical_name"
               @click="selectVariant(v)"
             >
-              <span v-if="v.featured" class="star">★</span>
+              <span v-if="v.featured" class="star"><StarFilled /></span>
               {{ v.variant }}
               <span class="pill-count" :class="v.routableCount > 0 ? 'ok' : 'bad'">{{ v.routableCount }}/{{ v.credentials.length }}</span>
             </button>
@@ -316,7 +317,7 @@ onMounted(load)
         </div>
         <div v-else-if="showFeaturedEmptyState" class="featured-empty-card">
           <div class="featured-empty-head">
-            <span class="featured-empty-icon">★</span>
+            <span class="featured-empty-icon"><StarFilled /></span>
             <strong>尚未配置特色模型</strong>
           </div>
           <p class="featured-empty-desc">
@@ -620,4 +621,12 @@ onMounted(load)
   .search-input { max-width: 100%; width: 100%; }
   .tag-row { margin-left: 0; width: 100%; }
 }
+
+/* ── 2026-10-27 第 17 增量（AI 痕迹门 V3）：图标尺寸 ──
+   element-plus 图标是裸 <svg viewBox="0 0 1024 1024">，**不带 width/height**
+   ⇒ 浏览器按包含块宽度渲染（会撑爆布局）⇒ 必须显式定尺寸。
+   尺寸沿用原字形的 font-size 观感（字形墨迹 ≈ 0.7em）。 */
+.refresh-btn > svg { width: 11px; height: 11px; }
+.star > svg { width: 9px; height: 9px; vertical-align: -1px; }
+.featured-empty-icon > svg { width: 12px; height: 12px; }
 </style>

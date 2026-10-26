@@ -8,7 +8,7 @@ export default {
   submitting: 'Iniciando sesión…',
   error: {
     required: 'Introduzca usuario y contraseña',
-    failed: 'Error de inicio de sesión',
+    failed: 'No se pudo iniciar sesión. Compruebe el nombre de usuario y la contraseña y vuelva a intentarlo.',
     apiKeyUnsupported: 'Esta cuenta ya no inicia sesión con una API key. Usa el nombre de usuario y la contraseña. Si necesitas ayuda, contacta con el administrador.',
     badResponse: 'La respuesta de inicio de sesión tiene un formato incorrecto. Vuelve a intentarlo o contacta con el administrador.',
   },

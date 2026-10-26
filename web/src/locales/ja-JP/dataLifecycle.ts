@@ -217,7 +217,7 @@ export default {
   coldData: "コールドデータ (30-90日)",
   expiredData: "期限切れデータ (>90日)",
   missingDate: "開始日と終了日を選択してください",
-  previewFailed: "プレビューに失敗しました",
+  previewFailed: 'プレビューを完了できませんでした。再試行してください。',
   needPreview: "先に影響を確認してください",
   executeNotImpl: "クリーンアップ機能は次のフェーズで実装予定です。コマンドラインスクリプトでクリーンアップ操作を実行してください。"
 ,
@@ -256,7 +256,7 @@ export default {
       hint: 'データベーススキーマがこのビルドより古くなっています。以下の数値は「計算できない」を示すプレースホルダであり、実測値ではありません。',
     },
     errors: {
-      load: '利用率詳細データの読み込みに失敗しました',
+      load: '利用率詳細データの読み込みに失敗しました。再試行してください。',
     },
     sources: {
       summary: '利用率サマリー',
@@ -319,9 +319,9 @@ export default {
       totalRequests: '総リクエスト数',
     },
     errors: {
-      costTrend: 'コスト推移の読み込みに失敗',
-      periodCompare: '期間比較の読み込みに失敗',
-      cacheEconomics: 'キャッシュ経済の読み込みに失敗',
+      costTrend: 'コスト推移の読み込みに失敗しました。再試行してください。',
+      periodCompare: '期間比較の読み込みに失敗しました。再試行してください。',
+      cacheEconomics: 'キャッシュ経済の読み込みに失敗しました。再試行してください。',
     },
     degraded: {
       title: '一部の指標を利用できません：',

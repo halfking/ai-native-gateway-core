@@ -39,7 +39,7 @@ export default {
     super: 'Default tenant',
     tenant: 'Tenant: {tenantId}',
   },
-  loadError: 'Load failed',
+  loadError: 'The dashboard data could not be loaded. Please retry.',
   board: {
     heroErrors: 'Errors',
     heroInput: 'Input',
@@ -109,7 +109,7 @@ export default {
     selfcheckTitle: 'Self-check',
     pieClients: 'Client types',
     pieDegraded: "Not available: {reason}. An empty ranking here means the data was not computed, not that there was none.",
-    pieDegradedGeneric: "the ranking query failed",
+    pieDegradedGeneric: 'The ranking query could not be completed. Please retry.',
     drillFailed: "Could not load this breakdown: {reason}. The empty list above does not mean there were no errors.",
     pieClientIp: 'Client IP',
     pieIdentity: 'Identity hash',

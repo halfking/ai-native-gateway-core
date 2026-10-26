@@ -108,20 +108,32 @@ type docEvidence struct {
 // requestSurfaceDocEvidence 是本门的对拍表。
 //
 // ★★ **页面上每一处 `file:line` 引用都必须在表里**（C1 会核对覆盖面）。
+//
+// ★★★ **第三次重钉（2026-10-27 03:4x 合并轮）**：★ 中间件链的行号又漂了
+//   —— `7725-7743` → **`7758-7776`**（★ **整体 +33 行**：本仓多模态/元数据
+//   两轮往 `cmd/gateway/main.go` 里插了 33 行 ⇒ Recovery 7758 / Logging 注释
+//   7760-7767 / maintain 注释 7749-7754 / Auth 7773 / SecurityHeaders 7776）。
+//   ⇒ ★ **同一次漂移的三个面必须一起改**，否则门会红：
+//   ① **本对拍表**（门的事实源）；② `docs/subsystems/request-surface.md`（被守页面，
+//      C1 要求**精确相等**不是「区间重叠」⇒ 差一行就红）；
+//   ③ **认证表**（审计档 §3.18.3 的 A1 行，C8 要求与本表**精确相等**）。
+//   ⇒ ★★ **漂移史**：`7724-7740` → `7725-7743` → `7758-7776`（★ 三次里有
+//   ★★ 两次是**别的会话**改 `main.go` 带的 ⇒ ⇒ 「行号会漂」不是偶发，
+//   ★★ 是**常态** ⇒ ⇒ 每次动 `main.go` 的中间件链，**必须回头重钉这三处**）。
 var requestSurfaceDocEvidence = []docEvidence{
 	{
-		file: "cmd/gateway/main.go", from: 7725, to: 7743,
+		file: "cmd/gateway/main.go", from: 7758, to: 7776,
 		mustContain: "middleware.NewRecoveryMiddleware()", kind: evidenceCode,
 		certRef: "A1",
 		why:     "HTTP 中间件链本体（Recovery 起、SecurityHeaders 止）★ 与认证表 A1 同一语义对象",
 	},
 	{
-		file: "cmd/gateway/main.go", from: 7727, to: 7734,
+		file: "cmd/gateway/main.go", from: 7760, to: 7767,
 		mustContain: "Logging 必须排在 Auth", kind: evidenceComment,
 		why: "「Logging 必须在 Auth 之外」的**自陈注释**",
 	},
 	{
-		file: "cmd/gateway/main.go", from: 7716, to: 7721,
+		file: "cmd/gateway/main.go", from: 7749, to: 7754,
 		mustContain: "maintain 与 mobile 两个挂载必须组合在链", kind: evidenceComment,
 		why: "「maintain/mobile 必须组合在链内」的**自陈注释**",
 	},

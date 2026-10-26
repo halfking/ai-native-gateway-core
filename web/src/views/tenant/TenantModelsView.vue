@@ -6,6 +6,7 @@
 //   - 顶部提供模型搜索 + 多模态 / 计费模式筛选
 //   - 所有文案走 i18n
 import { ref, computed, onMounted } from 'vue'
+import { surfaceError } from '../../i18n/errorSurface'
 import { useI18n } from 'vue-i18n'
 import { localeRef } from '../../i18n'
 import { getMaasModels } from '../../api'
@@ -86,7 +87,7 @@ async function load() {
     const res = await getMaasModels()
     models.value = res.items ?? []
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : t('tenantModels.page.loadFailed')
+    error.value = surfaceError(e, { key: 'tenantModels.page.loadFailed' })
   } finally {
     loading.value = false
   }

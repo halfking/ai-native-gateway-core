@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { useI18n } from 'vue-i18n'
+import { surfaceError } from '../i18n/errorSurface'
 import { localeRef } from '../i18n'
 import { ref, computed, onMounted } from 'vue'
 import {
@@ -189,7 +190,7 @@ async function load() {
       global_discount: rates.settings.global_discount ?? 1,
     }
   } catch (e: unknown) {
-    notifyError(e instanceof Error ? e.message : t('standardModelPricing.loadFailed'))
+    notifyError(surfaceError(e, { key: 'standardModelPricing.loadFailed' }))
   } finally {
     loading.value = false
   }
@@ -212,7 +213,7 @@ async function saveSettings() {
     notifySuccess(t('standardModelPricing.saved'))
     await load()
   } catch (e: unknown) {
-    notifyError(e instanceof Error ? e.message : t('standardModelPricing.saveFailed'))
+    notifyError(surfaceError(e, { key: 'standardModelPricing.saveFailed' }))
   } finally {
     savingSettings.value = false
   }
@@ -256,7 +257,7 @@ async function saveEdit() {
     closeEdit()
     await load()
   } catch (e: unknown) {
-    notifyError(e instanceof Error ? e.message : t('standardModelPricing.saveFailed'))
+    notifyError(surfaceError(e, { key: 'standardModelPricing.saveFailed' }))
   } finally {
     savingRow.value = false
   }
@@ -270,7 +271,7 @@ async function resetAll(row: AdminMaasModelRate) {
     await deleteAdminMaasModelRate(row.canonical_id)
     await load()
   } catch (e: unknown) {
-    notifyError(e instanceof Error ? e.message : t('standardModelPricing.resetFailed'))
+    notifyError(surfaceError(e, { key: 'standardModelPricing.resetFailed' }))
   }
 }
 
@@ -281,7 +282,7 @@ async function resetField(row: AdminMaasModelRate, field: RateField) {
     if (editRow.value?.canonical_id === row.canonical_id) closeEdit()
     await load()
   } catch (e: unknown) {
-    notifyError(e instanceof Error ? e.message : t('standardModelPricing.resetFailed'))
+    notifyError(surfaceError(e, { key: 'standardModelPricing.resetFailed' }))
   }
 }
 

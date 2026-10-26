@@ -1,0 +1,1078 @@
+{
+  "_readme": "第 15 增量 · L1 错误三问（语言包侧）· 规格文件 —— SSOT（唯一事实源）",
+  "_what": "本文件登记「错误陈述位」= 源码侧错误位置上、值由语言包承载的错误文案槽位。kind = 操作的种类；subject = zh-CN 主体词（改写标尺，同时作为门在 zh-CN 语种下的点名校验词）；new = 新的 zh-CN 文案。",
+  "_why": "① 位置信号不在语言包的键路径里（第 12 增量的死路），而在源码侧的赋值/调用上下文 ⇒ 键路径分不出「错误陈述」与「计数摘要」，源码上下文分得出；② 文案以仓内既有合规文案为标尺（「<主体>没能加载出来，请重试」/「<主体>没能保存，请重试」/「<操作>失败：{reason}。请重试」），不另发明一套；③ 每个语种内本族取值互不相同（同一句话不许两份）⇒ 24 个共用「加载失败」的槽位必须各自点名主体。",
+  "_houseStyle": {
+    "load": "<主体>没能加载出来，请重试",
+    "save": "<主体>没能保存，请重试",
+    "create": "<主体>没能创建出来，请重试",
+    "delete": "<主体>没能删除，请重试",
+    "operation": "<主体>操作没能完成，请重试",
+    "withReason": "<操作>失败：{reason}。请重试"
+  },
+  "kindVocabulary": [
+    "load",
+    "save",
+    "create",
+    "delete",
+    "update",
+    "export",
+    "import",
+    "test",
+    "probe",
+    "scan",
+    "reset",
+    "toggle",
+    "mark",
+    "link",
+    "annotate",
+    "trigger",
+    "preview",
+    "offline",
+    "online",
+    "upgrade",
+    "degrade",
+    "install",
+    "write",
+    "adopt",
+    "migrate",
+    "activate",
+    "summary",
+    "send",
+    "query",
+    "operation",
+    "login",
+    "rollback",
+    "register"
+  ],
+  "slots": {
+    "agentRegistryView.detailFailed": {
+      "kind": "load",
+      "subject": "Agent 详情",
+      "new": "Agent 详情没能加载出来，请重试"
+    },
+    "agentRegistryView.linkFailed": {
+      "kind": "create",
+      "subject": "Agent 关联",
+      "new": "Agent 关联没能创建出来，请重试"
+    },
+    "agentRegistryView.loadFailed": {
+      "kind": "load",
+      "subject": "Agent 注册表",
+      "new": "Agent 注册表没能加载出来，请重试"
+    },
+    "agentRegistryView.statsFailed": {
+      "kind": "load",
+      "subject": "Agent 统计",
+      "new": "Agent 统计没能加载出来，请重试"
+    },
+    "agentRegistryView.topologyFailed": {
+      "kind": "load",
+      "subject": "Agent 拓扑",
+      "new": "Agent 拓扑没能加载出来，请重试"
+    },
+    "annotation.annotationFailed": {
+      "kind": "annotate",
+      "subject": "标注",
+      "new": "标注没能完成，请重试"
+    },
+    "annotation.detail.loadFailed": {
+      "kind": "load",
+      "subject": "标注首轮详情",
+      "new": "标注首轮详情没能加载出来，请重试"
+    },
+    "annotation.loadFailed": {
+      "kind": "load",
+      "subject": "标注样本",
+      "new": "标注样本没能加载出来，请重试"
+    },
+    "annotation.stats.loadFailed": {
+      "kind": "load",
+      "subject": "标注统计",
+      "new": "标注统计没能加载出来，请重试"
+    },
+    "annotation.taskProfile.exportFailed": {
+      "kind": "export",
+      "subject": "标注任务画像",
+      "new": "标注任务画像没能导出，请重试"
+    },
+    "annotation.taskProfile.importFailed": {
+      "kind": "import",
+      "subject": "标注任务画像",
+      "new": "标注任务画像没能导入，请重试"
+    },
+    "approval.config.errors.loadFailed": {
+      "kind": "load",
+      "subject": "审批配置",
+      "new": "审批配置没能加载出来，请重试"
+    },
+    "approval.config.errors.saveFailed": {
+      "kind": "save",
+      "subject": "审批配置",
+      "new": "审批配置没能保存，请重试"
+    },
+    "approval.list.errors.approveFailed": {
+      "kind": "update",
+      "subject": "审批",
+      "new": "审批没能通过，请重试"
+    },
+    "approval.list.errors.loadListFailed": {
+      "kind": "load",
+      "subject": "审批列表",
+      "new": "审批列表没能加载出来，请重试"
+    },
+    "approval.list.errors.rejectFailed": {
+      "kind": "update",
+      "subject": "驳回",
+      "new": "驳回没能完成，请重试"
+    },
+    "auditLog.loadFailed": {
+      "kind": "load",
+      "subject": "审计日志列表",
+      "new": "审计日志列表没能加载出来，请重试"
+    },
+    "autoTuning.loadFailed": {
+      "kind": "load",
+      "subject": "自动调优",
+      "new": "自动调优没能加载出来，请重试"
+    },
+    "chat.fetchKeyFailed": {
+      "kind": "load",
+      "subject": "API 密钥",
+      "new": "没能取到 API 密钥，请检查密钥配置后重试"
+    },
+    "chat.sendFailed": {
+      "kind": "send",
+      "subject": "消息",
+      "new": "消息没能发送出去，请重试"
+    },
+    "chat.summarizeFailed": {
+      "kind": "summary",
+      "subject": "总结",
+      "new": "总结没能生成，请重试"
+    },
+    "common.feedback.apiKeyFetchFailed": {
+      "kind": "load",
+      "subject": "可用 API 密钥",
+      "new": "可用 API 密钥没能取到，请重试"
+    },
+    "common.feedback.chartCreateFailed": {
+      "kind": "create",
+      "subject": "图表",
+      "new": "图表没能创建出来，请重试"
+    },
+    "common.feedback.keyRevealFailed": {
+      "kind": "load",
+      "subject": "密钥内容",
+      "new": "密钥内容没能还原出来，请重试"
+    },
+    "common.feedback.modelAvailabilityFailed": {
+      "kind": "toggle",
+      "subject": "模型上下线",
+      "new": "模型上下线没能完成，请重试"
+    },
+    "common.feedback.modelPingFailed": {
+      "kind": "probe",
+      "subject": "模型 Ping",
+      "new": "Ping 没能成功，请重试"
+    },
+    "common.feedback.otherModelsLoadFailed": {
+      "kind": "load",
+      "subject": "其它模型的状态",
+      "new": "其它模型的状态没能加载出来，请重试"
+    },
+    "common.feedback.priorityAdjustFailed": {
+      "kind": "update",
+      "subject": "优先级",
+      "new": "调整优先级没能完成，请重试"
+    },
+    "common.feedback.probeFailed": {
+      "kind": "probe",
+      "subject": "其它模型的探活",
+      "new": "其它模型的探活没能完成，请重试"
+    },
+    "common.feedback.probeRequestFailed": {
+      "kind": "probe",
+      "subject": "探活请求",
+      "new": "探活请求没能提交，请重试"
+    },
+    "common.feedback.qualitySummaryLoadFailed": {
+      "kind": "load",
+      "subject": "质量汇总",
+      "new": "质量汇总没能加载出来，请重试"
+    },
+    "common.feedback.sessionAssetExtractFailed": {
+      "kind": "operation",
+      "subject": "沉淀",
+      "new": "沉淀没能完成，请重试"
+    },
+    "common.feedback.sessionSummarizeFailed": {
+      "kind": "operation",
+      "subject": "归纳",
+      "new": "归纳没能完成，请重试"
+    },
+    "common.feedback.tenantUpdateFailed": {
+      "kind": "update",
+      "subject": "租户信息",
+      "new": "租户信息没能更新，请重试"
+    },
+    "dashboard.board.pieDegradedGeneric": {
+      "kind": "query",
+      "subject": "该排行的查询",
+      "new": "该排行的查询没能完成，请重试"
+    },
+    "dashboard.loadError": {
+      "kind": "load",
+      "subject": "看板数据",
+      "new": "看板数据没能加载出来，请重试"
+    },
+    "dataLifecycle.previewFailed": {
+      "kind": "preview",
+      "subject": "预览",
+      "new": "预览没能完成，请重试"
+    },
+    "dataLifecycle.usageCost.errors.cacheEconomics": {
+      "kind": "load",
+      "subject": "缓存成本",
+      "new": "缓存成本没能加载出来，请重试"
+    },
+    "dataLifecycle.usageCost.errors.costTrend": {
+      "kind": "load",
+      "subject": "成本趋势",
+      "new": "成本趋势没能加载出来，请重试"
+    },
+    "dataLifecycle.usageCost.errors.periodCompare": {
+      "kind": "load",
+      "subject": "周期对比",
+      "new": "周期对比没能加载出来，请重试"
+    },
+    "dataLifecycle.usageEnhanced.errors.load": {
+      "kind": "load",
+      "subject": "用量增强数据",
+      "new": "用量增强数据没能加载出来，请重试"
+    },
+    "formatAnomaliesView.error.loadFailed": {
+      "kind": "load",
+      "subject": "格式异常",
+      "new": "格式异常没能加载出来，请重试"
+    },
+    "formatAnomaliesView.error.markFailed": {
+      "kind": "mark",
+      "subject": "格式异常标记",
+      "new": "格式异常标记没能完成，请重试"
+    },
+    "formatAnomaliesView.error.summaryLoadFailed": {
+      "kind": "load",
+      "subject": "格式异常统计",
+      "new": "格式异常统计没能加载出来，请重试"
+    },
+    "freeDiscovery.scan.failed": {
+      "kind": "scan",
+      "subject": "扫描",
+      "new": "扫描没能完成，请重试"
+    },
+    "freePool.bootstrapFailed": {
+      "kind": "operation",
+      "subject": "一键建设",
+      "new": "一键建设没能完成，请重试"
+    },
+    "freePool.discoverFailed": {
+      "kind": "scan",
+      "subject": "自动学习",
+      "new": "自动学习没能完成，请重试"
+    },
+    "freePool.error.probeFailedGeneric": {
+      "kind": "probe",
+      "subject": "探活",
+      "new": "探活没能完成，请重试"
+    },
+    "freePool.fetchInboxFailed": {
+      "kind": "load",
+      "subject": "收件箱",
+      "new": "收件箱没能拉取出来，请检查网络后重试"
+    },
+    "freePool.importEnvFailed": {
+      "kind": "import",
+      "subject": "环境变量",
+      "new": "环境变量没能导入，请重试"
+    },
+    "freePool.loadFailed": {
+      "kind": "load",
+      "subject": "自由池",
+      "new": "自由池没能加载出来，请重试"
+    },
+    "freePool.oauthBridgeFailed": {
+      "kind": "operation",
+      "subject": "OAuth 桥接",
+      "new": "OAuth 桥接没能建立，请检查配置后重试"
+    },
+    "freePool.registerFailed": {
+      "kind": "register",
+      "subject": "注册",
+      "new": "注册没能完成，请重试"
+    },
+    "freePool.saveFailed": {
+      "kind": "save",
+      "subject": "资源",
+      "new": "资源没能入库，请重试"
+    },
+    "freePool.tempEmailFailed": {
+      "kind": "create",
+      "subject": "临时邮箱",
+      "new": "临时邮箱没能创建出来，请重试"
+    },
+    "freePool.writeFailed": {
+      "kind": "write",
+      "subject": "写入",
+      "new": "没能写入，请重试"
+    },
+    "keys.approveFailed": {
+      "kind": "update",
+      "subject": "密钥审批",
+      "new": "密钥审批没能通过，请重试"
+    },
+    "keys.common.loadFailed": {
+      "kind": "load",
+      "subject": "密钥",
+      "new": "密钥没能加载出来，请重试"
+    },
+    "keys.common.saveFailed": {
+      "kind": "save",
+      "subject": "密钥限额",
+      "new": "密钥限额没能保存，请重试"
+    },
+    "keys.copyFailed": {
+      "kind": "operation",
+      "subject": "复制",
+      "new": "复制没能完成，请重试"
+    },
+    "keys.createFailed": {
+      "kind": "create",
+      "subject": "密钥",
+      "new": "密钥没能创建出来，请重试"
+    },
+    "keys.detail.error.loadDetailFailed": {
+      "kind": "load",
+      "subject": "密钥详情",
+      "new": "密钥详情没能加载出来，请重试"
+    },
+    "keys.disableFailed": {
+      "kind": "update",
+      "subject": "密钥",
+      "new": "密钥没能禁用，请重试"
+    },
+    "keys.enableFailed": {
+      "kind": "update",
+      "subject": "密钥",
+      "new": "密钥没能启用，请重试"
+    },
+    "keys.getKeyFailed": {
+      "kind": "load",
+      "subject": "密钥",
+      "new": "密钥没能取到，请重试"
+    },
+    "keys.list.limits.loadFailed": {
+      "kind": "load",
+      "subject": "默认限额",
+      "new": "默认限额没能加载出来，未加载前不显示也不允许保存。请重试"
+    },
+    "keys.loadFailed": {
+      "kind": "load",
+      "subject": "密钥清单",
+      "new": "密钥清单没能加载出来，请重试"
+    },
+    "keys.revokeFailed": {
+      "kind": "update",
+      "subject": "密钥",
+      "new": "密钥没能吊销，请重试"
+    },
+    "keys.saveFailed": {
+      "kind": "save",
+      "subject": "密钥",
+      "new": "密钥没能保存，请重试"
+    },
+    "keys.systemKeyCannotDisable": {
+      "kind": "update",
+      "subject": "系统密钥",
+      "new": "系统密钥不能禁用，请改用普通密钥"
+    },
+    "login.error.failed": {
+      "kind": "login",
+      "subject": "登录",
+      "new": "没能登录，请检查用户名和密码后重试"
+    },
+    "modelIntegrityView.error.driftLoadFailed": {
+      "kind": "load",
+      "subject": "指纹漂移数据",
+      "new": "指纹漂移数据没能加载出来，请重试"
+    },
+    "modelIntegrityView.error.loadFailed": {
+      "kind": "load",
+      "subject": "模型完整性数据",
+      "new": "模型完整性数据没能加载出来，请重试"
+    },
+    "modelIntegrityView.error.markFailed": {
+      "kind": "mark",
+      "subject": "模型完整性标记",
+      "new": "模型完整性标记没能完成，请重试"
+    },
+    "modelIntegrityView.error.summaryLoadFailed": {
+      "kind": "load",
+      "subject": "模型完整性统计",
+      "new": "模型完整性统计没能加载出来，请重试"
+    },
+    "modelPicker.loadFailed": {
+      "kind": "load",
+      "subject": "可选模型",
+      "new": "可选模型没能加载出来，请重试"
+    },
+    "models.createFailed": {
+      "kind": "create",
+      "subject": "模型",
+      "new": "模型没能新增出来，请重试"
+    },
+    "models.discoverFailed": {
+      "kind": "scan",
+      "subject": "模型发现",
+      "new": "模型发现没能完成，请重试"
+    },
+    "models.discovery.failed": {
+      "kind": "scan",
+      "subject": "模型扫描",
+      "new": "模型扫描没能完成，请重试"
+    },
+    "models.error.loadDetailFailed": {
+      "kind": "load",
+      "subject": "模型详情",
+      "new": "模型详情没能加载出来，请重试"
+    },
+    "models.error.loadFailed": {
+      "kind": "load",
+      "subject": "模型清单",
+      "new": "模型清单没能加载出来，请重试"
+    },
+    "models.error.resetFailed": {
+      "kind": "reset",
+      "subject": "模型",
+      "new": "模型没能重置，请重试"
+    },
+    "models.error.saveFailed": {
+      "kind": "save",
+      "subject": "模型配置",
+      "new": "模型配置没能保存，请重试"
+    },
+    "models.loadFeaturedFailed": {
+      "kind": "load",
+      "subject": "特色模型",
+      "new": "特色模型没能加载出来，请重试"
+    },
+    "models.recommendLoadFailed": {
+      "kind": "load",
+      "subject": "推荐模型",
+      "new": "推荐模型没能加载出来，请重试"
+    },
+    "models.saveFailed": {
+      "kind": "save",
+      "subject": "特色模型",
+      "new": "特色模型没能保存，请重试"
+    },
+    "modulesView.error.loadFailed": {
+      "kind": "load",
+      "subject": "模块列表",
+      "new": "模块列表没能加载出来，请重试"
+    },
+    "modulesView.error.operationFailed": {
+      "kind": "operation",
+      "subject": "模块操作",
+      "new": "模块操作没能完成，请重试"
+    },
+    "modulesView.error.saveFailed": {
+      "kind": "save",
+      "subject": "模块配置",
+      "new": "模块配置没能保存，请重试"
+    },
+    "modulesView.error.testFailed": {
+      "kind": "test",
+      "subject": "模块测试",
+      "new": "模块测试没能通过，请重试"
+    },
+    "ops.vibecoding.createProjectFailed": {
+      "kind": "create",
+      "subject": "项目",
+      "new": "项目没能创建出来，请重试"
+    },
+    "ops.vibecoding.createSessionFailed": {
+      "kind": "create",
+      "subject": "会话",
+      "new": "会话没能创建出来，请重试"
+    },
+    "ops.vibecoding.loadFailed": {
+      "kind": "load",
+      "subject": "数据",
+      "new": "数据没能加载出来，请重试"
+    },
+    "outputCompliance.recordsLoadFailed": {
+      "kind": "load",
+      "subject": "命中记录",
+      "new": "命中记录没能加载出来，请重试"
+    },
+    "pricingManagement.failed": {
+      "kind": "import",
+      "subject": "定价模板",
+      "new": "定价模板没能导入，请重试"
+    },
+    "pricingManagement.saveFailed": {
+      "kind": "save",
+      "subject": "定价",
+      "new": "定价没能保存，请重试"
+    },
+    "providerDetail.creds.apiKeyRotateFailed": {
+      "kind": "update",
+      "subject": "API 密钥",
+      "new": "API 密钥没能轮换出来，请重试"
+    },
+    "providerDetail.creds.checkFailed": {
+      "kind": "probe",
+      "subject": "凭据健康检测",
+      "new": "凭据健康检测没能完成，请重试"
+    },
+    "providerDetail.creds.deleteFailed": {
+      "kind": "delete",
+      "subject": "凭据",
+      "new": "凭据没能删除，请重试"
+    },
+    "providerDetail.creds.fpSlotStatsFailed": {
+      "kind": "load",
+      "subject": "指纹槽统计",
+      "new": "指纹槽统计没能加载出来，请重试"
+    },
+    "providerDetail.creds.lifecycleFailed": {
+      "kind": "update",
+      "subject": "凭据生命周期",
+      "new": "凭据生命周期没能设置成功，请重试"
+    },
+    "providerDetail.creds.planTypeFailed": {
+      "kind": "update",
+      "subject": "凭据计价类型",
+      "new": "凭据计价类型没能设置成功，请重试"
+    },
+    "providerDetail.creds.releaseFailed": {
+      "kind": "operation",
+      "subject": "指纹槽位",
+      "new": "指纹槽位没能释放，请重试"
+    },
+    "providerDetail.creds.repickFailed": {
+      "kind": "update",
+      "subject": "候选模型",
+      "new": "候选模型没能重新选定，请重试"
+    },
+    "providerDetail.creds.resetFailed": {
+      "kind": "reset",
+      "subject": "凭据",
+      "new": "凭据没能重置，请重试"
+    },
+    "providerDetail.creds.resetFpSlotsFailed": {
+      "kind": "reset",
+      "subject": "指纹槽位",
+      "new": "指纹槽位没能复位，请重试"
+    },
+    "providerDetail.creds.routingScopeFailed": {
+      "kind": "update",
+      "subject": "凭据路由范围",
+      "new": "凭据路由范围没能设置成功，请重试"
+    },
+    "providerDetail.creds.setFailed": {
+      "kind": "update",
+      "subject": "凭据设置",
+      "new": "凭据设置没能完成，请重试"
+    },
+    "providerDetail.creds.triggerFailed": {
+      "kind": "trigger",
+      "subject": "凭据探活",
+      "new": "凭据探活没能触发，请重试"
+    },
+    "providerDetail.diag.errorDiag": {
+      "kind": "operation",
+      "subject": "错误诊断",
+      "new": "错误诊断没能完成，请重试"
+    },
+    "providerDetail.errorDetail.loadFailed": {
+      "kind": "load",
+      "subject": "供应商错误明细",
+      "new": "供应商错误明细没能加载出来，请重试"
+    },
+    "providerDetail.logs.loadFailed": {
+      "kind": "load",
+      "subject": "调用日志",
+      "new": "调用日志没能加载出来，请重试"
+    },
+    "providerDetail.models.clearFailed": {
+      "kind": "delete",
+      "subject": "模型列表",
+      "new": "模型列表没能清空，请重试"
+    },
+    "providerDetail.models.iqTestFailed": {
+      "kind": "probe",
+      "subject": "IQ 测试",
+      "new": "IQ 测试没能完成，请重试"
+    },
+    "providerDetail.models.loadFailed": {
+      "kind": "load",
+      "subject": "供应商下的模型列表",
+      "new": "供应商下的模型列表没能加载出来，请重试"
+    },
+    "providerDetail.models.probeFailed": {
+      "kind": "probe",
+      "subject": "模型探活",
+      "new": "模型探活没能完成，请重试"
+    },
+    "providerDetail.models.refreshFailed": {
+      "kind": "load",
+      "subject": "供应商侧的模型列表",
+      "new": "模型列表没能从供应商读取出来，请重试"
+    },
+    "providerDetail.models.refreshStatusFailed": {
+      "kind": "query",
+      "subject": "刷新状态",
+      "new": "刷新状态没能查询出来，请重试"
+    },
+    "providerDetail.probe.loadFailed": {
+      "kind": "load",
+      "subject": "探针历史记录",
+      "new": "探针历史记录没能加载出来，请重试"
+    },
+    "providerDetail.probe.triggerFailed": {
+      "kind": "trigger",
+      "subject": "探针任务",
+      "new": "探针任务没能触发，请重试"
+    },
+    "providerDetail.settings.checkFailed": {
+      "kind": "probe",
+      "subject": "连通性检测",
+      "new": "连通性检测没能完成，请重试"
+    },
+    "providerDetailPage.deleteFailed": {
+      "kind": "delete",
+      "subject": "这个供应商",
+      "new": "这个供应商没能删除，请重试"
+    },
+    "providerDetailPage.diagFailed": {
+      "kind": "operation",
+      "subject": "供应商诊断",
+      "new": "供应商诊断没能完成，请重试"
+    },
+    "providerDetailPage.loadFailed": {
+      "kind": "load",
+      "subject": "供应商详情",
+      "new": "供应商详情没能加载出来，请重试"
+    },
+    "providerDetailPage.operationFailed": {
+      "kind": "toggle",
+      "subject": "供应商启停",
+      "new": "供应商启停没能完成，请重试"
+    },
+    "providers.check.credentialFailed": {
+      "kind": "probe",
+      "subject": "供应商凭据检测",
+      "new": "供应商凭据检测没能完成，请重试"
+    },
+    "providers.check.providerFailed": {
+      "kind": "probe",
+      "subject": "供应商检测",
+      "new": "供应商检测没能完成，请重试"
+    },
+    "providers.create.errors.createFailed": {
+      "kind": "create",
+      "subject": "供应商",
+      "new": "供应商没能创建出来，请重试"
+    },
+    "providers.create.errors.probeFailed": {
+      "kind": "probe",
+      "subject": "新建供应商的探活",
+      "new": "新建供应商的探活没能完成，请重试"
+    },
+    "providers.credential.errors.addFailed": {
+      "kind": "create",
+      "subject": "凭据",
+      "new": "凭据没能添加，请重试"
+    },
+    "providers.credential.errors.deleteFailed": {
+      "kind": "delete",
+      "subject": "凭据记录",
+      "new": "凭据记录没能删除，请重试"
+    },
+    "providers.credential.errors.loadFailed": {
+      "kind": "load",
+      "subject": "凭据列表",
+      "new": "凭据列表没能加载出来，请重试"
+    },
+    "providers.credential.errors.saveFailed": {
+      "kind": "save",
+      "subject": "凭据配置",
+      "new": "凭据配置没能保存，请重试"
+    },
+    "providers.credential.errors.toggleFailed": {
+      "kind": "toggle",
+      "subject": "凭据启停",
+      "new": "凭据启停没能完成，请重试"
+    },
+    "providers.credential.row.balanceRefreshFailed": {
+      "kind": "probe",
+      "subject": "余额探测",
+      "new": "余额探测没能完成，请重试"
+    },
+    "providers.edit.errors.probeFailed": {
+      "kind": "probe",
+      "subject": "供应商探活",
+      "new": "供应商探活没能完成，请重试"
+    },
+    "providers.edit.errors.saveFailed": {
+      "kind": "save",
+      "subject": "供应商配置",
+      "new": "供应商配置没能保存，请重试"
+    },
+    "providers.emergencyFailed": {
+      "kind": "operation",
+      "subject": "紧急维护",
+      "new": "紧急维护没能完成，请重试"
+    },
+    "providers.emergencyUnavailable": {
+      "kind": "operation",
+      "subject": "紧急维护",
+      "new": "候选还没加载出来，紧急维护暂时用不了。请刷新后重试"
+    },
+    "providers.lifecycleChangeFailed": {
+      "kind": "update",
+      "subject": "生命周期切换",
+      "new": "生命周期没能切换，请重试"
+    },
+    "providers.providerDelete.failed": {
+      "kind": "delete",
+      "subject": "供应商",
+      "new": "供应商没能删除，请重试"
+    },
+    "proxy.error.batchHealthFailed": {
+      "kind": "probe",
+      "subject": "批量探活",
+      "new": "批量探活没能完成，请重试"
+    },
+    "proxy.error.createNodeFailed": {
+      "kind": "create",
+      "subject": "节点",
+      "new": "节点没能创建出来，请重试"
+    },
+    "proxy.error.createSubFailed": {
+      "kind": "create",
+      "subject": "订阅",
+      "new": "订阅没能创建出来，请重试"
+    },
+    "proxy.error.deleteNodeFailed": {
+      "kind": "delete",
+      "subject": "节点",
+      "new": "节点没能删除，请重试"
+    },
+    "proxy.error.deleteSubFailed": {
+      "kind": "delete",
+      "subject": "订阅",
+      "new": "订阅没能删除，请重试"
+    },
+    "proxy.error.healthCheckFailed": {
+      "kind": "probe",
+      "subject": "健康检查",
+      "new": "健康检查没能完成，请重试"
+    },
+    "proxy.error.loadPolicyFailed": {
+      "kind": "load",
+      "subject": "选择策略",
+      "new": "选择策略没能加载出来，请重试"
+    },
+    "proxy.error.loadRegionsFailed": {
+      "kind": "load",
+      "subject": "区域统计",
+      "new": "区域统计没能加载出来，请重试"
+    },
+    "proxy.error.refreshSubFailed": {
+      "kind": "update",
+      "subject": "订阅刷新",
+      "new": "订阅刷新没能完成，请重试"
+    },
+    "proxy.error.saveNodeBanFailed": {
+      "kind": "save",
+      "subject": "节点禁用地区",
+      "new": "节点禁用地区没能保存，请重试"
+    },
+    "proxy.error.savePolicyFailed": {
+      "kind": "save",
+      "subject": "策略",
+      "new": "策略没能保存，请重试"
+    },
+    "proxy.error.saveSubBanFailed": {
+      "kind": "save",
+      "subject": "订阅禁用地区",
+      "new": "订阅禁用地区没能保存，请重试"
+    },
+    "proxy.error.swapFailed": {
+      "kind": "toggle",
+      "subject": "强制切流",
+      "new": "强制切流没能完成，请重试"
+    },
+    "reports.rerunFailed": {
+      "kind": "operation",
+      "subject": "重跑",
+      "new": "重跑没能完成，请重试"
+    },
+    "routeIncidentDrawer.exportFailedPrep": {
+      "kind": "export",
+      "subject": "导出",
+      "new": "导出没能开始：详情或审计记录没能取到。请重试导出"
+    },
+    "routeIncidentDrawer.exportNoChannel": {
+      "kind": "export",
+      "subject": "导出",
+      "new": "导出没能开始：当前宿主没有可用的导出通道。请改用桌面端导出"
+    },
+    "routing.adoptFailed": {
+      "kind": "adopt",
+      "subject": "推荐模型",
+      "new": "推荐模型没能设为特色，请重试"
+    },
+    "routing.loadFailed": {
+      "kind": "load",
+      "subject": "路由策略",
+      "new": "路由策略没能加载出来，请重试"
+    },
+    "routing.queryFailed": {
+      "kind": "query",
+      "subject": "路由查询",
+      "new": "路由查询没能完成，请重试"
+    },
+    "routing.saveFailed": {
+      "kind": "save",
+      "subject": "路由策略",
+      "new": "路由策略没能保存，请重试"
+    },
+    "sessions.clientAnalytics.loadError": {
+      "kind": "load",
+      "subject": "客户端分析",
+      "new": "客户端分析没能加载出来，请重试"
+    },
+    "sessions.config.promptInjectionLoadError": {
+      "kind": "load",
+      "subject": "提示注入配置",
+      "new": "提示注入配置没能加载出来，请重试"
+    },
+    "sessions.config.promptInjectionSaveError": {
+      "kind": "save",
+      "subject": "提示注入配置",
+      "new": "提示注入配置没能保存，请重试"
+    },
+    "sessions.taskAnalytics.loadError": {
+      "kind": "load",
+      "subject": "任务分析",
+      "new": "任务分析没能加载出来，请重试"
+    },
+    "sessions.userProfile.loadFailed": {
+      "kind": "load",
+      "subject": "用户画像",
+      "new": "用户画像没能加载出来，请重试"
+    },
+    "settings.detail.errors.loadDetailFailed": {
+      "kind": "load",
+      "subject": "设置详情",
+      "new": "设置详情没能加载出来，请重试"
+    },
+    "settings.detail.errors.loadListFailed": {
+      "kind": "load",
+      "subject": "设置列表",
+      "new": "设置列表没能加载出来，请重试"
+    },
+    "settings.detail.errors.rollbackFailed": {
+      "kind": "rollback",
+      "subject": "回滚",
+      "new": "回滚没能完成，请重试"
+    },
+    "settings.detail.errors.saveFailed": {
+      "kind": "save",
+      "subject": "设置",
+      "new": "设置没能保存，请重试"
+    },
+    "standardModelPricing.batch.msgFailed": {
+      "kind": "operation",
+      "subject": "批量操作",
+      "new": "批量操作没能完成，请重试"
+    },
+    "standardModelPricing.loadFailed": {
+      "kind": "load",
+      "subject": "标准模型定价",
+      "new": "标准模型定价没能加载出来，请重试"
+    },
+    "standardModelPricing.resetFailed": {
+      "kind": "reset",
+      "subject": "标准模型定价",
+      "new": "标准模型定价没能恢复，请重试"
+    },
+    "standardModelPricing.saveFailed": {
+      "kind": "save",
+      "subject": "标准模型定价",
+      "new": "标准模型定价没能保存，请重试"
+    },
+    "taskProfile.loadFailed": {
+      "kind": "load",
+      "subject": "任务画像",
+      "new": "任务画像没能加载出来，请重试"
+    },
+    "tenantModelPolicyPanel.error.checkFailed": {
+      "kind": "operation",
+      "subject": "校验",
+      "new": "校验没能完成，请重试"
+    },
+    "tenantModelPolicyPanel.error.createFailed": {
+      "kind": "create",
+      "subject": "租户模型策略",
+      "new": "租户模型策略没能创建出来，请重试"
+    },
+    "tenantModelPolicyPanel.error.deleteFailed": {
+      "kind": "delete",
+      "subject": "租户模型策略",
+      "new": "租户模型策略没能删除，请重试"
+    },
+    "tenantModelPolicyPanel.error.loadFailed": {
+      "kind": "load",
+      "subject": "租户模型策略",
+      "new": "租户模型策略没能加载出来，请重试"
+    },
+    "tenantModelPolicyPanel.error.restoreFailed": {
+      "kind": "reset",
+      "subject": "租户模型策略",
+      "new": "租户模型策略没能恢复，请重试"
+    },
+    "tenantModels.page.loadFailed": {
+      "kind": "load",
+      "subject": "租户模型",
+      "new": "租户模型没能加载出来，请重试"
+    },
+    "tenants.account.loadFailed": {
+      "kind": "load",
+      "subject": "租户账户",
+      "new": "租户账户没能加载出来，请重试"
+    },
+    "tenants.create.createFailed": {
+      "kind": "create",
+      "subject": "租户",
+      "new": "租户没能创建出来，请重试"
+    },
+    "tenants.dashboard.detailLoadFailed": {
+      "kind": "load",
+      "subject": "租户明细",
+      "new": "租户明细没能加载出来，请重试"
+    },
+    "tenants.dashboard.loadFailed": {
+      "kind": "load",
+      "subject": "租户看板",
+      "new": "租户看板没能加载出来，请重试"
+    },
+    "tenants.list.loadFailed": {
+      "kind": "load",
+      "subject": "租户列表",
+      "new": "租户列表没能加载出来，请重试"
+    },
+    "tenants.order.loadFailed": {
+      "kind": "load",
+      "subject": "订单列表",
+      "new": "订单列表没能加载出来，请重试"
+    },
+    "tenants.pricing.createOrderFailed": {
+      "kind": "create",
+      "subject": "订单",
+      "new": "订单没能创建出来，请重试"
+    },
+    "tenants.pricing.loadFailed": {
+      "kind": "load",
+      "subject": "定价信息",
+      "new": "定价信息没能加载出来，请重试"
+    },
+    "tenants.usage.loadFailed": {
+      "kind": "load",
+      "subject": "用量明细",
+      "new": "用量明细没能加载出来，请重试"
+    },
+    "turnDigest.openAttachmentFailed": {
+      "kind": "operation",
+      "subject": "附件",
+      "new": "附件没能打开，请检查文件后重试"
+    },
+    "users.error.createFailed": {
+      "kind": "create",
+      "subject": "用户",
+      "new": "用户没能创建出来，请重试"
+    },
+    "users.error.deleteFailed": {
+      "kind": "delete",
+      "subject": "用户",
+      "new": "用户没能删除，请重试"
+    },
+    "users.error.loadFailed": {
+      "kind": "load",
+      "subject": "用户记录",
+      "new": "用户记录没能加载出来，请重试"
+    },
+    "users.error.resetFailed": {
+      "kind": "reset",
+      "subject": "用户密码",
+      "new": "用户密码没能重置，请重试"
+    },
+    "users.error.tenantsLoadFailed": {
+      "kind": "load",
+      "subject": "租户名单",
+      "new": "租户名单没能加载出来，请重试"
+    },
+    "users.error.toggleFailed": {
+      "kind": "toggle",
+      "subject": "用户状态",
+      "new": "用户状态没能切换，请重试"
+    },
+    "workTypes.testFailedShort": {
+      "kind": "test",
+      "subject": "工作类型测试",
+      "new": "工作类型测试没能通过，请重试"
+    }
+  },
+  "exemptions": {
+    "annotation.taskProfile.importOk": {
+      "category": "count-summary",
+      "reason": "导入结果的**计数摘要**（导入/跳过/错误各几条）⇒ 里面的「错误」是计数项名，不是错误陈述"
+    },
+    "common.exportFailed": {
+      "category": "runtime-reason",
+      "reason": "四处调用点里有三处把具体原因在运行时拼在后面（`${t('common.exportFailed')}: ${e.message}`）⇒ 值本身只是前缀，补恢复动作会被拼成「…请重试: <原因>」这种倒装句"
+    },
+    "common.feedback.unknownReason": {
+      "category": "info-missing",
+      "reason": "它陈述的是「信息缺失」而不是一次失败 ⇒ 补恢复动作会变成「请稍后重试以获取错误详情」这种无意义的建议"
+    },
+    "credentialMonitor.error.batchFailed": {
+      "category": "runtime-reason",
+      "reason": "调用点在后面拼了具体原因与状态码（`${...} (${res.status})`）⇒ 值只是前缀"
+    },
+    "credentialMonitor.error.clearFailed": {
+      "category": "runtime-reason",
+      "reason": "调用点在后面拼了具体原因与状态码（`${...} (${res.status})`）⇒ 值只是前缀"
+    },
+    "freePool.error.saveFailed": {
+      "category": "runtime-reason",
+      "reason": "调用点在后面拼了具体原因与状态码（`${...} (${res.status})`）⇒ 值只是前缀"
+    },
+    "proxy.batchResult.healthAll": {
+      "category": "count-summary",
+      "reason": "批量探活的**结果统计**（成功/失败/跳过各几条）⇒ 里面的「失败」是计数项名，不是错误陈述"
+    },
+    "proxy.batchResult.healthSub": {
+      "category": "count-summary",
+      "reason": "批量探活的**结果统计**（成功/失败各几条）⇒ 里面的「失败」是计数项名，不是错误陈述"
+    },
+    "routingOverride.table.deleteFailed": {
+      "category": "runtime-reason",
+      "reason": "值以「删除失败：」结尾，具体原因在运行时拼在后面 ⇒ 值只是前缀"
+    }
+  }
+}

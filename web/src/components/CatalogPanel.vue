@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
+import { surfaceError } from '../i18n/errorSurface'
 import { getCatalog, type CatalogEntry } from '../api'
 import ActiveFilterChips from './ActiveFilterChips.vue'
 import { useFilterChips } from '../composables/useFilterChips'
@@ -36,7 +37,7 @@ async function load() {
   try {
     entries.value = await getCatalog()
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : '没能加载出来，请重试'
+    error.value = surfaceError(e, { key: 'common.feedback.loadFailed' })
   } finally {
     loading.value = false
   }

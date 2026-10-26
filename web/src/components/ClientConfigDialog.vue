@@ -12,7 +12,7 @@ import {
   generateShellScript, getManualSteps, TOOL_TEMPLATES, detectOS, validateProviderName, normalizeGatewayURL,
   downloadFile, auditAction,
 } from '../composables/useClientConfig'
-import { Key } from '@element-plus/icons-vue'
+import { Key, Refresh } from '@element-plus/icons-vue'
 
 const props = defineProps<{ tool: ToolId; open: boolean }>()
 const emit = defineEmits<{ (e: 'close'): void }>()
@@ -366,7 +366,7 @@ function goManageFeatured() {
           <div class="step-label">
             <span>{{ t('clientConfigDialog.step1.title') }}</span>
             <button class="btn btn-ghost btn-sm refresh-btn" :disabled="keysLoading" @click="loadKeys">
-              {{ keysLoading ? t('clientConfigDialog.step1.refreshing') : '↻ ' + t('clientConfigDialog.step1.refresh') }}
+              <Refresh v-if="!keysLoading" />{{ keysLoading ? t('clientConfigDialog.step1.refreshing') : t('clientConfigDialog.step1.refresh') }}
             </button>
           </div>
           <select v-if="!keysLoading && keys.length > 0" v-model="selectedKeyId" class="select-field">
@@ -1096,9 +1096,8 @@ function goManageFeatured() {
   width: 100%;
   max-width: 480px;
   background: var(--card);
-  border: 1px solid var(--border);
   border-radius: 12px;
-  box-shadow: 0 24px 60px var(--overlay-strong);
+  box-shadow: var(--kx-shadow-md);
   display: flex;
   flex-direction: column;
 }
@@ -1174,4 +1173,9 @@ textarea.form-input {
   color: var(--danger);
   border: 1px solid var(--danger-bd);
 }
+
+/* ── 2026-10-27 第 17 增量（AI 痕迹门 V3 · 插值形态）：图标尺寸 ──
+   element-plus 图标是裸 <svg viewBox="0 0 1024 1024">，**不带 width/height**
+   ⇒ 浏览器按包含块宽度渲染（会撑爆布局）⇒ 必须显式定尺寸。 */
+.refresh-btn > svg { width: 11px; height: 11px; }
 </style>

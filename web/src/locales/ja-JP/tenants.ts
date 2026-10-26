@@ -15,7 +15,7 @@ export default {
     colContact: "連絡先メール",
     colCreated: "作成日時",
     empty: 'テナントはまだありません。',
-    loadFailed: "読み込み失敗"
+    loadFailed: 'テナント一覧の読み込みに失敗しました。再試行してください。'
   },
   create: {
     title: "新規テナント",
@@ -33,7 +33,7 @@ export default {
     creating: "作成中…",
     cancel: "キャンセル",
     codeAndNameRequired: "コードと名は必須です",
-    createFailed: "作成失敗",
+    createFailed: 'テナントの作成に失敗しました。再試行してください。',
     successTitle: "✅ テナント作成成功",
     successHint: "デフォルト管理者が作成されました。初期パスワードは一度しか表示されないので、安全に保存してください。",
     credTenant: "テナント",
@@ -115,8 +115,8 @@ export default {
     onboardingModelsHint: "で利用可能なモデルを確認、または",
     onboardingKeys: "API キー",
     onboardingKeysHint: "でキーを発行して呼び出しを開始。",
-    loadFailed: "読み込み失敗",
-    detailLoadFailed: "詳細読み込み失敗"
+    loadFailed: 'テナントのダッシュボードの読み込みに失敗しました。再試行してください。',
+    detailLoadFailed: 'テナント詳細の読み込みに失敗しました。再試行してください。'
 ,
     statCreditsConsumed: "消費クレジット合計",
 
@@ -132,7 +132,7 @@ export default {
     buyCredits: "クレジットを購入",
     refresh: "更新",
     loading: "読み込み中…",
-    loadFailed: "読み込み失敗",
+    loadFailed: 'テナントアカウントの読み込みに失敗しました。再試行してください。',
     walletQuotaRemaining: "サブスクリプション枠",
     walletQuotaHint: "請求サイクルの終了時にリセットされます",
     walletGrantedBalance: "付与クレジット",
@@ -169,7 +169,7 @@ export default {
     title: "プランとチャージ",
     refresh: "更新",
     loading: "読み込み中…",
-    loadFailed: "読み込み失敗",
+    loadFailed: '価格情報の読み込みに失敗しました。再試行してください。',
     payChannelAlipay: "アリペイ",
     payChannelWechat: "WeChat 決済",
     walletQuota: "サブスクリプション枠",
@@ -186,14 +186,14 @@ export default {
     creditsAmount: "{n} クレジット",
     buyNow: "今すぐ購入",
     creatingOrder: "注文を作成中…",
-    createOrderFailed: "注文の作成に失敗しました"
+    createOrderFailed: '注文の作成に失敗しました。再試行してください。'
   },
   usage: {
     title: "消費状況",
     adminTitle: "消費統計",
     refresh: "更新",
     loading: "読み込み中…",
-    loadFailed: "読み込み失敗",
+    loadFailed: '使用量明細の読み込みに失敗しました。再試行してください。',
     days7: "直近7日間",
     days30: "直近30日間",
     ledgerLimit50: "流水 50 件",
@@ -223,7 +223,7 @@ export default {
   order: {
     title: "注文の支払い",
     loading: "読み込み中…",
-    loadFailed: "読み込み失敗",
+    loadFailed: '注文一覧の読み込みに失敗しました。再試行してください。',
     qrPlaceholder: "QR コードで支払（プレースホルダー）",
     stubNote: "決済プロバイダーが未設定です。注文番号を添えてサポートまでご連絡ください。",
     paidNote: "✅ 支払いが確認されました。クレジットが反映されています。",

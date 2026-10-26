@@ -21,10 +21,10 @@ export default {
   },
   detail: {
     errors: {
-      loadListFailed: 'Failed to load',
-      loadDetailFailed: 'Failed to load details',
-      saveFailed: 'Failed to save',
-      rollbackFailed: 'Failed to rollback',
+      loadListFailed: 'The settings list could not be loaded. Please retry.',
+      loadDetailFailed: 'The settings details could not be loaded. Please retry.',
+      saveFailed: 'The settings could not be saved. Please retry.',
+      rollbackFailed: 'The rollback could not be completed. Please retry.',
       invalidNumber: 'Please enter a valid number',
     },
   },

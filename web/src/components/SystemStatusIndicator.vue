@@ -338,7 +338,6 @@ onUnmounted(() => {
 .status-dropdown {
   position: fixed;
   background: var(--bg-card);
-  border: 1px solid var(--border);
   border-radius: 8px;
   box-shadow: var(--kx-shadow-md);
   z-index: 2000;

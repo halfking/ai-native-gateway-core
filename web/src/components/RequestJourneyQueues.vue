@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
+import { surfaceError } from '../i18n/errorSurface'
 import { useI18n } from 'vue-i18n'
 import { Close, RefreshRight } from '@element-plus/icons-vue'
 import { credentialDisplayName as credentialLabelById, useCredentialLabels } from '../composables/useCredentialLabels'
@@ -162,7 +163,7 @@ async function loadView(view: RequestJourneyQueueView, force = false) {
   try {
     payloads.value[view] = await getRequestJourneyQueues(view, view === 'total' && isSuperAdmin() ? 'all' : undefined)
   } catch (error) {
-    viewErrors.value[view] = error instanceof Error ? error.message : String(error)
+    viewErrors.value[view] = surfaceError(error)
   } finally {
     if (loadingView.value === view) loadingView.value = null
   }
@@ -298,7 +299,7 @@ function closeDialog() {
 .journey-trigger-meta { color:var(--kx-text-secondary); font-size:11px; margin-left:auto; }
 .journey-trigger svg { width:15px; height:15px; color:var(--kx-text-secondary); }
 .journey-modal-mask { position:fixed; inset:0; z-index:2900; background:var(--overlay-medium); display:flex; justify-content:flex-end; }
-.journey-modal { width:min(760px, 96vw); height:100vh; height:100dvh; overflow:auto; background:var(--kx-surface); color:var(--kx-text); box-shadow:-10px 0 30px var(--overlay-light); padding:18px 20px 28px; box-sizing:border-box; }
+.journey-modal { width:min(760px, 96vw); height:100vh; height:100dvh; overflow:auto; background:var(--kx-surface); color:var(--kx-text); box-shadow:var(--kx-shadow-md-left); padding:18px 20px 28px; box-sizing:border-box; }
 .journey-header-actions { display:flex; gap:6px; }
 .journey-modal-sub { margin:4px 0 0; color:var(--kx-text-secondary); font-size:11px; }
 .journey-header,

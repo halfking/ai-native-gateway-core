@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, watch } from 'vue'
+import { surfaceError } from '../i18n/errorSurface'
 import { updateTenant, TENANT_STATUSES, TENANT_STATUS_LABELS } from '../api'
 import type { Tenant } from '../api'
 
@@ -44,7 +45,7 @@ async function handleSubmit() {
     emit('updated')
     emit('close')
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : '更新没能完成，请重试'
+    error.value = surfaceError(e, { key: 'common.feedback.tenantUpdateFailed' })
   } finally {
     submitting.value = false
   }

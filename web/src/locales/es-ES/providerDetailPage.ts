@@ -24,9 +24,9 @@ export default {
   },
   manualDisabledTitle: 'Desactivación manual a nivel de proveedor: todo el proveedor no es enrutable',
   manualDisabledBadge: 'Desactivado manualmente',
-  loadFailed: 'Error al cargar',
-  operationFailed: 'Operación fallida',
-  diagFailed: 'Diagnóstico fallido',
+  loadFailed: 'No se pudieron cargar los detalles del proveedor. Vuelva a intentarlo, por favor.',
+  operationFailed: 'No se pudo activar o desactivar el proveedor. Vuelva a intentarlo, por favor.',
+  diagFailed: 'No se pudo completar el diagnóstico del proveedor. Vuelva a intentarlo, por favor.',
 
   quality: {
     loading: 'Loading quality data…',
@@ -55,5 +55,5 @@ export default {
   deleteBtn: "Eliminar proveedor",
   deleteTitle: "Eliminar (borrado suave) este proveedor. El proveedor y todas sus credenciales se retirarán de todas las listas y del enrutado. No se puede deshacer.",
   deleteConfirm: '¿Eliminar el proveedor "{name}"? Todas sus credenciales se marcarán como eliminadas y todas las rutas de modelos relacionadas se detendrán de inmediato. No se puede deshacer.',
-  deleteFailed: "Error al eliminar el proveedor",
+  deleteFailed: 'No se pudo eliminar este proveedor. Vuelva a intentarlo, por favor.',
 }

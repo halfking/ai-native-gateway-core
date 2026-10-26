@@ -5,6 +5,7 @@
 // 按 request_id 查询：GET /api/admin/connection-registry/{id}（含近期 closed）
 // 点击 request_id → 请求旅程详情
 import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { surfaceError } from '../i18n/errorSurface'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import {
@@ -95,7 +96,7 @@ async function searchByRequestId() {
     }
     filterText.value = id
   } catch (e) {
-    searchError.value = e instanceof Error ? e.message : String(e)
+    searchError.value = surfaceError(e)
   } finally {
     searchLoading.value = false
   }

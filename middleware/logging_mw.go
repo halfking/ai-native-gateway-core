@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"strconv"
 	"time"
+
+	"github.com/kaixuan/llm-gateway-go/internal/auth"
 )
 
 // LoggingMiddleware emits one structured JSON record per HTTP
@@ -154,16 +156,23 @@ func requestBytes(r *http.Request) int64 {
 	return 0
 }
 
-// compactQuery returns the raw query string, truncated to
-// 512 bytes to keep individual log lines bounded. Credentials
-// should not appear in URLs in the first place, but truncation
-// is the last line of defence if they do.
+// compactQuery returns the raw query string with credential-bearing
+// parameters redacted, truncated to 512 bytes to keep individual log lines
+// bounded.
+//
+// ★ 2026-10-26（Gemini 原生认证修复轮）：本函数此前**只截断不脱敏**
+// ⇒ Gemini 的 `?key=<API_KEY>` 凭据形态会把明文 key 写进滚动日志文件
+// （以及 panic 日志）。现在先脱敏再截断 ⇒ 被截断的 query 永远不会
+// 露出半个 secret。脱敏只动「网关自己认作凭据」的参数名
+// （key / token），其余参数原样保留 ⇒ 运维在日志里看到的普通 query
+// 语义零变化。
 func compactQuery(raw string) string {
 	const max = 512
-	if len(raw) <= max {
-		return raw
+	redacted := auth.RedactQueryCredentials(raw)
+	if len(redacted) <= max {
+		return redacted
 	}
-	return raw[:max] + "…"
+	return redacted[:max] + "…"
 }
 
 // errorKind returns a short, queryable label for the HTTP

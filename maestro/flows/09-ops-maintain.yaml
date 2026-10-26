@@ -1,0 +1,103 @@
+# 运维中心外跳 / maintain 兜底
+# /ops/* 全页外跳到 maintain SPA；Maintain 不可用时守卫改写到 /customer/update-activate。
+# 路由清单来自 web/src/router.ts（见 maestro/README.md 的逐条核对表）。
+# 计时：每个页面 openLink 前打点 output.t0，页面关键文案可见后算 output.ms__<slug>（毫秒）。
+#       阈值 2000ms 用 optional 断言 —— 慢页只标记不失败，事后用 maestro/tools/slow-pages.mjs 筛。
+appId: ${BASE_URL}
+---
+- launchApp
+- runFlow:
+    file: _shared/login.yaml
+    env:
+      ADMIN_USER: ${ADMIN_USER}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD}
+
+# ── /ops/licenses ─────────────────────────────────────────────
+- evalScript: "${output.t0 = Date.now()}"
+- openLink: "${BASE_URL}/ops/licenses"
+- extendedWaitUntil:
+    visible: '更新与激活'
+    timeout: 20000
+- assertVisible:
+    text: '503 · 运维平台不可用'
+    optional: true
+- evalScript: "${output.ms__ops_licenses = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}"
+- assertTrue:
+    condition: "${output.ms__ops_licenses < 2000}"
+    optional: true
+    label: 'slow-check:/ops/licenses'
+
+# ── /ops/faults ─────────────────────────────────────────────
+- evalScript: "${output.t0 = Date.now()}"
+- openLink: "${BASE_URL}/ops/faults"
+- extendedWaitUntil:
+    visible: '更新与激活'
+    timeout: 20000
+- assertVisible:
+    text: '503 · 运维平台不可用'
+    optional: true
+- evalScript: "${output.ms__ops_faults = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}"
+- assertTrue:
+    condition: "${output.ms__ops_faults < 2000}"
+    optional: true
+    label: 'slow-check:/ops/faults'
+
+# ── /ops/autoupdate ─────────────────────────────────────────────
+- evalScript: "${output.t0 = Date.now()}"
+- openLink: "${BASE_URL}/ops/autoupdate"
+- extendedWaitUntil:
+    visible: '更新与激活'
+    timeout: 20000
+- assertVisible:
+    text: '503 · 运维平台不可用'
+    optional: true
+- evalScript: "${output.ms__ops_autoupdate = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}"
+- assertTrue:
+    condition: "${output.ms__ops_autoupdate < 2000}"
+    optional: true
+    label: 'slow-check:/ops/autoupdate'
+
+# ── /ops/center ─────────────────────────────────────────────
+- evalScript: "${output.t0 = Date.now()}"
+- openLink: "${BASE_URL}/ops/center"
+- extendedWaitUntil:
+    visible: '更新与激活'
+    timeout: 20000
+- assertVisible:
+    text: '503 · 运维平台不可用'
+    optional: true
+- evalScript: "${output.ms__ops_center = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}"
+- assertTrue:
+    condition: "${output.ms__ops_center < 2000}"
+    optional: true
+    label: 'slow-check:/ops/center'
+
+# ── /ops ─────────────────────────────────────────────
+- evalScript: "${output.t0 = Date.now()}"
+- openLink: "${BASE_URL}/ops"
+- extendedWaitUntil:
+    visible: '更新与激活'
+    timeout: 20000
+- assertVisible:
+    text: '503 · 运维平台不可用'
+    optional: true
+- evalScript: "${output.ms__ops = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}"
+- assertTrue:
+    condition: "${output.ms__ops < 2000}"
+    optional: true
+    label: 'slow-check:/ops'
+
+# ── /ops/vibecoding ─────────────────────────────────────────────
+- evalScript: "${output.t0 = Date.now()}"
+- openLink: "${BASE_URL}/ops/vibecoding"
+- extendedWaitUntil:
+    visible: '更新与激活'
+    timeout: 20000
+- assertVisible:
+    text: 'VibeCoding'
+    optional: true
+- evalScript: "${output.ms__ops_vibecoding = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}"
+- assertTrue:
+    condition: "${output.ms__ops_vibecoding < 2000}"
+    optional: true
+    label: 'slow-check:/ops/vibecoding'

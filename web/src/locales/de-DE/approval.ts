@@ -57,10 +57,10 @@ export default {
       info: 'Seite {page} / {totalPages} ({total} gesamt)',
     },
     errors: {
-      approveFailed: 'Approve failed',
-      rejectFailed: 'Reject failed',
+      approveFailed: 'Genehmigung konnte nicht erteilt werden. Bitte erneut versuchen.',
+      rejectFailed: 'Ablehnung konnte nicht durchgeführt werden. Bitte erneut versuchen.',
 
-      loadListFailed: 'Failed to load approval list',
+      loadListFailed: 'Genehmigungsliste konnte nicht geladen werden. Bitte erneut versuchen.',
     },
     success: {
       approved: 'Approved',
@@ -139,8 +139,8 @@ export default {
       rules: 'Definieren, welche Anfragen genehmigt werden müssen',
     },
     errors: {
-      loadFailed: 'Einstellungen konnten nicht geladen werden',
-      saveFailed: 'Speichern fehlgeschlagen',
+      loadFailed: 'Genehmigungskonfiguration konnte nicht geladen werden. Bitte erneut versuchen.',
+      saveFailed: 'Genehmigungskonfiguration konnte nicht gespeichert werden. Bitte erneut versuchen.',
     },
     success: {
       saved: 'Erfolgreich gespeichert',

@@ -140,10 +140,10 @@ export default {
 
 
   error: {
-    loadFailed: 'Échec du chargement de la liste des modules',
-    operationFailed: 'Opération échouée',
-    saveFailed: 'Échec de l\'enregistrement de la configuration',
-    testFailed: 'Échec du test',
+    loadFailed: 'Le chargement de la liste des modules a échoué. Veuillez réessayer.',
+    operationFailed: 'L\'opération sur les modules n\'a pas pu aboutir. Veuillez réessayer.',
+    saveFailed: 'L\'enregistrement de la configuration des modules a échoué. Veuillez réessayer.',
+    testFailed: 'Le test des modules n\'a pas pu aboutir. Veuillez réessayer.',
   },
 
   // 同步的扁平键

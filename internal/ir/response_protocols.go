@@ -3,6 +3,7 @@ package ir
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 )
 
 // ParseGeminiResponse parses a Gemini generateContent response into IR.
@@ -28,11 +29,24 @@ func ParseGeminiResponse(body []byte) (*InternalResponse, error) {
 				} `json:"parts"`
 			} `json:"content"`
 			FinishReason string `json:"finishReason"`
+			// ★ 2026-10-27（Gemini 转换面补全轮）：厂方文档要求 IR 捕获
+			// 引用元数据（docs/vendor-formats/gemini.md §特殊字段）。
+			// ★ Gemini 的字段名是 `uri`（**不是** `url`）⇒ 归一时改名。
+			CitationMetadata struct {
+				Citations []struct {
+					StartIndex int    `json:"startIndex"`
+					EndIndex   int    `json:"endIndex"`
+					URI        string `json:"uri"`
+					Title      string `json:"title"`
+				} `json:"citations"`
+			} `json:"citationMetadata"`
 		} `json:"candidates"`
 		UsageMetadata struct {
-			PromptTokenCount     int `json:"promptTokenCount"`
-			CandidatesTokenCount int `json:"candidatesTokenCount"`
-			TotalTokenCount      int `json:"totalTokenCount"`
+			PromptTokenCount        int `json:"promptTokenCount"`
+			CandidatesTokenCount    int `json:"candidatesTokenCount"`
+			TotalTokenCount         int `json:"totalTokenCount"`
+			CachedContentTokenCount int `json:"cachedContentTokenCount"`
+			ThoughtsTokenCount      int `json:"thoughtsTokenCount"`
 		} `json:"usageMetadata"`
 		ModelVersion string `json:"modelVersion"`
 	}
@@ -49,6 +63,18 @@ func ParseGeminiResponse(body []byte) (*InternalResponse, error) {
 			TotalTokens:      src.UsageMetadata.TotalTokenCount,
 		},
 	}
+	// 2026-10-27 缓存标准对齐轮：与流式解析（parse_gemini_stream.go）对齐 ——
+	// 非流式此前把 cachedContentTokenCount 整个丢弃，隐式缓存命中进不了 IR。
+	if src.UsageMetadata.CachedContentTokenCount > 0 {
+		v := src.UsageMetadata.CachedContentTokenCount
+		resp.Usage.CacheReadTokens = &v
+	}
+	// 同一次对齐：thoughtsTokenCount → ReasoningTokens（流式侧同款映射），
+	// 序列化侧经 thoughtsTokenCount 回到 Gemini 客户端。
+	if src.UsageMetadata.ThoughtsTokenCount > 0 {
+		v := src.UsageMetadata.ThoughtsTokenCount
+		resp.Usage.ReasoningTokens = &v
+	}
 	if len(src.Candidates) == 0 {
 		return resp, nil
 	}
@@ -63,6 +89,20 @@ func ParseGeminiResponse(body []byte) (*InternalResponse, error) {
 	// SerializeGeminiResponse hand Gemini clients back their own finishReason.
 	resp.StopReason = candidate.FinishReason
 	resp.FinishReason = mapGeminiFinishReason(candidate.FinishReason)
+	// ★ 2026-10-27（Gemini 转换面补全轮）：捕获引用元数据（厂方文档要求
+	// IR 捕获 ⇒ 可在序列化为 OpenAI 时映射为 annotations）。
+	// ★ 无 URL 的引用没有意义（客户端点不动）⇒ 丢弃并计数，不进 IR。
+	for _, c := range candidate.CitationMetadata.Citations {
+		if strings.TrimSpace(c.URI) == "" {
+			continue
+		}
+		resp.Citations = append(resp.Citations, ResponseCitation{
+			URL:        c.URI,
+			Title:      c.Title,
+			StartIndex: c.StartIndex,
+			EndIndex:   c.EndIndex,
+		})
+	}
 	for index, part := range candidate.Content.Parts {
 		isThought, legacyThoughtText := geminiThoughtMarker(part.Thought)
 		switch {
@@ -142,9 +182,13 @@ func ParseResponsesResponse(body []byte) (*InternalResponse, error) {
 			Summary   json.RawMessage `json:"summary"`
 		} `json:"output"`
 		Usage struct {
-			InputTokens  int `json:"input_tokens"`
-			OutputTokens int `json:"output_tokens"`
-			TotalTokens  int `json:"total_tokens"`
+			InputTokens        int `json:"input_tokens"`
+			OutputTokens       int `json:"output_tokens"`
+			TotalTokens        int `json:"total_tokens"`
+			InputTokensDetails struct {
+				CachedTokens     int `json:"cached_tokens"`
+				CacheWriteTokens int `json:"cache_write_tokens"`
+			} `json:"input_tokens_details"`
 		} `json:"usage"`
 	}
 	if err := json.Unmarshal(body, &src); err != nil {
@@ -165,6 +209,18 @@ func ParseResponsesResponse(body []byte) (*InternalResponse, error) {
 			CompletionTokens: src.Usage.OutputTokens,
 			TotalTokens:      src.Usage.TotalTokens,
 		},
+	}
+	// 2026-10-27 缓存标准对齐轮：Responses usage 的缓存命中在
+	// input_tokens_details 下（与 chat 的 prompt_tokens_details 对位）。
+	// 此前非流式解析丢弃它 ⇒ Responses 上游 → chat 客户端的非流式桥
+	// （responses_mode_bridge）整段缓存命中不进 IR、不进账、不上屏。
+	if src.Usage.InputTokensDetails.CachedTokens > 0 {
+		v := src.Usage.InputTokensDetails.CachedTokens
+		resp.Usage.CacheReadTokens = &v
+	}
+	if src.Usage.InputTokensDetails.CacheWriteTokens > 0 {
+		v := src.Usage.InputTokensDetails.CacheWriteTokens
+		resp.Usage.CacheWriteTokens = &v
 	}
 	for index, item := range src.Output {
 		switch item.Type {

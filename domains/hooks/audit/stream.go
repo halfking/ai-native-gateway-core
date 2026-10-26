@@ -114,6 +114,13 @@ func (sc *StreamCapture) ObserveChunk(chunk *ir.StreamChunk) {
 			if chunk.Usage.CacheWriteTokens != nil {
 				sc.cacheWriteTokens = chunk.Usage.CacheWriteTokens
 			}
+			// 2026-10-27 缓存监测轮：TTL 写入分档随 usage chunk 一起进捕获。
+			if chunk.Usage.CacheWriteTTLShort != nil {
+				sc.cacheWriteTTLShort = chunk.Usage.CacheWriteTTLShort
+			}
+			if chunk.Usage.CacheWriteTTLLong != nil {
+				sc.cacheWriteTTLLong = chunk.Usage.CacheWriteTTLLong
+			}
 		}
 
 		// Usage chunks can also carry finish_reason

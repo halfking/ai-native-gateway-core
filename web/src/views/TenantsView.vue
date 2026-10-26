@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { useI18n } from 'vue-i18n'
+import { surfaceError } from '../i18n/errorSurface'
 import { formatDateTime } from '../utils/datetime'
 import { sortByName } from '../utils/sortByName'
 import { localeRef } from '../i18n'
@@ -38,7 +39,7 @@ async function load() {
     const rows = await getTenantsAdmin(filterStatus.value || undefined)
     tenants.value = sortByName(rows)
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : t('tenants.list.loadFailed')
+    error.value = surfaceError(e, { key: 'tenants.list.loadFailed' })
   } finally {
     loading.value = false
   }

@@ -390,7 +390,7 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   background: var(--card);
-  box-shadow: 0 8px 24px var(--shadow-color-dark);
+  box-shadow: var(--kx-shadow-sm);
 }
 
 /* 右侧面板：逻辑属性 inset-inline-end，dir=rtl 自动换边 */

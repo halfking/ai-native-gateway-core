@@ -52,7 +52,14 @@ vi.mock('../composables/useCredentialLabels', () => ({
   useCredentialLabels: () => ({ credentialDisplayName: (id: number) => `#${id}` }),
 }))
 vi.mock('../composables/useConfirmDialog', () => ({ confirmDialog: () => Promise.resolve(true) }))
-vi.mock('../i18n', () => ({ localeRef: { value: 'zh-CN' } }))
+vi.mock('../i18n', async (importOriginal) => {
+  // ★ 保留**真实**的 i18n 实例（真实的 zh-CN 文案），只覆盖 localeRef。
+  //   第 16 增量：错误文案统一走 src/i18n/errorSurface.ts 的 surfaceError()，
+  //   它从本模块取 i18n 实例 ⇒ 若这里把整个模块换成只剩 localeRef 的桩，
+  //   组件一加载就抛「No "i18n" export is defined on the mock」。
+  const actual = await importOriginal<typeof import('../i18n')>()
+  return { ...actual, localeRef: { value: 'zh-CN' } }
+})
 vi.mock('../store', () => ({
   // 价格页签要求 super_admin，否则 v-if="!isAdmin" 先短路，断言会停在另一个分支上。
   store: { userInfo: { role: 'super_admin' } },

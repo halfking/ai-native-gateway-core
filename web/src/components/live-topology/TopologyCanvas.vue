@@ -588,7 +588,6 @@ function onNodeClick(node: TopoNode) {
   border: 1px solid var(--kx-border);
   border-radius: 10px;
   background: color-mix(in srgb, var(--kx-surface) 88%, transparent);
-  box-shadow: var(--kx-shadow-sm);
   cursor: pointer;
   transition: opacity 160ms ease, transform 160ms ease;
   overflow: hidden;

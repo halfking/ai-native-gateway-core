@@ -3,7 +3,7 @@ export default {
     emptyHint: "Las sesiones aparecen una vez que se genera un gw_session_id en los registros de solicitudes",
   },
   userProfile: {
-    loadFailed: 'No se pudo cargar el perfil de usuario',
+    loadFailed: 'No se pudo cargar el perfil de usuario. Vuelva a intentarlo.',
     title: "Perfiles de usuario",
     detailTitle: "Detalle del perfil de usuario",
     ownerUser: "Identificador de usuario",
@@ -130,7 +130,7 @@ export default {
     sessionId: "ID de sesión",
     requests: "Solicitudes",
     health: "Salud",
-    loadError: "Error al cargar análisis de cliente"
+    loadError: 'No se pudo cargar el análisis del cliente. Vuelva a intentarlo.'
   },
   taskAnalytics: {
     title: "Análisis de tareas",
@@ -146,7 +146,7 @@ export default {
     sessionId: "ID de sesión",
     requests: "Solicitudes",
     health: "Salud",
-    loadError: "Error al cargar análisis de tareas"
+    loadError: 'No se pudo cargar el análisis de tareas. Vuelva a intentarlo.'
   },
   config: {
     title: 'Configuración de sesión',
@@ -314,8 +314,8 @@ export default {
     promptInjectionRuleSearchPlaceholder: "Buscar nombre o descripción…",
     promptInjectionRuleSaveSuccess: "Regla actualizada",
     promptInjectionPolicySaveSuccess: "Política guardada",
-    promptInjectionLoadError: "Error al cargar",
-    promptInjectionSaveError: "Error al guardar",
+    promptInjectionLoadError: 'No se pudo cargar la configuración de inyección de prompts. Vuelva a intentarlo.',
+    promptInjectionSaveError: 'No se pudo guardar la configuración de inyección de prompts. Vuelva a intentarlo.',
     promptInjectionSectionAdvanced: "Entradas avanzadas",
     promptInjectionLinkEngines: "Motores LLM",
     promptInjectionLinkEnginesHint: "Configure modelos, temperatura y prompts para detección LLM",

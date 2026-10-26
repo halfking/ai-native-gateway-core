@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted, computed, onBeforeUnmount, watch } from 'vue'
+import { surfaceError } from '../i18n/errorSurface'
 import { formatDateTime, formatTimeOnly, parseLocalMinute } from '../utils/datetime'
 import { localeRef } from '../i18n'
 import { fmtDateCompact } from '../i18n/useFormat'
@@ -900,7 +901,7 @@ async function load() {
     total.value = resp.count
     aggregate.value = resp.aggregate ?? null
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : String(e)
+    error.value = surfaceError(e)
   } finally {
     loading.value = false
   }
@@ -1142,7 +1143,7 @@ onMounted(async () => {
     await load()
   } catch (e) {
     console.error('Failed to load request logs:', e)
-    error.value = e instanceof Error ? e.message : String(e)
+    error.value = surfaceError(e)
     loading.value = false
   }
 

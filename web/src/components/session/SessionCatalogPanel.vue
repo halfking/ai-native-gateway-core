@@ -6,6 +6,7 @@
  * 同时在已返回行上按会话键、标题、模型、标签即时过滤。结果上限 200。
  */
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { surfaceError } from '../../i18n/errorSurface'
 import { useI18n } from 'vue-i18n'
 import { listCatalogSessions, type CatalogSession } from '../../api/session'
 import { useRaceGuard } from '../../composables/useRaceGuard'
@@ -43,7 +44,7 @@ async function load() {
     loaded.value = true
   } catch (e) {
     if (race.stale(gen)) return
-    error.value = e instanceof Error ? e.message : String(e)
+    error.value = surfaceError(e)
     rows.value = []
   } finally {
     if (race.current(gen)) loading.value = false

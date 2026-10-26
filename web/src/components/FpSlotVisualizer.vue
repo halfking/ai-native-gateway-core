@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
+import { Close } from '@element-plus/icons-vue'
 
 interface SlotDetail {
   index: number
@@ -88,9 +89,9 @@ function isLongHeld(d: SlotDetail | null): boolean {
       >
         <template v-if="d && d.holder">
           <div class="fp-cell-num">#{{ d.index }}</div>
-          <div class="fp-cell-icon">●</div>
+          <div class="fp-cell-icon"></div>
           <div class="fp-cell-ttl">{{ ttlLabel(d) }}</div>
-          <button class="fp-cell-close" @click.stop="emit('release', d.index)" title="释放此槽位">×</button>
+          <button class="fp-cell-close" @click.stop="emit('release', d.index)" title="释放此槽位"><Close /></button>
           <div class="fp-tooltip">
             <div class="fp-tooltip-title">{{ holderLabel(d) }}</div>
             <div class="fp-tooltip-meta">
@@ -171,7 +172,7 @@ function isLongHeld(d: SlotDetail | null): boolean {
 }
 .fp-cell:hover {
   transform: translateY(-2px);
-  box-shadow: 0 4px 12px var(--overlay-light);
+  box-shadow: var(--kx-shadow-sm);
   z-index: 5;
 }
 
@@ -259,7 +260,7 @@ function isLongHeld(d: SlotDetail | null): boolean {
   pointer-events: none;
   transition: opacity 0.15s;
   z-index: 100;
-  box-shadow: 0 4px 16px var(--overlay-strong);
+  box-shadow: var(--kx-shadow-sm);
   white-space: normal;
 }
 .fp-cell:hover .fp-tooltip {
@@ -311,4 +312,11 @@ function isLongHeld(d: SlotDetail | null): boolean {
   background: transparent;
   border: 1px dashed var(--muted);
 }
+
+/* ── 2026-10-27 第 17 增量（AI 痕迹门 V3）：图标尺寸 ──
+   element-plus 图标是裸 <svg viewBox="0 0 1024 1024">，**不带 width/height**
+   ⇒ 浏览器按包含块宽度渲染（会撑爆布局）⇒ 必须显式定尺寸。
+   尺寸沿用原字形的 font-size 观感（字形墨迹 ≈ 0.7em）。 */
+.fp-cell-icon { width: 8px; height: 8px; border-radius: 50%; background: currentColor; margin: 3px auto; }
+.fp-cell-close > svg { width: 10px; height: 10px; }
 </style>

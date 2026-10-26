@@ -14,6 +14,7 @@
 // （厂商分组选卡，与 DecisionsView/FormatAnomaliesView 同款）；模型候选
 // 由 ModelPicker 自取 available-models，本页不再单独拉 raw 列表。
 import { ref, computed, onMounted } from 'vue'
+import { surfaceError } from '../i18n/errorSurface'
 import { formatDateTime } from '../utils/datetime'
 import { formatBytes } from '../utils/format'
 import { acceptImportFile, importRejectionMessage, CORRECTIONS_CSV_MAX_BYTES } from '../utils/fileImport'
@@ -121,7 +122,7 @@ async function load() {
     samples.value = r.samples || []
     total.value = r.total || 0
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : t('annotation.loadFailed')
+    error.value = surfaceError(e, { key: 'annotation.loadFailed' })
     samples.value = []
     total.value = 0
   } finally {
@@ -187,7 +188,7 @@ async function openModal(sample: FirstTurnSample, mode: 'annotate' | 'view') {
       requestPreview.value = text.length > 8000 ? text.slice(0, 8000) + '\n…' : text
     }
   } catch (e: unknown) {
-    detailError.value = e instanceof Error ? e.message : t('annotation.detail.loadFailed')
+    detailError.value = surfaceError(e, { key: 'annotation.detail.loadFailed' })
   } finally {
     detailLoading.value = false
   }
@@ -233,7 +234,7 @@ async function handleAnnotationSubmit(data: {
         annotator: data.annotator,
         reason: data.is_correct ? 'correct' : data.reason,
 }).catch((corrErr: unknown) => {
-        const msg = corrErr instanceof Error ? corrErr.message : String(corrErr ?? '')
+        const msg = surfaceError(corrErr)
         if (/409|already/i.test(msg)) return
         correctionWarning.value = t('annotation.correctionWriteFailed', { msg })
       })
@@ -245,7 +246,7 @@ async function handleAnnotationSubmit(data: {
     closeModal()
     load()
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : t('annotation.annotationFailed')
+    error.value = surfaceError(e, { key: 'annotation.annotationFailed' })
   }
 }
 
@@ -261,7 +262,7 @@ async function handleExportCSV() {
     downloadTextFile(filename, content)
     exportImportMessage.value = t('annotation.taskProfile.exportOk', { name: filename })
   } catch (e: unknown) {
-    exportImportMessage.value = e instanceof Error ? e.message : t('annotation.taskProfile.exportFailed')
+    exportImportMessage.value = surfaceError(e, { key: 'annotation.taskProfile.exportFailed' })
   } finally {
     exportImportBusy.value = false
   }
@@ -292,7 +293,7 @@ async function handleImportCSV(ev: Event) {
     })
     await load() // 重新拉一次，闭环可视化
   } catch (e: unknown) {
-    exportImportMessage.value = e instanceof Error ? e.message : t('annotation.taskProfile.importFailed')
+    exportImportMessage.value = surfaceError(e, { key: 'annotation.taskProfile.importFailed' })
   } finally {
     exportImportBusy.value = false
   }

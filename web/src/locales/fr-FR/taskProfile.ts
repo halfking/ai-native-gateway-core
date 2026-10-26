@@ -2,7 +2,7 @@
 export default {
     refresh: 'Actualiser',
     refreshing: 'Actualisation…',
-    loadFailed: 'Échec du chargement',
+    loadFailed: 'Le chargement du profil de tâche a échoué. Veuillez réessayer.',
     noData: 'Aucune donnée de profil',
   registry: {
     version: 'Version du registre',

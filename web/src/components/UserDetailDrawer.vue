@@ -7,6 +7,7 @@
 // 与对账快照同源）；账号无用量时 KPI 全零 + 空态文案，基本信息仍完整展示。
 // 启停/重置密码操作不在抽屉内自行执行，emit 回列表页复用既有 handler。
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
+import { surfaceError } from '../i18n/errorSurface'
 import { useI18n } from 'vue-i18n'
 import { fmtDateTime24h } from '../i18n/useFormat'
 import { getUserStats, type UserStats } from '../api'
@@ -63,7 +64,7 @@ async function load() {
     stats.value = next
   } catch (e: unknown) {
     if (race.stale(gen)) return
-    errorText.value = e instanceof Error ? e.message : t('users.detail.loadStatsFailed')
+    errorText.value = surfaceError(e, { key: 'users.detail.loadStatsFailed' })
   } finally {
     if (race.current(gen)) loading.value = false
   }

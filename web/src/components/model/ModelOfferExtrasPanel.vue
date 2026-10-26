@@ -1,6 +1,7 @@
 <script setup lang="ts">
 /** IQ history + cross-credential check restored from ModelsTab drawer. */
 import { ref, watch, computed, onMounted, onBeforeUnmount, nextTick } from 'vue'
+import { surfaceError } from '../../i18n/errorSurface'
 import { useI18n } from 'vue-i18n'
 import { useFormat } from '../../i18n/useFormat'
 import { useChart, createTimeSeriesConfig } from '../../composables/useChart'
@@ -110,7 +111,7 @@ async function runIQTest() {
     await loadIQ()
     emit('iqTested')
   } catch (e: unknown) {
-    iqTestError.value = e instanceof Error ? e.message : pm('iqTestFailed')
+    iqTestError.value = surfaceError(e, { key: 'providerDetail.models.iqTestFailed' })
   } finally {
     iqTestLoading.value = false
   }
@@ -184,9 +185,9 @@ async function checkAcross() {
           phase1_status: 'ok',
           phase1_message: pm('phase2InOfferOnly'),
           phase2_status: 'error',
-          phase2_message: pm('phase2Generic', { msg: e instanceof Error ? e.message : String(e) }),
+          phase2_message: pm('phase2Generic', { msg: surfaceError(e)}),
           status: 'error',
-          error: pm('checkFailedPrefix', { msg: e instanceof Error ? e.message : String(e) }),
+          error: pm('checkFailedPrefix', { msg: surfaceError(e)}),
         }
       }
     }))

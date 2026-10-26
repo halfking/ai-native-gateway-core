@@ -2,7 +2,7 @@
 export default {
     refresh: 'Refresh',
     refreshing: 'Refreshing…',
-    loadFailed: 'Failed to load',
+    loadFailed: 'The auto-tuning proposals could not be loaded. Please retry.',
     panelTitle: 'Tuning proposals (approved = hot-applied within 5 min)',
     noProposals: 'No proposals yet (feedback_analyzer generates them per window)',
   filter: {

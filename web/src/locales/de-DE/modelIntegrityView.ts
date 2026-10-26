@@ -109,10 +109,10 @@ export default {
   },
 
   error: {
-    loadFailed: 'Laden fehlgeschlagen',
-    summaryLoadFailed: 'Statistik konnte nicht geladen werden',
-    driftLoadFailed: 'Fingerprint-Drift konnte nicht geladen werden',
-    markFailed: 'Markierung fehlgeschlagen',
+    loadFailed: 'Daten zur Modellintegrität konnten nicht geladen werden. Bitte erneut versuchen.',
+    summaryLoadFailed: 'Modellintegritätsstatistik konnte nicht geladen werden. Bitte erneut versuchen.',
+    driftLoadFailed: 'Daten zum Fingerprint-Drift konnten nicht geladen werden. Bitte erneut versuchen.',
+    markFailed: 'Modellintegritäts-Markierung konnte nicht abgeschlossen werden. Bitte erneut versuchen.',
     needSuperAdmin: 'Super-Admin-Berechtigung erforderlich',
   },
 }

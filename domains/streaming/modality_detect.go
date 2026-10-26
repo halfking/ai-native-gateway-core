@@ -23,9 +23,29 @@ import (
 //   - '' or 'text'  → no modality filter
 //   - 'vision'      → modality IN ('vision', 'multimodal')
 //   - 'audio'       → modality IN ('audio',  'multimodal')
-//   - 'video'       → modality = 'video'
+//   - 'video'       → modality IN ('video',  'multimodal')
 //   - 'multimodal'  → modality = 'multimodal'
 //   - 'embedding'   → modality = 'embedding'
+//
+// ★ 2026-10-27（R148 审计轮）订正：'video' 这一行此前写的是
+// `modality = 'video'` —— **在 2026-10-26 那轮修好之前它是对的**，
+// 那轮把 video 补进了分级模态门的接受臂
+// （provider/client.go 的 candidateQuerySQLBase：
+// `$3 IN ('vision','audio','video') AND COALESCE(mc.modality,'text') IN ($3,'multimodal')`），
+// 于是本文件的这份「事实源注释」变成了**过期的一副本**。
+//
+// 为什么 2026-10-26 那一轮必须改这一行：`multimodal` 在本仓的登记语义是
+// 「text+image+audio+video」—— 见 modelname/modality_defaults.go
+// （gemini-1.5/2.0/2.5 全家 → multimodal，qwen-omni → 「text+image+audio+video
+// (全模态)」，kimi-k3 → 「text+image+video」）。也就是说：**登记为
+// multimodal 的模型本来就该接 video 请求**，此前只有精确 `modality='video'`
+// 一条臂 ⇒ 任何带视频块的请求对全部 multimodal 模型 503（真机复现）。
+//
+// ★ 这条注释是「同一句话不许两份」的又一例：判据在 SQL 里，抄本在注释里，
+// 改判据时忘了改抄本 ⇒ 下一个读注释的人会照着过期语义做判断。
+// 本文件的抄本与 provider/client.go 的判据由
+// provider/candidate_query_sql_shape_test.go 的
+// TestCandidateQuerySQL_VideoAcceptsMultimodal 词表锁步判据共同守住。
 
 const (
 	modalityText       = "text"

@@ -55,6 +55,11 @@ MARKER SENSITIVE:phone:1
 MARKER （SENSITIVE:phone, SENSITIVE:email, SENSITIVE:id_card）
 MARKER your token is ＳＥＮＳＩＴＩＶＥ：ｓｅｃｒｅｔ：１ ok
 MARKER-JSON {"phone":"SENSITIVE:phone"}
+# 工具调用参数（function.arguments 是一段 **JSON 字符串**）里的裸形标记 ——
+# 标记落在**嵌套 JSON 字符串**里 ⇒ 外层的 brace 分支吞掉整段 JSON
+# ⇒ 探针路径原本看不见它（内层重扫缺失）⇒ 参数车道被整个跳过 ⇒ 泄漏。
+MARKER-JSON {"choices":[{"message":{"tool_calls":[{"function":{"arguments":"{\"pwd\":\"SENSITIVE:phone\"}"}}]}}]}
+MARKER-JSON {"choices":[{"message":{"tool_calls":[{"function":{"arguments":"{\"pwd\":\"ＳENSITIVE：phone\"}"}}]}}]}
 
 # ── 混拼形态（半角/全角逐字符混用）：2026-10-21 修复后加入 ──────
 # 这些形态修复前在生产扫描路径上是 **0 spans**（标记原样到客户端）。

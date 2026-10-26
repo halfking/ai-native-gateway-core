@@ -140,9 +140,9 @@ export default {
   },
 
   error: {
-    loadFailed: 'Failed to load module list',
-    operationFailed: 'Operation failed',
-    saveFailed: 'Failed to save configuration',
-    testFailed: 'Test failed',
+    loadFailed: 'The module list could not be loaded. Please retry.',
+    operationFailed: 'The module operation could not be completed. Please retry.',
+    saveFailed: 'The module configuration could not be saved. Please retry.',
+    testFailed: 'The module test could not be completed. Please retry.',
   },
 }

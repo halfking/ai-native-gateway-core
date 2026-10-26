@@ -74,7 +74,7 @@ export default {
     reason: '標註原因',
     annotator: '標註人',
     annotatedAt: '標註時間',
-    loadFailed: '首輪詳情載入失敗',
+    loadFailed: '標註首輪詳情沒能載入出來，請重試',
     metaSection: '第一輪元資料',
     requestSection: '請求資訊',
     annotationSection: '人工標註',
@@ -97,7 +97,7 @@ export default {
     detailTitle: '標註品質明細',
     refresh: '重新整理',
     refreshing: '重新整理中...',
-    loadFailed: '統計載入失敗',
+    loadFailed: '標註統計沒能載入出來，請重試',
     noData: '還沒有標註統計 —— 先完成一批標註後再查看',
     totalAnnotations: '總標註數',
     providerAccuracy: '供應商準確率',
@@ -121,8 +121,8 @@ export default {
   // Success messages
 
   // Error messages
-  loadFailed: '標註樣本載入失敗',
-  annotationFailed: '標註失敗',
+  loadFailed: '標註樣本沒能載入出來，請重試',
+  annotationFailed: '標註沒能完成，請重試',
   correctionWriteFailed: '修正寫入失敗（主標註已保存）：{msg}',
 
   // Loading states
@@ -134,8 +134,8 @@ export default {
     exportBtn: '匯出 CSV',
     importBtn: '匯入 CSV',
     exportOk: '已匯出 {name}',
-    exportFailed: '匯出失敗',
+    exportFailed: '標註任務畫像沒能匯出，請重試',
     importOk: '匯入 {imported} 條，略過 {skipped} 條，錯誤 {errors} 條',
-    importFailed: '匯入失敗',
+    importFailed: '標註任務畫像沒能匯入，請重試',
   },
 }

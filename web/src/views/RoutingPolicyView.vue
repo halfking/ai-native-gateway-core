@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { useI18n } from 'vue-i18n'
+import { surfaceError } from '../i18n/errorSurface'
 import { ref, onMounted, computed } from 'vue'
 import {
   getPolicy, patchPolicy, getFeatured, patchFeatured,
@@ -70,7 +71,7 @@ async function load() {
     weights.value = w
     weightsDraft.value = { ...w }
   } catch (e: unknown) {
-    notifyError(e instanceof Error ? e.message : t('routing.loadFailed'))
+    notifyError(surfaceError(e, { key: 'routing.loadFailed' }))
   } finally {
     loading.value = false
   }
@@ -106,7 +107,7 @@ async function savePolicy() {
     draft.value  = { ...updated }
     notifySuccess(t('routing.updatedPolicy'))
   } catch (e: unknown) {
-    notifyError(e instanceof Error ? e.message : t('routing.saveFailed'))
+    notifyError(surfaceError(e, { key: 'routing.saveFailed' }))
   } finally {
     saving.value = false
   }
@@ -120,7 +121,7 @@ async function saveWeights() {
     weights.value = { ...weightsDraft.value }
     notifySuccess(t('routing.updatedWeights'))
   } catch (e: unknown) {
-    notifyError(e instanceof Error ? e.message : t('routing.saveFailed'))
+    notifyError(surfaceError(e, { key: 'routing.saveFailed' }))
   } finally {
     saving.value = false
   }
@@ -135,7 +136,7 @@ async function saveFeatured() {
     notifySuccess(t('routing.policy.updatedFeatured', { n: list.length }))
     await load()
   } catch (e: unknown) {
-    notifyError(e instanceof Error ? e.message : t('routing.saveFailed'))
+    notifyError(surfaceError(e, { key: 'routing.saveFailed' }))
   } finally {
     saving.value = false
   }

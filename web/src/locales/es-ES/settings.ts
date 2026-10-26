@@ -22,10 +22,10 @@ export default {
   },
   detail: {
     errors: {
-      loadListFailed: 'Error al cargar',
-      loadDetailFailed: 'Error al cargar el detalle',
-      saveFailed: 'Error al guardar',
-      rollbackFailed: 'Error al revertir',
+      loadListFailed: 'No se pudo cargar la lista de ajustes. Vuelva a intentarlo.',
+      loadDetailFailed: 'No se pudo cargar el detalle de los ajustes. Vuelva a intentarlo.',
+      saveFailed: 'No se pudo guardar el ajuste. Vuelva a intentarlo.',
+      rollbackFailed: 'No se pudo revertir el ajuste. Vuelva a intentarlo.',
       invalidNumber: 'Introduzca un número válido',
     },
   },

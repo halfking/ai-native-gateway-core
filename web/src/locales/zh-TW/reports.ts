@@ -7,7 +7,7 @@ export default {
   exportExcel: '匯出 Excel',
   rerun: '重跑結束日',
   rerunDone: '重跑完成',
-  rerunFailed: '重跑失敗',
+  rerunFailed: '重跑沒能完成，請重試',
   // 涵蓋範圍 / 空狀態
   daysCovered: '天快照',
   unaggregatedDay: '未彙整',

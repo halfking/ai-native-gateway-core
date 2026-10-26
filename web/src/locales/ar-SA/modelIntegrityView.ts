@@ -109,10 +109,10 @@ export default {
   },
 
   error: {
-    loadFailed: 'فشل التحميل',
-    summaryLoadFailed: 'فشل تحميل الإحصائيات',
-    driftLoadFailed: 'فشل تحميل انحراف البصمة',
-    markFailed: 'فشل التحديد',
+    loadFailed: 'تعذّر تحميل بيانات سلامة النموذج. أعد المحاولة.',
+    summaryLoadFailed: 'تعذّر تحميل إحصاءات سلامة النموذج. أعد المحاولة.',
+    driftLoadFailed: 'تعذّر تحميل بيانات انحراف البصمة. أعد المحاولة.',
+    markFailed: 'تعذّر إتمام تحديد سلامة النموذج. أعد المحاولة.',
     needSuperAdmin: 'يتطلب صلاحية مدير عام',
   },
 }

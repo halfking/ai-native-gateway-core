@@ -1433,7 +1433,7 @@ func (h *Handler) handleSeedFromCatalog(w http.ResponseWriter, r *http.Request) 
 // SeedProvidersFromCatalog creates provider rows for every catalog entry that
 // does not yet exist. Safe to call on every startup (idempotent).
 // Returns the number of newly created providers.
-func SeedProvidersFromCatalog(ctx context.Context, db *pgxpool.Pool) (int, error) {
+func SeedProvidersFromCatalog(ctx context.Context, db *pgxpool.Pool, encryptCred func([]byte) (string, error)) (int, error) {
 	if db == nil {
 		return 0, nil
 	}
@@ -1470,15 +1470,24 @@ func SeedProvidersFromCatalog(ctx context.Context, db *pgxpool.Pool) (int, error
 	// F-10: 为新创建的本地供应商自动创建占位凭据（2026-09-07 审计修复）。
 	// 本地供应商无计费概念，必须有可用凭据才能被路由选中。
 	if created > 0 {
-		ensureLocalCredentialsForSeededProviders(ctx, db)
+		ensureLocalCredentialsForSeededProviders(ctx, db, encryptCred)
 	}
 
 	return created, nil
 }
 
+// EncryptCredentialBytes exposes the handler's credential encryptor for the
+// boot-time catalog seeding path（占位 key 也走 Fernet/AES 加密链路，
+// 2026-10-26 修复：此前播种明文落库，admin 刷新/健康检查解密失败）。
+func (h *Handler) EncryptCredentialBytes(plaintext []byte) (string, error) {
+	return h.encryptCred(plaintext)
+}
+
 // ensureLocalCredentialsForSeededProviders 为所有缺少凭据的本地供应商创建占位凭据。
 // Best-effort：失败只记日志，不阻塞 seed 流程。
-func ensureLocalCredentialsForSeededProviders(ctx context.Context, db *pgxpool.Pool) {
+// 2026-10-26 修复：占位 key 一律经 encryptCred 加密落库（encryptCred == nil
+// 时才回落明文并大声告警——那会重新制造 decrypt 失败的存量）。
+func ensureLocalCredentialsForSeededProviders(ctx context.Context, db *pgxpool.Pool, encryptCred func([]byte) (string, error)) {
 	if db == nil {
 		return
 	}
@@ -1509,9 +1518,21 @@ func ensureLocalCredentialsForSeededProviders(ctx context.Context, db *pgxpool.P
 			continue
 		}
 
-		// 创建占位凭据（模拟 ensureLocalCredential 的核心逻辑）
-		// 注意：这里使用明文存储占位符，因为没有 Handler 的加密设施。
-		// 实际加密在 credential 首次使用时由路由器处理。
+		// 创建占位凭据：加密链路与 ensureLocalCredential（admin API 路径）
+		// 同一实现——明文占位会让 refresh-models/健康检查在解密步失败。
+		cipher := localNoKeyPlaceholder
+		if encryptCred != nil {
+			enc, encErr := encryptCred([]byte(localNoKeyPlaceholder))
+			if encErr != nil {
+				slog.Warn("seed local credentials: encrypt placeholder failed; falling back to plaintext (decrypt seam tolerates it)",
+					"provider_id", providerID, "provider", displayName, "error", encErr)
+			} else {
+				cipher = enc
+			}
+		} else {
+			slog.Warn("seed local credentials: no encryptor wired; storing plaintext placeholder (decrypt seam tolerates it)",
+				"provider_id", providerID, "provider", displayName)
+		}
 		_, credErr := db.Exec(ctx, `
 			INSERT INTO credentials (
 				provider_id, label, secret_ciphertext, status,
@@ -1520,7 +1541,7 @@ func ensureLocalCredentialsForSeededProviders(ctx context.Context, db *pgxpool.P
 			VALUES ($1, 'local', $2, 'active', 4, 4, 1000.0, 'free')
 			ON CONFLICT (provider_id) WHERE label = 'local' AND status <> 'deleted'
 			DO NOTHING
-		`, providerID, []byte(localNoKeyPlaceholder))
+		`, providerID, []byte(cipher))
 
 		if credErr != nil {
 			slog.Warn("seed local credentials: create credential failed",

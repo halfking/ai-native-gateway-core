@@ -1,3 +1,11 @@
+-- V1-FAMILY-RETIRED: deprecated-poc | 本脚本会建 v1 族的 request_logs / request_logs_default。
+--   ★ v1 `request_logs` 族已随迁移 890 退役（物理删除）⇒ 本脚本对**已退役的库**
+--   会把 v1 族**复活**（它不在迁移链里 ⇒ 890 不会去删）。
+--   ★ 本文件属**废弃**本地 POC（目录名带 _deprecated），只被同目录那个废弃
+--     Makefile 引用（见 tests/README.deprecated.md）。
+--   ⇒ **不要再用它初始化任何库**。
+--   ⇒ 门：sql/migrations/startup/v1_family_retirement_completeness_test.go
+--
 -- tests/local/seed/01-schema-bootstrap.sql
 -- 从 prod 复制 base schema 简化版（覆盖 audit/credentials/providers/cmb/handoff
 -- 等关键表），同时 seed 几条 fixture 数据用于本地测试。

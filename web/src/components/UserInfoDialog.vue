@@ -2,6 +2,7 @@
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { store } from '../store'
+import { Close } from '@element-plus/icons-vue'
 
 const props = defineProps<{
   modelValue: boolean
@@ -31,7 +32,7 @@ function close() {
       <div class="user-info-dialog" role="dialog" aria-modal="true" :aria-label="t('app.userMenu.profile')">
         <header class="user-info-dialog__header">
           <h2 class="user-info-dialog__title">{{ t('app.userMenu.profile') }}</h2>
-          <button type="button" class="user-info-dialog__close" aria-label="Close" @click="close">×</button>
+          <button type="button" class="user-info-dialog__close" aria-label="Close" @click="close"><Close /></button>
         </header>
         <dl class="user-info-dialog__body">
           <div class="user-info-row">
@@ -78,9 +79,8 @@ function close() {
 .user-info-dialog {
   width: min(100%, 420px);
   background: var(--card);
-  border: 1px solid var(--border);
   border-radius: 12px;
-  box-shadow: 0 24px 48px var(--overlay-light);
+  box-shadow: var(--kx-shadow-md);
 }
 
 .user-info-dialog__header {
@@ -148,4 +148,10 @@ function close() {
   justify-content: flex-end;
   padding: 8px 18px 16px;
 }
+
+/* ── 2026-10-27 第 17 增量（AI 痕迹门 V3）：图标尺寸 ──
+   element-plus 图标是裸 <svg viewBox="0 0 1024 1024">，**不带 width/height**
+   ⇒ 浏览器按包含块宽度渲染（会撑爆布局）⇒ 必须显式定尺寸。
+   尺寸沿用原字形的 font-size 观感（字形墨迹 ≈ 0.7em）。 */
+.user-info-dialog__close > svg { width: 14px; height: 14px; }
 </style>

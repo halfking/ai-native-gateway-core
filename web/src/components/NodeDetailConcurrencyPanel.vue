@@ -4,6 +4,7 @@
  * 数据由父组件分段注入；本组件只负责展示与写回。
  */
 import { computed, ref, watch } from 'vue'
+import { surfaceError } from '../i18n/errorSurface'
 import {
   setConcurrencyAuto,
   type CredentialMonitorSummary,
@@ -17,6 +18,7 @@ import {
   type FpSlotStats,
 } from '../api/providers'
 import FpSlotVisualizer from './FpSlotVisualizer.vue'
+import { Refresh } from '@element-plus/icons-vue'
 
 const props = defineProps<{
   credentialId: number
@@ -85,7 +87,7 @@ async function loadFpStats() {
     fpStats.value = stats
   } catch (error) {
     fpStats.value = null
-    fpError.value = error instanceof Error ? error.message : t('ops.overview.fpSlotLoadFailed')
+    fpError.value = surfaceError(error, { key: 'ops.overview.fpSlotLoadFailed' })
   } finally {
     fpLoading.value = false
   }
@@ -166,7 +168,7 @@ async function saveUnified() {
     await loadFpStats()
     emit('saved')
   } catch (error) {
-    emit('error', error instanceof Error ? error.message : t('common.feedback.saveFailed'))
+    emit('error', surfaceError(error, { key: 'common.feedback.saveFailed' }))
   } finally {
     saving.value = false
   }
@@ -196,7 +198,7 @@ defineExpose({ reload: loadFpStats })
       <div class="nd-fp-head">
         <strong>指纹槽位</strong>
         <button class="btn btn-sm btn-ghost" :disabled="fpLoading" @click="loadFpStats">
-          {{ fpLoading ? $t('common.feedback.loading') : '↻ ' + $t('common.button.refresh') }}
+          <Refresh v-if="!fpLoading" />{{ fpLoading ? $t('common.feedback.loading') : $t('common.button.refresh') }}
         </button>
       </div>
       <div v-if="fpLoading && !fpStats" class="nd-seg-loading" role="status">指纹槽位加载中…</div>
@@ -254,9 +256,14 @@ defineExpose({ reload: loadFpStats })
 .nd-notice { padding: 8px 10px; border-radius: 6px; margin: 0 0 12px; font-size: 12px; }
 .nd-notice--warn { background: color-mix(in srgb, var(--kx-warning) 12%, transparent); color: var(--kx-warning); }
 .nd-dialog-mask { position: fixed; inset: 0; z-index: 3050; background: color-mix(in srgb, var(--kx-text) 38%, transparent); display: flex; align-items: flex-start; justify-content: center; padding-top: 80px; }
-.nd-dialog { width: min(420px, 92vw); background: var(--kx-surface); color: var(--kx-text); border-radius: 8px; padding: 18px; box-shadow: 0 12px 32px var(--overlay-light); display: grid; gap: 10px; }
+.nd-dialog { width: min(420px, 92vw); background: var(--kx-surface); color: var(--kx-text); border-radius: 8px; padding: 18px; box-shadow: var(--kx-shadow-md); display: grid; gap: 10px; }
 .nd-dialog h4 { margin: 0; font-size: 15px; }
 .nd-dialog label { display: grid; gap: 5px; font-size: 12px; }
 .nd-dialog input { box-sizing: border-box; width: 100%; padding: 7px; border: 1px solid var(--kx-border); border-radius: 5px; background: var(--kx-bg); color: inherit; }
 @media (max-width: 768px) { .nd-grid { grid-template-columns: 1fr; } }
+
+/* ── 2026-10-27 第 17 增量（AI 痕迹门 V3 · 插值形态）：图标尺寸 ──
+   element-plus 图标是裸 <svg viewBox="0 0 1024 1024">，**不带 width/height**
+   ⇒ 浏览器按包含块宽度渲染（会撑爆布局）⇒ 必须显式定尺寸。 */
+.nd-fp-head .btn > svg { width: 12px; height: 12px; }
 </style>

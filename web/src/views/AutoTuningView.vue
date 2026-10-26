@@ -12,6 +12,7 @@
 // （/routing-v2/auto-ops?tab=tuning），表格迁移标准 DataTable、配色收敛
 // CSS 变量（去除裸 rgba/hex）。
 import { ref, computed, onMounted } from 'vue'
+import { surfaceError } from '../i18n/errorSurface'
 import { useI18n } from 'vue-i18n'
 import {
   getTuningProposals,
@@ -71,7 +72,7 @@ async function load() {
     })
     proposals.value = Array.isArray(r.proposals) ? r.proposals : []
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : t('autoTuning.loadFailed')
+    error.value = surfaceError(e, { key: 'autoTuning.loadFailed' })
     proposals.value = []
   } finally {
     loading.value = false
@@ -86,7 +87,7 @@ async function loadAccuracy() {
     accuracyRows.value = Array.isArray(r.breakdown) ? r.breakdown : []
     accuracyGeneratedAt.value = r.generated_at
   } catch (e: unknown) {
-    accuracyError.value = e instanceof Error ? e.message : t('autoTuning.loadFailed')
+    accuracyError.value = surfaceError(e, { key: 'autoTuning.loadFailed' })
     accuracyRows.value = []
   } finally {
     accuracyLoading.value = false
@@ -110,7 +111,7 @@ async function generate() {
       : t('autoTuning.action.generateNone')
     await load()
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : String(e)
+    error.value = surfaceError(e)
   } finally {
     generating.value = false
   }
@@ -127,7 +128,7 @@ async function analyzeNow() {
     notice.value = t('autoTuning.action.analyzeDone', { at: r.completed_at })
     await load()
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : String(e)
+    error.value = surfaceError(e)
   } finally {
     analyzing.value = false
   }
@@ -212,7 +213,7 @@ async function approve(id: number) {
     notice.value = `#${r.id}: ${r.message}`
     await load()
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : String(e)
+    error.value = surfaceError(e)
   } finally {
     acting.value = 0
   }
@@ -229,7 +230,7 @@ async function reject(id: number) {
     notice.value = t('autoTuning.action.rejected', { id })
     await load()
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : String(e)
+    error.value = surfaceError(e)
   } finally {
     acting.value = 0
   }

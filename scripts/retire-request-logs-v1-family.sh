@@ -110,25 +110,33 @@ if [[ "$MODE" != "--preflight" && "${LLM_GATEWAY_RETIREMENT_ACK:-}" != "1" ]]; t
 fi
 
 # ── psql 通道（与 apply-db-revision-sequence.sh 同款：直连 or 容器）────
+# ★★ 2026-10-27（R165 轮）★★ 两处修正：
+#   ① 直连通道的客户端优先用 $LLM_GATEWAY_PSQL（★ 显式指定）⇒ ★ 否则 PATH 首位的
+#      `psql` 是个**容器转发 shim**，★ 它**故意丢掉 host/port** ⇒ ⇒ 走容器内默认
+#      socket ⇒ ⇒ 连到**另一个集群** ⇒ ⇒ 报「库不存在」（★ 极具误导性）。
+#   ② 容器通道必须**显式 TCP**（★ -h 127.0.0.1 -p 5432）：容器内**默认 socket** 指向
+#      的是镜像自带的初始化集群，★ 不是挂载的共享集群 ⇒ ⇒ 不加 -h/-p 会连错库。
 if [[ -n "${DATABASE_URL:-}" ]]; then
-  psql_q() { psql -X -v ON_ERROR_STOP=1 "$DATABASE_URL" -Atqc "$1"; }
+  _retire_psql_bin="${LLM_GATEWAY_PSQL:-}"
+  if [[ -z "$_retire_psql_bin" || ! -x "$_retire_psql_bin" ]]; then _retire_psql_bin="psql"; fi
+  psql_q() { "$_retire_psql_bin" -X -v ON_ERROR_STOP=1 "$DATABASE_URL" -Atqc "$1"; }
   psql_f() {
     # ★ -1 = 单事务：退役要么整体成功，要么整体回滚
     #   （890 会 DROP TABLE + 换视图 + 换函数 ⇒ 半途失败会留下「半退役」形态）
-    psql -X -v ON_ERROR_STOP=1 "$DATABASE_URL" -1 -f -
+    "$_retire_psql_bin" -X -v ON_ERROR_STOP=1 "$DATABASE_URL" -1 -f -
   }
 elif [[ -n "${LLM_GATEWAY_PG_CONTAINER:-}" ]]; then
   : "${LLM_GATEWAY_PG_PASSWORD:?set LLM_GATEWAY_PG_PASSWORD for Docker execution}"
   psql_q() {
     docker exec -e PGPASSWORD="$LLM_GATEWAY_PG_PASSWORD" "$LLM_GATEWAY_PG_CONTAINER" \
-      psql -X -v ON_ERROR_STOP=1 -U "${LLM_GATEWAY_PG_USER:-llm_gateway}" \
+      psql -X -v ON_ERROR_STOP=1 -h 127.0.0.1 -p 5432 -U "${LLM_GATEWAY_PG_USER:-llm_gateway}" \
       -d "${LLM_GATEWAY_PG_DATABASE:-llm_gateway}" -Atqc "$1"
   }
   psql_f() {
     # ★ -1 = 单事务：退役要么整体成功，要么整体回滚
     #   （890 会 DROP TABLE + 换视图 + 换函数 ⇒ 半途失败会留下「半退役」形态）
     docker exec -i -e PGPASSWORD="$LLM_GATEWAY_PG_PASSWORD" "$LLM_GATEWAY_PG_CONTAINER" \
-      psql -X -v ON_ERROR_STOP=1 -U "${LLM_GATEWAY_PG_USER:-llm_gateway}" \
+      psql -X -v ON_ERROR_STOP=1 -h 127.0.0.1 -p 5432 -U "${LLM_GATEWAY_PG_USER:-llm_gateway}" \
       -d "${LLM_GATEWAY_PG_DATABASE:-llm_gateway}" -1 -f -
   }
 else

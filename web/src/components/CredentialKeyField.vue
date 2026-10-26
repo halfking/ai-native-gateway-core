@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
+import { surfaceError } from '../i18n/errorSurface'
 import { revealCredentialKey } from '../api/providers'
 
 const props = withDefaults(defineProps<{
@@ -52,7 +53,7 @@ async function reveal() {
     revealed.value = key
     emit('revealed', key)
   } catch (err) {
-    error.value = err instanceof Error ? err.message : props.errorLabel
+    error.value = surfaceError(err)
   } finally {
     loading.value = false
   }
@@ -64,7 +65,7 @@ async function copy() {
     await navigator.clipboard.writeText(revealed.value)
     emit('copied')
   } catch (err) {
-    error.value = err instanceof Error ? err.message : props.errorLabel
+    error.value = surfaceError(err)
   }
 }
 

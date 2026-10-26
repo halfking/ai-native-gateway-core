@@ -1,0 +1,277 @@
+# 路由域
+# /routing-v2 工作台、凭据监控、探测健康、工作类型、AUTO 运营、路由策略与关联分析。
+# 路由清单来自 web/src/router.ts（见 maestro/README.md 的逐条核对表）。
+# 计时：每个页面 openLink 前打点 output.t0，页面关键文案可见后算 output.ms__<slug>（毫秒）。
+#       阈值 2000ms 用 optional 断言 —— 慢页只标记不失败，事后用 maestro/tools/slow-pages.mjs 筛。
+appId: ${BASE_URL}
+---
+- launchApp
+- runFlow:
+    file: _shared/login.yaml
+    env:
+      ADMIN_USER: ${ADMIN_USER}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD}
+
+# ── /routing-v2 ─────────────────────────────────────────────
+- evalScript: "${output.t0 = Date.now()}"
+- openLink: "${BASE_URL}/routing-v2"
+- extendedWaitUntil:
+    visible: '路由全景'
+    timeout: 20000
+- evalScript: "${output.ms__routing_v2 = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}"
+- assertTrue:
+    condition: "${output.ms__routing_v2 < 2000}"
+    optional: true
+    label: 'slow-check:/routing-v2'
+
+# ── /routing-v2/credentials ─────────────────────────────────────────────
+- evalScript: "${output.t0 = Date.now()}"
+- openLink: "${BASE_URL}/routing-v2/credentials"
+- extendedWaitUntil:
+    visible: '凭据监控'
+    timeout: 20000
+- evalScript: "${output.ms__routing_v2_credentials = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}"
+- assertTrue:
+    condition: "${output.ms__routing_v2_credentials < 2000}"
+    optional: true
+    label: 'slow-check:/routing-v2/credentials'
+
+# ── /probe-health ─────────────────────────────────────────────
+- evalScript: "${output.t0 = Date.now()}"
+- openLink: "${BASE_URL}/probe-health"
+- extendedWaitUntil:
+    visible: '探测健康度'
+    timeout: 20000
+- evalScript: "${output.ms__probe_health = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}"
+- assertTrue:
+    condition: "${output.ms__probe_health < 2000}"
+    optional: true
+    label: 'slow-check:/probe-health'
+
+# ── /probe-health/detail ─────────────────────────────────────────────
+- evalScript: "${output.t0 = Date.now()}"
+- openLink: "${BASE_URL}/probe-health/detail"
+- extendedWaitUntil:
+    visible: '输入价'
+    timeout: 20000
+- evalScript: "${output.ms__probe_health_detail = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}"
+- assertTrue:
+    condition: "${output.ms__probe_health_detail < 2000}"
+    optional: true
+    label: 'slow-check:/probe-health/detail'
+
+# ── /routing-v2/work-types ─────────────────────────────────────────────
+- evalScript: "${output.t0 = Date.now()}"
+- openLink: "${BASE_URL}/routing-v2/work-types"
+- extendedWaitUntil:
+    visible: '工作类型列表'
+    timeout: 20000
+- evalScript: "${output.ms__routing_v2_work_types = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}"
+- assertTrue:
+    condition: "${output.ms__routing_v2_work_types < 2000}"
+    optional: true
+    label: 'slow-check:/routing-v2/work-types'
+
+# ── /routing-v2/work-types/settings ─────────────────────────────────────────────
+- evalScript: "${output.t0 = Date.now()}"
+- openLink: "${BASE_URL}/routing-v2/work-types/settings"
+- extendedWaitUntil:
+    visible: '工作类型列表'
+    timeout: 20000
+- evalScript: "${output.ms__routing_v2_work_types_settings = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}"
+- assertTrue:
+    condition: "${output.ms__routing_v2_work_types_settings < 2000}"
+    optional: true
+    label: 'slow-check:/routing-v2/work-types/settings'
+
+# ── /routing-v2/work-types/:key ─────────────────────────────────────────────
+- evalScript: "${output.t0 = Date.now()}"
+- openLink: "${BASE_URL}/routing-v2/work-types/${WORK_TYPE_KEY}"
+- extendedWaitUntil:
+    visible: '工作类型列表'
+    timeout: 20000
+- evalScript: "${output.ms__routing_v2_work_types_key = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}"
+- assertTrue:
+    condition: "${output.ms__routing_v2_work_types_key < 2000}"
+    optional: true
+    label: 'slow-check:/routing-v2/work-types/:key'
+
+# ── /routing-v2/auto-ops ─────────────────────────────────────────────
+- evalScript: "${output.t0 = Date.now()}"
+- openLink: "${BASE_URL}/routing-v2/auto-ops"
+- extendedWaitUntil:
+    visible: 'AUTO 路由运营'
+    timeout: 20000
+- evalScript: "${output.ms__routing_v2_auto_ops = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}"
+- assertTrue:
+    condition: "${output.ms__routing_v2_auto_ops < 2000}"
+    optional: true
+    label: 'slow-check:/routing-v2/auto-ops'
+
+# ── /routing-v2/annotations ─────────────────────────────────────────────
+- evalScript: "${output.t0 = Date.now()}"
+- openLink: "${BASE_URL}/routing-v2/annotations"
+- extendedWaitUntil:
+    visible: '标注工作台'
+    timeout: 20000
+- evalScript: "${output.ms__routing_v2_annotations = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}"
+- assertTrue:
+    condition: "${output.ms__routing_v2_annotations < 2000}"
+    optional: true
+    label: 'slow-check:/routing-v2/annotations'
+
+# ── /routing-v2/annotations/stats ─────────────────────────────────────────────
+- evalScript: "${output.t0 = Date.now()}"
+- openLink: "${BASE_URL}/routing-v2/annotations/stats"
+- extendedWaitUntil:
+    visible: '标注统计'
+    timeout: 20000
+- evalScript: "${output.ms__routing_v2_annotations_stats = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}"
+- assertTrue:
+    condition: "${output.ms__routing_v2_annotations_stats < 2000}"
+    optional: true
+    label: 'slow-check:/routing-v2/annotations/stats'
+
+# ── /routing-v2/task-profile ─────────────────────────────────────────────
+- evalScript: "${output.t0 = Date.now()}"
+- openLink: "${BASE_URL}/routing-v2/task-profile"
+- extendedWaitUntil:
+    visible: '任务档案'
+    timeout: 20000
+- evalScript: "${output.ms__routing_v2_task_profile = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}"
+- assertTrue:
+    condition: "${output.ms__routing_v2_task_profile < 2000}"
+    optional: true
+    label: 'slow-check:/routing-v2/task-profile'
+
+# ── /routing-v2/auto-tuning ─────────────────────────────────────────────
+- evalScript: "${output.t0 = Date.now()}"
+- openLink: "${BASE_URL}/routing-v2/auto-tuning"
+- extendedWaitUntil:
+    visible: '调参审批'
+    timeout: 20000
+- evalScript: "${output.ms__routing_v2_auto_tuning = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}"
+- assertTrue:
+    condition: "${output.ms__routing_v2_auto_tuning < 2000}"
+    optional: true
+    label: 'slow-check:/routing-v2/auto-tuning'
+
+# ── /routing-policy ─────────────────────────────────────────────
+- evalScript: "${output.t0 = Date.now()}"
+- openLink: "${BASE_URL}/routing-policy"
+- extendedWaitUntil:
+    visible: '路由策略'
+    timeout: 20000
+- evalScript: "${output.ms__routing_policy = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}"
+- assertTrue:
+    condition: "${output.ms__routing_policy < 2000}"
+    optional: true
+    label: 'slow-check:/routing-policy'
+
+# ── /routing ─────────────────────────────────────────────
+- evalScript: "${output.t0 = Date.now()}"
+- openLink: "${BASE_URL}/routing"
+- extendedWaitUntil:
+    visible: '路由全景'
+    timeout: 20000
+- evalScript: "${output.ms__routing = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}"
+- assertTrue:
+    condition: "${output.ms__routing < 2000}"
+    optional: true
+    label: 'slow-check:/routing'
+
+# ── /routing-overview ─────────────────────────────────────────────
+- evalScript: "${output.t0 = Date.now()}"
+- openLink: "${BASE_URL}/routing-overview"
+- extendedWaitUntil:
+    visible: '模型路由全景'
+    timeout: 20000
+- evalScript: "${output.ms__routing_overview = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}"
+- assertTrue:
+    condition: "${output.ms__routing_overview < 2000}"
+    optional: true
+    label: 'slow-check:/routing-overview'
+
+# ── /routing-decisions ─────────────────────────────────────────────
+- evalScript: "${output.t0 = Date.now()}"
+- openLink: "${BASE_URL}/routing-decisions"
+- extendedWaitUntil:
+    visible: '路由决策日志'
+    timeout: 20000
+- evalScript: "${output.ms__routing_decisions = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}"
+- assertTrue:
+    condition: "${output.ms__routing_decisions < 2000}"
+    optional: true
+    label: 'slow-check:/routing-decisions'
+
+# ── /correlations ─────────────────────────────────────────────
+- evalScript: "${output.t0 = Date.now()}"
+- openLink: "${BASE_URL}/correlations"
+- extendedWaitUntil:
+    visible: 'Auto-Route 关联分析 (Correlations)'
+    timeout: 20000
+- evalScript: "${output.ms__correlations = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}"
+- assertTrue:
+    condition: "${output.ms__correlations < 2000}"
+    optional: true
+    label: 'slow-check:/correlations'
+
+# ── /routing/overrides ─────────────────────────────────────────────
+- evalScript: "${output.t0 = Date.now()}"
+- openLink: "${BASE_URL}/routing/overrides"
+- extendedWaitUntil:
+    visible: '路由覆盖 (Routing Overrides)'
+    timeout: 20000
+- evalScript: "${output.ms__routing_overrides = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}"
+- assertTrue:
+    condition: "${output.ms__routing_overrides < 2000}"
+    optional: true
+    label: 'slow-check:/routing/overrides'
+
+# ── /routing/overrides/audit ─────────────────────────────────────────────
+- evalScript: "${output.t0 = Date.now()}"
+- openLink: "${BASE_URL}/routing/overrides/audit"
+- extendedWaitUntil:
+    visible: '路由覆盖审计'
+    timeout: 20000
+- evalScript: "${output.ms__routing_overrides_audit = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}"
+- assertTrue:
+    condition: "${output.ms__routing_overrides_audit < 2000}"
+    optional: true
+    label: 'slow-check:/routing/overrides/audit'
+
+# ── /quality-correlations ─────────────────────────────────────────────
+- evalScript: "${output.t0 = Date.now()}"
+- openLink: "${BASE_URL}/quality-correlations"
+- extendedWaitUntil:
+    visible: '质量关联分析'
+    timeout: 20000
+- evalScript: "${output.ms__quality_correlations = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}"
+- assertTrue:
+    condition: "${output.ms__quality_correlations < 2000}"
+    optional: true
+    label: 'slow-check:/quality-correlations'
+
+# ── /system-monitor ─────────────────────────────────────────────
+- evalScript: "${output.t0 = Date.now()}"
+- openLink: "${BASE_URL}/system-monitor"
+- extendedWaitUntil:
+    visible: '仪表盘'
+    timeout: 20000
+- evalScript: "${output.ms__system_monitor = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}"
+- assertTrue:
+    condition: "${output.ms__system_monitor < 2000}"
+    optional: true
+    label: 'slow-check:/system-monitor'
+
+# ── /dispatch/waterfall ─────────────────────────────────────────────
+- evalScript: "${output.t0 = Date.now()}"
+- openLink: "${BASE_URL}/dispatch/waterfall"
+- extendedWaitUntil:
+    visible: '队列瀑布图'
+    timeout: 20000
+- evalScript: "${output.ms__dispatch_waterfall = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}"
+- assertTrue:
+    condition: "${output.ms__dispatch_waterfall < 2000}"
+    optional: true
+    label: 'slow-check:/dispatch/waterfall'

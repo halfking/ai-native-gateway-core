@@ -30,6 +30,7 @@
 package upstreamurl
 
 import (
+	"net/url"
 	"regexp"
 	"strings"
 )
@@ -61,8 +62,11 @@ const (
 	// EpGeminiGenerate is POST /v1beta/models/{m}:generateContent (Gemini
 	// native generateContent API). The full path is constructed by
 	// appending the model id + suffix at serialize-time (the upstream
-	// URL SSOT only owns the prefix). 2026-09-24 placeholder — actual
-	// executor wiring lives in P3 follow-up.
+	// URL SSOT only owns the prefix).
+	//
+	// 2026-10-27: the executor wiring landed — see GenerateContentURL,
+	// which owns the model-scoped path (this endpoint constant remains
+	// the enumerated "which endpoint" marker used by the URL audit).
 	EpGeminiGenerate Endpoint = "gemini_generate"
 )
 
@@ -254,6 +258,99 @@ func EmbeddingsURL(baseURL string) string {
 // /v1/api/chat on real Ollama.
 func OllamaChatURL(baseURL string) string {
 	return Build(baseURL, EpOllamaChat)
+}
+
+// geminiVersionSuffix matches a trailing Gemini API version segment
+// ("/v1", "/v1beta", "/v1alpha") at the very end of a base URL.
+//
+// It deliberately does NOT match OpenAI-style "/v1" handling rules from
+// `versionTrailing` for one reason: the Gemini version segment is part of
+// the *path prefix the operator configured* (Google publishes both /v1 and
+// /v1beta), so it must be PRESERVED rather than stripped. Only the
+// "does the base already carry a version?" question is asked here.
+var geminiVersionSuffix = regexp.MustCompile(`/v[0-9]+(?:[a-z]+)?$`)
+
+// geminiEndpointSuffix matches a trailing Gemini endpoint path that
+// carries a model segment ("/models/gemini-2.5-flash:generateContent").
+//
+// Operators routinely paste the FULL endpoint URL (copy-pasted from the
+// vendor docs) into the provider's base-url field. The OpenAI-family
+// `Build()` already handles exactly that class of input ("OpenAI chat
+// completions suffix" → strip → re-add), so the Gemini builder must
+// handle it too — otherwise the gateway would emit
+// ".../v1beta/models/gemini-2.5-flash:generateContent/v1beta/models/…".
+//
+// A BARE "/models" (no model segment) is NOT stripped: that is a
+// legitimate path prefix for a proxy, not a pasted endpoint.
+var geminiEndpointSuffix = regexp.MustCompile(`/models/[^/]+$`)
+
+// GenerateContentURL builds the Google Gemini native generateContent URL.
+//
+// The Gemini native API is *model-scoped*: the model id is a path segment
+// and the action is a path suffix, not a query parameter
+// (docs/vendor-formats/gemini.md §HTTP 形态):
+//
+//	POST /v1beta/models/{MODEL}:generateContent
+//	POST /v1beta/models/{MODEL}:streamGenerateContent?alt=sse
+//
+// # Version segment
+//
+// The base URL OWNS its version segment. If the operator configured
+// "https://generativelanguage.googleapis.com/v1beta" we keep "/v1beta";
+// if they configured "/v1" we keep "/v1"; only when the base carries no
+// version segment at all do we default to "/v1beta" (the version the
+// vendor format doc pins).
+//
+// Rationale: the OpenAI-family `Build()` rule ("a trailing /vN is kept,
+// otherwise /v1 is prepended") is the same shape, but applying it here
+// would rewrite "/v1" into "/v1beta" — a silent protocol change on a
+// base URL the operator configured on purpose.
+//
+// # Stream framing
+//
+// isStream=true selects the ":streamGenerateContent" action AND appends
+// "?alt=sse". The vendor doc is explicit that the streaming endpoint
+// returns a chunked JSON array when "alt=sse" is omitted and a real SSE
+// stream when it is present (docs/vendor-formats/gemini.md §HTTP 形态);
+// we ask for SSE because that is the framing the gateway's stream reader
+// understands best.
+//
+// GenerateContentURL("https://generativelanguage.googleapis.com", "gemini-2.5-flash", false)
+//
+//	→ "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
+//
+// GenerateContentURL("https://generativelanguage.googleapis.com", "gemini-2.5-flash", true)
+//
+//	→ "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:streamGenerateContent?alt=sse"
+//
+// GenerateContentURL("https://gw.example.com/gemini/v1beta", "m", false)
+//
+//	→ "https://gw.example.com/gemini/v1beta/models/m:generateContent"
+//
+// GenerateContentURL("", "m", false) → ""
+// GenerateContentURL("https://x.example", "", false) → ""
+func GenerateContentURL(baseURL, model string, isStream bool) string {
+	if baseURL == "" || model == "" {
+		return ""
+	}
+	cleaned := strings.TrimRight(baseURL, "/")
+	// A pasted full endpoint URL is normalized back to its base form.
+	cleaned = geminiEndpointSuffix.ReplaceAllString(cleaned, "")
+	cleaned = strings.TrimRight(cleaned, "/")
+	version := "/v1beta"
+	if m := geminiVersionSuffix.FindStringSubmatch(cleaned); m != nil {
+		version = m[0]
+		cleaned = strings.TrimSuffix(cleaned, m[0])
+	}
+	action := "generateContent"
+	if isStream {
+		action = "streamGenerateContent"
+	}
+	url := cleaned + version + "/models/" + url.PathEscape(model) + ":" + action
+	if isStream {
+		url += "?alt=sse"
+	}
+	return url
 }
 
 // ModelsURLCandidates returns the candidate models-endpoint URLs to try

@@ -23,10 +23,10 @@ export default {
   },
   detail: {
     errors: {
-      loadListFailed: '載入失敗',
-      loadDetailFailed: '載入詳情失敗',
-      saveFailed: '儲存失敗',
-      rollbackFailed: '回復失敗',
+      loadListFailed: '設定列表沒能載入出來，請重試',
+      loadDetailFailed: '設定詳情沒能載入出來，請重試',
+      saveFailed: '設定沒能儲存，請重試',
+      rollbackFailed: '回滾沒能完成，請重試',
       invalidNumber: '請輸入有效的數字',
     },
   },

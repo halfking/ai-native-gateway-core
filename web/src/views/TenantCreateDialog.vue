@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue'
+import { surfaceError } from '../i18n/errorSurface'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { createTenant, TENANT_STATUSES } from '../api'
@@ -46,7 +47,7 @@ async function handleSubmit() {
     })
     emit('created')
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : t('tenants.create.createFailed')
+    error.value = surfaceError(e, { key: 'tenants.create.createFailed' })
   } finally {
     submitting.value = false
   }

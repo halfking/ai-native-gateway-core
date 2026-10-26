@@ -9,7 +9,7 @@ export default {
     refresh: '刷新',
     loading: '加载中…',
     empty: '暂无可用模型',
-    loadFailed: '加载失败',
+    loadFailed: '租户模型没能加载出来，请重试',
     vendorSectionTitle: '模型清单',
   },
   columns: {

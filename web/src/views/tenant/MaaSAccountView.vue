@@ -2,6 +2,7 @@
 // MaaSAccountView.vue — /tenant/account 页面（我的账户 / 管理员只读账户视图）。
 // 2026-07-12: 文案全面接入 i18n。
 import { ref, computed, onMounted } from 'vue'
+import { surfaceError } from '../../i18n/errorSurface'
 import { formatDateTime } from '../../utils/datetime'
 import { useI18n } from 'vue-i18n'
 import { localeRef } from '../../i18n'
@@ -98,7 +99,7 @@ async function load() {
     }
   } catch (e: unknown) {
     account.value = null
-    error.value = e instanceof Error ? e.message : t('tenants.account.loadFailed')
+    error.value = surfaceError(e, { key: 'tenants.account.loadFailed' })
   } finally {
     loading.value = false
   }

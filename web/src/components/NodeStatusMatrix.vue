@@ -15,6 +15,7 @@ import { useI18n } from 'vue-i18n'
 import { nodesRef, type LiveNodeStatus } from '../composables/liveStreamStore'
 import NodeDetailDrawer from './NodeDetailDrawer.vue'
 import { credentialDisplayName, useCredentialLabels } from '../composables/useCredentialLabels'
+import { CaretBottom, CaretRight, Close } from '@element-plus/icons-vue'
 
 const { t } = useI18n()
 const nodes = nodesRef
@@ -177,7 +178,7 @@ const hasNodes = computed(() => nodes.value.length > 0)
               :title="t('requestJourneys.matrix.closeLabel')"
               :aria-label="t('requestJourneys.matrix.closeLabel')"
               @click="closeDialog"
-            >×</button>
+            ><Close /></button>
           </div>
 
           <!-- 空态 -->
@@ -191,7 +192,7 @@ const hasNodes = computed(() => nodes.value.length > 0)
               <div v-if="group.nodes.length > 0" class="nm-group">
                 <button type="button" class="nm-group-header" :aria-expanded="!collapsedGroups[group.key]" @click="toggleGroup(group.key)" @keydown.enter.prevent="toggleGroup(group.key)" @keydown.space.prevent="toggleGroup(group.key)">
                   <span :class="['nm-group-title', `nm-group-title--${group.tone}`]">{{ t(group.titleKey, { count: group.nodes.length }) }}</span>
-                  <span class="nm-collapse-icon">{{ collapsedGroups[group.key] ? '▶' : '▼' }}</span>
+                  <span class="nm-collapse-icon"><CaretRight v-if="collapsedGroups[group.key]" /><CaretBottom v-else /></span>
                 </button>
                 <div v-if="!collapsedGroups[group.key]" class="nm-grid">
                   <button
@@ -287,7 +288,7 @@ const hasNodes = computed(() => nodes.value.length > 0)
   overflow: auto;
   background: var(--kx-surface);
   color: var(--kx-text);
-  box-shadow: -10px 0 30px var(--overlay-light);
+  box-shadow: var(--kx-shadow-md-left);
   padding: 18px 20px 28px;
   box-sizing: border-box;
 }
@@ -412,4 +413,15 @@ const hasNodes = computed(() => nodes.value.length > 0)
 .nm-inflight { color: var(--kx-primary); }
 .nm-latency { color: var(--kx-text); }
 .nm-disabled-tag { color: var(--kx-danger); }
+
+/* ── 2026-10-27 第 17 增量（AI 痕迹门 V3）：图标尺寸 ──
+   element-plus 图标是裸 <svg viewBox="0 0 1024 1024">，**不带 width/height**
+   ⇒ 浏览器按包含块宽度渲染（会撑爆布局）⇒ 必须显式定尺寸。
+   尺寸沿用原字形的 font-size 观感（字形墨迹 ≈ 0.7em）。 */
+.nm-modal-close > svg { width: 14px; height: 14px; }
+
+/* ── 2026-10-27 第 17 增量（AI 痕迹门 V3 · 插值形态）：图标尺寸 ──
+   element-plus 图标是裸 <svg viewBox="0 0 1024 1024">，**不带 width/height**
+   ⇒ 浏览器按包含块宽度渲染（会撑爆布局）⇒ 必须显式定尺寸。 */
+.nm-collapse-icon > svg { width: 10px; height: 10px; }
 </style>

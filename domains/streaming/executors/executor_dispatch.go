@@ -292,10 +292,10 @@ func selectDispatchEndpoint(cand provider.Candidate, clientProtocol string, flag
 type dispatchRoute int
 
 const (
-	routeOpenAI            dispatchRoute = iota // default: /v1/chat/completions
-	routeAnthropic                              // /v1/messages
-	routeOllamaNative                           // Ollama /api/chat (NDJSON)
-	routeUnsupportedGemini                      // no executor; explicit 501-style skip
+	routeOpenAI       dispatchRoute = iota // default: /v1/chat/completions
+	routeAnthropic                         // /v1/messages
+	routeOllamaNative                      // Ollama /api/chat (NDJSON)
+	routeGeminiNative                      // Gemini /v1beta/models/{m}:generateContent
 )
 
 // classifyDispatchRoute maps a candidate protocol onto its executor.
@@ -338,7 +338,13 @@ func classifyDispatchRoute(protocol string, flags *settings.P4FeatureFlags) disp
 		}
 		return routeOpenAI
 	case providercatalog.ProtocolGeminiGenerate:
-		return routeUnsupportedGemini
+		// 2026-10-27（Gemini 转换面补全轮）: the Gemini native executor
+		// now exists (executor_gemini.go). Until it did, every
+		// gemini-generate candidate was skipped with
+		// KindUnsupportedFeature ⇒ a provider configured with the Gemini
+		// native protocol could never be used, even though the catalog
+		// advertises it and the protocol normalizer maps "gemini" onto it.
+		return routeGeminiNative
 	default:
 		return routeOpenAI
 	}
@@ -1028,18 +1034,12 @@ func (e *Executor) forwardForDispatch(dctx *dispatchCtx, cand provider.Candidate
 			result, execErr = e.executeAnthropic(execParams, cand, dctx.retryPerCred, dctx.tTotal, fpLease)
 		case routeOllamaNative:
 			result, execErr = e.executeOllama(execParams, cand, dctx.retryPerCred, dctx.tTotal, fpLease)
-		case routeUnsupportedGemini:
-			// 2026-09-09 audit round 3: the catalog advertises
-			// gemini-generate as an outbound protocol, but no executor
-			// branch exists — falling into executeOpenAI built OpenAI chat
-			// requests against Gemini endpoints, producing 4xx attributed to
-			// the credential instead of "unsupported feature" (which enters
-			// the normal failover/classification path without poisoning the
-			// credential's error stats with bogus protocol noise).
-			result, execErr = nil, &upstreampkg.Error{
-				Kind:    errorsx.KindUnsupportedFeature,
-				Message: "gemini-generate dispatch not implemented; candidate skipped",
-			}
+		case routeGeminiNative:
+			// 2026-10-27（Gemini 转换面补全轮）: the Gemini native
+			// executor. Replaces the previous hard
+			// KindUnsupportedFeature skip, which made every
+			// gemini-generate provider dead configuration.
+			result, execErr = e.executeGemini(execParams, cand, dctx.retryPerCred, dctx.tTotal, fpLease)
 		default:
 			// Includes the ollama-native candidate while
 			// FF_OLLAMA_NATIVE=false — see classifyDispatchRoute for why

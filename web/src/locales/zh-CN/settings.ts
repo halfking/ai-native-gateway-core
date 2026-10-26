@@ -21,10 +21,10 @@ export default {
   },
   detail: {
     errors: {
-      loadListFailed: '加载失败',
-      loadDetailFailed: '加载详情失败',
-      saveFailed: '保存失败',
-      rollbackFailed: '回滚失败',
+      loadListFailed: '设置列表没能加载出来，请重试',
+      loadDetailFailed: '设置详情没能加载出来，请重试',
+      saveFailed: '设置没能保存，请重试',
+      rollbackFailed: '回滚没能完成，请重试',
       invalidNumber: '请输入有效的数字',
     },
   },

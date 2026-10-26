@@ -10,6 +10,7 @@
 // 真 orphan 性：getStorageMigrationState API 已 export + StorageConfig.vue 已用，
 //   缺独立深链详细页让用户能直接打开 /admin/data-lifecycle/migration-state
 import { onMounted, onUnmounted, ref } from 'vue'
+import { surfaceError } from '../i18n/errorSurface'
 import { getStorageMigrationState, type MigrationStateResponse, type MigrationRun, type MigrationStatus } from '../api/tuning'
 import { VideoPause, Timer } from '@element-plus/icons-vue'
 
@@ -26,7 +27,7 @@ async function load(silent = false) {
   try {
     state.value = await getStorageMigrationState()
   } catch (e) {
-    error.value = e instanceof Error ? e.message : String(e)
+    error.value = surfaceError(e)
   } finally {
     loading.value = false
     refreshing.value = false

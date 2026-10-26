@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
+import { surfaceError } from '../i18n/errorSurface'
 import { getProviders, type Provider } from '../api'
 import { useI18n } from 'vue-i18n'
-import { CaretBottom } from '@element-plus/icons-vue'
+import { CaretBottom, Close } from '@element-plus/icons-vue'
 
 const { t } = useI18n()
 
@@ -77,7 +78,7 @@ async function loadProviders() {
   try {
     providers.value = await getProviders()
   } catch (e: unknown) {
-    loadErr.value = e instanceof Error ? e.message : t('providers.error.loadFailed')
+    loadErr.value = surfaceError(e, { key: 'providers.error.loadFailed' })
   } finally {
     loading.value = false
   }
@@ -127,7 +128,7 @@ onMounted(() => {
           :disabled="disabled"
           :title="$t('common.terms.clear')"
           @click.stop="clearValue"
-        >×</button>
+        ><Close /></button>
         <span class="pp-caret"><CaretBottom /></span>
       </span>
     </button>
@@ -137,7 +138,7 @@ onMounted(() => {
         <div class="pp-dialog" role="dialog" :aria-label="title" @click.stop>
           <header class="pp-header">
             <h3 class="pp-title">{{ title }}</h3>
-            <button type="button" class="pp-close" :aria-label="$t('common.close')" @click="closeDialog">×</button>
+            <button type="button" class="pp-close" :aria-label="$t('common.close')" @click="closeDialog"><Close /></button>
           </header>
 
           <div class="pp-toolbar">
@@ -218,9 +219,8 @@ onMounted(() => {
   display: flex;
   flex-direction: column;
   background: var(--card);
-  border: 1px solid var(--border);
   border-radius: 12px;
-  box-shadow: 0 20px 50px var(--overlay-medium);
+  box-shadow: var(--kx-shadow-md);
   overflow: hidden;
 }
 .pp-header {
@@ -305,4 +305,11 @@ onMounted(() => {
     grid-template-columns: 1fr;
   }
 }
+
+/* ── 2026-10-27 第 17 增量（AI 痕迹门 V3）：图标尺寸 ──
+   element-plus 图标是裸 <svg viewBox="0 0 1024 1024">，**不带 width/height**
+   ⇒ 浏览器按包含块宽度渲染（会撑爆布局）⇒ 必须显式定尺寸。
+   尺寸沿用原字形的 font-size 观感（字形墨迹 ≈ 0.7em）。 */
+.pp-clear > svg { width: 0.7em; height: 0.7em; }
+.pp-close > svg { width: 14px; height: 14px; }
 </style>

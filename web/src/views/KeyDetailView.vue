@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted, computed, watch } from 'vue'
+import { surfaceError } from '../i18n/errorSurface'
 import { sortByName } from '../utils/sortByName'
 import { formatDateTime } from '../utils/datetime'
 import { useI18n } from 'vue-i18n'
@@ -123,7 +124,7 @@ async function saveLimits() {
     showLimitsEditor.value = false
     await loadKey()
   } catch (e: unknown) {
-    notifyLimitsErr(e instanceof Error ? e.message : t('keys.common.saveFailed'))
+    notifyLimitsErr(surfaceError(e, { key: 'keys.common.saveFailed' }))
   } finally {
     limitsSaving.value = false
   }
@@ -491,7 +492,7 @@ async function loadKey() {
   try {
     keyInfo.value = await getKeyDetail(keyId.value)
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : t('keys.common.loadFailed')
+    error.value = surfaceError(e, { key: 'keys.common.loadFailed' })
   } finally {
     loading.value = false
   }
@@ -527,7 +528,7 @@ async function loadDetail() {
     keyModels.value = models
     keyTrend.value = trend
   } catch (e: unknown) {
-    detailError.value = e instanceof Error ? e.message : t('keys.detail.error.loadDetailFailed')
+    detailError.value = surfaceError(e, { key: 'keys.detail.error.loadDetailFailed' })
   } finally {
     detailLoading.value = false
   }
@@ -1184,13 +1185,12 @@ watch(keyId, async () => {
   transform: translate(-50%, -100%);
   pointer-events: none;
   background: var(--card);
-  border: 1px solid var(--border);
   border-radius: 6px;
   padding: 4px 8px;
   font-size: 11px;
   line-height: 1.35;
   white-space: nowrap;
-  box-shadow: 0 4px 12px var(--overlay-light);
+  box-shadow: var(--kx-shadow-sm);
   z-index: 2;
 }
 

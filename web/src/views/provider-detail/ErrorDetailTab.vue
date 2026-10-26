@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import { surfaceError } from '../../i18n/errorSurface'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import {
@@ -88,7 +89,7 @@ async function loadData() {
   } catch (err: unknown) {
     if (sequence !== requestSequence || controller.signal.aborted) return
     data.value = null
-    error.value = err instanceof Error ? err.message : pd('loadFailed')
+    error.value = surfaceError(err, { key: 'providerDetail.errorDetail.loadFailed' })
   } finally {
     if (sequence === requestSequence) {
       loading.value = false

@@ -55,6 +55,6 @@ export default {
   },
 
   // 扁平键（供 Vue 组件直接使用）
-  loadFailed: '読み込み失敗',
+  loadFailed: '監査ログ一覧の読み込みに失敗しました。再試行してください。',
   dash: '—',
 }

@@ -549,14 +549,13 @@ defineExpose({ load })
 
 .modal-content {
   background: var(--card);
-  border: 1px solid var(--border);
   border-radius: var(--radius, 8px);
   padding: 24px;
   max-width: 600px;
   width: 90%;
   max-height: 80vh;
   overflow-y: auto;
-  box-shadow: 0 8px 24px var(--overlay-light);
+  box-shadow: var(--kx-shadow-md);
 }
 
 .modal-content h3 {

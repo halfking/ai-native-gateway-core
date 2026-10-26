@@ -145,6 +145,12 @@ export default {
     empty: '未从请求正文或持久化附件中解析到图片 / 音频 / 视频。',
     openOrDownload: '打开 / 下载',
     noPreviewUrl: '无可预览 URL',
+    kindLabel: {
+      image: '图片',
+      audio: '音频',
+      video: '视频',
+      file: '文件',
+    },
   },
   // — RequestWaterfallPanel —
   waterfall: {

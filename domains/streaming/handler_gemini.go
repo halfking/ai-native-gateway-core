@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/observability/telemetry"
+	"github.com/kaixuan/llm-gateway-go/internal/auth"
 	"github.com/kaixuan/llm-gateway-go/internal/ir"
 )
 
@@ -240,12 +241,52 @@ func newGeminiSyntheticRequest(original *http.Request, body []byte) *http.Reques
 	if original != nil {
 		req = req.WithContext(original.Context())
 		req.Header = original.Header.Clone()
+		normalizeGeminiCredential(req, original)
 	}
 	if req.Header.Get("Content-Type") == "" {
 		req.Header.Set("Content-Type", "application/json")
 	}
 	req.Header.Set("X-Gw-Client-Protocol", ir.ProtocolGeminiGenerate)
 	return req
+}
+
+// normalizeGeminiCredential converts the Gemini-native credential forms into
+// the canonical `Authorization: Bearer` shape on the synthetic request.
+//
+// ★ 2026-10-26（Gemini 原生认证修复轮）：Gemini 原生客户端按厂方契约用
+// `x-goog-api-key` 头或 `?key=` query 传凭据（docs/vendor-formats/gemini.md
+// §HTTP 形态、docs/供应商协议优化.md §8.3、docs/QUICK_REFERENCE.md
+// §Gemini协议）。而 Gemini handler 把请求转成**合成的
+// /v1/chat/completions** 请求再交给 ChatHandler ⇒ 合成请求的下游全是
+// OpenAI 形状的代码（只认 Bearer / x-api-key）。
+//
+// ⇒ 在**边界上一次性归一**：凭据形态在入口转成 Bearer，下游一律不用
+// 知道 Google 的头名 ⇒ 不会出现「入口认了、下游不认」的半修状态。
+//
+// ★ 为什么不在合成请求里保留 `?key=`：合成请求的 URL 是新建的
+// （httptest.NewRequest），query 根本带不过来；而把 key 留在 URL 上
+// 会让它进入内部请求的 URL 字段 ⇒ 有落进日志的风险。归一成头之后
+// 凭据只存在于 Authorization 头里。
+//
+// ★★ 只归一**本轮新增的两种形态**（x-goog-api-key / ?key=）：
+// `x-api-key`（Anthropic）本来就能被下游 extractBearerToken 读到
+// （合成请求克隆了原始头）⇒ 把它改写成 Authorization 会**顺带改变**
+// 另一条既有路径的行为（无 verifier 模式下 handoff 会把 Authorization
+// 里的客户端凭据转给摘要上游，见 trustedHandoffUpstreamAPIKey）
+// ⇒ ⇒ 那属于本轮范围之外，本轮**不动**。
+func normalizeGeminiCredential(synth, original *http.Request) {
+	if synth == nil || original == nil {
+		return
+	}
+	key, source := auth.ExtractClientKey(original)
+	if key == "" {
+		return
+	}
+	if source != auth.SourceGoogAPIKey && source != auth.SourceQueryKey {
+		// Bearer / x-api-key：合成请求已克隆原始头，无需改写。
+		return
+	}
+	synth.Header.Set("Authorization", "Bearer "+key)
 }
 
 // attachGeminiSourceReasoning stashes the inbound reasoning intent into the

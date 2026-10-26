@@ -26,9 +26,9 @@ export default {
   },
   manualDisabledTitle: 'Anbieter-Ebene manuelle Deaktivierung: der gesamte Anbieter ist nicht routing-fähig',
   manualDisabledBadge: 'Manuell deaktiviert',
-  loadFailed: 'Laden fehlgeschlagen',
-  operationFailed: 'Vorgang fehlgeschlagen',
-  diagFailed: 'Diagnose fehlgeschlagen',
+  loadFailed: 'Die Anbieterdetails konnten nicht geladen werden. Bitte erneut versuchen.',
+  operationFailed: 'Der Anbieter konnte nicht aktiviert oder deaktiviert werden. Bitte erneut versuchen.',
+  diagFailed: 'Die Anbieterdiagnose konnte nicht abgeschlossen werden. Bitte erneut versuchen.',
 
   quality: {
     loading: 'Loading quality data…',
@@ -57,5 +57,5 @@ export default {
   deleteBtn: "Anbieter löschen",
   deleteTitle: "Diesen Anbieter soft-löschen. Der Anbieter und alle seine Anmeldedaten werden aus allen Listen und dem Routing entfernt. Nicht rückgängig machbar.",
   deleteConfirm: 'Anbieter "{name}" löschen? Alle zugehörigen Anmeldedaten werden ebenfalls als gelöscht markiert und alle zugehörigen Modellrouten stoppen sofort. Nicht rückgängig machbar.',
-  deleteFailed: "Löschen des Anbieters fehlgeschlagen",
+  deleteFailed: 'Dieser Anbieter konnte nicht gelöscht werden. Bitte erneut versuchen.',
 }

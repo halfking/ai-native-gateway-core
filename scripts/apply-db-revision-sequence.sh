@@ -6,22 +6,100 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 : "${DATABASE_URL:?DATABASE_URL must be explicitly set}"
 
-if command -v psql >/dev/null 2>&1; then
-  psql_query() { psql -X -v ON_ERROR_STOP=1 -Atqc "$1" "$DATABASE_URL"; }
-  psql_stream() { psql -X -v ON_ERROR_STOP=1 "$DATABASE_URL" -f -; }
+# ★★ 2026-10-27（R165 轮）★★ psql 通道的【客户端可信度】判据（★ 事实先于修法）：
+#
+#   ★ 事实一（实测）：★ 本机 PATH 上有两个叫 psql 的东西，★ 它们**都不是原生客户端**：
+#     ① ~/.local/bin/psql（★ openpocket 夹具用）★ **故意丢掉 host/port** ⇒
+#        ⇒ docker exec 进容器走**容器内默认 socket** ⇒ ⇒ **连的是另一个集群**
+#        ⇒ ⇒ ⇒ 报 `FATAL: database "llm_gateway" does not exist`（★ 极具误导性）
+#        ⇒ ⇒ ⇒ 真因是「连到了另一个集群」，★ 不是「库不存在」。
+#     ② ~/kaixuan/pg18/bin/psql（★ 部署库探针用）★ 把 DSN 的 host:port **改写**成
+#        127.0.0.1:5432 ⇒ ⇒ 连的是**真集群** ✔（★ 但依赖 docker 在 PATH）
+#   ★ ⇒ ⇒⇒ 「是不是 shim」不是判据；★ 判据是【**它连的是不是真集群**】。
+#
+#   ★ 事实二：★ 本机**没有**原生 psql 二进制（★ pg18/bin 下只有那个 shim）
+#     ⇒ ⇒⇒ 宿主通道永远只能经由 shim ⇒ ⇒⇒ 唯一可控的口径是【连接参数】。
+#
+# ⇒ ⇒ 通道优先级（★ 保持既有语义在前，★ 免得打碎测试夹具的封闭 PATH）：
+#   ① $LLM_GATEWAY_PSQL / $GUARD_PSQL（★ 显式指定 ⇒ 逃生口）
+#   ② command -v psql（★ ★ 原语义 ⇒ ★ 仓内测试夹具的 psql double 仍被选中）
+#   ③ ~/kaixuan/pg18/bin/psql（★ 无 PATH 客户端时的兜底）
+#   ④ 容器通道（docker exec + **显式 TCP** + DATABASE_URL 里的真口令）
+#   ★ ⇒ ★★ 宿主通道若失败 ⇒ ★ **自动降级到 ④**（★ 而不是把误导性报错抛出去）。
+dl_psql_bin() {
+  local p
+  for p in "${LLM_GATEWAY_PSQL:-}" "${GUARD_PSQL:-}"; do
+    [[ -n "$p" && -x "$p" ]] && { printf '%s\n' "$p"; return 0; }
+  done
+  command -v psql 2>/dev/null && return 0
+  if [[ -x "$HOME/kaixuan/pg18/bin/psql" ]]; then printf '%s\n' "$HOME/kaixuan/pg18/bin/psql"; return 0; fi
+  return 0
+}
+
+# ★★ 2026-10-27（R165 轮）★★ 口令的 SSOT = DATABASE_URL。
+#   ★ 容器 env 的 POSTGRES_PASSWORD 实测**已与库内真实口令漂移**（sha256 前缀
+#   ★ 93ae1c75… vs ad865f11…）⇒ ⇒ 用它连库只会得到认证失败。
+dl_dsn_pg_creds() {
+  DL_DSN_PG_USER=""; DL_DSN_PG_PASS=""; DL_DSN_PG_DB=""
+  DL_DSN_PG_HOST=""; DL_DSN_PG_PORT=""
+  local url="${DATABASE_URL:-}"
+  [[ -n "$url" ]] || return 1
+  local rest="${url#*://}"
+  # ★★ 凭据段 = 【最后一个 '@' 之前】，★ host 段 = 【最后一个 '@' 之后】
+  #   （★ 用 `%%/*` 取 creds 会把 host:port 一起吞进来 ⇒ ⇒ 口令变成 `pass@host:port`）
+  [[ "$rest" == *@* ]] || return 1
+  local creds="${rest%@*}" hostport="${rest##*@}"
+  DL_DSN_PG_USER="${creds%%:*}"
+  if [[ "$creds" == *:* ]]; then DL_DSN_PG_PASS="${creds#*:}"; else DL_DSN_PG_PASS=""; fi
+  # ★ percent-decode（口令里的 %40/%3A/%2F 必须还原）
+  DL_DSN_PG_PASS="${DL_DSN_PG_PASS//%40/@}"
+  DL_DSN_PG_PASS="${DL_DSN_PG_PASS//%3A/:}"
+  DL_DSN_PG_PASS="${DL_DSN_PG_PASS//%2F//}"
+  DL_DSN_PG_PASS="${DL_DSN_PG_PASS//%25/%}"
+  local dbpart="${hostport#*/}"
+  dbpart="${dbpart%%\?*}"
+  [[ "$dbpart" == "$hostport" ]] && dbpart=""
+  DL_DSN_PG_DB="${dbpart%%/*}"
+  local hp="${hostport%%/*}"
+  if [[ "$hp" == *:* ]]; then
+    DL_DSN_PG_HOST="${hp%%:*}"
+    DL_DSN_PG_PORT="${hp##*:}"
+  else
+    DL_DSN_PG_HOST="$hp"
+    DL_DSN_PG_PORT=""
+  fi
+  [[ -n "$DL_DSN_PG_USER" ]] || return 1
+  return 0
+}
+
+dl_dsn_pg_creds || true
+
+# ★ 容器通道可用性（★ 降级目标）
+dl_psql_container_available() {
+  [[ -n "${LLM_GATEWAY_PG_CONTAINER:-}" ]] || return 1
+  command -v docker >/dev/null 2>&1 || return 1
+  docker ps --format '{{.Names}}' 2>/dev/null | grep -Fxq "$LLM_GATEWAY_PG_CONTAINER"
+}
+
+# ★ 容器通道：★ 必须显式 TCP（★ -h 127.0.0.1 -p 5432）—— 容器内**默认 socket** 指向的是
+#   ★ 镜像自带的初始化集群，★ 不是挂载的共享集群 ⇒ ⇒ 不加 -h/-p 会连错库
+#   ★ （本轮实测：走 socket 连的是另一个集群，★ 连 `postgres` 角色都没有）。
+_dl_container_psql() {
+  local pw="${DL_DSN_PG_PASS:-${LLM_GATEWAY_PG_PASSWORD:-}}"
+  local u="${DL_DSN_PG_USER:-${LLM_GATEWAY_PG_USER:-llm_gateway}}"
+  local d="${DL_DSN_PG_DB:-${LLM_GATEWAY_PG_DATABASE:-llm_gateway}}"
+  docker exec -e PGPASSWORD="$pw" "$LLM_GATEWAY_PG_CONTAINER" \
+    psql -X -v ON_ERROR_STOP=1 -h 127.0.0.1 -p 5432 -U "$u" -d "$d" "$@"
+}
+
+PSQL_BIN="$(dl_psql_bin)"
+if [[ -n "$PSQL_BIN" ]]; then
+  psql_query() { "$PSQL_BIN" -X -v ON_ERROR_STOP=1 -Atqc "$1" "$DATABASE_URL"; }
+  psql_stream() { "$PSQL_BIN" -X -v ON_ERROR_STOP=1 "$DATABASE_URL" -f -; }
 else
   : "${LLM_GATEWAY_PG_CONTAINER:?psql is unavailable; set LLM_GATEWAY_PG_CONTAINER for Docker execution}"
-  : "${LLM_GATEWAY_PG_PASSWORD:?set LLM_GATEWAY_PG_PASSWORD for Docker execution}"
-  psql_query() {
-    docker exec -e PGPASSWORD="$LLM_GATEWAY_PG_PASSWORD" "$LLM_GATEWAY_PG_CONTAINER" \
-      psql -X -v ON_ERROR_STOP=1 -U "${LLM_GATEWAY_PG_USER:-llm_gateway}" \
-      -d "${LLM_GATEWAY_PG_DATABASE:-llm_gateway}" -Atqc "$1"
-  }
-  psql_stream() {
-    docker exec -i -e PGPASSWORD="$LLM_GATEWAY_PG_PASSWORD" "$LLM_GATEWAY_PG_CONTAINER" \
-      psql -X -v ON_ERROR_STOP=1 -U "${LLM_GATEWAY_PG_USER:-llm_gateway}" \
-      -d "${LLM_GATEWAY_PG_DATABASE:-llm_gateway}" -f -
-  }
+  psql_query() { _dl_container_psql -Atqc "$1"; }
+  psql_stream() { _dl_container_psql -f -; }
 fi
 
 # Historical SQL bytes (and content_sha256) remain immutable. After 860,
@@ -2262,6 +2340,7 @@ files=(
   #   （252 实测中位 4,482.8 ms → 2,270.8 ms；口径逐行等价 EXCEPT ALL 0/0）。
   #   ★ 零 DDL：只做 CREATE OR REPLACE VIEW（实测 245 ms；保留 OID ⇒ matview 依赖不动）。
   "$ROOT_DIR/sql/migrations/startup/907_routing_analytics_source_lateral.sql"
+
   # ── 2026-10-24（R147 存储效率续轮，㉘ 代码面核对后裁决）：
   #    route_incident_events 零消费方索引删除 ──
   #
@@ -2298,6 +2377,22 @@ files=(
   # ★ ★ 本条**只落仓**；★ 生产应用需属主另行授权（★ 三条索引在热写表上
   #   走 CONCURRENTLY ⇒ 不阻断在途读写，★ 但构建期吃 IO 与 CPU）。
   "$ROOT_DIR/sql/migrations/startup/909_session_summaries_search_trgm_indexes.sql"
+
+  # ★ R166（迁移 910）：routing_analytics_source 父表腿从 LATERAL 逐行回定位
+  #   换成「普通 LEFT JOIN + partition_date 日界下推」⇒ details 侧执行期分区裁剪
+  #   + Hash Join 可选，消掉 ~2.75 万次/刷新 的逐行探针
+  #   （252 实测整计划 buffers 147K → 52K，-64%；口径逐行等价 EXCEPT ALL 0/0）。
+  #   ★ 零 DDL：只做 CREATE OR REPLACE VIEW（保留 OID ⇒ matview 依赖不动）。
+  "$ROOT_DIR/sql/migrations/startup/910_routing_analytics_source_hashjoin.sql"
+
+  # ★ 911：本地音频（ASR/TTS）供应商 catalog 三条目（whisper-cpp /
+  #   whisper-cpp-large / macos-say），2026-10-26 多模态标准接口轮。
+  #   纯 INSERT ... ON CONFLICT DO NOTHING ⇒ 幂等、零数据操作、无锁风险；
+  #   不 seed providers 行（运营经 admin API 创建，catalog kind='local'
+  #   自动建占位凭据）。★ 合并时与上游 R166 的迁移 910 撞号 ⇒ 本条让位改为 911。
+  #   配套代码：whisper /inference 传输
+  #   （domains/streaming/audio_whisper_stt.go 按 catalog_code 钉死）。
+  "$ROOT_DIR/sql/migrations/startup/911_local_audio_catalog.sql"
 )
 
 

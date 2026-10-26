@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { surfaceError } from '../i18n/errorSurface'
 import { fmtDateTimeShort } from '../i18n/useFormat'
 import {
   getMemoraStatus,
@@ -8,6 +9,7 @@ import {
   type MemoraStatus,
 } from '../api'
 import { useI18n } from 'vue-i18n'
+import { Close } from '@element-plus/icons-vue'
 
 const { t } = useI18n()
 
@@ -69,7 +71,7 @@ async function handlePing() {
     if (!r.connected) lastPingError.value = r.error || t('memoraStatusButton.state.error')
     await loadStatus()
   } catch (e: unknown) {
-    lastPingError.value = e instanceof Error ? e.message : t('memoraStatusButton.state.detectFailed')
+    lastPingError.value = surfaceError(e, { key: 'memoraStatusButton.state.detectFailed' })
   } finally {
     actionLoading.value = false
   }
@@ -123,7 +125,7 @@ onUnmounted(() => {
       <div class="panel-head">
         <span class="panel-title">Memora 连接</span>
         <span class="panel-badge" :class="`panel-badge--${state}`">{{ stateLabel }}</span>
-        <button type="button" class="panel-close" :aria-label="$t('common.close')" @click="closePanel">×</button>
+        <button type="button" class="panel-close" :aria-label="$t('common.close')" @click="closePanel"><Close /></button>
       </div>
 
       <dl class="panel-meta">
@@ -251,9 +253,8 @@ onUnmounted(() => {
   width: min(300px, 88vw);
   padding: 12px;
   background: var(--card);
-  border: 1px solid var(--border);
   border-radius: var(--radius);
-  box-shadow: 0 8px 24px var(--overlay-strong);
+  box-shadow: var(--kx-shadow-sm);
 }
 
 .panel-head {
@@ -324,4 +325,10 @@ onUnmounted(() => {
   flex-wrap: wrap;
   gap: 6px;
 }
+
+/* ── 2026-10-27 第 17 增量（AI 痕迹门 V3）：图标尺寸 ──
+   element-plus 图标是裸 <svg viewBox="0 0 1024 1024">，**不带 width/height**
+   ⇒ 浏览器按包含块宽度渲染（会撑爆布局）⇒ 必须显式定尺寸。
+   尺寸沿用原字形的 font-size 观感（字形墨迹 ≈ 0.7em）。 */
+.panel-close > svg { width: 11px; height: 11px; }
 </style>

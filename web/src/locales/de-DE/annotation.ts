@@ -74,7 +74,7 @@ export default {
     reason: 'Annotation-Grund',
     annotator: 'Annotator',
     annotatedAt: 'Annotiert am',
-    loadFailed: 'Laden der Details der ersten Runde fehlgeschlagen',
+    loadFailed: 'Details der ersten Annotationsrunde konnten nicht geladen werden. Bitte erneut versuchen.',
     metaSection: 'Metadaten der ersten Runde',
     requestSection: 'Anfrage',
     annotationSection: 'Manuelle Annotation',
@@ -97,7 +97,7 @@ export default {
     detailTitle: 'Annotationsqualität im Detail',
     refresh: 'Aktualisieren',
     refreshing: 'Wird aktualisiert...',
-    loadFailed: 'Statistiken konnten nicht geladen werden',
+    loadFailed: 'Annotationsstatistik konnte nicht geladen werden. Bitte erneut versuchen.',
     noData: 'Noch keine Annotationsstatistik. Erst nach der ersten Annotationsrunde erscheinen hier die Werte.',
     totalAnnotations: 'Annotationen gesamt',
     providerAccuracy: 'Anbieter-Genauigkeit',
@@ -121,8 +121,8 @@ export default {
   // Success messages
 
   // Error messages
-  loadFailed: 'Annotation-Samples konnten nicht geladen werden',
-  annotationFailed: 'Annotation fehlgeschlagen',
+  loadFailed: 'Annotation-Samples konnten nicht geladen werden. Bitte erneut versuchen.',
+  annotationFailed: 'Annotation konnte nicht abgeschlossen werden. Bitte erneut versuchen.',
   correctionWriteFailed: 'Korrektur konnte nicht geschrieben werden (Annotation gespeichert): {msg}',
 
   // Loading states
@@ -134,8 +134,8 @@ export default {
     exportBtn: 'CSV exportieren',
     importBtn: 'CSV importieren',
     exportOk: '{name} exportiert',
-    exportFailed: 'Export fehlgeschlagen',
+    exportFailed: 'Annotationsprofil konnte nicht exportiert werden. Bitte erneut versuchen.',
     importOk: 'Importiert {imported}, übersprungen {skipped}, Fehler {errors}',
-    importFailed: 'Import fehlgeschlagen',
+    importFailed: 'Annotationsprofil konnte nicht importiert werden. Bitte erneut versuchen.',
   },
 }

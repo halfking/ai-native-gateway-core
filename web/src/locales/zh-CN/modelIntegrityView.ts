@@ -109,10 +109,10 @@ export default {
   },
 
   error: {
-    loadFailed: '加载失败',
-    summaryLoadFailed: '统计加载失败',
-    driftLoadFailed: '指纹漂移加载失败',
-    markFailed: '标记失败',
+    loadFailed: '模型完整性数据没能加载出来，请重试',
+    summaryLoadFailed: '模型完整性统计没能加载出来，请重试',
+    driftLoadFailed: '指纹漂移数据没能加载出来，请重试',
+    markFailed: '模型完整性标记没能完成，请重试',
     needSuperAdmin: '需要超级管理员权限',
   },
 }

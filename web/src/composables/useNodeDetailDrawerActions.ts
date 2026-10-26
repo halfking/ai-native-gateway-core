@@ -1,4 +1,5 @@
 import type { Ref, ComputedRef } from 'vue'
+import { surfaceError } from '../i18n/errorSurface'
 import type { RoutingCandidate, StreamMode } from '../api/routing'
 import { patchCandidateBinding } from '../api/routing'
 import { updateCredentialLifecycle, type CredentialLifecycleStatus } from '../api/providers'
@@ -125,7 +126,7 @@ export function useNodeDetailDrawerActions(opts: {
       emit('applied')
       await refreshCurrentTab()
     } catch (error) {
-      actionError.value = error instanceof Error ? error.message : t('providers.lifecycleChangeFailed')
+      actionError.value = surfaceError(error, { key: 'providers.lifecycleChangeFailed' })
     } finally { saving.value = false }
   }
 
@@ -144,7 +145,7 @@ export function useNodeDetailDrawerActions(opts: {
       emit('applied')
       await refreshCurrentTab()
     } catch (error) {
-      actionError.value = error instanceof Error ? error.message : i18n.global.t('ops.overview.maintainFailed')
+      actionError.value = surfaceError(error, { key: 'ops.overview.maintainFailed' })
     } finally { saving.value = false }
   }
 
@@ -163,7 +164,7 @@ export function useNodeDetailDrawerActions(opts: {
       emit('applied')
       await refreshCurrentTab()
     } catch (error) {
-      actionError.value = error instanceof Error ? error.message : i18n.global.t('ops.overview.modelMaintainFailed')
+      actionError.value = surfaceError(error, { key: 'ops.overview.modelMaintainFailed' })
     } finally { saving.value = false }
   }
 

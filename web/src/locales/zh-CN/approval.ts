@@ -57,9 +57,9 @@ export default {
       info: '第 {page} / {totalPages} 页 (共 {total} 条)',
     },
     errors: {
-      loadListFailed: '加载审批列表失败',
-      approveFailed: '批准失败',
-      rejectFailed: '拒绝失败',
+      loadListFailed: '审批列表没能加载出来，请重试',
+      approveFailed: '审批没能通过，请重试',
+      rejectFailed: '驳回没能完成，请重试',
     },
     success: {
       approved: '审批请求已批准',
@@ -136,8 +136,8 @@ export default {
       rules: '定义哪些请求需要审批',
     },
     errors: {
-      loadFailed: '加载配置失败',
-      saveFailed: '保存失败',
+      loadFailed: '审批配置没能加载出来，请重试',
+      saveFailed: '审批配置没能保存，请重试',
     },
     success: {
       saved: '保存成功',

@@ -91,6 +91,23 @@ func ParseGeminiStreamChunk(line string) (*StreamChunk, error) {
 			ThoughtsTokenCount int `json:"thoughtsTokenCount"`
 		} `json:"usageMetadata"`
 		ModelVersion string `json:"modelVersion"`
+
+		// ★ 2026-10-27（Gemini 转换面补全轮）: the vendor's in-band error
+		// envelope (docs/vendor-formats/gemini.md §错误响应).
+		//
+		// Before this field existed, a `data: {"error":{...}}` frame
+		// parsed into an EMPTY chunk (no candidates, no usage) and was
+		// indistinguishable from a keep-alive ⇒ the vendor error was
+		// swallowed and the client saw a silent, truncated stream.
+		//
+		// The Ollama parser has the same branch (parse_ollama_stream.go:
+		// "Error chunk (rare, but Ollama surfaces some upstream errors
+		// here)"); this brings the Gemini parser to parity.
+		Error *struct {
+			Code    int    `json:"code"`
+			Message string `json:"message"`
+			Status  string `json:"status"`
+		} `json:"error"`
 	}
 
 	if err := json.Unmarshal([]byte(payload), &raw); err != nil {
@@ -100,6 +117,19 @@ func ParseGeminiStreamChunk(line string) (*StreamChunk, error) {
 	chunk := &StreamChunk{
 		SourceProtocol: ProtocolGeminiGenerate,
 		Model:          raw.ModelVersion,
+	}
+
+	// ★ In-band vendor error. Must be handled BEFORE the usage/candidate
+	// branches: an error frame carries neither, so without this branch it
+	// would fall through as an empty delta and the error would vanish.
+	if raw.Error != nil {
+		chunk.Type = ChunkTypeError
+		chunk.Error = &StreamError{
+			Type:    "upstream_error",
+			Message: raw.Error.Message,
+			Code:    raw.Error.Status,
+		}
+		return chunk, nil
 	}
 
 	// Parse usage (Gemini emits usage at the end-of-stream chunk)

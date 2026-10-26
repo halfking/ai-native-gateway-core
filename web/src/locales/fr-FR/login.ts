@@ -8,7 +8,7 @@ export default {
   submitting: 'Connexion en cours…',
   error: {
     required: 'Veuillez saisir le nom d\'utilisateur et le mot de passe',
-    failed: 'Échec de la connexion',
+    failed: 'La connexion n\'a pas pu aboutir. Vérifiez le nom d\'utilisateur et le mot de passe, puis réessayez.',
     apiKeyUnsupported: 'Ce compte ne se connecte plus avec une clé API. Utilisez votre nom d\'utilisateur et votre mot de passe. Pour de l\'aide, contactez un administrateur.',
     badResponse: 'La réponse de connexion est mal formée. Réessayez ou contactez un administrateur.',
   },

@@ -6,6 +6,7 @@
 // summary_generated_at timestamp.
 
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import { surfaceError } from '../i18n/errorSurface'
 import {
   triggerInstantSummary,
   getSessionSnapshot,
@@ -110,7 +111,7 @@ async function trigger() {
   } catch (e) {
     if (generation !== pollGeneration || sessionId !== props.sessionId) return
     status.value = 'failed'
-    errMsg.value = e instanceof Error ? e.message : String(e)
+    errMsg.value = surfaceError(e)
   }
 }
 

@@ -145,6 +145,12 @@ export default {
     empty: 'Aucune image / audio / vidéo trouvée dans le corps de la requête ou dans les pièces jointes persistantes.',
     openOrDownload: 'Ouvrir / Télécharger',
     noPreviewUrl: 'Aucune URL d\'aperçu',
+    kindLabel: {
+      image: 'Image',
+      audio: 'Audio',
+      video: 'Vidéo',
+      file: 'Fichier',
+    },
   },
   // — RequestWaterfallPanel —
   waterfall: {

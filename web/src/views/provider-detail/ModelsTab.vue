@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onBeforeUnmount, onMounted, watch } from 'vue'
+import { surfaceError } from '../../i18n/errorSurface'
 import { useI18n } from 'vue-i18n'
 import { useFormat } from '../../i18n/useFormat'
 import { useCredentialLabels } from '../../composables/useCredentialLabels'
@@ -130,7 +131,7 @@ async function load() {
       routableLoading.value = false
     }
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : pm('loadFailed')
+    error.value = surfaceError(e, { key: 'providerDetail.models.loadFailed' })
   } finally {
     loading.value = false
   }
@@ -142,7 +143,7 @@ async function loadRoutingDiagnostics() {
   try {
     routingDiag.value = await getRoutingBlockedDiagnostic(props.providerId)
   } catch (e: unknown) {
-    routingDiagErr.value = e instanceof Error ? e.message : td('providers.check.diagnoseFailed')
+    routingDiagErr.value = surfaceError(e)
   } finally {
     routingDiagLoading.value = false
   }
@@ -159,7 +160,7 @@ async function handleFixBlocked() {
     await Promise.all([load(), loadRoutingDiagnostics()])
     setTimeout(() => { routingDiagFixed.value = false }, 5000)
   } catch (e: unknown) {
-    routingDiagErr.value = e instanceof Error ? e.message : td('providerDetail.models.repairFailed')
+    routingDiagErr.value = surfaceError(e)
   } finally {
     routingDiagFixing.value = false
   }
@@ -190,7 +191,7 @@ async function pollRefreshStatus() {
   } catch (e: unknown) {
     stopPolling()
     refreshing.value = false
-    refreshError.value = e instanceof Error ? e.message : pm('refreshStatusFailed')
+    refreshError.value = surfaceError(e, { key: 'providerDetail.models.refreshStatusFailed' })
   }
 }
 
@@ -218,7 +219,7 @@ async function clearModels() {
       message: pm('clearMessage', { n: resp.deleted }),
     }
   } catch (e: unknown) {
-    refreshError.value = e instanceof Error ? e.message : pm('clearFailed')
+    refreshError.value = surfaceError(e, { key: 'providerDetail.models.clearFailed' })
   } finally {
     clearing.value = false
   }
@@ -247,7 +248,7 @@ async function refreshFromProvider() {
     }
   } catch (e: unknown) {
     refreshing.value = false
-    refreshError.value = e instanceof Error ? e.message : pm('refreshFailed')
+    refreshError.value = surfaceError(e, { key: 'providerDetail.models.refreshFailed' })
   }
 }
 
@@ -289,7 +290,7 @@ async function triggerAllProbes() {
     }
   } catch (e: unknown) {
     probeAllSummary.value = null
-    alert(e instanceof Error ? e.message : pm('probeFailed'))
+    alert(surfaceError(e, { key: 'providerDetail.models.probeFailed' }))
   } finally {
     probeAllLoading.value = false
   }
@@ -318,7 +319,7 @@ async function resetFailedNodeProbes() {
       routable.value = null
     }
   } catch (e: unknown) {
-    alert(e instanceof Error ? e.message : pm('probeFailed'))
+    alert(surfaceError(e, { key: 'providerDetail.models.probeFailed' }))
   } finally {
     resetNodeProbeLoading.value = false
   }

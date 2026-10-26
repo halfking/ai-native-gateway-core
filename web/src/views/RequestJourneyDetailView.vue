@@ -15,6 +15,7 @@
 // 入站快照只回 minimal fields——这里检测 journey.events 为空时退化为仅动作面板
 // + 路由面板隐藏 + 追踪面板降级提示，避免误报"无事件"。
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
+import { surfaceError } from '../i18n/errorSurface'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { getRequestJourney } from '../api/request-journeys'
@@ -53,7 +54,7 @@ async function loadJourney(id: string) {
     // 用 events 为空 + observation_degraded 兜底标记。
     if (!j.events?.length) scopeAll.value = true
   } catch (e) {
-    error.value = e instanceof Error ? e.message : String(e)
+    error.value = surfaceError(e)
     journey.value = null
   } finally {
     loading.value = false

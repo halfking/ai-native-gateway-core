@@ -9,6 +9,7 @@
 // hot_api_keys[].key_id），于是视图在真实响应上直接抛 TypeError ⇒ 整页白屏。
 // 现在读的每个字段都能在 api/usage.ts 的响应类型里找到出处。
 import { onMounted, ref } from 'vue'
+import { surfaceError } from '../../i18n/errorSurface'
 import { useI18n } from 'vue-i18n'
 import { getUsageEnhancedData, type UsageEnhancedData } from '../../api/usageEnhanced'
 import {
@@ -51,7 +52,7 @@ async function load() {
       })
     }
   } catch (e) {
-    error.value = e instanceof Error ? e.message : t('dataLifecycle.usageEnhanced.errors.load')
+    error.value = surfaceError(e, { key: 'dataLifecycle.usageEnhanced.errors.load' })
   } finally {
     loading.value = false
   }

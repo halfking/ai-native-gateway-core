@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, watch, onMounted } from 'vue'
+import { surfaceError } from '../../i18n/errorSurface'
 import { useI18n } from 'vue-i18n'
 import { useFormat } from '../../i18n/useFormat'
 import {
@@ -89,7 +90,7 @@ async function loadProviderSettings() {
       })
     }
   } catch (e: unknown) {
-    notifySettingsErr(ps('settingsLoadFailed', { msg: e instanceof Error ? e.message : String(e) }))
+    notifySettingsErr(ps('settingsLoadFailed', { msg: surfaceError(e)}))
   } finally {
     settingsLoading.value = false
   }
@@ -109,7 +110,7 @@ async function saveCompressionMode(mode: string | null) {
       notifySettingsOk(ps('settingsSaved'))
     }
   } catch (e: unknown) {
-    notifySettingsErr(ps('settingsSaveFailed', { msg: e instanceof Error ? e.message : String(e) }))
+    notifySettingsErr(ps('settingsSaveFailed', { msg: surfaceError(e)}))
   }
 }
 
@@ -126,7 +127,7 @@ async function saveCacheEnabled(enabled: boolean | null) {
       notifySettingsOk(ps('settingsCacheSaved'))
     }
   } catch (e: unknown) {
-    notifySettingsErr(ps('settingsSaveFailed', { msg: e instanceof Error ? e.message : String(e) }))
+    notifySettingsErr(ps('settingsSaveFailed', { msg: surfaceError(e)}))
   }
 }
 
@@ -143,7 +144,7 @@ async function saveFormatConversion(enabled: boolean | null) {
       notifySettingsOk(ps('settingsFormatSaved'))
     }
   } catch (e: unknown) {
-    notifySettingsErr(ps('settingsSaveFailed', { msg: e instanceof Error ? e.message : String(e) }))
+    notifySettingsErr(ps('settingsSaveFailed', { msg: surfaceError(e)}))
   }
 }
 
@@ -184,7 +185,7 @@ async function save() {
     notifyMsgOk(ps('saveSuccess'))
     emit('refresh')
   } catch (e: unknown) {
-    notifyMsgErr(ps('saveFailed', { msg: e instanceof Error ? e.message : String(e) }))
+    notifyMsgErr(ps('saveFailed', { msg: surfaceError(e)}))
   } finally {
     saving.value = false
   }
@@ -213,7 +214,7 @@ async function runHealthCheck() {
     checkMsg.value = r.reason || ps('runCheck')
     setTimeout(() => emit('refresh'), 5000)
   } catch (e: unknown) {
-    checkMsg.value = e instanceof Error ? e.message : ps('checkFailed')
+    checkMsg.value = surfaceError(e, { key: 'providerDetail.settings.checkFailed' })
   } finally {
     checking.value = false
   }

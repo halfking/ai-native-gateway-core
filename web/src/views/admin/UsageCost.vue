@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, watch } from 'vue'
+import { surfaceError } from '../../i18n/errorSurface'
 import { useI18n } from 'vue-i18n'
 import { Chart, registerables } from 'chart.js'
 import {
@@ -131,7 +132,7 @@ const fetchCostTrend = async () => {
     recordDegradation(t('dataLifecycle.usageCost.attribution.title'), data)
   } catch (e) {
     console.error('Cost trend fetch error:', e)
-    error.value = e instanceof Error ? e.message : t('dataLifecycle.usageCost.errors.costTrend')
+    error.value = surfaceError(e, { key: 'dataLifecycle.usageCost.errors.costTrend' })
   }
 }
 
@@ -143,7 +144,7 @@ const fetchPeriodCompare = async () => {
     recordDegradation(t('dataLifecycle.usageCost.compare.title'), data)
   } catch (e) {
     console.error('Period compare fetch error:', e)
-    error.value = e instanceof Error ? e.message : t('dataLifecycle.usageCost.errors.periodCompare')
+    error.value = surfaceError(e, { key: 'dataLifecycle.usageCost.errors.periodCompare' })
   }
 }
 
@@ -154,7 +155,7 @@ const fetchCacheEconomics = async () => {
     recordDegradation(t('dataLifecycle.usageCost.cache.title'), data)
   } catch (e) {
     console.error('Cache economics fetch error:', e)
-    error.value = e instanceof Error ? e.message : t('dataLifecycle.usageCost.errors.cacheEconomics')
+    error.value = surfaceError(e, { key: 'dataLifecycle.usageCost.errors.cacheEconomics' })
   }
 }
 

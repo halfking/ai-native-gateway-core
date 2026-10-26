@@ -1,0 +1,20 @@
+{
+  "metric": "nonTokenElevation = 非规范抬升层数（抬升层必须来自 var(--kx-shadow-xs|sm|md|md-left)）；distinctElevationValues = 全仓不同抬升取值数（跨文件去重）",
+  "nonTokenElevation": 0,
+  "distinctElevationValues": 4,
+  "updated": "2026-10-27",
+  "history": [
+    {
+      "nonTokenElevation": 53,
+      "distinctElevationValues": 34,
+      "updated": "2026-10-27",
+      "reason": "初始基线：第 18 增量迁移前的实测值（121 处 box-shadow / 71 种取值 ⇒ 抬升层 69 层、其中 53 层为手写配方、34 种不同手写取值；与独立实现的普查脚本逐条对拍 53/53 一致）"
+    },
+    {
+      "nonTokenElevation": 0,
+      "distinctElevationValues": 4,
+      "updated": "2026-10-27",
+      "reason": "第 18 增量：抬升配方归一（69 处抬升 / 34 种手写取值 → 四支规范 token）"
+    }
+  ]
+}

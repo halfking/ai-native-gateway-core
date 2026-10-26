@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { useI18n } from 'vue-i18n'
 import SmartRoutingConfigPanel from './SmartRoutingConfigPanel.vue'
+import { Close } from '@element-plus/icons-vue'
 
 defineProps<{
   open: boolean
@@ -27,7 +28,7 @@ const { t } = useI18n()
             <h3>{{ t('routingDefault.title') }}</h3>
             <p class="hint">{{ t('routing.dashboard.overview.smartConfigHint') }}</p>
           </div>
-          <button type="button" class="close" :aria-label="t('routingDefault.actions.cancel')" @click="emit('close')">×</button>
+          <button type="button" class="close" :aria-label="t('routingDefault.actions.cancel')" @click="emit('close')"><Close /></button>
         </header>
         <div class="smart-drawer-body">
           <SmartRoutingConfigPanel :initial-task-type="taskType || ''" compact />
@@ -50,7 +51,7 @@ const { t } = useI18n()
   width: min(960px, 100vw);
   height: 100%;
   background: var(--card);
-  box-shadow: -12px 0 32px rgba(0, 0, 0, 0.16);
+  box-shadow: var(--kx-shadow-md-left);
   display: flex;
   flex-direction: column;
 }
@@ -86,4 +87,10 @@ const { t } = useI18n()
   overflow: auto;
   padding: 12px 16px 16px;
 }
+
+/* ── 2026-10-27 第 17 增量（AI 痕迹门 V3）：图标尺寸 ──
+   element-plus 图标是裸 <svg viewBox="0 0 1024 1024">，**不带 width/height**
+   ⇒ 浏览器按包含块宽度渲染（会撑爆布局）⇒ 必须显式定尺寸。
+   尺寸沿用原字形的 font-size 观感（字形墨迹 ≈ 0.7em）。 */
+.close > svg { width: 14px; height: 14px; }
 </style>

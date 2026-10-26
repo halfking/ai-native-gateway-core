@@ -49,7 +49,7 @@ export default {
       hint: '数据库结构落后于当前版本，以下数字是「无法计算」的占位，不是真实测量值。',
     },
     errors: {
-      load: '加载用量增强数据失败',
+      load: '用量增强数据没能加载出来，请重试',
     },
     sources: {
       summary: '用量总览',
@@ -112,9 +112,9 @@ export default {
       totalRequests: '总请求数',
     },
     errors: {
-      costTrend: '加载成本趋势失败',
-      periodCompare: '加载周期对比失败',
-      cacheEconomics: '加载缓存经济学失败',
+      costTrend: '成本趋势没能加载出来，请重试',
+      periodCompare: '周期对比没能加载出来，请重试',
+      cacheEconomics: '缓存成本没能加载出来，请重试',
     },
     degraded: {
       title: '部分指标不可用：',
@@ -319,7 +319,7 @@ export default {
   coldData: '冷数据 (30-90天)',
   expiredData: '过期数据 (>90天)',
   missingDate: '请选择起始日期和结束日期',
-  previewFailed: '预览失败',
+  previewFailed: '预览没能完成，请重试',
   needPreview: '请先预览影响',
   executeNotImpl: '清理功能将在下一阶段实现。请使用命令行脚本执行清理操作。',
   confirmDeleteCleanup: '确认删除 {rows} 行数据？\n预计释放空间: {size}\n\n此操作不可逆！',

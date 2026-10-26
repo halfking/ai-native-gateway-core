@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
+import { surfaceError } from '../i18n/errorSurface'
 import { changeMyPassword } from '../api'
 import { checkPasswordPolicy } from '../utils/passwordPolicy'
 import { useI18n } from 'vue-i18n'
@@ -69,7 +70,7 @@ async function submit() {
     })
     close()
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : t('users.error.changePasswordFailed')
+    error.value = surfaceError(e, { key: 'users.error.changePasswordFailed' })
   } finally {
     loading.value = false
   }
@@ -169,11 +170,10 @@ async function submit() {
 <style scoped>
 .password-modal {
   background: var(--card);
-  border: 1px solid var(--border);
   border-radius: 12px;
   padding: 24px;
   width: min(420px, calc(100vw - 32px));
-  box-shadow: 0 16px 48px var(--overlay-strong);
+  box-shadow: var(--kx-shadow-md);
 }
 
 .password-modal__header {

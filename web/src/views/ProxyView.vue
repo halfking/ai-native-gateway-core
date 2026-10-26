@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { useI18n } from 'vue-i18n'
+import { surfaceError } from '../i18n/errorSurface'
 import { ref, computed, onMounted } from 'vue'
 import {
   getProxySubscriptions,
@@ -60,7 +61,7 @@ async function loadForTab(tab: Tab, load: () => Promise<void>, fallbackError: st
   try {
     await load()
   } catch (e: unknown) {
-    setError(tab, e instanceof Error ? e.message : fallbackError)
+    setError(tab, surfaceError(e))
   } finally {
     endLoading(tab)
   }
@@ -89,7 +90,7 @@ async function loadRegions() {
     // 2026-10-03：原来 `catch { }`。区域统计拿不到时页面显示成「没有区域分布」，
     // 而 loadStatus 成功时 regions 也可能有值 —— 用户分不清「确实没有」
     // 与「没加载出来」。与同文件其它 loader 一致接到 setError。
-    setError('status', e instanceof Error ? e.message : t('proxy.error.loadRegionsFailed'))
+    setError('status', surfaceError(e, { key: 'proxy.error.loadRegionsFailed' }))
   }
 }
 
@@ -103,7 +104,7 @@ async function loadPolicy(): Promise<boolean> {
     // 2026-10-03：原来 `catch { }`。onMounted 会调它，失败时 policy 一直是
     // null，卡片就永远停在「加载中…」（见模板的 v-else 分支）。
     // 接上本文件已有的 error 通道，失败原因必须被说出来。
-    setError('status', e instanceof Error ? e.message : t('proxy.error.loadPolicyFailed'))
+    setError('status', surfaceError(e, { key: 'proxy.error.loadPolicyFailed' }))
     return false
   }
 }
@@ -125,7 +126,7 @@ async function handleBatchHealthCheckAll() {
       }))
       await loadStatus()
     } catch (e: unknown) {
-      alert(e instanceof Error ? e.message : t('proxy.error.batchHealthFailed'))
+      alert(surfaceError(e, { key: 'proxy.error.batchHealthFailed' }))
     }
   })
 }
@@ -140,7 +141,7 @@ async function handleBatchHealthCheckSub(id: number, name: string) {
       }))
       await loadSubscriptions()
     } catch (e: unknown) {
-      alert(e instanceof Error ? e.message : t('proxy.error.healthCheckFailed'))
+      alert(surfaceError(e, { key: 'proxy.error.healthCheckFailed' }))
     }
   })
 }
@@ -152,7 +153,7 @@ async function handleForceSwap() {
       alert(t('proxy.batchResult.swap', { name: res.selected.name }))
       await loadStatus()
     } catch (e: unknown) {
-      alert(e instanceof Error ? e.message : t('proxy.error.swapFailed'))
+      alert(surfaceError(e, { key: 'proxy.error.swapFailed' }))
     }
   })
 }
@@ -179,7 +180,7 @@ async function savePolicy() {
       showPolicyModal.value = false
       alert(t('proxy.batchResult.policySaved'))
     } catch (e: unknown) {
-      alert(e instanceof Error ? e.message : t('proxy.error.savePolicyFailed'))
+      alert(surfaceError(e, { key: 'proxy.error.savePolicyFailed' }))
     }
   })
 }
@@ -236,7 +237,7 @@ async function handleCreateSub() {
     subForm.value = { name: '', subscribe_url: '', notes: '', banned_regions_input: '' }
     await loadSubscriptions()
   } catch (e: unknown) {
-    setError('subscriptions', e instanceof Error ? e.message : t('proxy.error.createSubFailed'))
+    setError('subscriptions', surfaceError(e, { key: 'proxy.error.createSubFailed' }))
   } finally {
     endLoading('subscriptions')
   }
@@ -250,7 +251,7 @@ async function handleRefreshSub(id: number, name: string) {
     await refreshProxySubscription(id)
     await loadSubscriptions()
   } catch (e: unknown) {
-    setError('subscriptions', e instanceof Error ? e.message : t('proxy.error.refreshSubFailed'))
+    setError('subscriptions', surfaceError(e, { key: 'proxy.error.refreshSubFailed' }))
   } finally {
     endLoading('subscriptions')
   }
@@ -264,7 +265,7 @@ async function handleDeleteSub(id: number, name: string) {
     await deleteProxySubscription(id)
     await loadSubscriptions()
   } catch (e: unknown) {
-    setError('subscriptions', e instanceof Error ? e.message : t('proxy.error.deleteSubFailed'))
+    setError('subscriptions', surfaceError(e, { key: 'proxy.error.deleteSubFailed' }))
   } finally {
     endLoading('subscriptions')
   }
@@ -286,7 +287,7 @@ async function saveSubBan(sub: ProxySubscription) {
     editingSubBan.value = null
     await loadSubscriptions()
   } catch (e: unknown) {
-    setError('subscriptions', e instanceof Error ? e.message : t('proxy.error.saveSubBanFailed'))
+    setError('subscriptions', surfaceError(e, { key: 'proxy.error.saveSubBanFailed' }))
   } finally {
     endLoading('subscriptions')
   }
@@ -356,7 +357,7 @@ async function handleCreateNode() {
     }
     await loadNodes()
   } catch (e: unknown) {
-    setError('nodes', e instanceof Error ? e.message : t('proxy.error.createNodeFailed'))
+    setError('nodes', surfaceError(e, { key: 'proxy.error.createNodeFailed' }))
   } finally {
     endLoading('nodes')
   }
@@ -370,7 +371,7 @@ async function handleHealthCheckNode(id: number, name: string) {
     await healthCheckProxyNode(id)
     await loadNodes()
   } catch (e: unknown) {
-    setError('nodes', e instanceof Error ? e.message : t('proxy.error.healthCheckFailed'))
+    setError('nodes', surfaceError(e, { key: 'proxy.error.healthCheckFailed' }))
   } finally {
     endLoading('nodes')
   }
@@ -384,7 +385,7 @@ async function handleDeleteNode(id: number, name: string) {
     await deleteProxyNode(id)
     await loadNodes()
   } catch (e: unknown) {
-    setError('nodes', e instanceof Error ? e.message : t('proxy.error.deleteNodeFailed'))
+    setError('nodes', surfaceError(e, { key: 'proxy.error.deleteNodeFailed' }))
   } finally {
     endLoading('nodes')
   }
@@ -404,7 +405,7 @@ async function saveNodeBan(node: ProxyNode) {
     editingNodeBan.value = null
     await loadNodes()
   } catch (e: unknown) {
-    setError('nodes', e instanceof Error ? e.message : t('proxy.error.saveNodeBanFailed'))
+    setError('nodes', surfaceError(e, { key: 'proxy.error.saveNodeBanFailed' }))
   } finally {
     endLoading('nodes')
   }

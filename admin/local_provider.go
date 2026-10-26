@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"strings"
 
+	providercatalog "github.com/kaixuan/llm-gateway-go/provider/catalog"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -31,7 +32,10 @@ import (
 // 加密后存入 credentials.secret_ciphertext，解密后作为 Bearer token 发给
 // 本地服务 —— 本地服务不校验该值，但保持非空可以复用全部既有链路
 // （discovery 解密、relay Authorization 头、probe）。
-const localNoKeyPlaceholder = "local-no-key"
+// 2026-10-26 多模态标准接口轮：常量本体提升到 provider/catalog（admin 与
+// provider 两面的解密缝共用同一份值——「同一把尺子只一份实现」），此处
+// 保留包内别名以最小化改动面。
+const localNoKeyPlaceholder = providercatalog.LocalNoKeyPlaceholder
 
 // LocalProviderKind 是 providers.kind / provider_catalog.kind 的本地值。
 const LocalProviderKind = "local"
@@ -248,6 +252,14 @@ func defaultLocalBaseURLForCode(catalogCode string) string {
 		return "http://127.0.0.1:1234/v1"
 	case "vllm":
 		return "http://127.0.0.1:8000/v1"
+	case "whisper-cpp":
+		// whisper.cpp 端点全在根路径（/inference），base 不带 /v1
+		// （migration 910，2026-10-26 多模态标准接口轮）。
+		return "http://127.0.0.1:8081"
+	case "whisper-cpp-large":
+		return "http://127.0.0.1:8082"
+	case "macos-say":
+		return "http://127.0.0.1:8086/v1"
 	default:
 		return ""
 	}

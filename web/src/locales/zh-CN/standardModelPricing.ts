@@ -76,7 +76,7 @@ export default {
     msgPasted: '已更新 {n} 个模型',
     msgReset: '已恢复 {n} 个模型',
     msgFilled: '已写入 {n} 个模型',
-    msgFailed: '批量操作失败',
+    msgFailed: '批量操作没能完成，请重试',
   },
 
   // 扁平键（供 Vue 组件直接使用）
@@ -84,11 +84,11 @@ export default {
   customOnly: '含手工定价',
   partialOnly: '部分手工',
   otherVendor: '其他',
-  loadFailed: '加载失败',
+  loadFailed: '标准模型定价没能加载出来，请重试',
   saved: '全局基准已保存（仅影响未手工定价的维度）',
-  saveFailed: '保存失败',
+  saveFailed: '标准模型定价没能保存，请重试',
   needOneManual: '请至少勾选一个「手工定价」维度',
-  resetFailed: '恢复失败',
+  resetFailed: '标准模型定价没能恢复，请重试',
   input: '输入',
   output: '输出',
   cacheRead: '缓存读',
