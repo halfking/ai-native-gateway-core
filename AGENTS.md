@@ -10109,7 +10109,7 @@ index b953a6f03..555ef83c4 100644
 > 　＋ ★ **新增 `query_index_coverage_gate_test.go`**（★ 活查询 ⇒ 过滤/排序列 ⇒ 索引可用性；★ 不连数据库）
 > ⇒ ⇒ ★★★★ **★ 新增 `scripts/audit/asset/query-index-requirements.tsv`**（★ 活查询需求清单，★ 每行带源码定位）
 > ⇒ ⇒ ★★★★ **★ 变异臂 `scripts/mutate-r162-object-census-gate.py`：★ 6 条全达标**（★ 含 1 条对照臂必须仍绿）＋ ★ **还原后 md5 逐字一致**
-> ⇒ ⇒ ★★★★ **★ 通用式 11 条**沉淀在 `LESSONS.md` **§426**
+> ⇒ ⇒ ★★★★ **★ 通用式 11 条**沉淀在 `LESSONS.md` **§428**
 > ⇒ ⇒ ★★★★ 属主裁决（★ 本轮全部留空未做）：★ **R162-LOCAL-GAP：本地补跑 `4xx`/`5xx`/`6xx` 段迁移（★ 13 条 local-only-gap；★ 建议优先）**
 > 　· ★ **R162-SESSIONS-IDX：`sessions` 加 `(tenant_id, updated_at DESC, session_id DESC)`**（★ 结构事实已证）· ★ **R162-MULTIMODAL：`multimodal_types` 的 `_gw` 索引三环境皆缺**
 > 　· ★ **R162-EXPECT-SCOPE：期望集口径扩到 domain / deploy / root 三族**（★ 现只扫 startup 的 581 个）
