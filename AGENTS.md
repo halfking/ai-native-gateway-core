@@ -8381,6 +8381,59 @@ index b953a6f03..555ef83c4 100644
 >    （计数 4 + 理由），只登记不改其文件。★ 908 down 文件头注残留「903 删的是」一处**有意不修**
 >    （908 已 applied 记账 sha `bcd401ec`，改文件 = 台账失配，注释妆疵不值再投递）。
 >    详见审计档 §9 + runbook §143.104.6。
+>
+> **2026-10-27 R148 · 96h 批判式审计轮（本会话 `mvs_367b04073e304f26b546fd09f5f88282`）**
+> —— 审计档 `docs/audit/2026-10-27-R148-96h批判审计轮-分支资产盘点与四处事实源漂移.md`
+> ＋ LESSONS **§434** ＋ handoff **§19.28**：
+> ★ **分支面：无子分支可处置** —— `git ls-remote --heads origin` 实测**只有 `refs/heads/main`**，
+>   本地分支也只有 `main`、只有 1 个 worktree ⇒ ★ **「96h 内不活跃子分支」这一项是空集**；
+>   `refs/tags/*` 是版本/备份/回滚资产 ⇒ **不删**。
+> ⇒ ★★ **真正待处置的「未合并存量」在 6 个 stash 里** ⇒ 本轮做了**逐文件覆盖度台账**
+>   （`git diff --output=<patch> 'stash@{i}^1' 'stash@{i}'` ＋ `git apply --check --reverse`）
+>   ⇒ 结论：6 个**全部已被 HEAD 覆盖**（stash@{1}/{2} 的意图已在 HEAD 里演进到更晚形态），
+>   **无一条需要逐文件合并** ⇒ ★★ **但一律不 drop**（不可逆 + 属并行会话的恢复物 +
+>   「apply 失败」≠「工作丢了」）⇒ 登记为「有意保留的存量」。
+> ⇒ ★★★ **本轮 4 处发现全是同一族：「同一件事被抄成多份、其中一份没跟上」**
+>   （**没有一处是判据本身算错了** ⇒ 查法是 grep 判据的**全部落点**，不是读判据）：
+>   ① **F1 抄本过期**：`domains/streaming/modality_detect.go` 的「SQL 过滤语义」仍写
+>   `'video' → modality = 'video'`（入站 `483b60b301ab` 已改成 `IN ('video','multimodal')`）
+>   ⇒ 就地订正（★ 已核 `modelname/modality_defaults.go`：本仓 `multimodal` 的登记语义**就是**
+>   「text+image+audio+video」⇒ 那一轮的 SQL 改动**是对的**）；
+>   ② ★★ **F2 活正确性**：`bg/probe_policy.go` 的**会话族**探针排除谓词仍**手写**四元组 actor
+>   （`node-probe-worker`/`active-probe-worker`/`probe-service`/`credential-selfcheck-worker`），
+>   而事实源 `internal/probekind.ProbeActors` 已由写入点登记表派生为**七个** ⇒ ★★ **少了
+>   `self-check-worker`/`model-quality-worker`/`mock-probe-client`** ⇒ ★★ **2026-10-23 那次
+>   「不再手写」的订正只迁了视图臂，会话臂被落下** ⇒ ★★ 正是 `stash@{2}`（R52 的 2→4 订正）
+>   的**同一个漂移在另一条臂上重新长出来**（2→4→7）⇒ ★★ 修法 = **共用事实源**
+>   （`probekind.SQLActorList()`）**而不是再补三个** ⇒ 影响的三个活读面：settle 基线 cohort
+>   （⇒ reward 基线）、failure monitor 的 staleness、凭据自检的「近 3 天业务使用集合」
+>   ⇒ 新增 `TestProbeTrafficExclusionPredicateActorListsStayInLockstep`（两条臂锁步 ＋ 负控）；
+>   ③ ★★ **F3 半修**：`483b60b301ab` 把 video 补进模态门（门开了）却**只补了 Gemini→OpenAI
+>   一个方向** ⇒ ★★ `video_url` 在 parse 侧无分支（`block.Video` 恒 nil）＋ Gemini 序列化器
+>   **无该分支也无 default** ⇒ ★★ **视频块静默丢弃**（用户看到「200 且有回答，但视频没到上游」）
+>   ⇒ ★★ 前三个协议看不见是因为它们各自的 `default` 按 `RawContent` 兜底（**假绿**）
+>   ⇒ 修法**只往保守方向**：parse 侧类型化 ＋ **保留 `Type`/`RawContent`**（另三个协议逐字节不变），
+>   Gemini 侧加 `case "video_url"`；顺带修 `irVideoToGeminiPart` 的 MIME 兜底
+>   （此前会拼出**非法**的 `mimeType: "video/"` ⇒ 新增 `videoMIME()` 缺省 `video/mp4`）；
+>   ④ ★★★ **F4 门恒红且双向全废**：`internal/clockguard`（**在 `GUARD_PACKAGES` 里**）的
+>   实测台账门用 `filepath.Rel` 产键 ⇒ **Windows 上是反斜杠**，而台账是**提交进仓的数据文件**
+>   （正斜杠）⇒ ★★ 同一个文件两种拼写各报一次、12 条全是噪声 ⇒ ★★ **真正的漂移被淹没**
+>   ＋ `guard_test.go` 的 `Contains(b.File,"internal/clockguard")` 恒假 ⇒ **扫到自己也漏网**
+>   ⇒ 修法 = `filepath.ToSlash`（★ `File` 只做对账键/诊断串，从不开文件）
+>   ⇒ **同族先例**：web 侧 `ui-audit` 豁免查表键已因同一件事修过（`9327bc33e004`）⇒ **第二处**。
+> ⇒ ★★ **留证纪律**：clockguard **真仓变异臂** —— 改台账一个函数名 ⇒ 门**恰好报一条**精确
+>   「台账漂移」（改前是 12 条噪声）⇒ 证明门看得见差异；还原后 **md5 逐字一致**。
+> ⇒ ★★ **全量跑分的红项必须【基线对照 + 集合差】**：首轮 25 包红，逐条归因到**错误文本**
+>   （`CGO_ENABLED=0` 无 gcc ⇒ lite 存储族；PATH 无 bash ⇒ ursmcheck/q-usage；Windows 文件占用
+>   ⇒ pkg/monitor；计时类 ⇒ **负载型**，本轮实测到**另一个 Mavis 会话在同工作区同时跑
+>   `go test ./...`**）⇒ ★★ 在 `e50a0a5f6a37` 另开 worktree 跑**同一组 25 包**做基线对照。
+> ⇒ ★★ **本机环境三缺（CGO/gcc、bash、Windows 文件占用）⇒ `make guards` 与 lite 存储族
+>   在本机不可用作证据** ⇒ 下轮要本地证据须先装 gcc + Git Bash，或改在 Linux 上跑。
+> ⇒ ★★ **本轮明确没做（留给下一轮）**：**Gemini 序列化器的通用 raw 兜底**（本轮只补了
+>   `video_url` 这一条已知路径；治本要给四协议做「raw 兜底对称性」门，★ 属设计变更）
+>   ／ **F2 的量化缺口**（252 上「`origin_stage` 缺失 且 actor ∈ 那三个」的**实际行数未测**）
+>   ／ **stash 面的清理**（须由创建会话确认后再删）／ **clockguard 台账的自然值重测**
+>   （本轮只修了「门看不见」，没改那 10 处判据的下界）／ **web 侧与 installer 零改动故未重跑**。
 
 > **2026-10-24 探测打标修复 —— 154 发布 + 线上验证 + 口径订正轮（本会话）**：★ 上文 §「2026-10-23 实时拓扑探测打标轮」记的是
 > **根因定位与修复**（`e6f87c623`）；本节记**它被发到 154 并在线上生效**，以及**一处口径订正**。
