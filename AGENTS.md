@@ -1337,6 +1337,40 @@
 - HEAD：见 `git log --oneline -1`。**不要照抄本文件的 commit 列表**——仓库多会话共享，
   本文件记录时点之后通常已有他人提交；以 `git log` 为准。
 - 分支：仅 `main`；提交前先 `git fetch && git status -sb`
+- ★★ **双仓同步（2026-10-26 实测补记）**：本仓**有两个远端**，且**两条历史互相独立**
+  - `origin` = codeup `kaixuan/official-deploy/llm-gateway-go` —— **权威侧**（日常推进在这里）
+  - `github` = `halfking/ai-native-gateway-core` —— **镜像侧**（保留 2026-05～10 的原始历史）
+  - ⇒ **`git merge` 合不动**：merge-base 停在 2026-10-07；codeup 侧有 2400+ 笔
+    github 侧没有的提交，github 侧有 13000+ 笔 codeup 侧没有的原始历史。
+  - ⇒ **同步办法 = 树移植**（沿用 2026-10-13 / 10-15 的 9 笔 `sync(codeup)` 批次做法）：
+    ```bash
+    TREE=$(git rev-parse origin/main^{tree})
+    SYNC=$(git commit-tree "$TREE" -p "$(git rev-parse github/main)" -m "sync(codeup): …")
+    git push github "$SYNC:refs/heads/main"   # 父提交 = github 原 tip ⇒ 原始历史一条不丢
+    ```
+  - ⇒ **验收口径 = 两仓 main 的 `tree` SHA 必须相同**（不是「内容抽样看着一样」）：
+    `git rev-parse origin/main^{tree}` == `git rev-parse github/main^{tree}`，
+    且 `git diff --stat origin/main github/main` **为空**；推完用 `git ls-remote` 对拍远端真值。
+- ★★ **推 github 前要手工跑 pre-push 钩子的三段**（★ `.git/hooks` 里**没装钩子**、
+  `core.hooksPath` 也没设 ⇒ **推的时候一道都不会跑**，钩子存在不等于门被执行过）：
+  ① `scripts/scan-secrets.sh --mode=normal --paths=. --tracked-only
+  --baseline=scripts/scan-secrets.baseline`（★ **BLOCK 级必须为 0**；
+  该 baseline 按 `file:line:CATEGORY` 登记 ⇒ **文件一改行号就漂**
+  ⇒ 2026-10-26 一次同步清掉 **102 条陈旧条目**（29 重钉 + 77 剪除，237→150），
+  才把 `deploy_sops_test.sh` 的「baseline > 215」棘轮从红掰回绿）；
+  ② 审计守卫七包 `go test ./internal/{rowsguard,errdiscard,dbrows,jsoncol,paramguard,sqlguard,sqlreadguard}`
+  + `bash scripts/checks/guards-sync.sh`；
+  ③ `tests/*.sh` 全量（43 套）。
+  ⇒ ★ **已知的既有红**（2026-10-26 在 pristine HEAD 上复现过 ⇒ 不是回归）：
+  `deploy_local_contract_test` / `deploy_rollback_test` / `deploy_ssh_retry_test` /
+  `session_storage_audit_gate` 四个套件在本机红（前三者日志里出现
+  `mavis-trash: refusing to trash protected path … is the current working directory`
+  ⇒ 与本机回收器退化有关；后者要 docker + `-tags=integration` 真库）。
+- ★★ **别用 `git worktree` 给 deploy 类套件做 A/B 复现**：`scripts/deploy-lib/*`
+  在 worktree 里**取不到**（悬空符号链接）⇒ 复现出来的是**误导性的失败**
+  （`lock.sh: No such file or directory` / `host_release_layout: 未找到命令`）。
+  ⇒ 判「红是不是本轮引入」用**同工作区 `git stash` A/B**（本轮 4 个红套件在
+  pristine HEAD 上**同样红** ⇒ 既有环境性红）。
 - Go 模块：见仓库根 `go.mod`；**`installer/` 是独立 Go 模块**（有自己的 go.mod），
   它的测试要在 `installer/` 目录内跑，从根模块用 `./installer/...` 会报 setup failed
 - 入口二进制：`cmd/gateway/main.go`（v1）、`cmd/gateway-v2/main.go`（v2，独立）
