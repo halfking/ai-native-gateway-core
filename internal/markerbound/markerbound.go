@@ -77,23 +77,61 @@ func Spans(text string) [][2]int {
 	var spans [][2]int
 	for _, candidate := range spanCandidates(text) {
 		span := [2]int{candidate[0], candidate[1]}
-		text := text[span[0]:span[1]]
-		if exactPattern.MatchString(text) {
+		candidateText := text[span[0]:span[1]]
+		if exactPattern.MatchString(candidateText) {
 			spans = append(spans, span)
 			continue
 		}
-		if _, _, ok := parse(text); ok {
+		if _, _, ok := parse(candidateText); ok {
 			spans = append(spans, span)
 			continue
 		}
-		if looksLikeMarker(text) {
+		if looksLikeMarker(candidateText) {
 			spans = append(spans, span)
+			continue
+		}
+		// 2026-10-27（r1039 混拼修复轮的**后续审计**）：候选不是标记，但**裸形标记
+		// 可能在它内部** —— brace 分支会把一整段 JSON 吞成一个候选
+		// （{"pwd":"SENSITIVE:phone"} 整个就是一个候选）。
+		// ⇒ 与 security/sanitize 的 markerSpans **同步**做内层重扫，
+		// 否则两个副本的 span 集合分叉 ⇒ 契约门红 ⇒ 截断切点可能把标记切开。
+		for _, inner := range bareMarkerSpans(candidateText) {
+			spans = append(spans, [2]int{span[0] + inner[0], span[0] + inner[1]})
 		}
 	}
 	if tail := unterminatedSpanPattern.FindString(text); tail != "" && looksLikeMarker(tail) {
 		spans = append(spans, [2]int{len(text) - len(tail), len(text)})
 	}
 	return spans
+}
+
+// bareMarkerSpans mirrors sanitize.looseBareMarkerSpans: the brace-less marker
+// spans of text, in ASCII spelling and in the width-folded spelling.
+//
+// 2026-10-27: the inner re-scan above needs the **bare** grammar alone (the
+// full pattern would re-match the run being consumed and never terminate the
+// descent) — the same reason rewriteLooseSpans re-scans with the bare pattern
+// only.
+func bareMarkerSpans(text string) [][2]int {
+	spans := bareSpanPattern.FindAllStringIndex(text, -1)
+	out := make([][2]int, 0, len(spans))
+	for _, s := range spans {
+		out = append(out, [2]int{s[0], s[1]})
+	}
+	folded, ok := foldMarkerWidth(text)
+	if !ok {
+		return out
+	}
+	foldedSpans := foldedBareSpanPattern.FindAllStringIndex(folded, -1)
+	if len(foldedSpans) == 0 {
+		return out
+	}
+	mapped := mapFoldedSpans(text, foldedSpans)
+	mapped = keepBareSpanBoundaries(text, mapped)
+	all := make([][2]int, 0, len(out)+len(mapped))
+	all = append(all, out...)
+	all = append(all, mapped...)
+	return mergeSpans(all)
 }
 
 // spanCandidates returns the candidate spans of text: what the span pattern

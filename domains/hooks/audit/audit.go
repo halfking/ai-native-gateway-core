@@ -175,6 +175,12 @@ type StreamCapture struct {
 	completionTokens      *int
 	cacheReadTokens       *int
 	cacheWriteTokens      *int
+	// 缓存写入的 TTL 分档（2026-10-27 缓存监测轮）。只进监测面
+	// （SummaryAsMap / 结构化日志）；台账列是既有的读写总量两列。
+	// Anthropic ephemeral_5m→Short / ephemeral_1h→Long；
+	// OpenAI ttl_30m→Short / ttl_12h→Long。
+	cacheWriteTTLShort *int
+	cacheWriteTTLLong  *int
 	// Banked usage for continuation legs (P0-3 audit fix, 2026-10-16).
 	// ObserveUsage/ObserveChunk use REPLACE semantics — correct for one
 	// upstream leg, but a continuation splice bills TWO upstream calls inside
@@ -404,6 +410,8 @@ func (sc *StreamCapture) Reset() {
 	sc.completionTokens = nil
 	sc.cacheReadTokens = nil
 	sc.cacheWriteTokens = nil
+	sc.cacheWriteTTLShort = nil
+	sc.cacheWriteTTLLong = nil
 	sc.HasThinking = false
 	sc.ThinkingBlocksN = 0
 	sc.ModelMismatch = false
@@ -717,6 +725,21 @@ func (sc *StreamCapture) ObserveUsage(promptTokens, completionTokens, cacheRead,
 	}
 }
 
+// ObserveCacheWriteSplit records the vendor's TTL-tier breakdown of the cache
+// WRITE tokens (Anthropic ephemeral_5m/1h; OpenAI ttl_30m/12h). Monitoring
+// only: the ledger keeps the read/write totals, the split is for observability
+// (SummaryAsMap keys cache_write_ttl_short_tokens / cache_write_ttl_long_tokens).
+func (sc *StreamCapture) ObserveCacheWriteSplit(short, long *int) {
+	sc.mu.Lock()
+	defer sc.mu.Unlock()
+	if short != nil {
+		sc.cacheWriteTTLShort = short
+	}
+	if long != nil {
+		sc.cacheWriteTTLLong = long
+	}
+}
+
 func (sc *StreamCapture) MarkInterruptedWithReason(finishReason string) {
 	sc.mu.Lock()
 	defer sc.mu.Unlock()
@@ -914,6 +937,12 @@ func (sc *StreamCapture) SummaryAsMap() map[string]any {
 	}
 	if sc.cacheWriteTokens != nil {
 		m["cache_write_tokens"] = *sc.cacheWriteTokens
+	}
+	if sc.cacheWriteTTLShort != nil {
+		m["cache_write_ttl_short_tokens"] = *sc.cacheWriteTTLShort
+	}
+	if sc.cacheWriteTTLLong != nil {
+		m["cache_write_ttl_long_tokens"] = *sc.cacheWriteTTLLong
 	}
 	if sc.InputTokens != nil {
 		m["input_tokens"] = *sc.InputTokens

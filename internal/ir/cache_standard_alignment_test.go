@@ -306,3 +306,41 @@ func TestParseGeminiResponseReadsThoughtsTokenCount(t *testing.T) {
 		t.Fatalf("thoughtsTokenCount = %d, want 20", wire.UsageMetadata.ThoughtsTokenCount)
 	}
 }
+
+// 2026-10-27 缓存监测轮：Anthropic 嵌套 cache_creation 对象（5m/1h 写入
+// 分档）进 IR usage——流式 message_start 与非流式两路，只服务监测面。
+func TestAnthropicUsageCacheCreationSplitParsing(t *testing.T) {
+	t.Run("streaming message_start", func(t *testing.T) {
+		chunk, err := ParseAnthropicStreamEvent("message_start", []byte(
+			`{"type":"message_start","message":{"id":"msg_1","model":"claude-sonnet-5","usage":{"input_tokens":100,"cache_creation_input_tokens":300,"cache_read_input_tokens":50,"cache_creation":{"ephemeral_5m_input_tokens":100,"ephemeral_1h_input_tokens":200}}}}`))
+		if err != nil {
+			t.Fatalf("ParseAnthropicStreamEvent: %v", err)
+		}
+		u := chunk.Usage
+		if u == nil || u.CacheWriteTokens == nil || *u.CacheWriteTokens != 300 {
+			t.Fatalf("CacheWriteTokens = %v, want 300", u)
+		}
+		if u.CacheReadTokens == nil || *u.CacheReadTokens != 50 {
+			t.Fatalf("CacheReadTokens = %v, want 50", u)
+		}
+		if u.CacheWriteTTLShort == nil || *u.CacheWriteTTLShort != 100 {
+			t.Fatalf("CacheWriteTTLShort = %v, want 100", u)
+		}
+		if u.CacheWriteTTLLong == nil || *u.CacheWriteTTLLong != 200 {
+			t.Fatalf("CacheWriteTTLLong = %v, want 200", u)
+		}
+	})
+	t.Run("non-streaming", func(t *testing.T) {
+		parsed, err := ParseAnthropicResponse([]byte(
+			`{"id":"msg_2","type":"message","role":"assistant","model":"claude-sonnet-5","content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":100,"output_tokens":7,"cache_creation_input_tokens":300,"cache_read_input_tokens":50,"cache_creation":{"ephemeral_5m_input_tokens":100,"ephemeral_1h_input_tokens":200}}}`))
+		if err != nil {
+			t.Fatalf("ParseAnthropicResponse: %v", err)
+		}
+		if parsed.Usage.CacheWriteTTLShort == nil || *parsed.Usage.CacheWriteTTLShort != 100 {
+			t.Fatalf("CacheWriteTTLShort = %v, want 100", parsed.Usage.CacheWriteTTLShort)
+		}
+		if parsed.Usage.CacheWriteTTLLong == nil || *parsed.Usage.CacheWriteTTLLong != 200 {
+			t.Fatalf("CacheWriteTTLLong = %v, want 200", parsed.Usage.CacheWriteTTLLong)
+		}
+	})
+}
