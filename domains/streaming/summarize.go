@@ -82,6 +82,10 @@ type SummarizeService struct {
 	// baseURL 覆盖环回基址（反代形态下网关自己不可直接达时）。空 = 按
 	// 请求的 Host/X-Forwarded-Proto 推导。与 AudioTransformService 同款。
 	baseURL string
+	// asm 是 ai-session-manager 在线优先委托器（nil = 未启用，长文本恒走
+	// 网关管线）。见 summarize_asm.go：在线时委托其智能体端点，失败响亮
+	// 降级回本服务的 map-reduce——两条路都跑本地模型。
+	asm *asmDelegate
 }
 
 func NewSummarizeService() *SummarizeService {
@@ -667,8 +671,12 @@ func buildClassifySystemPrompt(vocab []taskVocabGroup) string {
 
 type SummarizeResult struct {
 	Summary  string `json:"summary"`
-	Pipeline string `json:"pipeline"` // single | map-reduce
+	Title    string `json:"title,omitempty"`
+	Pipeline string `json:"pipeline"` // single | map-reduce | asm
+	// Engine 记录实际执行方：asm（ai-session-manager 在线优先委托成功）
+	// 或 gateway（本服务管线）。调用方据此感知降级。
 	Chunks   int    `json:"chunks,omitempty"`
+	Engine   string `json:"engine,omitempty"`
 	LLMModel string `json:"llm_model,omitempty"`
 }
 
@@ -752,11 +760,31 @@ func (s *SummarizeService) serveSummarize(w http.ResponseWriter, r *http.Request
 				return
 			}
 		}
-		writeSummarizeJSON(w, requestID, SummarizeResult{Summary: content, Pipeline: "single", LLMModel: llmModel})
+		writeSummarizeJSON(w, requestID, SummarizeResult{Summary: content, Pipeline: "single", Engine: "gateway", LLMModel: llmModel})
 		return
 	}
 
-	// ── 长文本：map → reduce → render ──
+	// ── 长文本：asm 在线优先，失败响亮降级到网关管线 ──
+	// 复杂总结交给 ai-session-manager 的智能体端点（grounded 纪要 + 原文
+	// 金句；其 LLM 上游同样指向本地模型）。探测红/委托失败只记 WARN，
+	// 绝不把失败透给调用方——engine 字段说明实际执行方。
+	if s.asm != nil && s.asm.available(ctx) {
+		dctx, dcancel := context.WithTimeout(ctx, s.asm.budget)
+		asr, derr := s.asm.summarize(dctx, text, style, lang)
+		dcancel()
+		if derr == nil {
+			writeSummarizeJSON(w, requestID, SummarizeResult{
+				Summary: asr.Summary, Title: asr.Title, Pipeline: "asm",
+				Engine: "asm", LLMModel: asr.Model,
+			})
+			return
+		}
+		s.asm.markOffline()
+		slog.Warn("summarize: asm delegate failed; falling back to gateway map-reduce",
+			"request_id", requestID, "error", derr)
+	}
+
+	// ── 长文本：map → reduce → render（网关管线） ──
 	chunks := splitSummarizeChunks(text, chunkChars)
 	if len(chunks) > maxSummarizeChunks {
 		writeErrorJSON(w, http.StatusBadRequest, requestID,
@@ -813,7 +841,7 @@ func (s *SummarizeService) serveSummarize(w http.ResponseWriter, r *http.Request
 			writeAudioError(w, requestID, fmt.Errorf("reduce stage: %w", err))
 			return
 		}
-		writeSummarizeJSON(w, requestID, SummarizeResult{Summary: content, Pipeline: "map-reduce", Chunks: len(chunks), LLMModel: llmModel})
+		writeSummarizeJSON(w, requestID, SummarizeResult{Summary: content, Pipeline: "map-reduce", Chunks: len(chunks), Engine: "gateway", LLMModel: llmModel})
 		return
 	}
 
@@ -851,7 +879,7 @@ func (s *SummarizeService) serveSummarize(w http.ResponseWriter, r *http.Request
 			return
 		}
 	}
-	writeSummarizeJSON(w, requestID, SummarizeResult{Summary: content, Pipeline: "map-reduce", Chunks: len(chunks), LLMModel: llmModel})
+	writeSummarizeJSON(w, requestID, SummarizeResult{Summary: content, Pipeline: "map-reduce", Chunks: len(chunks), Engine: "gateway", LLMModel: llmModel})
 }
 
 // splitSummarizeChunks 按目标字数切段，优先在换行处断开（不撕碎一行消息）。
