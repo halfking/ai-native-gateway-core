@@ -462,9 +462,21 @@
 > MAX_LOADED_MODELS=5 的 plist 补丁未落到实际在跑的实例 ⇒ 模型 LRU 驱逐与探针
 > 超时的活锁会间歇复发；退 app + 重启 Mac 一次即根治。embedding:8b@32K 占 10GB，
 > 与双 chat 大模型共驻内存吃紧。
-> ⇒ 审计档 `docs/audit/2026-10-26-多模态标准接口轮-本地音频与文本三件套.md`（坑清单
-> §5 共 8 条：两条登记腿/admin_protected 排除/modality 只在 discovery 腿/错误映射吃真因/
-> 索引桶/ollama 活锁/DD_REPO_ROOT 漂移/30b 不宜当 map）。
+> ⇒ ★ **asm 在线优先委托 + 批判审计轮（2026-10-27 续）**：长文本总结在
+> ai-session-manager 在线时委托其 `POST /api/v1/summarize` 智能体端点（asm 侧
+> 同轮新增，grounded 纪要；其 LLM 上游 env 指向本地模型），离线/失败响亮降级
+> 回网关管线——响应 `engine` 字段区分 asm|gateway；211 实测三态闭环
+> （在线 22s=asm / 停机 78s=gateway / 恢复 22s=asm）。
+> ⇒ ★★★ **审计轮抓到并修掉的回归**：探针 liveness 修复曾通过共享判据
+> `credentialProbeHasOutput` 越界改变 node/model/active 探针语义（bg 4 红，
+> 上一轮「探针测试全绿」实为 `-run` 子集 + tail -2 吞输出的**无实证声明**）⇒
+> 语义分层：`credentialProbeHasOutput` 恢复 deliverability（reasoning 一律不算
+> 输出），新增 `credentialProbeHasLivenessEvidence` **只许 credential 探针**
+> 叠加；教训 = **改共享判据先枚举全部消费方 + `-run` 子集绿 ≠ 包绿**。
+> ⇒ ★ 迁移号订正：910 被上游 R166 占号，按让位纪律由并行 merge 重取 **911**
+> 完整恢复登记（五点复核 + 内容逐字等价 + 契约门绿）。
+> ⇒ 审计档 `docs/audit/2026-10-26-多模态标准接口轮-本地音频与文本三件套.md`
+> （坑清单 §5 共 8 条 + §7 审计轮补记：语义越界/撞号让位/死代码清理）。
 > **2026-10-27 第 17 增量：AI 痕迹门轮（impeccable 的 Do-Not 落成可执行判据）**（会话
 > `mvs_dc5e181989fc4539805f343f39be2b5d`）：★ 承接用户总目标（「学习 impeccable 的技能与规范，
 > 优化整个网关的 UI —— 减少 AI 化、增加人味与艺术化」）⇒ **前 16 增量清的是 i18n 覆盖与文案语义，
