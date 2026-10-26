@@ -291,7 +291,14 @@ func buildResponsesContent(msg Message) []map[string]any {
 				result = append(result, buildResponsesInputImage(block.Image))
 			}
 		case "input_audio":
-			if block.InputAudio != nil {
+			// ★★ 2026-10-27（12h 审计轮）：补**载荷为空就不发**的守卫 ——
+			// ★★ 与 serialize_openai.go 的 `case "input_audio"` **同族同口径**
+			// ★★ （此前只有 OpenAI 线有，Responses 线没有 ⇒ 同一个载荷
+			// ★★ 走两条线两种结局）。
+			// ★★ 没有载荷的 input_audio 不是合法输入 ⇒ **上游必 400**
+			// ★★ （Responses 的 input_audio 要 base64 数据 + 格式），
+			// ★★ 而且是静默的（客户端只拿到上游 400）。
+			if block.InputAudio != nil && block.InputAudio.Data != "" {
 				// Responses audio input uses input_audio with a data+format body.
 				result = append(result, map[string]any{
 					"type": "input_audio",
