@@ -735,7 +735,7 @@ onBeforeUnmount(() => {
               <button
                 v-if="keyState(k) === 'active'"
                 type="button"
-                class="btn btn-primary btn-xs"
+                class="btn btn-ghost btn-xs"
                 @click.stop="useExistingKeyAndReturn(k)"
               >
                 使用并返回
