@@ -1,0 +1,56 @@
+{
+  "_readme": "第 16 增量 · 错误出口门 · 豁免登记簿（SSOT）",
+  "_what": "登记「源码里仍然出现原始 error.message」但**不构成缺陷**的形态。判定标准只有一条：这个原始 message 必须挂在**本地化主文案**上（原因槽 / 拼接原因），绝不能自己就是主文案。",
+  "_why": "impeccable clarify.md：「Do not expose internal codes as the primary message.」—— 原因可以是原始 detail，但**主文案**必须是本地化的、点名主体、给出下一步的那句。",
+  "_selfcheck": "门会逐条复核：豁免声明的 key 必须仍然出现在该站点所在行/语句里；站点消失 ⇒ 豁免失效 ⇒ 报红（不许留空豁免藏违规）。",
+  "fileExemptions": [
+    {
+      "file": "src/views/SelfCheckPanel.vue",
+      "reason": "★ 仓内**明文纪律**（src/views/SelfCheckPanel.vue:185）：「本文件全文件不用 i18n（0 处 t()），故此处保持本地化风格，不为这一处单独引入 i18n key —— 那会把该文件变成半 i18n 半硬编码。」⇒ 本轮**服从该纪律**，不把它接进错误出口；该文件的 4 处原始 message 形态作为**已登记的已知存量**留档。"
+    },
+    {
+      "file": "src/i18n/copyClarity.ts",
+      "reason": "R1 门（源码侧清晰文案门）的**自证夹具**里就写着这个形状 ⇒ 不是产品代码。"
+    },
+    {
+      "file": "src/i18n/errorPositions.ts",
+      "reason": "「错误位置」识别的实现文件（正则里含这个形状作为判据）⇒ 不是产品代码。"
+    },
+    {
+      "file": "src/i18n/errorSurface.ts",
+      "reason": "错误出口的实现文件本身（注释里引用了这个形状）⇒ 不是产品代码。"
+    }
+  ],
+  "exemptions": [
+    {
+      "file": "src/composables/useNodeDetailDrawerActions.ts",
+      "key": "ops.overview.pingFailedWithReason",
+      "category": "reason-slot",
+      "reason": "原始 message 落在 t('ops.overview.pingFailedWithReason', { reason }) 的**原因槽**里；主文案是本地化的「操作失败：{reason}。请重试」⇒ 合规"
+    },
+    {
+      "file": "src/composables/useNodeDetailDrawerActions.ts",
+      "key": "ops.overview.saveSettingFailedWithReason",
+      "category": "reason-slot",
+      "reason": "同上：原始 message 是本地化主文案的原因槽"
+    },
+    {
+      "file": "src/views/PricingManagementView.vue",
+      "key": "common.feedback.batchUpdateFailedWithReason",
+      "category": "reason-slot",
+      "reason": "同上：原始 message 是本地化主文案的原因槽"
+    },
+    {
+      "file": "src/views/PricingManagementView.vue",
+      "key": "common.feedback.batchPricingFailedWithReason",
+      "category": "reason-slot",
+      "reason": "同上：原始 message 是本地化主文案的原因槽"
+    },
+    {
+      "file": "src/views/provider-detail/SettingsTab.vue",
+      "key": "batchRecoverFailed",
+      "category": "reason-slot",
+      "reason": "同上：ps('batchRecoverFailed', { msg }) —— 命名空间助手 ps ⇒ 实际键 providerDetail.settings.batchRecoverFailed"
+    }
+  ]
+}

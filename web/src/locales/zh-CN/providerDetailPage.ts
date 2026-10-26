@@ -48,12 +48,12 @@ export default {
   },
   manualDisabledTitle: '提供商级手工禁用 — 整个 provider 不可路由',
   manualDisabledBadge: '手工已禁用',
-  loadFailed: '加载失败',
-  operationFailed: '操作失败',
-  diagFailed: '诊断失败',
+  loadFailed: '供应商详情没能加载出来，请重试',
+  operationFailed: '供应商启停没能完成，请重试',
+  diagFailed: '供应商诊断没能完成，请重试',
   // 2026-08-31: 供应商软删除（终态）
   deleteBtn: '删除供应商',
   deleteTitle: '软删除该供应商 —— 该供应商及其全部凭据将不再出现在任何列表与路由中，且无法撤销',
   deleteConfirm: '确认删除供应商 "{name}" ？该供应商下的所有凭据将被一并标记为已删除，所有相关模型路由将立即停止。该操作不可撤销。',
-  deleteFailed: '供应商删除失败',
+  deleteFailed: '这个供应商没能删除，请重试',
 }

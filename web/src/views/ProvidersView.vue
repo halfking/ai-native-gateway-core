@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { surfaceError } from '../i18n/errorSurface'
 import { formatDateTime, parseLocalMinute } from '../utils/datetime'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
@@ -282,7 +283,7 @@ async function doProbe() {
       addProtocol.value = r.protocol
     }
   } catch (e: unknown) {
-    addProbeResult.value = { reachable: false, error: e instanceof Error ? e.message : pm('create.errors.probeFailed') }
+    addProbeResult.value = { reachable: false, error: surfaceError(e, { key: 'providers.create.errors.probeFailed' }) }
   } finally {
     addProbing.value = false
   }
@@ -307,7 +308,7 @@ async function submitAdd() {
       await load()
       showAdd.value = false
     } catch (e: unknown) {
-      addErr.value = e instanceof Error ? e.message : pm('create.errors.createFailed')
+      addErr.value = surfaceError(e, { key: 'providers.create.errors.createFailed' })
     } finally {
       addSaving.value = false
     }
@@ -325,7 +326,7 @@ async function submitAdd() {
     await load()
     showAdd.value = false
   } catch (e: unknown) {
-    addErr.value = e instanceof Error ? e.message : pm('create.errors.createFailed')
+    addErr.value = surfaceError(e, { key: 'providers.create.errors.createFailed' })
   } finally {
     addSaving.value = false
   }
@@ -365,7 +366,7 @@ async function doEditProbe() {
     const r = await probeProviderURL(editProvider.value.id)
     editProbeResult.value = r
   } catch (e: unknown) {
-    editProbeResult.value = { reachable: false, error: e instanceof Error ? e.message : pm('edit.errors.probeFailed') }
+    editProbeResult.value = { reachable: false, error: surfaceError(e, { key: 'providers.edit.errors.probeFailed' }) }
   } finally {
     editProbing.value = false
   }
@@ -385,7 +386,7 @@ async function submitEdit() {
     await load()
     showEdit.value = false
   } catch (e: unknown) {
-    editErr.value = e instanceof Error ? e.message : pm('edit.errors.saveFailed')
+    editErr.value = surfaceError(e, { key: 'providers.edit.errors.saveFailed' })
   } finally {
     editSaving.value = false
   }
@@ -453,7 +454,7 @@ async function submitCred() {
     // Close after a brief delay so the user sees the probe result
     setTimeout(() => { showCred.value = false }, 1500)
   } catch (e: unknown) {
-    credErr.value = e instanceof Error ? e.message : pm('credential.errors.addFailed')
+    credErr.value = surfaceError(e, { key: 'providers.credential.errors.addFailed' })
   } finally {
     credSaving.value = false
   }
@@ -469,7 +470,7 @@ async function delCred(p: Provider, credId: number) {
     const listed = providers.value.find((row) => row.id === p.id)
     if (listed) listed.active_credential_count = activeCount
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : pm('credential.errors.deleteFailed')
+    error.value = surfaceError(e, { key: 'providers.credential.errors.deleteFailed' })
   }
 }
 
@@ -483,7 +484,7 @@ async function loadCredentials(providerId: number) {
   } catch (e: unknown) {
     credentialErrors.value = {
       ...credentialErrors.value,
-      [providerId]: e instanceof Error ? e.message : pm('credential.errors.loadFailed'),
+      [providerId]: surfaceError(e, { key: 'providers.credential.errors.loadFailed' }),
     }
   } finally {
     credentialLoading.value = { ...credentialLoading.value, [providerId]: false }
@@ -506,7 +507,7 @@ async function saveCredential(p: Provider, c: ProviderCredential) {
     await loadCredentials(p.id)
     p.active_credential_count = (credentialsByProvider.value[p.id] ?? []).filter((row) => row.status === 'active').length
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : pm('credential.errors.saveFailed')
+    error.value = surfaceError(e, { key: 'providers.credential.errors.saveFailed' })
   } finally {
     credentialSaving.value = { ...credentialSaving.value, [c.id]: false }
   }
@@ -548,7 +549,7 @@ async function refreshBalance(p: Provider, c: ProviderCredential) {
     if (e instanceof ApiError && e.status === 400) {
       c.balance_error = pm('credential.row.balanceUnsupported')
     } else {
-      c.balance_error = e instanceof Error ? e.message : pm('credential.row.balanceRefreshFailed')
+      c.balance_error = surfaceError(e, { key: 'providers.credential.row.balanceRefreshFailed' })
     }
   } finally {
     refreshingBalance.value = { ...refreshingBalance.value, [c.id]: false }
@@ -654,7 +655,7 @@ async function toggle(p: Provider) {
     await toggleProvider(p.id)
     p.enabled = !p.enabled
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : pm('credential.errors.toggleFailed')
+    error.value = surfaceError(e, { key: 'providers.credential.errors.toggleFailed' })
   }
 }
 
@@ -672,7 +673,7 @@ async function delProvider(p: Provider) {
     delete credentialSaving.value[p.id]
     delete credentialErrors.value[p.id]
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : pm('providerDelete.failed')
+    error.value = surfaceError(e, { key: 'providers.providerDelete.failed' })
   }
 }
 
@@ -689,7 +690,7 @@ async function checkSingleProvider(p: Provider) {
     // Refresh after short delay to pick up health status
     setTimeout(() => load(), 5000)
   } catch (e: unknown) {
-    checkResults.value = { ...checkResults.value, [p.id]: e instanceof Error ? e.message : pm('check.providerFailed') }
+    checkResults.value = { ...checkResults.value, [p.id]: surfaceError(e, { key: 'providers.check.providerFailed' }) }
   } finally {
     checkingProvider.value = { ...checkingProvider.value, [p.id]: false }
   }
@@ -713,7 +714,7 @@ async function checkSingleCredential(prov: Provider, cred: { id: number }) {
   } catch (e: unknown) {
     credentialCheckResults.value = {
       ...credentialCheckResults.value,
-      [cred.id]: e instanceof Error ? e.message : pm('check.credentialFailed'),
+      [cred.id]: surfaceError(e, { key: 'providers.check.credentialFailed' }),
     }
   } finally {
     checkingCredential.value = { ...checkingCredential.value, [cred.id]: false }
@@ -737,7 +738,7 @@ async function openDiagnose(prov: Provider) {
     const r = await diagnoseProvider(prov.id, { force: true })
     diagnoseResult.value = r as never
   } catch (e: unknown) {
-    diagnoseError.value = e instanceof Error ? e.message : pm('check.diagnoseFailed')
+    diagnoseError.value = surfaceError(e, { key: 'providers.check.diagnoseFailed' })
   } finally {
     diagnoseLoading.value = false
   }
@@ -810,7 +811,7 @@ async function load() {
     providers.value = p
     catalog.value   = c
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : pm('error.loadFailed')
+    error.value = surfaceError(e, { key: 'providers.error.loadFailed' })
   } finally {
     loading.value = false
   }

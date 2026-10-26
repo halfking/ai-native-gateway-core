@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted, ref, watch } from 'vue'
+import { surfaceError } from '../i18n/errorSurface'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { login, getAuthMe } from '../api'
@@ -90,7 +91,7 @@ async function handleLogin() {
       error.value = t('login.error.badResponse')
     }
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : t('login.error.failed')
+    error.value = surfaceError(e, { key: 'login.error.failed' })
   } finally {
     loading.value = false
   }

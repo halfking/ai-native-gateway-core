@@ -11,6 +11,7 @@
 //
 // 调研：/tmp/co153-wt-evidence.txt 17 跳（line 1070 / 1101 / 1123 / 1282 / 1616）
 import { onMounted, ref } from 'vue'
+import { surfaceError } from '../i18n/errorSurface'
 import { getSubscriptionTiers, type SubscriptionTierInfo } from '../api/ops'
 
 const loading = ref(false)
@@ -25,7 +26,7 @@ async function load() {
     // 按 sort_order 升序
     tiers.value.sort((a, b) => a.sort_order - b.sort_order)
   } catch (e) {
-    error.value = e instanceof Error ? e.message : String(e)
+    error.value = surfaceError(e)
   } finally {
     loading.value = false
   }

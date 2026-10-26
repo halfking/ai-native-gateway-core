@@ -12,6 +12,7 @@
  * 加载/自动刷新全部内聚在本组件，列表刷新通过 refresh-list 事件委托宿主。
  */
 import { computed, onUnmounted, ref, watch } from 'vue'
+import { surfaceError } from '../../i18n/errorSurface'
 import { useI18n } from 'vue-i18n'
 import { Chart, registerables } from 'chart.js'
 import {
@@ -240,7 +241,7 @@ async function submitClearDisabled() {
     clearDisabledDialogOpen.value = false
     await refreshDetailDrawer()
   } catch (e) {
-    alert(t('credentialMonitor.error.clearFailed') + (e instanceof Error ? e.message : String(e)))
+    alert(t('credentialMonitor.error.clearFailed') + (surfaceError(e)))
   }
 }
 
@@ -259,7 +260,7 @@ async function submitSetManualDisabled() {
     setManualDisabledDialogOpen.value = false
     await refreshDetailDrawer()
   } catch (e) {
-    alert(t('credentialMonitor.drawer.operationFailedWithReason', { reason: e instanceof Error ? e.message : String(e) }))
+    alert(t('credentialMonitor.drawer.operationFailedWithReason', { reason: surfaceError(e)}))
   }
 }
 
@@ -512,8 +513,8 @@ async function submitToggle() {
   } catch (e) {
     alert(
       target.action === 'offline'
-        ? t('credentialMonitor.drawer.offlineFailedWithReason', { reason: e instanceof Error ? e.message : String(e) })
-        : t('credentialMonitor.drawer.onlineFailedWithReason', { reason: e instanceof Error ? e.message : String(e) }),
+        ? t('credentialMonitor.drawer.offlineFailedWithReason', { reason: surfaceError(e)})
+        : t('credentialMonitor.drawer.onlineFailedWithReason', { reason: surfaceError(e)}),
     )
   } finally {
     toggleBusy.value[key] = false
@@ -635,7 +636,7 @@ async function submitDemote() {
     emit('refresh-list')
     closeDrawer()
   } catch (e) {
-    alert(t('credentialMonitor.drawer.degradeFailedWithReason', { reason: e instanceof Error ? e.message : String(e) }))
+    alert(t('credentialMonitor.drawer.degradeFailedWithReason', { reason: surfaceError(e)}))
   }
 }
 
@@ -653,7 +654,7 @@ async function submitPromote() {
     emit('refresh-list')
     closeDrawer()
   } catch (e) {
-    alert(t('credentialMonitor.drawer.upgradeFailedWithReason', { reason: e instanceof Error ? e.message : String(e) }))
+    alert(t('credentialMonitor.drawer.upgradeFailedWithReason', { reason: surfaceError(e)}))
   }
 }
 
@@ -671,7 +672,7 @@ async function submitConcurrency() {
     concurrencyDialogOpen.value = false
     emit('refresh-list')
   } catch (e) {
-    alert(t('credentialMonitor.drawer.settingFailedWithReason', { reason: e instanceof Error ? e.message : String(e) }))
+    alert(t('credentialMonitor.drawer.settingFailedWithReason', { reason: surfaceError(e)}))
   }
 }
 

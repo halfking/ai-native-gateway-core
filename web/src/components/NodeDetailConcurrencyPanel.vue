@@ -4,6 +4,7 @@
  * 数据由父组件分段注入；本组件只负责展示与写回。
  */
 import { computed, ref, watch } from 'vue'
+import { surfaceError } from '../i18n/errorSurface'
 import {
   setConcurrencyAuto,
   type CredentialMonitorSummary,
@@ -85,7 +86,7 @@ async function loadFpStats() {
     fpStats.value = stats
   } catch (error) {
     fpStats.value = null
-    fpError.value = error instanceof Error ? error.message : t('ops.overview.fpSlotLoadFailed')
+    fpError.value = surfaceError(error, { key: 'ops.overview.fpSlotLoadFailed' })
   } finally {
     fpLoading.value = false
   }
@@ -166,7 +167,7 @@ async function saveUnified() {
     await loadFpStats()
     emit('saved')
   } catch (error) {
-    emit('error', error instanceof Error ? error.message : t('common.feedback.saveFailed'))
+    emit('error', surfaceError(error, { key: 'common.feedback.saveFailed' }))
   } finally {
     saving.value = false
   }

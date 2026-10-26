@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { surfaceError } from '../i18n/errorSurface'
 import { fmtDateTimeShort } from '../i18n/useFormat'
 import {
   getMemoraStatus,
@@ -69,7 +70,7 @@ async function handlePing() {
     if (!r.connected) lastPingError.value = r.error || t('memoraStatusButton.state.error')
     await loadStatus()
   } catch (e: unknown) {
-    lastPingError.value = e instanceof Error ? e.message : t('memoraStatusButton.state.detectFailed')
+    lastPingError.value = surfaceError(e, { key: 'memoraStatusButton.state.detectFailed' })
   } finally {
     actionLoading.value = false
   }

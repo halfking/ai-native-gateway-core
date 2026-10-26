@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
+import { surfaceError } from '../i18n/errorSurface'
 import { useI18n } from 'vue-i18n'
 import {
   getCredentialHeatmap,
@@ -454,7 +455,7 @@ async function loadHeatmap() {
       modelOptions.value = Array.from(names).sort()
     }
   } catch (e) {
-    error.value = e instanceof Error ? e.message : String(e)
+    error.value = surfaceError(e)
     console.error('Failed to load heatmap', e)
   } finally {
     loading.value = false
@@ -563,7 +564,7 @@ async function runAction(kind: 'model-online' | 'model-offline' | 'promote' | 'd
     }
     await loadHeatmap()
   } catch (e) {
-    actionMessage.value = `${t('common.feedback.operationFailed')}: ${e instanceof Error ? e.message : String(e)}`
+    actionMessage.value = `${t('common.feedback.operationFailed')}: ${surfaceError(e)}`
   } finally {
     actionBusy.value = false
   }

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { useI18n } from 'vue-i18n'
+import { surfaceError } from '../i18n/errorSurface'
 import { formatDateTime, formatTimeOnly } from '../utils/datetime'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { deleteGatewaySession, getAvailableModels, type PopularModel } from '../api'
@@ -346,7 +347,7 @@ async function send(opts?: SendOptions) {
       openKeyModal('session-forbidden')
       return
     }
-    const msg = e instanceof Error ? e.message : t('chat.sendFailed')
+    const msg = surfaceError(e, { key: 'chat.sendFailed' })
     const lower = msg.toLowerCase()
     sendError.value =
       !stream && (lower.includes('timeout') || lower.includes('timed out') || lower.includes('abort'))
@@ -443,7 +444,7 @@ async function runSummarize() {
       result.usage,
     )
   } catch (e: unknown) {
-    sendError.value = e instanceof Error ? e.message : t('chat.summarizeFailed')
+    sendError.value = surfaceError(e, { key: 'chat.summarizeFailed' })
   } finally {
     summarizing.value = false
   }

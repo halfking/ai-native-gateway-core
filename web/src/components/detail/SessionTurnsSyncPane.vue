@@ -9,6 +9,7 @@
 //   - "tree": the original request/child-request tree (metadata only) that
 //     syncs a turn to its request_id.
 import { computed, ref, watch } from 'vue'
+import { surfaceError } from '../../i18n/errorSurface'
 import { useI18n } from 'vue-i18n'
 import {
   fetchSessionTurnsTree,
@@ -128,7 +129,7 @@ watch(
       treeSelectedTurn.value = match?.turn_number ?? r.turns[0]?.turn_number ?? null
     } catch (e: unknown) {
       if (seq !== sessionLoadSeq) return
-      error.value = e instanceof Error ? e.message : String(e)
+      error.value = surfaceError(e)
     } finally {
       if (seq === sessionLoadSeq) loading.value = false
     }
@@ -139,7 +140,7 @@ watch(
       v2Bodies.value = bodies
     } catch (e: unknown) {
       if (seq !== sessionLoadSeq) return
-      v2Error.value = e instanceof Error ? e.message : String(e)
+      v2Error.value = surfaceError(e)
       v2Bodies.value = null
     }
   },

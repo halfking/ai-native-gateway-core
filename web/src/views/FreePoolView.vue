@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { useI18n } from 'vue-i18n'
+import { surfaceError } from '../i18n/errorSurface'
 import { formatTimeOnly } from '../utils/datetime'
 import { ref, onMounted, onUnmounted, computed, nextTick } from 'vue'
 import {
@@ -204,7 +205,7 @@ async function load() {
     signupHub.value = hub
     fetchedAt.value = Date.now()
   } catch (e: unknown) {
-    notifyError(e instanceof Error ? e.message : t('freePool.loadFailed'))
+    notifyError(surfaceError(e, { key: 'freePool.loadFailed' }))
   } finally {
     loading.value = false
   }
@@ -220,7 +221,7 @@ async function runBootstrap() {
     notifySuccess(t('freePool.error.bootstrapDone', { mirrors: mirror, discovered: discover }))
     await load()
   } catch (e: unknown) {
-    notifyError(e instanceof Error ? e.message : t('freePool.bootstrapFailed'))
+    notifyError(surfaceError(e, { key: 'freePool.bootstrapFailed' }))
   } finally {
     syncing.value = false
   }
@@ -234,7 +235,7 @@ async function runBridgeOAuth() {
     notifySuccess(t('freePool.error.oauthBridgeDone', { n: res.registered ?? 0 }))
     await load()
   } catch (e: unknown) {
-    notifyError(e instanceof Error ? e.message : t('freePool.oauthBridgeFailed'))
+    notifyError(surfaceError(e, { key: 'freePool.oauthBridgeFailed' }))
   } finally {
     syncing.value = false
   }
@@ -248,7 +249,7 @@ async function runDiscover() {
     notifySuccess(t('freePool.error.discoverDone', { n: res.registered ?? 0 }))
     await load()
   } catch (e: unknown) {
-    notifyError(e instanceof Error ? e.message : t('freePool.discoverFailed'))
+    notifyError(surfaceError(e, { key: 'freePool.discoverFailed' }))
   } finally {
     syncing.value = false
   }
@@ -262,7 +263,7 @@ async function runImportEnv() {
     notifySuccess(t('freePool.error.importEnvDone', { n: res.registered ?? 0 }))
     await load()
   } catch (e: unknown) {
-    notifyError(e instanceof Error ? e.message : t('freePool.importEnvFailed'))
+    notifyError(surfaceError(e, { key: 'freePool.importEnvFailed' }))
   } finally {
     syncing.value = false
   }
@@ -317,7 +318,7 @@ async function runQuickProbe() {
       notifyError(t('freePool.error.probeFailed', { reason: res.probe?.reason || res.probe?.error || t('freePool.probeFailedReason') }))
     }
   } catch (e: unknown) {
-    notifyError(e instanceof Error ? e.message : t('freePool.error.probeFailedGeneric'))
+    notifyError(surfaceError(e, { key: 'freePool.error.probeFailedGeneric' }))
   } finally {
     quickProbing.value = false
   }
@@ -355,7 +356,7 @@ async function runQuickSave(probeFirst = true) {
       notifyError(res.error || `${t('freePool.error.saveFailed')} (${res.status})`)
     }
   } catch (e: unknown) {
-    notifyError(e instanceof Error ? e.message : t('freePool.saveFailed'))
+    notifyError(surfaceError(e, { key: 'freePool.saveFailed' }))
   } finally {
     quickSaving.value = false
   }
@@ -379,7 +380,7 @@ async function generateTempEmail() {
     tempInbox.value = []
     notifySuccess(t('freePool.error.tempEmailCreated', { address: res.address }))
   } catch (e: unknown) {
-    notifyError(e instanceof Error ? e.message : t('freePool.tempEmailFailed'))
+    notifyError(surfaceError(e, { key: 'freePool.tempEmailFailed' }))
   } finally {
     tempEmailLoading.value = false
   }
@@ -402,7 +403,7 @@ async function pollTempInbox() {
       notifyError(res.error || t('freePool.fetchInboxFailed'))
     }
   } catch (e: unknown) {
-    notifyError(e instanceof Error ? e.message : t('freePool.fetchInboxFailed'))
+    notifyError(surfaceError(e, { key: 'freePool.fetchInboxFailed' }))
   } finally {
     tempPolling.value = false
   }
@@ -446,7 +447,7 @@ async function submitKey() {
     newKey.value = { catalog_code: 'openrouter-free', api_key: '', source: 'signup', source_detail: '', label: '' }
     await load()
   } catch (e: unknown) {
-    notifyError(e instanceof Error ? e.message : t('freePool.writeFailed'))
+    notifyError(surfaceError(e, { key: 'freePool.writeFailed' }))
   } finally {
     keySubmitting.value = false
   }
@@ -485,7 +486,7 @@ async function submitNew() {
     }
     await load()
   } catch (e: unknown) {
-    notifyError(e instanceof Error ? e.message : t('freePool.registerFailed'))
+    notifyError(surfaceError(e, { key: 'freePool.registerFailed' }))
   } finally {
     submitting.value = false
   }
@@ -533,7 +534,7 @@ async function submitBulk() {
     }
     await load()
   } catch (e: unknown) {
-    notifyError(e instanceof Error ? e.message : t('freePool.registerFailed'))
+    notifyError(surfaceError(e, { key: 'freePool.registerFailed' }))
   } finally {
     bulkSubmitting.value = false
   }

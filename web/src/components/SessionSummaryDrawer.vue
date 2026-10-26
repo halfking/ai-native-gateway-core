@@ -1,6 +1,7 @@
 <script setup lang="ts">
 // SessionSummaryDrawer — 独立会话总结界面：生成过程、结果、脉络与操作。
 import { computed, ref, watch } from 'vue'
+import { surfaceError } from '../i18n/errorSurface'
 import { useI18n } from 'vue-i18n'
 import { localeRef } from '../i18n'
 import {
@@ -101,7 +102,7 @@ async function loadSessionLogs(sid: string, seq: number) {
     logTotal.value = resp.count ?? logRows.value.length
   } catch (e: unknown) {
     if (seq !== loadSeq) return
-    logsError.value = e instanceof Error ? e.message : String(e)
+    logsError.value = surfaceError(e)
   }
 }
 
@@ -131,7 +132,7 @@ async function generateSummary(force = false) {
     if (seq !== loadSeq) return
     stepError.value = true
     activeStep.value = 'llm'
-    summaryError.value = e instanceof Error ? e.message : String(e)
+    summaryError.value = surfaceError(e)
   } finally {
     if (seq === loadSeq) summaryLoading.value = false
   }
@@ -179,7 +180,7 @@ async function writeMemora() {
     summaryResult.value = { summary: resp.summary, key_points: resp.key_points, meta: resp.meta }
     memoraResult.value = resp.memora
   } catch (e: unknown) {
-    memoraError.value = e instanceof Error ? e.message : String(e)
+    memoraError.value = surfaceError(e)
   } finally {
     memoraLoading.value = false
   }

@@ -4,6 +4,7 @@
 // tasks / users），后端 listSessionAnalyticsFilterOptions 聚合 6 端点
 // 数据（29 跳已验证全有 12-18 命中租户隔离）。
 import { onMounted, ref } from 'vue'
+import { surfaceError } from '../i18n/errorSurface'
 import { useRouter } from 'vue-router'
 import {
   listSessionAnalyticsFilterOptions,
@@ -27,7 +28,7 @@ async function load() {
   try {
     options.value = await listSessionAnalyticsFilterOptions({ hours: 24, limit: 20 })
   } catch (e) {
-    error.value = e instanceof Error ? e.message : String(e)
+    error.value = surfaceError(e)
   } finally {
     loading.value = false
   }

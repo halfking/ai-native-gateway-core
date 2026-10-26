@@ -7,6 +7,7 @@
 // 应用建议 + 修正率表）与任务档案面板重复，已从本页移除——闭环操作统一
 // 收口到「任务档案」页签。
 import { ref, onMounted } from 'vue'
+import { surfaceError } from '../i18n/errorSurface'
 import { formatDateTime } from '../utils/datetime'
 import { useI18n } from 'vue-i18n'
 import { localeRef } from '../i18n'
@@ -25,7 +26,7 @@ async function load() {
   try {
     stats.value = await getAnnotationStats()
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : t('annotation.stats.loadFailed')
+    error.value = surfaceError(e, { key: 'annotation.stats.loadFailed' })
     stats.value = null
   } finally {
     loading.value = false

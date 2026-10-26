@@ -15,6 +15,7 @@
 //   - Audit log is shown inline below the table.
 
 import { ref, onMounted } from 'vue'
+import { surfaceError } from '../i18n/errorSurface'
 import { localeRef } from '../i18n'
 import { confirmDialog } from '../composables/useConfirmDialog'
 import { useI18n } from 'vue-i18n'
@@ -61,7 +62,7 @@ async function load() {
     policies.value = p.policies
     audit.value = a.audit
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : t('tenantModelPolicyPanel.error.loadFailed')
+    error.value = surfaceError(e, { key: 'tenantModelPolicyPanel.error.loadFailed' })
   } finally {
     loading.value = false
   }
@@ -75,7 +76,7 @@ async function runCheck() {
   try {
     addCheckResult.value = await checkTenantModelPolicy(props.tenantCode, { canonical_name: name })
   } catch (e: unknown) {
-    addCheckError.value = e instanceof Error ? e.message : t('tenantModelPolicyPanel.error.checkFailed')
+    addCheckError.value = surfaceError(e, { key: 'tenantModelPolicyPanel.error.checkFailed' })
   }
 }
 
@@ -96,7 +97,7 @@ async function submitAdd() {
     addCheckResult.value = null
     await load()
   } catch (e: unknown) {
-    addCheckError.value = e instanceof Error ? e.message : t('tenantModelPolicyPanel.error.createFailed')
+    addCheckError.value = surfaceError(e, { key: 'tenantModelPolicyPanel.error.createFailed' })
   } finally {
     submitting.value = false
   }
@@ -108,7 +109,7 @@ async function softDelete(p: TenantModelPolicy) {
     await deleteTenantModelPolicy(props.tenantCode, p.id)
     await load()
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : t('tenantModelPolicyPanel.error.deleteFailed')
+    error.value = surfaceError(e, { key: 'tenantModelPolicyPanel.error.deleteFailed' })
   }
 }
 
@@ -117,7 +118,7 @@ async function restore(p: TenantModelPolicy) {
     await undeleteTenantModelPolicy(props.tenantCode, p.id)
     await load()
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : t('tenantModelPolicyPanel.error.restoreFailed')
+    error.value = surfaceError(e, { key: 'tenantModelPolicyPanel.error.restoreFailed' })
   }
 }
 

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 // FlowTimingPanel — shows each trace stage with duration_ms (— when unknown).
 import { computed, ref, watch } from 'vue'
+import { surfaceError } from '../../i18n/errorSurface'
 import { useI18n } from 'vue-i18n'
 import { getRequestTrace, type RequestTrace, type TraceEvent } from '../../api/trace'
 import { getRequestJourney, type RequestJourney } from '../../api/request-journeys'
@@ -50,21 +51,21 @@ watch(
     if (sequence !== loadSequence) return
     const [traceResult, journeyResult, waterfallResult] = results
     if (traceResult.status === 'fulfilled') trace.value = traceResult.value
-    else error.value = traceResult.reason instanceof Error ? traceResult.reason.message : String(traceResult.reason)
+    else error.value = surfaceError(traceResult.reason)
     if (journeyResult.status === 'fulfilled') journey.value = journeyResult.value
-    else journeyError.value = journeyResult.reason instanceof Error ? journeyResult.reason.message : String(journeyResult.reason)
+    else journeyError.value = surfaceError(journeyResult.reason)
     if (waterfallResult.status === 'fulfilled') {
       waterfall.value = waterfallResult.value.request
       waterfallResultSource.value = waterfallResult.value.source || ''
     } else {
-      waterfallError.value = waterfallResult.reason instanceof Error ? waterfallResult.reason.message : String(waterfallResult.reason)
+      waterfallError.value = surfaceError(waterfallResult.reason)
     }
     if (journeyResult.status === 'fulfilled' && journeyResult.value.tenant_id) {
       try {
         const nextJournal = await fetchDispatchJournal(journeyResult.value.tenant_id, id)
         if (sequence === loadSequence) journal.value = nextJournal
       } catch (e: unknown) {
-        if (sequence === loadSequence) journalError.value = e instanceof Error ? e.message : String(e)
+        if (sequence === loadSequence) journalError.value = surfaceError(e)
       }
     }
     if (sequence !== loadSequence) return

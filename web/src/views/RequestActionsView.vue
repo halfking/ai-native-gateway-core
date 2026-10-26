@@ -8,6 +8,7 @@
 // 视图：用户输入 request_id（路径参数 + URL query 兼容）→ 拉 actions 数组
 // 11 字段（来自 liveactions.ActionEvent + detail 展平）
 import { ref, watch } from 'vue'
+import { surfaceError } from '../i18n/errorSurface'
 import { useRoute, useRouter } from 'vue-router'
 import { getRequestActions, type RequestAction } from '../api/requestActions'
 
@@ -32,7 +33,7 @@ async function load() {
     actions.value = res.actions
     count.value = res.count
   } catch (e) {
-    error.value = e instanceof Error ? e.message : String(e)
+    error.value = surfaceError(e)
     actions.value = []
     count.value = 0
   } finally {

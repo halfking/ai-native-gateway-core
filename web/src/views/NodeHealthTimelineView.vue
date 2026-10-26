@@ -4,6 +4,7 @@
 // 单凭据视角：列出过去一段时间的关键恢复事件。数据来自
 // GET /api/admin/node-health/{credential_id}/timeline（node_probe_runs）。
 import { ref, computed, onMounted, watch } from 'vue'
+import { surfaceError } from '../i18n/errorSurface'
 import { formatDateTime } from '../utils/datetime'
 import { useRoute } from 'vue-router'
 import { useI18n } from 'vue-i18n'
@@ -78,7 +79,7 @@ async function load(id: string) {
     events.value = payload.events
     observationDegraded.value = payload.observation_status === 'observation_degraded'
   } catch (e) {
-    error.value = e instanceof Error ? e.message : String(e)
+    error.value = surfaceError(e)
     events.value = []
   } finally {
     loading.value = false

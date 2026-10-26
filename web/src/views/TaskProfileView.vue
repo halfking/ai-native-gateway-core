@@ -7,6 +7,7 @@
 // 类型数/修正数）收敛为一行信息 chips，导出/导入闭环与标注工作台面板不重复
 // （工作台工具栏保留 CSV 出入口，本面板按窗口期导出）。
 import { ref, computed, onMounted } from 'vue'
+import { surfaceError } from '../i18n/errorSurface'
 import { useI18n } from 'vue-i18n'
 import {
   getTaskProfile,
@@ -79,7 +80,7 @@ async function load() {
     profile.value = p
     stats.value = s
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : t('taskProfile.loadFailed')
+    error.value = surfaceError(e, { key: 'taskProfile.loadFailed' })
   } finally {
     loading.value = false
   }
@@ -99,7 +100,7 @@ async function apply() {
         })
     await load()
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : String(e)
+    error.value = surfaceError(e)
   } finally {
     applying.value = false
   }
@@ -115,7 +116,7 @@ async function reload() {
     notice.value = t('taskProfile.action.reloadDone', { version: r.registry_version })
     await load()
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : String(e)
+    error.value = surfaceError(e)
   } finally {
     reloading.value = false
   }
@@ -130,7 +131,7 @@ async function exportCsv() {
     // 2026-10-05（UI规范 19 §3.1）：走 exportFile 降级链（分享面→壳桥→blob）。
     await exportFile({ filename, blob })
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : String(e)
+    error.value = surfaceError(e)
   } finally {
     exporting.value = false
   }

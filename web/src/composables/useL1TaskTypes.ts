@@ -19,6 +19,7 @@
 //   <option v-for="t in l1TaskTypes" :key="t.key" :value="t.key">{{ t.label }}</option>
 
 import { ref, type Ref } from 'vue'
+import { surfaceError } from '../i18n/errorSurface'
 import { useI18n } from 'vue-i18n'
 import { L1_TASK_TYPES, listL1TaskTypes, type L1TaskTypeMeta } from '../api-work-types'
 
@@ -48,7 +49,7 @@ async function refreshL1TaskTypes(): Promise<void> {
         }))
       }
     } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : String(e)
+      const msg = surfaceError(e)
       error.value = msg
       // Keep canonical seed in place so UI is still populated.
     } finally {

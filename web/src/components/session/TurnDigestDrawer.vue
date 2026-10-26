@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import { surfaceError } from '../../i18n/errorSurface'
 import { useI18n } from 'vue-i18n'
 import { ApiError } from '../../api/_core'
 import {
@@ -141,7 +142,7 @@ function reload() {
       })
       .catch((cause) => {
         if (seq !== requestSeq || (cause instanceof DOMException && cause.name === 'AbortError')) return
-        error.value = cause instanceof ApiError ? cause.detail : cause instanceof Error ? cause.message : String(cause)
+        error.value = cause instanceof ApiError ? cause.detail : surfaceError(cause)
       })
       .finally(() => {
         if (seq === requestSeq) loading.value = false
@@ -173,7 +174,7 @@ watch(
       })
       .catch((cause) => {
         if (seq !== requestSeq || (cause instanceof DOMException && cause.name === 'AbortError')) return
-        error.value = cause instanceof ApiError ? cause.detail : cause instanceof Error ? cause.message : String(cause)
+        error.value = cause instanceof ApiError ? cause.detail : surfaceError(cause)
       })
       .finally(() => {
         if (seq === requestSeq) loading.value = false

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { surfaceError } from '../i18n/errorSurface'
 import {
   getCredentialRoutingLog,
   type RoutingLogEntry,
@@ -105,7 +106,7 @@ async function loadLog() {
     total.value = resp.total
     meta.value = resp.meta
   } catch (e) {
-    error.value = e instanceof Error ? e.message : String(e)
+    error.value = surfaceError(e)
     console.error('Failed to load routing log', e)
   } finally {
     loading.value = false

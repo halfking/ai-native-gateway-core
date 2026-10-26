@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { useI18n } from 'vue-i18n'
+import { surfaceError } from '../i18n/errorSurface'
 import { Rank } from '@element-plus/icons-vue'
 import { formatDateTime, formatTimeOnly } from '../utils/datetime'
 import { ref, computed, onMounted, watch } from 'vue'
@@ -449,7 +450,7 @@ async function testRoute(rt: ModelRoute) {
   try {
     testResults.value[name] = await probeModel(name, [{ role: 'user', content: 'ping' }], 8)
   } catch (e) {
-    testErrors.value[name] = e instanceof Error ? e.message : t('workTypes.testFailedShort')
+    testErrors.value[name] = surfaceError(e, { key: 'workTypes.testFailedShort' })
     delete testResults.value[name]
   } finally {
     if (testingModel.value === name) testingModel.value = null

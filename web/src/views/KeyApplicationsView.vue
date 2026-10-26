@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
+import { surfaceError } from '../i18n/errorSurface'
 import { useI18n } from 'vue-i18n'
 import { formatDateTime } from '../utils/datetime'
 import { localeRef } from '../i18n'
@@ -43,7 +44,7 @@ async function load() {
   try {
     applications.value = await listKeyApplications()
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : String(e)
+    error.value = surfaceError(e)
   } finally {
     loading.value = false
   }
@@ -93,7 +94,7 @@ async function submitReview() {
     }
     closeReview()
   } catch (e: unknown) {
-    reviewError.value = e instanceof Error ? e.message : String(e)
+    reviewError.value = surfaceError(e)
   } finally {
     reviewSaving.value = false
   }
@@ -106,7 +107,7 @@ async function handleReveal(app: KeyApplication) {
     const result = await revealKey(app.issued_key_id)
     revealedKeys.value[app.id] = result.api_key
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : String(e)
+    error.value = surfaceError(e)
   } finally {
     revealLoading.value = null
   }

@@ -9,6 +9,7 @@
 //     严禁大块亮色 (rgba 红黄绿警告框);状态色只用于小尺寸文字/小图标/左侧细条。
 //   - 兼容既有 API: 暴露 requestId, 内部自己 watch 并加载。
 import { ref, computed, watch, onUnmounted } from 'vue'
+import { surfaceError } from '../i18n/errorSurface'
 import { useI18n } from 'vue-i18n'
 import {
   getRequestTrace,
@@ -88,7 +89,7 @@ async function loadTrace(id: string) {
       expanded.value = ex
     }
   } catch (e: unknown) {
-    const msg = e instanceof Error ? e.message : t('common.feedback.loadFailed')
+    const msg = surfaceError(e, { key: 'common.feedback.loadFailed' })
     // 2026-07-17: 后端修复后, "no rows in result set" 不会再 500 上抛;
     // 此处仍兼容旧的 404 / not_found 错误信息 → 走空状态 UI。
     if (msg.includes('202') || msg.includes('not_ready') || msg.includes('still being persisted')) {
@@ -235,7 +236,7 @@ async function generatePrompt() {
     aiTokens.value = resp.tokens_estimate
     aiEventCount.value = resp.event_count
   } catch (e: unknown) {
-    aiError.value = e instanceof Error ? e.message : t('trace.generateFailed')
+    aiError.value = surfaceError(e, { key: 'trace.generateFailed' })
   } finally {
     aiGenerating.value = false
   }

@@ -1,5 +1,6 @@
 // useRequestDetailLoader — phased async load + short TTL cache per requestId.
 import { computed, ref, shallowRef } from 'vue'
+import { surfaceError } from '../i18n/errorSurface'
 import { ApiError } from '../api/_core'
 import { getRequestLogDetail, type RequestLogDetail, type RoutingAttempt } from '../api/logs'
 import {
@@ -39,9 +40,7 @@ export const REQUEST_DETAIL_NOT_FOUND = '请求详情未找到'
 function formatEndpointFailure(endpoint: string, e: unknown): string {
   const detail = e instanceof ApiError
     ? `HTTP ${e.status} ${e.message}`
-    : e instanceof Error
-      ? e.message
-      : String(e)
+    : surfaceError(e)
   return `${endpoint}: ${detail}`
 }
 
@@ -468,7 +467,7 @@ export function useRequestDetailLoader() {
       if (sid) void ensureSessionSnap(sid, abort?.signal)
     } catch (e: unknown) {
       if (seq !== loadSeq.value) return
-      metaError.value = e instanceof Error ? e.message : String(e)
+      metaError.value = surfaceError(e)
     } finally {
       if (seq === loadSeq.value) metaLoading.value = false
     }
@@ -590,7 +589,7 @@ export function useRequestDetailLoader() {
         waterfallSource.value = 'miss'
         waterfallError.value = ''
       } else {
-        waterfallError.value = e instanceof Error ? e.message : String(e)
+        waterfallError.value = surfaceError(e)
       }
     } finally {
       if (seq === loadSeq.value) waterfallLoading.value = false

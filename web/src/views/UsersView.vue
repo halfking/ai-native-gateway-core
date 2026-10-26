@@ -5,6 +5,7 @@
 // 用量数据 GET /api/admin/users/usage-summary（usage_facts × api_keys.owner_user，
 // 与对账快照同源）；无用量账号显示 —，列表加载不被用量失败阻塞。
 import { useI18n } from 'vue-i18n'
+import { surfaceError } from '../i18n/errorSurface'
 import { fmtDateTime24h } from '../i18n/useFormat'
 import { sortByName } from '../utils/sortByName'
 import { ref, computed, onMounted } from 'vue'
@@ -206,7 +207,7 @@ async function load() {
       usageItems.value = []
     }
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : t('users.error.loadFailed')
+    error.value = surfaceError(e, { key: 'users.error.loadFailed' })
   } finally {
     loading.value = false
   }
@@ -231,7 +232,7 @@ async function handleCreate() {
     form.value = { username: '', password: '', tenant_id: 'default', display_name: '', email: '', role: 'tenant_admin' }
     await load()
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : t('users.error.createFailed')
+    error.value = surfaceError(e, { key: 'users.error.createFailed' })
   }
 }
 
@@ -240,7 +241,7 @@ async function handleToggle(u: User, onRollback?: () => void) {
     await updateUser(u.id, { enabled: !u.enabled })
     await load()
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : t('users.error.toggleFailed')
+    error.value = surfaceError(e, { key: 'users.error.toggleFailed' })
     onRollback?.()
   }
 }
@@ -251,7 +252,7 @@ async function handleDelete(u: User) {
     await deleteUser(u.id)
     await load()
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : t('users.error.deleteFailed')
+    error.value = surfaceError(e, { key: 'users.error.deleteFailed' })
   }
 }
 
@@ -269,7 +270,7 @@ async function handleResetPwd() {
     resetPwdUser.value = null
     newPwd.value = ''
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : t('users.error.resetFailed')
+    error.value = surfaceError(e, { key: 'users.error.resetFailed' })
   }
 }
 
