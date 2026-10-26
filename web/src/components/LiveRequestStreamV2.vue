@@ -271,7 +271,7 @@ function vendorOptionLabel(v: string) {
         tabindex="0"
       >
         <!-- 分组切换 -->
-        <div class="control-group control-group--dimension">
+        <div class="control-group">
           <button
             type="button"
             class="control-btn"
@@ -307,7 +307,7 @@ function vendorOptionLabel(v: string) {
         </div>
 
         <!-- 2026-07-23: 大/小 模式切换（小=竖条默认，大=卡片） -->
-        <div class="control-group control-group--mode">
+        <div class="control-group">
           <button
             type="button"
             class="control-btn"
@@ -328,7 +328,7 @@ function vendorOptionLabel(v: string) {
           </button>
         </div>
 
-        <div class="control-group control-group--request-type request-type-filter">
+        <div class="control-group">
           <button
             type="button"
             class="control-btn"
@@ -638,7 +638,9 @@ function vendorOptionLabel(v: string) {
 .stream-controls {
   display: flex;
   align-items: center;
-  gap: 10px;
+  /* ★ 2026-10-27 第 21 增量：分组容器不再各涂一种色调 ⇒ 组与组之间改由**间距**区分。
+     组内按钮间距 4px，组间 14px ⇒ 比例 3.5:1，肉眼一眼分得开「组内」与「组间」。 */
+  gap: 14px;
   width: 100%;
   min-width: 0;
   overflow-x: auto;
@@ -670,6 +672,16 @@ function vendorOptionLabel(v: string) {
   background: transparent;
 }
 
+/* ★ 2026-10-27 第 21 增量（颜色只承载语义，不承载分组）：
+   分组容器一律中性底色 —— 旧实现给「维度 / 模式 / 请求类型」各涂一种色调
+   （accent / success / accent），选色理由是「跟旁边不一样」，
+   那是**装饰**不是状态；其中「小 / 大」被涂成 success（「它不是成功」）、
+   「筛选」被涂成 warning（「它不是警告」）⇒ 颜色在撒谎。
+   仓内明文：DESIGN.md §视觉世界「状态用最小的颜色量表达、每个元素都承担信息职责」；
+   impeccable colorize.md「Decoration without a relationship to hierarchy,
+   state, content… is not a color strategy」。
+   现在：颜色预算只留给组内「被选中的那一个」（.control-btn--active）；
+   组与组之间靠 .stream-controls 的间距区分。 */
 .control-group {
   display: flex;
   align-items: center;
@@ -680,23 +692,6 @@ function vendorOptionLabel(v: string) {
   border-radius: 6px;
   background: var(--bg-subtle);
   border: 1px solid var(--border);
-  /* 2026-07-24: 视觉分组 - 让相邻的功能簇有清晰的区隔 */
-}
-
-/* 2026-07-24: 不同功能簇使用不同色调做软区分 */
-.control-group.control-group--dimension {
-  background: color-mix(in srgb, var(--accent) 14%, var(--bg-subtle));
-  border-color: color-mix(in srgb, var(--accent) 35%, var(--border));
-}
-
-.control-group.control-group--mode {
-  background: color-mix(in srgb, var(--success) 14%, var(--bg-subtle));
-  border-color: color-mix(in srgb, var(--success) 35%, var(--border));
-}
-
-.control-group.control-group--request-type {
-  background: color-mix(in srgb, var(--accent) 16%, var(--bg-subtle));
-  border-color: color-mix(in srgb, var(--accent) 38%, var(--border));
 }
 
 .control-btn {
@@ -733,7 +728,10 @@ function vendorOptionLabel(v: string) {
   color: var(--accent);
 }
 
-/* 2026-07-24: 多维过滤器使用警告色，与维度/模式/请求类型组区分。 */
+/* ★ 2026-10-27 第 21 增量：筛选组不再用告警色。
+   旧注释写得很直白：「多维过滤器使用警告色，与维度/模式/请求类型组区分」
+   —— 选色理由是「跟旁边不一样」，不是「这里有告警」。
+   筛选区没有告警状态 ⇒ 涂橙是撒谎；组内的「筛选」标签已经承担了区隔职责。 */
 .filter-group {
   display: flex;
   align-items: center;
@@ -742,15 +740,15 @@ function vendorOptionLabel(v: string) {
   flex-wrap: nowrap;
   padding: 5px 10px;
   border-radius: 6px;
-  background: color-mix(in srgb, var(--warning) 18%, var(--bg-subtle));
-  border: 1px solid color-mix(in srgb, var(--warning) 45%, var(--border));
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
 }
 
 /* 2026-07-24: "筛选"前缀标签，让用户一眼看到这是筛选项区 */
 .filter-group__label {
   font-size: 11px;
   font-weight: 600;
-  color: var(--warning);
+  color: var(--text-secondary);
   letter-spacing: 0.5px;
   user-select: none;
   padding-right: 2px;

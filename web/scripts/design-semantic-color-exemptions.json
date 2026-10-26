@@ -1,0 +1,19 @@
+{
+  "_note": "第 21 增量「颜色只承载语义，不承载分组」的**人工登记豁免**。每条都必须写清「凭什么它不是装饰性着色」（witness 指向事实源）。命中数长期为 0 ⇒ 豁免形同虚设，门在替整族放行 ⇒ 读数会暴露。",
+  "exemptions": [
+    {
+      "id": "sc-001-verification-code-box",
+      "file": "views/FreePoolView.vue",
+      "snippet": "v-if=\"m.verificationCode\" class=\"verification-code-box\"",
+      "reason": "验证码框的绿色是**状态指示**：容器只在验证码已生成时渲染（v-if=\"m.verificationCode\"），在场本身就是「已拿到验证码」这个状态；绿色与状态一致，不是装饰。",
+      "witness": "模板 `FreePoolView.vue:1049` 的 `v-if=\"m.verificationCode\"` —— 容器的**存在**由状态决定；且绿色语义是「这个验证码可用」，与 `verification-code-box` 的内容（验证码本体 + 复制）一致。"
+    },
+    {
+      "id": "sc-002-rollback-confirm",
+      "file": "views/SanitizeRulesView.vue",
+      "snippet": "v-if=\"rollbackOpen\" class=\"rollback-confirm\" role=\"group\" :aria-label=\"t('sanitizeRules.rollbackConfirm')\"",
+      "reason": "回滚二次确认区的橙色边框是**警示态**：容器只在用户点了回滚后渲染（v-if=\"rollbackOpen\"），表示「这里正在做不可逆操作，请确认」。",
+      "witness": "模板 `SanitizeRulesView.vue:1176` 的 `v-if=\"rollbackOpen\"` + 组内确认按钮 `.btn.danger` —— 这是一个破坏性操作的确认态，警告色与态一致。"
+    }
+  ]
+}
