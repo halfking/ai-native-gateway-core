@@ -288,7 +288,7 @@ const hasNodes = computed(() => nodes.value.length > 0)
   overflow: auto;
   background: var(--kx-surface);
   color: var(--kx-text);
-  box-shadow: -10px 0 30px var(--overlay-light);
+  box-shadow: var(--kx-shadow-md-left);
   padding: 18px 20px 28px;
   box-sizing: border-box;
 }

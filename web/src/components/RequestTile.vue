@@ -618,7 +618,7 @@ function closeTimelinePanel() {
 .request-bar:hover {
   transform: scaleY(1.08);
   box-shadow: 0 0 0 1px color-mix(in srgb, var(--text) 35%, transparent),
-              0 4px 10px color-mix(in srgb, var(--text) 18%, transparent);
+              var(--kx-shadow-sm);
   z-index: 10;
 }
 
@@ -730,7 +730,6 @@ function closeTimelinePanel() {
       color-mix(in srgb, var(--accent-color) 16%, var(--kx-surface)) 0%,
       color-mix(in srgb, var(--accent-color) 6%, var(--kx-bg)) 100%
     );
-  box-shadow: var(--kx-shadow-sm);
   padding: 0;
   cursor: pointer;
   transition:
@@ -749,7 +748,7 @@ function closeTimelinePanel() {
   transform: translateY(-2px) scale(1.04);
   border-color: color-mix(in srgb, var(--accent-color) 65%, transparent);
   box-shadow:
-    0 6px 16px color-mix(in srgb, var(--text) 15%, transparent),
+    var(--kx-shadow-sm),
     0 0 0 1px color-mix(in srgb, var(--accent-color) 25%, transparent);
   z-index: 10;
 }
@@ -757,7 +756,7 @@ function closeTimelinePanel() {
 .request-tile--highlighted {
   box-shadow:
     0 0 0 2px color-mix(in srgb, var(--accent) 55%, transparent),
-    0 4px 14px color-mix(in srgb, var(--accent) 20%, transparent);
+    var(--kx-shadow-sm);
   z-index: 5;
 }
 
@@ -821,7 +820,7 @@ function closeTimelinePanel() {
   box-shadow:
     inset 0 1px 0 color-mix(in srgb, var(--probe-cyan) 12%, transparent),
     0 0 0 1px color-mix(in srgb, var(--probe-cyan) 20%, transparent),
-    0 1px 3px color-mix(in srgb, var(--text) 12%, transparent);
+    var(--kx-shadow-xs);
 }
 
 .request-tile--probe.request-tile--failure {
@@ -1124,7 +1123,6 @@ function closeTimelinePanel() {
   display: flex;
   flex-direction: column;
   background: var(--kx-surface);
-  border: 1px solid var(--kx-border);
   border-radius: 6px;
   box-shadow: var(--kx-shadow-md);
   z-index: 2000;
@@ -1281,7 +1279,6 @@ function closeTimelinePanel() {
   display: flex;
   flex-direction: column;
   background: var(--kx-surface);
-  border: 1px solid var(--kx-border);
   border-radius: 6px;
   box-shadow: var(--kx-shadow-md);
   z-index: 2000;

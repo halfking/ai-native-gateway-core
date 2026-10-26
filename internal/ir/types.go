@@ -520,6 +520,11 @@ type ThinkingBlock struct {
 // CacheControl represents Anthropic's semantic cache control.
 type CacheControl struct {
 	Type string `json:"type"` // "ephemeral"
+	// TTL is the cache entry lifetime the vendor accepts on the marker:
+	// "5m" (default when omitted) or "1h" (2026-10-27 缓存标准对齐轮).
+	// Without it the IR path silently degraded a 1h checkpoint to 5m —
+	// the marker survived, its pricing tier did not.
+	TTL string `json:"ttl,omitempty"`
 }
 
 // Document represents Anthropic's document prompt injection.

@@ -2340,6 +2340,7 @@ files=(
   #   （252 实测中位 4,482.8 ms → 2,270.8 ms；口径逐行等价 EXCEPT ALL 0/0）。
   #   ★ 零 DDL：只做 CREATE OR REPLACE VIEW（实测 245 ms；保留 OID ⇒ matview 依赖不动）。
   "$ROOT_DIR/sql/migrations/startup/907_routing_analytics_source_lateral.sql"
+
   # ── 2026-10-24（R147 存储效率续轮，㉘ 代码面核对后裁决）：
   #    route_incident_events 零消费方索引删除 ──
   #
@@ -2376,6 +2377,13 @@ files=(
   # ★ ★ 本条**只落仓**；★ 生产应用需属主另行授权（★ 三条索引在热写表上
   #   走 CONCURRENTLY ⇒ 不阻断在途读写，★ 但构建期吃 IO 与 CPU）。
   "$ROOT_DIR/sql/migrations/startup/909_session_summaries_search_trgm_indexes.sql"
+
+  # ★ R166（迁移 910）：routing_analytics_source 父表腿从 LATERAL 逐行回定位
+  #   换成「普通 LEFT JOIN + partition_date 日界下推」⇒ details 侧执行期分区裁剪
+  #   + Hash Join 可选，消掉 ~2.75 万次/刷新 的逐行探针
+  #   （252 实测整计划 buffers 147K → 52K，-64%；口径逐行等价 EXCEPT ALL 0/0）。
+  #   ★ 零 DDL：只做 CREATE OR REPLACE VIEW（保留 OID ⇒ matview 依赖不动）。
+  "$ROOT_DIR/sql/migrations/startup/910_routing_analytics_source_hashjoin.sql"
 )
 
 

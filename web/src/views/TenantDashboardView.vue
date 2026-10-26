@@ -842,7 +842,7 @@ onUnmounted(() => {
 .tab-btn--active {
   background: var(--accent);
   color: white;
-  box-shadow: 0 1px 2px var(--overlay-light);
+  box-shadow: var(--kx-shadow-xs);
 }
 .page-header-right {
   display: flex;
@@ -978,7 +978,7 @@ onUnmounted(() => {
 }
 .stat-mini:hover {
   border-color: var(--accent);
-  box-shadow: 0 2px 8px var(--overlay-light);
+  box-shadow: var(--kx-shadow-sm);
 }
 .stat-mini--highlight {
   border-color: color-mix(in srgb, var(--accent) 40%, transparent);

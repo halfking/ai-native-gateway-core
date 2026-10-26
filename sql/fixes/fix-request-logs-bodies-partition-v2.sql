@@ -1,3 +1,11 @@
+-- V1-FAMILY-RETIRED: manual-only | 本脚本操作 v1 族的 request_logs_bodies（含建 default 分区）。
+--   ★ v1 `request_logs` 族已随迁移 890 退役（物理删除）⇒ 本脚本对**已退役的库**
+--   会 42P01（关系不存在）⇒ 已失效。
+--   ★ 它保留的价值：R89-DU 的**形状证据**（自插探针行 + dry-run 闸 +
+--   RAISE_EXCEPTION），由 sql/schema/handrun_sql_inventory_test.go 管着。
+--   ⇒ **只在 890 之前的遗留库上手跑**。
+--   ⇒ 门：sql/migrations/startup/v1_family_retirement_completeness_test.go
+--
 -- 修复 request_logs_bodies 分区问题（修订版）
 -- 问题：当前时间无法找到对应分区，且 columnar 存储不支持 DELETE
 -- 解决方案：创建 default 分区作为 heap 存储

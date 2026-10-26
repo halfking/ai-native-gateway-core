@@ -545,7 +545,7 @@ function getRiskLevelLabel(level: string): string {
   max-width: 500px;
   background: var(--bg-card);
   border-radius: 8px;
-  box-shadow: 0 8px 24px var(--overlay-medium);
+  box-shadow: var(--kx-shadow-md);
   max-height: 90vh;
   display: flex;
   flex-direction: column;

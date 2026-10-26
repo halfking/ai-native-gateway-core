@@ -52,7 +52,6 @@ const { bannerVisible, dismissBanner, applyUpdate } = useDeploySeqUpdate()
   max-width: min(560px, calc(100vw - 32px));
   padding: 10px 16px;
   border-radius: 8px;
-  border: 1px solid var(--info-bd);
   background: var(--info-bg);
   color: var(--kx-text);
   /* 2026-10-06：原为 rgba(15, 23, 42, 0.16) 字面量，被 color:check --strict

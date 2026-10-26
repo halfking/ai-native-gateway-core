@@ -55,12 +55,16 @@ func observeNativeUsage(capture *audit.StreamCapture, usage map[string]json.RawM
 	output := nativeInt(usage, "output_tokens")
 	// 2026-09-09 audit round 3: native Responses usage carries cache hits in
 	// input_tokens_details.cached_tokens — feed it through to the capture.
-	var cacheRead *int
+	// 2026-10-27 缓存标准对齐轮：GPT-5.6 世代起同一对象还带
+	// cache_write_tokens（显式缓存写入）⇒ 一并进捕获；未配置缓存写价时
+	// 计费公式把写 token 留在 prompt 原价内，台账只多信息、不改变金额。
+	var cacheRead, cacheWrite *int
 	if details, ok := nativeObject(usage, "input_tokens_details"); ok {
 		cacheRead = nativeInt(details, "cached_tokens")
+		cacheWrite = nativeInt(details, "cache_write_tokens")
 	}
 	if input != nil || output != nil {
-		capture.ObserveUsage(input, output, cacheRead, nil)
+		capture.ObserveUsage(input, output, cacheRead, cacheWrite)
 	}
 }
 

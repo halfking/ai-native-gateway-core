@@ -3795,7 +3795,26 @@ func (d *DB) ensureSessionBodiesPromoteDrain(ctx context.Context) error {
 // this source view. It must stay the LAST column in both UNION branches:
 // CREATE OR REPLACE VIEW can only append columns, never reorder existing ones.
 // RoutingAnalyticsSourceViewDDL 是 `routing_analytics_source` 视图体的**唯一真源**
-// （R96 轮新增；迁移 907 的 SQL 文件是它的 DBA 面向镜像，门禁逐字比对两者）。
+// （R96 轮新增；迁移 910 的 SQL 文件是它的 DBA 面向镜像，门禁逐字比对两者；
+// 迁移 907 已 applied 且文件内容冻结——910.down 逐字采用 907.up 的视图体作回退形态）。
+//
+// ★★ 910 的第二次换形（2026-10-27 252 生产只读实测，详见本轮审计档）：
+//
+//	907 形态的残留成本 = 父表腿 ~2.75 万次/刷新 的 LATERAL 逐行探针
+//	（EXPLAIN ANALYZE：Limit/Append 节点 0.366ms x 27,486 loops ≈ 10.1s；
+//	  探针单次成本随宿主负载漂 100x+ —— R96 轮实测 ~3us/次）⇒ REFRESH 墙钟
+//	**乘法式**暴露在宿主负载上；整计划 ~147K buffers（父表腿 133,827）。
+//	⇒ 父表腿改普通 LEFT JOIN + partition_date 日界下推（日界被 t.ts 窗口
+//	  蕴含，错位行实测 0）⇒ details 侧执行期分区裁剪 + Hash Join 可选
+//	⇒ 整计划 51,425~52,664 buffers（-64%，多轮稳定）。
+//	⇒ hot 腿**保留 LATERAL LIMIT 1**：details_hot 的索引是非唯一 request 索引，
+//	  唯一键证明只覆盖分区父表。
+//	⇒ ★ 等价承诺范围 = **带 ts 窗的读**（窗口内父表腿 EXCEPT ALL 0/0）；
+//	  全源等价不再成立——无窗全量读下 >8d 旧行的 details 三列为 NULL
+//	  （设计内边界）。全仓 13 处消费方实测全部带 7d 窗或为 request_id
+//	  存在性探针（LEFT JOIN 保行存在性）⇒ 今日零受影响消费方；
+//	  边界由 TestRoutingAnalyticsSourceDayRangeBoundaryOnRealDB 钉住，
+//	  未来新增无窗消费方时必须重审。
 //
 // ★★ 为什么要换形（R96 轮 252 生产实测，详见审计档
 // `docs/audit/2026-10-27-R96-routing-analytics刷新链-LATERAL回定位.md`）：
@@ -3855,6 +3874,10 @@ const RoutingAnalyticsSourceViewDDL = `
 		-- 分析（matrix/flow/funnel 端点与 7d 物化视图）随热窗排空静默归零。
 		-- 2026-10-24 R96 轮：源再从 canonical 视图换成**会话族两腿 + LATERAL 回定位**
 		-- （口径逐行等价见上；收益与不加索引的理由见上）。
+		-- 2026-10-27 迁移 910：父表腿 LATERAL 改普通 LEFT JOIN + partition_date
+		-- 日界下推（details 侧分区裁剪 + Hash Join 可选），消掉 ~2.75 万次/刷新
+		-- 的逐行探针；hot 腿保留 LATERAL（details_hot 无唯一键证明）。
+		-- 日界下推被 t.ts 窗口蕴含（252 实测错位行 = 0；8 天留跨日边界余量）。
 		-- 15 列全部在 118 列契约内、列名/类型/次序与旧体逐位一致（CREATE
 		-- OR REPLACE 的列契约；auto_profile 仍居末位）。会话臂的
 		-- provider_id/auto_profile/client_model 依赖 734 details 特征层，
@@ -3892,9 +3915,9 @@ const RoutingAnalyticsSourceViewDDL = `
 		  t.ts,
 		  t.task_type::text AS task_type,
 		  t.model::text AS outbound_model,
-		  d.client_model::text AS client_model,
+		  dd.client_model::text AS client_model,
 		  t.work_type::text AS work_type,
-		  d.provider_id::bigint AS provider_id,
+		  dd.provider_id::bigint AS provider_id,
 		  (CASE WHEN t.credential_id ~ '^[0-9]+$' THEN t.credential_id::bigint ELSE NULL::bigint END)::bigint AS credential_id,
 		  t.is_auto_request::boolean AS is_auto_request,
 		  t.tenant_id::text AS tenant_id,
@@ -3903,16 +3926,13 @@ const RoutingAnalyticsSourceViewDDL = `
 		  t.latency_ms::numeric AS latency_ms,
 		  t.cost_usd::numeric AS cost_usd,
 		  t.origin_stage::text AS origin_stage,
-		  d.auto_profile::text AS auto_profile
+		  dd.auto_profile::text AS auto_profile
 		FROM public.session_turns t
-		LEFT JOIN LATERAL (
-		  SELECT dd.client_model, dd.provider_id, dd.auto_profile
-		  FROM public.session_turn_details dd
-		  WHERE dd.tenant_id = t.tenant_id
-		    AND dd.request_id = t.request_id
-		    AND dd.partition_date = t.partition_date
-		  LIMIT 1
-		) d ON TRUE;`
+		LEFT JOIN public.session_turn_details dd
+		  ON dd.tenant_id = t.tenant_id
+		 AND dd.request_id = t.request_id
+		 AND dd.partition_date = t.partition_date
+		 AND dd.partition_date >= (now() - interval '8 days')::date;`
 
 const routingAnalyticsMVSQL = `
 ` + RoutingAnalyticsSourceViewDDL + `
@@ -4092,6 +4112,8 @@ func (d *DB) ensureRoutingAnalyticsMaterializedViews(ctx context.Context) error 
 			   -- request_logs_with_current_month ⇒ 这里必须**同时接受两形**
 			   -- （旧形 canonical / 新形 session_turn_details）⇒ 否则新形被判陈旧
 			   -- ⇒ 走 CASCADE 重建路径（启动期 minutes 级），而重建并非本轮需要。
+			   -- ★ 迁移 910：父表腿改普通 LEFT JOIN（仍直引 session_turn_details）
+			   -- ⇒ 特征串对 910 形态天然成立，无需扩。
 			   AND (
 			     POSITION('request_logs_with_current_month' IN COALESCE(pg_get_viewdef(to_regclass('public.routing_analytics_source'), true), '')) > 0
 			     OR POSITION('session_turn_details' IN COALESCE(pg_get_viewdef(to_regclass('public.routing_analytics_source'), true), '')) > 0
@@ -4152,8 +4174,10 @@ func (d *DB) ensureRoutingAnalyticsMaterializedViews(ctx context.Context) error 
 					-- 缺该引用 = 本轮视图化未应用 ⇒ 判陈旧走下方 CASCADE 重建
 					-- 路径（一次性代价：两只 MV 随依赖摘除后按新 source 重建，
 					-- refresh 机制回填，与 837 迁移同形）。
-					-- ★ R96 轮：与上面 fast-path gate 保持同一口径 —— 两形都算「新」，
-					-- 只有两形都不沾（= pre-S3波2 的 v1 直读体）才判陈旧。
+						-- ★ R96 轮：与上面 fast-path gate 保持同一口径 —— 两形都算「新」，
+						-- 只有两形都不沾（= pre-S3波2 的 v1 直读体）才判陈旧。
+						-- ★ 迁移 910 的 hash-join 形态同样直引 session_turn_details
+						-- ⇒ 特征串天然成立。
 					AND (
 					  POSITION('request_logs_with_current_month' IN COALESCE(pg_get_viewdef(to_regclass('public.routing_analytics_source'), true), '')) > 0
 					  OR POSITION('session_turn_details' IN COALESCE(pg_get_viewdef(to_regclass('public.routing_analytics_source'), true), '')) > 0

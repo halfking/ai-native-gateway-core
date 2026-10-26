@@ -6794,6 +6794,22 @@ func main() {
 	geminiHandler := streaming.NewGeminiHandler(chatHandler)
 	mux.Handle("/v1beta/models/", geminiHandler)
 	mux.Handle("/v1/models/", geminiHandler) // also catch Gemini :generateContent on newer paths
+	// 2026-10-27（Gemini 剩余登记项处置轮）: the Gemini NATIVE model list.
+	//
+	// A native Gemini client (google-genai SDK) lists models via
+	// GET /v1beta/models and parses Google's shape
+	// ({"models":[{"name":"models/…"}]}). The OpenAI-shaped /v1/models
+	// answer would fail at the client's unmarshal step, far from the
+	// cause ⇒ so the native path gets the native shape.
+	//
+	// ★ SAME data source as /v1/models (the routable-model query) — only
+	// the wire shape differs; two sources would be two truths about
+	// "what can this gateway serve".
+	//
+	// ★ "/v1/models" (no trailing slash) stays the OpenAI-shaped list: it
+	// is the OpenAI SDK's contract and is already registered above. The
+	// Gemini GA path therefore keeps pointing at the OpenAI-shaped list.
+	mux.HandleFunc("/v1beta/models", modelsHandler.ServeGeminiModels)
 
 	// Overlay the v2 Pipeline wrapper on top of the 4 v1 endpoints
 	// when the flag is on. The wrapper is a Pipeline preflight
