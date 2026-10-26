@@ -2,7 +2,7 @@
 export default {
     refresh: '更新',
     refreshing: '更新中…',
-    loadFailed: '読み込みに失敗しました',
+    loadFailed: '自動チューニングの読み込みに失敗しました。再試行してください。',
     panelTitle: 'チューニング提案（承認後 5 分以内にホット適用）',
     noProposals: '提案はまだありません（feedback_analyzer が期間ごとに自動生成します）',
   filter: {

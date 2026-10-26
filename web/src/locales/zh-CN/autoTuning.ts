@@ -2,7 +2,7 @@
 export default {
     refresh: '刷新',
     refreshing: '刷新中…',
-    loadFailed: '加载失败',
+    loadFailed: '自动调优没能加载出来，请重试',
     panelTitle: '调参提案（批准即热调参，5 分钟内生效）',
     noProposals: '暂无提案（feedback_analyzer 会按窗口自动生成）',
   filter: {

@@ -123,5 +123,5 @@ export default {
 
   // 同步的扁平键
   savedOk: 'Guardado',
-  testFailedShort: 'Prueba fallida',
+  testFailedShort: 'No se pudo superar la prueba del tipo de trabajo. Vuelva a intentarlo.',
 }

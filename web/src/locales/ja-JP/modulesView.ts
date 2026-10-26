@@ -139,10 +139,10 @@ export default {
 
 
   error: {
-    loadFailed: 'モジュール一覧の読み込みに失敗しました',
-    operationFailed: '操作に失敗しました',
-    saveFailed: '設定の保存に失敗しました',
-    testFailed: 'テスト失敗',
+    loadFailed: 'モジュール一覧の読み込みに失敗しました。再試行してください。',
+    operationFailed: 'モジュール操作を完了できませんでした。再試行してください。',
+    saveFailed: 'モジュール設定の保存に失敗しました。再試行してください。',
+    testFailed: 'モジュールのテストに失敗しました。再試行してください。',
   },
 
   // 同步的扁平键

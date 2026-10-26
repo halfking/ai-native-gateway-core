@@ -23,10 +23,10 @@ export default {
   },
   detail: {
     errors: {
-      loadListFailed: 'Laden fehlgeschlagen',
-      loadDetailFailed: 'Details laden fehlgeschlagen',
-      saveFailed: 'Speichern fehlgeschlagen',
-      rollbackFailed: 'Rollback fehlgeschlagen',
+      loadListFailed: 'Einstellungsliste konnte nicht geladen werden. Bitte erneut versuchen.',
+      loadDetailFailed: 'Einstellungsdetails konnten nicht geladen werden. Bitte erneut versuchen.',
+      saveFailed: 'Einstellungen konnten nicht gespeichert werden. Bitte erneut versuchen.',
+      rollbackFailed: 'Rollback konnte nicht abgeschlossen werden. Bitte erneut versuchen.',
       invalidNumber: 'Bitte geben Sie eine gültige Zahl ein',
     },
   },

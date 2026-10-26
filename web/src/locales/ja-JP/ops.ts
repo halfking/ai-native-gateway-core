@@ -11,7 +11,7 @@ export default {
   // VibeCoding
   vibecoding: {
     title: 'VibeCoding',
-    loadFailed: 'データの読み込みに失敗しました',
+    loadFailed: 'データの読み込みに失敗しました。再試行してください。',
     fillRequired: '必須項目を入力してください',
     projects: 'プロジェクト',
     sessions: 'セッション',
@@ -19,11 +19,11 @@ export default {
     createProject: 'プロジェクトを作成',
     createProjectTitle: '新しいプロジェクトを作成',
     createProjectSuccess: 'プロジェクトを作成しました',
-    createProjectFailed: 'プロジェクトの作成に失敗しました',
+    createProjectFailed: 'プロジェクトの作成に失敗しました。再試行してください。',
     newSession: '新しいセッション',
     createSessionTitle: '新しいセッションを作成',
     createSessionSuccess: 'セッションを作成しました',
-    createSessionFailed: 'セッションの作成に失敗しました',
+    createSessionFailed: 'セッションの作成に失敗しました。再試行してください。',
     viewSessions: 'セッションを表示',
     viewReviews: 'レビューを表示',
     showAll: 'すべて表示',

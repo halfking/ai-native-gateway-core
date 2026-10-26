@@ -57,10 +57,10 @@ export default {
       info: 'Página {page} / {totalPages} ({total} en total)',
     },
     errors: {
-      approveFailed: 'Approve failed',
-      rejectFailed: 'Reject failed',
+      approveFailed: 'No se pudo conceder la aprobación. Vuelva a intentarlo.',
+      rejectFailed: 'No se pudo rechazar la solicitud. Vuelva a intentarlo.',
 
-      loadListFailed: 'Failed to load approval list',
+      loadListFailed: 'No se pudo cargar la lista de aprobaciones. Vuelva a intentarlo.',
     },
     success: {
       approved: 'Approved',
@@ -139,8 +139,8 @@ export default {
       rules: 'Definir qué solicitudes requieren aprobación',
     },
     errors: {
-      loadFailed: 'Error al cargar la configuración',
-      saveFailed: 'Error al guardar',
+      loadFailed: 'No se pudo cargar la configuración de aprobación. Vuelva a intentarlo.',
+      saveFailed: 'No se pudo guardar la configuración de aprobación. Vuelva a intentarlo.',
     },
     success: {
       saved: 'Guardado correctamente',

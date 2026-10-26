@@ -39,5 +39,5 @@ export default {
   openAttachment: 'Download',
   retry: 'Retry',
   openingAttachment: 'Opening…',
-  openAttachmentFailed: 'Failed to open attachment',
+  openAttachmentFailed: 'The attachment could not be opened. Check the file, then retry.',
 }

@@ -23,10 +23,10 @@ export default {
   },
   detail: {
     errors: {
-      loadListFailed: 'فشل التحميل',
-      loadDetailFailed: 'فشل تحميل التفاصيل',
-      saveFailed: 'فشل الحفظ',
-      rollbackFailed: 'فشل التراجع',
+      loadListFailed: 'تعذّر تحميل قائمة الإعدادات. أعد المحاولة.',
+      loadDetailFailed: 'تعذّر تحميل تفاصيل الإعدادات. أعد المحاولة.',
+      saveFailed: 'تعذّر حفظ الإعدادات. أعد المحاولة.',
+      rollbackFailed: 'تعذّر إتمام التراجع. أعد المحاولة.',
       invalidNumber: 'الرجاء إدخال رقم صالح',
     },
   },

@@ -59,8 +59,8 @@ export default {
   tokenPlanSuffix: 'token_plan',
   saved: '已儲存',
   noChange: '無變更',
-  saveFailed: '儲存失敗',
+  saveFailed: '定價沒能儲存，請重試',
   copied: '價格已複製',
   pasted: '已貼上，請儲存後生效',
-  failed: '匯入失敗',
+  failed: '定價範本沒能匯入，請重試',
 }

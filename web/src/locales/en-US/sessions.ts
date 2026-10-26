@@ -7,7 +7,7 @@ export default {
     emptyHint: 'Sessions appear once a gw_session_id is generated from request logs',
   },
   userProfile: {
-    loadFailed: 'Failed to load the user profile',
+    loadFailed: 'The user profile could not be loaded. Please retry.',
     title: 'User profiles',
     detailTitle: 'User profile detail',
     ownerUser: 'Owner user',
@@ -137,7 +137,7 @@ export default {
     sessionId: 'Session ID',
     requests: 'Requests',
     health: 'Health',
-    loadError: 'Failed to load client analytics',
+    loadError: 'The client analytics could not be loaded. Please retry.',
   },
   taskAnalytics: {
     title: 'Task Analytics',
@@ -153,7 +153,7 @@ export default {
     sessionId: 'Session ID',
     requests: 'Requests',
     health: 'Health',
-    loadError: 'Failed to load task analytics',
+    loadError: 'The task analytics could not be loaded. Please retry.',
   },
   config: {
     title: 'Session Configuration',
@@ -323,8 +323,8 @@ export default {
     promptInjectionRuleSearchPlaceholder: 'Search rule name or description…',
     promptInjectionRuleSaveSuccess: 'Rule updated',
     promptInjectionPolicySaveSuccess: 'Policy saved',
-    promptInjectionLoadError: 'Failed to load',
-    promptInjectionSaveError: 'Failed to save',
+    promptInjectionLoadError: 'The prompt injection settings could not be loaded. Please retry.',
+    promptInjectionSaveError: 'The prompt injection settings could not be saved. Please retry.',
     promptInjectionSectionAdvanced: 'Advanced entries',
     promptInjectionLinkEngines: 'LLM engines',
     promptInjectionLinkEnginesHint: 'Configure models, temperature, and prompts for LLM-based detection',

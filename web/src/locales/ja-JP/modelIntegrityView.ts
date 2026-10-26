@@ -109,10 +109,10 @@ export default {
   },
 
   error: {
-    loadFailed: '読み込み失敗',
-    summaryLoadFailed: '統計の読み込み失敗',
-    driftLoadFailed: 'フィンガープリントドリフトの読み込み失敗',
-    markFailed: 'マーク失敗',
+    loadFailed: 'モデル整合性データの読み込みに失敗しました。再試行してください。',
+    summaryLoadFailed: 'モデル整合性の統計の読み込みに失敗しました。再試行してください。',
+    driftLoadFailed: 'フィンガープリンドドリフトの読み込みに失敗しました。再試行してください。',
+    markFailed: 'モデル整合性のマーク付けに失敗しました。再試行してください。',
     needSuperAdmin: 'スーパー管理者権限が必要です',
   },
 }

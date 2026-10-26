@@ -1,3 +1,3 @@
 export default {
-  loadFailed: '模型列表沒能載入出來，請重試',
+  loadFailed: '可選模型沒能載入出來，請重試',
 }

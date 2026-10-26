@@ -93,9 +93,9 @@ export default {
   },
 
   error: {
-    loadFailed: 'Error al cargar',
-    summaryLoadFailed: 'Error al cargar estadísticas',
-    markFailed: 'Error al marcar',
+    loadFailed: 'No se pudo cargar las anomalías de formato. Vuelva a intentarlo.',
+    summaryLoadFailed: 'No se pudo cargar las estadísticas de anomalías de formato. Vuelva a intentarlo.',
+    markFailed: 'No se pudo completar el marcado de las anomalías de formato. Vuelva a intentarlo.',
     needSuperAdmin: 'Se requiere permiso de super-admin',
   },
 

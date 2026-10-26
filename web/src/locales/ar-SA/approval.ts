@@ -57,10 +57,10 @@ export default {
       info: 'الصفحة {page} / {totalPages} ({total} إجمالًا)',
     },
     errors: {
-      approveFailed: 'Approve failed',
-      rejectFailed: 'Reject failed',
+      approveFailed: 'تعذّر إتمام اعتماد الموافقة. أعد المحاولة.',
+      rejectFailed: 'تعذّر إتمام رفض الموافقة. أعد المحاولة.',
 
-      loadListFailed: 'Failed to load approval list',
+      loadListFailed: 'تعذّر تحميل قائمة الموافقات. أعد المحاولة.',
     },
     success: {
       approved: 'Approved',
@@ -139,8 +139,8 @@ export default {
       rules: 'تحديد الطلبات التي تحتاج موافقة',
     },
     errors: {
-      loadFailed: 'فشل تحميل الإعدادات',
-      saveFailed: 'فشل الحفظ',
+      loadFailed: 'تعذّر تحميل إعدادات الموافقة. أعد المحاولة.',
+      saveFailed: 'تعذّر حفظ إعدادات الموافقة. أعد المحاولة.',
     },
     success: {
       saved: 'تم الحفظ بنجاح',

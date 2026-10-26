@@ -7,7 +7,7 @@ export default {
   exportExcel: 'Exportar a Excel',
   rerun: 'Recalcular día final',
   rerunDone: 'Recalculo completado',
-  rerunFailed: 'Error en el recálculo',
+  rerunFailed: 'No se pudo completar el recálculo. Vuelva a intentarlo.',
   // Cobertura / estado vacío
   daysCovered: 'días de instantáneas',
   unaggregatedDay: 'Sin agregar',

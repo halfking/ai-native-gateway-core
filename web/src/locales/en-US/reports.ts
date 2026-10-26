@@ -8,7 +8,7 @@ export default {
   exportExcel: 'Export Excel',
   rerun: 'Rerun End Day',
   rerunDone: 'Rerun completed',
-  rerunFailed: 'Rerun failed',
+  rerunFailed: 'The rerun could not be completed. Please retry.',
   // Coverage / empty state
   daysCovered: 'days of snapshots',
   unaggregatedDay: 'Not aggregated',

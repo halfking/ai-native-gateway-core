@@ -2,7 +2,7 @@
 export default {
     refresh: '刷新',
     refreshing: '刷新中…',
-    loadFailed: '加载失败',
+    loadFailed: '任务画像没能加载出来，请重试',
     noData: '暂无档案数据',
   registry: {
     version: '档案版本',

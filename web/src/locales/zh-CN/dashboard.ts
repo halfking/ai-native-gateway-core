@@ -36,7 +36,7 @@ export default {
     super: '默认租户',
     tenant: '租户: {tenantId}',
   },
-  loadError: '加载失败',
+  loadError: '看板数据没能加载出来，请重试',
   board: {
     heroErrors: '错误',
     heroInput: '输入',
@@ -103,7 +103,7 @@ export default {
     selfcheckTitle: '系统自检',
     pieClients: '客户端类型',
     pieDegraded: "不可用 —— {reason}。此处的空排名表示「没算出来」，而不是「没有数据」。",
-    pieDegradedGeneric: "该排行查询失败",
+    pieDegradedGeneric: '该排行的查询没能完成，请重试',
     drillFailed: "无法加载该错误构成 —— {reason}。此处显示为空不代表真的没有这类错误。",
     pieClientIp: '客户端 IP',
     pieIdentity: '身份指纹',

@@ -123,5 +123,5 @@ export default {
 
   // 同步的扁平键
   savedOk: "保存しました",
-  testFailedShort: "テスト失敗",
+  testFailedShort: 'ワークタイプのテストに失敗しました。再試行してください。',
 }

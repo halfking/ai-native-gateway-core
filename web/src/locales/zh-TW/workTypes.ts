@@ -123,5 +123,5 @@ export default {
 
   // 同步的扁平键
   savedOk: '已儲存',
-  testFailedShort: '測試失敗',
+  testFailedShort: '工作類型測試沒能通過，請重試',
 }

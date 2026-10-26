@@ -68,7 +68,7 @@ export default {
       start: '开始扫描',
       running: '扫描中…',
       done: '扫描完成：发现 {n} 个模型，请审查结果',
-      failed: '扫描失败'
+      failed: '扫描没能完成，请重试'
     },
   task: {
       listTitle: '发现任务（{n}）',

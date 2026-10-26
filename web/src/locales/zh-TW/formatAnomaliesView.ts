@@ -93,9 +93,9 @@ export default {
   },
 
   error: {
-    loadFailed: '載入失敗',
-    summaryLoadFailed: '統計載入失敗',
-    markFailed: '標記失敗',
+    loadFailed: '格式異常沒能載入出來，請重試',
+    summaryLoadFailed: '格式異常統計沒能載入出來，請重試',
+    markFailed: '格式異常標記沒能完成，請重試',
     needSuperAdmin: '需要超級管理員權限',
   },
 

@@ -28,7 +28,7 @@ tabs: {
     super: "預設租戶",
     tenant: "租戶: {tenantId}"
   },
-  loadError: "載入失敗",
+  loadError: '看板資料沒能載入出來，請重試',
   board: {
     heroErrors: '錯誤',
     heroInput: '輸入',
@@ -96,7 +96,7 @@ tabs: {
     selfcheckTitle: '系統自檢',
     pieClients: '客戶端類型',
     pieDegraded: "不可用 —— {reason}。此處的空排名表示「沒算出來」，而不是「沒有資料」。",
-    pieDegradedGeneric: "該排行查詢失敗",
+    pieDegradedGeneric: '該排行的查詢沒能完成，請重試',
     drillFailed: "無法載入該錯誤構成 —— {reason}。此處顯示為空不代表真的沒有這類錯誤。",
     pieClientIp: '客戶端 IP',
     pieIdentity: '身份指紋',

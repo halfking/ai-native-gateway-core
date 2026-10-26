@@ -27,7 +27,7 @@ export default {
   // VibeCoding
   vibecoding: {
     title: 'VibeCoding',
-    loadFailed: 'Failed to load data',
+    loadFailed: 'The data could not be loaded. Please retry.',
     fillRequired: 'Please fill in required fields',
     projects: 'Projects',
     sessions: 'Sessions',
@@ -35,11 +35,11 @@ export default {
     createProject: 'Create Project',
     createProjectTitle: 'Create New Project',
     createProjectSuccess: 'Project created successfully',
-    createProjectFailed: 'Failed to create project',
+    createProjectFailed: 'The project could not be created. Please retry.',
     newSession: 'New Session',
     createSessionTitle: 'Create New Session',
     createSessionSuccess: 'Session created successfully',
-    createSessionFailed: 'Failed to create session',
+    createSessionFailed: 'The session could not be created. Please retry.',
     viewSessions: 'View Sessions',
     viewReviews: 'View Reviews',
     showAll: 'Show All',

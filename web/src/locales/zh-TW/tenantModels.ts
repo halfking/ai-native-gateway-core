@@ -8,7 +8,7 @@ export default {
     refresh: '重新整理',
     loading: '載入中…',
     empty: '暫無可用模型',
-    loadFailed: '載入失敗',
+    loadFailed: '租戶模型沒能載入出來，請重試',
     vendorSectionTitle: '模型清單',
   },
   columns: {

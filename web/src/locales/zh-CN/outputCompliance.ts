@@ -42,7 +42,7 @@ export default {
     createdAt: '时间',
   },
   empty: '暂无合规记录',
-  recordsLoadFailed: '命中记录加载失败',
+  recordsLoadFailed: '命中记录没能加载出来，请重试',
   recordsNotLoaded: '命中记录未加载，下面不是查询结果',
   pagination: {
     previous: '上一页',

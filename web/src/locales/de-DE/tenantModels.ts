@@ -8,7 +8,7 @@ export default {
     refresh: 'Aktualisieren',
     loading: 'Wird geladen…',
     empty: 'Keine Modelle verfügbar',
-    loadFailed: 'Laden fehlgeschlagen',
+    loadFailed: 'Mandantenmodelle konnten nicht geladen werden. Bitte erneut versuchen.',
     vendorSectionTitle: 'Verfügbare Modelle',
   },
   columns: {

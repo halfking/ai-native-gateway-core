@@ -7,7 +7,7 @@ export default {
   exportExcel: 'Excel エクスポート',
   rerun: '最終日を再実行',
   rerunDone: '再実行が完了しました',
-  rerunFailed: '再実行に失敗しました',
+  rerunFailed: '再実行を完了できませんでした。再試行してください。',
   // カバー範囲 / 空状態
   daysCovered: '日分のスナップショット',
   unaggregatedDay: '未集計',

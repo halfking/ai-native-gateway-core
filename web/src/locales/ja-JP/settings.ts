@@ -23,10 +23,10 @@ export default {
   },
   detail: {
     errors: {
-      loadListFailed: '読み込み失敗',
-      loadDetailFailed: '詳細読み込み失敗',
-      saveFailed: '保存失敗',
-      rollbackFailed: 'ロールバック失敗',
+      loadListFailed: '設定一覧の読み込みに失敗しました。再試行してください。',
+      loadDetailFailed: '設定詳細の読み込みに失敗しました。再試行してください。',
+      saveFailed: '設定の保存に失敗しました。再試行してください。',
+      rollbackFailed: 'ロールバックを完了できませんでした。再試行してください。',
       invalidNumber: '有効な数値を入力してください',
     },
   },

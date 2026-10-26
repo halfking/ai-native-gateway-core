@@ -2,7 +2,7 @@
 export default {
     refresh: '更新',
     refreshing: '更新中…',
-    loadFailed: '読み込みに失敗しました',
+    loadFailed: 'タスクプロファイルの読み込みに失敗しました。再試行してください。',
     noData: 'プロファイルデータなし',
   registry: {
     version: 'レジストリ版',

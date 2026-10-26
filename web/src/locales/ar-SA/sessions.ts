@@ -3,7 +3,7 @@ export default {
     emptyHint: "يتم تجميع الجلسات تلقائيًا بعد توليد gw_session_id في سجلات الطلبات",
   },
   userProfile: {
-    loadFailed: 'فشل تحميل ملف المستخدم',
+    loadFailed: 'تعذّر تحميل ملف المستخدم. أعد المحاولة.',
     title: "ملفات المستخدمين",
     detailTitle: "تفاصيل ملف المستخدم",
     ownerUser: "معرف المستخدم",
@@ -127,7 +127,7 @@ export default {
     sessionId: "معرّف الجلسة",
     requests: "الطلبات",
     health: "الصحة",
-    loadError: "فشل تحميل تحليل العميل"
+    loadError: 'تعذّر تحميل تحليل العميل. أعد المحاولة.'
   },
   taskAnalytics: {
     title: "تحليل المهام",
@@ -143,7 +143,7 @@ export default {
     sessionId: "معرّف الجلسة",
     requests: "الطلبات",
     health: "الصحة",
-    loadError: "فشل تحميل تحليل المهام"
+    loadError: 'تعذّر تحميل تحليل المهام. أعد المحاولة.'
   },
   config: {
     title: 'إعدادات الجلسة',
@@ -311,8 +311,8 @@ export default {
     promptInjectionRuleSearchPlaceholder: "ابحث في اسم القاعدة أو الوصف…",
     promptInjectionRuleSaveSuccess: "تم تحديث القاعدة",
     promptInjectionPolicySaveSuccess: "تم حفظ السياسة",
-    promptInjectionLoadError: "فشل التحميل",
-    promptInjectionSaveError: "فشل الحفظ",
+    promptInjectionLoadError: 'تعذّر تحميل إعدادات حقن الموجهات. أعد المحاولة.',
+    promptInjectionSaveError: 'تعذّر حفظ إعدادات حقن الموجهات. أعد المحاولة.',
     promptInjectionSectionAdvanced: "إدخالات متقدمة",
     promptInjectionLinkEngines: "محركات LLM",
     promptInjectionLinkEnginesHint: "تكوين النماذج ودرجة الحرارة والمحفزات لكشف LLM",

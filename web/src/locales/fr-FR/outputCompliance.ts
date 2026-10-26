@@ -42,7 +42,7 @@ export default {
     createdAt: 'Heure',
   },
   empty: 'Aucun enregistrement de conformité',
-  recordsLoadFailed: 'Échec du chargement des enregistrements de correspondances',
+  recordsLoadFailed: 'Le chargement des enregistrements de correspondances a échoué. Veuillez réessayer.',
   recordsNotLoaded: 'Enregistrements non chargés: le tableau ci-dessous n’est pas un résultat de requête',
   pagination: {
     previous: 'Précédent',

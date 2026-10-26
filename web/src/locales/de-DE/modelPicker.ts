@@ -1,3 +1,3 @@
 export default {
-  loadFailed: 'Modellliste konnte nicht geladen werden. Bitte erneut versuchen.',
+  loadFailed: 'Auswählbare Modelle konnten nicht geladen werden. Bitte erneut versuchen.',
 }

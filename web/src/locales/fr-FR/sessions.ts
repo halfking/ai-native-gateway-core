@@ -3,7 +3,7 @@ export default {
     emptyHint: "Les sessions apparaissent une fois qu'un gw_session_id est généré depuis les journaux de requêtes",
   },
   userProfile: {
-    loadFailed: 'Échec du chargement du profil utilisateur',
+    loadFailed: 'Le chargement du profil utilisateur a échoué. Veuillez réessayer.',
     title: "Profils utilisateurs",
     detailTitle: "Détail du profil utilisateur",
     ownerUser: "Identifiant utilisateur",
@@ -135,7 +135,7 @@ export default {
     sessionId: "ID de session",
     requests: "Requêtes",
     health: "Santé",
-    loadError: "Échec du chargement de l'analyse client"
+    loadError: 'Le chargement de l\'analyse client a échoué. Veuillez réessayer.'
   },
   taskAnalytics: {
     title: "Analyse des tâches",
@@ -151,7 +151,7 @@ export default {
     sessionId: "ID de session",
     requests: "Requêtes",
     health: "Santé",
-    loadError: "Échec du chargement de l'analyse des tâches"
+    loadError: 'Le chargement de l\'analyse des tâches a échoué. Veuillez réessayer.'
   },
   config: {
     title: 'Configuration de session',
@@ -319,8 +319,8 @@ export default {
     promptInjectionRuleSearchPlaceholder: "Rechercher un nom ou une description…",
     promptInjectionRuleSaveSuccess: "Règle mise à jour",
     promptInjectionPolicySaveSuccess: "Politique enregistrée",
-    promptInjectionLoadError: "Échec du chargement",
-    promptInjectionSaveError: "Échec de l'enregistrement",
+    promptInjectionLoadError: 'Le chargement de la configuration de détection d\'injection de prompts a échoué. Veuillez réessayer.',
+    promptInjectionSaveError: 'L\'enregistrement de la configuration de détection d\'injection de prompts a échoué. Veuillez réessayer.',
     promptInjectionSectionAdvanced: "Entrées avancées",
     promptInjectionLinkEngines: "Moteurs LLM",
     promptInjectionLinkEnginesHint: "Configurer les modèles, température et prompts pour la détection LLM",

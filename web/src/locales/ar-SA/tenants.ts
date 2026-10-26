@@ -15,7 +15,7 @@ export default {
     colContact: "البريد الإلكتروني للتواصل",
     colCreated: "تاريخ الإنشاء",
     empty: 'لا يوجد مستأجرون بعد',
-    loadFailed: "فشل التحميل"
+    loadFailed: 'تعذّر تحميل قائمة المستأجرين. أعد المحاولة.'
   },
   create: {
     title: "إنشاء مستأجر",
@@ -33,7 +33,7 @@ export default {
     creating: "جاري الإنشاء…",
     cancel: "إلغاء",
     codeAndNameRequired: "لا يمكن أن يكون code و name فارغين",
-    createFailed: "فشل الإنشاء",
+    createFailed: 'تعذّر إنشاء المستأجر. أعد المحاولة.',
     successTitle: "✅ تم إنشاء المستأجر بنجاح",
     successHint: "تم إنشاء المسؤول الافتراضي، تظهر كلمة المرور الأولية مرة واحدة فقط، يرجى حفظها بشكل آمن.",
     credTenant: "المستأجر",
@@ -115,8 +115,8 @@ export default {
     onboardingModelsHint: "لعرض النماذج المتاحة، أو إلى",
     onboardingKeys: "مفاتيح API",
     onboardingKeysHint: "لإصدار مفتاح وبدء الاستدعاء.",
-    loadFailed: "فشل التحميل",
-    detailLoadFailed: "فشل تحميل التفاصيل"
+    loadFailed: 'تعذّر تحميل لوحة معلومات المستأجر. أعد المحاولة.',
+    detailLoadFailed: 'تعذّر تحميل تفاصيل المستأجر. أعد المحاولة.'
 ,
     statCreditsConsumed: 'Total credits consumed',
 
@@ -132,7 +132,7 @@ export default {
     buyCredits: "شراء الأرصدة",
     refresh: "تحديث",
     loading: "جاري التحميل…",
-    loadFailed: "فشل التحميل",
+    loadFailed: 'تعذّر تحميل حساب المستأجر. أعد المحاولة.',
     walletQuotaRemaining: "حصة الاشتراك",
     walletQuotaHint: "تُصفَّر عند انتهاء كل دورة فوترة",
     walletGrantedBalance: "رصيد ائتماني",
@@ -169,7 +169,7 @@ export default {
     title: "الباقات والشحن",
     refresh: "تحديث",
     loading: "جاري التحميل…",
-    loadFailed: "فشل التحميل",
+    loadFailed: 'تعذّر تحميل معلومات التسعير. أعد المحاولة.',
     payChannelAlipay: "علي باي",
     payChannelWechat: "الدفع عبر WeChat",
     walletQuota: "حصة الاشتراك",
@@ -186,14 +186,14 @@ export default {
     creditsAmount: "{n} رصيد",
     buyNow: "اشترِ الآن",
     creatingOrder: "جاري إنشاء الطلب…",
-    createOrderFailed: "فشل إنشاء الطلب"
+    createOrderFailed: 'تعذّر إنشاء الطلب. أعد المحاولة.'
   },
   usage: {
     title: "استهلاكتي",
     adminTitle: "إحصاءات الاستهلاك",
     refresh: "تحديث",
     loading: "جاري التحميل…",
-    loadFailed: "فشل التحميل",
+    loadFailed: 'تعذّر تحميل تفاصيل الاستخدام. أعد المحاولة.',
     days7: "آخر 7 أيام",
     days30: "آخر 30 يومًا",
     ledgerLimit50: "أحدث 50 سجلًا",
@@ -223,7 +223,7 @@ export default {
   order: {
     title: "دفع الطلب",
     loading: "جاري التحميل…",
-    loadFailed: "فشل التحميل",
+    loadFailed: 'تعذّر تحميل قائمة الطلبات. أعد المحاولة.',
     qrPlaceholder: "ادفع بمسح الرمز (غير مفعّل)",
     stubNote: "لم يتم إعداد مزود الدفع. اتصل بالدعم مع رقم الطلب لإتمام الدفع.",
     paidNote: "✅ تم تأكيد الدفع. أُضيفت الأرصدة إلى حسابك.",

@@ -66,7 +66,7 @@ export default {
       start: "開始掃描",
       running: "掃描中…",
       done: "掃描完成：發現 {n} 個模型，請審查結果",
-      failed: "掃描失敗"
+      failed: '掃描沒能完成，請重試'
     },
   task: {
       listTitle: "發現任務（{n}）",

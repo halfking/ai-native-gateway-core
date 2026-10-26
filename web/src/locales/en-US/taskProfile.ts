@@ -2,7 +2,7 @@
 export default {
     refresh: 'Refresh',
     refreshing: 'Refreshing…',
-    loadFailed: 'Failed to load',
+    loadFailed: 'The task profile could not be loaded. Please retry.',
     noData: 'No profile data',
   registry: {
     version: 'Registry version',

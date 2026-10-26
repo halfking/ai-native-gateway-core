@@ -3,7 +3,7 @@ export default {
     emptyHint: "Sitzungen erscheinen, sobald eine gw_session_id aus Anfrage-Logs generiert wurde",
   },
   userProfile: {
-    loadFailed: 'Benutzerprofil konnte nicht geladen werden',
+    loadFailed: 'Benutzerprofil konnte nicht geladen werden. Bitte erneut versuchen.',
     title: "Benutzerprofile",
     detailTitle: "Benutzerprofildetails",
     ownerUser: "Benutzer-ID",
@@ -130,7 +130,7 @@ export default {
     sessionId: "Sitzungs-ID",
     requests: "Anfragen",
     health: "Gesundheit",
-    loadError: "Client-Analyse konnte nicht geladen werden"
+    loadError: 'Client-Analyse konnte nicht geladen werden. Bitte erneut versuchen.'
   },
   taskAnalytics: {
     title: "Aufgaben-Analyse",
@@ -146,7 +146,7 @@ export default {
     sessionId: "Sitzungs-ID",
     requests: "Anfragen",
     health: "Gesundheit",
-    loadError: "Aufgaben-Analyse konnte nicht geladen werden"
+    loadError: 'Aufgaben-Analyse konnte nicht geladen werden. Bitte erneut versuchen.'
   },
   config: {
     title: 'Sitzungskonfiguration',
@@ -314,8 +314,8 @@ export default {
     promptInjectionRuleSearchPlaceholder: "Regelname oder Beschreibung suchen…",
     promptInjectionRuleSaveSuccess: "Regel aktualisiert",
     promptInjectionPolicySaveSuccess: "Richtlinie gespeichert",
-    promptInjectionLoadError: "Laden fehlgeschlagen",
-    promptInjectionSaveError: "Speichern fehlgeschlagen",
+    promptInjectionLoadError: 'Prompt-Injection-Konfiguration konnte nicht geladen werden. Bitte erneut versuchen.',
+    promptInjectionSaveError: 'Prompt-Injection-Konfiguration konnte nicht gespeichert werden. Bitte erneut versuchen.',
     promptInjectionSectionAdvanced: "Erweiterte Einträge",
     promptInjectionLinkEngines: "LLM-Engines",
     promptInjectionLinkEnginesHint: "Modelle, Temperatur und Prompts für LLM-Erkennung konfigurieren",

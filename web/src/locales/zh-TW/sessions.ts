@@ -3,7 +3,7 @@ export default {
     emptyHint: "會話在請求記錄產生 gw_session_id 後自動彙總顯示",
   },
   userProfile: {
-    loadFailed: '使用者輪廓載入失敗',
+    loadFailed: '使用者畫像沒能載入出來，請重試',
     title: "使用者畫像",
     detailTitle: "使用者畫像詳情",
     ownerUser: "使用者識別",
@@ -130,7 +130,7 @@ export default {
     sessionId: "會話ID",
     requests: "請求數",
     health: "健康度",
-    loadError: "載入客戶端分析失敗"
+    loadError: '客戶端分析沒能載入出來，請重試'
   },
   taskAnalytics: {
     title: "任務分析",
@@ -146,7 +146,7 @@ export default {
     sessionId: "會話ID",
     requests: "請求數",
     health: "健康度",
-    loadError: "載入任務分析失敗"
+    loadError: '任務分析沒能載入出來，請重試'
   },
   config: {
     title: '會話配置',
@@ -314,8 +314,8 @@ export default {
     promptInjectionRuleSearchPlaceholder: "搜尋規則名稱或描述…",
     promptInjectionRuleSaveSuccess: "規則已更新",
     promptInjectionPolicySaveSuccess: "策略已儲存",
-    promptInjectionLoadError: "載入失敗",
-    promptInjectionSaveError: "儲存失敗",
+    promptInjectionLoadError: '提示詞注入設定沒能載入出來，請重試',
+    promptInjectionSaveError: '提示詞注入設定沒能儲存，請重試',
     promptInjectionSectionAdvanced: "進階入口",
     promptInjectionLinkEngines: "LLM 引擎管理",
     promptInjectionLinkEnginesHint: "配置用於智能檢測的模型、溫度與提示詞",

@@ -2,7 +2,7 @@
 export default {
     refresh: '重新整理',
     refreshing: '重新整理中…',
-    loadFailed: '載入失敗',
+    loadFailed: '自動調參沒能載入出來，請重試',
     panelTitle: '調參提案（批准即熱調參，5 分鐘內生效）',
     noProposals: '暫無提案（feedback_analyzer 會按視窗自動產生）',
   filter: {

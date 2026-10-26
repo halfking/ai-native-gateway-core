@@ -26,7 +26,7 @@ export default {
   // VibeCoding
   vibecoding: {
     title: 'VibeCoding',
-    loadFailed: '加载数据失败',
+    loadFailed: '数据没能加载出来，请重试',
     fillRequired: '请填写必填项',
     projects: '项目',
     sessions: '会话',
@@ -34,11 +34,11 @@ export default {
     createProject: '创建项目',
     createProjectTitle: '创建新项目',
     createProjectSuccess: '项目创建成功',
-    createProjectFailed: '项目创建失败',
+    createProjectFailed: '项目没能创建出来，请重试',
     newSession: '新会话',
     createSessionTitle: '创建新会话',
     createSessionSuccess: '会话创建成功',
-    createSessionFailed: '会话创建失败',
+    createSessionFailed: '会话没能创建出来，请重试',
     viewSessions: '查看会话',
     viewReviews: '查看审查',
     showAll: '显示全部',

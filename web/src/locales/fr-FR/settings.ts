@@ -23,10 +23,10 @@ export default {
   },
   detail: {
     errors: {
-      loadListFailed: 'Échec du chargement',
-      loadDetailFailed: 'Échec du chargement des détails',
-      saveFailed: 'Échec de l\'enregistrement',
-      rollbackFailed: 'Échec du rollback',
+      loadListFailed: 'Le chargement de la liste des paramètres a échoué. Veuillez réessayer.',
+      loadDetailFailed: 'Le chargement du détail des paramètres a échoué. Veuillez réessayer.',
+      saveFailed: 'L\'enregistrement des paramètres a échoué. Veuillez réessayer.',
+      rollbackFailed: 'La restauration de la version précédente n\'a pas pu aboutir. Veuillez réessayer.',
       invalidNumber: 'Veuillez saisir un nombre valide',
     },
   },

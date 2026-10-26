@@ -2,7 +2,7 @@
 export default {
     refresh: 'Aktualisieren',
     refreshing: 'Aktualisieren…',
-    loadFailed: 'Laden fehlgeschlagen',
+    loadFailed: 'Auto-Tuning konnte nicht geladen werden. Bitte erneut versuchen.',
     panelTitle: 'Tuning-Vorschläge (Freigabe = hotwirksam innerhalb 5 Min.)',
     noProposals: 'Noch keine Vorschläge (feedback_analyzer erzeugt sie pro Zeitfenster)',
   filter: {

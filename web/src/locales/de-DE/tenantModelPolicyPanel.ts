@@ -60,11 +60,11 @@ export default {
   },
 
   error: {
-    loadFailed: 'Laden fehlgeschlagen',
-    checkFailed: 'Validierung fehlgeschlagen',
+    loadFailed: 'Modellrichtlinie des Mandanten konnte nicht geladen werden. Bitte erneut versuchen.',
+    checkFailed: 'Validierung konnte nicht abgeschlossen werden. Bitte erneut versuchen.',
     canonicalNameRequired: 'canonical_name ist erforderlich',
-    createFailed: 'Erstellen fehlgeschlagen',
-    deleteFailed: 'Löschen fehlgeschlagen',
-    restoreFailed: 'Wiederherstellen fehlgeschlagen',
+    createFailed: 'Modellrichtlinie des Mandanten konnte nicht erstellt werden. Bitte erneut versuchen.',
+    deleteFailed: 'Modellrichtlinie des Mandanten konnte nicht gelöscht werden. Bitte erneut versuchen.',
+    restoreFailed: 'Modellrichtlinie des Mandanten konnte nicht wiederhergestellt werden. Bitte erneut versuchen.',
   },
 }

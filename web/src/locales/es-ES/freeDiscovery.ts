@@ -66,7 +66,7 @@ export default {
       start: "Iniciar escaneo",
       running: "Escaneando…",
       done: "Escaneo terminado: {n} modelos encontrados; revisa los resultados",
-      failed: "Falló el escaneo"
+      failed: 'No se pudo completar el escaneo. Vuelva a intentarlo.'
     },
   task: {
       listTitle: "Tareas de descubrimiento ({n})",

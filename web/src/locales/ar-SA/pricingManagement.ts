@@ -59,8 +59,8 @@ export default {
   tokenPlanSuffix: 'token_plan',
   saved: 'تم الحفظ',
   noChange: 'لا تغييرات',
-  saveFailed: 'فشل الحفظ',
+  saveFailed: 'تعذّر حفظ التسعير. أعد المحاولة.',
   copied: 'تم نسخ السعر',
   pasted: 'تم اللصق، احفظ لتفعيله',
-  failed: 'فشل الاستيراد',
+  failed: 'تعذّر استيراد قوالب التسعير. أعد المحاولة.',
 }

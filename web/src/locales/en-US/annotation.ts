@@ -74,7 +74,7 @@ export default {
     reason: 'Annotation Reason',
     annotator: 'Annotator',
     annotatedAt: 'Annotated At',
-    loadFailed: 'Failed to load first-turn detail',
+    loadFailed: 'The first-turn annotation detail could not be loaded. Please retry.',
     metaSection: 'First-Turn Metadata',
     requestSection: 'Request',
     annotationSection: 'Human Annotation',
@@ -97,7 +97,7 @@ export default {
     detailTitle: 'Annotation quality detail',
     refresh: 'Refresh',
     refreshing: 'Refreshing...',
-    loadFailed: 'Failed to load statistics',
+    loadFailed: 'The annotation stats could not be loaded. Please retry.',
     noData: 'No annotation stats yet. Finish a batch of annotations first, then check back.',
     totalAnnotations: 'Total Annotations',
     providerAccuracy: 'Provider Accuracy',
@@ -121,8 +121,8 @@ export default {
   // Success messages
 
   // Error messages
-  loadFailed: 'Failed to load annotation samples',
-  annotationFailed: 'Annotation failed',
+  loadFailed: 'The annotation samples could not be loaded. Please retry.',
+  annotationFailed: 'The annotation could not be completed. Please retry.',
   correctionWriteFailed: 'Correction write failed (annotation saved): {msg}',
 
   // Loading states
@@ -134,8 +134,8 @@ export default {
     exportBtn: 'Export CSV',
     importBtn: 'Import CSV',
     exportOk: 'Exported {name}',
-    exportFailed: 'Export failed',
+    exportFailed: 'The annotation task profile could not be exported. Please retry.',
     importOk: 'Imported {imported}, skipped {skipped}, errors {errors}',
-    importFailed: 'Import failed',
+    importFailed: 'The annotation task profile could not be imported. Please retry.',
   },
 }

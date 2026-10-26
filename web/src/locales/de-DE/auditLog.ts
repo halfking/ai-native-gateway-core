@@ -55,6 +55,6 @@ export default {
   },
 
   // 扁平键（供 Vue 组件直接使用）
-  loadFailed: 'Laden fehlgeschlagen',
+  loadFailed: 'Audit-Log-Liste konnte nicht geladen werden. Bitte erneut versuchen.',
   dash: '—',
 }

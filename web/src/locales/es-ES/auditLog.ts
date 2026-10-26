@@ -54,6 +54,6 @@ export default {
   },
 
   // 扁平键（供 Vue 组件直接使用）
-  loadFailed: 'Error al cargar',
+  loadFailed: 'No se pudo cargar la lista de registros de auditoría. Vuelva a intentarlo.',
   dash: '—',
 }

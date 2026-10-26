@@ -8,7 +8,7 @@ export default {
     refresh: 'تحديث',
     loading: 'جارٍ التحميل…',
     empty: 'لا توجد نماذج متاحة',
-    loadFailed: 'فشل التحميل',
+    loadFailed: 'تعذّر تحميل نماذج المستأجر. أعد المحاولة.',
     vendorSectionTitle: 'النماذج المتاحة',
   },
   columns: {

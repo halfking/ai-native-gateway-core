@@ -7,7 +7,7 @@ export default {
   submitting: 'Signing in…',
   error: {
     required: 'Please enter username and password',
-    failed: 'Sign-in failed',
+    failed: 'Sign-in could not be completed. Check the username and password, then retry.',
     apiKeyUnsupported: 'This account no longer signs in with an API key. Use your username and password instead. Ask an administrator for help.',
     badResponse: 'The sign-in response was malformed. Try again, or contact an administrator.',
   },
