@@ -10488,3 +10488,9 @@ macos-say :8086），纯 INSERT ON CONFLICT 幂等；生产应用由 deploy-seam
 `3fb06de5…` → `174f27ce…`；★ 上表登记的是**改名后**的指纹。
 ★ 登记台账 `sql/schema/installed_startup_migrations.tsv` 的 apply-order 索引：
 上游 910 = index 312，本条 911 = index 313。
+## 2026-10-26T22:27:58Z — deploy 245 build_seq 2879 (69434c88)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 911 | `911_local_audio_catalog.sql` | `174f27ce0f6435f0c39df5a61a9deb43fb621bdc087c2bed112feeeb034f56bb` | applied+verified |
+
