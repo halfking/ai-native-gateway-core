@@ -94,7 +94,7 @@ type docEvidence struct {
 	// certRef 指向审计档 §3.18.3 认证表里**对应同一语义对象**的那一行（如 `A1`）。
 	//
 	// ★★ 为什么需要它：★★ 本仓出现过「**同一交付里两份文件写了两组行号**」——
-	// ★★ 认证表 A1 说链在 `main.go:7725-7743`，而设计页写的是另一组
+	// ★★ 认证表 A1 说链在 `main.go:7741-7759`，而设计页写的是另一组
 	// ★★ ⇒ ⇒ 两份都是「权威」，却互相矛盾 ⇒ ⇒ 读者拿到哪份都可能是错的。
 	// ★★ ⇒ 门无法从「页面自己」发现这种矛盾 ⇒ ⇒ 必须引入**第三方**（认证表）来对拍。
 	//
@@ -110,18 +110,18 @@ type docEvidence struct {
 // ★★ **页面上每一处 `file:line` 引用都必须在表里**（C1 会核对覆盖面）。
 var requestSurfaceDocEvidence = []docEvidence{
 	{
-		file: "cmd/gateway/main.go", from: 7725, to: 7743,
+		file: "cmd/gateway/main.go", from: 7741, to: 7759,
 		mustContain: "middleware.NewRecoveryMiddleware()", kind: evidenceCode,
 		certRef: "A1",
 		why:     "HTTP 中间件链本体（Recovery 起、SecurityHeaders 止）★ 与认证表 A1 同一语义对象",
 	},
 	{
-		file: "cmd/gateway/main.go", from: 7727, to: 7734,
+		file: "cmd/gateway/main.go", from: 7743, to: 7750,
 		mustContain: "Logging 必须排在 Auth", kind: evidenceComment,
 		why: "「Logging 必须在 Auth 之外」的**自陈注释**",
 	},
 	{
-		file: "cmd/gateway/main.go", from: 7716, to: 7721,
+		file: "cmd/gateway/main.go", from: 7732, to: 7737,
 		mustContain: "maintain 与 mobile 两个挂载必须组合在链", kind: evidenceComment,
 		why: "「maintain/mobile 必须组合在链内」的**自陈注释**",
 	},
