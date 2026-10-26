@@ -119,9 +119,18 @@
 #   bash scripts/audit/extract-admin-routes.sh --root /path/to/other/checkout --out /tmp/x.tsv
 #
 #   # 刷新仓内快照（★ 改完源码后必须做，否则防漂移门会红）：
-#   bash scripts/audit/extract-admin-routes.sh --out scripts/audit/asset/admin-routes.new \
-#     && { head -1 scripts/audit/asset/admin-routes.txt; \
-#          cat scripts/audit/asset/admin-routes.new; } > scripts/audit/asset/admin-routes.txt
+#   # ★★ 用 --update-snapshot（★ 2026-10-27 合并轮新增 ⇒ 下面这行**不要**再照抄旧的）：
+#   bash scripts/audit/extract-admin-routes.sh --update-snapshot
+#   #
+#   # ★★ 【为什么旧的写法被废弃】★★ 旧写法是：
+#   #   bash scripts/audit/extract-admin-routes.sh --out scripts/audit/asset/admin-routes.new \
+#   #     && { head -1 scripts/audit/asset/admin-routes.txt; \
+#   #          cat scripts/audit/asset/admin-routes.new; } > scripts/audit/asset/admin-routes.txt
+#   # ★★ 它的 `>` **先截断**目标文件、`{ … }` **后读** ⇒ ⇒ **口径说明头被整行丢掉**
+#   # ★★ ⇒ 5 道 admin-routes 门全红，而红的原因**不指向真正的原因**；
+#   # ★★ ⇒ 且即便头没丢，头里的「数据行数=N」也是**旧值** ⇒ 门**照样红**。
+#   # ⇒ ⇒ `--update-snapshot` 一次做对三件事：★ 先复制再读头（无截断竞态）、
+#   # ⇒ ⇒ ★ 重铸头里的行数（头与数据一致）、★ 临时文件 + mv 原子替换。
 #
 #   # 跑防漂移门：
 #   go test ./scripts/ursmcheck/ -run 'TestAdminRoutes' -count=1 -v
@@ -144,6 +153,7 @@ DEFAULT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 ROOT="$DEFAULT_ROOT"
 OUT=""
 VERBOSE=0
+UPDATE_SNAPSHOT=0
 
 usage() {
 	sed -n '2,/^# ----/p' "$SELF" | sed 's/^# \{0,1\}//'
@@ -167,6 +177,10 @@ while [ $# -gt 0 ]; do
 		;;
 	--out=*)
 		OUT="${1#--out=}"
+		shift
+		;;
+	--update-snapshot)
+		UPDATE_SNAPSHOT=1
 		shift
 		;;
 	-v | --verbose)
@@ -198,8 +212,11 @@ ROOT="$(cd "$ROOT" && pwd)"
 TMP_OUT="$(mktemp "${TMPDIR:-/tmp}/extract-admin-routes.XXXXXX")"
 TMP_OUT_RAW="$(mktemp "${TMPDIR:-/tmp}/extract-admin-routes-raw.XXXXXX")"
 TMP_LIST="$(mktemp "${TMPDIR:-/tmp}/extract-admin-routes-list.XXXXXX")"
+SNAP_HDR=""
+SNAP_NEW=""
 cleanup() {
-	rm -f "$TMP_OUT" "$TMP_OUT_RAW" "$TMP_LIST"
+	rm -f "$TMP_OUT" "$TMP_OUT_RAW" "$TMP_LIST" \
+		${SNAP_HDR:+"$SNAP_HDR"} ${SNAP_NEW:+"$SNAP_NEW"}
 }
 trap cleanup EXIT INT TERM
 
@@ -307,6 +324,48 @@ UNIQ_COUNT="$(cut -f1 "$TMP_OUT" | LC_ALL=C sort -u | wc -l | tr -d ' ')"
 if [ "$REG_COUNT" -eq 0 ]; then
 	echo "抽取到 0 条登记 ⇒ 量具静默失效（口径或扫描范围被改坏了）" >&2
 	exit 70
+fi
+
+if [ "$UPDATE_SNAPSHOT" -eq 1 ]; then
+	# ★★ --update-snapshot：原地刷新仓内快照（★ 2026-10-27 合并轮新增）。
+	#
+	# ★★ **为什么要有这个模式**：★ 原头部注释里给的「刷新仓内快照」写法是
+	# ★★   bash scripts/audit/extract-admin-routes.sh --out .../admin-routes.new \
+	# ★★     && { head -1 .../admin-routes.txt; cat .../admin-routes.new; } > .../admin-routes.txt
+	# ★★ ⇒ ★★ **这一行是破坏性的**：★ `> .../admin-routes.txt` 会在 `{ … }` 子shell
+	# ★★ **读之前**就把目标文件**截断成空** ⇒ ⇒ `head -1` 读到的是**空** ⇒
+	# ★★ ⇒ **快照的口径说明头被整行丢掉** ⇒ ⇒ 5 道 admin-routes 门全部红，
+	# ★★ ⇒ 而红的原因（"第一行不是 # 开头的口径说明头"）**指向快照内容**，
+	# ★★ ⇒ **完全不指向真正的原因**（那行 shell 的重定向顺序）。
+	# ★★ ⇒ 而且即便头没丢，★ 头里自述的「数据行数=N」也是**旧值**
+	# ★★ ⇒ 门的「头与数据必须一致」断言**照样红** ⇒ ⇒ 照抄文档的人**必然撞红**。
+	#
+	# ★★ 本模式把三件事一次做对：
+	#   ① 先把旧快照**复制**到临时文件再读头（★ 不碰原文件 ⇒ 没有截断竞态）；
+	#   ② 把头里的「数据行数=N」**改写成新行数**（★ 门要求头与数据一致）；
+	#   ③ 先写临时文件、再 `mv` 覆盖（★ 原子替换 ⇒ 中途失败不会留下半个快照）。
+	SNAP_REL="scripts/audit/asset/admin-routes.txt"
+	SNAP="$ROOT/$SNAP_REL"
+	[ -f "$SNAP" ] || {
+		echo "仓内快照不存在：${SNAP}（不能凭空造头 ⇒ 先确认路径）" >&2
+		exit 64
+	}
+	SNAP_HDR="$(mktemp "${TMPDIR:-/tmp}/extract-admin-routes-hdr.XXXXXX")"
+	SNAP_NEW="$(mktemp "${TMPDIR:-/tmp}/extract-admin-routes-snap.XXXXXX")"
+	# ★ 先复制再读头：★ 目标文件全程不被打开为写 ⇒ 没有「截断在前、读在后」的竞态。
+	head -1 "$SNAP" >"$SNAP_HDR"
+	if ! grep -q '数据行数=[0-9]' "$SNAP_HDR"; then
+		echo "快照头里没有「数据行数=N」⇒ 不敢替你重铸头（先人工确认口径说明行）" >&2
+		rm -f "$SNAP_HDR" "$SNAP_NEW"
+		exit 70
+	fi
+	# ★ 重铸头里的行数：★ 只替换这一处，其余口径说明逐字保留。
+	sed "s/数据行数=[0-9][0-9]*/数据行数=$REG_COUNT/" "$SNAP_HDR" >"$SNAP_NEW"
+	cat "$TMP_OUT" >>"$SNAP_NEW"
+	mv "$SNAP_NEW" "$SNAP"
+	rm -f "$SNAP_HDR"
+	echo "已刷新仓内快照：${SNAP_REL}（${REG_COUNT} 条登记 / ${UNIQ_COUNT} 条唯一 path）" >&2
+	exit 0
 fi
 
 if [ -n "$OUT" ]; then

@@ -183,9 +183,17 @@ var knownStartupChainConcurrencyViolations = map[string]int{
 	// 用 CONCURRENTLY 是因为该表是活写表（event_writer 每请求一次 upsert）；
 	// 删除旧复合索引同样走 DROP INDEX CONCURRENTLY（不能拿强锁堵住活写表）。
 	//
-	// 计数 3：一条 CREATE UNIQUE INDEX CONCURRENTLY + 两条 DROP INDEX CONCURRENTLY
-	// （845 复合索引 + 重跑兜底的 tmp 清理）。
-	"902_stats_event_dedup_pkey_include.sql": 3,
+	// 计数 4：一条 CREATE UNIQUE INDEX CONCURRENTLY + 两条 DROP INDEX CONCURRENTLY
+	// （845 复合索引 + 重跑兜底的 tmp 清理）+ **形状校验块里的一处提及**
+	// （RAISE NOTICE 文案里提到的 "previously failed CONCURRENTLY build"）。
+	//
+	// ★★ 2026-10-27（12h 审计轮）**订正**：★ 本条原先登记 3，★ 但该文件里
+	// ★★ 剥注释后的 CONCURRENTLY 文本共 **4** 处 ⇒ ★★ 「复核结论」少算了一处
+	// ★★ ⇒ ★★ 而本表里的计数**就是复核结论的载体** ⇒ ★★ 少算 = 结论不完整。
+	// ★★ 订正后与同族口径一致（★ 888 = 4 条语句 + 1 处提及 = 5；
+	// ★★ 898 = 1 条语句 + 2 处提及 = 3）⇒ ★★ 计数口径 = 「剥注释后**全部**
+	// ★★ CONCURRENTLY 文本出现次数」，★ 不分「语句」与「提及」。
+	"902_stats_event_dedup_pkey_include.sql": 4,
 	// 908（2026-10-24 R147 存储效率续轮，㉘ 裁决落地）与 845/888/898/902 同类：
 	// 携带 dbinit:no-transaction 标记 ⇒ 非事务通道。删除 route_incident_events
 	// 的零消费方索引 idx_route_incident_events_type_created（110 MB）。
@@ -362,6 +370,46 @@ func stripNoTransactionMarker(raw []byte) []byte {
 		out = append(out, line)
 	}
 	return []byte(strings.Join(out, "\n"))
+}
+
+// TestKnownStartupChainConcurrencyViolationsStayAccurate guards the
+// **accuracy** of the exemption ledger — not just that its names exist.
+//
+// ★★ 2026-10-27（12h 审计轮）新增：★ 审计发现这张表**只被读名字**、
+// ★★ 它登记的**计数**（每个文件里 CONCURRENTLY 的条数）**从不被断言**
+// ★★ ⇒ ★★ 表可以与文件**悄悄漂移**：★ 文件改了（加/删一条 CONCURRENTLY）
+// ★★ 而表里的计数不变 ⇒ ★★ 「已复核豁免」这条**人类可读的凭据**就变成了
+// ★★ **过期文档** ⇒ ★★ 而表里的注释正是**复核结论的唯一载体**
+// ★★ ⇒ ★★ 复核结论过期了却没人知道。
+// ★★ 实测当时就有漂移：★ 902 登记 3、实际 4。
+//
+// ★★★ 本门断言三件事（逐条都是「可机械复核」的，不依赖人眼）：
+// ① 表里的每个名字在 embeddata/startup/ 下**存在**（否则是陈旧条目）；
+// ② 表里登记的**计数** == 该文件里**实际**的 CONCURRENTLY 条数（剥注释后）；
+// ③ 每个被登记的文件**确实**还有 CONCURRENTLY（否则它根本不需要豁免）。
+//
+// ★★ 口径与判定门**同一份字节**：都用 countConcurrentlyIn（剥注释后计数）
+// ★★ ⇒ 「量具」与「被测物」不会错位。
+func TestKnownStartupChainConcurrencyViolationsStayAccurate(t *testing.T) {
+	t.Helper()
+	embedDir := filepath.Join("embeddata", "startup")
+	for name, want := range knownStartupChainConcurrencyViolations {
+		path := filepath.Join(embedDir, name)
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			t.Errorf("豁免表登记了 %q，但 embeddata/startup/ 下没有这个文件 ⇒ 陈旧条目（豁免了空气）", name)
+			continue
+		}
+		got := countConcurrentlyIn(raw)
+		if got != want {
+			t.Errorf("豁免表登记 %q 的计数是 %d，实际是 %d ⇒ ★ 复核结论已过期（文件改过而表没跟上）\n"+
+				"★ ⇒ 修法：核对该文件的 CONCURRENTLY 条数后更新表里的计数与理由注释",
+				name, want, got)
+		}
+		if got == 0 {
+			t.Errorf("豁免表登记了 %q，但该文件里已经没有 CONCURRENTLY 了 ⇒ 它不需要豁免（表在豁免一个无害的文件）", name)
+		}
+	}
 }
 
 // TestPsqlConcurrencyRequiredNamesStillExist guards the exemption list itself:
