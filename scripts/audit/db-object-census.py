@@ -63,6 +63,19 @@
 ★ 坑三：**后来的迁移会 DROP 早期的索引**（★ 93 个 DROP INDEX，★ 其中 34 个是
    「建过又删掉」）⇒ ⇒ ★★ 期望集必须做【建了 ∧ 没被删】的差集，★ 否则全是假缺口。
 
+★★ ★★ 坑四（R162 轮定位，★ **R161 第一版踩的**）：★★ **DROP 的名字带 schema 前缀**！
+   `DROP INDEX IF EXISTS public.foo` ⇒ 正则抓到 `public.foo`
+   ⇒ 而 CREATE 侧存的是裸名 `foo`
+   ⇒ ⇒ ★★ 差集 `created - dropped` **永远匹配不上**
+   ⇒ ⇒ ★★ **被后续迁移明确退役的索引仍然留在期望集里**
+   ⇒ ⇒ ★★ 台账于是把它们记成「三环境都没建」⇒ ★★ 实测 **43 条**
+   ⇒ ⇒ ★★ 而它们在三个环境**确实都不存在** ⇒ ⇒ ★★ **43 条全是工具造的假缺口**
+   ⇒ ⇒ ★★ 更糟的是：**照台账去「补建」就会复活被刻意退役的索引**
+   ⇒ ⇒ ★★ 修法：DROP 侧也取裸名（★ `_bare_name`）⇒ ★★ 期望集 852 → **834**
+   ⇒ ⇒ ★★ 三环境同缺 43 → **0** ⇒ ★★ ⇒ **三环境在索引层面完全一致**
+   ⇒ ⇒ ★★ ★★ 教训：**「两处实现互证」也可能同源同错** ⇒ ★★ 那时互证是零信息
+   ⇒ ⇒ ★★ （★ R161 的 Go 门当时也没剥 ⇒ ★★ ★★ 必须验「第二份实现是否带同一个 bug」）
+
 # ★★ 还有一个坑（本工具第一版自己踩的，★ 写在最前面因为它会毁掉整个底账）
 
 ★★★ ★ **PG 17 的 `pg_get_indexdef()` 会【换行】**（★ 长的索引表达式会被 pretty-print 折行）
@@ -71,12 +84,18 @@
    ★★ **每个文本字段都被 `replace(replace(…, E'\\n', ' '), E'\\t', ' ')` 折成单行**。
    ⇒ ★★ 这不是洁癖：★★ **量具自己坏了 ⇒ 后面所有读数都是假的。**
 
-# 底账 TSV 格式（★ `collect` 的产物，★ 15 列）
+# 底账 TSV 格式（★ `collect` 的产物，★ **17 列**（★ R162 从 15 列扩到 17 列））
 
     #env<TAB>kind<TAB>schema<TAB>relkind<TAB>name<TAB>owner<TAB>ispartition<TAB>
     #partition_bound<TAB>parent_table<TAB>reltuples<TAB>table_size<TAB>total_size<TAB>
-    #definition<TAB>flags<TAB>parent_index
+    #definition<TAB>flags<TAB>parent_index<TAB>index_columns<TAB>index_predicate
     local<TAB>idx<TAB>public<TAB>i<TAB>idx_x<TAB>llm_gateway<TAB>…<TAB>true,true,true<TAB>
+    …<TAB>tenant_id,session_id<TAB>
+
+    ★★ R162 为什么加这两列：★★ 覆盖判据（「某条查询的过滤列/排序列有没有索引可用」）
+    ★★ 必须读【结构化列序】⇒ ★★ 解析 `pg_get_indexdef` 的文本太脆（★ 表达式索引 /
+    ★★ INCLUDE / opclass 都会让文本解析失真）⇒ ★★ 所以直接把 `indkey` 展开成列名序列。
+    ★★ `index_predicate` 用来区分【部分索引】（★ 只有查询带同样谓词才可用）。
 
 # 期望集 TSV 格式（★ `expect` 的产物，★ 5 列）
 
@@ -86,7 +105,16 @@
 # 缺口台账 TSV 格式（★ `reconcile` 的产物，★ 8 列）
 
     #migration_no<TAB>index_name<TAB>table<TAB>local<TAB>252<TAB>211<TAB>verdict<TAB>severity
-    909<TAB>idx_session_summaries_title_trgm<TAB>session_summaries<TAB>present<TAB>present<TAB>missing<TAB>gap<TAB>production-gap
+    909<TAB>idx_session_summaries_title_trgm<TAB>session_summaries<TAB>present<TAB>present<TAB>missing<TAB>gap<TAB>prod-partial-gap
+
+    ★★ severity 词表（★ R162 修掉了 R161 的「命名与语义相反」）：
+        none | local-only-gap | prod-partial-gap | prod-full-gap
+    ★★ **给定三个格子状态，severity 唯一确定** ⇒ ★★ 门可以机械校验。
+
+# 退役证据台账格式（★ `retired` 的产物，★ 8 列）
+
+    #create_migration_no<TAB>index_name<TAB>table<TAB>create_file<TAB>
+    #retire_migration_no<TAB>retire_file<TAB>conditional<TAB>retire_line
 
 ★ 本文件不含任何凭据；★ 也不含任何生产主机口令。
 """
@@ -124,6 +152,8 @@ SELECT 'rel'
     || E'\t' || ''
     || E'\t' || ''
     || E'\t' || ''
+    || E'\t' || ''
+    || E'\t' || ''
   FROM pg_class c
   JOIN pg_namespace n ON n.oid = c.relnamespace
  WHERE n.nspname NOT IN ('pg_catalog', 'information_schema', 'pg_toast')
@@ -144,6 +174,13 @@ SELECT 'idx'
     || E'\t' || replace(replace(pg_get_indexdef(i.oid), E'\n', ' '), E'\t', ' ')
     || E'\t' || x.indisvalid::text || ',' || x.indisready::text || ',' || x.indislive::text
     || E'\t' || coalesce((SELECT pc.relname FROM pg_inherits inh JOIN pg_class pc ON pc.oid = inh.inhparent WHERE inh.inhrelid = i.oid LIMIT 1), '')
+    || E'\t' || replace(replace(coalesce((SELECT string_agg(
+              CASE WHEN k.ord > x.indnkeyatts THEN a.attname || ' INCLUDE'
+                   WHEN x.indoption[k.ord - 1] & 1 = 1 THEN a.attname || ' DESC'
+                   ELSE a.attname END, ',' ORDER BY k.ord)
+            FROM unnest(x.indkey) WITH ORDINALITY AS k(attnum, ord)
+            JOIN pg_attribute a ON a.attrelid = x.indrelid AND a.attnum = k.attnum), ''), E'\n', ' '), E'\t', ' ')
+    || E'\t' || replace(replace(coalesce(pg_get_expr(x.indpred, x.indrelid), ''), E'\n', ' '), E'\t', ' ')
   FROM pg_index x
   JOIN pg_class i ON i.oid = x.indexrelid
   JOIN pg_namespace n ON n.oid = i.relnamespace
@@ -160,6 +197,8 @@ SELECT 'ext'
     || E'\t' || ''
     || E'\t' || e.extversion
     || E'\t' || ''
+    || E'\t' || ''
+    || E'\t' || ''
   FROM pg_extension e
   JOIN pg_namespace n ON n.oid = e.extnamespace
  ORDER BY 1;
@@ -171,10 +210,12 @@ SELECT 'srv'
     || E'\t' || current_setting('shared_buffers') || ',' || current_setting('work_mem')
            || ',' || current_setting('max_connections') || ',' || current_setting('effective_cache_size')
     || E'\t' || ''
+    || E'\t' || ''
+    || E'\t' || ''
   ;
 """
 
-CENSUS_COLUMNS = 15  # env + 14
+CENSUS_COLUMNS = 17  # env + 16
 RECONCILE_COLUMNS = 8
 
 RE_CREATE_INDEX = re.compile(
@@ -191,6 +232,22 @@ RE_LINE_COMMENT = re.compile(r"--[^\n]*")
 
 def _strip_name(raw: str) -> str:
     return raw.strip().strip('"').lower()
+
+
+def _bare_name(raw: str) -> str:
+    """★★ 剥掉 schema 前缀后的【裸名】。
+
+    ★★ R162 轮定位到的 R161 真缺陷（★ **差集失效 ⇒ 43 条假缺口**）：
+       `RE_DROP_INDEX` 抓到的是 `DROP INDEX IF EXISTS public.foo` ⇒ 整串带 schema 前缀；
+       而 `created` 侧存的是裸名 `foo`
+       ⇒ ⇒ `created - dropped` 永远匹配不上 ⇒ ★★ **被后续迁移明确 DROP 掉的索引
+       ⇒ ⇒ 仍然留在期望集里 ⇒ ⇒ 缺口台账把它们记成「三环境都没建」**
+       ⇒ ⇒ 而它们在三个环境**确实都不存在** ⇒ ⇒ ★★ **43 条假缺口是工具造的，不是环境差异**。
+
+    ★★ 所以 DROP 侧必须也取裸名 ⇒ ★★ 这一行是 R161 工具与 R161 门【同源同错】的根因
+       （★★ Go 侧 `dbObjStripName` 当时也没剥 ⇒ ★★ 「第二份独立实现互证」对这批是零信息）。
+    """
+    return _strip_name(raw).split(".")[-1]
 
 
 def die(msg: str, code: int = 3):
@@ -245,7 +302,7 @@ def derive_expected():
             created[name] = (mig, table, fn)
 
         for m in RE_DROP_INDEX.finditer(body):
-            dropped.add(_strip_name(m.group(1)))
+            dropped.add(_bare_name(m.group(1)))
 
     # ★★ 坑三：后来的迁移删掉了早期的索引 ⇒ 期望集要取差集
     expected = {k: v for k, v in created.items() if k not in dropped}
@@ -379,12 +436,18 @@ def parse_census(path):
                 )
             env = parts[0]
             kind = parts[1]
-            e = envs.setdefault(env, {"idx": set(), "children": {}, "rels": {}})
+            e = envs.setdefault(env, {"idx": set(), "children": {}, "rels": {},
+                                      "idxcols": {}, "idxpred": {}})
             if kind == "idx":
                 e["idx"].add(parts[4])
                 parent = parts[14]
                 if parent:
                     e["children"].setdefault(parent, []).append(parts[4])
+                # ★★ 结构化的索引列序列（★ R162 新增）
+                #    ★★ 覆盖判据必须读【结构化列序】，★ 解析 pg_get_indexdef 文本太脆
+                #    （★ 表达式索引 / INCLUDE / opclass 都会让文本解析失真）
+                e["idxcols"].setdefault(parts[4], parts[15])
+                e["idxpred"].setdefault(parts[4], parts[16])
             elif kind == "rel":
                 e["rels"][parts[4]] = parts[3]
     if not envs:
@@ -424,6 +487,38 @@ def classify(env_state, index_name, table):
     return "missing"
 
 
+def _severity(cells, envs, prod_envs):
+    """★★ severity 词表（★ R162 轮修掉了 R161 的**命名与语义相反**）。
+
+    ★★ R161 第一版写的是：
+        prod_hole ⇒ "production-gap"；否则 ⇒ "all-env-gap"
+    ⇒ ⇒ ★★ 于是「**只有 local 缺**」（★ 生产环境其实齐备）被判成 `all-env-gap`
+    ⇒ ⇒ ★★ 而「**三环境全缺**」（★ 一致退役）被判成 `production-gap`
+    ⇒ ⇒ ★★ **词表名与判据完全相反** ⇒ ★★ 谁读这份台账都会读反
+    ⇒ ⇒ ★★ 而且 R161 的门只校验计数（G6 棘轮）⇒ ★★ **门绿掩盖了这个缺陷**
+    ⇒ ⇒ ★★ 这是「R160 教训：规则与判据矛盾 ⇒ 门会逼人撒谎」的又一例。
+
+    ★★ 现在词表改成【每个格子组合唯一确定】的 4 值：
+
+        none              —— 任何环境都不缺
+        local-only-gap    —— 只有 local 缺（★ 生产环境 252/211 都齐备 ⇒ 影响面最小）
+        prod-partial-gap  —— 生产环境里【缺一部分】（★ 252 或 211 其一缺）
+        prod-full-gap     —— 生产环境【全都】缺（★ 252 与 211 都缺 ⇒ 影响面最大）
+
+    ⇒ ★★ **给定三个格子状态，severity 唯一确定** ⇒ ⇒ 门可以机械校验
+    ⇒ ⇒ ★★ **不会出现「同一个词对应两种意思」** ⇒ ★★ 这才是可机器判的前提。
+    """
+    missing = {e for e, c in zip(envs, cells) if c == "missing"}
+    if not missing:
+        return "none"
+    if missing == {"local"}:
+        return "local-only-gap"
+    prod_missing = missing & set(prod_envs)
+    if len(prod_missing) == len(prod_envs):
+        return "prod-full-gap"
+    return "prod-partial-gap"
+
+
 ENV_ORDER = ["local", "252", "211"]
 
 
@@ -459,12 +554,7 @@ def cmd_reconcile(args):
         prod_hole = any(c == "missing" for e, c in zip(envs, cells) if e in prod_envs)
         if prod_hole:
             prod_gaps += 1
-        if not is_gap:
-            severity = "none"
-        elif prod_hole:
-            severity = "production-gap"
-        else:
-            severity = "all-env-gap"
+        severity = _severity(cells, envs, prod_envs)
         rows.append(
             "\t".join(
                 [mig, name, table] + cells + ["gap" if is_gap else "complete", severity]
@@ -476,7 +566,7 @@ def cmd_reconcile(args):
         "# ★ 生成器：scripts/audit/db-object-census.py reconcile\n"
         "# ★ 列：migration_no\tindex_name\ttable\t%s\tverdict\tseverity\n"
         "# ★ 状态词：present | present-via-child | missing | retired\n"
-        "# ★ verdict：complete | gap　　severity：none | production-gap | all-env-gap\n"
+        "# ★ verdict：complete | gap　　severity：none | local-only-gap | prod-partial-gap | prod-full-gap\n"
         "# ★ generated_at=%s\n"
         "# ★ expected=%d envs=%s gaps_by_env=%s production_gaps=%d\n"
     ) % (
@@ -508,6 +598,107 @@ def cmd_reconcile(args):
 
 
 # ─────────────────────────── selftest ───────────────────────────
+
+
+
+def cmd_retired(args):
+    """★ 退役证据台账：★【建了又被后来的迁移删掉】的索引 ⇒ 每一条都带退役出处。
+
+    ★★ 为什么要有这张台账：★ R161 的期望集靠「建了 − 被删」做差集（★ 正确），
+    ★★ 但 R161 第一版的 DROP 正则抓到的是【带 schema 前缀的名字】⇒ ★★ 差集失效
+    ★★ ⇒ ★★ 被明确退役的索引仍留在期望集里 ⇒ ★★ 台账把它们记成「真缺口」
+    ★★ ⇒ ★★ **任何人照台账去「补建」，就会复活被刻意退役的索引**（★ 比如 876
+    ★★ 退役 `idx_sessions_session_id` 是因为它已被前缀覆盖，★ 复活它是纯浪费写入）。
+
+    ★★ 所以这张台账的作用是：**让「不是缺口」有据可查** ⇒
+    ★★   index_name ← retire_migration ← retire_file ← conditional
+    ★★ ⇒ ★★ 门可以据此断言「期望集里没有已退役的索引」⇒ ★★ 假缺口不可能再复活。
+    """
+    created, dropped_events, guarded = derive_retirement()
+    rows = []
+    for name in sorted(created):
+        if name not in dropped_events:
+            continue
+        mig, table, fn = created[name]
+        for (rmig, rfn, rline) in dropped_events[name]:
+            rows.append(
+                "\t".join(
+                    [
+                        str(mig),
+                        name,
+                        table,
+                        fn,
+                        str(rmig),
+                        rfn,
+                        "yes" if guarded.get((rfn, rline)) else "no",
+                        str(rline),
+                    ]
+                )
+            )
+    text = "\n".join(rows) + ("\n" if rows else "")
+    header = (
+        "# db-object-retired.tsv —— ★【建了又被后来的迁移删掉】的索引（★ 退役证据台账）\n"
+        "# ★ 生成器：scripts/audit/db-object-census.py retired\n"
+        "# ★ 列：create_migration_no\tindex_name\ttable\tcreate_file\t"
+        "retire_migration_no\tretire_file\tconditional\tretire_line\n"
+        "# ★ conditional=yes ⇒ ★ 该 DROP 在 DO 块内（★ 有前置证明才退役，★ 如 876 的覆盖证明）\n"
+        "# ★ generated_at=%s\n"
+        "# ★ retired_indexes=%d retire_events=%d\n"
+    ) % (
+        datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        len(created),
+        len(rows),
+    )
+    out = header + text
+    if args.out:
+        with open(args.out, "w", encoding="utf-8") as fh:
+            fh.write(out)
+        sys.stderr.write("retired: %d events -> %s\n" % (len(rows), args.out))
+    else:
+        sys.stdout.write(out)
+    return 0
+
+
+def derive_retirement():
+    """★ 反解「建了又被删」的索引 ⇒ (created, dropped_events, guarded)。
+
+    ★★ `guarded` 判据 = 该 DROP 语句是否落在一个 `DO $$ … $$` 块内
+    ★★ （★ ★★ 结构判据不是文本猜：★ 876 的 DROP 只在「覆盖证明通过」时才真删）
+    """
+    if not os.path.isdir(MIGRATIONS_DIR):
+        die("migrations dir not found: %s" % MIGRATIONS_DIR)
+    files = sorted(
+        f for f in os.listdir(MIGRATIONS_DIR)
+        if f.endswith(".sql") and not f.endswith(".down.sql")
+    )
+    created = {}
+    dropped_events = {}
+    guarded = {}
+    for fn in files:
+        head = fn.split("_", 1)[0]
+        mig = int(head) if head.isdigit() else -1
+        path = os.path.join(MIGRATIONS_DIR, fn)
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            raw = fh.read()
+        body = RE_LINE_COMMENT.sub("", raw)
+        consumed = {_strip_name(m.group(1)) for m in RE_USING_INDEX.finditer(body)}
+        for m in RE_CREATE_INDEX.finditer(body):
+            name = _strip_name(m.group(1))
+            if name in consumed:
+                continue
+            created.setdefault(name, (mig, _bare_name(m.group(2)), fn))
+        # ★ DO 块边界（★ 结构判据：★ 只看 $$ … $$ 成对出现）
+        do_spans = []
+        for dm in re.finditer(r"DO\s+\$[^$]*\$|DO\s+\$\$", body, re.I):
+            do_spans.append(dm.end())
+        for m in RE_DROP_INDEX.finditer(body):
+            name = _bare_name(m.group(1))
+            line_no = body.count("\n", 0, m.start()) + 1
+            in_do = any(body.count("\n", 0, pos) + 1 <= line_no for pos in do_spans)
+            dropped_events.setdefault(name, []).append((mig, fn, line_no))
+            if in_do:
+                guarded[(fn, line_no)] = True
+    return created, dropped_events, guarded
 
 
 def cmd_bundle(args):
@@ -608,6 +799,54 @@ def cmd_selftest(args):
         "%d vs %d" % (stats["expected_final"], stats["indexes_created"]),
     )
 
+    # ★★ R162 新增牙（★ ① 精确钉死刚修的那个 bug ② severity 词表唯一性 ③ 退役台账）
+    check(
+        "expect/excludes-schema-prefixed-drop",
+        "idx_sessions_session_id" not in expected,
+        "★ R161 bug: DROP INDEX ... public.<name> 带 schema 前缀 ⇒ 差集失效 ⇒ 退役索引漏进期望集",
+    )
+    check(
+        "expect/excludes-876-retired",
+        "idx_sessions_session_id" not in expected
+        and "session_summaries_session_key_uidx" not in expected
+        and "idx_session_bodies_hot_lookup" not in expected,
+        "★ 876/879/888 明确退役的索引仍在期望集里",
+    )
+    _created, _drop_events, _guarded = derive_retirement()
+    leaked = sorted(set(_drop_events) & set(expected))
+    check(
+        "expect/no-retired-index-leaks",
+        not leaked,
+        "★ %d retired indexes leaked into expected: %s" % (len(leaked), leaked[:5]),
+    )
+    check(
+        "retired/records-876",
+        any(
+            name == "idx_sessions_session_id" and rmig == 876
+            for name, evs in _drop_events.items()
+            for (rmig, _rf, _rl) in evs
+        ),
+        "★ retirement ledger lost the 876 event",
+    )
+    # ★ severity 词表：★ 给定格子状态，★ severity 必须唯一确定且与文档一致
+    _prod = ["252", "211"]
+    _cases = [
+        (["present", "present", "present"], "none"),
+        (["missing", "present", "present"], "local-only-gap"),
+        (["present", "missing", "present"], "prod-partial-gap"),
+        (["present", "present", "missing"], "prod-partial-gap"),
+        (["missing", "missing", "missing"], "prod-full-gap"),
+        (["present", "missing", "missing"], "prod-full-gap"),
+        (["missing", "missing", "present"], "prod-partial-gap"),
+    ]
+    for _cells, _want in _cases:
+        _got = _severity(_cells, ["local", "252", "211"], _prod)
+        check(
+            "severity/%s" % "-".join(c[:3] for c in _cells),
+            _got == _want,
+            "★ want %s got %s" % (_want, _got),
+        )
+
     # ② 状态判定四态（★ 阳性对照 + 反向对照）
     env_state = {
         "idx": {"idx_present"},
@@ -642,13 +881,18 @@ def cmd_selftest(args):
     # ④ 底账解析：字段数不对必须报错（★ 本轮真踩过：★ PG17 pretty-print 塞换行）
     import tempfile
 
+    def _row(n_fields, *vals):
+        """★ 夹具按【列数】构造 ⇒ ★★ 不手数 tab（★ 手数 tab 极易出错 ⇒ 仓内教训）。"""
+        cells = list(vals) + [""] * (n_fields - len(vals))
+        return "\t".join(cells[:n_fields])
+
     with tempfile.NamedTemporaryFile("w", suffix=".tsv", delete=False, encoding="utf-8") as fh:
         fh.write("# comment\n")
-        fh.write("local\tidx\tpublic\ti\tidx_x\towner\tf\t\t\t\t\t\t\t\t\n")
+        fh.write(_row(CENSUS_COLUMNS, "local", "idx", "public", "i", "idx_x", "owner", "f") + "\n")
         good = fh.name
     with tempfile.NamedTemporaryFile("w", suffix=".tsv", delete=False, encoding="utf-8") as fh:
         fh.write("# comment\n")
-        fh.write("local\tidx\tpublic\ti\tidx_x\towner\tf\t\t\t\t\t\t\t\n")
+        fh.write(_row(CENSUS_COLUMNS - 1, "local", "idx", "public", "i", "idx_x", "owner", "f") + "\n")
         bad = fh.name
 
     try:
@@ -674,18 +918,16 @@ def cmd_selftest(args):
         fh.write("909\tidx_b\ttbl_b\t909_x.sql\t\n")
         exp = fh.name
     with tempfile.NamedTemporaryFile("w", suffix=".tsv", delete=False, encoding="utf-8") as fh:
-        idx_row = "\t".join(
-            [
-                "local", "idx", "public", "i", "idx_a", "owner", "", "", "", "", "", "", "",
-                "CREATE INDEX ...", "true,true,true",
-            ]
+        idx_row = _row(
+            CENSUS_COLUMNS,
+            "local", "idx", "public", "i", "idx_a", "owner", "", "", "", "", "", "", "",
+            "CREATE INDEX ...", "true,true,true", "", "tenant_id,session_id", "",
         )
         # ★ 211 侧：★ 表 tbl_a 在（★ relkind=r）但索引 idx_a 不在 ⇒ 真缺口
-        rel_row = "\t".join(
-            [
-                "211", "rel", "public", "r", "tbl_a", "owner", "f", "", "", "", "", "", "",
-                "", "",
-            ]
+        rel_row = _row(
+            CENSUS_COLUMNS,
+            "211", "rel", "public", "r", "tbl_a", "owner", "f", "", "", "", "", "", "",
+            "", "", "", "", "",
         )
         fh.write(idx_row + "\n")
         fh.write(rel_row + "\n")
@@ -743,6 +985,10 @@ def main(argv=None):
     p.add_argument("--in", dest="inputs", action="append", required=True, help="input file (repeatable)")
     p.add_argument("--out", help="output TSV (default: stdout)")
     p.set_defaults(func=cmd_bundle)
+
+    p = sub.add_parser("retired", help="emit retirement-evidence ledger (created-then-dropped)")
+    p.add_argument("--out", help="output TSV (default: stdout)")
+    p.set_defaults(func=cmd_retired)
 
     p = sub.add_parser("selftest", help="self-tests")
     p.set_defaults(func=cmd_selftest)
