@@ -31,6 +31,13 @@ export default {
     allHealthy: 'Todas sanas',
     errorsWhenHealthy: 'Distribución de errores: todas sanas',
     errorsTitle: 'Distribución de errores',
+    /**
+     * Estado vacío del mapa de calor de credenciales (2026-10-27 · incremento 14).
+     * ★ kind = **Filtered**: esta página filtra por modelo, excluye la
+     *   autoverificación, muestra solo anomalías y aplica un rango de tiempo
+     *   ⇒ vacío = filtrado, no «esta página no tiene datos».
+     */
+    emptyFiltered: 'No hay registros de credenciales con el rango de tiempo y los filtros actuales; puede ampliar las condiciones para ver más.',
   },
   error: {
     selectFirst: 'Seleccione primero las credenciales',

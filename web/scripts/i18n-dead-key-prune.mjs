@@ -54,8 +54,16 @@
 // ★ 另一个坑（bash）：**变量后面紧跟中文时必须写 \`\${VAR}\`** ——
 //   bash 会把 \`$VAR\` 后面的多字节 UTF-8 吞进变量名 ⇒ \`set -u\` 下报「未绑定的变量」。
 //
-// 用法：node scripts/i18n-dead-key-prune.mjs <plan.json> [--dry-run] [--ns <命名空间>] [--check-parser]
+// 用法：node scripts/i18n-dead-key-prune.mjs <plan.json> [--apply] [--ns <命名空间>] [--check-parser]
 //   plan.json: { "<namespace>": ["key.path", ...], ... }   ← 命名空间 = 语言包模块名
+//
+// ★★★ 2026-10-26 订正（12h 审计轮）：**默认必须是只读**。
+//   ★ 原实现是 `const dryRun = argv.includes('--dry-run')` ⇒ **不给参数就落盘**
+//   ⇒ 而同族的 `fix-locale-dead-keys.mjs` 用的是相反约定（`--apply` 才动手）
+//   ⇒ ⇒ **同一个仓里两个删除工具的默认方向相反** ⇒ 一个手滑的调用就改工作树。
+//   ★⇒ 改成 `--apply` 才写（与同族一致）⇒ 误调用退化成「什么都没做」。
+//   ★ 本工具虽是**安全**的（删完做语法自检、坏掉就还原、叶子集不变式兜底），
+//   ★★ 但「安全」不等于「该默认动手」——★ 破坏性工具的默认值应该是**保守**的。
 import { readFileSync, writeFileSync } from 'node:fs';
 import { resolve, join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -72,7 +80,10 @@ const localesDir = join(ROOT, 'src/locales');
 
 const argv = process.argv.slice(2);
 const planFile = argv.find((a) => !a.startsWith('--'));
-const dryRun = argv.includes('--dry-run');
+// ★★★ 2026-10-26：默认**只读**，必须显式 `--apply` 才落盘（同族约定一致）。
+//   ★ 保留 `--dry-run` 作为**显式**的只读声明（向后兼容；它等价于不写）。
+const apply = argv.includes('--apply');
+const dryRun = !apply || argv.includes('--dry-run');
 const checkParser = argv.includes('--check-parser');
 const nsFilter = argv.includes('--ns') ? argv[argv.indexOf('--ns') + 1] : null;
 const plan = planFile ? JSON.parse(readFileSync(planFile, 'utf8')) : {};

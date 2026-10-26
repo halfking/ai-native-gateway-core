@@ -34,6 +34,14 @@ export default {
     allHealthy: 'Tous en bonne santé',
     errorsWhenHealthy: 'Distribution des erreurs: tous en bonne santé',
     errorsTitle: 'Distribution des erreurs',
+    /**
+     * État vide (2026-10-27 · incrément 14 — « état vide en 5 points »).
+     * ★ Ici l’état est un **Filtered** : la plage de temps et les filtres
+     *   ne laissent rien passer. ⇒ nommer ce qui manque (des identifiants) et
+     *   donner la prochaine action utile (élargir / assouplir), au lieu de
+     *   laisser l’utilisateur deviner pourquoi la carte est vide.
+     */
+    emptyFiltered: 'Aucun enregistrement d’identifiant ne correspond à la plage de temps ni aux filtres actuels ; élargissez la plage de temps ou assouplissez les filtres, puis consultez à nouveau.',
   },
   error: {
     selectFirst: 'Veuillez d\'abord sélectionner des identifiants',

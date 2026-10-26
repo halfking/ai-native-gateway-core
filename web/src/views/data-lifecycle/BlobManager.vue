@@ -31,7 +31,7 @@
               <td class="num strong">{{ r.total_human }}</td>
             </tr>
             <tr v-if="!rows.length && !loading">
-              <td colspan="7" class="empty">{{ $t('common.feedback.noData') }}</td>
+              <td colspan="7" class="empty">{{ $t('dataLifecycle.blob.emptyNoResult') }}</td>
             </tr>
           </tbody>
         </table>

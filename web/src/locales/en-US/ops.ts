@@ -66,5 +66,19 @@ export default {
     line: 'Line',
     severity: 'Severity',
     message: 'Message',
+    /**
+     * Empty states (2026-10-27 round 14 — the "5-point empty state" split).
+     * ★ The three tables used to share one `hyper.list.empty`
+     *   ("The list has no records for now"), but they are **two different** states:
+     *   · projects — uses the raw array ⇒ empty = no project was ever created
+     *     (FirstUse)
+     *   · sessions / reviews — use the **filtered** arrays ⇒ empty = the current
+     *     filters hid everything (Filtered)
+     *   ⇒ One sentence covered two states, i.e. it told the user "you have not
+     *   started" and "your filters are too narrow" as if they were the same.
+     */
+    emptyFirstUseProjects: 'No projects have been created yet',
+    emptyFilteredSessions: 'No session records match the current filters',
+    emptyFilteredReviews: 'No code review records match the current filters',
   },
 }

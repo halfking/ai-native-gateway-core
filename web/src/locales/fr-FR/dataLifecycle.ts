@@ -4,6 +4,17 @@ export default {
   storage: {
     migrateFailedWithReason: 'La migration n’a pas pu aboutir : {reason}. Veuillez réessayer.',
   },
+  /**
+   * Textes du gestionnaire des champs volumineux (BlobManager).
+   * ★ État vide (2026-10-27 · incrément 14 — « état vide en 5 points ») :
+   *   il utilisait la clé générique `common.feedback.noData`
+   *   (« Aucun contenu à afficher pour l’instant »).
+   *   Cette page **n’a pas de filtre de temps** ⇒ pas de plage de temps
+   *   (on n’invente pas un fait que la page ignore).
+   */
+  blob: {
+    emptyNoResult: 'Aucun enregistrement de champ volumineux n’a encore été créé.',
+  },
   storageOverview: {
     summary: {
       databaseTitle: "Base PostgreSQL",

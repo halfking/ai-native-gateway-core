@@ -697,9 +697,14 @@ onUnmounted(() => {
     </div>
 
     <!-- Empty state -->
+    <!--
+      ★ 2026-10-27（第 14 增量 · 空状态 5 分）：这一处是**筛选后为空**，不是「暂无内容」。
+        页面有模型筛选 + 排除自检 + 仅异常三个筛选条件 + 时间范围 ⇒ 空 = 被筛掉了。
+        ⇒ 专用键（kind=Filtered），并把原先硬编码的「请调整时间范围或筛选条件」并入整句
+          （同一句话不许两份；且那句中文在非中文语种下根本不会出现）。
+    -->
     <div v-else-if="!loading && !filteredCredentials.length" class="empty-state">
-      <p>{{ $t('common.feedback.noData') }}</p>
-      <p class="hint-text">请调整时间范围或筛选条件</p>
+      <p>{{ $t('credentialMonitor.chart.emptyFiltered') }}</p>
     </div>
 
     <!-- Heatmap table: horizontal time axis columns, cells aligned per column -->

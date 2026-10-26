@@ -4,6 +4,15 @@ export default {
   storage: {
     migrateFailedWithReason: '移行を完了できませんでした：{reason}。再試行してください。',
   },
+  /**
+   * 大フィールド管理（BlobManager）の文言。
+   * ★ 空状態（2026-10-27 第 14 インクリメント · 空状態 5 分）：以前は汎用キー
+   *   `common.feedback.noData`（表示できる内容はまだありません）を使っていた。
+   *   このページに**時間フィルターは無い** ⇒ 時間は書かない（ページが知らない事実を作らない）。
+   */
+  blob: {
+    emptyNoResult: '大きなフィールドの記録はまだありません。',
+  },
   storageOverview: {
     summary: {
       databaseTitle: "PostgreSQL データベース",

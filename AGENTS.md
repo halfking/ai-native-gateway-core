@@ -273,6 +273,46 @@
 > ★★ 守门报绿前先问「守门跑了吗」/ ★★ 测试文件也是引用源 /
 > ★★ 量具口径比事实源窄 ⇒ 伪绿 / ★★ bash 会把 `$VAR` 后的多字节吞进变量名 /
 > ★★ 回滚 + 确定性重放 / ★★ 格式化类正则的 `\s` 会跨行）。
+> **2026-10-27 第 14 增量：空状态 5 分轮**（会话 `mvs_dc5e181989fc4539805f343f39be2b5d`）：
+> ★ 承接用户的总目标（「优化整个网关的 UI，减少 AI 化、增加人味、把复杂表达做得更人性化」）
+> ⇒ 前三轮清的是 **i18n 覆盖**，本轮回到 **文案语义本身**：
+> ★★ impeccable `clarify.md` 的硬要求是「**An empty state distinguishes first use,
+> no results, filters, permissions, and failure**」⇒ **「区分」是硬要求**。
+> ⇒ ★★ **本仓把 4 个通用空态键跨语义共用在 24 处调用点上**（`common.feedback.noData` /
+> `dashboard.board.empty` / `hyper.list.empty` / `dashboard.noData`）
+> ⇒ 一句「暂时没有内容可显示」覆盖 6 种语义 ⇒ 用户看到「没有数据」时无法判断是
+> 「真没有」「被筛掉了」还是「算错了」。
+> ⇒ ★ **本轮最值钱的一处发现**：**已有的语言包侧清晰文案门（L3）测的根本不是这件事** ——
+> 它判「值整句等于通用空状态短语」，而「暂时没有内容可显示」**不是**通用短语
+> ⇒ **L3 判绿** ⇒ ★★ **门是绿的，界面在混同状态** ⇒ ★ **「门绿」只说明「门测的那件事成立」**。
+> ⇒ ★ **设计：状态种类进【结构】不进【措辞】** —— 23 个新键的**末段带 kind 标记**
+> （`emptyNoResult*` / `emptyFirstUse*` / `emptyFiltered*` / `emptyFailed*`）
+> ⇒ 复核时先看结构、再看措辞；否则差异会被下一次改写抹平。
+> ⇒ ★★ **kind 只能由「页面已经掌握的事实」决定**：VibeCodingView 的会话列表谓词是
+> **`filteredSessions`** ⇒ 空 = 筛选后为空（不是「没有会话」）；
+> `SessionStatsSignals` 的 `errors === null` ⇒ 服务端**没返回**错误汇总 = **未知**
+> （原文案说成「该时段暂无数据」⇒ **把「不知道」讲成「知道」**）；
+> BlobManager 页没有时间筛选器 ⇒ 空态**不写时间范围**（不编造页面不知道的事实）。
+> ⇒ ★ **新门 `web/scripts/i18n-empty-state-guard.mjs`**（+ `i18n-empty-state-registry.json` 登记簿）
+> —— 七条判据：退役键源码 0 引用 / 退役键 8 语种都不存在 / 登记键 8 语种齐备 /
+> **键名带 kind 标记** / 值不是通用空态短语 / **同语种内值互不相同** / 登记键引用数 ≥ 1
+> ⇒ ★★ **引用集口径自己定义**（`collectCallSiteRefKeys()`，只认真取键调用）：
+> **死键门那个保守引用集会把「注释里提到」与「测试里断言」都算成引用**
+> （实测误报 3 处）⇒ 这是**把判据对准被问的那件事**，不是放宽判据。
+> ⇒ ★ **本轮明确没做**：**`scanner.ts` 的 6 形态采集**（开工前实测**真缺键 = 0**，
+> 而「所有点分字面量」规则在缺键方向产生 **2027 条假阳性** ⇒ **同一条规则在两个方向上
+> 的安全方向相反**）；**扫描器剥注释**（幽灵引用 11 处 / 8 文件）；
+> **L1 错误三问（语言包侧）**；**通用槽拆键的其余 92 个既有空态位键**（登记簿只管本轮新增）；
+> **「源码抄语言包」族**；**页面级硬编码中文**（本轮只清了 1 段空态提示）；
+> **字表完整正名单**；**移动端 8 语言**；**后端下发的中文**。
+> ⇒ 审计档 `docs/audit/2026-10-27-第14增量-空状态5分轮.md`；
+> 通用式见 `LESSONS.md` **§424**（10 条形态：★★★ 门测的东西必须逐字对照要的东西 /
+> ★★★ 空状态的差异必须进结构 / ★★ kind 只能由页面掌握的事实决定 /
+> ★★ 通用键退役必须带棘轮 / ★★ 登记簿不许变成死键的新家 /
+> ★★★ 量具升级前先量收益 + 同一条规则在两个方向上安全方向相反 /
+> ★★ 注释里的键名是幽灵引用 / ★★ 局部同名函数会伪装成取键调用 /
+> ★★ 自证夹具带缺口 ⇒ 断言变成恒非空 /
+> ★★★ 变异臂的「红」也有两种读法：被变异抓到了 / 本来就红）。
 > **2026-10-23 实时拓扑探测打标四处源真值漂移轮 + 口径收敛**（会话
 > `mvs_64ddb526ee11405aae54d67e7c4d6161`）：用户报 154 生产上一条 32-hex
 > 请求 `af1eb6d83ef39610cc4f8be4e181b5a8` "应被识别为探测但实时拓扑 pill = 否"。
@@ -1297,6 +1337,40 @@
 - HEAD：见 `git log --oneline -1`。**不要照抄本文件的 commit 列表**——仓库多会话共享，
   本文件记录时点之后通常已有他人提交；以 `git log` 为准。
 - 分支：仅 `main`；提交前先 `git fetch && git status -sb`
+- ★★ **双仓同步（2026-10-26 实测补记）**：本仓**有两个远端**，且**两条历史互相独立**
+  - `origin` = codeup `kaixuan/official-deploy/llm-gateway-go` —— **权威侧**（日常推进在这里）
+  - `github` = `halfking/ai-native-gateway-core` —— **镜像侧**（保留 2026-05～10 的原始历史）
+  - ⇒ **`git merge` 合不动**：merge-base 停在 2026-10-07；codeup 侧有 2400+ 笔
+    github 侧没有的提交，github 侧有 13000+ 笔 codeup 侧没有的原始历史。
+  - ⇒ **同步办法 = 树移植**（沿用 2026-10-13 / 10-15 的 9 笔 `sync(codeup)` 批次做法）：
+    ```bash
+    TREE=$(git rev-parse origin/main^{tree})
+    SYNC=$(git commit-tree "$TREE" -p "$(git rev-parse github/main)" -m "sync(codeup): …")
+    git push github "$SYNC:refs/heads/main"   # 父提交 = github 原 tip ⇒ 原始历史一条不丢
+    ```
+  - ⇒ **验收口径 = 两仓 main 的 `tree` SHA 必须相同**（不是「内容抽样看着一样」）：
+    `git rev-parse origin/main^{tree}` == `git rev-parse github/main^{tree}`，
+    且 `git diff --stat origin/main github/main` **为空**；推完用 `git ls-remote` 对拍远端真值。
+- ★★ **推 github 前要手工跑 pre-push 钩子的三段**（★ `.git/hooks` 里**没装钩子**、
+  `core.hooksPath` 也没设 ⇒ **推的时候一道都不会跑**，钩子存在不等于门被执行过）：
+  ① `scripts/scan-secrets.sh --mode=normal --paths=. --tracked-only
+  --baseline=scripts/scan-secrets.baseline`（★ **BLOCK 级必须为 0**；
+  该 baseline 按 `file:line:CATEGORY` 登记 ⇒ **文件一改行号就漂**
+  ⇒ 2026-10-26 一次同步清掉 **102 条陈旧条目**（29 重钉 + 77 剪除，237→150），
+  才把 `deploy_sops_test.sh` 的「baseline > 215」棘轮从红掰回绿）；
+  ② 审计守卫七包 `go test ./internal/{rowsguard,errdiscard,dbrows,jsoncol,paramguard,sqlguard,sqlreadguard}`
+  + `bash scripts/checks/guards-sync.sh`；
+  ③ `tests/*.sh` 全量（43 套）。
+  ⇒ ★ **已知的既有红**（2026-10-26 在 pristine HEAD 上复现过 ⇒ 不是回归）：
+  `deploy_local_contract_test` / `deploy_rollback_test` / `deploy_ssh_retry_test` /
+  `session_storage_audit_gate` 四个套件在本机红（前三者日志里出现
+  `mavis-trash: refusing to trash protected path … is the current working directory`
+  ⇒ 与本机回收器退化有关；后者要 docker + `-tags=integration` 真库）。
+- ★★ **别用 `git worktree` 给 deploy 类套件做 A/B 复现**：`scripts/deploy-lib/*`
+  在 worktree 里**取不到**（悬空符号链接）⇒ 复现出来的是**误导性的失败**
+  （`lock.sh: No such file or directory` / `host_release_layout: 未找到命令`）。
+  ⇒ 判「红是不是本轮引入」用**同工作区 `git stash` A/B**（本轮 4 个红套件在
+  pristine HEAD 上**同样红** ⇒ 既有环境性红）。
 - Go 模块：见仓库根 `go.mod`；**`installer/` 是独立 Go 模块**（有自己的 go.mod），
   它的测试要在 `installer/` 目录内跑，从根模块用 `./installer/...` 会报 setup failed
 - 入口二进制：`cmd/gateway/main.go`（v1）、`cmd/gateway-v2/main.go`（v2，独立）
@@ -9931,7 +10005,7 @@ index b953a6f03..555ef83c4 100644
 > ⇒ ⇒ ★★★★ ⇒ ★★★ ⇒ ★★ ⇒ ★★ **⇒ 修法**：★ 校验通道放行**唯一**一处差异 = 棘轮计数且方向必须变小；★ 变大 ⇒ 拒；★ 别的差异 ⇒ 拒
 > ⇒ ⇒ ★★★★ ⇒ ★★★ ⇒ ★★ ⇒ ★★ **⇒ 触发它的真事件**：★ upstream 把 909 的散文改成 `applied+verified` ⇒ ★ 矛盾数 **107 → 106** ⇒ ★ 门当场红
 > ⇒ ⇒ ★★★★ ⇒ ★★★ ⇒ ★★ ⇒ ★★ **⇒ 配套**：★ 修完把镜像重新生成（★ 收紧基线到 106）⇒ ★★ **「修好门」与「收紧基线」是两件事**
-> ⇒ ⇒ ★★★★ ⇒ ★★★★ **★ 通用式 11 条**沉淀在 `LESSONS.md` §424（★ 核心：★★ **「账本」不是事实的最后一层** ★★★★★ **「规则」与「代码实现」必须同向**）
+> ⇒ ⇒ ★★★★ ⇒ ★★★★ **★ 通用式 12 条**沉淀在 `LESSONS.md` **§425**（★ 核心：★★ **「账本」不是事实的最后一层** ★★★★★ **「规则」与「代码实现」必须同向** ★★★★★ **「按行数线性外推绝对耗时」实测偏差 570 倍**）
 > ⇒ ⇒ ★★★★ ⇒ ★★★★ **★ PG 17 的 `pg_get_indexdef()` 会【换行】⇒ ★★ 行式 TSV 会被静默读错 ⇒ ★★ 采集端必须折行 ⇒ ★★ 「坏行必被拒」写成门**
 > ⇒ ⇒ ★★★★ ⇒ ★★★★ **★ 「表在不在」不能靠名字前缀启发式**（★ 被 `request_logs_with_current_month` 这个【视图】骗过）⇒ ★★ 用 `pg_class` 精确匹配 ＋ `relkind`
 > ⇒ ⇒ ★★★★ ⇒ ★★★★ **★ 反解期望集 = 【建了 − 被删 − 被 `USING INDEX` 消费的】**（★ 581 迁移 ⇒ 886 建 ⇒ −93 DROP ⇒ −1 中间产物 ⇒ **852**）

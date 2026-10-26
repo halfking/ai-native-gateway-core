@@ -29,6 +29,5 @@ export default {
     retry: 'Réessayer',
     allLoaded: '{count} éléments chargés',
     loadFailed: 'Échec du chargement. Veuillez réessayer.',
-    empty: 'La liste ne contient aucun enregistrement pour l’instant',
   },
 }

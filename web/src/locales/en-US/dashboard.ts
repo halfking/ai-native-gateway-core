@@ -84,7 +84,26 @@ export default {
     distTop: 'TOP {n}',
     distOthers: '{n} more',
     distDrillHint: 'Select an error type → drill by model/provider/client',
-    empty: 'The board has no data for now',
+    /**
+     * Empty states (2026-10-27 round 14 — the "5-point empty state" split).
+     * ★ This used to be a single `empty: 'The board has no data for now'` shared by
+     *   6 **different** cards (providers / distribution ranking / model distribution /
+     *   trend chart / usage table / the two operational task cards) —
+     *   one sentence covered 6 meanings ⇒ the user could not tell "really none"
+     *   from "filtered out" from "miscomputed". ⇒ Now split by **page fact**,
+     *   with the kind written into the key name.
+     *   · emptyNoResult* = no result (we looked, there really is none)
+     *   · emptyFailed*    = failed/unknown (the server did not return it ⇒
+     *                       it must not be described as "none")
+     */
+    emptyNoResultProviders: 'No provider data for the selected period',
+    emptyNoResultDist: 'No data to rank for the selected period',
+    emptyNoResultDrill: 'No failed requests for this error type',
+    emptyNoResultModelDist: 'No model data for the selected period',
+    emptyNoResultModelTrend: 'No model trend data for the selected period',
+    emptyNoResultTrend: 'No usage trend data for the selected period',
+    emptyNoResultDiscovery: 'No model discovery runs recorded yet',
+    emptyNoResultProbe: 'No probe inspection runs recorded yet',
     bgTasks: 'Background tasks',
     discoveryStatus: 'Model discovery',
     selfcheckTitle: 'Self-check',
@@ -136,6 +155,8 @@ export default {
     periodRange: '{start} to {end}',
     modelBreakdown: 'By model',
     dailyBreakdown: 'Daily model breakdown',
+    /** Empty state: no usage records (the degraded state keeps its own wording in `dataLifecycle.usageCost.degraded.title`). */
+    emptyNoResult: 'No usage records for the selected period',
   },
   stat: {
     totalRequests: 'Total requests',
@@ -152,7 +173,6 @@ export default {
     colModel: 'Model',
   },
   loading: 'Loading…',
-  noData: 'No data for this period',
   liveStream: {
     title: 'Real-time request stream',
     controlsAria: 'Live request stream controls',
@@ -266,6 +286,9 @@ export default {
     costUSD: 'Cost (USD)',
     sessionCount: 'Session Count',
     sessionTrend: 'Session Trend',
+    /** Empty states (2026-10-27 round 14): both used to be `dashboard.noData` ("No data for this period"). */
+    emptyNoResultHealthGrade: 'No health grade distribution data for the selected period',
+    emptyNoResultSessionTrend: 'No session trend data for the selected period',
   },
   statsRow: {
     totalSessions: 'Total Sessions',

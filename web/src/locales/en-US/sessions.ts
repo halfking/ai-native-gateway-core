@@ -31,6 +31,19 @@ export default {
     actionDetail: 'Detail',
     createdAt: 'Created at',
     empty: 'No user profile data',
+    /**
+     * Empty states for the three ranking tables (2026-10-27 round 14 — the
+     * "5-point empty state" split).
+     * ★ The three tables used to share one `hyper.list.empty`
+     *   ("The list has no records for now") ⇒ "top tasks", "top end users" and
+     *   "recent sessions" were flattened into one sentence, and that sentence
+     *   did not even say what is missing.
+     *   ⇒ kind = FirstUse: this account has genuinely not produced any
+     *   matching records yet.
+     */
+    emptyFirstUseTopTasks: 'This account has no task records yet',
+    emptyFirstUseTopEndUsers: 'This account has no end user records yet',
+    emptyFirstUseRecentSessions: 'This account has no session records yet',
   },
   userProfileSearchPlaceholder: 'Search owner user…',
   catalog: {
@@ -95,6 +108,20 @@ export default {
     errorRate: 'Error rate',
     totalErrors: 'Total errors',
     avgLatency: 'Avg latency',
+    /**
+     * Empty states (2026-10-27 round 14 — the "5-point empty state" split).
+     * ★ `errorsEmpty` = "no errors recorded in this period" = a **good** state
+     *   (there really were none); but the server **not returning** an error
+     *   summary (errors is null) is **unknown** —
+     *   the old copy used `dashboard.noData` ("No data for this period") and
+     *   described "we don't know" as "we know there is none".
+     *   ⇒ The two must be told apart — that is the kind=Failed slot.
+     */
+    emptyFailedErrorSummary: 'No error summary was returned for this period. Retry to fetch it',
+    /** Empty state: top client stats are empty (used to be the generic key `dashboard.noData`). */
+    emptyNoResultTopClients: 'No client statistics in this period',
+    /** Empty state: top task stats are empty (used to be the generic key `dashboard.noData`). */
+    emptyNoResultTopTasks: 'No task statistics in this period',
   },
   clientAnalytics: {
     title: 'Client Analytics',

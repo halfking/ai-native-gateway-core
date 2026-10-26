@@ -75,7 +75,7 @@ import { req, type RequestOptions } from './client'
  *     ⇒ ★★ 想要单租户视图，唯一办法是**用那个租户的账号登录**。
  *
  * (6) ★★★★ **★ 整条 `/api/admin/session-analytics/` 树只在 `dbConn != nil` 时注册**
- *     （`cmd/gateway/main.go:7307-7312`：`wrapSessionAnalytics` 只在有 DB 时才被赋值）
+ *     （`cmd/gateway/main.go:7314-7319`：`wrapSessionAnalytics` 只在有 DB 时才被赋值）
  *     ⇒ ⇒ **没有数据库时这个路径是 404，而不是 503** ——
  *       对照兄弟端点它恒注册（`admin/handler.go:1277`）才在 handler 内判 `h.db == nil` 返 503。
  *

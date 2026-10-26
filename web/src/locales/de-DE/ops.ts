@@ -50,6 +50,19 @@ export default {
     line: 'Zeile',
     severity: 'Schweregrad',
     message: 'Nachricht',
+    /**
+     * Leerzustände (2026-10-27, Inkrement 14 · „Leerzustand 5 Punkte“).
+     * ★ Die drei Tabellen teilten sich früher einen Satz `hyper.list.empty`
+     *   („in dieser Liste gibt es vorübergehend noch keine Einträge“), es sind aber
+     *   **zwei** verschiedene Zustände:
+     *   · Projekte — die rohe Liste ⇒ leer = noch nie ein Projekt angelegt (FirstUse)
+     *   · Sitzungen / Reviews — die **gefilterte** Liste ⇒ leer = herausgefiltert (Filtered)
+     *   ⇒ Ein Satz für beide Fälle macht aus „Sie haben noch nicht angefangen“ und
+     *   „Ihr Filter ist zu eng“ dasselbe.
+     */
+    emptyFirstUseProjects: 'Es wurde noch kein Projekt angelegt.',
+    emptyFilteredSessions: 'Mit den aktuellen Filterkriterien wurden keine Sitzungen gefunden.',
+    emptyFilteredReviews: 'Mit den aktuellen Filterkriterien wurden keine Code-Reviews gefunden.',
   },
 
 

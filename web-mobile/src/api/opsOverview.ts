@@ -5,7 +5,7 @@ import { req, type RequestOptions } from './client'
  *
  * GET /api/admin/ops/overview
  *
- * - **注册**：`admin/handler.go:1141` `mux.HandleFunc("/api/admin/ops/overview", h.superAdmin(h.handleOpsOverview))`
+ * - **注册**：`admin/handler.go:1144` `mux.HandleFunc("/api/admin/ops/overview", h.superAdmin(h.handleOpsOverview))`
  *   ⇒ **superAdmin 档**（`SuperAdminMiddleware` 逐字比 role ⇒ tenant_admin 后端**读不到**，403）。
  * ★★★★★★ 2026-10-21 行号订正 + **档位订正**：这一行原先写 `admin/handler.go:1134`
  *   `mux.HandleFunc("/api/admin/ops/overview", admin(h.handleOpsOverview))`（**漂 7 行**），
@@ -348,7 +348,7 @@ export interface OpsOverviewResponse {
 
 // ── fetch ───────────────────────────────────────────────────────────────────
 
-/** GET `/api/admin/ops/overview`（`admin/handler.go:1141`，**superAdmin 档** ⇒ 后端 tenant_admin 读不到）。无参数。 */
+/** GET `/api/admin/ops/overview`（`admin/handler.go:1144`，**superAdmin 档** ⇒ 后端 tenant_admin 读不到）。无参数。 */
 export function fetchOpsOverview(options?: RequestOptions): Promise<OpsOverviewResponse> {
   return req<unknown>('GET', '/api/admin/ops/overview', undefined, options).then(unwrapOpsOverview)
 }

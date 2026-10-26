@@ -35,7 +35,6 @@ export default {
     deleteFailed: 'Couldn\'t delete, please retry.',
     operationFailed: 'The operation could not be completed. Please retry.',
     loading: 'Loading…',
-    noData: 'No content to display right now',
     unknownReason: 'No error details received',
     saveFailedWithReason: 'Save failed: {reason}. Please retry.',
     operationFailedWithReason: 'Operation failed: {reason}. Please retry.',
@@ -48,6 +47,23 @@ export default {
     installFailedWithReason: 'Install failed: {reason}. Please retry.',
     batchPricingFailedWithReason: 'Batch pricing failed: {reason}. Please retry.',
     batchUpdateFailedWithReason: 'Batch update failed: {reason}. Please retry.',
+  },
+  /**
+   * Empty states (2026-10-27 round 14 — the "5-point empty state" split).
+   *
+   * ★ Only **cross-page shared** fallback copy lives here. Almost every empty
+   *   state needs its **own** key (naming what is missing + the time range +
+   *   the next useful action) —
+   *   impeccable's wording: "An empty state distinguishes first use, no results,
+   *   filters, permissions, and failure" ⇒ **distinguishing** is a hard rule;
+   *   one "nothing to display right now" flattens 5 states into 1.
+   *
+   * ★ `noResult` is the **fallback**: when the caller can say what is missing,
+   *   it must use its own key. The kind word lives in the key name
+   *   (`empty<Kind>`) ⇒ the difference goes into the structure, not into wording.
+   */
+  empty: {
+    noResult: 'No records to display',
   },
   table: {
     actions: 'Actions',

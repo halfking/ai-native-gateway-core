@@ -217,6 +217,23 @@ if [[ "$RUN_WEB" == true ]]; then
   # ★ 2026-10-25 接入：这道门此前只扫语言包，本轮扩到 src/** 源码文本面与
   #   移动端（web-mobile/）。不接进 CI ⇒ 扩出来的覆盖面就只是装饰。
   pm_run copy-quality:check web
+  echo "[verify] frontend i18n gates (hidden-key / shared-dead / copy-clarity / empty-state)"
+  # ★★ 2026-10-26 接入（12h 审计轮）：这四道门此前**只登记在 package.json**，
+  #   ★★ verify.sh / workflow / vitest **一处都没引用** ⇒
+  #   ⇒ 「只降不升的受门管棘轮」（死键族）与「清晰文案门」**从未被执行过**
+  #   ⇒ ⇒ ★ **一门没人跑的守卫是文档，不是门**（R86/R94 同族）。
+  #   ⇒ ⇒ 接入前实测：四道门在当前树上**全绿** ⇒ ⇒ 接入是零风险的。
+  #   ★ 逐道说明（为什么它们该被执行）：
+  #   · i18n:hidden-key:check      隐藏键（组件里注册了但没真用）——省体积但易删错
+  #   · i18n:shared-dead:check     跨语种共用的死键计数棘轮（只许降不许升）
+  #   · copy-clarity:check          文案清晰度（源码侧，不只是语言包侧）
+  #   · copy-clarity-locale:check   文案清晰度（语言包侧，含占位符/通用短语）
+  #   · i18n:empty-state:check     空状态 5 分结构门（第 14 增量新增）
+  pm_run i18n:hidden-key:check web
+  pm_run i18n:shared-dead:check web
+  pm_run copy-clarity:check web
+  pm_run copy-clarity-locale:check web
+  pm_run i18n:empty-state:check web
   echo "[verify] frontend build"
   pm_run build web
   echo "[verify] web-mobile install"

@@ -266,7 +266,7 @@ export const LOCALE_SELFTEST: LocaleSelftestCase[] = [
     id: 'L9',
     desc: '空状态位 + 通用短语 → 必须判红（L3）',
     locale: 'zh-CN',
-    key: 'dashboard.board.empty',
+    key: 'dashboard.board.emptyNoResultProviders',
     value: '暂无数据',
     expect: 'L3-generic-empty',
   },

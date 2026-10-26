@@ -36,7 +36,6 @@ export default {
     deleteFailed: 'Löschen fehlgeschlagen. Bitte erneut versuchen.',
     operationFailed: 'Vorgang fehlgeschlagen. Bitte erneut versuchen.',
     loading: 'Wird geladen…',
-    noData: 'Zurzeit sind noch keine Inhalte vorhanden.',
     unknownReason: 'Keine Fehlerdetails erhalten',
     saveFailedWithReason: 'Speichern fehlgeschlagen: {reason}. Bitte erneut versuchen.',
     operationFailedWithReason: 'Vorgang fehlgeschlagen: {reason}. Bitte erneut versuchen.',
@@ -49,6 +48,16 @@ export default {
     installFailedWithReason: 'Installation fehlgeschlagen: {reason}. Bitte erneut versuchen.',
     batchPricingFailedWithReason: 'Massenweise Preiszuweisung fehlgeschlagen: {reason}. Bitte erneut versuchen.',
     batchUpdateFailedWithReason: 'Massenaktualisierung fehlgeschlagen: {reason}. Bitte erneut versuchen.',
+  },
+  /**
+   * Leerzustände (2026-10-27, Inkrement 14 · „Leerzustand 5 Punkte“).
+   * ★ Hier steht nur der **seitenübergreifend geteilte** Fallback-Text. Die meisten
+   *   Leerzustände brauchen einen **eigenen** Schlüssel (was genau fehlt + Zeitraum
+   *   + nächste nützliche Aktion) — siehe die `empty<Kind>`-Schlüssel in
+   *   `dashboard.*` / `sessions.*` / `ops.*` / `dataLifecycle.*`.
+   */
+  empty: {
+    noResult: 'Es sind keine anzeigbaren Datensätze vorhanden.',
   },
   table: {
     actions: 'Aktionen',

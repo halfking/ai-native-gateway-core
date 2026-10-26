@@ -28,6 +28,21 @@ export default {
     viewReviews: 'Voir les revues',
     showAll: 'Tout afficher',
     reviewDetail: 'Détail de la revue',
+    /**
+     * États vides (2026-10-27 · incrément 14 — « état vide en 5 points »).
+     * ★ Les trois tableaux partageaient une seule phrase `hyper.list.empty`
+     *   (« La liste ne contient aucun enregistrement pour l’instant »), alors
+     *   qu’ils sont **deux** états différents :
+     *   · projects — sur le tableau **brut** ⇒ vide = aucun projet n’a encore
+     *     été créé (FirstUse)
+     *   · sessions / reviews — sur le tableau **filtré** ⇒ vide = filtré
+     *     (Filtered)
+     *   ⇒ Une seule phrase pour deux états, c’est « vous n’avez pas encore
+     *   commencé » et « vos filtres sont trop étroits » dits de la même façon.
+     */
+    emptyFirstUseProjects: 'Aucun projet n’a encore été créé.',
+    emptyFilteredSessions: 'Aucun enregistrement de session ne correspond aux filtres actuels.',
+    emptyFilteredReviews: 'Aucun enregistrement de revue de code ne correspond aux filtres actuels.',
     projectName: 'Nom du projet',
     projectNamePlaceholder: 'Saisissez le nom du projet',
     language: 'Langage',

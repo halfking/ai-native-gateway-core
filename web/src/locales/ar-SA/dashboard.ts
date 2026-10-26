@@ -79,7 +79,23 @@ v2: {
     distTop: 'الأفضل {n}',
     distOthers: '{n} أخرى',
     distDrillHint: 'اختر نوع خطأ → تعميق حسب النموذج/المزوّد/العميل',
-    empty: 'No data',
+    /**
+     * الحالات الفارغة (الدفعة 14 · «حالات فارغة»).
+     * ★ كان هنا مفتاح واحد `empty` («No data») تشاركه ستّ بطاقات مختلفة
+     *   (المزوّدون / تحليل التوزيع / توزيع النماذج / المخططات / جدول الاستخدام / بطاقتا مهام اللوحة)
+     *   ⇒ جملة واحدة تغطّي ستّ دلالات، فلم يستطع المستخدم معرفة أهو «لا يوجد فعلًا»
+     *   أم «تمّت التصفية» أم «الحساب فشل». ⇒ الآن كل بطاقة لها مفتاحها.
+     *   · emptyNoResult* = لا نتائج (تم البحث فعلًا، ولم نجد شيئًا)
+     *   · emptyFailed*    = فشل/مجهول (الخادم لم يُرجع ⇒ لا يجوز القول «لا يوجد»)
+     */
+    emptyNoResultProviders: 'لا توجد بيانات المزوّدين في الفترة المحدّدة.',
+    emptyNoResultDist: 'لا توجد بيانات يمكن ترتيبها في الفترة المحدّدة.',
+    emptyNoResultDrill: 'لا توجد طلبات فاشلة ضمن هذا النوع من الأخطاء.',
+    emptyNoResultModelDist: 'لا توجد بيانات النماذج في الفترة المحدّدة.',
+    emptyNoResultModelTrend: 'لا توجد بيانات اتجاهات النماذج في الفترة المحدّدة.',
+    emptyNoResultTrend: 'لا توجد بيانات اتجاهات الاستخدام في الفترة المحدّدة.',
+    emptyNoResultDiscovery: 'لا توجد سجلات تشغيل لمهمة اكتشاف النماذج بعد.',
+    emptyNoResultProbe: 'لا توجد سجلات تشغيل لدورات الفحص بعد.',
     bgTasks: 'Background tasks',
     discoveryStatus: 'Model discovery',
     selfcheckTitle: 'Self-check',
@@ -128,7 +144,6 @@ v2: {
     colModel: "النموذج",
   },
   loading: "جاري التحميل…",
-  noData: "لا توجد بيانات في هذه الفترة",
   liveStream: {
     title: "تدفق الطلبات المباشر",
     groupByQueue: "حسب قائمة المعالجة",
@@ -243,7 +258,11 @@ v2: {
     closedSessions: "جلسات مغلقة",
     costUSD: "التكلفة (دولار أمريكي)",
     sessionCount: "عدد الجلسات",
-    sessionTrend: "اتجاه الجلسات"
+    sessionTrend: "اتجاه الجلسات",
+    /** حالة فارغة: مخطط توزيع الصحة فارغ (كان يستخدم المفتاح العام `dashboard.noData`). */
+    emptyNoResultHealthGrade: 'لا توجد بيانات توزيع الصحة في الفترة المحدّدة.',
+    /** حالة فارغة: مخطط اتجاه الجلسات فارغ (كان يستخدم المفتاح العام `dashboard.noData`). */
+    emptyNoResultSessionTrend: 'لا توجد بيانات اتجاهات الجلسات في الفترة المحدّدة.',
   },
 
 
@@ -278,6 +297,8 @@ v2: {
     periodRange: '{start} إلى {end}',
     modelBreakdown: 'حسب النموذج',
     dailyBreakdown: 'تفصيل النموذج اليومي',
+    /** حالة فارغة: لا توجد سجلات استهلاك (لها وحدها صياغة خاصة في `dataLifecycle.usageCost.degraded.title`). */
+    emptyNoResult: 'لا توجد سجلات استهلاك في الفترة المحدّدة.',
   },
   statsRow: {
     totalSessions: "Total Sessions",

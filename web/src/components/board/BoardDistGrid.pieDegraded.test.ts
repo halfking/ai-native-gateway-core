@@ -58,7 +58,7 @@ const i18n = createI18n({
           distTop: 'Top {n}',
           distOthers: '其他 {n}',
           distDrillHint: '点击下钻',
-          empty: '暂无数据',
+          emptyNoResultDist: '所选时段内没有可排名的数据。',
           pieClients: '客户端类型',
           pieErrors: '错误类型',
           pieIdentity: '身份指纹',
@@ -160,7 +160,7 @@ describe('饼图维度降级三态', () => {
     expect(w.findAll('.dist-card__degraded').length).toBe(1)
     // clients 有数据 → 渲染排行，且不是降级态。
     expect(w.text()).toContain('client-a')
-    expect(w.text()).toContain('暂无数据') // 其它空维度仍走空态
+    expect(w.text()).toContain('所选时段内没有可排名的数据。') // 其它空维度仍走空态
   })
 })
 

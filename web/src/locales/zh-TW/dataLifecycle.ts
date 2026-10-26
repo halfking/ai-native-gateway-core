@@ -4,6 +4,15 @@ export default {
   storage: {
     migrateFailedWithReason: '遷移沒能完成：{reason}。請重試',
   },
+  /**
+   * 大欄位管理（BlobManager）文案。
+   * ★ 空態（2026-10-27 第 14 增量 · 空狀態 5 分）：原先用通用鍵
+   *   `common.feedback.noData`（「暫時沒有內容可顯示」）。
+   *   這一頁**沒有時間篩選器** ⇒ 不寫時間範圍（不編造頁面不知道的事實）。
+   */
+  blob: {
+    emptyNoResult: '還沒有大欄位記錄。',
+  },
   storageOverview: {
     summary: {
       databaseTitle: "PostgreSQL 資料庫",

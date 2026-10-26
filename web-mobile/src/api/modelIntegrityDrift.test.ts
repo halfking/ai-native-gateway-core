@@ -38,7 +38,7 @@ import {
 /**
  * 指纹漂移的契约测试（2026-10-08，第八十一批）。
  *
- * 后端：`admin/handler.go:979-980`（整个 `/api/admin/model-integrity/` 前缀都是
+ * 后端：`admin/handler.go:982-983`（整个 `/api/admin/model-integrity/` 前缀都是
  * `h.modelIntegrityTenantAdmin`）→ `admin/model_integrity.go:85-104` 的 switch 分发 →
  * `:341-412` 的 `handleModelIntegrityFingerprintDrift`。
  * ★★★★★★ 2026-10-21 行号订正：`:976-977` → `:979-980`（**漂 3 行**）；

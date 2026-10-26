@@ -35,7 +35,6 @@ export default {
     deleteFailed: '没能删除，请重试',
     operationFailed: '操作没能完成，请重试',
     loading: '加载中…',
-    noData: '暂时没有内容可显示',
     unknownReason: '没拿到错误详情',
     saveFailedWithReason: '保存失败：{reason}。请重试',
     operationFailedWithReason: '操作失败：{reason}。请重试',
@@ -48,6 +47,21 @@ export default {
     installFailedWithReason: '安装失败：{reason}。请重试',
     batchPricingFailedWithReason: '批量定价失败：{reason}。请重试',
     batchUpdateFailedWithReason: '批量更新失败：{reason}。请重试',
+  },
+  /**
+   * 空状态（2026-10-27 第 14 增量 · 空状态 5 分）。
+   *
+   * ★ 这里只放**跨页面共用**的兜底文案。绝大多数空态必须有**专属**键
+   *   （点名缺的是什么 + 时间范围 + 下一步动作）——
+   *   impeccable 的原话是「An empty state distinguishes first use, no results,
+   *   filters, permissions, and failure」⇒ **「区分」是硬要求**，
+   *   一句「暂时没有内容可显示」把 5 种状态压成 1 种，等于什么都没说。
+   *
+   * ★ `noResult` 是**兜底**：调用方能说出自己缺什么时，必须用自己的键。
+   *   kind 词写在键名里（`empty<Kind>`）⇒ 差异进结构，不靠措辞自觉。
+   */
+  empty: {
+    noResult: '没有可显示的记录。',
   },
   table: {
     actions: '操作',

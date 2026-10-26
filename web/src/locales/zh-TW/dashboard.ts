@@ -73,7 +73,24 @@ tabs: {
     distTop: 'TOP {n}',
     distOthers: '其他 {n} 項',
     distDrillHint: '選擇錯誤類型 → 按模型/供應商/客戶端下鑽',
-    empty: '看板暫時沒有資料',
+    /**
+     * 空狀態（2026-10-27 第 14 增量 · 空狀態 5 分）。
+     * ★ 原本這裡只有一個 `empty: '看板暫時沒有資料'`，被 6 個**不同**的卡片共用
+     *   （供應商 / 分佈排行 / 模型分佈 / 趨勢圖 / 用量表 / 運維看板的兩張任務卡）——
+     *   一句話覆蓋 6 種語意 ⇒ 使用者看到「沒有資料」時無法判斷是「真的沒有」「被篩掉了」
+     *   還是「算錯了」。⇒ 現在按**頁面事實**拆開，kind 寫進鍵名。
+     *   · emptyNoResult* = 無結果（查過了，真的沒有）
+     *   · emptyFailed*    = 失敗/未知（伺服器沒給 ⇒ 不能說成「沒有」）
+     *   ★ 時間範圍沿用本檔既有譯法（`dashboard.noData` 舊值「該時段暫無資料」）⇒ 該時段內。
+     */
+    emptyNoResultProviders: '該時段內沒有供應商資料。',
+    emptyNoResultDist: '該時段內沒有可排名的資料。',
+    emptyNoResultDrill: '該錯誤類型下沒有失敗的請求。',
+    emptyNoResultModelDist: '該時段內沒有模型資料。',
+    emptyNoResultModelTrend: '該時段內沒有模型趨勢資料。',
+    emptyNoResultTrend: '該時段內沒有用量趨勢資料。',
+    emptyNoResultDiscovery: '模型發現任務還沒有執行記錄。',
+    emptyNoResultProbe: '探測巡檢還沒有執行記錄。',
     bgTasks: '後台任務',
     discoveryStatus: '模型發現',
     selfcheckTitle: '系統自檢',
@@ -122,7 +139,6 @@ tabs: {
     colModel: "模型",
   },
   loading: "載入中…",
-  noData: "該時段暫無資料",
   liveStream: {
     title: "即時請求流",
     groupByQueue: "按處理佇列",
@@ -237,7 +253,14 @@ tabs: {
     closedSessions: "已關閉",
     costUSD: "費用 (USD)",
     sessionCount: "會話數",
-    sessionTrend: "會話趨勢"
+    sessionTrend: "會話趨勢",
+    /**
+     * 空狀態（2026-10-27 第 14 增量 · 空狀態 5 分）。
+     * ★ 原先這兩處都用通用鍵 `dashboard.noData`（「該時段暫無資料」）。
+     *   kind = NoResult：查過了，該時段內真的沒有這種資料。
+     */
+    emptyNoResultHealthGrade: '該時段內沒有健康度分佈資料。',
+    emptyNoResultSessionTrend: '該時段內沒有會話趨勢資料。',
   },
 
 
@@ -272,6 +295,12 @@ tabs: {
     periodRange: '{start} 至 {end}',
     modelBreakdown: '模型彙總',
     dailyBreakdown: '每日模型明細',
+    /**
+     * 空狀態（2026-10-27 第 14 增量 · 空狀態 5 分）。
+     * ★ 原先用通用鍵 `dashboard.noData`（「該時段暫無資料」）。
+     *   kind = NoResult：降級態已有獨立措辭（dataLifecycle.usageCost.degraded.title），維持不變。
+     */
+    emptyNoResult: '該時段內沒有用量記錄。',
   },
   statsRow: {
     totalSessions: "Total Sessions",

@@ -26,7 +26,17 @@ export default {
     recentSessions: "最近のセッション",
     actionDetail: "詳細",
     createdAt: "作成日時",
-    empty: "ユーザープロファイルデータがありません"
+    empty: "ユーザープロファイルデータがありません",
+    /**
+     * 3 つの統計テーブルの空状態（2026-10-27 第 14 インクリメント · 空状態 5 分）。
+     * ★ 以前は 3 つとも `hyper.list.empty`（このリストにはまだ内容がありません）を共有 ⇒
+     *   「人気タスク」「人気エンドユーザー」「最近のセッション」の 3 件事が 1 文に圧縮され、
+     *   その文は「何が無いのか」すら言っていなかった。
+     *   ⇒ kind = FirstUse：このアカウントでは該当の記録がまだ発生していない。
+     */
+    emptyFirstUseTopTasks: "このアカウントにはまだタスクの記録がありません。",
+    emptyFirstUseTopEndUsers: "このアカウントにはまだエンドユーザーの記録がありません。",
+    emptyFirstUseRecentSessions: "このアカウントにはまだセッションの記録がありません。",
   },
   userProfileSearchPlaceholder: "ユーザー ID を検索...",
   catalog: {
@@ -87,6 +97,18 @@ export default {
     piiDetected: "PII detected",
     topModels: "Top 10 models",
     topModelsEmpty: 'この期間のモデル使用データはありません',
+    /**
+     * 空状態（2026-10-27 第 14 インクリメント · 空状態 5 分）。
+     * ★ `errorsEmpty` = 「この期間のエラー記録はありません」= **正常な状態**（実際にエラーが無かった）；
+     *   一方、サーバーがエラー概要を**返していない**（errors が null）は**不明** ——
+     *   以前の文言 `dashboard.noData` は「分からないこと」を「分かっていること」처럼書いていた。
+     *   ⇒ この 2 つは分けて言わなければならない。kind = Failed の一枠。
+     */
+    emptyFailedErrorSummary: 'この期間のエラー概要データは返されませんでした。再試行してください。',
+    /** 空状態：Top クライアント統計が空（以前は汎用キー `dashboard.noData`）。 */
+    emptyNoResultTopClients: 'この期間のクライアント統計はありません。',
+    /** 空状態：Top タスク統計が空（以前は汎用キー `dashboard.noData`）。 */
+    emptyNoResultTopTasks: 'この期間のタスク統計はありません。',
     model: "Model",
     requestCount: "Requests",
     successRate: "Success rate",

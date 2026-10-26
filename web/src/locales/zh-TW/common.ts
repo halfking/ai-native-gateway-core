@@ -36,7 +36,6 @@ export default {
     deleteFailed: '沒能刪除，請重試',
     operationFailed: '操作沒能完成，請重試',
     loading: '載入中…',
-    noData: '暫時沒有內容可顯示',
     unknownReason: '沒取得錯誤詳情',
     saveFailedWithReason: '儲存失敗：{reason}。請重試',
     operationFailedWithReason: '操作失敗：{reason}。請重試',
@@ -49,6 +48,21 @@ export default {
     installFailedWithReason: '安裝失敗：{reason}。請重試',
     batchPricingFailedWithReason: '批次定價失敗：{reason}。請重試',
     batchUpdateFailedWithReason: '批次更新失敗：{reason}。請重試',
+  },
+  /**
+   * 空狀態（2026-10-27 第 14 增量 · 空狀態 5 分）。
+   *
+   * ★ 這裡只放**跨頁面共用**的兜底文案。絕大多數空態必須有**專屬**鍵
+   *   （點名缺的是什麼 + 時間範圍 + 下一步動作）——
+   *   impeccable 的原話是「An empty state distinguishes first use, no results,
+   *   filters, permissions, and failure」⇒ **「區分」是硬要求**，
+   *   一句「暫時沒有內容可顯示」把 5 種狀態壓成 1 種，等於什麼都沒說。
+   *
+   * ★ `noResult` 是**兜底**：呼叫端能說出自己缺什麼時，必須用自己的鍵。
+   *   kind 詞寫在鍵名裡（`empty<Kind>`）⇒ 差異進結構，不靠措辭自覺。
+   */
+  empty: {
+    noResult: '沒有可顯示的記錄。',
   },
   table: {
     actions: '操作',

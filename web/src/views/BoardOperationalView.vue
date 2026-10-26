@@ -114,7 +114,7 @@ onMounted(() => {
                 <span class="bo-row-value">{{ formatTimestamp(data.background_tasks.discovery.heartbeat_at) }}</span>
               </div>
             </div>
-            <p v-else class="bo-card-empty">{{ $t('common.feedback.noData') }}</p>
+            <p v-else class="bo-card-empty">{{ $t('dashboard.board.emptyNoResultDiscovery') }}</p>
             <p v-if="data.background_tasks?.degraded" class="bo-card-degraded">
               降级：{{ data.background_tasks.degraded_reason ?? '原因未知' }}
             </p>
@@ -129,7 +129,7 @@ onMounted(() => {
                 <span class="bo-row-value">{{ formatNumber(data.background_tasks.probe_loop.checks_last_10m) }}</span>
               </div>
             </div>
-            <p v-else class="bo-card-empty">{{ $t('common.feedback.noData') }}</p>
+            <p v-else class="bo-card-empty">{{ $t('dashboard.board.emptyNoResultProbe') }}</p>
             <p v-if="data.background_tasks?.probe_degraded" class="bo-card-degraded">
               探针降级
             </p>

@@ -42,9 +42,34 @@ violations=$(grep -v '^[[:space:]]*#' "$SCRIPT" | grep -n 'LEGACY_RESTART=false'
 #   host_atomic_switch 翻的 current/顶层软链 canary 根本不读。
 #   ⇒ 修复形态：ps 归属 > run/active-service 记录 > 契约 service_name
 #   三级解析实况 unit；canary 形态走 slots 重指 + restart 实况 unit。
-# 本段钉四件事（源码形态契约，判定窗口 = 消费点起 60 行）：
+#
+# ★★★ 2026-10-26 再订正（12h 审计轮）：本段原 ⑤⑦ 两条**把缺陷钉死了** ——
+#   ⑤ 钉「用 slots/$legacy_port 重指」：★ 事实是 canary unit 的
+#     ExecStart = /opt/llm-gateway-go/slots/%i/gateway ⇒ slot 的键是
+#     **systemd 实例名（%i）**，而 %i 与监听端口是**两个不同的来源**
+#     （llmgo-245-canary@2823.service ⇒ %i=2823，端口是 8781/8782）
+#     ⇒ 用端口重指 = **重指了一个 nobody 读的目录** ⇒ restart 起的仍是旧 binary
+#     ⇒⇒ **静默 no-op 部署**。⇒ 本段改钉「slot 由 %i 推导 + 与端口一致性校验」。
+#   ⑦ 钉「candidate_service 改指实况 unit」：★ 那三行赋值（candidate_port/
+#     candidate_service/active_service）**是死代码** —— legacy 分支写完就结束，
+#     而 [9/9] 探针与 host_mark_verified **全在蓝绿 else 分支里**
+#     ⇒ ⇒ 提交说明写的「共享 [9/9] 探针/诊断变量改指实况 unit」**没兑现**。
+#     ⇒ 本段改钉**真正缺失的那件事**：legacy 路径自己的验证 + 标记 verified。
+#
+# ⚠ 判定窗口：legacy 分支已显著变长（补了验证/回滚/输入校验）
+#   ⇒ 窗口不能是固定的「+60 行」⇒ 改为**按 else 关键字定位分支边界**
+#   （legacy 分支以 2 空格缩进的 `else` 结束 ⇒ 用缩进特征定位，不依赖行号）。
 start=$(grep -n -F 'if [[ "$LEGACY_RESTART" == true ]]; then' "$SCRIPT" | head -1 | cut -d: -f1)
-win=$(sed -n "${start},$((start + 60))p" "$SCRIPT")
+# 分支体 = start 行之后、下一个 2 空格缩进的 `else` 之前
+win=$(awk -v s="$start" '
+  NR<=s { next }
+  /^  else$/ { exit }
+  { print }
+' "$SCRIPT")
+# ★★ 只看**代码位**：本分支的注释里会提到 `slots/$legacy_port`、`systemctl restart`
+#   （讲「原实现怎么错的」），⇒ 若连注释一起数，「反向钉」会**恒红**，
+#   ⇒ 而「反向钉」的价值恰恰在于它必须真的红 ⇒ ⇒ 必须剥掉注释行。
+win_code=$(printf '%s\n' "$win" | grep -vE '^[[:space:]]*#')
 
 # ④ stop/start 前必须解析实况 unit，且解析失败要拒绝盲切（不许静默回契约）
 n=$(printf '%s\n' "$win" | grep -cF 'if ! detect_active_side; then')
@@ -52,29 +77,81 @@ n=$(printf '%s\n' "$win" | grep -cF 'if ! detect_active_side; then')
 n=$(printf '%s\n' "$win" | grep -cF '拒绝盲切')
 [ "${n}" -ge 1 ]; check "解析失败必须拒绝盲切而非静默继续（实际 ${n}）" $?
 
-# ⑤ canary 形态必须走 slots 重指 + restart 实况 unit（不是 host_atomic_switch 直呼）
-n=$(printf '%s\n' "$win" | grep -cF "ln -sfn '\$REMOTE_ROOT/releases/\$version' '\$REMOTE_ROOT/slots/\$legacy_port'")
-[ "${n}" = "1" ]; check "canary 形态走 slots 重指（实际 ${n}）" $?
-n=$(printf '%s\n' "$win" | grep -cF "systemctl restart '\$legacy_unit'")
+# ⑤ ★★ canary 形态的 slot 必须由 **unit 实例名（%i）** 推导，且须与端口一致
+#    （原判据钉「按端口重指」= 钉死了一个静默 no-op 部署，见上）
+n=$(printf '%s\n' "$win_code" | grep -cF 'legacy_slot="$REMOTE_ROOT/slots/$legacy_instance"')
+[ "${n}" = "1" ]; check "canary slot 由实例名拼出（不是端口）（实际 ${n}）" $?
+# ★★ 一致性校验（2026-10-26 变异实测补）：实例名（%i）与实况监听端口必须一致。
+#   ★ 不一致 ⇒ %i 推出的 slot 与正在监听的那个 slot 可能是**两个**目录
+#   ⇒ ⇒ 重指了一个 nobody 读的目录 ⇒ 又是**静默 no-op 部署**。
+#   ⇒⇒ 这一条必须单独钉（变异 M4：删掉它时门原本照样绿 ⇒ 门有洞）。
+n=$(printf '%s\n' "$win_code" | grep -cF 'if [[ "$legacy_instance" != "$legacy_port" ]]; then')
+[ "${n}" = "1" ]; check "实例名与实况端口一致性校验在场（实际 ${n}）" $?
+n=$(printf '%s\n' "$win_code" | grep -cF 'legacy_instance="${legacy_unit#*@}"')
+[ "${n}" = "1" ]; check "canary slot 的实例名由 unit 名推导（实际 ${n}）" $?
+n=$(printf '%s\n' "$win_code" | grep -cF "ln -sfn '\$REMOTE_ROOT/releases/\$version' '\$legacy_slot'")
+[ "${n}" = "1" ]; check "canary 形态按实例 slot 重指（实际 ${n}）" $?
+# ★ 反向钉：legacy 窗口内**不许**再出现按端口拼 slot 的写法
+n=$(printf '%s\n' "$win_code" | grep -cF "slots/\$legacy_port")
+[ "${n}" = "0" ]; check "legacy 窗口内无「按端口拼 slot」的写法（实际 ${n}）" $?
+# ★ restart 必须打在**实况 unit** 上：数的是**执行**语句（`remote_ssh "systemctl restart ..."`），
+#   不是错误提示里那句回滚建议（那也是 `systemctl restart` 但不是执行点）。
+n=$(printf '%s\n' "$win_code" | grep -cE 'remote_ssh "systemctl restart .\$legacy_unit')
 [ "${n}" = "1" ]; check "restart 打在实况 unit 上（实际 ${n}）" $?
 
 # ⑥ 三级回退链：ps 归属之后必须先试 run/active-service 记录，最后才契约 service_name
-n=$(printf '%s\n' "$win" | grep -cF "run/active-service")
+n=$(printf '%s\n' "$win_code" | grep -cF "run/active-service")
 [ "${n}" -ge 1 ]; check "回退链含 run/active-service 记录（实际 ${n}）" $?
-n=$(printf '%s\n' "$win" | grep -cF '回退契约 service_name')
+n=$(printf '%s\n' "$win_code" | grep -cF '回退契约 service_name')
 [ "${n}" = "1" ]; check "最终回退是契约 service_name 且带 warn（实际 ${n}）" $?
 
-# ⑦ 共享的 [9/9] 探针与诊断变量必须改指实况 unit（否则 journal tail 打在弃用 unit 上）
-n=$(printf '%s\n' "$win" | grep -cF 'candidate_service="$legacy_unit"')
-[ "${n}" = "1" ]; check "candidate_service 改指实况 unit（实际 ${n}）" $?
+# ⑦ ★★★ 2026-10-26 再订正：legacy 路径必须**自己**做验证并标记 verified
+#   （原判据钉「candidate_service 改指实况 unit」= 钉死了三行死代码）
+#   ⇒ 真正缺的是：legacy 重启后**不探活**、**不核对运行中版本**、**不标记 verified**
+#   ⇒⇒ 结果：起不来的 binary 也照样打印「✅ 部署完成」，且该 release 永远
+#      verified:false ⇒ 下一个部署不敢回滚到它 ⇒ 闭环缺最后一环。
+#
+# ★★★ 判据口径：**逐分支**断言，不是「整段 ≥1 次」。
+#   ★ 原因（2026-10-26 变异实测踩到）：legacy 分支有**两条**切换路径
+#     （canary 形态 / host 形态）⇒ 若只断言「整段里 ≥1 次」，
+#     ⇒ 删掉其中**一条**路径的验证时，门**照样绿** ⇒ **门有洞**。
+#   ⇒ ⇒ 拆成两段分别断言 ⇒ 删任一条都红。
+canary_win=$(printf '%s\n' "$win_code" | awk '
+  /if \[\[ -n "\$canary_prefix"/ { inb=1 }
+  inb { print }
+  inb && /^    else$/ { exit }
+')
+host_win=$(printf '%s\n' "$win_code" | awk '
+  /^    else$/ { inb=1; next }
+  inb { print }
+')
+for probe_name in canary_win host_win; do
+  eval "seg=\$$probe_name"
+  n=$(printf '%s\n' "$seg" | grep -cF 'remote_probe "$legacy')
+  [ "${n}" -ge 1 ]; check "${probe_name}: 自己探活 /healthz（实际 ${n}）" $?
+  n=$(printf '%s\n' "$seg" | grep -cF '_verify_running_release "$version"')
+  [ "${n}" -ge 1 ]; check "${probe_name}: 核对运行中 release 身份（实际 ${n}）" $?
+  n=$(printf '%s\n' "$seg" | grep -cF 'host_mark_verified "$SSH_CMD" "$TARGET" "$version"')
+  [ "${n}" -ge 1 ]; check "${probe_name}: 标记 release verified（实际 ${n}）" $?
+done
+# ★ 反向钉：不得再出现那三行死代码赋值
+n=$(printf '%s\n' "$win_code" | grep -cE '^\s*(candidate_port|candidate_service|active_service)="\$legacy_(port|unit)"')
+[ "${n}" = "0" ]; check "legacy 窗口内无「写完即弃」的探针变量赋值（实际 ${n}）" $?
 
 # ⑧ canary 前缀剥离必须用参数展开：BSD sed 对 s/@\.service$//@ 报 bad flag
 #   （2026-10-26 部署现场实测）⇒ 解析成空 ⇒ canary 判定静默走错分支。
 #   钉两层：展开式必须在场 + legacy 窗口内不许出现对该后缀的 sed 替换。
-n=$(printf '%s\n' "$win" | grep -cF 'canary_prefix="${canary_prefix%@.service}"')
+n=$(printf '%s\n' "$win_code" | grep -cF 'canary_prefix="${canary_prefix%@.service}"')
 [ "${n}" = "1" ]; check "canary 前缀用参数展开剥离（实际 ${n}）" $?
-n=$(printf '%s\n' "$win" | grep -c "sed.*@\\\\.service")
+n=$(printf '%s\n' "$win_code" | grep -c "sed.*@\\\\.service")
 [ "${n}" = "0" ]; check "legacy 窗口内无 sed 版后缀剥离（实际 ${n}）" $?
+
+# ⑨ ★ 2026-10-26 审计新增：远端读来的 unit/port 必须校验后才准拼进 shell 命令
+#   （它们来自 run/active-service / run/active-port 文件 ⇒ 被写坏就会拼出变形命令）
+n=$(printf '%s\n' "$win_code" | grep -cE 'legacy_port" =~ \^\[0-9\]\{1,5\}\$')
+[ "${n}" = "1" ]; check "实况端口有格式校验（实际 ${n}）" $?
+n=$(printf '%s\n' "$win_code" | grep -cE 'legacy_unit" =~ \^\[A-Za-z0-9_')
+[ "${n}" = "1" ]; check "实况 unit 有格式校验（实际 ${n}）" $?
 
 echo "deploy legacy-restart flag: ${pass} 通过 / ${fail} 失败"
 [ "${fail}" = "0" ]

@@ -79,7 +79,25 @@ v2: {
     distTop: 'TOP {n}',
     distOthers: '{n} weitere',
     distDrillHint: 'Fehlertyp anklicken → Drilldown nach Modell/Anbieter/Client',
-    empty: 'No data',
+    /**
+     * Leerzustände (2026-10-27, Inkrement 14 · „Leerzustand 5 Punkte“).
+     * ★ Vorher stand hier ein einziges `empty: 'No data'`, das von 6 **verschiedenen**
+     *   Karten geteilt wurde (Anbieter / Verteilungsrangliste / Modellverteilung /
+     *   Trenddiagramme / Nutzungstabelle / die zwei Aufgabenkarten der Betriebsübersicht)
+     *   — ein Satz für 6 Bedeutungen ⇒ „keine Daten“ ließ offen, ob wirklich nichts da ist,
+     *   ob herausgefiltert wurde oder ob schlicht falsch gerechnet wurde.
+     *   ⇒ Jetzt nach **Seitenfakt** getrennt, die Art steht im Schlüsselnamen.
+     *   · emptyNoResult* = kein Ergebnis (geprüft, es gibt wirklich nichts)
+     *   · emptyFailed*    = fehlgeschlagen/unbekannt (der Server lieferte nichts)
+     */
+    emptyNoResultProviders: 'Im ausgewählten Zeitraum liegen keine Anbieterdaten vor.',
+    emptyNoResultDist: 'Im ausgewählten Zeitraum gibt es keine Daten für die Rangliste.',
+    emptyNoResultDrill: 'Für diesen Fehlertyp gibt es keine fehlgeschlagenen Anfragen.',
+    emptyNoResultModelDist: 'Im ausgewählten Zeitraum liegen keine Modelldaten vor.',
+    emptyNoResultModelTrend: 'Im ausgewählten Zeitraum liegen keine Daten zum Modelltrend vor.',
+    emptyNoResultTrend: 'Im ausgewählten Zeitraum liegen keine Daten zum Nutzungstrend vor.',
+    emptyNoResultDiscovery: 'Die Modellentdeckung wurde noch nicht ausgeführt.',
+    emptyNoResultProbe: 'Der Probe-Prüflauf wurde noch nicht ausgeführt.',
     bgTasks: 'Background tasks',
     discoveryStatus: 'Model discovery',
     selfcheckTitle: 'Self-check',
@@ -128,7 +146,6 @@ v2: {
     colModel: "Modell",
   },
   loading: "Wird geladen…",
-  noData: "Keine Daten für diesen Zeitraum",
   liveStream: {
     title: "Echtzeit-Anfrage-Stream",
     groupByQueue: "Nach Verarbeitungswarteschlange",
@@ -243,7 +260,10 @@ v2: {
     closedSessions: "Geschlossene Sitzungen",
     costUSD: "Kosten (USD)",
     sessionCount: "Sitzungsanzahl",
-    sessionTrend: "Sitzungstrend"
+    sessionTrend: "Sitzungstrend",
+    /** Leerzustände (2026-10-27, Inkrement 14): vorher nutzten beide Stellen `dashboard.noData` („keine Daten für diesen Zeitraum“). */
+    emptyNoResultHealthGrade: 'Im ausgewählten Zeitraum liegen keine Daten zur Gesundheitsverteilung vor.',
+    emptyNoResultSessionTrend: 'Im ausgewählten Zeitraum liegen keine Daten zum Sitzungstrend vor.',
   },
 
 
@@ -278,6 +298,8 @@ v2: {
     periodRange: '{start} bis {end}',
     modelBreakdown: 'Nach Modell',
     dailyBreakdown: 'Tägliche Modellaufschlüsselung',
+    /** Leerzustand: keine Nutzungsdatensätze (der herabgestufte Zustand hat mit `dataLifecycle.usageCost.degraded.title` einen eigenen Wortlaut). */
+    emptyNoResult: 'Im ausgewählten Zeitraum liegen keine Nutzungsdaten vor.',
   },
   statsRow: {
     totalSessions: "Total Sessions",

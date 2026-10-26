@@ -29,6 +29,5 @@ export default {
     retry: '重试',
     allLoaded: '已全部加载 {count} 条',
     loadFailed: '加载失败，请重试',
-    empty: '列表暂时没有内容',
   },
 }

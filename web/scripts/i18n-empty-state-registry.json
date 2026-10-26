@@ -1,0 +1,49 @@
+{
+  "round": "2026-10-27 第 14 增量 · 空状态 5 分轮",
+  "principle": "impeccable clarify.md —— An empty state distinguishes first use, no results, filters, permissions, and failure. Explain the state and provide the next useful action.",
+  "kindVocabulary": [
+    "FirstUse",
+    "NoResult",
+    "Filtered",
+    "Failed",
+    "NoPermission"
+  ],
+  "kindMeanings": {
+    "FirstUse": "首次使用：用户还没创建过任何东西",
+    "NoResult": "无结果：查过了，确实没有",
+    "Filtered": "筛选后为空：有数据，但被当前筛选条件筛掉了",
+    "Failed": "失败/未知：服务端没给这个数据 ⇒ 不能说成「没有」",
+    "NoPermission": "无权限：当前身份看不到"
+  },
+  "retiredKeys": [
+    "common.feedback.noData",
+    "dashboard.board.empty",
+    "hyper.list.empty",
+    "dashboard.noData"
+  ],
+  "keys": [
+    { "key": "common.empty.noResult", "kind": "NoResult" },
+    { "key": "credentialMonitor.chart.emptyFiltered", "kind": "Filtered" },
+    { "key": "dashboard.board.emptyNoResultProviders", "kind": "NoResult" },
+    { "key": "dashboard.board.emptyNoResultDist", "kind": "NoResult" },
+    { "key": "dashboard.board.emptyNoResultDrill", "kind": "NoResult" },
+    { "key": "dashboard.board.emptyNoResultModelDist", "kind": "NoResult" },
+    { "key": "dashboard.board.emptyNoResultModelTrend", "kind": "NoResult" },
+    { "key": "dashboard.board.emptyNoResultTrend", "kind": "NoResult" },
+    { "key": "dashboard.board.emptyNoResultDiscovery", "kind": "NoResult" },
+    { "key": "dashboard.board.emptyNoResultProbe", "kind": "NoResult" },
+    { "key": "dashboard.providerUsage.emptyNoResult", "kind": "NoResult" },
+    { "key": "dashboard.charts.emptyNoResultHealthGrade", "kind": "NoResult" },
+    { "key": "dashboard.charts.emptyNoResultSessionTrend", "kind": "NoResult" },
+    { "key": "sessions.stats.emptyNoResultTopClients", "kind": "NoResult" },
+    { "key": "sessions.stats.emptyNoResultTopTasks", "kind": "NoResult" },
+    { "key": "sessions.stats.emptyFailedErrorSummary", "kind": "Failed" },
+    { "key": "sessions.userProfile.emptyFirstUseTopTasks", "kind": "FirstUse" },
+    { "key": "sessions.userProfile.emptyFirstUseTopEndUsers", "kind": "FirstUse" },
+    { "key": "sessions.userProfile.emptyFirstUseRecentSessions", "kind": "FirstUse" },
+    { "key": "ops.vibecoding.emptyFirstUseProjects", "kind": "FirstUse" },
+    { "key": "ops.vibecoding.emptyFilteredSessions", "kind": "Filtered" },
+    { "key": "ops.vibecoding.emptyFilteredReviews", "kind": "Filtered" },
+    { "key": "dataLifecycle.blob.emptyNoResult", "kind": "NoResult" }
+  ]
+}
