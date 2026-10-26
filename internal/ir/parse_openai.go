@@ -385,6 +385,17 @@ func parseOpenAIContentBlocks(blocks []any) ([]ContentBlock, error) {
 			// {type:"input_audio", input_audio:{data, format}}
 			ia := parseOpenAIInputAudioBlock(blockMap)
 			irBlock.InputAudio = ia
+			// 2026-10-26（Gemini fileData 转发修复轮）：URI 引用形态
+			// （input_audio.url，由 serializeOpenAIAudioBlock 的 file_uri
+			// 分支产出）没有 data/format ⇒ parseOpenAIInputAudioBlock 返回
+			// nil ⇒ 本分支此前什么都不留 ⇒ 执行器强制的 Parse→Validate→
+			// Serialize 往返（finalizeOpenAIUpstreamBody）把 URI 整个丢掉，
+			// 上游收到的是没有音频的请求。按本文件对「形状已知但无载荷」
+			// 块的既有惯例原样保留（video_url 等未知块走 default 同款）。
+			if ia == nil {
+				irBlock.Type = "raw"
+				irBlock.RawContent = mustMarshalString(blockMap)
+			}
 		case "image":
 			if img := parseOpenAIImageBlock(blockMap); img != nil && imageSourceHasPayload(img) {
 				irBlock.Image = img

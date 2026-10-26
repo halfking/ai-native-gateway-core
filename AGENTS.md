@@ -541,6 +541,32 @@
 > ★★★★ 契约测试报出的「漂移」有可能是【量具】的 ⇒ 先问断言写对没有 /
 > ★★★ 凭据进 URL ⇒ 日志必须脱敏且【先脱敏再截断】/ ★★★ 边界上一次性归一 ⇒ 下游零改动 /
 > ★★★ 认得同一把钥匙的实现要收成一份（解析器同理））。
+> **2026-10-27 Gemini 转换面补全轮**（会话 `mvs_42f116b20f694164b00900d451db1ca0`）：
+> ★ 承接 §433（Gemini 原生认证形态修复轮）留下的「本轮明确没做」清单 ⇒ 本轮先把清单**逐项定性**，
+> 再只做**厂方文档明文要求且实现面小**的那一项。
+> ⇒ ★★★ **定性结果（三族要分开做）**：
+> ① **`citationMetadata` 捕获**（厂方 `docs/vendor-formats/gemini.md` §特殊字段明文要求
+> 「IR 需要捕获并可在序列化为 OpenAI 时映射为 annotations」）⇒ **本轮做**；
+> ② **Gemini 原生模型列表**（`GET /v1beta/models` ⇒ 404）⇒ 保留文档没写成契约，且需
+> `cmd/gateway/main.go` 接线（★ 当时**有并行会话正在改同一个文件** ⇒ 本轮避让）⇒ **登记**；
+> ③ **`:countTokens`** ⇒ 要给客户端**诚实**的 token 计数；用估算值会让客户端按错预算决策
+> （★ 网关自己的估算口径是给内部账务用的）⇒ **独立设计题，登记**。
+> ⇒ ★★ **本轮最值钱的一处定性**：缺口是**「能力缺口」**（IR 压根没有承载引用元数据的字段 ⇒
+> 解析那一步就扔了），**不是「实现错了」** ⇒ 两者混在一轮里做会把无关特性拖大（LESSONS §436 通用式一）。
+> ⇒ ★ **实现**：`internal/ir` 加 `ResponseCitation{URL,Title,StartIndex,EndIndex}` +
+> `InternalResponse.Citations`；`ParseGeminiResponse` 捕获 `candidates[].citationMetadata.citations[]`
+> （★ 厂方字段名是 **`uri`** 不是 `url` ⇒ IR 里归一为 `URL`，别在序列化侧到处做别名判断）；
+> `SerializeOpenAIResponse` 在**有引用时**产出 `message.annotations[]`（`url_citation` 形状）；
+> `SerializeGeminiResponse` 还原 `citationMetadata`（回到 `uri` 字段名 ⇒ 往返不丢）。
+> ⇒ ★ **两条纪律**：① **`start_index`/`end_index` 为 0 时不发这个键** ⇒ 补 0 等于**声称**
+> 「这段引用从偏移 0 开始」，而上游可能只是没给跨度；② **没有引用时两个方向都不新增任何键**
+> ⇒ 普通响应报文**逐字不变**（不发空的 `annotations: []`）。
+> ⇒ ★ **门（5 条，含 3 条反向钉）**：IR 捕获 / 无 URI 的引用不进 IR / IR→OpenAI annotations /
+> **无引用 ⇒ 不出现 annotations 键** / Gemini 往返用 `uri` 而非 `url`。
+> ⇒ ★ **读数**：IR 能承载的引用元数据 **0 → `ResponseCitation`**；`citationMetadata` 解析
+> **丢弃 → 捕获**；IR→OpenAI `annotations` **不可能 → 有引用即产出**；IR→Gemini 往返 **丢弃 → 还原**。
+> `go build ./...` ✓ / `internal/ir` ✓ / `internal/requestfact` ✓ / `domains/transformation` ✓。
+> ⇒ 审计档 `docs/audit/2026-10-27-Gemini转换面补全轮.md`；通用式见 `LESSONS.md` **§436**（5 条）。
 > **2026-10-23 实时拓扑探测打标四处源真值漂移轮 + 口径收敛**（会话
 > `mvs_64ddb526ee11405aae54d67e7c4d6161`）：用户报 154 生产上一条 32-hex
 > 请求 `af1eb6d83ef39610cc4f8be4e181b5a8` "应被识别为探测但实时拓扑 pill = 否"。
@@ -8365,6 +8391,22 @@ index b953a6f03..555ef83c4 100644
 >    25.1% 行 request_delta≡outbound_body 只占 3.6% 字节 ⇒ 去重仅 ≈135MB（2.2%）；
 >    拆分真实价值 = 按列差分留存（语义，属主）。★ 本轮自纠：attstorage `'x'`=EXTENDED 不是 EXTERNAL
 >    ——字母读反差点产出「6GB 未压缩」假发现（比率实证 0.31~0.67 全程 ⇒ 压缩健在；LESSONS §397）。
+> ⇒ ★★ **R147 批判式审计轮（2026-10-26，252 只读复核）五项发现全部处置**：
+> ①★★★ **908 已应用生产**——deploy **154 build_seq 2828**（基提交 `9074b88a` = 本轮合并提交）
+>    于 10-25 应用并 verified；252 地面真值（10-26 复核）：type_created 已删（0 行）、幸存四索引
+>    恰为判决形态、uq_idem idx_scan 42.2万→48.2万（写路径健康）⇒ 本条目上文的「只落仓/需授权」
+>    按**写档时点**为真，现以审计档 §9.0 为准（生产应用发生在会话之外的部署列车，判决经受住生产验证）。
+> ② **objects/indexes 出处树核实为 provenance registry 非交付通道**（generator_contract_test 只读溯源；
+>    718 先例原样保留被删索引的 objects 文件）⇒ 无复活路径，不加标记不改动。
+> ③ 两处口径订正：「session_dim 每次都从盘读」只对冷态成立（热态复跑全 hit，read=0）；
+>    增长率 ≈253MB/天 = 6,081MB÷24 天（月分区行不更新 ⇒ 总量/天数成立）。
+> ④ 终态复验：最终 908 文件五段生命周期重跑全绿（itgate_147b 即弃）+ `go build ./...` +
+>    startup/db/installer 包全绿。
+> ⑤★ **顺带修 main 新红门**：并行会话 `fc6c17111`（909，R156 D17-A）漏登记
+>    `knownStartupChainConcurrencyViolations` ⇒ installer 门红在 main ⇒ 按门自述处置登记
+>    （计数 4 + 理由），只登记不改其文件。★ 908 down 文件头注残留「903 删的是」一处**有意不修**
+>    （908 已 applied 记账 sha `bcd401ec`，改文件 = 台账失配，注释妆疵不值再投递）。
+>    详见审计档 §9 + runbook §143.104.6。
 
 > **2026-10-24 探测打标修复 —— 154 发布 + 线上验证 + 口径订正轮（本会话）**：★ 上文 §「2026-10-23 实时拓扑探测打标轮」记的是
 > **根因定位与修复**（`e6f87c623`）；本节记**它被发到 154 并在线上生效**，以及**一处口径订正**。
@@ -10433,6 +10475,6 @@ index b953a6f03..555ef83c4 100644
 > ⇒ ⇒ ⇒ ★★★★ **★ 两条被复核推翻/纠正的初判（★ 留档）**：★ ① **「容器 env 口令漂移 ⇒ 共享库误判容器不可用」这条根因链在本机不成立**（★ loopback 是 `trust` ⇒ 瞎编的口令都成功 ⇒ `pg_container_usable` 不可能因口令失败）★ ② **「env 里的 `\?` 导致 Go 腿炸」不成立**（★ 那是 bash 未加引号时的转义，★ source 后本来就是 `?` ⇒ ⇒ 是**我的测量假象**）⇒ ⇒⇒ ★★ **⇒ 教训：★ 每次「推翻自己」都要留档，★ 否则下一个会话会把错结论再写一遍。**
 > ⇒ ⇒ ⇒ ★★★★ **★ 一个必须记录的踩坑：★ 仓内夹具用「封闭 PATH」（★ 只有 bash/psql/python3）⇒ ⇒ ⇒ 我第一版加的 `mktemp` 直接让夹具全红（★ `mktemp: command not found`）⇒ ⇒⇒ ★ **通道/解析层不能引入任何新外部命令** ⇒ ⇒⇒ 「夹具全红」极易被误读成「我的逻辑错了」。
 > ⇒ ⇒ ⇒ ★★★★ **★ 同深度对拍（★ 区分【内容效应】与【位置效应】）**：★ `tests/deploy_local_contract_test.sh` 在 worktree 里红（★ `scripts/deploy-lib` 是**相对软链** ⇒ 从 `/tmp` 下解析会逃逸）⇒ ⇒ 建**同深度** HEAD 基线副本与工作树副本对拍 ⇒ ⇒ 首轮两边同红（★ 一致 ⇒ 与改动无关）⇒ ⇒ **修正软链层级后两边都 PASS** ⇒ ⇒⇒ ★★ **结论变强：★ 不是「既有红灯」，★ 是【worktree 位置效应】⇒ ⇒ ⇒ 在正确环境下本次改动不破坏该契约。**
-> ⇒ ⇒ ⇒ ★ **通用式 10 条**沉淀在 `LESSONS.md`（★ ★ 原拟 §434 ⇒ ★★ 合并 origin/main（★ `0eff161c6` 已占 §433）后【让号】⇒ ★★ **最终 §435** ⇒ ★★ 改号不改内容）
+> ⇒ ⇒ ⇒ ★ **通用式 10 条**沉淀在 `LESSONS.md`（★ ★ 原拟 §434 ⇒ ★★ 合并 origin/main 后【让号】⇒ ★★ ★★ **本轮共让号三次**：★ 第一次 `0eff161c6` 已占 §433 ⇒ 让到 §435；★ 第二次并行会话又占 §434 与 §435 ⇒ ⇒ ⇒ **最终 §437** ⇒ ⇒ ⇒ ★★ 改号不改内容）
 > ⇒ ⇒ ⇒ ★ **诚实边界 / 待属主裁决 11 条**见审计档 §9（★ **待裁决**：★ **R165-PSQL-SHIM**（★ `~/.local/bin/psql` 与「宿主机直连 PG」语义冲突 ⇒ ★ 它是 openpocket 夹具的依赖 ⇒ **不能改**）· ★ **R165-HOST-DOCKER-MODE**（★ 「宿主机优先」判定把「宿主上跑着 PG 容器」判成 host 模式 ⇒ ⇒ `DL_DOCKER=0`）· ★ **R165-DL-PG-TRY-HOST**（★ 复核列为最高危残留点）· ★ **R165-COMPOSE-5432** · ★ **R165-PORTABLE**（★ 本轮修法是机器局部的 ⇒ 无 `~/kaixuan` 的机器上原 bug 原样复现）· ★ **R165-BACKUPS-500**（★ `/api/admin/backups` 的 500 应统一成 503）· ★ **R165-BODIES-401** · ★ **R165-NPLUS1** · ★ **R165-MODEL-503** · ★ **R165-MAESTRO-JAVA** · ★ **R165-LOAD**）。
 > ⇒ ⇒ ⇒ ★★★★ 完整记录见 `docs/audit/2026-10-27-R165-本地部署连错集群与psql通道修正.md`（§0~§9）。

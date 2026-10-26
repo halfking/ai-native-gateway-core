@@ -52270,7 +52270,7 @@ pkey 换体 `UNIQUE(event_id) INCLUDE(occurred_at)` + 删复合索引，**净省
 
 ### §143.104 R147 存储效率续轮：㉘ 裁决落地（迁移 908）+ ㉙ 成本分解 + ③ TOAST 评估
 
-> **对生产写入 = 0**（252 全程只读；903 只落仓）。★ 完整记录见
+> **对生产写入 = 0**（252 全程只读；908 只落仓〔§143.104.6 横幅：10-25 起已随 deploy 2828 应用生产〕）。★ 完整记录见
 > `docs/audit/2026-10-24-R147-存储效率续轮-matrix成本分解-rie索引裁决-bodiesTOAST评估.md`。
 
 #### §143.104.1 一句话结论
@@ -52291,7 +52291,7 @@ pkey 换体 `UNIQUE(event_id) INCLUDE(occurred_at)` + 删复合索引，**净省
 | created_at (41MB, 8) | retention.go hasTimeIndex 探针硬前置（无它 ⇒ 行级留存永久 SkippedNoIndex） | 保留 |
 
 ★ 写路径佐证：同表 uq_idem 5.2 天 42.2 万次扫描（≈7.8 万写/天）⇒ 每次写白维护
-零读者 110MB btree。★ 903 配套 db/db.go ensure 拆同名 CREATE（防复活）；
+零读者 110MB btree。★ 908 配套 db/db.go ensure 拆同名 CREATE（防复活）；
 baseline 两份快照刻意保留（718 先例：fresh-install「建出→删掉」）；
 8 点注册 + 门 9 测（3 坏样本阳性对照 + ensure 不复活腿 + baseline 保留腿）
 + 变异 M1~M6 全红逐字还原 + 本地一次性库五段生命周期全绿。
@@ -52324,4 +52324,25 @@ baseline 两份快照刻意保留（718 先例：fresh-install「建出→删掉
 #### §143.104.5 诚实边界
 
 两次 EXPLAIN ANALYZE 为真执行（只读 SELECT），冷/热墙钟差 14× ⇒ 墙钟只作
-时点记录（§143.28 口径）；(c) 收益未实测（未建中间表）；903 只落仓未应用。
+时点记录（§143.28 口径）；(c) 收益未实测（未建中间表）；908 只落仓未应用〔§143.104.6 横幅订正：现已应用〕。
+
+#### §143.104.6 ★★ 批判式审计横幅（2026-10-26，252 只读复核）
+
+> 本节初版三处定性被批判审计轮**修正/补充**（上文明示订正标记，原句保留）：
+
+1. ★★★ **908 已应用生产**：deploy **154 build_seq 2828**（基提交 `9074b88a` = 本轮
+   合并提交）于 **2026-10-25** 应用并 verified。252 地面真值（10-26 只读）：
+   `idx_route_incident_events_type_created` = 0 行（已删）；幸存四索引恰为判决形态；
+   `uq_idem` idx_scan 42.2万 → **48.2万**（写路径健康）。生产应用发生在本会话之外，
+   判决经受住生产验证（无回滚、无伴生故障读数）。
+2. **objects 出处文件无复活路径**：`sql/objects/indexes/` 是 provenance registry
+   （generator_contract_test.go 只读溯源，无应用方）；718 先例原样保留被删索引的
+   objects 文件 ⇒ 不加退役标记、不改动。
+3. **㉙ 口径两处订正**：①「session_dim 每次都从盘读」只对冷态成立（热态复跑全 hit）；
+   ③ 增长率 ≈253MB/天 = 6,081MB ÷ 24 天（月分区行不更新，总量/天数成立）。
+4. **顺带修 main 新红门**：并行会话 `fc6c17111`（909，R156）漏登记
+   `knownStartupChainConcurrencyViolations` ⇒ installer 门红在 main；已按门自述
+   的处置登记（计数 4 + 理由），只登记不改其文件。
+5. **终态复验**：最终 908 文件五段生命周期重跑全绿（`itgate_147b` 即弃）；
+   `go build ./...` + startup/db/installer 包全绿。
+★ 完整发现清单见审计档 §9。
