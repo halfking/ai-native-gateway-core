@@ -1,3 +1,11 @@
+-- V1-FAMILY-RETIRED: isolated-audit | 本脚本会建 v1 族的 _request_logs_hot。
+--   ★ v1 `request_logs` 族已随迁移 890 退役（物理删除）。
+--   ★ 但本脚本存在的**意义**恰恰是造出一个「890 之前的库」，好让 890 之前的
+--     迁移（627-631 等）能被复现与验证 ⇒ 保留。
+--   ★ 约束：**只允许经 scripts/audit/psql-isolated.sh 在隔离库里执行**
+--     （它建出来的表不会被 890 删掉 ⇒ 绝不允许在正式库上跑）。
+--   ⇒ 门：sql/migrations/startup/v1_family_retirement_completeness_test.go
+--
 -- audit/min-prereqs.sql
 -- Minimum preconditions so the 627-631 migration SQL can be applied to a
 -- fresh, empty database. The real production path applies 511-626 first to
