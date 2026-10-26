@@ -42,9 +42,11 @@ func ParseGeminiResponse(body []byte) (*InternalResponse, error) {
 			} `json:"citationMetadata"`
 		} `json:"candidates"`
 		UsageMetadata struct {
-			PromptTokenCount     int `json:"promptTokenCount"`
-			CandidatesTokenCount int `json:"candidatesTokenCount"`
-			TotalTokenCount      int `json:"totalTokenCount"`
+			PromptTokenCount        int `json:"promptTokenCount"`
+			CandidatesTokenCount    int `json:"candidatesTokenCount"`
+			TotalTokenCount         int `json:"totalTokenCount"`
+			CachedContentTokenCount int `json:"cachedContentTokenCount"`
+			ThoughtsTokenCount      int `json:"thoughtsTokenCount"`
 		} `json:"usageMetadata"`
 		ModelVersion string `json:"modelVersion"`
 	}
@@ -60,6 +62,18 @@ func ParseGeminiResponse(body []byte) (*InternalResponse, error) {
 			CompletionTokens: src.UsageMetadata.CandidatesTokenCount,
 			TotalTokens:      src.UsageMetadata.TotalTokenCount,
 		},
+	}
+	// 2026-10-27 缓存标准对齐轮：与流式解析（parse_gemini_stream.go）对齐 ——
+	// 非流式此前把 cachedContentTokenCount 整个丢弃，隐式缓存命中进不了 IR。
+	if src.UsageMetadata.CachedContentTokenCount > 0 {
+		v := src.UsageMetadata.CachedContentTokenCount
+		resp.Usage.CacheReadTokens = &v
+	}
+	// 同一次对齐：thoughtsTokenCount → ReasoningTokens（流式侧同款映射），
+	// 序列化侧经 thoughtsTokenCount 回到 Gemini 客户端。
+	if src.UsageMetadata.ThoughtsTokenCount > 0 {
+		v := src.UsageMetadata.ThoughtsTokenCount
+		resp.Usage.ReasoningTokens = &v
 	}
 	if len(src.Candidates) == 0 {
 		return resp, nil
@@ -168,9 +182,13 @@ func ParseResponsesResponse(body []byte) (*InternalResponse, error) {
 			Summary   json.RawMessage `json:"summary"`
 		} `json:"output"`
 		Usage struct {
-			InputTokens  int `json:"input_tokens"`
-			OutputTokens int `json:"output_tokens"`
-			TotalTokens  int `json:"total_tokens"`
+			InputTokens        int `json:"input_tokens"`
+			OutputTokens       int `json:"output_tokens"`
+			TotalTokens        int `json:"total_tokens"`
+			InputTokensDetails struct {
+				CachedTokens     int `json:"cached_tokens"`
+				CacheWriteTokens int `json:"cache_write_tokens"`
+			} `json:"input_tokens_details"`
 		} `json:"usage"`
 	}
 	if err := json.Unmarshal(body, &src); err != nil {
@@ -191,6 +209,18 @@ func ParseResponsesResponse(body []byte) (*InternalResponse, error) {
 			CompletionTokens: src.Usage.OutputTokens,
 			TotalTokens:      src.Usage.TotalTokens,
 		},
+	}
+	// 2026-10-27 缓存标准对齐轮：Responses usage 的缓存命中在
+	// input_tokens_details 下（与 chat 的 prompt_tokens_details 对位）。
+	// 此前非流式解析丢弃它 ⇒ Responses 上游 → chat 客户端的非流式桥
+	// （responses_mode_bridge）整段缓存命中不进 IR、不进账、不上屏。
+	if src.Usage.InputTokensDetails.CachedTokens > 0 {
+		v := src.Usage.InputTokensDetails.CachedTokens
+		resp.Usage.CacheReadTokens = &v
+	}
+	if src.Usage.InputTokensDetails.CacheWriteTokens > 0 {
+		v := src.Usage.InputTokensDetails.CacheWriteTokens
+		resp.Usage.CacheWriteTokens = &v
 	}
 	for index, item := range src.Output {
 		switch item.Type {

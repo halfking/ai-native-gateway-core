@@ -1154,12 +1154,28 @@ func SerializeResponsesResponse(ir *InternalResponse, clientModel string) ([]byt
 		"model":      model,
 		"status":     status,
 		"output":     output,
-		"usage": map[string]any{
-			"input_tokens":  ir.Usage.PromptTokens,
-			"output_tokens": ir.Usage.CompletionTokens,
-			"total_tokens":  ir.Usage.TotalTokens,
-		},
 	}
+	// 2026-10-27 缓存标准对齐轮：Responses usage 的缓存命中走
+	// input_tokens_details（chat 侧走 prompt_tokens_details，见
+	// buildOpenAIUsageObject）。此前 IR 重建的 Responses 响应体整段丢掉
+	// cached_tokens，Codex 类客户端读不到命中数。无值不发键，与 chat 侧
+	// 同一纪律。
+	inputDetails := map[string]any{}
+	if ir.Usage.CacheReadTokens != nil && *ir.Usage.CacheReadTokens > 0 {
+		inputDetails["cached_tokens"] = *ir.Usage.CacheReadTokens
+	}
+	if ir.Usage.CacheWriteTokens != nil && *ir.Usage.CacheWriteTokens > 0 {
+		inputDetails["cache_write_tokens"] = *ir.Usage.CacheWriteTokens
+	}
+	usageObj := map[string]any{
+		"input_tokens":  ir.Usage.PromptTokens,
+		"output_tokens": ir.Usage.CompletionTokens,
+		"total_tokens":  ir.Usage.TotalTokens,
+	}
+	if len(inputDetails) > 0 {
+		usageObj["input_tokens_details"] = inputDetails
+	}
+	resp["usage"] = usageObj
 	// audit #11: a status=incomplete envelope without incomplete_details is a
 	// protocol gap — Responses SDK clients contract on the reason. Map the
 	// finish reason to the Responses API reason vocabulary; omit the field

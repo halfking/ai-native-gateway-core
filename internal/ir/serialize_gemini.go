@@ -183,7 +183,9 @@ func reportSerializeGeminiLosses(req *InternalRequest) {
 			nil,
 		)
 	}
-	if len(req.CacheControl) > 0 {
+	// 2026-10-27 缓存标准对齐轮：块级 marker（system 块/消息块/tool_result）
+	// 同样没有 Gemini 等价物，一并上报，不再静默蒸发。
+	if len(req.CacheControl) > 0 || hasBlockLevelCacheControl(req) {
 		ReportProtocolLoss(
 			"unknown",
 			"cache_control",
