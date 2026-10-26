@@ -331,30 +331,32 @@ describe('LiveTopologyView filter convergence', () => {
     expect(openSpy.mock.calls[0]?.[1]).toBe('_blank')
   })
 
-  it('★ ★ opens the detail page in a NEW page when a row is clicked, and keeps the graph highlight', async () => {
+  it('★ ★ clicking a row pops the summary overlay (NO new window), and keeps the graph highlight', async () => {
     const { wrapper, router } = await mountView()
     const row = wrapper.get('.cp__item')
     await row.trigger('click')
     await flushPromises()
-    expect(openSpy.mock.calls[0]?.[0]).toBe('/request-detail/r-gw-reject')
-    expect(openSpy.mock.calls[0]?.[1]).toBe('_blank')
-    // 浮层已下线：页面上不得再出现内联放大面板
-    expect(wrapper.find('.zoom').exists()).toBe(false)
-    // 但选中态（高亮链路）必须保留 —— 这是拓扑页自己的信息，不能一起删掉
+    // 两步交互（owner 2026-10-27）：点行 = 摘要浮层，**不开新窗**
+    expect(openSpy).not.toHaveBeenCalled()
+    expect(wrapper.find('.zoom').exists()).toBe(true)
+    // 选中态（高亮链路）必须保留 —— 这是拓扑页自己的信息，不能一起删掉
     expect(router.currentRoute.value.path).toBe('/live')
     expect(wrapper.find('.cp__row.is-active').exists()).toBe(true)
   })
 
-  it('★ opens the detail page in a NEW page from the right panel (no inline overlay)', async () => {
+  it('★ the right panel row pops the summary overlay too; 「查看全景」inside opens the NEW page', async () => {
     const { wrapper } = await mountView()
     const rows = wrapper.findAll('.pp__row')
     // 最新在上 → r-mm-1
     await rows[0].get('.pp__zoom').trigger('click')
     await flushPromises()
-    // 属主口径：看详情 = 新页 /request-detail/<id>，不是内联浮层
+    // 点行/⤢ = 摘要浮层；开新窗是浮层里「查看全景」的事
+    expect(openSpy).not.toHaveBeenCalled()
+    expect(wrapper.find('.zoom').exists()).toBe(true)
+    await wrapper.get('[data-testid="zoom-open-page"]').trigger('click')
+    await flushPromises()
     expect(openSpy.mock.calls[0]?.[0]).toBe('/request-detail/r-mm-1')
     expect(openSpy.mock.calls[0]?.[1]).toBe('_blank')
-    expect(wrapper.find('.zoom').exists()).toBe(false)
   })
 
   it('renders the gateway core as one box holding all nine modules', async () => {
