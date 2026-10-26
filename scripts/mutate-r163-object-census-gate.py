@@ -202,7 +202,7 @@ MUTATIONS = [
         None,  # ★ 特殊处理：★ 改【note 自由文本列】⇒ ★ 判定结果不变
         None,
         "green",
-        "green",
+        "go",
     ),
     (
         "M11-CONTROL-COMMENT-ONLY",
@@ -220,22 +220,27 @@ def apply_mutation(name, rel, old, new):
     path = REPO / rel
     original = path.read_bytes()
     if name == "M5-COLUMNS-DROP-COLUMN":
-        # ★ 从列底账里删掉「local 的 sessions.last_full_payload_at」这一行
-        # ⇒ ⇒ local 的那类索引会从 retired-by-column-drop 掉回 missing ⇒ ★ 门必须红
+        # ★★★ 往列底账里【加】一行「local 的 sessions.last_full_payload_at」
+        # ⇒ ⇒ ★★ local 的 idx_sessions_last_full_at 会从 retired-by-column-drop 掉回 missing
+        # ⇒ ⇒ ⇒ 而 211 是【唯一】那列还在的环境（★ 顺序倒置的指纹）
+        # ⇒ ⇒ ⇒ 门必须红（★ 证明「列底账」确实是判定的真输入，★ 且顺序倒置能被检出）
+        # ★★ ★★ 方向很关键：★ 【删】一行不改变判定（★ 「键列不在 ⇒ 退役」本来就是删除方向）
+        # ★★ ★★ ⇒ ⇒ 所以这条变异必须【加】列，★ 才能改变判定
         lines = original.decode("utf-8").split("\n")
+        out = []
         hit = False
-        for i, line in enumerate(lines):
+        for line in lines:
+            out.append(line)
             if line.startswith("#") or not line.strip():
                 continue
             cols = line.split("\t")
-            if len(cols) == 4 and cols[2] == "sessions" \
-                    and cols[3] == "last_full_payload_at":
-                del lines[i]
+            if len(cols) == 4 and cols[0] == "local" and cols[2] == "sessions" \
+                    and cols[3] == "tenant_id":
+                out.append("local\tpublic\tsessions\tlast_full_payload_at")
                 hit = True
-                break
         if not hit:
             return original, False
-        path.write_bytes("\n".join(lines).encode("utf-8"))
+        path.write_bytes("\n".join(out).encode("utf-8"))
         return original, True
     if name in ("M6-REACH-CREATOR-TAMPER", "M7-REACH-VERDICT-TAMPER",
                 "M8-REACH-INSTALLER-BUG-INJECT", "M9-REACH-EMPTY"):
@@ -268,7 +273,7 @@ def apply_mutation(name, rel, old, new):
         path.write_bytes("\n".join(lines).encode("utf-8"))
         return original, True
     if name == "M10-CONTROL-NOTE-COLUMN":
-        # ★ 改一个【不在期望集里】的索引的列序列 ⇒ ★ 判定结果不应变 ⇒ ★ 门应仍绿
+        # ★ 改可达性台账的【note 自由文本列】⇒ ★ 没有任何判据读它 ⇒ ★ 门应仍绿
         lines = original.decode("utf-8").split("\n")
         for i, line in enumerate(lines):
             if line.startswith("#") or not line.strip():

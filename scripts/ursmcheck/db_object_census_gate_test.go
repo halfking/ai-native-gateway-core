@@ -413,7 +413,9 @@ func dbObjDeriveExpected(t *testing.T) (map[string]dbObjExpect, map[string]int) 
 	// ★★ R163：★ 两个解析路径的【名字集合】必须逐字相同（★ 互为交叉校验）
 	// ★★ 理由：★ R162 教训「两份独立实现互证也可能同源同错」⇒ ⇒ 光有一份解析不够
 	// ★★ ⇒ ⇒ 这里让【老正则】与【括号配对扫描】互相钉死：★ 任一侧单独漂移都会红。
-	regexNames := map[string]bool{}
+	// ★★ ★★ 交叉校验必须比【表名】⇒ ★ 只比名字是不够的
+	// ★★ ⇒ ★ 「ON ONLY」型缺陷【只改表名、不改名字】⇒ ★★ 只比名字 ⇒ ★★ 永远发现不了
+	regexNames := map[string]string{}
 	consumedNames := map[string]bool{}
 
 	for _, e := range entries {
@@ -441,7 +443,11 @@ func dbObjDeriveExpected(t *testing.T) (map[string]dbObjExpect, map[string]int) 
 			consumedNames[dbObjStripName(m[1])] = true
 		}
 		for _, m := range dbObjReCreate.FindAllStringSubmatch(body, -1) {
-			regexNames[dbObjStripName(m[1])] = true
+			tbl := dbObjStripName(m[2])
+			if i := strings.Index(tbl, "."); i >= 0 {
+				tbl = tbl[i+1:]
+			}
+			regexNames[dbObjStripName(m[1])] = tbl
 		}
 		for _, c := range dbObjScanCreateIndexes(body) {
 			name := c.name
@@ -457,9 +463,14 @@ func dbObjDeriveExpected(t *testing.T) (map[string]dbObjExpect, map[string]int) 
 	}
 
 	// ★★ R163：★ 两套解析的名字集合必须逐字相同（★ 任一侧单独漂移 ⇒ 这里红）
-	for k := range created {
-		if !regexNames[k] {
+	for k, v := range created {
+		rt, ok := regexNames[k]
+		if !ok {
 			t.Errorf("★ 括号配对扫描多出了索引 %q（★ 老正则没抓到）⇒ 期望集会漂", k)
+			continue
+		}
+		if rt != v.table {
+			t.Errorf("★ 索引 %q 的表名：★ 老正则=%q 配对扫描=%q ⇒ ★ 两侧口径不一致（★ 「ON ONLY」型缺陷【只改表名、不改名字】⇒ ★★ 只比名字就永远发现不了）", k, rt, v.table)
 		}
 	}
 	for k := range regexNames {
