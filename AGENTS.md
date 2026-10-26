@@ -608,6 +608,44 @@
 > ★★★★ 分析工具与门必须有同等的「区间 + 注释处理」能力 /
 > ★★★★ 源码合规 ≠ 运行时合规（两把尺）/
 > ★★★ 工具挂起时先换通道 / ★★★ 开工先确认改动落在哪）。
+> **2026-10-27 24h 窗口审计轮：探针三栈读数 + 凭据恢复脚本化 + 镜像管线复核 + 多模态流量审计**（goal 会话）：
+> 四项任务的结论与证据（读数全为 211 生产实测）：
+> ⇒ ★ **①探针三栈**：本地 thinking 模型（qwen3.8:27b-mlx / qwen3:30b-a3b）7 天 21 run 仅 1 次成功，
+> 翻红**全部 timeout/Service-Unavailable 驱动**（真实不可用窗口 10-27 01:14~02:13，翻红窗口内真实流量
+> 同样失败：mlx 1/7 OK、30b 0/12 OK）；reasoning-only 形态只产生 `probe_response_inconclusive`（200，
+> 从不翻转健康）。**model 探针栈在 211 完全不活跃**（7 天 0 run、model_probe_state 无两模型任何行）。
+> ⇒ ★★ **决策：不在 model 级引入 liveness 叠加**（可防翻红数 = 0、无附着面，且会重开
+> 「reasoning-only 判活」回归门——c8d11d9ce 的语义分层界线不动）。**真实流量记账覆盖成立**：
+> 流量最高时间戳与 node_probe_state 绿色更新逐分吻合（被动写回）+ 失败触发 request_failure 探针。
+> ⇒ ★★ **附带实锤：坏部署窗口**——06:13 构建的镜像（`f1f03f2c-dirty`，SHA 在本机全部检出不存在）
+> **整树丢失多模态端点与探针修复**（summarize.go / whisper / /v1/summarize 路由 / liveness 函数全缺席），
+> 06:43 被并行会话以正确树（69434c88-dirty）重部署自愈 ⇒ **DD_REPO_ROOT 漂移第三次复发**，
+> 部署后必须 grep 新符号核验（教训已在前几轮，这里是它再次咬人的实证）。
+> ⇒ ★ **②新脚本 `scripts/credential-health-recover.sh`**（预热 session-ping → reset-state
+> trigger_probe → check 轮询）：实测 trigger_probe 后 **~17s 内 node_probe_state 全行刷新连败清零**；
+> 实跑当场复现冷加载病理（30b ping=timeout 15s）；凭据级 1 req/s 限流要节流（否则 429 ×6）；
+> **`/state` 端点在 211 生产整体 503（stateManager 未启用）⇒ check 自动降级 DB 直读**；
+> 范围口径必须是 **(凭据,模型) 对级**（按凭据展开 ⇒ 668 对 ping 风暴，首轮 dry-run 实测）。
+> 存量不健康面 17 凭据 / 366 对（聚合供应商 http_404 协议红为主，处置属运维判断）。
+> ⇒ ★★ **③镜像管线真相**：**现行契约已是「树移植」**（AGENTS.md 027799a06 文档化，github 镜像
+> 保留原始历史），**sync-to-github.sh（filter-repo）与它互斥**（会毁掉保留历史）⇒ 只做
+> --dry-run 验证、镜像补齐走树移植；**管线自身断点**：`scan-secrets.private.replacements`
+> （设计为未跟踪）在本机全部检出**都不存在** ⇒ 任何环境都死在 Step 2。已重建（banner 条目由
+> origin 5c107cd25 ↔ mirror 64c2c8e97 成对提交 diff 反推实证；+192.168.31.0/24 全 21 IP——
+> RFC1918 = policy §2.3 BLOCK 类原表漏盖，按长度降序防 .1 吃 .10 前缀）；**退役 252 口令在
+> sops 加密文件里本机无密钥不可恢复** ⇒ 表头如实注明「补齐前不满足全量改写完整性前提」。
+> `--dry-run` 在 **~/sdk/bash5/bin/bash（5.2.0）** 下 5 步全通（pip3 install --user git-filter-repo 后）。
+> ⇒ ★★ **④多模态流量审计的两个观测缺口（已修一个）**：**外层 /v1/summarize 不进
+> request_logs**（该路径不走记账中间件，实测 0 行）+ **asm 委托成功路径完全静默**
+> （summarize_asm.go 无 slog，只有降级 WARN）⇒ engine=asm/gateway 占比事后不可回溯；
+> 修法 = `summarize.go` 增设唯一完成记账点 `logSummarizeOutcome`（INFO，含 engine/pipeline/
+> duration_ms 等，4 完成路径全接）⇒ 下次部署后 `grep 'summarize: completed'` 即得占比。
+> 现存容器取证：04:25~04:32 窗口 3 次 /v1/summarize 全 200（2 asm 形态 ~15-21s / 1 次降级
+> 77.6s，降级 WARN 实证 asm DNS 曾解析到公网 IP 115.29.212.252 refused）；质量抽样：
+> 03:04 长总结的渲染器环回行 response_preview 即最终纪要（`# 给 sessions 接口加索引 …`
+> 结构成形）；**asm 引擎产出仍无 per-request 日志 ⇒ 质量抽样盲区**（遗留）。
+> ⇒ 审计档 `docs/audit/2026-10-27-24h窗口审计-探针三栈读数与镜像管线.md`；
+> 通用式见 `LESSONS.md` **§457**。
 > **2026-10-27 第 19 增量：内部标识泄漏轮（用户可见文案里的内部标识，改写 + 门 + 登记豁免簿）**（会话
 > `mvs_dc5e181989fc4539805f343f39be2b5d`）：★ 承接用户总目标（「优化整个网关的 UI，减少 AI 化、
 > 增加人味与艺术化、把复杂表达做得更人性化」）⇒ ★★ 落点取 impeccable `skill/reference/clarify.md`
