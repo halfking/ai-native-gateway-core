@@ -1,6 +1,7 @@
 <script setup lang="ts">
 // MultimodalAttachmentsPanel — preview image / audio / video from body + attachments.
 import { computed, ref, watch } from 'vue'
+import { surfaceError } from '../../i18n/errorSurface'
 import { useI18n } from 'vue-i18n'
 import {
   getRequestAttachments,
@@ -38,7 +39,7 @@ watch(
       const res = await getRequestAttachments(id)
       fetched.value = res.attachments || []
     } catch (e: unknown) {
-      error.value = e instanceof Error ? e.message : String(e)
+      error.value = surfaceError(e)
     } finally {
       loading.value = false
     }

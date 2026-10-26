@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
+import { surfaceError } from '../../i18n/errorSurface'
 import { useI18n } from 'vue-i18n'
 import { startDiagnose, getDiagnoseResult, getTask, type BackgroundTask } from '../../api'
 import { useCredentialLabels } from '../../composables/useCredentialLabels'
@@ -53,7 +54,7 @@ async function runDiagnose() {
     polling.value = false
     error.value = pdg('errorTimeout')
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : pdg('errorDiag')
+    error.value = surfaceError(e, { key: 'providerDetail.diag.errorDiag' })
     polling.value = false
   } finally {
     loading.value = false

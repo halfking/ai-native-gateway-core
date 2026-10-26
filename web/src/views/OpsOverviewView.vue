@@ -12,6 +12,7 @@
 // 抽屉入口已存在（appNav.ts:229 /maintain/ops/overview external）—— 本视图
 // 是 web/ 内部深链 /admin/ops-overview 独立详细页，与 maintain SPA 平级
 import { onMounted, ref } from 'vue'
+import { surfaceError } from '../i18n/errorSurface'
 import { getOpsOverview, type OpsOverviewPayload, type RegionItem } from '../api/opsOverview'
 
 const loading = ref(false)
@@ -24,7 +25,7 @@ async function load() {
   try {
     data.value = await getOpsOverview()
   } catch (e) {
-    error.value = e instanceof Error ? e.message : String(e)
+    error.value = surfaceError(e)
   } finally {
     loading.value = false
   }

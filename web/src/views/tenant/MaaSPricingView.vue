@@ -2,6 +2,7 @@
 // MaaSPricingView.vue — /tenant/pricing 页面（套餐与充值）。
 // 2026-07-12: 文案全面接入 i18n。
 import { ref, computed, onMounted } from 'vue'
+import { surfaceError } from '../../i18n/errorSurface'
 import { useI18n } from 'vue-i18n'
 import { localeRef } from '../../i18n'
 import { useRouter } from 'vue-router'
@@ -58,7 +59,7 @@ async function load() {
     wallet.value = walletRes
     currencyDisplay.value = settingsRes.currency_display || 'CNY'
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : t('tenants.pricing.loadFailed')
+    error.value = surfaceError(e, { key: 'tenants.pricing.loadFailed' })
   } finally {
     loading.value = false
   }
@@ -78,7 +79,7 @@ async function buyPlan(plan: MaasPlan) {
       query: tenantQuerySuffix(),
     })
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : t('tenants.pricing.createOrderFailed')
+    error.value = surfaceError(e, { key: 'tenants.pricing.createOrderFailed' })
   } finally {
     buying.value = null
   }
@@ -98,7 +99,7 @@ async function buyTopup(pkg: MaasTopupPackage) {
       query: tenantQuerySuffix(),
     })
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : t('tenants.pricing.createOrderFailed')
+    error.value = surfaceError(e, { key: 'tenants.pricing.createOrderFailed' })
   } finally {
     buying.value = null
   }

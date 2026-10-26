@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onBeforeUnmount, nextTick, watch } from 'vue'
+import { surfaceError } from '../i18n/errorSurface'
 import { useI18n } from 'vue-i18n'
 import { formatDateTime } from '../utils/datetime'
 import { sortByName } from '../utils/sortByName'
@@ -114,7 +115,7 @@ async function loadTenant() {
     if (activeTab.value === 'stats') await loadStats()
     applyRouteFocus()
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : t('common.feedback.loadFailed')
+    error.value = surfaceError(e, { key: 'common.feedback.loadFailed' })
   } finally {
     loading.value = false
   }
@@ -124,7 +125,7 @@ async function loadUsers() {
   try {
     users.value = await getTenantUsers(tenantCode.value)
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : t('tenants.detail.loadUsersFailed')
+    error.value = surfaceError(e, { key: 'tenants.detail.loadUsersFailed' })
   }
 }
 
@@ -132,7 +133,7 @@ async function loadKeys() {
   try {
     keys.value = await getTenantKeys(tenantCode.value)
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : t('tenants.detail.loadKeysFailed')
+    error.value = surfaceError(e, { key: 'tenants.detail.loadKeysFailed' })
   }
 }
 
@@ -148,7 +149,7 @@ async function loadStats() {
     stats.value = next
   } catch (e: unknown) {
     if (statsRace.stale(gen)) return
-    error.value = e instanceof Error ? e.message : t('tenants.detail.loadStatsFailed')
+    error.value = surfaceError(e, { key: 'tenants.detail.loadStatsFailed' })
   }
 }
 
@@ -253,7 +254,7 @@ async function loadWallet() {
   try {
     maasWallet.value = await getAdminMaasWallet(tenantCode.value)
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : t('tenants.detail.loadWalletFailed')
+    error.value = surfaceError(e, { key: 'tenants.detail.loadWalletFailed' })
   }
 }
 
@@ -262,7 +263,7 @@ async function loadLedger() {
     const res = await getAdminMaasLedger(tenantCode.value, 100)
     maasLedger.value = res.items ?? []
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : t('tenants.detail.loadLedgerFailed')
+    error.value = surfaceError(e, { key: 'tenants.detail.loadLedgerFailed' })
   }
 }
 
@@ -271,7 +272,7 @@ async function loadOrders() {
     const res = await getAdminMaasTenantOrders(tenantCode.value, 50)
     maasOrders.value = res.items ?? []
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : t('tenants.detail.loadOrdersFailed')
+    error.value = surfaceError(e, { key: 'tenants.detail.loadOrdersFailed' })
   }
 }
 
@@ -280,7 +281,7 @@ async function loadBilling() {
   try {
     billing.value = await getAdminMaasConsumptionDetail(tenantCode.value, billingDays.value, billingOwnerUser.value)
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : t('tenants.detail.loadBillingDetailsFailed')
+    error.value = surfaceError(e, { key: 'tenants.detail.loadBillingDetailsFailed' })
   } finally {
     billingLoading.value = false
   }
@@ -300,7 +301,7 @@ async function submitAdjust() {
     adjustNote.value = ''
     await Promise.all([loadWallet(), loadLedger()])
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : t('tenants.detail.adjustFailed')
+    error.value = surfaceError(e, { key: 'tenants.detail.adjustFailed' })
   } finally {
     adjustSaving.value = false
   }
@@ -320,7 +321,7 @@ async function submitGrant() {
     grantNote.value = ''
     await Promise.all([loadWallet(), loadLedger()])
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : t('tenants.detail.grantFailed')
+    error.value = surfaceError(e, { key: 'tenants.detail.grantFailed' })
   } finally {
     grantSaving.value = false
   }
@@ -333,7 +334,7 @@ async function confirmOrder(orderId: number) {
     await confirmAdminMaasOrder(orderId, '管理员手动确认到账')
     await Promise.all([loadOrders(), loadWallet(), loadLedger()])
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : t('tenants.detail.confirmFailed')
+    error.value = surfaceError(e, { key: 'tenants.detail.confirmFailed' })
   } finally {
     confirmSaving.value = null
   }
@@ -404,7 +405,7 @@ async function toggleUserEnabled(u: TenantUser) {
     await updateUser(u.id, { enabled: !u.enabled })
     await loadUsers()
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : t('common.feedback.operationFailed')
+    error.value = surfaceError(e, { key: 'common.feedback.operationFailed' })
   }
 }
 

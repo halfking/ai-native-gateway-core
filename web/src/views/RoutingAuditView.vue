@@ -2,6 +2,7 @@
 // RoutingAuditView.vue — P9.2: admin UI for routing override audit log.
 
 import { ref, computed, onMounted } from 'vue'
+import { surfaceError } from '../i18n/errorSurface'
 import { useI18n } from 'vue-i18n'
 import { fmtDateTime24h } from '../i18n/useFormat'
 import {
@@ -39,7 +40,7 @@ async function load() {
     // 会抛 TypeError 整页白屏。数组字段一律 ?? []，不让一个 null 决定整页生死。
     entries.value = Array.isArray(r.entries) ? r.entries : []
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : String(e)
+    error.value = surfaceError(e)
   } finally {
     loading.value = false
   }

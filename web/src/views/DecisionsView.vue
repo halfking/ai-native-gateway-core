@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { useI18n } from 'vue-i18n'
+import { surfaceError } from '../i18n/errorSurface'
 import { formatTimeOnly } from '../utils/datetime'
 import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import { getDecisions, type RoutingDecision } from '../api'
@@ -136,7 +137,7 @@ async function load() {
     rows.value = resp.decisions
     total.value = resp.total
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : String(e)
+    error.value = surfaceError(e)
   } finally {
     loading.value = false
   }
@@ -158,7 +159,7 @@ const continuous = createHyperPages<RoutingDecision>({
       continuousTotal.value = resp.total
       return { rows: resp.decisions || [], total: resp.total }
     } catch (e: unknown) {
-      error.value = e instanceof Error ? e.message : String(e)
+      error.value = surfaceError(e)
       // 继续抛出：`createHyperPages` 靠它把 state 置成 failed（规范 13 §7
       // 「失败态不显示空态」的依据）。吞掉的话 state 停在 idle，UI 会撒谎。
       throw e

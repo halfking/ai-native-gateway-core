@@ -6,6 +6,7 @@
 //   - 模型用量 Top-N + 趋势图表，沿用 TenantDashboardView v2 的可视化
 //   - 所有文案走 i18n
 import { ref, computed, onMounted, onUnmounted, inject, type Ref } from 'vue'
+import { surfaceError } from '../i18n/errorSurface'
 import { sortByName } from '../utils/sortByName'
 import { formatDateTime } from '../utils/datetime'
 import { useI18n } from 'vue-i18n'
@@ -175,7 +176,7 @@ async function load() {
     summary.value = s
     wallet.value = w
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : t('tenants.dashboard.loadFailed')
+    error.value = surfaceError(e, { key: 'tenants.dashboard.loadFailed' })
   } finally {
     loading.value = false
   }
@@ -232,7 +233,7 @@ async function loadDetail() {
     detailRows.value = res.items ?? []
   } catch (e: unknown) {
     detailRows.value = []
-    error.value = e instanceof Error ? e.message : t('tenants.dashboard.detailLoadFailed')
+    error.value = surfaceError(e, { key: 'tenants.dashboard.detailLoadFailed' })
   } finally {
     detailLoading.value = false
   }

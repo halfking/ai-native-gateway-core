@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
+import { surfaceError } from '../../i18n/errorSurface'
 import { useI18n } from 'vue-i18n'
 import ModelPicker from '../ModelPicker.vue'
 import { useWorkTypes } from '../../composables/useWorkTypes'
@@ -65,7 +66,7 @@ async function loadDetail() {
     setDraft(next.model_routes)
   } catch (e: unknown) {
     if (version === loadVersion.value) {
-      error.value = e instanceof Error ? e.message : String(e)
+      error.value = surfaceError(e)
     }
   } finally {
     if (version === loadVersion.value) loading.value = false
@@ -82,7 +83,7 @@ async function load() {
     }
     await loadDetail()
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : String(e)
+    error.value = surfaceError(e)
     loading.value = false
   }
 }
@@ -123,7 +124,7 @@ async function save() {
     await refreshWorkTypes()
     if (key === selectedKey.value) saved.value = true
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : String(e)
+    error.value = surfaceError(e)
   } finally {
     saving.value = false
   }

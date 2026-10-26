@@ -26,9 +26,9 @@ export default {
   },
   manualDisabledTitle: '提供商級手工停用 — 整個 provider 不可路由',
   manualDisabledBadge: '手工已停用',
-  loadFailed: '載入失敗',
-  operationFailed: '操作失敗',
-  diagFailed: '診斷失敗',
+  loadFailed: '供應商詳情沒能載入出來，請重試',
+  operationFailed: '供應商啟停沒能完成，請重試',
+  diagFailed: '供應商診斷沒能完成，請重試',
 
   quality: {
     loading: '載入品質資料…',
@@ -57,5 +57,5 @@ export default {
   deleteBtn: "刪除供應商",
   deleteTitle: "軟刪除該供應商 —— 該供應商及其全部憑證將不再出現在任何列表與路由中，且無法撤銷",
   deleteConfirm: '確認刪除供應商 "{name}" ？該供應商下的所有憑證將被一併標記為已刪除，所有相關模型路由將立即停止。該操作無法撤銷。',
-  deleteFailed: "供應商刪除失敗",
+  deleteFailed: '這個供應商沒能刪除，請重試',
 }

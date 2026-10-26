@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, watch } from 'vue'
+import { surfaceError } from '../../i18n/errorSurface'
 import { useI18n } from 'vue-i18n'
 import { useFormat } from '../../i18n/useFormat'
 import { parseLocalMinute } from '../../utils/datetime'
@@ -415,7 +416,7 @@ async function submitRotate() {
     emit('refresh')
     closeDrawer()
   } catch (e: unknown) {
-    rotateErr.value = e instanceof Error ? e.message : pd('creds.apiKeyRotateFailed')
+    rotateErr.value = surfaceError(e, { key: 'providerDetail.creds.apiKeyRotateFailed' })
   } finally {
     rotateSubmitting.value = false
   }
@@ -577,7 +578,7 @@ function formatCredentialError(e: unknown, fallback: string): {
     return { message: fallbackMsg ?? '', kind: 'fp_slot_exceeds_concurrency', context: ctxObj }
   }
   return {
-    message: e instanceof Error ? e.message : fallback,
+    message: surfaceError(e),
     kind: '',
     context: null,
   }
@@ -670,7 +671,7 @@ async function checkSelected() {
     checkMsg.value = probeResultMsg(r)
     emit('silentRefresh')
   } catch (e: unknown) {
-    checkMsg.value = e instanceof Error ? e.message : pd('creds.checkFailed')
+    checkMsg.value = surfaceError(e, { key: 'providerDetail.creds.checkFailed' })
   } finally {
     checking.value = false
   }
@@ -684,7 +685,7 @@ async function delSelected() {
     closeDrawer()
     emit('refresh')
   } catch (e: unknown) {
-    alert(e instanceof Error ? e.message : pd('creds.deleteFailed'))
+    alert(surfaceError(e, { key: 'providerDetail.creds.deleteFailed' }))
   }
 }
 
@@ -708,7 +709,7 @@ async function toggleManualDisabled() {
         c.manual_disabled = next
         emit('silentRefresh')
       } catch (e: unknown) {
-        alert(e instanceof Error ? e.message : pd('creds.setFailed'))
+        alert(surfaceError(e, { key: 'providerDetail.creds.setFailed' }))
       }
       return
     }
@@ -724,7 +725,7 @@ async function setLifecycle(value: CredentialLifecycleStatus) {
     c.lifecycle_status = value
     emit('silentRefresh')
   } catch (e: unknown) {
-    alert(e instanceof Error ? e.message : pd('creds.lifecycleFailed'))
+    alert(surfaceError(e, { key: 'providerDetail.creds.lifecycleFailed' }))
   }
 }
 
@@ -752,7 +753,7 @@ async function setPlanType(value: string) {
     c.plan_type = newVal
     emit('silentRefresh')
   } catch (e: unknown) {
-    alert(e instanceof Error ? e.message : pd('creds.planTypeFailed'))
+    alert(surfaceError(e, { key: 'providerDetail.creds.planTypeFailed' }))
   }
 }
 
@@ -766,7 +767,7 @@ async function setRoutingScope(value: string) {
     c.routing_scope = newVal
     emit('silentRefresh')
   } catch (e: unknown) {
-    alert(e instanceof Error ? e.message : pd('creds.routingScopeFailed'))
+    alert(surfaceError(e, { key: 'providerDetail.creds.routingScopeFailed' }))
   }
 }
 
@@ -777,7 +778,7 @@ async function resetAvailability() {
     await resetCredentialAvailability(props.provider.id, c.id)
     emit('silentRefresh')
   } catch (e: unknown) {
-    alert(e instanceof Error ? e.message : pd('creds.resetFailed'))
+    alert(surfaceError(e, { key: 'providerDetail.creds.resetFailed' }))
   }
 }
 
@@ -788,7 +789,7 @@ async function resetQuota() {
     await resetCredentialQuota(props.provider.id, c.id)
     emit('silentRefresh')
   } catch (e: unknown) {
-    alert(e instanceof Error ? e.message : pd('creds.resetFailed'))
+    alert(surfaceError(e, { key: 'providerDetail.creds.resetFailed' }))
   }
 }
 
@@ -799,7 +800,7 @@ async function forceRecover() {
     await forceRecoverCredential(c.id)
     emit('silentRefresh')
   } catch (e: unknown) {
-    alert(e instanceof Error ? e.message : pd('creds.triggerFailed'))
+    alert(surfaceError(e, { key: 'providerDetail.creds.triggerFailed' }))
   }
 }
 
@@ -828,7 +829,7 @@ async function setDefaultModel() {
     c.default_probe_model_picked_at = new Date().toISOString()
     emit('silentRefresh')
   } catch (e: unknown) {
-    alert(e instanceof Error ? e.message : pd('creds.setFailed'))
+    alert(surfaceError(e, { key: 'providerDetail.creds.setFailed' }))
   }
 }
 
@@ -843,7 +844,7 @@ async function clearDefaultModel() {
     selectedDefaultModel.value = ''
     emit('silentRefresh')
   } catch (e: unknown) {
-    alert(e instanceof Error ? e.message : pd('creds.setFailed'))
+    alert(surfaceError(e, { key: 'providerDetail.creds.setFailed' }))
   }
 }
 
@@ -865,7 +866,7 @@ async function repickDefault() {
     }
     emit('silentRefresh')
   } catch (e: unknown) {
-    alert(e instanceof Error ? e.message : pd('creds.repickFailed'))
+    alert(surfaceError(e, { key: 'providerDetail.creds.repickFailed' }))
   }
 }
 
@@ -878,7 +879,7 @@ async function resetFpSlots() {
     fpSlotStats.value = null
     emit('silentRefresh')
   } catch (e: unknown) {
-    alert(e instanceof Error ? e.message : pd('creds.resetFpSlotsFailed'))
+    alert(surfaceError(e, { key: 'providerDetail.creds.resetFpSlotsFailed' }))
   }
 }
 
@@ -892,7 +893,7 @@ async function releaseFpSlot(slotIndex: number) {
       fpSlotStats.value = await getCredentialFpSlotStats(props.provider.id, c.id)
     }
   } catch (e: unknown) {
-    alert(e instanceof Error ? e.message : pd('creds.releaseFailed'))
+    alert(surfaceError(e, { key: 'providerDetail.creds.releaseFailed' }))
   }
 }
 
@@ -904,7 +905,7 @@ async function loadFpSlotStats() {
     fpSlotStats.value = await getCredentialFpSlotStats(props.provider.id, c.id)
   } catch (e: unknown) {
     fpSlotStats.value = null
-    alert(e instanceof Error ? e.message : pd('creds.fpSlotStatsFailed'))
+    alert(surfaceError(e, { key: 'providerDetail.creds.fpSlotStatsFailed' }))
   } finally {
     fpSlotStatsLoading.value = false
   }
@@ -945,7 +946,7 @@ async function refreshBalance() {
       balanceRefreshError.value = { ...balanceRefreshError.value, [c.id]: c.balance_error ?? '' }
     }
   } catch (e: unknown) {
-    const msg = e instanceof Error ? e.message : pr('credential.row.balanceRefreshFailed')
+    const msg = surfaceError(e, { key: 'providers.credential.row.balanceRefreshFailed' })
     balanceRefreshError.value = { ...balanceRefreshError.value, [c.id]: msg }
   } finally {
     refreshingBalance.value = { ...refreshingBalance.value, [c.id]: false }

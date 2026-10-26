@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { useI18n } from 'vue-i18n'
+import { surfaceError } from '../i18n/errorSurface'
 import { formatDateTime, formatTimeOnly } from '../utils/datetime'
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
@@ -600,7 +601,7 @@ async function onCandidateDrop(target: RoutingCandidate, event: DragEvent) {
   try {
     priorities = assignSpacedPriorities(next.length)
   } catch (error) {
-    reorderErr.value = error instanceof Error ? error.message : t('routing.dashboard.resolve.reorderFailed')
+    reorderErr.value = surfaceError(error, { key: 'routing.dashboard.resolve.reorderFailed' })
     return
   }
   resolveCandidates.value = next.map((candidate, index) => ({
@@ -628,7 +629,7 @@ async function onCandidateDrop(target: RoutingCandidate, event: DragEvent) {
     await doResolve()
   } catch (e: unknown) {
     resolveCandidates.value = previous
-    const fallback = e instanceof Error ? e.message : t('routing.dashboard.resolve.sortSaveFailed')
+    const fallback = surfaceError(e, { key: 'routing.dashboard.resolve.sortSaveFailed' })
     if (e instanceof ApiError && e.status === 409) {
       reorderErr.value = '排序已过期，已重新查询，请重试。'
       void doResolve()
@@ -667,7 +668,7 @@ async function saveCandidatePriority(c: RoutingCandidate, value: boolean) {
   } catch (e: unknown) {
     // Roll back to server truth on error.
     resolveCandidates.value = previous
-    const fallback = e instanceof Error ? e.message : t('common.feedback.saveFailed')
+    const fallback = surfaceError(e, { key: 'common.feedback.saveFailed' })
     if (e instanceof ApiError && e.status === 403) {
       priorityErr.value = '仅超级管理员可以切换优先凭据。'
     } else {
@@ -770,7 +771,7 @@ async function doResolve() {
     resolveReorderRawModel.value = reorderScope.rawModel
     appendResolveLog(res, profile)
   } catch (e: unknown) {
-    resolveErr.value = e instanceof Error ? e.message : t('routing.queryFailed')
+    resolveErr.value = surfaceError(e, { key: 'routing.queryFailed' })
   } finally {
     resolving.value = false
   }

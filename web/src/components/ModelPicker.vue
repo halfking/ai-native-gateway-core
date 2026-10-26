@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { surfaceError } from '../i18n/errorSurface'
 import { useI18n } from 'vue-i18n'
 import {
   getAvailableModels,
@@ -183,7 +184,7 @@ async function refreshModels(force = false) {
     vendorGroups.value = buildVendorGroups(data.families)
   } catch (e: unknown) {
     if (generation === modelsGeneration) {
-      loadErr.value = e instanceof Error ? e.message : t('modelPicker.loadFailed')
+      loadErr.value = surfaceError(e, { key: 'modelPicker.loadFailed' })
     }
   } finally {
     if (generation === modelsGeneration) loading.value = false

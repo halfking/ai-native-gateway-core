@@ -18,6 +18,7 @@
 // 调研：/tmp/co153-wt-evidence.txt 33 跳
 // 数据来源：fetchBoardOperational（已存在，api/board.ts:183-185）
 import { onMounted, ref } from 'vue'
+import { surfaceError } from '../i18n/errorSurface'
 import {
   fetchBoardOperational,
   type BoardOperationalPayload,
@@ -35,7 +36,7 @@ async function load() {
   try {
     data.value = await fetchBoardOperational()
   } catch (e) {
-    error.value = e instanceof Error ? e.message : String(e)
+    error.value = surfaceError(e)
   } finally {
     loading.value = false
   }

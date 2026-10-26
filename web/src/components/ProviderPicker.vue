@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
+import { surfaceError } from '../i18n/errorSurface'
 import { getProviders, type Provider } from '../api'
 import { useI18n } from 'vue-i18n'
 import { CaretBottom } from '@element-plus/icons-vue'
@@ -77,7 +78,7 @@ async function loadProviders() {
   try {
     providers.value = await getProviders()
   } catch (e: unknown) {
-    loadErr.value = e instanceof Error ? e.message : t('providers.error.loadFailed')
+    loadErr.value = surfaceError(e, { key: 'providers.error.loadFailed' })
   } finally {
     loading.value = false
   }

@@ -2,6 +2,7 @@
 // MaaSOrderView.vue — /tenant/orders/:id 订单支付页。
 // 2026-07-12: 文案全面接入 i18n。
 import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { surfaceError } from '../../i18n/errorSurface'
 import { formatDateTime } from '../../utils/datetime'
 import { useI18n } from 'vue-i18n'
 import { localeRef } from '../../i18n'
@@ -79,7 +80,7 @@ async function load() {
       pollTimer = null
     }
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : t('tenants.order.loadFailed')
+    error.value = surfaceError(e, { key: 'tenants.order.loadFailed' })
   } finally {
     loading.value = false
   }

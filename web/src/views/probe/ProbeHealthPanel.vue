@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted, computed, onUnmounted, watch } from 'vue'
+import { surfaceError } from '../../i18n/errorSurface'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import ModelPicker from '../../components/ModelPicker.vue'
@@ -220,7 +221,7 @@ async function triggerManualProbe() {
       showTriggerMessage(response.message || t('probeHealth.detail.triggerFailed'), true)
     }
   } catch (err) {
-    const errMsg = err instanceof Error ? err.message : String(err)
+    const errMsg = surfaceError(err)
     showTriggerMessage(t('common.feedback.triggerFailedWithReason', { reason: errMsg }), true)
   } finally {
     triggerBusy.value = false

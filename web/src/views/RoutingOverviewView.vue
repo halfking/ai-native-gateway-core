@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { useI18n } from 'vue-i18n'
+import { surfaceError } from '../i18n/errorSurface'
 import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import {
@@ -204,7 +205,7 @@ async function load() {
       selectedVariantId.value = ''
     }
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : t('routing.loadFailed')
+    error.value = surfaceError(e, { key: 'routing.loadFailed' })
   } finally {
     loading.value = false
   }
@@ -237,7 +238,7 @@ async function adoptRecommendedFeatured() {
     recommendMessage.value = `已采用 ${models.length} 个推荐模型作为特色`
     await load()
   } catch (e: unknown) {
-    recommendMessage.value = e instanceof Error ? e.message : t('routing.adoptFailed')
+    recommendMessage.value = surfaceError(e, { key: 'routing.adoptFailed' })
   } finally {
     recommendLoading.value = false
   }

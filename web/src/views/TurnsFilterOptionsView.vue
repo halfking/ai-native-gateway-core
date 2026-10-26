@@ -12,6 +12,7 @@
 //
 // 调研：/tmp/co153-wt-evidence.txt 17 跳（line 1066 「已有隔离 / 可直接接前端」）
 import { onMounted, ref } from 'vue'
+import { surfaceError } from '../i18n/errorSurface'
 import { listTurnsFilterOptions, type TurnsFilterOptions, type TurnsAPIKeyOption } from '../api/turns'
 
 const loading = ref(false)
@@ -24,7 +25,7 @@ async function load() {
   try {
     options.value = await listTurnsFilterOptions()
   } catch (e) {
-    error.value = e instanceof Error ? e.message : String(e)
+    error.value = surfaceError(e)
   } finally {
     loading.value = false
   }

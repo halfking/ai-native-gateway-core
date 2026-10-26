@@ -17,6 +17,7 @@
  *            只显示符合条件的模型分组。条件清空则显示所有。
  */
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { surfaceError } from '../i18n/errorSurface'
 import { useI18n } from 'vue-i18n'
 import type { LiveStatus, LiveModelCategory } from '../composables/useLiveStream'
 import { getFeatured, resolveRouting, reorderCandidateBindings, type CandidateBindingReorderItem, type RoutingCandidate } from '../api/routing'
@@ -804,7 +805,7 @@ async function onDrop(event: DragEvent, group: ModelGroup, targetCredentialId: n
       return assignSpacedPriorities(mergedIds.length)
     } catch (error) {
       clearDragState()
-      dragError.value = error instanceof Error ? error.message : t('routing.dashboard.resolve.reorderFailed')
+      dragError.value = surfaceError(error, { key: 'routing.dashboard.resolve.reorderFailed' })
       return null
     }
   })()
@@ -855,7 +856,7 @@ async function onDrop(event: DragEvent, group: ModelGroup, targetCredentialId: n
     for (const [rawModel, prev] of prevByRaw.entries()) {
       modelCandidatesByRawModel.value = new Map(modelCandidatesByRawModel.value).set(rawModel, prev)
     }
-    const fallback = error instanceof Error ? error.message : '调整优先级失败'
+    const fallback = surfaceError(error, { key: 'common.feedback.priorityAdjustFailed' })
     // 409 stale / incomplete / transient ordering conflict — surface a
     // user-friendly hint and refetch so the UI catches up with the server.
     if (error instanceof ApiError && error.status === 409) {

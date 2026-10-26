@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, onBeforeUnmount, ref, watch } from "vue";
+import { surfaceError } from '../i18n/errorSurface'
 import { useI18n } from "vue-i18n";
 import { isSuperAdmin, isTenantAdmin } from "../store";
 import { getSetting, updateSetting } from "../api/settings";
@@ -100,7 +101,7 @@ const valid = computed(
 );
 const clone = <T,>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
 const message = (e: unknown) =>
-  e instanceof Error ? e.message : t("sanitizeRules.unknownError");
+  surfaceError(e, { key: 'sanitizeRules.unknownError' });
 let disposed = false,
   pollTimer: ReturnType<typeof setTimeout> | undefined;
 const controller = new AbortController();

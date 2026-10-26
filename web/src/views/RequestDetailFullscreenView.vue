@@ -1,6 +1,7 @@
 <script setup lang="ts">
 // RequestDetailFullscreenView — fullscreen shell for request/session detail.
 import { computed, onUnmounted, ref, watch } from 'vue'
+import { surfaceError } from '../i18n/errorSurface'
 import { useRoute, useRouter } from 'vue-router'
 import {
   useRequestDetailLoader,
@@ -142,7 +143,7 @@ async function exportSessionMd() {
       totalCostUsd: snapCost.value,
     })
   } catch (e: unknown) {
-    exportError.value = e instanceof Error ? e.message : String(e)
+    exportError.value = surfaceError(e)
   } finally {
     exporting.value = false
   }
