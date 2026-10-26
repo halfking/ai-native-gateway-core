@@ -139,11 +139,6 @@ MUTATIONS = [
         GO_ONLY_BROKEN,
         "go:TestDbObjectExpectSetMatchesIndependentDerivation",
         "go",
-        GO_GATE_REL,
-        GO_ONLY_ANCHOR,
-        GO_ONLY_BROKEN,
-        "go:TestDbObjectExpectSetMatchesIndependentDerivation",
-        "go",
     ),
     (
         "M3-PY-NO-CASCADE",
