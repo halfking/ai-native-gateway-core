@@ -541,6 +541,32 @@
 > ★★★★ 契约测试报出的「漂移」有可能是【量具】的 ⇒ 先问断言写对没有 /
 > ★★★ 凭据进 URL ⇒ 日志必须脱敏且【先脱敏再截断】/ ★★★ 边界上一次性归一 ⇒ 下游零改动 /
 > ★★★ 认得同一把钥匙的实现要收成一份（解析器同理））。
+> **2026-10-27 Gemini 转换面补全轮**（会话 `mvs_42f116b20f694164b00900d451db1ca0`）：
+> ★ 承接 §433（Gemini 原生认证形态修复轮）留下的「本轮明确没做」清单 ⇒ 本轮先把清单**逐项定性**，
+> 再只做**厂方文档明文要求且实现面小**的那一项。
+> ⇒ ★★★ **定性结果（三族要分开做）**：
+> ① **`citationMetadata` 捕获**（厂方 `docs/vendor-formats/gemini.md` §特殊字段明文要求
+> 「IR 需要捕获并可在序列化为 OpenAI 时映射为 annotations」）⇒ **本轮做**；
+> ② **Gemini 原生模型列表**（`GET /v1beta/models` ⇒ 404）⇒ 保留文档没写成契约，且需
+> `cmd/gateway/main.go` 接线（★ 当时**有并行会话正在改同一个文件** ⇒ 本轮避让）⇒ **登记**；
+> ③ **`:countTokens`** ⇒ 要给客户端**诚实**的 token 计数；用估算值会让客户端按错预算决策
+> （★ 网关自己的估算口径是给内部账务用的）⇒ **独立设计题，登记**。
+> ⇒ ★★ **本轮最值钱的一处定性**：缺口是**「能力缺口」**（IR 压根没有承载引用元数据的字段 ⇒
+> 解析那一步就扔了），**不是「实现错了」** ⇒ 两者混在一轮里做会把无关特性拖大（LESSONS §436 通用式一）。
+> ⇒ ★ **实现**：`internal/ir` 加 `ResponseCitation{URL,Title,StartIndex,EndIndex}` +
+> `InternalResponse.Citations`；`ParseGeminiResponse` 捕获 `candidates[].citationMetadata.citations[]`
+> （★ 厂方字段名是 **`uri`** 不是 `url` ⇒ IR 里归一为 `URL`，别在序列化侧到处做别名判断）；
+> `SerializeOpenAIResponse` 在**有引用时**产出 `message.annotations[]`（`url_citation` 形状）；
+> `SerializeGeminiResponse` 还原 `citationMetadata`（回到 `uri` 字段名 ⇒ 往返不丢）。
+> ⇒ ★ **两条纪律**：① **`start_index`/`end_index` 为 0 时不发这个键** ⇒ 补 0 等于**声称**
+> 「这段引用从偏移 0 开始」，而上游可能只是没给跨度；② **没有引用时两个方向都不新增任何键**
+> ⇒ 普通响应报文**逐字不变**（不发空的 `annotations: []`）。
+> ⇒ ★ **门（5 条，含 3 条反向钉）**：IR 捕获 / 无 URI 的引用不进 IR / IR→OpenAI annotations /
+> **无引用 ⇒ 不出现 annotations 键** / Gemini 往返用 `uri` 而非 `url`。
+> ⇒ ★ **读数**：IR 能承载的引用元数据 **0 → `ResponseCitation`**；`citationMetadata` 解析
+> **丢弃 → 捕获**；IR→OpenAI `annotations` **不可能 → 有引用即产出**；IR→Gemini 往返 **丢弃 → 还原**。
+> `go build ./...` ✓ / `internal/ir` ✓ / `internal/requestfact` ✓ / `domains/transformation` ✓。
+> ⇒ 审计档 `docs/audit/2026-10-27-Gemini转换面补全轮.md`；通用式见 `LESSONS.md` **§436**（5 条）。
 > **2026-10-23 实时拓扑探测打标四处源真值漂移轮 + 口径收敛**（会话
 > `mvs_64ddb526ee11405aae54d67e7c4d6161`）：用户报 154 生产上一条 32-hex
 > 请求 `af1eb6d83ef39610cc4f8be4e181b5a8` "应被识别为探测但实时拓扑 pill = 否"。
