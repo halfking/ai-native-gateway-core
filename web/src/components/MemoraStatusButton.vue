@@ -254,7 +254,7 @@ onUnmounted(() => {
   padding: 12px;
   background: var(--card);
   border-radius: var(--radius);
-  box-shadow: 0 8px 24px var(--overlay-strong);
+  box-shadow: var(--kx-shadow-sm);
 }
 
 .panel-head {

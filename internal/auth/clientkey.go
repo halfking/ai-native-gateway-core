@@ -92,13 +92,14 @@ const RedactedValue = "REDACTED"
 //	POST /v1beta/models/{model}:streamGenerateContent
 //	POST /v1/models/{model}:generateContent
 //	POST /v1/models/{model}:streamGenerateContent
+//	GET  /v1beta/models                      ← the Gemini-NATIVE model list
 //
 // ★ Anchored at the START, deliberately NOT at the end.
 //
-//   - Start-anchored: the two mux subtrees that carry the Gemini handler
-//     are "/v1beta/models/" and "/v1/models/" (cmd/gateway/main.go). A
-//     path outside them is never served as a Gemini route, so the
-//     credential scope must not cover it.
+//   - Start-anchored: the mux subtrees that carry the Gemini surfaces are
+//     "/v1beta/models/" and "/v1/models/" (cmd/gateway/main.go). A path
+//     outside them is never served as a Gemini route, so the credential
+//     scope must not cover it.
 //
 //   - NOT end-anchored: domains/streaming/handler_gemini.go's own parser
 //     (geminiModelPathRe) is a substring match and therefore tolerates a
@@ -108,9 +109,21 @@ const RedactedValue = "REDACTED"
 //     the defect this round fixes), while a wider one is harmless (the mux
 //     404s what it does not serve).
 //
+// ★ The model-list alternative is EXACTLY anchored ("/v1beta/models$"): it
+// is a distinct route, not a prefix, so "/v1beta/modelsXYZ" must NOT be
+// in scope. And "/v1/models" (no trailing slash) is deliberately NOT
+// included: that path is the OpenAI-shaped model list (the OpenAI SDK's
+// contract), not a Gemini-native surface.
+//
+// ★ The scope must cover the model list because the gateway NOW serves it
+// (domains/streaming/models.go: ServeGeminiModels). A native Gemini SDK
+// commonly presents its key as "?key=" ⇒ without the scope the list
+// would 401 while generateContent (same client, header form) works —
+// the same "half-fixed" shape as the §433 defect.
+//
 // Kept in sync with domains/streaming/handler_gemini.go by the contract
 // test TestGeminiNativePathMatchesHandlerParser (domains/streaming).
-var geminiNativePathRe = regexp.MustCompile(`^/(?:v1beta|v1)/models/[^/:]+:(?:generateContent|streamGenerateContent)`)
+var geminiNativePathRe = regexp.MustCompile(`^(?:/(?:v1beta|v1)/models/[^/:]+:(?:generateContent|streamGenerateContent)|/v1beta/models$)`)
 
 // IsGeminiNativePath reports whether p is a Gemini-native generateContent
 // path (the routes served by domains/streaming/handler_gemini.go).

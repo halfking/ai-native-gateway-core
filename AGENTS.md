@@ -467,6 +467,87 @@
 > ★★★ 门报的行号必须指向【问题字符本身】/ ★★★ 浏览器实测是「阴性结论当缺陷一样复核」最好的触发器/
 > ★★★ 位置信号比字形本身更决定判红 / ★★ 批量替换必须两阶段 / ★★ 裸 `<svg viewBox>` 没有 width/height /
 > ★★ 排除目录是「量具口径变更」/ ★★ 登记册按行号记账会漂移 / ★★ 断言字形文本要改成更强的断言）。
+> **2026-10-27 第 18 增量：浮起词汇归一轮（阴影从「手写配方」收敛成「四支词表」）**（会话
+> `mvs_dc5e181989fc4539805f343f39be2b5d`）：★ 承接第 17 增量遗留清单里的
+> 「**阴影词汇归一**（⇒ 同时要回写 `DESIGN.md`，它自己要求「冲突时要回来改本文件」）」，
+> 把视觉治理从**文本层**推进到**几何层** ⇒ ★★ 普查实测：**121 处 `box-shadow` 声明 /
+> 71 种取值 / 66 个文件** ⇒ ★★★ **同一个概念有 71 种写法，本身就是 AI 生成代码的典型痕迹**
+> （每次生成重新发明一遍配方）。
+> ⇒ ★ **新门** `web/src/design/elevation.ts`（判据唯一实现 E1）+ `web/scripts/design-elevation-guard.mjs`
+> （薄壳，CLI `--json`/`--list`/`--selftest`/`--update-baseline`）+
+> `web/scripts/design-elevation-baseline.json`（棘轮登记簿，**只降不升**）；
+> 已注册 `design-elevation:check` / `:selftest` / `:list` / `:update-baseline`。
+> ⇒ ★★ **四支 token**（唯一定义处 `web/src/style.css`）：
+> `--kx-shadow-xs`（贴面 · 选中态标签）/ `--kx-shadow-sm`（浮起 · 弹层下拉）/
+> `--kx-shadow-md`（覆盖 · 模态对话框）/ `--kx-shadow-md-left`（侧向覆盖 · 右侧抽屉）。
+> ⇒ ★★★ **三条设计决定**：① **几何沿用仓内既有主流值**，不发明数值（视觉差异接近零，收益全在工程一致性）；
+> ② **色相统一为蓝调黑**（纯黑阴影本身是 AI 痕迹）；③ **alpha 只分两档**
+> （浮起 `.06`/`.28`、覆盖 `.10`/`.40`）—— ★ **级别靠【锐度】而不是【浓度】区分**，
+> 加浓会让暗色主题糊成一片、级别就消失了。
+> ⇒ ★★ **读数**：**55 处 token 引用**（md 25 / sm 15 / md-left 9 / xs 6）落在 **50 个 `.vue` + `style.css`**；
+> **不同取值 34 → 4**；★ **幽灵卡片处置 13 处 / 9 文件**（抬升级删闭合描边 8 处、
+> 表面级删静态阴影 5 处）；★ `HotPartitionManager` 的 `box-shadow: -1px 0 0 0 var(--accent)`
+> （零模糊 + 有偏移 + 彩色）**整条删除**（依据 `DESIGN.md` §6「禁止 1px 以上的彩色 border-left」
+> + craft-floor 禁零模糊硬偏移 + 该元素已有三重状态表达）。
+> ⇒ ★★★ **本轮最值钱的一处发现**：★ **第 17 增量的 V1 门在全部 17 处 `var(--kx-shadow-*)`
+> 元素上整族假绿** —— 因为 **V1 要判「是不是抬升」就得读【偏移】，而偏移搬进 token 之后，
+> 静态判据从 `var(...)` 里取不到** ⇒ ★★ **通用式：★ 「引用」与「实际几何」之间隔着一个【解析步骤】
+> ⇒ 判据跳不过去 ⇒ 它就是在【已经合规的元素】上假绿** ⇒ 修法：`ELEVATION_TOKENS` 名单
+> （**只放一处**，`aiSmells.ts` 导出、`elevation.ts` re-export）+ 「`--kx-shadow-*` 一律是抬升」。
+> ⇒ ★★ **同轮另修三处真盲区**：① **V7 硬偏移判据要求第 2 段必须带 `px`**
+> ⇒ `-1px 0 0 0 var(--accent)`（零模糊 + 有偏移）漏判 ⇒ 改为**逐层判 + 长度单位可省略**；
+> ② **V7 只取块内第一条 `box-shadow`** ⇒ 同块第二条完全看不见（**真仓变异臂 M3 抓到**）
+> ⇒ 抽出共享原语 `boxShadowDeclarations(body)`，**V7 与 elevation.ts 共用**（同一口径只有一份实现）；
+> ③ **V1 把「单边描边」当「闭合描边」** ⇒ 4 处抽屉假阳性 ⇒ ★ **单边描边（画在面板内侧）
+> + 外侧投影不重叠 ⇒ 那是一条边，不构成幽灵卡片** ⇒ 口径已细化并写进 `DESIGN.md` §5。
+> ⇒ ★★★ **判据的分类是第一位的**：★ 同一段 CSS 文本里有**两种语义** —— **抬升层**（有偏移 ⇒ 深度）
+> 与 **零偏移环**（`0 0 0 Npx` ⇒ 焦点圈 / 探测标记 ⇒ **不表示深度**）
+> ⇒ 实测抬升 69 / 环 33 / `none` 12 / inset 7 ⇒ ★ **分类错了，后面全错**（当抬升判 ⇒ 假红；
+> 当环判 ⇒ 假绿）⇒ 门里显式写死并让分母可被读数验证。
+> ⇒ ★★★ **工具自身踩过的坑**：独立普查脚本（`/tmp/q18/shadow-census2.mjs`）**自身 2 个 bug**
+> —— ① **逐行匹配漏多行声明**（`RequestTile.vue` 的 `.request-tile--probe` 跨 4 行）；
+> ② **不剥注释抓出假阳性**（`style.css` 注释里的声明）⇒ 修完后与门**逐条对拍 53/53 一致**
+> ⇒ ★★ **两个独立实现必须逐条对拍，这是发现「量具自己坏了」的唯一手段**。
+> ⇒ ★★★ **源码合规 ≠ 运行时合规** ⇒ 补了一次**独立运行时核对**，且把工具**固化进仓**（`web/scripts/design-elevation-runtime-check.mjs`
+> ⇒ `design-elevation:runtime` / `:runtime:selftest` 11/11；★ 无 Chrome 时打印 ⏭ SKIP「未测量」而不是伪装成通过）
+> ⇒ 核对方式：头 Chrome + CDP，
+> 遍历**全 DOM** 的计算阴影）：**9 页 × 2 主题 = 18 次扫描 ⇒ 非 token 抬升层 0 处**；
+> 定点断言（13 处幽灵卡片处置）**0 条不通过**（`.topo-node` / `.gw` 计算阴影 = `none`；
+> `.app-topbar__dropdown` / `.user-menu__dropdown` = `md` 阴影 + 四边 `0px`）；
+> 浮层实测 `.journey-modal` = `rgba(0,0,0,.4) -12px 0 32px 0px`（**md-left 侧投影**）。
+> ⇒ ★★ **读数**：浮起门 **0 非规范 / 4 取值 / 63 抬升层**（基线 0/4）+ 自证 **15/15**；
+> AI 痕迹门 **0 违规** + 自证 **45 → 51/51**；**真仓变异臂 4/4**（M1 非 token 抬升 /
+> M2 幽灵卡片 / M3 同块第二条声明 / **M4 负控：零偏移环 ⇒ rc=0**；每臂「注入→rc=1→还原→rc=0→
+> md5 逐字一致」）；`vue-tsc` **0 错**；`vitest` **2836 通过 / 2 跳过**；`build` ✓ 40.82s；
+> console 错误（9 页合计）**1**（`autoRoute.indexSnapshot` 500，**既有部署状态，与本轮 CSS 无关**）。
+> ⇒ ★★ **本轮没做 / 如实记**：① **令牌双轨的 7 个「需处理」变量未迁**
+> （`--bg-subtle` 跨主题语义不同：浅=primary-soft / 暗=sidebar；另有 `--bg-hover` / `--bg-secondary` /
+> `--bg-tertiary` / `--error-bg` / `--cyan` / `--border-muted` ⇒ 全是 `color-mix` 派生值 ⇒ 机械替换会改语义，
+> 需设计判断）；② **运行时只逐个打开了 3 类浮层**（journey-modal / topbar dropdown / user-menu dropdown），
+> 另 63 层里多数需特定数据才挂载 ⇒ 运行时扫描是**子集核对**，全量靠源码门；
+> ③ **浮起门没有「token 定义本身被改坏」的守卫**；④ **部署实例库只跑了部分迁移**
+> （`public` 474 张表，`request_logs` / `prompt_injection_stats_enhanced` / `detection_score` **缺失**
+> ⇒ 「请求日志」类页面在部署实例上会报错；迁移脚本在仓里
+> `sql/migrations/startup/315_prompt_injection_detection.sql` / `364_prompt_injection_enhanced.sql`
+> ⇒ **跑迁移属 DDL 有副作用操作，需用户授权** ⇒ **与本轮 CSS 无关**）。
+> ⇒ ★★ **工具侧的一次实战**：★ 内嵌浏览器在**实时流页面**上的 `click` / `reload` / `console`
+> 三类动作**持续 275s 超时**（`inspect` / `screenshot` / `open_tab` 正常 ⇒ 是「交互等待」这条路径坏了，
+> 不是页面坏了）⇒ ★★ **换通道**（无头 Chrome + CDP）⇒ 同样 0 违规，且额外拿到浮层计算值与 console 清单
+> ⇒ ★★★ **通用式：★ 「量具挂起」是【读不到】，不是【读到了 0】⇒ 两者必须分开写**。
+> ⇒ ★★ **一次「改动不见了」的实战**：★ 本轮改动在会话之间被存成 **WIP 提交 `470454dd8`
+> （分支 `wip/design-elevation`）** ⇒ 工作树「变干净了」⇒ ★★ **只看 `git status`（空）会以为改动没了**
+> ⇒ ★★★ **开工先三处一起看**：`git status` / `git stash list` / 分支表；
+> ★★ 恢复时**按「文件集合的交集」算冲突面**（57 文件 vs 上游 12 提交 ⇒ 只有 1 个重叠，
+> 而那 1 个是**生成物** `menu-config.json` 的 `exported_at` 时间戳 ⇒ 丢弃上游新版）。
+> ⇒ 审计档 `docs/audit/2026-10-27-第18增量-浮起词汇归一轮.md`（§0~§10）；
+> 通用式见 `LESSONS.md` **§450**（9 条形态：★★★ 分类是第一位的 /
+> ★★★★ 判据读 token 引用时必须同时解析 token 的定义 /
+> ★★★★ 「有没有 X」在 X 有多种形态时必须先枚举形态 /
+> ★★★★ 遍历必须覆盖同一条规则内的【所有】声明 /
+> ★★★★ 判据里每个字段都要单独给「可省略」的语义 /
+> ★★★★ 分析工具与门必须有同等的「区间 + 注释处理」能力 /
+> ★★★★ 源码合规 ≠ 运行时合规（两把尺）/
+> ★★★ 工具挂起时先换通道 / ★★★ 开工先确认改动落在哪）。
 > **2026-10-26 Gemini 原生认证形态修复轮**（会话 `mvs_42f116b20f694164b00900d451db1ca0`）：
 > 用户报「**Gemini 的数据转换好像认证没通过**，请根据我们保留的厂方标准文档修正」⇒
 > ★ **根因不是 IR 层、也不是上游 header —— 是网关自己的认证门不认 Gemini 客户端的凭据形态。**
@@ -586,6 +667,150 @@
 > ⇒ ★ 新增回归测试 3 条（退化输入三连 ⇒ 线格式只剩合法块；Responses 空 file_data；
 > ValidateAndFix 完整路径）。读数：`go build` ✓ / ir+auth+provider+attachments+streaming
 > 全绿。⇒ 审计档 `docs/audit/2026-10-27-Gemini多模态审计复审轮.md`；通用式见 `LESSONS.md` **§438**（5 条）。
+> **2026-10-27 Gemini 原生出站 executor 轮**（会话 `mvs_42f116b20f694164b00900d451db1ca0`）：
+> ★ 承接 §436 同一审计档的**子项②**（§433 清单的最后一项可做项）。
+> ⇒ ★★★★ **本轮最值钱的一处定性：缺口不是「功能没做」，是「死配置」** ——
+> `provider/catalog/protocol.go` 把 `gemini-generate` 列为合法 outbound 协议、
+> DB 的 CHECK 约束里有它、**Web UI 的协议下拉里有它**、
+> `protocol_normalize.go` 还会把 provider 配的 `gemini` **主动映射成它** ——
+> 而 dispatcher 把每个这样的候选**整条跳过**（`routeUnsupportedGemini` ⇒
+> `KindUnsupportedFeature`）⇒ **运维在 UI 里选 `gemini-generate`、配好 provider，
+> 那个 provider 就永远不会产生一包响应**。
+> ⇒ ★★ **仓内早就有这道账本**：`provider/catalog/contract_test.go` 里那条
+> `ProtocolGeminiGenerate: false`，注释明写「显式 unsupported」⇒ 本轮翻成 `true`
+> 并把**为什么**留在注释里（LESSONS §439 通用式一）。
+> ⇒ ★ **实现照抄仓内既有的设计书**（`docs/供应商协议优化.md` §8.3 逐条点名了四个配料），
+> 不自创协议语义：`internal/upstreamurl` 新增 `GenerateContentURL`（**base URL 拥有版本段**
+> ⇒ `/v1beta` 保留、`/v1` 保留、都没有才默认 `/v1beta`；★ **绝不替运维把 `/v1` 改写成
+> `/v1beta`**；**粘贴完整 endpoint URL 当 base 也能用** ⇒ 幂等性有门）；
+> 请求体走 `ir.SerializeGemini`；凭据走 **`x-goog-api-key` 头**；
+> 流式走 `ir/parse_gemini_stream.go`。
+> ⇒ ★★ **凭据形态只走头、不进 URL**：厂方两种都收（头 / `?key=`），★ 但 query 形态的凭据会进
+> **每一条** access log、**每一条** upstream-URL 日志行、**每一行**记录请求 URL 的 telemetry
+> ⇒ ⇒ 反向钉 `TestGeminiExecutor_BuildRequest_CredentialNeverInURL` 断言
+> **URL 既不含凭据、也不含任何 query**（★ 「厂商接受」≠「我们要用」）。
+> ⇒ ★★★ **顺带修掉 IR 流解析器的一个洞**：`ParseGeminiStreamChunk` 的结构体里**没有 `error`
+> 字段** ⇒ 一帧 `data: {"error":{...}}` 解析成**空 chunk** ⇒ 与心跳保活帧**不可区分**
+> ⇒ **厂商的 429/401 被静默吞掉**、客户端只看到被截断的流 ⇒ 修在 **IR 层**（事实源），
+> 且**错误判定必须在 usage/candidate 分支之前**（错误帧两者都没有，放后面永远走不到）。
+> ⇒ ★★ **客户端侧线格式只接 OpenAI Chat 一种，其余 fail closed**
+> （`anthropic-messages` / `openai-responses` ⇒ `KindUnsupportedFeature`）：
+> ★ **Gemini 原生客户端算「OpenAI Chat 客户端」** —— Gemini 入向 handler 在派发**前**就把
+> body 转成了 OpenAI 形状 ⇒ dispatcher 看到的是 `openai-completions` ⇒ 响应也是 OpenAI 形状
+> ⇒ 由 Gemini handler 自己转回 Gemini 形状 ⇒ ★ **`gemini-generate` 永远不会作为
+> 「入向客户端协议」出现**（别写「处理一种永远不会出现的形状」的分支）；
+> ★ **错形状的 200 比明确的未接线更糟**（SDK 会在离病因很远的地方解析失败）⇒ 与已上线的
+> Ollama-native executor 同一口径。
+> ⇒ ★ **门（20+ 条）**：URL/凭据（含**反向**：凭据绝不入 URL）/流式动作与 `alt=sse`/
+> 请求体转换 7 个 fail-closed 闸/**响应转 OpenAI 形状**/**厂商错误信封透传**/**畸形 ⇒
+> `KindConversion`/**流 ⇒ OpenAI SSE 且补 `[DONE]` 终态**（★ Gemini 流自己没有哨兵，
+> OpenAI 线必须有）/★ **反向：第二种厂商分帧（裸 JSON 行）也能吃**/流内厂商错误 ⇒ 错误帧 +
+> 流被打断/★★ **端到端**：真实上游收到的是 Gemini 原生体（**不是 `messages`**）、凭据在头里、
+> URL 里没有凭据/端到端流式/**401 ⇒ 类型化错误可 failover**/IR 往返不丢内容；
+> 另加 `executor_dispatch_p4_test.go` 两条（`gemini-generate` ⇒ `routeGeminiNative`，
+> ★ **且不依赖任何 P4 开关** —— 别让 native 路由被 feature flag 关掉）。
+> ⇒ ★ **读数**：`gemini-generate` provider 可否被选中 **否 → 是**；出站 URL/请求体/凭据形态
+> **不存在 → 齐备**；流内厂商错误帧 **被吞 → 解析为 `ChunkTypeError`**；
+> catalog 契约测试里 `gemini-generate` **false → true**。
+> ⇒ ★★ **本轮明确没做（留给下一轮，别重复排查）**：**Gemini 原生模型列表**
+> （`GET /v1beta/models` ⇒ 需 `cmd/gateway/main.go` 接线，★ **并行会话正在改该文件** ⇒ 避让，
+> 且要决定返回形状）；**`:countTokens`**（需**诚实**的 token 计数 ⇒ 估算会误导客户端的预算决策
+> ⇒ 独立设计题）；**`anthropic-messages` / `openai-responses` 客户端侧线格式**
+> （★ 需 Anthropic SSE 严格帧与 Responses 的 `response.completed` 编排 —— IR 里有序列化器，
+> **流式终态的编排**未接线）；**Gemini 上游的 `header_profile_code` 联动**；
+> **Gemini 上游的上下文超限压缩恢复**（Ollama 路径有，Gemini 路径本轮只做一次尝试）。
+> **2026-10-27 Gemini 剩余登记项处置轮**（会话 `mvs_42f116b20f694164b00900d451db1ca0`）：
+> ★ 承接上一条清单，**做掉其中 3 项**，另 2 项按硬约束登记。
+> ⇒ ★★★★ **本轮最值钱的一处发现：「没接线」≠「不存在」** ——
+> 上一轮把 `anthropic-messages` / `openai-responses` 的客户端线格式判为「未接线」，
+> 理由写的是「Anthropic SSE 严格帧 + Responses 的终态编排未接线」⇒ ★★ **那个理由站不住**：
+> 仓内**早就有**两条现成转换（`streaming.StreamOpenAIToAnthropicSSE` /
+> `streaming.StreamOpenAIToResponsesSSE`），而且**已经挂在 Executor 上**
+> （`OpenAIToAnthropicStream` / `OpenAIToResponsesStream`，`cmd/gateway/main.go` 接线），
+> 而**本 executor 本来就产出 OpenAI 形状的帧** ⇒ ★★ **同一份转换直接可用，零新增接线**
+> ⇒ ★★ 自己手搓 Anthropic 严格帧 = 白干（LESSONS §451 通用式一）。
+> ⇒ ★ **实现方式 = `io.Pipe`**：executor 把 Gemini 流转成 OpenAI 形状的帧写进管道，
+> 桥在另一侧读管道、写客户端 ⇒ ★★ 管道无缓冲 ⇒ **转换保持流式**（不整段缓冲到内存）。
+> ⇒ ★★ **不能直接 import 那个桥**：`domains/streaming` 导入 `domains/streaming/executors`
+> ⇒ 反向 import 即**循环依赖** ⇒ ★★ 这反过来说明「桥在 streaming、executor 持回调、
+> main.go 注入」是**被依赖方向逼出来的正确形状**，不是绕路。
+> ⇒ ★ **非流式**侧不需要桥：IR 层已有 `SerializeAnthropicResponse` /
+> `SerializeResponsesResponse`，且 `IRConverter` 接口本来就带这两个方法 ⇒ 零接线。
+> ⇒ ★ **`header_profile_code` 联动**（§8.3 明写「与 endpoint 的 `header_profile_code` 关联」）：
+> 出站请求**应用 endpoint 的 header profile**（与 OpenAI 路径同款）⇒ ★★ 没有它，
+> **Gemini 兼容中转**（profile 声明 `Authorization: Bearer`）会直接 401 ⇒ ★★
+> 应用顺序在凭据头**之后** ⇒ profile 声明的凭据头覆盖默认形态（这正是该机制的意义）。
+> ⇒ ★ **Gemini 上游的上下文超限压缩恢复**：复用共享的恢复协调器，压缩后**恰好重试一次**
+> （`geminiRecoveryAttempted` 标记防递归）。
+> ⇒ ★ **门（新增 11 条）**：Anthropic/Responses 请求 ⇒ Gemini 线（**不带** `messages`/`input`）/
+> Gemini 响应 ⇒ Anthropic（`type:message`+`stop_reason`）/⇒ Responses（`object:response`）/
+> ★ 桥收到的是 **OpenAI 形状**的帧（含 `[DONE]`）且 outcome 回传/★ **反向：桥缺失 ⇒
+> `KindUnsupportedFeature` 且不写任何字节**（不产生错形状的 200）/★ header profile 到达上游
+> 且默认 `x-goog-api-key` 仍在/★ 超限 ⇒ **恰好一次**压缩重试且重试体更小、压缩原因被记账/
+> ★ 未接线协议仍然 fail closed（门不是橡皮图章）。
+> ⇒ ★★ **本轮登记项的处置（★ 登记完立刻复查 ⇒ 第 1 项当场被推翻并做掉了，
+> 见本块末尾「补做掉第 4 项」）**：**Gemini 原生模型列表**
+> （★ 避让：并行会话正在改 `cmd/gateway/main.go`；★ 起手式：显式注册精确路由
+> `/v1beta/models`，**复用 `streaming.ModelsHandler` 的同一个 DB 数据源**、只换输出形状
+> ⇒ 厂商形状 `{"models":[{"name":"models/…"}]}`；★ 注意 Go 的 `ServeMux` 对已注册的子树
+> `/v1beta/models/` 会把无斜杠形态 **301** 过去 ⇒ 只按带斜杠实现也能访问到，但多一跳）；
+> **`:countTokens`**（★ **不是「不想做」，是「不能诚实做」**：仓内**没有** Gemini 分词器 ⇒
+> 本地估算会让客户端按错预算决策 ⇒ ★★ **唯一诚实的实现是转发给上游让厂商自己算**
+> ⇒ 那是**第三条出站动作**（响应形状 `{"totalTokens":N}` 与 `GenerateContentResponse` 完全不同
+> ⇒ 不走 `ProtocolHandler` 通用路径）⇒ 独立一轮）。
+> ⇒ ★ **补做掉第 4 项（登记理由已过期）**：**Gemini 原生模型列表**
+> （`GET /v1beta/models`）—— ★★ 上一轮的登记理由是「要动 `cmd/gateway/main.go`，
+> 而并行会话正在改该文件 ⇒ 避让」⇒ ★★★ 那是**时序条件**不是永久约束 ⇒ 本轮复查：
+> 并行会话的 `main.go` 改动落在**行 913 / 2574 / 3883 / 6788**，★ 而 Gemini 的 mux 注册在
+> **行 6794~6796** ⇒ ★★ 相距 25 行、**三方合并不重叠** ⇒ 避让前提消失 ⇒ 直接做掉。
+> ⇒ ★ **实现**：`domains/streaming/models.go` 新增 `ServeGeminiModels`（厂商原生形状
+> `{"models":[{"name":"models/…",…}]}`）★ **并把取数抽成 `loadEntries(ctx)` ⇒ 两份列表
+> 共用同一个可路由模型查询**（★ 同一份「网关能服务哪些模型」的真值 ⇒ 两个数据源
+> 就是两份真值 ⇒ 会漂移）+ `cmd/gateway/main.go` **一行**路由。
+> ⇒ ★★ **`supportedGenerationMethods` 只列网关【真的】支持的动作**
+> （`generateContent`/`streamGenerateContent`）⇒ **不列 `countTokens`** ⇒ ★
+> **列一个自己做不到的方法 = 给客户端一个它会当真、然后失败的承诺**。
+> ⇒ ★ **一个诚实的边界**：`/v1/models`（无斜杠）**仍是 OpenAI 形状**（OpenAI SDK 的既有契约）
+> ⇒ ★ Gemini 的 **GA 路径（`/v1`）**拿到的仍是 OpenAI 形状 ⇒ 本轮只解决 `v1beta` 这条
+> 厂商原生路径 ⇒ 若要 GA 也原生 ⇒ 需**重新分配 `/v1/models` 的归属** ⇒ 产品决策。
+> ⇒ ★ **门（再 +4 条）**：原生形状（`name` 带 `models/` 前缀 / `displayName` / 非空 methods）/
+> 上下文窗口映射 + **`models/` 前缀不重复** + 空 id 跳过 + 未知窗口**不发**该键/
+> ★ **反向：列表不列 `countTokens`**/★ **两份列表同一个数据源**（模型集合一致）。
+> ⇒ ★★★ **本轮第二值钱的一处发现：「只挂不认」比「不挂」更坏 —— 凭据收口面
+> 必须覆盖【每一个被服务的路由】** ——
+> 挂上 `/v1beta/models`（原生模型列表）之后，★★ **只挂不认**会留下一个比原缺陷
+> 更难查的形状：同一个客户端、同一个 key，`POST …:generateContent`（`x-goog-api-key`
+> 头形态）**能通**，而 `GET /v1beta/models`（`?key=` query 形态）**401** ⇒ ⇒
+> ★★ 用户看到的是「网关时好时坏 / 认证是坏的」⇒ ★★★ 根因不是「忘了带 key」，
+> 而是 **收口面漏了一条路由**：`internal/auth.IsGeminiNativePath`（`?key=` 的收口面）
+> 只认 generateContent 两个动作 ⇒ ⇒ ★★★ 而模型列表是**第三条被服务的 Gemini 路由**，
+> 它自己的 mux 条目**不在** `/v1beta/models/` 子树里 ⇒ ⇒ ★★ 靠「前缀」根本推不出它
+> ⇒ ⇒ ★★★ ⇒ 修法：`geminiNativePathRe` 增加一个**精确锚定**分支
+> `|/v1beta/models$` ⇒ ★★ **精确锚定而不是前缀**（`/v1beta/modelsXYZ` 必须**不在**
+> 收口面内 ⇒ 否则 `?key=` 会在一堆没人服务的路径上变成凭据源）⇒ ★★ `/v1/models`
+> （OpenAI 形状）**仍然不在**收口面内 ⇒ ★★ **收口面宁窄勿宽，但宽的部分必须是
+> 「已服务的 Gemini 路由」**。
+> ⇒ ★★★★ **本轮第三值钱的一处发现：「漂移门」自己也会写下【错误的要求】** ——
+> `TestGeminiNativePathMatchesHandlerParser` 判「已服务路由」用的是
+> `served(p) && handlerOK`（**前缀** ∧ **解析器**）⇒ ★★★ 模型列表**两条都不满足**
+> ⇒ ⇒ 门会把它归进「没人服务的路径」，**反过来要求收口面别覆盖它** ⇒ ⇒
+> ★★★ ⇒ 必须显式把新路由登记进门的判定（本轮加了一张 `geminiNativeExactRoutes`）
+> ⇒ ⇒ ★★ 否则这一轮会「为了让门绿而把收口面收窄」⇒ ★★★ ★★ **门不是事实，
+> 它只是事实的一个投影 ⇒ ⇒ 加一条路由时，老的投影会【自动给出错误结论】而且是绿的**
+> ⇒ ⇒ ★★ **「门全绿」时要问的是【门测的那件事成立吗】，而不是【门红了吗】**。
+> ⇒ ★ **门（再 +5 条，三侧对拍）**：挂载侧（`cmd/gateway`，**从 main.go 源码读出挂载语句**
+> ⇒ 不自证）+ 解析侧（`domains/streaming`，★ **反向**：generateContent 解析器**不认**
+> 模型列表 ⇒ 两条路由不许混）+ 收口侧（`internal/auth`，★ **反向**：精确锚定 ⇒
+> `/v1beta/modelsXYZ` 不在面内、`/v1/models` 不在面内）。
+> ⇒ ★★★★ **变异臂 4 臂全检出**（★ 三个方向，不只「把缺陷放回去」）：A 收窄回旧形态/
+> B 删掉模型列表挂载/C1 **锚定退化成前缀**/C2 **过宽到 `/v1/models`** ⇒ ⇒
+> ★★★ 四臂还原后 **md5 逐字一致** ⇒ ⇒ ★★ C1/C2 证明这组门**分得清**
+> 「该红的路径」与「不该红的路径」（★ **只会喊「必须覆盖」的门，和只会喊「不许覆盖」
+> 的门，是同一个门的两种坏法**）。
+> ⇒ 审计档 `docs/audit/2026-10-27-Gemini转换面补全轮.md`（子项③，§14~§20）；
+> 通用式见 `LESSONS.md` **§451**（通用式一~十三）。
+> ⇒ 审计档 `docs/audit/2026-10-27-Gemini转换面补全轮.md`（子项②，§6~§12）；
+> 通用式见 `LESSONS.md` **§439**（通用式一~七）。
 > **2026-10-23 实时拓扑探测打标四处源真值漂移轮 + 口径收敛**（会话
 > `mvs_64ddb526ee11405aae54d67e7c4d6161`）：用户报 154 生产上一条 32-hex
 > 请求 `af1eb6d83ef39610cc4f8be4e181b5a8` "应被识别为探测但实时拓扑 pill = 否"。
@@ -8387,6 +8612,29 @@ index b953a6f03..555ef83c4 100644
 > ⇒ ⇒ ★★★ （本机 `psql` shim 不认 DSN 的 host/port）⇒ ★ 已在 **origin/main 独立 worktree
 > ⇒ ⇒ ★★★ 复跑确认同签名失败 ⇒ **非本轮引入**，未动。
 > ⇒ ⇒ ★★ **完整记录见 `docs/audit/2026-10-27-R90-turns-sessions-过滤路径500与两腿改写.md`**。
+> **2026-10-27 R166 轮（本会话）· routing_analytics_7d REFRESH 降本【907 残留探针的结构性收口，迁移 910 pending】**：
+> **对生产写入 = 0**（252 全程只读；910 只落仓）。完整记录见
+> `docs/audit/2026-10-27-R166-routing-analytics-7d-REFRESH降本-父表腿日界下推.md` + handoff `§19.30` + LESSONS `§441`。
+> ★ **读数推进**：R147 的 4.97h/293/61.0s 是 **907 应用前**截面；907 实际 10-24 23:07+08 应用 252
+> ⇒ pgss 增量 ⇒ **907 后均值 ≈40.6s（1.5×）**，但仍是单 stmt 最大头；冷读 132MB/次、
+> temp 1.1MB/次 ⇒ **work_mem 不是本族杠杆**（matrix 才是）。
+> ★ **残留结构**：父表腿 ~2.75 万次/刷新 的 LATERAL 逐行探针（0.366ms × 27,486 ≈ 10.1s = 57%；
+> 整计划 ~147K buffers）；★ **探针单价随宿主负载漂 100×+**（R96 实测 ~3μs vs 本轮 366μs）
+> ⇒ 墙钟乘法式暴露在 load 23 上。
+> ★ **修法（910，零语义）**：父表腿 → 普通 LEFT JOIN + `partition_date >= (now()-8d)` 日界下推
+> ⇒ details 执行期分区裁剪（躲 0 行但堆 383MB 的 09 分区）+ Hash Join ⇒ **buffers 147K → 52K（−64%）**；
+> hot 腿保留 LATERAL（details_hot 无唯一键证明）。等价三证：ukey 唯一键（catalog 实测）+
+> 无行增殖（66,838→66,838）+ 错位行 0 ⇒ 窗口内双向 EXCEPT ALL **0/0**。
+> ★★ **门禁代际交接**：「迁移 ≡ Go 常量」语义耦合门从 907 **移交给 910**；907 同名门改判为
+> **回退链门**（910.down ≡ 907.up 逐字）——applied 文件冻结后回退不许另写「差不多」的旧体；
+> 夹具日期改 now() 相对值（时间谓词会让写死日期的夹具漂出窗外）；计划门改「只允许 1 个 Limit 节点」。
+> ★★ **登记面两处「登记了 ≠ 登记在正确位置」**：runner StartupFiles 与 sequence.sh 按**列表序**生效
+> ⇒ 910 插 907 后被 manifest 门按位对 TSV 当场抓红 ⇒ 移到 909 后全绿。
+> ★ 验证：本地一次性真库五段生命周期（907→910→幂等→OID 保持+REFRESH 联动→down=907 形态→复原→15 列契约）
+> + installer 全模块 + 全模块回归全绿。
+> ★ **拍板材料（未拍板）**：㉙(d) work_mem 只对 matrix 三兄弟有效（131.6MB temp/次），
+> 对 routing_7d 无效（1.1MB/次）；910 后下一层 = 增量刷新（结构变更属主）。
+
 > **2026-10-24 R147 轮（本会话）· §143.104 【存储效率续轮：㉙ 成本分解 + ㉘ 裁决落地（迁移 908）+ ③ TOAST 评估】**：
 > **对生产写入 = 0**（252 全程只读；908 只落仓）。完整记录见
 > `docs/audit/2026-10-24-R147-存储效率续轮-matrix成本分解-rie索引裁决-bodiesTOAST评估.md` + runbook `§143.104`。
@@ -8426,6 +8674,59 @@ index b953a6f03..555ef83c4 100644
 >    （计数 4 + 理由），只登记不改其文件。★ 908 down 文件头注残留「903 删的是」一处**有意不修**
 >    （908 已 applied 记账 sha `bcd401ec`，改文件 = 台账失配，注释妆疵不值再投递）。
 >    详见审计档 §9 + runbook §143.104.6。
+>
+> **2026-10-27 R148 · 96h 批判式审计轮（本会话 `mvs_367b04073e304f26b546fd09f5f88282`）**
+> —— 审计档 `docs/audit/2026-10-27-R148-96h批判审计轮-分支资产盘点与四处事实源漂移.md`
+> ＋ LESSONS **§434** ＋ handoff **§19.28**：
+> ★ **分支面：无子分支可处置** —— `git ls-remote --heads origin` 实测**只有 `refs/heads/main`**，
+>   本地分支也只有 `main`、只有 1 个 worktree ⇒ ★ **「96h 内不活跃子分支」这一项是空集**；
+>   `refs/tags/*` 是版本/备份/回滚资产 ⇒ **不删**。
+> ⇒ ★★ **真正待处置的「未合并存量」在 6 个 stash 里** ⇒ 本轮做了**逐文件覆盖度台账**
+>   （`git diff --output=<patch> 'stash@{i}^1' 'stash@{i}'` ＋ `git apply --check --reverse`）
+>   ⇒ 结论：6 个**全部已被 HEAD 覆盖**（stash@{1}/{2} 的意图已在 HEAD 里演进到更晚形态），
+>   **无一条需要逐文件合并** ⇒ ★★ **但一律不 drop**（不可逆 + 属并行会话的恢复物 +
+>   「apply 失败」≠「工作丢了」）⇒ 登记为「有意保留的存量」。
+> ⇒ ★★★ **本轮 4 处发现全是同一族：「同一件事被抄成多份、其中一份没跟上」**
+>   （**没有一处是判据本身算错了** ⇒ 查法是 grep 判据的**全部落点**，不是读判据）：
+>   ① **F1 抄本过期**：`domains/streaming/modality_detect.go` 的「SQL 过滤语义」仍写
+>   `'video' → modality = 'video'`（入站 `483b60b301ab` 已改成 `IN ('video','multimodal')`）
+>   ⇒ 就地订正（★ 已核 `modelname/modality_defaults.go`：本仓 `multimodal` 的登记语义**就是**
+>   「text+image+audio+video」⇒ 那一轮的 SQL 改动**是对的**）；
+>   ② ★★ **F2 活正确性**：`bg/probe_policy.go` 的**会话族**探针排除谓词仍**手写**四元组 actor
+>   （`node-probe-worker`/`active-probe-worker`/`probe-service`/`credential-selfcheck-worker`），
+>   而事实源 `internal/probekind.ProbeActors` 已由写入点登记表派生为**七个** ⇒ ★★ **少了
+>   `self-check-worker`/`model-quality-worker`/`mock-probe-client`** ⇒ ★★ **2026-10-23 那次
+>   「不再手写」的订正只迁了视图臂，会话臂被落下** ⇒ ★★ 正是 `stash@{2}`（R52 的 2→4 订正）
+>   的**同一个漂移在另一条臂上重新长出来**（2→4→7）⇒ ★★ 修法 = **共用事实源**
+>   （`probekind.SQLActorList()`）**而不是再补三个** ⇒ 影响的三个活读面：settle 基线 cohort
+>   （⇒ reward 基线）、failure monitor 的 staleness、凭据自检的「近 3 天业务使用集合」
+>   ⇒ 新增 `TestProbeTrafficExclusionPredicateActorListsStayInLockstep`（两条臂锁步 ＋ 负控）；
+>   ③ ★★ **F3 半修**：`483b60b301ab` 把 video 补进模态门（门开了）却**只补了 Gemini→OpenAI
+>   一个方向** ⇒ ★★ `video_url` 在 parse 侧无分支（`block.Video` 恒 nil）＋ Gemini 序列化器
+>   **无该分支也无 default** ⇒ ★★ **视频块静默丢弃**（用户看到「200 且有回答，但视频没到上游」）
+>   ⇒ ★★ 前三个协议看不见是因为它们各自的 `default` 按 `RawContent` 兜底（**假绿**）
+>   ⇒ 修法**只往保守方向**：parse 侧类型化 ＋ **保留 `Type`/`RawContent`**（另三个协议逐字节不变），
+>   Gemini 侧加 `case "video_url"`；顺带修 `irVideoToGeminiPart` 的 MIME 兜底
+>   （此前会拼出**非法**的 `mimeType: "video/"` ⇒ 新增 `videoMIME()` 缺省 `video/mp4`）；
+>   ④ ★★★ **F4 门恒红且双向全废**：`internal/clockguard`（**在 `GUARD_PACKAGES` 里**）的
+>   实测台账门用 `filepath.Rel` 产键 ⇒ **Windows 上是反斜杠**，而台账是**提交进仓的数据文件**
+>   （正斜杠）⇒ ★★ 同一个文件两种拼写各报一次、12 条全是噪声 ⇒ ★★ **真正的漂移被淹没**
+>   ＋ `guard_test.go` 的 `Contains(b.File,"internal/clockguard")` 恒假 ⇒ **扫到自己也漏网**
+>   ⇒ 修法 = `filepath.ToSlash`（★ `File` 只做对账键/诊断串，从不开文件）
+>   ⇒ **同族先例**：web 侧 `ui-audit` 豁免查表键已因同一件事修过（`9327bc33e004`）⇒ **第二处**。
+> ⇒ ★★ **留证纪律**：clockguard **真仓变异臂** —— 改台账一个函数名 ⇒ 门**恰好报一条**精确
+>   「台账漂移」（改前是 12 条噪声）⇒ 证明门看得见差异；还原后 **md5 逐字一致**。
+> ⇒ ★★ **全量跑分的红项必须【基线对照 + 集合差】**：首轮 25 包红，逐条归因到**错误文本**
+>   （`CGO_ENABLED=0` 无 gcc ⇒ lite 存储族；PATH 无 bash ⇒ ursmcheck/q-usage；Windows 文件占用
+>   ⇒ pkg/monitor；计时类 ⇒ **负载型**，本轮实测到**另一个 Mavis 会话在同工作区同时跑
+>   `go test ./...`**）⇒ ★★ 在 `e50a0a5f6a37` 另开 worktree 跑**同一组 25 包**做基线对照。
+> ⇒ ★★ **本机环境三缺（CGO/gcc、bash、Windows 文件占用）⇒ `make guards` 与 lite 存储族
+>   在本机不可用作证据** ⇒ 下轮要本地证据须先装 gcc + Git Bash，或改在 Linux 上跑。
+> ⇒ ★★ **本轮明确没做（留给下一轮）**：**Gemini 序列化器的通用 raw 兜底**（本轮只补了
+>   `video_url` 这一条已知路径；治本要给四协议做「raw 兜底对称性」门，★ 属设计变更）
+>   ／ **F2 的量化缺口**（252 上「`origin_stage` 缺失 且 actor ∈ 那三个」的**实际行数未测**）
+>   ／ **stash 面的清理**（须由创建会话确认后再删）／ **clockguard 台账的自然值重测**
+>   （本轮只修了「门看不见」，没改那 10 处判据的下界）／ **web 侧与 installer 零改动故未重跑**。
 
 > **2026-10-24 探测打标修复 —— 154 发布 + 线上验证 + 口径订正轮（本会话）**：★ 上文 §「2026-10-23 实时拓扑探测打标轮」记的是
 > **根因定位与修复**（`e6f87c623`）；本节记**它被发到 154 并在线上生效**，以及**一处口径订正**。
@@ -10497,3 +10798,33 @@ index b953a6f03..555ef83c4 100644
 > ⇒ ⇒ ⇒ ★ **通用式 10 条**沉淀在 `LESSONS.md`（★ ★ 原拟 §434 ⇒ ★★ 合并 origin/main 后【让号】⇒ ★★ ★★ **本轮共让号三次**：★ 第一次 `0eff161c6` 已占 §433 ⇒ 让到 §435；★ 第二次并行会话又占 §434 与 §435 ⇒ ⇒ ⇒ **最终 §437** ⇒ ⇒ ⇒ ★★ 改号不改内容）
 > ⇒ ⇒ ⇒ ★ **诚实边界 / 待属主裁决 11 条**见审计档 §9（★ **待裁决**：★ **R165-PSQL-SHIM**（★ `~/.local/bin/psql` 与「宿主机直连 PG」语义冲突 ⇒ ★ 它是 openpocket 夹具的依赖 ⇒ **不能改**）· ★ **R165-HOST-DOCKER-MODE**（★ 「宿主机优先」判定把「宿主上跑着 PG 容器」判成 host 模式 ⇒ ⇒ `DL_DOCKER=0`）· ★ **R165-DL-PG-TRY-HOST**（★ 复核列为最高危残留点）· ★ **R165-COMPOSE-5432** · ★ **R165-PORTABLE**（★ 本轮修法是机器局部的 ⇒ 无 `~/kaixuan` 的机器上原 bug 原样复现）· ★ **R165-BACKUPS-500**（★ `/api/admin/backups` 的 500 应统一成 503）· ★ **R165-BODIES-401** · ★ **R165-NPLUS1** · ★ **R165-MODEL-503** · ★ **R165-MAESTRO-JAVA** · ★ **R165-LOAD**）。
 > ⇒ ⇒ ⇒ ★★★★ 完整记录见 `docs/audit/2026-10-27-R165-本地部署连错集群与psql通道修正.md`（§0~§9）。
+
+## ⑳ R86 轮（2026-10-28）· 掏空门例外清零 + 负控臂 —— ★★★ **例外表的「前提」可能整段是错的 ⇒ ⇒ 例外必须逐条【重测前提】**
+
+> ⇒ ⇒ ★★★★ **承接 handoff `§19.25.19.10`（R86 轮任务书）**：★ 审本轮（R85）自己交付的掏空法门。
+> ⇒ ⇒ ★★★★ **头号发现（★★ 是「推翻上一轮」而不是「补上一轮」）**：★ R85 轮的**例外表有 7 条**，★ 而其中**两条的「前提」本身是错的** ⇒ ⇒ **实测例外 7 → 4 条**（★ 任务书的目标是 5 条 ⇒ ★ 本轮多降了 1 条）：
+> ⇒ ⇒ ⇒ ★ **① 「`measure-selfcreated-cleanup.sh` 需要真实库」是错的** ⇒ ★ 它的 `--verify` 模式只做【静态扫源码 ＋ 台账结构自检】，★ **全程不连库**（★ R86 轮用 **docker / psql 失败桩**实测 **0 次调用**）⇒ ⇒ 降级为 `expect=red`。
+> ⇒ ⇒ ⇒ ★ **② 「`dbaudit-scripts-ledger.tsv` 的唯一提及者只在注释里」是错的** ⇒ ★ 真读方是 `scripts/audit/healthcheck-dbaudit-scripts.sh --verify`（★ 该模式自述「只查台账自洽，★ 不连库」）⇒ ⇒ 降级为 `expect=red`。
+> ⇒ ⇒ ⇒ ★ **③ `permanent-skip-ledger.tsv` 的读方确实需要真实库** ⇒ ⇒ **给 `measure-permanent-skip-axis.sh` 新增了 `--dry-run-readonly` 模式**（★ 不建库 / 不连 psql / 不 docker ⇒ ★ 断言台账契约）⇒ ⇒ 降级为 `expect=red`。
+> ⇒ ⇒ ★★★★ **⇒ 通用式一：★★★ 例外表是【人工写下的散文】⇒ ⇒ 散文里的前提会随现盘变化 ⇒ ⇒ 门只能验「形状」时，★ 前提的过期是【静默的】⇒ ⇒ 必须把「机械可核」的那一段从散文里【拆出来单列】** ⇒ ⇒ 清单加**第 7 列 `mech_check`**（★ 封闭词表 `rows=0` / `reader-green` / `no-code-reader`）⇒ ⇒ 门**真的去核对**它。
+> ⇒ ⇒ ★★★★ **优先级 1①（门自己的量具有牙）**：★ 新增**负控臂** `scripts/ursmcheck/tsv_hollowout_negative_control_test.go` ⇒ ★ 走**同一条**行为判据代码路径（`hollowVerifyEntry`），★ 只差一个因子：「读方的红条件还在不在」⇒ ⇒ ★★ **「未改瞎 ⇒ red-caught」＋「改瞎 ⇒ still-green」的结论翻转** ⇒ ★ **两个臂**：★ ① **gotest 臂**（★ 用 `go build -overlay` 把**真实**测试文件的改瞎副本盖进编译输入 ⇒ ⇒ **仓内工作树一个字节不动** ⇒ ⇒ 并行会话零风险 ＋ SIGKILL 不留残骸）；★ ② **shell 臂**（★ 复制同深度副本 ⇒ 原件不动）。
+> ⇒ ⇒ ⇒ ★★ **★ 负控臂第一版当场失败**（★ 分类仍是 `red-caught`）⇒ ⇒ **真因 = 那个读方有【两条】红路径**（★ 测试体里的 `t.Fatal` ＋ 解析辅助 `ahcReadLedger` 末尾的 `t.Fatalf`）⇒ ⇒ **只去掉一条 ⇒ 读方并没有被改瞎** ⇒ ⇒ ⇒ **通用式二：★★★ 「把读方的红条件去掉」＝ 去掉【读方在读到 0 行时仍会红的每一条路径】⇒ ⇒ 而这条误报不是门的缺陷（★ 是探针没打到位）**。
+> ⇒ ⇒ ★★★★ **优先级 1③（`.tsv` 之外的形态）**：★ **实测**：★ tracked 非 `.tsv` 结构化文件 **483** 份（`.json` 321 / `.yml` 114 / `.yaml` 37 / `.csv` 11）⇒ ⇒ 其中 **11 份是 web 那几道门自己的 `baseline.json` / `registry.json`** ⇒ ★ **与 `.tsv` 登记册是同一物种**（★ 门读它、★ 掏空它会让门瞎）⇒ ⇒ **纳入覆盖判据** ⇒ ⇒ 新增 `scripts/ursmcheck/structured-registry-census.json` ＋ `structured_registry_census_test.go`（★ 候选集**机械可算**：★ tracked ＋ 扩展名 ＋ 文件名含 registry|baseline|inventory|ledger|manifest ⇒ **32 份** ⇒ ★ 13 份 `kind=registry`（★ 写出读方）＋ 20 份 `kind=excluded`（★ 写出实质理由））。
+> ⇒ ⇒ ⇒ ★★ **诚实边界**：★ 本轮只做了**覆盖判据**，★ **没有**做这 13 份的**行为化掏空验证**（★ JSON 的「掏空」不是「删几行」⇒ ⇒ 那会留下**语法错误**的 JSON ⇒ ⇒ 读方是**崩溃**才红 ⇒ ⇒ 不是「读到 0 条」）⇒ ⇒ 每条 `behaviorally_verified` **如实标 false** ⇒ ⇒ **不假装覆盖**。
+> ⇒ ⇒ ★★★★ **优先级 2（阴性结论复核）**：★ 「全仓无掏空洞」是本线**第一条全量阴性结论** ⇒ ⇒ 登记成**周期性复核项** `scripts/ursmcheck/periodic-review.md`（★ 一条命令、★ ~9 分钟）⇒ ⇒ ★★ **登记册自带三道门**（★ 形状 ＋ **命令不许指向不存在的测试** ＋ 覆盖）⇒ ⇒ ★★ **★ 那道「命令不许指向不存在的测试」当场抓到本轮自己写的登记册里的一个真 bug**：★ Markdown 表格里 `|` 必须写成 `\|` ⇒ ⇒ 而 `\|` 在 Go 正则里是「转义竖线」⇒ ⇒ **那条复核命令会匹配 0 个测试并正常退出** ⇒ ⇒ ★★ **「跑过了」与「跑了 0 条」在退出码上不可区分** ⇒ ⇒ ★★ ⇒ **通用式三：★★★ 判据读【别人写的命令】时先问【那条命令的语义是什么】⇒ ⇒ 用字面比较去核一条命令必假**（★ `-run` 是**未锚定**正则 ⇒ ★ 本轮那道门的第一版就栽在这上面 ⇒ ★ 自己踩了自己的坑）。
+> ⇒ ⇒ ★★★★ **交付面**：★ 清单 `tsv_hollowout_inventory.tsv`（★ 7 列 ＋ 39 条：★ **35** `expect=red` ＋ **4** `expect=exception`）· ★ 门 `tsv_hollowout_gate_test.go`（★ 抽出 `hollowVerifyEntry` ＋ `hollowVerifyEntryOverlay` ＋ **例外机械段判据** ＋ `hollowNonDocReferrers`）· ★ **负控臂**（新文件）· ★ **非 `.tsv` 普查表**（新文件 ×2）· ★ **周期性复核登记册**（新文件 ×2）· ★ `measure-permanent-skip-axis.sh`（★ `--dry-run-readonly`）· ★ `.gitignore`（★ 负控臂临时副本）。
+> ⇒ ⇒ ★★★★ **★ 通用式 7 条**沉淀在 `LESSONS.md` **§440**。
+> ⇒ ⇒ ★★★★ 完整记录见 `docs/audit/2026-10-28-R86-掏空门例外清零与负控臂.md`（§0~§11）。
++
++>
++> **2026-10-27 v1 族退役完备性审计轮（本会话）**：★ 用户要求「审计 2026-10-24 的 v1 → session_turns 替换轮，修正发现的问题，**确认所有 `request_log` 与 `_request_log` 相关的表都已移除**，随后提交并推送」。★★ **对生产的写入 = 0**（未连生产、未应用迁移、未部署；真库验证跑在**本机一次性库**上）。
++> ⇒ ★★★ **结论（真库实测）**：在**忠实投递路径**（基线快照 ≈ 迁移 387 之前的世界 + installer 显式顺序的 313 个迁移，带错误的迁移 **0** 个）下跑完一条链后：★★ **v1 表数量 = 0**（基线后是 10 张）；★ 唯一幸存的 `request_log` 命名关系是 canonical **视图** `request_logs_with_current_month`（按设计不删名字，只把视图体换成会话族两臂 ⇒ 实测「读会话族 ✔」）；★ v1 专属函数也清零。⇒ **「所有 request_log/_request_log 相关的表都已移除」——确认成立。**
++> ⇒ ★★ **本轮找到并修掉的 3 个问题**：
++> ⇒ ① ★★★★★ **上一轮那道门（`admin/v1_family_purge_gate_test.go` 的 `TestNoLiveV1WriteOperations`）是【假绿】** —— 它的「跑在退役之后」判据是**字典序**，门注释里写「实测三条通道的真实顺序都与字典序一致」⇒ ★★ **那条前提是假的**：★ **只有 glob 通道是字典序**；★ **installer 的 `StartupFiles`（312 条）与部署通道的显式列表（277 条）都是手写的依赖序** ⇒ installer 顺序里 890 之后还排着 **361b / 375 / 376 / 387 / 427**（编号**更小**），部署通道顺序里 890 之后排着 **044_health_source_probe_now.sql**（**两位数**前缀 ⇒ 字典序第 ~40 位）⇒ ⇒ ★ **那 6 个文件在旧判据下被当成「退役之前」⇒ 从未被检视**（实测它们确实不碰 v1 ⇒ **结论碰巧对，但绿的理由是错的**）。★ **已修**：判据改成「**任一通道的真实顺序里排在 890 之后**」的**并集**（glob=字典序 / installer=tsv 显式序 / 部署通道=脚本显式序）⇒ **补上 6 个此前从未被检视的文件**；★ 并在门里加**覆盖率自证**（「按旧判据会漏掉的那 6 个文件必须出现在新集合里」）⇒ ★ **改造本身可证伪**（实测改回旧判据 ⇒ 门红并逐条点名那 6 个文件 ⇒ 还原 ⇒ 全绿）。★ **同步订正 `LESSONS.md` §384**（原断言「三条通道的真实顺序都与字典序一致」已被证伪）。
++> ⇒ ② ★★★★★ **链外 5 个脚本会建 v1 表 ⇒ 890 不会删它们** ⇒ 在已退役的库上跑它们 = **v1 族复活**（42P01 老问题原地复现）。清单：`sql/init-complete-minimal.sql`（`request_logs` / `request_logs_hot`）、`sql/quick-init-request-logs.sql`（`request_logs_hot`）、`sql/fixes/fix-request-logs-bodies-partition-v2.sql`（`request_logs_bodies_default`）、`scripts/audit/sql/min-prereqs.sql`（`_request_logs_hot`）、`tests/_deprecated_local_poc_2026-07-12/seed/01-schema-bootstrap.sql`（`request_logs` / `request_logs_default`）。★ **处置 = 登记 + 机器可查标头 + scope 兑现，不是删**（审计夹具的**存在意义**就是造出「退役之前的库」⇒ 删了 = 删掉复现能力）。
++> ⇒ ③ ★★★★ **「上一轮清了代码里的活操作」≠「清了全仓语料里的活操作」** ⇒ 上一轮的门只扫**生产 Go 的字符串字面量** ⇒ ★ **SQL 语料根本不在那道门的视野里** ⇒ 本轮补上**新门 `sql/migrations/startup/v1_family_retirement_completeness_test.go`**（4 条判据：链内完备性 / 两种拼写 / 幸存面只允许 canonical 视图且读会话族 / 链外退役台账 + scope 兑现；另加真库腿，★ **DSN 设了却连不上 ⇒ SKIP 而非 FAIL**，与仓内既有真库门同口径）。
++> ⇒ ★★ **读数**：链内**未覆盖的表 = 0**（13 个建过的 v1 表逐个对拍 890 的退役清单）；★ 幸存面 = **只有 canonical 视图**；★ 真库终态 **v1 表 = 0**；★ 变异探针 **3 臂全红**（M1 链内新增未覆盖表 / M2 链外新增未登记脚本 / M3 摘掉退役标头）⇒ ★ **M1 第一版是假绿**（靶点表名压根不含 `request_log` ⇒ 门保持绿是**正确的** ⇒ §419 同款教训复发）；★ 另 1 臂：把投递序判据改回纯字典序 ⇒ 覆盖率自证红。
++> ⇒ ★★ **诚实边界**：① **对生产的写入 = 0**，**生产未连、未取证**；② **生产上 v1 族还没删**（实测 2026-10-21 生产只读：211 有 35,506 行、252 有 38,193/23,830/22,656 行 ⇒ 890 的**非空闸会 RAISE** ⇒ 这是**刻意的**：删表 = 删历史，不可回滚 ⇒ 把决定交回人；且 §143.53 已把 890 移出部署通道的自动列表 ⇒ 生产的退役是**显式的、属主授权的**步骤）；③ **本机 PG 没有 `pg_columnar`** ⇒ 真库跑的是 `columnar→heap` 的**派生副本**（★ 只改冷分区存储引擎，不改关系名/列/存在性 ⇒ 对「表还在不在」等价；★ 且交付清单里那 39 个提到 columnar 的迁移，`USING columnar` 全在条件分支或动态 SQL 里 ⇒ 无 columnar 也是 0 错误）；④ **本机 pgx 连不上**（`failed SASL auth`）而 `psql` 同一个 DSN 能连 ⇒ ★ **对照实验**：仓内**既有的**真库门同样连不上 ⇒ **宿主机怪癖，与本轮改动无关** ⇒ ⇒ ★ **真库终态的确认是通过 `psql` 直接查 `pg_class` 得到的，不是通过仓内那道门**；⑤ **并行会话**：工作树上有另一会话的在途改动（本地音频/多模态那轮）⇒ ★ 本轮**只提交自己触及的文件**，未替它提交、未合并、未改动。
++> ⇒ ★★ **让号记录（仓内惯例）**：本轮通用式原用 §437~§441 ⇒ ★★ 推送前实测 `origin/main` 已被**并行会话占用 §437 / §438 / §439**（Gemini 多模态审计复审轮 · 本地部署连错集群轮 · Gemini 原生出站 executor 轮）⇒ ⇒ 按「**先到者让后到者改号**」的惯例，★ **我方让号为 §445~§449**（改号不改内容），并同步订正 §384。★★ **让号共两次**：第一次 §437~§441 → §440~§444（上游已占 §437 / §438 / §439）；第二次 §440~§444 → §445~§449（上游又占用了 §440）⇒ ★ **改号不改内容**，通用式正文一字未改。
++> ⇒ ★★ **通用式（已落 `LESSONS.md` §445~§449，并订正 §384）**：★ **退役一个族要问两遍**（清单完备吗 / ★ **清单之外还有别的路吗**）；★ **「门绿」要追问「它绿的理由是不是它声称的那个理由」**（写进注释里的「实测」会过期，且**过期得毫无声响**）；★ **修完判据必须能证明「修之前漏、现在不漏」**；★ **「先后」是「通道 × 文件」的二元属性** ⇒ **显式列表几乎一定是手写的依赖序** ⇒ **绝不可用目录的字典序替代它**；★ **一条链的起点是「基线快照已经包含了什么」**，不是目录里的第一个文件（★ 复现链必须用那条链自己的显式列表）；★ **「跑不出预期终态」的第一嫌疑是环境**。
++> ⇒ ⇒ ★★★★ 完整记录见 `docs/audit/2026-10-27-v1族退役完备性审计轮.md`（§0 结论 / §1 四层方法 / §2 6 个问题 / §3 修正 / §4 变异探针 / §5 真库复现 / §6 诚实边界 / §7 通用式 / §8 提交清单）。

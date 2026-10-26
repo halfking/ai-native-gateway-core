@@ -1166,7 +1166,7 @@ function hasRunValues(values: Record<string, unknown>): boolean {
   background: var(--bg);
   color: var(--text);
   border-left: 1px solid var(--border);
-  box-shadow: -8px 0 24px var(--overlay-medium);
+  box-shadow: var(--kx-shadow-md-left);
 }
 
 .route-incident-drawer__header {
@@ -1782,7 +1782,7 @@ function hasRunValues(values: Record<string, unknown>): boolean {
   background: var(--bg);
   color: var(--text);
   border-radius: 8px;
-  box-shadow: 0 8px 32px var(--overlay-strong);
+  box-shadow: var(--kx-shadow-md);
   display: flex;
   flex-direction: column;
 }
@@ -1924,7 +1924,7 @@ function hasRunValues(values: Record<string, unknown>): boolean {
   border-radius: 6px;
   padding: 16px;
   width: min(420px, 100vw);
-  box-shadow: 0 8px 32px var(--overlay-strong);
+  box-shadow: var(--kx-shadow-md);
 }
 
 .export-banner__panel h4 {

@@ -51,7 +51,7 @@ const { t } = useI18n()
   width: min(960px, 100vw);
   height: 100%;
   background: var(--card);
-  box-shadow: -12px 0 32px rgba(0, 0, 0, 0.16);
+  box-shadow: var(--kx-shadow-md-left);
   display: flex;
   flex-direction: column;
 }

@@ -507,7 +507,7 @@ watch(() => props.modelValue, () => {
   display: flex; flex-direction: column;
   background: var(--card);
   border-radius: 12px;
-  box-shadow: 0 20px 50px var(--overlay-medium);
+  box-shadow: var(--kx-shadow-md);
   overflow: hidden;
 }
 .mp-dialog--vendor { width: min(640px, 100%); }

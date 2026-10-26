@@ -978,7 +978,7 @@ watch(activeTab, (tab) => {
   background: var(--card);
   color: var(--text);
   font-weight: 600;
-  box-shadow: 0 1px 2px var(--overlay-faint);
+  box-shadow: var(--kx-shadow-xs);
 }
 
 .hero-stats { display: flex; flex-wrap: wrap; gap: 4px; }

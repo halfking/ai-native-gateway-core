@@ -231,7 +231,7 @@ const railPoints = computed(() => props.heroPoints)
   object-fit: contain;
   flex-shrink: 0;
   background: var(--surface-elevated);
-  box-shadow: 0 8px 20px var(--kx-shadow-md);
+  box-shadow: var(--kx-shadow-sm);
 }
 .kx-landing__brand-text {
   min-width: 0;

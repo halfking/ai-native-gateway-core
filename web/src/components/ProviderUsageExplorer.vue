@@ -417,7 +417,7 @@ watch(() => props.timeQuery, () => {
   flex-direction: column;
   background: var(--card);
   border-left: 1px solid var(--border);
-  box-shadow: -8px 0 32px var(--overlay-medium);
+  box-shadow: var(--kx-shadow-md-left);
 }
 
 .pue-header {

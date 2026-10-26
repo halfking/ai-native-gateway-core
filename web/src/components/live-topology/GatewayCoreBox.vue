@@ -206,7 +206,6 @@ const title = computed(() => t('liveTopology.gateway.title'))
   background:
     linear-gradient(180deg, color-mix(in srgb, var(--kx-primary) 10%, transparent), transparent 40%),
     color-mix(in srgb, var(--kx-surface) 92%, transparent);
-  box-shadow: var(--kx-shadow-md);
   pointer-events: none;
   overflow: hidden;
 }

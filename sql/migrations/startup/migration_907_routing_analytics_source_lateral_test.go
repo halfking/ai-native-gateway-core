@@ -39,6 +39,9 @@ package startup
 //	② **语义耦合（★ 本门最有价值的一条）**：迁移里的视图体必须与 Go 侧常量
 //	   `db.RoutingAnalyticsSourceViewDDL`（= **启动期执行**的那段文本）**逐字一致**
 //	   ⇒ 否则「部署路径」与「运行时真源」各写一份、悄悄漂移。
+//	   ★ 910 轮改判：910 应用后常量指向 910 形态 ⇒ 907 的耦合门改判为
+//	   **回退链门**（910.down ≡ 907.up，见 TestMigration907_RollbackChainBy910）；
+//	   「迁移 ≡ Go 常量」由 migration_910 的契约门接棒。
 //	③ **零 DDL**：本迁移**只换视图体**。实测另建的覆盖索引
 //	   (tenant_id, request_id, partition_date) INCLUDE (...) **没有被规划器选中**
 //	   ⇒ 覆盖索引白建 ⇒ 迁移里出现 CREATE INDEX 就是回归。
@@ -62,8 +65,6 @@ import (
 	"regexp"
 	"strings"
 	"testing"
-
-	"github.com/kaixuan/llm-gateway-go/db"
 )
 
 const (
@@ -244,22 +245,27 @@ func TestMigration907_DetectorRejectsBadShapes(t *testing.T) {
 	}
 }
 
-// TestMigration907_ViewBodyMatchesRuntimeConstant 是**语义耦合门**。
+// TestMigration907_RollbackChainBy910 是**回退链门**（910 轮改判）。
 //
-// ★ 迁移（部署期执行）与 Go 常量（启动期执行）各写一份时，任何一侧改动
+// ★ 迁移 910 应用后，`db.RoutingAnalyticsSourceViewDDL`（运行时真源）已指向
 //
-//	忘了另一侧 ⇒ 部署后的形态与新装/重建路径**不一致** ⇒ 难查的行为分叉。
-func TestMigration907_ViewBodyMatchesRuntimeConstant(t *testing.T) {
+//	910 的 hash-join 形态；907 已 applied 且文件内容冻结 ⇒ 本文件与 Go 常量
+//	的逐字比对**自然失效**（不是文件被改，是常量前进了一代）。
+//	⇒ 907 的逐字耦合门改判为：**910.down 的视图体必须与 907.up 逐字一致**
+//	（回退 910 必须精确落回 907 形态，不许另写一份「差不多」的旧体）。
+//	「910.up ≡ Go 常量」的语义耦合门由 migration_910 的契约门接棒。
+func TestMigration907_RollbackChainBy910(t *testing.T) {
 	root := mig907Tree(t)
 	up := mig907Read(t, root, filepath.Join("sql", "migrations", "startup", mig907Name))
-	// ★ 两侧都按「从 CREATE 到第一个分号」抽取后再比对 ⇒ 前置注释不算差异。
-	want := mig907ExtractViewDDL(db.RoutingAnalyticsSourceViewDDL)
+	down910 := mig907Read(t, root, filepath.Join("sql", "migrations", "startup", mig910DownName))
+
 	got := mig907ExtractViewDDL(up)
-	if got == "" {
-		t.Fatal("907 up 文件里找不到 CREATE OR REPLACE VIEW routing_analytics_source 段")
+	want := mig907ExtractViewDDL(down910)
+	if got == "" || want == "" {
+		t.Fatalf("抽取不到视图体（907.up=%d 910.down=%d 字节）", len(got), len(want))
 	}
 	if got != want {
-		t.Errorf("907 的视图体与 db.RoutingAnalyticsSourceViewDDL 不一致（部署路径与运行时路径会分叉）\n--- go ---\n%s\n--- sql ---\n%s", want, got)
+		t.Errorf("910.down 的视图体与 907.up 不一致（回退形态必须逐字等于被回退的形态）\n--- 907.up ---\n%s\n--- 910.down ---\n%s", got, want)
 	}
 }
 

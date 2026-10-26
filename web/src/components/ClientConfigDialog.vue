@@ -1097,7 +1097,7 @@ function goManageFeatured() {
   max-width: 480px;
   background: var(--card);
   border-radius: 12px;
-  box-shadow: 0 24px 60px var(--overlay-strong);
+  box-shadow: var(--kx-shadow-md);
   display: flex;
   flex-direction: column;
 }

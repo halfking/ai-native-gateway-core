@@ -110,7 +110,7 @@ if (typeof window !== 'undefined') {
   list-style: none;
   background: var(--bg);
   border-radius: 6px;
-  box-shadow: 0 4px 12px var(--overlay-light);
+  box-shadow: var(--kx-shadow-sm);
   z-index: 50;
 }
 .filter-suggest li {
