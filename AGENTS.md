@@ -567,6 +567,79 @@
 > **丢弃 → 捕获**；IR→OpenAI `annotations` **不可能 → 有引用即产出**；IR→Gemini 往返 **丢弃 → 还原**。
 > `go build ./...` ✓ / `internal/ir` ✓ / `internal/requestfact` ✓ / `domains/transformation` ✓。
 > ⇒ 审计档 `docs/audit/2026-10-27-Gemini转换面补全轮.md`；通用式见 `LESSONS.md` **§436**（5 条）。
+> **2026-10-27 Gemini 多模态审计复审轮**（会话 `mvs_dc5e181989fc4539805f343f39be2b5d`）：
+> ★ 承接 10-26 `483b60b30`（多模态转发三缺陷）的批判式复审 ⇒ 六项清单：
+> ①模态门无第二份实现（admin/models.go:199 是 UI 精确筛选器，非路由门）/ ②Responses
+> builder 调用方唯一 / ④ollama 诚实拒绝多模态 / ⑤raw input_audio 过 ValidateAndFix
+> 存活（探针实证，上轮测试缺 Validate 腿）/ ⑥executors 仅有的两处 Header.Clone 是
+> 上游**响应**头存档，无客户端凭据头泄漏 —— 五项**通过**。
+> ⇒ ★★ **审计③实锤同族四处漏网**（「空载荷块」是一族形状，修了 file_uri 一种到达方式
+> 不等于修完族）：①file_id-only video 发 `video_url.url:""`（Chat 的 video_url 没有
+> file_id 槽位）；②**`Document.Source=nil` 在 OpenAI 侧序列化成 `content:[null]` 字面量
+> null 元素**（★ 上一轮在 Responses 侧修过同款 append，OpenAI 侧漏网 ⇒ 「两侧同修」）；
+> ③`Type:"url"` 而 URL 空的 audio 无条件写 `url:""`（★ 第一版 `len(inner)==0` 守卫
+> 挡不住「键在值空」—— **新回归测试当场抓到** ⇒ 防御判据要对着【最小坏输出】写：
+> 每个槽位写入前单独判空）；④url/text 双空 document 发 `file_data:""`（OpenAI 与
+> Responses 两侧）。
+> ⇒ ★ 修法：四个 builder 无载荷一律返回 nil + OpenAI 侧三个 append 点补 nil 守卫 +
+> **跳过必留痕**（reportSerializeOpenAILosses 新增三条损失上报，与 image.file_id 惯例对齐）。
+> ⇒ ★ 新增回归测试 3 条（退化输入三连 ⇒ 线格式只剩合法块；Responses 空 file_data；
+> ValidateAndFix 完整路径）。读数：`go build` ✓ / ir+auth+provider+attachments+streaming
+> 全绿。⇒ 审计档 `docs/audit/2026-10-27-Gemini多模态审计复审轮.md`；通用式见 `LESSONS.md` **§438**（5 条）。
+> **2026-10-27 Gemini 原生出站 executor 轮**（会话 `mvs_42f116b20f694164b00900d451db1ca0`）：
+> ★ 承接 §436 同一审计档的**子项②**（§433 清单的最后一项可做项）。
+> ⇒ ★★★★ **本轮最值钱的一处定性：缺口不是「功能没做」，是「死配置」** ——
+> `provider/catalog/protocol.go` 把 `gemini-generate` 列为合法 outbound 协议、
+> DB 的 CHECK 约束里有它、**Web UI 的协议下拉里有它**、
+> `protocol_normalize.go` 还会把 provider 配的 `gemini` **主动映射成它** ——
+> 而 dispatcher 把每个这样的候选**整条跳过**（`routeUnsupportedGemini` ⇒
+> `KindUnsupportedFeature`）⇒ **运维在 UI 里选 `gemini-generate`、配好 provider，
+> 那个 provider 就永远不会产生一包响应**。
+> ⇒ ★★ **仓内早就有这道账本**：`provider/catalog/contract_test.go` 里那条
+> `ProtocolGeminiGenerate: false`，注释明写「显式 unsupported」⇒ 本轮翻成 `true`
+> 并把**为什么**留在注释里（LESSONS §439 通用式一）。
+> ⇒ ★ **实现照抄仓内既有的设计书**（`docs/供应商协议优化.md` §8.3 逐条点名了四个配料），
+> 不自创协议语义：`internal/upstreamurl` 新增 `GenerateContentURL`（**base URL 拥有版本段**
+> ⇒ `/v1beta` 保留、`/v1` 保留、都没有才默认 `/v1beta`；★ **绝不替运维把 `/v1` 改写成
+> `/v1beta`**；**粘贴完整 endpoint URL 当 base 也能用** ⇒ 幂等性有门）；
+> 请求体走 `ir.SerializeGemini`；凭据走 **`x-goog-api-key` 头**；
+> 流式走 `ir/parse_gemini_stream.go`。
+> ⇒ ★★ **凭据形态只走头、不进 URL**：厂方两种都收（头 / `?key=`），★ 但 query 形态的凭据会进
+> **每一条** access log、**每一条** upstream-URL 日志行、**每一行**记录请求 URL 的 telemetry
+> ⇒ ⇒ 反向钉 `TestGeminiExecutor_BuildRequest_CredentialNeverInURL` 断言
+> **URL 既不含凭据、也不含任何 query**（★ 「厂商接受」≠「我们要用」）。
+> ⇒ ★★★ **顺带修掉 IR 流解析器的一个洞**：`ParseGeminiStreamChunk` 的结构体里**没有 `error`
+> 字段** ⇒ 一帧 `data: {"error":{...}}` 解析成**空 chunk** ⇒ 与心跳保活帧**不可区分**
+> ⇒ **厂商的 429/401 被静默吞掉**、客户端只看到被截断的流 ⇒ 修在 **IR 层**（事实源），
+> 且**错误判定必须在 usage/candidate 分支之前**（错误帧两者都没有，放后面永远走不到）。
+> ⇒ ★★ **客户端侧线格式只接 OpenAI Chat 一种，其余 fail closed**
+> （`anthropic-messages` / `openai-responses` ⇒ `KindUnsupportedFeature`）：
+> ★ **Gemini 原生客户端算「OpenAI Chat 客户端」** —— Gemini 入向 handler 在派发**前**就把
+> body 转成了 OpenAI 形状 ⇒ dispatcher 看到的是 `openai-completions` ⇒ 响应也是 OpenAI 形状
+> ⇒ 由 Gemini handler 自己转回 Gemini 形状 ⇒ ★ **`gemini-generate` 永远不会作为
+> 「入向客户端协议」出现**（别写「处理一种永远不会出现的形状」的分支）；
+> ★ **错形状的 200 比明确的未接线更糟**（SDK 会在离病因很远的地方解析失败）⇒ 与已上线的
+> Ollama-native executor 同一口径。
+> ⇒ ★ **门（20+ 条）**：URL/凭据（含**反向**：凭据绝不入 URL）/流式动作与 `alt=sse`/
+> 请求体转换 7 个 fail-closed 闸/**响应转 OpenAI 形状**/**厂商错误信封透传**/**畸形 ⇒
+> `KindConversion`/**流 ⇒ OpenAI SSE 且补 `[DONE]` 终态**（★ Gemini 流自己没有哨兵，
+> OpenAI 线必须有）/★ **反向：第二种厂商分帧（裸 JSON 行）也能吃**/流内厂商错误 ⇒ 错误帧 +
+> 流被打断/★★ **端到端**：真实上游收到的是 Gemini 原生体（**不是 `messages`**）、凭据在头里、
+> URL 里没有凭据/端到端流式/**401 ⇒ 类型化错误可 failover**/IR 往返不丢内容；
+> 另加 `executor_dispatch_p4_test.go` 两条（`gemini-generate` ⇒ `routeGeminiNative`，
+> ★ **且不依赖任何 P4 开关** —— 别让 native 路由被 feature flag 关掉）。
+> ⇒ ★ **读数**：`gemini-generate` provider 可否被选中 **否 → 是**；出站 URL/请求体/凭据形态
+> **不存在 → 齐备**；流内厂商错误帧 **被吞 → 解析为 `ChunkTypeError`**；
+> catalog 契约测试里 `gemini-generate` **false → true**。
+> ⇒ ★★ **本轮明确没做（留给下一轮，别重复排查）**：**Gemini 原生模型列表**
+> （`GET /v1beta/models` ⇒ 需 `cmd/gateway/main.go` 接线，★ **并行会话正在改该文件** ⇒ 避让，
+> 且要决定返回形状）；**`:countTokens`**（需**诚实**的 token 计数 ⇒ 估算会误导客户端的预算决策
+> ⇒ 独立设计题）；**`anthropic-messages` / `openai-responses` 客户端侧线格式**
+> （★ 需 Anthropic SSE 严格帧与 Responses 的 `response.completed` 编排 —— IR 里有序列化器，
+> **流式终态的编排**未接线）；**Gemini 上游的 `header_profile_code` 联动**；
+> **Gemini 上游的上下文超限压缩恢复**（Ollama 路径有，Gemini 路径本轮只做一次尝试）。
+> ⇒ 审计档 `docs/audit/2026-10-27-Gemini转换面补全轮.md`（子项②，§6~§12）；
+> 通用式见 `LESSONS.md` **§439**（通用式一~七）。
 > **2026-10-23 实时拓扑探测打标四处源真值漂移轮 + 口径收敛**（会话
 > `mvs_64ddb526ee11405aae54d67e7c4d6161`）：用户报 154 生产上一条 32-hex
 > 请求 `af1eb6d83ef39610cc4f8be4e181b5a8` "应被识别为探测但实时拓扑 pill = 否"。
@@ -8391,6 +8464,75 @@ index b953a6f03..555ef83c4 100644
 >    25.1% 行 request_delta≡outbound_body 只占 3.6% 字节 ⇒ 去重仅 ≈135MB（2.2%）；
 >    拆分真实价值 = 按列差分留存（语义，属主）。★ 本轮自纠：attstorage `'x'`=EXTENDED 不是 EXTERNAL
 >    ——字母读反差点产出「6GB 未压缩」假发现（比率实证 0.31~0.67 全程 ⇒ 压缩健在；LESSONS §397）。
+> ⇒ ★★ **R147 批判式审计轮（2026-10-26，252 只读复核）五项发现全部处置**：
+> ①★★★ **908 已应用生产**——deploy **154 build_seq 2828**（基提交 `9074b88a` = 本轮合并提交）
+>    于 10-25 应用并 verified；252 地面真值（10-26 复核）：type_created 已删（0 行）、幸存四索引
+>    恰为判决形态、uq_idem idx_scan 42.2万→48.2万（写路径健康）⇒ 本条目上文的「只落仓/需授权」
+>    按**写档时点**为真，现以审计档 §9.0 为准（生产应用发生在会话之外的部署列车，判决经受住生产验证）。
+> ② **objects/indexes 出处树核实为 provenance registry 非交付通道**（generator_contract_test 只读溯源；
+>    718 先例原样保留被删索引的 objects 文件）⇒ 无复活路径，不加标记不改动。
+> ③ 两处口径订正：「session_dim 每次都从盘读」只对冷态成立（热态复跑全 hit，read=0）；
+>    增长率 ≈253MB/天 = 6,081MB÷24 天（月分区行不更新 ⇒ 总量/天数成立）。
+> ④ 终态复验：最终 908 文件五段生命周期重跑全绿（itgate_147b 即弃）+ `go build ./...` +
+>    startup/db/installer 包全绿。
+> ⑤★ **顺带修 main 新红门**：并行会话 `fc6c17111`（909，R156 D17-A）漏登记
+>    `knownStartupChainConcurrencyViolations` ⇒ installer 门红在 main ⇒ 按门自述处置登记
+>    （计数 4 + 理由），只登记不改其文件。★ 908 down 文件头注残留「903 删的是」一处**有意不修**
+>    （908 已 applied 记账 sha `bcd401ec`，改文件 = 台账失配，注释妆疵不值再投递）。
+>    详见审计档 §9 + runbook §143.104.6。
+>
+> **2026-10-27 R148 · 96h 批判式审计轮（本会话 `mvs_367b04073e304f26b546fd09f5f88282`）**
+> —— 审计档 `docs/audit/2026-10-27-R148-96h批判审计轮-分支资产盘点与四处事实源漂移.md`
+> ＋ LESSONS **§434** ＋ handoff **§19.28**：
+> ★ **分支面：无子分支可处置** —— `git ls-remote --heads origin` 实测**只有 `refs/heads/main`**，
+>   本地分支也只有 `main`、只有 1 个 worktree ⇒ ★ **「96h 内不活跃子分支」这一项是空集**；
+>   `refs/tags/*` 是版本/备份/回滚资产 ⇒ **不删**。
+> ⇒ ★★ **真正待处置的「未合并存量」在 6 个 stash 里** ⇒ 本轮做了**逐文件覆盖度台账**
+>   （`git diff --output=<patch> 'stash@{i}^1' 'stash@{i}'` ＋ `git apply --check --reverse`）
+>   ⇒ 结论：6 个**全部已被 HEAD 覆盖**（stash@{1}/{2} 的意图已在 HEAD 里演进到更晚形态），
+>   **无一条需要逐文件合并** ⇒ ★★ **但一律不 drop**（不可逆 + 属并行会话的恢复物 +
+>   「apply 失败」≠「工作丢了」）⇒ 登记为「有意保留的存量」。
+> ⇒ ★★★ **本轮 4 处发现全是同一族：「同一件事被抄成多份、其中一份没跟上」**
+>   （**没有一处是判据本身算错了** ⇒ 查法是 grep 判据的**全部落点**，不是读判据）：
+>   ① **F1 抄本过期**：`domains/streaming/modality_detect.go` 的「SQL 过滤语义」仍写
+>   `'video' → modality = 'video'`（入站 `483b60b301ab` 已改成 `IN ('video','multimodal')`）
+>   ⇒ 就地订正（★ 已核 `modelname/modality_defaults.go`：本仓 `multimodal` 的登记语义**就是**
+>   「text+image+audio+video」⇒ 那一轮的 SQL 改动**是对的**）；
+>   ② ★★ **F2 活正确性**：`bg/probe_policy.go` 的**会话族**探针排除谓词仍**手写**四元组 actor
+>   （`node-probe-worker`/`active-probe-worker`/`probe-service`/`credential-selfcheck-worker`），
+>   而事实源 `internal/probekind.ProbeActors` 已由写入点登记表派生为**七个** ⇒ ★★ **少了
+>   `self-check-worker`/`model-quality-worker`/`mock-probe-client`** ⇒ ★★ **2026-10-23 那次
+>   「不再手写」的订正只迁了视图臂，会话臂被落下** ⇒ ★★ 正是 `stash@{2}`（R52 的 2→4 订正）
+>   的**同一个漂移在另一条臂上重新长出来**（2→4→7）⇒ ★★ 修法 = **共用事实源**
+>   （`probekind.SQLActorList()`）**而不是再补三个** ⇒ 影响的三个活读面：settle 基线 cohort
+>   （⇒ reward 基线）、failure monitor 的 staleness、凭据自检的「近 3 天业务使用集合」
+>   ⇒ 新增 `TestProbeTrafficExclusionPredicateActorListsStayInLockstep`（两条臂锁步 ＋ 负控）；
+>   ③ ★★ **F3 半修**：`483b60b301ab` 把 video 补进模态门（门开了）却**只补了 Gemini→OpenAI
+>   一个方向** ⇒ ★★ `video_url` 在 parse 侧无分支（`block.Video` 恒 nil）＋ Gemini 序列化器
+>   **无该分支也无 default** ⇒ ★★ **视频块静默丢弃**（用户看到「200 且有回答，但视频没到上游」）
+>   ⇒ ★★ 前三个协议看不见是因为它们各自的 `default` 按 `RawContent` 兜底（**假绿**）
+>   ⇒ 修法**只往保守方向**：parse 侧类型化 ＋ **保留 `Type`/`RawContent`**（另三个协议逐字节不变），
+>   Gemini 侧加 `case "video_url"`；顺带修 `irVideoToGeminiPart` 的 MIME 兜底
+>   （此前会拼出**非法**的 `mimeType: "video/"` ⇒ 新增 `videoMIME()` 缺省 `video/mp4`）；
+>   ④ ★★★ **F4 门恒红且双向全废**：`internal/clockguard`（**在 `GUARD_PACKAGES` 里**）的
+>   实测台账门用 `filepath.Rel` 产键 ⇒ **Windows 上是反斜杠**，而台账是**提交进仓的数据文件**
+>   （正斜杠）⇒ ★★ 同一个文件两种拼写各报一次、12 条全是噪声 ⇒ ★★ **真正的漂移被淹没**
+>   ＋ `guard_test.go` 的 `Contains(b.File,"internal/clockguard")` 恒假 ⇒ **扫到自己也漏网**
+>   ⇒ 修法 = `filepath.ToSlash`（★ `File` 只做对账键/诊断串，从不开文件）
+>   ⇒ **同族先例**：web 侧 `ui-audit` 豁免查表键已因同一件事修过（`9327bc33e004`）⇒ **第二处**。
+> ⇒ ★★ **留证纪律**：clockguard **真仓变异臂** —— 改台账一个函数名 ⇒ 门**恰好报一条**精确
+>   「台账漂移」（改前是 12 条噪声）⇒ 证明门看得见差异；还原后 **md5 逐字一致**。
+> ⇒ ★★ **全量跑分的红项必须【基线对照 + 集合差】**：首轮 25 包红，逐条归因到**错误文本**
+>   （`CGO_ENABLED=0` 无 gcc ⇒ lite 存储族；PATH 无 bash ⇒ ursmcheck/q-usage；Windows 文件占用
+>   ⇒ pkg/monitor；计时类 ⇒ **负载型**，本轮实测到**另一个 Mavis 会话在同工作区同时跑
+>   `go test ./...`**）⇒ ★★ 在 `e50a0a5f6a37` 另开 worktree 跑**同一组 25 包**做基线对照。
+> ⇒ ★★ **本机环境三缺（CGO/gcc、bash、Windows 文件占用）⇒ `make guards` 与 lite 存储族
+>   在本机不可用作证据** ⇒ 下轮要本地证据须先装 gcc + Git Bash，或改在 Linux 上跑。
+> ⇒ ★★ **本轮明确没做（留给下一轮）**：**Gemini 序列化器的通用 raw 兜底**（本轮只补了
+>   `video_url` 这一条已知路径；治本要给四协议做「raw 兜底对称性」门，★ 属设计变更）
+>   ／ **F2 的量化缺口**（252 上「`origin_stage` 缺失 且 actor ∈ 那三个」的**实际行数未测**）
+>   ／ **stash 面的清理**（须由创建会话确认后再删）／ **clockguard 台账的自然值重测**
+>   （本轮只修了「门看不见」，没改那 10 处判据的下界）／ **web 侧与 installer 零改动故未重跑**。
 
 > **2026-10-24 探测打标修复 —— 154 发布 + 线上验证 + 口径订正轮（本会话）**：★ 上文 §「2026-10-23 实时拓扑探测打标轮」记的是
 > **根因定位与修复**（`e6f87c623`）；本节记**它被发到 154 并在线上生效**，以及**一处口径订正**。
@@ -10437,3 +10579,58 @@ index b953a6f03..555ef83c4 100644
 > ⇒ ⇒ ⇒ ★ **★ 通用式 9 条**沉淀在 `LESSONS.md` **§432**（★ ★ 原 §431 ⇒ ★★ 与并行会话的「AI 痕迹门轮 §431」撞号 ⇒ ★★ **我方让号为 §432** ⇒ ★★ 改号不改内容）
 > ⇒ ⇒ ⇒ ★ **诚实边界 8 条 / 待属主裁决 5 条**见审计档 §8 / §9（★ **待裁决**：★ **R164-DEPLOY-HOOK**（★ 对拍接进部署序列）· ★ **R164-STALENESS**（★ 要不要加时间阈值这一路）· ★ **R164-RECOLLECT-CADENCE**（★ 重采节奏）· ★ **R164-COLUMNS-VERIFY**（★ 列底账也要一份 verify）· ★ **R164-CROSS-ENV**（★ 跨环境对拍））
 > ⇒ ⇒ ★★★★ 完整记录见 `docs/audit/2026-10-27-R164-底账新鲜度与漂移判据.md`（§0~§10）。
+
+## ⑲ R165 轮（2026-10-27）· 本地部署连错集群与 psql 通道修正 —— ★★ 「连的是不是真集群」才是判据
+
+> ⇒ ⇒ ⇒ ★ **背景**：★ 原始目标第 ① 步「重新使用 deploy-local.sh 部署到本地」⇒ ⇒ ★ **连续 7 次部署全部失败，★ 7 次报错都指向与真实根因无关的位置**（★ 最误导的一个：`FATAL: database "llm_gateway" does not exist` —— ★ 而真实库一直好好地在）。
+> ⇒ ⇒ ⇒ ★ **根因（本轮实测坐实）**：★ **PATH 首位的 `~/.local/bin/psql` 是一个「丢掉 host/port」的容器转发 shim** ⇒ ⇒ 它把请求转发给「把宿主 5432 发布出来的那个容器」（★ 本机是 `ac-audit-pg17`）⇒ ⇒⇒ 而那个容器里 `llm_gateway` 库数 = 0 ⇒ ⇒⇒⇒ 于是报「库不存在」。
+> ⇒ ⇒ ⇒ ★★★ **★ 关键区分（★ 本轮最值钱的一条）**：★ **「客户端是不是 shim」不是判据，「它连的是不是真集群」才是判据** ⇒ ⇒ 本机两个 shim 的盲区【互补】（★ `~/.local/bin/psql` 丢 DSN 的 host/port、★ `~/kaixuan/pg18/bin/psql` 丢 `-h/-p`）⇒ ⇒⇒ 同一个命令家族里没有统一答案 ⇒ ⇒⇒ **答案取决于【这次调用要连的是指定 host:port，还是本机那个 PG 容器】** ⇒ ⇒⇒ **职责分离：★ 调用方负责「用哪个客户端」，脚本负责「怎么连」。**
+> ⇒ ⇒ ⇒ ★ **第 8 次部署成功**：★ `DEPLOY_EXIT=0` · 版本 **`2.5.8-a127d3ff-20261026-2872`** · **8782 已监听** · 凭据解密冒烟 `providers=2452,2453,2454 creds=3 failed=0` · PG pre-flight ready · `shared_buffers=2GB`。
+> ⇒ ⇒ ⇒ ★ **库侧退役核对（原始目标的 SQL 面，★ 直接读数）**：
+> ⇒ ⇒ ⇒ ⇒ ★ **`request_logs` 家族只剩 1 个对象**：★ 视图 `request_logs_with_current_month`（`relkind='v'`）⇒ ⇒ **无表、无物化视图残留**；★ `pg_proc` 同族函数 **0**
+> ⇒ ⇒ ⇒ ⇒ ★ ★ **该视图的定义已读 `session_turns_hot` / `session_turns`** ⇒ ⇒ ⇒ **物化视图切换已完成** ⇒ ⇒★ **它只是保留旧名的兼容入口** ⇒ ⇒⇒ ★★ **「同名 ≠ 没转化」**（★ 若按名字当残留去删，★ 会删掉正在服务的兼容视图）
+> ⇒ ⇒ ⇒ ⇒ ★ **写入可用**：★ `session_turns_hot.max_ts` 随请求**同步推进**到 22:03:01（★ 即本轮那次请求的时刻）⇒ ⇒ 冷表 2663 行由后台搬运；★ `session_turns` 列 **130+**
+> ⇒ ⇒ ⇒ ★ **模型请求/写入测试**：★ 11 轮（★ 6 条成功：glm-5.3-flash ×4、deepseek-v4-flash ×1 + 探针 ×1；★ 5 个模型 **503**）⇒ ⇒ ★★★ **那 5 个 503 不是网关缺陷**：★ 响应体给出**可用的替代模型清单**（`minimax-m3`/`glm-5.2`/`kimi-k3`…）⇒ ⇒ ★ **网关降级建议逻辑是活的**；★ 真因是**这些模型名在本地库 `providers`（47 条）里无对应通道** ⇒ ⇒ **配置/数据问题，非代码问题**。
+> ⇒ ⇒ ⇒ ★ **逐 API 巡检**（★ `scripts/audit/api-sweep.sh`，★ 576 条路由 / 520 条实跑）：★ **ok 281** · method_not_allowed 110 · bad_request 66 · not_found 47 · 401×10（★ 9 条是 API-key 端点 ⇒ cookie 不适用）· 5xx×6（★ 5 条是「功能未配置」型 503）· **timeout 0** · unexpected_status 0 ⇒ ⇒ ★ **巡检器自判 `SWEEP_EXIT=75`**（★ load 峰值 135.74 > 阈值 20 ⇒ **延迟读数不可信、状态码仍可信** —— ★ 本机 load 121，★ CPU 燃烧源是 Android 模拟器 qemu 205%，★ 与本项目无关）。
+> ⇒ ⇒ ⇒ ★★ **★ 慢端点归因（★ 原始目标第 4 条的 SQL 面）**：★ `/api/admin/sessions` 1311ms ⇒ ⇒ ★ **是 N+1，不是慢 SQL** ⇒ ⇒ ★ `handleListSessions` 先取一批 session id 再**逐个** `Get()` + `GetStats()`（N ≤ 200）⇒ ⇒ ★★ `GetStats` 走 **Redis**（`HGETALL`）⇒ ⇒ ⇒ **不是 SQL、★ 不是表扫描** ⇒ ⇒⇒ 优化方向是**批量/pipeline**，★ 不是索引 ⇒ ⇒⇒ **「慢 API」≠「慢 SQL」**。
+> ⇒ ⇒ ⇒ ★ **深链批量（107 条）**：★ **105 条 200 + 正确 SPA 壳**；★ 2 条 `/maintain` 503「运维平台不可用」（★ 外部运维 SPA 不可达 ⇒ 预期行为）；★ **零 404** ⇒ ⇒ SPA 路由兜底正确。
+> ⇒ ⇒ ⇒ ★ **交付面**：
+> ⇒ ⇒ ⇒ ⇒ ★ **修 4 个仓内文件**（★ 部署语义不变，★ 只让验证/迁移/退役腿连到【正确的集群】+【正确的口令】）：★ `scripts/deploy-local.sh`（★ `dl_dsn_pg_creds()` + `psql_query`/`apply_schema_if_empty` 的显式 TCP + DSN 口令 + **调用方已给 DSN 时不再覆盖**（★ 对齐仓内既有的 Redis 契约「caller-provided 保持权威」）+ **显式指定 `LLM_GATEWAY_PSQL`**）· ★ `scripts/deploy-local-lib.sh`（★ `dl_wait_pg_isready`/`_dl_pg_scalar` 走 `dl_host_run psql` + `dl_pg_container_name` 的扫描条件不再要求 `DL_DOCKER`）· ★ `scripts/apply-db-revision-sequence.sh`（★ 通道优先级 + 容器通道显式 TCP + DSN 口令）· ★ `scripts/retire-request-logs-v1-family.sh`（★ ★ **原始目标核心脚本**：request_logs 退役）
+> ⇒ ⇒ ⇒ ⇒ ★ **Maestro 逐页资产**（★ `maestro/`，★ 子代理生成）：★ **112 条路由全覆盖**（★ 107 个 `path:` + 5 处 redirect）· ★ **112/112 断言文案逐条回源码核对**（★ 零错配）· ★ 10 个 flow + 共享登录流 + `slow-pages.mjs`（★ >2s 慢页只标记不失败）· ★ **诚实边界：★ 本机缺 Java Runtime ⇒ ★ flow 未实跑**（★ 实跑由 Browser 工具完成）
+> ⇒ ⇒ ⇒ ★★★★ **★ 独立复核（★ 子代理，★ 只读）抓出 4 个阻断级问题 ⇒ 全部已处置**：★ ① **`dl_dsn_pg_creds()` 口令解析错**（★ 用 `%%/*` 取 creds ⇒ 口令变成 `pass@host:port`）⇒ ⇒ **已修**（★ 改用【最后一个 `@` 之前】+ percent-decode）★ ② **我加的「容器兜底探测」不判 `DL_DB_MODE`** ⇒ ⇒ **schema 可能装到另一个集群** ★ ③ 它的「成功」判据只认退出码（★ 库不存在也是 rc=0）★ ④ `HAS_DB=1` 硬编码 ⇒ ⇒⇒ ★★★ **⇒ ★ 我把整段兜底探测【删掉】了**（★ 删处留注释记录为什么删）⇒ ⇒⇒ ★★★ **★ 通用式：★ 「根因」必须能被独立复核证伪 ⇒ ⇒ 基于未复核根因写的【绕过代码】风险往往比原问题更大 ⇒ ⇒ ⇒ 绕过解决不了问题时它就是【净负收益】⇒ ⇒ ⇒ 【删掉】比【留着】好。**
+> ⇒ ⇒ ⇒ ★★★★ **★ 两条被复核推翻/纠正的初判（★ 留档）**：★ ① **「容器 env 口令漂移 ⇒ 共享库误判容器不可用」这条根因链在本机不成立**（★ loopback 是 `trust` ⇒ 瞎编的口令都成功 ⇒ `pg_container_usable` 不可能因口令失败）★ ② **「env 里的 `\?` 导致 Go 腿炸」不成立**（★ 那是 bash 未加引号时的转义，★ source 后本来就是 `?` ⇒ ⇒ 是**我的测量假象**）⇒ ⇒⇒ ★★ **⇒ 教训：★ 每次「推翻自己」都要留档，★ 否则下一个会话会把错结论再写一遍。**
+> ⇒ ⇒ ⇒ ★★★★ **★ 一个必须记录的踩坑：★ 仓内夹具用「封闭 PATH」（★ 只有 bash/psql/python3）⇒ ⇒ ⇒ 我第一版加的 `mktemp` 直接让夹具全红（★ `mktemp: command not found`）⇒ ⇒⇒ ★ **通道/解析层不能引入任何新外部命令** ⇒ ⇒⇒ 「夹具全红」极易被误读成「我的逻辑错了」。
+> ⇒ ⇒ ⇒ ★★★★ **★ 同深度对拍（★ 区分【内容效应】与【位置效应】）**：★ `tests/deploy_local_contract_test.sh` 在 worktree 里红（★ `scripts/deploy-lib` 是**相对软链** ⇒ 从 `/tmp` 下解析会逃逸）⇒ ⇒ 建**同深度** HEAD 基线副本与工作树副本对拍 ⇒ ⇒ 首轮两边同红（★ 一致 ⇒ 与改动无关）⇒ ⇒ **修正软链层级后两边都 PASS** ⇒ ⇒⇒ ★★ **结论变强：★ 不是「既有红灯」，★ 是【worktree 位置效应】⇒ ⇒ ⇒ 在正确环境下本次改动不破坏该契约。**
+> ⇒ ⇒ ⇒ ★ **通用式 10 条**沉淀在 `LESSONS.md`（★ ★ 原拟 §434 ⇒ ★★ 合并 origin/main 后【让号】⇒ ★★ ★★ **本轮共让号三次**：★ 第一次 `0eff161c6` 已占 §433 ⇒ 让到 §435；★ 第二次并行会话又占 §434 与 §435 ⇒ ⇒ ⇒ **最终 §437** ⇒ ⇒ ⇒ ★★ 改号不改内容）
+> ⇒ ⇒ ⇒ ★ **诚实边界 / 待属主裁决 11 条**见审计档 §9（★ **待裁决**：★ **R165-PSQL-SHIM**（★ `~/.local/bin/psql` 与「宿主机直连 PG」语义冲突 ⇒ ★ 它是 openpocket 夹具的依赖 ⇒ **不能改**）· ★ **R165-HOST-DOCKER-MODE**（★ 「宿主机优先」判定把「宿主上跑着 PG 容器」判成 host 模式 ⇒ ⇒ `DL_DOCKER=0`）· ★ **R165-DL-PG-TRY-HOST**（★ 复核列为最高危残留点）· ★ **R165-COMPOSE-5432** · ★ **R165-PORTABLE**（★ 本轮修法是机器局部的 ⇒ 无 `~/kaixuan` 的机器上原 bug 原样复现）· ★ **R165-BACKUPS-500**（★ `/api/admin/backups` 的 500 应统一成 503）· ★ **R165-BODIES-401** · ★ **R165-NPLUS1** · ★ **R165-MODEL-503** · ★ **R165-MAESTRO-JAVA** · ★ **R165-LOAD**）。
+> ⇒ ⇒ ⇒ ★★★★ 完整记录见 `docs/audit/2026-10-27-R165-本地部署连错集群与psql通道修正.md`（§0~§9）。
+
+## ⑳ R86 轮（2026-10-28）· 掏空门例外清零 + 负控臂 —— ★★★ **例外表的「前提」可能整段是错的 ⇒ ⇒ 例外必须逐条【重测前提】**
+
+> ⇒ ⇒ ★★★★ **承接 handoff `§19.25.19.10`（R86 轮任务书）**：★ 审本轮（R85）自己交付的掏空法门。
+> ⇒ ⇒ ★★★★ **头号发现（★★ 是「推翻上一轮」而不是「补上一轮」）**：★ R85 轮的**例外表有 7 条**，★ 而其中**两条的「前提」本身是错的** ⇒ ⇒ **实测例外 7 → 4 条**（★ 任务书的目标是 5 条 ⇒ ★ 本轮多降了 1 条）：
+> ⇒ ⇒ ⇒ ★ **① 「`measure-selfcreated-cleanup.sh` 需要真实库」是错的** ⇒ ★ 它的 `--verify` 模式只做【静态扫源码 ＋ 台账结构自检】，★ **全程不连库**（★ R86 轮用 **docker / psql 失败桩**实测 **0 次调用**）⇒ ⇒ 降级为 `expect=red`。
+> ⇒ ⇒ ⇒ ★ **② 「`dbaudit-scripts-ledger.tsv` 的唯一提及者只在注释里」是错的** ⇒ ★ 真读方是 `scripts/audit/healthcheck-dbaudit-scripts.sh --verify`（★ 该模式自述「只查台账自洽，★ 不连库」）⇒ ⇒ 降级为 `expect=red`。
+> ⇒ ⇒ ⇒ ★ **③ `permanent-skip-ledger.tsv` 的读方确实需要真实库** ⇒ ⇒ **给 `measure-permanent-skip-axis.sh` 新增了 `--dry-run-readonly` 模式**（★ 不建库 / 不连 psql / 不 docker ⇒ ★ 断言台账契约）⇒ ⇒ 降级为 `expect=red`。
+> ⇒ ⇒ ★★★★ **⇒ 通用式一：★★★ 例外表是【人工写下的散文】⇒ ⇒ 散文里的前提会随现盘变化 ⇒ ⇒ 门只能验「形状」时，★ 前提的过期是【静默的】⇒ ⇒ 必须把「机械可核」的那一段从散文里【拆出来单列】** ⇒ ⇒ 清单加**第 7 列 `mech_check`**（★ 封闭词表 `rows=0` / `reader-green` / `no-code-reader`）⇒ ⇒ 门**真的去核对**它。
+> ⇒ ⇒ ★★★★ **优先级 1①（门自己的量具有牙）**：★ 新增**负控臂** `scripts/ursmcheck/tsv_hollowout_negative_control_test.go` ⇒ ★ 走**同一条**行为判据代码路径（`hollowVerifyEntry`），★ 只差一个因子：「读方的红条件还在不在」⇒ ⇒ ★★ **「未改瞎 ⇒ red-caught」＋「改瞎 ⇒ still-green」的结论翻转** ⇒ ★ **两个臂**：★ ① **gotest 臂**（★ 用 `go build -overlay` 把**真实**测试文件的改瞎副本盖进编译输入 ⇒ ⇒ **仓内工作树一个字节不动** ⇒ ⇒ 并行会话零风险 ＋ SIGKILL 不留残骸）；★ ② **shell 臂**（★ 复制同深度副本 ⇒ 原件不动）。
+> ⇒ ⇒ ⇒ ★★ **★ 负控臂第一版当场失败**（★ 分类仍是 `red-caught`）⇒ ⇒ **真因 = 那个读方有【两条】红路径**（★ 测试体里的 `t.Fatal` ＋ 解析辅助 `ahcReadLedger` 末尾的 `t.Fatalf`）⇒ ⇒ **只去掉一条 ⇒ 读方并没有被改瞎** ⇒ ⇒ ⇒ **通用式二：★★★ 「把读方的红条件去掉」＝ 去掉【读方在读到 0 行时仍会红的每一条路径】⇒ ⇒ 而这条误报不是门的缺陷（★ 是探针没打到位）**。
+> ⇒ ⇒ ★★★★ **优先级 1③（`.tsv` 之外的形态）**：★ **实测**：★ tracked 非 `.tsv` 结构化文件 **483** 份（`.json` 321 / `.yml` 114 / `.yaml` 37 / `.csv` 11）⇒ ⇒ 其中 **11 份是 web 那几道门自己的 `baseline.json` / `registry.json`** ⇒ ★ **与 `.tsv` 登记册是同一物种**（★ 门读它、★ 掏空它会让门瞎）⇒ ⇒ **纳入覆盖判据** ⇒ ⇒ 新增 `scripts/ursmcheck/structured-registry-census.json` ＋ `structured_registry_census_test.go`（★ 候选集**机械可算**：★ tracked ＋ 扩展名 ＋ 文件名含 registry|baseline|inventory|ledger|manifest ⇒ **32 份** ⇒ ★ 13 份 `kind=registry`（★ 写出读方）＋ 20 份 `kind=excluded`（★ 写出实质理由））。
+> ⇒ ⇒ ⇒ ★★ **诚实边界**：★ 本轮只做了**覆盖判据**，★ **没有**做这 13 份的**行为化掏空验证**（★ JSON 的「掏空」不是「删几行」⇒ ⇒ 那会留下**语法错误**的 JSON ⇒ ⇒ 读方是**崩溃**才红 ⇒ ⇒ 不是「读到 0 条」）⇒ ⇒ 每条 `behaviorally_verified` **如实标 false** ⇒ ⇒ **不假装覆盖**。
+> ⇒ ⇒ ★★★★ **优先级 2（阴性结论复核）**：★ 「全仓无掏空洞」是本线**第一条全量阴性结论** ⇒ ⇒ 登记成**周期性复核项** `scripts/ursmcheck/periodic-review.md`（★ 一条命令、★ ~9 分钟）⇒ ⇒ ★★ **登记册自带三道门**（★ 形状 ＋ **命令不许指向不存在的测试** ＋ 覆盖）⇒ ⇒ ★★ **★ 那道「命令不许指向不存在的测试」当场抓到本轮自己写的登记册里的一个真 bug**：★ Markdown 表格里 `|` 必须写成 `\|` ⇒ ⇒ 而 `\|` 在 Go 正则里是「转义竖线」⇒ ⇒ **那条复核命令会匹配 0 个测试并正常退出** ⇒ ⇒ ★★ **「跑过了」与「跑了 0 条」在退出码上不可区分** ⇒ ⇒ ★★ ⇒ **通用式三：★★★ 判据读【别人写的命令】时先问【那条命令的语义是什么】⇒ ⇒ 用字面比较去核一条命令必假**（★ `-run` 是**未锚定**正则 ⇒ ★ 本轮那道门的第一版就栽在这上面 ⇒ ★ 自己踩了自己的坑）。
+> ⇒ ⇒ ★★★★ **交付面**：★ 清单 `tsv_hollowout_inventory.tsv`（★ 7 列 ＋ 39 条：★ **35** `expect=red` ＋ **4** `expect=exception`）· ★ 门 `tsv_hollowout_gate_test.go`（★ 抽出 `hollowVerifyEntry` ＋ `hollowVerifyEntryOverlay` ＋ **例外机械段判据** ＋ `hollowNonDocReferrers`）· ★ **负控臂**（新文件）· ★ **非 `.tsv` 普查表**（新文件 ×2）· ★ **周期性复核登记册**（新文件 ×2）· ★ `measure-permanent-skip-axis.sh`（★ `--dry-run-readonly`）· ★ `.gitignore`（★ 负控臂临时副本）。
+> ⇒ ⇒ ★★★★ **★ 通用式 7 条**沉淀在 `LESSONS.md` **§440**。
+> ⇒ ⇒ ★★★★ 完整记录见 `docs/audit/2026-10-28-R86-掏空门例外清零与负控臂.md`（§0~§11）。
++
++>
++> **2026-10-27 v1 族退役完备性审计轮（本会话）**：★ 用户要求「审计 2026-10-24 的 v1 → session_turns 替换轮，修正发现的问题，**确认所有 `request_log` 与 `_request_log` 相关的表都已移除**，随后提交并推送」。★★ **对生产的写入 = 0**（未连生产、未应用迁移、未部署；真库验证跑在**本机一次性库**上）。
++> ⇒ ★★★ **结论（真库实测）**：在**忠实投递路径**（基线快照 ≈ 迁移 387 之前的世界 + installer 显式顺序的 313 个迁移，带错误的迁移 **0** 个）下跑完一条链后：★★ **v1 表数量 = 0**（基线后是 10 张）；★ 唯一幸存的 `request_log` 命名关系是 canonical **视图** `request_logs_with_current_month`（按设计不删名字，只把视图体换成会话族两臂 ⇒ 实测「读会话族 ✔」）；★ v1 专属函数也清零。⇒ **「所有 request_log/_request_log 相关的表都已移除」——确认成立。**
++> ⇒ ★★ **本轮找到并修掉的 3 个问题**：
++> ⇒ ① ★★★★★ **上一轮那道门（`admin/v1_family_purge_gate_test.go` 的 `TestNoLiveV1WriteOperations`）是【假绿】** —— 它的「跑在退役之后」判据是**字典序**，门注释里写「实测三条通道的真实顺序都与字典序一致」⇒ ★★ **那条前提是假的**：★ **只有 glob 通道是字典序**；★ **installer 的 `StartupFiles`（312 条）与部署通道的显式列表（277 条）都是手写的依赖序** ⇒ installer 顺序里 890 之后还排着 **361b / 375 / 376 / 387 / 427**（编号**更小**），部署通道顺序里 890 之后排着 **044_health_source_probe_now.sql**（**两位数**前缀 ⇒ 字典序第 ~40 位）⇒ ⇒ ★ **那 6 个文件在旧判据下被当成「退役之前」⇒ 从未被检视**（实测它们确实不碰 v1 ⇒ **结论碰巧对，但绿的理由是错的**）。★ **已修**：判据改成「**任一通道的真实顺序里排在 890 之后**」的**并集**（glob=字典序 / installer=tsv 显式序 / 部署通道=脚本显式序）⇒ **补上 6 个此前从未被检视的文件**；★ 并在门里加**覆盖率自证**（「按旧判据会漏掉的那 6 个文件必须出现在新集合里」）⇒ ★ **改造本身可证伪**（实测改回旧判据 ⇒ 门红并逐条点名那 6 个文件 ⇒ 还原 ⇒ 全绿）。★ **同步订正 `LESSONS.md` §384**（原断言「三条通道的真实顺序都与字典序一致」已被证伪）。
++> ⇒ ② ★★★★★ **链外 5 个脚本会建 v1 表 ⇒ 890 不会删它们** ⇒ 在已退役的库上跑它们 = **v1 族复活**（42P01 老问题原地复现）。清单：`sql/init-complete-minimal.sql`（`request_logs` / `request_logs_hot`）、`sql/quick-init-request-logs.sql`（`request_logs_hot`）、`sql/fixes/fix-request-logs-bodies-partition-v2.sql`（`request_logs_bodies_default`）、`scripts/audit/sql/min-prereqs.sql`（`_request_logs_hot`）、`tests/_deprecated_local_poc_2026-07-12/seed/01-schema-bootstrap.sql`（`request_logs` / `request_logs_default`）。★ **处置 = 登记 + 机器可查标头 + scope 兑现，不是删**（审计夹具的**存在意义**就是造出「退役之前的库」⇒ 删了 = 删掉复现能力）。
++> ⇒ ③ ★★★★ **「上一轮清了代码里的活操作」≠「清了全仓语料里的活操作」** ⇒ 上一轮的门只扫**生产 Go 的字符串字面量** ⇒ ★ **SQL 语料根本不在那道门的视野里** ⇒ 本轮补上**新门 `sql/migrations/startup/v1_family_retirement_completeness_test.go`**（4 条判据：链内完备性 / 两种拼写 / 幸存面只允许 canonical 视图且读会话族 / 链外退役台账 + scope 兑现；另加真库腿，★ **DSN 设了却连不上 ⇒ SKIP 而非 FAIL**，与仓内既有真库门同口径）。
++> ⇒ ★★ **读数**：链内**未覆盖的表 = 0**（13 个建过的 v1 表逐个对拍 890 的退役清单）；★ 幸存面 = **只有 canonical 视图**；★ 真库终态 **v1 表 = 0**；★ 变异探针 **3 臂全红**（M1 链内新增未覆盖表 / M2 链外新增未登记脚本 / M3 摘掉退役标头）⇒ ★ **M1 第一版是假绿**（靶点表名压根不含 `request_log` ⇒ 门保持绿是**正确的** ⇒ §419 同款教训复发）；★ 另 1 臂：把投递序判据改回纯字典序 ⇒ 覆盖率自证红。
++> ⇒ ★★ **诚实边界**：① **对生产的写入 = 0**，**生产未连、未取证**；② **生产上 v1 族还没删**（实测 2026-10-21 生产只读：211 有 35,506 行、252 有 38,193/23,830/22,656 行 ⇒ 890 的**非空闸会 RAISE** ⇒ 这是**刻意的**：删表 = 删历史，不可回滚 ⇒ 把决定交回人；且 §143.53 已把 890 移出部署通道的自动列表 ⇒ 生产的退役是**显式的、属主授权的**步骤）；③ **本机 PG 没有 `pg_columnar`** ⇒ 真库跑的是 `columnar→heap` 的**派生副本**（★ 只改冷分区存储引擎，不改关系名/列/存在性 ⇒ 对「表还在不在」等价；★ 且交付清单里那 39 个提到 columnar 的迁移，`USING columnar` 全在条件分支或动态 SQL 里 ⇒ 无 columnar 也是 0 错误）；④ **本机 pgx 连不上**（`failed SASL auth`）而 `psql` 同一个 DSN 能连 ⇒ ★ **对照实验**：仓内**既有的**真库门同样连不上 ⇒ **宿主机怪癖，与本轮改动无关** ⇒ ⇒ ★ **真库终态的确认是通过 `psql` 直接查 `pg_class` 得到的，不是通过仓内那道门**；⑤ **并行会话**：工作树上有另一会话的在途改动（本地音频/多模态那轮）⇒ ★ 本轮**只提交自己触及的文件**，未替它提交、未合并、未改动。
++> ⇒ ★★ **让号记录（仓内惯例）**：本轮通用式原用 §437~§441 ⇒ ★★ 推送前实测 `origin/main` 已被**并行会话占用 §437 / §438 / §439**（Gemini 多模态审计复审轮 · 本地部署连错集群轮 · Gemini 原生出站 executor 轮）⇒ ⇒ 按「**先到者让后到者改号**」的惯例，★ **我方让号为 §445~§449**（改号不改内容），并同步订正 §384。★★ **让号共两次**：第一次 §437~§441 → §440~§444（上游已占 §437 / §438 / §439）；第二次 §440~§444 → §445~§449（上游又占用了 §440）⇒ ★ **改号不改内容**，通用式正文一字未改。
++> ⇒ ★★ **通用式（已落 `LESSONS.md` §445~§449，并订正 §384）**：★ **退役一个族要问两遍**（清单完备吗 / ★ **清单之外还有别的路吗**）；★ **「门绿」要追问「它绿的理由是不是它声称的那个理由」**（写进注释里的「实测」会过期，且**过期得毫无声响**）；★ **修完判据必须能证明「修之前漏、现在不漏」**；★ **「先后」是「通道 × 文件」的二元属性** ⇒ **显式列表几乎一定是手写的依赖序** ⇒ **绝不可用目录的字典序替代它**；★ **一条链的起点是「基线快照已经包含了什么」**，不是目录里的第一个文件（★ 复现链必须用那条链自己的显式列表）；★ **「跑不出预期终态」的第一嫌疑是环境**。
++> ⇒ ⇒ ★★★★ 完整记录见 `docs/audit/2026-10-27-v1族退役完备性审计轮.md`（§0 结论 / §1 四层方法 / §2 6 个问题 / §3 修正 / §4 变异探针 / §5 真库复现 / §6 诚实边界 / §7 通用式 / §8 提交清单）。
