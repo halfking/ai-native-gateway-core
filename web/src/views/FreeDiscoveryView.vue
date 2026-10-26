@@ -612,7 +612,7 @@ onMounted(loadAll)
             </div>
             <div class="preset-key">{{ p.api_key_env || t('freeDiscovery.presets.keyless') }}</div>
             <button
-              class="btn btn-sm btn-primary"
+              class="btn btn-sm btn-ghost"
               :disabled="presetCreating === p.provider_code || existingProviderCodes.has(p.provider_code)"
               @click="createFromPreset(p)"
             >

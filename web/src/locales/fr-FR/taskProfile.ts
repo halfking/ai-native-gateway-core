@@ -22,7 +22,7 @@ export default {
   },
   action: {
     apply: 'Appliquer les suggestions',
-    applyConfirm: 'Écrire les suggestions de tier pilotées par les corrections dans la config de tier (task_type_tier_config) ?',
+    applyConfirm: 'Écrire les suggestions de tier pilotées par les corrections dans la config de tier ?',
     applyDone: 'Appliqué : {types}',
     applyNone: 'Aucune suggestion n’atteint actuellement le seuil',
     reload: 'Recharger l’overlay',

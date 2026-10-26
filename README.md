@@ -186,6 +186,44 @@ All modules below are shipped and running in the k3s production deployment. Scre
 
 ---
 
+## 🧩 Multimodal & Text Refinement APIs
+
+Beyond chat, the gateway exposes OpenAI-compatible multimodal and text-refinement
+endpoints. All of them route through the same credential/routing/failover plane,
+and all of them run happily on **local models** (ollama / whisper.cpp — see the
+`local-*` provider catalog entries):
+
+| Endpoint | Purpose | Upstream shape |
+|---|---|---|
+| `POST /v1/embeddings` | Embeddings (4096-dim `qwen3-embedding:8b` supported) | OpenAI-compatible |
+| `POST /v1/audio/transcriptions` | ASR (whisper large-v3 / large-v3-turbo via whisper.cpp, cloud ASR too) | multipart in, JSON/SSE out |
+| `POST /v1/audio/speech` | TTS (`tts-macos-say` shim over macOS `say`, cloud voices too) | JSON in, audio out |
+| `POST /v1/audio/refine` / `analyze` | ASR post-processing (punctuation/ITN, rolling meeting analysis) | loopback chat |
+| `POST /v1/summarize` | **Content/session summaries** — short text renders in one call; long text runs a map→reduce→render meeting-minutes pipeline | loopback chat |
+| `POST /v1/summarize/title` | ≤20-char action-verb titles with entity picks and banned-opening filtering | loopback chat |
+| `POST /v1/classify` | Task classification against a controlled vocabulary (custom vocab via request) | loopback chat |
+| `POST /v1/images/generations` / `videos/generations` | Image / video generation | provider-native |
+
+Example — a meeting-minutes summary over a local model:
+
+```bash
+curl https://<gateway>/v1/summarize \
+  -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" \
+  -d '{"model":"qwen3.8:27b-mlx","map_model":"qwen2.5:7b","text":"...long transcript...","style":"minutes"}'
+```
+
+The response carries `engine`: when **ai-session-manager** (the gateway's
+session-operations plugin) is online, long summaries are delegated to its
+on-demand agent endpoint (`POST /api/v1/summarize`, grounded minutes with
+verbatim quotes) and `engine` reads `asm`; when ASM is offline or fails, the
+gateway transparently falls back to its own pipeline and `engine` reads
+`gateway`. Both engines run local models, so complex summaries stay on local
+compute either way. Configure the delegation with
+`LLM_GATEWAY_ASM_BASE_URL` (+ optional `LLM_GATEWAY_ASM_PLUGIN_ID`,
+`LLM_GATEWAY_ASM_TIMEOUT`).
+
+---
+
 ## 🚀 Quick Start
 
 ### Install (one command, two scales)

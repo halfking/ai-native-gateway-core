@@ -461,17 +461,37 @@ func parseResponsesContentBlocks(blocks []any, role string) ([]ContentBlock, err
 			irBlock.Type = "document"
 			irBlock.Document = parseOpenAIFileBlock(blockMap)
 		case "input_audio":
-			irBlock.Type = "input_audio"
-			irBlock.InputAudio = parseOpenAIInputAudioBlock(blockMap)
-			// 2026-10-26: a URI-reference input_audio (url, no data/format)
-			// parses to nil — preserve it verbatim (same convention as
-			// parse_openai's default branch) instead of dropping it on the
-			// mandatory Parse→Serialize round trip.
-			if irBlock.InputAudio == nil {
-				irBlock.Type = "raw"
-				raw, _ := json.Marshal(blockMap)
-				irBlock.RawContent = string(raw)
+			// ★★ 2026-10-27（12h 审计轮）：本分支此前与 parse_openai.go 的
+			// ★★ **同款判据错误**，且那条错误在 parse_openai.go 上已经被修过
+			// ★★ （见 parse_openai.go 的 input_audio 分支注释）。
+			// ★★ 旧判据是「parse 返回 nil 与否」⇒ ★★ 只带 format 不带 data
+			// ★★ 时 `parseOpenAIInputAudioBlock` 返回**非 nil**（Data=""、
+			// ★★ Format="mp3"）⇒ ★★ 于是**不走** raw 兜底 ⇒ ★★ 块留在
+			// ★★ Type="input_audio" 而载荷为空 ⇒ ★★ 被两条线各自的
+			// ★★ 「载荷为空就不发」守卫丢掉 ⇒ ★★ **音频静默消失**。
+			// ★★ ⇒ 判据必须是「**有没有载荷**」（Data 是否为空），
+			// ★★ 且 URI 形态必须走**有类型的载体**（MediaSource），
+			// ★★ 让各线按各自正确的形状还原（OpenAI 线 input_audio{url} /
+			// ★★ Gemini 线 fileData{fileUri}）。
+			ia := parseOpenAIInputAudioBlock(blockMap)
+			if ia == nil || ia.Data == "" {
+				if src := parseOpenAIAudioURISource(blockMap); src != nil {
+					irBlock.Type = "audio"
+					irBlock.Audio = src
+					irBlock.InputAudio = nil
+					break
+				}
+				// 没有载荷也没有 URI ⇒ 这个块**不可表达** ⇒ 标成 input_audio
+				// 且载荷为空 ⇒ 各线的「载荷为空就不发」守卫会把它丢掉。
+				// ★ 不可再走 raw 兜底：raw 会被 default 分支**原样回吐**
+				// ⇒ 又变回 {"data":"","format":"mp3"} ⇒ 上游必 400。
+				irBlock.Type = "input_audio"
+				irBlock.InputAudio = ia
+				irBlock.RawContent = nil
+				break
 			}
+			irBlock.Type = "input_audio"
+			irBlock.InputAudio = ia
 		case "text":
 			irBlock.Type = "text"
 			if text, ok := blockMap["text"].(string); ok {

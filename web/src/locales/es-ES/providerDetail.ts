@@ -201,7 +201,7 @@ export default {
       mediaOnlyShort: "Media",
     },
     planTypeUnset: "Sin definir (tratado como token)",
-    planTypeHint: "Usado por el enrutamiento; cmb.billing_mode se deriva de aquí",
+    planTypeHint: "Usado por el enrutamiento; modo de facturación se deriva de aquí",
     planTypes: {
       token: "token (por uso)",
       token_plan: "token_plan (suscripción)",
@@ -412,17 +412,17 @@ export default {
       chipUnavailable: "No disponible"
     }
 ,
-    probeAllRecoveredHint: '✓ {n} modelos sondeados correctamente; node_probe_state recuperado y candidatos de enrutado reactivados',
+    probeAllRecoveredHint: '✓ {n} modelos sondeados correctamente; estado de sondeo recuperado y candidatos de enrutado reactivados',
 
     resetNodeProbeBtn: 'Clear failed probes',
 
     resetNodeProbeLoading: 'Clearing…',
 
-    resetNodeProbeTitle: 'Borra las filas de node_probe_state con last_direct_ok=FALSE y recupera el enrutado. Úsalo cuando «Sondear todo» indica OK pero los candidatos de enrutado siguen bloqueados.',
+    resetNodeProbeTitle: 'Borra los registros de sondeo con error y recupera el enrutado. Úsalo cuando «Sondear todo» indica OK pero los candidatos de enrutado siguen bloqueados.',
 
-    resetNodeProbeConfirm: '¿Borrar todas las filas con error de node_probe_state de este proveedor?',
+    resetNodeProbeConfirm: '¿Borrar todos los registros de sondeo con error de este proveedor?',
 
-    resetNodeProbeDone: '✓ Se borraron {n} filas con error de node_probe_state; candidatos de enrutado reactivados',
+    resetNodeProbeDone: '✓ Se borraron {n} registros de sondeo con error; candidatos de enrutado reactivados',
     repairFailed: 'No se pudo completar la reparación. Vuelva a intentarlo.',
   },
   settings: {

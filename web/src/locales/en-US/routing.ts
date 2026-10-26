@@ -72,7 +72,7 @@ export default {
     updatedFeatured: 'Featured models updated ({n})',
     formulaLabel: 'Composite formula: lower is better.',
     freeHighlight: 'Free models (price=0) score 0 and win by default.',
-    formulaPrefix: 'composite_score = manual_priority + (normalized_price × {price}) + (session_load × {session_load}) + (failure_count × {failure_penalty})',
+    formulaPrefix: 'composite_score = manual priority + (normalized price × {price}) + (session load × {session_load}) + (failure count × {failure_penalty})',
     weights: {
       price: 'Price weight (W2)',
       sessionLoad: 'Session load weight (W3)',

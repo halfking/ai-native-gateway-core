@@ -186,6 +186,40 @@ HTTP/SSE → middleware chain → protocol/IR normalization → session assignme
 
 ---
 
+## 🧩 多模态与文本加工 API
+
+除对话外，网关还暴露 OpenAI 兼容的多模态与文本加工端点。全部走同一套凭据/
+路由/故障转移面，且都能跑在**本地模型**上（ollama / whisper.cpp——见 provider
+catalog 的 `whisper-cpp` / `macos-say` / `ollama` 本地条目）：
+
+| 端点 | 用途 | 上游形态 |
+|---|---|---|
+| `POST /v1/embeddings` | 嵌入（支持 4096 维 `qwen3-embedding:8b`） | OpenAI 兼容 |
+| `POST /v1/audio/transcriptions` | 语音转写（whisper large-v3 / large-v3-turbo 经 whisper.cpp，也支持云端 ASR） | multipart 进，JSON/SSE 出 |
+| `POST /v1/audio/speech` | 语音合成（`tts-macos-say` 本地垫片，也支持云端音色） | JSON 进，音频出 |
+| `POST /v1/audio/refine` / `analyze` | ASR 后处理（标点/ITN 精修、滚动会议分析） | 环回 chat |
+| `POST /v1/summarize` | **内容/会话总结**——短文本单次渲染；长文本走 map→reduce→render 会议纪要管线 | 环回 chat |
+| `POST /v1/summarize/title` | ≤20 字动宾标题（实体择优 + 禁用开头过滤） | 环回 chat |
+| `POST /v1/classify` | 任务分类（受控词表，请求可带自定义词表） | 环回 chat |
+| `POST /v1/images/generations` / `videos/generations` | 图像 / 视频生成 | 供应商原生 |
+
+示例——用本地模型做会议纪要式总结：
+
+```bash
+curl https://<gateway>/v1/summarize \
+  -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" \
+  -d '{"model":"qwen3.8:27b-mlx","map_model":"qwen2.5:7b","text":"...长转写...","style":"minutes"}'
+```
+
+响应带 `engine` 字段：当 **ai-session-manager**（网关的会话运营插件）在线时，
+长文本总结委托给它的按需智能体端点（`POST /api/v1/summarize`，带原文金句的
+grounded 纪要），`engine=asm`；asm 离线或失败时，网关透明回退自己的管线，
+`engine=gateway`。两个执行方都跑本地模型——复杂总结无论谁接都留在本地算力。
+用 `LLM_GATEWAY_ASM_BASE_URL`（可选 `LLM_GATEWAY_ASM_PLUGIN_ID`、
+`LLM_GATEWAY_ASM_TIMEOUT`）配置委托。
+
+---
+
 ## 🚀 快速开始
 
 ### 方式 A：Docker Compose（推荐，< 10 分钟）

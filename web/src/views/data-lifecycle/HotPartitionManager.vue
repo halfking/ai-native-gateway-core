@@ -252,7 +252,7 @@
               </td>
               <td>
                 <button
-                  class="btn btn-sm btn-primary"
+                  class="btn btn-sm btn-ghost"
                   @click="selectTable(pTable.table_name)"
                   :disabled="loading"
                 >

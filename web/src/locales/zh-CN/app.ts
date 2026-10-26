@@ -33,7 +33,7 @@ export default {
     close: '关闭',
   },
   dataHorizon: {
-    title: '流量数据记录滞后：网关有请求，session_turns 未跟上',
+    title: '流量数据记录滞后：网关有请求，会话流水未跟上',
     titleUnavailable: '无法确认流量数据状态：本页数字可能已过期',
     hintLabel: '排查',
     retry: '重新检查',

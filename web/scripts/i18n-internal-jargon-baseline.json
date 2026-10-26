@@ -1,0 +1,18 @@
+{
+  "count": 0,
+  "distinctIdentifiers": 0,
+  "history": [
+    {
+      "at": "2026-10-27",
+      "note": "第 19 增量 · 「内部标识泄漏」轮 · 基线收紧",
+      "from": {
+        "count": 0,
+        "distinctIdentifiers": 0
+      },
+      "to": {
+        "distinctIdentifiers": 0,
+        "findings": 0
+      }
+    }
+  ]
+}

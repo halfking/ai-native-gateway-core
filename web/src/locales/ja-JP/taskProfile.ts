@@ -22,7 +22,7 @@ export default {
   },
   action: {
     apply: '提案を適用',
-    applyConfirm: '修正駆動のティア提案を tier 設定（task_type_tier_config）に書き込みますか？',
+    applyConfirm: '修正駆動のティア提案をティア設定に書き込みますか？',
     applyDone: '適用しました：{types}',
     applyNone: '現在しきい値を満たす提案はありません',
     reload: 'overlay を再読み込み',

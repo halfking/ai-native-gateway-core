@@ -34,7 +34,7 @@ export default {
     darkTitle: 'Dark mode',
   },
   dataHorizon: {
-    title: 'Los datos de tráfico se están quedando atrás: la pasarela atiende solicitudes pero session_turns no se mantiene al día',
+    title: 'Los datos de tráfico se están quedando atrás: la pasarela atiende solicitudes pero el flujo de sesiones no se mantiene al día',
     titleUnavailable: 'No se puede confirmar el estado de los datos de tráfico: las cifras de esta página pueden estar obsoletas',
     hintLabel: 'Investigar',
     retry: 'Volver a comprobar',

@@ -1524,7 +1524,7 @@ onUnmounted(() => stopPoll())
                   </button>
                   <button
                     v-if="superAdmin"
-                    class="btn btn-primary btn-sm"
+                    class="btn btn-ghost btn-sm"
                     type="button"
                     @click="openCandidateSettings(c)"
                   >

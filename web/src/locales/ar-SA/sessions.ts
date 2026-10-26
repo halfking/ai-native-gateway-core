@@ -1,6 +1,6 @@
 export default {
   list: {
-    emptyHint: "يتم تجميع الجلسات تلقائيًا بعد توليد gw_session_id في سجلات الطلبات",
+    emptyHint: "يتم تجميع الجلسات تلقائيًا بعد توليد معرّف الجلسة في سجلات الطلبات",
   },
   userProfile: {
     loadFailed: 'تعذّر تحميل ملف المستخدم. أعد المحاولة.',
@@ -257,7 +257,7 @@ export default {
     healthMetricComplianceHint: 'يربط نتائج حقن المطالبات و PII وامتثال الإخراج.',
     healthMetricOutcome: 'نتيجة الجلسة',
     healthMetricOutcomeHint: 'يتم كتابة نقاط الصحة في بيانات تحليل الجلسة ويمكن عرضها في مركز التحليل.',
-    healthSource: 'المصدر: حالة تشغيل وحدة session_inspector',
+    healthSource: 'المصدر: حالة تشغيل وحدة فحص الجلسات',
     healthViewAnalytics: "فتح تحليل الجلسات",
     // تكوين كشف حقن الموجهات (2026-07-12)
     promptInjectionTab: "حقن الموجهات",

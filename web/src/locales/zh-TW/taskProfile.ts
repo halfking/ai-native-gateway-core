@@ -22,7 +22,7 @@ export default {
   },
   action: {
     apply: '套用升檔建議',
-    applyConfirm: '把修正驅動的分層建議寫入 tier 設定（task_type_tier_config）？',
+    applyConfirm: '把修正驅動的分層建議寫入分層設定？',
     applyDone: '已套用：{types}',
     applyNone: '目前沒有滿足門檻的升檔建議',
     reload: '重新載入 overlay 檔案',

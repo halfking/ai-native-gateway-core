@@ -89,7 +89,7 @@ export default {
       compress: 'الضغط',
       security: 'تنقية الأمان',
     },
-    mappedToLogs: 'يقابل request_logs:',
+    mappedToLogs: 'يقابل سجلات الطلبات:',
     openSingle: 'فتح في وضع الطلب الواحد',
     noChildren: 'لا توجد طلبات فرعية',
     switchHint: 'انتقل إلى وضع «الطلب الواحد» ثم إلى علامة التبويب «الضغط والتنقية» لعرض المقارنة ثلاثية المراحل.',

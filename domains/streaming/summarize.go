@@ -49,6 +49,14 @@ const (
 	// 3 段 map + reduce + render，30b 58tok/s + 27b 渲染）实测口径在
 	// 5min 量级，这里留 2 倍余量。
 	maxSummarizeDuration = 10 * time.Minute
+	// asmDelegateBudgetDivisor 决定 asm 委托最多能拿走总预算的几分之一。
+	//
+	// ★ 为什么要切分（2026-10-27 审计轮）：委托与降级**共用同一把预算**时，
+	//   委托一旦超时（它存在的意义就是处理长文本 ⇒ 慢），父 ctx 就被吃空，
+	//   而**降级管线恰恰只在委托失败时才跑** ⇒ 降级在唯一需要它的场景里
+	//   不可用（读数：map 阶段 context deadline exceeded ⇒ 502）。
+	//   ⇒ 委托只拿 1/3，降级永远留有 ≥2/3 的预算。
+	asmDelegateBudgetDivisor = 3
 	// summarizeShortPathRunes 短文本阈值（字）：低于它跳过 map-reduce，
 	// 单次调用完成抽取+渲染（技能 §降级与边界同款）。
 	summarizeShortPathRunes = 3000
@@ -82,6 +90,10 @@ type SummarizeService struct {
 	// baseURL 覆盖环回基址（反代形态下网关自己不可直接达时）。空 = 按
 	// 请求的 Host/X-Forwarded-Proto 推导。与 AudioTransformService 同款。
 	baseURL string
+	// asm 是 ai-session-manager 在线优先委托器（nil = 未启用，长文本恒走
+	// 网关管线）。见 summarize_asm.go：在线时委托其智能体端点，失败响亮
+	// 降级回本服务的 map-reduce——两条路都跑本地模型。
+	asm *asmDelegate
 }
 
 func NewSummarizeService() *SummarizeService {
@@ -251,6 +263,27 @@ func stripThinkBlock(s string) string {
 		rest = rest[j+len("</think>"):]
 	}
 	return strings.TrimSpace(b.String())
+}
+
+// delegateBudgetFor 计算 asm 委托能拿到的 ctx 预算。
+//
+// ★ 规则：委托预算 = **min(配置的委托预算, 总预算 / asmDelegateBudgetDivisor)**。
+//
+//	理由见 asmDelegateBudgetDivisor 的注释：委托与降级共用一把预算时，
+//	委托超时会吃空父 ctx，使降级在唯一需要它的场景里不可用。
+//	⇒ 配置得再大（LLM_GATEWAY_ASM_TIMEOUT ≥ 总预算）也必须在此夹一次。
+//
+// ★ 契约：返回值**恒 ≤ total/asmDelegateBudgetDivisor**
+//
+//	⇒ 降级管线恒有 ≥ (1 - 1/divisor) 的总预算可用。
+func delegateBudgetFor(total, asmBudget time.Duration) time.Duration {
+	if total <= 0 {
+		return asmBudget
+	}
+	if maxBudget := total / asmDelegateBudgetDivisor; asmBudget > maxBudget {
+		return maxBudget
+	}
+	return asmBudget
 }
 
 // ── 标题总结（title-writer） ──────────────────────────────────────────
@@ -667,8 +700,12 @@ func buildClassifySystemPrompt(vocab []taskVocabGroup) string {
 
 type SummarizeResult struct {
 	Summary  string `json:"summary"`
-	Pipeline string `json:"pipeline"` // single | map-reduce
+	Title    string `json:"title,omitempty"`
+	Pipeline string `json:"pipeline"` // single | map-reduce | asm
+	// Engine 记录实际执行方：asm（ai-session-manager 在线优先委托成功）
+	// 或 gateway（本服务管线）。调用方据此感知降级。
 	Chunks   int    `json:"chunks,omitempty"`
+	Engine   string `json:"engine,omitempty"`
 	LLMModel string `json:"llm_model,omitempty"`
 }
 
@@ -690,6 +727,7 @@ type summarizeRequest struct {
 // 去重并排时间线，render 渲染为纪要 markdown。分层与降级边界与技能
 // session-summarist 一致（2026-10-26 方案 §3.2）。
 func (s *SummarizeService) serveSummarize(w http.ResponseWriter, r *http.Request, requestID string) {
+	start := time.Now()
 	ctx, cancel := context.WithTimeout(r.Context(), maxSummarizeDuration)
 	defer cancel()
 
@@ -752,11 +790,53 @@ func (s *SummarizeService) serveSummarize(w http.ResponseWriter, r *http.Request
 				return
 			}
 		}
-		writeSummarizeJSON(w, requestID, SummarizeResult{Summary: content, Pipeline: "single", LLMModel: llmModel})
+		res := SummarizeResult{Summary: content, Pipeline: "single", Engine: "gateway", LLMModel: llmModel}
+		writeSummarizeJSON(w, requestID, res)
+		logSummarizeOutcome(requestID, res, start, runes)
 		return
 	}
 
-	// ── 长文本：map → reduce → render ──
+	// ── 长文本：asm 在线优先，失败响亮降级到网关管线 ──
+	// 复杂总结交给 ai-session-manager 的智能体端点（grounded 纪要 + 原文
+	// 金句；其 LLM 上游同样指向本地模型）。探测红/委托失败只记 WARN，
+	// 绝不把失败透给调用方——engine 字段说明实际执行方。
+	//
+	// ★★ 预算必须**切分**，委托与降级不能共用同一把预算（2026-10-27 审计轮修）：
+	//   委托的 ctx 从总预算 ctx 派生（见 summarize_asm.go），若委托把 8min
+	//   全部烧完，父 ctx 只剩 ~2min ⇒ 降级管线的 map(240s)/reduce(300s)/
+	//   render(420s) **全部撞上同一个快到期的 ctx** ⇒
+	//   **降级恰恰在「委托超时」这一唯一需要它的场景里不可用**
+	//   （读数：map 阶段 context deadline exceeded ⇒ 502 而不是摘要）。
+	//   ⇒ 委托最多只拿总预算的 1/3，降级管线永远留有 ≥2/3 的预算。
+	//   ★ 注意 `s.asm.budget` 可由 LLM_GATEWAY_ASM_TIMEOUT 配置成 ≥ 总预算，
+	//     那种配置下委托会吃掉全部预算 ⇒ 降级预算为 0 ⇒ 必须在此**再夹一次**。
+	if s.asm != nil && s.asm.available(ctx) {
+		delegateBudget := delegateBudgetFor(maxSummarizeDuration, s.asm.budget)
+		dctx, dcancel := context.WithTimeout(ctx, delegateBudget)
+		asr, derr := s.asm.summarize(dctx, text, style, lang)
+		dcancel()
+		if derr == nil {
+			res := SummarizeResult{
+				Summary: asr.Summary, Title: asr.Title, Pipeline: "asm",
+				Engine: "asm", LLMModel: asr.Model,
+			}
+			writeSummarizeJSON(w, requestID, res)
+			logSummarizeOutcome(requestID, res, start, runes)
+			return
+		}
+		// ★ 调用方已断开 ⇒ **不**把 asm 判成离线（它可能完全健康），
+		//   也**不**再跑降级（没有接收方了）。
+		if r.Context().Err() != nil {
+			slog.Warn("summarize: caller gone before delegate finished; asm not marked offline",
+				"request_id", requestID, "error", derr)
+			return
+		}
+		s.asm.markOffline()
+		slog.Warn("summarize: asm delegate failed; falling back to gateway map-reduce",
+			"request_id", requestID, "error", derr)
+	}
+
+	// ── 长文本：map → reduce → render（网关管线） ──
 	chunks := splitSummarizeChunks(text, chunkChars)
 	if len(chunks) > maxSummarizeChunks {
 		writeErrorJSON(w, http.StatusBadRequest, requestID,
@@ -813,7 +893,30 @@ func (s *SummarizeService) serveSummarize(w http.ResponseWriter, r *http.Request
 			writeAudioError(w, requestID, fmt.Errorf("reduce stage: %w", err))
 			return
 		}
-		writeSummarizeJSON(w, requestID, SummarizeResult{Summary: content, Pipeline: "map-reduce", Chunks: len(chunks), LLMModel: llmModel})
+		// ★ brief 风格同样要过校验（校验器对 brief 只要求「非空文本」）。
+		//   为何必须：callChat 成功返回时 content 仍可能是**空串** ——
+		//   thinking 模型只吐 reasoning 时，chat 面看到非空 content ⇒ 200，
+		//   但 stripThinkBlock 把 reasoning 剥掉后就空了 ⇒
+		//   **HTTP 200 + 空摘要**（minutes 路径与短文本路径都有校验，
+		//   只有 brief 这条分支漏了 ⇒ 同一个请求换个 style 就出现两种语义）。
+		if verr := validateRenderedSummary(content, style); verr != nil {
+			p2 := p
+			p2.user = user + "\n\n注意：上一轮输出为空，请直接输出简报正文（不要输出思考过程或空内容）。"
+			content, llmModel, err = s.callChat(ctx, r, requestID, p2)
+			if err != nil {
+				writeAudioError(w, requestID, fmt.Errorf("reduce stage: %w", err))
+				return
+			}
+			if verr2 := validateRenderedSummary(content, style); verr2 != nil {
+				writeErrorJSON(w, http.StatusBadGateway, requestID,
+					"summarize LLM output empty after think-stripping: "+sanitizeAudioErrorMessage(verr2.Error()),
+					"server_error", "upstream_error")
+				return
+			}
+		}
+		res := SummarizeResult{Summary: content, Pipeline: "map-reduce", Chunks: len(chunks), Engine: "gateway", LLMModel: llmModel}
+		writeSummarizeJSON(w, requestID, res)
+		logSummarizeOutcome(requestID, res, start, runes)
 		return
 	}
 
@@ -851,7 +954,9 @@ func (s *SummarizeService) serveSummarize(w http.ResponseWriter, r *http.Request
 			return
 		}
 	}
-	writeSummarizeJSON(w, requestID, SummarizeResult{Summary: content, Pipeline: "map-reduce", Chunks: len(chunks), LLMModel: llmModel})
+	res := SummarizeResult{Summary: content, Pipeline: "map-reduce", Chunks: len(chunks), Engine: "gateway", LLMModel: llmModel}
+	writeSummarizeJSON(w, requestID, res)
+	logSummarizeOutcome(requestID, res, start, runes)
 }
 
 // splitSummarizeChunks 按目标字数切段，优先在换行处断开（不撕碎一行消息）。
@@ -999,6 +1104,25 @@ func outputLanguageDirective(language string) string {
 		return "输出使用英文。\n"
 	}
 	return "输出使用简体中文。\n"
+}
+
+// logSummarizeOutcome 是 /v1/summarize 的唯一完成记账点。
+//
+// 2026-10-27 审计轮（多模态端点调用方流量审计）：外层 /v1/summarize 调用
+// 不进 request_logs（该路径不走记账中间件），asm 委托成功路径此前完全静默、
+// 只有降级才打 WARN ⇒ engine=asm 与 engine=gateway 的占比在事后**无法回溯**
+// （24h 审计实测：只能靠时长/字节推断，asm 成功样本只能从存留容器的
+// 访问日志里考古）。这条 INFO 让每次完成的实际执行方可查：
+// grep 'summarize: completed' 即得占比与降级率。
+func logSummarizeOutcome(requestID string, res SummarizeResult, start time.Time, runes int) {
+	slog.Info("summarize: completed",
+		"request_id", requestID,
+		"pipeline", res.Pipeline,
+		"engine", res.Engine,
+		"llm_model", res.LLMModel,
+		"chunks", res.Chunks,
+		"input_runes", runes,
+		"duration_ms", time.Since(start).Milliseconds())
 }
 
 func writeSummarizeJSON(w http.ResponseWriter, requestID string, v any) {

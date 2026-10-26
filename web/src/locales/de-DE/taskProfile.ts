@@ -22,7 +22,7 @@ export default {
   },
   action: {
     apply: 'Vorschläge anwenden',
-    applyConfirm: 'Korrekturgesteuerte Tier-Vorschläge in die Tier-Konfiguration (task_type_tier_config) schreiben?',
+    applyConfirm: 'Korrekturgesteuerte Tier-Vorschläge in die Tier-Konfiguration schreiben?',
     applyDone: 'Angewendet: {types}',
     applyNone: 'Derzeit erfüllt kein Vorschlag den Schwellenwert',
     reload: 'Overlay neu laden',

@@ -427,8 +427,19 @@ func parseOpenAIContentBlocks(blocks []any) ([]ContentBlock, error) {
 					irBlock.Audio = src
 					irBlock.InputAudio = nil
 				} else {
-					irBlock.Type = "raw"
-					irBlock.RawContent = mustMarshalString(blockMap)
+					// ★★ 2026-10-27（12h 审计轮）：此处**不可**再走 raw 兜底。
+					// ★★ raw 块会被序列化器的 `default:` 分支**原样回吐**
+					// ★★ ⇒ 载荷为空的 input_audio 又变回
+					// ★★ {"input_audio":{"data":"","format":"mp3"}}
+					// ★★ ⇒ **上游必 400**（这正是本轮要修的形状）。
+					// ★★ 而本轮补在 `case "input_audio"` 上的守卫
+					// ★★ （`block.InputAudio.Data != ""`）**根本走不到**
+					// ★★ —— 因为块已经不是 input_audio 了 ⇒ ★★ 守卫形同虚设。
+					// ★★ ⇒ 正确做法：**保留 input_audio 类型、载荷留空**，
+					// ★★ 让各线那条「载荷为空就不发」的守卫真正生效（丢弃该块）。
+					irBlock.Type = "input_audio"
+					irBlock.InputAudio = ia
+					irBlock.RawContent = nil
 				}
 			}
 		case "image":

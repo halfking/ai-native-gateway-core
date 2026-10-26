@@ -56,7 +56,7 @@ export default {
   latest: 'Dernière analyse',
   loadFeaturedFailed: 'Le chargement des modèles en vedette a échoué. Veuillez réessayer.',
   loading: 'Chargement…',
-  noRecommend: 'Aucune recommandation : aucune requête réussie au cours des 7 derniers jours, ou featured_models et populaires sont tous deux vides',
+  noRecommend: 'Aucune recommandation : aucune requête réussie au cours des 7 derniers jours, ou le pool recommandé et le pool populaire sont tous deux vides',
   recommendBtn: '⚡ Auto-recommander (populaires 7j + politique actuelle)',
   recommendLoadFailed: 'Le chargement des recommandations de modèles a échoué. Veuillez réessayer.',
   running: 'Analyse en cours',

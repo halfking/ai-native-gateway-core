@@ -56,7 +56,7 @@ export default {
   latest: "直近のスキャン",
   loadFeaturedFailed: '注目モデルの取得に失敗しました。再試行してください。',
   loading: "読み込み中…",
-  noRecommend: "推奨できるモデルがありません：直近 7 日に成功リクエストがない、または featured_models と popular がともに空です",
+  noRecommend: "推奨できるモデルがありません：直近 7 日に成功リクエストがない、または推奨プールと人気プールがともに空です",
   recommendBtn: "⚡ 自動推薦（7d 人気 + 現在のポリシー）",
   recommendLoadFailed: '推薦モデルの読み込みに失敗しました。再試行してください。',
   running: "スキャンを実行中",

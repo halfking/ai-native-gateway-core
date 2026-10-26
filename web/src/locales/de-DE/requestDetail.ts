@@ -89,7 +89,7 @@ export default {
       compress: 'Komprimierung',
       security: 'Sicherheitsmaskierung',
     },
-    mappedToLogs: 'Zugeordnet zu request_logs:',
+    mappedToLogs: 'Zugeordnet zu Anfrageprotokollen:',
     openSingle: 'Im Einzelanfragemodus öffnen',
     noChildren: 'Keine Unteranfragen',
     switchHint: 'Wechseln Sie in den „Einzelanfrage"-Modus und auf den Tab „Komprimierung & Maskierung", um den Drei-Stufen-Vergleich zu sehen.',

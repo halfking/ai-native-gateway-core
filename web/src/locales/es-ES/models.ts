@@ -54,7 +54,7 @@ export default {
   latest: 'Último escaneo',
   loadFeaturedFailed: 'No se pudo cargar los modelos destacados. Vuelva a intentarlo.',
   loading: 'Cargando…',
-  noRecommend: 'Sin recomendaciones: sin solicitudes exitosas en los últimos 7 días, o tanto featured_models como popular están vacíos',
+  noRecommend: 'Sin recomendaciones: sin solicitudes exitosas en los últimos 7 días, o tanto grupo recomendado como grupo popular están vacíos',
   recommendBtn: '⚡ Auto-recomendar (populares 7d + política actual)',
   recommendLoadFailed: 'No se pudo cargar los modelos recomendados. Vuelva a intentarlo.',
   running: 'Escaneo en curso',

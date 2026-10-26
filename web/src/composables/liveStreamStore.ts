@@ -176,6 +176,34 @@ export interface LiveStreamDelta {
   status_legends: LiveStreamLegendItem[]
 }
 
+/**
+ * Slim wire (2026-10-27, ?slim=1): tile-granular alternative to
+ * LiveStreamDelta. The backend sends whole lanes per changed dimension,
+ * which at steady traffic re-sends nearly the full snapshot every 2s tick —
+ * the main driver of the ~200GB/day egress. The slim delta carries only the
+ * tiles that actually changed, keyed dim → lane id → patch, plus the lane
+ * roster diff. Upserts reuse the LiveStreamTile shape; `removed` carries
+ * request_ids that left the lane; removed_lanes lists lanes gone entirely.
+ */
+export interface LiveStreamLanePatch {
+  name?: string
+  stats: LiveStreamStats
+  upserts?: LiveStreamTile[]
+  removed?: string[]
+}
+
+export type LiveStreamTilePatchMap = Record<string, Record<string, LiveStreamLanePatch>>
+
+export interface LiveStreamTileDelta {
+  summary: LiveStreamStats
+  changed_tiles?: LiveStreamTilePatchMap
+  // Partial: the Go side is a plain map with omitempty — dimensions without
+  // changes are absent from the wire, never emitted as empty arrays.
+  removed_lanes?: Partial<Record<'credential' | 'vendor' | 'provider' | 'model', string[]>>
+  dimension_legends?: Partial<Record<'credential' | 'vendor' | 'provider' | 'model', LiveStreamLegendItem[]>>
+  status_legends?: LiveStreamLegendItem[]
+}
+
 export interface LiveStreamHealth {
   redis_connected: boolean
   redis_error?: string
@@ -252,6 +280,8 @@ export interface LiveStreamEnvelope {
   requests_present?: boolean
   snapshot?: LiveStreamSnapshot
   delta?: LiveStreamDelta
+  // Slim (?slim=1) tile-granular delta — replaces `delta` on slim clients.
+  tile_delta?: LiveStreamTileDelta
   health?: LiveStreamHealth
   incident?: RouteIncidentUpdate
   lane_ids?: string[]
@@ -450,7 +480,56 @@ function buildUrl(endpoint: string): string {
   // ignored by EventSource (it cannot set custom headers) — they must
   // rely on the cookie path, which admin/auth.go already supports via
   // ExtractBearerOrCookieToken.
-  return endpoint
+  // Slim wire (2026-10-27): opt into tile-granular deltas (?slim=1) and, when
+  // the UI expressed a lane dimension, subscribe to just that dimension
+  // (?dims=). An older backend ignores both unknown params, so rolling
+  // deploys degrade gracefully to the legacy whole-lane format. `dims=` with
+  // an empty value subscribes to NO dimension (queue-mode UIs) — the param
+  // must therefore be sent even when empty, and omitted entirely when the UI
+  // never expressed a preference.
+  const sep = endpoint.includes('?') ? '&' : '?'
+  let url = `${endpoint}${sep}slim=1`
+  if (streamDimsQuery !== null) url += `&dims=${encodeURIComponent(streamDimsQuery)}`
+  return url
+}
+
+// ── slim dims subscription ────────────────────────────────────────────────
+// The lane dimension the UI currently renders. 'queue' (the default view)
+// consumes dispatch-queue lanes that never ride the dimension delta, so it
+// maps to the empty subscription. null = no lane UI has spoken yet → omit
+// the dims param entirely (backend sends every dimension — the safe default
+// for consumers like RequestRegistryView that only read `request` events).
+let streamDimsQuery: string | null = null
+let dimsReconnectTimer: ReturnType<typeof setTimeout> | null = null
+
+/**
+ * Declare the lane dimension the UI currently shows ('' = queue mode →
+ * subscribe to no dimension). Changing the value while the stream is live
+ * schedules one debounced reconnect so the backend re-scopes the
+ * subscription and re-baselines from a fresh initial_data frame.
+ */
+export function setLiveStreamDimsQuery(query: string | null) {
+  if (query === streamDimsQuery) return
+  streamDimsQuery = query
+  if (refCount <= 0 || !es) {
+    // Not connected (or not acquired): the next openConnection() picks the
+    // new value up via buildUrl — no reconnect needed.
+    return
+  }
+  if (dimsReconnectTimer) clearTimeout(dimsReconnectTimer)
+  dimsReconnectTimer = setTimeout(() => {
+    dimsReconnectTimer = null
+    reconnectStream()
+  }, 300)
+}
+
+/** @internal test-only: reset the dims subscription between tests. */
+export function __resetStreamDimsForTest() {
+  streamDimsQuery = null
+  if (dimsReconnectTimer) {
+    clearTimeout(dimsReconnectTimer)
+    dimsReconnectTimer = null
+  }
 }
 
 // 用户层想要使用的最终 URL（可能被管理员通过弹窗覆盖）
@@ -946,7 +1025,20 @@ function handleEnvelope(env: LiveStreamEnvelope) {
     return
   }
 
-  if (env.delta) {
+  if (env.tile_delta) {
+    mergeTileDelta(env.tile_delta)
+    for (const dim of ['credential', 'vendor', 'provider', 'model'] as const) {
+      const patches = env.tile_delta.changed_tiles?.[dim]
+      if (!patches) continue
+      for (const patch of Object.values(patches)) {
+        for (const tile of patch.upserts ?? []) {
+          if (tile.timestamp && tile.timestamp > maxSeenTs) {
+            maxSeenTs = tile.timestamp
+          }
+        }
+      }
+    }
+  } else if (env.delta) {
     mergeDelta(env.delta)
     for (const dim of ['credential', 'vendor', 'provider', 'model'] as const) {
       const lanes = env.delta.changed_lanes[dim]
@@ -1206,6 +1298,90 @@ function mergeDelta(delta: LiveStreamDelta) {
     if (delta.dimension_legends && delta.dimension_legends[dim]) {
       if (!s.dimension_legends[dim]) s.dimension_legends[dim] = []
       mergeLegendsByKey(s.dimension_legends[dim], delta.dimension_legends[dim])
+    }
+  }
+}
+
+/**
+ * mergeTileDelta — slim (?slim=1) counterpart of mergeDelta. Applies
+ * tile-granular patches keyed dim → lane id, plus the lane roster diff
+ * (removed_lanes). Mirrors admin/live_stream_tile_delta.go: upserts replace
+ * by request_id in place or append (server order = oldest first); `removed`
+ * filters the lane's tiles; a lane patch for an unknown lane id creates the
+ * lane. Legends/summary ride the same envelope as the legacy format.
+ *
+ * Lane ORDER is deliberately handled exactly like mergeLanesById: existing
+ * lanes keep their positions, brand-new lanes append at the tail — the
+ * backend's rank reshuffle must not re-run leave/enter animations.
+ */
+function mergeTileDelta(td: LiveStreamTileDelta) {
+  if (!liveStreamState.snapshot) {
+    liveStreamState.snapshot = {
+      summary: td.summary,
+      dimensions: { credential: [], vendor: [], provider: [], model: [] },
+      dimension_legends: { credential: [], vendor: [], provider: [], model: [] },
+      status_legends: td.status_legends ?? [],
+    }
+  }
+  const s = liveStreamState.snapshot
+  s.summary = td.summary
+  if (td.status_legends) s.status_legends = td.status_legends
+  for (const dim of ['credential', 'vendor', 'provider', 'model'] as const) {
+    const patches = td.changed_tiles?.[dim]
+    if (patches) {
+      if (!s.dimensions[dim]) s.dimensions[dim] = []
+      for (const [laneId, patch] of Object.entries(patches)) {
+        if (!laneId) continue
+        let lane = s.dimensions[dim].find((item) => item.id === laneId)
+        if (!lane) {
+          lane = {
+            id: laneId,
+            name: patch.name || laneId,
+            dimension: dim,
+            requests: [],
+            stats: patch.stats,
+            isOthers: false,
+          }
+          s.dimensions[dim].push(lane)
+        } else {
+          lane.stats = patch.stats
+          if (patch.name) lane.name = patch.name
+        }
+        applyLanePatch(lane, patch)
+      }
+    }
+    const removedLanes = td.removed_lanes?.[dim]
+    if (removedLanes?.length && s.dimensions[dim]) {
+      const gone = new Set(removedLanes)
+      s.dimensions[dim] = s.dimensions[dim].filter((lane) => !gone.has(lane.id))
+    }
+    const legends = td.dimension_legends?.[dim]
+    if (legends) {
+      if (!s.dimension_legends[dim]) s.dimension_legends[dim] = []
+      mergeLegendsByKey(s.dimension_legends[dim], legends)
+    }
+  }
+}
+
+/** applyLanePatch applies one lane's upsert/remove patch in place. */
+function applyLanePatch(lane: LiveStreamLane, patch: LiveStreamLanePatch) {
+  if (patch.removed?.length) {
+    const gone = new Set(patch.removed)
+    lane.requests = lane.requests.filter((tile) => !gone.has(tile.request_id))
+  }
+  if (patch.upserts?.length) {
+    const byId = new Map<string, number>()
+    lane.requests.forEach((tile, i) => {
+      if (tile.request_id) byId.set(tile.request_id, i)
+    })
+    for (const tile of patch.upserts) {
+      const idx = tile.request_id ? byId.get(tile.request_id) : undefined
+      if (idx !== undefined) {
+        lane.requests[idx] = tile
+      } else {
+        lane.requests.push(tile)
+        if (tile.request_id) byId.set(tile.request_id, lane.requests.length - 1)
+      }
     }
   }
 }
@@ -1608,6 +1784,10 @@ export const __testing = {
   handleEnvelope,
   applyInitialData,
   mergeDelta,
+  mergeTileDelta,
+  // Slim wire (2026-10-27): URL/subscription hooks for the bandwidth tests.
+  buildUrl,
+  streamDimsQuery: () => streamDimsQuery,
   mergeSnapshotFromServer,
   mergeLaneList,
   mergeTilesById,

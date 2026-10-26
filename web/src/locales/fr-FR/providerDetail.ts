@@ -201,7 +201,7 @@ export default {
       mediaOnlyShort: "Média",
     },
     planTypeUnset: "Non défini (traité comme token)",
-    planTypeHint: "Utilisé par le routage ; cmb.billing_mode en est déduit",
+    planTypeHint: "Utilisé par le routage ; mode de facturation en est déduit",
     planTypes: {
       token: "token (à l'usage)",
       token_plan: "token_plan (abonnement)",
@@ -412,17 +412,17 @@ export default {
       chipUnavailable: "Indisponible"
     }
 ,
-    probeAllRecoveredHint: '✓ {n} modèles sondés sans problème ; node_probe_state rétabli automatiquement, candidats de routage réactivés',
+    probeAllRecoveredHint: '✓ {n} modèles sondés sans problème ; état de sondage rétabli automatiquement, candidats de routage réactivés',
 
     resetNodeProbeBtn: 'Clear failed probes',
 
     resetNodeProbeLoading: 'Clearing…',
 
-    resetNodeProbeTitle: 'Efface les lignes node_probe_state dont last_direct_ok vaut FALSE et rétablit le routage. À utiliser quand « Sonder tout » affiche OK alors que les candidats de routage restent bloqués.',
+    resetNodeProbeTitle: 'Efface les enregistrements de sonde en échec et rétablit le routage. À utiliser quand « Sonder tout » affiche OK alors que les candidats de routage restent bloqués.',
 
-    resetNodeProbeConfirm: 'Effacer toutes les lignes en échec de node_probe_state pour ce fournisseur ?',
+    resetNodeProbeConfirm: 'Effacer tous les enregistrements de sonde en échec pour ce fournisseur ?',
 
-    resetNodeProbeDone: '✓ {n} lignes en échec de node_probe_state effacées, candidats de routage réactivés',
+    resetNodeProbeDone: '✓ {n} enregistrements de sonde en échec effacés, candidats de routage réactivés',
     repairFailed: 'La réparation n’a pas pu aboutir. Veuillez réessayer.',
   },
   settings: {

@@ -1,7 +1,7 @@
 // routingAudit.ts — RoutingAuditView 文案。
 export default {
   title: '路由覆盖审计',
-  subtitle: 'routing_overrides 表的每次变更均会记录操作者、动作与行状态，用于追溯「谁在何时封禁了哪个模型」。',
+  subtitle: '每次路由覆盖变更都会记录操作者、动作与行状态，用于追溯「谁在何时封禁了哪个模型」。',
   summary: {
     total: '总计',
     inserts: '新增',

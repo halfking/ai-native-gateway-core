@@ -46,7 +46,7 @@ function goKeys(action?: string) {
         </div>
         <button
           type="button"
-          class="btn btn-primary btn-sm"
+          class="btn btn-ghost btn-sm"
           :disabled="loading"
           @click="emit('select', k.id)"
         >

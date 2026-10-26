@@ -35,6 +35,13 @@ const SKIP_FILES = new Set([
   'composables/liveStreamDisplay.ts',
   'utils/waterfallTimeline.ts',
   'types/swimlane.ts',
+  // 判据定义文件:里面的颜色字面量是【自证夹具】(故意写坏的 CSS 样本,
+  // 如 `box-shadow: 4px 4px 0 #000`)与【已知非规范取值】,
+  // 不是主题样式 —— 与上面 `*.test.ts` 跳过同理。
+  // ★ 这两个文件不是 .test.ts(它们是 vitest 可直接 import 的判据模块),
+  //   所以要显式登记,否则第 17/18 增量建目录之后 color:check 一直是红的。
+  'design/aiSmells.ts',
+  'design/elevation.ts',
 ])
 
 const HEX_RE = /#[0-9a-fA-F]{3,8}\b/g

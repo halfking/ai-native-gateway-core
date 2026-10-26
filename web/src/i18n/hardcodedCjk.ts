@@ -188,14 +188,36 @@ function tagBlockRanges(src: string, tag: string): Array<[number, number]> {
 const HTML_COMMENT_RE = /<!--[\s\S]*?-->/g
 const CSS_COMMENT_RE = /\/\*[\s\S]*?\*\//g
 
-/** 只在**非** script/style 的片段里剥 HTML 注释，避免吃掉脚本字符串里的 `<!--`。 */
+/**
+ * 只在**非** script/style 的片段里剥 HTML 注释，避免吃掉脚本字符串里的 `<!--`。
+ *
+ * ★★★ 2026-10-27 修：**保护区重叠会把内容重复拼接** ⇒ 长度变化 ⇒ 偏移全漂。
+ *   实测 3 个文件（`CorrelationsView.vue` / `FreeDiscoveryView.vue` / `ModelIntegrityView.vue`）
+ *   的 `<style>` 标签**落在 `<script>` 区间内**（如 FreeDiscoveryView：
+ *   script 内容区间 24→19960，而 `<style>` 开在 12768）
+ *   ⇒ 旧实现里 `cur` 已经推进到 19960，再来一个 `s=12775` 的区间：
+ *      `if (s > cur)` 不成立 ⇒ 跳过中间的切片，**却又把 `src.slice(12775, 51164)` 整段拼上去**
+ *      ⇒ 该段内容被复制了两遍 ⇒ 长度 +7185（= 19960 − 12775）。
+ *   ⇒ 后果：**所有复用 `maskSource` 的门，报的行号都是错的**（本轮实测：
+ *      `FreeDiscoveryView.vue` 的实心主色按钮真实在 615 行，门报 761 行）。
+ *   ⇒ 修法：**先把保护区合并成互不相交的区间**，再逐段处理；并保证 `cur` 单调不减。
+ */
 function maskHtmlCommentsOutside(src: string, protectedRanges: Array<[number, number]>): string {
+  // 合并重叠 / 相邻的保护区 ⇒ 互不相交
   const sorted = [...protectedRanges].sort((a, b) => a[0] - b[0])
+  const merged: Array<[number, number]> = []
+  for (const [s, e] of sorted) {
+    const last = merged[merged.length - 1]
+    if (last && s <= last[1]) last[1] = Math.max(last[1], e)
+    else merged.push([s, e])
+  }
   let out = ''
   let cur = 0
-  for (const [s, e] of sorted) {
-    if (s > cur) out += src.slice(cur, s).replace(HTML_COMMENT_RE, blankKeepNewlines)
-    out += src.slice(s, e)
+  for (const [s, e] of merged) {
+    if (e <= cur) continue
+    const start = Math.max(s, cur)
+    if (start > cur) out += src.slice(cur, start).replace(HTML_COMMENT_RE, blankKeepNewlines)
+    out += src.slice(start, e)
     cur = e
   }
   if (cur < src.length) out += src.slice(cur).replace(HTML_COMMENT_RE, blankKeepNewlines)

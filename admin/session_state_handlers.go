@@ -395,14 +395,19 @@ func (h *Handler) loadSessionsBatch(ctx context.Context, sessionIDs []string) (m
 	perSession := make(map[string]*session.Session, len(sessionIDs))
 	perStats := make(map[string]*session.SessionStats, len(sessionIDs))
 	for _, sid := range sessionIDs {
-		sess, err := h.sessionManager.Get(ctx, sid)
+		// ★ 读**一次** hash 即同时拿到 session 与 stats（GetWithStats）：
+		//   `Get` + `GetStats` 读的是同一份 `session:<id>` hash ⇒ 每会话
+		//   **4 次往返**（SafeHGetAll 内部 TYPE + HGETALL 各一次），
+		//   而批量路径只花 2 次往返走完全部会话。
+		//   ★ 降级路径恰恰在 **Redis 正出问题**时才会被走到 ⇒ 在最需要
+		//   减轻 Redis 压力的时候把往返翻倍，是最不该发生的事。
+		//   ★ 顺带消掉两次读之间的竞态窗口（key 消失 ⇒ stats 变 nil）。
+		sess, st, err := h.sessionManager.GetWithStats(ctx, sid)
 		if err != nil {
 			continue
 		}
 		perSession[sid] = sess
-		if st, err := h.sessionManager.GetStats(ctx, sid); err == nil {
-			perStats[sid] = st
-		}
+		perStats[sid] = st
 	}
 	return perSession, perStats
 }

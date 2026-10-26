@@ -35,7 +35,7 @@ export default {
     desc: '该请求的链路追踪数据不可用。',
     hint1: 'trace 仅在网关代码埋点启用时才会生成(默认开启)',
     hint2: '进行中的请求：trace 数据暂存在 Redis，可实时查看',
-    hint3: '已完成的请求：trace 数据已持久化到 request_logs.trace_events (JSONB)',
+    hint3: '已完成的请求：追踪数据已持久化到请求日志（JSONB）',
   },
   aiPrompt: {
     button: '🤖 生成 AI 分析提示词',

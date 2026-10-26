@@ -4,7 +4,7 @@ export default {
     refreshing: '刷新中…',
     loadFailed: '自动调优没能加载出来，请重试',
     panelTitle: '调参提案（批准即热调参，5 分钟内生效）',
-    noProposals: '暂无提案（feedback_analyzer 会按窗口自动生成）',
+    noProposals: '暂无提案（反馈分析器会按窗口自动生成）',
   filter: {
     statusAll: '全部',
     pending: '待审',
@@ -41,7 +41,7 @@ export default {
     generateNone: '窗口内修正样本不足或已有同类待审提案，未生成新提案',
     analyze: '运行信号分析',
     analyzing: '分析中…',
-    analyzeConfirm: '立即运行 feedback_analyzer 信号分析（tuning_signals 质量驱动提案）？',
+    analyzeConfirm: '立即运行反馈分析器的信号分析（基于调优信号的质量驱动提案）？',
     analyzeDone: '信号分析完成：{at}',
   },
   accuracy: {

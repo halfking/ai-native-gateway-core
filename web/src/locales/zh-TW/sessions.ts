@@ -1,6 +1,6 @@
 export default {
   list: {
-    emptyHint: "會話在請求記錄產生 gw_session_id 後自動彙總顯示",
+    emptyHint: "會話在請求記錄產生會話 ID 後自動彙總顯示",
   },
   userProfile: {
     loadFailed: '使用者畫像沒能載入出來，請重試',
@@ -260,7 +260,7 @@ export default {
     healthMetricComplianceHint: '聯動提示注入、PII 和輸出合規結果。',
     healthMetricOutcome: '會話結果',
     healthMetricOutcomeHint: '健康分數寫入會話分析資料后，可在分析中心檢視。',
-    healthSource: '來源：session_inspector 模組執行狀態',
+    healthSource: '來源：會話巡檢模組執行狀態',
     healthViewAnalytics: "打開會話分析",
     // 提示詞注入檢測配置（2026-07-12）
     promptInjectionTab: "提示詞注入",

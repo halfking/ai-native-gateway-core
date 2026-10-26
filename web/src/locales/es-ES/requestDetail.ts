@@ -89,7 +89,7 @@ export default {
       compress: 'Compresión',
       security: 'Redacción de seguridad',
     },
-    mappedToLogs: 'Corresponde a request_logs:',
+    mappedToLogs: 'Corresponde a registros de solicitudes:',
     openSingle: 'Abrir en modo solicitud única',
     noChildren: 'Sin sub-solicitudes',
     switchHint: 'Cambie al modo «Solicitud única» y a la pestaña «Compresión y redacción» para ver la comparación en tres etapas.',

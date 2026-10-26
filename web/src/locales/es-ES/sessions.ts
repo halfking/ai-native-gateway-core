@@ -1,6 +1,6 @@
 export default {
   list: {
-    emptyHint: "Las sesiones aparecen una vez que se genera un gw_session_id en los registros de solicitudes",
+    emptyHint: "Las sesiones aparecen una vez que se genera un ID de sesión en los registros de solicitudes",
   },
   userProfile: {
     loadFailed: 'No se pudo cargar el perfil de usuario. Vuelva a intentarlo.',
@@ -260,7 +260,7 @@ export default {
     healthMetricComplianceHint: 'Vincula resultados de inyección de prompt, PII y cumplimiento de salida.',
     healthMetricOutcome: 'Resultado de sesión',
     healthMetricOutcomeHint: 'Los puntajes de salud se escriben en datos de análisis de sesión y pueden verse en el centro de análisis.',
-    healthSource: 'Fuente: estado de funcionamiento del módulo session_inspector',
+    healthSource: 'Fuente: estado de funcionamiento del módulo de inspección de sesiones',
     healthViewAnalytics: "Abrir análisis de sesiones",
     // Configuración de detección de inyección de prompts (2026-07-12)
     promptInjectionTab: "Inyección de prompts",

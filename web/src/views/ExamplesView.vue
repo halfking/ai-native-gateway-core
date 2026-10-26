@@ -366,7 +366,7 @@ function toggleGuide(id: ClientGuideId) {
           <button class="btn btn-ghost btn-sm" @click="copyCode('curl', curlExample)">
             {{ copied === 'curl' ? t('examples.copied') : t('examples.copy') }}
           </button>
-          <button class="btn btn-primary btn-sm" @click="runTest('curl')" :disabled="drawers.curl.loading">
+          <button class="btn btn-ghost btn-sm" @click="runTest('curl')" :disabled="drawers.curl.loading">
             {{ drawers.curl.loading ? t('examples.testing') : t('examples.test') }}
           </button>
         </div>
@@ -381,7 +381,7 @@ function toggleGuide(id: ClientGuideId) {
           <button class="btn btn-ghost btn-sm" @click="copyCode('python', pythonExample)">
             {{ copied === 'python' ? t('examples.copied') : t('examples.copy') }}
           </button>
-          <button class="btn btn-primary btn-sm" @click="runTest('python')" :disabled="drawers.python.loading">
+          <button class="btn btn-ghost btn-sm" @click="runTest('python')" :disabled="drawers.python.loading">
             {{ drawers.python.loading ? t('examples.testing') : t('examples.test') }}
           </button>
         </div>
@@ -396,7 +396,7 @@ function toggleGuide(id: ClientGuideId) {
           <button class="btn btn-ghost btn-sm" @click="copyCode('stream', streamExample)">
             {{ copied === 'stream' ? t('examples.copied') : t('examples.copy') }}
           </button>
-          <button class="btn btn-primary btn-sm" @click="runTest('stream')" :disabled="drawers.stream.loading">
+          <button class="btn btn-ghost btn-sm" @click="runTest('stream')" :disabled="drawers.stream.loading">
             {{ drawers.stream.loading ? t('examples.testing') : t('examples.test') }}
           </button>
         </div>
@@ -411,7 +411,7 @@ function toggleGuide(id: ClientGuideId) {
           <button class="btn btn-ghost btn-sm" @click="copyCode('js', jsExample)">
             {{ copied === 'js' ? t('examples.copied') : t('examples.copy') }}
           </button>
-          <button class="btn btn-primary btn-sm" @click="runTest('js')" :disabled="drawers.js.loading">
+          <button class="btn btn-ghost btn-sm" @click="runTest('js')" :disabled="drawers.js.loading">
             {{ drawers.js.loading ? t('examples.testing') : t('examples.test') }}
           </button>
         </div>
@@ -426,7 +426,7 @@ function toggleGuide(id: ClientGuideId) {
           <button class="btn btn-ghost btn-sm" @click="copyCode('models', listModelsExample)">
             {{ copied === 'models' ? t('examples.copied') : t('examples.copy') }}
           </button>
-          <button class="btn btn-primary btn-sm" @click="runTest('models')" :disabled="drawers.models.loading">
+          <button class="btn btn-ghost btn-sm" @click="runTest('models')" :disabled="drawers.models.loading">
             {{ drawers.models.loading ? t('examples.testing') : t('examples.test') }}
           </button>
         </div>

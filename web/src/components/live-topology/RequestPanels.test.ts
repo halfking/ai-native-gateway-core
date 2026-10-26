@@ -6,7 +6,8 @@
 //  1. 两栏按状态着色，探测请求有独立标记；
 //  2. 缺省字段（无时延/无 token/无 session）渲染「—」，**禁止 0 冒充**
 //     —— 这是本仓反复吃过的亏（假零 = 假数据）；
-//  3. 放大是 emit 事件交给父层，父层开**新页**（不再有内联覆盖面板）。
+//  3. 放大是 emit 事件交给父层；父层先弹内联摘要浮层（RequestZoomPanel），
+//     浮层里的「查看全景」才开新页 —— **两步交互**（owner 2026-10-27 口径）。
 //
 // ★ 2026-10-24 审计改挂的理由（重要，不是搬家）：
 //   这组「详情内容」断言原本挂在 RequestZoomPanel.vue 上，但那个组件在
@@ -27,6 +28,7 @@ import { resolve } from 'node:path'
 import ClientRequestPanel from './ClientRequestPanel.vue'
 import ProviderResponsePanel from './ProviderResponsePanel.vue'
 import RequestDetailView from './RequestDetailView.vue'
+import RequestZoomPanel from './RequestZoomPanel.vue'
 import type { ClientSummary, PanelEntry } from '../../composables/useLiveTopology'
 import type { ActionEvent } from '../../composables/liveStreamStore'
 import zhCN from '../../locales/zh-CN/liveTopology'
@@ -405,24 +407,40 @@ describe('RequestDetailView', () => {
     expect(stages[0]).not.toBe('路由')
   })
 
-  it('★ the retired inline zoom panel stays retired (dead code must not come back)', () => {
-    // 2026-10-23「详情改开新页」之后，RequestZoomPanel.vue 失去了全部生产引用。
-    // 它一度只被本测试引用 ⇒ **死代码**：留着它 = 留一份没人渲染的 UI，
-    // 而它的样式（position:absolute 的 460px 覆盖层）正是当初盖住拓扑区的元凶。
-    // 这条判据把「已退役」钉成事实，而不是靠人的记忆。
+  it('★ 摘要浮层（RequestZoomPanel）已按属主 2026-10-27 口径恢复 —— 点行弹摘要，浮层里「查看全景」开新窗', () => {
+    // 2026-10-23「详情改开新页」曾把点行变成直接跳全页（跳过摘要）；
+    // 属主实测后要求改回旧版两步流 ⇒ 这条判据从「钉退役」翻转为「钉恢复」：
+    //   · 浮层文件存在，且被拓扑页**生产引用**（不是只被测试引用的死壳）；
+    //   · 浮层渲染的是共享的 RequestDetailView（与全页详情字段必然一致）。
     //
     // ⚠ 路径一律按 cwd（= web/）解析，不用 import.meta.url：这套 vitest 配置下
     //   import.meta.url **不是 file scheme**（new URL() 直接抛
     //   "The URL must be of scheme file"）——同仓 honesty.test.ts 早就踩过。
     const zoomPanelPath = resolve(process.cwd(), 'src/components/live-topology/RequestZoomPanel.vue')
-    expect(existsSync(zoomPanelPath), 'RequestZoomPanel.vue 已退役，不应再存在').toBe(false)
+    expect(existsSync(zoomPanelPath), '摘要浮层已恢复，不应缺失').toBe(true)
 
-    // 拓扑页不得再 import 它（万一有人把文件加回来，import 也会跟着回来）。
-    // ★ 只钉 **import 语句**：视图里仍留着提及该组件的历史注释（说明它已下线），
-    //   那是给人读的，不是引用。
     const viewPath = resolve(process.cwd(), 'src/views/LiveTopologyView.vue')
     const viewSource = readFileSync(viewPath, 'utf8')
-    expect(viewSource).not.toMatch(/import\s+RequestZoomPanel/)
-    expect(viewSource).not.toMatch(/from\s+['"][^'"]*RequestZoomPanel/)
+    expect(viewSource).toMatch(/import\s+RequestZoomPanel/)
+    expect(viewSource).toMatch(/<RequestZoomPanel/)
+
+    // 内容本体 = 共享详情（zoom__row 住在 RequestDetailView 里）
+    const wrapper = mount(RequestZoomPanel, {
+      props: { entry: entry(), decisions: [] },
+      global: { plugins: [i18n] },
+    })
+    expect(wrapper.findAll('.zoom__row').length).toBeGreaterThan(0)
+    expect(wrapper.get('[data-testid="zoom-open-page"]').text()).toContain('查看全景')
+  })
+
+  it('★ 浮层外壳的两个出口：「查看全景」emit open-page、✕ emit close（开新窗的裁决在父层）', async () => {
+    const wrapper = mount(RequestZoomPanel, {
+      props: { entry: entry(), decisions: [] },
+      global: { plugins: [i18n] },
+    })
+    await wrapper.get('[data-testid="zoom-open-page"]').trigger('click')
+    expect(wrapper.emitted('open-page')?.[0]?.[0]).toMatchObject({ requestId: 'r-1' })
+    await wrapper.get('.zoom__close').trigger('click')
+    expect(wrapper.emitted('close')).toHaveLength(1)
   })
 })

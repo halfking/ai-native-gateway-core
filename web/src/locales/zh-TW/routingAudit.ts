@@ -1,7 +1,7 @@
 // Auto-synced from en-US (zh-TW)
 export default {
   title: 'Routing Overrides Audit',
-  subtitle: 'routing_overrides 資料表的每次變更都會記錄操作者、動作與該列狀態。',
+  subtitle: '每次路由覆寫變更都會記錄操作者、動作與該列狀態。',
   summary: {
     total: 'Total',
     inserts: 'Inserts',

@@ -56,7 +56,7 @@ export default {
   latest: 'Letzter Scan',
   loadFeaturedFailed: 'Hervorgehobene Modelle konnten nicht geladen werden. Bitte erneut versuchen.',
   loading: 'Wird geladen…',
-  noRecommend: 'Keine Empfehlungen: keine erfolgreichen Anfragen in den letzten 7 Tagen, oder featured_models und beliebt sind beide leer',
+  noRecommend: 'Keine Empfehlungen: keine erfolgreichen Anfragen in den letzten 7 Tagen, oder der empfohlene Pool und der beliebte Pool sind beide leer',
   recommendBtn: '⚡ Auto-Empfehlung (7 Tage beliebt + aktuelle Richtlinie)',
   recommendLoadFailed: 'Empfehlungen konnten nicht geladen werden. Bitte erneut versuchen.',
   running: 'Scan läuft',

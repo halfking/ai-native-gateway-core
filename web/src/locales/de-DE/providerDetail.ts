@@ -201,7 +201,7 @@ export default {
       mediaOnlyShort: "Media",
     },
     planTypeUnset: "Nicht gesetzt (als token behandelt)",
-    planTypeHint: "Vom Routing verwendet; cmb.billing_mode wird daraus abgeleitet",
+    planTypeHint: "Vom Routing verwendet; Abrechnungsmodus wird daraus abgeleitet",
     planTypes: {
       token: "token (nutzungsbasiert)",
       token_plan: "token_plan (Abonnement)",
@@ -412,17 +412,17 @@ export default {
       chipUnavailable: "Nicht verfügbar"
     }
 ,
-    probeAllRecoveredHint: '✓ {n} Modelle geprüft und in Ordnung, node_probe_state automatisch wiederhergestellt, Routing-Kandidaten wieder aktiviert',
+    probeAllRecoveredHint: '✓ {n} Modelle geprüft und in Ordnung, Probe-Status automatisch wiederhergestellt, Routing-Kandidaten wieder aktiviert',
 
     resetNodeProbeBtn: 'Clear failed probes',
 
     resetNodeProbeLoading: 'Clearing…',
 
-    resetNodeProbeTitle: 'Zeilen in node_probe_state löschen, für die last_direct_ok=FALSE gilt, und das Routing wiederherstellen. Für den Fall, dass Probe all OK meldet, die Routing-Kandidaten aber gesperrt bleiben.',
+    resetNodeProbeTitle: 'Fehlgeschlagene Probe-Einträge löschen und das Routing erzwingen. Für den Fall, dass Probe all OK meldet, die Routing-Kandidaten aber gesperrt bleiben.',
 
-    resetNodeProbeConfirm: 'Alle fehlgeschlagenen Zeilen in node_probe_state für diesen Anbieter löschen?',
+    resetNodeProbeConfirm: 'Alle fehlgeschlagenen Probe-Einträge für diesen Anbieter löschen?',
 
-    resetNodeProbeDone: '✓ {n} fehlgeschlagene Zeilen in node_probe_state gelöscht, Routing-Kandidaten wieder aktiviert',
+    resetNodeProbeDone: '✓ {n} fehlgeschlagene Probe-Einträge gelöscht, Routing-Kandidaten wieder aktiviert',
     repairFailed: 'Reparatur konnte nicht abgeschlossen werden. Bitte erneut versuchen.',
   },
   settings: {

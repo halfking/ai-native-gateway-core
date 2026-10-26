@@ -201,7 +201,7 @@ export default {
       mediaOnlyShort: "メディア",
     },
     planTypeUnset: "未設定（token として処理）",
-    planTypeHint: "ルーティング時、cmb.billing_mode はここから自動派生します",
+    planTypeHint: "ルーティング時、課金モードはここから自動派生します",
     planTypes: {
       token: "token (従量課金)",
       token_plan: "token_plan (サブスクリプション)",
@@ -412,17 +412,17 @@ export default {
       chipUnavailable: "利用不可"
     }
 ,
-    probeAllRecoveredHint: "✓ {n} 件のモデルでプローブ成功。node_probe_state は自動復旧し、ルーティング候補が再び利用可能です",
+    probeAllRecoveredHint: "✓ {n} 件のモデルでプローブ成功。プローブ状態は自動復旧し、ルーティング候補が再び利用可能です",
 
     resetNodeProbeBtn: "失敗したプローブ状態をクリア",
 
     resetNodeProbeLoading: "クリア中…",
 
-    resetNodeProbeTitle: "node_probe_state の last_direct_ok=FALSE の行をクリアします（ルーティングを強制復旧）。「すべてのモデルを検出」で OK と表示されてもルーティング候補が blocked のままの場合に使用します。",
+    resetNodeProbeTitle: "プローブ失敗のレコードをクリアします（ルーティングを強制復旧）。「すべてのモデルを検出」で正常と表示されてもルーティング候補がブロックのままの場合に使用します。",
 
-    resetNodeProbeConfirm: "このプロバイダーの失敗した node_probe_state 行をすべてクリアしますか？",
+    resetNodeProbeConfirm: "このプロバイダーの失敗したプローブ記録行をすべてクリアしますか？",
 
-    resetNodeProbeDone: "✓ 失敗した node_probe_state {n} 行をクリアし、ルーティング候補が即座に復旧しました",
+    resetNodeProbeDone: "✓ 失敗したプローブ記録 {n} 行をクリアし、ルーティング候補が即座に復旧しました",
     repairFailed: '修復を完了できませんでした。再試行してください。',
   },
   settings: {

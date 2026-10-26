@@ -32,7 +32,7 @@ export default {
     desc: 'Trace data is not available for this request.',
     hint1: 'Trace is emitted only when instrumentation is enabled (default: on)',
     hint2: 'In-progress requests: trace data is in Redis and viewable in real-time',
-    hint3: 'Completed requests: trace data is persisted to request_logs.trace_events (JSONB)',
+    hint3: 'Completed requests: trace data is persisted to the request logs (JSONB)',
   },
   aiPrompt: {
     button: '🤖 Generate AI Prompt',

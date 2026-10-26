@@ -8,7 +8,7 @@
 //   顶部  客户端 / 供应商 / 模型 / 节点 四维**多选**过滤（同维 OR、跨维 AND）
 //   左    客户端请求摘要（聚合摘要 + 逐条明细）
 //   中    实时拓扑：上→下 客户端 → 网关核心大方块 → 供应端节点 → 模型
-//   右    供应商端响应的请求（点 ⤢ 放大，内联覆盖面板）
+//   右    供应商端响应的请求（点行弹摘要浮层，「查看全景」开新窗）
 //   左下  供应商当天请求/token 统计（UTC 日桶，水位显式展示）
 //
 // **关键约束**：图、左右两栏、左下统计必须收敛到同一个过滤子集，
@@ -28,6 +28,7 @@ import ClientRequestPanel from '../components/live-topology/ClientRequestPanel.v
 import ProviderResponsePanel from '../components/live-topology/ProviderResponsePanel.vue'
 import ProviderTodayRail from '../components/live-topology/ProviderTodayRail.vue'
 import RoutingDecisionTimeline from '../components/live-topology/RoutingDecisionTimeline.vue'
+import RequestZoomPanel from '../components/live-topology/RequestZoomPanel.vue'
 import type { ParticleSpawn } from '../lib/liveTopologyParticles'
 import type { GatewayModuleKey, TopoNode } from '../types/liveTopology'
 import { DEFAULT_TOPO_FILTERS, TOPO_WINDOW_PRESETS } from '../types/liveTopology'
@@ -41,6 +42,8 @@ const topo = useLiveTopology()
 
 const selectedNodeId = ref<string | null>(null)
 const selectedRequestId = ref<string | null>(null)
+/** 点行弹出的内联摘要浮层（两步交互第一步：先摘要，后全景）。 */
+const zoomEntry = ref<PanelEntry | null>(null)
 const highlightEdges = ref<string[]>([])
 const spawns = ref<ParticleSpawn[]>([])
 /** 点网关模块 → 高亮该格（纯视觉聚焦，不改变过滤子集）。 */
@@ -175,20 +178,20 @@ function onSelectRequest(requestId: string) {
 }
 
 /**
- * 点面板里的放大按钮 = 「查看这条请求的详情」。
+ * 点面板行 = 「弹出这条请求的摘要」（两步交互的第一步，owner 2026-10-27 口径）。
  *
- * 2026-10-23（属主口径）：走**全屏详情页 `/request-detail/<id>` 并开新页**，
- * 不再是内联覆盖浮层，也不再是同标签页跳 `/live/request/:id`。
- * 与站内其余入口（RequestLogsView / DashboardViewV2 / DispatchWaterfallView …）
- * 共用同一个 openRequestDetailPage —— 此前只有本页自己另开了一条同页路由，
- * 造成「同一个请求在别处开新页、在实时拓扑里原地跳」的不一致。
+ * 2026-10-23 曾把点行改成直接开全页详情（跳过摘要）；属主实测后要求改回
+ * 旧版两步流：点行 → 内联摘要浮层（本页不跳转、不开新窗，拓扑图仍在视野）；
+ * 浮层里的「查看全景」（onOpenPage）才开新窗展示整个请求详情。
  */
 function onZoomRequest(entry: PanelEntry) {
+  zoomEntry.value = entry
   onSelectRequest(entry.requestId)
-  openRequestDetailPage(entry.requestId, undefined, router)
 }
 
-/** 面板行 ↗（全页打开）：与放大按钮同一条出口。 */
+/** 「查看全景」（浮层按钮 / 面板行 ↗）：全页详情开新窗。
+ *  与站内其余入口（RequestLogsView / DashboardViewV2 / DispatchWaterfallView …）
+ *  共用同一个 openRequestDetailPage。 */
 function onOpenPage(entry: PanelEntry) {
   if (!entry.requestId) return
   openRequestDetailPage(entry.requestId, undefined, router)
@@ -205,6 +208,9 @@ function clearFilters() {
 }
 
 const decisions = computed(() => (selectedRequestId.value ? topo.decisionsFor(selectedRequestId.value) : []))
+
+/** 摘要浮层里的路由决策时间线（与左侧 timeline 同一份数据源）。 */
+const zoomDecisions = computed(() => (zoomEntry.value ? topo.decisionsFor(zoomEntry.value.requestId) : []))
 
 
 const coreSummary = computed(() => {
@@ -396,6 +402,15 @@ function onSelectProvider(code: string) {
           @zoom="onZoomRequest"
           @open-page="onOpenPage"
         />
+        <!-- 内联摘要浮层（两步交互第一步）：absolute 定位，靠本列的
+             position:relative 当定位基准（丢了基准会退到视口盖满整屏）。 -->
+        <RequestZoomPanel
+          v-if="zoomEntry"
+          :entry="zoomEntry"
+          :decisions="zoomDecisions"
+          @close="zoomEntry = null"
+          @open-page="onOpenPage"
+        />
       </div>
     </div>
   </div>
@@ -563,9 +578,10 @@ function onSelectProvider(code: string) {
   flex-direction: column;
   gap: 8px;
   min-height: 0;
-  /* 内联放大面板（RequestZoomPanel）已下线：请求详情改为新页打开
-     /request-detail/:id（属主 2026-10-23 口径）。position:relative 保留 ——
-     子面板内部仍有 absolute 定位元素依赖本列作定位基准。 */
+  /* RequestZoomPanel 是 position:absolute 的内联摘要浮层。没有这行，
+     它的 containing block 会退到视口，右下角那块 460px 面板会盖住拓扑区
+     和左栏 —— 窄屏下几乎占满整屏。必须由本列当定位基准（stage 列里的
+     TopologyCanvas 覆盖层同样依赖它）。 */
   position: relative;
 }
 

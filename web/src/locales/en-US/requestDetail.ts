@@ -89,7 +89,7 @@ export default {
       compress: 'Compression',
       security: 'Security redaction',
     },
-    mappedToLogs: 'Mapped to request_logs:',
+    mappedToLogs: 'Mapped to request logs:',
     openSingle: 'Open in single-request mode',
     noChildren: 'No sub-requests',
     switchHint: 'Switch to "Single request" → "Compression & redaction" tab to view the three-stage comparison.',

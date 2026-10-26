@@ -658,6 +658,46 @@ func (sm *Manager) ListStoppedSessions(ctx context.Context, tenantID string, lim
 	return client.SRandMemberN(ctx, fmt.Sprintf("session:stopped:%s", tenantID), int64(limit)).Result()
 }
 
+// GetWithStats 读取一次会话 hash，同时派生 Session 与 SessionStats（**不重复读**）。
+//
+// ★ 为什么要它：`Get` 与 `GetStats` 读的是**同一份 hash**（`session:<id>`）。
+//
+//	逐键路径若先 `Get` 再 `GetStats` ⇒ **同一份数据取了两遍**；而
+//	`SafeHGetAll` 内部是 TYPE + HGETALL **两次往返** ⇒ 每会话 **4 次往返**。
+//	★ 批量路径 `GetBatch` 早已按「读一次、同一份快照派生两者」实现
+//	（见 domains/session/session_state_batch.go 的设计段：往返 4N → 2），
+//	逐键路径（批量失败时的降级路径）应当**同形**。
+//
+// ★ 同时消掉两次读之间的**竞态窗口**：旧路径里 Get 成功后 GetStats 是第二次读，
+//
+//	若两次读之间 key 消失 ⇒ stats 变 nil；而批量路径从同一份快照派生 ⇒
+//	stats 恒非 nil。降级路径与主路径的语义应当一致。
+func (sm *Manager) GetWithStats(ctx context.Context, sessionID string) (*Session, *SessionStats, error) {
+	if sm == nil || sm.redis == nil {
+		return nil, nil, ErrSessionNotFound
+	}
+	client := sm.redis.Client()
+	if client == nil {
+		return nil, nil, ErrSessionNotFound
+	}
+	data, err := redissafe.SafeHGetAll(ctx, client, "session:"+sessionID)
+	if err != nil {
+		if errors.Is(err, redissafe.ErrKeyNotFound) {
+			return nil, nil, ErrSessionNotFound
+		}
+		if errors.Is(err, redissafe.ErrWrongType) {
+			logSessionTypeMismatch("get_with_stats", sessionID, err)
+			return nil, nil, ErrSessionNotFound
+		}
+		return nil, nil, fmt.Errorf("redis error reading session: %w", err)
+	}
+	sess, err := sessionFromRedisHash(sessionID, data)
+	if err != nil {
+		return nil, nil, err
+	}
+	return sess, sessionStatsFromRedisHash(data), nil
+}
+
 // GetEnrichedSession 读取完整的会话详情（含统计与轮换历史）
 func (sm *Manager) GetEnrichedSession(ctx context.Context, sessionID string) (*Session, *SessionStats, []CredRotationEntry, error) {
 	if sm == nil || sm.redis == nil {

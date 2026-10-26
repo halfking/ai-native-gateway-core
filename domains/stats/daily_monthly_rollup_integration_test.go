@@ -278,3 +278,63 @@ func TestRollup_ClosedRowsAreSurfaced(t *testing.T) {
 		t.Fatalf("RecordStatsMonthlyClosedSkipped(2): counter = %v, want %v", got, beforeHelper+2)
 	}
 }
+
+// TestRollup_PeerLockSkipsRebuild pins the R168 single-runner advisory lock
+// (252 SQL log round, 2026-10-27): when a peer gateway already holds the
+// stats-rollup key, Refresh must skip cleanly — return nil, rebuild nothing,
+// leave the daily window untouched — instead of racing the peer through the
+// same DELETE+INSERT until the statement timeout kills both. Releasing the
+// key must let the next Refresh rebuild normally (lock must not wedge the
+// worker).
+func TestRollup_PeerLockSkipsRebuild(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+
+	pool, conn := setupRollupContainer(t, ctx)
+
+	now := time.Now().UTC()
+	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+	seedRollupFact(t, ctx, conn, "roll-peer-lock", today.Add(12*time.Hour))
+
+	// Hold the SAME key session-level on a dedicated pooled connection —
+	// the exact state when both instances tick at once.
+	holder, err := pool.Acquire(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		// Unlock BEFORE Release: using a pooled conn after Release panics on
+		// the nil resource (first run of this test learned that the hard way).
+		_, _ = holder.Exec(context.Background(), `SELECT pg_advisory_unlock($1)`, statsRollupLockKey)
+		holder.Release()
+	}()
+	if _, err := holder.Exec(ctx, `SELECT pg_advisory_lock($1)`, statsRollupLockKey); err != nil {
+		t.Fatalf("peer lock acquire: %v", err)
+	}
+
+	rollup := NewDailyMonthlyRollup(pool, time.Hour)
+	if err := rollup.Refresh(ctx, today, today.Add(48*time.Hour)); err != nil {
+		t.Fatalf("Refresh under peer lock must skip cleanly, got error: %v", err)
+	}
+	var dailyRows int64
+	if err := conn.QueryRow(ctx, `SELECT count(*) FROM stats_usage_daily`).Scan(&dailyRows); err != nil {
+		t.Fatal(err)
+	}
+	if dailyRows != 0 {
+		t.Fatalf("Refresh must not rebuild while the peer holds the lock, got %d daily rows", dailyRows)
+	}
+
+	// Release; the next Refresh must proceed (the lock must not wedge).
+	if _, err := holder.Exec(ctx, `SELECT pg_advisory_unlock($1)`, statsRollupLockKey); err != nil {
+		t.Fatal(err)
+	}
+	if err := rollup.Refresh(ctx, today, today.Add(48*time.Hour)); err != nil {
+		t.Fatalf("Refresh after lock release: %v", err)
+	}
+	if err := conn.QueryRow(ctx, `SELECT count(*) FROM stats_usage_daily`).Scan(&dailyRows); err != nil {
+		t.Fatal(err)
+	}
+	if dailyRows == 0 {
+		t.Fatal("Refresh must rebuild after the peer lock is released")
+	}
+}

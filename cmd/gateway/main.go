@@ -2576,6 +2576,18 @@ func main() {
 		// 一次限流（authenticateNoRPM 的口径，见 summarize.go）。
 		summarizeSvc := streaming.NewSummarizeService()
 		summarizeSvc.SetAuth(keyVerifier)
+		// 2026-10-27：asm 在线优先委托——长文本总结在 ai-session-manager
+		// 在线时交给它的智能体端点（grounded 纪要；其 LLM 上游同样指向
+		// 本地模型），离线/失败回退本服务的 map-reduce。LLM_GATEWAY_ASM_
+		// BASE_URL 为空 = 关闭（恒走网关管线）。
+		if asmBase := strings.TrimSpace(os.Getenv("LLM_GATEWAY_ASM_BASE_URL")); asmBase != "" {
+			asmPluginID := strings.TrimSpace(os.Getenv("LLM_GATEWAY_ASM_PLUGIN_ID"))
+			if asmPluginID == "" {
+				asmPluginID = "ai-session-manager"
+			}
+			summarizeSvc.SetASMDelegate(asmBase, asmPluginID, "default", []byte(cfg.SecretKey))
+			slog.Info("summarize asm delegate enabled", "base_url", asmBase, "plugin_id", asmPluginID)
+		}
 		summarizeHandler = streaming.NewSummarizeHandler(summarizeSvc)
 		// 2026-10-08 Phase C：图/视频统一出口骨架（media 路由域）。
 		imagesGenerationsHandler = streaming.NewImagesGenerationsHandler(providerClient, upClient)

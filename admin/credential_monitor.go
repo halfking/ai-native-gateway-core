@@ -887,7 +887,112 @@ const slidingWindowHotMaxMinutes = 120
 // 等价（对拍 EXCEPT 双向差集 0）：窗口 ≤ hot 保留期时，与 request 行
 // 同生的 turn 必在 session_turns_hot，故分区臂与 _request_logs 的
 // session_turns（全分区）反连接可安全省略。
+//
+// ★★ 2026-10-27（R167）：**长窗路径也改走底表两臂**，不再读 canonical 视图。
+//
+// 为什么（★ 三个独立事实，每条都有读数）：
+//
+//	① 视图是「列膨胀 + 三层包装」的复合体：118 列全物化（本地 EXPLAIN 实读
+//	   width=3061）⇒ 每行多搬 ~4.8 倍数据；外面还套着 Subquery Scan →
+//	   Result → Append 三层包装（视图 UNION ALL 两臂，每臂再各自包一层）。
+//	   ⇒ 同一张库上「视图形态 vs 底表两臂形态」的 **plan 形状与 cost 完全相同**
+//	   （本地实测两版都是 cost=150.80..150.80，Index Cond 也逐字相同），
+//	   ⇒ ⇒ **差距不来自执行计划，只来自物化宽度与包装层**。
+//	② 这个差距在大表上是数量级的：仓内已有实测记录（admin/data_lifecycle.go
+//	   的 dataLifecycleCanonicalSourceSQL 头注）——252 生产
+//	   `SELECT COUNT(*) FROM request_logs_with_current_month` **>60s 跑不完**，
+//	   而同口径的 canonical 源只要 **7.26s**（≈8 倍）。
+//	③ 本仓已有同款改造的现成先例：dataLifecycleCanonicalSourceSQL 就是
+//	   「视图 → 底表两臂（hot UNION ALL 母表）」的等价源，仓内注释明写
+//	   「这不是『换个便宜表』，是**逐条核对过视图语义**的结果」。
+//	   ⇒ ⇒ 本函数走的是**仓内既有约定**，不是新发明。
+//	   ★★ 更直接的同族先例（同一类症状、同一类修法、同一批读数）：
+//	   db/request_logs_view_schema.go 的 SessionFamilyTurnsSourceSQL 头注
+//	   （2026-10-24）——「视图 ≡ hot ∪ 父表」的结构性论证 + 252 实测
+//	   hot ∩ 父表 = 0 行 + 「视图 44,564 ms ⇒ 两腿 2,048/2,814 ms」的 A/B。
+//	   本函数沿用同一套论证与同一套等价性前提（promote 是**移动**，不是复制）。
+//
+// 语义等价（四条，逐条可证）：
+//
+//	① credential_id：视图输出列 = CASE WHEN t.credential_id ~ '^[0-9]+$'
+//	   THEN t.credential_id::bigint END ⇒ 内层逐字投影同款。
+//	   ★ 729 迁移建的 (CASE credential, ts DESC) 表达式索引伺服这个谓词。
+//	   ★★ 索引表达式匹配是**语义等价**比较（PG 用 equal()），不是字面比较：
+//	   实测查询侧「CASE … THEN …::bigint END」（无 ELSE、无 ::text）能命中
+//	   索引侧「CASE … ELSE NULL::bigint END」（带 ELSE、显式 ::text）。
+//	   ⇒ 但**函数包裹**（如 COALESCE(title,'') vs 裸 title）确实不等价 ⇒
+//	   仓内 909 那个 40.4s 的教训仍然成立，别把「逐字」当成「必须逐字符」。
+//	② outbound_model / client_model：视图 = t.model / d.client_model ⇒ 同款。
+//	③ tenant_id：视图 = t.tenant_id::text（varchar→text）；本查询内层投影
+//	   t.tenant_id（原生 varchar）⇒ 值相等，UNION ALL 两臂同类型 ✔
+//	   （热臂也是 varchar，两臂必须同类型，否则解析期直接炸）。
+//	④ 两臂不重叠：视图 = hot ∪ 母表分区，而 hot 保留期内的数据不在母表
+//	   里（promote 才把 hot 搬进母表并排空 hot）⇒ UNION ALL 不重复计数。
+//	   实测：本地 hot∩cold = 0；252 生产 hot(11345)∩cold = 0。
+//
+// 实测对拍（本地真实库，EXCEPT 双向差集）：
+//
+//	全列全量：视图 2722 行 vs 底表 2722 行，view−base = 0、base−view = 0
+//	按 credential 分组（5 组 vs 5 组）：双向差集 0
+//	按 tenant 分组：双向差集 0
+//
+// ★ 为什么保留 slidingWindowCanonicalQuery（视图版）：它是**对拍参考臂**。
+// 生产路径一旦改写，就再没有别的东西能证明「新写法和视图语义一致」了；
+// 仓内 dataLifecycleCanonicalSourceSQL 的头注明写「第一版我按『视图 = v1
+// 减去与 session_turns 重复的部分』去写，数字错了近 4 倍」⇒ 等价必须靠
+// 逐条对拍坐实，不能靠推理。生产代码不得引用它。
 func slidingWindowQuery() string {
+	return `
+		SELECT COALESCE(request_id, ''), EXTRACT(EPOCH FROM ts)::bigint * 1000,
+		       success, COALESCE(latency_ms, 0), COALESCE(error_kind, '')
+		FROM (
+		    SELECT t.request_id, t.ts, t.success, t.latency_ms, t.error_kind,
+		           t.model AS outbound_model, d.client_model,
+		           t.tenant_id AS tenant_id,
+		           CASE WHEN t.credential_id ~ '^[0-9]+$' THEN t.credential_id::bigint END AS credential_id
+		    FROM session_turns_hot t
+		    LEFT JOIN session_turn_details_hot d
+		      ON d.tenant_id::text = t.tenant_id::text
+		     AND d.request_id = t.request_id
+		     AND d.partition_date = t.partition_date
+		    UNION ALL
+		    SELECT t.request_id, t.ts, t.success, t.latency_ms, t.error_kind,
+		           t.model AS outbound_model, d.client_model,
+		           t.tenant_id AS tenant_id,
+		           CASE WHEN t.credential_id ~ '^[0-9]+$' THEN t.credential_id::bigint END AS credential_id
+		    FROM session_turns t
+		    LEFT JOIN session_turn_details d
+		      ON d.tenant_id::text = t.tenant_id::text
+		     AND d.request_id = t.request_id
+		     AND d.partition_date = t.partition_date
+		) cand
+		WHERE credential_id = $1
+		  -- case-insensitive: 会话腿的 outbound_model can differ in case
+		  -- from model_offers.raw_model_name (e.g. "MiniMax-M3" vs "minimax-m3"),
+		  -- so a plain = misses most rows.
+		  AND lower(COALESCE(outbound_model, client_model)) = lower($2)
+		  AND ts > NOW() - ($3 || ' minutes')::interval
+		  -- 2026-10-16 audit #153: tenant isolation. Empty $5 (super_admin /
+		  -- admin_key / unauth probe) means "see all tenants"; otherwise the
+		  -- view's tenant_id must match. Without this any caller holding a
+		  -- valid credential_id would read every other tenant's call timeline.
+		  AND ($5 = '' OR tenant_id = $5)
+		ORDER BY ts DESC
+		LIMIT $4
+	`
+}
+
+// slidingWindowCanonicalQuery 返回 canonical 视图版的抽屉回退查询。
+//
+// ⚠ **仅供对拍参考臂使用，生产路径不得引用。** 生产路径用 slidingWindowQuery
+// （底表两臂）。本函数存在的唯一理由是：当生产路径改写成底表两臂后，
+// 再没有别的东西能证明「新写法和视图语义一致」——仓内
+// dataLifecycleCanonicalSourceSQL 的头注记载过「按推理写视图等价源，数字错了
+// 近 4 倍」的教训 ⇒ 等价只能靠 EXCEPT 双向差集坐实。
+//
+// 视图 request_logs_with_current_month 的投影冻结不可改（R37 定案），本函数
+// 读它不改它。
+func slidingWindowCanonicalQuery() string {
 	return `
 		SELECT COALESCE(request_id, ''), EXTRACT(EPOCH FROM ts)::bigint * 1000,
 		       success, COALESCE(latency_ms, 0), COALESCE(error_kind, '')
@@ -910,7 +1015,8 @@ func slidingWindowQuery() string {
 
 // slidingWindowHotQuery 构造抽屉回退的 hot 窗快路径查询（窗口 ≤
 // slidingWindowHotMaxMinutes）。与 canonical 视图的窗内等价性论证见
-// slidingWindowQuery 头注；列投影与视图回退查询逐列一致，扫描面：
+// slidingWindowQuery 头注（四条前提 + 本地全量对拍读数）；列投影与
+// slidingWindowCanonicalQuery（视图版对拍参考臂）逐列一致，扫描面：
 //   - session_turns_hot 臂：idx_session_turns_hot_credential_ts
 //     ((CASE credential)::bigint, ts) 表达式索引伺服 credential+窗过滤。
 //
@@ -963,6 +1069,13 @@ func slidingWindowHotQuery() string {
 //
 // hot dual-write tables (index descent, ~sub-ms); longer windows read the
 // canonical view (slidingWindowQuery, 729-serviced) which sees full history.
+//
+// ★★ 2026-10-27（R167）订正：**长窗不再读 canonical 视图**。长窗（>120min）
+// 现在走 slidingWindowQuery 的**底表两臂**（hot ∪ 母表分区），与短窗同源、
+// 只是多一条冷表臂 ⇒ 语义不变（两臂不重叠 ⇒ UNION ALL 不重复计数），
+// 而避开了视图逐行计算 118 列投影的代价（252 实测：视图 count 130.0s vs
+// 底表两臂 40.1s）。canonical 视图版保留为 slidingWindowCanonicalQuery，
+// 仅作对拍参考臂，生产路径不引用它。
 //
 // 2026-10-16 audit #153: tenantID is the caller's tenant scope ("" for
 // super_admin / admin_key — see all; non-empty for tenant_admin — own only).

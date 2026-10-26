@@ -326,6 +326,28 @@ GET http://localhost:8781/api/admin/session-audit/export?tenant_id=xxx
 
 ---
 
+#### 多模态与文本加工（本地模型优先）
+```bash
+# 嵌入（本地 qwen3-embedding:8b = 4096 维）
+POST /v1/embeddings          {"model":"qwen3-embedding:8b","input":"..."}
+
+# 语音转写（whisper.cpp 双档：whisper-large-v3-turbo / whisper-large-v3）
+POST /v1/audio/transcriptions   multipart: file, model, language
+
+# 语音合成（本地 macOS say 垫片）
+POST /v1/audio/speech        {"model":"tts-macos-say","input":"...","voice":"alloy"}
+
+# 内容/会话总结（短文本单次；长文本 map→reduce→render 纪要管线；
+# asm 在线时委托其智能体端点，响应 engine 字段区分 asm | gateway）
+POST /v1/summarize           {"model":"qwen3.8:27b-mlx","map_model":"qwen2.5:7b","text":"...","style":"minutes"}
+
+# 标题总结（≤20 字动宾，实体择优）
+POST /v1/summarize/title     {"model":"qwen2.5:7b","text":"..."}
+
+# 任务分类（受控词表，可带 vocab 覆盖）
+POST /v1/classify            {"model":"qwen2.5:7b","text":"..."}
+```
+
 ## 配置参考
 
 ### 环境变量

@@ -89,7 +89,7 @@ export default {
       compress: 'Compression',
       security: 'Masquage de sécurité',
     },
-    mappedToLogs: 'Mappé vers request_logs :',
+    mappedToLogs: 'Mappé vers les journaux de requêtes :',
     openSingle: 'Ouvrir en mode requête unique',
     noChildren: 'Aucune sous-requête',
     switchHint: 'Basculez en mode « Requête unique » puis sur l\'onglet « Compression et masquage » pour voir la comparaison en trois étapes.',

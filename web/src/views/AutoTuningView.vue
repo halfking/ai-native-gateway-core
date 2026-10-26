@@ -320,7 +320,7 @@ onMounted(() => {
             <td class="actions">
               <template v-if="p.status === 'pending'">
                 <button
-                  class="btn btn-primary btn-xs"
+                  class="btn btn-xs"
                   :disabled="acting === p.id"
                   @click="approve(p.id)"
                 >{{ t('autoTuning.action.approve') }}</button>

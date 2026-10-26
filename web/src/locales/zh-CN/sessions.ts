@@ -3,7 +3,7 @@
 // 命名空间：list / compare / audit / management / config。
 export default {
   list: {
-    emptyHint: '会话在请求日志产生 gw_session_id 后自动聚合显示',
+    emptyHint: '会话在请求日志产生会话 ID 后自动聚合显示',
   },
   userProfile: {
     loadFailed: '用户画像没能加载出来，请重试',
@@ -263,7 +263,7 @@ export default {
     healthMetricComplianceHint: '联动提示注入、PII 和输出合规结果。',
     healthMetricOutcome: '会话结果',
     healthMetricOutcomeHint: '健康分数写入会话分析数据后，可在分析中心查看。',
-    healthSource: '来源：session_inspector 模块运行状态',
+    healthSource: '来源：会话巡检模块运行状态',
     healthViewAnalytics: '打开会话分析',
     // 提示词注入检测配置（2026-07-12）
     promptInjectionTab: '提示词注入',

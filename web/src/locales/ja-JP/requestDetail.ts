@@ -89,7 +89,7 @@ export default {
       compress: '圧縮',
       security: 'セキュリティマスキング',
     },
-    mappedToLogs: '対応する request_logs:',
+    mappedToLogs: '対応するリクエストログ:',
     openSingle: '単一リクエストモードで開く',
     noChildren: '子リクエストなし',
     switchHint: '「単一リクエスト」モードの「圧縮とマスキング」タブに切り替えると 3 段階の比較を確認できます。',

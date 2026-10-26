@@ -673,11 +673,20 @@ prune_releases_safe() {
     cd '$REMOTE_ROOT/releases' 2>/dev/null || exit 0
     active='$active_version'
     keep_unverified=2
+    # 2026-10-27 245 现场实证（seq 2873 部署轮）：current 指向的 unverified
+    # release（2823）被本函数删掉 ⇒ nginx SPA 根 current/web 悬空 ⇒
+    # try_files 内部重定向循环 ⇒ /?login=1 全站 500，而 healthz 全绿 ⇒
+    # 部署照样报成功。⇒ current 与 slots/* 指向的 release 一律不删
+    # （即使 unverified）——删掉它们等于拆掉正在服务或可回滚的地板。
+    cur_release=\$(readlink '$REMOTE_ROOT/current' 2>/dev/null | xargs basename 2>/dev/null || true)
+    slot_targets=\$(for s in '$REMOTE_ROOT'/slots/*; do [ -L \"\$s\" ] && readlink \"\$s\" | xargs basename 2>/dev/null; done)
     # 收集 unverified (按 mtime 降序)，保留最新 keep_unverified 个，其余删除
     unverified_list=\$(for d in */; do
       [ -d \"\$d\" ] || continue
       v=\$(basename \"\$d\")
       [ \"\$v\" = \"\$active\" ] && continue
+      [ -n \"\$cur_release\" ] && [ \"\$v\" = \"\$cur_release\" ] && continue
+      [ -n \"\$slot_targets\" ] && printf '%s\n' \"\$slot_targets\" | grep -qxF \"\$v\" && continue
       meta=\"\${d}deployment.json\"
       [ -f \"\$meta\" ] || continue
       grep -q '\"verified\":true' \"\$meta\" 2>/dev/null && continue
@@ -1227,6 +1236,26 @@ do_deploy() {
         exit 1
       fi
       ok "    legacy: 运行中 release 身份核对通过（${version}）"
+      # ★★★ 2026-10-27 245 现场实证（seq 2873 部署轮）：canary 形态的 legacy
+      #   路径此前只翻 slots/%i ⇒ `current`/web 顶层软链留在旧 release 上 ⇒
+      #   nginx 的 SPA 根 (current/web) 与运行版本脱钩 —— 旧 release 一旦被
+      #   prune 删除，SPA 全站 500（/?login=1），而 healthz 全绿、部署报成功。
+      #   （10-26 seq 2860 legacy 部署后 current 仍指 2823，2823 被删即现场。）
+      #   ⇒ 与蓝绿路径对齐：验证通过后翻 current/顶层软链，再跑
+      #   verify_public_web 同一道门（蓝绿 [9.x] 已有，legacy 路径此前没有）。
+      log "    legacy: 翻 current/顶层软链 → releases/${version}（nginx SPA 根跟随）"
+      if ! remote_ssh "set -e; ln -sfn '$REMOTE_ROOT/releases/$version' '$REMOTE_ROOT/current'; ln -sfn '$REMOTE_ROOT/current/$BIN_NAME' '$REMOTE_ROOT/$BIN_NAME'; ln -sfn '$REMOTE_ROOT/current/web' '$REMOTE_ROOT/web'; ln -sfn '$REMOTE_ROOT/current/web-mobile' '$REMOTE_ROOT/web-mobile'; ln -sfn '$REMOTE_ROOT/current/version.json' '$REMOTE_ROOT/version.json'"; then
+        err "legacy: current/顶层软链翻转失败 —— slot 已指 ${version} 且在服务，但 nginx SPA 根仍指旧 release ⇒ 需人工对齐软链"
+        exit 1
+      fi
+      if ! verify_public_web; then
+        err "legacy: SPA 经 nginx 不可用（current/web 悬空或入口资源缺失）⇒ **不标记 verified** ⇒ 部署判定为失败"
+        if [[ -n "$legacy_prev_release" ]]; then
+          err "legacy: 回滚命令（可直接粘贴）: ln -sfn '$REMOTE_ROOT/releases/$legacy_prev_release' '$legacy_slot'; ln -sfn '$REMOTE_ROOT/releases/$legacy_prev_release' '$REMOTE_ROOT/current'; ln -sfn '$REMOTE_ROOT/current/$BIN_NAME' '$REMOTE_ROOT/$BIN_NAME'; ln -sfn '$REMOTE_ROOT/current/web' '$REMOTE_ROOT/web'; ln -sfn '$REMOTE_ROOT/current/web-mobile' '$REMOTE_ROOT/web-mobile'; ln -sfn '$REMOTE_ROOT/current/version.json' '$REMOTE_ROOT/version.json'; systemctl restart '$legacy_unit'"
+        fi
+        exit 1
+      fi
+      ok "    legacy: SPA 经 nginx 验证通过 (verify_public_web)"
       # ★★★ 补上 host_mark_verified：蓝绿路径在 [9/9] 里会调它，legacy 路径此前**从不调**
       #   ⇒ ⇒ 部署成功的 release 仍标着 verified:false ⇒ 回滚选目标时它是「不可信版本」
       #   ⇒ ⇒ 即「部署成功了，但下一个部署不敢回滚到它」⇒ **闭环缺最后一环**。
@@ -1251,6 +1280,13 @@ do_deploy() {
         exit 1
       fi
       ok "    legacy: 运行中 release 身份核对通过（${version}）"
+      # ★ 2026-10-27（同 seq 2873 轮）：host_atomic_switch 已翻 current/顶层软链，
+      #   但此前同样没有 SPA 门 ⇒ 与 canary 分支补齐同一道 verify_public_web。
+      if ! verify_public_web; then
+        err "legacy: SPA 经 nginx 不可用（current/web 悬空或入口资源缺失）⇒ **不标记 verified** ⇒ 部署判定为失败"
+        exit 1
+      fi
+      ok "    legacy: SPA 经 nginx 验证通过 (verify_public_web)"
       if ! host_mark_verified "$SSH_CMD" "$TARGET" "$version" 2>&1 | sed 's/^/    /'; then
         err "legacy: host_mark_verified 失败（release ${version} 未被标记 verified）⇒ 部署判定为失败"
         exit 1

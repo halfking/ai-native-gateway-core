@@ -4,7 +4,7 @@
 // Namespaces: list / compare / audit / management / config.
 export default {
   list: {
-    emptyHint: 'Sessions appear once a gw_session_id is generated from request logs',
+    emptyHint: 'Sessions appear once a session ID is generated from request logs',
   },
   userProfile: {
     loadFailed: 'The user profile could not be loaded. Please retry.',
@@ -269,7 +269,7 @@ export default {
     healthMetricComplianceHint: 'Integrates prompt injection, PII, and output compliance results.',
     healthMetricOutcome: 'Session outcome',
     healthMetricOutcomeHint: 'View persisted health scores in the analytics center.',
-    healthSource: 'Source: session_inspector module status',
+    healthSource: 'Source: session inspection module status',
     healthViewAnalytics: 'Open session analytics',
     // Prompt injection detection config (2026-07-12)
     promptInjectionTab: 'Prompt Injection',

@@ -89,7 +89,7 @@ export default {
       compress: '壓縮',
       security: '安全性去敏感化',
     },
-    mappedToLogs: '對應 request_logs:',
+    mappedToLogs: '對應請求記錄:',
     openSingle: '於單一請求模式開啟',
     noChildren: '無子請求',
     switchHint: '請切換至「單一請求」模式的「壓縮與去敏感化」分頁以檢視三階段對比。',

@@ -2,8 +2,9 @@
 // The backend owns grouping, TopN and summary aggregation. This composable
 // only selects the active dimension and exposes the server snapshot to Vue.
 
-import { computed, ref, type ComputedRef } from 'vue'
+import { computed, ref, watch, type ComputedRef } from 'vue'
 import type { GroupByDimension, SwimLane, SwimLaneMode } from '../types/swimlane'
+import { setLiveStreamDimsQuery } from './liveStreamStore'
 import type { LiveRequest, LiveStreamSnapshot, LiveStreamLegendItem } from './liveStreamStore'
 import { readLiveStreamPreferences, writeLiveStreamPreferences } from './liveStreamPreferences'
 
@@ -14,10 +15,23 @@ const emptySnapshot: LiveStreamSnapshot = {
   status_legends: [],
 }
 
+// Slim dims subscription (2026-10-27): the group-by preference decides which
+// lane dimension the SSE stream should deliver. 'queue' renders dispatch-queue
+// lanes that never ride the dimension delta, so it maps to the empty
+// subscription — the biggest single bandwidth cut for the default view.
+function dimsQueryFor(groupBy: GroupByDimension): string {
+  return groupBy === 'queue' ? '' : groupBy
+}
+
 export function useSwimLane(snapshotRef?: ComputedRef<LiveStreamSnapshot | null>) {
   // Restore the user's overview preference before the first render.
   const savedPreferences = readLiveStreamPreferences()
   const groupBy = ref<GroupByDimension>(savedPreferences.groupBy)
+  // Declare the subscription immediately (before the first SSE connect in the
+  // common mount order) and keep following preference changes; the store
+  // debounces any mid-session change into one reconnect.
+  setLiveStreamDimsQuery(dimsQueryFor(groupBy.value))
+  watch(groupBy, (next) => setLiveStreamDimsQuery(dimsQueryFor(next)))
   const selectedLegends = ref<Set<string>>(new Set(savedPreferences.selectedLegends))
   const localSnapshot = ref<LiveStreamSnapshot>(emptySnapshot)
   const mode = ref<SwimLaneMode>(savedPreferences.mode)
