@@ -166,3 +166,122 @@ func TestModelsURLCandidates(t *testing.T) {
 		})
 	}
 }
+
+// TestGenerateContentURL pins the Gemini native URL construction.
+//
+// The Gemini API is model-scoped: the model id is a path segment and
+// the action is a path suffix (docs/vendor-formats/gemini.md §HTTP 形态).
+// The version segment belongs to the base URL the operator configured —
+// "/v1beta" must survive, and a base with no version defaults to
+// "/v1beta" (the version the vendor format doc pins).
+func TestGenerateContentURL(t *testing.T) {
+	cases := []struct {
+		name     string
+		base     string
+		model    string
+		isStream bool
+		want     string
+	}{
+		{
+			name:  "bare base defaults to v1beta",
+			base:  "https://generativelanguage.googleapis.com",
+			model: "gemini-2.5-flash",
+			want:  "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent",
+		},
+		{
+			name:  "trailing slash is trimmed",
+			base:  "https://generativelanguage.googleapis.com/",
+			model: "gemini-2.5-flash",
+			want:  "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent",
+		},
+		{
+			name:  "v1beta in the base is preserved",
+			base:  "https://generativelanguage.googleapis.com/v1beta",
+			model: "gemini-2.5-flash",
+			want:  "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent",
+		},
+		{
+			name:  "v1 in the base is preserved (never rewritten to v1beta)",
+			base:  "https://generativelanguage.googleapis.com/v1",
+			model: "gemini-2.5-flash",
+			want:  "https://generativelanguage.googleapis.com/v1/models/gemini-2.5-flash:generateContent",
+		},
+		{
+			name:  "proxy prefix is preserved",
+			base:  "https://gw.example.com/gemini",
+			model: "gemini-2.5-flash",
+			want:  "https://gw.example.com/gemini/v1beta/models/gemini-2.5-flash:generateContent",
+		},
+		{
+			name:  "proxy prefix with version",
+			base:  "https://gw.example.com/gemini/v1beta",
+			model: "gemini-2.5-flash",
+			want:  "https://gw.example.com/gemini/v1beta/models/gemini-2.5-flash:generateContent",
+		},
+		{
+			name:     "stream uses the stream action and alt=sse",
+			base:     "https://generativelanguage.googleapis.com",
+			model:    "gemini-2.5-flash",
+			isStream: true,
+			want:     "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:streamGenerateContent?alt=sse",
+		},
+		{
+			name:  "model with a slash is escaped",
+			base:  "https://generativelanguage.googleapis.com",
+			model: "tunedModels/my-model",
+			want:  "https://generativelanguage.googleapis.com/v1beta/models/tunedModels%2Fmy-model:generateContent",
+		},
+		{
+			name:  "pasted full endpoint URL is normalized back to the base form",
+			base:  "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent",
+			model: "gemini-2.5-flash",
+			want:  "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent",
+		},
+		{
+			name:  "pasted endpoint on a proxy prefix",
+			base:  "https://gw.example.com/gemini/v1beta/models/gemini-2.5-flash:streamGenerateContent",
+			model: "gemini-2.5-flash",
+			want:  "https://gw.example.com/gemini/v1beta/models/gemini-2.5-flash:generateContent",
+		},
+		{
+			name:  "a bare /models prefix is left alone (a proxy path, not a pasted endpoint)",
+			base:  "https://gw.example.com/gemini/models",
+			model: "gemini-2.5-flash",
+			want:  "https://gw.example.com/gemini/models/v1beta/models/gemini-2.5-flash:generateContent",
+		},
+		{
+			name:  "empty base yields no URL",
+			base:  "",
+			model: "gemini-2.5-flash",
+			want:  "",
+		},
+		{
+			name:  "empty model yields no URL (the model is a path segment)",
+			base:  "https://generativelanguage.googleapis.com",
+			model: "",
+			want:  "",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := GenerateContentURL(tc.base, tc.model, tc.isStream)
+			if got != tc.want {
+				t.Errorf("GenerateContentURL(%q, %q, %v) = %q, want %q",
+					tc.base, tc.model, tc.isStream, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestGenerateContentURL_Idempotent pins that applying the function to
+// its own output does not grow the path. The URL builder is called from
+// the executor on every attempt; a non-idempotent rule would silently
+// produce "/v1beta/v1beta/models/..." on a retry.
+func TestGenerateContentURL_Idempotent(t *testing.T) {
+	base := "https://generativelanguage.googleapis.com"
+	first := GenerateContentURL(base, "gemini-2.5-flash", false)
+	second := GenerateContentURL(first, "gemini-2.5-flash", false)
+	if first != second {
+		t.Errorf("not idempotent:\n first  = %q\n second = %q", first, second)
+	}
+}

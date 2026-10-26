@@ -515,6 +515,87 @@
 > ★★★ 门报的行号必须指向【问题字符本身】/ ★★★ 浏览器实测是「阴性结论当缺陷一样复核」最好的触发器/
 > ★★★ 位置信号比字形本身更决定判红 / ★★ 批量替换必须两阶段 / ★★ 裸 `<svg viewBox>` 没有 width/height /
 > ★★ 排除目录是「量具口径变更」/ ★★ 登记册按行号记账会漂移 / ★★ 断言字形文本要改成更强的断言）。
+> **2026-10-27 第 18 增量：浮起词汇归一轮（阴影从「手写配方」收敛成「四支词表」）**（会话
+> `mvs_dc5e181989fc4539805f343f39be2b5d`）：★ 承接第 17 增量遗留清单里的
+> 「**阴影词汇归一**（⇒ 同时要回写 `DESIGN.md`，它自己要求「冲突时要回来改本文件」）」，
+> 把视觉治理从**文本层**推进到**几何层** ⇒ ★★ 普查实测：**121 处 `box-shadow` 声明 /
+> 71 种取值 / 66 个文件** ⇒ ★★★ **同一个概念有 71 种写法，本身就是 AI 生成代码的典型痕迹**
+> （每次生成重新发明一遍配方）。
+> ⇒ ★ **新门** `web/src/design/elevation.ts`（判据唯一实现 E1）+ `web/scripts/design-elevation-guard.mjs`
+> （薄壳，CLI `--json`/`--list`/`--selftest`/`--update-baseline`）+
+> `web/scripts/design-elevation-baseline.json`（棘轮登记簿，**只降不升**）；
+> 已注册 `design-elevation:check` / `:selftest` / `:list` / `:update-baseline`。
+> ⇒ ★★ **四支 token**（唯一定义处 `web/src/style.css`）：
+> `--kx-shadow-xs`（贴面 · 选中态标签）/ `--kx-shadow-sm`（浮起 · 弹层下拉）/
+> `--kx-shadow-md`（覆盖 · 模态对话框）/ `--kx-shadow-md-left`（侧向覆盖 · 右侧抽屉）。
+> ⇒ ★★★ **三条设计决定**：① **几何沿用仓内既有主流值**，不发明数值（视觉差异接近零，收益全在工程一致性）；
+> ② **色相统一为蓝调黑**（纯黑阴影本身是 AI 痕迹）；③ **alpha 只分两档**
+> （浮起 `.06`/`.28`、覆盖 `.10`/`.40`）—— ★ **级别靠【锐度】而不是【浓度】区分**，
+> 加浓会让暗色主题糊成一片、级别就消失了。
+> ⇒ ★★ **读数**：**55 处 token 引用**（md 25 / sm 15 / md-left 9 / xs 6）落在 **50 个 `.vue` + `style.css`**；
+> **不同取值 34 → 4**；★ **幽灵卡片处置 13 处 / 9 文件**（抬升级删闭合描边 8 处、
+> 表面级删静态阴影 5 处）；★ `HotPartitionManager` 的 `box-shadow: -1px 0 0 0 var(--accent)`
+> （零模糊 + 有偏移 + 彩色）**整条删除**（依据 `DESIGN.md` §6「禁止 1px 以上的彩色 border-left」
+> + craft-floor 禁零模糊硬偏移 + 该元素已有三重状态表达）。
+> ⇒ ★★★ **本轮最值钱的一处发现**：★ **第 17 增量的 V1 门在全部 17 处 `var(--kx-shadow-*)`
+> 元素上整族假绿** —— 因为 **V1 要判「是不是抬升」就得读【偏移】，而偏移搬进 token 之后，
+> 静态判据从 `var(...)` 里取不到** ⇒ ★★ **通用式：★ 「引用」与「实际几何」之间隔着一个【解析步骤】
+> ⇒ 判据跳不过去 ⇒ 它就是在【已经合规的元素】上假绿** ⇒ 修法：`ELEVATION_TOKENS` 名单
+> （**只放一处**，`aiSmells.ts` 导出、`elevation.ts` re-export）+ 「`--kx-shadow-*` 一律是抬升」。
+> ⇒ ★★ **同轮另修三处真盲区**：① **V7 硬偏移判据要求第 2 段必须带 `px`**
+> ⇒ `-1px 0 0 0 var(--accent)`（零模糊 + 有偏移）漏判 ⇒ 改为**逐层判 + 长度单位可省略**；
+> ② **V7 只取块内第一条 `box-shadow`** ⇒ 同块第二条完全看不见（**真仓变异臂 M3 抓到**）
+> ⇒ 抽出共享原语 `boxShadowDeclarations(body)`，**V7 与 elevation.ts 共用**（同一口径只有一份实现）；
+> ③ **V1 把「单边描边」当「闭合描边」** ⇒ 4 处抽屉假阳性 ⇒ ★ **单边描边（画在面板内侧）
+> + 外侧投影不重叠 ⇒ 那是一条边，不构成幽灵卡片** ⇒ 口径已细化并写进 `DESIGN.md` §5。
+> ⇒ ★★★ **判据的分类是第一位的**：★ 同一段 CSS 文本里有**两种语义** —— **抬升层**（有偏移 ⇒ 深度）
+> 与 **零偏移环**（`0 0 0 Npx` ⇒ 焦点圈 / 探测标记 ⇒ **不表示深度**）
+> ⇒ 实测抬升 69 / 环 33 / `none` 12 / inset 7 ⇒ ★ **分类错了，后面全错**（当抬升判 ⇒ 假红；
+> 当环判 ⇒ 假绿）⇒ 门里显式写死并让分母可被读数验证。
+> ⇒ ★★★ **工具自身踩过的坑**：独立普查脚本（`/tmp/q18/shadow-census2.mjs`）**自身 2 个 bug**
+> —— ① **逐行匹配漏多行声明**（`RequestTile.vue` 的 `.request-tile--probe` 跨 4 行）；
+> ② **不剥注释抓出假阳性**（`style.css` 注释里的声明）⇒ 修完后与门**逐条对拍 53/53 一致**
+> ⇒ ★★ **两个独立实现必须逐条对拍，这是发现「量具自己坏了」的唯一手段**。
+> ⇒ ★★★ **源码合规 ≠ 运行时合规** ⇒ 补了一次**独立运行时核对**，且把工具**固化进仓**（`web/scripts/design-elevation-runtime-check.mjs`
+> ⇒ `design-elevation:runtime` / `:runtime:selftest` 11/11；★ 无 Chrome 时打印 ⏭ SKIP「未测量」而不是伪装成通过）
+> ⇒ 核对方式：头 Chrome + CDP，
+> 遍历**全 DOM** 的计算阴影）：**9 页 × 2 主题 = 18 次扫描 ⇒ 非 token 抬升层 0 处**；
+> 定点断言（13 处幽灵卡片处置）**0 条不通过**（`.topo-node` / `.gw` 计算阴影 = `none`；
+> `.app-topbar__dropdown` / `.user-menu__dropdown` = `md` 阴影 + 四边 `0px`）；
+> 浮层实测 `.journey-modal` = `rgba(0,0,0,.4) -12px 0 32px 0px`（**md-left 侧投影**）。
+> ⇒ ★★ **读数**：浮起门 **0 非规范 / 4 取值 / 63 抬升层**（基线 0/4）+ 自证 **15/15**；
+> AI 痕迹门 **0 违规** + 自证 **45 → 51/51**；**真仓变异臂 4/4**（M1 非 token 抬升 /
+> M2 幽灵卡片 / M3 同块第二条声明 / **M4 负控：零偏移环 ⇒ rc=0**；每臂「注入→rc=1→还原→rc=0→
+> md5 逐字一致」）；`vue-tsc` **0 错**；`vitest` **2836 通过 / 2 跳过**；`build` ✓ 40.82s；
+> console 错误（9 页合计）**1**（`autoRoute.indexSnapshot` 500，**既有部署状态，与本轮 CSS 无关**）。
+> ⇒ ★★ **本轮没做 / 如实记**：① **令牌双轨的 7 个「需处理」变量未迁**
+> （`--bg-subtle` 跨主题语义不同：浅=primary-soft / 暗=sidebar；另有 `--bg-hover` / `--bg-secondary` /
+> `--bg-tertiary` / `--error-bg` / `--cyan` / `--border-muted` ⇒ 全是 `color-mix` 派生值 ⇒ 机械替换会改语义，
+> 需设计判断）；② **运行时只逐个打开了 3 类浮层**（journey-modal / topbar dropdown / user-menu dropdown），
+> 另 63 层里多数需特定数据才挂载 ⇒ 运行时扫描是**子集核对**，全量靠源码门；
+> ③ **浮起门没有「token 定义本身被改坏」的守卫**；④ **部署实例库只跑了部分迁移**
+> （`public` 474 张表，`request_logs` / `prompt_injection_stats_enhanced` / `detection_score` **缺失**
+> ⇒ 「请求日志」类页面在部署实例上会报错；迁移脚本在仓里
+> `sql/migrations/startup/315_prompt_injection_detection.sql` / `364_prompt_injection_enhanced.sql`
+> ⇒ **跑迁移属 DDL 有副作用操作，需用户授权** ⇒ **与本轮 CSS 无关**）。
+> ⇒ ★★ **工具侧的一次实战**：★ 内嵌浏览器在**实时流页面**上的 `click` / `reload` / `console`
+> 三类动作**持续 275s 超时**（`inspect` / `screenshot` / `open_tab` 正常 ⇒ 是「交互等待」这条路径坏了，
+> 不是页面坏了）⇒ ★★ **换通道**（无头 Chrome + CDP）⇒ 同样 0 违规，且额外拿到浮层计算值与 console 清单
+> ⇒ ★★★ **通用式：★ 「量具挂起」是【读不到】，不是【读到了 0】⇒ 两者必须分开写**。
+> ⇒ ★★ **一次「改动不见了」的实战**：★ 本轮改动在会话之间被存成 **WIP 提交 `470454dd8`
+> （分支 `wip/design-elevation`）** ⇒ 工作树「变干净了」⇒ ★★ **只看 `git status`（空）会以为改动没了**
+> ⇒ ★★★ **开工先三处一起看**：`git status` / `git stash list` / 分支表；
+> ★★ 恢复时**按「文件集合的交集」算冲突面**（57 文件 vs 上游 12 提交 ⇒ 只有 1 个重叠，
+> 而那 1 个是**生成物** `menu-config.json` 的 `exported_at` 时间戳 ⇒ 丢弃上游新版）。
+> ⇒ 审计档 `docs/audit/2026-10-27-第18增量-浮起词汇归一轮.md`（§0~§10）；
+> 通用式见 `LESSONS.md` **§450**（9 条形态：★★★ 分类是第一位的 /
+> ★★★★ 判据读 token 引用时必须同时解析 token 的定义 /
+> ★★★★ 「有没有 X」在 X 有多种形态时必须先枚举形态 /
+> ★★★★ 遍历必须覆盖同一条规则内的【所有】声明 /
+> ★★★★ 判据里每个字段都要单独给「可省略」的语义 /
+> ★★★★ 分析工具与门必须有同等的「区间 + 注释处理」能力 /
+> ★★★★ 源码合规 ≠ 运行时合规（两把尺）/
+> ★★★ 工具挂起时先换通道 / ★★★ 开工先确认改动落在哪）。
 > **2026-10-26 Gemini 原生认证形态修复轮**（会话 `mvs_42f116b20f694164b00900d451db1ca0`）：
 > 用户报「**Gemini 的数据转换好像认证没通过**，请根据我们保留的厂方标准文档修正」⇒
 > ★ **根因不是 IR 层、也不是上游 header —— 是网关自己的认证门不认 Gemini 客户端的凭据形态。**
@@ -686,6 +767,96 @@
 > （★ 需 Anthropic SSE 严格帧与 Responses 的 `response.completed` 编排 —— IR 里有序列化器，
 > **流式终态的编排**未接线）；**Gemini 上游的 `header_profile_code` 联动**；
 > **Gemini 上游的上下文超限压缩恢复**（Ollama 路径有，Gemini 路径本轮只做一次尝试）。
+> **2026-10-27 Gemini 剩余登记项处置轮**（会话 `mvs_42f116b20f694164b00900d451db1ca0`）：
+> ★ 承接上一条清单，**做掉其中 3 项**，另 2 项按硬约束登记。
+> ⇒ ★★★★ **本轮最值钱的一处发现：「没接线」≠「不存在」** ——
+> 上一轮把 `anthropic-messages` / `openai-responses` 的客户端线格式判为「未接线」，
+> 理由写的是「Anthropic SSE 严格帧 + Responses 的终态编排未接线」⇒ ★★ **那个理由站不住**：
+> 仓内**早就有**两条现成转换（`streaming.StreamOpenAIToAnthropicSSE` /
+> `streaming.StreamOpenAIToResponsesSSE`），而且**已经挂在 Executor 上**
+> （`OpenAIToAnthropicStream` / `OpenAIToResponsesStream`，`cmd/gateway/main.go` 接线），
+> 而**本 executor 本来就产出 OpenAI 形状的帧** ⇒ ★★ **同一份转换直接可用，零新增接线**
+> ⇒ ★★ 自己手搓 Anthropic 严格帧 = 白干（LESSONS §451 通用式一）。
+> ⇒ ★ **实现方式 = `io.Pipe`**：executor 把 Gemini 流转成 OpenAI 形状的帧写进管道，
+> 桥在另一侧读管道、写客户端 ⇒ ★★ 管道无缓冲 ⇒ **转换保持流式**（不整段缓冲到内存）。
+> ⇒ ★★ **不能直接 import 那个桥**：`domains/streaming` 导入 `domains/streaming/executors`
+> ⇒ 反向 import 即**循环依赖** ⇒ ★★ 这反过来说明「桥在 streaming、executor 持回调、
+> main.go 注入」是**被依赖方向逼出来的正确形状**，不是绕路。
+> ⇒ ★ **非流式**侧不需要桥：IR 层已有 `SerializeAnthropicResponse` /
+> `SerializeResponsesResponse`，且 `IRConverter` 接口本来就带这两个方法 ⇒ 零接线。
+> ⇒ ★ **`header_profile_code` 联动**（§8.3 明写「与 endpoint 的 `header_profile_code` 关联」）：
+> 出站请求**应用 endpoint 的 header profile**（与 OpenAI 路径同款）⇒ ★★ 没有它，
+> **Gemini 兼容中转**（profile 声明 `Authorization: Bearer`）会直接 401 ⇒ ★★
+> 应用顺序在凭据头**之后** ⇒ profile 声明的凭据头覆盖默认形态（这正是该机制的意义）。
+> ⇒ ★ **Gemini 上游的上下文超限压缩恢复**：复用共享的恢复协调器，压缩后**恰好重试一次**
+> （`geminiRecoveryAttempted` 标记防递归）。
+> ⇒ ★ **门（新增 11 条）**：Anthropic/Responses 请求 ⇒ Gemini 线（**不带** `messages`/`input`）/
+> Gemini 响应 ⇒ Anthropic（`type:message`+`stop_reason`）/⇒ Responses（`object:response`）/
+> ★ 桥收到的是 **OpenAI 形状**的帧（含 `[DONE]`）且 outcome 回传/★ **反向：桥缺失 ⇒
+> `KindUnsupportedFeature` 且不写任何字节**（不产生错形状的 200）/★ header profile 到达上游
+> 且默认 `x-goog-api-key` 仍在/★ 超限 ⇒ **恰好一次**压缩重试且重试体更小、压缩原因被记账/
+> ★ 未接线协议仍然 fail closed（门不是橡皮图章）。
+> ⇒ ★★ **本轮登记项的处置（★ 登记完立刻复查 ⇒ 第 1 项当场被推翻并做掉了，
+> 见本块末尾「补做掉第 4 项」）**：**Gemini 原生模型列表**
+> （★ 避让：并行会话正在改 `cmd/gateway/main.go`；★ 起手式：显式注册精确路由
+> `/v1beta/models`，**复用 `streaming.ModelsHandler` 的同一个 DB 数据源**、只换输出形状
+> ⇒ 厂商形状 `{"models":[{"name":"models/…"}]}`；★ 注意 Go 的 `ServeMux` 对已注册的子树
+> `/v1beta/models/` 会把无斜杠形态 **301** 过去 ⇒ 只按带斜杠实现也能访问到，但多一跳）；
+> **`:countTokens`**（★ **不是「不想做」，是「不能诚实做」**：仓内**没有** Gemini 分词器 ⇒
+> 本地估算会让客户端按错预算决策 ⇒ ★★ **唯一诚实的实现是转发给上游让厂商自己算**
+> ⇒ 那是**第三条出站动作**（响应形状 `{"totalTokens":N}` 与 `GenerateContentResponse` 完全不同
+> ⇒ 不走 `ProtocolHandler` 通用路径）⇒ 独立一轮）。
+> ⇒ ★ **补做掉第 4 项（登记理由已过期）**：**Gemini 原生模型列表**
+> （`GET /v1beta/models`）—— ★★ 上一轮的登记理由是「要动 `cmd/gateway/main.go`，
+> 而并行会话正在改该文件 ⇒ 避让」⇒ ★★★ 那是**时序条件**不是永久约束 ⇒ 本轮复查：
+> 并行会话的 `main.go` 改动落在**行 913 / 2574 / 3883 / 6788**，★ 而 Gemini 的 mux 注册在
+> **行 6794~6796** ⇒ ★★ 相距 25 行、**三方合并不重叠** ⇒ 避让前提消失 ⇒ 直接做掉。
+> ⇒ ★ **实现**：`domains/streaming/models.go` 新增 `ServeGeminiModels`（厂商原生形状
+> `{"models":[{"name":"models/…",…}]}`）★ **并把取数抽成 `loadEntries(ctx)` ⇒ 两份列表
+> 共用同一个可路由模型查询**（★ 同一份「网关能服务哪些模型」的真值 ⇒ 两个数据源
+> 就是两份真值 ⇒ 会漂移）+ `cmd/gateway/main.go` **一行**路由。
+> ⇒ ★★ **`supportedGenerationMethods` 只列网关【真的】支持的动作**
+> （`generateContent`/`streamGenerateContent`）⇒ **不列 `countTokens`** ⇒ ★
+> **列一个自己做不到的方法 = 给客户端一个它会当真、然后失败的承诺**。
+> ⇒ ★ **一个诚实的边界**：`/v1/models`（无斜杠）**仍是 OpenAI 形状**（OpenAI SDK 的既有契约）
+> ⇒ ★ Gemini 的 **GA 路径（`/v1`）**拿到的仍是 OpenAI 形状 ⇒ 本轮只解决 `v1beta` 这条
+> 厂商原生路径 ⇒ 若要 GA 也原生 ⇒ 需**重新分配 `/v1/models` 的归属** ⇒ 产品决策。
+> ⇒ ★ **门（再 +4 条）**：原生形状（`name` 带 `models/` 前缀 / `displayName` / 非空 methods）/
+> 上下文窗口映射 + **`models/` 前缀不重复** + 空 id 跳过 + 未知窗口**不发**该键/
+> ★ **反向：列表不列 `countTokens`**/★ **两份列表同一个数据源**（模型集合一致）。
+> ⇒ ★★★ **本轮第二值钱的一处发现：「只挂不认」比「不挂」更坏 —— 凭据收口面
+> 必须覆盖【每一个被服务的路由】** ——
+> 挂上 `/v1beta/models`（原生模型列表）之后，★★ **只挂不认**会留下一个比原缺陷
+> 更难查的形状：同一个客户端、同一个 key，`POST …:generateContent`（`x-goog-api-key`
+> 头形态）**能通**，而 `GET /v1beta/models`（`?key=` query 形态）**401** ⇒ ⇒
+> ★★ 用户看到的是「网关时好时坏 / 认证是坏的」⇒ ★★★ 根因不是「忘了带 key」，
+> 而是 **收口面漏了一条路由**：`internal/auth.IsGeminiNativePath`（`?key=` 的收口面）
+> 只认 generateContent 两个动作 ⇒ ⇒ ★★★ 而模型列表是**第三条被服务的 Gemini 路由**，
+> 它自己的 mux 条目**不在** `/v1beta/models/` 子树里 ⇒ ⇒ ★★ 靠「前缀」根本推不出它
+> ⇒ ⇒ ★★★ ⇒ 修法：`geminiNativePathRe` 增加一个**精确锚定**分支
+> `|/v1beta/models$` ⇒ ★★ **精确锚定而不是前缀**（`/v1beta/modelsXYZ` 必须**不在**
+> 收口面内 ⇒ 否则 `?key=` 会在一堆没人服务的路径上变成凭据源）⇒ ★★ `/v1/models`
+> （OpenAI 形状）**仍然不在**收口面内 ⇒ ★★ **收口面宁窄勿宽，但宽的部分必须是
+> 「已服务的 Gemini 路由」**。
+> ⇒ ★★★★ **本轮第三值钱的一处发现：「漂移门」自己也会写下【错误的要求】** ——
+> `TestGeminiNativePathMatchesHandlerParser` 判「已服务路由」用的是
+> `served(p) && handlerOK`（**前缀** ∧ **解析器**）⇒ ★★★ 模型列表**两条都不满足**
+> ⇒ ⇒ 门会把它归进「没人服务的路径」，**反过来要求收口面别覆盖它** ⇒ ⇒
+> ★★★ ⇒ 必须显式把新路由登记进门的判定（本轮加了一张 `geminiNativeExactRoutes`）
+> ⇒ ⇒ ★★ 否则这一轮会「为了让门绿而把收口面收窄」⇒ ★★★ ★★ **门不是事实，
+> 它只是事实的一个投影 ⇒ ⇒ 加一条路由时，老的投影会【自动给出错误结论】而且是绿的**
+> ⇒ ⇒ ★★ **「门全绿」时要问的是【门测的那件事成立吗】，而不是【门红了吗】**。
+> ⇒ ★ **门（再 +5 条，三侧对拍）**：挂载侧（`cmd/gateway`，**从 main.go 源码读出挂载语句**
+> ⇒ 不自证）+ 解析侧（`domains/streaming`，★ **反向**：generateContent 解析器**不认**
+> 模型列表 ⇒ 两条路由不许混）+ 收口侧（`internal/auth`，★ **反向**：精确锚定 ⇒
+> `/v1beta/modelsXYZ` 不在面内、`/v1/models` 不在面内）。
+> ⇒ ★★★★ **变异臂 4 臂全检出**（★ 三个方向，不只「把缺陷放回去」）：A 收窄回旧形态/
+> B 删掉模型列表挂载/C1 **锚定退化成前缀**/C2 **过宽到 `/v1/models`** ⇒ ⇒
+> ★★★ 四臂还原后 **md5 逐字一致** ⇒ ⇒ ★★ C1/C2 证明这组门**分得清**
+> 「该红的路径」与「不该红的路径」（★ **只会喊「必须覆盖」的门，和只会喊「不许覆盖」
+> 的门，是同一个门的两种坏法**）。
+> ⇒ 审计档 `docs/audit/2026-10-27-Gemini转换面补全轮.md`（子项③，§14~§20）；
+> 通用式见 `LESSONS.md` **§451**（通用式一~十三）。
 > ⇒ 审计档 `docs/audit/2026-10-27-Gemini转换面补全轮.md`（子项②，§6~§12）；
 > 通用式见 `LESSONS.md` **§439**（通用式一~七）。
 > **2026-10-23 实时拓扑探测打标四处源真值漂移轮 + 口径收敛**（会话
@@ -8489,6 +8660,29 @@ index b953a6f03..555ef83c4 100644
 > ⇒ ⇒ ★★★ （本机 `psql` shim 不认 DSN 的 host/port）⇒ ★ 已在 **origin/main 独立 worktree
 > ⇒ ⇒ ★★★ 复跑确认同签名失败 ⇒ **非本轮引入**，未动。
 > ⇒ ⇒ ★★ **完整记录见 `docs/audit/2026-10-27-R90-turns-sessions-过滤路径500与两腿改写.md`**。
+> **2026-10-27 R166 轮（本会话）· routing_analytics_7d REFRESH 降本【907 残留探针的结构性收口，迁移 910 pending】**：
+> **对生产写入 = 0**（252 全程只读；910 只落仓）。完整记录见
+> `docs/audit/2026-10-27-R166-routing-analytics-7d-REFRESH降本-父表腿日界下推.md` + handoff `§19.30` + LESSONS `§441`。
+> ★ **读数推进**：R147 的 4.97h/293/61.0s 是 **907 应用前**截面；907 实际 10-24 23:07+08 应用 252
+> ⇒ pgss 增量 ⇒ **907 后均值 ≈31.8s（混合窗推导，区间 [32,41]s ⇒ 1.5×~1.9×；批判审计轮修正：R147 读数时点 ≈10-24 02:51 早于 907 应用 20h ⇒ Δ窗混有 ~47 次 907 前调用——首轮误当纯后窗报 40.6s，正是 LESSONS §441 教训的实例）**，但仍是单 stmt 最大头（节奏 55.2 次/天 reset 干净重推，+15% 高于 30min 名义、14 次 r7d/audit 差未归因）；冷读 132MB/次、
+> temp 1.1MB/次 ⇒ **work_mem 不是本族杠杆**（matrix 才是）。
+> ★ **残留结构**：父表腿 ~2.75 万次/刷新 的 LATERAL 逐行探针（0.366ms × 27,486 ≈ 10.1s = 57%；
+> 整计划 ~147K buffers）；★ **探针单价随宿主负载漂 100×+**（R96 实测 ~3μs vs 本轮 366μs）
+> ⇒ 墙钟乘法式暴露在 load 23 上。
+> ★ **修法（910，零语义）**：父表腿 → 普通 LEFT JOIN + `partition_date >= (now()-8d)` 日界下推
+> ⇒ details 执行期分区裁剪（躲 0 行但堆 383MB 的 09 分区）+ Hash Join ⇒ **buffers 147K → 52K（−64%）**；
+> hot 腿保留 LATERAL（details_hot 无唯一键证明）。等价三证：ukey 唯一键（catalog 实测）+
+> 无行增殖（66,838→66,838）+ 错位行 0 ⇒ 窗口内双向 EXCEPT ALL **0/0**。★ 批判审计轮收窄等价承诺范围 = **带 ts 窗的读**：日界下推使全源等价不再成立（无窗读 >8d 旧行 details 列为 NULL，设计内边界）；全仓 13 处消费方逐一实测全部带窗/存在性探针 ⇒ 今日零受影响，边界由 `TestRoutingAnalyticsSourceDayRangeBoundaryOnRealDB` 钉住。
+> ★★ **门禁代际交接**：「迁移 ≡ Go 常量」语义耦合门从 907 **移交给 910**；907 同名门改判为
+> **回退链门**（910.down ≡ 907.up 逐字）——applied 文件冻结后回退不许另写「差不多」的旧体；
+> 夹具日期改 now() 相对值（时间谓词会让写死日期的夹具漂出窗外）；计划门改「只允许 1 个 Limit 节点」。
+> ★★ **登记面两处「登记了 ≠ 登记在正确位置」**：runner StartupFiles 与 sequence.sh 按**列表序**生效
+> ⇒ 910 插 907 后被 manifest 门按位对 TSV 当场抓红 ⇒ 移到 909 后全绿。
+> ★ 验证：本地一次性真库五段生命周期（907→910→幂等→OID 保持+REFRESH 联动→down=907 形态→复原→15 列契约）
+> + installer 全模块 + 全模块回归全绿。
+> ★ **拍板材料（未拍板）**：㉙(d) work_mem 只对 matrix 三兄弟有效（131.6MB temp/次），
+> 对 routing_7d 无效（1.1MB/次）；910 后下一层 = 增量刷新（结构变更属主）。
+
 > **2026-10-24 R147 轮（本会话）· §143.104 【存储效率续轮：㉙ 成本分解 + ㉘ 裁决落地（迁移 908）+ ③ TOAST 评估】**：
 > **对生产写入 = 0**（252 全程只读；908 只落仓）。完整记录见
 > `docs/audit/2026-10-24-R147-存储效率续轮-matrix成本分解-rie索引裁决-bodiesTOAST评估.md` + runbook `§143.104`。

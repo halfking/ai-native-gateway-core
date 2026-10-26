@@ -448,7 +448,6 @@ function groupActive(id: string): boolean {
   padding: 6px;
   margin: 0;
   background: var(--kx-surface, var(--card));
-  border: 1px solid var(--kx-border, var(--border));
   border-radius: 12px;
   box-shadow: var(--kx-shadow-md);
   display: flex;

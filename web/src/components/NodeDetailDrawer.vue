@@ -213,7 +213,7 @@ const manualStateDetail = computed(() => {
 
 <style scoped>
 .nd-mask { position: fixed; inset: 0; z-index: 3000; background: color-mix(in srgb, var(--kx-text) 38%, transparent); }
-.nd-drawer { position: fixed; z-index: 3001; top: 0; right: 0; width: min(940px, 94vw); height: 100vh; height: 100dvh; display: flex; flex-direction: column; background: var(--kx-surface); box-shadow: -12px 0 32px var(--overlay-light); color: var(--kx-text); }
+.nd-drawer { position: fixed; z-index: 3001; top: 0; right: 0; width: min(940px, 94vw); height: 100vh; height: 100dvh; display: flex; flex-direction: column; background: var(--kx-surface); box-shadow: var(--kx-shadow-md-left); color: var(--kx-text); }
 .nd-header { padding: 18px 22px 14px; border-bottom: 1px solid var(--kx-border); display:flex; justify-content:space-between; gap:16px; }
 .nd-subtitle,.nd-muted,small { color: var(--kx-muted); font-size:12px; }
 .nd-header h2 { margin:0 0 4px; font-size:18px; overflow-wrap:anywhere; }

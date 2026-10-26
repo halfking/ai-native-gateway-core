@@ -463,6 +463,15 @@ func parseResponsesContentBlocks(blocks []any, role string) ([]ContentBlock, err
 		case "input_audio":
 			irBlock.Type = "input_audio"
 			irBlock.InputAudio = parseOpenAIInputAudioBlock(blockMap)
+			// 2026-10-26: a URI-reference input_audio (url, no data/format)
+			// parses to nil — preserve it verbatim (same convention as
+			// parse_openai's default branch) instead of dropping it on the
+			// mandatory Parse→Serialize round trip.
+			if irBlock.InputAudio == nil {
+				irBlock.Type = "raw"
+				raw, _ := json.Marshal(blockMap)
+				irBlock.RawContent = string(raw)
+			}
 		case "text":
 			irBlock.Type = "text"
 			if text, ok := blockMap["text"].(string); ok {

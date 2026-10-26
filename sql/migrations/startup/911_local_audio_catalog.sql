@@ -1,4 +1,4 @@
--- 910_local_audio_catalog.sql
+-- 911_local_audio_catalog.sql
 --
 -- 本地音频（ASR/TTS）供应商 catalog 三条目（2026-10-26 多模态标准接口轮）。
 --

@@ -1059,7 +1059,6 @@ function formatNumber(num: number): string {
   background: color-mix(in srgb, var(--accent) 20%, transparent);
   border-color: var(--accent);
   color: var(--accent-h);
-  box-shadow: -1px 0 0 0 var(--accent);
 }
 
 :global(.retention-radio .el-radio-button.is-active .el-radio-button__inner) {
@@ -1503,7 +1502,7 @@ function formatNumber(num: number): string {
   border-radius: 12px;
   width: 90%;
   max-width: 500px;
-  box-shadow: 0 20px 25px -5px var(--overlay-light);
+  box-shadow: var(--kx-shadow-md);
 }
 
 .modal-header {

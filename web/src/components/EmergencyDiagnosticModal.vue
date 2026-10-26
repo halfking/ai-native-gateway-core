@@ -371,7 +371,7 @@ watch(() => props.visible, (visible) => {
   max-height: 90vh;
   display: flex;
   flex-direction: column;
-  box-shadow: 0 8px 32px var(--overlay-strong);
+  box-shadow: var(--kx-shadow-md);
 }
 
 .modal-header {

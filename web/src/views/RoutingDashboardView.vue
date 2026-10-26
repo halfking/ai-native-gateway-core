@@ -1782,7 +1782,7 @@ onUnmounted(() => stopPoll())
   background: var(--card);
   color: var(--text);
   font-weight: 600;
-  box-shadow: 0 1px 2px var(--overlay-faint);
+  box-shadow: var(--kx-shadow-xs);
 }
 
 .tab-content { display: flex; flex-direction: column; gap: 8px; }

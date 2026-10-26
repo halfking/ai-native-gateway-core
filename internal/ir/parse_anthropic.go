@@ -402,8 +402,8 @@ func parseAnthropicContentBlocks(blocks []any) ([]ContentBlock, error) {
 
 		// Parse cache_control if present
 		if cc, ok := blockMap["cache_control"].(map[string]any); ok {
-			if ccType, ok := cc["type"].(string); ok {
-				irBlock.CacheControl = &CacheControl{Type: ccType}
+			if parsed, ok := cacheControlFromMap(cc); ok {
+				irBlock.CacheControl = parsed
 			}
 		}
 
@@ -483,6 +483,16 @@ func parseAnthropicContentBlock(blockMap map[string]any) *ContentBlock {
 			irBlock.RedactedThinking = rt
 		} else if rt, ok := blockMap["thinking"].(string); ok {
 			irBlock.RedactedThinking = rt
+		}
+	}
+
+	// Parse cache_control if present. 2026-10-27 缓存标准对齐轮：单块解析器
+	// 此前不认 cache_control ⇒ system 数组块（Claude Code 的主检查点位置）
+	// 与 tool_result 内嵌块的检查点整段进不了 IR（不止 ttl，type 也丢）；
+	// 批量 helper（parseAnthropicContentBlocks）一直在解析，两条路径不对称。
+	if cc, ok := blockMap["cache_control"].(map[string]any); ok {
+		if parsed, ok := cacheControlFromMap(cc); ok {
+			irBlock.CacheControl = parsed
 		}
 	}
 
@@ -617,6 +627,77 @@ func parseAnthropicToolChoice(raw json.RawMessage) (*ToolChoice, error) {
 	return tc, nil
 }
 
+// cacheControlFromMap extracts one cache_control marker (type + optional
+// ttl). Returns false when the map carries no recognizable type, matching
+// the historical gate so unknown shapes still don't enter the IR.
+func cacheControlFromMap(m map[string]any) (*CacheControl, bool) {
+	ccType, ok := m["type"].(string)
+	if !ok {
+		return nil, false
+	}
+	cc := &CacheControl{Type: ccType}
+	if ttl, ok := m["ttl"].(string); ok {
+		cc.TTL = ttl
+	}
+	return cc, true
+}
+
+// hasBlockLevelCacheControl reports whether any content block carries an
+// Anthropic cache_control marker: system prompt parts/PDFs, message content
+// blocks (incl. tool_result children), and top-level documents. 2026-10-27
+// 缓存标准对齐轮：跨协议串行此前只对请求级 marker 上报丢失，块级静默蒸发
+// （system 块是 Claude Code 的主检查点位置）。
+func hasBlockLevelCacheControl(req *InternalRequest) bool {
+	if req == nil {
+		return false
+	}
+	if req.System != nil {
+		if req.System.CacheCtrl != nil {
+			return true
+		}
+		for i := range req.System.Parts {
+			if blockOrChildrenHaveCacheControl(&req.System.Parts[i]) {
+				return true
+			}
+		}
+		for i := range req.System.PDFs {
+			if req.System.PDFs[i].CacheCtrl != nil {
+				return true
+			}
+		}
+	}
+	for i := range req.Messages {
+		for j := range req.Messages[i].Content {
+			if blockOrChildrenHaveCacheControl(&req.Messages[i].Content[j]) {
+				return true
+			}
+		}
+	}
+	for i := range req.Documents {
+		if req.Documents[i].CacheCtrl != nil {
+			return true
+		}
+	}
+	return false
+}
+
+func blockOrChildrenHaveCacheControl(b *ContentBlock) bool {
+	if b == nil {
+		return false
+	}
+	if b.CacheControl != nil {
+		return true
+	}
+	if b.ToolResult != nil {
+		for i := range b.ToolResult.Content {
+			if blockOrChildrenHaveCacheControl(&b.ToolResult.Content[i]) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // parseAnthropicCacheControl parses cache_control field.
 func parseAnthropicCacheControl(raw json.RawMessage) []CacheControl {
 	var cc any
@@ -626,16 +707,16 @@ func parseAnthropicCacheControl(raw json.RawMessage) []CacheControl {
 
 	var result []CacheControl
 
-	switch c := cc.(type) {
+	switch v := cc.(type) {
 	case map[string]any:
-		if ccType, ok := c["type"].(string); ok {
-			result = append(result, CacheControl{Type: ccType})
+		if parsed, ok := cacheControlFromMap(v); ok {
+			result = append(result, *parsed)
 		}
 	case []any:
-		for _, item := range c {
+		for _, item := range v {
 			if itemMap, ok := item.(map[string]any); ok {
-				if ccType, ok := itemMap["type"].(string); ok {
-					result = append(result, CacheControl{Type: ccType})
+				if parsed, ok := cacheControlFromMap(itemMap); ok {
+					result = append(result, *parsed)
 				}
 			}
 		}
@@ -679,8 +760,8 @@ func parseAnthropicDocuments(raw json.RawMessage) ([]Document, error) {
 			}
 
 			if cc, ok := docMap["cache_control"].(map[string]any); ok {
-				if ccType, ok := cc["type"].(string); ok {
-					doc.CacheCtrl = &CacheControl{Type: ccType}
+				if parsed, ok := cacheControlFromMap(cc); ok {
+					doc.CacheCtrl = parsed
 				}
 			}
 

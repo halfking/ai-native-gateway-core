@@ -385,12 +385,48 @@ func parseOpenAIContentBlocks(blocks []any) ([]ContentBlock, error) {
 			// {type:"input_audio", input_audio:{data, format}}
 			ia := parseOpenAIInputAudioBlock(blockMap)
 			irBlock.InputAudio = ia
+			// 2026-10-26（Gemini fileData 转发修复轮）：URI 引用形态
+			// （input_audio.url，由 serializeOpenAIAudioBlock 的 file_uri
+			// 分支产出）没有 data/format ⇒ parseOpenAIInputAudioBlock 返回
+			// nil ⇒ 本分支此前什么都不留 ⇒ 执行器强制的 Parse→Validate→
+			// Serialize 往返（finalizeOpenAIUpstreamBody）把 URI 整个丢掉，
+			// 上游收到的是没有音频的请求。按本文件对「形状已知但无载荷」
+			// 块的既有惯例原样保留（video_url 等未知块走 default 同款）。
+			if ia == nil {
+				irBlock.Type = "raw"
+				irBlock.RawContent = mustMarshalString(blockMap)
+			}
 		case "image":
 			if img := parseOpenAIImageBlock(blockMap); img != nil && imageSourceHasPayload(img) {
 				irBlock.Image = img
 			} else {
 				irBlock.Type = "raw"
 				irBlock.RawContent = mustMarshalString(blockMap)
+			}
+		case "video_url":
+			// 2026-10-27（R148 审计轮）：OpenAI 的 video_url 此前**没有任何
+			// 分支** ⇒ 落进 default（Type 保持 "video_url"，RawContent 原样
+			// 保留）。后果是「看起来对、其实是空的」：
+			//
+			//	OpenAI / Anthropic / Responses 三个序列化器各自的 default 分支
+			//	都按 RawContent 兜底 ⇒ 块被原样发出去，形状正确；
+			//	但 **block.Video 始终为 nil** ⇒ 走类型化分支的 Gemini
+			//	序列化器（case "video" → irVideoToGeminiPart）拿不到任何载荷
+			//	⇒ **视频块被静默丢弃**（用户看到的是「模型答了，但没看视频」）。
+			//
+			// ★ 这条路径是 2026-10-26 那轮**打开**的：那一轮把 video 补进
+			// 分级模态门的接受臂（provider/client.go 的 candidateQuerySQLBase）
+			// ⇒「OpenAI 客户端发 video_url → 路由到 Gemini 模型」从
+			// 「503 无候选」变成「有候选、但视频消失」⇒ 那一轮是半修。
+			//
+			// 修法（**只往保守方向**）：解析成类型化 Video（MediaSource），
+			// **同时保留 Type="video_url" 与 RawContent** ——
+			//   · OpenAI/Anthropic/Responses 仍旧走各自的 default 分支，
+			//     输出逐字节不变（不碰它们 ⇒ 不给这三个协议引入风险）；
+			//   · 只有 Gemini 序列化器新增 "video_url" 分支后不再丢块。
+			irBlock.RawContent = mustMarshalString(blockMap)
+			if media := parseOpenAIMediaBlock(blockMap, "video"); media != nil {
+				irBlock.Video = media
 			}
 		case "audio", "video":
 			if media := parseOpenAIMediaBlock(blockMap, blockType); media != nil {

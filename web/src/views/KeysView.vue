@@ -1163,7 +1163,7 @@ onBeforeUnmount(() => {
   border-radius: var(--radius);
   background: var(--success);
   color: white;
-  box-shadow: 0 8px 24px var(--overlay-light);
+  box-shadow: var(--kx-shadow-sm);
   font-size: 13px;
 }
 

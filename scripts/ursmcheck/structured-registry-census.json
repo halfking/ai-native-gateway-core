@@ -1,0 +1,228 @@
+{
+  "_note": "★ 非 .tsv 的结构化【登记册】普查表（R86 轮新增）★ ⇒ 见 scripts/ursmcheck/structured_registry_census_test.go",
+  "_why": "★ R85 轮的掏空法门只覆盖 `.tsv` ⇒ ⇒ 仓内【同一物种】的 `.json` 登记册（★ web 门自己的 baseline / registry）一直不在覆盖判据里 ⇒ ⇒ 本表把它们（连同其余候选的排除理由）登记齐。",
+  "_candidate_rule": {
+    "extensions": [
+      ".json",
+      ".yaml",
+      ".yml",
+      ".csv"
+    ],
+    "basename_keywords": [
+      "registry",
+      "baseline",
+      "inventory",
+      "ledger",
+      "manifest"
+    ],
+    "excluded_extensions": [
+      ".tsv"
+    ],
+    "why_not_scan_referrers": "★ 候选集必须【机械可算且快】⇒ ⇒ 门不能扫「谁引用了它」（★ 实测慢 30 倍）⇒ ⇒ 候选靠【文件名】定 ⇒ ⇒ 排除项由本表逐条写理由。"
+  },
+  "_honest_boundary": "★ 本表实现的是【覆盖判据】（★ 每个候选都必须有归属）⇒ ⇒ ★★ 本轮**没有**为这些登记册做【行为化掏空验证】（★ 读方是 node 脚本 / vitest ⇒ ⇒ 需要另一套【格式感知的掏空变换】）⇒ ⇒ 「behaviorally_verified」一律 false ⇒ ⇒ 如实登记，不假装覆盖。",
+  "_kind_values": [
+    "registry",
+    "excluded"
+  ],
+  "entries": [
+    {
+      "path": "bg/data/model_baseline_prices.json",
+      "kind": "registry",
+      "reader": "bg/pricing_baseline_reconcile.go",
+      "behaviorally_verified": false,
+      "note": "★ 另有 bg/observation_health_empty_catalog_test.go 与 cmd/tools/propose-baseline-prices/*_test.go 读它"
+    },
+    {
+      "path": "cmd/auto-testbench/testdata/baseline.json",
+      "kind": "excluded",
+      "reason": "★ 测试夹具（★ auto-testbench 的输入）"
+    },
+    {
+      "path": "cmd/auto-testbench/testdata/e2e_baseline.json",
+      "kind": "excluded",
+      "reason": "★ 测试夹具（★ auto-testbench 的输入）"
+    },
+    {
+      "path": "deploy/prometheus/rule_tests/auto-route-settle-baseline_test.yml",
+      "kind": "excluded",
+      "reason": "★ Prometheus 规则【测试文件】（★ 规则的测试输入，不是登记表）"
+    },
+    {
+      "path": "deploy/prometheus/rules/auto-route-settle-baseline.yml",
+      "kind": "excluded",
+      "reason": "★ Prometheus【告警规则】（★ 不是登记表）"
+    },
+    {
+      "path": "docs/02-resources/research/pricing/2026-06-12-offers-baseline.csv",
+      "kind": "excluded",
+      "reason": "★ 文档证据（★ 定价调研产物）"
+    },
+    {
+      "path": "docs/archive/process/comprehensive-testing/results/2026-07-17-fix/S01_baseline.json",
+      "kind": "excluded",
+      "reason": "★ 归档的测试运行产物"
+    },
+    {
+      "path": "docs/archive/process/comprehensive-testing/results/S01_baseline.json",
+      "kind": "excluded",
+      "reason": "★ 归档的测试运行产物"
+    },
+    {
+      "path": "docs/archive/process/comprehensive-testing/results/runs/run-20260813T091619Z-44427/S01_baseline.json",
+      "kind": "excluded",
+      "reason": "★ 归档的测试运行产物"
+    },
+    {
+      "path": "docs/archive/process/comprehensive-testing/results/runs/run-20260813T091619Z-44427/manifest.json",
+      "kind": "excluded",
+      "reason": "★ 归档的测试运行产物"
+    },
+    {
+      "path": "docs/archive/process/comprehensive-testing/results/runs/run-20260813T093023Z-60194/manifest.json",
+      "kind": "excluded",
+      "reason": "★ 归档的测试运行产物"
+    },
+    {
+      "path": "docs/archive/process/comprehensive-testing/results/runs/run-20260813T093121Z-65513/manifest.json",
+      "kind": "excluded",
+      "reason": "★ 归档的测试运行产物"
+    },
+    {
+      "path": "docs/archive/process/comprehensive-testing/results/runs/run-20260813T093227Z-69036/manifest.json",
+      "kind": "excluded",
+      "reason": "★ 归档的测试运行产物"
+    },
+    {
+      "path": "docs/audit/evidence/2026-10-19-gate-evidence-code-manifest.json",
+      "kind": "excluded",
+      "reason": "★ 审计证据（★ 文档）"
+    },
+    {
+      "path": "docs/audit/evidence/2026-10-19-node-reviewed-manifest.json",
+      "kind": "excluded",
+      "reason": "★ 审计证据（★ 文档）"
+    },
+    {
+      "path": "docs/audit/evidence/2026-10-19-probe-reviewed-manifest.json",
+      "kind": "excluded",
+      "reason": "★ 审计证据（★ 文档）"
+    },
+    {
+      "path": "docs/audit/evidence/2026-10-19-reviewed-code-manifest.json",
+      "kind": "excluded",
+      "reason": "★ 审计证据（★ 文档）"
+    },
+    {
+      "path": "docs/audit/magpie-p0-154-baseline-20261014.json",
+      "kind": "excluded",
+      "reason": "★ 审计证据（★ 文档）"
+    },
+    {
+      "path": "routingopt/testdata/ml_fixture/manifest.json",
+      "kind": "excluded",
+      "reason": "★ 测试夹具（★ 路由优化的 ML 输入）"
+    },
+    {
+      "path": "scripts/ursmcheck/structured-registry-census.json",
+      "kind": "excluded",
+      "reason": "★ 本表自身 ⇒ ⇒ 它被掏空 ⇒ ⇒ 本门读不到候选集 ⇒ ⇒ 红（★ 自证）"
+    },
+    {
+      "path": "tests/session_replay/sessions/manifest.json",
+      "kind": "excluded",
+      "reason": "★ 测试夹具（★ 会话回放输入）"
+    },
+    {
+      "path": "web/scripts/color-audit-baseline.json",
+      "kind": "registry",
+      "reader": "web/scripts/color-baseline-stale.mjs",
+      "behaviorally_verified": false,
+      "note": "★ 颜色审计的基线（★ 门读它）"
+    },
+    {
+      "path": "web/scripts/compact-card-coverage-baseline.json",
+      "kind": "registry",
+      "reader": "web/scripts/compact-card-coverage.mjs",
+      "behaviorally_verified": false,
+      "note": "★ 紧凑卡片覆盖基线"
+    },
+    {
+      "path": "web/scripts/copy-quality-baseline.json",
+      "kind": "registry",
+      "reader": "web/scripts/copy-quality-audit.mjs",
+      "behaviorally_verified": false,
+      "note": "★ 文案质量基线"
+    },
+    {
+      "path": "web/scripts/design-ai-smell-registry.json",
+      "kind": "registry",
+      "reader": "web/scripts/design-ai-smell-guard.mjs",
+      "behaviorally_verified": false,
+      "note": "★ AI 味登记册（★ R164 轮新增）"
+    },
+    {
+      "path": "web/scripts/design-elevation-baseline.json",
+      "kind": "registry",
+      "reader": "web/scripts/design-elevation-guard.mjs",
+      "behaviorally_verified": false,
+      "note": "★ 浮起（阴影/elevation）基线（★ 门读它：design-elevation-guard.mjs 用它判定「抬升层是否走词表」）。★ 2026-10-27 合并轮补登：★ 上游 7742505f5（阴影四支词表轮）新增本文件 ⇒ 但未登记进本普查表 ⇒ ⇒ 覆盖判据门判红（★ 「像登记册」的结构化文件必须二选一归属）⇒ ⇒ 本条按同族口径登记为 kind=registry（★ 掏空它 ⇒ 门瞎 ⇒ ⇒ 属真登记册，不是排除项）"
+    },
+    {
+      "path": "web/scripts/i18n-cjk-baseline.json",
+      "kind": "registry",
+      "reader": "web/src/i18n/hardcoded_cjk.baseline.test.ts",
+      "behaviorally_verified": false,
+      "note": "★ 硬编码中文基线"
+    },
+    {
+      "path": "web/scripts/i18n-cjk-native-simplified-baseline.json",
+      "kind": "registry",
+      "reader": "web/scripts/i18n-cjk-native-simplified-guard.mjs",
+      "behaviorally_verified": false,
+      "note": "★ 简体残留基线"
+    },
+    {
+      "path": "web/scripts/i18n-empty-state-registry.json",
+      "kind": "registry",
+      "reader": "web/scripts/i18n-empty-state-guard.mjs",
+      "behaviorally_verified": false,
+      "note": "★ 空状态登记册（★ 第 14 增量新增）"
+    },
+    {
+      "path": "web/scripts/i18n-error-clarity-registry.json",
+      "kind": "registry",
+      "reader": "web/scripts/i18n-error-clarity-guard.mjs",
+      "behaviorally_verified": false,
+      "note": "★ 错误清晰度登记册"
+    },
+    {
+      "path": "web/scripts/i18n-error-outlet-registry.json",
+      "kind": "registry",
+      "reader": "web/scripts/i18n-error-outlet-guard.mjs",
+      "behaviorally_verified": false,
+      "note": "★ 错误出口登记册（★ R163 轮新增）"
+    },
+    {
+      "path": "web/scripts/i18n-shared-dead-baseline.json",
+      "kind": "registry",
+      "reader": "web/scripts/i18n-shared-dead-count.mjs",
+      "behaviorally_verified": false,
+      "note": "★ 共有死键计数基线（★ 第 13 增量新增）"
+    },
+    {
+      "path": "web/src/i18n/localeKeyParityBaseline.json",
+      "kind": "registry",
+      "reader": "web/src/i18n/localeKeyParity.test.ts",
+      "behaviorally_verified": false,
+      "note": "★ 键集合一致性基线"
+    },
+    {
+      "path": "web/src/i18n/localeValueBaseline.json",
+      "kind": "registry",
+      "reader": "web/src/i18n/localeValueQuality.test.ts",
+      "behaviorally_verified": false,
+      "note": "★ 语言包值质量基线"
+    }
+  ]
+}
