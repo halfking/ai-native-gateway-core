@@ -23,7 +23,6 @@ func TestCredentialProbeRequiresAssistantOutput(t *testing.T) {
 	}
 	negative := []string{"", "<html>busy</html>", "{broken", `{}`, `{"error":{"message":"busy"}}`,
 		`{"choices":"invalid"}`, `{"choices":[{"message":{"tool_calls":[{"function":{"name":"","arguments":""}}]}}]}`,
-		`{"choices":[{"message":{"reasoning_content":"thinking"},"finish_reason":"length"}]}`,
 		`{"content":[{"type":"thinking","thinking":"thinking"}],"stop_reason":"max_tokens"}`,
 		`{"output":[{"type":"reasoning","summary":[{"text":"thinking"}]}],"status":"incomplete"}`,
 		`{"type":"error","content":[{"type":"text","text":"error prose"}]}`,
@@ -32,10 +31,26 @@ func TestCredentialProbeRequiresAssistantOutput(t *testing.T) {
 		`{"status":"in_progress","output":[{"type":"message","content":[{"type":"output_text","text":"partial"}]}]}`,
 		`{"status":"queued","output":[{"type":"message","content":[{"type":"output_text","text":"partial"}]}]}`,
 	}
+	// 2026-10-26 多模态标准接口轮 + 2026-10-27 审计轮语义分家：credential
+	// 探针（本测试驱动的是 miniChat = hasOutput || livenessEvidence）对
+	// chat 的 reasoning-only 判「活」——thinking 模型在 32-token 探针载荷下
+	// content 恒空，不认 reasoning 则凭据健康检查永远翻不了绿（211 实测
+	// 活锁）。共享判据 credentialProbeHasOutput 本身仍维持 reasoning 负例
+	// （node/model/active 探针的 deliverability 语义），由下方
+	// TestCredentialProbeSharedValidatorExcludesReasoning 单独锁定。
+	chatReasoningPositive := []string{
+		`{"choices":[{"message":{"reasoning_content":"thinking"},"finish_reason":"length"}]}`,
+		`{"choices":[{"message":{"content":"","reasoning":"嗯，探针活性的思考"},"finish_reason":"length"}]}`,
+	}
 	for protocol, valid := range positive {
 		cases := append(append([]string{}, negative...), valid, strings.Replace(valid, "pong", strings.Repeat("p", 2048), 1))
 		if protocol == "responses" {
 			cases = append(cases, `{"status":"incomplete","incomplete_details":{"reason":"max_output_tokens"},"output":[{"type":"message","content":[{"type":"output_text","text":"pong"}]}]}`)
+		}
+		negCount := len(negative)
+		if protocol == "chat" {
+			// reasoning-only 正例挂在负例之后（want=true 段）。
+			cases = append(cases, chatReasoningPositive...)
 		}
 		for i, body := range cases {
 			t.Run(fmt.Sprintf("%s/%d", protocol, i), func(t *testing.T) {
@@ -55,7 +70,7 @@ func TestCredentialProbeRequiresAssistantOutput(t *testing.T) {
 				case "responses":
 					ok, detail, _, _ = c.miniResponses(t.Context(), srv.Client(), "", "test", srv.URL)
 				}
-				if want := i >= len(negative); ok != want {
+				if want := i >= negCount; ok != want {
 					t.Fatalf("ok=%v want=%v detail=%q", ok, want, detail)
 				}
 			})
@@ -407,5 +422,44 @@ func TestCredentialProbeLongUnsupportedDiagnosticUsesChatFallback(t *testing.T) 
 				}
 			}
 		})
+	}
+}
+
+// TestCredentialProbeSharedValidatorExcludesReasoning 锁定共享判据
+// credentialProbeHasOutput（node/model/active 探针经 probeResponseHasOutput
+// 消费）的 deliverability 语义：reasoning-only **一律不算输出**——2026-10-27
+// 审计轮修的回归：上一轮把 reasoning 检查直接写进本函数，通过共享入口把
+// model 级探针的语义降级成 liveness，bg 4 条测试翻红。语义分层：
+//   - credential 探针 = hasOutput || livenessEvidence（本文件上方测试）
+//   - 共享判据 = hasOutput（本测试）
+func TestCredentialProbeSharedValidatorExcludesReasoning(t *testing.T) {
+	reasoningOnly := []string{
+		`{"choices":[{"message":{"reasoning_content":"thinking"},"finish_reason":"length"}]}`,
+		`{"choices":[{"message":{"content":"","reasoning":"thinking"},"finish_reason":"length"}]}`,
+	}
+	for i, body := range reasoningOnly {
+		if credentialProbeHasOutput("chat", []byte(body)) {
+			t.Fatalf("case %d: shared validator must NOT accept reasoning-only chat body", i)
+		}
+		if !credentialProbeHasLivenessEvidence("chat", []byte(body)) {
+			t.Fatalf("case %d: liveness evidence must accept reasoning-only chat body", i)
+		}
+		// 有语义输出时 liveness 无需另证（成对叠加的总语义不变）。
+	}
+	withContent := `{"choices":[{"message":{"content":"pong"}}]}`
+	if !credentialProbeHasOutput("chat", []byte(withContent)) {
+		t.Fatal("sanity: content output must pass shared validator")
+	}
+	// 非 chat 形态不扩权。
+	anthropicReasoning := `{"type":"message","content":[{"type":"thinking","thinking":"thinking"}]}`
+	if credentialProbeHasLivenessEvidence("messages", []byte(anthropicReasoning)) {
+		t.Fatal("liveness evidence must not extend to messages protocol")
+	}
+	// 恶意/坏体不给 liveness。
+	if credentialProbeHasLivenessEvidence("chat", []byte(`{"choices":"invalid"}`)) {
+		t.Fatal("malformed body must not yield liveness evidence")
+	}
+	if credentialProbeHasLivenessEvidence("chat", []byte(`{"error":{"message":"busy"},"choices":[{"message":{"reasoning":"x"}}]}`)) {
+		t.Fatal("error envelope must not yield liveness evidence")
 	}
 }

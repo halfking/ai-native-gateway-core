@@ -72,7 +72,7 @@ export default {
     updatedFeatured: 'Modelos destacados actualizados ({n})',
     formulaLabel: 'Fórmula compuesta: cuanto más bajo, mejor.',
     freeHighlight: 'Los modelos gratuitos (precio=0) tienen puntuación 0 y ganan por defecto.',
-    formulaPrefix: 'composite_score = manual_priority + (precio_normalizado × {price}) + (carga_sesión × {session_load}) + (nº_fallos × {failure_penalty})',
+    formulaPrefix: 'composite_score = prioridad manual + (precio normalizado × {price}) + (carga de sesión × {session_load}) + (número de fallos × {failure_penalty})',
     weights: {
       price: 'Peso del precio (W2)',
       sessionLoad: 'Peso de carga de sesión (W3)',

@@ -4,7 +4,7 @@ export default {
     refreshing: 'Aktualisieren…',
     loadFailed: 'Auto-Tuning konnte nicht geladen werden. Bitte erneut versuchen.',
     panelTitle: 'Tuning-Vorschläge (Freigabe = hotwirksam innerhalb 5 Min.)',
-    noProposals: 'Noch keine Vorschläge (feedback_analyzer erzeugt sie pro Zeitfenster)',
+    noProposals: 'Noch keine Vorschläge (Feedback-Analyzer erzeugt sie pro Zeitfenster)',
   filter: {
     statusAll: 'Alle',
     pending: 'Ausstehend',
@@ -41,7 +41,7 @@ export default {
     generateNone: 'Zu wenige Korrekturen im Zeitraum oder identische ausstehende Vorschläge vorhanden. Nichts generiert',
     analyze: 'Signalanalyse ausführen',
     analyzing: 'Analysiere…',
-    analyzeConfirm: 'Feedback-Analyzer jetzt ausführen (qualitätsgetriebene Vorschläge aus tuning_signals)?',
+    analyzeConfirm: 'Feedback-Analyzer jetzt ausführen (qualitätsgetriebene Vorschläge aus Abstimmsignalen)?',
     analyzeDone: 'Signalanalyse abgeschlossen: {at}',
   },
   accuracy: {

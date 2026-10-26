@@ -1,7 +1,7 @@
 // routingAudit.ts — RoutingAuditView copy.
 export default {
   title: 'Routing Overrides Audit',
-  subtitle: 'Every change to the routing_overrides table is recorded with actor, action, and row state.',
+  subtitle: 'Every routing override change is recorded with actor, action, and row state.',
   summary: {
     total: 'Total',
     inserts: 'Inserts',

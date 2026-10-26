@@ -55,7 +55,7 @@ export default {
   latest: 'Latest scan',
   loadFeaturedFailed: 'The featured models could not be loaded. Please retry.',
   loading: 'Loading…',
-  noRecommend: 'No models to recommend: no successful requests in the last 7 days, or both featured_models and popular are empty',
+  noRecommend: 'No models to recommend: no successful requests in the last 7 days, or both the recommended pool and the popular pool are empty',
   recommendBtn: '⚡ Auto-recommend (popular 7d + current policy)',
   recommendLoadFailed: 'The recommended models could not be loaded. Please retry.',
   running: 'Scan in progress',

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"strings"
 )
 
 // ParseGemini parses a Gemini generateContent request body into IR.
@@ -372,6 +373,22 @@ func geminiMediaBlock(mimeType, base64Data string) ContentBlock {
 	}
 }
 
+// geminiMediaFormat extracts the **subtype** of a media MIME type
+// ("audio/mp3" ⇒ "mp3", "audio/mpeg" ⇒ "mpeg").
+//
+// ★★ 2026-10-27（12h 审计轮）：★ 它存在的唯一理由是**别让子类型在第一跳
+// ★★ 就丢**：★ Gemini 的 fileData 只给 mimeType（"audio/mp3"），
+// ★★ 而网关转成 OpenAI 线时写的是 `format` 字段 ⇒ ⇒ Format 不带值
+// ★★ ⇒ ★★ mimeType 的子类型**当场蒸发** ⇒ ★★ 往返回来只能拼出畸形的
+// ★★ `"audio/"` ⇒ ★★ ⇒ Gemini 线上 fileData.mimeType 非法。
+// ★★ ⇒ 把子类型单独存进 MediaSource.Format ⇒ 两跳都带得上。
+func geminiMediaFormat(mimeType string) string {
+	if i := strings.IndexByte(mimeType, '/'); i >= 0 && i+1 < len(mimeType) {
+		return mimeType[i+1:]
+	}
+	return ""
+}
+
 // geminiFileURIMediaBlock converts a fileData part into the appropriate IR
 // block using file_uri as the source carrier.
 func geminiFileURIMediaBlock(mimeType, fileURI string) ContentBlock {
@@ -392,6 +409,15 @@ func geminiFileURIMediaBlock(mimeType, fileURI string) ContentBlock {
 				Type:      "file_uri",
 				MediaType: mimeType,
 				FileURI:   fileURI,
+				// ★★ 2026-10-27（12h 审计轮）：★ **同时**记下格式
+				// ★★ （"audio/mp3" ⇒ "mp3"）⇒ ⇒ 理由：★ Gemini→OpenAI 的
+				// ★★ 第一跳（serializeOpenAIAudioBlock 的 file_uri 分支）
+				// ★★ 只把 `audio.Format` 写进 OpenAI 线的 `format` 字段 ⇒
+				// ★★ ★★ Format 空 ⇒ **mimeType 的子类型在第一跳就丢了**
+				// ★★ ⇒ ★★ 往返回来时只能拼出 `"audio/"`（**畸形 MIME**）⇒
+				// ★★ ⇒ Gemini 线上 fileData.mimeType 非法。
+				// ★★ ⇒ 把子类型一并记进 Format ⇒ 两跳都带得上。
+				Format: geminiMediaFormat(mimeType),
 			},
 		}
 	case len(mimeType) >= 5 && mimeType[:5] == "video":

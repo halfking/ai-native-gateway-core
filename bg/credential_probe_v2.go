@@ -1111,7 +1111,11 @@ func (c *CredentialProbeV2) miniChat(ctx context.Context, httpClient *http.Clien
 	}
 	bodyStr := string(body)
 	if resp.StatusCode == 200 {
-		if credentialProbeHasOutput("chat", body) {
+		// liveness 叠加（2026-10-27 审计轮语义分家）：assistant 语义输出缺失
+		// 时，chat 的 reasoning 有非空文本同样证明凭据背后的服务活着（本地
+		// ollama thinking 模型在 32-token 探针载荷下 content 恒空）。
+		// deliverability 语义归 credentialProbeHasOutput；本探针问的是 liveness。
+		if credentialProbeHasOutput("chat", body) || credentialProbeHasLivenessEvidence("chat", body) {
 			return true, ""
 		}
 		return false, "chat probe response invalid: assistant_output_missing"

@@ -4,7 +4,7 @@ export default {
     refreshing: 'Actualisation…',
     loadFailed: 'Le chargement des propositions de réglage automatique a échoué. Veuillez réessayer.',
     panelTitle: 'Propositions de réglage (approbation = application à chaud sous 5 min)',
-    noProposals: 'Aucune proposition pour l’instant (feedback_analyzer les génère par fenêtre)',
+    noProposals: 'Aucune proposition pour l’instant (l’analyseur de feedback les génère par fenêtre)',
   filter: {
     statusAll: 'Tout',
     pending: 'En attente',
@@ -41,7 +41,7 @@ export default {
     generateNone: 'Pas assez de corrections sur la fenêtre, ou propositions en attente identiques déjà présentes. Rien généré',
     analyze: 'Lancer l’analyse des signaux',
     analyzing: 'Analyse…',
-    analyzeConfirm: 'Exécuter l’analyseur de feedback maintenant (propositions pilotées par la qualité de tuning_signals) ?',
+    analyzeConfirm: 'Exécuter l’analyseur de feedback maintenant (propositions pilotées par la qualité de signaux d’ajustement) ?',
     analyzeDone: 'Analyse des signaux terminée : {at}',
   },
   accuracy: {

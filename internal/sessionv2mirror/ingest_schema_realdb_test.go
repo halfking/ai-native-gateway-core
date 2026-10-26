@@ -57,6 +57,8 @@ func ingestFixture(t *testing.T) *pgxpool.Pool {
  ADD COLUMN parent_request_id text, ADD COLUMN task_type text,
  ADD COLUMN attachment_count integer, ADD COLUMN attachment_total_bytes bigint,
  ADD COLUMN multimodal_types text[], ADD COLUMN title text, ADD COLUMN summary text,
+ -- 456_session_v2_display_columns.sql: required by the current turn writer.
+ ADD COLUMN tools jsonb NOT NULL DEFAULT '[]'::jsonb,
  ADD COLUMN digest jsonb, ADD COLUMN request_status text, ADD COLUMN client_protocol text,
  ADD COLUMN t0_arrived_at timestamptz, ADD COLUMN t1_total_enqueued_at timestamptz,
  ADD COLUMN t2_total_dequeued_at timestamptz, ADD COLUMN t3_model_enqueued_at timestamptz,
@@ -67,7 +69,10 @@ func ingestFixture(t *testing.T) *pgxpool.Pool {
  CREATE TABLE public.session_turns_hot (LIKE public.session_turns INCLUDING ALL);
  CREATE FUNCTION public.session_turns_advisory_lock_key(text,text) RETURNS bigint
  LANGUAGE sql IMMUTABLE STRICT AS $$ SELECT hashtextextended($1 || ':' || $2,0) $$;`)
+	// The writer queries the real tools hot table even for turns without tools.
+	ingestMigration(t, db, "706_session_family_s1a.sql")
 	ingestMigration(t, db, "707_session_turns_s1a.sql")
+	ingestMigration(t, db, "885_session_turns_host_tags.sql")
 	ingestMigration(t, db, "614_session_bodies_hot.sql")
 	ingestMigration(t, db, "630_session_aggregate_outbox.sql")
 	ingestExec(t, db, `CREATE VIEW public.session_turns_with_current_month AS

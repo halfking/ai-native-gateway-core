@@ -200,7 +200,7 @@ export default {
       mediaOnlyShort: "多媒體",
     },
     planTypeUnset: "未設定（按 token 處理）",
-    planTypeHint: "路由配接時，cmb.billing_mode 將自動從此衍生",
+    planTypeHint: "路由配接時，計費模式將自動從此衍生",
     planTypes: {
       token: "token (按量計費)",
       token_plan: "token_plan (訂閱方案)",
@@ -411,17 +411,17 @@ export default {
       chipUnavailable: "無法使用"
     }
 ,
-    probeAllRecoveredHint: '✓ {n} 個模型探測成功；node_probe_state 已自動復原，路由候選已重新可用',
+    probeAllRecoveredHint: '✓ {n} 個模型探測成功；探測狀態已自動復原，路由候選已重新可用',
 
     resetNodeProbeBtn: '清失敗探測狀態',
 
     resetNodeProbeLoading: '清除中…',
 
-    resetNodeProbeTitle: '清除 node_probe_state 中 last_direct_ok=FALSE 的列（force-recover routing）。當全面探測顯示 ok 但路由候選仍顯示 blocked 時使用。',
+    resetNodeProbeTitle: '清除探測記錄中探測失敗的列（強制復原路由）。當全面探測顯示正常但路由候選仍顯示被攔截時使用。',
 
-    resetNodeProbeConfirm: '確認清空該供應商所有失敗的 node_probe_state 列？',
+    resetNodeProbeConfirm: '確認清空該供應商所有失敗的探測記錄列？',
 
-    resetNodeProbeDone: '✓ 已清除 {n} 列失敗的 node_probe_state，路由候選立即復原',
+    resetNodeProbeDone: '✓ 已清除 {n} 列失敗的探測記錄，路由候選立即復原',
     repairFailed: '修復沒能完成，請重試',
   },
   settings: {

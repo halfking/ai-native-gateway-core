@@ -1640,6 +1640,12 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 		//   ★ 零 DDL：只做 CREATE OR REPLACE VIEW（保留 OID ⇒ matview 依赖不动，
 		//     下一次 REFRESH 自动采用新定义 ⇒ **不需要重建 matview**）。
 		"910_routing_analytics_source_hashjoin.sql",
+		// 911：本地音频（ASR/TTS）供应商 catalog 三条目（whisper-cpp /
+		//   whisper-cpp-large / macos-say），2026-10-26 多模态标准接口轮。
+		//   ★ 合并时与上游 R166 的迁移 910 撞号 ⇒ 本条让位改为 911。
+		//   纯 INSERT ON CONFLICT，幂等；不 seed providers 行（运营经
+		//   admin API 创建，catalog kind='local' 自动建占位凭据）。
+		"911_local_audio_catalog.sql",
 		},
 	}
 }

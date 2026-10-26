@@ -1,6 +1,6 @@
 export default {
   list: {
-    emptyHint: "Les sessions apparaissent une fois qu'un gw_session_id est généré depuis les journaux de requêtes",
+    emptyHint: "Les sessions apparaissent une fois qu'un identifiant de session est généré depuis les journaux de requêtes",
   },
   userProfile: {
     loadFailed: 'Le chargement du profil utilisateur a échoué. Veuillez réessayer.',
@@ -265,7 +265,7 @@ export default {
     healthMetricComplianceHint: "Relie les résultats d'injection de prompt, PII et de conformité de sortie.",
     healthMetricOutcome: 'Résultat de session',
     healthMetricOutcomeHint: "Les scores de santé sont écrits dans les données d'analyse de session et peuvent être consultés dans le centre d'analyse.",
-    healthSource: 'Source : statut de fonctionnement du module session_inspector',
+    healthSource: 'Source : statut de fonctionnement du module d\'inspection des sessions',
     healthViewAnalytics: "Ouvrir l'analyse de session",
     // Configuration de la détection d'injection de prompt (2026-07-12)
     promptInjectionTab: "Injection de prompt",

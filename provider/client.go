@@ -2493,6 +2493,16 @@ func (c *Client) fetchRevealDB(ctx context.Context, providerID, credentialID int
 	if len(ciphertext) == 0 {
 		return "", nil
 	}
+	// 2026-10-26 多模态标准接口轮：启动期 catalog 播种曾把本地供应商占位
+	// key **明文**写进 secret_ciphertext（历史 ensureLocalCredentialsFor-
+	// SeededProviders 无加密设施）——不解密直通，否则这些凭据的路由候选
+	// 全被丢掉（enrichWithAPIKeys 拿不到 key ⇒ audioCandidateSelection 过
+	// 滤 ⇒ no_provider）。精确等于占位常量才直通：密文列出现该值 ⇔ 播种
+	// 路径写过它。播种路径现已改走真加密（见 provider/catalog/
+	// local_placeholder.go），本分支兜存量。
+	if string(ciphertext) == catalog.LocalNoKeyPlaceholder {
+		return catalog.LocalNoKeyPlaceholder, nil
+	}
 	pt, _, err := secret.DecryptAny(string(ciphertext), c.keyring, c.fernetKey)
 	if err != nil {
 		// Wrap the upstream error with a canonical sentinel so callers
