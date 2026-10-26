@@ -168,23 +168,32 @@ type chatStageParams struct {
 	timeout         time.Duration
 }
 
-// callChat 经环回 /v1/chat/completions 取一次补全（带 429 单次重试）。
-// 返回 content 与实际上游模型名。
+// callChat 经环回 /v1/chat/completions 取一次补全。两类单次自适应重试：
+//   - 429（key RPM）：等一个窗口原样重试；
+//   - 400 "does not support thinking"（ollama 2026-10-27 实测）：非 thinking
+//     模型（qwen2.5:7b 等）收到 reasoning_effort≠none 直接 400 ⇒ 剥掉
+//     effort 重发一次。端点无法预知模型是否支持 thinking，这一步让
+//     「thinking 模型保 effort、非 thinking 模型自动裸发」两边都通——
+//     这正是整晚 map-on-7b 503 的真根因（title/classify 默认 none 恰好
+//     不触发，summarize 默认 low 每发必中）。
 func (s *SummarizeService) callChat(ctx context.Context, r *http.Request, requestID string, p chatStageParams) (string, string, error) {
-	payload := map[string]any{
-		"model":       p.model,
-		"messages":    []map[string]string{{"role": "system", "content": p.system}, {"role": "user", "content": p.user}},
-		"temperature": p.temperature,
-		"stream":      false,
-		"max_tokens":  p.maxTokens,
+	call := func(effort string) (string, string, error) {
+		payload := map[string]any{
+			"model":       p.model,
+			"messages":    []map[string]string{{"role": "system", "content": p.system}, {"role": "user", "content": p.user}},
+			"temperature": p.temperature,
+			"stream":      false,
+			"max_tokens":  p.maxTokens,
+		}
+		if effort != "" {
+			payload["reasoning_effort"] = effort
+		}
+		stageCtx, cancel := context.WithTimeout(ctx, p.timeout)
+		defer cancel()
+		return loopbackChatCompletions(stageCtx, s.hc, s.loopbackEndpoint(r), r.Header.Get("Authorization"), "summarize", requestID, payload)
 	}
-	if p.reasoningEffort != "" {
-		payload["reasoning_effort"] = p.reasoningEffort
-	}
-	stageCtx, cancel := context.WithTimeout(ctx, p.timeout)
-	defer cancel()
 
-	content, model, err := loopbackChatCompletions(stageCtx, s.hc, s.loopbackEndpoint(r), r.Header.Get("Authorization"), "summarize", requestID, payload)
+	content, model, err := call(p.reasoningEffort)
 	if isLoopbackRateLimitStatus(err) {
 		// 环回撞 key RPM：等一个窗口再试一次。map-reduce 是串行编排，
 		// 这里只兜边界，不做更长退避（调用方自己的 key 额度事实）。
@@ -193,9 +202,10 @@ func (s *SummarizeService) callChat(ctx context.Context, r *http.Request, reques
 		case <-ctx.Done():
 			return "", "", ctx.Err()
 		}
-		retryCtx, retryCancel := context.WithTimeout(ctx, p.timeout)
-		defer retryCancel()
-		content, model, err = loopbackChatCompletions(retryCtx, s.hc, s.loopbackEndpoint(r), r.Header.Get("Authorization"), "summarize", requestID, payload)
+		content, model, err = call(p.reasoningEffort)
+	}
+	if isThinkingUnsupportedErr(err) && p.reasoningEffort != "" {
+		content, model, err = call("")
 	}
 	if err != nil {
 		return "", "", err
@@ -1105,4 +1115,18 @@ func isLoopbackRateLimitStatus(err error) bool {
 		return up.StatusCode() == http.StatusTooManyRequests
 	}
 	return false
+}
+
+// isThinkingUnsupportedErr 报告环回错误是否为上游 400 且错误体是 ollama 的
+// 「模型不支持 thinking」（reasoning_effort 发给了非 thinking 模型）。
+// 按状态码+错误体判据识别，不猜模型名——模型能力是上游的事实。
+func isThinkingUnsupportedErr(err error) bool {
+	up, ok := err.(interface {
+		StatusCode() int
+		Body() string
+	})
+	if !ok || up.StatusCode() != http.StatusBadRequest {
+		return false
+	}
+	return strings.Contains(up.Body(), "does not support thinking")
 }

@@ -342,6 +342,41 @@ func TestSummarizeLoopback429RetriesOnce(t *testing.T) {
 	}
 }
 
+// TestSummarizeThinkingUnsupportedStripsEffort：非 thinking 模型对
+// reasoning_effort 回 400（ollama "does not support thinking"）时剥掉
+// effort 重发一次——第二次载荷必须不含 reasoning_effort（2026-10-27 实测
+// 根因：summarize 默认 effort=low + qwen2.5:7b 每发必 400 ⇒ map 层全灭）。
+func TestSummarizeThinkingUnsupportedStripsEffort(t *testing.T) {
+	var bodies []map[string]any
+	srv, _ := newSummarizeTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		var b map[string]any
+		_ = json.Unmarshal(raw, &b)
+		bodies = append(bodies, b)
+		if _, has := b["reasoning_effort"]; has {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"error":{"message":"\"qwen2.5:7b\" does not support thinking","type":"invalid_request_error"}}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"model":"qwen2.5:7b","choices":[{"message":{"content":"# t\n## 一句话回顾 a\n## 时间线 b\n## 关键决议 c\n## 待办 d"}}]}`))
+	})
+	resp, body := summarizePost(t, srv.URL, "/v1/summarize", `{"model":"qwen2.5:7b","text":"短内容"}`)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d body=%s", resp.StatusCode, body)
+	}
+	if len(bodies) != 2 {
+		t.Fatalf("llm calls = %d, want 2 (effort-400 + stripped retry)", len(bodies))
+	}
+	if _, has := bodies[1]["reasoning_effort"]; has {
+		t.Fatalf("retry payload must NOT carry reasoning_effort")
+	}
+	var out SummarizeResult
+	_ = json.Unmarshal(body, &out)
+	if out.Pipeline != "single" || out.LLMModel != "qwen2.5:7b" {
+		t.Fatalf("pipeline=%q llm_model=%q", out.Pipeline, out.LLMModel)
+	}
+}
+
 func TestStripThinkBlock(t *testing.T) {
 	cases := map[string]string{
 		"<think>推理过程</think>答案":                "答案",

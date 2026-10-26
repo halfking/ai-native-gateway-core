@@ -449,11 +449,15 @@
 > 同步到 211 的竟是上游 abc92693 的树，镜像静默丢掉本轮全部端点（/v1/summarize 404
 > 而非 400）⇒ **部署必须 `LLM_GATEWAY_ROOT=<绝对路径>` 钉根**；另 deploy-211.sh
 > 无参路径的 bash3.2+set -u ARGS[*] unbound 已补守卫。
-> ⇒ ★ **e2e 读数**（llm.itestu.cn，6 次蓝绿部署后）：embeddings **4096 维** ✓、
+> ⇒ ★ **e2e 读数**（llm.itestu.cn，8 次蓝绿部署后）：embeddings **4096 维** ✓、
 > ASR 双档转写正确 ✓、TTS wav ✓、title/classify/短总结多次通过（质量达 SKILL 规格）
-> ✓；长路径端到端成品被**五个分钟级周期子系统的收敛抖动**卡住（探针梯子/索引桶/
-> URSM 快照/ollama 驻留/6 次重启），编排逻辑由 16 个单测锁定、实跑已抵达 map 层
-> 环回——静置自愈，复验留下一轮。
+> ✓；**长路径 map-reduce 端到端打通（10-27 03:04：5207 字 → 91s 完整纪要成品）**。
+> 打通前挖掉两个真根因：★★ **ollama 对非 thinking 模型收到 reasoning_effort 直接
+> 400**（"does not support thinking"）⇒ 修在 **reqprobe**（thinking 能力族判据 →
+> 剥参免费重试，全调用方受益；summarize 层另加同判据兜底）——★ 教训：**chat 面把
+> 上游 400 吞成 503**，上游细节只在 upstream_http_attempt 日志里；★ **nginx 300s
+> proxy_read_timeout 掐断长渲染**（且掐断的在途请求会打脏渲染模型的探针状态，
+> 下一轮假象 503）⇒ 211 nginx llm 网关 location 已提 660s。
 > ⇒ ★★ **Mac 侧遗留（需用户处置）**：Ollama.app 与 launchd 双实例之争复发（坑#2），
 > MAX_LOADED_MODELS=5 的 plist 补丁未落到实际在跑的实例 ⇒ 模型 LRU 驱逐与探针
 > 超时的活锁会间歇复发；退 app + 重启 Mac 一次即根治。embedding:8b@32K 占 10GB，
