@@ -429,6 +429,10 @@ func buildResponsesInputFile(doc *DocumentBlock) map[string]any {
 		if url == "" { // compatibility with pre-canonical IR rows
 			url = doc.Source.Data
 		}
+		// 2026-10-27 复审轮：url/data 双空不写 file_data:""（空载荷块）。
+		if url == "" {
+			return nil
+		}
 		inner["file_data"] = url
 	case "file", "file_id":
 		// 2026-09-05 round2 复审: Anthropic-native Files API documents parse
@@ -451,6 +455,10 @@ func buildResponsesInputFile(doc *DocumentBlock) map[string]any {
 		// text/unknown: carry the raw data as file_data.
 		if mt != "" {
 			inner["mime_type"] = mt
+		}
+		// 同款空值护栏：空文本不写 file_data:""。
+		if doc.Source.Data == "" {
+			return nil
 		}
 		inner["file_data"] = doc.Source.Data
 	}
