@@ -23,7 +23,7 @@ export interface NavItem {
    *
    * ★ 2026-10-21 新增（R72f 轮 · 属主决策项 #10 的后半）。原因：有些功能的
    *   **端点只在开关打开时才注册**（例：「费用对账」的
-   *   `/api/admin/provider-cost-reconciliation*` —— `admin/handler.go:1096` 的 `providerCostReconciliationHandler` 装配判断）
+   *   `/api/admin/provider-cost-reconciliation*` —— `admin/handler.go:1099` 的 `providerCostReconciliationHandler` 装配判断）
    *   ⇒ ⇒ 而这一席此前
    *   **只带 `requiresRole`** ⇒ ⇒ ⇒ 开关关着时 super_admin 照样看得见它、
    *   点进去必然 404 ⇒ ★★ **404 与「端点不存在」同形 ⇒ 没有一层会说真话**。
@@ -39,7 +39,7 @@ export interface NavItem {
    *   ⇒ ⇒ 「Go 里的标识符」必须和 `.go:行号` 写在**同一行**，
    *   否则那一行的 token 集里只有端点路径字面量 ⇒ 引用会被判成
    *   「对不上」而**并非它真的错了**。本行因此把
-   *   `providerCostReconciliationHandler` 与 `admin/handler.go:1096` 写在一起。
+   *   `providerCostReconciliationHandler` 与 `admin/handler.go:1099` 写在一起。
    */
   requiresCapability?: string
 }
@@ -439,7 +439,7 @@ export const DRAWER_NAV: readonly NavItem[] = [
     requiresRole: 'super_admin',
   },
   // 2026-10-08 第一百批：任务类型档案 + 人工修正反馈闭环。
-  // ★ admin 档（`admin/handler.go:1485` 用 `admin` 挂载 `RegisterTaskProfileRoutes`）
+  // ★ admin 档（`admin/handler.go:1488` 用 `admin` 挂载 `RegisterTaskProfileRoutes`）
   //   ⇒ **不设** requiresRole（与上面那席相反）。
   // ★ 这一席同时接上批 98/99 的两个 API 模块 —— 它们此前**没有任何 UI 引用**，
   //   全仓 94 个 API 模块里有 32 个是这种「做完了但用户点不到」的孤儿。
@@ -492,14 +492,17 @@ export const DRAWER_NAV: readonly NavItem[] = [
   },
   // ★★ 凭据模型滑窗调用明细（2026-10-14 第一百一十五批）——
   //   与 errors-trend / model-history **同注册处**，但**处置相反**。
-  // ⚠️⚠️ 这里要设 **`requiresRole: 'super_admin'`** 而不是 `'admin'`：
-  //   `handleSlidingWindow`（admin/credential_monitor.go:704-782）里
-  //   **既没有 `tenantID` 变量也没有 `IsTenantAdmin`** ⇒ Redis 与
-  //   `_request_logs` 回退两条腿的 WHERE 都**只有 credential_id**，
-  //   而 `credential_id` 是**全局唯一**主键
-  //   ⇒ 任何通过认证的主体报出别的租户的 credential_id 就能读到它的逐次调用明细。
-  //   ⇒ `'admin'` 档会给出「按钮写着我的租户、后端根本不理这句」的**虚假安全感**。
-  // ⇒ ★ 所以它**必须**进 `AppDrawer.spec.ts` 的 superAdmin 白名单（与上面两席相反）。
+  // ⚠️⚠️ 这里设 **`requiresRole: 'super_admin'`** 而不是 `'admin'`：
+  //   ★★ **2026-10-26 订正**：本段原写的理由（「后端两条腿都只有 credential_id、
+  //   没有租户维度 ⇒ 跨租户可读」）已被后端补洞覆盖 —— audit #153 +
+  //   12h-audit 20261017（2026-10-16/17）给 `handleSlidingWindow`
+  //   （`admin/credential_monitor.go:753-863`）加了 `tenantID` / `IsTenantAdmin`、
+  //   两条 SQL 腿的 `AND ($5 = '' OR tenant_id = $5)`（`:905` / `:950`），
+  //   以及角色门（`:765-768`，`role=user` ⇒ 403）；Redis 快腿对 tenant_admin
+  //   直接跳过（`:809`，Redis 键没有 tenant tag）。
+  //   ⇒ 所以 `'admin'` 档**现在**是安全的；仍写 `'super_admin'` 是**过度限制**
+  //     （收紧一档不必跟着放开），**不是漏洞**。
+  // ⇒ ★ 它仍**必须**进 `AppDrawer.spec.ts` 的 superAdmin 白名单（与上面两席相反）。
   {
     key: 'sliding-window',
     to: '/sliding-window',

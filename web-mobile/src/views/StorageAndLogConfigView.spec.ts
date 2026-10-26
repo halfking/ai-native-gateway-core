@@ -233,27 +233,27 @@ describe('① 权限档第二类「真门」', () => {
     expect(storageConfigServerIsRealGate('h.admin')).toBe(false)
   })
 
-  it('①-6 ★★★★★★ 读 Go 源码：`:1179` 与 `:1182` **相邻两行却是两种档位**', () => {
+  it('①-6 ★★★★★★ 读 Go 源码：`:1182` 与 `:1185` **相邻两行却是两种档位**', () => {
     // ★★★ 这条是「绝不能按前缀推权限」的**事实侧**，也是本族结论与三批返工的对照。
     const lines = goSrc('admin/handler.go').split('\n')
     const storageLine = lines.findIndex((l) => l.includes('"/api/admin/storage/config"'))
-    expect(storageLine + 1, '模块头原写 :1108 → :1137 → :1172 → 实为 :1179（2026-10-21 views 行号订正轮）').toBe(1179)
+    expect(storageLine + 1, '模块头原写 :1108 → :1137 → :1172 → :1179（2026-10-21 views 行号订正轮）→ 实为 :1182（2026-10-26 行号漂移订正轮）').toBe(1182)
     expect(lines[storageLine]).toMatch(/h\.superAdmin\(h\.handleStorageConfig\)/)
     // ★ 相邻的 migration-state 就在 1179 之后三行，却是 admin 档。
     const migLine = lines.findIndex((l) => l.includes('"/api/admin/storage/migration-state"'))
-    expect(migLine + 1).toBe(1182)
+    expect(migLine + 1).toBe(1185)
     expect(lines[migLine]).toMatch(/admin\(h\.handleMigrationState\)/)
     expect(lines[migLine]).not.toMatch(/superAdmin/)
     expect(migLine - storageLine, '两行应当相邻（差 3 行：注释与空行）').toBeLessThanOrEqual(3)
   })
 
-  it('①-7 ★★★★ 行号订正：:1108/:1109/:1111/:1114 → :1137/:1138/:1140/:1143 → :1172/:1173/:1175/:1178 → 实为 :1179/:1180/:1182/:1185', () => {
+  it('①-7 ★★★★ 行号订正：:1108/:1109/:1111/:1114 → :1137/:1138/:1140/:1143 → :1172/:1173/:1175/:1178 → 实为 :1179/:1180/:1182/:1185 → 再漂至实为 :1182/:1183/:1185/:1188（2026-10-26 行号漂移订正轮）', () => {
     const lines = goSrc('admin/handler.go').split('\n')
     const at = (frag: string) => lines.findIndex((l) => l.includes(frag)) + 1
-    expect(at('"/api/admin/storage/config"')).toBe(1179)
-    expect(at('"/api/admin/storage/config/test-path"')).toBe(1180)
-    expect(at('"/api/admin/storage/migration-state"')).toBe(1182)
-    expect(at('"/api/admin/logs/config"')).toBe(1185)
+    expect(at('"/api/admin/storage/config"')).toBe(1182)
+    expect(at('"/api/admin/storage/config/test-path"')).toBe(1183)
+    expect(at('"/api/admin/storage/migration-state"')).toBe(1185)
+    expect(at('"/api/admin/logs/config"')).toBe(1188)
     // ★ 反向护栏：模块头原写的行号那行**不是**本族任何一行注册。
     expect(lines[1107]).not.toMatch(/storage\/config|logs\/config/)
   })

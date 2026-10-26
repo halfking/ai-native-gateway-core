@@ -393,7 +393,7 @@ describe('⑥ 指针型数字键', () => {
 
 describe('⑦ context 的三条消失路径', () => {
   it('⑦-1 ★★★★ 键缺失 ⇒ 显示「无法判定」，**不是**「不存在」', async () => {
-    // ★★★ jsoncol.Decode（internal/jsoncol/jsoncol.go:57-79）有**三条路**让键消失：
+    // ★★★ jsoncol.Decode（internal/jsoncol/jsoncol.go:57-75）有**三条路**让键消失：
     //   列是 NULL、列是 JSON `null`、**列里的 JSON 解析失败**（只留 Warn、dst 不动）。
     //   ⇒ 说「没有上下文」是在替后端下结论，而那三种情况里只有一种是「真的没有」。
     mFetch.mockResolvedValue(payload({ events: [rec()] }))

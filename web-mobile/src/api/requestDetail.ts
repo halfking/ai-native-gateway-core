@@ -180,7 +180,7 @@ export function fetchRequestDetail(
 }
 
 /**
- * ★ 后端 `writeJSON(w, 200, detail)`（unified_detail.go:474）传的是 `*Detail` 本身
+ * ★ 后端 `writeJSON(w, 200, detail)`（unified_detail.go:463）传的是 `*Detail` 本身
  * ⇒ 响应**没有包装键**，顶层就是 `{source, persistence, meta, bodies?, warning?}`。
  * 形状不符**抛错**，绝不当成「没查到」返回 null。
  */

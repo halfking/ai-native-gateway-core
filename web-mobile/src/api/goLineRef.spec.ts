@@ -28,7 +28,7 @@ import { join, relative, sep } from 'node:path'
  *   1 处只差 1 行），已全部订正并**复核结论仍然成立**（光移行号不算修好）；
  *   剩下 **15 条经逐字核对，引用本身是对的**，只是本判据抓 token 的方式不适用
  *   ⇒ 登记进 `KNOWN_FALSE_POSITIVE`，**它们不是债**。
- *   ⇒ 现状：`KNOWN_DRIFT`（真错）**0 条**，`KNOWN_FALSE_POSITIVE` **27 条**（扩全范围后订正）。
+ *   ⇒ 现状：`KNOWN_DRIFT`（真错）**0 条**，`KNOWN_FALSE_POSITIVE` **23 条**（扩全范围后订正；2026-10-26 行号漂移订正轮又订了 3 条的键）。
  *
  * ★★★★ **批 137 的一个额外发现，值得单独记住**：
  *   那 12 处真错修完之后，在**普查扫不到的范围**里又找到 **16 处同源残留** ——
@@ -239,16 +239,16 @@ const KNOWN_DRIFT: string[] = []
  *   每条写清「为什么判不出来」，将来改判据时才知道该动哪儿。
  */
 const KNOWN_FALSE_POSITIVE: { key: string; note: string }[] = [
-  { key: 'api/connectionRegistry.ts:7 admin/handler.go:1081', note: '注释写 `{id}`，Go 里是 `{request_id}` —— 字面不同，指的同一条注册（2026-10-21 订正：真注册行随上游合并从 :1052 漂到 :1081）' },
+  { key: 'api/connectionRegistry.ts:7 admin/handler.go:1084', note: '注释写 `{id}`，Go 里是 `{request_id}` —— 字面不同，指的同一条注册（2026-10-21 订正：真注册行随上游合并从 :1052 漂到 :1081；2026-10-26 行号漂移订正轮：再漂到 :1084）' },
   { key: 'api/credentialsOps.ts:140 admin/routing_reset.go:52', note: '52 行是 `handleResetCredentialState` 的函数定义；token `reason` 在函数体内（注释自己就写了 `:69-72`）' },
   { key: 'api/dashboard.ts:14 admin/dashboardapi/types.go:187', note: '187 行是 `writeSuccessJSON` 产出结构里的一行（`Success: true`），不是该函数本身' },
   { key: 'api/errorsTrend.ts:38 admin/users.go:406', note: '行里是大写 `Role`，token 是小写 `role`（大小写敏感）' },
   { key: 'api/outputCompliance.ts:131 admin/output_compliance_handler.go:712', note: '712 行是 `writeJSON(...{"feedback": items...})`，token 是函数名 `listFeedback`（定义在 :673）' },
   { key: 'api/requestActions.ts:94 middleware/requestid_mw.go:83-89', note: '83 行是 `generateRequestID()` 的定义；token `request_id` 在函数体内' },
   { key: 'api/sessions.ts:11 admin/session_summary_v2.go:89', note: '89 行正是 `if r.Method != http.MethodPost` 那句；token 是端点名 `summary`（不在该行）' },
-  { key: 'api/slidingWindow.ts:18 credentialhealth/recorder.go:16-22', note: '同一行是一串链式引用；`slidingWindowQuery` 配的是同行的 `:815` 那条，`recorder.go:16-22` 配的是 `CallEntry`' },
+  { key: 'api/slidingWindow.ts:19 credentialhealth/recorder.go:16-22', note: '同一行是一串链式引用；`slidingWindowQuery` 配的是同行的 `:815` 那条，`recorder.go:16-22` 配的是 `CallEntry`' },
   { key: 'api/taskProfile.ts:27 taskprofile/suggest.go:45-92', note: '45 行是 `Suggest` 的定义；token `ensurePool` 配的是同行另一条引用 `:435-441`' },
-  { key: 'api/taskTypeCorrectionStats.ts:20 admin/handler.go:1485', note: '1485 行确实是 `admin` 挂载 `RegisterTaskProfileRoutes`（结论成立；2026-10-21 订正：挂载行随上游合并从 :1421 漂到 :1485）；token `requiresRole` 是**前端概念**，Go 里没有这个词' },
+  { key: 'api/taskTypeCorrectionStats.ts:20 admin/handler.go:1488', note: '1488 行确实是 `admin` 挂载 `RegisterTaskProfileRoutes`（结论成立；2026-10-21 订正：挂载行随上游合并从 :1421 漂到 :1485；2026-10-26 行号漂移订正轮：再漂到 :1488）；token `requiresRole` 是**前端概念**，Go 里没有这个词' },
   { key: 'api/turnsFilterOptions.ts:317 admin/turns_filter_options.go:61-73', note: '61-73 就是注释里**逐字引用的那段**租户判断；token 是函数名（定义在 :49）' },
   { key: 'api/usageEnhanced.ts:27 pkg/identity/verifier.go:111', note: '111 行是 `Verify` 的定义；token `supportedRole` 在它函数体内（:120 附近）' },
   { key: 'api/usageTrendSeries.ts:265 admin/usage_trend_series.go:410', note: '410 行是 SQL 读面的 FROM 子句（2026-10-21 订正：随上游合并从 :407 漂到 :410，另一处 FROM 从 :588 漂到 :591）；token `source` 是**对外字段名**' },
@@ -318,7 +318,7 @@ describe('① Go 行号引用普查：读数 + 召回自证 + 阳性对照', () 
 
   it('①-3 ★★★★ 阳性对照：一条真实**正确**的引用必须判为对得上', () => {
     // 批 136 实测：`api/connectionRegistry.ts` 的列表端点引用
-    //   `admin/handler.go:1080`，而那一行逐字是
+    //   `admin/handler.go:1083`，而那一行逐字是
     //   `mux.HandleFunc("/api/admin/connection-registry", admin(...))`。
     // ⇒ 反向读数：判据不能只会喊「对不上」。
     // ★ 2026-10-21 订正：两条引用都随上游合并漂了（列表端点 :1051→:1080，
@@ -330,7 +330,7 @@ describe('① Go 行号引用普查：读数 + 召回自证 + 阳性对照', () 
     const { counts, bad } = classify(refs)
     expect(counts['可判定']).toBe(2)
     expect(bad).toHaveLength(1)
-    expect(bad[0]?.from, '唯一判为对不上的应该是 {id} 那条（Go 里是 {request_id}）').toBe(1081)
+    expect(bad[0]?.from, '唯一判为对不上的应该是 {id} 那条（Go 里是 {request_id}）').toBe(1084)
   })
 })
 

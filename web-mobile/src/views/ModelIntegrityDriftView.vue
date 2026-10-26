@@ -32,7 +32,7 @@
 //   4. ★★★★ `count` **恒等于** `events.length`（`:385` 写的是 `len(items)`），
 //      且**响应不回显 limit** ⇒ 截断只能靠「拿满请求上限」反推。
 //   5. ★★★★ `context` 走 `jsoncol.Decode`：列是 NULL、列是 JSON `null`、
-//      **以及列里的 JSON 解析失败**（`jsoncol.go:57-79`，失败只留 Warn、dst 不动）
+//      **以及列里的 JSON 解析失败**（`jsoncol.go:57-75`，失败只留 Warn、dst 不动）
 //      ——**三种情况都让键被省略** ⇒ ★★ 「键缺失」**不能**证明「没有上下文」。
 //   6. ★★★ `provider_id` / `credential_id` 是**指针** + omitempty
 //      ⇒ 键在时值可能是真实的 **0**；真值判断会把 0 误判成「没有」。

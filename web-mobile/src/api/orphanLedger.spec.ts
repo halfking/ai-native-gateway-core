@@ -712,7 +712,7 @@ describe('孤儿棘轮', () => {
 
   it('★★ 已接线的哨兵：reportRollup 不在孤儿里（第一百一十一批）', () => {
     // ★ 对账报表接上了抽屉席与路由 ⇒ 棘轮清单同步删掉那一行。
-    //   该族是 **superAdmin 档**（admin/handler.go:1130，整个 `/api/admin/report-rollup/`
+    //   该族是 **superAdmin 档**（admin/handler.go:1133，整个 `/api/admin/report-rollup/`
     //   前缀带尾斜杠都是 h.superAdmin）⇒ 席**要** requiresRole，
     //   所以 `AppDrawer.spec.ts` 的排序白名单里**必须**出现 report-rollup。
     //   ⇒ 两条判据合起来才覆盖「接上了」+「档位挂对了」。
@@ -733,7 +733,7 @@ describe('孤儿棘轮', () => {
 
   it('★★ 已接线的哨兵：opsOverview 不在孤儿里（第一百一十七批）', () => {
     // ★ 运维总览接上了抽屉席与路由 ⇒ 棘轮清单同步删掉那一行。
-    //   权限成因是**第三类**：注册处 `admin/handler.go:1141` 是 `h.superAdmin(...)`
+    //   权限成因是**第三类**：注册处 `admin/handler.go:1144` 是 `h.superAdmin(...)`
     //   （`SuperAdminMiddleware` 逐字比 role ⇒ 后端 tenant_admin **读不到**），
     //   且 `handleOpsOverview` 自己不检 role、11 条子查询**全是全局表**
     //   ⇒ 服务端**完全没有租户维度** ⇒ 前端只能对齐成 `requiresRole: 'super_admin'`，
