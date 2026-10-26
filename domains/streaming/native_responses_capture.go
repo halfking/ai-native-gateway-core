@@ -63,6 +63,15 @@ func observeNativeUsage(capture *audit.StreamCapture, usage map[string]json.RawM
 		cacheRead = nativeInt(details, "cached_tokens")
 		cacheWrite = nativeInt(details, "cache_write_tokens")
 	}
+	// 2026-10-27 缓存监测轮：GPT-5.6 显式缓存的 TTL 写入分档
+	// （usage.cache_write_tokens_details.{ttl_30m,ttl_12h}）进监测面。
+	if split, ok := nativeObject(usage, "cache_write_tokens_details"); ok {
+		short := nativeInt(split, "ttl_30m_tokens")
+		long := nativeInt(split, "ttl_12h_tokens")
+		if short != nil || long != nil {
+			capture.ObserveCacheWriteSplit(short, long)
+		}
+	}
 	if input != nil || output != nil {
 		capture.ObserveUsage(input, output, cacheRead, cacheWrite)
 	}

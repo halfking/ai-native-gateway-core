@@ -625,7 +625,17 @@ func serializeOpenAIMessageContent(blocks []ContentBlock) []map[string]any {
 			}
 		case "input_audio":
 			// audit-provider-multimodal (2026-07-13): OpenAI chat audio input
-			if block.InputAudio != nil {
+			//
+			// ★★ 2026-10-27（12h 审计轮）：★ 与紧邻的 `case "audio"` 同族
+			// ★★ —— 后者有「载荷为空就不发」的守卫（serializeOpenAIAudioBlock
+			// ★★ 返回 nil ⇒ 调用方跳过），★ ★★ 而本分支此前**没有守卫**
+			// ★★ ⇒ 只要 `block.InputAudio != nil` 就无条件发出 ⇒
+			// ★★ ⇒ 发出 `{"input_audio":{"data":"","format":"mp3"}}` ⇒
+			// ★★ ⇒ **上游必 400**（OpenAI 的 input_audio 要 base64 数据 +
+			// ★★ wav|mp3 格式；空 data 不是合法输入）⇒ ⇒ 而且是**静默**的
+			// ★★ （客户端拿到的是上游 400，而不是本地可解释的错误）。
+			// ★★ ⇒ 本轮按同族口径补守卫：**没有载荷就不发**。
+			if block.InputAudio != nil && block.InputAudio.Data != "" {
 				result = append(result, map[string]any{
 					"type": "input_audio",
 					"input_audio": map[string]any{

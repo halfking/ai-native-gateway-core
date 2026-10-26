@@ -417,6 +417,54 @@
 > ★★ 同一把尺子只能有一份实现 / ★★ 数字键会让 AST 写入器静默写出重复键 /
 > ★★「我以为的数字」必须当场重测 / ★★「疑似产品缺陷」要用能控住变量的量具复核 /
 > ★★ 文案结构变了断言的结构也要跟着变 / ★★「内部码该不该上屏」本身是个产品判断）。
+> **2026-10-26 多模态标准接口轮：本地音频（ASR/TTS）+ 文本三件套**（goal 会话，
+> 承接 network-switch 仓《嵌入与会话总结优化方案-2026-10-26》）：
+> ★ 目标：完善 llm.itestu.cn —— 接入本地模型，提供**嵌入/标题总结/内容总结/ASR/语音发音**
+> 标准接口。全部落地并 e2e（详见审计档 §4 时刻表）。
+> ⇒ ★ **新端点三件套** `domains/streaming/summarize.go`：`/v1/summarize`（短单发/长
+> map-reduce-render）、`/v1/summarize/title`（规则硬校验+实体择优）、`/v1/classify`
+> （受控词表）——环回 chat 面架构（与 audio_transform 同款），鉴权抽成包级
+> `authenticateNoRPM`、环回抽成 `loopbackChatCompletions`（transform 改委托，
+> 同一把尺子一份实现）；提示词移植自已验收的三个 SKILL.md；`<think>` 剥离；
+> 环回 429 单次重试；map 层 maxTokens=3000（thinking 模型预算不被烧穿）。
+> ⇒ ★ **whisper.cpp 传输** `audio_whisper_stt.go`：whisper-server 1.9.5 **没有**
+> OpenAI 兼容路径（实测 404），钉 `/inference` 方言，判据 **catalog_code**（绝不按
+> 模型名猜——云端也有 whisper-* 模型名）；base_url 注册约定**不带 /v1**。
+> ⇒ ★ **catalog 迁移 910**：whisper-cpp(:8081)/whisper-cpp-large(:8082)/macos-say(:8086)
+> 三条 kind='local' 条目 + manifest 模型清单（whisper 无 /v1/models ⇒ API 发现失败
+> 自动回落 manifest）；**7+1 点登记全齐**（正本/embeddata/installer×2/tsv/升级序列/
+> 基线/db-changelog）。
+> ⇒ ★★ **修复三个潜伏缺陷**（都被本地供应商注册踩出）：①启动播种把占位 key
+> **明文**写进 secret_ciphertext（播种已改走真加密 + admin decryptCred 对已知占位
+> 常量精确直通）；②同一明文在**运行时路由面**把候选整个丢掉（llamacpp/lmstudio/
+> mlx/vllm 四家「从未真正可路由」的根因；常量提升到 provider/catalog，两缝同修）；
+> ③**探针不认 thinking 模型**：max_tokens=32 探针载荷被 reasoning 烧穿 ⇒ content 空
+> ⇒ inconclusive ⇒ node_probe_failed 活锁——chat 臂加认 reasoning/reasoning_content
+> （「探针问的是活着吗，r1029 管的是能不能交付」，业务面一字不动；负例夹具按新契约
+> 移为 chat 正例，理由在注释）。
+> ⇒ ★ **Mac 侧**：whisper 双档 plist 0.0.0.0 + TTS 垫片 `~/bin/modelhub-tts-server.py`
+> （纯标准库，say+afconvert，OpenAI /v1/audio/speech 形态，wav/m4a，mp3 如实 400，
+> launchd :8086）。
+> ⇒ ★★ **部署坑（重要）**：**多 checkout 机器上 DD_REPO_ROOT 会漂**——第 5 次部署
+> 同步到 211 的竟是上游 abc92693 的树，镜像静默丢掉本轮全部端点（/v1/summarize 404
+> 而非 400）⇒ **部署必须 `LLM_GATEWAY_ROOT=<绝对路径>` 钉根**；另 deploy-211.sh
+> 无参路径的 bash3.2+set -u ARGS[*] unbound 已补守卫。
+> ⇒ ★ **e2e 读数**（llm.itestu.cn，8 次蓝绿部署后）：embeddings **4096 维** ✓、
+> ASR 双档转写正确 ✓、TTS wav ✓、title/classify/短总结多次通过（质量达 SKILL 规格）
+> ✓；**长路径 map-reduce 端到端打通（10-27 03:04：5207 字 → 91s 完整纪要成品）**。
+> 打通前挖掉两个真根因：★★ **ollama 对非 thinking 模型收到 reasoning_effort 直接
+> 400**（"does not support thinking"）⇒ 修在 **reqprobe**（thinking 能力族判据 →
+> 剥参免费重试，全调用方受益；summarize 层另加同判据兜底）——★ 教训：**chat 面把
+> 上游 400 吞成 503**，上游细节只在 upstream_http_attempt 日志里；★ **nginx 300s
+> proxy_read_timeout 掐断长渲染**（且掐断的在途请求会打脏渲染模型的探针状态，
+> 下一轮假象 503）⇒ 211 nginx llm 网关 location 已提 660s。
+> ⇒ ★★ **Mac 侧遗留（需用户处置）**：Ollama.app 与 launchd 双实例之争复发（坑#2），
+> MAX_LOADED_MODELS=5 的 plist 补丁未落到实际在跑的实例 ⇒ 模型 LRU 驱逐与探针
+> 超时的活锁会间歇复发；退 app + 重启 Mac 一次即根治。embedding:8b@32K 占 10GB，
+> 与双 chat 大模型共驻内存吃紧。
+> ⇒ 审计档 `docs/audit/2026-10-26-多模态标准接口轮-本地音频与文本三件套.md`（坑清单
+> §5 共 8 条：两条登记腿/admin_protected 排除/modality 只在 discovery 腿/错误映射吃真因/
+> 索引桶/ollama 活锁/DD_REPO_ROOT 漂移/30b 不宜当 map）。
 > **2026-10-27 第 17 增量：AI 痕迹门轮（impeccable 的 Do-Not 落成可执行判据）**（会话
 > `mvs_dc5e181989fc4539805f343f39be2b5d`）：★ 承接用户总目标（「学习 impeccable 的技能与规范，
 > 优化整个网关的 UI —— 减少 AI 化、增加人味与艺术化」）⇒ **前 16 增量清的是 i18n 覆盖与文案语义，
@@ -8612,7 +8660,36 @@ index b953a6f03..555ef83c4 100644
 > ⇒ ⇒ ★★★ （本机 `psql` shim 不认 DSN 的 host/port）⇒ ★ 已在 **origin/main 独立 worktree
 > ⇒ ⇒ ★★★ 复跑确认同签名失败 ⇒ **非本轮引入**，未动。
 > ⇒ ⇒ ★★ **完整记录见 `docs/audit/2026-10-27-R90-turns-sessions-过滤路径500与两腿改写.md`**。
-> **2026-10-27 R166 轮（本会话）· routing_analytics_7d REFRESH 降本【907 残留探针的结构性收口，迁移 910 pending】**：
+> **2026-10-27 R167 轮（本会话）· 910 生产闭环复核与节奏归因【迁移 910 已应用，本轮零代码零迁移】**：
+> **对生产写入 = 0**（252 只读：schema_migrations / pgss 10min 序列 / 三台网关 journal / PG 外抄日志）。
+> 完整记录见 `docs/audit/2026-10-27-R167-910生产闭环复核与节奏归因轮.md` + LESSONS `§455`（★ 原拟 §454，合并让号）。
+> ★ **910 已由部署列车应用**：`applied_at = 2026-10-27 02:57:44.285+08`（台账实查；154 候选槽
+> 03:01:54 / 245 候选槽 03:10:53 先后启动；**252 宿主无刷新参与者**——ps 里的 `gateway` 进程
+> 实为 kxmemory 容器）。★ **干净窗验证（R166 快照自带 ±2 次雾区 ⇒ 不做跨轮切段，S1 应用后
+> 17 分钟定格 → 逐 tick 差分）**：语句级 buffers/call 147K → **64.6~65.3K（n=2）= −56%**
+> （SELECT 层 −64% 兑现；差值 ~13K 页 = REFRESH CONCURRENTLY diff/apply 层）、冷读
+> 132MB/次 → 38MB→~0、temp 0。★ **墙钟不背书**：同夜同负载带（load 40→64）PG 语句日志——
+> 907 形态六 tick = 50.4s/**击杀**/88.6s/10.4s/67.1s/**击杀**（10-26 18:33 第三发）；
+> 910 形态 19.04s/**176.1s（距 180s 钉 4s，buffers 正常零锁等待=纯 CPU 争用）**/85.5s（击杀后
+> 追账冷态）/**04:30 第四发击杀（journal ERROR SQLSTATE 57014）——**本轮文档曾按 n=3 写过
+> 「910 样本 0 击杀」，被 04:30 当场推翻 ⇒ 907 今晚 2/6、910 1/5 tick 击杀（同 load 50~64 带），
+> **击杀族没有被 910 消除；可声明的是结构与冷读**；§143.28 再次被生产验证。
+> ★ **节奏 +15% 归因收口**：55.2 次/天是 churn 日抬高的**窗均值**，**稳态恰 48/天=名义**
+> （10-26 全天 48；907 稳定纪元 off-tick 4 次=4 次部署初始刷新）；发射器全查=3 个
+> （tick/boot 初始/admin TriggerRefresh 无调用方）。★ **r7d−audit=14 归因收口**：trailing view
+> 记账不对称（unpaired 25 vs 15，两方向都在净 +10；击杀反向 audit+1；良性，下一 tick 兜底）。
+> ★ **承接前提复查（本轮最值钱）**：R166 §8 拍板材料「matrix 分族 work_mem（未拍板）」
+> **已于 10-19 `6d5db3a7c` 接线**（`refreshView` 共享路径 SET 256MB ⇒ 两族全覆盖，单 winner
+> 语义无需分族）且生产已兑现：matrix 三兄弟 temp/call 136/40/28.5MB → 15.3/4.7/3.2MB
+> （lift 后推算 2.5~5MB，**−89% 量级**）⇒ **第二优先级就地销案**——「未拍板/未接线」从写下的
+> 那一刻起就在腐烂，承接清单逐项先复查前提。★ **台账漏记补回填**：909 行也还是 pending
+> （10-26 02:10:45 已应用）⇒ 909/910 两行一并 applied+verified（909 判据=三 trigram 索引
+> pg_indexes 在位）；910 行残留失实句「本迁移不改变口径」修正为范围限定版。
+> ★ **pgss 口径定案（间接）**：三发击杀恰 180.000s 而 pgss max=179.539 ⇒ **180s 击杀不进
+> pgss**（与 10-19 注释一致）；R166 的 31.8s [32,41] 切段重推确认（31.96~34.9s）。
+> ⇒ **下一轮入口**：白天 load 60+ 带观察 910 击杀率（若出现击杀 ⇒ 增量刷新升第一位，属主）；
+> hot 腿 0 命中探针（下一块可量成本）；外抄日志 gap 根因（03:00/03:02 两行蒸发）。
+
 > **对生产写入 = 0**（252 全程只读；910 只落仓）。完整记录见
 > `docs/audit/2026-10-27-R166-routing-analytics-7d-REFRESH降本-父表腿日界下推.md` + handoff `§19.30` + LESSONS `§441`。
 > ★ **读数推进**：R147 的 4.97h/293/61.0s 是 **907 应用前**截面；907 实际 10-24 23:07+08 应用 252
@@ -10849,6 +10926,11 @@ index b953a6f03..555ef83c4 100644
 > ⇒ ⇒ ⇒ ★★★ **★ 交叉印证**：★ origin/main 新增的注释写明「v1 `request_logs` 族已随**迁移 890** 物理退役」⇒ ⇒ ★ 与本轮 R165 的库侧实测（★ 家族只剩 1 个兼容视图）**互相印证** ⇒ ⇒ ★ **「同名 ≠ 没转化」在退役侧同样成立**。
 > ⇒ ⇒ ⇒ ★★★★ **★ SQL 变化（★ 原始目标第 7 条）**：★ **本轮 `.sql` 变更 = 0 个** ⇒ ⇒ **211 / 252 无需为本轮补任何 SQL**；★ 合并 origin/main 带进来的 `.sql` 变化**全是注释标记**（★ `V1-FAMILY-RETIRED` 台账）⇒ ⇒ **无可执行 SQL 变化** ⇒ ⇒ ★ R165 §10 的台账（★ 211 缺 29 个迁移号、★ 252 缺 25 个、★ 安装器不可达 8 个）**在本轮维持不变**。
 > ⇒ ⇒ ⇒ ★★★★ **★ 待属主裁决（本轮新增）**：★ **R166-CI-BUDGET** —— ★ **慢门的 900s 上限在饱和机器上不够用**（★ `make guards-ursmcheck`（Makefile:213）与 `verify.sh:166` **用的是同一个 900s 预算**）⇒ ⇒ 建议二选一：① CI 机器保证低负载；② 预算提到 1800s；★ **R166-POST-SURFACE** —— ★ **89 条有副作用 POST 端点仍未逐条验证**（★ `api-sweep.sh` 只覆盖 GET）；★ **R166-WRITE-PATH** —— ★ 本轮**只动读路径**，★ 写路径（`session_turns` 落库）效率本轮**未审**。
+> ⇒ ⇒ ⇒ ★★★★ **★ 第四次慢门（★ 最终树 ＋ 权威调用）★ 拿到【真红】而不是超时**：★ `ursmcheck` **769.911s FAIL**（★ 4 条断言失败）· `admin` **224.385s ok** · `FINALGATE_EXIT=2` ⇒ ⇒ ★★ **这次在 900s 预算内跑完了 ⇒ ⇒ ⇒ 拿到的是判决而不是「没跑完」**（★ 对照 R165 那次 `panic: test timed out`）⇒ ⇒ ★★ **4 条 FAIL 的归属用同深度对拍坐实**：★ **纯 origin/main（零我的提交）上逐条同红** ⇒ ⇒ ⇒ ★★★ **本轮改动零门红；合并后的树红在 origin/main 自己身上** ⇒ ⇒ ★★ 4 条分别是：★ `admin_routes` 快照漂移（★ 生成器 577 vs 快照 576）、★ `request_surface_doc_currency` 两处区间失效（★ `cmd/gateway/main.go` 挪了位）、★ `web/scripts/design-elevation-baseline.json` 未登记 census ⇒ ⇒ ★ **门已给出确切修法**，★ 但 ★ 三处都要写进【并行会话自己的资产与设计页】⇒ ⇒ ★ 按纪律**只登记不代改**（★ `R166-ORIGIN-MAIN-RED`）。
+> ⇒ ⇒ ⇒ ★★★★ **★ 通用式沉淀在 `LESSONS.md` **§454**（★ 原拟 §450 ⇒ ★★ 合并 origin/main 时发现**并行会话也用了 §450** ⇒ ⇒ ⇒ **让号两次：§450 → §452 → §454，不改内容** ⇒ ⇒ ⇒ ★ §450/§452 现属对方（「浮起词汇归一轮」/「自审轮」），§454 才是本轮）。
+> ⇒ ⇒ ⇒ ★★★★ **★★★ 环境级根因链（★ 本轮最值钱的发现之一）**：★ **Android 无头夹具（AVD `pocket-test`，★ 两个实例各 `-cores 4`，★ 其中一个连续 5h23m 占 470.9% CPU）卡住了 Docker Desktop 的停止/启动流程** ⇒ ⇒ ★ Docker daemon 起不来 ⇒ ⇒ ★ 本机**唯一**的 psql（★ `~/kaixuan/pg18/bin/psql` 是 **2404 字节的 bash 转发 shim**）一并失效 ⇒ ⇒ ★ PG 端口转发随 VM 停止而失效 ⇒ ⇒ ★★ **本地网关的 DB 端点全部挂死**（★ `/api/admin/sessions` 10s 超时，★ 而 `/api/system/version` 仍 200）⇒ ⇒ ⇒ ★ **同一条根因既撑爆了慢门预算，又杀死了 Docker daemon** ⇒ ⇒ ⇒ ★ 处置：★ `adb emu kill` 优雅停两个无头实例 → ★ `docker desktop start`（★ 容器全部自动 healthy）→ ★ 重新部署 `DEPLOY4_EXIT=0` · release **2.5.8.2876** · `git_sha=1dc43be3`（★ **合并后的 HEAD**）· 凭据解密冒烟 `failed=0` ⇒ ⇒ ⇒ ★ **B' 臂复测：`hgetall`=86 · `type`=86 · `total_sessions`=86 ⇒ ⇒ 优化与语义在最终二进制上保持**（★ 墙钟 0.029s，★ 但负载已从 240 降到 112 ⇒ ⇒ ★ 墙钟**不是负载对齐**读数 ⇒ ⇒ ⇒ ★ 硬证据仍是 commandstats 的 344→172 与往返 344→2）。
+> ⇒ ⇒ ⇒ ★★★★ **完整记录见 `docs/audit/2026-10-27-R166-会话列表N+1消除与读数量具自证.md`**（§0~§12）。
+
 > ⇒ ⇒ ⇒ ★★★★ **★ 通用式沉淀在 `LESSONS.md` **§452**（★ 原拟 §450 ⇒ ★★ 合并 origin/main 时发现**并行会话也用了 §450** ⇒ ⇒ ⇒ **让号到 §452，不改内容** ⇒ ⇒ ⇒ ★ §450 现属对方的「浮起词汇归一轮」）。
 > ⇒ ⇒ ⇒ ★★★★ **完整记录见 `docs/audit/2026-10-27-R166-会话列表N+1消除与读数量具自证.md`**（§0~§11）。
 

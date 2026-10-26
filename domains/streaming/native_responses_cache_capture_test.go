@@ -44,4 +44,19 @@ func TestObserveNativeUsageCapturesCacheReadAndWrite(t *testing.T) {
 	if m2["cache_read_tokens"].(int) != 64 || m2["cache_write_tokens"].(int) != 8 {
 		t.Fatalf("wrapped usage slots = %v", m2)
 	}
+
+	// 2026-10-27 缓存监测轮：GPT-5.6 显式缓存的 TTL 写入分档进监测面。
+	capture3 := audit.NewStreamCapture()
+	var withSplit map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(`{"response":{"model":"gpt-5.6","usage":{"input_tokens":100,"output_tokens":5,"input_tokens_details":{"cache_write_tokens":192},"cache_write_tokens_details":{"ttl_30m_tokens":64,"ttl_12h_tokens":128}}}}`), &withSplit); err != nil {
+		t.Fatalf("unmarshal split payload: %v", err)
+	}
+	observeNativeResponsesEvent(capture3, NativeResponsesEvent{
+		Name:    "response.completed",
+		Payload: withSplit,
+	})
+	m3 := capture3.SummaryAsMap()
+	if m3["cache_write_ttl_short_tokens"].(int) != 64 || m3["cache_write_ttl_long_tokens"].(int) != 128 {
+		t.Fatalf("ttl split slots = %v", m3)
+	}
 }

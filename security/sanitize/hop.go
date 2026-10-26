@@ -517,6 +517,18 @@ func allMarkerSpansForeign(text string, foreign foreignMarkerSet) bool {
 // r1039: the span finder also admits the full-width spelling of the bare
 // form, so a marker re-spelled on a CJK keyboard is visible to the residual
 // probes instead of passing as clean.
+//
+// 2026-10-27（r1039 混拼修复轮的**后续审计**）：探针路径**缺了内层重扫**。
+// brace 分支会把一整段 JSON 吞成一个候选（{"pwd":"SENSITIVE:phone"} 整个就是
+// 一个候选），而那个候选**既不匹配占位符语法、也不像标记** ⇒ 被这里判掉 ⇒
+// **探针报 0 个 span**。但裸形标记**就在它内部**。
+// ⇒ 重写路径早就在做这个内层重扫（rewriteLooseSpans 的 case (b)），只有探针
+// 路径没有 ⇒ placeholderCandidate / hasReservedPlaceholder /
+// containsNonForeignMarker **低报** ⇒ 该触发的门不触发
+// ⇒ 工具调用参数（function.arguments 是一段 JSON 字符串）里的裸形标记
+// **原样到达客户端**（canonical ASCII 与混拼形态都漏）。
+// ⇒ 修法：**探针侧复用重写路径的同一个原语**（looseBareMarkerSpans）做内层
+// 重扫 ⇒ 重写路径一字未动 ⇒ 既有判据不受影响。
 func markerSpans(text string) []string {
 	if !mayContainMarkerText(text) {
 		return nil
@@ -537,7 +549,14 @@ func markerSpans(text string) []string {
 		// on it instead of treating an unaccounted span as clean.
 		if looksLikeMarkerSpan(candidate) {
 			spans = append(spans, candidate)
+			continue
 		}
+		// The candidate is not a marker itself, but a bare marker may sit
+		// **inside** it: the brace branch swallows a whole JSON run, so the
+		// bare form it carries is invisible to the outer scan. Re-scan the
+		// inside — the same primitive the rewrite path uses — so the probes
+		// see what the rewrite would act on.
+		spans = append(spans, innerBareMarkerCandidates(candidate)...)
 	}
 	// A trailing run with no closing brace is a truncated marker: the residual
 	// probes must still see it, since a leaked half-token reaches the client

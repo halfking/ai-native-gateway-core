@@ -379,6 +379,46 @@ done
 CLAIM_FILE="$DD_STATE_DIR/redis-db.claim"
 ENV_FILE="$DD_STATE_DIR/env/gateway.env"
 
+# ── AUTO-GENERATOR-ENV:BEGIN ──
+# Keep explicit false across blue/green releases. Never source the saved file:
+# values must match Gateway's boolean grammar before persistence or SSH forwarding.
+dd_auto_generator_env() {
+  local env_file="$1" key value line
+  AUTO_GENERATOR_ENV=()
+  for key in LLM_GATEWAY_AUTO_TITLE_ENABLED LLM_GATEWAY_AUTO_SUMMARY_ENABLED; do
+    if [[ -n "${!key+x}" ]]; then
+      value="${!key}"
+    elif [[ -n "$env_file" && -f "$env_file" ]]; then
+      line="$(sed -nE "/^(export )?${key}=/p" "$env_file" | tail -1)"
+      [[ -n "$line" ]] || continue
+      value="${line#*=}"
+      # The engine writes unquoted bools; accept matching operator-added quotes.
+      case "$value" in
+        \"*\") value="${value#\"}"; value="${value%\"}";;
+        \'*\') value="${value#\'}"; value="${value%\'}";;
+      esac
+    else
+      continue
+    fi
+    value="${value#"${value%%[![:space:]]*}"}"
+    value="${value%"${value##*[![:space:]]}"}"
+    case "$value" in
+      1|t|T|true|TRUE|True) value=true;;
+      0|f|F|false|FALSE|False) value=false;;
+      *) die "invalid auto generator boolean: ${key}";;
+    esac
+    printf -v "$key" '%s' "$value"
+    AUTO_GENERATOR_ENV+=("${key}=${value}")
+  done
+}
+# ── AUTO-GENERATOR-ENV:END ──
+# Validate before writes/SSH; a --via caller must not forward its local saved file.
+if [[ -n "$VIA" ]]; then
+  dd_auto_generator_env ''
+else
+  dd_auto_generator_env "$ENV_FILE"
+fi
+
 # ── 执行位置守卫（2026-10-15）────────────────────────────────────────
 # 无参模式 = 「在 211 本机以 root 执行」：状态目录 /opt/llm-gateway-go-211、
 # 本机 docker 容器探测、docker build、127.0.0.1:8781 就绪探测全是目标机
@@ -413,7 +453,8 @@ if [[ -n "$VIA" ]]; then
             DD_REDIS_CONTAINER DD_REDIS_IMAGE DD_REDIS_DB_START DD_REDIS_DB_END \
             DD_BASE_REGISTRY DD_GO_BASE_IMAGE DD_RUNTIME_BASE_IMAGE \
             DD_ALLOW_STALE_WEB DD_PUBLIC_PROBE_IP DD_ADMIN_USER DD_ADMIN_PASSWORD \
-            DD_SKIP_LOGIN_SMOKE LLM_GATEWAY_HARD_BLOCK_RULES; do
+            DD_SKIP_LOGIN_SMOKE LLM_GATEWAY_HARD_BLOCK_RULES \
+            LLM_GATEWAY_AUTO_TITLE_ENABLED LLM_GATEWAY_AUTO_SUMMARY_ENABLED; do
     if [[ -n "${!_v+x}" ]]; then _dd_fwd+=" ${_v}='${!_v}'"; fi
   done
   _dd_args="${DD_ARGS[@]+"${DD_ARGS[@]}"}"
@@ -1805,6 +1846,10 @@ dd_asm_event_env() {
   local env_file="${1:-$ENV_FILE}"
   ASM_INTERNAL_ENDPOINT="${ASM_INTERNAL_ENDPOINT:-}"
   ASM_EVENT_SECRET="${AI_SESSION_MANAGER_GATEWAY_EVENT_SECRET:-}"
+  # 2026-10-27 多模态标准接口轮：/v1/summarize 的 asm 在线优先委托。
+  # 取值优先级与全文件同款：部署机环境变量 > env 文件里上次落下的值 > 不设。
+  LLM_GATEWAY_ASM_BASE_URL="${LLM_GATEWAY_ASM_BASE_URL:-}"
+  LLM_GATEWAY_ASM_PLUGIN_ID="${LLM_GATEWAY_ASM_PLUGIN_ID:-}"
   if [[ -f "$env_file" ]]; then
     if [[ -z "$ASM_INTERNAL_ENDPOINT" ]]; then
       ASM_INTERNAL_ENDPOINT="$(sed -nE 's/^(export )?ASM_INTERNAL_ENDPOINT=(.*)$/\2/p' "$env_file" | tail -1)"
@@ -1812,16 +1857,28 @@ dd_asm_event_env() {
     if [[ -z "$ASM_EVENT_SECRET" ]]; then
       ASM_EVENT_SECRET="$(sed -nE 's/^(export )?AI_SESSION_MANAGER_GATEWAY_EVENT_SECRET=(.*)$/\2/p' "$env_file" | tail -1)"
     fi
+    if [[ -z "$LLM_GATEWAY_ASM_BASE_URL" ]]; then
+      LLM_GATEWAY_ASM_BASE_URL="$(sed -nE 's/^(export )?LLM_GATEWAY_ASM_BASE_URL=(.*)$/\2/p' "$env_file" | tail -1)"
+    fi
+    if [[ -z "$LLM_GATEWAY_ASM_PLUGIN_ID" ]]; then
+      LLM_GATEWAY_ASM_PLUGIN_ID="$(sed -nE 's/^(export )?LLM_GATEWAY_ASM_PLUGIN_ID=(.*)$/\2/p' "$env_file" | tail -1)"
+    fi
     # 去掉 shell 引号形态（bash %q 对空串会写成 ''，对含空格的值会加反斜杠）。
     ASM_INTERNAL_ENDPOINT="${ASM_INTERNAL_ENDPOINT%\'}"; ASM_INTERNAL_ENDPOINT="${ASM_INTERNAL_ENDPOINT#\'}"
     ASM_INTERNAL_ENDPOINT="${ASM_INTERNAL_ENDPOINT%\"}"; ASM_INTERNAL_ENDPOINT="${ASM_INTERNAL_ENDPOINT#\"}"
     ASM_EVENT_SECRET="${ASM_EVENT_SECRET%\'}"; ASM_EVENT_SECRET="${ASM_EVENT_SECRET#\'}"
     ASM_EVENT_SECRET="${ASM_EVENT_SECRET%\"}"; ASM_EVENT_SECRET="${ASM_EVENT_SECRET#\"}"
+    LLM_GATEWAY_ASM_BASE_URL="${LLM_GATEWAY_ASM_BASE_URL%\'}"; LLM_GATEWAY_ASM_BASE_URL="${LLM_GATEWAY_ASM_BASE_URL#\'}"
+    LLM_GATEWAY_ASM_BASE_URL="${LLM_GATEWAY_ASM_BASE_URL%\"}"; LLM_GATEWAY_ASM_BASE_URL="${LLM_GATEWAY_ASM_BASE_URL#\"}"
+    LLM_GATEWAY_ASM_PLUGIN_ID="${LLM_GATEWAY_ASM_PLUGIN_ID%\'}"; LLM_GATEWAY_ASM_PLUGIN_ID="${LLM_GATEWAY_ASM_PLUGIN_ID#\'}"
+    LLM_GATEWAY_ASM_PLUGIN_ID="${LLM_GATEWAY_ASM_PLUGIN_ID%\"}"; LLM_GATEWAY_ASM_PLUGIN_ID="${LLM_GATEWAY_ASM_PLUGIN_ID#\"}"
   fi
 }
 # ── ASM-ENV-BLOCK:END ──
 dd_asm_event_env "$ENV_FILE"
+dd_auto_generator_env "$ENV_FILE"
 
+# ── GATEWAY-ENV-WRITE:BEGIN ──
 {
   printf '# llm-gateway-go @ %s（由 deploy-seamless-docker.sh 生成，勿提交）\n' "${DD_HOST:-目标机}"
   printf '# shell 可 source；容器用 -e 注入，不走 docker 的 env 文件参数\n'
@@ -1863,8 +1920,19 @@ dd_asm_event_env "$ENV_FILE"
   if [[ -n "$ASM_EVENT_SECRET" ]]; then
     printf 'export AI_SESSION_MANAGER_GATEWAY_EVENT_SECRET=%q\n' "$ASM_EVENT_SECRET"
   fi
+  for setting in "${AUTO_GENERATOR_ENV[@]+"${AUTO_GENERATOR_ENV[@]}"}"; do
+    printf 'export %s\n' "$setting"
+  done
+  # 2026-10-27：长文本总结 asm 在线优先委托（空 = 恒走网关管线）。
+  if [[ -n "$LLM_GATEWAY_ASM_BASE_URL" ]]; then
+    printf 'export LLM_GATEWAY_ASM_BASE_URL=%q\n' "$LLM_GATEWAY_ASM_BASE_URL"
+  fi
+  if [[ -n "$LLM_GATEWAY_ASM_PLUGIN_ID" ]]; then
+    printf 'export LLM_GATEWAY_ASM_PLUGIN_ID=%q\n' "$LLM_GATEWAY_ASM_PLUGIN_ID"
+  fi
 } > "$ENV_FILE"
 chmod 600 "$ENV_FILE"
+# ── GATEWAY-ENV-WRITE:END ──
 
 GW_ENV=(
   -e "LLM_GATEWAY_STORAGE_MODE=full"
@@ -1903,7 +1971,25 @@ if [[ -n "$ASM_INTERNAL_ENDPOINT" && -n "$ASM_EVENT_SECRET" ]]; then
 else
   log "ASM 事件投递未启用（endpoint_configured=$([[ -n "$ASM_INTERNAL_ENDPOINT" ]] && echo true || echo false) secret_configured=$([[ -n "$ASM_EVENT_SECRET" ]] && echo true || echo false)）—— 网关不会投任何事件"
 fi
+# 2026-10-27：/v1/summarize 的 asm 在线优先委托（endpoint 空 = 恒走网关
+# 管线；plugin_id 缺省 ai-session-manager，由网关 main.go 兜底）。
+# ★ ${VAR:-} 形态：本块会被判据门抽进 set -u 沙箱 eval，未设变量必须容错。
+if [[ -n "${LLM_GATEWAY_ASM_BASE_URL:-}" ]]; then
+  GW_ENV+=( -e "LLM_GATEWAY_ASM_BASE_URL=${LLM_GATEWAY_ASM_BASE_URL}" )
+  if [[ -n "${LLM_GATEWAY_ASM_PLUGIN_ID:-}" ]]; then
+    GW_ENV+=( -e "LLM_GATEWAY_ASM_PLUGIN_ID=${LLM_GATEWAY_ASM_PLUGIN_ID}" )
+  fi
+  log "ASM 总结委托已启用：${LLM_GATEWAY_ASM_BASE_URL}"
+else
+  log "ASM 总结委托未配置（LLM_GATEWAY_ASM_BASE_URL 为空）—— 长文本总结恒走网关管线"
+fi
 # ── ASM-ENV-INJECT:END ──
+
+# ── AUTO-GENERATOR-INJECT:BEGIN ──
+for setting in "${AUTO_GENERATOR_ENV[@]+"${AUTO_GENERATOR_ENV[@]}"}"; do
+  GW_ENV+=(-e "$setting")
+done
+# ── AUTO-GENERATOR-INJECT:END ──
 
 # ── 状态目录出容器（2026-10-13，对齐 211 机 DEPLOY-STANDARDS 总纲）──────
 # /app/data（keystore/hotzone/attachments/backups/model-quality）与 /app/logs
