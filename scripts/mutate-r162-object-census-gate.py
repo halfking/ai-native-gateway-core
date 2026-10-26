@@ -25,6 +25,7 @@
     TARGET = REPO / "scripts/ursmcheck/db_object_census_gate_test.go"
     TARGET = REPO / "scripts/audit/asset/db-object-gap-ledger.tsv"
     TARGET = REPO / "scripts/audit/asset/db-object-retired.tsv"
+    TARGET = REPO / "scripts/audit/asset/query-index-requirements.tsv"
 """
 
 import hashlib
@@ -41,9 +42,12 @@ TARGET = REPO / "scripts/audit/db-object-census.py"
 TARGET = REPO / "scripts/ursmcheck/db_object_census_gate_test.go"
 TARGET = REPO / "scripts/audit/asset/db-object-gap-ledger.tsv"
 TARGET = REPO / "scripts/audit/db-object-census.py"
+TARGET = REPO / "scripts/audit/asset/query-index-requirements.tsv"
 
 LEDGER_REL = "scripts/audit/asset/db-object-gap-ledger.tsv"
 RETIRED_REL = "scripts/audit/asset/db-object-retired.tsv"
+REQS_REL = "scripts/audit/asset/query-index-requirements.tsv"
+CENSUS_REL = "scripts/audit/asset/db-object-census.tsv"
 PY_TOOL_REL = "scripts/audit/db-object-census.py"
 GO_GATE_REL = "scripts/ursmcheck/db_object_census_gate_test.go"
 
@@ -109,6 +113,30 @@ MUTATIONS = [
         "go",
     ),
     (
+        "M7-REQS-LIE-COVERED",
+        REQS_REL,
+        "attachments.presence\tadmin/data_lifecycle_attachments.go:93\tsession_turns\tattachment_count\t\tknown-gap\t",
+        "attachments.presence\tadmin/data_lifecycle_attachments.go:93\tsession_turns\tattachment_count\t\tcovered\t",
+        "go:TestQueryIndexCoverageRequirements",
+        "go",
+    ),
+    (
+        "M8-REQS-FILTER-COL-BROKEN",
+        REQS_REL,
+        "sessions.detail.point\tadmin/session_detail_v2.go:539\tsessions\ttenant_id,session_id\t\tcovered\t",
+        "sessions.detail.point\tadmin/session_detail_v2.go:539\tsessions\ttenant_id,no_such_column_xyz\t\tcovered\t",
+        "go:TestQueryIndexCoverageRequirements",
+        "go",
+    ),
+    (
+        "M9-CENSUS-UNRELATED-COLUMN",
+        CENSUS_REL,
+        None,  # ★ 特殊处理：★ 见 apply_mutation
+        None,
+        "green",
+        "go",
+    ),
+    (
         "M6-CONTROL-COMMENT-ONLY",
         PY_TOOL_REL,
         "def _bare_name(raw: str) -> str:",
@@ -123,6 +151,23 @@ def apply_mutation(name, rel, old, new):
     """★ 施加变异 ⇒ 返回 (原字节, 是否成功)。"""
     path = REPO / rel
     original = path.read_bytes()
+    if name == "M9-CENSUS-UNRELATED-COLUMN":
+        # ★ 改一个【与清单无关】的索引的列序列 ⇒ ★ 判定结果不应变 ⇒ ★ 门应仍绿（★ 对照臂）
+        lines = original.decode("utf-8").split("\n")
+        hit = False
+        for i, line in enumerate(lines):
+            if line.startswith("#") or not line.strip():
+                continue
+            cols = line.split("\t")
+            if len(cols) == 17 and cols[1] == "idx" and cols[4] == "idx_sessions_status":
+                cols[15] = "status,mutated_unrelated_column"
+                lines[i] = "\t".join(cols)
+                hit = True
+                break
+        if not hit:
+            return original, False
+        path.write_bytes("\n".join(lines).encode("utf-8"))
+        return original, True
     if name == "M5-LEDGER-CELL-TAMPER":
         # ★ 台账里把第一行的 211 格子从 present 改成 missing（★ 手工定位，★ 不靠 grep -c）
         lines = original.decode("utf-8").split("\n")
@@ -160,9 +205,14 @@ def check_leg(kind, leg, name):
             needle = leg.split(":", 1)[1]
             return rc != 0 and ("FAIL %s" % needle) in out, out
         return False, out
+    if kind == "go" and leg == "green":
+        rc, out = run(["go", "test", "./scripts/ursmcheck/", "-run", "TestQueryIndexCoverage", "-count=1", "-v"])
+        return rc == 0 and ("--- PASS: TestQueryIndexCoverageRequirements" in out), out
     if kind == "go":
-        rc, out = run(["go", "test", "./scripts/ursmcheck/", "-run", leg, "-count=1", "-v"])
-        return rc != 0 and ("--- FAIL: %s" % leg) in out, out
+        # ★ 腿名带 "go:" 前缀只是给人看的（★ 脚本自述的腿名），★ -run 只认函数名
+        fn = leg.split(":", 1)[1] if leg.startswith("go:") else leg
+        rc, out = run(["go", "test", "./scripts/ursmcheck/", "-run", fn, "-count=1", "-v"])
+        return rc != 0 and ("--- FAIL: %s" % fn) in out, out
     if kind == "selftest+go":
         rc1, out1 = run([sys.executable, "scripts/audit/db-object-census.py", "selftest"])
         rc2, out2 = run(["go", "test", "./scripts/ursmcheck/", "-run", "TestDbObject", "-count=1"])
@@ -194,7 +244,8 @@ def main():
             if not red:
                 detail = "★ 该红的地方没红（★ 期望红在 %s）" % leg
             results.append((name, red, detail))
-            print("%-34s %s  %s" % (name, "RED ✔" if red else "RED ✘", detail))
+            want = "GREEN" if leg == "green" else "RED"
+            print("%-34s %-6s %s  %s" % (name, want, "✔" if red else "✘", detail))
             if not red:
                 print(out[-1500:])
         finally:
