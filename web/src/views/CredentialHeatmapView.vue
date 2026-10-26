@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
+import { surfaceError } from '../i18n/errorSurface'
 import { useI18n } from 'vue-i18n'
 import {
   getCredentialHeatmap,
@@ -19,6 +20,7 @@ import { isSuperAdmin } from '../store'
 import ActiveFilterChips from '../components/ActiveFilterChips.vue'
 import KxDateRangePicker from '../components/ui/KxDateRangePicker.vue'
 import type { KxDateRange } from '../components/ui/kx-date-types'
+import { CaretBottom, CaretRight, CaretTop } from '@element-plus/icons-vue'
 
 // CredentialHeatmapView — 热力图 tab
 // docs/FEATURE-REQ-credential-heatmap-routing-log.md §4:
@@ -454,7 +456,7 @@ async function loadHeatmap() {
       modelOptions.value = Array.from(names).sort()
     }
   } catch (e) {
-    error.value = e instanceof Error ? e.message : String(e)
+    error.value = surfaceError(e)
     console.error('Failed to load heatmap', e)
   } finally {
     loading.value = false
@@ -563,7 +565,7 @@ async function runAction(kind: 'model-online' | 'model-offline' | 'promote' | 'd
     }
     await loadHeatmap()
   } catch (e) {
-    actionMessage.value = `${t('common.feedback.operationFailed')}: ${e instanceof Error ? e.message : String(e)}`
+    actionMessage.value = `${t('common.feedback.operationFailed')}: ${surfaceError(e)}`
   } finally {
     actionBusy.value = false
   }
@@ -605,7 +607,7 @@ onUnmounted(() => {
     <div class="heatmap-toolbar">
       <div class="toolbar-head" @click="filtersOpen = !filtersOpen">
         <span class="filter-toggle">
-          <span class="chevron" aria-hidden="true">{{ filtersOpen ? '▲' : '▼' }}</span>
+          <span class="chevron" aria-hidden="true"><CaretTop v-if="filtersOpen" /><CaretBottom v-else /></span>
           筛选条件
           <span v-if="activeFilterCount" class="active-count">{{ activeFilterCount }} 项生效</span>
         </span>
@@ -723,7 +725,7 @@ onUnmounted(() => {
         <tbody v-for="row in indexedRows" :key="row.cred.credential_id" class="cred-section">
           <tr class="cred-header-row">
             <th :colspan="timeAxis.length + 1" class="cred-header-cell" @click="toggleExpanded(row.cred.credential_id)">
-              <span class="expand-icon" aria-hidden="true">{{ expandedCredentials.has(row.cred.credential_id) ? '▼' : '▶' }}</span>
+              <span class="expand-icon" aria-hidden="true"><CaretBottom v-if="expandedCredentials.has(row.cred.credential_id)" /><CaretRight v-else /></span>
               <span class="credential-label">
                 {{ credentialDisplayName(row.cred.credential_id, row.cred.label || `凭据 #${row.cred.credential_id}`) }}
               </span>
@@ -1375,4 +1377,10 @@ onUnmounted(() => {
 .action-message.fail {
   color: var(--danger);
 }
+
+/* ── 2026-10-27 第 17 增量（AI 痕迹门 V3 · 插值形态）：图标尺寸 ──
+   element-plus 图标是裸 <svg viewBox="0 0 1024 1024">，**不带 width/height**
+   ⇒ 浏览器按包含块宽度渲染（会撑爆布局）⇒ 必须显式定尺寸。 */
+.chevron > svg { width: 10px; height: 10px; }
+.expand-icon > svg { width: 11px; height: 11px; }
 </style>

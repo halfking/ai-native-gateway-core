@@ -49,7 +49,7 @@ import {
   type RouteIncidentTimelinePoint,
 } from '../types/routeIncident'
 import { exportFile } from '../utils/exportFile'
-import { Search, Close } from '@element-plus/icons-vue'
+import { Close, Search } from '@element-plus/icons-vue'
 
 // R48-D4（R48 报告 §五-6）：导出链失败文案接 i18n；组件其余存量硬编码串
 // 仍登记在 CJK 基线棘轮（scripts/i18n-cjk-baseline.json），逐批清偿。
@@ -1030,7 +1030,7 @@ function hasRunValues(values: Record<string, unknown>): boolean {
                 aria-label="关闭确认"
                 @click="confirmKind = null"
               >
-                ✕
+                <Close />
               </button>
             </header>
             <div class="action-modal__body">
@@ -1781,7 +1781,6 @@ function hasRunValues(values: Record<string, unknown>): boolean {
   overflow-y: auto;
   background: var(--bg);
   color: var(--text);
-  border: 1px solid var(--border);
   border-radius: 8px;
   box-shadow: 0 8px 32px var(--overlay-strong);
   display: flex;
@@ -1993,4 +1992,10 @@ function hasRunValues(values: Record<string, unknown>): boolean {
     border-left: none;
   }
 }
+
+/* ── 2026-10-27 第 17 增量（AI 痕迹门 V3）：图标尺寸 ──
+   element-plus 图标是裸 <svg viewBox="0 0 1024 1024">，**不带 width/height**
+   ⇒ 浏览器按包含块宽度渲染（会撑爆布局）⇒ 必须显式定尺寸。
+   尺寸沿用原字形的 font-size 观感（字形墨迹 ≈ 0.7em）。 */
+.route-incident-drawer__btn--close > svg { width: 10px; height: 10px; }
 </style>

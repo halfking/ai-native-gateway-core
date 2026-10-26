@@ -1318,7 +1318,6 @@ tbody tr:hover { background: var(--row-hover); }
   max-height: 85vh;
   overflow-y: auto;
   background: var(--card);
-  border: 1px solid var(--border);
   border-radius: var(--radius);
   padding: 20px;
   box-shadow: 0 8px 24px var(--shadow-color-dark);

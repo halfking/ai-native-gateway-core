@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { surfaceError } from '../i18n/errorSurface'
 import {
   getCredentialRoutingLog,
   type RoutingLogEntry,
@@ -105,7 +106,7 @@ async function loadLog() {
     total.value = resp.total
     meta.value = resp.meta
   } catch (e) {
-    error.value = e instanceof Error ? e.message : String(e)
+    error.value = surfaceError(e)
     console.error('Failed to load routing log', e)
   } finally {
     loading.value = false
@@ -511,7 +512,10 @@ onUnmounted(() => { if (refreshTimer) clearInterval(refreshTimer) })
 .log-row:hover { background: var(--bg-subtle); }
 .log-row.expanded { background: var(--bg-subtle); }
 
-.row-state-change td:first-child { box-shadow: inset 3px 0 0 var(--accent); }
+/* ★ 状态变化行用「整行语义软填充底」表达，不用首列彩色侧边条
+   （craft-floor：ban-side-stripe-borders）。
+   放在 tr 上而不是 td 上 ⇒ `:hover`（.log-row:hover，特异性更高）仍然压得住它。 */
+.row-state-change { background: color-mix(in srgb, var(--accent) 8%, transparent); }
 
 .mono { font-family: var(--font-mono, monospace); font-size: 11px; }
 .muted { color: var(--muted); }

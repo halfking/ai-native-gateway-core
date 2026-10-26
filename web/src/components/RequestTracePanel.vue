@@ -9,6 +9,7 @@
 //     严禁大块亮色 (rgba 红黄绿警告框);状态色只用于小尺寸文字/小图标/左侧细条。
 //   - 兼容既有 API: 暴露 requestId, 内部自己 watch 并加载。
 import { ref, computed, watch, onUnmounted } from 'vue'
+import { surfaceError } from '../i18n/errorSurface'
 import { useI18n } from 'vue-i18n'
 import {
   getRequestTrace,
@@ -16,7 +17,7 @@ import {
   type RequestTrace,
   type TraceEvent,
 } from '../api/trace'
-import { Link, MessageBox, Box, InfoFilled, Loading, Warning, CaretBottom } from '@element-plus/icons-vue'
+import { Box, CaretBottom, Close, InfoFilled, Link, Loading, MessageBox, Warning } from '@element-plus/icons-vue'
 
 const { t } = useI18n()
 
@@ -88,7 +89,7 @@ async function loadTrace(id: string) {
       expanded.value = ex
     }
   } catch (e: unknown) {
-    const msg = e instanceof Error ? e.message : t('common.feedback.loadFailed')
+    const msg = surfaceError(e, { key: 'common.feedback.loadFailed' })
     // 2026-07-17: 后端修复后, "no rows in result set" 不会再 500 上抛;
     // 此处仍兼容旧的 404 / not_found 错误信息 → 走空状态 UI。
     if (msg.includes('202') || msg.includes('not_ready') || msg.includes('still being persisted')) {
@@ -235,7 +236,7 @@ async function generatePrompt() {
     aiTokens.value = resp.tokens_estimate
     aiEventCount.value = resp.event_count
   } catch (e: unknown) {
-    aiError.value = e instanceof Error ? e.message : t('trace.generateFailed')
+    aiError.value = surfaceError(e, { key: 'trace.generateFailed' })
   } finally {
     aiGenerating.value = false
   }
@@ -456,7 +457,7 @@ onUnmounted(() => {
     <div v-if="showAIPanel" class="ai-panel">
       <header class="ai-panel-header">
         <h4>{{ t('trace.aiPrompt.modalTitle') }}</h4>
-        <button class="btn btn-ghost btn-sm" type="button" @click="closeAI">×</button>
+        <button class="btn btn-ghost btn-sm" type="button" @click="closeAI"><Close /></button>
       </header>
       <div class="ai-panel-body">
         <label class="ai-label">
@@ -938,4 +939,10 @@ onUnmounted(() => {
   margin: 0;
   color: var(--text);
 }
+
+/* ── 2026-10-27 第 17 增量（AI 痕迹门 V3）：图标尺寸 ──
+   element-plus 图标是裸 <svg viewBox="0 0 1024 1024">，**不带 width/height**
+   ⇒ 浏览器按包含块宽度渲染（会撑爆布局）⇒ 必须显式定尺寸。
+   尺寸沿用原字形的 font-size 观感（字形墨迹 ≈ 0.7em）。 */
+.ai-panel-header .btn > svg { width: 12px; height: 12px; }
 </style>

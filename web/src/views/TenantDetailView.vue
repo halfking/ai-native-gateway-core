@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onBeforeUnmount, nextTick, watch } from 'vue'
+import { surfaceError } from '../i18n/errorSurface'
 import { useI18n } from 'vue-i18n'
 import { formatDateTime } from '../utils/datetime'
 import { sortByName } from '../utils/sortByName'
@@ -23,7 +24,7 @@ import SparkBars from '../components/ui/SparkBars.vue'
 import { chartColors, createComboChartConfig, useChart } from '../composables/useChart'
 import { useRaceGuard } from '../composables/useRaceGuard'
 import { isPlatformOpsView } from '../store'
-import { Message, Clock } from '@element-plus/icons-vue'
+import { Clock, Cpu, CreditCard, Document, Message, Money, TrendCharts, Wallet } from '@element-plus/icons-vue'
 
 const { t } = useI18n()
 
@@ -114,7 +115,7 @@ async function loadTenant() {
     if (activeTab.value === 'stats') await loadStats()
     applyRouteFocus()
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : t('common.feedback.loadFailed')
+    error.value = surfaceError(e, { key: 'common.feedback.loadFailed' })
   } finally {
     loading.value = false
   }
@@ -124,7 +125,7 @@ async function loadUsers() {
   try {
     users.value = await getTenantUsers(tenantCode.value)
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : t('tenants.detail.loadUsersFailed')
+    error.value = surfaceError(e, { key: 'tenants.detail.loadUsersFailed' })
   }
 }
 
@@ -132,7 +133,7 @@ async function loadKeys() {
   try {
     keys.value = await getTenantKeys(tenantCode.value)
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : t('tenants.detail.loadKeysFailed')
+    error.value = surfaceError(e, { key: 'tenants.detail.loadKeysFailed' })
   }
 }
 
@@ -148,7 +149,7 @@ async function loadStats() {
     stats.value = next
   } catch (e: unknown) {
     if (statsRace.stale(gen)) return
-    error.value = e instanceof Error ? e.message : t('tenants.detail.loadStatsFailed')
+    error.value = surfaceError(e, { key: 'tenants.detail.loadStatsFailed' })
   }
 }
 
@@ -253,7 +254,7 @@ async function loadWallet() {
   try {
     maasWallet.value = await getAdminMaasWallet(tenantCode.value)
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : t('tenants.detail.loadWalletFailed')
+    error.value = surfaceError(e, { key: 'tenants.detail.loadWalletFailed' })
   }
 }
 
@@ -262,7 +263,7 @@ async function loadLedger() {
     const res = await getAdminMaasLedger(tenantCode.value, 100)
     maasLedger.value = res.items ?? []
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : t('tenants.detail.loadLedgerFailed')
+    error.value = surfaceError(e, { key: 'tenants.detail.loadLedgerFailed' })
   }
 }
 
@@ -271,7 +272,7 @@ async function loadOrders() {
     const res = await getAdminMaasTenantOrders(tenantCode.value, 50)
     maasOrders.value = res.items ?? []
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : t('tenants.detail.loadOrdersFailed')
+    error.value = surfaceError(e, { key: 'tenants.detail.loadOrdersFailed' })
   }
 }
 
@@ -280,7 +281,7 @@ async function loadBilling() {
   try {
     billing.value = await getAdminMaasConsumptionDetail(tenantCode.value, billingDays.value, billingOwnerUser.value)
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : t('tenants.detail.loadBillingDetailsFailed')
+    error.value = surfaceError(e, { key: 'tenants.detail.loadBillingDetailsFailed' })
   } finally {
     billingLoading.value = false
   }
@@ -300,7 +301,7 @@ async function submitAdjust() {
     adjustNote.value = ''
     await Promise.all([loadWallet(), loadLedger()])
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : t('tenants.detail.adjustFailed')
+    error.value = surfaceError(e, { key: 'tenants.detail.adjustFailed' })
   } finally {
     adjustSaving.value = false
   }
@@ -320,7 +321,7 @@ async function submitGrant() {
     grantNote.value = ''
     await Promise.all([loadWallet(), loadLedger()])
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : t('tenants.detail.grantFailed')
+    error.value = surfaceError(e, { key: 'tenants.detail.grantFailed' })
   } finally {
     grantSaving.value = false
   }
@@ -333,7 +334,7 @@ async function confirmOrder(orderId: number) {
     await confirmAdminMaasOrder(orderId, '管理员手动确认到账')
     await Promise.all([loadOrders(), loadWallet(), loadLedger()])
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : t('tenants.detail.confirmFailed')
+    error.value = surfaceError(e, { key: 'tenants.detail.confirmFailed' })
   } finally {
     confirmSaving.value = null
   }
@@ -404,7 +405,7 @@ async function toggleUserEnabled(u: TenantUser) {
     await updateUser(u.id, { enabled: !u.enabled })
     await loadUsers()
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : t('common.feedback.operationFailed')
+    error.value = surfaceError(e, { key: 'common.feedback.operationFailed' })
   }
 }
 
@@ -532,27 +533,27 @@ watch(() => route.params.tenantId, loadTenant)
           <p class="maas-shortcuts-desc">以该租户为上下文查看模型定价、账户与消耗（不在平台侧栏展示租户菜单）。</p>
           <div class="maas-shortcut-grid">
             <RouterLink :to="maasLink('/tenant/models')" class="maas-shortcut-card">
-              <span class="maas-shortcut-icon">🤖</span>
+              <span class="maas-shortcut-icon"><Cpu /></span>
               <span class="maas-shortcut-label">{{ $t('common.terms.standardModel') }}</span>
             </RouterLink>
             <RouterLink :to="maasLink('/tenant/pricing')" class="maas-shortcut-card">
-              <span class="maas-shortcut-icon">💳</span>
+              <span class="maas-shortcut-icon"><CreditCard /></span>
               <span class="maas-shortcut-label">套餐与充值</span>
             </RouterLink>
             <RouterLink :to="maasLink('/tenant/usage')" class="maas-shortcut-card">
-              <span class="maas-shortcut-icon">📉</span>
+              <span class="maas-shortcut-icon"><TrendCharts /></span>
               <span class="maas-shortcut-label">消耗统计</span>
             </RouterLink>
             <RouterLink :to="maasLink('/tenant/account')" class="maas-shortcut-card">
-              <span class="maas-shortcut-icon">💰</span>
+              <span class="maas-shortcut-icon"><Money /></span>
               <span class="maas-shortcut-label">账户中心</span>
             </RouterLink>
             <button type="button" class="maas-shortcut-card maas-shortcut-card--tab" @click="switchTab('wallet')">
-              <span class="maas-shortcut-icon">👛</span>
+              <span class="maas-shortcut-icon"><Wallet /></span>
               <span class="maas-shortcut-label">钱包管理</span>
             </button>
             <button type="button" class="maas-shortcut-card maas-shortcut-card--tab" @click="switchTab('ledger')">
-              <span class="maas-shortcut-icon">📒</span>
+              <span class="maas-shortcut-icon"><Document /></span>
               <span class="maas-shortcut-label">账本流水</span>
             </button>
           </div>
@@ -1214,4 +1215,10 @@ watch(() => route.params.tenantId, loadTenant)
   font-size: 11.5px;
   color: var(--muted);
 }
+
+/* ── 2026-10-27 第 17 增量（AI 痕迹门 V3）：图标尺寸 ──
+   element-plus 图标是裸 <svg viewBox="0 0 1024 1024">，**不带 width/height**
+   ⇒ 浏览器按包含块宽度渲染（会撑爆布局）⇒ 必须显式定尺寸。
+   尺寸沿用原字形的 font-size 观感（字形墨迹 ≈ 0.7em）。 */
+.maas-shortcut-icon > svg { width: 18px; height: 18px; }
 </style>

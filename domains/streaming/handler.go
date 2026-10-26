@@ -46,6 +46,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/transformation"                      //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"github.com/kaixuan/llm-gateway-go/i18n"
+	"github.com/kaixuan/llm-gateway-go/internal/auth"
 	"github.com/kaixuan/llm-gateway-go/internal/ir"
 	"github.com/kaixuan/llm-gateway-go/internal/liveactions"
 	"github.com/kaixuan/llm-gateway-go/internal/modelpolicy"
@@ -8346,19 +8347,19 @@ func resolveGatewayVersionInfo() healthVersionInfo {
 	return out
 }
 
+// extractBearerToken returns the client credential presented by r.
+//
+// ★ 2026-10-26（Gemini 原生认证修复轮）：本函数此前只认
+// `Authorization: Bearer` 与 `x-api-key`（Anthropic）两种形态 ⇒ 原生
+// Gemini 客户端（x-goog-api-key 头 / ?key= query，形态见
+// docs/vendor-formats/gemini.md §HTTP 形态 与 docs/供应商协议优化.md §8.3）
+// 一律在这里拿到空串 ⇒ 401 missing_key。
+//
+// ⇒ 收口到 internal/auth.ExtractClientKey（唯一事实源），与 middleware/auth_mw.go
+// 的全局静态 key 门**同源** ⇒ 两份实现不再漂移。
 func extractBearerToken(r *http.Request) string {
-	if auth := r.Header.Get("Authorization"); auth != "" {
-		if strings.HasPrefix(auth, "Bearer ") {
-			return strings.TrimPrefix(auth, "Bearer ")
-		}
-		if strings.HasPrefix(auth, "bearer ") {
-			return strings.TrimPrefix(auth, "bearer ")
-		}
-	}
-	if key := r.Header.Get("x-api-key"); key != "" {
-		return key
-	}
-	return ""
+	key, _ := auth.ExtractClientKey(r)
+	return key
 }
 
 // insertRateLimitedPlaceholder ensures _request_logs_hot has a row before the

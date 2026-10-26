@@ -1,8 +1,10 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
+import { surfaceError } from '../../i18n/errorSurface'
 import { useI18n } from 'vue-i18n'
 import ModelPicker from '../ModelPicker.vue'
 import { useWorkTypes } from '../../composables/useWorkTypes'
+import { Close } from '@element-plus/icons-vue'
 import {
   getWorkType,
   listWorkTypes,
@@ -65,7 +67,7 @@ async function loadDetail() {
     setDraft(next.model_routes)
   } catch (e: unknown) {
     if (version === loadVersion.value) {
-      error.value = e instanceof Error ? e.message : String(e)
+      error.value = surfaceError(e)
     }
   } finally {
     if (version === loadVersion.value) loading.value = false
@@ -82,7 +84,7 @@ async function load() {
     }
     await loadDetail()
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : String(e)
+    error.value = surfaceError(e)
     loading.value = false
   }
 }
@@ -123,7 +125,7 @@ async function save() {
     await refreshWorkTypes()
     if (key === selectedKey.value) saved.value = true
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : String(e)
+    error.value = surfaceError(e)
   } finally {
     saving.value = false
   }
@@ -170,7 +172,7 @@ defineExpose({ reload: load })
           <ModelPicker v-model="row.canonical_name" :placeholder="t('workTypes.detail.selectModelPlaceholder')" />
           <input v-model.number="row.min_score" type="number" min="0" step="0.1" aria-label="minimum score" />
           <label class="enabled"><input v-model="row.enabled" type="checkbox" /> {{ t('workTypes.detail.routeEnabled') }}</label>
-          <button type="button" class="btn btn-sm btn-ghost" @click="remove(tier, index)">×</button>
+          <button type="button" class="btn btn-sm btn-ghost" @click="remove(tier, index)"><Close /></button>
         </div>
       </div>
       <button type="button" class="btn btn-primary" :disabled="saving || loading" @click="save">{{ saving ? t('workTypes.saving') : t('workTypes.saveBtn') }}</button>
@@ -198,4 +200,10 @@ defineExpose({ reload: load })
 .error { color:var(--danger); font-size:13px; margin:0; }
 .saved { color:var(--success-dark); font-size:13px; margin:0; }
 @media (max-width: 768px) { .panel-head { flex-direction:column; } .route-row { grid-template-columns:24px 1fr 32px; } .route-row input[type=number], .enabled { grid-column:2; } }
+
+/* ── 2026-10-27 第 17 增量（AI 痕迹门 V3）：图标尺寸 ──
+   element-plus 图标是裸 <svg viewBox="0 0 1024 1024">，**不带 width/height**
+   ⇒ 浏览器按包含块宽度渲染（会撑爆布局）⇒ 必须显式定尺寸。
+   尺寸沿用原字形的 font-size 观感（字形墨迹 ≈ 0.7em）。 */
+.btn.btn-sm.btn-ghost > svg { width: 11px; height: 11px; }
 </style>

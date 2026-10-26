@@ -40,6 +40,18 @@ export const ERROR_TARGET_ASSIGN =
 export const NON_ERROR_TARGET = /(filter|label|option|type|status|mode|code|reason|tag|word|field|key)/i
 /** 目标名**某一段**含这些词 ⇒ 是错误文案变量（逐段判，见 R1 的注释）。 */
 export const ERROR_TARGET_WORD = /^(?:err|error|msg|message|fail)|(?:err|error|msg|message|fail)$/i
+/**
+ * **错误出口调用** —— `surfaceError(...)` 按定义就是错误位置。
+ *
+ * ★ 为什么要显式写一条（第 16 增量）：
+ *   迁移前，错误位上的文案靠 `instanceof Error ?` 这个**兜底形状**被认出来。
+ *   迁移后（`error.value = surfaceError(e, { key: 'x.y' })`）那个形状没了
+ *   ⇒ 若只靠 `ERROR_TARGET_ASSIGN`，`const fallback = surfaceError(...)`
+ *      这种中间变量就**不再是错误位** ⇒ 它的键会从 L1 的候选集里消失
+ *      ⇒ **L1 门会静默变弱**（这是「门绿 ≠ 门有牙」的另一个形态：门没坏，覆盖面没了）。
+ *   ⇒ 显式声明「出口调用即错误位」。
+ */
+export const ERROR_OUTLET_CALL = /\bsurfaceError\s*\(/
 
 /**
  * 这一段上下文是不是「错误位置」。
@@ -50,6 +62,8 @@ export const ERROR_TARGET_WORD = /^(?:err|error|msg|message|fail)|(?:err|error|m
 export function isErrorPosition(stmt: string, before = ''): boolean {
   if (FALLBACK_SHAPE.test(stmt) || FALLBACK_SHAPE.test(before)) return true
   if (THROW_RE.test(stmt) || ERROR_EMIT.test(stmt) || ERROR_CALL.test(stmt)) return true
+  // 错误出口调用：按定义是错误位（第 16 增量；见 ERROR_OUTLET_CALL 的注释）。
+  if (ERROR_OUTLET_CALL.test(stmt)) return true
   // 取该行**最后一个**赋值（守卫 `if (…)` 不在行首时也能命中）。
   ERROR_TARGET_ASSIGN.lastIndex = 0
   let lhs: string | null = null
@@ -84,6 +98,16 @@ export function beforeOf(masked: string, index: number): string {
 const CALL_RE = /\b(?:t|tc|\$t|te|tm|TE|i18n\.t)\(\s*'([A-Za-z0-9_.]+)'/g
 
 /**
+ * **错误出口形态**：`surfaceError(<err>, { key: '<key>' })`（第 16 增量）。
+ *
+ * ★ 为什么必须单独认这一种形态：
+ *   迁移后错误位上的文案**不再**由调用点直接写 `t('key')` ⇒ CALL_RE 看不见它
+ *   ⇒ 若不补这一条，第 15 增量的 L1 门在迁移后会**候选集变空 ⇒ 什么也不判 ⇒ 假绿**。
+ *   ⇒ 「门没坏，覆盖面没了」是比「门报错」更危险的一种坏。
+ */
+const OUTLET_KEY_RE = /\bsurfaceError\s*\(.{0,400}?\{\s*key\s*:\s*'([A-Za-z0-9_.]+)'/g
+
+/**
  * 源码侧「错误位置」上、值由语言包承载的键。
  *
  * ★ 这就是 L1 **跨 `t()` 边界**的输入：
@@ -111,6 +135,58 @@ export function errorSlotLocaleKeys(files: string[]): Map<string, string[]> {
       if (!isErrorPosition(stmt, before)) continue
       const line = masked.slice(0, index).split('\n').length
       push(m[1], `${rel}:${line}`)
+    }
+    // 错误出口形态（第 16 增量）：`surfaceError(e, { key: 'x.y' })`。
+    for (const [key, site] of outletKeyCalls(masked, rel)) push(key, site)
+  }
+  return out
+}
+
+/**
+ * **错误出口形态**上的语言包键 → 调用点。
+ *
+ * ★ 第 16 增量新增，供「错误出口门」复用（同一口径只能有一份实现）：
+ *   `errorSlotLocaleKeys` 把 `t('key')` 与 `surfaceError(..., { key })` **合并**成
+ *   「错误位候选集」（L1 门用）；
+ *   本函数只取**出口形态**那部分（出口门用：它要逐个核对键在 8 语种是否存在）。
+ */
+export function outletKeyCalls(
+  masked: string,
+  rel: string
+): Array<[string, string]> {
+  const out: Array<[string, string]> = []
+  OUTLET_KEY_RE.lastIndex = 0
+  let m: RegExpExecArray | null
+  while ((m = OUTLET_KEY_RE.exec(masked)) !== null) {
+    const index = m.index
+    const stmt = statementOf(masked, index)
+    const before = beforeOf(masked, index)
+    if (!isErrorPosition(stmt, before)) continue
+    const line = masked.slice(0, index).split('\n').length
+    out.push([m[1], `${rel}:${line}`])
+  }
+  return out
+}
+
+/**
+ * 源码里全部「错误出口形态」的键 → 调用点（**不**做位置过滤）。
+ *
+ * ★ 与 `outletKeyCalls` 的区别：出口门要核对的是**每一个**出口键在 8 语种是否存在，
+ *   不是「它是否恰好在错误位上」⇒ 用这一份。
+ */
+export function allOutletKeys(files: string[]): Map<string, string[]> {
+  const out = new Map<string, string[]>()
+  for (const file of files) {
+    const src = readFileSync(file, 'utf8')
+    const masked = maskSource(file, src)
+    const rel = relative(SRC_DIR, file)
+    OUTLET_KEY_RE.lastIndex = 0
+    let m: RegExpExecArray | null
+    while ((m = OUTLET_KEY_RE.exec(masked)) !== null) {
+      const index = m.index
+      const line = masked.slice(0, index).split('\n').length
+      if (!out.has(m[1])) out.set(m[1], [])
+      out.get(m[1])!.push(`${rel}:${line}`)
     }
   }
   return out

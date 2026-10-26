@@ -26,9 +26,9 @@ export default {
   },
   manualDisabledTitle: 'プロバイダーレベルの手動無効化 — プロバイダー全体がルーティング不可',
   manualDisabledBadge: '手動無効',
-  loadFailed: '読み込み失敗',
-  operationFailed: '操作失敗',
-  diagFailed: '診断失敗',
+  loadFailed: 'プロバイダー詳細の読み込みに失敗しました。再試行してください。',
+  operationFailed: 'プロバイダーの有効化に失敗しました。再試行してください。',
+  diagFailed: 'プロバイダーの診断を完了できませんでした。再試行してください。',
 
   quality: {
     loading: '品質データを読み込み中…',
@@ -57,5 +57,5 @@ export default {
   deleteBtn: "プロバイダーを削除",
   deleteTitle: "このプロバイダーをソフト削除します。プロバイダーとそのすべての認証情報はすべてのリストとルーティングから除外され、元に戻せません。",
   deleteConfirm: "プロバイダー「{name}」を削除しますか？配下のすべての認証情報も削除済みとなり、関連するモデルルートは直ちに停止します。この操作は取り消せません。",
-  deleteFailed: "プロバイダーの削除に失敗しました",
+  deleteFailed: 'このプロバイダーを削除できませんでした。再試行してください。',
 }

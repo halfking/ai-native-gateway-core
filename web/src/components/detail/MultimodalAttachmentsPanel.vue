@@ -1,6 +1,7 @@
 <script setup lang="ts">
 // MultimodalAttachmentsPanel — preview image / audio / video from body + attachments.
 import { computed, ref, watch } from 'vue'
+import { surfaceError } from '../../i18n/errorSurface'
 import { useI18n } from 'vue-i18n'
 import {
   getRequestAttachments,
@@ -38,7 +39,7 @@ watch(
       const res = await getRequestAttachments(id)
       fetched.value = res.attachments || []
     } catch (e: unknown) {
-      error.value = e instanceof Error ? e.message : String(e)
+      error.value = surfaceError(e)
     } finally {
       loading.value = false
     }
@@ -60,6 +61,21 @@ const counts = computed(() => {
   for (const m of media.value) c[m.kind]++
   return c
 })
+
+/**
+ * 媒体类型的中文标签。
+ *
+ * ★ 为什么不用模板串 `t(\`…kindLabel.${kind}\`)`：
+ *   本仓的 i18n 扫描器**只认字面量键** ⇒ 模板串里的键不会进引用集
+ *   ⇒ 那 4 个键会变成「有值但没人知道被谁用」的死键面。
+ *   ⇒ 一律写字面量。
+ */
+const kindLabel = computed<Record<MediaKind, string>>(() => ({
+  image: t('requestDetail.attachments.kindLabel.image'),
+  audio: t('requestDetail.attachments.kindLabel.audio'),
+  video: t('requestDetail.attachments.kindLabel.video'),
+  file: t('requestDetail.attachments.kindLabel.file'),
+}))
 </script>
 
 <template>
@@ -83,7 +99,7 @@ const counts = computed(() => {
           class="btn btn-sm"
           :class="{ 'btn-primary': filter === f }"
           @click="filter = f"
-        >{{ f === 'all' ? t('requestDetail.attachments.allFilter') : f }}</button>
+        >{{ f === 'all' ? t('requestDetail.attachments.allFilter') : kindLabel[f] }}</button>
       </div>
     </div>
 
@@ -94,7 +110,7 @@ const counts = computed(() => {
     <ul v-else class="grid">
       <li v-for="(m, i) in visible" :key="`${m.source}-${i}-${m.url.slice(0, 32)}`" class="card">
         <div class="meta">
-          <span class="kind">{{ m.kind }}</span>
+          <span class="kind">{{ kindLabel[m.kind] }}</span>
           <span class="src">{{ m.source }}</span>
           <span v-if="m.messageIndex >= 0" class="idx">msg#{{ m.messageIndex }}</span>
           <span v-if="m.label" class="lbl">{{ m.label }}</span>
@@ -130,7 +146,10 @@ const counts = computed(() => {
 }
 .meta { display: flex; flex-wrap: wrap; gap: 6px; font-size: 11px; margin-bottom: 8px; }
 .kind {
-  text-transform: uppercase; font-weight: 600;
+  /* ★ 徽标内容已本地化（kindLabel）⇒ 去掉 uppercase：
+     中文界面里 uppercase 无意义（DESIGN.md §4 规则 5），
+     而这枚徽标原本显示的是裸英文枚举值（image/audio/video/file）。 */
+  font-weight: 600;
   padding: 1px 6px; border-radius: 4px; background: var(--bg-subtle);
 }
 .src, .idx, .lbl { color: var(--muted); }

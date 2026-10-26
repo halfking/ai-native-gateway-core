@@ -52,7 +52,14 @@ vi.mock('../composables/useCredentialLabels', () => ({
   useCredentialLabels: () => ({ credentialDisplayName: (id: number) => `#${id}` }),
 }))
 vi.mock('../composables/useConfirmDialog', () => ({ confirmDialog: () => Promise.resolve(true) }))
-vi.mock('../i18n', () => ({ localeRef: { value: 'zh-CN' } }))
+vi.mock('../i18n', async (importOriginal) => {
+  // ★ 保留**真实**的 i18n 实例（真实的 zh-CN 文案），只覆盖 localeRef。
+  //   第 16 增量：错误文案统一走 src/i18n/errorSurface.ts 的 surfaceError()，
+  //   它从本模块取 i18n 实例 ⇒ 若这里把整个模块换成只剩 localeRef 的桩，
+  //   组件一加载就抛「No "i18n" export is defined on the mock」。
+  const actual = await importOriginal<typeof import('../i18n')>()
+  return { ...actual, localeRef: { value: 'zh-CN' } }
+})
 // 两个视图都从 ../store 取东西，而它们要的不是同一批：
 // 漏一个具名导出就会报 `No "x" export is defined` —— 本文件第一版就是这样
 // 让 ③–⑤ 全红（症状像「修复没生效」，其实是桩不全）。

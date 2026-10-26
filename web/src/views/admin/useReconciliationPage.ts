@@ -1,5 +1,6 @@
 // useReconciliationPage.ts — query, filters, and derived rows for the reconciliation page.
 import { computed, onMounted, ref, watch } from 'vue'
+import { surfaceError } from '../../i18n/errorSurface'
 import { useRaceGuard } from '../../composables/useRaceGuard'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
@@ -117,7 +118,7 @@ export function useReconciliationPage() {
       report.value = next
     } catch (err: unknown) {
       if (reportRace.stale(gen)) return
-      errorText.value = err instanceof Error ? err.message : String(err)
+      errorText.value = surfaceError(err)
       report.value = null
     } finally {
       if (reportRace.current(gen)) loading.value = false
@@ -196,7 +197,7 @@ export function useReconciliationPage() {
         ...cleanFilters(filters.value),
       })
     } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : String(err)
+      const message = surfaceError(err)
       ElMessage.error(`${t('common.exportFailed')}: ${message}`)
     } finally {
       exporting.value = false
@@ -210,7 +211,7 @@ export function useReconciliationPage() {
       ElMessage.success(`${t('reports.rerunDone')}: ${res.date} rows=${res.rows_written}`)
       reload()
     } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : String(err)
+      const message = surfaceError(err)
       ElMessage.error(`${t('reports.rerunFailed')}: ${message}`)
     } finally {
       rerunning.value = false

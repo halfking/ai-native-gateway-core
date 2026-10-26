@@ -123,6 +123,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import io
 import json
 import os
 import re
@@ -216,11 +217,75 @@ SELECT 'srv'
 """
 
 CENSUS_COLUMNS = 17  # env + 16
-RECONCILE_COLUMNS = 8
+RECONCILE_COLUMNS = 9  # ★ R163：★ 加了 fresh 环境 ⇒ 8 列 → 9 列
+COLUMNS_ARTIFACT_COLUMNS = 4  # ★ R163：★ env + schema + table + column
 
+# ★★ R164 新增：★【结构漂移】与【指标漂移】必须分开算 ——
+# ★★ 理由（★ 本轮实测出来的坑）：★ 底账里带着 `reltuples` / `table_size` / `total_size`
+# ★★ 这三列【每次 autovacuum / analyze 都会变】⇒ ⇒ 若拿整行做差集 ⇒ ⇒ **任何环境任何时刻**
+# ★★ 都会报「漂移」⇒ ⇒ ⇒ **噪声淹没的判据等于没有判据**。
+# ★★ ⇒ ⇒ 【对象没了 / 多了 / 形态变了】与【大小在动】必须分开报。
+# ★★ 排除面必须【显式且被门钉住】⇒ ★ 少排除 = 噪声，★ 多排除 = 漏报。
+VOLATILE_CENSUS_COLUMNS = ("reltuples", "table_size", "total_size")
+
+# ★ 底账 17 列的列名（★ 与 `collect` 的 SELECT 顺序逐字对应 ⇒ 判据按名字写，不按序号）。
+CENSUS_COLUMN_NAMES = (
+    "env", "kind", "schema", "relkind", "name", "owner", "ispartition",
+    "partition_bound", "parent_table", "reltuples", "table_size", "total_size",
+    "definition", "flags", "parent_index", "key_columns", "predicate",
+)
+assert len(CENSUS_COLUMN_NAMES) == CENSUS_COLUMNS
+assert set(VOLATILE_CENSUS_COLUMNS) <= set(CENSUS_COLUMN_NAMES)
+
+
+# ★★ R163 新增：★【列底账】的采集 SQL（★ 为什么单列一张表而不是塞进底账）。
+# ★★ 理由：★★ 「列级联退役」的判据必须回答【这个列在本环境还在不在】
+# ★★ ⇒ ⇒ 必须有【每环境每表每列】的事实 ⇒ ⇒ 底账（17 列）装不下 ⇒ ⇒ 单列一张。
+# ★★ ★★ 而这一层事实此前**完全没有** ⇒ ⇒ 「列没了索引也没了」这件事在仓内是【不可见的】
+# ★★ ⇒ ⇒ 假缺口的第三种来源一直躺在那儿（★ idx_sessions_last_full_at 实测命中）。
+COLUMNS_SQL_TEMPLATE = r"""
+SET statement_timeout = '120s';
+
+SELECT n.nspname
+    || E'\t' || c.relname
+    || E'\t' || a.attname
+  FROM pg_attribute a
+  JOIN pg_class c ON c.oid = a.attrelid
+  JOIN pg_namespace n ON n.oid = c.relnamespace
+ WHERE a.attnum > 0
+   AND NOT a.attisdropped
+   AND c.relkind IN ('r', 'p', 'm', 'f')
+   AND n.nspname NOT IN ('pg_catalog', 'information_schema', 'pg_toast')
+   %s
+ ORDER BY 1;
+"""
+
+
+def columns_sql(pairs=None):
+    """★ 生成列底账的采集 SQL。
+
+    ★★ `pairs` 非空时只采【(表, 列)】白名单里的列。
+    ★★ 为什么收窄：★★ 判据只需要回答「这个【键列】在本环境还在不在」
+    ★★ ⇒ ⇒ 全量列（★ 实测 ~8800/环境 ⇒ 4 环境 39k 行 ⇒ ★★ 1.5MB 的仓内产物）
+    ★★ ⇒ ⇒ 只采期望集索引的声明键列 ⇒ ★★ 规模降到 1/8 ⇒ ⇒ 而【判据覆盖度不变】。
+    """
+    if not pairs:
+        return COLUMNS_SQL_TEMPLATE % ""
+    quoted = ", ".join("('%s', '%s')" % (t.replace("'", "''"), c.replace("'", "''"))
+                       for (t, c) in sorted(pairs))
+    return COLUMNS_SQL_TEMPLATE % ("AND (c.relname, a.attname) IN (%s)" % quoted)
+
+
+COLUMNS_SQL = columns_sql()
+
+# ★★ R163 修掉的老 bug：★ `CREATE INDEX x ON ONLY <table>` ⇒ 老正则把表名吃成 "ONLY"
+# ★★ ⇒ ⇒ 那 17 条索引在缺口台账里被判成 `retired`（★ 表不存在）⇒ ⇒ ★★ **真缺口被掩盖**
+# ★★ ⇒ ⇒ 实测：★ 7 条四个环境全判 retired（★ 生产缺口被少算 7 条）
+# ★★ ⇒ ⇒ + 4 条在 fresh 判 retired（★ fresh 缺口被少算 4 条）
+# ★★ ⇒ ⇒ ★★ 这是「假退役」⇒ ★★ 危害是【掩盖真缺口】⇒ ★★ 与 R162 的「假缺口」正好相反。
 RE_CREATE_INDEX = re.compile(
     r"CREATE\s+(?:UNIQUE\s+)?INDEX\s+(?:CONCURRENTLY\s+)?(?:IF\s+NOT\s+EXISTS\s+)?"
-    r'([a-z0-9_"]+)\s+ON\s+([a-z0-9_."]+)',
+    r'([a-z0-9_"]+)\s+ON\s+(?:ONLY\s+)?([a-z0-9_."]+)',
     re.I,
 )
 RE_DROP_INDEX = re.compile(
@@ -228,6 +293,116 @@ RE_DROP_INDEX = re.compile(
 )
 RE_USING_INDEX = re.compile(r"ADD\s+CONSTRAINT[^;]*?USING\s+INDEX\s+([a-z0-9_.\"]+)", re.I | re.S)
 RE_LINE_COMMENT = re.compile(r"--[^\n]*")
+
+# ★★ R163 新增：★【括号配对】的 CREATE INDEX 扫描（★ 不用正则的 `\(([^)]*)\)`）。
+# ★★ 理由：★ 表达式索引（`lower(x)` / `(a->>'b')`）会被 `[^)]*` 截断在第一个 `)`，
+# ★★ ⇒ 列清单不完整 ⇒ ⇒ 「列级联退役」判据会失真。
+# ★★ 实测：★ 索引名集合逐字相同（842 = 842）、表名零差异 ⇒ ★★ 零回归；
+# ★★ 而列文本有 16 个表达式索引从「被截断」变成「完整」。
+RE_CREATE_INDEX_HEAD = re.compile(
+    r"CREATE\s+(?:UNIQUE\s+)?INDEX\s+(?:CONCURRENTLY\s+)?(?:IF\s+NOT\s+EXISTS\s+)?"
+    r'([a-z0-9_"]+)\s+ON\s+(?:ONLY\s+)?([a-z0-9_."]+)\s*(?:USING\s+[a-z0-9_]+\s*)?\(',
+    re.I,
+)
+
+# ★★ R163 新增：★ ALTER TABLE … DROP COLUMN 的解析（★ 列级联退役的证据源）。
+# ★★ ★★ 为什么按【语句】解析而不是一条正则吞到分号：★
+# ★★ `ALTER TABLE t DROP COLUMN a, DROP COLUMN b, DROP COLUMN c;`（★ 708 就是这个形态）
+# ★★ ⇒ 一条正则只能抓到第一条（★ 其余两条没有 DROP COLUMN 关键字 ⇒ 藏在逗号列表里）
+# ★★ ⇒ ⇒ 实测漏掉 last_full_payload_at ⇒ ⇒ 判据失灵。
+RE_ALTER_TABLE = re.compile(
+    r"ALTER\s+TABLE\s+(?:IF\s+EXISTS\s+)?(?:ONLY\s+)?([a-z0-9_.\"]+)",
+    re.I,
+)
+
+
+def _parse_drop_columns(stmt):
+    """★ 从一条 ALTER TABLE 语句里取出被删的列名（★ 支持逗号列表与多条 DROP COLUMN）。"""
+    m = re.search(r"DROP\s+COLUMN\s+(?:IF\s+EXISTS\s+)?([^;]+)", stmt, re.I)
+    if not m:
+        return []
+    out = []
+    for raw in m.group(1).split(","):
+        p = raw.strip()
+        p = re.sub(r"^IF\s+EXISTS\s+", "", p, flags=re.I)
+        p = re.sub(r"^DROP\s+COLUMN\s+(IF\s+EXISTS\s+)?", "", p, flags=re.I)
+        p = p.strip().strip('"')
+        if not p or not re.match(r"^[A-Za-z_][A-Za-z0-9_$]*$", p):
+            continue
+        out.append(p.lower())
+    return out
+
+
+def _scan_create_indexes(body):
+    """★ 括号配对扫描 CREATE INDEX ⇒ [(name, table, cols_text)]。
+
+    ★★ 为什么不用正则的 `\(([^)]*)\)`：★ 表达式索引（lower(x) / (a->>'b')）
+    ★★ 会被截断在第一个 `)` ⇒ 列清单不完整 ⇒ 「列级联退役」判据会失真。
+
+    ★★★ ★★ 而 `USING <method>` 必须在表名与列清单之间被容忍：
+    ★★★ `CREATE INDEX x ON t USING gin (tags)` ⇒ 若要求表名后紧跟 `(` ⇒ **漏掉这条索引**
+    ★★★ ⇒ 实测漏 **45 条**（★ GIN / 表达式索引）⇒ ⇒ **期望集会缩 45 条** ⇒ ⇒ 回归。
+    ★★★ ⇒ ⇒ 所以正则里显式允许 `(?:USING\s+[a-z0-9_]+\s*)?`。
+    """
+    out = []
+    for m in RE_CREATE_INDEX_HEAD.finditer(body):
+        depth = 0
+        cols = ""
+        for j in range(m.end() - 1, len(body)):
+            ch = body[j]
+            if ch == "(":
+                depth += 1
+            elif ch == ")":
+                depth -= 1
+                if depth == 0:
+                    cols = body[m.end():j]
+                    break
+        name = _strip_name(m.group(1))
+        table = _strip_name(m.group(2)).split(".")[-1]
+        out.append((name, table, cols))
+    return out
+
+
+def _declared_key_columns(cols_text):
+    """★ 取索引的【直接键列】（★ 保守口径：★ 表达式索引不取列名）。
+
+    ★★ 为什么保守：★ 取错列名 ⇒ 把活索引误判成「被列级联退役」
+    ★★ ⇒ 假缺口从「缺」翻成「不该有」⇒ ⇒ **两个方向都会骗人**
+    ★★ ⇒ ⇒ 只在【证据明确】时退役（★ 直接键列 + 同表 + 更晚的 DROP COLUMN）。
+    """
+    parts = []
+    depth = 0
+    cur = ""
+    for ch in cols_text:
+        if ch == "(":
+            depth += 1
+            cur += ch
+            continue
+        if ch == ")":
+            depth -= 1
+            cur += ch
+            continue
+        if ch == "," and depth == 0:
+            parts.append(cur)
+            cur = ""
+            continue
+        cur += ch
+    if cur.strip():
+        parts.append(cur)
+    cols = []
+    for entry in parts:
+        e = entry.strip()
+        if not e:
+            continue
+        e = re.sub(r"\s+(ASC|DESC)\s+NULLS\s+(FIRST|LAST)$", "", e, flags=re.I)
+        e = re.sub(r"\s+(ASC|DESC)$", "", e, flags=re.I)
+        if "(" in e:
+            continue
+        e = e.strip().strip('"')
+        if not e or not re.match(r"^[A-Za-z_][A-Za-z0-9_$]*$", e):
+            continue
+        cols.append(e.lower())
+    return cols
 
 
 def _strip_name(raw: str) -> str:
@@ -255,6 +430,11 @@ def die(msg: str, code: int = 3):
     sys.exit(code)
 
 
+# ★ 自证钩子（★ R164）：★ `verify` 的现场采集行的覆盖入口。
+# ★ 只在 `selftest` 里被设置；★ 正常路径永远为 None ⇒ ★ 永远走真实采集。
+_LIVE_ROWS_OVERRIDE = None
+
+
 # ─────────────────────────── expect ───────────────────────────
 
 
@@ -277,6 +457,10 @@ def derive_expected():
     dropped = set()
     transient = {}
     no_number = 0
+    # ★★ R163：★ 记下「创建顺序」⇒ 列级联退役要靠【先后】判定（★ 删列在建索引之后才算退役）
+    order_of = {fn: i for i, fn in enumerate(files)}
+    # ★★ R163：★ DROP COLUMN 事件（★ 列级联退役的证据源）
+    drop_col_events = []
 
     for fn in files:
         head = fn.split("_", 1)[0]
@@ -293,20 +477,52 @@ def derive_expected():
         # ★★ 坑二：中间产物索引 = 同一个文件里被 USING INDEX 消费掉的那个
         consumed = {_strip_name(m.group(1)) for m in RE_USING_INDEX.finditer(body)}
 
+        # ★★ R163：★ 用【括号配对】扫描取声明列（★ 名字/表与老正则逐字一致 ⇒ 零回归）
+        scanned = {}
+        for (sname, stable, scols) in _scan_create_indexes(body):
+            scanned[sname] = (stable, _declared_key_columns(scols))
         for m in RE_CREATE_INDEX.finditer(body):
             name = _strip_name(m.group(1))
             table = _strip_name(m.group(2)).split(".")[-1]
             if name in consumed:
                 transient[name] = (mig, fn)
                 continue
-            created[name] = (mig, table, fn)
+            stable, keycols = scanned.get(name, (table, []))
+            created[name] = (mig, table, fn, keycols, order_of[fn])
 
         for m in RE_DROP_INDEX.finditer(body):
             dropped.add(_bare_name(m.group(1)))
 
+        # ★★ R163：★ 解析 ALTER TABLE … DROP COLUMN（★ 语句级：★ 多列同语句要拆开）
+        for am in RE_ALTER_TABLE.finditer(body):
+            tbl = _strip_name(am.group(1)).split(".")[-1]
+            nxt_semi = body.find(";", am.end())
+            nxt_alt = RE_ALTER_TABLE.search(body, am.end())
+            ends = [x for x in (nxt_semi, nxt_alt.start() if nxt_alt else -1) if x > 0]
+            end = min(ends) if ends else len(body)
+            stmt = body[am.end():end]
+            for c in _parse_drop_columns(stmt):
+                drop_col_events.append(
+                    (order_of[fn], fn, tbl, c, body.count("\n", 0, am.start()) + 1)
+                )
+
     # ★★ 坑三：后来的迁移删掉了早期的索引 ⇒ 期望集要取差集
     expected = {k: v for k, v in created.items() if k not in dropped}
     superseded = {k: created[k] for k in created if k in dropped}
+
+    # ★★ R163：★ 列级联退役（★ 建索引之后、又有同表同列被 DROP COLUMN）
+    # ★★ ⇒ PG 会【自动删掉】那个索引 ⇒ ⇒ 它不是「该建没建」，★ 是「被列的死亡带走」
+    # ★★ ⇒ ⇒ 假缺口的第三种来源（★ 前两种：★ DROP 名字带 schema 前缀 / ★ 解析口径不一致）
+    col_retired = {}
+    for name, (mig, table, fn, keycols, order) in created.items():
+        if not keycols:
+            continue
+        for (dorder, dfn, dtable, dcol, _dline) in drop_col_events:
+            if dorder <= order or dtable != table:
+                continue
+            if dcol in keycols:
+                col_retired[name] = (mig, table, fn, dfn, dcol, keycols, _dline)
+                break
 
     stats = {
         "migration_files": len(files),
@@ -317,21 +533,25 @@ def derive_expected():
         "created_then_dropped": len(superseded),
         "expected_final": len(expected),
         "transient_names": sorted(transient),
+        "drop_column_events": len(drop_col_events),
+        "column_retired_indexes": len(col_retired),
     }
-    return expected, stats
+    return expected, stats, col_retired, drop_col_events
 
 
 def cmd_expect(args):
-    expected, stats = derive_expected()
+    expected, stats, _col_retired, _drop_col_events = derive_expected()
     rows = []
-    for name, (mig, table, fn) in sorted(expected.items(), key=lambda kv: (kv[1][0], kv[0])):
-        rows.append("%d\t%s\t%s\t%s\t" % (mig, name, table, fn))
+    for name, (mig, table, fn, keycols, _order) in sorted(expected.items(), key=lambda kv: (kv[1][0], kv[0])):
+        rows.append("%d\t%s\t%s\t%s\t%s\t" % (mig, name, table, fn, ",".join(keycols)))
     text = "\n".join(rows) + ("\n" if rows else "")
     header = (
         "# db-object-expect.tsv —— ★ 从仓内 startup 迁移反解出的「期望索引集」\n"
         "# ★ 生成器：scripts/audit/db-object-census.py expect\n"
-        "# ★ 列：migration_no\tindex_name\ttable\tsource_file\tnote\n"
+        "# ★ 列：migration_no\tindex_name\ttable\tsource_file\tdeclared_columns\tnote\n"
         "# ★ 口径：建了 ∧ 没被后来的迁移删掉 ∧ 不是中间产物（USING INDEX 消费）\n"
+        "# ★ declared_columns = ★ 建索引时的【直接键列】（★ 表达式索引保守取空）\n"
+        "# ★   ⇒ ★★ 「列被 DROP ⇒ PG 级联删索引」的判据要用它\n"
         "# ★ generated_at=%s\n"
         "# stats=%s\n"
     ) % (
@@ -351,8 +571,17 @@ def cmd_expect(args):
 # ─────────────────────────── collect ───────────────────────────
 
 
-def cmd_collect(args):
-    if args.from_stdin:
+def _collect_raw_rows(from_stdin: bool, psql_bin=None):
+    """★ 采集一个环境的底账【原始行】（★ 不含 env 前缀）⇒ list[str]。
+
+    ★ R164：★ 抽出来是为了让 `collect` 与 `verify` 走【同一条采集代码路径】
+    ⇒ ⇒ ★ 「verify 用的采集口径」与「快照用的采集口径」不可能分叉。
+    """
+    # ★ 自证钩子：★ 让 selftest 能【端到端】验退出码，★ 而不必真的连库。
+    # ★ 只在自证里被设置；★ 正常路径永远走真实采集。
+    if _LIVE_ROWS_OVERRIDE is not None:
+        return list(_LIVE_ROWS_OVERRIDE)
+    if from_stdin:
         # ★ 远程环境的采集形态：
         #   ssh 252 "cat | podman exec -i … psql -tA -q" < census.sql
         #     | python3 db-object-census.py collect --env 252 --from-stdin --out FILE --append
@@ -362,7 +591,7 @@ def cmd_collect(args):
         dsn = os.environ.get("GUARD_DSN")
         if not dsn:
             die("GUARD_DSN is not set (★ DSN 只走环境变量 ⇒ 不进 argv、不回显)")
-        psql = os.environ.get("GUARD_PSQL") or args.psql or "psql"
+        psql = os.environ.get("GUARD_PSQL") or psql_bin or "psql"
         try:
             proc = subprocess.run(
                 [psql, dsn, "-tA", "-q", "-v", "ON_ERROR_STOP=1", "-f", "-"],
@@ -386,7 +615,13 @@ def cmd_collect(args):
         parts = line.split("\t")
         if len(parts) != CENSUS_COLUMNS - 1:
             die("census row has %d fields, expected %d (★ newline contamination?)" % (len(parts), CENSUS_COLUMNS - 1))
-        rows.append("%s\t%s" % (args.env, line))
+        rows.append(line)
+    return rows
+
+
+def cmd_collect(args):
+    # ★ 前缀化放在这里（★ 与历史产物的 sha256 口径逐字一致 ⇒ ★ 旧快照仍可被新代码校验）
+    rows = ["%s\t%s" % (args.env, line) for line in _collect_raw_rows(args.from_stdin, args.psql)]
 
     header = (
         "# db-object-census.tsv —— ★ 三环境【真实对象底账】（★ 只读采集）\n"
@@ -411,6 +646,199 @@ def cmd_collect(args):
             else:
                 fh.write(out)
         sys.stderr.write("collect: env=%s rows=%d -> %s (%s)\n" % (args.env, len(rows), args.out, mode))
+    else:
+        sys.stdout.write(out)
+    return 0
+
+
+# ─────────────────────────── columns ───────────────────────────
+
+
+def cmd_columns(args):
+    """★ 采集一个环境的【列底账】（★ 只读）⇒ 写 4 列 TSV。
+
+    ★★ 为什么单独一个子命令而不是并进 collect：★ 底账是 17 列的【对象】账，
+    ★★ 而列底账是 4 列的【属性】账 ⇒ ⇒ 两者的行数量级不同（★ 对象 ~2500/环境，
+    ★★ 列 ~4000/环境）⇒ ⇒ 合在一起会让底账被列淹没 ⇒ ⇒ 单列。
+    ★★ ★★ 而且它们的【读取方】也不同：★ 底账给缺口台账，★ 列底账给「列级联退役」判据。
+    """
+    sql_text = COLUMNS_SQL
+    if getattr(args, "keys_from", None):
+        _exp = parse_expected(args.keys_from)
+        _pairs = set()
+        for _n, (_mig, _tbl, _cols, _f) in _exp.items():
+            for _c in _cols:
+                _pairs.add((_tbl, _c))
+        sql_text = columns_sql(_pairs)
+    # ★★ R164 新增：★ 让【工具自己】产出 scoped SQL ⇒ ⇒ 远程采集用的 SQL 与本地同一份。
+    # ★★ 起因（★ 本轮实测踩到）：★ 远程采集的 scoped SQL 是【手搓】的 ⇒ ★ 手搓时把期望集的
+    # ★★ `source_file` 列当成了 `declared_columns` 列 ⇒ ⇒ IN 列表全是垃圾 ⇒ ⇒ 252/211 各采到
+    # ★★ **0 行**（★ 而本地走工具自己的 `--keys-from` ⇒ 879/891 行 ⇒ ⇒ 两边口径分叉）。
+    # ★★ ⇒ ⇒ 纪律：**采集 SQL 必须由工具生成**（★ 与「产物不许手拼」同族）。
+    if getattr(args, "emit_sql", None):
+        with open(args.emit_sql, "w", encoding="utf-8") as fh:
+            fh.write(sql_text)
+        sys.stderr.write(
+            "columns: emit-sql -> %s (%d bytes; ★ scope=%s)\n"
+            % (args.emit_sql, len(sql_text), "expected-index-key-columns"
+               if getattr(args, "keys_from", None) else "all-columns")
+        )
+        return 0
+    if not getattr(args, "env", None):
+        die("columns needs --env (★ 只有 --emit-sql 模式可以省)")
+    if args.from_stdin:
+        raw_rows = sys.stdin.read().splitlines()
+    else:
+        dsn = os.environ.get("GUARD_DSN")
+        if not dsn:
+            die("GUARD_DSN is not set (★ DSN 只走环境变量 ⇒ 不进 argv、不回显)")
+        psql = os.environ.get("GUARD_PSQL") or args.psql or "psql"
+        try:
+            proc = subprocess.run(
+                [psql, dsn, "-tA", "-q", "-v", "ON_ERROR_STOP=1", "-f", "-"],
+                input=sql_text,
+                capture_output=True,
+                text=True,
+                env={**os.environ, "GUARD_DSN": dsn},
+            )
+        except FileNotFoundError:
+            die("psql not found: %s (★ override with GUARD_PSQL or --psql)" % psql)
+        if proc.returncode != 0:
+            err_lines = [l for l in proc.stderr.splitlines() if l.strip()]
+            die("psql failed rc=%d (%d stderr lines; ★ DSN not echoed)" % (proc.returncode, len(err_lines)))
+        raw_rows = proc.stdout.splitlines()
+
+    rows = []
+    for line in raw_rows:
+        if not line.strip():
+            continue
+        parts = line.split("\t")
+        if len(parts) != COLUMNS_ARTIFACT_COLUMNS - 1:
+            die(
+                "columns row has %d fields, expected %d"
+                " (★ 采集端必须折行 ⇒ PG17 pretty-print 会塞换行)"
+                % (len(parts), COLUMNS_ARTIFACT_COLUMNS - 1)
+            )
+        rows.append("%s\t%s" % (args.env, line))
+
+    header = (
+        "# db-object-columns.tsv —— ★★【每环境每表每列】的事实底账（★ 只读采集）\n"
+        "# ★ 生成器：scripts/audit/db-object-census.py columns\n"
+        "# ★ 列：env\tschema\ttable\tcolumn\n"
+        "# ★ 这层事实此前**不存在** ⇒ ⇒ 「列没了 ⇒ 索引被 PG 级联删掉」在仓内不可见\n"
+        "# ★   ⇒ ⇒ 假缺口的第三种来源一直躺着（★ idx_sessions_last_full_at 实测命中）\n"
+        "# ★ collected_at=%s\n"
+        "# ★ env=%s rows=%d sha256=%s\n"
+    ) % (
+        datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        args.env,
+        len(rows),
+        hashlib.sha256("\n".join(rows).encode("utf-8")).hexdigest(),
+    )
+    scope_line = "# ★ scope=%s\n" % (
+        "expected-index-key-columns" if getattr(args, "keys_from", None) else "all-columns"
+    )
+    out = header + scope_line + "\n".join(rows) + ("\n" if rows else "")
+
+    if args.out:
+        mode = "a" if args.append else "w"
+        with open(args.out, mode, encoding="utf-8") as fh:
+            if mode == "a":
+                fh.write("\n".join(rows) + ("\n" if rows else ""))
+            else:
+                fh.write(out)
+        sys.stderr.write("columns: env=%s rows=%d -> %s (%s)\n" % (args.env, len(rows), args.out, mode))
+    else:
+        sys.stdout.write(out)
+    return 0
+
+
+def parse_columns(path):
+    """读列底账 ⇒ {env: {table: set(columns)}}"""
+    out = {}
+    with open(path, encoding="utf-8") as fh:
+        for lineno, line in enumerate(fh, 1):
+            line = line.rstrip("\n")
+            if not line or line.startswith("#"):
+                continue
+            parts = line.split("\t")
+            if len(parts) != COLUMNS_ARTIFACT_COLUMNS:
+                die(
+                    "columns line %d has %d fields, expected %d"
+                    % (lineno, len(parts), COLUMNS_ARTIFACT_COLUMNS)
+                )
+            out.setdefault(parts[0], {}).setdefault(parts[2], set()).add(parts[3])
+    if not out:
+        die("columns artifact has no data rows: %s" % path)
+    return out
+
+
+def cmd_columns_bundle(args):
+    """★ 合并 N 份单环境列底账 ⇒ 一份多环境列底账（★ 头部带每环境行数与 sha256）。
+
+    ★★ 为什么要单独一步：★ 各环境的采集是【分开跑的】（★ 远程走 ssh 管道）
+    ★★ ⇒ ★ 产物必须【工具生成】⇒ ★ 不能手拼（★ 手拼的产物没法证明自己来自工具）。
+    """
+    rows = []
+    per_env = {}
+    per_env_collected = {}
+    for path in args.inputs:
+        env_hint = None
+        collected_at = None
+        with open(path, encoding="utf-8") as fh:
+            for line in fh:
+                line = line.rstrip("\n")
+                if not line:
+                    continue
+                if line.startswith("#"):
+                    # ★★ R164：★ 透传【采集时刻】（★ 与 census bundle 同款）
+                    # ★★ 修：★ 头部 token 前带 "★ " ⇒ ★ 锚在 "#\s*" 上会匹配不到。
+                    m = re.search(r"collected_at=(\S+)", line)
+                    if m:
+                        collected_at = m.group(1)
+                    m = re.search(r"env=(\S+)\s+rows=", line)
+                    if m:
+                        env_hint = m.group(1)
+                    continue
+                parts = line.split("\t")
+                if len(parts) != COLUMNS_ARTIFACT_COLUMNS:
+                    die("columns line has %d fields, expected %d" % (len(parts), COLUMNS_ARTIFACT_COLUMNS))
+                rows.append(line)
+                per_env[parts[0]] = per_env.get(parts[0], 0) + 1
+                if collected_at and parts[0] not in per_env_collected:
+                    per_env_collected[parts[0]] = collected_at
+    if not rows:
+        die("columns bundle has no data rows")
+    env_desc = []
+    for env in sorted(per_env):
+        env_rows = [r for r in rows if r.split("\t")[0] == env]
+        env_desc.append(
+            "%s rows=%d sha256=%s collected_at=%s"
+            % (
+                env,
+                len(env_rows),
+                hashlib.sha256("\n".join(env_rows).encode("utf-8")).hexdigest(),
+                per_env_collected.get(env) or "unknown",
+            )
+        )
+    header = (
+        "# db-object-columns.tsv —— ★★【每环境每表每列】的事实底账（★ 只读采集）\n"
+        "# ★ 生成器：scripts/audit/db-object-census.py columns-bundle\n"
+        "# ★ 列：env\tschema\ttable\tcolumn\n"
+        "# ★ 这层事实此前**不存在** ⇒ ⇒ 「列没了 ⇒ 索引被 PG 级联删掉」在仓内不可见\n"
+        "# ★   ⇒ ⇒ 假缺口的第三种来源一直躺着（★ idx_sessions_last_full_at 实测命中）\n"
+        "# ★ scope=expected-index-key-columns\n"
+        "# ★ bundled_at=%s\n"
+        "# ★ %s\n"
+    ) % (
+        datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        " | ".join(env_desc),
+    )
+    out = header + "\n".join(rows) + "\n"
+    if args.out:
+        with open(args.out, "w", encoding="utf-8") as fh:
+            fh.write(out)
+        sys.stderr.write("columns-bundle: %d rows -> %s\n" % (len(rows), args.out))
     else:
         sys.stdout.write(out)
     return 0
@@ -456,7 +884,7 @@ def parse_census(path):
 
 
 def parse_expected(path):
-    """读期望集 ⇒ {index_name: (migration_no, table)}"""
+    """读期望集 ⇒ {index_name: (migration_no, table, declared_columns)}"""
     out = {}
     with open(path, encoding="utf-8") as fh:
         for lineno, line in enumerate(fh, 1):
@@ -464,16 +892,25 @@ def parse_expected(path):
             if not line or line.startswith("#"):
                 continue
             parts = line.split("\t")
-            if len(parts) < 3:
-                die("expect line %d malformed (%d fields)" % (lineno, len(parts)))
-            out[parts[1]] = (parts[0], parts[2])
+            if len(parts) < 5:
+                die("expect line %d malformed (%d fields; ★ 期望集是 6 列)" % (lineno, len(parts)))
+            cols = [c for c in parts[4].split(",") if c]
+            out[parts[1]] = (parts[0], parts[2], cols, parts[3])
     if not out:
         die("expect file has no data rows: %s" % path)
     return out
 
 
-def classify(env_state, index_name, table):
-    """★ 四状态判定（★ 每格都可机器判 ⇒ 没有「不知道」）。"""
+def classify(env_state, index_name, table, keycols=None, colstate=None):
+    """★ 五状态判定（★ 每格都可机器判 ⇒ 没有「不知道」）。
+
+    ★★ R163 加了第 5 态 `retired-by-column-drop`：★ 索引的【直接键列】在本环境
+    ★★ 已经不存在 ⇒ ⇒ PG 在 DROP COLUMN 时会【自动删掉】依赖它的索引
+    ★★ ⇒ ⇒ 它【不是】缺口 ⇒ ⇒ **这是假缺口的第三种来源**
+    ★★ （★ 前两种：★ R161 的「DROP 名带 schema 前缀」/ ★ R162 的「解析口径不一致」）
+    ★★ ⇒ ⇒ 实测命中：★ idx_sessions_last_full_at（★ 迁移 708 删了 last_full_payload_at）
+    ★★ ⇒ ⇒ 三个环境都判「缺口」⇒ ⇒★ 而 211 上那列还在（★ 456 跑在 708 之后）⇒ ⇒ ★★ 顺序倒置
+    """
     if index_name in env_state["idx"]:
         return "present"
     if index_name in env_state["children"]:
@@ -484,6 +921,12 @@ def classify(env_state, index_name, table):
     if kind not in ("r", "p"):
         # ★ 表还在，但已经不是表了（★ 例如 v1 表退役后换成视图）⇒ 索引无意义
         return "retired"
+    # ★★ R163：★【列级联退役】⇒ ★ 键列没了 ⇒ 索引被 PG 自动带走 ⇒ ⇒ 不是缺口
+    if keycols and colstate is not None:
+        have = colstate.get(table)
+        if have is not None:
+            if [c for c in keycols if c not in have]:
+                return "retired-by-column-drop"
     return "missing"
 
 
@@ -501,9 +944,17 @@ def _severity(cells, envs, prod_envs):
     ★★ 现在词表改成【每个格子组合唯一确定】的 4 值：
 
         none              —— 任何环境都不缺
-        local-only-gap    —— 只有 local 缺（★ 生产环境 252/211 都齐备 ⇒ 影响面最小）
-        prod-partial-gap  —— 生产环境里【缺一部分】（★ 252 或 211 其一缺）
         prod-full-gap     —— 生产环境【全都】缺（★ 252 与 211 都缺 ⇒ 影响面最大）
+        prod-partial-gap  —— 生产环境里【缺一部分】（★ 252 或 211 其一缺）
+        local-only-gap    —— 生产齐备，★ 只缺 local（★ 开发/验证环境）
+        fresh-only-gap    —— 生产齐备，★ 只缺 fresh（★ 新装环境）
+        new-install-gap   —— ★★★ 生产齐备，★ 而 local 与 fresh【都缺】
+                              ⇒ ★★★ **⇒ 任何按安装器路径装出来的新环境【必然】缺**
+                              ⇒ ★★★ ⇒ 这正是「多环境同一标准」在新装侧的真实缺口
+
+    ★★ R163 轮追加：★ 加入 `fresh`（★ 新装环境）这个环境后，★ **「非 local 即生产」的口径就坏了**
+    ★★ （★ 例：local 缺 + fresh 缺 + 252/211 齐备 ⇒ ★★ 旧口径会判成 prod-partial-gap
+    ★★ ⇒ ★★ 把「生产齐备」说成「生产有缺口」）⇒ ★★ ⇒ 改成【按环境角色】判定。
 
     ⇒ ★★ **给定三个格子状态，severity 唯一确定** ⇒ ⇒ 门可以机械校验
     ⇒ ⇒ ★★ **不会出现「同一个词对应两种意思」** ⇒ ★★ 这才是可机器判的前提。
@@ -511,15 +962,27 @@ def _severity(cells, envs, prod_envs):
     missing = {e for e, c in zip(envs, cells) if c == "missing"}
     if not missing:
         return "none"
-    if missing == {"local"}:
-        return "local-only-gap"
     prod_missing = missing & set(prod_envs)
+    # ★★ 先判生产侧（★ 生产侧优先：★ 它决定「用户可见的劣化」）
     if len(prod_missing) == len(prod_envs):
         return "prod-full-gap"
-    return "prod-partial-gap"
+    if prod_missing:
+        return "prod-partial-gap"
+    # ★★ 生产侧齐备 ⇒ 只剩 local / fresh 缺 ⇒ ★★ 按【缺的是哪一个】分三档
+    if missing == {"local"}:
+        return "local-only-gap"
+    if missing == {"fresh"}:
+        return "fresh-only-gap"
+    if "fresh" in missing:
+        # ★★ local 与 fresh 都缺、★ 而生产齐备 ⇒ ★★★ **新装环境【必然】缺**
+        return "new-install-gap"
+    return "local-only-gap"
 
 
-ENV_ORDER = ["local", "252", "211"]
+# ★★ R163 轮加入 `fresh`：★ 「新装环境」= 用【安装器真实路径】（00/01/02 + 312 条 StartupFiles）
+# ★★ 在空库装出来的库 ⇒ ★★ 它是「多环境同一标准」的【新装侧】实测基准。
+# ★★ 列序固定（★ 不依赖字典序 ⇒ ★★ 逐字对拍可用）。
+ENV_ORDER = ["local", "fresh", "252", "211"]
 
 
 def _env_sort_key(env):
@@ -537,6 +1000,8 @@ def _env_sort_key(env):
 def cmd_reconcile(args):
     census = parse_census(args.census)
     expected = parse_expected(args.expect)
+    # ★★ R163：★ 列底账（★ 没有它就判不出「列级联退役」⇒ ⇒ 假缺口继续躺着）
+    columns = parse_columns(getattr(args, "columns", None)) if getattr(args, "columns", None) else {}
     envs = sorted(census.keys(), key=_env_sort_key)
 
     rows = []
@@ -545,8 +1010,11 @@ def cmd_reconcile(args):
     prod_gaps = 0
 
     for name in sorted(expected, key=lambda n: (int(expected[n][0]) if expected[n][0].isdigit() else -1, n)):
-        mig, table = expected[name]
-        cells = [classify(census[e], name, table) for e in envs]
+        mig, table, keycols, _cfile = expected[name]
+        cells = [
+            classify(census[e], name, table, keycols, columns.get(e))
+            for e in envs
+        ]
         is_gap = any(c == "missing" for c in cells)
         for e, c in zip(envs, cells):
             if c == "missing":
@@ -565,8 +1033,10 @@ def cmd_reconcile(args):
         "# db-object-gap-ledger.tsv —— ★ 「期望索引集 × 三环境真实底账」缺口台账\n"
         "# ★ 生成器：scripts/audit/db-object-census.py reconcile\n"
         "# ★ 列：migration_no\tindex_name\ttable\t%s\tverdict\tseverity\n"
-        "# ★ 状态词：present | present-via-child | missing | retired\n"
-        "# ★ verdict：complete | gap　　severity：none | local-only-gap | prod-partial-gap | prod-full-gap\n"
+        "# ★ 状态词：present | present-via-child | missing | retired | retired-by-column-drop\n"
+        "# ★   ★★ retired-by-column-drop = ★ 索引的键列在本环境已被 DROP COLUMN 删掉\n"
+        "# ★   ★★ ⇒ PG 自动删掉了那个索引 ⇒ ⇒ 它【不是】缺口（★ 假缺口的第三种来源）\n"
+        "# ★ verdict：complete | gap　　severity：none | prod-full-gap | prod-partial-gap | local-only-gap | fresh-only-gap | new-install-gap\n"
         "# ★ generated_at=%s\n"
         "# ★ expected=%d envs=%s gaps_by_env=%s production_gaps=%d\n"
     ) % (
@@ -597,6 +1067,322 @@ def cmd_reconcile(args):
     return 2 if prod_gaps else 0
 
 
+# ─────────────────────────── reachability ───────────────────────────
+
+
+def read_manifest(path):
+    """读安装器登记清单 ⇒ {文件名: 0-based apply-order}"""
+    out = {}
+    with open(path, encoding="utf-8") as fh:
+        for line in fh:
+            line = line.rstrip("\n")
+            if not line or line.startswith("#"):
+                continue
+            parts = line.split("\t")
+            if len(parts) < 2:
+                continue
+            try:
+                order = int(parts[0])
+            except ValueError:
+                continue
+            out[parts[1].strip()] = order
+    return out
+
+
+def read_package_up(dirpath):
+    """读安装器分发包里的 up 迁移文件名集合（★ .down.sql 不算）"""
+    out = set()
+    if not os.path.isdir(dirpath):
+        die("installer package dir not found: %s" % dirpath)
+    for fn in os.listdir(dirpath):
+        if fn.endswith(".sql") and not fn.endswith(".down.sql"):
+            out.add(fn)
+    return out
+
+
+def cmd_reachability(args):
+    """★★【安装器可达性台账】：★ 每条期望索引 ⇒ 它的新装可达性 + 四环境在位情况。
+
+    ★★ 这张台账回答的是原始目标第 7 条（「多个环境同样的标准」）：
+    ★★ **一条索引，新装环境为什么会有它？**
+    ★★   reachable        ⇒ 创建它的迁移在【安装器登记清单 ∩ 分发包】里 ⇒ 新装会跑
+    ★★   baseline-dependent ⇒ 创建它的迁移【不在】安装器清单里
+    ★★                        ⇒ 新装能拥有它**只因为 01-schema.sql 是一份 dump**
+    ★★   unreachable-and-missing ⇒ 创建它的迁移不可达、基线也没有 ⇒ ★★ 任何新装环境【必然缺】
+    ★★   reachable-but-missing-in-fresh ⇒ 创建它的迁移【可达】、新装却没有 ⇒ ★★ 安装器自己有 bug
+    """
+    expected = parse_expected(args.expect)
+    census = parse_census(args.census)
+    columns = parse_columns(getattr(args, "columns", None)) if getattr(args, "columns", None) else {}
+    manifest = read_manifest(args.manifest)
+    package = read_package_up(args.package)
+    envs = sorted(census.keys(), key=_env_sort_key)
+    fresh = args.fresh_env
+    prod_envs = [e for e in envs if e in ("252", "211")]
+
+    rows = []
+    counts = {}
+    for name in sorted(expected, key=lambda n: (int(expected[n][0]) if expected[n][0].isdigit() else -1, n)):
+        mig, table, keycols, cfile = expected[name]
+        creator = os.path.basename(cfile)
+        reachable = (creator in manifest) and (creator in package)
+        cells = {e: classify(census[e], name, table, keycols, columns.get(e)) for e in envs}
+        present_envs = [e for e in envs if cells[e].startswith("present")]
+        missing_envs = [e for e in envs if cells[e] == "missing"]
+        fresh_present = cells.get(fresh, "missing").startswith("present")
+        fresh_cell = cells.get(fresh, "missing")
+        if fresh_present:
+            verdict = "reachable-and-present" if reachable else "baseline-dependent"
+            severity = "none" if reachable else "baseline-dependent"
+        elif fresh_cell in ("retired", "retired-by-column-drop"):
+            # ★★★ 表/列都没了 ⇒ 索引【合法】退役 ⇒ ⇒ 不是缺口 ⇒ ★★ 也不能算「安装器 bug」
+            verdict = "reachable-and-legitimately-retired"
+            severity = "none"
+        elif reachable:
+            verdict = "reachable-but-missing-in-fresh"
+            severity = "installer-bug"
+        else:
+            verdict = "unreachable-and-missing"
+            prod_missing = [e for e in prod_envs if cells[e] == "missing"]
+            severity = "prod-gap" if prod_missing else "new-install-gap"
+        counts[verdict] = counts.get(verdict, 0) + 1
+        rows.append(
+            "\t".join(
+                [
+                    name,
+                    table,
+                    mig,
+                    creator,
+                    "yes" if reachable else "no",
+                    ",".join(present_envs),
+                    ",".join(missing_envs),
+                    verdict,
+                    severity,
+                    "",
+                ]
+            )
+        )
+
+    header = (
+        "# installer-reachability.tsv —— ★★「新装环境可达性」台账（★ 每条期望索引一行）\n"
+        "# ★ 生成器：scripts/audit/db-object-census.py reachability\n"
+        "# ★ 列：index_name\ttable\tcreator_migration_no\tcreator_file\tcreator_reachable\t"
+        "present_envs\tmissing_envs\tverdict\tseverity\tnote\n"
+        "# ★ verdict：reachable-and-present | reachable-and-legitimately-retired | "
+        "baseline-dependent | unreachable-and-missing | reachable-but-missing-in-fresh\n"
+        "# ★ severity：none | baseline-dependent | new-install-gap | prod-gap | installer-bug\n"
+        "# ★ ★ baseline-dependent = ★ 创建迁移【不在安装器清单】⇒ 新装能拥有它只因为基线是 dump\n"
+        "# ★ ★ new-install-gap    = ★ 创建迁移不可达 ⇒ ★★ 任何新装环境【必然缺】\n"
+        "# ★ ★ installer-bug      = ★ 创建迁移【可达】、新装却没有 ⇒ ★★ 安装器自己有 bug\n"
+        "# ★ generated_at=%s\n"
+        "# ★ envs=%s fresh_env=%s manifest=%d package_up=%d rows=%d\n"
+        "# ★ counts=%s\n"
+    ) % (
+        datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        ",".join(envs),
+        fresh,
+        len(manifest),
+        len(package),
+        len(rows),
+        json.dumps(counts, ensure_ascii=False, sort_keys=True),
+    )
+    out = header + "\n".join(rows) + ("\n" if rows else "")
+
+    if args.out:
+        with open(args.out, "w", encoding="utf-8") as fh:
+            fh.write(out)
+        sys.stderr.write("reachability: %d rows -> %s\n" % (len(rows), args.out))
+    if args.json:
+        sys.stderr.write(json.dumps({"rows": len(rows), "counts": counts}, ensure_ascii=False, sort_keys=True) + "\n")
+    else:
+        sys.stderr.write(json.dumps(counts, ensure_ascii=False, sort_keys=True) + "\n")
+    return 0
+
+
+# ─────────────────────────── verify（R164）───────────────────────────
+
+
+def parse_census_header(path):
+    """读底账头部 ⇒ {'meta': {...}, 'envs': {env: {'rows': n, 'sha256': h, 'collected_at': ts}}}"""
+    meta = {}
+    envs = {}
+    with open(path, encoding="utf-8") as fh:
+        for line in fh:
+            line = line.rstrip("\n")
+            if not line.startswith("#"):
+                break
+            m = re.search(r"#\s*★\s*env=(\S+)\s+rows=(\d+)\s+sha256=([0-9a-f]+)(?:\s+collected_at=(\S+))?", line)
+            if m:
+                envs[m.group(1)] = {
+                    "rows": int(m.group(2)),
+                    "sha256": m.group(3),
+                    "collected_at": m.group(4),
+                }
+                continue
+            m = re.search(r"#\s*★\s*collected_at=(\S+)", line)
+            if m:
+                meta["collected_at"] = m.group(1)
+                continue
+            m = re.search(r"#\s*★\s*bundled_at=(\S+)", line)
+            if m:
+                meta["bundled_at"] = m.group(1)
+                continue
+            m = re.search(r"#\s*★\s*total_rows=(\d+)\s+envs=(\S+)", line)
+            if m:
+                meta["total_rows"] = int(m.group(1))
+                meta["envs"] = m.group(2).split(",")
+                continue
+    return meta, envs
+
+
+def parse_census_env_rows(path, env):
+    """读底账里某个环境的行（★ ★ 保留 env 前缀 ⇒ ★ 与 header 的 sha256 口径逐字一致）。"""
+    out = []
+    with open(path, encoding="utf-8") as fh:
+        for lineno, line in enumerate(fh, 1):
+            line = line.rstrip("\n")
+            if not line or line.startswith("#"):
+                continue
+            parts = line.split("\t")
+            if len(parts) != CENSUS_COLUMNS:
+                die("census line %d has %d fields, expected %d" % (lineno, len(parts), CENSUS_COLUMNS))
+            if parts[0] == env:
+                out.append(line)
+    return out
+
+
+def _row_identity(parts):
+    """★ 对象的身份 ⇒ (kind, schema, name)（★ relkind 属【形态】不属【身份】）。
+
+    ★★ `parts` 必须是【17 列（带 env 前缀）】的形态 ⇒ ★ 与 `CENSUS_COLUMN_NAMES` 对齐。
+    """
+    return (parts[1], parts[2], parts[4])
+
+
+def _row_payload(parts):
+    """★ 对象的【结构载荷】⇒ tuple（★ 剔除 volatile 列 ⇒ ★ 只剩形态）。"""
+    volatile_idx = tuple(CENSUS_COLUMN_NAMES.index(c) for c in VOLATILE_CENSUS_COLUMNS)
+    return tuple(v for i, v in enumerate(parts) if i not in volatile_idx)
+
+
+def _row_metrics(parts):
+    """★ 对象的【指标】（★ 每次 autovacuum/analyze 都会动 ⇒ 不算漂移）。"""
+    return tuple(parts[CENSUS_COLUMN_NAMES.index(c)] for c in VOLATILE_CENSUS_COLUMNS)
+
+
+def diff_env(snap_rows, live_rows):
+    """★ 对拍两个行集 ⇒ (missing, added, changed, metric_only)。
+
+    ★ missing ⇒ ★ 【快照说该有、此刻没有】⇒ ★ 危险方向（★ 它会把人引向错误的补建动作）
+    ★ added   ⇒ ★ 【此刻有、快照没有】⇒ ★ 快照落后了（★ 良性方向）
+    ★ changed ⇒ ★ 同一对象的【形态】变了（★ 重建过 / 改过列 / 改过谓词）
+    ★ metric_only ⇒ ★ 只有大小在动（★ ★ 不是漂移 ⇒ ★ 但必须报数，不能静默）
+    """
+    snap = {}
+    for r in snap_rows:
+        p = r.split("\t")
+        snap[_row_identity(p)] = p
+    live = {}
+    for r in live_rows:
+        p = r.split("\t")
+        live[_row_identity(p)] = p
+
+    missing = sorted(set(snap) - set(live))
+    added = sorted(set(live) - set(snap))
+    changed = []
+    metric_only = []
+    for k in sorted(set(snap) & set(live)):
+        sp, lp = snap[k], live[k]
+        if _row_payload(sp) != _row_payload(lp):
+            changed.append(k)
+        elif _row_metrics(sp) != _row_metrics(lp):
+            metric_only.append(k)
+    return missing, added, changed, metric_only
+
+
+def cmd_verify(args):
+    """★ R164：★ 把「快照」与「此刻的真实库」对拍 ⇒ 报【结构漂移】。
+
+    ★★ 退出码（★★ 不许静默降级：★ 「没法判定」绝不能长成「没漂移」）：
+        0  无结构漂移（★ 指标漂移不算）
+        1  ★★ 有结构漂移（★ missing / added / changed）
+        2  ★★ 无法判定（★ 缺 DSN / 采集失败 / 快照里没有该环境 / 参数错误）
+    """
+    meta, hdr_envs = parse_census_header(args.census)
+    if args.env not in hdr_envs:
+        sys.stderr.write(
+            "ERROR: census %s has no env=%s (★ envs=%s)\n"
+            % (args.census, args.env, ",".join(sorted(hdr_envs)))
+        )
+        sys.exit(2)
+    snap_rows = parse_census_env_rows(args.census, args.env)
+    if not snap_rows:
+        sys.stderr.write("ERROR: census %s has no rows for env=%s\n" % (args.census, args.env))
+        sys.exit(2)
+
+    try:
+        raw_rows = _collect_raw_rows(args.from_stdin, args.psql)
+    except SystemExit as exc:
+        # ★ 「采集失败」在 verify 语境下是【无法判定】⇒ ★ 必须是 2，不是 0，也别混成 3。
+        sys.exit(2 if exc.code not in (0, None) else exc.code)
+    # ★ 前缀化 ⇒ ★ 与快照的行【同形】（★ 17 列 ⇒ 索引口径一致）
+    live_rows = ["%s\t%s" % (args.env, r) for r in raw_rows]
+
+    missing, added, changed, metric_only = diff_env(snap_rows, live_rows)
+
+    snap_sha = hashlib.sha256("\n".join(snap_rows).encode("utf-8")).hexdigest()
+    live_sha = hashlib.sha256("\n".join(live_rows).encode("utf-8")).hexdigest()
+    hdr_sha = hdr_envs[args.env]["sha256"]
+
+    summary = {
+        "env": args.env,
+        "snapshot_rows": len(snap_rows),
+        "live_rows": len(live_rows),
+        "snapshot_sha256": snap_sha,
+        "header_sha256": hdr_sha,
+        "live_sha256": live_sha,
+        "header_sha_matches_rows": hdr_sha == snap_sha,
+        "collected_at": hdr_envs[args.env].get("collected_at"),
+        "missing_in_live": len(missing),
+        "added_in_live": len(added),
+        "changed": len(changed),
+        "metric_only": len(metric_only),
+    }
+    if args.json:
+        sys.stderr.write(json.dumps(summary, ensure_ascii=False, sort_keys=True) + "\n")
+    else:
+        sys.stderr.write(
+            "verify: env=%s snapshot_rows=%d live_rows=%d\n"
+            % (args.env, len(snap_rows), len(live_rows))
+        )
+        sys.stderr.write(
+            "  structural drift: missing_in_live=%d added_in_live=%d changed=%d\n"
+            % (len(missing), len(added), len(changed))
+        )
+        sys.stderr.write(
+            "  metric-only movement (★ NOT drift): %d rows\n" % len(metric_only)
+        )
+        if hdr_sha != snap_sha:
+            sys.stderr.write(
+                "  ★ header sha256 != rows sha256 (★ 产物自身不一致 ⇒ 先修产物)\n"
+            )
+        for k in missing[:20]:
+            sys.stderr.write("  MISSING-IN-LIVE  %s/%s %s\n" % (k[0], k[1], k[2]))
+        for k in added[:20]:
+            sys.stderr.write("  ADDED-IN-LIVE    %s/%s %s\n" % (k[0], k[1], k[2]))
+        for k in changed[:20]:
+            sys.stderr.write("  CHANGED          %s/%s %s\n" % (k[0], k[1], k[2]))
+
+    # ★ 产物自身 sha256 对不上 ⇒ ★ 无从判定 ⇒ ★ 也是「无法判定」⇒ ★ 不是 0。
+    if not summary["header_sha_matches_rows"]:
+        sys.exit(2)
+    if missing or added or changed:
+        sys.stderr.write("RESULT: STRUCTURAL DRIFT\n")
+        sys.exit(1)
+    sys.stderr.write("RESULT: NO STRUCTURAL DRIFT\n")
+    return 0
+
+
 # ─────────────────────────── selftest ───────────────────────────
 
 
@@ -615,6 +1401,7 @@ def cmd_retired(args):
     ★★ ⇒ ★★ 门可以据此断言「期望集里没有已退役的索引」⇒ ★★ 假缺口不可能再复活。
     """
     created, dropped_events, guarded = derive_retirement()
+    _expected, _stats, col_retired, _drop_col_events = derive_expected()
     rows = []
     for name in sorted(created):
         if name not in dropped_events:
@@ -632,15 +1419,39 @@ def cmd_retired(args):
                         rfn,
                         "yes" if guarded.get((rfn, rline)) else "no",
                         str(rline),
+                        "drop-index",
+                        "",
                     ]
                 )
             )
+    # ★★ R163：★【列级联退役】——★ 迁移删了索引的键列 ⇒ PG 自动删掉那个索引
+    # ★★ ⇒ ⇒ 它不是「缺口」⇒ ⇒ 但【退役证据】必须可查 ⇒ ⇒ 记进同一张台账
+    for name in sorted(col_retired):
+        mig, table, fn, retire_file, col, _keycols, retire_line = col_retired[name]
+        rows.append(
+            "\t".join(
+                [
+                    str(mig),
+                    name,
+                    table,
+                    fn,
+                    "-1",
+                    retire_file,
+                    "no",
+                    str(retire_line),
+                    "drop-column",
+                    col,
+                ]
+            )
+        )
     text = "\n".join(rows) + ("\n" if rows else "")
     header = (
         "# db-object-retired.tsv —— ★【建了又被后来的迁移删掉】的索引（★ 退役证据台账）\n"
         "# ★ 生成器：scripts/audit/db-object-census.py retired\n"
         "# ★ 列：create_migration_no\tindex_name\ttable\tcreate_file\t"
-        "retire_migration_no\tretire_file\tconditional\tretire_line\n"
+        "retire_migration_no\tretire_file\tconditional\tretire_line\t"
+        "retire_kind\tretired_column\n"
+        "# ★ retire_kind：drop-index（★ 显式 DROP INDEX）| drop-column（★ ★ 删列 ⇒ PG 级联删索引）\n"
         "# ★ conditional=yes ⇒ ★ 该 DROP 在 DO 块内（★ 有前置证明才退役，★ 如 876 的覆盖证明）\n"
         "# ★ generated_at=%s\n"
         "# ★ retired_indexes=%d retire_events=%d\n"
@@ -708,9 +1519,11 @@ def cmd_bundle(args):
     ⇒ ★ 产物必须【工具生成】⇒ ★ 不能手拼（★ 手拼的产物没法证明自己来自工具）。
     """
     per_env = {}
+    per_env_collected = {}
     order = []
     for path in args.inputs:
         env = None
+        collected_at = None
         rows = []
         with open(path, encoding="utf-8") as fh:
             for lineno, line in enumerate(fh, 1):
@@ -719,9 +1532,19 @@ def cmd_bundle(args):
                     continue
                 if line.startswith("#"):
                     # ★ 单环境文件的头部里带 "env=<label>"
-                    m = re.search(r"#\s*env=(\S+)\s", line)
+                    # ★★ R164 修：★ 头部里这些 token 前面还带着 "★ "（★ 比如
+                    # ★★ "# ★ env=local rows=…"）⇒ ⇒ ★ 用 "#\s*env=" 这种锚法会【匹配不到】
+                    # ★★ ⇒ ★★ 实测 caught：★ collected_at 一律透传成 "unknown" ⇒ ★ 恰好把
+                    # ★★ 本轮要闭合的那条边界（★ 「采集时刻查不到」）又关回去了 ⇒ ⇒ 改用无锚 token 匹配。
+                    m = re.search(r"env=(\S+)\s+rows=", line)
                     if m:
                         env = m.group(1)
+                    # ★★ R164：★ 把【采集时刻】透传下去（★ 否则 bundle 之后
+                    # ★★ 「这个环境的数据是几号采的」在产物里就查不到了 ⇒ ⇒
+                    # ★★ 「快照过期」不可机器判 ⇒ ★★ 这正是本轮要闭合的那条边界）。
+                    m = re.search(r"collected_at=(\S+)", line)
+                    if m:
+                        collected_at = m.group(1)
                     continue
                 parts = line.split("\t")
                 if len(parts) != CENSUS_COLUMNS:
@@ -734,6 +1557,7 @@ def cmd_bundle(args):
         if env in per_env:
             die("duplicate env %s in inputs" % env)
         per_env[env] = rows
+        per_env_collected[env] = collected_at
         order.append(env)
 
     order.sort(key=_env_sort_key)
@@ -751,8 +1575,13 @@ def cmd_bundle(args):
     for env in order:
         rows = per_env[env]
         header_lines.append(
-            "# ★ env=%s rows=%d sha256=%s"
-            % (env, len(rows), hashlib.sha256("\n".join(rows).encode("utf-8")).hexdigest())
+            "# ★ env=%s rows=%d sha256=%s collected_at=%s"
+            % (
+                env,
+                len(rows),
+                hashlib.sha256("\n".join(rows).encode("utf-8")).hexdigest(),
+                per_env_collected.get(env) or "unknown",
+            )
         )
     header_lines.append(
         "# ★ total_rows=%d envs=%s" % (len(all_rows), ",".join(order))
@@ -781,7 +1610,7 @@ def cmd_selftest(args):
             sys.stderr.write("FAIL %s %s\n" % (name, detail))
 
     # ① 期望集反解：必须排除中间产物（902 的 _tmp）
-    expected, stats = derive_expected()
+    expected, stats, col_retired, drop_col_events = derive_expected()
     check("expect/has-entries", len(expected) > 100, str(len(expected)))
     check(
         "expect/excludes-transient-using-index",
@@ -847,7 +1676,80 @@ def cmd_selftest(args):
             "★ want %s got %s" % (_want, _got),
         )
 
-    # ② 状态判定四态（★ 阳性对照 + 反向对照）
+    # ★★ R163 新增牙：★★【列级联退役】的识别 + 零回归钉死
+    check(
+        "expect/column-drop-events-found",
+        len(drop_col_events) > 0,
+        "★ ALTER TABLE … DROP COLUMN 一个都没解析到 ⇒ 假缺口的第三种来源看不见",
+    )
+    check(
+        "expect/column-retired-detected",
+        "idx_sessions_last_full_at" in col_retired,
+        "★ 迁移 708 删了 last_full_payload_at ⇒ PG 会级联删掉 idx_sessions_last_full_at",
+    )
+    _cr = col_retired.get("idx_sessions_last_full_at")
+    check(
+        "expect/column-retired-names-the-column",
+        bool(_cr) and _cr[4] == "last_full_payload_at" and "708_session_bodies_s1a.sql" in _cr[3],
+        "★ 列级联退役的证据必须点名【哪一列】+【哪条迁移】",
+    )
+    # ★★ 零回归钉死：★ 括号配对扫描与老正则的【索引名集合】必须逐字相同
+    _old_names = set()
+    _new_names = set()
+    for _fn in sorted(
+        f for f in os.listdir(MIGRATIONS_DIR)
+        if f.endswith(".sql") and not f.endswith(".down.sql")
+    ):
+        _body = RE_LINE_COMMENT.sub(
+            "", open(os.path.join(MIGRATIONS_DIR, _fn), encoding="utf-8", errors="replace").read()
+        )
+        for _m in RE_CREATE_INDEX.finditer(_body):
+            _old_names.add(_strip_name(_m.group(1)))
+        for (_sn, _st, _sc) in _scan_create_indexes(_body):
+            _new_names.add(_sn)
+    check(
+        "expect/balanced-scan-zero-regression",
+        _old_names == _new_names,
+        "★ 括号配对扫描改变了索引名集合（★ %d vs %d）⇒ 期望集会漂"
+        % (len(_old_names), len(_new_names)),
+    )
+    check(
+        "expect/declared-columns-parsed",
+        "last_full_payload_at" in expected.get("idx_sessions_last_full_at", ("", "", "", [], ""))[3],
+        "★ 声明列没解析出来 ⇒ 列级联退役判据没有输入",
+    )
+    check(
+        "expect/using-method-indexes-kept",
+        "idx_assets_tags" in _old_names and "idx_assets_tags" in _new_names,
+        "★ `ON t USING gin (…)` 形态的索引被配对扫描漏掉 ⇒ 期望集缩了 45 条",
+    )
+    # ★★ 钉死 `ON ONLY <table>`：★ 表名被吃成 ONLY ⇒ ⇒ 17 条索引被判 retired ⇒ ★★ 掩盖真缺口
+    _only_form = [
+        n for n, v in expected.items() if v[1] == "only"
+    ]
+    check(
+        "expect/no-only-as-table-name",
+        not _only_form,
+        "★ %d 条索引的表名被解析成 ONLY ⇒ 它们在台账里会被判 retired ⇒ 掩盖真缺口：%s"
+        % (len(_only_form), _only_form[:5]),
+    )
+    check(
+        "expect/only-form-table-resolved",
+        expected.get("idx_routing_decision_log_canonical_ts", ("", "", "", [], ""))[1]
+        == "routing_decision_log",
+        "★ `ON ONLY routing_decision_log` 的表名没解析对",
+    )
+    # ★★ 钉死逗号列表形态的 DROP COLUMN（★ 708 就是三条同语句）
+    check(
+        "expect/drop-column-comma-list-parsed",
+        any(
+            tbl == "sessions" and col == "last_full_payload_at"
+            for (_o, _f, tbl, col, _l) in drop_col_events
+        ),
+        "★ 逗号列表里的第二三条 DROP COLUMN 没解析到 ⇒ 708 的删列漏了",
+    )
+
+    # ② 状态判定五态（★ 阳性对照 + 反向对照）
     env_state = {
         "idx": {"idx_present"},
         "children": {"idx_parent": ["part_child"]},
@@ -865,6 +1767,29 @@ def cmd_selftest(args):
         "★ a view must not count as a table",
     )
     check("classify/missing", classify(env_state, "idx_x", "tbl") == "missing")
+    # ★★ R163：★【列级联退役】——★ 键列没了 ⇒ 索引被 PG 自动带走 ⇒ ⇒ 不是缺口
+    env_state3 = {
+        "idx": set(),
+        "children": {},
+        "rels": {"sessions": "p"},
+    }
+    _colstate = {"sessions": {"tenant_id", "session_id"}}
+    check(
+        "classify/retired-by-column-drop",
+        classify(env_state3, "idx_x", "sessions", ["tenant_id", "last_full_payload_at"], _colstate)
+        == "retired-by-column-drop",
+        "★ 键列不在了却判成 missing ⇒ 假缺口继续躺着",
+    )
+    check(
+        "classify/column-present-still-missing",
+        classify(env_state3, "idx_x", "sessions", ["tenant_id"], _colstate) == "missing",
+        "★ 键列都在却判成非缺口 ⇒ 真缺口被吞了",
+    )
+    check(
+        "classify/no-column-facts-falls-back-to-missing",
+        classify(env_state3, "idx_x", "sessions", ["tenant_id"], None) == "missing",
+        "★ 没有列事实时必须保守判 missing（★ 不能瞎猜退役）",
+    )
 
     # ③ ★★★ 反向对照：★ 「表存在但索引不在」必须判 missing（★ 而不能判 retired）
     #    ★ 这是本轮第一版工具的漏洞（★ 名字前缀启发式）⇒ ★ 用例钉死。
@@ -942,6 +1867,178 @@ def cmd_selftest(args):
     os.unlink(exp)
     os.unlink(cen)
 
+    # ★★ R164 新增牙（★★ 两个要点：★ ① 「结构漂移」与「指标漂移」必须分得开
+    # ★★ ② 退出码语义必须分得开：★ 「没法判定」绝不能长成「没漂移」）
+    check(
+        "verify/volatile-columns-are-exactly-three",
+        VOLATILE_CENSUS_COLUMNS == ("reltuples", "table_size", "total_size"),
+        repr(VOLATILE_CENSUS_COLUMNS),
+    )
+
+    def _r(*vals):
+        """★ 17 列（带 env 前缀）的行（★ 与底账产物的行【同形】）。"""
+        return _row(CENSUS_COLUMNS, "local", *vals)
+
+    def _raw(*vals):
+        """★ 16 列（不带 env）的行（★ 与 `_collect_raw_rows` 的返回【同形】）。"""
+        return _row(CENSUS_COLUMNS - 1, *vals)
+
+    base = _r("idx", "public", "i", "idx_a", "owner", "f", "", "", "100", "4096", "8192",
+              "CREATE INDEX ...", "true,true,true", "", "tenant_id,session_id", "")
+    moved = _r("idx", "public", "i", "idx_a", "owner", "f", "", "", "200", "8192", "16384",
+               "CREATE INDEX ...", "true,true,true", "", "tenant_id,session_id", "")
+    redefined = _r("idx", "public", "i", "idx_a", "owner", "f", "", "", "100", "4096", "8192",
+                   "CREATE INDEX ON public.t (a)", "true,true,true", "", "tenant_id,session_id", "")
+
+    mi, ad, ch, mo = diff_env([base], [base])
+    check("verify/identical-is-no-drift", not mi and not ad and not ch and not mo, repr((mi, ad, ch, mo)))
+    mi, ad, ch, mo = diff_env([base], [moved])
+    check(
+        "verify/metric-only-is-not-drift",
+        not mi and not ad and not ch and len(mo) == 1,
+        "★ reltuples/size 变了 ⇒ 不该算漂移: %r" % ((mi, ad, ch, mo),),
+    )
+    mi, ad, ch, mo = diff_env([base], [])
+    check("verify/detects-missing-in-live", len(mi) == 1 and not ad, repr((mi, ad)))
+    mi, ad, ch, mo = diff_env([], [base])
+    check("verify/detects-added-in-live", len(ad) == 1 and not mi, repr((mi, ad)))
+    mi, ad, ch, mo = diff_env([base], [redefined])
+    check("verify/detects-changed-shape", len(ch) == 1 and not mo, repr((ch, mo)))
+
+    # ★★ 端到端退出码（★ 用自证钩子喂现场行 ⇒ 不连库）
+    def _write_census(path, env, rows):
+        pref = list(rows)
+        sha = hashlib.sha256("\n".join(pref).encode("utf-8")).hexdigest()
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write("# db-object-census.tsv —— selftest\n")
+            fh.write("# ★ bundled_at=2026-10-27T00:00:00+00:00\n")
+            fh.write("# ★ env=%s rows=%d sha256=%s collected_at=2026-10-27T00:00:00+00:00\n"
+                     % (env, len(pref), sha))
+            fh.write("# ★ total_rows=%d envs=%s\n" % (len(pref), env))
+            for r in pref:
+                fh.write(r + "\n")
+
+    global _LIVE_ROWS_OVERRIDE
+    with tempfile.NamedTemporaryFile("w", suffix=".tsv", delete=False, encoding="utf-8") as fh:
+        cen2 = fh.name
+    _write_census(cen2, "local", [base])
+    vns = argparse.Namespace(env="local", census=cen2, psql=None, from_stdin=False, json=False)
+
+    raw_base = _raw("idx", "public", "i", "idx_a", "owner", "f", "", "", "100", "4096", "8192",
+                    "CREATE INDEX ...", "true,true,true", "", "tenant_id,session_id", "")
+    raw_moved = _raw("idx", "public", "i", "idx_a", "owner", "f", "", "", "200", "8192", "16384",
+                     "CREATE INDEX ...", "true,true,true", "", "tenant_id,session_id", "")
+    raw_redefined = _raw("idx", "public", "i", "idx_a", "owner", "f", "", "", "100", "4096", "8192",
+                         "CREATE INDEX ON public.t (a)", "true,true,true", "", "tenant_id,session_id", "")
+
+    _LIVE_ROWS_OVERRIDE = [raw_base]
+    try:
+        cmd_verify(vns)
+        rc = 0
+    except SystemExit as exc:
+        rc = exc.code
+    check("verify/exit-0-on-no-drift", rc == 0, "rc=%r" % (rc,))
+
+    _LIVE_ROWS_OVERRIDE = [raw_moved]
+    try:
+        cmd_verify(vns)
+        rc = 0
+    except SystemExit as exc:
+        rc = exc.code
+    check("verify/exit-0-on-metric-only", rc == 0, "★ 只有统计量在动 ⇒ 不该红: rc=%r" % (rc,))
+
+    _LIVE_ROWS_OVERRIDE = [raw_redefined]
+    try:
+        cmd_verify(vns)
+        rc = 0
+    except SystemExit as exc:
+        rc = exc.code
+    check("verify/exit-1-on-shape-drift", rc == 1, "rc=%r" % (rc,))
+
+    _LIVE_ROWS_OVERRIDE = []
+    try:
+        cmd_verify(vns)
+        rc = 0
+    except SystemExit as exc:
+        rc = exc.code
+    check("verify/exit-1-on-missing-object", rc == 1, "rc=%r" % (rc,))
+
+    # ★★ 「快照里没有这个环境」⇒ ★ 无法判定 ⇒ ★ 必须是 2（★ 绝不是 0）
+    vns_absent = argparse.Namespace(env="211", census=cen2, psql=None, from_stdin=False, json=False)
+    _LIVE_ROWS_OVERRIDE = [raw_base]
+    try:
+        cmd_verify(vns_absent)
+        rc = 0
+    except SystemExit as exc:
+        rc = exc.code
+    check("verify/exit-2-when-env-absent", rc == 2, "★ 「没法判定」≠「没漂移」: rc=%r" % (rc,))
+
+    # ★★ 「连不上库」⇒ ★ 同样是无法判定 ⇒ ★ 必须是 2
+    _LIVE_ROWS_OVERRIDE = None
+    saved_dsn = os.environ.pop("GUARD_DSN", None)
+    try:
+        cmd_verify(vns)
+        rc = 0
+    except SystemExit as exc:
+        rc = exc.code
+    finally:
+        if saved_dsn is not None:
+            os.environ["GUARD_DSN"] = saved_dsn
+    check("verify/exit-2-when-db-unreachable", rc == 2, "★ 「连不上」≠「没漂移」: rc=%r" % (rc,))
+
+    os.unlink(cen2)
+
+    # ★★ R164 第二组牙：★ bundle 的 collected_at 透传（★ 工具侧行为 ⇒ ★ 由本工具自证）
+    # ★★ 起因（★ 本轮实测）：★ 第一版透传【没生效】⇒ ★ 正则被头部里的 "★ " 挡住
+    # ★★ ⇒ ⇒ 头部出来全是 `collected_at=unknown` ⇒ ⇒ ★ 而「unknown」长得像一个合法值
+    # ★★ ⇒ ⇒ ⇒ 「透传失败」被伪装成「采集时刻未知」⇒ ⇒ ⇒ ⇒ 所以这里要验两件事：
+    # ★★   ① 透传【真的发生】；★ ★★ ② 兜底值必须是【显式的 unknown】（★ 不许长得像合法值）。
+    def _write_single_env(path, env, rows, collected_at):
+        pref = ["%s\t%s" % (env, r) for r in rows]
+        sha = hashlib.sha256("\n".join(pref).encode("utf-8")).hexdigest()
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write("# db-object-census.tsv —— selftest\n")
+            if collected_at is not None:
+                fh.write("# ★ collected_at=%s\n" % collected_at)
+            fh.write("# ★ env=%s rows=%d sha256=%s\n" % (env, len(pref), sha))
+            for r in pref:
+                fh.write(r + "\n")
+
+    with tempfile.NamedTemporaryFile("w", suffix=".tsv", delete=False, encoding="utf-8") as fh:
+        env_a = fh.name
+    with tempfile.NamedTemporaryFile("w", suffix=".tsv", delete=False, encoding="utf-8") as fh:
+        env_b = fh.name
+    with tempfile.NamedTemporaryFile("w", suffix=".tsv", delete=False, encoding="utf-8") as fh:
+        env_c = fh.name
+    _write_single_env(env_a, "local", [raw_base], "2026-10-27T01:02:03+00:00")
+    _write_single_env(env_b, "252", [raw_base], "2026-10-27T04:05:06+00:00")
+    # ★ 第三个文件【故意没有 collected_at】⇒ ⇒ 兜底必须是 unknown
+    _write_single_env(env_c, "211", [raw_base], None)
+
+    bns = argparse.Namespace(inputs=[env_a, env_b, env_c], out=None)
+    buf = io.StringIO()
+    real_stdout = sys.stdout
+    sys.stdout = buf
+    try:
+        cmd_bundle(bns)
+    finally:
+        sys.stdout = real_stdout
+    bundled = buf.getvalue()
+    check(
+        "bundle/passes-collected-at-through",
+        "collected_at=2026-10-27T01:02:03+00:00" in bundled
+        and "collected_at=2026-10-27T04:05:06+00:00" in bundled,
+        "★ 采集时刻没透传到 bundle 头部",
+    )
+    check(
+        "bundle/fallback-is-explicit-unknown",
+        "collected_at=unknown" in bundled,
+        "★ 缺采集时刻时兜底必须是显式的 unknown（★ 不许长得像合法值）",
+    )
+    os.unlink(env_a)
+    os.unlink(env_b)
+    os.unlink(env_c)
+
     sys.stderr.write(
         "\nselftest: %d checks, %d failures\n" % (CHECKS[0], len(failures))
     )
@@ -977,6 +2074,10 @@ def main(argv=None):
     p = sub.add_parser("reconcile", help="reconcile expected set against census")
     p.add_argument("--census", required=True, help="census TSV")
     p.add_argument("--expect", required=True, help="expected-set TSV")
+    p.add_argument(
+        "--columns",
+        help="column census TSV (★ 没有它就判不出「列级联退役」⇒ ⇒ 假缺口继续躺着)",
+    )
     p.add_argument("--out", help="output gap ledger TSV (default: stderr only)")
     p.add_argument("--json", action="store_true", help="print a JSON summary to stderr")
     p.set_defaults(func=cmd_reconcile)
@@ -986,12 +2087,71 @@ def main(argv=None):
     p.add_argument("--out", help="output TSV (default: stdout)")
     p.set_defaults(func=cmd_bundle)
 
+    p = sub.add_parser(
+        "verify",
+        help="★ R164：★ 把快照与此刻的真实库对拍 ⇒ 报【结构漂移】（★ 退出码 0/1/2）",
+    )
+    p.add_argument("--env", required=True, help="environment label")
+    p.add_argument("--census", required=True, help="census bundle TSV")
+    p.add_argument("--psql", help="psql binary (default: $GUARD_PSQL or psql)")
+    p.add_argument(
+        "--from-stdin",
+        action="store_true",
+        help="read already-collected census rows from stdin (★ remote envs)",
+    )
+    p.add_argument("--json", action="store_true", help="print a JSON summary to stderr")
+    p.set_defaults(func=cmd_verify)
+
     p = sub.add_parser("retired", help="emit retirement-evidence ledger (created-then-dropped)")
     p.add_argument("--out", help="output TSV (default: stdout)")
     p.set_defaults(func=cmd_retired)
 
+    p = sub.add_parser("columns", help="read-only column census of one environment")
+    # ★ R164：★ --env 不再是必填（★ 因为 `--emit-sql` 模式下不需要环境标签 ⇒ ★ 只产 SQL）
+    p.add_argument("--env", help="environment label (★ --emit-sql 时可省)")
+    p.add_argument("--out", help="output TSV (default: stdout)")
+    p.add_argument("--append", action="store_true", help="append rows to --out")
+    p.add_argument("--psql", help="psql binary (default: $GUARD_PSQL or psql)")
+    p.add_argument("--from-stdin", action="store_true", help="read already-collected rows from stdin")
+    p.add_argument(
+        "--keys-from",
+        help="expected-set TSV (★ 只采期望集索引的【声明键列】⇒ 规模降到 1/8)",
+    )
+    p.add_argument(
+        "--emit-sql",
+        help="★ R164：★ 只写出采集用的 SQL（★ 远程环境用；★ ★ 采集 SQL 必须由工具生成 ⇒ 不许手搓）",
+    )
+    p.set_defaults(func=cmd_columns)
+
+    p = sub.add_parser(
+        "reachability",
+        help="emit the installer-reachability ledger (★ 新装环境为什么会有/不会有它)",
+    )
+    p.add_argument("--expect", required=True, help="expected-set TSV")
+    p.add_argument("--census", required=True, help="census TSV")
+    p.add_argument("--columns", help="column census TSV")
+    p.add_argument("--manifest", required=True, help="installer manifest TSV")
+    p.add_argument("--package", required=True, help="installer embeddata startup dir")
+    p.add_argument("--fresh-env", default="fresh", help="which env is the fresh-install baseline")
+    p.add_argument("--out", help="output TSV (default: stdout)")
+    p.add_argument("--json", action="store_true", help="print a JSON summary to stderr")
+    p.set_defaults(func=cmd_reachability)
+
+    p = sub.add_parser("columns-bundle", help="merge per-environment column census files")
+    p.add_argument("--in", dest="inputs", action="append", required=True, help="input file (repeatable)")
+    p.add_argument("--out", help="output TSV (default: stdout)")
+    p.set_defaults(func=cmd_columns_bundle)
+
     p = sub.add_parser("selftest", help="self-tests")
     p.set_defaults(func=cmd_selftest)
+
+    # ★★ R164：★ 把采集 SQL 本身也做成一个模式 ⇒ ★ 远程采集不用再手搓 SQL
+    # ★★ （★ 手搓过一次 ⇒ ★ 口径分叉 ⇒ ★ 252/211 采到 0 行 ⇒ ★ 见审计档 §5）。
+    p = sub.add_parser(
+        "census-sql",
+        help="★ R164：★ 打印对象底账的采集 SQL（★ 只读；★ 远程采集用这个，★ 不许手搓）",
+    )
+    p.set_defaults(func=lambda args: (sys.stdout.write(CENSUS_SQL), 0)[1])
 
     args = ap.parse_args(argv)
     return args.func(args)

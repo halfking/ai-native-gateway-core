@@ -17,6 +17,7 @@
  *            只显示符合条件的模型分组。条件清空则显示所有。
  */
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { surfaceError } from '../i18n/errorSurface'
 import { useI18n } from 'vue-i18n'
 import type { LiveStatus, LiveModelCategory } from '../composables/useLiveStream'
 import { getFeatured, resolveRouting, reorderCandidateBindings, type CandidateBindingReorderItem, type RoutingCandidate } from '../api/routing'
@@ -61,6 +62,7 @@ import NodeDetailDrawer from './NodeDetailDrawer.vue'
 import { openRequestDetailPage } from '../utils/openRequestDetailPage'
 import { formatTimeOnly } from '../utils/datetime'
 import ModelIOStrips from './ModelIOStrips.vue'
+import { CaretRight, Rank, StarFilled } from '@element-plus/icons-vue'
 
 // 2026-08-28: 接收上层筛选条件（从 LiveRequestStreamV2 的 useLiveStreamFilters 传入）
 interface Props {
@@ -804,7 +806,7 @@ async function onDrop(event: DragEvent, group: ModelGroup, targetCredentialId: n
       return assignSpacedPriorities(mergedIds.length)
     } catch (error) {
       clearDragState()
-      dragError.value = error instanceof Error ? error.message : t('routing.dashboard.resolve.reorderFailed')
+      dragError.value = surfaceError(error, { key: 'routing.dashboard.resolve.reorderFailed' })
       return null
     }
   })()
@@ -855,7 +857,7 @@ async function onDrop(event: DragEvent, group: ModelGroup, targetCredentialId: n
     for (const [rawModel, prev] of prevByRaw.entries()) {
       modelCandidatesByRawModel.value = new Map(modelCandidatesByRawModel.value).set(rawModel, prev)
     }
-    const fallback = error instanceof Error ? error.message : '调整优先级失败'
+    const fallback = surfaceError(error, { key: 'common.feedback.priorityAdjustFailed' })
     // 409 stale / incomplete / transient ordering conflict — surface a
     // user-friendly hint and refetch so the UI catches up with the server.
     if (error instanceof ApiError && error.status === 409) {
@@ -1278,7 +1280,7 @@ function requestTitleTooltip(request: LiveRequest): string {
             <span class="qp-layer-depth" :class="{ 'qp-depth--high': totalDepth > CONGESTION_THRESHOLD * 3 }">{{ totalDepth }}</span>
             <span class="qp-layer-count">{{ queue?.models.length || 0 }} 模型 · {{ queue?.credentials.length || 0 }} 节点</span>
           </span>
-          <span class="qp-model-group-caret" :class="{ 'qp-model-group-caret--open': queueDepthOpen }">▸</span>
+          <span class="qp-model-group-caret" :class="{ 'qp-model-group-caret--open': queueDepthOpen }"><CaretRight /></span>
         </button>
         <div v-if="queueDepthOpen" class="qp-depth-body">
           <div class="qp-row">
@@ -1370,7 +1372,7 @@ function requestTitleTooltip(request: LiveRequest): string {
         <div v-else v-for="group in filteredModelGroups" :key="group.model" class="qp-model-group">
           <div class="qp-model-compact">
             <button type="button" class="qp-model-group-toggle" :aria-expanded="expandedModels.has(group.model)" @click="toggleModel(group.model)">
-              <span class="qp-model-group-caret" :class="{ 'qp-model-group-caret--open': expandedModels.has(group.model) }">▸</span>
+              <span class="qp-model-group-caret" :class="{ 'qp-model-group-caret--open': expandedModels.has(group.model) }"><CaretRight /></span>
               <strong class="qp-model-group-name">{{ group.displayName }}</strong>
             </button>
             <span v-if="group.featured" class="qp-model-tag">{{ t('requestJourneys.featuredTag') }}</span>
@@ -1421,9 +1423,9 @@ function requestTitleTooltip(request: LiveRequest): string {
                     @click.stop.prevent
                     @dragstart.stop="onDragStart($event, group, node.credential_id)"
                     @dragend.stop="clearDragState"
-                  >⋮⋮</span>
+                  ><Rank /></span>
                   <span class="qp-node-card-title">
-                    <span v-if="isPriorityNode(group, node)" class="qp-node-priority-flag" title="优先节点：额度用完前优先路由">★</span>
+                    <span v-if="isPriorityNode(group, node)" class="qp-node-priority-flag" title="优先节点：额度用完前优先路由"><StarFilled /></span>
                     {{ nodeCardTitle(node, group) }}
                   </span>
                   <span class="qp-node-card-dots" :title="`熔断 ${node.circuit_state || '未知'} · 可用性 ${node.availability_state || '未知'} · 配额 ${node.quota_state || '未知'} · 健康 ${node.health_status || '未知'}`">
@@ -1986,4 +1988,12 @@ function requestTitleTooltip(request: LiveRequest): string {
   background: color-mix(in srgb, var(--kx-primary) 8%, var(--kx-surface));
 }
 .qp-model-rq-count { font-weight: 600; }
+
+/* ── 2026-10-27 第 17 增量（AI 痕迹门 V3）：图标尺寸 ──
+   element-plus 图标是裸 <svg viewBox="0 0 1024 1024">，**不带 width/height**
+   ⇒ 浏览器按包含块宽度渲染（会撑爆布局）⇒ 必须显式定尺寸。
+   尺寸沿用原字形的 font-size 观感（字形墨迹 ≈ 0.7em）。 */
+.qp-model-group-caret > svg { width: 11px; height: 11px; transition: transform 120ms ease; }
+.qp-node-card-drag-handle > svg { width: 10px; height: 10px; }
+.qp-node-priority-flag > svg { width: 10px; height: 10px; }
 </style>

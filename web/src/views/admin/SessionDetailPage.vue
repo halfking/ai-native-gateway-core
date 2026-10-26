@@ -8,6 +8,7 @@
  * generated turn digest (user input, assistant output, metrics, events, tools).
  */
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { surfaceError } from '../../i18n/errorSurface'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { getSessionDetailV2, getSessionSnapshot } from '../../api/sessions_v2'
@@ -72,7 +73,7 @@ async function loadSnapshot() {
     })) as Record<string, unknown>
   } catch (e) {
     if (e instanceof DOMException && e.name === 'AbortError') return
-    snapshotError.value = e instanceof ApiError ? e.detail : e instanceof Error ? e.message : String(e)
+    snapshotError.value = e instanceof ApiError ? e.detail : surfaceError(e)
   }
 }
 

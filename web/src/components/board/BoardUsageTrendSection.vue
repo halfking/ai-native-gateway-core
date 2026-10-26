@@ -5,6 +5,7 @@
 // 不进 board 缓存载荷 —— 卡片自取数，时间范围变化即刷；board 轮询刷新时按
 // 最小间隔节流跟随。全页分析入口按钮在 BoardFilterBar 时间范围右侧。
 import { computed, onMounted, ref, watch } from 'vue'
+import { surfaceError } from '../../i18n/errorSurface'
 import { useI18n } from 'vue-i18n'
 import { ElRadioButton, ElRadioGroup } from 'element-plus'
 import ModelTrendChart from '../analytics/ModelTrendChart.vue'
@@ -80,7 +81,7 @@ async function loadSeries(throttle = false) {
     series.value = []
     seriesDegraded.value = false
     seriesMissingView.value = ''
-    seriesError.value = err instanceof Error ? err.message : String(err)
+    seriesError.value = surfaceError(err)
   } finally {
     if (token === loadToken) seriesLoading.value = false
   }

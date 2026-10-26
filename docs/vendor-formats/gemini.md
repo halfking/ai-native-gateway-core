@@ -65,13 +65,22 @@ POST /v1beta/models/{MODEL}:streamGenerateContent?alt=sse HTTP/1.1
 ```json
 {
   "systemInstruction": {
-    "role": "system",
     "parts": [{"text": "You are a helpful assistant."}]
   }
 }
 ```
 
-注意：Gemini 的 systemInstruction **必须**带 `role: "system"`。
+注意（2026-10-26 勘误）：**本节此前写的是「`systemInstruction` 必须带 `role: "system"`」—— 那是错的。**
+厂方 `GenerateContentRequest` 参考原文：
+
+> `systemInstruction` Optional: Content — Instructions for the model to steer it toward better
+> performance. … **The role field of systemInstruction is ignored and doesn't affect the
+> performance of the model.**
+
+⇒ 该字段被厂方**忽略**；而 `Content.role` 的取值域是 `user` / `model`（`"system"` 不在其中）。
+⇒ **实现侧（`internal/ir/serialize_gemini.go` 的 `buildGeminiSystemInstruction`）不写 `role` 是正确的**，
+  本次勘误只改文档，**不改代码** —— 否则等于把一段错的 MUST 固化成代码。
+（教训见 `LESSONS.md` §428：「一段文字里写着规则 A、代码实现的却是规则 B ⇒ 门会逼人撒谎」。）
 
 ## Tools 结构
 

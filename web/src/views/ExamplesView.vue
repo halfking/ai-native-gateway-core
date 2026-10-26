@@ -5,6 +5,7 @@ import { resolveRouting } from '../api'
 import ModelPicker from '../components/ModelPicker.vue'
 import ClientConfigGenerator from '../components/ClientConfigGenerator.vue'
 import { useGatewayApiKey } from '../composables/useGatewayApiKey'
+import { CaretBottom, CaretRight } from '@element-plus/icons-vue'
 
 const { t } = useI18n()
 
@@ -320,7 +321,7 @@ function toggleGuide(id: ClientGuideId) {
       <div v-for="g in clientGuides" :key="g.id" class="card guide-card">
         <button type="button" class="guide-header" @click="toggleGuide(g.id)">
           <span class="guide-title"><span class="guide-icon">{{ g.icon }}</span> {{ g.name }}</span>
-          <span class="guide-chevron">{{ openGuide === g.id ? '▼' : '▶' }}</span>
+          <span class="guide-chevron"><CaretBottom v-if="openGuide === g.id" /><CaretRight v-else /></span>
         </button>
         <div v-show="openGuide === g.id" class="guide-body">
           <ol class="guide-steps">
@@ -643,4 +644,9 @@ function toggleGuide(id: ClientGuideId) {
   background: color-mix(in srgb, var(--accent) 8%, transparent);
   border-radius: 6px;
 }
+
+/* ── 2026-10-27 第 17 增量（AI 痕迹门 V3 · 插值形态）：图标尺寸 ──
+   element-plus 图标是裸 <svg viewBox="0 0 1024 1024">，**不带 width/height**
+   ⇒ 浏览器按包含块宽度渲染（会撑爆布局）⇒ 必须显式定尺寸。 */
+.guide-chevron > svg { width: 10px; height: 10px; }
 </style>

@@ -529,7 +529,27 @@ const isSelftest = process.argv.includes('--selftest')
 const isJson = process.argv.includes('--json')
 const isList = process.argv.includes('--list')
 
-if (isSelftest) {
+// ★ main-guard（2026-10-27 第 16 增量 · 错误出口轮）
+//
+//   本文件**导出**判据函数（FAIL_SIGNAL / RECOVER_WORD / splitClauses /
+//   isBareFailurePhrase / hasRecoveryAction / exemptionStillHolds / checkErrorClarity）
+//   ⇒ 第 16 增量的「错误出口门」要**复用同一把尺子**（同一口径只能有一份实现）。
+//   ★ 但本文件原先在 import 时就会跑 CLI 并 `process.exit()`
+//     ⇒ 被别的门 import 时，import 方会被一起带走（退出码非 0 ⇒ 看起来像「门红了」）。
+//   ⇒ 只在「本文件就是入口」时才跑 CLI。
+const isMain = (() => {
+  const entry = process.argv[1]
+  if (!entry) return false
+  try {
+    return pathToFileURL(resolve(entry)).href === import.meta.url
+  } catch {
+    return false
+  }
+})()
+
+if (!isMain) {
+  // 被 import：只提供判据，不跑 CLI（上面的分支体保持为空即可）。
+} else if (isSelftest) {
   await selftest()
 } else {
   const facts = await loadFacts()

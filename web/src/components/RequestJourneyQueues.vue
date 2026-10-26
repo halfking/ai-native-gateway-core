@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
+import { surfaceError } from '../i18n/errorSurface'
 import { useI18n } from 'vue-i18n'
 import { Close, RefreshRight } from '@element-plus/icons-vue'
 import { credentialDisplayName as credentialLabelById, useCredentialLabels } from '../composables/useCredentialLabels'
@@ -162,7 +163,7 @@ async function loadView(view: RequestJourneyQueueView, force = false) {
   try {
     payloads.value[view] = await getRequestJourneyQueues(view, view === 'total' && isSuperAdmin() ? 'all' : undefined)
   } catch (error) {
-    viewErrors.value[view] = error instanceof Error ? error.message : String(error)
+    viewErrors.value[view] = surfaceError(error)
   } finally {
     if (loadingView.value === view) loadingView.value = null
   }

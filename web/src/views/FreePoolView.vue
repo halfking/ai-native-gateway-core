@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { useI18n } from 'vue-i18n'
+import { surfaceError } from '../i18n/errorSurface'
 import { formatTimeOnly } from '../utils/datetime'
 import { ref, onMounted, onUnmounted, computed, nextTick } from 'vue'
 import {
@@ -35,6 +36,7 @@ import { useActionMessage } from '../composables/useActionMessage'
 import PageHeader from '../components/ui/PageHeader.vue'
 import StatsRow from '../components/ui/StatsRow.vue'
 import StatCard from '../components/ui/StatCard.vue'
+import { CaretBottom, CaretTop, Check, Key, Reading } from '@element-plus/icons-vue'
 
 const { t } = useI18n()
 // credentialDisplayName resolves credential id → human label; the composable
@@ -204,7 +206,7 @@ async function load() {
     signupHub.value = hub
     fetchedAt.value = Date.now()
   } catch (e: unknown) {
-    notifyError(e instanceof Error ? e.message : t('freePool.loadFailed'))
+    notifyError(surfaceError(e, { key: 'freePool.loadFailed' }))
   } finally {
     loading.value = false
   }
@@ -220,7 +222,7 @@ async function runBootstrap() {
     notifySuccess(t('freePool.error.bootstrapDone', { mirrors: mirror, discovered: discover }))
     await load()
   } catch (e: unknown) {
-    notifyError(e instanceof Error ? e.message : t('freePool.bootstrapFailed'))
+    notifyError(surfaceError(e, { key: 'freePool.bootstrapFailed' }))
   } finally {
     syncing.value = false
   }
@@ -234,7 +236,7 @@ async function runBridgeOAuth() {
     notifySuccess(t('freePool.error.oauthBridgeDone', { n: res.registered ?? 0 }))
     await load()
   } catch (e: unknown) {
-    notifyError(e instanceof Error ? e.message : t('freePool.oauthBridgeFailed'))
+    notifyError(surfaceError(e, { key: 'freePool.oauthBridgeFailed' }))
   } finally {
     syncing.value = false
   }
@@ -248,7 +250,7 @@ async function runDiscover() {
     notifySuccess(t('freePool.error.discoverDone', { n: res.registered ?? 0 }))
     await load()
   } catch (e: unknown) {
-    notifyError(e instanceof Error ? e.message : t('freePool.discoverFailed'))
+    notifyError(surfaceError(e, { key: 'freePool.discoverFailed' }))
   } finally {
     syncing.value = false
   }
@@ -262,7 +264,7 @@ async function runImportEnv() {
     notifySuccess(t('freePool.error.importEnvDone', { n: res.registered ?? 0 }))
     await load()
   } catch (e: unknown) {
-    notifyError(e instanceof Error ? e.message : t('freePool.importEnvFailed'))
+    notifyError(surfaceError(e, { key: 'freePool.importEnvFailed' }))
   } finally {
     syncing.value = false
   }
@@ -317,7 +319,7 @@ async function runQuickProbe() {
       notifyError(t('freePool.error.probeFailed', { reason: res.probe?.reason || res.probe?.error || t('freePool.probeFailedReason') }))
     }
   } catch (e: unknown) {
-    notifyError(e instanceof Error ? e.message : t('freePool.error.probeFailedGeneric'))
+    notifyError(surfaceError(e, { key: 'freePool.error.probeFailedGeneric' }))
   } finally {
     quickProbing.value = false
   }
@@ -355,7 +357,7 @@ async function runQuickSave(probeFirst = true) {
       notifyError(res.error || `${t('freePool.error.saveFailed')} (${res.status})`)
     }
   } catch (e: unknown) {
-    notifyError(e instanceof Error ? e.message : t('freePool.saveFailed'))
+    notifyError(surfaceError(e, { key: 'freePool.saveFailed' }))
   } finally {
     quickSaving.value = false
   }
@@ -379,7 +381,7 @@ async function generateTempEmail() {
     tempInbox.value = []
     notifySuccess(t('freePool.error.tempEmailCreated', { address: res.address }))
   } catch (e: unknown) {
-    notifyError(e instanceof Error ? e.message : t('freePool.tempEmailFailed'))
+    notifyError(surfaceError(e, { key: 'freePool.tempEmailFailed' }))
   } finally {
     tempEmailLoading.value = false
   }
@@ -402,7 +404,7 @@ async function pollTempInbox() {
       notifyError(res.error || t('freePool.fetchInboxFailed'))
     }
   } catch (e: unknown) {
-    notifyError(e instanceof Error ? e.message : t('freePool.fetchInboxFailed'))
+    notifyError(surfaceError(e, { key: 'freePool.fetchInboxFailed' }))
   } finally {
     tempPolling.value = false
   }
@@ -446,7 +448,7 @@ async function submitKey() {
     newKey.value = { catalog_code: 'openrouter-free', api_key: '', source: 'signup', source_detail: '', label: '' }
     await load()
   } catch (e: unknown) {
-    notifyError(e instanceof Error ? e.message : t('freePool.writeFailed'))
+    notifyError(surfaceError(e, { key: 'freePool.writeFailed' }))
   } finally {
     keySubmitting.value = false
   }
@@ -485,7 +487,7 @@ async function submitNew() {
     }
     await load()
   } catch (e: unknown) {
-    notifyError(e instanceof Error ? e.message : t('freePool.registerFailed'))
+    notifyError(surfaceError(e, { key: 'freePool.registerFailed' }))
   } finally {
     submitting.value = false
   }
@@ -533,7 +535,7 @@ async function submitBulk() {
     }
     await load()
   } catch (e: unknown) {
-    notifyError(e instanceof Error ? e.message : t('freePool.registerFailed'))
+    notifyError(surfaceError(e, { key: 'freePool.registerFailed' }))
   } finally {
     bulkSubmitting.value = false
   }
@@ -830,7 +832,7 @@ onUnmounted(() => {
             style="font-size:12px"
             :title="tpl.pool_registered ? t('freePool.templateInPool') : (tpl.env_configured ? t('freePool.templateEnvConfigured') : (tpl.needs_key ? t('freePool.templateNeedsKey') : t('freePool.templateNoKey')))"
           >
-            {{ tpl.display_name }}{{ tpl.pool_registered ? ' ✓' : (tpl.env_configured ? ' 🔑' : '') }}
+            {{ tpl.display_name }}<Check v-if="tpl.pool_registered" /><Key v-else-if="tpl.env_configured" />
           </button>
         </div>
       </div>
@@ -944,7 +946,7 @@ onUnmounted(() => {
             @click="showAdvancedOptions = !showAdvancedOptions"
           >
             {{ showAdvancedOptions ? t('freePool.assistant.hideAdvanced') : t('freePool.assistant.showAdvanced') }}
-            <span class="chevron" aria-hidden="true">{{ showAdvancedOptions ? '▲' : '▼' }}</span>
+            <span class="chevron" aria-hidden="true"><CaretTop v-if="showAdvancedOptions" /><CaretBottom v-else /></span>
           </button>
 
           <!-- Advanced options (collapsible) -->
@@ -1141,13 +1143,13 @@ onUnmounted(() => {
             @click="showGuidePanel = !showGuidePanel"
           >
             <div class="toggle-left">
-              <span class="guide-icon" aria-hidden="true">📖</span>
+              <span class="guide-icon" aria-hidden="true"><Reading /></span>
               <div>
                 <strong>{{ t('freePool.assistant.guidePanelTitle') }}</strong>
                 <div class="cell-muted">{{ t('freePool.assistant.guidePanelDesc') }}</div>
               </div>
             </div>
-            <span class="chevron" aria-hidden="true">{{ showGuidePanel ? '▲' : '▼' }}</span>
+            <span class="chevron" aria-hidden="true"><CaretTop v-if="showGuidePanel" /><CaretBottom v-else /></span>
           </button>
 
           <div
@@ -1913,4 +1915,16 @@ onUnmounted(() => {
   white-space: nowrap;
   cursor: help;
 }
+
+/* ── 2026-10-27 第 17 增量（AI 痕迹门 V3）：图标尺寸 ──
+   element-plus 图标是裸 <svg viewBox="0 0 1024 1024">，**不带 width/height**
+   ⇒ 浏览器按包含块宽度渲染（会撑爆布局）⇒ 必须显式定尺寸。
+   尺寸沿用原字形的 font-size 观感（字形墨迹 ≈ 0.7em）。 */
+.guide-icon > svg { width: 20px; height: 20px; }
+
+/* ── 2026-10-27 第 17 增量（AI 痕迹门 V3 · 插值形态）：图标尺寸 ──
+   element-plus 图标是裸 <svg viewBox="0 0 1024 1024">，**不带 width/height**
+   ⇒ 浏览器按包含块宽度渲染（会撑爆布局）⇒ 必须显式定尺寸。 */
+.btn.btn-ghost.btn-sm > svg { width: 11px; height: 11px; }
+.chevron > svg { width: 10px; height: 10px; }
 </style>

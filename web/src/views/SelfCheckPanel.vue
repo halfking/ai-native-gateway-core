@@ -29,7 +29,7 @@ import EmptyState from '../components/EmptyState.vue'
 import {
   displaySyntheticCredentialModel,
 } from '../composables/useCredentialLabels'
-import { CaretBottom, CaretRight, Setting, Refresh, CircleCheck, CircleClose } from '@element-plus/icons-vue'
+import { CaretBottom, CaretRight, CircleCheck, CircleClose, Close, Refresh, Setting } from '@element-plus/icons-vue'
 
 const loading = ref(false)
 const error = ref<string | null>(null)
@@ -436,7 +436,7 @@ const probeSummaryCards = computed(() => {
     <!-- 错误提示 -->
     <div v-if="error" class="alert alert-danger">
       ⚠️ {{ error }}
-      <button class="btn-close" @click="error = null">×</button>
+      <button class="btn-close" @click="error = null"><Close /></button>
     </div>
 
     <!-- 摘要卡片 -->
@@ -1118,4 +1118,10 @@ const probeSummaryCards = computed(() => {
   font-size: 12px;
   color: var(--el-text-color-secondary);
 }
+
+/* ── 2026-10-27 第 17 增量（AI 痕迹门 V3）：图标尺寸 ──
+   element-plus 图标是裸 <svg viewBox="0 0 1024 1024">，**不带 width/height**
+   ⇒ 浏览器按包含块宽度渲染（会撑爆布局）⇒ 必须显式定尺寸。
+   尺寸沿用原字形的 font-size 观感（字形墨迹 ≈ 0.7em）。 */
+.btn-close > svg { width: 11px; height: 11px; }
 </style>

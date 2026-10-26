@@ -9,6 +9,7 @@
 //   - "tree": the original request/child-request tree (metadata only) that
 //     syncs a turn to its request_id.
 import { computed, ref, watch } from 'vue'
+import { surfaceError } from '../../i18n/errorSurface'
 import { useI18n } from 'vue-i18n'
 import {
   fetchSessionTurnsTree,
@@ -128,7 +129,7 @@ watch(
       treeSelectedTurn.value = match?.turn_number ?? r.turns[0]?.turn_number ?? null
     } catch (e: unknown) {
       if (seq !== sessionLoadSeq) return
-      error.value = e instanceof Error ? e.message : String(e)
+      error.value = surfaceError(e)
     } finally {
       if (seq === sessionLoadSeq) loading.value = false
     }
@@ -139,7 +140,7 @@ watch(
       v2Bodies.value = bodies
     } catch (e: unknown) {
       if (seq !== sessionLoadSeq) return
-      v2Error.value = e instanceof Error ? e.message : String(e)
+      v2Error.value = surfaceError(e)
       v2Bodies.value = null
     }
   },
@@ -577,12 +578,20 @@ function onDividerKeydown(e: KeyboardEvent) {
   border: 1px solid var(--border); background: var(--bg-card, transparent);
   border-radius: 6px; padding: 0; margin-bottom: 6px; color: inherit;
 }
-.turn-card.active { border-color: var(--accent, var(--kx-primary)); box-shadow: inset 3px 0 0 var(--accent, var(--kx-primary)); }
+/* ★ 选中态用「语义软填充底」表达，不用彩色侧边条
+   （craft-floor：ban-side-stripe-borders；DESIGN.md §6 替代方案优先级：状态点 > 软填充底 > 徽标）。
+   描边同时变色 ⇒ 颜色与面两个维度都在说「选中」，侧边条是第三份冗余信号。 */
+.turn-card.active {
+  border-color: var(--accent, var(--kx-primary));
+  background: color-mix(in srgb, var(--accent, var(--kx-primary)) 8%, var(--bg-card, transparent));
+}
 .turn-card-select {
   display: block; width: 100%; text-align: left; border: 0;
   background: transparent; padding: 8px; cursor: pointer; color: inherit;
 }
-.turn-card-select.active { box-shadow: inset 3px 0 0 var(--accent, var(--kx-primary)); }
+.turn-card-select.active {
+  background: color-mix(in srgb, var(--accent, var(--kx-primary)) 10%, transparent);
+}
 .turn-card-head { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
 .turn-card .tn { font-weight: 600; }
 .turn-card .badge {
@@ -610,7 +619,10 @@ function onDividerKeydown(e: KeyboardEvent) {
   border: 1px solid var(--border); background: var(--bg-card, transparent);
   border-radius: 6px; padding: 8px; margin-bottom: 6px; cursor: pointer; color: inherit;
 }
-.turn-row.active { border-color: var(--accent); box-shadow: inset 3px 0 0 var(--accent); }
+.turn-row.active {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 8%, var(--bg-card, transparent));
+}
 .turn--ok { border: 1px solid var(--kx-success); }
 .turn--err { border: 1px solid var(--kx-error); background: color-mix(in srgb, var(--kx-error) 5%, transparent); }
 .turn--warn { border: 1px solid var(--kx-warning); }

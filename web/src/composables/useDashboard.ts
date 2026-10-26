@@ -8,6 +8,7 @@
 //   - 加载状态管理
 
 import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { surfaceError } from '../i18n/errorSurface'
 import { useI18n } from 'vue-i18n'
 import {
   fetchSessionOverview,
@@ -193,7 +194,7 @@ export function useDashboard(options: UseDashboardOptions = {}) {
       overview.value = result.data
       lastUpdated.value = new Date()
     } catch (e: unknown) {
-      error.value = e instanceof Error ? e.message : t('dashboard.loadError')
+      error.value = surfaceError(e, { key: 'dashboard.loadError' })
     } finally {
       loading.value = false
     }
