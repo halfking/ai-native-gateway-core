@@ -177,7 +177,29 @@ func SerializeOllama(req *InternalRequest) ([]byte, error) {
 	// (or an Anthropic thinking config) would vanish silently here.
 	reportOllamaReasoningLoss(req)
 
+	// Same contract for Anthropic cache_control markers (2026-10-27 缓存标准
+	// 对齐轮): Ollama has no request-side prompt-caching knob, so request- and
+	// block-level markers were dropped with no trace — the other four
+	// serializers all report this field.
+	reportOllamaCacheControlLoss(req)
+
 	return json.Marshal(body)
+}
+
+// reportOllamaCacheControlLoss emits one protocol-loss event when the request
+// carries Anthropic cache_control markers (request-level or block-level) that
+// SerializeOllama cannot express. Counts only, no content, nothing
+// credential-shaped.
+func reportOllamaCacheControlLoss(req *InternalRequest) {
+	if req == nil {
+		return
+	}
+	if len(req.CacheControl) > 0 || hasBlockLevelCacheControl(req) {
+		ReportProtocolLoss("", "cache_control", req.SourceProtocol, ProtocolOllamaChat,
+			"ollama_cache_control_drop",
+			"Anthropic cache_control has no Ollama request-side equivalent and was dropped",
+			nil)
+	}
 }
 
 // reportOllamaReasoningLoss emits one protocol-loss event per reasoning field

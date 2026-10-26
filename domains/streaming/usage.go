@@ -40,11 +40,22 @@ var (
 		{"cache_read_input_tokens"},
 		{"cache_read_tokens"},
 		{"prompt_tokens_details", "cached_tokens"},
+		// 2026-10-27 缓存标准对齐轮：Responses usage 的真实键是复数
+		// input_tokens_details（对照原厂文档 2026-10-27；本仓
+		// native_responses_capture.go 自 2026-09-09 就按复数读）。下方单数
+		// 条目是历史兜底，实测无厂商在用，first-match 语义下保留无害。
+		{"input_tokens_details", "cached_tokens"},
 		{"input_token_details", "cache_read"},
+		// DeepSeek 官方 usage 顶层字段（api-docs.deepseek.com/guides/kv_cache）。
+		// 新版 DeepSeek 同时发 prompt_tokens_details.cached_tokens 且两者恒等
+		// ⇒ 先命中的那个读数相同；老部署只发顶层字段。
+		{"prompt_cache_hit_tokens"},
 	}
 	usageCacheWritePaths = []usagePath{
 		{"cache_creation_input_tokens"},
 		{"cache_write_tokens"},
+		// OpenAI Responses usage 的缓存写入槽（input_tokens_details 下）。
+		{"input_tokens_details", "cache_write_tokens"},
 		{"input_token_details", "cache_creation"},
 	}
 )

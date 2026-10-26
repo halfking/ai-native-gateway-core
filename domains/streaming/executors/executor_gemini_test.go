@@ -2,7 +2,9 @@ package executors
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -10,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit" //nolint:depguard // matches executor.go
 	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"github.com/kaixuan/llm-gateway-go/internal/ir"
 	"github.com/kaixuan/llm-gateway-go/provider"
@@ -257,15 +260,13 @@ func TestFinalizeGeminiUpstreamBody_GatesFailClosed(t *testing.T) {
 			wantKind: errorsx.KindClientBug,
 		},
 		{
-			name:     "anthropic client wire not wired",
-			params:   &ExecParams{ClientProtocol: "anthropic-messages"},
+			// ★ anthropic-messages / openai-responses were "not wired"
+			// until this round; they are covered by their own positive
+			// tests now. This row pins that an UNKNOWN inbound protocol
+			// still fails closed (the gate is not a rubber stamp).
+			name:     "unknown client wire fails closed",
+			params:   &ExecParams{ClientProtocol: "some-future-protocol"},
 			body:     `{"model":"m","messages":[{"role":"user","content":"x"}]}`,
-			wantKind: errorsx.KindUnsupportedFeature,
-		},
-		{
-			name:     "responses client wire not wired",
-			params:   &ExecParams{ClientProtocol: "openai-responses"},
-			body:     `{"model":"m","input":"x"}`,
 			wantKind: errorsx.KindUnsupportedFeature,
 		},
 	}
@@ -848,5 +849,350 @@ func TestGeminiExecutor_GeminiClientRoundTrip(t *testing.T) {
 	}
 	if !strings.Contains(out, `"finishReason"`) {
 		t.Errorf("the Gemini shape lost the native finishReason:\n%s", out)
+	}
+}
+
+// ────────────────────────────────────────────────────────────────────────
+// Client wires: anthropic-messages / openai-responses
+// ────────────────────────────────────────────────────────────────────────
+
+// TestFinalizeGeminiUpstreamBody_AnthropicClientWire pins that an
+// Anthropic Messages request is converted into the Gemini native wire.
+//
+// ★ This closes a real gap: before this round an Anthropic client could
+// NOT use a Gemini-native provider at all (the executor failed closed
+// with KindUnsupportedFeature on the request side).
+func TestFinalizeGeminiUpstreamBody_AnthropicClientWire(t *testing.T) {
+	e := newGeminiTestExecutor()
+	params := &ExecParams{
+		ClientProtocol: "anthropic-messages",
+		ClientModel:    "client-model",
+		OutboundModel:  "gemini-2.5-flash",
+	}
+	cand := newGeminiCandidate("https://generativelanguage.googleapis.com")
+	wire := []byte(`{
+		"model":"client-model",
+		"max_tokens":256,
+		"system":"be terse",
+		"messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]
+	}`)
+
+	out, err := e.finalizeGeminiUpstreamBody(params, cand, wire)
+	if err != nil {
+		t.Fatalf("finalizeGeminiUpstreamBody: %v", err)
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal(out, &parsed); err != nil {
+		t.Fatalf("gemini body is not JSON: %v\n%s", err, out)
+	}
+	if _, ok := parsed["contents"]; !ok {
+		t.Errorf("gemini body missing contents:\n%s", out)
+	}
+	if _, ok := parsed["systemInstruction"]; !ok {
+		t.Errorf("anthropic system prompt did not reach the Gemini wire:\n%s", out)
+	}
+	if _, ok := parsed["messages"]; ok {
+		t.Errorf("gemini body still carries an OpenAI messages array:\n%s", out)
+	}
+}
+
+// TestFinalizeGeminiUpstreamBody_ResponsesClientWire pins that an
+// OpenAI Responses request is converted into the Gemini native wire.
+func TestFinalizeGeminiUpstreamBody_ResponsesClientWire(t *testing.T) {
+	e := newGeminiTestExecutor()
+	params := &ExecParams{
+		ClientProtocol: "openai-responses",
+		ClientModel:    "client-model",
+		OutboundModel:  "gemini-2.5-flash",
+	}
+	cand := newGeminiCandidate("https://generativelanguage.googleapis.com")
+	wire := []byte(`{
+		"model":"client-model",
+		"instructions":"be terse",
+		"input":[{"role":"user","content":[{"type":"input_text","text":"hello"}]}]
+	}`)
+
+	out, err := e.finalizeGeminiUpstreamBody(params, cand, wire)
+	if err != nil {
+		t.Fatalf("finalizeGeminiUpstreamBody: %v", err)
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal(out, &parsed); err != nil {
+		t.Fatalf("gemini body is not JSON: %v\n%s", err, out)
+	}
+	if _, ok := parsed["contents"]; !ok {
+		t.Errorf("gemini body missing contents:\n%s", out)
+	}
+	if _, ok := parsed["input"]; ok {
+		t.Errorf("gemini body still carries a Responses input array:\n%s", out)
+	}
+}
+
+// TestGeminiExecutor_WriteNonStreamResponse_AnthropicShape pins that a
+// Gemini native response reaches an Anthropic client in Anthropic
+// Messages shape (not an OpenAI-shaped body with an Anthropic label).
+func TestGeminiExecutor_WriteNonStreamResponse_AnthropicShape(t *testing.T) {
+	ge := &GeminiExecutor{ClientProtocol: "anthropic-messages"}
+	resp := &http.Response{
+		StatusCode: 200,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body: io.NopCloser(strings.NewReader(`{
+			"candidates":[{"content":{"role":"model","parts":[{"text":"pong"}]},"finishReason":"STOP","index":0}],
+			"usageMetadata":{"promptTokenCount":3,"candidatesTokenCount":5,"totalTokenCount":8},
+			"modelVersion":"gemini-2.5-flash"
+		}`)),
+	}
+	rec := httptest.NewRecorder()
+
+	if _, err := ge.WriteNonStreamResponse(rec, resp, "client-model", "", nil); err != nil {
+		t.Fatalf("WriteNonStreamResponse: %v", err)
+	}
+	out := rec.Body.String()
+	if !strings.Contains(out, `"pong"`) {
+		t.Errorf("client body missing the answer:\n%s", out)
+	}
+	if !strings.Contains(out, `"type":"message"`) {
+		t.Errorf("client body is not an Anthropic message:\n%s", out)
+	}
+	if !strings.Contains(out, `"role":"assistant"`) {
+		t.Errorf("client body missing the assistant role:\n%s", out)
+	}
+	if !strings.Contains(out, `"stop_reason"`) {
+		t.Errorf("client body missing stop_reason:\n%s", out)
+	}
+}
+
+// TestGeminiExecutor_WriteNonStreamResponse_ResponsesShape pins that a
+// Gemini native response reaches a Responses client in Responses shape.
+func TestGeminiExecutor_WriteNonStreamResponse_ResponsesShape(t *testing.T) {
+	ge := &GeminiExecutor{ClientProtocol: "openai-responses"}
+	resp := &http.Response{
+		StatusCode: 200,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body: io.NopCloser(strings.NewReader(`{
+			"candidates":[{"content":{"role":"model","parts":[{"text":"pong"}]},"finishReason":"STOP","index":0}],
+			"usageMetadata":{"promptTokenCount":3,"candidatesTokenCount":5,"totalTokenCount":8},
+			"modelVersion":"gemini-2.5-flash"
+		}`)),
+	}
+	rec := httptest.NewRecorder()
+
+	if _, err := ge.WriteNonStreamResponse(rec, resp, "client-model", "", nil); err != nil {
+		t.Fatalf("WriteNonStreamResponse: %v", err)
+	}
+	out := rec.Body.String()
+	if !strings.Contains(out, `"pong"`) {
+		t.Errorf("client body missing the answer:\n%s", out)
+	}
+	if !strings.Contains(out, `"object":"response"`) {
+		t.Errorf("client body is not a Responses object:\n%s", out)
+	}
+}
+
+// TestGeminiExecutor_StreamResponse_AnthropicBridgeReceivesOpenAISSE
+// pins the plumbing of the Anthropic client wire.
+//
+// ★ The executor does NOT hand-roll Anthropic framing: it produces
+// OpenAI-shaped frames and feeds them into the repo's shipped
+// OpenAI→Anthropic bridge through a pipe. This test pins that contract
+// (the bridge receives OpenAI-shaped SSE) — the bridge's own Anthropic
+// output is covered by domains/streaming/anthropic_bridge_test.go.
+func TestGeminiExecutor_StreamResponse_AnthropicBridgeReceivesOpenAISSE(t *testing.T) {
+	var bridgeSaw string
+	ge := &GeminiExecutor{
+		ClientProtocol: "anthropic-messages",
+		OpenAIToAnthropicStream: func(_ context.Context, w http.ResponseWriter, resp *http.Response, _, _, _ string, _ *audit.StreamCapture, _ any, _ int, _ bool) StreamOutcome {
+			body, _ := io.ReadAll(resp.Body)
+			bridgeSaw = string(body)
+			_, _ = w.Write([]byte("event: message_stop\ndata: {}\n\n"))
+			return StreamOutcome{ChunkCount: 7}
+		},
+	}
+	upstream := `data: {"candidates":[{"content":{"role":"model","parts":[{"text":"hi"}]},"finishReason":"STOP","index":0}]}` + "\n"
+	resp := &http.Response{StatusCode: 200, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(upstream))}
+	rec := httptest.NewRecorder()
+
+	outcome := ge.StreamResponse(t.Context(), rec, resp)
+	if outcome.Interrupted {
+		t.Fatalf("stream interrupted: %s (%s)", outcome.Reason, outcome.Kind)
+	}
+	if !strings.Contains(bridgeSaw, `"content":"hi"`) {
+		t.Errorf("the bridge did not receive OpenAI-shaped frames:\n%s", bridgeSaw)
+	}
+	if !strings.Contains(bridgeSaw, "data: [DONE]") {
+		t.Errorf("the bridge did not receive the OpenAI [DONE] sentinel:\n%s", bridgeSaw)
+	}
+	if outcome.ChunkCount != 7 {
+		t.Errorf("chunk count = %d, want the bridge's own count (7)", outcome.ChunkCount)
+	}
+	if !strings.Contains(rec.Body.String(), "message_stop") {
+		t.Errorf("the client's bytes did not come from the bridge:\n%s", rec.Body.String())
+	}
+}
+
+// TestGeminiExecutor_StreamResponse_ResponsesBridgeReceivesOpenAISSE
+// pins the same plumbing for the Responses client wire.
+func TestGeminiExecutor_StreamResponse_ResponsesBridgeReceivesOpenAISSE(t *testing.T) {
+	var bridgeSaw string
+	ge := &GeminiExecutor{
+		ClientProtocol: "openai-responses",
+		OpenAIToResponsesStream: func(_ context.Context, w http.ResponseWriter, resp *http.Response, _, _, _ string, _ *audit.StreamCapture, _ any, _ bool) StreamOutcome {
+			body, _ := io.ReadAll(resp.Body)
+			bridgeSaw = string(body)
+			_, _ = w.Write([]byte("event: response.completed\ndata: {}\n\n"))
+			return StreamOutcome{ChunkCount: 5}
+		},
+	}
+	upstream := `data: {"candidates":[{"content":{"role":"model","parts":[{"text":"hi"}]},"finishReason":"STOP","index":0}]}` + "\n"
+	resp := &http.Response{StatusCode: 200, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(upstream))}
+	rec := httptest.NewRecorder()
+
+	outcome := ge.StreamResponse(t.Context(), rec, resp)
+	if outcome.Interrupted {
+		t.Fatalf("stream interrupted: %s (%s)", outcome.Reason, outcome.Kind)
+	}
+	if !strings.Contains(bridgeSaw, `"content":"hi"`) {
+		t.Errorf("the bridge did not receive OpenAI-shaped frames:\n%s", bridgeSaw)
+	}
+	if outcome.ChunkCount != 5 {
+		t.Errorf("chunk count = %d, want the bridge's own count (5)", outcome.ChunkCount)
+	}
+}
+
+// TestGeminiExecutor_StreamResponse_BridgeNotWiredFailsClosed pins that
+// a missing bridge fails closed instead of writing OpenAI frames to an
+// Anthropic/Responses client (which would be a wrong-shaped 200).
+func TestGeminiExecutor_StreamResponse_BridgeNotWiredFailsClosed(t *testing.T) {
+	for _, proto := range []string{"anthropic-messages", "openai-responses"} {
+		t.Run(proto, func(t *testing.T) {
+			ge := &GeminiExecutor{ClientProtocol: proto}
+			resp := &http.Response{StatusCode: 200, Header: http.Header{}, Body: io.NopCloser(strings.NewReader("data: {}\n"))}
+			rec := httptest.NewRecorder()
+			outcome := ge.StreamResponse(t.Context(), rec, resp)
+			if !outcome.Interrupted {
+				t.Fatal("expected the stream to fail closed")
+			}
+			if outcome.Kind != errorsx.KindUnsupportedFeature {
+				t.Errorf("kind = %q, want %q", outcome.Kind, errorsx.KindUnsupportedFeature)
+			}
+			if rec.Body.Len() != 0 {
+				t.Errorf("a wrong-shaped body was written to the client: %s", rec.Body.String())
+			}
+		})
+	}
+}
+
+// ────────────────────────────────────────────────────────────────────────
+// Header profile linkage
+// ────────────────────────────────────────────────────────────────────────
+
+// TestExecutor_ExecuteGemini_HeaderProfileApplied pins the
+// header_profile_code linkage (docs/供应商协议优化.md §8.3): the endpoint's
+// header profile is applied to the outbound request, so a Gemini-
+// compatible relay whose profile declares its own credential header gets
+// it.
+//
+// ★ Without this, the Gemini executor would send ONLY x-goog-api-key and
+// such a relay would reject the request.
+func TestExecutor_ExecuteGemini_HeaderProfileApplied(t *testing.T) {
+	var seenAuth, seenGoogKey string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seenAuth = r.Header.Get("Authorization")
+		seenGoogKey = r.Header.Get("x-goog-api-key")
+		w.Header().Set("Content-Type", "application/json")
+		//nolint:errcheck // test response writer
+		w.Write([]byte(`{"candidates":[{"content":{"role":"model","parts":[{"text":"ok"}]},"finishReason":"STOP","index":0}]}`))
+	}))
+	defer srv.Close()
+
+	cache := NewHeaderProfileCache(nil)
+	cache.cache["google-gemini:gemini-generate"] = &headerProfile{
+		Headers: map[string]string{"Authorization": "Bearer profile-token"},
+	}
+
+	wireBody := []byte(`{"model":"client-model","messages":[{"role":"user","content":"ping"}]}`)
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(wireBody))
+	rec := httptest.NewRecorder()
+	params := &ExecParams{
+		W: rec, R: req, BodyBytes: wireBody,
+		ClientModel: "client-model", OutboundModel: "gemini-2.5-flash",
+		ClientProtocol: "openai-completions", RequestID: "gemini-profile",
+	}
+	cand := newGeminiCandidate(srv.URL)
+
+	e := newGeminiTestExecutor()
+	e.HeaderProfiles = cache
+	if _, err := e.executeGemini(params, cand, 0, time.Now(), nil); err != nil {
+		t.Fatalf("executeGemini: %v", err)
+	}
+	if seenAuth != "Bearer profile-token" {
+		t.Errorf("outbound Authorization = %q, want the header profile's value", seenAuth)
+	}
+	if seenGoogKey != "AIza-test-key" {
+		t.Errorf("outbound x-goog-api-key = %q, want the credential", seenGoogKey)
+	}
+}
+
+// ────────────────────────────────────────────────────────────────────────
+// Context-length recovery
+// ────────────────────────────────────────────────────────────────────────
+
+// TestExecutor_ExecuteGemini_ContextLengthRecoveryRetriesOnceWithSmallerBody
+// pins that a Gemini upstream rejecting the request as too long triggers
+// exactly ONE compressed retry (the same recovery coordinator the OpenAI
+// and Ollama paths use).
+func TestExecutor_ExecuteGemini_ContextLengthRecoveryRetriesOnceWithSmallerBody(t *testing.T) {
+	var requests [][]byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		requests = append(requests, append([]byte(nil), body...))
+		if len(requests) == 1 {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			//nolint:errcheck // test response writer
+			w.Write([]byte(`{"error":{"code":400,"message":"This model's maximum context length is 2000 tokens. Your messages resulted in 7000 tokens.","status":"INVALID_ARGUMENT"}}`))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		//nolint:errcheck // test response writer
+		w.Write([]byte(`{"candidates":[{"content":{"role":"model","parts":[{"text":"recovered"}]},"finishReason":"STOP","index":0}]}`))
+	}))
+	defer srv.Close()
+
+	var messages strings.Builder
+	messages.WriteString(`{"model":"gemini-2.5-flash","messages":[`)
+	for i := 0; i < 30; i++ {
+		if i > 0 {
+			messages.WriteByte(',')
+		}
+		messages.WriteString(fmt.Sprintf(`{"role":"user","content":%q}`, strings.Repeat("important context ", 120)))
+	}
+	messages.WriteString(`]}`)
+	wireBody := []byte(messages.String())
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(wireBody))
+	rec := httptest.NewRecorder()
+	params := &ExecParams{
+		W: rec, R: req, BodyBytes: wireBody,
+		ClientModel: "gemini-2.5-flash", OutboundModel: "gemini-2.5-flash",
+		ClientProtocol: "openai-completions", RequestID: "gemini-recovery",
+	}
+	cand := newGeminiCandidate(srv.URL)
+
+	result, err := newGeminiTestExecutor().executeGemini(params, cand, 0, time.Now(), nil)
+	if err != nil || result == nil {
+		t.Fatalf("executeGemini recovery = result %v, err %v", result, err)
+	}
+	if len(requests) != 2 {
+		t.Fatalf("upstream requests = %d, want exactly one recovery retry", len(requests))
+	}
+	if len(requests[1]) >= len(requests[0]) {
+		t.Fatalf("recovery body did not shrink: first=%d second=%d", len(requests[0]), len(requests[1]))
+	}
+	if !strings.Contains(rec.Body.String(), "recovered") {
+		t.Fatalf("client response missing recovered content: %s", rec.Body.String())
+	}
+	if result.CompressionReason == nil || *result.CompressionReason == "" {
+		t.Fatalf("CompressionReason = %v, want recorded recovery reason", result.CompressionReason)
 	}
 }

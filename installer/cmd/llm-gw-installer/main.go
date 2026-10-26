@@ -1203,6 +1203,18 @@ var routingAnalyticsSourceLateral907 []byte
 
 //go:embed embeddata/startup/907_routing_analytics_source_lateral.down.sql
 var routingAnalyticsSourceLateral907Down []byte
+
+// ★ R166：routing_analytics_source 父表腿从 LATERAL 逐行回定位换成
+//   「普通 LEFT JOIN + partition_date 日界下推」⇒ details 侧执行期分区裁剪
+//   + Hash Join 可选，消掉 ~2.75 万次/刷新 的逐行探针
+//   （252 实测整计划 buffers 147K → 52K，-64%；探针单次成本随宿主负载漂 100x+）。
+//   ★ 零 DDL：只做 CREATE OR REPLACE VIEW（保留 OID ⇒ matview 依赖不动）。
+
+//go:embed embeddata/startup/910_routing_analytics_source_hashjoin.sql
+var routingAnalyticsSourceHashJoin910 []byte
+
+//go:embed embeddata/startup/910_routing_analytics_source_hashjoin.down.sql
+var routingAnalyticsSourceHashJoin910Down []byte
 // 908（2026-10-24，R147 存储效率续轮）：删除 route_incident_events 的
 // 零消费方索引 idx_route_incident_events_type_created (event_type,
 // created_at DESC)。★ 判决链：全仓 Go 代码无任何 event_type 谓词查询本表；
@@ -1585,6 +1597,8 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/906_turns_api_key_numeric_partial_index.down.sql":                turnsApiKeyNumericPartialIndex906Down,
 	"startup/907_routing_analytics_source_lateral.sql":                    routingAnalyticsSourceLateral907,
 	"startup/907_routing_analytics_source_lateral.down.sql":               routingAnalyticsSourceLateral907Down,
+	"startup/910_routing_analytics_source_hashjoin.sql":                   routingAnalyticsSourceHashJoin910,
+	"startup/910_routing_analytics_source_hashjoin.down.sql":              routingAnalyticsSourceHashJoin910Down,
 	"startup/908_route_incident_events_type_created_drop.sql":                        routeIncidentEventTypeCreatedDrop908,
 	"startup/908_route_incident_events_type_created_drop.down.sql":                   routeIncidentEventTypeCreatedDrop908Down,
 	"startup/909_session_summaries_search_trgm_indexes.sql":                        sessionSummariesSearchTrgmIndexes909,

@@ -172,7 +172,7 @@ function isLongHeld(d: SlotDetail | null): boolean {
 }
 .fp-cell:hover {
   transform: translateY(-2px);
-  box-shadow: 0 4px 12px var(--overlay-light);
+  box-shadow: var(--kx-shadow-sm);
   z-index: 5;
 }
 
@@ -260,7 +260,7 @@ function isLongHeld(d: SlotDetail | null): boolean {
   pointer-events: none;
   transition: opacity 0.15s;
   z-index: 100;
-  box-shadow: 0 4px 16px var(--overlay-strong);
+  box-shadow: var(--kx-shadow-sm);
   white-space: normal;
 }
 .fp-cell:hover .fp-tooltip {

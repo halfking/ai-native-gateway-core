@@ -838,7 +838,6 @@ function vendorOptionLabel(v: string) {
   max-height: 300px;
   overflow-y: auto;
   background: var(--card);
-  border: 1px solid var(--border);
   border-radius: 6px;
   box-shadow: var(--kx-shadow-sm);
   z-index: 100;
@@ -953,7 +952,6 @@ function vendorOptionLabel(v: string) {
   left: 0;
   min-width: 400px;
   background: var(--bg);
-  border: 1px solid var(--border);
   border-radius: 8px;
   box-shadow: var(--kx-shadow-md);
   z-index: 1000;
