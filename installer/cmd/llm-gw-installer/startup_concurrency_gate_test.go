@@ -3,6 +3,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -43,20 +44,29 @@ func TestRegisteredStartupMigrationsCanRunInSingleTransaction(t *testing.T) {
 
 	embedDir := filepath.Join("embeddata", "startup")
 	for _, name := range runner.StartupFiles {
-		if n, exempt := knownStartupChainConcurrencyViolations[name]; exempt {
-			t.Logf("registered startup migration %q uses CONCURRENTLY (%d statements) and cannot run "+
-				"under psql --single-transaction — tracked in knownStartupChainConcurrencyViolations (%d)",
-				name, countConcurrently(t, filepath.Join(embedDir, name)), n)
+		path := filepath.Join(embedDir, name)
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			// A StartupFiles entry with no embeddata copy is TestStartupFilesAreAllEmbedded's
+			// business, not this gate's. Skip rather than double-report.
+			t.Logf("skip %s: %v", path, err)
 			continue
 		}
-		if n := countConcurrently(t, filepath.Join(embedDir, name)); n > 0 {
-			t.Errorf("registered startup migration %q contains %d CONCURRENTLY statement(s) and can "+
-				"never apply under dbinit.Runner's `psql --single-transaction`; the install hard-fails "+
-				"at this file. Either de-register it (add it to psqlConcurrencyRequired with the same "+
-				"rationale as 727/728/729/744/749) or rewrite it without CONCURRENTLY, then add it to "+
-				"knownStartupChainConcurrencyViolations only if it must stay registered for another reason",
-				name, n)
+		_, tracked := knownStartupChainConcurrencyViolations[name]
+		ok, reason := startupConcurrencyVerdict(raw, tracked)
+		if ok {
+			// ★ 只给「有 CONCURRENTLY」的文件记理由 ⇒ 300+ 个普通文件不刷屏，
+			// ★ 但凡值得一看的（标记文件 / 已复核豁免）都留痕。
+			if countConcurrentlyIn(raw) > 0 {
+				t.Logf("registered startup migration %q: %s", name, reason)
+			}
+			continue
 		}
+		t.Errorf("registered startup migration %q %s; the install hard-fails at this file. "+
+			"Either de-register it (add it to psqlConcurrencyRequired with the same "+
+			"rationale as 727/728/729/744/749) or rewrite it without CONCURRENTLY, then add it to "+
+			"knownStartupChainConcurrencyViolations only if it must stay registered for another reason",
+			name, reason)
 	}
 }
 
@@ -186,17 +196,162 @@ var knownStartupChainConcurrencyViolations = map[string]int{
 	"908_route_incident_events_type_created_drop.sql": 1,
 }
 
-func countConcurrently(t *testing.T, path string) int {
-	t.Helper()
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		// A StartupFiles entry with no embeddata copy is TestStartupFilesAreAllEmbedded's
-		// business, not this gate's. Skip rather than double-report.
-		t.Logf("skip %s: %v", path, err)
-		return 0
-	}
+// countConcurrentlyIn counts CONCURRENTLY occurrences in the given file content.
+//
+// ★ 与标记判定**必须看同一份字节**：dbinit.Runner.applySQL 把同一份 content
+// 既喂给 requiresNoTransaction 又喂给 psql 的 stdin ⇒ 判据与执行通道逐字一致
+// （否则会出现「按 A 文件判、按 B 文件跑」的错位）。
+func countConcurrentlyIn(raw []byte) int {
 	body := stripSQLComments(string(raw))
 	return len(concurrentlyRe.FindAllString(body, -1))
+}
+
+// startupConcurrencyVerdict 判定「一个已注册的启动迁移，在 dbinit.Runner 下能不能应用」。
+//
+// ★★★ 这道判据必须与 runner.go 的 applySQL **逐字对齐**（本仓反复吃过「门自己的量具
+// 比被测对象更严 ⇒ 造假阳性」的亏：门红着而系统其实是好的 ⇒ 真缺陷被淹没）：
+//
+//	runner.go:applySQL ——
+//	    content, _ := readFile(sqlPath)
+//	    if !requiresNoTransaction(content) { args = append(args, "--single-transaction") }
+//	    cmd.Stdin = bytes.NewReader(content)
+//
+// ⇒ 三种情形：
+//
+//	① 正文里没有 CONCURRENTLY（剥注释后）        ⇒ 能应用（--single-transaction 无害）
+//	② 有 CONCURRENTLY **且带 dbinit:no-transaction 标记**
+//	   ⇒ applySQL 不加 --single-transaction ⇒ 走非事务通道 ⇒ CONCURRENTLY 合法 ⇒ 能应用
+//	③ 有 CONCURRENTLY、无标记、且在 knownStartupChainConcurrencyViolations 里
+//	   ⇒ 「已复核的债」⇒ 门记账放行（但必须继续登记在册）
+//	④ 有 CONCURRENTLY、无标记、且不在册 ⇒ **不能应用**（psql 在事务块里拒绝
+//	   CREATE INDEX CONCURRENTLY ⇒ 整装中止）⇒ 门必须判红。
+//
+// ★★ 2026-10-26 修：★ 909（会话搜索三列 GIN trigram 索引）在 fc6c17111 登记进
+// StartupFiles 时**带了 dbinit:no-transaction 标记**（⇒ 运行期走非事务通道，应用没问题），
+// ★ 但没被登记进 knownStartupChainConcurrencyViolations ⇒ ★ 本门把它判红
+// ⇒ ★★ 后果：★ `cd installer && go test ./...` 在 main 上**长期红着**
+// ⇒ ★★ 而 AGENTS.md「已落地的回归门」把 rc=0 写成硬要求 ⇒ 门长期红 ⇒ 门退化成摆设
+// ⇒ ★★ 真缺陷被淹没（这正是本仓登记过的教训）。
+// ⇒ ★★ 修法：**不是**「把 909 也登记进豁免表」（那是给一个好文件贴「有债」的标签），
+// ★★ 而是**让门问对问题**：★ 标记文件走非事务通道 ⇒ 本来就能应用 ⇒ 不该判红。
+// ⇒ ★★ 副作用（正向的）：★ 「新增 CONCURRENTLY 迁移时忘了登记豁免表」这一类
+// ★★ **人一定会忘**的失败模式从此消失 ⇒ 门不再依赖「作者记得登记」这件事。
+//
+// ★★ 牙齿不丢：★ 无标记的 CONCURRENTLY 文件仍然判红（见 ④）⇒ 门没有变成恒绿门；
+// ★★ 判据本身另有 TestStartupConcurrencyVerdictHasTeeth 带阳性对照 + 变异臂。
+func startupConcurrencyVerdict(raw []byte, tracked bool) (ok bool, reason string) {
+	n := countConcurrentlyIn(raw)
+	if n == 0 {
+		// ★ 每条判定都必须给出**可复核的理由**（读数者不看代码也要能复核这条结论）
+		// ⇒ 即便结论是「无特别之处」，也把理由写出来。
+		return true, "正文无 CONCURRENTLY ⇒ 单事务通道无碍"
+	}
+	if dbinit.RequiresNoTransaction(raw) {
+		return true, fmt.Sprintf("带 dbinit:no-transaction 标记 ⇒ applySQL 不加 --single-transaction ⇒ 走非事务通道，CONCURRENTLY 合法（正文 %d 处）", n)
+	}
+	if tracked {
+		return true, fmt.Sprintf("已复核豁免（knownStartupChainConcurrencyViolations 登记在册），正文 %d 处 CONCURRENTLY", n)
+	}
+	return false, fmt.Sprintf("正文 %d 处 CONCURRENTLY 且**无** dbinit:no-transaction 标记 ⇒ psql --single-transaction 下必然中止整装", n)
+}
+
+// TestStartupConcurrencyVerdictHasTeeth gives the verdict function its own teeth.
+//
+// ★★ Why this exists: the gate above was RED on main for 909 (a false positive —
+// ★★ 909 carries the marker and therefore applies fine). ★★ The obvious "fix" for a
+// ★★ false positive is to widen the exemption until the gate is green — ★★ which is
+// ★★ exactly how a gate becomes a decoration. ★★ So the verdict's own behaviour is
+// ★★ pinned here, in both directions, plus a mutation arm on the real artifact.
+//
+// ★★ 变异臂（★ 最关键的一条）：★ take the REAL 909 file, strip its
+// ★★ `dbinit:no-transaction` marker line, and assert the verdict FLIPS to red.
+// ★★ ⇒ proves the marker branch is doing the work (not a constant), and that the
+// ★★ gate would still catch a genuinely unmarked CONCURRENTLY migration.
+func TestStartupConcurrencyVerdictHasTeeth(t *testing.T) {
+	t.Helper()
+
+	const marked = "-- dbinit:no-transaction\nCREATE INDEX CONCURRENTLY i ON t (a);\n"
+	const unmarked = "CREATE INDEX CONCURRENTLY i ON t (a);\n"
+	const noConcurrently = "CREATE INDEX i ON t (a);\n"
+
+	cases := []struct {
+		name    string
+		content string
+		tracked bool
+		wantOK  bool
+	}{
+		{"正文无 CONCURRENTLY ⇒ 放行", noConcurrently, false, true},
+		{"有 CONCURRENTLY + 带标记 ⇒ 放行（非事务通道）", marked, false, true},
+		{"有 CONCURRENTLY + 无标记 + 未登记 ⇒ 判红", unmarked, false, false},
+		{"有 CONCURRENTLY + 无标记 + 已复核登记 ⇒ 放行", unmarked, true, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ok, reason := startupConcurrencyVerdict([]byte(tc.content), tc.tracked)
+			if ok != tc.wantOK {
+				t.Fatalf("判定 = %v，期望 %v（reason=%q）", ok, tc.wantOK, reason)
+			}
+			// ★ 断言恒真比恒假更隐蔽：正例必须**给出理由**，反例必须**给出理由**。
+			if tc.wantOK && reason == "" {
+				t.Errorf("放行却没有给出理由 ⇒ 读数者无法复核这条结论")
+			}
+			if !tc.wantOK && reason == "" {
+				t.Errorf("判红却没有给出理由 ⇒ 读数者无法复核这条结论")
+			}
+		})
+	}
+
+	embedDir := filepath.Join("embeddata", "startup")
+
+	// ★★ 真实工件：909（带标记）必须放行 —— 把判据钉在真值上，而不是钉在合成样本上。
+	raw909, err := os.ReadFile(filepath.Join(embedDir, "909_session_summaries_search_trgm_indexes.sql"))
+	if err != nil {
+		t.Fatalf("读不到 909 的 embeddata 副本：%v", err)
+	}
+	if ok, reason := startupConcurrencyVerdict(raw909, false); !ok {
+		t.Errorf("909 带 dbinit:no-transaction 标记 ⇒ 应放行，却判红：%s", reason)
+	}
+
+	// ★★ 变异臂：抹掉 909 的标记行 ⇒ 判定必须翻红。
+	// ★★ 若这条不成立，说明「标记分支」是恒真的（判据与真值脱钩）⇒ 门是摆设。
+	stripped := stripNoTransactionMarker(raw909)
+	if dbinit.RequiresNoTransaction(stripped) {
+		t.Fatalf("变异臂自检失败：抹掉标记后 dbinit.RequiresNoTransaction 仍为 true ⇒ 抹除逻辑本身坏了")
+	}
+	if ok, reason := startupConcurrencyVerdict(stripped, false); ok {
+		t.Errorf("★ 变异臂未被检出：909 去掉标记后仍被判放行 ⇒ 标记分支是恒真的 ⇒ %s", reason)
+	}
+
+	// ★★ 真实工件：837（无标记）—— 未登记时必须判红；它之所以在 main 上是绿的，
+	// ★★ 唯一的依据就是 knownStartupChainConcurrencyViolations 里有它 ⇒
+	// ★★ 这条断言钉住「登记豁免表确实是唯一的放行依据」，而不是碰巧绿。
+	raw837, err := os.ReadFile(filepath.Join(embedDir, "837_routing_mv_refresh_state.sql"))
+	if err != nil {
+		t.Fatalf("读不到 837 的 embeddata 副本：%v", err)
+	}
+	if dbinit.RequiresNoTransaction(raw837) {
+		t.Fatalf("837 的 embeddata 副本带 dbinit:no-transaction 标记 ⇒ 与本测试的前提不符，请更新本测试")
+	}
+	if ok, _ := startupConcurrencyVerdict(raw837, false); ok {
+		t.Errorf("837 无标记且未登记时不该放行 ⇒ 判据漏掉了「无标记」这一路")
+	}
+	if _, tracked := knownStartupChainConcurrencyViolations["837_routing_mv_refresh_state.sql"]; !tracked {
+		t.Errorf("837 已无标记 ⇒ 它必须留在 knownStartupChainConcurrencyViolations 里（否则门会判红）")
+	}
+}
+
+// stripNoTransactionMarker removes every comment line carrying the
+// `dbinit:no-transaction` marker, leaving the rest of the file byte-identical.
+// Used by the mutation arm above.
+func stripNoTransactionMarker(raw []byte) []byte {
+	var out []string
+	for _, line := range strings.Split(string(raw), "\n") {
+		if strings.Contains(line, "dbinit:no-transaction") {
+			continue
+		}
+		out = append(out, line)
+	}
+	return []byte(strings.Join(out, "\n"))
 }
 
 // TestPsqlConcurrencyRequiredNamesStillExist guards the exemption list itself:
