@@ -3,6 +3,7 @@ package bg
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -404,3 +405,95 @@ func TestSelfcheckPrimaryGatedByThreeDayUsage(t *testing.T) {
 		}
 	}
 }
+
+// ─── 两条探针排除谓词的 actor 词表锁步（R148 审计轮，2026-10-27） ───────────
+
+// actorListFromPredicate extracts the origin_actor NOT IN (...) list from a
+// rendered probe-exclusion predicate. Both arms share the same arm shape
+// ("COALESCE(<alias>.origin_actor, '') NOT IN (...)"), so one extractor
+// serves both.
+//
+// Error-returning (not *testing.T.Fatal) so the same helper can be reused by
+// the negative control below without a live *testing.T.
+func actorListFromPredicate(rendered string) ([]string, error) {
+	const marker = "origin_actor, '') NOT IN ("
+	i := strings.Index(rendered, marker)
+	if i < 0 {
+		return nil, fmt.Errorf("rendered predicate has no origin_actor NOT IN arm: %s", rendered)
+	}
+	rest := rendered[i+len(marker):]
+	j := strings.Index(rest, ")")
+	if j < 0 {
+		return nil, fmt.Errorf("rendered predicate has an unterminated NOT IN list: %s", rendered)
+	}
+	items := strings.Split(rest[:j], ",")
+	out := make([]string, 0, len(items))
+	for _, it := range items {
+		it = strings.TrimSpace(it)
+		it = strings.Trim(it, "'")
+		if it != "" {
+			out = append(out, it)
+		}
+	}
+	return out, nil
+}
+
+// actorListMatchesCanonical compares a rendered predicate's actor list with
+// the canonical registry list. Returned error is non-nil when they differ.
+func actorListMatchesCanonical(rendered string, canonical []string) error {
+	got, err := actorListFromPredicate(rendered)
+	if err != nil {
+		return err
+	}
+	if len(got) != len(canonical) {
+		return fmt.Errorf("lists %d actors (%v), want canonical %d (%v)",
+			len(got), got, len(canonical), canonical)
+	}
+	for i, a := range got {
+		if a != canonical[i] {
+			return fmt.Errorf("actor[%d] = %q, want %q", i, a, canonical[i])
+		}
+	}
+	return nil
+}
+
+// TestProbeTrafficExclusionPredicateActorListsStayInLockstep pins that BOTH
+// probe-exclusion SQL arms — the view-family one and the session-family one —
+// render the canonical actor list from internal/probekind.
+//
+// ★ 2026-10-27（R148 审计轮）：同一次「actor 列表不再手写」的订正只迁了
+// 视图臂，会话臂被落下了 —— 它手写着 2026-09-22 R52 那次的四元组快照，
+// 而规范登记表（probekind.ProbeActors）此后已长到七个 ⇒ 会话臂少了
+// self-check-worker / model-quality-worker / mock-probe-client。
+//
+// 影响的是三个活读面：settle 基线 cohort（⇒ reward 基线）、
+// candidate failure monitor 的 staleness 判定、凭据自检的「近 3 天业务
+// 使用集合」。这三处只有 origin_actor 臂兜底 origin_stage 缺失的行。
+//
+// 与 candidate_query_sql_shape_test.go 里那条「modality 词表锁步」判据同款：
+// 两条臂共享同一份事实源，判据钉住它们不许各写一份。
+func TestProbeTrafficExclusionPredicateActorListsStayInLockstep(t *testing.T) {
+	view := fmt.Sprintf(ProbeTrafficExclusionPredicateView, "rl", "rl", "rl")
+	session := fmt.Sprintf(probeTrafficExclusionPredicateSession, "rl", "rl", "rl")
+
+	for _, tc := range []struct {
+		name     string
+		rendered string
+	}{
+		{"view-family arm", view},
+		{"session-family arm", session},
+	} {
+		if err := actorListMatchesCanonical(tc.rendered, probekind.ProbeActors); err != nil {
+			t.Fatalf("%s actor list drifted from internal/probekind: %v", tc.name, err)
+		}
+	}
+
+	// 负控（量具必须看得见差异）：把名单砍成三个 ⇒ 判据必须报错。
+	// ★ 这条负控是本判据「有牙」的证明；没有它，上面两条断言可能在
+	// 比较逻辑恒真时一起绿掉（§419：断言恒真比恒假更隐蔽）。
+	const narrowed = "COALESCE(rl.origin_actor, '') NOT IN ('node-probe-worker', 'active-probe-worker', 'probe-service')"
+	if err := actorListMatchesCanonical(narrowed, probekind.ProbeActors); err == nil {
+		t.Fatal("negative control did not flip: a narrowed actor list was accepted as canonical ⇒ this guard has no teeth")
+	}
+}
+
