@@ -201,7 +201,7 @@ export default {
       mediaOnlyShort: "وسائط",
     },
     planTypeUnset: "غير محدد (يُعامل كـ token)",
-    planTypeHint: "يستخدمه التوجيه؛ يُشتق cmb.billing_mode منه",
+    planTypeHint: "يستخدمه التوجيه؛ يُشتق وضع الفوترة منه",
     planTypes: {
       token: "token (حسب الاستخدام)",
       token_plan: "token_plan (اشتراك)",
@@ -412,17 +412,17 @@ export default {
       chipUnavailable: "غير متاح"
     }
 ,
-    probeAllRecoveredHint: '✓ تم فحص {n} من النماذج بنجاح، وأُعيد بناء node_probe_state تلقائيًا، وأُعيد تفعيل مرشحي التوجيه',
+    probeAllRecoveredHint: '✓ تم فحص {n} من النماذج بنجاح، وأُعيد بناء حالة الفحص تلقائيًا، وأُعيد تفعيل مرشحي التوجيه',
 
     resetNodeProbeBtn: 'Clear failed probes',
 
     resetNodeProbeLoading: 'Clearing…',
 
-    resetNodeProbeTitle: 'احذف صفوف node_probe_state التي تكون فيها last_direct_ok=FALSE وأعد تفعيل التوجيه. استخدمه عندما تُظهر «فحص الكل» حالة OK مع بقاء مرشحي التوجيه محظورين.',
+    resetNodeProbeTitle: 'احذف سجلات الفحص الفاشلة وأعد تفعيل التوجيه. استخدم هذه الخطوة عندما تُظهر «فحص الكل» حالة سليمة مع بقاء مرشحي التوجيه محظورين.',
 
-    resetNodeProbeConfirm: 'هل تحذف كل الصفوف الفاشلة في node_probe_state لهذا المزوّد؟',
+    resetNodeProbeConfirm: 'هل تحذف كل سجلات الفحص الفاشلة لهذا المزوّد؟',
 
-    resetNodeProbeDone: '✓ حُذف {n} صف فاشل في node_probe_state وأُعيد تفعيل مرشحي التوجيه',
+    resetNodeProbeDone: '✓ حُذف {n} سجل فحص فاشل وأُعيد تفعيل مرشحي التوجيه',
     repairFailed: 'تعذّر إتمام الإصلاح. أعد المحاولة.',
   },
   settings: {

@@ -1,7 +1,7 @@
 // Auto-synced from en-US (ar-SA)
 export default {
   title: 'Routing Overrides Audit',
-  subtitle: 'كل تعديل في جدول routing_overrides يُسجَّل مع المنفّذ والإجراء وحالة الصف.',
+  subtitle: 'كل تعديل في تجاوز التوجيه يُسجَّل مع المنفّذ والإجراء وحالة الصف.',
   summary: {
     total: 'Total',
     inserts: 'Inserts',

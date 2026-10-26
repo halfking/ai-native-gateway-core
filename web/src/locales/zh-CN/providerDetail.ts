@@ -185,7 +185,7 @@ export default {
     // v735: route-side plan type (credentials.plan_type)
     drawerFieldPlanType: '计费套餐',
     planTypeUnset: '未设置（按 token 处理）',
-    planTypeHint: '路由适配时，cmb.billing_mode 将自动从此派生',
+    planTypeHint: '路由适配时，计费模式将自动从此派生',
     planTypes: {
       token: 'token (按量)',
       token_plan: 'token_plan (订阅套餐)',
@@ -312,12 +312,12 @@ export default {
     probeAllTitle: '对列表中所有模型发起探测，验证可用性',
     // 2026-07-21 P0: shown after "全面探测" reports ok=N — explains that
     // the routing view will now re-admit the recovered bindings.
-    probeAllRecoveredHint: '✓ {n} 个模型探测成功；node_probe_state 已自动恢复，路由候选已重新可用',
+    probeAllRecoveredHint: '✓ {n} 个模型探测成功；探测状态已自动恢复，路由候选已重新可用',
     resetNodeProbeBtn: '清失败探测状态',
     resetNodeProbeLoading: '清除中…',
-    resetNodeProbeTitle: '清除 node_probe_state 中 last_direct_ok=FALSE 的行（force-recover routing）。当全面探测显示 ok 但路由候选仍显示 blocked 时使用。',
-    resetNodeProbeConfirm: '确认清空该供应商所有失败的 node_probe_state 行？',
-    resetNodeProbeDone: '✓ 已清除 {n} 行失败的 node_probe_state，路由候选立即恢复',
+    resetNodeProbeTitle: '清除探测失败的记录（强制恢复路由）。当全面探测显示正常但路由候选仍显示被拦截时使用。',
+    resetNodeProbeConfirm: '确认清空该供应商所有失败的探测记录？',
+    resetNodeProbeDone: '✓ 已清除 {n} 条失败的探测记录，路由候选立即恢复',
     probingModels: '正在探测模型…',
     probeResultOk: '✅ 成功 {n}',
     probeResultUnavailable: '❌ 模型不可用 {n}',

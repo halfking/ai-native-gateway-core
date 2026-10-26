@@ -54,7 +54,7 @@ export default {
   latest: '最近一次扫描',
   loadFeaturedFailed: '特色模型没能加载出来，请重试',
   loading: '加载中…',
-  noRecommend: '无可推荐模型：最近 7 天无成功请求，或 featured_models 与 popular 均空',
+  noRecommend: '无可推荐模型：最近 7 天无成功请求，或推荐池与热门池均空',
   recommendBtn: '⚡ 自动推荐（7d 热门 + 当前策略）',
   recommendLoadFailed: '推荐模型没能加载出来，请重试',
   running: '扫描进行中',

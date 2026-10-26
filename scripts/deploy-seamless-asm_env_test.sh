@@ -112,6 +112,33 @@ OUT="$(run_asm_env "$TMP/does-not-exist" "" "")"
 check "endpoint 空" "" "$(printf '%s\n' "$OUT" | sed -n 1p)"
 check "secret 空"   "" "$(printf '%s\n' "$OUT" | sed -n 2p)"
 
+# ── 场景⑤b：总结委托的两个变量同样走「部署机值 > env 文件 > 不设」 ────────
+echo "[5b] 总结委托变量（LLM_GATEWAY_ASM_BASE_URL / _PLUGIN_ID）"
+run_asm_delegate() { # <env_file> ⇒ 打印两个委托变量（与 dd_asm_event_env 同一函数）
+  (
+    set -uo pipefail
+    ENV_FILE="$1"
+    ASM_INTERNAL_ENDPOINT=""
+    ASM_EVENT_SECRET=""
+    LLM_GATEWAY_ASM_BASE_URL=""
+    LLM_GATEWAY_ASM_PLUGIN_ID=""
+    log() { :; }
+    eval "$ASM_BLK"
+    dd_asm_event_env "$ENV_FILE"
+    printf '%s\n' "$LLM_GATEWAY_ASM_BASE_URL"
+    printf '%s\n' "$LLM_GATEWAY_ASM_PLUGIN_ID"
+  )
+}
+cat > "$TMP/env.asmdelegate" <<'EOF'
+export LLM_GATEWAY_STORAGE_MODE=full
+export LLM_GATEWAY_ASM_BASE_URL=http://ai-session-manager-asm-1:8782
+EOF
+OUT="$(run_asm_delegate "$TMP/env.asmdelegate")"
+check "base_url 从旧 env 文件读出" "http://ai-session-manager-asm-1:8782" "$(printf '%s\n' "$OUT" | sed -n 1p)"
+check "plugin_id 未设回落空（网关 main.go 兜底默认）" "" "$(printf '%s\n' "$OUT" | sed -n 2p)"
+OUT="$(run_asm_delegate "$TMP/does-not-exist")"
+check "无 env 文件 ⇒ base_url 空" "" "$(printf '%s\n' "$OUT" | sed -n 1p)"
+
 # ── 场景⑥：注入 —— 双开关语义（只配一个 = 不注入）────────────────────────
 echo "[6] 注入：两个都齐才注入"
 run_inject() { # <endpoint> <secret> ⇒ 打印 GW_ENV（元素按行分隔）
@@ -133,6 +160,38 @@ JOIN="$(join_env "$OUT")"
 check "endpoint 被注入" "1" "$(printf '%s' "$JOIN" | grep -c -- '-e ASM_INTERNAL_ENDPOINT=http://asm:8782/internal/v1/events')"
 check "secret 被注入"   "1" "$(printf '%s' "$JOIN" | grep -c -- '-e AI_SESSION_MANAGER_GATEWAY_EVENT_SECRET=s3cret')"
 check "argv 序列里 -e 出现两次（每个开关一个）" "2" "$(printf '%s\n' "$OUT" | grep -cx -- '-e')"
+
+# ── 场景⑥b：总结委托变量注入（set -u 沙箱里未设也要容错）──────────────────
+run_inject2() { # <base_url> <plugin_id> ⇒ 打印 GW_ENV
+  (
+    set -uo pipefail
+    ASM_INTERNAL_ENDPOINT=""
+    ASM_EVENT_SECRET=""
+    LLM_GATEWAY_ASM_BASE_URL="$1"
+    LLM_GATEWAY_ASM_PLUGIN_ID="$2"
+    GW_ENV=()
+    log() { :; }
+    eval "$INJ_BLK"
+    printf '%s\n' "${GW_ENV[@]+"${GW_ENV[@]}"}"
+  )
+}
+OUT="$(run_inject2 "http://asm:8782" "ai-session-manager")"
+JOIN="$(join_env "$OUT")"
+check "总结委托 base_url 被注入" "1" "$(printf '%s' "$JOIN" | grep -c -- '-e LLM_GATEWAY_ASM_BASE_URL=http://asm:8782')"
+check "总结委托 plugin_id 被注入" "1" "$(printf '%s' "$JOIN" | grep -c -- '-e LLM_GATEWAY_ASM_PLUGIN_ID=ai-session-manager')"
+# 未设 base_url ⇒ 不注入（且 set -u 沙箱不炸 = 场景能跑到断言这一行）
+OUT="$(
+  (
+    set -uo pipefail
+    ASM_INTERNAL_ENDPOINT=""
+    ASM_EVENT_SECRET=""
+    GW_ENV=()
+    log() { :; }
+    eval "$INJ_BLK"
+    printf '%s\n' "${GW_ENV[@]+"${GW_ENV[@]}"}"
+  )
+)"
+check "未配置 ⇒ 总结委托不注入" "0" "$(printf '%s' "$OUT" | grep -c -- 'LLM_GATEWAY_ASM_BASE_URL')"
 
 OUT="$(run_inject "http://asm:8782/internal/v1/events" "")"
 JOIN="$(join_env "$OUT")"

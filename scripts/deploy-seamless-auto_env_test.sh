@@ -36,6 +36,7 @@ run_case() (
   export REDIS_PASSWORD='' REDIS_URL=placeholder SECRET_KEY=placeholder CORS_ORIGINS=''
   export CRED_ENC_KEY='' URSM_REDIS_DB=2 GW_STATIC_API_KEY=placeholder GW_ADMIN_API_KEY=placeholder
   export GW_CURSOR_HMAC=placeholder HARD_BLOCK_RULES='' ASM_INTERNAL_ENDPOINT='' ASM_EVENT_SECRET=''
+  export LLM_GATEWAY_ASM_BASE_URL='' LLM_GATEWAY_ASM_PLUGIN_ID=''
   eval "$read_block"
   dd_auto_generator_env "$ENV_FILE"
   eval "$write_block"

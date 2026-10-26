@@ -56,7 +56,7 @@ export default {
   latest: '最近一次掃描',
   loadFeaturedFailed: '特色模型沒能載入出來，請重試',
   loading: '載入中…',
-  noRecommend: '無可推薦模型：最近 7 天無成功請求，或 featured_models 與 popular 均空',
+  noRecommend: '無可推薦模型：最近 7 天無成功請求，或推薦池與熱門池均空',
   recommendBtn: '⚡ 自動推薦（7d 熱門 + 目前策略）',
   recommendLoadFailed: '推薦模型沒能載入出來，請重試',
   running: '掃描進行中',

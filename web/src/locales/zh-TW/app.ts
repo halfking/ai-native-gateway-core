@@ -34,7 +34,7 @@ export default {
     darkTitle: '深色模式',
   },
   dataHorizon: {
-    title: '流量資料記錄滯後：閘道有請求，session_turns 未跟上',
+    title: '流量資料記錄滯後：閘道有請求，會話串流未跟上',
     titleUnavailable: '無法確認流量資料狀態：本頁數字可能已過期',
     hintLabel: '排查',
     retry: '重新檢查',

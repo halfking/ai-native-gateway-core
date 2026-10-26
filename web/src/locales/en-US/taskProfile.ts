@@ -22,7 +22,7 @@ export default {
   },
   action: {
     apply: 'Apply suggestions',
-    applyConfirm: 'Write correction-driven tier suggestions into the tier config (task_type_tier_config)?',
+    applyConfirm: 'Write correction-driven tier suggestions into the tier configuration?',
     applyDone: 'Applied: {types}',
     applyNone: 'No suggestion currently meets the threshold',
     reload: 'Reload overlay',

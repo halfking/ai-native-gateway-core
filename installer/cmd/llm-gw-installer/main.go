@@ -1236,6 +1236,9 @@ var sessionSummariesSearchTrgmIndexes909 []byte
 //go:embed embeddata/startup/909_session_summaries_search_trgm_indexes.down.sql
 var sessionSummariesSearchTrgmIndexes909Down []byte
 
+//go:embed embeddata/startup/911_local_audio_catalog.sql
+var localAudioCatalog911 []byte
+
 //go:embed embeddata/startup/859_tighten_pii_phone_intl_regex.sql
 var tightenPiiPhoneIntlRegex859 []byte
 
@@ -1603,6 +1606,7 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/908_route_incident_events_type_created_drop.down.sql":                   routeIncidentEventTypeCreatedDrop908Down,
 	"startup/909_session_summaries_search_trgm_indexes.sql":                        sessionSummariesSearchTrgmIndexes909,
 	"startup/909_session_summaries_search_trgm_indexes.down.sql":                   sessionSummariesSearchTrgmIndexes909Down,
+	"startup/911_local_audio_catalog.sql":                                          localAudioCatalog911,
 	"startup/859_tighten_pii_phone_intl_regex.sql":                                   tightenPiiPhoneIntlRegex859,
 	"startup/852_models_canonical_column_set_reconcile.sql":                          modelsCanonicalColumnSetReconcile852,
 	"startup/489_credential_probe_queue_startup_backfill.sql":                        credentialProbeQueueStartupBackfill489,

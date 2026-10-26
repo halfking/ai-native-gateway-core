@@ -138,6 +138,17 @@ func credentialProbeText(parts []credentialProbeContent) bool {
 // emptyoutcome's unknown/malformed fallback protects business payloads from
 // being discarded. A probe needs positive evidence, so additionally require
 // the expected envelope and recognized assistant text or a named tool call.
+//
+// ★ 语义分层（2026-10-27 审计轮修正）：本函数是「**assistant 语义输出**」
+// 判据，被 credential 探针与 node/model/active 探针的共享入口
+// （probeResponseHasOutput）共同消费——reasoning-only 在这里**一律不算
+// 输出**（r1029 的立场：content 为空 = 用户拿不到可读回答，deliverability
+// 语义）。「reasoning 也算活着」是**credential 级 liveness** 的另一种语义，
+// 由 credentialProbeHasLivenessEvidence 单独承载、只被 credential 探针的
+// chat 臂叠加调用（本地 ollama thinking 模型在 32-token 探针载荷下
+// content 恒空，211 实测活锁）。此前一轮修复直接把 reasoning 检查写进了
+// 本函数——通过共享入口把 deliverability 语义降级成了 liveness，bg 包
+// 4 条 model 探针测试当场翻红，教训：**改共享判据前先枚举全部消费方**。
 func credentialProbeHasOutput(protocol string, body []byte) bool {
 	format, empty := emptyoutcome.ClassifyBody(body)
 	want := map[string]emptyoutcome.Format{"chat": emptyoutcome.FormatChat,
@@ -211,4 +222,57 @@ func credentialProbeHasOutput(protocol string, body []byte) bool {
 		}
 	}
 	return false
+}
+
+// credentialProbeHasLivenessEvidence 是 **credential 探针专用**的 liveness
+// 叠加判据（与 credentialProbeHasOutput 成对使用：
+// `hasOutput(...) || hasLivenessEvidence(...)`）：assistant 语义输出缺失时，
+// chat 形态的 reasoning/reasoning_content 有非空文本同样证明「HTTP 栈 + 推理
+// 引擎活着」——这是凭据健康检查问的问题（liveness），不是交付判定
+// （deliverability，那归 credentialProbeHasOutput / r1029）。只认 chat 形态：
+// messages/responses 的 reasoning 块在各自协议里有独立的语义位（thinking /
+// reasoning item），不在此处扩权。**只许 credential 探针调用**——node/
+// model/active 探针经 probeResponseHasOutput 走 deliverability 语义，本地
+// thinking 模型的 reasoning-only 在那一级仍应 inconclusive（重试/降级由
+// 探针梯子处理），这是 2026-10-27 审计轮定下的界线。
+func credentialProbeHasLivenessEvidence(protocol string, body []byte) bool {
+	if protocol != "chat" {
+		return false
+	}
+	format, empty := emptyoutcome.ClassifyBody(body)
+	if format != emptyoutcome.FormatChat || !empty {
+		// 有语义输出时 liveness 无需另证；非 chat 形态/坏体不扩权。
+		return false
+	}
+	var envelope struct {
+		Error   json.RawMessage `json:"error"`
+		Choices []struct {
+			Message struct {
+				Reasoning        json.RawMessage `json:"reasoning"`         // ollama qwen3 系
+				ReasoningContent json.RawMessage `json:"reasoning_content"` // deepseek/openrouter 风格
+			} `json:"message"`
+		} `json:"choices"`
+	}
+	if json.Unmarshal(body, &envelope) != nil || (len(envelope.Error) > 0 && string(envelope.Error) != "null") {
+		return false
+	}
+	for _, choice := range envelope.Choices {
+		if rawNonEmptyJSONString(choice.Message.Reasoning) || rawNonEmptyJSONString(choice.Message.ReasoningContent) {
+			return true
+		}
+	}
+	return false
+}
+
+// rawNonEmptyJSONString 判定一个 JSON 原始字段是否为非空字符串
+// （去掉首尾空白后非空）。用于 reasoning/reasoning_content 的存活证据检查。
+func rawNonEmptyJSONString(raw json.RawMessage) bool {
+	if len(raw) == 0 || string(raw) == "null" {
+		return false
+	}
+	var s string
+	if json.Unmarshal(raw, &s) != nil {
+		return false
+	}
+	return strings.TrimSpace(s) != ""
 }

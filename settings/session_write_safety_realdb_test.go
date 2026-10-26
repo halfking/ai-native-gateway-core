@@ -62,7 +62,8 @@ func seedSessionWriteState(t *testing.T, db *pgxpool.Pool, v1, enabled, shadow b
 
 func TestSessionWriteSettingsRejectSourceLossOnSetAndRollback(t *testing.T) {
 	store, db := sessionSettingsFixture(t)
-	t.Run("default-v1-remains-a-source", func(t *testing.T) {
+	t.Run("explicit-v1-remains-a-source", func(t *testing.T) {
+		seedSessionWriteState(t, db, true, false, false)
 		if _, err := store.Set(ScopePlatform, KeyRequestLogsWriteEnabled, false); err == nil {
 			t.Fatal("Set disabled the only default writer")
 		}

@@ -320,6 +320,11 @@ func (s *AudioService) Transcribe(ctx context.Context, req TranscribeRequest, em
 			// MiniMax 标准路径 /audio/transcriptions 实测 404（go mux 裸
 			// "404 page not found"），直接钉 speech_to_text 不做空往返。
 			order = []string{AudioTransportSpeechToText}
+		case preferWhisperInference(cand):
+			// whisper.cpp server 只说 /inference 方言（标准 OpenAI 路径
+			// 404 "File Not Found"，2026-10-26 本机 1.9.5 实测），钉死
+			// 不做空往返；判据是 catalog_code，见 audio_whisper_stt.go。
+			order = []string{AudioTransportWhisperInference}
 		case strings.EqualFold(cand.Protocol, providercatalog.ProtocolAnthropicMessages):
 			// Anthropic 协议候选没有 chat-audio 形态（那要 OpenAI chat
 			// 结构）；multipart 透传与 chat 协议无关，只给这一种。
@@ -335,6 +340,8 @@ func (s *AudioService) Transcribe(ctx context.Context, req TranscribeRequest, em
 				res, err = s.transcribeViaChatAudio(ctx, cand, req, format, emit)
 			} else if transport == AudioTransportSpeechToText {
 				res, err = s.transcribeViaSpeechToText(ctx, cand, req, format, emit)
+			} else if transport == AudioTransportWhisperInference {
+				res, err = s.transcribeViaWhisperInference(ctx, cand, req)
 			} else {
 				res, err = s.transcribeViaMultipart(ctx, cand, req, emit)
 			}

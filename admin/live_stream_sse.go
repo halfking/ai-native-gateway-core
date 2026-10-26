@@ -67,13 +67,22 @@ type LiveStreamEnvelope struct {
 	Requests  []LiveRequest       `json:"requests,omitempty"`
 	Snapshot  *LiveStreamSnapshot `json:"snapshot,omitempty"`
 	Delta     *LiveStreamDelta    `json:"delta,omitempty"`
-	Health    *LiveStreamHealth   `json:"health,omitempty"`
+	// TileDelta (2026-10-27) is the slim (?slim=1) alternative to Delta:
+	// tile-granular upserts/removals instead of whole lanes. Legacy clients
+	// never receive it (fanOut picks per client), so the legacy wire is
+	// byte-identical. superTileDelta mirrors superDelta's role.
+	TileDelta *LiveStreamTileDelta `json:"tile_delta,omitempty"`
+	Health    *LiveStreamHealth    `json:"health,omitempty"`
 	// Incident (2026-07-13) carries a route incident update for the
 	// dashboard's diagnose entry. Type="incident_update" identifies
 	// this variant on the wire. The body is sanitized — no tenant
 	// id, no credential value, no full request body.
 	Incident   *LiveIncidentUpdate `json:"incident,omitempty"`
 	superDelta *LiveStreamDelta    `json:"-"` // attached to Delta during fanOut for super clients; not serialised directly
+	// superTileDelta pairs with TileDelta the same way superDelta pairs with
+	// Delta: the global/super-admin-scoped slim payload, chosen per client
+	// inside fanOut and never serialised directly.
+	superTileDelta *LiveStreamTileDelta `json:"-"`
 
 	// LaneIDs carries the list of known lane IDs for idle_marker envelopes.
 	// The frontend uses this to decide which lanes need idle tiles.
@@ -465,6 +474,12 @@ type liveStreamClient struct {
 	w        http.ResponseWriter
 	tenantID string
 	isSuper  bool
+	// Slim wire (2026-10-27): ?slim=1 opts the client into tile-granular
+	// deltas (TileDelta instead of Delta). dims is the ?dims= subscription
+	// (nil = all dimensions; empty set = none — queue-mode UIs). Legacy
+	// clients keep the exact pre-slim wire.
+	slim bool
+	dims map[string]bool
 	writeMu  sync.Mutex
 	closed   bool
 	// Only queue_snapshot/node_update use this bounded, per-connection cache.
@@ -541,7 +556,7 @@ type LiveStreamSSEHub struct {
 	// 在窗口内复用上一次成功的 delta (delta 缓存), 不重复跑 Redis pipeline.
 	lastSnapshotAtMu    sync.RWMutex
 	lastSnapshotAt      map[string]time.Time        // key = scope.cacheKey
-	lastDeltaByScope    map[string]*LiveStreamDelta // 上次成功的 delta 缓存 (供节流命中时复用)
+	lastDeltaByScope    map[string]*scopeDeltaPair // 上次成功的 delta 缓存 (供节流命中时复用; legacy + slim 双格式)
 	lastDeltaMu         sync.RWMutex
 	snapshotMinInterval time.Duration // 最小刷新间隔; 0 禁用节流
 
@@ -738,7 +753,7 @@ func NewLiveStreamSSEHub(db *pgxpool.Pool, cfg LiveStreamConfig) *LiveStreamSSEH
 		stopCh:              make(chan struct{}),
 		cachedSnapshot:      make(map[string]*cachedSnapshotEntry),
 		lastSnapshotAt:      make(map[string]time.Time),
-		lastDeltaByScope:    make(map[string]*LiveStreamDelta),
+		lastDeltaByScope:    make(map[string]*scopeDeltaPair),
 		terminalOverlayAt:   make(map[string]time.Time),
 		snapshotMinInterval: defaultLiveStreamSnapshotMinInterval,
 		actionTenantIndex:   newLRUCache(actionTenantIndexCap), // 2026-08-27 P1 fix: use LRU instead of random eviction
@@ -872,7 +887,7 @@ func (h *LiveStreamSSEHub) Run() {
 			// super admin is watching).
 			tenantID := normalizeLiveStreamTenant(req.TenantID)
 			hasSuperClient := h.hasSuperClient()
-			var tenantDelta, superDelta *LiveStreamDelta
+			var tenantDeltas, superDeltas scopeDeltaPair
 			if h.store != nil {
 				// 2026-07-23: 修复实时流只显示 1 个泳道的 bug。
 				// 原来用 200ms 超时，但 SnapshotFromDimensionQueues 内部需要
@@ -882,22 +897,22 @@ func (h *LiveStreamSSEHub) Run() {
 				// 放宽到 liveStreamSnapshotReadTimeout(5s)，避免远程共享 Redis
 				// 下 ~40% 的读取被 deadline 截断导致泳道跳动。
 				ctx, cancel := context.WithTimeout(context.Background(), liveStreamSnapshotReadTimeout)
-				tenantDelta = h.computeScopeDelta(ctx, tenantID, false)
+				tenantDeltas = h.computeScopeDeltas(ctx, tenantID, false)
 				if hasSuperClient {
-					superDelta = h.computeScopeDelta(ctx, "", true)
+					superDeltas = h.computeScopeDeltas(ctx, "", true)
 				}
 				cancel()
 
 				// 2026-07-21: 详细日志记录每次推送的delta内容
-				if tenantDelta != nil {
-					h.logDeltaDetails("tenant", tenantID, req.RequestID, tenantDelta)
+				if tenantDeltas.legacy != nil {
+					h.logDeltaDetails("tenant", tenantID, req.RequestID, tenantDeltas.legacy)
 				}
-				if superDelta != nil {
-					h.logDeltaDetails("super", "", req.RequestID, superDelta)
+				if superDeltas.legacy != nil {
+					h.logDeltaDetails("super", "", req.RequestID, superDeltas.legacy)
 				}
 				// 2026-07-21: 当 delta 为 nil 但 store 可用时记录 warning，
 				// 帮助诊断"流不更新"类问题（空 snapshot / Redis 队列过期等）。
-				if tenantDelta == nil || (hasSuperClient && superDelta == nil) {
+				if tenantDeltas.legacy == nil || (hasSuperClient && superDeltas.legacy == nil) {
 					slog.Warn("live stream: scope delta nil, request may not appear in swim lanes",
 						"request_id", req.RequestID,
 						"tenant_id", tenantID,
@@ -906,11 +921,13 @@ func (h *LiveStreamSSEHub) Run() {
 				}
 			}
 			h.fanOut(LiveStreamEnvelope{
-				Type:       "request",
-				Timestamp:  time.Now().UTC(),
-				Request:    &req,
-				Delta:      tenantDelta,
-				superDelta: superDelta,
+				Type:           "request",
+				Timestamp:      time.Now().UTC(),
+				Request:        &req,
+				Delta:          tenantDeltas.legacy,
+				TileDelta:      tenantDeltas.slim,
+				superDelta:     superDeltas.legacy,
+				superTileDelta: superDeltas.slim,
 			})
 			// OBS-BE2: every streamed request teaches the lifecycle filter
 			// its tenant (action events themselves carry no tenant id), and
@@ -1011,9 +1028,28 @@ const defaultLiveStreamSnapshotMinInterval = 2 * time.Second
 // when Redis is momentarily empty we keep the last good snapshot so a
 // transient Redis hiccup cannot blank out every client's lanes (the
 // root cause of the "queues disappear, come back on refresh" bug).
+//
+// scopeDeltaPair carries both wire formats for one scope tick: the legacy
+// whole-lane delta and the slim tile-granular delta, both derived from the
+// same (baseline → new) snapshot pair so the two formats can never disagree.
+// slim is computed alongside legacy at negligible cost (pure in-memory diff
+// of snapshots already resident in the cache).
+type scopeDeltaPair struct {
+	legacy *LiveStreamDelta
+	slim   *LiveStreamTileDelta
+}
+
+// computeScopeDelta returns the legacy whole-lane delta for the scope.
+// Slim-aware callers should use computeScopeDeltas.
 func (h *LiveStreamSSEHub) computeScopeDelta(ctx context.Context, tenantID string, isSuper bool) *LiveStreamDelta {
+	return h.computeScopeDeltas(ctx, tenantID, isSuper).legacy
+}
+
+// computeScopeDeltas is the shared engine behind computeScopeDelta; the
+// returned pair always describes the same snapshot transition.
+func (h *LiveStreamSSEHub) computeScopeDeltas(ctx context.Context, tenantID string, isSuper bool) scopeDeltaPair {
 	if h.store == nil {
-		return nil
+		return scopeDeltaPair{}
 	}
 	scope := newLiveStreamScope(tenantID, isSuper)
 
@@ -1033,7 +1069,7 @@ func (h *LiveStreamSSEHub) computeScopeDelta(ctx context.Context, tenantID strin
 			h.lastDeltaMu.RUnlock()
 			if cachedDelta != nil {
 				atomic.AddInt64(&h.cachedSnapshotThrottleHits, 1)
-				return cachedDelta
+				return *cachedDelta
 			}
 			// 上次未成功 (cachedDelta==nil) — 仍要走完整路径,
 			// 但不要再延后 lastSnapshotAt, 避免冷启时持续 skip.
@@ -1059,7 +1095,7 @@ func (h *LiveStreamSSEHub) computeScopeDelta(ctx context.Context, tenantID strin
 	if err != nil {
 		slog.Warn("live stream scope snapshot failed",
 			"scope_tenant", scope.tenantID, "is_super", scope.isSuper, "err", err.Error())
-		return nil
+		return scopeDeltaPair{}
 	}
 	if snapshot == nil || snapshot.Summary.Total == 0 {
 		if items, replayErr := h.replay(ctx, scope.tenantID, scope.isSuper, h.cfg.InitialReplayLimit); replayErr == nil && len(items) > 0 {
@@ -1078,7 +1114,7 @@ func (h *LiveStreamSSEHub) computeScopeDelta(ctx context.Context, tenantID strin
 		slog.Warn("live stream: empty snapshot (no dimension data in Redis), skipping delta",
 			"scope_tenant", scope.tenantID, "is_super", scope.isSuper,
 			"empty_skips", atomic.LoadInt64(&h.cachedSnapshotEmptySkips))
-		return nil
+		return scopeDeltaPair{}
 	}
 	h.cachedSnapshotMu.Lock()
 	defer h.cachedSnapshotMu.Unlock()
@@ -1105,7 +1141,7 @@ func (h *LiveStreamSSEHub) computeScopeDelta(ctx context.Context, tenantID strin
 			"cached_total", cached.Summary.Total,
 			"incoming_total", snapshot.Summary.Total,
 			"threshold_pct", degradedSnapshotThresholdPct)
-		return nil
+		return scopeDeltaPair{}
 	}
 
 	// 2026-08-26: 终态 overlay —— 把卡死在 in_progress 的 tile 用 DB 终态纠正
@@ -1113,6 +1149,9 @@ func (h *LiveStreamSSEHub) computeScopeDelta(ctx context.Context, tenantID strin
 	snapshot = h.maybeOverlaySnapshotTerminal(ctx, scope.cacheKey, snapshot)
 
 	delta := ComputeDelta(cached, snapshot)
+	// Slim format derives from the exact same snapshot pair, so the two
+	// wire formats can never disagree about what changed.
+	slimDelta := ComputeTileDelta(cached, snapshot)
 	h.cachedSnapshot[scope.cacheKey] = &cachedSnapshotEntry{
 		snapshot:     snapshot,
 		lastAccessed: time.Now(),
@@ -1120,12 +1159,12 @@ func (h *LiveStreamSSEHub) computeScopeDelta(ctx context.Context, tenantID strin
 	// 2026-08-25: 节流缓存. 把本次成功 delta 写入 lastDeltaByScope,
 	// 并把 lastSnapshotAt 标为 now, 让后续 ≤ interval 的 broadcast 复用之.
 	h.lastDeltaMu.Lock()
-	h.lastDeltaByScope[scope.cacheKey] = delta
+	h.lastDeltaByScope[scope.cacheKey] = &scopeDeltaPair{legacy: delta, slim: slimDelta}
 	h.lastDeltaMu.Unlock()
 	h.lastSnapshotAtMu.Lock()
 	h.lastSnapshotAt[scope.cacheKey] = time.Now()
 	h.lastSnapshotAtMu.Unlock()
-	return delta
+	return scopeDeltaPair{legacy: delta, slim: slimDelta}
 }
 
 // evictStaleLabelCaches periodically clears the four lazy sync.Map label
@@ -1743,27 +1782,28 @@ func (h *LiveStreamSSEHub) maybeEmitIdleMarker() {
 	}
 	h.mu.RUnlock()
 
-	// Deduplicate scopes so we call computeScopeDelta once per unique
+	// Deduplicate scopes so we call computeScopeDeltas once per unique
 	// (tenantID, isSuper) pair.
-	deltaByCacheKey := make(map[string]*LiveStreamDelta, len(all))
+	deltasByCacheKey := make(map[string]scopeDeltaPair, len(all))
 	for _, cs := range all {
 		sk := newLiveStreamScope(cs.tenantID, cs.isSuper).cacheKey
-		if _, ok := deltaByCacheKey[sk]; ok {
+		if _, ok := deltasByCacheKey[sk]; ok {
 			continue
 		}
 		if h.store == nil {
-			deltaByCacheKey[sk] = nil
+			deltasByCacheKey[sk] = scopeDeltaPair{}
 			continue
 		}
 		// 2026-07-23: 修复实时流只显示 1 个泳道的 bug（同上：从 200ms 改为 2s）
 		// 2026-08-04 (方案B): 放宽到 liveStreamSnapshotReadTimeout(5s)。
 		ctx, cancel := context.WithTimeout(context.Background(), liveStreamSnapshotReadTimeout)
-		deltaByCacheKey[sk] = h.computeScopeDelta(ctx, cs.tenantID, cs.isSuper)
+		deltasByCacheKey[sk] = h.computeScopeDeltas(ctx, cs.tenantID, cs.isSuper)
 		cancel()
 	}
 
 	// 4) Fan out — each client receives the envelope whose delta matches
-	//    its own scope.
+	//    its own scope (legacy lane-level for legacy clients, tile-level for
+	//    slim ?slim=1 clients).
 	base := LiveStreamEnvelope{
 		Type:      "idle_marker",
 		Timestamp: now,
@@ -1772,7 +1812,15 @@ func (h *LiveStreamSSEHub) maybeEmitIdleMarker() {
 	for _, cs := range all {
 		sk := newLiveStreamScope(cs.tenantID, cs.isSuper).cacheKey
 		env := base
-		env.Delta = deltaByCacheKey[sk]
+		if cs.c.slim {
+			// Slim clients get the tile-granular patch only — the legacy
+			// whole-lane delta must not ride their wire.
+			env.Delta = nil
+			env.TileDelta = filterTileDeltaForDims(deltasByCacheKey[sk].slim, cs.c.dims)
+		} else {
+			env.Delta = deltasByCacheKey[sk].legacy
+			env.TileDelta = nil
+		}
 		data, err := json.Marshal(env)
 		if err != nil {
 			slog.Warn("live stream idle marker marshal failed", "err", err.Error())
@@ -1854,8 +1902,12 @@ func (h *LiveStreamSSEHub) fanOutKeepalive() {
 func (h *LiveStreamSSEHub) fanOut(env LiveStreamEnvelope) {
 	h.mu.RLock()
 	clients := make([]*liveStreamClient, 0, len(h.clients))
+	hasSlim := false
 	for c := range h.clients {
 		clients = append(clients, c)
+		if c.slim {
+			hasSlim = true
+		}
 	}
 	h.mu.RUnlock()
 
@@ -1864,6 +1916,10 @@ func (h *LiveStreamSSEHub) fanOut(env LiveStreamEnvelope) {
 	var marshalErr error
 	tenantEnv := env
 	tenantEnv.Delta = env.Delta
+	// Legacy bytes never carry the slim payload — the two formats must not
+	// leak into each other's wire (and legacy clients must keep the exact
+	// pre-slim byte stream).
+	tenantEnv.TileDelta = nil
 	if tenantData, marshalErr = json.Marshal(tenantEnv); marshalErr != nil {
 		slog.Warn("live stream marshal failed (tenant)", "err", marshalErr.Error())
 		return
@@ -1871,10 +1927,57 @@ func (h *LiveStreamSSEHub) fanOut(env LiveStreamEnvelope) {
 	if env.superDelta != nil {
 		superEnv := env
 		superEnv.Delta = env.superDelta
+		superEnv.TileDelta = nil
 		if superData, marshalErr = json.Marshal(superEnv); marshalErr != nil {
 			slog.Warn("live stream marshal failed (super)", "err", marshalErr.Error())
 			// Fall back to tenant payload for everyone rather than dropping.
 			superData = nil
+		}
+	}
+
+	// Slim (2026-10-27): pre-serialise per distinct (scope, dims-set) at most
+	// once. The slim envelope carries TileDelta (tile-granular) instead of
+	// Delta (whole lanes); everything else (Request, Queue, Nodes, Health,
+	// Action…) rides unchanged. Legacy clients never see these bytes and slim
+	// clients never see the legacy ones — the legacy wire stays byte-identical.
+	// Envelope types that carry no delta at all (queue_snapshot, node_update,
+	// request_lifecycle, …) are format-agnostic: both variants are byte-equal,
+	// so no slim payload is built for them and slim clients get the legacy
+	// bytes below.
+	slimPayloads := map[string][]byte{}
+	if hasSlim && (env.TileDelta != nil || env.superTileDelta != nil) {
+		base := env
+		base.Delta = nil
+		base.TileDelta = nil
+		base.superDelta = nil
+		base.superTileDelta = nil
+		for _, variant := range []struct {
+			scopeKey string
+			td       *LiveStreamTileDelta
+			super    bool
+		}{{"t", env.TileDelta, false}, {"s", env.superTileDelta, true}} {
+			if variant.td == nil {
+				continue
+			}
+			seen := map[string]bool{}
+			for _, c := range clients {
+				if c.isSuper != variant.super {
+					continue
+				}
+				key := liveStreamDimsKey(c.dims)
+				if seen[key] {
+					continue
+				}
+				seen[key] = true
+				slimEnv := base
+				slimEnv.TileDelta = filterTileDeltaForDims(variant.td, c.dims)
+				data, err := json.Marshal(slimEnv)
+				if err != nil {
+					slog.Warn("live stream slim marshal failed", "err", err.Error())
+					continue
+				}
+				slimPayloads[variant.scopeKey+"|"+key] = data
+			}
 		}
 	}
 
@@ -1902,10 +2005,22 @@ func (h *LiveStreamSSEHub) fanOut(env LiveStreamEnvelope) {
 		if !h.shouldDeliver(c, env) {
 			continue
 		}
-		// Super-admin clients get the global-scoped delta when available.
+		// Slim clients prefer the tile-granular payload for their own scope.
+		// No slim entry = the envelope carries no delta (or the scope had a
+		// nil delta while another scope had one) → the legacy bytes, whose
+		// Delta/TileDelta are both absent anyway.
 		payload := tenantData
 		if c.isSuper && superData != nil {
 			payload = superData
+		}
+		if c.slim {
+			scopeKey := "t"
+			if c.isSuper {
+				scopeKey = "s"
+			}
+			if slimData, ok := slimPayloads[scopeKey+"|"+liveStreamDimsKey(c.dims)]; ok {
+				payload = slimData
+			}
 		}
 		var written bool
 		if periodic {
@@ -1923,12 +2038,6 @@ func (h *LiveStreamSSEHub) fanOut(env LiveStreamEnvelope) {
 // that scope. A snapshot for one tenant must never replace another tenant's
 // lane queue in an open dashboard.
 func (h *LiveStreamSSEHub) fanOutScope(scope liveStreamScope, env LiveStreamEnvelope) {
-	data, err := json.Marshal(env)
-	if err != nil {
-		slog.Warn("live stream scoped marshal failed", "err", err.Error())
-		return
-	}
-
 	h.mu.RLock()
 	clients := make([]*liveStreamClient, 0, len(h.clients))
 	for c := range h.clients {
@@ -1938,7 +2047,40 @@ func (h *LiveStreamSSEHub) fanOutScope(scope liveStreamScope, env LiveStreamEnve
 	}
 	h.mu.RUnlock()
 
+	// 2026-10-27 (slim): snapshot_refresh honours each client's ?dims=
+	// subscription — a queue-mode client subscribed to no dimension must not
+	// receive a multi-megabyte all-dimension snapshot every 30 minutes.
+	// Serialise once per distinct (slim, dims) shape.
+	payloads := make(map[string][]byte, 2)
 	for _, c := range clients {
+		key := "legacy"
+		if c.slim || c.dims != nil {
+			key = "slim|" + liveStreamDimsKey(c.dims)
+		}
+		if _, done := payloads[key]; done {
+			continue
+		}
+		variant := env
+		if c.dims != nil && variant.Snapshot != nil {
+			variant.Snapshot = filterSnapshotForDims(variant.Snapshot, c.dims)
+		}
+		data, err := json.Marshal(variant)
+		if err != nil {
+			slog.Warn("live stream scoped marshal failed", "err", err.Error())
+			return
+		}
+		payloads[key] = data
+	}
+
+	for _, c := range clients {
+		key := "legacy"
+		if c.slim || c.dims != nil {
+			key = "slim|" + liveStreamDimsKey(c.dims)
+		}
+		data := payloads[key]
+		if len(data) == 0 {
+			continue
+		}
 		if !h.writeEvent(c, data) {
 			h.evict(c)
 		}
@@ -2392,6 +2534,15 @@ func (h *LiveStreamSSEHub) HandleLiveStream(w http.ResponseWriter, r *http.Reque
 		tenantID: tenantID,
 		isSuper:  isSuper,
 	}
+	// Slim wire (2026-10-27): ?slim=1 opts into tile-granular deltas;
+	// ?dims= narrows the lane subscription (absent = all, empty = none).
+	// Both are display-bandwidth knobs — auth/scope are untouched.
+	if r.URL.Query().Get("slim") == "1" {
+		client.slim = true
+	}
+	if dims, present := parseLiveStreamDims(r); present {
+		client.dims = dims
+	}
 	// Register with interruptible sends: when the hub run-loop is wedged
 	// (slow clients blocking fan-out) or shutting down, a blocking send here
 	// would leak the request goroutine and its socket.
@@ -2434,6 +2585,10 @@ func (h *LiveStreamSSEHub) HandleLiveStream(w http.ResponseWriter, r *http.Reque
 		}
 		// Initial-frame terminal correction is harmless for an empty snapshot.
 		snapshot = h.overlaySnapshotTerminalStatuses(r.Context(), snapshot)
+		// 2026-10-27 (slim): honour the client's ?dims= subscription on the
+		// initial frame too — a queue-mode client (dims=) must not receive a
+		// multi-megabyte all-dimension snapshot on every page load.
+		snapshot = filterSnapshotForDims(snapshot, client.dims)
 		queue := h.queueSnapshot()
 		nodes := h.nodeStatusSnapshot()
 		data, mErr := json.Marshal(LiveStreamEnvelope{

@@ -3,6 +3,12 @@
 ## [Unreleased]
 
 ### Added
+- **多模态标准接口轮：本地音频（ASR/TTS）+ 文本三件套（2026-10-26/27）**：网关接入本地模型，补齐嵌入/标题总结/内容总结/ASR/语音发音标准接口。
+  - `POST /v1/summarize`（短单发 / 长 map→reduce→render 会议纪要管线）、`POST /v1/summarize/title`（规则硬校验+实体择优）、`POST /v1/classify`（受控词表）——环回 chat 面架构（`domains/streaming/summarize.go`）。
+  - whisper.cpp `/inference` 传输变体（按 catalog_code 钉方言）；迁移 911（原取 910，被上游 routing_analytics 占号后按让位纪律重取）：`whisper-cpp` / `whisper-cpp-large` / `macos-say` 三条本地音频 catalog 条目（登记点齐备，契约门验证）。
+  - **asm 在线优先委托**：长文本总结在 ai-session-manager 在线时委托其 `POST /api/v1/summarize` 智能体端点（grounded 纪要；asm 侧同轮新增），离线/失败回退网关管线——响应 `engine` 字段区分 asm | gateway，两条路都跑本地模型。
+  - 修三个潜伏缺陷：启动播种凭据明文落库（llamacpp 等四家本地供应商「从未真正可路由」的根因）；探针不认 thinking 模型（node_probe_failed 活锁）；reqprobe 新增 thinking 能力族剥参（ollama 对非 thinking 模型 400 "does not support thinking"）。
+  - 审计：`docs/audit/2026-10-26-多模态标准接口轮-本地音频与文本三件套.md`。
 - **多媒体统一出口 + 凭据 routing_scope 隔离（2026-10-08）**：标准 chat 与媒体面凭据硬隔离；音频按时长计费；图片/视频 generations 骨架。
   - `credentials.routing_scope` in {all, chat_only, media_only}（migration 847 + ensure）；候选 SQL 按 modality 过滤。
   - `cmb.billing_unit` / `request_logs*.audio_seconds`（migration 848）；MaaS audio_second；`/v1/audio/*` 落库 duration。
