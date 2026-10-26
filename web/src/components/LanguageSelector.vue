@@ -106,7 +106,7 @@ onBeforeUnmount(() => {
   min-width: 180px;
   background: var(--card);
   border-radius: var(--radius);
-  box-shadow: 0 4px 12px var(--overlay-light);
+  box-shadow: var(--kx-shadow-sm);
   z-index: 1000;
   overflow: hidden;
 }

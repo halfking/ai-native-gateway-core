@@ -302,7 +302,6 @@ watch(laneMode, async () => {
   border-radius: 8px;
   gap: 5px;
   overflow-wrap: break-word;
-  box-shadow: var(--kx-shadow-sm);
 }
 
 .swim-lane__name {
@@ -453,7 +452,6 @@ watch(laneMode, async () => {
   overflow: hidden;
   overflow-x: hidden;
   overflow-y: hidden;
-  box-shadow: var(--kx-shadow-sm);
 }
 
 .swim-lane__track--small {

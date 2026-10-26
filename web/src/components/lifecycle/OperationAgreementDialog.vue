@@ -113,7 +113,7 @@ watch(
   padding: 1.5rem;
   max-width: 540px;
   width: 100%;
-  box-shadow: 0 24px 48px var(--overlay-light);
+  box-shadow: var(--kx-shadow-md);
   color: var(--kx-text);
 }
 .dialog-content h2 { margin: 0 0 1rem; font-size: 1.15rem; }

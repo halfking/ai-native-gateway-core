@@ -995,7 +995,7 @@ code {
   border-radius: 12px;
   padding: 18px;
   color: var(--text);
-  box-shadow: 0 24px 60px var(--overlay-strong);
+  box-shadow: var(--kx-shadow-md);
 }
 .modal-header {
   display: flex;

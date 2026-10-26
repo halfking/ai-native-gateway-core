@@ -143,7 +143,7 @@ function apply() {
   background: var(--card);
   color: var(--text, var(--surface-secondary));
   border-radius: 10px;
-  box-shadow: 0 12px 40px var(--overlay-medium);
+  box-shadow: var(--kx-shadow-md);
 }
 .lsfd-head {
   display: flex;

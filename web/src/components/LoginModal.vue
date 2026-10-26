@@ -174,7 +174,7 @@ function onModelUpdate(v: boolean) {
   padding: 24px;
   width: min(400px, calc(100vw - 32px));
   min-width: 0;
-  box-shadow: 0 16px 48px var(--overlay-strong);
+  box-shadow: var(--kx-shadow-md);
 }
 </style>
 

@@ -163,7 +163,7 @@ function clearValue() {
   flex-direction: column;
   background: var(--card);
   border-radius: 12px;
-  box-shadow: 0 20px 50px var(--overlay-medium);
+  box-shadow: var(--kx-shadow-md);
   overflow: hidden;
 }
 .tp-header {
