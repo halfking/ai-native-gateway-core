@@ -140,10 +140,10 @@ export default {
 
 
   error: {
-    loadFailed: 'Error al cargar la lista de módulos',
-    operationFailed: 'Operación fallida',
-    saveFailed: 'Error al guardar la configuración',
-    testFailed: 'Prueba fallida',
+    loadFailed: 'No se pudo cargar la lista de módulos. Vuelva a intentarlo.',
+    operationFailed: 'No se pudo completar la operación de los módulos. Vuelva a intentarlo.',
+    saveFailed: 'No se pudo guardar la configuración de los módulos. Vuelva a intentarlo.',
+    testFailed: 'No se pudo superar la prueba de los módulos. Vuelva a intentarlo.',
   },
 
   // 同步的扁平键

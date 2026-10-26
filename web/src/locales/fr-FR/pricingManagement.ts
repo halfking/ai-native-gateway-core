@@ -59,8 +59,8 @@ export default {
   tokenPlanSuffix: 'token_plan',
   saved: 'Enregistré',
   noChange: 'Aucun changement',
-  saveFailed: 'Échec de l\'enregistrement',
+  saveFailed: 'L\'enregistrement de la tarification a échoué. Veuillez réessayer.',
   copied: 'Prix copié',
   pasted: 'Collé : utilisez « Enregistrer » pour appliquer',
-  failed: 'Échec de l\'import',
+  failed: 'L\'import du modèle de tarification a échoué. Veuillez réessayer.',
 }

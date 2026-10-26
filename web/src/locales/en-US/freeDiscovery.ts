@@ -67,7 +67,7 @@ export default {
       start: 'Start scan',
       running: 'Scanning…',
       done: 'Scan finished: {n} models found, please review the results',
-      failed: 'Scan failed'
+      failed: 'The scan could not be completed. Please retry.'
     },
   task: {
       listTitle: 'Discovery tasks ({n})',

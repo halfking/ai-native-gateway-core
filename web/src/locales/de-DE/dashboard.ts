@@ -34,7 +34,7 @@ v2: {
     super: "Standardmandant",
     tenant: "Mandant: {tenantId}"
   },
-  loadError: "Laden fehlgeschlagen",
+  loadError: 'Dashboard-Daten konnten nicht geladen werden. Bitte erneut versuchen.',
   board: {
     heroErrors: 'Fehler',
     heroInput: 'Eingabe',
@@ -103,7 +103,7 @@ v2: {
     selfcheckTitle: 'Self-check',
     pieClients: 'Client-Typen',
     pieDegraded: "Nicht verfügbar: {reason}. Eine leere Rangliste bedeutet hier, dass nicht berechnet wurde, nicht dass nichts vorhanden war.",
-    pieDegradedGeneric: "die Ranglisten-Abfrage ist fehlgeschlagen",
+    pieDegradedGeneric: 'Die Ranglisten-Abfrage konnte nicht abgeschlossen werden. Bitte erneut versuchen.',
     drillFailed: "Diese Aufschlüsselung konnte nicht geladen werden. {reason}. Eine leere Liste bedeutet nicht, dass keine Fehler auftraten.",
     pieClientIp: 'Client-IP',
     pieIdentity: 'Identitäts-Hash',

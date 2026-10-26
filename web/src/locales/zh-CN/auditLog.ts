@@ -54,6 +54,6 @@ export default {
   },
 
   // 扁平键（供 Vue 组件直接使用）
-  loadFailed: '加载失败',
+  loadFailed: '审计日志列表没能加载出来，请重试',
   dash: '—',
 }

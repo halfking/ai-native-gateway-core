@@ -123,5 +123,5 @@ export default {
 
   // 同步的扁平键
   savedOk: 'Enregistré',
-  testFailedShort: 'Échec du test',
+  testFailedShort: 'Le test du type de travail n\'a pas pu aboutir. Veuillez réessayer.',
 }

@@ -42,7 +42,7 @@ export default {
     createdAt: 'Time',
   },
   empty: 'No compliance records',
-  recordsLoadFailed: 'Failed to load hit records',
+  recordsLoadFailed: 'The hit records could not be loaded. Please retry.',
   recordsNotLoaded: 'Hit records not loaded: the table below is not query results',
   pagination: {
     previous: 'Previous',

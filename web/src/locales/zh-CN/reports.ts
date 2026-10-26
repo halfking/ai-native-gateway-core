@@ -6,7 +6,7 @@ export default {
   exportExcel: '导出 Excel',
   rerun: '重跑结束日',
   rerunDone: '重跑完成',
-  rerunFailed: '重跑失败',
+  rerunFailed: '重跑没能完成，请重试',
   daysCovered: '天快照',
   unaggregatedDay: '未聚合',
   noSnapshots:

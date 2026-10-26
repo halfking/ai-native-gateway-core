@@ -7,7 +7,7 @@ export default {
   exportExcel: 'تصدير Excel',
   rerun: 'إعادة تشغيل اليوم الأخير',
   rerunDone: 'اكتملت إعادة التشغيل',
-  rerunFailed: 'فشلت إعادة التشغيل',
+  rerunFailed: 'تعذّر إتمام إعادة التشغيل. أعد المحاولة.',
   // نطاق التغطية / الحالة الفارغة
   daysCovered: 'أيام من اللقطات',
   unaggregatedDay: 'غير مُجمَّع',

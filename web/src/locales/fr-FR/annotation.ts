@@ -74,7 +74,7 @@ export default {
     reason: "Motif d'annotation",
     annotator: 'Annotateur',
     annotatedAt: "Date d'annotation",
-    loadFailed: 'Échec du chargement du détail du premier tour',
+    loadFailed: 'Le chargement du détail du premier tour d\'annotation a échoué. Veuillez réessayer.',
     metaSection: 'Métadonnées du premier tour',
     requestSection: 'Requête',
     annotationSection: 'Annotation manuelle',
@@ -97,7 +97,7 @@ export default {
     detailTitle: 'Détail de la qualité d’annotation',
     refresh: 'Actualiser',
     refreshing: 'Actualisation...',
-    loadFailed: 'Échec du chargement des statistiques',
+    loadFailed: 'Le chargement des statistiques d\'annotation a échoué. Veuillez réessayer.',
     noData: 'Pas encore de statistiques d’annotation. Terminez d’abord un lot d’annotations, puis revenez ici.',
     totalAnnotations: 'Annotations totales',
     providerAccuracy: 'Précision par fournisseur',
@@ -121,8 +121,8 @@ export default {
   // Success messages
 
   // Error messages
-  loadFailed: "Échec du chargement des échantillons d'annotation",
-  annotationFailed: "Échec de l'annotation",
+  loadFailed: 'Le chargement des échantillons d\'annotation a échoué. Veuillez réessayer.',
+  annotationFailed: 'L\'annotation n\'a pas pu aboutir. Veuillez réessayer.',
   correctionWriteFailed: 'Échec de l\'écriture de la correction (annotation enregistrée) : {msg}',
 
   // Loading states
@@ -134,8 +134,8 @@ export default {
     exportBtn: 'Exporter CSV',
     importBtn: 'Importer CSV',
     exportOk: '{name} exporté',
-    exportFailed: 'Échec de l\'export',
+    exportFailed: 'L\'export du profil de tâche d\'annotation a échoué. Veuillez réessayer.',
     importOk: 'Importés {imported}, ignorés {skipped}, erreurs {errors}',
-    importFailed: 'Échec de l\'import',
+    importFailed: 'L\'import du profil de tâche d\'annotation a échoué. Veuillez réessayer.',
   },
 }

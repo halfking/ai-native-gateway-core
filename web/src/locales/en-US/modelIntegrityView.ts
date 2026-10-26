@@ -109,10 +109,10 @@ export default {
   },
 
   error: {
-    loadFailed: 'Failed to load',
-    summaryLoadFailed: 'Failed to load stats',
-    driftLoadFailed: 'Failed to load fingerprint drift',
-    markFailed: 'Failed to mark',
+    loadFailed: 'The model integrity data could not be loaded. Please retry.',
+    summaryLoadFailed: 'The model integrity stats could not be loaded. Please retry.',
+    driftLoadFailed: 'The fingerprint drift data could not be loaded. Please retry.',
+    markFailed: 'The model integrity event could not be marked as resolved. Please retry.',
     needSuperAdmin: 'Super admin permission required',
   },
 }

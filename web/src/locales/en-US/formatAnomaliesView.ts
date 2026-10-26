@@ -93,9 +93,9 @@ export default {
   },
 
   error: {
-    loadFailed: 'Failed to load',
-    summaryLoadFailed: 'Failed to load stats',
-    markFailed: 'Failed to mark',
+    loadFailed: 'The format anomalies could not be loaded. Please retry.',
+    summaryLoadFailed: 'The format anomaly stats could not be loaded. Please retry.',
+    markFailed: 'The format anomaly could not be marked as resolved. Please retry.',
     needSuperAdmin: 'Super admin permission required',
   },
 

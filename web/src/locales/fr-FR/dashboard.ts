@@ -34,7 +34,7 @@ v2: {
     super: "Locataire par défaut",
     tenant: "Locataire : {tenantId}"
   },
-  loadError: "Échec du chargement",
+  loadError: 'Le chargement des données du tableau de bord a échoué. Veuillez réessayer.',
   board: {
     heroErrors: 'Erreurs',
     heroInput: 'Entrée',
@@ -105,7 +105,7 @@ v2: {
     selfcheckTitle: 'Self-check',
     pieClients: 'Types de client',
     pieDegraded: "Indisponible: {reason}. Un classement vide ici signifie « non calculé », pas « aucune donnée ».",
-    pieDegradedGeneric: "la requête du classement a échoué",
+    pieDegradedGeneric: 'La requête du classement n’a pas pu aboutir. Veuillez réessayer.',
     drillFailed: "Impossible de charger ce détail: {reason}. Une liste vide ici ne signifie pas qu’il n’y a aucune erreur.",
     pieClientIp: 'IP client',
     pieIdentity: 'Empreinte d’identité',

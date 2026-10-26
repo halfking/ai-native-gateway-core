@@ -140,10 +140,10 @@ export default {
 
 
   error: {
-    loadFailed: 'Fehler beim Laden der Modulliste',
-    operationFailed: 'Vorgang fehlgeschlagen',
-    saveFailed: 'Konfiguration konnte nicht gespeichert werden',
-    testFailed: 'Test fehlgeschlagen',
+    loadFailed: 'Modulliste konnte nicht geladen werden. Bitte erneut versuchen.',
+    operationFailed: 'Modulvorgang konnte nicht abgeschlossen werden. Bitte erneut versuchen.',
+    saveFailed: 'Modulkonfiguration konnte nicht gespeichert werden. Bitte erneut versuchen.',
+    testFailed: 'Modultest konnte nicht bestanden werden. Bitte erneut versuchen.',
   },
 
   // 同步的扁平键

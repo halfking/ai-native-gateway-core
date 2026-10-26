@@ -19,7 +19,7 @@ export default {
     colContact: 'Contact email',
     colCreated: 'Created',
     empty: 'No tenants yet',
-    loadFailed: 'Load failed',
+    loadFailed: 'The tenant list could not be loaded. Please retry.',
   },
   create: {
     title: 'New tenant',
@@ -37,7 +37,7 @@ export default {
     creating: 'Creating…',
     cancel: 'Cancel',
     codeAndNameRequired: 'code and name are required',
-    createFailed: 'Create failed',
+    createFailed: 'The tenant could not be created. Please retry.',
     successTitle: '✅ Tenant created',
     successHint: 'Default admin created. The initial password is shown only once. Please save it.',
     credTenant: 'Tenant',
@@ -121,8 +121,8 @@ export default {
     onboardingModelsHint: 'to see what is available, or go to',
     onboardingKeys: 'API keys',
     onboardingKeysHint: 'to issue a key and start calling.',
-    loadFailed: 'Load failed',
-    detailLoadFailed: 'Failed to load detail',
+    loadFailed: 'The tenant dashboard could not be loaded. Please retry.',
+    detailLoadFailed: 'The tenant details could not be loaded. Please retry.',
   },
 
   account: {
@@ -131,7 +131,7 @@ export default {
     buyCredits: 'Buy credits',
     refresh: 'Refresh',
     loading: 'Loading…',
-    loadFailed: 'Failed to load',
+    loadFailed: 'The tenant account could not be loaded. Please retry.',
     walletQuotaRemaining: 'Subscription quota',
     walletQuotaHint: 'Resets each billing cycle',
     walletGrantedBalance: 'Granted credits',
@@ -169,7 +169,7 @@ export default {
     title: 'Plans & top-up',
     refresh: 'Refresh',
     loading: 'Loading…',
-    loadFailed: 'Failed to load',
+    loadFailed: 'The pricing information could not be loaded. Please retry.',
     payChannelAlipay: 'Alipay',
     payChannelWechat: 'WeChat Pay',
     walletQuota: 'Subscription quota',
@@ -186,7 +186,7 @@ export default {
     creditsAmount: '{n} credits',
     buyNow: 'Buy now',
     creatingOrder: 'Creating order…',
-    createOrderFailed: 'Failed to create order',
+    createOrderFailed: 'The order could not be created. Please retry.',
   },
 
   usage: {
@@ -194,7 +194,7 @@ export default {
     adminTitle: 'Usage statistics',
     refresh: 'Refresh',
     loading: 'Loading…',
-    loadFailed: 'Failed to load',
+    loadFailed: 'The usage details could not be loaded. Please retry.',
     days7: 'Last 7 days',
     days30: 'Last 30 days',
     ledgerLimit50: 'Latest 50 entries',
@@ -225,7 +225,7 @@ export default {
   order: {
     title: 'Order payment',
     loading: 'Loading…',
-    loadFailed: 'Failed to load',
+    loadFailed: 'The order list could not be loaded. Please retry.',
     qrPlaceholder: 'Scan to pay (placeholder)',
     stubNote: 'Payment provider is not configured. Please contact support with your order number to complete payment.',
     paidNote: '✅ Payment confirmed. Credits have been added to your account.',

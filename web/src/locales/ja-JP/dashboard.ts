@@ -28,7 +28,7 @@ tabs: {
     super: "デフォルトテナント",
     tenant: "テナント: {tenantId}"
   },
-  loadError: "読み込み失敗",
+  loadError: 'ダッシュボードデータの読み込みに失敗しました。再試行してください。',
   board: {
     heroErrors: 'エラー',
     heroInput: '入力',
@@ -96,7 +96,7 @@ tabs: {
     selfcheckTitle: 'システム自己診断',
     pieClients: 'クライアント種別',
     pieDegraded: "利用できません — {reason}。ここが空のランキングなのは、データが無かったのではなく算出できなかったためです。",
-    pieDegradedGeneric: "ランキングの取得に失敗しました",
+    pieDegradedGeneric: 'ランキングの取得を完了できませんでした。再試行してください。',
     drillFailed: "この内訳を読み込めませんでした — {reason}。ここが空なのは、この種類のエラーがなかったことを意味しません。",
     pieClientIp: 'クライアント IP',
     pieIdentity: 'ID フィンガープリント',

@@ -34,7 +34,7 @@ v2: {
     super: "Inquilino predeterminado",
     tenant: "Inquilino: {tenantId}"
   },
-  loadError: "Error al cargar",
+  loadError: 'No se pudo cargar los datos del panel. Vuelva a intentarlo.',
   board: {
     heroErrors: 'Errores',
     heroInput: 'Entrada',
@@ -104,7 +104,7 @@ v2: {
     selfcheckTitle: 'Self-check',
     pieClients: 'Tipos de cliente',
     pieDegraded: "No disponible: {reason}. Una clasificación vacía aquí significa «no se calculó», no «no hay datos».",
-    pieDegradedGeneric: "la consulta de clasificación falló",
+    pieDegradedGeneric: 'No se pudo completar la consulta de clasificación. Vuelva a intentarlo.',
     drillFailed: "No se pudo cargar este desglose: {reason}. Una lista vacía aquí no significa que no hubiera errores.",
     pieClientIp: 'IP del cliente',
     pieIdentity: 'Hash de identidad',

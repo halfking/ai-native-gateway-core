@@ -2,7 +2,7 @@
 export default {
     refresh: 'Actualizar',
     refreshing: 'Actualizando…',
-    loadFailed: 'Error al cargar',
+    loadFailed: 'No se pudo cargar el ajuste automático. Vuelva a intentarlo.',
     panelTitle: 'Propuestas de ajuste (aprobada = aplicación en caliente en 5 min)',
     noProposals: 'Aún no hay propuestas (feedback_analyzer las genera por ventana)',
   filter: {

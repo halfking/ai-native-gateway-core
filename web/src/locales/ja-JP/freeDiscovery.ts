@@ -66,7 +66,7 @@ export default {
       start: "スキャン開始",
       running: "スキャン中…",
       done: "スキャン完了：{n} 件のモデルを発見。結果をレビューしてください",
-      failed: "スキャン失敗"
+      failed: 'スキャンを完了できませんでした。再試行してください。'
     },
   task: {
       listTitle: "探索タスク（{n}）",

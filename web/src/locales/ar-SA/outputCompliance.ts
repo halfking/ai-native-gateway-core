@@ -42,7 +42,7 @@ export default {
     createdAt: 'الوقت',
   },
   empty: 'لا توجد سجلات امتثال',
-  recordsLoadFailed: 'فشل تحميل سجلات المطابقة',
+  recordsLoadFailed: 'تعذّر تحميل سجلات المطابقة. أعد المحاولة.',
   recordsNotLoaded: 'سجلات المطابقة غير محمّلة: الجدول أدناه ليس نتيجة الاستعلام',
   pagination: {
     previous: 'السابق',

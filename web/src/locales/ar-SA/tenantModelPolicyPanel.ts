@@ -60,11 +60,11 @@ export default {
   },
 
   error: {
-    loadFailed: 'فشل التحميل',
-    checkFailed: 'فشل التحقق',
+    loadFailed: 'تعذّر تحميل سياسات نماذج المستأجر. أعد المحاولة.',
+    checkFailed: 'تعذّر إتمام التحقق. أعد المحاولة.',
     canonicalNameRequired: 'canonical_name مطلوب',
-    createFailed: 'فشل الإنشاء',
-    deleteFailed: 'فشل الحذف',
-    restoreFailed: 'فشلت الاستعادة',
+    createFailed: 'تعذّر إنشاء سياسة نماذج المستأجر. أعد المحاولة.',
+    deleteFailed: 'تعذّر حذف سياسة نماذج المستأجر. أعد المحاولة.',
+    restoreFailed: 'تعذّرت استعادة سياسة نماذج المستأجر. أعد المحاولة.',
   },
 }

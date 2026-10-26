@@ -109,10 +109,10 @@ export default {
   },
 
   error: {
-    loadFailed: 'Échec du chargement',
-    summaryLoadFailed: 'Échec du chargement des statistiques',
-    driftLoadFailed: "Échec du chargement de la dérive d'empreinte",
-    markFailed: 'Échec du marquage',
+    loadFailed: 'Le chargement des données d\'intégrité des modèles a échoué. Veuillez réessayer.',
+    summaryLoadFailed: 'Le chargement du résumé d\'intégrité des modèles a échoué. Veuillez réessayer.',
+    driftLoadFailed: 'Le chargement des données de dérive d\'empreinte a échoué. Veuillez réessayer.',
+    markFailed: 'Le marquage d\'intégrité des modèles n\'a pas pu aboutir. Veuillez réessayer.',
     needSuperAdmin: 'Permission super-admin requise',
   },
 }

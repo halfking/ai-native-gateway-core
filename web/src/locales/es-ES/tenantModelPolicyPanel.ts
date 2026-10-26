@@ -60,11 +60,11 @@ export default {
   },
 
   error: {
-    loadFailed: 'Error al cargar',
-    checkFailed: 'Error de validación',
+    loadFailed: 'No se pudo cargar la política de modelos del inquilino. Vuelva a intentarlo.',
+    checkFailed: 'No se pudo completar la validación. Vuelva a intentarlo.',
     canonicalNameRequired: 'canonical_name es obligatorio',
-    createFailed: 'Error al crear',
-    deleteFailed: 'Error al eliminar',
-    restoreFailed: 'Error al restaurar',
+    createFailed: 'No se pudo crear la política de modelos del inquilino. Vuelva a intentarlo.',
+    deleteFailed: 'No se pudo eliminar la política de modelos del inquilino. Vuelva a intentarlo.',
+    restoreFailed: 'No se pudo restablecer la política de modelos del inquilino. Vuelva a intentarlo.',
   },
 }

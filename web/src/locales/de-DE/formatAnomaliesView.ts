@@ -93,9 +93,9 @@ export default {
   },
 
   error: {
-    loadFailed: 'Laden fehlgeschlagen',
-    summaryLoadFailed: 'Statistik konnte nicht geladen werden',
-    markFailed: 'Markierung fehlgeschlagen',
+    loadFailed: 'Formatanomalien konnten nicht geladen werden. Bitte erneut versuchen.',
+    summaryLoadFailed: 'Formatanomalie-Statistik konnte nicht geladen werden. Bitte erneut versuchen.',
+    markFailed: 'Formatanomalie-Markierung konnte nicht abgeschlossen werden. Bitte erneut versuchen.',
     needSuperAdmin: 'Super-Admin-Berechtigung erforderlich',
   },
 

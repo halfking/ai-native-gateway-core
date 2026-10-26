@@ -7,7 +7,7 @@ export default {
   submitting: '登录中…',
   error: {
     required: '请输入用户名和密码',
-    failed: '登录失败',
+    failed: '没能登录，请检查用户名和密码后重试',
     apiKeyUnsupported: '此账号不再支持 API key 登录，请使用用户名/密码登录。如需帮助请联系管理员。',
     badResponse: '登录响应格式异常，请重试或联系管理员。',
   },

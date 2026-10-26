@@ -58,8 +58,8 @@ export default {
   tokenPlanSuffix: 'token_plan',
   saved: '已保存',
   noChange: '无变更',
-  saveFailed: '保存失败',
+  saveFailed: '定价没能保存，请重试',
   copied: '价格已复制',
   pasted: '已粘贴，请保存后生效',
-  failed: '导入失败',
+  failed: '定价模板没能导入，请重试',
 }

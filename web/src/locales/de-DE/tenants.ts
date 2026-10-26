@@ -15,7 +15,7 @@ export default {
     colContact: "Kontakt-E-Mail",
     colCreated: "Erstellt",
     empty: 'Noch keine Mandanten vorhanden.',
-    loadFailed: "Laden fehlgeschlagen"
+    loadFailed: 'Mandantenliste konnte nicht geladen werden. Bitte erneut versuchen.'
   },
   create: {
     title: "Neuen Mandanten anlegen",
@@ -33,7 +33,7 @@ export default {
     creating: "Wird erstellt…",
     cancel: "Abbrechen",
     codeAndNameRequired: "Code und Name sind erforderlich",
-    createFailed: "Erstellen fehlgeschlagen",
+    createFailed: 'Mandant konnte nicht erstellt werden. Bitte erneut versuchen.',
     successTitle: "✅ Mandant erstellt",
     successHint: "Standard-Admin erstellt. Das initiale Passwort wird nur einmal angezeigt. Bitte sicher aufbewahren.",
     credTenant: "Mandant",
@@ -115,8 +115,8 @@ export default {
     onboardingModelsHint: "um zu sehen, was verfügbar ist, oder gehen Sie zu",
     onboardingKeys: "API-Schlüssel",
     onboardingKeysHint: "um einen Schlüssel auszustellen und Aufrufe zu starten.",
-    loadFailed: "Laden fehlgeschlagen",
-    detailLoadFailed: "Details konnten nicht geladen werden"
+    loadFailed: 'Mandanten-Dashboard konnte nicht geladen werden. Bitte erneut versuchen.',
+    detailLoadFailed: 'Mandantendetails konnten nicht geladen werden. Bitte erneut versuchen.'
 ,
     statCreditsConsumed: 'Total credits consumed',
 
@@ -132,7 +132,7 @@ export default {
     buyCredits: "Credits kaufen",
     refresh: "Aktualisieren",
     loading: "Wird geladen…",
-    loadFailed: "Laden fehlgeschlagen",
+    loadFailed: 'Mandantenkonto konnte nicht geladen werden. Bitte erneut versuchen.',
     walletQuotaRemaining: "Abonnement-Kontingent",
     walletQuotaHint: "Wird zum Ende des Abrechnungszeitraums zurückgesetzt",
     walletGrantedBalance: "Gewährte Credits",
@@ -169,7 +169,7 @@ export default {
     title: "Tarife & Aufladung",
     refresh: "Aktualisieren",
     loading: "Wird geladen…",
-    loadFailed: "Laden fehlgeschlagen",
+    loadFailed: 'Preisinformationen konnten nicht geladen werden. Bitte erneut versuchen.',
     payChannelAlipay: "Alipay",
     payChannelWechat: "WeChat Pay",
     walletQuota: "Abonnement-Kontingent",
@@ -186,14 +186,14 @@ export default {
     creditsAmount: "{n} Credits",
     buyNow: "Jetzt kaufen",
     creatingOrder: "Bestellung wird angelegt…",
-    createOrderFailed: "Bestellung konnte nicht angelegt werden"
+    createOrderFailed: 'Bestellung konnte nicht erstellt werden. Bitte erneut versuchen.'
   },
   usage: {
     title: "Mein Verbrauch",
     adminTitle: "Verbrauchsstatistik",
     refresh: "Aktualisieren",
     loading: "Wird geladen…",
-    loadFailed: "Laden fehlgeschlagen",
+    loadFailed: 'Nutzungsdetails konnten nicht geladen werden. Bitte erneut versuchen.',
     days7: "Letzte 7 Tage",
     days30: "Letzte 30 Tage",
     ledgerLimit50: "Letzte 50 Buchungen",
@@ -223,7 +223,7 @@ export default {
   order: {
     title: "Bestellung bezahlen",
     loading: "Wird geladen…",
-    loadFailed: "Laden fehlgeschlagen",
+    loadFailed: 'Bestellliste konnte nicht geladen werden. Bitte erneut versuchen.',
     qrPlaceholder: "Scannen zum Bezahlen (Platzhalter)",
     stubNote: "Der Zahlungsanbieter ist nicht eingerichtet. Bitte nennen Sie dem Support Ihre Bestellnummer, um die Zahlung abzuschließen.",
     paidNote: "✅ Zahlung bestätigt. Die Credits wurden Ihrem Konto gutgeschrieben.",

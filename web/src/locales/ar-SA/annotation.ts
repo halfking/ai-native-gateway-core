@@ -74,7 +74,7 @@ export default {
     reason: 'سبب التعليق',
     annotator: 'المعلِّق',
     annotatedAt: 'وقت التعليق',
-    loadFailed: 'فشل تحميل تفاصيل الدور الأول',
+    loadFailed: 'تعذّر تحميل تفاصيل الدور الأول للتعليق. أعد المحاولة.',
     metaSection: 'بيانات الدور الأول الوصفية',
     requestSection: 'معلومات الطلب',
     annotationSection: 'التعليق اليدوي',
@@ -97,7 +97,7 @@ export default {
     detailTitle: 'تفاصيل جودة الوسم',
     refresh: 'تحديث',
     refreshing: 'جارٍ التحديث...',
-    loadFailed: 'فشل تحميل الإحصاءات',
+    loadFailed: 'تعذّر تحميل إحصاءات التعليق. أعد المحاولة.',
     noData: 'لا توجد إحصاءات الوسم بعد. أكمل دفعة تعليقات أولًا ثم راجعها.',
     totalAnnotations: 'إجمالي التعليقات',
     providerAccuracy: 'دقة المزوّدين',
@@ -121,8 +121,8 @@ export default {
   // Success messages
 
   // Error messages
-  loadFailed: 'فشل تحميل عينات التعليق',
-  annotationFailed: 'فشل التعليق',
+  loadFailed: 'تعذّر تحميل عينات التعليق. أعد المحاولة.',
+  annotationFailed: 'تعذّر إتمام التعليق. أعد المحاولة.',
   correctionWriteFailed: 'فشل حفظ التصحيح (تم حفظ التعليق التوضيحي): {msg}',
 
   // Loading states
@@ -134,8 +134,8 @@ export default {
     exportBtn: 'تصدير CSV',
     importBtn: 'استيراد CSV',
     exportOk: 'تم تصدير {name}',
-    exportFailed: 'فشل التصدير',
+    exportFailed: 'تعذّر تصدير ملف مهمة التعليق. أعد المحاولة.',
     importOk: 'تم استيراد {imported}، تم تخطي {skipped}، أخطاء {errors}',
-    importFailed: 'فشل الاستيراد',
+    importFailed: 'تعذّر استيراد ملف مهمة التعليق. أعد المحاولة.',
   },
 }

@@ -74,7 +74,7 @@ export default {
     reason: 'アノテーション理由',
     annotator: 'アノテーター',
     annotatedAt: 'アノテーション日時',
-    loadFailed: '最初のターン詳細の読み込みに失敗しました',
+    loadFailed: 'アノテーションの最初のターン詳細の読み込みに失敗しました。再試行してください。',
     metaSection: '最初のターンのメタデータ',
     requestSection: 'リクエスト情報',
     annotationSection: '人手アノテーション',
@@ -97,7 +97,7 @@ export default {
     detailTitle: 'アノテーション品質明細',
     refresh: '更新',
     refreshing: '更新中...',
-    loadFailed: '統計の読み込みに失敗しました',
+    loadFailed: 'アノテーション統計の読み込みに失敗しました。再試行してください。',
     noData: 'アノテーション統計はまだありません。先にアノテーションをまとめて登録してから確認してください。',
     totalAnnotations: '総アノテーション数',
     providerAccuracy: 'プロバイダー別精度',
@@ -121,8 +121,8 @@ export default {
   // Success messages
 
   // Error messages
-  loadFailed: 'サンプルの読み込みに失敗しました',
-  annotationFailed: 'アノテーションに失敗しました',
+  loadFailed: 'アノテーションサンプルの読み込みに失敗しました。再試行してください。',
+  annotationFailed: 'アノテーションを完了できませんでした。再試行してください。',
   correctionWriteFailed: '修正の書き込みに失敗しました（アノテーションは保存済み）：{msg}',
 
   // Loading states
@@ -134,8 +134,8 @@ export default {
     exportBtn: 'CSV エクスポート',
     importBtn: 'CSV インポート',
     exportOk: '{name} をエクスポートしました',
-    exportFailed: 'エクスポートに失敗しました',
+    exportFailed: 'アノテーションのタスクプロファイルのエクスポートに失敗しました。再試行してください。',
     importOk: 'インポート {imported}、スキップ {skipped}、エラー {errors}',
-    importFailed: 'インポートに失敗しました',
+    importFailed: 'アノテーションのタスクプロファイルのインポートに失敗しました。再試行してください。',
   },
 }

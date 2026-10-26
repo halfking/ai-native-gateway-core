@@ -218,7 +218,7 @@ export default {
   coldData: "Datos fríos (30-90 días)",
   expiredData: "Datos caducados (más de 90 días)",
   missingDate: "Seleccione una fecha de inicio y una de fin",
-  previewFailed: "Error en la vista previa",
+  previewFailed: 'No se pudo generar la vista previa. Vuelva a intentarlo.',
   needPreview: "Previsualice primero el impacto",
   executeNotImpl: "La función de limpieza se implementará en una fase posterior. Use el script de línea de comandos para ejecutarla."
 ,
@@ -257,7 +257,7 @@ export default {
       hint: 'El esquema de la base de datos está por detrás de esta versión; las cifras son marcadores de «no se puede calcular», no mediciones reales.',
     },
     errors: {
-      load: 'No se pudieron cargar los datos de uso avanzados',
+      load: 'No se pudieron cargar los datos de uso avanzado. Vuelva a intentarlo.',
     },
     sources: {
       summary: 'Resumen de uso',
@@ -320,9 +320,9 @@ export default {
       totalRequests: 'Solicitudes totales',
     },
     errors: {
-      costTrend: 'Error al cargar tendencia de costes',
-      periodCompare: 'Error al cargar comparación de periodos',
-      cacheEconomics: 'Error al cargar economía de caché',
+      costTrend: 'No se pudo cargar la tendencia de costes. Vuelva a intentarlo.',
+      periodCompare: 'No se pudo cargar la comparación de periodos. Vuelva a intentarlo.',
+      cacheEconomics: 'No se pudo cargar la economía de caché. Vuelva a intentarlo.',
     },
     degraded: {
       title: 'Algunas métricas no están disponibles:',

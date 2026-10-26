@@ -2,7 +2,7 @@
 export default {
     refresh: 'Actualiser',
     refreshing: 'Actualisation…',
-    loadFailed: 'Échec du chargement',
+    loadFailed: 'Le chargement des propositions de réglage automatique a échoué. Veuillez réessayer.',
     panelTitle: 'Propositions de réglage (approbation = application à chaud sous 5 min)',
     noProposals: 'Aucune proposition pour l’instant (feedback_analyzer les génère par fenêtre)',
   filter: {

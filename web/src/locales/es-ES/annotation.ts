@@ -74,7 +74,7 @@ export default {
     reason: 'Motivo de la anotación',
     annotator: 'Anotador',
     annotatedAt: 'Fecha de anotación',
-    loadFailed: 'Error al cargar el detalle del primer turno',
+    loadFailed: 'No se pudo cargar el detalle del primer turno de anotación. Vuelva a intentarlo.',
     metaSection: 'Metadatos del primer turno',
     requestSection: 'Solicitud',
     annotationSection: 'Anotación manual',
@@ -97,7 +97,7 @@ export default {
     detailTitle: 'Detalle de calidad de anotación',
     refresh: 'Actualizar',
     refreshing: 'Actualizando...',
-    loadFailed: 'Error al cargar las estadísticas',
+    loadFailed: 'No se pudo cargar las estadísticas de anotación. Vuelva a intentarlo.',
     noData: 'Aún no hay estadísticas de anotación. Anota una muestra para verlas.',
     totalAnnotations: 'Anotaciones totales',
     providerAccuracy: 'Precisión por proveedor',
@@ -121,8 +121,8 @@ export default {
   // Success messages
 
   // Error messages
-  loadFailed: 'Error al cargar las muestras de anotación',
-  annotationFailed: 'Error en la anotación',
+  loadFailed: 'No se pudo cargar las muestras de anotación. Vuelva a intentarlo.',
+  annotationFailed: 'No se pudo completar la anotación. Vuelva a intentarlo.',
   correctionWriteFailed: 'Error al guardar la corrección (anotación guardada): {msg}',
 
   // Loading states
@@ -134,8 +134,8 @@ export default {
     exportBtn: 'Exportar CSV',
     importBtn: 'Importar CSV',
     exportOk: '{name} exportado',
-    exportFailed: 'Error al exportar',
+    exportFailed: 'No se pudo exportar el perfil de tarea de anotación. Vuelva a intentarlo.',
     importOk: 'Importados {imported}, omitidos {skipped}, errores {errors}',
-    importFailed: 'Error al importar',
+    importFailed: 'No se pudo importar el perfil de tarea de anotación. Vuelva a intentarlo.',
   },
 }

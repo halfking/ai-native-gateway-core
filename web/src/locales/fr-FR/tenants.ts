@@ -15,7 +15,7 @@ export default {
     colContact: "E-mail de contact",
     colCreated: "Créé",
     empty: 'Aucun locataire pour l’instant',
-    loadFailed: "Échec du chargement"
+    loadFailed: 'Le chargement de la liste des locataires a échoué. Veuillez réessayer.'
   },
   create: {
     title: "Nouveau locataire",
@@ -33,7 +33,7 @@ export default {
     creating: "Création…",
     cancel: "Annuler",
     codeAndNameRequired: "Le code et le nom sont requis",
-    createFailed: "Échec de la création",
+    createFailed: 'La création du locataire a échoué. Veuillez réessayer.',
     successTitle: "✅ Locataire créé",
     successHint: "Administrateur par défaut créé. Le mot de passe initial n'est affiché qu'une seule fois. Veuillez le conserver.",
     credTenant: "Locataire",
@@ -115,8 +115,8 @@ export default {
     onboardingModelsHint: "pour voir ce qui est disponible, ou allez à",
     onboardingKeys: "Clés API",
     onboardingKeysHint: "pour émettre une clé et commencer à appeler.",
-    loadFailed: "Échec du chargement",
-    detailLoadFailed: "Échec du chargement du détail"
+    loadFailed: 'Le chargement du tableau de bord des locataires a échoué. Veuillez réessayer.',
+    detailLoadFailed: 'Le chargement du détail des locataires a échoué. Veuillez réessayer.'
 ,
     statCreditsConsumed: 'Total credits consumed',
 
@@ -132,7 +132,7 @@ export default {
     buyCredits: "Acheter des crédits",
     refresh: "Actualiser",
     loading: "Chargement…",
-    loadFailed: "Échec du chargement",
+    loadFailed: 'Le chargement du compte du locataire a échoué. Veuillez réessayer.',
     walletQuotaRemaining: "Quota d'abonnement",
     walletQuotaHint: "Réinitialisé à chaque cycle de facturation",
     walletGrantedBalance: "Crédits accordés",
@@ -169,7 +169,7 @@ export default {
     title: "Forfaits & rechargement",
     refresh: "Actualiser",
     loading: "Chargement…",
-    loadFailed: "Échec du chargement",
+    loadFailed: 'Le chargement des informations de tarification a échoué. Veuillez réessayer.',
     payChannelAlipay: "Alipay",
     payChannelWechat: "WeChat Pay",
     walletQuota: "Quota d'abonnement",
@@ -186,14 +186,14 @@ export default {
     creditsAmount: "{n} crédits",
     buyNow: "Acheter maintenant",
     creatingOrder: "Création de la commande…",
-    createOrderFailed: "Échec de la création de la commande"
+    createOrderFailed: 'La création de la commande a échoué. Veuillez réessayer.'
   },
   usage: {
     title: "Ma consommation",
     adminTitle: "Statistiques de consommation",
     refresh: "Actualiser",
     loading: "Chargement…",
-    loadFailed: "Échec du chargement",
+    loadFailed: 'Le chargement du détail de la consommation n\'a pas pu aboutir. Veuillez réessayer.',
     days7: "7 derniers jours",
     days30: "30 derniers jours",
     ledgerLimit50: "50 dernières écritures",
@@ -223,7 +223,7 @@ export default {
   order: {
     title: "Paiement de la commande",
     loading: "Chargement…",
-    loadFailed: "Échec du chargement",
+    loadFailed: 'Le chargement de la liste des commandes a échoué. Veuillez réessayer.',
     qrPlaceholder: "Scannez pour payer (placeholder)",
     stubNote: "Le prestataire de paiement n'est pas configuré. Contactez le support avec votre numéro de commande pour finaliser le paiement.",
     paidNote: "✅ Paiement confirmé. Les crédits ont été ajoutés à votre compte.",

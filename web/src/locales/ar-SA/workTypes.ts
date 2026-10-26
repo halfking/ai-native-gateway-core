@@ -123,5 +123,5 @@ export default {
 
   // 同步的扁平键
   savedOk: 'تم الحفظ',
-  testFailedShort: 'فشل الاختبار',
+  testFailedShort: 'تعذّر اجتياز اختبار أنواع المهام. أعد المحاولة.',
 }

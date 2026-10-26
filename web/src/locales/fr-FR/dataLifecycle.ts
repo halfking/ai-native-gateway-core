@@ -219,7 +219,7 @@ export default {
   coldData: "Données froides (30–90 jours)",
   expiredData: "Données expirées (>90 jours)",
   missingDate: "Veuillez choisir une date de début et une date de fin",
-  previewFailed: "Échec de l'aperçu",
+  previewFailed: 'L\'aperçu n\'a pas pu aboutir. Veuillez réessayer.',
   needPreview: "Veuillez d'abord exécuter un aperçu",
   executeNotImpl: "Le nettoyage sera implémenté dans la prochaine phase. Veuillez utiliser les scripts CLI pour l'instant."
 ,
@@ -258,7 +258,7 @@ export default {
       hint: 'Le schéma de la base de données est en retard sur cette version ; les chiffres sont des substituts « non calculables », pas des mesures réelles.',
     },
     errors: {
-      load: 'Échec du chargement des données d’utilisation avancées',
+      load: 'Le chargement des données d\'utilisation avancées a échoué. Veuillez réessayer.',
     },
     sources: {
       summary: 'Résumé d’utilisation',
@@ -321,9 +321,9 @@ export default {
       totalRequests: 'Requêtes totales',
     },
     errors: {
-      costTrend: 'Échec du chargement de la tendance des coûts',
-      periodCompare: 'Échec du chargement de la comparaison',
-      cacheEconomics: 'Échec du chargement de l’économie cache',
+      costTrend: 'Le chargement de la tendance des coûts a échoué. Veuillez réessayer.',
+      periodCompare: 'Le chargement de la comparaison des périodes a échoué. Veuillez réessayer.',
+      cacheEconomics: 'Le chargement de l\'économie du cache a échoué. Veuillez réessayer.',
     },
     degraded: {
       title: 'Certaines métriques sont indisponibles :',

@@ -57,10 +57,10 @@ export default {
       info: '{page} / {totalPages} ページ（{total} 件）',
     },
     errors: {
-      approveFailed: 'Approve failed',
-      rejectFailed: 'Reject failed',
+      approveFailed: '承認が確定しませんでした。再試行してください。',
+      rejectFailed: '却下を完了できませんでした。再試行してください。',
 
-      loadListFailed: "承認リストの読み込みに失敗しました",
+      loadListFailed: '承認リストの読み込みに失敗しました。再試行してください。',
     },
     success: {
       approved: 'Approved',
@@ -139,8 +139,8 @@ export default {
       rules: '承認が必要なリクエストを定義',
     },
     errors: {
-      loadFailed: '設定の読み込みに失敗',
-      saveFailed: '保存に失敗',
+      loadFailed: '承認設定の読み込みに失敗しました。再試行してください。',
+      saveFailed: '承認設定の保存に失敗しました。再試行してください。',
     },
     success: {
       saved: '保存しました',

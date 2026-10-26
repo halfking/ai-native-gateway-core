@@ -15,7 +15,7 @@ export default {
     colContact: "聯絡郵箱",
     colCreated: "建立時間",
     empty: '還沒有租戶',
-    loadFailed: "載入失敗"
+    loadFailed: '租戶列表沒能載入出來，請重試'
   },
   create: {
     title: "新增租戶",
@@ -33,7 +33,7 @@ export default {
     creating: "建立中…",
     cancel: "取消",
     codeAndNameRequired: "code 和 name 不能為空",
-    createFailed: "建立失敗",
+    createFailed: '租戶沒能建立起來，請重試',
     successTitle: "✅ 租戶建立成功",
     successHint: "預設管理員已建立，初始密碼僅顯示一次，請妥善儲存。",
     credTenant: "租戶",
@@ -115,8 +115,8 @@ export default {
     onboardingModelsHint: "檢視可用模型，或到",
     onboardingKeys: "API 金鑰",
     onboardingKeysHint: "簽發金鑰後發起呼叫。",
-    loadFailed: "載入失敗",
-    detailLoadFailed: "明細載入失敗"
+    loadFailed: '租戶看板沒能載入出來，請重試',
+    detailLoadFailed: '租戶明細沒能載入出來，請重試'
 ,
     statCreditsConsumed: '總積分消耗',
 
@@ -132,7 +132,7 @@ export default {
     buyCredits: "購買積分",
     refresh: "重新整理",
     loading: "載入中…",
-    loadFailed: "載入失敗",
+    loadFailed: '租戶帳戶沒能載入出來，請重試',
     walletQuotaRemaining: "訂閱額度",
     walletQuotaHint: "月包週期內，到期清零",
     walletGrantedBalance: "信用積分",
@@ -169,7 +169,7 @@ export default {
     title: "套餐與儲值",
     refresh: "重新整理",
     loading: "載入中…",
-    loadFailed: "載入失敗",
+    loadFailed: '定價資訊沒能載入出來，請重試',
     payChannelAlipay: "支付寶",
     payChannelWechat: "微信支付",
     walletQuota: "訂閱額度",
@@ -186,14 +186,14 @@ export default {
     creditsAmount: "{n} 積分",
     buyNow: "立即購買",
     creatingOrder: "建立訂單…",
-    createOrderFailed: "建立訂單失敗"
+    createOrderFailed: '訂單沒能建立起來，請重試'
   },
   usage: {
     title: "我的消耗",
     adminTitle: "消耗統計",
     refresh: "重新整理",
     loading: "載入中…",
-    loadFailed: "載入失敗",
+    loadFailed: '用量明細沒能載入出來，請重試',
     days7: "近 7 天",
     days30: "近 30 天",
     ledgerLimit50: "流水 50 條",
@@ -223,7 +223,7 @@ export default {
   order: {
     title: "訂單支付",
     loading: "載入中…",
-    loadFailed: "載入失敗",
+    loadFailed: '訂單列表沒能載入出來，請重試',
     qrPlaceholder: "掃碼支付（佔位）",
     stubNote: "支付帳號尚未接入，請備註訂單號聯絡客服完成支付。",
     paidNote: "✅ 支付已確認，積分已到賬。",

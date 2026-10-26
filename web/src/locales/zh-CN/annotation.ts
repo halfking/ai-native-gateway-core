@@ -74,7 +74,7 @@ export default {
     reason: '标注原因',
     annotator: '标注人',
     annotatedAt: '标注时间',
-    loadFailed: '加载首轮详情失败',
+    loadFailed: '标注首轮详情没能加载出来，请重试',
     metaSection: '第一轮元数据',
     requestSection: '请求信息',
     annotationSection: '人工标注',
@@ -97,7 +97,7 @@ export default {
     detailTitle: '标注质量明细',
     refresh: '刷新',
     refreshing: '刷新中...',
-    loadFailed: '加载统计数据失败',
+    loadFailed: '标注统计没能加载出来，请重试',
     noData: '还没有标注统计 —— 先完成一批标注后再看',
     totalAnnotations: '总标注数',
     providerAccuracy: '供应商准确率',
@@ -121,8 +121,8 @@ export default {
   // Success messages
   
   // Error messages
-  loadFailed: '加载标注样本失败',
-  annotationFailed: '标注失败',
+  loadFailed: '标注样本没能加载出来，请重试',
+  annotationFailed: '标注没能完成，请重试',
   correctionWriteFailed: '修正写入失败（主标注已保存）：{msg}',
   
   // Loading states
@@ -134,8 +134,8 @@ export default {
     exportBtn: '导出 CSV',
     importBtn: '导入 CSV',
     exportOk: '已导出 {name}',
-    exportFailed: '导出失败',
+    exportFailed: '标注任务画像没能导出，请重试',
     importOk: '导入 {imported} 条，跳过 {skipped} 条，错误 {errors} 条',
-    importFailed: '导入失败',
+    importFailed: '标注任务画像没能导入，请重试',
   },
 }

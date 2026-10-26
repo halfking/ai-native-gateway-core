@@ -42,7 +42,7 @@ export default {
     createdAt: 'Hora',
   },
   empty: 'Sin registros de cumplimiento',
-  recordsLoadFailed: 'No se pudieron cargar los registros de coincidencias',
+  recordsLoadFailed: 'No se pudieron cargar los registros de coincidencias. Vuelva a intentarlo.',
   recordsNotLoaded: 'Registros de coincidencias no cargados: la tabla siguiente no es el resultado de la consulta',
   pagination: {
     previous: 'Anterior',

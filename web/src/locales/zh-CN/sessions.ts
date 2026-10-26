@@ -6,7 +6,7 @@ export default {
     emptyHint: '会话在请求日志产生 gw_session_id 后自动聚合显示',
   },
   userProfile: {
-    loadFailed: '用户画像加载失败',
+    loadFailed: '用户画像没能加载出来，请重试',
     title: '用户画像',
     detailTitle: '用户画像详情',
     ownerUser: '用户标识',
@@ -131,7 +131,7 @@ export default {
     sessionId: '会话 ID',
     requests: '请求数',
     health: '健康度',
-    loadError: '加载客户端分析失败',
+    loadError: '客户端分析没能加载出来，请重试',
   },
   taskAnalytics: {
     title: '任务分析',
@@ -147,7 +147,7 @@ export default {
     sessionId: '会话 ID',
     requests: '请求数',
     health: '健康度',
-    loadError: '加载任务分析失败',
+    loadError: '任务分析没能加载出来，请重试',
   },
   config: {
     title: '会话配置',
@@ -317,8 +317,8 @@ export default {
     promptInjectionRuleSearchPlaceholder: '搜索规则名称或描述…',
     promptInjectionRuleSaveSuccess: '规则已更新',
     promptInjectionPolicySaveSuccess: '策略已保存',
-    promptInjectionLoadError: '加载失败',
-    promptInjectionSaveError: '保存失败',
+    promptInjectionLoadError: '提示注入配置没能加载出来，请重试',
+    promptInjectionSaveError: '提示注入配置没能保存，请重试',
     promptInjectionSectionAdvanced: '高级入口',
     promptInjectionLinkEngines: 'LLM 引擎管理',
     promptInjectionLinkEnginesHint: '配置用于智能检测的模型、温度与提示词',

@@ -114,7 +114,7 @@ export default {
   loading: '加载…',
   loadingDetail: '加载详情…',
   savedOk: '已保存',
-  testFailedShort: '测试失败',
+  testFailedShort: '工作类型测试没能通过，请重试',
   // 2026-07-07: WorkTypesView.vue 直接引用顶层 key
   enabled: '已启用',
   disabled: '已禁用',

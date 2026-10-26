@@ -93,9 +93,9 @@ export default {
   },
 
   error: {
-    loadFailed: 'فشل التحميل',
-    summaryLoadFailed: 'فشل تحميل الإحصائيات',
-    markFailed: 'فشل التحديد',
+    loadFailed: 'تعذّر تحميل شذوذات التنسيق. أعد المحاولة.',
+    summaryLoadFailed: 'تعذّر تحميل إحصاءات شذوذات التنسيق. أعد المحاولة.',
+    markFailed: 'تعذّر إتمام تحديد شذوذات التنسيق. أعد المحاولة.',
     needSuperAdmin: 'يتطلب صلاحية مدير عام',
   },
 

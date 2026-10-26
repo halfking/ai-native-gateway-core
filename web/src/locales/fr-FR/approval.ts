@@ -57,10 +57,10 @@ export default {
       info: 'Page {page} / {totalPages} ({total} au total)',
     },
     errors: {
-      approveFailed: 'Approve failed',
-      rejectFailed: 'Reject failed',
+      approveFailed: 'L\'approbation n\'a pas pu aboutir. Veuillez réessayer.',
+      rejectFailed: 'Le rejet n\'a pas pu aboutir. Veuillez réessayer.',
 
-      loadListFailed: 'Failed to load approval list',
+      loadListFailed: 'Le chargement de la liste des approbations a échoué. Veuillez réessayer.',
     },
     success: {
       approved: 'Approved',
@@ -139,8 +139,8 @@ export default {
       rules: 'Définir les requêtes à approuver',
     },
     errors: {
-      loadFailed: 'Échec du chargement des paramètres',
-      saveFailed: 'Échec de l’enregistrement',
+      loadFailed: 'Le chargement de la configuration des approbations a échoué. Veuillez réessayer.',
+      saveFailed: 'L\'enregistrement de la configuration des approbations a échoué. Veuillez réessayer.',
     },
     success: {
       saved: 'Enregistré avec succès',

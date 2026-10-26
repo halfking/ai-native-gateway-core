@@ -42,7 +42,7 @@ export default {
     createdAt: '時間',
   },
   empty: '暫無合規記錄',
-  recordsLoadFailed: '命中記錄載入失敗',
+  recordsLoadFailed: '命中記錄沒能載入出來，請重試',
   recordsNotLoaded: '命中記錄未載入，下面不是查詢結果',
   pagination: {
     previous: '上一頁',
