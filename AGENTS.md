@@ -10194,4 +10194,12 @@ index b953a6f03..555ef83c4 100644
 > 　· ★ **R163-HIDDEN-7：裁决被假退役掩盖的 7 条真缺口（★ 6 条 `routing_decision_log` + 1 条 `tool_usage_stats`）**
 > 　· ★ **R163-ORDER：211 的 `sessions` 三列死列要不要清（★ 顺序倒置的残留）** · ★ **R163-MIGRATION-MONOTONIC：迁移链加「只前进、不回退」守卫**
 > 　· ★ **R163-BASELINE：★ `01-schema.sql` 的定位（★ 342 条索引 / 95 个迁移的产物只存在于 dump）** · ★ R162-SESSIONS-IDX · ★ R162-EXPECT-SCOPE · ★ R161-D17-A · ★ R161-SHARED-BUF
-> ⇒ ⇒ ★★★★ 完整记录见 `docs/audit/2026-10-27-R163-新装环境多环境同一标准与执行顺序.md`（§0~§11，★ 含 §9「诚实边界」9 条与 §10「待属主裁决」9 条）。
+> ⇒ ⇒ ★★★★ ★★ **本轮订正（★ 2026-10-27 收尾）**：★ **「909 含 CONCURRENTLY ⇒ 永远装不上 ⇒ `guards-installer` 红」是【误报】**
+> 　· ★ 门（`installer/cmd/llm-gw-installer/startup_concurrency_gate_test.go:53`）断言 909「can never apply under `psql --single-transaction`; **the install hard-fails at this file**」
+> 　· ★ **真因**：★ `runner.go:1736` 只在文件**未**声明 `dbinit:no-transaction` 时才加 `--single-transaction`；★ 909 **第 1 行**带该标记 ⇒ ⇒ **runner 对 909 从不加那个参数**
+> 　· ★ **阳性/阴性对照（本轮最硬的一处证据）**：★ 同一文件、同一夹具库、同一 psql ⇒ **带** `--single-transaction` ⇒ `ERROR: CREATE INDEX CONCURRENTLY cannot run inside a transaction block`（rc=3）；★ **不带** ⇒ rc=0 且三条 trgm 索引 `indisvalid=true` 全部建出
+> 　· ★ **新装库实测**：`llm_gateway_fresh` 账本有 909（@`2026-10-25 14:44:52`）且三条索引 `indisvalid=t` / `indisready=t` ⇒ ⇒ **与「hard-fails」相反**
+> 　· ★ ★★ **门自己的注释（第 88~92 行）已写「该前提对携带 `dbinit:no-transaction` 标记的文件不成立」** ⇒ ★ 而 871/877/887/888/898/902/908 全登记在豁免表 ⇒ ⇒ **门维护的是【手抄白名单】⇒ ★ 漏一条就报红**；★ 仓内已有正解范例：`installer/internal/dbinit/untransactable_requires_marker_test.go` **调用真函数** `requiresNoTransaction`
+> 　· ★ **归属**：★ 本轮分支对 `installer/` 与 `sql/migrations/` **零 diff** ⇒ ⇒ **origin/main 既有红**；★ 修复已由并行会话的未提交补丁承担（★ 调用 `dbinit.RequiresNoTransaction`）⇒ ⇒ **本轮不重复实现、不纳入本次推送**
+> 　· ★ ★★ **三条通用式**：★ **门的前置假设必须与【被测物的实际行为】对齐 ⇒ ★★ 「门自己写着前提不成立却仍按旧前提判红」⇒ ⇒ 门的前置假设本身必须能被证伪** · ★ **「我这边红」≠「我这边错」⇒ ★★ 归属判定唯一可靠办法是【同机同命令、两个 checkout 各跑一遍】** · ★ **「装得上」的实测成本极低（★ 本轮 ≈ 1 分钟）⇒ ⇒ 判「新装装不上」之前先真装一次**
+> ⇒ ⇒ ★★★★ 完整记录见 `docs/audit/2026-10-27-R163-新装环境多环境同一标准与执行顺序.md`（§0~§11，★ 含 §8.5「909 门误报订正」、§9「诚实边界」9 条与 §10「待属主裁决」9 条）。
