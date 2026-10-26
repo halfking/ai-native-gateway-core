@@ -1,0 +1,121 @@
+# 供应商 / 模型 / 定价
+# providerConsole 与 platformOps 档的供应商、模型目录、定价、免费池。
+# 路由清单来自 web/src/router.ts（见 maestro/README.md 的逐条核对表）。
+# 计时：每个页面 openLink 前打点 output.t0，页面关键文案可见后算 output.ms__<slug>（毫秒）。
+#       阈值 2000ms 用 optional 断言 —— 慢页只标记不失败，事后用 maestro/tools/slow-pages.mjs 筛。
+appId: ${BASE_URL}
+---
+- launchApp
+- runFlow:
+    file: _shared/login.yaml
+    env:
+      ADMIN_USER: ${ADMIN_USER}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD}
+
+# ── /providers ─────────────────────────────────────────────
+- evalScript: "${output.t0 = Date.now()}"
+- openLink: "${BASE_URL}/providers"
+- extendedWaitUntil:
+    visible: '供应商管理'
+    timeout: 20000
+- evalScript: "${output.ms__providers = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}"
+- assertTrue:
+    condition: "${output.ms__providers < 2000}"
+    optional: true
+    label: 'slow-check:/providers'
+
+# ── /providers/:id ─────────────────────────────────────────────
+- evalScript: "${output.t0 = Date.now()}"
+- openLink: "${BASE_URL}/providers/${PROVIDER_ID}"
+- extendedWaitUntil:
+    visible: '供应商名称（Name）'
+    timeout: 20000
+- evalScript: "${output.ms__providers_id = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}"
+- assertTrue:
+    condition: "${output.ms__providers_id < 2000}"
+    optional: true
+    label: 'slow-check:/providers/:id'
+
+# ── /models ─────────────────────────────────────────────
+- evalScript: "${output.t0 = Date.now()}"
+- openLink: "${BASE_URL}/models"
+- extendedWaitUntil:
+    visible: '模型与目录'
+    timeout: 20000
+- evalScript: "${output.ms__models = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}"
+- assertTrue:
+    condition: "${output.ms__models < 2000}"
+    optional: true
+    label: 'slow-check:/models'
+
+# ── /catalog ─────────────────────────────────────────────
+- evalScript: "${output.t0 = Date.now()}"
+- openLink: "${BASE_URL}/catalog"
+- extendedWaitUntil:
+    visible: '模型与目录'
+    timeout: 20000
+- evalScript: "${output.ms__catalog = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}"
+- assertTrue:
+    condition: "${output.ms__catalog < 2000}"
+    optional: true
+    label: 'slow-check:/catalog'
+
+# ── /model-pricing ─────────────────────────────────────────────
+- evalScript: "${output.t0 = Date.now()}"
+- openLink: "${BASE_URL}/model-pricing"
+- extendedWaitUntil:
+    visible: '定价管理'
+    timeout: 20000
+- evalScript: "${output.ms__model_pricing = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}"
+- assertTrue:
+    condition: "${output.ms__model_pricing < 2000}"
+    optional: true
+    label: 'slow-check:/model-pricing'
+
+# ── /pricing ─────────────────────────────────────────────
+- evalScript: "${output.t0 = Date.now()}"
+- openLink: "${BASE_URL}/pricing"
+- extendedWaitUntil:
+    visible: '成本价格'
+    timeout: 20000
+- evalScript: "${output.ms__pricing = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}"
+- assertTrue:
+    condition: "${output.ms__pricing < 2000}"
+    optional: true
+    label: 'slow-check:/pricing'
+
+# ── /free-pool ─────────────────────────────────────────────
+- evalScript: "${output.t0 = Date.now()}"
+- openLink: "${BASE_URL}/free-pool"
+- extendedWaitUntil:
+    visible: '写入免费池凭据（加密存 DB）'
+    timeout: 20000
+- evalScript: "${output.ms__free_pool = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}"
+- assertTrue:
+    condition: "${output.ms__free_pool < 2000}"
+    optional: true
+    label: 'slow-check:/free-pool'
+
+# ── /free-discovery ─────────────────────────────────────────────
+- evalScript: "${output.t0 = Date.now()}"
+- openLink: "${BASE_URL}/free-discovery"
+- extendedWaitUntil:
+    visible: '免费资源发现'
+    timeout: 20000
+- evalScript: "${output.ms__free_discovery = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}"
+- assertTrue:
+    condition: "${output.ms__free_discovery < 2000}"
+    optional: true
+    label: 'slow-check:/free-discovery'
+
+# ── /key-applications ─────────────────────────────────────────────
+- evalScript: "${output.t0 = Date.now()}"
+- openLink: "${BASE_URL}/key-applications"
+- extendedWaitUntil:
+    visible: '密钥申请'
+    timeout: 20000
+- evalScript: "${output.ms__key_applications = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}"
+- assertTrue:
+    condition: "${output.ms__key_applications < 2000}"
+    optional: true
+    label: 'slow-check:/key-applications'
