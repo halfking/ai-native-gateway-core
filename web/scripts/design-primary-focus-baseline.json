@@ -1,0 +1,17 @@
+{
+  "metric": "rowLevelSolidPrimary = 落在「数据行」内的实心主色按钮数（数据行 = td/th · el-table-column · 数据视图行 slot · li/tr；焦点区域与「无竞争的刻意区域卡」豁免）",
+  "rowLevelSolidPrimary": 0,
+  "updated": "2026-10-27",
+  "history": [
+    {
+      "rowLevelSolidPrimary": 11,
+      "updated": "2026-10-27",
+      "reason": "第 20 增量建门时的实测值（ModelsView 表格行 53 个「查看详情」由同一处声明渲染而成，另 10 处分布在 10 个视图）"
+    },
+    {
+      "rowLevelSolidPrimary": 0,
+      "updated": "2026-10-27",
+      "reason": "第 20 增量：修掉 11 处「数据行内的实心主色」（ModelsView 表格行「查看详情」等）⇒ 主色只留给页面级主动作与「刻意区域」；同时修复 maskSource 保护区重叠导致的长度漂移，行号不再失真"
+    }
+  ]
+}
